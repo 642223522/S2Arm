@@ -420,7 +420,7 @@ class ContractTests(unittest.TestCase):
                                  text=True, capture_output=True, timeout=20)
             self.assertEqual(run.returncode, expected, run.stderr)
 
-    def test_entry_rejects_bad_contract_and_insecure_request_file(self):
+    def test_entry_rejects_bad_contract_but_accepts_default_permission_request(self):
         path = self.root / "request.json"
         atomic(path, self.request | {"contract": "invalid-secret-contract"})
         command = [sys.executable, "-I", "-B", str(ROOT / "pack/jobs/target_main.py"), "--request", str(path)]
@@ -429,10 +429,10 @@ class ContractTests(unittest.TestCase):
         self.assertNotIn("invalid-secret-contract", run.stderr)
         self.assertFalse(Path(self.request["privateRoot"]).exists())
         atomic(path, self.request)
-        path.chmod(0o644)
+        path.chmod(0o644)   # 11-16 不再自设权限：系统缺省权限（0644）的请求照常收、照常出事件（原先按「不是 0600」拒收、stdout 为空）
         run = subprocess.run(command, text=True, capture_output=True, timeout=20)
-        self.assertNotEqual(run.returncode, 0)
-        self.assertEqual(run.stdout, "")
+        self.assertTrue(run.stdout.strip(), run.stderr)
+        self.assertEqual(json.loads(run.stdout.splitlines()[0])["jobId"], self.request["taskId"])
 
 
 if __name__ == "__main__":

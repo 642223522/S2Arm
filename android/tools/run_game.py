@@ -13,7 +13,7 @@ power.tsv / logcat.txt / gfx_mode.txt / battery.txt / thermal.txt / frame_log.tx
                 [--extra s2arm.KEY[=VALUE] ...]   # 其他 intent extra（true/false 走 --ez）
                 [--adb "adb"] [--ready-timeout 180] [--wait 0] [--allow-data-loss]
                 [--backup-dir DIR] [--lock-root DIR] [--holder NAME] [--note TXT]
-                [--push-timeout S] [--push-tar auto|always|never]
+                [--push-timeout S]
 
 锁：取 device_lock.py 的持久内核锁后才动设备，收局按持锁令牌 release；
 崩溃 / 强杀 / adb 掉线 = 未正常收局，设备留置不放行（不自动放）。
@@ -1078,7 +1078,11 @@ def write_frames(out, caps, notes, raw_text, window_us=None):
             "cover": cover, "rows": rows, "captures": len(caps)}
 
 
-PRIV_LOG_NAME = re.compile(r"^(?:host-(\d+)-(\d+)-[A-Za-z0-9]+\.log|frame-log-(\d+)\.log)$")
+PRIV_LOG_NAME = re.compile(r"^(?:host-(\d+)-(\d+)-[A-Za-z0-9]+\.log|frame-log-(\d+)\.log"
+                           r"|compile-inflight-(\d+)-\d+\.log)$")
+# compile-inflight-<pid>-<槽>.log（android/native/direct/compile_request.c）：现编时崩溃，崩溃线程正在编的那份请求原样落盘；
+#   首行 `[s2a] compile-inflight v1 pid=<pid> … uuid=<本局 session_uuid>`，之后是请求 JSON。只在崩了的局里有。
+PRIV_INFLIGHT_HEAD = re.compile(rb"^\[s2a\] compile-inflight v1 pid=(\d+) [^\n]*? uuid=(\S+)\n")
 # host-*.log 首行（os.c s2a_android_session_log_start 的 dprintf）：
 #   [s2a] Android 会话日志：session=<seg> pid=<pid> file=<path>
 # 名实互核：文件名 <seg>/<pid> 与首行写明的对不上 = 改名/拼接过的文件，不证归属。
@@ -1126,7 +1130,7 @@ def collect_private_logs(d, pkg, pids, out, notes, birth_walls=None,
     for path in sorted(ln.strip() for ln in found.splitlines() if ln.strip()):
         m = PRIV_LOG_NAME.match(path.rsplit("/", 1) [-1])
         if m:
-            candidates.append((path, int(m.group(2) or m.group(3))))
+            candidates.append((path, int(m.group(2) or m.group(3) or m.group(4))))
     if pids:
         candidates = [c for c in candidates if c[1] in pids]
         if not candidates:
@@ -1212,6 +1216,12 @@ def collect_private_logs(d, pkg, pids, out, notes, birth_walls=None,
             elif name.startswith("frame-log-"):
                 um = PRIV_FRAME_UUID.search(r.stdout[:8192])
                 file_uuid = um.group(1).decode(errors="replace") if um else None
+            elif name.startswith("compile-inflight-"):
+                hm = PRIV_INFLIGHT_HEAD.match(r.stdout[:4096])
+                if hm is None or int(hm.group(1)) != pid:
+                    attr = "首行 pid 与文件名对不上（或首行缺）"
+                else:
+                    file_uuid = hm.group(2).decode(errors="replace")
             if attr is None and file_uuid != session_uuid:
                 attr = ("文件内容没有 session_uuid 字段（旧构建/属性没置上）：本局身份未证"
                         if file_uuid is None else
@@ -1450,9 +1460,7 @@ def main(argv=None):
                         "tar + manifest.json（逐文件 sha256 清单），收局按它回灌核对")
     p.add_argument("--adb", default="adb")
     p.add_argument("--push-timeout", type=int, default=None,
-                   help="资源推送超时秒数；缺省按资源字节+文件数估（约 30MB/s + 20ms/文件、2 倍余量）")
-    p.add_argument("--push-tar", choices=["auto", "always", "never"], default="auto",
-                   help="资源推送方式：auto 小文件密集自动 tar 单推解开；always 强制；never 整树推")
+                   help="资源直传超时秒数；缺省按字节估（约 30MB/s、2 倍余量）")
     p.add_argument("--ready-timeout", type=int, default=180)
     p.add_argument("--discharge-settle", type=int, default=None,
                    help="采集窗开始前要连续物理放电的秒数（能耗口径；缺省 30，"
@@ -1666,10 +1674,7 @@ def main(argv=None):
                 log("已降级安装测试包（install -r -d）")
             deploy_game.deploy_resources(str(frozen), str(res), adb, str(deploy_work),
                                          mode="auto", timeout=300, start=False,
-                                         push_timeout=args.push_timeout,
-                                         push_tar={"auto": None, "always": True,
-                                                   "never": False}[args.push_tar],
-                                         log=log)
+                                         push_timeout=args.push_timeout, log=log)
             log("资源与包已部署（deploy_resources，未启动）")
             if args.pack:
                 try:

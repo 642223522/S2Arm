@@ -17,9 +17,12 @@ static int g_caps_fps60 = -1, g_caps_fps60_display;
 //   或这款不是「速度已验证正确、默认开」的款（玩家手动开：配带速度修正的补丁才对，玩家自选）。
 //   已验证款里的 fps.tsv（帧率表自己带 present display 行，fps.c 起局设）与游戏原生 60 帧（交换间隔本就不需要放开，caps_policy native60「跟随游戏」）
 //   不由清单放开：宿主替它们写的 S2A_FPS60=1 不等于玩家开了，原先放开来源只认玩家开，不能因为默认开就把原生 60 帧的款也改成每个显示节拍一帧
+// 我方 60 帧那一层（帧率表 fps.tsv / 全引擎放开出图间隔 / 逻辑速度 A/B 绿）缺省不用（11-13 维护者撤掉、只用社区补丁；11-14 补帧手测后确认）：
+//   出包侧 tools/caps_policy.py patch_only 已不再写这些来源，这里是运行时同一个开关——老包清单里还写着「fps.tsv」等原因、包里还带 fps.tsv，
+//   原先照旧默认开我方 60 帧（11-14 手测旧包：帧率表 60 帧开着，60 撑不住被档位梯子降档弹「跑不稳 60 帧」）。S2A_CAPS_OWN=1 回到旧口径，只给内部对照用
 int s2a_fps60_display_source(void) {
     const char *e = getenv("S2A_FPS60");
-    return e && !strcmp(e, "1") && (g_caps_fps60_display || g_caps_fps60 != 1);
+    return s2a_caps_own() && e && !strcmp(e, "1") && (g_caps_fps60_display || g_caps_fps60 != 1);
 }
 
 static char g_pkeys[16][32]; static int g_npkeys;
@@ -39,7 +42,9 @@ void s2a_caps_reset(void) {
 }
 
 int s2a_caps_fps60_verified(const char *val, const char *why) {
-    return val && val[0] == '1' && why && (strstr(why, "fps.tsv") || strstr(why, "逻辑速度同局 A/B 绿") || strstr(why, "游戏原生 60 帧") || strstr(why, "社区帧率补丁"));
+    if (!(val && val[0] == '1' && why)) return 0;
+    if (strstr(why, "游戏原生 60 帧") || strstr(why, "社区帧率补丁")) return 1;
+    return s2a_caps_own() && (strstr(why, "fps.tsv") || strstr(why, "逻辑速度同局 A/B 绿"));   // 我方来源：只在旧口径（S2A_CAPS_OWN=1）算
 }
 
 // 一行能力：src = "能力清单" / "补丁" / "补丁例外"

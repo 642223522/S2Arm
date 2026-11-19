@@ -7,15 +7,52 @@
     <string name="native_unavailable">The native host could not start. See the S2Arm log for details.</string>
     <string name="capability_status" translatable="false">%1$s\n%2$s</string>
     <string name="import_game">Import game package…</string>
+    <string name="in_place_game">Use a game folder in place…</string>
+    <string name="in_place_access_title">All files access needed</string>
+    <string name="in_place_access_text">Using a game in place reads its files straight from your phone\'s storage instead of copying them into the app, which saves as much space as the game takes. In the system settings that open next, turn on \"Allow access to manage all files\" for this app, then come back and tap \"Use a game folder in place…\" again to pick the game folder.</string>
+    <string name="in_place_access_open">Open settings</string>
+    <string name="in_place_not_local">The picked location is not a folder on this phone (a cloud drive, for example), so it can\'t be used in place. Pick a game folder on the phone\'s storage or SD card.</string>
+    <string name="player_err_all_files">The app has no \"All files access\", so it can\'t read the game files in place.</string>
+    <string name="player_err_all_files_next">Turn on \"Allow access to manage all files\" for this app in the system settings, then try again.</string>
+    <string name="player_err_in_place">The game files used in place were moved, deleted or changed.</string>
+    <string name="player_err_in_place_next">Put the game folder back as it was (or copy it from your computer again), then tap \"Use a game folder in place…\" in the library to register it again.</string>
+    <string name="import_progress">Importing game: %1$d / %2$d MiB</string>
     <string name="fps_overlay_show">Show FPS (successful frame submissions)</string>
+    <string name="quality_high">High quality</string>
+    <string name="quality_saver">Battery saver</string>
+    <string name="quality_note">High quality turns on edge-adaptive spatial upscaling and similar features for a sharper picture.</string>
     <string name="fps_overlay_description">Successful game frame submissions per second; not the screen refresh rate</string>
     <!-- #528 item 15: player diagnostic bundle (library screen) -->
     <string name="export_diagnostics">Export diagnostics…</string>
     <string name="export_diagnostics_running">Exporting diagnostics…</string>
     <string name="export_diagnostics_done">Diagnostics ready: %1$s</string>
     <string name="export_diagnostics_failed">Diagnostics export failed: %1$s</string>
+    <string name="save_diagnostics">Save diagnostics to file…</string>
+    <string name="save_diagnostics_done">Diagnostics saved: %1$s</string>
+    <string name="save_diagnostics_failed">Saving diagnostics failed: %1$s</string>
+    <!-- #528 item 15: last game session died in the foreground (LastSession); shown once in the library's status area -->
+    <string name="last_session_abnormal">The last game session ended abnormally. A diagnostics bundle helps us find out why.</string>
+    <string name="last_session_abnormal_reason">The last game session ended abnormally (%1$s). A diagnostics bundle helps us find out why.</string>
+    <string name="last_session_crash">app crash</string>
+    <string name="last_session_native_crash">native crash, signal %1$d</string>
+    <string name="last_session_not_responding">not responding</string>
+    <string name="last_session_low_memory">closed by the system: out of memory</string>
+    <string name="last_session_signaled">closed by the system: signal %1$d</string>
+    <string name="last_session_excessive">closed by the system: too many resources used</string>
+    <string name="last_session_dismiss">Not now</string>
     <string name="console_mode_handheld">Console mode: handheld (tap for docked)</string>
     <string name="console_mode_docked">Console mode: docked (tap for handheld)</string>
+    <string name="phone_gyro_on">Phone gyro: on (tap to turn off)</string>
+    <string name="phone_gyro_off">Phone gyro: off (tap to turn on)</string>
+    <string name="phone_rumble_on">Phone rumble: on (tap to turn off)</string>
+    <string name="phone_rumble_off">Phone rumble: off (tap to turn on)</string>
+    <string name="pad_rumble_on">Controller rumble: on (tap to turn off)</string>
+    <string name="pad_rumble_off">Controller rumble: off (tap to turn on)</string>
+    <string name="pad_face_item">Controller button layout: %1$s</string>
+    <string name="pad_face_title">Controller button layout</string>
+    <string name="pad_face_auto">Automatic (follow the button labels)</string>
+    <string name="pad_face_switch">Switch layout (right button confirms)</string>
+    <string name="pad_face_xbox">Xbox layout (bottom button confirms)</string>
     <string name="console_mode_switched">Console mode switched.</string>
     <string name="console_mode_saved">Console mode saved. It applies the next time the game starts.</string>
 
@@ -70,5 +107,42 @@
     <string name="library_position">%1$d of %2$d</string>
     <string name="library_empty">No games yet</string>
     <string name="library_empty_hint">Install a game with S2Arm on your computer.</string>
+    <!-- Playtime line under the library card (Playtime.java): verbatim from launchers/shared/experience.v1.json library.playtime.*; {0} is the placeholder -->
+    <string name="library_playtime_minutes">Played {0} min</string>
+    <string name="library_playtime_hours">Played {0} h</string>
+    <string name="library_playtime_today">today</string>
+    <string name="library_playtime_yesterday">yesterday</string>
+    <string name="library_playtime_days_ago">{0} days ago</string>
+    <!-- Stall watch (runtime/src/ap_host.c) notices in the game; stall_wait is verbatim S2A_UI_STALL_WAIT_EN (runtime/include/s2a_ui_text.h) -->
+    <string name="stall_patch_off">The picture barely moved for about %1$d seconds, so this game\'s frame-rate patch was turned off. It stays off when you start this game again; you can turn it back on from the settings panel at the top right of the library.</string>
+    <string name="stall_wait">The game picture is stuck\n\nIt may still be loading, so you can wait a little longer. If nothing changes, swipe this app away in the app switcher and open it again.</string>
+    <string name="stall_off_note">This game\'s frame-rate patch was turned off automatically because the picture froze. Turning it back on takes effect the next time you start the game.</string>
+    <string name="stall_reopen">Turn frame-rate patch back on</string>
+    <string name="stall_reopen_failed">Could not turn the frame-rate patch back on: %1$s</string>
+    <string name="mods_title">Mods (asset replacement)</string>
+    <string name="mods_for_game">For: %1$s</string>
+    <string name="mods_no_game">Install a game first: mods are kept per game.</string>
+    <string name="mods_import_zip">Import mod (zip)…</string>
+    <string name="mods_import_folder">Import mod folder…</string>
+    <string name="mods_none">No mods for this game yet.</string>
+    <string name="mods_item">%1$s · %2$d files · %3$s</string>
+    <string name="mods_remove">Delete</string>
+    <string name="mods_working">Working on mods…</string>
+    <string name="mods_imported">Mods imported: %1$s</string>
+    <string name="mods_failed">Mod action failed: %1$s</string>
+    <string name="mods_err_not_archive">A mod must be a zip archive or a folder (extract 7z / rar into a folder first): %1$s</string>
+    <string name="mods_err_too_many">This archive has too many files (more than %1$d): %2$s</string>
+    <string name="mods_err_too_large">This archive unpacks to more than 16 GB: %1$s</string>
+    <string name="mods_err_no_romfs">No romfs folder in “%1$s”: an asset replacement mod must contain romfs/ (for example atmosphere/contents/%2$s/romfs).</string>
+    <string name="mods_err_missing">No such mod: %1$s.</string>
+    <string name="mods_err_name_taken">A mod with this name already exists: %1$s.</string>
+    <string name="mods_note_other_game">“%1$s” is for another game (%2$s); skipped</string>
+    <string name="mods_note_exefs">Code patches inside (exefs pchtxt / IPS) are not imported here: only asset replacement (romfs)</string>
+    <string name="mods_note_empty">The romfs of “%1$s” is empty; skipped</string>
+    <string name="mods_note">Mods apply from the next launch, stacked by folder name (later ones win). Uncheck to turn one off. Change mods while the game is not running.</string>
+    <string name="touch_appearance_opacity">Control opacity</string>
+    <string name="touch_appearance_smaller">Smaller</string>
+    <string name="touch_appearance_larger">Larger</string>
+    <string name="touch_appearance_opacity_value">%1$d%%</string>
 </resources>
 

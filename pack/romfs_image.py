@@ -7,7 +7,9 @@ romfs.imgmap（小端）："S2ARIM01" | i64 镜像长 | i32 文件数 | 文件�
 #329（同一款的数据在盘上只占一份）：库里的资源包不存 romfs.img——macOS 没有区间克隆，几万个文件拼成的大文件和逐文件那一族（解包、
 产物根、Mac 版、pack.files）共享不了块，存着就是第 2 份。改存 romfs.files/<相对路径>：镜像里每个文件的硬链接（同卷零额外占用，NTFS 同样），
 index.tsv 照旧记 romfs.img 的长度与 sha256（按镜像顺序读一遍算出）。推送时要推镜像才由 materialize 按 romfs.s2aidx + romfs.imgmap 现拼、
-边拼边核长度与 sha256，推完删（tools/push_pack.py）。"""
+边拼边核长度与 sha256，推完删（tools/push_pack.py）。
+RomFS 不落散文件（资源包里是 <前缀>romfs.std 标准 RomFS 镜像、没有逐文件的 romfs/，pack/pack.py）：各文件从这份镜像按文件表读，
+输出里硬链接这份镜像（<前缀>romfs.std，同 romfs.files 不进 index.tsv、不推手机），不建 romfs.files/；materialize 同样从它读。index.tsv / romfs.imgmap 与目录形态逐字节相同。"""
 import hashlib, json, os, random, shutil, struct, sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'tools'))
 import sha256_fast
@@ -16,6 +18,15 @@ MAGIC = b'S2ARIM01'
 CHUNK = 1 << 22
 FILES = 'romfs.files'   # 资源包里镜像各文件的硬链接目录（不进 index.tsv、不推手机）
 VERSION = 'romfs-image-v2'   # v2：不存 romfs.img、存 romfs.files 硬链接（#329）
+STD = 'romfs.std'   # 资源包里标准 RomFS 镜像（RomFS 不落散文件时 pack.py 克隆进来的）：有它就从它读各文件
+
+
+def std_image(path):
+    """同目录的 pack/romfs_img.py 读标准 RomFS（本文件也被 tools/push_pack.py 等按 pack/ 在搜索路径里导入）"""
+    d = os.path.dirname(os.path.abspath(__file__))
+    if d not in sys.path: sys.path.insert(0, d)
+    from romfs_img import RomfsImage
+    return RomfsImage(path)
 
 
 class Red(Exception):
@@ -59,20 +70,24 @@ def write_image(src_dir, tmp, prefix, rows, overlay):
     if set(have) - zero != listed: 
         extra, lost = sorted(set(have) - zero - listed), sorted(listed - set(have))
         raise Red(f'{prefix}romfs 文件与索引对不上：多 {len(extra)} 个（如 {extra[:3]}），缺 {len(lost)} 个（如 {lost[:3]}）；索引过期，重出 RomFS 索引')
-    os.makedirs(os.path.join(tmp, prefix, FILES), exist_ok=True)   # 空 RomFS（#578：数据全在 exefs）也要有这个目录：交付 / 推送按它认「库内形态」，没有就退去找不存在的 romfs.img
+    std = os.path.join(src_dir, prefix + STD)
+    im = std_image(std) if os.path.isfile(std) else None   # 镜像形态：各文件从资源包里的标准 RomFS 镜像读，输出里硬链这份镜像
+    if im is None: os.makedirs(os.path.join(tmp, prefix, FILES), exist_ok=True)   # 空 RomFS（#578：数据全在 exefs）也要有这个目录：交付 / 推送按它认「库内形态」，没有就退去找不存在的 romfs.img
     h, pos, offsets, out = sha256_fast.new(), 0, [], []
     for _, n, rel in files:   # 不写镜像：按镜像顺序读一遍算长度与 sha256，文件硬链进 romfs.files/（推送时现拼）
         if int(have[rel][1]) != n: raise Red(f'{prefix}romfs/{rel} 大小与索引不符')
         if rel in overlay: offsets.append(-1); continue
         offsets.append(pos)
+        if im is not None and rel not in im: raise Red(f'{prefix}{STD} 里没有 {rel}')
         src = os.path.join(src_dir, prefix, 'romfs', rel)
-        with open(src, 'rb') as f:
+        with (im.open(rel) if im is not None else open(src, 'rb')) as f:
             left = n
             while left:
                 b = f.read(min(CHUNK, left))
                 if not b: raise Red(f'{prefix}romfs/{rel} 读不满')
                 h.update(b); left -= len(b); pos += len(b)
-        link(src, os.path.join(tmp, prefix, FILES, rel))
+        if im is None: link(src, os.path.join(tmp, prefix, FILES, rel))
+    if im is not None: link(std, os.path.join(tmp, prefix + STD))
     with open(os.path.join(tmp, prefix + 'romfs.imgmap'), 'wb') as m:
         m.write(MAGIC + struct.pack('<qi', pos, len(offsets))); m.write(struct.pack(f'<{len(offsets)}q', *offsets))
     out.append((prefix + 'romfs.img', pos, h.hexdigest()))
@@ -88,7 +103,8 @@ def build(src_dir, out, root):
     rows = [l.split('\t') for l in text.splitlines() if l]
     pres = prefixes(rows)
     overlays = {p: overlay_names(os.path.join(root, p)) for p in pres}
-    key = hashlib.sha256('\n'.join([VERSION, text, *(f'{p}\t{n}' for p in pres for n in sorted(overlays[p]))]).encode()).hexdigest()
+    stds = [f'{p}{STD}' for p in pres if os.path.isfile(os.path.join(src_dir, p + STD))]   # 镜像形态的前缀进键（输出里是镜像、不是 romfs.files/）；目录形态键不变
+    key = hashlib.sha256('\n'.join([VERSION, text, *(f'{p}\t{n}' for p in pres for n in sorted(overlays[p])), *stds]).encode()).hexdigest()
     key_file = out.rstrip('/\\') + '.image.key'
     try:
         same = open(key_file, encoding='utf-8').read().strip() == key and json.load(open(os.path.join(out, 'manifest.json'), encoding='utf-8')).get('version') == 2
@@ -106,7 +122,8 @@ def build(src_dir, out, root):
     with open(os.path.join(tmp, 'index.tsv'), 'wb') as f: f.write(ix)
     with open(os.path.join(tmp, 'manifest.json'), 'w', encoding='utf-8', newline='\n') as f:
         json.dump({'version': 2, 'files': len(new), 'total': sum(n for _, n, _ in new), 'index_sha256': hashlib.sha256(ix).hexdigest()}, f, indent=1)
-    shutil.rmtree(out, ignore_errors=True); os.replace(tmp, out)
+    from orch.dirrename import rename_dir   # Windows 刚硬链完十几万个文件，杀软 / 索引扫描开着句柄，目录改名报 WinError 5；按 #361 同一套退避重试（11-15 Windows 出包机 ReFS 盘 18.7 万个文件两单都死在这里，手动再改一次就过）
+    shutil.rmtree(out, ignore_errors=True); rename_dir(tmp, out)
     with open(key_file + '.tmp', 'w', encoding='utf-8', newline='\n') as f: f.write(key + '\n')
     os.replace(key_file + '.tmp', key_file)
     img = sum(n for p, n, _ in new if p.endswith('romfs.img'))
@@ -114,9 +131,11 @@ def build(src_dir, out, root):
 
 
 def materialize(pack, img_rel, size, want_sha, say=print, progress=None):
-    """按 <前缀>romfs.s2aidx 的文件顺序、<前缀>romfs.imgmap 的偏移，把 <前缀>romfs.files/ 里的文件拼成 <前缀>romfs.img（先写 .part 再改名），
+    """按 <前缀>romfs.s2aidx 的文件顺序、<前缀>romfs.imgmap 的偏移，把 <前缀>romfs.files/ 里的文件（镜像形态：<前缀>romfs.std 里的）拼成 <前缀>romfs.img（先写 .part 再改名），
     边拼边核：长度、sha256 都要等于 index.tsv 记的（size / want_sha），对不上删掉半份、报红。→ 写出的路径（调用方推完删）"""
     pack = os.fspath(pack); prefix = img_rel[:-len('romfs.img')]
+    std = os.path.join(pack, prefix + STD)
+    im = std_image(std) if not os.path.isdir(os.path.join(pack, prefix, FILES)) and os.path.isfile(std) else None
     _, files = parse_index(os.path.join(pack, prefix + 'romfs.s2aidx'))
     mb = open(os.path.join(pack, prefix + 'romfs.imgmap'), 'rb').read()
     if mb[:8] != MAGIC: raise Red(f'{prefix}romfs.imgmap 格式不对')
@@ -131,15 +150,16 @@ def materialize(pack, img_rel, size, want_sha, say=print, progress=None):
             for o, (_, n, rel) in zip(offsets, files):
                 if o < 0: continue
                 if o != pos: raise Red(f'{prefix}romfs.imgmap 偏移不连续：{rel} 记 {o}、应为 {pos}')
-                with open(os.path.join(pack, prefix, FILES, rel), 'rb') as f:
+                if im is not None and rel not in im: raise Red(f'{prefix}{STD} 里没有 {rel}')
+                with (im.open(rel) if im is not None else open(os.path.join(pack, prefix, FILES, rel), 'rb')) as f:
                     left = n
                     while left:
                         b = f.read(min(CHUNK, left))
                         if not b: raise Red(f'{prefix}{FILES}/{rel} 读不满')
                         h.update(b); w.write(b); left -= len(b); pos += len(b)
                         if progress and time.monotonic() - last >= 1: progress(pos); last = time.monotonic()
-        if pos != size or h.hexdigest() != want_sha:
-            raise Red(f'现拼的 {img_rel} 与索引不符（长 {pos} / {size}，sha256 {h.hexdigest()[:12]} / {want_sha[:12]}）：资源包里的文件被改过，重打 iPhone 包')
+        if pos != size or h.hexdigest() != want_sha:   # 维护者 11-17：校验不过不再整个拒绝——坏也只坏这款的包，黄字说清后照常推
+            say(f'🟡 现拼的 {img_rel} 与索引不符（长 {pos} / {size}，sha256 {h.hexdigest()[:12]} / {want_sha[:12]}）：资源包里的文件被改过，照常继续；游戏里出问题时重打 iPhone 包')
         os.replace(part, dst)
     except BaseException:
         try: os.unlink(part)

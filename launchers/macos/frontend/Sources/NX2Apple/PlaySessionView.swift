@@ -55,8 +55,7 @@ struct PlaySessionView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(.horizontal, 40).padding(.top, 30).padding(.bottom, 40)
-                .frame(maxWidth: 1180)
+                .padding(.horizontal, LauncherTheme.Metrics.libraryInset).padding(.top, 30).padding(.bottom, 40)
                 .frame(maxWidth: .infinity)
             }
             Divider().opacity(0.3)
@@ -136,8 +135,8 @@ struct PlaySessionView: View {
                     Button { model.play(game, uiLanguage: uiLanguage) } label: {
                         Label(loc.t("s2arm.play.again"), systemImage: "play.fill").font(.manrope(13, .semibold))
                     }
-                    .buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy)
-                    .accessibilityIdentifier("play.again")
+                    .controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy)
+                    .controllerID("play.again").controllerShortcut(.rightTrigger, focused: true)
                 }
                 CopyReportButton(model: model, gameID: session.gameID, operations: ["launch"], fallback: session.message)
             }
@@ -153,18 +152,19 @@ struct PlaySessionView: View {
 
     private var actionBar: some View {
         HStack(spacing: 14) {
+            Spacer(minLength: 0)
             if finished == nil {
-                Button { model.stop() } label: { LauncherHeroActionLabel(title: loc.t("s2arm.play.stop"), symbol: "stop.fill") }
-                    .buttonStyle(.plain).disabled(session.phase == .stopping)
-                    .keyboardShortcut(".", modifiers: .command).accessibilityIdentifier("play.stop")
+                Button { model.stop() } label: { Label(loc.t("s2arm.play.stop"), systemImage: "stop.fill") }
+                    .controllerButtonStyle(LauncherPrimaryButtonStyle(prominent: true)).disabled(session.phase == .stopping)
+                    .keyboardShortcut(".", modifiers: .command).controllerID("play.stop").controllerShortcut(.rightTrigger)
             } else {
-                Button { model.backToLibrary() } label: { LauncherHeroActionLabel(title: loc.t("s2arm.play.back"), symbol: "chevron.left") }
-                    .buttonStyle(.plain).keyboardShortcut(.defaultAction).accessibilityIdentifier("play.back")
+                // Match the titlebar/B action even before a newly started session has redrawn this footer.
+                Button { model.goToLibrary() } label: { Label(loc.t("s2arm.play.back"), systemImage: "chevron.left") }
+                    .controllerButtonStyle(LauncherPrimaryButtonStyle(prominent: true))
+                    .keyboardShortcut(.defaultAction).controllerID("play.back").controllerShortcut(.rightTrigger, .back)
             }
-            Spacer()
         }
-        .padding(.horizontal, 40).padding(.vertical, 16)
-        .frame(maxWidth: 1180)
+        .padding(.horizontal, LauncherTheme.Metrics.libraryInset).padding(.vertical, 16)
         .frame(maxWidth: .infinity)
     }
 }

@@ -1,13 +1,14 @@
 // UI adapted from LumaDock (MIT); see ../../README.md.
 import SwiftUI
 import AppKit
+import S2ArmAppleAdapter
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var store: Store?
     func applicationShouldTerminate(_ sender:NSApplication)->NSApplication.TerminateReply {store?.terminate();return .terminateNow}
     func applicationShouldTerminateAfterLastWindowClosed(_ sender:NSApplication)->Bool {false}
 }
 @main struct S2ArmLauncherApp: App {
-    init() { _ = SharedExperience.specification }
+    init() { _ = SharedExperience.specification; BackendText.preload() }   // 文案资源启动时一次读完（Sparkle 换盘上 .app 时不再去读，0.5.1 退出崩溃）
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     @StateObject var store = Store()
     var body: some Scene {

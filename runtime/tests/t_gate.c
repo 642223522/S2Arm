@@ -23,7 +23,8 @@ uint64_t s2a_det_tick(uint64_t v) { return v; }
 void s2a_det_yield(void) {}
 static int n_done;
 void s2a_svc_ctx_done(void) { n_done++; }
-void s2a_svc_ctx_fill(s2a_svc_ctx *c, int num, uint64_t *regs) { memset(c, 0, sizeof *c); c->num = (uint32_t)num; c->regs = regs; }
+static uint32_t g_tlr[64];   // ⑥ 假 TLS 消息区：IPC 请求 / 应答都在这里（同真机 0x21）
+void s2a_svc_ctx_fill(s2a_svc_ctx *c, int num, uint64_t *regs) { memset(c, 0, sizeof *c); c->num = (uint32_t)num; c->regs = regs; c->tlr = g_tlr; }
 void *s2a_thread_tlr(void) { return NULL; }
 void s2a_widen_gate(int idx, uint64_t *regs, uint64_t orig) { (void)idx; (void)regs; (void)orig; }
 void s2a_spin_wait(uint64_t site) { (void)site; }
@@ -34,7 +35,12 @@ int svc_mem(int num, uint64_t *regs, uint64_t orig) { (void)num; (void)regs; (vo
 int s2a_svc_park_all(int wait_ms);
 
 static int handled = 1;
-static int cs_svc(s2a_svc_ctx *c) { c->regs[0] = 0; return handled ? S2A_SVC_HANDLED : 0; }
+static int reply_mode;   // ⑥：1 = 回 GetService（转移一个句柄 0x1234）；2 = 回 CMIF 结果 0x2a2
+static int cs_svc(s2a_svc_ctx *c) {
+    c->regs[0] = 0;
+    if (reply_mode == 1) { memset(g_tlr, 0, sizeof g_tlr); g_tlr[0] = 0; g_tlr[1] = 1u << 31; g_tlr[2] = 1u << 5; g_tlr[3] = 0x1234; }
+    if (reply_mode == 2) { memset(g_tlr, 0, sizeof g_tlr); g_tlr[0] = 4; g_tlr[1] = 8; g_tlr[4] = 0x4F434653; g_tlr[6] = 0x2a2; }
+    return handled ? S2A_SVC_HANDLED : 0; }
 static void *ipc_thread(void *a) { uint64_t r[32] = {0}; gate_dispatch((uint64_t)a, r); return NULL; }
 static int fails;
 static void check(const char *w, int ok) { printf("%s %s\n", ok ? "✓" : "✗", w); fails += !ok; }
@@ -70,6 +76,19 @@ int main(void) {
     check("C# 未处理：回 0xF201", regs[0] == 0xF201);
     check("C# 未处理也调了系统调用收尾（1001 次）", n_done == 1001);
     handled = 1;
+    {   // ⑥ 崩溃现场的最近 IPC（#eb9952）：sm 给 fsp-srv 会话 0x1234（TIPC 命令 1，名字在请求里），再在 0x1234 上发 CMIF 命令 7、回结果 0x2a2。
+        //   期望（手写）：倒出来的最后两条依次是「句柄 0（sm）命令 1」与「句柄 0x1234（fsp-srv）命令 7 → 结果 0x2a2」
+        memset(g_tlr, 0, sizeof g_tlr); g_tlr[0] = 16 + 1; g_tlr[1] = 0; memcpy(&g_tlr[2], "fsp-srv\0", 8);
+        reply_mode = 1; regs[0] = 0; gate_dispatch(ret, regs);
+        memset(g_tlr, 0, sizeof g_tlr); g_tlr[0] = 4; g_tlr[1] = 8; g_tlr[4] = 0x49434653; g_tlr[6] = 7;
+        reply_mode = 2; regs[0] = 0x1234; gate_dispatch(ret, regs); reply_mode = 0;
+        void s2a_gate_ipc_recent(const char *); char path[] = "/tmp/t_gate_ipcXXXXXX"; int fd = mkstemp(path), keep = dup(2);
+        fflush(stderr); dup2(fd, 2); s2a_gate_ipc_recent("单测"); fflush(stderr); dup2(keep, 2); close(keep);
+        char out[8192] = {0}; lseek(fd, 0, SEEK_SET); ssize_t got = read(fd, out, sizeof out - 1); (void)got; close(fd); unlink(path);
+        check("⑥ 最近 IPC：sm 那条记成命令 1", strstr(out, "句柄 0（?）命令 1 → 结果 0") != NULL);
+        check("⑥ 最近 IPC：0x1234 认出是 fsp-srv、命令 7、结果 0x2a2", strstr(out, "句柄 0x1234（fsp-srv）命令 7 → 结果 0x2a2") != NULL);
+        if (!strstr(out, "fsp-srv")) printf("%s\n", out);
+    }
     // at_core 先清：前面每次 IPC 都置过
     atomic_store(&at_core, 0); atomic_store(&block_core, 1); pthread_t th; pthread_create(&th, NULL, ipc_thread, (void *)ret);
     for (int i = 0; i < 2000 && !atomic_load(&at_core); i++) usleep(1000);   // 等它从 C# 回来、卡在取核
@@ -89,6 +108,6 @@ int main(void) {
             printf("✗ 门数过 2048：应登记 %d 个、表 ≥ 4 倍、全部查回；实 %d 个、表 2^%u、查回错 %d\n", n0 + 5000, s2a_gate_count(), bits, bad_back); fails++; }
         else printf("  门数过 2048：登记 %d 个，表扩到 2^%u 槽，5000 个全部查回\n", s2a_gate_count(), bits);
     }
-    printf("%s t_gate：%d 处不符（共 13 项）\n", fails ? "✗" : "✓", fails);
+    printf("%s t_gate：%d 处不符（共 15 项）\n", fails ? "✗" : "✓", fails);
     return fails != 0;
 }

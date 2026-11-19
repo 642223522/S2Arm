@@ -27,7 +27,7 @@ public final class GameSessionTest {
         BootContract.Module main = new BootContract.Module("main", "apk-asset", "main.patched.bin", "main.fixups.tsv", "main.gates.tsv", null, "0000");
         BootContract.Apk apk = new BootContract.Apk("org.s2arm.game.t0100000000000000", 1, hash, hash, "game/modules");
         s.game = new BootContract.Game("0100000000000000", content, "revisions/"+content, "game-build-artifact.json", hash,
-            BootContract.REWRITE_ABI, "0.1.0", "vulkan", "exefs/main.npdm", "ctl/control.nacp", "romfs", "modules", 1, 1,
+            BootContract.REWRITE_ABI, "0.1.0", "vulkan", "exefs/main.npdm", "ctl/control.nacp", "romfs", "modules", null, 1, 1,
             new ArrayList<>(Collections.singletonList(main)), apk, null);
         return s;
     }

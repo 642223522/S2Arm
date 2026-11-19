@@ -32,6 +32,10 @@ final class RunnerTests: XCTestCase {
                 origin.withOffset(CGVector(dx: x, dy: y)).press(forDuration: s); print("[xcui] \(i + 1) 按住 \(x),\(y) \(s) 秒")
             case .wait(let s):
                 Thread.sleep(forTimeInterval: s); print("[xcui] \(i + 1) 等 \(s) 秒")
+            case .swipeLeft(let id, let timeout):
+                let e = app.descendants(matching: .any)[id]
+                XCTAssertTrue(e.waitForExistence(timeout: timeout), "第 \(i + 1) 步：\(timeout) 秒没等到控件 \(id)")
+                e.swipeLeft(); print("[xcui] \(i + 1) 左滑 \(id)")
             case .typeText(let id, let text, let timeout):
                 let e = app.descendants(matching: .any)[id]
                 XCTAssertTrue(e.waitForExistence(timeout: timeout), "第 \(i + 1) 步：\(timeout) 秒没等到输入框 \(id)")

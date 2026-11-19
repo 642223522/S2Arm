@@ -107,15 +107,20 @@ int main(void) { @autoreleasepool {
 
     // ② 段外工作：先结束段，几何核排在它前面
     reset_mem(); nvn_be_sub_begin(); geo_run_begin(); lane_kernel(1);
+    uint64_t e_op0 = g_gr_end[GEO_END_OP], e_dp0 = g_gr_end_op[OP_DISPATCH], e_ot0 = g_gr_end[GEO_END_OTHER];
     bind_tagged(2); g_on = 0; put(OP_DISPATCH, &dp, sizeof dp); put(OP_END, NULL, 0); nvn_be_exec(g_ops);
     int after = g_gr.active;
+    int why2 = g_gr_end[GEO_END_OP] - e_op0 == 1 && g_gr_end_op[OP_DISPATCH] - e_dp0 == 1 && g_gr_end[GEO_END_OTHER] == e_ot0;
     finish();
     CHECK(!after && count() == 2 && outv(0) == 1 && outv(1) == 2, "② [派发 标签 2] 先结束段（段开着 %d，期望 0）：执行顺序 [%u %u]（期望 [1 2]），计数 %u（期望 2）", after, outv(0), outv(1), count());
+    CHECK(why2, "② 结束原因记成「状态之外的操作」一次、操作码是派发（%d，期望 1），没记成「结束主遍 / 其他」", why2);
 
     // ③ 遍结束：段结束
     reset_mem(); nvn_be_sub_begin(); geo_run_begin(); lane_kernel(1);
-    rp_end(); int ended = !g_gr.active;
+    uint64_t e_ot3 = g_gr_end[GEO_END_OTHER];
+    rp_end(); int ended = !g_gr.active, why3 = g_gr_end[GEO_END_OTHER] - e_ot3 == 1;
     finish();
+    CHECK(why3, "③ rp_end 结束的段记成「结束主遍 / 其他」一次（%d，期望 1）", why3);
     CHECK(ended && count() == 1 && outv(0) == 1, "③ rp_end 之后段已结束（%d，期望 1），几何核执行了（计数 %u，期望 1）", ended, count());
 
     // ④ 段末压缩排在全部几何核之后
@@ -251,7 +256,9 @@ int main(void) { @autoreleasepool {
         rec_lane(2); g_game_barrier = 1; rp_begin(); rec_lane(0); REQUIRE(g_enc);   // 段里的主遍：开在道 2
         uint64_t c0 = nvn_be_cut_count(); g_arena_seg = ARENA_CUT / 2; geo_scratch_cut(1, 1024);
         int below = g_gr.active && nvn_be_cut_count() == c0;
+        uint64_t e_cut8 = g_gr_end[GEO_END_CUT];
         g_arena_seg = ARENA_CUT; geo_scratch_cut(1, 1024);
+        CHECK(g_gr_end[GEO_END_CUT] - e_cut8 == 1 && g_gr_why == 0, "⑧ 切段结束的段记成「切暂存」一次（%llu，期望 1），原因用完清零（%d，期望 0）", (unsigned long long)(g_gr_end[GEO_END_CUT] - e_cut8), g_gr_why);
         int ended = !g_gr.active, cut = nvn_be_cut_count() == c0 + 1, reset = g_arena_seg < ARENA_CUT;
         finish();
         CHECK(below && ended && cut && reset && count() == 1, "⑧ 没到阈值不动（%d，期望 1）；到阈值段结束 %d、切一刀 %d、本段暂存归零 %d（期望 1 1 1），几何核照常执行（计数 %u，期望 1）", below, ended, cut, reset, count());

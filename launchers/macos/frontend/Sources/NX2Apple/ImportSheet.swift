@@ -22,12 +22,12 @@ struct ImportSheet: View {
     @FocusState private var focusedSource: String?
 
     var page: S2ArmLauncherModel.ImportPage { model.importPage ?? (kind == .games ? .selection : .keys) }
-    private var language: String { loc.lang == .zh ? "zh-Hans" : "en" }
+    private var language: String { loc.lang.sharedCode }
 
     private func w(_ id: String) -> String {
         BackendText.launcherText("welcome.sheet." + (page == .selection ? "games." : "keys.") + id, language: language)
     }
-    private func common(_ id: String) -> String { BackendText.launcherText("welcome.sheet." + id, language: loc.lang == .zh ? "zh-Hans" : "en") }
+    private func common(_ id: String) -> String { BackendText.launcherText("welcome.sheet." + id, language: loc.lang.sharedCode) }
 
     private var job: JobSession? {
         guard let s = model.session, [.keys, .importGames].contains(s.kind) else { return nil }
@@ -40,28 +40,26 @@ struct ImportSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if page == .results {
-                ZStack(alignment: .topLeading) {
-                    results
-                        .opacity(detail == nil ? 1 : 0)
-                        .accessibilityHidden(detail != nil)
-                        .allowsHitTesting(detail == nil)
-                        .disabled(detail != nil)
-                    if let detail { sourceDetails(detail) }
+            VStack(alignment: .leading, spacing: 0) {
+                if page == .results {
+                    ZStack(alignment: .topLeading) {
+                        results
+                            .opacity(detail == nil ? 1 : 0)
+                            .accessibilityHidden(detail != nil)
+                            .allowsHitTesting(detail == nil)
+                            .disabled(detail != nil)
+                        if let detail { sourceDetails(detail) }
+                    }
+                } else {
+                    ScrollView { picker }
                 }
-            } else {
-                picker
+                Spacer(minLength: 16)
             }
-            Spacer(minLength: 16)
+            .padding(.horizontal, LauncherTheme.Space.page).padding(.top, LauncherTheme.Space.page)
             footer
                 .layoutPriority(1)
         }
-        .padding(30)
-        .frame(width: 560, height: 500)
-        .background(LauncherPalette.background)
-        .font(.manrope(13))
-        .preferredColorScheme(.dark)
-        .tint(LauncherPalette.cream)
+        .launcherSheet(.form, height: page == .results ? 560 : 460)
         .onExitCommand {
             if let detail { backFromDetails(detail) }
             else if page == .results { model.cancelImport() }
@@ -85,13 +83,9 @@ struct ImportSheet: View {
         VStack(alignment: .leading, spacing: 0) {
             let count = model.importedSourceCount
             let remaining = model.pendingSources.count
-            Text(resultText(count == 0 ? "none" : count == 1 ? "one" : "many", count: count))
-                .font(.manrope(26, .heavy)).tracking(-0.6)
-                .accessibilityAddTraits(.isHeader)
-            Text(resultText(remaining == 1 ? "pendingOne" : "pendingMany", count: remaining) +
-                 (count == 0 ? "" : " " + resultText("inLibrary")))
-                .font(.manrope(14)).foregroundStyle(.secondary).padding(.top, 6)
-                .fixedSize(horizontal: false, vertical: true)
+            LauncherSheetHeading(resultText(count == 0 ? "none" : count == 1 ? "one" : "many", count: count),
+                                 subtitle: resultText(remaining == 1 ? "pendingOne" : "pendingMany", count: remaining) +
+                                     (count == 0 ? "" : " " + resultText("inLibrary")))
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(model.pendingSources) { source in
@@ -105,7 +99,7 @@ struct ImportSheet: View {
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             Button(resultText("view")) { detail = source }
-                                .buttonStyle(LauncherSecondaryButtonStyle())
+                                .controllerButtonStyle(LauncherSecondaryButtonStyle())
                                 .disabled(model.busy)
                                 .accessibilityIdentifier("import.details." + source.id)
                                 .focusable()
@@ -130,34 +124,28 @@ struct ImportSheet: View {
         }
     }
 
-    private static let footerButtonWidth: CGFloat = 84
+    private static let footerButtonWidth: CGFloat = 136
 
     private var footer: some View {
-        HStack {
+        LauncherSheetFooter {
             if page == .results, detail == nil {
                 Button(common("cancel")) { model.cancelImport() }
-                    .buttonStyle(LauncherSecondaryButtonStyle())
+                    .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerShortcut(.back)
             }
             Spacer()
             if let detail, page == .results {
                 Button(resultText("back")) { backFromDetails(detail) }
-                    .buttonStyle(LauncherSecondaryButtonStyle())
+                    .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerShortcut(.back)
             } else if page == .results {
                 Button(resultText("back")) { model.backFromImportResults() }
-                    .buttonStyle(LauncherSecondaryButtonStyle())
+                    .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerShortcut(.secondary)
                     .disabled(model.busy)
-                Button { model.retryImport() } label: {
-                    Text(resultText("retry")).font(.manrope(13, .bold))
-                        .foregroundStyle(.black)
-                        .frame(width: Self.footerButtonWidth, height: LauncherControl.height)
-                        .background(LauncherPalette.cream.opacity(model.busy ? 0.45 : 1), in: RoundedRectangle(cornerRadius: 9))
-                        .contentShape(RoundedRectangle(cornerRadius: 9))
-                }
-                .buttonStyle(.plain)
+                Button(resultText("retry")) { model.retryImport() }
+                .controllerButtonStyle(LauncherPrimaryButtonStyle()).controllerShortcut(.rightTrigger)
                 .disabled(model.busy)
             } else {
                 Button(common("cancel")) { cancel() }
-                    .buttonStyle(LauncherSecondaryButtonStyle())
+                    .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerShortcut(.back)
                     .disabled(job?.phase == .stopping)
             }
         }
@@ -172,7 +160,7 @@ struct ImportSheet: View {
 
     private func sourceDetails(_ source: ImportSource) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(reason(source)).font(.manrope(26, .heavy)).tracking(-0.6)
+            Text(reason(source)).font(LauncherTheme.TypeStyle.title).tracking(-0.6)
                 .accessibilityAddTraits(.isHeader)
             Text(resultText("fileName")).font(.manrope(14, .bold)).padding(.top, 22)
             Text(source.fileName)
@@ -190,7 +178,7 @@ struct ImportSheet: View {
                         .background(fieldBackground)
                         .contentShape(RoundedRectangle(cornerRadius: 9))
                 }
-                .buttonStyle(.plain)
+                .controllerButtonStyle(.plain)
                 .disabled(source.diagnostic.isEmpty)
                 .accessibilityLabel(resultText("copy"))
                 .accessibilityValue(copyFeedback == nil ? "" : resultText("copied"))
@@ -228,16 +216,14 @@ struct ImportSheet: View {
 
     private var picker: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(w("title")).font(.manrope(26, .heavy)).tracking(-0.6)
-            Text(w("what")).font(.manrope(14)).foregroundStyle(.secondary).lineSpacing(3)
-                .fixedSize(horizontal: false, vertical: true).padding(.top, 6)
+            LauncherSheetHeading(w("title"), subtitle: w("what"))
             Group {
                 if let job {
                     VStack(alignment: .leading, spacing: 10) {
                         Text(job.name).font(.manrope(16, .bold)).lineLimit(1)
                         InlineProgress(session: job)
                         if !job.message.isEmpty, job.message != job.stage, job.message != "操作完成" {
-                            Text(loc.backend(job.message)).font(.manrope(12.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            Text(loc.backend(job.message)).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         }
                     }
                     .padding(24)
@@ -250,20 +236,20 @@ struct ImportSheet: View {
             .padding(.top, 20)
             .animation(.easeOut(duration: 0.2), value: job == nil)
             if page == .keys, model.keysRejected, job == nil {
-                Text(BackendText.launcherText("welcome.keys.unusable", language: loc.lang == .zh ? "zh-Hans" : "en")).font(.manrope(13)).foregroundStyle(LauncherPalette.danger)
+                Text(BackendText.launcherText("welcome.keys.unusable", language: loc.lang.sharedCode)).font(LauncherTheme.TypeStyle.detail).foregroundStyle(LauncherPalette.danger)
                     .fixedSize(horizontal: false, vertical: true).padding(.top, 12)
             }
             if page == .selection, job == nil, !model.importNoBase.isEmpty {   // #797：刚添加的款缺本体
-                Text(model.importNoBase.map { BackendText.launcherText("import.noBase", language: loc.lang == .zh ? "zh-Hans" : "en").replacingOccurrences(of: "{0}", with: $0) }.joined(separator: "\n"))
-                    .font(.manrope(13)).foregroundStyle(LauncherPalette.building)
+                Text(model.importNoBase.map { BackendText.launcherText("import.noBase", language: loc.lang.sharedCode).replacingOccurrences(of: "{0}", with: $0) }.joined(separator: "\n"))
+                    .font(LauncherTheme.TypeStyle.detail).foregroundStyle(LauncherPalette.building)
                     .fixedSize(horizontal: false, vertical: true).padding(.top, 12).accessibilityIdentifier("import.noBase")
             }
             if let dropHint, job == nil {
-                Text(dropHint).font(.manrope(13)).foregroundStyle(LauncherPalette.danger)
+                Text(dropHint).font(LauncherTheme.TypeStyle.detail).foregroundStyle(LauncherPalette.danger)
                     .fixedSize(horizontal: false, vertical: true).padding(.top, 12)
             }
             if let failure {
-                Text(loc.backend(failure)).font(.manrope(13)).foregroundStyle(LauncherPalette.danger)
+                Text(loc.backend(failure)).font(LauncherTheme.TypeStyle.detail).foregroundStyle(LauncherPalette.danger)
                     .fixedSize(horizontal: false, vertical: true).padding(.top, 12)
                 CopyReportButton(model: model, gameID: nil, operations: ["import", "keys", "setup"], fallback: failure).padding(.top, 8)
                 ReportHint().padding(.top, 4)
@@ -276,9 +262,10 @@ struct ImportSheet: View {
             Image(systemName: page == .selection ? "square.and.arrow.down" : "key").font(.system(size: 34, weight: .light))
                 .foregroundStyle(LauncherPalette.cream)
             Text(w("drop")).font(.manrope(18, .bold))
-            Text(common("or")).font(.manrope(12.5)).foregroundStyle(.secondary)
-            Button { browse() } label: { Text(w("browse")).font(.manrope(14, .bold)).foregroundStyle(.black).padding(.horizontal, 20).padding(.vertical, 9).background(LauncherPalette.cream, in: Capsule()).contentShape(Capsule()) }
-                .buttonStyle(.plain).disabled(model.busy)
+            Text(common("or")).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary)
+            Button(w("browse")) { browse() }
+                .controllerButtonStyle(LauncherPrimaryButtonStyle())
+                .disabled(model.busy)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(targeted ? LauncherPalette.cream.opacity(0.07) : LauncherPalette.surface.opacity(0.45), in: RoundedRectangle(cornerRadius: 16))
@@ -377,7 +364,7 @@ struct InlineProgress: View {
 struct ReportHint: View {
     @EnvironmentObject var loc: Localizer
     var body: some View {
-        Text(loc.reportHint).font(.manrope(12.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        Text(loc.reportHint).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             .accessibilityIdentifier("report.hint")
     }
 }
@@ -392,7 +379,7 @@ struct CopyReportButton: View {
 
     var body: some View {
         Button(loc.t("s2arm.diagUpload.button")) { showing = true }
-            .buttonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("diag.upload")
+            .controllerButtonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("diag.upload")
             .sheet(isPresented: $showing) {
                 UploadDiagnosticsSheet(model: model, gameID: gameID, operations: operations, fallback: fallback) { showing = false }
                     .environmentObject(loc)
@@ -417,58 +404,59 @@ struct UploadDiagnosticsSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(loc.t("s2arm.diagUpload.title")).font(.manrope(17, .semibold))
+            LauncherSheetHeading(loc.t("s2arm.diagUpload.title"))
             switch phase {
             case .confirm:
-                Text(loc.t("s2arm.diagUpload.what")).font(.manrope(13)).fixedSize(horizontal: false, vertical: true)
-                Text(loc.t("s2arm.diagUpload.not")).font(.manrope(13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(loc.t("s2arm.diagUpload.what")).font(LauncherTheme.TypeStyle.detail).fixedSize(horizontal: false, vertical: true)
+                Text(loc.t("s2arm.diagUpload.not")).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(loc.t("s2arm.diagUpload.noteLabel")).font(.manrope(13, .semibold))
-                    TextField(loc.t("s2arm.diagUpload.notePlaceholder"), text: $note, axis: .vertical)
-                        .lineLimit(3...6).textFieldStyle(.roundedBorder).font(.manrope(13))
+                    Text(loc.t("s2arm.diagUpload.noteLabel")).font(LauncherTheme.TypeStyle.section)
+                    TextField("", text: $note, prompt: Text(loc.t("s2arm.diagUpload.notePlaceholder")).foregroundColor(LauncherTheme.Colors.secondary), axis: .vertical)
+                        .lineLimit(3...6).textFieldStyle(LauncherTextFieldStyle(topInset: LauncherTheme.Space.small)).font(LauncherTheme.TypeStyle.detail)
+                        .accessibilityLabel(loc.t("s2arm.diagUpload.noteLabel"))
                         .accessibilityIdentifier("diag.upload.note")
                 }
                 HStack {
                     Spacer()
-                    Button(loc.t("s2arm.diagUpload.cancel")) { close() }.buttonStyle(LauncherSecondaryButtonStyle()).keyboardShortcut(.cancelAction)
-                    Button(loc.t("s2arm.diagUpload.send")) { send() }.buttonStyle(LauncherSecondaryButtonStyle()).keyboardShortcut(.defaultAction)
+                    Button(loc.t("s2arm.diagUpload.cancel")) { close() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).keyboardShortcut(.cancelAction).controllerShortcut(.back)
+                    Button(loc.t("s2arm.diagUpload.send")) { send() }.controllerButtonStyle(LauncherPrimaryButtonStyle()).keyboardShortcut(.defaultAction).controllerShortcut(.rightTrigger)
                         .accessibilityIdentifier("diag.upload.send")
                 }
             case .uploading:
-                HStack(spacing: 10) { ProgressView().controlSize(.small); Text(loc.t("s2arm.diagUpload.sending")).font(.manrope(13)) }
+                HStack(spacing: 10) { ProgressView().controlSize(.small); Text(loc.t("s2arm.diagUpload.sending")).font(LauncherTheme.TypeStyle.detail) }
                 // 11-13：卡在这一步（网慢 / 代理半通）原先没有任何出口；作业层另有 90 秒总时限兜底
                 HStack {
                     Spacer()
-                    Button(loc.t("s2arm.diagUpload.cancel")) { cancelUpload() }.buttonStyle(LauncherSecondaryButtonStyle()).keyboardShortcut(.cancelAction)
+                    Button(loc.t("s2arm.diagUpload.cancel")) { cancelUpload() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).keyboardShortcut(.cancelAction).controllerShortcut(.back)
                         .accessibilityIdentifier("diag.upload.cancelSending")
                 }
             case .done(let receipt):
-                Text(loc.t("s2arm.diagUpload.done")).font(.manrope(13)).fixedSize(horizontal: false, vertical: true)
+                Text(loc.t("s2arm.diagUpload.done")).font(LauncherTheme.TypeStyle.detail).fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 12) {
                     Text(receipt.code).font(.system(size: 26, weight: .semibold, design: .monospaced)).textSelection(.enabled).accessibilityIdentifier("diag.upload.code")
-                    Button(copied ? loc.t("s2arm.export.copied") : loc.t("s2arm.diagUpload.copy")) { copy(receipt.code) }.buttonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("diag.upload.copy")
+                    Button(copied ? loc.t("s2arm.export.copied") : loc.t("s2arm.diagUpload.copy")) { copy(receipt.code) }.controllerButtonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("diag.upload.copy").controllerShortcut(.secondary)
                 }
-                Text(loc.t("s2arm.diagUpload.repo").replacingOccurrences(of: "{0}", with: receipt.repo)).font(.manrope(12.5)).foregroundStyle(.secondary).textSelection(.enabled)
+                Text(loc.t("s2arm.diagUpload.repo").replacingOccurrences(of: "{0}", with: receipt.repo)).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary).textSelection(.enabled)
                 HStack {
                     Spacer()
-                    Button(loc.t("s2arm.diagUpload.close")) { close() }.buttonStyle(LauncherSecondaryButtonStyle()).keyboardShortcut(.cancelAction)
+                    Button(loc.t("s2arm.diagUpload.close")) { close() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).keyboardShortcut(.cancelAction).controllerShortcut(.back)
                     if let url = receipt.issueURL {   // 主按钮：系统浏览器打开预填好诊断码 / 版本 / 平台的新帖页
-                        Button(loc.t("s2arm.diagUpload.github")) { NSWorkspace.shared.open(url) }.buttonStyle(LauncherSecondaryButtonStyle()).keyboardShortcut(.defaultAction)
+                        Button(loc.t("s2arm.diagUpload.github")) { NSWorkspace.shared.open(url) }.controllerButtonStyle(LauncherPrimaryButtonStyle()).keyboardShortcut(.defaultAction).controllerShortcut(.rightTrigger)
                             .accessibilityIdentifier("diag.upload.github")
                     }
                 }
             case .failed(let why):
-                Label(why, systemImage: "exclamationmark.triangle").font(.manrope(13)).foregroundStyle(LauncherPalette.danger).fixedSize(horizontal: false, vertical: true)
+                Label(why, systemImage: "exclamationmark.triangle").font(LauncherTheme.TypeStyle.detail).foregroundStyle(LauncherPalette.danger).fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("diag.upload.failed")
                 HStack {
                     Spacer()
-                    Button(loc.t("s2arm.diagUpload.close")) { close() }.buttonStyle(LauncherSecondaryButtonStyle()).keyboardShortcut(.cancelAction)
-                    Button(loc.t("s2arm.play.diagnostics")) { exportInstead() }.buttonStyle(LauncherSecondaryButtonStyle()).keyboardShortcut(.defaultAction)
+                    Button(loc.t("s2arm.diagUpload.close")) { close() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).keyboardShortcut(.cancelAction).controllerShortcut(.back)
+                    Button(loc.t("s2arm.play.diagnostics")) { exportInstead() }.controllerButtonStyle(LauncherPrimaryButtonStyle()).keyboardShortcut(.defaultAction).controllerShortcut(.rightTrigger)
                         .accessibilityIdentifier("diag.upload.export")
                 }
             }
         }
-        .padding(22).frame(width: 440)
+        .padding(LauncherTheme.Space.page).launcherSheet(.compact, height: nil)
         .onReceive(model.$diagUploadCommand) { command in   // 控制口替玩家点（只认当前这一步有的按钮）
             guard let command else { return }
             model.diagUploadCommand = nil
@@ -506,7 +494,7 @@ struct UploadDiagnosticsSheet: View {
     private func exportInstead() {
         let panel = NSSavePanel()
         let stamp = DateFormatter(); stamp.locale = Locale(identifier: "en_US_POSIX"); stamp.dateFormat = "MMdd-HHmm"
-        panel.nameFieldStringValue = "S2Arm-\(loc.lang == .zh ? "诊断" : "diag")-\(stamp.string(from: Date())).zip"
+        panel.nameFieldStringValue = "S2Arm-\(BackendText.launcherText("diag.fileWord", language: loc.lang.sharedCode))-\(stamp.string(from: Date())).zip"
         if panel.runModal() == .OK, let url = panel.url { close(); model.diagnostics(exportTo: url) }
     }
 }

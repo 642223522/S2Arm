@@ -3,7 +3,8 @@
 #   私有目录 ~/Library/Application Support 带空格；维护机有 Homebrew、路径不带空格，门禁全绿、用户机挂）：bash tests/userenv_test.sh（约 15 秒）
 # 期望（按规则手写）：
 #   ① 出包链脚本（pack、services、graphics/tools、graphics/nvn/tools）里 command -v 声明要的每个命令，用户机都有：App 运行环境自带
-#      （launchers/macos/bundle_runtime.py 的 TOOLS：拷进 Runtime/bin 的那张表，加 Runtime/python/bin 的 python3、作业指定的 .NET SDK dotnet），或系统自带（/usr/bin、/bin、/usr/sbin、/sbin）
+#      （launchers/macos/bundle_runtime.py 的 TOOLS：拷进 Runtime/bin 的那张表，加 Runtime/python/bin 的 python3；脚本里剩下的 dotnet 只在源码树现编分支——
+#       App 分支的 C# 工具全为引擎预编原生单文件、运行不要 .NET），或系统自带（/usr/bin、/bin、/usr/sbin、/sbin）
 #   ② 运行环境表里有 bash，按启动器作业的 PATH（pack/jobs/core.py：Runtime/python/bin、Runtime/bin、/usr/bin、/bin…）找到的 bash 是 5 以上
 #   ③ 引擎、输出、Runtime 全在「带 空格 中文」目录，env -i 只给启动器作业那套 PATH：一键出包（播种 / 刷新 / 出包换成桩）rc=0、出了 IPA，
 #      输出里没有「command not found」「unbound variable」
@@ -57,6 +58,7 @@ mkdir -p "$R/pack/jobs" "$R/compat/tree"; cp "$H"/pack/jobs/*.py "$R/pack/jobs/"
 cp "$H/pack/roots.sh" "$H/pack/srcs.sh" "$H/pack/build_id.sh" "$R/pack/"
 for f in cores.sh progress.sh machine.sh nospace.sh; do cp "$H/tools/$f" "$R/tools/"; done
 mkdir -p "$R/graphics/nvn/tools"; cp "$H/graphics/nvn/tools/romfs_list.py" "$R/graphics/nvn/tools/"   # --from-extract 播种键盘点 romfs/ aoc/（审计 #1534 P1-54）
+mkdir -p "$R/tools"; cp "$H/tools/pool_workers.py" "$R/tools/"   # romfs_list / pak_crypto 经它取核数（#1332：核数唯一来源）
 printf '#!/bin/bash\nr=$S2A_ROOTS/$1@$2; mkdir -p "$r" && cp -R "$3/exefs" "$r/" && cp "$3"/*.tsv "$r/" 2> /dev/null; ln -sfn "$1@$2" "$S2A_ROOTS/$1@现行"; echo "🟢 播种桩 $r"\n' > "$R/pack/seed_root.sh"
 printf '#!/bin/bash\necho "🟢 刷新桩"\n' > "$R/pack/refresh.sh"
 cat > "$R/pack/ipa.sh" <<'EOF'
@@ -79,7 +81,8 @@ ck "③ 带空格目录 + 启动器作业 PATH 一键出包：rc=${r3}、IPA $([
 # ⑤ ⑥：Runtime 仿 App 自带 C 改写器（维护机按本树源码编一份，同 bundle_runtime.py：拷进 Runtime/bin、旁边 .source 记源码指纹），作业环境取自 core.py
 CB=$(S2A_REWRITER=c "$PY" "$H/pack/rewriter.py" c-path 2> "$T/cbuild.log") && cp "$CB" "$RT/bin/s2a-rewrite" \
   && "$PY" -c 'import sys; sys.path.insert(0, sys.argv[1]); import rewriter; print(rewriter.source_digest())' "$H/pack" > "$RT/bin/s2a-rewrite.source"
-printf '{"runtimeSchema": 4}\n' > "$RT/versions.json"; mkdir -p "$T/空家"
+printf '{"runtimeSchema": 5}\n' >"$RT/versions.json"
+mkdir -p "$T/空家"
 RW() { "$PY" - "$H" "$B" "$T" "$1" <<'PY'
 import os, subprocess, sys
 h, b, t, keep = sys.argv[1:]

@@ -2,6 +2,7 @@
 //   全部画成和加载页（loadpage.m，10-30 维护者 批准）同一套样子：游戏图标放大模糊铺满整屏（不留边）+ 圆角图标（角上一个状态符号）+ 一句话标题 + 一句「下一步做什么」
 //   + 胶囊按钮（主按钮用启动器品牌色）。技术细节（失败码、文件名、地址上限）只进 host.log / unpack.log，经「导出诊断包」带走，不上屏。本文件只画
 #import "notice.h"
+#import "tv_compat.h"
 #import "s2a_l10n.h"
 
 UIColor *s2a_notice_accent(void) { return [UIColor colorWithRed:0.02 green:0.53 blue:0.57 alpha:1]; }   // 启动器 Brand.accent（launchers/macos/Sources/S2ArmLauncher/Appearance.swift）
@@ -24,7 +25,7 @@ static UIView *backdrop(CGRect f, UIView **content) {
     page.layer.zPosition = 2000;   // 整页提示压过虚拟手柄（1000），低于开发浮层（10000）
     UIImageView *bg = [[UIImageView alloc] initWithImage:s2a_game_icon()]; bg.contentMode = UIViewContentModeScaleAspectFill; bg.clipsToBounds = YES; bg.alpha = 0.9;
     bg.frame = page.bounds; bg.autoresizingMask = page.autoresizingMask; [page addSubview:bg];
-    UIVisualEffectView *blur = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterialDark]];
+    UIVisualEffectView *blur = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:S2A_BLUR_MATERIAL_DARK]];
     blur.frame = page.bounds; blur.autoresizingMask = page.autoresizingMask; [page addSubview:blur];
     *content = blur.contentView; return page;
 }
@@ -73,7 +74,7 @@ UIView *s2a_notice_page(CGRect f, NSString *symbol, NSString *title, NSString *b
     NSMutableArray *rows = [NSMutableArray arrayWithObjects:badge_icon(symbol), t, nil];
     if (body.length) { UILabel *b = label(16, UIFontWeightRegular, UIColor.secondaryLabelColor); b.text = body; b.textAlignment = NSTextAlignmentCenter; [rows addObject:b]; }
     if (progress >= 0) {
-        UIProgressView *bar = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleBar]; bar.translatesAutoresizingMaskIntoConstraints = NO;
+        UIProgressView *bar = [[UIProgressView alloc] initWithProgressViewStyle:S2A_PROGRESS_BAR]; bar.translatesAutoresizingMaskIntoConstraints = NO;
         bar.progressTintColor = [UIColor colorWithWhite:1 alpha:0.92]; bar.trackTintColor = [UIColor colorWithWhite:1 alpha:0.14]; bar.layer.cornerRadius = 2; bar.clipsToBounds = YES;
         bar.progress = progress; [bar.heightAnchor constraintEqualToConstant:4].active = YES;
         UILabel *c = label(13, UIFontWeightRegular, UIColor.tertiaryLabelColor); c.font = [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightRegular]; c.text = caption ?: @"";

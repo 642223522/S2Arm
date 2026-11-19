@@ -29,6 +29,9 @@ namespace S2A.Services
     public static unsafe class Application
     {
         public static ulong ProgramId { get; private set; }
+        // 本程序的序号（进程身份、程序序号表、arp、fs 205 都按它）= 程序号末位。多程序合集里等于用户通道序号（目录槽 programs/<n>/）；
+        //   单独导出的程序 n（包里只有这一支、放在数据根，如 Switch 2 版的程序 1，#1567）目录槽是 0、序号是 n——目录槽与程序身份分开
+        public static int ProgramIndex { get; private set; }
 
         // 多程序合集（一个应用里多支程序，程序号末位 = 序号，Ryujinx 真值 Nca.ProgramIndex）：序号 0 = 游戏数据根本身，
         //   序号 n ≥ 1 在根下 programs/<n>/（exefs/、romfs/、ctl/ 与根同结构）；DLC 与系统数据仍在根，各序号共用。原生模块目录同一约定（runtime/include/s2a_programs.h）
@@ -44,12 +47,20 @@ namespace S2A.Services
             return n;
         }
 
+        // 单独导出的程序 n：Switch 2 程序、目录槽 0（数据根）、程序号末位 n ≥ 1、包里只有这一支（没有 programs/ 下的别的程序）。
+        //   只认 Switch 2：数据根上程序号末位非 0 只来自 Switch 2 的 NUP / 导出目录（每份只导一支程序）；Switch 1 的多程序包解包时按 NCA 的程序序号
+        //   分进 programs/<n>/，而自制程序的程序号末位不是序号（如测试用 Homebrew.npdm 的 …100D），不能当成程序 13
+        internal static bool StandaloneProgram(string gameDir, int slot, int ownIndex, bool switch2) =>
+            switch2 && slot == 0 && ownIndex >= 1 && ProgramCount(gameDir) == 1 && !Directory.Exists(Path.Combine(gameDir, "programs"));
+
         // 本进程登记的游戏数据根（ExecuteProgram 切程序前核包里有没有目标序号用）
         internal static string GameDir { get; set; }
 
         internal static void Reset()
         {
             ProgramId = 0;
+            ProgramIndex = 0;
+            Ryujinx.HLE.S2AHooks.DataStorageAliasIndex = -1;
             LazyHostFile.CloseAll();
         }
 
@@ -57,7 +68,7 @@ namespace S2A.Services
         {
             ulong pid = Native.ProcessId();
             GameDir = gameDir;
-            int programIndex = Host.Channel.Index;   // 用户通道跨进程内重启存活：ExecuteProgram(n) 后新局按 n 取程序（Ryujinx PartitionFileSystemExtensions.TryLoad 按通道 Index 挑 Program / Control）
+            int programIndex = Host.Channel.Index;   // 目录槽：用户通道跨进程内重启存活：ExecuteProgram(n) 后新局按 n 取程序（Ryujinx PartitionFileSystemExtensions.TryLoad 按通道 Index 挑 Program / Control）
             string programDir = ProgramDir(gameDir, programIndex);
 
             byte[] npdmRaw = File.ReadAllBytes(Path.Combine(programDir, "exefs", "main.npdm"));
@@ -69,8 +80,15 @@ namespace S2A.Services
             ProgramId = npdm.Aci.ProgramId.Value;
             if (requireSuccess && ProgramId != Native.ProgramId())
                 throw new InvalidOperationException("Application NPDM and native process program IDs disagree");
-            if ((int)(ProgramId & 0xF) != programIndex)
+            int ownIndex = (int)(ProgramId & 0xF);
+            bool standalone = StandaloneProgram(gameDir, programIndex, ownIndex, Ryujinx.HLE.S2AHooks.Switch2);
+            if (ownIndex != programIndex && !standalone)
                 Red.Report("多程序合集：程序号末位与用户通道序号不一致", $"程序号 {ProgramId:X16}，序号 {programIndex}，目录 {programDir}");
+            ProgramIndex = standalone ? ownIndex : programIndex;
+            // 单独导出的程序 n：包里只有它这一份 RomFS，游戏按序号 0 要的资源（Switch 2 版程序 1 读程序 0 的数据）给这一份；别的序号照旧报未支持
+            Ryujinx.HLE.S2AHooks.DataStorageAliasIndex = standalone ? 0 : -1;
+            if (standalone)
+                Console.Error.WriteLine($"S2A 单独导出的程序 {ownIndex}（程序号 {ProgramId:X16}）：身份序号 {ownIndex}，序号 0 的资源请求给本程序这一份");
             // 应用号 = 程序号去掉末位（Ryujinx NcaExtensions.Load：多程序应用的存档按主程序号建）；单程序款末位本来就是 0
             ulong applicationId = ProgramId & ~0xFul;
 
@@ -93,10 +111,10 @@ namespace S2A.Services
             Native.Mark("服务：npdm / NACP 读、等 Horizon 服务就绪\0"u8);
 
             device.System.LibHacHorizonManager.InitializeApplicationClient(new ProgramId(ProgramId), in npdm);
-            RegisterProgramMap(device, applicationId, ProgramCount(gameDir), requireSuccess);
+            RegisterProgramMap(device, applicationId, Math.Max(ProgramCount(gameDir), standalone ? ProgramIndex + 1 : 0), requireSuccess);
 
             ref readonly Meta meta = ref npdm.Meta;
-            ProcessResult result = new(metaLoader, nacp, false, false, null, pid, 0, meta.MainThreadPriority, meta.MainThreadStackSize, device.System.State.DesiredTitleLanguage);
+            ProcessResult result = new(metaLoader, nacp, false, false, null, pid, (byte)ProgramIndex, meta.MainThreadPriority, meta.MainThreadStackSize, device.System.State.DesiredTitleLanguage);
             device.Processes.S2ARegisterApplication(result);
 
             // Ryujinx 加载器（FileSystemExtensions）同一步：LibHac 的 bcat 等按它找当前应用（漏了 bcat 建投递缓存存储回 0x147a，对拍查出）
@@ -104,20 +122,33 @@ namespace S2A.Services
 
             string romfs = Path.Combine(programDir, "romfs");
 
-            IStorage imgV1 = RomFsIndex.OpenImg(programDir);   // 单一 IMG v1（v0.3.0）：有 game.img 就用它；旧形态（romfs.img 三件套 / romfs/ 目录）照旧支持
+            string overlayDir = Path.Combine(programDir, "ui_overlay", "romfs");   // 界面布局覆盖层（RomFsIndex.OverlayFiles）：同路径读覆盖层那份
+            string readLogAs = $"程序 {programIndex}";   // 诊断读记录（S2A_ROMFS_READLOG，RomFsIndex.ReadLog）里的来源名
+
+            // 单一 IMG v1（v0.3.0）：有 game.img 就用它（Mac 运行目录里的是 iPhone 资源包那份的硬链接，0.6.0 一款一份资源）；旧形态（romfs.img 三件套 / romfs/ 目录）照旧支持。
+            //   Mac 运行目录的界面覆盖层在 ui_overlay/romfs（iPhone 资源包是 romfs_overlay，OpenImg 缺省）
+            IStorage imgV1 = RomFsIndex.OpenImg(programDir, Directory.Exists(overlayDir) ? overlayDir : null);
             if (imgV1 != null)
             {
-                imgV1 = RomFsMods.ApplyAtLaunch(imgV1, programIndex);   // 资源替换类 mod（RomFsMods.cs）：没有 mod 原对象返回；下面两处同
-                device.Configuration.VirtualFileSystem.SetRomFs(pid, imgV1);
+                imgV1 = RomFsMods.ApplyAtLaunch(imgV1, programIndex);   // 资源替换类 mod（RomFsMods.cs）：没有 mod 原对象返回；下面几处同
+                device.Configuration.VirtualFileSystem.SetRomFs(pid, RomFsIndex.ReadLog(imgV1, readLogAs));
                 Native.Mark("服务：RomFS 单一 IMG\0"u8);
             }
-            IStorage imageStorage = imgV1 != null ? null : RomFsIndex.OpenImage(programDir);
-            RomFsIndex.Source source = imgV1 != null ? RomFsIndex.Source.Missing : RomFsIndex.Decide(imageStorage != null, File.Exists(Path.Combine(programDir, RomFsIndex.ImageName)), Directory.Exists(romfs), programDir);
+            // 标准 RomFS 镜像（Mac 运行版本 / 产物根里 romfs/ 不在、只有 romfs.std）：整个文件就是游戏要的 RomFS，直接交（RomFsIndex.OpenStd）；romfs/ 在照旧读目录
+            string std = imgV1 != null ? null : RomFsIndex.StdOf(romfs);
+            if (std != null)
+            {
+                IStorage image = RomFsMods.ApplyAtLaunch(RomFsIndex.OpenStd(std, overlayDir), programIndex);
+                device.Configuration.VirtualFileSystem.SetRomFs(pid, RomFsIndex.ReadLog(image, readLogAs));
+                Native.Mark("服务：RomFS 标准镜像\0"u8);
+            }
+            IStorage imageStorage = imgV1 != null || std != null ? null : RomFsIndex.OpenImage(programDir);
+            RomFsIndex.Source source = imgV1 != null || std != null ? RomFsIndex.Source.Missing : RomFsIndex.Decide(imageStorage != null, File.Exists(Path.Combine(programDir, RomFsIndex.ImageName)), Directory.Exists(romfs), programDir);
 
             if (source == RomFsIndex.Source.Image)
             {
                 imageStorage = RomFsMods.ApplyAtLaunch(imageStorage, programIndex);
-                device.Configuration.VirtualFileSystem.SetRomFs(pid, imageStorage);
+                device.Configuration.VirtualFileSystem.SetRomFs(pid, RomFsIndex.ReadLog(imageStorage, readLogAs));
                 Native.Mark("服务：RomFS 单文件镜像\0"u8);
             }
             else if (source == RomFsIndex.Source.Directory)
@@ -126,7 +157,7 @@ namespace S2A.Services
                     Red.Report("RomFS 单文件镜像不完整（多半推到一半），这局改读 romfs/ 目录", programDir);   // 审计 P1-151：不静默改读
                 // 出包时预建的索引（RomFsIndex）优先：免去起局枚举十几万文件；没有就按目录现建（慢，打一行提示）
                 string index = Path.Combine(programDir, RomFsIndex.FileName);
-                string overlay = Path.Combine(programDir, "ui_overlay", "romfs");   // 界面布局覆盖层（RomFsIndex.OverlayFiles）：同路径读覆盖层那份
+                string overlay = overlayDir;
                 IStorage image;
 
                 if (File.Exists(index))
@@ -140,12 +171,12 @@ namespace S2A.Services
                 }
 
                 image = RomFsMods.ApplyAtLaunch(image, programIndex);
-                device.Configuration.VirtualFileSystem.SetRomFs(pid, image);   // 镜像本身按偏移读：各数据存储会话互不共享读位置（#883），大读也不租中间数组
+                device.Configuration.VirtualFileSystem.SetRomFs(pid, RomFsIndex.ReadLog(image, readLogAs));   // 镜像本身按偏移读：各数据存储会话互不共享读位置（#883），大读也不租中间数组
                 Native.Mark("服务：RomFS 目录表建\0"u8);
             }
-            else if (imgV1 == null)
+            else if (imgV1 == null && std == null)
             {
-                Red.Report("游戏数据缺 romfs/", programDir);
+                Red.Report("游戏数据缺 romfs/（也没有 romfs.std）", programDir);
             }
 
             Aoc.Register(gameDir);   // DLC：aoc.tsv 里的全部登记为已拥有（有数据的挂 aoc/<idx>/，仅授权的挂载时报红）
@@ -216,7 +247,7 @@ namespace S2A.Services
 
             registrar.Issue(out ulong instanceId).AbortOnFailure();
             writer.AcquireApplicationProcessPropertyUpdater(out IUpdater updater, instanceId).AbortOnFailure();
-            updater.SetApplicationProcessProperty(pid, new ApplicationProcessProperty { ProgramIndex = (byte)Host.Channel.Index }).AbortOnFailure();
+            updater.SetApplicationProcessProperty(pid, new ApplicationProcessProperty { ProgramIndex = (byte)ProgramIndex }).AbortOnFailure();
         }
 
         // 解开的 RomFS 目录 → RomFS 镜像（游戏经 fs 读的是镜像格式）。目录表由 LibHac 生成；文件数据按需打开（句柄缓存），
@@ -310,13 +341,9 @@ namespace S2A.Services
 
                 // 长度来自目录枚举或预建索引：文件被换过（索引过期）就对不上，读出的数据会错位。
                 //   回失败、不按索引长度补零当完整（审计 #1534 P1-6）；不缓存这个句柄，下次读再核
+                // 11-17 维护者：校验不过不整个拒——黄字记下、照常按实际文件读（读到文件尾就是实际长度），出问题时报红会带上这条
                 if (opened.Length != _size)
-                {
-                    Red.Report("RomFS 文件长度与索引不符（romfs.s2aidx 过期？），本次读回失败", $"{_path}：索引 {_size}，实际 {opened.Length}");
-                    opened.Dispose();
-                    bytesRead = 0;
-                    return ResultFs.HostFileDataCorrupted.Value;
-                }
+                    Red.Waive($"RomFS 文件长度与索引不符（romfs.s2aidx 过期？版本不配，可能读错或闪退，重新装到 iPhone 可解），照常按实际文件读", $"{_path}：索引 {_size}，实际 {opened.Length}");
 
                 lock (_lock)
                 {

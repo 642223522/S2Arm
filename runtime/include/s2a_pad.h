@@ -23,6 +23,8 @@ uint32_t s2a_pad_read(int32_t axes[4], s2a_pad_source *source);
 //   按着时返回当前序号，没按着返回 0。iOS 记下新序号、1.5 秒后再问一次仍是它 = 一直按着没松，开菜单（ios/controller.m）
 uint64_t s2a_pad_plus_press(void);
 void s2a_pad_stick(float x, float y, int32_t axes[2]);
+// 单轴死区线性重缩放：死区内 0、过阈从 0 线性爬到满幅 (|v|−dz)/(1−dz)，符号随 v（iOS 物理手柄的径向版 s2a_pad_stick 本就重缩放，两端同口径；Mac map_pad_inputs 用）
+float s2a_pad_axis_deadzone(float v, float dz);
 // 系统手柄的 ABXY：多数手柄按物理方位上报（buttonA 在南侧，MFi / Xbox 那颗键上印的也是 A），任天堂手柄（Pro、Joy-Con）按键帽字母上报（印 A 的右键 = buttonA）。
 //   所以系统的 buttonA 在每种手柄上都是印着 A（PS 是 ×）的那颗键。
 // iOS 与 Mac 共用这一套（#40、审计 P2-213）：category 取 GCController.productCategory（可为 NULL），is_xbox / is_playstation 由宿主按手柄类型判
@@ -46,6 +48,9 @@ void s2a_pad_abxy_order(int kind, int layout, int out[4]);
 //   slot_of[j] 写第 j 只占的槽（-1 = 超过 max 只，丢弃）；返回占到的最高槽位 + 1（至少 1：槽 0 留给键盘 / 鼠标 / 触屏）。
 //   还在线的保留原槽；新来的占最小空槽，所以断开后重连、中间没插别的就回原槽
 int s2a_slot_plan(const void *const *prev, const void *const *live, int count, int max, int *slot_of);
+// 顺序表登记了第 r 位（rank = s2a_pad_order_rank，0 起）的手柄钉在第 r 格：面板写它是 P1，游戏读的玩家 1 就是它（#1264）。
+//   在 s2a_slot_plan 之前改 prev：它原在别格就挪过来，被挤掉的没登记手柄由 s2a_slot_plan 另找空格；没登记的照旧「留原槽」
+void s2a_slot_pin(const void **prev, const void *const *live, const int *rank, int count, int max);
 
 // 分配玩家的顺序表（#520 E；启动器写 ~/Library/Application Support/S2Arm/pad-order.json，宿主读）：
 //   entry 依次是 P1、P2…——NS2 手柄写通道玩家号（ns2_player ≥ 0），系统手柄写名字 + 同名第几只（ns2_player = -1）；

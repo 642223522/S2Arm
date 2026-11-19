@@ -308,6 +308,19 @@ namespace Ryujinx.HLE.HOS.Services.Ro
 
             nroMappedAddress = mapped;
 
+            // S2Arm: not in the package (#8be819: a game keeps its NRO inside its own encrypted archive, which packing cannot read). The game has just
+            // unpacked it into memory: the native layer keeps that file so the next preparation of the game rewrites it
+            if (rc == 1 && S2AHooks.NroKeep != null && S2AHooks.GuestView?.Invoke(info.NroAddress, (int)info.NroSize) is System.Memory<byte> nroView
+                && System.Security.Cryptography.SHA256.HashData(nroView.Span).AsSpan().SequenceEqual(info.Hash))
+            {
+                using System.Buffers.MemoryHandle pin = nroView.Pin();
+
+                fixed (byte* hash = info.Hash)
+                {
+                    S2AHooks.NroKeep(hash, (byte*)pin.Pointer, info.NroSize);
+                }
+            }
+
             switch (rc)
             {
                 case 0:

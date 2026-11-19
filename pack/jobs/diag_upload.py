@@ -27,8 +27,8 @@ import zipfile
 from core import Failure
 
 REPO = "github.com/jhaizhou-ops/S2Arm"   # 短码页上同时写出仓库地址：打不开链接的玩家照着手动去
-ISSUE_FORM = "问题回报.yml"   # .github/ISSUE_TEMPLATE/问题回报.yml：字段 id logs / version / platform 以它为准
-PLATFORM_OPTION = {"mac": "Mac（前端里打包或启动）", "windows": "出包的电脑（一键出包命令）"}   # = 模板 platform 下拉的选项原文（预填要逐字相同）
+ISSUE_FORM = "问题回报.yml"   # .github/ISSUE_TEMPLATE/问题回报.yml：字段 id logs / version / platform 以它为准  # 非玩家句
+PLATFORM_OPTION = {"mac": "Mac（前端里打包或启动）", "windows": "出包的电脑（一键出包命令）"}   # = 模板 platform 下拉的选项原文（预填要逐字相同）  # 非玩家句
 UPLOAD_URL = "https://diag.s2arm.com/v1/upload"   # *.workers.dev 国内不通，只用这个；S2A_DIAG_UPLOAD_URL 覆盖（内部联调 / 单测）
 LIMIT = 30 * 1024 * 1024   # 服务端收件上限（压缩后 ≤ 30 MB，方案「服务端」节）：超了不白传，直接退回导出
 CODE_RE = re.compile(r"D-[2-9A-HJKMNP-TV-Z]{4}")   # D- + 4 位，去掉 0 1 I L O U（念、抄不混）
@@ -122,7 +122,7 @@ def issue_url(code, client):
     client = X-S2Arm-Client 的 <平台>/<版本>"""
     from urllib.parse import urlencode, quote
     plat, _, version = client.partition("/")
-    query = dict(template=ISSUE_FORM, logs=code, version=version if version and version != "-" else "", platform=PLATFORM_OPTION.get(plat, ""), title="[问题] ")
+    query = dict(template=ISSUE_FORM, logs=code, version=version if version and version != "-" else "", platform=PLATFORM_OPTION.get(plat, ""), title="[问题] ")  # 非玩家句
     return f"https://{REPO}/issues/new?" + urlencode({k: v for k, v in query.items() if v}, quote_via=quote)
 
 

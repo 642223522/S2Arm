@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 S2Arm contributors
 """Read-only Windows packaging inventory: the launcher's single start-of-job check (bundled packing items from oneclick_win.env_items + Impactor + system components). See WINDOWS_ENV.md."""
+# 应用布局：只从引擎快照里的 pack/jobs 起（toolchain.py 用 c.engine/pack/jobs/winenv.py 当脚本跑），不从应用的 Jobs 里跑；这里的 ROOT 就是引擎根
 from __future__ import annotations
 
 import argparse
@@ -56,13 +57,13 @@ def _read_file(path, limit=524288):
     path = Path(path)
     meta = path.lstat()
     if not stat.S_ISREG(meta.st_mode) or getattr(meta, "st_file_attributes", 0) & 0x400:
-        raise ValueError("需要普通非链接文件")
+        raise ValueError("需要普通非链接文件")  # 非玩家句
     if meta.st_size > limit:
-        raise ValueError("文件过大")
+        raise ValueError("文件过大")  # 非玩家句
     with path.open("rb") as stream:
         data = stream.read(limit + 1)
     if len(data) > limit:
-        raise ValueError("文件过大")
+        raise ValueError("文件过大")  # 非玩家句
     return data.decode("utf-8-sig")
 
 
@@ -97,7 +98,7 @@ def _json(text):
         result = {}
         for key, value in pairs:
             if key in result:
-                raise ValueError("重复JSON字段")
+                raise ValueError("重复JSON字段")  # 非玩家句
             result[key] = value
         return result
     return json.loads(text, object_pairs_hook=unique)
@@ -120,38 +121,38 @@ def _requirements():
             continue
         match = PINS.fullmatch(line)
         if not match or match[1] in pins:
-            raise ValueError("共用钉版清单格式错误")
+            raise ValueError("共用钉版清单格式错误")  # 非玩家句
         pins[match[1]] = match[2]
     if not pins:
-        raise ValueError("共用钉版清单为空")
+        raise ValueError("共用钉版清单为空")  # 非玩家句
     return pins
 
 
 def _validate(request):
     if not isinstance(request, dict) or set(request) - REQUEST_FIELDS:
-        raise ValueError("未知请求格式")
+        raise ValueError("未知请求格式")  # 非玩家句
     if type(request.get("schema", 1)) is not int or request.get("schema", 1) != 1:
-        raise ValueError("请求schema必须为1")
+        raise ValueError("请求schema必须为1")  # 非玩家句
     for key in ("python", "targetDir", "metal", "shell", "catalog", "gameId", "library", "resources"):
         if key in request and (not isinstance(request[key], str) or not request[key]
                                or len(request[key]) > 32768 or any(c in request[key] for c in "\0\r\n")):
-            raise ValueError("路径字段格式错误")
+            raise ValueError("路径字段格式错误")  # 非玩家句
     if "requiredFreeBytes" in request and (type(request["requiredFreeBytes"]) is not int
                                           or request["requiredFreeBytes"] < 0):
-        raise ValueError("空间预算必须为非负整数字节数")
+        raise ValueError("空间预算必须为非负整数字节数")  # 非玩家句
     if "target" in request and request["target"] not in ("ios", "mac"):
-        raise ValueError("target只认ios / mac")
+        raise ValueError("target只认ios / mac")  # 非玩家句
     if "offline" in request and type(request["offline"]) is not bool:
-        raise ValueError("offline必须为布尔值")
+        raise ValueError("offline必须为布尔值")  # 非玩家句
     if "anisette" in request:
         value = request["anisette"]
         if not isinstance(value, dict) or set(value) - {"source", "endpoint", "allowPublic"}:
-            raise ValueError("anisette字段格式错误")
+            raise ValueError("anisette字段格式错误")  # 非玩家句
         if any(k in value and (not isinstance(value[k], str) or len(value[k]) > 2048)
                for k in ("source", "endpoint")):
-            raise ValueError("anisette来源格式错误")
+            raise ValueError("anisette来源格式错误")  # 非玩家句
         if "allowPublic" in value and type(value["allowPublic"]) is not bool:
-            raise ValueError("公共备选必须显式为布尔值")
+            raise ValueError("公共备选必须显式为布尔值")  # 非玩家句
 
 
 def _exit_reason(code, stderr):
@@ -225,9 +226,9 @@ class NativeProbe:
             if not merge_stderr and not readers[-1].is_alive():
                 process.stderr.close()
         if readers[0].is_alive() or overflow.is_set():
-            raise ProbeError("只读探测失败或输出超限")
+            raise ProbeError("只读探测失败或输出超限")  # 非玩家句
         if process.returncode:
-            raise ProbeError("只读探测失败退出", nonzero=True, detail=_exit_reason(process.returncode, bytes(errors)))
+            raise ProbeError("只读探测失败退出", nonzero=True, detail=_exit_reason(process.returncode, bytes(errors)))  # 非玩家句
         return bytes(data)
 
     def __call__(self, kind, **options):
@@ -300,20 +301,20 @@ class NativeProbe:
                 sys.path.insert(0, str(ROOT))
                 from pack.orch.oneclick_win import metal_exe, metal_search, metal_search_text
                 rows = metal_search()   # 与出包预检、实际编译共用目录选择，显式目录优先于 PATH
-                exe, searched = str(metal_exe()), "找过：" + metal_search_text(rows)
+                exe, searched = str(metal_exe()), "找过：" + metal_search_text(rows)  # 非玩家句
             meta = self("file", path=exe)
             if not meta["exists"]:   # 「复制错误摘要」带上找过的每一处（玩家装了还认不出时一贴就能定因）
-                raise ProbeError("找不到Metal", missing=True, detail=searched or f"指定的 {exe} 不在")
+                raise ProbeError("找不到Metal", missing=True, detail=searched or f"指定的 {exe} 不在")  # 非玩家句
             if not meta["regular"]:
-                raise ProbeError("Metal路径不是普通非链接文件", detail=f"{exe} 不是普通文件")
+                raise ProbeError("Metal路径不是普通非链接文件", detail=f"{exe} 不是普通文件")  # 非玩家句
             try:
                 return {"output": self.run([exe, "--version"], merge_stderr=True).decode("utf-8", "strict")}
             except ProbeError as exc:   # 找到了但跑不起来（缺 VC++ 运行库、被杀毒拦）：写明是哪一份
-                exc.detail = f"找到 {exe}，但运行 metal --version 失败：{exc.detail or exc}"
+                exc.detail = f"找到 {exe}，但运行 metal --version 失败：{exc.detail or exc}"  # 非玩家句
                 raise
         if kind in ("usbmux_port", "usb_devices"):
             if sys.platform != "win32":
-                raise ProbeError("此宿主不能核Windows USB服务")
+                raise ProbeError("此宿主不能核Windows USB服务")  # 非玩家句
             if kind == "usbmux_port":
                 try:
                     with socket.create_connection(("127.0.0.1", 27015), timeout=self.timeout):
@@ -325,7 +326,7 @@ class NativeProbe:
             return self.icloud()
         if kind == "apple_devices":
             return self.apple_devices()
-        raise ValueError("未知只读探测")
+        raise ValueError("未知只读探测")  # 非玩家句
 
     def usb_devices(self):
         # plist protocol v1 ListDevices only; no Listen/Connect/pair records.
@@ -337,11 +338,11 @@ class NativeProbe:
             while len(data) < size:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise ProbeError("USB清单探测超时")
+                    raise ProbeError("USB清单探测超时")  # 非玩家句
                 stream.settimeout(remaining)
                 block = stream.recv(size - len(data))
                 if not block:
-                    raise ProbeError("USB清单帧不完整")
+                    raise ProbeError("USB清单帧不完整")  # 非玩家句
                 data.extend(block)
             return bytes(data)
         try:
@@ -350,7 +351,7 @@ class NativeProbe:
                 stream.sendall(struct.pack("<IIII", len(payload) + 16, 1, 8, 1) + payload)
                 length, version, message, tag = struct.unpack("<IIII", receive(stream, 16))
                 if not 16 < length <= LIMIT or (version, message, tag) != (1, 8, 1):
-                    raise ProbeError("USB清单帧头不可核实")
+                    raise ProbeError("USB清单帧头不可核实")  # 非玩家句
                 data = plistlib.loads(receive(stream, length - 16))
             records = data.get("DeviceList") if isinstance(data, dict) else None
             if not isinstance(records, list) or len(records) > 4096:
@@ -364,13 +365,13 @@ class NativeProbe:
                 counts[connection] += 1
             return counts  # Never return serials, handles, network addresses or raw payload.
         except Exception:
-            raise ProbeError("USB清单只读探测未完成（超时、权限或协议）") from None
+            raise ProbeError("USB清单只读探测未完成（超时、权限或协议）") from None  # 非玩家句
 
     def apple_devices(self):
         """商店版 Apple Devices（AppleInc.AppleDevices）装没装：只读安装登记的名字 / 状态 / 版本。商店版不注册老式「Apple Mobile Device Service」
         （#424：玩家装了、能识别 iPad，SCM 里却没有这个服务），所以光看服务名会误判没装"""
         if sys.platform != "win32":
-            raise ProbeError("此宿主不能核Windows安装登记")
+            raise ProbeError("此宿主不能核Windows安装登记")  # 非玩家句
         exe = str(Path(os.environ.get("SystemRoot", "C:/Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe")
         script = ("$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); "
                   "@(Get-AppxPackage -Name 'AppleInc.AppleDevices*' -ErrorAction Stop | ForEach-Object { "
@@ -380,12 +381,12 @@ class NativeProbe:
         if isinstance(packages, dict):
             packages = [packages]
         if not isinstance(packages, list) or len(packages) > 16 or not all(isinstance(x, dict) for x in packages):
-            raise ProbeError("安装清单格式不可核实")
+            raise ProbeError("安装清单格式不可核实")  # 非玩家句
         return {"packages": [{k: str(x.get(k, ""))[:64] for k in ("Name", "Status", "Version")} for x in packages]}
 
     def icloud(self):
         if sys.platform != "win32":
-            raise ProbeError("此宿主不能核Windows安装登记")
+            raise ProbeError("此宿主不能核Windows安装登记")  # 非玩家句
         # Fixed script; no caller text, account fields, profiles or package contents.
         exe = str(Path(os.environ.get("SystemRoot", "C:/Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe")
         script = ("$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); "
@@ -398,7 +399,7 @@ class NativeProbe:
         if isinstance(packages, dict):
             packages = [packages]
         if not isinstance(packages, list) or len(packages) > 128:
-            raise ProbeError("安装清单格式不可核实")
+            raise ProbeError("安装清单格式不可核实")  # 非玩家句
         import winreg
         legacy = []
         deadline = time.monotonic() + self.timeout
@@ -413,10 +414,10 @@ class NativeProbe:
             with key:
                 total = winreg.QueryInfoKey(key)[0]
                 if total > 10000:
-                    raise ProbeError("安装登记超限")
+                    raise ProbeError("安装登记超限")  # 非玩家句
                 for i in range(total):
                     if time.monotonic() >= deadline:
-                        raise ProbeError("安装登记只读探测超时")
+                        raise ProbeError("安装登记只读探测超时")  # 非玩家句
                     with winreg.OpenKey(key, winreg.EnumKey(key, i)) as entry:
                         try:
                             name = winreg.QueryValueEx(entry, "DisplayName")[0]
@@ -431,7 +432,7 @@ class NativeProbe:
     @staticmethod
     def service():
         if sys.platform != "win32":
-            raise ProbeError("此宿主不能核Windows SCM")
+            raise ProbeError("此宿主不能核Windows SCM")  # 非玩家句
         from ctypes import wintypes
         api = ctypes.WinDLL("advapi32", use_last_error=True)
         api.OpenSCManagerW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
@@ -607,7 +608,7 @@ def _impactor(probe, request):
 
 
 def _metal(request, probe):
-    hint = " 由用户在 https://developer.apple.com/download/ 人工取得官方工具；本工具不下载。"
+    hint = " 由用户在 https://developer.apple.com/download/ 人工取得官方工具；本工具不下载。"  # 非玩家句
     try:
         rows = [line.split("\t", 1)[1].strip() for line in _text(METAL_LOCK).splitlines()
                 if line.startswith("metal_iphoneos\t")]
@@ -622,17 +623,17 @@ def _metal(request, probe):
             raise ValueError()
         versions = re.findall(r"(?m)^Apple metal version ([0-9][A-Za-z0-9_.+() -]{0,240})$", output.strip())
         if len(versions) != 1 or re.search(r"error:", output, re.IGNORECASE):
-            return _item("metal", "官方Windows Metal编译器", "missing", "未取得有效Apple metal version。" + hint, METAL_LOCK)
+            return _item("metal", "官方Windows Metal编译器", "missing", "未取得有效Apple metal version。" + hint, METAL_LOCK)  # 非玩家句
         actual = "Apple metal version " + versions[0]
         message = actual
         if actual != tested:
-            message += "；与测试版本 " + tested + " 不同，仅需重编。"
+            message += "；与测试版本 " + tested + " 不同，仅需重编。"  # 非玩家句
         return _item("metal", "官方Windows Metal编译器", "ok", message, METAL_LOCK,
                      {"version": actual, "testedVersion": tested})
     except Exception as exc:
         detail = getattr(exc, "detail", "")
         if isinstance(exc, ProbeError) and exc.nonzero:
-            exc = ProbeError("Metal版本命令失败退出", missing=True)
+            exc = ProbeError("Metal版本命令失败退出", missing=True)  # 非玩家句
         c = _failure("metal", "官方Windows Metal编译器", exc, METAL_LOCK)
         c["message"] += hint + (" " + _safe(detail) if detail else "")
         c["help"] = c["message"]
@@ -646,7 +647,7 @@ def _apple(probe):
     """要的是本机 usbmux 端口（127.0.0.1:27015）：装机工具靠它和手机通信。老式 Apple 移动设备支持（iTunes / Apple Mobile Device Service）
     和商店版 Apple Devices 都提供它，但商店版不注册老式服务名（#424）。所以先连端口，连上即就绪，不管哪种安装；连不上才查两种安装形态，
     把查过的每一处与结果写进 message（「复制错误摘要」即带上）"""
-    source = "127.0.0.1:27015 usbmux + Windows SCM + 商店安装登记"
+    source = "127.0.0.1:27015 usbmux + Windows SCM + 商店安装登记"  # 非玩家句
     ready = False
     try:
         connected = probe("usbmux_port")["connected"]
@@ -674,17 +675,17 @@ def _apple(probe):
                 if not isinstance(pkgs, list):
                     raise ValueError()
                 store = bool(pkgs)
-                checked.append("商店版 Apple Devices：" + ("已装（" + "、".join(f"{x.get('Version', '')} {x.get('Status', '')}".strip() for x in pkgs) + "）" if store else "没装"))
+                checked.append("商店版 Apple Devices：" + ("已装（" + "、".join(f"{x.get('Version', '')} {x.get('Status', '')}".strip() for x in pkgs) + "）" if store else "没装"))  # 非玩家句
             except Exception:
                 checked.append("商店版 Apple Devices：读不到安装登记")
-            seen = "查过：" + "；".join(checked)
+            seen = "查过：" + "；".join(checked)  # 非玩家句
             if state is not None and state != 4:
-                driver = _item("apple_driver", "Apple移动设备支持", "mismatch", "Apple服务未运行；请人工检查官方安装与服务。" + seen, source)
+                driver = _item("apple_driver", "Apple移动设备支持", "mismatch", "Apple服务未运行；请人工检查官方安装与服务。" + seen, source)  # 非玩家句
             elif store or state == 4:
                 driver = _item("apple_driver", "Apple移动设备支持", "missing",
                                "已装Apple设备支持但本机usbmux端口不通：打开一次Apple Devices（或重启电脑）让后台服务起来后再查。" + seen, source)
             else:
-                driver = _item("apple_driver", "Apple移动设备支持", "missing", "没找到Apple设备支持。" + seen, source)
+                driver = _item("apple_driver", "Apple移动设备支持", "missing", "没找到Apple设备支持。" + seen, source)  # 非玩家句
     except Exception as exc:
         driver = _failure("apple_driver", "Apple移动设备支持", exc, source)
     usb = _item("apple_usb", "Apple USB设备能力", "unverified",
@@ -758,7 +759,7 @@ def _anisette(request, probe):
                        if status == "ok" else "未检出足够的官方iCloud安装身份；仅代表已查询范围，不代表整机不存在。")
             if status == "missing" and source is None:
                 status = "unverified"
-                message += " 自建来源协议未交付，不自动公共回退。"
+                message += " 自建来源协议未交付，不自动公共回退。"  # 非玩家句
         except Exception as exc:
             return _failure("anisette", "anisette来源", exc, "Windows installed-package metadata + #1098")
     return _item("anisette", "anisette来源", status, message, "Windows installed-package metadata + #1098", detected)
@@ -781,12 +782,12 @@ def _catalog_budget(request):
     data = _json(_read_file(catalog))
     if (not isinstance(data, dict) or type(data.get("schema")) is not int or data["schema"] != 1
             or not isinstance(data.get("games"), list)):
-        raise ValueError("catalog格式无法核实")
+        raise ValueError("catalog格式无法核实")  # 非玩家句
     games = [g for g in data["games"] if isinstance(g, dict) and g.get("id") == gid]
     if not games:
         return None, "mismatch", "catalog中未找到gameId，不能计算该游戏的出包预算。"
     if len(games) != 1 or not isinstance(games[0].get("packages"), list):
-        raise ValueError("游戏记录重复或包清单不可核实")
+        raise ValueError("游戏记录重复或包清单不可核实")  # 非玩家句
     game = games[0]
     for package in game["packages"]:
         if (not isinstance(package, dict) or package.get("type") not in ("base", "update", "dlc")
@@ -796,14 +797,14 @@ def _catalog_budget(request):
                 or not re.fullmatch(r"[a-fA-F0-9]{64}", package["sha256"])
                 or any(type(package.get(k, 0)) is not int or package.get(k, 0) < 0
                        for k in ("size", "contentBytes"))):
-            raise ValueError("包元数据不可核实")
+            raise ValueError("包元数据不可核实")  # 非玩家句
     rules = _space_rule()
     packages = rules.selected_packages(game)
     if not packages:
         return None, "unverified", "gameId没有可选包，尚无完整出包预算。"
     need = rules.pack_need_bytes(packages, windows=True, image=True)   # Windows 只出 iPhone 包：单一 IMG 那份也算
     if type(need) is not int or need < 0:
-        raise ValueError("共用空间规则结果不可核实")
+        raise ValueError("共用空间规则结果不可核实")  # 非玩家句
     return need, None, "按共用选包与出包计划规则计算；压缩包按已登记内容大小，不读取包正文。"
 
 
@@ -883,8 +884,8 @@ def check(request, *, probe=None):
             raise ValueError()
         good = tuple(version) >= minimum
         checks.append(_item("python", "Python", "ok" if good else "mismatch",
-                            "所选解释器版本 " + ".".join(map(str, version)) + "；要求至少 " + ".".join(map(str, minimum)) +
-                            "，不符时请人工安装满足版本的Python并明确选择该解释器。", PREFLIGHT + ":preflight"))
+                            "所选解释器版本 " + ".".join(map(str, version)) + "；要求至少 " + ".".join(map(str, minimum)) +  # 非玩家句
+                            "，不符时请人工安装满足版本的Python并明确选择该解释器。", PREFLIGHT + ":preflight"))  # 非玩家句
         for dist, want in pins.items():
             data = packages.get(dist, {})
             have = data.get("version") if isinstance(data, dict) else None
@@ -894,16 +895,16 @@ def check(request, *, probe=None):
             elif not isinstance(have, str) or not re.fullmatch(r"[A-Za-z0-9_.+!-]{1,80}", have):
                 status, detail = "error", "版本未能核实"
             else:
-                status, detail = ("ok" if have == want else "mismatch"), "实际 " + have
+                status, detail = ("ok" if have == want else "mismatch"), "实际 " + have  # 非玩家句
             checks.append(_item("python." + dist, "Python / " + dist, status,
-                                detail + "；要求 " + want + "。缺失/不符时对所选解释器人工执行 pip install -r " + RUNTIME + "。", RUNTIME))
+                                detail + "；要求 " + want + "。缺失/不符时对所选解释器人工执行 pip install -r " + RUNTIME + "。", RUNTIME))  # 非玩家句
     except Exception as exc:
         # 依赖都靠这个解释器核实：解释器没起来只报一条，并说清真实原因，不列一串「未能核实」
         reason = getattr(exc, "detail", "")
         item = _failure("python", "Python", exc, PREFLIGHT + " + " + RUNTIME)
         item["probeUnknown"] = True   # 探测没做成不等于坏：不挡流程，真坏时出包会报具体原因
         if reason:
-            item["message"] = _safe("S2Arm 自带的 Python 没能运行：" + reason + "。")
+            item["message"] = _safe("S2Arm 自带的 Python 没能运行：" + reason + "。")  # 非玩家句
         checks.append(item)
     checks.extend(_pack(request, probe))
     checks.append(_impactor(probe, request))
@@ -926,9 +927,9 @@ def check(request, *, probe=None):
 
 
 def render(report):
-    heading = "环境就绪" if report["ready"] else "环境未就绪"
+    heading = "环境就绪" if report["ready"] else "环境未就绪"  # 非玩家句
     return heading + "\n" + "\n".join(
-        f"[{c['status']}] {c['name']}：{c['message']}（要求来源：{c['source']}）" for c in report["checks"])
+        f"[{c['status']}] {c['name']}：{c['message']}（要求来源：{c['source']}）" for c in report["checks"])  # 非玩家句
 
 
 def main(argv=None):
@@ -937,9 +938,9 @@ def main(argv=None):
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
-    parser = argparse.ArgumentParser(description="Windows出包环境只读自检；不下载安装")
-    parser.add_argument("--request", help="启动器提供的普通JSON配置文件")
-    parser.add_argument("--json", action="store_true", help="输出UTF-8 JSON而非人类摘要")
+    parser = argparse.ArgumentParser(description="Windows出包环境只读自检；不下载安装")  # 非玩家句
+    parser.add_argument("--request", help="启动器提供的普通JSON配置文件")  # 非玩家句
+    parser.add_argument("--json", action="store_true", help="输出UTF-8 JSON而非人类摘要")  # 非玩家句
     args = parser.parse_args(argv)
     try:
         request = _json(_read_file(args.request, LIMIT)) if args.request else {}

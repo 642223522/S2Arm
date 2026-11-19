@@ -98,6 +98,15 @@ int ns2_scan_wants_other_side(ns2_kind only, int only_ready, int only_failed) {
     return (only == NS2_KIND_JOYCON_L || only == NS2_KIND_JOYCON_R) && !only_failed;
 }
 
+// Switch 2 Pro 回前台直连记住的那只（11-16 全量：iOS 13 份诊断 106 次尝试，直连有结果的成 38%、扫描到广播再连的成 84%，配对广播次次 1 秒内连上；
+//   原先直连 30 秒期间不扫描、超时也不转扫描，玩家照提示长按 SYNC 发的配对广播没人接，D-MT6K 23 次只连上 1 次）：
+//   直连还没建起链路（没就绪、没失败）时也扫描；扫到 Pro 的配对广播就撤掉直连改连它；直连从没就绪就断了，转一轮扫描
+int ns2_pro_direct_pending(ns2_kind only, int only_ready, int only_failed) { return only == NS2_KIND_PRO && !only_ready && !only_failed; }
+int ns2_pro_take_pairing(ns2_kind waiting, int waiting_ready, int waiting_linked, ns2_kind found, ns2_wake wake) {
+    return waiting == NS2_KIND_PRO && !waiting_ready && !waiting_linked && found == NS2_KIND_PRO && wake == NS2_WAKE_PAIRING;
+}
+int ns2_pro_rescan_after_drop(ns2_kind lost, int was_ready, int rearmed) { return lost == NS2_KIND_PRO && !was_ready && !rearmed; }
+
 int ns2_link_failure_stops_scan(ns2_kind failed) {
     return failed != NS2_KIND_JOYCON_L && failed != NS2_KIND_JOYCON_R;
 }

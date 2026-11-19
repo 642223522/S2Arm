@@ -43,6 +43,44 @@ import S2ArmAppleAdapter
         XCTAssertEqual(runner.requests.last?["cheatsImport"] as? [String], ["/tmp/a.txt"])
     }
 
+    /// S 级每类状态（作业层 sgradeState，定稿表）：模型按类读出状态 / 自动关原因与时间 / 版本；「重新打开」走 sgradeReenable、带 key
+    func testSgradeStateAndReenable() async throws {
+        runner.sgrade = ["widescreen": ["state": "off_auto", "autoOff": ["cause": "crash", "at": 1794740000]],
+                         "fps": ["state": "version", "versions": ["mine": "1.0.2", "available": ["1.0.4"]]]]
+        let full = try await model.launchSettingsFull(gid)
+        XCTAssertEqual(full.4["widescreen"]?.state, "off_auto")
+        XCTAssertEqual(full.4["widescreen"]?.autoOffCause, "crash")
+        XCTAssertEqual(full.4["widescreen"]?.autoOffAt, Date(timeIntervalSince1970: 1794740000))
+        XCTAssertEqual([full.4["fps"]?.mine, full.4["fps"]?.available.first], ["1.0.2", "1.0.4"])
+        runner.sgrade = [:]
+        let empty = try await model.launchSettingsFull(gid).4
+        XCTAssertTrue(empty.isEmpty, "作业层没出 sgradeState：空，界面不画状态句")
+
+        try await model.sgradeReenable(gid, key: "fullscreen")
+        XCTAssertEqual(runner.requests.last?["operation"] as? String, "sgradeReenable")
+        XCTAssertEqual(runner.requests.last?["key"] as? String, "fullscreen")
+    }
+
+    /// 资源替换类 mod（11-15，作业层 pack/jobs/mods.py）：导入 / 删除走 communitySave、请求带 modsImport / modsRemove；模型读出列表与导入说明
+    func testModsImportRemoveAndList() async throws {
+        runner.mods = [["name": "HD Textures", "files": 2, "bytes": 3]]
+        runner.modsImported = ["imported": ["HD Textures"], "notes": ["「HD Textures」带 1 份代码补丁：重新打包这款（或 S 级优化升级）后生效"]]
+        let full = try await model.launchSettingsFull(gid, modsImport: ["/tmp/pack.zip"])
+        XCTAssertEqual(runner.requests.last?["operation"] as? String, "communitySave")
+        XCTAssertEqual(runner.requests.last?["modsImport"] as? [String], ["/tmp/pack.zip"])
+        XCTAssertEqual(full.5.items.map(\.id), ["HD Textures"])
+        XCTAssertEqual([full.5.items[0].files, Int(full.5.items[0].bytes)], [2, 3])
+        XCTAssertEqual(full.5.imported, ["HD Textures"])
+        XCTAssertEqual(full.5.notes.count, 1)
+        _ = try await model.launchSettingsFull(gid, modsRemove: ["HD Textures"])
+        XCTAssertEqual(runner.requests.last?["modsRemove"] as? [String], ["HD Textures"])
+        XCTAssertEqual(full.5.items.map(\.enabled), [true], "作业层没给 enabled = 开着（旧作业层）")
+        runner.mods = [["name": "HD Textures", "enabled": false, "files": 2, "bytes": 3]]
+        let off = try await model.launchSettingsFull(gid, modsEnable: ["HD Textures": false])
+        XCTAssertEqual(runner.requests.last?["modsEnable"] as? [String: Bool], ["HD Textures": false])
+        XCTAssertEqual(off.5.items.map(\.enabled), [false])
+    }
+
     /// 上次开着某几条时异常退出（11-13 维护者改定：不问）：作业层已关掉；开始游戏照常开局，同时通知关了什么、回 crashAnswer=ack 清记录
     func testCrashNoticeDoesNotBlockPlay() async throws {
         runner.crashed = ["Infinite Health", "One Hit Kill"]
@@ -60,10 +98,14 @@ private final class CheatsRunner: JobProcessRunner {
     final class Handle: JobProcessHandle { func terminate() {} }
     var requests: [[String: Any]] = []
     var crashed: [String] = []
+    var mods: [[String: Any]] = []
+    var modsImported: [String: Any]? = nil
+    var sgrade: [String: Any] = [:]
 
     func start(executable: URL, arguments: [String], environment: [String: String],
                onLine: @escaping (Data) -> Void, onStderr: @escaping (Data) -> Void,
                onExit: @escaping (Int32) -> Void) throws -> JobProcessHandle {
+        objc_sync_enter(self); defer { objc_sync_exit(self) }   // 作业客户端在并发线程池里同时调 start：替身状态串行改（无锁并发追加数组会 SIGSEGV 带崩整个测试进程）
         let url = URL(fileURLWithPath: try XCTUnwrap(arguments.last))
         let request = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
         DispatchQueue.main.async { [self] in
@@ -75,7 +117,8 @@ private final class CheatsRunner: JobProcessRunner {
                  "from": "player", "repo": "", "author": "", "license": "", "status": ""]]]
             let event: [String: Any] = ["schema": 1, "taskId": request["taskId"]!, "type": "result", "state": "succeeded",
                                         "result": ["mac": [:], "graphics": [], "cheats": cheats,
-                                                   "crashed": crashed.map { ["kind": "cheat", "key": "f.txt/" + $0, "name": $0] }], "message": ""]
+                                                   "crashed": crashed.map { ["kind": "cheat", "key": "f.txt/" + $0, "name": $0] },
+                                                   "sgradeState": sgrade, "mods": mods].merging(modsImported.map { ["modsImported": $0] } ?? [:]) { a, _ in a }, "message": ""]
             onLine(try! JSONSerialization.data(withJSONObject: event))
             onExit(0)
         }

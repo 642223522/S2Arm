@@ -17,9 +17,11 @@ struct PhoneJobPanel: View {
     let session: JobSession
     /// 成功页额外的提示（装机页：第一次打开前要信任、免费 Apple ID 7 天到期……）
     var notes: [String] = []
+    /// 外层已用大标题写明是什么操作（导出自签包弹层）时不再画这一行，免得「导出自签包」下面又一行「导出，自己签名安装」
+    var showsOperation = true
     @State private var showDetails = false
 
-    private var language: String { loc.lang == .zh ? "zh-Hans" : "en" }
+    private var language: String { loc.lang.sharedCode }
     /// 共用体验表的文案；查不到（不该发生，单测守着）退回 fallback，不把键名上屏
     private func t(_ id: String, _ fallback: String = "") -> String {
         let s = BackendText.launcherText(id, language: language)
@@ -31,17 +33,19 @@ struct PhoneJobPanel: View {
         return d.isEmpty ? model.installTargetLabel : d
     }
 
-    /// 导出模式（装法「导出，自己签名安装」）：装机 / 更新作业不连手机、出到文件夹。完成后看结果，进行中看当前装法
+    /// 导出自签包（游戏库「导出自签包」、S 级升级页「自签导出」）：装机 / 更新作业不连手机、出到文件夹。完成后看结果，进行中看这次会话
     private var exporting: Bool {
         guard session.kind == .install || session.kind == .installUpdate else { return false }
         if case .finished(.completed) = session.phase { return !(model.phoneOutcome?.exportFolder ?? "").isEmpty }
-        return model.installMode.mode == "export"
+        return model.selfSigning
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 30) {
             // 这是什么操作（维护者：原先只看得到「更新中 · …」一小行）
-            Text(t(exporting ? "phone.title.export" : "phone.title." + session.kind.rawValue)).font(.manrope(18, .bold)).accessibilityIdentifier("phone.operation")
+            if showsOperation {
+                Text(t(exporting ? "phone.title.export" : "phone.title." + session.kind.rawValue)).font(.manrope(18, .bold)).accessibilityIdentifier("phone.operation")
+            }
             switch session.phase {
             case .running, .stopping: running
             case .finished(.failed) where pendingConfirm != nil: dropAsk
@@ -60,11 +64,12 @@ struct PhoneJobPanel: View {
         let p = session.progress
         let value = p.overall ?? 0
         return VStack(alignment: .leading, spacing: 22) {
-            HStack(spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Circle().fill(LauncherPalette.building).frame(width: 9, height: 9)
                 Text(t(exporting ? "phone.status.running.export" : "phone.status.running." + session.kind.rawValue)).font(.manrope(14, .bold)).foregroundStyle(LauncherPalette.building)
                 if !exporting { Text("· " + device).font(.manrope(13, .medium)).foregroundStyle(.secondary) }
             }
+            .lineLimit(1)
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text("\(Int(value * 100))%").font(.manrope(58, .heavy)).tracking(-2).monospacedDigit()
                     .contentTransition(.numericText()).animation(.easeOut(duration: 0.5), value: Int(value * 100))
@@ -166,14 +171,26 @@ struct PhoneJobPanel: View {
         return VStack(alignment: .leading, spacing: 20) {
             HStack(alignment: .center, spacing: 18) {
                 SuccessSeal()
-                Text(t("phone.headline.export")).font(.manrope(44, .heavy)).tracking(-1.4).accessibilityIdentifier("phone.title")
+                LauncherHeadingLine {
+                    Text(t("phone.headline.export")).font(.manrope(44, .heavy)).tracking(-1.4).accessibilityIdentifier("phone.title")
+                } subtitle: {
+                    // 路径可点：点了在访达打开。
+                    Button { NSWorkspace.shared.open(URL(fileURLWithPath: o.exportFolder)) } label: {
+                        Text(t("phone.done.export").replacingOccurrences(of: "{0}", with: (o.exportFolder as NSString).abbreviatingWithTildeInPath))
+                            .font(.manrope(16)).foregroundStyle(.secondary).underline()
+                    }
+                    .buttonStyle(.plain).help(o.exportFolder).accessibilityIdentifier("phone.export.path")
+                }
             }
-            // 路径可点：点了在访达打开（维护者 11-11：界面上的路径一律可点打开）
-            Button { NSWorkspace.shared.open(URL(fileURLWithPath: o.exportFolder)) } label: {
-                Text(t("phone.done.export").replacingOccurrences(of: "{0}", with: (o.exportFolder as NSString).abbreviatingWithTildeInPath))
-                    .font(.manrope(16)).foregroundStyle(.secondary).underline().fixedSize(horizontal: false, vertical: true).multilineTextAlignment(.leading)
+            if o.exportReused > 0 {
+                Text(LauncherCopy.note(o.exportFresh.isEmpty ? t("phone.done.export.same")
+                    : t("phone.done.export.fresh").replacingOccurrences(of: "{0}", with: o.exportFresh.joined(separator: "、")).replacingOccurrences(of: "{1}", with: "\(o.exportReused)")))
+                    .font(.manrope(15, .semibold)).fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("phone.export.fresh")
             }
-            .buttonStyle(.plain).accessibilityIdentifier("phone.export.path")
+            if !o.exportUnwritten.isEmpty {   // 只新写了点的那款：别的款这次没写 .img，说清手机上已有照常能玩、没有怎么办（Windows PhoneJobCard 同）
+                Text(LauncherCopy.note(t("phone.done.export.unwritten").replacingOccurrences(of: "{0}", with: o.exportUnwritten.joined(separator: "、"))))
+                    .font(.manrope(15, .semibold)).fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("phone.export.unwritten")
+            }
             HStack(alignment: .top, spacing: 52) {
                 ForEach(Array(stats.enumerated()), id: \.offset) { _, s in
                     VStack(alignment: .leading, spacing: 6) {
@@ -197,12 +214,12 @@ struct PhoneJobPanel: View {
             }
             HStack(spacing: 12) {
                 Button { NSWorkspace.shared.open(URL(fileURLWithPath: o.exportFolder)) } label: { LauncherHeroActionLabel(title: t("phone.export.open"), symbol: "folder") }
-                    .buttonStyle(.plain).accessibilityIdentifier("phone.export.open")
+                    .controllerButtonStyle(.plain).accessibilityIdentifier("phone.export.open")
                 if o.pushed.isEmpty {
                     Button { model.pushExportToPhone(gameID: session.gameID) } label: {
                         LauncherHeroActionLabel(title: model.exportPushing ? t("phone.export.pushing") : t("phone.export.push"), symbol: "iphone.and.arrow.forward")
                     }
-                    .buttonStyle(.plain).disabled(model.exportPushing).accessibilityIdentifier("phone.export.push")
+                    .controllerButtonStyle(.plain).disabled(model.exportPushing).controllerID("phone.export.push").controllerShortcut(.rightTrigger)
                 }
             }
             SGradeResultView(results: o.sgrade, text: { t($0) })   // 补进 S 级优化的各款：打上 / 没打上（11-14）
@@ -214,7 +231,7 @@ struct PhoneJobPanel: View {
     private var failure: some View {
         VStack(alignment: .leading, spacing: 24) {
             headline(seal: AnyView(StatusSeal(symbol: "exclamationmark", color: LauncherPalette.danger)),
-                     title: t("phone.failed." + session.kind.rawValue, t("phone.failed.install")), subtitle: loc.backend(session.message))
+                     title: exporting ? t("phone.failed.export") : t("phone.failed." + session.kind.rawValue, t("phone.failed.install")), subtitle: loc.backend(session.message))
             if !session.suggestion.isEmpty {
                 PhoneJobFact(label: t("phone.next"), text: loc.backend(session.suggestion))
             }
@@ -222,7 +239,12 @@ struct PhoneJobPanel: View {
             HStack(spacing: 12) {
                 if session.kind == .installUpdate {
                     Button { model.retryPhoneUpdate() } label: { LauncherHeroActionLabel(title: t("phone.retry"), symbol: "arrow.clockwise") }
-                        .buttonStyle(.plain).disabled(model.busy).accessibilityIdentifier("phone.retry")
+                        .controllerButtonStyle(.plain).disabled(model.phoneBusy).controllerID("phone.retry").controllerShortcut(.rightTrigger)
+                }
+                // 装到 iPhone / 更新没走成（没连手机、签不上…）：换另一条路——导出自签包，不连手机也能一步走完
+                if !exporting, session.kind == .install || session.kind == .installUpdate {
+                    Button { model.switchToSelfSign(session, language: language) } label: { LauncherHeroActionLabel(title: t("phone.switch_export"), symbol: "square.and.arrow.up") }
+                        .controllerButtonStyle(.plain).disabled(model.phoneBusy).controllerID("phone.switchExport")
                 }
                 CopyReportButton(model: model, gameID: session.gameID, operations: [session.kind.rawValue], fallback: session.message)
             }
@@ -245,9 +267,9 @@ struct PhoneJobPanel: View {
             headline(seal: AnyView(StatusSeal(symbol: "exclamationmark", color: LauncherPalette.building)), title: title, subtitle: loc.backend(session.message))
             HStack(spacing: 12) {
                 Button { if let d = model.dropConfirm { model.confirmDrop(d) } } label: { LauncherHeroActionLabel(title: t("install.drop_confirm"), symbol: "arrow.right") }
-                    .buttonStyle(.plain).accessibilityIdentifier("phone.drop.confirm")
-                Button(t("phone.drop.cancel")) { model.dropConfirm = nil; model.backToLibrary() }
-                    .buttonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("phone.drop.cancel")
+                    .controllerButtonStyle(.plain).controllerID("phone.drop.confirm").controllerShortcut(.rightTrigger)
+                Button(t("phone.drop.cancel")) { model.dropConfirm = nil; model.backFromPhone() }
+                    .controllerButtonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("phone.drop.cancel")
             }
         }
         .accessibilityIdentifier("phone.drop")
@@ -256,9 +278,12 @@ struct PhoneJobPanel: View {
     private func headline(seal: AnyView, title: String, subtitle: String) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             seal
-            Text(title).font(.manrope(52, .heavy)).tracking(-1.6).accessibilityIdentifier("phone.title")
-            if !subtitle.isEmpty {
-                Text(subtitle).font(.manrope(18)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            LauncherHeadingLine {
+                Text(title).font(.manrope(52, .heavy)).tracking(-1.6).accessibilityIdentifier("phone.title")
+            } subtitle: {
+                if !subtitle.isEmpty {
+                    Text(subtitle).font(.manrope(18)).foregroundStyle(.secondary).help(subtitle)
+                }
             }
         }
     }
@@ -283,9 +308,8 @@ struct PhoneJobPanel: View {
 
     /// 「1 分 5 秒」「45 秒」/「1 min 5 s」
     static func duration(_ seconds: Double, language: String) -> String {
-        let s = max(0, Int(seconds.rounded())), m = s / 60, r = s % 60
-        if language == "en" { return m > 0 ? "\(m) min \(r) s" : "\(r) s" }
-        return m > 0 ? "\(m) 分 \(r) 秒" : "\(r) 秒"
+        let s = max(0, Int(seconds.rounded()))
+        return ExportSessionView.duration(seconds: s, exact: true, language: language)   // 同出包页一套写法（共享文案表 duration.*）
     }
 }
 

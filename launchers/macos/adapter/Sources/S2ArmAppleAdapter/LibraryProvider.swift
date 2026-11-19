@@ -12,16 +12,19 @@ public struct GamePackage: Equatable {
     public let sha256: String
     /// 原件形态：空 = NSP / XCI（要密钥）；nup / dump / extract / loose 不加密，不要密钥。
     public let format: String
+    /// 导入时有内容哈希对不上、跳过完整性校验照常导入了（catalog packages[].integritySkipped 非空，11-17 维护者：校验不过不再拒收）
+    public let integritySkipped: Bool
 
-    public init(type: String, titleId: String = "", version: Int = 0, display: String = "", size: Int64 = 0, sha256: String = "", format: String = "") {
+    public init(type: String, titleId: String = "", version: Int = 0, display: String = "", size: Int64 = 0, sha256: String = "", format: String = "", integritySkipped: Bool = false) {
         self.type = type; self.titleId = titleId; self.version = version; self.display = display; self.size = size; self.sha256 = sha256; self.format = format
+        self.integritySkipped = integritySkipped
     }
 
     init?(catalog p: [String: Any]) {
         guard let type = p["type"] as? String else { return nil }
         self.init(type: type, titleId: p["titleId"] as? String ?? "", version: (p["version"] as? NSNumber)?.intValue ?? 0,
                   display: p["display"] as? String ?? "", size: (p["size"] as? NSNumber)?.int64Value ?? 0, sha256: p["sha256"] as? String ?? "",
-                  format: p["format"] as? String ?? "")
+                  format: p["format"] as? String ?? "", integritySkipped: !((p["integritySkipped"] as? [Any]) ?? []).isEmpty)
     }
 }
 
@@ -79,10 +82,24 @@ public struct GameSummary: Identifiable, Equatable {
     public let iphoneFree: Bool
     /// 上次装的那台设备（设备记录键，UDID）：「续签」装回当初那台，不换别的（pack/jobs/layout.py install_record 的 deviceKey）
     public var iphoneInstallDevice: String? = nil
+    /// Apple TV 版已出好（catalog appleTvReady：image/tvos 的容器件 + 资源包都在）：出包页给「装到 Apple TV」
+    public var appleTvReady = false
+    /// 「导出自签包」能直接导出：iPhone 包就绪且是单一 IMG 资源包（catalog iphoneExportable）；不能就先重出 iPhone 包再导出
+    public var iphoneExportable = false
     /// 设备记录里装在某台手机上（catalog onPhone）：删除确认框多写一句「下次往这台手机装游戏时，手机上的这款会打不开」
     public var onPhone: Bool = false
     /// 游戏库封面左上角的金色 S（v0.4.0，pack/jobs/library.py sgrade_badge）：这款有 S 级优化（已打进补丁，或补丁库里有、下次起局 / 更新 iPhone 补上）
     public var sgrade: Bool = false
+    /// S 级优化升级没做完（catalog sgradeIncomplete：上次单款升级中途退出了启动器、标记还在）：这款显示「升级未完成，点 S 级优化继续」
+    public var sgradeIncomplete: Bool = false
+    /// S 级优化升级正在跑（catalog sgradeUpgrading：标记在且起升级的进程还活着，比如另一个启动器窗口起的）：同样画升级中、开始按钮不可点
+    public var sgradeUpgrading: Bool = false
+    /// S 级优化升级队列里这款的状态（catalog sgradeState：queued / running / done / skipped / incomplete，不在队里为 nil；作业层一份队列两端共用）
+    public var sgradeState: String? = nil
+    /// 在升的进度 0–1（catalog sgradeProgress；不在升为 nil）
+    public var sgradeProgress: Double? = nil
+    /// 在这台 Mac 上的游玩时间（catalog 的 playtime）；没玩过为 nil
+    public var playtime: GamePlaytime? = nil
     /// 下游深度方案（pack/jobs/downstream.py describe）：这款有下游项目的专门移植时，导出 iPhone 前问玩家一次用哪套
     public var downstream: DownstreamOffer? = nil
     /// 只换宿主（pack/jobs/host_update.py）：none / current / swap / incompatible（要重新准备才能用上新版修复）/ failed
@@ -118,8 +135,15 @@ public struct GameSummary: Identifiable, Equatable {
                   hostUpdate: g["hostUpdate"] as? String ?? "none", location: GameLocation(catalog: g["location"] as? [String: Any] ?? [:]), iphoneRestorable: g["iphoneRestorable"] as? Bool ?? false,
                   sizes: GameSizes(catalog: g["sizes"] as? [String: Any] ?? [:]))
         self.iphoneInstallDevice = (g["iphoneInstall"] as? [String: Any])?["deviceKey"] as? String
+        self.iphoneExportable = g["iphoneExportable"] as? Bool ?? false
+        self.appleTvReady = g["appleTvReady"] as? Bool ?? false
         self.onPhone = g["onPhone"] as? Bool ?? false
         self.sgrade = g["sgrade"] as? Bool ?? false
+        self.sgradeIncomplete = g["sgradeIncomplete"] as? Bool ?? false
+        self.sgradeUpgrading = g["sgradeUpgrading"] as? Bool ?? false
+        self.sgradeState = g["sgradeState"] as? String
+        self.sgradeProgress = (g["sgradeProgress"] as? NSNumber)?.doubleValue
+        self.playtime = GamePlaytime(catalog: g["playtime"] as? [String: Any])
         self.banner = (g["banner"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         self.downstream = (g["downstream"] as? [String: Any]).flatMap(DownstreamOffer.init(catalog:))
     }
@@ -130,6 +154,8 @@ public struct GameSummary: Identifiable, Equatable {
     }
 
     /// DLC 个数（按程序号去重）。
+    /// 这款有原件导入时跳过了完整性校验（游戏库卡片标「数据校验不过」）
+    public var integritySkipped: Bool { packages.contains(where: \.integritySkipped) }
     public var dlcCount: Int { Set(packages.filter { $0.type == "dlc" }.map(\.titleId)).count }
 
     /// 原件总大小（同一个文件里的多项只算一次，同旧启动器 ExportGameCard）。
@@ -159,24 +185,60 @@ public final class LibraryProvider {
     private let lock = NSLock()
     private var keys: Bool?
     private var updates: [PhoneUpdate] = []
+    private var devices = 0
+    private var sgradeBatchValue: SGradeBatch?
     /// 上次读游戏库时 prod.keys 齐没齐（catalog 的 keys.ready）；还没读过为 nil。
     public var keysReady: Bool? { lock.withLock { keys } }
     /// 上次读游戏库时，壳比本版旧的手机（catalog 的 phoneUpdates，只按本机设备记录判）：游戏库右上角「更新 iPhone 上的 S2Arm」
     public var phoneUpdates: [PhoneUpdate] { lock.withLock { updates } }
+    /// 上次读游戏库时，这台电脑往几台手机装过游戏（catalog 的 phoneDevices）：启动器更新弹窗据此写「更新启动器和 iPhone App」
+    public var phoneDevices: Int { lock.withLock { devices } }
+    /// 上次读游戏库时 S 级优化升级队列的批次（catalog 顶层 sgradeBatch）；没有为 nil
+    public var sgradeBatch: SGradeBatch? { lock.withLock { sgradeBatchValue } }
 
     public init(client: JobClient) { self.client = client }
 
     private func remember(_ result: [String: Any]) {
         let ready = (result["keys"] as? [String: Any])?["ready"] as? Bool
         let phones = (result["phoneUpdates"] as? [[String: Any]] ?? []).map(PhoneUpdate.init(catalog:))
-        lock.withLock { keys = ready; updates = phones }
+        let count = (result["phoneDevices"] as? NSNumber)?.intValue ?? 0
+        let batch = (result["sgradeBatch"] as? [String: Any]).map(SGradeBatch.init(catalog:))
+        lock.withLock { keys = ready; updates = phones; devices = count; sgradeBatchValue = batch }
     }
 
     private var snapshotFile: URL { client.environment.privateRoot.appendingPathComponent("library-snapshot.json") }
 
-    /// 上一次读到的游戏列表：启动时先显示它，catalog 作业在后台跑完再替换。换了游戏库（libraryId 不符）或没读过时为 nil。
+    /// 配着的游戏库文件夹整个不在了（玩家在访达里删了 / 挪走了，#1412）：库所在的盘连着、文件夹本身没有。
+    ///   外接盘没插上不算（作业层照旧报「磁盘没连上」，插上就回来，不能忘掉）
+    public var libraryFolderGone: Bool {
+        let path = client.environment.library
+        guard !path.isEmpty else { return false }
+        let parts = URL(fileURLWithPath: path).pathComponents
+        if parts.count > 2, parts[1] == "Volumes", !FileManager.default.fileExists(atPath: "/Volumes/" + parts[2]) { return false }
+        return !FileManager.default.fileExists(atPath: path)
+    }
+
+    /// 读游戏库失败、且游戏库文件夹确实没了：忘掉它（preferences.json 的游戏库两项清空、删上次列表快照），回到新玩家的样子——欢迎页，
+    ///   放密钥 / 添加游戏时按 ensureLibrary 在 ~/S2Arm 重建（#1412：原先照旧显示上次的列表，顶上报「游戏库未连接或标识不符」，点删除也只是重复报错）。
+    ///   只在作业层也读不了时才忘（作业层是游戏库连没连上的权威判断）；返回忘没忘
+    private func forgetLibraryIfGone() -> Bool {
+        guard libraryFolderGone else { return false }
+        try? JobEnvironment.saveLibrary(privateRoot: client.environment.privateRoot, library: "", libraryId: "")
+        client.environment.library = ""
+        client.environment.libraryId = ""
+        try? FileManager.default.removeItem(at: snapshotFile)
+        return true
+    }
+
+    /// 上一次读到的游戏列表：启动时先显示它，catalog 作业在后台跑完再替换。换了游戏库（libraryId 不符）、游戏库文件夹没了或没读过时为 nil。
     public func lastKnownGames() -> [GameSummary]? {
-        guard !client.environment.libraryId.isEmpty, let data = try? Data(contentsOf: snapshotFile),
+        guard !client.environment.libraryId.isEmpty, !client.environment.library.isEmpty else { return nil }
+        // 库标记不在（库被删 / 搬走）或库号不符：缓存列表不能当成还在。只核 libraryId 会让删库后的旧列表一直挂着，删除 / 刷新都报 library_not_connected。
+        let marker = URL(fileURLWithPath: client.environment.library).appendingPathComponent(".s2arm-library.json")
+        guard let markerData = try? Data(contentsOf: marker),
+              let markerInfo = (try? JSONSerialization.jsonObject(with: markerData)) as? [String: Any],
+              markerInfo["id"] as? String == client.environment.libraryId else { return nil }
+        guard let data = try? Data(contentsOf: snapshotFile),
               let saved = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               saved["libraryId"] as? String == client.environment.libraryId,
               let result = saved["result"] as? [String: Any] else { return nil }
@@ -204,7 +266,9 @@ public final class LibraryProvider {
         do {
             return try client.start(operation: "catalog", extra: startup ? ["startup": true] : [:], onFinish: { outcome in
                 guard outcome.state == .completed else {
-                    completion(.failure(JobClientError(outcome.message.isEmpty ? JobOutcome.interruptedMessage : outcome.message)))
+                    if outcome.state == .failed, self.forgetLibraryIfGone() { completion(.failure(JobClientError(Self.noLibraryMessage))); return }
+                    completion(.failure(JobClientError(outcome.message.isEmpty ? JobOutcome.interruptedMessage : outcome.message,
+                                                       code: outcome.failureCode)))   // 带失败码：前端按码给动作（library_id_mismatch 问要不要改用这个库）
                     return
                 }
                 self.remember(outcome.result)
@@ -222,7 +286,9 @@ public final class LibraryProvider {
     /// 同 load，async（EngineProvider 用）：没配游戏库直接抛错，不起作业。
     public func games() async throws -> [GameSummary] {
         guard !client.environment.library.isEmpty else { throw JobClientError(Self.noLibraryMessage) }
-        let result = try await client.perform("catalog").result
+        let result: [String: Any]
+        do { result = try await client.perform("catalog").result }
+        catch { if forgetLibraryIfGone() { throw JobClientError(Self.noLibraryMessage) }; throw error }
         remember(result)
         return Self.games(in: result)
     }
@@ -284,6 +350,9 @@ public struct GameSizes: Equatable {
     public var cache: Int64 = 0
     public var sources: Int64 = 0
     public var measured = false
+    /// 0.6.0 四类（作业层 pack/jobs/sizes.py categories：resources / programs / playerData / cache；通用壳开关开着才带）。nil = 照旧五项显示
+    public var categories: [String: Int64]?
+    public static let categoryOrder = ["resources", "programs", "playerData", "cache"]
     public init() {}
     public init(imageMac: Int64, imageIos: Int64, saves: Int64, cache: Int64, sources: Int64, measured: Bool) {
         self.imageMac = imageMac; self.imageIos = imageIos; self.saves = saves; self.cache = cache; self.sources = sources; self.measured = measured
@@ -292,6 +361,9 @@ public struct GameSizes: Equatable {
         func n(_ k: String) -> Int64 { (s[k] as? NSNumber)?.int64Value ?? 0 }
         imageMac = n("imageMac"); imageIos = n("imageIos"); saves = n("saves"); cache = n("cache"); sources = n("sources")
         measured = s["measured"] as? Bool ?? false
+        if let c = s["categories"] as? [String: Any] {
+            categories = Dictionary(uniqueKeysWithValues: Self.categoryOrder.map { ($0, (c[$0] as? NSNumber)?.int64Value ?? 0) })
+        }
     }
 }
 
@@ -336,5 +408,18 @@ public struct PhoneUpdate: Equatable, Sendable {
             (u[k] as? [[String: Any]] ?? []).compactMap { g in (g["gameId"] as? String).map { GameRef(id: $0, name: g["name"] as? String ?? $0) } }
         }
         device = u["device"] as? String ?? ""; name = u["name"] as? String ?? ""; games = refs("games"); stale = refs("stale")
+    }
+}
+
+/// S 级优化升级队列的批次（catalog 顶层 sgradeBatch / 作业 sgradeUpgradeStatus）：running 在跑、index 第几款（没在升时 = 已结束的款数）、count 共几款
+public struct SGradeBatch: Equatable, Sendable {
+    public var running: Bool
+    public var index: Int
+    public var count: Int
+    public init(running: Bool, index: Int, count: Int) { self.running = running; self.index = index; self.count = count }
+    public init(catalog d: [String: Any]) {
+        running = d["running"] as? Bool ?? false
+        index = (d["index"] as? NSNumber)?.intValue ?? 0
+        count = (d["count"] as? NSNumber)?.intValue ?? 0
     }
 }

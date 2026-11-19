@@ -95,6 +95,12 @@ static void receive_assign(int link, ns2_kind kind, ns2_assign_gesture gesture, 
     emit_line(@{@"assign": @{@"link": @(link), @"kind": @(kind), @"gesture": @(gesture), @"id": @(identifier ?: "")}});
 }
 
+// 认手柄：面板开着时任一只有新按下的键就报给启动器（玩家列表那一行亮一下；NS2Transport.h ns2_press_callback）
+static void receive_press(int link, const char *identifier, uint64_t buttons, int side, void *context) {
+    (void)context;
+    emit_line(@{@"press": @{@"link": @(link), @"id": @(identifier ?: ""), @"buttons": @(buttons), @"side": @(side)}});
+}
+
 // 分配完成（启动器 stdin `assign done {json}`）：split = 两只 Joy-Con 各一位玩家、first = 玩家 1 那只的 id、keep = 登记了的 id；没登记的断开（同原机）
 static void apply_assignment(NSDictionary *plan) {
     ns2_set_assign_mode(0);
@@ -132,6 +138,9 @@ static void emit_status(ns2_status status, const char *message, void *context) {
         ns2_get_info(&info);
         NSMutableDictionary *payload = [@{
             @"status": @(status),
+#ifdef NS2_SCAN_SECONDS
+            @"scanSeconds": @(NS2_SCAN_SECONDS),   // 这次编进来的扫描秒数：启动器「搜索 / 连接中」显示多久照它
+#endif
             @"message": message ? [NSString stringWithUTF8String:message] ?: @"" : @"",
             @"name": info.name[0] ? [NSString stringWithUTF8String:info.name] ?: @"" : @"",
             @"identifier": info.identifier[0] ? [NSString stringWithUTF8String:info.identifier] ?: @"" : @"",
@@ -209,6 +218,9 @@ static void *stdin_main(void *context) {
             pthread_mutex_unlock(&filterLock);
             continue;
         }
+        if (!strcmp(line, "scan") || !strcmp(line, "scan\n")) { ns2_rescan(); continue; }   // 手柄面板开着：再搜一轮好接上别的手柄（已连着手柄的链路不撤，ns2_rescan 会略过）
+        if (!strncmp(line, "press start", 11)) { ns2_set_press_watch(1); continue; }   // 手柄面板打开：按键时让玩家那一行亮一下
+        if (!strncmp(line, "press stop", 10)) { ns2_set_press_watch(0); continue; }
         if (!strncmp(line, "assign start", 12)) { ns2_set_assign_mode(1); ns2_rescan(); continue; }   // 分配中继续搜，好接更多手柄
         if (!strncmp(line, "assign cancel", 13)) { ns2_set_assign_mode(0); continue; }
         if (!strncmp(line, "assign done ", 12)) {
@@ -586,6 +598,7 @@ int main(void) {
         configure_bonding();
         ns2_set_player_callback(receive_player);
         ns2_set_assign_callback(receive_assign);
+        ns2_set_press_callback(receive_press);
         pthread_t commandThread;
         if (!pthread_create(&commandThread, NULL, stdin_main, NULL)) pthread_detach(commandThread);
         ns2_set_joycon_raw(1);   // 单只 Joy-Con 报原始方向（通道 v2），游戏宿主按游戏样式决定转不转（macos/ns2_controller.c，#520 A）

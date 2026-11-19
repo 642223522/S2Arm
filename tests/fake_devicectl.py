@@ -3,7 +3,9 @@
 # 硬件 UDID 按测试设备名单对应（FAKE_HW_UDID 给了就用它，模拟 devicectl 报错设备）。
 # 只实现执行器用到的子命令；copy to 以目录为源 = 把目录内容合并进目标目录（与真机 10-19 实测一致）。
 # 起局时以 $FAKE_APP（缺省 tests/fake_app.py）起假 App，环境 = 本进程环境 + --environment-variables。
-import time, json, os, plistlib, shutil, signal, subprocess, sys, uuid, zipfile
+import time, json, os, shutil, signal, sys
+# plistlib / zipfile / uuid 只有装包用、subprocess 只有起局用：放进各自分支按需导入（11-14 慢单测提速：执行器每 0.2 秒轮询就起一次本脚本，
+#   dev_run_test 一份要起几千次；顶层全导入每次多约 8 毫秒解释器启动）
 A = sys.argv[1:]
 TO = None
 if '--timeout' in A:   # 执行器把 devicectl 自带的 --timeout 加在命令末尾；先摘掉，下面「最后一个参数 = 包路径 / 包名」照旧
@@ -57,6 +59,7 @@ if A[:3] == ['device', 'info', 'files']:   # 只列一层：每行「名字  属
     for n in sorted(os.listdir(d)) if os.path.isdir(d) else []: print(f'{n}   Writable, Readable')
     sys.exit(0)
 if A[:3] == ['device', 'install', 'app']:
+    import plistlib, uuid, zipfile
     z = zipfile.ZipFile(A[-1]); pl = [n for n in z.namelist() if n.endswith('.app/Info.plist')][0]
     b = plistlib.loads(z.read(pl))['CFBundleIdentifier']; os.makedirs(os.path.join(app_dir(b), 'Documents'), exist_ok=True)
     open(os.path.join(app_dir(b), 'url'), 'w').write(f'file:///fake/{uuid.uuid4().hex[:8]}/')   # 每次安装路径都变（与真机一致）
@@ -130,6 +133,7 @@ if A[:3] == ['device', 'process', 'launch']:
     env = dict(os.environ); env.update(json.loads(opt('--environment-variables', '{}'))); env['FAKE_DOCS'] = os.path.join(root, 'Documents')
     app = os.environ.get('FAKE_APP', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fake_app.py'))
     con = '--console' in A
+    import subprocess
     p = subprocess.Popen([sys.executable, app], env=env, stdout=subprocess.PIPE if con else subprocess.DEVNULL, stderr=open(os.path.join(R, 'app.err'), 'a'), start_new_session=True)
     open(pf, 'w').write(str(p.pid))
     with open(os.path.join(R, 'launches.log'), 'a') as f: f.write(opt('--environment-variables', '{}') + '\n')

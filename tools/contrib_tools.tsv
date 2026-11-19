@@ -24,16 +24,15 @@ iOS 全量编译	Xcode
 单测 linux_ctest_colima_test	Xcode
 单测 dmsh_sc_identity_test	Xcode
 单测 macos_native_input_test	Xcode
+单测 macos_pro_motion_test	Xcode
 # Mac 出包 / 普查链：真实调用 Apple 工具链、BSD 工具或 APFS 克隆；非 Mac 宿主交 Mac 门禁验证，不记为本机通过。
 单测 app_only_test	Xcode
-单测 bake_cache_test	Xcode
 单测 census_test	Xcode
 单测 direct_profile_test	Xcode
 单测 host_build_test	Xcode
 单测 mac_slot_test	Xcode
 单测 mac_slot_frozen_test	Xcode
 单测 oneclick_test	Xcode
-单测 toolkeys_memo_test	Xcode
 # App 用户环境依赖 macOS 系统命令布局；后台快照的源访问时间不变依赖 APFS clonefile。
 单测 userenv_test	Xcode,改写器固定依赖
 单测 widen_auto_pkg_test	Xcode
@@ -44,6 +43,7 @@ iOS 全量编译	Xcode
 单测 rewrite_apple_golden_test	Python 包,改写器固定依赖
 单测 pack_rewrite_test	改写器固定依赖
 单测 fps_rewrite_test	Python 包,改写器固定依赖
+单测 fix_rewrite_test	Python 包,改写器固定依赖
 单测 rewrite_*	Python 包
 单测 widen_sites_test	Python 包
 单测 widen_sead_test	Python 包
@@ -52,3 +52,4 @@ iOS 全量编译	Xcode
 单测 widen_aspcap_test	Python 包
 单测 macos_swift_build_test	Xcode
 单测 android_runtime_build_test	Android NDK
+单测 save_running_gate_test	.NET 10 SDK,Xcode

@@ -71,7 +71,7 @@ ck "⑧ xlate_fp 输入不含 vklib/" 0 "$(grep -c '/vklib/' <<< "$XF")"
 XI=$(cd "$R/graphics/tools/direct/dsh" && "$DN" msbuild S2A.Dsh.csproj -getItem:DshXfpInput 2> /dev/null | python3 -c 'import json, sys; print("\n".join(i["FullPath"] for i in json.load(sys.stdin)["Items"]["DshXfpInput"]))') || XI=""
 ck "⑧ 翻译器指纹 DshXfpInput 含 Dsh.cs（正对照）" 1 "$(grep -c '/dsh/Dsh\.cs$' <<< "$XI")"
 ck "⑧ 翻译器指纹 DshXfpInput 不含 vklib/" 0 "$(grep -c '/vklib/' <<< "$XI")"
-ck "⑧ 出包直连阶段键的「入」里没有 vklib/（只看第二列路径；「外」可以）" 0 "$(awk -F'\t' '$1 == "入" && $2 ~ /\/vklib\//' "$R/pack/stage_inputs/direct.tsv" | wc -l | tr -d ' ')"
+ck "⑧ 出包直连阶段键的「入」里没有 vklib/（只看第二列路径；「外」可以）" 0 "$(LC_ALL=C awk -F'\t' '$1 == "入" && $2 ~ /\/vklib\//' "$R/pack/stage_inputs/direct.tsv" | wc -l | tr -d ' ')"
 # 用真实 CLI 子进程验证逐键失败 / 全成功的退出码（带和不带 --lib）。
 python3 "$H/t_vklib_exit.py" --dotnet "$DN" --dll "$T/art/bin/S2A.DshVkLib/release/dsh_vklib.dll" \
   --dsx "$LIB" --spirv-cross "$XC" || bad=1

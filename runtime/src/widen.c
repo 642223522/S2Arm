@@ -8,6 +8,7 @@
 // 随包表：widen_enable.*.tsv（出包组装 pack/ship_ext.py 从产物根拷进 App，runtime/build.mk 按这行自动收清单）
 // 随包表：widen_verified.tsv（出包组装 pack/ship_ext.py 从产物根拷进 App，runtime/build.mk 按这行自动收清单）
 // 随包表：widen_full.*.tsv（出包组装 pack/ship_ext.py 从产物根拷进 App，runtime/build.mk 按这行自动收清单）
+#include "caps.h"   // s2a_caps_own：我方通用满屏缺省不用
 #include "native.h"
 #include "patch.h"
 #include <errno.h>
@@ -148,6 +149,9 @@ static int widen_verified(void) {
     if (ws_yield()) return 0;
     const char *e = getenv("S2A_WIDEN_VERIFIED"); if (e) return !strcmp(e, "1");
     if (!widen_setting_on()) return 0;
+    // 11-15（v0.4.0，维护者定）：我方通用满屏缺省不用，只用社区宽屏补丁（上面 ws_yield 那支由补丁铺满）；能力清单 widen 1 / 已验证标记都只在旧口径（S2A_CAPS_OWN=1）认。
+    //   出包侧 tools/caps_policy.py patch_only 11-13 起已写 0，这里是运行时同一个开关：老导出的包清单仍写 widen 1，原先照旧铺满（同 fps60，caps.c）
+    if (!s2a_caps_own()) return 0;
     // 包内能力清单（runtime/src/caps.c：1 = 开、0 = 发布包能力卡未验按 16:9）：在用户设置之后、名单之前（审计 #854 F-caps-beats-settings）
     const char *c = getenv("S2A_WIDEN_CAPS"); if (c) return !strcmp(c, "1");
 #if defined(__ANDROID__)
@@ -162,20 +166,29 @@ static const char *widen_src(void) {
     if (ws_yield()) return "开着社区宽屏补丁（补丁优先）";
     const char *e = getenv("S2A_WIDEN_VERIFIED"); if (e) return !strcmp(e, "1") ? "S2A_WIDEN_VERIFIED=1 覆盖" : "S2A_WIDEN_VERIFIED=0 覆盖";
     if (!widen_setting_on()) return "设置里宽屏关";
+    if (!s2a_caps_own()) return "我方通用满屏不用（只用社区宽屏补丁；S2A_CAPS_OWN=1 才按能力清单 / 已验证名单）";
     const char *c = getenv("S2A_WIDEN_CAPS"); if (c) return !strcmp(c, "1") ? "包内能力清单开（发布缺省开，未必验证过）" : "包内能力清单关";
     return "已验证名单（graphics/widen/tables/verified.tsv）";
 }
 // 名单门（屏幕宽 / 屏幕高共用）：要放（宽 > 1920 或高 > 1080）时看本款在不在宽屏已验证名单。返回 1 = 放，0 = 不放（16:9 原比例加黑边），-1 = 还没装载、不知道
+//   安卓 s2a_screen_w / h 不缓存（旋转靠每次新读），游戏每帧读屏幕尺寸就每帧走到这里：判定照旧每次做，日志只在（结论, 读的是什么, 值）变了时打一行
+//   （#1581 附带：一局 249 秒 4418 行、50 帧局 5.7 万行，且每次重算 widen_src）
+static _Atomic uint64_t g_gate_logged;
+static int gate_log_new(const char *what, int v, int ok) {
+    uint64_t k = (uint64_t)(uint32_t)v | (uint64_t)(ok & 3) << 32 | (uint64_t)((uintptr_t)what & 0x3fffffffu) << 34;
+    return atomic_exchange(&g_gate_logged, k) != k;
+}
 static int widen_gate(const char *what, int v) {
     int ok = widen_verified();
     if (ok < 0) { LOG("【红】宽屏：装载前就读了%s，还不知道本款在不在宽屏已验证名单，这次按 16:9 且不记住", what); return -1; }
-    if (!ok) { LOG("宽屏：不放（来源：%s），整局按 16:9 原比例加黑边（%s %d 不放）", widen_src(), what, v);
+    if (!ok) { if (gate_log_new(what, v, 0)) LOG("宽屏：不放（来源：%s），整局按 16:9 原比例加黑边（%s %d 不放）", widen_src(), what, v);
                if (!getenv("S2A_WIDEN_NARROW")) {
                    if (setenv("S2A_WIDEN_NARROW", "1", 0)) die("宽屏：设置窄屏标记失败");
                    g_default_narrow = 1;
                }
                return 0; }   // 通用上屏层的满屏判据据此不报黑边（graphics/metal/gal_present.m fit_narrow）
-    LOG("宽屏：放开（来源：%s），%s %d", widen_src(), what, v); return 1;
+    if (gate_log_new(what, v, 1)) LOG("宽屏：放开（来源：%s），%s %d", widen_src(), what, v);
+    return 1;
 }
 // 屏幕宽唯一来源（原生层宽屏点与 C# 宽屏包装层同读这里）：S2A_SCREEN_W 优先，iOS 没给时按实际屏幕算；不在宽屏已验证名单时按 1920（见 widen_verified）；只算一次
 //   窗口场景连上前（s2a_ios_screen_known() == 0）只读不缓存，与屏幕高同一做法
@@ -512,10 +525,15 @@ static void widen_load_stream(module_t *m, const char *dir, const char *path, FI
                 uint32_t z = *(const uint32_t *)(m->base + o);
                 if ((z & 0xffe0001f) == ((fl ? 0xd2a00000u : 0xd2800000u) | (s->word & 31))) { lo = fl ? ((z >> 5) & 0xffff) << 16 : (z >> 5) & 0xffff; have = 1; break; }
                 if (si < 0 && (z & 31) == (s->word & 31)) break; }
-            if (!have) LOG("【红】宽屏：%s+%#x %s 找不到配对的 MOVZ，低半按 0", m->name, s->off, kname(s->kind));
             for (int i = 0; i < 8; i++) if (fl ? fh == (float)k_hcls[i] : imm == k_hcls[i]) c = i;
-            if (s->on && c >= 0) hv = fl ? fbits((float)scale_h(k_hcls[c])) : (uint32_t)scale_h(k_hcls[c]);
-            else if (s->on) LOG("【红】宽屏：%s+%#x %s 高 %g 不是 16:9 档高，按原值", m->name, s->off, kname(s->kind), fl ? (double)fh : (double)imm);
+            // 找不到搭档（0.4.0 起搭档那条让给社区补丁、被换成补丁开关跳转，满屏开关开不开都认不出，#1180）：整格保持原值、不放大。
+            //   扫描器只在 (宽, 高) 是同一 16:9 档时出 f2h / i2h（graphics/widen/scan/wide_scan.py CLS，与 k_cls / k_hcls 同序），原宽 = 高所在档的宽；
+            //   原来按 0 写低半 → 交换链宽 0 → 黑屏
+            if (!have && c >= 0) { lo = fl ? fbits((float)k_cls[c]) : k_cls[c]; have = 2; LOG("宽屏：%s+%#x %s 找不到配对的 MOVZ，按档位原宽 %u、高不改", m->name, s->off, kname(s->kind), k_cls[c]);
+                if (s->on) { s->on = 0; non--; g_hsize--; } }   // 没真放大：不算启用的显示高度点（宿主据此判游戏自己出高图）
+            if (!have) LOG("【红】宽屏：%s+%#x %s 找不到配对的 MOVZ，高也不是 16:9 档，低半按 0", m->name, s->off, kname(s->kind));
+            if (s->on && c >= 0 && have == 1) hv = fl ? fbits((float)scale_h(k_hcls[c])) : (uint32_t)scale_h(k_hcls[c]);
+            else if (s->on && have == 1) LOG("【红】宽屏：%s+%#x %s 高 %g 不是 16:9 档高，按原值", m->name, s->off, kname(s->kind), fl ? (double)fh : (double)imm);
             *slot = (uint64_t)hv << 32 | lo;
         }
         else if (s->kind == 5 && s->on) {   // f32：16:9 浮点分辨率表的锚点（1920.0, 1080.0）。表里各档（如 960×540 … 3840×2160）一起按屏幕宽放大：

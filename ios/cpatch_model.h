@@ -1,6 +1,6 @@
 // 社区补丁设置的数据层（纯 Foundation，Mac 单测 t_cpatch_settings）：读包根 cpatch.tsv（pack/cpatch.py plan 出的装载器表），
 //   按编号前缀分组（widescreen: 宽屏 / fps: 60 帧 / 其余 画面；编号 gfx: 的画面类 iOS 不打不列，11-13），同一编号跨模块的多行并成一项；开关写回 S2ACommunityPatches。
-// 写回口径与装载器一致（ios/settings.m → S2A_CPATCH_ON → runtime/src/cpatch.c）：没设过 = 全开（11-13；表「缺省开」只作我方已验标签）；字符串数组 = 只开数组里的；
+// 写回口径与装载器一致（ios/settings.m → S2A_CPATCH_ON → runtime/src/cpatch.c）：没设过 = 开（11-13；表「缺省开」只作我方已验标签；降负载的画面补丁除外，11-16 缺省关）；字符串数组 = 只开数组里的；
 //   空数组 = 全关。帧率类（fps:）不看这个列表，跟 60 帧开关 S2AFps60 走，所以不进写回。下次启动生效
 #import <Foundation/Foundation.h>
 
@@ -13,6 +13,7 @@ extern NSString *const S2ACPatchDefaultsKey;   // @"S2ACommunityPatches"
 @property (nonatomic, copy) NSString *group;     // 显示分组：widescreen / fps / gfx（S2ACPatchClassify，按名字关键词，其次「类别」列）
 @property (nonatomic, copy) NSString *license;   // 许可（空 = 未声明）
 @property (nonatomic) BOOL defaultOn;            // 表里「缺省开」（同一编号多行时任一行为 1 即为 1）
+@property (nonatomic) BOOL loadDir;             // 降负载的画面补丁（表第 14 列方向 load）：没设过时缺省关（11-16，同 runtime/src/cpatch.c）
 @property (nonatomic) NSInteger targetFps;      // 帧率类的目标帧率（表第 10 列，pack/cpatch.py；0 = 没写 / 旧表）。补丁优先：设置页「帧率」行按它写「最高 n 帧」
 @property (nonatomic, readonly) BOOL followsFps60;   // 帧率类：跟 60 帧开关
 @property (nonatomic, readonly) BOOL followsFullscreen;   // 自适应满屏一族（编号 wsauto:）：跟满屏开关（settings.m s2a_ios_set_fullscreen 一并开关），不单列
@@ -36,5 +37,10 @@ NSString *S2ACPatchRatioText(double a);
 NSArray<S2ACPatchGroup *> *S2ACPatchGroupsFromTSV(NSString *text);
 // 当前开着的编号（不含帧率类）
 NSSet<NSString *> *S2ACPatchEnabled(NSArray<S2ACPatchGroup *> *groups, NSUserDefaults *defaults);
+// 崩溃时只关出事的那份（v0.4.1，同 pack/jobs/cheats.py narrow）：嫌疑从小到大取一层，再崩再扩大——
+//   ① 比上次好好收局时（good，元素「类<TAB>键」；nil = 没记过）新开的；② 没有 → 我方没验过的（金手指、verified 为假的补丁 / 帧率）；③ 还没有 → 全部。
+//   on 元素 {kind: cheat | patch | fps, key, name, verified}
+NSString *S2ACrashTag(NSDictionary *item);
+NSArray<NSDictionary *> *S2ACrashNarrow(NSArray<NSDictionary *> *on, NSSet<NSString *> *good);
 // 改一项（帧率类忽略）：在当前开着的集合上加 / 减，按页面顺序写回字符串数组
 void S2ACPatchSetEnabled(NSArray<S2ACPatchGroup *> *groups, NSUserDefaults *defaults, NSString *ident, BOOL on);

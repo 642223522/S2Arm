@@ -4,7 +4,7 @@ function(s2a_android_game_sources output)
     set(repo "${S2A_ANDROID_RUNTIME_ROOT}")
     # Apple 专用触页优化与诊断不用于 Android；Android 使用实际 fault dispatcher。
     set(core alt ap_host boot caps cpatch crash det dguard direct_host direct_prompt emul_ld emul_sp emul_st fps gate layout libc lifecycle loader loadprog logcap logcon lowva nrodefer
-        glslc_tool oodle_tool os pack_apply pad patch patch_data qladder qladder_host qprompt qprompt_host selfcheck session svc_mem text_input thread traps vawin widen
+        glslc_tool oodle_tool os pack_apply pad patch patch_data playtime qladder qladder_host qprompt qprompt_host selfcheck session snapsw svc_mem text_input thread traps vawin widen
         widen_remember xstack)
     set(sources)
     foreach(name IN LISTS core)

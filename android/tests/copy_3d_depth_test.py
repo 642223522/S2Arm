@@ -40,7 +40,7 @@ preamble = r'''
 #define REF_BUF 2
 struct nvn_gpu_tex_s { uint32_t w,h,depth,levels,target,layers,format,nvn_format,aspect; VkImage image; int bc_decoded; };   /* bc_decoded：压缩贴图现解；本测试的贴图都不是 */
 struct nvn_gpu_buf_s { VkBuffer buffer; uint64_t size; };
-struct nvn_gpu_cmd_s { int sticky,in_pass; VkCommandBuffer cb; };
+struct nvn_gpu_cmd_s { int sticky,in_pass,xfer_dirty; VkCommandBuffer cb; };
 static int copies, bc_calls, bc_upload_calls; static VkBufferImageCopy last;
 static int nvn_vk_format_substituted(uint32_t f) { (void)f; return 0; }   /* #398 D24 换 D32：本测试的贴图都不换存储 */
 static int rc_is(int got, int expected) { return got == expected; }
@@ -66,7 +66,13 @@ bc_upload_stub = bc_upload_signature + r''' {
     bc_upload_calls++; set_sticky(c, NVN_GPU_E_UNSUPPORTED, "BC upload not implemented by bounds fixture");
 }
 '''
-production = '\n'.join(function(x) for x in (
+# #1581 K：一个拷贝区域只取一个面——面选择（copy_face_aspect）与 copy_buf_tex_impl 的 face 取值（COPY_FACE_*）在函数外，一起切出来
+match = re.search(r'enum \{ COPY_FACE_DEFAULT[^}]*\};', src)
+if not match:
+    raise RuntimeError('production COPY_FACE_* enum not found')
+face_enum = match.group(0)
+production = face_enum + '\n' + '\n'.join(function(x) for x in (
+    'static VkImageAspectFlags copy_face_aspect(',
     'static void copy_region_block_clamp(', 'static int copy_region(', 'static int check_copy_params(',   # block_clamp：#697 小 mip 整块区域裁边，copy_region 调它
     'static void copy_buf_tex_impl(', 'void nvn_gpu_copy_buf_tex(', 'void nvn_gpu_copy_tex_buf('))   # copy_buf_tex_impl：#422 起 nvn_gpu_copy_buf_tex 是它的薄壳
 main = r'''

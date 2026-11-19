@@ -134,6 +134,23 @@ namespace S2A.Services.Tests
             check("FPSLocker 表达式：VSYNC_TARGET @60 / @30、优先级与括号", (1.0, 2.0, 7.0), (FpsLocker.Eval("VSYNC_TARGET", 60), FpsLocker.Eval("VSYNC_TARGET", 30), FpsLocker.Eval("1 + 2 * (4 - 1)", 60)));
             var fl = FpsLocker.Load("{\"units\":[{\"id\":\"fps:a\",\"all_fps\":[{\"type\":\"evaluate_write\",\"address\":[\"MAIN\",68358836],\"value_type\":\"float\",\"value\":\"0.945 * FRAMETIME_TARGET\"},{\"type\":\"write\",\"address\":[\"HEAP\",16,8],\"value_type\":\"int32\",\"value\":[1,2]}]}]}");
             check("FPSLocker 配置读取：条数 / 第二条地址级数 / 值是列表", (2, 3, System.Text.Json.JsonValueKind.Array), (fl.Count, fl[1].Address.Count, fl[1].Value.ValueKind));
+            // 审计 P1-184：每条写入记下所属那份补丁（只写选中那份），目标帧率按选中档（120 档按 120 求值，帧时间 8.33 ms），刚取消选中写回 30
+            check("FPSLocker 每条写入带所属补丁编号", ("fps:a", "fps:a"), (fl[0].Unit, fl[1].Unit));
+            check("FPSLocker 目标帧率：选 120 / 选 60 / 取消选中", (120.0, 60.0, 30.0), (FpsLocker.Target(120), FpsLocker.Target(60), FpsLocker.Target(0)));
+            check("FPSLocker 120 档帧时间：FRAMETIME_TARGET @120", "8.33", FpsLocker.Eval("FRAMETIME_TARGET", FpsLocker.Target(120)).ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
+            // 审计 P1-185：收局停金手指线程。起一条真实的 Run 线程（空目录，原生层不在 → 重载失败也照常循环），Stop 后线程 3 秒内退出、_thread 清空（下一局 Start 能重起、重新交原生层）
+            {
+                var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static;
+                string tmp = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "s2a_cheats_stop_" + Environment.ProcessId); System.IO.Directory.CreateDirectory(tmp);
+                var cts = new System.Threading.CancellationTokenSource();
+                var run = typeof(Cheats).GetMethod("Run", flags);
+                var t = new System.Threading.Thread(() => run.Invoke(null, new object[] { tmp, cts.Token })) { IsBackground = true };
+                typeof(Cheats).GetField("_stop", flags).SetValue(null, cts); typeof(Cheats).GetField("_thread", flags).SetValue(null, t);
+                t.Start(); System.Threading.Thread.Sleep(300);
+                Cheats.Stop();
+                check("金手指 收局停线程：线程已退出 / _thread 清空", (false, true), (t.IsAlive, typeof(Cheats).GetField("_thread", flags).GetValue(null) == null));
+                System.IO.Directory.Delete(tmp, true);
+            }
             check("金手指 编译：坏指令回 null（界面显示「指令有误」）", true,
                 new AtmosphereCompiler(exe, 0, 0, 0, fake).Compile("bad", new[] { "ZZZZ" }) == null);
         }

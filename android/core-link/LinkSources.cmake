@@ -14,6 +14,8 @@ function(s2a_android_host_sources output)
     set(sources
         native/s2a_savecommit.c native/system_tuning.c native/capacity_affinity.cpp native/adpf_hint.c native/cpu_floor.c
         native/bridge.cpp native/lan_discovery.cpp ../runtime/src/lan_elect.c native/capture_jpeg.cpp native/touch_jni.cpp native/game_touch.c native/window.cpp native/presenter.cpp
+        # 手机当掌机的六轴 / 震动（#528 第 10 项）：坐标换算、震动信箱、六轴来源仲裁用共用的 runtime/src 实现
+        native/phone_feedback.c ../runtime/src/phone_axes.c ../runtime/src/phone_rumble_mailbox.c ../runtime/src/motion_pick.c
         native/wsi_lease.c native/input.c native/tsd.c native/module.c native/selftest.c native/selftest_gate.S
         native/guest_signal.c native/redlog.c native/redzone.S native/pcm_ring.c native/aaudio_sink.c native/hostapi.c native/screen_metrics.c
         # #48 P8：dm_thermal_now / dm_low_power_now 的安卓强定义（盖过 fps.c / hle_nvn.c 的弱缺省）
@@ -27,7 +29,7 @@ function(s2a_android_host_sources output)
         native/docs_android.c
         # AMediaCodec 视频解码边界（#44 第二刀）：纯 NDK API，无钉版源码，直接进单库。
         codecs/s2a_mc.c
-        native/direct_vk.c native/direct_session.c native/direct_choice.c native/direct_callback.c native/direct_callback.S)
+        native/direct_vk.c native/direct_session.c native/vk_loader_shim.c native/direct_choice.c native/direct_callback.c native/direct_callback.S)
     if(S2A_ANDROID_EXPERIMENTAL_TOUCH)
         list(APPEND sources native/touch_input.c)
     endif()
@@ -52,6 +54,8 @@ function(s2a_android_diagnostic_sources output)
         # dguard_android.c / bridge.cpp 引用的共用出口：诊断目标编入同一实现（无武装点，
         # 只靠弱回退的日志与 stub 的 s2a_host_session_state 空转），行为与游戏目标一致。
         ../runtime/src/dguard.c ../runtime/src/direct_prompt.c
+        # 即时存档开关（snapsw.c，安卓恒关）：服务层 SnapLog.cs 与 hle_nvn.c 引用，诊断目标同编（游戏目标由 Runtime.cmake 的 core 列表提供）
+        ../runtime/src/snapsw.c
         # 诊断目标没有原生会话核心：direct_prompt.c 要的 s2a_host_session_state 等会话入口由 stub 给
         # （恒报 FAILED）。不论服务层是否静态链入都要它，否则缺省 assembleDebug（S2A_CS_SERVICES=0）
         # 在 -z defs 下报 undefined symbol: s2a_host_session_state。
@@ -84,8 +88,19 @@ function(s2a_android_nvk_sources output)
         # 着色器链里与旧回放无关的部分
         native/direct/compiler_bind.c native/direct/source_store.c native/direct/diag.c
         native/direct/compile_worker.c native/direct/program_cache.c native/direct/offline_library.c
+        native/direct/libpack_vk.c   # 出包预编库读取（nvk_shader.c 按每阶段键取，同 iOS lib_pack）
         native/direct/compile_request.c native/direct/input_identity.c native/direct/texture_facts.c
-        native/nvn/nvn_vk_program_result.c native/nvn/nvn_vk_compute_request.c native/gfx_plat/nvk_shader.c
+        native/nvn/nvn_vk_program_result.c native/nvn/nvn_vk_compute_request.c native/gfx_plat/nvk_shader.c native/gfx_plat/direct_diag.c
+        # 首次使用的准备工作下沉（iOS 蓝本 nvn_mtl.m warm_start/pso_pend 的 Vulkan 版）：
+        #   nvn_vk_prog_warm  程序预热清单（跨会话程序内容身份 → 读盘/解析/建设备对象 → 发布到 g_progs）
+        #   nvn_vk_pipe_warm  管线预热清单（完整 nvn_gpu_pipe_desc 配方 → 后台 nvn_gpu_pipe_get）
+        #   nvn_vk_pipe_once  「同一配方只有一份」的双检装载（提交线程与预热线程并发建管线）
+        #   nvn_warm          一个有界后台线程按清单顺序喂上面两类工作（先程序后管线）
+        native/nvn/nvn_vk_prog_warm.c native/nvn/nvn_vk_pipe_warm.c native/nvn/nvn_vk_pipe_once.c native/nvn/nvn_warm.c
+        #   首用管线后台构建（iOS pso_pend / first_skip_ok 的 Vulkan 新回放版）：pending 状态表 + demand 后台线程
+        native/nvn/nvn_pipe_pend.c native/nvn/nvn_vk_pipe_demand.c
+        #   nvn_pipe_flight  配方级在途表（纯逻辑）：同配方并发需求合并成一份创建，不同配方不互相排队（复核 P1-2）
+        native/nvn/nvn_pipe_flight.c
         # nvn_gpu_* 的 Vulkan 后端与它的零件
         native/nvn/backend_vulkan.c native/nvn/nvn_vk_format.c native/nvn/nvn_vk_bcdec.c
         native/nvn/nvn_vk_driver_cache.c   # 驱动管线缓存落盘文件层（backend_vulkan.c 的 plc_open / plc_close 用；SHA-256 用上面的 sha256.c）

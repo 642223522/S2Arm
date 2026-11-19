@@ -1,11 +1,8 @@
-// Derived from NX2Apple frontend/Sources/NX2Apple/LauncherView+Library.swift (908e4e84, MIT; see ../../UPSTREAM.md).
-// S2Arm changes: the games are S2ArmAppleAdapter GameSummary (catalog job) instead of GameLibrary/LibraryGame; the artwork is the
-// library's cover.jpg drawn by CoverFill (upstream's ArtworkFill / artwork editor / slots are not taken); the hero's primary action is
-// Export (11-07 维护者: the launcher is built around exporting, Mac and iPhone / iPad alike; it opens ExportView), and a game whose Mac
-// version is ready also gets Play (launch job) beside it, then the launch options button and Free up space (FreeSpaceView: spaceSurvey / spaceFree jobs); the cards and the hero's buttons carry
-// their own accessibility labels (a card read as an image before); the empty library offers Add games; the rebuild, iPhone
-// re-sign, Manage menu, Switch 2 badge and library filter are left out; a save dropped on a card opens that game's save window on it (11-09).
+// Derived from NX2Apple LauncherView+Library.swift (908e4e84, MIT; see ../../UPSTREAM.md).
+// S2Arm: the Home layout lives in LauncherView+Home; this file keeps library status,
+// management actions and file drops shared with that layout.
 import AppKit
+import Darwin
 import SwiftUI
 import UniformTypeIdentifiers
 import NXCore
@@ -21,18 +18,7 @@ extension LauncherView {
             } else if model.showsWelcome {
                 emptyLibrary
             } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 0) {
-                        staleBanner
-                        renewBanner
-                        if let game = model.selected {
-                            hero(game, width: geometry.size.width, height: max(240, geometry.size.height - collectionHeight))
-                        }
-                        collection(width: geometry.size.width)
-                            .background(GeometryReader { g in Color.clear.preference(key: CollectionHeightKey.self, value: g.size.height) })
-                    }
-                }
-                .onPreferenceChange(CollectionHeightKey.self) { h in if h > 0, abs(h - collectionHeight) > 0.5 { collectionHeight = h } }
+                homeLibrary(size: geometry.size)
             }
         }
     }
@@ -51,167 +37,6 @@ extension LauncherView {
         WelcomeView(model: model)
     }
 
-    func hero(_ game: GameSummary, width: CGFloat, height: CGFloat) -> some View {
-        ZStack(alignment: .bottomLeading) {
-            // 顶部大图（#378）：玩家换的封面 → 已下载的商店横图 → 游戏图标；原先直接用 cover，横图下好了也把 256×256 的图标放大
-            if let image = covers.image(game.customCover ? game.cover : (game.banner ?? game.cover)) {
-                CoverFill(image: image).frame(width: width, height: height).clipped()
-            } else {
-                LauncherPalette.surface
-                Image(nsImage: BrandArt.wordmark).resizable().interpolation(.high).scaledToFit().frame(width: 300, height: 78)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing).padding(54)
-            }
-            LinearGradient(stops: [.init(color: .clear, location: 0.25),
-                                   .init(color: .black.opacity(0.25), location: 0.45),
-                                   .init(color: LauncherPalette.background, location: 1)],
-                           startPoint: .top, endPoint: .bottom)
-            LinearGradient(colors: [.black.opacity(0.24), .clear], startPoint: .leading, endPoint: .trailing)
-            VStack(alignment: .leading, spacing: 14) {
-                status(game, prominent: true)
-                Text(game.name).font(.manrope(min(68, width * 0.052), .heavy))
-                    .tracking(-1.6).lineLimit(2).shadow(color: .black.opacity(0.25), radius: 12)
-                HStack(spacing: 14) {
-                    let queueable = !model.busy || model.session?.export != nil
-                    if game.iphoneReady {
-                        // 包已出好：主按钮是装机 / 续签，重新出包退到次要
-                        // 装过的款（续签 / 重装）：目标先设成当初装的那台，不换别的；要装到另一台在装机页改选
-                        Button { model.targetInstalledDevice(of: game); installFor = game.id } label: {
-                            // 导出模式：主按钮是「导出，自己签名安装」（维护者 11-13：两路分开，导出路不写「装到 iPhone」）
-                            LauncherHeroActionLabel(title: model.installMode.mode == "export" ? txt("export.done.export")
-                                                    : txt(game.iphoneInstalledAt != nil && game.iphoneFree ? "library.hero.renew" : "library.hero.install"),
-                                                    symbol: model.installMode.mode == "export" ? "square.and.arrow.up" : "iphone")
-                        }
-                        .buttonStyle(.plain).keyboardShortcut(.return, modifiers: []).accessibilityIdentifier("hero.install")
-                        heroCapsule(loc.t("s2arm.export.action"), symbol: "shippingbox", id: "hero.export", enabled: queueable) { model.exportFor = game.id }
-                    } else {
-                        Button { model.exportFor = game.id } label: {
-                            LauncherHeroActionLabel(title: loc.t("s2arm.export.action"), symbol: "shippingbox.fill")
-                        }
-                        .buttonStyle(.plain).disabled(!queueable)
-                        .keyboardShortcut(.return, modifiers: [])
-                        .accessibilityLabel(loc.t("s2arm.export.action")).accessibilityIdentifier("hero.export")
-                        .padTarget("hero.export", scope: "main", radius: 30) { model.exportFor = game.id }
-                    }
-                    if game.playable {
-                        // 开局前在同步 iCloud 存档：按钮写明在做什么（11-09 审查：原来点了几分钟没反应）
-                        heroCapsule(loc.t(model.cloudSyncing ? "s2arm.cloud.syncing" : "library.play"), symbol: model.cloudSyncing ? "icloud" : "play.fill", id: "hero.play",
-                                    enabled: !model.busy && !model.cloudSyncing) { model.play(game, uiLanguage: uiLanguage) }
-                        // 启动设置（11-09 维护者）：开局前设这一款的画面 / 模式 / 震动 / 体感 / 浮层，按款记住
-                        heroCircle("gearshape", label: txt("game.display"), id: "hero.launchSettings", enabled: true) { displayFor = game.id }
-                    }
-                    if model.finishedExports[game.id] != nil, !(model.busy && model.session?.gameID == game.id) {
-                        heroCapsule(txt("library.hero.results"), symbol: "checkmark.seal", id: "hero.results", enabled: true) { model.viewingResult = model.finishedExports[game.id] }
-                    }
-                    heroCircle("externaldrive", label: loc.t("s2arm.action.freeSpace"), id: "hero.space") { spaceFor = game.id }
-                    heroCircle("ellipsis", label: txt("game.more"), id: "hero.more") { moreFor = game.id }
-                        .popover(isPresented: Binding(get: { moreFor == game.id }, set: { if !$0 { moreFor = nil } }), arrowEdge: .bottom) { moreMenu(game) }
-                }
-                if game.playable, game.hostUpdate == "incompatible" {
-                    // 新版改了宿主读产物的约定，换不了宿主：旧版本照常能玩，重新出一次 Mac 版才能用上新版修复（host_update.py）
-                    HStack(spacing: 10) {
-                        Text(txt("library.hostUpdate.incompatible")).font(.manrope(12.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                        Button(txt("library.hostUpdate.prepare")) { model.exportFor = game.id }
-                            .buttonStyle(.link).disabled(model.busy).busyHint(model).accessibilityIdentifier("hero.hostUpdate")
-                    }
-                }
-                if let error = model.actionError(for: game.id) {
-                    Text(loc.backend(error)).font(.manrope(12.5)).foregroundStyle(LauncherPalette.danger).fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .padding(.horizontal, 34).padding(.bottom, 34)
-        }
-        .frame(width: width, height: height).clipped()
-    }
-
-    /// A round secondary action of the hero (the launch options; more round actions sit after it).
-    func heroCircle(_ symbol: String, label: String, id: String, enabled: Bool = false, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol).font(.system(size: 17))
-                .frame(width: 48, height: 48)
-                .background(Color.white.opacity(0.10), in: Circle())
-                .overlay(Circle().strokeBorder(Color.white.opacity(0.14)))
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain).disabled(model.busy && !enabled).help(label).busyHint(model, disabled: !enabled).accessibilityLabel(label).accessibilityIdentifier(id)
-        .padTarget(id, scope: "main", radius: 24, activate: action)
-    }
-
-    func collection(width: CGFloat) -> some View {
-        let cardWidth = min(300, max(190, (width - 124) / 5))
-        let step = cardWidth + 14
-        let heroID = model.selected?.id
-        return VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 16) {
-                Text(loc.t("library.collection")).font(.manrope(28, .bold)).tracking(-0.6)
-                Spacer()
-                // S 级优化升级（v0.4.0）：已导出的游戏不用重出包就补上 S 级优化（SGradeUpgradeView）
-                Button { model.sgradeUpgradeOpen = true } label: {
-                    HStack(spacing: 6) {
-                        Image(nsImage: SGradeCardView.sGold).resizable().interpolation(.high).aspectRatio(contentMode: .fit).frame(width: 16, height: 16)
-                        Text(BackendText.launcherText("sgrade.upgrade.button", language: loc.lang == .zh ? "zh-Hans" : "en")).font(.manrope(12.5, .semibold))
-                    }
-                }
-                .buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy || model.games.isEmpty)
-                .accessibilityIdentifier("library.sgradeUpgrade")
-                Button { model.refresh() } label: {
-                    Image(systemName: "arrow.clockwise").font(.system(size: 13, weight: .semibold))
-                }
-                .buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.loading)
-                .help(loc.t("s2arm.library.refresh")).accessibilityLabel(loc.t("s2arm.library.refresh"))
-                Text(model.games.count == 1 ? loc.t("library.gameCountOne") : String(format: loc.t("library.gameCount"), model.games.count))
-                    .font(.manrope(12)).foregroundStyle(.secondary)
-            }
-            ScrollViewReader { proxy in
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(alignment: .top, spacing: 14) {
-                        ForEach(model.games) { game in
-                            let _ = LauncherWork.count(.card)
-                            Button { if game.location.state == "missing" { missingFor = game } else { model.selectedID = game.id } } label: {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    GameArtwork(covers: covers, cover: game.cover)
-                                    .frame(width: cardWidth, height: cardWidth / 1.8).clipped()
-                                    .clipShape(RoundedRectangle(cornerRadius: 5))
-                                    .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(
-                                        game.id == heroID ? LauncherPalette.cream : .clear, lineWidth: 2))
-                                    .overlay(alignment: .topLeading) { if game.sgrade { SGradeBadge(size: max(24, cardWidth / 9)) } }   // 金色 S：这款有 S 级优化（v0.4.0）
-                                    Text(game.name).font(.manrope(16, .semibold)).lineLimit(1)
-                                    status(game)
-                                    Capsule().fill(game.id == heroID ? LauncherPalette.cream : .clear)
-                                        .frame(height: 3).padding(.top, 4)
-                                }
-                                .frame(width: cardWidth, alignment: .leading).contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel(game.name)
-                            .accessibilityValue(statusLine(game).text)
-                            .accessibilityAddTraits(game.id == heroID ? .isSelected : [])
-                            .accessibilityIdentifier("card." + game.id)
-                            .padTarget("card." + game.id, scope: "main", radius: 7) { model.selectedID = game.id }
-                            .contextMenu { cardMenu(game) }
-                            // 存档拖到这款卡片上 = 给这款导入存档：打开存档窗口并先检查（同拖进存档窗口，确认后才覆盖）；
-                            //   游戏文件 / 密钥仍走整页那条（添加游戏、放密钥），别当存档
-                            .modifier(CardDrop(targeted: cardTargeted(game.id), artwork: cardWidth / 1.8) { urls in dropOnCard(urls, game: game) })
-                        }
-                    }
-                    .padding(.horizontal, Self.ringRoom).padding(.top, Self.ringRoom).padding(.bottom, 5 + Self.ringRoom)
-                    .background(EnclosingScrollView(row: row))
-                }
-                .padding(.horizontal, -Self.ringRoom).padding(.vertical, -Self.ringRoom)
-                .onChange(of: padFocus.focused) { id in
-                    guard let id, id.hasPrefix("card.") else { return }
-                    withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(id, anchor: .center) }
-                }
-            }
-            .overlay(alignment: .topLeading) {
-                if row.canBack { pager("chevron.left", height: cardWidth / 1.8) { row.page(-1, step: step) }.offset(x: -22) }
-            }
-            .overlay(alignment: .topTrailing) {
-                if row.canForward { pager("chevron.right", height: cardWidth / 1.8) { row.page(1, step: step) }.offset(x: 22) }
-            }
-        }
-        .padding(.horizontal, 34).padding(.top, 8).padding(.bottom, 22)
-    }
-
     func cardTargeted(_ id: String) -> Binding<Bool> {
         Binding(get: { dropCard == id }, set: { dropCard = $0 ? id : (dropCard == id ? nil : dropCard) })
     }
@@ -224,53 +49,17 @@ extension LauncherView {
         saveDrop = first; saveFor = game.id
     }
 
-    /// A round button floating over the row's edge, centred on the artwork, shown while the row scrolls that way.
-    func pager(_ symbol: String, height: CGFloat, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol).font(.system(size: 16, weight: .semibold)).foregroundStyle(.white)
-                .frame(width: 44, height: 44)
-                .background(Color.black.opacity(0.72), in: Circle())
-                .overlay(Circle().strokeBorder(Color.white.opacity(0.16)))
-                .shadow(color: .black.opacity(0.4), radius: 10)
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .frame(height: height)
-        .accessibilityLabel(loc.t(symbol == "chevron.left" ? "library.scrollBack" : "library.scrollForward"))
-        .transition(.opacity)
-    }
-
-    /// Ready (green) when Play can start the runtime; not prepared (grey) otherwise.
-    private func heroCapsule(_ title: String, symbol: String, id: String, enabled: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 8) { Image(systemName: symbol); Text(title).lineLimit(1) }
-                .font(.manrope(16, .bold)).foregroundStyle(LauncherPalette.cream)
-                .padding(.horizontal, 22).frame(height: LauncherHeroAction.height)
-                .background(Color.white.opacity(0.10), in: Capsule())
-                .overlay(Capsule().strokeBorder(LauncherPalette.cream.opacity(0.35)))
-                .contentShape(Capsule())
-        }
-        .buttonStyle(.plain).disabled(!enabled).accessibilityLabel(title).accessibilityIdentifier(id)
-    }
-
-    /// 显示的是上次的列表（启动先显示的快照 / 刷新失败）：标明是上次的；失败时说原因、给重试。
+    /// 显示的是上次的列表（刷新失败）：标明是上次的、说原因、给重试。后台正常刷新时只在顶栏转轻菊花，避免首屏横幅占位导致封面排下移再上跳。
     @ViewBuilder var staleBanner: some View {
-        if model.showingSnapshot && !model.games.isEmpty && (model.loading || model.libraryError != nil) {
+        if model.showingSnapshot && !model.games.isEmpty && model.libraryError != nil {
             HStack(spacing: 12) {
-                if model.loading {
-                    ProgressView().controlSize(.small)
-                    Text(txt("library.stale.loading")).font(.manrope(13.5, .semibold))
-                } else {
-                    Image(systemName: "exclamationmark.arrow.triangle.2.circlepath").foregroundStyle(LauncherPalette.danger)
-                    Text(txt("library.stale.failed").replacingOccurrences(of: "{0}", with: loc.backend(model.staleLibraryError ?? ""))).font(.manrope(13.5, .semibold))
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                Image(systemName: "exclamationmark.arrow.triangle.2.circlepath").foregroundStyle(LauncherPalette.danger)
+                Text(txt("library.stale.failed").replacingOccurrences(of: "{0}", with: loc.backend(model.staleLibraryError ?? ""))).font(.manrope(13.5, .semibold))
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 12)
-                if !model.loading {
-                    Button(txt("library.stale.retry")) { model.refresh() }.buttonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("library.stale.retry")
-                }
+                Button(txt("library.stale.retry")) { model.refresh() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("library.stale.retry")
             }
-            .padding(.horizontal, 34).padding(.vertical, 10).background((model.loading ? LauncherPalette.building : LauncherPalette.danger).opacity(0.10))
+            .padding(.horizontal, LauncherTheme.Metrics.libraryInset).padding(.vertical, 10).background(LauncherPalette.danger.opacity(0.10))
         }
     }
 
@@ -281,13 +70,13 @@ extension LauncherView {
                 Image(systemName: "clock.badge.exclamationmark").foregroundStyle(LauncherPalette.building)
                 Text((days == 0 ? txt("library.banner.expired") : txt("library.banner.renew")).replacingOccurrences(of: "{0}", with: game.name).replacingOccurrences(of: "{1}", with: "\(days)")).font(.manrope(13.5, .semibold))
                 Spacer(minLength: 12)
-                Button(txt("library.hero.renew")) { model.targetInstalledDevice(of: game); installFor = game.id }.buttonStyle(LauncherSecondaryButtonStyle())
+                Button(txt("library.hero.renew")) { model.targetInstalledDevice(of: game); installFor = game.id }.controllerButtonStyle(LauncherSecondaryButtonStyle())
             }
-            .padding(.horizontal, 34).padding(.vertical, 10).background(LauncherPalette.building.opacity(0.10))
+            .padding(.horizontal, LauncherTheme.Metrics.libraryInset).padding(.vertical, 10).background(LauncherPalette.building.opacity(0.10))
         }
     }
 
-    private func moreMenu(_ game: GameSummary) -> some View {
+    func moreMenu(_ game: GameSummary) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             VStack(alignment: .leading, spacing: 6) {
                 Text(txt("library.sizes.title")).font(.manrope(11, .semibold)).foregroundStyle(.secondary)
@@ -295,10 +84,21 @@ extension LauncherView {
             }
             .padding(.horizontal, 10).padding(.vertical, 6)
             Divider().opacity(0.3).padding(.vertical, 4)
+            if model.finishedExports[game.id] != nil, !(model.mainBusy && model.session?.gameID == game.id) {   // 这款上次出包 / 装机 / 导出的结果页（原首页圆钮）
+                moreRow(txt("library.hero.results"), "checkmark.seal") { model.viewingResult = model.finishedExports[game.id] }
+            }
+            if game.appleTvReady {   // #1429：出好 Apple TV 包的款，游戏库里也有「装到 Apple TV」（原先只在出包页 / 出包结果页，离开就找不到）
+                moreRow(BackendText.launcherText("export.installAppleTV", language: loc.lang.sharedCode), "appletv") { model.installAppleTV(game) }
+                    .disabled(model.busy)
+            }
+            moreRow(loc.t("s2arm.action.freeSpace"), "externaldrive") { spaceFor = game.id }
             moreRow(txt("game.display"), "slider.horizontal.3") { displayFor = game.id }
             moreRow(txt("game.saves"), "tray.full") { saveFor = game.id }
             moreRow(txt("game.input"), "gamecontroller") { inputFor = game.id }
             moreRow(txt("game.diag"), "paperplane") { model.diagUploadFor = game.id }   // 上传给开发者；上传没成在弹窗里退回导出
+            if !game.location.path.isEmpty {
+                moreRow(txt("library.menu.reveal"), "folder") { model.reveal(game) }
+            }
             Divider().opacity(0.3).padding(.vertical, 4)
             moreRow(txt("game.delete"), "trash", danger: true) { deleteFor = game }
         }
@@ -306,16 +106,12 @@ extension LauncherView {
     }
 
     private func moreRow(_ title: String, _ symbol: String, danger: Bool = false, action: @escaping () -> Void) -> some View {
-        Button { moreFor = nil; action() } label: {
-            // 图标放固定宽度的框里、和文字按中线对齐：Label 的图标宽度跟着符号走，各行文字起点会错开（11-09 维护者截图）
-            HStack(alignment: .center, spacing: 10) {
-                Image(systemName: symbol).font(.system(size: 14, weight: .medium)).frame(width: 20, height: 20, alignment: .center)
-                Text(title).lineLimit(1)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 8).contentShape(Rectangle())
-            .foregroundStyle(danger ? LauncherPalette.danger : Color.primary)
+        let activate = { moreFor = nil; action() }
+        return Button(action: activate) {
+            MoreMenuRowLabel(title: title, symbol: symbol, danger: danger)
         }
         .buttonStyle(.plain)
+        .controllerControl(activate: activate)
     }
 
     /// 游戏卡片右键菜单（游戏库结构 v3）：开始游戏、出包、启动设置、在访达中显示、移动到其他位置、清除缓存、删除
@@ -349,8 +145,8 @@ extension LauncherView {
     }
 
     /// 卡片和大图上的状态：两端都算（原作者只看 Mac 版）。
-    private func statusLine(_ game: GameSummary) -> (text: String, color: Color) {
-        if model.busy && model.session?.gameID == game.id {
+    func statusLine(_ game: GameSummary) -> (text: String, color: Color) {
+        if model.mainBusy && model.session?.gameID == game.id {
             return (loc.t(model.session?.kind == .play ? "s2arm.library.running" : "s2arm.job.running"), LauncherPalette.building)
         }
         if model.exportQueue.contains(where: { $0.game.id == game.id }) { return (txt("export.status.queued"), LauncherPalette.building) }
@@ -374,9 +170,32 @@ extension LauncherView {
         return (parts.joined(separator: " · "), expired ? LauncherPalette.danger : LauncherPalette.ready)
     }
 
+    /// 「建议更新」（0.6.0 通用壳开关后面）：对不上几样写几行原因，末行说点了会怎样，旁边「更新这款」（只做这一款，就是推到 iPhone）。
+    ///   不点照旧能用；开关关着 updateReasons 恒空，这里什么都不出
+    @ViewBuilder func updateHintLines(_ game: GameSummary) -> some View {
+        let reasons = model.updateReasons(game).compactMap(S2ArmLauncherModel.updateReasonKey)
+        if !reasons.isEmpty {
+            let lang = loc.lang.sharedCode
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(reasons, id: \.self) { key in
+                    Label(BackendText.launcherText(key, language: lang), systemImage: "arrow.triangle.2.circlepath")
+                        .font(.manrope(12, .medium)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                }
+                HStack(spacing: 10) {
+                    Text(BackendText.launcherText("update.hint.tail", language: lang)).font(.manrope(11.5)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button(BackendText.launcherText("update.hint.button", language: lang)) { model.updateSuggested(game) }
+                        .controllerButtonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("update.hint.button." + game.id)
+                }
+            }
+            .accessibilityIdentifier("update.hint." + game.id)
+        }
+    }
+
     func status(_ game: GameSummary, prominent: Bool = false) -> some View {
         let (text, color) = statusLine(game)
-        return HStack(spacing: 7) {
+        return VStack(alignment: .leading, spacing: 4) {
+        HStack(spacing: 7) {
             Circle().fill(color).frame(width: prominent ? 9 : 7, height: prominent ? 9 : 7)
             Text(prominent ? text.uppercased() : text)
                 .font(prominent ? .manrope(12, .bold) : .manrope(13, .medium))
@@ -386,7 +205,22 @@ extension LauncherView {
                 Text("· " + game.display).font(.manrope(prominent ? 13 : 12)).foregroundStyle(.secondary).lineLimit(1)
             }
         }
-        .accessibilityElement(children: .combine)
+        // 导入时数据校验不过、照常导入的款（11-17）：选中时黄字说一句（卡片角标只有图标，手柄玩家看不到悬停说明）
+        if game.integritySkipped {
+            Label(loc.backend(LauncherView.integritySkippedNote), systemImage: "exclamationmark.triangle.fill")
+                .font(.manrope(12, .medium)).foregroundStyle(.yellow).fixedSize(horizontal: false, vertical: true)
+        }
+        // S 级优化升级没做完（上次中途退出了启动器）：一行说明，点了打开「S 级优化升级」页接着升（11-18 维护者）
+        if game.sgradeIncomplete && !model.sgradeUpgrading(game.id) {
+            Button { model.sgradeUpgradeOpen = true } label: {
+                Label(txt("sgrade.upgrade.incomplete"), systemImage: "exclamationmark.arrow.circlepath")
+                    .font(.manrope(12, .medium)).foregroundStyle(SGradeCardView.gold).fixedSize(horizontal: false, vertical: true)
+            }
+            .buttonStyle(.plain).accessibilityIdentifier("sgrade.incomplete." + game.id)
+        }
+        updateHintLines(game)
+        }
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -394,32 +228,65 @@ extension LauncherView {
 struct CoverFill: View {
     let image: NSImage
     var body: some View {
-        GeometryReader { g in
-            // 填满后溢出的部分 .clipped() 只裁显示、不裁点击区域：不限定的话，接近正方形的封面会把点击区域伸出框外，
-            //   盖住上面的「返回游戏库」、旁边的卡片（11-09 维护者：丝之歌出包页返回点不了；AX 量到封面按钮高 236、看得见的只有 131）
-            Image(nsImage: image).resizable().interpolation(.high).aspectRatio(contentMode: .fill)
-                .frame(width: g.size.width, height: g.size.height).clipped().contentShape(Rectangle())
-        }
+        // 填满后溢出的部分 .clipped() 只裁显示、不裁点击区域：不限定的话，接近正方形的封面会把点击区域伸出框外，
+        //   盖住上面的「返回游戏库」、旁边的卡片（11-09 维护者：丝之歌出包页返回点不了；AX 量到封面按钮高 236、看得见的只有 131）。
+        //   用 Color.clear.overlay 代替 GeometryReader，避免卡片从小变大时 GeometryReader 尺寸一步到位跳过插值动画
+        Color.clear
+            .overlay {
+                Image(nsImage: image).resizable().interpolation(.high).scaledToFill()
+            }
+            .clipped()
+            .contentShape(Rectangle())
     }
 }
 
-/// Covers decoded once per file version (the library redraws on every job event while a game runs).
-/// 键 = 路径 + 修改时间（剃刀 M15：原先只按路径永久缓存——玩家换封面、后台查到横图写同一路径后一直显示旧图 / 一直空，要重开启动器）；
-/// 每次只做一次 stat，解码只在文件变了时做。解不开的也按同一个键记，文件一变就重试
+/// Artwork I/O runs off the UI thread. A slow volume must not block selection or window layout.
+/// Cache by path + target modification time; retry missing/invalid artwork when its file changes.
 @MainActor final class CoverCache: ObservableObject {
+    struct Loaded {
+        let version: String
+        let image: NSImage?
+        var decoded = false
+    }
+    typealias Loader = (String, String?) -> Loaded
     private var images: [String: NSImage] = [:]
-    private var missing: Set<String> = []
+    private var versions: [String: String] = [:]
+    private var pending: Set<String> = []
+    private let loader: Loader
+    @Published private var revision = 0
+
+    init(loader: @escaping Loader = CoverCache.load) { self.loader = loader }
+
     func image(_ path: String?) -> NSImage? {
         guard let path else { return nil }
-        guard let stamp = (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date else { return nil }
-        let key = path + "|" + String(stamp.timeIntervalSinceReferenceDate)
-        if let image = images[key] { return image }
-        if missing.contains(key) { return nil }
-        let _ = LauncherWork.count(.artworkDecode)
-        guard let image = NSImage(contentsOfFile: path) else { missing.insert(key); return nil }
-        images = images.filter { !$0.key.hasPrefix(path + "|") }   // 同一张图的旧版本不留着占内存
-        images[key] = image
-        return image
+        if pending.insert(path).inserted {
+            let previous = versions[path], loader = loader
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let result = loader(path, previous)
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.pending.remove(path)
+                    guard self.versions[path] != result.version else { return }
+                    self.versions[path] = result.version
+                    self.images[path] = result.image
+                    if result.decoded { LauncherWork.count(.artworkDecode) }
+                    self.revision &+= 1
+                }
+            }
+        }
+        return images[path]
+    }
+
+    nonisolated private static func load(_ path: String, _ previous: String?) -> Loaded {
+        // Only the target timestamp is needed, not Foundation's extra extended-attribute queries.
+        var metadata = stat()
+        guard path.withCString({ fstatat(AT_FDCWD, $0, &metadata, 0) }) == 0 else { return Loaded(version: "", image: nil) }
+        let version = String(metadata.st_mtimespec.tv_sec) + "." + String(metadata.st_mtimespec.tv_nsec)
+        guard version != previous else { return Loaded(version: version, image: nil) }
+        // Read the bytes here: NSImage(contentsOfFile:) can defer file access until main-thread drawing.
+        let image = (try? Data(contentsOf: URL(fileURLWithPath: path))).flatMap(NSImage.init(data:))
+        _ = image?.representations
+        return Loaded(version: version, image: image, decoded: true)
     }
 }
 
@@ -432,7 +299,7 @@ struct CardDrop: ViewModifier {
         content
             .overlay(alignment: .top) {
                 if targeted.wrappedValue {
-                    RoundedRectangle(cornerRadius: 5).strokeBorder(LauncherPalette.cream, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                    RoundedRectangle(cornerRadius: 20).strokeBorder(LauncherPalette.cream, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
                         .frame(height: artwork).allowsHitTesting(false)
                 }
             }
@@ -440,5 +307,25 @@ struct CardDrop: ViewModifier {
                 LauncherView.fileURLs(providers, perform)
                 return true
             }
+    }
+}
+
+private struct MoreMenuRowLabel: View {
+    let title: String
+    let symbol: String
+    let danger: Bool
+    @State private var hovered = false
+
+    var body: some View {
+        // 图标放固定宽度的框里、和文字按中线对齐：Label 的图标宽度跟着符号走，各行文字起点会错开（11-09 维护者截图）
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: symbol).font(.system(size: 14, weight: .medium)).frame(width: 20, height: 20, alignment: .center)
+            Text(title).lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 8)
+        .background(Color.white.opacity(hovered ? 0.08 : 0), in: RoundedRectangle(cornerRadius: 6))
+        .contentShape(Rectangle())
+        .foregroundStyle(danger ? LauncherPalette.danger : Color.primary)
+        .onHover { hovered = $0 }
     }
 }

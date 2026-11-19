@@ -9,7 +9,17 @@
 // ⑤ 争锁压力：4 条游戏线程按 SDK 用户态写法（CAS 抢锁、置等待位后 0x1A、放锁 CAS 不成则 0x1B）各进出临界区 20000 次，
 //    期望：临界区内同时只有 1 条（重入计数恒为 0）、非原子计数 = 80000。反例：同样线程不加锁跑，检测器必须报出重叠（证明判据能抓到违规）。
 // ⑥ 线程名：主线程登记后名为「nx-<GetThreadId 返回的 id>」（能耗 / sample 拆账按线程名对上线程表）。
+#define S2A_LOGCAP_IMPL   // 本单测给 s2a_log_out 强定义：照常写出，另把现场导出的「同步调用」行截下来判（㉙）
 #include "../src/native.h"
+#include <string.h>
+#include <stdatomic.h>
+static char g_cap[65536]; static size_t g_capn; static _Atomic int g_cap_on;
+#ifndef S2A_LOG_OUT_WEAK   // 安卓暂停夹具（runtime/tests/support/run_pause_wait_host.py）把 thread.c 与本文件拼进同一单元、thread.c 先带进了弱定义：那里不跑 ㉙，不再定义
+void s2a_log_out(int fd, const char *p, size_t n) {
+    ssize_t w = write(fd, p, n); (void)w;
+    if (atomic_load(&g_cap_on) && (strstr(p, "同步调用") || strstr(p, "寄存器 x") || strstr(p, "键周围内存")) && g_capn + n < sizeof g_cap) { memcpy(g_cap + g_capn, p, n); g_capn += n; g_cap[g_capn] = 0; }
+}
+#endif
 #include <stdatomic.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
@@ -179,6 +189,17 @@ static int64_t wait30(void *p) { struct wait30 *w = p; struct timespec a; clock_
     uint64_t r[31] = {0, (uint64_t)w->hs, 1, 30000000};
     if (w->kind) { r[0] = (uint64_t)w->ow; r[1] = 2; r[2] = 7; r[3] = 30000000; svc_thread(0x34, r); } else svc_thread(0x18, r);
     int64_t v = ns_since(a) - 30000000; w->bad_rc += r[0] != 0xEA01; return v; }
+static _Alignas(4) _Atomic uint32_t g_sv; static _Atomic int g_sv_go, g_sv_done, g_sv_exit;
+// ㉛：停帧现场给等条件的线程打锁 / 键周围 48 字节（#19361b）。结构 16 字节对齐，锁字在 +0x14、键在 +0x18，其余字预先写好
+static _Alignas(16) _Atomic uint32_t g_kw[12]; static _Atomic int g_kw_done;
+static void kw_waiter(uint64_t arg) { (void)arg;
+    atomic_store(&g_kw[5], s2a_thread_current());   // 持锁进 0x1C（SDK 条件变量协议：等之前锁在自己手里）
+    uint64_t r[31] = {(uint64_t)(uintptr_t)&g_kw[5], (uint64_t)(uintptr_t)&g_kw[6], s2a_thread_current(), (uint64_t)-1}; svc_thread(0x1C, r);
+    atomic_store(&g_kw_done, 1); uint64_t e[31] = {0}; svc_thread(0x0A, e); }
+static void sv_spinner(uint64_t arg) { (void)arg;   // ㉙：3 次 SignalToAddress 后在游戏代码里空转（不进系统调用 → 线程表里是「在跑」）
+    for (int i = 0; i < 3; i++) { uint64_t r[31] = {(uint64_t)&g_sv, 0, 7, 1}; svc_thread(0x35, r); }
+    atomic_store(&g_sv_done, 1); while (!atomic_load(&g_sv_go)) { }
+    atomic_store(&g_sv_exit, 1); uint64_t e[31] = {0}; svc_thread(0x0A, e); }
 static void spawn(void (*f)(uint64_t), uint64_t arg, uint32_t *h) {
     uint64_t r[31] = {0, (uint64_t)f, arg, 0, 44, 0}; svc_thread(0x08, r); if (h) *h = (uint32_t)r[1];
     uint64_t s_[31] = {r[1]}; svc_thread(0x09, s_);
@@ -518,6 +539,16 @@ static void bl_cv(uint64_t arg) { (void)arg;
     uint64_t r[31] = {(uint64_t)&g_bl_lock, (uint64_t)&g_bl_key, g_bl_h, (uint64_t)-1}; svc_thread(0x1C, r);
     atomic_store(&g_bl_rc, r[0]); atomic_store(&g_bl_done, 1);
     uint64_t e[31] = {0}; svc_thread(0x0A, e); }
+// ---- ArbitrateLock 快路径（期望照 Horizon：锁字已不是「持有者 | 等待位」→ 回 0，游戏回用户态重抢）：主线程持着全局锁 G，
+//   另一条游戏线程拿对不上的锁字调 0x1A，应 1 秒内回 0（不碰 G）。反证：去掉快路径，它卡在 glock() 上，1 秒内回不来
+void s2a_test_glock_hold(int on);
+static _Atomic uint32_t g_fp_lock; static _Atomic int g_fp_go, g_fp_done, g_fp_ready; static _Atomic uint64_t g_fp_rc = 1; static uint32_t g_fp_h;
+static void fp_arb(uint64_t arg) { (void)arg;
+    atomic_store(&g_fp_ready, 1);   // 线程起来（启动登记要用 G）之后主线程才拿 G
+    while (!atomic_load(&g_fp_go)) usleep(100);
+    uint64_t r[31] = {0x1234u, (uint64_t)&g_fp_lock, g_fp_h}; svc_thread(0x1A, r);   // 锁字 0（没人持有），对不上 0x1234 | 等待位
+    atomic_store(&g_fp_rc, r[0]); atomic_store(&g_fp_done, 1);
+    uint64_t e[31] = {0}; svc_thread(0x0A, e); }
 // ---- Horizon 时间片轮转：优先级 59 的两条线程都只能用 0 号核，A 空转，B 等核 ----
 static _Atomic int g_hz_ready, g_hz_done, g_hz_stop;
 __attribute__((noinline)) static void hz_spin(uint64_t arg) { (void)arg;
@@ -645,6 +676,20 @@ static void lt_waiter(uint64_t arg) { (void)arg;
     atomic_store(&g_lt_b, atomic_fetch_add(&g_lt_seq, 1) + 1);
     uint64_t y[31] = {0}; svc_thread(0x0B, y);   // 再进系统调用：唤醒方的「等它跑到下一次系统调用」在这里满足
     uint64_t e[31] = {0}; svc_thread(0x0A, e); }
+// ③b（#1520 D-BJZ6）：等待中途游戏关掉被等的事件读端句柄。Horizon 等的是对象：事件还被写端持着，从写端触发照样唤醒（甲）；不触发就按超时返回（乙），都不回句柄无效
+static uint32_t g_cw_h; static _Atomic int g_cw_done; static uint64_t g_cw_r0, g_cw_r1;
+static void cw_waiter(uint64_t arg) { uint32_t hs[1] = {g_cw_h}; uint64_t r[31] = {0, (uint64_t)hs, 1, arg}; svc_thread(0x18, r);
+    g_cw_r0 = r[0]; g_cw_r1 = r[1]; atomic_store(&g_cw_done, 1); uint64_t e[31] = {0}; svc_thread(0x0A, e); }
+static void cw_case(int signal_after, uint64_t timeout_ns, uint64_t want) {
+    uint64_t ev[31] = {0}; svc_thread(0x45, ev); uint32_t hw = (uint32_t)ev[1]; g_cw_h = (uint32_t)ev[2]; atomic_store(&g_cw_done, 0);
+    uint64_t r[31] = {0, (uint64_t)cw_waiter, timeout_ns, 0, 44, 0}; svc_thread(0x08, r); uint64_t s_[31] = {r[1]}; svc_thread(0x09, s_);
+    while (!s2a_test_blocked(r[1])) usleep(100);   // 真进了 0x18
+    uint64_t cl[31] = {g_cw_h}; svc_thread(0x16, cl);   // 游戏关掉被等的读端
+    if (signal_after) { uint64_t sg[31] = {hw}; svc_thread(0x11, sg); }
+    while (!atomic_load(&g_cw_done)) usleep(1000);
+    CHECK(g_cw_r0 == want && (want || g_cw_r1 == 0), "③b 等待中关读端%s：期望 %#llx → %#llx（下标 %llu；0xe401 = 句柄无效，旧实现醒来按句柄重查）",
+          signal_after ? "、再从写端触发" : "、不触发", (unsigned long long)want, (unsigned long long)g_cw_r0, (unsigned long long)g_cw_r1);
+    uint64_t cw[31] = {hw}; svc_thread(0x16, cw); }
 static volatile long g_lc[4]; static _Atomic int g_lc_done;
 static void lc_worker(uint64_t arg) { (void)arg;
     for (int round = 0; round < 5; round++) {
@@ -932,6 +977,8 @@ int main(void) {
       s2a_event_signal(cc); s2a_event_release(cc); }
     CHECK(s2a_handle_get(S2A_H_CUR_THREAD, &k, &ck) && ck == g_wtag, "当前线程伪句柄 cookie 仍为句柄（伪句柄约定不变）");
 
+    g_case = "③b 等待中关句柄";
+    cw_case(1, 5000000000ull, 0); cw_case(0, 300000000ull, 0xEA01);
     // ④
     g_case = "④ SignalToAddress 类型 2";
     arb64_case(); arb_case(0, 0, 11, 0); arb_case(2, 0, 8, 2); arb_case(2, -1, 8, 2); arb_case(1, 1, 9, 1); arb_case(2, 2, 9, 2); arb_case(3, 2, 10, 2); arb_case(2, 1, 10, 1);
@@ -943,6 +990,40 @@ int main(void) {
     stress(0);
     CHECK(g_overlap > 0, "反例（不加锁）：检测器没抓到重叠（重叠 %d 次、计数 %ld）——判据失效", atomic_load(&g_overlap), g_count);
     int ov0 = atomic_load(&g_overlap);
+
+    {   // ㉙ 停帧现场：「在跑」的线程打最近的同步类系统调用（号、参数、地址处的值、返回）。期望手写：游戏线程对 g_sv 发 3 次
+        //   SignalToAddress（类型 0、数 1，无人等待 → 返回 0，值不变 7）后空转；导出现场应恰有 3 行是 svc 0x35、参数首个 = &g_sv、调前调后都是 7、返回 0。
+        //   反证：去掉 thread.c 里打印这几行的那段 → 0 行
+        atomic_store(&g_sv, 7); atomic_store(&g_sv_go, 0); atomic_store(&g_sv_done, 0);
+        g_case = "㉙ 停帧现场的同步调用";
+        void s2a_core_leave(void);
+        spawn(sv_spinner, 0, NULL); s2a_core_leave();   // 同 ⑦：主线程放核，空转线程拿核跑；导出现场是宿主侧、不用核
+        int ok = wait_flag(&g_sv_done, 5000);
+        g_capn = 0; g_cap[0] = 0; atomic_store(&g_cap_on, 1); void s2a_thread_dump(void); s2a_thread_dump(); atomic_store(&g_cap_on, 0);
+        char want[160]; snprintf(want, sizeof want, "svc 0x35 参数 %#llx 0 0x7 0x1，地址处值 调前 0x7 调后 0x7，返回 0", (unsigned long long)(uintptr_t)&g_sv);
+        int hits = 0; for (const char *q = g_cap; (q = strstr(q, want)); q++) hits++;
+        CHECK(ok && hits == 3, "㉙ 停帧现场没打出在跑线程最近的同步调用（期望恰 3 行含「%s」，实 %d 行；空转线程跑到 %d），截到：%s", want, hits, ok, g_cap);
+        // 同一份现场：在跑线程还要打通用寄存器（x0–x28 共 8 行）。反证：去掉寄存器那段 → 0 行
+        int regl = 0; for (const char *q = g_cap; (q = strstr(q, "寄存器 x28 ")); q++) regl++;
+        CHECK(regl >= 1, "㉙ 停帧现场没打在跑线程的通用寄存器（寄存器 x28 行 %d 个）", regl);
+        atomic_store(&g_sv_go, 1); wait_flag(&g_sv_exit, 5000);   // 空转线程退出、放核后主线程再往下
+    }
+    {   // ㉛ 停帧现场：等条件的线程打锁 / 键周围原样内存（从锁地址按 16 对齐往前 16 字节起 48 字节）。期望手写：
+        //   等待中锁字已放（0）、键置 1，其余 10 个字是预先写的样式；导出现场应有一行「键周围内存 <结构首址>：」接这 12 个字。
+        //   反证：去掉 thread.c 里打这一行的那段 → 0 行
+        g_case = "㉛ 停帧现场的键周围内存";
+        static const uint32_t pat[12] = {0x11111111, 0x22222222, 0x33333333, 0x44444444, 0x0badf00d, 0, 0, 0xcafe0001, 0x55555555, 0x66666666, 0x77777777, 0x88888888};
+        for (int i = 0; i < 12; i++) atomic_store(&g_kw[i], pat[i]);
+        atomic_store(&g_kw_done, 0);
+        void s2a_core_leave(void);
+        spawn(kw_waiter, 0, NULL); s2a_core_leave();
+        int blocked = 0; for (int k = 0; k < 5000 && !(blocked = s2a_test_waiters(2, (uint64_t)(uintptr_t)&g_kw[6]) > 0); k++) usleep(1000);
+        g_capn = 0; g_cap[0] = 0; atomic_store(&g_cap_on, 1); void s2a_thread_dump(void); s2a_thread_dump(); atomic_store(&g_cap_on, 0);
+        char want[200]; snprintf(want, sizeof want, "键周围内存 %#llx：11111111 22222222 33333333 44444444 | 0badf00d 00000000 00000001 cafe0001 | 55555555 66666666 77777777 88888888",
+                                 (unsigned long long)(uintptr_t)&g_kw[0]);
+        CHECK(blocked && strstr(g_cap, want), "㉛ 停帧现场没打出等条件线程的键周围内存（期望含「%s」；等待者挂上 %d），截到：%s", want, blocked, g_cap);
+        uint64_t sg[31] = {(uint64_t)(uintptr_t)&g_kw[6], 1}; svc_thread(0x1D, sg); wait_flag(&g_kw_done, 5000);   // 放它走：拿回锁、退出
+    }
 
     {   // ⑦
         g_case = "⑦ 暂停空转线程放核";
@@ -1383,6 +1464,16 @@ int main(void) {
         uint64_t sg[31] = {(uint64_t)&g_bl_key, 1}; svc_thread(0x1D, sg);
         CHECK(wait_flag(&g_bl_done, 2000) && atomic_load(&g_bl_rc) == 0xE401, "条件变量唤醒后锁字持有者无效：等待者应以 0xE401 醒来（%s，rc %#llx）",
               atomic_load(&g_bl_done) ? "醒了" : "2 秒没醒", (unsigned long long)atomic_load(&g_bl_rc));
+    }
+    {
+        g_case = "ArbitrateLock 快路径";
+        atomic_store(&g_fp_lock, 0); spawn(fp_arb, 0, &g_fp_h); wait_flag(&g_fp_ready, 2000); usleep(20000);
+        s2a_test_glock_hold(1); atomic_store(&g_fp_go, 1);
+        int done = wait_flag(&g_fp_done, 1000);
+        s2a_test_glock_hold(0);
+        if (!done) wait_flag(&g_fp_done, 2000);   // 反证路径：放了 G 它才回来，等它收尾
+        CHECK(done && atomic_load(&g_fp_rc) == 0, "锁字对不上时 ArbitrateLock 应不拿全局锁、1 秒内回 0（%s，rc %#llx）",
+              done ? "回来了" : "持 G 期间 1 秒没回（卡在全局锁上）", (unsigned long long)atomic_load(&g_fp_rc));
     }
     if (getenv("S2A_SCHED_HZ") || getenv("S2A_HZ_CORE")) {   // Horizon 核号 -2 / 时间片轮转（只在 S2A_HZ_CORE 开时跑；期望照 Ryujinx KThread.Initialize / KScheduler.RotateScheduledQueue）
         g_case = "Horizon 核号 -2 / 时间片轮转";

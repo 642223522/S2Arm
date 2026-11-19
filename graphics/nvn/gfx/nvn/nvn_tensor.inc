@@ -21,6 +21,10 @@
 //   规则：带平方的出口层、绑定恰好 1 张贴图 + 1 张图 + 1 个推常量槽 → 按本次派发的推常量给 MetalFX 设输入内容宽高；输出区域不是整张图时先放大进同尺寸临时图，
 //   再拷到输出图的起点。参数不成立（宽高 ≤ 0、步长非正 / 非有限、越出图）报红一次、照整张图做
 static uint64_t g_tensor_skip, g_tensor_up, g_tensor_red, g_tensor_off;
+#include "tensor_widen.h"   // 满屏放宽下挑不出输入几时退回 16:9（#726）
+int s2a_screen_w(void); int s2a_screen_h(void);   // runtime/src/widen.c（满屏门之后的屏幕宽 / 高；原生 16:9 = 1920 × 1080）
+int s2a_widen_force_native(int on);   // runtime/src/widen.c：运行中退回原生 16:9（图形单测由 tests/host_stubs.h 给桩）
+static s2a_tensor_widen_t g_tensor_widen;   // 只在 g_rmu 外、派发线程里改（tensor_standin 由录制 / 编码线程串行调）
 // 诊断开关 DM_NVN_TENSOR_STANDIN=0（11-11 #376 / #464：M1 主机模式 Metal 4 进场景后 GPU 挂死，顶替用的 Metal 4 版 MetalFX 空间放大是头号嫌疑）：网络照旧不派发，
 //   出口层也不做顶替（不平方、不调 MetalFX、不拷），输出图这一遍不写——画面不对，只为判挂死是不是顶替引起的。缺省（不设 / 其他值）照旧顶替，零变化
 static int g_tensor_standin_on = -1;
@@ -35,6 +39,9 @@ static NvDlss *g_tensor_fx[4];
 static id<MTLTexture> g_tensor_sq_tex[4]; static unsigned g_tensor_sq_n;
 static uint64_t g_tensor_sq_runs, g_tensor_rect_runs;
 static id<MTLTexture> g_tensor_out_tex[4]; static unsigned g_tensor_out_n;
+// 放大器的定尺寸输入图（tensor_fix_in）：每种（格式、输出尺寸）一张，尺寸 = 输出尺寸；记着上次的有效区域，变了才把区域外清零
+static struct { __strong id<MTLTexture> t; NSUInteger cw, ch; } g_tensor_fix[4]; static unsigned g_tensor_fix_n;
+static uint64_t g_tensor_fix_runs, g_tensor_fix_clears;
 
 // 出口层绑定恰好 1 张贴图 + 1 张图 + 1 个推常量槽时返回那个槽号，否则 -1（tensor_rect / tensor_rect_io 两族共用）
 static int tensor_push_slot(NvShader *cs) {
@@ -153,12 +160,48 @@ static int tensor_sq_pass(id<MTLTexture> s, id<MTLTexture> d, int dom) {
     return 1;
 }
 
+// 输入图尺寸不等于放大器输入容量（= 输出尺寸）时：有效区域 cw x ch 从 src 左上角拷进定尺寸输入图左上角；有效区域变了就把区域外（右条、下条）清零，
+//   免得 MetalFX 在边缘采到上一种尺寸留下的像素（能耗线 11-15）。拷贝在调用方开的拷贝编码器里，调用方关编码器即全屏障。失败回 nil（这一遍不写）
+static id<MTLTexture> tensor_fix_in(id<MTLTexture> src, NSUInteger W, NSUInteger H, NSUInteger cw, NSUInteger ch, MTLTextureUsage u) {
+    if (cw > W || ch > H || !cw || !ch) { RED_ONCE(195, "张量核网络顶替：有效区域 %lux%lu 超出放大器输入容量 %lux%lu，这一遍不写", (unsigned long)cw, (unsigned long)ch, (unsigned long)W, (unsigned long)H); return nil; }
+    int k = -1;
+    for (int i = 0; i < 4; i++) { id<MTLTexture> t = g_tensor_fix[i].t; if (t && t.pixelFormat == src.pixelFormat && t.width == W && t.height == H && (t.usage & u) == u) { k = i; break; } }
+    if (k < 0) {
+        MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:src.pixelFormat width:W height:H mipmapped:NO];
+        d.usage = u | MTLTextureUsageShaderRead; d.storageMode = MTLStorageModePrivate;
+        id<MTLTexture> t = [g_dev newTextureWithDescriptor:d];
+        if (!t) { RED_ONCE(196, "张量核网络顶替：建 %lux%lu 的定尺寸输入图失败，这一遍不写", (unsigned long)W, (unsigned long)H); return nil; }
+        k = (int)(g_tensor_fix_n++ % 4);
+        if (g_tensor_fix[k].t) defer_obj_release(g_tensor_fix[k].t);
+        g_tensor_fix[k].t = t; g_tensor_fix[k].cw = g_tensor_fix[k].ch = 0; res_add(t);
+    }
+    id<MTLTexture> fx = g_tensor_fix[k].t;
+    id e = blit();
+    enc_b_copy_texture(e, src, 0, 0, MTLOriginMake(0, 0, 0), MTLSizeMake(cw, ch, 1), fx, 0, 0, MTLOriginMake(0, 0, 0));
+    if (g_tensor_fix[k].cw != cw || g_tensor_fix[k].ch != ch) {   // 区域外清零：右条 [cw, W) x [0, ch)，下条 [0, W) x [ch, H)
+        size_t bpp = mtl_pf_bytes(fx.pixelFormat), row = (size_t)W * bpp;
+        id<MTLBuffer> zb = bpp ? zero_buf(row * H) : nil;
+        if (!zb) { RED_ONCE(197, "张量核网络顶替：定尺寸输入图格式 %lu 清不了零，区域外可能带旧像素", (unsigned long)fx.pixelFormat); }
+        else {
+            if (cw < W) enc_b_copy_buffer_texture(e, zb, 0, row, row * H, MTLSizeMake(W - cw, ch, 1), fx, 0, 0, MTLOriginMake(cw, 0, 0));
+            if (ch < H) enc_b_copy_buffer_texture(e, zb, 0, row, row * H, MTLSizeMake(W, H - ch, 1), fx, 0, 0, MTLOriginMake(0, ch, 0));
+            g_tensor_fix_clears++;
+        }
+        g_tensor_fix[k].cw = cw; g_tensor_fix[k].ch = ch;
+    }
+    enc_close_blit();
+    g_tensor_fix_runs++;
+    return fx;
+}
+// 放大器按（输入格式、输出格式、输出尺寸）一个，输入容量固定等于输出尺寸（网络放大 1–4 倍，输入不会大过输出）；输入图尺寸不等时先拷进定尺寸输入图（tensor_fix_in），
+//   有效区域交 inputContentWidth / Height。原先按输入图尺寸精确缓存 4 个：游戏动态降分辨率时输入尺寸一直变（854x480、763x429、683x384…），放大器跟着反复新建、挤掉旧的；
+//   第三类 GPU 挂死 4/4 份样本（M1 Pro / M2，时之笛）都紧跟在这之后（D-698W / D-KV2T / D-P2RA / D-EA46）
 static NvDlss *tensor_scaler(id<MTLTexture> c, id<MTLTexture> o) {
-    for (int i = 0; i < 4; i++) { NvDlss *f = g_tensor_fx[i]; if (f && f->cf == c.pixelFormat && f->of == o.pixelFormat && f->iw == c.width && f->ih == c.height && f->ow == o.width && f->oh == o.height) return f; }
+    for (int i = 0; i < 4; i++) { NvDlss *f = g_tensor_fx[i]; if (f && f->cf == c.pixelFormat && f->of == o.pixelFormat && f->ow == o.width && f->oh == o.height) return f; }
     Class scl = dlss_class("MTLFXSpatialScalerDescriptor");
     if (!scl) { RED_ONCE(160, "张量核网络顶替：这台设备没有 MetalFX 空间放大，输出图这一遍不写"); return nil; }
     MTLFXSpatialScalerDescriptor *sd = [scl new]; BOOL m4 = !g_m3; id sc = nil;
-    sd.colorTextureFormat = c.pixelFormat; sd.outputTextureFormat = o.pixelFormat; sd.inputWidth = c.width; sd.inputHeight = c.height; sd.outputWidth = o.width; sd.outputHeight = o.height;
+    sd.colorTextureFormat = c.pixelFormat; sd.outputTextureFormat = o.pixelFormat; sd.inputWidth = o.width; sd.inputHeight = o.height; sd.outputWidth = o.width; sd.outputHeight = o.height;
     BOOL ldr = c.pixelFormat == MTLPixelFormatRGBA8Unorm || c.pixelFormat == MTLPixelFormatBGRA8Unorm || c.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB || c.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB || c.pixelFormat == MTLPixelFormatRGB10A2Unorm;
     sd.colorProcessingMode = ldr ? MTLFXSpatialScalerColorProcessingModePerceptual : MTLFXSpatialScalerColorProcessingModeHDR;
     if (m4) { if (@available(macOS 26.0, iOS 26.0, *)) { id comp = present_fx_compiler(); if (comp) sc = [sd newSpatialScalerWithDevice:g_dev compiler:comp]; } }
@@ -169,9 +212,9 @@ static NvDlss *tensor_scaler(id<MTLTexture> c, id<MTLTexture> o) {
     int slot = (int)(g_tensor_up % 4); for (int i = 0; i < 4; i++) if (!g_tensor_fx[i]) { slot = i; break; }
     if (g_tensor_fx[slot]) defer_obj_unref(g_tensor_fx[slot]->scaler);
     NvDlss *f = [NvDlss new]; f->scaler = sc; f->spatial = YES; f->m4 = m4;
-    f->cf = c.pixelFormat; f->of = o.pixelFormat; f->iw = c.width; f->ih = c.height; f->ow = o.width; f->oh = o.height; g_tensor_fx[slot] = f;
-    MLOG("张量核网络顶替：MetalFX 空间放大（%s）%lux%lu 格式 %lu → %lux%lu 格式 %lu", m4 ? "Metal 4" : "Metal 3", (unsigned long)c.width, (unsigned long)c.height, (unsigned long)c.pixelFormat,
-         (unsigned long)o.width, (unsigned long)o.height, (unsigned long)o.pixelFormat);
+    f->cf = c.pixelFormat; f->of = o.pixelFormat; f->iw = o.width; f->ih = o.height; f->ow = o.width; f->oh = o.height; g_tensor_fx[slot] = f;
+    MLOG("张量核网络顶替：MetalFX 空间放大（%s）格式 %lu → %lux%lu 格式 %lu，输入容量 %lux%lu（这一遍输入 %lux%lu，有效区域交 inputContentWidth / Height）", m4 ? "Metal 4" : "Metal 3",
+         (unsigned long)c.pixelFormat, (unsigned long)o.width, (unsigned long)o.height, (unsigned long)o.pixelFormat, (unsigned long)o.width, (unsigned long)o.height, (unsigned long)c.width, (unsigned long)c.height);
     return f;
 }
 
@@ -188,10 +231,10 @@ static id<MTLTexture> tensor_write_view(id<MTLTexture> v) {
 // 派发一个带 HMMA 的计算程序时调（dispatch）：不派发它；它写图就把读到的低分辨率画面放大进去
 static void tensor_standin(NvShader *cs) {
     if (!tensor_standin_enabled()) { g_tensor_off++; return; }   // 诊断关（见 g_tensor_standin_on）
-    pthread_mutex_lock(&g_rmu);
+    os_unfair_lock_lock(&g_rmu);
     int otid = -1;
     for (int i = 0; i < cs->rf.nb && otid < 0; i++) { const nvn_rbind *b = &cs->rf.b[i]; if (b->kind == NVN_RB_IMG && b->reg < 32) { int tid = (int)(S.img[5][b->reg] & 0xfffff); if (tid > 0 && tid < g_ntreg && g_treg[tid].ok) otid = tid; } }
-    if (otid < 0) { pthread_mutex_unlock(&g_rmu); g_tensor_skip++; return; }   // 只写缓冲区的一层（网络入口 / 中间层）
+    if (otid < 0) { os_unfair_lock_unlock(&g_rmu); g_tensor_skip++; return; }   // 只写缓冲区的一层（网络入口 / 中间层）
     // 两张图的贴图对象在锁里拷成值再用：g_treg 是登记表本身，别的线程登记新编号时在 g_rmu 里 realloc 扩表、旧表释放，出锁后再经 &g_treg[i].t 读就悬空
     //   （11-05 时之笛 Switch 2 版测试设备2：tex_upgrade 读 t->serial 段错误，单测 t_nvn_tensor_treg）。拷贝同录制时的快照（tex_snap），后面只读它的字段
     tex_t to_v = g_treg[otid].t, tc_v; const tex_t *to = &to_v; void *ov = NULL; (void)tex_fast_rid(otid, &ov); id<MTLTexture> o = (__bridge id<MTLTexture>)ov;
@@ -209,7 +252,7 @@ static void tensor_standin(NvShader *cs) {
         if (s < 1.0 - 1e-6 || s > 4.0 + 1e-6 || fabs(a - ar) / ar > 0.02) continue;
         if (!c || t.width * t.height > c.width * c.height) { c = t; tc_v = g_treg[tid].t; tc = &tc_v; }
     }
-    pthread_mutex_unlock(&g_rmu);
+    os_unfair_lock_unlock(&g_rmu);
     if (o) o = tensor_write_view(o);   // 写目标：不带通道重排（tensor_write_view）
     // 分屏规则（tensor_rect_io）：推常量给出的输入 / 输出区域成立、而且输出只占一块（或按整张输出图挑不出输入）才用；单人整屏照旧，零变化
     NSUInteger rio[8]; int io = 0;
@@ -217,6 +260,12 @@ static void tensor_standin(NvShader *cs) {
     if (!o || !c) {
         g_tensor_red++;
         if (!(cs->tensor_log & 1)) { cs->tensor_log |= 1; MLOG("【红】 张量核网络顶替：%s 写图 %lux%lu，读的贴图里没有宽高比一致、放大 1–4 倍的低分辨率画面，这一遍不写", cs->key, o ? (unsigned long)o.width : 0ul, o ? (unsigned long)o.height : 0ul); }
+        // 满屏放宽下挑不出（#726：放宽的目标与没放宽的图宽高比对不上）：不同的帧里累计到 S2A_TENSOR_WIDEN_FRAMES 就本局退回 16:9（tensor_widen.h），不让输出图一直空着
+        if (o && s2a_tensor_widen_revert_due(&g_tensor_widen, atomic_load(&g_cur_frame), s2a_screen_w() > 1920 || s2a_screen_h() > 1080)) {
+            int fr = s2a_widen_force_native(1);
+            MLOG("【红】 张量核网络顶替：满屏放宽（屏幕 %dx%d）下 %d 个不同的帧都挑不出对得上的输入（%s 写图 %lux%lu），本局退回原生 16:9（%s）", s2a_screen_w(), s2a_screen_h(), S2A_TENSOR_WIDEN_FRAMES, cs->key,
+                 (unsigned long)o.width, (unsigned long)o.height, fr > 0 ? "已热切，下一个渲染遍起生效" : fr < 0 ? "游戏自己出宽图，退不了" : "已经是 16:9 或还没定屏，没变化");
+        }
         return;
     }
     int dom = cs->tensor_sq ? 1 : cs->tensor_srgb ? 2 : 0;   // 出口层的输出域（文件头）：0 同域、1 平方、2 sRGB 解码
@@ -258,6 +307,9 @@ static void tensor_standin(NvShader *cs) {
     if (dom) {   // 平方 / sRGB 解码这一遍，之后再一个全屏障，MetalFX 读到写完的临时图
         if (!tensor_sq_pass(src, in, dom)) { g_tensor_red++; return; }
         (void)blit(); enc_close_blit();
+    }
+    if (in.width != f->iw || in.height != f->ih) {   // 输入图不等于放大器输入容量：有效区域拷进定尺寸输入图（tensor_fix_in）
+        if (!(in = tensor_fix_in(in, f->iw, f->ih, rc[0], rc[1], ss.colorTextureUsage))) { g_tensor_red++; return; }
     }
     uint64_t a[15] = {0}; a[11] = rc[0]; a[12] = rc[1]; a[13] = 1;   // 输入内容宽高：有效区域（不成立 / 这一族以外 = 整张输入图）
     if (rec_on()) { rec_t *r = rec_put(RO_FX, 5); memcpy(r->a, a, sizeof a); r->a[0] = rec_obj(f->scaler); r->a[1] = rec_obj(in); r->a[2] = rec_obj(nil); r->a[3] = rec_obj(nil); r->a[4] = rec_obj(ot); }

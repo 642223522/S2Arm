@@ -28,11 +28,12 @@ static class T {
         public readonly byte[] Bytes, Hashes;
         public const int Block = 0x1000;
         public int Strict, None;
-        public Fixture(bool small = false, bool empty = false, bool caseDirs = false) {
+        public Fixture(bool small = false, bool empty = false, bool caseDirs = false, bool junk = false) {
             Expected = new() { ["/big.bin"] = Enumerable.Range(0, small ? 64 : 0x9500).Select(i => (byte)(i * 13 + 7)).ToArray(),
                 ["/sub/more"] = Enumerable.Range(0, small ? 31 : 0x5111).Select(i => (byte)(i * 7 + 3)).ToArray(), ["/zero"] = Array.Empty<byte>() };
             if (empty) Expected.Clear();
             if (caseDirs) Expected = new() { ["/A/one"] = new byte[] { 1, 2, 3 }, ["/a/two"] = new byte[] { 4, 5, 6 } };
+            if (junk) { Expected["/._big.bin"] = new byte[] { 9, 9 }; Expected["/sub/.DS_Store"] = new byte[] { 8 }; }
             var builder = new RomFsBuilder();
             foreach (var e in Expected) builder.AddFile(e.Key, new StorageFile(new MemoryStorage(e.Value), OpenMode.Read));
             using var storage = builder.Build(); storage.GetSize(out long length).ThrowIfFailure();
@@ -80,6 +81,46 @@ static class T {
         public override Result Write(long offset, ReadOnlySpan<byte> source) => throw new NotSupportedException();
         public override Result OperateRange(Span<byte> output, OperationId id, long offset, long size, ReadOnlySpan<byte> input) => throw new NotSupportedException();
         public override void Dispose() { inner.Dispose(); base.Dispose(); }
+    }
+    // 镜像形态的期望：把期望文件（去掉宿主垃圾名）按相对路径 Ordinal 排序交给 LibHac RomFsBuilder——即 services/romfs_index.sh --std 对解开的目录做的事；不经过被测的 ExtractImage
+    static byte[] Canonical(Dictionary<string, byte[]> files) {
+        var builder = new RomFsBuilder();
+        foreach (var e in files.Where(e => !e.Key.Split('/')[^1].StartsWith("._") && e.Key.Split('/')[^1] != ".DS_Store").OrderBy(e => e.Key, StringComparer.Ordinal))
+            builder.AddFile(e.Key, new StorageFile(new MemoryStorage(e.Value), OpenMode.Read));
+        using var storage = builder.Build(); storage.GetSize(out long length).ThrowIfFailure();
+        byte[] bytes = new byte[length]; storage.Read(0, bytes).ThrowIfFailure(); return bytes;
+    }
+    static RomfsExtraction.Result Image(Fixture fixture, string name, bool patched = true) =>
+        RomfsExtraction.ExtractImage(fixture.Open, Path.Combine(Root, name, "romfs.std"), patched, chunkSize: 0x3000, parallelism: 3);
+    static bool ImageExact(Fixture fixture, string name) {
+        string dir = Path.Combine(Root, name);
+        return File.ReadAllBytes(Path.Combine(dir, "romfs.std")).SequenceEqual(Canonical(fixture.Expected)) &&
+            Directory.GetFileSystemEntries(dir).Length == 1;   // 只有镜像：没有 romfs/ 散文件，也没留暂存
+    }
+    static void ImageChecks() {
+        var normal = new Fixture(); var nr = Image(normal, "img-normal");
+        Check(ImageExact(normal, "img-normal") && !nr.Bypassed && nr.Files == 3 && normal.None == 0, "镜像形态：与目录建镜像逐字节相同、目录里只有 romfs.std、严格通过");
+        var bad = new Fixture(); bad.TamperData(0x4321); var br = Image(bad, "img-tampered");
+        Check(br.Bypassed && ImageExact(bad, "img-tampered") && br.FirstBad != null && br.FirstBad.StartsWith("文件 romfs/big.bin，文件内偏移 "),
+            "镜像形态·更新分区数据篡改：降级重读、镜像逐字节等于篡改后内容建的镜像、点名第一处坏块");
+        var strict = new Fixture(); strict.TamperData(0x4321);
+        var sr0 = Image(strict, "img-base-only", patched: false);   // 维护者 11-17：校验不过不再整单拒绝，本体分区与更新分区同样降级
+        Check(sr0.Bypassed && ImageExact(strict, "img-base-only") && sr0.FirstBad != null && sr0.FirstBad.StartsWith("文件 romfs/big.bin，文件内偏移 "),
+            "镜像形态·非更新分区数据篡改：同样降级重读、镜像逐字节等于篡改后内容建的镜像、点名第一处坏块");
+        var front = new Fixture(); int cursor = 0x50;
+        foreach (int field in new[] { 8, 0x18, 0x28, 0x38 }) {
+            int old = (int)front.H(field), size = (int)front.H(field + 8);
+            front.Bytes.AsSpan(old, size).CopyTo(front.Bytes.AsSpan(cursor)); front.H(field, cursor); cursor += size;
+        }
+        front.Rehash(); var fr = Image(front, "img-front-metadata");
+        Check(!fr.Bypassed && ImageExact(front, "img-front-metadata"), "镜像形态·源 RomFS 布局不同（表在数据前）：产出仍是标准布局，与目录建镜像相同");
+        var junk = new Fixture(junk: true); var jr = Image(junk, "img-junk");
+        Check(jr.Files == 3 && ImageExact(junk, "img-junk"), "镜像形态·宿主垃圾名（._* / .DS_Store）：与目录建镜像一样不进镜像");
+        var empty = RomfsExtraction.ExtractImage(null, Path.Combine(Root, "img-empty", "romfs.std"), false);
+        Check(empty.Files == 0 && File.ReadAllBytes(Path.Combine(Root, "img-empty", "romfs.std")).SequenceEqual(Canonical(new())), "镜像形态·程序没有资源分区：写空 RomFS（同空 romfs/ 建的镜像）");
+        string occupied = Path.Combine(Root, "img-occupied", "romfs.std"); Directory.CreateDirectory(Path.GetDirectoryName(occupied)); File.WriteAllText(occupied, "keep");
+        Exception oe = Error(() => RomfsExtraction.ExtractImage(normal.Open, occupied, true));
+        Check(oe is IOException && File.ReadAllText(occupied) == "keep", "镜像形态·已有输出：拒绝覆盖，原内容保持");
     }
     static RomfsExtraction.Result Extract(Fixture fixture, string name, bool patched = true) =>
         RomfsExtraction.Extract(fixture.Open, Path.Combine(Root, name, "romfs"), patched, partSize: 0x3000, parallelism: 3);
@@ -133,6 +174,7 @@ static class T {
         Directory.CreateDirectory(Root);
         try {
             ExefsNegative();
+            ImageChecks();
             var normal = new Fixture(); var nr = Extract(normal, "normal");
             string normalManifest = Path.Combine(Root, "normal", "unpack.tsv");
             P.WriteResourceManifest(normalManifest, "title_id\tfixture\n", nr);
@@ -152,13 +194,16 @@ static class T {
             Check(br.Bypassed && bad.Exact(Path.Combine(Root, "tampered", "romfs")) && br.Files == 3 && br.Bytes == bad.Expected.Sum(e => (long)e.Value.Length),
                 "数据块篡改：整分区降级后所有文件精确等于篡改后预期（含跨块 / 多任务 / 零长）");
             // #787：黄字末尾点名第一处坏块（只有 /big.bin 被篡改；并行哪一份先撞上坏块不定，只核到文件名与「文件内偏移」）
-            Check(captured.ToString().StartsWith("🟡 原件数据哈希不符（疑改版 / 整合版），已跳过 RomFS 完整性校验解出 3 个文件；第一处坏块在文件 romfs/big.bin，文件内偏移 ") &&
-                captured.ToString().EndsWith(Environment.NewLine) && captured.ToString().Split('\n').Length == 2 &&
-                File.ReadAllText(Path.Combine(Root, "tampered", "unpack.tsv")) == "title_id\tfixture\nintegrity\tbypassed\n", "生产清单写入：一行黄（点名坏块所在文件）+ unpack.tsv integrity=bypassed");
+            // 维护者 11-17：再加一行机读「【校验跳过】资源分区 RomFS\t\t<第一处坏块>」，作业层据它记 integritySkipped（期望手写：恰好两行，第二行坏块与黄字同一处）
+            string[] outLines = captured.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+            Check(outLines.Length == 2 && outLines[0].StartsWith("🟡 原件数据哈希不符（疑改版 / 整合版），已跳过 RomFS 完整性校验解出 3 个文件；第一处坏块在文件 romfs/big.bin，文件内偏移 ") &&
+                outLines[1] == "【校验跳过】资源分区 RomFS\t\t" + br.FirstBad && br.FirstBad.StartsWith("文件 romfs/big.bin，文件内偏移 ") &&
+                captured.ToString().EndsWith(Environment.NewLine) &&
+                File.ReadAllText(Path.Combine(Root, "tampered", "unpack.tsv")) == "title_id\tfixture\nintegrity\tbypassed\n", "生产清单写入：一行黄（点名坏块所在文件）+ 一行【校验跳过】机读 + unpack.tsv integrity=bypassed");
             var small = new Fixture(small: true); small.TamperData(7); var sr = Extract(small, "shared-block");
             Check(sr.Bypassed && small.Exact(Path.Combine(Root, "shared-block", "romfs")), "数据 / 头 / 目录共享 IVFC 块：结构合法仍能降级");
-            var baseOnly = new Fixture(); baseOnly.TamperData(0x4321); Exception baseError = Error(() => Extract(baseOnly, "base-only", patched: false));
-            Check(RomfsExtraction.IsDataHashFailure(baseError) && baseOnly.None == 0 && !Directory.Exists(Path.Combine(Root, "base-only", "romfs")), "非更新分区：仍严格，不扩展降级范围");
+            var baseOnly = new Fixture(); baseOnly.TamperData(0x4321); var bo = Extract(baseOnly, "base-only", patched: false);   // 维护者 11-17：本体分区也降级
+            Check(bo.Bypassed && baseOnly.Exact(Path.Combine(Root, "base-only", "romfs")), "非更新分区数据篡改：同样降级重读、解出篡改后的内容");
             var alias = new Fixture();
             // 第二文件 more 与 big 的前缀共用同一数据区；目录表可读，不能额外要求数据互斥。
             int fileMeta = (int)alias.H(0x38); int nextFile = (32 + (int)BinaryPrimitives.ReadUInt32LittleEndian(alias.Bytes.AsSpan(fileMeta + 28)) + 3) & ~3;

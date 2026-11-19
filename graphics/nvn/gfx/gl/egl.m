@@ -274,6 +274,26 @@ GLB(eglMakeCurrent, EGLBoolean, EGLDisplay d, EGLSurface draw, EGLSurface read, 
     return 1;
 }}
 GL(eglGetCurrentContext, EGLContext, void) { return cur_context(); }
+// 当前显示 / 表面 / 上下文属性（EGL 1.5 §3.7.4 / §3.7.3；#1440 一款 GL 游戏开局就问，没实现时装载期未解析、一调即退）：
+//   只有一个显示（eglGetDisplay 回 1）、读写表面恒同一个（eglMakeCurrent 要求 read == draw）、一个配置（号 1）
+GL(eglGetCurrentDisplay, EGLDisplay, void) { return cur_context() ? (EGLDisplay)1 : NULL; }   // 没有当前上下文：EGL_NO_DISPLAY
+GL(eglGetCurrentSurface, EGLSurface, EGLint readdraw) {
+    if (readdraw != 0x3059 && readdraw != 0x305A) { g_err = EGL_BAD_PARAMETER; return NULL; }   // EGL_DRAW / EGL_READ
+    return cur_context() ? g_draw : NULL;   // 无表面上下文或没有当前上下文：EGL_NO_SURFACE
+}
+GL(eglQueryContext, EGLBoolean, EGLDisplay d, EGLContext c, EGLint attr, EGLint *v) {
+    if (!display_ready(d)) return 0;
+    context_t *x = c; if (!x || x->dead) { g_err = EGL_BAD_CONTEXT; return 0; }
+    if (!v) { g_err = EGL_BAD_PARAMETER; return 0; }
+    switch (attr) {
+    case 0x3028: *v = 1; break;                                            // EGL_CONFIG_ID：唯一的配置
+    case 0x3097: *v = (EGLint)x->st.api; break;                            // EGL_CONTEXT_CLIENT_TYPE
+    case 0x3098: *v = x->st.api == EGL_OPENGL_ES_API ? 3 : 4; break;      // EGL_CONTEXT_CLIENT_VERSION（= MAJOR_VERSION）：同 GL_MAJOR_VERSION（ES 3.2 / 桌面 4.5）
+    case 0x3086: *v = x == cur_context() && g_draw ? 0x3084 : 0x3038; break;   // EGL_RENDER_BUFFER：绑着表面是后缓冲，否则 EGL_NONE
+    default: g_err = EGL_BAD_ATTRIBUTE; return 0;
+    }
+    return 1;
+}
 GLB(eglWaitGL, EGLBoolean, void) { @autoreleasepool {
     // EGL 1.5 §3.8: waits the ES context, regardless of the currently bound API.
     // OpenGL and ES share the one current GL context slot in this frontend.

@@ -135,6 +135,13 @@ public final class S2ArmEngineProvider: EngineProvider {
             if let location = job.location { extra["location"] = location }
             let r = try await client.perform("ipa", extra: extra, events: events).result
             return BuildResult(gameId: job.gameId, target: .iPhone, outputPath: r["outputPath"] as? String, ipa: r["ipa"] as? String, raw: r)
+        case .appleTV:
+            // Apple TV：同一个 ipa 作业，platform = "tvos"（tvOS 壳与 image/tvos 由出包流程出）
+            var extra: [String: Any] = ["gameId": job.gameId, "platform": "tvos"]
+            if job.spaceOverride { extra["spaceOverride"] = true }
+            if let location = job.location { extra["location"] = location }
+            let r = try await client.perform("ipa", extra: extra, events: events).result
+            return BuildResult(gameId: job.gameId, target: .appleTV, outputPath: r["outputPath"] as? String, ipa: r["ipa"] as? String, raw: r)
         }
     }
 
@@ -146,12 +153,14 @@ public final class S2ArmEngineProvider: EngineProvider {
     /// 出包编排（剃刀 H13，pack/jobs/export_plan.py）：plan = {source: inline, items, location, deviceTarget, spaceOverride} 或 {source: batch}。
     /// 每一步是作业层的普通子作业，事件经 sink 原样过来（step / child / stepEnded）；终态 paused 时抛 JobFailure（state = .paused，结果里有 pausedReason / stoppedAt）。
     /// 计划里有 iPhone 时先确认 .NET SDK（同 build：玩家只点一次）
-    public func export(plan: [String: Any], hasIPhone: Bool, events: EventSink) async throws -> JobOutcome {
+    public func export(plan: [String: Any], hasIPhone: Bool, mode: String? = nil, events: EventSink) async throws -> JobOutcome {
         if hasIPhone, dotnetMissing {
             _ = try await environment.repair("installDotnet", events: events)
             if dotnetMissing { throw JobClientError(Self.dotnetRecheckFailed) }
         }
-        return try await client.perform("export", extra: ["plan": plan], events: events)
+        var extra: [String: Any] = ["plan": plan]
+        if let mode { extra["mode"] = mode }   // 子作业照带（export_plan._run_step 复制父请求）
+        return try await client.perform("export", extra: extra, events: events)
     }
 
     private var dotnetMissing: Bool { environment.checks?.first { $0.action == "installDotnet" }?.ok == false }
@@ -219,6 +228,30 @@ public final class S2ArmEngineProvider: EngineProvider {
         try await client.perform("pullDiagnostics", events: events).result
     }
 
+    // MARK: Apple TV（tvOS 版，pack/jobs/tvos.py）
+
+    /// 配对过的 Apple TV（tvDevices 作业）→ [{id, udid, name, model, os, kind, online}]；没有 / 读不到 = 空表。
+    public func appleTVDevices() async throws -> [[String: Any]] {
+        try await client.perform("tvDevices").result["devices"] as? [[String: Any]] ?? []
+    }
+
+    /// 装到 Apple TV（tvInstall 作业）：device = 选的那台（设备号 / UDID），nil = 只连着一台时用它。
+    public func installAppleTV(gameId: String, device: String?, events: EventSink = .discard) async throws -> [String: Any] {
+        var extra: [String: Any] = ["gameId": gameId]
+        if let device { extra["device"] = device }
+        return try await client.perform("tvInstall", extra: extra, events: events).result
+    }
+
+    /// 导出 Apple TV 安装包（tvExport 作业，11-16）：未签名 .ipa、游戏资源在 App 本体里，玩家用自己的签名工具签名装；结果 ipa = 文件位置。
+    public func exportAppleTV(gameId: String, events: EventSink = .discard) async throws -> [String: Any] {
+        try await client.perform("tvExport", extra: ["gameId": gameId], events: events).result
+    }
+
+    /// 电视存档自动备份一轮（tvSaveBackup 作业）：没连电视不算错（state = unreachable）。
+    public func appleTVSaveBackup() async throws -> [String: Any] {
+        try await client.perform("tvSaveBackup").result
+    }
+
     /// 打 iPhone 包的目标设备探测（targetDevice 作业）：connected / models / osChoices；quick 只给静态机型表、不读设备。
     public func targetDevices(quick: Bool = false) async throws -> [String: Any] {
         try await client.perform("targetDevice", extra: quick ? ["quick": true] : [:]).result
@@ -244,6 +277,7 @@ public final class S2ArmEngineProvider: EngineProvider {
         var arguments: [String: Any] = [:]
         if let autoConnect = s.values["switch2ProAutoConnect"] { arguments["switch2ProAutoConnect"] = autoConnect == "1" }
         if let relaySocket = s.values["switch2ProRelaySocket"] { arguments["switch2ProRelaySocket"] = relaySocket }
+        if let xboxRelay = s.values["xboxGipRelaySocket"] { arguments["xboxGipRelaySocket"] = xboxRelay }
         // 本地玩家（#623）：player 字段 {user, name, folder}；没带 = 旧行为
         if let user = s.values["playerUser"] {
             arguments["player"] = ["user": user, "name": s.values["playerName"] ?? "", "folder": s.values["playerFolder"] ?? "SaveData"]
@@ -270,17 +304,42 @@ public final class S2ArmEngineProvider: EngineProvider {
     public func devCertUse(_ active: Bool) async throws { try await installer.devCertUse(active) }
     public func devCertDelete() async throws { try await installer.devCertDelete() }
 
-    public func install(gameId: String, teamId: String? = nil, device: String? = nil, acceptDropped: Bool = false, accept: Set<String> = [], events: EventSink = .discard) async throws -> InstallResult {
-        try await installer.install(gameId: gameId, teamId: teamId, device: device, acceptDropped: acceptDropped, accept: accept, events: events)
+    public func install(gameId: String, teamId: String? = nil, device: String? = nil, acceptDropped: Bool = false, accept: Set<String> = [], mode: String? = nil,
+                        events: EventSink = .discard) async throws -> InstallResult {
+        try await installer.install(gameId: gameId, teamId: teamId, device: device, acceptDropped: acceptDropped, accept: accept, mode: mode,
+                                    widget: settings.homeWidget, cloudSaves: settings.cloudSavesFolder, events: events)
     }
 
     public func exportPush(gameId: String?, device: String? = nil, events: EventSink = .discard) async throws -> [String] {
         try await installer.exportPush(gameId: gameId, device: device, events: events)
     }
-    public func installMode(set mode: String? = nil) async throws -> InstallModeInfo { try await installer.installMode(set: mode) }
+    public func installMode() async throws -> InstallModeInfo { try await installer.installMode() }
+    /// 0.6.0 通用壳（开关后面）的快速比对「建议更新」（作业 updateHints，pack/jobs/host_update.py）：每款只读 game.json。
+    ///   开关关着 → nil（界面什么都不出）；开着 → 游戏号（大写）→ 原因（rewriter / hostAbi / shader），没对不上的款不在表里
+    /// 0.6.0 总控台「更新所选」（作业 pushSelected，pack/jobs/install.py push_selected）：所选几款按顺序各推一次，一款失败接着推下一款，
+    ///   换哪款都做不下去（没装 App / 手机断开）才整轮停；停 = 取消作业，推完的留着；resume = 从上一轮没推成的接着推
+    public func pushSelected(gameIds: [String], device: String?, resume: Bool = false, events: EventSink = .discard) async throws -> [String: Any] {
+        var extra: [String: Any] = resume ? ["resume": true] : ["gameIds": gameIds]
+        if let device, !device.isEmpty { extra["device"] = device }
+        return try await client.perform("pushSelected", extra: extra, events: events).result
+    }
+    /// 0.6.0 iPhone 总控台：所有见过的手机与每款在那台上的状态（作业 phoneOverview）；开关关着 → nil。probe：顺带问 USB 上连着谁（要几秒）
+    public func phoneOverview(probe: Bool = false) async throws -> PhoneOverview? {
+        PhoneOverview(result: try await client.perform("phoneOverview", extra: probe ? ["probe": true] : [:]).result)
+    }
+    public func updateHints() async throws -> [String: [String]]? {
+        let r = try await client.perform("updateHints").result
+        guard r["enabled"] as? Bool == true else { return nil }
+        var out: [String: [String]] = [:]
+        for g in r["games"] as? [[String: Any]] ?? [] {
+            if let id = g["gameId"] as? String, let why = g["reasons"] as? [String], !why.isEmpty { out[id.uppercased()] = why }
+        }
+        return out
+    }
     public func updatePhone(acceptStale: Bool = false, acceptDropped: Bool = false, accept: Set<String> = [], mode: String? = nil, sgradeUpgrade: Bool = false,
                             device: String? = nil, events: EventSink = .discard) async throws -> [String: Any] {
-        try await installer.updatePhone(acceptStale: acceptStale, acceptDropped: acceptDropped, accept: accept, mode: mode, sgradeUpgrade: sgradeUpgrade, device: device, events: events)
+        try await installer.updatePhone(acceptStale: acceptStale, acceptDropped: acceptDropped, accept: accept, mode: mode, sgradeUpgrade: sgradeUpgrade, device: device,
+                                        widget: settings.homeWidget, cloudSaves: settings.cloudSavesFolder, events: events)
     }
 
     public func restorePhone(device: String? = nil, events: EventSink = .discard) async throws {

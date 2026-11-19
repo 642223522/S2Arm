@@ -364,6 +364,17 @@ int main(void) { @autoreleasepool {
         CHECK(g_e9_per < 4.5, "⑨ 宽屏一遍每笔 tex_mtl %.2f 次（判据 < 4.5：颜色目标 0 的尺寸在放宽画法下取一次；改前每笔多取一次、约 5.06）", g_e9_per);
         printf("%s ⑨ 宽屏一遍（2346×1080 目标、64 笔）：每笔 tex_mtl %.2f 次（共 %llu）、读回整张存储指纹 %016llx（改前同一单测编出应同）\n", bad > bad9 ? "✗" : "✓", g_e9_per,
                (unsigned long long)g_e9_tex, (unsigned long long)g_e9_hash); }
+    {   // ⑬ #640：一次提交里同一页排了很多条内联更新时，每次查常量块都把整条链走完（每次绘制一遍，链越积越长，一帧数秒）：超过 PEND_SINCE_MAX 回 -1（不做影子、结束渲染遍），没超照常全收。
+        //    期望按语义手写：100 条全在 [P, P+256) 里 → 回 100；20000 条（> 8192）→ 回 -1（修前回 20000），查一次 < 5 ms
+        int bad11 = bad; uint64_t P = 0x7f0000100000ull;
+        pend_reset(); for (int i = 0; i < 100; i++) pend_add(P + (uint64_t)(i % 16) * 16, 16, 1);
+        int n100 = pend_since(P, P + 256, 0, g_ubp_idx);
+        CHECK(n100 == 100, "⑬ 同页 100 条：pend_since 回 %d（应 100）", n100);
+        pend_reset(); for (int i = 0; i < 20000; i++) pend_add(P + (uint64_t)(i % 16) * 16, 16, 1);
+        uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW); int nbig = pend_since(P, P + 256, 0, g_ubp_idx); uint64_t dt = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0;
+        CHECK(nbig == -1 && dt < 5000000ull, "⑬ 同页 20000 条：pend_since 回 %d（应 -1）、用时 %.3f ms（应 < 5 ms）", nbig, dt / 1e6);
+        pend_reset();
+        printf("%s ⑬ 同页 100 条回 %d、20000 条回 %d（%.3f ms）\n", bad > bad11 ? "✗" : "✓", n100, nbig, dt / 1e6); }
     printf("%s t_nvn_ubd_index：%s\n", bad ? "✗" : "✓", bad ? "有不符" : "延后表查找同参照、512 条下单次查找低于 400 条指令");
     return bad != 0;
 } }

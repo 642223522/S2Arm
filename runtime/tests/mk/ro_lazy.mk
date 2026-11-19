@@ -1,8 +1,8 @@
 # nn::ro 懒绑定交接（#858）：完整原生生产对象 + 出包 C 改写器产物，合成模块按 SDK nn::ro 布局。
 NATIVE_TEST_OWN += ro_lazy
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 $(BUILD)/tests/t_ro_lazy: runtime/tests/t_ro_lazy.c $(NVN_TEST_HOST_OBJS)
-	$(CC) $(CFLAGS) $(NATIVE_INC) -o $@ $< $(NVN_TEST_HOST_OBJS) $(S2A_HOST_WEAK)
+	$(CC) $(CFLAGS) $(NATIVE_INC) -o $@ $< $(NVN_TEST_HOST_OBJS) $(S2A_HOST_WEAK) $(NVN_TEST_HOST_LIBS)
 .PHONY: native-test-ro_lazy
 native-test-ro_lazy: $(BUILD)/tests/t_ro_lazy
 	python3 runtime/tests/ro_lazy/prepare.py $(BUILD)/tests/ro_lazy

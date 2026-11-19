@@ -76,6 +76,12 @@ static os_unfair_lock g_lp_lib_mu = OS_UNFAIR_LOCK_INIT;
 static NSMapTable<NSString *, id<MTLLibrary>> *g_lp_libs;    // "<容器>/<分片>/<偏移>" → 活着的库
 static NSMutableDictionary<NSString *, NSNumber *> *g_lp_layer;   // 同键 → 这一段用不用 render_target_array_index
 static _Atomic uint64_t g_lp_lib_built, g_lp_lib_shared;    // 建了几个库 / 几次取库直接拿到同段已建好的
+// 覆盖层（S 级升级补的可读瓦片版：<库目录>/bf/，同格式同链版本的小容器，只含补上的 <键>_bf 与带 fetch 的 <键>_b.json）：
+//   同键同种类覆盖层里有就取覆盖层，否则取主容器。主容器整份不动（玩家机上 1 GB 量级，只推这一小份）。over 没开（idx 空）= 只用主容器
+static lp_pack *lp_pick(lp_pack *main, lp_pack *over, const char *name, unsigned kind) {
+    if (over && over->idx) { int ok; uint64_t k = lp_key(name, &ok); if (ok && lp_find(over, k, kind)) return over; }
+    return main;
+}
 static id<MTLLibrary> lp_library(lp_pack *p, id<MTLDevice> dev, const char *name, unsigned kind, int *layer, NSError **err) {
     int ok; uint64_t key = lp_key(name, &ok); const lp_rec *r = ok && p->idx ? lp_find(p, key, kind) : NULL;
     if (!r) { if (err) *err = [NSError errorWithDomain:NSPOSIXErrorDomain code:ENOENT userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"%s is not in the library container", name]}];

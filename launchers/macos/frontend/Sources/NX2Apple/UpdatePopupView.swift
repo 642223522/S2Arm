@@ -11,7 +11,7 @@ import S2ArmAppleAdapter
 
 /// 更新说明里的一条：{zh-Hans, en?}；英文没有就用中文
 private func noteText(_ item: [String: Any], _ language: String) -> String {
-    (language == "en" ? item["en"] as? String : nil) ?? item["zh-Hans"] as? String ?? ""
+    LauncherCopy.note((language == "en" ? item["en"] as? String : nil) ?? item["zh-Hans"] as? String ?? "")
 }
 
 private func releasePage(_ version: String) -> URL? { URL(string: "https://github.com/jhaizhou-ops/S2Arm/releases/tag/v" + version) }
@@ -25,27 +25,33 @@ struct UpdatePopupView: View {
     private var version: String { popup["version"] as? String ?? "" }
     private var notes: [String: Any] { popup["notes"] as? [String: Any] ?? [:] }
     private var after: Bool { popup["kind"] as? String == "afterUpdate" }
+    private var isEnglish: Bool { language == "en" }
+    private var isWorking: Bool { if case .working = model.updateState { return true }; return false }
+    private var isReady: Bool { model.updateState == .ready }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             if after { afterBody } else { updateBody }
         }
-        .padding(.horizontal, 36).padding(.vertical, 32)
-        .frame(width: after ? 600 : 680)
-        .environment(\.colorScheme, .dark)
+        .padding(LauncherTheme.Space.page)
+        .launcherSheet(.form, height: nil)
         .accessibilityIdentifier(after ? "update.after" : "update.popup")
     }
 
     private var updateBody: some View {
         VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(t("update.popup.kicker")).font(.manrope(13, .semibold)).foregroundStyle(LauncherPalette.cream.opacity(0.8))
-                Text("S2Arm v" + version).font(.manrope(28, .heavy))
-                Text(t("update.popup.meta")).font(.manrope(13)).foregroundStyle(.secondary)
+            LauncherHeadingLine {
+                Text("S2Arm v" + version).font(LauncherTheme.TypeStyle.title)
+            } subtitle: {
+                HStack(alignment: .firstTextBaseline, spacing: LauncherTheme.Space.small) {
+                    Text(t("update.popup.kicker")).font(LauncherTheme.TypeStyle.section).foregroundStyle(LauncherPalette.cream.opacity(0.8))
+                        .help(t("update.popup.kicker"))
+                    Text(t("update.popup.meta")).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary).help(t("update.popup.meta"))
+                }
             }
             let sections = notes["sections"] as? [[String: Any]] ?? []
             if sections.isEmpty {
-                Text(t("update.popup.noNotes")).font(.manrope(14)).foregroundStyle(.secondary)
+                Text(t("update.popup.noNotes")).font(LauncherTheme.TypeStyle.body).foregroundStyle(.secondary)
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
@@ -60,51 +66,77 @@ struct UpdatePopupView: View {
                 }
                 .frame(maxHeight: 340)
             }
-            if case .working = model.updateState {
-                Text(t("update.popup.downloading")).font(.manrope(12.5)).foregroundStyle(.secondary)
+            if case .working(let id, let percent) = model.updateState {
+                VStack(alignment: .leading, spacing: 6) {
+                    LauncherProgressBar(value: percent.map { Double($0) / 100.0 }, height: 6)
+                    Text(t(id).replacingOccurrences(of: "{0}", with: "\(percent ?? 0)"))
+                        .font(LauncherTheme.TypeStyle.detail).monospacedDigit().foregroundStyle(.secondary)
+                }
+            } else if case .failed(let code) = model.updateState {
+                Text(t("update.error." + code)).font(LauncherTheme.TypeStyle.detail).foregroundStyle(LauncherPalette.danger)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            if let gate = model.updateGate {   // 草图④：点了「现在更新并重启」但有局 / 任务在跑，先拦下、说清，弹窗不关
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(t(gate)).font(.manrope(14, .bold))
-                    Text(t(gate + ".body")).font(.manrope(13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if model.updateGate != nil {   // 点了「现在更新并重启」但有局 / 任务在跑：说清会打断什么，玩家选「仍然重启」照样换（11-18 维护者），默认焦点在「取消」
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(t("update.gate.confirm.title")).font(.manrope(14, .bold))
+                    Text(model.updateRestartImpactText(t)).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 10) {
+                        Spacer()
+                        Button(t("update.gate.confirm.cancel")) { model.updateGate = nil }.controllerButtonStyle(LauncherSecondaryButtonStyle())
+                            .keyboardShortcut(.defaultAction).accessibilityIdentifier("update.gate.cancel").controllerID("update.gate.cancel")
+                        Button(t("update.gate.confirm.restart")) { model.restartToUpdate(confirmed: true) }.controllerButtonStyle(LauncherSecondaryButtonStyle())
+                            .accessibilityIdentifier("update.gate.restart").controllerID("update.gate.restart")
+                    }
                 }
                 .padding(14).frame(maxWidth: .infinity, alignment: .leading)
                 .background(LauncherPalette.building.opacity(0.14), in: RoundedRectangle(cornerRadius: 12))
                 .accessibilityIdentifier("update.gate")
             }
-            HStack {
+            HStack(spacing: 10) {
                 if let link = releasePage(version) {
-                    Button { NSWorkspace.shared.open(link) } label: { Text(t("update.popup.fullLog")).font(.manrope(13)).underline() }
-                        .buttonStyle(.plain).foregroundStyle(LauncherPalette.cream)
+                    Button { NSWorkspace.shared.open(link) } label: { Text(t("update.popup.fullLog")).font(LauncherTheme.TypeStyle.detail).underline() }
+                        .controllerButtonStyle(.plain).foregroundStyle(LauncherPalette.cream).controllerShortcut(.secondary)
                 }
                 Spacer()
-                Button(t("update.popup.later")) { model.closeUpdatePopup() }.buttonStyle(LauncherSecondaryButtonStyle())
-                    .keyboardShortcut(.cancelAction).accessibilityIdentifier("update.popup.later")
-                Button { model.restartToUpdate() } label: { Text(t("update.popup.now")).font(.manrope(14, .bold)).foregroundStyle(.black)
-                    .padding(.horizontal, 20).frame(height: 40).background(LauncherPalette.cream, in: Capsule()) }
-                    .buttonStyle(.plain).disabled(model.updateState != .ready).opacity(model.updateState == .ready ? 1 : 0.5)
-                    .accessibilityIdentifier("update.popup.now")
+                if !isWorking {
+                    Button(t("update.popup.skip")) { model.skipUpdateVersion() }
+                        .controllerButtonStyle(LauncherSecondaryButtonStyle())
+                        .accessibilityIdentifier("update.popup.skip")
+                }
+                Button(t("update.popup.later")) { model.closeUpdatePopup() }.controllerButtonStyle(LauncherSecondaryButtonStyle())
+                    .keyboardShortcut(.cancelAction).accessibilityIdentifier("update.popup.later").controllerShortcut(.back)
+                Button(primaryActionTitle) {
+                    if isReady { model.restartToUpdate() }
+                    else { model.downloadUpdate() }
+                }
+                .controllerButtonStyle(LauncherPrimaryButtonStyle()).disabled(isWorking)
+                .accessibilityIdentifier("update.popup.now").controllerShortcut(.rightTrigger)
             }
         }
+    }
+
+    private var primaryActionTitle: String {
+        if isReady { return t("update.popup.now") }
+        if isWorking { return t("update.settings.btn.downloading") }
+        if case .failed = model.updateState { return t("update.popup.retryDownload") }
+        return t("update.popup.download")
     }
 
     private var afterBody: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(spacing: 12) {
                 Image(systemName: "checkmark.circle").font(.system(size: 26)).foregroundStyle(LauncherPalette.ready)
-                Text(t("update.after.title").replacingOccurrences(of: "{0}", with: version)).font(.manrope(26, .heavy))
+                LauncherSheetHeading(t("update.after.title").replacingOccurrences(of: "{0}", with: version), subtitle: t("update.after.lead"))
             }
-            Text(t("update.after.lead")).font(.manrope(14)).foregroundStyle(.secondary)
             bullets(notes["highlights"] as? [[String: Any]] ?? [])
             HStack {
                 if let link = releasePage(version) {
-                    Button { NSWorkspace.shared.open(link) } label: { Text(t("update.popup.fullLog")).font(.manrope(13)).underline() }
-                        .buttonStyle(.plain).foregroundStyle(LauncherPalette.cream)
+                    Button { NSWorkspace.shared.open(link) } label: { Text(t("update.popup.fullLog")).font(LauncherTheme.TypeStyle.detail).underline() }
+                        .controllerButtonStyle(.plain).foregroundStyle(LauncherPalette.cream).controllerShortcut(.secondary)
                 }
                 Spacer()
-                Button { model.closeUpdatePopup() } label: { Text(t("update.after.ok")).font(.manrope(14, .bold)).foregroundStyle(.black)
-                    .padding(.horizontal, 22).frame(height: 40).background(LauncherPalette.cream, in: Capsule()) }
-                    .buttonStyle(.plain).keyboardShortcut(.defaultAction).accessibilityIdentifier("update.after.ok")
+                Button(t("update.after.ok")) { model.closeUpdatePopup() }
+                    .controllerButtonStyle(LauncherPrimaryButtonStyle()).keyboardShortcut(.defaultAction).accessibilityIdentifier("update.after.ok").controllerShortcut(.rightTrigger, .back)
             }
         }
     }
@@ -114,7 +146,7 @@ struct UpdatePopupView: View {
             ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text("•").foregroundStyle(.secondary)
-                    Text(noteText(item, language)).font(.manrope(14)).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                    Text(noteText(item, language)).font(LauncherTheme.TypeStyle.body).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                 }
             }
         }
@@ -130,9 +162,9 @@ struct MessagesPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(t("messages.title")).font(.manrope(16, .bold)).padding(.horizontal, 4).padding(.bottom, 6)
+            Text(t("messages.title")).font(LauncherTheme.TypeStyle.panelTitle).padding(.horizontal, 4).padding(.bottom, 6)
             if model.messages.isEmpty {
-                Text(t("messages.empty")).font(.manrope(13)).foregroundStyle(.secondary).padding(4)
+                Text(t("messages.empty")).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary).padding(4)
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 6) {
@@ -141,7 +173,8 @@ struct MessagesPanel: View {
             }
             .frame(maxHeight: 420)
         }
-        .padding(18).frame(width: 440)
+        .padding(LauncherTheme.Metrics.cardInset).frame(width: 440)
+        .background(.regularMaterial)
         .environment(\.colorScheme, .dark)
         .accessibilityIdentifier("messages.panel")
     }
@@ -152,26 +185,27 @@ struct MessagesPanel: View {
             if m["kind"] as? String == "update" {
                 let version = m["version"] as? String ?? ""
                 Text(t("messages.kind.update").replacingOccurrences(of: "{0}", with: version) + " · " + t(m["installed"] as? Bool == true ? "messages.installed" : "messages.available"))
-                    .font(.manrope(12)).foregroundStyle(.secondary)
+                    .font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary)
                 let notes = m["notes"] as? [String: Any] ?? [:]
                 let items = (notes["highlights"] as? [[String: Any]]).flatMap { $0.isEmpty ? nil : $0 }
                     ?? (notes["sections"] as? [[String: Any]] ?? []).flatMap { $0["items"] as? [[String: Any]] ?? [] }
                 ForEach(Array(items.prefix(3).enumerated()), id: \.offset) { _, item in
-                    Text("• " + noteText(item, language)).font(.manrope(13.5)).fixedSize(horizontal: false, vertical: true)
+                    Text("• " + noteText(item, language)).font(LauncherTheme.TypeStyle.body).fixedSize(horizontal: false, vertical: true)
                 }
                 if let link = releasePage(version) {
-                    Button { NSWorkspace.shared.open(link) } label: { Text(t("update.popup.fullLog")).font(.manrope(12.5)).underline() }
-                        .buttonStyle(.plain).foregroundStyle(LauncherPalette.cream)
+                    Button { NSWorkspace.shared.open(link) } label: { Text(t("update.popup.fullLog")).font(LauncherTheme.TypeStyle.detail).underline() }
+                        .controllerButtonStyle(.plain).foregroundStyle(LauncherPalette.cream)
                 }
             } else {
                 HStack(spacing: 8) {
                     if unread { Circle().fill(LauncherPalette.danger).frame(width: 7, height: 7) }
-                    Text(t(m["level"] as? String == "important" ? "messages.kind.important" : "messages.kind.notice")).font(.manrope(12)).foregroundStyle(.secondary)
+                    Text(t(m["level"] as? String == "important" ? "messages.kind.important" : "messages.kind.notice")).font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary)
                 }
-                Text((m["text"] as? [String: String])?[language] ?? "").font(.manrope(13.5)).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                Text(LauncherCopy.note((m["text"] as? [String: String])?[language] ?? ""))
+                    .font(LauncherTheme.TypeStyle.body).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                 if let link = (m["url"] as? String).flatMap(URL.init(string:)) {
-                    Button { NSWorkspace.shared.open(link) } label: { Text(t("notice.details")).font(.manrope(12.5)).underline() }
-                        .buttonStyle(.plain).foregroundStyle(LauncherPalette.cream)
+                    Button { NSWorkspace.shared.open(link) } label: { Text(t("notice.details")).font(LauncherTheme.TypeStyle.detail).underline() }
+                        .controllerButtonStyle(.plain).foregroundStyle(LauncherPalette.cream)
                 }
             }
         }

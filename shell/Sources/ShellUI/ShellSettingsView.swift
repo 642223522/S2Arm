@@ -8,6 +8,7 @@ enum ShellSettingsRows {
     static let glass = "shell.glass"
     static let silent = "shell.silent"
     static let mix = "shell.mix"
+    static let language = "shell.language"
     static let touchSize = "shell.touchSize"
     static let touchStick = "shell.touchStick"
     static let targetPrefix = "shs.row."
@@ -37,6 +38,15 @@ enum ShellSettingsRows {
                    kind: .toggle(on: "1", off: "0"), value: store.mixWithOthers ? "1" : "0")
     }
 
+    /// S2Arm: the app's interface language (#1252: before, only the in-game settings had it). Each language in its own name, so a
+    /// player who lands on a language they cannot read still finds theirs.
+    static func languageRow(_ store: ShellSettingsStore) -> SettingRow {
+        let names = ["zh-Hans": "简体中文", "zh-Hant": "繁體中文", "en": "English", "ja": "日本語", "es": "Español", "fr": "Français"]
+        return SettingRow(id: language, label: ShellStrings.text("Interface language"), note: ShellStrings.text("Close and reopen S2Arm to use the new language."),
+                          kind: .choice(ShellSettingsStore.interfaceLanguages.map { SettingOption($0, $0 == "system" ? ShellStrings.text("Same as system") : names[$0] ?? $0) }),
+                          value: store.interfaceLanguage)
+    }
+
     /// The touch controls' size for every game. The preview above the row shows it.
     static func touchSizeRow(_ store: ShellSettingsStore) -> SettingRow {
         SettingRow(id: touchSize, label: ShellStrings.text("Size"),
@@ -64,6 +74,7 @@ enum ShellSettingsRows {
         case silent: store.storePlayInSilentMode(value == "1")
         case mix: store.storeMixWithOthers(value == "1")
         case glass: store.storeLiquidGlass(value == "1")
+        case language: store.storeInterfaceLanguage(value)
         case touchSize: store.storeTouchSize(value)
         case touchStick: store.storeTouchStick(value)
         default: break
@@ -133,14 +144,14 @@ struct ShellSettingsView: View {
                         // S2Arm: the upstream Touch controls group (size, stick, arrangement) is left out. The game reads its own
                         // per-game layout (each game's settings → button positions), never these shell settings (#372).
                         SettingsGroup(title: ShellStrings.text("Interface")) {
-                            ForEach([ShellSettingsRows.glassRow(store), ShellSettingsRows.hudRow(store)]) { row in
+                            ForEach([ShellSettingsRows.languageRow(store), ShellSettingsRows.glassRow(store), ShellSettingsRows.hudRow(store)]) { row in
                                 SettingControl(gameID: ShellSettingsRows.gameID, row: row, targetPrefix: ShellSettingsRows.targetPrefix) {
                                     ShellSettingsRows.apply(row.id, value: $0, to: store)
                                 }.equatable()
                             }
                         }
                         SettingsGroup(title: ShellStrings.text("Sound")) {
-                            ForEach([ShellSettingsRows.silentRow(store), ShellSettingsRows.mixRow(store)]) { row in
+                            ForEach(soundRows) { row in
                                 SettingControl(gameID: ShellSettingsRows.gameID, row: row, targetPrefix: ShellSettingsRows.targetPrefix) {
                                     ShellSettingsRows.apply(row.id, value: $0, to: store)
                                 }.equatable()
@@ -164,7 +175,7 @@ struct ShellSettingsView: View {
                                 .accessibilityIdentifier("shellSettings.version")
                         }
                     }
-                    .padding(24).padding(.bottom, geometry.safeAreaInsets.bottom).frame(maxWidth: 640)
+                    .padding(24).padding(.bottom, geometry.safeAreaInsets.bottom).frame(maxWidth: 640 * ShellFonts.tvScale)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .scrollIndicators(.hidden)
@@ -182,5 +193,14 @@ struct ShellSettingsView: View {
         }
         .foregroundStyle(.white).preferredColorScheme(.dark)
         .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in revision += 1 }
+    }
+
+    /// 声音一组：Apple TV 没有静音开关，tvOS 上只留「与其他 App 混音」
+    private var soundRows: [SettingRow] {
+        #if os(tvOS)
+        [ShellSettingsRows.mixRow(store)]
+        #else
+        [ShellSettingsRows.silentRow(store), ShellSettingsRows.mixRow(store)]
+        #endif
     }
 }

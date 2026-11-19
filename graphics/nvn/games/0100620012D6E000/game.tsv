@@ -42,5 +42,3 @@ shader_note	Big Brain Academy: Brain vs. Brain shaders
 # ---- Mode ----
 # Handheld, the game reads the touch screen (menus, every activity, Party's two-player touch battles); docked it does not. Handheld Normal draws 1280x720,
 # handheld with Boost 1920x1080 (the window crop goes from 1280x720 to 1920x1080 once the game sees Boost)
-op_mode	handheld
-perf_mode	boost

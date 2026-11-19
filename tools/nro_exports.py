@@ -11,7 +11,7 @@ import os, struct, sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'graphics', 'nvn', 'tools')); import romfs_list
 
 def exports(path):
-    d = open(path, 'rb').read()
+    d = romfs_list.read_file(path)   # RomFS 不落散文件、只有 romfs.std 镜像时从镜像读（盘上有同 open）
     if d[0x10:0x14] != b'NRO0': raise ValueError('不是 NRO（缺 NRO0 标记）')
     m0 = struct.unpack_from('<I', d, 4)[0]
     if d[m0:m0 + 4] != b'MOD0': raise ValueError(f'MOD0 偏移 {m0:#x} 处没有 MOD0')
@@ -34,7 +34,7 @@ def main(argv):
     if len(argv) != 2: print('用法：nro_exports.py <romfs 目录> <输出 tsv>', file=sys.stderr); return 2
     # romfs 任意深度的 *.nro（10-29：魔界战记6 的 lz4.nro 在 romfs 根、大航海4 在 NRO/ 与 .nro/，原先只看 romfs/nro/ 漏表；与 runtime/rewriter/nro_to_nso.py 同口径）
     nd = argv[0]
-    files = sorted(os.path.relpath(os.path.join(dp, f), nd) for dp, _, fn in romfs_list.walk(nd) for f in fn if f.lower().endswith('.nro')) if os.path.isdir(nd) else []
+    files = sorted(os.path.relpath(os.path.join(dp, f), nd) for dp, _, fn in romfs_list.walk(nd) for f in fn if f.lower().endswith('.nro')) if romfs_list.is_dir(nd) else []
     if not files: print('romfs 里没有 *.nro，不出表'); return 0
     rows = []
     for f in files:

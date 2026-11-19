@@ -443,7 +443,7 @@ namespace Ryujinx.Memory
                     return OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17134);
                 }
 
-                return OperatingSystem.IsLinux() || OperatingSystem.IsMacOS() || OperatingSystem.IsIOS();
+                return OperatingSystem.IsLinux() || OperatingSystem.IsMacOS() || (OperatingSystem.IsIOS() || OperatingSystem.IsTvOS());   // 平台例外：tvOS 与 iOS 走同一分支
             }
 
             return true;

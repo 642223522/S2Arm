@@ -125,6 +125,15 @@ class ExportPlanTests(JobCase):
         result = [e for e in read_events(self.c.private, task) if e["type"] == "result"][-1]
         self.assertEqual(result["result"]["summary"]["completed"], 2)
 
+    def test_appletv_step_exports_ipa_only_where_tv_install_is_missing(self):
+        # Apple TV 一步：请求带 platform = tvos；Windows（装不到电视）再带 tvExport，出好接着导出安装包；Mac 不带（Mac 有「装到 Apple TV」与导出按钮）
+        for plat, want in (("win32", True), ("darwin", None)):
+            task, path = self.new_request({"source": "inline", "items": [{"gameId": A, "name": "甲", "platforms": ["appletv"]}]})
+            with mock.patch.object(export_plan.sys, "platform", plat), mock.patch.object(export_plan, "SUPPORTED", ("iphone", "appletv")):
+                self.assertEqual(self.run_inline(path), 0)
+            req = self.seen(f"{task}-1")
+            self.assertEqual((req["operation"], req["platform"], req.get("tvExport")), ("ipa", "tvos", want), plat)
+
     # ② 按批次出、第 2 步磁盘满 → 暂停，独立终态 paused
     def test_batch_disk_full_pauses_with_terminal_state_paused(self):
         batch.save(self.c.private, batch.create(self.two()))

@@ -13,12 +13,18 @@ static _Atomic uint64_t g_frames;
 static _Atomic int g_stall_stop;
 static pthread_t g_stall_thread;
 static int g_stall_started;
+static int g_stall_rescue_only;   // 看门线程只做停帧救场（玩家包：开发设施关）——见 s2a_ap_stall_mode
 static _Atomic int g_nominal_fps, g_nominal_n;   // 标称帧率（见 s2a_nominal_fps_set）；上屏时给帧间隔工作组定截止
 void s2a_wg_frame(int fps);   // thread.c 帧间隔工作组（缺省关，S2A_WORKGROUP=1/render/all 可开）；fps = 标称帧率定本帧截止
 // 开发浮层（runtime/src/hud.c，S2A_HUD=1）：开着时每上屏一帧记一个单调时间戳进环（容量够 120 帧/秒 × 10 秒），浮层据此算帧率与慢帧；关着时只读缓存的开关
 static _Atomic int g_hud_on = -1;
 int s2a_hud_on(void) { int v = atomic_load(&g_hud_on); if (v < 0) { const char *e = getenv("S2A_HUD"); v = e && !strcmp(e, "1"); atomic_store(&g_hud_on, v); } return v; }
 _Atomic uint64_t g_s2a_hud_ft[2048], g_s2a_hud_fn;
+// 声音调度迟到探针（11-14 卡顿诊断，compat 补丁 aud-late-probe）：C# 声音渲染线程每个 5 ms 周期把唤醒迟到的纳秒记进来（静态导入；放在本文件因为苹果与安卓游戏组合都链它，安卓诊断组合由 android/native/s2a_native_stub.c 给替身），
+//   直连逐帧表 @aud_wait_ms 每帧取走清零（graphics/nvn/gfx/nvn/hle_nvn.c）。游戏线程等的声音更新事件由该线程发出：这里晚到，游戏线程同量晚醒
+static _Atomic uint64_t g_aud_late_ns;
+void s2a_aud_late_note(long long ns) { if (ns > 0) atomic_fetch_add_explicit(&g_aud_late_ns, (uint64_t)ns, memory_order_relaxed); }
+uint64_t s2a_aud_late_take(void) { return atomic_exchange_explicit(&g_aud_late_ns, 0, memory_order_relaxed); }
 // 简版性能浮层（11-09 B 方案，齿轮菜单「性能浮层」，玩家随时开关）：开着时同样记上屏时间戳，跨局保留（界面按偏好设）
 static _Atomic int g_hud_brief;
 void s2a_hud_brief_set(int on) { atomic_store(&g_hud_brief, on ? 1 : 0); }
@@ -30,6 +36,11 @@ void s2a_hud_frame(void) {
 // S2A_THREAD_DUMP_FRAME=<帧号>（诊断，缺省关）：上屏到这一帧时打一次全线程表——正常局也在停住局出事的同一帧附近留一张表，两边比第一处不同
 static uint64_t dump_frame(void) { static long long v = -1; if (v < 0) { const char *e = getenv("S2A_THREAD_DUMP_FRAME"); v = e && *e ? atoll(e) : 0; } return (uint64_t)v; }
 static int stall_s(void); static void *stall_watch(void *a);   // 出图停住看门，定义在文件后部
+// 看门线程起不起、做什么（审计 P1-191）：停帧救场（帧率补丁把画面停住时当场关补丁、记下次也关、横幅告诉玩家，cpatch.c）是给玩家的，原先整条线程只在开发设施开着时起，
+//   玩家包（Info.plist S2ADevFacilities=0）救场走不到，补丁停住画面就一直停着。现在：开发设施开 + S2A_STALL_DUMP_S > 0 → 2 = 全套（救场 + 提示 + 打现场 + 退出）；
+//   开发设施关 → 1 = 只救场（判完一次线程就退）；开发设施开但现场关（S2A_STALL_DUMP_S=0）→ 1 = 只救场。纯函数，t_ap_host ⑧c 测
+int s2a_ap_stall_mode(int dev_on, int dump_s);
+int s2a_ap_stall_mode(int dev_on, int dump_s) { return dev_on && dump_s > 0 ? 2 : 1; }
 // 回前台恢复时间线（#495「回前台卡几秒」定因）：iOS 壳回前台时交来各阶段时刻，之后每上屏一帧推进；连续 30 帧间隔都 ≤ 50 ms 算稳定，
 //   打一行逐段毫秒数（到稳定或 20 秒为止）。只在渲染线程推进，起点用原子量交接
 static struct { uint64_t note, ds, gpu, thr, done; } g_rs_in;
@@ -57,11 +68,13 @@ static void resume_frame(uint64_t f) {
     g_rs_first = 0; atomic_store(&g_rs_on, 0);
 }
 void s2a_dguard_frame(uint64_t now); void s2a_dguard_evidence(const char *why, int stall);
+void s2a_playtime_frame(uint64_t now, int focused); int s2a_host_focused(void);   // playtime.c 游玩时间（只算有焦点、连续上屏的段）；os.c 宿主焦点
 void s2a_load_first_frame(uint64_t now);   // loadprog.c：首帧上屏 → 加载页收起、全部编完的记下已完整预热   // dguard.c：直连安全网（首帧后前台满 60 秒清零连续失败）；没 arm 时一次原子读
-void s2a_frame_presented(void) { s2a_wg_frame(atomic_load_explicit(&g_nominal_fps, memory_order_relaxed)); s2a_dguard_frame(now_ns()); if (s2a_hud_on() || atomic_load_explicit(&g_hud_brief, memory_order_relaxed)) s2a_hud_frame(); uint64_t f = atomic_fetch_add_explicit(&g_frames, 1, memory_order_relaxed);
+void s2a_frame_presented(void) { s2a_wg_frame(atomic_load_explicit(&g_nominal_fps, memory_order_relaxed)); uint64_t now = now_ns(); s2a_dguard_frame(now); s2a_playtime_frame(now, s2a_host_focused()); if (s2a_hud_on() || atomic_load_explicit(&g_hud_brief, memory_order_relaxed)) s2a_hud_frame(); uint64_t f = atomic_fetch_add_explicit(&g_frames, 1, memory_order_relaxed);
     resume_frame(f);
     if (!f) { BOOT_MARK("nnMain → 首帧上屏（游戏自身加载 + 渲染器首帧）"); s2a_load_first_frame(now_ns()); }
-    if (!f && stall_s() > 0 && !g_stall_started && s2a_dev_on()) { atomic_store(&g_stall_stop, 0); if (!pthread_create(&g_stall_thread, NULL, stall_watch, NULL)) g_stall_started = 1; }
+    if (!f && !g_stall_started) { int m = s2a_ap_stall_mode(1, stall_s());   // 11-17 拆开：停住现场只在真停住时打、只进日志（一局至多 3 次），归「诊断读数」玩家包也开；S2A_STALL_DUMP_S=0 关
+        if (m) { g_stall_rescue_only = m == 1; atomic_store(&g_stall_stop, 0); if (!pthread_create(&g_stall_thread, NULL, stall_watch, NULL)) g_stall_started = 1; } }
     if (dump_frame() && f + 1 == dump_frame()) { void (*td)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "s2a_thread_dump");   // 线程表在 thread.c；只链 ap_host 的单测里取不到就不打
         if (td) { LOG("线程表 [S2A_THREAD_DUMP_FRAME=%llu]：", (unsigned long long)(f + 1)); td(); } } }
 uint64_t s2a_ap_frames(void) { return atomic_load_explicit(&g_frames, memory_order_relaxed); }
@@ -121,6 +134,11 @@ __attribute__((weak)) int s2a_ui_zh(void) { return 1; }   // 界面语言（s2a_
 static const char *stall_note(void) { return stall_exit_s() > 0 ? S2A_UI(S2A_UI_STALL_EXIT) : S2A_UI(S2A_UI_STALL_WAIT); }
 static void (*g_notice_hook)(const char *);
 void s2a_ap_set_notice_hook(void (*fn)(const char *)) { g_notice_hook = fn; }
+// 停帧救场的判据（11-14）：首帧后连续 30 秒窗口里新上屏 ≤ 15 帧（低于 0.5 帧/秒）。不用「10 秒一帧不出」：帧率补丁把交换间隔写成 1000 时，
+//   120 Hz 节拍下每 8.3 秒还出一帧（60 Hz 下 16.7 秒），10 秒判据被这一帧一次次清零、永远不触发，画面却等于停住（真机实测 A 局）；
+//   也不在 10 秒就动手：有的游戏加载时正常停帧十几秒，过早会把好好的帧率补丁误关。正常游戏 30 秒低于 0.5 帧本来就是坏了
+int s2a_ap_crawl_due(uint64_t frames_in_30s);
+int s2a_ap_crawl_due(uint64_t frames_in_30s) { return frames_in_30s <= 15; }
 static void *stall_watch(void *a) { s2a_thread_name("s2a-ap-stall");
     (void)a; int (*frozen)(void) = (int (*)(void))dlsym(RTLD_DEFAULT, "s2a_guest_frozen");   // 两者都在 thread.c；只链 ap_host 的单测由桩提供
     // 停帧「外因」四态：宿主焦点 / 失焦暂停（游戏 SetOutOfFocusSuspendingEnabled 要的值）/ 宿主睡眠 / 客机冻结。11-11 诊断包（Mac 局 9 次停帧
@@ -132,11 +150,30 @@ static void *stall_watch(void *a) { s2a_thread_name("s2a-ap-stall");
     int (*hd)(const char *) = (int (*)(const char *))dlsym(RTLD_DEFAULT, "s2a_dump_threads");   // tdump.c：宿主线程调用栈（10-24 xc3 停住靠它定出实化互等）
     void (*msg)(const char *) = (void (*)(const char *))dlsym(RTLD_DEFAULT, "s2a_ios_show_message");   // 第 2 档：屏幕上给玩家一句话（见 s2a_ap_stall_notice_after）
     void (*clr)(const char *) = (void (*)(const char *))dlsym(RTLD_DEFAULT, "s2a_ios_clear_message");   // 帧又走了收掉提示（只收这条，别的提示不动）
+    int (*rescue)(void) = (int (*)(void))dlsym(RTLD_DEFAULT, "s2a_cpatch_stall_rescue");   // 停帧救场：帧率补丁开着就当场关（runtime/src/cpatch.c）；只链本文件的单测取不到
+    void (*banner)(const char *, double) = (void (*)(const char *, double))dlsym(RTLD_DEFAULT, "s2a_ios_banner");   // 定时横幅（ios/dprompt.m），救场那句不随帧又走了收掉
     char shown[512] = "";   // 正在屏幕上的那句提示（收的时候按它认）
     uint64_t last = s2a_ap_frames(); int idle = 0, armed = 1, n = 0, noticed = 0, lim = 4 * stall_s();
+    uint64_t ring[30]; int rn = 0, rt = 0, crawled = 0;   // 停帧救场的 30 秒窗口：每秒记一次上屏帧数（客机冻结时清空重来）
     while (!atomic_load(&g_stall_stop)) {
         usleep(250000); uint64_t f = s2a_ap_frames();
         if (atomic_load(&g_stall_stop)) break;
+        if (++rt % 4 == 0) {
+            if (frozen && frozen()) rn = 0;
+            else {
+                if (!crawled && rn >= 30 && s2a_ap_crawl_due(f - ring[rn % 30])) {
+                    crawled = 1;   // 每局只判一次：救场本身也只救一次
+                    LOG("出图停住看门：近 30 秒只上屏 %llu 帧（第 %llu 帧），按停帧处理", (unsigned long long)(f - ring[rn % 30]), (unsigned long long)f);
+                    if (rescue && rescue()) {   // 社区帧率补丁开着 → 已当场关、记下次也关；横幅 8 秒告诉玩家（不随帧恢复收掉，读得完）
+                        const char *t = S2A_UI(S2A_UI_STALL_PATCH_OFF);
+                        if (g_notice_hook) g_notice_hook(t); else if (banner) banner(t, 8); else if (msg) msg(t);
+                    } else LOG("出图停住看门：没有开着的社区帧率补丁可关，照常继续");
+                    if (g_stall_rescue_only) break;   // 只救场：每局只判一次，判完线程退
+                }
+                ring[rn % 30] = f; rn++;
+            }
+        }
+        if (g_stall_rescue_only) { last = f; continue; }   // 只救场：提示 / 打现场 / 主动退出是开发设施，玩家包不做
         if (f != last) {   // 帧又走了：收掉提示，下一次停住重新给
             if (noticed) { LOG("出图停住看门：帧又走了（第 %llu 帧），收掉屏幕提示", (unsigned long long)f); if (g_notice_hook) g_notice_hook(NULL); else if (clr) clr(shown); }
             if (n) s2a_dguard_evidence(NULL, 1);   // 直连安全网：停住的证据撤回（自己活过来了）
@@ -162,6 +199,7 @@ static void *stall_watch(void *a) { s2a_thread_name("s2a-ap-stall");
                 "停帧就有外因，判引擎卡死前先看这一行）",
                 focused ? focused() : -1, suspend ? suspend() : -1, sleeping ? sleeping() : -1, frozen ? frozen() : -1);
             if (td) td();
+            { void (*wd)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "s2a_direct_wait_dump"); if (wd) wd(); }   // 直连：图形层各等待点（已提交 / 已完成栅栏、队列在等的别家事件；direct_host.c）——停帧多半是队列在等一个不来的事件；只链本文件的单测取不到就不打
             if (hd) { char w[96]; snprintf(w, sizeof w, "出图停住看门：停在第 %llu 帧已 %d 秒", (unsigned long long)f, stall_s()); hd(w); }
             continue;
         }

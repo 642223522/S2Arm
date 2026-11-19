@@ -1,6 +1,7 @@
-// Joy-Con / Pro Controller 六轴：IOHID 直读（macOS GameController 对 Joy-Con 的 motion 恒为 nil）。
+// Joy-Con / Pro 六轴：保留原始样本；Pro 的 GameController 传感器开关与校准数据能力分开管理。
 #import <Foundation/Foundation.h>
 #import <IOKit/hid/IOHIDManager.h>
+#import <GameController/GameController.h>
 #include "joycon_imu.h"
 #include <pthread.h>
 #include <stdatomic.h>
@@ -18,6 +19,8 @@ typedef struct {
     uint8_t pkt;
     int slot;                 // JC_L / JC_R：这只是左只还是右只 / Pro
     int product_id;
+    int gc_motion_control;     // cached backend choice for framework-recognized Pro, not an ownership assertion
+    uint64_t generation;       // g_mu: distinguish reattachment even if the device pointer is reused
     char id[64];              // 设备 id（序列号 = 蓝牙地址；启动器 Gen1HIDWatcher.deviceID 同一套），跨进程认同一只
     s2a_pad_motion sample;
     int known;
@@ -38,26 +41,53 @@ static _Atomic int g_want;
 static _Atomic int g_pad_want;   // D2：要按设备读按键（开着就让手柄出标准全报告 0x30，体感关着也一样）
 static int g_started;
 static uint8_t g_pkt_global;
+static uint64_t g_attachment_generation;   // g_mu; not reset when a slot is cleared
 
 static int16_t rd16(const uint8_t *p) { return (int16_t)(p[0] | (p[1] << 8)); }
 
+static mach_timebase_info_data_t g_timebase;
+static pthread_once_t g_timebase_once = PTHREAD_ONCE_INIT;
+static void timebase_init(void) { mach_timebase_info(&g_timebase); }
 static uint64_t now_us(void) {
-    static mach_timebase_info_data_t tb;
-    if (!tb.denom) mach_timebase_info(&tb);
-    return mach_absolute_time() * tb.numer / (tb.denom * 1000ull);
+    pthread_once(&g_timebase_once, timebase_init);
+    return mach_absolute_time() * g_timebase.numer / (g_timebase.denom * 1000ull);
 }
 
-static void send_sub(jc_dev *d, uint8_t cmd, uint8_t arg) {
-    if (!d->device) return;
-    uint8_t report[0x40];
-    memset(report, 0, sizeof report);
+// g_mu: reserve the packet counter and copy the whole command before unlocking.
+static int prepare_sub_locked(jc_dev *d, uint8_t cmd, uint8_t arg, uint8_t report[0x40]) {
+    if (!d->device) return 0;
+    if ((cmd == 0x40 || cmd == 0x03) && d->gc_motion_control) return 0;
+    memset(report, 0, 0x40);
     report[0] = 0x01;                         // OutputType.subcommand
     report[1] = (d->pkt++ & 0x0f);
     report[2] = 0x00; report[3] = 0x01; report[4] = 0x00; report[5] = 0x40;   // rumble neutral
     report[6] = 0x00; report[7] = 0x01; report[8] = 0x00; report[9] = 0x40;
     report[10] = cmd;
     report[11] = arg;
-    IOHIDDeviceSetReport(d->device, kIOHIDReportTypeOutput, 0x01, report, sizeof report);
+    return 1;
+}
+
+static void send_sub(jc_dev *d, uint8_t cmd, uint8_t arg) {   // existing callers hold g_mu
+    uint8_t report[0x40];
+    if (prepare_sub_locked(d, cmd, arg, report))
+        IOHIDDeviceSetReport(d->device, kIOHIDReportTypeOutput, 0x01, report, sizeof report);
+}
+
+// Connection-time enable / full-report requests must not block sample readers.
+static void send_attach_sub(jc_dev *d, IOHIDDeviceRef device, uint64_t generation, uint8_t cmd, uint8_t arg) {
+    uint8_t report[0x40];
+    IOHIDDeviceRef target = NULL;
+    pthread_mutex_lock(&g_mu);
+    int want = atomic_load(&g_want), pad_want = atomic_load(&g_pad_want);
+    int requested = cmd == 0x40 ? want : want || pad_want;
+    if (d->device == device && d->generation == generation && requested && prepare_sub_locked(d, cmd, arg, report))
+        target = (IOHIDDeviceRef)CFRetain(device);
+    pthread_mutex_unlock(&g_mu);
+    if (!target) return;
+    // A concurrent detach may make this write fail, but cannot redirect it to a
+    // reused slot. Revalidate the attachment and demand before each next command.
+    IOHIDDeviceSetReport(target, kIOHIDReportTypeOutput, 0x01, report, sizeof report);
+    CFRelease(target);
 }
 
 // Joy-Con 报告里的加速度 / 角速度 → 近似 NS2 原始坐标（g、度/秒）。
@@ -82,12 +112,17 @@ static void decode_imu(int slot, int product_id, const uint8_t *s, s2a_pad_motio
     out->host_timestamp_us = now_us();
 }
 
-static void apply_report(jc_dev *d, uint32_t report_id, const uint8_t *report, CFIndex len) {
+static void apply_report(jc_dev *d, IOHIDDeviceRef source, uint32_t report_id, const uint8_t *report, CFIndex len) {
     if (!d || (report_id != 0x30 && report_id != 0x3f)) return;
+    pthread_mutex_lock(&g_mu);
+    int pid = d->device && d->device == source ? d->product_id : 0, slot = d->slot;
+    pthread_mutex_unlock(&g_mu);
+    if (!pid) return;
     // D2：按键 / 摇杆按设备存（0x30 全报告、0x3F 简单报告都认）
     uint32_t buttons; int32_t sticks[4]; int side;
-    if (s2a_joycon1_decode(d->product_id, report, (size_t)len, &buttons, sticks, &side)) {
+    if (s2a_joycon1_decode(pid, report, (size_t)len, &buttons, sticks, &side)) {
         pthread_mutex_lock(&g_mu);
+        if (d->device != source) { pthread_mutex_unlock(&g_mu); return; }
         d->pad_buttons = buttons; memcpy(d->pad_sticks, sticks, sizeof sticks); d->pad_side = side; d->pad_known = 1; d->pad_us = now_us();
         CFIndex at = (len > 0 && report[0] == report_id) ? 1 : 0;
         if (report_id == 0x30 && len - at >= S2A_JC1_RAW) { memcpy(d->pad_raw, report + at, S2A_JC1_RAW); d->pad_raw_known = 1; }
@@ -99,23 +134,51 @@ static void apply_report(jc_dev *d, uint32_t report_id, const uint8_t *report, C
     // 标准全报告带 3 组 IMU（5 ms 间隔）；取最后一组
     const uint8_t *s = report + off + 36;
     s2a_pad_motion m = {0};
-    decode_imu(d->slot, d->product_id, s, &m);
+    decode_imu(slot, pid, s, &m);
     pthread_mutex_lock(&g_mu);
-    d->sample = m;
-    d->known = 1;
+    if (d->device == source) { d->sample = m; d->known = 1; }
     pthread_mutex_unlock(&g_mu);
 }
 
 static void report_cb(void *context, IOReturn result, void *sender, IOHIDReportType type,
                       uint32_t reportID, uint8_t *report, CFIndex reportLength) {
-    (void)result; (void)sender; (void)type;
-    apply_report((jc_dev *)context, reportID, report, reportLength);
+    if (result != kIOReturnSuccess || type != kIOHIDReportTypeInput) return;
+    apply_report((jc_dev *)context, (IOHIDDeviceRef)sender, reportID, report, reportLength);
 }
 
 static int side_for_pid(int pid) {
     if (pid == JC_PID_L) return JC_L;
     if (pid == JC_PID_R || pid == JC_PID_PRO) return JC_R;
     return -1;
+}
+
+// Identify the Nintendo protocol interface rather than accepting every collection
+// with the same VID/PID (USB receivers can also expose an unnumbered vendor pipe).
+// -1 = metadata cannot be interpreted: preserve the legacy connection attempt.
+static int nintendo_reports(const uint8_t *p, size_t n) {
+    if (!p || !n) return -1;
+    unsigned id = 0, ids[32], depth = 0; int input = 0;
+    for (size_t i = 0; i < n;) {
+        uint8_t b = p[i++];
+        if (b == 0xfe) {
+            if (n - i < 2) return -1;
+            size_t size = p[i]; i += 2;
+            if (n - i < size) return -1;
+            i += size; continue;
+        }
+        static const unsigned sizes[4] = {0, 1, 2, 4};
+        unsigned size = sizes[b & 3], type = (b >> 2) & 3, tag = b >> 4;
+        if (n - i < size) return -1;
+        if (type == 1 && tag == 8) { if (size != 1 || !p[i]) return -1; id = p[i]; }
+        else if (type == 1 && tag == 10) { if (size || depth == sizeof ids / sizeof *ids) return -1; ids[depth++] = id; }
+        else if (type == 1 && tag == 11) { if (size || !depth) return -1; id = ids[--depth]; }
+        else if (type == 0 && tag == 8) {
+            if (!size) return -1;
+            if (id == 0x30 || id == 0x3f) input = 1;
+        }
+        i += size;
+    }
+    return depth ? -1 : input;
 }
 
 // 设备 id：序列号（一代 Joy-Con 走蓝牙时是蓝牙地址，重连不变）；没有就用 LocationID。启动器 Gen1HIDWatcher.deviceID 照同一套，两边认同一只
@@ -141,6 +204,17 @@ static void attach_device(IOHIDDeviceRef device) {
     if (pid_cf) CFNumberGetValue(pid_cf, kCFNumberIntType, &pid);
     int slot = side_for_pid(pid);
     if (slot < 0) return;
+    CFTypeRef descriptor = IOHIDDeviceGetProperty(device, CFSTR(kIOHIDReportDescriptorKey));
+    if (descriptor && CFGetTypeID(descriptor) == CFDataGetTypeID() &&
+        nintendo_reports(CFDataGetBytePtr((CFDataRef)descriptor), (size_t)CFDataGetLength((CFDataRef)descriptor)) == 0) return;
+
+    pthread_mutex_lock(&g_mu);
+    for (int i = 0; i < JC_N; i++) if (g_dev[i].device == device) { pthread_mutex_unlock(&g_mu); return; }
+    pthread_mutex_unlock(&g_mu);
+    // Public API promises an associated GCController. Prefer that backend for
+    // Pro sensor control; retain raw samples independently of calibrated fields.
+    // The query is expensive: do it once per attachment, outside the transport lock.
+    int gc_motion_control = pid == JC_PID_PRO && [GCController supportsHIDDevice:device];
 
     pthread_mutex_lock(&g_mu);
     jc_dev *d = NULL;
@@ -157,6 +231,8 @@ static void attach_device(IOHIDDeviceRef device) {
     }
     d->device = device;
     d->product_id = pid;
+    d->gc_motion_control = gc_motion_control;
+    d->generation = ++g_attachment_generation;
     d->slot = slot;
     s2a_joycon_device_id(device, d->id);
     d->pkt = g_pkt_global++;
@@ -168,13 +244,13 @@ static void attach_device(IOHIDDeviceRef device) {
         return;
     }
     IOHIDDeviceRegisterInputReportCallback(device, d->report_buf, 0x200, report_cb, d);
-    int want = atomic_load(&g_want);
+    int want = atomic_load(&g_want), pad_want = atomic_load(&g_pad_want);
+    uint64_t generation = d->generation;
     pthread_mutex_unlock(&g_mu);
-
-    if (!want && atomic_load(&g_pad_want)) send_sub(d, 0x03, 0x30);   // D2：只要按键也要全报告
+    if (!want && pad_want) send_attach_sub(d, device, generation, 0x03, 0x30);   // D2：只要按键也要全报告
     if (want) {
-        send_sub(d, 0x40, 1);     // enable IMU
-        send_sub(d, 0x03, 0x30);  // standard full
+        send_attach_sub(d, device, generation, 0x40, 1);     // enable IMU
+        send_attach_sub(d, device, generation, 0x03, 0x30);  // standard full
         fprintf(stderr, "[输入] Joy-Con HID 六轴：已接通 %s（shared）\n",
                 pid == JC_PID_L ? "L" : (pid == JC_PID_PRO ? "Pro" : "R"));
     }
@@ -254,7 +330,7 @@ int s2a_joycon_imu_read(s2a_pad_motion *out_l, s2a_pad_motion *out_r) {
     pthread_mutex_lock(&g_mu);
     for (int i = 0; i < JC_N; i++) {   // 好几只时取最先接上的左只 / 右只（同改前只有一对时）
         jc_dev *d = &g_dev[i];
-        if (!d->device || !d->known || (mask & (1 << d->slot))) continue;
+        if (!d->device || !d->known || !atomic_load(&g_want) || now_us() - d->sample.host_timestamp_us > 250000 || (mask & (1 << d->slot))) continue;
         if (d->slot == JC_L && out_l) *out_l = d->sample;
         if (d->slot == JC_R && out_r) *out_r = d->sample;
         mask |= 1 << d->slot;
@@ -373,7 +449,7 @@ int s2a_joycon_pad_raw_id(const char *id, uint8_t raw[S2A_JC1_RAW]) {
 int s2a_joycon_imu_read_id(const char *id, s2a_pad_motion *out) {
     pthread_mutex_lock(&g_mu);
     jc_dev *d = find_id_locked(id);
-    int ok = d && d->known;
+    int ok = d && d->known && atomic_load(&g_want) && now_us() - d->sample.host_timestamp_us <= 250000;
     if (ok) *out = d->sample;
     pthread_mutex_unlock(&g_mu);
     return ok;

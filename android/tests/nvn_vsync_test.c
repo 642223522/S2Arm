@@ -93,10 +93,10 @@ static AVsyncId fk_tl_vsync_id(const AChoreographerFrameCallbackData *d, size_t 
 DECLARED(ALooper_prepare); DECLARED(ALooper_pollOnce); DECLARED(ALooper_wake);
 DECLARED(AChoreographer_getInstance); DECLARED(AChoreographer_postVsyncCallback);
 DECLARED(AChoreographer_postFrameCallback64);
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 DECLARED(AChoreographer_postFrameCallback);      // 真头 __DEPRECATED_IN(29)：符号存在即可用，钉名不判新旧
-#pragma clang diagnostic pop
+#pragma GCC diagnostic pop
 DECLARED(AChoreographerFrameCallbackData_getFrameTimeNanos);
 DECLARED(AChoreographerFrameCallbackData_getFrameTimelinesLength);
 DECLARED(AChoreographerFrameCallbackData_getPreferredFrameTimelineIndex);

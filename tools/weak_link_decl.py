@@ -13,7 +13,7 @@ DECL_GLOBS = ("runtime/src/*.c", "ios/*.m", "graphics/nvn/gfx/*/*.m", "graphics/
 #   时把安卓源码也读进来，壳输入表 shell.tsv 就得登记 48 个安卓文件，安卓每加一个 .c 出壳就红，如 92517a319）。
 #   安卓在 Mac 上跑的宿主单测（androiddraw、poolahb_test …）登记在安卓源码里：场合不是苹果侧的那几个时，再加扫安卓目录
 APPLE_PLACES = ("host", "ios", "nvntest", "autoplay", "lab", "touchtest")   # 苹果 / 共用构建取放行参数的场合（runtime/build.mk、tests/build.mk、Mac 图形测试）
-ANDROID_DECL_GLOBS = ("android/native/nvn/*.c", "android/native/direct/*.c")   # direct/：W2 导出门 / 诊断的弱引用（11-06）
+ANDROID_DECL_GLOBS = ("android/native/nvn/*.c", "android/native/direct/*.c", "graphics/nvn/replay/*.c")   # direct/：W2 导出门 / 诊断的弱引用（11-06）；replay/：Vulkan 回放核心对后端可选件的弱引用（安卓 / 鸿蒙，iOS 不编，所以不进苹果侧场合）
 REG = re.compile(r"弱链接\[([^\]]*)\]：([A-Za-z0-9_]+)")
 WEAK = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\([^;{}]*\)\s*__attribute__\(\(weak_import\)\)")
 

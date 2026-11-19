@@ -17,7 +17,7 @@ HEAD = ('# Prewarm seed list (shipped in the app, next to shader_map.tsv). Rows:
 
 def files(srcs):
     for s in srcs:
-        if os.path.isdir(s): yield from (os.path.join(s, f) for f in sorted(os.listdir(s)) if f.endswith('.tsv'))
+        if os.path.isdir(s): yield from (os.path.join(s, f) for f in sorted(os.listdir(s)) if f.endswith('.tsv') and not f.startswith('._'))   # ._：exFAT 上的 AppleDouble 附属文件
         elif os.path.isfile(s): yield s
 
 def main(out, keys_tsv, shmap, skey_bytes, srcs):   # shmap 留在参数里（direct_lib.sh 调用口径不变），不再读
@@ -48,6 +48,10 @@ def main(out, keys_tsv, shmap, skey_bytes, srcs):   # shmap 留在参数里（di
     # 只装库的行挪到末尾（11-07 卡顿线，异度3 冷装读档）：顶点 / 片元的 S 行只装载着色器库、不建管线；键不在任何 R 行里的（Mac 累积来源 4874 行，多为 10-27 前
     #   「预取即记」的老行），加载页 30 秒里占掉约四成工时（S 约 11 ms / 行、R 约 47 ms / 行，按两段吞吐联立估），把进场景要等的 R 行挤到放行之后。
     #   不删：挪到所有别的行之后，照样在后台装。几何等别的阶段的 S 行（几何管线不记 R 行，只能靠 S 行预装）与 C 行不动
+    # 同一对网格 / 片元（同 pso_skey、同任务键）既有补齐行又有不补齐行：不补齐那行是被拒过的（网格没写片元读的 user(locn)，宿主被拒后才要补齐变体），
+    #   照它预热必拒（D-75KF：0400486024DEC000 植被那对 iOS 报 locn5 不配、部分 Mac 编译服务连接中断）。宿主预热 warm_parse 同规则
+    padded = {tuple(r.split('\t')[1:3]) for r in rows if r.startswith('M\t') and int(r.split('\t')[3] or '0', 16)}
+    rows = [r for r in rows if not (r.startswith('M\t') and not int(r.split('\t')[3] or '0', 16) and tuple(r.split('\t')[1:3]) in padded)]
     used = {k for r in rows if r.startswith(('R\t', 'M\t')) for k in r_keys(r.split('\t')[1]) if k}
     lib_only = lambda r: r.startswith('S\t') and r.split('\t')[2] in ('0', '1') and r.split('\t')[1] not in used
     deferred = [r for r in rows if lib_only(r)]

@@ -41,6 +41,13 @@ for raw in subprocess.check_output(['git', '-C', str(root), 'ls-files', '-z']).s
     else:
         shutil.copy2(src, dst)
 PY
+# 宿主依赖清单含 `dotnet --version`（docker 的清单不含）。缓存里还没有私有固定 SDK 时，
+# 先引导好再算清单：否则这里把 dotnet 记成「没装」，下面的构建把 SDK 引导进同一路径后
+# 再算就对不上，首次准备必然报「准备期间依赖清单变化」。显式 S2A_ANDROID_DOTNET 不引导。
+if [ -z "${S2A_ANDROID_DOTNET:-}" ]; then
+    (cd "$scratch/src/android" && bash cs/build.sh --prepare-sdk) || {
+        echo '【红】.NET SDK 准备失败；检查上方下载或 SHA 校验' >&2; exit 1; }
+fi
 expected=$(python3 "$android_dir/docker/cache-identity.py" --backend host \
     --repo "$repo_dir" --source "$scratch/src" --sdk "$ANDROID_HOME" --ndk "$ndk" \
     --dotnet "$dotnet" --javac "$JAVAC") || { echo '【红】依赖清单不可核实' >&2; exit 1; }

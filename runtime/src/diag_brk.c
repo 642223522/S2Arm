@@ -106,7 +106,11 @@ static void dump_hit(int k, int h, const _STRUCT_ARM_THREAD_STATE64 *ss) {
 }
 // ---------- 打点（S2A_DIAG_STAMP）----------
 #define NSLOT 128
-static struct { _Atomic(pthread_t) who; uint64_t t[8], cpu0, svc0, gsv0, tn0, tns0; int seen; } g_ts[NSLOT];   // 每线程一格（按 pthread_self 认领，不释放）
+static struct { _Atomic(pthread_t) who; uint64_t t[8], cpu0, svc0, gsv0, tn0, tns0; _Atomic int seen; uint32_t mtid; } g_ts[NSLOT];   // 每线程一格（按 pthread_self 认领，不释放）；mtid = 系统线程号（重叠开窗报它）
+// 重叠开窗（#f1ad1e：游戏的加载线程与主渲染线程是否同时在 SetRenderTargets 里改设备上的共享数组）：开窗时别的线程的窗还开着就记一次——
+//   开窗方、已在窗里的一方（系统线程号、已开多久、走到第几点）。前 OVL_LOG 次逐次打，之后只计数；收局 / 崩溃的汇总里带总次数与当时还开着窗的线程
+enum { OVL_LOG = 20 };
+static _Atomic uint64_t g_ovl_n;
 static _Atomic uint64_t g_win_n, g_win_buck[7];   // <1µs <10µs <100µs <1ms <10ms <100ms ≥100ms
 static struct { uint64_t wall, cpu, seg[8], nsvc, gsv, tn, tns; int nseg, seen, last_svc, glast; } g_top[5]; static pthread_mutex_t g_top_mu = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t ns_of(uint64_t t) { return t * g_tb.numer / g_tb.denom; }
@@ -125,7 +129,15 @@ static const char *buck_name[7] = {"<1µs", "<10µs", "<100µs", "<1ms", "<10ms"
 static void stamp_report(const char *why) {
     char b[400]; size_t l = 0;
     for (int i = 0; i < 7; i++) l += (size_t)snprintf(b + l, sizeof b - l, "%s%s %llu", i ? "、" : "", buck_name[i], (unsigned long long)atomic_load(&g_win_buck[i]));
-    LOG("诊断打点（%s）：空窗走完 %llu 次，分布 %s", why, (unsigned long long)atomic_load(&g_win_n), b);
+    LOG("诊断打点（%s）：空窗走完 %llu 次，分布 %s；重叠开窗 %llu 次", why, (unsigned long long)atomic_load(&g_win_n), b, (unsigned long long)atomic_load(&g_ovl_n));
+    {   // 此刻还开着窗的线程（崩溃处理里调：崩的线程在窗里时，另一条线程是否也在窗里一眼可见）
+        uint64_t now = mach_absolute_time();
+        for (int i = 0; i < NSLOT; i++) {
+            int sn = atomic_load(&g_ts[i].seen); if (!atomic_load(&g_ts[i].who) || !(sn & 1)) continue;
+            int at = 1; for (int j = 2; j < 8; j++) if (sn & (1 << j)) at = j;
+            LOG("诊断打点（%s）：线程 %u 的窗还开着（已开 %.3f ms、走到第 %d 点）", why, g_ts[i].mtid, ns_of(now - g_ts[i].t[1]) / 1e6, at);
+        }
+    }
     if (pthread_mutex_trylock(&g_top_mu)) { LOG("诊断打点：最长表正被别的线程写，这次不打"); return; }   // 崩溃处理里也调：不能等锁
     for (int i = 0; i < 5 && g_top[i].wall; i++) { char sg[200]; size_t q = 0;
         for (int k = 0; k < g_top[i].nseg; k++) q += (size_t)snprintf(sg + q, sizeof sg - q, "%s%.1f", k ? " / " : "", g_top[i].seg[k] / 1000.0);
@@ -144,7 +156,15 @@ static void stamp_hit(int st) {
     int s = slot_of(); if (s < 0) return;
     uint64_t now = mach_absolute_time();
     int s2a_thread_svc_stat(uint64_t *n); uint64_t s2a_gate_svc_stat(int *last), s2a_touch_stat(uint64_t *mach); int gl;
-    if (st == 1) { g_ts[s].seen = 1 | 2; g_ts[s].t[1] = now; g_ts[s].cpu0 = thread_cpu_ns(); s2a_thread_svc_stat(&g_ts[s].svc0); g_ts[s].gsv0 = s2a_gate_svc_stat(&gl); g_ts[s].tn0 = s2a_touch_stat(&g_ts[s].tns0); return; }
+    if (st == 1) {
+        for (int i = 0; i < NSLOT; i++) {   // 先查别的线程有没有开着的窗（读别格不加锁：诊断读数，竞态只影响这一行的「走到第几点」）
+            if (i == s || !atomic_load(&g_ts[i].who) || !(atomic_load(&g_ts[i].seen) & 1)) continue;
+            uint64_t k = atomic_fetch_add(&g_ovl_n, 1) + 1; int at = 1; int sn = atomic_load(&g_ts[i].seen); for (int j = 2; j < 8; j++) if (sn & (1 << j)) at = j;
+            if (k <= OVL_LOG) LOG("诊断打点：重叠开窗 第 %llu 次——线程 %u 开窗时线程 %u 的窗还开着（已开 %.3f ms、走到第 %d 点）",
+                                  (unsigned long long)k, pthread_mach_thread_np(pthread_self()), g_ts[i].mtid, ns_of(now - g_ts[i].t[1]) / 1e6, at);
+        }
+        g_ts[s].mtid = pthread_mach_thread_np(pthread_self());
+        g_ts[s].seen = 1 | 2; g_ts[s].t[1] = now; g_ts[s].cpu0 = thread_cpu_ns(); s2a_thread_svc_stat(&g_ts[s].svc0); g_ts[s].gsv0 = s2a_gate_svc_stat(&gl); g_ts[s].tn0 = s2a_touch_stat(&g_ts[s].tns0); return; }
     if (!(g_ts[s].seen & 1)) return;   // 没开窗就到了中间点 / 收窗点：不算
     g_ts[s].seen |= 1 << st; g_ts[s].t[st] = now;
     if (st != g_nst) return;

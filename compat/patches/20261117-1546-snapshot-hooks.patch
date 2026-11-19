@@ -1,0 +1,180 @@
+diff --git a/src/Ryujinx.Audio/Renderer/Server/AudioRenderSystem.cs b/src/Ryujinx.Audio/Renderer/Server/AudioRenderSystem.cs
+index 729db9037390bf55989897c46f35978161cf124f..b0f7887e364b40723c0251acc64ad8d95a61ec5b 100644
+--- a/src/Ryujinx.Audio/Renderer/Server/AudioRenderSystem.cs
++++ b/src/Ryujinx.Audio/Renderer/Server/AudioRenderSystem.cs
+@@ -65,9 +65,29 @@ namespace Ryujinx.Audio.Renderer.Server
+         // S2Arm: voice slot diagnostics (S2A_AUDIO_VOICE_DIAG=1), read-only; null when off
+         private S2AVoiceSlotDiag _s2aVoiceDiag;
+ 
++        // S2Arm 即时存档：渲染器状态 = 自有工作缓冲（整块）+ 少量托管标量；恢复时 B 用同参数新建同布局的缓冲，整块拷回再把块内绝对指针平移
++        //   缓冲大小记在旁挂表里、只在即时存档开着时登记（S2ASnapOn 由服务层启动时置）：关着时每个渲染器不多一个字段
++        public static bool S2ASnapOn;
++        private static System.Runtime.CompilerServices.ConditionalWeakTable<AudioRenderSystem, System.Runtime.CompilerServices.StrongBox<int>> s_s2aOwnedSize;
++        public unsafe (IntPtr Ptr, int Size) S2ASnapBuffer => ((IntPtr)_ownedWorkBuffer, s_s2aOwnedSize != null && s_s2aOwnedSize.TryGetValue(this, out var b) ? b.Value : 0);
++        public Lock S2ALock => _lock;
++        public int S2ASessionId => _sessionId;
++        public void S2AForceEffectReinit() { for (int i = 0; i < _effectContext.S2ACount; i++) _effectContext.GetEffect(i).S2AForceReinit(); }
++        // 托管标量个数（布局指纹用）：取一个不跑构造函数的空实例数一下，不建真渲染器
++        public static int S2ASnapScalarCount => ((AudioRenderSystem)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(AudioRenderSystem))).S2ASnapScalarsSafe().Length;
++        private ulong[] S2ASnapScalarsSafe() { try { return S2ASnapScalars(); } catch { return System.Array.Empty<ulong>(); } }
++        public ulong[] S2ASnapScalars() => new ulong[] { _isActive ? 1ul : 0, _totalElapsedTicksUpdating, _totalElapsedTicks, _elapsedFrameCount, _voiceDropEnabled ? 1ul : 0,
++            _voiceDropCount, BitConverter.SingleToUInt32Bits(_voiceDropParameter), _renderingTimeLimitPercent, _isDspRunningBehind ? 1ul : 0 };
++        public void S2ARestoreScalars(ulong[] v)
++        {
++            _isActive = v[0] != 0; _totalElapsedTicksUpdating = v[1]; _totalElapsedTicks = v[2]; _elapsedFrameCount = v[3]; _voiceDropEnabled = v[4] != 0;
++            _voiceDropCount = (uint)v[5]; _voiceDropParameter = BitConverter.UInt32BitsToSingle((uint)v[6]); _renderingTimeLimitPercent = (uint)v[7]; _isDspRunningBehind = v[8] != 0;
++        }
++
+         public unsafe Memory<byte> AllocateOwnedWorkBuffer(int size)
+         {
+             _ownedWorkBuffer = (byte*)System.Runtime.InteropServices.NativeMemory.AllocZeroed((nuint)Math.Max(size, 1));
++            if (S2ASnapOn) (s_s2aOwnedSize ??= new()).AddOrUpdate(this, new System.Runtime.CompilerServices.StrongBox<int>(size));
+ 
+             return new Ryujinx.Memory.NativeMemoryManager<byte>(_ownedWorkBuffer, size).Memory;
+         }
+diff --git a/src/Ryujinx.Audio/Renderer/Server/AudioRendererManager.cs b/src/Ryujinx.Audio/Renderer/Server/AudioRendererManager.cs
+index d121d17878c1209cbf387f0b7d7482e34f8cafe0..16641073a297e272b232a66ea9cce33b22717382 100644
+--- a/src/Ryujinx.Audio/Renderer/Server/AudioRendererManager.cs
++++ b/src/Ryujinx.Audio/Renderer/Server/AudioRendererManager.cs
+@@ -40,6 +40,9 @@ namespace Ryujinx.Audio.Renderer.Server
+         /// The <see cref="AudioRenderSystem"/> sessions instances.
+         /// </summary>
+         private readonly AudioRenderSystem[] _sessions;
++        // S2Arm 即时存档：会话表与会话锁（持锁时工作线程停在两次处理之间）
++        public AudioRenderSystem[] S2ASessions => _sessions;
++        public Lock S2ASessionLock => _sessionLock;
+ 
+         /// <summary>
+         /// The count of active sessions.
+diff --git a/src/Ryujinx.Audio/Renderer/Server/Effect/BaseEffect.cs b/src/Ryujinx.Audio/Renderer/Server/Effect/BaseEffect.cs
+index 77d9b5c2950604927803743107a3b9730f6674cb..9157e3e1a825116e582c16177d5a46689018079d 100644
+--- a/src/Ryujinx.Audio/Renderer/Server/Effect/BaseEffect.cs
++++ b/src/Ryujinx.Audio/Renderer/Server/Effect/BaseEffect.cs
+@@ -15,6 +15,9 @@ namespace Ryujinx.Audio.Renderer.Server.Effect
+     /// </summary>
+     public class BaseEffect
+     {
++        // S2Arm 即时存档：恢复后让带 DSP 状态的效果在下一拍按参数重新初始化状态（托管状态不随渲染器缓冲拷回）
++        public virtual void S2AForceReinit() { }
++
+         /// <summary>
+         /// The <see cref="EffectType"/> of the effect.
+         /// </summary>
+diff --git a/src/Ryujinx.Audio/Renderer/Server/Effect/BiquadFilterEffect.cs b/src/Ryujinx.Audio/Renderer/Server/Effect/BiquadFilterEffect.cs
+index 55a8985295cc850297f511a611fa43396b10eb3b..2777761cb14592a3e2c25e1ad93c3bda12011033 100644
+--- a/src/Ryujinx.Audio/Renderer/Server/Effect/BiquadFilterEffect.cs
++++ b/src/Ryujinx.Audio/Renderer/Server/Effect/BiquadFilterEffect.cs
+@@ -15,6 +15,8 @@ namespace Ryujinx.Audio.Renderer.Server.Effect
+     /// </summary>
+     public class BiquadFilterEffect : BaseEffect
+     {
++        public override void S2AForceReinit() => Parameter.Status = UsageState.Invalid;   // S2Arm 即时存档
++
+         /// <summary>
+         /// The biquad filter parameter.
+         /// </summary>
+diff --git a/src/Ryujinx.Audio/Renderer/Server/Effect/CompressorEffect.cs b/src/Ryujinx.Audio/Renderer/Server/Effect/CompressorEffect.cs
+index de0f44e475ed55621befb7ffdd2d7034074b4925..f6bb879aab35e793f51efca57639641475d98033 100644
+--- a/src/Ryujinx.Audio/Renderer/Server/Effect/CompressorEffect.cs
++++ b/src/Ryujinx.Audio/Renderer/Server/Effect/CompressorEffect.cs
+@@ -14,6 +14,8 @@ namespace Ryujinx.Audio.Renderer.Server.Effect
+     /// </summary>
+     public class CompressorEffect : BaseEffect
+     {
++        public override void S2AForceReinit() => Parameter.Status = UsageState.Invalid;   // S2Arm 即时存档
++
+         /// <summary>
+         /// The compressor parameter.
+         /// </summary>
+diff --git a/src/Ryujinx.Audio/Renderer/Server/Effect/DelayEffect.cs b/src/Ryujinx.Audio/Renderer/Server/Effect/DelayEffect.cs
+index 9db1ce465d95275e25416023351984f25849749f..12d44e7609bdb7e6a88da27f0fae911c3e134396 100644
+--- a/src/Ryujinx.Audio/Renderer/Server/Effect/DelayEffect.cs
++++ b/src/Ryujinx.Audio/Renderer/Server/Effect/DelayEffect.cs
+@@ -15,6 +15,8 @@ namespace Ryujinx.Audio.Renderer.Server.Effect
+     /// </summary>
+     public class DelayEffect : BaseEffect
+     {
++        public override void S2AForceReinit() => Parameter.Status = UsageState.Invalid;   // S2Arm 即时存档
++
+         /// <summary>
+         /// The delay parameter.
+         /// </summary>
+diff --git a/src/Ryujinx.Audio/Renderer/Server/Effect/EffectContext.cs b/src/Ryujinx.Audio/Renderer/Server/Effect/EffectContext.cs
+index 619f31100d08c517d6e7ed7f5335ee7263b1e4c9..e8096d1543ee20e8716578c72ba6856746282ce9 100644
+--- a/src/Ryujinx.Audio/Renderer/Server/Effect/EffectContext.cs
++++ b/src/Ryujinx.Audio/Renderer/Server/Effect/EffectContext.cs
+@@ -14,6 +14,7 @@ namespace Ryujinx.Audio.Renderer.Server.Effect
+         /// Storage for <see cref="BaseEffect"/>.
+         /// </summary>
+         private BaseEffect[] _effects;
++        public int S2ACount => _effects?.Length ?? 0;   // S2Arm 即时存档
+ 
+         /// <summary>
+         /// The total effect count.
+diff --git a/src/Ryujinx.Audio/Renderer/Server/Effect/LimiterEffect.cs b/src/Ryujinx.Audio/Renderer/Server/Effect/LimiterEffect.cs
+index d9b3d5666ec69e1347cf8545222d69fddb5ea756..f0de2b83ec8697c5c0746bdfd99e9944012fd4a6 100644
+--- a/src/Ryujinx.Audio/Renderer/Server/Effect/LimiterEffect.cs
++++ b/src/Ryujinx.Audio/Renderer/Server/Effect/LimiterEffect.cs
+@@ -14,6 +14,8 @@ namespace Ryujinx.Audio.Renderer.Server.Effect
+     /// </summary>
+     public class LimiterEffect : BaseEffect
+     {
++        public override void S2AForceReinit() => Parameter.Status = UsageState.Invalid;   // S2Arm 即时存档
++
+         /// <summary>
+         /// The limiter parameter.
+         /// </summary>
+diff --git a/src/Ryujinx.Audio/Renderer/Server/Effect/ReverbEffect.cs b/src/Ryujinx.Audio/Renderer/Server/Effect/ReverbEffect.cs
+index aa6e67448152c940f9a1e12e855d0b6ef665c032..a8d8082123ec718ec31163af7ae39c0d470e9e8c 100644
+--- a/src/Ryujinx.Audio/Renderer/Server/Effect/ReverbEffect.cs
++++ b/src/Ryujinx.Audio/Renderer/Server/Effect/ReverbEffect.cs
+@@ -14,6 +14,8 @@ namespace Ryujinx.Audio.Renderer.Server.Effect
+     /// </summary>
+     public class ReverbEffect : BaseEffect
+     {
++        public override void S2AForceReinit() => Parameter.Status = UsageState.Invalid;   // S2Arm 即时存档
++
+         /// <summary>
+         /// The reverberation parameter.
+         /// </summary>
+diff --git a/src/Ryujinx.HLE/HOS/Services/IpcService.cs b/src/Ryujinx.HLE/HOS/Services/IpcService.cs
+index 1a50e5d1947e212d45d7955024b85da4ada39a9f..bbeb68441d1177763a8d0dc51ebc8ccccc368b0e 100644
+--- a/src/Ryujinx.HLE/HOS/Services/IpcService.cs
++++ b/src/Ryujinx.HLE/HOS/Services/IpcService.cs
+@@ -362,6 +362,7 @@ namespace Ryujinx.HLE.HOS.Services
+         internal bool S2AIsDomain => _isDomain;
+ 
+         internal string S2ADomainObjectName(int id) => GetObject(id)?.GetType().Name;
++        internal string S2ADomainObjectFullName(int id) => GetObject(id)?.GetType().FullName;   // S2Arm 即时存档：同名接口（AM / FS 都有 IStorage）按命名空间分
+ 
+         public void SetParent(IpcService parent)
+         {
+diff --git a/src/Ryujinx.Horizon/Audio/AudioManagers.cs b/src/Ryujinx.Horizon/Audio/AudioManagers.cs
+index 3587f8f3565836e3439773cbaf8e6a30a32a6483..c456bf0dc3185a502fda0f3e85ae700d984a3fa4 100644
+--- a/src/Ryujinx.Horizon/Audio/AudioManagers.cs
++++ b/src/Ryujinx.Horizon/Audio/AudioManagers.cs
+@@ -11,12 +11,14 @@ using System.Threading;
+ 
+ namespace Ryujinx.Horizon.Audio
+ {
+-    class AudioManagers : IDisposable
++    public class AudioManagers : IDisposable   // S2Arm 即时存档：服务层要访问
+     {
+         public AudioManager AudioManager { get; }
+         public AudioOutputManager AudioOutputManager { get; }
+         public AudioInputManager AudioInputManager { get; }
+         public AudioRendererManager AudioRendererManager { get; }
++        public static AudioManagers S2ALast { get; private set; }
++        public static bool S2ASnapOn;   // S2Arm 即时存档开着（服务层启动时按原生层的唯一开关置）
+         public VirtualDeviceSessionRegistry AudioDeviceSessionRegistry { get; }
+ 
+         public AudioManagers(IHardwareDeviceDriver audioDeviceDriver, ITickSource tickSource)
+@@ -25,6 +27,8 @@ namespace Ryujinx.Horizon.Audio
+             AudioOutputManager = new AudioOutputManager();
+             AudioInputManager = new AudioInputManager();
+             AudioRendererManager = new AudioRendererManager(tickSource);
++            if (S2ASnapOn)
++                S2ALast = this;   // S2Arm 即时存档：服务层按它找渲染器会话（只在存档 / 恢复时留这个静态引用，关着不改对象生命周期）
+             AudioDeviceSessionRegistry = new VirtualDeviceSessionRegistry(audioDeviceDriver);
+ 
+             IWritableEvent[] audioOutputRegisterBufferEvents = new IWritableEvent[Constants.AudioOutSessionCountMax];

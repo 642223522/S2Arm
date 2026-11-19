@@ -383,6 +383,18 @@ namespace Ryujinx.Graphics.Shader
         }
 
         /// <summary>
+        /// S2A: Queries whether raw loads (SULD.D) from non-buffer storage images may be declared without a format,
+        /// keeping the integer sampled type of the load size. The host then binds a view of the texture's byte size in
+        /// that numeric class (an RG32F texture read as raw bits gets an RG32_UINT view), so the declaration matches the view.
+        /// Off by default: a host that binds the texture's own format view keeps the explicit size format.
+        /// </summary>
+        /// <returns>True if raw image loads may be declared without a format, false otherwise</returns>
+        bool QueryHostSupportsImageLoadFormattedRaw()
+        {
+            return false;
+        }
+
+        /// <summary>
         /// Queries host support for writable images without a explicit format declaration on the shader.
         /// </summary>
         /// <returns>True if formatless image store is supported, false otherwise</returns>
@@ -601,6 +613,12 @@ namespace Ryujinx.Graphics.Shader
         TextureFormat QueryTextureFormat(int handle, int cbufSlot = -1)
         {
             return TextureFormat.R8G8B8A8Unorm;
+        }
+
+        /// <summary>S2A: bound sampled-view format for numeric type selection; Unknown preserves the upstream float declaration.</summary>
+        TextureFormat QueryS2ASampledTextureFormat(int handle, int cbufSlot = -1)
+        {
+            return TextureFormat.Unknown;
         }
 
         /// <summary>

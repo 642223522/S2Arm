@@ -46,6 +46,7 @@ def runtime_deps_fingerprint():
     h.update((ROOT / 'launchers/macos/runtime_sources.py').read_bytes())
     h.update(runtime_sources.deployment_target().encode())
     h.update((ROOT / 'launchers/macos/bundle_runtime.py').read_bytes())   # 收什么、怎么收也算：11-02 只改拷贝规则补 Pillow，旧 Runtime 指纹不变照旧复用、玩家仍缺
+    h.update((ROOT / 'launchers/shared/pil_prune.py').read_bytes())   # 瘦身规则也算（#1570：只改它不换指纹，旧 Runtime 照旧缺画字）
     h.update((ROOT / 'launchers/macos/requirements-runtime.txt').read_bytes())
     h.update(b'\n')
     for formula, name in TOOLS:
@@ -126,6 +127,8 @@ def build(out):
     for p in installed.iterdir():
         if p.name.lower().startswith(keep):
             cp(p, site/p.name)
+    import pil_prune   # Pillow 只留出包用得到的（去 AVIF / Tk 与只被它们引用的库；画字留着，下游做包工具要用，#1570）
+    pil_prune.prune(site, lambda f: [l.strip().split(' ')[0].rsplit('/', 1)[-1] for l in output(['otool', '-L', f]).splitlines()[1:]])
     (out/'python/bin/python3').unlink(missing_ok=True)
     (out/'python/bin/python3').symlink_to('python3.12')
     (out/'bin').mkdir()
@@ -139,13 +142,7 @@ def build(out):
         os.environ.pop(name, None)   # 一律按本树源码编，不拿外部指定的二进制
     cp(rewriter.c_path(), out/'bin/s2a-rewrite')
     (out/'bin/s2a-rewrite.source').write_text(rewriter.source_digest()+'\n')
-    dotnet = pathlib.Path(shutil.which('dotnet')).resolve().parent
-    versions_dotnet = sorted((dotnet/'shared/Microsoft.NETCore.App').glob('10.*'), key=lambda p:tuple(map(int,p.name.split('.'))))
-    version_dotnet = versions_dotnet[-1]
-    cp(version_dotnet, out/'dotnet/shared/Microsoft.NETCore.App'/version_dotnet.name)
-    cp(dotnet/'host', out/'dotnet/host')
-    cp(dotnet/'dotnet', out/'dotnet/dotnet')
-    (out/'bin/dotnet').symlink_to('../dotnet/dotnet')
+    # .NET 运行时不再随包：出包用的 C# 工具（读取器 / romfs 索引 / 烘焙器 / 直连批量进程）全为引擎 Binaries/ 里的 NativeAOT 单文件（bundle_engine.py），玩家机零 .NET
     libs = out/'lib'
     libs.mkdir()
     todo = [p for p in out.rglob('*')
@@ -204,39 +201,64 @@ def build(out):
         if p.name not in ('python3', 'python3.12'):
             p.unlink()
     env = dict(os.environ, PYTHONNOUSERSITE='1', PYTHONDONTWRITEBYTECODE='1')
-    run([out/'python/bin/python3', '-B', '-I', '-c', 'import capstone,lz4.block,numpy,PIL.Image,zstandard,ctypes,zlib,hashlib; print("Portable Python dependencies OK")'], env=env)
+    run([out/'python/bin/python3', '-B', '-I', '-c', 'import capstone,lz4.block,numpy,PIL.Image,PIL.ImageFont,PIL._imagingft,zstandard,ctypes,zlib,hashlib; print("Portable Python dependencies OK")'], env=env)
     # zstd 解压要用 Runtime/bin/zstd 旁边的 ../lib/libzstd.1.dylib（App 的 Python 3.12 没有 compression.zstd；Python 侧入口 graphics/tools/shbake/zstd_lib.py 随 pack/uepak-v8 入）
     run([out/'python/bin/python3', '-B', '-I', '-c', f'import ctypes; ctypes.CDLL({str(out / "lib/libzstd.1.dylib")!r}).ZSTD_versionNumber; print("Runtime libzstd OK")'], env=env)
     licenses = out/'licenses'
     licenses.mkdir()
-    for src, name in [(python/'lib/python3.12/LICENSE.txt', 'Python-LICENSE.txt'),
-                      (dotnet/'LICENSE.txt', 'dotnet-LICENSE.txt'), (dotnet/'ThirdPartyNotices.txt', 'dotnet-ThirdPartyNotices.txt'),
-                      (tool_sources['spirv-tools']/'LICENSE', 'SPIRV-Tools-LICENSE.txt'),
-                      (tool_sources['zstd']/'LICENSE', 'Zstandard-LICENSE.txt'),
-                      (prefixes['bash']/'COPYING', 'bash-COPYING.txt'),
-                      (ROOT/'launchers/macos/runtime_source_offer.txt', 'S2Arm-runtime-source-offer.txt'),
-                      (tool_sources['spirv-cross']/'LICENSE', 'SPIRV-Cross-LICENSE.txt'),
-                      (tool_sources['glslang']/'LICENSE.txt', 'glslang-LICENSE.txt'),
-                      (ROOT/'runtime/rewriter/LICENSES/capstone.txt', 'capstone-LICENSE.txt'),
-                      (ROOT/'runtime/rewriter/LICENSES/lz4.txt', 'lz4-LICENSE.txt')]:
-        shutil.copy2(src, licenses/name)
-    dependencies = output([brew, 'deps', '--installed', 'bash']).splitlines()
+    for src, name in [
+        (python / "lib/python3.12/LICENSE.txt", "Python-LICENSE.txt"),
+        (tool_sources["spirv-tools"] / "LICENSE", "SPIRV-Tools-LICENSE.txt"),
+        (tool_sources["zstd"] / "LICENSE", "Zstandard-LICENSE.txt"),
+        (prefixes["bash"] / "COPYING", "bash-COPYING.txt"),
+        (ROOT / "launchers/macos/runtime_source_offer.txt", "S2Arm-runtime-source-offer.txt"),
+        (tool_sources["spirv-cross"] / "LICENSE", "SPIRV-Cross-LICENSE.txt"),
+        (tool_sources["glslang"] / "LICENSE.txt", "glslang-LICENSE.txt"),
+        (ROOT / "runtime/rewriter/LICENSES/capstone.txt", "capstone-LICENSE.txt"),
+        (ROOT / "runtime/rewriter/LICENSES/lz4.txt", "lz4-LICENSE.txt"),
+    ]:
+        shutil.copy2(src, licenses / name)
+    dependencies = output([brew, "deps", "--installed", "bash"]).splitlines()
     for name in set(dependencies):
-        prefix = pathlib.Path(output([brew, '--prefix', name]))
-        for p in prefix.glob('*'):
-            if p.is_file() and any(x in p.name.upper() for x in ('LICENSE', 'COPYING', 'NOTICE')):
-                shutil.copy2(p, licenses/(name+'-'+p.name))
-    versions = json.loads(output([out/'python/bin/python3', '-B', '-I', '-c',
-        'import json,sys,importlib.metadata as m; print(json.dumps(dict(python=sys.version.split()[0], **{p:m.version(p) for p in ["capstone","lz4","numpy"]})))']))
-    versions.update(runtimeSchema=4, runtimeDeps=runtime_deps_fingerprint(), dotnet=version_dotnet.name, timeout='tools/bin/timeout',
-                    spirvTools='spirv-tools '+runtime_sources.SPIRV_TOOLS_VERSION, zstd='zstd '+runtime_sources.ZSTD_VERSION, bash=output([brew, 'list', '--versions', 'bash']),
-                    spirvCross='spirv-cross '+runtime_sources.SPIRV_CROSS_VERSION, glslang='glslang '+runtime_sources.GLSLANG_VERSION,
-                    rewriter=rewriter.source_digest())
-    (out/'versions.json').write_text(json.dumps(versions, indent=2))
-    for tool, arguments in [('spirv-as',['--version']), ('spirv-val',['--version']), ('zstd',['--version']),
-                            ('timeout',['5','true']), ('bash',['-c','[ "${BASH_VERSINFO[0]}" -ge 5 ]']), ('spirv-cross',['--help']), ('glslangValidator',['--version']), ('s2a-rewrite',['--version'])]:
-        run([out/'bin'/tool,*arguments],stdout=subprocess.DEVNULL,env=env)
-    print('Portable native runtime files:',verify_portable_runtime(out))
+        prefix = pathlib.Path(output([brew, "--prefix", name]))
+        for p in prefix.glob("*"):
+            if p.is_file() and any(x in p.name.upper() for x in ("LICENSE", "COPYING", "NOTICE")):
+                shutil.copy2(p, licenses / (name + "-" + p.name))
+    versions = json.loads(
+        output(
+            [
+                out / "python/bin/python3",
+                "-B",
+                "-I",
+                "-c",
+                'import json,sys,importlib.metadata as m; print(json.dumps(dict(python=sys.version.split()[0], **{p:m.version(p) for p in ["capstone","lz4","numpy"]})))',
+            ]
+        )
+    )
+    versions.update(
+        runtimeSchema=5,
+        runtimeDeps=runtime_deps_fingerprint(),
+        timeout="tools/bin/timeout",
+        spirvTools="spirv-tools " + runtime_sources.SPIRV_TOOLS_VERSION,
+        zstd="zstd " + runtime_sources.ZSTD_VERSION,
+        bash=output([brew, "list", "--versions", "bash"]),
+        spirvCross="spirv-cross " + runtime_sources.SPIRV_CROSS_VERSION,
+        glslang="glslang " + runtime_sources.GLSLANG_VERSION,
+        rewriter=rewriter.source_digest(),
+    )
+    (out / "versions.json").write_text(json.dumps(versions, indent=2))
+    for tool, arguments in [
+        ("spirv-as", ["--version"]),
+        ("spirv-val", ["--version"]),
+        ("zstd", ["--version"]),
+        ("timeout", ["5", "true"]),
+        ("bash", ["-c", '[ "${BASH_VERSINFO[0]}" -ge 5 ]']),
+        ("spirv-cross", ["--help"]),
+        ("glslangValidator", ["--version"]),
+        ("s2a-rewrite", ["--version"]),
+    ]:
+        run([out / "bin" / tool, *arguments], stdout=subprocess.DEVNULL, env=env)
+    print("Portable native runtime files:", verify_portable_runtime(out))
 
 
 def main():

@@ -4,14 +4,46 @@
 #pragma once
 #include "nvn_obj.h"
 #include "nvn_backend.h"
+#include <string.h>
 
 // 贴图对象 → 后端贴图。首次使用时建；内容来自游戏内存的，在 c 这一段里上传 / 脏了重传。NULL = 取不到（已经 nvn_unimpl 记账）。线程：[提交]。
 nvn_gpu_tex rp_tex_resolve(const tex_t *t, nvn_gpu_cmd c);
-// 贴图号 → 视图（登记时带视图记录的按它建，否则默认视图）。t_out 可为 NULL。号没登记 / 池外 → NULL。线程：[提交]。
-nvn_gpu_view rp_view_by_id(int id, nvn_gpu_cmd c, const tex_t **t_out);
+// 贴图号 → 视图（登记时带视图记录的按它建，否则默认视图）。号没登记 / 池外 → NULL。线程：[提交]。
+// t_out 可为 NULL；非 NULL 时取到登记就在锁内把登记快照拷进调用方的 *t_out，没取到清零（serial 为 0）。
+//   不交出登记表内地址：客体线程登记更大的号会让表扩容换地址（#1581）。
+nvn_gpu_view rp_view_by_id(int id, nvn_gpu_cmd c, tex_t *t_out);
 // 按着色器声明取兼容视图；dtt = NVN 目标 + 1，0 沿用原样。elem 表示句柄数组元素。
-// 返回视图由核心持有；调用方在 pin 窗口内取用并交给后端。线程：[提交]。
-nvn_gpu_view rp_view_by_id_decl(int id, uint8_t dtt, uint8_t dcls, int elem, nvn_gpu_cmd c, const tex_t **t_out);
+// 返回视图由核心持有；调用方在 pin 窗口内取用并交给后端。t_out 同 rp_view_by_id（调用方持有的快照）。线程：[提交]。
+nvn_gpu_view rp_view_by_id_decl(int id, uint8_t dtt, uint8_t dcls, int elem, nvn_gpu_cmd c, tex_t *t_out);
+// 按声明规划同一存储的视图目标；0 原样、1 已改记录、-1 无法桥接。不会创建零贴图。
+static inline int rp_decl_view_target(const tex_t *t, view_t *v, int has_v, uint8_t dtt) {
+    if (!dtt) return 0;
+    int want = dtt - 1, have = has_v && v->set_target ? v->target : t->d.target;
+    if (want == have) return 0;
+    uint32_t layers = t->d.target == NVN_TEXTURE_TARGET_CUBEMAP ? 6 :
+        t->d.target == NVN_TEXTURE_TARGET_2D_ARRAY || t->d.target == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY ? t->d.depth : 1;
+    if (has_v && v->set_layers) layers = v->nlayers ? v->nlayers : (layers > v->min_layer ? layers - v->min_layer : 1);
+    uint32_t n = 0;
+    int layered = have == NVN_TEXTURE_TARGET_2D || have == NVN_TEXTURE_TARGET_2D_ARRAY ||
+        have == NVN_TEXTURE_TARGET_CUBEMAP || have == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY;
+    if (layered) {
+        if (want == NVN_TEXTURE_TARGET_2D) n = 1;
+        else if (want == NVN_TEXTURE_TARGET_2D_ARRAY) n = layers;
+        else if (want == NVN_TEXTURE_TARGET_CUBEMAP && layers >= 6) n = 6;
+        else if (want == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY && layers >= 6) n = layers / 6 * 6;
+    }
+    if ((want == NVN_TEXTURE_TARGET_2D_MULTISAMPLE && have == NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY) ||
+        (want == NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY && have == NVN_TEXTURE_TARGET_2D_MULTISAMPLE)) n = 1;
+    if (!n || n > UINT16_MAX) return -1;
+    int cube = want == NVN_TEXTURE_TARGET_CUBEMAP || want == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY;
+    int cube_compat_array = t->d.target == NVN_TEXTURE_TARGET_2D_ARRAY && t->d.width == t->d.height && t->d.samples <= 1 && t->d.depth >= 6;
+    if (cube && t->d.target != NVN_TEXTURE_TARGET_CUBEMAP && t->d.target != NVN_TEXTURE_TARGET_CUBEMAP_ARRAY && !cube_compat_array) return -1;
+    if (!has_v) memset(v, 0, sizeof *v);
+    v->set_target = 1; v->target = (uint8_t)want;
+    v->set_layers = 1; v->nlayers = (uint16_t)n;
+    return 1;
+}
+uint64_t rp_empty_slot_zero_count(void);   // 空贴图槽绑零贴图的次数（#1147；信息计数）
 // 贴图对象 + 视图记录（NULL = 默认视图）→ 视图：渲染目标、拷贝端点用。线程：[提交]。
 nvn_gpu_view rp_view_for(const tex_t *t, const view_t *v, nvn_gpu_cmd c);
 // 当颜色附件取视图。刚建、初始内容该是全零的单级单层颜色图：不在 CPU 上填零，记成「待清零」，
@@ -28,8 +60,17 @@ void rp_view_pin_begin(void);
 void rp_view_pin_end(void);
 // 贴图号 → 登记时的贴图 / 视图快照（不建图）。1 = 这个号登记过。
 int rp_tex_snap_by_id(int id, tex_t *t, view_t *v, int *has_v);
+// 存储图像的 sRGB 别名：后端置了 NVN_GPU_CAP_STORAGE_SRGB_ALIAS、格式 f 本身不能当存储、同位宽 UNORM 能，返回那个 UNORM 格式；否则 0。
+//   NVN 的图像存储按原始字节写，不做 sRGB 编码，所以按 UNORM 视图写进 sRGB 贴图是同一份字节。
+uint32_t rp_storage_srgb_alias(uint32_t f);
 // 采样器号 → 后端采样器（首次取用时建）。没登记 → NULL。线程：[提交]。
 nvn_gpu_samp rp_samp_by_id(int id);
+// #1072：同上，但贴图 tid 的有效格式不能线性过滤时给同参数的最近点采样器（具名记账）。
+nvn_gpu_samp rp_samp_for_tex(int sid, int tid);
+// 格式能力（nvn_gpu_format_caps）按格式缓存，会话重开时清。
+uint32_t rp_fmt_caps(uint32_t f);
+// 仅供已证明不读取采样器的组合描述符；Vulkan 仍要求描述符里的对象有效。
+nvn_gpu_samp rp_sampler_for_query(void);
 // 这张贴图的内容从此以 GPU 为准（当了渲染目标 / 被拷贝写 / 被着色器写）：不再从游戏内存重传。
 void rp_tex_mark_gpu_written(const tex_t *t);
 // 只读查询：这个序号被前端标过「CPU 写过」（nvn_be_tex_cpu_written：WriteTexels、刷新范围盖到、导出等）。同步读回判内容在不在游戏内存里用。线程：任意。

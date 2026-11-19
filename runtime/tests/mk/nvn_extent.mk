@@ -1,5 +1,5 @@
 NATIVE_TEST_OWN += nvn_extent
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 NVN_EXTENT_BINARY ?= $(BUILD)/tests/t_nvn_extent
 $(NVN_EXTENT_BINARY): graphics/nvn/tests/t_nvn_extent.m $(NVN_MTL_DEPS) graphics/nvn/texture_extent.inc graphics/nvn/widen_glue.inc graphics/nvn/widen_fallback.inc $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
 	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -Wno-unused-function -Wno-unguarded-availability-new -Wno-unguarded-availability \

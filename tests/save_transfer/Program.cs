@@ -12,6 +12,57 @@ if (args.Length == 2 && args[0] == "--request")
     Console.WriteLine(SaveTransfer.Execute(File.ReadAllText(args[1])));
     return;
 }
+if (args.Length == 1 && args[0] == "--linked-root")
+{
+    // 诊断 D-R52E：数据根所在路径上有链接（游戏库挪到外置盘再链回来、/tmp 系统链接）照常做；只拦解开后跑出存档目录的（事务目录下的备份目录链到外面）。期望手写
+    string tmp = Directory.CreateDirectory(Path.Combine("/private/tmp", "s2a-linked-root-" + Guid.NewGuid().ToString("N"))).FullName;
+    string real = Path.Combine(tmp, "外置盘", "游戏库"), linkParent = Path.Combine(tmp, "链回来");
+    Directory.CreateDirectory(Path.Combine(real, "data")); Directory.CreateDirectory(Path.Combine(tmp, "work"));
+    Directory.CreateSymbolicLink(linkParent, Path.Combine(tmp, "外置盘"));
+    string id = "0100000000010000";
+    JsonObject Req(string op, string root, string work) => new() { ["operation"] = op, ["dataRoot"] = root, ["workRoot"] = work, ["path"] = Path.Combine(tmp, "x.s2asave"),
+        ["game"] = new JsonObject { ["id"] = id, ["version"] = 0, ["contentIdentity"] = new string('a', 64), ["name"] = "t" } };
+    string Code(JsonObject r) { var n = JsonNode.Parse(SaveTransfer.Execute(r.ToJsonString())); return n["ok"].GetValue<bool>() ? "ok" : n["error"]["code"].GetValue<string>(); }
+    var fails = new List<string>();
+    void Expect(bool ok, string what) { Console.WriteLine((ok ? "PASS " : "FAIL ") + what); if (!ok) fails.Add(what); }
+    string viaLink = Path.Combine(linkParent, "游戏库", "data");
+    Expect(Code(Req("status", viaLink, Path.Combine(tmp, "work"))) == "ok", "data root reached through a linked parent folder: status ok");
+    string viaTmp = "/tmp" + Path.Combine(real, "data").Substring("/private/tmp".Length);
+    Expect(Code(Req("status", viaTmp, Path.Combine(tmp, "work"))) == "ok", "data root under the /tmp system link: status ok");
+    string outside = Directory.CreateDirectory(Path.Combine(tmp, "elsewhere")).FullName;
+    Directory.CreateDirectory(Path.Combine(tmp, "work", "save-backups"));
+    Directory.CreateSymbolicLink(Path.Combine(tmp, "work", "save-backups", id), outside);
+    Expect(Code(Req("status", viaLink, Path.Combine(tmp, "work"))) == "save_unsafe_path", "backup folder linked outside the save folders: still save_unsafe_path");
+    Directory.Delete(tmp, true);
+    if (fails.Count > 0) { Console.WriteLine($"✗ linked root: {fails.Count} failed"); Environment.Exit(1); }
+    Console.WriteLine("✓ linked root: 3 checks");
+    return;
+}
+if (args.Length == 1 && args[0] == "--running-gate")
+{
+    // 诊断#a87296：游戏在跑（hostRunning）时只放只读的 status / export / inspect；restore / recover、留着没收尾的事务一律 save_running；不需要私有存档
+    string tmp = Directory.CreateDirectory(Path.Combine(OperatingSystem.IsWindows() ? Path.GetTempPath() : "/private/tmp", "s2a-running-gate-" + Guid.NewGuid().ToString("N"))).FullName,   // 不走 /var/folders：/var 是软链，存档路径核对拒链接
+    root = Path.Combine(tmp, "data"), work = Path.Combine(tmp, "work");
+    Directory.CreateDirectory(root);
+    string id = "0100000000010000";
+    JsonObject Req(string op) => new() { ["operation"] = op, ["dataRoot"] = root, ["workRoot"] = work, ["path"] = Path.Combine(tmp, "x.s2asave"),
+        ["game"] = new JsonObject { ["id"] = id, ["version"] = 0, ["contentIdentity"] = new string('a', 64), ["name"] = "t" } };
+    string Code(JsonObject r, bool running) { var n = JsonNode.Parse(SaveTransfer.Execute(r.ToJsonString(), running)); return n["ok"].GetValue<bool>() ? "ok" : n["error"]["code"].GetValue<string>(); }
+    var fails = new List<string>();
+    void Expect(bool ok, string what) { Console.WriteLine((ok ? "PASS " : "FAIL ") + what); if (!ok) fails.Add(what); }
+    Expect(Code(Req("status"), false) == "ok", "not running: status ok (fixture is valid)");
+    Expect(Code(Req("status"), true) == "ok", "running: status allowed (empty save)");
+    Expect(Code(Req("restore"), true) == "save_running", "running: restore refused");
+    Expect(Code(Req("recover"), true) == "save_running", "running: recover refused");
+    Directory.CreateDirectory(Path.Combine(work, "save-transactions"));
+    File.WriteAllText(Path.Combine(work, "save-transactions", id + ".json"), "{}");
+    Expect(Code(Req("status"), true) == "save_running", "running: pending transaction journal refuses even status (no Recover while the game writes)");
+    Expect(Code(Req("status"), false) != "save_running", "not running: status goes through (Recover handles the journal)");
+    Directory.Delete(tmp, true);
+    if (fails.Count > 0) { Console.WriteLine($"✗ running gate: {fails.Count} failed"); Environment.Exit(1); }
+    Console.WriteLine("✓ running gate: 6 checks");
+    return;
+}
 if (args.Length == 4 && args[0] == "--crash-child")
 {
     Environment.SetEnvironmentVariable("SAVE_TRANSFER_CHECKPOINT", args[2]);
@@ -111,7 +162,12 @@ internal static class RealTests
             Pass("export real private save copy and validate CRC/hash/index");
             Reject(Request(root, work, "export", archive), "save_exists"); Pass("exclusive export");
             var stale = Confirm(root, work, archive);
-            MutateProgress(root); Reject(stale, "save_changed"); Pass("changed target after preview");
+            // 维护者 11-17（按新规矩改：原先检查后目标又变就拒绝）：iCloud 自动同步（sync）照旧拒绝；手动恢复照常恢复，恢复前副本在执行时现拍
+            MutateProgress(root);
+            var staleSync = stale.DeepClone().AsObject(); staleSync["sync"] = true; Reject(staleSync, "save_changed");
+            var staleDone = Call(stale); Assert(staleDone["committed"].GetValue<bool>() && File.Exists(staleDone["previousBackup"].GetValue<string>()), "stale manual restore proceeds with a fresh previous backup");
+            Call(Request(root, work, "recover"));
+            Pass("changed target after preview: sync rejects, manual restore proceeds");
             var restored = Call(Confirm(root, work, archive));
             Assert(restored["committed"].GetValue<bool>() && Equal(original, Hashes(root)), "byte-for-byte restore including nonwhitelisted original data");
             Assert(File.Exists(restored["previousBackup"].GetValue<string>()), "Previous archive");
@@ -124,11 +180,19 @@ internal static class RealTests
                 Assert(Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(Path.Combine(emptyRoot, file["path"].GetValue<string>())))) == file["sha256"].GetValue<string>(), "G05 imported bytes");
             Pass("restore actual G05 archive into empty target");
             var wrong = Request(root, work, "inspect", archive); wrong["game"]["id"] = "0000000000000000"; Reject(wrong, "save_wrong_game");
-            wrong = Request(root, work, "inspect", archive); wrong["game"]["version"] = game["version"].GetValue<long>() + 1; Reject(wrong, "save_version");
-            wrong = Request(root, work, "inspect", archive); wrong["game"]["contentIdentity"] = new string('0', 64); Reject(wrong, "save_version");
-            Pass("reject game/version/contentIdentity mismatch");
+            // 版本 / DLC 组合、账号归属对不上：手动检查照常通过并带一句提示；sync（iCloud 自动同步）照旧拒绝
+            foreach (var change in new Action<JsonObject>[] { r => r["game"]["version"] = game["version"].GetValue<long>() + 1, r => r["game"]["contentIdentity"] = new string('0', 64) })
+            {
+                wrong = Request(root, work, "inspect", archive); change(wrong);
+                var warned = Call(wrong); Assert(warned["warnings"].AsArray().Count == 1, "version mismatch warns once");
+                wrong = Request(root, work, "inspect", archive); change(wrong); wrong["sync"] = true; Reject(wrong, "save_version");
+            }
+            Assert(Call(Request(root, work, "inspect", archive))["warnings"].AsArray().Count == 0, "matching backup has no warnings");
+            Pass("reject other game; version/contentIdentity mismatch warns (sync still rejects)");
             string other = Path.Combine(scratch, "other-owner"); Copy(source, other); OwnershipVariant.Change(other);
-            Reject(Request(other, work + "-other", "inspect", archive), "save_wrong_user"); Pass("reject changed actual LibHac account owner");
+            Assert(Call(Request(other, work + "-other", "inspect", archive))["warnings"].AsArray().Count == 1, "owner mismatch warns once");
+            var syncOther = Request(other, work + "-other", "inspect", archive); syncOther["sync"] = true; Reject(syncOther, "save_wrong_user");
+            Pass("changed actual LibHac account owner warns (sync still rejects)");
             string duplicate = Path.Combine(scratch, "duplicate-index"); Copy(source, duplicate);
             string indexPath = Path.Combine(duplicate, "bis/system/save/8000000000000000/0/imkvdb.arc");
             byte[] indexBytes = File.ReadAllBytes(indexPath);

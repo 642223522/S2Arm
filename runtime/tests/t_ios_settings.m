@@ -107,6 +107,12 @@ int main(int argc, char **argv) {
             [d setBool:NO forKey:@"MetalHUDForceEnabled"]; s2a_ios_apply_overlay_settings(d);
             check([d objectForKey:@"MetalForceHudEnabled"] == nil, @"Metal 浮层：开关关 → 系统键删掉");
             [d removePersistentDomainForName:suite]; unsetenv("MTL_HUD_ENABLED");
+            // #1148：系统键来自删不掉的域（这里用注册缺省模拟 LiveContainer 下的情形）、开关关着时，任何偏好变更都不许「删 → 通知 → 再删」无限递归撑爆栈
+            NSUserDefaults *std = NSUserDefaults.standardUserDefaults; BOOL was = [std boolForKey:@"MetalHUDForceEnabled"];
+            [std setBool:NO forKey:@"MetalHUDForceEnabled"]; [std registerDefaults:@{@"MetalForceHudEnabled": @YES}];
+            [std setInteger:1 forKey:@"t_ios_settings.hud.poke"];   // 发一次变更通知；没有重入闸这里就栈溢出崩掉
+            check([std objectForKey:@"MetalForceHudEnabled"] != nil, @"Metal 浮层：系统键删不掉（注册缺省）时变更通知不递归、进程还活着");
+            [std removeObjectForKey:@"t_ios_settings.hud.poke"]; [std setBool:was forKey:@"MetalHUDForceEnabled"]; [std registerDefaults:@{@"MetalForceHudEnabled": @NO}];
         }
         {   // 开发设施开关（settings.m s2a_dev_plist_from，os.c s2a_dev_on 按名字取）：有键回 1，"0" 开头为关；没有键 / 非字符串 / 空串回 0（= 没有这个键）
             int s2a_dev_plist_from(NSDictionary *info, int *on); int on = -1;
@@ -354,7 +360,7 @@ int main(int argc, char **argv) {
         //   ⓑ 用户在设置里关了 60 帧与宽屏（审计 #854 F-caps-beats-settings）→ 设置赢：S2A_FPS60=0、S2A_WIDESCREEN=0（widen.c 设置关先于清单判）
         {
             NSString *caps = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"s2a_caps.tsv"];
-            check([@"widen\t1\t# 单测\nfps60\t1\t# 默认开：来源 fps.tsv\n" writeToFile:caps atomically:YES encoding:NSUTF8StringEncoding error:nil], @"能力清单写进包目录");   // 11-11：原因是速度已验证的来源，清单才替玩家开
+            check([@"widen\t1\t# 单测\nfps60\t1\t# 默认开：来源 社区帧率补丁\n" writeToFile:caps atomically:YES encoding:NSUTF8StringEncoding error:nil], @"能力清单写进包目录");   // 11-11：原因是速度已验证的来源（11-14 起我方帧率表不算，用社区帧率补丁），清单才替玩家开
             NSUserDefaults *std = NSUserDefaults.standardUserDefaults;
             for (int k = 0; k < 2; k++) {
                 [std removeObjectForKey:@"S2AFps60"]; [std removeObjectForKey:@"S2AWidescreen"];
@@ -374,12 +380,13 @@ int main(int argc, char **argv) {
         // 60 帧强信号关的款（11-02 维护者定：设置里玩家可手动开；全引擎默认开后清单 fps60 0 只剩强信号）：清单 fps60 0，期望手写——
         //   ⓒ 玩家没动过 → 清单生效 S2A_FPS60=0、不是放开来源；ⓓ 设置页手动开（S2AFps60Manual）→ S2A_FPS60=1、是放开来源（图形层读时判），不写 DM_PRESENT_INTERVAL（审计 P1-80）；
         //   ⓔ 只存着老的 S2AFps60 = YES（关过又开过，没看过提示）→ 不算手动开，仍 0
+        //   11-14 撤我方 60 帧（caps.c s2a_caps_own 缺省 0）：ⓓ 手动开也不再是放开来源——没有社区帧率补丁的款我方不放开出图间隔（设置页也不出这一行）
         {
             NSString *caps = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"s2a_caps.tsv"];
             check([@"fps60\t0\t# 强信号：静态无来源\n" writeToFile:caps atomically:YES encoding:NSUTF8StringEncoding error:nil], @"未验证清单写进包目录");
             check(s2a_ios_caps_value("fps60") == 0, @"读到清单 fps60 0");
             NSUserDefaults *std = NSUserDefaults.standardUserDefaults;
-            NSString *names[] = {@"没动过", @"手动开", @"只存着老的 S2AFps60=YES"}, *wants[] = {@"S2A_FPS60=未设 间隔=未设 来源=0", @"S2A_FPS60=1 间隔=未设 来源=1", @"S2A_FPS60=未设 间隔=未设 来源=0"};   // 11-11：清单不再写 S2A_FPS60（没设 = 原帧率）
+            NSString *names[] = {@"没动过", @"手动开", @"只存着老的 S2AFps60=YES"}, *wants[] = {@"S2A_FPS60=未设 间隔=未设 来源=0", @"S2A_FPS60=1 间隔=未设 来源=0", @"S2A_FPS60=未设 间隔=未设 来源=0"};   // 11-11：清单不再写 S2A_FPS60（没设 = 原帧率）
             for (int k = 0; k < 3; k++) {
                 [std removeObjectForKey:@"S2AFps60"]; [std removeObjectForKey:@"S2AFps60Manual"];
                 if (k == 1) { [std setBool:YES forKey:@"S2AFps60Manual"]; [std setBool:YES forKey:@"S2AFps60"]; }
@@ -406,7 +413,7 @@ int main(int argc, char **argv) {
             check(s2a_ios_fps60_on(), @"60 帧显示①社区帧率补丁没选过（11-13：版本精确命中才进得了包，默认开）：期望开");
             [@"fps60\t1\t# 默认开：来源 引擎通用第一层（Unity / UE4 放开交换间隔）\n" writeToFile:caps atomically:YES encoding:NSUTF8StringEncoding error:nil];
             check(!s2a_ios_fps60_on(), @"60 帧显示①b 引擎通用来源没选过（速度没验证）：期望关");
-            [@"fps60\t1\t# 默认开：来源 fps.tsv\n" writeToFile:caps atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            [@"fps60\t1\t# 默认开：来源 社区帧率补丁\n" writeToFile:caps atomically:YES encoding:NSUTF8StringEncoding error:nil];
             check(s2a_ios_fps60_on(), @"60 帧显示②速度已验证来源没选过：期望开");
             [@"fps60\t1\t# 默认开：来源 社区帧率补丁\n" writeToFile:caps atomically:YES encoding:NSUTF8StringEncoding error:nil];
             s2a_ios_set_fps60(YES); clear_environment(); s2a_ios_load_graphics_settings();
@@ -434,7 +441,7 @@ int main(int argc, char **argv) {
         //   旧实现第 2 项红（重读只撤设置页登记的名字，清单写的 1 留着，设置那条「未设才写」写不进）
         {
             NSString *caps = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"s2a_caps.tsv"];
-            check([@"fps60\t1\t# 默认开：来源 fps.tsv\n" writeToFile:caps atomically:YES encoding:NSUTF8StringEncoding error:nil], @"fps60 1 清单写进包目录");   // 11-11：验证过的来源清单才写 1，立刻重启才有东西可撤
+            check([@"fps60\t1\t# 默认开：来源 社区帧率补丁\n" writeToFile:caps atomically:YES encoding:NSUTF8StringEncoding error:nil], @"fps60 1 清单写进包目录");   // 11-11：验证过的来源清单才写 1，立刻重启才有东西可撤
             NSUserDefaults *std = NSUserDefaults.standardUserDefaults; [std removeObjectForKey:@"S2AFps60"]; [std removeObjectForKey:@"S2AFps60Manual"];
             // 先清空设置页的登记表（进程级，前面 ⓓ 登记过 S2A_FPS60=1）：否则旧实现②会因为登记表里恰好是 1 被撤掉而碰巧过
             NSString *empty = [@"local.s2arm.settings-p180." stringByAppendingString:NSUUID.UUID.UUIDString];
@@ -590,21 +597,39 @@ int main(int argc, char **argv) {
             NSString *caps = [bundle stringByAppendingPathComponent:@"s2a_caps.tsv"], *ctsv = [bundle stringByAppendingPathComponent:@"cpatch.tsv"];
             [plain writeToFile:caps atomically:YES encoding:NSUTF8StringEncoding error:nil];
             setenv("S2A_LAUNCH_GAME_ID", "G9", 1);
-            for (int k = 0; k < 2; k++) {
+            // 11-15 维护者「没补丁的游戏手动打开满屏就走咱们通用方案」：旧键转成满屏明确开、没有自适应满屏补丁 → 我方通用满屏（VERIFIED / WIDESCREEN 都是 1），
+            //   不再看 S2A_CAPS_OWN（k 0 没设、k 2 设了，结果一样）；k 1 有自适应满屏补丁 → 补丁铺满、S2Arm 让开
+            for (int k = 0; k < 3; k++) {
                 [g9 removePersistentDomainForName:@"S2AGame.G9"];
-                if (k) { [tsv writeToFile:ctsv atomically:YES encoding:NSUTF8StringEncoding error:nil]; s2a_ios_set_fullscreen(nil, YES); }
+                if (k == 1) { [tsv writeToFile:ctsv atomically:YES encoding:NSUTF8StringEncoding error:nil]; s2a_ios_set_fullscreen(nil, YES); }
                 else [g9 setBool:YES forKey:@"S2AWidenForce"];
                 clear_environment(); unsetenv("S2A_WIDEN_VERIFIED"); unsetenv("S2A_WIDEN_CAPS");
+                if (k == 2) setenv("S2A_CAPS_OWN", "1", 1); else unsetenv("S2A_CAPS_OWN");
+                if (k == 2) [NSFileManager.defaultManager removeItemAtPath:ctsv error:nil];   // k 1 写的自适应满屏补丁表别留到旧口径那轮
                 s2a_ios_load_graphics_settings();
                 const char *v = getenv("S2A_WIDEN_VERIFIED"), *ws = getenv("S2A_WIDESCREEN"), *cpo = getenv("S2A_CPATCH_ON");
                 NSString *(^val)(const char *) = ^(const char *e) { return e ? @(e) : @"未设"; };
                 NSString *got = [NSString stringWithFormat:@"VERIFIED=%@ WIDESCREEN=%@ CPATCH_ON=%@", val(v), val(ws), val(cpo)];
-                NSString *want = k ? @"VERIFIED=未设 WIDESCREEN=0 CPATCH_ON=wsauto:fam" : @"VERIFIED=1 WIDESCREEN=1 CPATCH_ON=未设";
-                check([got isEqual:want] && (k || ([g9 boolForKey:@"S2AWidescreen"] && ![g9 objectForKey:@"S2AWidenForce"])),
-                      [NSString stringWithFormat:@"起局满屏%@：期望 %@ → 真结果 %@", k ? @"（有自适应满屏补丁）" : @"（旧键宽屏强制启用）", want, got]);
+                NSString *want = k == 1 ? @"VERIFIED=未设 WIDESCREEN=0 CPATCH_ON=wsauto:fam" : k == 2 ? @"VERIFIED=1 WIDESCREEN=1 CPATCH_ON=未设" : @"VERIFIED=1 WIDESCREEN=1 CPATCH_ON=未设";
+                check([got isEqual:want] && (k == 1 || ([g9 boolForKey:@"S2AWidescreen"] && ![g9 objectForKey:@"S2AWidenForce"])),
+                      [NSString stringWithFormat:@"起局满屏%@：期望 %@ → 真结果 %@", k == 1 ? @"（有自适应满屏补丁）" : k == 2 ? @"（旧键宽屏强制启用，旧口径）" : @"（旧键宽屏强制启用，没设旧口径径不强开）", want, got]);
             }
             [g9 removePersistentDomainForName:@"S2AGame.G9"]; unsetenv("S2A_LAUNCH_GAME_ID"); unsetenv("S2A_WIDEN_VERIFIED"); unsetenv("S2A_WIDEN_CAPS");
             [NSFileManager.defaultManager removeItemAtPath:caps error:nil]; [NSFileManager.defaultManager removeItemAtPath:ctsv error:nil];
+        }
+        {   // #1209：导入合成的 control.nacp（pack/ns2_dump.py synth_nacp：支持表只写美式英语、显示版本 0x3060 =「?」）不是真表 → 当不知道（空），下拉列全部；真表照读
+            NSString *gd = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"t_ios_lang_%d", getpid()]];
+            [NSFileManager.defaultManager createDirectoryAtPath:[gd stringByAppendingPathComponent:@"ctl"] withIntermediateDirectories:YES attributes:nil error:nil];
+            NSMutableData *n = [NSMutableData dataWithLength:0x4000]; uint32_t one = 1, real = 1u | 1u << 2 | 1u << 14;   // 美英；美英 + 日 + 简中
+            [n replaceBytesInRange:NSMakeRange(0x302C, 4) withBytes:&one]; ((uint8_t *)n.mutableBytes)[0x3060] = '?';
+            [n writeToFile:[gd stringByAppendingPathComponent:@"ctl/control.nacp"] atomically:YES]; setenv("S2A_GAME_DATA", gd.UTF8String, 1);
+            NSArray *got = s2a_ios_game_supported_languages();
+            check(got.count == 0, [NSString stringWithFormat:@"合成 nacp 的支持语言：期望 空（不知道） → 真结果 %@", got]);
+            ((uint8_t *)n.mutableBytes)[0x3060] = '1'; [n replaceBytesInRange:NSMakeRange(0x302C, 4) withBytes:&real];
+            [n writeToFile:[gd stringByAppendingPathComponent:@"ctl/control.nacp"] atomically:YES];
+            got = s2a_ios_game_supported_languages(); NSArray *want = @[@"AmericanEnglish", @"Japanese", @"SimplifiedChinese"];
+            check([got isEqual:want], [NSString stringWithFormat:@"真 nacp 的支持语言：期望 %@ → 真结果 %@", want, got]);
+            unsetenv("S2A_GAME_DATA"); [NSFileManager.defaultManager removeItemAtPath:gd error:nil];
         }
         clear_environment();
         [a removePersistentDomainForName:suiteA];

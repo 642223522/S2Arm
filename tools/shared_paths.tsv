@@ -3,6 +3,7 @@
 # 运行时缺省（iOS 是 App 容器私有；Mac 上是整台机器共用，Mac 局一律由 runtime/run_mac.sh / tools/mac_health.sh 显式给局目录，不许落到这里）
 ~/.s2arm/run/s2arm/ab_pair	画幅线	能力 A/B 对照局目录（tools/ab_pair.sh）	每局一个带时间戳的子目录，不共写
 ~/.s2arm/run/s2arm/cache/ccache	构建工具	编译缓存（tools/cc_cache.sh）	ccache 自身并发安全
+~/.s2arm/run/s2arm/cache/native_gate_times	构建工具	runtime 钩子各组上次耗时（runtime/gate.sh，派发排序用，S2A_NATIVE_GATE_TIMES 可改）	写临时文件再原子 mv，多树并发写最后一个为准；只影响派发顺序，删了下次重学
 ~/.s2arm/run/s2arm/deps/rewriter-deps	出包线	改写器固定依赖（tools/doctor.sh 查）	只读校验，准备步骤写入
 ~/.s2arm/run/s2arm/env/layout.env	维护方	本机布局标记（tools/s2a_machine.sh 只读判断）	只读
 ~/.s2arm/run/s2arm/evidence/gate_crash	门禁	崩溃现场留证（tests/visual/crash_keep.sh）	按崩溃各建子目录，不共写
@@ -90,8 +91,8 @@ run	测试出包	记分板 / 全绿 / 里程碑 tsv	只追加单行（< 4 KB 原
 ~/.s2arm/run/s2arm/icons	测试出包	各款 App 图标（tools/game_icons.sh 从游戏原始包重抽，中文优先；pack/ipa.sh 读）	单写者 game_icons.sh，写临时文件再改名；读方只读
 ~/Downloads	测试出包	游戏原始包（xci / nsp）所在目录，tools/game_icons.sh 只读（S2A_GAME_SRC 可改）	只读，不写
 ~/.s2arm/run/s2arm/cache/csclosure	测试出包	着色器阶段键：C# 编译闭包文件清单缓存 <粗键>.files（tools/csproj_closure.py）	同粗键并发只求值一份（<粗键>.files.lock，pid 存活检查）；写临时名再原子改名
+~/.s2arm/run/s2arm/cache/csbuild	构建工具	C# 编译产物树外缓存 <键>/（tools/cs_cache.sh：键 = 编译闭包在 HEAD 的内容 + 原命令参数 + SDK 版本 + 读到的环境变量；门禁单测 dotnet build 命中就克隆、不重编；S2A_CS_BUILD_CACHE 可改）	按键 mkdir 锁 + pid 存活检查，命中不拿锁；编完复制到 <键>.tmp.<pid> 再原子 mv；只读使用（克隆出去用）；48 小时没用或总量超 3 GB 从最久没用的删，1 小时内用过的不删
 ~/.s2arm/run/s2arm/cache/xckey	测试出包	着色器阶段键：GAL 翻译代码二进制哈希 <树号组>、SPIRV-Cross 目标文件 spvc-<键>/（graphics/tools/shbake/xc_key.sh）	同组并发只编一份（<组>.lock，pid 存活检查）；写临时名再原子改名
-~/.s2arm/run/s2arm/cache/shx	测试出包	着色器包抽取缓存 <程序号>-<键>/（graphics/tools/shader_pack.sh ①：抽出集 + 程序配对 + 透明测试）	写 <键>.<pid> 再原子改名；每程序号留 2 份
 ~/.s2arm/run/s2arm/wip/gate_scene	测试出包线	单测不通时的文本现场（tests/keep_scene.sh：<单测>_<时刻>_<pid>，只拷 *.log *.tsv *.txt *.json）	每次新建带 pid 的子目录、不覆盖；wip/ 下 6 小时由 tools/gc.sh 清
 ~/.s2arm/run/gal_pso_cache	画面·着色器线 / 测试出包	管线归档分片缓存（graphics/tools/shbake/pso_chunk.sh 按内容寻址：键 = 分片输入 + 编译器版本）	按键写临时文件再改名（同键并发只是重复编）；10-23 起 tools/gc.sh 不再按盘余量删（条目全和产物根共享、独占 0，删了腾不出空间）
 ~/.s2arm/run/gal_air_cache	画面·着色器线 / 测试出包	.air 内容寻址缓存（graphics/metal/tools/gal_offline.py：键 = MSL 源码 + 平台 + metal 编译器版本；链接 metallib 的中间产物，产物根里不留）	按键写临时文件再改名；tools/gc.sh 超过 72 小时删、ios/ 下非 u?? 合编目录的逐支条目超过 6 小时删、盘紧按修改时间从旧到新补缺口（1 小时内动过的不动）；烘焙道有活持有者时 gc 跳过
@@ -118,3 +119,5 @@ run	测试出包	记分板 / 全绿 / 里程碑 tsv	只追加单行（< 4 KB 原
 ~/.s2a/update-signing/ed25519.key	维护方	发版清单签名私钥（tools/sign_update_manifest.py 读；只在发版机上，不进仓库）	只读；权限 600，目录 700；脚本启动时校验它与启动器内置公钥一致，对不上就拒绝签名
 ~/.s2arm/run/s2arm/shell_src	合入运维	出壳（pack/shell_build.sh）的按树私有镜像（shell_src/<树号>/src，含镜像里的 build/ 增量产物）	shell_build.sh 持本树镜像锁 src.lock（pid 存活检查）；不同树互不排队；只有出壳本身读写
 ~/.s2arm/run/s2arm/gate_depskip	合入运维	runtime 钩子按源文件跳组的缓存（src.<规则哈希>/<组>.txt 源文件清单、full.<日期> 当天已全跑标记）	写入只发生在钩子跑时；规则文件一变换新目录，旧的可随时删
+~/.cargo/bin/cargo	构建工具	Rust 工具链（门禁机 PATH 里没有 cargo 时按它找，tests/pc_selfsign_test.sh；同 launchers/macos/bundle_engine.py）	只读
+/tmp/s2a-plumesign-target	构建工具	自编 plumesign 的 macOS 编译目录（tools/plumesign_build.py FIXED_TARGET：苹果链接器把目标文件绝对路径算进 LC_UUID，固定路径才能逐字节可重复）	cargo 自带编译目录文件锁，同时编会排队；--clean 只在核可重复时手动用

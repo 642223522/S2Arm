@@ -456,6 +456,12 @@ namespace Ryujinx.Graphics.Shader.Translation
             {
                 sampledType = _gpuAccessor.QueryTextureFormat(handle, cbufSlot).GetComponentType();
             }
+            else if (!isImage && type != SamplerType.None && arrayLength == 1)
+            {
+                // S2A: sampled images require the bound view's numeric type (VUID-07753).
+                // An array shares one declaration across its descriptors and cannot use one element's format.
+                sampledType = _gpuAccessor.QueryS2ASampledTextureFormat(handle, cbufSlot).GetComponentType();
+            }
 
             // S2A：存储 texel buffer 的 Image Format 与数值型分开（VUID-08737）：宿主支持无格式读
             // （写时还要求无格式写）时保持 Unknown——R16ui 等扩展格式要求 StorageImageExtendedFormats
@@ -473,6 +479,20 @@ namespace Ryujinx.Graphics.Shader.Translation
                     (!mergedFlags.HasFlag(TextureUsageFlags.ImageStore) ||
                         _gpuAccessor.QueryHostSupportsImageStoreFormatted());
                 if (formatless)
+                {
+                    declaredFormat = TextureFormat.Unknown;
+                }
+            }
+            else if (isImage && info.Format != TextureFormat.Unknown)
+            {
+                // S2A：非缓冲存储图像的按位读（SULD.D：格式只按读的大小定，如 B32 → R32Uint，见 InstEmitSurface.EmitSuld）。
+                //   贴图本身常是别的格式（空轨 2nd 的曝光 1x1 RG32F 按 R32ui 读上一帧的位），声明 R32ui 而视图是 R32G32_SFLOAT 属未定义行为，
+                //   Adreno 830 上读出的值与 Mali 不同（曝光钉在下限）。宿主支持无格式读、且这个绑定只读（无存储、无原子）时声明 Unknown，
+                //   Sampled Type 仍按读的大小（uint / sint），宿主按贴图字节数绑该数值类的视图（安卓直连 rp_draw.c image_view_format）。
+                //   写和原子照旧具体格式（无格式写的能力还没进 profile）。
+                TextureUsageFlags mergedFlags = dict[info].UsageFlags;
+                if (!mergedFlags.HasFlag(TextureUsageFlags.ImageAtomic) && !mergedFlags.HasFlag(TextureUsageFlags.ImageStore) &&
+                    _gpuAccessor.QueryHostSupportsImageLoadFormattedRaw())
                 {
                     declaredFormat = TextureFormat.Unknown;
                 }

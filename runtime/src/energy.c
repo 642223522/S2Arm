@@ -36,10 +36,11 @@ static void init_once(void) {
         if (sysctlbyname(k, v, &sz, NULL, 0) == 0) snprintf(g_lvnames + strlen(g_lvnames), sizeof g_lvnames - strlen(g_lvnames), "%s%d=%s", i ? " " : "", i, v); }
 }
 
-// 本进程累计写盘字节（rusage v6 ri_diskio_byteswritten）：客体内存文件后备的闪存写回量（11-05，心跳「[写盘]」行）。0 = 成功
-int s2a_disk_written(uint64_t *bytes) {
+// 本进程累计读盘 / 写盘字节与缺页读入次数（rusage v6）。缺页读入 = 碰到已被换出到后备文件的页、等它从闪存读回：#938 / #1050 长局后段丢帧时，
+//   游戏线程是不是在等它，看这个数随丢帧一起涨没有。0 = 成功
+int s2a_disk_io(uint64_t *rd, uint64_t *wr, uint64_t *pageins) {
     struct rusage_info_v6 ri; if (proc_pid_rusage(getpid(), RUSAGE_INFO_V6, (rusage_info_t *)&ri) != 0) return -1;
-    *bytes = ri.ri_diskio_byteswritten; return 0;
+    *rd = ri.ri_diskio_bytesread; *wr = ri.ri_diskio_byteswritten; *pageins = ri.ri_pageins; return 0;
 }
 int s2a_energy_snap(s2a_esnap *s) {
     init_once(); memset(s, 0, sizeof *s);

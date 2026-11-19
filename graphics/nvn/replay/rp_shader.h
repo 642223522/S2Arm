@@ -5,17 +5,33 @@
 #include "nvn_backend.h"
 
 enum { RP_PROG_STAGES = 3, RP_PROG_ENT_MAX = 128 };   // 顶点、片元、几何
+// 句柄放在游戏用户常量缓冲里的绑定（NVN_RB_TEXU / NVN_RB_TBUFU，语义照 iOS nvn_refl.h / nvn_mtl.m ubo_packed）的来源。
+//   一个字：用户常量槽 reg 的字节 off 处的 32 位字；sid = 它是采样器号（读出后左移 20）；pair = 同一 Ryujinx 句柄的另一半
+//   （pair_reg / pair_off 处的字，pair_sid 时左移 20），两半相或 = 打包句柄：低 20 位纹理号、高 12 位采样器号。
+struct rp_uword { uint8_t reg, sid, pair, pair_sid, pair_reg; uint16_t off, pair_off; };
+// 一项的完整来源：tex = 贴图句柄字；samp_kind = 组合采样的采样器来源（0 = 着色器没有采样器半边；NVN_RB_SAMPU = samp 处的字；
+//   NVN_RB_SAMPI = 常量采样器号 samp_reg；NVN_RB_SAMP = NVN 采样器槽 samp_reg 绑的句柄）。布局项的 src_reg2 = 本表下标。
+struct rp_usrc { struct rp_uword tex, samp; uint8_t samp_kind; uint16_t samp_reg; };
+enum { RP_PROG_USRC_MAX = 64 };
 struct rp_prog {
     nvn_gpu_shader sh[RP_PROG_STAGES];                        // 0 顶点 1 片元 2 几何
     nvn_gpu_layout_ent ent[RP_PROG_STAGES][RP_PROG_ENT_MAX];  // 与交给后端装载的布局同一份：核心按 src_kind / src_reg 逐项绑定
     uint8_t dtt[RP_PROG_STAGES][RP_PROG_ENT_MAX];             // 声明目标 + 1；0 = 未知，沿用登记视图
     uint8_t dcls[RP_PROG_STAGES][RP_PROG_ENT_MAX];            // 0 float，1 uint，2 sint，3 depth 比较
+    uint8_t difmt[RP_PROG_STAGES][RP_PROG_ENT_MAX];           // 存储图像声明的 SPIR-V Image Format（0 = Unknown；只计算阶段填，见 nvk_shader.c sampled_decl）
+    uint8_t sampler_unused[RP_PROG_STAGES][RP_PROG_ENT_MAX];   // 已从 SPIR-V 证明该组合描述符不读取采样器
     uint32_t nent[RP_PROG_STAGES];
     uint32_t support_bytes;                                   // NVN_RB_SUPPORT 那一项的缓冲长度
     uint32_t attr_mask;                                       // 顶点着色器实际读的属性位
     uint32_t color_out_mask;                                  // 片元着色器写了哪些输出分量：每个颜色目标 4 位（RGBA）。没有片元阶段 / 不知道 = 全 1
     uint8_t c1[RP_PROG_STAGES][0x100]; uint8_t c1_ok;         // NVN_RB_C1：着色器自带的常量段（位 i = 阶段 i 有）
     uint8_t is_compute;                                       // 计算程序：只有 sh[0] / ent[0]，绑定取 NVN 阶段 5 的状态
+    uint8_t binst_unread;                                     // 位 i = 阶段 i 已证不读 c0 + 0x644（编译器 c0Reads）：间接绘制不用把 GPU 侧的 base instance 拷进它的驱动段。0 = 读或未知（照旧拷）
+    uint8_t z_raw;                                            // 顶点出口 z 原样（不随深度模式改写，出包预编库的程序）：near = -w 时管线设裁剪深度 [-1, 1]
+    struct rp_usrc usrc[RP_PROG_USRC_MAX]; uint32_t nusrc;    // NVN_RB_TEXU / TBUFU 项的句柄来源（布局项 src_reg2 指向这里）
+    // 内容身份：S2AI1 v3 规范输入的 SHA-256，也就是来源缓存（g_progs）的键。管线配方与跨会话预热清单
+    // 用它跨会话定位「同一份程序」；全 0 = 没有身份（失败项 / 还没算出来），这种程序不进任何清单。
+    uint8_t identity[32];
 };
 struct rp_shader_req {
     uint32_t prim;              // NVNdrawPrimitive
@@ -30,4 +46,19 @@ int rp_shader_stage_key(unsigned st, uint8_t key[8]);   // 1 = 该阶段已绑�
 int rp_shader_resolve(const struct rp_shader_req *q, const struct rp_prog **out);
 // 取当前回放状态下计算阶段（NVN 阶段 5）绑着的程序。返回值同上。
 int rp_shader_resolve_compute(const struct rp_prog **out);
+// 程序的内容身份（见 struct rp_prog.identity）。1 = 有；0 = 没有（p 为空 / 失败项 / 计算旧路径没记）。
+// 线程：[任意]（只读，不加锁）。生命周期：p 有效期间有效。
+int rp_shader_prog_identity(const struct rp_prog *p, uint8_t out[32]);
+// 按内容身份取已发布到来源缓存的程序：1 = 有；0 = 还没发布 / 这份身份不在本局。
+// 给预热后台线程按管线配方找程序用（建管线要拿程序阶段的着色器句柄）。
+// 线程：[后台]。生命周期：借用指针，到会话收尾（rp_shader_reset）前有效：取到之后不允许再等编译。
+int rp_shader_prog_by_identity(const uint8_t identity[32], const struct rp_prog **out);
+
+// 程序借用：后台消费者（管线预热、预取）从 rp_shader_prog_by_identity 拿到 rp_prog* 之后，整段使用期间
+// 必须持有借用。收尾（rp_shader_reset）与预热静默判据都等借用归零才允许释放程序记录：代际判断只能决定
+// 「迟到结果还能不能安装」，不能证明对象仍存活。
+//   1 = 借到（*out 有效，跨线程只读）；0 = 这个身份还没发布；-1 = 会话已停 / 参数问题。
+int rp_shader_prog_borrow(const uint8_t identity[32], const struct rp_prog **out);
+void rp_shader_prog_return(const uint8_t identity[32]);
+int  rp_shader_prog_borrowed(void);   // 当前未归还的借用数（静默 / 收尾判据）
 void rp_shader_reset(void);     // 会话收尾：放掉全部着色器

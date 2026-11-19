@@ -21,7 +21,7 @@ extension S2ArmLauncherModel {
         switch updateState {
         case .idle: return ["state": "idle"]
         case .working(let id, let percent): return ["state": "working", "detail": id, "percent": percent ?? NSNull()]
-        case .ready: return ["state": "ready", "detail": sparkleUpdate.foundVersion ?? "", "via": "sparkle"]
+        case .ready: return ["state": "ready", "detail": updateDriver.foundVersion ?? "", "via": "sparkle"]
         case .failed(let code): return ["state": "failed", "detail": code, "reason": updateFailure ?? ""]
         }
     }
@@ -33,18 +33,86 @@ extension S2ArmLauncherModel {
         _ = sparkleUpdate
     }
 
-    /// 启动时一次：查版本 + 取公告，按「永远只给最新一期」算出弹窗 / 横幅 / 消息（pack/jobs/updater.py inbox）。有新版照旧在后台下好，不打断玩家；
-    ///   查不到（没网、GitHub 不通）什么都不显示
-    func loadInbox() {
+    /// 启动时一次（或手动检查）：查版本 + 取公告，按「永远只给最新一期」算出弹窗 / 横幅 / 消息（pack/jobs/updater.py inbox）。
+    /// - 自动检查更新开 + 自动下载更新开：后台先下载，下好验签后才弹更新窗口让用户确认重启。
+    /// - 自动检查更新开 + 自动下载更新关（默认）：查到新版立刻弹窗显示更新内容，由用户选择「下载更新」或「跳过此版本」，绝不后台偷下。
+    /// - 自动检查更新关：启动只拉公告/消息，不自动弹更新窗也不自动下载（用户可在设置里手动点检查更新）。
+    func loadInbox(manual: Bool = false) {
+        if manual { updateCheckFeedback = "checking" }
         Task {
-            guard let result = await provider.client.inbox(current: currentVersion) else { return }
+            guard let result = await provider.client.inbox(current: currentVersion) else {
+                if manual { updateCheckFeedback = "failed" }
+                return
+            }
             notice = result["banner"] as? [String: Any]
             messages = result["messages"] as? [[String: Any]] ?? []
             unreadMessages = result["unread"] as? Int ?? 0
-            if let update = result["update"] as? [String: Any], update["available"] as? Bool == true { availableUpdate = update }
-            updatePopup = result["popup"] as? [String: Any]
-            if availableUpdate != nil, updateState == .idle { downloadUpdate() }
+            let popup = result["popup"] as? [String: Any]
+            let update = result["update"] as? [String: Any]
+            let hasUpdate = update?["available"] as? Bool == true
+            let version = update?["version"] as? String
+
+            if manual {
+                if hasUpdate, let update, let version {
+                    availableUpdate = update
+                    if skippedUpdateVersion == version { skippedUpdateVersion = nil }
+                    updateCheckFeedback = "available"
+                    showUpdatePopup()
+                } else {
+                    updateCheckFeedback = "upToDate"
+                }
+                return
+            }
+
+            if popup?["kind"] as? String != "update" {
+                if hasUpdate, autoCheckUpdates { availableUpdate = update }
+                updatePopup = popup
+                return
+            }
+
+            guard autoCheckUpdates, hasUpdate, let update, let version else { return }
+            availableUpdate = update
+            if skippedUpdateVersion == version { return }
+
+            if autoDownloadUpdates {
+                if updateDriver.readyToInstall {
+                    showUpdatePopup()
+                } else {
+                    autoDownloadPopupPending = true
+                    downloadUpdate()
+                }
+            } else {
+                updatePopup = popup
+            }
         }
+    }
+
+    /// 设置页「检查更新」按钮：主动查新版，查到就弹窗展示更新内容
+    func manualCheckForUpdates() {
+        loadInbox(manual: true)
+    }
+
+    /// 玩家在更新弹窗点「跳过此版本」：记下版本号并取消正在准备安装的 Sparkle 会话，以后这一版不再自动弹窗或自动下载
+    func skipUpdateVersion() {
+        let version = (updatePopup?["version"] as? String) ?? (availableUpdate?["version"] as? String)
+        updateGate = nil
+        autoDownloadPopupPending = false
+        installWhenReady = false
+        updatePopup = nil
+        updateDriver.cancelOrSkipReadyUpdate()
+        if case .working = updateState { updateState = .idle }
+        if case .ready = updateState { updateState = .idle }
+        if let version, !version.isEmpty {
+            skippedUpdateVersion = version
+            Task { await provider.client.inboxSeen(update: version) }
+        }
+    }
+
+    /// 后台自动下载完成回调（仅自动检查 + 自动下载模式下自动弹窗）
+    func onAutoDownloadReady() {
+        guard autoDownloadPopupPending else { return }
+        autoDownloadPopupPending = false
+        showUpdatePopup()
     }
 
     /// 玩家点 ×：当场收起，再记下这条（比它旧的也都算看过）
@@ -96,7 +164,7 @@ extension S2ArmLauncherModel {
         updateFailure = nil
         updateState = .working("update.downloading", 0)
         saveUpdateNotes()
-        sparkleUpdate.checkAndDownload()
+        updateDriver.checkAndDownload()
     }
 
     /// 换上新版后第一次打开要弹「这版更新了什么」（updater.py inbox 读 updates/notes/<版本>.json）：说明随查到的新版记在本机，换完不再联网
@@ -108,12 +176,40 @@ extension S2ArmLauncherModel {
         try? data.write(to: folder.appendingPathComponent("\(version).json"))
     }
 
-    /// 只有玩家点了才重启。有局 / 任务在跑：先拦下说清（草图④：前置检查，不进换版）。替换、回滚、重启都由 Sparkle 做
-    func restartToUpdate() {
-        if busy { updateGate = session?.kind == .play ? "update.gate.playing" : "update.gate.busy"; return }
-        guard sparkleUpdate.readyToInstall else { return }
+    /// 重启以更新会打断什么：正在玩的那款、正在跑的任务（出包被打断可以接着做：已做完的阶段与缓存保留）
+    struct UpdateRestartImpact: Equatable { var game: String?; var task: String?; var taskResumes = false }
+    var updateRestartImpact: UpdateRestartImpact {
+        var r = UpdateRestartImpact()
+        if mainBusy, let s = session {
+            if s.kind == .play { r.game = s.name } else { r.task = s.name; r.taskResumes = s.kind == .export }
+        }
+        if r.task == nil, phoneBusy, let p = phoneSession { r.task = p.name }
+        return r
+    }
+
+    /// 确认框的说明：会关掉哪款、会中断哪个任务、重启后能不能接着做（t = 按界面语言取文案）
+    func updateRestartImpactText(_ t: (String) -> String) -> String {
+        let i = updateRestartImpact
+        var lines: [String] = []
+        if let g = i.game { lines.append(t("update.gate.confirm.game").replacingOccurrences(of: "{0}", with: g)) }
+        if let k = i.task { lines.append(t(i.taskResumes ? "update.gate.confirm.taskResume" : "update.gate.confirm.taskRestart").replacingOccurrences(of: "{0}", with: k)) }
+        return lines.joined(separator: "\n")
+    }
+
+    /// 只有玩家点了才换版。有局 / 任务在跑：先说清会打断什么、玩家点「仍然重启」照样换（11-18 维护者：认得出的风险让玩家确认后继续，
+    ///   不再只能等）。确认后先停掉在跑的局 / 任务再换版。还没下：先下，下好（SparkleUpdate.showReady）接着换。替换、回滚、重启都由 Sparkle 做
+    func restartToUpdate(confirmed: Bool = false) {
+        if busy && !confirmed { updateGate = "update.gate.confirm"; installWhenReady = false; return }
+        updateGate = nil
+        if busy { stop(); stopPhone() }
+        guard updateDriver.readyToInstall else {
+            installWhenReady = true
+            downloadUpdate()
+            return
+        }
+        installWhenReady = false
         updatePopup = nil
-        sparkleUpdate.installNow()
+        updateDriver.installNow()
     }
 }
 

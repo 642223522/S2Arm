@@ -85,6 +85,37 @@ def bundle_id_of(ipa):
         return plistlib.loads(z.read(n))['CFBundleIdentifier']
 
 
+IML_KEY = 'com.apple.developer.kernel.increased-memory-limit'
+
+
+def iml_facts(ipa):
+    """签好的 ipa 里主 App 的描述文件（embedded.mobileprovision）：带不带「提高内存上限」、描述文件名、应用号 → dict；读不到 → None。
+    plumesign 签主 App 用的权限就是描述文件里的那份（v2.7.2 signer.rs sign_single_bundle：merge_entitlements 只补钥匙串组），
+    描述文件里没有 = 装上就丢（宿主首启复核【红】[IML]，诊断 #7c32b3 等一族 4 份，丢在哪一步原先看不到）"""
+    try:
+        with zipfile.ZipFile(ipa) as z:
+            n = next((x for x in z.namelist() if re.fullmatch(r'Payload/[^/]+\.app/embedded\.mobileprovision', x)), None)
+            if not n:
+                return None
+            raw = z.read(n)
+        a, b = raw.find(b'<?xml'), raw.rfind(b'</plist>')
+        prof = plistlib.loads(raw[a:b + 8]) if a >= 0 and b > a else {}
+    except (OSError, zipfile.BadZipFile, plistlib.InvalidFileException, ValueError):
+        return None
+    ent = prof.get('Entitlements') or {}
+    return dict(iml=bool(ent.get(IML_KEY)), name=str(prof.get('Name') or ''), app_id=str(ent.get('application-identifier') or ''),
+                team=str((prof.get('TeamIdentifier') or [''])[0]))
+
+
+def iml_line(ipa):
+    """装机日志 / 进度里的一行：签出的 S2Arm 带不带「提高内存上限」。丢了的那行以「【IML 丢了】」开头（作业层据此记诊断、黄字提示玩家）"""
+    f = iml_facts(ipa)
+    if f is None:
+        return '【IML】读不到签好的包里的描述文件，没核「提高内存上限」'  # 非玩家句
+    where = f'描述文件「{f["name"]}」、应用号 {f["app_id"]}、团队 {f["team"]}'  # 非玩家句
+    return f'【IML】签好的 S2Arm 带「提高内存上限」（{where}）' if f['iml'] else f'【IML 丢了】签好的 S2Arm 描述文件里没有「提高内存上限」（{where}）'  # 非玩家句
+
+
 def legacy_case_bundle(bundle):
     """容器包名的旧写法：0.2.1 及以前 Windows 由 plumesign 自己在包名后接「.大写团队号」（io.s2arm.games.<大写团队号>），0.2.2 起和 Mac 统一小写。
     苹果的包名不分大小写，这个 Apple ID 早先注册过大写那个时，新写法去注册会被拒（9401），plumesign 查已有 App ID 却分大小写、认不出旧的。
@@ -93,10 +124,25 @@ def legacy_case_bundle(bundle):
     return m[1] + m[2].upper() if m and m[2] != m[2].upper() else None
 
 
+WIDGET_TAKEN = re.compile(r"Identifier '[^']+\.widget' is not available", re.I)   # 9401 被拒的是小组件扩展的包名（pack/widget_ext.py SUFFIX）
+
+
+def strip_plugins(src, dst):
+    """另存一份去掉扩展（Payload/*.app/PlugIns/）的 ipa → 原包里有没有扩展。没有就不写 dst（同 pack/jobs/install.py ipa_strip_widget）"""
+    with zipfile.ZipFile(src) as z:
+        names = z.infolist()
+        drop = [i for i in names if re.match(r'Payload/[^/]+\.app/PlugIns/', i.filename)]
+        if not drop: return False
+        with zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as o:
+            for i in names:
+                if i not in drop: o.writestr(i, z.read(i), compress_type=i.compress_type)
+    return True
+
+
 def plumesign_env():
     """起 plumesign 的环境：日志级别固定 info，不继承玩家机上的 RUST_LOG（#585：环境里有 RUST_LOG=warn，info 级的「Installation complete」
     被压掉，装好了、退出码 0 也判成失败）。判装机成功靠这行，级别得由我们定"""
-    return dict(os.environ, RUST_LOG='info')
+    return impactor.plume_env()   # S2A_PLUME_HOME 设了（Mac 通用壳）→ XDG_CONFIG_HOME：账号存档与私钥放启动器私有目录
 
 
 def sign_install(exe, ipa, dev_id, name, log, out_ipa, bundle=None, register=True):
@@ -121,6 +167,192 @@ def sign_install(exe, ipa, dev_id, name, log, out_ipa, bundle=None, register=Tru
 #   设备其实已经在团队里了，这次签出的描述文件会带上它：认出这句就改成「只签名不登记」再用 device --install 装签好的包
 ALREADY_REGISTERED = re.compile(r'already exists on this team', re.I)
 RETRY_WAIT = 3   # 连不上签名服务器时重试前等几秒（单测置 0）
+
+
+# 签名前核开发证书（11-17 #1450 之后读 PlumeImpactor v2.7.2 源码发现：plumesign sign --apple-id 要新建证书时撞上额度（苹果 7460），
+#   不问就撤掉证书列表里的第一张——可能是玩家 Xcode / AltStore 用的那张；crates/plume_core/src/utils/certificate.rs request_new_certificate，
+#   commands/sign.rs 传的确认回调是 None）。只用确定的事实判：苹果列表里有一张证书的公钥 = 本机 <数据目录>/keys/<团队>/key.pem 的、机器名 = plumesign 缺省的 AltStore → 不会新建、什么都不撤；
+#   没有，但列表里也没有别人的开发证书 → 新建也撤不到别人；没有、又有别人的 → 交调用方问玩家（它会撤哪张：列表第一张）。上限判不准（同一类型 maxActive 1
+#   却有 3 张在用），不按张数判。只读：plumesign account certificates，不切账号、不动证书
+def _tlv(b, i):
+    """DER 一项 → (标签, 内容起, 内容止)"""
+    tag, n = b[i], b[i + 1]
+    i += 2
+    if n & 0x80:
+        k = n & 0x7F
+        n = int.from_bytes(b[i:i + k], 'big'); i += k
+    return tag, i, i + n
+
+
+def _children(b, start, end):
+    out = []
+    while start < end:
+        t, s, e = _tlv(b, start)
+        out.append((t, s, e)); start = e
+    return out
+
+
+def cert_modulus_and_start(der):
+    """X.509 证书（DER）→ (RSA 模数, 生效时刻文字 YYYY-MM-DD)；不是 RSA / 读不了 → (None, '')"""
+    try:
+        _, s, e = _tlv(der, 0)
+        _, ts, te = _children(der, s, e)[0]
+        tbs = _children(der, ts, te)
+        if tbs[0][0] == 0xA0: tbs = tbs[1:]   # 版本号 [0]
+        vt, vs, ve = tbs[3]
+        nb = _children(der, vs, ve)[0]
+        when = der[nb[1]:nb[2]].decode('ascii', 'replace')
+        # UTCTime（0x17）YYMMDDhhmmssZ；GeneralizedTime（0x18）YYYYMMDDhhmmssZ
+        date = f'20{when[0:2]}-{when[2:4]}-{when[4:6]}' if nb[0] == 0x17 else f'{when[0:4]}-{when[4:6]}-{when[6:8]}'
+        _, ks, ke = tbs[5]
+        _, bs, be = _children(der, ks, ke)[1]   # BIT STRING
+        _, rs, re_ = _tlv(der, bs + 1)           # 跳过「未用位数」那一字节
+        _, ms, me = _children(der, rs, re_)[0]
+        return int.from_bytes(der[ms:me], 'big'), date
+    except (IndexError, ValueError):
+        return None, ''
+
+
+def key_modulus(pem):
+    """PKCS#8 私钥 PEM（plumesign keys/<团队>/key.pem）→ RSA 模数；读不了 → None"""
+    import base64
+    try:
+        body = ''.join(l for l in pem.splitlines() if l and not l.startswith('-----'))
+        der = base64.b64decode(body)
+        _, s, e = _tlv(der, 0)
+        kids = _children(der, s, e)
+        _, os_, oe = kids[2]                      # OCTET STRING → RSAPrivateKey
+        _, rs, re_ = _tlv(der, os_)
+        return int.from_bytes(der[slice(*_children(der, rs, re_)[1][1:])], 'big')
+    except (IndexError, ValueError):
+        return None
+
+
+CERT_BLOCK = re.compile(r'Cert \{(.*?)\n\s*\},?\s*(?=\n\s*Cert \{|\n\s*\]|$)', re.S)
+
+
+def parse_certs(text):
+    """plumesign account certificates 的输出（Rust Debug 形式的 Cert 列表，同版 v2.7.2）→ [{name, machine, der}]，顺序同苹果列表"""
+    out = []
+    for m in CERT_BLOCK.finditer(text):
+        body = m.group(1)
+        name = re.search(r'\bname: "([^"]*)"', body)
+        machine = re.search(r'machine_name: Some\(\s*"([^"]*)"', body)
+        content = re.search(r'cert_content: Some\(\s*\[([\d,\s]*)\]', body)
+        der = bytes(int(x) for x in re.findall(r'\d+', content.group(1))) if content else b''
+        out.append(dict(name=name.group(1) if name else '', machine=machine.group(1) if machine else '', der=der))
+    return out
+
+
+PLUME_MACHINE_NAME = 'AltStore'   # plumesign v2.7.2 sign 不传机器名时的缺省（crates/plume_core/src/utils/certificate.rs MACHINE_NAME）
+
+
+def cert_check(exe, team, appdata=None, log=None, run=subprocess.run):
+    """签名前核：要不要问玩家（见上）→ None（不用问）| {name, machine, created}（plumesign 这次会新建证书、列表里有别人的；满了会撤的那张 = 第一张）。
+    列不出来（没联网 / 会话过期 / 工具旧）→ None：照原来签（判不了就不加阻碍，记日志）"""
+    base = impactor.data_base(appdata)
+    key = Path(base) / 'PlumeImpactor' / 'keys' / team / 'key.pem'
+    mine = key_modulus(key.read_text(encoding='utf-8')) if key.is_file() else None
+    try:
+        p = run([exe, 'account', 'certificates', '--team', team], capture_output=True, text=True, encoding='utf-8', errors='replace', env=plumesign_env(), timeout=120)
+    except (OSError, subprocess.SubprocessError) as e:
+        if log: Path(log).write_text(f'列证书失败：{e}\n', encoding='utf-8')
+        return None
+    text = (p.stdout or '') + (p.stderr or '')
+    if log: Path(log).write_text(re.sub(r'\[(?:\s*\d+,){20,}[\s\d,]*\]', '[…]', text), encoding='utf-8')
+    if p.returncode: return None
+    certs = parse_certs(text)
+    rows = [(c, *cert_modulus_and_start(c['der'])) for c in certs]
+    # 本机这把私钥的证书还在、且机器名是 plumesign 找的那个：不新建、不撤。plumesign 认「自己的」要两样都对上
+    #   （certificate.rs find_certificate：machine_name == MACHINE_NAME 且公钥相同），只比公钥会漏掉「公钥对、名字不对 → 它照样新建」
+    if mine is not None and any(m == mine and c['machine'] == PLUME_MACHINE_NAME for c, m, _ in rows): return None
+    others = [(c, d) for c, m, d in rows if m is not None and m != mine]
+    if not others: return None   # 一张别人的都没有：新建也撤不到别人
+    first, created = rows[0][0], rows[0][2]
+    return dict(name=first['name'], machine=first['machine'], created=created)
+
+
+def plume_key_path(team, appdata=None):
+    """plumesign 存私钥的地方（同版 v2.7.2 apps/plumesign/src/main.rs get_data_path）：Windows %APPDATA%，别的系统 $XDG_CONFIG_HOME 或 ~/.config；下面 PlumeImpactor/keys/<团队>/key.pem"""
+    base = impactor.data_base(appdata)
+    return Path(base) / 'PlumeImpactor' / 'keys' / team / 'key.pem'
+
+
+def pkcs1_der(pem):
+    """私钥 PEM → RSAPrivateKey（PKCS#1）DER。key.pem 是 PKCS#8（BEGIN PRIVATE KEY）：取出里面 OCTET STRING 包着的那份；已是 PKCS#1（BEGIN RSA PRIVATE KEY）就原样。
+    读不了 → None。手机端 SecKeyCreateWithData 收的就是 PKCS#1（11-17 真机验过）"""
+    import base64
+    try:
+        body = ''.join(l for l in pem.splitlines() if l and not l.startswith('-----'))
+        der = base64.b64decode(body)
+        if 'BEGIN RSA PRIVATE KEY' in pem:
+            return der
+        _, s, e = _tlv(der, 0)
+        tag, os_, oe = _children(der, s, e)[2]
+        if tag != 0x04:
+            return None
+        inner = der[os_:oe]
+        return inner if inner[:1] == b'\x30' else None
+    except (IndexError, ValueError):
+        return None
+
+
+def plume_identity(exe, team, appdata=None, log=None, run=subprocess.run):
+    """手机自签要的身份（0.6.0 通用壳，「私钥怎么交给 App」）：本机 plumesign 私钥 + 苹果列表里它的那张证书（公钥对上、机器名 AltStore，
+    就是 plumesign 自己会复用的那张，同 cert_check）→ {key: PKCS#1 DER, cert: DER, created, key_fp}；没有私钥 / 列不出 / 列表里没有对应证书 → None。
+    只读：只列证书，不新建、不撤。key_fp = 私钥文件的 SHA-256 前 16 位（调用方据此判「交过了」，不必每次联网列证书）"""
+    import hashlib
+    key = plume_key_path(team, appdata)
+    if not key.is_file():
+        return None
+    pem = key.read_text(encoding='utf-8')
+    mine, der = key_modulus(pem), pkcs1_der(pem)
+    if mine is None or der is None:
+        return None
+    try:
+        p = run([exe, 'account', 'certificates', '--team', team], capture_output=True, text=True, encoding='utf-8', errors='replace', env=plumesign_env(), timeout=120)
+    except (OSError, subprocess.SubprocessError) as e:
+        if log: Path(log).write_text(f'列证书失败：{e}\n', encoding='utf-8')
+        return None
+    if p.returncode:
+        return None
+    for c in parse_certs((p.stdout or '') + (p.stderr or '')):
+        m, created = cert_modulus_and_start(c['der'])
+        if m == mine and c['machine'] == PLUME_MACHINE_NAME:
+            return dict(key=der, cert=c['der'], created=created, key_fp=hashlib.sha256(pem.encode('utf-8')).hexdigest()[:16])
+    return None
+
+
+def key_fingerprint(team, appdata=None):
+    """本机 plumesign 私钥文件的 SHA-256 前 16 位；没有 → None（不联网）"""
+    import hashlib
+    key = plume_key_path(team, appdata)
+    return hashlib.sha256(key.read_text(encoding='utf-8').encode('utf-8')).hexdigest()[:16] if key.is_file() else None
+
+
+def sign_dylibs(exe, shell_root, dylibs, bundle, log):
+    """通用壳程序包（pack/jobs/program_pack.py win_signer，11-16）：plumesign 没有单签一个文件的命令，就拿预编壳（shell_root = 壳的 App 内容）
+    去掉 PlugIns/（小组件扩展：带上它 plumesign 会为扩展另注册 App ID）、Frameworks/ 放进这几个 dylib，打成小 IPA，只签不装（sign_install register=False），
+    再把签好的 dylib 原地换回。bundle = 这台手机上已装 S2Arm 的包名，经 --custom-identifier 原样交给 plumesign：不接团队号、不新建 App ID
+    （11-16 Windows 出包机实测：不给它就新注册了主 App + 扩展 2 个 App ID）。签好的 dylib 代码字节不变，只换文件头长度字段与末尾签名块"""
+    dylibs = [Path(d) for d in dylibs]
+    with tempfile.TemporaryDirectory(prefix='s2a_signdylib_') as w:
+        w = Path(w); app = w / 'stage/Payload/S2Arm.app'
+        shutil.copytree(shell_root, app, symlinks=True, ignore=shutil.ignore_patterns('PlugIns'))
+        (app / 'Frameworks').mkdir(exist_ok=True)
+        for d in dylibs:
+            shutil.copyfile(d, app / 'Frameworks' / d.name)
+        stub, out = w / 'stub.ipa', w / 'signed.ipa'
+        with zipfile.ZipFile(stub, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) as z:
+            for p in sorted((w / 'stage').rglob('*')):
+                if p.is_file():
+                    z.write(p, p.relative_to(w / 'stage').as_posix())
+        sign_install(exe, stub, None, None, log, out, bundle=bundle, register=False)
+        with zipfile.ZipFile(out) as z:
+            for d in dylibs:
+                tmp = d.with_name(d.name + '.signed')
+                tmp.write_bytes(z.read(f'Payload/S2Arm.app/Frameworks/{d.name}'))
+                os.replace(tmp, d)
 
 
 def install_signed(exe, app, udid, log):
@@ -178,6 +410,12 @@ def install_app(a, say=lambda m: print(m, flush=True)):
                     time.sleep(RETRY_WAIT)
                     try:
                         sign_install(exe, a.ipa, dev, a.name, log, out, bundle)
+                    except Fail as again:
+                        # 重试那次 plumesign 常常连不上就直接 panic（omnisette remote_anisette_v3.rs 显式 panic），输出里只剩
+                        #   「note: run with RUST_BACKTRACE=1」认不出原因、落回 device_install_failed，玩家看到的就是这句（诊断#3fc02b D-5A5K，0.4.0）。
+                        #   第二次认不出就按第一次认出的报：连不上签名服务器
+                        if again.err != 'device_install_failed': raise
+                        raise e from again
                     finally:
                         Path(log).write_text(first + '\n--- 连不上签名服务器：重试 ---\n' + Path(log).read_text(encoding='utf-8', errors='replace'), encoding='utf-8')
             except Fail:
@@ -190,17 +428,36 @@ def install_app(a, say=lambda m: print(m, flush=True)):
                 finally:
                     Path(log).write_text(first + '\n--- 设备已在团队里：只签名再装 ---\n' + Path(log).read_text(encoding='utf-8', errors='replace'), encoding='utf-8')
         except Fail:
-            # 9401 = 这个包名苹果那边已被占用。本机记录里没有旧包名时（换了电脑 / 重装启动器 / 新游戏库），旧写法是唯一可能的占用者：换它重试一次，
-            #   成功后调用方把实际包名记进设备记录，下次直接用（install.WinPhone.bundle_for_signing）。两次的输出都留在日志里
-            legacy = legacy_case_bundle(bundle)
             first = Path(log).read_text(encoding='utf-8', errors='replace') if Path(log).is_file() else ''
-            if not legacy or impactor.explain(first) != 'app_id_taken': raise
-            say(f'包名 {bundle} 被苹果拒绝（9401），改用这个 Apple ID 早先注册的写法 {legacy} 重试')
-            try:
-                sign_install(exe, a.ipa, dev, a.name, log, out, legacy)
-            finally:
-                Path(log).write_text(first + f'\n--- 9401：改用 {legacy} 重试 ---\n' + Path(log).read_text(encoding='utf-8', errors='replace'), encoding='utf-8')
+            if impactor.explain(first) != 'app_id_taken': raise
+            nowidget = Path(t, 'nowidget.ipa')
+            if WIDGET_TAKEN.search(first) and strip_plugins(a.ipa, nowidget):
+                # 被拒的是小组件扩展的包名（<主包名>.widget）：主包名本身没问题。plumesign 给主程序和扩展同时注册 App ID，
+                #   查已有的又分大小写——这个 Apple ID 早先被不带包名签过一次（plumesign 自己接「.大写团队号」），主包名被拒、
+                #   扩展却注册成了大写那个，之后小写的扩展包名永远 9401（11-18 Windows 实机复现）。同 Mac（sign_with_apple_id）：
+                #   绝不因小组件装不上，这次不带小组件把 S2Arm 装上
+                say('小组件的包名被苹果拒绝（9401），这次先不带主屏小组件装上 S2Arm')
+                try:
+                    sign_install(exe, nowidget, dev, a.name, log, out, bundle)
+                finally:
+                    Path(log).write_text(first + '\n--- 9401 在小组件包名：不带小组件重签 ---\n' + Path(log).read_text(encoding='utf-8', errors='replace'), encoding='utf-8')
+            else:
+                # 9401 = 这个包名苹果那边已被占用。本机记录里没有旧包名时（换了电脑 / 重装启动器 / 新游戏库），旧写法是唯一可能的占用者：换它重试一次，
+                #   成功后调用方把实际包名记进设备记录，下次直接用（install.WinPhone.bundle_for_signing）。两次的输出都留在日志里
+                legacy = legacy_case_bundle(bundle)
+                if not legacy: raise
+                say(f'包名 {bundle} 被苹果拒绝（9401），改用这个 Apple ID 早先注册的写法 {legacy} 重试')
+                try:
+                    sign_install(exe, a.ipa, dev, a.name, log, out, legacy)
+                finally:
+                    Path(log).write_text(first + f'\n--- 9401：改用 {legacy} 重试 ---\n' + Path(log).read_text(encoding='utf-8', errors='replace'), encoding='utf-8')
         bid = bundle_id_of(out) if out.is_file() else None
+        if out.is_file():
+            line = iml_line(out)   # 核对结果一律进装机日志；丢了才交给调用方（作业层记黄字诊断，不当进度显示）
+            with open(log, 'a', encoding='utf-8') as f:
+                f.write('\n' + line + '\n')
+            if line.startswith('【IML 丢了】'):
+                say(line)
     if not bid: raise Fail('装好了但读不到签好的 ipa 里的包名，推不了资源包', 1, 'device_install_failed')
     return bid
 

@@ -83,11 +83,17 @@ sleep 1; left=$(pgrep -f 'sleep 31.7' 2> /dev/null | tr '\n' ' ')
 ck "⑤ 超时 124、子孙一个不剩（rc 实得 ${s}，残留「${left}」）" '[ "$s" = 124 ] && [ -z "$left" ]'
 
 echo "—— ⑥ 真实入口：services/romfs_index.sh 在干净 PATH 下不再静默失败（#591 的原始形态）"
-# 两处都设 S2A_PREBUILT_TOOLS 走预编分支（只有一行 exec timeout，不碰构建）：#962 把「构建报成功但没有产物」判红，
-# 干净树里没有 romfs_index.dll，DOTNET=/usr/bin/true 的构建路径会被判红——与本 PR 的 timeout 口径无关。
-if git -C "$H" cat-file -e origin/main:services/romfs_index.sh 2> /dev/null; then
-  git -C "$H" show origin/main:services/romfs_index.sh > "${T}/romfs_main.sh"
-  rc0=$(env -i PATH=${SYS} DOTNET=/usr/bin/true S2A_PREBUILT_TOOLS="${T}/pre" bash "${T}/romfs_main.sh" "${T}/root" > /dev/null 2>&1; echo $?)
+# 两处都设 S2A_PREBUILT_TOOLS 走预编分支（只有一行 exec timeout，不碰构建）：预编件是 NativeAOT 单文件，桩就放一个可执行；
+# #962 把「构建报成功但没有产物」判红，干净树里没有 romfs_index 产物，构建路径会被判红——与本 PR 的 timeout 口径无关。
+mkdir -p "${T}/pre/romfs"
+printf '#!/bin/sh\nexit 0\n' >"${T}/pre/romfs/romfs_index"
+chmod +x "${T}/pre/romfs/romfs_index"
+if git -C "$H" cat-file -e origin/main:services/romfs_index.sh 2>/dev/null; then
+  git -C "$H" show origin/main:services/romfs_index.sh >"${T}/romfs_main.sh"
+  rc0=$(
+    env -i PATH=${SYS} DOTNET=/usr/bin/true S2A_PREBUILT_TOOLS="${T}/pre" bash "${T}/romfs_main.sh" "${T}/root" >/dev/null 2>&1
+    echo $?
+  )
   ck "⑥ main 的 romfs_index.sh 在干净 PATH 下退出 127（实得 ${rc0}）" '[ "$rc0" = 127 ]'
 else
   echo "跳过 ⑥ 的 main 对照：取不到 origin/main:services/romfs_index.sh"

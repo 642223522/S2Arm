@@ -1,6 +1,6 @@
 # native-test-nvn_xqueue：本单测的构建规则（runtime/build.mk 末尾按 runtime/tests/mk/*.mk 收进来；新单测只新增一个分片，不改 build.mk）
 NATIVE_TEST_OWN += nvn_xqueue
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 # 跨队列事件顺序（nvn_xqueue.inc nvn_be_submit）：等待之后的命令排在满足它的信号之后；互等报红不死锁
 $(BUILD)/tests/t_nvn_xqueue: graphics/nvn/tests/t_nvn_xqueue.m graphics/nvn/gfx/nvn/nvn_mtl.m graphics/nvn/gfx/nvn/nvn_xqueue.inc $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
 	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -Wno-unused-function -Wno-unguarded-availability-new -Wno-unguarded-availability \

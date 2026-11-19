@@ -37,6 +37,7 @@ static class Fn
                     "mesh_memory" => MeshStage.Memory(MeshStage.Info(H(0), H(1))) is var (ml, msz) ? new List<object> { ml.Select(v => (object)(long)v).ToList(), (long)msz } : null,
                     "mesh_to_stage" => MeshStage.ToStage(S(0), MeshStage.Info(H(1), H(2))),
                     "mesh_own_shared" => MeshStage.OwnShared(H(0)),
+                    "mesh_guard_loops" => MeshStage.GuardLoops(S(0)),
                     "raster_facts" => DshCompiler.RasterFacts(S(0), S(1)),
                     "int_inputs" => DshCompiler.IntInputs(S(0)),
                     "vs_init" => DshCompiler.VsInit(S(0)),
@@ -90,8 +91,11 @@ static class Fn
                     "flatten" => DshFlat.Flatten(S(0)) is var (fo, fl) ? new List<object> { fo, (long)fl } : null,
                     "spill_fix" => NxgalSpvCross.SpillFix(S(0), (uint)a[1]) is var (so, sb) ? new List<object> { so, (long)sb } : null,   // 要 --dsx
                     "scr_uv_locns" => DshCompiler.ScrUvLocns(S(0)),
+                    "scr_pos_locns" => DshCompiler.ScrPosLocns(S(0)),
                     "next_id" => DshCompiler.NextId(S(0)),
                     // 11-01 dsh 收敛：离线链 Python reflect / tex_scales 删了，tests/dmsh_reflect_test.sh、dmsh_tex_scales_test.sh 改测这里（经 dshfn.py）
+                    "wide_loads" => DshCompiler.WideLoads(S(0)),   // 存储缓冲逐字读合并（tests/t_dsh_wide.py）
+                    "mul_extended" => DshCompiler.MulExtended(S(0)),   // 标量宽乘法离开 optnone 模板（tests/t_dsh_mulext.py）
                     "pool_arrays" => ((Func<object>)(() => { try { return DshCompiler.PoolArrays(S(0)); } catch (DshError de) { return new PyDict { ["err"] = de.Status, ["detail"] = de.Detail }; } }))(),   // 池数组改池指针（PoolArrays）；失败带原因原文
                     "reflect_detail" => ((Func<object>)(() => { try { return DshCompiler.Reflect(S(0), S(1), a[2].AsObject()); } catch (DshError de) { return new PyDict { ["err"] = de.Status, ["detail"] = de.Detail }; } }))(),   // 失败带原因原文（上面 reflect 只回类名）
                     "tex_scales" => typeof(DshCompiler).GetMethod("TexScales", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)

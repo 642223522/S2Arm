@@ -12,7 +12,7 @@ import ShellUI
 /// - 按键透明度：App 级 `S2AVPadOpacity`（0.1–1，缺省 1），全部游戏共用；宿主 ios/vpad.m 进游戏时读
 /// - 虚拟手柄布局：按游戏，走 C 接口 s2a_shell_vpad_*（宿主 ios/vpad_shell.m），与游戏内拖动编辑同一份文件
 public enum S2ArmGameSettings {
-    public static let fps60 = "fps60", fpsPick = "fpsPick", fullscreen = "fullscreen", opacity = "vpadOpacity", layout = "vpadLayout", holdLock = "vpadHoldLock", identity = "gameIdentity", editIdentity = "edit"
+    public static let fps60 = "fps60", fpsPick = "fpsPick", volume = "gameVolume", gameLanguage = "gameLanguage", fullscreen = "fullscreen", opacity = "vpadOpacity", layout = "vpadLayout", holdLock = "vpadHoldLock", identity = "gameIdentity", editIdentity = "edit"
     /// 社区补丁 / 金手指的行号前缀（后接补丁编号 / 「文件名/条目名」）
     public static let patchPrefix = "patch.", cheatPrefix = "cheat."
     /// 布局多选里打开二级编辑页的那一项（不是一个方案）
@@ -28,6 +28,11 @@ public enum S2ArmGameSettings {
         public struct Switch: Equatable, Sendable { public var on: Bool; public var enabled = true; public var note = ""; public var title = ""; public var hidden = false; public var levels: [Level] = []; public var pick = "0"; public var levelsTitle = "" }
         public struct Item: Equatable, Sendable { public var id: String; public var title: String; public var note = ""; public var on: Bool }
         public var fps: Switch; public var fullscreen: Switch; public var patches: [Item] = []; public var cheats: [Item] = []
+        /// 游戏音量 0–100（#1186，同齿轮菜单「声音」）；宿主没给 = nil，不出这一行
+        public var volume: Int? = nil
+        /// 游戏语言（#1252，同游戏内设置页「游戏语言」）：levels 第一项跟随系统（"system"），只列这款支持的；note = 选的这款不支持时起局用哪种。宿主没给 = nil，不出这一行
+        public struct Language: Equatable, Sendable { public var pick: String; public var levels: [Level]; public var note = "" }
+        public var language: Language? = nil
         public init(fps: Switch, fullscreen: Switch, patches: [Item] = [], cheats: [Item] = []) { self.fps = fps; self.fullscreen = fullscreen; self.patches = patches; self.cheats = cheats }
         static func parse(_ json: String) -> Options? {
             guard let o = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] else { return nil }
@@ -40,7 +45,13 @@ public enum S2ArmGameSettings {
             func items(_ v: Any?, _ idKey: String, _ titleKey: String) -> [Item] {
                 (v as? [[String: Any]] ?? []).compactMap { d in (d[idKey] as? String).map { Item(id: $0, title: d[titleKey] as? String ?? $0, note: d["note"] as? String ?? "", on: d["on"] as? Bool ?? false) } }
             }
-            return Options(fps: sw(o["fps"]), fullscreen: sw(o["fullscreen"]), patches: items(o["patches"], "id", "title"), cheats: items(o["cheats"], "key", "name"))
+            var out = Options(fps: sw(o["fps"]), fullscreen: sw(o["fullscreen"]), patches: items(o["patches"], "id", "title"), cheats: items(o["cheats"], "key", "name"))
+            out.volume = (o["volume"] as? NSNumber)?.intValue
+            if let l = o["language"] as? [String: Any] {
+                let lv = (l["levels"] as? [[String: Any]] ?? []).compactMap { e in (e["value"] as? String).map { Level(value: $0, label: e["label"] as? String ?? $0) } }
+                if !lv.isEmpty { out.language = Language(pick: l["pick"] as? String ?? "system", levels: lv, note: l["note"] as? String ?? "") }
+            }
+            return out
         }
     }
 
@@ -99,6 +110,12 @@ public enum S2ArmGameSettings {
         func toggle(_ id: String, _ label: String, _ s: Options.Switch) -> SettingRow {
             SettingRow(id: id, label: label, note: s.note, kind: .toggle(on: "on", off: "off"), value: s.on ? "on" : "off", enabled: s.enabled)
         }
+        #if os(tvOS)
+        // 电视：没有改名字和封面（tvOS 没有相册选图）、没有分屏 / 屏幕朝向（折叠屏与手机转向才有），也没有触屏虚拟手柄（见下）
+        _ = (splitValue, direction)
+        var out: [SettingSection] = []
+        var picture: [SettingRow] = []
+        #else
         var out = [SettingSection(id: "s2a.identity", title: "Display", rows: [
             SettingRow(id: identity, label: "Name and Cover", note: "Only changes how it appears on this iPhone", kind: .choice([SettingOption("current", state.customIdentity ? "Customized" : "Default"), SettingOption(editIdentity, "Edit…")]), value: "current"),
         ])]
@@ -107,6 +124,7 @@ public enum S2ArmGameSettings {
             SettingRow(id: splitScreen, label: "Split screen", note: "Applies to all games; Automatic enables split screen only when partially folded", kind: .choice([SettingOption("auto", "Automatic"), SettingOption("on", "On"), SettingOption("off", "Off")]), value: ["auto", "on", "off"].contains(splitValue) ? splitValue : "auto"),
             SettingRow(id: screenOrientation, label: "Screen orientation", note: "Applies to all games; Automatic uses portrait for split screen and landscape otherwise", kind: .choice([SettingOption("auto", "Automatic"), SettingOption("landscape", "Landscape"), SettingOption("portrait", "Portrait")]), value: ["auto", "landscape", "portrait"].contains(direction) ? direction : "auto"),
         ]
+        #endif
         let o = stores.options(id)
         if let o {
             if !o.fps.hidden { picture.append(toggle(fps60, o.fps.title.isEmpty ? "60 FPS" : o.fps.title, o.fps)) }
@@ -116,7 +134,7 @@ public enum S2ArmGameSettings {
             }
             if !o.fullscreen.hidden { picture.append(toggle(fullscreen, o.fullscreen.title.isEmpty ? "Full screen" : o.fullscreen.title, o.fullscreen)) }
         }
-        out.append(SettingSection(id: "s2a.picture", title: "Picture", rows: picture))
+        if !picture.isEmpty { out.append(SettingSection(id: "s2a.picture", title: "Picture", rows: picture)) }
         if let o {
             if !o.patches.isEmpty {
                 out.append(SettingSection(id: "s2a.patches", title: "Community patches", rows: o.patches.map {
@@ -127,11 +145,30 @@ public enum S2ArmGameSettings {
                     SettingRow(id: cheatPrefix + $0.id, label: $0.title, note: $0.note, kind: .toggle(on: "on", off: "off"), value: $0.on ? "on" : "off") }))
             }
         }
+        // 声音（#1186）：游戏音量五档，同齿轮菜单；静音就是 0 那一档，不另设开关
+        if let v = o?.volume {
+            let levels = [0, 25, 50, 75, 100]
+            out.append(SettingSection(id: "s2a.sound", title: "Sound", rows: [
+                SettingRow(id: volume, label: "Game volume", note: "This game only; doesn't change the system volume or other apps",
+                           kind: .choice(levels.map { SettingOption(String($0), $0 == 0 ? "Mute" : "\($0)%") }),
+                           value: String(levels.min { abs($0 - v) < abs($1 - v) } ?? 100))]))
+        }
+        // 游戏语言（#1252）：开局前在这里选好，进游戏直接生效，不用先进游戏再重开
+        if let l = o?.language {
+            var row = SettingRow(id: gameLanguage, label: "Game language", note: "This game only; takes effect when the game starts", kind: .choice(l.levels.map { SettingOption($0.value, $0.label) }),
+                                 value: l.levels.contains { $0.value == l.pick } ? l.pick : "system")
+            if !l.note.isEmpty { row.note += " · " + l.note }   // 宿主那句已按当前语言，不再查表
+            out.append(SettingSection(id: "s2a.language", title: "Language", rows: [row]))
+        }
+        #if !os(tvOS)   // 触屏虚拟手柄（布局 / 按住锁定 / 透明度）：电视上没有触屏
         out.append(SettingSection(id: "s2a.vpad", title: "Virtual controller", rows: [
             SettingRow(id: layout, label: "Button layout", note: "Adjust normal and split positions separately; applies to this game only", kind: .choice(options), value: current),
             SettingRow(id: holdLock, label: "Hold-lock ZL / ZR", note: "Hold for 2 s to lock, tap again to unlock; this game only", kind: .toggle(on: "on", off: "off"), value: state.holdLock ? "on" : "off"),
             SettingRow(id: opacity, label: "Button opacity", note: "Shared by all games; takes effect the next time you enter a game", kind: .range(min: 10, max: 100, step: 5, unit: "%"), value: String(Int((op * 100).rounded()))),
         ]))
+        #else
+        _ = (op, options, current)
+        #endif
         return out
     }
 
@@ -143,6 +180,8 @@ public enum S2ArmGameSettings {
         case screenOrientation: if ["auto", "landscape", "portrait"].contains(value) { stores.app.set(value, forKey: screenOrientation); stores.app.removeObject(forKey: "S2AScreenOrientation") }
         case fps60: _ = stores.setOption(id, "fps", "", value == "on")
         case fpsPick: _ = stores.setOption(id, "fpspick", value, true)
+        case volume: if Int(value) != nil { _ = stores.setOption(id, "volume", value, true) }
+        case gameLanguage: _ = stores.setOption(id, "language", value, true)
         case fullscreen: _ = stores.setOption(id, "fullscreen", "", value == "on")
         case _ where setting.hasPrefix(patchPrefix): _ = stores.setOption(id, "patch", String(setting.dropFirst(patchPrefix.count)), value == "on")
         case _ where setting.hasPrefix(cheatPrefix): _ = stores.setOption(id, "cheat", String(setting.dropFirst(cheatPrefix.count)), value == "on")

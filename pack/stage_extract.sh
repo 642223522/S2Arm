@@ -9,7 +9,7 @@
 set -u
 G=${1:?款}; H=$(cd "$(dirname "$0")" && pwd); R=$(cd "$H/.." && pwd); source "$H/roots.sh"
 source "$H/stage_keyfiles.sh"; stage_deps_on || exit 1; SELF=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")   # 实际读入进键（声明表管调用到的代码，实际读入管真读了哪些文件和表）
-CUR=$(root_cur "$G"); [ -n "$CUR" ] && [ -d "$CUR/romfs" ] && [ -f "$CUR/exefs/main" ] || { echo "【红】$G 现行产物根没有 romfs/ 或 exefs/main"; exit 1; }
+CUR=$(root_cur "$G"); [ -n "$CUR" ] && { [ -d "$CUR/romfs" ] || [ -f "$CUR/romfs.std" ]; } && [ -f "$CUR/exefs/main" ] || { echo "【红】$G 现行产物根没有 romfs/（或镜像 romfs.std）或 exefs/main"; exit 1; }   # RomFS 目录或镜像都行（romfs_list.py image_of）
 bash "$H/stage_direct_profile.sh" "$G" --require-consumer || exit $?   # 配置档同直连库阶段（零配置推导 / 手写档），抽取按同一份档
 CUR=$(root_cur "$G")
 PY=${S2A_PYTHON:-${S2A_PY:-python3}}

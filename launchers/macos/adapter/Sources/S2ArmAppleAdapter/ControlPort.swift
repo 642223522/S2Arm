@@ -134,7 +134,7 @@ final class ControlStateCache: @unchecked Sendable {
         let info: [String: Any] = ["port": Int(port), "token": token, "pid": Int(ProcessInfo.processInfo.processIdentifier)]
         try? FileManager.default.createDirectory(at: privateRoot, withIntermediateDirectories: true)
         guard let d = try? JSONSerialization.data(withJSONObject: info),
-              FileManager.default.createFile(atPath: controlFile.path, contents: d, attributes: [.posixPermissions: 0o600]) else {
+              FileManager.default.createFile(atPath: controlFile.path, contents: d) else {
             // 写不上 = AI 客户端连不进来（审计 18:00 P2-35）：停听，不当作已开
             fail("写不了 " + controlFile.path)
             return

@@ -4,6 +4,7 @@ using System;
 using System.Buffers;
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Threading;
 
 namespace Ryujinx.Audio.Renderer.Dsp.Command
 {
@@ -25,6 +26,26 @@ namespace Ryujinx.Audio.Renderer.Dsp.Command
         public ushort[] InputBufferIndices { get; private set; }
 
         public Memory<float> Buffers { get; private set; }
+
+        // S2Arm (#1182 无声诊断)：交设备前（饱和转 int16 之前）混音结果里的 NaN 样本累计数。饱和把 NaN 变 0，到设备那边已分不出
+        //   「渲染出 NaN」与「渲染出真 0」，只能在 float 阶段数。全渲染器共用一个计数：本命令只在音频渲染线程上跑，有 NaN 时才原子加一次；
+        //   Apple 后端的 10 秒 [声] 行（S2AOutputDiag）取走清零。
+        public static long S2ANaNSamples;
+
+        private static int S2ACountNaN(ReadOnlySpan<float> buffer)
+        {
+            int count = 0;
+
+            foreach (float sample in buffer)
+            {
+                if (float.IsNaN(sample))
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
 
         public DeviceSinkCommand()
         {
@@ -102,8 +123,20 @@ namespace Ryujinx.Audio.Renderer.Dsp.Command
                     inputCount = bufferCount;
                 }
 
+                // S2Arm (#1182)：饱和前数 NaN（见 S2ANaNSamples）
+                int nanSamples = 0;
+
+                for (int i = 0; i < bufferCount; i++)
+                {
+                    nanSamples += S2ACountNaN(GetBuffer(InputBufferIndices[i], SampleCount));
+                }
+
+                if (nanSamples != 0)
+                {
+                    Interlocked.Add(ref S2ANaNSamples, nanSamples);
+                }
+
                 short[] outputBuffer = ArrayPool<short>.Shared.Rent((int)inputCount * SampleCount);
-                Array.Fill(outputBuffer, (short)0, 0, (int)inputCount * SampleCount);
 
                 // S2Arm: 立体声设备 + 双声道输入（最常见的设备形态）走 S2ADspMixHelper 的饱和窄化 + 交织内核；
                 //   5.1（6 声道）设备走 6 声道交织内核（缓冲区数不足 6 的上混，静音声道传空 span 查零，
@@ -131,6 +164,10 @@ namespace Ryujinx.Audio.Renderer.Dsp.Command
                 }
                 else
                 {
+                    // S2Arm: 两个 SIMD 内核逐样本覆盖全部输出帧，只有这条逐声道循环给不足 bufferCount 的声道留空位，
+                    //   缺的静音声道靠清零（审计 P4-4：原先无条件整块清零，2/6 声道最常见的两条路径纯浪费）。
+                    Array.Fill(outputBuffer, (short)0, 0, (int)inputCount * SampleCount);
+
                     for (int i = 0; i < bufferCount; i++)
                     {
                         ReadOnlySpan<float> inputBuffer = GetBuffer(InputBufferIndices[i], SampleCount);

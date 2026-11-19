@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import plistlib
 import sys
 import tempfile
 import unittest
@@ -22,6 +23,10 @@ COMMIT = "c" * 40
 class FakeContext:
     def __init__(self, private, request=None):
         self.private, self.r = Path(private), request or {}
+
+    def lock(self, *a, **k):   # 装机类作业的手机锁（ipa.phone_lock）
+        import contextlib
+        return contextlib.nullcontext()
 
 
 def game(*updates, gid=TITLE):
@@ -204,6 +209,41 @@ class BundleTest(unittest.TestCase):
             with self.assertRaisesRegex(Failure, "不一致"):
                 ds.fetch_bundle(c, s)
 
+    def test_corrupt_download_is_fetched_again(self):
+        """维护者 11-17（玩家判断不了的我们替他判）：下载的包件 SHA 不对 → 不用它、自动重下；重下对了就照常用。期望手写：
+        第一次读到坏字节、第二次读到原样 → 照常解开，同一地址共请求 2 次"""
+        import io, unittest.mock as um
+        with tempfile.TemporaryDirectory() as d:
+            z, sha = self.make(d)
+            good = z.read_bytes(); calls = []
+            class Resp(io.BytesIO):
+                headers = {}
+                def __enter__(self): return self
+                def __exit__(self, *a): return False
+            def fake(req, timeout=None):
+                calls.append(req.full_url)
+                return Resp(b"bad" if len(calls) == 1 else good)
+            s = scheme(bundle=dict(tag="v1", commit=COMMIT, urls=["https://example.invalid/b.zip"], sha256=sha))
+            c = FakeContext(Path(d) / "private"); c.private.mkdir()
+            with um.patch.object(ds.urllib.request, "urlopen", fake):
+                root = ds.fetch_bundle(c, s)
+            self.assertEqual((root / "src/dm/tools/d2rm_pack.py").read_bytes(), b"print(1)\n")
+            self.assertEqual(len(calls), 2)
+
+    def test_other_commit_is_fetched_again_then_refused_and_not_kept(self):
+        """内容和登记的不一致：删掉这份、整件重下一遍；还不对才报（说明重下过），且不留这份 zip（下次不再用它）。期望手写：请求 2 次"""
+        import unittest.mock as um
+        with tempfile.TemporaryDirectory() as d:
+            z, sha = self.make(d, commit="d" * 40)
+            s = scheme(bundle=dict(tag="v1", commit=COMMIT, urls=[z.as_uri()], sha256=sha))
+            c = FakeContext(Path(d) / "private"); c.private.mkdir()
+            real = ds.urllib.request.urlopen; calls = []
+            with um.patch.object(ds.urllib.request, "urlopen", lambda req, timeout=None: (calls.append(1), real(req, timeout=timeout))[1]):
+                with self.assertRaisesRegex(Failure, "重新下载后还是不对"):
+                    ds.fetch_bundle(c, s)
+            self.assertEqual(len(calls), 2)
+            self.assertFalse(list((c.private / "downstream").rglob("*.zip")))
+
     def test_unpublished_bundle_says_so(self):
         with self.assertRaisesRegex(Failure, "还没上线"):
             ds.fetch_bundle(FakeContext("/nonexistent"), scheme())
@@ -220,6 +260,181 @@ class ExefsTest(unittest.TestCase):
             self.assertEqual(e.exception.code, "downstream_ineligible")
             (Path(d) / "exefs" / "main").write_bytes(b"pinned")
             ds._check_exefs(s, d)
+
+
+IML = "com.apple.developer.kernel.increased-memory-limit"
+EVA = "com.apple.developer.kernel.extended-virtual-addressing"
+
+
+class WinContext:
+    """Windows 装机要用到的作业上下文：begin / emit 只记、run 记命令并在跑 rcodesign 时读下它要签进的权限文件"""
+    def __init__(self, d, request=None):
+        self.private, self.engine, self.task, self.r = Path(d) / "private", Path(d) / "engine", "t1", request or {}
+        self.private.mkdir(parents=True)
+        self.steps, self.messages, self.runs, self.ents = [], [], [], None
+
+    def begin(self, name, i, n): self.steps.append((i, n, name))
+    def emit(self, kind, m): self.messages.append(m)
+
+    def run(self, cmd, log, env=None):
+        self.runs.append([str(x) for x in cmd])
+        if "-e" in self.runs[-1]:
+            self.ents = plistlib.loads(Path(self.runs[-1][self.runs[-1].index("-e") + 1]).read_bytes())
+
+
+class FakeWin:
+    """pack/orch/install_win.py 的替身：记 install_app 收到的参数（与那时 ipa 里的文件）、push_pack 的参数"""
+    class Fail(Exception):
+        def __init__(self, msg, code=1, err=None):
+            super().__init__(msg); self.err = err
+
+    def __init__(self, team="ABCDE12345", fail=None):
+        self.ns = self.names = self.pushed = None
+        self.fail = fail
+        self.impactor = unittest.mock.Mock(bundled=lambda r: {"plumesign": "plumesign.exe"}, select_only_account=lambda exe: None, selected_team=lambda: team)
+
+    def plumesign_path(self, given): return given
+
+    def install_app(self, ns, say=None):
+        self.ns = ns
+        self.names = zipfile.ZipFile(ns.ipa).namelist()
+        if self.fail: raise self.fail
+        return ns.bundle
+
+    def push_pack(self, udid, bid, pack, devpush=None, **kw):
+        self.pushed = dict(udid=udid, bid=bid, pack=str(pack), **kw)
+        return 3, 100
+
+
+class WinInstallTest(unittest.TestCase):
+    """Windows 装下游独立 App（install_ios_win）：入参、返回、出包记录与 Mac 同形；签名装机 / 推送走 install_win（这里打桩）"""
+    def setUp(self):
+        self.d = tempfile.TemporaryDirectory(); d = Path(self.d.name)
+        self.c = WinContext(d)
+        self.s = scheme(targets=dict(ios=dict(tool="t.py", entitlements=[IML, EVA])))
+        out = d / "lib" / "downstream" / "demo"; out.mkdir(parents=True)
+        ipa = out / "demo.ipa"
+        with zipfile.ZipFile(ipa, "w") as z:
+            z.writestr("Payload/Demo.app/Info.plist", plistlib.dumps(dict(CFBundleIdentifier="org.demo")))
+            z.writestr("Payload/Demo.app/Demo", b"bin")
+        (out / "pack").mkdir(); (out / "pack" / "manifest.json").write_text("{}")
+        self.rec = dict(scheme="demo", ipa=str(ipa), pack=str(out / "pack"))
+        self.out = out
+        import install as inst
+        self.inst = inst
+
+    def tearDown(self): self.d.cleanup()
+
+    def go(self, W):
+        import devcert
+        with unittest.mock.patch.object(ds, "last_record", lambda c, gid, s: self.rec), \
+             unittest.mock.patch.object(ds, "out_dir", lambda c, gid, s: self.out), \
+             unittest.mock.patch.object(self.inst, "win_install_mod", lambda c: W), \
+             unittest.mock.patch.object(self.inst, "win_udid", lambda c, w: "UDID1"), \
+             unittest.mock.patch.object(devcert, "rcodesign_path", lambda c: "rcodesign.exe"):
+            return ds.install_ios_win(self.c, dict(id="0100000000010000"), self.s)
+
+    def test_signs_installs_and_pushes(self):
+        W = FakeWin()
+        r = self.go(W)
+        # 包名同 Mac：io.s2arm.ds.<方案>.<小写团队号>；权限按免费团队只申请提高内存上限（扩展寻址免费团队签不了）
+        self.assertEqual(W.ns.bundle, "io.s2arm.ds.demo.abcde12345")
+        self.assertEqual(self.c.ents, {IML: True})
+        self.assertEqual(self.c.runs[0][:3], ["rcodesign.exe", "sign", "-e"])
+        self.assertTrue(self.c.runs[0][-1].endswith("Demo.app"))
+        self.assertIn("Payload/Demo.app/Demo", W.names)   # 交给 plumesign 的是重新打好的 .ipa
+        self.assertEqual((W.ns.udid, W.ns.plumesign), ("UDID1", "plumesign.exe"))
+        self.assertEqual((W.pushed["udid"], W.pushed["bid"], W.pushed["pack"]), ("UDID1", "io.s2arm.ds.demo.abcde12345", self.rec["pack"]))
+        self.assertNotIn("docs", W.pushed); self.assertNotIn("apply_after", W.pushed)   # 单款 App：Documents 为根、不起 App 解包（同 Mac）
+        self.assertEqual((r["bundleId"], r["packFiles"], r["packBytes"], r["openToFinish"]), ("io.s2arm.ds.demo.abcde12345", 3, 100, True))
+        saved = json.loads((self.out / "record.json").read_text())
+        self.assertEqual(saved["installed"]["bundleId"], "io.s2arm.ds.demo.abcde12345")
+        self.assertEqual([i for i, n, _ in self.c.steps], [1, 2, 3, 4])
+
+    def test_no_selected_account_stops_before_signing(self):
+        W = FakeWin(team=None)
+        with self.assertRaises(Failure) as e:
+            self.go(W)
+        self.assertEqual(e.exception.code, "apple_not_signed_in")
+        self.assertIsNone(W.ns)
+
+    def test_signing_failure_keeps_its_code(self):
+        W = FakeWin()
+        W.fail = FakeWin.Fail("签名装机失败（free_appid_limit）：Developer API error 9120", err="free_appid_limit")
+        with self.assertRaises(Failure) as e:
+            self.go(W)
+        self.assertEqual(e.exception.code, "free_appid_limit")
+        self.assertIsNone(W.pushed)
+
+    def test_windows_dispatch(self):
+        with unittest.mock.patch.object(ds.os, "name", "nt"), unittest.mock.patch.object(ds, "install_ios_win", lambda c, g, s: "win") as _:
+            self.assertEqual(ds.install_ios(None, dict(id="x"), self.s), "win")
+
+
+class ExportTest(unittest.TestCase):
+    def test_export_with_scheme_says_install_only(self):
+        import install as inst
+        with tempfile.TemporaryDirectory() as d:
+            c = FakeContext(d, dict(gameId="0100000000010000", mode="export"))
+            with unittest.mock.patch.object(ds, "requested", lambda c, g: scheme()), \
+                 unittest.mock.patch.object(ds, "install_ios", lambda *a: self.fail("导出不该去装机")):
+                with self.assertRaises(Failure) as e:
+                    inst.install(c)
+            self.assertEqual(e.exception.code, "downstream_export_unsupported")
+
+
+class HostTest(unittest.TestCase):
+    """方案能在哪些电脑上出包（登记表 targets.ios.hosts，#1272）：本机平台不在里面 → 不能选、原因说只能在 Mac 上出"""
+    def test_mac_only_scheme_on_windows(self):
+        s = scheme(targets=dict(ios=dict(tool="t.py", hosts=["mac"])))
+        ok, why = ds.eligibility(s, game(), host="windows")
+        self.assertFalse(ok); self.assertIn("Mac", why)
+        self.assertFalse(ds.eligibility(s, game(), "en", host="windows")[0])
+        self.assertEqual(ds.eligibility(s, game(), host="mac"), (True, ""))
+
+    def test_hosts_default_is_mac_only(self):
+        s = scheme(targets=dict(ios=dict(tool="t.py")))
+        self.assertFalse(ds.eligibility(s, game(), host="windows")[0])
+        self.assertTrue(ds.eligibility(s, game(), host="mac")[0])
+
+    def test_windows_listed_opens_it(self):
+        s = scheme(targets=dict(ios=dict(tool="t.py", hosts=["mac", "windows"])))
+        self.assertEqual(ds.eligibility(s, game(), host="windows"), (True, ""))
+
+    def test_real_registry_opens_windows(self):
+        # 下游 v2.3.3 起做包不再要 C 编译器 / .NET / spirv-cross（壳里自带预编件，#1272），Windows 也能出：登记表放开
+        real = ds.load()
+        self.assertEqual(ds.hosts(real["d2r-mobile"]), ["mac", "windows"])
+
+
+class DownstreamInput(unittest.TestCase):
+    """#1570：共用解包只有 RomFS 镜像 romfs.std 时，交给下游做包工具的目录要有逐文件的 romfs/。期望手写：
+    ① 只有 romfs.std → 工具拿到 work/downstream-input：exefs、ctl 里的文件是解包目录对应文件的硬链接（同 inode），romfs/ 下每个文件与镜像里逐字节相同，镜像不放进去；
+    ② 解包目录本来就有 romfs/ 真目录 → 原样交解包目录、不展开；③ 两种都没有 → 原样交（缺什么由工具自己报）"""
+    def setUp(self):
+        from test_onerom import std_romfs
+        self.d = Path(tempfile.mkdtemp()); self.addCleanup(lambda: __import__("shutil").rmtree(self.d, ignore_errors=True))
+        self.ex = self.d / "extract"; (self.ex / "exefs").mkdir(parents=True); (self.ex / "ctl").mkdir()
+        (self.ex / "exefs/main").write_bytes(b"MAIN")
+        self.files = {"build_manifest.psv": b"psv" * 1000, "a.bin": bytes(range(256)) * 300, "empty": b""}
+        self.std = std_romfs(self.files)
+        c = unittest.mock.Mock(); c.engine = str(JOBS.parents[1]); self.c = c
+
+    def test_image_is_expanded(self):
+        (self.ex / "romfs.std").write_bytes(self.std)
+        got, expanded = ds._downstream_input(self.c, self.ex, self.d / "work")
+        self.assertEqual((got, expanded), (self.d / "work/downstream-input", self.d / "work/downstream-input/romfs"))
+        self.assertEqual(sorted(p.name for p in got.iterdir()), ["ctl", "exefs", "romfs"])
+        self.assertEqual(((got / "exefs/main").read_bytes(), (got / "exefs/main").stat().st_ino), (b"MAIN", (self.ex / "exefs/main").stat().st_ino))
+        self.assertEqual({p.name: p.read_bytes() for p in (got / "romfs").iterdir()}, self.files)
+
+    def test_real_romfs_dir_passes_through(self):
+        (self.ex / "romfs").mkdir(); (self.ex / "romfs/x").write_bytes(b"x")
+        self.assertEqual(ds._downstream_input(self.c, self.ex, self.d / "work"), (self.ex, None))
+        self.assertFalse((self.d / "work").exists())
+
+    def test_no_romfs_passes_through(self):
+        self.assertEqual(ds._downstream_input(self.c, self.ex, self.d / "work"), (self.ex, None))
 
 
 if __name__ == "__main__":

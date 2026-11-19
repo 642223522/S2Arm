@@ -11,7 +11,7 @@
 # 未登记/外置档先经 direct_profile 准备并校验；所选档内容哈希进键，出库按同一份档。
 set -u
 G=${1:?款}; H=$(cd "$(dirname "$0")" && pwd); R=$(cd "$H/.." && pwd); source "$H/roots.sh"; source "$H/stage_keyfiles.sh"; stage_deps_on || exit 1; SELF=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")   # 实际读入进键（pack/stage_keyfiles.sh）
-CUR=$(root_cur "$G"); [ -n "$CUR" ] && [ -d "$CUR/romfs" ] && [ -f "$CUR/exefs/main" ] || { echo "【红】$G 现行产物根没有 romfs/ 或 exefs/main"; exit 1; }
+CUR=$(root_cur "$G"); [ -n "$CUR" ] && { [ -d "$CUR/romfs" ] || [ -f "$CUR/romfs.std" ]; } && [ -f "$CUR/exefs/main" ] || { echo "【红】$G 现行产物根没有 romfs/（或镜像 romfs.std）或 exefs/main"; exit 1; }   # RomFS 目录或镜像都行（romfs_list.py image_of）
 # Direct invocations need the same profile preflight as refresh. The profile
 # stage may publish a provisional candidate; runtime acceptance is separate.
 bash "$H/stage_direct_profile.sh" "$G" --require-consumer || exit $?

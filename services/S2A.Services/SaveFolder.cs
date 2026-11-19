@@ -181,7 +181,7 @@ namespace S2A.Services
 
         // 存档位置里的用户号（审计 P1-162：游戏把用户号记在存档里，对不上会当新玩家；原先写回丢了它、Ryujinx 导出里的也不套用）：
         //   固定结构写回的 user 文件（32 位十六进制，同 S2A_SAVE_DIR/user），否则 Ryujinx 导出账号存档 ExtraData0 偏移 0x8 的 16 字节（这款、类型 1）
-        internal static string FolderUser(string folder, ulong programId)
+        public static string FolderUser(string folder, ulong programId)   // public：存档事务（另编进 tests/save_transfer 工程）认第一个玩家要用（审计 P1-178）
         {
             if (folder == null || !Directory.Exists(folder)) return null;
             string f = Path.Combine(folder, "user");

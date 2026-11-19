@@ -1,6 +1,6 @@
 # native-test-nvn_warm_fb：本单测的构建规则（runtime/build.mk 末尾按 runtime/tests/mk/*.mk 收进来；新单测只新增一个分片，不改 build.mk）
 NATIVE_TEST_OWN += nvn_warm_fb
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 # 本机现编过的着色器进预热与预取（七龙珠 电光炸裂 ZERO 11-06）
 NVN_WARM_FB_SOURCE ?= graphics/nvn/gfx/nvn/nvn_mtl.m
 $(BUILD)/tests/t_nvn_warm_fb: graphics/nvn/tests/t_nvn_warm_fb.m $(NVN_WARM_FB_SOURCE) $(NVN_MTL_DEPS) $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)

@@ -274,6 +274,9 @@ uint64_t gl_commit(void) {
     gl_end_enc();
     id<MTLCommandBuffer> cb = gl_cmd(); uint64_t v = ++g_ev_val;
     [cb encodeSignalEvent:gl_ev value:v];
+    // GPU 安全停：先判再挂回调（D-TMM9）。原先先 enter + 挂完成回调、停了再手动 leave，可不交的命令缓冲释放时 Metal 照样调完成回调，
+    //   同一次 enter 被 leave 两次 → dispatch_group_leave 陷阱（信号 5）。停了就不进组、不挂回调、不交
+    if (!mtl_gpu_go()) { g_cb = nil; return v; }
     dispatch_group_t completions = g_completions;
     dispatch_group_enter(completions);
     [cb addCompletedHandler:^(id<MTLCommandBuffer> c) {
@@ -284,7 +287,7 @@ uint64_t gl_commit(void) {
         while (done < v && !atomic_compare_exchange_weak_explicit(&g_done, &done, v, memory_order_release, memory_order_relaxed)) {}
         dispatch_group_leave(completions);
     }];
-    if (mtl_gpu_go()) [cb commit]; else dispatch_group_leave(completions);   // GPU 安全停：不交，完成回调不会来
+    [cb commit];
     g_cb = nil;
     return v;
 }

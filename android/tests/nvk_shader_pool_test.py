@@ -33,8 +33,9 @@ def main():
         if (sysinc/name).exists() and not (include/name).exists():
             (include/name).symlink_to(sysinc/name)
     inc = (include, ROOT/'runtime/include', native, native/'nvn', native/'direct', gfx, gfx/'replay', gfx/'gfx/nvn',
-           gfx/'gfx/nvn/include', ROOT/'android/tests/vkhost')
-    libs = [gfx/'replay/nvn_unimpl.c', gfx/'replay/rp_state.c', native/'nvn/nvn_vk_compute_request.c']
+           gfx/'gfx/nvn/include', ROOT/'android/tests/vkhost', native/'gfx_plat')
+    libs = [gfx/'replay/nvn_unimpl.c', gfx/'replay/rp_state.c', native/'nvn/nvn_vk_compute_request.c',
+            native/'nvn/nvn_vk_prog_warm.c']   # nvk_shader.c 的预热发布/清单记账在 nvn_vk_prog_warm.c
     libs += [ROOT/'runtime/src/direct_host.c']
     libs += [native/'direct'/f for f in ('source_store.c', 'control.c', 'input_identity.c',
                                         'texture_facts.c', 'sha256.c', 'json.c', 'compile_request.c')]
@@ -45,15 +46,73 @@ def main():
     # host_link 自动补链的 offline_library.c、program_cache.c 要用。宏只加在测试侧、只加给非 macOS：
     # 这两个文件还要给 NDK 和苹果宿主编，在源文件里定义会改变 macOS 上的可见声明；macOS 的参数与原来逐字相同。
     if sys.platform != 'darwin':
-        base.append('-D_POSIX_C_SOURCE=200809L')
+        # glibc 在 -std=c11 下不暴露 POSIX 声明（O_CLOEXEC / openat / fstatat / strdup / realpath 等），
+        # host_link 自动补链的 offline_library.c、program_cache.c 要用。用 _GNU_SOURCE（POSIX 宏的超集：
+        # 新版 glibc 里 realpath 不算在 _POSIX_C_SOURCE 200809 的可见集里）。宏只加在测试侧、只加给非 macOS：
+        # 这两个文件还要给 NDK 和苹果宿主编，在源文件里定义会改变 macOS 上的可见声明。
+        base.append('-D_GNU_SOURCE')
     base += ['-I'+str(p) for p in inc]
     original = native/'gfx_plat/nvk_shader.c'
 
-    def run(name, source, extra_libs=None, args=()):
+    def run(name, source, extra_libs=None, args=(), env=None):
         exe = out/name
         src = [ROOT/'android/tests/nvk_shader_pool_test.c', source, *(extra_libs if extra_libs is not None else libs)]
         host_link.run(base + [str(p) for p in src] + [strip, '-lm', '-o', str(exe)], check=True, timeout=60)
-        return subprocess.run([str(exe), *args], capture_output=True, text=True, timeout=30)
+        return subprocess.run([str(exe), *args], capture_output=True, text=True, timeout=30, env=env)
+
+    if sys.argv[1:] == ['--compute-warm-mutants']:
+        text = original.read_text()
+        mutants = [
+            ('no-record', '    rec.lp_ok = unaligned ? 0 : 2;\n    nvk_prog_warm_note(&rec);',
+             '    rec.lp_ok = unaligned ? 0 : 2;\n    (void)rec;', '--compute-warm', 'compute program must be recorded in warm manifest'),
+            ('wrong-stage', 'memcpy(rec.identity, p->identity, 32); rec.stage_mask = 32;',
+             'memcpy(rec.identity, p->identity, 32); rec.stage_mask = 1;', '--compute-warm', 'persisted compute manifest retains identity'),
+            ('wrong-build', 'struct entry *e = compute ? build_compute(bytes, len, &views[0], rec->identity) : build(bytes, len, views, nst, rec->identity);',
+             'struct entry *e = build(bytes, len, views, nst, rec->identity);', '--compute-warm', 'compute program warm builds from prior cache'),
+            ('flag-ignored', 'if (!nvn_plat_flag("nvk_compute_warm", 0)) return;',
+             '(void)nvn_plat_flag("nvk_compute_warm", 0);', '--compute-warm-off', 'compute warm off must not record programs'),
+        ]
+        for name, old, new, mode, expected in mutants:
+            assert text.count(old) == 1, (name, 'mutation anchor')
+            path = out / ('cs-warm-mutant-' + name + '.c')
+            path.write_text(text.replace(old, new))
+            with tempfile.TemporaryDirectory(prefix='cs-warm-mutant-', dir=out) as td:
+                manifest = Path(td) / 'manifest'; manifest.mkdir()
+                cache = Path(td) / 'cache'; cache.mkdir()
+                env = dict(os.environ, S2A_COMPUTE_WARM='1', S2A_PW_TEST_DIR=str(manifest), S2A_DIRECT_CACHE_DIR=str(cache))
+                if mode == '--compute-warm-off':
+                    baseline = run('cs-warm-prepare', original, args=('--compute-warm',), env=env)
+                    assert baseline.returncode == 0, (name, baseline.stdout, baseline.stderr)
+                    env['S2A_COMPUTE_WARM'] = '0'
+                result = run('cs-warm-' + name, path, args=(mode,), env=env)
+                assert result.returncode != 0 and expected in result.stderr, (name, result.stdout, result.stderr)
+                print(f'{name}: expected assertion failure: {expected}', flush=True)
+        print(f'PASS: {len(mutants)} compute warm negative controls')
+        return 0
+
+    if sys.argv[1:] == ['--diag-mutants']:
+        code = original.read_text()
+        for name, old, expected in (
+            ('graphics', 'uint64_t trace = diag_begin(s->identity, s->stages, !background);', 'graphics live compile emits paired event'),
+            ('compute', 'uint64_t trace = diag_begin(rq.identity, 32u, 1);', 'compute live compile emits paired event'),
+        ):
+            assert code.count(old) == 1
+            path = out / ('trace-mutant-' + name + '.c')
+            path.write_text(code.replace(old, 'uint64_t trace = 0;'))
+            result = run('trace-mutant-' + name, path, args=('--diag-compile',))
+            assert result.returncode and expected in result.stderr and 'error:' not in result.stderr, (result.stdout, result.stderr)
+            print(f'PASS: {name} event removal produces expected behavior failure')
+        return 0
+
+    if sys.argv[1:] == ['--diag-compile']:
+        result = run('diag-compile', original, args=('--diag-compile',))
+        sys.stdout.write(result.stdout); sys.stderr.write(result.stderr)
+        return result.returncode
+
+    if sys.argv[1:] in (['--compute-warm'], ['--compute-warm-off']):
+        result = run('compute-warm', original, args=(sys.argv[1],))
+        sys.stdout.write(result.stdout); sys.stderr.write(result.stderr)
+        return result.returncode
 
     if len(sys.argv) in (3, 4) and sys.argv[1] == '--tbuf-layout':
         exe = out/'tbuf-layout'
@@ -84,7 +143,7 @@ def main():
         assert before_lines[1] == after_lines[1], 'legacy S2AI1 bytes changed'
         print(f'legacy request and canonical identity byte-for-byte unchanged versus {base_sha}')
         return 0
-    if len(sys.argv) == 6 and sys.argv[1] in ('--emit-real', '--emit-real-tbuf', '--execute-tbuf', '--emit-compute-tbuf', '--execute-compute-tbuf'):
+    if len(sys.argv) == 6 and sys.argv[1] in ('--emit-reuse-texture', '--emit-reuse-rt', '--emit-reuse-inactive', '--emit-real', '--emit-real-tbuf', '--execute-tbuf', '--emit-compute-tbuf', '--execute-compute-tbuf', '--reject-graphics-tbufu', '--reject-compute-tbufu'):
         result = run('emit-real', original, args=sys.argv[1:])
         sys.stdout.write(result.stdout); sys.stderr.write(result.stderr)
         return result.returncode
@@ -105,22 +164,61 @@ def main():
             result = subprocess.run([str(exe), path, *extra], capture_output=True, text=True, timeout=30)
             assert result.returncode == 1 and 'FAIL: BUFFER layout must be TBUF' in result.stderr, result.stderr
         print('NEGATIVE CONTROL PASS: removing TBUF layout fails graphics and compute assertions')
-        guard = 'if (le->cls == NVN_GPU_RES_TBUF) { red1("texture_buffer_replay_unsupported",'
-        assert code.count(guard) == 2
-        mutated = out/'tbuf-withdraw-replay.c'
-        mutated.write_text(code.replace(guard, guard.replace('le->cls ==', '0 && le->cls ==')))
+        type_anchor = 'else if (dim == 5 && !arrayed && !ms) target = NVN_TEXTURE_TARGET_BUFFER;'
+        assert code.count(type_anchor) == 1
+        mutated = out/'tbuf-withdraw-type.c'
+        mutated.write_text(code.replace(type_anchor, type_anchor.replace('dim == 5', '0 && dim == 5')))
         for mode, path in [('--execute-tbuf', gfx_result), ('--execute-compute-tbuf', cs_result)]:
-            result = run('tbuf-withdraw-replay', mutated, args=(mode, profile, closure, src_dir, path))
-            assert result.returncode == 1 and 'FAIL: real' in result.stderr and 'refuses unsupported replay' in result.stderr, result.stderr
-        print('NEGATIVE CONTROL PASS: removing TBUF replay guards fails graphics and compute assertions')
+            result = run('tbuf-withdraw-type', mutated, args=(mode, profile, closure, src_dir, path))
+            assert result.returncode == 1 and 'FAIL: real' in result.stderr and 'declared TBUF layout' in result.stderr, result.stderr
+        print('NEGATIVE CONTROL PASS: unproven TBUF shader type rejects graphics and compute')
+        # Mutate the actual dependency cache header independently for each
+        # guard; the compiler sees the copied producer and copied header.
+        cache = (native/'gfx_plat/nvk_shader_fact_cache.h').read_text()
+        base.append('-I'+str(native/'gfx_plat'))
+        for name, before, after in [
+            ('input', ' || t->is_buffer || ', ' || '),
+            ('reflection', 'e->src_kind == NVN_RB_TBUF || ', ''),
+        ]:
+            assert cache.count(before) == 1, (name, 'mutation anchor')
+            directory = out/('tbuf-cache-' + name)
+            directory.mkdir(exist_ok=True)
+            shader = directory/'nvk_shader.c'
+            shader.write_text(code)
+            (directory/'nvk_shader_fact_cache.h').write_text(cache.replace(before, after))
+            if name == 'input':
+                result = run('tbuf-cache-input-test', shader)
+                expected = 'TBUF input fact prevents dependency identity reuse'
+            else:
+                fixture = directory/'tbuf-layout-test.c'
+                fixture.write_text((ROOT/'android/tests/tbuf_layout_test.c').read_text().replace(
+                    '#include "../native/gfx_plat/nvk_shader.c"', '#include "' + str(shader) + '"'))
+                exe = directory/'test'
+                host_link.run(base + [str(p) for p in [fixture, *libs]] + [strip, '-lm', '-o', str(exe)], check=True, timeout=60)
+                result = subprocess.run([str(exe), gfx_result], capture_output=True, text=True, timeout=30)
+                expected = 'reflected TBUF prevents dependency identity reuse'
+            assert result.returncode == 1 and expected in result.stderr, (name, result.stdout, result.stderr)
+            print('NEGATIVE CONTROL PASS: TBUF cache ' + name + ' guard -> ' + expected, flush=True)
         return 0
 
+    if len(sys.argv) == 6 and sys.argv[1] == '--execute-reuse':
+        result = run('execute-reuse', original, args=tuple(sys.argv[1:]))
+        sys.stdout.write(result.stdout); sys.stderr.write(result.stderr)
+        return result.returncode
     if sys.argv[1:] == ['--withdraw']:
         text = original.read_text(encoding='utf-8')
         changes = [
             ('gs-source-epoch', 'MIX(s2a_source_epoch());\n    MIX(stages);', '(void)s2a_source_epoch();\n    MIX(stages);', 1, 'poisoned GS source cannot hit fast cache'),
+            ('cs-query-proof-omitted', 'e->prog.sampler_unused[0][e->prog.nent[0]] = (uint8_t)s2a_spirv_sampler_unused(',
+             'e->prog.sampler_unused[0][e->prog.nent[0]] = 0 && (uint8_t)s2a_spirv_sampler_unused(', 1,
+             'production compute builder retains sampler use proof: query=1'),
+            ('cs-query-proof-forced', 'e->prog.sampler_unused[0][e->prog.nent[0]] = (uint8_t)s2a_spirv_sampler_unused(',
+             'e->prog.sampler_unused[0][e->prog.nent[0]] = 1 || (uint8_t)s2a_spirv_sampler_unused(', 1,
+             'production compute builder retains sampler use proof: query=0'),
             ('gs-slot', '(const char *const[]){"vs", "fs", "gs"}[st]',
              '(const char *const[]){"vs", "fs", "fs"}[st]', 3, 'GS production request reaches compiler'),
+            ('ubo-learn-reported-red', 'g_ubo_learned = 1;\n            else red1("compile_failed", oc.summary);',
+             'g_ubo_learned = 1;\n            red1("compile_failed", oc.summary);', 1, 'a rejection that taught a coordinate is a learning step'),
             ('gs-wrong-stage', 'src.stage = (nvn_gpu_stage)st;',
              'src.stage = st == 2 ? NVN_GPU_SH_FS : (nvn_gpu_stage)st;', 1, 'result loads VS FS and GS'),
             ('gs-key-omitted', '((stages & 4u) ? 3 : 2)',
@@ -137,7 +235,7 @@ def main():
              'if (0 && !(caps.caps & NVN_GPU_CAP_GEOMETRY))', 1, 'disabled GS fails before compiler'),
             ('withdraw-guard', 'if (!shader_texture_pool_ready()) return -1;',
              'if (0 && !shader_texture_pool_ready()) return -1;', 2, 'expected accounting=texture_pool_over_limit'),
-            ('wrong-gfx-length', 'in.texture_array_length = (uint32_t)rp_S.tex_pool_n;',
+            ('wrong-gfx-length', 'in.texture_array_length = s->tex_pool_n;',
              'in.texture_array_length = 1;', 1, 'gfx n=7 request retains exact capacity'),
             ('wrong-cs-length', 'st.tex_pool_n = (uint32_t)rp_S.tex_pool_n;',
              'st.tex_pool_n = 1;', 1, 'cs n=7 request retains exact capacity'),
@@ -150,8 +248,8 @@ def main():
              'reports the dedicated unimplemented'),
             ('drop-final-summary', 's2a_direct_summary_register(pool_final_summary);',
              '(void)pool_final_summary;', 1, 'normal process-exit callback emits final stats'),
-            ('timeout-is-not-final', 'if (normal && (g_pool_programs || g_pool_request_rejected)) pool_stats("final");',
-             'if (g_pool_programs || g_pool_request_rejected) pool_stats("final");', 1, 'timeout summary is never labelled final'),
+            ('timeout-is-not-final', 'if (normal && (g_pool_programs || g_pool_request_rejected || g_pool_reason_count)) pool_stats("final");',
+             'if (g_pool_programs || g_pool_request_rejected || g_pool_reason_count) pool_stats("final");', 1, 'timeout summary is never labelled final'),
             ('flatten-missing-fact', 'else if (!strcmp(code, "MISSING_FACT")) {',
              'else if (0 && !strcmp(code, "MISSING_FACT")) {', 1, 'compiler reason counted accurately'),
             ('drop-request-count', 'g_pool_request_rejected++;',
@@ -180,22 +278,108 @@ def main():
             ('cs-separate-omitted', 'MIX(sep_fact_sig(5));', '(void)0;', 1, 'changed CS separate texture fact recompiles'),
             ('cs-separate-generation-omitted', 'const uint64_t sg = rp_tex_sep_gen[st], rg = rp_tex_reg_gen();',
              'const uint64_t sg = st == 5 ? 0 : rp_tex_sep_gen[st], rg = rp_tex_reg_gen();', 1, 'changed CS separate texture fact recompiles'),
+            # 图形 / 计算共用的快表（#1146）：桶数退回 512，「同一旧桶里的 5 个键共存」必须变红；收尾不释放表，「会话收尾释放」必须变红；
+            # 存项时不分配（表永远建不起来），所有访问都落空，同一条必须变红。
+            ('last-table-512', 'enum { LAST_BITS = 12,', 'enum { LAST_BITS = 9,', 1, 'coexist in the fast table'),
+            ('last-table-kept', 'free(g_last_tab); g_last_tab = NULL;', '(void)g_last_tab;', 1, 'released at session retirement'),
+            ('last-table-never-built', 'if (!g_last_tab && !(g_last_tab = calloc(1, sizeof *g_last_tab))) return;',
+             'if (!g_last_tab) return;', 1, 'coexist in the fast table'),
+            # 结果合并（#1355）前台路径：每一道判据撤一次，对应的用例必须变红
+            ('alias-fg-disabled', '    if (alias_on()) {\n        int a_adopted = 0;', '    if (0 && alias_on()) {\n        int a_adopted = 0;', 1,
+             'same result -> same program object'),
+            ('alias-result-ignored', 'memcpy(buf, res, 32); n += 32;', 'memset(buf, 0, 32); n += 32;', 1,
+             'different result is not merged'),
+            ('alias-c1-ignored', 'if (k->c1_ok & (1u << st)) { memcpy(buf + n, k->c1[st], 0x100); n += 0x100; }',
+             'if (0) { memcpy(buf + n, k->c1[st], 0x100); n += 0x100; }', 1, 'different c1 is not merged'),
+            ('alias-fact-registration-omitted', 'if (reusable && ae->fact_ok) fact_cache_keep_mask(&id, fact_base, ae->fact_mask, &ae->prog);',
+             '(void)ae->fact_mask;', 1, 'reuses the program (no live compile'),
+            # 预热线程建的那份也要算事实掩码：撤掉后，合并命中它的前台身份登记不上事实复用（真机现编 3 → 198 次的另一半）
+            ('alias-bg-fact-mask-omitted', 'if (!compute && e && !e->failed && alias_on()) e->fact_ok = (uint8_t)fact_cache_mask(bytes, len, &e->prog, e->fact_mask);',
+             '(void)0;', 1, 'alias fact-bg[on] s2: identity differing only in an unread texture fact reuses the program'),
+            # 开关关闭态（--alias-off 另起进程）：开关读了不用，关闭态下 B 就会被合并，「B 读自己的文件」必须变红
+            ('alias-flag-ignored', 'if (v < 0) v = nvn_plat_flag("nvk_alias", 1) ? 1 : 0; return v;',
+             'if (v < 0) { (void)nvn_plat_flag("nvk_alias", 1); v = 1; } return v;', 1, 'alias[off] s2: B reads its own file', ('--alias-off',)),
         ]
-        for name, before, after, count, expected in changes:
+        for name, before, after, count, expected, *more in changes:
             assert text.count(before) == count, (name, 'mutation anchor')
             path = out/(name+'.c')
             path.write_text(text.replace(before, after), encoding='utf-8')
-            result = run(name, path)
+            result = run(name, path, args=(more[0] if more else ()))
             assert result.returncode != 0 and expected in result.stderr, (name, result.stdout, result.stderr)
             print(f'{name}: expected assertion failure: {expected}', flush=True)
         print(f'PASS: {len(changes)} negative controls')
         return 0
+    if sys.argv[1:] == ['--withdraw-fact-reuse']:
+        text = original.read_text()
+        before = 'if (!e && reusable) {'
+        assert text.count(before) == 1
+        path = out/'fact-reuse-withdraw.c'
+        path.write_text(text.replace(before, 'if (0 && !e && reusable) {'))
+        # The extracted source keeps its normal local header search path.
+        base.append('-I'+str(native/'gfx_plat'))
+        result = run('fact-reuse-withdraw', path)
+        assert result.returncode and 'unqueried combined texture reuses compiled program' in result.stderr, result.stderr
+        print('PASS: disabling dependency reuse fails the production-producer regression')
+        return 0
+    if sys.argv[1:] == ['--withdraw-fact-reset']:
+        text = original.read_text()
+        assert text.count('    fact_cache_reset();') == 1
+        path = out/'fact-reset-withdraw.c'
+        path.write_text(text.replace('    fact_cache_reset();', '    (void)fact_cache_reset;'))
+        base.append('-I'+str(native/'gfx_plat'))
+        result = run('fact-reset-withdraw', path)
+        assert result.returncode and 'reset clears aliases and dependency index' in result.stderr, result.stderr
+        print('PASS: keeping stale dependency indexes across reset fails the production-producer regression')
+        return 0
+    if sys.argv[1:] == ['--withdraw-inactive-ubo']:
+        text = original.read_text()
+        before = 'for (int st = 0; st < nst; st++) { uint32_t m = 0;'
+        assert text.count(before) == 1
+        path = out/'inactive-ubo-withdraw.c'
+        path.write_text(text.replace(before, 'for (int st = 0; st < 6; st++) { uint32_t m = 0;'))
+        base.append('-I'+str(native/'gfx_plat'))
+        result = run('inactive-ubo-withdraw', path)
+        assert result.returncode and 'inactive stage UBO keeps graphics identity' in result.stderr, result.stderr
+        print('PASS: restoring inactive UBO identity fails the production-producer regression')
+        return 0
     if sys.argv[1:]:
         raise ValueError('usage: nvk_shader_pool_test.py [--withdraw]')
+    # 存储图像的声明（数值类 + SPIR-V Image Format）落程序记录：生产 sampled_decl，手搭 SPIR-V
+    exe = out/'image-decl'
+    host_link.run(base + [str(ROOT/'android/tests/image_decl_test.c'), *[str(p) for p in libs]] + [strip, '-lm', '-o', str(exe)], check=True, timeout=60)
+    decl = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30)
+    sys.stdout.write(decl.stdout); sys.stderr.write(decl.stderr)
+    if decl.returncode:
+        return decl.returncode
+    # #1594：类型 3 句柄（常量采样器）的布局映射：真实结果解析 + 生产 layout_ent（编码 / 下标 0 与 4095 / 其它来源不变）
+    exe = out/'const-sampler-layout'
+    host_link.run(base + [str(ROOT/'android/tests/const_sampler_layout_test.c'), *[str(p) for p in libs]] + [strip, '-lm', '-o', str(exe)], check=True, timeout=60)
+    csl = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30)
+    sys.stdout.write(csl.stdout); sys.stderr.write(csl.stderr)
+    if csl.returncode:
+        return csl.returncode
+    diag = run('diag-compile', original, args=('--diag-compile',))
+    sys.stdout.write(diag.stdout); sys.stderr.write(diag.stderr)
+    if diag.returncode:
+        return diag.returncode
     result = run('test', original)
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
-    return result.returncode
+    # 结果合并开关关闭态（debug.s2a.nvk_alias=0）：开关在进程内只读一次，单独起一个进程
+    off = run('test-alias-off', original, args=('--alias-off',))
+    sys.stdout.write(off.stdout)
+    sys.stderr.write(off.stderr)
+    with tempfile.TemporaryDirectory(prefix='compute-warm-', dir=out) as td:
+        warm_dir = Path(td) / 'manifest'; warm_dir.mkdir()
+        cache_on = Path(td) / 'cache-on'; cache_on.mkdir()
+        cache_off = Path(td) / 'cache-off'; cache_off.mkdir()
+        env = dict(os.environ, S2A_COMPUTE_WARM='1', S2A_PW_TEST_DIR=str(warm_dir), S2A_DIRECT_CACHE_DIR=str(cache_on))
+        on = run('test-compute-warm', original, args=('--compute-warm',), env=env)
+        sys.stdout.write(on.stdout); sys.stderr.write(on.stderr)
+        env.update(S2A_COMPUTE_WARM='0', S2A_DIRECT_CACHE_DIR=str(cache_off))
+        cs_off = run('test-compute-warm-off', original, args=('--compute-warm-off',), env=env)
+        sys.stdout.write(cs_off.stdout); sys.stderr.write(cs_off.stderr)
+    return result.returncode or off.returncode or on.returncode or cs_off.returncode
 
 if __name__ == '__main__':
     raise SystemExit(main())

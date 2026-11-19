@@ -1,6 +1,6 @@
 # 地址空洞统计必须遵守 TASK_VM_INFO 上限；只替换查询，不模拟 VM 映射。
 NATIVE_TEST_OWN += vawin_limits
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 .PHONY: native-test-vawin_limits
 native-test-vawin_limits: $(TEST_VAGUARD)
 	@mkdir -p $(BUILD)/tests

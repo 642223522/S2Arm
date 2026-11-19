@@ -14,6 +14,7 @@ namespace Ryujinx.HLE.HOS.Services.Hid
     public class NpadDevices : BaseDevice
     {
         private const int NoMatchNotifyFrequencyMs = 2000;
+        private const ulong SixAxisSamplePeriodNs = 5_000_000;
         private int _activeCount;
         private long _lastNotifyTimestamp;
 
@@ -191,6 +192,14 @@ namespace Ryujinx.HLE.HOS.Services.Hid
         }
 
         // S2A：输入泵每 250 ms 查游戏收不收掌机格 / Player1（不分配，GetSupportedPlayers 是迭代器）
+        // S2A：游戏声明收哪些手柄号 / 样式之后、这次服务调用返回之前回调（IHidServer SetSupportedNpadIdType / SetSupportedNpadStyleSet）：
+        //   宿主虚拟手柄跟随游戏声明改接（掌机格 → Player1 Pro 等）在声明这一刻同步做完，同真机——掌机里握着的 Joy-Con 在声明时就归到它收的手柄号，
+        //   游戏之后 ActivateNpad、建自己的手柄对象时看到的已是改好的连接。原先只靠输入泵 250 ms 轮询，改接落在游戏初始化中途任意时刻
+        public static System.Action<Switch> S2ASupportedChanged;
+        // S2A（审计 P1-192）：Configure 只记配置，写进共享内存（SetupNpad）原先只在输入泵的 Update → Remap 里做，声明那次服务调用返回时游戏读到的仍是旧连接。
+        //   S2AApplyConfiguration 在调用线程上立刻 Remap 一次；它与输入泵的 Update 用同一把锁，两条线程不会同时写手柄共享内存
+        private readonly object _s2aUpdateLock = new();
+        public void S2AApplyConfiguration() { lock (_s2aUpdateLock) Remap(); }
         internal bool IsSupportedPlayer(PlayerIndex player) => (uint)player < (uint)_supportedPlayers.Length && _supportedPlayers[(int)player];
 
         internal IEnumerable<PlayerIndex> GetSupportedPlayers()
@@ -266,6 +275,11 @@ namespace Ryujinx.HLE.HOS.Services.Hid
         }
 
         public void Update(IList<GamepadInput> states)
+        {
+            lock (_s2aUpdateLock) UpdateLocked(states);
+        }
+
+        private void UpdateLocked(IList<GamepadInput> states)
         {
             Remap();
 
@@ -484,6 +498,7 @@ namespace Ryujinx.HLE.HOS.Services.Hid
         {
             ref SixAxisSensorState previousEntry = ref lifo.GetCurrentEntryRef();
 
+            state.DeltaTime = SixAxisSamplePeriodNs;
             state.SamplingNumber = previousEntry.SamplingNumber + 1;
 
             lifo.Write(ref state);

@@ -14,6 +14,12 @@ namespace Ryujinx.HLE
         // 游戏是 Switch 2 程序（NPDM 是 Switch 2 的 ACID 布局；services Application.Register 按 NpdmCompat 设）。只给语义随机型变的命令分派用
         public static bool Switch2;
 
+        // OpenDataStorageWithProgramIndex (fs 205) for a program index other than the caller's own: answer with the caller's own data storage
+        // when the index equals this (-1 = never; upstream throws "Accessing storage from other programs is not supported").
+        // services Application.Register sets 0 for a standalone program n (n >= 1) that is the only program in its package: the package
+        // carries a single RomFS, and a Switch 2 Edition program 1 also reads index 0 (#1567).
+        public static int DataStorageAliasIndex = -1;
+
         // GetDesiredLanguage when the game does not support the system language: try these in order before upstream's "first supported"
         // (the host passes the system's preferred languages, then Simplified / Traditional Chinese, then English). Null = upstream.
         public static Ryujinx.HLE.HOS.SystemState.TitleLanguage[] TitleLanguageFallback;
@@ -41,6 +47,9 @@ namespace Ryujinx.HLE
         // NroUnmap(base) -> 0 ok, 1 not loaded. Null = upstream (Ryujinx kernel memory manager).
         public static delegate*<byte*, ulong, ulong, ulong*, int> NroMap;   // 宿主登记（services Native.NroMap → 原生核心 s2a_nro_map，DllImport 集中声明）
         public static delegate*<ulong, int> NroUnmap;
+        // NroKeep(sha256[32], nro bytes, size) -> 0 kept, 2 kept before (not prepared again yet), 1 failed: an NRO the package has no image of (NroMap 1) is kept
+        // as the game unpacked it, for the next preparation to rewrite (runtime/src/loader.c s2a_nro_keep). Null = not kept.
+        public static delegate*<byte*, byte*, ulong, int> NroKeep;
         public static bool NroHooked => NroMap != null;
         public static int NroUnmapAt(ulong mapped) => NroUnmap(mapped);
 

@@ -1,6 +1,6 @@
 # Real production shader entries + concurrent real Metal loading and GPU oracle.
 NATIVE_TEST_OWN += nvn_shader_flight
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 NVN_SHADER_FLIGHT_SOURCE ?= graphics/nvn/gfx/nvn/nvn_mtl.m
 NVN_SHADER_FLIGHT_BINARY ?= $(BUILD)/tests/t_nvn_shader_flight
 $(NVN_SHADER_FLIGHT_BINARY): graphics/nvn/tests/t_nvn_shader_flight.m $(NVN_SHADER_FLIGHT_SOURCE) $(NVN_MTL_DEPS) $(dir $(NVN_SHADER_FLIGHT_SOURCE))nvn_session.inc $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)

@@ -123,6 +123,10 @@ void dm_fault_hook_register(int (*fn)(void *addr, int is_write, void *uc)) { s2a
 static void (*g_wprep)(void *addr, size_t len);
 static void wprep_tramp(uint64_t addr, uint64_t len) { g_wprep((void *)(uintptr_t)addr, (size_t)len); }
 void dm_guest_write_prep_register(void (*fn)(void *addr, size_t len)) { g_wprep = fn; s2a_guest_write_prep_register(wprep_tramp); }
+// 远端别名区里的内存池不让 nvn_dirty 写保护（11-14 D-GCMY，见 nvn_dirty.c nvn_dirty_add_range）：判定用原生层的远端表
+int s2a_far_has(uint64_t a, uint64_t n) __attribute__((weak));   // runtime/src/far.c（没开远端时恒 0）；弱引用：只链 libnvn 不链原生层的单测没有它（登记见 nvn_dirty.c）
+extern int (*nvn_dirty_far_fn)(uint64_t a, uint64_t n);
+__attribute__((constructor)) static void dirty_far_init(void) { if (s2a_far_has) nvn_dirty_far_fn = s2a_far_has; }
 // 直连层自己要写游戏内存前（贴图回写）：走 S2Arm 宿主写游戏内存的同一个入口，登记的写前回调从那里收到
 void dm_guest_write_prepare(void *addr, size_t len) { s2a_track_write_quiet((uint64_t)(uintptr_t)addr, (uint64_t)len); }
 // 崩溃等待点 / 资源行：直连层在 Metal 初始化时登记
@@ -150,11 +154,18 @@ static void big_wrap(void) {
     unsigned n = 0;
     for (unsigned i = 0; i < NVN_NFUNC; i++) if (nvn_big_real[i]) { nvn_big_real[i] = sw_xstack_wrap(nvn_names[i], nvn_big_real[i]); n++; }
     LOG("直连：%u 个 NVN 函数经 S2Arm 切栈桩跑在宿主栈上（其余命令录制留在游戏栈）", n);
+    void nvn_leaf_wrap(void *(*leaf)(const char *, void *)); void *sw_xstack_leaf(const char *name, void *fn);
+    nvn_leaf_wrap(sw_xstack_leaf);   // 留在游戏栈上的那些套叶子桩：游戏 sp 不对齐时先对齐再调（runtime/src/xstack.c）
 }
 
 // ---------- 兜底现编（§12.3，着色器线 s2a_dsh_compile）----------
 // ProgramSetShaders 时（控制段只在这次调用里保证有效）键不在映射表、也不是内置核：按代码区头判阶段，同步调 s2a_dsh_compile 把 <键>_b.metal / .json 写进
 // DM_MSL_FALLBACK（Documents/wire/<程序号>/shaders），成功就把「键 → 阶段」补进直连层映射表旁表；建管线时 shader_load 从兜底目录现场建库。只当最后一层保险
+const char *s2a_app_version(void) {   // dsh_miss.inc 着色器覆盖计数的 "app"：iOS 是 App 版本；Mac 宿主是命令行程序，没有 → ""
+    static char v[32]; static dispatch_once_t once;
+    dispatch_once(&once, ^{ NSString *s = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"]; snprintf(v, sizeof v, "%s", s ? s.UTF8String : ""); });
+    return v;
+}
 #include "host/dsh_miss.inc"
 #include "host/dsh_cold.inc"
 
@@ -175,6 +186,7 @@ UIView *s2a_ios_root_view(void) __attribute__((weak_import));
 UIView *s2a_ios_present_view(void) __attribute__((weak_import));
 static UIView *present_view(void) { return s2a_ios_present_view ? s2a_ios_present_view() : s2a_ios_root_view ? s2a_ios_root_view() : nil; }
 CGRect s2a_ios_game_area(void) __attribute__((weak_import));
+int s2a_ios_game_top(void) __attribute__((weak_import));
 // 出图层摆放的范围（#300 统一游戏区域）：挂在手机根视图上时取 App 壳给的游戏区域（分屏等），挂在外接屏窗口的视图上或壳没这个符号 / 区域为空时取视图自身
 static CGRect game_rect(UIView *v) {
     if (s2a_ios_game_area && s2a_ios_root_view && v == s2a_ios_root_view()) { CGRect r = s2a_ios_game_area(); if (!CGRectIsEmpty(r)) return r; }
@@ -213,6 +225,8 @@ static void layout_layer(UIView *v, CAMetalLayer *l) {
     // 等比居中；出图比例与视图比例差 < 1% 时铺满视图（10-29：宽屏开着时出图比例来自取整后的屏幕宽，如 2346 / 1080 = 2.1722 对屏幕 2.1727，
     //   旧写法层比视图窄零点几个点，右侧露一条 ≤ 1 像素的黑缝；同 the reference port present_viewport 的 1% 容差）
     pf_vp f = pf_viewport(b.size.width, b.size.height, a, 1); CGFloat w = f.w, h = f.h;
+    // 分屏放宽到整屏宽的上区（iPhone Duo 外屏竖屏，ios/play_layout.m S2APlayLayoutMake 的 top）：画面贴顶，空余留在画面与手柄之间
+    if (s2a_ios_game_top && s2a_ios_root_view && v == s2a_ios_root_view() && s2a_ios_game_top()) f.y = 0;
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     l.frame = CGRectMake(b.origin.x + f.x, b.origin.y + f.y, w, h);
     // 出图层像素倍数（S2A_OUT_SCALE，缺省 1 = 屏幕原生；帧率能耗线 10-26 维护者要量）：最后上屏这一层按原生全分辨率画，每帧多一次整屏读写；
@@ -256,9 +270,26 @@ void s2a_direct_relayout(void) {   // App 壳视图控制器 viewDidLayoutSubvie
         re ? "，宽屏核心下一个渲染遍按新比例出图" : "");
     if (!re && fabs(va / g_out_a - 1) > 0.01) LOG("【黄】直连：可用区域比例 %.3f 与出图比例 %.3f 不同，按实际出图比例居中；固定尺寸的路径须重新启动游戏后应用新比例", va, g_out_a);
 }
+unsigned s2a_session_generation(void) __attribute__((weak));   // runtime/src/session.c：会话代号（同进程「立刻重启」新一局加一）
+static _Atomic unsigned g_layer_gen;   // 出图比例按哪一局算的（会话代号）
+// 同进程新一局重算出图比例（#1169）：游戏内「立刻重启」重读设置后，满屏 / 补丁画幅可能变了，宽屏核心按新屏宽高出图；
+//   出图层却只在进程首次建层时算过一次比例，新画幅被装进上一局的层（iPad 横屏开满屏后重启：1.532 的画面塞进 16:9 层、四边留黑，冷启动才对）。
+//   渲染线程每次取层比一次代号，换局了交主线程重算比例并按同一条重摆路摆层（后台等回前台补，同布局回调）
+static void layer_session_check(void) {
+    if (!g_layer || !s2a_session_generation) return;
+    unsigned g = s2a_session_generation(), o = atomic_load(&g_layer_gen);
+    if (g == o || !atomic_compare_exchange_strong(&g_layer_gen, &o, g)) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        double a0 = g_out_a, a1 = out_aspect(); if (!(a1 > 0) || a1 == a0) return;
+        g_out_a = a1; CGSize d0 = g_layer.drawableSize; s2a_direct_relayout(); CGSize d1 = g_layer.drawableSize;
+        if (d0.width == d1.width && d0.height == d1.height) { g_relayout_due = 1; return; }   // 没摆（在后台）：回前台补（front_metal_layer 登记的通知）
+        LOG("直连：新一局出图比例 %.3f → %.3f，出图层重摆为 %.0fx%.0f 像素", a0, a1, g_layer.drawableSize.width, g_layer.drawableSize.height);
+    });
+}
 void *front_metal_layer(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
+        if (s2a_session_generation) atomic_store(&g_layer_gen, s2a_session_generation());
         if (!s2a_ios_root_view) { LOG("【红】直连：没有 App 壳根视图（s2a_ios_root_view），无出图层"); return; }
         void (^mk)(void) = ^{
             UIView *v = present_view(); if (!v) return;
@@ -275,6 +306,12 @@ void *front_metal_layer(void) {
             //   已经晚了，只有启动前从外面传入才显示。iOS 16 起可按层在运行中打开：开关开着（环境变量来自设置或外面传入都算）就对出图层打开
             { const char *hud = getenv("MTL_HUD_ENABLED");
               if (hud && !strcmp(hud, "1")) { if (@available(iOS 16.0, *)) { l.developerHUDProperties = @{@"mode": @"default"}; LOG("直连：Metal 性能浮层按出图层打开（MTL_HUD_ENABLED=1）"); } } }
+            // PR1 探针（HDR 全链路评审稿 v2）：挂层屏幕 EDR 能力一次性读数（M0 跑局记录屏幕配置用；能力动态重探是 PR4 的活）。EDR headroom iOS 16 起；
+            //   排查指引只写在 Mac 侧（front_mac.m screen_edr_note）——iOS 的设置路径与那行文案不同，这里只报读数
+            { UIScreen *sc = v.window.screen ?: UIScreen.mainScreen;
+              float pe = 0, ce = 0;
+              if (@available(iOS 16.0, *)) { pe = sc.potentialEDRHeadroom; ce = sc.currentEDRHeadroom; }
+              LOG("直连：出图层所在屏 EDR 探针：potentialEDR %.3f / currentEDR %.3f（倍数），色域 %s", pe, ce, sc.traitCollection.displayGamut == UIDisplayGamutP3 ? "P3" : "sRGB"); }
             if (v != s2a_ios_root_view()) LOG("直连：出图层挂在外接屏（下一行的「根视图」尺寸是外接屏窗口的视图）");
             [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue
                 usingBlock:^(NSNotification *n) { (void)n; if (g_relayout_due) { g_relayout_due = 0; s2a_direct_relayout(); } }];   // 补后台期间欠的重摆
@@ -284,6 +321,7 @@ void *front_metal_layer(void) {
                          g_layer.drawableSize.width / g_layer.drawableSize.height, s2a_widen_game() ? "开" : out_wide() ? "关、直连第三层整套放宽" : out_tall() ? "关、直连第三层上下加高" : "关");
         else LOG("【红】直连：根视图还没建好，没挂上出图层");
     });
+    layer_session_check();
     return (__bridge void *)g_layer;
 }
 #else
@@ -532,10 +570,13 @@ void s2a_gpu_safe_stop(const char *why) {
     LOG("【红】GPU 挂死安全停：iOS 壳没有错误页入口，改为收局");
 #endif
     char *w = strdup(why ? why : "-");
+    // 退出码 86（同 gal_core.m 命令缓冲出错）：作业层（pack/jobs/build.py）按它告诉玩家这局是被安全停下的，不显示「操作完成」（#1257）
+    void (*code)(int) = (void (*)(int))dlsym(RTLD_DEFAULT, "s2a_host_exit_code");
+    if (code) code(86);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
         void (*down)(const char *) = (void (*)(const char *))dlsym(RTLD_DEFAULT, "s2a_host_shutdown");
         char m[300]; snprintf(m, sizeof m, "GPU 挂死安全停（%.200s）", w);
-        if (down) down(m); else _exit(70);
+        if (down) down(m); else _exit(86);
     });
 }
 // GPU 卡住暂停的宿主一侧（11-13；判据在 nvn_mtl.m gpu_frame_stuck：连续 3 帧各过 3 秒）：iOS 盖「继续玩 / 退出」页（app.m s2a_ios_gpu_stuck），
@@ -564,7 +605,10 @@ static void *fail_watch(void *arg) {
     unsigned long long last = 0; double idle = 0, wait_first = 0;
     for (;;) {
         sleep(1);
-        if (atomic_load(&g_suspended)) { idle = 0; base = 0; continue; }
+        // 客机冻结（Mac 失焦暂停 / iOS 后台 / 重启屏障，runtime/src/thread.c s2a_guest_frozen）按设计不出帧，不算停住
+        //   （11-15 v0.4.2 候选一局：窗口失焦冻结 45 秒被报「出帧停住 45 秒」假红；停帧救场 runtime/src/ap_host.c 早已同口径）
+        static int (*frozen)(void); static int looked; if (!looked) { frozen = (int (*)(void))dlsym(RTLD_DEFAULT, "s2a_guest_frozen"); looked = 1; }
+        if (atomic_load(&g_suspended) || (frozen && frozen())) { idle = 0; base = 0; continue; }
         unsigned long long f = direct_frames();
         if (!f) {
             if (++wait_first != 90) continue;   // 只在第 90 秒报一次、打一次现场，之后照常等首帧

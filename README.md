@@ -119,7 +119,7 @@ S2Arm stands on the shoulders of its community.
 - **Virtual gamepad and gear menu**: the in-game gear menu and in-place gamepad editing on iOS follow the MeloNX-style design that [@neexuan](https://github.com/neexuan) brought in [#134](https://github.com/jhaizhou-ops/S2Arm/pull/134); S2Arm reimplemented it from scratch. Thanks to MeloNX for exploring this interaction on iOS.
 - **Ryujinx** (Ryujinx Team and Contributors, MIT): upstream for system services and shader translation; S2Arm's compatibility layer is built on it.
 - **[NX2Apple](https://github.com/LNPANDY/NX2Apple)** (LNPANDY, MIT): upstream of the launcher interface.
-- **[nxnative](https://github.com/seedds/nxnative)** (seedds, MIT, Copyright (c) 2026 seedds): the original work behind the direct graphics layer that connects game graphics straight to Metal. That generous release is what made the direct path possible.
+- **[nxnative](https://github.com/seedds/nxnative)** (seedds, MIT, Copyright (c) 2026 seedds): the original work behind the direct graphics layer that connects game graphics straight to Metal. That generous release is what made the direct path possible. Its fork **[kartnative](https://github.com/pahorema/kartnative)** (MIT) is where the placement-sparse tile sharing for large sparse textures comes from.
 - **[d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile)** (MIT): pioneered this technical path, bringing your own Switch game natively to iPhone, iPad, Mac, Android and HarmonyOS for the first time.
 - **Impactor** (Samara M, MIT) and **apple-codesign** (MPL-2.0): signing and installing from Windows.
 - **LNPANDY** and the original authors and contributors of the iOS library shell: the shell and its RomFS archive subsystem.

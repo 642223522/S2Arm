@@ -67,6 +67,16 @@ class ErrorRecoveryTests(JobCase):
         self.assert_failure(failed, "keys_invalid")
         self.assertEqual(self.c.keys.read_bytes(), before)
 
+    def test_missing_keys_file_is_keys_invalid_not_our_file_missing(self):
+        # 诊断#c719ce：选的 prod.keys 已经不在（被移动 / 删除 / iCloud 没下载），原先 stat 抛 FileNotFoundError 落到 job_failed，
+        #   报成「S2Arm 自己的文件找不到了」。期望手写：报 keys_invalid、说是选的密钥文件找不到、让玩家重新选；原有密钥不变
+        self.import_keys()
+        before = self.c.keys.read_bytes()
+        _, failed = self.worker("keys", path=str(self.root / "gone" / "prod.keys"))
+        diagnostic = self.assert_failure(failed, "keys_invalid")
+        self.assertIn("找不到", json.dumps(diagnostic, ensure_ascii=False)); self.assertIn("重新选择", json.dumps(diagnostic, ensure_ascii=False))
+        self.assertEqual(self.c.keys.read_bytes(), before)
+
     def test_specific_reader_error_replaces_tool_exit_and_preserves_evidence(self):
         self.import_keys(); self.install_reader_fixture()
         source = self.root / "source.nsp"
@@ -119,8 +129,13 @@ class ErrorRecoveryTests(JobCase):
     def test_reader_io_failure_propagates_after_child_exit(self):
         import winproc
         spawn = winproc.popen if os.name == 'nt' else subprocess.Popen
+        fixture = [sys.executable, "-c", "print('fixture')"]
         def unreadable_pipe(*args, **kwargs):
             child = spawn(*args, **kwargs)
+            # 只给被测的那个子进程装坏管道：Popen 是整个 subprocess 模块打的桩，收尾 reap_session 里的 /bin/ps 也走这里，
+            #   原先它也被等 5 秒、输出过管道缓冲（本机进程多时 ps -A 超 64 KB）就超时，两次收尾每例白等 10 秒、残留进程也没真收（11-14 门禁提速）
+            if list(args[0]) != fixture:
+                return child
             child.wait(timeout=5)
             child.stdout = Mock(wraps=child.stdout)
             child.stdout.readline.side_effect = OSError(errno.EIO, "synthetic pipe read failure")
@@ -211,6 +226,58 @@ raise SystemExit(main.main())
                          "input_missing")   # 游戏库根整个不在 = 外接盘没插
         self.assertEqual(explain(Failure("No space left on device")).code, "job_failed")
         self.assertEqual(explain(ValueError("Check keys")).code, "job_failed")
+
+    def test_windows_app_control_block_named(self):
+        # #0745b9：Windows 应用控制（4551 智能应用控制 / WDAC、1260 组策略、225 / 226 杀毒软件）拦下我们自带的工具 → app_control_blocked，
+        #   上屏点名被拦的工具（winproc.popen 补的文件名）；原先落到「本地任务失败，请检查日志和输入」。errno 写成 EACCES 也先认应用控制
+        for code_w in (4551, 1260, 225, 226):
+            with self.subTest(winerror=code_w):
+                e = OSError(errno.EACCES, "应用程序控制策略已阻止此文件。", r"C:\S2Arm\Engine\tools\nx_reader.exe")
+                e.winerror = code_w
+                got = explain(e)
+                self.assertEqual(got.code, "app_control_blocked")
+                self.assertIn("「nx_reader.exe」", str(got))
+                self.assertIn({4551: "智能应用控制", 1260: "组策略"}.get(code_w, "杀毒软件"), str(got))
+                self.assertIn(f"WinError {code_w}", got.internal)
+        e = OSError(errno.EINVAL, "x"); e.winerror = 4551
+        self.assertIn("「S2Arm 自带的工具」", str(explain(e)), "不带文件名照样认")
+        self.assertIn("app_control_blocked", RECOVERY)
+
+    def test_unrecognized_volume_during_classification_does_not_mask_original_error(self):
+        lib = self.root / "classify-volume-lib"
+        src = self.root / "classify-volume-src"
+        lib.mkdir(); src.mkdir()
+        missing_cache = lib / "games" / "Absolum" / "build" / "extract"
+        original = FileNotFoundError(errno.ENOENT, "synthetic missing cache", str(missing_cache))
+
+        def unrecognized_volume(*args, **kwargs):
+            error = OSError(errno.EIO, "synthetic unrecognized volume")
+            error.winerror = 1005
+            raise error
+
+        with patch("errors.os.path.realpath", side_effect=unrecognized_volume):
+            got = explain(original, sources=[src], library=lib)
+        self.assertEqual(got.code, "job_failed")
+        self.assertIn(str(missing_cache), got.internal)
+
+    def test_unrecognized_volume_check_does_not_mark_library_as_missing(self):
+        lib = self.root / "classify-stat-lib"
+        src = self.root / "classify-stat-src"
+        lib.mkdir(); src.mkdir()
+        original_stat = os.stat
+
+        def stat_with_unrecognized_volume(path, *args, **kwargs):
+            if os.fspath(path) == str(lib):
+                error = OSError(errno.EIO, "synthetic unrecognized volume", str(lib))
+                error.winerror = 1005
+                raise error
+            return original_stat(path, *args, **kwargs)
+
+        missing_cache = lib / "games" / "fixture" / "build" / "extract"
+        original = FileNotFoundError(errno.ENOENT, "synthetic missing cache", str(missing_cache))
+        with patch("errors.os.stat", side_effect=stat_with_unrecognized_volume):
+            got = explain(original, sources=[src], library=lib)
+        self.assertEqual(got.code, "job_failed")
 
     def test_non_os_error_keeps_type_message_and_location(self):
         # #372 / #854（Windows 0.3.9 报修打包 AttributeError）：不是 OSError 的异常原先连原文一起丢，玩家复制的摘要里只剩「本地任务失败」。

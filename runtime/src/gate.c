@@ -11,6 +11,9 @@
 #include <stdlib.h>
 // 弱缺省定义：真定义在 crash.c（同一个程序里强定义盖过它）；只链 gate.c 的单测没有 crash.c，用这份返回 0
 __attribute__((weak)) uint64_t s2a_sp_unaligned_count(void) { return 0; }
+__attribute__((weak)) uint64_t s2a_stale_perm_count(void) { return 0; }
+// 同理：真定义在 thread.c（即时存档记「C# 回复已写好」）；只链 gate.c 的单测用这份空实现
+__attribute__((weak)) void s2a_svc_cs_returned(void) {}
 
 enum { G_SVC, G_CNTPCT, G_CNTVCT, G_WIDE, G_SPIN, G_AREGION };
 typedef struct { uint64_t ret; int kind, arg; uint64_t orig; } gate_t;
@@ -34,6 +37,18 @@ static int gtab_put(gtab_t *t, gate_t g) {
     return 0;
 }
 
+// 即时存档（跨版本 B 档）：门的身份 = (原指令地址, 门类型)。存档时按返回点查身份，恢复时按身份在本版门表里找新返回点（维护者：
+//   同一份改写产物里 (原地址, 类型) 唯一；跨版本找不到就归 C 档拒绝，不猜最近的门）
+int s2a_gate_identity(uint64_t ret, uint64_t *orig, int *kind) {
+    gtab_t *t = atomic_load_explicit(&g_tab, memory_order_acquire); if (!t) return -1;
+    for (unsigned i = 0; i < (1u << t->bits); i++) if (t->e[i].ret == ret) { *orig = t->e[i].orig; *kind = t->e[i].kind; return 0; }
+    return -1;
+}
+uint64_t s2a_gate_by_identity(uint64_t orig, int kind) {
+    gtab_t *t = atomic_load_explicit(&g_tab, memory_order_acquire); if (!t) return 0;
+    for (unsigned i = 0; i < (1u << t->bits); i++) if (t->e[i].ret && t->e[i].orig == orig && t->e[i].kind == kind) return t->e[i].ret;
+    return 0;
+}
 void gate_register(uint64_t ret_abs, const char *kind, int arg, uint64_t orig) {
     int k = !strcmp(kind, "svc") ? G_SVC : !strcmp(kind, "cntpct") ? G_CNTPCT : !strcmp(kind, "cntvct") ? G_CNTVCT : !strcmp(kind, "wide") ? G_WIDE : !strcmp(kind, "spin") ? G_SPIN : !strcmp(kind, "aregion") ? G_AREGION : -1;
     if (k < 0) die("不认识的门类 %s（改写器与原生层版本不符）", kind);
@@ -108,6 +123,9 @@ void s2a_svc_red_summary(void) {   // 退出时一行，健康表读：空 = 报
     // 栈指针未对齐的读写替游戏做了几条（crash.c / emul_sp.c s2a_emul_sp_unaligned；Switch 不查 SP 对齐、苹果查）：有才报
     { uint64_t n = s2a_sp_unaligned_count();
       if (n) LOG("栈指针未对齐：替游戏模拟了 %llu 条读写（Switch 不查栈对齐，苹果查）", (unsigned long long)n); }
+    // 过期权限缺页重执行了几次（crash.c stale_perm_retry：缺页时页还不可写、处理时已被别的线程放开）：有才报
+    { uint64_t n = s2a_stale_perm_count();
+      if (n) LOG("过期权限缺页：重执行 %llu 次（缺页没人认领、内核里这页已有要的权限）", (unsigned long long)n); }
 }
 
 int svc_thread(int num, uint64_t *regs);                    // thread.c：线程 / 同步，1 = 已处理
@@ -129,6 +147,40 @@ static int cmif_cmd(const uint32_t *m, char *name, uint32_t *dom) {   // 返回�
 static int cmif_result(const uint32_t *m, uint32_t *res) {   // 应答里 SFCO 后 +8 的结果码；找不到 0
     for (int i = 2; i < 0x40; i++) if (m[i] == 0x4F434653) { *res = m[i + 2]; return 1; }
     return 0;
+}
+// 每条客体线程最近 16 次 IPC（崩溃现场打，s2a_gate_ipc_recent）：#eb9952 / #03b531 / #7a6909 三款不同游戏、不同平台，都是刚从服务调用返回、
+//   在自己的代码里用了空指针，原先的日志看不出这条线程刚调了哪个服务、回了什么。平时只往线程局部的环里写几个字，不打日志
+typedef struct { uint32_t num, handle, dom, res, rc; int cmd; } ipc_rec;
+static _Thread_local ipc_rec t_ipc[16]; static _Thread_local unsigned t_ipc_n;
+// 句柄 → 服务名：sm GetService 的应答里拿到的句柄（名字是请求里的 8 字节，只收可打印的）；会话克隆 / 子对象不在表里（打「?」）。只追加、崩溃时倒查
+static struct { _Atomic uint32_t h; char nm[9]; } g_hname[512]; static _Atomic unsigned g_hname_n;
+static int svc_name_ok(const char *n) { if (!n[0]) return 0; for (int i = 0; i < 8 && n[i]; i++) if (!((n[i] >= 'a' && n[i] <= 'z') || (n[i] >= '0' && n[i] <= '9') || n[i] == ':' || n[i] == '-' || n[i] == '_')) return 0; return 1; }
+static void ipc_note_before(int num, const uint64_t *regs, const uint32_t *msg, char name[9]) {
+    ipc_rec *r = &t_ipc[t_ipc_n++ & 15]; memset(r, 0, sizeof *r);
+    r->num = (uint32_t)num; r->handle = (uint32_t)(num == 0x21 ? regs[0] : regs[2]); r->cmd = -1; name[0] = 0;
+    if (!msg) return;
+    if ((msg[0] & 0xffff) >= 16) { r->cmd = (int)(msg[0] & 0xffff) - 16; if (r->cmd == 1) { const uint32_t *raw = msg + 2 + ((msg[1] >> 31) ? 1 : 0); memcpy(name, raw, 8); name[8] = 0; } }   // TIPC（sm:）
+    else { r->cmd = cmif_cmd(msg, name, &r->dom); if (r->cmd != 1) name[0] = 0; }   // CMIF：只有命令 1（GetService）的那 8 字节是服务名
+    if (!svc_name_ok(name)) name[0] = 0;
+}
+static void ipc_note_after(const uint64_t *regs, const uint32_t *msg, const char *name) {
+    ipc_rec *r = &t_ipc[(t_ipc_n - 1) & 15]; r->rc = (uint32_t)regs[0];
+    if (msg && (msg[0] & 0xffff) < 16) cmif_result(msg, &r->res);
+    if (msg && name[0] && !regs[0] && (msg[1] >> 31)) {   // GetService 成功：应答里转移来的第一个句柄就是这个服务的会话
+        uint32_t hd = msg[2]; int ncopy = (hd >> 1) & 15, nmove = (hd >> 5) & 15; const uint32_t *h = msg + 3 + ((hd & 1) ? 2 : 0);
+        if (ncopy + nmove) { unsigned k = atomic_fetch_add(&g_hname_n, 1) & 511; memcpy(g_hname[k].nm, name, 9); atomic_store(&g_hname[k].h, h[0]); }
+    }
+}
+static const char *ipc_name(uint32_t h) {
+    unsigned n = atomic_load(&g_hname_n), lim = n < 512 ? n : 512;
+    for (unsigned i = 0; i < lim; i++) { unsigned k = (n - 1 - i) & 511; if (atomic_load(&g_hname[k].h) == h) return g_hname[k].nm; }
+    return "?";
+}
+void s2a_gate_ipc_recent(const char *why) {   // 崩溃现场（crash.c，崩的那条线程上调）：本线程最近 16 次 IPC，旧 → 新
+    unsigned n = t_ipc_n, k0 = n > 16 ? n - 16 : 0;
+    LOG("%s：本线程最近 %u 次 IPC（共 %u 次；句柄 → 服务名只认 sm 直接给的会话，子对象 / 克隆打 ?）", why, n - k0, n);
+    for (unsigned k = k0; k < n; k++) { const ipc_rec *r = &t_ipc[k & 15]; char d[24] = ""; if (r->dom) snprintf(d, sizeof d, " 域对象 %u", r->dom & 0xffffff);
+        LOG("  #%u svc %#x 句柄 %#x（%s）命令 %d%s → 结果 %#x、svc 返回 %#x", k - k0 + 1, r->num, r->handle, ipc_name(r->handle), r->cmd, d, r->res, r->rc); }
 }
 static void trace(const s2a_svc_ctx *c, const uint32_t *msg, int before) {
     if (!msg) return;
@@ -222,18 +274,22 @@ static uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig) {
         atomic_fetch_add(&g_cs_inflight, 1);
         if (atomic_load(&g_park)) { atomic_fetch_sub(&g_cs_inflight, 1); park_forever(); }   // 与 park_all 的先后：先登记在途再复查，收局方要么等到它、要么它停住
         s2a_svc_ctx c; s2a_svc_ctx_fill(&c, num, regs);
-        const uint32_t *msg = trace_on() && (num == 0x21 || num == 0x22) ? (const uint32_t *)(num == 0x21 ? c.tlr : (void *)regs[0]) : NULL;
+        const uint32_t *ipcmsg = num == 0x21 || num == 0x22 ? (const uint32_t *)(num == 0x21 ? c.tlr : (void *)regs[0]) : NULL;
+        const uint32_t *msg = trace_on() ? ipcmsg : NULL;
+        char ipcname[9] = ""; if (num == 0x21 || num == 0x22) ipc_note_before(num, regs, ipcmsg, ipcname);   // 崩溃现场的最近 IPC（上面）
         if (msg) trace(&c, msg, 1);
         extern int g_det; uint64_t keep[8]; if (g_det) memcpy(keep, regs, sizeof keep);
         void s2a_core_leave(void), s2a_core_enter(void); int ipc = num == 0x21 || num == 0x22 || num == 0x23;
         if (ipc) s2a_core_leave();   // IPC 阻塞在服务线程上：放开虚拟核（S2A_CORES，thread.c）
         t_in_cs = 1; int done = g_cs.svc(&c) == S2A_SVC_HANDLED;
+        { void s2a_svc_cs_returned(void); s2a_svc_cs_returned(); }   // 回复已写好：先记一笔（即时存档核对「判齐后完成了没有」，thread.c）
         t_in_cs = 0; atomic_fetch_sub(&g_cs_inflight, 1);   // 进 / 出配对：与上面的 fetch_add 一一对应（10-20 曾被下一行注释吞掉，收局在途计数只增不减）
         // 重取核放在出账之后：在途只记「人在 C# 里」，等核不算；已在收局就不再取核、直接停住（取核可能永远等不到）
         if (ipc) { if (atomic_load(&g_park)) park_forever(); s2a_core_enter(); }
         // 系统调用收尾（清 in_svc）留在取核之后：等核期间仍算在系统调用里，暂停方不去 Mach 挂起它
         s2a_svc_ctx_done();
         if (g_det) { int s2a_det_out_regs(int); for (int k = s2a_det_out_regs(num); k < 8; k++) regs[k] = keep[k]; }   // 确定性档：C# 留在非输出寄存器的宿主残值不泄进游戏（每局不同）
+        if (num == 0x21 || num == 0x22) ipc_note_after(regs, ipcmsg, ipcname);
         if (msg) trace(&c, msg, 0);
         if (done) return regs[0];
         s2a_svc_red(num, regs, orig, "C# 未处理");
