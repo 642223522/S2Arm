@@ -806,13 +806,8 @@ static uint64_t index_img_len(const char *root) {   // index.tsv 里 game.img �
     while (fgets(line, sizeof line, f)) if (!strncmp(line, "game.img\t", 9)) { v = strtoull(line + 9, NULL, 10); break; }
     fclose(f); return v;
 }
-// 0.6.0 行为开关（同电脑侧 pack/jobs/program_pack.py ON_BY_DEFAULT）：0.6.0 之前缺省关、玩家手机上行为一字不变；切 0.6.0 时把缺省翻成 1。单测按两种状态各核一遍
-#ifndef S2A_V060_DEFAULT
-#define S2A_V060_DEFAULT 0
-#endif
-int g_s2a_v060 = S2A_V060_DEFAULT;
-static void img_shed(const char *root, const char *logp) {
-    if (!g_s2a_v060 || !came_from_import(root)) return;
+static void img_shed(const char *root, const char *logp) {   // 导入来的本体截掉已解成文件的派生件（0.6.0 起通用壳是唯一装法，不再有开关）
+    if (!came_from_import(root)) return;
     char ip[2400]; snprintf(ip, sizeof ip, "%s/game.img", root);
     int fd = open(ip, O_RDONLY); if (fd < 0) return;
     uint8_t h[136]; upd_ent *e = NULL; size_t n = 0; uint64_t to, tl, total0;
