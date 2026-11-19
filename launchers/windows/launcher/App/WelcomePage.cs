@@ -216,10 +216,18 @@ public sealed partial class EnvironmentWindow
     }
 
     // 默认库：%USERPROFILE%\S2Arm（LibraryPaths.DefaultLibrary；玩家选过就用选的），如果还没连接就先 setup。
+    //   第一次建库且有不止一块盘时先问放哪块盘（NeedsLibraryDrive）。
     private void EnsureLibrary(Action next)
     {
         if (connectedFolder is not null && libraryId is not null) { next(); Render(); return; }
         var defaultLib = SavedLibrary();
+        // 第一次建库、这台电脑不止一块能放库的盘：先让玩家选盘（LibraryDrivePicker 选盘模式），不再不问就放进系统盘的用户目录
+        if (NeedsLibraryDrive(defaultLib))
+        {
+            libraryFailCode = LibraryChooseDrive; libraryFailMoveFrom = null; libraryFailFolder = defaultLib; libraryFolder = defaultLib;
+            Render();
+            return;
+        }
         // 玩家没选过位置：缺省位置被别的文件占着（多半是把 S2Arm 解压到了 %USERPROFILE%\S2Arm）时由作业层 setup 换到旁边（freeDefault，规则在
         //   pack/jobs/library.py setup，剃刀 W19），连上后记住实际位置。原先 setup 拒收后整个添加游戏卡死（v0.2.8 热修，「一直提示还有任务在进行」）
         freeDefault = !File.Exists(LibraryPreference);

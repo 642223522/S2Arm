@@ -423,6 +423,16 @@ SetW(pack, "drivesOverride", (object?)new List<(string Root, string Format, long
 SetW(pack, "importDialog", new ImportDialogState(ImportKind.Games));   // 连不上库时游戏库页是欢迎页，原因显示在「添加游戏」弹窗里
 SetW(pack, "importError", "游戏库没连上（E:\\S2Arm Library）：这个盘是 EXFAT，可以用，但按现有 2 款游戏算，出包会多占约 61 GB；放在 NTFS 格式的盘上更省空间。");
 SaveP("win_24_library_bad_format_drives", () => Navigate(pack, "library"));
+// 第一次建库、本机不止一块盘：添加游戏弹窗先问放哪块盘（LibraryDrivePicker 选盘模式），各盘剩余空间、系统盘标出来，没有「重试」只有「换一个文件夹」
+SetW(pack, "librarySummary", ""); SetW(pack, "libraryDiagnostics", ""); SetW(pack, "importError", "");
+SetW(pack, "libraryFailCode", "library_choose_drive"); SetW(pack, "libraryFailFolder", @"C:\Users\player\S2Arm"); SetW(pack, "systemDriveOverride", "C:\\");
+SetW(pack, "importDialog", new ImportDialogState(ImportKind.Games));
+foreach (var (lang, name) in new[] { ("zh-Hans", "win_24b_library_choose_drive"), ("en", "win_24c_library_choose_drive_en") })
+{
+    SetW(pack, "language", lang);
+    SaveP(name, () => Navigate(pack, "library"));
+}
+SetW(pack, "language", "zh-Hans"); SetW(pack, "systemDriveOverride", null);
 // 数据目录写不进去、本人权限也补不回（11-16 拆自设权限之后的兜底）：不再甩英文异常原文，说哪个文件夹写不进去、可能原因、怎么办；
 //   走真代码路径（WelcomePage.NoWrite + LibraryFailed）。Windows 实机异常原文带文件名（request-….json），NoWrite 取它的上级目录；
 //   快照在非 Windows 上渲染时 Path.GetDirectoryName 不认反斜杠，所以这里直接给目录形式的原文，画面与 Windows 上取完上级目录一致
