@@ -496,6 +496,35 @@ def deliver(c, gid, root, pack_dir, ipa):
     Path(ipa).unlink(missing_ok=True)
 
 
+def adopt_product(c):
+    """作业 adoptProduct（内部真机测试链）：别处已出好的 iPhone 产物收进本游戏库，等同这款刚「打 iPhone 包」完，之后「安装 / 更新 S2Arm」「推到 iPhone」照常走。
+    请求：gameId；productRoot = 产物根（顶层程序件、ctl/control.nacp、programs/<n>/，同 save_container_kit 读的那些；不需要 RomFS）；
+    packDir = 资源包（manifest.json 带 index_sha256）。资源包原样收、不转 game.img（文件形态手机照读，pack_apply.c img_toc 没有 game.img 走文件；
+    转 IMG 要产物根里的完整 RomFS）。拷进游戏库，不动来源。→ {gameId, kit, pack, packId}"""
+    from library import save_container_kit, _rm
+    gid = str(c.r.get("gameId") or "").upper()
+    root, src = Path(c.r.get("productRoot") or ""), Path(c.r.get("packDir") or "")
+    want = read(src / "manifest.json", {}).get("index_sha256")
+    if not want:
+        raise Failure(f"资源包缺清单或清单没有 index_sha256（{src}）。", code="package_failed")  # 非玩家句
+    c.begin("收程序件", 1, 2)  # 非玩家句
+    with program_locks(c, [gid]):
+        kit = save_container_kit(c, gid, root)
+    if kit is None:
+        raise Failure(f"产物根里没有 main.npdm（{root}）。", code="package_failed")  # 非玩家句
+    c.begin("收资源包", 2, 2)  # 非玩家句
+    image = layout.image_ios(c, gid)
+    image.mkdir(parents=True, exist_ok=True)
+    tmp = image / (layout.IOS_PACK + ".adopt")
+    if tmp.exists():
+        _rm(c, layout.root_of(c, gid), tmp)
+    shutil.copytree(src, tmp)   # 来源多半在别的卷：先拷到这款文件夹里，再同卷换（_swap_pack 用 os.replace）
+    with program_locks(c, [gid]):
+        _swap_pack(c, gid, tmp, want)
+    finish_kit_state(c, gid)
+    return dict(gameId=gid, kit=str(layout.ios_kit(c, gid)), pack=str(layout.ios_pack(c, gid)), packId=want)
+
+
 def _swap_pack(c, gid, pack_dir, want):
     import host_update
     from library import _rm
