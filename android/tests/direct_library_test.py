@@ -285,11 +285,24 @@ def make_request(request_id=None, profile_hash=PROFILE, closure=CLOSURE, abi=1, 
     }
 
 
+def make_geometry_request():
+    """v2 request (five NVN slots, null = unbound) for a vs+fs+gs program, as the device sends it for native geometry."""
+    request = make_request()
+    vs, fs = request['program']['stages']
+    gs = dict(fs, constantBufferUse=2)
+    gs['stage'] = 'gs'
+    request['schema'] = 's2a-direct-compile-v2'
+    request['program']['stages'] = [vs, fs, gs, None, None]
+    request['requestId'] = '0123456789abcdef' * 3
+    return request
+
+
 def make_result(request, request_id=None, corrupt=None):
     kind = request['program']['kind']
-    order = ['vs', 'fs'] if kind == 'graphics' else ['cs']
-    requested = {stage['stage']: stage for stage in request['program']['stages']}
-    cb_use = {stage['stage']: stage['constantBufferUse'] for stage in request['program']['stages']}
+    requested = {stage['stage']: stage for stage in request['program']['stages'] if stage is not None}
+    cb_use = {name: stage['constantBufferUse'] for name, stage in requested.items()}
+    # the compiler writes graphics stages in pipeline order (vs, gs, fs)
+    order = (['vs', 'gs', 'fs'] if 'gs' in requested else ['vs', 'fs']) if kind == 'graphics' else ['cs']
     stages = []
     for name in order:
         spirv_sha = '0' * 64 if corrupt == 'spirv_sha' else sha256(SPIRV)
@@ -426,6 +439,58 @@ class LibraryTest(unittest.TestCase):
 
     def read_pack_rows(self, pack):
         return direct_library.read_index(Path(pack) / 'index.tsv')
+
+    # -- 原生几何：v2 请求（五个 NVN 槽）与 vs / gs / fs 结果 -----------------------------
+    def test_geometry_program_request_result_and_build(self):
+        request = make_geometry_request()
+        parsed = direct_library.validate_request(json.dumps(request).encode(), 'gs request')
+        self.assertEqual(parsed['_stages'], ['vs', 'fs', 'gs'])
+        result = make_result(request)
+        self.assertEqual([s['stage'] for s in json.loads(result)['content']['stages']], ['vs', 'gs', 'fs'])
+        direct_library.validate_result(result, 'gs result', request=parsed)
+        # 整条生产链：带几何的捕获对照常建库、复检
+        self.write_capture([(identity('gs'), request, result)])
+        built = self.build()
+        self.assertEqual(built['entries'], 1)
+        direct_library.verify_library(str(self.lib), self.load_descriptor())
+
+    def test_geometry_program_negative_cases(self):
+        good = make_geometry_request()
+        def bad_request(mutate, pattern):
+            request = json.loads(json.dumps(good))
+            mutate(request)
+            with self.assertRaisesRegex(direct_library.LibraryError, pattern):
+                direct_library.validate_request(json.dumps(request).encode(), 'bad')
+        # v1 请求没有几何（编译器只在 v2 收 gs）
+        def v1_with_gs(r):
+            r['schema'] = 's2a-direct-compile-v1'
+            r['program']['stages'] = [s for s in r['program']['stages'] if s is not None]
+        bad_request(v1_with_gs, "not one of vs/fs/cs")
+        # v2 槽位与阶段名对不上（gs 放进 fs 槽）
+        def swapped(r):
+            st = r['program']['stages']
+            st[1], st[2] = st[2], st[1]
+        bad_request(swapped, 'does not match its NVN slot')
+        # v2 不是五个槽 / 不是图形
+        bad_request(lambda r: r['program']['stages'].pop(), 'five NVN slots')
+        bad_request(lambda r: r['program'].__setitem__('kind', 'compute'), 'five NVN slots')
+        # vs + gs 没有 fs
+        bad_request(lambda r: r['program']['stages'].__setitem__(1, None), r"is not \['vs', 'fs'\] or")
+        # 结果：阶段顺序不是 vs, gs, fs；结果缺 gs 而请求有
+        parsed = direct_library.validate_request(json.dumps(good).encode(), 'gs request')
+        result = json.loads(make_result(good))
+        def raw():
+            body = json.dumps(result['content'], separators=(',', ':')).encode()
+            result['contentHash'] = 'sha256-' + sha256(body)
+            return json.dumps(result, separators=(',', ':')).encode()
+        st = result['content']['stages']
+        st[1], st[2] = st[2], st[1]
+        with self.assertRaisesRegex(direct_library.LibraryError, 'content.stages is'):
+            direct_library.validate_result(raw(), 'order')
+        st[1], st[2] = st[2], st[1]
+        result['content']['stages'] = [s for s in st if s['stage'] != 'gs']
+        with self.assertRaisesRegex(direct_library.LibraryError, 'are not the request stages'):
+            direct_library.validate_result(raw(), 'missing gs', request=parsed)
 
     # -- 32 位 constantBufferUse 合同 ------------------------------------------------
     def test_constant_buffer_use_is_full_32_bit(self):

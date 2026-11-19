@@ -104,6 +104,32 @@ def main():
             print(f'PASS: {name} event removal produces expected behavior failure')
         return 0
 
+    if sys.argv[1:] == ['--gs-libpack-mutants']:
+        # 负对照：三段程序查出包预编库的两处接线各撤一处，--gs-libpack 必红
+        code = original.read_text()
+        for name, old, new, expected in (
+            ('mask-0x3', 'lrc = s2a_libpack_program_v1(lp, keys, stages, &g,', 'lrc = s2a_libpack_program_v1(lp, keys, 0x3, &g,',
+             'hit from the library, compiler not called'),
+            ('no-topology', 'const struct s2a_libpack_gfx g = { topology, pc->profile_json, pc->profile_bytes };',
+             'const struct s2a_libpack_gfx g = { NULL, pc->profile_json, pc->profile_bytes }; (void)topology;',
+             'hit from the library, compiler not called'),
+            ('vs-fs-only', '((stages != 0x3u && stages != 0x7u) || !state_ok)', '(stages != 0x3u || !state_ok)',
+             'hit from the library, compiler not called'),
+        ):
+            assert code.count(old) == 1, (name, 'mutation anchor')
+            path = out / ('gs-libpack-mutant-' + name + '.c')
+            path.write_text(code.replace(old, new))
+            result = run('gs-libpack-' + name, path, args=('--gs-libpack',))
+            assert result.returncode != 0 and expected in result.stderr, (name, result.stdout, result.stderr)
+            print(f'{name}: expected assertion failure: {expected}', flush=True)
+        print('PASS: 3 libpack GS negative controls')
+        return 0
+
+    if sys.argv[1:] == ['--gs-libpack']:
+        result = run('gs-libpack', original, args=('--gs-libpack',))
+        sys.stdout.write(result.stdout); sys.stderr.write(result.stderr)
+        return result.returncode
+
     if sys.argv[1:] == ['--diag-compile']:
         result = run('diag-compile', original, args=('--diag-compile',))
         sys.stdout.write(result.stdout); sys.stderr.write(result.stderr)
@@ -389,6 +415,9 @@ def main():
     result = run('test', original)
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
+    # 三段程序（vs + fs + gs）查出包预编库：环境变量与深度能力缓存是进程级的，单独起一个进程
+    gsl = run('test-gs-libpack', original, args=('--gs-libpack',))
+    sys.stdout.write(gsl.stdout); sys.stderr.write(gsl.stderr)
     # 结果合并开关关闭态（debug.s2a.nvk_alias=0）：开关在进程内只读一次，单独起一个进程
     off = run('test-alias-off', original, args=('--alias-off',))
     sys.stdout.write(off.stdout)
@@ -403,7 +432,7 @@ def main():
         env.update(S2A_COMPUTE_WARM='0', S2A_DIRECT_CACHE_DIR=str(cache_off))
         cs_off = run('test-compute-warm-off', original, args=('--compute-warm-off',), env=env)
         sys.stdout.write(cs_off.stdout); sys.stderr.write(cs_off.stderr)
-    return result.returncode or off.returncode or on.returncode or cs_off.returncode
+    return result.returncode or gsl.returncode or off.returncode or on.returncode or cs_off.returncode
 
 if __name__ == '__main__':
     raise SystemExit(main())

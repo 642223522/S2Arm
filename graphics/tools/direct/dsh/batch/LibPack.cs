@@ -223,15 +223,18 @@ static partial class LibPack
     // ---------------- lib_pack.py ----------------
     const int VER = 1, ALIGN = 16; const long SHARD_MAX = 64L << 20;   // 分片上限 64 MB（运行时按需映射，iOS 虚拟地址紧）
     static readonly byte[] MAGIC = Encoding.ASCII.GetBytes("S2ALIB\0\0");
-    static readonly Regex NAME = new(@"\A([0-9a-f]{16})_(b\.metallib|b\.json|b\.spv|bf\.metallib|bv\.metallib|ft\.metallib|se\.metallib|vp\.metallib|b_t([0-2])\.metallib|bg(\d+)\.(metallib|json)|bgv\.(metallib|json)|bgs(\d+)\.(metallib|json)|bgc\.(metallib|json))$", RegexOptions.CultureInvariant);
+    static readonly Regex NAME = new(@"\A([0-9a-f]{16})_(b\.metallib|b\.json|b\.spv|bf\.metallib|bv\.metallib|ft\.metallib|se\.metallib|vp\.metallib|b_t([0-2])\.metallib|bg(\d+)\.(metallib|json)|bgv\.(metallib|json)|bgs(\d+)\.(metallib|json)|bgc\.(metallib|json)|vg([0-4])\.(json|spv))$", RegexOptions.CultureInvariant);
     static readonly Regex VKFP = new(@"\A[0-9a-f]{16}\z", RegexOptions.CultureInvariant);
     const int K_SPV = 52;   // Vulkan 库的 _b.spv（#783）；0–51 是 Metal 的种类
+    const int K_VGJSON = 112, K_VGSPV = 120;   // Vulkan 库的原生几何阶段：_vg<t>.json 112+t / _vg<t>.spv 120+t（t = 输入图元 InputTopology 编号 0–4，安卓 Vulkan 导出的原生几何阶段）
+    static bool VkKind(int k) => k == 1 || k == K_SPV || (k >= K_VGJSON && k < K_VGJSON + 5) || (k >= K_VGSPV && k < K_VGSPV + 5);
     static readonly Regex CHAIN = new(@"\A[0-9a-z]{1,12}\z", RegexOptions.CultureInvariant);
     static readonly Regex KEYFILE = new(@"\A[0-9a-f]{16}_", RegexOptions.CultureInvariant);
     static readonly Regex BATCH = new(@"\Au[0-9a-f]{16}\z", RegexOptions.CultureInvariant);
 
     /// <summary>种类号（lib_pack.kind）：0 _b.metallib 1 _b.json 2 _bf 3 _bv 4+d _b_t&lt;d&gt; 16+i _bg&lt;i&gt;.metallib 32+i _bg&lt;i&gt;.json 48/49 _bgv 50 _ft 51 _se 52 _b.spv（Vulkan 库）54 _vp（顶点着色器的并集补齐变体）
-    /// 64+i _bgs&lt;i&gt;.metallib 80+i _bgs&lt;i&gt;.json 96/97 _bgc（直通几何快路：只算副作用的几何核、读抓顶点的主遍顶点变体）；i &gt; 15 → null</summary>
+    /// 64+i _bgs&lt;i&gt;.metallib 80+i _bgs&lt;i&gt;.json 96/97 _bgc（直通几何快路：只算副作用的几何核、读抓顶点的主遍顶点变体）；i &gt; 15 → null
+    /// 112+t _vg&lt;t&gt;.json 120+t _vg&lt;t&gt;.spv（Vulkan 库的原生几何阶段，t = 输入图元 0–4）</summary>
     static int? Kind(Match m)
     {
         string s = m.Groups[2].Value;
@@ -248,6 +251,7 @@ static partial class LibPack
             return i > 15 ? null : (m.Groups[8].Value == "metallib" ? 64 : 80) + (int)i;
         }
         if (m.Groups[9].Success) return m.Groups[9].Value == "metallib" ? 96 : 97;
+        if (m.Groups[10].Success) return (m.Groups[11].Value == "json" ? K_VGJSON : K_VGSPV) + (m.Groups[10].Value[0] - '0');
         return m.Groups[6].Value == "metallib" ? 48 : 49;
     }
 
@@ -278,8 +282,8 @@ static partial class LibPack
             else if (KEYFILE.IsMatch(n)) bad.Add($"认不出的键文件：{n}");   // 不认识的按键文件不能悄悄留在包外
         }
         if (bad.Count > 0) return (bad, "");
-        if (vkfp == null && ents.Any(e => e.K == K_SPV)) return (new() { $"有 _b.spv（Vulkan 库的种类）却没给 Vulkan 侧指纹" }, "");
-        if (vkfp != null && ents.Any(e => e.K != K_SPV && e.K != 1)) return (new() { $"给了 Vulkan 侧指纹却混进了 Metal 段（如 {ents.First(e => e.K != K_SPV && e.K != 1).N}；Vulkan 库只收 _b.json / _b.spv）" }, "");
+        if (vkfp == null && ents.Any(e => e.K != 1 && VkKind(e.K))) return (new() { $"有 {ents.First(e => e.K != 1 && VkKind(e.K)).N}（Vulkan 库的种类）却没给 Vulkan 侧指纹" }, "");
+        if (vkfp != null && ents.Any(e => !VkKind(e.K))) return (new() { $"给了 Vulkan 侧指纹却混进了 Metal 段（如 {ents.First(e => !VkKind(e.K)).N}；Vulkan 库只收 _b.json / _b.spv / _vg<t>.json / _vg<t>.spv）" }, "");
         if (ents.Count == 0) return (new() { $"{d} 一个键文件都没有" }, "");
         // A network's layers must all execute, or all use the old stand-in. Per-key opt-in would
         // mix newly translated missing keys with old packaged scalar layers and read unwritten buffers.
