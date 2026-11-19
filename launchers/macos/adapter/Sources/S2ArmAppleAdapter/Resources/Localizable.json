@@ -10326,5 +10326,33 @@
  {
   "source": "这次签好的 S2Arm 没带「提高内存上限」权限：装上后能玩，但大游戏可能内存不够、开局中止。",
   "en": "The S2Arm signed this time is missing the \"Increased Memory Limit\" entitlement: it installs and runs, but large games may run out of memory and stop at launch."
+ },
+ {
+  "source": "电脑连不上这台 iPhone 的开发者通道（手机通过 Wi-Fi 连着时最常见，不是没解锁）：用数据线把手机直接插到这台电脑（别经过扩展坞或集线器），解锁停在主屏幕，再点一次；还不行就重启一次手机，插上后在手机上重新点「信任」。",
+  "en": "This Mac can't reach the iPhone's developer connection (most common when the phone is connected over Wi-Fi; it isn't about being locked): plug the phone straight into this Mac with a cable (not through a dock or hub), unlock it to the Home Screen, and try again. If it still fails, restart the phone, plug it back in and tap \"Trust\" again on the phone."
+ },
+ {
+  "source": "Xbox GIP 本机通道设置无效。",
+  "en": "Invalid Xbox GIP native channel setting."
+ },
+ {
+  "source": "查上一份存档",
+  "en": "Checking for a previous save"
+ },
+ {
+  "source": "回到上一份存档",
+  "en": "Going back to the previous save"
+ },
+ {
+  "source": "这款游戏没有上一份存档。",
+  "en": "This game has no previous save."
+ },
+ {
+  "source": "没能回到上一份存档，存档保持原样。",
+  "en": "Couldn’t go back to the previous save. Your save is unchanged."
+ },
+ {
+  "source": "没能回到上一份存档，而且有存档没能换回原样，请导出诊断包。",
+  "en": "Couldn’t go back to the previous save, and some saves couldn’t be switched back. Please export a diagnostic report."
  }
 ]

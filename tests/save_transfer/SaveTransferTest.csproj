@@ -18,6 +18,7 @@
     <Compile Include="../../services/S2A.Services/SaveTransfer.cs" />
     <Compile Include="../../services/S2A.Services/SaveTransferArchive.cs" />
     <Compile Include="../../services/S2A.Services/SaveTransferTransaction.cs" />
+    <Compile Include="../../services/S2A.Services/SaveTransferPrevious.cs" />
     <Compile Include="../../services/S2A.Services/SaveTransferIndex.cs" />
     <Compile Include="../../services/S2A.Services/SaveTransferZipBounds.cs" />
   </ItemGroup>

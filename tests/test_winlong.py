@@ -15,6 +15,28 @@ import redact
 
 
 class LongPathTest(unittest.TestCase):
+    def test_oserror_without_path_names_call_paths(self):
+        # #df9fd6：CopyFile2 报 WinError 112 不带文件名，失败归因量不到写满的那块盘。期望手写：包装后报错补上调用方给的源 / 目标（不带 \\?\ 前缀）；
+        #   本来就带文件名的不动；参数是文件描述符（不是路径）不补
+        import types
+        def boom(*a):
+            raise OSError(28, "磁盘空间不足。")
+        def named(*a):
+            raise OSError(28, "磁盘空间不足。", "X:\\own")
+        long_src = "E:\\" + "a\\" * 130 + "f"
+        mod = types.SimpleNamespace(copy=boom, stat=boom, named=named)
+        winlong._wrap(mod, "copy", 2); winlong._wrap(mod, "stat", 1); winlong._wrap(mod, "named", 2)
+        with self.assertRaises(OSError) as c:
+            mod.copy(long_src, "C:\\out\\f")
+        self.assertEqual((c.exception.filename, c.exception.filename2), (long_src, "C:\\out\\f"))
+        self.assertIn("-> 'C:\\\\out\\\\f'", str(c.exception))
+        with self.assertRaises(OSError) as c:
+            mod.stat(7)
+        self.assertIsNone(c.exception.filename)
+        with self.assertRaises(OSError) as c:
+            mod.named("E:\\a", "C:\\b")
+        self.assertEqual((c.exception.filename, c.exception.filename2), ("X:\\own", None))
+
     def test_short_paths_untouched(self):
         self.assertEqual(winlong.long_path("C:\\a\\b.txt"), "C:\\a\\b.txt")
         self.assertEqual(winlong.long_path(7), 7)     # 文件描述符

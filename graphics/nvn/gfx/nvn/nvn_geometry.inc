@@ -363,7 +363,7 @@ static id mtk_warm(const pso_skey *sk, NSString *mkey, NSString *fkey, NSString 
     NvShader *ms = warm_shader(mkey, sk->vs_stage), *fs = fkey.length ? warm_shader(fkey, sk->fs_stage) : nil, *ts = tkey.length ? warm_shader(tkey, 3) : nil;
     if (!ms || ms->mesh_kind != 2 || (fkey.length && !fs) || (tkey.length && !ts)) return nil;
     id<MTLFunction> pf = nil;
-    if (pad && !(pf = vp_fn(ms, pad))) return nil;   // the padded variant is made at its first use on this device (vp_ask); not yet: the draw builds it then
+    if (pad && !(pf = vp_warm(ms, pad))) return nil;   // the padded variant: made now from this device's translation on disk (vp_warm); none there yet: the draw makes it (vp_ask)
     mtk_key mk; mtk_warm_key(sk, ts, ms, fs, pad, &mk);
     if (mk.k.fc && fs && !se_warm(fs, mk.k.fc)) return nil;   // a sampler-emulation variant this device has not made yet (as R rows)
     NSError *e = nil; uint64_t t0 = bp_now();

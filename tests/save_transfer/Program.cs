@@ -63,6 +63,41 @@ if (args.Length == 1 && args[0] == "--running-gate")
     Console.WriteLine("✓ running gate: 6 checks");
     return;
 }
+if (args.Length == 1 && args[0] == "--previous")
+{
+    // 回到上一份存档：previous 只读、游戏在跑也给；restorePrevious 把已提交版本 0/ 与 .s2a_prev 原子交换，再调一次换回；在跑拒、没有上一份拒
+    string tmp = Directory.CreateDirectory(Path.Combine(OperatingSystem.IsWindows() ? Path.GetTempPath() : "/private/tmp", "s2a-previous-" + Guid.NewGuid().ToString("N"))).FullName,
+    root = Path.Combine(tmp, "data"), work = Path.Combine(tmp, "work");
+    string id = "0100000000010000", save = Path.Combine(root, "bis", "user", "save", "0000000000000001");
+    JsonObject Req(string op) => new() { ["operation"] = op, ["dataRoot"] = root, ["workRoot"] = work, ["path"] = Path.Combine(tmp, "x.s2asave"),
+        ["game"] = new JsonObject { ["id"] = id, ["version"] = 0, ["contentIdentity"] = new string('a', 64), ["name"] = "t" } };
+    JsonNode Call(JsonObject r, bool running = false) => JsonNode.Parse(SaveTransfer.Execute(r.ToJsonString(), running));
+    string Code(JsonNode n) => n["ok"].GetValue<bool>() ? "ok" : n["error"]["code"].GetValue<string>();
+    string Read(string sub) => File.ReadAllText(Path.Combine(save, sub, "slot.bin"));
+    var fails = new List<string>();
+    void Expect(bool ok, string what) { Console.WriteLine((ok ? "PASS " : "FAIL ") + what); if (!ok) fails.Add(what); }
+    Directory.CreateDirectory(root);
+    Expect(Code(Call(Req("previous"))) == "ok" && !Call(Req("previous"))["result"]["hasPrevious"].GetValue<bool>(), "no save: previous ok, hasPrevious false");
+    Expect(Code(Call(Req("restorePrevious"))) == "save_no_previous", "no previous: restorePrevious refused (save_no_previous)");
+    Directory.CreateDirectory(Path.Combine(save, "0")); File.WriteAllText(Path.Combine(save, "0", "slot.bin"), "newer");
+    Directory.CreateDirectory(Path.Combine(save, ".s2a_prev")); File.WriteAllText(Path.Combine(save, ".s2a_prev", "slot.bin"), "older");
+    var p = Call(Req("previous"));
+    Expect(Code(p) == "ok" && p["result"]["hasPrevious"].GetValue<bool>() && p["result"]["saveIds"][0].GetValue<string>() == "0000000000000001", "previous lists the save that has .s2a_prev");
+    Expect(Code(Call(Req("previous"), true)) == "ok", "running: previous allowed (read only)");
+    Expect(!p["result"]["guardRed"].GetValue<bool>(), "no guard mark: guardRed false");
+    File.WriteAllText(Path.Combine(save, ".s2a_guard"), "commit 3 refused");
+    Expect(Call(Req("previous"))["result"]["guardRed"].GetValue<bool>(), "guard mark next to the save: guardRed true");
+    Expect(Code(Call(Req("restorePrevious"), true)) == "save_running" && Read("0") == "newer", "running: restorePrevious refused, save untouched");
+    var r1 = Call(Req("restorePrevious"));
+    Expect(Code(r1) == "ok" && r1["result"]["restored"].GetValue<int>() == 1 && Read("0") == "older" && Read(".s2a_prev") == "newer", "restorePrevious: committed is now the previous version, the newer one kept as previous");
+    Expect(!File.Exists(Path.Combine(save, ".s2a_guard")), "restorePrevious clears the guard mark");
+    var r2 = Call(Req("restorePrevious"));
+    Expect(Code(r2) == "ok" && Read("0") == "newer" && Read(".s2a_prev") == "older", "restorePrevious again: switched back exactly");
+    Directory.Delete(tmp, true);
+    if (fails.Count > 0) { Console.WriteLine($"✗ previous: {fails.Count} failed"); Environment.Exit(1); }
+    Console.WriteLine("✓ previous: 10 checks");
+    return;
+}
 if (args.Length == 4 && args[0] == "--crash-child")
 {
     Environment.SetEnvironmentVariable("SAVE_TRANSFER_CHECKPOINT", args[2]);

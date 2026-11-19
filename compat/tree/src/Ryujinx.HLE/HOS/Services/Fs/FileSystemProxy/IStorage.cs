@@ -64,6 +64,12 @@ namespace Ryujinx.HLE.HOS.Services.Fs.FileSystemProxy
                     Logger.Warning?.Print(LogClass.ServiceFs, $"读存储失败 @ 偏移 0x{offset:X}，请求 0x{size:X}，结果 {result.ToStringWithName()}");
                 }
 
+                // S2Arm：流式读按真机存储速度限流（S2AFsStreamPace；只记账，锁外才睡）
+                if (result.IsSuccess())
+                {
+                    S2AFsStreamPace.Note(this, (long)offset, (long)size);
+                }
+
                 if (context.Device.DirtyHacks.IsEnabled(DirtyHack.Xc2MenuSoftlockFix) && IsXc2)
                 {
                     // Add a load-bearing sleep to avoid XC2 softlock

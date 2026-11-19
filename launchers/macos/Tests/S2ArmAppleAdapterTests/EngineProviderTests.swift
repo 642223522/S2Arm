@@ -320,4 +320,14 @@ final class EnvironmentAndInstallTests: XCTestCase {
         XCTAssertEqual(runner.starts[3].request["device"] as? String, "测试 iPhone")
         XCTAssertEqual(runner.starts[3].request["teamId"] as? String, "ABCDE12345")
     }
+
+    func testLaunchArgumentsForwardsXboxGipRelaySocket() {
+        let withRelay = S2ArmEngineProvider.launchArguments(Settings(values: [
+            "switch2ProAutoConnect": "0",
+            "xboxGipRelaySocket": "/tmp/s2a-xbox-test.sock",
+        ]))
+        XCTAssertEqual(withRelay["xboxGipRelaySocket"] as? String, "/tmp/s2a-xbox-test.sock")
+        let withoutRelay = S2ArmEngineProvider.launchArguments(Settings(values: ["switch2ProAutoConnect": "0"]))
+        XCTAssertNil(withoutRelay["xboxGipRelaySocket"])
+    }
 }

@@ -105,6 +105,7 @@ RECOVERY = {
     "device_not_connected": "让你选的那台 iPhone / iPad 连上这台电脑：插上数据线，或解锁后和电脑连同一个 Wi-Fi；第一次连要在设备上点「信任」，并在「设置 → 隐私与安全性 → 开发者模式」打开开发者模式，然后再试。",
     "device_required": "在装机页选好要装到哪台 iPhone / iPad，再点装机。",
     "signing_failed": "查看本任务日志里签名那一步的报错；确认 Xcode 能用你的账号给这台 iPhone 签名，或改用 AltStore 安装。",
+    "device_tunnel_unavailable": "电脑连不上这台 iPhone 的开发者通道（手机通过 Wi-Fi 连着时最常见，不是没解锁）：用数据线把手机直接插到这台电脑（别经过扩展坞或集线器），解锁停在主屏幕，再点一次；还不行就重启一次手机，插上后在手机上重新点「信任」。",
     "device_locked": "解锁这台 iPhone（保持亮屏、停在主屏幕），再点一次「装到 iPhone」；装机过程中别锁屏。",
     "shell_install_required": "在 S2Arm 里先点「安装 S2Arm」把 App 装到这台 iPhone，再对这款点「推到 iPhone」。",   # 通用壳「推到 iPhone」：手机上还没装壳（install.push_game）
     "shell_update_required": "在 S2Arm 里先点「更新 S2Arm」，把手机上的 App 换成这一版，再对这款点「推到 iPhone」。",   # 通用壳「推到 iPhone」：手机上的壳不是本版
@@ -492,8 +493,13 @@ def _tool_present(name):
     return shutil.which(name) is not None
 
 
-def _confirm(code, line, log):
-    """候选码的事实核对 → (是否采信, 依据)。只核环境类的码，其余直接采信"""
+def _confirm(code, line, log, final=False):
+    """候选码的事实核对 → (是否采信, 依据)。只核环境类的码，其余直接采信。
+    final：命中行就是这段证据的最后一行（让这一步退出的那个异常，如回溯末行 OSError: [WinError 112]）——盘满就是真因，事后剩余空间不作数：
+      失败后临时文件已删、空间又回来了（诊断 #9ac7f7：写的时候满，事后量还剩 17 GB，原先不采信、落到「没归类」）"""
+    if code == "disk_full" and final:
+        free = _free_bytes(str(Path(log).parent)) if log else None
+        return True, "这一步写满了盘（失败后临时文件已删" + ("，现在剩 %.1f GB" % (free / (1 << 30)) if free is not None else "") + "）"  # 非玩家句
     if code == "disk_full":
         paths = [m.group(1) for m in _LOG_PATH_ANY.finditer(line)] + ([str(Path(log).parent)] if log else [])
         free = [(p, f) for p, f in ((p, _free_bytes(p)) for p in paths) if f is not None]
@@ -521,7 +527,8 @@ def log_cause(chunks, log=None):
                 start = text.rfind("\n", 0, m.start()) + 1
                 end = text.find("\n", m.end())
                 line = text[start:end if end >= 0 else None].strip()[:300]
-                ok, why = _confirm(code, line, log)
+                final = not text[end:].strip() if end >= 0 else True   # 命中行后面没有别的输出 = 让这一步退出的那个错误
+                ok, why = _confirm(code, line, log, final)
                 if ok:
                     return code, label, line, why
                 rejected.append("候选 %s 未采信：%s 里「%s」，%s" % (code, label, line, why))  # 非玩家句

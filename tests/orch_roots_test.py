@@ -726,6 +726,43 @@ class FailedSymlinkStubTest(unittest.TestCase):
             roots.remove_owned(box)
         self.assertFalse(real_lexists(box))
 
+    # #0fd185（0.5.8 照中，#1431 修复已在）：软链报 WinError 2 后留下的那一项 os.path.lexists 认不出（它遇到任何 OSError 都答「不在」），
+    #   「失败后多出来的先删」没删，junction 退路 mkdir 撞 WinError 183。期望手写：
+    #   ④ nt（模拟）：残留在、lexists 对它答「不在」→ 照样删掉再走退路，退路建链时 link 不在；日志点名留下了一项
+    #   ⑤ remove_owned：残留让 is_link 抛 OSError、lexists 答「不在」→ 照样删掉，上一级能删空
+    def stub_symlink_enoent(self, src, dst, target_is_directory=False):   # 0.5.8 玩家机：WinError 2，链接处留下一项
+        os.mkdir(dst)
+        e = FileNotFoundError(2, '系统找不到指定的文件。'); e.winerror = 2; raise e
+
+    def test_nt_removes_stub_lexists_cannot_see(self):
+        link = self.home / 'link'
+        fake = _Os('nt'); fake.symlink = self.stub_symlink_enoent; seen = []
+        real = os.path
+        fake.path = type('P', (), {'__getattr__': lambda _s, k: getattr(real, k),
+                                   'lexists': staticmethod(lambda p: False if Path(p).name == 'link' else real.lexists(p))})()
+        def junction(target, at):
+            seen.append(real.lexists(at)); Path(at).mkdir()
+        err = io.StringIO()
+        with patch.object(roots, 'os', fake), patch.object(roots, 'table_now', return_value=[]), \
+             patch.object(roots, '_junction', junction), contextlib.redirect_stderr(err):
+            roots.directory_link(self.home / 'target', link)
+        self.assertEqual(seen, [False])
+        self.assertIn('留下了一项', err.getvalue())
+
+    def test_remove_owned_removes_stub_lstat_cannot_read(self):
+        box = self.home / 'box'; box.mkdir(); (box / 'stub').mkdir()
+        real_lexists = os.path.lexists
+        def is_link(p):
+            if Path(p).name == 'stub':
+                e = OSError(22, '无法访问此文件'); e.winerror = 1920; raise e
+            return False
+        with patch.object(roots, 'is_link', is_link), \
+             patch.object(Path, 'is_dir', lambda p: False if p.name == 'stub' else os.path.isdir(p)), \
+             patch.object(Path, 'exists', lambda p: False if p.name == 'stub' else real_lexists(p)), \
+             patch.object(os.path, 'lexists', lambda p: False if Path(p).name == 'stub' else real_lexists(p)):
+            roots.remove_owned(box)
+        self.assertFalse(real_lexists(box))
+
     @unittest.skipUnless(os.name == 'nt', 'native Windows junction fallback')
     def test_native_junction_after_stub(self):
         link = self.home / 'link'

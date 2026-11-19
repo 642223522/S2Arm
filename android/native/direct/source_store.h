@@ -23,7 +23,13 @@ extern "C" {
 #define S2A_SOURCE_MAX_PINNED 16384     // 活 program pin 的额外槽位（硬上限；字节预算另计）
 #endif
 #define S2A_SOURCE_SLOTS (S2A_SOURCE_MAX_ENTRIES + S2A_SOURCE_MAX_PINNED)
-#define S2A_SOURCE_MAX_BYTES (64u * 1024u * 1024u)
+#define S2A_SOURCE_MAX_BYTES (64u * 1024u * 1024u)   // 软预算：只约束可淘汰（未 pin）的条目，超了先淘汰最旧的未 pin 条目
+// 字节安全阀：可淘汰的淘汰光了、剩下全是活 program / 编译在用的源时，keep 放宽到这里（防泄漏，正常到不了）；越过它才失败。
+//   活 program pin 的条数由游戏自己的活程序数决定（有 S2A_SOURCE_MAX_PINNED 槽位硬上限），不能让 64 MiB 软预算替它们拒收
+//   （#1622：5,711 个活程序恰好占满 64 MiB，之后注册的 123 个程序存不进去）。
+#ifndef S2A_SOURCE_HARD_BYTES
+#define S2A_SOURCE_HARD_BYTES (512u * 1024u * 1024u)
+#endif
 #define S2A_SOURCE_MAX_CODE (256u * 1024u)
 #define S2A_SOURCE_CONTROL_BYTES 0x880u
 #define S2A_SOURCE_CONTROL_MIN 0x760u    // 控制段 +0x20 自描述长度（短 control）的最小合法值
@@ -53,7 +59,8 @@ struct s2a_source_entry_view {
 };
 
 // 保存一次 SetShaders 的一个阶段。control_bytes 允许控制段自描述的短长度（0x760..0x880）。
-// 超出数量/字节上限时按最旧优先淘汰未 pinned 的条目；全部 pinned 时准确失败（-1），不淘汰在用的源。
+// 超出数量/字节预算时按最旧优先淘汰未 pinned 的条目；可淘汰的没有了（全部 pinned）就不淘汰在用的源，
+// 也不拒收它们：字节放宽到 S2A_SOURCE_HARD_BYTES，越过它或槽位满了才准确失败（-1）。
 // 短 key 与真实内容摘要前 8 字节不符时同样返回 -1（调用方按缺源处理，不写可能误命中的条目）。
 int s2a_source_keep(const uint8_t key[8], uint32_t array_index, const void *code, uint32_t code_bytes,
                     const void *control, uint32_t control_bytes);
@@ -72,7 +79,8 @@ int s2a_source_pin_key(const uint8_t key[8], struct s2a_source_pin_ref *out);
 // 按 slot+seq 解 pin；ref 已失效（淘汰/清空/换代）时是 no-op，返回 -1。
 int s2a_source_unpin_ref(const struct s2a_source_pin_ref *ref);
 // pin 统计（设备回执用）。evict_skipped 是“扫描中因 program pin 跳过的条目次数”，
-// keep_fail_bytes/keep_fail_slots 是字节预算 / 槽位分别耗尽导致的 keep 失败次数。
+// keep_fail_bytes/keep_fail_slots 是字节安全阀 / 槽位分别耗尽导致的 keep 失败次数；
+// keep_over_budget 是收下之后总字节仍超过软预算的 keep 次数（可淘汰的没有了、被活 program 占着，放宽收下的）。
 struct s2a_source_pin_stats {
     uint32_t pinned_entries;
     uint64_t pins;
@@ -82,6 +90,7 @@ struct s2a_source_pin_stats {
     uint64_t evict_skipped;
     uint64_t keep_fail_bytes;
     uint64_t keep_fail_slots;
+    uint64_t keep_over_budget;
 };
 void s2a_source_pin_stats(struct s2a_source_pin_stats *out);
 // 内容/磁盘身份用：唯一命中返回 0 并给出完整摘要与真实长度；缺源返回 -1（调用方准确失败）。
@@ -98,6 +107,7 @@ int s2a_source_hold_pending(uint64_t prog_serial, uint32_t stage, const void *co
 // 取回 pending control 的借用指针（用于补算 key / keep）；命中返回 1。
 int s2a_source_pending_control(uint64_t prog_serial, uint32_t stage, const uint8_t **control, uint32_t *control_bytes);
 void s2a_source_drop_pending(uint64_t prog_serial);
+void s2a_source_drop_pending_stage(uint64_t prog_serial, uint32_t stage);   // 该阶段的源已存进源快照：释放它的自持控制段
 uint32_t s2a_source_pending_count(void);   // 现存自持控制段条数（单测 / 诊断用）
 
 void s2a_source_stats(uint32_t *entries, uint32_t *bytes, uint32_t *dropped);

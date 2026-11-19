@@ -3,6 +3,7 @@
 import AppKit
 import Foundation
 import Combine
+import LauncherPadBridge
 import NXModel
 import S2ArmAppleAdapter
 import SaveSync
@@ -190,6 +191,10 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var downstreamPromptFor: String?
     /// 上次开着金手指 / 画面补丁时这款异常退出、已被关掉（作业层 pack/jobs/cheats.py note_crash / crashed）：开始游戏时通知一句（LaunchSettingsSheet.swift CrashPromptHost）
     @Published var crashPrompt: CrashPrompt?
+    /// 开始前问「要回到上一份存档吗」（上一局读存档出事、且有上一份，S2ArmLauncherModel+SavePrevious）；不拦，玩家选了再开局
+    @Published var previousSavePrompt: PreviousSavePrompt?
+    /// 刚回到上一份存档的那一款：提示一次「可以随时换回来」
+    @Published var previousSaveSwitched: String?
     var downstreamPending: (platforms: [ExportPlatform]?, deviceTarget: [String: Any]?, spaceOverride: Bool, location: String?)?
     /// 存放位置（游戏库结构 v3）：出包页下拉框的各项、上次用的位置号
     @Published var locations: [StorageLocation] = []
@@ -254,33 +259,36 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var unreadMessages = 0
     /// 有新版时的那一版 {version, notes?}：顶栏「有新版 vX」点开回到弹窗
     @Published var availableUpdate: [String: Any]?
-    /// 点「现在更新并重启」时有局 / 任务在跑：先拦下说明（文案号 update.gate.playing / update.gate.busy）
+    /// 主动重启会中断进行中的工作时，等待玩家确认。
     @Published var updateGate: String?
-    /// 玩家点了「现在更新」、新版还在下：下好就直接换（玩家已经选了，不再要第二次点）
-    var installWhenReady = false
+    static let autoRestartWhenReadyKey = "update.autoRestartWhenReady"
+    @Published var autoRestartWhenReady: Bool {
+        didSet { updateDefaults.set(autoRestartWhenReady, forKey: Self.autoRestartWhenReadyKey) }
+    }
+    @Published var isCheckingForUpdates = false
+    @Published var checkError: String?
+    @Published var updateRestarting = false
+    let updateDefaults: UserDefaults
+    let updateSimulationEnabled: Bool
+    var updateCheckTask: Task<Void, Never>?
+    var didStartManualUpdateCheck = false
+    private var didStartLauncher = false
     /// 更新失败时 Sparkle 给的原因（界面在错误码文案之外照原话显示，控制口 /state 的 update.reason）
     @Published var updateFailure: String?
     /// 自动检查更新（默认开）：开启后启动时静默向服务端确认是否有新版本
     static let autoCheckUpdatesOffKey = "S2AAutoCheckUpdatesOff"
-    @Published var autoCheckUpdates: Bool = !UserDefaults.standard.bool(forKey: S2ArmLauncherModel.autoCheckUpdatesOffKey) {
-        didSet { UserDefaults.standard.set(!autoCheckUpdates, forKey: Self.autoCheckUpdatesOffKey) }
+    @Published var autoCheckUpdates: Bool {
+        didSet { updateDefaults.set(!autoCheckUpdates, forKey: Self.autoCheckUpdatesOffKey) }
     }
-    /// 自动下载更新（默认关）：仅在「自动检查更新」也开启时生效；开启后后台自动下载并在下好后弹窗，关闭则查到新版即弹窗让用户自己选下载或跳过
+    /// 自动下载更新（默认关）：仅在「自动检查更新」也开启时生效；开启后后台下载，关闭则由玩家自己选何时下载
     static let autoDownloadUpdatesKey = "S2AAutoDownloadUpdates"
-    @Published var autoDownloadUpdates: Bool = UserDefaults.standard.bool(forKey: S2ArmLauncherModel.autoDownloadUpdatesKey) {
-        didSet { UserDefaults.standard.set(autoDownloadUpdates, forKey: Self.autoDownloadUpdatesKey) }
+    @Published var autoDownloadUpdates: Bool {
+        didSet { updateDefaults.set(autoDownloadUpdates, forKey: Self.autoDownloadUpdatesKey) }
     }
-    /// 用户主动点「跳过此版本」记下的版本号：以后自动检查不再弹这一版（手动点检查仍可查看）
-    static let skippedUpdateVersionKey = "S2ASkippedUpdateVersion"
-    @Published var skippedUpdateVersion: String? = UserDefaults.standard.string(forKey: S2ArmLauncherModel.skippedUpdateVersionKey) {
-        didSet { UserDefaults.standard.set(skippedUpdateVersion, forKey: Self.skippedUpdateVersionKey) }
-    }
-    /// 设置页手动「检查更新」的实时反馈（checking / upToDate / available / failed）
-    @Published var updateCheckFeedback: String?
-    /// 自动下载完成后待弹出的更新提示（仅在自动检查 + 自动下载模式下为 true）
-    var autoDownloadPopupPending = false
-    /// 应用内更新（Sparkle 2）：第一次用时起，起来后整个 App 生命周期只一份
-    lazy var sparkleUpdate = SparkleUpdate(model: self)
+    lazy var updateDriver: any LauncherUpdateDriver = {
+        if updateSimulationEnabled { return SimulatedUpdateDriver(model: self, defaults: updateDefaults) }
+        return SparkleUpdate(model: self)
+    }()
     @Published var showAddGames = false
     @Published var showKeys = false
     /// 选好了但缺密钥（作业层 keys_missing）：等放入密钥后接着导入。解包好的游戏不要密钥，不经过这里。
@@ -293,7 +301,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published private(set) var lastPhoneSession: JobSession?
     /// 欢迎页上排着队的一键下载（作业同一时刻只有一个）。
     @Published private(set) var repairQueue: [ToolCheck] = []
-    /// 新手流程刚导入的那款：欢迎页留着，右下角「一键出包」（点了就回到正常的游戏库）。
+    /// 新手流程刚导入的那款：欢迎页留着，可进入游戏库或接着一键出包。
     @Published private(set) var welcomeGameID: String?
     /// 这份密钥读不了选的游戏：放密钥弹窗提示换一份。
     @Published private(set) var keysRejected = false
@@ -393,6 +401,8 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     let provider: S2ArmEngineProvider
     let controller: NS2LauncherController
+    let xboxGipSocketURL: URL
+    private var xboxGipRelayStarted = false
     private var running: RunningGame?
     /// iCloud 存档同步进行中（开局前 / 退出后）：不重复开局
     @Published var cloudSyncing = false
@@ -410,10 +420,24 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// 导入后排着等准备的游戏（同旧启动器：放进来就自动准备，维护者 10-23 不让玩家选）。
     private static let logLimit = 200
 
-    public init(client: JobClient) {
+    public convenience init(client: JobClient) {
+        self.init(client: client, updateDefaults: .standard)
+    }
+
+    init(client: JobClient, updateDefaults: UserDefaults) {
+        self.updateDefaults = updateDefaults
+        updateSimulationEnabled = SimulatedUpdateDriver.isAllowed(preference: updateDefaults.bool(forKey: SimulatedUpdateDriver.enabledKey),
+                                                                  info: Bundle.main.infoDictionary)
+        autoRestartWhenReady = updateDefaults.bool(forKey: Self.autoRestartWhenReadyKey)
+        autoCheckUpdates = !updateDefaults.bool(forKey: Self.autoCheckUpdatesOffKey)
+        autoDownloadUpdates = updateDefaults.bool(forKey: Self.autoDownloadUpdatesKey)
         provider = S2ArmEngineProvider(client: client)
         controller = NS2LauncherController(
             socketURL: provider.client.environment.privateRoot.appendingPathComponent("ns2-relay.sock"), watchGame: true)   // 游戏的手柄设置画面交给面板分配玩家（#520 E）
+        let preferredXboxSocket = provider.client.environment.privateRoot.appendingPathComponent("xbox-gip-relay.sock")
+        xboxGipSocketURL = preferredXboxSocket.path.utf8.count < 100
+            ? preferredXboxSocket
+            : URL(fileURLWithPath: "/tmp/s2arm-xbox-gip-\(getuid()).sock")
         exportChoice = provider.settings.exportTargets
         // 启动首帧即先载入上次列表快照，避免先闪出加载占位页再切换成首页卡片排
         if let known = provider.library.lastKnownGames(), !known.isEmpty {
@@ -443,6 +467,8 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// 原先 onAppear 一次并发起这几个作业，每个作业开头都做迁移 / 收日志：两个作业同时收私有目录日志、老库搬家时旧库目录被建回来（坑记录）。
     /// 不碰游戏库的（控制口、更新、公告、手柄中继）照常一起起。
     func startup() {
+        guard !didStartLauncher else { return }
+        didStartLauncher = true
         startControl(); finishPendingUpdate(); loadInbox(); startControllerConnection()
         refreshInstallMode(silent: true)   // 装法启动时就读（原先只在设置页 / 装机页出现时读）：控制口 /install 按它判断导出模式要不要 device，界面顶栏也按它
         refresh { [weak self] in self?.recoverBatch { self?.checkEnvironment() } }
@@ -1266,9 +1292,16 @@ public final class S2ArmLauncherModel: ObservableObject {
                 crashPrompt = CrashPrompt(game: game, uiLanguage: uiLanguage, names: names)
                 _ = try? await saveJob("communitySave", gameID: game.id, extra: ["crashAnswer": "ack"])
             }
+            // 上一局读存档出事、且有上一份存档：先问要不要回到上一份（PreviousSavePromptHost），玩家选了再开局
+            if let prompt = await previousSavePromptIfNeeded(game, uiLanguage: uiLanguage) {
+                previousSavePrompt = prompt
+                return
+            }
             playChecked(game, uiLanguage: uiLanguage)
         }
     }
+
+    func startAfterPreviousSave(_ game: GameSummary, uiLanguage: String?) { playChecked(game, uiLanguage: uiLanguage) }
 
     private func crashedBeforePlay(_ gameID: String) async throws -> [String] {
         let result = try await saveJob("community", gameID: gameID, extra: [:])
@@ -1305,6 +1338,7 @@ public final class S2ArmLauncherModel: ObservableObject {
             "switch2ProAutoConnect": relaySocket == nil ? "0" : "1",   // 有通道就让游戏自己接（还没连上时游戏会重试）
         ]
         if let relaySocket { controllerArguments["switch2ProRelaySocket"] = relaySocket }
+        if xboxGipRelayStarted { controllerArguments["xboxGipRelaySocket"] = xboxGipSocketURL.path }
         // 本地玩家（#623）：顶栏选的玩家随 launch 请求给作业层（pack/jobs/build.py runtime_env → 服务层 S2A_PLAYER_USER / 这个玩家的 SaveData）；没建过玩家不带（旧行为）
         if let player = Self.launchPlayer() {
             controllerArguments["playerUser"] = player.serviceUser
@@ -1324,7 +1358,17 @@ public final class S2ArmLauncherModel: ObservableObject {
         }
     }
 
-    func startControllerConnection() { controller.startIfEnabled() }
+    func startControllerConnection() {
+        controller.startIfEnabled()
+        let env = ProcessInfo.processInfo.environment
+        // 单测里不起（会去独占真实 USB 手柄）：XCTestConfigurationFilePath 只有 Xcode 跑测试才设，swift test 不设，另按 XCTest 是否已加载判
+        guard !xboxGipRelayStarted,
+              env["XCTestConfigurationFilePath"] == nil, NSClassFromString("XCTestCase") == nil,
+              env["S2ARM_CONTROL"] != "1" else { return }
+        if s2a_xbox_gip_relay_start(xboxGipSocketURL.path, nil, nil) == 0 {
+            xboxGipRelayStarted = true
+        }
+    }
 
     // ---- 本地玩家（#623，规则在共享包 SaveSync LocalPlayers，同 iPhone / iPad）----
 
@@ -1340,7 +1384,13 @@ public final class S2ArmLauncherModel: ObservableObject {
     static func playerRequest(_ defaults: UserDefaults = .standard) -> [String: String]? {
         launchPlayer(defaults).map { ["user": $0.serviceUser, "name": $0.name, "folder": $0.folder] }
     }
-    func shutdownControllerConnection() { controller.shutdown() }
+    func shutdownControllerConnection() {
+        controller.shutdown()
+        if xboxGipRelayStarted {
+            s2a_xbox_gip_relay_stop()
+            xboxGipRelayStarted = false
+        }
+    }
 
     // ---- 放密钥 / 删除 / 诊断（本机控制口用；参数与作业同旧启动器）----
 
@@ -1787,9 +1837,9 @@ public final class S2ArmLauncherModel: ObservableObject {
     }
 
     /// 回库：只有作业结束了才能关掉作业页。
-    /// 顶栏「游戏库」：从任何页面回到游戏库；出包还在跑就留在后台，游戏库上的进度条可以回去。
+    /// 页面返回 / 欢迎页「进入游戏库」：出包还在跑就留在后台，游戏库上的进度条可以回去。
     func goToLibrary() {
-        exportFor = nil; viewingResult = nil; showEnvironment = false; welcomeHome = false
+        exportFor = nil; viewingResult = nil; showEnvironment = false; welcomeHome = false; welcomeGameID = nil
         if let phone = phoneSession, phone.kind == .installUpdate { if isFinished(phone) { phoneSession = nil } else { phoneHidden = true } }
         guard let current = session else { return }
         if isFinished(current) { session = nil } else { sessionHidden = true }

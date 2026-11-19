@@ -232,6 +232,22 @@ namespace Ryujinx.Graphics.Shader.Instructions
                         context.BranchIfFalse(lblRetry, context.ICompareEqual(seen, old));
                         res = old;
                     }
+                    else if (type == AtomSize.F16x2FtzRn)
+                    {
+                        // S2Arm 11-17: a packed pair of half-float adds (RED / ATOM .F16x2.FTZ.RN; a full scan of 25 packaged libraries, 501,335 shaders, found 2 in one game,
+                        // which the log-and-drop path lost). The same compare-and-swap loop as the 32-bit float add above: each half of the word is added in 32 bits and packed
+                        // back, rounding to nearest (an fp32 sum of two halves rounded to half is the correctly rounded half sum: 24 bits >= 2 x 11 + 2); half denormals are kept, not
+                        // flushed as FTZ would. Returns the word before this thread's add
+                        Operand lblRetry = Label();
+                        context.MarkLabel(lblRetry);
+                        Operand old = context.Load(storageKind, e0, e1);
+                        Operand lo = context.FPAdd(context.UnpackHalf2x16Low(old), context.UnpackHalf2x16Low(value));
+                        Operand hi = context.FPAdd(context.UnpackHalf2x16High(old), context.UnpackHalf2x16High(value));
+                        Operand sum = context.PackHalf2x16(lo, hi);
+                        Operand seen = context.AtomicCompareAndSwap(storageKind, e0, e1, old, sum);
+                        context.BranchIfFalse(lblRetry, context.ICompareEqual(seen, old));
+                        res = old;
+                    }
                     else
                     {
                         context.TranslatorContext.GpuAccessor.Log($"Invalid reduction type: {type}.");

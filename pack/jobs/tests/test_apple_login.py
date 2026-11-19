@@ -125,6 +125,23 @@ class AppleLogin(unittest.TestCase):
         self.assertEqual(e.exception.code, "apple_not_signed_in")
 
 
+class PlumeMacPhoneBorrowsWinInstall(unittest.TestCase):
+    """PlumeMacPhone 借 WinPhone.install 签名装机：install 里用到的 self 成员它都得有（11-18 真机：没借 say，Mac 免费账号装 App 一调就 AttributeError）。
+    期望由源码直接得出：WinPhone.install 里出现的每个 self.<名字>，PlumeMacPhone 的类成员或两个 __init__ 里赋值的实例属性都有"""
+
+    def test_members_used_by_install_exist(self):
+        import ast
+        import inspect
+        def self_attrs(fn, assigned=False):
+            tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+            return {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id == "self"
+                    and (not assigned or isinstance(n.ctx, ast.Store))}
+        used = self_attrs(install.WinPhone.install)
+        have = set(dir(install.PlumeMacPhone)) | self_attrs(install.MacPhone.__init__, True) | self_attrs(install.PlumeMacPhone.__init__, True)
+        self.assertTrue(used, "WinPhone.install 里应当用到 self 成员")
+        self.assertEqual(sorted(used - have), [], "PlumeMacPhone 缺这些 WinPhone.install 用到的成员")
+
+
 class SignerSwitched(unittest.TestCase):
     """换签名方式后第一次装才带 signerSwitched：老记录没 signer 字段时按当时只有的签法推"""
 
@@ -138,24 +155,25 @@ class SignerSwitched(unittest.TestCase):
 @unittest.skipIf(os.name == "nt", "Mac 打包")
 class BundlePlumesign(unittest.TestCase):
     def test_hash_pinned(self):
-        # 随包的是自编修改版：只从缓存取（不再下载），缓存缺 / 哈希不符都拒打；补丁原文与「修改版」说明随包
+        # 随包的是自编修改版：缓存有就用，没有从固定来源下；下不来 / 哈希不符拒打并说清地址；补丁原文与「修改版」说明随包
         sys.path.insert(0, str(ROOT / "launchers/macos"))
         import build_app
         import impactor
         import hashlib
         t = Path(tempfile.mkdtemp()); self.addCleanup(__import__("shutil").rmtree, t, True)
+        def down(url, to): raise OSError("连不上")
         with self.assertRaises(SystemExit) as e:
-            build_app.bundle_plumesign(t / "res0", cache=t / "empty")
-        self.assertIn("plumesign_build.py", str(e.exception))
+            build_app.bundle_plumesign(t / "res0", cache=t / "empty", fetch=down)
+        self.assertIn(impactor.OWN_RELEASE + "plumesign-macos-universal", str(e.exception)); self.assertIn("连不上", str(e.exception))
         (t / "cache").mkdir(); (t / "cache/plumesign-macos-universal").write_bytes(b"not it")
         with patch.object(impactor, "BUNDLED_MAC", {"plumesign-macos-universal": "00" * 32}):
             with self.assertRaises(SystemExit) as e:
-                build_app.bundle_plumesign(t / "res", cache=t / "cache")
+                build_app.bundle_plumesign(t / "res", cache=t / "cache", fetch=lambda url, to: Path(to).write_bytes(b"still not"))
             self.assertIn("拒打", str(e.exception))
         body = b"fake plumesign"
         (t / "cache/plumesign-macos-universal").write_bytes(body)
         with patch.object(impactor, "BUNDLED_MAC", {"plumesign-macos-universal": hashlib.sha256(body).hexdigest()}):
-            build_app.bundle_plumesign(t / "res2", cache=t / "cache")
+            build_app.bundle_plumesign(t / "res2", cache=t / "cache", fetch=lambda url, to: self.fail("缓存里有且哈希对就不下"))
         d = t / "res2" / impactor.BUNDLE_DIR
         out = d / "plumesign-macos-universal"
         self.assertEqual(out.read_bytes(), body)
