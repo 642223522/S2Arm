@@ -69,6 +69,31 @@ static os_unfair_lock g_pbase_lock = OS_UNFAIR_LOCK_INIT;
 static id g_hy_comp;   // Metal 4 编译器（m4_compiler）
 static int g_pso_pull;   // pso_get_ 这次返回的是拉取管线（绘制改绑布局块，不做 CPU 顶点转换）
 static _Atomic uint64_t g_hy_draws, g_hy_made, g_hy_none, g_hy_kicked, g_hy_bases, g_hy_base_fail, g_hy_spec_ns;
+// 随包拉取基础管线（出包时 graphics/tools/direct/base_pipelines.py 按同一描述离线编，<库映射表同级>/pipelines/p<键>.mtl4archive，一对一个 Metal 4 归档）：
+//   键 = sha256("<顶点键>\t<片元键>\t<顶点入口>") 前 20 字节十六进制（顶点 / 片元键带 _b，与出包 bkey 同一串）。归档只查不编（MTL4Archive 的建管线就是按描述查，
+//   查不中返回 nil，同 FailOnBinaryArchiveMiss），查不中（别的 GPU / 系统大版本、多重采样 / alpha-to-coverage 这类离线不出的描述、近平面 0 模式的 main0_z）照旧后台建。
+//   打开的归档留着（Metal 映射整份文件；一对只开一次，本局真用到的对才开）。DM_PSO_ARCHIVE=0 连随包的一起关（pso_archive.h par_open_dir）
+static _Atomic uint64_t g_hy_pkg_hit, g_hy_pkg_nofile, g_hy_pkg_miss;
+static NSMutableArray *g_hy_pkg_open;   // g_pbase_lock
+static NSString *hybrid_pkg_name(NvShader *vs, NvShader *fs) {
+    NSData *b = [[NSString stringWithFormat:@"%s\t%s\t%@", vs->key, fs->key, vs->ventry] dataUsingEncoding:NSUTF8StringEncoding];
+    uint8_t h[CC_SHA256_DIGEST_LENGTH]; CC_SHA256(b.bytes, (CC_LONG)b.length, h);
+    NSMutableString *n = [NSMutableString stringWithString:@"p"]; for (int i = 0; i < 20; i++) [n appendFormat:@"%02x", h[i]];
+    return [n stringByAppendingString:@".mtl4archive"];
+}
+static id<MTLRenderPipelineState> hybrid_pkg_base(id bd, NvShader *vs, NvShader *fs) API_AVAILABLE(macos(26.0), ios(26.0)) {
+    par_open_dir(); if (!g_par_bdir) return nil;
+    NSString *path = [g_par_bdir stringByAppendingPathComponent:hybrid_pkg_name(vs, fs)];
+    if (access(path.fileSystemRepresentation, R_OK)) { g_hy_pkg_nofile++; return nil; }
+    NSError *e = nil; id a = [g_dev newArchiveWithURL:[NSURL fileURLWithPath:path] error:&e];   // id：Metal 4 归档类型不出 nvn_mtl.m 包装（mtl4 棘轮）
+    id<MTLRenderPipelineState> ps = a ? [a newRenderPipelineStateWithDescriptor:bd error:&e] : nil;
+    if (a) { os_unfair_lock_lock(&g_pbase_lock); if (!g_hy_pkg_open) g_hy_pkg_open = [NSMutableArray array]; [g_hy_pkg_open addObject:a]; os_unfair_lock_unlock(&g_pbase_lock); }
+    if (ps) { g_hy_pkg_hit++; return ps; }
+    uint64_t n = ++g_hy_pkg_miss;
+    if (n <= 4) MLOG("【黄】 hybrid pipelines: the package's pulling base of vertex %s fragment %s did not serve (%s): built in the background", vs->key, fs->key, e ? [e.localizedDescription componentsSeparatedByString:@"\n"].firstObject.UTF8String : "no error");
+    return nil;
+}
+void mtl_hybrid_pkg_stats(uint64_t out[3]) { out[0] = g_hy_pkg_hit; out[1] = g_hy_pkg_nofile; out[2] = g_hy_pkg_miss; }
 static id hybrid_comp(void) API_AVAILABLE(macos(26.0), ios(26.0)) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{ g_hy_comp = m4_compiler("hybrid pipelines (first uses wait for their pipelines)"); });
@@ -93,8 +118,13 @@ static __unsafe_unretained id<MTLRenderPipelineState> hybrid_get(const pso_key *
         pbase_key bk; memset(&bk, 0, sizeof bk); bk.vf = (__bridge const void *)vs->pfn; bk.ff = (__bridge const void *)fs->fn;
         bk.samples = (uint32_t)d.rasterSampleCount; bk.a2c = d.alphaToCoverageEnabled; bk.a21 = d.alphaToOneEnabled; bk.topo = (uint32_t)d.inputPrimitiveTopology;
         os_unfair_lock_lock(&g_pbase_lock); id base = hm_get_id(&g_pbase, &bk); if (!base) hm_put_id(&g_pbase, &bk, NSNull.null); os_unfair_lock_unlock(&g_pbase_lock);
-        if (!base) {   // 第一次：后台建基础管线（占位 NSNull 防重复踢；建成换成管线）
-            id bd = pull_desc4(d, vs, fs, 1); g_hy_kicked++;
+        id bd = base ? nil : pull_desc4(d, vs, fs, 1);
+        if (!base) {   // 第一次：先查随包归档，命中就地用（下面照常按本笔特化）
+            id<MTLRenderPipelineState> pb = hybrid_pkg_base(bd, vs, fs);
+            if (pb) { os_unfair_lock_lock(&g_pbase_lock); hm_put_id(&g_pbase, &bk, pb); os_unfair_lock_unlock(&g_pbase_lock); base = pb; }
+        }
+        if (!base) {   // 随包没有：后台建基础管线（占位 NSNull 防重复踢；建成换成管线）
+            g_hy_kicked++;
             static dispatch_queue_t q; static dispatch_once_t once;
             dispatch_once(&once, ^{ q = dispatch_queue_create("dm.nvn.hybrid", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0)); });
             dispatch_async(q, ^{ @autoreleasepool { NSError *e = nil; id<MTLRenderPipelineState> ps = [g_hy_comp newRenderPipelineStateWithDescriptor:bd compilerTaskOptions:nil error:&e];

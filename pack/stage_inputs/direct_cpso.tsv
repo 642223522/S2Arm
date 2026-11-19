@@ -3,6 +3,7 @@
 # 起点：pack/stage_direct_cpso.sh。tests/stage_keys_test.sh 用 tools/stage_inputs.py 从起点扫依赖闭包，闭包里有本表没列的文件就报红（新依赖要在这里归类）。
 入	pack/stage_direct_cpso.sh
 入	graphics/tools/direct/cs_pipelines.py	出归档（描述、文件名、metal-tt 参数）
+入	graphics/tools/direct/base_pipelines.py	出拉取基础管线归档（描述、文件名、metal-tt 参数；引 cs_pipelines.py 的库读法与 metal-tt 调法）
 入	graphics/tools/direct/repair_compute.py	cs_pipelines.py 引入，读库容器
 入	tools/tt_env.sh	metal-tt 查询缓存后缀
 外	pack/jobs/archs.py	推目标对：推出的对（架构 / 大版本）按内容进键

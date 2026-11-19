@@ -8,6 +8,9 @@
 #   一个文件里同一架构只能装一个系统大版本（metal-tt 胖文件按架构分切片），目标对跨几个大版本时只出最高那个，其余大版本的设备照旧首遇现编（打黄写明）。
 # 键 = 直连库阶段键 + 目标对 + 平台 + metal-tt 版本 + 生成代码（pack/stage_inputs/direct_cpso.tsv「入」）；与现行 .stage_direct_cpso 相同就跳过。
 # 归档是锦上添花（同种子表）：没有 Metal 工具链、推不出目标对、工具失败都只打【黄】、不记键（下次刷新重试）、退出 0；部分支编不出照收其余、打黄、记键。
+# 同一阶段还出每对着色器的拉取基础管线（graphics/tools/direct/base_pipelines.py：shader_pairs.tsv 每对一个 p<键>.mtl4archive，Metal 4 归档），
+#   设备混合管线首遇先查它（nvn_hybrid.inc hybrid_get），命中直接特化、不在设备上后台建基础管线。与计算管线同目标对、同一个缓存目录（store/cpso/：键带各自格式号，不会互相命中；直连缓存回收照样认得）、同一次提交；
+#   放同一段：输入（直连库 + 目标对 + metal-tt 版本）与产物目录都相同，分两段只多一份键和一次产物根提交。
 # 不出：安卓（S2A_PACK_PLAT=android）、Vulkan / OpenGL / 运行时现编空库（没有 Metal 库容器 b-<链>/lib.idx）。
 set -u
 G=${1:?款}; H=$(cd "$(dirname "$0")" && pwd); R=$(cd "$H/.." && pwd); source "$H/roots.sh"; source "$H/stage_keyfiles.sh"; source "$H/srcs.sh"; stage_deps_on || exit 1; SELF=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
@@ -41,9 +44,13 @@ TAG=$(root_tag "$G" "cp-${K:0:8}"); W=$(root_begin "$G" "$TAG") || exit 1
 P=$W/shaders/direct/pipelines; rm -rf "$P"
 o=$("$PY" "$R/graphics/tools/direct/cs_pipelines.py" "$W/shaders/direct" "$P" --plat "$PLAT" --os "$OSV" $(printf -- '--arch %s ' $ARCHS) --cache "$C/store/cpso" -j "${J:-$(getconf _NPROCESSORS_ONLN)}" 2>&1); rc=$?
 if [ "$rc" != 0 ] && [ "$rc" != 3 ]; then root_abort "$G" "$TAG"; soft "cs_pipelines.py 退出 ${rc}：$(tail -1 <<< "$o" | cut -c1-200)"; fi
+ob=$("$PY" "$R/graphics/tools/direct/base_pipelines.py" "$W/shaders/direct" "$P" --plat "$PLAT" --os "$OSV" $(printf -- '--arch %s ' $ARCHS) --cache "$C/store/cpso" -j "${J:-$(getconf _NPROCESSORS_ONLN)}" 2>&1); rb=$?
+if [ "$rb" != 0 ] && [ "$rb" != 3 ]; then root_abort "$G" "$TAG"; soft "base_pipelines.py 退出 ${rb}：$(tail -1 <<< "$ob" | cut -c1-200)"; fi
 NOTE=; [ "$rc" = 3 ] && NOTE="；🟡 有支没编成，照旧首遇现编（$(grep -c '^【黄】计算管线' <<< "$o") 条示例见日志）"
+[ "$rb" = 3 ] && NOTE="${NOTE}；🟡 有对的拉取基础管线没编成，照旧设备后台建（$(grep -c '^【黄】拉取基础管线' <<< "$ob") 条示例见日志）"
 [ -z "$OTHER" ] || NOTE="${NOTE}；🟡 目标对另有系统大版本 ${OTHER}：一个归档文件同一架构只装一个大版本，那些设备照旧首遇现编"
 stage_deps_save "$W" direct_cpso "$KB" "$SELF" > "$W/.stage_direct_cpso" || { root_abort "$G" "$TAG"; exit 1; }
 ROOT_REPLAY='shaders/direct/pipelines .stage_direct_cpso .stage_direct_cpso.deps' root_commit "$G" "$TAG" || exit 1
-grep '^【黄】' <<< "$o" | head -8
+grep '^【黄】' <<< "$o" | head -8; grep '^【黄】' <<< "$ob" | head -8
+echo "🟢 $G $(tail -1 <<< "$ob")"
 echo "🟢 $G $(tail -1 <<< "$o")${NOTE}（现行 → $(basename "$(root_cur "$G")")）"

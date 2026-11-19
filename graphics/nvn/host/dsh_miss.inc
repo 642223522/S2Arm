@@ -53,6 +53,10 @@ static void dsh_summary(int normal) {
     // 顶点补齐变体（nvn_mtl.m vp_ask）：运行期配上的片元要读顶点不写的 user(locn) 时在设备上编
     uint64_t vp[2]; mtl_vp_stats(vp);
     if (vp[0] || vp[1]) LOG("顶点补齐变体：设备编好 %llu / 编不出 %llu", (unsigned long long)vp[0], (unsigned long long)vp[1]);
+    // 混合管线的拉取基础管线（nvn_hybrid.inc hybrid_pkg_base）：首遇先查随包归档（出包 base_pipelines.py），命中 = 没在设备上后台建
+    uint64_t hp[3]; mtl_hybrid_pkg_stats(hp);
+    if (hp[0] || hp[1] || hp[2]) LOG("随包基础管线命中 %llu / 未命中 %llu（包里没有这一对 %llu、有文件查不中 %llu）", (unsigned long long)hp[0],
+        (unsigned long long)(hp[1] + hp[2]), (unsigned long long)hp[1], (unsigned long long)hp[2]);
     dsh_salvage_summary();
 }
 __attribute__((constructor)) static void dsh_register_summary(void) { s2a_direct_summary_register(dsh_summary); }

@@ -11,6 +11,8 @@
 //      流基址余 2（元素地址都是偶数：16 位分量的对齐，Pull.cs / t_vs_pull 的契约；32 位分量要 4 的倍数，Metal 顶点抓取同），一条拉取管线吃另一种顶点格式（基础管线不带顶点布局）；
 //      精确管线（建时 RGBA32F）画对齐的 RGBA32F 副本。片元输出插值后的顶点属性：4×4 目标的像素 (1, 1) 中心在 NDC (-0.25, 0.25)，
 //      读回 half 逐位 = b400 3400 3400 3c00（-0.25, 0.25, 0.25, 1），两条管线相同
+//   ⑥ 随包拉取基础管线（hybrid_pkg_base）：本机 metal-tt 按设备描述出的归档放在 <映射表同级>/pipelines/p<sha256("<顶点键>\t<片元键>\tmain0") 前 40 位>.mtl4archive（shasum 现算）：
+//      有这一对 → 第一次首遇就拿到拉取管线、不后台踢、随包命中 +1；包里没有 → 照旧后台踢 1、「包里没有」+1；文件名对但内容是别的片元的 → 照旧后台踢 1、「有文件查不中」+1
 //   反证：DM_PSO_HYBRID=0（子进程）→ ② 拿到的是精确管线、g_pso_pull 0
 #include "../gfx/nvn/nvn_mtl.m"
 #include <sys/wait.h>
@@ -35,16 +37,40 @@ static NvShader *shader(id<MTLLibrary> lib, NSString *fn, const char *key, int s
     if (stage == 0) { s->rf.nv = 1; s->rf.v[0].loc = 0; s->rf.v[0].nvn = 0; s->rf.v[0].ct = NVN_CT_FLOAT; s->ventry = @"main0"; }
     return s;
 }
+static NSString *g_pkg_dir;
+// ⑥ 的随包文件名：「p」+ sha256("<顶点键>\t<片元键>\t<入口>") 前 40 位十六进制 + .mtl4archive，用系统 shasum 现算（不经被测实现）
+static NSString *pkg_name(const char *vk, const char *fk) {
+    char cmd[256]; snprintf(cmd, sizeof cmd, "printf '%%s\\t%%s\\tmain0' %s %s | shasum -a 256", vk, fk);
+    FILE *p = popen(cmd, "r"); REQUIRE(p); char h[80] = {0}; REQUIRE(fgets(h, sizeof h, p)); pclose(p); h[40] = 0;
+    return [NSString stringWithFormat:@"p%s.mtl4archive", h];
+}
+// 用本机 metal-tt 按设备描述（拉取顶点 main0 + 片元、8 个颜色附件留空、不带顶点描述、其余缺省）出一份 Metal 4 归档：本机 GPU 架构、本机系统大版本
+static int pkg_make(NSString *vlib, NSString *flib, NSString *ffn, NSString *out) {
+    NSString *un = @"{\"pixel_format\":\"Unspecialized\",\"write_mask\":\"Unspecialized\",\"blending_state\":\"Unspecialized\",\"alpha_blend_operation\":\"Unspecialized\",\"rgb_blend_operation\":\"Unspecialized\","
+                    "\"destination_alpha_blend_factor\":\"Unspecialized\",\"destination_rgb_blend_factor\":\"Unspecialized\",\"source_alpha_blend_factor\":\"Unspecialized\",\"source_rgb_blend_factor\":\"Unspecialized\"}";
+    NSMutableArray *ca = [NSMutableArray array]; for (int i = 0; i < 8; i++) [ca addObject:un];
+    NSString *js = [NSString stringWithFormat:@"{\"version\":{\"major\":0,\"minor\":1,\"sub_minor\":0},\"generator\":\"MetalFramework\",\"libraries\":[{\"label\":\"LV\",\"path\":\"%@\"},{\"label\":\"LF\",\"path\":\"%@\"}],"
+        "\"function_descriptors\":{\"library_function_descriptors\":[{\"label\":\"V\",\"name\":\"main0\",\"library\":\"LV\"},{\"label\":\"F\",\"name\":\"%@\",\"library\":\"LF\"}]},"
+        "\"pipeline_descriptors\":{\"render_pipeline_descriptors\":[{\"vertex_function_descriptor\":\"fnd:V\",\"fragment_function_descriptor\":\"fnd:F\",\"color_attachments\":[%@]}]}}",
+        vlib, flib, ffn, [ca componentsJoinedByString:@","]];
+    NSString *script = [out stringByAppendingString:@".mtl4-json"]; REQUIRE([js writeToFile:script atomically:YES encoding:NSUTF8StringEncoding error:nil]);
+    char cmd[2048]; snprintf(cmd, sizeof cmd, "xcrun -sdk macosx metal-tt -arch %s -macos-version-min %ld.0 '%s' -o '%s' > /dev/null 2>&1", g_dev.architecture.name.UTF8String,
+                             (long)NSProcessInfo.processInfo.operatingSystemVersion.majorVersion, script.UTF8String, out.UTF8String);
+    return system(cmd) == 0;
+}
 static int wait_bases(uint64_t want) { for (int i = 0; i < 500 && g_hy_bases < want; i++) usleep(10000); return g_hy_bases >= want; }
 
 static int run(int hybrid) {
     setenv("DM_NVN_FIRST_SKIP", "0", 1);   // 测的是不能跳的首遇（跳过那条路另有单测）
     if (!hybrid) setenv("DM_PSO_HYBRID", "0", 1);
     char user[] = "/tmp/t_nvn_hybrid_XXXXXX"; int fd = mkstemp(user); REQUIRE(fd >= 0); close(fd); setenv("DM_PSO_USER", user, 1);
-    char map[] = "/tmp/t_nvn_hybrid_map_XXXXXX"; fd = mkstemp(map); REQUIRE(fd >= 0); close(fd); setenv("DM_NVN_SHMAP", map, 1);
+    // 映射表放进自己的临时目录：随包归档目录 = 它同级的 pipelines/（pso_archive.h par_open_dir），⑥ 往里放随包基础管线
+    char mdir[] = "/tmp/t_nvn_hybrid_map_XXXXXX"; REQUIRE(mkdtemp(mdir)); g_pkg_dir = [@(mdir) stringByAppendingPathComponent:@"pipelines"];
+    NSString *map = [@(mdir) stringByAppendingPathComponent:@"shader_map.tsv"]; REQUIRE([@"" writeToFile:map atomically:YES encoding:NSUTF8StringEncoding error:nil]); setenv("DM_NVN_SHMAP", map.UTF8String, 1);
     setenv("DM_NVN_PSO_FRAME_MS", "0", 1);
     const char *libdir = getenv("T_HYBRID_LIB"); REQUIRE(libdir);   // mk 编好的 aaaaaaaaaaaaaaaa_bp.metallib 所在目录
-    mtl_init(); g_msl_dir = @(libdir);   // 没有容器（lib.idx）：lib_from_pack 读 <库目录>/<名>.metallib
+    mtl_init(); shmap_load();   // 映射表先载（同生产：首个管线之前），随包归档目录跟着它定；它会把库目录设成缺省的，下面再指回 mk 的
+    g_msl_dir = @(libdir);   // 没有容器（lib.idx）：lib_from_pack 读 <库目录>/<名>.metallib
     if (hybrid && !hybrid_on()) { printf("SKIP 本机不是 Metal 4 后端（macOS 26 以下或 NXGAL_BE=mtl3）：混合管线不适用\n"); return 0; }
     NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:source options:nil error:&e]; REQUIRE(lib);
     NvShader *vs = shader(lib, @"main0", "aaaaaaaaaaaaaaaa_b", 0), *fs = shader(lib, @"fa", "cccccccccccccccc_b", 1);
@@ -130,6 +156,29 @@ static int run(int hybrid) {
         static const uint16_t want[4] = {0xb400, 0x3400, 0x3400, 0x3c00};
         VERIFY(!memcmp(px[1], want, sizeof want) && !memcmp(px[2], want, sizeof want), "⑤ 拉取管线（RGBA16F、流基址余 2）/ 精确管线（RGBA32F）画出的像素：%04x %04x %04x %04x / %04x %04x %04x %04x（期望都 b400 3400 3400 3c00）",
                px[1][0], px[1][1], px[1][2], px[1][3], px[2][0], px[2][1], px[2][2], px[2][3]);
+    }
+    // ⑥ 随包拉取基础管线：片元库 hybrid_fs.metallib（mk 编，fb / fy / fz 三个片元）。B 对（fb）有对得上的随包归档；Z 对（fz）包里没有；
+    //   Y 对（fy）的文件名对、内容是 fz 的基础管线（查不中）。都是这对第一次首遇
+    {
+        NSString *ld = @(libdir), *vlib = [ld stringByAppendingPathComponent:@"aaaaaaaaaaaaaaaa_bp.metallib"], *flib = [ld stringByAppendingPathComponent:@"hybrid_fs.metallib"];
+        REQUIRE([NSFileManager.defaultManager createDirectoryAtPath:g_pkg_dir withIntermediateDirectories:YES attributes:nil error:nil]);
+        REQUIRE(pkg_make(vlib, flib, @"fb", [g_pkg_dir stringByAppendingPathComponent:pkg_name("aaaaaaaaaaaaaaaa_b", "eeeeeeeeeeeeeeee_b")]));
+        REQUIRE(pkg_make(vlib, flib, @"fz", [g_pkg_dir stringByAppendingPathComponent:pkg_name("aaaaaaaaaaaaaaaa_b", "9999999999999999_b")]));
+        id<MTLLibrary> fl = [g_dev newLibraryWithURL:[NSURL fileURLWithPath:flib] error:&e]; REQUIRE(fl);
+        NvShader *fsb = shader(fl, @"fb", "eeeeeeeeeeeeeeee_b", 1), *fsz = shader(fl, @"fz", "ffffffffffffffff_b", 1), *fsy = shader(fl, @"fy", "9999999999999999_b", 1);
+        NvShader *fss[3] = {fsb, fsz, fsy}; int pulled[3]; uint64_t kicked[3], hit[3], nofile[3], miss[3];
+        for (int i = 0; i < 3; i++) {
+            NvProg *p6 = [NvProg new]; p6->sh[0] = vs; p6->sh[1] = fss[i];
+            uint64_t st0[3], st1[3], k0 = g_hy_kicked; mtl_hybrid_pkg_stats(st0);
+            id ps = pso_get_(p6, nil); pulled[i] = ps && g_pso_pull; mtl_hybrid_pkg_stats(st1);
+            kicked[i] = g_hy_kicked - k0; hit[i] = st1[0] - st0[0]; nofile[i] = st1[1] - st0[1]; miss[i] = st1[2] - st0[2];
+        }
+        VERIFY(pulled[0] && !kicked[0] && hit[0] == 1 && !nofile[0] && !miss[0], "⑥ 随包有这一对：第一次首遇就拿到拉取管线 %d（期望 1）、后台踢 %llu（期望 0）、随包命中 +%llu（期望 1）",
+               pulled[0], (unsigned long long)kicked[0], (unsigned long long)hit[0]);
+        VERIFY(!pulled[1] && kicked[1] == 1 && !hit[1] && nofile[1] == 1 && !miss[1], "⑥ 包里没有这一对：拉取管线 %d（期望 0）、后台踢 %llu（期望 1）、包里没有 +%llu（期望 1）",
+               pulled[1], (unsigned long long)kicked[1], (unsigned long long)nofile[1]);
+        VERIFY(!pulled[2] && kicked[2] == 1 && !hit[2] && !nofile[2] && miss[2] == 1, "⑥ 文件在、内容是别的片元的：拉取管线 %d（期望 0）、后台踢 %llu（期望 1）、有文件查不中 +%llu（期望 1）",
+               pulled[2], (unsigned long long)kicked[2], (unsigned long long)miss[2]);
     }
     return 0;
 }
