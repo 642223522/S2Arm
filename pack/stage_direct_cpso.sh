@@ -8,7 +8,8 @@
 #   一个文件里同一架构只能装一个系统大版本（metal-tt 胖文件按架构分切片），目标对跨几个大版本时只出最高那个，其余大版本的设备照旧首遇现编（打黄写明）。
 # 键 = 直连库阶段键 + 目标对 + 平台 + metal-tt 版本 + 生成代码（pack/stage_inputs/direct_cpso.tsv「入」）；与现行 .stage_direct_cpso 相同就跳过。
 # 归档是锦上添花（同种子表）：没有 Metal 工具链、推不出目标对、工具失败都只打【黄】、不记键（下次刷新重试）、退出 0；部分支编不出照收其余、打黄、记键。
-# 同一阶段还出每对着色器的拉取基础管线（graphics/tools/direct/base_pipelines.py：shader_pairs.tsv 每对一个 p<键>.mtl4archive，Metal 4 归档），
+# 同一阶段还出每对着色器的拉取基础管线（graphics/tools/direct/base_pipelines.py：离线配对表 shader_pairs.tsv ∪ 管线种子表 pso_manifest.tsv 每对一个 p<键>.mtl4archive，
+#   Metal 4 归档；iPhone 包逐对 lzfse 压成 .mtl4archive.lzfse、Mac 包原样；另带一对首查预热 s2a_warm.*），
 #   设备混合管线首遇先查它（nvn_hybrid.inc hybrid_get），命中直接特化、不在设备上后台建基础管线。与计算管线同目标对、同一个缓存目录（store/cpso/：键带各自格式号，不会互相命中；直连缓存回收照样认得）、同一次提交；
 #   放同一段：输入（直连库 + 目标对 + metal-tt 版本）与产物目录都相同，分两段只多一份键和一次产物根提交。
 # 不出：安卓（S2A_PACK_PLAT=android）、Vulkan / OpenGL / 运行时现编空库（没有 Metal 库容器 b-<链>/lib.idx）。
@@ -35,7 +36,7 @@ ARCHS=$(awk -F'\t' -v v="$OSV" '$2 == v { print $1 }' <<< "$PAIRS" | sort -u | t
 OTHER=$(cut -f2 <<< "$PAIRS" | sort -nu | grep -vx "$OSV" | tr '\n' ' '); OTHER=${OTHER% }
 [ -n "$OSV" ] && [ -n "$ARCHS" ] || soft "目标对是空的"
 KT=$(stage_files_key direct_cpso "$R") || exit 1
-K=$(printf '%s\n%s\n%s\n%s\n%s\n' "$(cat "$CUR/.stage_direct" 2> /dev/null)" "$PLAT $OSV $ARCHS" "$TTV" "$KT" "$(shasum -a 256 < "$D/pso_manifest.tsv" 2> /dev/null | cut -c1-16)" | shasum -a 256 | cut -c1-16)   # 种子表进键：基础管线的对取自它（base_pipelines.py read_pairs），种子换了这一段要重出
+K=$(printf '%s\n%s\n%s\n%s\n%s\n' "$(cat "$CUR/.stage_direct" 2> /dev/null)" "$PLAT $OSV $ARCHS" "$TTV" "$KT" "$(cat "$D/pso_manifest.tsv" "$D/shader_pairs.tsv" 2> /dev/null | shasum -a 256 | cut -c1-16)" | shasum -a 256 | cut -c1-16)   # 种子表与配对表进键：基础管线的对取自两者之并（base_pipelines.py read_pairs），换了这一段要重出
 KB=$K; K=$(stage_deps_key "$CUR" direct_cpso "$KB" "$SELF") || exit 1
 root_stage_done "$CUR" direct_cpso "$K" && { echo "🟢 $G 现行已是计算管线归档 ${K}，跳过"; exit 0; }
 TID=$(prog_id "$CUR")
