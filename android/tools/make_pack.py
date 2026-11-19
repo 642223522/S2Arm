@@ -155,7 +155,8 @@ def rewrite(exefs, staging):
     if fix_table and fix_table.is_file():
         env['S2A_FIX_TSV'] = str(fix_table)
     env.update(S2A_TARGET='android',
-               S2A_REWRITE_SPIN=os.environ.get('S2A_REWRITE_SPIN', '0'),
+               # 自旋闸缺省开，同 iOS 出包（pack/stage_rewrite.sh）与重改写（pack/jobs/rewrite_refresh.py）；运行时 S2A_SPIN=0 可关
+               S2A_REWRITE_SPIN=os.environ.get('S2A_REWRITE_SPIN', '1'),
                S2A_SDK_ADDR_CUT=os.environ.get('S2A_SDK_ADDR_CUT', '1'))
     command = rewrite_command()
     community = community_patches(exefs)
