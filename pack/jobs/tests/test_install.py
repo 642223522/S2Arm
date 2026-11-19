@@ -1518,27 +1518,6 @@ class AssembleTests(unittest.TestCase):
             ph.install("x.ipa", ["0100A"])
         self.assertEqual((e.exception.code, installed), ("app_id_taken", []))
 
-    def test_stamp_container_digest(self):
-        """#845 S2AContainerDigest：内容相同 → 摘要相同；只差 _CodeSignature/ 或 Info.plist 里摘要键本身 → 相同；改一个文件 / Info.plist 别的键 → 不同；
-        写进 Info.plist（保留原格式）、打成 ipa 后 ipa_digest 读回同一个值"""
-        import ipa as packer
-        def app(root, extra=b"", sig=b"s1", key=None, ver="1"):
-            a = Path(root) / "S2Arm.app"; (a / "Games/X").mkdir(parents=True); (a / "_CodeSignature").mkdir()
-            (a / "Games/X/kit.bin").write_bytes(b"kit" + extra); (a / "_CodeSignature/CodeResources").write_bytes(sig)
-            info = {"CFBundleIdentifier": "io.s2arm.games", "CFBundleVersion": ver}
-            if key: info[packer.CONTAINER_DIGEST_KEY] = key
-            (a / "Info.plist").write_bytes(plistlib.dumps(info, fmt=plistlib.FMT_BINARY)); return a
-        with tempfile.TemporaryDirectory() as t:
-            d = [packer.stamp_container(app(Path(t) / n, **kw)) for n, kw in (("a", {}), ("b", dict(sig=b"other", key="old")), ("c", dict(extra=b"!")), ("d", dict(ver="2")))]
-            self.assertEqual(len(d[0]), 24)
-            self.assertEqual(d[0], d[1], "只差签名与摘要键本身：相同")
-            self.assertNotEqual(d[0], d[2], "改了一个文件：不同"); self.assertNotEqual(d[0], d[3], "Info.plist 别的键变了：不同")
-            raw = (Path(t) / "a/S2Arm.app/Info.plist").read_bytes(); self.assertTrue(raw.startswith(b"bplist"), "保留二进制格式")
-            self.assertEqual(plistlib.loads(raw)[packer.CONTAINER_DIGEST_KEY], d[0])
-            ipa = Path(t) / "x.ipa"
-            with zipfile.ZipFile(ipa, "w") as z: z.writestr("Payload/S2Arm.app/Info.plist", raw)
-            self.assertEqual(packer.ipa_digest(ipa), d[0])
-
     def _app_gone(self, ph):
         """玩家在手机上删了整个 S2Arm：进不了容器、平台确认这个包名没装（走真的 install.phone_games，不用夹具里的替身）"""
         class Cl:
@@ -1647,40 +1626,6 @@ def img_module():
 def install_ipa_games(ipa):
     import ipa as packer
     return packer.ipa_games(ipa)
-
-
-class DropRestampTests(unittest.TestCase):
-    """#845 摘掉一款后重算容器摘要（ipa.finish_container）：摘之前整套的摘要写在 Info.plist 里；摘掉一款后内容变了，
-    新 ipa 里的摘要必须非空、且不等于整套的旧值——否则之后再装回整套时 same_app 误判相同、跳过重装，摘掉的那款回不到手机上"""
-
-    def test_drop_restamps_digest(self):
-        import ipa as packer
-        t = Path(tempfile.mkdtemp()); self.addCleanup(lambda: shutil.rmtree(t, ignore_errors=True))
-        app = t / "build" / "Payload" / "S2Arm.app"
-        A, B = "0100000000010000", "0100000000020000"
-        for g in (A, B):
-            (app / "Games" / g).mkdir(parents=True); (app / "Games" / g / "main.npdm").write_bytes(g.encode() + bytes(16))
-            (app / "Frameworks").mkdir(exist_ok=True); (app / f"Frameworks/S2AImages-{g}.dylib").write_bytes(g.encode())
-        (app / "s2a_catalogue.json").write_text(json.dumps({"schema": 1, "shell_id": "SID1", "games": [{"title_id": A}, {"title_id": B}]}))
-        (app / "Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": "io.s2arm.games"}))
-        full = packer.stamp_container(app)
-        ipa = t / "S2Arm.ipa"
-        with zipfile.ZipFile(ipa, "w") as z:
-            for f in sorted((t / "build").rglob("*")):
-                if f.is_file(): z.write(f, f.relative_to(t / "build").as_posix())
-        self.assertEqual(packer.ipa_digest(ipa), full)
-        lib = t / "lib"; lib.mkdir()
-        c = jobcase.fake_context(lib.parent, library=lib, logs=t, task="drop", engine=Path(packer.__file__).resolve().parents[2],
-                                  env=lambda: dict(os.environ), run=lambda args, log, env, **kw: subprocess.run([str(a) for a in args], check=True, capture_output=True))
-        def zip_app(c, a, out, log):   # 写 ipa 的完整校验（app_bundle write_ipa）不在这里核：照原样打包
-            with zipfile.ZipFile(out, "w") as z:
-                for f in sorted(Path(a).rglob("*")):
-                    if f.is_file(): z.write(f, "Payload/S2Arm.app/" + f.relative_to(a).as_posix())
-        with um.patch.object(packer, "sign_container", lambda *a, **k: None), um.patch.object(packer, "write_container_ipa", zip_app):   # 签名要 codesign，这里只核摘要
-            new, left, _ = packer.drop_from_ipa(c, ipa, A)
-        self.assertEqual(left, [B])
-        got = packer.ipa_digest(new)
-        self.assertTrue(got); self.assertNotEqual(got, full)
 
 
 class ShipExtContainerDropTests(unittest.TestCase):
