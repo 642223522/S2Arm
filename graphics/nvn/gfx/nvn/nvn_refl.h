@@ -98,6 +98,7 @@ typedef struct {
     uint8_t has_user;        // bit 0: user_out known (vertex json user_out), bit 1: user_in known (pixel json user_in); a library without them leaves both 0
     uint32_t user_out, user_in;   // user(locn) positions as bits: what the vertex shader writes / the pixel shader reads (dmsh_build.py user_locs; nvn_mtl.m pso_pair_ok)
     uint8_t drv_read[3];     // B: reads driver segments c0 / c2 at runtime (indices 0, 2; gathered statically from the MSL at packaging time, tools/dmsh_build.py drv_reads)
+    uint8_t drv_unfilled;    // B: also reads driver-segment locations the replay layer does not fill (drv_unfillable): they read 0, the shader is used anyway (err holds the list)
     uint16_t c1_len;         // Length of the c1 constant segment (B; 0 / 256 / 512 / 768 across the whole library)
     // For the fully-covering-first-draw proof (dmsh_build.py raster_facts; missing field = not provable): vertex - position xyz taken as-is from attribute pos_attr (-1 = no), w is the constant 1 (pos_w1) or taken from the same attribute's .w;
     // fragment - may discard, writes sample_mask, bitmap of the color numbers written
