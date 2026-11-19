@@ -7,6 +7,10 @@
   16 GB / 12 核：(8, 12)      8 GB / 8 核：6 × 2 // 3 = 4；1 + 3339 // 420 = 8 → (4, 8)（同 cores.sh 头注「8 GB / 8 核开满 8 路」）
   4 GB / 8 核：(2, 1)         2 GB / 8 核：1 × 2 // 3 = 0 → 1；直连为负 → 1 → (1, 1)
   内存读不到 / 16 核：(16, 16)（不拦，照旧）     环境 S2A_CPU_BAKE=3、S2A_DIRECT_J=5：用给的
+  此刻可用内存（执行锁读写化后玩着一款也能出包）：预算 = min(总量 × 3/4, 可用 − 1 GB)
+    32 GB / 32 核、可用 30000 MB（空闲）：min(24, 28) = 24 GB → 16；min(24576, 28976) = 24576 MB → 1 + 21771 // 420 = 52 → 32 → (16, 32)（同不给可用）
+    32 GB / 32 核、可用 9216 MB（一局占着）：min(24, 8) = 8 → 8 × 2 // 3 = 5；min(24576, 8192) = 8192 → 1 + 5387 // 420 = 13 → (5, 13)
+    16 GB / 8 核、可用 2048 MB：min(12, 1) = 1 → 0 → 1；1024 MB → 1 + (−1781) // 420 = −4 → 1 → (1, 1)
   direct() 交给直连库脚本的 J / S2A_CPU_BAKE 就是上面两个数（S2A_MEM_TOTAL_GB=16、--jobs 32 → J=23、S2A_CPU_BAKE=8）
   工作根联接退回拷贝（v0.3.1 exFAT）：建不了联接 → 整份拷、内容一样；目标已在 → 报错"""
 import os, sys, tempfile
@@ -22,15 +26,19 @@ def chk(name, want, got):
     ok = want == got; bad += not ok
     print(f'{"通" if ok else "不通"} {name}：期望 {want!r} → 真结果 {got!r}')
 
-for k in ('S2A_CPU_BAKE', 'S2A_DIRECT_J', 'S2A_MEM_TOTAL_GB', 'S2A_DIRECT_CACHE', 'S2A_DIRECT_CACHE_ROOT', 'S2A_PSO_SOURCES', 'S2A_PSO_KNOW'):
+for k in ('S2A_CPU_BAKE', 'S2A_DIRECT_J', 'S2A_MEM_TOTAL_GB', 'S2A_MEM_AVAIL_MB', 'S2A_DIRECT_CACHE', 'S2A_DIRECT_CACHE_ROOT', 'S2A_PSO_SOURCES', 'S2A_PSO_KNOW'):
     os.environ.pop(k, None)
 for (gb, jobs), want in {(16, 32): (8, 23), (16, 12): (8, 12), (8, 8): (4, 8), (4, 8): (2, 1), (2, 8): (1, 1), (None, 16): (16, 16)}.items():
     chk(f'{gb} GB / {jobs} 核', want, ow.parallel(jobs, gb))
+for (gb, jobs, avail), want in {(32, 32, 30000): (16, 32), (32, 32, None): (16, 32), (32, 32, 9216): (5, 13), (16, 8, 2048): (1, 1)}.items():
+    chk(f'{gb} GB / {jobs} 核 / 可用 {avail} MB', want, ow.parallel(jobs, gb, avail))
 os.environ['S2A_CPU_BAKE'] = '3'; os.environ['S2A_DIRECT_J'] = '5'
 chk('环境给了就用给的', (3, 5), ow.parallel(32, 16))
 os.environ.pop('S2A_CPU_BAKE'); os.environ.pop('S2A_DIRECT_J')
 os.environ['S2A_MEM_TOTAL_GB'] = '16'
 chk('S2A_MEM_TOTAL_GB 手动指定', 16, ow.mem_gb())
+os.environ['S2A_MEM_AVAIL_MB'] = '1000000'   # direct() 那条按总量算（门禁在 Windows 上跑时不读真可用内存）
+chk('S2A_MEM_AVAIL_MB 手动指定', 1000000, ow.mem_avail_mb())
 
 seen = {}
 real_sh = ow.Run.sh
