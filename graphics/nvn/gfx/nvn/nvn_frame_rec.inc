@@ -135,6 +135,22 @@ static unsigned fr_bpp(MTLPixelFormat f) {
 enum { FR_TK_PLAIN = 0, FR_TK_MS = 1 };
 typedef struct { uint32_t bw, bh, bb, opt; } fr_plane;   // 块宽 / 块高 / 每块字节 / blit 选项（MTLBlitOption）
 typedef struct { uint64_t ser; uint32_t type, fmt, w, h, depth, layers, levels, kind, samples, nplane, pad; fr_plane pl[2]; uint64_t bytes; } fr_tex_hd;
+// 贴图内容按张压缩（即时存档 / 帧录共用）：hd.pad = 0 → 后面原样跟 hd.bytes 字节（旧文件都是这样）；非 0 → LZFSE 压过，后面跟 hd.pad 字节。
+//   显卡内容大片是同色 / 空白，三款实测整份 GPU 文件压到 1/30（大金刚 321 MB → 11 MB）
+#include <compression.h>
+static int fr_w_tex(FILE *f, fr_tex_hd *hd, const void *p, uint64_t n) {
+    hd->bytes = n; hd->pad = 0; uint8_t *c = n > 4096 && n < 0xFFFFFFFFull ? malloc(n) : NULL; size_t cl = 0;
+    if (c) cl = compression_encode_buffer(c, n, p, n, NULL, COMPRESSION_LZFSE);
+    if (cl && cl < n) hd->pad = (uint32_t)cl;
+    int ok = fr_w(f, hd, sizeof *hd) && fr_w(f, hd->pad ? c : p, hd->pad ? cl : n);
+    free(c); return ok;
+}
+static int fr_skip_tex(FILE *f, const fr_tex_hd *hd) { return fseeko(f, (off_t)(hd->pad ? hd->pad : hd->bytes), SEEK_CUR) == 0; }
+static int fr_r_tex(FILE *f, const fr_tex_hd *hd, void *dst) {
+    if (!hd->pad) return fr_r(f, dst, hd->bytes);
+    uint8_t *c = malloc(hd->pad); int ok = c && fr_r(f, c, hd->pad) && compression_decode_buffer(dst, hd->bytes, c, hd->pad, NULL, COMPRESSION_LZFSE) == hd->bytes;
+    free(c); return ok;
+}
 #define FR_GPU_MAGIC 0x32555047u   // gpu.bin 开头（「GPU2」）：旧录像没有，读到不认就整份不写回（旧录法缺这三类，要重录）
 static int fr_compressed(MTLPixelFormat f, fr_plane *p) {   // 压缩格式的块：BC / ETC2 / EAC / ASTC（LDR、sRGB、HDR）
     switch (f) {
@@ -278,8 +294,7 @@ static int fr_dump_gpu(const char *path, uint64_t *bytes, int *skipped) {
         if (!b) { (*skipped)++; continue; }
         int ok = hd.kind == FR_TK_MS ? fr_ms_read(t, b) : fr_blit_planes(t, &hd, b, 1);
         if (!ok) { (*skipped)++; continue; }
-        hd.bytes = tot;
-        if (!fr_w(f, &hd, sizeof hd) || !fr_w(f, b.contents, tot)) { fclose(f); return -1; }
+        if (!fr_w_tex(f, &hd, b.contents, tot)) { fclose(f); return -1; }
         *bytes += tot; saved++;
     }
     return fclose(f) == 0 ? saved : -1;
@@ -511,9 +526,9 @@ static void fr_restore_gpu(const char *path, int *put, int *miss) {
         if (!t || t.width != hd.w || t.height != hd.h || t.depth != hd.depth || (uint32_t)t.pixelFormat != hd.fmt || fr_slices(t) != hd.layers || t.mipmapLevelCount != hd.levels || t.sampleCount != hd.samples) {
             if (*miss < 32) MLOG("回放：贴图 ser=%llu 没写回：录时 %ux%ux%u 格式 %u 级 %u 层 %u 采样 %u，回放存储 %s%lux%lux%lu 格式 %lu 级 %lu", (unsigned long long)hd.ser, hd.w, hd.h, hd.depth, hd.fmt, hd.levels, hd.layers, hd.samples,
                                  t ? "" : "（没建出）", (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.depth, (unsigned long)t.pixelFormat, (unsigned long)t.mipmapLevelCount);
-            fseeko(f, (off_t)hd.bytes, SEEK_CUR); (*miss)++; continue; }
+            fr_skip_tex(f, &hd); (*miss)++; continue; }
         id<MTLBuffer> b = [g_dev newBufferWithLength:hd.bytes options:MTLResourceStorageModeShared];
-        if (!b || !fr_r(f, b.contents, hd.bytes)) { (*miss)++; break; }
+        if (!b || !fr_r_tex(f, &hd, b.contents)) { (*miss)++; break; }
         if (hd.kind == FR_TK_MS ? fr_ms_write(t, b) : fr_blit_planes(t, &hd, b, 0)) (*put)++; else (*miss)++;
     }
     fclose(f);
