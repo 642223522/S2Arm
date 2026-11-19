@@ -413,6 +413,10 @@ namespace S2A.Services
         private readonly string _name;
         private readonly ServerManagerBase _manager;
         private readonly int _token;
+        // 游戏发过 CMIF 关会话消息（类型 2）：上游 ProcessRequest 当场走 CloseSessionImpl 释放了服务端会话与其对象，之后游戏关句柄
+        //   （Closed）不再释放第二遍——第二遍会再 Dispose 同一批服务对象、关已关掉的事件句柄（InvalidHandle；即时存档恢复重放关会话消息后
+        //   按日志关句柄时撞到，大乱斗 audren:u）
+        private bool _closedByMessage;
 
         public HorizonTarget(string name, ServerManagerBase manager, int token)
         {
@@ -494,6 +498,8 @@ namespace S2A.Services
                 rl[..receiveCount].CopyTo(receiveList);
             }
 
+            bool closeMessage = (*(uint*)msg & 0xFFFF) == 2;
+
             lock (_manager)
             {
                 HorizonHost.EnterHorizonThread((ulong)msg);
@@ -503,6 +509,7 @@ namespace S2A.Services
                 try
                 {
                     Result r = _manager.ProcessRequest(session, message);
+                    if (closeMessage) _closedByMessage = true;
 
                     if (r.IsSuccess)
                     {
@@ -758,6 +765,12 @@ namespace S2A.Services
 
             if (session == null)
             {
+                return;
+            }
+
+            if (_closedByMessage)
+            {
+                HorizonHost.ForgetSession(_token);
                 return;
             }
 
