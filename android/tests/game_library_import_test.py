@@ -94,7 +94,7 @@ STUBS = {
  public Object layoutParams; public void setLayoutParams(Object p){layoutParams=p;} }''',
 'android/widget/TextView.java': '''package android.widget; import android.view.View; import android.content.Context; import java.util.concurrent.*;
  public class TextView extends View { public static final BlockingQueue<String> messages=new LinkedBlockingQueue<>();
- public String text; public TextView(Context c){} public void setText(String s){text=s;messages.add(s);} public void setText(int i){} public void setTextSize(float f){} public void setTextColor(int c){} }''',
+ public volatile String text; public int textId; public TextView(Context c){} public void setText(String s){text=s;messages.add(s);} public void setText(int i){textId=i;} public void setTextSize(float f){} public void setTextColor(int c){} }''',
 'android/widget/Button.java': '''package android.widget; import android.content.Context; import android.view.View;
  public class Button extends TextView { public Button(Context c){super(c);} public void setOnClickListener(View.OnClickListener l){} }''',
 'android/widget/CompoundButton.java': '''package android.widget; import android.content.Context;
