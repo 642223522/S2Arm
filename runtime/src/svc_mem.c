@@ -428,6 +428,20 @@ static int heap_need_note(uint64_t pid, uint64_t size) {   // → 1 = 记下了�
     return f && fprintf(f, "%llu\n", (unsigned long long)size) > 0 && !fclose(f);
 }
 static _Atomic int g_heap_noted;   // 这一局 SetHeapSize 超出堆区、已记下要的堆
+static _Atomic uint64_t g_heap_noted_size;   // 这一局超出堆区时要过的最大普通堆（字节）
+static uint64_t g_lay_heap_floor;            // 这一局布局用的「上一局真要过的普通堆」（heap_need，layout_prepare 读回）
+// 堆不够、需求已记下（#947）：自动发起进程内重开一局，新局重算布局时堆区按记下的给（layout.c g_heap_floor），玩家看到多一次加载、不用再点开始。
+//   只在记下的比本局布局已按的大时重开（按它给过仍不够 = 不是堆区给小，不再重开，防循环）；不支持进程内重建（安卓）/ 被拒时回 0，
+//   调用方照旧报「需要更多内存、已记下、再点一次开始」（S2A_INIT_FAIL_E_HEAP_LEARNED）
+int s2a_mem_heap_learned_restart(void) {
+    uint64_t need = atomic_load(&g_heap_noted_size);
+    if (!atomic_load(&g_heap_noted) || need <= g_lay_heap_floor) return 0;
+    int (*restart)(void (*)(int, const char *, void *), void *) = (int (*)(void (*)(int, const char *, void *), void *))dlsym(RTLD_DEFAULT, "s2a_host_restart");
+    int rc = restart ? restart(NULL, NULL) : -2;
+    if (rc) { LOG("普通堆不够、已记下 %llu MB：进程内重开没受理（%d），改提示再点一次开始", (unsigned long long)(need >> 20), rc); return 0; }
+    LOG("普通堆不够、已记下 %llu MB（本局布局按 %llu MB）：自动进程内重开一局，新局堆区按记下的给（#947）", (unsigned long long)(need >> 20), (unsigned long long)(g_lay_heap_floor >> 20));
+    return 1;
+}
 static int alias_full_seen(uint64_t pid) { char p[1024]; FILE *f = alias_full_path(p, sizeof p, pid) ? fopen(p, "r") : NULL; if (f) fclose(f); return f != NULL; }   // 只用 fopen / fclose：安卓 VM 端点集合（check_endpoints.py）
 // 收小后游戏照旧映射到收掉的那段（它没按报的大小来，比如写死了 64 GiB）：这一局照常服务（那段在 L.alias_size 内，伸出窗口的走远端，同收小前），
 //   报一次红并记下本款，下次起局恢复原值——宁慢不写错
@@ -466,7 +480,7 @@ static void layout_prepare(const char *npdm) {
       { int s2a_snap_restoring(void); if (cap && s2a_snap_restoring()) { LOG("即时存档恢复：不按本款学到的跨度收窗口（窗口保持快照时的 %llu MB）", (unsigned long long)(ws >> 20)); cap = 0; } }
       if (ws < g_lay_need && cap && cap < ws) { LOG("地址窗口：按本款（%016llx）学到的跨度收到 %llu MB（原 %llu MB），其余还给宿主", (unsigned long long)pid, (unsigned long long)(cap >> 20), (unsigned long long)(ws >> 20)); ws = cap; } }
     int alias_gb = alias_first_hint(npdm, pid);
-    { void s2a_layout_heap_floor_set(uint64_t); uint64_t hn = heap_need_read(pid); s2a_layout_heap_floor_set(hn);   // 上一局真要过的普通堆（见 heap_need_path）
+    { void s2a_layout_heap_floor_set(uint64_t); uint64_t hn = heap_need_read(pid); s2a_layout_heap_floor_set(hn); g_lay_heap_floor = hn;   // 上一局真要过的普通堆（见 heap_need_path）
       if (hn) LOG("地址布局：本款上一局要过 %llu MB 普通堆（wire/%016llX/heap_need），堆区至少给到这么多", (unsigned long long)(hn >> 20), (unsigned long long)pid); }
     int rc = s2a_layout_compute(t, sr, mod, alias_gb, wb, ws, &L, &g_mod_base, &g_shadow_base);
     if (rc == -1) die("【红】NPDM 地址空间类型 %u（%s）暂不支持（布局只支持类型 1 = 36 位、3 = 39 位）", t, s2a_as_type_bits(t));
@@ -930,6 +944,7 @@ int s2a_mem_test_alias_hint(const char *npdm, uint64_t pid) { return alias_first
 void s2a_mem_test_map_perm(int index, uint32_t perm) { g_map[index].perm = perm; }
 void s2a_mem_test_tlr(uint64_t base, uint64_t next) { L.tlsio_base = base; g_tlr_next = next; }
 void s2a_mem_test_astype(uint32_t t) { L.as_type = t; }
+void s2a_mem_test_heap_floor(uint64_t v) { g_lay_heap_floor = v; }   // #947：本局布局按过的「上一局真要过的普通堆」
 void s2a_mem_test_reset_probes(void) { g_amask_probes = 0; }
 uint64_t s2a_mem_test_probes(void) { return g_amask_probes; }
 #ifdef __ANDROID__
@@ -1531,7 +1546,7 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
             GMU_UNLOCK();
             // 出包时堆按应用池上限给、别名优先的款按静态识别让堆——到这里说明那两条都没覆盖到（堆大小是运行时算的，D-NGH9）：记下本款要的堆，下一局布局至少给到这么多
             int noted = heap_need_note(g_lay_pid, size);
-            if (noted) atomic_store(&g_heap_noted, 1);   // 游戏随后 Break（拿到 0xD001 中止）时按「需要更多内存、已记下」收（见 Break）
+            if (noted) { atomic_store(&g_heap_noted, 1); if (size > atomic_load(&g_heap_noted_size)) atomic_store(&g_heap_noted_size, size); }   // 游戏随后 Break（拿到 0xD001 中止）时按「需要更多内存、已记下」收（见 Break）
             char b[320]; snprintf(b, sizeof b, "普通堆需要 %llu 字节，堆区只有 %llu 字节（出包缺省 / 静态识别没覆盖到这款）：%s",
                 (unsigned long long)size, (unsigned long long)heap_region(), noted ? "已记下本款要的堆，下次起局堆区按它给" : "记录写不进，下次起局仍按缺省");
             svc_fail_log(num, 0xD001, b); regs[0] = 0xD001; return 1;
@@ -2086,7 +2101,11 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
         if (num == 0x2D) unmap_ring_note(a, size);
         regs[0] = 0; return 1;
     }
-    case 0x07: session_guest_end("游戏调 ExitProcess"); s2a_host_shutdown("游戏调 ExitProcess"); for (;;) pause();
+    case 0x07:
+        // 堆不够后游戏自己退出（#947 HOT WHEELS：拿到 0xD001 打「Failed to Set MemoryHeap Size」后 ExitProcess，不走 Break）：同 Break，
+        //   能进程内重开就重开（新局按记下的堆给），不能就按「需要更多内存、已记下、再点一次开始」收，不当成正常退出
+        if (atomic_load(&g_heap_noted) && !s2a_mem_heap_learned_restart()) { LOG("游戏在堆不够后退出：本款要的堆已记下，下一局按它给"); s2a_init_failed(S2A_INIT_FAIL_E_HEAP_LEARNED); }
+        session_guest_end("游戏调 ExitProcess"); s2a_host_shutdown("游戏调 ExitProcess"); for (;;) pause();
     case 0x1E: { uint64_t s2a_det_tick(uint64_t); regs[0] = s2a_det_tick(guest_tick()); return 1; }   // GetSystemTick：x0 = 计数（无 Result）
     case 0x24: {  // GetProcessId(→x1; w1 句柄)：只认本进程 / 本线程伪句柄
         uint32_t h = (uint32_t)regs[1]; uint64_t s2a_process_id(void);
@@ -2113,7 +2132,7 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
         s2a_backtrace(regs[29]);
         // 这一局普通堆超出堆区、已记下要的堆（D-NGH9）：游戏拿到 0xD001 自己中止。告诉玩家「需要更多内存、已记下、再点一次开始」，不按崩溃说
         //   （iOS 人手局停提示页，Mac / 自动化局失败退出，Mac 启动器按同一句话报，pack/jobs/build.py）。没记下（写不进）照旧走下面
-        if (atomic_load(&g_heap_noted)) { LOG("游戏在堆不够后中止：本款要的堆已记下，下一局按它给"); s2a_init_failed(S2A_INIT_FAIL_E_HEAP_LEARNED); }
+        if (atomic_load(&g_heap_noted) && !s2a_mem_heap_learned_restart()) { LOG("游戏在堆不够后中止：本款要的堆已记下，下一局按它给"); s2a_init_failed(S2A_INIT_FAIL_E_HEAP_LEARNED); }
         session_guest_end("游戏 Break");
 #if TARGET_OS_IPHONE
         // 资源包缺 / 不全导致的 Break（10-26 测试设备2：缺 ctl/control.nacp，App 退出像闪退）：不退出，停住游戏、弹缺资源包说明页（pack_apply.c）
@@ -2449,6 +2468,7 @@ void s2a_mem_session_reset(void) {
     g_user_exception_context = g_det_arena_top = 0;
     memset(g_entropy, 0, sizeof g_entropy); g_entropy_ready = 0;
     g_lay_ok = 0; g_mod_base = g_shadow_base = g_lay_need = 0;
+    atomic_store(&g_heap_noted, 0); atomic_store(&g_heap_noted_size, 0); g_lay_heap_floor = 0;   // 进程内重开：上一局的「堆不够已记下」不带进新局
     atomic_store(&g_va_short, 0); atomic_flag_clear(&g_map_failure_seen);
     g_rl = (reslimit_t){1, 1, {0, 608, 700, 128, 894}, {0}, {0}};
     g_mem_peak = 0;
