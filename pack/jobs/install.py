@@ -2687,8 +2687,8 @@ def push_game(c, gid, ph, steps=True):
     pr = pick_pack_root(c, ph, gid)
     with packer.program_locks(c, [gid]):
         import sgrade_bf   # 着色器链变了：只重编这款的着色器库（游戏库里的 game.img / 借 Mac 版），不重出整款；没原料不挡推送（11-17 维护者定）
-        if sgrade_bf.SUPPORTED and sgrade_bf.rechain_ios(c, gid) == "unavailable":
-            trace(c, f"{gid} 着色器链更新了，但游戏库里没有 game.img、也没有 Mac 版可借：这次没重编着色器库（「建议更新」照旧提示要原件）")  # 非玩家句
+        if sgrade_bf.rechain_ios(c, gid) == "unavailable":
+            trace(c, f"{gid} 着色器链更新了，这次没重编着色器库（原因见上一行；「建议更新」照旧提示）")  # 非玩家句
         refresh_ios(c, [gid])
         with tempfile.TemporaryDirectory(dir=c.private) as w:
             progs = push_programs(c, ph.client(w), [gid], rec, team, bid, signer, {gid: pr}, keep_old=phone_busy(ph, [gid]))

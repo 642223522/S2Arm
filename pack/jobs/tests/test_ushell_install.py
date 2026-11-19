@@ -108,7 +108,7 @@ class PushGameTests(JobCase):
         layout.save_device(self.c, self.ph.key, dict(shellId="S1", bundleId=self.ph.bid, games={}))
         for result in ("updated", "unavailable"):
             order = []
-            with mock.patch.object(sgrade_bf, "SUPPORTED", True), mock.patch.object(sgrade_bf, "rechain_ios", lambda c, g, r=result: order.append(("rechain", g)) or r), \
+            with mock.patch.object(sgrade_bf, "rechain_ios", lambda c, g, r=result: order.append(("rechain", g)) or r), \
                     mock.patch("rewrite_refresh.refresh_ios", lambda c, gs: order.append(("refresh", list(gs)))), \
                     mock.patch.object(install, "push_programs", lambda *a, **k: order.append(("programs",)) or {GID: self.prog}):
                 r = install.push_game(self.c, GID, self.ph, steps=False)

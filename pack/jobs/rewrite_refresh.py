@@ -562,7 +562,7 @@ def refresh_ios(c, games, ignore_rewriter=False):
 def _refresh_bf_ios(c, games):
     """老包直连库缺 _bf 的款：整份重出、覆盖层进资源包（put_game 随后按资源包号只推新增的文件）。取不到原料的点名、记 bfMissing（「更新 iPhone」不再因它重组容器，升级页照样再试）"""
     import sgrade_bf
-    todo = [g for g in games if sgrade_bf.SUPPORTED and sgrade_bf.stale((layout.game_info(c, g).get("ios") or {}).get("bfGen"))]
+    todo = [g for g in games if sgrade_bf.stale((layout.game_info(c, g).get("ios") or {}).get("bfGen"))]
     done, missing = [], []
     names = {x["id"].upper(): x.get("name") or x["id"] for x in c.catalog()["games"]} if todo else {}
     for i, g in enumerate(todo, 1):
