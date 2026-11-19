@@ -1740,6 +1740,9 @@
   "s2arm.env.widget.group": "ホーム画面ウィジェット",
   "s2arm.env.widget.title": "iPhone にホーム画面ウィジェットも入れる",
   "s2arm.env.widget.detail": "iPhone のホーム画面にゲーム機の形のウィジェットを置き、最近遊んだゲームとよく遊ぶゲームを表示します。カバーをタップすると起動します。無料の Apple ID では、新しくインストールするたびに App ID を 1 つ多く使います（7 日間で 10 個まで）",
+  "s2arm.env.fullscreen.group": "ゲームウインドウ",
+  "s2arm.env.fullscreen.title": "ゲーム起動時にフルスクリーンにする",
+  "s2arm.env.fullscreen.detail": "オンにすると、すべてのゲーム（今後追加するものを含む）がフルスクリーンで起動します。ゲームごとにフルスクリーンを設定している場合はその設定に従います。",
   "home.card.daysLeft": "残り %d 日",
   "home.card.expired": "期限切れ"
 }

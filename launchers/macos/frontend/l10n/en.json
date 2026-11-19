@@ -1773,6 +1773,9 @@
   "s2arm.env.widget.group": "Home Screen widget",
   "s2arm.env.widget.title": "Include the Home Screen widget on iPhone",
   "s2arm.env.widget.detail": "A console-style widget for your iPhone Home Screen that shows your latest and most-played games; tap a cover to play. With a free Apple ID, each new install uses one more App ID (10 per 7 days).",
+  "s2arm.env.fullscreen.group": "Game window",
+  "s2arm.env.fullscreen.title": "Start games in full screen",
+  "s2arm.env.fullscreen.detail": "When on, every game (including ones you add later) opens in full screen; a game with its own full-screen setting keeps that setting.",
   "home.card.daysLeft": "%d days left",
   "home.card.expired": "Expired"
 }

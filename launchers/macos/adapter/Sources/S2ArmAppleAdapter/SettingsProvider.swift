@@ -54,6 +54,8 @@ public final class SettingsProvider {
     private var cloud: String?
     /// 「装到 iPhone 时带主屏小组件」（11-16，缺省开；玩家关掉才记 homeWidget: false）：装机 / 更新 / 导出请求里关掉时带 widget: false
     private var widget: Bool
+    /// 「启动游戏时自动全屏」（#575，缺省关；打开才记 launchFullscreen: true）：起局请求里带 launchFullscreen，作业层给宿主全局缺省，单款显式设过的照单款
+    private var fullscreen: Bool
 
     public init(client: JobClient, store: URL? = nil) {
         self.client = client
@@ -64,6 +66,7 @@ public final class SettingsProvider {
         ai = Self.object(self.store)?["aiControl"] as? Bool ?? false
         cloud = Self.object(self.store)?["cloudSavesFolder"] as? String
         widget = Self.object(self.store)?["homeWidget"] as? Bool ?? true
+        fullscreen = Self.object(self.store)?["launchFullscreen"] as? Bool ?? false
     }
 
     private static func object(_ url: URL) -> [String: Any]? {
@@ -87,6 +90,13 @@ public final class SettingsProvider {
     public func setHomeWidget(_ on: Bool) throws {
         let before = lock.withLock { () -> Bool in let b = widget; widget = on; return b }
         do { try write() } catch { lock.withLock { widget = before }; throw JobClientError("「装到 iPhone 时带主屏小组件」的开关没能写进磁盘（\(error.localizedDescription)）。") }
+    }
+
+    public var launchFullscreen: Bool { lock.withLock { fullscreen } }
+
+    public func setLaunchFullscreen(_ on: Bool) throws {
+        let before = lock.withLock { () -> Bool in let b = fullscreen; fullscreen = on; return b }
+        do { try write() } catch { lock.withLock { fullscreen = before }; throw JobClientError("「启动游戏时自动全屏」的开关没能写进磁盘（\(error.localizedDescription)）。") }
     }
 
     public var cloudSavesFolder: String? { lock.withLock { cloud } }
@@ -130,6 +140,7 @@ public final class SettingsProvider {
         if lock.withLock({ ai }) { file["aiControl"] = true }
         if let folder = lock.withLock({ cloud }) { file["cloudSavesFolder"] = folder }
         if !lock.withLock({ widget }) { file["homeWidget"] = false }
+        if lock.withLock({ fullscreen }) { file["launchFullscreen"] = true }
         let data = try JSONSerialization.data(withJSONObject: file, options: [.sortedKeys])
         try data.write(to: store, options: .atomic)
     }

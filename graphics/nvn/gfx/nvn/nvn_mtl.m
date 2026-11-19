@@ -2941,7 +2941,10 @@ typedef struct { uint64_t pool; int64_t off; nvn_texdesc d; } alias_key;
 // texture lacks is added in place (tex_mtl → tex_upgrade)
 enum { ALIAS_USE_FLAGS = NVN_TEXTURE_FLAGS_IMAGE | NVN_TEXTURE_FLAGS_COMPRESSIBLE | NVN_TEXTURE_FLAGS_ADAPTIVE_ZCULL | NVN_TEXTURE_FLAGS_DEPTH16_PREFER_FAST_CLEAR | NVN_TEXTURE_FLAGS_ZCULL_SUPPORT_STENCIL };
 static int mtl_fmt_depth(MTLPixelFormat f);
-static void alias_key_of(alias_key *k, const tex_t *t) { memset(k, 0, sizeof *k); k->pool = (uint64_t)(uintptr_t)t->pool; k->off = t->off; k->d = t->d; k->d.flags &= ~(uint32_t)ALIAS_USE_FLAGS; }
+// Sample count 0 and 1 both mean single-sampled (nvn_tex.h) and lay the storage out the same: the key takes 1 for both. 01001E9023920000 builds, over one storage, the object its
+//   compute pass writes as an image and the object its render pass samples, the two differing only so: keyed apart they were two Metal textures, the reads saw a texture nothing
+//   wrote (exposure 1x1, two 8x8x64 volumes, two 32^3 sky tables) and its 3D scene came out black on iOS (#427, cause found by an outside contributor)
+static void alias_key_of(alias_key *k, const tex_t *t) { memset(k, 0, sizeof *k); k->pool = (uint64_t)(uintptr_t)t->pool; k->off = t->off; k->d = t->d; k->d.flags &= ~(uint32_t)ALIAS_USE_FLAGS; if (k->d.samples == 0) k->d.samples = 1; }
 static nvn_hmap g_alias = {.klen = sizeof(alias_key)};
 static nvn_hmap g_alias_seen = {.klen = sizeof(alias_key)};   // key → g_fence + 1 at its last lookup or creation (alias_take_over spares entries looked up lately)
 static nvn_hmap g_alias_wrote = {.klen = sizeof(alias_key)};   // key → g_fence + 1 at its last GPU write (gpw_mark), under g_smu
@@ -3025,6 +3028,15 @@ static void alias_take_over(const alias_key *nk) {
     for (uint32_t i = 0; i < g_alias.cap && n < 16; i++) {
         if (!g_alias.vals[i]) continue;
         alias_key k; memcpy(&k, g_alias.keys + (size_t)i * g_alias.klen, sizeof k);
+        if (k.pool == nk->pool && k.off == nk->off && memcmp(&k, nk, sizeof k)) {   // same storage start, another key: name the fields that keep them two textures (#427: what the key should leave out)
+            static _Atomic int nm; if (atomic_fetch_add(&nm, 1) < 32) { const nvn_texdesc *a = &k.d, *b = &nk->d;
+                MLOG("[alias] near-miss pool=%#llx off=%#llx a=[t%d f%d %ux%ux%u lv%u s%d stride%u pkg%d flags%#x] b=[t%d f%d %ux%ux%u lv%u s%d stride%u pkg%d flags%#x] differ=%s%s%s%s%s%s%s%s%s",
+                     (unsigned long long)k.pool, (unsigned long long)k.off, a->target, a->format, a->width, a->height, a->depth, a->levels, a->samples, a->stride, a->pkg_layout, a->flags,
+                     b->target, b->format, b->width, b->height, b->depth, b->levels, b->samples, b->stride, b->pkg_layout, b->flags,
+                     a->target != b->target ? "target " : "", a->format != b->format ? "format " : "", a->width != b->width || a->height != b->height || a->depth != b->depth ? "size " : "",
+                     a->levels != b->levels ? "levels " : "", a->samples != b->samples ? "samples " : "", a->stride != b->stride ? "stride " : "", a->pkg_layout != b->pkg_layout ? "pkg " : "",
+                     a->flags != b->flags ? "flags " : "", "");
+            } }
         if (k.pool != nk->pool || !memcmp(&k, nk, sizeof k) || k.off >= hi) continue;
         nvn_texlayout kl; nvn_tex_layout(&k.d, &kl);
         uint64_t seen = (uint64_t)(uintptr_t)nvn_hm_get(&g_alias_seen, &k);
