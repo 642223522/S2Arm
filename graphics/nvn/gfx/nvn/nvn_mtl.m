@@ -406,10 +406,12 @@ static inline void stl_add(int k, uint64_t t0) { atomic_fetch_add_explicit(&g_st
 static _Atomic uint64_t g_stl_cpu_tex, g_stl_gpu_tex, g_stl_flush_tex;
 static uint64_t g_stl_radd_b[3], g_stl_rc_b[3], g_stl_radd_n[3], g_stl_rm_n;   // residency bytes added (under g_res_mu) by kind: 0 texture, 1 private buffer (staging), 2 shared buffer (zero-copy sources, CPU staging); rc: of them, made resident by commits this frame   // pkg_upload_ textures that took the CPU path / the GPU path; up_flush calls that committed a batch
 static char g_sp_heap_key;   // Metal 稀疏贴图 → 它的稀疏堆（nvn_sparse_tex.inc）
+static char g_rh_owner_key;   // 回收堆里的贴图 → 它的堆主（NvRecycledHeap，rh_place）：驻留集收的是堆，贴图本身不进不出
 static void res_add_at_body(id<MTLResource> r, int line);
 static void res_add_at(id<MTLResource> r, int line) { uint64_t t0 = stl_now(); @autoreleasepool { res_add_at_body(r, line); } stl_add(STL_RADD, t0); }
 static void res_add_at_body(id<MTLResource> r, int line) {
     if (!r) return;
+    if (objc_getAssociatedObject(r, &g_rh_owner_key)) return;   // 回收堆里的贴图：堆从建起就常驻（rh_heap），到 rh_trim 才出
     pthread_mutex_lock(&g_res_mu);
     if (!g_res_objects) g_res_objects = [NSHashTable weakObjectsHashTable];
     if ([g_res_objects containsObject:r]) { pthread_mutex_unlock(&g_res_mu); return; }   // already resident (a shared texture resolved again): marking the set dirty would cost a commit that changes nothing
@@ -432,6 +434,7 @@ static void res_remove_body(id<MTLResource> r);
 static void res_remove(id<MTLResource> r) { @autoreleasepool { res_remove_body(r); } }
 static void res_remove_body(id<MTLResource> r) {
     if (!r) return;
+    if (objc_getAssociatedObject(r, &g_rh_owner_key)) return;   // 同上：贴图放掉时堆回到等待表（rh_wait），仍常驻
     pthread_mutex_lock(&g_res_mu);
     if (![g_res_objects containsObject:r]) { pthread_mutex_unlock(&g_res_mu); return; }
     if (pool_pin_retire((__bridge void *)r)) { pthread_mutex_unlock(&g_res_mu); return; }
@@ -443,6 +446,91 @@ static void res_remove_body(id<MTLResource> r) {
       rs_live_bump(line, -1, -(int64_t)r.allocatedSize);
       int k = 0; while (k < RS_SITES - 1 && g_rs_rmsite[k].line && g_rs_rmsite[k].line != line) k++; g_rs_rmsite[k].line = line; g_rs_rmsite[k].n++; }
     pthread_mutex_unlock(&g_res_mu);
+}
+// ---------- 回收贴图堆（马车世界缺口 ③，照上游参考实现（MIT）707cac95 rh_*） ----------
+// 动态分辨率每隔几帧就给渲染目标换个尺寸，每个新尺寸都是一张新 Metal 贴图、一次新分配、一次驻留集增删（上游读数：一场比赛每 300 帧上千张，驻留集加 5–6 GB）。
+// Metal 的贴图布局与 NVN 不同，渲染目标不能像主机上那样共用池内存；能留下来的是宿主已经放掉的贴图的内存：GPU 专用池里、GPU 能画能写的贴图各建在自己的放置堆里（rh_texture），
+// 贴图放掉时（延迟释放：用过它的提交都做完之后，defer_drain）堆进等待表、仍常驻，留给下一张装得下的贴图。新堆比第一张贴图大八分之一，等待的堆给不小于自己三分之二的贴图用
+// （取装得下的最小那个），所以长大一档尺寸（2 MB 附近约 10%）的目标能放进它前一帧放掉的堆。新贴图照新分配一样填（tex_init_fill 或清零），读到什么与复用无关；
+// 堆里那段内存只在旧贴图最后一次使用做完之前属于它，与 Metal 自己放掉再分出去的内存同理，不加别名冲刷。等了 RH_IDLE_NS 的堆、以及等待总量超过 RH_CAP 时最老的堆，
+// 在提交开头出驻留集并放掉（rh_trim）。块压缩格式（游戏拷进来的素材，不带渲染目标用途）不进堆、照旧精确分配。只在 Metal 4：放置堆里的贴图没有自动冒险跟踪，Metal 3 路靠它。
+// DM_NVN_RT_RECYCLE=0 回每张贴图自己一次分配（对照）
+enum { RH_CAP = 256u << 20 }; static const uint64_t RH_IDLE_NS = 3000000000ull;
+typedef struct { void *heap; uint64_t size, t; } rh_ent;   // heap：持有（CFBridgingRetain）；t：开始等待的时刻
+static os_unfair_lock g_rh_lk = OS_UNFAIR_LOCK_INIT; static rh_ent *g_rh; static unsigned g_rh_n, g_rh_cap; static uint64_t g_rh_bytes;
+static _Atomic uint64_t g_rh_made, g_rh_reused, g_rh_trimmed;   // 内存读数行
+static int rh_on(void) { static int m = -1; if (m < 0) { const char *e = getenv("DM_NVN_RT_RECYCLE"); m = !(e && *e == '0'); } return m && !g_m3; }
+static void rh_res(id<MTLHeap> h, int add) {   // 堆进 / 出驻留集（排队，下一次 res_commit 生效；出集的堆由队列持有到那次 commit）
+    pthread_mutex_lock(&g_res_mu); res_q_put((id<MTLAllocation>)h, add); g_res_dirty = 1;
+    if (add) { g_stl_radd_b[0] += h.size; g_stl_radd_n[0]++; } else g_stl_rm_n++;
+    pthread_mutex_unlock(&g_res_mu);
+}
+// 贴图放掉了，它的堆等下一张装得下的贴图。在贴图最后一个引用消失处跑（defer_drain：提交线程或完成回调）
+static void rh_wait(id<MTLHeap> heap) {
+    if (!heap) return;
+    rh_ent e = {(void *)CFBridgingRetain(heap), heap.size, clock_gettime_nsec_np(CLOCK_MONOTONIC)};
+    os_unfair_lock_lock(&g_rh_lk);
+    if (g_rh_n == g_rh_cap) { unsigned c = g_rh_cap ? 2 * g_rh_cap : 64; rh_ent *q = realloc(g_rh, c * sizeof *q); if (!q) { MLOG("FATAL recycled texture heaps: out of memory"); abort(); } g_rh = q; g_rh_cap = c; }
+    g_rh[g_rh_n++] = e; g_rh_bytes += e.size;
+    os_unfair_lock_unlock(&g_rh_lk);
+}
+@interface NvRecycledHeap : NSObject { @public id<MTLHeap> heap; } @end
+@implementation NvRecycledHeap
+- (void)dealloc { rh_wait(heap); }
+@end
+// 至少 size 字节的放置堆：等待表里不超过 1.5 倍的最小那个，没有就新建一个大八分之一的（建时进驻留集）。Metal 建不出来给 nil
+static id<MTLHeap> rh_heap(uint64_t size, MTLStorageMode sm, MTLCPUCacheMode cm, MTLHazardTrackingMode hm, int *reused) {
+    *reused = 0;
+    if (!size) return nil;
+    uint64_t top = size + size / 2; void *got = NULL;
+    os_unfair_lock_lock(&g_rh_lk);
+    unsigned best = g_rh_n;
+    for (unsigned i = 0; i < g_rh_n; i++) {
+        if (g_rh[i].size < size || g_rh[i].size > top || (best < g_rh_n && g_rh[i].size >= g_rh[best].size)) continue;
+        id<MTLHeap> h = (__bridge id<MTLHeap>)g_rh[i].heap;
+        if (h.storageMode != sm || h.cpuCacheMode != cm) continue;   // （放进去的贴图随堆的冒险跟踪：放置堆报不跟踪，与描述缺省一样）
+        best = i;
+    }
+    if (best < g_rh_n) { got = g_rh[best].heap; g_rh_bytes -= g_rh[best].size; g_rh[best] = g_rh[--g_rh_n]; }
+    os_unfair_lock_unlock(&g_rh_lk);
+    if (got) { *reused = 1; atomic_fetch_add(&g_rh_reused, 1); return CFBridgingRelease(got); }
+    MTLHeapDescriptor *hd = [MTLHeapDescriptor new]; hd.type = MTLHeapTypePlacement; hd.size = size + size / 8;
+    hd.storageMode = sm; hd.cpuCacheMode = cm; hd.hazardTrackingMode = hm;
+    id<MTLHeap> h = [g_dev newHeapWithDescriptor:hd];
+    if (h) { atomic_fetch_add(&g_rh_made, 1); rh_res(h, 1); }
+    return h;
+}
+// 这个描述的贴图放进回收内存（堆开头）。开关关 / 放不进去给 nil；从等待表取来的堆没用上就回去等，新建的没用上就出驻留集放掉
+static id<MTLTexture> rh_place(MTLTextureDescriptor *d) {
+    if (!rh_on() || d.storageMode != MTLStorageModePrivate || d.textureType == MTLTextureTypeTextureBuffer) return nil;
+    MTLSizeAndAlign need = [g_dev heapTextureSizeAndAlignWithDescriptor:d];
+    int reused = 0; id<MTLHeap> heap = rh_heap(need.size, d.storageMode, d.cpuCacheMode, d.hazardTrackingMode, &reused);
+    id<MTLTexture> mt = heap ? [heap newTextureWithDescriptor:d offset:0] : nil;
+    if (!mt) { if (heap) { if (reused) rh_wait(heap); else rh_res(heap, 0); } return nil; }
+    NvRecycledHeap *owner = [NvRecycledHeap new]; owner->heap = heap;
+    objc_setAssociatedObject(mt, &g_rh_owner_key, owner, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return mt;
+}
+// GPU 专用池里、GPU 能画能写的贴图进回收内存：CPU 从不写它的存储，新贴图照新分配一样由宿主手里的内容填（tex_init_fill）或清零。NVN 不给渲染目标标志位
+// （一款赛车游戏换尺寸的目标有的不带 COMPRESSIBLE），所以按宿主给它的 Metal 用途判：块压缩格式不带渲染目标用途，照旧自己精确分配
+static id<MTLTexture> rh_texture(const tex_t *t, MTLTextureDescriptor *d) {
+    if (!t->pool || !(t->pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS) || !(d.usage & (MTLTextureUsageRenderTarget | MTLTextureUsageShaderWrite))
+        || (t->d.flags & (NVN_TEXTURE_FLAGS_DISPLAY | NVN_TEXTURE_FLAGS_VIDEO_DECODE | NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_SPARSE | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET))) return nil;
+    return rh_place(d);
+}
+// 提交开头：等了 RH_IDLE_NS 的堆、等待总量超过 RH_CAP 时最老的堆，出驻留集并放掉（一次至多 64 个）
+static void rh_trim(void) {
+    if (!g_rh_n) return;
+    uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC); void *drop[64]; unsigned nd = 0;
+    os_unfair_lock_lock(&g_rh_lk);
+    while (g_rh_n && nd < 64) {
+        unsigned old = 0; for (unsigned i = 1; i < g_rh_n; i++) if (g_rh[i].t < g_rh[old].t) old = i;
+        if (now - g_rh[old].t < RH_IDLE_NS && g_rh_bytes <= RH_CAP) break;
+        drop[nd++] = g_rh[old].heap; g_rh_bytes -= g_rh[old].size; g_rh[old] = g_rh[--g_rh_n];
+    }
+    os_unfair_lock_unlock(&g_rh_lk);
+    for (unsigned i = 0; i < nd; i++) { id<MTLHeap> h = CFBridgingRelease(drop[i]); rh_res(h, 0); }
+    if (nd) atomic_fetch_add(&g_rh_trimmed, nd);
 }
 // ---------- Metal 3 argument tables (#279 D3-3) ----------
 // Metal 4 binds a buffer by its GPU address (MTL4ArgumentTable setAddress) and a texture / sampler by its resource ID; the old encoders take the objects (setVertexBuffer:offset:atIndex: …).
@@ -1535,6 +1623,7 @@ void nvn_be_sub_begin(void) {
     mtl_init(); g_sub_serial++; g_pkg_epoch++; wd_sub_begin(); g_seg = 0; seg_clk_put(g_sclk); g_sclk = NULL; rc_retire(); g_rc_npend = 0; g_rc_skip = 0;
     up_pool_trim();   // the staging pool's idle blocks go 5 s after their last use, whether or not anything uploads again
     defer_drain();
+    rh_trim();   // 回收贴图堆：等太久 / 超量的出驻留集
     defer_reset();
     void treg_sweep_gone(void); treg_sweep_gone();
     warm_claim();
@@ -5642,7 +5731,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
         MTLTextureDescriptor *d = tex_desc(t, 0);
         if (!d) return nil;
         uint64_t stl0 = stl_now();
-        mt = [g_dev newTextureWithDescriptor:d];
+        mt = rh_texture(t, d); if (!mt) mt = [g_dev newTextureWithDescriptor:d];   // 能进回收内存的先进（rh_texture）
         stl_add(STL_GNEW, stl0);
         if (!mt) { RED_ONCE(2, "failed to create MTLTexture ser=%llu %ux%u format %#x target %d samples %d levels %u", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, t->d.target, t->d.samples, t->d.levels); return nil; }
         res_add(mt); stl0 = stl_now(); int filled_ = tex_init_fill(t, mt); if (!filled_) tex_zero_fill(mt); stl_add(STL_FILL, stl0);
@@ -5833,6 +5922,8 @@ void nvn_be_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
     snprintf(avail, sizeof avail, "%llu MB", (unsigned long long)(os_proc_available_memory() >> 20));
 #endif
     MLOG("memory up to frame %llu: resident %llu MB, GPU allocated %llu MB (counts zero-copy pool buffers at full length), deferred-release queue %lu, residency set %lu, serial objects %u, memory pools %d (resident %d, %llu MB pinned whole by the residency set; peak %d / tracking table capacity %d; freed but alive %lu, %llu MB), shared textures %u, %llu MB (%u of them unreferenced, %llu MB, GPU-written %llu MB, looked up in the last %d submissions %llu MB, display / video %llu MB; textures by serial %llu MB; evicted with pools %llu, on storage takeover %llu, unreferenced released %llu, %llu MB (never GPU-written %llu, storage rewritten since %llu, for the low-region ledger %llu) in total), texture re-uploads %llu in total, per-frame arena blocks created %llu in total (%llu MB; segments cut for scratch %llu, waits for a block %llu), finalized textures still referenced %u (small table, %llu put in total, %llu held to the end of their submission past it, %llu resolved to shared textures without it); headroom to the system memory limit %s", frame, rss_mb, gpu, nd, nr, ns, live, pres, (unsigned long long)(pres_b >> 20), peak, cap, dead_n, dead_mb, ashared, (unsigned long long)(ash_b >> 20), aorph, (unsigned long long)(aorph_b >> 20), (unsigned long long)(aorph_w >> 20), (int)ALIAS_IDLE, (unsigned long long)(aorph_recent >> 20), (unsigned long long)(aorph_dv >> 20), (unsigned long long)(ser_b >> 20), (unsigned long long)g_alias_evicted, (unsigned long long)g_alias_taken, (unsigned long long)(g_alias_orph_cache + g_alias_orph_rw + g_alias_orph_valve), (unsigned long long)((g_alias_orph_cache_b + g_alias_orph_rw_b + g_alias_orph_valve_b) >> 20), (unsigned long long)g_alias_orph_cache, (unsigned long long)g_alias_orph_rw, (unsigned long long)g_alias_orph_valve, (unsigned long long)g_pkg_reuploads, (unsigned long long)g_arena_made, (unsigned long long)(arena_bytes() >> 20), (unsigned long long)g_arena_cuts, (unsigned long long)arena_waits(), nghost, (unsigned long long)ghost_puts, (unsigned long long)ghost_kept, (unsigned long long)ghost_shared, avail);
+    { os_unfair_lock_lock(&g_rh_lk); unsigned rn = g_rh_n; uint64_t rb = g_rh_bytes; os_unfair_lock_unlock(&g_rh_lk);   // 回收贴图堆（rh_*）
+      MLOG("recycled texture heaps up to frame %llu: made %llu, reused %llu, trimmed %llu in total; waiting %u, %llu MB%s", frame, (unsigned long long)g_rh_made, (unsigned long long)g_rh_reused, (unsigned long long)g_rh_trimmed, rn, (unsigned long long)(rb >> 20), rh_on() ? "" : " (off)"); }
     {   uint64_t k[8]; nvn_res_by_kind(k);
         MLOG("residency set by kind up to frame %llu: textures %llu, %llu MB; GPU-private buffers %llu, %llu MB; shared buffers (mostly zero-copy memory pools: the game's own memory) %llu, %llu MB; other %llu, %llu MB",
              frame, (unsigned long long)k[0], (unsigned long long)(k[1] >> 20), (unsigned long long)k[2], (unsigned long long)(k[3] >> 20),
