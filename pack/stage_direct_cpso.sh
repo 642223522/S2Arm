@@ -17,7 +17,7 @@ PLAT=${S2A_PACK_PLAT:-ios}
 skip() { echo "🟡 $G 计算管线归档不出：$1，跳过"; exit 0; }
 [ "$PLAT" = ios ] || [ "$PLAT" = macos ] || skip "出包平台 ${PLAT} 不是苹果"
 D=$CUR/shaders/direct
-LIBS=$(for x in "$D"/b-*/lib.idx; do case $x in *-vk/lib.idx) ;; *) [ -f "$x" ] && echo "$x";; esac; done)
+LIBS=; for x in "$D"/b-*/lib.idx; do [ -f "$x" ] && [ "${x%-vk/lib.idx}" = "$x" ] && LIBS="$LIBS$x "; done   # 不在 $( ) 里写 case：bash 3.2 把分支的 ) 当成命令替换结束
 [ -n "$LIBS" ] || skip "没有 NVN Metal 直连库容器（Vulkan / OpenGL / 运行时现编空库）"
 soft() { echo "【黄】$G 计算管线归档这次没出：$1；包照常出，缺的是计算着色器首遇免现编（首遇照旧现编），下次刷新重试"; exit 0; }
 [ "$(uname -s)" = Darwin ] || soft "本机不是 Mac，没有 Metal 工具链"
