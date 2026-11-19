@@ -42,7 +42,7 @@
    },
    "how": {
     "zh-Hans": "先在电脑上把 S2Arm 装到手机，以后哪款想玩就把哪款「**推到 iPhone**」。S2Arm 更新时**不用重新推游戏**，存档也都在。",
-    "en": "Install S2Arm on your phone from the computer, then **Send to iPhone** whichever game you want to play. Updating S2Arm **doesn't mean sending games again**, and your saves stay."
+    "en": "Install S2Arm on your phone from the computer, then **Push to iPhone** whichever game you want to play. Updating S2Arm **doesn't mean sending games again**, and your saves stay."
    },
    "where": {
     "zh-Hans": "iPhone 主屏上的 S2Arm 图标，打开就是游戏库。",
@@ -55,24 +55,24 @@
     "en": "feature/v060-send-en.jpg"
    },
    "kicker": {
-    "zh-Hans": "新的出包方式 · 两个按钮各管一件事",
-    "en": "A new way to add games · One button for each job"
+    "zh-Hans": "推游戏的新方式 · 两个入口各管一件事",
+    "en": "A new way to add games · One place for each job"
    },
    "title": {
-    "zh-Hans": "「一键出包」拆成了两步：装 App、推游戏",
-    "en": "One-click export is now two steps: install the app, send the game"
+    "zh-Hans": "装 App 和推游戏分开了",
+    "en": "Installing the app and sending games are now separate"
    },
    "what": {
-    "zh-Hans": "以前一键出包会把游戏和 App 打成一个包；现在拆开了：**手机条只管 S2Arm 这个 App**（安装、续签、更新），每款游戏的「**推到 iPhone**」**只管这一款**。",
-    "en": "Export used to build the game and the app into one package. Now **the phone bar handles the S2Arm app** (install, renew, update) and each game's **Send to iPhone handles just that game**."
+    "zh-Hans": "以前出包会把游戏和 App 打成一个包；现在 **S2Arm 这个 App 只装一次**，每款游戏单独「**推到 iPhone**」，只推这一款。",
+    "en": "Export used to build the game and the app into one package. Now **the S2Arm app is installed once** and each game is sent on its own with **Push to iPhone**."
    },
    "how": {
-    "zh-Hans": "第一次：连上手机，点手机条上的「安装 S2Arm」。之后：选一款游戏，点「推到 iPhone」。快到 7 天时，手机条会提示「续签」，点一下就行，游戏不用重推。",
-    "en": "The first time, connect your phone and click Install S2Arm on the phone bar. After that, pick a game and click Send to iPhone. When the 7 days are nearly up, the phone bar asks you to renew; one click, no games to send again."
+    "zh-Hans": "第一次：连上手机，在游戏库第一格的「S2Arm」里点「**安装 S2Arm**」。之后：选一款游戏，点「**推到 iPhone**」。快到 7 天时，同一处的按钮变成「**续签 S2Arm**」，点一下就行，游戏不用重推。",
+    "en": "The first time, connect your phone and click **Install S2Arm** on the S2Arm card at the start of the library. After that, pick a game and click **Push to iPhone**. When the 7 days are nearly up, the same button becomes **Renew S2Arm**; one click, no games to send again."
    },
    "where": {
-    "zh-Hans": "原来的「一键出包」按钮，现在就是**游戏页上的「推到 iPhone」**；装 App、续签都在**启动器上方的手机条**里。",
-    "en": "The old one-click export button is now **Send to iPhone on the game's page**; installing and renewing the app are on **the phone bar at the top of the launcher**."
+    "zh-Hans": "装 App、续签、更新：游戏库**第一格的「S2Arm」**。推游戏：每款游戏下面的「**推到 iPhone**」。",
+    "en": "Installing, renewing and updating the app: **the S2Arm card at the start of the library**. Sending a game: **Push to iPhone** under each game."
    }
   },
   {
@@ -100,8 +100,8 @@
     "en": "From 0.6.0 there is one S2Arm app for all your games. The games, saves and game data already on your phone **all stay**; no exporting again, no sending game data again."
    },
    "how": {
-    "zh-Hans": "① Mac 玩家先在 S2Arm 里**用 Apple ID 登录一次**。② 连上手机，点手机条上的「**更新 S2Arm**」：先把各款存档备份到电脑，再换成新 App。③ 装完同一页列出这台手机上要更新的旧游戏，默认全勾，点「**更新这 N 款**」，每款约 1–2 分钟；旧版做的着色器库电脑会顺带重做，第一次要几分钟到几十分钟。**不用点 S 级优化**。",
-    "en": "① On a Mac, **sign in with your Apple ID once** in S2Arm. ② Connect your phone and click **Update S2Arm** on the phone bar: your saves are backed up to the computer first, then the new app goes on. ③ Right after, the same page lists the old games on this phone, all checked: click **Update these N games**, about 1–2 minutes each. Shader libraries built by the old version are rebuilt by the computer too; the first time takes from a few minutes to a few tens of minutes. **No need for S-grade optimization.**"
+    "zh-Hans": "① Mac 玩家先在 S2Arm 里**用 Apple ID 登录一次**。② 连上手机，在游戏库第一格的「S2Arm」里点「**更新 S2Arm**」：先把各款存档备份到电脑，再换成新 App。③ 装完同一页列出这台手机上要更新的旧游戏，默认全勾，点「**更新这 N 款**」，每款约 1–2 分钟；旧版做的着色器库电脑会顺带重做，第一次要几分钟到几十分钟。**不用点 S 级优化**。",
+    "en": "① On a Mac, **sign in with your Apple ID once** in S2Arm. ② Connect your phone and click **Update S2Arm** on the S2Arm card at the start of the library: your saves are backed up to the computer first, then the new app goes on. ③ Right after, the same page lists the old games on this phone, all checked: click **Update these N games**, about 1–2 minutes each. Shader libraries built by the old version are rebuilt by the computer too; the first time takes from a few minutes to a few tens of minutes. **No need for S-grade optimization.**"
    },
    "where": {
     "zh-Hans": "第 ③ 步做完之前，这些游戏在手机上显示「**在电脑上更新一次**」，点不进去，但没丢。别的电脑装的另起一行列出，到那台电脑上更新。用 AltStore 等自己签名的：装新 S2Arm 覆盖旧的，再把每款 .s2arm 导入一次。",
@@ -155,20 +155,20 @@
     "en": "Easier file management"
    },
    "title": {
-    "zh-Hans": "每款游戏一份文件，占多少一眼看清",
-    "en": "One copy per game, and you can see what takes the space"
+    "zh-Hans": "每款游戏占多少，一眼看清",
+    "en": "See what each game takes on your Mac"
    },
    "what": {
-    "zh-Hans": "每款游戏只占一份资源，不再重复存好几份；游戏、存档、快照各占多少空间，都列在一页里。",
-    "en": "Each game keeps one copy of its files instead of several; games, saves and snapshots are listed on one page with their sizes."
+    "zh-Hans": "每款游戏的占用分项列出：**着色器与出包缓存、Mac 运行版本、已出好的 iPhone 包**，各占多少一眼看清；存档和日志只显示大小、不会被删。",
+    "en": "Each game's space is broken down: **shaders and build cache, the Mac build, ready iPhone builds**, each with its size. Saves and logs only show their size and are never deleted."
    },
    "how": {
-    "zh-Hans": "空间不够时打开「释放空间」，挑不玩的删掉。想把游戏带到另一台设备，点「导出 .s2arm」，把文件发过去导入就行。",
-    "en": "When space runs low, open Free up space and remove what you no longer play. To take a game to another device, click Export .s2arm and import the file there."
+    "zh-Hans": "空间不够时，勾上不要的项点「释放」。删了的部分下次需要时会重新准备，手机上已装的游戏不受影响。",
+    "en": "When space runs low, check what you don't need and click Free up. Deleted parts are prepared again when needed; games already on your phone keep working."
    },
    "where": {
-    "zh-Hans": "启动器游戏库里的「释放空间」；导出在每款游戏页的更多操作里。",
-    "en": "Free up space in the launcher's library; Export is in each game's More menu."
+    "zh-Hans": "每款游戏的「…」菜单里的「**释放空间**」；旁边的「存储总览」看全部游戏。",
+    "en": "**Free up space** in each game's ••• menu; Storage overview next to it shows every game."
    }
   },
   {
@@ -185,16 +185,16 @@
     "en": "No more hitch when you enter a new area"
    },
    "what": {
-    "zh-Hans": "以前第一次走进一个新场景，画面常会顿一下；那是在临时准备画面要用的东西。现在推游戏的时候就准备好了。",
-    "en": "The first time you walked into a new area, the picture often stuttered while the game got its graphics ready. Now that's done when you send the game."
+    "zh-Hans": "出包时多做一步「**编译着色器库**」：把这款游戏的着色器提前编成苹果显卡的格式，进游戏时不用现编，第一次走进新场景卡一下的情况更少。",
+    "en": "Exporting includes **Compile shader library**: the game's shaders are compiled for Apple graphics ahead of time, so they don't have to be compiled while you play and new areas hitch less the first time."
    },
    "how": {
-    "zh-Hans": "什么都不用做。照常推游戏，会多花一点时间准备，之后第一次玩也顺。",
-    "en": "Nothing to do. Send games as usual; it takes a little longer, and the first play is smooth."
+    "zh-Hans": "什么都不用做，照常出包。大游戏这一步要多花一些时间。",
+    "en": "Nothing to do; export as usual. Big games take a bit longer on this step."
    },
    "where": {
-    "zh-Hans": "所有新推的游戏都自动带上。之前推过的游戏，重新推一次就有了。",
-    "en": "Every game you send from now on. For games sent before, send them again."
+    "zh-Hans": "出包进度里的「编译着色器库」。从 0.5 升上来的游戏，点「更新这 N 款」时电脑会按新版重编。",
+    "en": "The Compile shader library step in the export progress. For games from 0.5, the computer rebuilds them for the new version when you click Update these N games."
    }
   }
  ]
