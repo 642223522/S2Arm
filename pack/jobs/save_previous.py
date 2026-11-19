@@ -13,6 +13,7 @@ import ctypes
 import errno
 import json
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -24,11 +25,23 @@ GUARD_MARK = ".s2a_guard"
 RENAME_SWAP = 0x2
 F_FULLFSYNC = 51
 
-_libc = ctypes.CDLL(None, use_errno=True)
+_libc = None
+
+
+def _darwin_libc():
+    """renamex_np / F_FULLFSYNC 是 macOS 专有：用到时才加载，导入本模块不碰平台专有的东西
+    （main.py 启动就导入它；原先导入时 ctypes.CDLL(None)，Windows 上 CDLL 必须给库名，所有作业一启动就崩）。
+    别的系统报 ENOTSUP，restore 按「没能回到上一份存档，存档保持原样」报"""
+    global _libc
+    if sys.platform != "darwin":
+        raise OSError(errno.ENOTSUP, "renamex_np is macOS only")
+    if _libc is None:
+        _libc = ctypes.CDLL(None, use_errno=True)
+    return _libc
 
 
 def _exchange(a, b):
-    if _libc.renamex_np(os.fsencode(a), os.fsencode(b), ctypes.c_uint(RENAME_SWAP)) != 0:
+    if _darwin_libc().renamex_np(os.fsencode(a), os.fsencode(b), ctypes.c_uint(RENAME_SWAP)) != 0:
         e = ctypes.get_errno()
         raise OSError(e, os.strerror(e), str(a))
 
