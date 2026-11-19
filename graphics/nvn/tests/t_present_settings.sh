@@ -63,7 +63,7 @@ rm -f "$out"/mtl?-*/edge-*.bgra
 bad=0; unproven=0; unpr=' '
 for backend in mtl3 mtl4; do
     for aa in None SmaaMedium SmaaHigh; do
-        for filter in Nearest Bilinear MetalFX; do
+        for filter in Nearest Bilinear MetalFX Fsr; do   # Fsr = AMD FSR 1
             name="$backend-$aa-$filter"
             runtime="$out/$name"
             mkdir -p "$runtime"
@@ -94,6 +94,12 @@ for backend in mtl3 mtl4; do
             if [[ "$filter" == MetalFX ]]; then
                 if [[ "$backend" == mtl3 ]]; then fx='MetalFX 空间放大：67x53 → 134x106（Metal 3）'; else fx='MetalFX 空间放大：67x53 → 134x106（Metal 4）'; fi
                 /usr/bin/grep -Fq "$fx" "$runtime/run.log" || ok=0
+            fi
+            # Fsr：67x53 → 134x106 必须真走了 EASU → RCAS（带抗锯齿时前面多一步），且在被测的后端上
+            if [[ "$filter" == Fsr ]]; then
+                if [[ "$aa" == None ]]; then chain='EASU → RCAS'; else chain='抗锯齿 → EASU → RCAS'; fi
+                if [[ "$backend" == mtl3 ]]; then fsr="直连上屏 FSR：67x53 → 134x106，${chain}（Metal 3）"; else fsr="直连上屏 FSR：67x53 → 134x106，${chain}（Metal 4）"; fi
+                /usr/bin/grep -Fq "$fsr" "$runtime/run.log" || ok=0
             fi
             # This graphics-only process has no game NPDM and requests no guest
             # address window. Keep that expected production diagnostic in the
@@ -127,11 +133,15 @@ for backend in mtl3 mtl4; do
         if [[ "$unpr" == *" $backend-${modes[i]}-MetalFX "* || "$unpr" == *" $backend-${modes[i]}-Bilinear "* ]]; then dskip=$((dskip+1))
         elif [[ -s "$a" && -s "$b" ]] && ! cmp -s "$a" "$b"; then distinctions=$((distinctions+1))
         else printf 'FAIL %s %s MetalFX and Bilinear produce identical pixels\n' "$backend" "${modes[i]}" >&2; fi
+        a="$out/$backend-${modes[i]}-Fsr/edge-scaled.bgra"   # FSR 1 对双线性（存的是真画布，不是抓图）
+        if [[ "$unpr" == *" $backend-${modes[i]}-Fsr "* || "$unpr" == *" $backend-${modes[i]}-Bilinear "* ]]; then dskip=$((dskip+1))
+        elif [[ -s "$a" && -s "$b" ]] && ! cmp -s "$a" "$b"; then distinctions=$((distinctions+1))
+        else printf 'FAIL %s %s Fsr and Bilinear produce identical pixels\n' "$backend" "${modes[i]}" >&2; fi
     done
 done
-printf 'present settings matrix: %d/18 passed, %d unproven (logs/images: %s)\n' "$((18-bad-unproven))" "$unproven" "$out"
-printf 'present settings output distinctions: %d/18 passed, %d skipped\n' "$distinctions" "$dskip"
+printf 'present settings matrix: %d/24 passed, %d unproven (logs/images: %s)\n' "$((24-bad-unproven))" "$unproven" "$out"
+printf 'present settings output distinctions: %d/24 passed, %d skipped\n' "$distinctions" "$dskip"
 if ((unproven)); then printf 'present settings: %d cells 未证（宿主显示环境不给真上屏位）\n' "$unproven"; fi
-# 18 格全未证 = 这次一格真上屏都没验：退 75（门禁记「环境未就绪」重排），不能当绿（判据绿着失效）；部分未证照跳过那几格
-if ((unproven == 18)); then exit 75; fi
-[[ "$bad" == 0 && $((distinctions+dskip)) == 18 ]]   # 每个后端：3 种模式两两 3 对 + 每模式最近邻对双线性 3 次 + MetalFX 对双线性 3 次 = 9，两个后端 18；未证格的对子计 skip 不判（10-30 去掉 FXAA 前 4 种模式是 28）
+# 24 格（加 Fsr 一列前 18）全未证 = 这次一格真上屏都没验：退 75（门禁记「环境未就绪」重排），不能当绿（判据绿着失效）；部分未证照跳过那几格
+if ((unproven == 24)); then exit 75; fi
+[[ "$bad" == 0 && $((distinctions+dskip)) == 24 ]]   # 每个后端：3 种模式两两 3 对 + 每模式最近邻对双线性 3 次 + MetalFX 对双线性 3 次 + FSR 对双线性 3 次 = 12，两个后端 24；未证格的对子计 skip 不判（10-30 去掉 FXAA 前 4 种模式是 28）
