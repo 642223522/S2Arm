@@ -3264,6 +3264,10 @@
   "en": "Requires an Apple Silicon Mac."
  },
  {
+  "source": "Intel Mac：给 iPhone 出包可用；在 Mac 上起游戏仍要 Apple 芯片。",
+  "en": "Intel Mac: building for iPhone works; playing games on this Mac still needs Apple silicon."
+ },
+ {
   "source": "启动器需要 macOS 15 或更新版本。",
   "en": "Requires macOS 15 or later."
  },

@@ -25,7 +25,8 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
-import runtime_sources   # 同目录：构建 venv 的基准解释器跟着随包 Python 的钉版走
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # 按文件加载本脚本时（单测 importlib）同目录也找得到
+import runtime_sources   # noqa: E402  同目录：构建 venv 的基准解释器跟着随包 Python 的钉版走
 REQS = ["tools/rewriter-requirements.txt", "pack/fonts/requirements.txt", "launchers/macos/requirements-runtime.txt"]
 # 公式 → 谁要：bundle_runtime.py 的 prefixes 全部 + C 改写器（runtime/rewriter，CMake 3.18+）+ services/dav1d/build.sh（meson + ninja）
 # S2A_DAV1D=0：不链 dav1d 软件兜底（仅适合所有目标机都有 AV1 硬件解码的本地构建），meson / ninja 不再是必需项

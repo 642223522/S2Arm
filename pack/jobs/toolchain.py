@@ -539,7 +539,7 @@ def ios_platform(c):
     # Intel Mac 不出 Mac 局、也不跑 iOS 模拟器：装 8 GB 模拟器运行时对出 iPhone 包没有用处。
     # 只要本机 SDK 能直接编 arm64 目标就认这套 Xcode 可用（Xcode 26.5 / SDK 26.5 实走）。
     if platform.system() == "Darwin" and platform.machine() == "x86_64" and _iphoneos_sdk_usable(c):
-        return True, ver, why + "；Intel Mac 用 iphoneos SDK 直接出壳，不要求模拟器运行时", None
+        return True, ver, why + "；Intel Mac 用 iphoneos SDK 直接出壳，不要求模拟器运行时", None  # 非玩家句（拼进详情 why）
     ready = [r for r in rows if r[2] and _runtime_matches(ver, allowed, r[0], r[1])]
     pending = [r for r in rows if not r[2] and _runtime_matches(ver, allowed, r[0], r[1])]
     if ready:
