@@ -336,15 +336,9 @@ void s2a_mem_test_headroom_div(uint64_t d) { g_pool_headroom_div = d ? d : 8; }
 static uint64_t host_avail(void) { return g_test_host_avail; }
 #elif defined(__ANDROID__)
 static uint64_t host_avail(void) { long n = sysconf(_SC_AVPHYS_PAGES), pg = sysconf(_SC_PAGESIZE); return n > 0 && pg > 0 ? (uint64_t)n * (uint64_t)pg : 0; }
-#elif TARGET_OS_IPHONE
-#include <os/proc.h>
-static uint64_t host_avail(void) { return os_proc_available_memory(); }
 #else
-static uint64_t host_avail(void) {
-    vm_statistics64_data_t vs; mach_msg_type_number_t c = HOST_VM_INFO64_COUNT; vm_size_t pg = 0;
-    if (host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t)&vs, &c) != KERN_SUCCESS || host_page_size(mach_host_self(), &pg) != KERN_SUCCESS) return 0;
-    return ((uint64_t)vs.free_count + vs.inactive_count + vs.purgeable_count + vs.speculative_count) * pg;
-}
+uint64_t s2a_host_mem_avail(void);   // 苹果平台实现 runtime/src/hostmem_apple.c（iPhone：离系统给本 App 的上限还剩多少；Mac：空闲 + 可回收页）
+static uint64_t host_avail(void) { return s2a_host_mem_avail(); }
 #endif
 // 这次之后要用到的总量 need 放得下就回 1（超过模拟的池、宿主给得了时扩池）
 static int pool_fits(uint64_t need, uint64_t *avail_out) {
