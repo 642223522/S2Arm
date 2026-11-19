@@ -31,6 +31,7 @@ uint64_t s2a_mem_test_punch_pending(void); void s2a_mem_test_punch_stats(uint64_
 void s2a_mem_test_subpage(uint64_t a, int on); void s2a_mem_test_map(uint64_t b, uint64_t n);
 void s2a_mem_test_map_diag_reset(void); void s2a_mem_test_stack(uint64_t base, uint64_t size);
 void s2a_mem_test_astype(uint32_t t);
+void s2a_mem_test_host_avail(uint64_t v);   // 应用池按宿主余量扩：测试里的宿主余量（缺省 0 = 宿主给不了，照模拟的池拒）
 int s2a_mem_mapped(uint64_t addr, uint64_t size);
 int s2a_mem_readable(uint64_t addr, uint64_t size);
 uint32_t s2a_mem_tmem_borrow(uint64_t a, uint64_t n, uint32_t perm); void s2a_mem_tmem_unborrow(uint64_t a, uint64_t n); void s2a_mem_tmem_close(uint64_t a, uint64_t n);
@@ -296,6 +297,20 @@ int main(void) {
         CHECK(r[0] == 0x10801, "堆再加 2 MB（物理映射已占满池）：SetHeapSize 应回 0x10801，实回 %#llx", (unsigned long long)r[0]);
         // 失败时出参 x1（堆基址）= 0（同 Ryujinx address = 0；D-ASK2：原先留着请求的大小，不看结果码的游戏拿它当基址写进宿主代码段）
         CHECK(r[1] == 0, "SetHeapSize 失败（池满）：x1 应为 0，实 %#llx", (unsigned long long)r[1]);
+        // 应用池按宿主余量扩（#1493）：池已满 9 MB。宿主余量 512 MB + 3 MB（留 512 MB 不动 → 能多给 3 MB）：
+        //   再要 4 KB → 成功、GetInfo 6 总量 = 池 + 4 KB、已用 = 池 + 4 KB；接着要 3 MB + 4 KB（超出 3 MB 余量）→ 0x10801、记账不变；余量归 0 后池回模拟值
+        {
+            s2a_mem_test_host_avail(512 * MB + 3 * MB);
+            CHECK(PHYS(0x2C, b + 20 * MB, 0x1000) == 0 && s2a_mem_test_phys() == 9 * MB + 0x1000, "宿主有余量：超池 4 KB 应成功（记账 %llu KB）", (unsigned long long)(s2a_mem_test_phys() >> 10));
+            memset(r, 0, sizeof r); r[1] = 6; r[2] = 0xFFFF8001; svc_mem(0x29, r, 0); uint64_t tot = r[1];
+            memset(r, 0, sizeof r); r[1] = 7; r[2] = 0xFFFF8001; svc_mem(0x29, r, 0);
+            CHECK(tot == POOL + 0x1000 && r[1] == POOL + 0x1000, "扩池后总量 / 已用（GetInfo 6 / 7）都应 = 池 + 4 KB：实 %llu / %llu KB", (unsigned long long)(tot >> 10), (unsigned long long)(r[1] >> 10));
+            CHECK(PHYS(0x2C, b + 21 * MB, 3 * MB + 0x1000) == 0x10801 && s2a_mem_test_phys() == 9 * MB + 0x1000, "超出宿主余量（要 3 MB + 4 KB、能给 3 MB）：应回 0x10801 且记账不变");
+            CHECK(PHYS(0x2D, b + 20 * MB, 0x1000) == 0 && s2a_mem_test_phys() == 9 * MB, "解除那 4 KB：记账回 9 MB");
+            s2a_mem_test_host_avail(0);
+            memset(r, 0, sizeof r); r[1] = 6; r[2] = 0xFFFF8001; svc_mem(0x29, r, 0);
+            CHECK(r[1] == POOL, "余量归 0、扩过的池清掉：总量回到池：实 %llu MB", (unsigned long long)(r[1] >> 20));
+        }
         memset(r, 0, sizeof r); r[1] = 3 * MB + 0x1000; svc_mem(0x01, r, 0);
         CHECK(r[0] == 0xCA01 && r[1] == 0, "SetHeapSize 大小不对齐：应回 0xCA01 且 x1 为 0，实 %#llx / %#llx", (unsigned long long)r[0], (unsigned long long)r[1]);
         #undef PHYS
