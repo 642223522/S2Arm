@@ -10551,6 +10551,10 @@ static void warm_task_(WarmTask *t) {
             }
             pso_key k = sk.k; k.vs = (__bridge void *)vs; k.fs = (__bridge void *)fs; k.fsfn = (__bridge void *)fsfn; pso_key_norm(&k, vs, fs, sk.merged);   // seeds written before the normalisation, and keys from elsewhere, still hit
             if (k.fc && !se_warm(fs, k.fc)) { g_warm_skip_fz++; g_warm_done++; continue; }   // S2Arm #800: a sampler-emulation pipeline (fc masked to this GPU's bits, warm_parse) whose variant this device has not made (yet): made at its first use
+            // 整数颜色目标 / 双源混合要的输出类型变体（pso_fout_variant）本机还没有（包里没带 <键>_ft、兜底目录里也没有）：同上一行跳过，绘制首遇时按游戏的程序现出。
+            //   原先照普通入口建，Metal 拒（「output of type float4 is not compatible with a MTLPixelFormatR32Uint color attachment」），诊断里 42 份报成预热失败的红行
+            { uint32_t fneed = fs && !fsfn ? pso_fout_need(&k, fs, sk.merged) : 0;
+              if (fneed && !fs_typed_fn(fs, fneed)) { g_warm_skip_fz++; g_warm_done++; continue; } }
             NSString *akey = par_rkey(&k, vs, fs, sk.merged, fsfn);
             NSError *e = nil; id ps = par_render(pso_desc(&k, vs, fs, fsfn, sk.merged), akey, &e);
             if (!ps && !vs->layer_out && [e.localizedDescription containsString:@"render_target_array_index"]) {   // a vertex shader that writes the layer (see pso_get_)
