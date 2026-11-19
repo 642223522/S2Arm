@@ -371,7 +371,7 @@
 "diag.report.placeholder" = "Required: which game, what you did, what you saw";
 "diag.upload.post" = "Post on GitHub";
 "diag.upload.retry" = "Try again";
-"dprompt.expiry.body" = "Time left: %@. After it expires the game won’t open, but your saves are safe: connect the phone and click “Install on iPhone” again, or refresh in AltStore.";
+"dprompt.expiry.body" = "Time left: %@. After it expires the game won’t open, but your saves are safe: connect the phone and click “Renew S2Arm” on the computer’s phone bar, or refresh in AltStore.";
 "dprompt.expiry.hours" = "about %d hours";
 "dprompt.expiry.lessThanHour" = "less than 1 hour";
 "dprompt.expiry.title" = "Signature expires soon";

@@ -366,7 +366,7 @@
 "diag.report.placeholder" = "Obligatorio: qué juego, qué hiciste, qué viste";
 "diag.upload.post" = "Publicar en GitHub";
 "diag.upload.retry" = "Reintentar";
-"dprompt.expiry.body" = "Tiempo restante: %@. Al expirar el juego no se abrirá, pero tus partidas guardadas estarán a salvo: conecta el teléfono y vuelve a pulsar «Instalar en el iPhone», o actualiza en AltStore.";
+"dprompt.expiry.body" = "Tiempo restante: %@. Al expirar el juego no se abrirá, pero tus partidas guardadas estarán a salvo: conecta el teléfono y pulsa «Renovar S2Arm» en la barra del teléfono del ordenador, o actualiza en AltStore.";
 "dprompt.expiry.hours" = "unos %d horas";
 "dprompt.expiry.lessThanHour" = "menos de 1 hora";
 "dprompt.expiry.title" = "La firma expira pronto";

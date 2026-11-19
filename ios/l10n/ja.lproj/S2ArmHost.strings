@@ -366,7 +366,7 @@
 "diag.report.placeholder" = "必須：どのゲーム・何をした・何が起きた";
 "diag.upload.post" = "GitHub に投稿";
 "diag.upload.retry" = "再試行";
-"dprompt.expiry.body" = "残り時間：%@。期限が切れるとゲームは起動できなくなりますが、セーブデータは安全です。iPhone を接続して「iPhone にインストール」を再度クリックするか、AltStore で更新してください。";
+"dprompt.expiry.body" = "残り時間：%@。期限が切れるとゲームは起動できなくなりますが、セーブデータは安全です。iPhone を接続してパソコンのスマホバーの「S2Arm を再署名」をクリックするか、AltStore で更新してください。";
 "dprompt.expiry.hours" = "約 %d 時間";
 "dprompt.expiry.lessThanHour" = "1 時間未満";
 "dprompt.expiry.title" = "署名の有効期限が近づいています";

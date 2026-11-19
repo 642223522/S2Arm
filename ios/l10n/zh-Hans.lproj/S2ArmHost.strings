@@ -371,7 +371,7 @@
 "diag.report.placeholder" = "必填：哪款游戏、做了什么、看到了什么";
 "diag.upload.post" = "去 GitHub 发帖";
 "diag.upload.retry" = "再试一次";
-"dprompt.expiry.body" = "还剩%@。到期后游戏打不开，存档不会丢：连上手机再点一次「装到 iPhone」，或在 AltStore 里刷新。";
+"dprompt.expiry.body" = "还剩%@。到期后游戏打不开，存档不会丢：连上手机点手机条上的「续签 S2Arm」，或在 AltStore 里刷新。";
 "dprompt.expiry.hours" = "约 %d 小时";
 "dprompt.expiry.lessThanHour" = "不到 1 小时";
 "dprompt.expiry.title" = "签名快到期了";
