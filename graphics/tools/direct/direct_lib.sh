@@ -295,7 +295,7 @@ if ls "$ROOT"/rt_shaders/*.code > /dev/null 2>&1; then
 fi
 # 包内键别名表（第 1 代 → 第 2 代，translator/nvn_key.py）：表与包都定型（含真机转储）之后出，收表时与 shader_map.tsv 同处随包；宿主读档 / 读本机管线记录时把旧键换成第 2 代
 "$PY" "$R/graphics/tools/direct/merge_extract.py" --alias "$W/merged/pkg" "$W/profile/$TID/shader_map.tsv" "$W/merged/key_alias.tsv" > "$W/alias.log" 2>&1 \
-  || { say "🔴 键别名表没出成（$(tail -1 "$W/alias.log")；$W/alias.log）"; exit 1; }
+  || { say "🟡 键别名表没出成，随包空表照常出包（只影响旧版本存档 / 管线记录换键；$(tail -1 "$W/alias.log")；$W/alias.log）"; : > "$W/merged/key_alias.tsv"; }
 # 跑局知识（审计 #1534 P1-54 B1）：只读快照 KN，不读活文件。pack/stage_direct.sh 算键前出好一份、经 S2A_RUN_KNOWLEDGE 交来（键与出库用的是同一份）；
 #   单独调用（单测 / 手工）时这里按同一工具现出。来源 = pso_seed/<程序号>/（或 S2A_PSO_SOURCES），出包不读 ~/Documents/wire（Mac 局收局拷进 pso_seed/，runtime/run_mac.sh），
 #   同一提交、同一份 pso_seed/ 在 Mac 与Windows 出包机出的库相同。四张表的含义见 graphics/tools/direct/run_knowledge.py 头注
