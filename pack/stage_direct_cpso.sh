@@ -35,7 +35,7 @@ ARCHS=$(awk -F'\t' -v v="$OSV" '$2 == v { print $1 }' <<< "$PAIRS" | sort -u | t
 OTHER=$(cut -f2 <<< "$PAIRS" | sort -nu | grep -vx "$OSV" | tr '\n' ' '); OTHER=${OTHER% }
 [ -n "$OSV" ] && [ -n "$ARCHS" ] || soft "目标对是空的"
 KT=$(stage_files_key direct_cpso "$R") || exit 1
-K=$(printf '%s\n%s\n%s\n%s\n' "$(cat "$CUR/.stage_direct" 2> /dev/null)" "$PLAT $OSV $ARCHS" "$TTV" "$KT" | shasum -a 256 | cut -c1-16)
+K=$(printf '%s\n%s\n%s\n%s\n%s\n' "$(cat "$CUR/.stage_direct" 2> /dev/null)" "$PLAT $OSV $ARCHS" "$TTV" "$KT" "$(shasum -a 256 < "$D/pso_manifest.tsv" 2> /dev/null | cut -c1-16)" | shasum -a 256 | cut -c1-16)   # 种子表进键：基础管线的对取自它（base_pipelines.py read_pairs），种子换了这一段要重出
 KB=$K; K=$(stage_deps_key "$CUR" direct_cpso "$KB" "$SELF") || exit 1
 root_stage_done "$CUR" direct_cpso "$K" && { echo "🟢 $G 现行已是计算管线归档 ${K}，跳过"; exit 0; }
 TID=$(prog_id "$CUR")

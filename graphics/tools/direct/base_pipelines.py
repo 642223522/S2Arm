@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# 直连库每对着色器的拉取基础管线归档（出包时离线编，随包放 shaders/direct/pipelines/）：
+# 直连库种子表里每对着色器的拉取基础管线归档（出包时离线编，随包放 shaders/direct/pipelines/）：
 #   python3 base_pipelines.py <shaders/direct 目录> <输出 pipelines 目录> --plat ios|macos --os <系统大版本> --arch <GPU 架构> [--arch …] [--cache <目录>] [-j <路数>]
 # 为什么：混合管线（nvn_hybrid.inc hybrid_get）首遇一对着色器时要它的「拉取基础管线」（拉取式顶点 <键>_bp + 片元、颜色状态留空、不带顶点描述），
 #   原先只能在设备上后台用 Metal 4 编译器现建，建好之前这对的首遇照旧跳过 / 等精确管线（Ori 2 菜单进序章：提交线程首遇现建 42 条、合计 825 ms）。
@@ -18,7 +18,7 @@
 #   MTL4Archive 打开时按文件大小 1:1 占地址（graphics/metal/gal_core.m 10-21 巫师3 低区崩），一对一个文件 = 设备只映射本局真用到的对。
 #   代价：同一片元配几个顶点时它的库在每个文件里各带一份（11-19 本机实测 3 对共用片元：分开 249696 字节、合进一个文件 169664 字节，多约 1/3）。
 # metal-tt / 缓存 / 进程组 / 重试与 cs_pipelines.py 同一套（从那里引用）。缓存键 = 本工具格式号 + 两个函数的模块 sha256（或整段库）+ 特化与否 + 入口 + 平台 + 大版本 + 架构表 + metal-tt 版本。
-# 输出：标准输出最后一行一句读数；有对编不出 → 照出其余、退出 3（调用方打黄）；参数 / 库读不了 → 退出 1。没有 shader_pairs.tsv = 0 对、退出 0。
+# 输出：标准输出最后一行一句读数；有对编不出 → 照出其余、退出 3（调用方打黄）；参数 / 库读不了 → 退出 1。没有种子表 = 0 对、退出 0。
 import argparse
 import hashlib
 import json
@@ -80,14 +80,21 @@ def declares_constants(b):
 
 
 def read_pairs(direct):
-    """shader_pairs.tsv：每行「顶点键\t片元键」，去重保序（空行 / # 注释跳过）；没有这个文件 = 空"""
-    f = direct / 'shader_pairs.tsv'
+    """要出的对 = 本包管线种子表（pso_manifest.tsv，种子阶段 pso_seed.py 按本包库键滤过：我方真跑 + 众包 + 外部公开清单）R 行里的顶点 / 片元着色器键，
+    去重保序（11-19 维护者定：随包只出真跑见过的对，体积按实际用到的算；没出的对照旧设备首遇后台建。不按 shader_pairs.tsv 出全对：单架构动森约 430 MB、王国之泪约 1.39 GB）。
+    R 行 = pso_skey 十六进制，前 24 字节顶点键串、再 24 字节片元键串（C 字符串「<16 位键>_b」，nvn_pso_skey.h）；没有种子表 = 空"""
+    f = direct / 'pso_manifest.tsv'
     if not f.is_file(): return []
     seen, out = set(), []
     for line in f.read_text(encoding='utf-8').splitlines():
         c = line.split('\t')
-        if len(c) < 2 or line.startswith('#') or len(c[0]) != 16 or len(c[1]) != 16 or (c[0], c[1]) in seen: continue
-        seen.add((c[0], c[1])); out.append((c[0], c[1]))
+        if len(c) < 2 or c[0] != 'R' or len(c[1]) < 96: continue
+        try: raw = bytes.fromhex(c[1][:96])
+        except ValueError: continue
+        v, fr = (raw[o:o + 24].split(b'\0')[0].decode('latin1') for o in (0, 24))
+        v, fr = v[:-2] if v.endswith('_b') else v, fr[:-2] if fr.endswith('_b') else fr
+        if len(v) != 16 or len(fr) != 16 or (v, fr) in seen: continue
+        seen.add((v, fr)); out.append((v, fr))
     return out
 
 

@@ -3,7 +3,7 @@
 # 夹具：合成直连库目录。库容器（lib.idx + lib.000.pak，格式同 graphics/nvn/lib_pack_core.inc）：
 #   顶点键 A、B、N、L 各有种类 55 拉取库（入口 main0 / main0_z，不带 [[stage_in]]，A 与 B 的 main0 函数体不同）与反射（种类 1）：A、B 带 pull {main0, slot 16}，
 #   N 没有 pull，L 带 pull 但 writes_layer；片元键 P、Q、R 的种类 0 指向同一段批库（s<P>_main0 不声明函数常量、s<Q>_main0 声明一个带缺省的常量、s<R>_main0 不用），
-#   反射 fn_prefix「s<键>_」+ entry main0。shader_pairs.tsv：A P、A Q、B P、N P、L P、A M（M 不在库里）、再一行 A P（重复）、一行 # 注释。
+#   反射 fn_prefix「s<键>_」+ entry main0。种子表 pso_manifest.tsv 的 R 行：A P、A Q、B P、N P、L P、A M（M 不在库里）、再一行 A P（重复）、一行 # 注释、一行 S；shader_pairs.tsv 只有 B Q（种子里没有，不出）。
 # 期望（不跑被测实现就写得出）：
 #   ① 出 3 个文件，名字 = 「p」+ sha256("<顶点键>_b\t<片元键>_b\tmain0") 前 40 位 + .mtl4archive（shasum 现算，同设备 nvn_hybrid.inc hybrid_pkg_name）：A×P、A×Q、B×P；
 #      读数「着色器对 6 对（跳过：顶点没有拉取库 1、写层号 1、片元不在库里 1），出 3 对」
@@ -44,7 +44,10 @@ fragment float4 s${R}_main0(F0 i [[stage_in]]) { return i.a.zyxw; }
 EOF
 xcrun -sdk macosx metal -mmacosx-version-min=15.0 -c "$T/fb.metal" -o "$T/fb.air" && xcrun -sdk macosx metallib "$T/fb.air" -o "$T/fb.metallib" || die "夹具批库编不出"
 : > "$F/shader_map.tsv"   # 没有计算键：⑥ 阶段里计算管线那半出 0 支
-printf '# 注释\n%s\t%s\n%s\t%s\n%s\t%s\n%s\t%s\n%s\t%s\n%s\t%s\n%s\t%s\n' $A $P $A $Q $B $P $N $P $L $P $A $M $A $P > "$F/shader_pairs.tsv"
+# 管线种子表（对的来源，base_pipelines.py read_pairs）：R 行 = pso_skey 十六进制，前 24 字节顶点键串「<键>_b」、再 24 字节片元键串，余下补零到 432 字节
+rrow() { python3 -c 'import sys; v, f = sys.argv[1:3]; print("R\t" + ((v + "_b").encode().ljust(24, b"\0") + (f + "_b").encode().ljust(24, b"\0") + bytes(384)).hex())' "$1" "$2"; }
+{ echo '# 注释'; for pr in "$A $P" "$A $Q" "$B $P" "$N $P" "$L $P" "$A $M" "$A $P"; do rrow $pr; done; printf 'S\t%s_b\t0\n' $A; } > "$F/pso_manifest.tsv"
+printf '%s\t%s\n' $B $Q > "$F/shader_pairs.tsv"   # 离线配对表里有、种子表里没有的对（B×Q）：不出（随包只出真跑见过的对）
 python3 - "$F/b-t1" "$T" $A $B $N $L $P $Q $R <<'EOF'
 import json, struct, sys
 out, T = sys.argv[1], sys.argv[2]; A, B, N, L, P, Q, R = sys.argv[3:]
