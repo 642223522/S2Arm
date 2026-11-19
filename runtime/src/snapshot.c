@@ -331,7 +331,7 @@ static int dump_mem(FILE *f, uint64_t *raw_out, uint64_t *comp_out, int *nreg) {
         int bn = nsp - b0 < 64 ? nsp - b0 : 64; uint8_t **out = calloc(64, sizeof *out); size_t *ol = calloc(64, sizeof *ol);
         dispatch_apply((size_t)bn, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t k) {
             span_t s = sp[b0 + (int)k]; out[k] = malloc(s.n + 4096);
-            ol[k] = out[k] ? compression_encode_buffer(out[k], s.n, (const uint8_t *)s.a, s.n, NULL, COMPRESSION_LZFSE) : 0;   // LZFSE：同速档里压得最小（三款实测比 LZ4 小 16–26%），系统自带
+            ol[k] = out[k] ? compression_encode_buffer(out[k], s.n, (const uint8_t *)s.a, s.n, NULL, COMPRESSION_LZ4) : 0;
         });
         for (int k = 0; k < bn; k++) {
             span_t s = sp[b0 + k]; uint64_t cl = ol[k] ? ol[k] : s.n;
@@ -427,7 +427,7 @@ static void snap_take_(const char *final_dir, int exit_after) {
         { void s2a_snap_arena_get(uint64_t *, uint64_t *, uint64_t *); uint64_t s2a_snap_arena_len(void); uint64_t cb = 0, cu = 0, vu = 0; s2a_snap_arena_get(&cb, &cu, &vu);
           fprintf(f, "命令记录区\t%llu\t%llu\n", (unsigned long long)cb, (unsigned long long)s2a_snap_arena_len()); }
         fprintf(f, "线程\t%d\n停法\t入口 %d 出口 %d 等待 %d 睡眠 %d 已退出 %d 未启动 %d\n冻结到齐_us\t%d\n", nthr, nst[1], nst[2], nst[3], nst[4], nst[5], nst[6], us);
-        fprintf(f, "内存段\t%d\n内存原始_MB\t%.1f\n内存压缩后_MB\t%.1f\n内存压缩\tlzfse\n", nreg, raw / 1048576.0, comp / 1048576.0);   // 没有这行的旧快照按 LZ4 解
+        fprintf(f, "内存段\t%d\n内存原始_MB\t%.1f\n内存压缩后_MB\t%.1f\n", nreg, raw / 1048576.0, comp / 1048576.0);
         fprintf(f, "耗时_哈希_s\t%.3f\n耗时_冻结_s\t%.3f\n耗时_内存账内核账_s\t%.3f\n耗时_内存_s\t%.3f\n完整\t%d\n", t1 - t0, t2 - t1, t3 - t2, t4 - t3, !e);
         e |= close_sync(f);
     } else e = 1;
@@ -673,7 +673,6 @@ uint64_t s2a_snap_scratch_map(uint64_t n); void s2a_snap_scratch_unmap(uint64_t 
 static uint64_t scratch_pick(uint64_t n) { return s2a_snap_scratch_map(n); }
 static void scratch_done(uint64_t a, uint64_t n) { s2a_snap_scratch_unmap(a, n); }
 static int load_mem(const char *dir, uint64_t *raw_out) {
-    char ca[16] = ""; const compression_algorithm alg = !man_get(dir, "内存压缩", ca, sizeof ca) && !strcmp(ca, "lzfse") ? COMPRESSION_LZFSE : COMPRESSION_LZ4;   // 清单没写的旧快照是 LZ4
     double t_lm0 = now_s(); char p[2048]; snprintf(p, sizeof p, "%s/mem.bin", dir); int fd = open(p, O_RDONLY); if (fd < 0) return -1;
     struct stat st; fstat(fd, &st); uint8_t *m = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0); close(fd);
     if (m == MAP_FAILED) return -1;
@@ -756,12 +755,12 @@ static int load_mem(const char *dir, uint64_t *raw_out) {
         for (;;) { int i = __atomic_fetch_add(&next, 1, __ATOMIC_RELAXED); if (i >= nr) break;
             if (!viaf[i]) {
                 if (rv[i].cl == rv[i].n) memcpy((void *)rv[i].a, rv[i].d, rv[i].n);
-                else if (compression_decode_buffer((uint8_t *)rv[i].a, rv[i].n, rv[i].d, rv[i].cl, NULL, alg) != rv[i].n) { __atomic_add_fetch(&bad, 1, __ATOMIC_RELAXED); continue; }
+                else if (compression_decode_buffer((uint8_t *)rv[i].a, rv[i].n, rv[i].d, rv[i].cl, NULL, COMPRESSION_LZ4) != rv[i].n) { __atomic_add_fetch(&bad, 1, __ATOMIC_RELAXED); continue; }
                 if (fix) k += ptrfix((uint64_t *)rv[i].a, rv[i].n / 8);
                 continue; }
             if (!buf && !(buf = malloc(bufn))) { __atomic_add_fetch(&wbad, 1, __ATOMIC_RELAXED); continue; }
             const uint8_t *src = rv[i].d;
-            if (rv[i].cl != rv[i].n) { if (compression_decode_buffer(buf, rv[i].n, rv[i].d, rv[i].cl, NULL, alg) != rv[i].n) { __atomic_add_fetch(&bad, 1, __ATOMIC_RELAXED); continue; } src = buf; }
+            if (rv[i].cl != rv[i].n) { if (compression_decode_buffer(buf, rv[i].n, rv[i].d, rv[i].cl, NULL, COMPRESSION_LZ4) != rv[i].n) { __atomic_add_fetch(&bad, 1, __ATOMIC_RELAXED); continue; } src = buf; }
             if (fix) { if (src != buf) { memcpy(buf, src, rv[i].n); src = buf; } k += ptrfix((uint64_t *)buf, rv[i].n / 8); }
             off_t off = (off_t)foff[i]; uint64_t done = 0;
             while (done < rv[i].n) { ssize_t w = pwrite(gfd, src + done, (size_t)(rv[i].n - done), off + (off_t)done); if (w <= 0) { if (w < 0 && errno == EINTR) continue; break; } done += (uint64_t)w; }
