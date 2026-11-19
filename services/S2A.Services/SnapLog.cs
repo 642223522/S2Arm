@@ -47,6 +47,7 @@ namespace S2A.Services
         private const uint EntReq = 1, EntConnect = 2, EntFailed = 4, EntObjs = 5;
         [ThreadStatic] private static byte[] _pending;          // 本线程正在处理、要进日志的请求（开始时序列化，完成时追加）
         [ThreadStatic] private static List<int> _pendingIds;    // 它交出的域对象号
+        [ThreadStatic] private static bool _pendingTipc;        // 它是 TIPC 请求（应答的结果码是原始数据第 1 个字，没有 CMIF 应答头）
         private static readonly object _lock = new();
         private static readonly MemoryStream _log = new();
         private static readonly BinaryWriter _w = new(_log);
@@ -186,7 +187,7 @@ namespace S2A.Services
             lock (_lock)
             {
                 int seq = _seq++; _kept++;
-                _pending = Serialize(seq, num, cookie, cmd, n, msg, size); _pendingIds?.Clear();
+                _pending = Serialize(seq, num, cookie, cmd, n, msg, size); _pendingIds?.Clear(); _pendingTipc = size >= 4 && (*(uint*)msg & 0xFFFF) >= 0x10;
                 { string k = n + "#" + (uint)cmd; _bytesBy[k] = _bytesBy.GetValueOrDefault(k) + _pending.Length; _countBy[k] = _countBy.GetValueOrDefault(k) + 1; }
                 if (_log.Length >= _nextReport)
                 {   // 日志每翻一倍（16 MB 起）点名占地最多的 5 类：恢复后日志暴涨要知道是谁
@@ -229,7 +230,7 @@ namespace S2A.Services
             s2a_snap_hctx(-2);
             byte[] e = _pending; _pending = null;
             if (seq < 0 || e == null) return;
-            bool ok = CmifResult(msg, size) == 0;
+            bool ok = ReplyResult(msg, size, _pendingTipc) == 0;
             lock (_lock)
             {
                 if (ok)
@@ -242,10 +243,26 @@ namespace S2A.Services
             }
             _pendingIds?.Clear();
         }
-        // CMIF 应答的结果码（"SFCO" 后第 8 字节）；没有 CMIF 应答头的（关对象 / TIPC）按成功算
-        private static uint CmifResult(byte* msg, int size)
+        // 应答的结果码：按 HIPC 头算出这条应答的原始数据段（头 2 个字、特殊头、各类描述符之后，长度 = 头里记的字数），只在段里取——
+        //   原先在消息缓冲前 0x100 字节里找 "SFCO"，TIPC 应答（sm 取服务等）没有 CMIF 应答头，就读到了同一线程缓冲里上一条应答留下的结果码：
+        //   上一条失败、这条成功也记成失败，恢复时不重放，这条建的会话（如 hid）在 B 里没有（大金刚第 125 条）。
+        //   TIPC：原始数据第 1 个字就是结果码；CMIF：段里 "SFCO" 头后第 8 字节；没有原始数据的（关对象）按成功算
+        internal static uint ReplyResult(byte* msg, int size, bool tipc)
         {
-            for (int i = 0; i + 12 <= Math.Min(size, 0x100); i += 4)
+            if (size < 8) return 0;
+            uint w0 = *(uint*)msg, w1 = *(uint*)(msg + 4);
+            int nx = (int)(w0 >> 16) & 0xF, na = (int)(w0 >> 20) & 0xF, nb = (int)(w0 >> 24) & 0xF, nw = (int)(w0 >> 28) & 0xF;
+            int raw = (int)(w1 & 0x3FF) * 4, off = 8;
+            if ((w1 >> 31) != 0)
+            {
+                if (size < off + 4) return 0;
+                uint sh = *(uint*)(msg + off); off += 4 + ((sh & 1) != 0 ? 8 : 0) + 4 * (int)(((sh >> 1) & 0xF) + ((sh >> 5) & 0xF));
+            }
+            off += nx * 8 + (na + nb + nw) * 12;
+            int end = Math.Min(size, off + raw);
+            if (raw == 0 || off + 4 > end) return 0;
+            if (tipc) return *(uint*)(msg + off);
+            for (int i = off; i + 12 <= end; i += 4)   // 段内逐字找（对齐填充长短不假设）
                 if (*(uint*)(msg + i) == 0x4F434653u) return *(uint*)(msg + i + 8);
             return 0;
         }
@@ -343,10 +360,11 @@ namespace S2A.Services
                         }
                     }
                     Ryujinx.HLE.S2AHooks.SnapForceDomainIds = outIds.TryGetValue(seq, out int[] want) ? new Queue<int>(want) : null;
+                    bool tipc = (*(uint*)msgAddr & 0xFFFF) >= 0x10;   // 处理前看请求头的类型（处理完缓冲已是应答）
                     uint rc = d.SnapRequest(num, cookie, (byte*)msgAddr, size);
                     forcedLeft += Ryujinx.HLE.S2AHooks.SnapForceDomainIds?.Count ?? 0; Ryujinx.HLE.S2AHooks.SnapForceDomainIds = null;
                     if (rc != 0) { bad++; if (bad <= 20) Console.Error.WriteLine($"[s2a] 【黄】即时存档恢复：重放第 {seq} 条 {name}#{(uint)cmd} 回 0x{rc:X}"); }
-                    else if (CmifResult((byte*)msgAddr, size) is uint cr && cr != 0)
+                    else if (ReplyResult((byte*)msgAddr, size, tipc) is uint cr && cr != 0)
                     {   // 日志里的都是 A 当时成功的（失败的记成 EntFailed 不重放）：B 里回了错误码 = 两边状态分岔，点名这条（后面对象号可能跟着错位）
                         diverged++; if (diverged <= 20) Console.Error.WriteLine($"[s2a] 【黄】即时存档恢复：重放第 {seq} 条 {name}#{(uint)cmd} A 当时成功、这里回 0x{cr:X}");
                     }
