@@ -5,9 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../../android/native/direct/s2a_direct.h"
-#include "../../android/native/direct/graphics.h"
-#include "../../android/native/direct/json.h"
+// 只走运行时 ABI（runtime_ohos.h → android/native/runtime/runtime.h）：S2A_DIRECT_MODE_* 与 descriptor 上限都从那里来，不直接包含 direct/ 内部头。
 int s2a_ohos_runtime_run(const struct s2a_android_runtime_request *request) {
     return s2a_android_runtime_run(request);
 }
@@ -50,7 +48,7 @@ int s2a_ohos_runtime_run_selected(const struct s2a_android_runtime_request *requ
     static struct s2a_android_runtime_request_v2 v2;
     static char *descriptor;
     size_t bytes = 0;
-    descriptor = read_small(request->module_dir, "graphics.v1.json", S2A_JSON_MAX_BYTES, &bytes);
+    descriptor = read_small(request->module_dir, "graphics.v1.json", S2A_ANDROID_GRAPHICS_DESCRIPTOR_MAX_BYTES, &bytes);
     memset(&v2, 0, sizeof v2);
     v2.size = sizeof v2;
     v2.version = S2A_ANDROID_RUNTIME_ABI_V2;

@@ -360,6 +360,7 @@ int s2a_android_runtime_run_v2(const struct s2a_android_runtime_request_v2 *r) {
         r->services.base.version != S2A_ANDROID_SERVICES_ABI_V2 ||
         r->services.graphics || r->services.graphics_mode || r->services.flags)
         return S2A_RUNTIME_ARGUMENT;
+    _Static_assert(S2A_ANDROID_GRAPHICS_DESCRIPTOR_MAX_BYTES == S2A_JSON_MAX_BYTES, "runtime ABI descriptor limit drifted from direct/json.h");
     if (r->graphics.bytes > S2A_JSON_MAX_BYTES || (r->graphics.bytes && !r->graphics.json))
         return S2A_RUNTIME_ARGUMENT;
     struct s2a_android_runtime_request v1;
