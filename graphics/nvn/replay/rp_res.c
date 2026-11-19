@@ -997,6 +997,31 @@ nvn_gpu_samp rp_sampler_for_query(void) {
     pthread_mutex_unlock(&g_rmu); return result;
 }
 
+// 类型 3 句柄（常量采样器；c2 分离表 / 游戏常量缓冲两种形态）的采样器登记号没登记 = Ryujinx 的空采样器：上游 SamplerPool.Get 对
+//   (uint)id >= Items.Length 给 null、池内没写过的号读出全零描述符（最近点 / Repeat / LOD 0）；null 采样器在 Vulkan 后端
+//   （DescriptorSetUpdater 的 _dummySampler）换成最近点 / Repeat 的 dummy 采样器，draw 照常提交。这边两种都绑 rp_sampler_for_query() 那个
+//   同样取法的默认采样器、整笔照画，不跳笔（上游画的一笔，这边整笔消失，画面就缺一块）。
+//   不是红行：信息计数 + 每局首次一行（带采样器号、登记号、池起点和容量），号越界在读数里仍看得见。
+//   范围只在类型 3 句柄：登记了但后端建不出的（samp_create 已记账）、默认采样器也建不出的，仍返回 NULL，由调用方具名跳过；
+//   采样器槽 / 分离采样器 / 整池数组不走这里（口径另议）。
+static _Atomic uint64_t g_cs_default;   // 类型 3 句柄的采样器号没登记、绑了默认采样器的次数（信息计数；换局清零）
+uint64_t rp_const_samp_default_count(void) { return atomic_load(&g_cs_default); }
+nvn_gpu_samp rp_samp_for_const_handle(int sid, int tid, int pool_base, int pool_n) {
+    nvn_gpu_samp s = rp_samp_for_tex(sid, tid);
+    if (s) return s;
+    pthread_mutex_lock(&g_rmu);
+    const int unregistered = sid < 0 || sid >= g_nsreg || !g_sreg[sid].ok;
+    pthread_mutex_unlock(&g_rmu);
+    if (!unregistered || !(s = rp_sampler_for_query())) return NULL;
+    if (atomic_fetch_add(&g_cs_default, 1) == 0) {
+        char b[240];
+        snprintf(b, sizeof b, "类型 3 句柄的采样器号 %d（登记号 %d，采样器池起点 %d、容量 %d）没登记：同 Ryujinx，绑最近点 / Repeat 的默认采样器，不跳整笔",
+                 sid - pool_base, sid, pool_base, pool_n);
+        nvn_plat_log(NVN_PLAT_LOG_INFO, "tex", b);
+    }
+    return s;
+}
+
 // 整池数组（布局来源 NVN_RB_TEXP / NVN_RB_SAMPP，编译器给追不到槽的句柄的回退）：按池编号建一张不可变的池快照（nvn_backend.h nvn_gpu_pool_*）。
 //   键 = (贴图 / 采样器, 池起点, 池长, 声明目标, 数值类)；登记表纪元或序号纪元变了才重建（快照不可原地改，换表 = 新建 + 放旧，
 //   已绑的旧表由后端引用到命令段完成）。贴图项一律走 rp_view_by_id_decl：池内没登记的号 / 类型不符给声明类型的零贴图（#1147，同 Ryujinx），
@@ -1068,7 +1093,7 @@ void rp_res_reset(void) {
         if (g_zero[target][cls].view) nvn_gpu_view_release(g_zero[target][cls].view);
         if (g_zero[target][cls].tex) nvn_gpu_tex_release(g_zero[target][cls].tex);
     }
-    memset(g_zero, 0, sizeof g_zero); g_zero_cube_logged = 0; atomic_store(&g_ubo_zero, 0);
+    memset(g_zero, 0, sizeof g_zero); g_zero_cube_logged = 0; atomic_store(&g_cs_default, 0); atomic_store(&g_ubo_zero, 0);
     for (int i = 0; i < g_nsreg; i++) { if (g_sreg[i].s) nvn_gpu_samp_release(g_sreg[i].s); if (g_sreg[i].sn) nvn_gpu_samp_release(g_sreg[i].sn); }
     memset(g_fmt_caps, 0, sizeof g_fmt_caps);
     if (g_query_sampler) nvn_gpu_samp_release(g_query_sampler);
