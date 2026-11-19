@@ -332,13 +332,14 @@ def refl(name, new, body, check, why): REFL.append((name, new, body, check, why)
 def refl_job(body):
     """body：指令表（片元，shader() 拼）或现成的 (阶段, 代码区, 控制段)"""
     return body if isinstance(body, tuple) else ('ps',) + shader(body)
-def cs_shader(body, push=0, ubos=0, ssbos=0, tex=0, sep_tex=0, sep_samp=0, images=0):
+def cs_shader(body, push=0, ubos=0, ssbos=0, tex=0, sep_tex=0, sep_samp=0, images=0, pb1=0):
     """NVN2 计算着色器：代码区 = 指令（无 SPH），补齐到 0x80；控制段 0x760 字节：魔数、版本 0xc9、+0x38 指令区长、+0x40 / +0x44 c1 起止（空）、
     c[0] 布局 +0xa9 推送常量字数、+0xb1..+0xb5 uniform / storage / 纹理 / 分离纹理 / 分离采样器项数、+0xba 大小（Dsh.cs Nvn2Job nvn2_cs），+0x748 线程组 1×1×1"""
     code = b''.join((i if isinstance(i, int) else i).to_bytes(16, 'little') for i in body + [EXIT]); code += bytes(-len(code) % 0x80)
     ctl = bytearray(0x760); struct.pack_into('<II', ctl, 0, 0x98761234, 0xc9); struct.pack_into('<I', ctl, 0x38, len(code)); struct.pack_into('<II', ctl, 0x40, len(code), len(code))
-    ctl[0x56] = 5; ctl[0xa9] = push; ctl[0xb1:0xb6] = bytes((ubos, ssbos, tex, sep_tex, sep_samp))
-    struct.pack_into('<H', ctl, 0xba, 0x10 + 4 * push + 0x10 * (ubos + ssbos) + 8 * (tex + sep_tex + sep_samp + images)); struct.pack_into('<III', ctl, 0x748, 1, 1, 1)
+    #   pb1：推常量块 1 的 16 字节项数（+0xaa = 4 × pb1 字，排在推常量块 0（按 16 字节取整）之后、uniform 项之前）
+    ctl[0x56] = 5; ctl[0xa9] = push; ctl[0xaa] = 4 * pb1; ctl[0xb1:0xb6] = bytes((ubos, ssbos, tex, sep_tex, sep_samp))
+    struct.pack_into('<H', ctl, 0xba, 0x10 + (4 * push + 0xf & ~0xf) + 0x10 * (pb1 + ubos + ssbos) + 8 * (tex + sep_tex + sep_samp + images)); struct.pack_into('<III', ctl, 0x748, 1, 1, 1)
     return ('cs', code, bytes(ctl))
 ULDC2 = lambda urd, off: inst(0xab9, urd=(16, urd), off=(38, off), bank=(54, 2), size=(73, 4))   # ULDC.32 URd, c[2][off]
 ULOP3_OR = lambda urd, ura, urb: alu(0x092, 1, urd, ura, rb=(32, urb), rc=(64, URZ), lut=(72, 0xfc), pd=(81, PT), q=(87, PT))   # ULOP3.LUT URd = URa | URb
@@ -477,6 +478,26 @@ def c0_dims(msl, j):
 refl('计算 c[0] 0x4 / 0x8 / 0xc 线程组数映到宿主 0x200（时之笛 21d9f83e6027c565）', True,
      cs_shader([ULDC0(4, 0x4), ULDC0(5, 0x8), ULDC0(6, 0xc), LDC64(8, 0x10), MOVU(0, 4), MOVU(1, 5), MOVU(2, 6), STG32(8, 0, 0), STG32(8, 1, 4), STG32(8, 2, 8)], ssbos=1),
      c0_dims, '宿主只在 c[0] + 0x200 放派发的线程组数；修前原地读 0x4..0xc 得 0，21d9 除以 0、天空辐照度和成 inf / NaN')
+
+# NVN2 计算着色器的推常量块 1（控制段 +0xaa 字数）：游戏把 {地址, 大小} 存储缓冲项推进这一块，它在 c[0] 里排在推常量块 0 之后、uniform 项之前（上游参考实现（MIT）
+#   nvn2_cs[7]）。翻译器把这段映到推常量槽 1 = c[25]，反射给 sbuf_push（宿主 nvn_refl.h SBUFQ：从推常量槽 1 + 偏移读地址）。
+#   修前布局里没有这一块：一款 Switch 2 游戏 21 支计算着色器（+0xb2 = 0、+0xaa = 4 × 1..7）的项落进 uniform / 句柄表的位置，存储缓冲解不出槽、整支不载
+#   期望（按布局手算）：① 只有块 1 一项，地址读 c[0] 0x10 → sbuf_push 槽 1 偏移 0；② 块 1 一项 + 一个 uniform，读 c[0] 0x20 = uniform 0 → ubo_ptr 0（uniform 在块 1 之后）；
+#   ③ 推常量块 0 一个字（取整 0x10）+ 块 1 两项，读 c[0] 0x30 = 块 1 第二项 → sbuf_push 槽 1 偏移 0x10
+def sbuf_from(kind, reg, off=None):
+    def f(msl, j):
+        b = json.loads(j).get('bindings', [])
+        return None if any(x.get('kind') == kind and x.get('reg') == reg and (off is None or x.get('off') == off) for x in b) else f'绑定 {[(x.get("kind"), x.get("reg"), x.get("off")) for x in b]}'
+    return f
+refl('NVN2 计算推常量块 1 的存储缓冲项 → 推常量槽 1（+0xaa）', True,
+     cs_shader([LDC64(8, 0x10), MOVI(0, 7), STG32(8, 0, 0)], pb1=1), sbuf_from('sbuf_push', 1, 0),
+     '块 1 从 0x10 起（推常量块 0 空），第一项 = c[25] + 0；修前这里当成 uniform 0 的位置（ubo_ptr 0）或解不出槽')
+refl('NVN2 计算推常量块 1 之后是 uniform 项', True,
+     cs_shader([LDC64(8, 0x20), MOVI(0, 7), STG32(8, 0, 0)], ubos=1, pb1=1), sbuf_from('ubo_ptr', 0),
+     '块 1 占 0x10..0x20，uniform 0 在 0x20 → 宿主 c[0] + 0x210（ubo_ptr 0）；修前 0x20 被当成句柄表')
+refl('NVN2 计算推常量块 0 之后才是块 1', True,
+     cs_shader([LDC64(8, 0x30), MOVI(0, 7), STG32(8, 0, 0)], push=1, pb1=2), sbuf_from('sbuf_push', 1, 0x10),
+     '块 0 一个字取整到 0x10（0x10..0x20），块 1 两项 0x20..0x40，0x30 = 块 1 第二项 → c[25] + 0x10')
 
 # ATOMS.ADD.F32.FTZ.RN（0x38c，大小 73..76 = 3、操作 87..91 = 0 加）：共享内存上的浮点加（11-06，上游参考实现（MIT）b1d7c707 的比较交换循环扩到所有存储种类；
 #   我方 a83499002 只做了全局内存，共享内存走「Invalid reduction type」记一行丢掉）。期望：MSL 里有线程组内存上的比较交换（atomic_compare_exchange 落在 threadgroup atomic_uint*），

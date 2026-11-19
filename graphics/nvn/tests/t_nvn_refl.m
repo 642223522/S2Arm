@@ -37,6 +37,22 @@ int main(void) {
         }
         VERIFY(!memcmp(got, want, sizeof want), "存储缓冲可写判定：rw 真 / rw 假但非 const / rw 假且 const / 无 rw 且 const / 都没有 → 1 1 0 0 1（实得 %d %d %d %d %d）", got[0], got[1], got[2], got[3], got[4]);
 
+        // 地址推在 NVN2 推常量槽里的存储缓冲（Dsh.cs sbuf_push → SBUFQ）。期望手写：① 槽 1 + 0x10、rw 真 → SBUFQ / reg 1 / off 0x10 / 可写；
+        //   ② 槽 7 + 0xf8（末尾 8 字节）→ 成功；③ 槽 8、④ 偏移 0xf9（8 字节越出 256）、⑤ 没给槽 → 拒（错误写明推常量槽）。反证：同一单测编改前的 nvn_refl.m，① 报「kind sbuf_push not implemented」
+        {
+            NSDictionary *pq[5] = { @{ @"reg": @1, @"off": @0x10, @"rw": @YES }, @{ @"reg": @7, @"off": @0xf8 }, @{ @"reg": @8, @"off": @0 }, @{ @"reg": @1, @"off": @0xf9 }, @{ @"off": @0 } };
+            int rq[5]; NvShader *qs[5]; char qe[5][256];
+            for (int i = 0; i < 5; i++) {
+                NSMutableDictionary *b = [pq[i] mutableCopy]; b[@"kind"] = @"sbuf_push"; b[@"arg_id"] = @0; b[@"msl_name"] = @"cp_s0"; b[@"msl_type"] = @"device _12*";
+                qs[i] = [NvShader new]; qe[i][0] = 0; rq[i] = nvn_refl_from_json(@{ @"route": @"B", @"bindings": @[b] }, &qs[i]->rf, qe[i], sizeof qe[i]);
+            }
+            VERIFY(rq[0] == 0 && qs[0]->rf.nb == 1 && qs[0]->rf.b[0].kind == NVN_RB_SBUFQ && qs[0]->rf.b[0].reg == 1 && qs[0]->rf.b[0].off == 0x10 && qs[0]->rf.b[0].rw,
+                   "① sbuf_push 槽 1 + 0x10 → SBUFQ（rc %d %s）", rq[0], qe[0]);
+            VERIFY(rq[1] == 0 && qs[1]->rf.b[0].kind == NVN_RB_SBUFQ && qs[1]->rf.b[0].reg == 7 && qs[1]->rf.b[0].off == 0xf8, "② 槽 7 末尾 8 字节 → 成功（rc %d %s）", rq[1], qe[1]);
+            VERIFY(rq[2] && strstr(qe[2], "push slot") && rq[3] && strstr(qe[3], "push slot") && rq[4] && strstr(qe[4], "push slot"),
+                   "③ 槽 8 / ④ 偏移越出 256 / ⑤ 没给槽 → 拒（%s | %s | %s）", qe[2], qe[3], qe[4]);
+        }
+
         // #798 前导项配对（11-16 回归：几何变体的拓扑缓冲 trb_data 在反射里是几何辅助缓冲，原先整支判「no texel buffer of that name」、几何核编不出）。期望手写：
         //   ① 前导项指向几何辅助缓冲 → 解析成功、两边都不配对（tbl 0，has_tbl 0：前导数按 0 走）；② 指向纹素缓冲 → 照常互指（#798 原行为）；
         //   ③ 名字找不到 → 照旧报错；④ 指向别的种类（常量缓冲）→ 照旧报错。反证：同一单测编改前的 nvn_refl.m，① 红

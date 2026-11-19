@@ -133,6 +133,9 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
             else if ([k isEqualToString:@"gmem_map"]) { r->kind = NVN_RB_GMEM; r->rw = [b[@"rw"] boolValue]; }   // raw memory pool table (nvn_refl.h GMEM)
             else if ([k isEqualToString:@"gmem_log"]) { r->kind = NVN_RB_GMEML; r->rw = 1; }
             else if ([k isEqualToString:@"sbuf_ubo"]) { r->kind = NVN_RB_SBUFU; r->rw = sbuf_rw(b); r->off = (uint16_t)[b[@"off"] intValue]; }
+            else if ([k isEqualToString:@"sbuf_push"]) { int off = [b[@"off"] intValue];   // its address pushed into NVN2 push slot reg (Dsh.cs sbuf_push; nvn_refl.h SBUFQ)
+                if (reg < 0 || reg >= NVN_REFL_PUSH_SLOTS || off < 0 || off + 8 > NVN_REFL_PUSH_BYTES) FAIL("B binding %s: push slot %d + %d outside the %d slots of %d bytes", [nm description].UTF8String, reg, off, NVN_REFL_PUSH_SLOTS, NVN_REFL_PUSH_BYTES);
+                r->kind = NVN_RB_SBUFQ; r->rw = sbuf_rw(b); r->off = (uint16_t)off; }
             else if ([k isEqualToString:@"geometry"]) { if (reg < 0 || reg > 4) FAIL("invalid geometry helper slot"); r->kind = NVN_RB_GEOMETRY; }
             else if ([k isEqualToString:@"support"]) r->kind = NVN_RB_SUPPORT;
             else if ([k isEqualToString:@"uvx"]) r->kind = NVN_RB_UVX;

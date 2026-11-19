@@ -202,7 +202,9 @@ namespace S2A.Dsh
                 var j = new JsonObject { ["key"] = Key, ["stage"] = stage, ["code"] = cp, ["arch"] = "sm86", ["tex"] = new JsonObject(), ["img"] = new JsonObject(), ["attr"] = new JsonObject(), ["fout"] = new JsonObject(), ["c1"] = Convert.ToHexStringLower(c1) };
                 if (stage == "cs") j["tensor_mma_count"] = DshTensor.Count(code);
                 // 计算阶段的驱动常量在 c[0] 里按程序排（推送常量字数 +0xa9，uniform / storage / 纹理项数 +0xb1..+0xb3，分离纹理 / 分离采样器项数 +0xb4 / +0xb5（图像在它们之后，上游参考实现（MIT）67f1d0055），大小 +0xba），翻译器按它映射（InstEmitAmpere.cs AMapC0）
-                if (stage == "cs") j["nvn2_cs"] = new JsonArray(ctl[0xb1], ctl[0xb2], ctl[0xb3], BitConverter.ToUInt16(ctl, 0xba), ctl[0xa9] * 4, ctl[0xb4], ctl[0xb5]);
+                //   推常量块 1（+0xaa 字数，排在推常量块 0 之后、uniform 项之前）：游戏推进来的 {地址, 大小} 存储缓冲项或 8 字节句柄，翻译器映射到推常量槽 1 = c[25]（上游参考实现（MIT）nvn2_cs[7]）。
+                //   不给它时，一款 Switch 2 游戏的计算着色器（+0xb2 = 0、+0xaa = 4 × 1..7）把这些项读进了 uniform / 句柄表的位置，存储缓冲解不出槽、整支不载
+                if (stage == "cs") j["nvn2_cs"] = new JsonArray(ctl[0xb1], ctl[0xb2], ctl[0xb3], BitConverter.ToUInt16(ctl, 0xba), ctl[0xa9] * 4, ctl[0xb4], ctl[0xb5], ctl[0xaa] * 4);
                 // 早期深度（NVN2）：像素着色器控制段 +0x5b（NVN1 在 +0x718，见上）。原先 NVN2 不读，Switch 2 款里该先测深度再着色的像素着色器（先写内存、后测深度）全部晚测，
                 //   被遮挡的像素也整片着色。搬 nxnative a888e668（MIT）：NVN2 驱动按单字节读 +0x58..+0x62 的片元标志，+0x5b 即早测；对方读数（一款第三方 Switch 2 游戏，M4 Pro）GPU 19.0 → 16.6 ms、
                 //   p95 64 → 26 ms；040074A01BF12000 的 13546 支像素着色器里 2855 支、0400486024DEC000 的 22352 支里 746 支带它。自己写深度的（SPH 字 19 位 1，OmapDepth）不提前：先测的深度不是它算出的那个
@@ -1919,6 +1921,9 @@ namespace S2A.Dsh
                     continue;
                 }
                 if (stage == "cs" && off != null && 0x210 <= off && off < 0x310 && (off - 0x210) % 16 == 0) e.Set("kind", "ubo_ptr").Set("reg", (off - 0x210) / 16);
+                // 地址在 NVN2 推常量槽里（c[24 + k]：计算阶段推常量块 1 映射到 c[25]，图形阶段 i 自己的缓冲库 c[25 + i]）：宿主从推常量槽读地址（nvn_refl.h SBUFQ）。
+                //   原先落进下一支成 sbuf_ubo reg 21..28，宿主按 uniform 槽读不到 → 哑缓冲
+                else if (b != null && b.Count > 0 && (long)b["cb_slot"] >= 24 && (long)b["cb_slot"] < 32) e.Set("kind", "sbuf_push").Set("reg", (long)b["cb_slot"] - 24).Set("off", (long)b["cb_offset"] * 4);
                 else if (b != null && b.Count > 0 && (long)b["cb_slot"] >= 3) e.Set("kind", "sbuf_ubo").Set("reg", (long)b["cb_slot"] - 3).Set("off", (long)b["cb_offset"] * 4);
                 else e["reg"] = off != null && bs != null && 0 <= off - bs && off - bs < 0x100 && (off - bs) % 16 == 0 ? (off - bs) / 16 : null;
                 e["rw"] = b != null && b.Count > 0 && ((long)b["flags"] & 1) != 0;   // BufferUsageFlags.Write = bit 0（同 dmsh_build.py）
