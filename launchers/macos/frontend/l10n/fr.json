@@ -1740,6 +1740,9 @@
   "s2arm.env.widget.group": "Widget de l’écran d’accueil",
   "s2arm.env.widget.title": "Inclure le widget de l’écran d’accueil sur l’iPhone",
   "s2arm.env.widget.detail": "Un widget en forme de console pour l’écran d’accueil de l’iPhone, qui affiche vos jeux récents et les plus joués ; touchez une couverture pour jouer. Avec un identifiant Apple gratuit, chaque nouvelle installation utilise un App ID de plus (10 par 7 jours).",
+  "s2arm.env.fullscreen.group": "Fenêtre de jeu",
+  "s2arm.env.fullscreen.title": "Lancer les jeux en plein écran",
+  "s2arm.env.fullscreen.detail": "Activé : tous les jeux (y compris ceux ajoutés plus tard) s’ouvrent en plein écran ; un jeu doté de son propre réglage plein écran garde ce réglage.",
   "home.card.daysLeft": "Encore %d jours",
   "home.card.expired": "Expiré"
 }

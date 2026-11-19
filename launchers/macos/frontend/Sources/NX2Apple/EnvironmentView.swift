@@ -91,6 +91,15 @@ struct EnvironmentView: View {
                                 .accessibilityIdentifier("env.homeWidget")
                         }
                     }
+                    // 启动游戏时自动全屏（#575）：对所有游戏生效，单款在 env.txt 显式写过 S2A_FULLSCREEN 的照单款
+                    CardGroup(loc.t("s2arm.env.fullscreen.group")) {
+                        CardRow(loc.t("s2arm.env.fullscreen.title"), detail: model.launchFullscreenError.map(loc.backend) ?? loc.t("s2arm.env.fullscreen.detail")) {
+                            Toggle("", isOn: Binding(get: { model.launchFullscreen }, set: { model.setLaunchFullscreen($0) }))
+                                .toggleStyle(LauncherSwitchStyle()).labelsHidden()
+                                .accessibilityLabel(loc.t("s2arm.env.fullscreen.title"))
+                                .accessibilityIdentifier("env.launchFullscreen")
+                        }
+                    }
                     let failing = model.checks.filter { !$0.ok }
                     ForEach(ordered(failing), id: \.self) { group in
                         let items = failing.filter { groupOf($0) == group }

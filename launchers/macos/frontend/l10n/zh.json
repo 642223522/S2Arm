@@ -1774,6 +1774,9 @@
   "s2arm.env.widget.group": "主屏小组件",
   "s2arm.env.widget.title": "装到 iPhone 时带主屏小组件",
   "s2arm.env.widget.detail": "iPhone 桌面上的游戏机样子小组件：显示最近玩的游戏和玩得最多的游戏，点封面直接开。用免费 Apple ID 时，每次新装会多用一个 App ID 名额（7 天 10 个）",
+  "s2arm.env.fullscreen.group": "游戏窗口",
+  "s2arm.env.fullscreen.title": "启动游戏时自动全屏",
+  "s2arm.env.fullscreen.detail": "打开后，所有游戏（包括以后添加的）启动时都直接进入全屏；单独给某款设过全屏开关的，照那款的。",
   "home.card.daysLeft": "还剩 %d 天",
   "home.card.expired": "签名已过期"
 }

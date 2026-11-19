@@ -2135,8 +2135,11 @@ void s2a_front_run(void (*guest_main)(void)) {
             tick(); [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) { (void)t; tick(); }];
         }
         [view setNeedsLayout:YES]; [window center]; [window makeKeyAndOrderFront:nil]; [window makeFirstResponder:view];
-        // 启动即全屏（#575，S2A_FULLSCREEN=1）：窗口出来后走系统原生全屏，同菜单「进入全屏幕」，退出后回到窗口
-        { const char *fs = getenv("S2A_FULLSCREEN"); if (fs && !strcmp(fs, "1")) { fprintf(stderr, "[s2a] 启动即全屏（S2A_FULLSCREEN=1）\n"); dispatch_async(dispatch_get_main_queue(), ^{ if (!window_fullscreen(window)) window_fullscreen_toggle(window); }); } }
+        // 启动即全屏（#575，S2A_FULLSCREEN=1）：窗口出来后走系统原生全屏，同菜单「进入全屏幕」，退出后回到窗口。
+        //   S2A_FULLSCREEN_DEFAULT 是启动器设置里「启动游戏时自动全屏」的全局缺省：这款显式给了 S2A_FULLSCREEN（含 =0）就照这款的，没给才用全局的
+        { const char *fs = getenv("S2A_FULLSCREEN"); const char *from = "S2A_FULLSCREEN";
+          if (!fs) { fs = getenv("S2A_FULLSCREEN_DEFAULT"); from = "启动器设置"; }
+          if (fs && !strcmp(fs, "1")) { fprintf(stderr, "[s2a] 启动即全屏（来源 %s）\n", from); dispatch_async(dispatch_get_main_queue(), ^{ if (!window_fullscreen(window)) window_fullscreen_toggle(window); }); } }
         [app activateIgnoringOtherApps:YES]; focused = YES; input_mute_refresh();
         s2a_pad_set_active(1);
         install_pad_handlers();
