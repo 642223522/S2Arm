@@ -2959,7 +2959,7 @@ void nvn_be_drain(void) { if (mtl_gpu_halted()) { MLOG("GPU 安全停中：后�
 
 // ================= Render replay =================
 #include "../../host/front.h"
-static int g_red_once[206];   // RED_ONCE keys 0..205 (205: texture upload / pool-storage synchronization; 202–204: nvn_stex.inc 放置式稀疏贴图块管理 — CPU 写的 / GPU 写的稀疏贴图同步失败（没堆页 / 暂存），稀疏贴图不做 tex_upgrade 整张复制; 198–201: nvn_sparse_tex.inc Metal sparse textures — heap / texture not made, page / level deswizzle failed, map / upload command buffer failed; 195–197: nvn_tensor.inc tensor_fix_in, the tensor stand-in's fixed-size input; 194: #798 a texel buffer's aligned lead view could not be made, tbl_view; 193: a texture outside any memory pool with an unmapped storage tail, #b5a081; 188–192: internal resolution — 188 a draw / dispatch still held scaled image-slot storages after the retry limit, rs_pre_draw / rs_pre_images; 189 a storage past the device texture limit, rs_rescale / tex_widen; 190 a CPU readback of an enlarged storage not scaled back linearly, nvn_be_read_texels; 191 an image-slot storage that could not go back to its own size; 192 a screenshot of the enlarged window texture not scaled back; 187: a multisample count the GPU does not support, stepped down, mtl_samples_supported (#903); 186: a packaged texture's storage runs past the end of its memory pool, pkg_upload_ (#819); 183 / 184 / 185: an incompatible Metal texture format view fell back to the base format in rt_view_fmt / attach / clear_tex; 182: a block-compressed texture whose GPU writer resolved to its own Metal format, bcal_copy; 181: a texture view whose target and layer range Metal cannot express (#199), tex_by_id; 179 / 180: a pass's own depth attachment sampled in it could not be copied / viewed (#387); 178: a slot read on-chip by the first draw of a pass was not opened loaded; 177: a compute dispatch's binding ended the shared encoder again on the retry; 175 / 176: a block-compressed texture's GPU-written bytes not taken: no host texture of the uncompressed writer / no staging buffer, bcal_sync; 174: a converted vertex attribute stream address in no memory pool, vconv_bind; 172 / 173: a pool table for handles traced to no slot could not be allocated / grown, pool_tab_new / pool_tab_put_n; 171: a first-invocation store skipped, dispatch; 170: an sRGB / linear view not made again on its upgraded parent, tex_upgrade; 169: a storage buffer address pushed into an NVN2 push slot the pools do not hold (SBUFQ; until 11-07 a not-loaded color attachment written); 167 / 168: a storage buffer address the pools do not hold, slot / handle in a uniform buffer; 166: a texture turning packaged whose old host texture has another shape, its GPU-written texels not carried over, carry_gpu) (162: a vertex buffer address the pools do not hold, bind_vbufs) (160 / 161 / 163–165: tensor-core network stand-in, nvn_tensor.inc; 147–159 left for the NVN2 task / mesh branch) (143–146: NVN2 DLSS → MetalFX, nvn_dlss.inc) (139–142: folded linear textures: tex_linear, se_want, se_bind, copies / clears into one) (137 / 138: a GL texture an NVN texture is built from has no usable storage / no matching NVN format) (136: a draw's binding ended its pass twice) (134 / 135: alpha test / multisampling off the fragment shader cannot take); same-pass feedback snapshot too large 127, native image atomics use 128/129, same-pass feedback view narrowing 133
+static int g_red_once[207];   // RED_ONCE keys 0..206 (206: a BC texture drawn as blocks on a GPU without BC, its shadow / staging / decode not made, bcdec_attach / bcdec_flush; 205: texture upload / pool-storage synchronization; 202–204: nvn_stex.inc 放置式稀疏贴图块管理 — CPU 写的 / GPU 写的稀疏贴图同步失败（没堆页 / 暂存），稀疏贴图不做 tex_upgrade 整张复制; 198–201: nvn_sparse_tex.inc Metal sparse textures — heap / texture not made, page / level deswizzle failed, map / upload command buffer failed; 195–197: nvn_tensor.inc tensor_fix_in, the tensor stand-in's fixed-size input; 194: #798 a texel buffer's aligned lead view could not be made, tbl_view; 193: a texture outside any memory pool with an unmapped storage tail, #b5a081; 188–192: internal resolution — 188 a draw / dispatch still held scaled image-slot storages after the retry limit, rs_pre_draw / rs_pre_images; 189 a storage past the device texture limit, rs_rescale / tex_widen; 190 a CPU readback of an enlarged storage not scaled back linearly, nvn_be_read_texels; 191 an image-slot storage that could not go back to its own size; 192 a screenshot of the enlarged window texture not scaled back; 187: a multisample count the GPU does not support, stepped down, mtl_samples_supported (#903); 186: a packaged texture's storage runs past the end of its memory pool, pkg_upload_ (#819); 183 / 184 / 185: an incompatible Metal texture format view fell back to the base format in rt_view_fmt / attach / clear_tex; 182: a block-compressed texture whose GPU writer resolved to its own Metal format, bcal_copy; 181: a texture view whose target and layer range Metal cannot express (#199), tex_by_id; 179 / 180: a pass's own depth attachment sampled in it could not be copied / viewed (#387); 178: a slot read on-chip by the first draw of a pass was not opened loaded; 177: a compute dispatch's binding ended the shared encoder again on the retry; 175 / 176: a block-compressed texture's GPU-written bytes not taken: no host texture of the uncompressed writer / no staging buffer, bcal_sync; 174: a converted vertex attribute stream address in no memory pool, vconv_bind; 172 / 173: a pool table for handles traced to no slot could not be allocated / grown, pool_tab_new / pool_tab_put_n; 171: a first-invocation store skipped, dispatch; 170: an sRGB / linear view not made again on its upgraded parent, tex_upgrade; 169: a storage buffer address pushed into an NVN2 push slot the pools do not hold (SBUFQ; until 11-07 a not-loaded color attachment written); 167 / 168: a storage buffer address the pools do not hold, slot / handle in a uniform buffer; 166: a texture turning packaged whose old host texture has another shape, its GPU-written texels not carried over, carry_gpu) (162: a vertex buffer address the pools do not hold, bind_vbufs) (160 / 161 / 163–165: tensor-core network stand-in, nvn_tensor.inc; 147–159 left for the NVN2 task / mesh branch) (143–146: NVN2 DLSS → MetalFX, nvn_dlss.inc) (139–142: folded linear textures: tex_linear, se_want, se_bind, copies / clears into one) (137 / 138: a GL texture an NVN texture is built from has no usable storage / no matching NVN format) (136: a draw's binding ended its pass twice) (134 / 135: alpha test / multisampling off the fragment shader cannot take); same-pass feedback snapshot too large 127, native image atomics use 128/129, same-pass feedback view narrowing 133
 // The key must be a constant inside the table: a key past the end wrote into the statics next to it (11-05: nvn_tensor.inc used 160 / 161 with 147 slots)
 #define RED_ONCE(k, ...) do { _Static_assert((k) >= 0 && (k) < (int)(sizeof g_red_once / sizeof g_red_once[0]), "RED_ONCE key outside g_red_once"); if (!g_red_once[k]++) MLOG("【红】 " __VA_ARGS__); } while (0)
 // NVN vertex streams 0–15 → Metal vertex buffer slots: 0–13 go to 16–29 (30 is the constant fallback buffer), 14 and 15 to 14 and 15. Metal has only the 31 slots 0–30; translated shaders use only buffer(0) (the argument buffer),
@@ -6260,7 +6260,8 @@ static int bcrt_view(id<MTLTexture> base, const view_t *v, int has_v, MTLPixelFo
 // and back, byte for byte, after it (bcrt_flush, from rp_end). The shadow is an attachment of its own: always loaded and stored, and kept out of the load-skip / store-elision / zero-source bookkeeping,
 // which keys by the BC texture's serial. Shadows and staging buffers stay resident and are reused per attachment number, format and size, so a pass per depth plane adds no residency churn.
 // From PR #11 (digitalhivehub), where Tears of the Kingdom first drew this way
-typedef struct { id<MTLTexture> base, shadow; id<MTLBuffer> buf; NSUInteger level, slice, z, w, h, bw, bh, bpb; } bcrt_t;
+typedef struct { id<MTLTexture> base, shadow; id<MTLBuffer> buf; NSUInteger level, slice, z, w, h, bw, bh, bpb; uint32_t dec; } bcrt_t;   // dec：无 BC 的解压存储，遍后用解码核解回（bcd 的格式号，0 = 逐字节拷回）
+static void bcdec_flush(const bcrt_t *e, NSUInteger row);   // 无 BC：影子的块解回底贴图（见 bcdec_attach）
 static bcrt_t g_bcrt[8];
 static __strong id<MTLTexture> g_bcrt_sh[8]; static __strong id<MTLBuffer> g_bcrt_buf[8];
 static int bcrt_is(id<MTLTexture> t) { for (int i = 0; i < g_nbcrt; i++) if (t && g_bcrt[i].shadow == t) return 1; return 0; }
@@ -6269,6 +6270,7 @@ static void bcrt_flush(void) {
     for (int i = 0; i < n; i++) { bcrt_t e = g_bcrt[i]; g_bcrt[i] = (bcrt_t){0};
         NSUInteger row = e.bw * e.bpb, img = row * e.bh;
         enc_b_copy_texture_buffer(blit(), e.shadow, 0, 0, MTLOriginMake(0, 0, 0), MTLSizeMake(e.bw, e.bh, 1), e.buf, 0, row, img);
+        if (e.dec) { bcdec_flush(&e, row); continue; }
         enc_b_copy_buffer_texture(blit(), e.buf, 0, row, img, MTLSizeMake(e.w, e.h, 1), e.base, e.slice, e.level, MTLOriginMake(0, 0, e.z));
     }
 }
@@ -6295,6 +6297,67 @@ static int bcrt_attach(MTLRenderPassAttachmentDescriptor *a, id<MTLTexture> base
     static int once[2]; if (!once[side == 1]++) MLOG("render target in a %s texture: view format %#x drawn into a %lux%lu-block shadow (Metal format %lu) and copied back after the pass (first case pass %llu)",
                                        side == 1 ? "depth" : "compressed", v->format, (unsigned long)bw, (unsigned long)bh, (unsigned long)spf, g_stat_pass + 1);
     return 1;
+}
+// 无 BC 的 GPU（iPhone）：BC 贴图存成解压后的像素（bc_gpu_dec），游戏又按「一个纹素 = 一个 BC 块」的整数视图把它当渲染目标写——在 GPU 上编码 BC
+//   （诊断 13 款「render target view format 0x2c / 0x2f cannot be attached / not compatible」：BC1 / BC4 走 8 字节的 RGBA16UI，BC2 / 3 / 5 / 6 / 7 走 16 字节的 RGBA32UI）。
+//   Metal 建不了这种视图（每像素字节数不同），原先按底格式画，块写进了像素。这里同 bcrt_attach 画进按块尺寸的影子（视图格式），
+//   影子按（贴图序号、级、层）常驻、首次建时清零（真机上渲染目标的块存储同样从游戏内存的初值起，没被写的块保持上一遍写的），
+//   遍结束 bcdec_flush 用上传那套 bcd 解码核把影子的块解进底贴图那一级那一层。3D 不走这里（bcd 只写 2D 视图）
+static int bcdec_view(const tex_t *t, id<MTLTexture> base, const view_t *v, int has_v, MTLPixelFormat *pf_out) {
+    if (!t || !base || mtl_fmt_block(base.pixelFormat) || !nvn_fmt_bc(t->d.format) || !bcd_fmt(t->d.format) || !has_v || !v->set_format || t->d.target == 2) return 0;
+    int tbw = 0, tbh = 0, bw = 0, bh = 0, bb = nvn_fmt_bpb(t->d.format, &tbw, &tbh); uint32_t pf = 0; uint8_t swz[4];
+    if (!bb || tbw != 4 || tbh != 4 || !nvn_fmt_to_mtl(v->format, &pf, swz) || !pf || mtl_fmt_block((MTLPixelFormat)pf) || mtl_fmt_depth((MTLPixelFormat)pf)) return 0;
+    if (nvn_fmt_bpb(v->format, &bw, &bh) != bb || bw != 1 || bh != 1) return 0;
+    *pf_out = (MTLPixelFormat)pf; return 1;
+}
+static NSMutableDictionary<NSString *, id<MTLTexture>> *g_bcdec_sh;   // 常驻影子：键「序号/级/层/格式」
+static uint64_t g_bcdec_n;
+static int bcdec_attach(MTLRenderPassAttachmentDescriptor *a, const tex_t *t, id<MTLTexture> base0, const view_t *v, int has_v) {
+    MTLPixelFormat spf; int k = g_nbcrt; if (k >= 8 || !bcdec_view(t, base0, v, has_v, &spf) || !bcd_ready()) return 0;
+    id<MTLTexture> base = base0;
+    if (!(base.usage & MTLTextureUsageShaderWrite) || (base.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB && !(base.usage & MTLTextureUsagePixelFormatView))) {   // bcd 写它（sRGB 经 RGBA8Unorm 视图）
+        base = tex_upgrade(t, base, MTLTextureUsageShaderWrite | MTLTextureUsagePixelFormatView, base.pixelFormat); a.texture = base; }
+    int tbw = 0, tbh = 0; NSUInteger bpb = (NSUInteger)nvn_fmt_bpb(t->d.format, &tbw, &tbh);
+    NSUInteger lv = a.level, sl = a.slice, w = mip_extent(base.width, lv), h = mip_extent(base.height, lv), bw = (w + 3) / 4, bh = (h + 3) / 4, row = bw * bpb, img = row * bh;
+    if (!g_bcdec_sh) g_bcdec_sh = [NSMutableDictionary dictionary];
+    NSString *key = [NSString stringWithFormat:@"%llu/%lu/%lu/%lu", (unsigned long long)t->serial, (unsigned long)lv, (unsigned long)sl, (unsigned long)spf];
+    id<MTLTexture> sh = g_bcdec_sh[key];
+    if (!sh || sh.width != bw || sh.height != bh) {
+        MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:spf width:bw height:bh mipmapped:NO];
+        d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead; d.storageMode = MTLStorageModeShared;
+        sh = [g_dev newTextureWithDescriptor:d];
+        if (!sh) { RED_ONCE(206, "BC texture drawn as blocks on a GPU without BC: cannot create its %lux%lu-block shadow (Metal format %lu)", (unsigned long)bw, (unsigned long)bh, (unsigned long)spf); return 0; }
+        void *z = calloc(1, img); if (z) { [sh replaceRegion:MTLRegionMake2D(0, 0, bw, bh) mipmapLevel:0 withBytes:z bytesPerRow:row]; free(z); }
+        if (g_bcdec_sh[key]) defer_obj_release(g_bcdec_sh[key]);
+        g_bcdec_sh[key] = sh; res_add(sh);
+    }
+    if (!g_bcrt_buf[k] || g_bcrt_buf[k].length < img) {
+        id<MTLBuffer> buf = [g_dev newBufferWithLength:img options:MTLResourceStorageModePrivate];
+        if (!buf) { RED_ONCE(206, "BC texture drawn as blocks on a GPU without BC: cannot create its %lu-byte staging buffer", (unsigned long)img); return 0; }
+        if (g_bcrt_buf[k]) defer_obj_release(g_bcrt_buf[k]);
+        res_add(buf); g_bcrt_buf[k] = buf;
+    }
+    g_bcrt[g_nbcrt++] = (bcrt_t){base, sh, g_bcrt_buf[k], lv, sl, 0, w, h, bw, bh, bpb, (uint32_t)bcd_fmt(t->d.format)};
+    a.texture = sh; a.level = 0; a.slice = 0; a.depthPlane = 0;
+    if (!g_bcdec_n++) MLOG("BC texture drawn as blocks on a GPU without BC: view format %#x drawn into a %lux%lu-block shadow (Metal format %lu), decoded into the texture after the pass (first case pass %llu)",
+                           v->format, (unsigned long)bw, (unsigned long)bh, (unsigned long)spf, g_stat_pass + 1);
+    return 1;
+}
+// 遍结束：影子的块已拷进 e->buf（行距 row），bcd 把它们解进底贴图的那一级那一层（参数同 up_flush 的 up_dec：源偏移、行距、宽、高、格式号）
+static void bcdec_flush(const bcrt_t *e, NSUInteger row) {
+    static id at; static int failed; NSError *err = nil;
+    if (failed) return;
+    if (!at) { at = rec_table(tab_new(2, 1, 0, &err)); if (!at) { failed = 1; MLOG("【红】 BC blocks drawn on a GPU without BC: cannot create the decode argument table: %s", err.localizedDescription.UTF8String); return; } }
+    MTLPixelFormat vf = e->base.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB ? MTLPixelFormatRGBA8Unorm : e->base.pixelFormat;
+    id<MTLTexture> v = [e->base newTextureViewWithPixelFormat:vf textureType:MTLTextureType2D levels:NSMakeRange(e->level, 1) slices:NSMakeRange(e->slice, 1)];
+    id<MTLBuffer> pb = nil; size_t po = arena_alloc(32, &pb);
+    if (!v || !pb) { RED_ONCE(206, "BC blocks drawn on a GPU without BC: cannot create the decode view / parameters"); return; }
+    uint32_t *pp = (uint32_t *)((uint8_t *)pb.contents + po); pp[0] = 0; pp[1] = (uint32_t)row; pp[2] = (uint32_t)e->w; pp[3] = (uint32_t)e->h; pp[4] = e->dec; pp[5] = 0;
+    if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
+    id ce = enc_c_begin(NULL); enc_c_table(ce, at);
+    tab_buf(at, e->buf, 0, 0); tab_buf(at, pb, po, 1); tab_tex(at, v, 0);
+    enc_c_pso(ce, bcd_ready()); enc_c_dispatch(ce, MTLSizeMake((e->bw + 7) / 8, (e->bh + 7) / 8, 1), MTLSizeMake(8, 8, 1)); enc_c_end(ce);
+    args_dirty_all(); defer_obj_unref(v);
 }
 static MTLPixelFormat rt_view_fmt(id<MTLTexture> base, const view_t *v, int has_v) {
     MTLPixelFormat spf;
@@ -6421,6 +6484,7 @@ static void attach(MTLRenderPassAttachmentDescriptor *a, const tex_t *t, const v
     if (has_v && v->set_levels) a.level = extent.level;
     if (has_v && v->set_layers) { if (t->d.target == 2) a.depthPlane = extent.layer; else a.slice = extent.layer; }
     if (base && mtl_fmt_block(base.pixelFormat)) { if (!bcrt_attach(a, base, v, has_v)) { rt_view_fmt(base, v, has_v); a.texture = nil; } return; }   // compressed formats: a shadow or nothing (see rt_view_fmt)
+    if (base && bcdec_attach(a, t, base, v, has_v)) return;   // 无 BC：解压存储的 BC 贴图被当块写（见 bcdec_attach）
     if (base && mtl_fmt_depth(base.pixelFormat) && bcrt_attach(a, base, v, has_v)) return;   // a depth texture through a colour view: a shadow (see shrt_block)
     // A view that changes the format is attached as a Metal view of that format (pipeline formats follow the attachment). SMBW's last pass writes the RGBA8 swapchain texture through an RGBA8_SRGB view, so the hardware encodes sRGB on write;
     // attaching the base texture instead stored the linear values as they were and the whole picture came out dark (every value decoded from sRGB once more, on the Mac and the iPhone). The view lives until this submission completes
@@ -12911,7 +12975,7 @@ static void pso_predict_rest_(void) {
         if (hq.op == OP_SET_RT) {
             p_set_rt rb; const p_set_rt *r = set_rt_rec(aq, hq.size, &rb); memset(cf, 0, sizeof cf); dfull = sfull = 0; samples = 1;
             g_tex_peek = 1;   // 只取格式 / 采样数（见 g_tex_peek）
-            for (int i = 0; i < r->n && i < 8; i++) { id<MTLTexture> t = r->color[i] && !rt_dup_slot(r, i) ? tex_mtl(r->color[i]) : nil; if (t && nvn_fmt_bc(r->color[i]->d.format) && mtl_fmt_block(t.pixelFormat)) t = nil; if (t) { cf[i] = (uint32_t)rt_view_fmt(t, &r->cview[i], r->has_cview[i]); samples = (uint32_t)t.sampleCount; } }   // compressed BC targets are never attached (see attach); on a GPU without BC the storage is decoded and IS attached, so predict its real format
+            for (int i = 0; i < r->n && i < 8; i++) { id<MTLTexture> t = r->color[i] && !rt_dup_slot(r, i) ? tex_mtl(r->color[i]) : nil; if (t && nvn_fmt_bc(r->color[i]->d.format) && mtl_fmt_block(t.pixelFormat)) t = nil; if (t) { MTLPixelFormat dpf; cf[i] = bcdec_view(r->color[i], t, &r->cview[i], r->has_cview[i], &dpf) ? (uint32_t)dpf : (uint32_t)rt_view_fmt(t, &r->cview[i], r->has_cview[i]); samples = (uint32_t)t.sampleCount; } }   // 无 BC 的块影子按视图格式（bcdec_attach）   // compressed BC targets are never attached (see attach); on a GPU without BC the storage is decoded and IS attached, so predict its real format
             id<MTLTexture> dt = r->depth ? tex_mtl(r->depth) : nil;
             g_tex_peek = 0;
             if (dt) { MTLPixelFormat f = dt.pixelFormat; samples = (uint32_t)dt.sampleCount;
