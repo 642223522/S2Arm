@@ -66,7 +66,7 @@ public struct Catalogue: Equatable, Sendable {
     /// 列进来（单个对象，字段同 App 包清单条目，另有 dir）。图 / 补丁表都相对版本目录 program/<dir>/（没写 dir = program/）。
     /// 同一个号 App 包清单里也有：以程序包这条为准（换上的是这一版）。游戏号不合规的目录、清单读不了 / 不是这一款的都跳过并记问题
     /// legacy（只装壳的通用 App）：0.5.x 老玩家覆盖装上通用 App 后，老款的资源包还在 <根>/<号>/资源包、App 包里没有它、也还没有程序包——
-    /// 照样列出来，卡片「在电脑上更新」（.needsGameUpdate；电脑总控台「更新所选」补程序包，资源不重推），不让玩家以为游戏丢了。
+    /// 照样列出来，卡片「在电脑上更新一次」（.needsLegacyUpdate：说清是旧版装的、存档都在；电脑总控台「更新所选」补程序包，资源不重推），不让玩家以为游戏丢了。
     /// 名字取资源包自带的 资源包/ctl/control.nacp（同电脑端 install.phone_game_name：简中 14，没有取美式英语 0），读不到用游戏号
     mutating func merge(programs root: URL, legacy: Bool = false) {
         guard let ids = try? FileManager.default.contentsOfDirectory(atPath: root.path) else { return }
@@ -77,7 +77,7 @@ public struct Catalogue: Equatable, Sendable {
                 if legacy, !tiles.contains(where: { $0.id == id }),
                    FileManager.default.fileExists(atPath: root.appendingPathComponent(id).appendingPathComponent("资源包").path, isDirectory: &isDir), isDir.boolValue {
                     let pack = root.appendingPathComponent(id).appendingPathComponent("资源包")
-                    tiles.append(GameTile(id: id, title: Catalogue.nacpTitle(pack.appendingPathComponent("ctl/control.nacp")) ?? id, state: .needsGameUpdate))
+                    tiles.append(GameTile(id: id, title: Catalogue.nacpTitle(pack.appendingPathComponent("ctl/control.nacp")) ?? id, state: .needsLegacyUpdate))
                     problems.append("程序包清单 \(id) 不在、只有资源包（0.5.x 老款），列为「在电脑上更新」")
                 }
                 continue

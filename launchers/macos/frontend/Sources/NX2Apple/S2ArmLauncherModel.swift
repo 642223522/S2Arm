@@ -118,6 +118,18 @@ struct PhoneOutcome: Equatable {
     /// 完成页「推到手机」（11-13）：推进手机上自签 S2Arm 的 .img 文件名（空 = 还没推）；推不成时作业给的一句「缺什么、怎么做」
     /// 这次补进 S 级优化的各款：打上 / 没打上（作业层结果 sgrade，pack/jobs/install.py；升级 / 装机 / 导出完成页列，11-14）
     var sgrade: [SGradeGameResult] = []
+    /// 「更新 S2Arm」装完后这台手机上的 0.5.x 老款（作业结果 legacy：资源在、程序包不在，这台电脑能更新的）：成功页接着列出、默认全勾，点「更新这 N 款」走 pushSelected
+    var legacy: [LegacyGame] = []
+    /// 同上、但这台电脑的游戏库里没有它的 iPhone 包（legacyElsewhere：要回装它的那台电脑更新）：只写一行说明
+    var legacyElsewhere: [String] = []
+    /// 老款所在那台的设备记录键（作业结果 legacyDevice）：「更新这 N 款」推到它
+    var legacyDevice = ""
+}
+
+/// 0.5.x 整包装上的老款（作业层 install.legacy_games）
+struct LegacyGame: Equatable, Identifiable {
+    let id: String
+    let name: String
 }
 
 /// 排队的一次出包。

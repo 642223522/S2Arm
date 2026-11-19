@@ -63,7 +63,7 @@ import ShellUI
     let c = Catalogue.load(path: shell.path, programRoot: root)
     #expect(c.tiles.map(\.id) == ["0100000000050000", "0100000000060000", "0100000000080000"], "列 E、F、H（实际 \(c.tiles.map(\.id))）")
     let e = c.tiles.first { $0.id == "0100000000050000" }
-    #expect(e?.state == .needsGameUpdate && e?.title == "老游", "只有资源包的款：「在电脑上更新」、名字取 control.nacp 简中（实际 \(e?.title ?? "nil")）")
+    #expect(e?.state == .needsLegacyUpdate && e?.title == "老游", "只有资源包的款：「在电脑上更新」、名字取 control.nacp 简中（实际 \(e?.title ?? "nil")）")
     #expect(c.tiles.first { $0.id == "0100000000080000" }?.title == "Old", "没有简中名取美式英语")
     #expect(c.tiles.first { $0.id == "0100000000060000" }?.state == .playable, "有程序包的照常可玩")
     let old = tmp.appendingPathComponent("old.json"); try Data(#"{"schema":1,"shell_id":"x","games":[{"title_id":"0100000000050000","name":"E"}]}"#.utf8).write(to: old)

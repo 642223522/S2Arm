@@ -88,7 +88,10 @@ extension S2ArmLauncherModel {
                                                   exportFresh: r["fresh"] as? [String] ?? [], exportReused: (r["reused"] as? NSNumber)?.intValue ?? 0,
                                                   exportUnwritten: r["unwritten"] as? [String] ?? [],
                                                   sgrade: (r["sgrade"] as? [String: Any] ?? [:]).sorted { $0.key < $1.key }
-                                                      .map { SGradeGameResult(name: names[$0.key.uppercased()] ?? $0.key, outcome: SGradeOutcome($0.value as? [String: Any] ?? [:])) })
+                                                      .map { SGradeGameResult(name: names[$0.key.uppercased()] ?? $0.key, outcome: SGradeOutcome($0.value as? [String: Any] ?? [:])) },
+                                                  legacy: (r["legacy"] as? [[String: Any]] ?? []).compactMap { g in (g["gameId"] as? String).map { LegacyGame(id: $0.uppercased(), name: g["name"] as? String ?? $0) } },
+                                                  legacyElsewhere: (r["legacyElsewhere"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String ?? $0["gameId"] as? String },
+                                                  legacyDevice: r["legacyDevice"] as? String ?? "")
                 if r["exported"] as? Bool == true, let folder = r["outputPath"] as? String { NSWorkspace.shared.open(URL(fileURLWithPath: folder)) }
             }
             catch let f as JobFailure where ask && Self.confirmCodes[f.code ?? ""] != nil {
