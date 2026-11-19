@@ -508,6 +508,13 @@ static int skip(const char *why, const void *rec) {
 }
 void rp_draw_log_arm(int lines) { g_log_left = lines; }
 
+// 图形高槽与驱动图像表重叠：与 DRV2 的写入顺序、iOS tex_slot_h 同一来源。
+static uint64_t graphics_tex_handle(int st, unsigned reg) {
+    if (st < RP_PROG_STAGES && reg >= 32 && reg < 40 && rp_S.img[st][reg - 32])
+        return rp_S.img[st][reg - 32];
+    return rp_S.tex[st][reg];
+}
+
 // Resolve the exact backing bytes before the pass. The view is temporary: the
 // backend retains it at bind, and the caller releases it after encoding.
 static int tbuf_prepare(nvn_gpu_cmd c, const nvn_gpu_layout_ent *e, int st,
@@ -516,7 +523,7 @@ static int tbuf_prepare(nvn_gpu_cmd c, const nvn_gpu_layout_ent *e, int st,
     if (e->cls != NVN_GPU_RES_TBUF || e->count != 1 || e->src_reg >= RP_NTEX ||
         e->src_reg2 != UINT16_MAX || e->access != NVN_GPU_ACC_R)
         return skip("tbuf_binding_shape", rec);
-    uint64_t h = rp_S.tex[st][e->src_reg];
+    uint64_t h = graphics_tex_handle(st, e->src_reg);
     int id = h ? (int)(h & 0xfffff) : rp_S.tex_base;
     tex_t t; view_t v; int hv = 0;
     if (!rp_tex_snap_by_id(id, &t, &v, &hv)) return skip("tbuf_texture_unresolved", rec);
@@ -1228,7 +1235,7 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
               for (uint32_t k = 0; k < e->count; k++) { if (!g_av[st][k] && !g_prog->dtt[st][i]) g_av[st][k] = fv; if (!g_as[st][k]) g_as[st][k] = fs; } }
             continue;
         }
-        uint64_t h = rp_S.tex[st][e->src_reg];
+        uint64_t h = graphics_tex_handle(st, e->src_reg);
         tex_t tsnap, *tt = g_log_left ? &tsnap : NULL;   // 登记快照只给逐笔日志用：日志关时不拷
         tv[st][i] = rp_view_by_id_decl(h ? (int)(h & 0xFFFFF) : rp_S.tex_base, g_prog->dtt[st][i], g_prog->dcls[st][i], 0, c, tt);
         if (tt && tn < sizeof tl - 56) {
@@ -1268,8 +1275,8 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
                 uint32_t cnt = e->count > 1 ? e->count : 1;
                 for (uint32_t k = 0; k < cnt && nr < (int)(sizeof rd / sizeof rd[0]); k++) {
                     int slot = (int)e->src_reg + (e->count > 1 ? (int)k - RP_HANDLE_TABLE_FIRST_SLOT : 0);
-                    if (slot < 0 || slot >= 32) continue;
-                    uint64_t h = rp_S.tex[st][slot];
+                    if (slot < 0 || slot >= (e->count > 1 ? 32 : 40)) continue;
+                    uint64_t h = graphics_tex_handle(st, (unsigned)slot);
                     if (!rp_tex_snap_by_id(h ? (int)(h & 0xFFFFF) : rp_S.tex_base, &rdsnap[nr], NULL, NULL)) continue;
                     rd[nr] = &rdsnap[nr]; nr++;
                 }
@@ -1455,7 +1462,7 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
     { uint64_t ts4[HIST_TEX]; int nt = 0;
       for (int st = 0; st < RP_PROG_STAGES; st++) for (uint32_t i = 0; i < g_prog->nent[st] && nt < HIST_TEX; i++) { const nvn_gpu_layout_ent *e = &g_prog->ent[st][i];
           if (e->src_kind != NVN_RB_TEX || e->count > 1) continue;
-          uint64_t h = rp_S.tex[st][e->src_reg]; tex_t snap; view_t sv; int hv;
+          uint64_t h = graphics_tex_handle(st, e->src_reg); tex_t snap; view_t sv; int hv;
           if (rp_tex_snap_by_id(h ? (int)(h & 0xFFFFF) : rp_S.tex_base, &snap, &sv, &hv)) ts4[nt++] = snap.serial; }
       int noted = 0;
       for (int k = 0; k < rt->n; k++) if (rt->color[k]) { hist_note(rt->color[k]->serial, ts4, nt); noted = 1; }   // 每个颜色目标各记一条：多目标的绘制，第二个以后的目标也要能往上追

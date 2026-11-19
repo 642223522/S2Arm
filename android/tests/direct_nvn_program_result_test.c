@@ -44,6 +44,17 @@ static int parse_v2(const char *bindings, struct fd_program *p, char *why, size_
 int main(void) {
     char why[192] = "";
     struct fd_program p;
+    // c2 image-table words 72..86 are also sampled through combined slots 32..39.
+    for (int v = 1; v <= 2; v++) for (int word = 72; word <= 88; word++) {
+        char binding[192], what[100];
+        snprintf(binding, sizeof binding, "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"slot\":%d,\"count\":1}", word);
+        int rc = (v == 1 ? parse_json : parse_v2)(binding, &p, why, sizeof why);
+        snprintf(what, sizeof what, "high-slot v%d c2 word %d maps only even image-table words", v, word);
+        int valid = word < 88 && !(word & 1);
+        CHECK(valid ? (!rc && p.binding_count == 1 && p.bindings[0].tex_slot == 32 + (word - 72) / 2) :
+              (v == 2 ? rc != 0 : (!rc && p.bindings[0].tex_slot == -1)), what);
+        nvn_vk_program_free(&p);
+    }
     const char *bindings =
         "{\"stage\":\"vs\",\"kind\":\"storage\",\"set\":1,\"binding\":0,\"count\":1,"
         "\"rw\":false,\"cbSlot\":0,\"cbOffset\":272,\"nvnSlot\":0},"

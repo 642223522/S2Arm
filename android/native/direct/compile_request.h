@@ -84,8 +84,8 @@ struct s2a_compile_texture_src {
     uint32_t array_length;
 };
 
-// Three graphics stages, each with 32 combined and 128 separate texture slots.
-#define S2A_COMPILE_TEXTURE_MAX 480
+// Three graphics stages, each with 40 combined and 128 separate texture slots.
+#define S2A_COMPILE_TEXTURE_MAX 504
 
 struct s2a_compile_request_input {
     uint64_t session;
