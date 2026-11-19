@@ -729,7 +729,7 @@ static int usrc_put(struct rp_prog *pg, const struct fd_binding *b, nvn_gpu_layo
     memset(u, 0, sizeof *u);
     u->tex = uword_of(&b->tex_u);
     if (b->samp_src == FD_SAMP_UBO) { u->samp_kind = NVN_RB_SAMPU; u->samp = uword_of(&b->samp_u); }
-    else if (b->samp_src == FD_SAMP_ID) { u->samp_kind = NVN_RB_SAMPI; u->samp_reg = b->samp_val; }
+    else if (b->samp_src == FD_SAMP_ID) { u->samp_kind = NVN_RB_SAMPI; u->samp_reg = b->samp_val; u->samp_pool = b->samp_pool; }   // samp_pool：立即数采样器池下标（#1594 片 3）
     else if (b->samp_src == FD_SAMP_SLOT) { u->samp_kind = NVN_RB_SAMP; u->samp_reg = b->samp_val; }
     e->src_reg2 = (uint16_t)pg->nusrc++;
     return 1;

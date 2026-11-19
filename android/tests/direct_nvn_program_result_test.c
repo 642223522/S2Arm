@@ -150,7 +150,7 @@ int main(void) {
                 const struct fd_binding *cb = &p.bindings[0];
                 snprintf(what, sizeof what, "constant sampler slot %d sampler %d -> tex_slot %d + sampler id, no samp_slot / ubo", cs_ok[k].slot, cs_ok[k].sampler, cs_ok[k].want);
                 CHECK(cb->kind == 2 && cb->count == 1 && cb->tex_slot == cs_ok[k].want && cb->samp_slot == -1 && !cb->tex_ubo &&
-                      cb->samp_src == FD_SAMP_ID && cb->samp_val == cs_ok[k].sampler, what);
+                      cb->samp_src == FD_SAMP_ID && cb->samp_val == cs_ok[k].sampler && cb->samp_pool == 1, what);
             }
             nvn_vk_program_free(&p);
         }
@@ -178,7 +178,7 @@ int main(void) {
             "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"constSampler\":7,\"count\":1}",                                        // 没有 slot
             "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"slot\":90,\"constSampler\":7,\"count\":2}",                            // 数组
             "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"slot\":90,\"samp_slot\":3,\"constSampler\":7,\"count\":1}",             // 同时给 samp_slot
-            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"constSampler\":7,\"count\":1,\"uboSlot\":1,\"uboOffset\":1024}",       // 同时给 UBO 句柄
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"slot\":90,\"constSampler\":7,\"count\":1,\"uboSlot\":1,\"uboOffset\":1024}", // c2 的槽和 UBO 来源同时给（贴图字来源不唯一）
             "{\"stage\":\"fs\",\"kind\":\"uniform\",\"set\":2,\"binding\":0,\"slot\":90,\"constSampler\":7,\"count\":1}",                            // 不是贴图
             "{\"stage\":\"fs\",\"kind\":\"storage\",\"set\":2,\"binding\":0,\"slot\":90,\"constSampler\":7,\"count\":1,\"rw\":false,\"nvnSlot\":0}",  // 不是贴图
             "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"slot\":90,\"constSampler\":7,\"constSampler\":8,\"count\":1}",         // 字段重复
@@ -192,6 +192,76 @@ int main(void) {
         // v1 结果没有这个字段的合同：带了就拒（不能被当成「多余字段」忽略掉后绑成错的采样器）
         why[0] = 0;
         CHECK(parse_json("{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"slot\":90,\"constSampler\":7,\"count\":1}", &p, why, sizeof why) != 0, "constant sampler in a v1 result is rejected");
+        nvn_vk_program_free(&p);
+    }
+
+    // #1594 片 3：类型 3 句柄的贴图字在游戏 UBO（平铺的 uboSlot = cbuf − 3 + uboOffset = 字节偏移，没有 slot）+ constSampler = 立即数采样器池下标。
+    //   贴图字来源 = 常量缓冲 tex_u 处的字；采样器来源 = FD_SAMP_ID / samp_val，samp_pool = 1（池下标，回放要加池起点），不是「取同字高位」（FD_SAMP_UBO）。
+    {
+        static const struct { int ubo, off, sampler; } ub_ok[] = {{2, 160, 260}, {0, 0, 0}, {15, 65532, 4095}, {1, 1024, 1}};
+        for (unsigned k = 0; k < sizeof ub_ok / sizeof ub_ok[0]; k++) {
+            char b[240]; why[0] = 0;
+            snprintf(b, sizeof b, "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":1,\"uboSlot\":%d,\"uboOffset\":%d,\"constSampler\":%d}", ub_ok[k].ubo, ub_ok[k].off, ub_ok[k].sampler);
+            int rc = parse_v2(b, &p, why, sizeof why);
+            char what[200]; snprintf(what, sizeof what, "v2 UBO %d +%d with constant sampler %d parses (why=%s)", ub_ok[k].ubo, ub_ok[k].off, ub_ok[k].sampler, why);
+            CHECK(rc == 0 && p.binding_count == 1, what);
+            if (rc == 0 && p.binding_count == 1) {
+                const struct fd_binding *ub = &p.bindings[0];
+                snprintf(what, sizeof what, "UBO %d +%d / constant sampler %d -> texture word at the UBO, sampler id (pool index), no slot / samp_slot", ub_ok[k].ubo, ub_ok[k].off, ub_ok[k].sampler);
+                CHECK(ub->kind == 2 && ub->count == 1 && ub->slot < 0 && ub->tex_slot == -1 && ub->samp_slot == -1 && ub->tex_ubo == 1 &&
+                      ub->tex_u.slot == ub_ok[k].ubo && ub->tex_u.offset == ub_ok[k].off && !ub->tex_u.sid && !ub->tex_u.pair &&
+                      ub->samp_src == FD_SAMP_ID && ub->samp_val == ub_ok[k].sampler && ub->samp_pool == 1, what);
+            }
+            nvn_vk_program_free(&p);
+        }
+        // 两个口径分开：离线库写法（uboHandle + sampler 对象 {"source":"id"}）的 FD_SAMP_ID 是宿主登记号原值，samp_pool = 0；
+        //   没有 constSampler 的平铺 UBO 贴图仍是「采样器取同字」（FD_SAMP_UBO），不带池下标标记
+        why[0] = 0;
+        CHECK(parse_v2("{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":1,\"uboHandle\":{\"slot\":1,\"offset\":1024},\"sampler\":{\"source\":\"id\",\"id\":257}}", &p, why, sizeof why) == 0 &&
+              p.binding_count == 1 && p.bindings[0].tex_ubo == 1 && p.bindings[0].samp_src == FD_SAMP_ID && p.bindings[0].samp_val == 257 && p.bindings[0].samp_pool == 0,
+              "a library-style sampler id keeps the raw registered id (samp_pool 0)");
+        nvn_vk_program_free(&p);
+        why[0] = 0;
+        CHECK(parse_v2("{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":1,\"uboSlot\":1,\"uboOffset\":1024}", &p, why, sizeof why) == 0 &&
+              p.binding_count == 1 && p.bindings[0].samp_src == FD_SAMP_UBO && p.bindings[0].samp_pool == 0, "a flat UBO texture without constSampler keeps 'sampler from the same word'");
+        nvn_vk_program_free(&p);
+        // 同一个结果里 c2 形态与 UBO 形态各带各的常量采样器
+        why[0] = 0;
+        CHECK(parse_v2("{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"slot\":90,\"constSampler\":257,\"count\":1},"
+                       "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":1,\"count\":1,\"uboSlot\":2,\"uboOffset\":160,\"constSampler\":260}", &p, why, sizeof why) == 0 &&
+              p.binding_count == 2 && !p.bindings[0].tex_ubo && p.bindings[0].tex_slot == 128 && p.bindings[0].samp_val == 257 &&
+              p.bindings[1].tex_ubo == 1 && p.bindings[1].tex_slot == -1 && p.bindings[1].tex_u.slot == 2 && p.bindings[1].samp_val == 260 &&
+              p.bindings[0].samp_pool == 1 && p.bindings[1].samp_pool == 1, "a c2 constant sampler and a UBO constant sampler in one result keep their own sources");
+        nvn_vk_program_free(&p);
+        // 拒绝：任何一条都不能退化成「只填贴图来源、采样器取同字高位」
+        static const char *const ub_bad[] = {
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":1,\"uboSlot\":2,\"uboOffset\":160,\"constSampler\":4096}",                                    // 池下标超 12 位
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":1,\"uboSlot\":2,\"uboOffset\":160,\"constSampler\":-1}",                                      // 负数
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":1,\"uboSlot\":2,\"uboOffset\":160,\"constSampler\":\"7\"}",                                   // 不是数字
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":1,\"uboSlot\":2,\"uboOffset\":160,\"constSampler\":1.5}",                                     // 非整数
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":2,\"uboSlot\":2,\"uboOffset\":160,\"constSampler\":7}",                                       // 数组
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":1,\"uboSlot\":2,\"uboOffset\":160,\"samp_slot\":3,\"constSampler\":7}",                     // 同时给 samp_slot
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":1,\"uboSlot\":2,\"uboOffset\":160,\"sampler\":{\"source\":\"id\",\"id\":3},\"constSampler\":7}", // 同时给 sampler 对象
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":1,\"uboHandle\":{\"slot\":2,\"offset\":160},\"constSampler\":7}",                          // uboHandle 写法不接
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":1,\"uboHandle\":{\"slot\":2,\"offset\":160},\"sampler\":{\"source\":\"id\",\"id\":3},\"constSampler\":7}", // uboHandle + sampler 对象
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":1,\"slot\":8,\"uboSlot\":2,\"uboOffset\":160,\"constSampler\":7}",                         // 同时给组合槽
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":1,\"uboSlot\":16,\"uboOffset\":160,\"constSampler\":7}",                                     // UBO 号越界
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":1,\"uboSlot\":2,\"constSampler\":7}",                                                         // 缺偏移
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":1,\"uboSlot\":2,\"uboOffset\":6,\"constSampler\":7}",                                        // 不是字偏移
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":1,\"uboSlot\":2,\"uboOffset\":160,\"constSampler\":7,\"constSampler\":8}",                  // 字段重复
+            "{\"stage\":\"fs\",\"kind\":\"storage\",\"set\":2,\"binding\":0,\"count\":1,\"rw\":false,\"uboSlot\":2,\"uboOffset\":160,\"constSampler\":7}",                         // 不是贴图（存储绑定也带 uboSlot）
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":1,\"constSampler\":7}",                                                                       // 没有任何贴图字来源
+        };
+        for (unsigned i = 0; i < sizeof ub_bad / sizeof ub_bad[0]; ++i) {
+            why[0] = 0;
+            char what[96]; snprintf(what, sizeof what, "UBO constant sampler negative %u rejected by v2", i);
+            CHECK(parse_v2(ub_bad[i], &p, why, sizeof why) != 0, what);
+            nvn_vk_program_free(&p);
+        }
+        // v1 结果没有这个字段的合同：带了就拒
+        why[0] = 0;
+        CHECK(parse_json("{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":1,\"uboSlot\":2,\"uboOffset\":160,\"constSampler\":7}", &p, why, sizeof why) != 0,
+              "UBO constant sampler in a v1 result is rejected");
         nvn_vk_program_free(&p);
     }
 

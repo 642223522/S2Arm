@@ -346,15 +346,23 @@ static int parse_graphics(const uint8_t *bytes, size_t length, struct fd_program
             int has_samp = !s2a_jv_obj_find(b, "samp_slot", &samp);
             int has_csamp = !s2a_jv_obj_find(b, "constSampler", &csamp);
             if (has_csamp) {
-                // #1594：类型 3 句柄。贴图字在 c2 分离贴图表（slot 90..344 偶 → 分离贴图槽 128 + k），采样器是着色器里的立即数采样器池下标
-                //   constSampler（0..4095，句柄高 12 位的范围；下标 0 是真下标）。采样器来源记成常量号 FD_SAMP_ID / samp_val，
-                //   不进 samp_slot（那是 c2 采样器表的槽）、也不是「取同字高位」。只认 v2 的单个非 UBO 贴图；
-                //   缺 slot / 奇字 / 表外 / 数组 / 同时给 samp_slot 或 UBO 句柄 / 不是贴图：一律拒，不退化成只填贴图槽（那会静默绑成池里第 0 个采样器）。
-                if (!v2 || dst->kind != 2 || has_samp || dst->tex_ubo || s2a_jv_u32(csamp, &csamp_v) || csamp_v > 4095 ||
-                    dst->count != 1 || dst->slot < 90 || dst->slot >= 346 || (dst->slot & 1))
+                // #1594：类型 3 句柄，采样器是着色器里的立即数采样器池下标 constSampler（0..4095，句柄高 12 位的范围；下标 0 是真下标）。
+                //   采样器来源记成 FD_SAMP_ID / samp_val，samp_pool = 1（池下标，回放要加采样器池起点），
+                //   不进 samp_slot（那是 c2 采样器表的槽）、也不是「取同字高位」。贴图字有两种来源，都只认 v2 的单个贴图：
+                //     * c2 分离贴图表（片 2）：slot 90..344 偶 → 分离贴图槽 128 + k，没有 UBO 来源；
+                //     * 游戏 UBO（片 3）：平铺的 uboSlot / uboOffset（ubo_texture_parse 已保证没有 slot、没有 sampler 对象），贴图字在 tex_u 处；
+                //       uboHandle 对象写法（离线库那一套，采样器另有 sampler 对象）不接。
+                //   缺来源 / 奇字 / 表外 / 数组 / 同时给 samp_slot 或 uboHandle / 不是贴图：一律拒，
+                //   不退化成只填贴图来源（平铺 UBO 的默认是「采样器取同一个字的高 12 位」，那里不是采样器号，会静默绑错）。
+                struct s2a_jv uh = { NULL, 0 };
+                int ubo_flat = dst->tex_ubo && s2a_jv_obj_find(b, "uboHandle", &uh);   // 找不到 uboHandle = 平铺写法
+                int c2_form = !dst->tex_ubo && dst->slot >= 90 && dst->slot < 346 && !(dst->slot & 1);
+                if (!v2 || dst->kind != 2 || has_samp || s2a_jv_u32(csamp, &csamp_v) || csamp_v > 4095 ||
+                    dst->count != 1 || !(c2_form || ubo_flat))
                     return fail(why, why_size, "invalid constant sampler source");
-                dst->tex_slot = (int16_t)(128 + (dst->slot - 90) / 2);
-                dst->samp_src = FD_SAMP_ID; dst->samp_val = (uint16_t)csamp_v;
+                if (c2_form) dst->tex_slot = (int16_t)(128 + (dst->slot - 90) / 2);
+                else memset(&dst->samp_u, 0, sizeof dst->samp_u);   // 平铺写法把采样器字默认成贴图字本身；常量采样器不读任何字
+                dst->samp_src = FD_SAMP_ID; dst->samp_val = (uint16_t)csamp_v; dst->samp_pool = 1;
             } else if (has_samp) {
                 if (!v2 || dst->kind != 2 || s2a_jv_u32(samp, &samp_v) || samp_v >= 128 ||
                     dst->count != 1 || dst->slot < 90 || dst->slot >= 346 || (dst->slot & 1))

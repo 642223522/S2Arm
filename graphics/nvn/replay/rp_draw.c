@@ -72,12 +72,13 @@ static uint32_t ubo_packed(int st, const struct rp_uword *w) {
 }
 // 这一项这一笔的纹理号 / 采样器号（宿主登记表里的号）。NULL = 取到；否则是跳过这笔的原因。
 //   纹理号 = 打包句柄低 20 位 + 当前贴图池起点（ID 0 是池的第 0 项，同硬件）。
-//   采样器：SAMPU = 打包句柄高 12 位 + 采样器池起点；SAMPI = 着色器里的常量号原值；SAMP = NVN 采样器槽的句柄高 12 位（没绑过照 NVN_RB_TEX 分离采样器口径跳过）。
+//   采样器：SAMPU = 打包句柄高 12 位 + 采样器池起点；SAMPI = 着色器里的常量号：samp_pool = 0 取原值（离线库的登记号），
+//   samp_pool = 1 是立即数采样器池下标（#1594 片 3）、登记号 = 下标 + 采样器池起点（同 SAMPU，号 0 取池第 0 项）；SAMP = NVN 采样器槽的句柄高 12 位（没绑过照 NVN_RB_TEX 分离采样器口径跳过）。
 //   iOS 把采样器号 0 与「没有采样器半边」绑成假采样器；这里没有假采样器，取采样器池第 0 项（= 号 0 在硬件上的意思）
 static const char *usrc_ids(int st, const struct rp_usrc *u, int *tid, int *sid) {
     *tid = (int)(ubo_packed(st, &u->tex) & 0xFFFFF) + rp_S.tex_base;
     if (u->samp_kind == NVN_RB_SAMPU) *sid = (int)(ubo_packed(st, &u->samp) >> 20) + rp_S.samp_base;
-    else if (u->samp_kind == NVN_RB_SAMPI) *sid = u->samp_reg;
+    else if (u->samp_kind == NVN_RB_SAMPI) *sid = u->samp_pool ? (int)u->samp_reg + rp_S.samp_base : u->samp_reg;
     else if (u->samp_kind == NVN_RB_SAMP) {
         if (u->samp_reg >= 128 || !rp_S.samp_bound[st][u->samp_reg]) return "separate_sampler_unbound";
         *sid = (int)(rp_S.samp[st][u->samp_reg] >> 20);
@@ -1185,6 +1186,8 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
             if (bad) { skip(bad, rec); goto draw_done; }
             tv[st][i] = rp_view_by_id_decl(tid, g_prog->dtt[st][i], g_prog->dcls[st][i], 0, c, NULL);
             ts[st][i] = rp_samp_for_tex(sid, tid);
+            // 立即数采样器池下标（#1594 片 3）没登记：具名跳过，不拿别的采样器顶替（同 c2 常量采样器）
+            if (!ts[st][i] && g_prog->usrc[e->src_reg2].samp_pool) { skip("const_sampler_unresolved", rec); goto draw_done; }
             if (g_log_left && tn < sizeof tl - 40) tn += (size_t)snprintf(tl + tn, sizeof tl - tn, " u%d.%u+%#x=#%d/s%d", st, (unsigned)e->src_reg, (unsigned)e->src_off, tid, sid);
             continue;
         }

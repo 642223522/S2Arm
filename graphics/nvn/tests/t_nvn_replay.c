@@ -4901,6 +4901,71 @@ static void t_ubo_texture(void) {
     nvn_be_tex_release(&t7); nvn_be_tex_release(&t8); pass_fresh();
 }
 
+// #1594 片 3：类型 3 句柄、贴图字在游戏常量缓冲里（NVN_RB_TEXU）+ 采样器是着色器里的立即数池下标（usrc 表项 SAMPI + samp_pool = 1）。
+//   贴图字在编码这一刻从游戏内存读（常量槽 2 +0x10，同 t_ubo_texture）；采样器按「池下标 + 当前采样器池起点」取（同 c2 常量采样器），
+//   不看贴图字高位（那里是别的数）；下标 0 是真下标；没登记的下标具名跳过（const_sampler_unresolved），不拿别的采样器顶替；
+//   samp_pool = 0 的 SAMPI（离线库写法，登记号原值）口径不变：不加池起点，没登记照旧走 sampler_slot_unresolved。
+static void t_ubo_const_sampler(void) {
+    pass_fresh(); g_resolve_rc = 0; g_gdraws = 0; nvn_unimpl_reset();
+    memset(g_pmem, 0, sizeof g_pmem); nvn_be_pool_add(g_pmem, sizeof g_pmem);
+    const uint64_t base = (uint64_t)(uintptr_t)g_pmem;
+    stream s = {0}; q_env(&s);
+    tex_t t7 = mk_tex(7044, 0x4000, NVN_FORMAT_RGBA8, 4, 4, 1, 0), t8 = mk_tex(7045, 0x8000, NVN_FORMAT_RGBA8, 2, 2, 1, 0);
+    samp_par sp = {0}; nvn_be_reg_tex(7, &t7, NULL); nvn_be_reg_tex(8, &t8, NULL);
+    // 标记 = 采样器的 S 向环绕模式（替身把它原样记在 x 里）；只用替身能原样保留的 1 / 5 / 6 / 7
+    sp.ws = 1; nvn_be_reg_samp(3, &sp);      // 池下标 3：标记 1（要取到的）
+    sp.ws = 6; nvn_be_reg_samp(0, &sp);      // 池下标 0：标记 6（真下标）
+    sp.ws = 7; nvn_be_reg_samp(9, &sp);      // 贴图字高位里的号（9）：标记 7（不许被取到）
+    sp.ws = 5; nvn_be_reg_samp(4095, &sp);   // 最大的池下标：标记 5
+    uint32_t tw = 7 | (uint32_t)9 << 20; memcpy(g_pmem + PG + 0x10, &tw, 4);   // 贴图字：纹理号 7；高 12 位（9）不是这个句柄的采样器
+    g_fprog.nent[1] = 1; nvn_gpu_layout_ent *e = &g_fprog.ent[1][0];
+    e->cls = NVN_GPU_RES_TEX_SAMP; e->src_kind = NVN_RB_TEXU; e->src_reg = 2; e->src_off = 0x10; e->src_reg2 = 0; e->count = 1;
+    g_fprog.nusrc = 1;
+    g_fprog.usrc[0] = (struct rp_usrc){ .tex = { .reg = 2, .off = 0x10 }, .samp_kind = NVN_RB_SAMPI, .samp_reg = 3, .samp_pool = 1 };
+    p_bind_buf *ub = put(&s, OP_BIND_UBO, sizeof *ub); ub->stage = 1; ub->index = 2; ub->addr = base + PG; ub->size = 64;
+    q_draw(&s); end(&s); submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == 1 && g_fb[1][0].u.ts.view && g_fb[1][0].u.ts.view->of->d.d.width == 4);   // 贴图 = 游戏常量缓冲里的字 7（4x4 那张）
+    CHECK(g_fb[1][0].u.ts.samp && g_fb[1][0].u.ts.samp->x == 1);                                // 采样器 = 池下标 3，不是字高位的 9（标记 7）
+    CHECK(nvn_unimpl_kinds() == 0);
+    // 游戏改了常量缓冲里的贴图字：下一笔读到新的（贴图跟着换，采样器还是池下标 3）
+    tw = 8; memcpy(g_pmem + PG + 0x10, &tw, 4);
+    stream again = {0}; q_draw(&again); end(&again); submit1(&again); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == 2 && g_fb[1][0].u.ts.view && g_fb[1][0].u.ts.view->of->d.d.width == 2 && g_fb[1][0].u.ts.samp && g_fb[1][0].u.ts.samp->x == 1);
+    // 下标 0 是真下标：不当「没有」，也不退回取字高位
+    g_fprog.usrc[0].samp_reg = 0; rp_dirty_all();
+    stream zero = {0}; q_draw(&zero); end(&zero); submit1(&zero); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == 3 && g_fb[1][0].u.ts.samp && g_fb[1][0].u.ts.samp->x == 6);
+    // 最大池下标（12 位全 1）
+    g_fprog.usrc[0].samp_reg = 4095; rp_dirty_all();
+    stream top = {0}; q_draw(&top); end(&top); submit1(&top); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == 4 && g_fb[1][0].u.ts.samp && g_fb[1][0].u.ts.samp->x == 5);
+    // 没登记的池下标：具名跳过，不画、不拿别的采样器顶替
+    g_fprog.usrc[0].samp_reg = 31; rp_dirty_all();
+    stream missing = {0}; q_draw(&missing); end(&missing); submit1(&missing); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == 4 && nvn_unimpl_count("draw", "const_sampler_unresolved") == 1);
+    // 当前采样器池起点：登记号 = 池下标 + 起点（池 1 起点 5：下标 3 → 登记号 8；原始号 3 不再是它）
+    rp_S.samp_base = 5; sp.ws = 6; nvn_be_reg_samp(8, &sp);   // 登记号 8：标记 6（原始号 3 是标记 1，字高位 9 是标记 7）
+    g_fprog.usrc[0].samp_reg = 3; rp_dirty_all();
+    stream based = {0}; q_draw(&based); end(&based); submit1(&based); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == 5 && g_fb[1][0].u.ts.samp && g_fb[1][0].u.ts.samp->x == 6);
+    // 池起点非零时，下标 0 也是真下标：登记号 = 0 + 起点（不退回原始号 0 = 标记 6）
+    sp.ws = 5; nvn_be_reg_samp(5, &sp);   // 登记号 5：标记 5
+    g_fprog.usrc[0].samp_reg = 0; rp_dirty_all();
+    stream based0 = {0}; q_draw(&based0); end(&based0); submit1(&based0); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == 6 && g_fb[1][0].u.ts.samp && g_fb[1][0].u.ts.samp->x == 5);
+    g_fprog.usrc[0].samp_reg = 3;
+    // 对照：samp_pool = 0 的 SAMPI（离线库写法）是登记号原值，不加池起点（加了会取到登记号 8 = 标记 6）
+    g_fprog.usrc[0].samp_pool = 0; rp_dirty_all();
+    stream raw = {0}; q_draw(&raw); end(&raw); submit1(&raw); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == 7 && g_fb[1][0].u.ts.samp && g_fb[1][0].u.ts.samp->x == 1);
+    // 对照：samp_pool = 0 且没登记：老口径的具名跳过（sampler_slot_unresolved），不记成常量采样器的跳过
+    g_fprog.usrc[0].samp_reg = 31; rp_dirty_all();
+    stream raw_missing = {0}; q_draw(&raw_missing); end(&raw_missing); submit1(&raw_missing); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == 7 && nvn_unimpl_count("draw", "sampler_slot_unresolved") == 1 && nvn_unimpl_count("draw", "const_sampler_unresolved") == 1);
+    rp_S.samp_base = 0;
+    nvn_be_tex_release(&t7); nvn_be_tex_release(&t8); pass_fresh();
+}
+
 // Registered views must obey the same encode-window lifetime as cached attachment
 // views and samplers, including re-registration and nested windows.
 static void t_registered_view_pin(void) {
@@ -5186,6 +5251,7 @@ int main(int argc, char **argv) {
     t_separate_sampler();
     t_const_sampler();
     t_ubo_texture();
+    t_ubo_const_sampler();
     t_present();
     t_framelog_fence();
     t_view_pin();

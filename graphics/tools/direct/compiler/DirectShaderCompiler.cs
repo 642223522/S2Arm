@@ -305,7 +305,7 @@ namespace S2A.DirectCompiler
         // 缓冲：c2 只有同句柄存在直接绑定事实时才按 NVN c2→组合槽放行；游戏 UBO（c3..c18）
         // 的单个组合句柄给出 uboSlot / uboOffset（见下）；其余 cbuf 路径和 separate 采样器
         // 仍未实现，明确报红，不写死 0 让运行时绑错。
-        private const int UserUboFirstCbuf = 3, UserUboLastCbuf = 18, UserUboMaxBytes = 0x10000;
+        internal const int UserUboFirstCbuf = 3, UserUboLastCbuf = 18, UserUboMaxBytes = 0x10000;
         // 类型 3 句柄的采样器号是立即数 << 20，只占句柄高 12 位：采样器池下标 0..4095。
         private const int MaxConstSampler = 4095;
         private static void ResolvePoolSlots(List<(DirectStage stage, ShaderProgram shader, DirectGpuAccessor accessor)> translated,
@@ -352,6 +352,27 @@ namespace S2A.DirectCompiler
                                 HandleDetailFields(allocator, binding, resolved, messageHasShape: false)));
                     binding.Slot = constTexWord;
                     binding.ConstSampler = constSampler;
+                    continue;
+                }
+                if (binding.Kind == "texture" && !resolved.Separate &&
+                    entry.accessor.TrySeparateConstUbo(resolved.HandleIndex, resolved.CbufSlot, out int constUboWord, out int constUboCbuf, out int constUboSampler))
+                {
+                    // #1594 片 3：贴图字在游戏 UBO（c3..c18）、采样器是着色器里的立即数采样器池下标（类型 3）。结果给游戏 UBO 来源 uboSlot（NVN UBO 号 = cbuf − 3）/
+                    //   uboOffset（贴图字的字节偏移 = 字 × 4）、没有 slot，再加 constSampler = 池下标（可选字段，按 v2 写）。
+                    //   绝不只给 uboSlot / uboOffset：宿主对这种写法按「组合句柄」把采样器取成同一个字的高 12 位（那里不是采样器号），静默错绑。
+                    //   形态判据同 c2 的类型 3：数组、计算阶段（宿主计算侧没接）、池下标超出句柄里 12 位的范围，具名报未接，什么都不填。
+                    //   字偏移不用另查 64 KiB：类型 3 句柄的字只有 14 位（0..16383 = 字节 0..65532），装不下 64 KiB 以外的字。
+                    string shape = binding.Count != 1 || resolved.ArrayLength > 1 ? "constant sampler array" :
+                                   binding.Stage == "cs" ? "constant sampler, compute" :
+                                   constUboSampler > MaxConstSampler ? "constant sampler index above 4095" : null;
+                    if (shape != null)
+                        throw new DirectCompileException("UNSUPPORTED_PROGRAM",
+                            WithHandleDetail(binding.Stage + ": texture handle from cbuf slot " + resolved.CbufSlot + " is not implemented (" + shape + ")",
+                                HandleDetailFields(allocator, binding, resolved, messageHasShape: false)));
+                    binding.Slot = -1;
+                    binding.UboSlot = constUboCbuf - UserUboFirstCbuf;
+                    binding.UboOffset = constUboWord * 4;
+                    binding.ConstSampler = constUboSampler;
                     continue;
                 }
                 if (resolved.CbufSlot >= UserUboFirstCbuf && resolved.CbufSlot <= UserUboLastCbuf)
