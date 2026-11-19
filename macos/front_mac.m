@@ -1638,6 +1638,13 @@ static void screen_edr_note(NSWindow *w) {
             strstr(rawname, "P3") ? "是" : "否", rawname, sc.backingScaleFactor, cs.localizedName.UTF8String ?: "-");
     if (potential <= 1.0)   // 评审稿 §2.5：判成 SDR 但屏其实支持 HDR 的错配，日志一行人话指引、给下一步
         fprintf(stderr, "[s2a] 当前屏按 SDR 处理（potentialEDR ≤ 1.0）。若该屏支持 HDR：查①系统设置→显示器→HDR 开关（常见成因）②显示器 OSD 的 HDR/色域档 ③线缆/扩展坞（直连 USB-C DP Alt、HBR2+）④EDID 是否宣告 HDR（本机实测先例：宣告 PQ 而非 HLG）\n");
+    // PR3a 策略抽象（评审稿 v3 §2.2 / §4 PR3a）：同一屏读数发布进 HDR 策略快照——Mac 侧发布点在此（host_adapt.m 的 Mac 分支没有 AppKit：
+    //   无头宿主不链 AppKit），经 dlsym 调直连层 host_adapt.m 的 s2a_hdr_screen_publish（同 s2a_gpu_stuck_resume 先例：按名取，
+    //   不链直连层的构建 / 输入单测里没有它，缺了就不发布、行为照旧；平台壳不直接含图形内部头——分层 R-05）。
+    //   发布只刷环境读数（potential_edr / current_headroom / s1_ready / paper_white），层簿记不回卷；S2ARM_HDR=off（缺省）时
+    //   无视快照恒 S0 直通 ∧ vi 恒 on=0，行为零变化
+    { void (*pub)(double, double) = (void (*)(double, double))dlsym(RTLD_DEFAULT, "s2a_hdr_screen_publish");
+      if (pub) pub(potential, sc.maximumExtendedDynamicRangeColorComponentValue); }
 }
 @implementation S2AMetalView
 - (BOOL)acceptsFirstResponder { return YES; }
