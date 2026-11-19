@@ -312,7 +312,7 @@ public sealed partial class EnvironmentWindow
                     case "restart":
                         if (updateReady is null && availableUpdate is null) return ControlReply.Bad("没有新版", 409);   // 还没下好：同玩家点「现在更新」，先下、下完接着装
                         if (ControlBusy) return Busy();
-                        Dispatcher.UIThread.Post(RestartToUpdate, DispatcherPriority.Background);   // 先把回复发出去，再退出
+                        Dispatcher.UIThread.Post(() => RestartToUpdate(), DispatcherPriority.Background);   // 先把回复发出去，再退出
                         return ControlReply.Ok();
                     case "retry":
                         _ = DownloadUpdateAsync();

@@ -1864,6 +1864,28 @@ import S2ArmAppleAdapter
         }
     }
 
+    /// 「现在更新并重启」时有局在跑（11-18 维护者）：弹窗里的确认块写清关掉哪款、给「取消 / 仍然重启」两个按钮，都能用手柄点到
+    func testUpdateRestartConfirmShowsGameAndBothChoices() async throws {
+        let fixture = try SettingsFixture()
+        defer { fixture.remove() }
+        for language in [Lang.zh, .en] {
+            let uiLanguage = language == .zh ? "zh-Hans" : "en"
+            fixture.model.updatePopup = ["kind": "available", "version": "1.0.0", "notes": NSNull()]
+            fixture.model.session = JobSession(kind: .play, gameID: "fixture", name: "Original Game")
+            fixture.model.updateGate = "update.gate.confirm"
+            let (host, window) = try await render(AnyView(UpdatePopupView(model: fixture.model, language: uiLanguage)), fixture: fixture, language: language)
+            defer { window.close() }
+            let ids = Set(fixture.navigation.controlTargets(in: window).map(\.id))
+            XCTAssertTrue(ids.isSuperset(of: ["update.gate.cancel", "update.gate.restart"]), "确认块两个按钮都在：\(language.code)")
+            XCTAssertEqual(fixture.model.updateRestartImpactText { BackendText.launcherText($0, language: uiLanguage) },
+                           language == .zh ? "正在玩的「Original Game」会被关掉，没存的进度会丢；可以先在游戏里存一下再重启。"
+                                           : "\"Original Game\" will be closed and unsaved progress will be lost — save in the game first if you can.")
+            try snapshot(host, "update-restart-confirm-" + language.code)
+            fixture.model.updateGate = nil
+            fixture.model.session = nil
+        }
+    }
+
     func testAllUtilitySheetsRenderWithContainedControlsInBothLanguages() async throws {
         let fixture = try SettingsFixture()
         defer { fixture.remove() }

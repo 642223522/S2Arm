@@ -187,9 +187,11 @@ struct LauncherView: View {
                 UpdatePopupView(model: model, language: uiLanguage)
             }
         }
-        .alert(txt(model.updateGate ?? "update.gate.busy"), isPresented: Binding(get: { model.updateGate != nil && model.updatePopup == nil }, set: { if !$0 { model.updateGate = nil } })) {
-            Button(txt("update.after.ok"), role: .cancel) { model.updateGate = nil }
-        } message: { Text(txt((model.updateGate ?? "update.gate.busy") + ".body")) }
+        .alert(txt("update.gate.confirm.title"), isPresented: Binding(get: { model.updateGate != nil && model.updatePopup == nil }, set: { if !$0 { model.updateGate = nil } })) {
+            // 认得出的风险说清后让玩家选（11-18 维护者）：默认焦点在「取消」，「仍然重启」照样换版
+            Button(txt("update.gate.confirm.cancel"), role: .cancel) { model.updateGate = nil }.keyboardShortcut(.defaultAction)
+            Button(txt("update.gate.confirm.restart"), role: .destructive) { model.restartToUpdate(confirmed: true) }
+        } message: { Text(model.updateRestartImpactText(txt)) }
         .sheet(isPresented: Binding(get: { model.showKeys && !model.showEnvironment }, set: { model.showKeys = $0 })) {
             ImportSheet(model: model, kind: .keys).environmentObject(loc)
         }

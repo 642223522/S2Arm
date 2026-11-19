@@ -281,6 +281,8 @@ public final class S2ArmLauncherModel: ObservableObject {
     var autoDownloadPopupPending = false
     /// 应用内更新（Sparkle 2）：第一次用时起，起来后整个 App 生命周期只一份
     lazy var sparkleUpdate = SparkleUpdate(model: self)
+    /// 换版走的接口：平时就是 Sparkle；单测换成替身（不起真 Sparkle、不真退出）
+    lazy var updateDriver: UpdateInstalling = sparkleUpdate
     @Published var showAddGames = false
     @Published var showKeys = false
     /// 选好了但缺密钥（作业层 keys_missing）：等放入密钥后接着导入。解包好的游戏不要密钥，不经过这里。
