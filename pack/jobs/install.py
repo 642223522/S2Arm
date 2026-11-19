@@ -2153,7 +2153,7 @@ class PlumeMacPhone(MacPhone):
         acct = plume_account(c, self.W)
         if not acct:
             raise Failure(APPLE_SIGN_IN, code="apple_not_signed_in")
-        # free：plumesign 判不了付费 / 免费，一律按免费记（same_app 签名新鲜度走 3 天：当成付费 30 天，免费账号 7 天到期前就不会顺手续签）
+        # free：plumesign 判不了付费 / 免费，一律按免费记
         super().__init__(c, team=dict(id=acct["team"], name=acct["teamName"] or acct["account"], free=True), dev=dev, udid=udid)
 
     install = WinPhone.install                       # plumesign 签名装机（含 9401 旧写法、设备已登记、小组件去掉重来）
@@ -2774,17 +2774,13 @@ def forget_other_app(c, ph):
 
 def install_shell(c, ph, steps=True):
     """「安装 / 续签 / 更新 S2Arm」：只组只有壳的容器、签名、装壳，绝不推任何一款的程序包与资源包（11-17 维护者定）。
-    手机上已是这一版壳、签名离到期还早（same_app）→ 不装，updated = False。装上后记壳号、包名、签名时刻；各款记录原样留着（程序包在手机上不受装壳影响）"""
+    玩家点了就照做：每次都签名安装（手机上已是同一个 App 也重签——续签、补回「提高内存上限」等权限都靠这一下）。装上后记壳号、包名、签名时刻；各款记录原样留着（程序包在手机上不受装壳影响）"""
     import ipa as packer
     rec = layout.load_device(c, ph.key)
     before = last_signer(rec)   # 装之前取（换包名时 forget_other_app 会清记录）
     snapshot_phone_saves(c, ph, list(rec.get("games") or {}))   # 0.6.0：装壳前把手机上各款的存档拉回电脑（同 push_game）
     if steps: c.begin("组 S2Arm（不带游戏）", 2, 3)
     ipa, _, sid = packer.assemble_shell(c)
-    if same_app(c, ph, rec, packer.ipa_digest(ipa)):
-        note(c, "手机上的 S2Arm 已是这一版、签名离到期还早：不重签不重装")  # 非玩家句
-        deliver_identity(c, ph)   # 证书签名用户：装 App 时同时把证书交给 App（交过了跳过、交不出不挡）
-        return dict(updated=False, bundleId=ph.bid, games=[], **ph.info)
     if steps: c.begin("签名并装到 iPhone", 3, 3)
     ph.install(ipa, [], steps=False)
     forget_other_app(c, ph)
@@ -2811,33 +2807,6 @@ def last_signer(rec):
 def signer_kind(c, ph):
     """这次 App 用什么签的（设备记录 signer，判「换了签名方式」）：devCert / plumesign（Windows、Mac 通用壳 Apple ID）/ xcode（Mac 钥匙串）"""
     return "devCert" if devcert.active(c) else "plumesign" if hasattr(ph, "W") else "xcode"
-
-
-SAME_APP_FRESH = (3 * 86400, 30 * 86400)   # 跳过重签的签名新鲜度：免费账号描述文件 7 天到期，签了不到 3 天才跳过（照常装机就顺手续签）；付费 / 证书 30 天
-
-
-def same_app(c, ph, rec, digest):
-    """#845「每次装到 iPhone 都要重新签名打包」：手机上的 S2Arm 就是这次组出的这一个时，不再重签重装，只推资源。三条都满足才跳过：
-    ① 手机上这个包名的 App 的 Info.plist S2AContainerDigest（s2a-devpush app-attr，installation_proxy 读，不进容器）= 这次组出的（ipa.stamp_container）——
-       真相在手机上：别的电脑（含没有这个键的旧版 S2Arm）重装过就对不上，照常装；② 这台电脑记的上次签名离现在不到 SAME_APP_FRESH（免费账号 / 付费）；
-    ③ 请求没要求强制重装（forceInstall）。读不到（工具缺、断开、锁屏）一律当不同：照原来的流程装，最坏只是多装一次"""
-    if not digest or c.r.get("forceInstall") or not getattr(ph, "bid", None) or not getattr(ph, "udid", None):
-        return False
-    signed = rec.get("signed") or {}
-    if not isinstance(signed.get("at"), (int, float)) or time.time() - signed["at"] >= SAME_APP_FRESH[0 if signed.get("free", True) else 1]:
-        return False
-    try:
-        with tempfile.TemporaryDirectory(dir=c.private) as w:
-            rc, out = devpush_client(c, ph.udid, ph.bid, w).call("app-attr", ipa_key())
-    except (Failure, OSError) as e:
-        note(c, f"读不出手机上 S2Arm 的内容摘要，照常签名安装（{e}）")
-        return False
-    return not rc and out.strip().splitlines()[-1:] == [digest] if out else False
-
-
-def ipa_key():
-    import ipa as packer
-    return packer.CONTAINER_DIGEST_KEY
 
 
 def shell_outdated(c, rec, sid, games=None):
@@ -3111,7 +3080,7 @@ def update_prepare(c):
 def update_phone(c):
     """「更新 iPhone 上的 S2Arm」：用本版壳 + 手机上各款已有的程序模块组新容器 → 签名 → 只装 App；资源包（IMG）、直连库只推变了的（通常一个都不推），
     手机上的游戏库、存档不动。新壳认不得的款（要按新版重新出包）：没带 acceptStale 就停下报 container_stale 列出它们，玩家确认后不带它们装
-    （它们的资源包和存档还在手机上，重新出包后再装就回来）。壳已是本版 → 不装，结果 updated = False"""
+    （它们的资源包和存档还在手机上，重新出包后再装就回来）"""
     with packer_phone_lock(c):   # 装机类作业一次一个（ipa.phone_lock）
         return _update_phone(c)
 

@@ -156,19 +156,17 @@ class DevcertDelivery(unittest.TestCase):
             self.assertEqual(e.exception.code, "devcert_invalid", "证书读不出：单独作业原样报这个原因")
             self.assertIsNone(install.deliver_identity(self.c, ph), "顺带交：读不出不挡装机")
 
-    def test_install_shell_delivers_both_ways(self):
+    def test_install_shell_delivers_identity(self):
         import ipa as packer
         seen = []
         ph = types.SimpleNamespace(key="UDID1", bid="io.example.app", info={"device": "d"}, install=lambda ipa, g, steps=False: seen.append("install"))
         with patch.object(install, "deliver_identity", lambda c, p: seen.append("deliver")), patch.object(packer, "assemble_shell", lambda c: ("x.ipa", [], "S1")), \
-                patch.object(packer, "ipa_digest", lambda i: "dg"), patch.object(packer, "commit_phone_ipa", lambda *a: None), \
+                patch.object(packer, "commit_phone_ipa", lambda *a: None), \
                 patch.object(install.layout, "load_device", lambda c, k: {}), patch.object(install.layout, "save_device", lambda *a: None), \
                 patch.object(install.layout, "phone_ipa", lambda c: self.t / "S2Arm.ipa"), patch.object(install, "note", lambda *a: None), \
                 patch.object(install, "signer_kind", lambda c, p: "devCert"):
-            for same in (False, True):
-                with patch.object(install, "same_app", lambda *a, s=same: s):
-                    install.install_shell(self.c, ph, steps=False)
-        self.assertEqual(seen, ["install", "deliver", "deliver"])
+            install.install_shell(self.c, ph, steps=False)
+        self.assertEqual(seen, ["install", "deliver"])
 
 if __name__ == "__main__":
     unittest.main()

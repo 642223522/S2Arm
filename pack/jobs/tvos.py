@@ -361,7 +361,7 @@ def assemble(c, gid, others, shell, sid):
         if e.code == "tool_exit" and "地址空间类型不一致" in text:  # 非玩家句
             raise Failure(packer.incompatible_message(text, gid, names), code="container_incompatible") from e
         raise
-    packer.finish_container(c, app, log)
+    packer.sign_container(c, app, log)
     games = [g["title_id"] for g in json.loads((app / "s2a_catalogue.json").read_text(encoding="utf-8"))["games"]]
     try:   # 同 ipa.assemble：程序号和游戏包号对不上时按程序号放、资源取回游戏包号那款（认不出是哪个才停）
         packer.title_mismatch(c, gid, list(others), games)
@@ -753,7 +753,7 @@ def _export_tv(c, gid, pack, shell, sid):
             ctx.write_text("".join(line if l.startswith("game_data\t") else l for l in ctx.read_text(encoding="utf-8").splitlines(keepends=True)),
                            encoding="utf-8", newline="\n")
         if sys.platform == "darwin":
-            packer.sign_container(c, app, log)   # 改了 Info.plist：Mac 重签 ad-hoc（同 finish_container）
+            packer.sign_container(c, app, log)   # 改了 Info.plist：Mac 重签 ad-hoc
         ents, eva = entitlements_for(c, app, out / "tv.entitlements")
         if eva:
             adhoc_entitle(c, app, ents, log)
