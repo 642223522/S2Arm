@@ -14,6 +14,7 @@
     <Compile Include="TestBoundary.cs" />
     <Compile Include="$(RepoRoot)ohos/cs/OhosKeyboard.cs" />
     <Compile Include="$(RepoRoot)ohos/cs/OhosHostUi.cs" />
+    <Compile Include="$(RepoRoot)services/S2A.Services/Red.cs" />
     <Compile Include="$(RepoRoot)compat/tree/src/Ryujinx.HLE/HOS/Applets/SoftwareKeyboard/SoftwareKeyboardUIArgs.cs" />
     <Compile Include="$(RepoRoot)compat/tree/src/Ryujinx.HLE/HOS/Applets/SoftwareKeyboard/KeyboardMode.cs" />
     <Compile Include="$(RepoRoot)compat/tree/src/Ryujinx.HLE/UI/IHostUIHandler.cs" />

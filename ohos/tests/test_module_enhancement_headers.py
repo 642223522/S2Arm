@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 S2Arm contributors
+# 门禁手动：只能 Windows 宿主（ctypes 调 msvcrt 跑编出的解析函数）且要传 --cc；单跑：python3 ohos/tests/test_module_enhancement_headers.py --repo . --cc <clang.exe> --out <新目录>
 """Exercise the actual OHOS layout-parser body on a Windows host.
 
 Only unrelated mapping code is excluded. Scalar/string CRT calls use the host's

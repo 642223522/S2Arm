@@ -3,6 +3,7 @@
 using Ryujinx.HLE.HOS.Applets;
 using Ryujinx.HLE.HOS.Applets.SoftwareKeyboard;
 using S2A.Android.Aot;
+using S2A.Services;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -95,8 +96,25 @@ internal static class Program
 
     public static int Main()
     {
+        // 真 Red.cs：严格模式（S2A_STRICT=1）首次报红会 FailFast，本单测要数报红次数，关掉；日志行收进来核对不带输入内容
+        Red.Strict = false;
+        var redLines = new List<string>();
+        Red.Log = line => redLines.Add(line);
         try
         {
+            Case("host-ui-real-cancel-and-no-content-in-error", () =>
+            {
+                // 放在最前：这里是本进程第一次报红，Red 一定打日志行（之后按 2^n 次才打），才能核日志不带输入内容
+                long before = Red.Total;
+                var transport = new FakeTransport { Answer = Reply(false, "") };
+                var ui = OhosHostUi.Create(transport.Keyboard());
+                Check(ui.SoftwareKeyboard(Args(min: 3)) == null && Red.Total == before, "real cancel is null and not red");
+                transport = new FakeTransport { Answer = Encoding.UTF8.GetBytes("{\"private-input-marker\": true}") };
+                ui = OhosHostUi.Create(transport.Keyboard());
+                Check(ui.SoftwareKeyboard(Args()) == null && Red.Total == before + 1, "bad reply answers null and reports red once");
+                Check(redLines.Count == 1 && redLines[0].Contains("鸿蒙软键盘应答失败"), "first red prints one line");
+                Check(!redLines[0].Contains("private-input-marker"), "red line does not print input");
+            });
             Case("unicode-roundtrip-and-frozen-schema", () =>
             {
                 var args = Args(KeyboardMode.Default, 2, 5);
@@ -211,15 +229,16 @@ internal static class Program
                 Throws<TimeoutException>(() => transport.Keyboard(1000).Display(Args(), out _));
                 Check(transport.CancelCount == 1, "late answer cleanup");
             });
-            Case("transport-errors-fatal-and-finally", () =>
+            Case("transport-errors-red-and-finally", () =>
             {
+                // 生产口径（OhosHostUi 登记共用 HostUi 的软键盘挂点）：传输出错 → 报红一次、回 null（= 不确认），不抛、不停局；请求照样释放
                 foreach (int error in new[] { -1, -2, -4, -5, -99 })
                 {
                     var transport = new FakeTransport { WaitError = error };
-                    int fatals = 0;
-                    var ui = new OhosHostUi(_ => fatals++, transport.Keyboard());
-                    Throws<InvalidOperationException>(() => ui.DisplayInputDialog(Args(), out _));
-                    Check(fatals == 1 && transport.CancelCount == 1, "wait error must report fatal and release");
+                    long before = Red.Total;
+                    var ui = OhosHostUi.Create(transport.Keyboard());
+                    Check(ui.SoftwareKeyboard(Args()) == null, "wait error answers null (not confirmed)");
+                    Check(Red.Total == before + 1 && transport.CancelCount == 1, "wait error must report red once and release");
                 }
                 var begin = new FakeTransport { BeginError = -4, Id = 0 };
                 Throws<InvalidOperationException>(() => begin.Keyboard().Display(Args(), out _));
@@ -239,19 +258,6 @@ internal static class Program
                 failed = new FakeTransport { WaitError = -4, CancelError = -5 };
                 var both = Throws<AggregateException>(() => failed.Keyboard().Display(Args(), out _));
                 Check(both.InnerExceptions.Count == 2, "preserve request and cleanup errors");
-            });
-            Case("host-ui-real-cancel-and-no-content-in-error", () =>
-            {
-                int fatals = 0;
-                var transport = new FakeTransport { Answer = Reply(false, "") };
-                var ui = new OhosHostUi(_ => fatals++, transport.Keyboard());
-                Check(!ui.DisplayInputDialog(Args(min: 3), out string value) && value == null && fatals == 0, "real cancel is not fatal");
-                transport = new FakeTransport { Answer = Encoding.UTF8.GetBytes("{\"private-input-marker\": true}") };
-                Exception recorded = null;
-                ui = new OhosHostUi(e => recorded = e, transport.Keyboard());
-                var error = Throws<InvalidDataException>(() => ui.DisplayInputDialog(Args(), out _));
-                Check(ReferenceEquals(recorded, error) && !error.ToString().Contains("private-input-marker"), "fatal does not print input");
-                Throws<NotSupportedException>(() => ui.DisplayMessageDialog("", ""));
             });
             Console.WriteLine($"PASS keyboard: {_cases} groups, {_assertions} assertions; actual managed codec/loop/host adapter, fake transport only.");
             return 0;

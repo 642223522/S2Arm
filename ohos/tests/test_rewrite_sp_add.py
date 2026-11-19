@@ -60,7 +60,7 @@ def fixture():
 
 def rewrite(script, source, destination, target, commands):
     destination.mkdir()
-    argv = [sys.executable, "-B", str(script), str(source), str(destination), "main"]
+    argv = ([sys.executable, "-B", str(script)] if str(script).endswith(".py") else [str(script)]) + [str(source), str(destination), "main"]
     env = dict(os.environ, S2A_TARGET=target, PYTHONUTF8="1")
     env.pop("S2A_REWRITE_SPIN", None)
     result = subprocess.run(argv, env=env, capture_output=True)
@@ -170,7 +170,9 @@ def main():
     source = args.out / "synthetic.nso"
     container, original = fixture()
     source.write_bytes(container)
-    script = REPO / "runtime/rewriter/patch_nso.py"
+    # C 改写器（Python patch_nso.py 已在上游删除）：S2A_REWRITER_C，否则 pack/rewriter.py c-path（要 S2A_REWRITER_DEPS）
+    script = Path(subprocess.run([sys.executable, str(REPO / "pack/rewriter.py"), "c-path"], check=True,
+                                 capture_output=True, text=True).stdout.strip().splitlines()[-1])
     commands, results = [], {}
     for target in ("apple", "android", "ohos"):
         destination = args.out / target

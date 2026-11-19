@@ -40,8 +40,8 @@ OpenSSL 必须随引擎部署：见 [构建入口](openssl/README.md)。复用�
 
 - Windows + 官方API26/Clang15：两个 native 静态库编译通过；host/feedback/performance/NUMA四个对象编译通过。最初因苹果平台条件/安卓surface宏失败，补齐OHOS选择后通过；这不是首帧证明。
 - 签名生成器4项纯合成契约测试通过：`python -B ohos/tests/test_signed_generator.py`。
-- 已尝试键盘回归，当前失败：测试仍调用旧 OhosHostUi 构造接口，生产实现已复用共用 HostUi；须更新该测试，旧成绩不可沿用。
-- 历史 test_nro_container.py 依赖尚未公开的 nro_container.py；其余改写/图形描述符测试尚未在这棵树验证，不能视为通过。
+- 键盘回归已按共用 HostUi 口径更新（出错报红一次、回 null，不抛）：编真 OhosKeyboard / OhosHostUi / Red.cs，HostUi 只留软键盘挂点；接进 `ohos/gate.sh`。
+- 历史 test_nro_container.py 依赖尚未公开的 nro_container.py，标「门禁手动」。改写器两支（test_rewrite_ohos.py、test_rewrite_sp_add.py）改调 C 改写器（Python patch_nso.py 上游已删），接进 `ohos/gate.sh`，要固定 venv 的 unicorn / capstone 与 S2A_REWRITER_DEPS；图形描述符 C 夹具未接。
 - 全量 NativeAOT、最终 libS2AEngine.so 链接、模拟器首帧、真机画面/帧率未验；不请求把本 Draft 当成可玩版本合入。
 - 完整贡献门禁在 Windows 前置环境检查退出，Python3入口、固定改写依赖、Xcode缺失；不把编译静态库称为完整门禁通过。
 - 共享源码改动主要为 OHOS 选择 Linux 路径、musl TLS、签名装载、动态库内反馈导出及 OHOS surface；苹果/安卓门禁仍待各宿主验证。没有复制图形后端，也没有移入旧层性能实验。

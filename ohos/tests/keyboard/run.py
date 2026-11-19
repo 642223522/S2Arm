@@ -24,7 +24,7 @@ def main():
     output.mkdir(parents=True, exist_ok=False)
     sources = [here / p for p in ("Program.cs", "TestBoundary.cs", "Keyboard.Tests.csproj", "NuGet.Config", "run.py")]
     sources += [repo / p for p in (
-        "ohos/cs/OhosKeyboard.cs", "ohos/cs/OhosHostUi.cs",
+        "ohos/cs/OhosKeyboard.cs", "ohos/cs/OhosHostUi.cs", "services/S2A.Services/Red.cs",
         "compat/tree/src/Ryujinx.HLE/HOS/Applets/SoftwareKeyboard/SoftwareKeyboardUIArgs.cs",
         "compat/tree/src/Ryujinx.HLE/HOS/Applets/SoftwareKeyboard/KeyboardMode.cs",
         "compat/tree/src/Ryujinx.HLE/UI/IHostUIHandler.cs")]

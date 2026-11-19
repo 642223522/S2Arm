@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 S2Arm contributors
+# 门禁手动：要鸿蒙官方 native SDK（--ndk）编鸿蒙可执行文件，产物要上鸿蒙设备跑；单跑：python3 ohos/tests/run_guest_classifier.py --ndk <OpenHarmony native SDK> --out <新目录>
 """Build a real OHOS dlopen/classifier regression, without using a device.
 
 Usage: python run_guest_classifier.py --ndk <official-native-SDK> --out <new-dir>

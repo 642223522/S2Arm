@@ -3,7 +3,8 @@
 # Copyright 2026 S2Arm contributors
 """Execute synthetic OHOS rewritten instructions using Unicorn; no game data or real keys.
 Usage: python test_rewrite_ohos.py REPO OUT [PREVIOUS_REWRITER]
-Requires pinned rewriter dependencies and unicorn 2.1.4.
+Rewriter: the C command line (S2A_REWRITER_C, else `pack/rewriter.py c-path`, which needs
+S2A_REWRITER_DEPS); the Python patch_nso.py was removed upstream. Requires unicorn 2.1.4.
 """
 from pathlib import Path
 import os, re, struct, subprocess, sys
@@ -12,7 +13,8 @@ from unicorn import Uc, UC_ARCH_ARM64, UC_MODE_ARM
 from unicorn.arm64_const import *
 
 repo, out = map(Path, sys.argv[1:3]); out.mkdir(parents=True, exist_ok=True)
-rewriter = repo / 'runtime/rewriter/patch_nso.py'
+rewriter = Path(subprocess.run([sys.executable, str(repo / 'pack/rewriter.py'), 'c-path'], check=True,
+                               capture_output=True, text=True).stdout.strip().splitlines()[-1])
 # Reuse the upstream synthetic NSO fixture, not production program bytes.
 fixture = (repo / 'tests/rewrite_target_test.sh').read_text(encoding='utf-8').split("<<'EOF'", 1)[1].split('\nEOF', 1)[0]
 nso = out / 'main.nso'
@@ -20,7 +22,8 @@ subprocess.run([sys.executable, '-c', fixture, str(nso)], check=True)
 
 def rewrite(target, script, dest):
     dest.mkdir(exist_ok=True)
-    r = subprocess.run([sys.executable, str(script), str(nso), str(dest), 'main'],
+    cmd = [sys.executable, str(script)] if str(script).endswith('.py') else [str(script)]
+    r = subprocess.run(cmd + [str(nso), str(dest), 'main'],
         env=dict(os.environ, S2A_TARGET=target, PYTHONUTF8='1'), capture_output=True)
     (dest / 'rewrite.log').write_bytes(r.stdout + r.stderr)
     assert r.returncode == 0, (target, r.returncode)

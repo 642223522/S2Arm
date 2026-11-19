@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 S2Arm contributors
+# 门禁手动：依赖尚未公开的 runtime/rewriter/nro_container.py（不在本仓库），公开后接进 ohos/gate.sh；单跑：python3 -B ohos/tests/test_nro_container.py
 """Pure Python container tests; all executable inputs are synthetic bytes.
 
 Run: python -B ohos/tests/test_nro_container.py
