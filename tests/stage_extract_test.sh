@@ -232,6 +232,10 @@ class ResourceMemo(unittest.TestCase):
   # 缓存靠 ctime 认出「同长度改写又把 mtime 改回去」（pack/resource_input_key.py signature）。Linux 的 ext4 等按内核粗粒度时钟记 ctime（约 4 ms 一跳），
   #   紧接着上一次读取的改写可能与改写前同值，用例的前提（ctime 已变）就没成立、偶发红：没变就等一跳再 chmod 一次（只动 ctime，不动内容与 mtime）
   while p.stat().st_ctime_ns==st.st_ctime_ns:time.sleep(0.005);os.chmod(p,stat.S_IMODE(p.stat().st_mode))
+ def ctime_after(self,p,ref_ns):
+  # 交接判据「文件 ctime > 交接时刻（.root_pid 的 mtime）」（pack/resource_input_key.py inherit_cache）用严格大于：克隆出的文件本身 ctime 可能与交接同一跳，>= 会误拒。
+  #   Linux 粗粒度时钟（约 4 ms 一跳）下「克隆 → 写 .root_pid → 改写」可能落在同一跳、改写的 ctime 不大于交接时刻，用例的前提没成立（Linux 主机上红过）：等到确实晚于再继续
+  while p.stat().st_ctime_ns<=ref_ns:time.sleep(0.005);os.chmod(p,stat.S_IMODE(p.stat().st_mode))
  def measured(self):
   real=Path.open;counter={'opens':0,'bytes':0,'key_assemblies':0};root=self.root
   class Reader:
@@ -280,7 +284,7 @@ class ResourceMemo(unittest.TestCase):
  def test_main_same_length_change_is_full_rehashed(self):
   old,_=self.measured();p=self.root/'exefs/main';st=p.stat();p.write_bytes(b'MAIN-input');os.utime(p,ns=(st.st_atime_ns,st.st_mtime_ns));self.ctime_moved(p,st);new,c=self.measured();self.assertNotEqual(old,new);self.assertEqual(c,{'opens':1,'bytes':10,'key_assemblies':1})
  def test_target_write_before_handoff_rejected(self):
-  key,_=self.measured();target=self.clone();p=target/'romfs/a';st=p.stat();p.write_bytes(b'BB');os.utime(p,ns=(st.st_atime_ns,st.st_mtime_ns));self.ctime_moved(p,st);self.assertRaises((ValueError,OSError),mod.inherit_cache,self.root,target,key)
+  key,_=self.measured();target=self.clone();p=target/'romfs/a';st=p.stat();p.write_bytes(b'BB');os.utime(p,ns=(st.st_atime_ns,st.st_mtime_ns));self.ctime_moved(p,st);self.ctime_after(p,(target/'.root_pid').stat().st_mtime_ns);self.assertRaises((ValueError,OSError),mod.inherit_cache,self.root,target,key)
  def test_new_source_memo_cannot_replace_fixed_snapshot(self):
   key,_=self.measured();target=self.clone();p=self.root/'romfs/a';st=p.stat();p.write_bytes(b'BB');os.utime(p,ns=(st.st_atime_ns,st.st_mtime_ns));self.ctime_moved(p,st);self.measured();self.assertRaises((ValueError,OSError),mod.inherit_cache,self.root,target,key)
  def test_read_failure_does_not_publish_new_key(self):
