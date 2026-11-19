@@ -2,14 +2,17 @@ import Foundation
 
 /// 出包平台（11-02 维护者：iPhone / iPad（同一个 iOS 包）、macOS、安卓、鸿蒙，按这个顺序列；同旧启动器 BuildPlatform 的 id）。
 /// Apple TV（tvOS，11-15）与 iPhone 并列，排在它后面。
-/// 安卓、鸿蒙留位置、置灰「即将上线，敬请期待」：开放某个平台只改 released 与 target。
+/// 鸿蒙留位置、置灰「即将上线，敬请期待」：开放某个平台只改 released 与 target；安卓在开关后（androidEnabled）。
 public enum ExportPlatform: String, CaseIterable, Identifiable {
     case ios, tvos, mac, android, ohos
 
     public var id: String { rawValue }
 
-    /// 对玩家开放的平台。
-    public var released: Bool { target != nil }
+    /// 安卓出包开没开：作业层 androidDevices 回报的 enabled（开关只在后端读一处：S2A_ANDROID_EXPORT，pack/jobs/android_export.py，缺省关）。
+    nonisolated(unsafe) public static var androidEnabled = false
+
+    /// 对玩家开放的平台（安卓在开关后：出包是作业层 android，不走 EngineTarget）。
+    public var released: Bool { self == .android ? Self.androidEnabled : target != nil }
 
     /// 出这个平台交哪种 build（未开放的没有）。
     public var target: EngineTarget? {

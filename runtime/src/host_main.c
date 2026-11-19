@@ -477,7 +477,11 @@ static int host_run(int argc, char **argv) {
           s2a_snap_result_note(1);
           if (start_timer("S2A_RUN_S", run_timer)) LOG("【红】局时定时器起不来");
           s2a_session_guest_end(0);
-      } else if (start_guest_thread()) failed_session(S2A_INIT_FAIL_E_GAME_THREAD); }
+      } else {
+#if TARGET_OS_IPHONE
+          s2a_load_front_wait();   // 前台激活门（s2a_loadprog.h）：系统弹框盖着时加载照做、到这里才等激活，激活后马上开跑
+#endif
+          if (start_guest_thread()) failed_session(S2A_INIT_FAIL_E_GAME_THREAD); } }
     if (s2a_session_running(s2a_session_generation())) failed_session(S2A_INIT_FAIL_E_SERVICE_EARLY);
     s2a_boot_mark("S2A 就绪 → 起游戏主线程");
     s2a_front_run(NULL);

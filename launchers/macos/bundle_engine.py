@@ -42,6 +42,33 @@ INPUTS = ["runtime", "ios", "graphics", "translator", "services", "compat", "pac
           "docs/site/feature.json", "docs/site/feature"]
 
 
+ANDROID_ENGINE_ENV = "S2A_ANDROID_ENGINE_DIR"
+
+
+def inputs():
+    """快照收哪些仓库路径：INPUTS；发版给了安卓预编引擎（S2A_ANDROID_ENGINE_DIR，android/tools/engine_template.py 产出）时再收 android/
+    （安卓出包要 android/tools、verify-apk.py 等）。安卓出包在开关后（pack/jobs/android_export.py，缺省关）；不给就和以前一样不收。"""
+    return INPUTS + (["android"] if os.environ.get(ANDROID_ENGINE_ENV) else [])
+
+
+def bundle_android_engine(destination):
+    """预编引擎 APK 随引擎发：<引擎>/Binaries/Android/engine（android_export.engine_dir 认这个位置）。先核 engine.json 与 APK 身份一致。"""
+    source = os.environ.get(ANDROID_ENGINE_ENV)
+    if not source:
+        return None
+    sys.path.insert(0, str(ROOT / "android/tools"))
+    import apk_assemble
+    doc, _ = apk_assemble.load_engine(source)
+    if not (Path(source) / "identity.json").is_file():
+        raise SystemExit(f"【红】安卓预编引擎 {source} 缺 identity.json")
+    target = Path(destination) / "Binaries/Android/engine"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    for name in ("engine.apk", "engine.json", "identity.json"):
+        target.mkdir(exist_ok=True)
+        shutil.copy2(Path(source) / name, target / name)
+    return doc
+
+
 def include_source(relative):
     """发版引擎快照不收测试树（11-16 安装包瘦身：出包流程不跑测试，各处 tests/ 约 18 MB）。
     例外：根目录 tests/visual/galrec 是出包要读的（INPUTS 单独列进来），按顶层 tests 之后的目录判。"""
@@ -53,7 +80,7 @@ def include_source(relative):
 
 def snapshot_files(root=ROOT):
     """引擎快照收的文件（仓库相对路径，排好序）：INPUTS 下 git 跟踪 / 未忽略的文件，去掉 include_source 排除的测试树。bundle 与单测共用"""
-    names = subprocess.check_output(["git", "-C", str(root), "ls-files", "-co", "--exclude-standard", "-z", "--", *INPUTS]).split(b"\0")
+    names = subprocess.check_output(["git", "-C", str(root), "ls-files", "-co", "--exclude-standard", "-z", "--", *inputs()]).split(b"\0")
     return [Path(os.fsdecode(n)) for n in sorted(set(names) - {b""}) if include_source(Path(os.fsdecode(n)))]
 
 
@@ -61,7 +88,7 @@ def source_fingerprint(root):
     """Apply the same tree hash as the other jobs to the shipped inputs."""
     root = Path(root)
     paths = []
-    for folder in INPUTS:
+    for folder in inputs():
         top = root / folder
         if top.is_dir():
             paths.extend(str(p.relative_to(root)) for p in sorted(top.rglob("*"))
@@ -292,6 +319,7 @@ def bundle(destination, developer_dir):
     # 读取器：NativeAOT 单文件（同 toolchain.prepare 的配方），整个 Reader 目录只有这一个可执行文件
     (destination / "Binaries/Reader").mkdir(parents=True)
     shutil.copy2(toolchain.reader(c), destination / "Binaries/Reader/nx_unpack")
+    bundle_android_engine(destination)   # 给了 S2A_ANDROID_ENGINE_DIR 才带（安卓出包在开关后）
     tools = destination / "Binaries/Prepare"
     # 预编工具各收自己的单文件（AOT publish 会另出符号文件 / 中间件，不随包）：shbake 的 gpu_arch（clang 编的原生件）同目录
     (tools / "shbake").mkdir(parents=True)

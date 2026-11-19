@@ -6,7 +6,8 @@
 #   同 MSL 的键共用一份批库；收尾只留本次用到的条目。三支同 MSL → 每侧只编 1 份库；仓里条目 = 3 份翻译 + 每侧 1 份库 + 每侧 1 条批成员索引（Unity.ReuseIndex：三支同 MSL 只有一个代表键，每侧一条「ubu/<侧>/…」）。
 #   ① 两份冷出（不发布：两侧按键导出）：Mac 每键 .metal / .metallib / .json、iOS 每键 .metallib / .json；命中 / 重编 (0, 3)；Metal 每侧 (复用 0, 新编 1)；
 #      _b_build.json 3 键全 ok；两侧 inputs.tsv 印章 = 给的程序号与摘要 + 本树翻译器指纹 / 锁摘要；①′ --check-stamp 本树库过、篡改 / 旧印章红，--lock 不存在出库红；①″ 没 SDK 的玩家机按内置件 .xfp 记录核过 / 核红；仓 7 条留 0 条删；进度「直连库·翻译与收尾 / 编批库」从 0 到完成（7965ddea7 起翻译与逐键收尾同线程流水、合成一段）；
-#      se_want.tsv 列 K1 与一个不在本次出库里的键 → 请求 2 个、K1 计算核没有采样「nothing to emulate 1」、不出 _se
+#      _se 每个键都试（0.6.0 出包着色器全覆盖，83a632e4e 起；se_want.tsv 只报覆盖）：se_want.tsv 列 K1 与一个不在本次出库里的键 → 试 3 个、请求 2 个其中出了 0 个，
+#      三支都是计算核、没有要模拟的采样「nothing to emulate 3」、不出 _se
 #   ② 原地再出、什么都没变：(3, 0)、Metal 每侧 (1, 0)、两侧每个按键文件逐字节不变、仓 7 条留 0 删、仓里条目修改时间不变（含批成员索引：整批拿来时不重记）（命中不改写条目，出包机缓存裁剪按目录时间算款的新旧）
 #   ③ 改 K2 线程组 32 → 128、K3 移出着色器表：(1, 1)（只 K2 重翻）；K1 文件逐字节不变；K2 json 线程组 [128, 1, 1]；MSL 没变 → Metal 每侧 (1, 0)；
 #      K3 两侧文件全删；仓留 4（K1 / 新 K2 翻译 + 两份库；另两条批成员索引照留）、删 2（旧 K2 翻译、K3 翻译）
@@ -141,8 +142,8 @@ for stg, total in (('直连库·翻译与收尾', 3), ('直连库·编批库（M
     v = [(int(x[2]), int(x[3])) for x in rows if len(x) == 4 and x[1] == stg]
     check(bool(v) and v[0][0] == 0 and v[-1][0] == v[-1][1] and all(a <= b for (a, _), (b, _) in zip(v, v[1:])) and (total is None or v[-1][1] == total),
           f'① 进度 {stg} 从 0 到完成：{v}')
-check(re.search(r'se_want\.tsv 2 keys\): built 0, nothing to emulate 1, failed 0', o) is not None and not [n for n in ls(mac) + ls(ios) if '_se.' in n],
-      '① se_want.tsv 两行：请求 2 个，K1 计算核没有采样 → nothing to emulate 1、不出 _se（不在出库里的键不算）')
+check(re.search(r'every key tried 3\): built 0 \(of se_want\.tsv\'s 2 keys 0\), nothing to emulate 3, failed 0', o) is not None and not [n for n in ls(mac) + ls(ios) if '_se.' in n],
+      '① _se 每个键都试：试 3 个、se_want.tsv 请求 2 个出了 0 个，三支计算核都没有采样 → nothing to emulate 3、不出 _se')
 before = snap(mac, ios); e0 = entries('cas_a')
 # ② 原地再出
 rc, o, _, _, _, _ = build('a', 'cas_a')

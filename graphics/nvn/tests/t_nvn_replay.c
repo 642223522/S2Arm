@@ -403,6 +403,11 @@ void nvn_gpu_compute_to_graphics(nvn_gpu_cmd c) { (void)c; CHECK(!g_pass_open); 
 // 帧日志替身（生产在 android/native/nvn/nvn_vk_frame_log.c，回放核心按弱引用调）：记次数与最后一次读数（#1501 D①）
 static int g_fl_presents, g_fl_fences; static uint64_t g_fl_acq_ns, g_fl_pres_ns;
 void s2a_frame_log_present_timed(uint64_t acquire_ns, uint64_t present_ns) { g_fl_presents++; g_fl_acq_ns = acquire_ns; g_fl_pres_ns = present_ns; }
+// ADPF 帧负载上报替身（rp_present.c nvn_be_present）：记调用次数与最后一次的序号 / 目标
+static int g_adpf_begin_n, g_adpf_end_n, g_adpf_invis_n; static uint64_t g_adpf_begin_seq, g_adpf_end_seq; static int64_t g_adpf_end_target;
+void s2a_adpf_work_begin(uint64_t seq) { g_adpf_begin_n++; g_adpf_begin_seq = seq; }
+void s2a_adpf_frame_end(int64_t target_ns, uint64_t seq) { g_adpf_end_n++; g_adpf_end_seq = seq; g_adpf_end_target = target_ns; }
+void s2a_adpf_invisible(void) { g_adpf_invis_n++; }
 void nvn_vk_frame_log_fence_wait(uint64_t wait_ns) { (void)wait_ns; g_fl_fences++; }
 static void t_framelog_fence(void) {   // 帧日志 fence 字段：同步等待 / Finish 等待每次记一次（口径同 RP_PERF_WAIT_N + WAIT_FIN_N），栅栏 0 不算等
     uint64_t saved = g_fdone; g_fdone = 0; g_fl_fences = 0;
@@ -4753,6 +4758,24 @@ static void t_bind_reuse(void) {   // 按脏位少发绑定：没变的阶段不
     CHECK(g_gdraws == 6 && g_bind_calls[0] == 1 && g_bind_calls[1] == 1);
 }
 
+// ADPF 帧负载上报接在新层出图点：出图前对本帧报 frame_end（目标 = 游戏周期），出图后对下一帧开 work_begin；没有显示面时关会话、不报。
+//   期望（手算）：无显示面出图 → invisible 1 次、frame_end / work_begin 0 次；有显示面、周期 1/30 s：
+//   第 1 次 → frame_end(33333333, 1)、work_begin(2)；第 2 次 → frame_end(33333333, 2)、work_begin(3)。
+static void t_present_adpf(void) {
+    pass_fresh(); rp_present_reset(); memset(g_acq_script, 0, sizeof g_acq_script); g_acq_i = 0;
+    g_adpf_begin_n = g_adpf_end_n = g_adpf_invis_n = 0; g_adpf_begin_seq = g_adpf_end_seq = 0; g_adpf_end_target = 0;
+    tex_t t = mk_tex(72, 0, NVN_FORMAT_RGBA8, 640, 360, 1, 0);
+    rp_present_set_surface(NULL, 0);
+    nvn_be_present(&t, 1.0 / 30, NULL);
+    CHECK(g_adpf_invis_n == 1 && g_adpf_end_n == 0 && g_adpf_begin_n == 0);
+    rp_present_set_surface(&g_fake_surf, 60);
+    nvn_be_present(&t, 1.0 / 30, NULL);
+    CHECK(g_adpf_end_n == 1 && g_adpf_end_seq == 1 && g_adpf_end_target == 33333333 && g_adpf_begin_n == 1 && g_adpf_begin_seq == 2);
+    nvn_be_present(&t, 1.0 / 30, NULL);
+    CHECK(g_adpf_end_n == 2 && g_adpf_end_seq == 2 && g_adpf_begin_n == 2 && g_adpf_begin_seq == 3 && g_adpf_invis_n == 1);
+    rp_present_set_surface(NULL, 0);
+}
+
 static void t_present(void) {   // 上屏：没有窗口按丢帧报；有窗口时取图、按比例贴合、呈现；交换链过期先重建
     g_fl_presents = 0;
     pass_fresh(); rp_present_reset(); g_diag_frames = 0; memset(g_acq_script, 0, sizeof g_acq_script); g_acq_i = g_rebuilds = g_presents = 0;
@@ -5389,7 +5412,7 @@ int main(int argc, char **argv) {
     t_const_sampler();
     t_ubo_texture();
     t_ubo_const_sampler();
-    t_present();
+    t_present(); t_present_adpf();
     t_framelog_fence();
     t_view_pin();
     t_view_storage_key();

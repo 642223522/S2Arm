@@ -503,6 +503,8 @@
 "settings.toggle.devHud" = "Mostrar capa de diagnóstico de S2Arm";
 "settings.toggle.diagOnOpen" = "Exportar diagnóstico en la próxima apertura";
 "settings.toggle.docked" = "Modo con base";
+"settings.toggle.snapshot" = "Instantáneas de guardado rápido";
+"settings.snapshot.note" = "Para todos los juegos: guarda el momento actual y vuelve a él más tarde. Se aplica la próxima vez que inicies un juego.";
 "settings.toggle.diagRun" = "Ejecución de diagnóstico (próxima sesión)";
 "settings.diagRun.note" = "Activa, cierra la app desde el selector de apps e inicia este juego de nuevo. Permanece donde aparece el problema durante al menos 3 minutos, luego exporta el diagnóstico. Se aplica solo a la próxima sesión; esa sesión se ejecutará más lento.";
 "settings.docked.note" = "Imagen más nítida, pero consume más energía y calienta más; no se recomienda en un teléfono";
