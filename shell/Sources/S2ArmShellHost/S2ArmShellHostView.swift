@@ -33,7 +33,7 @@ public struct S2ArmShellHostView: View {
             // 库顶上的提示：这次安装丢了「提高内存上限」权限（可关，只管这次打开；「了解详情」看各装法怎么带上）；删除游戏的进度与结果（点一下收起结果）
             .overlay(alignment: .top) {
                 VStack(spacing: 10) {
-                    if let iml = model.imlNotice, !model.guideOpen {   // 首次引导开着时先不出（引导盖在上面、点不到关闭），引导关了再出
+                    if let iml = model.imlNotice, !model.guideOpen, !model.featureOpen {   // 首次引导 / 新功能介绍开着时先不出（盖在上面、点不到关闭），关了再出
                         IMLNoticeBar(notice: iml, close: { model.closeIMLNotice() }, more: { model.openIMLGuide() })
                             .onAppear { s2a_shell_iml_notice_seen() }   // 真显示出来才记（起局那条不再重复）
                             .transition(.move(edge: .top).combined(with: .opacity))
@@ -56,6 +56,17 @@ public struct S2ArmShellHostView: View {
                 }
             }
             .animation(.smooth(duration: 0.25), value: model.guideOpen)
+        #if !os(tvOS)
+            // 这一版的新功能介绍（iPhone 两页）：排在首次引导之后，同样盖在最上面、手柄能翻页能关；设置里「再看一遍」再开
+            .overlay {
+                if model.featureOpen, let intro = model.featureIntroContent {
+                    FeatureIntroView(intro: intro, index: Binding(get: { model.featurePage }, set: { model.featurePage = $0 }), close: { model.closeFeature() })
+                        .transition(.opacity)
+                }
+            }
+            .animation(.smooth(duration: 0.25), value: model.featureOpen)
+            .onReceive(NotificationCenter.default.publisher(for: .shellOpenFeatureIntro)) { _ in model.openFeature() }
+        #endif
         #if canImport(UIKit) && !os(tvOS)
             // 回前台重判资源包：玩家去「文件」/ 访达拷完资源包回来，不用重开 App
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in model.rescanCatalogue() }

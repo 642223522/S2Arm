@@ -43,6 +43,24 @@ public struct InstallStage: Equatable, Sendable {
     }
 }
 
+/// The version's "What's new" (0.6.0 on, decided 11-19): the pages docs/site/feature.json marks for iPhone, in the player's
+/// language, the same words and pictures as the computer's. The host reads it from the app (Feature/feature.json).
+public struct FeatureIntro: Equatable, Sendable {
+    public struct Page: Equatable, Sendable {
+        public var picture: Artwork?
+        public var kicker: String, title: String, what: String, how: String, whereText: String
+        /// Column headings this page renames (what / how / where → its own words, such as "Good to know").
+        public var labels: [String: String]
+        public init(picture: Artwork?, kicker: String, title: String, what: String, how: String, whereText: String, labels: [String: String] = [:]) {
+            self.picture = picture; self.kicker = kicker; self.title = title; self.what = what; self.how = how; self.whereText = whereText; self.labels = labels
+        }
+    }
+    public var id: String
+    public var badge: String
+    public var pages: [Page]
+    public init(id: String, badge: String, pages: [Page]) { self.id = id; self.badge = badge; self.pages = pages }
+}
+
 /// The game's saved moment (instant snapshot, 0.6.0): when it was saved and the picture of that moment. One per game.
 public struct SavedMoment: Equatable, Sendable {
     public var savedAt: Date
@@ -300,6 +318,9 @@ public struct ShellActions {
     /// game restored to that moment). Both nil: no snapshot item anywhere in the library.
     public var snapshotAvailable: ((_ gameID: String) -> Bool)? = nil
     public var onRestoreSnapshot: ((_ gameID: String) -> Void)? = nil
+    /// The version's "What's new" for iPhone. The host shows it once over the library (after the first-run guide) and
+    /// the library's settings offer it again; nil: this version has none, so no settings row either.
+    public var featureIntro: FeatureIntro? = nil
     /// Deletes the game's saved moment and frees its space (the library asks the player first). Nil: no Delete item.
     public var onDeleteSnapshot: ((_ gameID: String) -> Void)? = nil
     public init(onSelect: @escaping (String) -> Void = { _ in }, onPlay: @escaping (String) -> Void = { _ in },

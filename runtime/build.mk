@@ -206,6 +206,7 @@ ios: ios-ns2pro
 	  -framework UIKit -framework Foundation -framework CoreGraphics $(IOS_SHELLUI_LINK) $(call S2A_WEAK_U,ios) -Wl,-S
 	@rm -rf $(BUILD)/ios/S2Arm.dSYM $(IOS_APP)/S2Arm.dSYM   # 主程序链接带 -Wl,-S（不留调试映射），没有调试符号包可出；函数符号表照留，atos / 宿主 dladdr 照常符号化
 	@[ "$(S2A_SHELLUI)" != 1 ] || cp -R $(SHELLUI_PRODUCTS)/S2ArmShellUI_ShellUI.bundle $(IOS_APP)/   # 游戏库界面资源包（本地化 + 字体）
+	@[ "$(S2A_SHELLUI)" != 1 ] || python3 pack/feature_bundle.py docs/site $(IOS_APP)/Feature   # 新功能介绍（iPhone 两页，和电脑共用 docs/site/feature.json 与图）
 # CADisableMinimumFrameDurationOnPhone（11-13）：iPhone 默认把显示链压在 60 Hz；社区帧率补丁目标高于 60 时出图链要 60–120 Hz（runtime/src/cpatch.c fps_link），
 #   没这一项系统不给。实际帧率仍由出图链按请求定（缺省 60），别的款不受影响
 	@/usr/bin/plutil -create xml1 $(IOS_APP)/Info.plist && for kv in CFBundleIdentifier=$(IOS_BUNDLE) CFBundleExecutable=S2Arm CFBundleName=S2Arm CFBundlePackageType=APPL \
