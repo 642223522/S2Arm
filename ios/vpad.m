@@ -560,7 +560,7 @@ static NSString *vp_running_gid(void) { const char *g = getenv("S2A_LAUNCH_GAME_
       if (s2a_snap_logging && s2a_snap_logging() && s2a_snap_dir_for && !s2a_snap_dir_for(NULL, sd, sizeof sd)) {
           NSString *dir = @(sd);
           NSMutableArray<UIMenuElement *> *snap = [NSMutableArray array];
-          [snap addObject:vp_act(S2AL(@"vpad.snap.save"), @"camera.viewfinder", NO, ^{ [ws afterMenu:^{ [ws snapSave:dir]; }]; })];
+          [snap addObject:vp_act(S2AL(@"vpad.snap.save"), @"record.circle", NO, ^{ [ws afterMenu:^{ [ws snapSave:dir]; }]; })];
           if (s2a_snap_exists && s2a_snap_exists(sd)) [snap addObject:vp_act(S2AL(@"vpad.snap.restore"), @"clock.arrow.circlepath", NO, ^{ [ws afterMenu:^{ [ws snapRestore:dir]; }]; })];
           [items addObject:vp_inline(snap)];
       } }
@@ -680,7 +680,7 @@ static unsigned long long s2a_snap_bytes(NSString *dir);
     _snapDir = @(sd);
     _snapBtn = [UIButton buttonWithType:UIButtonTypeSystem]; _snapBtn.accessibilityIdentifier = @"vpad.snap"; _snapBtn.accessibilityLabel = S2AL(@"vpad.snap.save");
     _snapBtn.accessibilityHint = S2AL(@"vpad.snap.button.hint");
-    [_snapBtn setImage:[UIImage systemImageNamed:@"camera.viewfinder"] forState:UIControlStateNormal]; _snapBtn.tintColor = UIColor.whiteColor;
+    [_snapBtn setImage:[UIImage systemImageNamed:@"record.circle"] forState:UIControlStateNormal]; _snapBtn.tintColor = UIColor.whiteColor;
     _snapBtn.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45]; _snapBtn.layer.cornerRadius = 18;   // 与齿轮同一套
     [_snapBtn addTarget:self action:@selector(snapTapped) forControlEvents:UIControlEventTouchUpInside];
     __weak S2AVPadView *ws = self;
@@ -712,7 +712,7 @@ static NSString *snap_when_text(NSDate *d) {
     int s2a_snap_exists(const char *) __attribute__((weak));
     __weak S2AVPadView *ws = self; NSString *dir = _snapDir;
     if (!(dir && s2a_snap_exists && s2a_snap_exists(dir.fileSystemRepresentation))) {
-        UIAction *none = vp_act(S2AL(@"vpad.snap.none"), @"camera.viewfinder", NO, ^{});
+        UIAction *none = vp_act(S2AL(@"vpad.snap.none"), @"record.circle", NO, ^{});
         none.attributes = UIMenuElementAttributesDisabled; return @[none];
     }
     NSDate *when = nil; UIImage *th = snap_thumb(dir, 96, &when);

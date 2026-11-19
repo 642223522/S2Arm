@@ -160,7 +160,7 @@ struct PortraitLibrary: View, Equatable {
                 CoverView(game: detail.game, showsState: true)
                     .overlay(alignment: .topTrailing) {   // 有存下的时刻：右上角一个小角标（入口在上面「从这一刻继续」那一条）
                         if detail.game.moment != nil {
-                            Image(systemName: "camera.viewfinder").font(.system(size: 10, weight: .semibold)).foregroundStyle(.white)
+                            Image(systemName: "record.circle").font(.system(size: 10, weight: .semibold)).foregroundStyle(.white)
                                 .frame(width: 20, height: 20).background(.black.opacity(0.55), in: Circle()).padding(6)
                                 .accessibilityLabel(ShellStrings.text("Continue from this moment"))
                         }
