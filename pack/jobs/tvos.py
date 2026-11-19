@@ -841,7 +841,7 @@ class TvClient:
         try:
             self.dc.put(src, rel)
         except self.P.Fail as e:
-            raise Failure(str(e).replace("iPhone", KIND).replace("手机", "电视"), code="resource_transfer_failed") from e
+            raise Failure(str(e).replace("iPhone", KIND).replace("手机", "电视"), code="resource_transfer_failed") from e  # 非玩家句（换字；原句是 push_pack 的玩家句）
 
     def get(self, rel, dst):
         return self.dc.get(rel, dst)

@@ -9848,8 +9848,16 @@
   "en": "Adding this game to S2Arm on the Apple TV"
  },
  {
-  "source": "把游戏推进 Apple TV（只推变了的文件；第一次大游戏要几分钟）",
-  "en": "Sending the game to the Apple TV (only changed files; a large game takes a few minutes the first time)"
+  "source": "把游戏资源推进 Apple TV（只推变了的文件；第一次大游戏要几分钟）",
+  "en": "Sending the game's resources to the Apple TV (only changed files; a large game takes a few minutes the first time)"
+ },
+ {
+  "source": "把游戏的程序推进 Apple TV",
+  "en": "Sending the game's program to the Apple TV"
+ },
+ {
+  "source": "组 Apple TV 上的 S2Arm（不带游戏）",
+  "en": "Building S2Arm for Apple TV (without games)"
  },
  {
   "source": "这台电脑上还没有 Apple TV 版的预编壳：先给这款出一次 Apple TV 包，再装到 Apple TV。",
