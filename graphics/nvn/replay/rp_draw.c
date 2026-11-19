@@ -291,6 +291,20 @@ static uint32_t gs_tstrip_expand(uint32_t count, uint32_t *d) {
     for (uint32_t i = 0; i + 2 < count; i++) { d[o++] = i + (i & 1); d[o++] = i + 1 - (i & 1); d[o++] = i + 2; }
     return o;
 }
+// 带索引的同一展开：顶点号取游戏的索引（编码这一刻读出），开着重启时每段各自从「第 0 个三角形」起算（GL：重启后像新的一次绘制）。
+//   d 至少要 (count - 2) * 3 个（重启只会更少）；首顶点由调用方放进 base vertex（索引原值）。
+static uint32_t gs_tstrip_expand_ix(const uint8_t *src, uint32_t isz, uint32_t count, int64_t rv, uint32_t *d) {
+#define IXG(i) (isz == 1 ? src[i] : isz == 2 ? (uint32_t)(src[(size_t)(i) * 2] | src[(size_t)(i) * 2 + 1] << 8) : \
+                ((uint32_t)src[(size_t)(i) * 4] | (uint32_t)src[(size_t)(i) * 4 + 1] << 8 | (uint32_t)src[(size_t)(i) * 4 + 2] << 16 | (uint32_t)src[(size_t)(i) * 4 + 3] << 24))
+    uint32_t o = 0;
+    for (uint32_t s = 0; s < count;) {
+        uint32_t e = s; if (rv >= 0) { while (e < count && IXG(e) != (uint32_t)rv) e++; } else e = count;
+        for (uint32_t i = 0; s + i + 2 < e; i++) { const uint32_t k = s + i; d[o++] = IXG(k + (i & 1)); d[o++] = IXG(k + 1 - (i & 1)); d[o++] = IXG(k + 2); }
+        s = e + 1;
+    }
+#undef IXG
+    return o;
+}
 
 // 贴图数组（着色器按运行时下标取句柄）的各项：每个阶段至多一个数组，至多 RP_TEXARR_MAX 项。
 // 数组第 k 项 = 驱动句柄表的第 k 个 8 字节项；贴图槽 s 的句柄在第 4 + s 项，前 4 项与没绑的槽读作池里的第 0 项（同单个贴图槽没绑时的口径）
@@ -1008,13 +1022,17 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
     }
     if (dr && dr->tfc) { skip("transform_feedback_count", rec); return; }
     if (rp_S.tf_on) { skip("transform_feedback_active", rec); return; }
-    if (!(prim <= 9)) { char nm[24]; snprintf(nm, sizeof nm, "prim_%u", prim); skip(nm, rec); return; }
-    // 必须在图元展开前判原始输入，避免 GS 看到不同数量或顺序的图元。原生点 / 线 / 三角直接画；不带索引、非间接的三角带按 GL 序展开
-    // （gs_tstrip_expand）；其余（带索引或间接的三角带、三角扇、线带、线环、四边形类）照旧报未接。
-    const int gs = (rp_shader_graphics_stages() & 4u) != 0;
-    if (gs && prim != 0 && prim != 1 && prim != 4 && !(prim == 5 && !di && !ind)) {
-        skip("geometry_topology_unimplemented", rec); return;
+    // 0..9 是普通图元，10..13 是四种邻接图元（直接映射 Vulkan 的 *_WITH_ADJACENCY，不展开）；14 曲面细分补丁另说
+    if (!(prim <= 13)) { char nm[24]; snprintf(nm, sizeof nm, "prim_%u", prim); skip(nm, rec); return; }
+    if (prim >= 10) {   // Vulkan：设备没开 geometryShader 特性时不许用邻接拓扑（VUID-VkPipelineInputAssemblyStateCreateInfo-topology-00429）
+        nvn_gpu_caps caps; nvn_gpu_caps_get(&caps);
+        if (!(caps.caps & NVN_GPU_CAP_GEOMETRY)) { skip("adjacency_without_geometry_feature", rec); return; }
     }
+    // 带 GS 的拓扑（同 Ryujinx 的 Vulkan 后端：原生能收的直接交给 GS，收不了的换成三角形列表）：
+    //   三角带按 GL 序展开（GS 的 gl_in 顺序与 Vulkan 原生三角带的奇三角形不同，#696）：不带索引 gs_tstrip_expand、带索引 gs_tstrip_expand_ix（读游戏索引、分段重启）；
+    //   间接的三角带：索引 / 参数在 GPU 上，CPU 展开不了，按原生三角带画（Ryujinx 同此，奇三角形 gl_in[0] 与 GL 不同、绕序相同）；
+    //   线带 / 三角扇 / 多边形（= 扇）/ 邻接图元：原生交给 GS；线环 / 四边形 / 四边形带：沿用下面的展开（GS 看到展开后的线 / 三角形，同 Ryujinx）。
+    const int gs = (rp_shader_graphics_stages() & 4u) != 0;
     uint32_t count = (uint32_t)(di ? di->count : dr->count);
     if (!count && !ind) return;
     if (ind) count = 0;   // GPU parameters, not stale direct fields, own the draw count.
@@ -1023,7 +1041,7 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
     int quads = EXP_NONE;
     if (prim == 7) { quads = EXP_QUADS; prim = 4; }
     else if (prim == 2) { quads = EXP_LOOP; prim = 1; }
-    else if (prim == 5 && gs) { quads = EXP_GS_TSTRIP; prim = 4; }   // 上面的判断已保证不带索引、非间接
+    else if (prim == 5 && gs && !ind) { quads = EXP_GS_TSTRIP; prim = 4; }   // 带 GS 的三角带按 GL 序展开（带索引的读游戏索引）；间接的照原生画
     else if (prim == 9) prim = 6;   // 多边形 = 三角扇（首点为扇心，绕序同扇）
     else if (prim == 8) {           // 四边形带 = 三角带；零头 1 个点在三角带里会多画一个三角形，丢掉
         if (restart) { quads = EXP_QSTRIP; prim = 4; }
@@ -1155,7 +1173,7 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
         if (!nvn_gpu_ok(rc) || !sl.cpu) { arena_fail_detail(rc, &err, cap * 4); skip("arena_alloc_failed", rec); return; }
         const uint8_t *src = di ? (const uint8_t *)(uintptr_t)di->ibuf : NULL; int64_t rv = restart ? (int64_t)rp_S.restart.index : -1; uint32_t *dst = (uint32_t *)(void *)sl.cpu;
         uint32_t n = quads == EXP_QUADS ? quad_expand(src, isz, count, rv, dst) : quads == EXP_LOOP ? loop_expand(src, isz, count, rv, dst) :
-                     quads == EXP_GS_TSTRIP ? gs_tstrip_expand(count, dst) : qstrip_expand(src, isz, count, rv, dst);
+                     quads == EXP_GS_TSTRIP ? (src ? gs_tstrip_expand_ix(src, isz, count, rv, dst) : gs_tstrip_expand(count, dst)) : qstrip_expand(src, isz, count, rv, dst);
         if (!n) return;
         a.ibuf = sl.buf; a.ioff = sl.off; a.itype = 2; a.base_vertex = di ? di->base_vertex : dr->first; count = n;
     } else if (rst_rewrite) {
