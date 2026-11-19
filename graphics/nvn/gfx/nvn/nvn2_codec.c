@@ -1,3 +1,6 @@
+// 系统库[nvntest]：-framework VideoToolbox（直连层单测链 libnvn.a 时带上，tools/weak_link_decl.py flags nvntest 输出）
+// 系统库[nvntest]：-framework CoreMedia
+// 系统库[nvntest]：-framework CoreVideo
 // Switch 2 直连档：nn::codec 视频解码器、解码图像池、nn::syncpt::sdk 同步点事件、nn::gs::TryWaitNativeSync，以及 NVN2 的原生图像（nvnNativeImage* /
 //   nvnTextureInitializeFromNativeImage）——宿主自己解码、自己给图像与同步点，不进 gsv 服务。
 // 为什么：Switch 2 SDK 的 nn::codec 视频解码器经 nn::gsv::GetUserSession() 走 gsv 服务（NVIDIA 硬件解码器）。真机由 NVN2 驱动初始化时拉起 gsv，直连档把 NVN 换成
