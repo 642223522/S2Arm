@@ -1058,6 +1058,9 @@ static void nvn_be_pool_add_body(const void *mem, uint64_t size) {
 }
 
 static dispatch_queue_t ph_queue(void);   // first-upload page hashes (see NvPkg ph)
+// 最近注销的池（地址兜底 addr_adhoc 的取证：兜底的地址是不是落在一个已释放的池里）：环形 128 条，g_mu 下读写
+enum { FREED_RING = 128 };
+static struct { uintptr_t lo, hi; uint64_t seq; } g_freed[FREED_RING]; static uint64_t g_freed_seq; static __thread int t_freed_skip;   // t_freed_skip：注销兜底池时不记（adhoc_drop）
 static void nvn_be_pool_del_body(const void *mem);
 void nvn_be_pool_del(const void *mem) { @autoreleasepool { nvn_be_pool_del_body(mem); } }
 static void nvn_be_pool_del_body(const void *mem) {
@@ -1067,7 +1070,8 @@ static void nvn_be_pool_del_body(const void *mem) {
     // The no-copy buffer goes through deferred release (out of the residency set and unreferenced after submitted commands complete). It used to be removed only from g_keep while the residency set still held a strong reference: after the pool was freed the buffer stayed alive wrapping that guest memory,
     // and a new pool at the same address wrapped it again. Engage's title demo cycles scenes; GPU allocated grew to 5.4 GB and resident memory to 3.6 GB in 850 s
     for (int i = 0; i < g_npool; i++)
-        if (g_pools[i].key == mem) { id<MTLBuffer> b = g_pools[i].buf; [g_keep removeObject:b]; if (!xq_buf_hold_retire((__bridge void *)b)) defer_obj_release(b); if (g_pools[i].res) g_pool_res_n--;
+        if (g_pools[i].key == mem) { if (!t_freed_skip) { uint64_t q = g_freed_seq++; g_freed[q % FREED_RING].lo = g_pools[i].lo; g_freed[q % FREED_RING].hi = g_pools[i].hi; g_freed[q % FREED_RING].seq = q; }
+            id<MTLBuffer> b = g_pools[i].buf; [g_keep removeObject:b]; if (!xq_buf_hold_retire((__bridge void *)b)) defer_obj_release(b); if (g_pools[i].res) g_pool_res_n--;
             if (!g_dead_pools) g_dead_pools = [NSHashTable weakObjectsHashTable];
             gslot_put(i);
             [g_dead_pools addObject:b]; pidx_removing(i); g_pools[i] = g_pools[--g_npool]; if (i < g_npool && g_pools[i].gslot) g_gslot_pool[g_pools[i].gslot - 1] = i;   // the moved pool's bit follows it
@@ -1111,6 +1115,48 @@ int mtl_pool_near(uint64_t addr, char *out, size_t n) {
 //   and registers them as a pool (审计 #1592 P1-112; textures read the page table themselves), and the lookup is made once more: len bytes must be covered, up to want are copied
 //   where pages are mapped (a binding looked up by its first byte, as before, still gets its whole range copied)
 int nvn_sparse_shadow(uint64_t a, uint64_t len, uint64_t want);
+// 地址兜底（宿主图形未实现清单 #5）：游戏给的缓冲 / 贴图地址不在任何已登记的池里（诊断里顶点 28 款、索引 22 款、存储缓冲 6 款、交错贴图 68 款……，
+//   原先顶点读 0、索引 / 存储读写替身、贴图退 CPU）。真机上 GPU 能读写的地址一定映射着；这里只要它是客体地址窗口里、此刻可读可写的内存，
+//   就把它所在的 64 KB 对齐一段（不越出那个映射区）登记成一个池（nvn_be_pool_add：零拷贝缓冲、驻留、延迟释放都同普通池），再查一次。
+//   不在客体窗口里（宿主自己的内存）或没映射 / 只读的不兜：GPU 写存储缓冲会改到宿主内存。Ryujinx 也是整片 GPU 虚拟地址可解析，不按池。
+//   前几例与 2 的幂次例记一行：区间、是否落在最近释放的某个池里（取证根因：游戏用了已释放的池，还是我方登记漏了）
+void s2a_window_get(uint64_t *base, uint64_t *size) __attribute__((weak));
+//   兜底池只活到这次提交结束（下次提交开始时 adhoc_drop 注销，再用到再登记）：游戏之后若解除映射那段内存，长留的零拷贝缓冲会让 GPU 读到空洞（缺页）
+static _Atomic uint64_t g_adhoc_n;
+enum { ADHOC_MAX = 256 };
+static uintptr_t g_adhoc_key[ADHOC_MAX]; static int g_adhoc_nk;   // g_mu
+static void adhoc_drop(void) {
+    uintptr_t k[ADHOC_MAX]; int n;
+    pthread_mutex_lock(&g_mu); n = g_adhoc_nk; memcpy(k, g_adhoc_key, (size_t)n * sizeof *k); g_adhoc_nk = 0; pthread_mutex_unlock(&g_mu);
+    t_freed_skip = 1; for (int i = 0; i < n; i++) nvn_be_pool_del((const void *)k[i]); t_freed_skip = 0;
+}
+static void (*g_adhoc_win)(uint64_t *, uint64_t *);   // 取客体地址窗口：缺省 s2a_window_get（原生层 vawin.c）；单测包含本文件时指到自己的夹具
+static int addr_adhoc(uint64_t addr, uint64_t len) {
+    if (!g_adhoc_win) g_adhoc_win = s2a_window_get;
+    if (!addr || !len || len > (64ull << 20) || !g_adhoc_win) return 0;
+    uint64_t wb = 0, ws = 0; g_adhoc_win(&wb, &ws);
+    if (!ws || addr < wb || addr + len > wb + ws) return 0;
+    vm_address_t ra = (vm_address_t)addr; vm_size_t rs = 0; vm_region_basic_info_data_64_t info; mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64; mach_port_t obj = MACH_PORT_NULL;
+    if (vm_region_64(mach_task_self(), &ra, &rs, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &cnt, &obj) != KERN_SUCCESS) return 0;   // vm_region_64：iOS SDK 的 mach_vm.h 不可用（同 mem_readable）
+    if (obj != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), obj);
+    if (ra > addr || addr + len > ra + rs || (info.protection & (VM_PROT_READ | VM_PROT_WRITE)) != (VM_PROT_READ | VM_PROT_WRITE)) return 0;
+    uint64_t lo = MAX((uint64_t)ra, addr & ~0xFFFFull), hi = MIN((uint64_t)(ra + rs), (addr + len + 0xFFFFull) & ~0xFFFFull);
+    long freed = -1;
+    pthread_mutex_lock(&g_mu);
+    if (pool_find(addr, len) >= 0) { pthread_mutex_unlock(&g_mu); return 1; }   // another thread registered it meanwhile
+    if (g_adhoc_nk >= ADHOC_MAX) { pthread_mutex_unlock(&g_mu); return 0; }   // this submission already holds as many as it can drop again
+    g_adhoc_key[g_adhoc_nk++] = (uintptr_t)lo;
+    for (uint64_t k = 0; k < FREED_RING && k < g_freed_seq; k++) { uint64_t q = g_freed_seq - 1 - k; if (addr >= g_freed[q % FREED_RING].lo && addr < g_freed[q % FREED_RING].hi) { freed = (long)k; break; } }
+    pthread_mutex_unlock(&g_mu);
+    nvn_be_pool_add((const void *)(uintptr_t)lo, hi - lo);
+    uint64_t n = atomic_fetch_add(&g_adhoc_n, 1) + 1;
+    if (n <= 8 || !(n & (n - 1)))
+        MLOG("【黄】 address %#llx (+%llu bytes) is in no registered memory pool: registered its guest memory %#llx..%#llx as a pool and used it (%llu so far; %s)", (unsigned long long)addr,
+             (unsigned long long)len, (unsigned long long)lo, (unsigned long long)hi, (unsigned long long)n,
+             freed >= 0 ? [NSString stringWithFormat:@"it lay in a pool released %ld pool releases ago", freed].UTF8String : "no recently released pool held it");
+    return 1;
+}
+static int addr_fallback(uint64_t addr, uint64_t len, uint64_t want) { return nvn_sparse_shadow(addr, len, want) || addr_adhoc(addr, len); }
 int nvn_be_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off) {
     addr = nvn_ga2ca(addr);   // 兜底：录制入口已换成 CPU 地址，这里只接住从游戏内存里读出、没在读出处换的 GPU 地址（hle_nvn.c GPU 地址空间）
     const pc_ent *c = pc_get(addr, len);
@@ -1120,7 +1166,7 @@ int nvn_be_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off) {
     int i = pool_find(addr, len);
     if (i >= 0) { pool_res(i); pc_put(i, addr); *buf = (__bridge void *)g_pools[i].buf; *off = addr - g_pools[i].base; ok = 1; }
     pthread_mutex_unlock(&g_mu);
-    if (!ok && nvn_sparse_shadow(addr, len, len)) {   // outside g_mu: it registers pools (g_vp_mu → g_mu)
+    if (!ok && addr_fallback(addr, len, len)) {   // outside g_mu: it registers pools (g_vp_mu → g_mu)
         pthread_mutex_lock(&g_mu); i = pool_find(addr, len);
         if (i >= 0) { pool_res(i); pc_put(i, addr); *buf = (__bridge void *)g_pools[i].buf; *off = addr - g_pools[i].base; ok = 1; }
         pthread_mutex_unlock(&g_mu); }
@@ -1154,7 +1200,7 @@ static inline int gpu_addr_want(uint64_t addr, uint64_t len, uint64_t want, void
     int i = pool_find(addr, len);
     if (i >= 0) { pool_res(i); pc_put(i, addr); *buf = (__bridge void *)g_pools[i].buf; *off = addr - g_pools[i].base; *gpu = g_pools[i].gpu + *off; *avail = pool_buf_end(g_pools[i].hi) - addr; ok = 1; }
     pthread_mutex_unlock(&g_mu);
-    if (!ok && nvn_sparse_shadow(addr, len, want > len ? want : len)) {   // as nvn_be_addr
+    if (!ok && addr_fallback(addr, len, want > len ? want : len)) {   // as nvn_be_addr
         pthread_mutex_lock(&g_mu); i = pool_find(addr, len);
         if (i >= 0) { pool_res(i); pc_put(i, addr); *buf = (__bridge void *)g_pools[i].buf; *off = addr - g_pools[i].base; *gpu = g_pools[i].gpu + *off; *avail = pool_buf_end(g_pools[i].hi) - addr; ok = 1; }
         pthread_mutex_unlock(&g_mu); }
@@ -1511,6 +1557,7 @@ static void sub_cut_begin(void);   // the segment draw count starts with the sub
 static void dsnap_stale(void);   // #387 (with fb_prepare)
 static void up_pool_trim(void);   // upload staging pool (with up_flush)
 void nvn_be_sub_begin(void) {
+    adhoc_drop();   // 上一次提交里地址兜底登记的池（addr_adhoc）
     dsnap_stale();   // #387: depth may change between submissions (CPU writes, other queues)
     mtl_init(); g_sub_serial++; g_pkg_epoch++; wd_sub_begin(); g_seg = 0; seg_clk_put(g_sclk); g_sclk = NULL; rc_retire(); g_rc_npend = 0; g_rc_skip = 0;
     up_pool_trim();   // the staging pool's idle blocks go 5 s after their last use, whether or not anything uploads again
