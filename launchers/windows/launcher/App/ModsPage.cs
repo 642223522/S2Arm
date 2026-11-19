@@ -1,6 +1,6 @@
 // S2Arm（不是上游文件）：Windows「Mod」页（11-15 维护者「咱们也可以支持 mod 导入」）。同 Mac 启动设置里的「资源 Mod」：
 //   看这款导入了哪些、导入 zip / 文件夹、删除。导入进这款游戏文件夹的 mods/（pack/jobs/mods.py，作业层找 romfs、标了别的程序号的不收），
-//   下次「装到 iPhone」时推进手机上本款文档根 mods/（pack/jobs/install.py push_mods，只推变了的），进游戏时服务层 RomFsMods.cs 叠上
+//   下次「推到 iPhone」时推进手机上本款文档根 mods/（pack/jobs/install.py push_mods，只推变了的），进游戏时服务层 RomFsMods.cs 叠上
 using System.Text.Json;
 using Avalonia.Controls;
 using Avalonia.Layout;

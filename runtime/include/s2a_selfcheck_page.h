@@ -16,8 +16,8 @@
 // 读不到本款要多大地址（包不完整）→ 重装补资源
 #define S2A_SELFCHECK_PKG_TITLE    "游戏资源不完整"
 #define S2A_SELFCHECK_PKG_TITLE_EN "Game files are incomplete"
-#define S2A_SELFCHECK_PKG_BODY     "请在 电脑上的 S2Arm 里对这款游戏再点一次「装到 iPhone」，它会把缺的补上。"
-#define S2A_SELFCHECK_PKG_BODY_EN  "In S2Arm on your computer, click \"Install on iPhone\" for this game again to add what's missing."
+#define S2A_SELFCHECK_PKG_BODY     "请在 电脑上的 S2Arm 里对这款游戏再点一次「推到 iPhone」，它会把缺的补上。"
+#define S2A_SELFCHECK_PKG_BODY_EN  "In S2Arm on your computer, click \"Push to iPhone\" for this game again to add what's missing."
 // 签了仍不够 → 本机型系统上限
 #define S2A_SELFCHECK_DEVICE_TITLE "这台手机暂时玩不了这款游戏"
 #define S2A_SELFCHECK_DEVICE_TITLE_EN "This iPhone can't run this game yet"

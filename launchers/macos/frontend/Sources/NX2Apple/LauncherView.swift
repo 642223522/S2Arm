@@ -677,7 +677,7 @@ struct LauncherView: View {
         }
     }
 
-    /// 装机弹窗关着时：手机作业在跑 → 「正在装到 iPhone · 查看进度」，点了回到同一个作业（弹窗显示 model.session，不新起安装）；
+    /// 装机弹窗关着时：手机作业在跑 → 「正在推到 iPhone · 查看进度」，点了回到同一个作业（弹窗显示 model.session，不新起安装）；
     /// 跑完还没回去看 → 「已装好 / 没装完 · 查看结果」（#308，Mac 与 Windows 同一套入口）。
     @ViewBuilder private var phonePill: some View {
         if installFor == nil {

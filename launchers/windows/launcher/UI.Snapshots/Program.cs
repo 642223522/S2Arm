@@ -36,7 +36,7 @@ var outDir = args.Length > 0 ? args[0] : Path.Combine(
     ".s2arm/run/s2arm/cmdr/evidence/launcher/win");
 Directory.CreateDirectory(outDir);
 
-// 顶部选中游戏三按钮断言（v0.4.5 修）：有横图 / 无横图两个分支里都要找得到「装到 iPhone」与「导出自签包」；不通过时末尾退出 1
+// 顶部选中游戏三按钮断言（v0.4.5 修）：有横图 / 无横图两个分支里都要找得到「推到 iPhone」与「导出自签包」；不通过时末尾退出 1
 var heroActionFailures = new List<string>();
 
 AppBuilder.Configure<SnapshotApp>()
@@ -292,7 +292,7 @@ PhoneTrackEvents(
     """{"type":"stage","stage":"找签名账号与 iPhone","message":"找签名账号与 iPhone","stageIndex":1,"stageCount":6,"overall":0.0}""",
     """{"type":"stage","stage":"把这款放进手机上的 S2Arm","message":"把这款放进手机上的 S2Arm","stageIndex":2,"stageCount":6,"overall":0.17}""",
     """{"type":"stage","stage":"用你的 Apple ID 签名","message":"用你的 Apple ID 签名","stageIndex":4,"stageCount":6,"overall":0.5}""",
-    """{"type":"stage","stage":"装到 iPhone","message":"装到 iPhone","stageIndex":5,"stageCount":6,"overall":0.62}""");
+    """{"type":"stage","stage":"推到 iPhone","message":"推到 iPhone","stageIndex":5,"stageCount":6,"overall":0.62}""");
 SetW(pack, "updateState", "running");
 SaveP("win_20_phone_update_running", () => Navigate(pack, "phoneupdate"));
 TrackField("Started", DateTime.UtcNow.AddSeconds(-47)); TrackField("Ended", (DateTime?)DateTime.UtcNow);
@@ -312,7 +312,7 @@ TrackField("Suggestion", "在 Impactor 里重新登录你的 Apple ID，再点�
 SetW(pack, "updateMessage", "签名没成功：Impactor 里的 Apple ID 登录已过期。");
 SetW(pack, "updateState", "failed");
 SaveP("win_22_phone_update_failed", () => Navigate(pack, "phoneupdate"));
-SetW(pack, "updateMessage", "这次会让手机上的 1 款游戏暂时不能玩：示例游戏。它们不是在这台电脑上装的，存档和资源包都还在手机上，到原来那台电脑上再点一次「装到 iPhone」就能回来。");
+SetW(pack, "updateMessage", "这次会让手机上的 1 款游戏暂时不能玩：示例游戏。它们不是在这台电脑上装的，存档和资源包都还在手机上，到原来那台电脑上再点一次「推到 iPhone」就能回来。");
 SetW(pack, "updateState", "drop");
 SaveP("win_23_phone_update_drop", () => Navigate(pack, "phoneupdate"));
 
@@ -521,8 +521,8 @@ static void CallW(object target, string method, params object?[] methodArgs)
 static void Navigate(EnvironmentWindow w, string pg)
     => w.GetType().GetMethod("Navigate", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(w, [pg]);
 
-// 顶部选中游戏三按钮断言：当前渲染的游戏库页里，顶部「装到 iPhone」与「导出自签包」都要找得到；
-//   夹具只有一款游戏：列表行自带一个「装到 iPhone」（Action 共用 library.hero.install 键），所以顶部按钮在时装到 iPhone 应出现 2 次、导出自签包 1 次（只数出现次数会把行按钮也算进来，数 1 次不够）。
+// 顶部选中游戏三按钮断言：当前渲染的游戏库页里，顶部「推到 iPhone」与「导出自签包」都要找得到；
+//   夹具只有一款游戏：列表行自带一个「推到 iPhone」（Action 共用 library.hero.install 键），所以顶部按钮在时装到 iPhone 应出现 2 次、导出自签包 1 次（只数出现次数会把行按钮也算进来，数 1 次不够）。
 //   有横图时还要确认真画了横图（而不是横图解码失败悄悄退回封面卡片）——HeroBanner 用 DecodeToWidth(…, 1600)，横图宽应为 1600
 static void CheckHeroActions(EnvironmentWindow window, string label, List<string> failures, bool expectBanner = false)
 {
@@ -531,7 +531,7 @@ static void CheckHeroActions(EnvironmentWindow window, string label, List<string
         .Select(b => Avalonia.Automation.AutomationProperties.GetAutomationId(b)).ToList();
     var installCount = ids.Count(id => id == "library.hero.install");
     var selfSignCount = ids.Count(id => id == "library.hero.selfSign");
-    if (installCount < 2) failures.Add($"{label}：顶部「装到 iPhone」缺失（library.hero.install 出现 {installCount} 次，含列表行应为 2 次）");
+    if (installCount < 2) failures.Add($"{label}：顶部「推到 iPhone」缺失（library.hero.install 出现 {installCount} 次，含列表行应为 2 次）");
     if (selfSignCount < 1) failures.Add($"{label}：找不到 library.hero.selfSign");
     if (expectBanner)
     {

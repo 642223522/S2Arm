@@ -313,7 +313,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// 最近一次手机作业（装到 iPhone / 从手机删 / 装回上一版）的结局，玩家还没回去看：顶部胶囊「已装好 · 查看结果」靠它（#308：关掉装机弹窗后找不回结果）。
     /// 新的手机作业开始、或打开这款的装机弹窗时清掉。
     @Published var phoneResult: (gameID: String, name: String, ok: Bool)?
-    /// 控制口 /show install：打开这款的装机窗（同点顶栏「查看结果」/ 游戏的「装到 iPhone」）；界面接到后清空
+    /// 控制口 /show install：打开这款的装机窗（同点顶栏「查看结果」/ 游戏的「推到 iPhone」）；界面接到后清空
     @Published var showInstallFor: String?
     static let phoneKinds: Set<JobSession.Kind> = [.install, .installRemove, .installRestore]
     /// 连着的手机、可选机型（出包页用）；玩家选的机型（productType）。
@@ -964,7 +964,7 @@ public final class S2ArmLauncherModel: ObservableObject {
                 // 「导出自签包」点在没出过包的款上：iPhone 包出好就接着导出（D-9ZF9：原先出完包停在完成页，导出要再点一次）。
                 //   导出不连手机、不签名，没有副作用；排进 installAfterQueue，这次出包会话结束后由 pumpQueue 接着跑（installNextQueued 按 selfSignAfterPack 走导出）
                 if platform == .ios, state == .completed, let gid = self.session?.gameID, self.selfSignAfterPack.contains(gid) || self.installAfterPack.contains(gid),
-                   !self.batchRunning, !self.installAfterQueue.contains(gid) { self.installAfterQueue.append(gid) }   // 选了「装到 iPhone」的同样接着装
+                   !self.batchRunning, !self.installAfterQueue.contains(gid) { self.installAfterQueue.append(gid) }   // 选了「推到 iPhone」的同样接着装
                 if self.batchRunning { self.batchStepEnded() }
             default:
                 sink.emit(event)
@@ -1006,7 +1006,7 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     var selectedDevice: [String: Any]? { Self.pickDevice(connectedDevices, chosen: chosenDevice) }
 
-    /// 选中的设备是 iPad 时，「装到 iPhone」这几处入口文字换成「装到 iPad」（#487）；没连设备照旧写 iPhone
+    /// 选中的设备是 iPad 时，「推到 iPhone」这几处入口文字换成「装到 iPad」（#487）；没连设备照旧写 iPhone
     var installTargetIsPad: Bool { Self.padLike(selectedDevice?["productType"] as? String) }
     /// iPad，以及按 iPad 兼容装的 Apple Vision Pro（机型号 RealityDevice*；理论支持、未真机验证）：入口和文案写 iPad
     static func padLike(_ productType: String?) -> Bool {
@@ -1031,7 +1031,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         do { probe = try await provider.targetDevices(); readOK("s2arm.fail.targets") }
         catch {
             // 探测被取消不是读不到：设备行一消失（装完换到完成页）SwiftUI 就取消这次轮询，原先当成失败清空设备、弹「读不到连接的设备 /
-            //   任务已取消」（玩家截图：顶栏刚写「已装到 iPhone」就弹这框）。列表照旧，不弹
+            //   任务已取消」（玩家截图：顶栏刚写「已推到 iPhone」就弹这框）。列表照旧，不弹
             if Task.isCancelled || (error as? JobFailure)?.state == .cancelled { return }
             connectedDevices = []; deviceProbeError = error.localizedDescription; reportFailure("s2arm.fail.targets", error, passive: true); return
         }

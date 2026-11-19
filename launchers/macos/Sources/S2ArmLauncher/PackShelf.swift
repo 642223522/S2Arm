@@ -4,7 +4,7 @@ import SwiftUI
 //   数据从产物本身读（游戏库 iPhone/<程序号>/*.ipa、旁边的「…资源包」、IPA 里 Info.plist 的画面模式 / 出包时间 / 包号），不靠任务记录：
 //   任务记录换机 / 重开启动器会丢字段（11-01：后端任务记录不存 IPA 路径，重开后完成卡画面模式「未知」）。
 //   按游戏一张卡，同款多次出包显示最新一个、旧版本可展开；产物已删、只剩成功任务的款显示「产物已清理」，只给重新出包，不放死按钮。
-//   装机复用完成卡同一条路（Store.installToPhone：pack/jobs/install.py 装这款目录里最新的 IPA），所以只有最新版本带「装到 iPhone」。
+//   装机复用完成卡同一条路（Store.installToPhone：pack/jobs/install.py 装这款目录里最新的 IPA），所以只有最新版本带「推到 iPhone」。
 
 struct PackShelfVersion: Identifiable, Equatable {
     var id: String { ipa.path }
@@ -142,7 +142,7 @@ struct PackShelfCard: View {
                 Button(L("改用 AltStore")) { store.showInstallGuide = true }.buttonStyle(.borderless)
                 Button { store.reveal(latest.ipa) } label: { Image(systemName: "folder") }.buttonStyle(.borderless).help(L("在访达中显示")).accessibilityLabel(L("在访达中显示"))
                 Button { confirmDelete = latest } label: { Image(systemName: "trash") }.buttonStyle(.borderless).help(L("删除")).accessibilityLabel(L("删除"))
-                Button { if let g = entry.game { store.requestInstall(g) } } label: { Label(L("装到 iPhone"), systemImage: "iphone.and.arrow.forward") }
+                Button { if let g = entry.game { store.requestInstall(g) } } label: { Label(L("推到 iPhone"), systemImage: "iphone.and.arrow.forward") }
                     .buttonStyle(.borderedProminent).disabled(entry.game == nil || store.executionBusy)
                     .help(entry.game == nil ? L("这款游戏不在当前游戏库里，没法装") : "")
             }.controlSize(.small)

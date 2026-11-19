@@ -414,7 +414,7 @@ import Darwin
         let sent = store.ipaRequest(game, target:target)["target"] as? [String:Any]
         XCTAssertEqual(sent?["gpuArch"] as? String, "applegpu_g18p")
         XCTAssertEqual(sent?["os"] as? Int, 27)
-        // 「装到 iPhone」照常选设备：选过的机型仍记住、仍是 iphoneTarget
+        // 「推到 iPhone」照常选设备：选过的机型仍记住、仍是 iphoneTarget
         store.chooseTarget(target)
         XCTAssertEqual(store.iphoneTarget, target)
         XCTAssertEqual(Store(privateRoot:root).preferences.iphoneTarget, target)
