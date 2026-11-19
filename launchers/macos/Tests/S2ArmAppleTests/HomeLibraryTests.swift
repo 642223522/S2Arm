@@ -68,6 +68,15 @@ import LauncherPadBridge
         host.layoutSubtreeIfNeeded()
         let targets = model.gamepad.controlTargets(in: window)
         XCTAssertTrue(targets.contains { $0.id == "library.sgradeUpgrade" }, "合并主线后首页仍须提供可用手柄操作的 S 级优化升级入口")
+        // 手机在装 / 更新（model.busy）时入口照样可用：S 级升级在作业层排队、不阻断玩家干别的（置灰的按钮不登记手柄目标）。
+        //   游戏在跑时主区域是运行页、首页不显示（玩家收起运行页后才回首页），所以这里用装单款这类不占整页的装机作业
+        model.phoneSession = JobSession(kind: .install, gameID: "0000000000000001", name: "Fixture")
+        XCTAssertTrue(model.busy)
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(200))
+        host.layoutSubtreeIfNeeded()
+        XCTAssertTrue(model.gamepad.controlTargets(in: window).contains { $0.id == "library.sgradeUpgrade" }, "装机作业在跑时 S 级优化升级入口不能置灰")
+        model.phoneSession = nil
         let cards = targets.filter { $0.id.hasPrefix("card.") }
         XCTAssertGreaterThanOrEqual(cards.count, 5, "Home 首屏必须能浏览一排游戏")
         let firstCard = try XCTUnwrap(cards.min { $0.frame.minX < $1.frame.minX })
