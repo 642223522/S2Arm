@@ -8082,6 +8082,25 @@ static NSString *shmap_rt_get(NSString *k) { pthread_mutex_lock(&g_shmap_rt_mu);
 static NSString *shmap_stage(NSString *k) { NSString *s = g_shmap[k]; return s ? s : shmap_rt_get(k); }
 void mtl_shmap_rt_add(const char *key, const char *stage) { pthread_mutex_lock(&g_shmap_rt_mu); if (!g_shmap_rt) g_shmap_rt = [NSMutableDictionary dictionary]; g_shmap_rt[@(key)] = @(stage); pthread_mutex_unlock(&g_shmap_rt_mu); }
 int mtl_shmap_known(const char *key) { shmap_load(); NSString *k = @(key); return g_shmap[k] != nil || shmap_rt_get(k) != nil || builtin_get(key) != NULL; }
+// 主程序内嵌计算核（nvn_builtin.h）认这个键：只比表，不像 builtin_get 那样建库（游戏线程上也调）
+static int builtin_known(const char *key) {
+    for (unsigned i = 0; i < sizeof k_nvn_builtin_map / sizeof *k_nvn_builtin_map; i++) if (!strcmp(key, k_nvn_builtin_map[i].ctl)) return 1;
+    return 0;
+}
+// 旧包兜底（hle_nvn.c keys_hash，nvn_key.h）：同一份控制段 + 代码的第 2 代键 v2 与第 1 代键 v1 二选一，回 1 = 用 v1。
+//   当前包的着色器表（映射表 + 内嵌计算核）有 v2 → v2；没有 v2、有 v1 → v1（玩家手上按第 1 代出的旧包）；
+//   包表两个都没有：设备兜底目录里有旧版本 App 按 v1 现编、本机还能复用的（dm_shader_reuse，顺带登记进运行时映射）→ v1；都没有 → v2（首遇现编按 v2 存）。
+//   规则只看包表与兜底目录里的第 1 代产物，本局现编只会新增被选中的那个键，所以同一份字节在 SetShaders、首用、首用复核（prog_key_live）时取舍一致。
+//   线程：SetShaders 在游戏线程、首用在提交线程都会调。映射表经 shmap_load 一次性加载（dispatch_once，先到的线程加载、其余等它），之后只读；
+//   换程序（nvn_be_reload_direct_library）只在会话之间换表；运行时映射有锁；内嵌核表是常量
+int nvn_be_shader_key_pick(const uint8_t v2[8], const uint8_t v1[8]) {
+    char a[17], b[17];
+    for (int i = 0; i < 8; i++) { snprintf(a + 2 * i, 3, "%02x", v2[i]); snprintf(b + 2 * i, 3, "%02x", v1[i]); }
+    shmap_load();
+    if (g_shmap[@(a)] != nil || builtin_known(a)) return 0;
+    if (g_shmap[@(b)] != nil || builtin_known(b)) return 1;
+    return shmap_rt_get(@(b)) != nil || dm_shader_reuse(b);
+}
 // S2Arm 两段式出包（10-27）：映射表有键不等于库里有这支——热键版包的映射表是全键、库只带热键，缺的那支要照样走首遇现编（dsh_miss.inc），不能让 shader_load 失败去触发直连失败判据。
 // 只查索引不读数据（每次 ProgramSetShaders 都会问）：现编过的 / 内置的 → 有；有库容器 → 容器索引里有没有 <键>_b 的反射；没容器（Mac 开发树）→ <键>_b.json 文件在不在
 int mtl_shlib_has(const char *key) {
@@ -8157,7 +8176,7 @@ static void *prog_get_ptr(const prog_t *cp) {   // Called only on the submit thr
     NvProg *o = [NvProg new];
     for (unsigned i = 0; i < p->nstage; i++) {
         // Key = sha256(first 0x880 bytes of the control section + code area): many of Mario's shaders share a control section but differ in code (dm/gfx/tools/shader_split.py). It was computed at SetShaders (hle_nvn.c): by now the game may have freed the control section
-        uint8_t md[8]; prog_key(p, i, md);
+        uint8_t md[8]; prog_key(p, i, md);   // two volatile control spans are zeroed in the key (nvn_key.h); an old package may get its old key (hle_nvn.c keys_hash)
         { static const uint8_t z[8]; static int nz; if (!memcmp(md, z, 8) && nz++ < 8)   // S2Arm: the state behind a zero key (no control section when the key was taken), for the next diagnosis
             MLOG("【红】 program %p stage %u of %u has no key: control %p, code %#llx, magic %#x, serial %llu", (const void *)p, i, p->nstage, p->sd[i].control, (unsigned long long)p->sd[i].data, p->magic, (unsigned long long)p->serial); }
         NSString *k = [NSString stringWithFormat:@"%02x%02x%02x%02x%02x%02x%02x%02x", md[0], md[1], md[2], md[3], md[4], md[5], md[6], md[7]];

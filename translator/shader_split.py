@@ -31,7 +31,7 @@
 # Code area: 0x30 header + (graphics) 0x50 SPH + instructions; header magic 0x12345678 for graphics, 0x12345679 for compute. The control section starts with 0x98761234, +0x704 = code area length,
 #   +0x700 = start of the c1 constant segment within the code area; for compute +0x748 thread group xyz (u32 ×3), +0x754 shared memory bytes (checked one by one against PC reflection on D2R's 22 compute shaders).
 # Stage: BNSH uses the stage slot; BAHS uses bits 10..13 of SPH word 0 (1 vertex 2 hull 3 domain 4 geometry 5 pixel), and a compute header means compute.
-# Key = sha256(first 0x880 bytes of the control section (its own length when control +0x20 says it is shorter, see ctl_len) + code area)[:16], the same as the host's prog_get: in this game many shaders share a control section but differ in code
+# Key = sha256(first 0x880 bytes of the control section (its own length when control +0x20 says it is shorter, see ctl_len; two volatile spans zeroed, nvn_key.py) + code area)[:16], the same as the host's prog_get: in this game many shaders share a control section but differ in code
 #   (SecredUber's 16600 stage shaders have only 3079 distinct control sections, with 6367 cases of same control, different code), so hashing the control alone picks the wrong library.
 # Output: <package dir>/<stage>_<source group>.bin, each record = 'BTCDBTCD' + header (+0x28 control length, +0x2c code length) padded to 0x38 + code area + control section, one copy per key;
 #   map rows have the same columns as D2R's shader_map.tsv (column 5 records where the key first appeared); the answer table has one row per compute shader {"local", "shared"} (shared memory rounded up to 16 bytes, as D2R did).
@@ -43,6 +43,7 @@ import collections, concurrent.futures as cf, hashlib, json, mmap, os, posixpath
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../graphics/nvn/games')); import game as _game
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import uepak
 import ns2_shaders as ns2   # Switch 2 (NVN2) GLSLC outputs and control sections
+import nvn_key   # Switch 1 shader key rule (the one Python copy, same as the host's nvn_key.h)
 # 仓库里唯一的 RomFS 遍历（graphics/nvn/tools/romfs_list.py：walk 同 os.walk）
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'graphics', 'nvn', 'tools')); import romfs_list
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../graphics/tools/shbake')); import zstd_lib, unreal_pak   # the repository's one zstd decoder (libzstd beside the zstd tool; the player app's Python 3.12 has no compression.zstd)
@@ -87,11 +88,9 @@ def ctl_len(ctl):
     if ns2.is_nvn2(ctl): return ns2.KEY_CTL   # Switch 2: see ns2_shaders.py
     """Number of control bytes in the key: control +0x20 holds the section's own length. Every control section of Mario, Fire Emblem Engage, Metroid Dread and 13 Sentinels is at least 0x880 bytes, so the first 0x880 are used;
     SDK 10's Super Mario 3D World + Bowser's Fury has 2,888 that are only 0x850 bytes (the bfsha in ShaderData, 6 layouts), with other data right after them, so only their own length is used (the same as the host's keys_hash)"""
-    n = struct.unpack_from('<I', ctl, 0x20)[0]
-    return n if 0x760 <= n < 0x880 else 0x880
+    return nvn_key.ctl_len(ctl)
 
-def skey(ctl, code):
-    return hashlib.sha256((ns2.key_ctl(ctl) if ns2.is_nvn2(ctl) else ctl[:ctl_len(ctl)]) + code).hexdigest()[:16]
+skey = nvn_key.skey   # generation 2 (two volatile control spans zeroed), see nvn_key.py
 
 def same_shader(a, b):
     """Two copies of one key hold the same shader: the code areas are equal, and so are the control sections up to their own length (control +0x20). Pokémon Legends: Z-A's UI layout archives

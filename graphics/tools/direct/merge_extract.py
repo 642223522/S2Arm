@@ -2,7 +2,7 @@
 # 直连着色器库·合并抽取（双轨 §12.3，着色器线 10-24）：把 S2Arm 抽取（graphics/tools/shbake/nxsh_extract.py）有、直连抽取（shader_split.py）没有的着色器，
 # 补进直连包目录与着色器表，让直连出库（C# dsh_batch build，graphics/tools/direct/dsh/batch/Build.cs）原样出「两边并集」的直连库；同时出两张给运行时用的表。
 #
-# 键口径一律用直连口径（运行时 nvn_mtl.m prog_key 按它查库）：sha256(控制段[0:L] ‖ 机器码)[:16]，L = 控制段 +0x20 自报长度落在 [0x760, 0x880) 时取它，否则 0x880。
+# 键口径一律用直连口径（运行时 nvn_mtl.m prog_key 按它查库）：sha256(控制段[0:L] ‖ 机器码)[:16]，L = 控制段 +0x20 自报长度落在 [0x760, 0x880) 时取它，否则 0x880；第 2 代哈希前把两段易变字段置零（translator/nvn_key.py）。
 #   S2Arm 抽取取完整自报长度，控制段长于 0x880 的两边键不同（10-24 动森 9794 个里 28 个），所以 S2Arm 那边的键在这里按直连口径重算，不直接用。
 #
 # 用法：merge_extract.py <S2Arm 抽取目录（含 src/ 与 index.tsv）> <直连包目录（*.bin）> <直连抽取 shader_map.tsv> <输出目录>
@@ -21,19 +21,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 import srcpack   # S2Arm 抽取的着色器字节存放（src/*.pk）
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', 'translator'))
 import ns2_shaders as ns2   # Switch 2（NVN2，控制段版本 0xc9）的键规则与控制段字段，与 shader_split.py / 宿主 nvn2_key 同一份
+import nvn_key   # Switch 1 键规则，与 shader_split.py / 宿主 nvn_key.h 同一份
 
 STAGE_WORD = {'vs': 'vertex', 'hs': 'hull', 'ds': 'domain', 'gs': 'geometry', 'ps': 'pixel', 'cs': 'compute', 'ts': 'task', 'ms': 'mesh'}   # = shader_split.py STAGE_NAME
 SEP = b'BTCDBTCD'
 
 
-def ctl_len(ctl):
-    n = struct.unpack_from('<I', ctl, 0x20)[0]
-    return n if 0x760 <= n < 0x880 else 0x880
-
-
-def nx_key(ctl, code):
-    if ns2.is_nvn2(ctl): return hashlib.sha256(ns2.key_ctl(ctl) + code).hexdigest()[:16]
-    return hashlib.sha256(ctl[:ctl_len(ctl)] + code).hexdigest()[:16]
+ctl_len = nvn_key.ctl_len
+nx_key = nvn_key.skey   # 第 2 代键（两段易变字段置零，translator/nvn_key.py）
 
 
 def records(d):   # 同出库 Build.cs Records：按分隔符切
@@ -135,7 +130,7 @@ def main(a):
         st = word_stage.get(word)
         if not st: red.append(f'直连键 {nk} 阶段 {word} 不认识'); continue
         if st in ('ts', 'ms'): no_s2a += 1; continue   # NVN2 任务 / 网格：S2Arm 抽取格式（nxsh_extract 六阶段）与通用模式都没有这两个阶段，不反向补
-        sk = hashlib.sha256(ctl + code).hexdigest()[:16]
+        sk = hashlib.sha256(nvn_key.key_bytes(ctl) + code).hexdigest()[:16]   # S2Arm 口径（整段控制段，nxsh_extract key_of），同样第 2 代置零
         sw.put(sk, code, ctl)
         nx_only_rows.append(f'{sk}\t{st}\t{src}\t0\n'); key_map[sk] = nk
     sw.flush()
