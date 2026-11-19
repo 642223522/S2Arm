@@ -45,6 +45,27 @@ class PathReasonTests(unittest.TestCase):
             with self.subTest(original=original):
                 self.assertEqual(redact.redact_text(original, key_values=()), expected)
 
+    def test_keeps_measurement_tail(self):
+        """路径后面我方日志接着写的读数（耗时 / 大小 / 百分比）只抹路径、读数留下：诊断#343862 里「存档提交 #N：<路径> 克隆 + 原子交换 X ms」
+        整段成了「存档提交 #1：[PRIVATE_PATH]」，查存档耗时拿不到数。期望手写：路径换占位，「 克隆 + 原子交换 25.5 ms」原样保留；
+        尾巴里只许中文词、符号、数字和单位，英文单词与斜杠照旧算路径（免得漏出带空格的目录名）"""
+        ios = "/var/mobile/Containers/Data/Application/0F4E7C1A-2B3D-4E5F-8A9B-C0D1E2F3A4B5/Documents/S2A/ryujinx/bis/system/save/8000000000000000"
+        cases = [
+            (f"00:00:00.110 |I| ServiceFs CommitLocked: 存档提交 #1：{ios} 克隆 + 原子交换 25.5 ms",
+             "00:00:00.110 |I| ServiceFs CommitLocked: 存档提交 #1：[PRIVATE_PATH] 克隆 + 原子交换 25.5 ms"),
+            ("存档提交 #12：/Users/joe/Library/Application Support/S2Arm/games/0100A/SaveData 克隆 + 原子交换 3.0 ms",
+             "存档提交 #12：[PRIVATE_PATH] 克隆 + 原子交换 3.0 ms"),
+            ("写盘 /Volumes/Game Disk/S2Arm 库/x.img 1,024 MB", "写盘 [PRIVATE_PATH] 1,024 MB"),
+            ("/private/var/joe/My Game 2/a.xci", "[PRIVATE_PATH]"),
+            ("/Users/joe smith/Movie Night 12 ms", "[PRIVATE_PATH] 12 ms"),   # 只有数字 + 单位能留在外面：英文单词「Night」照旧在占位里
+            ("/private/var/joe/a.img 用时 1.5 秒", "[PRIVATE_PATH] 用时 1.5 秒"),
+            ("pipeline prewarm list /var/mobile/x/pso.tsv: 1834 lines", "pipeline prewarm list [PRIVATE_PATH] 1834 lines"),   # nvn_mtl.m 的形态
+            ("写入 /Users/joe/S2Arm/a.img（12.5 MB）", "写入 [PRIVATE_PATH]（12.5 MB）"),
+        ]
+        for original, expected in cases:
+            with self.subTest(original=original):
+                self.assertEqual(redact.redact_text(original, key_values=()), expected)
+
 
 class RedactCasesTests(unittest.TestCase):
     def test_shared_cases(self):

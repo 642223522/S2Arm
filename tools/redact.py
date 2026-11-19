@@ -117,12 +117,38 @@ ERRNO_REASONS = ("Operation not permitted", "Permission denied", "No such file o
 _REASON_TAIL = re.compile(r'(?i): (?:(?:clonefile|fclonefileat|copyfile) failed: )?(?:' + '|'.join(map(re.escape, ERRNO_REASONS)) + r')\.?[ \t]*$')
 
 
+# 我方日志在路径后面接着写的读数（诊断#343862：「存档提交 #N：<路径> 克隆 + 原子交换 25.5 ms」整段成了 [PRIVATE_PATH]，存档耗时拿不到）：
+#   行尾「 <中文词 / 符号 / 数字>… <数字> <单位>」留下。尾巴里不许有英文字母（单位除外）和斜杠，带空格的英文目录名照旧算路径。
+#   只用锚在行尾的短正则认读数，前面的词从后往前逐个看（线性；一条大正则在长串上会回溯到平方级以上）
+_MEASURE_END = re.compile(r'(?:[ \t]+|[ \t]*[（(])[0-9][0-9.,]*[ \t]?(?:ms|µs|us|ns|s|秒|毫秒|分钟|KB|MB|GB|TB|KiB|MiB|GiB|B|%|帧|fps|次|项|条|个|块|行|款|份|lines|files)[)）\]]*\.?[ \t]*\Z')
+_MEASURE_WORD = re.compile(r'[^\x00-\x7f\s]+|[+=#×~≈-]|[0-9][0-9.,]*')
+
+
+def _measure_tail_start(text):
+    end = _MEASURE_END.search(text)
+    if not end:
+        return None
+    start = end.start()
+    while True:
+        cut = start
+        while cut > 0 and text[cut - 1] not in ' \t':   # 前一个词
+            cut -= 1
+        word = text[cut:start]
+        gap = cut
+        while gap > 0 and text[gap - 1] in ' \t':
+            gap -= 1
+        if not word or gap == cut or not _MEASURE_WORD.fullmatch(word):
+            return start
+        start = gap
+
+
 def _private_path_keep_reason(match):
     text = match.group(0)
     tail = _REASON_TAIL.search(text)
-    if not tail or tail.start() == 0:
+    at = tail.start() if tail else _measure_tail_start(text)
+    if not at:
         return _private_path(match)
-    return _private_path(re.match(r'.*', text[:tail.start()], re.S)) + text[tail.start():]
+    return _private_path(re.match(r'.*', text[:at], re.S)) + text[at:]
 
 
 def redact_text(text, *, key_values=None, preserve_identity=False) -> str:
