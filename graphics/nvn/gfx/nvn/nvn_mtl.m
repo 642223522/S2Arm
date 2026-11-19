@@ -10326,20 +10326,30 @@ static id spec_probe_fn(id<MTLLibrary> lib, id<MTLFunction> f) API_AVAILABLE(mac
     id sp = [MTL4SpecializedFunctionDescriptor new]; [sp setFunctionDescriptor:l]; [sp setConstantValues:[MTLFunctionConstantValues new]]; return sp;
 }
 // 完整建用的 Metal 4 描述：照真实描述逐项带过来（单测直接查这里，探针的完整建要和真实那条是同一条管线，计时才可比）
+// Metal 4 渲染描述的唯一建法（探针完整建、混合管线拉取版共用，nvn_hybrid.inc 不直接碰 Metal 4 符号：tools/mtl4_baseline.txt 棘轮）：
+//   照精确描述 d 逐项带过来，顶点 / 片元换成给定的函数描述；vdesc 为 nil 时不带顶点描述（拉取版自己读顶点流）；unspec：颜色状态留空（基础管线）
+static id m4_render_desc(MTLRenderPipelineDescriptor *d, id vfd, id ffd, MTLVertexDescriptor *vdesc, int unspec) API_AVAILABLE(macos(26.0), ios(26.0)) {
+    id p = [MTL4RenderPipelineDescriptor new];
+    [p setVertexFunctionDescriptor:vfd]; [p setFragmentFunctionDescriptor:ffd]; if (vdesc) [p setVertexDescriptor:vdesc];
+    [p setRasterSampleCount:d.rasterSampleCount]; [p setInputPrimitiveTopology:d.inputPrimitiveTopology];
+    [p setAlphaToCoverageState:d.alphaToCoverageEnabled ? MTL4AlphaToCoverageStateEnabled : MTL4AlphaToCoverageStateDisabled];
+    [p setAlphaToOneState:d.alphaToOneEnabled ? MTL4AlphaToOneStateEnabled : MTL4AlphaToOneStateDisabled];
+    spec_probe_color(p, d, unspec); return p;
+}
+// 新建一个 Metal 4 编译器（各用处各持一个：探针串行队列、混合管线后台建）；建不出打红一行，带上用处
+static id m4_compiler(const char *who) API_AVAILABLE(macos(26.0), ios(26.0)) {
+    NSError *e = nil; id c = [g_dev newCompilerWithDescriptor:[MTL4CompilerDescriptor new] error:&e];
+    if (!c) MLOG("【红】 %s: no Metal 4 compiler (%s)", who, e.localizedDescription.UTF8String);
+    return c;
+}
 static id spec_probe_desc(MTLRenderPipelineDescriptor *d, id<MTLLibrary> vl, id<MTLLibrary> fl, NvShader *vs, NvShader *fs) API_AVAILABLE(macos(26.0), ios(26.0)) {
-    id full = [MTL4RenderPipelineDescriptor new];
-    [full setVertexFunctionDescriptor:spec_probe_fn(vl, vs->fn)]; [full setFragmentFunctionDescriptor:spec_probe_fn(fl, fs->fn)]; [full setVertexDescriptor:d.vertexDescriptor];
-    [full setRasterSampleCount:d.rasterSampleCount]; [full setInputPrimitiveTopology:d.inputPrimitiveTopology];
-    [full setAlphaToCoverageState:d.alphaToCoverageEnabled ? MTL4AlphaToCoverageStateEnabled : MTL4AlphaToCoverageStateDisabled];
-    [full setAlphaToOneState:d.alphaToOneEnabled ? MTL4AlphaToOneStateEnabled : MTL4AlphaToOneStateDisabled];
-    spec_probe_color(full, d, 0); return full;
+    return m4_render_desc(d, spec_probe_fn(vl, vs->fn), spec_probe_fn(fl, fs->fn), d.vertexDescriptor, 0);
 }
 static void spec_probe(MTLRenderPipelineDescriptor *d, NvShader *vs, NvShader *fs) {
     if (@available(macOS 26.0, iOS 26.0, *)) {} else return;
     static dispatch_queue_t q; static id comp; static dispatch_once_t once;
     dispatch_once(&once, ^{ q = dispatch_queue_create("dm.nvn.specprobe", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, 0));
-        if (@available(macOS 26.0, iOS 26.0, *)) { NSError *e = nil; comp = [g_dev newCompilerWithDescriptor:[MTL4CompilerDescriptor new] error:&e];
-            if (!comp) MLOG("【红】 two-level build probe: no Metal 4 compiler (%s)", e.localizedDescription.UTF8String); } });
+        if (@available(macOS 26.0, iOS 26.0, *)) comp = m4_compiler("two-level build probe"); });
     dispatch_sync(q, ^{ @autoreleasepool { if (@available(macOS 26.0, iOS 26.0, *)) {
         id<MTLLibrary> vl = vs ? vs->plib : nil, fl = fs ? fs->plib : nil;
         if (!comp || !vl || !fl || d.vertexFunction != vs->fn || d.fragmentFunction != fs->fn || !d.rasterizationEnabled) { g_sp.skipped++; return; }

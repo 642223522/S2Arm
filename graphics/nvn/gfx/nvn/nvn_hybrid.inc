@@ -54,7 +54,7 @@ static void pull_layout_fill(pull_layout *L, NvShader *vs) {
         v.offset += lo[v.stream]; memcpy(&L->attr[a], &v, 4);
     }
 }
-static void pull_bind(id<MTL4RenderCommandEncoder> en, NvShader *vs) {
+static void pull_bind(id en, NvShader *vs) {   // en：Metal 4 渲染编码器（变量用 id，tools/mtl4_baseline.txt 棘轮）
     pull_layout L; pull_layout_fill(&L, vs);
     __unsafe_unretained id<MTLBuffer> ab; size_t off = arena_alloc_u(sizeof L, &ab);
     memcpy((uint8_t *)ab.contents + off, &L, sizeof L);
@@ -66,23 +66,17 @@ typedef struct { const void *vf, *ff; uint32_t samples, a2c, a21, topo; } pbase_
 static nvn_hmap g_pbase = {.klen = sizeof(pbase_key)};   // → id<MTLRenderPipelineState>，失败 NSNull
 static nvn_hmap g_pso_hy = {.klen = sizeof(pso_key)};   // 特化好的拉取管线，按它顶替的精确管线的键（提交线程）
 static os_unfair_lock g_pbase_lock = OS_UNFAIR_LOCK_INIT;
-static id g_hy_comp;   // MTL4Compiler
+static id g_hy_comp;   // Metal 4 编译器（m4_compiler）
 static int g_pso_pull;   // pso_get_ 这次返回的是拉取管线（绘制改绑布局块，不做 CPU 顶点转换）
 static _Atomic uint64_t g_hy_draws, g_hy_made, g_hy_none, g_hy_kicked, g_hy_bases, g_hy_base_fail, g_hy_spec_ns;
 static id hybrid_comp(void) API_AVAILABLE(macos(26.0), ios(26.0)) {
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ NSError *e = nil; g_hy_comp = [g_dev newCompilerWithDescriptor:[MTL4CompilerDescriptor new] error:&e];
-        if (!g_hy_comp) MLOG("【红】 hybrid pipelines: no Metal 4 compiler (%s): first uses wait for their pipelines", e.localizedDescription.UTF8String); });
+    dispatch_once(&once, ^{ g_hy_comp = m4_compiler("hybrid pipelines (first uses wait for their pipelines)"); });
     return g_hy_comp;
 }
 // 精确管线的描述 d → 拉取版的 Metal 4 描述：顶点换拉取入口、不带顶点描述；unspec：颜色状态留空（基础管线）
 static id pull_desc4(MTLRenderPipelineDescriptor *d, NvShader *vs, NvShader *fs, int unspec) API_AVAILABLE(macos(26.0), ios(26.0)) {
-    id p = [MTL4RenderPipelineDescriptor new];
-    [p setVertexFunctionDescriptor:spec_probe_fn(vs->pull_lib, vs->pfn)]; [p setFragmentFunctionDescriptor:spec_probe_fn(fs->plib, fs->fn)];
-    [p setRasterSampleCount:d.rasterSampleCount]; [p setInputPrimitiveTopology:d.inputPrimitiveTopology];
-    [p setAlphaToCoverageState:d.alphaToCoverageEnabled ? MTL4AlphaToCoverageStateEnabled : MTL4AlphaToCoverageStateDisabled];
-    [p setAlphaToOneState:d.alphaToOneEnabled ? MTL4AlphaToOneStateEnabled : MTL4AlphaToOneStateDisabled];
-    spec_probe_color(p, d, unspec); return p;
+    return m4_render_desc(d, spec_probe_fn(vs->pull_lib, vs->pfn), spec_probe_fn(fs->plib, fs->fn), nil, unspec);
 }
 // 这一笔能不能用拉取管线：Metal 4、普通绘制（vs 是 sh[0]、不是合并遍 / 可读瓦片 / 诊断片元），精确描述的顶点是 vs->fn 或影子输入入口（拉取版两者都替），片元是 fs->fn 本身
 static int hybrid_fits(MTLRenderPipelineDescriptor *d, NvShader *vs, NvShader *fs) {
