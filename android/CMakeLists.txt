@@ -818,6 +818,7 @@ else()
         ../graphics/nvn/gfx/nvn ../graphics/nvn/gfx/nvn/include ../graphics/nvn
         ../graphics/nvn/host ../graphics/nvn/gfx/tex native/nvn/compat ../runtime/src)
     target_link_libraries(nvn_vk_swapchain_host_test PRIVATE pthread)
+    target_link_options(nvn_vk_swapchain_host_test PRIVATE ${s2a_weak_u})   # 旧层上屏翻转入口是弱引用（macOS ld64 要显式放行）
     target_compile_definitions(nvn_vk_swapchain_host_test PRIVATE VK_USE_PLATFORM_ANDROID_KHR=1)
     target_compile_options(nvn_vk_swapchain_host_test PRIVATE -Wall -Wextra -Werror -Wno-missing-field-initializers)
     add_test(NAME android_nvn_vk_swapchain_host COMMAND nvn_vk_swapchain_host_test)

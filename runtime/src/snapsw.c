@@ -31,4 +31,8 @@ void s2a_snap_live_set(int on) { atomic_store(&g_snap_live, on ? 1 : 0); }
 int s2a_snap_need_handle(uint32_t h) { (void)h; return 0; }
 int s2a_snap_replay_begin(int seq) { (void)seq; return 0; }
 int s2a_snap_replay_end(int seq) { (void)seq; return 0; }
+int s2a_snap_seq_live(int seq) { (void)seq; return 0; }
+void s2a_snap_hlog_forget(int seq) { (void)seq; }
+int s2a_snap_handle_use(uint32_t h, uint32_t *uid) { (void)h; *uid = 0; return -1; }
+void s2a_snap_handle_unuse(uint32_t uid) { (void)uid; }
 #endif

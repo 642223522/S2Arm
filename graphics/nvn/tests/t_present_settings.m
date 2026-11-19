@@ -203,6 +203,9 @@ static void noteWindow(NSString *phase, uint64_t ticket, id<CAMetalDrawable> dra
     });
 }
 
+// 滤镜 Fsr（AMD FSR 1）的格：截图 / 抓图口径不带 FSR（同选 Bilinear），所以画布与抓图本来就不同。capture 在这些格返回抓图（后面按「没过滤镜」写的判据
+//   全部照核抓图 = 抓图口径不变），画布另存 fsrDrawable、与抓图不同的像素数累进 fsrChanged，由 run 里 Fsr 那段判；逐像素对错在 native-test-present_fsr（不开窗口）
+static NSData *fsrDrawable; static int fsrChanged;
 static NSData *capture(id<MTLTexture> source, const int crop[4], BOOL flip, int width, int height, NSString *name) {
     dispatch_sync(dispatch_get_main_queue(), ^{ layer.drawableSize = CGSizeMake(width, height); [CATransaction flush]; });
     noteWindow([name stringByAppendingString:@"-before"], 0, nil);
@@ -234,11 +237,14 @@ static NSData *capture(id<MTLTexture> source, const int crop[4], BOOL flip, int 
     if (!drawable || after != before + 1) exit(1);
     NSData *actual = readTexture(drawable.texture);
     int maximum, different = pixelDifference(actual, grab, 1, &maximum);
-    CHECK(different == 0, "%s actual drawable vs production grab: different=%d max=%d", name.UTF8String, different, maximum);
+    BOOL fsr = !strcmp(getenv("S2A_SCALING_FILTER") ?: "", "Fsr");
+    if (fsr) { fsrDrawable = actual; fsrChanged += different; }
+    else CHECK(different == 0, "%s actual drawable vs production grab: different=%d max=%d", name.UTF8String, different, maximum);
     shown += checkPresentation(name,after,ticket,drawable);
     noteWindow([name stringByAppendingString:@"-after"], ticket, drawable);
     saveImage(actual, width, height, name);
     saveImage(grab, width, height, [name stringByAppendingString:@"-grab"]);
+    if (fsr) return grab;
     return actual;
 }
 
@@ -410,6 +416,21 @@ static void run(void) {
             NSData *expected = referenceScale(native,w,h,2*w,2*h,nearest);
             different = pixelDifference(scaled,expected,1,&maximum);
             CHECK(different==0, "%s matches independent pixel-center scale: different=%d max=%d",filter,different,maximum);
+        }
+        if (!strcmp(filter, "Fsr")) {
+            // FSR 1 的画布（上面 scaled 是抓图，已按双线性参考核过）：离边 > 4 个源像素的平坦区保持源值（± 2：RCAS 的近似倒数让纯白落到 254）、不透明；
+            //   边附近区别于双线性；整格里画布确实与抓图不同（FSR 真的上了屏）。EASU / RCAS 逐像素对 CPU 参考在 native-test-present_fsr
+            const uint8_t *q = fsrDrawable.bytes; int flatBad = 0, flatN = 0;
+            for (int y=0; y<2*h; y++) for (int x=0; x<2*w; x++) {
+                double sx = (x+0.5)/2, sy = (y+0.5)/2;
+                if (fabs(sx-0.27*sy-8.31) <= 4) continue;
+                int want = sx > 0.27*sy+8.31 ? 255 : 0, i = 4*(y*2*w+x); flatN++;
+                for (int c=0; c<3; c++) flatBad += abs(q[i+c]-want) > 2;
+                flatBad += q[i+3] != 255;
+            }
+            CHECK(fsrDrawable.length == (NSUInteger)(2*w*2*h*4) && flatN > 0 && flatBad == 0, "Fsr drawable keeps flat regions far from the edge: %d bad of %d", flatBad, flatN);
+            different = pixelDifference(fsrDrawable,referenceScale(native,w,h,2*w,2*h,NO),1,&maximum);
+            CHECK(different > 0 && fsrChanged > 0, "Fsr drawable differs from bilinear near the edge: different=%d max=%d; drawable vs grab so far: %d pixels", different, maximum, fsrChanged);
         }
 
         id<MTLTexture> plane = renderPattern(64,36,1,0,0,64,36,0);

@@ -480,7 +480,7 @@ def _relative(parent, name, directory=None, delete=False):
         raise ValueError('relative access requires one plain component')
     text = C.create_unicode_buffer(name)
     encoded = name.encode('utf-16-le')
-    string = _UnicodeString(len(encoded), len(encoded) + 2, C.cast(text, W.LPWSTR))
+    string = _UnicodeString(len(encoded), len(encoded) + 2, C.cast(C.addressof(text), W.LPWSTR))
     attributes = _ObjectAttributes(C.sizeof(_ObjectAttributes), parent.handle, C.pointer(string), 0x40, None, None)
     handle, status = W.HANDLE(), _IOStatus()
     access = 0x100081 | (0x10000 if delete else 0)  # SYNCHRONIZE, READ_DATA, READ_ATTRIBUTES, DELETE
@@ -629,7 +629,7 @@ def access_facts(path):
                 if _api('advapi32', 'ConvertSecurityDescriptorToStringSecurityDescriptorW', W.BOOL, C.c_void_p, W.DWORD, W.DWORD,
                         C.POINTER(C.c_wchar_p), C.c_void_p)(sd, 1, 7, C.byref(text), None):
                     out.append("权限 " + text.value)  # 非玩家句
-                    _api('kernel32', 'LocalFree', C.c_void_p, C.c_void_p)(C.cast(text, C.c_void_p))
+                    _api('kernel32', 'LocalFree', C.c_void_p, C.c_void_p)(C.c_void_p.from_buffer(text))
             finally:
                 _api('kernel32', 'LocalFree', C.c_void_p, C.c_void_p)(sd)
     except OSError as e:

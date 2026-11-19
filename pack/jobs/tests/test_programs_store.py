@@ -120,6 +120,43 @@ class ProgramStoreTests(unittest.TestCase):
         kit = layout.ios_kit(self.c, GID)
         self.assertEqual((kit / "sgrade_state.json").read_text(), '{"schema": 1}')
 
+    def adopt(self, pid, files=None):
+        """内部测试链 adoptProduct：别处出好的产物根 + 资源包（来源在游戏库外）"""
+        pack = self.root / ("pack-" + pid); pack.mkdir()
+        (pack / "manifest.json").write_text(json.dumps({"index_sha256": pid}) if pid else "{}")
+        for n, v in (files or {}).items():
+            (pack / n).write_text(v)
+        self.c.r = dict(gameId=GID.lower(), productRoot=str(self.product()), packDir=str(pack))
+        with mock.patch.object(ipa, "current_shell_id", lambda c: "S1"), mock.patch.object(sgrade, "write_kit_state", lambda c, gid, kit: None), \
+             mock.patch.object(rewrite_refresh, "rewriter_id", lambda c: "RW"), mock.patch("host_update.engine_compat", lambda c: {}), mock.patch("host_update.built_by", lambda c: "t"):
+            return ipa.adopt_product(self.c), pack
+
+    def test_adopt_product_lands_like_a_fresh_iphone_pack(self):
+        # 期望手写：收完这款在游戏库里「有 iPhone 包」——程序件（main.npdm 等）进程序缓存 kit，资源包原样进 image/ios/.pack，
+        #   game.json 的 ios 记本版壳号与资源包号；来源不动。再收一份新资源包整份换掉，不留 .adopt / .old
+        sgrade.save_program(self.c, GID, self.exefs())
+        r, src = self.adopt("P1", {"index.tsv": "a\t1\t-\n"})
+        self.assertEqual(r["packId"], "P1"); self.assertEqual(r["gameId"], GID)
+        self.assertTrue(layout.has_ios_kit(self.c, GID))
+        self.assertEqual((layout.ios_kit(self.c, GID) / "main.npdm").read_text(), "npdm")
+        pack = layout.ios_pack(self.c, GID)
+        self.assertEqual((pack / "index.tsv").read_text(), "a\t1\t-\n")
+        self.assertTrue((src / "index.tsv").is_file())
+        self.assertEqual({k: layout.game_info(self.c, GID)["ios"][k] for k in ("shellId", "pack")}, {"shellId": "S1", "pack": "P1"})
+        shutil.rmtree(self.root / "product")
+        self.adopt("P2", {"b.bin": "2"})
+        self.assertEqual(sorted(p.name for p in pack.iterdir()), ["b.bin", "manifest.json"])
+        self.assertEqual(layout.game_info(self.c, GID)["ios"]["pack"], "P2")
+        self.assertEqual(sorted(p.name for p in pack.parent.iterdir() if p.name.startswith(".pack")), [".pack"])
+
+    def test_adopt_product_without_pack_id_is_refused_before_touching_library(self):
+        # 期望手写：资源包清单没有 index_sha256 → package_failed，游戏库里不留这款的程序件
+        from core import Failure
+        with self.assertRaises(Failure) as e:
+            self.adopt("")
+        self.assertEqual(e.exception.code, "package_failed")
+        self.assertFalse(layout.has_ios_kit(self.c, GID))
+
     def test_resource_images_stay_out_unknown_small_files_stay_in(self):
         # 期望手写：资源镜像这一小类封闭集合（romfs.std / game.img / *.nsp / *.xci / *.nca，大小写不论）不进程序件也不进配方；
         #   不认识的小文件照常进（不是白名单：程序件有约 30 种、读写方各不相同，漏一项升级就坏）
