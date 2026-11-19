@@ -673,6 +673,8 @@
   "install.eta_minutes": " 分鐘",
   "export.action.queue": "加入出包佇列",
   "export.status.queued": "排隊中",
+  "export.queue.behind": "「{0}」正在出包：現在點開始會排在它後面，它出完自動開始。",
+  "export.queue.waiting": "已排隊：排在「{0}」後面，它出完自動開始。",
   "export.device.connected": "已連線 {0}，會按這臺手機最佳化。",
   "install.mode.title": "裝到 iPhone 的方式",
   "install.mode.note": "出包、批量出包、更新 iPhone 上的 S2Arm、匯出都按這裡來；每次完成頁還能臨時換另一種。",

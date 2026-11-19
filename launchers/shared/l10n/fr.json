@@ -658,6 +658,8 @@
   "install.eta_minutes": " min",
   "export.action.queue": "Ajouter à la file d'attente",
   "export.status.queued": "En attente",
+  "export.queue.behind": "« {0} » est en cours de génération. Si vous lancez maintenant, ce jeu attend son tour et démarre tout seul quand l'autre est terminé.",
+  "export.queue.waiting": "En file d'attente derrière « {0} ». Il démarre tout seul quand l'autre est terminé.",
   "export.device.connected": "{0} connecté. L'exportation sera optimisée pour celui-ci.",
   "install.mode.title": "Comment mettre S2Arm sur votre iPhone",
   "install.mode.note": "Les exportations, exportations par lot, mises à jour S2Arm et exports suivent ceci. Vous pouvez toujours changer une seule fois sur chaque page terminée.",
