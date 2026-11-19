@@ -1468,6 +1468,25 @@ class JobsTests(unittest.TestCase):
             self.assertEqual(toolchain.detect_xcode((str(apps),)), str(apps / "Xcode-27.1.app/Contents/Developer"))
             self.assertIsNone(toolchain.detect_xcode((str(self.root / "none"),)))
 
+    def test_detect_xcode_finds_xcode_on_external_volume(self):
+        # 玩家把 Xcode 装在扩展硬盘上（D-9WFW）：外接卷的 Applications 与卷根都看；/Volumes 里指回 / 的启动盘软链跳过
+        import plistlib, toolchain, unittest.mock as um
+        vols = self.root / "Volumes"
+        def mk(app, version):
+            (app / "Contents/Developer/usr/bin").mkdir(parents=True)
+            (app / "Contents/Info.plist").write_bytes(plistlib.dumps(dict(CFBundleIdentifier="com.apple.dt.Xcode", CFBundleShortVersionString=version)))
+            (app / "Contents/Developer/usr/bin/xcodebuild").write_text("")
+        mk(vols / "Ext SSD" / "Applications" / "Xcode.app", "27.1")
+        mk(vols / "Other" / "Xcode-26.app", "26.6")   # 直接放在卷根
+        boot = self.root / "boot"; (boot / "Applications").mkdir(parents=True)
+        (vols / "Macintosh HD").symlink_to(boot)
+        dirs = toolchain.default_app_dirs(str(vols))
+        self.assertEqual(dirs[2:], (str(vols / "Ext SSD" / "Applications"), str(vols / "Ext SSD"), str(vols / "Other" / "Applications"), str(vols / "Other")))
+        with um.patch.object(toolchain.subprocess, "run", side_effect=OSError):
+            ext = dirs[2:]   # 只看外接卷那几项：本机真 /Applications 里的 Xcode 不进期望
+            self.assertEqual(toolchain.detect_xcode(ext), str(vols / "Ext SSD" / "Applications" / "Xcode.app/Contents/Developer"))
+            self.assertEqual([x[1] for x in toolchain.installed_xcodes(ext)], ["27.1", "26.6"])
+
     def test_installed_xcodes_by_version_and_build_not_path(self):
         # 11-07 gate-host 现场：Xcode-27.app 被 App Store 原地升到 27.1（构建号 27A9275），Xcode-27.1.app 是指向它的软链 → 只算一套；
         #   改名拷贝（同版本同构建号）也只算一套；同版本不同构建号（beta 与正式）算两套；路径名写 27 不影响读出的 27.1
