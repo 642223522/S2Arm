@@ -15,7 +15,7 @@ if [ "$(uname -s)" = Darwin ]; then
     run_container() { docker --context colima run --platform linux/amd64 --rm --pull=never --network=none \
         --user "$(id -u):$(id -g)" --mount "type=bind,source=$repo,target=/src,readonly" \
         --mount "type=bind,source=$out,target=/out" --workdir /src \
-        --env S2A_SPILL_VK_OUT=/out --env TMPDIR=/out/tmp --env HOME=/out --env XDG_CACHE_HOME=/out/cache \
+        --env S2A_SPILL_VK_OUT=/out --env S2A_REPLAY_DB_DQ="${S2A_REPLAY_DB_DQ:-0}" --env TMPDIR=/out/tmp --env HOME=/out --env XDG_CACHE_HOME=/out/cache \
         --entrypoint bash s2a-vk-ci-parity:26.0.8-vvl-1.4.341 android/tests/vk/run_shared_spill.sh "$1"; }
     if [ "$mode" = --candidate ]; then
         run_container --prepare

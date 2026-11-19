@@ -15,6 +15,7 @@ nvn_gpu_view rp_view_for(const tex_t *t, const view_t *v, nvn_gpu_cmd c) {
 }
 uint32_t rp_storage_srgb_alias(uint32_t f) { (void)f; abort(); }
 
+extern uint64_t nvn_vk_dbg_dq_recs(void);
 enum { SPILL_GROUPS = 12, SPILL_WORDS = SPILL_GROUPS * 9 };
 static void run_spill(const char *dir, int spilled, int indirect, uint64_t serial,
                       uint32_t result[SPILL_WORDS]) {
@@ -66,6 +67,9 @@ int main(int argc, char **argv) {
         }
     }
     printf("replay_spill groups=%d direct_indirect=2 byte_comparisons=%zu mismatches=%u\n", SPILL_GROUPS, 2*sizeof ref, bad);
+    uint64_t dq_records = nvn_vk_dbg_dq_recs();
+    printf("replay_spill dq=%d dq_records=%llu\n", dq_mode, (unsigned long long)dq_records);
+    REQUIRE(dq_mode == 1 ? dq_records > 0 : dq_mode == 0 && dq_records == 0);
     GPU(nvn_gpu_close(5000000000ull, &err)); REQUIRE(!s2a_vk_device_destroy(&d, 1));
     return bad ? 1 : 0;
 }
