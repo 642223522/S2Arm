@@ -379,5 +379,19 @@ namespace Ryujinx.Audio.Backends.Apple
 
         public bool SupportsChannelCount(uint channelCount)
             => channelCount != 6 || _supportSurroundConfiguration;
+
+        // S2Arm（#189 后续，5.1 虚拟环绕第二片）：游戏看到的 active device 名字按玩家显式选择的设备类型定（VirtualDeviceSessionRegistry）：
+        //   builtin → AudioBuiltInSpeakerOutput、headphones → AudioStereoJackOutput（USB / 蓝牙耳机选 Headphones 也报 StereoJack——
+        //   设备类型语义的简化，不逐设备另报真实接口名）；未显式选择（Auto）与 external 不给名字 → 缺省 AudioTvOutput（缺省路径
+        //   逐字节不变）。声道数不走这里：照旧看 SupportsChannelCount(6)（显式类型 + 虚拟环绕开时报 6，关时报 2）
+        public string? S2AActiveDeviceName()
+        {
+            return AppleAudioDeviceTypeSelector.FromEnvironment() switch
+            {
+                AppleAudioDeviceType.BuiltInSpeakers => "AudioBuiltInSpeakerOutput",
+                AppleAudioDeviceType.Headphones => "AudioStereoJackOutput",
+                _ => null,
+            };
+        }
     }
 }

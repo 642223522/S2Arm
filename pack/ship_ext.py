@@ -50,6 +50,35 @@ import struct  # noqa: E402
 TABLES = "S2AShell.tables"
 PLACEHOLDER_ID, PLACEHOLDER_NAME = "dev.s2arm.shell", "S2Arm"
 IMAGES = "Frameworks/S2AImages.dylib"
+NRO_TABLES = "nro_tables.tsv"   # 各 NRO 的 fixups / gates 合成的一份（宿主 runtime/src/loader.c nrot_get 读，表里没有的模块照旧读逐模块文件）
+
+
+def nro_names(root):
+    """产物根 nro_modules.tsv 里的 NRO 模块名（romfs 里 nn::ro 装的模块，runtime/rewriter/nro_to_nso.py 出表）；没有表 → 空集"""
+    p = Path(root) / "nro_modules.tsv"
+    if not p.is_file():
+        return set()
+    return {l.split("\t", 1)[0] for l in p.read_text(encoding="utf-8").splitlines() if l and not l.startswith("#")}
+
+
+def write_nro_tables(root, mods, dest):
+    """root 里属于 NRO 的模块的 <名>.fixups.tsv / .gates.tsv 合成 dest/nro_tables.tsv（空门表不写）→ 合进去的模块名集合（没有 NRO = 不出表、回空集）。
+    一款用 nn::ro 的大作有上千个 NRO，逐模块两张小表让程序包多出上千个文件，推到手机按文件数计时。段头「@<种类><TAB><模块名>」，段内容逐字节照抄原表；
+    原表里有行首是「@」的（会被当成段头）报红，不静默改写"""
+    nro = [m for m in mods if m in nro_names(root)]
+    if not nro:
+        return set()
+    out = [f"# 各 NRO 模块的随行表合成一份：「@fixups / @gates<TAB><模块名>」起一段，段内容 = 原 <模块名>.<种类>.tsv；没有 gates 段 = 空门表（runtime/src/loader.c nrot_get）\n".encode()]
+    for m in nro:
+        for kind in ("fixups", "gates"):
+            data = (Path(root) / f"{m}.{kind}.tsv").read_bytes()
+            if kind == "gates" and not data.strip():
+                continue
+            if data.startswith(b"@") or b"\n@" in data:
+                red(f"{m}.{kind}.tsv 有行首是 @ 的行，合不进 {NRO_TABLES}")
+            out += [f"@{kind}\t{m}\n".encode(), data if data.endswith(b"\n") or not data else data + b"\n"]
+    (Path(dest) / NRO_TABLES).write_bytes(b"".join(out))
+    return set(nro)
 
 
 def red(msg):
@@ -79,7 +108,7 @@ def per_game(app, tables):
     app = Path(app); out = []
     for p in app.iterdir():
         n = p.name
-        if p.is_file() and (n.endswith((".fixups.tsv", ".gates.tsv", ".widen.tsv")) or n in ("main.npdm", "save-identity.json")
+        if p.is_file() and (n.endswith((".fixups.tsv", ".gates.tsv", ".widen.tsv")) or n in ("main.npdm", "save-identity.json", NRO_TABLES)
                             or any(fnmatch.fnmatchcase(n, t) for t in tables) or (n.startswith("AppIcon") and n.endswith(".png"))):
             out.append(n)
     if (app / IMAGES).exists():
@@ -212,18 +241,20 @@ def place_game(root, dest, images, tables):
     if r.returncode:
         red(f"写外置镜像包失败：{(r.stderr or r.stdout).strip().splitlines()[-1:]}")
     dest.mkdir(parents=True, exist_ok=True)
+    merged = write_nro_tables(root, mods, dest)
     for m in mods:
         for suf in (".fixups.tsv", ".gates.tsv", ".widen.tsv"):
             src = root / (m + suf)
-            if src.is_file() or suf != ".widen.tsv":
+            if (src.is_file() or suf != ".widen.tsv") and not (m in merged and suf != ".widen.tsv"):
                 shutil.copyfile(src, dest / src.name)
     shutil.copyfile(root / "main.npdm", dest / "main.npdm")
     for n, d in progs:
         pa = dest / "programs" / str(n); pa.mkdir(parents=True, exist_ok=True)
-        for m in modules(d):
+        pm = modules(d); pmerged = write_nro_tables(d, pm, pa)
+        for m in pm:
             for suf in (".fixups.tsv", ".gates.tsv", ".widen.tsv"):
                 src = d / (m + suf)
-                if src.is_file() or suf != ".widen.tsv":
+                if (src.is_file() or suf != ".widen.tsv") and not (m in pmerged and suf != ".widen.tsv"):
                     shutil.copyfile(src, pa / src.name)
         shutil.copyfile(d / "main.npdm", pa / "main.npdm")
         for t in tables:

@@ -204,8 +204,9 @@ def win_oneclick(c, oneclick, extraction, fonts, out, events, log, env, line, so
 
 
 def build(c):
-    # 与 Mac prepare、显式清缓存 / 删除共用执行锁，清理不与同库编库重叠。
-    with c.lock("execution"):
+    # 与 Mac prepare 共用出包锁（一次只出一个），执行锁拿共享：清缓存 / 删除等全库独占动作不与出包重叠，别的游戏照样能玩（build.produce_locks）
+    from build import produce_locks
+    with produce_locks(c):
         return _build(c)
 
 
@@ -548,7 +549,7 @@ def _swap_pack(c, gid, pack_dir, want):
     compat = host_update.engine_compat(c) or {}
     from rewrite_refresh import rewriter_id   # 这次的改写产物出自哪版改写器：改写器以后修了，更新手机时只核记号不同的款（rewrite_refresh.py）
     from sgrade_bf import BF_GEN   # 这次的直连库出自本引擎翻译器：可读瓦片版代数（S 级升级按它判要不要补 _bf，pack/jobs/sgrade_bf.py）
-    layout.update_info(c, gid, ios=dict(shellId=current_shell_id(c), pack=want, rewriterId=rewriter_id(c), bfGen=BF_GEN, builtBy=host_update.built_by(c), **compat))
+    layout.update_info(c, gid, ios=dict(shellId=current_shell_id(c), pack=want, rewriterId=rewriter_id(c), bfGen=BF_GEN, libGen=host_update.LIB_GEN, builtBy=host_update.built_by(c), **compat))   # libGen：直连库内容代数（host_update.LIB_GEN）
 
 
 def drop_iphone_delivery(c, gid):

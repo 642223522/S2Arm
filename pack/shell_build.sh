@@ -54,9 +54,16 @@ s2a_tc_sweep "$S/build/.${OS}_toolchain" "$S/build/gal$GX/ios" "$S/build/nvn$GX/
 SN=$(s2a_nospace "$S") || { echo "【红】建不了无空格别名（${S}）"; exit 1; }
 "${S2A_PY:-python3}" "$H/shell/closure.py" mark "$S" --list-from "$R" || { echo "【红】设不了出壳镜像文件访问时间（壳输入闭包）"; exit 1; }
 t0=$SECONDS
-# 游戏库界面（runtime/build.mk S2A_SHELLUI）开不开只看壳输入表：有「入 shell」行才编进壳。不收外部开关——表与表里的目录都进壳编号，
-#   开关与库界面源码一变壳编号必变，同一壳编号不会对应带 / 不带库界面两种壳
+# 游戏库界面（runtime/build.mk S2A_SHELLUI）缺省按壳输入表：有「入 shell」行才编进壳。
+# Intel Mac 只有 tvOS 平台组件没装、xcodebuild 解析不出 generic/platform=tvOS；iOS 平台组件已装，xcodebuild 能编出库界面。
+# 通用容器 App（s2a_catalogue.json）必须带库界面，否则 iPad 上打开就报「没带游戏库」，不能为了省编译跳过。
 SHELLUI=0; printf '%s\n' "$IN" | grep -qx 'shell' && SHELLUI=1
+if [ "$(uname -m)" = x86_64 ] && [ "$OS" = tvos ] && [ "$SHELLUI" = 1 ] && [ -z "${S2A_SHELLUI:-}" ]; then
+  echo "🟡 Intel Mac：本机没装 tvOS 平台组件，跳过电视壳的游戏库界面；iPhone 壳照常带库界面"
+  SHELLUI=0
+elif [ -n "${S2A_SHELLUI:-}" ]; then
+  SHELLUI=$S2A_SHELLUI
+fi
 # 提交号在工作树里取好再交给 make（镜像没有 .git：runtime/build.mk 写进 Info.plist 的 S2ACommit 原先现取 git rev-parse，镜像里会成 unknown）
 HC=$(git -C "$R" rev-parse HEAD) || { echo "【红】取不到本树提交号"; exit 1; }
 "$MK" -C "$SN" ROOT="$SN" -j"$S2A_JOBS" -s ios S2A_APPLE_OS=$OS S2A_CS=1 S2A_SHELLUI=$SHELLUI IOS_BUNDLE=dev.s2arm.shell IOS_DISPLAY=S2Arm BUILD="$B/build" IOS_OBJ_CACHE="$SN/build/${OS}_objcache" S2A_COMMIT="$HC" > "$B/make.log" 2>&1 \

@@ -9,6 +9,7 @@
 #include "system_tuning.h"
 #include <errno.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -177,9 +178,23 @@ static void world_reset(void) {
 }
 // 模拟时钟前进 ns，并等线程在新时刻上处理完一个判定周期：用「最近一个已完成周期读到的时钟 ≥ 新时刻」同步，
 // 不会被前台 / 显示面变化触发的、读到的还是旧时钟的那个周期提前放行。
+// 推进模拟时钟并等托底线程把这一步走完：叫醒它、让出 CPU 紧等，不按固定间隔睡（上千步各睡一次，负载高时整套被拖过 ctest 上限）。
+//   上限同 WAIT_UNTIL：3 秒（真实时间）。
 static void advance(uint64_t ns) {
     const uint64_t target = atomic_fetch_add(&fake_now, ns) + ns;
-    CHECK(WAIT_UNTIL(s2a_cpu_floor_test_last_tick_ns() >= target));
+    s2a_cpu_floor_test_kick();
+    struct timespec t0, t; clock_gettime(CLOCK_MONOTONIC, &t0);
+    int ok = 0;
+    for (unsigned i = 0;; i++) {
+        if (s2a_cpu_floor_test_last_tick_ns() >= target) { ok = 1; break; }
+        if ((i & 255) == 255) {
+            clock_gettime(CLOCK_MONOTONIC, &t);
+            if ((t.tv_sec - t0.tv_sec) * 1000000000L + (t.tv_nsec - t0.tv_nsec) > 3000000000L) break;
+            s2a_cpu_floor_test_kick();   // 叫醒时它若正忙（没在等），再叫一次
+        }
+        sched_yield();
+    }
+    CHECK(ok);
 }
 // 按 fps 出帧并走一个判定周期（250 ms）
 static double frac;

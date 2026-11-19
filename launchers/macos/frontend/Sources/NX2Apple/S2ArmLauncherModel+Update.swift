@@ -42,7 +42,8 @@ extension S2ArmLauncherModel {
         }
     }
 
-    private var currentVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "" }
+    // 交给更新器的本机版本：S2AVersion（build_app.py 写，含预发布段，测试版 0.6.0-test.1 才收得到同号正式版）；老包没有它就退回短版本号
+    private var currentVersion: String { (Bundle.main.object(forInfoDictionaryKey: "S2AVersion") as? String).flatMap { $0.isEmpty ? nil : $0 } ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "" }
     var updateVersion: String { availableUpdate?["version"] as? String ?? "" }
     var updateDownloadBytes: (received: UInt64, expected: UInt64) { updateDriver.downloadBytes }
     var showRestartUpdateButton: Bool { updateState == .ready && !updateRestarting }
@@ -148,6 +149,12 @@ extension S2ArmLauncherModel {
     }
 
     /// 关掉弹窗（以后再说 / 知道了 / 新功能大窗的关闭、跳过、去出包）：这一版 / 这一期不再弹
+    /// 「消息」里点「再看一遍」：把这一期新功能大窗再打开（关掉照常记看过，不影响别的弹窗）
+    func reopenFeature(_ feature: [String: Any]) {
+        guard feature["kind"] as? String == "feature" else { return }
+        updatePopup = feature
+    }
+
     func closeUpdatePopup() {
         updateGate = nil
         if updatePopup?["kind"] as? String == "feature", let id = updatePopup?["id"] as? String {
@@ -219,9 +226,8 @@ extension S2ArmLauncherModel {
     struct UpdateRestartImpact: Equatable { var game: String?; var task: String?; var taskResumes = false }
     var updateRestartImpact: UpdateRestartImpact {
         var r = UpdateRestartImpact()
-        if mainBusy, let s = session {
-            if s.kind == .play { r.game = s.name } else { r.task = s.name; r.taskResumes = s.kind == .export }
-        }
+        if playBusy, let p = playSession { r.game = p.name }   // 一局在游戏槽，可以和出包同时在跑：两样都列
+        if mainBusy, let s = session { r.task = s.name; r.taskResumes = s.kind == .export }
         if r.task == nil, phoneBusy, let p = phoneSession { r.task = p.name }
         return r
     }
@@ -261,6 +267,7 @@ extension S2ArmLauncherModel {
         }
         if busy {
             stop()
+            stopPlay()
             stopPhone()
         }
         installReadyUpdate()

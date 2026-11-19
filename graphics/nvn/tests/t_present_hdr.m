@@ -2,12 +2,12 @@
 // Copyright 2026 S2Arm contributors
 // PR3b：present_mode 数学闭环 GPU 对拍（评审稿 v3 §2.4 模式矩阵 / §4 PR3b；形态照 nxnative #1176 的 t_present_hdr 适配本仓）。
 //   生产 nvn_mtl.m 隔离编译进本单测（#include——真着色器上 GPU，present_encode 全链路）；前端替身按 t_nvn2 直调先例注入
-//   （nvn2_hdr_snapshot_publish 合成快照 + nvn2_hdr_answer 同源答案入口直调 + setenv S2ARM_HDR，不照搬 nxnative 的 swforce 段）；
+//   （nvn2_hdr_snapshot_publish 合成快照 + nvn2_hdr_answer 同源答案入口直调 + setenv S2A_HDR，不照搬 nxnative 的 swforce 段）；
 //   期望值 CPU 双精度复算（本文件自带 PQ / 肩部 / 矩阵参考式），容差 ±1 LSB（着色器 float32 对 CPU double 的固有差）。
-//   ① off 不变量：S2ARM_HDR 缺省（vi 未答过）+ 8 位目标 ⇒ 平凡直通——与改前 trivial 采样着色器（本文件按改前源码原样编译的对照管线，
+//   ① off 不变量：S2A_HDR 缺省（vi 未答过）+ 8 位目标 ⇒ 平凡直通——与改前 trivial 采样着色器（本文件按改前源码原样编译的对照管线，
 //      同一裁切 / 边缘钳制 / 采样器）逐字节一致：10 位源（含 512→128 的硬件换算）、8 位源、sRGB 源、float 源、alpha 透传。
 //   ② 未答过的 10 位窗进 PQ 层目标：按 gamma SDR 解码、纸白 100 nit 编码（mode 2 语义——「vi 答过 HDR 才当 PQ 码值解码」的反面锁定）。
-//   ③ mode 1（S3 兜底 + PR6 截图共用）：vi 答 on=1（S3 路径：S2ARM_HDR=on ∧ can 未持稳）后 HDR10 窗 → 8 位目标：
+//   ③ mode 1（S3 兜底 + PR6 截图共用）：vi 答 on=1（S3 路径：S2A_HDR=on ∧ can 未持稳）后 HDR10 窗 → 8 位目标：
 //      先 BT.2020→BT.709 矩阵（负值截断在矩阵后）→ 肩部压缩到 SDR 白 → 2.2 编码；灰阶逐档 + 橙色高光保色相（先压缩后转换会把
 //      红绿比 6.9 压成 4.6——次序铁律锁定）+ 转换态 alpha 1。
 //   ④ mode 2：8 位 SDR → PQ 层：SDR 白 255 = 纸白锚 100 nit、中灰 128 = 线性值、阴影按 2.2 解码不抬肩（码 16 = 2.2 下 sRGB 的约 1/2.3 光）、alpha 1。
@@ -17,9 +17,9 @@
 //   ⑦ mode 4 滚降（无 metadata）：已告知 peak 在步进保持期（屏变暗、答案还没跟上）压过当前净空时——膝点下逐位直通、
 //      肩部曲线（knee 300 / target 400 / 源峰 1580 = min(声明 1801, 已告知 1580)）、单调有界（≤ target+3 nit）、色相保持（各通道同缩放）、
 //      三个门限（源峰 ≤ 1.05×target 不滚、knee > 0.9×target 不滚、已告知峰值追平净空后不滚）、缩放上屏与直通逐位一致。
-//   ⑧ latch：答过 HDR 后回答转 SDR（S2ARM_HDR=off），present 仍按 PQ 解码游戏保持的 HDR10 窗（排空过渡帧的唯一不糊画面解法，nxnative 口径）；
+//   ⑧ latch：答过 HDR 后回答转 SDR（S2A_HDR=off），present 仍按 PQ 解码游戏保持的 HDR10 窗（排空过渡帧的唯一不糊画面解法，nxnative 口径）；
 //      游戏自降回 8 位窗后 off 恢复平凡直通。
-//   ⑨ S2ARM_HDR_SDR_GAMMA=0（分段 sRGB 曲线，Q13 参数留可调）：mk 第二遍单独进程跑 mode 2 的 sRGB 期望（首遍缺省 2.2；
+//   ⑨ S2A_HDR_SDR_GAMMA=0（分段 sRGB 曲线，Q13 参数留可调）：mk 第二遍单独进程跑 mode 2 的 sRGB 期望（首遍缺省 2.2；
 //      该开关读一次缓存，进程内不换——所以分进程）。
 // PQ 层目标（RGB10A2）在 PR3b 阶段还没有真层（PR4 落地）：②④⑤⑥⑦ 的 RGB10A2 目标是单测直接建的——验的是转换数学与管线接线，
 //   真机路径随 PR4/PR5 验收（§4 PR3b 的时点口径）。S3 真机路径同理：vi 门控接线是 PR5，本测经同源答案入口直调驱动。
@@ -51,7 +51,7 @@ static double pq_nits(double code) {
     double e = pow(code / 1023.0, 1.0 / m2);
     return 10000.0 * pow(fmax(e - c1, 0) / (c2 - c3 * e), 1.0 / m1);
 }
-static double sdr_dec(double c) { return pow(c, 2.2); }                 // Q13 缺省口径（S2ARM_HDR_SDR_GAMMA 不设）
+static double sdr_dec(double c) { return pow(c, 2.2); }                 // Q13 缺省口径（S2A_HDR_SDR_GAMMA 不设）
 static double sdr_enc(double l) { return pow(l, 1.0 / 2.2); }
 static double srgb_dec(double c) { return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4); }
 static double shoulder(double m, double k, double t, double s) {        // present_shoulder 的双精度参考式
@@ -151,12 +151,12 @@ static int present_into(id<MTLTexture> src, id<MTLTexture> dst) {   // 生产 pr
 
 int main(void) { @autoreleasepool {
     setvbuf(stdout, NULL, _IOLBF, 0);
-    unsetenv("S2ARM_HDR"); if (!getenv("T_PRESENT_HDR_GAMMA0")) unsetenv("S2ARM_HDR_SDR_GAMMA");   // ⑨ 第二遍进程带着 S2ARM_HDR_SDR_GAMMA=0 起：别在这里清掉
+    unsetenv("S2A_HDR"); if (!getenv("T_PRESENT_HDR_GAMMA0")) unsetenv("S2A_HDR_SDR_GAMMA");   // ⑨ 第二遍进程带着 S2A_HDR_SDR_GAMMA=0 起：别在这里清掉
     unsetenv("S2A_ANTI_ALIASING"); unsetenv("S2A_SCALING_FILTER"); unsetenv("S2A_CPATCH_ON");
     setenv("DM_PSO_MANIFEST", "off", 1); setenv("DM_PSO_ARCHIVE", "0", 1);
     mtl_init();
-    if (getenv("T_PRESENT_HDR_GAMMA0")) {   // ⑨ 第二遍进程（mk 起的）：S2ARM_HDR_SDR_GAMMA=0 的分段 sRGB 曲线（读一次缓存，分进程才换得动）
-        setenv("S2ARM_HDR", "on", 1);
+    if (getenv("T_PRESENT_HDR_GAMMA0")) {   // ⑨ 第二遍进程（mk 起的）：S2A_HDR_SDR_GAMMA=0 的分段 sRGB 曲线（读一次缓存，分进程才换得动）
+        setenv("S2A_HDR", "on", 1);
         uint8_t c[N][3] = {{255, 255, 255}, {128, 128, 128}, {64, 64, 64}, {32, 32, 32}, {16, 16, 16}, {8, 8, 8}, {4, 4, 4}, {0, 0, 0}};
         double o[N][3]; int ran = run(src8(c, MTLPixelFormatRGBA8Unorm), MTLPixelFormatRGB10A2Unorm, o), bad = 0;
         for (int i = 0; ran && i < N; i++) bad += fabs(o[i][1] - pq_code(srgb_dec(c[i][1] / 255.0) * 100)) > 1.0;
@@ -206,7 +206,7 @@ int main(void) { @autoreleasepool {
     //   （s2a_platform_ounce，宿主对象 svc_mem.o 的 NPDM 读数）在单测里恒 0——源峰的 min(声明, 已告知) 落已告知一侧验证
     //   （已告知 400 nit = 4 纸白），声明侧（min 取声明，DKB 声明低于告知的形态）随 PR5 元数据消费接线验收
     {
-        setenv("S2ARM_HDR", "on", 1);
+        setenv("S2A_HDR", "on", 1);
         hdr_snapshot pub = {.potential_edr = 2.0, .current_headroom = 4.0, .s1_ready = 0, .paper_white = 100};
         nvn2_hdr_snapshot_publish(&pub);   // can 未持稳 / s1_ready=0 → S3 强制路径
         hdr_decision d = nvn2_hdr_answer(1, 1000);
@@ -330,7 +330,7 @@ int main(void) { @autoreleasepool {
 
     // ⑧ latch：答过 HDR 后回答转 SDR（off），present 仍按 PQ 解码游戏保持的 HDR10 窗；游戏自降回 8 位窗后 off 恢复平凡直通
     {
-        setenv("S2ARM_HDR", "off", 1);
+        setenv("S2A_HDR", "off", 1);
         hdr_decision d = nvn2_hdr_answer(1, 6000);
         CHECK(d.mode == HDR_S0 && d.vi_on == 0 && d.vi_fmt == 0 && d.vi_peak == 0, "⑧ 前端替身：off 后回答转 SDR（on=0 / fmt=0 / peak=0）");
         const double nits[N] = {0, 0.1, 10, 80, 203, 500, 1000, 10000};
@@ -342,7 +342,7 @@ int main(void) { @autoreleasepool {
         id<MTLTexture> s8 = src8(c, MTLPixelFormatRGBA8Unorm), d1 = dst_tex(MTLPixelFormatRGBA8Unorm, N, 1), d2 = dst_tex(MTLPixelFormatRGBA8Unorm, N, 1);
         CHECK(present_into(s8, d1) && trivial_run(s8, d2) && bytes_equal(d1, d2),
               "⑧ off：游戏自降回 8 位窗后恢复平凡直通（与改前 trivial 逐字节一致）");
-        unsetenv("S2ARM_HDR");
+        unsetenv("S2A_HDR");
     }
 
     printf("%s t_present_hdr：%u 项，%u 项不符\n", failures ? "✗" : "✓", checks, failures);

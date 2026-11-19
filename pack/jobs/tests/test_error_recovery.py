@@ -504,11 +504,11 @@ raise SystemExit(main.main())
         self.assert_t75_recovery(self.c.describe_failure(raised.exception), "content_invalid",
                                  "文件是否完整", "重新导入", "保留对应日志")
 
-    def test_t75_architecture_unsupported_recovery(self):
+    def test_t75_intel_mac_can_package_iphone(self):
         row = self.t75_preflight(machine="x86_64")["Apple Silicon"]
-        self.assertFalse(row["ok"])
-        self.assert_t75_recovery(row["diagnostic"], "architecture_unsupported",
-                                 "Apple Silicon Mac", "换用支持的设备", "重试不会")
+        self.assertTrue(row["ok"])
+        self.assertIn("Intel Mac", row["message"])
+        self.assertIn("iPhone", row["message"])
 
     def test_t75_os_unsupported_recovery(self):
         row = self.t75_preflight(version="14.7")["macOS"]

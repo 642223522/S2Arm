@@ -168,7 +168,7 @@ import S2ArmAppleAdapter
             for (width, height): (CGFloat, CGFloat) in [(800, 450), (1120, 630), (1440, 810)] {
                 let session = JobSession(kind: .play, gameID: game.id, name: game.name,
                     phase: .finished(.completed), stage: "游戏运行中")
-                fixture.model.session = session
+                fixture.model.playSession = session
                 let page = AnyView(PlaySessionView(model: fixture.model, covers: covers, session: session,
                     uiLanguage: language == .zh ? "zh-Hans" : "en")
                     .background(LauncherWindowMaterial()).foregroundStyle(LauncherTheme.Colors.text)
@@ -213,7 +213,7 @@ import S2ArmAppleAdapter
         let game = try XCTUnwrap(fixture.model.games.first)
         for phase in [JobSession.Phase.running, .stopping, .finished(.failed)] {
             let session = JobSession(kind: .play, gameID: game.id, name: game.name, phase: phase, stage: "游戏运行中")
-            fixture.model.session = session
+            fixture.model.playSession = session   // 一局在游戏槽
             let page = AnyView(PlaySessionView(model: fixture.model, covers: CoverCache(), session: session, uiLanguage: "en")
                 .background(LauncherWindowMaterial()).frame(width: 800, height: 450))
             let (host, window) = try await render(page, fixture: fixture, language: .en)
@@ -236,13 +236,13 @@ import S2ArmAppleAdapter
             }
             if phase == .finished(.failed) {
                 for action in [LauncherPadAction.confirm, .submit, .back] {
-                    fixture.model.session = session
+                    fixture.model.playSession = session
                     navigation.focus("play.back"); navigation.handle(action)
-                    XCTAssertNil(fixture.model.session, "A、R2 与 B 均应执行原有回库操作")
+                    XCTAssertNil(fixture.model.playSession, "A、R2 与 B 均应执行原有回库操作")
                 }
             } else {
                 navigation.handle(.submit)
-                XCTAssertEqual(fixture.model.session?.phase, .stopping)
+                XCTAssertEqual(fixture.model.playSession?.phase, .stopping)
             }
             XCTAssertFalse(fixture.runner.requests.contains { $0["operation"] as? String == "launch" }, "底栏操作不能意外重启游戏")
             try snapshot(host, "play-footer-\(actionID)-\(phase == .stopping ? "stopping" : "active")")
@@ -1058,7 +1058,7 @@ import S2ArmAppleAdapter
             switch page {
             case "welcome": fixture.model.welcomeHome = true
             case "export": fixture.model.exportFor = "fixture"
-            default: fixture.model.session = JobSession(kind: .play, gameID: "fixture", name: "Original session")
+            default: fixture.model.playSession = JobSession(kind: .play, gameID: "fixture", name: "Original session")
             }
             try await settle(window, fixture.model.gamepad)
             XCTAssertTrue(fixture.model.gamepad.controlTargets(in: window).contains { $0.id == "top.report" }, "\(page) 页面应直接看到全局故障报修")
@@ -2035,7 +2035,7 @@ import S2ArmAppleAdapter
         for language in [Lang.zh, .en] {
             let uiLanguage = language == .zh ? "zh-Hans" : "en"
             fixture.model.updatePopup = ["kind": "available", "version": "1.0.0", "notes": NSNull()]
-            fixture.model.session = JobSession(kind: .play, gameID: "fixture", name: "Original Game")
+            fixture.model.playSession = JobSession(kind: .play, gameID: "fixture", name: "Original Game")
             fixture.model.updateGate = "update.gate.confirm"
             let (host, window) = try await render(AnyView(UpdatePopupView(model: fixture.model, language: uiLanguage)), fixture: fixture, language: language)
             defer { window.close() }
@@ -2046,7 +2046,7 @@ import S2ArmAppleAdapter
                                            : "\"Original Game\" will be closed and unsaved progress will be lost — save in the game first if you can.")
             try snapshot(host, "update-restart-confirm-" + language.code)
             fixture.model.updateGate = nil
-            fixture.model.session = nil
+            fixture.model.playSession = nil
         }
     }
 

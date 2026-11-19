@@ -1,5 +1,6 @@
 """Mac preparation/launch adapter. All engine transformations stay in S2Arm."""
 from __future__ import annotations
+import contextlib
 import hashlib
 import importlib.util
 import json
@@ -324,8 +325,16 @@ def keep_runtime_nros(c, game_id, source):
 
 def launch(c):
     import sgrade
-    with c.lock("execution"), c.idle(sgrade.game_lock(c.r.get("gameId") or "")) as free:
-        if not free:   # 这款正在升级 S 级优化（sgrade.upgrade_game 拿着这款的锁）：只挡这一款，升级做完自动解除
+    # 执行锁读写化（11-19）：起局整局只拿执行锁的共享模式——别的游戏照样能起、能出包；清理 / 删除 / 搬家等全库动作（独占）照旧等这局结束。
+    #   这一款由按款锁挡：同一款的出包（produce_locks）、S 级升级、再起一局都要等这局结束
+    with c.lock("execution", shared=True), c.idle(sgrade.game_lock(c.r.get("gameId") or "")) as free:
+        if not free:
+            import filelock
+            holder = filelock.read_holder(c.library / ("." + sgrade.game_lock(c.r.get("gameId") or "") + ".lock"))
+            if holder.get("operation") in ("launch", "build", "ipa"):   # 拿着这款锁的是起局 / 出包：同原先排执行锁到上限后的说法
+                from errors import library_lock_failure
+                raise library_lock_failure(holder, "另一个任务正在使用游戏库，请稍后重试。", f"这款的按款锁被占：{holder}")  # 非玩家句
+            # 这款正在升级 S 级优化（sgrade.upgrade_game 拿着这款的锁）：只挡这一款，升级做完自动解除
             raise Failure("这款游戏正在升级 S 级优化，升级完成后就能开始。", code="sgrade_upgrading")
         game = c.game()
         from saves import recover
@@ -872,8 +881,17 @@ def prune_runtime_extras(root):
             _rmtree(extra)   # 走统一删除：pkg/pack/romfs 克隆自产物根，可能带只读目录；删不掉要报出来，不能悄悄留半棵进运行版本
 
 
+@contextlib.contextmanager
+def produce_locks(c):
+    """出包（Mac prepare、iPhone ipa.build）拿的锁（执行锁读写化，11-19）：执行锁共享（和起局并行，挡全库独占动作）+ 出包锁独占（两次出包照旧
+    一个接一个：共用编译缓存、缓存修剪 cache_retention 要独占）+ 这一款的按款锁（这款在玩 / 在升级 S 级优化时等它结束）"""
+    import sgrade
+    with c.lock("execution", shared=True), c.lock("produce"), c.lock(sgrade.game_lock(c.r.get("gameId") or "")):
+        yield
+
+
 def prepare(c):
-    with c.lock("execution"):
+    with produce_locks(c):
         c.begin("检查游戏输入")
         c.require_source()
         game = c.game()
@@ -975,7 +993,7 @@ def prepare(c):
                             engine="S2Arm", gameId=game["id"], gameName=game["name"], compatibility="unverified",
                             files=snapshot(c, temporary), **(host_update.engine_compat(c) or {}),   # 只换宿主的判据（host_update.py）
                             rewriterId=__import__("rewrite_refresh").rewriter_id(c),
-                            bfGen=__import__("sgrade_bf").BF_GEN, builtBy=host_update.built_by(c))   # 直连库的可读瓦片版代数（S 级升级按它判要不要补 _bf，pack/jobs/sgrade_bf.py）   # 改写产物出自哪版改写器：改写器修了，起局前只核记号不同的（rewrite_refresh.refresh_mac）
+                            bfGen=__import__("sgrade_bf").BF_GEN, libGen=host_update.LIB_GEN, builtBy=host_update.built_by(c))   # 直连库的可读瓦片版代数（S 级升级按它判要不要补 _bf，pack/jobs/sgrade_bf.py）   # 改写产物出自哪版改写器：改写器修了，起局前只核记号不同的（rewrite_refresh.refresh_mac）
             atomic(temporary / "manifest.json", manifest)   # v0.2.3 清理：不再紧接着全量复验——清单就是同一进程刚从这些文件量出来的
             sha = host_update.install_host(c, host)
             c.check()

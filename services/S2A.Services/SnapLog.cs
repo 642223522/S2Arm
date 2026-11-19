@@ -227,7 +227,8 @@ namespace S2A.Services
             }
             return false;
         }
-        private static bool Drop(string n, long cmd)
+        internal static bool AudioQueueRulesOn = true;   // 单测负对照用：关掉就 AudioOut / AudioIn 的队列命令照常进日志
+        internal static bool Drop(string n, long cmd)
         {
             uint c = (uint)cmd;
             if (n.Contains("IHidServer") && (c == 200 || c == 214)) return true;                     // 震动查询 / 震动发送
@@ -235,7 +236,8 @@ namespace S2A.Services
             if (n.EndsWith("IFile") && (c == 0 || c == 1 || c == 2 || c == 3)) return true;
             if (n.EndsWith("IFileSystem") && (c <= 6 || c == 10 || c == 13)) return true;             // 建删改名 / 提交（写盘）
             if (n.Contains("AudioRenderer") && !n.Contains("Manager") && c == 4) return true;                                  // RequestUpdate：渲染器整块另存
-            if (n.Contains("AudioOut") && !n.Contains("Manager") && (c == 3 || (c >= 5 && c <= 11))) return true;              // 缓冲队列：AudioOut 队列另存
+            if (AudioQueueRulesOn && n.Contains("AudioOut") && !n.Contains("Manager") && (c == 3 || (c >= 5 && c <= 11))) return true;              // 缓冲队列：AudioOut 队列另存（audout.bin，AudioOutSave）
+            if (AudioQueueRulesOn && n.Contains("AudioIn") && !n.Contains("Manager") && (c == 0 || c == 3 || (c >= 5 && c <= 11) || c == 13 || c == 14)) return true;   // 同上：AudioIn 队列另存（audin.bin）；Start / Stop / 取事件 / 设增益照常重放
             // 音频设备的纯查询（设备名列表 / 取音量 / 当前设备名 / 声道数，含 Auto 版）：不改服务状态，重放只为重建状态，不进日志（一款大游戏：
             //   重放 #10 取当前设备名时按 A 的接收表写回报内存区无效）。设音量（1 / 7）改状态、取系统事件（4 / 11 / 12）建句柄，照常重放
             if (n.Contains("AudioDevice") && (c == 0 || c == 2 || c == 3 || c == 5 || c == 6 || c == 8 || c == 10 || c == 13)) return true;
@@ -557,6 +559,8 @@ namespace S2A.Services
                     outLog.W.Write(EntMeta); outLog.W.Write(0); _tab.WriteMeta(outLog.W);
                     outLog.SaveTo(p); _savedRaw = outLog.Length; _savedZ = outLog.Stored;
                 }
+                SaveSyncpoints(Path.Combine(Path.GetDirectoryName(p) ?? ".", "syncpt.bin"));
+                SaveAppletMessages(Path.Combine(Path.GetDirectoryName(p) ?? ".", "applet.bin"));
                 var sb = new StringBuilder();
                 foreach (var kv in _dropBy) sb.Append(kv.Key).Append('×').Append(kv.Value).Append(' ');
                 Console.Error.WriteLine($"[s2a] 即时存档：服务请求日志 活着的 {_tab.Count} 条（历来记过 {_kept} 条，其余随对象关闭收掉）、原始 {_savedRaw / 1024} KB、压后 {_savedZ / 1024} KB；不记的 {_dropped} 条（{sb}）");
@@ -572,6 +576,39 @@ namespace S2A.Services
             lock (_lock) { _tab.Clear(); _seq = 0; _kept = 0; _dropped = 0; _maxSeq = -1; _dropBy.Clear(); _lastUpdate.Clear(); _lastMm.Clear(); _lastNvWait.Clear(); _nvMapped.Clear(); _nvCookies.Clear(); }
             SnapSwitch.Save = SnapSwitch.CanSave && restoring == 0;
             return 0;
+        }
+
+        // 同步点状态（syncpt.bin，与 ipc.bin 同目录）：host1x 通道的 Submit 不进日志，它推上去的同步点计数单独存、重放后抬回去（Ryujinx.HLE.S2ASyncptSnap）。
+        //   旧快照没有这个文件：照旧恢复、记一行黄（视频类等同步点的会每步等满 1 秒）
+        private static void SaveSyncpoints(string file)
+        {
+            if (Host.Device is not Ryujinx.HLE.Switch dev) return;
+            using var w = new BinaryWriter(File.Create(file));
+            Ryujinx.HLE.S2ASyncptSnap.Save(dev, w);
+        }
+        private static void RestoreSyncpoints(string file)
+        {
+            if (Host.Device is not Ryujinx.HLE.Switch dev) return;
+            if (!File.Exists(file)) { Console.Error.WriteLine("[s2a] 【黄】即时存档恢复：快照没有同步点状态（旧快照），同步点计数从重放结果接着走"); return; }
+            using var r = new BinaryReader(File.OpenRead(file));
+            int raised = Ryujinx.HLE.S2ASyncptSnap.Restore(dev, r);
+            Console.Error.WriteLine(raised < 0 ? "[s2a] 【红】即时存档恢复：同步点状态格式不对，没接上" : $"[s2a] 即时存档恢复：同步点计数接回快照时的值（抬了 {raised} 个）");
+        }
+
+        // 小程序消息队列（applet.bin）：宿主事件入队的消息不在请求日志里，存档那一刻没被取走的单独存、重放后放回（Ryujinx.HLE.S2AAppletSnap）。旧快照没有：照旧恢复
+        private static void SaveAppletMessages(string file)
+        {
+            if (Host.Device is not Ryujinx.HLE.Switch dev) return;
+            using var w = new BinaryWriter(File.Create(file));
+            int n = Ryujinx.HLE.S2AAppletSnap.Save(dev, w);
+            if (n > 0) Console.Error.WriteLine($"[s2a] 即时存档：小程序消息队列里还有 {n} 条没取走，已存");
+        }
+        private static void RestoreAppletMessages(string file)
+        {
+            if (Host.Device is not Ryujinx.HLE.Switch dev || !File.Exists(file)) return;
+            using var r = new BinaryReader(File.OpenRead(file));
+            int n = Ryujinx.HLE.S2AAppletSnap.Restore(dev, r);
+            Console.Error.WriteLine(n < 0 ? "[s2a] 【红】即时存档恢复：小程序消息队列格式不对，没接上" : $"[s2a] 即时存档恢复：小程序消息队列接回快照那一刻（{n} 条）");
         }
 
         // ---------- 恢复：重放 ----------
@@ -655,6 +692,8 @@ namespace S2A.Services
                 if (ph > 0) Console.Error.WriteLine($"[s2a] 即时存档恢复：重放时为已删路径建空占位 {ph} 个，重放完删掉 {ph - kept} 个（还开着、留下 {kept} 个）");
                 double ms = (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
                 Console.Error.WriteLine($"[s2a] 即时存档恢复：服务请求重放 {n} 条，{ms:F1} ms，异常 {bad} 条（当时失败、不重放 {skipped} 条；A 成功这里失败 {diverged} 条）");
+                RestoreSyncpoints(Path.Combine(Path.GetDirectoryName(Marshal.PtrToStringUTF8((IntPtr)path)) ?? ".", "syncpt.bin"));
+                RestoreAppletMessages(Path.Combine(Path.GetDirectoryName(Marshal.PtrToStringUTF8((IntPtr)path)) ?? ".", "applet.bin"));
                 if (bad == 0 && SnapSwitch.CanSave)
                 {   // 恢复局接着记：快照里的日志整份当开头，序号接着编（同原生层的句柄日志接续，thread.c s2a_snap_hlog_continue）
                     lock (_lock) { RebuildTable(all); _seq = _maxSeq + 1; _kept = n; }
@@ -845,9 +884,65 @@ namespace S2A.Services
                     }
                 }
                 Console.Error.WriteLine($"[s2a] 即时存档：音频渲染器 {n} 个会话已存");
+                AudioOutSave(Path.Combine(Path.GetDirectoryName(Marshal.PtrToStringUTF8((IntPtr)path)) ?? ".", "audout.bin"));
                 return 0;
             }
             catch (Exception e) { Console.Error.WriteLine($"[s2a] 【红】即时存档：存音频渲染器失败 {e}"); return -1; }
+        }
+
+        // audout 缓冲队列（audout.bin，与 audio.bin 同目录）：游戏自己混音、经 audout 送 PCM 的（如一款格斗大作），队列命令（追加 / 取已交还 / 计数 / 冲刷）不进请求日志，
+        //   队列在这里另存：每个会话的已交还未取走、未交还（按放的顺序）缓冲与已播采样数（Ryujinx.Audio AudioDeviceSession.S2ARestore）。
+        //   会话由请求重放按原顺序重建（同会话号）。旧快照没有这个文件：照旧恢复、记一行黄
+        private static void AudioOutSave(string file)
+        {
+            var mg = Ryujinx.Horizon.Audio.AudioManagers.S2ALast;
+            var list = new List<(int, ((ulong, ulong, ulong)[], (ulong, ulong, ulong)[], ulong, bool))>();
+            if (mg?.AudioOutputManager is { } om) lock (om.S2ASessionLock) { var ss = om.S2ASessions; for (int i = 0; i < ss.Length; i++) if (ss[i] != null) list.Add((i, ss[i].S2ASnapshot())); }
+            QueueSave(file, "audout", list);
+            var inl = new List<(int, ((ulong, ulong, ulong)[], (ulong, ulong, ulong)[], ulong, bool))>();
+            if (mg?.AudioInputManager is { } im) lock (im.S2ASessionLock) { var ss = im.S2ASessions; for (int i = 0; i < ss.Length; i++) if (ss[i] != null) inl.Add((i, ss[i].S2ASnapshot())); }
+            QueueSave(Path.Combine(Path.GetDirectoryName(file) ?? ".", "audin.bin"), "audin", inl);
+        }
+        private static void QueueSave(string file, string kind, List<(int, ((ulong, ulong, ulong)[], (ulong, ulong, ulong)[], ulong, bool))> list)
+        {
+            using var w = new BinaryWriter(File.Create(file));
+            w.Write(list.Count);
+            int bufs = 0;
+            foreach (var (i, q) in list)
+            {
+                w.Write(i); w.Write(q.Item3); w.Write(q.Item4);
+                w.Write(q.Item1.Length); foreach (var b in q.Item1) { w.Write(b.Item1); w.Write(b.Item2); w.Write(b.Item3); }
+                w.Write(q.Item2.Length); foreach (var b in q.Item2) { w.Write(b.Item1); w.Write(b.Item2); w.Write(b.Item3); }
+                bufs += q.Item1.Length + q.Item2.Length;
+            }
+            Console.Error.WriteLine($"[s2a] 即时存档：{kind} {list.Count} 个会话、队列里 {bufs} 个缓冲已存");
+        }
+        private static int AudioOutRestore(string file)
+        {
+            var mg = Ryujinx.Horizon.Audio.AudioManagers.S2ALast;
+            int bad = QueueRestore(file, "audout", i => { var om = mg?.AudioOutputManager; if (om == null) return null; lock (om.S2ASessionLock) { var ss = om.S2ASessions; return i < ss.Length && ss[i] != null ? (ss[i].S2ARestore) : null; } });
+            bad += QueueRestore(Path.Combine(Path.GetDirectoryName(file) ?? ".", "audin.bin"), "audin", i => { var im = mg?.AudioInputManager; if (im == null) return null; lock (im.S2ASessionLock) { var ss = im.S2ASessions; return i < ss.Length && ss[i] != null ? (ss[i].S2ARestore) : null; } });
+            return bad;
+        }
+        private static int QueueRestore(string file, string kind, Func<int, Func<(ulong, ulong, ulong)[], (ulong, ulong, ulong)[], ulong, int>> find)
+        {
+            if (!File.Exists(file)) { Console.Error.WriteLine($"[s2a] 【黄】即时存档恢复：快照没有 {kind} 队列（旧快照），{kind} 会话从空队列开始"); return 0; }
+            using var r = new BinaryReader(File.OpenRead(file));
+            int n = r.ReadInt32(), ok = 0, bad = 0, again = 0;
+            static (ulong, ulong, ulong)[] Bufs(BinaryReader r) { var a = new (ulong, ulong, ulong)[r.ReadInt32()]; for (int k = 0; k < a.Length; k++) a[k] = (r.ReadUInt64(), r.ReadUInt64(), r.ReadUInt64()); return a; }
+            for (int k = 0; k < n; k++)
+            {
+                int i = r.ReadInt32(); ulong played = r.ReadUInt64(); r.ReadBoolean();
+                var released = Bufs(r); var pending = Bufs(r);
+                var restore = find(i);
+                if (restore == null) { bad++; Console.Error.WriteLine($"[s2a] 【红】即时存档恢复：{kind} 会话 {i} 在恢复局里没有（重放没重建）"); continue; }
+                int got = restore(released, pending, played);
+                if (got < 0) { bad++; Console.Error.WriteLine($"[s2a] 【红】即时存档恢复：{kind} 会话 {i} 队列不空或放不下，没接上"); continue; }
+                ok++; again += got;
+                if (got != pending.Length) Console.Error.WriteLine($"[s2a] 【黄】即时存档恢复：{kind} 会话 {i} 在途缓冲 {pending.Length} 个只追加上 {got} 个");
+            }
+            Console.Error.WriteLine($"[s2a] 即时存档恢复：{kind} {ok}/{n} 个会话队列接上（重新追加在途缓冲 {again} 个）");
+            return bad;
         }
 
         [UnmanagedCallersOnly(EntryPoint = "S2A_SnapAudioRestore")]
@@ -880,6 +975,7 @@ namespace S2A.Services
                     }
                 }
                 Console.Error.WriteLine($"[s2a] 即时存档恢复：音频渲染器 {ok}/{n} 个会话拷回，块内指针平移 {moved} 处{(bad > 0 ? $"，失败 {bad}" : "")}");
+                bad += AudioOutRestore(Path.Combine(Path.GetDirectoryName(Marshal.PtrToStringUTF8((IntPtr)path)) ?? ".", "audout.bin"));
                 return bad;
             }
             catch (Exception e) { Console.Error.WriteLine($"[s2a] 【红】即时存档恢复：音频渲染器拷回失败 {e}"); return -1; }

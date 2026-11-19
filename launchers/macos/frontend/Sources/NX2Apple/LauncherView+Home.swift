@@ -353,9 +353,15 @@ extension LauncherView {
     private func homeHint(_ shortcut: PadShortcut, _ title: String) -> some View {
         HomeControllerHint(presentation: navigation.presentation, shortcut: shortcut, title: title)
     }
-    // 主按钮只在主槽有作业（出包 / 一局 / 导入…）时变成「回到当前任务」；手机作业在顶栏胶囊里看，不占主按钮
+    // 主按钮在这款开不了局 / 主槽有作业时变成「回到当前任务」：在玩（游戏槽）回那一局，否则回主槽的作业（出包 / 导入…）；
+    //   出包在跑时别的款照样「开始游戏」（游戏槽并行），玩着时没出过 Mac 版的款照样「准备」（出包页）。手机作业在顶栏胶囊里看，不占主按钮
+    private func homeReturnSlot(_ game: GameSummary) -> S2ArmLauncherModel.Slot? {
+        if game.playable, model.canPlay(game.id) { return nil }
+        if model.playBusy, game.playable || model.playHolds(game.id) { return .game }
+        return model.mainBusy ? .main : nil
+    }
     private func homePrimarySymbol(_ game: GameSummary) -> String {
-        if model.mainBusy { return "arrow.up.forward.app" }
+        if homeReturnSlot(game) != nil { return "arrow.up.forward.app" }
         if game.playable { return model.cloudSyncing ? "arrow.triangle.2.circlepath" : "play.fill" }
         if game.iphoneReady { return "iphone.and.arrow.forward" }
         return "shippingbox"
@@ -363,7 +369,7 @@ extension LauncherView {
     func homePrimaryTitle(_ game: GameSummary) -> String {
         if model.sgradeQueued(game.id) { return txt("sgrade.upgrade.queued") }   // 排在队里还没轮到：写「排队中」，不冒充在升
         if model.sgradeUpgrading(game.id) { return Self.sgradeUpgradingTitle(model.sgradeProgress(game.id), txt) }   // 这款在升 S 级优化：按钮上直接写进度，不另弹框
-        if model.mainBusy { return loc.t("home.currentTask") }
+        if homeReturnSlot(game) != nil { return loc.t("home.currentTask") }
         if game.playable { return loc.t(model.cloudSyncing ? "s2arm.cloud.syncing" : "library.play") }
         if game.iphoneReady {
             return txt(game.iphoneInstalledAt != nil && game.iphoneFree ? "library.hero.renew" : "library.hero.install")
@@ -377,10 +383,13 @@ extension LauncherView {
     }
     func homePrimary(_ game: GameSummary) {
         if model.sgradeUpgrading(game.id) { return }   // 升级中不能开这款
-        if model.mainBusy {
+        switch homeReturnSlot(game) {
+        case .game?: model.playHidden = false; return
+        case .main?, .phone?:
             model.sessionHidden = false
             if model.batchRunning { model.batchShown = true }
             return
+        case nil: break
         }
         if game.location.state == "missing" { missingFor = game; return }
         if game.playable { model.play(game, uiLanguage: uiLanguage) }
@@ -397,6 +406,7 @@ extension LauncherView {
     }
     var showingHome: Bool {
         if model.showsWelcome || model.batchShown || model.viewingResult != nil || model.exportFor != nil { return false }
+        if model.playVisible { return false }
         if let session = model.session, !model.sessionHidden, !model.isInline(session) { return false }
         return true
     }
@@ -404,7 +414,7 @@ extension LauncherView {
         navigation.language = uiLanguage
         navigation.text = { loc.t($0) }
         navigation.defaultFocus = { showingHome ? homeSelected.map { "card." + $0.id } : nil }
-        navigation.context = { showingHome ? "home" : model.showsWelcome ? "welcome" : "job.\(model.exportFor ?? model.session?.kind.rawValue ?? "")" }
+        navigation.context = { showingHome ? "home" : model.showsWelcome ? "welcome" : "job.\((model.playVisible ? "play" : nil) ?? model.exportFor ?? model.session?.kind.rawValue ?? "")" }
         navigation.source.relayPath = { model.controller.phase == .ready && !model.controller.assigning ? model.controller.socketURL.path : nil }
         navigation.source.relayAllowed = { !model.playSessionActive && !model.controller.assigning }
         navigation.source.relayConnected = { model.controller.deviceCount > 0 }

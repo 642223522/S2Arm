@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import shutil
 import stat
 import subprocess
@@ -120,7 +121,26 @@ def bundle_tzdata(c, destination, source_root=ROOT):
 #   没有 AV1 硬解 / 不可走系统 VP9 的机器上时（发版机：M1 / M2、A16 及更早）必设 S2A_DAV1D=1 S2A_VPX=1 再出，
 #   否则那些机器上的内建宿主链接要真身、App 里却没有
 PREBUILT_LIBS = []
-PREBUILT_RIDS = ("ios-arm64", "osx-arm64")
+
+
+def host_arch():
+    machine = platform.machine()
+    if machine not in ("arm64", "x86_64"):
+        raise RuntimeError(f"Mac 启动器只支持 arm64 / x86_64，本机是 {machine}")
+    return machine
+
+
+def host_rid():
+    return "osx-arm64" if host_arch() == "arm64" else "osx-x64"
+
+
+def host_slice():
+    return "arm64" if host_arch() == "arm64" else "x86_64"
+
+
+def prebuilt_rids():
+    """iOS 壳始终 arm64；Mac 侧预编库跟出包机架构走（Intel 只出包、不起游戏）。"""
+    return ("ios-arm64", host_rid())
 
 
 def _probe_wanted(script, extra_env):
@@ -179,7 +199,7 @@ def bundle_prebuilt_libs(tools, source_root=ROOT, env=None, developer_dir=None):
         pin = re.search(r"^VER=([0-9.]+); SHA=([0-9a-f]{64})$", script.read_text(), re.M)
         if not pin:
             raise RuntimeError("%s 的版本 / sha256 钉行认不出" % script)
-        for rid in PREBUILT_RIDS:
+        for rid in prebuilt_rids():
             key = subprocess.check_output(["bash", str(script), rid, "--key"], env=env, text=True).strip()
             built = Path(subprocess.check_output(["bash", str(script), rid], env=env, text=True).strip().splitlines()[-1])
             out = tools / "libs" / name / rid
@@ -222,7 +242,13 @@ def bundle(destination, developer_dir):
     # 发布进 App 的 .NET 程序集不带出包机路径：MSBuild 把环境变量当属性读，PathMap 让编译器把仓库根（含 build/ 下的 obj）写成 /_/（C 侧同理见各 -ffile-prefix-map）
     os.environ["PathMap"] = "%s=/_/" % ROOT
     toolchain.prepare(c)
-    host = compile_host(c, fingerprint, c.env(), c.logs)
+    # Intel Mac 只做出包壳：s2arm-host 是 AArch64 原生执行体（entry.S + 改写后的 ARM64 代码），x86_64 编不出也跑不了游戏。
+    # 出包用的工具另在下面按本机 RID 预编；不塞一个跑不动的宿主进 App，免得玩家误以为能在 Mac 起局。
+    if host_arch() == "arm64":
+        host = compile_host(c, fingerprint, c.env(), c.logs)
+    else:
+        host = None
+        c.emit("message", "Intel Mac：本 App 带出包工具，不带在 Mac 上跑游戏的宿主；给 iPhone 出包不受影响。")
     prepare = c.private / "tools/prepare"
     # 每次从空目录编：dotnet publish -o 不清目标目录，上一次（别的编法）留下的产物会混进来（v0.4.4 第三次候选：上一版编出的 dsh_batch.dSYM
     #   残留，去符号那步拿它当二进制处理报错）。这几样工具每次本来就全量重编，清掉不损失增量
@@ -242,7 +268,7 @@ def bundle(destination, developer_dir):
             "-c",
             "Release",
             "-r",
-            "osx-arm64",
+            host_rid(),
             "-p:PublishAot=true",
             "-p:UseSharedCompilation=false",
             "--nologo",
@@ -259,7 +285,7 @@ def bundle(destination, developer_dir):
             "-c",
             "Release",
             "-r",
-            "osx-arm64",
+            host_rid(),
             "--nologo",
             "-o",
             prepare / "romfs",
@@ -275,7 +301,7 @@ def bundle(destination, developer_dir):
             "-c",
             "Release",
             "-r",
-            "osx-arm64",
+            host_rid(),
             "-p:PublishAot=true",
             "-p:UseSharedCompilation=false",
             "--nologo",
@@ -315,7 +341,8 @@ def bundle(destination, developer_dir):
     # Finish compaction synchronously before hashing/signing. Background Git
     # maintenance would otherwise invalidate the signed resource seal.
     subprocess.run(["git", "-C", str(destination), "-c", "gc.autoDetach=false", "gc", "--prune=now"], env=env, check=True)
-    shutil.copytree(host, destination / "Binaries/S2ArmGame.app")
+    if host:
+        shutil.copytree(host, destination / "Binaries/S2ArmGame.app")
     # 读取器：NativeAOT 单文件（同 toolchain.prepare 的配方），整个 Reader 目录只有这一个可执行文件
     (destination / "Binaries/Reader").mkdir(parents=True)
     shutil.copy2(toolchain.reader(c), destination / "Binaries/Reader/nx_unpack")
@@ -361,10 +388,16 @@ def bundle(destination, developer_dir):
     # 开发者证书签名工具 rcodesign（apple-codesign 官方发布件，版本 / SHA-256 钉在 pack/jobs/devcert.py，不符拒打；v0.2.4）
     import devcert
     devcert.fetch_rcodesign(tools / "rcodesign", "mac")
-    # 官方只发 universal（arm64 + x86_64，51.8 MB）；本 App 只支持 Apple 芯片，只留 arm64 那一片（各片签名各自独立，抽出来仍有效），约省一半
+    # 官方只发 universal（arm64 + x86_64，51.8 MB）；只留当前出包机那一片（各片签名各自独立，抽出来仍有效）。
+    # Intel 出包机要用 x86_64 那片，不能像 Apple Silicon 那样只留 arm64。
     exe = tools / "rcodesign/rcodesign"
-    subprocess.run(["lipo", str(exe), "-thin", "arm64", "-output", str(exe) + ".arm64"], check=True)
-    os.replace(str(exe) + ".arm64", exe)
+    archs = subprocess.check_output(["lipo", "-archs", str(exe)], text=True).split()
+    if host_slice() not in archs:
+        raise RuntimeError(f"rcodesign 没有 {host_slice()} 分片（实际 {archs}）：这台 Mac 上签不了")
+    if len(archs) > 1:
+        thin = str(exe) + "." + host_slice()
+        subprocess.run(["lipo", str(exe), "-thin", host_slice(), "-output", thin], check=True)
+        os.replace(thin, exe)
     (tools / "gal").mkdir()
     shutil.copy2(ROOT / "build/gal/gal_xc", tools / "gal/gal_xc")
     (tools / "dsx").mkdir()   # 直连翻译库（pack/stage_direct.sh 认 dsx/libdsx.dylib，11-08 从 libnxgal 拆出）

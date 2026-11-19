@@ -1,0 +1,11 @@
+cmake_minimum_required(VERSION 3.16)
+project(s2arm_ohaudio LANGUAGES C)
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "OHOS" OR NOT CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+    message(FATAL_ERROR "Use the official OHOS arm64-v8a toolchain")
+endif()
+add_library(s2arm_ohaudio STATIC ohaudio_sink.c pcm_output.c ../../android/native/pcm_ring.c)
+target_compile_features(s2arm_ohaudio PRIVATE c_std_11)
+target_compile_options(s2arm_ohaudio PRIVATE -Wall -Wextra -Werror=implicit-function-declaration
+    -Werror=incompatible-pointer-types -ffunction-sections -fdata-sections)
+set_target_properties(s2arm_ohaudio PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_link_libraries(s2arm_ohaudio PUBLIC ohaudio)

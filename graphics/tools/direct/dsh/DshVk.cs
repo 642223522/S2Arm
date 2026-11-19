@@ -364,10 +364,10 @@ namespace S2A.Dsh
         /// <summary>同一个键出 Metal 与 Vulkan 两份，共用 &lt;key&gt;_b.json：先照常 DshCompiler.Compile（写 _b.metal / _b.json），
         /// 再用同一张答案表、同一 JobFor / 翻译器重出单线程改写之前的 .spv（VulkanSpv），按 json 改写绑定号（BindToArgIds），写 &lt;key&gt;_b.spv。
         /// 出包（DshCompiler.PackOut）时 Compile 的产物留在 DshCompiler.PackFiles、不落盘：json 从那里取，_b.spv 进 PackSpv，同样不落盘。
-        /// 几何 / 曲面外壳 / 曲面域着色器走另外的路（多拓扑、TessFinish），不出 .spv（报红，不静默）。返回产物名。</summary>
+        /// 几何着色器走 CompileGeometry（按输入图元出几份，见那里）；曲面外壳 / 曲面域着色器不出 .spv（报红，不静默）。返回产物名。</summary>
         public static List<string> CompileWithSpv(string key, string stage, byte[] code, byte[] ctl, string outDir, ISpvCross xc, string tablesDir, string workRoot = null)
         {
-            if (stage is "gs" or "hs" or "ds") throw new DshError("export failed", $"{stage} 着色器不出 .spv（#783 只出 vs / ps / cs）");
+            if (stage is "gs" or "hs" or "ds") throw new DshError("export failed", $"{stage} 着色器不走 CompileWithSpv（vs / ps / cs 在这里，几何走 CompileGeometry，曲面不出）");
             PackSpv = DshCompiler.PackOut ? new Dictionary<string, byte[]>() : null;
             var written = DshCompiler.Compile(key, stage, code, ctl, outDir, xc, tablesDir, workRoot);
             string jsonName = key + "_b.json", spvName = key + "_b.spv";
@@ -455,16 +455,10 @@ namespace S2A.Dsh
             _ => false,
         };
 
-        public static byte[] BindToArgIds(byte[] spv, JsonArray bindings, string stage)
+        /// <summary>入口用到的变量，保守判定：函数体（OpFunction … OpFunctionEnd）里任何指令的任何操作字等于该变量 id 都算用到，
+        /// 指针经 OpCopyObject / OpPhi / OpSelect / 原子等传递也算；宁可把真没用的当成用到而报红，不把用到的静默挪到空号</summary>
+        static HashSet<uint> UsedVars(uint[] w, Info x)
         {
-            if (!StageNo.TryGetValue(stage, out uint stageNo)) throw new DshError("export failed", "未知阶段 " + stage);
-            var argId = new Dictionary<string, uint>(StringComparer.Ordinal);
-            foreach (var b in bindings)
-                if (b is JsonObject o && o["msl_name"] is JsonNode n && o["arg_id"] is JsonNode a) argId[(string)n] = (uint)(long)a;
-            uint[] w = Words(spv);
-            Info x = ReadInfo(w);
-            // 入口用到的变量，保守判定：函数体（OpFunction … OpFunctionEnd）里任何指令的任何操作字等于该变量 id 都算用到，
-            // 指针经 OpCopyObject / OpPhi / OpSelect / 原子等传递也算；宁可把真没用的当成用到而报红，不把用到的静默挪到空号
             var used = new HashSet<uint>();
             bool inFunction = false;
             foreach (var (_, op, a) in Insts(w))
@@ -473,6 +467,18 @@ namespace S2A.Dsh
                 else if (op == 56) inFunction = false;
                 else if (inFunction) for (int k = 0; k < a.Length; k++) if (!LiteralOperand(op, k) && x.Var.ContainsKey(a[k])) used.Add(a[k]);
             }
+            return used;
+        }
+
+        public static byte[] BindToArgIds(byte[] spv, JsonArray bindings, string stage)
+        {
+            if (!StageNo.TryGetValue(stage, out uint stageNo)) throw new DshError("export failed", "未知阶段 " + stage);
+            var argId = new Dictionary<string, uint>(StringComparer.Ordinal);
+            foreach (var b in bindings)
+                if (b is JsonObject o && o["msl_name"] is JsonNode n && o["arg_id"] is JsonNode a) argId[(string)n] = (uint)(long)a;
+            uint[] w = Words(spv);
+            Info x = ReadInfo(w);
+            var used = UsedVars(w, x);
             var target = new Dictionary<uint, uint>(); var idle = new List<uint>();
             foreach (var (vid, vt) in x.Var.OrderBy(v => v.Key))
             {
@@ -492,6 +498,112 @@ namespace S2A.Dsh
                     else if (a[1] == 34) w[at + 3] = 0;    // DescriptorSet：参数缓冲只有一个
                 }
             return WordsBytes(w);
+        }
+
+        // ---------------- 原生几何阶段（安卓离线 Vulkan 库） ----------------
+        /// <summary>离线出的几何着色器输入图元（翻译器 InputTopology 编号）：点 0 / 线 1 / 三角 3。邻接（2 / 4）设备现编也还没接（DirectShaderCompiler 具名拒），这里同样不出；
+        /// 消费端（android/native/direct/libpack_vk.c）按绘制图元挑同号那份，没有就整支 miss</summary>
+        public static readonly int[] GeometryTopologies = { 0, 1, 3 };
+
+        /// <summary>离线不出这支几何着色器的原因（同设备现编 DirectShaderCompiler 的具名拒：几何头阶段号不是 4、直通型几何头），null = 出。
+        /// code / ctl 是着色器包里的原样两段（NVN1 代码区 0x30 前缀之后才是 SPH，NVN2 从头就是）</summary>
+        public static string GeometrySkip(byte[] code, byte[] ctl)
+        {
+            int at = Nvn2.Is(ctl) ? 0 : 0x30;
+            if (code == null || code.Length < at + 4) return "geometry code is shorter than its header";
+            uint h = BitConverter.ToUInt32(code, at);
+            if (((h >> 10) & 15) != 4) return "header stage is not geometry";
+            if ((h & (1u << 24)) != 0) return "passthrough geometry header (the device compiles it)";
+            return null;
+        }
+
+        /// <summary>几何着色器 → 原生 Vulkan 几何阶段的 .spv 与反射，每种输入图元一份：&lt;key&gt;_vg&lt;t&gt;.json + &lt;key&gt;_vg&lt;t&gt;.spv（t 见 GeometryTopologies），返回 名 → 字节（不落盘，调用方写）。
+        /// 同设备现编（DirectShaderCompiler：VS → GS → FS 原生几何）一样不转计算；Metal 那条（GeometryFinish）是几何转计算，产物与这里无关。
+        /// 几何阶段没有 Metal 对应物、SPIRV-Cross 也出不了几何的 MSL，反射就照 .spv 本身写：按入口用到的资源变量（名字 = 翻译器的 OpName，与 Metal 参数缓冲的成员名同源）
+        /// 拼出参数缓冲成员表交 DshCompiler.Reflect（与 vs / ps / cs 的 _b.json 同一套按名字分类：cbuf / c1 / sbuf / tex / samp…），参数号按成员先后编；
+        /// 再按它改写绑定号（BindToArgIds：参数号 × 6 + 3）。输出接口不配片元（翻译器不调 SetNextStage）：只写着色器自己写的输出，与离线顶点阶段同一口径。
+        /// 运行时描述符数组（池）、认不出的资源类型、直通型几何头报 DshError，不出这支（设备现编）。</summary>
+        public static Dictionary<string, byte[]> CompileGeometry(string key, byte[] code, byte[] ctl, ISpvCross xc, string tablesDir, string workRoot = null)
+        {
+            if (GeometrySkip(code, ctl) is string why) throw new DshError("export failed", why);
+            var outFiles = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+            foreach (int t in GeometryTopologies)
+            {
+                var (spv, res) = GeometryXlate(key, code, ctl, t, xc, tablesDir, workRoot);
+                var bindings = (JsonArray)JsonNode.Parse(Py.Dumps(DshCompiler.Reflect("gs", GeometryArgs(spv), res)));
+                var json = new JsonObject
+                {
+                    ["key"] = key + "_vg" + t, ["stage"] = "gs", ["dm_ctl"] = key, ["gs_input_topology"] = t,
+                    ["resolution_scale_abi"] = res["resolution_scale_abi"]?.DeepClone(), ["notes"] = res["notes"]?.DeepClone(), ["bindings"] = bindings,
+                };
+                outFiles[key + "_vg" + t + ".json"] = System.Text.Encoding.UTF8.GetBytes(json.ToJsonString());
+                outFiles[key + "_vg" + t + ".spv"] = BindToArgIds(spv, bindings, "gs");
+            }
+            return outFiles;
+        }
+
+        /// <summary>一种输入图元的翻译：同 JobFor / 翻译器，任务带 gs_input_topology（不带 geometry_topology：那个是几何转计算）。工作文件留在本线程的内存表（XIo）</summary>
+        static (byte[] Spv, JsonObject Res) GeometryXlate(string key, byte[] code, byte[] ctl, int topology, ISpvCross xc, string tablesDir, string workRoot)
+        {
+            string w = Path.Combine(workRoot ?? Path.GetTempPath(), "dshvkg_" + key + "_" + Guid.NewGuid().ToString("N")[..8]);
+            var c = new DshCompiler.Ctx { Key = key, Out = w, W = w, Xc = xc, T = DshTables.Get(tablesDir) };
+            var mem0 = XIo.Mem; XIo.Mem = new Dictionary<string, byte[]>();
+            try
+            {
+                var (j, _) = c.JobFor("gs", code, ctl);
+                j["gs_input_topology"] = topology;
+                c.TranslateFirst(j);
+                return (XIo.ReadAllBytes(Path.Combine(w, key + ".spv")), JsonNode.Parse(XIo.ReadAllText(Path.Combine(w, key + ".res.json"))).AsObject());
+            }
+            finally { XIo.Mem = mem0; }
+        }
+
+        /// <summary>.spv 入口用到的资源变量 → Metal 参数缓冲成员表的写法（struct spvDescriptorSetBuffer0 { 类型 名 [[id(N)]]; … }，Reflect 只读这一段）。
+        /// 组合纹理在 Metal 里是「名」+「名Smplr」两个成员（SPIRV-Cross 的拆法），这里同样拆；N 按 (原绑定号, 变量 id) 先后连续编</summary>
+        static string GeometryArgs(byte[] spv)
+        {
+            uint[] w = Words(spv);
+            Info x = ReadInfo(w);
+            var used = UsedVars(w, x);
+            var sb = new System.Text.StringBuilder("struct spvDescriptorSetBuffer0\n{\n");
+            int id = 0;
+            foreach (var (vid, vt) in x.Var.Where(v => v.Value.Class is 0 or 2 or 12 && used.Contains(v.Key) && x.Deco.TryGetValue(v.Key, out var d) && d.ContainsKey(33))
+                                             .OrderBy(v => x.Deco[v.Key][33]).ThenBy(v => v.Key))
+            {
+                string name = x.Names.GetValueOrDefault(vid, "");
+                if (name.Length == 0) throw new DshError("export failed", $"geometry .spv resource %{vid} has no name");
+                string ty = MslType(x, x.Ptr[vt.Type].Type, vt.Class, name, out bool combined, out uint count);
+                sb.Append($"    {ty} {name} [[id({id++})]];\n");
+                if (combined) sb.Append($"    {(count > 0 ? $"array<sampler, {count}>" : "sampler")} {name}Smplr [[id({id++})]];\n");
+            }
+            return sb.Append("};\n").ToString();
+        }
+
+        /// <summary>资源变量指向的类型 → Reflect 认的 MSL 成员类型（它只看 texture_buffer / texture 前缀 / array&lt; 与名字）。combined = 组合纹理（另有采样器成员），count = 数组长（0 = 不是数组）</summary>
+        static string MslType(Info x, uint tid, uint cls, string name, out bool combined, out uint count)
+        {
+            combined = false; count = 0;
+            if (!x.Types.TryGetValue(tid, out var t)) throw new DshError("export failed", $"geometry .spv resource {name}: type %{tid} not declared");
+            if (t.Op == 29) throw new DshError("export failed", $"geometry .spv resource {name} is a runtime descriptor array (pool): not emitted");
+            if (t.Op == 28)
+            {
+                if (!x.Consts.TryGetValue(t.A[1], out count) || count == 0) throw new DshError("export failed", $"geometry .spv resource {name}: array length is not a constant");
+                return $"array<{MslType(x, t.A[0], cls, name, out combined, out _)}, {count}>";
+            }
+            string Img(uint img, bool storage)
+            {
+                var (op, a) = x.Types[img];
+                if (op != 25) throw new DshError("export failed", $"geometry .spv resource {name}: sampled image of a non-image type");
+                return (a[1] == 5 ? "texture_buffer<float" : "texture2d<float") + (storage ? ", access::read_write>" : ">");   // Dim 5 = Buffer
+            }
+            switch (t.Op)
+            {
+                case 27: combined = true; return Img(t.A[0], false);                 // OpTypeSampledImage
+                case 25: return Img(tid, t.A[5] == 2);                                // OpTypeImage：Sampled 2 = 存储图像
+                case 26: return "sampler";
+                case 30: return (cls == 12 ? "device " : "constant ") + "S2AGsBlock_" + name + "&";   // 常量 / 存储块（Reflect 按名字分类）
+                default: throw new DshError("export failed", $"geometry .spv resource {name}: type op {t.Op} not mappable");
+            }
         }
 
         // ---------------- 打包（pack_game_shaders.pack） ----------------

@@ -6,6 +6,7 @@ import json
 import unittest
 import unittest.mock as um
 
+import core
 import test_jobs
 from core import Failure
 
@@ -32,6 +33,24 @@ class BundledHostMissing(unittest.TestCase):
         with um.patch.object(self.c, "engine", engine):
             env = self.c.env()
         self.assertNotIn("S2A_BUNDLED_HOST", env)
+
+    def test_intel_packaging_bundle_without_host_is_valid(self):
+        """Intel 出包 App 按设计不带 Mac 宿主：清单无该项 = 合法，不报重装。"""
+        engine = self.release_app()
+        (engine / "engine.json").write_text(json.dumps({"files": {"Binaries/Other/x": "00"}}))
+        self.c.r["engineBundle"] = str(engine)
+        with um.patch.object(self.c, "engine", engine), um.patch.object(core.platform, "machine", return_value="x86_64"):
+            env = self.c.env()
+        self.assertNotIn("S2A_BUNDLED_HOST", env)
+
+    def test_intel_bundle_with_corrupt_host_still_fails(self):
+        """Intel App 里真有宿主项却缺文件 = 包坏了，照旧报重装，不能一律吞掉。"""
+        engine = self.release_app()
+        (engine / "engine.json").write_text(json.dumps({"files": {"Binaries/S2ArmGame.app/Contents/MacOS/s2arm-host": "00"}}))
+        self.c.r["engineBundle"] = str(engine)
+        with um.patch.object(self.c, "engine", engine), um.patch.object(core.platform, "machine", return_value="x86_64"):
+            with self.assertRaises(Failure):
+                self.c.env()
 
 
 if __name__ == "__main__":

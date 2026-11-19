@@ -509,6 +509,28 @@ int nvn_snap_redump(const char *dir) {   // 诊断：游戏跑着时重存预排
     MLOG("即时存档诊断：预排布贴图往返自检 一致 %d、不一致 %d、跳过 %d", same, diff, skip);
     return 0;
 }
+// 快照缩略图（游戏库卡片 / 存完提示 / 启动器 / 备份清单用，不读整帧图）：读 src（整帧 PNG），等比放大到盖满 w×h、居中裁掉多出的部分，写 dst（PNG）。0 = 写好了
+int nvn_snap_thumb(const char *src, const char *dst, int w, int h) {
+    int ok = 0;
+    CFURLRef su = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)src, (CFIndex)strlen(src), false);
+    CGImageSourceRef is = su ? CGImageSourceCreateWithURL(su, NULL) : NULL;
+    CGImageRef img = is ? CGImageSourceCreateImageAtIndex(is, 0, NULL) : NULL;
+    CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGContextRef ctx = img ? CGBitmapContextCreate(NULL, (size_t)w, (size_t)h, 8, 0, cs, kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little) : NULL;
+    if (ctx) {
+        double iw = (double)CGImageGetWidth(img), ih = (double)CGImageGetHeight(img), k = fmax(w / iw, h / ih);   // 盖满：取大的比例，多出的一边居中裁掉
+        CGContextSetInterpolationQuality(ctx, kCGInterpolationHigh);
+        CGContextDrawImage(ctx, CGRectMake((w - iw * k) / 2, (h - ih * k) / 2, iw * k, ih * k), img);
+        CGImageRef t = CGBitmapContextCreateImage(ctx);
+        CFURLRef du = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)dst, (CFIndex)strlen(dst), false);
+        CGImageDestinationRef d = du && t ? CGImageDestinationCreateWithURL(du, (__bridge CFStringRef)UTTypePNG.identifier, 1, NULL) : NULL;
+        if (d) { CGImageDestinationAddImage(d, t, NULL); ok = CGImageDestinationFinalize(d); CFRelease(d); }
+        if (du) CFRelease(du); CGImageRelease(t); CGContextRelease(ctx);
+    }
+    CGColorSpaceRelease(cs); CGImageRelease(img); if (is) CFRelease(is); if (su) CFRelease(su);
+    MLOG("%s即时存档：缩略图 %d×%d %s %s", ok ? "" : "【黄】 ", w, h, ok ? "存到" : "没存成", dst);
+    return ok ? 0 : -1;
+}
 // 验证截图：取「下一次出图」的画面。取图钩子只有一个槽，自动玩家截图等也用它，后来的请求会把前面的回调盖掉（11-17：iPhone 上第 5 / 20 秒两张逐字节相同、
 //   Mac 上第 20 秒那张等不到）：3 秒没等到就重新请求，最多 3 次；回调里记下截自第几帧
 int nvn_snap_grab(const char *path) {

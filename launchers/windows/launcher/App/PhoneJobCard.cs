@@ -39,12 +39,18 @@ internal sealed class PhoneJobTrack
     public List<string> ExportUnwritten = [];   // 只新写点的那款时，这次没写 .img 的别的款（作业结果 unwritten，游戏名）
     /// <summary>这次补进 S 级优化的各款：(游戏名, {applied, failed, error})（作业结果 sgrade，pack/jobs/install.py；完成页列打上 / 没打上，11-14）</summary>
     public List<(string Name, JsonElement Res)> SGrade = [];
+    /// <summary>「更新 S2Arm」装完后这台手机上的 0.5.x 老款（作业结果 legacy：资源在、程序包不在，这台电脑能更新的）与它们那台的设备记录键（legacyDevice）；
+    /// 要回装它的电脑更新的只记名字（legacyElsewhere）。成功页接着列出、默认全勾，点「更新这 N 款」走 pushSelected（同 Mac PhoneJobPanel legacySection）</summary>
+    public List<(string Id, string Name)> Legacy = [];
+    public List<string> LegacyElsewhere = [];
+    public string LegacyDevice = "";
 
     public void Begin(string kind, string device)
     {
         Kind = kind; Device = device; Stages.Clear(); Log.Clear(); Overall = null; Step = Steps = null;
         Started = DateTime.UtcNow; Ended = null; Suggestion = ""; PackBytes = null; PackFiles = null; Skipped = []; Version = "";
         ExportFolder = ""; ExportGames = 0; ExportBytes = null; ExportFresh = []; ExportReused = 0; ExportUnwritten = []; SGrade = [];
+        Legacy = []; LegacyElsewhere = []; LegacyDevice = "";
     }
 
     /// <summary>作业事件：阶段进步骤列表、整体进度只认作业层 overall（只增不减）、说明行进过程记录</summary>
@@ -75,6 +81,13 @@ internal sealed class PhoneJobTrack
         if (r.TryGetProperty("packFiles", out var pf) && pf.ValueKind == JsonValueKind.Number) PackFiles = pf.GetInt32();
         if (r.TryGetProperty("skipped", out var sk) && sk.ValueKind == JsonValueKind.Array)
             Skipped = sk.EnumerateArray().Select(x => gameName(x.GetString() ?? "")).ToList();
+        if (r.TryGetProperty("legacy", out var lg) && lg.ValueKind == JsonValueKind.Array)
+            Legacy = lg.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.Object && x.TryGetProperty("gameId", out _))
+                .Select(x => ((x.GetProperty("gameId").GetString() ?? "").ToUpperInvariant(), x.TryGetProperty("name", out var nm) ? nm.GetString() ?? "" : "")).ToList();
+        if (r.TryGetProperty("legacyElsewhere", out var le) && le.ValueKind == JsonValueKind.Array)
+            LegacyElsewhere = le.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.Object)
+                .Select(x => x.TryGetProperty("name", out var nm) ? nm.GetString() ?? "" : x.TryGetProperty("gameId", out var gi) ? gi.GetString() ?? "" : "").Where(x => x.Length > 0).ToList();
+        if (r.TryGetProperty("legacyDevice", out var ld) && ld.ValueKind == JsonValueKind.String) LegacyDevice = ld.GetString() ?? "";
         if (r.TryGetProperty("sgrade", out var sg2) && sg2.ValueKind == JsonValueKind.Object)
             SGrade = sg2.EnumerateObject().OrderBy(p => p.Name, StringComparer.Ordinal).Select(p => (gameName(p.Name), p.Value.Clone())).ToList();
         if (r.TryGetProperty("exported", out var ex) && ex.ValueKind == JsonValueKind.True && r.TryGetProperty("s2armPath", out var sp) && sp.ValueKind == JsonValueKind.String)
@@ -98,6 +111,33 @@ internal sealed class PhoneJobTrack
 public sealed partial class EnvironmentWindow
 {
     private readonly PhoneJobTrack installTrack = new(), updateTrack = new();
+    private readonly HashSet<string> legacyOff = new(StringComparer.OrdinalIgnoreCase);   // 「更新这 N 款」里玩家取消勾的老款（缺省全勾）
+
+    /// <summary>0.5.x 老款：装好 App 的同一页接着列出、默认全勾，点「更新这 N 款」按「更新所选」逐款推（排队、有进度、可停）；别处装的只写一行（同 Mac legacySection）</summary>
+    private Control LegacyPanel(PhoneJobTrack tr)
+    {
+        var box = new StackPanel { Spacing = 8, Margin = new Thickness(0, 10, 0, 0) };
+        if (tr.Legacy.Count > 0)
+        {
+            var title = Label(T("phone.legacy.title").Replace("{0}", tr.Legacy.Count.ToString()), 20); title.FontWeight = FontWeight.Black; title.Foreground = Brush.Parse("#FFC857");
+            box.Children.Add(title);
+            box.Children.Add(WrappedMuted(T("phone.legacy.note"), 14));
+            foreach (var (id, name) in tr.Legacy)
+            {
+                var cb = new CheckBox { Content = name.Length > 0 ? name : id, IsChecked = !legacyOff.Contains(id) };
+                cb.IsCheckedChanged += (_, _) => { if (cb.IsChecked == true) legacyOff.Remove(id); else legacyOff.Add(id); Render(); };
+                Avalonia.Automation.AutomationProperties.SetAutomationId(cb, "phone.legacy." + id);
+                box.Children.Add(cb);
+            }
+            var picked = tr.Legacy.Where(g => !legacyOff.Contains(g.Id)).Select(g => g.Id).ToList();
+            var go = Primary(T("phone.legacy.button").Replace("{0}", picked.Count.ToString()), () => { if (picked.Count > 0) _ = PushSelectedAsync(picked, tr.LegacyDevice); }, picked.Count > 0 && tr.LegacyDevice.Length > 0);
+            Avalonia.Automation.AutomationProperties.SetAutomationId(go, "phone.legacy.update");
+            box.Children.Add(go);
+        }
+        if (tr.LegacyElsewhere.Count > 0)
+            box.Children.Add(WrappedMuted(T("phone.legacy.elsewhere").Replace("{0}", tr.LegacyElsewhere.Count.ToString()).Replace("{1}", string.Join("、", tr.LegacyElsewhere)), 14));
+        return box;
+    }
 
     /// <summary>手机作业卡片。state：running / succeeded / needsPlayer / failed / invalid / interrupted / cancelled / drop（会挤掉别处装的游戏，页内确认）。
     /// retry：失败时的「重试」；confirmDrop / cancelDrop：drop 态的「仍然继续」/「先不」（在这页里问，不弹散的对话框）</summary>
@@ -239,6 +279,7 @@ public sealed partial class EnvironmentWindow
                 }
                 foreach (var line in lines.Concat(notes ?? [])) panel.Children.Add(WrappedMuted(line, 14));
                 if (SGradeResultPanel(tr.SGrade) is { } sgr) panel.Children.Add(sgr);   // 补进 S 级优化的各款：打上 / 没打上（11-14）
+                if (tr.Kind == "installUpdate" && (tr.Legacy.Count > 0 || tr.LegacyElsewhere.Count > 0)) panel.Children.Add(LegacyPanel(tr));
             }
             else if (message.Length > 0) panel.Children.Add(WrappedMuted(B(message), 16));
         }

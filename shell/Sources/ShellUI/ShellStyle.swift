@@ -496,6 +496,7 @@ extension GameState {
         case .needsGameData: ShellStrings.text("Needs game data")
         case .needsAppUpdate: ShellStrings.text("App update needed")
         case .needsGameUpdate: ShellStrings.text("Update on your computer")
+        case .needsLegacyUpdate: ShellStrings.text("Update once on your computer")
         case .broken(let reason, _, _): reason.isEmpty ? ShellStrings.text("Unavailable") : reason
         case .installing(let stage):
             switch stage.phase {
@@ -527,7 +528,7 @@ extension GameState {
     var color: Color {
         switch self {
         case .playable: ShellPalette.ready
-        case .needsGameData, .needsAppUpdate, .needsGameUpdate: ShellPalette.attention
+        case .needsGameData, .needsAppUpdate, .needsGameUpdate, .needsLegacyUpdate: ShellPalette.attention
         case .broken: ShellPalette.muted
         case .installing(let stage): stage.phase == .interrupted || stage.phase == .failed ? ShellPalette.attention : ShellPalette.muted
         }
@@ -535,15 +536,16 @@ extension GameState {
     var explanation: String {
         switch self {
         case .playable: ""
-        case .needsGameData: ShellStrings.text("Choose this game's data to get ready to play. If it was installed from a computer, connect the iPhone and click “Install on iPhone” for this game in S2Arm: it picks up from what was already copied, so it won’t start over.")
+        case .needsGameData: ShellStrings.text("Choose this game's data to get ready to play. If it was installed from a computer, connect the iPhone and click “Push to iPhone” for this game in S2Arm: it picks up from what was already copied, so it won’t start over.")
         case .needsAppUpdate: ShellStrings.text("Install a newer version of this app to play this game.")
-        case .needsGameUpdate: ShellStrings.text("This game on your phone doesn't match S2Arm on this phone, so it can't open: it was built for another version, installed from another computer or Apple ID, or didn't finish installing. Connect your phone to your computer and click \"Install on iPhone\" for this game in S2Arm.")
+        case .needsGameUpdate: ShellStrings.text("This game on your phone doesn't match S2Arm on this phone, so it can't open: it was built for another version, installed from another computer or Apple ID, or didn't finish installing. Connect your phone to your computer and click \"Push to iPhone\" for this game in S2Arm.")
+        case .needsLegacyUpdate: ShellStrings.text("This game was installed with an older S2Arm. Its saves and game data are still on this iPhone. In S2Arm on your computer, update your older games once (they're listed right after you update S2Arm, and in the iPhone console) and it's ready to play.")
         case .broken(_, let detail, _): detail
         case .installing(let stage):
             switch stage.phase {
             case .transferring: ShellStrings.text("This game is being copied from your computer. Keep the cable connected.")
             case .installing: ShellStrings.text("Getting this game ready. Keep this app open.")
-            case .interrupted: ShellStrings.text("Connect this iPhone to the computer, then click “Install on iPhone” for this game in S2Arm. It picks up from what was already copied, so it won’t start over.")
+            case .interrupted: ShellStrings.text("Connect this iPhone to the computer, then click “Push to iPhone” for this game in S2Arm. It picks up from what was already copied, so it won’t start over.")
             case .failed:
                 (stage.reason.map { $0 + "\n" } ?? "") + ShellStrings.text("Tap Try again. If it still does not finish, install it again from the computer.")
             }
@@ -553,7 +555,7 @@ extension GameState {
         switch self {
         case .playable: ShellStrings.text("Play")
         case .needsGameData: ShellStrings.text("Choose game data…")
-        case .needsAppUpdate, .needsGameUpdate: ShellStrings.text("How to update")
+        case .needsAppUpdate, .needsGameUpdate, .needsLegacyUpdate: ShellStrings.text("How to update")
         case .broken: ShellStrings.text("How to fix")
         case .installing(let stage):
             switch stage.phase {
@@ -567,7 +569,7 @@ extension GameState {
         switch self {
         case .playable: "play.fill"
         case .needsGameData: "folder"
-        case .needsAppUpdate, .needsGameUpdate: "arrow.up.circle"
+        case .needsAppUpdate, .needsGameUpdate, .needsLegacyUpdate: "arrow.up.circle"
         case .broken: "wrench.and.screwdriver"
         case .installing(let stage):
             switch stage.phase {
@@ -655,7 +657,7 @@ extension GameState {
         switch self {
         case .playable: ShellStrings.text("Play")
         case .needsGameData: ShellStrings.text("Choose")
-        case .needsAppUpdate, .needsGameUpdate: ShellStrings.text("How to update")
+        case .needsAppUpdate, .needsGameUpdate, .needsLegacyUpdate: ShellStrings.text("How to update")
         case .broken: ShellStrings.text("How to fix")
         case .installing: actionTitle
         }
@@ -663,7 +665,7 @@ extension GameState {
     /// Broken, needs-an-update and a stopped transfer are fixed on the computer. Their primary action explains how, instead of acting.
     var needsHelp: Bool {
         switch self {
-        case .broken, .needsAppUpdate, .needsGameUpdate: true
+        case .broken, .needsAppUpdate, .needsGameUpdate, .needsLegacyUpdate: true
         case .installing(let stage): stage.phase == .interrupted
         default: false
         }

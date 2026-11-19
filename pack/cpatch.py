@@ -60,13 +60,17 @@ def parse_pchtxt(text):
     for block in blocks:
         m = re.search(r'@nsobid-([0-9A-Fa-f]+)', block)
         bid = m.group(1).upper() if m else ''
-        cur, name, shift = None, '', 0
+        cur, name, shift, prev_c = None, '', 0, False
         for line in block.splitlines():
             s = line.strip()
-            if not s: cur = None; continue
+            if not s: cur = None; prev_c = False; continue
             if s.startswith('//') or s.startswith('#'):
-                if s.startswith('//') or s.startswith('#'): name = s.lstrip('/#').strip()
-                continue
+                # 段名 = 段前紧挨着的那几行注释，连在一起（#1493：作者写「// 10320x4320 Docked」「// Use Extended Memory Layout」两行，
+                #   原先只取最后一行，玩家看到的名字成了「Use Extended Memory Layout」、分辨率丢了）；隔了空行或别的行就重新算
+                t = s.lstrip('/#').strip()
+                name = (f'{name} · {t}' if name and t else name or t) if prev_c else t
+                prev_c = True; continue
+            prev_c = False
             if s.startswith('@'):
                 w = s.split()[0]
                 if w in ('@enabled', '@disabled'): cur = {'bid': bid, 'name': name, 'enabled': w == '@enabled', 'writes': [], 'bad': ''}; secs.append(cur)

@@ -27,3 +27,24 @@ static inline int s2a_report_ts_convert(uint64_t raw, uint64_t gpu, uint64_t hos
         uint32_t bits, double period, uint64_t begin, uint64_t end, uint64_t deviation, uint64_t *out) {
     return s2a_report_ts_convert_why(raw, gpu, host, bits, period, begin, end, deviation, out) == 0;
 }
+
+// Self-calibration against the driver's calibrated pair. Some drivers (Adreno 830, driver 0x80320049) return a
+// DEVICE-domain value from vkGetCalibratedTimestamps whose zero differs from vkCmdWriteTimestamp's by a constant
+// (measured 73.18 M ticks = 3.81 s), so every converted sample lands outside its recording window. A probe submit
+// that only writes one timestamp gives a host window [begin, end] that must contain the sample: the correction is
+// the window centre minus the driver-based conversion. Within the combined uncertainty the driver is trusted
+// (correction 0, extra uncertainty 0); otherwise the correction is kept with half the probe window as extra
+// uncertainty. Returns 0 when the inputs cannot be converted at all.
+static inline int s2a_report_ts_self_offset(uint64_t raw, uint64_t gpu, uint64_t host, uint32_t bits, double period,
+        uint64_t begin, uint64_t end, uint64_t deviation, int64_t *corr, uint64_t *extra) {
+    if (!corr || !extra || !bits || bits > 64 || !isfinite(period) || period <= 0 || end < begin) return 0;
+    long double ns = (long double)host + (long double)s2a_ts_wrap_diff(raw, gpu, bits) * period;
+    long double mid = ((long double)begin + (long double)end) / 2;
+    long double half = ((long double)end - (long double)begin) / 2;
+    long double d = mid - ns;
+    if (!(d > -9.0e18L && d < 9.0e18L)) return 0;   // also rejects NaN
+    if ((d < 0 ? -d : d) <= half + (long double)deviation) { *corr = 0; *extra = 0; return 1; }
+    *corr = (int64_t)d;
+    *extra = (uint64_t)(half + 0.5L);
+    return 1;
+}

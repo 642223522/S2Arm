@@ -437,7 +437,7 @@ struct ExportSessionView: View {
                 Button { if let game { model.backToLibrary(); model.play(game, uiLanguage: uiLanguage) } } label: {
                     Label(loc.t("library.play"), systemImage: "play.fill")
                 }
-                .controllerButtonStyle(LauncherPrimaryButtonStyle(prominent: true))
+                .controllerButtonStyle(LauncherPrimaryButtonStyle(prominent: true)).disabled(game.map { !model.canPlay($0.id) } ?? true)   // 开局判据（正在玩别的款时置灰）
                 .controllerID("result.mac.play").controllerShortcut(.rightTrigger, focused: run.platforms.count > 1)
             }
         }
@@ -472,6 +472,7 @@ struct ExportSessionView: View {
                 HStack(spacing: 8) {
                     if platform == .mac {
                         Button(loc.t("library.play")) { if let game { model.backToLibrary(); model.play(game, uiLanguage: uiLanguage) } }
+                            .disabled(game.map { !model.canPlay($0.id) } ?? true)
                             .controllerID("result.mac.play").controllerShortcut(.rightTrigger, focused: true)
                         if let game { Button(loc.t("s2arm.export.openGameFolder")) { model.reveal(game) } }
                     } else if platform == .tvos {

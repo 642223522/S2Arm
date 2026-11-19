@@ -37,8 +37,9 @@ static int write_out, slow_first;   // 39–41（后台预编）：编译器桩�
 static _Atomic int in_comp, overlap;   // 42：C# 现编入口不可重入，同时有两个调用在里面就计一次
 static int compiler_(const char *key, int stage, const char *out);
 static int crash_in_comp;   // 44：替身翻译器编到一半崩（真 SIGSEGV），看崩溃处理落没落下输入
+static uint8_t got_in[0x1000]; static size_t got_nt, got_nc;   // 46 / 47 / 52：最近一次交给翻译器的控制段 + 代码区（核是不是包里那份）
 static int compiler(const char *key, int stage, const void *code, size_t nc, const void *ctl, size_t nt, const char *out) {
-    (void)code; (void)nc; (void)ctl; (void)nt;
+    if (nt + nc <= sizeof got_in) { memcpy(got_in, ctl, nt); memcpy(got_in + nt, code, nc); got_nt = nt; got_nc = nc; }
     if (crash_in_comp) *(volatile int *)(uintptr_t)8 = 1;   // 同 #467 现场：读写 0x8 段错误
     if (atomic_fetch_add(&in_comp, 1)) atomic_fetch_add(&overlap, 1);
     int rc_ = compiler_(key, stage, out); atomic_fetch_sub(&in_comp, 1); return rc_;
@@ -60,8 +61,10 @@ static int se_variant(const char *in, const char *out) { (void)in; (void)out; at
 static int vp_variant(const char *in, uint32_t m, const char *out) { (void)in; (void)out; vp_mask = m; atomic_fetch_add(&vp_calls, 1); return vp_rc; }
 static const char *xfp(void) { return XFP; }
 static void *fake_dlsym(void *handle, const char *name) { (void)handle; return missing ? NULL : !strcmp(name, "s2a_dsh_xfp") ? (noxfp ? NULL : (void *)xfp) : !strcmp(name, "s2a_dsh_fout_variant") ? (void *)variant : !strcmp(name, "s2a_dsh_samp_emu") ? (void *)se_variant : !strcmp(name, "s2a_dsh_vs_pad") ? (void *)vp_variant : (void *)compiler; }
-// 捕获固定汇总行；逐次成功/红行仍经生产调用，只在本依赖桩中不打印。
+// 捕获固定汇总行；逐次成功/红行仍经生产调用，只在本依赖桩中不打印。说「客体输入」的红行计数（48 / 53：包里没有输入时照报红）
+static _Atomic int guest_red;
 static void fixture_log(const char *fmt, ...) {
+    if (strstr(fmt, "【红】") && strstr(fmt, "客体输入")) atomic_fetch_add(&guest_red, 1);
     if (strncmp(fmt, "直连着色器现编汇总：", strlen("直连着色器现编汇总："))) return;
     va_list ap; va_start(ap, fmt); vprintf(fmt, ap); va_end(ap); putchar('\n');
 }
@@ -71,6 +74,17 @@ static void fixture_log(const char *fmt, ...) {
 static int nvn2;
 int nvn2_on(void) { return nvn2; }
 int nvn2_key(const void *control, const void *code, uint8_t out[8]) { (void)code; if (!control) return 0; memcpy(out, (const uint8_t *)control + 0x20, 8); return 1; }
+// 包里的客体输入（生产 nvn_mtl.m mtl_guest_input：库容器种类 56，读法 lib_pack.inc lp_guest_get 在 t_lib_pack.m 测）：本测替身按「包里有哪个键、哪个阶段、哪份字节」答，
+//   pkg_on = 0 时同没有这一段的旧包（返回 1）
+static int pkg_on, pkg_st; static uint8_t pkg_key[8], pkg_bytes[0x1000]; static uint32_t pkg_nctl, pkg_ncode; static _Atomic int pkg_asks;
+int mtl_guest_input(const uint8_t k8[8], int st, uint8_t **buf, uint32_t *nctl, uint32_t *ncode) {
+    atomic_fetch_add(&pkg_asks, 1); *buf = NULL; *nctl = *ncode = 0;
+    if (!pkg_on || memcmp(k8, pkg_key, 8) || st != pkg_st) return 1;
+    *buf = malloc(pkg_nctl + pkg_ncode); memcpy(*buf, pkg_bytes, pkg_nctl + pkg_ncode); *nctl = pkg_nctl; *ncode = pkg_ncode; return 0;
+}
+static void pkg_put(const uint8_t k8[8], int st, const uint8_t *c, uint32_t nc, const uint8_t *d, uint32_t nd) {
+    memcpy(pkg_key, k8, 8); pkg_st = st; memcpy(pkg_bytes, c, nc); memcpy(pkg_bytes + nc, d, nd); pkg_nctl = nc; pkg_ncode = nd; pkg_on = 1;
+}
 #include "../host/dsh_miss.inc"
 static const char *chain_name(void) { return DMSH_CHAIN; }
 #undef dlsym
@@ -82,7 +96,9 @@ static void check(int ok) { if (!ok) _exit(40); }
 static void crash_handler44(int sig) { (void)sig; s2a_dsh_crash_dump(); _exit(0); }   // 照 crash.c：原始现场后调 s2a_dsh_crash_dump
 static void scenario(int n) {
     alarm(10); setvbuf(stdout, NULL, _IONBF, 0);
-    setenv("S2A_DSH_EAGER_MAX", n >= 39 ? "8" : "0", 1);   // 0–38 是登记时不编的旧语义（后台预编关）；39–41 测后台预编
+    // 后台预编只给测它的 39–41 开；其余场景是登记时不编的语义（后台预编关）。原为 n >= 39，之后新加的 42–53 都被顺带打开：
+    //   场景 51 断言「首遇时代码区不可读 → 不调编译器」，后台预编用登记时拷的代码区抢先编完时编译器替身被调，60 次红 7 次（11-19）
+    setenv("S2A_DSH_EAGER_MAX", n >= 39 && n <= 41 ? "8" : "0", 1);
     uint32_t size = sizeof code, csize = sizeof ctl;
     memcpy(ctl + 0x704, &size, 4); memcpy(ctl + 0x20, &csize, 4);
     setenv("DM_MSL_FALLBACK", "/dev/null", 1); // 编译器桩不写文件。
@@ -261,46 +277,59 @@ static void scenario(int n) {
         unlink(path); snprintf(p, sizeof p, "%s/0000000000000000_b.json", d); unlink(p);
         snprintf(p, sizeof p, "%s/0000000000000000_b.metal", d); unlink(p); rmdir(d);
     }
-    if (n == 46) {   // 包内 mesh shader：SetShaders 时只保留输入；Metal 首次拒绝后才现编基础 MSL 并补齐
+    if (n == 46) {   // 包内 mesh shader：设备上不留输入；Metal 首次拒绝后按包里的客体输入（种类 56，阶段 5）现编基础 MSL 并补齐。
+        //   期望（手算）：编译器 1 次、阶段 5、交给翻译器的控制段 0xe0 + 代码 0x100 字节 = 包里写的那份（游戏这时已清零自己的副本）、补齐文本带 locn5
         char d[] = "/tmp/t_dsh_vpsnap.XXXXXX", p[256], path[256]; check(mkdtemp(d) != NULL); setenv("DM_MSL_FALLBACK", d, 1);
         write_out = 1; nvn2 = 1; inlib = 1; known = 1;
         uint32_t magic = NVN2_CTL_MAGIC, version = NVN2_CTL_VERSION, ncode = sizeof code, nctl = 0xe0; uint16_t mesh = 7;
         memcpy(ctl, &magic, 4); memcpy(ctl + 4, &version, 4); memcpy(ctl + 0x30, &nctl, 4); memcpy(ctl + 0x44, &ncode, 4); memcpy(ctl + 0x56, &mesh, 2);
+        for (int i = 0; i < (int)sizeof code; i++) code[i] = (uint8_t)(0x40 + i);
         uint8_t mesh_key[8]; check(nvn2_key(ctl, code, mesh_key));
-        dm_shader_miss(key, (uint64_t)(uintptr_t)code, ctl); dm_shader_mesh_hold((uint64_t)(uintptr_t)code, ctl);
+        uint8_t want[0xe0 + sizeof code]; memcpy(want, ctl, 0xe0); memcpy(want + 0xe0, code, sizeof code);
+        pkg_put(mesh_key, 5, ctl, 0xe0, code, sizeof code);
+        dm_shader_miss(key, (uint64_t)(uintptr_t)code, ctl);
         check(atomic_load(&compiler_calls) == 0);   // ProgramSetShaders 路径不编
         nvn2 = 0; memset(ctl, 0, sizeof ctl); memset(code, 0, sizeof code);   // 模拟游戏释放 / 复用 guest 输入
         int rc = dm_shader_vpad_cached(mesh_key, 5, 1u << 5, path, sizeof path); FILE *f = fopen(path, "r"); check(rc == 0 && f != NULL);
         char result[2048] = {0}; if (f) { size_t z = fread(result, 1, sizeof result - 1, f); result[z] = 0; fclose(f); }
         check(atomic_load(&compiler_calls) == 1 && compiled_stage == 5 && strstr(result, "dm_pad5 [[user(locn5)]]"));
+        check(got_nt == 0xe0 && got_nc == sizeof code && !memcmp(got_in, want, sizeof want));
         unlink(path); snprintf(p, sizeof p, "%s/0000000000000000_b.json", d); unlink(p); snprintf(p, sizeof p, "%s/0000000000000000_b.metal", d); unlink(p); rmdir(d);
     }
-    if (n == 47 || n == 48) {   // 11-14 D-R4CP（Switch 1 顶点着色器，人物与地形缺失）：包内顶点着色器只在 SetShaders 时留输入快照（47）；游戏复用控制段之后，
-        //   首次配对缺 user(locn) 时从快照现编基础源码再出补齐变体（编译器 1 次、阶段 0、补齐桩 1 次、掩码原样、路径 <键>_vp8.metal）。48 负对照：没留快照 → 做不了、两个桩都不调
-        uint32_t st = 1 << 10; const uint8_t magic[] = {0x78,0x56,0x34,0x12}; memcpy(code, magic, 4); memcpy(code + 0x30, &st, 4);
+    if (n == 47 || n == 48) {   // 11-14 D-R4CP（Switch 1 顶点着色器，人物与地形缺失）：包内顶点着色器，游戏复用控制段之后首次配对缺 user(locn)：
+        //   47 包里有它的客体输入（种类 56，阶段 0）→ 按它现编基础源码再出补齐变体（编译器 1 次、阶段 0、交给翻译器的 0x880 + 0x100 字节 = 包里那份、补齐桩 1 次、掩码原样、
+        //   路径 <键>_vp8.metal、不报红）。48 反证：旧包（没有种类 56）→ 做不了（返回 1）、问过包 1 次、两个桩都不调、报一行「客体输入」红
+        uint32_t st = 1 << 10; const uint8_t magic[] = {0x78,0x56,0x34,0x12}; memcpy(code, magic, 4); memcpy(code + 0x30, &st, 4); for (int i = 0x40; i < (int)sizeof code; i++) code[i] = (uint8_t)i;
         char d[] = "/tmp/t_dsh_vssnap.XXXXXX", p[256], path[256] = ""; check(mkdtemp(d) != NULL); setenv("DM_MSL_FALLBACK", d, 1);
         write_out = 1; inlib = 1; known = 1;
-        dm_shader_miss(key, (uint64_t)(uintptr_t)code, ctl); if (n == 47) dm_shader_vs_hold_key(key, (uint64_t)(uintptr_t)code, ctl);
+        uint8_t want_in[sizeof ctl + sizeof code]; memcpy(want_in, ctl, sizeof ctl); memcpy(want_in + sizeof ctl, code, sizeof code);
+        if (n == 47) pkg_put(key, 0, ctl, sizeof ctl, code, sizeof code);
+        dm_shader_miss(key, (uint64_t)(uintptr_t)code, ctl);
         check(atomic_load(&compiler_calls) == 0);   // SetShaders 路径不编
         memset(ctl, 0, sizeof ctl); memset(code, 0, sizeof code);   // 模拟游戏释放 / 复用 guest 输入
         int rc = dm_shader_vpad_cached(key, 0, 0x8, path, sizeof path);
         char want[256]; snprintf(want, sizeof want, "%s/0000000000000000_vp8.metal", d);
-        if (n == 47) check(rc == 0 && !strcmp(path, want) && atomic_load(&compiler_calls) == 1 && compiled_stage == 0 && atomic_load(&vp_calls) == 1 && vp_mask == 0x8);
-        else check(rc == 1 && atomic_load(&compiler_calls) == 0 && atomic_load(&vp_calls) == 0);
+        if (n == 47) check(rc == 0 && !strcmp(path, want) && atomic_load(&compiler_calls) == 1 && compiled_stage == 0 && atomic_load(&vp_calls) == 1 && vp_mask == 0x8 && atomic_load(&guest_red) == 0
+                           && got_nt == sizeof ctl && got_nc == sizeof code && !memcmp(got_in, want_in, sizeof want_in));
+        else check(rc == 1 && atomic_load(&pkg_asks) == 1 && atomic_load(&compiler_calls) == 0 && atomic_load(&vp_calls) == 0 && atomic_load(&guest_red) == 1);
         snprintf(p, sizeof p, "%s/0000000000000000_b.json", d); unlink(p); snprintf(p, sizeof p, "%s/0000000000000000_b.metal", d); unlink(p); rmdir(d);
     }
-    if (n == 52 || n == 53) {   // 采样器模拟变体（nvn_mtl.m se_build）控制段过期：诊断里 55 次没出成的变体 46 次是「游戏已不持有控制段」。包内片元着色器只在 SetShaders 时留输入快照（52）；
-        //   游戏复用控制段之后，首次绑 min / max 采样器时从快照现编基础源码再出变体（编译器 1 次、阶段 1、模拟桩 1 次、路径 <键>_se.metal）。53 负对照：没留快照 → 做不了、两个桩都不调
-        uint32_t ps = 5 << 10; const uint8_t magic[] = {0x78,0x56,0x34,0x12}; memcpy(code, magic, 4); memcpy(code + 0x30, &ps, 4);
+    if (n == 52 || n == 53) {   // 采样器模拟变体（nvn_mtl.m se_build）控制段过期：诊断里 55 次没出成的变体 46 次是「游戏已不持有控制段」。包内片元着色器，游戏复用控制段之后首次绑 min / max 采样器：
+        //   52 包里有它的客体输入（种类 56，阶段 1）→ 现编基础源码再出变体（编译器 1 次、阶段 1、交给翻译器的 = 包里那份、模拟桩 1 次、路径 <键>_se.metal、不报红）。
+        //   53 反证：包里同键记的是顶点（阶段 0），要的是片元 → 按没有：做不了、两个桩都不调、报一行「客体输入」红
+        uint32_t ps = 5 << 10; const uint8_t magic[] = {0x78,0x56,0x34,0x12}; memcpy(code, magic, 4); memcpy(code + 0x30, &ps, 4); for (int i = 0x40; i < (int)sizeof code; i++) code[i] = (uint8_t)(i ^ 0x5a);
         char d[] = "/tmp/t_dsh_sesnap.XXXXXX", p[256], path[256] = ""; check(mkdtemp(d) != NULL); setenv("DM_MSL_FALLBACK", d, 1);
         write_out = 1; inlib = 1; known = 1;
-        dm_shader_miss(key, (uint64_t)(uintptr_t)code, ctl); if (n == 52) dm_shader_vs_hold_key(key, (uint64_t)(uintptr_t)code, ctl);
+        uint8_t want_in[sizeof ctl + sizeof code]; memcpy(want_in, ctl, sizeof ctl); memcpy(want_in + sizeof ctl, code, sizeof code);
+        pkg_put(key, n == 52 ? 1 : 0, ctl, sizeof ctl, code, sizeof code);
+        dm_shader_miss(key, (uint64_t)(uintptr_t)code, ctl);
         check(atomic_load(&compiler_calls) == 0);   // SetShaders 路径不编
         memset(ctl, 0, sizeof ctl); memset(code, 0, sizeof code);   // 模拟游戏释放 / 复用 guest 输入
         int rc = dm_shader_se_cached(key, 1, path, sizeof path);
         char want[256]; snprintf(want, sizeof want, "%s/0000000000000000_se.metal", d);
-        if (n == 52) check(rc == 0 && !strcmp(path, want) && atomic_load(&compiler_calls) == 1 && compiled_stage == 1 && atomic_load(&se_calls) == 1);
-        else check(rc == 1 && atomic_load(&compiler_calls) == 0 && atomic_load(&se_calls) == 0);
+        if (n == 52) check(rc == 0 && !strcmp(path, want) && atomic_load(&compiler_calls) == 1 && compiled_stage == 1 && atomic_load(&se_calls) == 1 && atomic_load(&guest_red) == 0
+                           && got_nt == sizeof ctl && got_nc == sizeof code && !memcmp(got_in, want_in, sizeof want_in));
+        else check(rc == 1 && atomic_load(&compiler_calls) == 0 && atomic_load(&se_calls) == 0 && atomic_load(&guest_red) == 1);
         snprintf(p, sizeof p, "%s/0000000000000000_b.json", d); unlink(p); snprintf(p, sizeof p, "%s/0000000000000000_b.metal", d); unlink(p); rmdir(d);
     }
     if (n == 42) {   // 审计 #1646 P1-123：后台预编在编片元 0 时来一支输出类型变体（同键）：变体要的源码走同一把锁、锁里复查，不并发进 C# 现编入口、不重编
@@ -355,14 +384,14 @@ int main(void) {
         "成功 0、失败 1、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 43 见下行
         "成功 1、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 44 编的时候输入落盘成 .inflight.*、返回后删掉；43 翻译器报错：输入自动存进兜底目录；42 后台在编同键时来输出类型变体：同锁、不并发、不重编（后台编好、没有首遇来取：不计成功）
         "成功 0、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 45 guest 控制段过期时，从同链同指纹的本机 mesh MSL 缓存补齐
-        "成功 0、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 46 包内 mesh：仅在 Metal 拒绝时从 SetShaders 快照按需现编 MSL
-        "成功 0、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 47 包内 Switch 1 顶点：SetShaders 快照 → 控制段过期后照样出补齐变体
-        "成功 0、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 48 负对照：没留快照 → 做不了
+        "成功 0、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 46 包内 mesh：仅在 Metal 拒绝时按包里的客体输入现编 MSL
+        "成功 0、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 47 包内 Switch 1 顶点：包里的客体输入 → 控制段过期后照样出补齐变体
+        "成功 0、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 48 反证：旧包没有种类 56 → 做不了、报红
         "成功 0、失败 0、跳过 1、复用上局 0、输出类型变体 0（正常收局）",   // 49 控制段自报长度越过映射末尾：放弃这一份、不崩（#354a81）
         "成功 0、失败 0、跳过 1、复用上局 0、输出类型变体 0（正常收局）",   // 50 控制段短于代码长字段位置：认不出、不现编（#fb7116）
         "成功 0、失败 0、跳过 1、复用上局 0、输出类型变体 0（正常收局）",   // 51 登记后代码区被解除映射：首遇放弃、不崩
-        "成功 0、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 52 包内片元：SetShaders 快照 → 控制段过期后照样出采样器模拟变体
-        "成功 0、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 53 负对照：没留快照 → 做不了
+        "成功 0、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 52 包内片元：包里的客体输入 → 控制段过期后照样出采样器模拟变体
+        "成功 0、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 53 反证：没有容器 → 做不了、报红
         "成功 1、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 54 NVN2 阶段字节 1、代码没有 SPH（计算着色器）：按计算现编
         "成功 1、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）"    // 55 负对照：阶段字节 1、代码带像素 SPH：仍按像素
     };

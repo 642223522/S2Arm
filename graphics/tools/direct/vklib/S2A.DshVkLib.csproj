@@ -1,4 +1,4 @@
-<!-- #783 出包 Vulkan 产物的独立入口：读直连出库同一份着色器包 + 配置档的 shader_map.tsv，逐键走 DshVk.CompileWithSpv（出包模式），只写 <key>_b.json + <key>_b.spv。
+<!-- #783 出包 Vulkan 产物的独立入口：读直连出库同一份着色器包 + 配置档的 shader_map.tsv，逐键走 DshVk.CompileWithSpv（出包模式），只写 <key>_b.json + <key>_b.spv；几何键走 DshVk.CompileGeometry，写 <key>_vg<t>.json + <key>_vg<t>.spv。
      放在 dsh/ 之外：dmsh_chain.py 的 FILES 只收 dsh/*.cs 与 dsh/batch/*.cs，S2A.Dsh.csproj 的 DshXfpInput 只收它自己的 Compile，本工程改了不换翻译指纹（#783 维护方 11-02 建议）。 -->
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>

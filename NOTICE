@@ -119,3 +119,12 @@ BSD-2-Clause. 许可全文：该目录 LICENSE 与 lib/linkernsbypass/LICENSE。
 经 BananaNative（MIT，Copyright (c) 2026 seedds、Swap2-Native contributors 等，
 https://git.eden-emu.dev/moceure/BananaNative 分支 android 提交 3d43275）vendored；
 src/hook/adreno_binder_compat.c 来自 BananaNative（MIT）。只进安卓 APK，且只在选择外挂驱动时加载。
+
+着色器清单数据（社区补丁统一包里 kind = pso 的 ext_<来源>.tsv：管线预建种子，只有着色器键与管线描述，不含游戏数据；
+由 tools/ext_pso_collect.py 按 tools/ext_pso_sources.tsv 定期从各来源取，每份首行记来源库与提交，出包时按本包直连库的键滤）
+nxnative（https://github.com/seedds/nxnative，dm/games/<程序号>/pso_manifest.tsv）
+Copyright (c) 2026 seedds
+MIT License. 许可全文：graphics/nvn/LICENSE
+MacNativeGames（https://github.com/ly05010419/MacNativeGames，games/<款>/assets/shader_list.tsv）
+Copyright (c) 2026 MacNativeGames contributors
+MIT License. 许可全文：graphics/nvn/third_party/macnativegames/LICENSE

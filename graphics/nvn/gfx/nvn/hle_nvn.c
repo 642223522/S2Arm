@@ -1483,8 +1483,7 @@ NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData 
     int npin = 0;
 #endif
     for (int i = 0; i < n; i++) {
-        dm_shader_mesh_hold(sd[i].data, sd[i].control);   // NVN2 keys are deferred, but control + code are valid here; retain only mesh inputs
-        if (keys_hash(&sd[i], 1, k->key[i])) { k->ok |= (uint8_t)(1u << i); dm_shader_miss(k->key[i], sd[i].data, sd[i].control); dm_shader_vs_hold_key(k->key[i], sd[i].data, sd[i].control); nvn_be_shader_prefetch(k->key[i]); }   // S2Arm: a key missing from the map is translated on the device now (graphics/nvn/host_adapt.m)
+        if (keys_hash(&sd[i], 1, k->key[i])) { k->ok |= (uint8_t)(1u << i); dm_shader_miss(k->key[i], sd[i].data, sd[i].control); nvn_be_shader_prefetch(k->key[i]); }   // S2Arm: a key missing from the map is translated on the device now (graphics/nvn/host_adapt.m)
         else { uint8_t early[8]; if (keys_hash_early(&sd[i], early)) nvn_be_shader_prefetch(early); }   // S2Arm #674: Switch 2 stages, keyed at first use
 #if !defined(__ANDROID__)
         // 首用才算键的阶段（Switch 2 一律；Switch 1 代码区还不在已登记内存池时），控制段先自持一份（ctl_intern）
@@ -2345,14 +2344,6 @@ NVN(nvnCommandBufferBindProgram, void, NVNcommandBuffer *c, const NVNprogram *p,
     stages = nvn2_stage_bits(stages);   // NVN2 任务 / 网格位 0x40 / 0x80 → 宿主阶段 3 / 4 的位（nvn2_cmd.h）
     *REC(c, OP_BIND_PROGRAM, p_bind_program_id) = (p_bind_program_id){o, o ? o->serial : 0, stages, 0};
     if (!o) return;
-    // NVN2's code bytes can change after SetShaders, so its key is deliberately first computed here.
-    // Snapshot only mesh inputs under that final key; SetShaders' mapped=1 key path intentionally skips NVN2.
-    if (nvn2_on()) for (unsigned i = 0; i < o->nstage && i < 6; i++) {
-        const void *ctl = o->sd[i].control; uint8_t md[8];
-        // #713 D-ZBQS 0007（0.5.1 SIGBUS）：SetShaders 之后游戏可能已放掉控制段那块内存，指针还在、页不可读——先核整段可读再看魔数 / 阶段字节（同 keys_hash 的 shader_bytes_readable）
-        if (ctl && (uintptr_t)ctl < (1ull << 47) && shader_bytes_readable((uint64_t)(uintptr_t)ctl, 0x58) && nvn2_ctl(ctl) && ((const uint8_t *)ctl)[0x56] == 7 &&
-            prog_key(o, i, md)) dm_shader_mesh_hold_key(md, o->sd[i].data, ctl);
-    }
     prog_t snap; memcpy(&snap, o, sizeof snap);
     uint8_t keys[6][8], kok = 0, stage[6]; memset(keys, 0, sizeof keys); memset(stage, 0xff, sizeof stage);
     prog_keys_t *k = pk_get(p, 0);
@@ -4393,6 +4384,7 @@ typedef struct { const uint8_t *phys; uint64_t gen; } vpte;
 struct vpool { const pool_t *pool; uint8_t *base; uint64_t len, size, top; int nrun; struct vrun { uint64_t lo, hi; } *run; vpte **pt;
     int nsh, csh; struct vshp { uint64_t off, stamp; } *sh;   // copied host pages (see vsh_*): offset in the pool, dirty stamp of the last copy
     int lv;   // 预留记进了低区账（vpool_lv_note；帧录虚拟池区里取的不在低区、不记）
+    struct vlog_ent { uint64_t off, len; } *log; _Atomic uint64_t nlog;   // 映射变更日志（马车世界缺口 ①，照上游参考实现（MIT）hle_nvn.c vlog）：每次映射请求 [off, off + len) 进环（VLOG_N），nlog 是总条数；有人问才建（nvn_sparse_log_seq）
     _Atomic uint64_t gen; uint64_t id;   // gen：本池最近一次映射请求的全局代号（vpt_set）；id：建池序号（全局递增，池对象地址复用时区分新旧池）。GPU 写的稀疏贴图按它们跟映射（nvn_mtl.m gstex_*）
 #if defined(__ANDROID__)
     s2a_vp_alias_table alias;   // dst -> 背板源；vpool_map / vpool_release 维护（#1217 §2.8）
@@ -4508,7 +4500,7 @@ static void vpool_release(const pool_t *o) {
 #endif
         for (uint64_t l = 0; l < (v->size + (2u << 20) - 1) >> 21; l++) free(v->pt[l]);
         atomic_fetch_sub(&g_vsh_pages, (uint64_t)v->nsh);
-        free(v->pt); free(v->run); free(v->sh); free(v); }
+        free(v->pt); free(v->run); free(v->sh); free(v->log); free(v); }
     vp_unlock();
 }
 // Mapped runs of a sparse pool: [lo, hi) sorted, disjoint, adjacent runs merged. Caller holds g_vp_mu. A request adds at most one run (a map) or splits one in two (an unmap)
@@ -4529,8 +4521,10 @@ static void vrun_set(struct vpool *v, uint64_t lo, uint64_t hi, int mapped) {
 }
 // Page table of a sparse pool (see above). Caller holds g_vp_mu
 static const vpte *vpt_get(const struct vpool *v, uint64_t o) { const vpte *l = v->pt[o >> 21]; return l ? &l[(o >> 12) & (VPT_LEAF - 1)] : NULL; }
+enum { VLOG_N = 4096 };
 static void vpt_set(struct vpool *v, uint64_t voff, uint64_t size, const uint8_t *phys) {
     uint64_t gen = atomic_fetch_add(&g_vp_gen, 1) + 1; atomic_store(&v->gen, gen);
+    if (v->log) { v->log[atomic_load_explicit(&v->nlog, memory_order_relaxed) % VLOG_N] = (struct vlog_ent){voff, size}; atomic_fetch_add_explicit(&v->nlog, 1, memory_order_release); }   // 先写条目再推进计数（读者按计数取）
     for (uint64_t o = 0; o < size; o += 0x1000) {
         vpte **l = &v->pt[(voff + o) >> 21];
         if (!*l && !phys) continue;   // never mapped: stays unmapped
@@ -4705,6 +4699,7 @@ enum { VPT_LEAF = 512 };   // a page-table leaf covers 2 MB
 typedef struct { const uint8_t *phys; uint64_t gen; } vpte;
 // One per virtual pool, allocated at Initialize and freed at Finalize. run: the runs of consecutive physical memory, grown as needed (a texture's pool usually has 1–3; Monster Hunter Rise's heap hundreds)
 struct vpool { const pool_t *pool; uint8_t *base; uint64_t len, size, top; int nrun; struct vrun { uint64_t lo, hi; const uint8_t *phys; } *run; vpte **pt;
+    struct vlog_ent { uint64_t off, len; } *log; _Atomic uint64_t nlog;   // 映射变更日志（马车世界缺口 ①，照上游参考实现（MIT）hle_nvn.c vlog）：每次映射请求 [off, off + len) 进环（VLOG_N），nlog 是总条数；有人问才建（nvn_sparse_log_seq）
     int nsh, csh; struct vshb { uint64_t off, len, stamp; uint8_t *mem; } *sh;   // copies (see vsh_*): virtual offset and length, dirty stamp of the last fill, host memory (its replay buffer owns it)
     _Atomic uint64_t gen; uint64_t id;   // gen：本池最近一次映射请求的全局代号（vpt_set）；id：建池序号（全局递增，池对象地址复用时区分新旧池）。GPU 写的稀疏贴图按它们跟映射（nvn_mtl.m gstex_*）
 };   // base: the pool's address (a number, no host memory behind it); len: its share of the window (size rounded up to 2 MB); top: highest mapped end so far (logged per 128 MB)
@@ -4800,7 +4795,7 @@ static void vpool_release(const pool_t *o) {
         for (int k = 0; k < v->nrun; k++) nvn_be_pool_del(v->base + v->run[k].lo);
         for (int i = 0; i < v->nsh; i++) { nvn_be_pool_del(v->base + v->sh[i].off + 1); atomic_fetch_sub(&g_vsh_bytes, v->sh[i].len); }   // a copy's memory goes with its replay buffer
         for (uint64_t l = 0; l < (v->size + (2u << 20) - 1) >> 21; l++) free(v->pt[l]);
-        free(v->pt); free(v->run); free(v->sh); free(v); }
+        free(v->pt); free(v->run); free(v->sh); free(v->log); free(v); }
     vp_unlock();
 }
 // A run's registration with the replay: an alias of the physical pool's buffer over [base + lo, base + hi). It finds none when the physical memory is no registered pool or crosses the
@@ -4835,8 +4830,10 @@ static void vrun_set(struct vpool *v, uint64_t lo, uint64_t hi, const uint8_t *p
 }
 // Page table of a sparse pool (see above). Caller holds g_vp_mu
 static const vpte *vpt_get(const struct vpool *v, uint64_t o) { const vpte *l = v->pt[o >> 21]; return l ? &l[(o >> 12) & (VPT_LEAF - 1)] : NULL; }
+enum { VLOG_N = 4096 };
 static void vpt_set(struct vpool *v, uint64_t voff, uint64_t size, const uint8_t *phys) {
     uint64_t gen = atomic_fetch_add(&g_vp_gen, 1) + 1; atomic_store(&v->gen, gen);
+    if (v->log) { v->log[atomic_load_explicit(&v->nlog, memory_order_relaxed) % VLOG_N] = (struct vlog_ent){voff, size}; atomic_fetch_add_explicit(&v->nlog, 1, memory_order_release); }   // 先写条目再推进计数（读者按计数取）
     for (uint64_t o = 0; o < size; o += 0x1000) {
         vpte **l = &v->pt[(voff + o) >> 21];
         if (!*l && !phys) continue;   // never mapped: stays unmapped
@@ -5638,6 +5635,41 @@ static int vpt_walk(const void *pool, uint64_t a, uint64_t n, uint64_t gen, int 
 static int run_written(const uint8_t *p, uint64_t n, uint64_t stamp) { return nvn_dirty_since(p, n, stamp); }
 static int run_protect(const uint8_t *p, uint64_t n, uint64_t unused) { (void)unused; nvn_dirty_protect(p, n); return 0; }
 int nvn_sparse_since(const void *pool, uint64_t a, uint64_t n, uint64_t gen, uint64_t stamp) { return vpt_walk(pool, a, n, gen, run_written, stamp); }
+// 映射变更日志（马车世界缺口 ①）：稀疏贴图每次提交原先逐页走整段页表（nvn_sparse_since），上游读数这一项占提交线程一半。现在贴图记下日志序号和背后的物理段，
+//   之后只问「序号以来有没有和我重叠的映射请求」：没有就只查物理段写没写过（nvn_mtl.m pkg 检查）。
+// 本池日志的当前序号（第一次问时建日志：之前的请求不在日志里，调用方此时整段走一遍再记序号）；不是虚拟池 → 0
+uint64_t nvn_sparse_log_seq(const void *pool) {
+    vp_lock(); struct vpool *v = vpool_of(pool); uint64_t n = 0;
+    if (v) { if (!v->log && !(v->log = calloc(VLOG_N, sizeof *v->log))) die("sparse pool change log allocation failed"); n = atomic_load_explicit(&v->nlog, memory_order_acquire); }
+    vp_unlock(); return n;
+}
+// *seq 以来本池有没有和 [a, a + n)（宿主地址）重叠的映射请求：1 = 有，或者日志已转过一圈 / 不是虚拟池 / 没建日志（都按有算，调用方整段走）；0 = 没有，*seq 推进到当前
+int nvn_sparse_log_hit(const void *pool, uint64_t *seq, uint64_t a, uint64_t n) {
+    vp_lock(); struct vpool *v = vpool_of(pool); int hit = 1;
+    if (v && v->log) {
+        uint64_t end = atomic_load_explicit(&v->nlog, memory_order_acquire), lo = a - (uint64_t)(uintptr_t)v->base;
+        if (end - *seq <= VLOG_N) { hit = 0;
+            for (uint64_t k = *seq; k < end && !hit; k++) { const struct vlog_ent *e = &v->log[k % VLOG_N]; hit = e->off < lo + n && lo < e->off + e->len; }
+            if (!hit) *seq = end; }
+    }
+    vp_unlock(); return hit;
+}
+// [a, a + n) 背后连续物理页的段（物理地址、字节数），最多 max 段：段数；多于 max / 不是虚拟池 → -1（调用方不缓存，照旧整段走）
+int nvn_sparse_runs(const void *pool, uint64_t a, uint64_t n, uint64_t (*out)[2], int max) {
+    vp_lock(); struct vpool *v = vpool_at(pool, a); int k = 0;
+    if (!v) { vp_unlock(); return -1; }
+    const uint8_t *rs = NULL, *re = NULL; uint64_t o = a - (uint64_t)(uintptr_t)v->base;
+    for (uint64_t at = o & ~0xFFFull; at < o + n && at < v->size && k >= 0; at += 0x1000) {
+        const vpte *e = vpt_get(v, at);
+        if (!e) { at |= (2u << 20) - 1; at -= 0xFFF; continue; }
+        if (!e->phys) continue;
+        if (rs && e->phys == re) { re += 0x1000; continue; }
+        if (rs) { if (k == max) k = -1; else { out[k][0] = (uint64_t)(uintptr_t)rs; out[k][1] = (uint64_t)(re - rs); k++; } }
+        rs = e->phys; re = rs + 0x1000;
+    }
+    if (k >= 0 && rs) { if (k == max) k = -1; else { out[k][0] = (uint64_t)(uintptr_t)rs; out[k][1] = (uint64_t)(re - rs); k++; } }
+    vp_unlock(); return k;
+}
 int nvn_sparse_mapped(const void *pool, uint64_t a, uint64_t n) {   // every page of [a, a+n) has memory behind it
     vp_lock(); struct vpool *v = vpool_at(pool, a); int ok = v != NULL;
     for (uint64_t o = v ? (a - (uint64_t)(uintptr_t)v->base) & ~0xFFFull : 0, end = v ? a - (uint64_t)(uintptr_t)v->base + n : 0; ok && o < end; o += 0x1000) { const vpte *e = o < v->size ? vpt_get(v, o) : NULL; ok = e && e->phys; }

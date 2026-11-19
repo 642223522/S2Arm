@@ -326,7 +326,7 @@ public sealed partial class EnvironmentWindow
                 ? (Action)(() => { libraryFolder = libraryFolderBox.Text ?? ""; selectedGame = game.Id; readinessFor = null; if (!installBusy) installExport = false; Navigate("install"); })
                 : game.LocationState == "missing" ? () => _ = MissingAsync(game)
                 : () => { libraryFolder = libraryFolderBox.Text ?? ""; selectedGame = game.Id; OpenBuild(); };
-            // 装机在跑时别的游戏照常能选、看详情、出包（只锁正在装的那款；同时只装一款：点别的「装到 iPhone」进装机页提示「另一款正在装 · 查看那一款」）
+            // 装机在跑时别的游戏照常能选、看详情、出包（只锁正在装的那款；同时只装一款：点别的「推到 iPhone」进装机页提示「另一款正在装 · 查看那一款」）
             var select = Action(primaryKey, primaryAction, (game.IphoneReady ? !PhoneBlockedFor(game) : !BusyFor(game)) && (game.IphoneReady || game.LocationState != "offline") && !SGradeUpgrading(game));   // 装到 iPhone：出包在跑也能去（排队）；升 S 级优化中不可点
             if (SGradeUpgrading(game)) select.Content = SGradeUpgradingTitle(game);
             select.VerticalAlignment = VerticalAlignment.Center;

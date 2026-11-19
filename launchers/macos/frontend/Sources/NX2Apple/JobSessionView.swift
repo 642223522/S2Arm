@@ -128,7 +128,7 @@ struct JobSessionView: View {
             HStack(spacing: 14) {
                 Spacer(minLength: 0)
                 if finished == nil {
-                    Button { model.stop() } label: {
+                    Button { if session.kind == .play { model.stopPlay() } else { model.stop() } } label: {   // 一局在游戏槽，停它走 stopPlay
                         Label(loc.t(session.kind == .play ? "s2arm.play.stop" : "s2arm.job.cancel"), systemImage: "stop.fill")
                     }
                     .controllerButtonStyle(LauncherPrimaryButtonStyle(prominent: true))

@@ -2,7 +2,7 @@
 // Copyright 2026 S2Arm contributors
 // 一键装到 iPhone 的签名身份 + 更新 iPhone 上的 S2Arm（v0.3.0，同 Mac InstallModeViews.swift / S2ArmLauncherModel+InstallMode.swift）。
 //   签名身份 = Apple ID（在 Impactor 里登录）/ 我的开发者证书，沿用 DevCertPage.cs 那套。11-15 维护者：导出不再是装法——
-//   游戏库「装到 iPhone」「导出自签包」两个按钮并排（ExportPages.cs ExportSelfSign），设置里没有切换。
+//   游戏库「推到 iPhone」「导出自签包」两个按钮并排（ExportPages.cs ExportSelfSign），设置里没有切换。
 //   InstallModeCard：设置里的一张卡；InstallModeLine：出包页一行只读签名身份 + 「更改」（去设置）。
 //   更新：游戏库顶栏按钮（catalog phoneUpdates：设备记录的壳号比本版旧）→ 有要重新出包的款先三选一 → installUpdate 作业只换壳、不重推资源；
 //   选了「更新并重新出这几款」：更新成功后把它们排进批量出包（只出 iPhone），整批出完逐款装上。
