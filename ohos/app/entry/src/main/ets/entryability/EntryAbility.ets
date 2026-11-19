@@ -4,9 +4,11 @@ import engine from 'libs2aprobehost.so';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { stopTouchFeedback } from '../controls/TouchFeedback';
 import { installCrashWatcher } from '../controls/Diagnostics';
+import { bindStrings } from '../ui/Strings';
 
 export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    bindStrings(this.context.resourceManager);
     this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_DARK);
     installCrashWatcher(this.context.filesDir);
     this.acceptLaunch(want);

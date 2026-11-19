@@ -14,6 +14,7 @@ import { PlayerSettings, loadPlayerSettings, defaultPlayerSettings } from '../co
 import { touchFeedbackSupported, touchPulse, stopTouchFeedback } from '../controls/TouchFeedback';
 import { importGamePackage, graphicsMode, keepOriginalAspect, allowTallScreen, setGraphicsMode, ImportProgress, ImportResult } from '../controls/TarImport';
 import { picker } from '@kit.CoreFileKit';
+import { str } from '../ui/Strings';
 import { markSessionStart, markSessionEnd, takeUnfinishedSession, lastFailureLines, exportReport, SessionInfo } from '../controls/Diagnostics';
 
 interface KeyboardRequest {
@@ -50,8 +51,8 @@ interface PreparedGame {
 
 // Plex/Emby-style capability badges: what this package actually carries, nothing promotional.
 class Badge {
-  text: string; strong: boolean;
-  constructor(text: string, strong: boolean) { this.text = text; this.strong = strong; }
+  text: string; strong: boolean; wide: boolean;
+  constructor(text: string, strong: boolean, wide: boolean = false) { this.text = text; this.strong = strong; this.wide = wide; }
 }
 const BG: string = Tokens.background;
 const PANEL: string = Tokens.surface;
@@ -125,7 +126,7 @@ struct Index {
   @State controllerConnected: boolean = false;
   @State controllerAvailable: boolean = false;
   @State controllerName: string = '';
-  @State controllerDetail: string = '连接蓝牙或 USB 手柄后，在这里查看状态。';
+  @State controllerDetail: string = str($r('app.string.controller_hint'));
   @State feedbackMessage: string = '';
   @State menuError: string = '';
   @State touchFeedbackAvailable: boolean = false;
@@ -161,7 +162,7 @@ struct Index {
     this.showFps = this.player.showFps === true;
     const unfinished: SessionInfo | undefined = takeUnfinishedSession(this.files);
     if (unfinished !== undefined) {
-      this.crashTitle = unfinished.title + (unfinished.mode === 'direct' ? ' · 直连' : ' · 兼容');
+      this.crashTitle = str($r('app.string.title_with_mode'), unfinished.title, str(unfinished.mode === 'direct' ? $r('app.string.gfx_direct') : $r('app.string.gfx_generic')));
       this.crashLines = lastFailureLines(this.files, 4);
     }
     AppStorage.setOrCreate<boolean>('s2armTouchFeedback', this.touchFeedback);
@@ -197,8 +198,9 @@ struct Index {
       if (s.error !== 0 || s.finished || s.detail.startsWith('会话停止请求')) {
         this.message = s.detail + ' · ' + s.error.toString();
       } else {
-        const states: string[] = ['准备运行库', '加载模块', '内存已就绪', '图形与服务已就绪', '游戏运行中', '启动失败', '正在停止'];
-        this.message = states[s.state] ?? '读取运行状态';
+        const states: Resource[] = [$r('app.string.state_preparing_runtime'), $r('app.string.state_loading_modules'), $r('app.string.state_memory_ready'),
+          $r('app.string.state_services_ready'), $r('app.string.state_running'), $r('app.string.state_start_failed'), $r('app.string.state_stopping')];
+        this.message = str(states[s.state] ?? $r('app.string.state_reading'));
       }
     }, 250);
   }
@@ -218,7 +220,7 @@ struct Index {
       this.welcome = this.games.length === 0 && this.player.onboardingComplete !== true;
     } catch (error) {
       this.profileBusy = false;
-      this.profileError = '无法读取设置，请重新打开应用';
+      this.profileError = str($r('app.string.settings_read_failed'));
       this.message = this.profileError;
     }
   }
@@ -234,7 +236,7 @@ struct Index {
       if (profile === undefined) return;
       this.checkGame();
     } catch (error) {
-      if (request === this.profileRequest) this.profileError = '无法读取游戏设置';
+      if (request === this.profileRequest) this.profileError = str($r('app.string.game_settings_read_failed'));
     } finally { if (request === this.profileRequest) this.profileBusy = false; }
   }
   private async saveDisplay(): Promise<void> {
@@ -246,7 +248,7 @@ struct Index {
         scalingFilter: this.scalingFilter, widenMode: this.widenMode };
       await this.store.saveProfile(game.key, profile);
       this.displaySettingsVisible = false;
-    } catch (error) { this.profileError = '未保存，请重试'; }
+    } catch (error) { this.profileError = str($r('app.string.save_failed_retry')); }
     finally { this.profileBusy = false; }
   }
   private async refreshGameIndex(found: Game[]): Promise<void> {
@@ -257,7 +259,7 @@ struct Index {
       const selectedKey = this.games[this.selected]?.key;
       this.games = indexed;
       this.selected = Math.max(0, indexed.findIndex((game: Game) => game.key === selectedKey));
-    } catch (error) { this.message = '游戏索引未保存，请重新扫描'; }
+    } catch (error) { this.message = str($r('app.string.index_save_failed')); }
   }
   private async toggleFavorite(): Promise<void> {
     const game = this.games[this.selected];
@@ -265,12 +267,12 @@ struct Index {
     try {
       await this.store.setFavorite(game.titleId, !game.favorite);
       await this.refreshGameIndex(this.games);
-    } catch (error) { this.message = '收藏未保存，请重试'; }
+    } catch (error) { this.message = str($r('app.string.favorite_save_failed')); }
   }
   private async finishWelcome(): Promise<void> {
     this.player.onboardingComplete = true;
     try { await this.store.saveGlobals(this.player); this.welcome = false; }
-    catch (error) { this.message = '未保存，请重试'; }
+    catch (error) { this.message = str($r('app.string.save_failed_retry')); }
   }
   aboutToDisappear() {
     if (this.poller >= 0) clearInterval(this.poller);
@@ -321,7 +323,9 @@ struct Index {
     this.player.powerSave = this.powerSave;
     this.player.hideTouchWithController = this.hideTouchWithController;
     this.player.showFps = this.showFps;
-    this.store.saveGlobals(this.player).catch(() => { this.message = '设置未保存，请重试'; this.feedbackMessage = '设置未保存，请重试'; });
+    this.store.saveGlobals(this.player).catch(() => {
+      this.message = str($r('app.string.settings_save_failed')); this.feedbackMessage = this.message;
+    });
   }
   private closePlayerSettings(): void {
     this.playerSettingsVisible = false;
@@ -344,7 +348,7 @@ struct Index {
     } catch (error) {
       console.error('S2Arm return to library failed: ' + String(error));
       this.returning = false; this.exitConfirm = false;
-      this.menuError = '未能返回游戏库。请重试，或先回到游戏。';
+      this.menuError = str($r('app.string.return_library_failed'));
       this.syncInputGate();
       window.getLastWindow(context).then((w: window.Window) => w.setWindowKeepScreenOn(true)).catch(() => {});
     }
@@ -366,7 +370,7 @@ struct Index {
     const pending = engine.uiTake();
     if (pending.error === -6 || pending.error === -4) return;
     if (pending.error !== 0 || !/^[1-9][0-9]{0,19}$/.test(pending.id)) {
-      this.message = '无法读取游戏输入请求：' + pending.error.toString(); return;
+      this.message = str($r('app.string.keyboard_request_read_failed'), pending.error); return;
     }
     try {
       const request = JSON.parse(pending.request) as KeyboardRequest;
@@ -378,7 +382,7 @@ struct Index {
           request.maxLength < request.minLength || request.maxLength > 1000 ||
           request.initialText.length > request.maxLength ||
           !this.validKeyboardText(request.initialText, request.keyboardMode)) {
-        engine.uiCancel(pending.id); this.message = '游戏输入请求格式或模式尚不受支持'; return;
+        engine.uiCancel(pending.id); this.message = str($r('app.string.keyboard_request_unsupported')); return;
       }
       this.keyboardId = pending.id;
       this.keyboardHeader = request.header;
@@ -394,26 +398,26 @@ struct Index {
       this.send();
       this.keyboardVisible = true; this.syncInputGate();
     } catch (error) {
-      engine.uiCancel(pending.id); this.message = '无法解析游戏输入请求';
+      engine.uiCancel(pending.id); this.message = str($r('app.string.keyboard_request_parse_failed'));
     }
   }
   private replyKeyboard(accepted: boolean) {
     if (!this.keyboardVisible || this.keyboardId.length === 0) return;
     if (accepted && (this.keyboardText.length < this.keyboardMin || this.keyboardText.length > this.keyboardMax ||
         !this.validKeyboardText(this.keyboardText, this.keyboardMode))) {
-      this.keyboardError = '请输入 ' + this.keyboardMin.toString() + ' 至 ' + this.keyboardMax.toString() + ' 个字符，并符合输入类型。';
+      this.keyboardError = str($r('app.string.keyboard_length_hint'), this.keyboardMin, this.keyboardMax);
       return;
     }
     const result = engine.uiReply(this.keyboardId, JSON.stringify({
       version: 1, type: 'keyboard', accepted: accepted, text: accepted ? this.keyboardText : ''
     }));
     this.keyboardVisible = false; this.keyboardId = ''; this.keyboardText = ''; this.syncInputGate();
-    if (result !== 0) this.message = '输入请求已结束，未提交内容：' + result.toString();
+    if (result !== 0) this.message = str($r('app.string.keyboard_request_ended'), result);
   }
   @Builder keyboardDialog() {
     Column() {
       Column({ space: 10 }) {
-        Text(this.keyboardHeader.length > 0 ? this.keyboardHeader : '输入文字').fontSize(21).fontWeight(FontWeight.Bold).fontColor(INK)
+        Text(this.keyboardHeader.length > 0 ? this.keyboardHeader : $r('app.string.keyboard_default_header')).fontSize(21).fontWeight(FontWeight.Bold).fontColor(INK)
         if (this.keyboardSubtitle.length > 0) Text(this.keyboardSubtitle).fontSize(13).fontColor(MUTED)
         TextInput({ text: this.keyboardText, placeholder: this.keyboardGuide })
           .id('s2arm-keyboard-text').width('100%').height(48).fontSize(18)
@@ -424,8 +428,8 @@ struct Index {
           .onSubmit(() => this.replyKeyboard(true))
         if (this.keyboardError.length > 0) Text(this.keyboardError).fontSize(12).fontColor(ACCENT)
         Row({ space: 16 }) {
-          Button('取消').id('s2arm-keyboard-cancel').backgroundColor(BG).fontColor(INK).onClick(() => this.replyKeyboard(false))
-          Button(this.keyboardSubmit.length > 0 ? this.keyboardSubmit : '确定').id('s2arm-keyboard-submit')
+          Button($r('app.string.cancel')).id('s2arm-keyboard-cancel').backgroundColor(BG).fontColor(INK).onClick(() => this.replyKeyboard(false))
+          Button(this.keyboardSubmit.length > 0 ? this.keyboardSubmit : $r('app.string.ok')).id('s2arm-keyboard-submit')
             .backgroundColor(ACCENT).fontColor('#102334').onClick(() => this.replyKeyboard(true))
         }.justifyContent(FlexAlign.End).width('100%')
       }.width('70%').padding(18).backgroundColor(PANEL).borderRadius(18)
@@ -474,7 +478,7 @@ struct Index {
           this.activeLaunch = request;
         } catch (error) { this.writeLaunchResult(request, 'failed', '启动请求失败；请查看应用日志。'); }
       }
-    } catch (error) { this.message = '启动请求处理失败；请求记录已保留。'; }
+    } catch (error) { this.message = str($r('app.string.launch_request_failed')); }
   }
   private finishImports() {
     // HDC writes sandbox files as the debug shell; directory rename belongs to the app UID.
@@ -492,7 +496,7 @@ struct Index {
         if (!fs.accessSync(from + '/ready.json')) continue;
         fs.renameSync(from, to);
         fs.renameSync(path, path + '.done');
-      } catch (error) { this.message = '有一项导入尚未完成，资源已保留。'; }
+      } catch (error) { this.message = str($r('app.string.import_pending_kept')); }
     }
   }
   private loadGames() {
@@ -516,7 +520,7 @@ struct Index {
             const title: string = typeof prepared.name === 'string' && prepared.name.trim().length > 0
               ? prepared.name.trim().substring(0, 128) : prepared.titleId.toUpperCase();
             const subtitle: string = typeof prepared.displayName === 'string' && prepared.displayName.trim().length > 0
-              ? prepared.displayName.trim().substring(0, 128) : '已导入游戏';
+              ? prepared.displayName.trim().substring(0, 128) : str($r('app.string.imported_game'));
             found.push(new Game(key, title, subtitle, prepared.titleId.toUpperCase(), '', prepared.version));
           } catch (error) { invalid++; }
         });
@@ -526,9 +530,9 @@ struct Index {
       this.selected = Math.max(0, found.findIndex((game: Game) => game.key === this.player.lastGame));
       if (found.length > 0) { this.checkGame(); this.loadSelectedProfile(); }
       else { this.ready = false; this.message = ''; }
-      if (invalid > 0) this.message += ' 有 ' + invalid.toString() + ' 项导入记录无效，已阻止加载。';
+      if (invalid > 0) this.message += ' ' + str($r('app.string.invalid_imports'), invalid);
     } catch (error) {
-      this.games = []; this.ready = false; this.message = '暂时无法读取游戏库。';
+      this.games = []; this.ready = false; this.message = str($r('app.string.library_read_failed'));
     }
   }
   private checkGame() {
@@ -559,8 +563,8 @@ struct Index {
     } catch (error) { this.ready = false; }
     this.gfxMode = graphicsMode(this.files, game.titleId);
     this.gfxDirectAvailable = this.ready && fs.accessSync(this.files + '/games/' + game.key + '/' + this.moduleDirectory + '/graphics.v1.json');
-    if (this.ready && !this.gfxDirectAvailable) { this.ready = false; this.message = '这个游戏包没有直连图形库，请用新版打包工具重新出包。'; }
-    else this.message = this.ready ? '' : '游戏文件不完整，请重新导入游戏包。';
+    if (this.ready && !this.gfxDirectAvailable) { this.ready = false; this.message = str($r('app.string.package_no_direct_graphics')); }
+    else this.message = this.ready ? '' : str($r('app.string.game_files_incomplete'));
     this.accent = accentFor(game.titleId, prepared?.accent);
     this.refreshBadges(prepared);
   }
@@ -571,14 +575,14 @@ struct Index {
     const patches: PreparedPatch[] = prepared?.patches ?? [];
     if (patches.some((p: PreparedPatch) => p.kind === 'fps' && Number(p.fps) >= 60)) list.push(new Badge('60 FPS', true));
     const aspect = prepared?.presentationAspect;
-    if (typeof aspect === 'string' && /^[0-9]{1,5}:[0-9]{1,5}$/.test(aspect)) list.push(new Badge('宽屏 ' + aspect, true));
-    if (this.resolutionScale !== '1') list.push(new Badge(this.resolutionScale + '× 分辨率', false));
+    if (typeof aspect === 'string' && /^[0-9]{1,5}:[0-9]{1,5}$/.test(aspect)) list.push(new Badge(str($r('app.string.badge_widescreen'), aspect), true, true));
+    if (this.resolutionScale !== '1') list.push(new Badge(str($r('app.string.badge_resolution'), this.resolutionScale), false));
     this.badges = list;
   }
   private setGfx(mode: string) {
     if (this.selected >= this.games.length) return;
     try { setGraphicsMode(this.files, this.games[this.selected].titleId, mode); this.gfxMode = mode; this.checkGame(); }
-    catch (error) { this.message = '图形模式没有保存'; }
+    catch (error) { this.message = str($r('app.string.gfx_mode_not_saved')); }
   }
   private async pickAndImport() {
     if (this.importing) return;
@@ -588,19 +592,18 @@ struct Index {
       options.maxSelectNumber = 32;   // a large package comes as name.tar.001, .002, ...: select all parts together
       uris = await new picker.DocumentViewPicker(getContext(this)).select(options);
       if (uris.length === 0) return;
-    } catch (error) { this.importStatus = '无法打开文件选择'; return; }
-    this.importing = true; this.importStatus = '正在读取游戏包…';
+    } catch (error) { this.importStatus = str($r('app.string.file_picker_failed')); return; }
+    this.importing = true; this.importStatus = str($r('app.string.import_reading'));
     const win = await window.getLastWindow(getContext(this) as common.UIAbilityContext);
     win.setWindowKeepScreenOn(true).catch(() => {});
     try {
       const result: ImportResult = await importGamePackage(uris, this.files, (p: ImportProgress) => {
-        this.importStatus = '正在导入 ' + (p.bytes / 1073741824).toFixed(1) + ' / ' + (p.total / 1073741824).toFixed(1) +
-          ' GB';
+        this.importStatus = str($r('app.string.import_progress'), (p.bytes / 1073741824).toFixed(1), (p.total / 1073741824).toFixed(1));
       });
-      this.importStatus = '已导入 · ' + result.files.toString() + ' 个文件';
+      this.importStatus = str($r('app.string.import_done'), result.files);
       this.loadGames();
     } catch (error) {
-      this.importStatus = '导入失败：' + ((error as Error).message ?? String(error));
+      this.importStatus = str($r('app.string.import_failed'), (error as Error).message ?? String(error));
     } finally {
       this.importing = false;
       win.setWindowKeepScreenOn(false).catch(() => {});
@@ -621,11 +624,11 @@ struct Index {
     try {
       if (!fs.accessSync(state)) fs.mkdirSync(state, true);
       if (!fs.statSync(state).isDirectory()) {
-        this.message = '游戏存档路径不是目录'; return;
+        this.message = str($r('app.string.save_dir_not_directory')); return;
       }
-    } catch (error) { this.message = '无法打开游戏存档目录'; return; }
+    } catch (error) { this.message = str($r('app.string.save_dir_open_failed')); return; }
     // 引擎只读 graphics_mode 文件：推荐模式也要落盘。
-    try { setGraphicsMode(this.files, game.titleId, this.gfxMode); } catch (error) { this.message = '无法写入图形模式'; return; }
+    try { setGraphicsMode(this.files, game.titleId, this.gfxMode); } catch (error) { this.message = str($r('app.string.gfx_mode_write_failed')); return; }
     this.presentBaseline = Math.max(0, engine.presentCount());
     const result = engine.start(root + '/game', state, root + '/' + this.moduleDirectory, this.preparedModules, game.titleId);
     if (result.length > 0) { this.message = result; return; }
@@ -657,17 +660,17 @@ struct Index {
     } catch (error) { return ''; }
   }
   private displayLabel(): string {
-    return this.resolutionScale + '× · ' + (this.scalingFilter === 'Nearest' ? '锐利' : '平滑');
+    return this.resolutionScale + '× · ' + str(this.scalingFilter === 'Nearest' ? $r('app.string.filter_sharp') : $r('app.string.filter_smooth'));
   }
-  private toast(text: string): void {
+  private toast(text: ResourceStr): void {
     try { this.getUIContext().getPromptAction().showToast({ message: text, duration: 1500 }); } catch (error) {}
   }
   private async exportDiagnostics(): Promise<void> {
-    this.diagnosticsStatus = '正在整理日志…';
+    this.diagnosticsStatus = str($r('app.string.diagnostics_collecting'));
     try {
       const name = await exportReport(getContext(this) as common.UIAbilityContext, this.files, this.appVersion());
-      this.diagnosticsStatus = name.length > 0 ? '已保存：' + name + '。把这个文件发给开发者即可。' : '';
-    } catch (error) { this.diagnosticsStatus = '没能保存：' + ((error as Error).message ?? String(error)); }
+      this.diagnosticsStatus = name.length > 0 ? str($r('app.string.diagnostics_saved'), name) : '';
+    } catch (error) { this.diagnosticsStatus = str($r('app.string.diagnostics_save_failed'), (error as Error).message ?? String(error)); }
   }
   private send() { engine.input(this.buttons, this.leftX, this.leftY, this.rightX, this.rightY); }
   private tint(alpha: string): string { return '#' + alpha + this.accent.substring(1); }
@@ -677,18 +680,18 @@ struct Index {
       .borderRadius(5).border({ width: 1, color: b.strong ? this.tint('80') : '#3A3E46' })
       .backgroundColor(b.strong ? this.tint('14') : '#0DFFFFFF')
   }
-  @Builder option(label: string, active: boolean, action: () => void) {
+  @Builder option(label: ResourceStr, active: boolean, action: () => void) {
     Text(label).fontSize(13).fontColor(active ? DARK_INK : '#D6D9DF').fontWeight(active ? FontWeight.Medium : FontWeight.Regular)
       .height(44).padding({ left: 14, right: 14 }).borderRadius(16)
       .backgroundColor(active ? ACCENT : '#14FFFFFF').onClick(action)
   }
-  @Builder settingRow(label: string, hint: string) {
+  @Builder settingRow(label: ResourceStr, hint: string) {
     Column({ space: 2 }) {
       Text(label).fontSize(14).fontColor(INK)
       if (hint.length > 0) Text(hint).fontSize(11).fontColor(FAINT).maxLines(2)
     }.alignItems(HorizontalAlign.Start).layoutWeight(1)
   }
-  @Builder sheet(title: string) {
+  @Builder sheet(title: ResourceStr) {
     Row() {
       Text(title).fontSize(20).fontWeight(FontWeight.Medium).fontColor(INK)
       Blank()
@@ -697,41 +700,41 @@ struct Index {
   @Builder displaySettingsDialog() {
     Scroll() {
       Column({ space: 16 }) {
-        this.sheet('画面')
+        this.sheet($r('app.string.display_title'))
         if (this.profileError.length > 0) Text(this.profileError).fontSize(14).fontColor('#FFB4A8')
         Row({ space: 8 }) {
-          this.settingRow('分辨率', '')
+          this.settingRow($r('app.string.resolution'), '')
           ForEach(['1', '1.5', '2'], (value: string) => {
-            this.option(value + '×', this.resolutionScale === value, () => { this.resolutionScale = value; this.checkGame(); this.toast('下次启动生效'); })
+            this.option(value + '×', this.resolutionScale === value, () => { this.resolutionScale = value; this.checkGame(); this.toast($r('app.string.next_launch_applies')); })
           }, (value: string) => value)
         }.width('100%')
         Row({ space: 8 }) {
-          this.settingRow('缩放', '')
-          this.option('平滑', this.scalingFilter === 'Bilinear', () => { this.scalingFilter = 'Bilinear'; })
-          this.option('锐利', this.scalingFilter === 'Nearest', () => { this.scalingFilter = 'Nearest'; })
+          this.settingRow($r('app.string.scaling'), '')
+          this.option($r('app.string.filter_smooth'), this.scalingFilter === 'Bilinear', () => { this.scalingFilter = 'Bilinear'; })
+          this.option($r('app.string.filter_sharp'), this.scalingFilter === 'Nearest', () => { this.scalingFilter = 'Nearest'; })
         }.width('100%')
-        if (!this.badges.some((b: Badge) => b.text.startsWith('宽屏'))) {
+        if (!this.badges.some((b: Badge) => b.wide)) {
           Row({ space: 8 }) {
-            this.settingRow('画幅', '')
-            this.option('原始', this.widenMode === 'off', () => { this.widenMode = 'off'; })
-            this.option('扩展', this.widenMode === 'experimental', () => { this.widenMode = 'experimental'; })
+            this.settingRow($r('app.string.aspect'), '')
+            this.option($r('app.string.aspect_original'), this.widenMode === 'off', () => { this.widenMode = 'off'; })
+            this.option($r('app.string.aspect_extended'), this.widenMode === 'experimental', () => { this.widenMode = 'experimental'; })
           }.width('100%')
         }
         if (this.gfxDirectAvailable) {
           Row({ space: 8 }) {
-            this.settingRow('图形', '')
-            this.option('兼容', this.gfxMode === 'generic', () => { this.setGfx('generic'); })
-            this.option('直连', this.gfxMode === 'direct', () => { this.setGfx('direct'); })
+            this.settingRow($r('app.string.graphics'), '')
+            this.option($r('app.string.gfx_generic'), this.gfxMode === 'generic', () => { this.setGfx('generic'); })
+            this.option($r('app.string.gfx_direct'), this.gfxMode === 'direct', () => { this.setGfx('direct'); })
           }.width('100%')
         }
         Row({ space: 8 }) {
-          this.settingRow('显示帧率', '')
+          this.settingRow($r('app.string.show_fps'), '')
           Toggle({ type: ToggleType.Switch, isOn: this.showFps }).selectedColor(this.accent)
             .onChange((value: boolean) => { this.showFps = value; this.fpsText = ''; this.fpsLastCount = -1; this.persistPlayer(); })
         }.width('100%')
         Row() {
           Blank()
-          Text('完成').fontSize(14).fontWeight(FontWeight.Medium).fontColor(INK).height(48).padding({ left: 22, right: 22 })
+          Text($r('app.string.done')).fontSize(14).fontWeight(FontWeight.Medium).fontColor(INK).height(48).padding({ left: 22, right: 22 })
             .borderRadius(18).backgroundColor(ACCENT).enabled(!this.profileBusy).onClick(() => { this.saveDisplay(); })
         }.width('100%').margin({ top: 4 })
       }.width('100%').padding({ left: 26, right: 26, top: 22, bottom: 20 })
@@ -739,11 +742,11 @@ struct Index {
   }
   private cover(game: Game): string { return 'file://' + this.files + '/games/' + game.key + '/game/icon.jpg'; }
   private hasCover(game: Game): boolean { return fs.accessSync(this.files + '/games/' + game.key + '/game/icon.jpg'); }
-  @Builder pill(label: string, id: string, action: () => void) {
+  @Builder pill(label: ResourceStr, id: string, action: () => void) {
     Text(label).id(id).fontSize(12).fontColor('#D9DCE2').height(44).padding({ left: 14, right: 14 }).borderRadius(15)
       .backgroundColor('#14FFFFFF').border({ width: 1, color: '#1FFFFFFF' }).onClick(action)
   }
-  @Builder primary(label: string, id: string, action: () => void) {
+  @Builder primary(label: ResourceStr, id: string, action: () => void) {
     Text(label).id(id).fontSize(14).fontWeight(FontWeight.Medium).fontColor(INK).height(48)
       .padding({ left: 20, right: 20 }).borderRadius(18).backgroundColor(ACCENT).onClick(action)
   }
@@ -764,22 +767,22 @@ struct Index {
   }
   @Builder importDialog() {
     Column({ space: 14 }) {
-      this.sheet('导入游戏')
-      Text('分卷请一次选全')
+      this.sheet($r('app.string.import_game'))
+      Text($r('app.string.import_all_parts'))
         .fontSize(13).fontColor(MUTED).lineHeight(21)
       if (this.importStatus.length > 0) Text(this.importStatus).fontSize(13).fontColor(this.accent).lineHeight(20)
       Row({ space: 10 }) {
         Blank()
-        this.pill('重新扫描', 's2arm-rescan', () => { if (!this.importing) { this.loadGames(); this.importGuide = false; } })
-        this.pill('关闭', 's2arm-import-close', () => { if (!this.importing) this.importGuide = false; })
-        this.primary(this.importing ? '导入中…' : '选择游戏包', 's2arm-import-tar', () => { this.pickAndImport(); })
+        this.pill($r('app.string.rescan'), 's2arm-rescan', () => { if (!this.importing) { this.loadGames(); this.importGuide = false; } })
+        this.pill($r('app.string.close'), 's2arm-import-close', () => { if (!this.importing) this.importGuide = false; })
+        this.primary(this.importing ? $r('app.string.importing') : $r('app.string.choose_package'), 's2arm-import-tar', () => { this.pickAndImport(); })
       }.width('100%').margin({ top: 4 })
     }.padding({ left: 26, right: 26, top: 22, bottom: 20 }).width('100%')
   }
   @Builder diagnosticsDialog() {
     Column({ space: 12 }) {
-      this.sheet('运行诊断')
-      if (this.crashTitle.length > 0) Text('上次 ' + this.crashTitle + ' 没有正常结束。').fontSize(13).fontColor('#FFB4A8')
+      this.sheet($r('app.string.diagnostics_title'))
+      if (this.crashTitle.length > 0) Text($r('app.string.crash_last_session', this.crashTitle)).fontSize(13).fontColor('#FFB4A8')
       if (this.crashLines.length > 0) {
         Column({ space: 4 }) {
           ForEach(this.crashLines, (line: string) => {
@@ -787,29 +790,29 @@ struct Index {
           }, (line: string, index: number) => index.toString())
         }.alignItems(HorizontalAlign.Start).width('100%').padding(12).borderRadius(12).backgroundColor('#0AFFFFFF')
       } else {
-        Text('日志里没有找到明确的错误行；导出完整日志更有帮助。').fontSize(12).fontColor(MUTED)
+        Text($r('app.string.diagnostics_no_errors')).fontSize(12).fontColor(MUTED)
       }
       if (this.diagnosticsStatus.length > 0) Text(this.diagnosticsStatus).fontSize(12).fontColor(this.accent)
       Row({ space: 10 }) {
         Blank()
-        this.pill('关闭', 's2arm-diag-close', () => { this.diagnosticsVisible = false; this.diagnosticsStatus = ''; })
-        this.primary('导出日志', 's2arm-diag-export', () => { this.exportDiagnostics(); })
+        this.pill($r('app.string.close'), 's2arm-diag-close', () => { this.diagnosticsVisible = false; this.diagnosticsStatus = ''; })
+        this.primary($r('app.string.export_logs'), 's2arm-diag-export', () => { this.exportDiagnostics(); })
       }.width('100%').margin({ top: 4 })
     }.padding({ left: 26, right: 26, top: 22, bottom: 20 }).width('100%')
   }
   @Builder playerSettingsDialog() {
     Column({ space: 14 }) {
-      this.sheet('设置')
+      this.sheet($r('app.string.settings'))
       if (/失败|未保存|无法/.test(this.feedbackMessage)) Text(this.feedbackMessage).fontSize(14).fontColor('#FFB4A8')
       Row({ space: 12 }) {
         Circle().width(8).height(8).fill(this.controllerAvailable && this.controllerConnected ? this.accent : '#4A4E56')
         Column({ space: 2 }) {
-          Text(this.controllerConnected ? (this.controllerName || '手柄已连接') : '未连接手柄').fontSize(14).fontColor(INK)
+          Text(this.controllerConnected ? (this.controllerName.length > 0 ? this.controllerName : $r('app.string.controller_connected')) : $r('app.string.controller_none')).fontSize(14).fontColor(INK)
           if (this.controllerConnected && this.controllerDetail.length > 0) Text(this.controllerDetail).fontSize(11).fontColor(FAINT).maxLines(2)
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)
       }.width('100%').padding(12).borderRadius(14).backgroundColor('#0AFFFFFF')
       Row() {
-        this.settingRow('连接手柄时隐藏触控', '')
+        this.settingRow($r('app.string.hide_touch_with_controller'), '')
         Toggle({ type: ToggleType.Switch, isOn: this.hideTouchWithController }).selectedColor(this.accent).onChange((value: boolean) => {
           this.hideTouchWithController = value;
           if (this.playing) this.controls = !value || !(this.controllerAvailable && this.controllerConnected);
@@ -817,7 +820,7 @@ struct Index {
         })
       }.width('100%')
       Row() {
-        this.settingRow('按键触感', this.touchFeedbackAvailable ? '' : '这台设备不支持')
+        this.settingRow($r('app.string.touch_feedback'), this.touchFeedbackAvailable ? '' : str($r('app.string.device_unsupported')))
         Toggle({ type: ToggleType.Switch, isOn: this.touchFeedback }).selectedColor(this.accent).enabled(this.touchFeedbackAvailable)
           .onChange((value: boolean) => {
             this.touchFeedback = value; AppStorage.setOrCreate<boolean>('s2armTouchFeedback', value); this.persistPlayer();
@@ -825,17 +828,17 @@ struct Index {
           })
       }.width('100%')
       Row() {
-        this.settingRow('游戏震动', '')
+        this.settingRow($r('app.string.game_rumble'), '')
         Toggle({ type: ToggleType.Switch, isOn: this.gameFeedback }).selectedColor(this.accent).onChange((value: boolean) => {
           this.gameFeedback = value; this.feedbackMessage = engine.gameFeedback(value); this.persistPlayer(); if (!value) engine.stopFeedback();
         })
       }.width('100%')
       Row() {
-        this.settingRow('省电 30 帧', '')
-        Toggle({ type: ToggleType.Switch, isOn: this.powerSave }).selectedColor(this.accent).onChange((value: boolean) => { this.powerSave = value; this.persistPlayer(); this.toast('下次启动生效'); })
+        this.settingRow($r('app.string.power_save'), '')
+        Toggle({ type: ToggleType.Switch, isOn: this.powerSave }).selectedColor(this.accent).onChange((value: boolean) => { this.powerSave = value; this.persistPlayer(); this.toast($r('app.string.next_launch_applies')); })
       }.width('100%')
       Row() {
-        this.settingRow('显示帧率', '')
+        this.settingRow($r('app.string.show_fps'), '')
         Toggle({ type: ToggleType.Switch, isOn: this.showFps }).selectedColor(this.accent)
           .onChange((value: boolean) => { this.showFps = value; this.fpsText = ''; this.fpsLastCount = -1; this.persistPlayer(); })
       }.width('100%')
@@ -847,20 +850,20 @@ struct Index {
       Flex({ wrap: FlexWrap.Wrap }) {
         ForEach(this.badges, (b: Badge) => { Row() { this.badge(b) }.margin({ right: 6, bottom: 6 }) }, (b: Badge) => b.text)
       }.width('100%')
-            Text('继续游戏').id('s2arm-resume').width('100%').height(42).textAlign(TextAlign.Center).fontSize(14)
+            Text($r('app.string.resume_game')).id('s2arm-resume').width('100%').height(42).textAlign(TextAlign.Center).fontSize(14)
         .fontWeight(FontWeight.Medium).fontColor(DARK_INK).borderRadius(21).backgroundColor(ACCENT)
         .onClick(() => { this.showGameMenu(false); })
       Row({ space: 10 }) {
-        Text(this.controls ? '隐藏触控' : '显示触控').layoutWeight(1).height(36).textAlign(TextAlign.Center).fontSize(12)
+        Text(this.controls ? $r('app.string.hide_touch') : $r('app.string.show_touch')).layoutWeight(1).height(36).textAlign(TextAlign.Center).fontSize(12)
           .fontColor(INK).borderRadius(18).backgroundColor('#14FFFFFF')
           .onClick(() => { this.controls = !this.controls; this.showGameMenu(false); })
-        Text('设置').layoutWeight(1).height(36).textAlign(TextAlign.Center).fontSize(12)
+        Text($r('app.string.settings')).layoutWeight(1).height(36).textAlign(TextAlign.Center).fontSize(12)
           .fontColor(INK).borderRadius(18).backgroundColor('#14FFFFFF')
           .onClick(() => { this.gameMenu = false; this.playerSettingsVisible = true; this.syncInputGate(); })
       }.width('100%')
-      Button('触控布局').height(44).width('100%').backgroundColor('#14FFFFFF').fontColor(INK)
+      Button($r('app.string.touch_layout')).height(44).width('100%').backgroundColor('#14FFFFFF').fontColor(INK)
         .onClick(() => { this.editControlsOnOpen = true; this.controls = true; this.showGameMenu(false); })
-      Text('退出到游戏库').id('s2arm-return-library').width('100%').height(36).textAlign(TextAlign.Center).fontSize(12)
+      Text($r('app.string.exit_to_library')).id('s2arm-return-library').width('100%').height(36).textAlign(TextAlign.Center).fontSize(12)
         .fontColor('#FFB4A8').borderRadius(18).backgroundColor('#1AFF7A6B')
         .onClick(() => { this.exitConfirm = true; this.syncInputGate(); })
       if (this.menuError.length > 0) Text(this.menuError).fontSize(11).fontColor('#FFB4A8')
@@ -870,13 +873,13 @@ struct Index {
   }
   @Builder exitDialog() {
     Column({ space: 14 }) {
-      Text(this.returning ? '正在返回游戏库' : '已经在游戏里存档了吗？').fontSize(20).fontWeight(FontWeight.Medium).fontColor(INK)
-      Text('退出会结束这次游戏，应用不会替游戏保存进度。').fontSize(13).fontColor(MUTED).lineHeight(21)
+      Text(this.returning ? $r('app.string.returning_to_library') : $r('app.string.exit_saved_question')).fontSize(20).fontWeight(FontWeight.Medium).fontColor(INK)
+      Text($r('app.string.exit_warning')).fontSize(13).fontColor(MUTED).lineHeight(21)
       Row({ space: 10 }) {
         Blank()
-        Text('回去存档').id('s2arm-exit-cancel').height(38).padding({ left: 18, right: 18 }).fontSize(13).fontColor(INK)
+        Text($r('app.string.exit_go_save')).id('s2arm-exit-cancel').height(38).padding({ left: 18, right: 18 }).fontSize(13).fontColor(INK)
           .borderRadius(19).backgroundColor('#14FFFFFF').enabled(!this.returning).onClick(() => { this.showGameMenu(false); })
-        Text(this.returning ? '正在退出…' : '已存档，退出').id('s2arm-exit-confirm').height(38).padding({ left: 18, right: 18 })
+        Text(this.returning ? $r('app.string.exiting') : $r('app.string.exit_confirm')).id('s2arm-exit-confirm').height(38).padding({ left: 18, right: 18 })
           .fontSize(13).fontWeight(FontWeight.Medium).fontColor(DARK_INK).borderRadius(19).backgroundColor(ACCENT)
           .enabled(!this.returning).onClick(() => { this.returnToLibrary(); })
       }.width('100%')
@@ -895,14 +898,14 @@ struct Index {
   }
   @Builder welcomePage() {
     Column({ space: 24 }) {
-      Text(['你的游戏，随身带', '导入游戏包', '选好操作，开玩'][this.welcomeStep])
+      Text([$r('app.string.welcome_title_1'), $r('app.string.welcome_title_2'), $r('app.string.welcome_title_3')][this.welcomeStep])
         .fontSize(24).fontWeight(FontWeight.Medium).fontColor(INK)
-      Text(['准备已生成的 S2Arm 游戏包', '分卷请一次选全', '触控与手柄都可用'][this.welcomeStep])
+      Text([$r('app.string.welcome_body_1'), $r('app.string.import_all_parts'), $r('app.string.welcome_body_3')][this.welcomeStep])
         .fontSize(16).fontColor(MUTED).maxLines(2)
       Text((this.welcomeStep + 1).toString() + ' / 3').fontSize(12).fontColor(MUTED)
-      Button(this.welcomeStep < 2 ? '继续' : '进入游戏库').height(48).backgroundColor(ACCENT)
+      Button(this.welcomeStep < 2 ? $r('app.string.continue') : $r('app.string.enter_library')).height(48).backgroundColor(ACCENT)
         .onClick(() => { if (this.welcomeStep < 2) this.welcomeStep++; else this.finishWelcome(); })
-      Button('跳过').height(44).backgroundColor(PANEL).onClick(() => this.finishWelcome())
+      Button($r('app.string.skip')).height(44).backgroundColor(PANEL).onClick(() => this.finishWelcome())
       if (this.message.length > 0) Text(this.message).fontSize(14).fontColor('#FFB4A8')
     }.padding(24).width('100%').height('100%').justifyContent(FlexAlign.Center).backgroundColor(BG)
   }
@@ -913,8 +916,8 @@ struct Index {
       if (!this.storeReady) {
         Column({ space: 16 }) {
           if (this.profileError.length === 0) LoadingProgress().width(40).height(40).color(ACCENT)
-          Text(this.profileError || '正在读取游戏库').fontSize(16).fontColor(INK)
-          if (this.profileError.length > 0) Button('重试').height(48).onClick(() => this.initializeStore())
+          Text(this.profileError.length > 0 ? this.profileError : $r('app.string.loading_library')).fontSize(16).fontColor(INK)
+          if (this.profileError.length > 0) Button($r('app.string.retry')).height(48).onClick(() => this.initializeStore())
         }.width('100%').height('100%').justifyContent(FlexAlign.Center).backgroundColor(BG)
       }
       if (this.welcome && !this.playing) this.welcomePage()
@@ -926,7 +929,7 @@ struct Index {
       if (this.playing && !this.keyboardVisible && !this.touchEditing && !this.gameMenu && !this.playerSettingsVisible) {
         Text('•••').id('s2arm-game-menu').fontSize(14).height(44).width(44).textAlign(TextAlign.Center).fontColor('#F5F5F7')
           .borderRadius(14).backgroundColor('#66101216').border({ width: 1, color: '#22FFFFFF' })
-          .position({ x: 24, y: 10 }).accessibilityText('打开游戏菜单').onClick(() => { this.showGameMenu(true); })
+          .position({ x: 24, y: 10 }).accessibilityText($r('app.string.open_game_menu')).onClick(() => { this.showGameMenu(true); })
       }
       if (this.playing && this.showFps && this.fpsText.length > 0) {
         Row({ space: 4 }) {
@@ -939,9 +942,9 @@ struct Index {
       if (this.playing && !this.firstFrame) {
         Column({ space: 16 }) {
           if (!this.launchFailed) LoadingProgress().width(40).height(40).color(ACCENT)
-          Text(this.launchFailed ? '启动未完成' : '正在启动').fontSize(20).fontColor(INK)
+          Text(this.launchFailed ? $r('app.string.launch_incomplete') : $r('app.string.launching')).fontSize(20).fontColor(INK)
           Text(this.message).fontSize(14).fontColor(MUTED).maxLines(3)
-          if (this.launchFailed) Button('返回游戏库').height(48).backgroundColor(ACCENT).onClick(() => this.returnToLibrary())
+          if (this.launchFailed) Button($r('app.string.back_to_library')).height(48).backgroundColor(ACCENT).onClick(() => this.returnToLibrary())
         }.width('100%').height('100%').justifyContent(FlexAlign.Center).padding(24).backgroundColor(BG)
       }
       if (!this.playing && this.editPreview && this.games.length > 0) {

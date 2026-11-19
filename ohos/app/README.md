@@ -44,6 +44,7 @@ python ohos/tools/build_shell.py --public-sdk --out "<新的空构建目录>"
 | 目录 | 责任 |
 | --- | --- |
 | `entry/src/main/ets/ui` | 游戏库展示、详情与视觉样式 |
+| `entry/src/main/resources/base/element/string.json` | 玩家可见文字；界面用 `$r('app.string.<名称>')`，逻辑里拼接或保存的文字用 `ui/Strings.ets` 的 `str()`（`%s`/`%d` 占位） |
 | `entry/src/main/ets/controls` | 设置存储、导入、触控、诊断 |
 | `entry/src/main/ets/entryability` | 应用生命周期与启动请求 |
 | `entry/src/main/cpp/bridge_ohos.cpp` | XComponent / 窗口持有、引擎 ABI、会话状态 |

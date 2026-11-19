@@ -4,9 +4,10 @@
 import { SymbolGlyphModifier } from '@kit.ArkUI';
 import { C, R, L, M, Glass, IMMERSIVE } from './Theme';
 import { Game, filterGames, sortGames } from './LibraryModel';
+import { str } from './Strings';
 
 const SORTS: string[] = ['recent', 'title', 'favorite'];
-const SORT_LABELS: string[] = ['最近', '名称', '收藏'];
+const SORT_LABELS: Resource[] = [$r('app.string.recent'), $r('app.string.sort_title'), $r('app.string.favorites')];
 
 @Component
 export struct LauncherShell {
@@ -47,7 +48,8 @@ export struct LauncherShell {
     this.onSelect(game.key);
     this.paths.pushPath({ name: 'GameDetail' });
   }
-  private startLabel(game: Game): string { return this.lastGame === game.key ? '继续' : '开始'; }
+  private startLabel(game: Game): string { return str(this.lastGame === game.key ? $r('app.string.continue') : $r('app.string.start')); }
+  private startGameLabel(game: Game): Resource { return this.lastGame === game.key ? $r('app.string.resume_game') : $r('app.string.start_game'); }
   private columns(): string {
     const usable = this.pageWidth - this.inset() * 2 + 12;
     const count = Math.max(2, Math.min(6, Math.floor(usable / (L.gridMin + 12))));
@@ -75,9 +77,9 @@ export struct LauncherShell {
 
   @Builder cardMenu(game: Game) {
     Menu() {
-      MenuItem({ content: '开始游戏' }).enabled(this.ready).onClick(() => { this.onSelect(game.key); this.onStart(); })
-      MenuItem({ content: game.favorite ? '取消收藏' : '收藏' }).onClick(() => { this.onSelect(game.key); this.onFavorite(); })
-      MenuItem({ content: '触控布局' }).onClick(() => { this.onSelect(game.key); this.onControls(); })
+      MenuItem({ content: $r('app.string.start_game') }).enabled(this.ready).onClick(() => { this.onSelect(game.key); this.onStart(); })
+      MenuItem({ content: game.favorite ? $r('app.string.unfavorite') : $r('app.string.favorite') }).onClick(() => { this.onSelect(game.key); this.onFavorite(); })
+      MenuItem({ content: $r('app.string.touch_layout') }).onClick(() => { this.onSelect(game.key); this.onControls(); })
     }
   }
 
@@ -91,7 +93,7 @@ export struct LauncherShell {
       .accessibilityText(this.startLabel(game) + game.title).accessibilityGroup(true)
   }
 
-  @Builder iconButton(symbol: Resource, label: string, id: string, action: () => void) {
+  @Builder iconButton(symbol: Resource, label: Resource, id: string, action: () => void) {
     Stack() {
       SymbolGlyph(symbol).fontSize(20).fontColor([C.primary])
     }.id(id).width(L.target).height(L.target).borderRadius(R.pill)
@@ -115,24 +117,24 @@ export struct LauncherShell {
     }.width('100%').height('100%').backgroundColor(C.base).hitTestBehavior(HitTestMode.None)
   }
 
-  @Builder header(title: string, importable: boolean = true) {
+  @Builder header(title: ResourceStr, importable: boolean = true) {
     Row() {
       Text(title).fontSize(28).fontWeight(FontWeight.Bold).fontColor(C.primary)
       Blank()
-      if (importable) this.iconButton($r('sys.symbol.folder_badge_plus'), '导入游戏', 's2arm-import', this.onImport)
+      if (importable) this.iconButton($r('sys.symbol.folder_badge_plus'), $r('app.string.import_game'), 's2arm-import', this.onImport)
     }.height(L.header).width('100%').padding({ left: this.inset(), right: this.inset() })
   }
 
-  @Builder emptyState(title: string, importable: boolean) {
+  @Builder emptyState(title: ResourceStr, importable: boolean) {
     Column({ space: 20 }) {
       SymbolGlyph($r('sys.symbol.gamecontroller')).fontSize(56).fontColor([C.tertiary])
       Text(title).fontSize(18).fontWeight(FontWeight.Medium).fontColor(C.secondary)
       if (importable) {
-        Text('导入游戏').id('s2arm-import-first').fontSize(16).fontWeight(FontWeight.Medium).fontColor(C.inverse)
+        Text($r('app.string.import_game')).id('s2arm-import-first').fontSize(16).fontWeight(FontWeight.Medium).fontColor(C.inverse)
           .height(L.cta).padding({ left: 28, right: 28 }).borderRadius(R.pill).backgroundColor(C.primary)
           .onClick(this.onImport)
       } else {
-        Text('清除搜索').fontSize(16).fontColor(C.primary).height(L.cta).padding({ left: 24, right: 24 })
+        Text($r('app.string.clear_search')).fontSize(16).fontColor(C.primary).height(L.cta).padding({ left: 24, right: 24 })
           .borderRadius(R.pill).backgroundColor(C.elevated2).onClick(() => this.query = '')
       }
     }.width('100%').height(320).justifyContent(FlexAlign.Center)
@@ -164,7 +166,7 @@ export struct LauncherShell {
       .borderRadius(R.xl).clip(true)
       .shadow({ radius: 32, color: '#66000000', offsetY: 12 })
       .geometryTransition('hero-' + game.key)
-      .onClick(() => this.open(game)).accessibilityText(game.title + '，详情')
+      .onClick(() => this.open(game)).accessibilityText(str($r('app.string.game_details_a11y'), game.title))
       .bindContextMenu(this.cardMenu(game), ResponseType.LongPress)
   }
 
@@ -192,13 +194,13 @@ export struct LauncherShell {
       Column({ space: 24 }) {
         this.header('S2Arm')
         if (this.loading) this.skeleton()
-        else if (this.games.length === 0) this.emptyState('还没有游戏', true)
+        else if (this.games.length === 0) this.emptyState($r('app.string.no_games'), true)
         else {
           Column({ space: 12 }) {
             if (this.crashTitle.length > 0) {
               Row({ space: 8 }) {
                 SymbolGlyph($r('sys.symbol.xmark')).fontSize(14).fontColor([C.error])
-                Text('上次运行中断').fontSize(14).fontColor(C.error)
+                Text($r('app.string.last_run_interrupted')).fontSize(14).fontColor(C.error)
                 Blank()
                 SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([C.tertiary])
               }.width('100%').height(L.target).padding({ left: 16, right: 12 }).borderRadius(R.lg)
@@ -213,7 +215,7 @@ export struct LauncherShell {
             if (this.message.length > 0) Text(this.message).fontColor(C.error).fontSize(14).maxLines(3)
           }.padding({ left: this.inset(), right: this.inset() })
           Column({ space: 12 }) {
-            Text('最近').fontSize(20).fontWeight(FontWeight.Bold).fontColor(C.primary)
+            Text($r('app.string.recent')).fontSize(20).fontWeight(FontWeight.Bold).fontColor(C.primary)
               .padding({ left: this.inset() })
             List({ space: 12 }) {
               ForEach(sortGames(this.games, 'recent'), (game: Game) => {
@@ -244,24 +246,24 @@ export struct LauncherShell {
 
   @Builder library() {
     Column({ space: 12 }) {
-      this.header('游戏库')
+      this.header($r('app.string.library'))
       Column({ space: 12 }) {
         Row({ space: 12 }) {
-          Search({ value: this.query, placeholder: '搜索' }).height(44).layoutWeight(1)
+          Search({ value: this.query, placeholder: $r('app.string.search') }).height(44).layoutWeight(1)
             .backgroundColor(C.elevated).fontColor(C.primary).placeholderColor(C.tertiary)
             .onChange((value: string) => this.query = value)
-          Select(SORT_LABELS.map((label: string): SelectOption => ({ value: label })))
+          Select(SORT_LABELS.map((label: Resource): SelectOption => ({ value: label })))
             .selected(this.sortIndex).value(SORT_LABELS[this.sortIndex])
             .font({ size: 14 }).fontColor(C.primary).backgroundColor(C.elevated).height(44).borderRadius(R.pill)
             .onSelect((index: number) => this.sortIndex = index)
         }.width('100%')
         if (this.query.trim().length > 0) {
-          Text(filterGames(this.games, this.query).length.toString() + ' 个结果').fontSize(13).fontColor(C.tertiary)
+          Text($r('app.string.search_results', filterGames(this.games, this.query).length)).fontSize(13).fontColor(C.tertiary)
         }
       }.padding({ left: this.inset(), right: this.inset() }).alignItems(HorizontalAlign.Start)
       if (this.loading) this.skeleton()
       else if (filterGames(this.games, this.query).length === 0) {
-        this.emptyState(this.games.length === 0 ? '还没有游戏' : '没有匹配的游戏', this.games.length === 0)
+        this.emptyState(this.games.length === 0 ? $r('app.string.no_games') : $r('app.string.no_matches'), this.games.length === 0)
       } else {
         Grid() {
           ForEach(sortGames(filterGames(this.games, this.query), SORTS[this.sortIndex]), (game: Game) => {
@@ -274,7 +276,7 @@ export struct LauncherShell {
     }.width('100%').height('100%')
   }
 
-  @Builder settingsRow(symbol: Resource, label: string, value: string, id: string, callback: () => void) {
+  @Builder settingsRow(symbol: Resource, label: ResourceStr, value: string, id: string, callback: () => void) {
     Row({ space: 14 }) {
       SymbolGlyph(symbol).fontSize(20).fontColor([C.secondary])
       Text(label).fontSize(16).fontColor(C.primary)
@@ -287,16 +289,17 @@ export struct LauncherShell {
   @Builder settings() {
     Scroll() {
       Column({ space: 16 }) {
-        this.header('设置', false)
+        this.header($r('app.string.settings'), false)
         Column() {
-          this.settingsRow($r('sys.symbol.gamecontroller'), '控制与反馈', this.controller || '触屏', 's2arm-settings-input', this.onSettings)
+          this.settingsRow($r('sys.symbol.gamecontroller'), $r('app.string.controls_feedback'),
+            this.controller.length > 0 ? this.controller : str($r('app.string.touchscreen')), 's2arm-settings-input', this.onSettings)
           if (this.games.length > 0) {
             Divider().color(C.separator).margin({ left: 50 })
-            this.settingsRow($r('sys.symbol.square_grid_2x2'), '触控布局', this.touchValue, 's2arm-settings-touch', this.onControls)
+            this.settingsRow($r('sys.symbol.square_grid_2x2'), $r('app.string.touch_layout'), this.touchValue, 's2arm-settings-touch', this.onControls)
           }
         }.borderRadius(R.lg).backgroundColor(C.elevated).clip(true).margin({ left: this.inset(), right: this.inset() })
         Column() {
-          this.settingsRow($r('sys.symbol.arrow_down_to_line'), '运行日志', '', 's2arm-settings-diag', this.onDiagnostics)
+          this.settingsRow($r('sys.symbol.arrow_down_to_line'), $r('app.string.runtime_logs'), '', 's2arm-settings-diag', this.onDiagnostics)
         }.borderRadius(R.lg).backgroundColor(C.elevated).clip(true).margin({ left: this.inset(), right: this.inset() })
         if (this.version.length > 0) {
           Text(this.version).fontSize(12).fontColor(C.tertiary).width('100%').textAlign(TextAlign.Center)
@@ -327,25 +330,25 @@ export struct LauncherShell {
                   SymbolGlyph(this.current()!.favorite ? $r('sys.symbol.star_fill') : $r('sys.symbol.star'))
                     .fontSize(22).fontColor([this.current()!.favorite ? C.primary : C.secondary])
                 }.id('s2arm-favorite').width(L.target).height(L.target).onClick(this.onFavorite)
-                  .accessibilityText(this.current()!.favorite ? '取消收藏' : '收藏')
+                  .accessibilityText(this.current()!.favorite ? $r('app.string.unfavorite') : $r('app.string.favorite'))
               }.width('100%').alignItems(VerticalAlign.Top)
               if (this.message.length > 0) Text(this.message).fontSize(14).fontColor(C.error)
               Row({ space: 8 }) {
                 SymbolGlyph($r('sys.symbol.play_fill')).fontSize(18).fontColor([C.inverse])
-                Text(this.startLabel(this.current()!) + '游戏').fontSize(17).fontWeight(FontWeight.Medium)
+                Text(this.startGameLabel(this.current()!)).fontSize(17).fontWeight(FontWeight.Medium)
                   .fontColor(C.inverse)
               }.id('s2arm-detail-start').width('100%').height(52).justifyContent(FlexAlign.Center)
                 .borderRadius(R.pill).backgroundColor(this.ready ? C.primary : '#66F5F5F7')
                 .onClick(() => { if (this.ready) this.onStart(); })
               Column() {
-                this.settingsRow($r('sys.symbol.square_grid_2x2'), '触控布局', this.touchValue, 's2arm-detail-touch', this.onControls)
+                this.settingsRow($r('sys.symbol.square_grid_2x2'), $r('app.string.touch_layout'), this.touchValue, 's2arm-detail-touch', this.onControls)
               }.borderRadius(R.lg).backgroundColor(C.elevated).clip(true)
             }.alignItems(HorizontalAlign.Start).padding({ left: this.inset(), right: this.inset(), top: 8, bottom: 40 })
               .width('100%')
           }.width('100%').height('100%').scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring)
             .padding({ top: L.header })
           Row() {
-            this.iconButton($r('sys.symbol.chevron_left'), '返回', 's2arm-detail-back', () => { this.paths.pop(); })
+            this.iconButton($r('sys.symbol.chevron_left'), $r('app.string.back'), 's2arm-detail-back', () => { this.paths.pop(); })
           }.width('100%').height(L.header).padding({ left: this.inset() - 4 }).position({ x: 0, y: 0 })
         }.width('100%').height('100%')
       }.hideTitleBar(true).backgroundColor(C.base)
@@ -359,17 +362,17 @@ export struct LauncherShell {
         Tabs({ barPosition: BarPosition.End, index: this.tab }) {
           TabContent() { this.home() }
             .tabBar(BottomTabBarStyle.of({ normal: new SymbolGlyphModifier($r('sys.symbol.house')).fontColor([C.secondary]),
-              selected: new SymbolGlyphModifier($r('sys.symbol.house_fill')).fontColor([C.primary]) }, '首页')
+              selected: new SymbolGlyphModifier($r('sys.symbol.house_fill')).fontColor([C.primary]) }, $r('app.string.home'))
               .labelStyle({ unselectedColor: C.secondary, selectedColor: C.primary })
               .iconStyle({ unselectedColor: C.secondary, selectedColor: C.primary }))
           TabContent() { this.library() }
             .tabBar(BottomTabBarStyle.of({ normal: new SymbolGlyphModifier($r('sys.symbol.square_grid_2x2')).fontColor([C.secondary]),
-              selected: new SymbolGlyphModifier($r('sys.symbol.square_grid_2x2')).fontColor([C.primary]) }, '游戏库')
+              selected: new SymbolGlyphModifier($r('sys.symbol.square_grid_2x2')).fontColor([C.primary]) }, $r('app.string.library'))
               .labelStyle({ unselectedColor: C.secondary, selectedColor: C.primary })
               .iconStyle({ unselectedColor: C.secondary, selectedColor: C.primary }))
           TabContent() { this.settings() }
             .tabBar(BottomTabBarStyle.of({ normal: new SymbolGlyphModifier($r('sys.symbol.gearshape')).fontColor([C.secondary]),
-              selected: new SymbolGlyphModifier($r('sys.symbol.gearshape_fill')).fontColor([C.primary]) }, '设置')
+              selected: new SymbolGlyphModifier($r('sys.symbol.gearshape_fill')).fontColor([C.primary]) }, $r('app.string.settings'))
               .labelStyle({ unselectedColor: C.secondary, selectedColor: C.primary })
               .iconStyle({ unselectedColor: C.secondary, selectedColor: C.primary }))
         }.barHeight(L.tab).scrollable(false).animationDuration(0)

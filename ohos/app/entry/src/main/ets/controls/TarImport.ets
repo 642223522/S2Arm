@@ -3,6 +3,7 @@
 // download); entries are streamed into files/games/.import-<stamp> and the folder is published by renaming it,
 // exactly like the HDC import path. Nothing outside that folder is written; unsafe paths abort the import.
 import { fileIo as fs, statfs } from '@kit.CoreFileKit';
+import { str } from '../ui/Strings';
 
 const BLOCK: number = 512;
 const CHUNK: number = 8 * 1024 * 1024;
@@ -41,7 +42,7 @@ class Reader {
         const room = CHUNK - this.end;
         const scratch = new ArrayBuffer(room);
         const got = await this.readAt(this.base + this.end, scratch, room);
-        if (got <= 0) throw new Error('游戏包提前结束（文件可能没有下载完整）');
+        if (got <= 0) throw new Error(str($r('app.string.package_truncated')));
         new Uint8Array(this.buf).set(new Uint8Array(scratch, 0, got), this.end);
         this.end += got;
       }
@@ -98,7 +99,7 @@ function pax(b: Uint8Array): Map<string, string> {
 function safe(path: string): string {
   const parts = path.split('/').filter((p: string) => p.length > 0 && p !== '.');
   if (parts.length === 0 || path.startsWith('/') || parts.some((p: string) => p === '..' || p.indexOf('\\') >= 0))
-    throw new Error('游戏包含有不安全的路径：' + path);
+    throw new Error(str($r('app.string.package_unsafe_path'), path));
   return parts.join('/');
 }
 
@@ -127,7 +128,7 @@ export async function importGamePackage(uris: string[], filesDir: string,
   const free = statfs.getFreeSizeSync(filesDir);
   if (free < total + 512 * 1024 * 1024) {
     closeAll();
-    throw new Error('手机剩余空间不足：需要约 ' + (total / 1073741824).toFixed(1) + ' GB，当前可用 ' + (free / 1073741824).toFixed(1) + ' GB');
+    throw new Error(str($r('app.string.package_no_space'), (total / 1073741824).toFixed(1), (free / 1073741824).toFixed(1)));
   }
   const stamp = Date.now().toString(36);
   const temp = games + '/.import-' + stamp;
@@ -161,7 +162,7 @@ export async function importGamePackage(uris: string[], filesDir: string,
       const rel = safe(name);
       const dest = temp + '/' + rel;
       if (type === '5') { if (!fs.accessSync(dest)) fs.mkdirSync(dest, true); continue; }
-      if (type !== '0') throw new Error('游戏包含有不支持的条目类型 ' + type + '：' + rel);
+      if (type !== '0') throw new Error(str($r('app.string.package_unsupported_entry'), type, rel));
       const slash = dest.lastIndexOf('/');
       const dir = dest.substring(0, slash);
       if (!fs.accessSync(dir)) fs.mkdirSync(dir, true);
@@ -181,15 +182,15 @@ export async function importGamePackage(uris: string[], filesDir: string,
       if (padded > size) await reader.take(padded - size);
       files++;
     }
-    if (!fs.accessSync(temp + '/ready.json')) throw new Error('这不是 S2Arm 游戏包：缺少 ready.json');
+    if (!fs.accessSync(temp + '/ready.json')) throw new Error(str($r('app.string.package_not_s2arm')));
     let key = '';
     if (fs.accessSync(temp + '/s2arm-import.json')) {
       const m = JSON.parse(fs.readTextSync(temp + '/s2arm-import.json')) as ImportManifest;
       key = typeof m.key === 'string' ? m.key : '';
     }
-    if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(key)) throw new Error('游戏包缺少有效的游戏代号');
+    if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(key)) throw new Error(str($r('app.string.package_missing_key')));
     const to = games + '/' + key;
-    if (fs.accessSync(to)) throw new Error('手机上已有「' + key + '」，为保护资源和存档未覆盖；如需重装请先在游戏库删除');
+    if (fs.accessSync(to)) throw new Error(str($r('app.string.package_exists'), key));
     fs.renameSync(temp, to);
     progress({ files: files, bytes: total, total: total });
     return { key: key, files: files, bytes: written };

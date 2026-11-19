@@ -6,6 +6,7 @@ import { hiAppEvent } from '@kit.PerformanceAnalysisKit';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { common } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
+import { str } from '../ui/Strings';
 
 export interface SessionInfo { key: string; title: string; titleId: string; mode: string; started: number; }
 
@@ -115,7 +116,7 @@ export function buildReport(files: string, appVersion: string): string {
 export async function exportReport(context: common.UIAbilityContext, files: string, appVersion: string): Promise<string> {
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').substring(0, 15);
   const options = new picker.DocumentSaveOptions();
-  options.newFileNames = ['S2Arm-诊断-' + stamp + '.txt'];
+  options.newFileNames = [str($r('app.string.diagnostics_file_name'), stamp)];
   const uris = await new picker.DocumentViewPicker(context).save(options);
   if (uris.length === 0) return '';
   const file = fs.openSync(uris[0], fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);

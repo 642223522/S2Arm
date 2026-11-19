@@ -5,7 +5,8 @@ import { pasteboard } from '@kit.BasicServicesKit';
 import { util } from '@kit.ArkTS';
 import { touchPulse } from './TouchFeedback';
 import { Glass, IMMERSIVE } from '../ui/Theme';
-import { PadButton, PadStick, PadContact, TouchProfile, ButtonLook, ICONS,
+import { str } from '../ui/Strings';
+import { PadButton, PadStick, PadContact, TouchProfile, ButtonLook, ICONS, ICON_NAMES, PRESET_NAMES,
   defaultProfile, actionProfile, cloneProfile, parseProfile, buttonBit, buttonLabel, stickAxes } from './TouchModel';
 
 @Component
@@ -38,7 +39,7 @@ export struct TouchDeck {
   @State idle: boolean = false;
   private idleTimer: number = -1;
   @State skin: string = 'console';
-  @State presetName: string = '掌机 · 通用';
+  @State presetName: string = str(PRESET_NAMES[0]);
   @State deadzone: number = 8;
   @State fileBusy: boolean = false;
   private profile: TouchProfile = defaultProfile();
@@ -54,7 +55,7 @@ export struct TouchDeck {
     try {
       const path = this.profilePath();
       if (fs.accessSync(path) && fs.statSync(path).size <= 65536) this.profile = parseProfile(fs.readTextSync(path));
-    } catch (error) { this.status = '旧布局暂时无法读取，使用默认布局'; }
+    } catch (error) { this.status = str($r('app.string.layout_read_failed')); }
     this.saved = cloneProfile(this.profile);
     this.controlOpacity = Math.round(this.profile.opacity * 100);
     this.editing = this.preview || this.editOnOpen;
@@ -93,7 +94,7 @@ export struct TouchDeck {
     this.selectedId = id;
     const b = this.profile.layout.buttons.find((x: PadButton) => x.id === id);
     const s = this.profile.layout.sticks.find((x: PadStick) => 'stick-' + x.id === id);
-    this.label = b ? this.look(id).label : (id === 'stick-left' ? '左摇杆' : '右摇杆');
+    this.label = b ? this.look(id).label : str(id === 'stick-left' ? $r('app.string.left_stick') : $r('app.string.right_stick'));
     this.controlSize = Math.round((b ? b.width : s ? s.radius : 0.15) * 100);
   }
   private editLook(label: string, icon: string) {
@@ -126,10 +127,10 @@ export struct TouchDeck {
         fs.copyFileSync(path, history + '/' + this.gameId + '-' + Date.now().toString() + '.json');
       }
       fs.renameSync(temp, path);
-      this.saved = cloneProfile(this.profile); this.status = '已保存到这款游戏';
+      this.saved = cloneProfile(this.profile); this.status = str($r('app.string.layout_saved'));
       this.editing = false; this.onEditing(false); this.inspector = false; this.release();
       if (this.preview) this.onClose();
-    } catch (error) { this.status = '保存未完成：' + String(error); }
+    } catch (error) { this.status = str($r('app.string.layout_save_failed'), String(error)); }
   }
   private cancel() {
     this.profile = cloneProfile(this.saved); this.controlOpacity = Math.round(this.profile.opacity * 100);
@@ -166,7 +167,7 @@ export struct TouchDeck {
       if (e.type === TouchType.Down) {
         const control = this.hit(point.x, point.y);
         if (!control) continue;
-        if (this.editing) { this.choose(control); this.status = '拖动位置，打开外观调整尺寸和名称'; }
+        if (this.editing) { this.choose(control); this.status = str($r('app.string.layout_edit_hint')); }
         if (control.startsWith('stick-') && Array.from(this.contacts.values()).some((c: PadContact) => c.control === control)) continue;
         if (this.editing && this.contacts.size > 0) continue;
         this.contacts.set(point.id, { pointer: point.id, control: control, originX: point.x, originY: point.y, x: point.x, y: point.y });
@@ -227,7 +228,7 @@ export struct TouchDeck {
       c.strokeStyle = '#2E372F'; c.lineWidth = 1;
       for (let x=24;x<this.canvasWidth;x+=40) { c.beginPath();c.moveTo(x,48);c.lineTo(x,this.canvasHeight-24);c.stroke(); }
       for (let y=48;y<this.canvasHeight;y+=40) { c.beginPath();c.moveTo(24,y);c.lineTo(this.canvasWidth-24,y);c.stroke(); }
-      if (this.preview) { c.fillStyle='#ABB9CB';c.font='14px sans-serif';c.textAlign='center';c.fillText('拖动按键调整位置',this.canvasWidth/2,this.canvasHeight*.38); }
+      if (this.preview) { c.fillStyle='#ABB9CB';c.font='14px sans-serif';c.textAlign='center';c.fillText(str($r('app.string.layout_drag_hint')),this.canvasWidth/2,this.canvasHeight*.38); }
     }
     c.globalAlpha = this.editing ? 1 : this.profile.opacity;
     for (const s of this.profile.layout.sticks) {
@@ -270,7 +271,7 @@ export struct TouchDeck {
     this.controlOpacity = Math.round(this.profile.opacity * 100);
     this.deadzone = Math.round((this.profile.deadzone ?? 0.08) * 100);
     this.choose('A');
-    this.status = '预览方案；点击保存才会替换当前布局。旧布局会保留副本。';
+    this.status = str($r('app.string.layout_preset_preview'));
     this.draw();
   }
   private applyImport(text: string) {
@@ -279,32 +280,32 @@ export struct TouchDeck {
     this.controlOpacity = Math.round(next.opacity * 100);
     this.deadzone = Math.round((next.deadzone ?? 0.08) * 100);
     this.choose('A'); this.exchange = false;
-    this.status = '已读入方案，点击保存后生效。'; this.release();
+    this.status = str($r('app.string.layout_loaded')); this.release();
   }
   private async importFile() {
     if (this.fileBusy) return;
     this.fileBusy = true; this.release();
     try {
       const view = new picker.DocumentViewPicker(getContext(this) as common.UIAbilityContext);
-      const uris = await view.select({ maxSelectNumber: 1, fileSuffixFilters: ['触控布局|.json'] });
+      const uris = await view.select({ maxSelectNumber: 1, fileSuffixFilters: [str($r('app.string.touch_layout')) + '|.json'] });
       if (uris.length === 0) return;
       const file = fs.openSync(uris[0], fs.OpenMode.READ_ONLY);
       let text = '';
       try {
         const info = fs.statSync(file.fd);
-        if (!info.isFile() || info.size < 1 || info.size > 65536) throw new Error('请选择 64 KiB 以内的 JSON 文件');
+        if (!info.isFile() || info.size < 1 || info.size > 65536) throw new Error(str($r('app.string.layout_file_too_large')));
         const bytes = new Uint8Array(info.size);
         let done = 0;
         while (done < info.size) {
           const buffer = new ArrayBuffer(Math.min(4096, info.size - done));
           const count = fs.readSync(file.fd, buffer);
-          if (count < 1) throw new Error('文件读取不完整');
+          if (count < 1) throw new Error(str($r('app.string.file_read_incomplete')));
           bytes.set(new Uint8Array(buffer, 0, count), done); done += count;
         }
         text = util.TextDecoder.create('utf-8', { fatal: true, ignoreBOM: true }).decodeToString(bytes);
       } finally { fs.closeSync(file); }
       this.applyImport(text);
-    } catch (error) { this.status = '未导入：' + String(error); }
+    } catch (error) { this.status = str($r('app.string.layout_not_imported'), String(error)); }
     finally { this.fileBusy = false; }
   }
   private async exportFile() {
@@ -313,69 +314,70 @@ export struct TouchDeck {
     try {
       parseProfile(JSON.stringify(this.profile));
       const view = new picker.DocumentViewPicker(getContext(this) as common.UIAbilityContext);
-      const uris = await view.save({ newFileNames: ['S2Arm-' + this.profile.layout.id + '.json'], fileSuffixChoices: ['触控布局|.json'] });
+      const uris = await view.save({ newFileNames: ['S2Arm-' + this.profile.layout.id + '.json'], fileSuffixChoices: [str($r('app.string.touch_layout')) + '|.json'] });
       if (uris.length === 0) return;
       const file = fs.openSync(uris[0], fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
       try { fs.writeSync(file.fd, JSON.stringify(this.profile, null, 2)); fs.fsyncSync(file.fd); }
       finally { fs.closeSync(file); }
-      this.status = '方案已导出到你选择的位置。';
-    } catch (error) { this.status = '未导出：' + String(error); }
+      this.status = str($r('app.string.layout_exported'));
+    } catch (error) { this.status = str($r('app.string.layout_not_exported'), String(error)); }
     finally { this.fileBusy = false; }
   }
   @Builder padBar() {
     Row({space:8}) {
-      if(this.editing) Text('触控布局').fontColor('#F2F7FC').fontSize(14).fontWeight(FontWeight.Medium)
+      if(this.editing) Text($r('app.string.touch_layout')).fontColor('#F2F7FC').fontSize(14).fontWeight(FontWeight.Medium)
       if(this.editing) {
         Text(this.gameTitle).fontColor('#ABB9CB').fontSize(11).maxLines(1).width(150)
-        Button('外观').fontSize(12).height(32).backgroundColor('#1C2C42').onClick(()=>this.inspector=!this.inspector)
-        Select([{value:'掌机 · 通用'}, {value:'动作布局 · 探索'}, {value:'动作布局 · 战斗'}, {value:'动作布局 · 菜单'}])
+        Button($r('app.string.appearance')).fontSize(12).height(32).backgroundColor('#1C2C42').onClick(()=>this.inspector=!this.inspector)
+        Select(PRESET_NAMES.map((name: Resource): SelectOption => ({ value: str(name) })))
           .value(this.presetName).font({ size: 11 }).fontColor('#D9E7E2').backgroundColor('#182622').height(32).width(150)
           .onSelect((index: number): void => { this.usePreset(index); })
-        Button('导入 / 导出').fontSize(12).height(32).backgroundColor('#1C2C42').onClick(()=>{this.release();this.exchangeText=JSON.stringify(this.profile,null,2);this.exchange=true;})
+        Button($r('app.string.import_export')).fontSize(12).height(32).backgroundColor('#1C2C42').onClick(()=>{this.release();this.exchangeText=JSON.stringify(this.profile,null,2);this.exchange=true;})
         Blank()
-        Button('取消').fontSize(12).height(32).backgroundColor('#1C2C42').onClick(()=>this.cancel())
-        Button('保存布局').fontSize(12).height(32).backgroundColor('#A6E3E8').fontColor('#102334').onClick(()=>this.save())
+        Button($r('app.string.cancel')).fontSize(12).height(32).backgroundColor('#1C2C42').onClick(()=>this.cancel())
+        Button($r('app.string.save_layout')).fontSize(12).height(32).backgroundColor('#A6E3E8').fontColor('#102334').onClick(()=>this.save())
       } else {
         Blank()
-        Button(this.auxiliary ? '收起辅助' : '辅助键').fontSize(10).height(44).fontColor('#F2F7FC').backgroundColor('#221C2C42').onClick(()=>{this.release();this.auxiliary=!this.auxiliary;this.draw();})
-        Button('布局').fontSize(10).height(44).fontColor('#F2F7FC').backgroundColor('#5010171D').onClick(()=>{this.release();this.saved=cloneProfile(this.profile);this.editing=true;this.onEditing(true);this.draw();})
-        Button('隐藏').fontSize(10).height(44).fontColor('#F2F7FC').backgroundColor('#221C2C42').onClick(()=>{this.release();this.onClose();})
+        Button(this.auxiliary ? $r('app.string.aux_hide') : $r('app.string.aux_show')).fontSize(10).height(44).fontColor('#F2F7FC').backgroundColor('#221C2C42').onClick(()=>{this.release();this.auxiliary=!this.auxiliary;this.draw();})
+        Button($r('app.string.layout')).fontSize(10).height(44).fontColor('#F2F7FC').backgroundColor('#5010171D').onClick(()=>{this.release();this.saved=cloneProfile(this.profile);this.editing=true;this.onEditing(true);this.draw();})
+        Button($r('app.string.hide')).fontSize(10).height(44).fontColor('#F2F7FC').backgroundColor('#221C2C42').onClick(()=>{this.release();this.onClose();})
       }
     }.padding({left:24,right:24,top:8,bottom:8}).width('100%').backgroundColor(this.editing?'#F0181C19':'#00181C19')
   }
   @Builder properties() {
     Column({space:10}) {
-      Text(this.selectedId.startsWith('stick-')?this.label:'按键 '+this.selectedId).fontSize(16).fontWeight(FontWeight.Bold).fontColor('#F2F7FC')
+      Text(this.selectedId.startsWith('stick-')?this.label:str($r('app.string.button_named'), this.selectedId)).fontSize(16).fontWeight(FontWeight.Bold).fontColor('#F2F7FC')
       if(!this.selectedId.startsWith('stick-')) {
-        TextInput({text:this.label,placeholder:'按键名称'}).height(40).maxLength(12).fontColor('#F2F7FC').backgroundColor('#0C1422')
+        TextInput({text:this.label,placeholder:$r('app.string.button_name')}).height(40).maxLength(12).fontColor('#F2F7FC').backgroundColor('#0C1422')
           .onChange((v:string)=>this.editLook(v,this.look(this.selectedId).icon))
-        Select(ICONS.map((x:string):SelectOption=>({value:x}))).value(this.look(this.selectedId).icon).fontColor('#F2F7FC')
-          .onSelect((_index:number,value:string)=>this.editLook(this.label,value))
+        Select(ICON_NAMES.map((x:Resource):SelectOption=>({value:x})))
+          .value(ICON_NAMES[Math.max(0, ICONS.indexOf(this.look(this.selectedId).icon))]).fontColor('#F2F7FC')
+          .onSelect((index:number)=>this.editLook(this.label,ICONS[index]))
       }
-      Text('尺寸 '+this.controlSize.toString()).fontColor('#ABB9CB').fontSize(12)
+      Text($r('app.string.size_value', this.controlSize)).fontColor('#ABB9CB').fontSize(12)
       Slider({value:this.controlSize,min:6,max:30,step:1}).selectedColor('#A6E3E8').onChange((v:number)=>this.resize(v))
-      Text('不透明度 '+this.controlOpacity.toString()+'%').fontColor('#ABB9CB').fontSize(12)
+      Text($r('app.string.opacity_value', this.controlOpacity.toString()+'%')).fontColor('#ABB9CB').fontSize(12)
       Slider({value:this.controlOpacity,min:20,max:100,step:5}).selectedColor('#A6E3E8').onChange((v:number)=>{this.controlOpacity=v;this.profile.opacity=v/100;this.draw();})
-      Text('摇杆死区 '+this.deadzone.toString()+'%').fontColor('#ABB9CB').fontSize(12)
+      Text($r('app.string.deadzone_value', this.deadzone.toString()+'%')).fontColor('#ABB9CB').fontSize(12)
       Slider({value:this.deadzone,min:0,max:25,step:1}).selectedColor('#A6E3E8').onChange((v:number)=>{this.deadzone=v;this.profile.deadzone=v/100;})
-      Text(this.status||'点选控件后拖动；摇杆虚线框是可触发区域。').fontColor('#ABB9CB').fontSize(11)
-      Button('收起').height(30).fontSize(12).backgroundColor('#0C1422').onClick(()=>this.inspector=false)
+      Text(this.status.length>0?this.status:$r('app.string.layout_inspector_hint')).fontColor('#ABB9CB').fontSize(11)
+      Button($r('app.string.collapse')).height(30).fontSize(12).backgroundColor('#0C1422').onClick(()=>this.inspector=false)
     }.width(230).padding(16).backgroundColor('#16161C').borderRadius(18).position({x:24,y:58})
   }
   @Builder exchangeDialog() {
     Column({space:12}) {
-      Text('分享你的触控方案').fontColor('#F2F7FC').fontSize(20).fontWeight(FontWeight.Bold)
+      Text($r('app.string.share_layout')).fontColor('#F2F7FC').fontSize(20).fontWeight(FontWeight.Bold)
       Row({space:12}) {
-        Button('从文件导入').height(38).backgroundColor('#284237').enabled(!this.fileBusy).onClick(()=>this.importFile())
-        Button('导出到文件').height(38).backgroundColor('#284237').enabled(!this.fileBusy).onClick(()=>this.exportFile())
-        Text('兼容 F01 / S2Arm JSON').fontSize(11).fontColor('#ABB9CB')
+        Button($r('app.string.import_from_file')).height(38).backgroundColor('#284237').enabled(!this.fileBusy).onClick(()=>this.importFile())
+        Button($r('app.string.export_to_file')).height(38).backgroundColor('#284237').enabled(!this.fileBusy).onClick(()=>this.exportFile())
+        Text($r('app.string.layout_formats')).fontSize(11).fontColor('#ABB9CB')
       }
-      TextArea({text:this.exchangeText,placeholder:'也可粘贴布局文本'}).height('38%').fontSize(11)
+      TextArea({text:this.exchangeText,placeholder:$r('app.string.paste_layout')}).height('38%').fontSize(11)
         .fontColor('#F2F7FC').backgroundColor('#0C1422').onChange((v:string)=>this.exchangeText=v)
       Row({space:12}) {
-        Button('关闭').backgroundColor('#0C1422').onClick(()=>this.exchange=false)
-        Button('复制').backgroundColor('#1C2C42').onClick(()=>{pasteboard.getSystemPasteboard().setData(pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN,this.exchangeText)).then(()=>this.status='已复制方案');})
-        Button('应用文本').backgroundColor('#A6E3E8').fontColor('#102334').onClick(()=>{try{this.applyImport(this.exchangeText);}catch(error){this.status='导入失败：'+String(error);}})
+        Button($r('app.string.close')).backgroundColor('#0C1422').onClick(()=>this.exchange=false)
+        Button($r('app.string.copy')).backgroundColor('#1C2C42').onClick(()=>{pasteboard.getSystemPasteboard().setData(pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN,this.exchangeText)).then(()=>this.status=str($r('app.string.layout_copied')));})
+        Button($r('app.string.apply_text')).backgroundColor('#A6E3E8').fontColor('#102334').onClick(()=>{try{this.applyImport(this.exchangeText);}catch(error){this.status=str($r('app.string.import_failed'), String(error));}})
       }
       Text(this.status).fontSize(12).fontColor('#ABB9CB')
     }.padding(24).width('78%').height('88%').backgroundColor('#16161C').borderRadius(20)
