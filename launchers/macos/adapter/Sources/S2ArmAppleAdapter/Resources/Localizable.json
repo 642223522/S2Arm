@@ -3932,6 +3932,38 @@
   "en": "Development mode needs the .NET 10 SDK. For the complete app, reinstall it to restore the bundled runtime, then recheck the environment."
  },
  {
+  "source": "安卓出包还没开放：等新版本开放后再出。",
+  "en": "Android export isn't open yet: wait for a version that opens it."
+ },
+ {
+  "source": "检查网络后重试；也可以自己装 Android SDK Platform-Tools（含 adb），装好后再试。",
+  "en": "Check your network and try again, or install Android SDK Platform-Tools (with adb) yourself and retry."
+ },
+ {
+  "source": "重新插好数据线，在手机上允许 USB 调试，然后点「刷新」再试。",
+  "en": "Reconnect the cable, allow USB debugging on the phone, then tap Refresh and try again."
+ },
+ {
+  "source": "安卓出包还没开放。",
+  "en": "Android export isn't open yet."
+ },
+ {
+  "source": "下载安卓调试工具（adb）",
+  "en": "Downloading the Android debugging tool (adb)"
+ },
+ {
+  "source": "adb devices 失败：",
+  "en": "adb devices failed: "
+ },
+ {
+  "source": "下载的 platform-tools 里没有 adb。",
+  "en": "The downloaded platform-tools has no adb."
+ },
+ {
+  "source": "下载安卓调试工具（adb）失败：{0}。检查网络后重试；也可以自己装 Android SDK Platform-Tools。",
+  "en": "Downloading the Android debugging tool (adb) failed: {0}. Check your network and try again, or install Android SDK Platform-Tools yourself."
+ },
+ {
   "source": "在「设置」的环境检查中安装 .NET 10 SDK，完成后重新检查，再打 iPhone 包。",
   "en": "Install the .NET 10 SDK from the environment checks in Settings, recheck, then generate the iPhone package again."
  },

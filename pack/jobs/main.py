@@ -26,6 +26,7 @@ if os.name == "nt":   # 作业主程序自己也要长路径处理：子 Python 
     sys.path.insert(1, str(Path(__file__).resolve().parents[2]))
     from pack.orch import winlong as _winlong
     _winlong.install()
+import android_export
 import apple_login
 import awake
 import community
@@ -110,7 +111,8 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
                   "pushSelected": install.push_selected,
                   "signModeSet": install.sign_mode_set,
                   "saveStatus": saves.status, "saveBackup": saves.backup, "saveInspect": saves.inspect, "saveRestore": saves.restore, "savePrevious": save_previous.status, "saveRestorePrevious": save_previous.restore,
-                  "community": community.listing, "communitySave": community.save, "patchMatch": patches.match, "sgradeScan": sgrade.scan, "sgradeUpgradeGame": sgrade.upgrade_one, "sgradeUpgradeBatch": sgrade.upgrade_batch, "sgradeUpgradeStop": sgrade.upgrade_stop, "sgradeUpgradeStatus": sgrade.upgrade_status, "updateHints": host_update.update_hints, "phoneOverview": host_update.phone_overview, "sgradeMac": sgrade.mac_all, "sgradeReenable": sgrade.reenable, "devCert": devcert.operation, "export": export_plan.export}
+                  "community": community.listing, "communitySave": community.save, "patchMatch": patches.match, "sgradeScan": sgrade.scan, "sgradeUpgradeGame": sgrade.upgrade_one, "sgradeUpgradeBatch": sgrade.upgrade_batch, "sgradeUpgradeStop": sgrade.upgrade_stop, "sgradeUpgradeStatus": sgrade.upgrade_status, "updateHints": host_update.update_hints, "phoneOverview": host_update.phone_overview, "sgradeMac": sgrade.mac_all, "sgradeReenable": sgrade.reenable, "devCert": devcert.operation, "export": export_plan.export,
+                  "android": android_export.build_job, "androidDevices": android_export.devices_job}
     if operation_overrides:
         operations.update(operation_overrides)
     try:
@@ -118,7 +120,7 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
             raise Failure("不支持的任务类型。")
         if c.operation == "import" and c.r.get("partialResults") is True:   # 默认路径不带 sources（结果与任务记录同 #124 之前）
             c.import_result = library.initial_import_result(c)
-        if c.operation not in saves.OPERATIONS and c.operation not in ORCHESTRATION:
+        if c.operation not in saves.OPERATIONS and c.operation not in ORCHESTRATION + DEVICE_ONLY:
             embedded.install(c)
         if c.operation not in NO_LIBRARY:
             layout.ensure(c)   # 旧布局的库先一次性整理成新结构（layout.py），之后各作业只按新布局找路径
@@ -247,10 +249,11 @@ def background_priority():
         print(f"[s2a] 自动任务降优先级没做成，照常跑：{error}", file=sys.stderr, flush=True)
 
 
-KEEP_AWAKE = ("build", "ipa", "install", "installUpdate", "installRestore", "exportPush", "tvInstall", "tvExport")   # 出包 / 推送期间电脑不空闲休眠（awake.py；v0.3.1 玩家推大包被休眠打断成「传输中断」）
+KEEP_AWAKE = ("build", "ipa", "android", "install", "installUpdate", "installRestore", "exportPush", "tvInstall", "tvExport")   # 出包 / 推送期间电脑不空闲休眠（awake.py；v0.3.1 玩家推大包被休眠打断成「传输中断」）
 HEAL_AFTER = ("import", "build", "ipa")   # 结束时顺手把还叫游戏号的文件夹改英文名（layout.heal_folder_names）
 ORCHESTRATION = ("export",)   # 只起子作业的编排：引擎副本、游戏库结构由每一步的子作业自己核（剃刀 H13）
-NO_LIBRARY = ORCHESTRATION + ("preflight", "prepareEngine", "downloadMetal", "downloadIosPlatform", "installDotnet", "targetDevice", "setup", "signingProject", "devCert", "appleLogin", "appleAccount")
+DEVICE_ONLY = ("androidDevices",)   # 只问已连接设备（adb），不碰引擎副本与游戏库
+NO_LIBRARY = ORCHESTRATION + DEVICE_ONLY + ("preflight", "prepareEngine", "downloadMetal", "downloadIosPlatform", "installDotnet", "targetDevice", "setup", "signingProject", "devCert", "appleLogin", "appleAccount")
 
 
 def parser():

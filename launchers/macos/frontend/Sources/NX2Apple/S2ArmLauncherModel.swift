@@ -132,6 +132,8 @@ struct QueuedExport {
     var location: String? = nil
     /// "export" = 这次出包是为了导出自签包（作业层步骤名照自签路写）
     var mode: String? = nil
+    /// 安卓出好装到哪台（adb 序列号）：控制口显式给的；nil = 界面上选的那台（androidPhone）
+    var androidSerial: String? = nil
 }
 
 /// 这次出包要占多少、盘上还有多少（只取游戏库所在的卷）。
@@ -860,7 +862,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// platforms 不给 = 出包页勾的；本机控制口（AI 操作）按命令给一个平台，deviceTarget 只用于 iPhone 出包（提示地址窗口）。
     @discardableResult
     func export(_ game: GameSummary, platforms chosen: [ExportPlatform]? = nil, deviceTarget: [String: Any]? = nil, spaceOverride: Bool = false, location: String? = nil,
-                mode: String? = nil) -> ExportBlocker? {
+                mode: String? = nil, androidSerial: String? = nil) -> ExportBlocker? {
         if let blocker = exportBlocker(game, platforms: chosen), blocker.stopsStart { return blocker }
         // 这款有下游深度方案、玩家还没选过、这次要出 iPhone：先问一次（选完 chooseDownstream 接着导出）。选过就照选的走，作业层按记下的选择分流
         if game.downstream != nil, game.downstream?.choice == nil, (chosen ?? exportTargets).contains(.ios) {
@@ -868,7 +870,8 @@ public final class S2ArmLauncherModel: ObservableObject {
             downstreamPromptFor = game.id
             return nil
         }
-        let item = QueuedExport(game: game, platforms: chosen ?? exportTargets, target: deviceTarget ?? currentDeviceTarget, spaceOverride: spaceOverride, location: location, mode: mode)
+        let item = QueuedExport(game: game, platforms: chosen ?? exportTargets, target: deviceTarget ?? currentDeviceTarget, spaceOverride: spaceOverride, location: location, mode: mode,
+                                androidSerial: androidSerial)
         exportFor = nil
         welcomeGameID = nil
         if mainBusy || batchRunning || phoneHolds(game.id) {   // 正在出别的 / 一批正在出 / 这款正在装到手机（装机读它的程序件）：排队，出完 / 装完接着出（11-08 维护者：出好一个接着出下一个）
@@ -922,6 +925,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         if let target = item.target { plan["deviceTarget"] = target }
         if item.spaceOverride { plan["spaceOverride"] = true }
         if !sgradeOn(game.id) { plan["sgrade"] = false }   // 出包页取消「S 级优化（Beta）」：这次不带社区补丁与金手指（pack/jobs/patches.py prepare）
+        if platforms.contains(.android), let serial = item.androidSerial ?? androidPhone { plan["androidSerial"] = serial }   // 出好接着装到这台安卓手机（export_plan → installSerial）
         start(session) { [weak self] sink in
             guard let self else { return nil }
             do { _ = try await self.provider.export(plan: plan, hasIPhone: platforms.contains(.ios), mode: item.mode, events: self.exportSink(sink)) }
@@ -1181,6 +1185,10 @@ public final class S2ArmLauncherModel: ObservableObject {
     var phoneAutoFails: [String: Int] = [:]   // 自动更新后台作业连续失败次数（notePhoneAuto，+PhoneBanner.swift）
     var phonePrepareStarted = false   // 首启在电脑侧准备 iPhone 更新只做一次（准备期间不出横幅，不能再靠横幅状态挡重复）
     /// Apple TV（tvOS 版，S2ArmLauncherModel+AppleTV）：配对过的电视、出包页选的那台、存档自动备份循环起没起
+    /// 安卓（开关后，S2ArmLauncherModel+Android.swift）：androidDevices 作业回报的开关与已连接手机、玩家选的那台（nil = 只连一台就用它）
+    @Published var androidEnabled = false
+    @Published var androidPhones: [[String: Any]] = []
+    @Published var androidPhoneChoice: String?
     @Published var appleTVs: [[String: Any]] = []
     @Published var appleTVChoice: String?
     var tvBackupStarted = false
