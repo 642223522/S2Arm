@@ -75,11 +75,10 @@ static class SwshXlate
         public ReadOnlySpan<ulong> GetCode(ulong address, int minimumSize) => address >= (ulong)_code.Length ? default : MemoryMarshal.Cast<byte, ulong>(new ReadOnlySpan<byte>(_code)[(int)address..]);
         // 追不到槽的句柄（Ryujinx 回退 <阶段>_<t|s>_cb0_40000000）：采样贴图按整段编号读池（纹理号 20 位、采样器号 12 位，同上游参考实现（MIT）Program.cs），
         //   S2A.Dsh PoolArrays 把这两个数组改成指向宿主池表的指针（nvn_mtl.m pool_gpu）。原先写死 32：下标夹到 31、宿主第 k 项绑第 k 个贴图槽，
-        //   句柄指的贴图编号 ≥ 32 时读到别的贴图（时之笛 4,454 支、阴影深度比较）。贴图缓冲与图像仍按槽绑 32 项（QueryBindlessSlotArrayLength、nvn_mtl.m TEXD）
+        //   句柄指的贴图编号 ≥ 32 时读到别的贴图（时之笛 4,454 支、阴影深度比较）。贴图缓冲与图像同样按整段编号（宿主按元素类型分表）
         public int QuerySamplerArrayLengthFromPool() => 1 << 12;
         public int QueryTextureArrayLengthFromBuffer(int slot) => 32;
         public int QueryTextureArrayLengthFromPool() => 1 << 20;
-        public int QueryBindlessSlotArrayLength() => 32;
 
         string Get(string table, int slot) => _job[table] is JsonObject t && t[slot.ToString()] is JsonNode n ? (n is JsonObject o ? (string)o["type"] : (string)n) : null;
         // A handle's texture or image slot, numbered as dmsh_build.py decode_tex numbers the reflection's (so an answer table row names the slot the reflection shows): the handle ORs two

@@ -226,7 +226,6 @@ namespace S2A.DirectCompiler
         public bool QueryBindlessPhiSeeThrough() => Record("QueryBindlessPhiSeeThrough", "", true, "translator:phi-see-through (same as dmsh_xlate)");
         // 0 = 回退数组一律按池长（上游原样）：安卓宿主 textureArrayLength / samplerArrayLength 就是真实描述符池容量（vk_record.c OP_SET_TEX_POOL），
         //   贴图缓冲 / 图像也按池编号取；没有 nvn_mtl.m TEXD 那种按槽绑的约定，答 32 会把编号 ≥ 32 的贴图缓冲 / 图像夹到第 31 项读错图
-        public int QueryBindlessSlotArrayLength() => Record("QueryBindlessSlotArrayLength", "", 0, "direct-v1:pool-length (no per-slot texture-buffer/image binding)");
         public bool QueryS2ARuntimeState() => Record("QueryS2ARuntimeState", "", false, "direct-v1:host does not fill s2a_flags / s2a_point");
         public void RecordTexelFetch1D(int handle) => Record("RecordTexelFetch1D", "handle=" + handle, "recorded", "direct-v1:no-tbuf-as-2d host contract");
         public bool QueryHostStorageWindowClamp() => Record("QueryHostStorageWindowClamp", "", false, "direct-v1:no-storage-window-instrumentation");

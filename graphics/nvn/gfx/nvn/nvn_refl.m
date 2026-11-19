@@ -88,7 +88,8 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
                 r->kind = NVN_RB_IMGA; r->rw = 1; o->nb++; continue;
             }
             if ([k isEqualToString:@"cbuf"]) r->kind = NVN_RB_CBUF;
-            else if ([k isEqualToString:@"samp"]) r->kind = NVN_RB_SAMP;
+            else if ([k isEqualToString:@"samp"]) { r->kind = NVN_RB_SAMP;   // declared as an array (the sampler half of a separate handle pair whose texture half is a run-time c2 array, Dsh.cs C2Array): every element is this one sampler
+                if (n > 1) { if (n > 32) FAIL("B binding %s: array of %d", nm.UTF8String, n); r->n = (uint8_t)n; } }
             else if ([k isEqualToString:@"samp_tex"]) r->kind = NVN_RB_SAMPT;
             else if ([k isEqualToString:@"tex"]) { r->kind = NVN_RB_TEX; dummy_kind(b[@"msl_type"], &r->dtt, &r->dpf); r->f1d = [b[@"fetch1d"] boolValue] ? ([b[@"fetch1d_exact"] boolValue] ? 2 : 1) : 0;
                 // #968: the s2a_flags.yzw bit the translator reads for this binding's coordinate normalization (Dsh.cs Reflect); absent in an older library = no bit, as before
@@ -104,7 +105,8 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
                 if (n) { if (n > 32) FAIL("B binding %s: array of %d", nm.UTF8String, n); r->n = (uint8_t)n; } }
             else if ([k isEqualToString:@"samp_id"]) r->kind = NVN_RB_SAMPI;
             // The pools, indexed by the handle's IDs (nvn_refl.h TEXP / SAMPP): which texture is read is known only when the GPU runs the draw
-            else if ([k isEqualToString:@"tex_pool"]) { if (![b[@"elem"] isKindOfClass:[NSString class]]) FAIL("B binding %s: texture pool without its element type", [nm description].UTF8String); r->kind = NVN_RB_TEXP; dummy_kind(b[@"elem"], &r->dtt, &r->dpf); o->bindless = o->pool = 1; }
+            else if ([k isEqualToString:@"tex_pool"]) { if (![b[@"elem"] isKindOfClass:[NSString class]]) FAIL("B binding %s: texture pool without its element type", [nm description].UTF8String); r->kind = NVN_RB_TEXP; dummy_kind(b[@"elem"], &r->dtt, &r->dpf); o->bindless = o->pool = 1;
+                r->rw = [b[@"elem"] containsString:@"access::write"] || [b[@"elem"] containsString:@"access::read_write"]; }   // an image pool (the shader writes through it): nvn_mtl.m pool_fit / pool_mark_writes
             else if ([k isEqualToString:@"samp_pool"]) { r->kind = NVN_RB_SAMPP; o->bindless = o->pool = 1; }
             else if ([k isEqualToString:@"tex_c2a"] || [k isEqualToString:@"samp_c2a"]) {   // an array of the driver table's handles (nvn_refl.h TEXA / SAMPA)
                 if (n < 1 || n > 32) FAIL("B binding %s: array of %d", nm.UTF8String, n);
@@ -133,6 +135,9 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
             else if ([k isEqualToString:@"gmem_map"]) { r->kind = NVN_RB_GMEM; r->rw = [b[@"rw"] boolValue]; }   // raw memory pool table (nvn_refl.h GMEM)
             else if ([k isEqualToString:@"gmem_log"]) { r->kind = NVN_RB_GMEML; r->rw = 1; }
             else if ([k isEqualToString:@"sbuf_ubo"]) { r->kind = NVN_RB_SBUFU; r->rw = sbuf_rw(b); r->off = (uint16_t)[b[@"off"] intValue]; }
+            else if ([k isEqualToString:@"sbuf_push"]) { int off = [b[@"off"] intValue];   // its address pushed into NVN2 push slot reg (Dsh.cs sbuf_push; nvn_refl.h SBUFQ)
+                if (reg < 0 || reg >= NVN_REFL_PUSH_SLOTS || off < 0 || off + 8 > NVN_REFL_PUSH_BYTES) FAIL("B binding %s: push slot %d + %d outside the %d slots of %d bytes", [nm description].UTF8String, reg, off, NVN_REFL_PUSH_SLOTS, NVN_REFL_PUSH_BYTES);
+                r->kind = NVN_RB_SBUFQ; r->rw = sbuf_rw(b); r->off = (uint16_t)off; }
             else if ([k isEqualToString:@"geometry"]) { if (reg < 0 || reg > 4) FAIL("invalid geometry helper slot"); r->kind = NVN_RB_GEOMETRY; }
             else if ([k isEqualToString:@"support"]) r->kind = NVN_RB_SUPPORT;
             else if ([k isEqualToString:@"uvx"]) r->kind = NVN_RB_UVX;

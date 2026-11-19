@@ -630,7 +630,7 @@ static int geo_stage_ranges(NvShader *gs, int st, geo_rg *rd, int *nrd, geo_rg *
                 (w ? wr : rd)[(w ? (*nwr)++ : (*nrd)++)] = (geo_rg){u->addr, u->addr + (u->size ? u->size : 1)};
                 break; }
             case NVN_RB_IMG: case NVN_RB_IMGA: if (b->rw) k &= ~GEO_WK; break;   // 图像写：所写贴图的内存这里不列举（读的贴图不在缓冲区间里，不影响读位）
-            case NVN_RB_IMGU: case NVN_RB_SBUFU: k &= ~(b->rw ? GEO_WK | GEO_RK : GEO_RK); break;   // 地址在统一缓冲 / 贴图句柄里：不列举
+            case NVN_RB_IMGU: case NVN_RB_SBUFU: case NVN_RB_SBUFQ: k &= ~(b->rw ? GEO_WK | GEO_RK : GEO_RK); break;   // 地址在统一缓冲 / 贴图句柄 / 推常量里：不列举
             case NVN_RB_TBUF: case NVN_RB_TBUFU: k &= ~GEO_RK; break;   // 贴图缓冲只读
             case NVN_RB_GMEM:   // 原始池表（地址从内存读来）：可达任一列表里的池，读区间列举不全；写区间在预测生效时 = 学到的池（gml_take 记写的同一份），否则也不全（审计 P1-119 / 120）
                 k &= ~GEO_RK;

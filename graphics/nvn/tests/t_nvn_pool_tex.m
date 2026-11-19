@@ -47,7 +47,7 @@ static uint64_t table_entry(int tid, int unused, uint64_t *gpu) {
     (void)unused; const pool_tab *tp = NULL; for (int i = 0; i < POOL_TABS; i++) if (g_ptab[i].used && !g_ptab[i].samp && g_ptab[i].base == 0) tp = &g_ptab[i];
     REQUIRE(tp);
     os_unfair_lock_lock(&g_rmu);
-    __unsafe_unretained id<MTLBuffer> b = nil; uint64_t a = pool_gpu(0, tp->dtt, tp->dpf, 0, &b); REQUIRE(b);
+    __unsafe_unretained id<MTLBuffer> b = nil; uint64_t a = pool_gpu(0, tp->dtt, tp->dpf, 0, 0, &b); REQUIRE(b);
     uint64_t e = ((const uint64_t *)((const uint8_t *)b.contents + DMSH_POOL_HEAD))[tid];
     os_unfair_lock_unlock(&g_rmu);
     if (gpu) *gpu = a;
@@ -97,6 +97,18 @@ static NSString *const SLOT_SRC =
      "    if (gid.x != 0) return;\n    uint h = spvDescriptorSet0.cp_s0[0].x; uint t = min(h & 1048575u, 31u), s = min(h >> 20u, 31u);\n"
      "    float v = spvDescriptorSet0.cp_t2d_cb0_40000000[t].sample(spvDescriptorSet0.cp_s_cb0_40000000[s], float2(0.5), level(0.0)).x;\n"
      "    spvDescriptorSet0.cp_s0[1] = as_type<uint4>(float4(v));\n}\n";
+// 图像池（Dsh.cs PoolArrays 改写可写图像回退数组的形状）：句柄从存储缓冲第 0 个 uint4 的 x 取、要写的值在 y，写满 4x4
+static NSString *const IMG_SRC =
+    @"template<typename P> static inline __attribute__((always_inline)) uint dm_pool_mark(constant P* p, uint i)\n{\n"
+     "    device uint* w = reinterpret_cast<device uint*>(p->seen) + (i >> 5);\n    uint b = 1u << (i & 31u);\n"
+     "    if (!(*w & b)) atomic_fetch_or_explicit(reinterpret_cast<device atomic_uint*>(w), b, memory_order_relaxed);\n    return i;\n}\n\n"
+     "struct spvPool_cp_i2d_cb0_40000000\n{\n    uint n;\n    ulong seen;\n    array<texture2d<float, access::write>, 1> e;\n};\n\n"
+     "struct spvDescriptorSetBuffer0\n{\n    device uint4* cp_s0 [[id(0)]];\n    constant spvPool_cp_i2d_cb0_40000000* cp_i2d_cb0_40000000 [[id(1)]];\n};\n\n"
+     "kernel void main0(constant spvDescriptorSetBuffer0& spvDescriptorSet0 [[buffer(0)]], uint3 gid [[thread_position_in_grid]])\n{\n"
+     "    if (gid.x != 0) return;\n    uint4 h = spvDescriptorSet0.cp_s0[0]; uint t = min(h.x & 1048575u, 1048575u);\n"
+     "    for (uint y = 0; y < 4; y++) for (uint x = 0; x < 4; x++)\n"
+     "        (&spvDescriptorSet0.cp_i2d_cb0_40000000->e[0])[dm_pool_mark(spvDescriptorSet0.cp_i2d_cb0_40000000, min(uint(t), spvDescriptorSet0.cp_i2d_cb0_40000000->n))]"
+     ".write(float4(as_type<float>(h.y)), uint2(x, y));\n}\n";
 static float out4[4];
 static void read4(NvShader *cs, uint32_t h0, uint32_t h1, uint32_t h2, uint32_t h3) {
     uint32_t *io = (uint32_t *)(memory + IO_OFF); io[0] = h0; io[1] = h1; io[2] = h2; io[3] = h3; for (int i = 4; i < 8; i++) io[i] = 0xffffffffu;
@@ -309,6 +321,85 @@ int main(void) { @autoreleasepool {
         }
         VERIFY(tex1 - tex0 >= 4 && buf1 - buf0 >= 2, "⑫ 驻留集按类：加 4 MiB 私有纹理后纹理 %lld → %lld MB（期望至少 +4）、加 2 MiB 私有缓冲后私有缓冲 %lld → %lld MB（期望至少 +2）",
                (long long)tex0, (long long)tex1, (long long)buf0, (long long)buf1);
+    }
+    // ⑬ 图像池（可写元素，反射 rw：nvn_refl.m tex_pool、nvn_mtl.m pool_fit / pool_mark_writes）。句柄从存储缓冲来的图像写，以前走 32 槽数组、宿主只能改 c2 里的句柄，
+    //    写进槽里碰巧那张。期望按语义手写：
+    //    a 反射记成可写；b 句柄 121（带 IMAGE，可写用途）写 9.0 → 再按读池读 121 得 9.00、读 120 仍 120.50（没写错张），池记为 GPU 写过
+    //    c 句柄 122（COMPRESSIBLE、不带 IMAGE：渲染目标类，建时没有可写用途，也没有遍画过它）写 7.0：图像池照样建出它（不按「没写过的渲染目标不建」挡），
+    //      没有可写用途 → 本次写进哑图、读 122 不是 7.00；下一次提交前升级成可写，再写 7.0 → 读得 7.00
+    //    d 句柄 200（没登记）写：写进可写哑图，提交不报错
+    //    负对照：pool_mark_writes 不标（池不记 GPU 写过）→ b 红；图像池也按「没写过的渲染目标不建」挡 → c 一直写哑图、红
+    if (cs) {
+        texture_ex(120, 4, 4, NVN_TEXTURE_FLAGS_IMAGE, 120.5f); texture_ex(121, 4, 4, NVN_TEXTURE_FLAGS_IMAGE, 121.5f); texture(122, 4, 4, NVN_TEXTURE_FLAGS_COMPRESSIBLE);
+        NSDictionary *refl_img = @{ @"route": @"B", @"threadgroup_size": @[@1, @1, @1], @"bindings": @[
+            @{ @"kind": @"sbuf", @"reg": @0, @"arg_id": @0, @"rw": @YES, @"msl_name": @"cp_s0", @"msl_type": @"device uint4*" },
+            @{ @"kind": @"tex_pool", @"elem": @"texture2d<float, access::write>", @"arg_id": @1, @"msl_name": @"cp_i2d_cb0_40000000", @"msl_type": @"constant spvPool_cp_i2d_cb0_40000000*" } ] };
+        err[0] = 0; NvShader *ws = shader(IMG_SRC, refl_img, err, sizeof err);
+        VERIFY(ws && ws->rf.b[1].kind == NVN_RB_TEXP && ws->rf.b[1].rw, "⑬a 反射：可写元素的 tex_pool → TEXP 且可写（%s）", ws ? "转换成功" : err);
+        if (ws) {
+            float v9 = 9.0f, v7 = 7.0f; uint32_t u9, u7; memcpy(&u9, &v9, 4); memcpy(&u7, &v7, 4);
+            read4(ws, 121u, u9, 0, 0);
+            read4(cs, 121u | 1u << 20, 120u | 1u << 20, 3u | 1u << 20, 3u | 1u << 20);
+            VERIFY(near(out4[0], 9.0f) && near(out4[1], 120.5f) && pool_gpu_written(pool), "⑬b 句柄 121 写 9.0 → 读 121 得 %.2f（期望 9.00）、读 120 得 %.2f（期望 120.50）；池记 GPU 写过 %d（期望 1）",
+                   out4[0], out4[1], pool_gpu_written(pool));
+            read4(ws, 122u, u7, 0, 0);
+            read4(cs, 122u | 1u << 20, 3u | 1u << 20, 3u | 1u << 20, 3u | 1u << 20);
+            float first = out4[0];
+            read4(ws, 122u, u7, 0, 0);
+            read4(cs, 122u | 1u << 20, 3u | 1u << 20, 3u | 1u << 20, 3u | 1u << 20);
+            VERIFY(!near(first, 7.0f) && near(out4[0], 7.0f) && made(122), "⑬c 没有可写用途、没画过的渲染目标 122：第一次写后读得 %.2f（期望不是 7.00，写进哑图）；升级后再写读得 %.2f（期望 7.00）；已建 %d（期望 1）", first, out4[0], made(122));
+            read4(ws, 200u, u7, 0, 0);
+            VERIFY(1, "⑬d 句柄 200（没登记）写进可写哑图，提交没报错");
+        }
+    }
+    // ⑭ 采样器按描述计数（老 GPU 缺口 #14：每个采样器号一个采样器对象，参数缓冲能引用的是不同描述的个数，Apple7 / 8 上限 996）。期望手写：
+    //    新登记 2000–2099 共 100 个号，参数只有 3 种（各号 lod_bias = 号 % 3），逐个取对象 → 活着的对象 +100、不同描述 +3；
+    //    再把 2000（2000 % 3 = 2，bias 2.25）改登记成第 4 种（bias 9.25）并取对象 → 对象数不变、不同描述 +1；
+    //    再把 % 3 == 2 的 34 个号（2000、2003 … 2099）全登记成 9.25、逐个取对象 → bias 2.25 那种一个不剩：对象数仍 100、不同描述比上一步 −1
+    {
+        os_unfair_lock_lock(&g_rmu); uint64_t s0 = g_samp_states, d0 = g_samp_distinct; os_unfair_lock_unlock(&g_rmu);
+        samp_par q; memset(&q, 0, sizeof q); q.lod_max = 1000;
+        for (int i = 2000; i < 2100; i++) { q.lod_bias = (float)(i % 3) + 0.25f; nvn_be_reg_samp(i, &q); }
+        os_unfair_lock_lock(&g_rmu); for (int i = 2000; i < 2100; i++) REQUIRE(samp_by_id(i)); uint64_t s1 = g_samp_states, d1 = g_samp_distinct; os_unfair_lock_unlock(&g_rmu);
+        q.lod_bias = 9.25f; nvn_be_reg_samp(2000, &q);
+        os_unfair_lock_lock(&g_rmu); REQUIRE(samp_by_id(2000)); uint64_t s2 = g_samp_states, d2 = g_samp_distinct; os_unfair_lock_unlock(&g_rmu);
+        int nb0 = 0;
+        for (int i = 2000; i < 2100; i++) if (i % 3 == 2) { nvn_be_reg_samp(i, &q); nb0++; }   // bias 2.25 那种（2000 已改走，剩 2003、2006 …）全改成 9.25
+        os_unfair_lock_lock(&g_rmu); for (int i = 2000; i < 2100; i++) REQUIRE(samp_by_id(i)); uint64_t s3 = g_samp_states, d3 = g_samp_distinct; os_unfair_lock_unlock(&g_rmu);
+        VERIFY(s1 - s0 == 100 && d1 - d0 == 3 && s2 == s1 && d2 - d1 == 1 && s3 == s1 && d3 == d2 - 1 && nb0 == 34,
+               "⑭ 采样器按描述计数：100 个号 3 种参数 → 对象 +%llu、描述 +%llu（期望 100、3）；改一个号成第 4 种 → 对象差 %lld、描述 +%llu（期望 0、1）；"
+               "bias 2.25 那种的 %d 个号全改走 → 对象差 %lld、描述 %lld（期望 34 个、0、−1）",
+               (unsigned long long)(s1 - s0), (unsigned long long)(d1 - d0), (long long)(s2 - s1), (unsigned long long)(d2 - d1), nb0, (long long)(s3 - s1), (long long)d3 - (long long)d2);
+    }
+    // ⑮ 内存吃紧时放掉闲置的活对象贴图（#1386，nvn_mtl.m tex_idle_reclaim）。期望按语义手写：
+    //    150 闲置、存储没被 GPU 写过、不在池表里 → 被放（序号表里没了）；151 闲置但存储上有 GPU 写记录 → 留；152 刚用过 → 留；153 只经池表读过（登记在池表里，GPU 随时会读）→ 留；
+    //    放了 1 张；再经池读 150 → 从游戏内存重建，读得 150.50。余量充足（不设假余量）时什么都不放。
+    //    负对照：去掉 GPU 写判断 → 151 被放、红；去掉池表判断 → 池表那张被放、红；去掉闲置判断 → 152 被放、红
+    if (cs) {
+        texture(150, 4, 4, 0); texture(151, 4, 4, 0); texture(152, 4, 4, 0);
+        os_unfair_lock_lock(&g_rmu); REQUIRE(tex_by_id(150)); REQUIRE(tex_by_id(151)); REQUIRE(tex_by_id(152)); os_unfair_lock_unlock(&g_rmu);
+        gpw_mark(&texs[151], 0, 0, 1, 0, 0, 4, 4);
+        texture(153, 4, 4, 0); int pin = 153;   // 只经池表读过、存储没被 GPU 写过：池表登记是唯一挡住它的条件
+        read4(cs, 153u | 1u << 20, 3u | 1u << 20, 3u | 1u << 20, 3u | 1u << 20); read4(cs, 153u | 1u << 20, 3u | 1u << 20, 3u | 1u << 20, 3u | 1u << 20);
+        { __unsafe_unretained id o = tex_get(texs[pin].serial); id<MTLTexture> x = [o isKindOfClass:[NvPkg class]] ? ((NvPkg *)o)->tex : (id<MTLTexture>)o; REQUIRE(x && !x.buffer && tex_pinned((__bridge void *)x));
+          uint64_t *rr = NULL, bb = 0; REQUIRE(gpw_stale(texs[pin].mem, texs[pin].L.size, &rr, &bb) == 0); free(rr); }
+        empty_sub(); empty_sub(); empty_sub();
+        g_tex_idle_subs = 2;
+        os_unfair_lock_lock(&g_rmu);
+        for (int i = 0; i < g_ntreg; i++) if (g_treg[i].ok) g_treg[i].used = g_fence + 1;   // everything else counts as just used
+        g_treg[150].used = g_treg[151].used = 1; for (int h = (int)(uintptr_t)nvn_hm_get(&g_treg_ser, &texs[pin].serial); h; h = g_treg[h - 1].ser_next) g_treg[h - 1].used = 1;
+        os_unfair_lock_unlock(&g_rmu);
+        uint64_t n0 = g_reclaim_n; g_reclaim_next = 0; empty_sub();
+        int quiet = (int)(g_reclaim_n - n0);   // 余量未知（Mac、没设假余量）：不放
+        os_unfair_lock_lock(&g_rmu); g_treg[150].used = g_treg[151].used = 1; for (int h = (int)(uintptr_t)nvn_hm_get(&g_treg_ser, &texs[pin].serial); h; h = g_treg[h - 1].ser_next) g_treg[h - 1].used = 1; os_unfair_lock_unlock(&g_rmu);   // 上一次提交里池表重走会把登记着的贴图记成刚用过
+        atomic_store(&g_mem_avail_fake, (int64_t)100 << 20); g_reclaim_next = 0; empty_sub();
+        int gone150 = !made(150), kept = made(151) && made(152) && made(pin); uint64_t dn = g_reclaim_n - n0;
+        read4(cs, 150u | 1u << 20, 3u | 1u << 20, 3u | 1u << 20, 3u | 1u << 20);
+        read4(cs, 150u | 1u << 20, 3u | 1u << 20, 3u | 1u << 20, 3u | 1u << 20);
+        VERIFY(quiet == 0 && gone150 && kept && dn == 1 && near(out4[0], 150.5f) && made(150),
+               "⑮ 闲置活对象贴图回收：余量未知时放 %d 张（期望 0）；余量 100 MB 时 150 放了 %d、151 / 152 / 池表 %d 都留 %d、共放 %llu 张（期望 1、1、1）；重建后读 150 得 %.2f（期望 150.50）",
+               quiet, gone150, pin, kept, (unsigned long long)dn, out4[0]);
+        atomic_store(&g_mem_avail_fake, -1); g_tex_idle_subs = TEX_IDLE_SUBS;
     }
     printf("%s t_nvn_pool_tex：%u 项，%u 项失败（追不到槽的句柄按编号读池：池表 + 已读位图 + 未写渲染目标不建 + 小贴图预建 + 表复用）\n", fails ? "✗" : "✓", checks, fails);
     return fails != 0;

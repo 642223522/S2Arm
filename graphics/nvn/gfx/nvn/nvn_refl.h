@@ -2,13 +2,16 @@
 // Kinds added by B: SBUFP = storage buffer device pointer (NVN storage buffer slot); SUPPORT = Ryujinx auxiliary constants; C1 = the shader's own constant segment (c[1]);
 //            DRV0 / DRV2 = NVN driver constant segments c[0] (storage buffer address table) / c[2] (texture and sampler handle table)
 //            PUSH = NVN2 (Ampere) push-constant slot reg, read as constant bank c[24 + reg] (nvn2_cmd.h; filled from PushGraphics / ComputeConstants, nvn_mtl.m encode_args)
+//            SBUFQ = a storage buffer whose 64-bit GPU address the game pushed into NVN2 push-constant slot reg at byte off (compute push block 1 = slot 1, graphics stage i's bank
+//                    c[25 + i] = slot 1 + i; Dsh.cs sbuf_push), read like SBUFU but from the pushed bytes
 // PC shader reflection json → fixed-length C arrays (converted once when the shader is fetched; each draw only walks the arrays and does not touch NSDictionary / NSString).
 // Unit test tests/t_refl.m computes the expectations by hand from real reflection.
 #pragma once
 #include <stdint.h>
 
 enum { NVN_RB_CBUF = 1, NVN_RB_SAMP, NVN_RB_TEX, NVN_RB_IMG, NVN_RB_TBUF,
-       NVN_RB_SBUFP, NVN_RB_SUPPORT, NVN_RB_C1, NVN_RB_DRV0, NVN_RB_DRV2, NVN_RB_SAMPT, NVN_RB_UBOP, NVN_RB_TEXU, NVN_RB_SAMPU, NVN_RB_SAMPI, NVN_RB_SBUFU, NVN_RB_TEXD, NVN_RB_SAMPD, NVN_RB_IMGA, NVN_RB_TEXA, NVN_RB_SAMPA, NVN_RB_GEOMETRY, NVN_RB_UVX, NVN_RB_LB, NVN_RB_UBOLEN, NVN_RB_SBSZ, NVN_RB_PUSH, NVN_RB_TBUFU, NVN_RB_IMGU, NVN_RB_GMEM, NVN_RB_GMEML, NVN_RB_TEXP, NVN_RB_SAMPP, NVN_RB_UBOA, NVN_RB_TBLEAD };   // UBOA: 计算存储缓冲来自「用户 UBO 内 8 字节 guest 裸指针」（map 3，UBO 槽 src_reg + 字节偏移 src_off）   // UVX: S2Arm widen 16:9 sampling remap table (dmsh_build.py fs_uvx; widen_glue.inc uvx_fill); LB: #800 sampler LOD bias table (dmsh_red.py fs_lb; nvn_mtl.m lb_fill)
+       NVN_RB_SBUFP, NVN_RB_SUPPORT, NVN_RB_C1, NVN_RB_DRV0, NVN_RB_DRV2, NVN_RB_SAMPT, NVN_RB_UBOP, NVN_RB_TEXU, NVN_RB_SAMPU, NVN_RB_SAMPI, NVN_RB_SBUFU, NVN_RB_TEXD, NVN_RB_SAMPD, NVN_RB_IMGA, NVN_RB_TEXA, NVN_RB_SAMPA, NVN_RB_GEOMETRY, NVN_RB_UVX, NVN_RB_LB, NVN_RB_UBOLEN, NVN_RB_SBSZ, NVN_RB_PUSH, NVN_RB_TBUFU, NVN_RB_IMGU, NVN_RB_GMEM, NVN_RB_GMEML, NVN_RB_TEXP, NVN_RB_SAMPP, NVN_RB_UBOA, NVN_RB_TBLEAD, NVN_RB_SBUFQ };
+enum { NVN_REFL_PUSH_SLOTS = 8, NVN_REFL_PUSH_BYTES = 256 };   // SBUFQ bounds: NVN2 push-constant slots and their bytes (= nvn2_cmd.h NVN2_PUSH_SLOTS / NVN2_PUSH_BYTES, asserted in nvn_mtl.m)   // UBOA: 计算存储缓冲来自「用户 UBO 内 8 字节 guest 裸指针」（map 3，UBO 槽 src_reg + 字节偏移 src_off）   // UVX: S2Arm widen 16:9 sampling remap table (dmsh_build.py fs_uvx; widen_glue.inc uvx_fill); LB: #800 sampler LOD bias table (dmsh_red.py fs_lb; nvn_mtl.m lb_fill)
 // TEXA / SAMPA: an array of n handles in the driver table c2 that the shader indexes at run time (dmsh_build.py c2_array): element k = the texture / sampler of the slot whose c2 word lies
 // at byte off + 8k (combined, else separate); words outside both tables give the dummy. Luigi's Mansion 3's shadow cascades
 // IMGA: SPIRV-Cross's MSL 2.3 image atomics: a device atomic_uint / atomic_int pointer (<image name>_atomic) beside the image of NVN image slot r; the replay binds the image's storage address
@@ -67,7 +70,7 @@ static inline int nvn_sbsz_fill(const nvn_rbind *rb, int nb, nvn_sbsz_bound_fn b
     for (int i = 0; i < nb; i++) {
         const nvn_rbind *b = &rb[i]; uint32_t v;
         if (b->kind == NVN_RB_SBUFP || b->kind == NVN_RB_UBOP || b->kind == NVN_RB_GMEM || b->kind == NVN_RB_GMEML) v = bound(ctx, b);
-        else if (b->kind == NVN_RB_SBUFU) v = nolim;
+        else if (b->kind == NVN_RB_SBUFU || b->kind == NVN_RB_SBUFQ) v = nolim;
         else if (b->kind == NVN_RB_GEOMETRY) { uint64_t z = b->reg < 5 ? geo[b->reg] : 0; v = z > nolim ? nolim : (uint32_t)z; }
         else continue;
         if (b->aid >= NVN_REFL_MAXARG) continue;

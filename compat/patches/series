@@ -621,6 +621,8 @@
 20261118-0059-snapshot-replay-fs-domain.patch
 20261117-2020-shared-font-read-once.patch
 20261117-1813-ampere-image-atomic-bank.patch
+20261117-1742-bindless-any-source.patch
+20261118-0433-bindless-pool-images.patch
 20261118-0515-save-commit-verify.patch
 20261118-1021-six-axis-motion-interval.patch
 20261118-0559-save-guard-mark.patch
@@ -633,3 +635,4 @@
 20261118-0245-f16x2-atomic-add.patch
 20261118-1854-save-commit-no-reject.patch
 20261118-1543-audio-guest-formats.patch
+20261118-1625-ampere-push-block-1.patch
