@@ -651,3 +651,5 @@
 20261119-1057-snap-audout-queue.patch
 20261119-0408-spirv-nan-minmax.patch
 20261119-0717-applet-validate-presented-style.patch
+20261119-1145-snap-audin-queue.patch
+20261119-1149-snap-applet-messages.patch
