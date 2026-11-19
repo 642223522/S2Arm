@@ -279,6 +279,8 @@ __attribute__((weak)) void s2a_snap_mark_old(void) {}
 __attribute__((weak)) int s2a_snap_restoring(void) { return 0; }
 __attribute__((weak)) int s2a_snap_logging(void) { return 0; }
 void s2a_snap_hctx(int seq) { t_snap_ctx = seq; thr_t *t = thread_current_or_null(); if (t) t->cs_seq = seq; }   // C# 请求开始时设本线程的请求序号（结束设 -2）
+// 请求日志收住用的四个导出：安卓快照恒关不调，安卓那份由 snapsw.c 给空实现（两边都定义会重复）
+#if defined(__APPLE__)
 // 请求日志要删第 seq 条之前问：它建的句柄还有活着的吗（活着的要靠重放这条建，不能删）
 int s2a_snap_seq_live(int seq) {
     glock(); int live = 0;
@@ -316,6 +318,7 @@ void s2a_snap_handle_unuse(uint32_t uid) {
     }
     pthread_mutex_unlock(&G);
 }
+#endif
 void s2a_snap_hcommit(int seq) { if (seq >= 0) atomic_store(&g_snap_lastseq, seq); }   // C# 请求完成、追加进日志时设：此后的关闭记在它之后（日志按完成先后，SnapLog.cs）
 void s2a_snap_force(const uint32_t *v, int n) { t_force = v; t_nforce = n; t_iforce = 0; }        // 恢复重放：本线程接下来服务层建的句柄按这串值分
 int s2a_snap_force_left(void) { return t_nforce - t_iforce; }
