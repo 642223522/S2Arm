@@ -1139,7 +1139,7 @@ static void query_sampler_test(void) {
 static void lp_put32(uint8_t *p, uint32_t v) { memcpy(p, &v, 4); }
 static void lp_put64(uint8_t *p, uint64_t v) { memcpy(p, &v, 8); }
 static int lp_write(const char *dir, uint64_t key[], const uint8_t kind[], const uint8_t *data[], const size_t len[], int n) {
-    char path[600]; snprintf(path, sizeof path, "%s/lib.000.pak", dir);
+    char path[640]; snprintf(path, sizeof path, "%s/lib.000.pak", dir);   // 调用方的 dir 最长 599 字节，加 "/lib.000.pak" 含结尾 0 要 612 字节；600 会被 -Werror=format-truncation 拦在编译（#1701）
     FILE *f = fopen(path, "wb"); if (!f) return -1;
     uint64_t off[16], at = 0;
     for (int i = 0; i < n; i++) { off[i] = at; fwrite(data[i], 1, len[i], f); at += len[i]; }
