@@ -140,30 +140,6 @@ def main():
         sys.stdout.write(result.stdout); sys.stderr.write(result.stderr)
         return result.returncode
 
-    if sys.argv[1:] == ['--high-slot-controls']:
-        code = original.read_text()
-        base_sha = subprocess.check_output(['git', 'merge-base', 'HEAD', 'origin/main'], cwd=ROOT, text=True).strip()
-        baseline = subprocess.check_output(['git', 'show', base_sha + ':' + original.relative_to(ROOT).as_posix()], cwd=ROOT, text=True)
-        changes = [
-            ('main-high-slots', baseline, 'high-slot texture fact'),
-            ('high-facts-withdraw', code.replace('for (int slot = 0; slot < 8; slot++) {\n            long id = handles[slot]',
-                                               'for (int slot = 0; slot < 0; slot++) {\n            long id = handles[slot]'), 'high-slot texture fact'),
-            ('high-signature-withdraw', code.replace('MIX(graphics_high_fact_sig(st));', '(void)graphics_high_fact_sig;'),
-             'high-slot image precedence invalidates identity'),
-            ('high-image-precedence-withdraw', code.replace('rp_S.img[st][slot] ? rp_S.img[st][slot] : rp_S.tex[st][32 + slot]',
-                                                          'rp_S.tex[st][32 + slot]'), 'high-slot image precedence invalidates identity'),
-        ]
-        for name, changed, expected in changes:
-            assert changed != code, (name, 'mutation anchor')
-            path = out / (name + '.c')
-            path.write_text(changed)
-            result = run(name, path)
-            (out / (name + '.log')).write_text(result.stdout + result.stderr)
-            assert result.returncode and expected in result.stderr, (name, result.stdout, result.stderr)
-            print(name + ': expected assertion failure: ' + expected, flush=True)
-        print('PASS: main baseline and 3 high-slot negative controls')
-        return 0
-
     if len(sys.argv) in (3, 4) and sys.argv[1] == '--tbuf-layout':
         exe = out/'tbuf-layout'
         src = [ROOT/'android/tests/tbuf_layout_test.c', *libs]
@@ -344,6 +320,16 @@ def main():
             ('alias-fact-registration-omitted', 'if (reusable && ae->fact_ok) fact_cache_keep_mask(&id, fact_base, ae->fact_mask, &ae->prog);',
              '(void)ae->fact_mask;', 1, 'reuses the program (no live compile'),
             # 预热线程建的那份也要算事实掩码：撤掉后，合并命中它的前台身份登记不上事实复用（真机现编 3 → 198 次的另一半）
+            # 事实复用（#1187）：身份不同、编译器读到的事实相同 → 复用同一程序，不再编
+            ('fact-reuse-disabled', 'if (reusable && (*out = fact_cache_find(&id, fact_base)))',
+             'if (0 && reusable && (*out = fact_cache_find(&id, fact_base)))', 1, 'unqueried combined texture reuses compiled program'),
+            # 高槽（c2 字 72–86）事实、签名与图像优先：撤掉任一处，对应断言必须变红
+            ('high-facts-withdraw', 'for (int slot = 0; slot < 8; slot++) {\n            long id = handles[slot]',
+             'for (int slot = 0; slot < 0; slot++) {\n            long id = handles[slot]', 1, 'high-slot texture fact'),
+            ('high-signature-withdraw', 'MIX(graphics_high_fact_sig(st));', '(void)graphics_high_fact_sig;', 1,
+             'high-slot image precedence invalidates identity'),
+            ('high-image-precedence-withdraw', 'rp_S.img[st][slot] ? rp_S.img[st][slot] : rp_S.tex[st][32 + slot]',
+             'rp_S.tex[st][32 + slot]', 1, 'high-slot image precedence invalidates identity'),
             ('alias-bg-fact-mask-omitted', 'if (!compute && e && !e->failed && alias_on()) e->fact_ok = (uint8_t)fact_cache_mask(bytes, len, &e->prog, e->fact_mask);',
              '(void)0;', 1, 'alias fact-bg[on] s2: identity differing only in an unread texture fact reuses the program'),
             # 开关关闭态（--alias-off 另起进程）：开关读了不用，关闭态下 B 就会被合并，「B 读自己的文件」必须变红
@@ -402,18 +388,6 @@ def main():
             assert result.returncode != 0 and expected in result.stderr, (name, result.stdout, result.stderr)
             print(f'{name}: expected assertion failure: {expected}', flush=True)
         print(f'PASS: {len(changes)} negative controls')
-        return 0
-    if sys.argv[1:] == ['--withdraw-fact-reuse']:
-        text = original.read_text()
-        before = 'if (!e && reusable) {'
-        assert text.count(before) == 1
-        path = out/'fact-reuse-withdraw.c'
-        path.write_text(text.replace(before, 'if (0 && !e && reusable) {'))
-        # The extracted source keeps its normal local header search path.
-        base.append('-I'+str(native/'gfx_plat'))
-        result = run('fact-reuse-withdraw', path)
-        assert result.returncode and 'unqueried combined texture reuses compiled program' in result.stderr, result.stderr
-        print('PASS: disabling dependency reuse fails the production-producer regression')
         return 0
     if sys.argv[1:] == ['--withdraw-fact-reset']:
         text = original.read_text()
