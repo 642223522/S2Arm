@@ -2,6 +2,7 @@
 """Windows 启动器发版组装（同 Mac launchers/macos/bundle_engine.py + build_app 的资源段）：产出解压即用的完整目录，玩家机不装任何开发工具。
 在 Windows 出包机上（要 .NET SDK / clang / cmake / cargo 等，见 bundle_prepare_win.py）：
   python -X utf8 launchers/windows/bundle_win.py <目标> --shell <预编壳目录> --tzdata <时区目录> --fonts <字体目录>
+  发版提速（11-19）：先不给 --shell 组装（不等 Mac 出壳），壳到了再 bundle_win.py <目标> --place-shell --shell <壳> [--tv-shell <tvOS 壳>]
 产物（<目标> 不许已存在）：
   Engine/           引擎快照（同 Mac：按 bundle_engine.INPUTS 挑仓库文件）+ Binaries/Prepare（bundle_prepare_win 预编件 + Tzdata）+ engine.json
                     （逐文件大小 + sha256、源码指纹、壳编号、出包要的 git 值；作业层 embedded.install 校验后克隆进私有目录）。
@@ -123,11 +124,43 @@ def smoke_reader(runtime, engine):
     say(f"  读取器 {Path(exe).name} 起得来（只用随包运行时）")
 
 
+def check_shells(shell, tv_shell=None):
+    """壳编号须等于本引擎按提交算的壳号（engine.json 的 shellId 同源）"""
+    sys.path.insert(0, str(ROOT)); from pack.shell import manifest as shell_manifest
+    shell, want = Path(shell), shell_manifest.current_id()
+    if not (shell / "manifest.json").is_file() or shell_id(shell) != want:
+        raise SystemExit(f"【红】预编壳 {shell} 不是本引擎的壳 {want}（Mac 上 pack/shell_build.sh 按同一提交出）")
+    if tv_shell:
+        tv_shell, want_tv = Path(tv_shell), shell_manifest.current_id("tvos")
+        if not (tv_shell / "manifest.json").is_file() or shell_id(tv_shell) != want_tv:
+            raise SystemExit(f"【红】Apple TV 预编壳 {tv_shell} 不是本引擎的 tvOS 壳 {want_tv}（Mac 上 S2A_APPLE_OS=tvos pack/shell_build.sh 按同一提交出）")
+
+
+def copy_shells(target, shell, tv_shell=None):
+    shutil.copytree(shell, Path(target) / "Shell")
+    if tv_shell:
+        shutil.copytree(tv_shell, Path(target) / "Shell-tvOS")
+    else:
+        say("[组装] 🟡 没给 --tv-shell：本版不带 Apple TV 预编壳，Windows 出不了 Apple TV 包")
+
+
+def place_shell(target, shell, tv_shell=None):
+    """先组装（不带 --shell）的目录补放壳（11-19 发版提速）：核壳号后放进 Shell/、Shell-tvOS/；已有壳不覆盖"""
+    target = Path(target).resolve()
+    if not (target / "Engine/engine.json").is_file():
+        raise SystemExit(f"【红】{target} 不是组装好的 Windows 启动器目录（没有 Engine/engine.json）")
+    if (target / "Shell").exists():
+        raise SystemExit(f"【红】{target} 已有 Shell/：不覆盖")
+    check_shells(shell, tv_shell)
+    copy_shells(target, shell, tv_shell)
+    say(f"🟢 壳已放进 {target}")
+
+
 def bundle(target, shell, tzdata, fonts, tv_shell=None):
     target = Path(target).resolve()
     if target.exists():
         raise SystemExit(f"【红】{target} 已存在：换个空目标，不混旧件")
-    shell, tzdata, fonts = Path(shell), Path(tzdata), Path(fonts)
+    shell, tzdata, fonts = (Path(shell) if shell else None), Path(tzdata), Path(fonts)
     if not (tzdata / "output").is_dir() or not any((tzdata / "output").iterdir()):
         raise SystemExit(f"【红】时区目录 {tzdata} 要有非空 output/（Mac 上 services/systemdata/make_tzdata.sh --bundle-to 出）")
     bft = sorted(fonts.glob("*.bfttf"))
@@ -135,12 +168,8 @@ def bundle(target, shell, tzdata, fonts, tv_shell=None):
         raise SystemExit(f"【红】字体目录 {fonts} 要有 7 份 .bfttf（现 {len(bft)} 份；Mac 上 pack/fonts/make_open_fonts.py 出）")
     sys.path.insert(0, str(ROOT)); from pack.shell import manifest as shell_manifest
     want = shell_manifest.current_id()
-    if not (shell / "manifest.json").is_file() or shell_id(shell) != want:
-        raise SystemExit(f"【红】预编壳 {shell} 不是本引擎的壳 {want}（Mac 上 pack/shell_build.sh 按同一提交出）")
-    if tv_shell:
-        tv_shell, want_tv = Path(tv_shell), shell_manifest.current_id("tvos")
-        if not (tv_shell / "manifest.json").is_file() or shell_id(tv_shell) != want_tv:
-            raise SystemExit(f"【红】Apple TV 预编壳 {tv_shell} 不是本引擎的 tvOS 壳 {want_tv}（Mac 上 S2A_APPLE_OS=tvos pack/shell_build.sh 按同一提交出）")
+    if shell is not None:
+        check_shells(shell, tv_shell)
     engine = target / "Engine"
     fingerprint = bundle_engine.source_fingerprint(ROOT)
     say(f"[组装] 引擎快照：{snapshot(engine)} 个文件")
@@ -151,11 +180,10 @@ def bundle(target, shell, tzdata, fonts, tv_shell=None):
     say(f"[组装] engine.json：{identity[:16]}（壳 {want}）")
     say("[组装] 随包运行时"); bundle_runtime_win.main([str(target)])
     say("[组装] 自检：只用随包运行时起读取器"); smoke_reader(target / "Runtime", engine)
-    shutil.copytree(shell, target / "Shell")
-    if tv_shell:
-        shutil.copytree(tv_shell, target / "Shell-tvOS")
+    if shell is not None:
+        copy_shells(target, shell, tv_shell)
     else:
-        say("[组装] 🟡 没给 --tv-shell：本版不带 Apple TV 预编壳，Windows 出不了 Apple TV 包")
+        say("[组装] 壳先不放（--shell 没给）：组装完再用 --place-shell 放（发版时 Windows 不必等 Mac 出壳）")
     (target / "Fonts").mkdir()
     for f in bft:
         shutil.copy2(f, target / "Fonts" / f.name)
@@ -182,9 +210,16 @@ def bundle(target, shell, tzdata, fonts, tv_shell=None):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("target"); ap.add_argument("--shell", required=True); ap.add_argument("--tzdata", required=True); ap.add_argument("--fonts", required=True)
+    ap.add_argument("target"); ap.add_argument("--shell"); ap.add_argument("--tzdata"); ap.add_argument("--fonts")
+    ap.add_argument("--place-shell", action="store_true", help="只往已组装的目录里放壳（要 --shell，可带 --tv-shell）")
     ap.add_argument("--tv-shell", help="Apple TV 预编壳目录（可选；不给 = 这版 Windows 出不了 Apple TV 包）")
     a = ap.parse_args(argv)
+    if a.place_shell:
+        if not a.shell:
+            ap.error("--place-shell 要 --shell")
+        return place_shell(a.target, a.shell, a.tv_shell)
+    if not a.tzdata or not a.fonts:
+        ap.error("组装要 --tzdata 与 --fonts（--shell 可后放）")
     bundle(a.target, a.shell, a.tzdata, a.fonts, a.tv_shell)
 
 

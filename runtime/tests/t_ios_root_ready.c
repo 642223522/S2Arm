@@ -13,7 +13,7 @@ typedef struct { dispatch_semaphore_t entered; int result, saw_ready; } waiter;
 static void *wait_root(void *arg) {
     waiter *w = arg;
     dispatch_semaphore_signal(w->entered);
-    w->result = s2a_ios_wait_root_view(2000);
+    w->result = s2a_ios_wait_root_view(30000);   // 上限只当兜底（原 2 秒：负载高时等待者没等到就超时 → 假红）
     w->saw_ready = atomic_load(&g_ready_set);
     return NULL;
 }
@@ -45,11 +45,11 @@ int main(int argc, char **argv) {
         CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, 0);
         CHECK(ran == 0);
         s2a_ios_root_view_ready();
-        for (int i = 0; i < 100 && !ran; i++) CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, 1);
+        for (int i = 0; i < 3000 && !ran; i++) CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, 1);   // 转到回调跑了为止，30 秒兜底
         CHECK(ran == 1 && on_main == 1);
         // 已就绪：下一拍照跑
         s2a_ios_on_root_view(^{ ran++; });
-        for (int i = 0; i < 100 && ran < 2; i++) CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, 1);
+        for (int i = 0; i < 3000 && ran < 2; i++) CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, 1);
         CHECK(ran == 2);
     } else if (!strcmp(argv[1], "ready-first")) {
         s2a_ios_root_view_ready(); s2a_ios_root_view_ready();
@@ -69,7 +69,7 @@ int main(int argc, char **argv) {
             waiters[i] = (waiter){entered, -2, 0};
             CHECK(pthread_create(&threads[i], NULL, wait_root, &waiters[i]) == 0);
         }
-        for (int i = 0; i < n; i++) CHECK(dispatch_semaphore_wait(entered, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC)) == 0);
+        for (int i = 0; i < n; i++) CHECK(dispatch_semaphore_wait(entered, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC)) == 0);
         // Renderer starts before the scene, as on a cold iOS launch.
         usleep(20000);
         atomic_store(&g_ready_set, 1);

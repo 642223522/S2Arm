@@ -87,6 +87,20 @@ var shared = new SharedText("""
 Check(shared.Get("action.check", "zh-Hans") == "检查", "shared Chinese text");
 Check(shared.Get("action.check", "en") == "Check", "shared English text");
 Check(shared.Get("absent", "en") == "[absent]", "missing key is placeholder, not copied text");
+// 11-19 结构 9：确认码表、原因表只在共享体验表一处，Windows 经 SharedText 读（原先各写一份：Windows 缺 libGen、两端缺 shaderMiss）
+{
+    var dir = new DirectoryInfo(AppContext.BaseDirectory);
+    while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "launchers", "shared", "experience.v1.json"))) dir = dir.Parent;
+    var real = new SharedText(File.ReadAllText(Path.Combine(dir!.FullName, "launchers", "shared", "experience.v1.json")));
+    Check(real.ConfirmFlags.TryGetValue("cert_revoke_confirm", out var crf) && crf == "acceptCertRevoke", "shared tables: cert_revoke_confirm carries acceptCertRevoke");
+    Check(real.ConfirmAlternates.TryGetValue("cert_revoke_confirm", out var cra) && cra.Action == "devCertSettings" && cra.Label == "confirm.alternate.useExistingCert"
+        && real.InstallActionLabel("devCertSettings") is not null && real.Has("confirm.alternate.useExistingCert") && !real.ConfirmAlternates.ContainsKey("save_backup_failed"),
+        "shared tables: cert_revoke_confirm offers 'use an existing certificate' (devCertSettings, no resend)");
+    Check(real.ConfirmFlags.TryGetValue("library_in_cloud", out var lic) && lic == "acceptCloud" && !real.ConfirmFlags.ContainsKey("library_bad_format"),
+        "shared tables: library confirms come from the same table; accept_ui codes (drive picker) stay out of the generic confirm");
+    Check(real.UpdateReasonKey("libGen") == "update.hint.reason.shader" && real.UpdateReasonKey("shaderMiss") == "update.hint.reason.shader" && real.UpdateReasonKey("other") is null,
+        "shared tables: libGen / shaderMiss have a reason text, unknown reasons show nothing");
+}
 var languageKeys = new SharedText("""
 {"schema":1,"contract":"s2a.experience.v1","launcher":{"items":[{"id":"language.zh-Hans","zh-Hans":"简体中文","en":"Simplified Chinese"},{"id":"language.en","zh-Hans":"英文","en":"English"}]},"errors":{"items":[]}}
 """);

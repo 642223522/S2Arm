@@ -224,17 +224,25 @@ int main(void) {
         //   再碰 5 次远端（5 次读，各缺页一次），等 2.2 秒；截到的日志里恰有一行，缺页 5、代执行 5
         setenv("S2A_FAR_LINEAR", "1", 1); s2a_far_set(G, G + SPAN, (uint64_t)shadow, (uint64_t)shadow + SH);
         EQ("逐秒账：给页", 0, s2a_far_map(G, 0x4000));
-        usleep(1200000);
+        // 按结算进度等，不按墙钟对齐秒边界：先等前面的缺页都记完账再截日志，读完 5 次再等这 5 次记完账（30 秒兜底）
+        uint64_t s2a_far_tick_seen(void), s2a_far_faults_total(void);
+        for (int i = 0; i < 3000 && s2a_far_tick_seen() != s2a_far_faults_total(); i++) usleep(10000);
         char tp[] = "/tmp/t_far_tick.XXXXXX"; int tf = mkstemp(tp), save = dup(g_s2a_logfd);
         dup2(tf, g_s2a_logfd);
+        uint64_t f0 = s2a_far_faults_total();
         for (int i = 0; i < 5; i++) (void)*(volatile uint8_t *)(uintptr_t)(G + 0x100 + (uint64_t)i);
-        usleep(2200000);
+        for (int i = 0; i < 3000 && s2a_far_tick_seen() < f0 + 5; i++) usleep(10000);
+        { uint64_t s2a_far_tick_n(void), n0 = s2a_far_tick_n(); for (int i = 0; i < 3000 && s2a_far_tick_n() < n0 + 2; i++) usleep(10000); }   // 再醒两次：窗口里必有没碰远端的一秒，验「不出行」
         dup2(save, g_s2a_logfd); close(save);
         char buf[4096] = {0}; lseek(tf, 0, SEEK_SET); ssize_t rn = read(tf, buf, sizeof buf - 1); close(tf); unlink(tp); (void)rn;
-        int lines = 0; for (const char *q = buf; (q = strstr(q, "远端每秒")); q++) lines++;
-        EQ("逐秒账：恰一行", 1, lines);
-        EQ("逐秒账：缺页 5、代执行 5", 1, strstr(buf, "缺页 5、代执行 5、") != NULL);
-        if (lines != 1 || !strstr(buf, "缺页 5、代执行 5、")) printf("  截到：%s\n", buf);
+        // 判各行合计（5 次读可能跨两秒记成两行，那是对的）：至少一行、缺页合计 5、代执行合计 5
+        int lines = 0, zero = 0; unsigned long long sf = 0, se = 0;
+        for (const char *q = buf; (q = strstr(q, "远端每秒")); q++) { unsigned long long sec_, a_, b_; const char *r = strstr(q, "秒：缺页 ");
+            if (r && sscanf(r, "秒：缺页 %llu、代执行 %llu", &a_, &b_) == 2) { sf += a_; se += b_; zero += a_ == 0; } (void)sec_; lines++; }
+        EQ("逐秒账：至少一行", 1, lines >= 1);
+        EQ("逐秒账：缺页合计 5、代执行合计 5", 1, sf == 5 && se == 5);
+        EQ("逐秒账：没碰远端的秒不出行（每行缺页 ≥ 1）", 0, zero);
+        if (lines < 1 || sf != 5 || se != 5) printf("  截到（%d 行、缺页 %llu、代执行 %llu）：%s\n", lines, sf, se, buf);
         EQ("逐秒账退休", 0, s2a_far_session_reset()); }
     {   // 即时存档：远端按游戏地址存 / 取。存完复位、换一块影子区重开（模拟新进程 / 新版本里影子落在别处），取回后经游戏地址读内容与权限
         int s2a_snap_far_save(FILE *), s2a_snap_far_load(FILE *);

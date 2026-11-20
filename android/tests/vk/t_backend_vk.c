@@ -2,6 +2,9 @@
 // 覆盖设计文档 §8：C01（32 位填充）、C02/C03（失败终止、失败段不回写）、C04（发布顺序）、
 // C05/C06（录制未提交保活）、C08（cmd_abort）、C23 的粘滞错误部分，以及 close 义务。
 // 期望值全部是 CPU 手算 / 契约条文，不取自被测实现。
+// RTLD_NEXT（dlsym，见下方 vkGetPhysicalDeviceSurfaceCapabilitiesKHR）在 glibc 上是 GNU 扩展，
+// -std=c11 会把它关掉，故在包含任何头文件之前开 _GNU_SOURCE。
+#define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 
 #include <dirent.h>

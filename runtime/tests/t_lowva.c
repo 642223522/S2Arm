@@ -1,5 +1,6 @@
 // 低区账单测：假扫描（空洞合计 T / 最大一块 B 由用例摆）+ 假钟 + 假归档使用者（每片 10 MB，腾一片句柄 −1；即时模式下 T、B 各 +10 MB，
 // 迟放模式下映射还没真放、T 不动）；期望按 s2a_lowva.h 的规则手算（保留量 R = max(256 MB, 2 × 最近 60 秒拦不到部分单秒最大涨幅)）
+// 等事件的上限只当兜底（11-19：原先 1～5 秒，负载高时线程没跑到就判红 → 一律 30 秒，正常时一到就返回）
 #include "../src/native.h"
 #include "../include/s2a_lowva.h"
 #include <sys/wait.h>
@@ -73,7 +74,7 @@ int main(void) {
     // ⑪ note 无锁：本线程持着账本锁（巡检持锁调回调的情形）时，别的线程 note 照样返回
     { pthread_mutex_t *m = (pthread_mutex_t *)s2a_lowva_test_mutex(); pthread_t th; g_noted = 0;
       pthread_mutex_lock(m); pthread_create(&th, NULL, note_th, NULL);
-      for (int i = 0; i < 200 && !g_noted; i++) usleep(5000);
+      for (int i = 0; i < 6000 && !g_noted; i++) usleep(5000);
       int ok = g_noted; pthread_mutex_unlock(m); pthread_join(th, NULL);
       CK(ok, "⑪ 持账本锁时别的线程 note 应不阻塞"); }
     // ⑭ 10-21 丝之歌 silksong_1021154925_1 原数：起账 T 1160、B 896；写跟踪快照池登记 32 MB（不可腾退）；之后 20 秒里拦不到的涨到 T 751 / B 545（每秒约 20 MB）；

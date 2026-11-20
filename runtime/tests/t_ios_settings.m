@@ -89,6 +89,40 @@ int main(int argc, char **argv) {
         if (argc == 3 && (!strcmp(argv[2], "--reload-owned") || !strcmp(argv[2], "--reload-explicit")))
             return reload_checks(!strcmp(argv[2], "--reload-explicit"));
         if (argc != 2) return 2;
+        {
+            NSString *suite = [@"local.s2arm.ldn." stringByAppendingString:NSUUID.UUID.UUIDString];
+            NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:suite];
+            const char *ldn[] = {"S2A_LDN_SERVER", "S2A_LDN_RELAY", "S2A_LDN_LISTEN"};
+            for (int i = 0; i < 3; i++) unsetenv(ldn[i]);
+            s2a_ios_apply_ldn_settings(d);
+            check(!getenv(ldn[0]) && !getenv(ldn[1]) && !getenv(ldn[2]), @"联机默认不写环境，保留现有自动发现");
+            [d setObject:@"manual" forKey:@"S2ALdnMode"];
+            [d setBool:YES forKey:@"S2ALdnHost"];
+            s2a_ios_apply_ldn_settings(d);
+            check(getenv(ldn[0]) && !strcmp(getenv(ldn[0]), "127.0.0.1") &&
+                  getenv(ldn[1]) && !strcmp(getenv(ldn[1]), "1") &&
+                  getenv(ldn[2]) && !strcmp(getenv(ldn[2]), "0.0.0.0"), @"本机托管：回环连接，全部网卡监听");
+            for (int i = 0; i < 3; i++) unsetenv(ldn[i]);
+            [d setBool:NO forKey:@"S2ALdnHost"];
+            [d setObject:@" 100.64.0.2 \n" forKey:@"S2ALdnAddress"];
+            s2a_ios_apply_ldn_settings(d);
+            check(getenv(ldn[0]) && !strcmp(getenv(ldn[0]), "100.64.0.2") &&
+                  getenv(ldn[1]) && !strcmp(getenv(ldn[1]), "0") && !getenv(ldn[2]), @"指定IP裁空白且不托管");
+            setenv(ldn[0], "203.0.113.8", 1);
+            s2a_ios_apply_ldn_settings(d);
+            check(!strcmp(getenv(ldn[0]), "203.0.113.8"), @"显式启动服务器优先");
+            for (int i = 0; i < 3; i++) unsetenv(ldn[i]);
+            [d setObject:@"manual" forKey:@"S2ALdnMode"];
+            [d setObject:@"" forKey:@"S2ALdnAddress"];
+            s2a_ios_apply_ldn_settings(d);
+            check(getenv(ldn[0]) && !strcmp(getenv(ldn[0]), "0.0.0.0") &&
+                  getenv(ldn[1]) && !strcmp(getenv(ldn[1]), "0"), @"空地址不自动发现、不托管、不拦起局");
+            for (int i = 0; i < 3; i++) unsetenv(ldn[i]);
+            [d setObject:@"auto" forKey:@"S2ALdnMode"];
+            s2a_ios_apply_ldn_settings(d);
+            check(!getenv(ldn[0]) && !getenv(ldn[1]) && !getenv(ldn[2]), @"切回自动后忽略保存的手动地址");
+            [d removePersistentDomainForName:suite];
+        }
         {   // 开着社区宽屏 / 自适应满屏补丁（11-12）：S2Arm 满屏让开（S2A_WIDESCREEN=0）；只开别类补丁不动；显式给了 S2A_WIDESCREEN 的照它
             NSString *suite = [@"local.s2arm.settings-cpws." stringByAppendingString:NSUUID.UUID.UUIDString];
             NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:suite];

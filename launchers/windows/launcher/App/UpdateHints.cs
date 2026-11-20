@@ -58,10 +58,8 @@ public sealed partial class EnvironmentWindow
         Render();
     }
 
-    internal static string? UpdateReasonKey(string reason) => reason switch
-    {
-        "rewriter" => "update.hint.reason.rewriter", "hostAbi" => "update.hint.reason.hostAbi", "shader" => "update.hint.reason.shader", _ => null,
-    };
+    /// <summary>原因 → 文案键：只认共享体验表 update_reasons（11-19 结构 9，Mac 读同一处；原先这里另写一份，缺 libGen / shaderMiss）</summary>
+    private string? UpdateReasonKey(string reason) => text.UpdateReasonKey(reason);
 
     private string[] UpdateReasons(LibraryGame game) => updateHints.TryGetValue(game.Id, out var why) ? why : [];
 

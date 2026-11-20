@@ -55,7 +55,7 @@ p=pathlib.Path(sys.argv[1]); enc=lambda x:base64.b64encode((p/x).read_bytes()).d
 program={'schema':'s2a-direct-program-v1','content':{'stages':[{'stage':'vs','spirv':enc('vertex.spv'),'attributeReadMask':0},{'stage':'fs','spirv':enc('fragment.spv')}],'bindings':[]}}
 (p/'program.json').write_text(json.dumps(program))
 PYJSON
-export VK_DRIVER_FILES="$icd" VK_LAYER_PATH="$layer" VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation VK_LAYER_VALIDATE_SYNC=1 XDG_CACHE_HOME="$out"
+export VK_DRIVER_FILES="$icd" VK_LAYER_PATH="$layer" VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT XDG_CACHE_HOME="$out"
 if [ "$mode" != --neg ]; then
     # Exercise the record fixture with the same real Vulkan and validation setup.
     bash "$repo/android/tests/vk_record_vvl_test.sh"

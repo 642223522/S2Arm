@@ -184,8 +184,8 @@ static int dump_confirms_wait(const char *trace_path) {
     }
     return good;
 }
-static int await_wait(pthread_t thread, const char *trace_path) {
-    for (int attempt = 0; attempt < 5000; ++attempt) {
+static int await_wait(pthread_t thread, const char *trace_path) {   // 等到线程真进内核等待为止，30 秒兜底（11-19：原 5 秒，负载高时线程没跑到 → 假红）
+    for (int attempt = 0; attempt < 30000; ++attempt) {
         if (native_waiting(thread)) {
             int evidence = dump_confirms_wait(trace_path);
             if (evidence < 0) return 0;
@@ -235,7 +235,7 @@ int main(int argc, char **argv) {
     if (!error) error = pthread_create(&thread, &attr, bootstrap, NULL);
     pthread_attr_destroy(&attr);
     if (error) return fail("8 MiB production-style guest pthread failed");
-    for (int attempt = 0; attempt < 5000 && !atomic_load_explicit(&ready, memory_order_acquire); ++attempt) usleep(1000);
+    for (int attempt = 0; attempt < 30000 && !atomic_load_explicit(&ready, memory_order_acquire); ++attempt) usleep(1000);
     if (!atomic_load_explicit(&ready, memory_order_acquire)) return fail("guest body did not publish ready");
     if (!query_local(local_handles, sizeof(uint32_t)) || !query_local(local_index, sizeof(int32_t)))
         return fail("actual guest locals are not in the real NPDM Stack/RW mapping");
@@ -243,7 +243,7 @@ int main(int argc, char **argv) {
     if (!await_wait(thread, argv[3])) return fail("no matching production wait evidence before stop");
     // No service was started. The controller does not perform pthread_join:
     // the production roster/reaper alone owns the thread and its TLS lifetime.
-    int stopped = s2a_thread_stop_all(5000);
+    int stopped = s2a_thread_stop_all(30000);   // 时限只当兜底（要证的是停得下来，不是几秒内）
     int joined = s2a_thread_session_joined();
     int destroyed = atomic_load(&tls_destroyed);
     fprintf(stderr, "[probe] stop_result=%d session_joined=%d TLS_destructors=%d\n", stopped, joined, destroyed);

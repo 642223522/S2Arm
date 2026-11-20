@@ -85,7 +85,8 @@ namespace S2A.Services
         }
 
         // 本地无线联机中继地址（IP 或主机名，端口缺省 Ryujinx LanPlayPort 30456，单测改到临时端口：S2AHooks.LdnPort）：Mac 多开给 127.0.0.1，第一个起来的进程托管中继、其余连它；
-        //   S2A_LDN_RELAY=1 时非回环地址也就地托管（手机局域网当主机）。不给 = 不联机
+        //   S2A_LDN_RELAY=1 显式托管，=0 只当客户端；S2A_LDN_LISTEN 独立指定监听地址。
+        //   未指定服务器时保留按需平台发现；显式服务器跳过发现与选举。
         public static string LdnServer { get; } = string.IsNullOrEmpty(Environment.GetEnvironmentVariable("S2A_LDN_SERVER")) ? null : Environment.GetEnvironmentVariable("S2A_LDN_SERVER");
         // 局域网模式（同一 Wi-Fi 多台设备，ios/ldn_lan.m）：每台都在全部网卡上托管中继并用 Bonjour 发布，大家按同一规则选出同一台中继，
         //   原生层经 S2A_LdnSetServer 随时改指，游戏下一次建房 / 加入（ldn:u OpenAccessPoint / OpenStation）用新地址。
@@ -255,12 +256,23 @@ namespace S2A.Services
                 address = System.Net.IPAddress.Any;   // 局域网：别的设备要连得进来
             }
             else if (LdnServer == null || !System.Net.IPAddress.TryParse(LdnServer, out address) ||
-                !(System.Net.IPAddress.IsLoopback(address) || Environment.GetEnvironmentVariable("S2A_LDN_RELAY") == "1"))
+                !(Environment.GetEnvironmentVariable("S2A_LDN_RELAY") == "1" ||
+                  (System.Net.IPAddress.IsLoopback(address) && Environment.GetEnvironmentVariable("S2A_LDN_RELAY") != "0")))
             {
                 return;
             }
 
-            string where = LdnLan ? "全部网卡" : LdnServer;
+            // 连接目标与监听网卡独立：本机游戏连回环，远端玩家可经公网 / VPN IPv4 接入。
+            // 未指定时保留旧行为；自动发现仍始终监听全部网卡。
+            string listen = Environment.GetEnvironmentVariable("S2A_LDN_LISTEN");
+            if (!LdnLan && !string.IsNullOrEmpty(listen) &&
+                !System.Net.IPAddress.TryParse(listen, out address))
+            {
+                Console.Error.WriteLine($"[S2A 联机] 无效的中继监听地址：{listen}");
+                return;
+            }
+
+            string where = address.ToString();
             _ldnRelay = LdnRelay.TryHost(address, Ryujinx.HLE.S2AHooks.LdnPort);
             Console.Error.WriteLine(_ldnRelay != null ? $"[S2A 联机] 本进程托管中继 {where}:{Ryujinx.HLE.S2AHooks.LdnPort}" : $"[S2A 联机] 中继 {where}:{Ryujinx.HLE.S2AHooks.LdnPort} 已由别的进程托管，本进程只当客户端");
 

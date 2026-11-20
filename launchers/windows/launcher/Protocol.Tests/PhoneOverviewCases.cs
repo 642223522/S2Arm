@@ -39,5 +39,55 @@ internal static class PhoneOverviewCases
         check(two.Pick(null)?.Device == "NEW", "pick: most recently synced");
         var online = new PhoneOverview([Ph(device: "OLD", probed: true, online: "usb", seen: now.AddSeconds(-99)), Ph(device: "NEW", seen: now)]);
         check(online.Pick(null)?.Device == "OLD" && online.Pick("NEW")?.Device == "NEW", "pick: connected one first; a chosen one wins");
+
+        // 11-19 自签走查结构 4、5：别的工具（AltStore / SideStore）装的 S2Arm（同 Mac PhoneConsoleTests；期望按作业契约 host_update.phone_overview 手写）
+        const string alt = "io.s2arm.games.example01";
+        var ext = PhoneOverview.Parse(J("""{"phones":[{"device":"ALT-1","name":"备用手机","installed":true,"installedBy":"external","bundleId":"io.s2arm.games.example01","shellCurrent":null,"signMode":"external","online":"usb","actions":["exportShellIpa","pushS2arm","exportS2arm","handOverIdentity"],"games":[]}, {"device":"P1","installed":true,"installedBy":"launcher","bundleId":"io.example.one","shellCurrent":true}, {"device":"OLD","installed":true,"shellCurrent":true}, {"device":"NEW","installedBy":"weird"}]}"""))!;
+        var a1 = ext.Phones[0];
+        check(a1.InstalledBy == "external" && a1.External && a1.BundleId == alt && !a1.ShellCurrent && a1.Actions!.SequenceEqual(["exportShellIpa", "pushS2arm", "exportS2arm", "handOverIdentity"]),
+            "external: installedBy / bundleId / actions parsed, shellCurrent null → false");
+        check(ext.Phones[1].InstalledBy == "launcher" && ext.Phones[2].InstalledBy is null && ext.Phones[3].InstalledBy is null && ext.Phones[2].Actions!.Count == 0,
+            "external: old job without installedBy → null; unknown value → null; no actions → empty");
+        check(K(a1) == "console.status.externalApp", "status: external app has its own state (not notInstalled / appOutdated / expired)");
+        check(K(a1 with { Online = null }) == "console.status.notConnectedNever", "status: offline still comes first");
+        string Acts(PhoneOverview.Phone x) => string.Join(",", PhoneOverview.Actions(x));
+        check(Acts(a1) == "exportShellIpa,pushS2arm,exportS2arm,handOverIdentity", "actions: external → the four job buttons in order");
+        check(Acts(a1 with { Actions = ["installShell", "renewShell", "handOverIdentity", "bogus"] }) == "handOverIdentity", "actions: external never shows install / renew, unknown dropped");
+        check(Acts(a1 with { Actions = [] }) == "exportShellIpa,pushS2arm,exportS2arm,handOverIdentity", "actions: external without job actions → the four defaults");
+        check(Acts(Ph()) == "renewShell,handOverIdentity,updateSelected" && Acts(Ph(installed: false)).StartsWith("installShell,") && Acts(Ph(current: false)).StartsWith("updateShell,"),
+            "actions: launcher phones keep install / update / renew + identity + update selected");
+        var st = ext.ConsoleState();
+        Dictionary<string, object?> Inst(int i) => (Dictionary<string, object?>)st[i]["installed"]!;
+        check((string?)Inst(0)["by"] == "other" && (string?)Inst(0)["bundleId"] == alt && st[0]["device"] as string == "ALT-1", "state: external → installed.by other with its bundle id");
+        var acts0 = (List<string>)st[0]["actions"]!;
+        check(!acts0.Contains("installShell") && acts0.Contains("handOverIdentity"), "state: acceptance — external phone has handOverIdentity and no installShell");
+        check((string?)Inst(1)["by"] == "s2arm" && Inst(2)["by"] is null && Inst(3)["bundleId"] is null, "state: launcher → s2arm; unknown → null; no bundle → null");
+        // 同一台 iPhone 上装着不止一个 S2Arm：玩家选、选一次记住（同 Mac PhoneConsoleTests；期望按作业契约 host_update.phone_overview needsChoice / candidates 手写）
+        const string own = "io.s2arm.games.example02";
+        const string cands = """[{"bundleId":"io.s2arm.games.example01","team":"TEAMALT","byThisLauncher":false,"identityTeam":"TEAMALT"},{"bundleId":"io.s2arm.games.example02","team":"TEAMOWN","byThisLauncher":true,"identityTeam":null}]""";
+        var duo = PhoneOverview.Parse(J("""{"phones":[{"device":"DUO-1","installed":true,"bundleId":"","shellCurrent":null,"signMode":null,"online":"usb","needsChoice":true,"actions":["chooseApp"],"candidates":""" + cands + ""","games":[]},"""
+            + """{"device":"P1","installed":true,"installedBy":"launcher","bundleId":"io.s2arm.games.example02","shellCurrent":true,"candidates":""" + cands + """},"""
+            + """{"device":"OLD","installed":true},{"device":"BAD","candidates":[{"team":"TEAMALT"},{"bundleId":"","team":"X"}]}]}"""))!;
+        var d0 = duo.Phones[0];
+        check(d0.NeedsChoice && !duo.Phones[1].NeedsChoice && !duo.Phones[2].NeedsChoice, "choose: needsChoice parsed; absent = false");
+        check(d0.Candidates!.SequenceEqual([new PhoneOverview.Candidate(alt, "TEAMALT", false, "TEAMALT"), new PhoneOverview.Candidate(own, "TEAMOWN", true, null)]),
+            "choose: candidates in job order, identityTeam null → null");
+        check(d0.Installed && d0.BundleId == "" && d0.InstalledBy is null, "choose: needsChoice phone is installed with no current bundle");
+        check(duo.Phones[1].Candidates!.Count == 2 && duo.Phones[2].Candidates!.Count == 0 && duo.Phones[3].Candidates!.Count == 0, "choose: chosen keeps candidates; none = empty; candidates without bundle id dropped");
+        check(K(d0) == "console.status.chooseApp" && K(d0 with { Online = null }) == "console.status.notConnectedNever", "status: choose after offline, before everything else");
+        check(Acts(d0) == "chooseApp", "actions: needsChoice → only chooseApp (no install / update)");
+        check(Acts(duo.Phones[1]) == "renewShell,handOverIdentity,updateSelected,chooseApp", "actions: chosen with several candidates → change entry at the end");
+        check(Acts(a1) == "exportShellIpa,pushS2arm,exportS2arm,handOverIdentity", "actions: only one S2Arm → no change entry");
+        string L(PhoneOverview.Candidate c) => string.Join(",", PhoneOverview.CandidateLabelKeys(c));
+        check(L(new(alt, "TEAMALT", false, null)) == "console.choose.byOther", "label: another tool");
+        check(L(new(alt, "TEAMALT", false, "TEAMALT")) == "console.choose.byOther,console.choose.certImported", "label: certificate team matches → imported");
+        check(L(new(alt, "TEAMALT", false, "TEAMOTHER")) == "console.choose.byOther" && L(new(alt, "", false, null)) == "console.choose.byOther", "label: team mismatch / empty → not imported");
+        check(L(new(own, "TEAMOWN", true, null)) == "console.choose.byLauncher", "label: this launcher");
+        var ds = duo.ConsoleState();
+        var dc = (List<Dictionary<string, object?>>)ds[0]["candidates"]!;
+        check((bool)ds[0]["needsChoice"]! && ((Dictionary<string, object?>)ds[0]["installed"]!)["bundleId"] is null && ((List<string>)ds[0]["actions"]!).SequenceEqual(["chooseApp"]),
+            "state: needsChoice, no current bundle, only chooseApp");
+        check(dc.Count == 2 && (string?)dc[0]["bundleId"] == alt && (bool)dc[1]["byThisLauncher"]! && dc[1]["identityTeam"] is null && (string?)dc[0]["team"] == "TEAMALT", "state: candidates carried");
+        check(!(bool)ds[1]["needsChoice"]! && (string?)((Dictionary<string, object?>)ds[1]["installed"]!)["bundleId"] == own, "state: chosen one is installed.bundleId");
     }
 }

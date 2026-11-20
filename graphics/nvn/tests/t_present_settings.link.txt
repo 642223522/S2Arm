@@ -155,6 +155,7 @@ hdr runtime/src/native.h
 hdr runtime/src/reloc_class.h
 hdr runtime/src/ro_find.h
 hdr runtime/src/selfsign_certs.inc
+hdr runtime/src/snapfile.h
 hdr runtime/src/snapfmt.h
 hdr runtime/src/thread_wait_diag.inc
 dyn _S2A_SnapAudioFp
@@ -170,6 +171,7 @@ dyn _s2a_av1_decode
 dyn _s2a_av1_open
 dyn _s2a_gl_xlate
 dyn _s2a_gl_xlate_tag
+dyn _s2a_prov_app_json_self
 dyn _s2a_prov_signing_ids_self
 dyn _s2a_vp8_close
 dyn _s2a_vp8_decode

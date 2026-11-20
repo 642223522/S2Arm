@@ -23,6 +23,14 @@ public sealed partial class EnvironmentWindow
     private FrontJob? consoleJob;                 // 「更新所选」那一单（作业 pushSelected）；null = 没在更新
     private int consoleDone, consoleTotal;        // 这一轮推完几款 / 共几款（作业 progress 事件 done / total）
     private string? consolePushing;               // 正在推的那款（progress 事件 current）
+    // 「把签名身份交给手机」（作业 phoneIdentity）：这一单的状态（running / succeeded / failed / cancelled…）、失败原因与诊断、成功时 delivered
+    private readonly PhoneJobTrack identityTrack = new();
+    private string identityState = "", identityMessage = "", identityDiagnostics = "";
+    private bool identityDelivered;
+    // 「选用哪个 S2Arm」（作业 phoneChooseApp；同 Mac consoleChoosing / consoleChooseError / consoleRechoose）：正在记的包名、上一次没选成的原因（作业层原句）、选过了又点了「换一个」
+    private string? consoleChoosing;
+    private string consoleChooseError = "";
+    private bool consoleRechoose;
     private bool ConsoleUpdating => consoleJob is not null;
     private bool ConsoleSelected => phoneOverview is not null && selectedGame == ConsoleId;
     private PhoneOverview.Phone? ConsolePhone => phoneOverview?.Pick(consoleDevice);
@@ -32,6 +40,7 @@ public sealed partial class EnvironmentWindow
         try
         {
             var extra = probe ? new Dictionary<string, object?> { ["probe"] = true } : null;
+            if (extra is not null && consoleDevice is { Length: > 0 } d) extra["device"] = d;   // 带上总控台当前这台
             var job = await PackJobClient.RunAsync(PackRequest("phoneOverview", "", extra), null, CancellationToken.None);
             phoneOverview = job.Report.Succeeded ? PhoneOverview.Parse(job.Report.Result) : null;
             if (phoneOverview is not null && phoneOverview.Phones.All(p => p.Device != consoleDevice)) consoleDevice = null;
@@ -60,15 +69,8 @@ public sealed partial class EnvironmentWindow
         return Tf(key, args);
     }
 
-    /// <summary>「更新所选」：一单作业 pushSelected 按游戏库顺序推总控台这台（同 Mac updateSelected）。作业层一款失败接着推下一款，
+    /// <summary>「更新所选」/「推所选到 iPhone」（RunConsoleAction）：一单作业 pushSelected 按游戏库顺序推总控台这台（同 Mac updateSelected）。作业层一款失败接着推下一款，
     /// 换哪款都做不下去（没装 App / 手机断开）才整轮停；「停下」= 取消这一单，推完的留着</summary>
-    private void UpdateSelected()
-    {
-        if (ConsoleUpdating || ConsolePhone is not { } phone) return;
-        var order = (catalog?.Games ?? []).Where(g => !g.Hidden && consoleSelection.Contains(g.Id)).Select(g => g.Id.ToUpperInvariant()).ToList();
-        if (order.Count > 0) _ = PushSelectedAsync(order, phone.Device);
-    }
-
     private async Task PushSelectedAsync(IReadOnlyList<string> order, string device)
     {
         if (QueuePhone(null, () => PushSelectedAsync(order, device))) return;   // 手机上有作业在跑 → 排队
@@ -92,6 +94,165 @@ public sealed partial class EnvironmentWindow
         { state = error is OperationCanceledException ? "cancelled" : "failed"; Console.Error.WriteLine("S2Arm pushSelected: " + error.Message); }
         finally { EndJob(front); consoleJob = null; consolePushing = null; DynamicFinished(state); Render(); }
         await RefreshPhoneOverviewAsync();
+    }
+
+    /// <summary>「把签名身份交给手机」：作业 phoneIdentity 把这台电脑的签名身份交给总控台这台手机上的 S2Arm（别的工具装的团队对得上也交；同 Mac phoneIdentity）。
+    /// 成功记下 delivered（完成提示分「交好了」/「已经有了」）；失败用手机作业结局卡（PhoneJobCard：原因 + 下一步 + 复制错误摘要）</summary>
+    private async Task PhoneIdentityAsync(string device, bool force = false)
+    {
+        if (connectedFolder is null || libraryId is null) return;
+        if (QueuePhone(null, () => PhoneIdentityAsync(device, force))) return;   // 手机上有作业在跑 → 排队
+        var front = BeginJob(JobKind.Phone);
+        identityTrack.Begin("phoneIdentity", ConsolePhone is { Name.Length: > 0 } p ? p.Name : device);
+        identityState = "running"; identityMessage = identityDiagnostics = ""; identityDelivered = false;
+        Render();
+        try
+        {
+            var extra = new Dictionary<string, object?> { ["device"] = device };
+            if (force) extra["force"] = true;
+            var job = await PackJobClient.RunAsync(PackRequest("phoneIdentity", "", extra),
+                e => Avalonia.Threading.Dispatcher.UIThread.Post(() => { identityTrack.Ingest(e); Render(); }), front.Token, front.Next());
+            identityTrack.Finish(job, GameName);
+            identityState = job.Report.State;
+            if (job.Report.Succeeded)
+                identityDelivered = job.Report.Result.ValueKind == System.Text.Json.JsonValueKind.Object && job.Report.Result.TryGetProperty("delivered", out var d) && d.ValueKind == System.Text.Json.JsonValueKind.True;
+            else { identityMessage = job.Report.Message.Length > 0 ? job.Report.Message : job.Report.State; identityDiagnostics = JobDiagnostics(job); }
+        }
+        catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
+            InvalidOperationException or OperationCanceledException or System.ComponentModel.Win32Exception)
+        { identityMessage = error.Message.Length > 0 ? error.Message : error.GetType().Name; identityState = error is OperationCanceledException ? "cancelled" : "failed"; identityTrack.Ended = DateTime.UtcNow; }
+        finally { EndJob(front); DynamicFinished(identityState); Render(); }
+    }
+
+    /// <summary>「选用哪个 S2Arm」：作业 phoneChooseApp 核对它确在这台手机上后记进设备记录；成没成都重新现查总览（选的已不在 → 列表跟着变）。同 Mac chooseApp</summary>
+    private async Task ChooseAppAsync(string device, string bundleId)
+    {
+        if (consoleChoosing is not null) return;
+        consoleChoosing = bundleId; consoleChooseError = "";
+        Render();
+        try
+        {
+            var job = await PackJobClient.RunAsync(PackRequest("phoneChooseApp", "", new Dictionary<string, object?> { ["device"] = device, ["bundleId"] = bundleId }), null, CancellationToken.None);
+            if (job.Report.Succeeded) consoleRechoose = false;
+            else consoleChooseError = job.Report.Message.Length > 0 ? job.Report.Message : job.Report.State;
+        }
+        catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
+            InvalidOperationException or System.ComponentModel.Win32Exception)
+        { consoleChooseError = error.Message.Length > 0 ? error.Message : error.GetType().Name; }
+        finally { consoleChoosing = null; }
+        await RefreshPhoneOverviewAsync(probe: true);
+    }
+
+    /// <summary>① 手机与 App 里的「选用哪个 S2Arm」：按作业给的顺序（包名排序）列出每一个，每个一颗按钮；只写事实（谁装的、证书导没导、团队号），不推荐。选过的再点「换一个」也到这里</summary>
+    private Control ConsoleChooser(PhoneOverview.Phone phone, bool offline)
+    {
+        var box = new StackPanel { Spacing = 8, Margin = new Thickness(0, 4, 0, 0) };
+        box.Children.Add(WrappedMuted(T("console.choose.title"), 12.5));
+        foreach (var c in phone.Candidates ?? [])
+        {
+            var text = new StackPanel { Spacing = 2 };
+            text.Children.Add(new TextBlock { Text = (consoleChoosing == c.BundleId ? "⟳ " : "") + string.Join(" · ", PhoneOverview.CandidateLabelKeys(c).Select(T)), Foreground = Ink, FontSize = 13 });
+            text.Children.Add(Muted(c.BundleId + (c.Team.Length > 0 ? " · " + Tf("console.choose.team", c.Team) : ""), 11));
+            var button = new Button { Content = text, IsEnabled = !offline && consoleChoosing is null && !installBusy, Padding = new Thickness(16, 9),
+                Background = Brush.Parse("#29292D"), Foreground = Ink, CornerRadius = new CornerRadius(8) };
+            var bid = c.BundleId;
+            button.Click += (_, _) => RunConsoleAction(PhoneOverview.Act.ChooseApp, phone.Device, bundleId: bid);
+            Avalonia.Automation.AutomationProperties.SetAutomationId(button, "console.chooseApp." + bid);
+            box.Children.Add(button);
+        }
+        if (offline) box.Children.Add(new TextBlock { Text = Tf("console.offline", phone.Name.Length > 0 ? phone.Name : "iPhone"), Foreground = Brush.Parse("#FF9F0A"), FontSize = 12 });
+        if (consoleChooseError.Length > 0) box.Children.Add(new TextBlock { Text = B(consoleChooseError), Foreground = Brush.Parse("#FF9F0A"), FontSize = 12, TextWrapping = TextWrapping.Wrap });
+        if (!phone.NeedsChoice) box.Children.Add(Action("console.choose.cancel", () => { consoleRechoose = false; consoleChooseError = ""; Render(); }));
+        Avalonia.Automation.AutomationProperties.SetAutomationId(box, "console.chooseApp");
+        return box;
+    }
+
+    /// <summary>① 手机与 App 里的「把签名身份交给手机」（次要按钮 + 一行说明 + 进行中 / 完成提示 / 失败卡）</summary>
+    private Control ConsoleIdentity(PhoneOverview.Phone phone, bool offline)
+    {
+        var box = new StackPanel { Spacing = 6, Margin = new Thickness(0, 6, 0, 0) };
+        var running = identityState == "running";
+        box.Children.Add(Action("console.button.identity", () => _ = PhoneIdentityAsync(phone.Device), !offline && !running));
+        box.Children.Add(WrappedMuted(T("console.identity.note"), 12));
+        if (running) box.Children.Add(new TextBlock { Text = "⟳ " + T("phone.status.running.phoneIdentity"), Foreground = Ink, FontSize = 12.5 });
+        else if (identityState == "succeeded")
+        {
+            var done = new TextBlock { Text = T(identityDelivered ? "console.identity.done" : "console.identity.already"), Foreground = Brush.Parse("#30D158"), FontSize = 13, TextWrapping = TextWrapping.Wrap };
+            Avalonia.Automation.AutomationProperties.SetAutomationId(done, "console.identity.result");
+            box.Children.Add(done);
+        }
+        else if (identityState.Length > 0) box.Children.Add(PhoneJobCard(identityTrack, identityState, identityMessage, identityDiagnostics, null, showsOperation: false));
+        Avalonia.Automation.AutomationProperties.SetAutomationId(box, "console.identity");
+        return box;
+    }
+
+    /// <summary>介绍卡「连上 iPhone 开始」（11-19 自签走查结构 5，同 Mac consoleIntroStart）：先现查连着的手机（probe）；手机上已有 S2Arm
+    /// （别的工具装的 → 总控台「用别的工具装的」那套按钮；启动器装的 → 它自己的状态）就停在总控台、不装第二个；什么都没装（或查不出）才接着原来的装机</summary>
+    private async Task ConsoleIntroStartAsync()
+    {
+        await RefreshPhoneOverviewAsync(probe: true);
+        if (ConsolePhone is { InstalledBy: not null } found) { consoleDevice = found.Device; Render(); return; }
+        await UpdatePhoneAsync(false, [], device: ConsolePhone?.Device);
+    }
+
+    /// <summary>点总控台按钮（界面与控制口 POST /console-action 走这同一个函数；同 Mac runConsoleAction）。ids：推 / 导出哪几款（控制口可给；不给 = 勾选的、按游戏库顺序）。
+    /// bundleId：chooseApp 选哪一个（必须是这台手机的候选之一）。→ 没做的原因（null = 已发起）</summary>
+    private string? RunConsoleAction(string action, string device, IReadOnlyList<string>? ids = null, string? bundleId = null)
+    {
+        var shown = (catalog?.Games ?? []).Where(g => !g.Hidden).ToList();
+        var order = ids?.Select(i => i.ToUpperInvariant()).ToList() ?? shown.Where(g => consoleSelection.Contains(g.Id)).Select(g => g.Id.ToUpperInvariant()).ToList();
+        switch (action)
+        {
+            case PhoneOverview.Act.InstallShell or PhoneOverview.Act.UpdateShell or PhoneOverview.Act.RenewShell:
+                _ = UpdatePhoneAsync(false, [], device: device); break;
+            case PhoneOverview.Act.ExportShellIpa:   // 导出通用 S2Arm.ipa（作业 installUpdate + mode export → export_shell_ipa）：不连手机
+                _ = UpdatePhoneAsync(false, [], mode: "export"); break;
+            case PhoneOverview.Act.HandOverIdentity:
+                _ = PhoneIdentityAsync(device); break;
+            case PhoneOverview.Act.UpdateSelected or PhoneOverview.Act.PushS2arm:   // 别的工具装的也是同一单 pushSelected：作业层推未签名 .s2arm、手机自己签
+                if (order.Count == 0) return "没选游戏";
+                if (ConsoleUpdating) return "正在更新所选";
+                _ = PushSelectedAsync(order, device); break;
+            case PhoneOverview.Act.ExportS2arm:
+                var picked = order.Select(id => shown.FirstOrDefault(g => string.Equals(g.Id, id, StringComparison.OrdinalIgnoreCase))).OfType<LibraryGame>().ToList();
+                if (picked.Count == 0) return "没选游戏";
+                foreach (var g in picked) ExportSelfSign(g);
+                break;
+            case PhoneOverview.Act.ChooseApp:
+                var cands = phoneOverview?.Phones.FirstOrDefault(p => p.Device == device)?.Candidates ?? [];
+                if (bundleId is null || cands.All(c => c.BundleId != bundleId)) return "bundleId 不在这台手机的候选里（此刻有：" + string.Join(" / ", cands.Select(c => c.BundleId)) + "）";
+                if (consoleChoosing is not null) return "正在记下上一次的选择";
+                _ = ChooseAppAsync(device, bundleId); break;
+            default: return "不认识这个按钮";
+        }
+        return null;
+    }
+
+    private string ConsoleActionTitle(string action) => action switch
+    {
+        PhoneOverview.Act.InstallShell => T("console.button.install"),
+        PhoneOverview.Act.UpdateShell => T("console.button.update"),
+        PhoneOverview.Act.RenewShell => T("console.button.renew"),
+        PhoneOverview.Act.ExportShellIpa => T("console.button.exportShellIpa"),
+        PhoneOverview.Act.HandOverIdentity => T("console.button.identity"),
+        PhoneOverview.Act.PushS2arm => Tf("console.button.pushS2arm", consoleSelection.Count),
+        PhoneOverview.Act.ExportS2arm => Tf("console.button.exportS2arm", consoleSelection.Count),
+        PhoneOverview.Act.ChooseApp => T("console.choose.change"),
+        _ => Tf("console.updateSelected", consoleSelection.Count),
+    };
+
+    /// <summary>总控台按钮：文案按动作名取，自动化 id = console.&lt;动作名&gt;，点了走 RunConsoleAction</summary>
+    private Button ConsoleButton(string action, string device, bool enabled, bool primary)
+    {
+        Button button;
+        if (primary) button = Primary(ConsoleActionTitle(action), () => RunConsoleAction(action, device), enabled);
+        else
+        {   // 次要按钮同 Action 的样子（Action 按文案键取字，这里文案带勾选数，直接给字）
+            button = new Button { Content = ConsoleActionTitle(action), IsEnabled = enabled, Padding = new Thickness(16, 9), Background = Brush.Parse("#29292D"), Foreground = Ink, CornerRadius = new CornerRadius(8) };
+            button.Click += (_, _) => RunConsoleAction(action, device);
+        }
+        Avalonia.Automation.AutomationProperties.SetAutomationId(button, "console." + action);
+        return button;
     }
 
     /// <summary>「停下」：取消这一单（推完的留着；没推完的那款下次续推）</summary>
@@ -131,7 +292,7 @@ public sealed partial class EnvironmentWindow
         {
             page.Children.Add(Label(T("console.status.introduce"), 28));
             page.Children.Add(new TextBlock { Text = T("console.intro.body"), TextWrapping = TextWrapping.Wrap, MaxWidth = 620, Foreground = Ink });
-            page.Children.Add(Primary(T("console.intro.start"), () => _ = UpdatePhoneAsync(false, [])));
+            page.Children.Add(Primary(T("console.intro.start"), () => _ = ConsoleIntroStartAsync()));
             Avalonia.Automation.AutomationProperties.SetAutomationId(page, "console.intro");
             return Card(page, 24);
         }
@@ -144,24 +305,43 @@ public sealed partial class EnvironmentWindow
         {
             var pick = new ComboBox { ItemsSource = phoneOverview.Phones.Select(p => p.Name.Length > 0 ? p.Name : p.Device).ToList(),
                 SelectedIndex = phoneOverview.Phones.ToList().FindIndex(p => p.Device == phone.Device) };
-            pick.SelectionChanged += (_, _) => { if (pick.SelectedIndex >= 0) { consoleDevice = phoneOverview.Phones[pick.SelectedIndex].Device; SeedConsoleSelection(); Render(); } };
+            pick.SelectionChanged += (_, _) =>
+            {   // 换了一台：现查它装了哪些 S2Arm
+                if (pick.SelectedIndex < 0) return;
+                consoleDevice = phoneOverview.Phones[pick.SelectedIndex].Device; consoleRechoose = false; consoleChooseError = "";
+                SeedConsoleSelection(); Render(); _ = RefreshPhoneOverviewAsync(probe: true);
+            };
             Avalonia.Automation.AutomationProperties.SetAutomationId(pick, "console.phonePicker");
             head.Children.Add(pick);
         }
         else head.Children.Add(Label(phone.Name.Length > 0 ? phone.Name : phone.Device, 24));
         head.Children.Add(Muted(ConsoleStatusText(), 13));
-        if (phone.Installed && phone.ShellCurrent && phone.Games.Count > 0 && phone.Games.All(g => g.State == PhoneOverview.GameState.Latest))
+        if (phone.Installed && phone.ShellCurrent && !phone.External && phone.Games.Count > 0 && phone.Games.All(g => g.State == PhoneOverview.GameState.Latest))
             head.Children.Add(new TextBlock { Text = "✓ " + T("console.allLatest"), Foreground = Brush.Parse("#30D158"), FontWeight = FontWeight.Bold });
         page.Children.Add(head);
 
-        // ① 手机与 App
+        // ① 手机与 App：按钮集合与控制口 phoneConsole 同一个来源 PhoneOverview.Actions（启动器装的：安装 / 更新 / 续签 一颗；别的工具装的：导出 S2Arm.ipa）
+        var actions = PhoneOverview.Actions(phone);
         var app = new StackPanel { Spacing = 8 };
         app.Children.Add(Label(ConsoleStatusText() + (phone.SignMode is { } m ? " · " + T("console.sign." + m) : "")));
-        var appRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
-        var appKey = !phone.Installed ? "console.button.install" : !phone.ShellCurrent ? "console.button.update" : "console.button.renew";
-        appRow.Children.Add(Action(appKey, () => _ = UpdatePhoneAsync(false, [], device: phone.Device), !offline));
-        if (offline) appRow.Children.Add(Offline());
-        app.Children.Add(appRow);
+        if (phone.NeedsChoice || (consoleRechoose && (phone.Candidates?.Count ?? 0) > 1)) app.Children.Add(ConsoleChooser(phone, offline));
+        else if ((phone.Candidates?.Count ?? 0) > 1)   // 选过了、装着不止一个：写正在用哪个 + 「换一个」
+        {
+            var cur = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+            cur.Children.Add(new TextBlock { Text = Tf("console.choose.current", phone.BundleId), Foreground = Brush.Parse("#A0A0A8"), FontSize = 12, VerticalAlignment = VerticalAlignment.Center });
+            cur.Children.Add(Action("console.choose.change", () => { consoleChooseError = ""; consoleRechoose = true; Render(); }));
+            app.Children.Add(cur);
+        }
+        if (phone.External) app.Children.Add(WrappedMuted(T("console.external.note"), 12));
+        if (actions.FirstOrDefault(a => a is PhoneOverview.Act.InstallShell or PhoneOverview.Act.UpdateShell or PhoneOverview.Act.RenewShell or PhoneOverview.Act.ExportShellIpa) is { } appAction)
+        {
+            var appRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
+            var needsPhone = appAction != PhoneOverview.Act.ExportShellIpa;   // 导出 S2Arm.ipa 不连手机，没连也能点
+            appRow.Children.Add(ConsoleButton(appAction, phone.Device, !(offline && needsPhone), primary: false));
+            if (offline && needsPhone) appRow.Children.Add(Offline());
+            app.Children.Add(appRow);
+        }
+        if (actions.Contains(PhoneOverview.Act.HandOverIdentity)) app.Children.Add(ConsoleIdentity(phone, offline));
         page.Children.Add(ConsoleSection("console.section.phone", app));
 
         // ② 游戏同步
@@ -194,7 +374,13 @@ public sealed partial class EnvironmentWindow
         var run = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12, Margin = new Thickness(0, 6, 0, 0) };
         if (!ConsoleUpdating)
         {
-            run.Children.Add(Primary(Tf("console.updateSelected", consoleSelection.Count), UpdateSelected, consoleSelection.Count > 0 && !offline));
+            // 启动器装的：更新所选；别的工具装的：推所选到 iPhone + 导出所选 .s2arm（导出不连手机，没连也能点）
+            foreach (var a in actions.Where(a => a is PhoneOverview.Act.UpdateSelected or PhoneOverview.Act.PushS2arm or PhoneOverview.Act.ExportS2arm))
+            {
+                var push = a != PhoneOverview.Act.ExportS2arm;
+                var enabled = consoleSelection.Count > 0 && !(push && offline);
+                run.Children.Add(ConsoleButton(a, phone.Device, enabled, primary: push));
+            }
             if (offline) run.Children.Add(Offline());
         }
         else
@@ -235,6 +421,7 @@ public sealed partial class EnvironmentWindow
     {
         if (phoneOverview is null) return null;
         if (ConsoleUpdating) return "⟳ " + Tf("dynamic.batch", Math.Min(consoleDone + 1, Math.Max(consoleTotal, 1)), Math.Max(consoleTotal, 1));
+        if (identityState == "running") return "⟳ " + T("phone.title.phoneIdentity");   // 交签名身份占着手机槽：写它自己的名字，不借「更新 S2Arm」
         if (installBusy || phoneUpdating)
         {
             var pct = installDone is { } d && installTotal is { } t && t > 0 ? " " + (100 * d / t) + "%" : "";

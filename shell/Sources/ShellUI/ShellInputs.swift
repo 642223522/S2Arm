@@ -13,12 +13,31 @@ public enum GameState: Equatable, Sendable {
     /// Installed with S2Arm 0.5 (the program lived inside that app; installing the 0.6 app replaced it): saves and resources are still here,
     /// the computer pushes this game's program once and it plays. Its own state so the card can say why and what to do.
     case needsLegacyUpdate
+    /// S2Arm 0.6.0: this game is signed on this iPhone before it opens, and the iPhone has no certificate that can sign it.
+    /// Its primary action gets one right here (`ShellActions.onGetSigningCert`); once imported the game is playable again.
+    case needsCertificate(CertificateNeed)
+    /// S2Arm 0.6.0: the game's data is on this iPhone but its program (the game's .s2arm file) isn't yet, such as when only the
+    /// .img was put in. Its primary action picks the .s2arm here (`ShellActions.onImportProgram`).
+    case needsProgram
     /// `reason` is one short line for under the title, such as "Game files damaged". `detail` is a plain sentence
     /// for the player (what happened, what to do), shown under the title and in the How to fix sheet. `technical`
     /// is the underlying message, shown only as small secondary Details in the sheet.
     case broken(reason: String, detail: String = "", technical: String = "")
     /// On its way from the computer: copied over the cable, then unpacked here. Its cover is greyed until it can be played.
     case installing(InstallStage)
+}
+
+/// Why a game needs a signing certificate on this iPhone. Each has its own words; the fix is the same: get the
+/// certificate of the app that installed S2Arm (AltStore or SideStore) and import it here.
+public enum CertificateNeed: Equatable, Sendable {
+    /// No certificate on this iPhone yet.
+    case missing
+    /// Only certificates of another team (Apple ID) than the one S2Arm was installed with.
+    case otherTeam
+    /// The certificate S2Arm was installed with has been replaced or revoked, so the one here no longer works.
+    case replaced
+    /// Signed in a way this iPhone doesn't accept, and there is no certificate here to sign it again.
+    case oldSignature
 }
 
 /// Where an arriving game is. `fraction` (0...1) is how far this phase has got; nil when it is not known yet.
@@ -309,6 +328,15 @@ public struct ShellActions {
     public var onClearShellCloud: (() -> Void)?
     /// S2Arm: settings → "Report a problem" (the host packs the logs, uploads them and shows a short code). Nil hides the row.
     public var onReportProblem: (() -> Void)?
+    /// S2Arm: settings → "Signing certificate" (0.6.0): the certificate this iPhone signs imported games with ("" = none yet),
+    /// importing a .p12 (the host picks the file and asks for its password) and getting SideStore's. All nil hides the group.
+    public var signingCertStatus: (() -> String)? = nil
+    public var onImportSigningCert: (() -> Void)? = nil
+    public var onSideStoreSigningCert: (() -> Void)? = nil
+    /// S2Arm: a game's "Get certificate…" (state `.needsCertificate`): SideStore when it is installed, otherwise picking a .p12.
+    public var onGetSigningCert: (() -> Void)? = nil
+    /// S2Arm: "Import .s2arm…" on a game that needs its program (`.needsProgram`, or an older game `.needsLegacyUpdate`): pick the file here.
+    public var onImportProgram: ((String) -> Void)? = nil
     public var onGlobalPadMapChange: ((String, String) -> Void)?
     public var onGlobalPadMapReset: (() -> Void)?
     /// The button test opened (true) or closed: the host sends `PadSnapshot`s only in between.

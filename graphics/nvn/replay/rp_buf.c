@@ -42,6 +42,7 @@ struct mirror { nvn_gpu_buf buf; uint64_t *synced, *sub, *checked; uint64_t seen
 struct land_rng { uint64_t off, len; };
 struct shadow { const uint8_t *mem; uint64_t size; struct mirror m[2]; uint64_t npages; uintptr_t page0; struct gpu_write *gw; int ngw, cgw; int landing;
                 int log_on;
+                int untracked;      // 整个池不在写跟踪里（nvn_dirty_span 取不到）：没有页代号可比，页新旧靠「本次提交里同步过」加「回放自己登记的写」判，见 page_fresh
                 const void *span;   // log_on 时：整个池在写跟踪里的范围句柄（日志按它读）
                 int failed;   // 第一份镜像建不出来：记住，之后这个池直接按未接返回，不再每笔重建（池释放时随表项删掉，重建池会重试）
                 struct land_rng lr[16]; int nlr; };
@@ -52,6 +53,7 @@ static nvn_hmap g_shadow = {.klen = 8};   // 池起点 → struct shadow *
 static uint64_t g_sync_bytes, g_sync_runs;
 static nvn_gpu_buf g_null_storage;
 static int g_gw_live;   // 所有池的未落地登记数（含正在落地的项）
+static int g_untracked_shadows;   // 不受写跟踪的池里有镜像的个数（原子读写）：为 0（受跟踪的游戏全程如此）时 rp_write_note 不多走一步
 #ifdef S2A_GPU_LAND_TEST
 int rp_test_gw_live(void) { return __atomic_load_n(&g_gw_live, __ATOMIC_ACQUIRE); }
 #endif
@@ -79,7 +81,8 @@ static void mirror_free(struct mirror *m, int defer) {
     if (m->buf && !(defer && limbo_push(m->buf))) nvn_gpu_buf_release(m->buf, NULL, NULL);
     free(m->synced); free(m->sub); free(m->checked); free(m->stale); free(m->stale_sum); memset(m, 0, sizeof *m);
 }
-static void shadow_free(struct shadow *s, int defer) { if (s->ngw) __atomic_sub_fetch(&g_gw_live, s->ngw, __ATOMIC_RELEASE); mirror_free(&s->m[0], defer); mirror_free(&s->m[1], defer); free(s->gw); free(s); }
+static void shadow_free(struct shadow *s, int defer) { if (s->ngw) __atomic_sub_fetch(&g_gw_live, s->ngw, __ATOMIC_RELEASE); if (s->untracked) __atomic_sub_fetch(&g_untracked_shadows, 1, __ATOMIC_RELEASE);
+                                                       mirror_free(&s->m[0], defer); mirror_free(&s->m[1], defer); free(s->gw); free(s); }
 // 镜像映射代号：新建镜像、换镜像都会让「同一段地址解析出的 (缓冲, 偏移)」变掉。回放核心的解析结果缓存按它作废。
 
 // ---------- 脏页追加日志（nvk_buf_dirtylog，#1501 A②）----------
@@ -175,9 +178,11 @@ static struct shadow *shadow_get(const uint8_t *mem, uint64_t size) {
     s->mem = mem; s->size = size;
     s->page0 = (uintptr_t)mem & ~(uintptr_t)(ps - 1);
     s->npages = ((uintptr_t)mem + size - s->page0 + ps - 1) / ps;
+    s->untracked = nvn_dirty_span(mem, (size_t)size) == NULL;   // 池登记时就定了（写跟踪在登记池的同一刻起区间），之后不变
     // 脏页追加日志：开关开着、写跟踪给这个池起了日志（nvk_session 在登记任何池之前配置）才用；整池的范围句柄在这里取一次
     if (nvn_plat_flag("nvk_buf_dirtylog", 1) && (s->span = nvn_dirty_span(mem, (size_t)size))) { uint64_t id, cur; s->log_on = nvn_dirty_log_open(s->span, &id, &cur); }
-    if (!mirror_make(s, 0)) { s->failed = 1; nvn_hm_put(&g_shadow, &k, s); nvn_unimpl("gpu", "buf_create_pool_mirror", mem); return NULL; }
+    if (!mirror_make(s, 0)) { s->failed = 1; s->untracked = 0; nvn_hm_put(&g_shadow, &k, s); nvn_unimpl("gpu", "buf_create_pool_mirror", mem); return NULL; }
+    if (s->untracked) __atomic_add_fetch(&g_untracked_shadows, 1, __ATOMIC_RELEASE);
     nvn_hm_put(&g_shadow, &k, s);
     return s;
 }
@@ -193,8 +198,45 @@ static struct mirror *mirror_pick(struct shadow *s, uint64_t off, uint64_t len, 
     return m;
 }
 
-// 这一段受不受写跟踪：不受跟踪的池每次使用都要整段同步，解析结果不能缓存（真机上的硬约束，见 rp_buf_resolve 注释）
 void rp_buf_frame_flip(void) { pthread_mutex_lock(&g_bmu); g_mirror_cur ^= 1; pthread_mutex_unlock(&g_bmu); }
+
+// 第 i 页在镜像里还是新的吗（新的 = 这次使用不用再传）。
+//   · 受写跟踪的池：同步之后页代号没有超过同步时取的那个值，就是没人写过；
+//   · 不受写跟踪的池（整池 nvn_dirty_span 取不到：安卓的虚拟池映射段属于这一类）没有代号可比。以前每次使用都整段重传，
+//     而这类池的用法是一笔绘制取三四段、一帧取上千次：同一页一帧被重传几百次，每次再因「同一次提交里的第二次同步」把当前通道切开。
+//     现在：本次提交里同步过的页算新的（命令按 NVN 的规矩只读提交那一刻之前写好的内容，提交之后游戏对同一处的改写不归这次提交），
+//     回放自己在这次提交中途改了这一页（三条按序写命令、显卡写回落地）由 pages_invalidate_locked 作废。
+//   · 受写跟踪的池遇到跟踪不可靠 / 一段页数太多（got != n）：仍然每次都传，行为不变。
+static inline int page_fresh(const struct shadow *s, const struct mirror *m, uint64_t i, int tracked, const uint64_t *gens, uint64_t p, uint64_t sub0) {
+    if (!m->synced[i]) return 0;
+    if (tracked) return gens[i - p] <= m->synced[i];
+    return s->untracked && m->sub[i] == sub0;
+}
+// 回放自己改了游戏内存池内偏移 [off, off + len)：两份镜像里（skip_mi 那份除外）这几页作废，下次使用必须重新同步。
+// 只清 synced，不动 sub：sub 还记着「这页本次提交里用过」，重新同步时 sync_run 据此录成 GPU 上有序的拷贝，不会直接写进显卡可能正在读的镜像。
+static void pages_invalidate_locked(struct shadow *s, uint64_t off, uint64_t len, int skip_mi) {
+    if (!len || off >= s->size) return;
+    if (len > s->size - off) len = s->size - off;
+    const size_t ps = nvn_dirty_page_size();
+    const uint64_t a = (uint64_t)(uintptr_t)s->mem + off, p = (a - s->page0) / ps, q = (a + len - 1 - s->page0) / ps;
+    for (int i = 0; i < 2; i++) {
+        struct mirror *m = &s->m[i];
+        if (i == skip_mi || !m->synced) continue;
+        for (uint64_t k = p; k <= q && k < s->npages; k++) m->synced[k] = 0;
+    }
+}
+// 回放在 CPU 上改了游戏内存 [addr, addr + n)（rp_write_note 调）：落在不受写跟踪的池里就作废镜像里的对应页。
+// 受跟踪的池靠写跟踪发现这些写，不需要；没有任何不受跟踪的池时（原子读）一步都不走。
+static void buf_invalidate_written(uint64_t addr, uint64_t n) {
+    if (!n || !__atomic_load_n(&g_untracked_shadows, __ATOMIC_ACQUIRE)) return;
+    const uint8_t *mem; uint64_t size;
+    if (!rp_pool_find(addr, n, &mem, &size)) return;
+    uint64_t k = (uint64_t)(uintptr_t)mem;
+    pthread_mutex_lock(&g_bmu);
+    struct shadow *s = nvn_hm_get(&g_shadow, &k);
+    if (s && s->untracked) pages_invalidate_locked(s, addr - k, n, -1);
+    pthread_mutex_unlock(&g_bmu);
+}
 
 // 把游戏内存的 [a, b)（池内偏移）传进镜像，绕开 GPU 写过、还没回写落地的那些段：
 // 那些字节镜像里的才是新的，游戏内存里是旧的（同步按页，一页里别的字节脏了不能连它一起盖回去）。
@@ -248,12 +290,12 @@ void rp_buf_gpu_write_land(uint64_t pool_key, uint64_t id, int ok) {   // 线程
     // 登记保留到锁外拷贝结束：同步和镜像选择都必须避开尚未完整落地的区间。
     // 锁内只标记正在拷，13 MB 的拷贝放到锁外做：这一段原来持锁拷贝，
     // 与提交线程的缓冲解析抢同一把锁，重叠档实测「锁等待」11.1–21.2 毫秒/帧（见坑记录续 25）。
-    const uint8_t *src = NULL, *mem = NULL; uint64_t off = 0, len = 0; struct shadow *s = NULL; int found = 0;
+    const uint8_t *src = NULL, *mem = NULL; uint64_t off = 0, len = 0; struct shadow *s = NULL; int found = 0, wmi = 0;
     pthread_mutex_lock(&g_bmu);
     s = nvn_hm_get(&g_shadow, &pool_key);
     if (s) for (int i = 0; i < s->ngw; i++) if (s->gw[i].id == id && !s->gw[i].landing) {
         src = ok ? nvn_gpu_buf_cpu(s->m[s->gw[i].mi].buf) : NULL;
-        mem = s->mem; off = s->gw[i].off; len = s->gw[i].len;
+        mem = s->mem; off = s->gw[i].off; len = s->gw[i].len; wmi = s->gw[i].mi;
         rp_perf_add(RP_PERF_LAND_N, 1); rp_perf_add(RP_PERF_LAND_KB, len / 1024);
         s->gw[i].landing = 1; found = 1;
         s->landing++;
@@ -270,6 +312,9 @@ void rp_buf_gpu_write_land(uint64_t pool_key, uint64_t id, int ok) {   // 线程
     pthread_mutex_lock(&g_bmu);
     for (int i = 0; i < s->ngw; i++) if (s->gw[i].id == id) { s->gw[i] = s->gw[--s->ngw]; break; }
     for (int i = s->nlr - 1; i >= 0; i--) if (s->lr[i].off == off && s->lr[i].len == len) { s->lr[i] = s->lr[--s->nlr]; break; }
+    // 登记撤掉之后同一段改用当前那份镜像：不受写跟踪的池里，那份镜像此前同步这些页时按登记跳过了这段字节，落地的内容它没有——作废这几页，下次使用重新同步。
+    // 写它的那一份镜像里本来就是新的，不动（受跟踪的池里落地的 memcpy 自己会让页变脏）。
+    if (ok && s->untracked) pages_invalidate_locked(s, off, len, wmi);
     s->landing--;
     __atomic_sub_fetch(&g_gw_live, 1, __ATOMIC_RELEASE);   // 锁内撤登记与计数保持一致
     if (!s->landing) pthread_cond_broadcast(&g_land_cv);   // 池销毁 / 会话收尾可安全解除目标映射
@@ -377,14 +422,17 @@ static int resolve_part_locked(uint64_t addr, uint64_t len, const uint8_t *mem, 
     }
     uint64_t stack[256], *gens = n <= 256 ? stack : malloc((size_t)n * sizeof *gens);
     long got = gens ? nvn_dirty_page_gens(nvn_dirty_span((const void *)(uintptr_t)addr, (size_t)len), (const void *)(uintptr_t)addr, (size_t)len, gens, (size_t)n) : -1;
-    int tracked = got == (long)n;   // 没被写跟踪的池：每次使用都整段同步
+    int tracked = got == (long)n;   // 没被写跟踪的池：见 page_fresh
     if (tracked) { rp_perf_add(RP_PERF_BUF_SLOW_N, 1); rp_perf_add(RP_PERF_BUF_PAGES_N, n); } else rp_perf_add(RP_PERF_BUF_NOSPAN_N, 1);
+    const uint64_t sub0 = rp_sub_serial(); uint64_t synced_pages = 0;
     for (uint64_t i = p; i <= q;) {
-        if (m->synced[i] && tracked && gens[i - p] <= m->synced[i]) { i++; continue; }
-        uint64_t j = i; while (j + 1 <= q && !(m->synced[j + 1] && tracked && gens[j + 1 - p] <= m->synced[j + 1])) j++;
+        if (page_fresh(s, m, i, tracked, gens, p, sub0)) { i++; continue; }
+        uint64_t j = i; while (j + 1 <= q && !page_fresh(s, m, j + 1, tracked, gens, p, sub0)) j++;
         sync_run(s, m, mem, size, i, j);
+        synced_pages += j - i + 1;
         i = j + 1;
     }
+    if (!tracked && s->untracked && !synced_pages) rp_perf_add(RP_PERF_BUF_NOSPAN_FRESH_N, 1);   // 不受写跟踪、这一段本次提交里都同步过：免传
     if (gens != stack) free(gens);
     m->seen_ok = (uint8_t)tracked; m->seen_map = map0;
     for (uint64_t i = p; i <= q; i++) m->checked[i] = now0;   // now0 取在读各页代号之前：这之后才写的页，代号已经不等于 now0
@@ -532,7 +580,10 @@ enum { WL_N = 128 };
 static struct wl_ent { uint64_t seq, a, b; } g_wl[WL_N];
 static uint64_t g_wl_seq, g_wl_put;
 uint64_t rp_write_mark(void) { return g_wl_seq; }
-void rp_write_note(uint64_t a, uint64_t n) { g_wl[g_wl_put].seq = ++g_wl_seq; g_wl[g_wl_put].a = a; g_wl[g_wl_put].b = a + n; g_wl_put = (g_wl_put + 1) % WL_N; }
+void rp_write_note(uint64_t a, uint64_t n) {
+    g_wl[g_wl_put].seq = ++g_wl_seq; g_wl[g_wl_put].a = a; g_wl[g_wl_put].b = a + n; g_wl_put = (g_wl_put + 1) % WL_N;
+    buf_invalidate_written(a, n);   // 不受写跟踪的池靠这条知道「回放自己改了哪几页」（受跟踪的池由写跟踪看到）
+}
 // mark 之后有没有人写过和 [a, a+n) 重叠的区间。只顺着记号扫「mark 之后的那几条」——
 // 一帧要问 8000 次左右，扫满 128 条就是一百万次比较（实测这样做的缓存反而更慢）。
 // 日志绕一圈（mark 太旧、记录已被覆盖）时保守当作写过。
@@ -569,7 +620,7 @@ int rp_buf_gpu_pending(uint64_t addr, uint64_t len) {
 // 常量缓冲绑到这段时直接绑镜像（rp_draw.c）。不相交就返回 0，调用方照旧在 CPU 上做（绝大多数情况，零额外开销）。
 static int gpu_dst_done(uint64_t d, uint64_t n, const char *what, const void *rec) {
     if (!rp_post_gpu_write(d, n)) nvn_unimpl("buf", what, rec);   // 登记不上：结果留在镜像里、落不回游戏内存（记账，不静默）
-    rp_cpu_write_gen++; rp_write_note(d, n);   // 目标内容变了（游戏内存要到落地才变）：段内切片表、整组沿用按它作废
+    rp_cpu_write_gen++; rp_write_note(d, n); rp_gpu_wr_gen++;   // 目标内容变了（游戏内存要到落地才变）：段内切片表、整组沿用、base instance 批量表按它作废
     rp_perf_add(RP_PERF_BUF_GPU_ORDER_N, 1);
     return 1;
 }

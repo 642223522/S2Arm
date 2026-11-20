@@ -26,6 +26,9 @@ public final class ShellSettingsStore: @unchecked Sendable {
     public static let playInSilentModeKey = "S2APlayInSilentMode"
     /// S2Arm: 与其他 App 混音（宿主 ios/app.m audio_choice 读同一个键）；原只在系统设置 App 的 S2Arm 页（11-14 挪进游戏库设置）
     public static let mixWithOthersKey = "S2AMixWithOthers"
+    public static let ldnModeKey = "S2ALdnMode"
+    public static let ldnHostKey = "S2ALdnHost"
+    public static let ldnAddressKey = "S2ALdnAddress"
     public static let liquidGlassKey = "liquidGlass"             // true/false; Liquid Glass on the floating surfaces, on unless turned off
     /// S2Arm: the app's interface language, the same key as the in-game settings (ios/s2a_l10n.h S2AUILanguageKey). The host sets
     /// the app's AppleLanguages from it when the process starts, so a change takes effect the next time S2Arm opens. "system" is never
@@ -51,6 +54,12 @@ public final class ShellSettingsStore: @unchecked Sendable {
     public var performanceHUD: Bool { UserDefaults.standard.bool(forKey: Self.performanceHUDKey) }
     public var playInSilentMode: Bool { UserDefaults.standard.bool(forKey: Self.playInSilentModeKey) }
     public var mixWithOthers: Bool { UserDefaults.standard.bool(forKey: Self.mixWithOthersKey) }
+    public var ldnMode: String {
+        let value = UserDefaults.standard.string(forKey: Self.ldnModeKey) ?? "auto"
+        return ["auto", "manual"].contains(value) ? value : "auto"
+    }
+    public var ldnHost: Bool { UserDefaults.standard.bool(forKey: Self.ldnHostKey) }
+    public var ldnAddress: String { UserDefaults.standard.string(forKey: Self.ldnAddressKey) ?? "" }
 
     public func storeDataFolderName(_ name: String) { defaults.set(name, forKey: Self.dataFolderNameKey) }
     public func storeCloudSavesFolderName(_ name: String) { defaults.set(name, forKey: Self.cloudSavesNameKey) }
@@ -66,6 +75,13 @@ public final class ShellSettingsStore: @unchecked Sendable {
         guard Self.interfaceLanguages.contains(value) else { return }
         if value == "system" { UserDefaults.standard.removeObject(forKey: Self.interfaceLanguageKey) } else { UserDefaults.standard.set(value, forKey: Self.interfaceLanguageKey) }
     }
+    public func storeLdnMode(_ mode: String) {
+        guard ["auto", "manual"].contains(mode) else { return }
+        if mode == "auto" { UserDefaults.standard.removeObject(forKey: Self.ldnModeKey) }
+        else { UserDefaults.standard.set(mode, forKey: Self.ldnModeKey) }
+    }
+    public func storeLdnHost(_ on: Bool) { UserDefaults.standard.set(on, forKey: Self.ldnHostKey) }
+    public func storeLdnAddress(_ address: String) { UserDefaults.standard.set(address, forKey: Self.ldnAddressKey) }
     public func storePerformanceHUD(_ on: Bool) {
         UserDefaults.standard.set(on, forKey: Self.performanceHUDKey)
         defaults.removeObject(forKey: Self.retiredPerformanceHUDKey)

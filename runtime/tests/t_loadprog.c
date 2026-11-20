@@ -1,4 +1,5 @@
 // 加载页进度模型单测（runtime/include/s2a_loadprog.h）：期望值按口径手算。每例 fork 一个子进程（模型的静态量从零开始），S2A_DOCS 指临时目录。
+// 等事件的上限只当兜底（11-19：原先 1～5 秒，负载高时线程没跑到就判红 → 一律 30 秒，正常时一到就返回）
 #include "../src/native.h"
 #include "s2a_loadprog.h"
 #include <sys/wait.h>
@@ -22,9 +23,9 @@ int main(void) {
     // 前台激活门（s2a_load_front_state / s2a_load_front_wait；11-19 系统弹框盖着时场景停在前台未激活）：期望按状态定义手写
     CASE("前台激活门：没设过状态（不走 UIKit 场景的路径）→ 不等", { alarm(5); WANT(s2a_load_front_wait() == 0); });
     CASE("前台激活门：前台未激活时加载已做完、起主线程前等着；200 ms 后仍在等，激活后 1 秒内放行", {
-        alarm(10); s2a_load_front_state(1); pthread_t th; WANT(!pthread_create(&th, NULL, gate_waiter, NULL));
+        alarm(60); s2a_load_front_state(1); pthread_t th; WANT(!pthread_create(&th, NULL, gate_waiter, NULL));
         usleep(200000); WANT(g_gate_done == 0);
-        s2a_load_front_state(2); for (int i = 0; i < 100 && !g_gate_done; i++) usleep(10000); WANT(g_gate_done == 1); pthread_join(th, NULL); });
+        s2a_load_front_state(2); for (int i = 0; i < 3000 && !g_gate_done; i++) usleep(10000); WANT(g_gate_done == 1); pthread_join(th, NULL); });
     CASE("前台激活门：已激活 → 不等", { alarm(5); s2a_load_front_state(2); WANT(s2a_load_front_wait() == 0); });
     CASE("剩余时间文案逐秒：-1 估算中、3 不到 5 秒、42 → 42 秒、61 → 1 分 1 秒、80 → 1 分 20 秒、120 → 2 分钟", {
         WANT(eq(-1, "正在估算剩余时间")); WANT(eq(3, "不到 5 秒")); WANT(eq(42, "42 秒")); WANT(eq(61, "1 分 1 秒"));

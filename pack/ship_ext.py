@@ -41,6 +41,7 @@ sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / 'tools'))
 from pack import app_bundle  # noqa: E402
 from pack import widget_ext  # noqa: E402
+from pack.orch.dirrename import rename_dir  # noqa: E402  目录改名带 Windows 杀软 / 索引占用退避重试（#361、#50cb93）
 from pack.container_custom import apply_custom  # noqa: E402
 from pack.shell import manifest as shell_manifest  # noqa: E402
 from pack.display_name import NoTitle, ascii_display_name, display_name, localized_names, nacp_path, title  # noqa: E402
@@ -189,9 +190,9 @@ def cmd_shell(a):
                     red(f"主屏小组件扩展 ad-hoc 签名失败：{rc.stderr.strip()}")
                 shutil.copy2(c, xe)
         root_final = tmp / "shell" / "root"; root_final.parent.mkdir()
-        os.replace(r, root_final)
+        rename_dir(r, root_final)
         doc = shell_manifest.seal(root_final, tmp / "shell" / "manifest.json", *shell_manifest._defaults())
-        os.replace(tmp / "shell", out)
+        rename_dir(tmp / "shell", out)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print(f"🟢 壳 {doc['details']['shellId']}（{out}）：{len(doc['files'])} 个文件，随包表 {len(tables)} 种，主程序不含游戏镜像、ad-hoc 签名带 {ent.name}")
@@ -420,7 +421,7 @@ def cmd_program(a):
                                capture_output=True, text=True)
             if r.returncode:
                 red(f"{gid} 存档游戏身份校验失败：{(r.stderr or r.stdout).strip()[-200:]}")
-        os.replace(tmp, out)
+        rename_dir(tmp, out)
     except BaseException:
         shutil.rmtree(tmp, ignore_errors=True)
         raise
@@ -519,7 +520,7 @@ def cmd_container(a):
         apply_custom(app, games, a.custom, GAMES)
         (app / CATALOGUE).write_text(json.dumps(dict(schema=1, shell_id=sid, games=games), ensure_ascii=False, indent=1) + "\n", encoding="utf-8", newline="\n")
         sign_app(app, a.sign, a.bundle_id, a.team)
-        os.replace(app, out)
+        rename_dir(app, out)
     finally:
         shutil.rmtree(work, ignore_errors=True)
     if a.shell_only:
@@ -547,7 +548,7 @@ def cmd_container_drop(a):
         shutil.rmtree(app / GAMES / a.game)
         (app / game_images(a.game)).unlink()
         (app / CATALOGUE).write_text(json.dumps(dict(cat, games=left), ensure_ascii=False, indent=1) + "\n", encoding="utf-8", newline="\n")
-        os.replace(app, out)
+        rename_dir(app, out)
     finally:
         shutil.rmtree(work, ignore_errors=True)
     print(f"🟢 已摘掉 {a.game}，容器剩 {len(left)} 款：{out}")

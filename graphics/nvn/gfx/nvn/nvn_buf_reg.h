@@ -15,7 +15,9 @@
 #include <stdatomic.h>
 
 typedef struct { uint64_t base, size, mx; uint32_t l, r, pri; } nvn_breg_node;   // mx = 子树内最大终点（终点 = 起点 + 长度，饱和到 UINT64_MAX）
-typedef struct { nvn_breg_node *a; uint32_t cap, root, free_, n; uint32_t rng; } nvn_breg;   // a[0] 是空结点哨兵；free_ = 空闲链表头（经 l 串起来）
+typedef struct { nvn_breg_node *a; uint32_t cap, root, free_, n; uint32_t rng; uint64_t steps; } nvn_breg;   // a[0] 是空结点哨兵；free_ = 空闲链表头（经 l 串起来）
+// steps：累计走过的 split / merge 步数（每进一次 +1；调用方持锁，普通加法）。建删的代价就是这个数：期望 O(log n) / 次。
+//   增长率回归按它判（t_nvn_bufreg_rate.m：N 与 4N 个活缓冲的步数比），不用墙钟比——墙钟比随机器负载漂（11-19 门禁负载 62 时比值 11.77 判红，功能并没退化）
 
 static inline void nvn_breg_init(nvn_breg *t) { memset(t, 0, sizeof *t); t->rng = 0x9e3779b9u; }
 static inline void nvn_breg_free(nvn_breg *t) { free(t->a); nvn_breg_init(t); }
@@ -28,12 +30,14 @@ static inline void nvn_breg_pull(nvn_breg *t, uint32_t x) {
 }
 // 拆分：x 拆成 {起点 < k 或 ≤ k（le = 1）} 与其余；结果写 *L / *R
 static inline void nvn_breg_split(nvn_breg *t, uint32_t x, uint64_t k, int le, uint32_t *L, uint32_t *R) {
+    t->steps++;
     if (!x) { *L = *R = 0; return; }
     if (t->a[x].base < k || (le && t->a[x].base == k)) { nvn_breg_split(t, t->a[x].r, k, le, &t->a[x].r, R); *L = x; }
     else { nvn_breg_split(t, t->a[x].l, k, le, L, &t->a[x].l); *R = x; }
     nvn_breg_pull(t, x);
 }
 static inline uint32_t nvn_breg_merge(nvn_breg *t, uint32_t x, uint32_t y) {   // x 的键全小于 y
+    t->steps++;
     if (!x || !y) return x ? x : y;
     if (t->a[x].pri > t->a[y].pri) { t->a[x].r = nvn_breg_merge(t, t->a[x].r, y); nvn_breg_pull(t, x); return x; }
     t->a[y].l = nvn_breg_merge(t, x, t->a[y].l); nvn_breg_pull(t, y); return y;

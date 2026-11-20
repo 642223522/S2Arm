@@ -17,6 +17,7 @@ struct EnvironmentView: View {
     var onOpenSpace: (() -> Void)? = nil
     @State private var showPassed = false
 
+    private static let installModeID = "env.installMode"
     /// 组的顺序同旧启动器 ToolChecks。
     private static let groups = ["system", "apple", "engine", "bundled", "storage"]
 
@@ -32,6 +33,7 @@ struct EnvironmentView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, LauncherTheme.Space.page).padding(.bottom, LauncherTheme.Space.medium)
             }
+            ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: LauncherTheme.Space.section) {
                     // 界面语言（原在顶栏，入口整理收进设置）：一键切到另一种，当场生效、记住选择
@@ -97,6 +99,8 @@ struct EnvironmentView: View {
                         }
                     }
                     InstallModeCard(model: model)   // 装到 iPhone 的方式（v0.3.0：签名 / 安装入口收在这一处）
+                        .id(Self.installModeID)
+                        .overlay(RoundedRectangle(cornerRadius: LauncherTheme.Metrics.cardRadius).strokeBorder(LauncherPalette.cream, lineWidth: model.settingsFocus == "devCertSettings" ? 1.5 : 0))
                     // 主屏小组件（11-16）：装到 iPhone / 更新 / 导出时带不带 iPhone 桌面的游戏机小组件；缺省开，关掉后请求里带 widget: false
                     CardGroup(loc.t("s2arm.env.widget.group")) {
                         CardRow(loc.t("s2arm.env.widget.title"), detail: model.homeWidgetError.map(loc.backend) ?? loc.t("s2arm.env.widget.detail")) {
@@ -172,6 +176,10 @@ struct EnvironmentView: View {
                 }
                 .padding(.horizontal, LauncherTheme.Space.page).padding(.bottom, LauncherTheme.Space.section)
             }
+            // 装机清单「去设置」（证书一栏，devCertSettings）点过来：滚到签名身份那张卡、亮边框
+            .onAppear { if model.settingsFocus != nil { DispatchQueue.main.async { proxy.scrollTo(Self.installModeID, anchor: .top) } } }
+            .onChange(of: model.settingsFocus) { f in if f != nil { withAnimation { proxy.scrollTo(Self.installModeID, anchor: .top) } } }
+            }
             LauncherSheetFooter {
                 Text(loc.t("s2arm.env.note")).font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
@@ -186,7 +194,10 @@ struct EnvironmentView: View {
         .onChange(of: model.updatePopup != nil) { hasPopup in
             if hasPopup { model.showEnvironment = false }
         }
+        .appleLoginSheet(model, host: "settings")
         .onDisappear {
+            model.settingsFocus = nil
+            if model.appleLoginHost == "settings" { model.closeAppleLogin() }
             if model.inlineFailure?.kind == .keys { model.clearInlineFailure() }
             if model.showKeys { model.showKeys = false }
         }
@@ -350,7 +361,8 @@ struct EnvironmentView: View {
         CardRow(loc.backend(check.name), detail: check.ok ? "" : loc.backend(check.message), dot: check.ok ? LauncherPalette.ready : LauncherPalette.danger) {
             if !check.ok, let action = check.action, case let key = "s2arm.env.action." + action, loc.t(key) != key {
                 Button(loc.t(key)) {
-                    if model.provider.environment.repairStep(for: action) == .chooseLibrary { chooseLibrary() } else { model.repair(check) }
+                    if action == "appleLogin" { model.openAppleLogin(host: "settings") }   // 0.6.0 Mac 推到 iPhone 的 Apple ID：S2Arm 自己的登录面板
+                    else if model.provider.environment.repairStep(for: action) == .chooseLibrary { chooseLibrary() } else { model.repair(check) }
                 }
                     .controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy || model.checking)
             }

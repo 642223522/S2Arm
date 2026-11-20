@@ -130,7 +130,8 @@ namespace S2A.Services
             IStorage imgV1 = RomFsIndex.OpenImg(programDir, Directory.Exists(overlayDir) ? overlayDir : null);
             if (imgV1 != null)
             {
-                imgV1 = RomFsMods.ApplyAtLaunch(imgV1, programIndex);   // 资源替换类 mod（RomFsMods.cs）：没有 mod 原对象返回；下面几处同
+                // programIndex 是目录槽（0 = 这个包的根程序，单独导出的程序 n 也在槽 0），不是程序身份序号：没标目标的 romfs/ Mod 给根程序，按身份序号改会错
+                imgV1 = RomFsMods.ApplyAtLaunch(imgV1, programIndex, ProgramId);   // 资源替换类 mod（RomFsMods.cs）：没有 mod 原对象返回；下面几处同
                 device.Configuration.VirtualFileSystem.SetRomFs(pid, RomFsIndex.ReadLog(imgV1, readLogAs));
                 Native.Mark("服务：RomFS 单一 IMG\0"u8);
             }
@@ -138,7 +139,7 @@ namespace S2A.Services
             string std = imgV1 != null ? null : RomFsIndex.StdOf(romfs);
             if (std != null)
             {
-                IStorage image = RomFsMods.ApplyAtLaunch(RomFsIndex.OpenStd(std, overlayDir), programIndex);
+                IStorage image = RomFsMods.ApplyAtLaunch(RomFsIndex.OpenStd(std, overlayDir), programIndex, ProgramId);
                 device.Configuration.VirtualFileSystem.SetRomFs(pid, RomFsIndex.ReadLog(image, readLogAs));
                 Native.Mark("服务：RomFS 标准镜像\0"u8);
             }
@@ -147,7 +148,7 @@ namespace S2A.Services
 
             if (source == RomFsIndex.Source.Image)
             {
-                imageStorage = RomFsMods.ApplyAtLaunch(imageStorage, programIndex);
+                imageStorage = RomFsMods.ApplyAtLaunch(imageStorage, programIndex, ProgramId);
                 device.Configuration.VirtualFileSystem.SetRomFs(pid, RomFsIndex.ReadLog(imageStorage, readLogAs));
                 Native.Mark("服务：RomFS 单文件镜像\0"u8);
             }
@@ -170,7 +171,7 @@ namespace S2A.Services
                     image = RomFsFromDirectory(romfs, overlay);
                 }
 
-                image = RomFsMods.ApplyAtLaunch(image, programIndex);
+                image = RomFsMods.ApplyAtLaunch(image, programIndex, ProgramId);
                 device.Configuration.VirtualFileSystem.SetRomFs(pid, RomFsIndex.ReadLog(image, readLogAs));   // 镜像本身按偏移读：各数据存储会话互不共享读位置（#883），大读也不租中间数组
                 Native.Mark("服务：RomFS 目录表建\0"u8);
             }

@@ -960,7 +960,7 @@ def _package_failure_phase(reason):
 
 
 def oneclick_failure(events, milestone, log, *, refresh_log=None, refresh_before=None):
-    from errors import classify_failure, player_reason, refresh_stop_phase, tool_reason
+    from errors import classify_failure, player_reason, player_words, refresh_stop_phase, tool_reason
     name = "未记录阶段"  # 非玩家句
     result = None
     try:
@@ -998,6 +998,8 @@ def oneclick_failure(events, milestone, log, *, refresh_log=None, refresh_before
     # 日志确凿根因（盘满 / 缺 Metal / 缺工具）先于阶段映射；读一键出包输出尾 + 原因里点名的 refresh.log → 其红行点名的子日志（errors.gather_evidence）。
     # 本轮 refresh.log 没更新过（_log_identity 未变）就不读，旧失败不归给新任务。
     fresh_refresh = refresh_log if refresh_log is not None and _log_identity(refresh_log) not in (None, refresh_before) else None
-    code, why = classify_failure(phase, log, (reason,) + ((str(fresh_refresh),) if fresh_refresh else ()))
+    texts = (reason,) + ((str(fresh_refresh),) if fresh_refresh else ())
+    code, why = classify_failure(phase, log, texts)
+    said, advice = player_words(code, log, texts)
     # 上屏只放玩家话术；阶段 / 红行原文 / 归因依据进 internal → 诊断 detail（「复制错误摘要」带走）
-    return Failure(player_reason(code), code=code, internal="一键出包失败（" + name + "）：" + reason + "\n" + why)  # 非玩家句
+    return Failure(said, code=code, advice=advice, internal="一键出包失败（" + name + "）：" + reason + "\n" + why)  # 非玩家句

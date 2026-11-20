@@ -18,6 +18,8 @@ namespace S2A.Services.Tests
     //    不是苹果音频的回调线程（旧代码在回调里读 → 闸住的是回调线程）
     // ③ 闸着时关会话（Dispose）：3 秒内返回（旧代码：同步停队列要等回调，回调卡在闸上 → 永远不返回）
     // ④ 开闸后送数线程走完、不崩（会话已关：队列留着不释放，晚到的交缓冲什么都不做）
+    // ⑤ 开闸后送数线程 2 秒内退出、进程还在：它回来时可能对驱动共享的「要更新」事件 Set，驱动关时见它还卡着就不销毁那两个事件
+    //    （旧代码：驱动照销毁，Set 抛 ObjectDisposedException 在后台线程上带崩进程，负载下整套跑偶发退出 134）
     static class AppleAudioGuestStallTest
     {
         private sealed class StallReader : HardwareDeviceSessionOutputBase
@@ -94,6 +96,11 @@ namespace S2A.Services.Tests
             reader.Release.Set();
             Thread.Sleep(300);
             Row("④ 开闸后送数线程走完、进程还在", "不崩", "没崩", true);
+
+            var apple = (AppleHardwareDeviceSession)session;   // 平台例外：苹果音频后端单测
+            var wait = Stopwatch.StartNew();
+            while (apple.S2APaceThreadAlive && wait.ElapsedMilliseconds < 2000) Thread.Sleep(20);
+            Row("⑤ 开闸后送数线程退出、进程还在", "2 秒内退出、不崩", apple.S2APaceThreadAlive ? "2 秒还在" : $"{wait.ElapsedMilliseconds} ms 退出、没崩", !apple.S2APaceThreadAlive);
 
             return bad == 0 ? 0 : 1;
         }

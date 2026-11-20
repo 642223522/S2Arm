@@ -286,8 +286,6 @@ static int host_run(int argc, char **argv) {
       const char *dk = getenv("S2A_DOCKED");
       if (lc->module_dir[0] && !(dk && !strcmp(dk, "1")) && s2a_cpatch_ws_needs_docked(lc->module_dir)) {
           setenv("S2A_DOCKED", "1", 1); LOG("运行模式：开着社区宽屏补丁，按主机模式跑（补丁只改主机档渲染宽高；原 S2A_DOCKED=%s）", dk ? dk : "未设"); } }
-    // 档位梯子（runtime/src/qladder_host.c）：要在 iOS 画面设置注入之后（玩家选的运行模式是梯子的上限，#352），服务层 / 宽屏装表读 S2A_DOCKED 之前
-    { void s2a_ql_boot(void); s2a_ql_boot(); }
 #if TARGET_OS_OSX
     // 文件句柄软上限（10-24 gate-host 实测）：macOS 的 Terminal / ssh / 图形 App 缺省软上限 256，硬上限不限；动森带存档起局读存档时
     //   「Too many open files」、游戏随即 Break。iOS 上是 2560。起局时把软上限抬到 min(硬上限, 10240)（OPEN_MAX，setrlimit 认的最大值）

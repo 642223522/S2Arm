@@ -250,6 +250,13 @@ struct PhoneJobPanel: View {
             }
             ReportHint()
             HStack(spacing: 12) {
+                // 还没用 Apple ID 登录 / 登录过期（0.6.0 Mac：S2Arm 自己登录）：就在这里登录，登录好再点一次（RECOVERY 的「登录 Apple ID」指的就是它）
+                if let code = session.failureCode, let reason = S2ArmLauncherModel.appleLoginCodes[code] {
+                    Button { model.openAppleLogin(host: model.installViewOpen != nil ? "install" : "main", reason: reason) } label: {
+                        LauncherHeroActionLabel(title: t("install.login.open"), symbol: "person.crop.circle")
+                    }
+                    .controllerButtonStyle(.plain).controllerID("phone.appleLogin").controllerShortcut(.rightTrigger)
+                }
                 if session.kind == .installUpdate {
                     Button { model.retryPhoneUpdate() } label: { LauncherHeroActionLabel(title: t("phone.retry"), symbol: "arrow.clockwise") }
                         .controllerButtonStyle(.plain).disabled(model.phoneBusy).controllerID("phone.retry").controllerShortcut(.rightTrigger)
@@ -281,6 +288,11 @@ struct PhoneJobPanel: View {
             HStack(spacing: 12) {
                 Button { if let d = model.dropConfirm { model.confirmDrop(d) } } label: { LauncherHeroActionLabel(title: t("install.drop_confirm"), symbol: "arrow.right") }
                     .controllerButtonStyle(.plain).controllerID("phone.drop.confirm").controllerShortcut(.rightTrigger)
+                // 这个码有并列的另一条路（共享体验表 alternate，如新建证书确认的「改用已有证书」）：玩家自己选，点了不重发、去那个动作的落点
+                if let d = pendingConfirm, let alt = S2ArmLauncherModel.confirmAlternates[d.code] {
+                    Button(t(alt.labelKey)) { model.takeConfirmAlternate(d) }
+                        .controllerButtonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("phone.drop.alternate")
+                }
                 Button(t("phone.drop.cancel")) { model.dropConfirm = nil; model.backFromPhone() }
                     .controllerButtonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("phone.drop.cancel")
             }

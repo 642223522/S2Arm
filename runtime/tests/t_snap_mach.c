@@ -25,7 +25,7 @@ static void *spin(void *a) {   // 忙等：LDXR/STXR 自增，永不进系统调
 static void *park(void *a) { (void)a; for (;;) pause(); return NULL; }
 int main(void) {
     pthread_t w, v; pthread_create(&w, NULL, spin, NULL);
-    usleep(200000);
+    for (int i = 0; i < 30000 && !g_cnt; i++) usleep(1000);   // 等忙等线程真跑起来（原先睡 200 ms 当它在跑：负载高时还没上 CPU）
     mach_port_t wp = pthread_mach_thread_np(w);
     EQ("挂住工作线程", thread_suspend(wp) == KERN_SUCCESS);
     arm_thread_state64_t st; mach_msg_type_number_t c1 = ARM_THREAD_STATE64_COUNT; arm_neon_state64_t ns; mach_msg_type_number_t c2 = ARM_NEON_STATE64_COUNT;
@@ -42,11 +42,11 @@ int main(void) {
     EQ("写入通用寄存器现场", thread_set_state(vp, ARM_THREAD_STATE64, (thread_state_t)&st, ARM_THREAD_STATE64_COUNT) == KERN_SUCCESS);
     EQ("写入向量寄存器现场", thread_set_state(vp, ARM_NEON_STATE64, (thread_state_t)&ns, ARM_NEON_STATE64_COUNT) == KERN_SUCCESS);
     EQ("放行新线程", thread_resume(vp) == KERN_SUCCESS);
-    usleep(200000);
+    for (int i = 0; i < 30000 && g_cnt <= c0; i++) usleep(1000);   // 等计数真涨（原先睡 200 ms 再比：负载高时新线程还没被调度到 → 假红）
     uint64_t c1v = g_cnt;
     EQ("新线程从原指令接着跑：计数继续增长", c1v > c0);
     { arm_thread_state64_t s2; mach_msg_type_number_t n2 = ARM_THREAD_STATE64_COUNT; thread_suspend(vp); thread_get_state(vp, ARM_THREAD_STATE64, (thread_state_t)&s2, &n2);
       uint64_t p2 = __darwin_arm_thread_state64_get_pc(s2); EQ("新线程的 PC 落在原忙等循环里（距原 PC 不超过 5 条指令）", p2 >= pc - 20 && p2 <= pc + 20); thread_resume(vp); }
-    printf("%s t_snap_mach：%d / %d 项通过（挂住时计数 %llu、放行 0.2 秒后 %llu）\n", bad ? "✗" : "✓", cnt - bad, cnt, (unsigned long long)c0, (unsigned long long)c1v);
+    printf("%s t_snap_mach：%d / %d 项通过（挂住时计数 %llu、放行后 %llu）\n", bad ? "✗" : "✓", cnt - bad, cnt, (unsigned long long)c0, (unsigned long long)c1v);
     fflush(stdout); _exit(bad != 0);
 }

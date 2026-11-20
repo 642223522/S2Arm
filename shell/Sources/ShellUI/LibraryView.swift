@@ -525,6 +525,9 @@ public struct LibraryView: View {
         a.onClearShellData = o.onClearShellData.map { act in { if !echo() { act() } } }
         a.onClearShellCloud = o.onClearShellCloud.map { act in { if !echo() { act() } } }
         a.onReportProblem = o.onReportProblem.map { act in { if !echo() { act() } } }
+        a.signingCertStatus = o.signingCertStatus
+        a.onImportSigningCert = o.onImportSigningCert.map { act in { if !echo() { act() } } }
+        a.onSideStoreSigningCert = o.onSideStoreSigningCert.map { act in { if !echo() { act() } } }
         a.onGlobalPadMapChange = o.onGlobalPadMapChange.map { act in { if !echo() { act($0, $1) } } }
         a.onGlobalPadMapReset = o.onGlobalPadMapReset.map { act in { if !echo() { act() } } }
         a.onDeleteGame = o.onDeleteGame.map { act in { if !echo() { act($0, $1) } } }
@@ -555,7 +558,9 @@ public struct LibraryView: View {
         case .playable: actions.onPlay(detail.id)
         case .needsGameData: actions.onPickGameData(detail.id)
         case .needsAppUpdate: actions.onAppUpdate?()
-        case .needsGameUpdate, .needsLegacyUpdate: break   // needsHelp：上面已展开说明
+        case .needsGameUpdate: break   // needsHelp：上面已展开说明
+        case .needsLegacyUpdate, .needsProgram: actions.onImportProgram?(detail.id)   // 选这款的 .s2arm 导入（电脑「更新一次」是第二条路，写在说明里）
+        case .needsCertificate: actions.onGetSigningCert?()   // 直接导证书（装了 SideStore 向它要，否则选 .p12），导好库自己回「可以玩」
         case .broken: actions.onShowLog?(detail.id)
         case .installing(let stage): if stage.phase == .failed { actions.onPlay(detail.id) }   // 重试解开；传着 / 解着按了不动
         }

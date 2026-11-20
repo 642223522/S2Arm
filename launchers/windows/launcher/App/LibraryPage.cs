@@ -30,6 +30,7 @@ public sealed partial class EnvironmentWindow
     private void Navigate(string destination)
     {
         CapturePaths();
+        presented = null;   // 清单按钮的落点只算当前这一页（ExportPages.cs RunInstallAction 换页后再记）
         if (page == "library") libraryFolder = libraryFolderBox.Text ?? "";
         messagesOpen = false;   // 顶栏导航离开「消息」页
         sgradeOpen = false;     // 也离开「S 级优化升级」页
