@@ -4108,6 +4108,7 @@
   "在启动器里登录装 S2Arm 用的那个 Apple ID（或选用和装 S2Arm 同一团队的证书），再点一次「把签名身份交给手机」。": "En el lanzador, inicia sesión con el Apple ID que usaste para instalar S2Arm (o elige un certificado del mismo equipo que instaló S2Arm) y vuelve a hacer clic en «Entregar la identidad de firma al teléfono».",
   "手机上的 S2Arm 是用另一个 Apple ID 或证书签的（团队 {0}），和这台电脑上的签名身份（团队 {1}）不是同一个团队，交过去也签不了游戏：请在启动器里登录装 S2Arm 用的那个 Apple ID，或选用同一团队的证书。": "S2Arm en tu teléfono se firmó con otro Apple ID o certificado (equipo {0}), que no es del mismo equipo que la identidad de firma de este ordenador (equipo {1}), así que el teléfono no podrá firmar juegos con ella. Inicia sesión en el lanzador con el Apple ID que usaste para instalar S2Arm o elige un certificado del mismo equipo.",
   "手机上的 S2Arm 不是这个团队签的": "S2Arm del teléfono está firmado por otro equipo",
-  "装 S2Arm 用的 Apple ID 或证书，和这台电脑上的不是同一个团队。": "El Apple ID o certificado con el que se instaló S2Arm es de un equipo distinto al de este ordenador."
+  "装 S2Arm 用的 Apple ID 或证书，和这台电脑上的不是同一个团队。": "El Apple ID o certificado con el que se instaló S2Arm es de un equipo distinto al de este ordenador.",
+  "子程序 %s 的代码补丁暂不支持，没收": "Los parches de código del subprograma %s aún no son compatibles, así que no se importaron"
  }
 }
