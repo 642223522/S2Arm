@@ -226,6 +226,11 @@ def runtime_env(c, game, runtime, input_ok=True):
                S2A_CHEATS_DIR=str(contained(layout.root_of(c, game["id"]), layout.path(c, game["id"], "cheats"))),
                # 资源替换类 mod（11-15）：这款游戏文件夹的 mods/（启动器「游戏设置 → Mod」导入），服务层 RomFsMods.cs 起局叠到 RomFS 上
                S2A_MODS_DIR=str(contained(layout.root_of(c, game["id"]), layout.path(c, game["id"], "mods"))))
+    # Dock / Cmd+Tab 图标（#994）：把游戏库列表同一张封面交给宿主（封面三级取法在 library.catalog：玩家换的 → 游戏自带 → 商店横图），
+    #   宿主起 App 后把图标换成它（macos/front_mac.m）。没有封面 / 文件不在了就不带，宿主用包里的默认图标（write_host_icon 编进 Resources）
+    cover = str(game.get("cover") or "")
+    if cover and Path(cover).is_file():
+        env["S2A_GAME_COVER"] = cover
     if player:
         env["S2A_PLAYER_USER"] = player["user"]
         if player.get("name"):
@@ -464,6 +469,7 @@ def launch(c):
 
 
 VAGUARD = "libs2a_vaguard.dylib"
+HOST_ICON = "S2ArmGame.icns"   # 宿主包默认图标（#994 无封面时的回退）：compile_host 用 make_icns.sh 从 Branding/AppIcon-1024.png 编出
 
 
 def host_cache_ok(app, stamp):
@@ -478,6 +484,17 @@ def host_cache_ok(app, stamp):
     for target in (guard, app):
         if subprocess.run(["codesign", "--verify", "--strict", str(target)], capture_output=True).returncode != 0:
             return False
+    return True
+
+
+def write_host_icon(c, app, log):
+    """宿主包默认图标（#994 的回退）：launchers/macos/make_icns.sh 把 Branding/AppIcon-1024.png（与启动器 App 同一原图、同一配方）
+    编成 Contents/Resources/S2ArmGame.icns → True；引擎快照里没有配方 / 原图（更早的快照）→ False，不写、调用方不给 Info.plist 加图标键"""
+    script = c.engine / "launchers/macos/make_icns.sh"
+    if not script.is_file() or not (c.engine / "launchers/macos/Branding/AppIcon-1024.png").is_file():
+        return False
+    (app / "Contents/Resources").mkdir(parents=True, exist_ok=True)
+    c.run(["bash", str(script), str(app / "Contents/Resources" / HOST_ICON)], log)
     return True
 
 
@@ -541,6 +558,7 @@ def compile_host(c, fingerprint, env, log_root):
         raise Failure("S2Arm Mac 宿主缺地址窗口护栏库 libs2a_vaguard.dylib。")
     shutil.copy2(guard, executable.parent / guard.name)
     c.run(["codesign", "--force", "--sign", "-", executable.parent / guard.name], log_root / "sign.log", env)
+    host_icon = write_host_icon(c, app, log_root / "icon.log")   # 宿主包默认图标（#994 无封面时的回退）：玻璃 S 标，与启动器 App 同一原图
     # 不进系统「游戏模式」：游戏模式下 GPU 忙着也被压在最低频（上游参考实现（MIT）cb59a672 / frame-rate.md：一个约 100 行、不含宿主代码的全屏 Metal 程序
     #   游戏模式下约 160 秒后 618 → 338 MHz、9.5 → 18 ms 一帧；关掉 924 MHz、约 7 ms；一款大型开放世界游戏 10.5 → 19.7 ms 落到 30 帧）。LSSupportsGameMode false 是苹果给的关法，
     #   保留游戏类别。系统记得认过游戏的包名，同一包名改成 false 仍开着游戏模式：包名换成 org.s2arm.macos.host，老玩家机器也从头算（第一次起会再问一次蓝牙权限）；
@@ -550,6 +568,8 @@ def compile_host(c, fingerprint, env, log_root):
                  NSBluetoothAlwaysUsageDescription="连接 Switch 2 Pro 手柄，接收按键与体感并发送游戏震动。",  # 非玩家句
                  NSHighResolutionCapable=True, LSSupportsGameMode=False,
                  LSApplicationCategoryType="public.app-category.games")
+    if host_icon:
+        plist["CFBundleIconFile"] = HOST_ICON   # Dock / Cmd+Tab 无封面起局时的回退（#994；有封面时 front_mac.m 按 S2A_GAME_COVER 换成游戏封面）
     (app / "Contents/Info.plist").write_bytes(plistlib.dumps(plist))
     c.run(["codesign", "--force", "--sign", "-", app], log_root / "sign.log", env)
     atomic(host_root / "ready.json", dict(schema=1, sha256=digest(executable), guard_sha256=digest(executable.parent / VAGUARD)))
