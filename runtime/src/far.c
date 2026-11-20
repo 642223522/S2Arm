@@ -318,7 +318,7 @@ static int far_atomic(_STRUCT_ARM_THREAD_STATE64 *ss, uint32_t i, uint64_t delta
             uint64_t e = (uint64_t)g_mon[k].val; int ok = g_mon[k].len == n && g_mon[k].addr == ea && cas_n(h, n, &e, rx(ss, Rt));
             g_mon[k].len = 0; wx(ss, Rs, ok ? 0 : 1); return 1;
         }
-        if (!o2 && o1 && Rt2 != 31 && size >= 2) {   // LDXP / LDAXP / STXP / STLXP（每个寄存器 4 / 8 字节）
+        if (!o2 && o1 && size >= 2) {   // LDXP / LDAXP / STXP / STLXP（每个寄存器 4 / 8 字节）；第二个寄存器可以是 xzr（写 0）。与 CASP 的区分靠位 31（CASP 恒 0、独占对恒 1），不靠 Rt2
             int k = mon_slot((uintptr_t)pthread_self()); unsigned e1 = size == 3 ? 8 : 4; if (k < 0) return 0;
             if (L) { unsigned __int128 v = size == 3 ? __atomic_load_n((unsigned __int128 *)h, __ATOMIC_SEQ_CST) : __atomic_load_n((uint64_t *)h, __ATOMIC_SEQ_CST);
                 g_mon[k].addr = ea; g_mon[k].len = 2 * e1; g_mon[k].val = v;
