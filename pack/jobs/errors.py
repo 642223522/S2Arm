@@ -187,6 +187,7 @@ RECOVERY = {
     'game_files_mismatch': '用原版游戏文件重新导入这款：先在游戏库里移除它，再把原版文件拖进来。',
     'container_purge_failed': '手机解锁、数据线插稳后再删一次；不影响其他游戏。',
     'keychain_prompt': '在这台 Mac 屏幕上的钥匙串弹窗里点「始终允许」（需要的话输入 Mac 登录密码），再点一次「推到 iPhone」。',
+    'windows_mandatory_aslr': '打开「Windows 安全中心 → 应用和浏览器控制 → 漏洞利用保护设置 → 系统设置」，把「强制映像随机化（强制性 ASLR）」改回「使用默认值（关）」，再打一次包。',
     'windows_path_too_long': '路径太长：把游戏库搬到盘符根目录附近的短路径（比如 D:\\S2Arm），再打一次包；反馈时请带上错误摘要。',
     'pack_missing': '没找到这款的资源包目录：重新「打 iPhone 包」后再装到 iPhone。',
     'save_recovery_overridden': '已按你的确认跳过存档回退启动游戏；事务记录保留，下次启动会再试恢复。',
@@ -366,6 +367,7 @@ PLAYER_REASON = {
     "resource_preparation_failed": "资源准备失败。",
     "device_install_failed": "设备安装失败。",
     "package_failed": "出包未完成。",
+    "windows_mandatory_aslr": "Windows 的强制 ASLR 开着：出包工具起不了子进程。",
 }
 
 
@@ -377,6 +379,9 @@ def player_reason(code):
 # 只收工具 / 系统原样会打的字样，不从散文猜。
 LOG_CAUSES = (
     (r"WinError 206|filename or extension is too long|文件名或扩展名太长", "windows_path_too_long"),  # 非玩家句
+    # 随包 bash 起子进程刚建就退（#1762：MSYS 原文「dofork: child -1 - forked process … died unexpectedly, retry 0, exit code 0xC0000142」，连试 6 次）：
+    #   Windows「强制映像随机化（强制性 ASLR）」开着，MSYS 的 fork 要在子进程同一地址装 DLL，被系统强制换址后起不来。玩家关回系统默认即可出包
+    (r"dofork: child -1 - forked process \d+ died unexpectedly, retry \d+, exit code 0xC0000142", "windows_mandatory_aslr"),
     (r"No space left on device|\bENOSPC\b|\[Errno 28\]|\berrno\s*[=:]?\s*28\b"          # POSIX / Python OSError / .NET IOException（Mac）  # 非玩家句
      r"|There is not enough space on the disk|\bDisk full\b|WinError 112|ERROR_DISK_FULL|0x80070070"   # Windows / .NET
      r"|STATUS_DISK_FULL|磁盘空间不足|【写满】", "disk_full"),                                       # Windows 退出码注（direct_lib.sh 127）/ 我方字样
@@ -497,6 +502,32 @@ def _free_bytes(path):
         return None
 
 
+# 漏洞利用保护的「强制映像随机化」（winnt.h PROCESS_CREATION_MITIGATION_POLICY_FORCE_RELOCATE_IMAGES_*，位 8–9：1 = 总开、3 = 总开且要求重定位）。
+#   系统设置写在 Session Manager\kernel，单程序覆盖写在 Image File Execution Options\<程序名>，两处都是 MitigationOptions（REG_BINARY，小端）
+ASLR_KEYS = (r"SYSTEM\CurrentControlSet\Control\Session Manager\kernel",
+             r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\bash.exe")
+
+
+def _force_relocate_on(blob):
+    return isinstance(blob, (bytes, bytearray)) and len(blob) >= 2 and blob[1] & 3 in (1, 3)
+
+
+def _mandatory_aslr_on():
+    """强制 ASLR 开着 → 依据（哪一处开着）；读得到、都没开 → None。只在 Windows 读（不需要管理员）"""
+    if os.name != "nt":
+        return None
+    import winreg
+    for key in ASLR_KEYS:
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key) as k:
+                blob, _ = winreg.QueryValueEx(k, "MitigationOptions")
+        except OSError:
+            continue
+        if _force_relocate_on(blob):
+            return "注册表 HKLM\\" + key + " 的 MitigationOptions 强制 ASLR 开着"  # 非玩家句
+    return None
+
+
 def _tool_present(name):
     import shutil
     return shutil.which(name) is not None
@@ -521,6 +552,11 @@ def _confirm(code, line, log, final=False):
         if least < DISK_FULL_FREE:
             return True, "核实：%s 所在盘只剩 %.1f GB" % (path, gib)  # 非玩家句
         return False, "所在盘还剩 %.1f GB（%s），不是盘满" % (gib, path)  # 非玩家句
+    if code == "windows_mandatory_aslr":   # 0xC0000142 也可能是别的原因（桌面堆耗尽、安全软件注入）：读注册表核实强制 ASLR 真开着才采信
+        on = _mandatory_aslr_on()
+        if on:
+            return True, "核实：" + on  # 非玩家句
+        return False, "强制 ASLR 没开（或读不到）"  # 非玩家句
     if code == "tool_missing":
         m = re.search(r"([\w.+-]+): command not found", line)
         if m and _tool_present(m.group(1)):

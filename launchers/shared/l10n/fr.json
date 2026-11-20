@@ -4206,6 +4206,10 @@
   "这台 iPhone 上装着不止一个 S2Arm": "Plusieurs S2Arm sur cet iPhone",
   "同一台手机上装着两个及以上 S2Arm（比如 AltStore 装的一个、启动器装的一个），S2Arm 不替你挑推到哪一个。": "Ce téléphone a deux S2Arm ou plus installés (par exemple un via AltStore et un via le lanceur), et S2Arm ne choisit pas à votre place.",
   "选的 S2Arm 不在手机上了": "Le S2Arm choisi n'est plus sur le téléphone",
-  "选过的那个 S2Arm 已经从这台 iPhone 上删掉或换掉了。": "Le S2Arm choisi a été supprimé ou remplacé sur cet iPhone."
+  "选过的那个 S2Arm 已经从这台 iPhone 上删掉或换掉了。": "Le S2Arm choisi a été supprimé ou remplacé sur cet iPhone.",
+  "Windows 的强制 ASLR 开着": "L'ASLR obligatoire de Windows est activé",
+  "出包工具起不了子进程。": "Les outils d'empaquetage ne peuvent pas lancer de processus enfants.",
+  "Windows 的强制 ASLR 开着：出包工具起不了子进程。": "L'ASLR obligatoire de Windows est activé : les outils d'empaquetage ne peuvent pas lancer de processus enfants.",
+  "打开「Windows 安全中心 → 应用和浏览器控制 → 漏洞利用保护设置 → 系统设置」，把「强制映像随机化（强制性 ASLR）」改回「使用默认值（关）」，再打一次包。": "Ouvrez Sécurité Windows → Contrôle des applications et du navigateur → Paramètres de protection contre les failles → Paramètres système, remettez « Forcer la randomisation des images (ASLR obligatoire) » sur « Utiliser la valeur par défaut (Désactivé) », puis relancez l'empaquetage."
  }
 }
