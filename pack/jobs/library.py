@@ -2170,6 +2170,16 @@ def direct_cache_dir(c, gid):
     return loc / "direct-cache"
 
 
+def scratch_root(c, gid):
+    """重出着色器库这类前台临时活（sgrade_bf：从 game.img 拷出 RomFS、克隆产物根、重抽重翻，大游戏几十 GB）的临时目录放哪：同 direct_cache_dir 跟着游戏走——
+    和工具缓存同一块盘就放工具缓存 tmp/，游戏在别的盘就放这款文件夹第一层的 .work-tmp/。原先一律放私有目录（Windows 在系统盘），
+    玩家把游戏库设到别的盘、更新几款时系统盘照样被写满（D-NDV5）。目录建好再返回（tempfile 要它在）"""
+    d = direct_cache_dir(c, gid)
+    out = d.parent / ".work-tmp" if d.name == "direct-cache" else c.work_root / "tmp"
+    out.mkdir(parents=True, exist_ok=True)
+    return out
+
+
 def game_caches(c, gid, *, include_compiler=True):
     run = c.work_root / "run" / "s2arm"
     low = gid.lower()

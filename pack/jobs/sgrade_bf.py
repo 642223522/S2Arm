@@ -40,6 +40,11 @@ def lib_dir(direct):
     return ds[0] if len(ds) == 1 else None
 
 
+def _scratch(c, gid):
+    import library   # 局部导入：library 也会用到本模块
+    return library.scratch_root(c, gid)
+
+
 def _clone(c, src, dst):
     r = subprocess.run([sys.executable, "-X", "utf8", str(Path(c.engine) / "tools/clonedir.py"), str(src), str(dst)], capture_output=True, text=True)
     if r.returncode:
@@ -150,7 +155,7 @@ def upgrade_mac(c, gid, runtime, hold=None):
         with open(runtime / "game.img", "rb") as f:
             _copy_range(f, h["romfs"][0], h["romfs"][1], std)
     try:
-        with tempfile.TemporaryDirectory(dir=c.private) as tmp:
+        with tempfile.TemporaryDirectory(dir=_scratch(c, gid)) as tmp:
             return _upgrade_mac(c, gid, runtime, hold, Path(tmp))
     finally:
         if made:
@@ -307,7 +312,7 @@ def upgrade_ios(c, gid):
     old = lib_dir(pack / "shaders/direct")
     if old is None:
         return "skip"   # 不是直连包
-    with tempfile.TemporaryDirectory(dir=c.private) as tmp:
+    with tempfile.TemporaryDirectory(dir=_scratch(c, gid)) as tmp:
         src, where = ios_inputs(c, gid, Path(tmp))
         if src is None:
             return "unavailable"
@@ -350,7 +355,7 @@ def rechain_ios(c, gid):
     direct = pack / "shaders/direct"
     if lib_dir(direct) is None:
         return "skip"   # 不是直连包
-    with tempfile.TemporaryDirectory(dir=c.private) as tmp:
+    with tempfile.TemporaryDirectory(dir=_scratch(c, gid)) as tmp:
         src, where = ios_inputs(c, gid, Path(tmp))
         if src is None:
             c.emit("message", f"{gid}：着色器链更新了，但游戏库里没有 game.img、也没有 Mac 版可借：这次没重编着色器库")  # 非玩家句
