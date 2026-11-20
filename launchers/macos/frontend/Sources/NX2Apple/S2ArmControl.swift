@@ -167,6 +167,15 @@ import S2ArmAppleAdapter
             if let b = phoneBusy() { return b }
             guard let device = str("device") else { return .bad(Self.deviceRequired) }
             model.phoneIdentity(device: device, force: a["force"] as? Bool ?? false); return .ok()
+        case ("POST", "/console-action"):   // 同点总控台这台手机上的按钮（11-19）：只认 GET /state 的 phoneConsole 里这台此刻显示的动作，走界面同一个 runConsoleAction
+            guard let device = str("device") else { return .bad(Self.deviceRequired) }
+            guard let phone = model.phoneOverview?.phones.first(where: { $0.device == device }) else { return .bad("总控台里没有这台手机（先看 GET /state 的 phoneConsole）", code: 409) }
+            guard let action = str("action").flatMap(S2ArmLauncherModel.ConsoleAction.init), model.consoleActions(phone).contains(action) else {
+                return .bad("这台手机的总控台上没有这个按钮（此刻有：\(model.consoleActions(phone).map(\.rawValue).joined(separator: " / "))）", code: 409)
+            }
+            if let b = phoneBusy() { return b }
+            if let why = model.runConsoleAction(action, device: device, ids: a["gameIds"] as? [String], language: "zh-Hans") { return .bad(why, code: 409) }
+            return .ok()
         case ("POST", "/restore-iphone"):
             guard let g = game() else { return .bad("没有这个 gameId") }
             guard g.iphoneRestorable else { return .bad("没有可以装回的上一版手机 S2Arm") }
@@ -341,6 +350,7 @@ import S2ArmAppleAdapter
         ["POST /installCheck {gameId}", "装机前清单（只读）：几秒后看 GET /state 的 installReadiness"],
         ["POST /install {gameId, acceptDropped?, acceptNoBackup?, acceptStale?}", "装到 iPhone（不用先 installCheck，缺什么作业报真实原因）；可确认的失败码先问玩家、同意了带对应参数再发：container_would_drop → acceptDropped（手机上有别的电脑装的游戏这次带不上）、save_backup_failed → acceptNoBackup（覆盖前没能备份存档）、container_stale → acceptStale（旧资源包要重出）"],
         ["POST /phone-identity {device, force?}", "把这台电脑的签名身份交给手机上的 S2Arm（AltStore / SideStore / 证书 App 装的团队对得上也交），以后手机上自己签导入的游戏包；交过了不重交（force = 照样重交）；结果看 GET /state 的 tasks（operation = phoneIdentity）"],
+        ["POST /console-action {device, action, gameIds?}", "同点总控台这台手机上的按钮：action 只认 GET /state 的 phoneConsole 里这台此刻显示的（installShell / updateShell / renewShell / exportShellIpa / handOverIdentity / updateSelected / pushS2arm / exportS2arm）；gameIds = 推 / 导出哪几款（不给 = 总控台勾选的）；没有这个按钮回 409"],
         ["POST /uninstall {gameId, acceptDropped?, acceptNoBackup?}", "从 iPhone 上的 S2Arm 删一款（备份存档 → 更新容器 → 删数据；其余游戏不动）；acceptDropped / acceptNoBackup 同 /install"],
         ["POST /mods {gameId, import?:[路径], enable?:{名字: 真/假}, remove?:[名字]}", "资源替换 mod：导入 zip / 文件夹（找 romfs）、开关（关掉下次开始游戏不叠，装到 iPhone 时机上删掉）、删除；都不给只列；回 {mods:[{name, enabled, files, bytes}], imported, notes}"],
         ["POST /delete {gameId}", "删除这款游戏：IPA / 资源包 / 出包中间产物 / 缓存全删；存档与原始游戏文件保留"],
@@ -402,6 +412,8 @@ import S2ArmAppleAdapter
             "installReadiness": rd,
             "update": m.updateStatus,
             "installMode": ["signMode": m.installMode.signMode, "exportAvailable": m.installMode.exportAvailable],
+            // 总控台每台手机实际显示的按钮（11-19，test.4 真机验收用）：与界面同一个来源 consoleActions；installed.by：启动器装的 s2arm / 别的工具装的 other / 没装或判不出 null。开关关着 = null
+            "phoneConsole": m.phoneOverview.map { Self.phoneConsole($0, model: m) as Any } ?? NSNull(),
             "phoneUpdates": m.phoneUpdates.map { u in ["device": u.device, "games": u.games.map(\.id), "stale": u.stale.map(\.id)] as [String: Any] },
             "batch": m.batchState.map { s -> [String: Any] in ["running": m.batchRunning, "summary": s["summary"] ?? [:], "next": s["next"] ?? NSNull(),
                                                                    "items": ((s["batch"] as? [String: Any])?["items"]) ?? [], "paused": ((s["batch"] as? [String: Any])?["paused"]) ?? NSNull()] } ?? NSNull(),
@@ -414,6 +426,15 @@ import S2ArmAppleAdapter
                 return ["title": w.title, "number": w.windowNumber, "sheet": w.sheetParent != nil, "main": w.isMainWindow,
                         "rect": [w.frame.minX, top, w.frame.width, w.frame.height]] },
         ]
+    }
+
+    /// GET /state 的 phoneConsole：[{device, installed: {bundleId, by: s2arm | other | null}, actions: [...]}]，actions 与界面同一个来源 consoleActions
+    static func phoneConsole(_ o: PhoneOverview, model m: S2ArmLauncherModel) -> [[String: Any]] {
+        o.phones.map { p in
+            let by: Any = p.installedBy.map { $0 == .launcher ? "s2arm" : "other" } ?? NSNull()
+            let bundle: Any = p.bundleId.isEmpty ? NSNull() : p.bundleId
+            return ["device": p.device, "installed": ["bundleId": bundle, "by": by] as [String: Any], "actions": m.consoleActions(p).map(\.rawValue)]
+        }
     }
 
     static var screenCaptureAllowed: Bool {

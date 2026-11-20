@@ -24,6 +24,7 @@ extension LauncherView {
         case .updating(let done, let total): return sx("console.status.updating", done + 1 > total ? total : done + 1, total)
         case .notConnected(let seen):
             return seen.map { sx("console.status.notConnected", $0.formatted(.relative(presentation: .named))) } ?? sx("console.status.notConnectedNever")
+        case .externalApp: return sx("console.status.externalApp")
         case .notInstalled: return sx("console.status.notInstalled")
         case .appOutdated: return sx("console.status.appOutdated")
         case .expired: return sx("console.status.expired")
@@ -87,7 +88,7 @@ extension LauncherView {
         VStack(alignment: .leading, spacing: 14) {
             Text(sx("console.status.introduce")).font(.manrope(30, .bold))
             Text(sx("console.intro.body")).font(.manrope(14)).foregroundStyle(.white.opacity(0.8)).fixedSize(horizontal: false, vertical: true).frame(maxWidth: 620, alignment: .leading)
-            Button { model.updatePhone(acceptStale: false, repack: [], language: loc.lang.sharedCode) } label: { Label(sx("console.intro.start"), systemImage: "iphone") }
+            Button { model.consoleIntroStart(language: loc.lang.sharedCode) } label: { Label(sx("console.intro.start"), systemImage: "iphone") }
                 .controllerButtonStyle(ConsolePlayButtonStyle()).controllerID("console.intro.start")
         }.accessibilityIdentifier("console.intro")
     }
@@ -131,17 +132,39 @@ extension LauncherView {
         Text(sx("console.offline", phone.name.isEmpty ? "iPhone" : phone.name)).font(.manrope(12)).foregroundStyle(.orange)
     }
 
-    /// ① 手机与 App：App 状态 + 一个随状态变的按钮（安装 / 续签 / 更新 S2Arm）+ 签名方式
+    /// 按钮文案键（动作名 → 共享文案；动作集合与控制口 phoneConsole 同一个来源 model.consoleActions）
+    private func consoleActionTitle(_ a: S2ArmLauncherModel.ConsoleAction) -> String {
+        switch a {
+        case .installShell: return sx("console.button.install")
+        case .updateShell: return sx("console.button.update")
+        case .renewShell: return sx("console.button.renew")
+        case .exportShellIpa: return sx("console.button.exportShellIpa")
+        case .handOverIdentity: return sx("console.button.identity")
+        case .updateSelected: return sx("console.updateSelected", model.consoleSelection.count)
+        case .pushS2arm: return sx("console.button.pushS2arm", model.consoleSelection.count)
+        case .exportS2arm: return sx("console.button.exportS2arm", model.consoleSelection.count)
+        }
+    }
+
+    /// ① 手机与 App：App 状态 + 一个随状态变的按钮（启动器装的：安装 / 续签 / 更新 S2Arm；别的工具装的：导出 S2Arm.ipa）+ 签名方式
     private func consolePhoneSection(_ phone: PhoneOverview.Phone, status: S2ArmLauncherModel.ConsoleStatus) -> some View {
-        let key = !phone.installed ? "console.button.install" : !phone.shellCurrent ? "console.button.update" : "console.button.renew"
+        let actions = model.consoleActions(phone)
+        let app = actions.first { [.installShell, .updateShell, .renewShell, .exportShellIpa].contains($0) }
         return consoleSection(sx("console.section.phone")) {
             Text(consoleStatusText(status) + (phone.signMode.map { " · " + sx("console.sign." + $0.rawValue) } ?? "")).font(.manrope(14))
-            HStack(spacing: 12) {
-                Button { model.updatePhone(acceptStale: false, repack: [], language: loc.lang.sharedCode, device: phone.device) } label: { Label(sx(key), systemImage: "iphone.and.arrow.forward") }
-                    .controllerButtonStyle(ConsolePillButtonStyle()).controllerID("console.app").disabled(consoleOffline)
-                if consoleOffline { offlineReason(phone) }
+            if phone.installedBy == .external {
+                Text(sx("console.external.note")).font(.manrope(12)).foregroundStyle(.white.opacity(0.65)).fixedSize(horizontal: false, vertical: true)
             }
-            consoleIdentity(phone)
+            if let app {
+                HStack(spacing: 12) {
+                    // 导出 S2Arm.ipa 不连手机，没连也能点
+                    Button { model.runConsoleAction(app, device: phone.device, language: loc.lang.sharedCode) } label: {
+                        Label(consoleActionTitle(app), systemImage: app == .exportShellIpa ? "square.and.arrow.up" : "iphone.and.arrow.forward") }
+                        .controllerButtonStyle(ConsolePillButtonStyle()).controllerID("console.app").disabled(consoleOffline && app != .exportShellIpa)
+                    if consoleOffline && app != .exportShellIpa { offlineReason(phone) }
+                }
+            }
+            if actions.contains(.handOverIdentity) { consoleIdentity(phone) }
         }.accessibilityIdentifier("console.section.phone")
     }
 
@@ -190,9 +213,14 @@ extension LauncherView {
             }
             HStack(spacing: 12) {
                 if !model.consoleUpdating {
-                    Button { model.updateSelected() } label: { Label(sx("console.updateSelected", model.consoleSelection.count), systemImage: "arrow.down.to.line") }
-                        .controllerButtonStyle(ConsolePlayButtonStyle()).controllerID("console.updateSelected")
-                        .disabled(model.consoleSelection.isEmpty || consoleOffline)
+                    // 启动器装的：更新所选；别的工具装的：推所选到 iPhone + 导出所选 .s2arm（导出不连手机，没连也能点）
+                    ForEach(model.consoleActions(phone).filter { [.updateSelected, .pushS2arm, .exportS2arm].contains($0) }, id: \.self) { a in
+                        let push = a != .exportS2arm
+                        let button = Button { model.runConsoleAction(a, device: phone.device, language: loc.lang.sharedCode) } label: {
+                            Label(consoleActionTitle(a), systemImage: push ? "arrow.down.to.line" : "square.and.arrow.up") }
+                            .controllerID("console." + a.rawValue).disabled(model.consoleSelection.isEmpty || (push && consoleOffline))
+                        if push { button.controllerButtonStyle(ConsolePlayButtonStyle()) } else { button.controllerButtonStyle(LauncherSecondaryButtonStyle()) }
+                    }
                     if consoleOffline { offlineReason(phone) }
                 } else {
                     let p = model.consoleProgress, total = max(p.total, 1)

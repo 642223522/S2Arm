@@ -39,5 +39,28 @@ internal static class PhoneOverviewCases
         check(two.Pick(null)?.Device == "NEW", "pick: most recently synced");
         var online = new PhoneOverview([Ph(device: "OLD", probed: true, online: "usb", seen: now.AddSeconds(-99)), Ph(device: "NEW", seen: now)]);
         check(online.Pick(null)?.Device == "OLD" && online.Pick("NEW")?.Device == "NEW", "pick: connected one first; a chosen one wins");
+
+        // 11-19 自签走查结构 4、5：别的工具（AltStore / SideStore）装的 S2Arm（同 Mac PhoneConsoleTests；期望按作业契约 host_update.phone_overview 手写）
+        const string alt = "io.s2arm.games.example01";
+        var ext = PhoneOverview.Parse(J("""{"phones":[{"device":"ALT-1","name":"备用手机","installed":true,"installedBy":"external","bundleId":"io.s2arm.games.example01","shellCurrent":null,"signMode":"external","online":"usb","actions":["exportShellIpa","pushS2arm","exportS2arm","handOverIdentity"],"games":[]}, {"device":"P1","installed":true,"installedBy":"launcher","bundleId":"io.example.one","shellCurrent":true}, {"device":"OLD","installed":true,"shellCurrent":true}, {"device":"NEW","installedBy":"weird"}]}"""))!;
+        var a1 = ext.Phones[0];
+        check(a1.InstalledBy == "external" && a1.External && a1.BundleId == alt && !a1.ShellCurrent && a1.Actions!.SequenceEqual(["exportShellIpa", "pushS2arm", "exportS2arm", "handOverIdentity"]),
+            "external: installedBy / bundleId / actions parsed, shellCurrent null → false");
+        check(ext.Phones[1].InstalledBy == "launcher" && ext.Phones[2].InstalledBy is null && ext.Phones[3].InstalledBy is null && ext.Phones[2].Actions!.Count == 0,
+            "external: old job without installedBy → null; unknown value → null; no actions → empty");
+        check(K(a1) == "console.status.externalApp", "status: external app has its own state (not notInstalled / appOutdated / expired)");
+        check(K(a1 with { Online = null }) == "console.status.notConnectedNever", "status: offline still comes first");
+        string Acts(PhoneOverview.Phone x) => string.Join(",", PhoneOverview.Actions(x));
+        check(Acts(a1) == "exportShellIpa,pushS2arm,exportS2arm,handOverIdentity", "actions: external → the four job buttons in order");
+        check(Acts(a1 with { Actions = ["installShell", "renewShell", "handOverIdentity", "bogus"] }) == "handOverIdentity", "actions: external never shows install / renew, unknown dropped");
+        check(Acts(a1 with { Actions = [] }) == "exportShellIpa,pushS2arm,exportS2arm,handOverIdentity", "actions: external without job actions → the four defaults");
+        check(Acts(Ph()) == "renewShell,handOverIdentity,updateSelected" && Acts(Ph(installed: false)).StartsWith("installShell,") && Acts(Ph(current: false)).StartsWith("updateShell,"),
+            "actions: launcher phones keep install / update / renew + identity + update selected");
+        var st = ext.ConsoleState();
+        Dictionary<string, object?> Inst(int i) => (Dictionary<string, object?>)st[i]["installed"]!;
+        check((string?)Inst(0)["by"] == "other" && (string?)Inst(0)["bundleId"] == alt && st[0]["device"] as string == "ALT-1", "state: external → installed.by other with its bundle id");
+        var acts0 = (List<string>)st[0]["actions"]!;
+        check(!acts0.Contains("installShell") && acts0.Contains("handOverIdentity"), "state: acceptance — external phone has handOverIdentity and no installShell");
+        check((string?)Inst(1)["by"] == "s2arm" && Inst(2)["by"] is null && Inst(3)["bundleId"] is null, "state: launcher → s2arm; unknown → null; no bundle → null");
     }
 }

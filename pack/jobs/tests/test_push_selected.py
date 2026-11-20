@@ -33,7 +33,7 @@ class PushSelected(unittest.TestCase):
         self.c.r.clear(); self.c.r.update(req)
         ph = types.SimpleNamespace(key=device)
         with patch.object(install, "push_game", fake_push), \
-                patch.object(install, "phone_for", lambda c: ph), patch.object(install, "packer_phone_lock", lambda c: contextlib.nullcontext()), \
+                patch.object(install, "push_phone", lambda c: ph), patch.object(install, "packer_phone_lock", lambda c: contextlib.nullcontext()), \
                 patch.object(install, "trace", lambda *a, **k: None):
             try:
                 return install.push_selected(self.c), pushed
