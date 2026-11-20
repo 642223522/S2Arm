@@ -14,6 +14,11 @@ int rp_depth_zero(void);                // NVN 深度模式：1 = 近平面为 0
 int rp_origin_lower_left(void);         // NVN 窗口原点：1 = 左下
 int rp_present_lower_left(void);        // 上屏翻转：被上屏窗口建时的原点（没有窗口说过 = 当前原点）
 uint64_t rp_frame(void);                // 前端给的当前帧号
+// 提交之外的旁路段（rp_exec.c）：调用方持提交锁、不在提交回放里。begin 失败返回 NULL（已记账）；commit 返回这一段的栅栏值，0 = 没交成（已报红）
+int rp_in_submit(void);
+nvn_gpu_cmd rp_side_begin(const char *label);
+uint64_t rp_side_commit(nvn_gpu_cmd c);
+void nvn_be_read_texels_gpu_stats(uint64_t out[4]);   // rp_entry.c：ReadTexels 读 GPU 内容的读数（次数 / 等之前的活共纳秒 / 最长纳秒 / 读回共纳秒）
 
 // ---------- 内存池镜像（rp_buf.c）----------
 // 合法但未绑定的 NVN 存储槽：内部 64 KiB 缓冲（初始全零），不登记 guest 池；会话收尾释放。
@@ -21,6 +26,10 @@ nvn_gpu_buf rp_buf_for_null_storage(void);
 // 取 [addr, addr+len) 在后端的缓冲与偏移；自上次同步后写过的页在 c 这一段的 GPU 顺序里重传。0 = 地址不在任何池里（已记账）。线程：[提交]。
 int rp_buf_resolve(nvn_gpu_cmd c, uint64_t addr, uint64_t len, nvn_gpu_buf *buf, uint64_t *off);
 int rp_buf_resolve_multi(int n, const uint64_t *addr, const uint64_t *len, nvn_gpu_buf *buf, uint64_t *off, unsigned char *ok);   // 一次抢锁解析多段
+// 回放窗口 = 一次提交的回放（nvn_be_sub_begin → nvn_be_sub_commit，开窗口的线程是回放线程）。窗口开着时别的线程销毁池（MapVirtual 改 run、MemoryPoolFinalize），
+// 镜像缓冲不当场放（回放线程手里可能已有 rp_buf_resolve 取到、后端还没 cmd_ref 的句柄），推迟到窗口收尾；窗口外或同线程销毁照旧当场放。
+void rp_buf_hold_begin(void);
+void rp_buf_hold_end(void);
 // 写入区间日志（rp_draw 的暂存片复用判定用）：记号 + 「记号之后有没有人写过这一段」
 uint64_t rp_write_mark(void);
 int rp_write_touched(uint64_t mark, uint64_t addr, uint64_t len);

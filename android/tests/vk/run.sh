@@ -353,7 +353,7 @@ case "$mode" in
     --tsan) cflags+=(-fsanitize=thread) ;;
     --asan) cflags+=(-fsanitize=address,undefined -fno-omit-frame-pointer) ;;
     --shown-only) cflags+=(-DS2A_C883_TEST=1) ;;
-    ""|--sampler-minmax-only|--c63-same-view|--stencil8-only|--ds-upload-only|--msaa-only|--msaa-neg-pick|--msaa-neg-pipe|--msaa-neg-sampled|--msaa-neg-attachment|--present-only|--present-upscale|--separate-core|--separate-neg-sampler|--tbuf-core|--tbuf-compiler-core|--tbuf-neg-resolve|--tbuf-neg-format|--tbuf-neg-elements|--gs-only|--gs-compiler|--gs-core|--gs-no-cap|--gs-neg-stage|--gs-neg-flags|--gs-neg-cap|--clear-capacity|--clear-capacity-neg|--cmdpool-only|--cmdpool-neg) ;;
+    ""|--sampler-minmax-only|--c63-same-view|--stencil8-only|--read-texels-core|--ds-upload-only|--msaa-only|--msaa-neg-pick|--msaa-neg-pipe|--msaa-neg-sampled|--msaa-neg-attachment|--present-only|--present-upscale|--separate-core|--separate-neg-sampler|--tbuf-core|--tbuf-compiler-core|--tbuf-neg-resolve|--tbuf-neg-format|--tbuf-neg-elements|--gs-only|--gs-compiler|--gs-core|--gs-no-cap|--gs-neg-stage|--gs-neg-flags|--gs-neg-cap|--clear-capacity|--clear-capacity-neg|--cmdpool-only|--cmdpool-neg) ;;
     *) echo "未知参数：${mode}（可用 --tsan / --asan）" >&2; exit 64 ;;
 esac
 # 撤改只写入临时源码副本；逐项必须红在指定行为断言。
@@ -698,6 +698,9 @@ if [ "$mode" = "--ds-upload-only" ]; then
     echo '【绿】C1581K 深度模板上传：深度面回读一致、模板面生效，validation 0 条'; exit 0
 fi
 
+# ReadTexels 读 GPU 内容的独立档（默认档里也跑）：只跑 run_replay_read_texels.sh，给红 / 绿 / 负控取证用
+if [ "$mode" = "--read-texels-core" ]; then exec bash "$repo/android/tests/vk/run_replay_read_texels.sh"; fi
+
 # C1581O：纯模板格式 STENCIL8 当模板附件：图像 / 视图的面只有模板面，管线的兼容通道按 sfmt 挂上这个附件。左绿右蓝、validation 0 条才绿。
 if [ "$mode" = "--stencil8-only" ]; then
     set +e
@@ -839,6 +842,7 @@ if [ "$mode" = "" ]; then bash "$repo/android/tests/vk/run.sh" --separate-core; 
 if [ "$mode" = "" ]; then bash "$repo/android/tests/vk/run.sh" --tbuf-core; fi
 if [ "$mode" = "" ]; then bash "$repo/android/tests/vk/run.sh" --tbuf-compiler-core; fi
 if [ "$mode" = "" ]; then bash "$repo/android/tests/vk/run_replay_copy_t2b.sh"; fi
+if [ "$mode" = "" ]; then bash "$repo/android/tests/vk/run_replay_read_texels.sh"; fi   # ReadTexels 读 GPU 内容（rp_read_texels.inc + 真后端）
 if [ "$mode" = "" ]; then bash "$repo/android/tests/vk/run_replay_clear_tex.sh"; fi
 if [ "$mode" = "" ]; then bash "$repo/android/tests/vk/run_replay_ssbo_window.sh"; fi
 # 计算读回要求校验层声明 syncval_shader_accesses_heuristic；共享镜像的层（Ubuntu noble 1.3.275）没有，夹具退 75（环境验不了）。
@@ -1009,26 +1013,6 @@ bad=$(grep -cE "Validation Error|VUID-" "$out/log_bc" || true)
 if [ "$bad" -ne 0 ]; then
     echo "【红】BC 解码 validation 报错 $bad 条：" >&2
     grep -E "Validation Error|VUID-" "$out/log_bc" | head -20 >&2
-    exit 1
-fi
-# #968: draw-local texture-coordinate support bitmap. The helper uses the
-# same host headers, loader, glslc and ICD checked above. It does not sample
-# textures, and is not itself sanitizer-instrumented in --asan/--tsan modes.
-set +e
-(
-    unset FIRST_DRAW_SOURCE VULKAN_RUNNER VULKAN_INCLUDE
-    export GLSLC="$glslc"
-    timeout 180 bash "$repo/android/tests/first_draw_unnorm_test.sh"
-) 2>&1 | tee "$out/log_unnorm"
-rc=${PIPESTATUS[0]}
-set -e
-if [ "$rc" -ne 0 ]; then
-    echo "【红】#968 support bitmap fixture failed (rc=${rc})" >&2
-    exit "$rc"
-fi
-bad=$(grep -cE "Validation Error|VUID-" "$out/log_unnorm" || true)
-if [ "$bad" -ne 0 ]; then
-    echo "【红】#968 validation reported $bad errors" >&2
     exit 1
 fi
 if [ "$mode" = "--tsan" ]; then

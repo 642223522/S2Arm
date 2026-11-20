@@ -5,6 +5,9 @@
 // 另外三种没有原生对应的图元（#710）：四边形带（8）当三角带画（顶点序不变；零头 1 个丢掉；带索引又开着重启时按段展开成三角形列表），
 // 多边形（9）当三角扇画，线环（2）展开成线段列表的 32 位索引（每段末尾补一条回到段首的线）。
 // 还没接：间接计数多绘、变换反馈、邻接图元与面片、图元重启以外的小状态、存储缓冲与图像绑定、空槽假贴图。
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1   // process_vm_readv（逐笔日志经内核读游戏内存）；编译参数已定义的不重复
+#endif
 #include "rp_exec.h"
 #include "rp_state.h"
 #include "rp_res.h"
@@ -21,6 +24,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
+#if defined(__APPLE__)
+#include <mach/mach.h>
+#else
+#include <sys/uio.h>
+#endif
 
 // 弱链接登记（tools/weak_link_decl.py，场合 replay = 回放核心宿主单测）：后端 / 首用模块的可选件，缺实现时地址为空、走不到调用
 // 弱链接[replay]：nvk_fu_frame_ms
@@ -44,6 +53,21 @@ enum { SB_RENDER_SCALE = 192, SB_S2A_FLAGS = 1392, SB_S2A_POINT = 1408, SB_RENDE
 // 驱动常量段 c0 的合成布局（着色器从它读存储缓冲描述符表、最大点径、base instance）
 enum { DRV0_BYTES = 0xA00 };
 static const int k_drv0_base[5] = {0x110, 0x510, 0x410, 0x210, 0x310};   // 各图形阶段的存储缓冲表起点
+
+// 逐笔日志读游戏内存（贴图首 8 字节、常量缓冲前 20 个四元组）：这段内存可能整页无读权限（真机重场景里被采样的一批贴图在池标 0x2a1 =
+// 虚拟 | 可压缩 | GPU 缓存 | CPU 不可访问 的池里，回放自己对这种池不读，cpu_content 见标志就返回 0），
+// 直接解引用会让回放线程吃 SIGSEGV（设备读数：开逐笔日志后重场景第一帧就崩在这里，SEGV_ACCERR 读）。
+// 经内核读：读不到只回 0（out 清零），不发信号。
+static int dbg_peek(const void *p, void *out, size_t n) {
+    memset(out, 0, n);
+#if defined(__APPLE__)
+    vm_size_t got = 0;
+    return vm_read_overwrite(mach_task_self(), (vm_address_t)(uintptr_t)p, (vm_size_t)n, (vm_address_t)(uintptr_t)out, &got) == KERN_SUCCESS && got == n;
+#else
+    struct iovec l = {out, n}, r = {(void *)(uintptr_t)p, n};
+    return process_vm_readv(getpid(), &l, 1, &r, 1, 0) == (ssize_t)n;
+#endif
+}
 
 int rp_pool_find(uint64_t addr, uint64_t len, const uint8_t **mem, uint64_t *size);   // rp_entry.c
 extern int s2a_nvn_rast_flip;   // hle_nvn.c：当前提交队列的正面光栅翻转位（建队列时按窗口原点定）
@@ -146,7 +170,7 @@ static int rp_fu_storage_write(void) {
     if (rp_S.tf_on) return 1;
     for (int st = 0; st < 6; st++)
         for (int i = 0; i < 16; i++)
-            if (rp_S.ssbo[st][i].size) return 1;
+            if (rp_S.ssbo[st][i].addr) return 1;   // 地址有效、长度 0 的槽也写真实内存（见 sb_len）
     if (g_prog)
         for (int st = 0; st < RP_PROG_STAGES; st++)
             for (uint32_t i = 0; i < g_prog->nent[st]; i++)
@@ -320,9 +344,20 @@ static const nvn_gpu_caps *caps_cached(void) { if (!g_caps_ok) { nvn_gpu_caps_ge
 // 描述符偏移也就满足 minStorageBufferOffsetAlignment。只对 NVN 存储缓冲槽（SBUFP）这么做：编译事实只看这张表；
 // UBOP（计算阶段用户 UBO 槽当存储缓冲）的着色器按基址本身取数，起点不动。
 // 长度再夹到 maxStorageBufferRange（着色器用 OpArrayLength 取实际绑定长度判越界，窗口外按越界处理）。返回 1 = 被夹短。
+// 存储缓冲槽的有效长度。硬件语义：着色器访问存储缓冲编成 LDG / STG，按 64 位客体地址裸访存，不拿槽里的长度做越界检查；
+//   游戏自己判界时读的是常量缓冲里的长度（原样翻译照样生效）。所以「地址有效、长度 0」的槽访问的是真实内存：
+//   长度取这段地址所在池剩下的部分（之后按存储缓冲范围上限夹短）。Ryujinx 把它判成没映射，是建宿主缓冲要一个范围的实现限制，不是硬件行为。
+//   地址 0、或地址不在任何池里：没有可绑的真实内存，返回 0（调用方绑空缓冲照画，见 sb_unmapped）。只对 NVN 存储缓冲槽（SBUFP）这样补；统一缓冲来源（UBOP）长度 0 照旧算没绑。
+static uint64_t sb_len(const p_bind_buf *sb, int sbufp) {
+    if (!sb->addr) return 0;
+    if (sb->size || !sbufp) return sb->size;
+    const uint8_t *pmem = NULL; uint64_t psz = 0;
+    if (!rp_pool_find(sb->addr, 1, &pmem, &psz)) return 0;
+    return psz - (sb->addr - (uint64_t)(uintptr_t)pmem);
+}
 static int sb_window(const p_bind_buf *sb, int align_down, uint64_t *wa, uint64_t *wl) {
     const nvn_gpu_caps *cp = caps_cached();
-    uint64_t a = sb->addr, l = sb->size;
+    uint64_t a = sb->addr, l = sb_len(sb, align_down);   // align_down 各调用处都等于「是 SBUFP」
     if (align_down && cp->min_ssbo_align > 1) { const uint64_t r = a & (uint64_t)(cp->min_ssbo_align - 1); a -= r; l += r; }
     const int clamped = cp->max_ssbo_range && l > cp->max_ssbo_range;
     if (clamped) l = cp->max_ssbo_range;
@@ -579,6 +614,10 @@ static nvn_gpu_buf g_disp_ind; static uint64_t g_disp_ind_off;
 // 本笔绘制在开通道之前解析好的图形阶段存储缓冲（[阶段][布局项]）；只在 rp_draw 里填、在同一笔的发绑定里用
 static nvn_gpu_buf g_sb_buf[RP_PROG_STAGES][RP_PROG_ENT_MAX]; static uint64_t g_sb_off[RP_PROG_STAGES][RP_PROG_ENT_MAX];
 static uint8_t g_sb_ok[RP_PROG_STAGES][RP_PROG_ENT_MAX];
+// 存储缓冲槽「没有可绑的真实内存」：地址 0，或地址不在任何池里（sb_len 返回 0）。绑 64 KiB 空缓冲、这一笔照画（不是整笔跳过）。
+//   「地址有效、长度 0」不在此列：按硬件语义绑到真实内存（见 sb_len）。只管 NVN 存储缓冲槽（SBUFP）；
+//   计算阶段把统一缓冲当存储读（UBOP）的没绑仍具名跳过。
+static int sb_unmapped(const p_bind_buf *sb) { return !sb_len(sb, 1); }
 // Per-draw GPU-populated driver slices. Never retained by the binding cache.
 static nvn_gpu_slice g_ind_drv[RP_PROG_STAGES];
 static uint8_t g_ind_drv_ok[RP_PROG_STAGES];
@@ -844,13 +883,14 @@ static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st
             case NVN_RB_SBUFP: case NVN_RB_UBOP: {   // 存储缓冲：取地址、绑池镜像里的那一段；可写的登记一次 GPU 写（完成后回写游戏内存）。两种来源只差在哪张表给地址：
                 // SBUFP 按 NVN 存储缓冲槽（rp_S.ssbo）；UBOP 按计算阶段的用户 UBO 槽（rp_S.ubo；反射映射 NVK_STORAGE_UBO_PTR），段的范围就是这个 UBO 绑定的地址与大小
                 const p_bind_buf *sb = e->src_reg < 16 ? (e->src_kind == NVN_RB_UBOP ? &rp_S.ubo[st][e->src_reg] : &rp_S.ssbo[st][e->src_reg]) : NULL;
-                if (sb && e->src_kind == NVN_RB_SBUFP && !sb->addr && !sb->size) {
+                if (sb && e->src_kind == NVN_RB_SBUFP && sb_unmapped(sb)) {   // 没有可绑真实内存的存储缓冲槽：绑 64 KiB 空缓冲、照画（见 sb_unmapped）
                     o->u.b.buf = rp_buf_for_null_storage();
                     if (!o->u.b.buf) return skip("storage_buffer_empty_failed", rec);
                     o->u.b.off = 0; o->u.b.len = 0x10000; break;
                 }
-                if (!sb || !sb->addr || !sb->size) return skip("storage_buffer_unbound", rec);
                 const int sbufp = e->src_kind == NVN_RB_SBUFP;
+                if (!sb || !sb_len(sb, sbufp)) return skip("storage_buffer_unbound", rec);
+                const uint64_t blen = sb_len(sb, sbufp);   // 「地址有效、长度 0」的槽是池剩余长度（见 sb_len）
                 uint64_t wa, wl; const int clamped = sb_window(sb, sbufp, &wa, &wl);
                 nvn_gpu_buf gb; uint64_t go;
                 if (st < RP_PROG_STAGES && i < RP_PROG_ENT_MAX && g_sb_ok[st][i]) { gb = g_sb_buf[st][i]; go = g_sb_off[st][i]; }   // 开通道前已按同一窗口同步（见 rp_draw 开头）
@@ -861,7 +901,7 @@ static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st
                 if (clamped) nvn_unimpl("draw", "storage_buffer_window_clamped", rec);   // 超出 maxStorageBufferRange 的部分着色器访问不到：照画，具名记账
                 // 回写只登记游戏绑定的那一段（窗口前补的余数字节不是这个缓冲的，回写会盖掉相邻内容）
                 if (e->access & NVN_GPU_ACC_W) { const uint64_t reach = wa + wl - sb->addr;   // 窗口里属于这个缓冲的长度（余数 < 对齐 ≤ 256，上限 ≥ 128 MiB，不会为负）
-                    rp_post_gpu_write(sb->addr, reach < sb->size ? reach : sb->size); }
+                    rp_post_gpu_write(sb->addr, reach < blen ? reach : blen); }
                 o->u.b.buf = gb; o->u.b.off = go; o->u.b.len = wl; break; }
             case NVN_RB_UBOA: {   // 计算存储缓冲来自「用户 UBO 槽 r 内 src_off 处的 8 字节 guest 裸指针」（map 3，NVK_STORAGE_UBO_ADDRESS）：
                 // 指针字节必须当前：先按写的来源解析那 8 字节（池镜像里 GPU 写过的部分不会被旧 guest 字节盖掉），
@@ -1252,7 +1292,7 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
             const nvn_gpu_layout_ent *e = &g_prog->ent[st][i];
             if (e->src_kind != NVN_RB_SBUFP && e->src_kind != NVN_RB_UBOP) continue;
             const p_bind_buf *sb = e->src_reg < 16 ? (e->src_kind == NVN_RB_UBOP ? &rp_S.ubo[st][e->src_reg] : &rp_S.ssbo[st][e->src_reg]) : NULL;
-            if (!sb || !sb->addr || !sb->size) continue;
+            if (!sb || !sb_len(sb, e->src_kind == NVN_RB_SBUFP)) continue;
             uint64_t wa, wl; (void)sb_window(sb, e->src_kind == NVN_RB_SBUFP, &wa, &wl);   // 与发绑定时同一个窗口（被夹短的记账在发绑定那边）
             if (nb < SB_BATCH) { bs[nb] = st; bi[nb] = (int)i; ba[nb] = wa; bl[nb] = wl; nb++; }
             else if (rp_buf_resolve(c, wa, wl, &g_sb_buf[st][i], &g_sb_off[st][i])) g_sb_ok[st][i] = 1;   // 超出一批的照旧逐段解析
@@ -1425,9 +1465,13 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
         tv[st][i] = rp_view_by_id_decl(h ? (int)(h & 0xFFFFF) : rp_S.tex_base, g_prog->dtt[st][i], g_prog->dcls[st][i], 0, c, tt);
         if (tt && tn < sizeof tl - 56) {
             int id = h ? (int)(h & 0xFFFFF) : rp_S.tex_base;
-            if (tt->serial) tn += (size_t)snprintf(tl + tn, sizeof tl - tn, " t%d.%u=#%llu(%#x %dx%d 态%x 存%08x%08x 标%#x 池%#x 包%d)", st, (unsigned)e->src_reg, (unsigned long long)tt->serial, (unsigned)tt->d.format, tt->d.width, tt->d.height, (unsigned)rp_tex_debug_state(tt->serial),
-                                         tt->mem && tt->L.size >= 8 ? (unsigned)((const uint32_t *)(const void *)tt->mem)[0] : 0u, tt->mem && tt->L.size >= 8 ? (unsigned)((const uint32_t *)(const void *)tt->mem)[1] : 0u, (unsigned)tt->d.flags, tt->pool ? (unsigned)tt->pool->flags : 0xffffu, (int)tt->has_layout);
-            else tn += (size_t)snprintf(tl + tn, sizeof tl - tn, " t%d.%u=#%d(无)", st, (unsigned)e->src_reg, id);
+            if (tt->serial) {
+                uint32_t pk[2] = {0, 0}; char pks[24];
+                if (!tt->mem || tt->L.size < 8 || dbg_peek(tt->mem, pk, sizeof pk)) snprintf(pks, sizeof pks, "%08x%08x", (unsigned)pk[0], (unsigned)pk[1]);
+                else snprintf(pks, sizeof pks, "读不到");   // 无读权限单独标出，别当成全 0
+                tn += (size_t)snprintf(tl + tn, sizeof tl - tn, " t%d.%u=#%llu(%#x %dx%d 态%x 存%s 标%#x 池%#x 包%d)", st, (unsigned)e->src_reg, (unsigned long long)tt->serial, (unsigned)tt->d.format, tt->d.width, tt->d.height, (unsigned)rp_tex_debug_state(tt->serial),
+                                       pks, (unsigned)tt->d.flags, tt->pool ? (unsigned)tt->pool->flags : 0xffffu, (int)tt->has_layout);
+            } else tn += (size_t)snprintf(tl + tn, sizeof tl - tn, " t%d.%u=#%d(无)", st, (unsigned)e->src_reg, id);
         }
         if (e->src_reg2 != UINT16_MAX && (e->src_reg2 & NVN_GPU_SAMP2_CONST)) {
             // 类型 3 句柄（#1594）：采样器号 = 贴图字高 12 位 | 着色器里的立即数池下标（const_samp_id，同 Ryujinx ReadPackedId），
@@ -1484,7 +1528,7 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
             if (e->src_kind == NVN_RB_SBUFP || e->src_kind == NVN_RB_UBOP) {
                 const p_bind_buf *sb = e->src_reg < 16 ? (e->src_kind == NVN_RB_UBOP ? &rp_S.ubo[st][e->src_reg] : &rp_S.ssbo[st][e->src_reg]) : NULL;
                 if (g_sb_ok[st][i] && sb) { uint64_t wa, wl; (void)sb_window(sb, e->src_kind == NVN_RB_SBUFP, &wa, &wl); ACCESS_READ(compute_read_buf(g_sb_buf[st][i], g_sb_off[st][i], wl)); }
-                else if (sb && !sb->addr && !sb->size && e->src_kind == NVN_RB_SBUFP) ACCESS_READ(compute_read_buf(rp_buf_for_null_storage(), 0, 0x10000));
+                else if (sb && sb_unmapped(sb) && e->src_kind == NVN_RB_SBUFP) ACCESS_READ(compute_read_buf(rp_buf_for_null_storage(), 0, 0x10000));
             } else if (e->src_kind == NVN_RB_TEX || e->src_kind == NVN_RB_TEXU || e->src_kind == NVN_RB_TBUF) {
                 if (e->count > 1) { for (uint32_t k = 0; k < e->count && !need; k++) ACCESS_READ(compute_read_view(g_av[st][k])); }
                 else ACCESS_READ(compute_read_view(tv[st][i]));
@@ -1640,9 +1684,11 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
         if (rt->n > 1) { int o = snprintf(b, sizeof b, "  其余颜色目标："); for (int k = 1; k < rt->n; k++) o += snprintf(b + o, sizeof b - (size_t)o, " [%d]=#%llu(%#x)", k, (unsigned long long)(rt->color[k] ? rt->color[k]->serial : 0), (unsigned)(rt->color[k] ? rt->color[k]->d.format : 0)); nvn_plat_log(NVN_PLAT_LOG_INFO, "draw", b); }
         // 片元阶段第 0 个常量缓冲的前 20 个四元组与着色器自带常量段的前 2 个（调试取证：对照着色器里读的位置看内容对不对）
         { const p_bind_buf *ub = &rp_S.ubo[1][0];
-          if (ub->addr && ub->size >= 320 && rp_pool_find(ub->addr, ub->size, NULL, NULL)) { const float *f = (const float *)(uintptr_t)ub->addr;
-            for (int q = 0; q < 20; q += 5) { int o = snprintf(b, sizeof b, "  片元常量 0（长 %llu）第 %d 项起：", (unsigned long long)ub->size, q);
-                for (int k = q; k < q + 5; k++) o += snprintf(b + o, sizeof b - (size_t)o, "[%.3g %.3g %.3g %.3g]", (double)f[k * 4], (double)f[k * 4 + 1], (double)f[k * 4 + 2], (double)f[k * 4 + 3]);
+          float uf[80];
+          if (ub->addr && ub->size >= 320 && rp_pool_find(ub->addr, ub->size, NULL, NULL)) {
+            if (!dbg_peek((const void *)(uintptr_t)ub->addr, uf, sizeof uf)) { snprintf(b, sizeof b, "  片元常量 0（长 %llu）：读不到", (unsigned long long)ub->size); nvn_plat_log(NVN_PLAT_LOG_INFO, "draw", b); }
+            else for (int q = 0; q < 20; q += 5) { int o = snprintf(b, sizeof b, "  片元常量 0（长 %llu）第 %d 项起：", (unsigned long long)ub->size, q);
+                for (int k = q; k < q + 5; k++) o += snprintf(b + o, sizeof b - (size_t)o, "[%.3g %.3g %.3g %.3g]", (double)uf[k * 4], (double)uf[k * 4 + 1], (double)uf[k * 4 + 2], (double)uf[k * 4 + 3]);
                 nvn_plat_log(NVN_PLAT_LOG_INFO, "draw", b); } }
           if (g_prog->c1_ok >> 1 & 1) { float f[8]; memcpy(f, g_prog->c1[1], sizeof f);
             snprintf(b, sizeof b, "  片元自带常量：[%.3g %.3g %.3g %.3g][%.3g %.3g %.3g %.3g]", (double)f[0], (double)f[1], (double)f[2], (double)f[3], (double)f[4], (double)f[5], (double)f[6], (double)f[7]);

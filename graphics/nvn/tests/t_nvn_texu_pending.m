@@ -34,7 +34,7 @@ static uint64_t consume_begin(void) {
     return g_sub_serial;
 }
 static uint64_t consume_end(void) { p_dispatch d={.x=1,.y=1,.z=1}; dispatch(&d); return nvn_be_sub_commit(); }
-static void finish(uint64_t fence) { REQUIRE(nvn_be_wait(fence,10000000000ull)); REQUIRE(!mtl_last_commit_error()); }
+static void finish(uint64_t fence) { REQUIRE(nvn_be_wait(fence,30000000000ull)); REQUIRE(!mtl_last_commit_error()); }   // GPU 完成等待上限 30 秒（原 10 秒；负载高时只会更慢）
 static void texture(NVNtexture *t, int offset, unsigned id, const uint8_t color[4]) {
     NVNtextureBuilder b; API(nvnTextureBuilderSetDefaults)(&b); API(nvnTextureBuilderSetDevice)(&b,&device);
     API(nvnTextureBuilderSetTarget)(&b,NVN_TEXTURE_TARGET_2D); API(nvnTextureBuilderSetSize2D)(&b,1,1);
@@ -92,7 +92,7 @@ int main(int argc, char **argv) { @autoreleasepool {
     if (later || all || collision) {
         // C is a later submitted writer on a different, non-colliding GW page.
         // B's CPU handle decode needs A, not C. C's GPU wait remains closed
-        // until B's encoding returns; a six-second fallback prevents deadlock
+        // until B's encoding returns; a 30-second fallback prevents deadlock
         // in a broken implementation that waits for the global latest fence.
         if(later) REQUIRE(gw_slot(handle_addr>>12)!=gw_slot(nvn_ga2ca(ga+OTHER_OFF)>>12));
         NVNcommandBuffer other; static uint8_t other_control[4096];
@@ -121,33 +121,43 @@ int main(int argc, char **argv) { @autoreleasepool {
     uint64_t before[6]; nvn_be_handle_wait_stats(before);
     consume_begin(); REQUIRE(gw_live(handle_addr,handle_addr+4)); REQUIRE(gate.signaledValue==0);
     if (current) mtl_sub_update(&red_handle,handle_addr,4);   // known B-local inline bytes need no A wait
-    // An independent CPU timer releases the real GPU event. It must not fire
-    // during setup: compiling a shader or a slow setup is SETUP FAIL, not green.
+    // 放闸按事件，不按定时器：原先 1 秒后取消、3 秒后放闸、6 秒后放 C，并要求准备在 100 ms 内做完、判「等了 ≥ 100 ms」——
+    //   负载高时准备慢过 100 ms、或 B 还没走到等待定时器就先放了闸，单测假红。现在一个放闸线程等 B 真正进入句柄等待
+    //   （nvn_be_handle_wait_stats 的调用数 +1，进等待时就记），再取消（--cancel）或放闸；B 的编码返回后（main_done）才放取消场景的闸。
+    //   不该等的场景（--inline）不会进等待：放闸线程等 B 返回后再放。兜底 30 秒：等不到就照放，下面的计数 / 先后判据会判红
     dispatch_semaphore_t released=dispatch_semaphore_create(0);
-    uint64_t start=clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,3*NSEC_PER_SEC),dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
+    static _Atomic int main_done, entered_seen; const uint64_t calls0=before[0];   // 块里不能引用数组，先取出调用数
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
+        uint64_t s[6]; int seen=0;
+        for (int i=0;i<3000;i++) { nvn_be_handle_wait_stats(s); if (s[0]>calls0) { seen=1; break; } if (atomic_load(&main_done)) break; usleep(10000); }
+        atomic_store(&entered_seen,seen);
+        if (cancel) { if (seen) REQUIRE(!dm_nvn_request_stop()); for (int i=0;i<3000 && !atomic_load(&main_done);i++) usleep(10000); }
+        else if (!seen) for (int i=0;i<3000 && !atomic_load(&main_done);i++) usleep(10000);
         gate.signaledValue=1; dispatch_semaphore_signal(released);
     });
-    if (cancel) dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{ REQUIRE(!dm_nvn_request_stop()); });
-    if (later) dispatch_after(dispatch_time(DISPATCH_TIME_NOW,6*NSEC_PER_SEC),dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{ later_gate.signaledValue=1; });
-    REQUIRE(clock_gettime_nsec_np(CLOCK_UPTIME_RAW)-start<100000000ull && gate.signaledValue==0 && cpu_handle()==BLUE_ID);
+    // C 的闸只在 B 编码返回后由下面手动放；这里只留卡死兜底（实现错等了 C 时不挂死），放到 30 秒
+    if (later) dispatch_after(dispatch_time(DISPATCH_TIME_NOW,30*NSEC_PER_SEC),dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{ later_gate.signaledValue=1; });
+    REQUIRE(gate.signaledValue==0 && cpu_handle()==BLUE_ID);
     uint64_t b_fence=consume_end();
     uint64_t after[6]; nvn_be_handle_wait_stats(after);
     uint64_t expected_wait=current?0:1;
     CHECK(after[0]-before[0]==expected_wait && after[2]-before[2]==(uint64_t)(all||collision) &&
           after[3]-before[3]==(uint64_t)all && after[4]-before[4]==(uint64_t)collision && after[5]-before[5]==(uint64_t)cancel,
         "wait counters: calls=%llu conservative=%llu all=%llu collision=%llu cancelled=%llu",after[0]-before[0],after[2]-before[2],after[3]-before[3],after[4]-before[4],after[5]-before[5]);
-    CHECK(current ? after[1]==before[1] : after[1]-before[1]>=100000000ull,
-        "wait elapsed %.3f ms (inline zero; blocked GPU / cancellation at least 100 ms)",(after[1]-before[1])/1e6);
+    // 原「等了 ≥ 100 ms」改判先后：要等的场景，B 进入句柄等待时闸还关着（放闸线程看到进等待才放），所以 B 读到红色句柄就证明它等到了 A；
+    //   不该等的场景用时为 0
+    CHECK(current ? after[1]==before[1] && !atomic_load(&entered_seen) : atomic_load(&entered_seen) && after[1]>before[1],
+        "wait elapsed %.3f ms, entered before the gate opened %d (inline: zero and never entered; blocked GPU / cancellation: entered while A was gated)",(after[1]-before[1])/1e6,atomic_load(&entered_seen));
     if (current) CHECK(gate.signaledValue==0,"B-local complete inline handle does not wait for A");
     if (later) { CHECK(later_gate.signaledValue==0,"handle decode waits for A, not later unrelated writer C"); later_gate.signaledValue=1; }
-    REQUIRE(dispatch_semaphore_wait(released,dispatch_time(DISPATCH_TIME_NOW,10*NSEC_PER_SEC))==0);
+    atomic_store(&main_done,1);
+    REQUIRE(dispatch_semaphore_wait(released,dispatch_time(DISPATCH_TIME_NOW,60*NSEC_PER_SEC))==0);
     // Session cancellation makes nvn_be_wait return early by design. Observe
     // the actual production queue signal to verify that B really ran no shader.
     MTLSharedEventListener *listener=[[MTLSharedEventListener alloc] initWithDispatchQueue:dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0)];
     dispatch_semaphore_t completed=dispatch_semaphore_create(0);
     [g_ev notifyListener:listener atValue:b_fence block:^(id<MTLSharedEvent> event, uint64_t value) { (void)event; (void)value; dispatch_semaphore_signal(completed); }];
-    REQUIRE(dispatch_semaphore_wait(completed,dispatch_time(DISPATCH_TIME_NOW,10*NSEC_PER_SEC))==0);
+    REQUIRE(dispatch_semaphore_wait(completed,dispatch_time(DISPATCH_TIME_NOW,30*NSEC_PER_SEC))==0);   // GPU 完成等待上限 30 秒（原 10 秒）
     REQUIRE(cpu_handle()==RED_ID);
     if (cancel) {
         CHECK(mtl_last_commit_error() && !mtl_gpu_halted() && output[0]==-1 && output[1]==-1 && output[2]==-1 && output[3]==-1,

@@ -5,8 +5,9 @@
 // 反证：旧代码按名查不到这个入口（load 的 CHECK 红）
 // 另：nvnSyncInitializeFromNvRmSyncNVX（Metroid Dread）按名可查，同步对象一开始就已发出信号；nvnSyncGetNvRmSyncNVX 导出无效同步点（末尾两例）
 // 再另（审计 #1534 P1-47）：GPU 栅栏没完成时 nvnSyncGetNvRmSyncNVX 不报完成——等到完成为止；会话收尾时仍没完成就回假、不写导出。
-//   期望按语义手算：栅栏号取远超已提交的 2^40（永远到不了），1.5 秒后别的线程收尾（dm_nvn_request_stop）→ 调用至少等了 1.4 秒、回假、输出 8 字节保持哨兵。
-//   旧实现等 1 秒就写 {0xFFFFFFFF, 0} 并回真：红
+//   期望按语义手算：栅栏号取远超已提交的 2^40（永远到不了），别的线程等调用真正进入栅栏等待（生产只读计数 nvn_be_wait_blocked ≥ 1）后再过 1.5 秒收尾
+//   （dm_nvn_request_stop）→ 回假、输出 8 字节保持哨兵。旧实现等 1 秒就写 {0xFFFFFFFF, 0} 并回真：在收尾之前就回了，红。
+//   原先从起线程算 1.5 秒、判「调用至少等了 1.4 秒」：负载高时主线程晚进调用，等的时长不到 1.4 秒就假红；现在 1.5 秒从「已进入等待」起算，用时只打出来参考
 #include "nvn_protos.h"
 #include "nvn_obj.h"
 #include <pthread.h>
@@ -30,7 +31,10 @@ static void *load(const char *name) {
 #define API(name) ((NVNT_##name)load(#name))
 
 int dm_nvn_request_stop(void);
-static void *stop_later(void *a) { (void)a; usleep(1500000); dm_nvn_request_stop(); return NULL; }   // 会话收尾（同真机切后台 / 重启）：nvn_be_wait 被唤醒放弃
+int nvn_be_wait_blocked(void);   // nvn_mtl.m 只读计数：此刻阻塞在 nvn_be_wait 里的线程数
+static void *stop_later(void *a) {   // 会话收尾（同真机切后台 / 重启）：nvn_be_wait 被唤醒放弃
+    (void)a; for (int i = 0; i < 30000 && nvn_be_wait_blocked() < 1; i++) usleep(1000);   // 等调用进入栅栏等待（兜底 30 秒）
+    usleep(1500000); dm_nvn_request_stop(); return NULL; }   // 再过 1.5 秒（超过旧实现的 1 秒上限）才收尾
 static unsigned nmk; static uint64_t mk_addr[4]; static uint32_t mk_size[4];
 __attribute__((visibility("default"), used)) int S2A_NvMapFromGuest(uint64_t address, uint32_t size) {
     CHECK(nmk < 4); mk_addr[nmk] = address; mk_size[nmk] = size; return 41 + (int)++nmk;
@@ -173,8 +177,7 @@ int main(void) {
       uint32_t out[2] = {0x5A5A5A5Au, 0x5A5A5A5Au}; struct timespec t0, t1; clock_gettime(CLOCK_MONOTONIC, &t0);
       NVNboolean r = get(&sy, out); clock_gettime(CLOCK_MONOTONIC, &t1); pthread_join(th, NULL);
       double el = (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9;
-      CHECK(el >= 1.4);                                                    // 没在 1 秒处放弃
-      CHECK(!r);                                                           // 没等到：回假
+      CHECK(!r);                                                           // 没在 1 秒处放弃、没等到：回假（旧实现 1 秒后回真）
       CHECK(out[0] == 0x5A5A5A5Au && out[1] == 0x5A5A5A5Au);               // 不写「无效同步点 = 已触发」
       printf("%s：通过（等了 %.2f 秒）\n", phase, el); }
 

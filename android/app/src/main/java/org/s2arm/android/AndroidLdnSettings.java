@@ -10,6 +10,7 @@ import android.content.SharedPreferences;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.util.Log;
+import android.view.View;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.RadioButton;
@@ -75,10 +76,10 @@ final class AndroidLdnSettings {
         int[] labels = {R.string.ldn_auto, R.string.ldn_host, R.string.ldn_client};
         for (int i = 0; i < values.length; i++) {
             RadioButton button = new RadioButton(activity);
-            button.setId(i + 1);
+            button.setId(View.generateViewId());   // 控件 id 由系统分配；选的是第几项按在组里的位置判（selectedIndex），不拿 id 当下标
             button.setText(labels[i]);
             modes.addView(button);
-            if (values[i].equals(saved.mode)) modes.check(i + 1);
+            if (values[i].equals(saved.mode)) modes.check(button.getId());
         }
         content.addView(modes);
         EditText address = new EditText(activity);
@@ -133,7 +134,7 @@ final class AndroidLdnSettings {
                         if (activity.isFinishing() || activity.isDestroyed() || !dialog.isShowing()) return;
                         test.setEnabled(true);
                         // Do not label an edited address with a previous target's result.
-                        if (modes.getCheckedRadioButtonId() == 3
+                        if (selectedIndex(modes) == 2   // client
                                 && settings.address.equals(address.getText().toString().trim()))
                             result.setText(completed);
                         else result.setText("");
@@ -153,9 +154,15 @@ final class AndroidLdnSettings {
         dialog.show();
     }
 
+    /** 选中的是组里第几个按钮；没选返回 -1。 */
+    private static int selectedIndex(RadioGroup modes) {
+        int id = modes.getCheckedRadioButtonId();
+        return id == View.NO_ID ? -1 : modes.indexOfChild(modes.findViewById(id));
+    }
+
     private static LdnSettings readInput(Activity activity, RadioGroup modes, String[] values,
             EditText address, TextView result) {
-        int selected = modes.getCheckedRadioButtonId() - 1;
+        int selected = selectedIndex(modes);
         if (selected < 0 || selected >= values.length) {
             result.setText(R.string.ldn_select_mode);
             return null;

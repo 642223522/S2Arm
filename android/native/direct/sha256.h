@@ -22,9 +22,6 @@ void s2a_sha256_final(s2a_sha256 *ctx, uint8_t out[32]);
 // 输出小写 hex + NUL；out 至少 65 字节。
 void s2a_sha256_hex(const uint8_t digest[32], char out[65]);
 
-// 诊断/记账：累计被哈希的字节数与 update 调用次数（读取即清零）。采样剖析里 SHA-256 曾是
-// 绘制线程最大单项，没有这两个数就只能猜“是谁在逐笔哈希”。
-void s2a_sha256_stats(uint64_t *bytes, uint64_t *calls);
 
 #ifdef __cplusplus
 }

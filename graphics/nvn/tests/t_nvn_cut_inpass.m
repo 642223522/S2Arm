@@ -39,7 +39,7 @@ static tex_t A; static id<MTLBuffer> buf; static prog_t p0;
 // 回放一次；busy：回放期间把在途计数置 1（GPU 忙）。出参：分段提交次数、渲染编码器个数
 static void run(int busy, float a[8], uint64_t *cuts, uint64_t *passes) {
     float *f=buf.contents; for (int i=0;i<64;i++) f[i]=0.25f; xfer(&A,buf,1);
-    for (int i=0;i<200 && atomic_load(&g_seg_inflight);i++) usleep(10000);
+    for (int i=0;i<3000 && atomic_load(&g_seg_inflight);i++) usleep(10000);   // 等上一次提交回报，兜底 30 秒（原 2 秒：负载高时回报晚就 SETUP FAIL 假红）
     REQUIRE(!atomic_load(&g_seg_inflight));
     nvn_be_sub_begin(); state_reset(); S.prog=&p0; rp_flush(); memset(&R.rt,0,sizeof R.rt); R.has_rt=0; R.has_sc=0; g_pso_dirty=1; args_dirty_all();
     uint64_t c0=g_cuts, p0n=g_stat_pass;
@@ -47,7 +47,8 @@ static void run(int busy, float a[8], uint64_t *cuts, uint64_t *passes) {
     nvn_be_exec(g_ops); rp_flush();
     if (busy) atomic_fetch_sub(&g_seg_inflight,1);
     *cuts=g_cuts-c0; *passes=g_stat_pass-p0n;
-    uint64_t fe=nvn_be_sub_commit(); REQUIRE(nvn_be_wait(fe,10000000000ull)); REQUIRE(!mtl_last_commit_error());
+    uint64_t fe=nvn_be_sub_commit(); REQUIRE(nvn_be_wait(fe,30000000000ull));   // GPU 完成等待上限 30 秒（原 10 秒）
+    REQUIRE(!mtl_last_commit_error());
     memset(f,0,256); xfer(&A,buf,0); for (int i=0;i<8;i++) a[i]=f[i*4];
 }
 static int all(const float *v, float want) { for (int i=0;i<8;i++) if (v[i]!=want) return 0; return 1; }
