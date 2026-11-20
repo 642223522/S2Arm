@@ -1775,7 +1775,7 @@ def readiness_windows(c, gid):
         ipa_path = phone_ipa_path(c)
         item("package", True, "这款游戏的 iPhone 版已经做好", "")
     except Failure:
-        item("package", False, "这款游戏的 iPhone 版已经做好", "还没做好：先做 iPhone 版，做好后这里自动打勾。", who="app")
+        item("package", False, "这款游戏的 iPhone 版已经做好", "还没做好：先做 iPhone 版，做好后这里自动打勾。", who="app", action="openExport")   # 按钮落点：这款的出包页（11-19 契约，同 Mac）
     resources = c.r.get("resources")
     use_cert = devcert.active(c)
     st = W.impactor.status(resources=resources)

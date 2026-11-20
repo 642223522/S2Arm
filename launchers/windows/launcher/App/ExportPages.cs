@@ -26,17 +26,46 @@ public sealed partial class EnvironmentWindow
     private static string BundledImpactor => Path.Combine(AppContext.BaseDirectory, "ThirdParty", "Impactor", "Impactor-windows-x86_64-portable.exe");
 
     // First Apple ID sign-in happens in Impactor itself (the password never passes through S2Arm); the checklist re-asks every 5 s and ticks when done.
-    private void OpenBundledImpactor()
+    private void OpenBundledImpactor() => TryOpenBundledImpactor();
+
+    private bool TryOpenBundledImpactor()
     {
+        var ok = false;
         try
         {
             using var p = Process.Start(new ProcessStartInfo(BundledImpactor) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(BundledImpactor)! });
-            if (p is null) installDiagnostics = T("process.start_failed");
+            if (p is null) installDiagnostics = T("process.start_failed"); else ok = true;
         }
         catch (Exception error) when (error is IOException or System.ComponentModel.Win32Exception or InvalidOperationException)
         { installDiagnostics = T("process.start_failed") + " " + error.Message; }
         Render();
+        return ok;
     }
+
+    /// <summary>装机前清单当前呈现的落点（11-19 契约，同 Mac state.presented）：清单按钮 / 控制口 /install-action 做成了记 action 名；换页（Navigate）、/dismiss 清空</summary>
+    private string? presented;
+
+    /// <summary>装机前清单按钮的唯一派发（11-19 总指挥：test.3 Mac 清单 Apple ID 按钮把人引到环境检查和 Xcode；Windows 同口径核出两处——
+    /// impactor_login 数据说 openImpactor、说明写「点『打开 Impactor』」，按钮却是「去设置」跳设置页；package 没好没有按钮）。
+    /// 项上的 action 是按钮落点的唯一来源；控制口 /install-action 走这同一个函数。→ 做成了没有</summary>
+    private bool RunInstallAction(string action, LibraryGame game)
+    {
+        switch (action)
+        {
+            case "openExport": selectedGame = game.Id; OpenBuild(); break;   // 这款的出包页（同游戏库「出包」）
+            case "openImpactor": if (!TryOpenBundledImpactor()) return false; break;   // 随包 Impactor：Apple ID 在它里面登录
+            case "devCertSettings": Navigate("settings"); break;   // 设置页「装到 iPhone 的方式」：开发者证书在那里导入 / 切换
+            default: return false;
+        }
+        presented = action;   // 换页（OpenBuild / Navigate）先清空，这里再记
+        Render();
+        return true;
+    }
+
+    private static string? InstallActionLabel(string action) => action switch
+    {
+        "openExport" => "nav.build", "openImpactor" => "action.open_impactor", "devCertSettings" => "install.mode.go_settings", _ => null,
+    };
 
     private const string PlatformIos = "ios";
     private const string PlatformTv = "tvos";
@@ -1666,13 +1695,14 @@ public sealed partial class EnvironmentWindow
                 official.Click += async (_, _) => await OpenOfficialAsync(url);
                 Grid.SetColumn(official, 2); row.Children.Add(official);
             }
-            else if (!item.Ok && item.Action == "openImpactor")
+            else if (!item.Ok && item.Action is { } act && InstallActionLabel(act) is { } label)
             {
-                // 签名身份（Apple ID 在 Impactor 里登录 / 开发者证书）统一在环境检查「装到 iPhone 的方式」里设（v0.3.0）
-                var open = new Button { Content = T("install.mode.go_settings"), Background = Accent, Foreground = Canvas,
+                // 按钮落点只看项上的 action（11-19 契约）：openImpactor 直接打开随包 Impactor（原先写「去设置」跳设置页，和说明「点『打开 Impactor』」对不上），
+                //   openExport 去这款的出包页（原先 package 没好没有按钮），devCertSettings 去设置页；控制口 /install-action 走同一个 RunInstallAction
+                var open = new Button { Content = T(label), Background = Accent, Foreground = Canvas,
                     Padding = new Thickness(14, 8), CornerRadius = new CornerRadius(8), VerticalAlignment = VerticalAlignment.Center };
-                AutomationId(open, "install.go_settings");
-                open.Click += (_, _) => Navigate("settings");
+                AutomationId(open, "install.action." + act);
+                open.Click += (_, _) => RunInstallAction(act, game);
                 Grid.SetColumn(open, 2); row.Children.Add(open);
             }
             list.Children.Add(row);
