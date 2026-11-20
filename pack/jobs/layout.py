@@ -333,9 +333,25 @@ def _move_folder(c, gid, src, dest_root):
             shutil.rmtree(temporary, ignore_errors=True)
             raise Failure("拷到新位置后核对不一致，没有移动（原位置的文件都还在）。", code="job_failed")
         os.replace(temporary, dest)
-        shutil.rmtree(src)
+        remove_tree(src)
     _retarget_links(dest, src, dest)
     return dest
+
+
+def remove_tree(path):
+    """删掉搬走后的旧文件夹（同 shutil.rmtree），只容忍「文件已经不在」：exFAT 等非 APFS 盘上每个文件旁有 AppleDouble 伴随文件 ._<名>，
+    删本体时系统会把它一起删掉，rmtree 先列出的 ._<名> 再去删就找不到（#1720 / 诊断#5d659a：游戏已搬好、旧夹删了一半，整个任务却报失败）。
+    别的错误照抛；删完旧文件夹还在也照抛"""
+    path = Path(path)
+    def gone(func, p, exc):
+        if not isinstance(exc if isinstance(exc, BaseException) else exc[1], FileNotFoundError):
+            raise exc if isinstance(exc, BaseException) else exc[1]
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=gone)
+    else:
+        shutil.rmtree(path, onerror=gone)
+    if os.path.lexists(path):
+        raise OSError(f"旧文件夹删完还在：{path}")  # 非玩家句
 
 
 def _same_volume(a, b):
@@ -921,7 +937,7 @@ def _moved(src, dst):
     finally:
         if os.path.lexists(temporary):
             shutil.rmtree(temporary, ignore_errors=True) if temporary.is_dir() else temporary.unlink()
-    shutil.rmtree(src) if src.is_dir() and not src.is_symlink() else src.unlink()
+    remove_tree(src) if src.is_dir() and not src.is_symlink() else src.unlink()
 
 
 def follow_task(c):
