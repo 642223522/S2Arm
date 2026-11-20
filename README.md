@@ -63,6 +63,16 @@ Also: several kinds of shader problems fixed at the root, more reliable loading 
 
 You can also play on the Mac itself: choose This Mac. Without a cable, export a .s2arm file and put it on your phone with AirDrop or the Files app.
 
+### Self-signing with AltStore / SideStore
+
+Import games right on your phone, with no Apple ID sign-in on a computer and no new certificate:
+
+1. In AltStore or SideStore settings, export your signing certificate and set a password.
+2. Open S2Arm: gear → Signing certificate → Import .p12…, pick the certificate and enter the password.
+3. Then put .s2arm and .img files (exported from your computer or shared by a friend) into S2Arm's Import Here folder, and play.
+
+Note: manage each Apple ID from AltServer on only one computer. Using two makes them revoke each other's certificates, and AltStore shows "Multiple AltServers". Refresh every 7 days with Refresh All in AltStore.
+
 ### Upgrading from 0.5
 
 The games, saves and game data already on your phone all stay. No exporting again, no sending game data again.

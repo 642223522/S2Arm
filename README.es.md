@@ -63,6 +63,16 @@ Además: varios tipos de problemas de sombreadores corregidos de raíz, cargas y
 
 También puedes jugar directamente en el Mac: elige «Este Mac». Si no conectas el teléfono, puedes exportar un archivo .s2arm y llevarlo al teléfono con AirDrop o la App Archivos para importarlo.
 
+### Firmar tú mismo con AltStore / SideStore
+
+Importa juegos directamente en el teléfono, sin iniciar sesión con tu Apple ID en un ordenador y sin crear un certificado nuevo:
+
+1. En los ajustes de AltStore o SideStore, exporta tu certificado de firma y ponle una contraseña.
+2. Abre S2Arm: engranaje → Certificado de firma → Importar .p12…, elige el certificado e introduce la contraseña.
+3. Después pon los archivos .s2arm e .img (exportados desde tu ordenador o compartidos por un amigo) en la carpeta Import Here de S2Arm, y a jugar.
+
+Nota: gestiona cada Apple ID desde AltServer en un solo ordenador. Si usas dos, se anulan los certificados mutuamente y AltStore muestra «Multiple AltServers». Renueva cada 7 días con Refresh All en AltStore.
+
 ### Actualizar desde la 0.5
 
 Los juegos, las partidas guardadas y los datos de juego que ya tienes en el teléfono se quedan. No hace falta volver a exportar ni volver a enviar los datos de juego.

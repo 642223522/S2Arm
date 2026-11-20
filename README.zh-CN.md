@@ -63,6 +63,16 @@
 
 在 Mac 上也能直接玩：选「这台 Mac」即可。不连手机的话，可以导出 .s2arm 文件，用 AirDrop 或「文件」App 放到手机上导入。
 
+### 用 AltStore / SideStore 自签
+
+不用电脑登录 Apple ID、也不用新建证书，手机上就能导入游戏：
+
+1. 在 AltStore 或 SideStore 的设置里「导出签名证书」，设一个密码。
+2. 打开 S2Arm：齿轮 →「签名证书」→「导入 .p12…」，选这份证书，输入密码。
+3. 之后把电脑导出的或朋友分享的 .s2arm 和 .img 放进 S2Arm 的「放这里导入」，就能玩。
+
+注意：同一个 Apple ID 只在一台电脑的 AltServer 上管理；两台电脑都用会互相作废证书，AltStore 会弹「Multiple AltServers」。每 7 天在 AltStore 里点「Refresh All」续签。
+
 ### 从 0.5 升级
 
 你手机上原来的游戏、存档和游戏数据都会留着，不用重新出包，也不用重传游戏数据。
