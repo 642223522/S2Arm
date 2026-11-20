@@ -83,7 +83,7 @@ Los juegos, las partidas guardadas y los datos de juego que ya tienes en el tel�
 
 Hasta que termines el paso 3, esos juegos aparecen en el teléfono como «Actualízalo una vez en tu ordenador» y no se abren, pero no se han perdido. Los juegos instalados desde otro ordenador aparecen en otra línea de la misma página; actualízalos en ese ordenador. Si borraste el paquete de recursos de iPhone de un juego con «Liberar espacio», vuelve a generar el paquete de iPhone de ese juego.
 
-Si firmas la App tú mismo con AltStore u otra herramienta similar: en la página de exportación del lanzador elige «Exportar para firmar uno mismo» en «Después de exportar», pulsa el botón de la ficha «S2Arm» (la primera de la biblioteca) para exportar el nuevo S2Arm.ipa e instálalo encima del anterior con AltStore; exporta tu certificado de firma en los ajustes de AltStore e impórtalo en S2Arm (engranaje → Certificado de firma → Importar .p12…); por último, pulsa «Exportar para firmar uno mismo» en cada juego y pon su .s2arm y su .img en Import Here.
+Si firmas la App tú mismo con AltStore u otra herramienta similar: conecta el iPhone, pulsa «Instalar S2Arm» en la ficha «S2Arm» (la primera de la biblioteca) y, en la página que indica que no has iniciado sesión con un Apple ID, pulsa «Exportar para autofirma en su lugar (sin iPhone)» para obtener el nuevo S2Arm.ipa; instálalo encima del anterior con AltStore; importa tu certificado de firma (SideStore: engranaje → Certificado de firma → Obtener de SideStore en S2Arm; AltStore: expórtalo en sus ajustes y luego Importar .p12…); por último, pulsa «Enviar la selección al iPhone» en la consola, o «Exportar para firmar uno mismo» en cada juego y pon su .s2arm y su .img en Import Here.
 
 ## Una IA puede manejarlo
 
