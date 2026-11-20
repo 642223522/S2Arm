@@ -5800,18 +5800,69 @@ static void t_const_sampler(void) {
     g_samp_fail_nearest = 0;
     stream recovered = {0}; q_draw(&recovered); end(&recovered); submit1(&recovered); fake_complete(NVN_GPU_DONE_OK);
     CHECK(g_gdraws == fail_draws0 + 1 && g_fb[1][0].u.ts.samp && g_fb[1][0].u.ts.samp->x == 5 && g_fb[1][0].u.ts.samp != rp_sampler_for_query() && rp_const_samp_default_count() == fail_csd0);
-    // 计算阶段没接：带标记位的计算项（任何池下标，含 0 与最大）具名跳过，不分发、不绑成别的采样器
+    // 计算阶段（片 7）：同一份合同。带标记位的计算项：采样器号 = 贴图字高 12 位 | 池下标，登记号 = 采样器号 + 池起点，照常派发（不再具名跳过）。
+    //   此刻登记着的号：3（标记 1）、0（标记 6）、9（标记 7）、11（标记 5）、4095（标记 5）、40（标记 5）；池起点 5 时 16（标记 6）、8（标记 1）、14（标记 7）。
     memset(&g_cprog, 0, sizeof g_cprog); g_cprog.is_compute = 1; g_cprog.sh[0] = &g_fsh[0];
     g_cprog.nent[0] = 1; g_cprog.ent[0][0].cls = NVN_GPU_RES_TEX_SAMP;
     g_cprog.ent[0][0].src_kind = NVN_RB_TEX; g_cprog.ent[0][0].src_reg = 130; g_cprog.ent[0][0].count = 1;
     int dispatch_before = g_ndisp;
-    static const uint16_t cs_regs[] = { NVN_GPU_SAMP2_CONST | 3, NVN_GPU_SAMP2_CONST | 0, NVN_GPU_SAMP2_CONST | NVN_GPU_SAMP2_ID_MASK };
-    for (unsigned k = 0; k < sizeof cs_regs / sizeof cs_regs[0]; k++) {
-        g_cprog.ent[0][0].src_reg2 = cs_regs[k]; rp_dirty_all();
-        stream compute = {0}; b = put(&compute, OP_BIND_TEX, sizeof *b); b->stage = 5; b->first = 130; b->n = 1; b->h[0] = 7;
+    const uint64_t cs_csd0 = rp_const_samp_default_count(); const int cs_red0 = g_red_lines;
+    static const struct { uint16_t reg2; uint64_t handle; int mark; } cs_ok[] = {
+        { NVN_GPU_SAMP2_CONST | 3, 7 | (uint64_t)9 << 20, 5 },                                 // 9 | 3 = 11（标记 5）：不是只取立即数的 3（标记 1）、只取字高位的 9（标记 7）
+        { NVN_GPU_SAMP2_CONST | 0, 7 | (uint64_t)9 << 20, 7 },                                 // 9 | 0 = 9（标记 7）
+        { NVN_GPU_SAMP2_CONST | 0, 7, 6 },                                                      // 下标 0 是真下标（标记 6），不当「没有」
+        { NVN_GPU_SAMP2_CONST | 3, 7, 1 },                                                      // 字高位 0：采样器号就是立即数 3（标记 1）
+        { NVN_GPU_SAMP2_CONST | NVN_GPU_SAMP2_ID_MASK, 7 | (uint64_t)9 << 20, 5 },             // 9 | 4095 = 4095（标记 5）
+        { NVN_GPU_SAMP2_CONST | 0, 7 | (uint64_t)NVN_GPU_SAMP2_ID_MASK << 20, 5 },             // 字高 12 位全 1、立即数 0 = 4095（整 12 位都取）
+    };
+    for (unsigned k = 0; k < sizeof cs_ok / sizeof cs_ok[0]; k++) {
+        g_cprog.ent[0][0].src_reg2 = cs_ok[k].reg2; rp_dirty_all();
+        stream compute = {0}; b = put(&compute, OP_BIND_TEX, sizeof *b); b->stage = 5; b->first = 130; b->n = 1; b->h[0] = cs_ok[k].handle;
         put_dispatch1(&compute); end(&compute); submit1(&compute); fake_complete(NVN_GPU_DONE_OK);
-        CHECK(g_ndisp == dispatch_before && nvn_unimpl_count("draw", "compute_texture_array") == k + 1);
+        CHECK(g_ndisp == dispatch_before + 1 && g_ncb == 1 && g_cb[0].u.ts.view && g_cb[0].u.ts.view->of->d.d.width == 4 &&   // 贴图仍是 c2 分离表那一槽绑的 7
+              g_cb[0].u.ts.samp && g_cb[0].u.ts.samp->x == cs_ok[k].mark);
+        dispatch_before = g_ndisp;
     }
+    CHECK(nvn_unimpl_count("draw", "compute_texture_array") == 0);
+    // 池起点 5：采样器号 11 → 登记号 16（标记 6）；只取立即数的 3 + 5 = 8（标记 1）、只取字高位的 9 + 5 = 14（标记 7）、原始号 11（标记 5）都不是它
+    rp_S.samp_base = 5; g_cprog.ent[0][0].src_reg2 = NVN_GPU_SAMP2_CONST | 3; rp_dirty_all();
+    stream cbase = {0}; b = put(&cbase, OP_BIND_TEX, sizeof *b); b->stage = 5; b->first = 130; b->n = 1; b->h[0] = 7 | (uint64_t)9 << 20;
+    put_dispatch1(&cbase); end(&cbase); submit1(&cbase); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_ndisp == dispatch_before + 1 && g_cb[0].u.ts.samp && g_cb[0].u.ts.samp->x == 6);
+    rp_S.samp_base = 0; dispatch_before = g_ndisp;
+    // 没登记的采样器号（片 6 的口径同样用在计算阶段）：9 | 31 = 31 没登记 → 绑默认采样器（rp_sampler_for_query）照派发，不拿字高位的 9 / 只取立即数的 3 顶替；
+    //   信息计数 + 1、首行已出过（每局一次），不记 const_sampler_unresolved（图形阶段的建不出那一笔已记 1 次）、不报红
+    g_cprog.ent[0][0].src_reg2 = NVN_GPU_SAMP2_CONST | 31; rp_dirty_all();
+    stream cmiss = {0}; b = put(&cmiss, OP_BIND_TEX, sizeof *b); b->stage = 5; b->first = 130; b->n = 1; b->h[0] = 7 | (uint64_t)9 << 20;
+    put_dispatch1(&cmiss); end(&cmiss); submit1(&cmiss); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_ndisp == dispatch_before + 1 && g_cb[0].u.ts.view && g_cb[0].u.ts.view->of->d.d.width == 4);
+    CHECK(g_cb[0].u.ts.samp && g_cb[0].u.ts.samp == rp_sampler_for_query() && g_cb[0].u.ts.samp != rp_samp_by_id(9) && g_cb[0].u.ts.samp != rp_samp_by_id(3));
+    CHECK(nvn_unimpl_count("draw", "const_sampler_unresolved") == 1 && rp_const_samp_default_count() == cs_csd0 + 1 && g_csd_lines == 1 && g_red_lines == cs_red0);
+    dispatch_before = g_ndisp;
+    // 登记了、但后端建不出（模拟内存不足）：不是「没登记」，不拿默认采样器顶替，具名跳过（const_sampler_unresolved）、不派发、不记默认采样器计数；
+    //   后端恢复后同一笔照派发，取到登记的那个（标记 5）。号 41 是新登记的，还没建过对象
+    sp.ws = 5; nvn_be_reg_samp(41, &sp); g_samp_fail_nearest = 1;
+    g_cprog.ent[0][0].src_reg2 = NVN_GPU_SAMP2_CONST | 41; rp_dirty_all();
+    stream cfail = {0}; b = put(&cfail, OP_BIND_TEX, sizeof *b); b->stage = 5; b->first = 130; b->n = 1; b->h[0] = 7;   // 字高位 0：采样器号 = 池下标 41
+    put_dispatch1(&cfail); end(&cfail); submit1(&cfail); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_ndisp == dispatch_before && nvn_unimpl_count("draw", "const_sampler_unresolved") == 2 && rp_const_samp_default_count() == cs_csd0 + 1);
+    g_samp_fail_nearest = 0;
+    stream crec = {0}; put_dispatch1(&crec); end(&crec); submit1(&crec); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_ndisp == dispatch_before + 1 && g_cb[0].u.ts.samp && g_cb[0].u.ts.samp->x == 5 && g_cb[0].u.ts.samp != rp_sampler_for_query() && rp_const_samp_default_count() == cs_csd0 + 1);
+    dispatch_before = g_ndisp;
+    // 认不出的形状仍具名跳过（compute_texture_array），不派发、不绑任何采样器：标记位之外还有别的位 / 没有标记位却 >= 128（同图形阶段的 odd_shapes）、数组
+    unsigned cs_skips = 0;
+    for (unsigned k = 0; k < n_odd; k++) {
+        g_cprog.ent[0][0].src_reg2 = odd_shapes[k]; rp_dirty_all();
+        stream shape = {0}; b = put(&shape, OP_BIND_TEX, sizeof *b); b->stage = 5; b->first = 130; b->n = 1; b->h[0] = 7;
+        put_dispatch1(&shape); end(&shape); submit1(&shape); fake_complete(NVN_GPU_DONE_OK);
+        cs_skips++;
+        CHECK(g_ndisp == dispatch_before && nvn_unimpl_count("draw", "compute_texture_array") == cs_skips);
+    }
+    g_cprog.ent[0][0].src_reg2 = NVN_GPU_SAMP2_CONST | 3; g_cprog.ent[0][0].count = 2; rp_dirty_all();
+    stream carr = {0}; put_dispatch1(&carr); end(&carr); submit1(&carr); fake_complete(NVN_GPU_DONE_OK);
+    cs_skips++;
+    CHECK(g_ndisp == dispatch_before && nvn_unimpl_count("draw", "compute_texture_array") == cs_skips);
     nvn_be_tex_release(&t); pass_fresh();
 }
 
