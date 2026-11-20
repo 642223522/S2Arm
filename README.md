@@ -39,6 +39,8 @@ Shaders the game needs are prepared when you send it, so new areas no longer stu
 
 How it is counted: the rate covers only shaders that **had failed to compile** in player diagnostics; it is not a coverage rate for all shaders. Of the remaining 98, 91 were not shaders at all but memory read wrongly during capture (capture fixed), and the other 7 have been fixed at the root.
 
+Note: on iPhone, precompiled pipelines are generated only when you Push to iPhone with that iPhone connected. When exporting for self-signing (no iPhone connected) or with several iPhones connected, this version still compiles them the first time they are needed, as in 0.5. This will improve in a later version.
+
 ### Fixes, performance and graphics
 
 From 0.5.0 to 0.6.0 (how each number is counted is in the table):

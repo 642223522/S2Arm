@@ -39,6 +39,8 @@ Los sombreadores que necesita el juego se preparan al enviarlo, así que la prim
 
 Cómo se cuenta: el porcentaje solo incluye los sombreadores que **habían fallado al compilar** en los diagnósticos de jugadores; no es una tasa de cobertura de todos los sombreadores. De los 98 restantes, 91 no eran sombreadores, sino memoria leída mal durante la captura (captura corregida), y los otros 7 se han corregido de raíz.
 
+Nota: en iPhone, las canalizaciones precompiladas solo se generan al enviar el juego con ese iPhone conectado. Al exportar para firmar uno mismo (sin iPhone conectado) o con varios iPhone conectados, esta versión todavía las compila la primera vez que se necesitan, como en la 0.5. Se mejorará en una próxima versión.
+
 ### Correcciones, rendimiento y gráficos
 
 De la 0.5.0 a la 0.6.0 (cómo se cuenta cada cifra, en la tabla):

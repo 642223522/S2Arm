@@ -39,6 +39,8 @@ Les shaders dont le jeu a besoin sont préparés au moment de l'envoi, donc la p
 
 Comment c’est compté : ce taux ne porte que sur les shaders qui **avaient échoué à la compilation** dans les diagnostics des joueurs ; ce n’est pas un taux de couverture de tous les shaders. Sur les 98 restants, 91 n’étaient pas des shaders mais de la mémoire mal lue lors de la capture (capture corrigée), et les 7 autres ont été corrigés à la racine.
 
+Remarque : sur iPhone, les pipelines précompilés ne sont générés que lorsque vous envoyez le jeu avec cet iPhone connecté. Lors d’un export pour signer soi-même (sans iPhone connecté) ou avec plusieurs iPhone connectés, cette version les compile encore la première fois qu’ils sont nécessaires, comme en 0.5. Ce sera amélioré dans une prochaine version.
+
 ### Corrections, performances et graphismes
 
 De la 0.5.0 à la 0.6.0 (la façon de compter chaque chiffre est dans le tableau) :
