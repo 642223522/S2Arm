@@ -14,7 +14,7 @@ private func sx(_ loc: Localizer, _ id: String) -> String { BackendText.launcher
 struct DevCertRow: View {
     @ObservedObject var model: S2ArmLauncherModel
     @EnvironmentObject var loc: Localizer
-    /// 标题与「不用证书」那一项的叫法：环境检查「装到 iPhone 的方式」里叫「签名身份」「Xcode 账号」（Mac 上 Apple ID 只能经 Xcode 登录）
+    /// 标题与「不用证书」那一项的叫法：环境检查「装到 iPhone 的方式」里叫「签名身份」「Apple ID 签名」（0.6.0 起 Apple ID 在 S2Arm 里登录，不经 Xcode）
     var title: String? = nil
     var appleIdTitle: String? = nil
     var embedded = false

@@ -1411,28 +1411,29 @@ def readiness(c):
     def item(key, ok, title, detail, who="human", waiting=False, note="", action=None, url=None):
         wait = waiting and not ok
         # 等前一步的不给说明，免得 AI 拿去催玩家；好了的项也不带说明，只有 note（好了但值得知道的，如只靠网络连着）照带
-        # action / url：没好的项的按钮落点（11-19 落点契约，动作名单见 launchers/shared/experience.v1.json installActions；同 readiness_windows）
+        # action / url：没好的项的按钮落点（11-19 落点契约，唯一来源 launchers/shared/experience.v1.json install_landing；同 readiness_windows）；
+        #   等前一步的也不带（那一步还轮不到玩家做，启动器不画按钮）
         items.append(dict(id=key, ok=bool(ok), waiting=wait, blocking=key == "package" and not ok, title=title, detail=note if ok else "" if wait else detail, who=who,
-                          action=None if ok else action, url=None if ok else url))
+                          action=None if ok or wait else action, url=None if ok or wait else url))
     import downstream
     scheme = downstream.requested(c, next((g for g in c.catalog()["games"] if g["id"].upper() == gid.upper()), dict(id=gid)))
     if scheme:   # 下游深度方案出的是独立 App（install → downstream.install_ios）：iPhone 版看它自己的出包记录，不看容器件（原先一律报没做好，实际装得上）
         rec = downstream.last_record(c, gid.upper(), scheme)
         ipa_path = (rec or {}).get("ipa") or ""
-        item("package", bool(rec), "这款游戏的 iPhone 版已经做好", "还没做好：先做 iPhone 版，做好后这里自动打勾。", who="app")
+        item("package", bool(rec), "这款游戏的 iPhone 版已经做好", "还没做好：先做 iPhone 版，做好后这里自动打勾。", who="app", action="openExport")
     else:
         try:
             ios_pack(c, gid)
             ipa_path = phone_ipa_path(c)
             item("package", True, "这款游戏的 iPhone 版已经做好", "")
         except Failure:
-            item("package", False, "这款游戏的 iPhone 版已经做好", "还没做好：先做 iPhone 版，做好后这里自动打勾。", who="app")
+            item("package", False, "这款游戏的 iPhone 版已经做好", "还没做好：先做 iPhone 版，做好后这里自动打勾。", who="app", action="openExport")
     use_cert = devcert.active(c)
     team = None
     if not use_cert:   # Apple ID 用随包 plumesign 登录（mac_plume）：看它当前选中的账号，不看 Xcode
         acct = plume_account(c, win_install_mod(c)) if mac_plume(c) else None
         team = dict(id=acct["team"], name=acct["teamName"] or acct["account"]) if acct else None
-        item("appleId", team, "已登录 Apple ID", "" if team else APPLE_SIGN_IN)
+        item("appleId", team, "已登录 Apple ID", "" if team else APPLE_SIGN_IN, action="appleLogin")   # S2Arm 自己的登录面板
     # 清单只看玩家选的那台、每次现查（11-11 玩家实报：没插线却亮「iPhone 已用数据线连上」——原先没选设备时作业自己挑了同网的 iPad 来打勾）
     want = (c.r.get("device") or "").strip()
     link = device_link(c, want, polling=True) if want else dict(device=None, stage="connected", problem=S_DEVICE_REQUIRED, trace=[], devices=[])
@@ -1442,12 +1443,12 @@ def readiness(c):
     kind = device_kind(one) if one else "iPhone / iPad"
     how = "数据线" if one and _link(one).get("transportType") == "wired" else "同一 Wi-Fi"
     item("connected", one, "{0}「{1}」已连上（{2}）".replace("{0}", kind).replace("{1}", name).replace("{2}", how) if one else "选的设备已连上（数据线或同一 Wi-Fi）",
-         link["problem"] if stage == "connected" else "", note=S_NETWORK if one and how != "数据线" else "")   # 只靠网络连着：能装，但提醒插线更稳（玩家反馈 11-11）
+         link["problem"] if stage == "connected" else "", note=S_NETWORK if one and how != "数据线" else "", action="pickDevice")   # 只靠网络连着：能装，但提醒插线更稳（玩家反馈 11-11）
     paired = bool(one) and stage != "trusted"
-    item("trusted", paired, "{0} 已信任这台 Mac".replace("{0}", kind), link["problem"] if stage == "trusted" else S_TRUST, waiting=not one)
+    item("trusted", paired, "{0} 已信任这台 Mac".replace("{0}", kind), link["problem"] if stage == "trusted" else S_TRUST, waiting=not one, action="trustHelp")
     mode_pending = paired and stage == "prepare" and one.get("deviceProperties", {}).get("developerModeStatus") not in ("enabled", None)
     dev_mode = paired and stage != "developerMode" and not mode_pending
-    item("developerMode", dev_mode, "{0} 已打开开发者模式".replace("{0}", kind), S_DEV_MODE, waiting=not paired or mode_pending)
+    item("developerMode", dev_mode, "{0} 已打开开发者模式".replace("{0}", kind), S_DEV_MODE, waiting=not paired or mode_pending, action="developerModeHelp")
     item("deviceReady", dev_mode and stage == "", "{0} 已准备好安装".replace("{0}", kind), link["problem"] if stage == "prepare" else "", who="app", waiting=not paired or stage == "developerMode")
     account = (cert or {}).get("teamName") or "" if use_cert else (team["name"] or team["id"]) if team else ""
     return dict(gameId=gid, items=items, ready=not any(i["blocking"] for i in items), device=name, deviceKind=kind.lower() if one else "", account=account, ipaPath=ipa_path, imgPath=phone_img_path(c, gid), shaderCachePath=phone_shader_cache(c, gid),

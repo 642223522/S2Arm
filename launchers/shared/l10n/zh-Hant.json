@@ -1202,7 +1202,28 @@
   "console.button.exportShellIpa": "匯出 S2Arm.ipa",
   "console.button.pushS2arm": "推所選到 iPhone（{0}）",
   "console.button.exportS2arm": "匯出所選 .s2arm（{0}）",
-  "console.external.note": "這台手機上的 S2Arm 是用 AltStore / SideStore 等別的工具裝的：推過去的遊戲由手機上的 S2Arm 用你匯入的簽名憑證來簽，不用在電腦上登入 Apple ID；要換新版 S2Arm，匯出 S2Arm.ipa 用原來的工具簽好裝上。"
+  "console.external.note": "這台手機上的 S2Arm 是用 AltStore / SideStore 等別的工具裝的：推過去的遊戲由手機上的 S2Arm 用你匯入的簽名憑證來簽，不用在電腦上登入 Apple ID；要換新版 S2Arm，匯出 S2Arm.ipa 用原來的工具簽好裝上。",
+  "install.login.title": "用 Apple ID 簽署",
+  "install.login.note": "用你的 Apple ID 登入一次（免費的就行），之後簽署、續簽都用它。密碼只傳給 Apple，S2Arm 不儲存。",
+  "install.login.email": "Apple ID（電子郵件）",
+  "install.login.password": "密碼",
+  "install.login.signIn": "登入",
+  "install.login.working": "正在登入…",
+  "install.login.code": "輸入 Apple 裝置上彈出的 6 位驗證碼",
+  "install.login.codeSms": "輸入簡訊裡的 6 位驗證碼",
+  "install.login.confirm": "確認",
+  "install.login.useSms": "改用簡訊接收",
+  "install.login.resend": "沒收到？再傳一次",
+  "install.login.done": "已登入：{0}（團隊 {1}）",
+  "install.login.none": "還沒登入 Apple ID",
+  "install.login.open": "登入 Apple ID",
+  "install.login.switch": "換一個 Apple ID",
+  "install.login.cancel": "取消",
+  "install.login.close": "完成",
+  "install.action.pickDevice": "選裝置",
+  "install.action.howTo": "怎麼做",
+  "install.help.ok": "好",
+  "install.login.expired": "Apple ID 登入已過期：重新登入一次，電子郵件已經填好。"
  },
  "text": {
   "直连": "直連",
@@ -4196,7 +4217,6 @@
   "等你填验证码": "等你填驗證碼",
   "填好 Apple ID 邮箱和密码再登录。": "填好 Apple ID 郵箱和密碼再登入。",
   "Apple ID 登录没成功：{0}": "Apple ID 登入沒成功：{0}",
-  "还没用 Apple ID 登录：在 S2Arm 的「用 Apple ID 签名」里填邮箱和密码登录（你的苹果设备上会弹出验证码），再点一次「推到 iPhone」。密码只用于这次向 Apple 登录，S2Arm 不保存。": "還沒用 Apple ID 登入：在 S2Arm 的「用 Apple ID 簽名」裡填郵箱和密碼登入（你的蘋果裝置上會彈出驗證碼），再點一次「推到 iPhone」。密碼只用於這次向 Apple 登入，S2Arm 不儲存。",
   "还没用 Apple ID 登录：在 S2Arm 里用你的 Apple ID 登录一次（邮箱、密码、手机上的验证码），再装到 iPhone。": "還沒用 Apple ID 登入：在 S2Arm 裡用你的 Apple ID 登入一次（郵箱、密碼、手機上的驗證碼），再裝到 iPhone。",
   "在「Windows 安全中心 → 保护历史记录」看是谁拦的。杀毒软件拦的：把 S2Arm 安装文件夹加进信任再重试；「智能应用控制」拦的：它不能单独放行，只能在「应用和浏览器控制 → 智能应用控制」里关掉（关掉后要重装 Windows 才能再打开）；公司电脑请让管理员放行。": "在「Windows 安全中心 → 保護歷史記錄」看是誰攔的。防毒軟體攔的：把 S2Arm 安裝資料夾加進信任再重試；「智慧應用控制」攔的：它不能單獨放行，只能在「應用和瀏覽器控制 → 智慧應用控制」裡關掉（關掉後要重灌 Windows 才能再開啟）；公司電腦請讓管理員放行。",
   "S2Arm 自带的工具": "S2Arm 自帶的工具",
@@ -4232,6 +4252,12 @@
   "「{0}」空间不够：这一步还要约 {1} GB，盘上只剩 {2} GB。": "「{0}」空間不夠：這一步還要約 {1} GB，磁碟上只剩 {2} GB。",
   "在「{0}」上腾出至少 {3} GB 后重试；游戏原件、存档和上次成功的运行版本别删。": "在「{0}」上騰出至少 {3} GB 後重試；遊戲原件、存檔和上次成功的執行版本別刪。",
   "已送到手机，但手机上的 S2Arm 还没有签名证书，这款还开不了：在手机上打开 S2Arm → 齿轮 →「签名证书」，SideStore 装的点「从 SideStore 获取」；AltStore 装的先在 AltStore 设置里导出签名证书，再点「导入 .p12…」。": "已送到手機，但手機上的 S2Arm 還沒有簽名憑證，這款還開不了：在手機上開啟 S2Arm → 齒輪 →「簽名憑證」，SideStore 裝的點「從 SideStore 取得」；AltStore 裝的先在 AltStore 設定裡匯出簽名憑證，再點「匯入 .p12…」。",
-  "已送到手机，但手机上的 S2Arm 导入的签名证书（团队 {0}）不是给这个 S2Arm 签名的那张（团队 {1}），这款还开不了：在手机上打开 S2Arm → 齿轮 →「签名证书」，SideStore 装的点「从 SideStore 获取」；AltStore 装的先在 AltStore 设置里重新导出签名证书，再点「导入 .p12…」。": "已送到手機，但手機上的 S2Arm 匯入的簽名憑證（團隊 {0}）不是給這個 S2Arm 簽名的那張（團隊 {1}），這款還開不了：在手機上開啟 S2Arm → 齒輪 →「簽名憑證」，SideStore 裝的點「從 SideStore 取得」；AltStore 裝的先在 AltStore 設定裡重新匯出簽名憑證，再點「匯入 .p12…」。"
+  "已送到手机，但手机上的 S2Arm 导入的签名证书（团队 {0}）不是给这个 S2Arm 签名的那张（团队 {1}），这款还开不了：在手机上打开 S2Arm → 齿轮 →「签名证书」，SideStore 装的点「从 SideStore 获取」；AltStore 装的先在 AltStore 设置里重新导出签名证书，再点「导入 .p12…」。": "已送到手機，但手機上的 S2Arm 匯入的簽名憑證（團隊 {0}）不是給這個 S2Arm 簽名的那張（團隊 {1}），這款還開不了：在手機上開啟 S2Arm → 齒輪 →「簽名憑證」，SideStore 裝的點「從 SideStore 取得」；AltStore 裝的先在 AltStore 設定裡重新匯出簽名憑證，再點「匯入 .p12…」。",
+  "还没用 Apple ID 登录：点「登录 Apple ID」（装机清单和失败页上都有，也可以在设置 →「签名身份」下面点），在弹出的「用 Apple ID 签名」里填邮箱和密码（你的苹果设备上会弹出验证码），再点一次「推到 iPhone」。密码只用于这次向 Apple 登录，S2Arm 不保存。": "還沒用 Apple ID 登入：點「登入 Apple ID」（安裝清單和失敗頁上都有，也可以在設定 →「簽署身分」下面點），在彈出的「用 Apple ID 簽署」裡填電子郵件和密碼（你的 Apple 裝置上會彈出驗證碼），再點一次「推到 iPhone」。密碼只用於這次向 Apple 登入，S2Arm 不儲存。",
+  "这个 Apple ID 绑了不止一个受信任手机号，S2Arm 选不了发到哪一个：重新登录，改用苹果设备上弹出的验证码。": "這個 Apple ID 綁了不只一個受信任電話號碼，S2Arm 選不了傳到哪一個：重新登入，改用 Apple 裝置上彈出的驗證碼。",
+  "Apple TV / 独立 App 方案用的 Xcode 团队": "Apple TV / 獨立 App 方案用的 Xcode 團隊",
+  "验证码是 6 位数字。": "驗證碼是 6 位數字。",
+  "登录作业还没开始。": "登入作業還沒開始。",
+  "验证码没能交给登录作业：S2Arm 的数据目录写不进去，检查磁盘空间和权限后再试。": "驗證碼沒能交給登入作業：S2Arm 的資料目錄寫不進去，檢查磁碟空間和權限後再試。"
  }
 }

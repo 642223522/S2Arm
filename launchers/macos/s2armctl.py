@@ -40,7 +40,9 @@ USAGE = """s2armctl —— 让 AI 助手操作 S2Arm（每条命令 = 玩家点�
   batch <游戏号>[:mac,iphone] … [--location 文件夹]
                                     批量出包：几款一起，每款可指定平台（缺省 iphone；同一款先 Mac 后 iPhone，解包只做一次）、一批共用一个存放位置；
                                     一款接一款地出，失败不挡后面、磁盘满暂停；等到出完，打印每款结果和汇总，有失败退出码 1
-  install-check <游戏号> [--device UDID或设备名] [--json]    装到 iPhone 前的清单（--device：查哪一台，同 install --device；s2armctl targets 列设备号）：iPhone 版做好没有、Xcode 登录 Apple ID、连上、信任、开发者模式；没好的写谁做什么
+  install-check <游戏号> [--device UDID或设备名] [--json]    装到 iPhone 前的清单（--device：查哪一台，同 install --device；s2armctl targets 列设备号）：iPhone 版做好没有、在 S2Arm 里登录 Apple ID、连上、信任、开发者模式；没好的写谁做什么
+  install-action <游戏号> <项 id>    点清单里这一项的按钮（先 install-check）：appleId 打开登录面板（邮箱、密码、验证码只能玩家本人填）、connected 亮出装到哪台、
+                                    trusted / developerMode 弹说明、package 去出包页、devcert 打开设置的证书一栏；打开了什么看 state --json 的 presented
   restore-iphone <游戏号>             手机上的 S2Arm 换了新版运行层后不好用：装回上一版（state 里 iphoneRestorable 为真才有）
   show environment|library|export|install [游戏号]   打开环境检查 / 回游戏库 / 打开这款的出包页 / 装机窗（进度与完成页）（同点对应按钮）
   update-phone [--ask | --accept-stale [--repack]] [--device UDID或设备名] [--accept-dropped] [--accept-no-backup]   更新 iPhone 上的 S2Arm（state 里 phoneUpdates 不空才有）：本版壳 + 已有程序模块，只装 App、不重推资源；
@@ -362,8 +364,8 @@ def next_step(s, gid=None, target='ios'):
     if done:
         return dict(step='打开游戏', who='human', do=f'已推到 iPhone{("「" + done[-1]["device"] + "」") if done[-1].get("device") else ""}、资源包已拷好并核对：请玩家打开这款游戏，第一次会先导入游戏资源（几分钟），保持前台别锁屏，导入完会自动进入游戏。免费 Apple ID 签的 App 7 天过期，到时连上再 s2armctl install {g["id"]}',
                     why='装机完成，剩下只有玩家本人在手机上打开', ipa=ipa, **extra)
-    return dict(step='装机', who='ai', do=f's2armctl install-check {g["id"]}，没打勾的项按它说的请玩家做；然后 s2armctl install {g["id"]}（等到装完；失败会打错误码和建议、退 1）',
-                why='iPhone 包已出好：用玩家在 Xcode 登录的 Apple ID 签名，数据线装上并拷资源包。玩家不想登录 Xcode 就改用 AltStore（装机步骤页第二部分）', ipa=ipa, **extra)
+    return dict(step='装机', who='ai', do=f's2armctl install-check {g["id"]}，没打勾的项按它说的请玩家做（Apple ID 没登录：s2armctl install-action {g["id"]} appleId 打开登录面板，请玩家本人填）；然后 s2armctl install {g["id"]}（等到装完；失败会打错误码和建议、退 1）',
+                why='iPhone 包已出好：用玩家在 S2Arm 里登录的 Apple ID 签名，数据线装上并拷资源包。玩家不想登录就改用「导出自签包」', ipa=ipa, **extra)
 
 def show_next(gid, as_json, target='ios'):
     n = next_step(call('GET', '/state'), gid, target)
@@ -668,7 +670,7 @@ def diag_body(rest, now=None):
 
 # 至少需要一个位置参数的命令：以前缺参数直接 IndexError，或把后面的选项当成游戏号发给控制口。
 NEEDS_ARG = {'install', 'uninstall', 'launch', 'cancel', 'retry', 'delete', 'customize', 'ipa', 'prepare', 'selfsign',
-             'build', 'wait', 'install-check', 'logs', 'device', 'push-pack', 'snapshot', 'select',
+             'build', 'wait', 'install-check', 'install-action', 'logs', 'device', 'push-pack', 'snapshot', 'select',
              'onboarding', 'target', 'keys', 'games',
              'cloud-sync', 'display', 'library', 'restore-iphone', 'show', 'mods'}   # 合入时补：这几条同样直接取 rest[0]
 
@@ -768,6 +770,10 @@ def main():
         call('POST', '/library', {'path': os.path.abspath(os.path.expanduser(rest[0])), 'move': '--move' in rest}); wait_op('setup', before); return
     if cmd == 'errors': errors(rest[0] if rest else None); return
     if cmd == 'install-check': install_check(rest[0], '--json' in rest, device=rest[rest.index('--device') + 1] if '--device' in rest else None); return
+    if cmd == 'install-action':   # 点清单一项的按钮：控制口按这一项的 action 派发；已好 / 没动作回 409（call 打原因退 1）
+        if len(rest) < 2 or rest[1].startswith('-'): print(USAGE); sys.exit(2)
+        r = call('POST', '/install-action', {'gameId': rest[0], 'id': rest[1]})
+        print(json.dumps(r, ensure_ascii=False)); return
     if cmd == 'build':
         serial = rest[rest.index('--serial') + 1] if '--serial' in rest else None   # 安卓：出好装到这台手机（adb 序列号）
         args = [a for i, a in enumerate(rest) if a not in ('--space-override', '--serial') and (i == 0 or rest[i - 1] != '--serial')]

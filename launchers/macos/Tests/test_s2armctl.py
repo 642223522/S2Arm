@@ -1017,6 +1017,14 @@ class UsageGuardTests(unittest.TestCase):
             ctl.main()
         return call, output.getvalue()
 
+    def test_install_action_posts_game_and_item(self):
+        with mock.patch.object(ctl, "call", return_value={"ok": True, "action": "appleLogin"}) as call, \
+                mock.patch.object(ctl.sys, "argv", ["s2armctl", "install-action", "0100ABCDEF000000", "appleId"]), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            ctl.main()
+        call.assert_called_once_with("POST", "/install-action", {"gameId": "0100ABCDEF000000", "id": "appleId"})
+        self.assertIn("appleLogin", out.getvalue())
+
     def test_subcommand_help_never_reaches_the_app(self):
         for argv in (["install", "--help"], ["install", "-h"], ["wait", "--help"]):
             with self.subTest(argv=argv):
@@ -1028,7 +1036,7 @@ class UsageGuardTests(unittest.TestCase):
         for argv in (["install"], ["wait"], ["build"], ["snapshot"], ["keys"],
                      ["install-check", "--json"], ["ipa", "--space-override"],
                      ["cloud-sync"], ["display", "--docked", "on"], ["library", "--move"], ["restore-iphone"], ["show"],
-                     ["install", "--team", "ABCDE12345"]):
+                     ["install", "--team", "ABCDE12345"], ["install-action"], ["install-action", "0100ABCDEF000000"]):
             with self.subTest(argv=argv):
                 with mock.patch.object(ctl, "call") as call, \
                         mock.patch.object(ctl.sys, "argv", ["s2armctl", *argv]), \

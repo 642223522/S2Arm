@@ -73,7 +73,7 @@ public enum BackendText {
     ///   App 开着时包被挪走 / 删掉（拖进「应用程序」、更新换包的空档），首次显示某句报错才去读文件会读不到而停
     ///   （0.5.1 欢迎页崩溃）。资源真缺仍在这里当场停，装包错误照旧不放过
     public static func preload() {
-        _ = entries; _ = english; _ = chinese; _ = forward; _ = reverse; _ = launcherItems
+        _ = entries; _ = english; _ = chinese; _ = forward; _ = reverse; _ = launcherItems; _ = installLandingActions
         let resources = (try? resourceBundle().resourceURL) ?? nil
         let names = resources.flatMap { try? FileManager.default.contentsOfDirectory(atPath: $0.path) } ?? []
         for name in names where name.hasPrefix("l10n.") && name.hasSuffix(".json") {
@@ -90,6 +90,15 @@ public enum BackendText {
         guard let item = launcherItems[id] else { return "[\(id)]" }
         return overlay(language).launcher[id] ?? item[language] ?? item[fallback(language)] ?? item["en"] ?? "[\(id)]"
     }
+
+    /// 装机前清单按钮落点的动作表（共享规格 install_landing.actions，Windows SharedText.InstallActionLabel 同一处）：动作名 → 按钮文案键；
+    ///   值为 nil = 表里写 null（这一端自画文案）。不在表里的动作不画按钮、不派发（两端不另写一份动作表）
+    public static let installLandingActions: [String: String?] = {
+        guard let data = try? Data(contentsOf: experienceURL()),
+              let spec = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let actions = (spec["install_landing"] as? [String: Any])?["actions"] as? [String: Any] else { return [:] }
+        return actions.mapValues { $0 as? String }
+    }()
 
     /// 报错页统一的一句「故障报修」指引（11-13）：文字只在共享规格 report.hint 一处，{button} 换成顶栏按钮名 report.button（Windows SharedText.ReportHint 同一取法）
     public static func reportHint(language: String) -> String {

@@ -1206,7 +1206,28 @@
   "console.button.exportShellIpa": "S2Arm.ipa を書き出す",
   "console.button.pushS2arm": "選んだゲームを iPhone に送る（{0}）",
   "console.button.exportS2arm": "選んだゲームを .s2arm で書き出す（{0}）",
-  "console.external.note": "この iPhone の S2Arm は AltStore / SideStore など別のツールで入れたものです。送ったゲームは iPhone 上の S2Arm が読み込んだ署名証明書で署名するので、このコンピュータで Apple ID にサインインする必要はありません。新しい S2Arm にするには S2Arm.ipa を書き出し、同じツールで署名してインストールしてください。"
+  "console.external.note": "この iPhone の S2Arm は AltStore / SideStore など別のツールで入れたものです。送ったゲームは iPhone 上の S2Arm が読み込んだ署名証明書で署名するので、このコンピュータで Apple ID にサインインする必要はありません。新しい S2Arm にするには S2Arm.ipa を書き出し、同じツールで署名してインストールしてください。",
+  "install.login.title": "Apple ID で署名",
+  "install.login.note": "Apple ID で一度サインインしてください（無料のもので構いません）。以後の署名と再署名はこれを使います。パスワードは Apple にだけ送られ、S2Arm には保存されません。",
+  "install.login.email": "Apple ID（メールアドレス）",
+  "install.login.password": "パスワード",
+  "install.login.signIn": "サインイン",
+  "install.login.working": "サインイン中…",
+  "install.login.code": "Apple デバイスに表示された 6 桁の確認コードを入力",
+  "install.login.codeSms": "SMS に届いた 6 桁の確認コードを入力",
+  "install.login.confirm": "確認",
+  "install.login.useSms": "SMS で受け取る",
+  "install.login.resend": "届かない場合はもう一度送信",
+  "install.login.done": "サインイン済み：{0}（チーム {1}）",
+  "install.login.none": "Apple ID でサインインしていません",
+  "install.login.open": "Apple ID でサインイン",
+  "install.login.switch": "別の Apple ID を使う",
+  "install.login.cancel": "キャンセル",
+  "install.login.close": "完了",
+  "install.action.pickDevice": "デバイスを選ぶ",
+  "install.action.howTo": "やり方",
+  "install.help.ok": "OK",
+  "install.login.expired": "Apple ID のサインインの有効期限が切れました。もう一度サインインしてください。メールアドレスは入力済みです。"
  },
  "text": {
   "满屏补丁（按屏幕比例自动选）": "全画面パッチ（画面比率に応じて自動選択）",
@@ -4122,6 +4143,12 @@
   "「{0}」空间不够：这一步还要约 {1} GB，盘上只剩 {2} GB。": "「{0}」の空き容量が足りません。この処理には約 {1} GB 必要ですが、空きは {2} GB しかありません。",
   "在「{0}」上腾出至少 {3} GB 后重试；游戏原件、存档和上次成功的运行版本别删。": "「{0}」で {3} GB 以上の空きを作ってから、もう一度お試しください。ゲームの元ファイル、セーブデータ、前回正常に動いたバージョンは削除しないでください。",
   "已送到手机，但手机上的 S2Arm 还没有签名证书，这款还开不了：在手机上打开 S2Arm → 齿轮 →「签名证书」，SideStore 装的点「从 SideStore 获取」；AltStore 装的先在 AltStore 设置里导出签名证书，再点「导入 .p12…」。": "iPhone に送りましたが、iPhone の S2Arm にまだ署名証明書がないため、このゲームは起動できません。iPhone で S2Arm を開き、歯車 →「署名証明書」へ。SideStore で入れた場合は「SideStore から取得」、AltStore で入れた場合は先に AltStore の設定で署名証明書を書き出してから「.p12 を読み込む…」をタップしてください。",
-  "已送到手机，但手机上的 S2Arm 导入的签名证书（团队 {0}）不是给这个 S2Arm 签名的那张（团队 {1}），这款还开不了：在手机上打开 S2Arm → 齿轮 →「签名证书」，SideStore 装的点「从 SideStore 获取」；AltStore 装的先在 AltStore 设置里重新导出签名证书，再点「导入 .p12…」。": "iPhone に送りましたが、iPhone の S2Arm に読み込まれた署名証明書（チーム {0}）は、この S2Arm に署名した証明書（チーム {1}）ではないため、このゲームは起動できません。iPhone で S2Arm を開き、歯車 →「署名証明書」へ。SideStore で入れた場合は「SideStore から取得」、AltStore で入れた場合は先に AltStore の設定で署名証明書を書き出し直してから「.p12 を読み込む…」をタップしてください。"
+  "已送到手机，但手机上的 S2Arm 导入的签名证书（团队 {0}）不是给这个 S2Arm 签名的那张（团队 {1}），这款还开不了：在手机上打开 S2Arm → 齿轮 →「签名证书」，SideStore 装的点「从 SideStore 获取」；AltStore 装的先在 AltStore 设置里重新导出签名证书，再点「导入 .p12…」。": "iPhone に送りましたが、iPhone の S2Arm に読み込まれた署名証明書（チーム {0}）は、この S2Arm に署名した証明書（チーム {1}）ではないため、このゲームは起動できません。iPhone で S2Arm を開き、歯車 →「署名証明書」へ。SideStore で入れた場合は「SideStore から取得」、AltStore で入れた場合は先に AltStore の設定で署名証明書を書き出し直してから「.p12 を読み込む…」をタップしてください。",
+  "还没用 Apple ID 登录：点「登录 Apple ID」（装机清单和失败页上都有，也可以在设置 →「签名身份」下面点），在弹出的「用 Apple ID 签名」里填邮箱和密码（你的苹果设备上会弹出验证码），再点一次「推到 iPhone」。密码只用于这次向 Apple 登录，S2Arm 不保存。": "Apple ID でサインインしていません。「Apple ID でサインイン」をクリックし（インストールのチェックリストと失敗画面にあります。設定 ›「署名 ID」の下からも開けます）、表示される「Apple ID で署名」にメールアドレスとパスワードを入力して（Apple デバイスに確認コードが表示されます）、もう一度「iPhone に転送」をクリックしてください。パスワードは今回 Apple へのサインインにだけ使われ、S2Arm には保存されません。",
+  "这个 Apple ID 绑了不止一个受信任手机号，S2Arm 选不了发到哪一个：重新登录，改用苹果设备上弹出的验证码。": "この Apple ID には信頼できる電話番号が複数あり、S2Arm ではどの番号に送るか選べません。もう一度サインインし、Apple デバイスに表示される確認コードを使ってください。",
+  "Apple TV / 独立 App 方案用的 Xcode 团队": "Apple TV／単独アプリ方式用の Xcode チーム",
+  "验证码是 6 位数字。": "確認コードは 6 桁の数字です。",
+  "登录作业还没开始。": "サインインがまだ始まっていません。",
+  "验证码没能交给登录作业：S2Arm 的数据目录写不进去，检查磁盘空间和权限后再试。": "確認コードをサインインに渡せませんでした。S2Arm のデータフォルダに書き込めません。ディスクの空き容量と権限を確認してからもう一度お試しください。"
  }
 }

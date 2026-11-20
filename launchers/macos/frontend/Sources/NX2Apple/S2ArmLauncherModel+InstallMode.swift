@@ -1,4 +1,4 @@
-// S2Arm（不是上游文件）：签名身份（一键装用 Xcode 账号 / 我的开发者证书，installMode 作业只读）+ 游戏库「导出自签包」+ 更新 iPhone 上的 S2Arm。
+// S2Arm（不是上游文件）：签名身份（一键装用 Apple ID / 我的开发者证书，installMode 作业只读）+ 游戏库「导出自签包」+ 更新 iPhone 上的 S2Arm。
 //   11-15 维护者：导出不再是一种「装法」，设置里没有切换；「推到 iPhone」「导出自签包」两个按钮并排，导不导出只看这次请求。
 //   更新：库页右上角按钮（catalog phoneUpdates：设备记录的壳号比本版旧）→ 有要重新出包的款先三选一 → installUpdate 作业只换壳、不重推资源。
 import AppKit
@@ -45,7 +45,7 @@ extension S2ArmLauncherModel {
         }
     }
 
-    /// 签名身份（一键装时）：开发者证书开着 = devcert，否则 Xcode 账号
+    /// 签名身份（一键装时）：开发者证书开着 = devcert，否则 Apple ID（0.6.0 起在 S2Arm 里登录）
     var signIdentity: String { devCert?.active == true ? "devcert" : "xcode" }
 
     /// 游戏库右上角按钮对应的那台（多台时取第一台：按钮点下去装的是现在连着的那台，作业里按它自己的记录再判一遍）

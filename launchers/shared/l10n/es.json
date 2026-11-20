@@ -1206,7 +1206,28 @@
   "console.button.exportShellIpa": "Exportar S2Arm.ipa",
   "console.button.pushS2arm": "Enviar la selección al iPhone ({0})",
   "console.button.exportS2arm": "Exportar la selección como .s2arm ({0})",
-  "console.external.note": "El S2Arm de este teléfono se instaló con otra herramienta, como AltStore o SideStore: los juegos que envíes los firma S2Arm en el teléfono con el certificado que importaste, sin iniciar sesión con un Apple ID en este ordenador. Para tener un S2Arm nuevo, exporta S2Arm.ipa y fírmalo e instálalo con esa misma herramienta."
+  "console.external.note": "El S2Arm de este teléfono se instaló con otra herramienta, como AltStore o SideStore: los juegos que envíes los firma S2Arm en el teléfono con el certificado que importaste, sin iniciar sesión con un Apple ID en este ordenador. Para tener un S2Arm nuevo, exporta S2Arm.ipa y fírmalo e instálalo con esa misma herramienta.",
+  "install.login.title": "Firmar con Apple ID",
+  "install.login.note": "Inicia sesión una vez con tu Apple ID (sirve uno gratuito); a partir de entonces se usa para firmar y renovar. La contraseña solo va a Apple y S2Arm no la guarda.",
+  "install.login.email": "Apple ID (correo)",
+  "install.login.password": "Contraseña",
+  "install.login.signIn": "Iniciar sesión",
+  "install.login.working": "Iniciando sesión…",
+  "install.login.code": "Escribe el código de 6 dígitos que aparece en tu dispositivo Apple",
+  "install.login.codeSms": "Escribe el código de 6 dígitos del SMS",
+  "install.login.confirm": "Confirmar",
+  "install.login.useSms": "Recibirlo por SMS",
+  "install.login.resend": "¿No te llegó? Enviar de nuevo",
+  "install.login.done": "Sesión iniciada: {0} (equipo {1})",
+  "install.login.none": "No hay ningún Apple ID con sesión iniciada",
+  "install.login.open": "Iniciar sesión con Apple ID",
+  "install.login.switch": "Usar otro Apple ID",
+  "install.login.cancel": "Cancelar",
+  "install.login.close": "Listo",
+  "install.action.pickDevice": "Elegir dispositivo",
+  "install.action.howTo": "Cómo hacerlo",
+  "install.help.ok": "Aceptar",
+  "install.login.expired": "Tu sesión del Apple ID ha caducado. Vuelve a iniciar sesión; tu correo ya está escrito."
  },
  "text": {
   "满屏补丁（按屏幕比例自动选）": "Parche de pantalla completa (elegido según la proporción de tu pantalla)",
@@ -4122,6 +4143,12 @@
   "「{0}」空间不够：这一步还要约 {1} GB，盘上只剩 {2} GB。": "No hay suficiente espacio en «{0}»: este paso necesita unos {1} GB y solo quedan {2} GB libres.",
   "在「{0}」上腾出至少 {3} GB 后重试；游戏原件、存档和上次成功的运行版本别删。": "Libera al menos {3} GB en «{0}» y vuelve a intentarlo. No borres los archivos del juego, las partidas guardadas ni la última versión que funcionó.",
   "已送到手机，但手机上的 S2Arm 还没有签名证书，这款还开不了：在手机上打开 S2Arm → 齿轮 →「签名证书」，SideStore 装的点「从 SideStore 获取」；AltStore 装的先在 AltStore 设置里导出签名证书，再点「导入 .p12…」。": "Enviado al teléfono, pero S2Arm en tu teléfono aún no tiene certificado de firma, así que este juego no puede iniciarse: en el teléfono, abre S2Arm → engranaje → «Certificado de firma». Si lo instalaste con SideStore, toca «Obtener de SideStore»; si lo instalaste con AltStore, exporta primero el certificado de firma en los ajustes de AltStore y luego toca «Importar .p12…».",
-  "已送到手机，但手机上的 S2Arm 导入的签名证书（团队 {0}）不是给这个 S2Arm 签名的那张（团队 {1}），这款还开不了：在手机上打开 S2Arm → 齿轮 →「签名证书」，SideStore 装的点「从 SideStore 获取」；AltStore 装的先在 AltStore 设置里重新导出签名证书，再点「导入 .p12…」。": "Enviado al teléfono, pero el certificado de firma importado en S2Arm (equipo {0}) no es el que firmó este S2Arm (equipo {1}), así que este juego no puede iniciarse: en el teléfono, abre S2Arm → engranaje → «Certificado de firma». Si lo instalaste con SideStore, toca «Obtener de SideStore»; si lo instalaste con AltStore, vuelve a exportar el certificado de firma en los ajustes de AltStore y luego toca «Importar .p12…»."
+  "已送到手机，但手机上的 S2Arm 导入的签名证书（团队 {0}）不是给这个 S2Arm 签名的那张（团队 {1}），这款还开不了：在手机上打开 S2Arm → 齿轮 →「签名证书」，SideStore 装的点「从 SideStore 获取」；AltStore 装的先在 AltStore 设置里重新导出签名证书，再点「导入 .p12…」。": "Enviado al teléfono, pero el certificado de firma importado en S2Arm (equipo {0}) no es el que firmó este S2Arm (equipo {1}), así que este juego no puede iniciarse: en el teléfono, abre S2Arm → engranaje → «Certificado de firma». Si lo instalaste con SideStore, toca «Obtener de SideStore»; si lo instalaste con AltStore, vuelve a exportar el certificado de firma en los ajustes de AltStore y luego toca «Importar .p12…».",
+  "还没用 Apple ID 登录：点「登录 Apple ID」（装机清单和失败页上都有，也可以在设置 →「签名身份」下面点），在弹出的「用 Apple ID 签名」里填邮箱和密码（你的苹果设备上会弹出验证码），再点一次「推到 iPhone」。密码只用于这次向 Apple 登录，S2Arm 不保存。": "No has iniciado sesión con un Apple ID. Haz clic en Iniciar sesión con Apple ID (en la lista de instalación y en la página de error, o en Ajustes › Identidad de firma), escribe tu correo y contraseña en Firmar con Apple ID (aparecerá un código en tu dispositivo Apple) y vuelve a hacer clic en Enviar al iPhone. La contraseña solo se usa para iniciar sesión en Apple esta vez; S2Arm no la guarda.",
+  "这个 Apple ID 绑了不止一个受信任手机号，S2Arm 选不了发到哪一个：重新登录，改用苹果设备上弹出的验证码。": "Este Apple ID tiene más de un número de teléfono de confianza y S2Arm no puede elegir a cuál enviar el mensaje. Vuelve a iniciar sesión y usa el código que aparece en tu dispositivo Apple.",
+  "Apple TV / 独立 App 方案用的 Xcode 团队": "Equipo de Xcode para Apple TV / esquemas de app independiente",
+  "验证码是 6 位数字。": "El código tiene 6 dígitos.",
+  "登录作业还没开始。": "El inicio de sesión aún no ha empezado.",
+  "验证码没能交给登录作业：S2Arm 的数据目录写不进去，检查磁盘空间和权限后再试。": "No se pudo pasar el código al inicio de sesión: no se puede escribir en la carpeta de datos de S2Arm. Comprueba el espacio en disco y los permisos e inténtalo de nuevo."
  }
 }

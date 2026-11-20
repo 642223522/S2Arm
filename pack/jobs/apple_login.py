@@ -5,8 +5,12 @@
 作业 appleLogin：请求 {account}；密码由适配层起作业进程时放环境变量 S2A_APPLE_PASSWORD，main.run_request 一启动就从环境里摘掉（同证书密码），
   不进请求文件、不传给任何子进程的环境与参数、不写日志——只写进 plumesign 的标准输入（同版 v2.7.2 apps/plumesign/src/commands/account.rs login：
   密码、两步验证码都是 stdin read_line，不要求终端）。
-  两步验证：plumesign 提示输入验证码时发 progress 事件 stageKey = appleLogin.needCode（带 account）；界面经适配层写 <私有目录>/login/<作业号>.code
+  两步验证：plumesign 提示输入验证码时发 progress 事件 stageKey = appleLogin.needCode（带 account、canSms、sms）；界面经适配层写 <私有目录>/login/<作业号>.code
   （只放 6 位数字），作业读到立刻删、写进 plumesign 的标准输入；最多等 CODE_WAIT 秒。「没收到？再发一次」= 取消这次作业、重起一次。
+  短信：苹果设备方式且账号有受信任手机号时，plumesign 的提示是「Enter the code sent to your device, or type 'sms' to receive it by text message」
+  （同版 account.rs tfa_closure）→ canSms = True；界面「改用短信接收」往同一个文件写 sms，作业转给 plumesign，它改发短信、再提示
+  「Enter the code sent via SMS」→ 再发一次 needCode（sms = True）。受信任手机号不止一个时 plumesign 要弹 dialoguer 选号菜单，
+  管道里没有终端，它以「IO error: not a terminal」退出（rc 1）：报 two_factor_wrong + 定句「多个手机号选不了」，叫玩家重新登录改用设备上的验证码。
   结果 {account, team, teamName}；失败码：apple_id_wrong（账号或密码不对）/ two_factor_wrong（验证码不对或过期）/
   signing_server_unreachable、apple_server_unreachable（连不上）/ 其余 job_failed + plumesign 原句。
 作业 appleAccount：当前登录的账号 → {account, team, teamName}；没登录 → {account: None}。
@@ -19,6 +23,11 @@ from core import Failure
 PASSWORD_ENV = "S2A_APPLE_PASSWORD"
 CODE_WAIT = 600            # 等玩家填验证码的上限（秒）
 NEED_CODE = re.compile(r"enter (?:the code sent|2fa code)", re.I)   # 同版 account.rs tfa_closure 的三种提示
+CAN_SMS = re.compile(r"type 'sms'", re.I)          # 设备方式、账号有受信任手机号：可改发短信
+VIA_SMS = re.compile(r"code sent via sms", re.I)   # 已是短信方式
+SMS = "sms"
+NO_TERMINAL = re.compile(r"not a terminal", re.I)  # 多个受信任手机号：dialoguer 选号菜单要终端（Select::interact → NotConnected）
+SAY_SMS_PICK = "这个 Apple ID 绑了不止一个受信任手机号，S2Arm 选不了发到哪一个：重新登录，改用苹果设备上弹出的验证码。"
 LOGIN_OK = "Successfully logged in"
 SAY_SIGN_IN = "登录 Apple ID"
 SAY_CODE = "等你填验证码"
@@ -28,8 +37,8 @@ def _code_file(c):
     return Path(c.private) / "login" / (c.task + ".code")
 
 
-def _wait_code(c, proc):
-    """等界面写验证码文件 → 6 位数字（读到即删）；作业被取消 / plumesign 先退了 / 超时 → None"""
+def _wait_code(c, proc, allow_sms=False):
+    """等界面写验证码文件 → 6 位数字，或 allow_sms 时的 sms（改发短信；读到即删）；作业被取消 / plumesign 先退了 / 超时 → None"""
     f = _code_file(c)
     end = time.monotonic() + CODE_WAIT
     while time.monotonic() < end and not c.cancelled and proc.poll() is None:
@@ -40,6 +49,8 @@ def _wait_code(c, proc):
                 f.unlink(missing_ok=True)
             if re.fullmatch(r"\d{6}", text):
                 return text
+            if allow_sms and text.lower() == SMS:
+                return SMS
         time.sleep(0.3)
     return None
 
@@ -77,11 +88,14 @@ def login(c):
                             env=W.impactor.plume_env(), text=True, encoding="utf-8", errors="replace")
     lines = []
     asked = threading.Event()
+    prompt = [""]   # 最近一次验证码提示原文（判能不能改短信、是不是短信方式）
+    sms_sent = False
 
     def pump():
         for ln in proc.stdout:
             lines.append(ln)
             if NEED_CODE.search(ln):
+                prompt[0] = ln
                 asked.set()
     reader = threading.Thread(target=pump, daemon=True)
     reader.start()
@@ -91,11 +105,13 @@ def login(c):
         while proc.poll() is None and not c.cancelled:
             if asked.wait(0.3):
                 asked.clear()
+                can_sms = bool(CAN_SMS.search(prompt[0]))
                 c.begin(SAY_CODE, 1, 1, key="appleLogin.needCode")
-                c.emit("progress", account=account)
-                code = _wait_code(c, proc)
+                c.emit("progress", account=account, canSms=can_sms, sms=bool(VIA_SMS.search(prompt[0])))
+                code = _wait_code(c, proc, allow_sms=can_sms)
                 if code is None:
                     break
+                sms_sent = sms_sent or code == SMS
                 c.begin(SAY_SIGN_IN, 1, 1, key="appleLogin")
                 proc.stdin.write(code + "\n")
                 proc.stdin.flush()
@@ -121,6 +137,8 @@ def login(c):
     c.check()   # 取消（再发一次 / 关掉登录框）：照作业取消收尾
     if proc.returncode == 0 and LOGIN_OK in text:
         return _account_result(c, W)
+    if sms_sent and NO_TERMINAL.search(text):   # 改短信时要选号：管道里选不了（见文件头）
+        raise Failure(SAY_SMS_PICK, code="two_factor_wrong", internal=text.strip().splitlines()[-1][-300:] if text.strip() else "")
     code = _classify(text)
     tail = [ln.strip() for ln in text.splitlines() if ln.strip() and "DEBUG" not in ln][-1:] or [""]
     if code == "job_failed":
