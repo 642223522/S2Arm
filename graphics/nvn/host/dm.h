@@ -67,10 +67,12 @@ int dm_shader_fout_fresh(const char *key16, uint32_t umask, uint32_t smask);   /
 //   _snap = 提交线程上把控制段 + 代码区整份拷下给后台用（*code / *control 指进返回的那块，调用方 free；NULL = 认不出）
 int dm_shader_se(const uint8_t key[8], uint64_t code, const void *control, char *path, size_t n);
 int dm_shader_vpad(const uint8_t key[8], uint64_t code, const void *control, uint32_t mask, char *path, size_t n);   // 顶点补齐变体（dsh_miss.inc）
-int dm_shader_vpad_cached(const uint8_t key[8], int st, uint32_t mask, char *path, size_t n);   // 顶点（st 0）/ 网格（st 5）着色器控制段过期时，用本机同链源码或包里的客体输入出补齐变体（dsh_miss.inc）
+int dm_shader_vpad_cached(const uint8_t key[8], int st, uint32_t mask, char *path, size_t n);   // 顶点（st 0）/ 网格（st 5）着色器控制段过期时，用本机同链源码或 SetShaders / Bind 时的源快照出补齐变体（dsh_miss.inc）
 int dm_shader_base_cached(const uint8_t key[8], int st, char *path, size_t n);   // #770 任务 / 网格着色器本机基础源码（dsh_miss.inc）
-int dm_shader_se_cached(const uint8_t key[8], int st, char *path, size_t n);   // 片元（st 1）/ 计算（st 2）控制段过期时，用本机同链源码或包里的客体输入出采样器模拟变体（dsh_miss.inc）
-int mtl_guest_input(const uint8_t key[8], int st, uint8_t **buf, uint32_t *nctl, uint32_t *ncode);   // 包里这支的客体输入（nvn_mtl.m，库容器种类 56）：0 取到（调用方 free）、1 没有、-1 段坏了
+void dm_shader_mesh_hold(uint64_t code, const void *control);   // SetShaders 时保存 NVN2 mesh 输入，按当时键索引
+void dm_shader_mesh_hold_key(const uint8_t key[8], uint64_t code, const void *control);   // Bind 时按已算出的最终键保存
+void dm_shader_vs_hold_key(const uint8_t key[8], uint64_t code, const void *control);   // SetShaders 时按键保存 Switch 1 顶点 / 片元 / 计算着色器输入（补齐变体、采样器模拟变体用）
+int dm_shader_se_cached(const uint8_t key[8], int st, char *path, size_t n);   // 片元（st 1）/ 计算（st 2）控制段过期时，用本机同链源码或 SetShaders 时的源快照出采样器模拟变体（dsh_miss.inc）
 int dm_shader_se_fresh(const char *key16);
 void *dm_shader_snap(uint64_t code, const void *control, uint64_t *code_out, const void **control_out);
 int dm_shader_retrans(const uint8_t key[8], uint64_t code, const void *control);   // 出包库计算着色器按本机翻译器重出源码 <键>_b.metal（dsh_miss.inc，v0.4.1 重译抢跑）：成功 0、做不了 1

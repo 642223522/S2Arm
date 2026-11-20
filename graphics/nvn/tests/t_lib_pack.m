@@ -36,7 +36,6 @@ static int g_red;
 static int g_hr_rc = -1; static uint64_t g_hr_lo, g_hr_hi;
 #define LP_HI_RANGE(lo, hi) (*(lo) = g_hr_lo, *(hi) = g_hr_hi, g_hr_rc)
 #include "../lib_pack.inc"
-#include <zlib.h>   // 客体输入用例：块用 zlib 库压（读端用 Foundation 解，两种实现对拍）
 static int fails, checks;
 #define CHECK(c, ...) do { checks++; if (!(c)) { fails++; printf("✗ " __VA_ARGS__); printf("\n"); } else { printf("✓ " __VA_ARGS__); printf("\n"); } } while (0)
 static NSData *rd(const char *p) { NSData *d = [NSData dataWithContentsOfFile:@(p)]; if (!d) { printf("读不到 %s\n", p); exit(2); } return d; }
@@ -55,47 +54,6 @@ static void write_pack(const char *dir, const char *chain, NSArray<NSData *> *se
     for (int k = 0; k < 2; k++) { uint64_t sz = sh[k].length + (k == 1 && ssize_bad >= 0 ? 7 : 0), zz = 0; [ix appendBytes:&sz length:8]; [ix appendBytes:&zz length:8]; }
     for (int i = 0; i < n; i++) { uint16_t z16 = 0; [ix appendBytes:&r[i].key length:8]; [ix appendBytes:&r[i].kind length:1]; [ix appendBytes:&r[i].shard length:1]; [ix appendBytes:&z16 length:2]; [ix appendBytes:&r[i].len length:4]; [ix appendBytes:&r[i].off length:8]; }
     [ix writeToFile:[NSString stringWithFormat:@"%s/lib.idx", dir] atomically:YES];
-}
-// 客体输入（种类 56，lp_guest_get）：块按格式手造（期望值 = 写进去的字节），用 zlib 库的 compress2 压（读端用 Foundation 解 + 自己核 Adler-32，两边不同实现）。
-//   块 0（分片 0）：阶段 0，键 0x10（控制段 300 字节 + 代码 1000 字节）、0x20（40 + 7）；块 1（分片 1）：阶段 1，键 0x30（0x880 + 64）；
-//   键 0x40 的记录指向块 0 的拷贝但 Adler-32 改坏；键 0x50 的记录指向块 1（块里没有 0x50）。期望：三键取回逐字节相等、阶段不符与没有的键返回 1 不报红、两处坏段返回 -1 各报一次红
-static NSData *guest_seg(uint8_t st, int n, const uint64_t *keys, NSData *const *ctl, NSData *const *code, int bad_adler) {
-    NSMutableData *raw = [NSMutableData data]; uint32_t nn = (uint32_t)n; uint8_t h4[4] = {st, 1, 0, 0};
-    [raw appendBytes:&nn length:4]; [raw appendBytes:h4 length:4];
-    uint32_t at = 8 + 24 * (uint32_t)n;
-    for (int i = 0; i < n; i++) { uint32_t c = (uint32_t)ctl[i].length, d = (uint32_t)code[i].length, z = 0;
-        [raw appendBytes:&keys[i] length:8]; [raw appendBytes:&at length:4]; [raw appendBytes:&c length:4]; [raw appendBytes:&d length:4]; [raw appendBytes:&z length:4]; at += c + d; }
-    for (int i = 0; i < n; i++) { [raw appendData:ctl[i]]; [raw appendData:code[i]]; }
-    uLongf zl = compressBound(raw.length); NSMutableData *seg = [NSMutableData dataWithLength:8 + zl];
-    if (compress2((Bytef *)seg.mutableBytes + 8, &zl, raw.bytes, raw.length, 6) != Z_OK) { printf("compress2 失败\n"); exit(2); }
-    seg.length = 8 + zl; uint32_t rl = (uint32_t)raw.length; memcpy(seg.mutableBytes, &rl, 4);
-    if (bad_adler) ((uint8_t *)seg.mutableBytes)[seg.length - 1] ^= 0x5a;
-    return seg;
-}
-static NSData *fill(size_t n, uint8_t seed) { NSMutableData *d = [NSMutableData dataWithLength:n]; uint8_t *b = d.mutableBytes; for (size_t i = 0; i < n; i++) b[i] = (uint8_t)(seed + i * 7); return d; }
-static void guest_cases(void) {
-    char dir[] = "/tmp/t_lib_guest.XXXXXX"; if (!mkdtemp(dir)) exit(2);
-    NSData *c10 = fill(300, 1), *d10 = fill(1000, 2), *c20 = fill(40, 3), *d20 = fill(7, 4), *c30 = fill(0x880, 5), *d30 = fill(64, 6);
-    uint64_t k0[2] = {0x10, 0x20}, k1[1] = {0x30};
-    NSData *b0 = guest_seg(0, 2, k0, (NSData *[]){c10, c20}, (NSData *[]){d10, d20}, 0), *b1 = guest_seg(1, 1, k1, (NSData *[]){c30}, (NSData *[]){d30}, 0), *bb = guest_seg(0, 2, k0, (NSData *[]){c10, c20}, (NSData *[]){d10, d20}, 1);
-    uint64_t keys[5] = {0x10, 0x20, 0x30, 0x40, 0x50}; uint8_t kinds[5] = {56, 56, 56, 56, 56}, shards[5] = {0, 0, 1, 0, 1};
-    write_pack(dir, "abcdef012345", @[b0, b0, b1, bb, b1], shards, keys, kinds, 5, -1);   // 同一个 NSData 同分片 = 共用一段（同块的键指向同一段）
-    lp_pack p; CHECK(lp_open(&p, dir, "abcdef012345") == 1 && p.n == 5, "客体输入：容器打开、5 条种类 56 记录");
-    int red0 = g_red; uint8_t *buf; uint32_t nc, nk;
-    int r = lp_guest_get(&p, 0x10, 0, &buf, &nc, &nk);
-    CHECK(r == 0 && nc == 300 && nk == 1000 && !memcmp(buf, c10.bytes, 300) && !memcmp(buf + 300, d10.bytes, 1000), "客体输入：键 0x10（块 0 第 1 条）控制段 300 + 代码 1000 字节逐字节相等（rc %d、%u + %u）", r, nc, nk); free(buf);
-    r = lp_guest_get(&p, 0x20, 0, &buf, &nc, &nk);
-    CHECK(r == 0 && nc == 40 && nk == 7 && !memcmp(buf, c20.bytes, 40) && !memcmp(buf + 40, d20.bytes, 7), "客体输入：键 0x20（同块第 2 条）40 + 7 字节逐字节相等（rc %d）", r); free(buf);
-    r = lp_guest_get(&p, 0x30, 1, &buf, &nc, &nk);
-    CHECK(r == 0 && nc == 0x880 && nk == 64 && !memcmp(buf, c30.bytes, 0x880) && !memcmp(buf + 0x880, d30.bytes, 64), "客体输入：键 0x30（分片 1 的另一块、阶段 1）0x880 + 64 字节逐字节相等（rc %d）", r); free(buf);
-    CHECK(lp_guest_get(&p, 0x10, 1, &buf, &nc, &nk) == 1 && !buf && g_red == red0, "客体输入：键 0x10 按阶段 1 要（块是阶段 0）：返回 1、不给数据、不报红");
-    CHECK(lp_guest_get(&p, 0x11, 0, &buf, &nc, &nk) == 1 && !buf && g_red == red0, "客体输入：没有的键 0x11：返回 1、不报红");
-    CHECK(lp_guest_get(&p, 0x40, 0, &buf, &nc, &nk) == -1 && !buf && g_red == red0 + 1, "客体输入：键 0x40 的段 Adler-32 坏：返回 -1、报红一次");
-    CHECK(lp_guest_get(&p, 0x50, 1, &buf, &nc, &nk) == -1 && !buf && g_red == red0 + 2, "客体输入：键 0x50 的记录指向不含它的块：返回 -1、报红一次");
-    char empty[] = "/tmp/t_lib_guest_e.XXXXXX"; if (!mkdtemp(empty)) exit(2);
-    uint64_t kq[1] = {0x10}; uint8_t kdq[1] = {0}, shq[1] = {0};
-    write_pack(empty, "abcdef012345", @[c10], shq, kq, kdq, 1, -1);   // 旧包：只有库段、没有种类 56
-    lp_pack q; CHECK(lp_open(&q, empty, "abcdef012345") == 1 && lp_guest_get(&q, 0x10, 0, &buf, &nc, &nk) == 1 && g_red == red0 + 2, "客体输入：旧包（没有种类 56）返回 1、不报红");
 }
 int main(int argc, char **argv) { @autoreleasepool {
     if (argc < 3) { printf("用法：t_lib_pack <a.metallib> <b.metallib>\n"); return 2; }
@@ -236,7 +194,6 @@ int main(int argc, char **argv) { @autoreleasepool {
         CHECK(lp_pick(&m, &none, "00000000000000aa_b", 1) == &m && lp_pick(&m, NULL, "00000000000000aa_bf", 2) == &m, "覆盖层没开：一律主容器");
         lp_pack bad; CHECK(lp_open(&bad, dov, "000000000000") == -1, "覆盖层链版本不符：判格式错（宿主不开它，只用主容器）");
     }
-    guest_cases();
     printf("%s t_lib_pack：%d 项，不通 %d\n", fails ? "✗" : "✓", checks, fails);
     return fails ? 1 : 0;
 } }

@@ -71,63 +71,6 @@ static dispatch_data_t lp_get(lp_pack *p, const char *name, unsigned kind) {
 //   这里按段记活着的库（弱引用：库放掉就不再记，库的生命周期照旧由持有它的着色器决定），同段的键拿同一个库；段里有没有 render_target_array_index 随段记，
 //   不必每个键扫一遍整段。layer 可为 NULL。取不到返回 nil 并给 err（没有这一段：ENOENT「not in the library container」；映射失败 lp_get 已报红）
 #import <Metal/Metal.h>
-// 客体输入（种类 56；段与块的格式见 graphics/tools/direct/dsh/batch/LibPack.cs GuestBlocks）：按键取出这支着色器出包时交给翻译器的控制段 + 代码区。
-//   用处：库里的着色器在本机没翻过，游戏又已回收控制段时，设备侧现做补齐 / 采样模拟变体、宿主自跑任务阶段要先翻一份基础源码（graphics/nvn/host/dsh_miss.inc）。
-//   读法：这一段 pread 进来（压缩后几十 KB）、整块解压（Foundation 的 NSDataCompressionAlgorithmZlib 是裸 deflate：跳过 2 字节 zlib 头，尾部 Adler-32 自己核）、取一条、块放掉；
-//   用 Foundation 而不用 Compression 框架 / zlib 库：直连层静态库（libnvn.a）的各个链接方（宿主、App、十来个单测）都已链 Foundation，不给它们加链接库；
-//   一个键一局至多取一两次（变体做好就落兜底目录），不缓存块。st：要的阶段（dsh_stage 编号：0 顶点 1 片元 2 计算 4 任务 5 网格）。
-//   → 0 取到：*buf 是 malloc 的一块（控制段 *nctl 字节在前、代码区 *ncode 字节紧随），调用方 free；
-//     1 没有（容器里没有这个键的种类 56：旧包、翻译失败的键、不带的阶段；或块里记的阶段不是 st）：不报红，由调用方报；-1 段坏了（报红）
-__attribute__((unused)) static uint32_t lp_adler32(const uint8_t *p, size_t n) {
-    uint32_t a = 1, b = 0;
-    while (n) { size_t m = n < 5552 ? n : 5552; n -= m; while (m--) { a += *p++; b += a; } a %= 65521; b %= 65521; }
-    return b << 16 | a;
-}
-__attribute__((unused)) static int lp_guest_get(const lp_pack *p, uint64_t key, int st, uint8_t **buf, uint32_t *nctl, uint32_t *ncode) {
-    *buf = NULL; *nctl = *ncode = 0;
-    const lp_rec *r = p && p->idx ? lp_find(p, key, LP_K_GUEST) : NULL; if (!r) return 1;
-    enum { HEAD = 8, ZHEAD = 2, ZTAIL = 4, RAW_MAX = 64u << 20 };
-    const char *why = NULL; uint8_t *seg = NULL, *raw = NULL; uint32_t rawlen = 0; int rc = -1;
-    char path[1100]; snprintf(path, sizeof path, "%s/lib.%03u.pak", p->dir, r->shard);
-    int fd = -1;
-    if (r->shard >= p->nshard || r->off + r->len > p->ssize[2 * r->shard]) why = "points past the end of its shard";
-    else if (r->len < HEAD + ZHEAD + ZTAIL) why = "is shorter than its header";
-    else if (!(seg = malloc(r->len))) why = "cannot be read (out of memory)";
-    else if ((fd = open(path, O_RDONLY)) < 0 || pread(fd, seg, r->len, (off_t)r->off) != (ssize_t)r->len) why = "cannot be read from its shard";
-    if (fd >= 0) close(fd);
-    if (!why) {
-        memcpy(&rawlen, seg, 4); uint8_t cmf = seg[HEAD], flg = seg[HEAD + 1];
-        if (rawlen < 8 || rawlen > RAW_MAX) why = "states an implausible inflated length";
-        else if ((cmf & 0x0f) != 8 || ((unsigned)cmf << 8 | flg) % 31 || (flg & 0x20)) why = "is not a zlib stream";
-        else @autoreleasepool {
-            NSData *z = [NSData dataWithBytesNoCopy:seg + HEAD + ZHEAD length:r->len - HEAD - ZHEAD - ZTAIL freeWhenDone:NO];
-            NSData *u = [z decompressedDataUsingAlgorithm:NSDataCompressionAlgorithmZlib error:nil];
-            if (!u || u.length != rawlen) why = "does not inflate to its stated length";
-            else if (!(raw = malloc(rawlen))) why = "cannot be inflated (out of memory)";
-            else memcpy(raw, u.bytes, rawlen);
-        }
-        if (!why) { const uint8_t *t = seg + r->len - ZTAIL; uint32_t want = (uint32_t)t[0] << 24 | (uint32_t)t[1] << 16 | (uint32_t)t[2] << 8 | t[3];
-               if (lp_adler32(raw, rawlen) != want) why = "fails its Adler-32 check"; }
-    }
-    if (!why) {
-        uint32_t n; memcpy(&n, raw, 4);
-        if (!n || n > 16 || raw[5] != 1 || HEAD + 24ull * n > rawlen) why = "has a malformed block header";
-        else {
-            const uint8_t *e = NULL;
-            for (uint32_t i = 0; i < n; i++) { uint64_t k; memcpy(&k, raw + HEAD + 24 * i, 8); if (k == key) { e = raw + HEAD + 24 * i; break; } }
-            uint32_t at = 0, c = 0, d = 0; if (e) { memcpy(&at, e + 8, 4); memcpy(&c, e + 12, 4); memcpy(&d, e + 16, 4); }
-            if (!e) why = "points at a block that does not hold this key";
-            else if (at < HEAD + 24 * n || (uint64_t)at + c + d > rawlen) why = "has an entry running past its block";
-            else if (raw[4] != st) rc = 1;   // 块里是别的阶段：按没有（调用方报红）
-            else if (!(*buf = malloc((size_t)c + d + 1))) why = "cannot be copied out (out of memory)";
-            else { memcpy(*buf, raw + at, (size_t)c + d); *nctl = c; *ncode = d; rc = 0; }
-        }
-    }
-    if (why) LP_LOG("【红】 direct library container: the guest input (kind %u) of %016llx in %s at %#llx (%u bytes) %s", (unsigned)LP_K_GUEST, (unsigned long long)key, path, (unsigned long long)r->off, r->len, why);
-    free(seg); free(raw);
-    return rc;
-}
-
 #include <os/lock.h>
 static os_unfair_lock g_lp_lib_mu = OS_UNFAIR_LOCK_INIT;
 static NSMapTable<NSString *, id<MTLLibrary>> *g_lp_libs;    // "<容器>/<分片>/<偏移>" → 活着的库

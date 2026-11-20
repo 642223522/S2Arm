@@ -7594,13 +7594,6 @@ static lp_pack *lp_pack_get(void) {
         g_libpack_ok = r; lp_over_open(); });
     return g_libpack_ok == 1 ? &g_libpack : NULL;
 }
-// 包里这支着色器的客体输入（容器种类 56，lib_pack.inc lp_guest_get）：宿主 dsh_miss.inc 给库里的着色器现做补齐 / 采样模拟变体、自跑任务阶段时翻基础源码用。
-//   key = 8 字节键（按字节顺序即 16 位十六进制键名），st = dsh_stage 编号。→ 0 取到（*buf 控制段在前、代码区紧随，调用方 free）；1 包里没有（没有容器 = 逐键旧格式也算）；-1 段坏了（已报红）
-int mtl_guest_input(const uint8_t key[8], int st, uint8_t **buf, uint32_t *nctl, uint32_t *ncode) {
-    uint64_t k = 0; for (int i = 0; i < 8; i++) k = k << 8 | key[i];
-    *buf = NULL; *nctl = *ncode = 0;
-    lp_pack *p = lp_pack_get(); return p ? lp_guest_get(p, k, st, buf, nctl, ncode) : 1;
-}
 // 多程序合集（runtime/include/s2a_programs.h）：游戏 ExecuteProgram(n) 切到同包另一支程序走进程内重启，这支程序的着色器库在 <游戏数据>/programs/<n>/shaders/direct。
 //   宿主（host_adapt.m s2a_direct_program_switch）先把 DM_MSL_DIR / DM_NVN_SHMAP 改到那里再调这里：映射表、c1_full、cb_extent 重读，库容器按新目录重开，预热按新表的清单再起。
 //   只在会话之间调（客体线程都已收回、预热 / 预载已停，nvn_session.inc）。已建好的着色器对象按内容键缓存，两支程序同键 = 同一份翻译，不清。
@@ -9929,9 +9922,9 @@ static id<MTLFunction> se_build(NvShader *sh, const uint8_t md[8], uint64_t code
     if (!fb || !*fb) { snprintf(why, n, "DM_MSL_FALLBACK is not set"); return nil; }
     if (!dm_shader_se_fresh(sh->key)) {
         char path[1200]; int rc;
-        // 游戏已收回控制段：本机同链源码，或包里的客体输入（库容器种类 56，dm_shader_se_cached；同顶点补齐 vp_build）
+        // 游戏已收回控制段：本机同链源码，或 SetShaders 时的源快照（dm_shader_se_cached；同顶点补齐 vp_build）
         if (!code) { rc = dm_shader_se_cached(md, sh->stage == 5 ? 2 : 1, path, sizeof path);
-            if (rc == 1) { snprintf(why, n, "the game no longer holds its control section, and neither the package (guest input, kind 56) nor this device has a translation of it"); return nil; } }
+            if (rc == 1) { snprintf(why, n, "the game no longer holds its control section, and no snapshot or translation of it is on this device"); return nil; } }
         else rc = dm_shader_se(md, code, ctl, path, sizeof path);
         if (rc) { snprintf(why, n, "%s", rc == 3 ? "main0 samples through no sampler member the variant rewrites" : "the device could not make it"); return nil; }
     }
@@ -10069,9 +10062,9 @@ static id<MTLFunction> vp_fn(NvShader *vs, uint32_t miss) {   // the padded vari
 // Make the variant and load it: S2A.Dsh writes it from the guest code / control (code 0: none to make it from). → the shader's entry point in it, nil with why
 static id<MTLFunction> vp_build(NvShader *vs, const uint8_t md[8], uint64_t code, const void *ctl, uint32_t mask, char *why, size_t n) {
     char path[1200]; int rc;
-    if (!code) {   // the game reused its control section: this device's translation, or the package's guest input (container kind 56, dm_shader_vpad_cached)
+    if (!code) {   // the game reused its control section: this device's translation, or the SetShaders / Bind snapshot (dsh_src_hold)
         rc = dm_shader_vpad_cached(md, vs->mesh_kind == 2 ? 5 : 0, mask, path, sizeof path);
-        if (rc == 1) { snprintf(why, n, "the game no longer holds its control section, and neither the package (guest input, kind 56) nor this device has a translation of it"); return nil; }
+        if (rc == 1) { snprintf(why, n, "the game no longer holds its control section, and no snapshot or translation of it is on this device"); return nil; }
     }
     else rc = dm_shader_vpad(md, code, ctl, mask, path, sizeof path);
     if (rc) { snprintf(why, n, "%s", rc == 3 ? "its translation already writes those outputs (or has no main0_out to add them to)" : "the device could not make it"); return nil; }
@@ -10100,7 +10093,7 @@ static id<MTLFunction> vp_warm(NvShader *vs, uint32_t mask) {
     if (vs->vp_st == SE_READY && (vs->vp_mask & mask) == mask) { id<MTLFunction> f = vs->vp_main; pthread_mutex_unlock(&g_vp_mu); return f; }
     if (vs->vp_st != SE_NONE) { pthread_mutex_unlock(&g_vp_mu); return nil; }   // being made by the draw's vp_ask, failed, or a narrower variant is ready: leave it to the draw
     // only a variant an earlier run already wrote (<key>_vp<mask>.metal; dm_shader_vpad_cached still checks it is this chain's and not older than its source): the prewarm
-    //   does not translate, and with no translation on disk the cached path would translate from the package's guest input here, on the prewarm thread
+    //   does not translate, and with no translation on disk the cached path would report the missing snapshot that only the draw can supply
     const char *fb = getenv("DM_MSL_FALLBACK"); char vp[1200];
     if (!fb || !*fb || snprintf(vp, sizeof vp, "%s/%.16s_vp%x.metal", fb, vs->key, mask) >= (int)sizeof vp || access(vp, R_OK)) { pthread_mutex_unlock(&g_vp_mu); return nil; }
     vs->vp_st = SE_BUSY; pthread_mutex_unlock(&g_vp_mu);

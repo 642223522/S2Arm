@@ -22,20 +22,18 @@ NOW = dict(hostAbi=2, dmshChain="chainNOW")
 
 class UpdateHints(unittest.TestCase):
     setUp = tj.JobsTests.setUp; tearDown = tj.JobsTests.tearDown
-    A, B, C, D, E, F = "0100000000010000", "0100000000020000", "0100000000030000", "0100000000040000", "0100000000050000", "0100000000060000"
+    A, B, C, D, E = "0100000000010000", "0100000000020000", "0100000000030000", "0100000000040000", "0100000000050000"
 
     def fixture(self):
-        ok = dict(rewriterId="RIDNOW", hostAbi=2, dmshChain="chainNOW", libGen=host_update.LIB_GEN)
+        ok = dict(rewriterId="RIDNOW", hostAbi=2, dmshChain="chainNOW")
         ios_fixture(self.c, self.A, compat=dict(ok, rewriterId="RIDOLD"))     # 改写器更新
         ios_fixture(self.c, self.B, compat=dict(ok, hostAbi=1))               # 约定号变了
         ios_fixture(self.c, self.C, compat=dict(ok, dmshChain="chainOLD"))    # 着色器链更新
         ios_fixture(self.c, self.D, compat=ok)                                # 全对上：不标
         # E 没打过 iPhone 包（没有程序兼容记录）：不标
-        if getattr(self, "with_old_lib", False):
-            ios_fixture(self.c, self.F, compat={k: v for k, v in ok.items() if k != "libGen"})   # 旧包：库没有客体输入（缺 libGen）
         for g in (self.A, self.B, self.C, self.D):   # 每款放一个游戏大文件：比对不许读它
             (layout.image_ios(self.c, g) / ".pack/game.img").write_bytes(b"\0" * 4096)
-        ids = [self.A, self.B, self.C, self.D, self.E] + ([self.F] if getattr(self, "with_old_lib", False) else [])
+        ids = [self.A, self.B, self.C, self.D, self.E]
         self.c.catalog = lambda: {"games": [{"id": g, "name": g} for g in ids]}
 
     def hints(self, on=True):
@@ -72,12 +70,6 @@ class UpdateHints(unittest.TestCase):
                 patch.object(host_update, "engine_compat", lambda c: NOW):
             r = host_update.update_hints(self.c)
         self.assertEqual(r["games"], [dict(gameId=self.B, reasons=["hostAbi"]), dict(gameId=self.C, reasons=["shader"])])
-
-    def test_old_lib_generation_is_a_reason(self):
-        # 直连库内容代数（host_update.LIB_GEN）：记录里没有 libGen 的旧包（0.5.x 出的，库不带客体输入）→ 原因 libGen；带了当前代数的不标
-        self.with_old_lib = True; self.fixture()
-        self.assertEqual(self.hints()["games"][-1], dict(gameId=self.F, reasons=["libGen"]))
-        self.assertNotIn(self.D, [g["gameId"] for g in self.hints()["games"]])
 
 
 if __name__ == "__main__":

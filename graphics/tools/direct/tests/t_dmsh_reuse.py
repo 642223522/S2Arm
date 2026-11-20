@@ -18,7 +18,6 @@
 #   ⑧ 换模式：⑥ 两份齐的目录上原地只出 iOS → 旧 Mac 库（按键与批库）删光
 #   ⑨ 出包形态（--publish ios + --export-mac）：iOS 目录只有 lib.idx + lib.NNN.pak + inputs.tsv、两侧输出目录没有按键文件；iOS 那份库字节（⑦ 导出的）原样在分片里；
 #      iOS 输出根 keys.tsv = 三键、ps_inputs.tsv 在；--export-mac 目录有三键 Mac 三样（考卷 / 全量对拍用）
-#   ⑨′ 客体输入（种类 56）：三键同块、块内每条 = 包记录切出的控制段 + 代码区
 #   ⑩ 只出 Mac（--no-ios --publish mac）：退出 0；输出打出 lib.idx 与分片、没有按键文件；「只出 Mac：Mac 三样都齐」「发布 mac 库：反射全部 -sdk macosx」；Metal 汇总只有 mac
 #   ⑪ 两张表（c1_full.tsv / cb_extent.tsv，C1Cb 接入中）：配置档目录里两张表都在、首行「# chain b-<链号> inputs <摘要>」（内容逐字节由别的对拍保证）
 #   ⑫ 出包形态不导出（发布前放掉 Mac 侧源码、两张表后台遍每支一批）：容器 / keys / ps_inputs / 两张表与 ⑨ 逐字节相同
@@ -194,25 +193,6 @@ check(rc == 0 and 'lib.idx' in packs and len(packs) >= 2 and not perkey(macp) + 
       f'⑨ 发布 iOS：退出 {rc}，容器 {packs}，按键文件 {len(perkey(macp) + perkey(iosp))} 个（期望 0），iOS 库 {len(iosbytes)} 份字节原样在分片里')
 check(keys == ALL and os.path.exists(os.path.join(top, 'ps_inputs.tsv')) and all(names(exp, e) == ALL for e in ('metal', 'metallib', 'json')),
       f'⑨ keys.tsv 三键 {keys == ALL}、ps_inputs.tsv 在、--export-mac 目录 Mac 三样各 3 键')
-# ⑨′ 客体输入（种类 56，Build.GuestBuild → LibPack.GuestBlocks）：三支计算着色器（阶段 2）同在一块、三条记录指向同一段；解出的块头 3 条 / 阶段 2 / 版本 1，
-#   每条控制段 + 代码区 = 包记录按格式切出的那份（+0x28 控制段长、+0x2c 代码区长、代码从 +0x38 起、控制段随后；不调被测实现）；日志报「3 keys in 1 blocks」
-import zlib
-gi = {}
-if 'lib.idx' in packs:
-    ix = open(os.path.join(iosp, 'lib.idx'), 'rb').read(); n_, ns_ = struct.unpack_from('<II', ix, 12)
-    for i in range(n_):
-        k, kd, sh, _, ln, off = struct.unpack_from('<QBBHIQ', ix, 48 + 16 * ns_ + 24 * i)
-        if kd == 56: gi[f'{k:016x}'] = (sh, off, ln)
-ok_gi = set(gi) == ALL and len(set(gi.values())) == 1
-if ok_gi:
-    sh, off, ln = next(iter(gi.values())); sg = open(os.path.join(iosp, f'lib.{sh:03d}.pak'), 'rb').read()[off:off + ln]; raw = zlib.decompress(sg[8:])
-    cnt, bst, ver = struct.unpack_from('<IBB', raw, 0); ents = {f'{e[0]:016x}': e[1:4] for e in (struct.unpack_from('<QIII', raw, 8 + 24 * i) for i in range(cnt))}
-    recs = open(os.path.join(PKG, 'cs_t.bin'), 'rb').read().split(b'BTCDBTCD')[1:]
-    def parts(r): r = b'BTCDBTCD' + r; nc, nd = struct.unpack_from('<II', r, 0x28); return r[0x38 + nd:0x38 + nd + nc], r[0x38:0x38 + nd]
-    want = {K1: parts(recs[0]), K2: parts(recs[1]), K3: parts(recs[2])}
-    ok_gi = struct.unpack_from('<I', sg, 0)[0] == len(raw) and (cnt, bst, ver) == (3, 2, 1) and set(ents) == ALL and all(
-        raw[a:a + c] == want[k][0] and raw[a + c:a + c + d] == want[k][1] for k, (a, c, d) in ents.items())
-check(ok_gi and 'guest inputs (kind 56' in o and '3 keys in 1 blocks' in o, f'⑨′ 客体输入：三键种类 56 同指一段、块头 3 条 / 阶段 2 / 版本 1、每条 = 包记录切出的控制段 + 代码区（记录 {len(gi)} 条）')
 # ⑫ 出包形态不导出（v0.2.4 出包空间：两张表收尾挪到发布前、ps_inputs 写完即放掉 Mac 侧源码那份；两张表后台遍按字节切批，S2A_C1CB_CHUNK_MB=0 每支一批）：
 #   产物与 ⑨（导出、源码留到最后、缺省切批）逐字节相同——容器分片 + lib.idx、keys.tsv、ps_inputs.tsv、两张表（首行带印章时间，比第二行起）；日志有「临时数据：」用量行
 def body(d, n): b = open(os.path.join(d, n), 'rb').read(); return b.split(b'\n', 1)[1] if d == P else b

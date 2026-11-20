@@ -141,9 +141,9 @@ test: $(OUT)/tests/t_nvn_m3
 	# 存储缓冲大小表（nvn_refl.h nvn_sbsz_fill）：几何辅助缓冲按本笔临时区段长进表（11-06 鬼灭 #37 脸空白 / 手缺失）
 	clang $(PFX) -std=gnu11 -O1 -Wall -o $(OUT)/tests/t_sbsz tests/t_sbsz.c
 	timeout 30 $(OUT)/tests/t_sbsz
-	# 直连库打包容器的读法（lib_pack.inc）：两个小 metallib 现编，测试按格式手造容器；客体输入（种类 56）用 zlib 库压块、读端用 Foundation 解
+	# 直连库打包容器的读法（lib_pack.inc）：两个小 metallib 现编，测试按格式手造容器
 	xcrun -sdk macosx metal tests/t_lib_pack_a.metal -o $(OUT)/tests/t_lib_pack_a.metallib && xcrun -sdk macosx metal tests/t_lib_pack_b.metal -o $(OUT)/tests/t_lib_pack_b.metallib
-	clang $(PFX) -std=gnu11 -O1 -g -fobjc-arc -mmacosx-version-min=$(MACOSX_DEPLOYMENT_TARGET) -Wall -o $(OUT)/tests/t_lib_pack tests/t_lib_pack.m -framework Metal -framework Foundation -lz
+	clang $(PFX) -std=gnu11 -O1 -g -fobjc-arc -mmacosx-version-min=$(MACOSX_DEPLOYMENT_TARGET) -Wall -o $(OUT)/tests/t_lib_pack tests/t_lib_pack.m -framework Metal -framework Foundation
 	timeout 60 $(OUT)/tests/t_lib_pack $(OUT)/tests/t_lib_pack_a.metallib $(OUT)/tests/t_lib_pack_b.metallib
 	# 曲面细分固定核单测（tests/t_tess_triangle.m）：三角patch已知因子 → 已知点数/索引数
 	clang $(PFX) -std=gnu11 -O1 -g -fobjc-arc -mmacosx-version-min=$(MACOSX_DEPLOYMENT_TARGET) -Wall $(INC) -o $(OUT)/tests/t_tess_triangle tests/t_tess_triangle.m -framework Metal -framework Foundation

@@ -20,8 +20,8 @@ extension S2ArmLauncherModel {
     /// 「更新这款」：就是这一款的推到 iPhone（通用壳下 install = push_game，只推这一款、按本版重新准备）
     func updateSuggested(_ game: GameSummary) { install(game) }
 
-    /// 原因 → 共享文案键（libGen = 库缺新代数内容，用着色器那条文案）（launchers/shared/experience.v1.json launcher.items，六种语言）；不认识的原因不显示
+    /// 原因 → 共享文案键（launchers/shared/experience.v1.json launcher.items，六种语言）；不认识的原因不显示
     static func updateReasonKey(_ reason: String) -> String? {
-        ["rewriter": "update.hint.reason.rewriter", "hostAbi": "update.hint.reason.hostAbi", "shader": "update.hint.reason.shader", "libGen": "update.hint.reason.shader"][reason]
+        ["rewriter": "update.hint.reason.rewriter", "hostAbi": "update.hint.reason.hostAbi", "shader": "update.hint.reason.shader"][reason]
     }
 }
