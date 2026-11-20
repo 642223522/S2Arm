@@ -49,7 +49,7 @@ import os, sys
 O = sys.argv[2]; C = os.environ['FAKE_CALLS']; e = os.environ.get
 def rec(suf, v): open(C + suf, 'a').write(v + '\n')
 rec('.gal', e('DSX_LIB', '未设')); rec('', '1'); rec('.tgt', e('S2A_DIRECT_TARGETS', '未设')); rec('.pub', e('S2A_DIRECT_PUBLISH', '未设')); rec('.j', e('J') or '未设')   # 记下本次出几个平台的库、几路并行
-if e('FAKE_FAIL', '0') == '1': print('[直连库] 🔴 出库失败 rc=3'); sys.exit(1)
+if e('FAKE_FAIL', '0') == '1': print('[直连库] 🔴 出库失败 rc=3：dsh_batch.py 退出码 3：' + '前面的输出 ' * 40 + 'SIG_DIRECT_7f3a'); print('[直连库] 收尾'); sys.exit(1)   # 原文在 200 字之后、后面还有一行进度
 if e('FAKE_GAP', '0') == '1': print('[直连库] 🟡 直连缺口：NVN 着色器 翻不了 1 支（0123456789abcdef：桩原因），现有出库不支持部分出库，本款这次走通用'); sys.exit(3)
 if e('FAKE_NOPROF', '0') == '1': print('[直连库] 🟡 0100 没有直连配置档，不出直连库'); sys.exit(0)
 if e('FAKE_VKHDR', '0') == '1':
@@ -97,7 +97,7 @@ ck "再次拒绝，不把准备候选当成功缓存（出库 $n1 → $(calls) �
 o=$(S 2>&1); k3=$(cat "$(cur)/.stage_direct"); n2=$(calls); echo ksh2 > $(cur)/.stage_shaders; o=$(S 2>&1); r=$?
 ck "着色器阶段键变 → 直连库不重出（10-25：直连库键不含着色器阶段，两段并行；出库 $n2 → $(calls) 次）" '[ $r = 0 ] && [ "$(calls)" = "$n2" ] && [ "$(cat "$(cur)/.stage_direct")" = "$k3" ]'
 rin 'echo r4 > romfs/i'; b=$(cur); o=$(FAKE_FAIL=1 S 2>&1); r=$?
-ck "出库失败 → 退出 1、现行不动、【红】、日志副本在 .failed/" '[ $r = 1 ] && [ "$(cur)" = "$b" ] && [[ "$o" == *【红】* ]] && [ -f $T/roots/.failed/acnh_direct_lib.log ] && [ -z "$(ls -d $T/roots/*.tmp 2>/dev/null)" ]'
+ck "出库失败 → 退出 1、现行不动、【红】带直连库 🔴 行全文（原文特征串 SIG_DIRECT_7f3a）、日志副本在 .failed/" '[ $r = 1 ] && [ "$(cur)" = "$b" ] && [[ "$o" == *【红】*SIG_DIRECT_7f3a* ]] && [ -f $T/roots/.failed/acnh_direct_lib.log ] && [ -z "$(ls -d $T/roots/*.tmp 2>/dev/null)" ]'
 rm -f $T/roots/.failed/acnh_direct_lib.log; o=$(FAKE_GAP=1 S 2>&1); r=$?
 ck "出库内容缺口 → 退出 3（rc=${r}）、【黄】带缺口原文、现行不动、日志副本在 .failed/" '[ $r = 3 ] && [ "$(cur)" = "$b" ] && [[ "$o" == *"【黄】acnh 直连缺口：NVN 着色器 翻不了 1 支（0123456789abcdef：桩原因）"* ]] && [[ "$o" != *【红】* ]] && [ -f $T/roots/.failed/acnh_direct_lib.log ] && [ -z "$(ls -d $T/roots/*.tmp 2>/dev/null)" ]'
 # 包键：各阶段键原样拼 + 直连库键；尾部带进包资源输入键与系统数据戳（只有直连，11-07：不再带通用着色器阶段键，环境里留着旧的 S2A_DUAL 也不改包键）

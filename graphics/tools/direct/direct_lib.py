@@ -56,6 +56,42 @@ def die(msg=None, code=1):
     raise Exit(code)
 
 
+RED_LINES, RED_BYTES = 20, 1600   # 报红行里带的子命令原文：至多 20 行、按字节封顶（UTF-8 按字节截、不截半个字）
+
+
+def tail_of(text, n=RED_LINES, cap=RED_BYTES):
+    """子命令输出末尾的非空行（至多 n 行）连成一行（行间「 ⏎ 」），超过 cap 字节只留最后 cap 字节"""
+    ls = [l.rstrip() for l in (text or '').replace('\r\n', '\n').replace('\r', '\n').split('\n') if l.strip()][-n:]
+    t = ' ⏎ '.join(ls)
+    b = t.encode('utf-8')
+    return t if len(b) <= cap else '…' + b[-cap:].decode('utf-8', errors='ignore')
+
+
+def cmd_name(cmd):
+    """命令的名字：跳过解释器与无进展看门狗（nostall.py … -- <命令>），取脚本名（.py）或可执行文件名"""
+    cmd = [str(c) for c in cmd]
+    if any(os.path.basename(c) == 'nostall.py' for c in cmd) and '--' in cmd: cmd = cmd[cmd.index('--') + 1:]
+    if len(cmd) > 2 and cmd[1] == '-c': return os.path.basename(cmd[0]) + ' -c'
+    for c in cmd[1:] if len(cmd) > 1 and os.path.basename(cmd[0]).lower().startswith('python') else cmd[:1]:
+        if c.endswith('.py') or c == cmd[0]: return os.path.basename(c)
+    return os.path.basename(cmd[0]) if cmd else '?'
+
+
+def red(msg, cmd=None, rc=None, text='', log=None):
+    """报红退出（退 1）：一行带上失败的子命令名、退出码和它的输出末尾原文（玩家诊断只收这一行：原文在路径前，脱敏把路径一直抹到行尾）"""
+    line = '🔴 ' + msg
+    if cmd is not None: line += f'：{cmd_name(cmd)} 退出码 {rc}'
+    t = tail_of(text)
+    if t: line += '：' + t
+    if log: line += f'（{log}）'
+    die(line)
+
+
+def log_text(p):
+    try: return read_text(p)
+    except OSError as e: return f'（日志读不了：{e}）'
+
+
 def read_text(p):
     with open(p, 'rb') as f: return f.read().decode('utf-8', errors='replace')
 
@@ -71,14 +107,6 @@ def lines_of(p):
 def last_line(p):   # = $(tail -1 <文件>)
     ls = lines_of(p)
     return ls[-1] if ls else ''
-
-
-def tail(p, n, err=False):   # = tail -n <文件>（打到标准输出）
-    ls = lines_of(p)
-    if ls is None: return
-    out = sys.stderr if err else sys.stdout
-    for l in ls[-n:]: print(l, file=out)
-    out.flush()
 
 
 def wc_l(p):   # = wc -l < <文件>：数换行符
@@ -143,14 +171,24 @@ def run(cmd, log=None, mode='w', env=None, cwd=None, capture=False, err=None):
                 return subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, env=env, cwd=cwd).returncode
         if capture:
             ef = open(err, 'wb') if err else None
-            try: p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=ef, env=env, cwd=cwd)
+            try: p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=ef or subprocess.PIPE, env=env, cwd=cwd)
             finally:
                 if ef: ef.close()
+            run.err = '' if ef else p.stderr.decode('utf-8', errors='replace')   # 标准错误照转出去，另留一份给报红行带原文（red）
+            if run.err: sys.stderr.write(run.err); sys.stderr.flush()
             return p.returncode, p.stdout.decode('utf-8', errors='replace').replace('\r\n', '\n').rstrip('\n')   # Windows 原生程序按 CRLF 写标准输出（同 Git Bash 的 $(…) 去掉 CR）
         return subprocess.run(cmd, env=env, cwd=cwd).returncode
     except OSError as e:   # 起不来（同 shell 的 126 / 127）
         print(f'{cmd[0]}: {e}', file=sys.stderr, flush=True)
+        run.err = f'{cmd[0]}: {e}'
+        if log is not None:
+            try:
+                with open(log, 'ab') as f: f.write((run.err + '\n').encode('utf-8'))
+            except OSError: pass
         return (127, '') if capture else 127
+
+
+run.err = ''
 
 
 def which(name):
@@ -263,11 +301,11 @@ TMP_SYSTEM = ('/var/folders/*', '/private/var/folders/*', '/tmp', '/tmp/*', '/pr
 def build_env(py, tr, w, v):
     """出库前核工具 / 链号（translator/dmsh_chain.py --build-env）→ (链号, 程序号, 输入摘要)。stdout 只收这三样；编译器版本提示走 stderr（照转到本进程 stderr），
     合流会把 note: 误读成链号。工具退非 0 → 报红；链号与开头取的不一 → 报红"""
-    rc, be = run([py, 'dmsh_chain.py', '--build-env', w + '/profile_rows.txt'], capture=True, err=w + '/build_env.log', cwd=tr)
+    cmd = [py, 'dmsh_chain.py', '--build-env', w + '/profile_rows.txt']
+    rc, be = run(cmd, capture=True, err=w + '/build_env.log', cwd=tr)
     if rc != 0:
-        say('🔴 出库前核工具 / 链号失败'); sys.stderr.write(read_text(w + '/build_env.log'))
-        for l in be.split('\n')[-3:]: print(l, file=sys.stderr)
-        sys.stderr.flush(); die()
+        sys.stderr.write(log_text(w + '/build_env.log')); sys.stderr.flush()
+        red('出库前核工具 / 链号失败', cmd, rc, log_text(w + '/build_env.log') + '\n' + be, w + '/build_env.log')
     sys.stderr.write(read_text(w + '/build_env.log')); sys.stderr.flush()
     f = (be.split('\n')[0] if be else '').split(None, 2)
     bv, bg, bi = (f + ['', '', ''])[:3]
@@ -345,8 +383,8 @@ class Lib:
             os.environ.update(PYTHONUTF8='1')   # Windows 的 Python 缺省按系统代码页（GBK）写标准输出，中文 / 🟢 写不出就抛错；日志一律 UTF-8，同 Mac
             # Windows 出包机（#1100 W6）：没有 Homebrew 的 spirv-cross，PATH 上没有就用仓库同一份源码（= 链锁版本）现编命令行、放进 PATH（translator/spvc_inproc.py cli）
             if not which('spirv-cross'):
-                rc, sc = run([PY, self.TR + '/spvc_inproc.py', 'cli'], capture=True)
-                if rc != 0 or not sc: die('🔴 Windows 上编不出 spirv-cross 命令行（translator/spvc_inproc.py cli）')
+                cmd = [PY, self.TR + '/spvc_inproc.py', 'cli']; rc, sc = run(cmd, capture=True)
+                if rc != 0 or not sc: red('Windows 上编不出 spirv-cross 命令行（translator/spvc_inproc.py cli）', cmd, rc, run.err + '\n' + sc)
                 os.environ['PATH'] = os.path.dirname(sc) + os.pathsep + os.environ.get('PATH', '')
         # 并行路数（10-25 维护者「多核要适配机器的核心数」）：J / S2A_CPU_BAKE = 本阶段分到的路数，都没给才用 S2A_JOBS / 本机核数；导出给下面每个工具
         self.J = os.environ.get('J') or os.environ.get('S2A_CPU_BAKE') or os.environ.get('S2A_JOBS') or str(os.cpu_count() or 1)
@@ -356,8 +394,8 @@ class Lib:
         self.TID = self.prog_id()
         if not self.TID: die('🔴 取不到程序号')
         # 出包分流的唯一判法（graphics/nvn/tools/gfx_api.py）
-        rc, API = run([PY, NX + '/tools/gfx_api.py', ROOT + '/exefs', ROOT + '/romfs'], capture=True)
-        if rc != 0: die(f'🔴 判图形接口失败（graphics/nvn/tools/gfx_api.py）：{API.split(chr(9), 1)[-1]}')
+        cmd = [PY, NX + '/tools/gfx_api.py', ROOT + '/exefs', ROOT + '/romfs']; rc, API = run(cmd, capture=True)
+        if rc != 0: red('判图形接口失败（graphics/nvn/tools/gfx_api.py）', cmd, rc, API.split(chr(9), 1)[-1] + '\n' + run.err)
         self.api = API.split('\t', 1)[0]
         tg = os.environ.get('S2A_DIRECT_TARGETS', '')
         if tg == 'android' and self.api in ('vulkan', 'gl'):
@@ -400,36 +438,36 @@ class Lib:
         KN = os.environ.get('S2A_RUN_KNOWLEDGE', '')
         if not KN:
             KN = C + '/knowledge'
-            if run([PY, R + '/graphics/tools/direct/run_knowledge.py', KN, TID], log=C + '/run_knowledge.log') != 0:
-                say(f'🔴 跑局知识快照出不来（{C}/run_knowledge.log）'); tail(C + '/run_knowledge.log', 3); die()
+            cmd = [PY, R + '/graphics/tools/direct/run_knowledge.py', KN, TID]; rc = run(cmd, log=C + '/run_knowledge.log')
+            if rc != 0: red('跑局知识快照出不来', cmd, rc, log_text(C + '/run_knowledge.log'), C + '/run_knowledge.log')
         try: nrt = sum(1 for n in os.listdir(KN + '/vk_spv') if not n.startswith('.') and n.endswith('.spv'))
         except OSError: nrt = 0
         if nrt: DIRS.append(KN + '/vk_spv')
         vlog = C + '/vk_shaders.log'
         if nospv and not nrt:
             # 出包不起局（11-05 维护者）：只出表头、没有库，keys.tsv 为空，全部交设备首遇现编（hle_vk.m → vk_rt.inc 后台编、编好持久化）
-            if run([PY, self.TR + '/vk_shaders.py', '--header-only', C + '/vkmac', '--ios', OUT], log=vlog) != 0:
-                say(f'🔴 Vulkan 表头没写出（{vlog}）'); tail(vlog, 3); die()
-            if not nonempty(OUT + '/vk/vk_shaders.tsv'): die(f'🔴 没出 {OUT}/vk/vk_shaders.tsv')
+            cmd = [PY, self.TR + '/vk_shaders.py', '--header-only', C + '/vkmac', '--ios', OUT]; rc = run(cmd, log=vlog)
+            if rc != 0: red('Vulkan 表头没写出', cmd, rc, log_text(vlog), vlog)
+            if not nonempty(OUT + '/vk/vk_shaders.tsv'): red(f'没出 {OUT}/vk/vk_shaders.tsv（vk_shaders.py 退 0）', text=log_text(vlog), log=vlog)
             open(OUT + '/keys.tsv', 'w').close()
             say(f'🟡 Vulkan 款 {TID}：RomFS / 追加内容里没有 SPIR-V（游戏运行时生成），跑局知识里也没有，出包不起局，只出表头、全部设备首遇现编（vk/vk_shaders.tsv），{secs() - s} 秒')
             raise Exit(0)
         if nrt: say(f'Vulkan 款 {TID}：跑局知识里有设备现编存下的 SPIR-V {nrt} 支，照 RomFS 一起翻进离线库')
-        vrc = self.nostall([C + '/vkmac', OUT], [PY, self.TR + '/vk_shaders.py', *DIRS, C + '/vkmac', '--ios', OUT], vlog)
+        cmd = [PY, self.TR + '/vk_shaders.py', *DIRS, C + '/vkmac', '--ios', OUT]; vrc = self.nostall([C + '/vkmac', OUT], cmd, vlog)
         if vrc != 0:
             if vrc == 1: gap(vlog, 'Vulkan 着色器')
-            say(f'🔴 Vulkan 着色器离线翻译失败 rc={vrc}（{vlog}）'); tail(vlog, 3); die()
+            red(f'Vulkan 着色器离线翻译失败 rc={vrc}', cmd, vrc, log_text(vlog), vlog)
         # 单支翻不了 / Metal 编不过的已剔掉（vk_shaders.py，v0.3.1），汇总行「Vulkan 汇总：成功 N、失败 M」：M > 0 记降级；N = 0 只出表头、全部设备首遇现编
         ok, bad = summary(vlog, 'Vulkan')
         if bad is not None and bad > 0:
             self.deg('vk_failed', bad, f'这款有 {bad} 个着色器没能提前编好，用到时会现场编译、可能卡一下，遇到请反馈', f'Vulkan 离线翻译剔掉的支（{vlog}）')
         if ok == 0:
-            if not nonempty(OUT + '/vk/vk_shaders.tsv'): die(f'🔴 没出 {OUT}/vk/vk_shaders.tsv')
+            if not nonempty(OUT + '/vk/vk_shaders.tsv'): red(f'没出 {OUT}/vk/vk_shaders.tsv（vk_shaders.py 退 0）', text=log_text(vlog), log=vlog)
             open(OUT + '/keys.tsv', 'w').close()
             say(f'🟡 Vulkan 款 {TID}：离线一支没编成（失败 {"" if bad is None else bad}），只出表头、全部设备首遇现编，{secs() - s} 秒'); raise Exit(0)
         # 两个目标各剔各的（审计 P1-176）：别的目标编成、这个目标一支不剩时只有表头没有库，照出、keys.tsv 空
         n = self.keys_from(OUT + '/vk/vk_shaders.tsv')
-        if n and not nonempty(OUT + '/vk/vk_shaders.metallib'): die(f'🔴 表里有 {n} 支却没出 {OUT}/vk/vk_shaders.metallib')
+        if n and not nonempty(OUT + '/vk/vk_shaders.metallib'): red(f'表里有 {n} 支却没出 {OUT}/vk/vk_shaders.metallib', text=log_text(vlog), log=vlog)
         say(f'Vulkan 款 {TID}：SPIR-V {n} 支 → vk/vk_shaders.metallib {du_h(OUT + "/vk/vk_shaders.metallib")}，{secs() - s} 秒（{last_line(vlog)[:120]}）')
         raise Exit(0)
 
@@ -450,23 +488,23 @@ class Lib:
         mark = f'{C}/gl.stage.{os.getpid()}'; open(mark, 'w').close(); self.cleanup.append(lambda: rmtree(mark))   # 同 Vulkan 分支：出库期间的占用标记
         INS = [ROOT + '/romfs', ROOT + '/exefs/main'] + self.aocs()
         glog = C + '/gl_shaders.log'
-        grc = self.nostall([C + '/glmac', OUT], [PY, self.TR + '/gl_shaders.py', *INS, C + '/glmac', '--ios', OUT], glog)
+        gcmd = [PY, self.TR + '/gl_shaders.py', *INS, C + '/glmac', '--ios', OUT]; grc = self.nostall([C + '/glmac', OUT], gcmd, glog)
         # gl_shaders.py 翻成的照写库、有翻不了的退 1，汇总行「GLSL 汇总：成功 N、失败 M」：N > 0 = 部分出库（照常出、末行黄）；成功 0 或别的退出码 = 判不清，报红
         ok, bad = summary(glog, 'GLSL'); miss = 0
         if grc == 0 or (grc == 1 and ok is not None and ok > 0): miss = bad if bad is not None and bad >= 0 else 0
-        else: say(f'🔴 GLSL 着色器离线翻译失败 rc={grc}（{glog}）'); tail(glog, 3); die()
+        else: red(f'GLSL 着色器离线翻译失败 rc={grc}', gcmd, grc, log_text(glog), glog)
         # 离线一支没有（GameMaker 等引擎运行时才拼 GLSL，#518）：照出，只有表头、没有库，keys.tsv 为空；宿主库里没有的源码首遇时现场翻译
         if miss > 0:
             self.deg('gl_failed', miss, f'这款有 {miss} 个着色器没能提前编好，用到时会现场编译、可能卡一下，遇到请反馈', f'GLSL 离线翻译译不过的支（{glog}）')
         if grc == 0 and ok == 0:   # 成功 0：离线一支没有（失败 0）或一支都没译成（失败 > 0，v0.3.1 起照出空表）
-            if not nonempty(OUT + '/gl/gl_shaders.tsv'): die(f'🔴 没出 {OUT}/gl/gl_shaders.tsv')
+            if not nonempty(OUT + '/gl/gl_shaders.tsv'): red(f'没出 {OUT}/gl/gl_shaders.tsv', text=log_text(glog), log=glog)
             open(OUT + '/keys.tsv', 'w').close()
             if miss > 0: say(f'🟡 OpenGL 款 {TID}：离线一支没编成（编译失败 {miss} 支），只出表头、全部运行时首遇现编（gl/gl_shaders.tsv），{secs() - s} 秒')
             else: say(f'🟡 OpenGL 款 {TID}：离线 0 支 GLSL（运行时拼源码的引擎；没有 main 的片段记跳过），只出表头、全部运行时首遇现编（gl/gl_shaders.tsv），{secs() - s} 秒（{last_line(glog)[:120]}）')
             raise Exit(0)
-        if not nonempty(OUT + '/gl/gl_shaders.tsv'): die(f'🔴 没出 {OUT}/gl/gl_shaders.tsv')
+        if not nonempty(OUT + '/gl/gl_shaders.tsv'): red(f'没出 {OUT}/gl/gl_shaders.tsv', text=log_text(glog), log=glog)
         n = self.keys_from(OUT + '/gl/gl_shaders.tsv')
-        if n and not nonempty(OUT + '/gl/gl_shaders.metallib'): die(f'🔴 表里有 {n} 支却没出 {OUT}/gl/gl_shaders.metallib')   # 同 Vulkan：这个目标一支不剩时只有表头
+        if n and not nonempty(OUT + '/gl/gl_shaders.metallib'): red(f'表里有 {n} 支却没出 {OUT}/gl/gl_shaders.metallib', text=log_text(glog), log=glog)   # 同 Vulkan：这个目标一支不剩时只有表头
         pre = '' if miss == 0 else f'🟡 直连缺口（部分出库）：GLSL 翻不了 {miss} 支（运行时走现编 / 兜底）；'
         say(f'{pre}OpenGL 款 {TID}：GLSL {n} 支 → gl/gl_shaders.metallib {du_h(OUT + "/gl/gl_shaders.metallib")}，{secs() - s} 秒（{last_line(glog)[:120]}）')
         raise Exit(0)
@@ -474,8 +512,7 @@ class Lib:
     def swap_out(self):
         """⑥ 换进位（苹果 / 安卓共用）：临时输出目录与正式输出目录原子互换，换下来的旧版本由退出时的清理删；日志留进 <缓存>/logs/"""
         try: swap(self.OS, self.OUT)
-        except (OSError, SwapError) as e:
-            print(e, file=sys.stderr, flush=True); die('🔴 换进位失败')
+        except (OSError, SwapError) as e: red('换进位失败', text=str(e))
         C, W = self.C, self.W
         try:
             rmtree(C + '/logs.new'); os.makedirs(C + '/logs.new')
@@ -487,9 +524,9 @@ class Lib:
 
     def nvn(self):
         R, NX, PY, ROOT, TID = self.R, self.NX, self.PY, self.ROOT, self.TID
-        rc, PROF = run([PY, NX + '/games/game.py', 'dir', TID], capture=True)
-        if rc != 0: die(f'🔴 {TID} 没有可用配置档（先运行 pack/stage_direct_profile.sh）')
-        if not os.path.isfile(PROF + '/game.tsv'): die(f'🔴 {TID} 配置档缺 game.tsv')
+        cmd = [PY, NX + '/games/game.py', 'dir', TID]; rc, PROF = run(cmd, capture=True)
+        if rc != 0: red(f'{TID} 没有可用配置档（先运行 pack/stage_direct_profile.sh）', cmd, rc, run.err + '\n' + PROF)
+        if not os.path.isfile(PROF + '/game.tsv'): red(f'{TID} 配置档缺 game.tsv（game.py dir 给的是「{PROF}」）', cmd, rc, run.err)
         tg = os.environ.get('S2A_DIRECT_TARGETS', '')
         VK = 0; CK = ''
         if tg == '': NOMAC, NOIOS = 0, 0
@@ -511,8 +548,8 @@ class Lib:
         try: os.makedirs(self.OUT, exist_ok=True)
         except OSError as e: die(f'🔴 建不了输出目录 {self.OUT}：{e}')
         self.OUT = OUT = fwd(os.path.abspath(self.OUT) if WIN else os.path.realpath(self.OUT))
-        rc, V = run([PY, '-c', 'import dmsh_chain; print(dmsh_chain.version())'], capture=True, cwd=self.TR)
-        if rc != 0: die('🔴 取不到链版本')
+        cmd = [PY, '-c', 'import dmsh_chain; print(dmsh_chain.version())']; rc, V = run(cmd, capture=True, cwd=self.TR)
+        if rc != 0: red('取不到链版本', cmd, rc, run.err + '\n' + V)
         pid = os.getpid()
         # 缓存只剩内容寻址仓 $C/store 与上次的日志 $C/logs/；旧布局（mac/ ios/ work/）第一次碰到整个删掉。改名挪开是瞬间的，真删放后台
         #   （旧布局一款几十万个小文件，同步删把出库卡住半小时）。上次被停在半路留下的 .old-* 同样后台删
@@ -531,7 +568,9 @@ class Lib:
             if done[0]: rmtree(W)
         self.cleanup.append(fin)
         # 输出目录里原有的东西（旧链版本的容器、表）克隆进临时输出目录；逐键产物不跨次保留。跳过同链号的旧容器 b-${V}：dsh_batch 要全量重打这份容器
-        if run([PY, R + '/tools/clonedir.py', OUT, OS, 'b-' + V]) != 0: die('🔴 建临时输出目录失败')
+        cmd = [PY, R + '/tools/clonedir.py', OUT, OS, 'b-' + V]; rc, o = run(cmd, capture=True)
+        if o: print(o, flush=True)
+        if rc != 0: red('建临时输出目录失败', cmd, rc, run.err + '\n' + o)
         P = f'{W}/profile/{TID}'
         os.makedirs(P); os.makedirs(W + '/pkg'); os.makedirs(MS)
         try:
@@ -541,8 +580,7 @@ class Lib:
                 if os.path.isdir(PROF + '/' + n): bad.append(n); continue
                 shutil.copy(PROF + '/' + n, P + '/')
             if bad: raise OSError(f'{"、".join(bad)} 是目录')
-        except OSError as e:
-            print(e, file=sys.stderr, flush=True); die('🔴 配置档复制失败')
+        except OSError as e: red('配置档复制失败', text=str(e))
         # L3 判定结果表（fps_l3_results.tsv，名单线产出）拷进配置档，随包带给宿主运行时（host_adapt.m fps_l3_override）
         if os.path.isfile(NX + '/games/fps_l3_results.tsv'): copy_soft(NX + '/games/fps_l3_results.tsv', P + '/fps_l3_results.tsv')
         # 零源跳过事实（graphics/nvn/games/zero_skip.tsv，按程序号逐款登记）写成副本 game.tsv 的 zero_skip 键，随包带给宿主（nvn_mtl.m zskip_facts_load）
@@ -576,12 +614,14 @@ class Lib:
             # 退 3 = 只有直连用的那几份抽不出（运行时现编的 GLSL 没抓到输出、认不出着色器容器……）：出运行时现编空直连库、照常换进输出目录、退 0
             #   （11-06 Windows 出包机疯狂兔子 / 马力欧高尔夫）。一个 Python 进程做完清目录、出空库、换进位、拷日志
             if xrc == 3:
-                if run([PY, R + '/graphics/tools/direct/runtime_only_lib.py', OS, V, TID, 'auto', W + '/direct_gap.txt', PROF + '/game.tsv', '--gap-from', W + '/extract.log',
-                        '--swap-to', OUT, '--logs-from', W, '--logs-to', C]) != 0:
-                    die('🔴 出运行时现编空直连库失败')
+                cmd = [PY, R + '/graphics/tools/direct/runtime_only_lib.py', OS, V, TID, 'auto', W + '/direct_gap.txt', PROF + '/game.tsv', '--gap-from', W + '/extract.log',
+                       '--swap-to', OUT, '--logs-from', W, '--logs-to', C]
+                rc, o = run(cmd, capture=True)
+                if o: print(o, flush=True)
+                if rc != 0: red('出运行时现编空直连库失败', cmd, rc, run.err + '\n' + o)
                 g = (lines_of(W + '/direct_gap.txt') or [''])[0].strip()
                 done[0] = True; say(f'🟡 {TID} 离线 0 支、运行时首遇现编（{g[:200]}）'); raise Exit(0)
-            if xrc != 0: die(f'🔴 抽取失败（{X}）')
+            if xrc != 0: red(f'抽取失败（{X}）', [self.PY, self.R + '/graphics/tools/direct/extract.py'], xrc, log_text(W + '/extract.log'), W + '/extract.log')
         # 翻译编译开工前复核盘（pack/jobs/space_rule.py，#265）：预估不够只打黄、照常开编（space_rule.py 恒退 0，不许堵门）；真写满时写盘报 ENOSPC，那才是物理停（disk_full）
         src = run([PY, R + '/pack/jobs/space_rule.py', 'direct-check', ROOT, C, OUT])
         if src != 0: say(f'🟡 直连库开工前的空间复核没跑成（pack/jobs/space_rule.py 退 {src}），照常开编；真写满时会按盘满停')
@@ -589,12 +629,10 @@ class Lib:
             rmtree(W + '/pkg')
             for n in ('pkg', 'split', 's2x'): copy_tree(X + '/' + n, W + '/' + n)
             for n in ('split.log', 's2x.log'): copy_file(X + '/' + n, W + '/' + n)
-        except OSError as e:
-            print(e, file=sys.stderr, flush=True); die(f'🔴 抽取结果克隆进工作目录失败（{X} → {W}）')
+        except OSError as e: red(f'抽取结果克隆进工作目录失败（{X} → {W}）', text=str(e))
         # 抽取的表写临时目录，不盖配置档：着色器表用抽取的；答案表 = 配置档 + 抽取里配置档没有的键；配对表 = 两边并集。配置档里有、本次抽不到的行只报 🟡 计数
         try: PROF_ONLY = merge_tables(W + '/split', P)
-        except Exception as e:
-            print(e, file=sys.stderr, flush=True); die('🔴 合表失败')
+        except Exception as e: red('合表失败', text=f'{type(e).__name__}: {e}')
         if PROF_ONLY: say(f'🟡 配置档里有、本次抽不到的着色器 {PROF_ONLY} 个（多为没解的追加内容，游戏没挂那份数据就用不到）')
         okv = dict(l.split('\t', 1) for l in lines_of(X + '/ok') or [] if '\t' in l)
         tx, ts = int(okv.get('s2a_extract', '0').split('\t')[0] or 0), int(okv.get('split', '0').split('\t')[0] or 0)
@@ -602,15 +640,15 @@ class Lib:
         s = secs()
         self.prog('合并两边抽取')
         # ③ 并集表放回配置档副本（dmsh_build 按配置档读表、按包目录读记录）
-        if run([PY, R + '/graphics/tools/direct/merge_extract.py', W + '/s2x', W + '/pkg', P + '/shader_map.tsv', W + '/merged'], log=W + '/merge.log') != 0:
-            say(f'🔴 合并抽取失败（{W}/merge.log）'); tail(W + '/merge.log', 3); die()
+        cmd = [PY, R + '/graphics/tools/direct/merge_extract.py', W + '/s2x', W + '/pkg', P + '/shader_map.tsv', W + '/merged']; rc = run(cmd, log=W + '/merge.log')
+        if rc != 0: red('合并抽取失败', cmd, rc, log_text(W + '/merge.log'), W + '/merge.log')
         copy_soft(W + '/merged/shader_map.tsv', P + '/shader_map.tsv')
         copy_soft(W + '/merged/shader_facts.tsv', P + '/shader_facts.tsv')   # 答案表：计算着色器补齐线程组 / 共享内存（merge_extract.py）
         # 真机转储的着色器（产物根 rt_shaders/：游戏文件里抽不到、真机首遇只能现编的，DM_NVN_SHDUMP 存的 <键>.ctl / .code）：并进合并后的包与表、补进并集键清单（11-05 时之笛）
         if glob.glob(glob.escape(ROOT) + '/rt_shaders/*.code'):
             n0 = sum(1 for l in lines_of(P + '/shader_map.tsv') or [] if l)
-            if run([PY, self.TR + '/rt_dump_merge.py', ROOT + '/rt_shaders', W + '/merged/pkg', P + '/shader_map.tsv', P + '/shader_facts.tsv'], log=W + '/rt_dump.log') != 0:
-                die(f'🔴 真机转储着色器并不进库（{last_line(W + "/rt_dump.log")}；{W}/rt_dump.log）')
+            cmd = [PY, self.TR + '/rt_dump_merge.py', ROOT + '/rt_shaders', W + '/merged/pkg', P + '/shader_map.tsv', P + '/shader_facts.tsv']; rc = run(cmd, log=W + '/rt_dump.log')
+            if rc != 0: red('真机转储着色器并不进库', cmd, rc, log_text(W + '/rt_dump.log'), W + '/rt_dump.log')
             add = [(l.split('\t')[3] if l.count('\t') >= 3 else ('' if '\t' in l else l)) for l in (lines_of(P + '/shader_map.tsv') or [])[n0:]]
             with open(W + '/merged/union_keys.tsv', 'a', encoding='utf-8', newline='\n') as f: f.write(''.join(k + '\n' for k in add))
             say(last_line(W + '/rt_dump.log'))
@@ -621,22 +659,22 @@ class Lib:
         KN = os.environ.get('S2A_RUN_KNOWLEDGE', '')
         if not KN:
             KN = W + '/knowledge'
-            if run([PY, R + '/graphics/tools/direct/run_knowledge.py', KN, TID], log=W + '/run_knowledge.log') != 0:
-                say(f'🔴 跑局知识快照出不来（{W}/run_knowledge.log）'); tail(W + '/run_knowledge.log', 3); die()
+            cmd = [PY, R + '/graphics/tools/direct/run_knowledge.py', KN, TID]; rc = run(cmd, log=W + '/run_knowledge.log')
+            if rc != 0: red('跑局知识快照出不来', cmd, rc, log_text(W + '/run_knowledge.log'), W + '/run_knowledge.log')
             say(last_line(W + '/run_knowledge.log'))
         for f in ('pairs', 'fout_want', 'se_want'):
             if not os.path.isfile(f'{KN}/{f}.tsv'): die(f'🔴 跑局知识快照缺 {f}.tsv（{KN}）')
         # 跑局里见到、出包没配上的「顶点 + 片元」对并进配对表，④ 的 vs_pad 给顶点着色器补上片元要读的输出（run_pairs.py）
-        if run([PY, R + '/graphics/tools/direct/run_pairs.py', P + '/shader_pairs.tsv', W + '/merged/union_keys.tsv', KN + '/pairs.tsv'], log=W + '/run_pairs.log') != 0:
-            say(f'🔴 跑局配对并不进配对表（{W}/run_pairs.log）'); tail(W + '/run_pairs.log', 2); die()
+        cmd = [PY, R + '/graphics/tools/direct/run_pairs.py', P + '/shader_pairs.tsv', W + '/merged/union_keys.tsv', KN + '/pairs.tsv']; rc = run(cmd, log=W + '/run_pairs.log')
+        if rc != 0: red('跑局配对并不进配对表', cmd, rc, log_text(W + '/run_pairs.log'), W + '/run_pairs.log')
         say(last_line(W + '/run_pairs.log'))
         # 片元输出类型变体请求表（fout_want.tsv）与采样模拟变体请求表（se_want.tsv）：只给 Metal 库用（_ft / _se），安卓（VK=1）不出
         if not VK:
             try: shutil.copy(KN + '/fout_want.tsv', P + '/fout_want.tsv')
-            except OSError: die(f'🔴 输出类型变体请求表拷不进配置档副本（{KN}/fout_want.tsv）')
+            except OSError as e: red(f'输出类型变体请求表拷不进配置档副本（{KN}/fout_want.tsv）', text=str(e))
             say(f'输出类型变体请求：{sum(1 for l in lines_of(P + "/fout_want.tsv") or [] if not l.startswith("#"))} 条（跑局知识快照）')
-            if run([PY, R + '/graphics/tools/direct/se_want.py', P + '/se_want.tsv', W + '/merged/union_keys.tsv', '--keys', KN + '/se_want.tsv'], log=W + '/se_want.log') != 0:
-                say(f'🔴 采样模拟变体请求表出不来（{W}/se_want.log）'); tail(W + '/se_want.log', 3); die()
+            cmd = [PY, R + '/graphics/tools/direct/se_want.py', P + '/se_want.tsv', W + '/merged/union_keys.tsv', '--keys', KN + '/se_want.tsv']; rc = run(cmd, log=W + '/se_want.log')
+            if rc != 0: red('采样模拟变体请求表出不来', cmd, rc, log_text(W + '/se_want.log'), W + '/se_want.log')
             say(last_line(W + '/se_want.log'))
         tm = secs() - s; s = secs()
         st = dict(V=V, P=P, MS=MS, PROF_ONLY=PROF_ONLY, AOCS=len(AOCS), ts=ts, tx=tx, tm=tm, s=s, T0=T0, NOMAC=NOMAC, NOIOS=NOIOS, PUB=PUB, KN=KN, btx=btx)
@@ -663,12 +701,12 @@ class Lib:
         V = st['V']
         self.prog('翻译成 Vulkan')
         L = f'{OS}/b-{V}-vk'; K = W + '/vk/keys'; rmtree(L); rmtree(K); os.makedirs(W + '/vk', exist_ok=True)
-        brc = self.nostall([W + '/vk', OS], [PY, R + '/graphics/tools/direct/vklib/dsh_vklib.py', 'build', '--pkg', W + '/merged/pkg', '--profile', P, '--out', K,
+        brc = self.nostall([W + '/vk', OS], vcmd := [PY, R + '/graphics/tools/direct/vklib/dsh_vklib.py', 'build', '--pkg', W + '/merged/pkg', '--profile', P, '--out', K,
                                              '--lib', L, '--chain', V, '--dsx', os.environ.get('DSX_LIB') or R + '/build/dsx/libdsx.dylib', '--work', W + '/vk/work'], W + '/build.log')
         if not (brc == 0 and os.path.isfile(K + '/vk_build.tsv') and nonempty(L + '/lib.idx')):
-            say(f'🔴 安卓 Vulkan 库出库失败 rc={brc}（{W}/build.log）'); tail(W + '/build.log', 5); die()
+            red(f'安卓 Vulkan 库出库失败 rc={brc}', vcmd, brc, log_text(W + '/build.log'), W + '/build.log')
         try: shutil.copy(K + '/vk_build.tsv', OS + '/vk_build.tsv')
-        except OSError: die('🔴 vk_build.tsv 拷不进输出目录')
+        except OSError as e: red('vk_build.tsv 拷不进输出目录', text=str(e))
         rows = [l.split('\t') for l in lines_of(K + '/vk_build.tsv') or []]
         f3 = lambda c, i: c[i] if len(c) > i else ''
         put(OS + '/keys.tsv', ''.join(k + '\n' for k in sorted(c[0] for c in rows if f3(c, 2) == 'ok')))
@@ -713,8 +751,8 @@ class Lib:
         # 出库链整条在 C# 一个进程里（graphics/tools/direct/dsh/batch/Build.cs）；链号、配置档输入摘要先由 dmsh_chain.py 核过工具再给。
         #   stdout 只收链号 / 程序号 / 输入摘要；编译器版本提示走 stderr，合流会把 note: 误读成链号
         BV, BG, BI = build_env(PY, self.TR, W, V)
-        rc, SPVC = run([PY, '-c', 'import spvc_inproc; print(spvc_inproc.lib_path())'], capture=True, cwd=self.TR)
-        if rc != 0: die('🔴 spirv-cross 进程内库编不出')
+        cmd = [PY, '-c', 'import spvc_inproc; print(spvc_inproc.lib_path())']; rc, SPVC = run(cmd, capture=True, cwd=self.TR)
+        if rc != 0: red('spirv-cross 进程内库编不出', cmd, rc, run.err + '\n' + SPVC)
         BA = ['--pkg', W + '/merged/pkg', '--profile', P, '--game', BG, '--chain', V, '--inputs', BI, '--profile-rows', W + '/profile_rows.txt', '--out', MS, '--iosout', OS, '--publish', st['PUB'],
               '--cas', C + '/store', '--dsx', os.environ.get('DSX_LIB') or R + '/build/dsx/libdsx.dylib', '--spvc', SPVC, '-j', self.J, '--lock', self.TR + '/dmsh_chain.lock']
         if st['NOMAC']: BA.append('--no-mac')
@@ -726,17 +764,18 @@ class Lib:
         if BTX: st['btx'].append(BTX)
         os.makedirs(BT, exist_ok=True)
         log = W + '/build.log'
-        brc = self.nostall([MS, OUT], [PY, self.TR + '/dsh_batch.py', 'build', *BA], log, env=dict(os.environ, TMPDIR=BT))
+        bcmd = [PY, self.TR + '/dsh_batch.py', 'build', *BA]; brc = self.nostall([MS, OUT], bcmd, log, env=dict(os.environ, TMPDIR=BT))
         DF = rc127_note(brc, log, [BT, C])
         if brc != 0:
             if brc == 1: gap(log, 'NVN 着色器')
             why = fail_why(log)
-            say(f'🔴 出库失败 rc={brc}{"：" + why if why else ""}{DF}（{log}）'); tail(log, 20 if DF else 5); die()
+            red(f'出库失败 rc={brc}{"：" + why if why else ""}{DF}', bcmd, brc, log_text(log), log)
         # 核产物出自本树的翻译器（11-06 时之笛第 49 版：DSH_BATCH_CMD 指到按旧树编的 dsh_batch.exe，41971 支全命中旧缓存、出库照报绿）：
         #   dsh_batch 把自己的翻译器指纹 xfp 与 --lock 文件摘要写进库印章 inputs.tsv，这里拿本树算的逐项比，不等 / 印章没这两行（旧程序）报红
         sys.stdout.flush()
-        p = subprocess.run([PY, 'dmsh_chain.py', '--check-stamp', f'{OS}/b-{V}'], cwd=self.TR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        if p.returncode != 0: die(f'🔴 直连库不是本树的翻译器出的：{p.stdout.decode("utf-8", "replace").replace(chr(13), "").rstrip(chr(10))}（DSH_BATCH_CMD={os.environ.get("DSH_BATCH_CMD") or "未设"}）')
+        cmd = [PY, 'dmsh_chain.py', '--check-stamp', f'{OS}/b-{V}']
+        p = subprocess.run(cmd, cwd=self.TR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        if p.returncode != 0: red(f'直连库不是本树的翻译器出的（DSH_BATCH_CMD={os.environ.get("DSH_BATCH_CMD") or "未设"}）', cmd, p.returncode, p.stdout.decode('utf-8', 'replace'))
         # 没出成的按类别计数（_b_build.json 的 st），末行黄行带上，普查按它归类；编不过的键清单（11-01 维护者）随 *.log 收进 $C/logs：出库成功就写（没有编不过的也写表头）
         GAPS = ''
         try:
@@ -748,7 +787,7 @@ class Lib:
         tb = secs() - st['s']
         self.prog('收表')
         # ⑤ 收表、出 keys.tsv（以实际出成的 iOS 库为准）
-        if not os.path.isdir(f'{OS}/b-{V}'): die(f'🔴 没出 {OS}/b-{V}')
+        if not os.path.isdir(f'{OS}/b-{V}'): red(f'没出 b-{V}（出库退 0 却没写库目录）', bcmd, brc, log_text(log), f'{OS}/b-{V}；{log}')
         self.collect()
         # 管线种子表（配置档没有时，direct_lib.json 记 pso_seed=gen；配置档维护过的记 profile、上面收表时原样带了）：经 pack/stage_direct.sh 出库（S2A_PSO_SEED_STAGE=1）不在这里生成，
         #   归轻阶段 pack/stage_direct_seed.sh；这里只不发布配置档那份只有表头的空表。单独调用（Windows 出包 pack/orch/oneclick_win.py、单测）照旧在这里按快照的 seen.tsv 生成
@@ -776,7 +815,7 @@ class Lib:
         for l in ('核验齐全', '发布 ', '打包：'):
             x = grep_last(log, r'\[直连库\] .*' + re.escape(l))
             if x: say(x[len('[直连库] '):] if x.startswith('[直连库] ') else x)
-        if not nonempty(f'{OS}/b-{V}/lib.idx'): die(f'🔴 整份出库没写出 {OS}/b-{V}/lib.idx（{log}）')
+        if not nonempty(f'{OS}/b-{V}/lib.idx'): red(f'整份出库没写出 b-{V}/lib.idx', bcmd, brc, log_text(log), log)
         # 只把打好的容器换进输出目录；逐键的 Mac / iOS 产物与工作目录是这次出库的临时品，日志留进 $C/logs/，其余退出时删
         self.swap_out()
         # S2A_DIRECT_KEEP=1：这次的工作目录与 Mac 那份逐键产物留到 $C/keep/{work,mac}（门禁考卷冻结 / 全量对拍读它们；平时不留）
@@ -900,9 +939,9 @@ def main(argv):
     except Exit as e:
         return e.code
     except Exception:
-        import traceback; traceback.print_exc()
-        say('🔴 直连库脚本异常（上面是异常栈）')
-        return 1
+        import traceback; tb = traceback.format_exc(); sys.stderr.write(tb)
+        try: red('直连库脚本异常', text=tb)
+        except Exit as e: return e.code
     finally:
         sys.stdout.flush()
         for f in reversed(lib.cleanup if lib else []):

@@ -131,7 +131,10 @@ fi
 if [ "$drc" != 0 ]; then
   mkdir -p "$S2A_ROOTS/.failed" && cp "$W/direct_lib.log" "$S2A_ROOTS/.failed/${G}_direct_lib.log"; root_abort "$G" "$TAG"
   [ "$drc" = 3 ] && { echo "【黄】$G 直连缺口：$(sed -n 's/.*直连缺口：//p' "$S2A_ROOTS/.failed/${G}_direct_lib.log" | tail -1)"; exit 3; }
-  echo "【红】$G 直连库出库失败（rc=${drc}，$(grep '直连库\]' "$S2A_ROOTS/.failed/${G}_direct_lib.log" | tail -1 | cut -c1-200)）"; exit 1
+  # 带上直连库那行 🔴 的全文（含失败子命令名、退出码与原文末尾；direct_lib.py red）：作业层错误摘要取这一行（原先截 200 字，原文常被截掉，#1730）。
+  #   按字节封顶 2000，iconv -c 去掉截断处的半个字
+  F=$S2A_ROOTS/.failed/${G}_direct_lib.log; WHY=$(grep -a '🔴' "$F" | tail -1); [ -n "$WHY" ] || WHY=$(grep -a '直连库\]' "$F" | tail -1)
+  echo "【红】$G 直连库出库失败（rc=${drc}，$(printf '%s' "$WHY" | head -c 2000 | iconv -c -f UTF-8 -t UTF-8)）"; exit 1
 fi
 # OpenGL 款离线 0 支（运行时拼 GLSL）：keys.tsv 为空、只有 gl/gl_shaders.tsv 表头，也算出了库（宿主首遇现编，direct_lib.py GL 段）；
 #   Vulkan 款 RomFS 没有 SPIR-V（运行时生成，11-05 出包不起局后）同理：keys.tsv 为空、只有 vk/vk_shaders.tsv 表头（direct_lib.py Vulkan 段 --header-only）

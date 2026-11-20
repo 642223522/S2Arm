@@ -640,6 +640,40 @@ def tool_reason(log):
     return "工具未提供错误详情，请保留本阶段日志。"
 
 
+CAUSE_BYTES = 2400   # 失败原文行按字节封顶（UTF-8 按字节截、不截半个字）
+
+
+def cause_line(log):
+    """这一步失败的原文：日志末尾最后一行红行；它是 refresh 的终止转述行（「【红】<款> 刷新停在 <阶段>…」）就取它前一行红行——
+    那是失败阶段自己的红行，带失败子命令的名字、退出码与输出原文（如直连库「…出库失败 rc=1，[直连库] 🔴 …：dsh_batch.py 退出码 1：<原文>」）。
+    没有红行 → None。#1725 / #1730 / #1744：判不出原因落 package_failed 时，错误摘要只剩「出包未完成。」，原文只在日志里"""
+    if not log:
+        return None
+    try:
+        with open(log, "rb") as stream:
+            stream.seek(0, 2)
+            stream.seek(max(0, stream.tell() - 16000))
+            lines = stream.read().decode("utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    red = [l.strip() for l in lines if l.strip() and not l.strip().startswith("[s2a] ") and any(mark in l for mark in _RED)]
+    if not red:
+        return None
+    stop = lambda l: "刷新停在" in l  # 非玩家句
+    if stop(red[-1]):
+        # 终止转述行之前、上一次终止行之后（同一轮刷新里）最后一行非终止的红行；没有就不另给（旧轮的红行不归给本轮）
+        prev = [l for l in red[:-1]]
+        cut = max((i for i, l in enumerate(prev) if stop(l)), default=-1)
+        mine = [l for l in prev[cut + 1:] if not stop(l)]
+        if not mine:
+            return None
+        line = mine[-1]
+    else:
+        line = red[-1]
+    b = line.encode("utf-8")
+    return line if len(b) <= CAUSE_BYTES else b[:CAUSE_BYTES].decode("utf-8", errors="ignore") + "…"
+
+
 def last_output_lines(log, limit=5):
     """日志末尾最有用的几行（红行优先，保持原顺序），每行截到 300 字；脱敏由调用方（Context.redact）做"""
     if not log:
@@ -689,6 +723,8 @@ def build_tool_failure(args, milestone, log):
         phase = "unpack"
     code, why = classify_failure(phase, log)
     said, advice = player_words(code, log)
+    cause = cause_line(log)   # 失败阶段自己的红行（带子命令原文）：终止转述行之外另记一行，错误摘要按「失败原文：」取（report.build）
+    more = "\n失败原文：" + cause if cause and cause != reason else ""  # 非玩家句
     # 上屏只放玩家话术；阶段 / rc / 构建号 / 红行原文进 internal → 诊断 detail（「复制错误摘要」带走）；机读事实进 facts（前端按字段显示）
-    return Failure(said, code=code, advice=advice, internal="Mac 准备失败（" + (phase or "未识别阶段") + "）：" + reason + "\n" + why,  # 非玩家句
+    return Failure(said, code=code, advice=advice, internal="Mac 准备失败（" + (phase or "未识别阶段") + "）：" + reason + more + "\n" + why,  # 非玩家句
                    facts=cause_facts(code, log))
