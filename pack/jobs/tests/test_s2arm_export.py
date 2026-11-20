@@ -137,6 +137,39 @@ class S2armExport(unittest.TestCase):
         r = self.signed_export(choice="appleId", once="none")
         self.assertEqual(r["signedWith"]["mode"], "none", "选了 Apple ID 这次也能不签")
 
+    def test_apple_id_not_signed_in_still_exports_unsigned(self):
+        # 11-19 维护者：导出不加拦截。Apple ID 方式读不到登录（Windows：Impactor 里没账号）→ 修前「没装上」；期望照样导出未签名的（同不签），
+        #   完成页 signedWith none，诊断一条黄字说导入后由手机签（码 apple_not_signed_in：下一步是去登录）
+        self.fixture()
+        self.c.r.update(gameId=self.A, mode="export")
+        def no_login(c, mode):
+            raise install.Failure("读不到 Impactor 里登录的 Apple ID", code="apple_not_signed_in")
+        with patch.object(program_pack, "build", lambda c, g, **k: self.pkg), \
+                patch.object(rewrite_refresh, "refresh_ios", lambda c, games, **k: []), patch.object(install, "export_signer", no_login):
+            r = install.export_s2arm(self.c, self.A)
+        _, data, _ = self.members(r["s2armPath"])
+        self.assertEqual((json.loads(data["s2arm.json"])["signer"], r["signedWith"]), (None, dict(mode="none", name="", team=None)))
+        self.assertEqual(data[f"program/{program_pack.image_name(self.A)}"], DYLIB, "程序库原样、没签")
+        warn = [d for d in self.c.job["diagnostics"] if d.get("code") == "apple_not_signed_in"]
+        self.assertEqual([d["severity"] for d in warn], ["warning"])
+        self.assertEqual(warn[0]["summary"], install.EXPORT_UNSIGNED_NO_ID, "没有交过身份的手机：如实说导入后签不了、下一步是什么")
+        layout.save_device(self.c, "PHONE1", dict(identity=dict(team="T1", key_fp="f", cert_sha1="s")))
+        self.c.job["diagnostics"].clear()
+        with patch.object(program_pack, "build", lambda c, g, **k: self.pkg), \
+                patch.object(rewrite_refresh, "refresh_ios", lambda c, games, **k: []), patch.object(install, "export_signer", no_login):
+            install.export_s2arm(self.c, self.A)
+        self.assertEqual([d["summary"] for d in self.c.job["diagnostics"] if d.get("code") == "apple_not_signed_in"], [install.EXPORT_UNSIGNED],
+                         "交过身份的手机：未签名，导入后由手机上的 S2Arm 签名")
+        # 别的签不成（证书缺件等）照旧报
+        def broken(c, mode):
+            raise install.Failure("证书缺件", code="devcert_missing")
+        self.c.r.update(sign="devCert")
+        with patch.object(program_pack, "build", lambda c, g, **k: self.pkg), \
+                patch.object(rewrite_refresh, "refresh_ios", lambda c, games, **k: []), patch.object(install, "export_signer", broken):
+            with self.assertRaises(install.Failure) as e:
+                install.export_s2arm(self.c, self.A)
+        self.assertEqual(e.exception.code, "devcert_missing")
+
     def test_sign_mode_set(self):
         from core import Failure
         for mode, want in (("external", "external"), ("appleId", "appleId")):
