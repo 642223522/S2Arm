@@ -187,7 +187,7 @@ struct EnvironmentView: View {
                     .controllerID("settings.storage.open")
             }
         }
-        // 密钥：状态 + 导入（同 Windows 设置页；11-14 体验梳理：原先密钥就绪后 Mac 上没有地方换一份）
+        // 密钥：状态 + 导入（同 Windows 设置页；11-14：原先密钥就绪后 Mac 上没有地方换一份）
         CardGroup(s("settings.keys")) {
             CardRow(s("settings.keys"), detail: model.keysReady == true ? s("welcome.step.keys.done") : s("welcome.step.keys.title")) {
                 Button(s("library.import_keys")) { chooseKeys() }
