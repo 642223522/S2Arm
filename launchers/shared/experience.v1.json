@@ -185,12 +185,12 @@
        "title": {"zh-Hans": "任务失败", "en": "Job failed"},
        "detail": {"zh-Hans": "任务中途失败，原因见诊断。", "en": "The job failed partway; see the diagnostics."},
        "next_action": {"from": "pack/jobs/errors.py"}},
-      {"code": "container_would_drop", "severity": "warn", "retryable": true, "recoverable": true, "title": {"zh-Hans": "会让别的游戏暂时不能玩", "en": "Other games would stop working for now"}, "detail": {"zh-Hans": "手机上有几款游戏是在另一台电脑上装的，这台电脑没法把它们一起放进新的 App。", "en": "Some games on the phone were installed from another computer, and this computer can't put them into the new app."}, "next_action": {"from": "pack/jobs/errors.py"}},
+      {"code": "container_would_drop", "accept": "acceptDropped", "severity": "warn", "retryable": true, "recoverable": true, "title": {"zh-Hans": "会让别的游戏暂时不能玩", "en": "Other games would stop working for now"}, "detail": {"zh-Hans": "手机上有几款游戏是在另一台电脑上装的，这台电脑没法把它们一起放进新的 App。", "en": "Some games on the phone were installed from another computer, and this computer can't put them into the new app."}, "next_action": {"from": "pack/jobs/errors.py"}},
       {"code": "phone_app_running", "severity": "error", "retryable": true, "recoverable": true, "title": {"zh-Hans": "S2Arm 正在 iPhone 上运行", "en": "S2Arm is running on the iPhone"}, "detail": {"zh-Hans": "游戏开着的时候换存档，存档会被游戏写坏。", "en": "Changing saves while the game is open lets the game overwrite and damage them."}, "next_action": {"from": "pack/jobs/errors.py"}},
-      {"code": "save_backup_failed", "severity": "warn", "retryable": true, "recoverable": true, "title": {"zh-Hans": "存档没能先备份", "en": "Saves could not be backed up first"}, "detail": {"zh-Hans": "这次装机前没能把手机上的存档备份到电脑。存档没备份，万一覆盖出问题可能丢档；确认仍然继续就照装。", "en": "Your saves on the phone could not be backed up to this computer before installing. Without a backup, a problem during the overwrite could lose saves; confirm to install anyway."}, "next_action": {"from": "pack/jobs/errors.py"}},
-      {"code": "cert_revoke_confirm", "severity": "warn", "retryable": true, "recoverable": true, "title": {"zh-Hans": "可能会撤掉一张别的开发证书", "en": "Another development certificate may be revoked"}, "detail": {"zh-Hans": "账号证书满了时，新建证书会让苹果撤掉列表里的第一张，用它签的 App 会打不开；没满就什么都不撤。", "en": "If your account's certificates are full, creating a new one makes Apple revoke the first one in the list, and apps signed with it stop opening; if they are not full, nothing is revoked."}, "next_action": {"from": "pack/jobs/errors.py"}},
-      {"code": "device_space_low", "severity": "warn", "retryable": true, "recoverable": true, "title": {"zh-Hans": "手机空间看起来不够", "en": "iPhone storage looks low"}, "detail": {"zh-Hans": "手机报的空闲空间比这次要传的少。它不含系统随时能清掉的空间，实际多半放得下；仍然继续就照传，真写满了会停下并说明还差多少。", "en": "The free space the iPhone reports is less than this transfer needs. It leaves out space iOS can clear at any time, so it usually still fits; continue to send anyway, and it stops and says how much is missing only if storage really fills up."}, "next_action": {"from": "pack/jobs/errors.py"}},
-      {"code": "container_stale", "severity": "error", "retryable": true, "recoverable": true, "title": {"zh-Hans": "要先重新出 iPhone 版", "en": "Rebuild for iPhone first"}, "detail": {"zh-Hans": "同一个 S2Arm App 里的游戏要用同一版 S2Arm 出：有的游戏还是旧版出的，或者这台电脑上没有它的 iPhone 版。", "en": "Games in the same S2Arm app must be built by the same S2Arm version: some were built by an older one, or this computer has no iPhone build of them."}, "next_action": {"from": "pack/jobs/errors.py"}},
+      {"code": "save_backup_failed", "accept": "acceptNoBackup", "severity": "warn", "retryable": true, "recoverable": true, "title": {"zh-Hans": "存档没能先备份", "en": "Saves could not be backed up first"}, "detail": {"zh-Hans": "这次装机前没能把手机上的存档备份到电脑。存档没备份，万一覆盖出问题可能丢档；确认仍然继续就照装。", "en": "Your saves on the phone could not be backed up to this computer before installing. Without a backup, a problem during the overwrite could lose saves; confirm to install anyway."}, "next_action": {"from": "pack/jobs/errors.py"}},
+      {"code": "cert_revoke_confirm", "accept": "acceptCertRevoke", "severity": "warn", "retryable": true, "recoverable": true, "title": {"zh-Hans": "可能会撤掉一张别的开发证书", "en": "Another development certificate may be revoked"}, "detail": {"zh-Hans": "账号证书满了时，新建证书会让苹果撤掉列表里的第一张，用它签的 App 会打不开；没满就什么都不撤。", "en": "If your account's certificates are full, creating a new one makes Apple revoke the first one in the list, and apps signed with it stop opening; if they are not full, nothing is revoked."}, "next_action": {"from": "pack/jobs/errors.py"}},
+      {"code": "device_space_low", "accept": "acceptLowSpace", "severity": "warn", "retryable": true, "recoverable": true, "title": {"zh-Hans": "手机空间看起来不够", "en": "iPhone storage looks low"}, "detail": {"zh-Hans": "手机报的空闲空间比这次要传的少。它不含系统随时能清掉的空间，实际多半放得下；仍然继续就照传，真写满了会停下并说明还差多少。", "en": "The free space the iPhone reports is less than this transfer needs. It leaves out space iOS can clear at any time, so it usually still fits; continue to send anyway, and it stops and says how much is missing only if storage really fills up."}, "next_action": {"from": "pack/jobs/errors.py"}},
+      {"code": "container_stale", "accept": "acceptStale", "severity": "error", "retryable": true, "recoverable": true, "title": {"zh-Hans": "要先重新出 iPhone 版", "en": "Rebuild for iPhone first"}, "detail": {"zh-Hans": "同一个 S2Arm App 里的游戏要用同一版 S2Arm 出：有的游戏还是旧版出的，或者这台电脑上没有它的 iPhone 版。", "en": "Games in the same S2Arm app must be built by the same S2Arm version: some were built by an older one, or this computer has no iPhone build of them."}, "next_action": {"from": "pack/jobs/errors.py"}},
       {"code": "game_files_mismatch", "severity": "error", "retryable": false, "recoverable": false, "title": {"zh-Hans": "游戏文件对不上", "en": "Game files do not match"}, "detail": {"zh-Hans": "这款游戏的程序文件和游戏包对不上，可能是游戏文件被改过或混了别的游戏。", "en": "This game's program files do not match its game package. The files may have been modified or mixed with another game."}, "next_action": {"from": "pack/jobs/errors.py"}},
       {"code": "container_incompatible", "severity": "error", "retryable": false, "recoverable": false, "title": {"zh-Hans": "放不进同一个 App", "en": "Cannot share one app"}, "detail": {"zh-Hans": "这款和手机上已有的游戏地址空间类型不同。", "en": "This game uses a different address space type from the games already on the iPhone."}, "next_action": {"from": "pack/jobs/errors.py"}},
       {"code": "container_purge_failed", "severity": "warn", "retryable": true, "recoverable": true, "title": {"zh-Hans": "手机上的数据没删掉", "en": "Game data was not removed"}, "detail": {"zh-Hans": "这款已从 App 里移除，但它在手机上的数据还在。", "en": "The game was removed from the app, but its data is still on the iPhone."}, "next_action": {"from": "pack/jobs/errors.py"}},
@@ -281,7 +281,7 @@
        "title": {"zh-Hans": "存放位置所在磁盘格式不支持", "en": "Drive format not supported"},
        "detail": {"zh-Hans": "这块盘不支持出包需要的文件操作（常见于 exFAT / FAT 格式的外接盘）。", "en": "This drive does not support the file operations exporting needs (common on exFAT / FAT external drives)."},
        "next_action": {"from": "pack/jobs/errors.py"}},
-      {"code": "library_in_cloud", "severity": "error", "retryable": false, "recoverable": true,
+      {"code": "library_in_cloud", "accept": "acceptCloud", "severity": "error", "retryable": false, "recoverable": true,
        "title": {"zh-Hans": "游戏库在云盘同步目录里", "en": "Library is in a cloud-synced folder"},
        "detail": {"zh-Hans": "游戏库要放在本机磁盘上不同步的位置；云盘同步目录（iCloud 云盘、OneDrive、Dropbox 等）里出包会读不到中间文件。游戏原件放在哪都行。", "en": "The game library must be in a local folder that is not synced. Exports fail inside cloud-synced folders (iCloud Drive, OneDrive, Dropbox and similar). Game files can stay anywhere."},
        "next_action": {"from": "pack/jobs/errors.py"}},
@@ -289,11 +289,11 @@
        "title": {"zh-Hans": "这里是另一个游戏库", "en": "This folder holds a different game library"},
        "detail": {"zh-Hans": "文件夹里的游戏库和 S2Arm 记下的不是同一个（从备份恢复、从别处拷来，或重装后记录丢了都会这样）。", "en": "The library in this folder isn’t the one S2Arm remembered (restored from a backup, copied from elsewhere, or the record was lost after reinstalling)."},
        "next_action": {"from": "pack/jobs/errors.py"}},
-      {"code": "library_folder_not_empty", "severity": "error", "retryable": false, "recoverable": true,
+      {"code": "library_folder_not_empty", "accept": "acceptForeign", "severity": "error", "retryable": false, "recoverable": true,
        "title": {"zh-Hans": "文件夹里已有别的文件", "en": "This folder already has other files"},
        "detail": {"zh-Hans": "S2Arm 只在自己建的文件和子文件夹里读写，不改也不删这个文件夹里原有的文件；以后搬游戏库时它们会一起搬走。", "en": "S2Arm only reads and writes the files and subfolders it creates, and never changes or deletes the files already here. If you move the library later, they move with it."},
        "next_action": {"from": "pack/jobs/errors.py"}},
-      {"code": "library_bad_format", "severity": "error", "retryable": false, "recoverable": true,
+      {"code": "library_bad_format", "accept": "acceptFormat", "accept_ui": "drive_picker", "severity": "error", "retryable": false, "recoverable": true,
        "title": {"zh-Hans": "这块盘可以用，但不是 NTFS", "en": "This drive works, but it isn't NTFS"},
        "detail": {"zh-Hans": "exFAT / FAT32 的盘可以放游戏库，但出包会多占空间，FAT32 上超过 4 GB 的游戏出不了。放在 NTFS 盘上更省空间。", "en": "exFAT / FAT32 drives can hold the library, but exports take more space, and games over 4 GB can't be exported on FAT32. An NTFS drive saves space."},
        "next_action": {"from": "pack/jobs/errors.py"}},
@@ -781,6 +781,11 @@
     ]
   },
 
+  "update_reasons": {
+    "note": "「建议更新」原因 → 文案键的唯一来源（11-19 结构 9：Mac / Windows 原先各写一份，Windows 缺 libGen、两端都缺 shaderMiss）。后端原因见 pack/jobs/host_update.py；pack/jobs/tests/test_shared_tables.py 核后端会发的原因都在这里。可确认停装码的续跑参数写在 errors 各码的 accept 字段（同一处）",
+    "rewriter": "update.hint.reason.rewriter", "hostAbi": "update.hint.reason.hostAbi", "shader": "update.hint.reason.shader",
+    "libGen": "update.hint.reason.shader", "shaderMiss": "update.hint.reason.shader"
+  },
   "launcher": {
     "note": "启动器客户端界面文案（Windows Avalonia 客户端 #1629 起；Mac 新前端可复用）。键 = 客户端界面元素 id，zh-Hans / en 两份必填，客户端按界面语言取，缺键显示 [键名]、不在客户端存副本。环境检查项本身的名称 / 说明 / 下一步与官方页由后端给（pack/jobs/winenv.py checks[].name / message / action / url）；错误码的标题 / 说明用本文件 errors 段。加键：同一提交加 zh-Hans + en，revision +1（README「口径号」规则）。",
     "items": [

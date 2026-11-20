@@ -111,6 +111,27 @@ public enum BackendText {
         errorTitles[code]?[language]
     }
 
+    /// 两端共用的表只在共享体验表一处（11-19 结构 9：Mac / Windows 原先各写一份，Mac 缺 cert_revoke_confirm、两端缺 shaderMiss）：
+    /// 可确认停装码 → 玩家点「仍然继续」后重发带的参数 = errors 各码的 accept（带 accept_ui 的由专门页面带，不进通用确认）
+    public static let confirmFlags: [String: String] = {
+        guard let data = try? Data(contentsOf: experienceURL()),
+              let spec = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let errors = spec["errors"] as? [String: Any],
+              let items = errors["items"] as? [[String: Any]] else { return [:] }
+        return Dictionary(items.compactMap { item in
+            guard let code = item["code"] as? String, let accept = item["accept"] as? String, item["accept_ui"] == nil else { return nil }
+            return (code, accept)
+        }, uniquingKeysWith: { first, _ in first })
+    }()
+
+    /// 「建议更新」原因 → 共享文案键 = update_reasons（不认识的原因不显示）
+    public static let updateReasonKeys: [String: String] = {
+        guard let data = try? Data(contentsOf: experienceURL()),
+              let spec = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let reasons = spec["update_reasons"] as? [String: Any] else { return [:] }
+        return reasons.compactMapValues { $0 as? String }.filter { $0.key != "note" }
+    }()
+
     /// 共享规格里要进翻译表的那些中英文（同旧启动器 SharedExperience.translations 的取法）：
     /// running / failed 两个状态名、作业结局（成功 / 取消）、出包画面模式标签、阶段名。
     public static func sharedEntries(_ data: Data) throws -> [Entry] {

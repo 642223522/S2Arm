@@ -655,7 +655,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// 作业跑在作业页，没成的原因（如选的还在云盘里）在作业页显示；成了作业页可在访达中显示新游戏库。
     /// 换游戏库时作业层报认得出的风险（v0.3.1：认得出的风险让玩家确认）：问玩家「仍然继续 / 先不」，同意带对应参数重发，参数累积
     ///   library_in_cloud：选的文件夹在云盘同步目录里；library_folder_not_empty：文件夹里已有别的文件、又不是游戏库（S2Arm 只动自己建的文件）
-    static let libraryConfirmCodes = ["library_in_cloud": "acceptCloud", "library_folder_not_empty": "acceptForeign"]
+    static var libraryConfirmCodes: [String: String] { BackendText.confirmFlags }   // 共享体验表 errors 的 accept（11-19 结构 9，同 Windows 读同一处）
     struct LibraryConfirm: Equatable { let url: URL; let move: Bool; let message: String; var code = "library_in_cloud"; var accept: Set<String> = [] }
     @Published var libraryConfirm: LibraryConfirm?
 
@@ -1184,8 +1184,8 @@ public final class S2ArmLauncherModel: ObservableObject {
         var mode: String? = nil; var sgradeUpgrade = false }   // 「S 级优化升级」页发起的：重发时照带装法与升级标记
     /// 作业层可确认继续的停装码 → 玩家点「仍然继续」后重发时带的参数（维护者 11-11 装机原则：认得出的风险让玩家确认，确认了就装）。
     ///   结局页（PhoneJobPanel）按码在页内问「仍然继续 / 先不」，不弹散的对话框；参数累积（先确认挤掉、再撞上备份失败，第二次重发两个都带）
-    static let confirmCodes: [String: String] = ["container_would_drop": "acceptDropped", "save_backup_failed": "acceptNoBackup", "container_stale": "acceptStale",
-                                                   "device_space_low": "acceptLowSpace"]
+    ///   11-19 结构 9：表只在共享体验表 errors 的 accept 一处（Windows 读同一处）；原先这里另写一份，没有 cert_revoke_confirm，「仍然继续」点不了
+    static var confirmCodes: [String: String] { BackendText.confirmFlags }
     struct DropConfirm { let kind: JobSession.Kind; var game: GameSummary? = nil; let message: String; var update: UpdateArgs? = nil
                          var code = "container_would_drop"; var accept: Set<String> = []
                          /// 当初装到哪台：确认后原样带回（不能退回「界面选中的那台」，控制口指定的设备会被换掉）
