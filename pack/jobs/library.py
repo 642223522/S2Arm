@@ -2411,9 +2411,7 @@ def save_container_kit(c, gid, root, dest=None):
             if p.is_dir() and (p / "main.npdm").is_file():
                 copy_files(p, temporary / "programs" / p.name)
     loud_if_kit_oversized(c, gid, temporary)
-    if kit.exists():
-        _rm(c, managed, kit)
-    os.replace(temporary, kit)
+    progs._put_dir(c, temporary, kit)   # 旧的先改名挪开、新的改名就位，两次都按 #361 退避重试（Windows 杀软 / 索引开着刚拷完的文件报 WinError 5，#50cb93 三台设备）
     if not dest:
         progs.save_recipe(c, gid)   # 常驻配方（原始程序在常驻里的模块，改写产物不存、现建）
         for legacy, root in ((layout.image_ios(c, gid, create=False) / CONTAINER_KIT, layout.root_of(c, gid)),

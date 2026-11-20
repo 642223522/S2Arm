@@ -219,6 +219,7 @@
 外	.gitignore	出壳过程里 git 命令读的忽略规则，不影响壳内容
 外	nuget.config	根目录的 NuGet 源配置，包版本由各工程钉死，不影响壳内容
 外	tools/gmake.sh	出壳挑 GNU Make 4 的路径（开发机工具），不影响壳内容
+外	pack/orch/dirrename.py	出壳 / 组容器时目录改名的 Windows 占用退避重试，只影响改名会不会重试，不影响壳内容
 
 # 「不」= 不编进壳（pack/shell/closure.py csiblings 用：表里逐文件登记的目录下，C 系文件要么入 / 外、要么在这里写明不编进壳）。
 #   出壳闭包与壳编号都不认这一类；下面 25 个是 11-10 首次核对时的现状，v0.2.3 出壳闭包核过、出壳没读到它们。
