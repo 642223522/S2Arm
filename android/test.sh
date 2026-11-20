@@ -341,6 +341,10 @@ s2a_gate_step bash "$android_dir/tools/nvn_warm_test.sh"
 if [ "$(uname -s)" = Linux ]; then
     s2a_gate_step sh "$android_dir/tools/nvk_prog_warm_session_test.sh"
 fi
+# 程序清单最近使用顺序：CANDIDATE_TREE 是本次门禁检出的仓库。
+# 门禁不传 LEGACY_TREE，不依赖 Git 历史或联网；手工查旧格式兼容性时，
+# runner 的第二个参数可传修复前的独立源码检出（例如本 PR 的基线）。
+s2a_gate_step sh "$android_dir/tools/nvk_prog_warm_recency_test.sh" "$repo_dir"
 # 预热用的两个清单模块与「同一配方只有一份」的双检（纯逻辑）：往返一致、碰撞不去重、坏文件整份拒绝、
 # 4 线程并发建同一配方只装一份。
 s2a_gate_step bash "$android_dir/tools/nvk_warm_modules_test.sh"
