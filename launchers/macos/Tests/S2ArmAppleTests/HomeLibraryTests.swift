@@ -8,6 +8,31 @@ import LauncherPadBridge
 @testable import S2ArmAppleAdapter
 
 @MainActor final class HomeLibraryTests: XCTestCase {
+    // 免费签名到期提醒（11-20）：剩余天数按作业层给的 expires 算；横幅「×」= 关掉设置开关 → 不再显示；设置里重新打开 → 恢复；开关存进偏好、重开启动器还在
+    func testFreeSignReminderDismissRestorePersist() throws {
+        let suite = "s2arm-free-sign-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite)); defer { defaults.removePersistentDomain(forName: suite) }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(suite); defer { try? FileManager.default.removeItem(at: root) }
+        let make = { S2ArmLauncherModel(client: JobClient(environment: JobEnvironment(privateRoot: root, resources: root)), updateDefaults: defaults) }
+        let now = Date(timeIntervalSince1970: 1_000_000), day = 86400.0
+        // 6 天前装、包里读到的真实到期在 2.5 天后：显示 3 天（不是按装机时刻 +7 天的 1 天）
+        let game = try XCTUnwrap(GameSummary(catalog: ["id": "0100000000010000", "name": "Alpha",
+            "iphoneInstall": ["at": now.timeIntervalSince1970 - 6 * day, "free": true, "expires": now.timeIntervalSince1970 + 2.5 * day]]))
+        let other = try XCTUnwrap(GameSummary(catalog: ["id": "0100000000020000", "name": "Beta",
+            "iphoneInstall": ["at": now.timeIntervalSince1970 - 6 * day, "free": false]]))   // 作业层判出不是启动器免费签的那份
+        let model = make()
+        XCTAssertTrue(model.freeSignReminder, "没碰过开关：缺省开")
+        XCTAssertEqual(model.freeSignDaysLeft(game, now: now), 3)
+        XCTAssertNil(model.freeSignDaysLeft(other, now: now))
+        model.freeSignReminder = false   // 横幅上的「×」
+        XCTAssertNil(model.freeSignDaysLeft(game, now: now), "擦掉后不显示")
+        let reopened = make()
+        XCTAssertFalse(reopened.freeSignReminder, "重开启动器：仍是关")
+        XCTAssertNil(reopened.freeSignDaysLeft(game, now: now))
+        reopened.freeSignReminder = true   // 设置里重新打开
+        XCTAssertEqual(make().freeSignDaysLeft(game, now: now), 3, "重新打开后恢复显示，且存下来")
+    }
+
     // 新主题漏掉的补回来：每张卡片上的 iPhone 签名角标（还剩几天 / 已过期）
     func testHomeCardsShowExpiryBadges() async throws {
         _ = NSApplication.shared
@@ -274,7 +299,7 @@ private final class HomeCatalogRunner: JobProcessRunner {
                     "banner": artwork.appendingPathComponent(index % 2 == 0 ? "banner-red.png" : "banner-blue.png").path,
                     "packages": packages]
                 if let at = installs[index] {
-                    game["iphoneInstall"] = ["at": at, "free": true] as [String: Any]
+                    game["iphoneInstall"] = ["at": at, "free": true, "expires": at + 7 * 86400] as [String: Any]   // 作业层给到期时刻（读不到真值时按 7 天估）
                 } else {
                     game["iphoneInstall"] = NSNull()
                 }

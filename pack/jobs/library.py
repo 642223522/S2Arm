@@ -1994,6 +1994,7 @@ def catalog(c):
     input_supported, input_reason = toolchain.input_interface(c)
     # 设备记录里装在某台手机上的款：删除确认框据此多写一句「下次往这台手机装游戏时，手机上的这款会打不开」（容器现组时游戏库里没有它就带不进）
     on_phone = {g.upper() for _, r in layout.devices(c) if isinstance(r, dict) for g in (r.get("games") or {})}
+    import install
     import sgrade
     sq = sgrade.queue_status(c)   # S 级升级队列（排队只在作业层一套）：每款 sgradeState / sgradeProgress，顶层 sgradeBatch
     for game in cat["games"]:

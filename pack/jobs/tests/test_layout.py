@@ -301,6 +301,49 @@ class DevicesTests(JobCase):
             self.assertEqual(layout.install_record(self.c, A), dict(at=5, free=False, device="甲机", deviceKey="phone-1"))
 
 
+class FreeSignReminderTests(JobCase):
+    """install_record 的免费到期只给「这台手机现在用的就是启动器免费签的那份」（维护者 11-20：换了自签 / 别的方式后提醒一直挂着取消不了）。
+    期望按规则手写：签名时刻 at=1000，7 天 = 604800 秒"""
+    OWN, ALT = "io.s2arm.games.team1", "com.altstore.s2arm"
+
+    def put(self, **rec):
+        d = self.c.library / layout.DEVICES; d.mkdir(parents=True, exist_ok=True)
+        atomic(d / "phone-1.json", dict(dict(games={A: {}}, shellId="SID", bundleId=self.OWN, signed=dict(at=1000, free=True, device="甲机")), **rec))
+
+    def test_launcher_free_estimates_seven_days(self):
+        self.put()
+        self.assertEqual(layout.install_record(self.c, A),
+                         dict(at=1000, free=True, device="甲机", deviceKey="phone-1", expires=605800, expiresKnown=False))
+
+    def test_real_expiry_wins(self):
+        self.put(signed=dict(at=1000, free=True, device="甲机", expires=500000))
+        self.assertEqual(layout.install_record(self.c, A),
+                         dict(at=1000, free=True, device="甲机", deviceKey="phone-1", expires=500000, expiresKnown=True))
+
+    def test_switched_away_no_reminder(self):
+        gone = dict(at=1000, free=False, device="甲机", deviceKey="phone-1")
+        cases = (("之后推进了别的工具装的 S2Arm", dict(externalBundleId=self.ALT, externalAt=2000)),
+                 ("旧记录：推过别的工具装的、没记时刻", dict(externalBundleId=self.ALT)),
+                 ("总控台选用的是别的那份", dict(chosenBundleId=self.ALT)),
+                 ("证书 / 付费账号重装过（这次签名不是免费的）", dict(signed=dict(at=1000, free=False, device="甲机"))))
+        for name, rec in cases:
+            with self.subTest(name):
+                self.put(**rec)
+                self.assertEqual(layout.install_record(self.c, A), gone)
+
+    def test_setting_switched_but_not_reinstalled_still_reminds(self):
+        """电脑设置换成证书签 / 别的工具签、手机上那份免费签的还没重装：照样 7 天到期，照旧提醒（设置只管下一次怎么签）"""
+        self.put()
+        (self.c.private / "devcert").mkdir(parents=True, exist_ok=True)
+        self.assertEqual(layout.install_record(self.c, A),
+                         dict(at=1000, free=True, device="甲机", deviceKey="phone-1", expires=605800, expiresKnown=False))
+
+    def test_launcher_reinstalled_after_external_shows_again(self):
+        """先推过别的工具装的（externalAt=500），后来又用启动器免费签装回来（at=1000）：现在用的是启动器那份，照旧提醒"""
+        self.put(externalBundleId=self.ALT, externalAt=500, chosenBundleId=self.OWN.upper())
+        self.assertTrue(layout.install_record(self.c, A)["free"])
+
+
 class LocationTests(JobCase):
     """游戏库结构 v3：多个存放位置 + 索引表。期望按设计文档的规则手写"""
     def setUp(self):

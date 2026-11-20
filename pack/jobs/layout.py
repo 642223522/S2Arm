@@ -576,12 +576,52 @@ def save_device(c, ident, rec):
     atomic(p, dict(rec, schema=1))
 
 
+FREE_SIGN_LIFETIME = 7 * 86400   # 免费 Apple ID 签的描述文件 7 天（读不到签好的包里的真实到期时按它估，同 host_update.SIGN_LIFETIME）
+
+
+def launcher_free_in_use(rec):
+    """这台手机现在用的 S2Arm 是不是「这台电脑的启动器用免费 Apple ID 签的那份」（游戏库「免费签名快到期」提醒只给这种）。
+    只看设备记录里已有的事实，不连手机（列游戏库要快）：
+      · 启动器装过（有壳号 shellId + 包名 bundleId），且那次是免费签（signed.free）；
+      · 玩家在总控台选用的不是启动器那份（chosenBundleId 与 bundleId 不同）→ 不是；
+      · 启动器装之后又往别的工具（AltStore / SideStore …）装的 S2Arm 推过游戏（externalBundleId，推送时刻 externalAt 晚于签名时刻；
+        旧记录没有 externalAt 时按别的工具算）→ 不是；
+    不看电脑这边的签名方式设置：设置只管下一次怎么签，手机上那份免费签的 App 没重装前照样 7 天到期，照旧提醒；
+    玩家真用证书 / 付费账号重装后 signed.free 为假，提醒自然消失"""
+    signed = rec.get("signed") if isinstance(rec.get("signed"), dict) else {}
+    own = str(rec.get("bundleId") or "").lower()
+    if not signed.get("free") or not rec.get("shellId") or not own:
+        return False
+    chosen = str(rec.get("chosenBundleId") or "").lower()
+    if chosen and chosen != own:
+        return False
+    ext = str(rec.get("externalBundleId") or "").lower()
+    if ext and ext != own:
+        at, ext_at = signed.get("at"), rec.get("externalAt")
+        if not isinstance(ext_at, (int, float)) or not isinstance(at, (int, float)) or ext_at >= at:
+            return False
+    return True
+
+
 def install_record(c, gid):
-    """这款最近一次装机签名的记录 {at, free, device}（游戏库页「还有几天到期 / 续签」）：各台手机记录里带这款的取最新一次；没装过 → None"""
+    """这款最近一次装机签名的记录 {at, free, device, deviceKey, [expires, expiresKnown]}（游戏库页「还有几天到期 / 续签」）：各台手机记录里带这款的取最新一次；没装过 → None。
+    free 只在那台手机现在用的就是启动器免费签的那份时为 True（launcher_free_in_use）：玩家换成别的工具装、换签名方式后不再给，提醒自动消失。
+    free 时带到期时刻 expires：签好的包里读到的真值（signed.expires，expiresKnown=True）；没有才按 7 天估（expiresKnown=False）。前端直接用，不再自己加天数"""
     gid = gid.upper()
     # deviceKey：那台设备的记录键（UDID）。续签 / 重装装回当初那台，不替玩家换一台（维护者 11-11：续签时 iPad 被装上）
-    recs = [dict(r["signed"], deviceKey=k) for k, r in devices(c) if gid in (r.get("games") or {}) and isinstance(r.get("signed"), dict)]
-    return max(recs, key=lambda r: r.get("at") or 0) if recs else None
+    recs = [(dict(r["signed"], deviceKey=k), r) for k, r in devices(c) if gid in (r.get("games") or {}) and isinstance(r.get("signed"), dict)]
+    if not recs:
+        return None
+    out, rec = max(recs, key=lambda x: x[0].get("at") or 0)
+    out["free"] = launcher_free_in_use(rec)
+    out.pop("expires", None)
+    if out["free"]:
+        real = rec["signed"].get("expires")
+        known = isinstance(real, (int, float))
+        at = out.get("at")
+        if known or isinstance(at, (int, float)):
+            out.update(expires=real if known else at + FREE_SIGN_LIFETIME, expiresKnown=known)
+    return out
 
 
 def devices(c):
