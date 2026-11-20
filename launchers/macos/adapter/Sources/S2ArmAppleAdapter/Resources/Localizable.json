@@ -10630,5 +10630,13 @@
  {
   "source": "直连库·顶点补齐变体 {0}",
   "en": "Direct library · padded vertex variants {0}"
+ },
+ {
+  "source": "直连库·计算管线 {0}",
+  "en": "Direct library · compute pipelines {0}"
+ },
+ {
+  "source": "直连库·拉取基础管线 {0}",
+  "en": "Direct library · base pipelines {0}"
  }
 ]
