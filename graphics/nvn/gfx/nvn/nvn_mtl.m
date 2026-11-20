@@ -8781,7 +8781,9 @@ static void *tex_by_id_ptr(int tid) {   // Caller holds g_rmu
     rp->view_pkg = (rp->t.has_layout || tex_cpu_written(rp->t.serial)) && rp->t.mem;
     if (v) {   // The serial table or guest memory has changed: check whether the base texture was re-uploaded and replaced; if so the view is invalidated
         id<MTLTexture> cur = tex_mtl(&rp->t);
-        if (cur == v || v.parentTexture == cur) { rp->view_ser = sg; rp->view_dirty = dg; rp->view_ep = g_pkg_epoch; return (__bridge void *)v; }
+        // cur 为空 = 这个贴图号现在没有贴图（释放了没再建 / 建不出）：缓存的若正是底贴图本身，它也没有 parent，nil == nil 原先照样留着并标为有效，
+        //   池表的快路径（tex_fast_rid）就把一张宿主已放掉、已出驻留集的贴图交给着色器采样 = GPU 缺页（照上游参考实现（MIT）0e4480d2）
+        if (cur && (cur == v || v.parentTexture == cur)) { rp->view_ser = sg; rp->view_dirty = dg; rp->view_ep = g_pkg_epoch; return (__bridge void *)v; }
         defer_obj_unref(v); CFRelease(rp->view); rp->view = NULL; rp->view_rid = 0; v = nil;
     }
     treg_t r = *rp;
