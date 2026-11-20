@@ -23,7 +23,7 @@ void S2APlayPublishSplit(BOOL split);
 int s2a_ios_split_active(void);
 CGRect s2a_ios_game_area(void);
 int s2a_ios_game_top(void);
-// 倒着拿（jhz 11-17 拍板：其余方向跟随系统，系统不给倒置竖屏时 App 自己补这一种）。纯函数，Mac 单测 t_play_layout：
+// 倒着拿（维护者 11-17 拍板：其余方向跟随系统，系统不给倒置竖屏时 App 自己补这一种）。纯函数，Mac 单测 t_play_layout：
 //   dev = UIDeviceOrientation（1 竖、2 倒竖、3 横左、4 横右；其余平放 / 未知）；ui = UIInterfaceOrientation（1 竖、2 倒竖、3 横右、4 横左）；
 //   k = 这块屏「界面角度 − 设备角度」（0 / 90 / 180 / 270；外屏和普通手机 0，iPhone Duo 内屏面板与机身差 90° 的倍数）
 // 学差值：界面是横屏时（横屏系统一定照转）才学，返回 k；其余 −1（竖屏可能是系统拒了倒置、停在原来的正竖屏，学了会错 180°）

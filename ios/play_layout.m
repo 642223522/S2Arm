@@ -105,7 +105,7 @@ int s2a_ios_game_top(void) { return g_layout.top; }
 //   游戏页每次排版按自己窗口的尺寸类记（主线程写，各处读）
 static _Atomic int g_resizable;
 int s2a_ios_play_resizable(void) { return atomic_load(&g_resizable); }
-// 「自动」方向跟随系统（jhz 11-17 真机 Duo：自动模式竖着拿还是横屏、App 自己判握持转画面反而颠倒）：四个方向都给，
+// 「自动」方向跟随系统（维护者 11-17 真机 Duo：自动模式竖着拿还是横屏、App 自己判握持转画面反而颠倒）：四个方向都给，
 //   系统转到哪就按哪排版，不申请、不自己判握持；选了「横屏 / 竖屏」才锁定。分屏照旧竖屏（S2APlayPortrait）。可自由缩放的窗口同样跟随系统
 static BOOL play_follow_system(void) {
 #if TARGET_OS_TV
@@ -115,7 +115,7 @@ static BOOL play_follow_system(void) {
     return atomic_load(&g_resizable) || S2APlayReadOrientation(d)==S2APlayOrientationAuto;   // 分屏也跟随系统：竖着才分上下屏（S2APlayLayoutMake），横过来按横屏排
 #endif
 }
-// 跟随系统时上下分屏只在竖着：系统转成横屏就按横屏排（jhz 11-17 真机：分屏打开就不随系统转——原先分屏写死只给竖屏）。
+// 跟随系统时上下分屏只在竖着：系统转成横屏就按横屏排（维护者 11-17 真机：分屏打开就不随系统转——原先分屏写死只给竖屏）。
 //   锁定方向的照旧（玩家选「横屏」再开分屏 = 横屏上下分，t_play_layout）
 static S2APlaySplitMode play_split_for(CGRect b) {
     S2APlaySplitMode m=S2APlayReadSplit(NSUserDefaults.standardUserDefaults);
