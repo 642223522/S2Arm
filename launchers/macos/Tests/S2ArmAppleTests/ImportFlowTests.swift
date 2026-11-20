@@ -66,7 +66,9 @@ import S2ArmAppleAdapter
         await waitForImport()
         runner.response = { _ in ("hold", [:]) }
         model.retryImport()
-        for _ in 0..<200 where runner.imports.count < 2 { try? await Task.sleep(for: .milliseconds(10)) }
+        // 等重试那次导入真发出去再取消（30 秒兜底）。原先只等 2 秒、等不到也照样取消：负载高时重试还没发出，取消计数 0 → 假红（11-19 门禁）
+        for _ in 0..<3000 where runner.imports.count < 2 { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(runner.imports.count, 2, "重试那次导入 30 秒没发出")
         model.cancelImport()
         XCTAssertFalse(model.showAddGames)
         XCTAssertTrue(model.busy)
@@ -154,7 +156,7 @@ import S2ArmAppleAdapter
     }
 
     private func waitForImport() async {
-        for _ in 0..<200 where model.busy { try? await Task.sleep(for: .milliseconds(10)) }
+        for _ in 0..<3000 where model.busy { try? await Task.sleep(for: .milliseconds(10)) }   // 30 秒兜底（原 2 秒：负载高时导入还没收尾就往下判）
         XCTAssertFalse(model.busy)
     }
 }
