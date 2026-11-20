@@ -69,12 +69,6 @@ def pack_input_bytes(packages):
     return sum(max(size, largest if nup else summed) for size, summed, largest, nup in by_sha.values())
 
 
-def source_file_bytes(packages):
-    """玩家导入的原件文件总字节：所选原件按 sha256 去重、取导入时记的文件大小（不含解开后的内容字节）。
-    出包阶段的随包基础管线上限按它算（S2A_SOURCE_BYTES → pack/stage_direct_cpso.sh：原件 × 10%）"""
-    return sum(int(p.get("size") or 0) for p in {p["sha256"]: p for p in packages}.values())
-
-
 def pack_direct_bytes(size):
     return DIRECT_SMALL_BYTES if size < PACK_SMALL_BYTES else DIRECT_LARGE_BYTES
 
