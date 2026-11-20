@@ -140,8 +140,8 @@
     "en": "① On a Mac, **sign in with your Apple ID once** in S2Arm. ② Connect your phone and click **Update S2Arm** on the S2Arm card at the start of the library: your saves are backed up to the computer first, then the new app goes on. ③ Right after, the same page lists the old games on this phone, all checked: click **Update these N games**, about 1–2 minutes each. Shader libraries built by the old version are rebuilt by the computer too; the first time takes from a few minutes to a few tens of minutes. **No need for S-grade optimization.**"
    },
    "where": {
-    "zh-Hans": "第 ③ 步做完之前，这些游戏在手机上显示「**在电脑上更新一次**」，点不进去，但没丢。别的电脑装的另起一行列出，到那台电脑上更新。用 AltStore 等自己签名的：装新 S2Arm 覆盖旧的，再把每款 .s2arm 导入一次。",
-    "en": "Until step ③ is done, those games show **Update once on your computer** on the phone and won't open, but they aren't gone. Games installed from another computer are listed on a separate line; update them on that computer. If you sign the app yourself with AltStore or similar: install the new S2Arm over the old one, then import each game's .s2arm once."
+    "zh-Hans": "第 ③ 步做完之前，这些游戏在手机上显示「**在电脑上更新一次**」，点不进去，但没丢。别的电脑装的另起一行列出，到那台电脑上更新。用 AltStore 等自己签名的：先在电脑启动器出包页的「出完之后」选「导出自签包」，再点游戏库第一格「S2Arm」里的按钮，导出新版 S2Arm.ipa，用 AltStore 装上覆盖旧的；在 AltStore 设置里导出签名证书，导进 S2Arm（齿轮 →「签名证书」→「导入 .p12…」）；最后在启动器里对每款点「导出自签包」，把 .s2arm 和 .img 放进「放这里导入」。",
+    "en": "Until step ③ is done, those games show **Update once on your computer** on the phone and won't open, but they aren't gone. Games installed from another computer are listed on a separate line; update them on that computer. If you self-sign with AltStore or similar: in the launcher's build page, set After building to Export for self-signing, then click the button on the S2Arm tile (first in the game library) to export the new S2Arm.ipa and install it over the old one with AltStore; export your signing certificate in AltStore settings and import it into S2Arm (gear → Signing certificate → Import .p12…); finally click Export for self-signing on each game and put its .s2arm and .img into Import Here."
    }
   },
   {
