@@ -44,7 +44,7 @@ import sys
 import tempfile
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -297,7 +297,8 @@ def main():
                 used = sum(x.stat().st_size for x in warm_files)
         tk = Ticker('直连库·拉取基础管线', len(jobs))   # 按对计
         with ThreadPoolExecutor(max(1, a.j)) as ex:   # 全装：plan 出的对全部并行编
-            for job, r in zip(jobs, ex.map(one, jobs)): res[job] = r; tk.step()
+            fut = {ex.submit(one, job): job for job in jobs}
+            for f in as_completed(fut): res[fut[f]] = f.result(); tk.step()   # 按完成先后计：一对编一分多钟时，按提交顺序取会让计数停在它前面（界面看着像卡住）
         for job in jobs:   # 没编成的不留同名旧文件
             if isinstance(res[job][0], tuple): path(job).unlink(missing_ok=True)
     finally:
