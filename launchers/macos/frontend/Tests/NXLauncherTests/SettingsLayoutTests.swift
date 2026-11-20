@@ -50,7 +50,8 @@ import S2ArmAppleAdapter
                         "悬停进入时必须同步显示提示")
                     let elapsed = ProcessInfo.processInfo.systemUptime - started
                     print("tooltip \(language.code)/\(Int(width))/\(id): \(elapsed * 1000) ms, above=\(above)")
-                    XCTAssertLessThan(elapsed, 0.1)
+                    // 「即时」由上面那句证明：mouseEntered 刚返回就取得到、且可见 = 同步弹出，不靠系统 help 计时器。耗时只打印、不判（11-19：
+                    //   原判 < 0.1 秒，负载高时 0.128 秒假红）
                     XCTAssertTrue(panel.ignoresMouseEvents, "提示不能挡住原按钮的鼠标操作")
                     XCTAssertFalse(panel.canBecomeKey, "提示不能夺走键盘或手柄窗口")
                     let frame = window.convertToScreen(anchor.convert(anchor.bounds, to: nil))
@@ -1223,11 +1224,11 @@ import S2ArmAppleAdapter
     /// 按条件等：满足立刻返回，上限 10 秒。原先 2 秒，门禁机整套并发跑、负载高时搜索胶囊展开 + 拿焦点会超时偶发红
     ///   （11-18 合入后步红在首页搜索用例，单跑必过），条件判定不变，快的时候不多等
     private func waitUntil(_ ready: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
-        for _ in 0..<500 {
+        for _ in 0..<1500 {   // 等界面状态到位，30 秒兜底（11-19：原 10 秒，负载上百时渲染慢于此 → 假红）
             if ready() { return }
             try await Task.sleep(for: .milliseconds(20))
         }
-        XCTAssertTrue(ready(), "界面未在 10 秒内完成状态切换", file: file, line: line)
+        XCTAssertTrue(ready(), "界面未在 30 秒内完成状态切换", file: file, line: line)
     }
 
     func testHomeSearchExpandsInsideTheHomeWindowAndKeepsItsQuery() async throws {
