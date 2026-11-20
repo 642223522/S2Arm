@@ -189,6 +189,9 @@ void ns2_set_player_order(int first_link);   // 两只拆开时哪条链路是�
 typedef struct { int link; ns2_kind kind; char identifier[64]; } ns2_device;
 int ns2_get_devices(ns2_device out[2]);   // 已就绪的链路（最多 2），返回几条
 int ns2_disconnect_device(const char *identifier);   // 断开这一只（分配时没登记的，同原机）；找到返回 1
+// 玩家灯（同原机：手柄上的灯跟着玩家位）：mask 低 4 位 = 四颗灯（第 0 位最靠近 SYNC 那颗）。按设备 id 记，重连后照用；
+//   没设过的照旧亮玩家 1。连着时马上写一次，之后保活也写这一组
+void ns2_set_player_lights(const char *identifier, unsigned mask);
 // 可选的「收不收这台」（#520 E 最多 4 只：Mac 上第二个连接程序管第二组，两边别抢同一台）：扫到 NS2 手柄时问一次，回 0 就不连。
 //   不设（iOS / 只有一个连接程序时）= 同改前
 typedef int (*ns2_accept_filter)(ns2_kind kind, const char *identifier, void *context);

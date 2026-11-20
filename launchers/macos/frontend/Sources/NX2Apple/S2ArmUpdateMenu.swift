@@ -27,6 +27,7 @@ public struct S2ArmUpdateMenu: View {
         if let driver = model.simulatedUpdate {
             SimulatedUpdateMenu(model: model, driver: driver, activateWindow: activateWindow)
         }
+        if ControllerColorSimulator.allowed { ControllerColorSimulatorMenu() }   // 本地 / 自测构建才有（发行版带 SUFeedURL）
     }
 }
 

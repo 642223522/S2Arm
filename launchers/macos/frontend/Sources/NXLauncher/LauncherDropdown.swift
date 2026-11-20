@@ -139,6 +139,11 @@ private struct LauncherDropdownLayer: View {
 
 /// The rows of an open dropdown: the chosen one with a checkmark, the one under the pointer or the arrow keys lit.
 /// Arrow keys move, Return or Space pick, Esc closes (a local key monitor while it is open, as in the Manage menu).
+package extension Notification.Name {
+    /// 手柄 B：收起这个窗口里开着的下拉选单（object = 窗口；只关选单，不关底下的面板）
+    static let launcherDropdownClose = Notification.Name("S2ALauncherDropdownClose")
+}
+
 package struct LauncherDropdownList: View {
     package init(options: [(value: String, label: String)], selection: String, label: String, artwork: ((String) -> AnyView)? = nil, disabledOptions: Set<String> = [],
                  choose: @escaping (String) -> Void, close: @escaping () -> Void) {
@@ -174,6 +179,7 @@ package struct LauncherDropdownList: View {
             }
         }
         .onDisappear(perform: stopKeys)
+        .onReceive(NotificationCenter.default.publisher(for: .launcherDropdownClose)) { _ in close() }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(label)
         .accessibilityIdentifier("launcher.dropdown")

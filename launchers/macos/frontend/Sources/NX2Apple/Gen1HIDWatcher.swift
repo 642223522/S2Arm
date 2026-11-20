@@ -16,6 +16,13 @@ final class Gen1HIDWatcher {
     private var heldButtons: [String: UInt64] = [:]
     private var present: [IOHIDDevice] = []
     private var reading = false
+    // 玩家灯（子命令 0x30）与出厂颜色（子命令 0x10 读 SPI 0x6050：机身 RGB、按键 RGB）
+    private var lights: [String: Int] = [:]         // 设备 id → 该亮的灯型（PlayerAssignment.lightMasks）
+    private var sentLights: [String: Int] = [:]     // 已经写过的（连上 / 改了才再写）
+    private var colors: [String: ControllerTint] = [:]
+    private var colorWait: [String: Int] = [:]      // 还在等颜色应答的设备 id → 已发几次
+    private var onColors: (([String: ControllerTint]) -> Void)?
+    private var packet: UInt8 = 0
 
     /// 解析一笔报告的手势（纯函数，单测）：2 = SL + SR 同按、3 = 肩键（左只 L / 右只 R）、0 = 没有
     static func gesture(pid: Int, report: [UInt8]) -> Int {
@@ -117,10 +124,59 @@ final class Gen1HIDWatcher {
         onPress = handler; heldButtons = [:]
         updateReading()
     }
-    /// 手势或按键有人要看就读输入报告，都不要就停
+    /// 每只该亮的玩家灯（设备 id → 灯型）；连着的马上写，之后连上的接上时写
+    func setLights(_ masks: [String: Int]) {
+        lights = masks
+        for device in present { writeLights(device) }
+    }
+    /// 读到的出厂颜色（设备 id → 颜色）；读不到的不在里面（照缺省颜色画）
+    func observeColors(_ handler: @escaping ([String: ControllerTint]) -> Void) {
+        onColors = handler
+        ensureManager()
+        handler(colors)
+    }
+
+    /// 子命令输出报告 0x01（同宿主 joycon_imu.m prepare_sub_locked：序号 + 中性震动 + 子命令 + 参数）
+    private func subcommand(_ device: IOHIDDevice, _ command: UInt8, _ args: [UInt8]) {
+        var report = [UInt8](repeating: 0, count: 0x40)
+        report[0] = 0x01; report[1] = packet & 0x0f; packet &+= 1
+        report.replaceSubrange(2..<10, with: [0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40])
+        report[10] = command
+        report.replaceSubrange(11..<11 + args.count, with: args)
+        let r = IOHIDDeviceSetReport(device, kIOHIDReportTypeOutput, 0x01, report, report.count)
+        if r != kIOReturnSuccess { NSLog("[手柄] 一代 Joy-Con 子命令 %02x 没写出去（%x），照常继续", command, r) }
+    }
+    private func writeLights(_ device: IOHIDDevice) {
+        guard let id = Self.deviceID(device), let mask = lights[id], sentLights[id] != mask else { return }
+        sentLights[id] = mask
+        subcommand(device, 0x30, [UInt8(mask & 0x0f)])
+    }
+    private func askColor(_ device: IOHIDDevice) {
+        guard let id = Self.deviceID(device), colors[id] == nil else { return }
+        let tries = colorWait[id, default: 0]
+        guard tries < 3 else { colorWait[id] = nil; updateReading(); return }   // 三次都没应答（第三方手柄多半不支持）：照缺省颜色
+        colorWait[id] = tries + 1
+        updateReading()
+        subcommand(device, 0x10, [0x50, 0x60, 0x00, 0x00, 0x06])
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self, self.colorWait[id] != nil, self.present.contains(where: { $0 === device }) else { return }
+            self.askColor(device)
+        }
+    }
+    /// 子命令应答 0x21 里的 SPI 读（纯函数，单测）：第 14 字节 = 0x10、地址 0x6050、长度 ≥ 6 → 机身 / 按键颜色；
+    ///   全 0 / 全 FF（没写过颜色的第三方手柄）不算
+    static func color(report: [UInt8]) -> ControllerTint? {
+        guard report.count >= 26, report[0] == 0x21, report[14] == 0x10, report[15] == 0x50, report[16] == 0x60, report[19] >= 6 else { return nil }
+        let rgb = Array(report[20..<26])
+        if rgb.allSatisfy({ $0 == 0 }) || rgb.allSatisfy({ $0 == 0xff }) { return nil }
+        return ControllerTint(body: UInt32(rgb[0]) << 16 | UInt32(rgb[1]) << 8 | UInt32(rgb[2]),
+                              buttons: UInt32(rgb[3]) << 16 | UInt32(rgb[4]) << 8 | UInt32(rgb[5]))
+    }
+
+    /// 手势或按键有人要看、或还在等颜色应答，就读输入报告；都不要就停
     private func updateReading() {
         ensureManager()
-        let wanted = onGesture != nil || onPress != nil
+        let wanted = onGesture != nil || onPress != nil || !colorWait.isEmpty
         guard let m = manager, wanted != reading else { return }
         reading = wanted
         if reading {
@@ -144,12 +200,21 @@ final class Gen1HIDWatcher {
         IOHIDManagerRegisterDeviceMatchingCallback(m, { context, _, _, device in
             guard let context else { return }
             let watcher = Unmanaged<Gen1HIDWatcher>.fromOpaque(context).takeUnretainedValue()
-            if !watcher.present.contains(where: { $0 === device }) { watcher.present.append(device); watcher.publish() }
+            if !watcher.present.contains(where: { $0 === device }) {
+                watcher.present.append(device); watcher.publish()
+                // 刚连上：稍等系统那边接好再写玩家灯、读颜色（连上那一刻连写容易丢）
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak watcher] in
+                    guard let watcher, watcher.present.contains(where: { $0 === device }) else { return }
+                    watcher.writeLights(device); watcher.askColor(device)
+                }
+            }
         }, me)
         IOHIDManagerRegisterDeviceRemovalCallback(m, { context, _, _, device in
             guard let context else { return }
             let watcher = Unmanaged<Gen1HIDWatcher>.fromOpaque(context).takeUnretainedValue()
-            watcher.present.removeAll { $0 === device }; watcher.publish()
+            watcher.present.removeAll { $0 === device }
+            if let id = Gen1HIDWatcher.deviceID(device) { watcher.sentLights[id] = nil; watcher.colorWait[id] = nil }   // 再连上时重写灯；颜色留着
+            watcher.publish(); watcher.updateReading()
         }, me)
         IOHIDManagerScheduleWithRunLoop(m, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
         IOHIDManagerOpen(m, IOOptionBits(kIOHIDOptionsTypeNone))
@@ -165,6 +230,10 @@ final class Gen1HIDWatcher {
     private func handle(device: IOHIDDevice, report: [UInt8]) {
         let side = Self.side(device)
         guard side >= 0, let id = Self.deviceID(device) else { return }
+        if colorWait[id] != nil, report.first == 0x21 {
+            if let tint = Self.color(report: report) { colors[id] = tint; onColors?(colors) }
+            if report.count > 14, report[14] == 0x10 { colorWait[id] = nil; updateReading() }   // 应答到了（没颜色也算），不再问
+        }
         let g = Self.gesture(pid: side == 0 ? 0x2006 : 0x2007, report: report)
         if g != held[id] { held[id] = g; if g != 0 { onGesture?(id, side, g) } }
         if let onPress {
