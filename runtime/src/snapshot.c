@@ -290,6 +290,8 @@ typedef struct { uint64_t a, n; } span_t;
 static int in_ranges(uint64_t a, const uint64_t *b, const uint64_t *n, int k) { for (int i = 0; i < k; i++) if (a >= b[i] && a < b[i] + n[i]) return 1; return 0; }
 static int page_zero(const uint8_t *p) { const uint64_t *q = (const uint64_t *)p; for (size_t i = 0; i < 0x4000 / 8; i++) if (q[i]) return 0; return 1; }
 static int g_dump_noread; static uint64_t g_dump_noread_b, g_dump_released;
+// 后备文件按块查（file_extent）：有数据的段数 / 字节、查不了走兜底的次数；对照诊断（S2A_SNAP_EXTENT_CHECK=1）的三个计数
+static uint64_t g_ext_n, g_ext_b, g_ext_old_nz, g_ext_new_nz, g_ext_miss; static int g_ext_fallback, g_ext_check;
 // 按内容去重：一页（16 KB）内容与前面某页完全相同 → 不存数据，记（这页地址, 源页地址）进 memdup.bin，恢复时写回完再拷。
 //   一款小游戏 iPhone 上同一块约 90 MB 数据在堆里有十来份（1.3 GB 里约 870 MB 是重复页）；判重只算哈希 + 撞上时整页比，不压缩、不拖冻结
 typedef struct { uint64_t dst, src; } dup_t;
@@ -301,6 +303,14 @@ static uint64_t page_hash(const uint8_t *p) {   // 四路乘法异或，只求�
 }
 int s2a_snap_page_released(uint64_t hp) __attribute__((weak));   // svc_mem.c：游戏已释放、待清零的页（文件后备的懒清零）；不链 svc_mem 的单测没有
 static _Atomic int g_snap_abandoned;   // 看门狗放弃了这次存档（定义在看门狗一节）：游戏已解冻、内存权限已还原，存档线程不能再读游戏内存
+#include "snapfile.h"   // 后备文件里「已写回、不在内存里」的页按实际分配的块找（snap_file_mark），单测与宿主自检同一份
+static void snap_progress_tick(void) { s2a_snap_progress(NULL); }
+// 宿主自检（S2A_SNAP_EXTENT_SELFTEST=1，真机验证用）：起局时在临时目录跑一遍 s2a_snap_extent_selftest，结果进日志
+__attribute__((constructor)) static void snap_extent_selftest_ctor(void) {
+    const char *e = getenv("S2A_SNAP_EXTENT_SELFTEST"); if (!e || *e != '1') return;
+    char msg[512]; int rc = s2a_snap_extent_selftest(getenv("TMPDIR"), 0, msg, sizeof msg);
+    LOG("%s即时存档自检（后备文件按块查）：%s；%s", rc ? "【红】" : "", rc ? "不通" : "通过", msg);
+}
 static int dump_mem(FILE *f, uint64_t *raw_out, uint64_t *comp_out, int *nreg) {
     uint64_t base, size; s2a_window_get(&base, &size); const uint64_t pg = 0x4000, CH = 8ull << 20;
     uint64_t sb[1024], sn[1024]; int ns = s2a_snap_shared_ranges(sb, sn, 1023);
@@ -308,6 +318,7 @@ static int dump_mem(FILE *f, uint64_t *raw_out, uint64_t *comp_out, int *nreg) {
     span_t *sp = NULL; int nsp = 0, cap = 0; *nreg = 0;
     int s2a_guest_fd(void); int gfd = s2a_guest_fd(); uint64_t nfile = 0;   // vawin.c：客体内存文件后备的描述符（没开 = -1）
     struct { uint64_t a, n; int prot; } *nr = NULL; int nnr = 0, cnr = 0;   // 临时加了读权限的段（存完原样还原）
+    g_ext_n = g_ext_b = g_ext_old_nz = g_ext_new_nz = g_ext_miss = 0; g_ext_fallback = 0; { const char *e = getenv("S2A_SNAP_EXTENT_CHECK"); g_ext_check = e && *e == '1'; }
     g_dump_noread = 0; g_dump_noread_b = 0; g_dump_released = 0; g_ndup = 0;
     size_t hcap = 1 << 16, hn = 0; uint64_t *hk = calloc(hcap, 8), *hv = calloc(hcap, 8); double t_hash = 0;   // 去重表：页哈希 → 首次出现的页地址
     // 1) 收集要存的连续页段：当前可读、非代码、不在服务层共享内存里、驻留（含换出）、非全零
@@ -329,14 +340,28 @@ static int dump_mem(FILE *f, uint64_t *raw_out, uint64_t *comp_out, int *nreg) {
         size_t np = (size_t)((hi - lo) / pg); char *vec = malloc(np); if (!vec || mincore((void *)lo, hi - lo, vec)) { free(vec); continue; }
         // 文件后备窗口（S2A_GUEST_FILE，iPhone 缺省开；runtime/src/vawin.c 窗口映射在后备文件偏移 0）：写过的页被系统写回文件、撤出内存后，mincore 既不报
         //   驻留也不报换出（换出标志只管匿名内存），原先按「没碰过」跳过，恢复后是全零（11-17 iPhone 一款大游戏恢复后 6 秒崩在分配器读空指针，同款 Mac 没开后备、正常）。
-        //   后备文件是稀疏的：从没写过 / 游戏还页打过洞的地方是洞。这段在文件里有数据的页，mincore 没报也照样读（读时系统从文件读回）
-        if (gfd >= 0) for (off_t o = (off_t)(lo - base), end = (off_t)(hi - base); o < end; ) {
-            s2a_snap_progress(NULL);   // 看门狗：文件数据区逐块报时刻（同上）
-            off_t d = lseek(gfd, o, SEEK_DATA); if (d < 0 || d >= end) break;
-            off_t h = lseek(gfd, d, SEEK_HOLE); if (h < 0 || h > end) h = end;
-            for (off_t q = d & ~(off_t)(pg - 1); q < h; q += pg) { size_t i = (size_t)((uint64_t)q - (lo - base)) / pg; if (i < np && !(vec[i] & (MINCORE_INCORE | MINCORE_PAGED_OUT))) { vec[i] |= MINCORE_PAGED_OUT; nfile++; } }
-            o = h;
+        //   后备文件是稀疏的：从没写过 / 游戏还页打过洞的地方是洞。这段在文件里有数据的页，mincore 没报也照样读（读时系统从文件读回）。
+        //   哪里有数据按文件实际分配的块问（F_LOG2PHYS_EXT：空洞回物理位置 -1 和到下一段数据的长度），不用 SEEK_DATA / SEEK_HOLE：
+        //   文件还有可写共享映射时 APFS 把整个文件都报成数据（Mac / iPhone 实测：只写两页的 1 GB 文件 SEEK_HOLE(0) = 文件末尾，解映射后才准），
+        //   原先整个窗口（几十 GB）逐页读回判零：一款大游戏 iPhone 存档「内存」段 12～15 秒、Mac 强制文件后备 17 秒。
+        //   还没写回的脏页没有块（报空洞），但它们驻留、mincore 照样报
+        char *ck = NULL;   // 对照诊断（S2A_SNAP_EXTENT_CHECK=1）：按块查之前，记下哪些页不驻留、不换出——旧方法（SEEK_DATA 把整段报成数据）会逐页读回判零的那些
+        if (gfd >= 0 && g_ext_check && (ck = malloc(np))) for (size_t i = 0; i < np; i++) ck[i] = !(vec[i] & (MINCORE_INCORE | MINCORE_PAGED_OUT));
+        if (gfd >= 0) {   // 看门狗：文件数据区逐段报时刻（snap_progress_tick）
+            snap_file_stat st = {0}; snap_file_mark(gfd, (off_t)(lo - base), np, pg, vec, &st, snap_progress_tick, 0);
+            if (st.fallback && !g_ext_fallback) LOG("【红】即时存档：后备文件按块查数据区失败（F_LOG2PHYS_EXT errno %d），整段按有数据读回（存档会慢）", st.err);
+            g_ext_fallback += st.fallback; g_ext_n += st.next; g_ext_b += st.bext; nfile += st.nfile;
         }
+        if (ck) {   // 旧方法会读的页里非零的，新方法必须都标上（否则就是漏页：恢复后那页是零）。
+            //   从后备文件按偏移 pread 进一页缓冲判零、临时关这个文件的页缓存（F_NOCACHE）：经映射读几十 GB 空洞会给每页填零页进页缓存，
+            //   iPhone 上读到一半 App 被系统结束（真机实测）；每 4096 页报一次看门狗进度（对照要读遍整段，本来就慢）
+            static _Alignas(16384) uint8_t pbuf[0x4000]; fcntl(gfd, F_NOCACHE, 1);
+            for (size_t i = 0; i < np; i++) {
+                if (!(i & 4095)) s2a_snap_progress(NULL);
+                if (!ck[i]) continue;
+                if (pread(gfd, pbuf, pg, (off_t)(lo - base + i * pg)) != (ssize_t)pg) continue;
+                int nz = !page_zero(pbuf); g_ext_old_nz += nz; if (nz && (vec[i] & MINCORE_PAGED_OUT)) g_ext_new_nz++; if (nz && !(vec[i] & MINCORE_PAGED_OUT)) g_ext_miss++; }
+            fcntl(gfd, F_NOCACHE, 0); free(ck); }
         for (size_t i = 0; i < np; i++) {
             uint64_t pa = lo + i * pg;
             // 看门狗：一段里逐页判零每 4096 页（64 MB）报一次时刻。文件后备下一段可达几十 GB、页要从文件读回，整段扫完超过 10 秒，
@@ -385,7 +410,10 @@ static int dump_mem(FILE *f, uint64_t *raw_out, uint64_t *comp_out, int *nreg) {
     }
     uint64_t z = 0; e |= fwrite(&z, 8, 1, f) != 1;
     for (int i = 0; i < nnr; i++) mprotect((void *)nr[i].a, nr[i].n, (nr[i].prot & VM_PROT_WRITE ? PROT_WRITE : 0) | (nr[i].prot & VM_PROT_EXECUTE ? PROT_EXEC : 0));   // 还原（原先没有读）
-    if (gfd >= 0) LOG("即时存档：客体内存文件后备 已写回文件、不在内存里的页 %llu 个按文件数据区补存（%.1f MB）", (unsigned long long)nfile, nfile * (double)pg / 1048576.0);
+    if (gfd >= 0) LOG("即时存档：客体内存文件后备 已写回文件、不在内存里的页 %llu 个按文件数据区补存（%.1f MB）；按块查：有数据 %llu 段 %.1f MB，兜底 %d 次", (unsigned long long)nfile, nfile * (double)pg / 1048576.0,
+                      (unsigned long long)g_ext_n, g_ext_b / 1048576.0, g_ext_fallback);
+    if (gfd >= 0 && g_ext_check) LOG("%s即时存档对照：旧方法（整段读回判零）非零页 %llu 个、新方法（按块查）标到其中 %llu 个、漏 %llu 个", g_ext_miss ? "【红】" : "",
+                                      (unsigned long long)g_ext_old_nz, (unsigned long long)g_ext_new_nz, (unsigned long long)g_ext_miss);
     if (nnr) LOG("即时存档：不可读的内存段 %d 段 %.1f MB 临时加读存进快照（游戏设的权限，恢复时照权限账收回）", nnr, g_dump_noread_b / 1048576.0);
     free(hk); free(hv);
     if (g_ndup) LOG("即时存档：游戏内存按内容去重 %zu 页（%.1f MB）只记引用不存数据（判重 %.2f s）", g_ndup, g_ndup * (double)pg / 1048576.0, t_hash);
