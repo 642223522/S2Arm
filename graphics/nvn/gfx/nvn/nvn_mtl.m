@@ -19693,6 +19693,7 @@ void nvn_be_present_prepare(const tex_t *t) {
 }
 uint64_t nvn_be_present(const tex_t *t, double period, const int crop[4]) { int c[4] = {0}; if (crop) memcpy(c, crop, sizeof c); wd_present(t, c); return present_enqueue(t, period, crop || c[2] || c[3] ? c : NULL, 0); }   // S2Arm widen: present notice (a fallback crop the core set counts even when the game gave none)
 void *mtl_device(void) { mtl_init(); return (__bridge void *)g_dev; }
+void *mtl_nocopy_buf(void *p, uint64_t n) { mtl_init(); id<MTLBuffer> b = nocopy_buf(p, (NSUInteger)n, nil); return b ? (__bridge_retained void *)b : NULL; }   // Vulkan 前端（hle_vk.m / vk_snap.inc）的零拷贝缓冲走同一记账
 // An external producer's texture (the Vulkan layer's swapchain images): a serial the present path resolves (serial_put), resident for the Metal 4 queue, never collected by the cross-submit ledger
 uint64_t mtl_ext_tex(void *tex) {
     static _Atomic uint64_t n; id<MTLTexture> t = (__bridge id<MTLTexture>)tex; uint64_t ser = (1ull << 62) + atomic_fetch_add(&n, 1) + 1;
