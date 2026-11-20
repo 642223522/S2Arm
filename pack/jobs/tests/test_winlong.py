@@ -19,7 +19,7 @@ class StrictShortRootResolve(unittest.TestCase):
         self.original_realpath = winlong.ntpath.realpath
         self.real_lstat = winlong.os.lstat
         self.real_stat = winlong.os.stat
-        self.alias = r"C:\Users\tester\AppData\Local\S2A\j\z9e9"
+        self.alias = r"C:\S2AFixture\j\z9e9"
         self.source = self.alias + r"\games\game\build\extract"
         self.table = "A:\\_game\\ios\\games\t" + self.alias
         self.error = OSError(22, "filesystem final-path query unsupported")
