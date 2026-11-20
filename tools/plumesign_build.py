@@ -84,7 +84,7 @@ def vendor_deps(src, vendor):
     Path(vendor, "cargo-config.toml").write_text(conf + "\n", encoding="utf-8")
 
 
-CHECK = PATCHES / "check/login_fallback_check.rs"
+CHECKS = PATCHES / "check"   # 每个 .rs 是一个检查程序，编之前逐个跑
 
 
 def check(src, work, offline=False):
@@ -92,15 +92,18 @@ def check(src, work, offline=False):
     member = src / "apps/s2acheck"
     ws, lock = (src / "Cargo.toml").read_text(encoding="utf-8"), (src / "Cargo.lock").read_text(encoding="utf-8")
     try:
-        (member / "src").mkdir(parents=True, exist_ok=True)
-        shutil.copy2(CHECK, member / "src/main.rs")
-        (member / "Cargo.toml").write_text('[package]\nname = "s2a-login-fallback-check"\nversion = "0.1.0"\nedition = "2024"\n[dependencies]\n'
+        (member / "src/bin").mkdir(parents=True, exist_ok=True)
+        checks = sorted(CHECKS.glob("*.rs"))
+        for c in checks:
+            shutil.copy2(c, member / "src/bin" / c.name)
+        (member / "Cargo.toml").write_text('[package]\nname = "s2a-patch-check"\nversion = "0.1.0"\nedition = "2024"\n[dependencies]\n'
                                           'plume_core = { path = "../../crates/plume_core", features = ["tweaks"] }\n'
                                           'omnisette = { path = "../../3rdparty/omnisette", features = ["remote-anisette-v3"] }\n'
                                           'tokio = { workspace = true }\n', encoding="utf-8")
         (src / "Cargo.toml").write_text(ws.replace('    "crates/plume_utils",\n]', '    "crates/plume_utils",\n    "apps/s2acheck",\n]', 1), encoding="utf-8")
         env = dict(os.environ, CARGO_TARGET_DIR=str(work / "target-check"))
-        run(["cargo", "run", "-q", "-p", "s2a-login-fallback-check"] + (["--offline"] if offline else []), cwd=src, env=env)
+        for c in checks:
+            run(["cargo", "run", "-q", "-p", "s2a-patch-check", "--bin", c.stem] + (["--offline"] if offline else []), cwd=src, env=env)
     finally:
         shutil.rmtree(member, ignore_errors=True)
         (src / "Cargo.toml").write_text(ws, encoding="utf-8"); (src / "Cargo.lock").write_text(lock, encoding="utf-8")
