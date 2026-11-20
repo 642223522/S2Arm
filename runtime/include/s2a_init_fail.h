@@ -39,6 +39,8 @@ enum { S2A_INIT_FAIL_EXIT = 1, S2A_INIT_FAIL_PAGE = 2 };
 #define S2A_INIT_FAIL_MSG_HEAP_EN "This game needs more memory. It has been noted, so tap Start again and it will run."
 #define S2A_INIT_FAIL_MSG_EXEC    "系统不允许运行这款游戏的代码：用 LiveContainer 之类的工具装的 S2Arm 会这样。请改用电脑上的 S2Arm，对这款游戏点「推到 iPhone」安装后再打开。"
 #define S2A_INIT_FAIL_MSG_EXEC_EN "The system won't let this game's code run. This happens when S2Arm was installed with a tool such as LiveContainer. Install it from S2Arm on your computer instead (choose \"Push to iPhone\" for this game), then open it again."
+#define S2A_INIT_FAIL_MSG_EXEC_CERT    "这个 S2Arm 是用分发证书签名安装的：系统只允许开发证书签的 App 运行放在 App 外的游戏程序。请在电脑上的 S2Arm 改用 Apple ID 登录（或换开发证书）重新安装 S2Arm。"
+#define S2A_INIT_FAIL_MSG_EXEC_CERT_EN "This S2Arm was signed with a distribution certificate. iOS only lets apps signed with a development certificate run game code kept outside the app. In S2Arm on your computer, sign in with an Apple ID (or use a development certificate) and install S2Arm again."
 #define S2A_INIT_FAIL_MSG_DEVICE  "这台设备的内存和地址空间不够运行这款游戏，换一台内存更大的 iPhone / iPad 再试；诊断里有它要多少、这台设备有多少。"
 #define S2A_INIT_FAIL_MSG_DEVICE_EN "This device doesn't have enough memory and address space to run this game. Try an iPhone or iPad with more memory; the diagnostics show how much it needs and how much this device has."
 // 错误码：由失败出口显式指定（host_main.c failed_session 的调用点一处一个），不从摘要文本猜。
@@ -54,7 +56,8 @@ enum { S2A_INIT_FAIL_EXIT = 1, S2A_INIT_FAIL_PAGE = 2 };
     X(S2A_INIT_FAIL_E_DIRECT_LIB,    "direct_lib_missing", "设备跑不了直连（无 Metal 4 / Metal 3 路径）；包里没带直连库不再停在这里（11-13 起现编）", S2A_INIT_FAIL_MSG_SHADERS) \
     X(S2A_INIT_FAIL_E_DEVICE_ADDRESS, "device_address_space", "设备地址空间不够跑这款：地址窗口连模块段、栈、堆前段都放不下（#446，原先 abort 静默闪退），或游戏要的堆超出本机给得出的窗口（#01b36b，原先写进宿主映像 SIGBUS）", S2A_INIT_FAIL_MSG_DEVICE) \
     X(S2A_INIT_FAIL_E_HEAP_LEARNED, "heap_learned", "普通堆超出堆区、游戏随后中止：已记下本款要的堆（wire/<程序号>/heap_need），下一局堆区按它给（D-NGH9）", S2A_INIT_FAIL_MSG_HEAP) \
-    X(S2A_INIT_FAIL_E_IMAGE_EXEC,   "image_exec_denied", "外置镜像代码段映射被系统拒（errno=EPERM）：签名已注册但不许可执行映射，所见 4 张卡都是 LiveContainer 装法（#63639b）", S2A_INIT_FAIL_MSG_EXEC)
+    X(S2A_INIT_FAIL_E_IMAGE_EXEC,   "image_exec_denied", "外置镜像代码段映射被系统拒（errno=EPERM）：签名已注册但不许可执行映射，所见 4 张卡都是 LiveContainer 装法（#63639b）", S2A_INIT_FAIL_MSG_EXEC) \
+    X(S2A_INIT_FAIL_E_IMAGE_EXEC_CERT, "image_exec_cert", "外置镜像代码段映射被系统拒（errno=EPERM），且本进程签名没有 get-task-allow（分发 / ad hoc / 企业证书签的 App）：iOS 只给带它的进程映射 App 外的代码（#1760 单变量复现）", S2A_INIT_FAIL_MSG_EXEC_CERT)
 #define S2A_INIT_FAIL_ENUM_(e, id, summary, msg) e,
 enum { S2A_INIT_FAIL_E_UNKNOWN = 0, S2A_INIT_FAIL_CODES(S2A_INIT_FAIL_ENUM_) S2A_INIT_FAIL_E_COUNT };
 #undef S2A_INIT_FAIL_ENUM_
