@@ -76,6 +76,42 @@
    }
   },
   {
+   "platforms": [
+    "mac",
+    "windows"
+   ],
+   "image": {
+    "zh-Hans": "feature/v060-selfsign.jpg",
+    "en": "feature/v060-selfsign-en.jpg"
+   },
+   "kicker": {
+    "zh-Hans": "自签玩家 · 不用电脑也能导入",
+    "en": "Self-signing · import without a computer"
+   },
+   "title": {
+    "zh-Hans": "用 AltStore / SideStore 的，手机上就能导入游戏",
+    "en": "Using AltStore / SideStore? Import games right on your phone"
+   },
+   "what": {
+    "zh-Hans": "把 AltStore / SideStore 的签名证书导进 S2Arm，之后电脑导出的或朋友分享的游戏，放进手机就能玩。**不用电脑登录 Apple ID，也不用新建证书。**",
+    "en": "Bring your AltStore / SideStore signing certificate into S2Arm, and games exported from your computer or shared by a friend play as soon as you put them on the phone. **No Apple ID sign-in on a computer, no new certificate.**"
+   },
+   "how": {
+    "zh-Hans": "① 在 AltStore 或 SideStore 的设置里「**导出签名证书**」，设一个密码。② 打开 S2Arm：齿轮 →「**签名证书**」→「**导入 .p12…**」，选这份证书，输入密码。③ 把 .s2arm 和 .img 放进 S2Arm 的「**放这里导入**」。",
+    "en": "① In AltStore or SideStore settings, **export your signing certificate** and set a password. ② Open S2Arm: gear → **Signing certificate** → **Import .p12…**, pick the certificate and enter the password. ③ Put the .s2arm and .img files into S2Arm's **Import Here** folder."
+   },
+   "where": {
+    "zh-Hans": "同一个 Apple ID 只在一台电脑的 AltServer 上管理：两台电脑都用会互相作废证书，AltStore 会弹「Multiple AltServers」。7 天到期前在 AltStore 点「Refresh All」即可，S2Arm 里不用再做什么。",
+    "en": "Manage each Apple ID from AltServer on only one computer: using two makes them revoke each other's certificates, and AltStore shows \"Multiple AltServers\". Before the 7 days run out, just tap Refresh All in AltStore; nothing else to do in S2Arm."
+   },
+   "labels": {
+    "where": {
+     "zh-Hans": "要知道",
+     "en": "Good to know"
+    }
+   }
+  },
+  {
    "audience": "upgrade",
    "image": {
     "zh-Hans": "feature/v060-upgrade.jpg",
