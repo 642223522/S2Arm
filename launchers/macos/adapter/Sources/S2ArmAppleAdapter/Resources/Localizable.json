@@ -10654,5 +10654,9 @@
  {
   "source": "打开「Windows 安全中心 → 应用和浏览器控制 → 漏洞利用保护设置 → 系统设置」，把「强制映像随机化（强制性 ASLR）」改回「使用默认值（关）」，再打一次包。",
   "en": "Open Windows Security → App & browser control → Exploit protection settings → System settings, set \"Force randomization for images (Mandatory ASLR)\" back to \"Use default (Off)\", then package again."
+ },
+ {
+  "source": "游戏输入键 {0}",
+  "en": "Game input key {0}"
  }
 ]
