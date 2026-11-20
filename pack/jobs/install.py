@@ -2218,14 +2218,18 @@ def push_phone(c):
     否则同 phone_for。不读电脑的签名方式（sign_mode）：电脑选什么，手机上照样可能是 AltStore 装的"""
     if os.name == "nt":
         ph = WinPhone(c)
-        bid = external_s2arm(c, ph.udid, layout.load_device(c, ph.key))
-        if bid:
+        who, bid = s2arm_owner(c, ph.udid, layout.load_device(c, ph.key))
+        if who == "choose":
+            raise Failure(PHONE_APP_CHOICE, code="phone_app_choice_required")
+        if who == "external":
             ph.bid, ph.external = bid, True
         return ph
     dev = phone(c)
     udid = udid_of(c, dev["id"])
-    bid = external_s2arm(c, udid, layout.load_device(c, udid or dev["id"]))
-    return ExternalPhone(c, bid, dev, udid) if bid else mac_phone(c, dev=dev, udid=udid)
+    who, bid = s2arm_owner(c, udid, layout.load_device(c, udid or dev["id"]))
+    if who == "choose":   # 装着不止一个、玩家还没选：不替玩家挑，总控台列出来让他选（phoneChooseApp）
+        raise Failure(PHONE_APP_CHOICE, code="phone_app_choice_required")
+    return ExternalPhone(c, bid, dev, udid) if who == "external" else mac_phone(c, dev=dev, udid=udid)
 
 
 GID_RE = re.compile(r"[0-9A-F]{16}")
@@ -2753,34 +2757,60 @@ def installed_s2arm_on(c, udid):
 
 
 def s2arm_owner(c, udid, rec):
-    """这台手机上的 S2Arm 是谁装的（11-19 走查结构 4、5；总控台与推送共用这一个判断）→ (谁, 包名)：
-    ('launcher', 启动器记下的包名)：设备记录 rec 有壳号、且它记下的包名还装着；('external', 包名)：装着的是别的工具（AltStore / SideStore / ESign …）装的，
-    取装着的 S2Arm 里包名排序第一个（同一台手机一般只装一份）；('none', None)：一个都没装；(None, None)：列不出已装 App（工具旧 / 断开）。
-    不看电脑的签名方式（sign_mode 管电脑签不签，与手机上是谁装的正交）"""
+    """这台手机上用哪个 S2Arm（11-19 走查结构 4、5；总控台与推送共用这一个判断）→ (谁, 包名)：
+    ('launcher', 包名)：用的是这台电脑的启动器装的（设备记录 rec 有壳号、记下的包名还装着）；('external', 包名)：用的是别的工具（AltStore / SideStore / ESign …）装的；
+    ('choose', None)：装着两个及以上、玩家还没选（或选过的那个已经不在）——让玩家在总控台选（phoneChooseApp），不替玩家挑（11-20 维护者：玩家自选优先，
+    原先按「已导入签名身份 → 包名排序」挑，同机还装着别的电脑的启动器装的那份时挑错）；('none', None)：一个都没装；(None, None)：列不出已装 App（工具旧 / 断开）。
+    只有一个时直接用它。不看电脑的签名方式（sign_mode 管电脑签不签，与手机上是谁装的正交）"""
     apps = installed_s2arm_on(c, udid)
     if apps is None:
         return None, None
     if not apps:
         return "none", None
     own = (rec.get("bundleId") or "").lower() if rec.get("shellId") else ""
-    if own and any(a["bundleId"].lower() == own for a in apps):
-        return "launcher", rec["bundleId"]
-    return "external", pick_external(c, udid, apps)
-
-
-def pick_external(c, udid, apps):
-    """别的工具装的 S2Arm 不止一份（真机上见过同时装着 5 个 io.s2arm.games.*）：优先已导入签名身份的（App 写的 current.json 在），
-    其中身份团队与 App 团队对得上的再优先；都判不了才取包名排序第一个，并记一行。只有一份直接用它，不读手机文件"""
-    apps = sorted(apps, key=lambda a: a["bundleId"])
     if len(apps) == 1:
-        return apps[0]["bundleId"]
-    ids = {a["bundleId"]: phone_identity_meta(c, udid, a["bundleId"]) for a in apps}
-    have = [a for a in apps if ids[a["bundleId"]]]
-    same = [a for a in have if a["team"] and (ids[a["bundleId"]].get("team") or "") == a["team"]]
-    pick = (same or have or apps)[0]["bundleId"]
-    if not have:
-        trace(c, f"手机上装着 {len(apps)} 个别的工具装的 S2Arm、都没导入签名身份，按包名取 {pick}：{', '.join(a['bundleId'] for a in apps)}")  # 非玩家句
-    return pick
+        bid = apps[0]["bundleId"]
+    else:
+        chosen = (rec.get("chosenBundleId") or "").lower()
+        bid = next((a["bundleId"] for a in apps if chosen and a["bundleId"].lower() == chosen), None)
+        if not bid:
+            return "choose", None
+    return ("launcher" if own and bid.lower() == own else "external"), bid
+
+
+def s2arm_candidates(c, udid, rec):
+    """总控台让玩家选的候选（s2arm_owner 判 choose 时列）：手机上装着的每个 S2Arm → [{bundleId, team, byThisLauncher, identityTeam}]，按包名排序；
+    byThisLauncher = 这台电脑的启动器装的（设备记录的壳号与包名），identityTeam = 这个 S2Arm 导入的签名证书的团队（没导入为 None）。列不出 → []"""
+    apps = installed_s2arm_on(c, udid) or []
+    own = (rec.get("bundleId") or "").lower() if rec.get("shellId") else ""
+    out = []
+    for a in sorted(apps, key=lambda a: a["bundleId"]):
+        meta = phone_identity_meta(c, udid, a["bundleId"])
+        out.append(dict(bundleId=a["bundleId"], team=a["team"], byThisLauncher=bool(own) and a["bundleId"].lower() == own,
+                        identityTeam=(meta or {}).get("team") or None))
+    return out
+
+
+PHONE_APP_CHOICE = "这台 iPhone 上装着不止一个 S2Arm：先在 iPhone 总控台选好用哪一个，再推游戏。"
+PHONE_APP_GONE = "选的这个 S2Arm 不在这台 iPhone 上了：在总控台重新选一次。"
+
+
+def phone_choose_app(c):
+    """作业 phoneChooseApp（总控台「选用哪个 S2Arm」，11-20 维护者：玩家自选优先）：请求带 device（UDID）与 bundleId；核实它现在装在这台手机上，
+    记进设备记录 chosenBundleId，之后推送 / 总控台都用它，直到它不在了再问。→ {device, bundleId}"""
+    udid = (c.r.get("device") or "").strip()
+    want = (c.r.get("bundleId") or "").strip()
+    if not udid or not want:
+        raise Failure("没说要选哪台 iPhone 上的哪一个 S2Arm。", code="job_failed")  # 非玩家句（前端按清单发，不会缺）
+    apps = installed_s2arm_on(c, udid)
+    if apps is None:
+        raise Failure("读不出这台 iPhone 上装了哪些 App：确认 iPhone 连着、已解锁，再试一次。", code="device_not_ready")
+    hit = next((a["bundleId"] for a in apps if a["bundleId"].lower() == want.lower()), None)
+    if not hit:
+        raise Failure(PHONE_APP_GONE, code="phone_app_gone")
+    rec = layout.load_device(c, udid)
+    layout.save_device(c, udid, dict(rec, chosenBundleId=hit))
+    return dict(device=udid, bundleId=hit)
 
 
 def phone_identity_meta(c, udid, bid):

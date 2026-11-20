@@ -111,6 +111,8 @@ RECOVERY = {
     "device_tunnel_unavailable": "电脑连不上这台 iPhone 的开发者通道（手机通过 Wi-Fi 连着时最常见，不是没解锁）：用数据线把手机直接插到这台电脑（别经过扩展坞或集线器），解锁停在主屏幕，再点一次；还不行就重启一次手机，插上后在手机上重新点「信任」。",
     "device_locked": "解锁这台 iPhone（保持亮屏、停在主屏幕），再点一次「推到 iPhone」；装机过程中别锁屏。",
     "shell_install_required": "在 S2Arm 里先点「安装 S2Arm」把 App 装到这台 iPhone，再对这款点「推到 iPhone」。",   # 通用壳「推到 iPhone」：手机上还没装壳（install.push_game）
+    "phone_app_choice_required": "在 iPhone 总控台里选好这台手机用哪一个 S2Arm（AltStore / SideStore 装的，还是启动器装的），再推游戏；选一次就记住。",   # 同机装着不止一个 S2Arm（install.s2arm_owner choose）
+    "phone_app_gone": "在 iPhone 总控台里重新选一次用哪一个 S2Arm：选过的那个已经不在这台 iPhone 上了。",   # phoneChooseApp 选的包不在手机上
     "shell_update_required": "在 S2Arm 里先点「更新 S2Arm」，把手机上的 App 换成这一版，再对这款点「推到 iPhone」。",   # 通用壳「推到 iPhone」：手机上的壳不是本版
     "device_not_visible": "用数据线把这台 iPhone 连到这台 Mac，解锁后在手机上点「信任」；打开开发者模式（设置 → 隐私与安全性 → 开发者模式，开了要重启手机）；等 Xcode 菜单「窗口 → 设备与模拟器」里出现这台，再点一次「推到 iPhone」。",   # pack/ensure_profile.sh：Xcode 看不到这台、账号上也没登记过它（D-44DP 兜底的盲区，11-16）
     "free_app_limit": "免费 Apple ID 在每台设备上最多同时装 3 个自签 App，这台 iPhone 已经装满：在 iPhone 上长按删掉一个不再玩的自签 App 后重试；或改用付费 Apple 开发者账号（没有这个上限）。",

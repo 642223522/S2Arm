@@ -282,15 +282,18 @@ def phone_overview(c):
                     why.append("shaderMiss")   # 这台手机上现场翻译过包里没有的着色器、包又比当前启动器旧：重新出包能补上
                 games.append(dict(gameId=g, state="suggested", reasons=why) if why else dict(gameId=g, state="latest"))
         # 谁装的 S2Arm：连着就现查（install.s2arm_owner），列不出 / 没连着就按设备记录（启动器装过 = 有壳号；别的工具装的 = 推过时记下的 externalBundleId）
-        who, ext = (None, None)
+        who, ext, cands = (None, None, None)
         if online and online.get(key):
             import install
             who, ext = install.s2arm_owner(c, key, rec)
+            if who == "choose" or rec.get("chosenBundleId"):   # 装着不止一个：列候选让玩家选（选过的也带上，可以换）
+                cands = install.s2arm_candidates(c, key, rec)
         if who is None:
             who = "launcher" if rec.get("shellId") else "external" if rec.get("externalBundleId") else None
             ext = rec.get("externalBundleId") if who == "external" else None
         external = who == "external"
-        phone = dict(device=key, name=signed.get("device") or names.get(key) or "", installed=who in ("launcher", "external") if who else bool(rec.get("shellId")),
+        choose = who == "choose"
+        phone = dict(device=key, name=signed.get("device") or names.get(key) or "", installed=who in ("launcher", "external", "choose") if who else bool(rec.get("shellId")),
                      installedBy=who if who in ("launcher", "external") else None, bundleId=ext if external else rec.get("bundleId") or "",
                      shellCurrent=None if external else bool(sid) and rec.get("shellId") == sid, signedAt=at, free=free,
                      signMode="external" if external else _sign_mode(c, rec, signed),
@@ -299,6 +302,10 @@ def phone_overview(c):
                      lastSeen=rec.get("at") if isinstance(rec.get("at"), (int, float)) else None, canSign=_can_sign(rec), games=games)
         if external:   # 别的工具装的：给它自己的一套按钮，不出「安装 S2Arm」（会新建证书、顶掉玩家 AltStore 的证书）
             phone["actions"] = list(EXTERNAL_PHONE_ACTIONS)
+        if choose:   # 装着不止一个、玩家还没选：只给「选用哪个 S2Arm」，不替玩家挑、不出安装
+            phone.update(needsChoice=True, bundleId="", signMode=None, shellCurrent=None, actions=["chooseApp"])
+        if cands and len(cands) > 1:
+            phone["candidates"] = cands   # 前端据此列候选（要选时）或给「换一个」入口（选过了）；不往 actions 里加，启动器装的手机按钮照旧由前端算
         if online is not None:
             phone["online"] = online.get(key)
         phones.append(phone)

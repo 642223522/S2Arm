@@ -186,7 +186,7 @@ import S2ArmAppleAdapter
                 return .bad("这台手机的总控台上没有这个按钮（此刻有：\(model.consoleActions(phone).map(\.rawValue).joined(separator: " / "))）", code: 409)
             }
             if let b = phoneBusy() { return b }
-            if let why = model.runConsoleAction(action, device: device, ids: a["gameIds"] as? [String], language: "zh-Hans") { return .bad(why, code: 409) }
+            if let why = model.runConsoleAction(action, device: device, ids: a["gameIds"] as? [String], bundleId: str("bundleId"), language: "zh-Hans") { return .bad(why, code: 409) }
             return .ok()
         case ("POST", "/restore-iphone"):
             guard let g = game() else { return .bad("没有这个 gameId") }
@@ -365,7 +365,7 @@ import S2ArmAppleAdapter
         ["POST /install-action {gameId, id}", "点装机前清单里一项的按钮（id = 清单项 id）：按这一项的 action 打开对应的面板 / 页面（appleLogin 登录面板、pickDevice 装到哪台、trustHelp / developerModeHelp 说明、openExport 出包页、devCertSettings 设置的证书一栏）；那一项已好或没有动作回 409。打开了什么看 GET /state 的 presented"],
         ["POST /install {gameId, acceptDropped?, acceptNoBackup?, acceptStale?}", "装到 iPhone（不用先 installCheck，缺什么作业报真实原因）；可确认的失败码先问玩家、同意了带对应参数再发：container_would_drop → acceptDropped（手机上有别的电脑装的游戏这次带不上）、save_backup_failed → acceptNoBackup（覆盖前没能备份存档）、container_stale → acceptStale（旧资源包要重出）"],
         ["POST /phone-identity {device, force?}", "把这台电脑的签名身份交给手机上的 S2Arm（AltStore / SideStore / 证书 App 装的团队对得上也交），以后手机上自己签导入的游戏包；交过了不重交（force = 照样重交）；结果看 GET /state 的 tasks（operation = phoneIdentity）"],
-        ["POST /console-action {device, action, gameIds?}", "同点总控台这台手机上的按钮：action 只认 GET /state 的 phoneConsole 里这台此刻显示的（installShell / updateShell / renewShell / exportShellIpa / handOverIdentity / updateSelected / pushS2arm / exportS2arm）；gameIds = 推 / 导出哪几款（不给 = 总控台勾选的）；没有这个按钮回 409"],
+        ["POST /console-action {device, action, gameIds?, bundleId?}", "同点总控台这台手机上的按钮：action 只认 GET /state 的 phoneConsole 里这台此刻显示的（installShell / updateShell / renewShell / exportShellIpa / handOverIdentity / updateSelected / pushS2arm / exportS2arm / chooseApp）；gameIds = 推 / 导出哪几款（不给 = 总控台勾选的）；chooseApp 带 bundleId = 选用 phoneConsole 里这台 candidates 的哪一个（同一台手机装着不止一个 S2Arm 时）；没有这个按钮回 409"],
         ["POST /uninstall {gameId, acceptDropped?, acceptNoBackup?}", "从 iPhone 上的 S2Arm 删一款（备份存档 → 更新容器 → 删数据；其余游戏不动）；acceptDropped / acceptNoBackup 同 /install"],
         ["POST /mods {gameId, import?:[路径], enable?:{名字: 真/假}, remove?:[名字]}", "资源替换 mod：导入 zip / 文件夹（找 romfs）、开关（关掉下次开始游戏不叠，装到 iPhone 时机上删掉）、删除；都不给只列；回 {mods:[{name, enabled, files, bytes}], imported, notes}"],
         ["POST /delete {gameId}", "删除这款游戏：IPA / 资源包 / 出包中间产物 / 缓存全删；存档与原始游戏文件保留"],
@@ -445,12 +445,17 @@ import S2ArmAppleAdapter
         ]
     }
 
-    /// GET /state 的 phoneConsole：[{device, installed: {bundleId, by: s2arm | other | null}, actions: [...]}]，actions 与界面同一个来源 consoleActions
+    /// GET /state 的 phoneConsole：[{device, installed: {bundleId, by: s2arm | other | null}, actions: [...], needsChoice, candidates: [{bundleId, team, byThisLauncher, identityTeam}]}]，
+    ///   actions 与界面同一个来源 consoleActions
     static func phoneConsole(_ o: PhoneOverview, model m: S2ArmLauncherModel) -> [[String: Any]] {
         o.phones.map { p in
             let by: Any = p.installedBy.map { $0 == .launcher ? "s2arm" : "other" } ?? NSNull()
             let bundle: Any = p.bundleId.isEmpty ? NSNull() : p.bundleId
-            return ["device": p.device, "installed": ["bundleId": bundle, "by": by] as [String: Any], "actions": m.consoleActions(p).map(\.rawValue)]
+            // needsChoice：装着不止一个 S2Arm、还没选（此时 bundleId = null）；candidates：装着不止一个时的全部候选（选没选过都带），选中的那个就是 installed.bundleId
+            let candidates = p.candidates.map { c in ["bundleId": c.bundleId, "team": c.team, "byThisLauncher": c.byThisLauncher,
+                                                      "identityTeam": c.identityTeam.map { $0 as Any } ?? NSNull()] as [String: Any] }
+            return ["device": p.device, "installed": ["bundleId": bundle, "by": by] as [String: Any], "actions": m.consoleActions(p).map(\.rawValue),
+                    "needsChoice": p.needsChoice, "candidates": candidates]
         }
     }
 

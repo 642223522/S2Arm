@@ -231,6 +231,89 @@ import S2ArmAppleAdapter
         XCTAssertEqual(runner.updates.first?["mode"] as? String, "export", "导出 S2Arm.ipa = installUpdate + mode export（作业 export_shell_ipa）")
         XCTAssertNil(runner.updates.first?["device"], "导出不连手机、不带设备")
     }
+
+    // ---- 同一台 iPhone 上装着不止一个 S2Arm：玩家选、选一次记住（作业契约 host_update.phone_overview needsChoice / candidates、作业 phoneChooseApp）。期望手写 ----
+    private let launcherBid = "io.s2arm.games.example02"
+    private var twoCandidates: [[String: Any]] {
+        [["bundleId": alt, "team": "TEAMALT", "byThisLauncher": false, "identityTeam": "TEAMALT"],
+         ["bundleId": launcherBid, "team": "TEAMOWN", "byThisLauncher": true, "identityTeam": NSNull()]]
+    }
+    private var choosePhoneRow: [String: Any] {
+        ["device": "DUO-1", "name": "我的手机", "installed": true, "bundleId": "", "shellCurrent": NSNull(), "signMode": NSNull(), "online": "usb",
+         "needsChoice": true, "actions": ["chooseApp"], "candidates": twoCandidates, "games": [[String: Any]]()]
+    }
+
+    func testParseNeedsChoiceAndCandidates() {
+        let o = PhoneOverview(result: ["phones": [choosePhoneRow,
+            ["device": "P1", "installed": true, "installedBy": "launcher", "bundleId": launcherBid, "candidates": twoCandidates],
+            ["device": "OLD", "installed": true],
+            ["device": "BAD", "candidates": [["team": "TEAMALT"], ["bundleId": "", "team": "X"]]]]])
+        let ps = o?.phones ?? []
+        XCTAssertEqual(ps.map(\.needsChoice), [true, false, false, false], "没带 needsChoice = 不用选")
+        XCTAssertEqual(ps[0].candidates, [.init(bundleId: alt, team: "TEAMALT", byThisLauncher: false, identityTeam: "TEAMALT"),
+                                          .init(bundleId: launcherBid, team: "TEAMOWN", byThisLauncher: true, identityTeam: nil)], "按作业给的顺序；identityTeam = null → nil")
+        XCTAssertEqual(ps[0].bundleId, ""); XCTAssertTrue(ps[0].installed); XCTAssertNil(ps[0].installedBy)
+        XCTAssertEqual(ps[1].candidates.count, 2, "选过了也带候选")
+        XCTAssertEqual(ps[2].candidates, [], "没带 candidates = 空")
+        XCTAssertEqual(ps[3].candidates, [], "没有包名的候选丢掉")
+    }
+
+    func testCandidateLabels() {
+        typealias C = PhoneOverview.Candidate
+        let keys = S2ArmLauncherModel.candidateLabelKeys
+        XCTAssertEqual(keys(C(bundleId: alt, team: "TEAMALT", byThisLauncher: false, identityTeam: nil)), ["console.choose.byOther"])
+        XCTAssertEqual(keys(C(bundleId: alt, team: "TEAMALT", byThisLauncher: false, identityTeam: "TEAMALT")), ["console.choose.byOther", "console.choose.certImported"],
+                       "导入的证书团队与 App 团队对得上：追加「已导入签名证书」")
+        XCTAssertEqual(keys(C(bundleId: alt, team: "TEAMALT", byThisLauncher: false, identityTeam: "TEAMOTHER")), ["console.choose.byOther"], "团队对不上不算")
+        XCTAssertEqual(keys(C(bundleId: alt, team: "", byThisLauncher: false, identityTeam: nil)), ["console.choose.byOther"], "团队空、没导入不算")
+        XCTAssertEqual(keys(C(bundleId: launcherBid, team: "TEAMOWN", byThisLauncher: true, identityTeam: nil)), ["console.choose.byLauncher"])
+        XCTAssertEqual(BackendText.launcherText("console.choose.byLauncher", language: "zh-Hans"), "这台电脑的启动器装的")
+        XCTAssertEqual(BackendText.launcherText("console.choose.byOther", language: "zh-Hans"), "别的工具装的（AltStore / SideStore 等）")
+        XCTAssertEqual(BackendText.launcherText("console.choose.certImported", language: "zh-Hans"), "已导入签名证书")
+    }
+
+    func testNeedsChoiceOnlyChooseAndChosenGetsChange() throws {
+        let m = try makeModel()
+        let o = PhoneOverview(result: ["phones": [choosePhoneRow]])!
+        m.phoneOverview = o
+        XCTAssertEqual(m.consoleStatus(now: now), .chooseApp, "要选时状态行写装着不止一个")
+        XCTAssertEqual(m.consoleActions(m.consolePhone!), [.chooseApp], "只出「选用哪个 S2Arm」，不出安装 / 更新 S2Arm")
+        let row = S2ArmControl.phoneConsole(o, model: m).first ?? [:]
+        XCTAssertEqual(row["needsChoice"] as? Bool, true)
+        XCTAssertEqual(row["actions"] as? [String], ["chooseApp"])
+        XCTAssertTrue((row["installed"] as? [String: Any])?["bundleId"] is NSNull, "没选时当前包名 = null")
+        let cands = row["candidates"] as? [[String: Any]] ?? []
+        XCTAssertEqual(cands.map { $0["bundleId"] as? String }, [alt, launcherBid])
+        XCTAssertEqual(cands.map { $0["byThisLauncher"] as? Bool }, [false, true]); XCTAssertTrue(cands.last?["identityTeam"] is NSNull)
+        // 选过了：启动器装的那个照旧三颗 + 末尾「换一个」；别的工具装的照旧四颗 + 「换一个」
+        let chosen = PhoneOverview(result: ["phones": [["device": "DUO-1", "installed": true, "installedBy": "launcher", "bundleId": launcherBid, "shellCurrent": true,
+                                                        "online": "usb", "candidates": twoCandidates]]])!
+        m.phoneOverview = chosen
+        XCTAssertEqual(m.consoleActions(m.consolePhone!), [.renewShell, .handOverIdentity, .updateSelected, .chooseApp])
+        let c = S2ArmControl.phoneConsole(chosen, model: m).first ?? [:]
+        XCTAssertEqual((c["installed"] as? [String: Any])?["bundleId"] as? String, launcherBid, "选中的就是 installed.bundleId")
+        XCTAssertEqual(c["needsChoice"] as? Bool, false)
+        m.phoneOverview = PhoneOverview(phones: [externalPhone()])
+        XCTAssertEqual(m.consoleActions(m.consolePhone!), externalFour, "只装着一个：没有「换一个」")
+    }
+
+    func testChooseAppRunsJobThenReprobesThisPhone() async throws {
+        let runner = ConsoleRunner(probePhones: [choosePhoneRow])
+        let m = try makeModel(runner)
+        m.phoneOverview = PhoneOverview(result: ["phones": [choosePhoneRow]])
+        XCTAssertNotNil(m.runConsoleAction(.chooseApp, device: "DUO-1", bundleId: "io.s2arm.games.example09", language: "zh-Hans"), "不在候选里的不发")
+        XCTAssertNotNil(m.runConsoleAction(.chooseApp, device: "DUO-1", language: "zh-Hans"), "没给包名不发")
+        XCTAssertNil(m.runConsoleAction(.chooseApp, device: "DUO-1", bundleId: alt, language: "zh-Hans"))
+        for _ in 0..<300 where runner.chooses.isEmpty || m.consoleChoosing != nil { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(runner.chooses.count, 1, "一次选择一单作业")
+        XCTAssertEqual(runner.chooses.first?["device"] as? String, "DUO-1"); XCTAssertEqual(runner.chooses.first?["bundleId"] as? String, alt)
+        for _ in 0..<300 where runner.overviewProbes.isEmpty { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(runner.overviewProbes, [true], "选完重新现查总览")
+        XCTAssertNil(m.consoleChooseError)
+        m.consoleDevice = "DUO-1"
+        await m.loadPhoneOverview(probe: true)
+        XCTAssertEqual(runner.overviewDevices.last ?? nil, "DUO-1", "现查带上总控台这台")
+    }
 }
 
 /// 假作业进程：记下 install / pushSelected 请求；holdPush 时 pushSelected 挂着直到取消，其余作业照常成功
@@ -245,6 +328,8 @@ private final class ConsoleRunner: JobProcessRunner {
     var updates: [[String: Any]] = []
     var operations: [String] = []
     var overviewProbes: [Bool] = []
+    var overviewDevices: [String?] = []
+    var chooses: [[String: Any]] = []
     let holdPush: Bool
     /// 给了：phoneOverview 按这份回（介绍卡测试用）；没给：照旧一台 D9
     let probePhones: [[String: Any]]?
@@ -266,7 +351,8 @@ private final class ConsoleRunner: JobProcessRunner {
         let finish = { onLine(try! JSONSerialization.data(withJSONObject: event)); onExit(0) }
         if request["operation"] as? String == "install" { installs.append(request) }
         if request["operation"] as? String == "installUpdate" { updates.append(request) }
-        if request["operation"] as? String == "phoneOverview" { overviewProbes.append(request["probe"] as? Bool == true) }
+        if request["operation"] as? String == "phoneOverview" { overviewProbes.append(request["probe"] as? Bool == true); overviewDevices.append(request["device"] as? String) }
+        if request["operation"] as? String == "phoneChooseApp" { chooses.append(request) }
         operations.append(request["operation"] as? String ?? "")
         if request["operation"] as? String == "pushSelected" {
             pushes.append(request)

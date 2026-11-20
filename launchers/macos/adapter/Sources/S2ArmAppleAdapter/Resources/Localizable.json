@@ -10538,5 +10538,41 @@
  {
   "source": "：拷贝失败（",
   "en": ": copy failed ("
+ },
+ {
+  "source": "在 iPhone 总控台里选好这台手机用哪一个 S2Arm（AltStore / SideStore 装的，还是启动器装的），再推游戏；选一次就记住。",
+  "en": "In the iPhone console, choose which S2Arm this phone should use (the one installed with AltStore / SideStore, or the one installed by the launcher), then send the game again. Your choice is remembered."
+ },
+ {
+  "source": "在 iPhone 总控台里重新选一次用哪一个 S2Arm：选过的那个已经不在这台 iPhone 上了。",
+  "en": "Choose again in the iPhone console which S2Arm to use: the one you chose is no longer on this iPhone."
+ },
+ {
+  "source": "这台 iPhone 上装着不止一个 S2Arm：先在 iPhone 总控台选好用哪一个，再推游戏。",
+  "en": "This iPhone has more than one S2Arm installed: first choose which one to use in the iPhone console, then send the game."
+ },
+ {
+  "source": "选的这个 S2Arm 不在这台 iPhone 上了：在总控台重新选一次。",
+  "en": "The S2Arm you chose is no longer on this iPhone: choose again in the console."
+ },
+ {
+  "source": "读不出这台 iPhone 上装了哪些 App：确认 iPhone 连着、已解锁，再试一次。",
+  "en": "Couldn't read which apps are installed on this iPhone: make sure the iPhone is connected and unlocked, then try again."
+ },
+ {
+  "source": "这台 iPhone 上装着不止一个 S2Arm",
+  "en": "More than one S2Arm on this iPhone"
+ },
+ {
+  "source": "同一台手机上装着两个及以上 S2Arm（比如 AltStore 装的一个、启动器装的一个），S2Arm 不替你挑推到哪一个。",
+  "en": "This phone has two or more S2Arm installed (for example one from AltStore and one from the launcher), and S2Arm won't pick one for you."
+ },
+ {
+  "source": "选的 S2Arm 不在手机上了",
+  "en": "The chosen S2Arm is no longer on the phone"
+ },
+ {
+  "source": "选过的那个 S2Arm 已经从这台 iPhone 上删掉或换掉了。",
+  "en": "The S2Arm you chose has been removed from or replaced on this iPhone."
  }
 ]
