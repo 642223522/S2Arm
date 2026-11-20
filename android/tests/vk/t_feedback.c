@@ -7,16 +7,17 @@
 #include <stdlib.h>
 #include <string.h>
 static nvn_gpu_err err;
-static int dq_mode,opt_mode,copy_mode=1;
-static unsigned failures;
+static int dq_mode,opt_mode,copy_mode=1,pool_fb_mode=1;   // pool_fb_mode：nvk_pool_fb（1 = 整池数组也为写着的附件拷快照，旧行为；0 = 缺省，不拷）
+static unsigned failures,begins,ncases;
 #define REQUIRE(x) do { if(!(x)){fprintf(stderr,"fixture failed line %d: %s rc=%d why=%s\n",__LINE__,#x,err.rc.code,err.why);exit(2);} } while(0)
 #define GPU(x) REQUIRE(nvn_gpu_ok(x))
 #include "feedback_observer.h"
+static void on_begin(const VkRenderPassBeginInfo *p){(void)p;begins++;}   // 物理渲染通道的开始次数（反馈重开会多一次）
 const char *const *nvn_plat_vk_instance_exts(uint32_t *n){*n=0;return NULL;}
 VkResult nvn_plat_vk_surface_create(VkInstance i,void *w,VkSurfaceKHR *s){(void)i;(void)w;*s=VK_NULL_HANDLE;return VK_ERROR_EXTENSION_NOT_PRESENT;}
 int nvn_plat_window_size(void *w,uint32_t *x,uint32_t *y){(void)w;(void)x;(void)y;return 0;}
 void nvn_plat_safepoint(void){}
-int nvn_plat_flag(const char *n,int d){if(!strcmp(n,"nvk_dq"))return dq_mode;if(!strcmp(n,"nvk_opt_layout"))return opt_mode;if(!strcmp(n,"nvk_fb_copy"))return copy_mode;return d;}
+int nvn_plat_flag(const char *n,int d){if(!strcmp(n,"nvk_dq"))return dq_mode;if(!strcmp(n,"nvk_opt_layout"))return opt_mode;if(!strcmp(n,"nvk_fb_copy"))return copy_mode;if(!strcmp(n,"nvk_pool_fb"))return pool_fb_mode;return d;}
 void nvn_plat_log(int l,const char *c,const char *s){(void)l;fprintf(stderr,"[%s] %s\n",c?c:"",s?s:"");}
 static void done(void *u,const nvn_gpu_done *d){(void)u;REQUIRE(d->status==NVN_GPU_DONE_OK);}
 static nvn_gpu_shader shader(const char *dir,const char *name,nvn_gpu_stage stage,const nvn_gpu_layout *layout) {
@@ -32,14 +33,16 @@ static void begin_pass(nvn_gpu_cmd c,nvn_gpu_view view,int load,unsigned size) {
     p.w=p.h=size;p.layers=1;nvn_gpu_pass_begin(c,&p);
 }
 static void run_case(struct s2a_vk_device *device,const char *dir,int which) {
-    observer_reset();nvn_gpu_open_desc od={0};od.host_device=device;od.app_label="feedback-isolation";GPU(nvn_gpu_open(&od,&err));
+    observer_reset();begins=0;ncases++;nvn_gpu_open_desc od={0};od.host_device=device;od.app_label="feedback-isolation";GPU(nvn_gpu_open(&od,&err));
     nvn_gpu_layout_ent ent[2]={{0}};ent[0].cls=NVN_GPU_RES_TEX;ent[1].cls=NVN_GPU_RES_SAMP;ent[1].binding=1;
     for(unsigned i=0;i<2;i++){ent[i].access=NVN_GPU_ACC_R;ent[i].count=1;ent[i].stages=1u<<NVN_GPU_SH_FS;}
     nvn_gpu_layout layout={0};layout.ent=ent;layout.nent=2;
-    if(which==10){ent[0].count=2;ent[0].src_kind=NVN_RB_TEXP;observed_expect_samples=2;}
+    if(which==10||which==16||which==17){ent[0].count=2;ent[0].src_kind=NVN_RB_TEXP;observed_expect_samples=2;}
+    if(which==15){ent[0].count=3;ent[0].src_kind=NVN_RB_TEXP;observed_expect_samples=3;}   // 两项 + 表尾占位
     if(which==11){ent[0].cls=NVN_GPU_RES_TEX_SAMP;layout.nent=1;}
-    nvn_gpu_shader vs=shader(dir,"fullscreen.vert",NVN_GPU_SH_VS,NULL),fs=shader(dir,which==10?"feedback_pool.frag":which==11?"feedback_combined.frag":"feedback.frag",NVN_GPU_SH_FS,&layout);
-    nvn_gpu_pipe_desc pd={0};pd.poly.mode=NVN_POLYGON_MODE_FILL;pd.color.logic_op=3;pd.prim=4;pd.samples=1;pd.chmask.mask=15;
+    nvn_gpu_shader vs=shader(dir,"fullscreen.vert",NVN_GPU_SH_VS,NULL),fs=shader(dir,which==10||which==16||which==17?"feedback_pool.frag":which==15?"feedback_pool_phantom.frag":which==11?"feedback_combined.frag":"feedback.frag",NVN_GPU_SH_FS,&layout);
+    nvn_gpu_pipe_desc pd={0};pd.poly.mode=NVN_POLYGON_MODE_FILL;pd.color.logic_op=3;pd.prim=4;pd.samples=1;
+    pd.chmask.mask=which==16||which==17?240:15;   // 案例 16 / 17：0 号附件的写掩码为 0 = 本笔不写它（池里登记的恰是这张图）
     pd.st[NVN_GPU_SH_VS].sh=vs;pd.st[NVN_GPU_SH_FS].sh=fs;pd.cfmt[0]=NVN_FORMAT_RGBA8;
     nvn_gpu_pipe pipe=NULL;GPU(nvn_gpu_pipe_get(&pd,NVN_GPU_PIPE_SYNC,&pipe,&err));
     nvn_gpu_tex images[2]={0};nvn_gpu_view views[2]={0},sample=NULL;
@@ -55,8 +58,17 @@ static void run_case(struct s2a_vk_device *device,const char *dir,int which) {
     if(which==8){v.set_format=1;v.format=NVN_FORMAT_BGRA8;}
     GPU(nvn_gpu_view_create(images[which==0?1:0],&v,&sample,&err));
     samp_par sp={0};nvn_gpu_samp sampler=NULL;GPU(nvn_gpu_samp_create(&sp,&sampler,&err));
-    nvn_gpu_pool_table pool=NULL;
-    if(which==10){nvn_gpu_pool_item item={.state=NVN_GPU_POOL_READY};item.resource.view=sample;nvn_gpu_pool_desc d={.kind=NVN_GPU_POOL_IMAGE,.count=1,.items=&item};d.dummy.view=sample;GPU(nvn_gpu_pool_create(&d,&pool,&err));}
+    nvn_gpu_pool_table pool=NULL;nvn_gpu_view other=NULL;
+    if(which==10||which==16){nvn_gpu_pool_item item={.state=NVN_GPU_POOL_READY};item.resource.view=sample;nvn_gpu_pool_desc d={.kind=NVN_GPU_POOL_IMAGE,.count=1,.items=&item};d.dummy.view=sample;GPU(nvn_gpu_pool_create(&d,&pool,&err));}
+    if(which==17){   // 同一张图的两个不同视图（槽 0 = sample，表尾占位 = other），都与本笔没写的 0 号附件重叠：每笔两个都要拷快照（按图索引的串链不能漏掉第二个）
+        GPU(nvn_gpu_view_create(images[0],&v,&other,&err));
+        nvn_gpu_pool_item item={.state=NVN_GPU_POOL_READY};item.resource.view=sample;nvn_gpu_pool_desc d={.kind=NVN_GPU_POOL_IMAGE,.count=1,.items=&item};d.dummy.view=other;GPU(nvn_gpu_pool_create(&d,&pool,&err));
+    }
+    if(which==15){   // 槽 0 = 别的图（着色器采样的），槽 1 = 本通道正在写的那张图（登记在池里，但没人读），表尾占位 = 槽 0 的图
+        GPU(nvn_gpu_view_create(images[1],&v,&other,&err));
+        nvn_gpu_pool_item items[2]={{.state=NVN_GPU_POOL_READY},{.state=NVN_GPU_POOL_READY}};items[0].resource.view=other;items[1].resource.view=sample;
+        nvn_gpu_pool_desc d={.kind=NVN_GPU_POOL_IMAGE,.count=2,.items=items};d.dummy.view=other;GPU(nvn_gpu_pool_create(&d,&pool,&err));
+    }
     unsigned char sentinel[80];memset(sentinel,0xa5,sizeof sentinel);nvn_gpu_buf rb=NULL;GPU(nvn_gpu_buf_create(sizeof sentinel,NVN_GPU_MEM_SHARED,sentinel,&rb,&err));
     nvn_gpu_cmd cmd=NULL;GPU(nvn_gpu_cmd_begin(NULL,&cmd,&err));
     for(unsigned i=0;i<2;i++){begin_pass(cmd,views[i],NVN_GPU_LOAD_CLEAR,4);nvn_gpu_pass_end(cmd);}
@@ -65,10 +77,10 @@ static void run_case(struct s2a_vk_device *device,const char *dir,int which) {
     begin_pass(cmd,views[0],which==2?NVN_GPU_LOAD_CLEAR:NVN_GPU_LOAD_LOAD,4);
     nvn_gpu_set_pipe(cmd,pipe);nvn_gpu_dyn dyn={0};dyn.nvp=1;dyn.vp[0][2]=dyn.vp[0][3]=4;dyn.vp[0][5]=1;dyn.has_sc=1;dyn.sc[2]=dyn.sc[3]=4;nvn_gpu_set_dyn(cmd,&dyn);
     nvn_gpu_binding b[2]={{0}};b[0].cls=NVN_GPU_RES_TEX;b[0].u.view=sample;b[1].ent=1;b[1].cls=NVN_GPU_RES_SAMP;b[1].u.samp=sampler;
-    if(which==10){nvn_gpu_bind(cmd,NVN_GPU_SH_FS,&b[1],1);GPU(nvn_gpu_pool_bind(cmd,NVN_GPU_SH_FS,0,pool,&err));}
+    if(which==10||which==15||which==16||which==17){nvn_gpu_bind(cmd,NVN_GPU_SH_FS,&b[1],1);GPU(nvn_gpu_pool_bind(cmd,NVN_GPU_SH_FS,0,pool,&err));}
     else if(which==11){b[0].cls=NVN_GPU_RES_TEX_SAMP;b[0].u.ts.view=sample;b[0].u.ts.samp=sampler;nvn_gpu_bind(cmd,NVN_GPU_SH_FS,b,1);}
     else nvn_gpu_bind(cmd,NVN_GPU_SH_FS,b,2);
-    nvn_gpu_draw_args a={0};a.prim=4;a.count=3;a.instances=1;unsigned draws=which==3||which==9||which==10?2:1;
+    nvn_gpu_draw_args a={0};a.prim=4;a.count=3;a.instances=1;unsigned draws=which==3||which==9||which==10||which==15||which==16||which==17?2:1;
     for(unsigned i=0;i<draws;i++){
         if(which==9&&i==1){nvn_gpu_pass_end(cmd);begin_pass(cmd,views[1],NVN_GPU_LOAD_LOAD,4);} // same bind: must restore original, now changed by draw 1
         nvn_gpu_draw(cmd,&a);
@@ -76,6 +88,7 @@ static void run_case(struct s2a_vk_device *device,const char *dir,int which) {
     nvn_gpu_pass_end(cmd);nvn_gpu_copy_tex_buf(cmd,images[which==9?1:0],0,which==5?1:0,NULL,rb,0,16,64);
     // Release every source owner before submit; command refs and private snapshots must survive.
     if(pool)nvn_gpu_pool_release(pool);
+    if(other)nvn_gpu_view_release(other);
     nvn_gpu_samp_release(sampler);nvn_gpu_view_release(sample);
     for(unsigned i=0;i<2;i++){nvn_gpu_view_release(views[i]);nvn_gpu_tex_release(images[i]);}
     if(which==14){
@@ -87,18 +100,25 @@ static void run_case(struct s2a_vk_device *device,const char *dir,int which) {
     }
     GPU(nvn_gpu_cmd_commit(cmd,1,done,NULL,&err));GPU(nvn_gpu_fence_wait(1,5000000000ull,&err));
     REQUIRE(observed_draws==draws);unsigned pixels_bad=0;const unsigned char *bytes=nvn_gpu_buf_cpu(rb);
-    unsigned red=which==7||which==8?64:draws==2?192:128;
-    for(unsigned i=0;i<16;i++)if(bytes[i*4]!=red||bytes[i*4+1]!=(which==7?64:0)||bytes[i*4+2]!=(which==8?64:0)||bytes[i*4+3]!=255)pixels_bad++;
+    // 整池数组里登记着本通道正在写的附件：缺省（nvk_pool_fb=0）不拷快照、不拆通道——着色器读不读它由表里的索引决定，
+    // 整池「可能被采样」不等于「这一笔会读」（对齐 Ryujinx：数组段不做反馈环追踪）。opt 模式、nvk_pool_fb=1 仍走旧行为。
+    const int skip=(which==10||which==15)&&!pool_fb_mode&&!opt_mode;
+    unsigned red=which==7||which==8||which==16||which==17?64:which==15?128:draws==2?192:128;   // 16 / 17：本笔不写附件，清屏值 0.25 原样留着
+    if(!(skip&&which==10))   // 案例 10 在缺省下读的是正在写的附件本身（读写同一张图，值未定义），只验未越界
+        for(unsigned i=0;i<16;i++)if(bytes[i*4]!=red||bytes[i*4+1]!=(which==7?64:0)||bytes[i*4+2]!=(which==8?64:0)||bytes[i*4+3]!=255)pixels_bad++;
     for(unsigned i=64;i<80;i++)if(bytes[i]!=0xa5)pixels_bad++;
-    int control=which==0||which==4||which==6;unsigned copy_bad=observed_copies!=(control?0:which==9?1:draws);
-    printf("feedback dq=%d opt=%d case=%d draws=%u live-overlap=%u copies=%u copy-bad=%u pixel-bad=%u\n",dq_mode,opt_mode,which,draws,observed_overlap,observed_copies,copy_bad,pixels_bad);
-    failures+=observed_overlap+copy_bad+pixels_bad;
+    int control=which==0||which==4||which==6;unsigned copy_bad=observed_copies!=(skip?0:control?0:which==9?1:which==17?2*draws:draws);   // 17：每笔两个视图各拷一份
+    unsigned overlap_want=skip?(which==10?4:2):0,overlap_bad=observed_overlap!=overlap_want;   // 缺省下描述符里仍是原图：10 的两个槽都是附件，15 只有槽 1 是
+    unsigned begins_bad=0;if(which==10||which==15)begins_bad=skip?begins!=3:begins<=3;   // 缺省：2 次清屏 + 1 次主通道，没有反馈重开；旧行为每笔多重开一次
+    if(which==16||which==17)begins_bad=begins!=5;   // 池里登记的是「本笔没写」的附件：缺省与旧行为一样照旧拷快照、拆通道（只免「写着的」）
+    printf("feedback dq=%d opt=%d pool_fb=%d case=%d draws=%u live-overlap=%u copies=%u copy-bad=%u begins=%u begins-bad=%u overlap-bad=%u pixel-bad=%u\n",dq_mode,opt_mode,pool_fb_mode,which,draws,observed_overlap,observed_copies,copy_bad,begins,begins_bad,overlap_bad,pixels_bad);
+    failures+=overlap_bad+copy_bad+begins_bad+pixels_bad;
     nvn_gpu_buf_release(rb,NULL,NULL);
     nvn_gpu_shader_release(vs);nvn_gpu_shader_release(fs);GPU(nvn_gpu_close(5000000000ull,&err));
     REQUIRE(observed_early_destroy==0);
 }
 static void run_depth(struct s2a_vk_device *device,const char *dir,unsigned format,int which) {
-    observer_reset();nvn_gpu_open_desc od={0};od.host_device=device;od.app_label="feedback-depth";GPU(nvn_gpu_open(&od,&err));
+    observer_reset();ncases++;nvn_gpu_open_desc od={0};od.host_device=device;od.app_label="feedback-depth";GPU(nvn_gpu_open(&od,&err));
     nvn_gpu_layout_ent ent[2]={{0}};
     ent[0].cls=NVN_GPU_RES_TEX;ent[1].cls=NVN_GPU_RES_SAMP;ent[1].binding=1;
     for(unsigned i=0;i<2;i++){ent[i].count=1;ent[i].access=NVN_GPU_ACC_R;ent[i].stages=1u<<NVN_GPU_SH_FS;}
@@ -135,14 +155,20 @@ static void run_depth(struct s2a_vk_device *device,const char *dir,unsigned form
     nvn_gpu_shader_release(vs);nvn_gpu_shader_release(fs);GPU(nvn_gpu_close(5000000000ull,&err));REQUIRE(observed_early_destroy==0);
 }
 int main(int argc,char **argv) {
-    if(argc!=5)return 2;
+    if(argc!=6)return 2;
     dq_mode=atoi(argv[2]);opt_mode=atoi(argv[3]);REQUIRE((dq_mode==0||dq_mode==1)&&(opt_mode==0||opt_mode==1));
     copy_mode=atoi(argv[4]);REQUIRE(copy_mode==0||copy_mode==1);
+    pool_fb_mode=atoi(argv[5]);REQUIRE(pool_fb_mode==0||pool_fb_mode==1);
+    observed_on_begin=on_begin;
     struct s2a_vk_device device;char why[256];
     if(s2a_vk_device_create(&device,why,sizeof why)){fprintf(stderr,"%s\n",why);return 2;}
     for(int c=0;c<12;c++)run_case(&device,argv[1],c);
     run_depth(&device,argv[1],NVN_FORMAT_DEPTH32F,12);
     run_depth(&device,argv[1],NVN_FORMAT_DEPTH32F_STENCIL8,13);
     run_case(&device,argv[1],14);
-    REQUIRE(!s2a_vk_device_destroy(&device,1));printf("feedback cases=15 failures=%u\n",failures);return failures?1:0;
+    // 案例 15（池里别的图 + 一个只登记不读的附件）要求池里的图都是 GENERAL：nvk_opt_layout=1 时 pool_check_layouts 按设计拒绝其余布局，该模式不适用。
+    if(!opt_mode)run_case(&device,argv[1],15);
+    run_case(&device,argv[1],16);
+    run_case(&device,argv[1],17);
+    REQUIRE(!s2a_vk_device_destroy(&device,1));printf("feedback cases=%u failures=%u\n",ncases,failures);return failures?1:0;
 }
