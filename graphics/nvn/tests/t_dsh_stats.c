@@ -34,7 +34,10 @@ void mtl_hybrid_pkg_stats(uint64_t out[7]) { for (int i = 0; i < 7; i++) out[i] 
 static uint64_t now_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000 + t.tv_nsec; }
 static int compiled_stage = -1;   // 最近一次交给 S2A.Dsh 的阶段号（34–36 核 NVN2 任务 / 网格 = 4 / 5）
 static const char *chain_name(void);   // DMSH_CHAIN（dmsh_chain.h 随 dsh_miss.inc 在下面才包含）
-static int write_out, slow_first;   // 39–41（后台预编）：编译器桩真把产物写进兜底目录（dsh_have 认它）；41：键 0 编得慢（让排在它后面的键停在队里）
+static int write_out, slow_first; static _Atomic int hold_first;   // hold_first：41 键 0 停在编里直到测试开闸（按事件，不靠「慢 300 ms」赶时间窗）
+// 等事件（11-19：原先 200×10 ms 只等 2 秒、等不到也往下判，负载高时后台还没开编就判 → 假红）；60 秒兜底只防挂死
+#define WAITFOR(c) do { for (int w_ = 0; w_ < 6000 && !(c); w_++) usleep(10000); } while (0)
+// write_out / slow_first：39–41（后台预编）：编译器桩真把产物写进兜底目录（dsh_have 认它）；41：键 0 编得慢（让排在它后面的键停在队里）
 static _Atomic int in_comp, overlap;   // 42：C# 现编入口不可重入，同时有两个调用在里面就计一次
 static int compiler_(const char *key, int stage, const char *out);
 static int crash_in_comp;   // 44：替身翻译器编到一半崩（真 SIGSEGV），看崩溃处理落没落下输入
@@ -46,16 +49,17 @@ static int compiler(const char *key, int stage, const void *code, size_t nc, con
     int rc_ = compiler_(key, stage, out); atomic_fetch_sub(&in_comp, 1); return rc_;
 }
 static int compiler_(const char *key, int stage, const char *out) {
+    int rc = compile_rc;   // 进来就定下这次的返回码（40：测试见计数到 1 就把 compile_rc 改回 0，不用睡一会儿等桩读完）
     compiled_stage = stage; atomic_fetch_add(&compiler_calls, 1);   // 先计数再慢：41 据此知道键 0 已在编（键 1 还在队里）
-    if (slow_first && !strcmp(key, "0000000000000000")) usleep(300000);
-    if (write_out && !compile_rc && out && strcmp(out, "/dev/null")) {
+    if (slow_first && !strcmp(key, "0000000000000000")) { if (atomic_load(&hold_first)) { while (atomic_load(&hold_first)) usleep(1000); } else usleep(300000); }
+    if (write_out && !rc && out && strcmp(out, "/dev/null")) {
         char p[1200]; FILE *f; snprintf(p, sizeof p, "%s/%s_b.metal", out, key); if ((f = fopen(p, "w"))) {
             if (stage == 5) fputs("struct dm_vertex_t {\n    float4 position [[position]];\n};\nstruct dm_prim_t {\n};\nvoid main0() {\n        dm_vertex_t v;\n}\n", f);
             fclose(f);
         }
         snprintf(p, sizeof p, "%s/%s_b.json", out, key); if ((f = fopen(p, "w"))) { fprintf(f, "{\n \"chain\": \"%s\",\n \"xfp\": \"" XFP "\",\n \"stage\": \"%s\"\n}\n", chain_name(), stage == 5 ? "ms" : stage == 0 ? "vs" : stage == 1 ? "ps" : "cs"); fclose(f); }   // 0 顶点 = "vs"（同 S2A.Dsh；47 核顶点补齐按它认阶段）
     }
-    return compile_rc;
+    return rc;
 }
 static int variant(const char *in, uint32_t u, uint32_t s, const char *out) { (void)in; (void)u; (void)s; (void)out; atomic_fetch_add(&variant_calls, 1); return 0; }
 static int se_variant(const char *in, const char *out) { (void)in; (void)out; atomic_fetch_add(&se_calls, 1); return se_rc; }
@@ -87,6 +91,7 @@ static void pkg_put(const uint8_t k8[8], int st, const uint8_t *c, uint32_t nc, 
     memcpy(pkg_key, k8, 8); pkg_st = st; memcpy(pkg_bytes, c, nc); memcpy(pkg_bytes + nc, d, nd); pkg_nctl = nc; pkg_ncode = nd; pkg_on = 1;
 }
 #include "../host/dsh_miss.inc"
+static void *release_on_cancel(void *x) { (void)x; WAITFOR(atomic_load(&g_dsh_eager_cancel) >= 1); hold_first = 0; return NULL; }   // 41：键 1 取消了才放键 0 编完
 static const char *chain_name(void) { return DMSH_CHAIN; }
 #undef dlsym
 static uint8_t ctl[0x880], code[0x100], key[8];
@@ -97,9 +102,10 @@ static void check(int ok) { if (!ok) _exit(40); }
 static void crash_handler44(int sig) { (void)sig; s2a_dsh_crash_dump(); _exit(0); }   // 照 crash.c：原始现场后调 s2a_dsh_crash_dump
 static void scenario(int n) {
     alarm(10); setvbuf(stdout, NULL, _IONBF, 0);
-    // 后台预编只给测它的 39–41 开；其余场景是登记时不编的语义（后台预编关）。原为 n >= 39，之后新加的 42–53 都被顺带打开：
+    // 后台预编只给测它的 39–42 开；其余场景是登记时不编的语义（后台预编关）。原为 n >= 39，之后新加的 42–53 都被顺带打开：
     //   场景 51 断言「首遇时代码区不可读 → 不调编译器」，后台预编用登记时拷的代码区抢先编完时编译器替身被调，60 次红 7 次（11-19）
-    setenv("S2A_DSH_EAGER_MAX", n >= 39 && n <= 41 ? "8" : "0", 1);
+    //   42 也要开（11-19：上一条收窄时漏了它——42 测「后台在编时来输出类型变体」，后台不开时它一直空过：2 秒等后台开编白等到头、变体自己编一次照样绿）
+    setenv("S2A_DSH_EAGER_MAX", n >= 39 && n <= 42 ? "8" : "0", 1);
     uint32_t size = sizeof code, csize = sizeof ctl;
     memcpy(ctl + 0x704, &size, 4); memcpy(ctl + 0x20, &csize, 4);
     setenv("DM_MSL_FALLBACK", "/dev/null", 1); // 编译器桩不写文件。
@@ -338,22 +344,23 @@ static void scenario(int n) {
         const uint8_t magic[] = {0x78,0x56,0x34,0x12}; memcpy(code, magic, 4); uint32_t ps = 5 << 10; memcpy(code + 0x30, &ps, 4);
         char d[] = "/tmp/t_dsh_varlock.XXXXXX", path[256]; check(mkdtemp(d) != NULL); setenv("DM_MSL_FALLBACK", d, 1); write_out = 1; slow_first = 1;
         dm_shader_miss(key, (uint64_t)(uintptr_t)code, ctl);
-        for (int i = 0; i < 200 && atomic_load(&compiler_calls) < 1; i++) usleep(10000);   // 后台已在编（慢 300 ms）
+        WAITFOR(atomic_load(&compiler_calls) >= 1);   // 后台已在编（慢 300 ms）
         int rc = dm_shader_fout(key, (uint64_t)(uintptr_t)code, ctl, 0x4, 0x2, path, sizeof path);
-        for (int i = 0; i < 200 && atomic_load(&g_dsh_eager_ok) < 1; i++) usleep(10000);
+        WAITFOR(atomic_load(&in_comp) == 0);   // 后台那次编完再数（原先等 g_dsh_eager_ok ≥ 1：本场景它不涨，2 秒上限一直是白等）
         char p[256]; snprintf(p, sizeof p, "%s/0000000000000000_b.metal", d); unlink(p); snprintf(p, sizeof p, "%s/0000000000000000_b.json", d); unlink(p); rmdir(d);
         check(rc == 0 && atomic_load(&overlap) == 0 && atomic_load(&compiler_calls) == 1 && atomic_load(&variant_calls) == 1);
     }
     if (n >= 39 && n <= 41) {   // 后台预编（dsh_eager_start）：登记即交后台；首遇时编好的复用、在编的等、没开始的取消改同步、失败的同步再编
         char d[] = "/tmp/t_dsh_eager.XXXXXX"; check(mkdtemp(d) != NULL); setenv("DM_MSL_FALLBACK", d, 1); write_out = 1;
         if (n == 40) compile_rc = 7;   // 后台那次失败
-        if (n == 41) slow_first = 1;
+        if (n == 41) { slow_first = 1; hold_first = 1; }   // 键 0 停在编里，直到键 1 首遇做完再开闸
         dm_shader_miss(key, (uint64_t)(uintptr_t)code, ctl);
         uint8_t key2[8] = {1}; if (n == 41) dm_shader_miss(key2, (uint64_t)(uintptr_t)code, ctl);   // 41：第二个键排在慢键后面
-        for (int i = 0; i < 200 && atomic_load(&compiler_calls) < 1; i++) usleep(10000);   // 等后台开编（41：键 0 在编、键 1 还在队里）
-        if (n == 39) { for (int i = 0; i < 200 && atomic_load(&g_dsh_eager_ok) < 1; i++) usleep(10000); late(); check(atomic_load(&compiler_calls) == 1 && !strcmp(rt_stage, "compute") && atomic_load(&g_dsh_eager_hit) == 1); }
-        if (n == 40) { for (int i = 0; i < 200 && atomic_load(&compiler_calls) < 1; i++) usleep(10000); usleep(50000); compile_rc = 0; late(); check(atomic_load(&compiler_calls) == 2 && !strcmp(rt_stage, "compute")); }
-        if (n == 41) { dm_shader_miss_late("0100000000000000", (uint64_t)(uintptr_t)code, NULL); usleep(500000);
+        WAITFOR(atomic_load(&compiler_calls) >= 1);   // 等后台开编（41：键 0 在编、键 1 还在队里）
+        if (n == 39) { WAITFOR(atomic_load(&g_dsh_eager_ok) >= 1); late(); check(atomic_load(&compiler_calls) == 1 && !strcmp(rt_stage, "compute") && atomic_load(&g_dsh_eager_hit) == 1); }
+        if (n == 40) { WAITFOR(atomic_load(&compiler_calls) >= 1); compile_rc = 0; late(); check(atomic_load(&compiler_calls) == 2 && !strcmp(rt_stage, "compute")); }
+        if (n == 41) { pthread_t rel; pthread_create(&rel, NULL, release_on_cancel, NULL);   // 键 1 被取消（同步编之前）再开闸：同步编和后台编同一把锁，不开闸就互等
+            dm_shader_miss_late("0100000000000000", (uint64_t)(uintptr_t)code, NULL); pthread_join(rel, NULL); WAITFOR(atomic_load(&g_dsh_eager_ok) >= 1);
             check(atomic_load(&g_dsh_eager_cancel) == 1 && atomic_load(&compiler_calls) == 2); }   // 键 1 取消改同步（键 0 后台 + 键 1 同步 = 2；键 1 的后台块不再编）
     }
     registered(n != 8); _exit(0);
