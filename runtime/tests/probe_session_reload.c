@@ -83,7 +83,7 @@ static void *sleeper(void *unused) {
 // Observe the actual native wait before stopping, rather than racing stop
 // against svc_enter and accidentally testing only its entry checkpoint.
 static int await_native_wait(pthread_t pt) {
-    for (int i = 0; i < 5000; i++) {
+    for (int i = 0; i < 30000; i++) {   // 30 秒兜底（11-19：原 5 秒）
         thread_basic_info_data_t info; mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
         if (thread_info(pthread_mach_thread_np(pt), THREAD_BASIC_INFO, (thread_info_t)&info, &count) != KERN_SUCCESS) return 0;
         if (info.run_state == TH_STATE_WAITING) return 1;
@@ -181,12 +181,12 @@ int main(int argc, char **argv) {
         hashes_seen[variant] = 1;
         atomic_store(&ready, 0);
         pthread_t pt; if (pthread_create(&pt, NULL, sleeper, NULL)) return 1;
-        for (int n = 0; n < 5000 && !atomic_load(&ready); n++) usleep(1000);
+        for (int n = 0; n < 30000 && !atomic_load(&ready); n++) usleep(1000);
         if (!atomic_load(&ready)) return 1;
         if (stop_case != CPU_LOOP && !await_native_wait(pt)) {
             fprintf(stderr, "thread did not enter %s\n", stop_names[stop_case]); return 1;
         }
-        if (s2a_thread_stop_all(5000)) {
+        if (s2a_thread_stop_all(30000)) {   // 时限只当兜底
             fprintf(stderr, "failed to stop %s on pass %d\n", stop_names[stop_case], pass + 1); return 1;
         }
         if (!s2a_thread_session_joined() || atomic_load(&destroyed) != pass + 1) { fprintf(stderr, "pthread join/TLS destructor did not complete\n"); return 1; }

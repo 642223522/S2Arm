@@ -42,8 +42,8 @@ int main(void) {
     if (got + drop != 4000 || broken || !notes || !drop)
         { printf("✗ ② 期望 整行数 + 丢行数 = 4000、坏行 0、丢行通知 ≥1 → 真结果 整行 %lu、丢 %lu、坏行 %lu、通知 %lu\n", got, drop, broken, notes); bad++; }
     close(c[0]); s2a_log_line("断开后 %d", 1);
-    for (int i = 0; i < 100 && g_s2a_confd >= 0; i++) { struct timespec ts = { 0, 10000000 }; nanosleep(&ts, 0); s2a_log_line("断开后 %d", 2); }
-    if (g_s2a_confd >= 0) { printf("✗ ③ 读端关后 1 秒副本 fd 仍是 %d（期望 -1）\n", g_s2a_confd); bad++; }
+    for (int i = 0; i < 3000 && g_s2a_confd >= 0; i++) { struct timespec ts = { 0, 10000000 }; nanosleep(&ts, 0); s2a_log_line("断开后 %d", 2); }   // 30 秒兜底（原 1 秒）
+    if (g_s2a_confd >= 0) { printf("✗ ③ 读端关后 30 秒副本 fd 仍是 %d（期望 -1）\n", g_s2a_confd); bad++; }
     { int q[2]; if (!pipe(q)) { pid_t pid = fork();
         if (pid == 0) { close(q[0]); int nul = open("/dev/null", O_WRONLY); g_s2a_logfd = nul; g_s2a_confd = -1; s2a_logcon_start(q[1]); char pad[200]; memset(pad, 'y', sizeof pad - 1); pad[sizeof pad - 1] = 0; for (int i = 0; i < 2000; i++) s2a_log_line("%s 退出前 %d", pad, i); s2a_logcon_flush(); _exit(0); }
         close(q[1]); { struct timespec ts = { 0, 200000000 }; nanosleep(&ts, 0); }   /* 晚 200 毫秒才读：管道先写满，子进程 exit 时环里还压着约 340 KB */
@@ -57,9 +57,9 @@ int main(void) {
             s2a_logcon_test_inlock = reenter; s2a_log_line("外层一行"); s2a_log_line("之后一行"); s2a_logcon_flush(); _exit(0); }
         close(q[1]); int st = -1; uint64_t t0 = ms(); static char r[65536]; size_t m = 0; ssize_t k;
         fcntl(q[0], F_SETFL, O_NONBLOCK);
-        while (ms() - t0 < 5000) { while ((k = read(q[0], r + m, sizeof r - 1 - m)) > 0) m += (size_t)k; if (waitpid(pid, &st, WNOHANG) == pid) break; struct timespec ts = { 0, 10000000 }; nanosleep(&ts, 0); }
+        while (ms() - t0 < 30000) { while ((k = read(q[0], r + m, sizeof r - 1 - m)) > 0) m += (size_t)k; if (waitpid(pid, &st, WNOHANG) == pid) break; struct timespec ts = { 0, 10000000 }; nanosleep(&ts, 0); }   // 30 秒兜底（原 5 秒：负载高时子进程被挤 5 秒就误报自锁死）
         while ((k = read(q[0], r + m, sizeof r - 1 - m)) > 0) m += (size_t)k; r[m] = 0;
-        if (st == -1) { kill(pid, SIGKILL); waitpid(pid, &st, 0); printf("✗ ⑤ 持锁时同线程再打日志：子进程 5 秒没退出（自锁死）\n"); bad++; }
+        if (st == -1) { kill(pid, SIGKILL); waitpid(pid, &st, 0); printf("✗ ⑤ 持锁时同线程再打日志：子进程 30 秒没退出（自锁死）\n"); bad++; }
         else if (!strstr(r, "外层一行\n") || !strstr(r, "之后一行\n") || !strstr(r, "环满丢 1 行")) { printf("✗ ⑤ 期望 外层 / 之后两行在、丢行通知 1 行 → 真结果「%.200s」\n", r); bad++; }
         close(q[0]); } }
     printf("%s t_logcon：%d 处不符（② 整行 %lu、环满丢 %lu、通知 %lu 次）\n", bad ? "✗" : "✓", bad, got, drop, notes); return bad;

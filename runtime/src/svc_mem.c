@@ -880,8 +880,10 @@ void s2a_mem_test_stack(uint64_t base, uint64_t size) { L.stack_base = base; L.s
 // [addr, addr + size) 是否全已映射（与「逐段 QueryMemory、遇权限 0 即否」同判）：只看区间涉及的堆 / 映射表 / 模块 / 别名子页，不并段。
 // 10-21 帧率能耗线采样：C# 的 IsRangeMapped 每次托管写都调（暗黑3 计数结果回调每帧约 18 次），原先经 s2a_mem_query 在别名区把相邻子页一路并成整段，
 // S2A.GPU 线程上 20 秒 622 ms。步数 = 区间涉及的已映射子页数（整宿主页全映射一步跳 16 KB）
+static uint64_t g_mapped_steps;   // mapped 走过的步数（持 g_mu 加）：单测比步数判「一步到位」，不比耗时（11-19：比耗时 20 倍在负载高时失真）
 static int mapped(uint64_t a, uint64_t end) {   // 持 g_mu
     while (a < end) {
+        g_mapped_steps++;
         uint64_t base, size; uint32_t state, perm; int k;
         if (a >= (uint64_t)g_heap && a < (uint64_t)g_heap + g_heap_cur) { a = (uint64_t)g_heap + g_heap_cur; continue; }
         if ((k = map_find(a, 1))) { a = g_map[k - 1].base + g_map[k - 1].size; continue; }
@@ -896,6 +898,8 @@ static int mapped(uint64_t a, uint64_t end) {   // 持 g_mu
     }
     return 1;
 }
+uint64_t s2a_mem_mapped_steps(void);
+uint64_t s2a_mem_mapped_steps(void) { GMU_LOCK(); uint64_t v = g_mapped_steps; GMU_UNLOCK(); return v; }
 int s2a_mem_mapped(uint64_t addr, uint64_t size) {
     if (addr + size < addr) return 0;
     GMU_LOCK(); int r = mapped(addr, addr + size); GMU_UNLOCK(); return r;
