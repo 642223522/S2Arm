@@ -78,6 +78,8 @@ s2a_gate_step bash "$android_dir/tests/nvk_shown_timing_test.sh"
 s2a_gate_step bash "$android_dir/tests/vk_dev_ext_test.sh"
 # 调试开关读数的线程内缓存（宿主，确定性）：命中 / 过期 / 缺省 / 名字比较 / 名字上限，7 个负对照。
 s2a_gate_step bash "$android_dir/tests/nvk_flag_cache_test.sh"
+# 自定义边框色就近取内置三档（宿主，确定性）：没有 VK_EXT_custom_border_color 时浮点 / 整数各取最近一档。
+s2a_gate_step bash "$android_dir/tests/nvk_border_nearest_test.sh"
 s2a_gate_step bash "$android_dir/tools/generic_frame_trace_test.sh"
 # #48 A5（宿主，确定性）：BatteryManager 净放电换算与不可用状态、采样器停采/迟到回调/读数开关。
 s2a_gate_step bash "$android_dir/tools/system_power_test.sh"

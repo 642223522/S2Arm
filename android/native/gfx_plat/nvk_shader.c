@@ -1111,9 +1111,9 @@ static void libpack_mark_bad(const uint8_t identity[32]) {
 static void libpack_note_hit(void) { atomic_fetch_add(&g_n_libpack, 1); }
 // 程序累计一行：出包预编 / 离线库 / 跨局缓存 / 现场编 合计第 1 个和每 50 个打一次（每发布一份新程序合计正好加 1）
 static void prog_tally_text(char *b, size_t bn) {
-    int bo = snprintf(b, bn, "程序累计：出包预编（库%s）命中 %llu / 没有 %llu / 坏 %llu / 不可用 %llu、离线库 %llu、跨局缓存 %llu、现场编 %llu、失败 %llu",
+    int bo = snprintf(b, bn, "程序累计：出包预编（库%s）命中 %llu / 没有 %llu / 坏 %llu / 不可用 %llu（删 64 位能力声明 %llu）、离线库 %llu、跨局缓存 %llu、现场编 %llu、失败 %llu",
         k_lp_state[atomic_load(&g_lp_state)], (unsigned long long)atomic_load(&g_n_libpack), (unsigned long long)s2a_libpack_misses(), (unsigned long long)s2a_libpack_rejects(),
-        (unsigned long long)atomic_load(&g_n_libpack_bad), (unsigned long long)atomic_load(&g_n_offline), (unsigned long long)atomic_load(&g_n_cache),
+        (unsigned long long)atomic_load(&g_n_libpack_bad), (unsigned long long)s2a_libpack_caps_stripped(), (unsigned long long)atomic_load(&g_n_offline), (unsigned long long)atomic_load(&g_n_cache),
         (unsigned long long)atomic_load(&g_n_compiled), (unsigned long long)atomic_load(&g_n_failed));
     if (alias_on() && bo > 0 && (size_t)bo < bn) {   // 结果合并读数（开着才出）
         uint32_t resn = 0;
