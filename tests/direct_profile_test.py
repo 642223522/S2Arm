@@ -985,7 +985,7 @@ class Profiles(unittest.TestCase):
         shutil.copyfile(REPO / "graphics/tools/direct/direct_lib.py", consumer / "direct_lib.py")
         shutil.copyfile(REPO / "graphics/tools/direct/extract.py", consumer / "extract.py")   # 10-25「抽着色器只做一次」：产物根没有 extract/ 时当场抽（真脚本，抽取器是下面的合成桩）
         (sandbox / "tools").mkdir(exist_ok=True); shutil.copyfile(REPO / "tools/clonedir.py", sandbox / "tools/clonedir.py")   # test/directlib12 起临时目录由它整目录克隆上次的库
-        for _f in ("progress.py", "nostall.py", "addr_need.py", "nso_plain.py"): shutil.copy2(REPO / "tools" / _f, sandbox / "tools" / _f)   # 进度协议、无进展看门狗、程序号（没有 unpack.tsv 时读 main.npdm）
+        for _f in ("progress.py", "pool_workers.py", "nostall.py", "addr_need.py", "nso_plain.py"): shutil.copy2(REPO / "tools" / _f, sandbox / "tools" / _f)   # 进度协议、无进展看门狗、程序号（没有 unpack.tsv 时读 main.npdm）
         (nx / "tools").mkdir(exist_ok=True); shutil.copyfile(REPO / "graphics/nvn/tools/gfx_api.py", nx / "tools/gfx_api.py")   # 出包分流判法
         # romfs_list.py：判法 / extract.py 列 RomFS 经它（仓库里唯一的 RomFS 遍历）
         for _f in ("nso_syms.py", "lz4blk.py", "romfs_list.py"): shutil.copyfile(REPO / "graphics/nvn/tools" / _f, nx / "tools" / _f)   # 判法读 NSO 导入表要它们
