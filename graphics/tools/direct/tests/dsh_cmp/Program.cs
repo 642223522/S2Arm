@@ -1,6 +1,6 @@
 // S2A.Dsh 对拍：直连包记录（<pkg>/*.bin，按 shader_map.tsv 找）逐键调现编，产物与离线链目录（b-<链版本>/）比。
 //   .metal 逐字节；.json 按语义（字段同、值同），比之前两边都去掉三项：chain_metal（编法记录：离线 xcrun / 本库 newLibraryWithSource）、
-//   vin / fetch（_bv / _bf 两个副库的索引，本库不出，见 dsh/DshCApi.cs 文件头）。三项各自的出现次数另报。
+//   vin / pull / fetch（_bv / _bp / _bf 三个副库的索引，出库层 Build.cs 写进 _b.json，本库不出，见 dsh/DshCApi.cs 文件头）。各项的出现次数另报。
 // 用法：dsh_cmp --ref <b-目录> --pkg <包目录> --map <shader_map.tsv> --tables <答案表 / 配对表目录> --out <输出目录>
 //               [--backend cli|nxgal] [--dsx <libdsx.dylib>] [--keys all|sample:<N>|file:<键清单>] [--seed-pairs] [--print-keys] [-j <并发>] [--capi]
 //               [--abi-only] [--mtl-list <文件>] [--report <tsv>]
@@ -28,7 +28,7 @@ using System.Threading.Tasks;
 
 static unsafe class DshCmp
 {
-    static readonly string[] Excluded = { "chain_metal", "vin", "fetch", "fn_prefix", "fn_lib", "writes_layer", "xfp" };   // xfp：现编 json 才带的翻译器指纹（离线库不带）；其前三项：离线成批合编（dmsh_build.py unity_flush）才有，设备现编不分批
+    static readonly string[] Excluded = { "chain_metal", "vin", "pull", "fetch", "fn_prefix", "fn_lib", "writes_layer", "xfp" };   // xfp：现编 json 才带的翻译器指纹（离线库不带）；其前三项：离线成批合编（dmsh_build.py unity_flush）才有，设备现编不分批
     static readonly string[] Entries = { "entry", "entry_z", "entry_geometry_capture", "entry_tf", "entry_layer", "entry_layer_z", "entry_u" };
     [DllImport("libc")] static extern int setenv(string name, string value, int overwrite);
 

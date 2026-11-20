@@ -127,7 +127,7 @@ need_texture_dma_read() { net_touched android/core-link/runtime-tests/readonly-c
 need_metal() { touched $ALL_PFX $METAL_PFX; }   # 渲染器预编 + 单测、离线库按阶段 / 大 MSL、.air 缓存
 need_cntdead() { net_touched graphics/metal/tests/cntdead/CntDead.csproj $METAL_PFX; }   # build_run.sh 先 make libnxgal.dylib，再编 CntDead（引 NxGal.csproj → Ryujinx GAL / Memory）
 need_session() { net_touched graphics/metal/tests/session/Session.csproj $METAL_PFX; }   # 同上引 NxGal.csproj；NativeAOT 发布 Session，无窗口呈现 / 读回、释放队列、原生线程上开下一局
-need_m3pack() { touched $ALL_PFX $METAL_PFX graphics/tools/shbake/ tools/; }   # t_m3pack.sh / m3archive_pack.py 现跑 shbake 的 pso_gen / pso_chunk / m3_combo / gpu_arch
+need_m3pack() { touched $ALL_PFX $METAL_PFX graphics/tools/shbake/ tools/ graphics/tools/direct/cs_pipelines.py graphics/tools/direct/base_pipelines.py graphics/tools/direct/repair_compute.py graphics/tools/direct/tests/t_cs_pipelines graphics/tools/direct/tests/t_base_pipelines pack/stage_direct_cpso.sh pack/stage_inputs/direct_cpso.tsv pack/jobs/archs.py pack/pso_targets.tsv; }   # t_m3pack.sh / m3archive_pack.py 现跑 shbake 的 pso_gen / pso_chunk / m3_combo / gpu_arch；t_cs_pipelines.sh / t_base_pipelines.sh 现跑直连计算管线 / 拉取基础管线归档（metal-tt）与它们的出包阶段
 # 直连曲面 / 共享内存溢出（组名 direct_link 沿用：11-08 起用直连翻译库 build/dsx/libdsx.dylib）：翻译段源码在 graphics/dsx；
 #   11-01 起 t_dmsh_reuse 真跑的出库每键改写是 C# 批量进程（graphics/tools/direct/dsh），它编进 Ryujinx 着色器翻译器 / Spv.Generator 与宽屏着色器分析的源码
 need_direct_link() { touched $ALL_PFX $METAL_PFX graphics/dsx/ graphics/tools/direct/ translator/ compat/tree/src/Ryujinx.Graphics.Shader/ compat/tree/src/Spv.Generator/ graphics/widen/shader/ graphics/widen/SpirvCbufUseText.cs; }
@@ -343,6 +343,8 @@ lane_metal() {
   fi
   if ! has "${GATE_SKIP:-}" m3pack && has "$RUNG" m3pack; then job m3pack timeout 300 make -s -C graphics/metal test-m3; fi
   has "$RUNG" m3pack && job m3archive timeout 300 make -s -C graphics/metal test-m3archive
+  has "$RUNG" m3pack && job cs_pipelines timeout 300 bash graphics/tools/direct/tests/t_cs_pipelines.sh   # 直连计算管线随包归档：出包 → 设备同一描述命中 / 反证不命中 / 阶段键
+  has "$RUNG" m3pack && job base_pipelines timeout 300 bash graphics/tools/direct/tests/t_base_pipelines.sh   # 直连拉取基础管线随包归档：出包 → 设备同一描述命中 / 反证不命中 / 阶段
   # NVN 直连层 / GL / Vulkan 前端（graphics/nvn 与根 Makefile 的 make，链 libnvn.a、build/dsx/mac/libspvc.a）：同一道先后
   need_nvn && job nvn_m3 timeout 300 make -s -C graphics/nvn test
   need_nvn_tex && job nvn_tex timeout 120 make -s -B -C graphics/nvn/gfx/tex/tests run
@@ -428,6 +430,7 @@ py_items() {
   need_dmsh_giant && job dmsh_giant timeout 300 python3 graphics/tools/direct/tests/t_dmsh_giant.py
   if has "$RUNG" direct_link; then
     job alpha_ms timeout 300 python3 graphics/tools/direct/tests/t_alpha_ms.py
+    job vs_pull timeout 300 python3 graphics/tools/direct/tests/t_vs_pull.py   # 拉取式顶点输入变体 _bp：形状 + GPU 逐格式与 Metal 顶点抓取逐位同
     job fout_fc timeout 300 python3 graphics/tools/direct/tests/t_fout_fc.py
     job se_want timeout 60 python3 tests/se_want_test.py
   fi
@@ -739,6 +742,8 @@ elif ! has "$RUNG" m3pack; then reg 0 "Metal 3 归档出包到命中 / 运行时
 else rcof m3pack; r=$?; M3PACK_RESULT="Metal 3 归档出包到命中：$(grep -c '✓' "$LOG/m3pack.log") 项通过、$(grep -c '✗' "$LOG/m3pack.log") 项不符（退出 ${r}）"; reg $r "$M3PACK_RESULT" "$LOG/m3pack.log"; fi
 # 正式 GLSL 出包 → GAL 运行时归档：两程序 × 两颜色格式真命中，改变混合 / 写掩码真未命中及像素读回。
 if has "$RUNG" m3pack; then rcof m3archive; r=$?; reg $r "Metal 3 运行时包归档：$(tail -1 "$LOG/m3archive.log")（退出 ${r}）" "$LOG/m3archive.log"; fi
+if has "$RUNG" m3pack; then rcof cs_pipelines; r=$?; reg $r "直连计算管线随包归档：$(tail -1 "$LOG/cs_pipelines.log")（退出 ${r}）" "$LOG/cs_pipelines.log"; fi
+if has "$RUNG" m3pack; then rcof base_pipelines; r=$?; reg $r "直连拉取基础管线随包归档：$(tail -1 "$LOG/base_pipelines.log")（退出 ${r}）" "$LOG/base_pipelines.log"; fi
 # Unity ComputeShader 各版本的 kernel 变体布局（shader_split.kernel_variants）：2022.3 / 2020.3 / 2018.4（#379 Moving Out）三种认得、未知布局报红
 rcof unity_kernels; r=$?; reg $r "Unity 计算着色器布局：$(tail -1 "$LOG/unity_kernels.log")（退出 ${r}）" "$LOG/unity_kernels.log"
 rcof unity55_layout; r=$?; reg $r "Unity 5.5 精确布局：$(tail -1 "$LOG/unity55_layout.log")（退出 ${r}）" "$LOG/unity55_layout.log"
@@ -774,6 +779,7 @@ rcof dmsh_tess; dt_=$?; reg $dt_ "直连曲面阶段翻译：$(tail -1 "$LOG/dms
 # 直连计算着色器共享内存溢出（libdsx nxgal_dmsh_spill + S2A.Dsh NxgalSpvCross.SpillFix，10-26 怪猎脸黑）：超限改写、Metal 编过、不超限原样、认不出报错（编 dsh_cmp 冷编约 1 分钟）
 rcof dmsh_spill; ds_=$?; reg $ds_ "直连共享内存溢出：$(tail -1 "$LOG/dmsh_spill.log")（退出 ${ds_}）" "$LOG/dmsh_spill.log"
 rcof alpha_ms; am_=$?; reg $am_ "直连片元 Alpha 测试 / 多重采样关常量：$(tail -1 "$LOG/alpha_ms.log")（退出 ${am_}）" "$LOG/alpha_ms.log"
+rcof vs_pull; vp_=$?; reg $vp_ "直连拉取式顶点输入变体：$(tail -1 "$LOG/vs_pull.log")（退出 ${vp_}）" "$LOG/vs_pull.log"
 rcof fout_fc; ff_=$?; reg $ff_ "直连片元输出类型常量（#427）：$(tail -1 "$LOG/fout_fc.log")（退出 ${ff_}）" "$LOG/fout_fc.log"
 # 整份直连出库（C# dsh_batch build）缓存复用 / 只出一侧 / 发布形态：真跑翻译器与 metal，计算着色器共享内存改写要 build/dsx/libdsx.dylib，放在上面预编之后（10-30 原先排在预编前，新工作树的 gate-host 上 3 支全失败、出库 0 个库）
 rcof dmsh_reuse; r=$?; reg $r "整份直连出库缓存复用与出库形态：$(tail -1 "$LOG/dmsh_reuse.log")（退出 ${r}）" "$LOG/dmsh_reuse.log"

@@ -6,8 +6,8 @@ import json
 import unittest
 import unittest.mock as um
 
+import test_jobs   # 先它：它把 pack/jobs 放进导入路径，单文件跑时 import core 才找得到
 import core
-import test_jobs
 from core import Failure
 
 

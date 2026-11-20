@@ -19,13 +19,21 @@ void s2a_source_log_line(const char *line) { (void)line; g_source_log_lines++; }
 static int fails;
 #define CHECK(cond, what) do { if (!(cond)) { printf("FAIL: %s\n", what); fails++; } } while (0)
 
+// 生产口径的控制段：键第 2 代先把 [0x790,0x798)、[0x7d0,0x7e8) 落在 control_bytes 内的字节按 0 算（graphics/nvn/gfx/nvn/nvn_key.h）；这里按规则另写一遍，不调被测实现
+static const uint8_t *key_control(const void *control, uint32_t control_bytes, uint8_t buf[0x880]) {
+    memcpy(buf, control, control_bytes);
+    for (uint32_t i = 0x790; i < 0x798 && i < control_bytes; i++) buf[i] = 0;
+    for (uint32_t i = 0x7d0; i < 0x7e8 && i < control_bytes; i++) buf[i] = 0;
+    return buf;
+}
 // 生产口径的短 key：SHA-256(control‖code) 的前 8 字节（与前端 keys_hash 同一字节顺序）。
 static void make_key(const void *code, uint32_t code_bytes, const void *control, uint32_t control_bytes,
                      uint8_t out[8]) {
     s2a_sha256 c;
     uint8_t md[32];
     s2a_sha256_init(&c);
-    s2a_sha256_update(&c, control, control_bytes);
+    uint8_t kc[0x880];
+    s2a_sha256_update(&c, key_control(control, control_bytes, kc), control_bytes);
     s2a_sha256_update(&c, code, code_bytes);
     s2a_sha256_final(&c, md);
     memcpy(out, md, 8);
@@ -35,7 +43,8 @@ static void make_digest(const void *code, uint32_t code_bytes, const void *contr
                         uint8_t out[32]) {
     s2a_sha256 c;
     s2a_sha256_init(&c);
-    s2a_sha256_update(&c, control, control_bytes);
+    uint8_t kc[0x880];
+    s2a_sha256_update(&c, key_control(control, control_bytes, kc), control_bytes);
     s2a_sha256_update(&c, code, code_bytes);
     s2a_sha256_final(&c, out);
 }
@@ -560,6 +569,28 @@ int main(void) {
         CHECK(s2a_source_pending_count() == m0 + 1, "repeat / out-of-range drop is a no-op");
         s2a_source_drop_pending(7777);
         CHECK(s2a_source_pending_count() == m0, "finalize releases the rest");
+    }
+
+    // 键第 2 代（nvn_key.h）：内容摘要按「两段易变字段置零」的控制段算。期望值由 Python hashlib 按规则手算：
+    //   控制段 0x880 字节 ctl[i] = (i*7+3) & 0xff、+0x20 = 0x880、+0x704 = 0x40；代码 0x40 字节 code[i] = (i*13+5) & 0xff、前 4 字节 78 56 34 12
+    //   第 2 代 sha256 = e0d0ef6990987e99758d5ed2782b06f462ea133d633ee9cd30825916a90b9ec5，第 1 代键（不置零）= 404d87c7549fd09c
+    //   反证：source_store.c 不置零 → 第 2 代键被拒、第 1 代键被收（下两项红）
+    {
+        static uint8_t kv_ctl[0x880], kv_ctl2[0x880], kv_code[0x40];
+        for (unsigned i = 0; i < sizeof kv_ctl; i++) kv_ctl[i] = (uint8_t)(i * 7 + 3);
+        for (unsigned i = 0; i < sizeof kv_code; i++) kv_code[i] = (uint8_t)(i * 13 + 5);
+        memcpy(kv_code, "\x78\x56\x34\x12", 4);
+        uint32_t own = 0x880, nc = 0x40; memcpy(kv_ctl + 0x20, &own, 4); memcpy(kv_ctl + 0x704, &nc, 4);
+        memcpy(kv_ctl2, kv_ctl, sizeof kv_ctl); kv_ctl2[0x793] ^= 0x5a; kv_ctl2[0x7e7] ^= 0xa5;   // 只差两段
+        static const uint8_t v2[8] = {0xe0, 0xd0, 0xef, 0x69, 0x90, 0x98, 0x7e, 0x99}, v1[8] = {0x40, 0x4d, 0x87, 0xc7, 0x54, 0x9f, 0xd0, 0x9c};
+        static const uint8_t sha_v2[32] = {0xe0, 0xd0, 0xef, 0x69, 0x90, 0x98, 0x7e, 0x99, 0x75, 0x8d, 0x5e, 0xd2, 0x78, 0x2b, 0x06, 0xf4,
+                                           0x62, 0xea, 0x13, 0x3d, 0x63, 0x3e, 0xe9, 0xcd, 0x30, 0x82, 0x59, 0x16, 0xa9, 0x0b, 0x9e, 0xc5};
+        CHECK(s2a_source_keep(v1, 0, kv_code, sizeof kv_code, kv_ctl, sizeof kv_ctl) != 0, "key v2: generation-1 key rejected");
+        CHECK(s2a_source_keep(v2, 0, kv_code, sizeof kv_code, kv_ctl, sizeof kv_ctl) == 0, "key v2: generation-2 key kept");
+        uint8_t sha[32]; uint32_t cb = 0, ctlb = 0;
+        CHECK(s2a_source_identity(v2, sha, &cb, &ctlb) == 0 && !memcmp(sha, sha_v2, 32), "key v2: content digest = hand-computed zeroed digest");
+        CHECK(s2a_source_keep(v2, 0, kv_code, sizeof kv_code, kv_ctl2, sizeof kv_ctl2) == 0 && s2a_source_identity_ok_for_test(v2),
+              "key v2: a control differing only in the volatile spans is the same source (not ambiguous)");
     }
 
     if (fails) { printf("direct source store test: %d FAILED\n", fails); return 1; }

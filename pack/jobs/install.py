@@ -1101,6 +1101,15 @@ def export_sign_mode(c):
     return want if want in SIGN_MODES else chosen_sign_mode(c)
 
 
+EXPORT_UNSIGNED = "没读到登录的 Apple ID，这份游戏包未签名，导入后由手机上的 S2Arm 签名。"
+EXPORT_UNSIGNED_NO_ID = "没读到登录的 Apple ID，这份游戏包未签名；手机上的 S2Arm 还没拿到签名身份，导入后签不了：先在启动器里登录 Apple ID（或选用自己的证书），连上手机推一次游戏，把签名身份交给它。"
+
+
+def any_phone_identity(c):
+    """这台电脑交过签名身份的手机有没有（设备记录 identity，deliver_identity 写）：导出未签名的 .s2arm 时按它说导入后能不能签"""
+    return any((rec or {}).get("identity") for _, rec in layout.devices(c))
+
+
 def export_signer(c, mode):
     """导出 .s2arm 时签程序包要的 → (团队号, 包名, 签名器, 账号名)，同推到 iPhone 的签法（phone_signing）但不要手机：
     包名就是装 App 的那个 container_bundle_id(团队)；证书用户用证书的团队与描述文件的包名。做不到（没登录、证书缺件）照实报"""
@@ -1117,7 +1126,7 @@ def export_signer(c, mode):
     if not team:
         if os.name != "nt":
             raise Failure(APPLE_SIGN_IN, code="apple_not_signed_in")
-        raise Failure("读不到 Impactor 里登录的 Apple ID：在 Impactor 里登录后再导出，或者这次改成「自己用别的工具签」。", code="xcode_account_missing")
+        raise Failure("读不到 Impactor 里登录的 Apple ID：在 Impactor 里登录后再导出，或者这次改成「自己用别的工具签」。", code="apple_not_signed_in")   # Windows 的下一步（WINDOWS_RECOVERY）：在 Impactor 里添加账号
     import ipa as packer
     exe = W.plumesign_path((W.impactor.bundled(c.r.get("resources")) or {}).get("plumesign"))
     win_cert_gate(c, W, exe)
@@ -1263,10 +1272,18 @@ def export_s2arm(c, gid):
         mode = export_sign_mode(c)
         signed_with = None
         if mode != "external":   # 玩家选了用 Apple ID / 自己的证书签：导出前就签好，手机导入看清单 team 非空不再签（11-17 维护者定）
-            team, bundle, signer, who = export_signer(c, mode)
-            pkg = Path(program_pack.sign(c, gid, team, bundle, signer, pkg=pkg))
-            image = pkg / program_pack.image_name(gid)
-            signed_with = dict(mode=mode, name=who, team=team)
+            try:
+                team, bundle, signer, who = export_signer(c, mode)
+            except Failure as e:
+                # Apple ID 没登录不拦导出（11-19 维护者：导出 / 自签不加拦截）：照样导出未签名的（同「自己用别的工具签」），导入后由手机上的 S2Arm 用电脑交过去的身份签
+                if mode != "appleId" or e.code != "apple_not_signed_in":
+                    raise
+                c.diagnostic(EXPORT_UNSIGNED if any_phone_identity(c) else EXPORT_UNSIGNED_NO_ID, code="apple_not_signed_in", severity="warning", internal=str(e))   # 下一步同没登录：想在电脑上签就去登录
+                team = None
+            if team:
+                pkg = Path(program_pack.sign(c, gid, team, bundle, signer, pkg=pkg))
+                image = pkg / program_pack.image_name(gid)
+                signed_with = dict(mode=mode, name=who, team=team)
         cat = json.loads((pkg / program_pack.CATALOGUE).read_text(encoding="utf-8")) if signed_with else program_pack.catalogue(gid, meta, image, None)
         c.begin("打包 .s2arm", 2, 3)
         files = [("program/" + p.relative_to(pkg).as_posix(), p) for p in sorted(pkg.rglob("*"))
@@ -2493,7 +2510,7 @@ def phone_signing(c, ph):
         if not team:
             if os.name != "nt":
                 raise Failure(APPLE_SIGN_IN, code="apple_not_signed_in")
-            raise Failure("读不到 Impactor 里登录的 Apple ID：在 Impactor 里登录后再推到 iPhone。", code="xcode_account_missing")
+            raise Failure("读不到 Impactor 里登录的 Apple ID：在 Impactor 里登录后再推到 iPhone。", code="apple_not_signed_in")   # 原先报 Mac 的 xcode_account_missing，下一步叫 Windows 玩家开 Xcode
         import ipa as packer
         exe = ph.W.plumesign_path((ph.W.impactor.bundled(c.r.get("resources")) or {}).get("plumesign"))
         win_cert_gate(c, ph.W, exe)

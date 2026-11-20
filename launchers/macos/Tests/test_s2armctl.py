@@ -173,7 +173,8 @@ class WaitTests(unittest.TestCase):
                 (["build", "G", "--space-override"], "/build", {"gameId": "G", "target": "ios", "spaceOverride": True}),
                 (["build", "G", "ios"], "/build", {"gameId": "G", "target": "ios"}),
                 (["ipa", "G", "--space-override"], "/ipa", {"gameId": "G", "spaceOverride": True}),
-                (["ipa", "G"], "/ipa", {"gameId": "G"})]:
+                (["ipa", "G"], "/ipa", {"gameId": "G"}),
+                (["selfsign", "G"], "/selfsign", {"gameId": "G"})]:   # 控制口 /selfsign 按 gameId 取这款（S2ArmControl.swift）
             # build 发出前先读一次任务列表（记下已有任务号给 wait 用），数据目录换成临时目录
             with tempfile.TemporaryDirectory() as root, mock.patch.object(ctl, "ROOT", root), \
                     mock.patch.object(ctl, "call", side_effect=lambda m, p, *a, **k: {"tasks": []} if (m, p) == ("GET", "/state") else {"ok": True}) as call, \
