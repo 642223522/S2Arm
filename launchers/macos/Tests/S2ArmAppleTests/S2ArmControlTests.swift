@@ -49,6 +49,16 @@ import AppKit
         XCTAssertNil(model.session, "上面这些一个作业都没起")
     }
 
+    /// s2armctl dismiss（「关掉提示框」）要关得掉新功能大窗和更新弹窗，同玩家点关闭；修前只清报错、弹窗原样开着
+    func testDismissClosesFeatureSpotlightAndUpdatePopup() async {
+        for popup: [String: Any] in [["kind": "feature", "id": "v0.0.0-probe"], ["kind": "update", "version": "99.0.0"]] {
+            model.updatePopup = popup
+            let code = await post("/dismiss").0
+            XCTAssertEqual(code, 200)
+            XCTAssertNil(model.updatePopup, "dismiss 后 \(popup["kind"] ?? "") 弹窗应关掉")
+        }
+    }
+
     func testHelpListsTheSameCallsS2armctlUses() async {
         let r = await control.handle(ControlRequest(method: "GET", path: "/help", headers: [:], body: [:]))
         let calls = ((try? JSONSerialization.jsonObject(with: r.body) as? [String: Any])?["endpoints"] as? [[String: String]] ?? []).compactMap { $0["call"] }
