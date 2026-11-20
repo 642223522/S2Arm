@@ -1943,7 +1943,16 @@ nvn_gpu_rc nvn_gpu_pool_create(const nvn_gpu_pool_desc *d, nvn_gpu_pool_table *o
     for (uint32_t i = 0; i < d->count && i < 16; i++) g_pool_last[i] = d->items[i];
     *out = calloc(1, sizeof **out); (*out)->kind = d->kind; (*out)->count = d->count; return (nvn_gpu_rc){NVN_GPU_OK};
 }
-nvn_gpu_rc nvn_gpu_pool_bind(nvn_gpu_cmd c, nvn_gpu_stage st, uint32_t ent, nvn_gpu_pool_table t, nvn_gpu_err *err) { (void)c; (void)st; (void)ent; (void)t; (void)err; g_pool_binds++; return (nvn_gpu_rc){NVN_GPU_OK}; }
+// 每次绑表的记录（阶段、布局项号、表指针与它的种类 / 项数）：用例把 g_pool_bind_n 清零后读
+static struct { int st; uint32_t ent, kind, count; nvn_gpu_pool_table t; } g_pool_bind_log[16]; static int g_pool_bind_n;
+nvn_gpu_rc nvn_gpu_pool_bind(nvn_gpu_cmd c, nvn_gpu_stage st, uint32_t ent, nvn_gpu_pool_table t, nvn_gpu_err *err) {
+    (void)c; (void)err; g_pool_binds++;
+    if (g_pool_bind_n < 16) {
+        g_pool_bind_log[g_pool_bind_n].st = (int)st; g_pool_bind_log[g_pool_bind_n].ent = ent; g_pool_bind_log[g_pool_bind_n].t = t;
+        g_pool_bind_log[g_pool_bind_n].kind = t ? t->kind : 0; g_pool_bind_log[g_pool_bind_n].count = t ? t->count : 0; g_pool_bind_n++;
+    }
+    return (nvn_gpu_rc){NVN_GPU_OK};
+}
 void nvn_gpu_pool_release(nvn_gpu_pool_table t) { g_pool_releases++; free(t); }
 
 // 整池数组的池快照（rp_pool_table）：
@@ -3394,6 +3403,36 @@ static void t_graphics_high_slots(void) {
     pass_fresh(); res_fresh();
 }
 
+// 图形阶段的整池数组（取表函数 pool_table_resolve 与计算派发共用，#1594 片 8 抽出）：行为不变的钉子。
+//   期望（手算）：片元阶段 = 阶段 1；池长 8 / 4 → 布局项 count 9 / 5；一笔绘制 = 建 2 张表（IMAGE 8 项 / SAMPLER 4 项）、绑 2 次（阶段 1，项号 0 / 1）；
+//   池长对不上 = 具名跳过这一笔、不绑表；池长 0 = 具名原因；恢复后又能画
+static void t_graphics_pool(void) {
+    for (int k = 0; k < 4; k++) {   // 0 = 正常；1 / 2 = 贴图池 / 采样器池的池长对不上；3 = 池长 0
+        pass_fresh(); res_fresh(); g_arena_used = 0; g_resolve_rc = 0;
+        stream s = {0}; q_env(&s);
+        tex_t a = mk_tex(88911, 0, NVN_FORMAT_RGBA8, 8, 8, 1, 0);
+        samp_par sp; memset(&sp, 0, sizeof sp);
+        nvn_be_reg_tex(2, &a, NULL); nvn_be_reg_samp(1, &sp); nvn_be_set_tex_pool_n(8);
+        rp_S.tex_base = 0; rp_S.samp_base = 0; rp_S.tex_pool_n = k == 3 ? 0 : 8; rp_S.samp_pool_n = 4;
+        nvn_gpu_layout_ent *te = &g_fprog.ent[1][0], *se = &g_fprog.ent[1][1]; g_fprog.nent[1] = 2;
+        te->cls = NVN_GPU_RES_TEX; te->src_kind = NVN_RB_TEXP; te->src_reg2 = UINT16_MAX; te->count = k == 1 ? 10 : k == 3 ? 1 : 9; te->access = NVN_GPU_ACC_R;
+        se->cls = NVN_GPU_RES_SAMP; se->src_kind = NVN_RB_SAMPP; se->src_reg2 = UINT16_MAX; se->count = k == 2 ? 4 : 5; se->access = NVN_GPU_ACC_R;
+        g_fprog.dtt[1][0] = NVN_TEXTURE_TARGET_2D + 1; g_fprog.dcls[1][0] = 0;
+        int g0 = g_gdraws, cr = g_pool_creates, pb = g_pool_binds; g_pool_bind_n = 0;
+        q_draw(&s); end(&s); submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+        if (k == 0) {
+            CHECK(g_gdraws == g0 + 1 && g_pool_creates - cr == 2 && g_pool_binds - pb == 2 && g_pool_bind_n == 2);
+            CHECK(g_pool_bind_log[0].st == NVN_GPU_SH_FS && g_pool_bind_log[0].ent == 0 && g_pool_bind_log[0].kind == NVN_GPU_POOL_IMAGE && g_pool_bind_log[0].count == 8);
+            CHECK(g_pool_bind_log[1].st == NVN_GPU_SH_FS && g_pool_bind_log[1].ent == 1 && g_pool_bind_log[1].kind == NVN_GPU_POOL_SAMPLER && g_pool_bind_log[1].count == 4);
+        } else {
+            CHECK(g_gdraws == g0 && g_pool_binds == pb);
+            CHECK(nvn_unimpl_count("draw", k == 3 ? "pool_length_unsupported" : "pool_length_mismatch") == 1);
+        }
+        rp_S.tex_pool_n = rp_S.samp_pool_n = 0;
+    }
+    pass_fresh(); res_fresh();
+}
+
 static void t_tbuf_replay(void) {
     pass_fresh(); g_gdraws = g_resolves = g_resolve_rc = 0; g_arena_used = 0;
     g_bind_outside = g_draw_outside = g_pass_open = g_nbw = 0;
@@ -4825,6 +4864,54 @@ static void t_compute_query_sampler(void) {
     CHECK(g_samp_releases == releases + 1);
 }
 
+// #1594 片 8：计算阶段的整池数组。布局里的 NVN_RB_TEXP / SAMPP 项（编译结果 pool:"texture" / "sampler"，count = 池长 + 1 表尾 dummy）
+//   在派发时各取一张池快照、按计算阶段绑上整表（与绘制同一个取表函数 pool_table_resolve）。
+//   期望（手算）：池长 8 / 4 → 布局项 count 9 / 5；贴图池起点 0、采样器池起点 2（两个起点故意错开：号 2 登记贴图、号 3 登记采样器）；
+//   ① 只有贴图池项：派发 1 次 = 建 1 张表（8 项 IMAGE，号 2 是它自己的视图、与号 3 的零贴图视图不同）、绑 1 次（阶段 = 计算，项号 0）；
+//   ② 加上采样器池项：派发 1 次 = 贴图表沿用、再建 1 张采样器表（4 项 SAMPLER，起点 2 → 项 1 = 号 3 READY、项 0 / 项 3 = 号 2 / 号 5 EMPTY）、
+//      绑 2 次（项号 0 / 1）；登记没变再派发 = 不建新表、仍绑 2 次；重登记一个贴图号 = 贴图表重建、旧表一张不留（建表数 − 放表数 = 2 张在用的）；
+//   ③ 池长对不上（贴图池 / 采样器池各试一次）、池长 0 = 具名跳过：不派发、不绑表；恢复后又能派发
+static void t_compute_pool(void) {
+    pass_fresh(); res_fresh(); g_arena_used = 0; nvn_unimpl_reset();
+    tex_t a = mk_tex(667, 0, NVN_FORMAT_RGBA8, 8, 8, 1, 0), b = mk_tex(668, 0x4000, NVN_FORMAT_RGBA8, 8, 8, 1, 0);
+    samp_par sp; memset(&sp, 0, sizeof sp);
+    nvn_be_set_tex_pool_n(8); nvn_be_reg_tex(2, &a, NULL); nvn_be_reg_samp(3, &sp);
+    rp_S.tex_base = 0; rp_S.samp_base = 2; rp_S.tex_pool_n = 8; rp_S.samp_pool_n = 4;
+    memset(&g_cprog, 0, sizeof g_cprog); g_cprog.is_compute = 1; g_cprog.sh[0] = &g_fsh[0]; g_cprog.nent[0] = 1;
+    nvn_gpu_layout_ent *te = &g_cprog.ent[0][0], *se = &g_cprog.ent[0][1];
+    te->cls = NVN_GPU_RES_TEX; te->src_kind = NVN_RB_TEXP; te->src_reg2 = UINT16_MAX; te->count = 9; te->access = NVN_GPU_ACC_R;
+    se->cls = NVN_GPU_RES_SAMP; se->src_kind = NVN_RB_SAMPP; se->src_reg2 = UINT16_MAX; se->count = 5; se->access = NVN_GPU_ACC_R;
+    g_cprog.dtt[0][0] = NVN_TEXTURE_TARGET_2D + 1; g_cprog.dcls[0][0] = 0;   // 声明二维：登记的二维贴图取它自己的视图（声明立方体时非立方体项都解析成同一张零立方体，认不出起点）
+    p_dispatch dp = {.x = 1, .y = 1, .z = 1};
+    int n = g_ndisp, cr = g_pool_creates, cl = g_pool_releases, pb = g_pool_binds;
+    g_pool_bind_n = 0;
+    nvn_be_sub_begin(); rp_dispatch(&g_fake_cmd, &dp, NULL);   // ① 只有贴图池项
+    CHECK(g_ndisp == n + 1 && g_pool_creates - cr == 1 && g_pool_binds - pb == 1 && g_pool_bind_n == 1);
+    CHECK(g_pool_bind_log[0].st == NVN_GPU_SH_CS && g_pool_bind_log[0].ent == 0 && g_pool_bind_log[0].kind == NVN_GPU_POOL_IMAGE && g_pool_bind_log[0].count == 8);
+    CHECK(g_pool_last_kind == NVN_GPU_POOL_IMAGE && g_pool_last_n == 8 && g_pool_last[2].resource.view && g_pool_last[3].resource.view &&
+          g_pool_last[2].resource.view != g_pool_last[3].resource.view);   // 贴图池按贴图池起点 0 取：号 2 是登记的那张
+    g_cprog.nent[0] = 2; g_pool_bind_n = 0; rp_dispatch(&g_fake_cmd, &dp, NULL);   // ② 再加采样器池项：贴图表沿用
+    CHECK(g_ndisp == n + 2 && g_pool_creates - cr == 2 && g_pool_binds - pb == 3 && g_pool_bind_n == 2);
+    CHECK(g_pool_bind_log[0].st == NVN_GPU_SH_CS && g_pool_bind_log[0].ent == 0 && g_pool_bind_log[0].kind == NVN_GPU_POOL_IMAGE && g_pool_bind_log[0].count == 8);
+    CHECK(g_pool_bind_log[1].st == NVN_GPU_SH_CS && g_pool_bind_log[1].ent == 1 && g_pool_bind_log[1].kind == NVN_GPU_POOL_SAMPLER && g_pool_bind_log[1].count == 4);
+    CHECK(g_pool_last_kind == NVN_GPU_POOL_SAMPLER && g_pool_last_n == 4 && g_pool_last[1].state == NVN_GPU_POOL_READY &&
+          g_pool_last[0].state == NVN_GPU_POOL_EMPTY && g_pool_last[3].state == NVN_GPU_POOL_EMPTY);   // 采样器池按采样器池起点 2 取：号 3 是登记的那个
+    g_pool_bind_n = 0; rp_dispatch(&g_fake_cmd, &dp, NULL);   // 登记没变：表沿用
+    CHECK(g_ndisp == n + 3 && g_pool_creates - cr == 2 && g_pool_releases - cl == 0 && g_pool_bind_n == 2 && g_pool_bind_log[0].ent == 0 && g_pool_bind_log[1].ent == 1);
+    nvn_be_reg_tex(5, &b, NULL); g_pool_bind_n = 0; rp_dispatch(&g_fake_cmd, &dp, NULL);   // 重登记一个贴图号：贴图表重建，每重建一张就放掉一张旧表（缓存键与图形同一套，采样器表是否同时重建随序号纪元，不钉）
+    CHECK(g_ndisp == n + 4 && g_pool_creates - cr >= 3 && g_pool_releases - cl == g_pool_creates - cr - 2 && g_pool_bind_n == 2 && g_pool_bind_log[0].kind == NVN_GPU_POOL_IMAGE);
+    n = g_ndisp; pb = g_pool_binds;
+    te->count = 10; rp_dispatch(&g_fake_cmd, &dp, NULL);   // 贴图池项的池长（9 − 1）与当前池长 8 对不上
+    CHECK(g_ndisp == n && g_pool_binds == pb && nvn_unimpl_count("draw", "pool_length_mismatch") == 1);
+    te->count = 9; rp_S.samp_pool_n = 3; rp_dispatch(&g_fake_cmd, &dp, NULL);   // 采样器池项（5 − 1）与当前池长 3 对不上
+    CHECK(g_ndisp == n && g_pool_binds == pb && nvn_unimpl_count("draw", "pool_length_mismatch") == 2);
+    rp_S.samp_pool_n = 4; te->count = 1; rp_S.tex_pool_n = 0; rp_dispatch(&g_fake_cmd, &dp, NULL);   // 池长 0：建不出表，具名原因
+    CHECK(g_ndisp == n && g_pool_binds == pb && nvn_unimpl_count("draw", "pool_length_unsupported") == 1);
+    te->count = 9; rp_S.tex_pool_n = 8; g_pool_bind_n = 0; rp_dispatch(&g_fake_cmd, &dp, NULL);   // 恢复：又能派发
+    CHECK(g_ndisp == n + 1 && g_pool_binds == pb + 2 && g_pool_bind_n == 2);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    rp_S.tex_pool_n = rp_S.samp_pool_n = 0; rp_S.samp_base = 0; nvn_be_unreg_tex_range(0, 8); nvn_be_set_tex_pool_n(0); pass_fresh(); res_fresh(); nvn_unimpl_reset();
+}
 // 贴图 → 贴图的拷贝：同尺寸同格式的逐层直接拷，各按自己视图的级与起始层；缩放 / 换格式 / 镜像 / 多重采样解析分开记账；目标从此以 GPU 为准。
 static p_copy_t2t *put_t2t(stream *s, const tex_t *src, const tex_t *dst) {
     p_copy_t2t *o = put(s, OP_COPY_T2T, sizeof *o + 2 * sizeof(tex_t)); tex_t *sn = (tex_t *)(o + 1); sn[0] = *src; sn[1] = *dst; o->src = &sn[0]; o->dst = &sn[1]; return o;
@@ -6636,6 +6723,7 @@ int main(int argc, char **argv) {
     t_compute_tex_from_image();
     t_drv2_table();
     t_compute_query_sampler();
+    t_compute_pool();
     t_compute_sources();
     t_depth_copy_scaled(); t_front_origin_matrix(); t_color_copy_mirror(); t_copy_t2t();
     t_clean_read_order();
@@ -6648,6 +6736,7 @@ int main(int argc, char **argv) {
     t_gs_dirty_and_topology();
     t_gs_bind(); t_ub_fill_async(); t_storage_null_binding(); t_storage_sync_before_pass(); t_stage_dropped_clears_binds(); t_sbuf_window(); t_sbuf_past_pool_end();
     t_graphics_high_slots();
+    t_graphics_pool();
     t_tbuf_replay();
     t_decl_sampling();
     t_separate_sampler();

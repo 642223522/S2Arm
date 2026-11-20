@@ -575,6 +575,32 @@ static int compute_storage(struct s2a_jv b, struct nvn_vk_compute_storage *s) {
     }
     return -1;
 }
+/* 整池数组绑定（pool = "texture" / "sampler"）：整个 NVN 贴图池 / 采样器池当一个描述符数组（编译器 ResolvePoolSlots，
+ * 着色器按运行时下标取句柄、追不到槽时的回退）。合同与图形阶段同一份（nvn_vk_program_parse 的 pool 分支）：只认 v2 的贴图绑定、
+ * 不带任何槽位来源，count 是池长 2..0xfffe（布局项 count 是 16 位，还要一项表尾 dummy）；计算侧另要求 stage 是 cs，
+ * 且不带存储来源字段 / 每组字节数。形状不对整份拒，不退化成「从槽 0 起的数组」。返回 NULL = 已填好 dst，否则是拒绝原因。 */
+static const char *compute_pool_binding(struct s2a_jv b, struct s2a_jv pool, int v2, uint32_t count, struct fd_binding *dst) {
+    static const char *const forbidden[] = {
+        "slot", "samp_slot", "constSampler", "uboSlot", "uboOffset", "uboHandle",   /* 槽位 / 句柄来源 */
+        "rw", "cbSlot", "cbOffset", "nvnSlot", "uboPtr",                              /* 存储来源 */
+        "bytesPerGroup" };                                                            /* spill */
+    char text[16];
+    struct s2a_jv extra;
+    if (s2a_jv_str(pool, text, sizeof text) || (strcmp(text, "texture") && strcmp(text, "sampler")))
+        return "compute pool array: pool is neither texture nor sampler";
+    if (!v2) return "compute pool array needs a v2 result";
+    if (dst->kind != 2 || dst->is_support) return "compute pool array on a non-texture binding";
+    if (!compute_string_is(b, "stage", "cs")) return "compute pool array binding stage is not cs";
+    if (count < 2 || count > 0xfffe) return "compute pool array length is outside 2..65534";
+    for (unsigned k = 0; k < sizeof forbidden / sizeof forbidden[0]; ++k)
+        if (!s2a_jv_obj_find(b, forbidden[k], &extra)) return "compute pool array binding carries a slot or storage source field";
+    dst->pool = (uint8_t)(strcmp(text, "texture") ? 2 : 1);
+    dst->count = (uint16_t)count;
+    snprintf(dst->stage, sizeof dst->stage, "cs");
+    dst->stage_idx = 5;   /* NVN CS index, same as the other compute bindings. */
+    dst->slot = -1; dst->ubo_slot = -1; dst->tex_slot = -1; dst->samp_slot = -1;
+    return NULL;
+}
 int nvn_vk_program_parse_compute(const uint8_t *bytes, size_t length,
     struct nvn_vk_compute_program *out, char *why, size_t why_size) {
     if (!bytes || !out) return fail(why, why_size, "compute result arguments are missing");
@@ -647,13 +673,16 @@ int nvn_vk_program_parse_compute(const uint8_t *bytes, size_t length,
         if (s2a_jv_obj_find(b, "binding", &value) || compute_u32(value, &u) || u > INT_MAX) CS_FAIL("compute binding number invalid");
         dst->binding = (int)u;
         if (s2a_jv_obj_find(b, "count", &value) || compute_u32(value, &u) || !u) CS_FAIL("compute binding count is invalid");
-        if (u > FD_MAX_ARRAY_ELEMENTS) {
+        // 整池数组（带 pool 字段）的 count 是池长，不走下面「普通数组」的上限；它的形状在后面 compute_pool_binding 里整体核
+        struct s2a_jv pool_v = { NULL, 0 };
+        const int has_pool = !s2a_jv_obj_find(b, "pool", &pool_v);
+        if (!has_pool && u > FD_MAX_ARRAY_ELEMENTS) {
             char message[128]; snprintf(message, sizeof message, "stage cs descriptor array length=%u exceeds %u", u, FD_MAX_ARRAY_ELEMENTS);
             nvn_vk_program_free_compute(out);
             fail(why, why_size, message);
             return NVK_PROGRAM_ARRAY_UNSUPPORTED;
         }
-        if (u != 1) CS_FAIL("compute descriptor arrays are unsupported");
+        if (!has_pool && u != 1) CS_FAIL("compute descriptor arrays are unsupported");
         dst->count = 1;
         for (int j = 0; j < i; ++j)
             if (out->bindings[j].set == dst->set && out->bindings[j].binding == dst->binding) CS_FAIL("duplicate compute binding");
@@ -664,13 +693,17 @@ int nvn_vk_program_parse_compute(const uint8_t *bytes, size_t length,
         else if (compute_string_is(b, "kind", "image")) dst->kind = 3;
         else if (compute_string_is(b, "kind", "spill")) dst->kind = 4;
         else CS_FAIL("unknown compute binding kind");
+        if (has_pool) {   // 整池数组（计算分发按池建快照绑整表，回放 rp_dispatch）：形状整体核、自己收口，不进下面的槽位 / 来源检查，也不当成普通贴图数组
+            const char *bad = compute_pool_binding(b, pool_v, v2, u, dst);
+            if (bad) CS_FAIL(bad);
+            out->binding_count++;
+            continue;
+        }
         // #1594：类型 3 句柄（贴图字在 c2 分离贴图表、采样器池下标是着色器里的立即数）计算侧没接——编译器对 cs 已具名报未接，
         //   这里是第二道：带 constSampler 的计算绑定不能被当成「没有 samp_slot = 采样器取同字高位」绑成错的采样器。
         //   放在 slot 等检查之前，原因才不会被别的拒绝盖住。
         { struct s2a_jv csamp;
           if (!s2a_jv_obj_find(b, "constSampler", &csamp)) CS_FAIL("compute constant sampler source is not implemented"); }
-        { struct s2a_jv pl;   // 整池数组计算侧没接（回放计算分发不建池快照）：具名拒，不当成普通贴图数组
-          if (!s2a_jv_obj_find(b, "pool", &pl)) CS_FAIL("compute pool array is not implemented"); }
         {   // 每线程组字节数只属于 spill；spill 必须带、且 4 字节对齐、不超过客体上限 48 KiB；整个程序最多一个
             struct s2a_jv per; int has_per = !s2a_jv_obj_find(b, "bytesPerGroup", &per);
             if (dst->kind == 4) {
