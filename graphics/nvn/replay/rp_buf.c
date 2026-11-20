@@ -19,7 +19,7 @@
 #include <stdio.h>
 #include <string.h>
 
-struct gpu_write { uint64_t off, len, id; uint8_t mi, landing; };   // GPU 写进镜像、还没回写到游戏内存的一段；mi = 写进了哪一份镜像
+struct gpu_write { uint64_t off, len, id; uint8_t mi, landing; uint64_t sub; };   // GPU 写进镜像、还没回写到游戏内存的一段；mi = 写进了哪一份镜像；已有字段（off / len / id / mi / landing）的含义与顺序不变，sub 是追加在末尾的新字段：登记时的提交序号（同段合并按它认「同一次提交」）
 // 一份镜像。synced[i]：第 i 页上次同步取的脏页代号，0 = 从没同步；sub[i]：那次同步所在的提交序号；
 // checked[i]：第 i 页上次逐页核对时的全局写代号（代号没动 = 那之后游戏没写过任何被跟踪的页，这一页不用再核）。
 // use_sub / use_fence：最近一次用到这份镜像的提交（序号、栅栏值）；prev_fence：再往前一次用到它的提交的栅栏值——
@@ -54,15 +54,44 @@ static uint64_t g_sync_bytes, g_sync_runs;
 static nvn_gpu_buf g_null_storage;
 static int g_gw_live;   // 所有池的未落地登记数（含正在落地的项）
 static int g_untracked_shadows;   // 不受写跟踪的池里有镜像的个数（原子读写）：为 0（受跟踪的游戏全程如此）时 rp_write_note 不多走一步
+static int g_gw_merge_on = -1; static unsigned g_gw_merge_k;   // 开关 nvk_land_merge 的缓存与读取计数（见 rp_buf_gpu_write_note2）
 #ifdef S2A_GPU_LAND_TEST
 int rp_test_gw_live(void) { return __atomic_load_n(&g_gw_live, __ATOMIC_ACQUIRE); }
+void rp_test_gw_merge_reload(void) { __atomic_store_n(&g_gw_merge_on, -1, __ATOMIC_RELAXED); }   // 单测换开关值后让下一次登记立刻重读
+int rp_test_gw_get(uint64_t pool_key, int i, uint64_t *off, uint64_t *len) {   // 这个池登记表第 i 条的区间；返回表里的条数（池没有镜像 = -1）
+    pthread_mutex_lock(&g_bmu);
+    struct shadow *s = nvn_hm_get(&g_shadow, &pool_key); int n = s ? s->ngw : -1;
+    if (s && i >= 0 && i < s->ngw) { if (off) *off = s->gw[i].off; if (len) *len = s->gw[i].len; }
+    pthread_mutex_unlock(&g_bmu);
+    return n;
+}
 #endif
 
 int rp_pool_find(uint64_t addr, uint64_t len, const uint8_t **mem, uint64_t *size);   // rp_entry.c
 
-static void mirror_free(struct mirror *m) { if (m->buf) nvn_gpu_buf_release(m->buf, NULL, NULL); free(m->synced); free(m->sub); free(m->checked); free(m->stale); free(m->stale_sum); memset(m, 0, sizeof *m); }
-static void shadow_free(struct shadow *s) { if (s->ngw) __atomic_sub_fetch(&g_gw_live, s->ngw, __ATOMIC_RELEASE); if (s->untracked) __atomic_sub_fetch(&g_untracked_shadows, 1, __ATOMIC_RELEASE);
-                                            mirror_free(&s->m[0]); mirror_free(&s->m[1]); free(s->gw); free(s); }
+// ---------- 回放窗口：别的线程销毁池时，回放手里的镜像缓冲不能当场放 ----------
+// 一次提交的回放（rp_exec.c nvn_be_sub_begin → nvn_be_sub_commit）里，回放线程从 rp_buf_resolve 取到镜像缓冲句柄，到后端 cmd_ref 登记它之间没有任何锁护着；
+// 游戏的别的线程这时销毁池（MapVirtual 合并 / 拆分 run 时对被动到的 run 先 pool_del 再 pool_add，或 MemoryPoolFinalize），镜像缓冲当场 release，
+// 回放线程随后录制它 = 后端「release 之后仍在使用句柄」契约违规：整段提交失败，时间线进失败终态，恢复只能重开会话。
+// 窗口开着、销毁来自别的线程：池表项与影子照常撤（之后的解析看不到这个池），镜像缓冲进待放列表，窗口收尾（rp_buf_hold_end）时一并 release；
+// 命令已经 cmd_ref 的缓冲由后端引用计数保活到段完成。窗口外、或销毁来自开窗口的那个线程（同线程不会在回放中途销毁池）：原样当场放。
+// 窗口只记「开了没有」不计层数：漏了配对的 end 时，下一次完整的 begin / end 自愈。
+static int g_hold; static pthread_t g_hold_tid;   // 开着的回放窗口及开它的线程（持 g_bmu 读写）
+static nvn_gpu_buf *g_limbo; static int g_nlimbo, g_climbo; static uint64_t g_limbo_total;   // 待放的镜像缓冲、累计延后放掉的个数（日志限流用）
+static int limbo_push(nvn_gpu_buf b) {   // 调用方持 g_bmu；0 = 记不下（内存不足），调用方当场放
+    if (g_nlimbo == g_climbo) {
+        const int cap = g_climbo ? g_climbo * 2 : 8; nvn_gpu_buf *p = realloc(g_limbo, (size_t)cap * sizeof *p);
+        if (!p) return 0;
+        g_limbo = p; g_climbo = cap;
+    }
+    g_limbo[g_nlimbo++] = b; return 1;
+}
+static void mirror_free(struct mirror *m, int defer) {
+    if (m->buf && !(defer && limbo_push(m->buf))) nvn_gpu_buf_release(m->buf, NULL, NULL);
+    free(m->synced); free(m->sub); free(m->checked); free(m->stale); free(m->stale_sum); memset(m, 0, sizeof *m);
+}
+static void shadow_free(struct shadow *s, int defer) { if (s->ngw) __atomic_sub_fetch(&g_gw_live, s->ngw, __ATOMIC_RELEASE); if (s->untracked) __atomic_sub_fetch(&g_untracked_shadows, 1, __ATOMIC_RELEASE);
+                                                       mirror_free(&s->m[0], defer); mirror_free(&s->m[1], defer); free(s->gw); free(s); }
 // 镜像映射代号：新建镜像、换镜像都会让「同一段地址解析出的 (缓冲, 偏移)」变掉。回放核心的解析结果缓存按它作废。
 
 // ---------- 脏页追加日志（nvk_buf_dirtylog，#1501 A②）----------
@@ -141,7 +170,7 @@ static int mirror_make(struct shadow *s, int i) {
     m->synced = calloc(s->npages ? s->npages : 1, sizeof *m->synced);
     m->sub = calloc(s->npages ? s->npages : 1, sizeof *m->sub);
     m->checked = calloc(s->npages ? s->npages : 1, sizeof *m->checked);
-    if (!m->synced || !m->sub || !m->checked) { mirror_free(m); return 0; }   // 页表没分出来：不留半份镜像（之后每次使用都会读它）
+    if (!m->synced || !m->sub || !m->checked) { mirror_free(m, 0); return 0; }   // 页表没分出来：不留半份镜像（之后每次使用都会读它）
     if (s->log_on && log_arm(s, m)) m->path = MP_LOG;   // 起不了日志就沿用逐页路径
     return 1;
 }
@@ -236,21 +265,63 @@ static void sync_write(nvn_gpu_cmd xc, uint8_t *direct, struct shadow *s, struct
 
 // GPU 往池里写（计算着色器写存储缓冲）。提交线程登记这一段，返回登记号；段完成时 rp_buf_gpu_write_land 把结果拷回游戏内存、撤掉登记。
 // pool_key：这段所在池的起点（落地时凭它找镜像：池已经销毁就什么都不做）。0 = 地址不在登记过的池里。
-uint64_t rp_buf_gpu_write_note(uint64_t addr, uint64_t len, uint64_t *pool_key) {
+// 同段合并（开关 nvk_land_merge，缺省开）：本次提交里已经登记过、同一份镜像、还没开始落地、区间与这一段相交或首尾相接的那一条，
+// 直接扩成并集，不另起一条（merged 非空时才合并；返回已有那条的登记号，*merged 置 1，调用方不要再把它记进本次提交的落地表）。
+// 为什么：落地是段完成时按登记逐条把镜像拷回游戏内存，一条登记就是一次整段 memcpy。同一块存储缓冲被多个派发反复绑定写、每次都登记整段绑定范围时，
+// 重叠的几条拷的是同一份镜像里同一段字节（段完成时镜像里已是最终内容），拷一次与拷多次结果相同。
+// 只并「相交 / 首尾相接」的：并集里没有任何没被写过的字节。中间有空隙的不桥接——空隙里的镜像字节可能比游戏内存里的旧，落地会把新内容盖掉。
+uint64_t rp_buf_gpu_write_note2(uint64_t addr, uint64_t len, uint64_t *pool_key, int *merged) {
     static uint64_t next_id;
     const uint8_t *mem; uint64_t size;
+    if (merged) *merged = 0;
     if (!len || !rp_pool_find(addr, len, &mem, &size)) return 0;
+    if (g_gw_merge_on < 0 || !(++g_gw_merge_k & 255)) g_gw_merge_on = nvn_plat_flag("nvk_land_merge", 1) != 0;   // 开关：每 256 次登记重读一次
+    const int merge_on = g_gw_merge_on;
     pthread_mutex_lock(&g_bmu);
     struct shadow *s = shadow_get(mem, size); uint64_t id = 0;
     if (s) {
+        const uint64_t off = addr - (uint64_t)(uintptr_t)mem, sub = rp_sub_serial();
+        rp_perf_add(RP_PERF_GW_REG_N, 1); rp_perf_add(RP_PERF_GW_REG_KB, len / 1024);
+        if (merged && merge_on) {
+            int mi = g_mirror_cur;   // 与 mirror_pick 同一规则（不带它记账的副作用）：与任一未落地登记相交就跟着那一条的镜像，否则用当前这一份
+            for (int k = 0; k < s->ngw; k++) if (s->gw[k].off < off + len && off < s->gw[k].off + s->gw[k].len) { mi = s->gw[k].mi; break; }
+            // 同一份镜像、同一次提交、没开始落地的登记之间两两互不相接（每次登记都经过这里合并），所以与这一段相接的记录只可能直接与这一段相接，单遍扫描即可。
+            // 那一份镜像还没建出来 = 不可能有记在它上面的登记，也就没有可并的：走下面的老路（mirror_pick 会建它）。
+            int hit = -1; uint64_t lo = off, hi = off + len, old_sum = 0;   // 并集 [lo, hi)；old_sum = 被并掉的旧记录原长度之和
+            for (int k = 0; s->m[mi].buf && k < s->ngw; k++) {
+                struct gpu_write *g = &s->gw[k];
+                if (k == hit || g->sub != sub || g->mi != mi || g->landing || g->off > hi || lo > g->off + g->len) continue;   // 相交或首尾相接才并
+                if (g->off < lo) lo = g->off;
+                if (g->off + g->len > hi) hi = g->off + g->len;
+                old_sum += g->len;
+                if (hit < 0) { hit = k; id = g->id; }
+                else {   // 又一条与并集相接：吸进第一条，自己撤掉（它的登记号还在本次提交的落地表里，迟到的落地按「找不到」忽略）
+                    rp_perf_add(RP_PERF_GW_MERGED_N, 1);
+                    s->gw[k] = s->gw[--s->ngw]; __atomic_sub_fetch(&g_gw_live, 1, __ATOMIC_RELEASE);
+                    if (hit == s->ngw) hit = k;   // 被换走的是最后一条、恰好是 hit：它现在在 k
+                    k--;                          // 换过来的那条还没看
+                }
+            }
+            if (hit >= 0) {
+                struct gpu_write *g = &s->gw[hit];
+                g->off = lo; g->len = hi - lo;
+                const uint64_t grow = g->len > old_sum ? g->len - old_sum : 0;   // 这一段真正新增的字节；其余是和已登记的重叠（本来要多拷一遍的）
+                rp_perf_add(RP_PERF_GW_MERGED_N, 1);
+                rp_perf_add(RP_PERF_GW_MERGED_KB, (len > grow ? len - grow : 0) / 1024);
+                *pool_key = (uint64_t)(uintptr_t)mem; *merged = 1;
+                pthread_mutex_unlock(&g_bmu);
+                return id;
+            }
+        }
         if (s->ngw == s->cgw) { int nc = s->cgw ? s->cgw * 2 : 8; struct gpu_write *n = realloc(s->gw, (size_t)nc * sizeof *n); if (n) { s->gw = n; s->cgw = nc; } }
-        if (s->ngw < s->cgw) { int mi = 0; mirror_pick(s, addr - (uint64_t)(uintptr_t)mem, len, &mi);   // 和取这段缓冲时（rp_buf_resolve）挑的是同一份
-            id = ++next_id; s->gw[s->ngw++] = (struct gpu_write){addr - (uint64_t)(uintptr_t)mem, len, id, (uint8_t)mi, 0}; *pool_key = (uint64_t)(uintptr_t)mem;
+        if (s->ngw < s->cgw) { int mi = 0; mirror_pick(s, off, len, &mi);   // 和取这段缓冲时（rp_buf_resolve）挑的是同一份
+            id = ++next_id; s->gw[s->ngw++] = (struct gpu_write){.off = off, .len = len, .id = id, .mi = (uint8_t)mi, .landing = 0, .sub = sub}; *pool_key = (uint64_t)(uintptr_t)mem;
             __atomic_add_fetch(&g_gw_live, 1, __ATOMIC_RELEASE); }
     }
     pthread_mutex_unlock(&g_bmu);
     return id;
 }
+uint64_t rp_buf_gpu_write_note(uint64_t addr, uint64_t len, uint64_t *pool_key) { return rp_buf_gpu_write_note2(addr, len, pool_key, NULL); }   // 不合并的老入口（单测与只登记一条的调用方）
 int rp_buf_gpu_write_pending(uint64_t addr, uint64_t len) {
     const uint8_t *mem; uint64_t size;
     if (!len || !rp_pool_find(addr, len, &mem, &size)) return -1;
@@ -482,6 +553,7 @@ int rp_buf_resolve_multi(int n, const uint64_t *addr, const uint64_t *len, nvn_g
 
 void rp_buf_pool_gone(const void *mem) {
     uint64_t k = (uint64_t)(uintptr_t)mem;
+    char said[192]; said[0] = 0;
     pthread_mutex_lock(&g_bmu);
     struct shadow *s = nvn_hm_del(&g_shadow, &k);
 #ifdef S2A_GPU_LAND_TEST
@@ -490,9 +562,27 @@ void rp_buf_pool_gone(const void *mem) {
 #endif
     if (s) {
         while (s->landing) pthread_cond_wait(&g_land_cv, &g_bmu);   // 等待不持锁，允许落地完成；返回后调用方才可解除映射
-        shadow_free(s);
+        // 等待之后再判窗口：等的时候窗口可能已经收了。镜像缓冲是后端自己的存储（不是游戏内存的别名），晚放不碍调用方解除映射
+        const int defer = g_hold && !pthread_equal(g_hold_tid, pthread_self());
+        const int nb = (s->m[0].buf != NULL) + (s->m[1].buf != NULL);
+        shadow_free(s, defer);
+        if (defer && nb) {   // 只记前几次和 2 的幂次的累计数：真机上这条每次都意味着一次本来会撞契约违规的销毁
+            const uint64_t n = (g_limbo_total += (uint64_t)nb);
+            if (n <= 8 || !(n & (n - 1))) snprintf(said, sizeof said, "池销毁撞上回放窗口：池 %p 的 %d 份镜像缓冲延到提交收尾再放（累计 %llu 份）", mem, nb, (unsigned long long)n);
+        }
     }
     pthread_mutex_unlock(&g_bmu);
+    if (said[0]) nvn_plat_log(NVN_PLAT_LOG_INFO, "buf", said);
+}
+void rp_buf_hold_begin(void) { pthread_mutex_lock(&g_bmu); g_hold = 1; g_hold_tid = pthread_self(); pthread_mutex_unlock(&g_bmu); }
+void rp_buf_hold_end(void) {
+    nvn_gpu_buf *take = NULL; int n = 0;
+    pthread_mutex_lock(&g_bmu);
+    g_hold = 0;
+    if (g_nlimbo) { take = g_limbo; n = g_nlimbo; g_limbo = NULL; g_nlimbo = g_climbo = 0; }
+    pthread_mutex_unlock(&g_bmu);
+    for (int i = 0; i < n; i++) nvn_gpu_buf_release(take[i], NULL, NULL);   // 后端按引用计数退役：已被命令登记的缓冲留到段完成
+    free(take);
 }
 nvn_gpu_buf rp_buf_for_null_storage(void) {
     pthread_mutex_lock(&g_bmu);
@@ -520,7 +610,9 @@ void rp_buf_reset(void) {
         if (!landing) break;
         pthread_cond_wait(&g_land_cv, &g_bmu);
     }
-    for (uint32_t i = 0; i < g_shadow.cap; i++) { struct shadow *s = g_shadow.vals[i]; if (s) shadow_free(s); }
+    for (uint32_t i = 0; i < g_shadow.cap; i++) { struct shadow *s = g_shadow.vals[i]; if (s) shadow_free(s, 0); }
+    for (int i = 0; i < g_nlimbo; i++) nvn_gpu_buf_release(g_limbo[i], NULL, NULL);   // 收尾：没配上 end 的窗口里延后的缓冲也放掉
+    free(g_limbo); g_limbo = NULL; g_nlimbo = g_climbo = 0; g_hold = 0;
     if (g_null_storage) nvn_gpu_buf_release(g_null_storage, NULL, NULL);
     g_null_storage = NULL;
     free(g_shadow.keys); free(g_shadow.vals); nvn_hm_init(&g_shadow, 8); g_mirror_cur = 0;

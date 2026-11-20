@@ -96,6 +96,8 @@ struct JobSession: Equatable {
     /// 走过的阶段（阶段事件的作业层原句，按出现顺序、不重复）：手机作业进行中页的步骤列表
     var stages: [String] = []
     /// 手机作业（装到手机 / 续签、删除、装回、更新手机上的 S2Arm）：结局页统一用 PhoneJobPanel
+    /// 手机槽里整页显示的那几单：更新 iPhone 上的 S2Arm；「更新所选」没走成（#1756：原先这单的失败哪里都不显示，玩家只看到进度条跑完——整页写原因、给「重试」）
+    var wholePage: Bool { kind == .installUpdate || (kind == .pushSelected && phase == .finished(.failed)) }
     var isPhoneJob: Bool { [.install, .installRemove, .installRestore, .installUpdate, .pushSelected, .phoneIdentity].contains(kind) }
 }
 
@@ -200,6 +202,8 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var phoneQueue: [(gameID: String?, run: () -> Void)] = []
     /// 这款的手机作业排着队（手机槽前一个还没完 / 这款正在出包，出完接着装）：装机窗显示「已排队」，按钮不重复排
     func phoneQueued(_ gameID: String) -> Bool { phoneQueue.contains { $0.gameID == gameID } || installAfterQueue.contains(gameID) }
+    /// 手机槽正在推这一款（装机作业在跑、装的就是它）
+    func phonePushing(_ gameID: String) -> Bool { phoneBusy && phoneSession?.kind == .install && phoneSession?.gameID == gameID }
     /// 出包页开着的那一款（nil = 游戏库）。
     @Published var exportFor: String?
     /// 下游深度方案确认页（DownstreamConfirmSheet）：导出 iPhone 前弹，选完记下（downstreamChoice 作业）再接着导出这一单
@@ -237,12 +241,14 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var phoneOverview: PhoneOverview?
     @Published var consoleDevice: String?            // 总控台在管哪台（多台时顶部切换）；nil = 跟着默认那台
     @Published var consoleSelection: Set<String> = []   // ② 游戏同步里勾上的款（游戏号大写）
+    var lastPushSelectedDevice: String?                   // 上一单「更新所选」推的那台（失败页「重试」续推它，#1756）
     @Published var consolePushing: String?               // 「更新所选」正在推的那款（作业 pushSelected 的 progress 事件 current）
     @Published var identityDelivered: Bool?              // 「把签名身份交给手机」最近一次成功的结果（作业 phoneIdentity 的 delivered）；nil = 还没成功过 / 又点了一次
     var consoleSeeded: Set<String> = []                  // 上次自动勾过的建议更新款（玩家取消的不重勾）
     @Published var consoleChoosing: String?              // 「选用哪个 S2Arm」正在记的那个包名（作业 phoneChooseApp 在跑）；nil = 没在选
     @Published var consoleChooseError: String?           // 上一次选没选成的原因（作业层原句，界面按当前语言翻）；nil = 没出错
     @Published var consoleRechoose = false               // 选过了、玩家点了「换一个 S2Arm」：重新列出候选
+    @Published var pushChoice: PushChoice?               // 推送停在「装着不止一个 S2Arm、还没选」：失败页就地列的候选与选好后重推的那一次；nil = 没有
     @Published var dynamicDone = false    // 顶栏动态窗口：手机作业刚做完，闪一下 ✓（2 秒后回普通图标，S2ArmLauncherModel+PhoneConsole）
     @Published var dynamicAlert = false   // 手机作业失败 / 停下：橙色「!」一直留着，直到玩家点开看过
     @Published var phoneUpdates: [PhoneUpdate] = []
@@ -298,6 +304,14 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var autoCheckUpdates: Bool {
         didSet { updateDefaults.set(!autoCheckUpdates, forKey: Self.autoCheckUpdatesOffKey) }
     }
+    /// 免费签名到期提醒（缺省开；维护者 11-20：玩家换成自签或别的方式后提醒挂着取消不了）：游戏库顶部横幅点「×」即关、不再显示，设置里重新打开恢复。
+    ///   关着时横幅、卡片角标、状态行里的「还剩几天 / 已到期」都不出（freeSignDaysLeft）。存的是「关」，同 autoCheckUpdatesOffKey
+    static let freeSignReminderOffKey = "S2AFreeSignReminderOff"
+    @Published var freeSignReminder: Bool {
+        didSet { updateDefaults.set(!freeSignReminder, forKey: Self.freeSignReminderOffKey) }
+    }
+    /// 这款要显示的免费签名剩余天数：提醒关着或不是启动器免费签的那份 → nil
+    func freeSignDaysLeft(_ game: GameSummary, now: Date = Date()) -> Int? { freeSignReminder ? game.iphoneDaysLeft(now: now) : nil }
     /// 自动下载更新（默认关）：仅在「自动检查更新」也开启时生效；开启后后台下载，关闭则由玩家自己选何时下载
     static let autoDownloadUpdatesKey = "S2AAutoDownloadUpdates"
     @Published var autoDownloadUpdates: Bool {
@@ -465,6 +479,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         autoRestartWhenReady = updateDefaults.bool(forKey: Self.autoRestartWhenReadyKey)
         autoCheckUpdates = !updateDefaults.bool(forKey: Self.autoCheckUpdatesOffKey)
         autoDownloadUpdates = updateDefaults.bool(forKey: Self.autoDownloadUpdatesKey)
+        freeSignReminder = !updateDefaults.bool(forKey: Self.freeSignReminderOffKey)
         provider = S2ArmEngineProvider(client: client)
         controller = NS2LauncherController(
             socketURL: provider.client.environment.privateRoot.appendingPathComponent("ns2-relay.sock"), watchGame: true)   // 游戏的手柄设置画面交给面板分配玩家（#520 E）
@@ -1245,6 +1260,8 @@ public final class S2ArmLauncherModel: ObservableObject {
         let accept = acceptDropped ? accept.union(["acceptDropped"]) : accept
         // 不在这里再核装机页清单（启动器剃刀 M1）：装机页按钮和控制口调用前各自核过；批量出完自动装的款从没打开过装机页，原先在这里被悄悄挡掉、队列停住
         // 出包等主槽作业照跑也能装（手机槽）；手机槽忙 / 这款正被主槽占着（正在出这款）→ 排队，那单结束接着装
+        // 这一款已在推 / 已排上：不重复排（D-YXDW：点一下就给同一款再排一单，推完又推一遍）。排队那单出队后才执行、确认后的续推在前一单结束后才发，都不受影响
+        if phonePushing(game.id) || phoneQueued(game.id) { return }
         guard !phoneBusy, !mainHolds(game.id) else {
             phoneQueue.append((game.id, { [weak self] in self?.install(game, teamId: teamId, device: device, accept: accept, ask: ask, export: export) })); return
         }
@@ -1272,6 +1289,10 @@ public final class S2ArmLauncherModel: ObservableObject {
             catch let f as JobFailure where ask && Self.confirmCodes[f.code ?? ""] != nil {
                 self?.dropConfirm = DropConfirm(kind: .install, game: game, message: f.errorDescription ?? "", code: f.code ?? "",
                                                 accept: accept.union([Self.confirmCodes[f.code ?? ""]!]), device: device, export: export)
+                throw f
+            }
+            catch let f as JobFailure {   // 装着不止一个 S2Arm、还没选：失败页就地列候选，选好重推这一款（同样的参数）
+                self?.notePushChoice(f) { [weak self] in self?.install(game, teamId: teamId, device: device, accept: accept, ask: ask, export: export) }
                 throw f
             }
             return nil
@@ -1419,6 +1440,9 @@ public final class S2ArmLauncherModel: ObservableObject {
         guard !xboxGipRelayStarted,
               env["XCTestConfigurationFilePath"] == nil, NSClassFromString("XCTestCase") == nil,
               env["S2ARM_CONTROL"] != "1" else { return }
+        let logsDir = provider.client.environment.privateRoot.appendingPathComponent("logs", isDirectory: true)
+        try? FileManager.default.createDirectory(at: logsDir, withIntermediateDirectories: true)
+        s2a_xbox_gip_relay_set_log_path(logsDir.appendingPathComponent("xbox-gip-relay.log").path)
         if s2a_xbox_gip_relay_start(xboxGipSocketURL.path, nil, nil) == 0 {
             xboxGipRelayStarted = true
         }
@@ -1750,6 +1774,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         let slot: Slot = fresh.isPhoneJob ? .phone : fresh.kind == .play ? .game : .main
         setJob(slot, fresh)
         if Self.phoneKinds.contains(fresh.kind) { phoneResult = nil }
+        if fresh.isPhoneJob { pushChoice = nil }   // 上一次「还没选」的失败页换成这一单了
         let sink = EventSink { [weak self] event in self?.ingest(event, slot: slot) }
         let task = Task { [weak self] in
             do {
@@ -1843,7 +1868,8 @@ public final class S2ArmLauncherModel: ObservableObject {
             libraryNotice = LibraryNotice(kind: state == .completed ? .done : .failed, key: n.key, name: n.name,
                                           detail: state == .completed ? "" : (session.message.isEmpty ? JobOutcome.interruptedMessage : session.message))
         }
-        if Self.phoneKinds.contains(session.kind), let id = session.gameID { phoneResult = (id, session.name, state == .completed) }
+        // 用户手动取消不提示失败胶囊（只有真的成了 / 失败才在顶栏显示）
+        if Self.phoneKinds.contains(session.kind), let id = session.gameID, state != .cancelled { phoneResult = (id, session.name, state == .completed) }
         // 一局结束：开了 iCloud 存档就上传这局的进度（失败写在出包页错误行上，本地存档不动）
         if session.kind == .play, let id = session.gameID, cloudFolder != nil {
             cloudSyncing = true

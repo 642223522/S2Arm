@@ -63,14 +63,18 @@ extension LauncherView {
         }
     }
 
-    /// 免费签名快到期 / 已到期的提醒（只提最急的一款）。
+    /// 免费签名快到期 / 已到期的提醒（只提最急的一款）。「×」= 不再提醒（关掉设置里的「免费签名到期提醒」，重新打开恢复）
     @ViewBuilder var renewBanner: some View {
-        if let game = model.games.filter({ ($0.iphoneDaysLeft() ?? 9) <= 1 }).min(by: { ($0.iphoneDaysLeft() ?? 9) < ($1.iphoneDaysLeft() ?? 9) }), let days = game.iphoneDaysLeft() {
+        if let game = model.games.filter({ (model.freeSignDaysLeft($0) ?? 9) <= 1 }).min(by: { (model.freeSignDaysLeft($0) ?? 9) < (model.freeSignDaysLeft($1) ?? 9) }), let days = model.freeSignDaysLeft(game) {
             HStack(spacing: 12) {
                 Image(systemName: "clock.badge.exclamationmark").foregroundStyle(LauncherPalette.building)
                 Text((days == 0 ? txt("library.banner.expired") : txt("library.banner.renew")).replacingOccurrences(of: "{0}", with: game.name).replacingOccurrences(of: "{1}", with: "\(days)")).font(.manrope(13.5, .semibold))
                 Spacer(minLength: 12)
                 Button(txt("library.hero.renew")) { model.targetInstalledDevice(of: game); installFor = game.id }.controllerButtonStyle(LauncherSecondaryButtonStyle())
+                Button { model.freeSignReminder = false } label: { Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).frame(width: 22, height: 22).contentShape(Rectangle()) }
+                    .controllerButtonStyle(.plain).foregroundStyle(.secondary)
+                    .launcherTooltip(txt("library.banner.dismiss"), placement: .above)
+                    .accessibilityLabel(txt("library.banner.dismiss")).accessibilityIdentifier("library.renew.dismiss")
             }
             .padding(.horizontal, LauncherTheme.Metrics.libraryInset).padding(.vertical, 10).background(LauncherPalette.building.opacity(0.10))
         }
@@ -159,7 +163,7 @@ extension LauncherView {
         var parts: [String] = []
         var expired = false
         if game.iphoneInstalledAt != nil {
-            if let days = game.iphoneDaysLeft() {
+            if let days = model.freeSignDaysLeft(game) {
                 expired = days == 0
                 parts.append(expired ? txt("library.status.expired") : txt("library.status.installed").replacingOccurrences(of: "{0}", with: "\(days)"))
             } else { parts.append(txt("library.status.installedPaid")) }

@@ -304,6 +304,7 @@ BUILD_ENV_ALLOWED = frozenset({
     'PATH', 'HOME', 'TMPDIR', 'LANG', 'LC_ALL', 'JAVA_HOME', 'DOTNET_ROOT',
     'ANDROID_HOME', 'ANDROID_SDK_ROOT', 'ANDROID_NDK_HOME', 'ANDROID_NDK_ROOT',
     'ANDROID_USER_HOME', 'GRADLE_USER_HOME', 'NUGET_PACKAGES',
+    'S2ARM_ANDROID_RELEASE_KEYSTORE',
     'S2A_ANDROID_DOTNET', 'S2A_JAVAC', 'S2A_REWRITER_DEPS', 'S2A_RUN_ROOT',
     'S2A_BUILD_CACHE', 'S2ARM_ANDROID_IMAGE', 'S2ARM_ANDROID_CACHE',
     'S2A_VULKAN_PROFILE', 'S2A_VULKAN_REFS',
@@ -318,10 +319,10 @@ BUILD_ENV_ALLOWED = frozenset({
 def build_environment(environ):
     env = {key: environ[key] for key in BUILD_ENV_ALLOWED if key in environ}
     env.setdefault('PATH', os.defpath)
-    # 图形后端缺省是新回放层（nvk）；旧层（nvn_vk）只留作对照诊断，要显式设环境变量才出
+    # 图形后端只有新回放层（nvk）：旧层（nvn_vk）已删除（#1501）
     backend = environ.get('S2ARM_ANDROID_VK_BACKEND') or 'nvk'
-    if backend not in ('nvk', 'nvn_vk'):
-        raise ValueError('S2ARM_ANDROID_VK_BACKEND 只认 nvk / nvn_vk：' + backend)
+    if backend != 'nvk':
+        raise ValueError('S2ARM_ANDROID_VK_BACKEND 只认 nvk（旧回放层 nvn_vk 已删除）：' + backend)
     env.update(S2A_REWRITE_SPIN='0', S2ARM_ANDROID_CS_SERVICES='static',
                S2A_ANDROID_SKIP_APPLE_ARTIFACTS='1', S2A_TARGET='android',
                S2ARM_ANDROID_VK_ENGINE='1', S2ARM_ANDROID_VK_BACKEND=backend,

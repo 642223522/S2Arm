@@ -99,11 +99,7 @@ public sealed record PhoneOverview(IReadOnlyList<PhoneOverview.Phone> Phones)
                     }
                 var actions = p.TryGetProperty("actions", out var av) && av.ValueKind == JsonValueKind.Array
                     ? av.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString()!).ToArray() : [];
-                var candidates = new List<Candidate>();
-                if (p.TryGetProperty("candidates", out var cs) && cs.ValueKind == JsonValueKind.Array)
-                    foreach (var c in cs.EnumerateArray())
-                        if (c.ValueKind == JsonValueKind.Object && S(c, "bundleId") is { Length: > 0 } bid)
-                            candidates.Add(new Candidate(bid, S(c, "team") ?? "", B(c, "byThisLauncher"), S(c, "identityTeam") is { Length: > 0 } it ? it : null));
+                var candidates = p.TryGetProperty("candidates", out var cs) ? Candidates(cs) : [];
                 phones.Add(new Phone(device, S(p, "name") ?? "", B(p, "installed"), B(p, "shellCurrent"), D(p, "expiresAtEstimate"),
                     p.TryGetProperty("online", out _), S(p, "online"), D(p, "lastSeen"), S(p, "signMode"), games,
                     S(p, "installedBy") is "launcher" or "external" ? S(p, "installedBy") : null, S(p, "bundleId") ?? "", actions,
@@ -111,6 +107,59 @@ public sealed record PhoneOverview(IReadOnlyList<PhoneOverview.Phone> Phones)
             }
         return new PhoneOverview(phones);
     }
+
+    /// <summary>作业的候选数组（总览 candidates、推送失败 facts.candidates 同一形状）→ 候选；不是数组 = 空</summary>
+    public static List<Candidate> Candidates(JsonElement cs)
+    {
+        static string? S(JsonElement o, string k) => o.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        var candidates = new List<Candidate>();
+        if (cs.ValueKind == JsonValueKind.Array)
+            foreach (var c in cs.EnumerateArray())
+                if (c.ValueKind == JsonValueKind.Object && S(c, "bundleId") is { Length: > 0 } bid)
+                    candidates.Add(new Candidate(bid, S(c, "team") ?? "", c.TryGetProperty("byThisLauncher", out var b) && b.ValueKind == JsonValueKind.True,
+                        S(c, "identityTeam") is { Length: > 0 } it ? it : null));
+        return candidates;
+    }
+
+    public const string ChoiceRequiredCode = "phone_app_choice_required";
+
+    /// <summary>推送（推单款 install、更新所选 pushSelected）失败「装着不止一个 S2Arm、还没选」时作业诊断带的机读事实 facts {device, candidates}
+    /// （install.owner_for_push；同 Mac PhoneOverview.choiceFacts）：失败页就地列出候选让玩家选，选好自动重推。不是这个码 / 没带候选 → null</summary>
+    public static (string Device, IReadOnlyList<Candidate> Candidates)? ChoiceFacts(JsonElement diagnostics)
+    {
+        if (diagnostics.ValueKind != JsonValueKind.Array) return null;
+        foreach (var d in diagnostics.EnumerateArray())
+            if (d.ValueKind == JsonValueKind.Object && d.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.String && c.GetString() == ChoiceRequiredCode
+                && d.TryGetProperty("facts", out var f) && f.ValueKind == JsonValueKind.Object
+                && f.TryGetProperty("device", out var dv) && dv.ValueKind == JsonValueKind.String && dv.GetString() is { Length: > 0 } device
+                && f.TryGetProperty("candidates", out var cs) && Candidates(cs) is { Count: > 0 } list)
+                return (device, list);
+        return null;
+    }
+
+    /// <summary>「更新所选」没推成的一款：游戏号、错误码、原因（作业层给玩家的原句）</summary>
+    public sealed record PushFailure(string GameId, string Code, string Message);
+
+    /// <summary>「更新所选」（作业 pushSelected）失败时诊断带的逐款结果 facts {games: [{gameId, ok, code?, message?}]}（install.push_selected）→ 没推成的那几款，按推的顺序。
+    /// 换哪款都做不下去整轮停（没装 App / 手机断开…）的失败不带逐款结果 → 空：失败页只写作业原因，「重试」走续推</summary>
+    public static IReadOnlyList<PushFailure> PushFailures(JsonElement diagnostics)
+    {
+        static string? S(JsonElement o, string k) => o.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        var failed = new List<PushFailure>();
+        if (diagnostics.ValueKind != JsonValueKind.Array) return failed;
+        foreach (var d in diagnostics.EnumerateArray())
+            if (d.ValueKind == JsonValueKind.Object && d.TryGetProperty("facts", out var f) && f.ValueKind == JsonValueKind.Object
+                && f.TryGetProperty("games", out var gs) && gs.ValueKind == JsonValueKind.Array)
+                foreach (var g in gs.EnumerateArray())
+                    if (g.ValueKind == JsonValueKind.Object && S(g, "gameId") is { Length: > 0 } id && !(g.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.True)
+                        && failed.All(x => !string.Equals(x.GameId, id, StringComparison.OrdinalIgnoreCase)))
+                        failed.Add(new PushFailure(id.ToUpperInvariant(), S(g, "code") ?? "job_failed", S(g, "message") ?? ""));
+        return failed;
+    }
+
+    /// <summary>失败页「重试」推哪几款（同一台）：知道逐款结果 → 只推没成的那几款；不知道（整轮停）→ null，按作业续推（resume：没推到的 + 失败的）</summary>
+    public static IReadOnlyList<string>? RetryOrder(IReadOnlyList<PushFailure> failed) =>
+        failed.Count > 0 ? failed.Select(x => x.GameId).ToArray() : null;
 
     /// <summary>总控台当前这台：选过的那台；没选过 → 连着的那台 → 最近同步过的那台</summary>
     public Phone? Pick(string? chosen) =>

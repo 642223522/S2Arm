@@ -100,8 +100,6 @@ public class MainActivity extends Activity
     // 缓冲尺寸报上来；这里按它把 surface 的 frame 布成同比例居中矩形，
     // 合成器的 SCALE_TO_WINDOW 拉伸才不变形（native_window 没有 SCALE_FIT）。
     // touchPad 不跟画面矩形：虚拟键要留在两侧黑边上，始终铺满整个窗口。
-    private final Runnable geometrySample = this::sampleBufferGeometry;
-    private int bufferGeomW, bufferGeomH;
     // 存档不能原子提交的提示（与 iOS dprompt 每秒轮询同一判定，文案口径同 S2A_DPROMPT_SAVE_ATOMIC_*；
     // spec 检查只认共用头里的宏，安卓的展示件是 Toast 不是提示条）
     private static final String SAVE_ATOMIC_NOTICE =
@@ -562,20 +560,8 @@ public class MainActivity extends Activity
         }
     }
 
-    /** 冷启动 intent：s2arm.draw_log=1|0 → 原生 draw_log 覆盖（生产通道；debug.s2a.draw_log
-        属性在 user 版设备上 untrusted_app 读不到，extra 经本 Activity 落到 :game 进程）。 */
-    private static int drawLogFromIntent(android.content.Intent intent) {
-        String value = intent == null ? null : intent.getStringExtra("s2arm.draw_log");
-        if (value == null || value.isEmpty()) return -1;
-        if ("1".equals(value)) return 1;
-        if ("0".equals(value)) return 0;
-        Log.e("S2Arm", "Unknown s2arm.draw_log '" + value + "'; ignoring");
-        return -1;
-    }
-
     private void tryStartGame() {
         if (!gameMode || gameStopping || host == 0 || gameSession == null) return;
-        NativeBridge.setDrawLog(drawLogFromIntent(getIntent()));
         exportPreviousShaderCache();
         android.view.Display display = surface.getDisplay();
         android.util.DisplayMetrics metrics = getResources().getDisplayMetrics();
@@ -724,7 +710,6 @@ public class MainActivity extends Activity
         if (phoneFeedback != null) phoneFeedback.resume();   // settings + rotation before the game can ask for six-axis
         if (padFeedback != null) padFeedback.resume();
         tryStartGame();
-        if (gameMode) lifecycleProbe.postDelayed(geometrySample, 500);   // B3 输出尺寸轮询（开关关时全部回落 MATCH_PARENT）
         if (gameMode) { lifecycleProbe.removeCallbacks(playtimeTick); lifecycleProbe.postDelayed(playtimeTick, 10000); }
         if (gameMode && host != 0 && !gameStopping && getIntent().getBooleanExtra(GameActivity.LIFECYCLE_TEST_EXTRA, false)
                 && (getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
@@ -742,32 +727,6 @@ public class MainActivity extends Activity
         }
         lifecycleProbe.postDelayed(lifecycleSample, 100);
     }
-    // B3：500 ms 轮询交换链缓冲尺寸；未开/未出图时持续按 MATCH_PARENT 收尾，旋转后重排也走这里。
-    // 轮询无条件跑，但只在算出的尺寸真变时才动 LayoutParams——开关关着不触发重布局。
-    private void sampleBufferGeometry() {
-        if (!resumed || !gameMode || !runtimeLoaded) return;
-        int[] dims = new int[2];
-        NativeBridge.bufferGeometry(dims);
-        if (dims[0] != bufferGeomW || dims[1] != bufferGeomH) {
-            bufferGeomW = dims[0]; bufferGeomH = dims[1];
-        }
-        layoutForBufferGeometry();
-        lifecycleProbe.postDelayed(geometrySample, 500);
-    }
-    private void layoutForBufferGeometry() {
-        int w = FrameLayout.LayoutParams.MATCH_PARENT, h = FrameLayout.LayoutParams.MATCH_PARENT;
-        if (bufferGeomW > 0 && bufferGeomH > 0 && root != null && root.getWidth() > 0 && root.getHeight() > 0) {
-            int[] fit = BufferGeometry.fit(bufferGeomW, bufferGeomH, root.getWidth(), root.getHeight());
-            w = fit[0]; h = fit[1];
-        }
-        FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) surface.getLayoutParams();
-        if (lp == null) {
-            surface.setLayoutParams(new FrameLayout.LayoutParams(w, h, android.view.Gravity.CENTER));
-        } else if (lp.width != w || lp.height != h || lp.gravity != android.view.Gravity.CENTER) {
-            lp.width = w; lp.height = h; lp.gravity = android.view.Gravity.CENTER;
-            surface.setLayoutParams(lp);
-        }
-    }
     @Override protected void onPause() {
         resumed = false;
         markSession(false);
@@ -775,7 +734,6 @@ public class MainActivity extends Activity
         if (legacyTextInput != null) legacyTextInput.pause();
         if (dguardNotice != null) dguardNotice.pause();
         lifecycleProbe.removeCallbacks(lifecycleSample);
-        lifecycleProbe.removeCallbacks(geometrySample);
         lifecycleProbe.removeCallbacks(playtimeTick);
         if (runtimeLoaded) {
             clearInput();

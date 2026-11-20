@@ -86,7 +86,7 @@ struct LauncherView: View {
                 ExportSessionView(model: model, covers: covers, session: session, run: run, install: { installFor = $0 }, freeSpace: { spaceFor = $0 }, uiLanguage: uiLanguage)
             } else if let session = model.session, session.export == nil, !model.sessionHidden, !model.isInline(session) {
                 JobSessionView(model: model, session: session)
-            } else if let phone = model.phoneSession, phone.kind == .installUpdate, !model.phoneHidden {   // 更新 iPhone 上的 S2Arm（手机槽）：主槽没占着整页时整页显示
+            } else if let phone = model.phoneSession, phone.wholePage, !model.phoneHidden {   // 更新 iPhone 上的 S2Arm / 更新所选没走成（手机槽）：主槽没占着整页时整页显示
                 JobSessionView(model: model, session: phone)
             } else if let id = model.exportFor, let game = model.games.first(where: { $0.id == id }) {
                 ExportView(model: model, covers: covers, game: game) { installFor = game.id }
@@ -116,8 +116,13 @@ struct LauncherView: View {
         .launcherDropdownHost()
         .ignoresSafeArea(.container, edges: .top)
         .background {
-            if showingHome { HomeBackdrop(game: homeSelected, covers: covers).ignoresSafeArea() }
-            else { LauncherWindowMaterial().ignoresSafeArea() }
+            if showingHome {
+                HomeBackdrop(game: homeSelected, covers: covers).ignoresSafeArea()
+            } else if let backdropGame {
+                HomeBackdrop(game: backdropGame, covers: covers, frosted: true).ignoresSafeArea()
+            } else {
+                LauncherWindowMaterial().ignoresSafeArea()
+            }
         }
         .background(LauncherWindowChrome())
         .background(LauncherPadHost(navigation: navigation, update: configurePadNavigation))
@@ -292,6 +297,17 @@ struct LauncherView: View {
         text.append(shen)
         return text
     }()
+
+    /// 非首页（出包页、批量出包、游玩/作业进度与结果页）复用当前游戏的高斯模糊背景，保持与首页一致的磨砂质感。
+    private var backdropGame: GameSummary? {
+        let id: String?
+        if model.batchShown { id = model.batchSeed }
+        else if let result = model.viewingResult, result.export != nil { id = result.gameID }
+        else if let session = model.session, !model.sessionHidden, !model.isInline(session) { id = session.gameID }
+        else if let idExport = model.exportFor { id = idExport }
+        else { id = nil }
+        return id.flatMap { gid in model.games.first { $0.id == gid } } ?? homeSelected
+    }
 
     private var topBar: some View {
         topBarRow.onChange(of: model.showInstallFor) { id in if let id { installFor = id; model.showInstallFor = nil } }
@@ -650,7 +666,7 @@ struct LauncherView: View {
                 .accessibilityLabel(loc.t("home.currentTask") + " · " + play.name)
         }
         // 收起的、或被主槽整页（出包进度等）/ 一局的页面压着的「更新 iPhone 上的 S2Arm」：回到它的进度页
-        if let phone = model.phoneSession, phone.kind == .installUpdate,
+        if let phone = model.phoneSession, phone.wholePage,
            model.phoneHidden || model.playVisible || (model.session.map { !model.sessionHidden && ($0.export != nil || !model.isInline($0)) } ?? false) {
             Button { model.phoneHidden = false; model.sessionHidden = true; model.playHidden = true } label: {
                 Label(phone.name, systemImage: "iphone").font(.manrope(12.5, .semibold)).lineLimit(1)
@@ -759,12 +775,20 @@ private struct ControllerToolbarButton: View {
         // 面板用 AppKit 的 NSPopover 自己开关，不用 SwiftUI .popover：实机上 .popover 会在背后重新呈现、套回打开时记下的高度，
         //   先没连、面板里连上（多出玩家区块）后再开齿轮选单 / 改开关，面板内容上下被裁（11-16，真窗口单测重现不出来）。
         //   高度照内容自动撑（NSHostingController.sizingOptions = .preferredContentSize），不写死
-        .background(AppKitPopover(isPresented: $show) {
+        // 开着「模擬手把」面板（本地 / 自测构建的开发工具）时，点面板外面不收手柄面板，方便两个对着测；点手柄钮 / 按 B 照常收
+        .background(AppKitPopover(isPresented: $show, stayOpen: { ControllerSimulatorPanel.isOpen }) {
             Switch2ProConnectionPopover(controller: controller, systems: systems, lang: lang, onClose: { show = false })
                 .environment(\.padControls, padControls)
         })
         // 蓝牙手柄接上 / 断开：分配跟着整理（新连上的自动排进玩家位，#520 E）
         .onReceive(systems.$pads) { pads in controller.updateSystem(SystemControllers.keys(for: pads)) }
+        .onReceive(controller.$assignment) { systems.applyPlayerLights($0) }
+        .onAppear {   // 模拟手柄（本地 / 自测构建）：按键送进分配；Joy-Con 2 连上 / 断开要重对分配（一代走 systems 的表，上面两行已接）
+            guard ControllerColorSimulator.allowed, ControllerColorSimulator.shared.controller == nil else { return }   // 只接一次（onAppear 会来好几次）
+            let target = controller
+            ControllerColorSimulator.shared.controller = target
+            ControllerColorSimulator.shared.onChange.append { [weak target] in target?.reconcile() }
+        }   // 手柄上的玩家灯跟着分配（一代 Joy-Con、系统手柄；Joy-Con 2 由连接程序写）
         .onReceive(systems.$gen1) { controller.updateGen1($0) }   // 一代 Joy-Con 按设备（D2）   // 用送来的新值（@Published 在改之前就送，读属性还是旧的）
         // 游戏打开了系统的手柄设置画面：面板自己弹出来（已进分配玩家）
         .onChange(of: controller.panelRequested) { wanted in if wanted { controller.panelRequested = false; if !show { toggle() } } }
@@ -775,14 +799,18 @@ private struct ControllerToolbarButton: View {
 ///   不会被 SwiftUI 在背后重新呈现、套回旧高度。点外面关（transient），关了把 isPresented 设回 false
 private struct AppKitPopover<Content: View>: NSViewRepresentable {
     @Binding var isPresented: Bool
+    var stayOpen: () -> Bool = { false }   // true 时点外面不收（只有 isPresented 改成 false 才收）
     let content: () -> Content
 
     final class Coordinator: NSObject, NSPopoverDelegate {
         var parent: AppKitPopover
         var popover: NSPopover?
         var host: NSHostingController<Content>?
+        var requested = false   // 这次关是 isPresented 改成 false 要的（不是点外面）
         init(_ parent: AppKitPopover) { self.parent = parent }
+        func popoverShouldClose(_ popover: NSPopover) -> Bool { requested || !parent.stayOpen() }
         func popoverDidClose(_ notification: Notification) {
+            requested = false
             popover = nil; host = nil
             if parent.isPresented { parent.isPresented = false }
         }
@@ -808,6 +836,7 @@ private struct AppKitPopover<Content: View>: NSViewRepresentable {
                 popover.show(relativeTo: view.bounds, of: view, preferredEdge: .minY)   // 按钮下方
             }
         } else if let popover = c.popover {
+            c.requested = true
             popover.performClose(nil)
         }
     }

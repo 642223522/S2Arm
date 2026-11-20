@@ -366,6 +366,20 @@ def free_clones(root, keep, pack_dir, work=None):
     except FileNotFoundError: pass
 
 
+def program_romfs(pack_dir, rel):
+    """多程序合集序号 n 的 RomFS 行（#1782）：清单里叫 programs/<n>/romfs.img，库内实际是标准 RomFS 镜像 programs/<n>/romfs.std
+    （0.6.0 起 RomFS 不落散文件，pack/oneclick/deliver_pack.py 交付的就是它）→ 改成按 programs/<n>/romfs.std 进 IMG，手机解回来
+    宿主照它读（services Application.cs：romfs/ 不在就找同目录 romfs.std，序号 n 的 programs/<n>/ 同一套）。
+    旧形态 romfs.files/（镜像各文件的硬链接）进不了 IMG：报红说清楚要重新出包。其余行原样 → (进 IMG 的相对路径, 源文件)"""
+    src = os.path.join(pack_dir, rel)
+    if not (rel.startswith('programs/') and rel.endswith('/romfs.img')) or os.path.isfile(src): return rel, src
+    std = src[:-len('romfs.img')] + 'romfs.std'
+    if os.path.isfile(std): return rel[:-len('romfs.img')] + 'romfs.std', std
+    if os.path.isdir(src[:-len('romfs.img')] + 'romfs.files'):
+        raise Red(f'资源包里 {rel[:-len("romfs.img")]} 的 RomFS 还是旧形态（romfs.files），进不了单一 IMG：对这款重新出包')
+    return rel, src
+
+
 def write(root, pack_dir, out_path, progress=None, romfs_index=None, gid=None, consume=False, work=None):
     """产物根 root 的完整原始 romfs/ 建标准 RomFS 段（库里的 romfs.files 缺被覆盖层替换的原文件，不能用它建；产物根只有 romfs.std 时原样拷这段），
     资源包 pack_dir 清单（index.tsv）里的其余原始资源进其余文件段；游戏号 gid（没给取 root/unpack.tsv），资源包号 = image_id。
@@ -376,7 +390,7 @@ def write(root, pack_dir, out_path, progress=None, romfs_index=None, gid=None, c
     others = []
     for rel, _ in pack_rows(pack_dir):
         if rel.startswith(SKIP): continue
-        src = os.path.join(pack_dir, rel)
+        rel, src = program_romfs(pack_dir, rel)
         if not os.path.isfile(src): raise Red(f'资源包清单里的 {rel} 不在 {pack_dir}')
         others.append((rel, src))
     rom, tmp = orig_romfs(root, os.path.dirname(os.path.abspath(out_path)))
@@ -412,7 +426,7 @@ def convert(root, pack_dir, progress=None, romfs_index=None, gid=None, consume=F
                                      'index_sha256': hashlib.sha256(ix.encode('utf-8')).hexdigest()}, indent=1) + '\n')
     for rel, _ in rows:
         if not rel.startswith(KEEP):
-            try: os.unlink(os.path.join(pack_dir, rel))
+            try: os.unlink(program_romfs(pack_dir, rel)[1])   # 多程序合集的 RomFS 行库内是 romfs.std（#1782）：删的是实际那份
             except FileNotFoundError: pass
     import shutil
     shutil.rmtree(os.path.join(pack_dir, 'romfs.files'), ignore_errors=True)   # 旧形态库内镜像的硬链接目录（#329，不在清单里）：IMG 已有原件

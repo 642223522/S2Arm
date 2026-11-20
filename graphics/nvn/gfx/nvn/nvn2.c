@@ -9,6 +9,7 @@
 #include <stdatomic.h>
 #include <pthread.h>
 #include <strings.h>
+#include <time.h>   // PR5 vi 门控：peak 步进持稳计时的单调钟（hdr_now_ms——host_adapt.m 同款）
 
 __attribute__((weak)) int s2a_platform_ounce(void) { return 0; }   // 原生层 svc_mem.c 有强定义；单测没有原生层
 // host_adapt.m：游戏 sdk 里 NVN2 驱动 nvnDeviceGetInteger 跳表中直接返回立即数的那一项（API / GPU 代码版本随 SDK 走）；0 = 不是常量项或没认出跳表
@@ -435,7 +436,8 @@ static uint32_t vi_special_layer(void **out, void *disp, const void *cs) { (void
 static uint32_t vi_native_window(void **out, void *layer) { (void)layer; *out = &g_vi_native; return 0; }
 static uint32_t vi_ok_vrr(void *disp, unsigned on) { (void)disp; static _Atomic int n; if (!atomic_exchange(&n, 1)) LOG("vi::SetDisplayVrrCapability %u：宿主固定刷新率，不开 VRR", on & 0xff); return 0; }
 // PR1 探针（HDR 全链路评审稿 v2）：游戏经 nn::vi Set* 交来的 HDR 元数据「接收即存储」——原先五个入口直接丢弃，M0 跑局判读（评审稿 G0）无从知道游戏设了什么。
-//   只存不改答：所有查询回答照旧（QueryDisplayHdrStatus on=0、PaperWhite 203、刷新 60），游戏可见行为零变化。
+//   只存不改答：PR1 期所有查询回答照旧，游戏可见行为零变化；PR5 起 QueryDisplayHdrStatus / QueryDisplayHdrPaperWhite 两查询改按
+//   L2 快照 + 层状态回答（vi_hdr_status / vi_paper_white——hdr-m0b-exp 实验局强制值的正式化），Set* 照旧只存（查询回答不随 Set* 走，随策略走）。
 //   变化才打一行（幂等）：同一值反复设不再打；变化本身照 nvn_mtl.m mtl_sub_counter 的 2 的幂次节流——第 1、2、4、8…次变化各打一行，防逐帧抖动刷屏。
 //   三个 Clear*（gamut / tonemap / bezier）共用 vi_layer_clear：层级元数据整组回缺省。真机各 Clear* 只清自己那项，宿主整组清只是多丢一点观察样本，不改任何游戏可见行为；
 //   SetDisplayHdrCapability 是显示级、没有对应 Clear*，不随层清空。读数接口 nvn2_vi_hdr_probe 在 vi_layer_clear 后面（照 hle_nvn.c dm_vi_layer_crop 的 accessor 先例）。
@@ -469,11 +471,36 @@ static uint32_t vi_ok_hdr(void *layer, unsigned lo, unsigned hi) {
     return 0;
 }
 // 火纹 Fortune's Weave（11-03，main 导入，不接管就进 sdk 要 nn::gs 而中止）：HDR 状态 / 纸白 / 显示最大缓冲 / VRR / 扩展交换间隔 / HDR 色域元数据。
-//   宿主出 SDR、固定刷新率；BufferMaxResolution 是 u32 档位（0 = 720p、1 = 1080p、2 = 1440p、3 = 4K）：回 0 时火纹按 720p 出图（DLSS 输入 640x360），
+//   BufferMaxResolution 是 u32 档位（0 = 720p、1 = 1080p、2 = 1440p、3 = 4K）：回 0 时火纹按 720p 出图（DLSS 输入 640x360），
 //   照 Switch 2：主机模式 4K、掌机模式屏幕 1080p。事实取自 参考实现（MIT）dm/gfx/hle_vi.c（0a759de7），代码自写
 int dm_opmode(void);
-static uint32_t vi_hdr_status(uint8_t *on, uint32_t *fmt, uint16_t *peak, const void *disp) { (void)disp; if (on) *on = 0; if (fmt) *fmt = 0; if (peak) *peak = 0; return 0; }
-static uint32_t vi_paper_white(uint16_t *nits, const void *disp) { (void)disp; if (nits) *nits = 203; return 0; }   // BT.2408 参考白；HDR 关着时游戏不读
+// PR5 vi 门控（评审稿 v3 §2.3 判定次序 / §2.5 S2A_HDR_PEAK / §4 PR5）：HDR 状态查询改按 L2 快照 + 层状态回答——同源答案入口
+//   nvn2_hdr_answer（本文件存储侧单点，出图 PR4 读同一份），hdr-m0b-exp 实验局强制值（on=1/fmt=1/peak=potentialEDR×100）的正式化，日志口径区分。
+//   src_hdr 恒 1：游戏查询显示 HDR 能力本身就是 HDR 意图（m0b 时序——查询在重建 RGB10A2 窗之前，当下窗口格式当不了门，否则首查询永答 on=0 永困 SDR）；
+//   on=1 的门控次序「先持 PQ 层再答、不等 headroom 爬坡」在 hdr_choose_mode 第 4 条（Bananza 首查询即定窗口，nxnative 冷管线存档不重问）；
+//   fmt 恒 1（fmt>1 是 SDK 错误 0x272——Bananza sdk 0x55be0c 反汇编实证 on=(fmt==1)；on=0 时 0 照现状）；
+//   peak = 纸白 × 当前 headroom，hdr_vi_peak_nits 步进（40 步/十倍频量化 10 nit、带内 ±2 步保持、出带候选持稳 1s、地板 1.25×纸白、
+//   顶帽 10000、无前端 1000——绝不答 0）；S2A_HDR_PEAK 固定值（诊断）盖步进算法（nvn2_hdr_peak_override）；off ⇒ 恒 on=0（不变量，无视快照与层状态）。
+static unsigned long long hdr_now_ms(void) {   // 单调钟（host_adapt.m 同款；peak 步进持稳计时的事件源——层簿记的合成时钟归 tick 调用方）
+    struct timespec ts; if (clock_gettime(CLOCK_MONOTONIC, &ts)) return 0;
+    return (unsigned long long)ts.tv_sec * 1000ull + (unsigned long long)ts.tv_nsec / 1000000ull;
+}
+static uint32_t vi_hdr_status(uint8_t *on, uint32_t *fmt, uint16_t *peak, const void *disp) {
+    (void)disp;
+    hdr_decision d = nvn2_hdr_answer(1, hdr_now_ms());
+    if (on) *on = d.vi_on ? 1 : 0;
+    if (fmt) *fmt = (uint32_t)d.vi_fmt;
+    if (peak) *peak = (uint16_t)d.vi_peak;
+    static _Atomic int last_on, last_peak;   // 答案变化才计数（初值 0 = 现状 off 回答——off 缺省下反复查询不打行，字节级零新增输出）
+    static _Atomic unsigned long long chg;
+    if (d.vi_on != atomic_load(&last_on) || d.vi_peak != atomic_load(&last_peak)) {
+        atomic_store(&last_on, d.vi_on); atomic_store(&last_peak, d.vi_peak);
+        unsigned long long n = atomic_fetch_add(&chg, 1) + 1;
+        if ((n & (n - 1)) == 0) LOG("vi::QueryDisplayHdrStatus → on=%d fmt=%d peak=%d：PR5 vi 门控（L2 快照 + 层状态真实回答，与 hdr-m0b-exp 实验局强制值的日志口径区分；peak=纸白×headroom 步进，绝不答 0）", d.vi_on, d.vi_fmt, d.vi_peak);   // 2 的幂次才打（hdr_chg_log / mtl_sub_counter 先例，防 peak 步进逐帧刷屏）
+    }
+    return 0;
+}
+static uint32_t vi_paper_white(uint16_t *nits, const void *disp) { (void)disp; if (nits) *nits = 100; return 0; }   // PR5 起答 100（v3 定稿 PQ 相对模型锚 EDR=nits/100，§1.4 判读③；203 是 BT.2408 参考白、游戏缺省声明值——m0b:414/415 实证被 told peak 覆盖。游戏侧后果未实测：T15 专项，如实写未测项）
 static uint32_t vi_max_res(uint32_t *res, const void *disp) { (void)disp; if (res) *res = dm_opmode() == 1 ? 3 : 1; return 0; }
 static uint32_t vi_vrr_supported(uint8_t *on, const void *disp) { (void)disp; if (on) *on = 0; return 0; }
 // 当前刷新率：RefreshRate 是 u32 赫兹（sdk 只认 60 / 120，火纹 sdk+0x5dd5a4），带 bool 的 SDK 21 起版本另出「VRR 在用」：宿主 60、没有 VRR
@@ -682,12 +709,29 @@ void nvn2_hdr_preattach(int raw_can, unsigned long long now_ms) {   // PR4 开�
     }
     pthread_mutex_unlock(&g_hdr_snap_mu);
 }
+// S2A_HDR_PEAK（评审稿 v3 §2.5；PR4 起开关名按项目惯例 S2A_ 前缀——维护者 PR #1640 意见）：auto（缺省）/ 固定 nit 值（诊断用）——照 nxnative DM_HDR_PEAK 形态。
+//   固定值盖过步进算法的答案（只改答案、不动步进记忆——摘掉开关后算法从自己的记忆继续），经 nvn2_hdr_answer 生效（vi 回答与已告知 peak 同源，present 一致）；
+//   非法值（不是 auto、不是完整的数、<1 或 >顶帽 10000）一律当 unset 处理并打一次红日志（不静默吞拼写错误）；绝不答 0（0 也算非法——答案恒 ≥ 地板量化值）。
+//   逐次读环境：答案入口是事件档频率（vi 查询极稀——开机首查询 + 变化后；非 present 热路径），nvn2_hdr_sdr_gamma 那类「读一次缓存」是给逐帧路径的口径
+static int nvn2_hdr_peak_override(void) {
+    const char *e = getenv("S2A_HDR_PEAK");
+    if (!e || !*e || !strcmp(e, "auto")) return 0;   // 缺省 / auto：无覆盖，走步进算法
+    char *end = NULL; double x = strtod(e, &end);
+    if (end == e || *end || !isfinite(x) || x < 1.0 || x > (double)HDR_PEAK_CAP_NITS) {
+        static _Atomic int said;
+        if (!atomic_exchange(&said, 1)) LOG("【红】S2A_HDR_PEAK=%s 看不懂（要 auto 或 1..10000 的固定 nit 值），按 auto（步进算法）", e);
+        return 0;
+    }
+    return (int)(x + 0.5);
+}
 hdr_decision nvn2_hdr_answer(int src_hdr, unsigned long long now_ms) {   // 同源答案入口：三态开关 + 已发布快照 + 存储的 peak 状态进 choose_mode
     hdr_snapshot s; hdr_peak_state pk;
     pthread_mutex_lock(&g_hdr_snap_mu);
     s = g_hdr_snap; pk = g_hdr_peak;
     pthread_mutex_unlock(&g_hdr_snap_mu);
     hdr_decision d = hdr_choose_mode(nvn2_hdr_switch(), src_hdr, &s, &pk, now_ms);
+    {   int pkov = nvn2_hdr_peak_override();   // S2A_HDR_PEAK 固定值（诊断）：vi on=1 时盖过步进算法的 peak 答案（步进记忆不动）
+        if (d.vi_on && pkov > 0) d.vi_peak = pkov; }
     pthread_mutex_lock(&g_hdr_snap_mu);
     g_hdr_peak = pk;
     pthread_mutex_unlock(&g_hdr_snap_mu);

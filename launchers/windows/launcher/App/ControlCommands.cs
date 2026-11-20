@@ -35,6 +35,16 @@ public sealed partial class EnvironmentWindow
         Render();
     }
 
+    // 「免费签名到期提醒」（11-20，缺省开；存法见 Protocol/FreeSignReminder.cs）：游戏库状态行「×」与设置页开关共用
+    private string freeSignReminderError = "";
+    private void SetFreeSignReminder(bool on)
+    {
+        freeSignReminderError = "";
+        try { FreeSignReminder.Set(privateRoot, on); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { freeSignReminderError = error.Message; }
+        Render();
+    }
+
     /// <summary>崩溃日志用（LauncherCrash）：同 ResolvePrivateRoot，算不出（参数坏了）退回系统临时目录。</summary>
     internal static string PrivateRootForLogs()
     {

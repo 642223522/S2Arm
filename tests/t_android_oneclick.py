@@ -81,6 +81,18 @@ class AndroidDeliveryTest(unittest.TestCase):
         self.assertEqual(child(mod.build_environment(dirty)), baseline)
         self.assertNotEqual(child(dirty), baseline)  # removing the whitelist is a real red control
 
+    def test_release_keystore_override_reaches_host_builder(self):
+        keystore = str(self.base / 'custom signing' / 'release.p12')
+        base = {'HOME': str(self.base), 'PATH': os.defpath}
+        env = mod.build_environment(dict(base, S2ARM_ANDROID_RELEASE_KEYSTORE=keystore,
+                                         S2ARM_ANDROID_RELEASE_PASSWORD='must not reach the child'))
+        source = ('import os; '
+                  'print(os.environ.get("S2ARM_ANDROID_RELEASE_KEYSTORE", "")); '
+                  'assert "S2ARM_ANDROID_RELEASE_PASSWORD" not in os.environ')
+        self.assertEqual(subprocess.check_output([sys.executable, '-I', '-c', source], env=env, text=True),
+                         keystore + '\n')
+        self.assertNotIn('S2ARM_ANDROID_RELEASE_KEYSTORE', mod.build_environment(base))
+
     def test_docker_builder_forwards_direct_backend_to_container(self):
         commands = self.base / 'bin'; commands.mkdir()
         capture = self.base / 'docker-args'
@@ -88,13 +100,13 @@ class AndroidDeliveryTest(unittest.TestCase):
         docker.write_text('#!/bin/sh\nif [ "$1" = image ]; then exit 0; fi\nprintf "%s\\n" "$@" > "$CAPTURE_PATH"\n')
         docker.chmod(0o755)
         env = dict(os.environ, PATH=str(commands) + ':' + os.defpath, CAPTURE_PATH=str(capture),
-                   S2ARM_ANDROID_VK_ENGINE='1', S2ARM_ANDROID_VK_BACKEND='nvn_vk')
+                   S2ARM_ANDROID_VK_ENGINE='1', S2ARM_ANDROID_VK_BACKEND='nvk')
         run = subprocess.run(['bash', str(ROOT / 'android/docker/build.sh'), ':app:assembleDebug'],
                              env=env, capture_output=True, text=True)
         self.assertEqual(run.returncode, 0, run.stderr)
         arguments = capture.read_text().splitlines()
         self.assertIn('S2ARM_ANDROID_VK_ENGINE=1', arguments)
-        self.assertIn('S2ARM_ANDROID_VK_BACKEND=nvn_vk', arguments)
+        self.assertIn('S2ARM_ANDROID_VK_BACKEND=nvk', arguments)
 
     def test_gui_bundled_rewriter_is_derived_from_python_runtime_not_environment(self):
         spec = importlib.util.spec_from_file_location('local_rewriter', ROOT / 'pack/rewriter.py')

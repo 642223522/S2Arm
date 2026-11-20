@@ -59,5 +59,40 @@ packed = vs + ':' + fs + ':' + re.sub('(00)+', lambda z: f'z{len(z.group(0)) // 
 ck(epc.conv_mng(packed) == (bytes(w2).hex(), None), '⑭ MacNativeGames 压缩写法展开后同明文')
 m2 = bytearray(m); struct.pack_into('<I', m2, 200 + 68, 0x4)
 ck(epc.conv_mng(bytes(m2).hex())[0] is None, '⑮ MacNativeGames a2c MetalFX 位 → 不收')
-print(f'ext_pso_collect：{15 - fails}/15 通过'); sys.exit(1 if fails else 0)
+# 11-20 更多上游：MacNativeGames 的 runtime 路径（nxnative 格式）、hermit 式首行 game= 的清单、同款多份合并。期望手写
+d3 = T / 'm3'; srcs3 = T / 'src3.tsv'; seeds3 = T / 'seeds3'
+def repo3(name, files):
+    d = d3 / name; d.mkdir(parents=True)
+    for rel, text in files.items(): (d / rel).parent.mkdir(parents=True, exist_ok=True); (d / rel).write_text(text)
+    for c in (['init', '-q'], ['add', '-A'], ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'x']): subprocess.run(['git', '-C', str(d)] + c, check=True)
+repo3('mng', {'games/la/runtime/games/0100DDDD00000000/pso_manifest.tsv': 'S\t2222333344445555_b\t5\n'})
+repo3('hm', {'games/one/shader_list.tsv': f'# shared shader list\tgame=0100EEEE00000000\tengine=x\nS\t3333444455556666_b\t1\n{r_ok}\n',
+             'games/one/shader_list-1.0.1.tsv': f'# shared shader list\tgame=0100eeee00000000\tengine=y\n{r_ok}\nS\t7777888899990000_b\t0\n',
+             'games/two/notes.tsv': 'S\t4444555566667777_b\t0\n'})
+srcs3.write_text('来源\tmng\thttps://e.x/mng\tMIT\tmng\n来源\thm\thttps://e.x/hm\tMIT\tnxnative\n')
+o = subprocess.run([sys.executable, str(R / 'tools/ext_pso_collect.py'), str(d3), str(seeds3), '--sources', str(srcs3)], capture_output=True, text=True)
+rt = seeds3 / '0100DDDD00000000/ext_mng.tsv'
+ck(o.returncode == 0 and rt.is_file() and rt.read_text().split('\n')[2:] == ['S\t2222333344445555_b\t5', ''] and 'path=games/la/runtime/games/0100DDDD00000000/pso_manifest.tsv' in rt.read_text(),
+   f'⑯ MacNativeGames runtime 路径下的 nxnative 格式清单也收（{o.stdout.strip()[-120:]}{o.stderr.strip()[-160:]}）')
+hm = seeds3 / '0100EEEE00000000/ext_hm.tsv'
+hl = hm.read_text().split('\n') if hm.is_file() else []
+ck(hl[2:] == [r_ok, 'S\t7777888899990000_b\t0', 'S\t3333444455556666_b\t1', ''] and 'path=games/one/shader_list-1.0.1.tsv（另 1 份同款合并）' in hl[0],
+   f'⑰ 首行 game= 认程序号（大小写都认）、同款两份按路径序合成一份、行去重、首行注明合并（{hl[:1]}）')
+ck(sorted(x.name for x in seeds3.iterdir()) == ['0100DDDD00000000', '0100EEEE00000000'], '⑱ 首行没有 game=、也不在程序号目录下的 .tsv 不收')
+# 跨来源去重：上游 up 与分叉 fk 同款，fk 只多一行 → fk 的文件只有那一行；fk 与上游完全相同的款不出文件。期望手写
+d4 = T / 'm4'; s4 = T / 'seeds4'
+def repo4(name, files):
+    d = d4 / name; d.mkdir(parents=True)
+    for rel, text in files.items(): (d / rel).parent.mkdir(parents=True, exist_ok=True); (d / rel).write_text(text)
+    for c in (['init', '-q'], ['add', '-A'], ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'x']): subprocess.run(['git', '-C', str(d)] + c, check=True)
+same = 'S\t1111222233334444_b\t0\n'
+repo4('up', {'dm/games/0100AAAA00000000/pso_manifest.tsv': same, 'dm/games/0100BBBB00000000/pso_manifest.tsv': same})
+repo4('fk', {'dm/games/0100AAAA00000000/pso_manifest.tsv': same + 'S\t9999888877776666_b\t2\n', 'dm/games/0100BBBB00000000/pso_manifest.tsv': same})
+(T / 'src4.tsv').write_text('来源\tup\thttps://e.x/up\tMIT\tnxnative\n来源\tfk\thttps://e.x/fk\tMIT\tnxnative\n')
+o = subprocess.run([sys.executable, str(R / 'tools/ext_pso_collect.py'), str(d4), str(s4), '--sources', str(T / 'src4.tsv')], capture_output=True, text=True)
+fa = s4 / '0100AAAA00000000/ext_fk.tsv'
+ck(fa.is_file() and fa.read_text().split('\n')[2:] == ['S\t9999888877776666_b\t2', ''] and not (s4 / '0100BBBB00000000/ext_fk.tsv').exists()
+   and (s4 / '0100AAAA00000000/ext_up.tsv').read_text().split('\n')[2:] == ['S\t1111222233334444_b\t0', ''],
+   f'⑲ 跨来源去重：分叉只留独有的行，与上游完全相同的款不出文件（{o.stdout.strip()[-140:]}）')
+print(f'ext_pso_collect：{19 - fails}/19 通过'); sys.exit(1 if fails else 0)
 PY

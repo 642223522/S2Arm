@@ -31,6 +31,12 @@ namespace S2A.DirectCompiler
         [ThreadStatic] private static string _requestSha;
         private static string RequestSha() => _requestSha ?? "unknown";
 
+        // 翻译标志按阶段，与出库链同口径（graphics/tools/direct/dsh/Dsh.cs：debug = gs / cs，11-07 起）：顶点、片元关 DebugMode，
+        //   AST 表达式传播打开，产物不再满是局部变量读写（#1774：同一延迟光照合成片元，现编 62,841 字 vs 出库 30,099 字）；
+        //   几何保留（关掉后翻译慢 2.4 倍，首遇现编更卡）；计算走 ShaderCache.DecodeComputeShader，内部带 DebugMode，不经这里。
+        //   原先三段都沿用 Ryujinx ShaderCache.DefaultFlags（= DebugMode），是出库链 11-07 改口径时没跟上的遗留。
+        internal static TranslationFlags GraphicsFlags(string stage) => stage == "gs" ? ShaderCache.DefaultFlags : ShaderCache.DefaultFlags & ~TranslationFlags.DebugMode;
+
         public static byte[] Compile(byte[] requestUtf8)
         {
             // 诊断：拒收行带上请求 sha，真机上就能把拒收与同一条请求对上（不用另开请求落盘开关）。
@@ -132,7 +138,7 @@ namespace S2A.DirectCompiler
                         if (stage == null) continue;
                         var accessor = new DirectGpuAccessor(profile, program, stage, item.index, allocator, queries);
                         accessors.Add(accessor);
-                        contexts.Add((stage, accessor, ShaderCache.DecodeGraphicsShader(accessor, TargetApi.Vulkan, ShaderCache.DefaultFlags, 0)));
+                        contexts.Add((stage, accessor, ShaderCache.DecodeGraphicsShader(accessor, TargetApi.Vulkan, GraphicsFlags(item.name), 0)));
                     }
                     for (int i = contexts.Count - 2; i >= 0; i--)
                     {

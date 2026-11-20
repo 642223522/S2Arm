@@ -2,7 +2,9 @@
 
 维护者定的规则（11-09）：
   ① 导入时解析并上屏：团队名、证书 / 描述文件到期、连着的手机在不在设备列表（企业「所有设备」描述文件没有列表，照实说）、包名、权限够不够；
-     问题只提示、不挡出包和装机。只有根本签不了才停：私钥解不开（密码不对 / 文件坏），证书和描述文件不配套。
+     问题只提示、不挡出包和装机。只有根本签不了才停：私钥解不开（密码不对 / 文件坏），证书和描述文件不配套，
+     分发描述文件（没有 get-task-allow：0.6 起游戏程序在 App 外加载，iOS 只对开发签名放行）。
+     缺哪几项权限逐条列「中文名（技术名）——后果」，并给一段可一键复制、直接发给证书发放人的话（requestText）。
   ② 包名取描述文件的；通配（TEAM.*）→ io.s2arm.games.<小写团队号>（同 Apple ID 模式的算法）；权限 = 描述文件允许的 ∩ S2Arm 要的。
   ③ 两端都用 rcodesign（apple-codesign，MPL-2.0，官方发布件、SHA-256 钉在下面）直接读 p12 签名：不进钥匙串、不要 Xcode。
      rcodesign 读不了新式（PBES2 / AES）加密的 p12，导入时规整成老式（3DES）再存：Mac 用系统自带 openssl（LibreSSL），Windows 用 .NET；
@@ -30,7 +32,27 @@ from core import Failure, atomic, read
 
 # S2Arm 要的权限：提高内存上限（大游戏必需，Apple ID 模式也带）+ 扩展寻址（付费账号才有，大地址窗口）；描述文件没开就不带、提示大游戏可能闪退
 WANT = ("com.apple.developer.kernel.increased-memory-limit", "com.apple.developer.kernel.extended-virtual-addressing")
-WANT_NAMES = {WANT[0]: "提高内存上限", WANT[1]: "扩展寻址"}
+# S2Arm 要的全部权限（逐项体检用）：get-task-allow 必须为 True——0.6 起游戏程序在 App 外映射执行，iOS 只对带它的 App 放行；
+#   分发（App Store / Ad Hoc / 企业）描述文件不给它，缺了任何游戏都打不开（image_exec_denied），物理上做不到 → blocking；只缺后两项照常导入、提示
+REQUIRED = ("get-task-allow",) + WANT
+# 缺项每条一句「中文名（技术名）——后果」：整句进翻译表，界面按行翻
+MISSING_LINES = {
+    "get-task-allow": "调试权限（get-task-allow）——没有它任何游戏都打不开",
+    WANT[0]: "提高内存上限（com.apple.developer.kernel.increased-memory-limit）——没有它大游戏可能内存不够、起不来",
+    WANT[1]: "扩展寻址（com.apple.developer.kernel.extended-virtual-addressing）——没有它大游戏可能地址不够、起不来",
+}
+DISTRIBUTION_HEAD = "这是分发（发布）证书的描述文件，缺下面的权限，S2Arm 0.6 起用它签出来的 App 每款游戏都打不开："
+DISTRIBUTION_TAIL = "可以改用 Apple ID 登录签名，或复制下面这段话发给证书发放人，换成开发证书和开发描述文件后再导入。"
+ENTITLEMENTS_HEAD = "描述文件缺下面的权限，小游戏照常，大游戏可能起不来："
+ENTITLEMENTS_TAIL = "可以复制下面这段话发给证书发放人，补开后重新下载描述文件再导入。"
+NO_UDID_HINT = "没连着 iPhone：复制后把「<你的设备 UDID>」换成你手机的 UDID。"
+# 给证书发放人的话：权限清单写全部三项（不只写缺的，照单开最省事）；按能力开的权限只能开在显式 App ID 上（苹果 QA1713），通配描述文件不带后两项
+REQUEST_TEXT = ("请提供 Apple Development 开发证书（.p12，附密码）和对应的 iOS App Development 开发描述文件。描述文件要求：用显式 App ID（不要通配 *），"
+                "包含我的设备 UDID：{0}，并开启以下权限：调试权限（get-task-allow）、提高内存上限（com.apple.developer.kernel.increased-memory-limit）、"
+                "扩展寻址（com.apple.developer.kernel.extended-virtual-addressing）。")
+REQUEST_TEXT_NO_UDID = ("请提供 Apple Development 开发证书（.p12，附密码）和对应的 iOS App Development 开发描述文件。描述文件要求：用显式 App ID（不要通配 *），"
+                        "包含我的设备 UDID：<你的设备 UDID>，并开启以下权限：调试权限（get-task-allow）、提高内存上限（com.apple.developer.kernel.increased-memory-limit）、"
+                        "扩展寻址（com.apple.developer.kernel.extended-virtual-addressing）。")
 EXPIRY_WARN_DAYS = 30
 KEYCHAIN_SERVICE = "io.s2arm.devcert"
 PASSWORD_ENV = "S2A_DEVCERT_PASSWORD"
@@ -90,6 +112,14 @@ def rcodesign_path(c):
         if p and Path(p).is_file():
             return str(p)
     raise Failure("找不到签名工具 rcodesign：请重新安装完整的 S2Arm。", code="tool_missing")
+
+
+def rcodesign_ents(ents):
+    """rcodesign 的 -e / --entitlements-xml-path 是「作用范围:路径」格式、按第一个冒号拆：Windows 绝对路径带盘符（C:\\…）
+    会把权限挂到不存在的路径「C」上（os error 3），目录名带冒号也拆错。所有给 rcodesign 传权限文件的地方都经这里：
+    返回 (参数, 运行目录)——在权限文件所在目录里跑、只传不含冒号的文件名"""
+    p = Path(ents)   # 文件名都是我们自己起的（ents.plist / downstream.entitlements / 出包时写的权限文件），不含冒号
+    return ["-e", p.name], p.parent
 
 
 # ---------- 解析 ----------
@@ -190,10 +220,17 @@ def inspect(rcs, p12, password, profile_bytes, udid=None, now=None):
         blocking.append(dict(id="devcert_mismatch", text="证书和描述文件不配套：这份描述文件里没有这张证书，签出来装不上。请在开发者网站重新生成包含这张证书的描述文件。"))
     bid, wildcard = bundle_id(prof)
     ents = entitlements(prof, bid)
-    missing = [k for k in WANT if k not in ents]
+    allow = prof["Entitlements"]
+    missing = [k for k in REQUIRED if allow.get(k) is not True]
+    request = None
     if missing:
-        names = "、".join(WANT_NAMES[k] for k in missing)
-        warnings.append(dict(id="devcert_entitlements", text=f"描述文件没开「{names}」权限：小游戏照常，大游戏可能内存不够闪退。可在开发者网站给这个 App ID 打开后重新下载描述文件。"))
+        hint = [] if udid else [NO_UDID_HINT]
+        lines = [MISSING_LINES[k] for k in missing]
+        if "get-task-allow" in missing:   # 根本签不了：导入就拒（旧证书原样留着）
+            blocking.append(dict(id="devcert_distribution", text="\n".join([DISTRIBUTION_HEAD, *lines, DISTRIBUTION_TAIL, *hint])))
+        else:
+            warnings.append(dict(id="devcert_entitlements", text="\n".join([ENTITLEMENTS_HEAD, *lines, ENTITLEMENTS_TAIL, *hint])))
+        request = REQUEST_TEXT.format(udid) if udid else REQUEST_TEXT_NO_UDID
     cert_end, prof_end = iso_date(cert.get("Not Valid After")), prof.get("ExpirationDate")
     if isinstance(prof_end, datetime.datetime) and not prof_end.tzinfo:
         prof_end = prof_end.replace(tzinfo=datetime.timezone.utc)
@@ -219,7 +256,14 @@ def inspect(rcs, p12, password, profile_bytes, udid=None, now=None):
                 certName=cert.get("Subject CN", ""), certSha1=sha1, certExpires=cert_end.strftime("%Y-%m-%d") if cert_end else "",
                 profileName=prof.get("Name") or "", profileExpires=prof_end.strftime("%Y-%m-%d") if isinstance(prof_end, datetime.datetime) else "",
                 bundleId=bid, wildcard=wildcard, allDevices=all_devices, deviceCount=len(prof.get("ProvisionedDevices") or []),
-                deviceListed=listed, entitlements=sorted(k for k in ents if k in WANT), missingEntitlements=missing)
+                deviceListed=listed, entitlements=sorted(k for k in ents if k in WANT), missingEntitlements=missing,
+                **({"requestText": request} if request else {}))
+
+
+def blocked(got):
+    """体检有根本签不了的问题 → 第一条的失败；缺项和给发放人的话作为机读事实带给前端（导入失败页直接给「复制」）"""
+    facts = {k: got[k] for k in ("missingEntitlements", "requestText") if got.get(k)}
+    return Failure(got["blocking"][0]["text"], code=got["blocking"][0]["id"], facts=facts or None)
 
 
 # ---------- p12 规整 ----------
@@ -469,7 +513,7 @@ def operation(c):
             normalize_p12(src, norm, password)
             got = inspect(rcodesign_path(c), norm, password, prof, udid=c.r.get("device"))
             if got["blocking"]:
-                raise Failure(got["blocking"][0]["text"], code=got["blocking"][0]["id"])
+                raise blocked(got)
             c.begin("保存证书", 2, 2)
             old = state(c).get("certSha1")
             if old and old != got["certSha1"]:
@@ -521,7 +565,7 @@ def sign_app(c, app, log):
     rcs = rcodesign_path(c)
     got = inspect(rcs, p12, pw, prof)
     if got["blocking"]:
-        raise Failure(got["blocking"][0]["text"], code=got["blocking"][0]["id"])
+        raise blocked(got)
     app = Path(app)
     info = app / "Info.plist"
     pl = plistlib.loads(info.read_bytes())
@@ -539,5 +583,6 @@ def sign_app(c, app, log):
         #   或目录名带冒号都会拆错，所以在权限文件所在目录里跑、只传不含冒号的文件名
         # --timestamp-url none（#794）：rcodesign 缺省向苹果时间戳服务器（timestamp.apple.com/ts01）要安全时间戳，连不上就整次签名失败、装不了也更新不了。
         #   开发签名装自己的设备不需要安全时间戳（苹果自己的 codesign 对开发签名也不打，pack/dev_sign.py 同样 --timestamp=none）
-        c.run([rcs, "sign", "--p12-file", p12, "--p12-password-file", pf, "--team-name", got["teamId"], "--timestamp-url", "none", "-e", ef.name, app], log, cwd=ef.parent)
+        eargs, ecwd = rcodesign_ents(ef)
+        c.run([rcs, "sign", "--p12-file", p12, "--p12-password-file", pf, "--team-name", got["teamId"], "--timestamp-url", "none", *eargs, app], log, cwd=ecwd)
     return got["bundleId"], got

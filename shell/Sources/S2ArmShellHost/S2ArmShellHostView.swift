@@ -173,6 +173,9 @@ import UIKit
 /// 游戏库页的根控制器：关掉 iPhone Duo 的竖栏。系统缺省给竖向状态栏留一整列（iOS 27.1 preferredVerticalBarBehavior = automatic，
 /// 外屏竖着安全区右 84 / 下 34），库页右侧和底部就空成黑边；关掉后状态栏回到顶部横放，整屏归库页。没有竖栏的机型系统不问这个属性
 final class LibraryHostingController<Content: View>: UIHostingController<Content> {
+    #if os(iOS)
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .all }   // 跟随系统：四个方向都给（UIHostingController 在 iPhone 上缺省「除倒置外」），没有倒置方向的机型系统自己不转
+    #endif
     // 按 SDK 判、不按编译器判：Xcode 27.0 与 27.1 都是 Swift 6.4，但只有 27.1 的 iOS SDK 有 UIVerticalBarBehavior（UIKit 9127.0.85 起）——
     //   原先 compiler(>=6.4) 在 27.0 上也成立，门禁机每个 Xcode 各编一遍时 27.0 报找不到类型（同 ios/play_layout.h 按 __IPHONE_27_1 判）
     //   Intel 出壳走 swift build --sdk，UIKit 没有 user version number（Swift 警告 #ModuleVersionMissing），

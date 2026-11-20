@@ -69,7 +69,7 @@ class PhoneOverview(unittest.TestCase):
         self.assertEqual({k: p1[k] for k in ("device", "name", "installed", "bundleId", "shellCurrent", "signedAt", "free", "expiresAtEstimate")},
                          dict(device="PHONE-1", name="手机甲", installed=True, bundleId="io.example.one", shellCurrent=True, signedAt=T, free=False,
                               expiresAtEstimate=T + 365 * 86400))
-        # C：电脑上 game.img 在（放一个）→ 推一下就行；E：程序推过、游戏库里没有这款的 game.img → 要原件
+        # C：电脑上 game.img 在（放一个）→ 推一下就行；E：游戏库没有资源清单 → 要原件
         self.assertEqual(p1["games"], [dict(gameId=self.A, state="latest"), dict(gameId=self.B, state="suggested", reasons=["rewriter"]),
                                        dict(gameId=self.C, state="needsData", dataOnComputer=True), dict(gameId=self.D, state="suggested", reasons=["hostAbi"]),
                                        dict(gameId=self.E, state="needsData", dataOnComputer=False)])
@@ -82,15 +82,30 @@ class PhoneOverview(unittest.TestCase):
                 p = next(x for x in self.overview()["phones"] if x["device"] == "PHONE-2")
             self.assertEqual(p["remainingDays"], want)
         self.assertEqual({g["state"] for g in p2["games"]}, {"notPushed"})   # 手机 2 一款都没推
-        # 没推过的也带电脑上资源在不在（A、C 放了 game.img）：界面提前说「要原件」
-        self.assertEqual({g["gameId"]: g["dataOnComputer"] for g in p2["games"]}, {self.A: True, self.B: False, self.C: True, self.D: False, self.E: False})
+        # IMG 与目录式资源包（ios_fixture 的 manifest/index）都算电脑上有资源；E 没有资源清单。
+        self.assertEqual({g["gameId"]: g["dataOnComputer"] for g in p2["games"]}, {self.A: True, self.B: True, self.C: True, self.D: True, self.E: False})
         self.assertNotIn("online", p1, "没带 probe：不查连接、不出 online")
+
+    def test_real_expiry_beats_estimate(self):
+        # #1772：装机时从签好的包里读到的真实到期（signed.expires）优先；没有才按 7 天 / 365 天估。期望手写
+        layout.save_device(self.c, "P-REAL", dict(shellId="S", signed=dict(at=T, free=False, expires=T + 360 * 86400), games={}))
+        layout.save_device(self.c, "P-EST", dict(shellId="S", signed=dict(at=T, free=True), games={}))
+        import time as _t
+        with patch.object(_t, "time", lambda: T + 86400):
+            got = {p["device"]: (p["expiresAtEstimate"], p["remainingDays"], p["expiresKnown"]) for p in self.overview()["phones"]}
+        self.assertEqual(got, {"P-REAL": (T + 360 * 86400, 359, True), "P-EST": (T + 7 * 86400, 6, False)})
 
     def test_probe_reports_connection(self):
         self.fixture()
         r = self.overview(probe=True, online={"PHONE-1": "usb"})
         on = {p["device"]: p["online"] for p in r["phones"]}
         self.assertEqual(on, {"PHONE-1": "usb", "PHONE-2": None})
+
+    def test_has_game_data_accepts_legacy_img_without_manifest(self):
+        pack = layout.image_ios(self.c, self.A) / ".pack"
+        pack.mkdir(parents=True)
+        (pack / "game.img").write_bytes(b"legacy")
+        self.assertTrue(host_update._has_game_data(self.c, self.A))
 
     def test_reads_records_only(self):
         # 只读记录：不打开游戏大文件（game.img、资源包里的文件）
@@ -187,6 +202,31 @@ class PhoneOverview(unittest.TestCase):
         p = next(x for x in r["phones"] if x["device"] == "TWO-2")
         self.assertEqual((p["installedBy"], p["bundleId"], p["actions"], p["candidates"], p.get("needsChoice")),
                          ("external", "io.s2arm.games.a", ["exportShellIpa", "pushS2arm", "exportS2arm", "handOverIdentity"], cand, None))
+
+    def test_pending_choice_without_probe(self):
+        """没现查：推送时记下的 pendingChoice 照样给 needsChoice + 那份候选（与推送同一份结果）；选过且选的在候选里 → 不算待选"""
+        cand = [dict(bundleId="io.s2arm.games.a", team="TA", byThisLauncher=False, identityTeam="TA"),
+                dict(bundleId="io.s2arm.games.b", team="TB", byThisLauncher=True, identityTeam=None)]
+        layout.save_device(self.c, "TWO-3", dict(shellId="SNOW", bundleId="io.s2arm.games.b", pendingChoice=dict(candidates=cand, at=T), games={}))
+        layout.save_device(self.c, "TWO-4", dict(shellId="SNOW", bundleId="io.s2arm.games.b", chosenBundleId="io.s2arm.games.a",
+                                                 pendingChoice=dict(candidates=cand, at=T), games={}))
+        ps = {p["device"]: p for p in self.overview()["phones"]}
+        p = ps["TWO-3"]
+        self.assertEqual((p["installed"], p["installedBy"], p["needsChoice"], p["bundleId"], p["actions"], p["candidates"]),
+                         (True, None, True, "", ["chooseApp"], cand))
+        self.assertEqual((ps["TWO-4"]["installedBy"], ps["TWO-4"].get("needsChoice")), ("launcher", None), "选过了：按记录照旧")
+
+    def test_probe_refreshes_pending_choice(self):
+        """现查：还要选 → 记下这次的候选；不用选了 → 清掉 pendingChoice"""
+        old = [dict(bundleId="io.s2arm.games.a", team="TA", byThisLauncher=False, identityTeam=None)]
+        cand = old + [dict(bundleId="io.s2arm.games.c", team="TC", byThisLauncher=False, identityTeam=None)]
+        layout.save_device(self.c, "TWO-5", dict(pendingChoice=dict(candidates=old, at=T), games={}))
+        layout.save_device(self.c, "TWO-6", dict(pendingChoice=dict(candidates=old, at=T), games={}))
+        self.overview(probe=True, online={"TWO-5": "usb", "TWO-6": "usb"},
+                      owners={"TWO-5": ("choose", None), "TWO-6": ("external", "io.s2arm.games.a")}, cands={"TWO-5": cand})
+        recs = dict(layout.devices(self.c))
+        self.assertEqual(recs["TWO-5"]["pendingChoice"]["candidates"], cand)
+        self.assertNotIn("pendingChoice", recs["TWO-6"])
 
 
 if __name__ == "__main__":

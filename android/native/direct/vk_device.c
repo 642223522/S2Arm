@@ -9,7 +9,6 @@
 #define S2A_VK_PLATFORM_SURFACE "VK_KHR_android_surface"
 #endif
 #include "vk_device.h"
-#include "vk_membuf.h"
 #include "gs_path.h"
 #include "../capprobe/capprobe.h"
 
@@ -707,67 +706,6 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
     pool.queueFamilyIndex = out->queue_family;
     if (vkCreateCommandPool(out->device, &pool, NULL, &out->command_pool) != VK_SUCCESS)
         return fail(why, why_size, "vkCreateCommandPool failed");
-    // 内存后端自检（诊断，debug.s2a.mem_probe=1）：扩展 advertise 不等于能用，逐后端实测一遍
-    // 「CPU 写→GPU 读」「GPU 写→CPU 读」。只在要求时跑，不影响默认路径。符号弱引用，
-    // 让只链 vk_device.c 的宿主探针照旧能链接。
-    if (prop_int("debug.s2a.mem_probe", 0)) {
-        extern int s2a_gpu_mem_probe(struct s2a_vk_device *, struct s2a_gpu_mem_caps *, char *, size_t)
-            __attribute__((weak));
-        extern int s2a_gpu_mem_selftest(struct s2a_vk_device *, int, char *, size_t) __attribute__((weak));
-        if (s2a_gpu_mem_probe && s2a_gpu_mem_selftest) {
-            const struct { int kind; int enabled; const char *name; } try[] = {
-                { S2A_GPU_MEM_HOST_IMPORT, out->external_memory_host_enabled, "host_import" },
-                { S2A_GPU_MEM_AHB, out->ahb_import_enabled, "ahb" },
-                { S2A_GPU_MEM_UPLOAD, 1, "upload" },
-            };
-            struct s2a_gpu_mem_caps caps;
-            char wy[256] = "";
-            if (s2a_gpu_mem_probe(out, &caps, wy, sizeof wy) == 0) {
-                S2A_DLOG( "[s2a] mem caps: host_import=%d align=%llu ahb=%d dmabuf=%d shared_enabled=%d\n",
-                        caps.host_import, (unsigned long long)caps.host_align, caps.ahb, caps.dmabuf,
-                        caps.shared_enabled);
-                extern double s2a_gpu_mem_bench(struct s2a_vk_device *, int, size_t, char *, size_t)
-                    __attribute__((weak));
-                for (unsigned i = 0; i < sizeof try / sizeof try[0]; i++) {
-                    if (!try[i].enabled) {
-                        S2A_DLOG("[s2a] mem selftest %s: skipped (not enabled)\n", try[i].name);
-                        continue;
-                    }
-                    wy[0] = 0;
-                    int rc = s2a_gpu_mem_selftest(out, try[i].kind, wy, sizeof wy);
-                    S2A_DLOG("[s2a] mem selftest %s: rc=%d %s\n", try[i].name, rc, wy);
-                    // 扩展存在、自检通过，还要看“当 guest 内存用”时 CPU 写入带宽：共享映射常不可缓存，
-                    // 写池子会变慢，慢到一定程度就不该换过去。
-                    if (rc == 0 && i < 2) {
-                        extern int s2a_gpu_mem_selftest_alias(struct s2a_vk_device *, char *, size_t)
-                            __attribute__((weak));
-                        if (s2a_gpu_mem_selftest_alias) {
-                            wy[0] = 0;
-                            int arc = s2a_gpu_mem_selftest_alias(out, wy, sizeof wy);
-                            S2A_DLOG("[s2a] mem alias %s: rc=%d %s\n", try[i].name, arc, wy);
-                        }
-                    }
-                    {
-                        extern double s2a_gpu_mem_bench_scatter(struct s2a_vk_device *, int, size_t, char *, size_t)
-                            __attribute__((weak));
-                        if (rc == 0 && s2a_gpu_mem_bench_scatter) {
-                            wy[0] = 0;
-                            double ns = s2a_gpu_mem_bench_scatter(out, try[i].kind, 4u << 20, wy, sizeof wy);
-                            S2A_DLOG("[s2a] mem scatter %s: %.1f ns/写 (%s)\n", try[i].name, ns, wy);
-                        }
-                    }
-                    if (rc == 0 && s2a_gpu_mem_bench) {
-                        wy[0] = 0;
-                        double mbs = s2a_gpu_mem_bench(out, try[i].kind, 32u << 20, wy, sizeof wy);
-                        S2A_DLOG("[s2a] mem bench %s: 32MB cpu-write %.0f MB/s (%s)\n",
-                                 try[i].name, mbs, wy);
-                    }
-                }
-            } else {
-                S2A_DLOG( "[s2a] mem probe failed: %s\n", wy);
-            }
-        }
-    }
     return 0;
 }
 

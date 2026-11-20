@@ -29,14 +29,14 @@ PRODUCT = 'plumeimpactor'
 BUNDLE_DIR = 'ThirdParty/Impactor'
 IMPACTOR_EXE = 'Impactor-windows-x86_64-portable.exe'
 PLUMESIGN_EXE = 'plumesign-windows-x86_64.exe'
-BUNDLED = {IMPACTOR_EXE: '1748e5595cc8750fb34cf48d7265d65d3cd6d07dced23a4595a0c5b5f028ab23',   # 自编 v2.7.3-s2a1（Windows 实机，rustc 1.99.1；两个工作目录各编一次逐字节相同）
-           PLUMESIGN_EXE: '84ce275398d2fa008eadbd11b2a6da2ffe012d18e1dd874cf1814bddc9f2c2d1'}
+BUNDLED = {IMPACTOR_EXE: 'f64456928d65f467b94f7ced03bf2e0edcf9fa4bcf57d76c78342e4a2019274d',   # 自编 v2.7.3-s2a2（Windows 实机，rustc 1.99.1；补丁 0001 + 0002）
+           PLUMESIGN_EXE: '505517573afe9a5d924198fbd0a4397bcc037a250cb36228936a857079ed782b'}
 # Mac 启动器随包同版 plumesign（0.6.0 通用壳：Mac 的 Apple ID 改用它登录、签名，自管私钥，免费团队也能签程序库）。
-#   自编 v2.7.3-s2a1 通用版（Mac 实机，rustc 1.94.0，固定目标目录两次编逐字节相同）；Mac 发版要公证，随包时由 sign_release.sh 用我们的开发者身份重签外层签名，内容不改
+#   自编 v2.7.3-s2a2 通用版（Mac 实机，rustc 1.94.0，固定目标目录）；Mac 发版要公证，随包时由 sign_release.sh 用我们的开发者身份重签外层签名，内容不改
 PLUMESIGN_MAC = 'plumesign-macos-universal'
-BUNDLED_MAC = {PLUMESIGN_MAC: 'd3ca590e1e92a1e7416f1c27c1ec6749c4ad05389c9c8724faaa53bbf63ce511'}
+BUNDLED_MAC = {PLUMESIGN_MAC: '8d770ff3b6d6c1a8db1c0be28826cff9c6e55b9602a2791649c7c3d3e9f13d38'}
 PLUME_HOME_ENV = 'S2A_PLUME_HOME'   # 设了就是 plumesign 的数据目录（XDG_CONFIG_HOME，下面 PlumeImpactor/）：Mac 通用壳放启动器私有目录，不碰玩家 ~/.config
-OWN_BUILD = 's2a1'   # 自编版号（补丁或 Rust 版本变了加一，产物缓存目录 v{TESTED}-{OWN_BUILD}）
+OWN_BUILD = 's2a2'   # 自编版号（补丁或 Rust 版本变了加一，产物缓存目录 v{TESTED}-{OWN_BUILD}）
 SOURCE_TREE = f'https://github.com/claration/impactor/tree/v{TESTED}'
 # 自编产物的固定来源：我们公开仓的一个 Release（标签 impactor-v{TESTED}-{OWN_BUILD}，预发布、不进「最新版」，附补丁原文与许可）。
 #   打包时本机缓存没有（或哈希不对）就从这里下，按 BUNDLED / BUNDLED_MAC 钉的 SHA-256 校验，不符直接失败；缓存只是加速，任何一台机器都能打包
@@ -149,6 +149,8 @@ def selected_team(appdata=None):
 # Impactor / 侧载工具界面上的报错原文 → 共用错误码（顺序即优先级；处理办法在 pack/jobs/errors.py RECOVERY）
 EXPLAIN = (
     (r'-80046', 'login_identity_rejected'),
+    # 验证码被苹果接受、重登又要码（自编 plumesign / Impactor 补丁 0002 停下时的标记）：同属苹果不信任这台电脑的登录身份
+    (r's2a_2fa_repeat', 'login_identity_rejected'),
     # 连不上签名要用的 anisette 服务器（#3fc02b，Windows 玩家 3 次上传：「Anisette error … dns error … 不知道这样的主机。 (os error 11001)」）：
     #   Impactor v2.7.2 的 omnisette 本机取不到就走远程 v3，地址写死 mac-ani.jkcoxson.com（3rdparty/omnisette/src/lib.rs DEFAULT_ANISETTE_URL_V3）。原先落到 device_install_failed，建议写「检查设备连接」，方向全错
     (r'anisette error[\s\S]{0,600}?(?:dns error|os error 1100[1-4]|client error \(connect\)|error sending request|connection (?:refused|reset)|timed out)', 'signing_server_unreachable'),
@@ -156,13 +158,21 @@ EXPLAIN = (
     #   要在 Impactor 里重新登录；原先落到 device_install_failed，建议写「检查设备连接与包的有效性」，把玩家往错的方向引
     # 连不上苹果自己的服务器（登录 gsa.apple.com、签名 developerservices2.apple.com）：网络问题，不是 Apple ID 的问题（#edc5f5 拆分）
     (r'error sending request for url \(https?://[^\s)]*\bapple\.com', 'apple_server_unreachable'),
+    # 苹果服务器回了 5xx（D-KF34 / #1798，Mac 0.6.1 plumesign 登录 10 次：「HTTP request error 503 attempting to connect to https://gsa.apple.com/grandslam/GsService2」）：
+    #   请求到了、被苹果那边拒（限流 / 出口被拒 / 服务暂时不可用），账号密码还没到校验；同属「不是 Apple ID 的问题」。原先落 job_failed、英文原句上屏
+    (r'http request error 5\d\d attempting to connect to https?://[^\s]*\bapple\.com', 'apple_server_unreachable'),
+    # 装机时恢复保存的登录要交互（D-G8Z8，Mac 0.6.1 plumesign「Restoring session for …」后「IO error: not a terminal」×6）：
+    #   会话恢复要重新验证、管道里没终端问不了 → 等同登录过期，叫玩家重新登录。原先落 device_install_failed、建议「检查设备连接」，方向全错。
+    #   只认「恢复会话」后面紧跟的这句：登录作业里多手机号选号的 not a terminal 由 apple_login.NO_TERMINAL 先认（不经过恢复会话）
+    (r'restoring session for[^\n]*\n(?:[^\n]*\n){0,3}?[^\n]*not a terminal', 'apple_session_expired'),
     (r'developer api error 1100\b|\b1100\b[^\n]{0,40}session|session has expired|please log ?in again', 'apple_session_expired'),
     # 还没登录 / 存了账号却没选中（D-ZM37 plumesign 原文「No account selected. Please login first」）：原先归「登录已过期」，
     #   对从没登录成功过的玩家措辞不对（#edc5f5）。添加即选中（v2.7.2 accounts_add 设 selected_account）；只存了一个的在签名前已替玩家选上（select_only_account）
     (r'no account selected|please log ?in first|not logged in', 'apple_not_signed_in'),
     # 验证码不对排在「incorrect」前：苹果这句是「Incorrect verification code」（-21669），原先先命中账号密码那条，玩家被叫去重输密码
     (r'-21669|verification code|two.?factor|2fa', 'two_factor_wrong'),
-    (r'-2097\d|-20101|incorrect|entered incorrectly', 'apple_id_wrong'),
+    # -22406「Enter the correct password for this Apple Account」（D-W2VH，Mac 0.6.1 plumesign）：同是密码不对，原先没认出、玩家看到英文原句
+    (r'-2097\d|-20101|-22406|incorrect|entered incorrectly|enter the correct password', 'apple_id_wrong'),
     (r'unknown error occured while reading the file|unknown error occurred while reading the file|zip64', 'ipa_needs_repack'),
     (r'name for this app is invalid', 'ipa_needs_repack'),
     # 免费 Apple ID 两个上限分开报（依据同 pack/jobs/install.py SIGN_ERRORS 注释）：说「App ID」/ 9120 的是 7 天 10 个包名额度，

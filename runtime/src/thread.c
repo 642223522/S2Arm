@@ -685,7 +685,16 @@ void s2a_cs_thread_exit(uint32_t thread);                                  // ga
 #define TLS_SIZE 8192
 #define THREAD_OBJ_SIZE 0x400
 static pthread_key_t g_own_key;
-static void own_free(void *p) { void **b = p; if (!b) return; if (!b[2]) { free(b[0]); free(b[1]); } free(b); }
+// 线程退出时还它的 TLS 块 / 线程对象：宿主 calloc 的直接 free；即时存档档从确定性 arena 分的挂回空闲表复用（#ef04e6：原先不回收，线程起落多的游戏把 TLS/IO 区吃光后
+//   「确定性：TLS/IO 区放不下 TLS 块」致命退出）；确定性诊断档（S2A_DET ≥ 2）照旧不回收，保证每局地址相同
+static void own_free(void *p) {
+    void **b = p; if (!b) return;
+    if (!b[2]) { free(b[0]); free(b[1]); }
+#ifndef S2A_UNIT_TEST
+    else if (s2a_det_mode() < 2) { void s2a_det_arena_free(void *, size_t); s2a_det_arena_free(b[0], TLS_SIZE); s2a_det_arena_free(b[1], THREAD_OBJ_SIZE); }
+#endif
+    free(b);
+}
 static pthread_once_t thread_keys_once = PTHREAD_ONCE_INIT;
 static int thread_keys_error;
 static void thread_keys_create(void) {

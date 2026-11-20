@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import zipfile
 from pathlib import Path
@@ -277,15 +278,15 @@ def _build(c):
         except OSError as e:
             c.emit("message", f"【黄】原始程序没存下（以后升级要回原件）：{e}")
         kuan = oneclick_kuan(c, gid)
-        if os.name != "nt" and not (out / "roots" / (kuan + "@现行")).exists():   # Windows 机上没有 Mac 包可克隆  # 非玩家句
+        if os.name != "nt" and layout.current_root(c, out / "roots" / (kuan + layout.CURRENT)) is None:   # Windows 机上没有 Mac 包可克隆
             seed_from_sibling(c, game, out / "roots", kuan)
         # 出 iPhone 包：平台换成 iOS；.NET 只在源码树现编 C#（壳 / iOS 库）时用已确认的外部 SDK（发版应用全用随包预编，运行不要 .NET）
         for name in tuple(env):
             if name.startswith('DOTNET_ROOT_'):
                 env.pop(name)
         env.update(S2A_PACK_PLAT="ios", S2A_TARGET="ios", S2A_PY=os.sys.executable)
-        from library import source_file_bytes
-        env["S2A_SOURCE_BYTES"] = str(source_file_bytes(selected_packages(game)))   # 原件文件总字节：随包基础管线上限 = 它的 10%（pack/stage_direct_cpso.sh）
+        for k, v in pso_env(tgt).items():   # 随包管线（计算 / 基础）按目标设备出：不传时 pack/jobs/archs.py 对用户 iPhone 包不猜、管线段整段跳过（0 份）
+            env.setdefault(k, v)
         # 存档游戏身份（和 Mac 存档作业 saves.identity 同一份）：一键出包只在「从原件出包」时自己生成，启动器走 --from-extract 一直缺，
         #   iPhone 包里没有 save-identity.json → 存档管理页报「缺少游戏身份」、iCloud 存档不同步（11-09 真机）。这里按游戏库目录写好交给它
         from saves import identity as save_identity
@@ -373,7 +374,7 @@ def _build(c):
         from build import warn_offline_empty, collect_degrade
         warn_offline_empty(c, root)   # 离线 0 支（#470）：照常交付，完成页带黄字
         notes = collect_degrade(c, root)   # 降级继续的玩家提示：随结果交给完成卡（v0.3.1）；清理会删产物根，先读
-    # 早装先收尾再清理：清理会删它正在读的 roots/<款>@现行 与 .early（审计 P1-146：直连命中缓存时出包比早装推得快）
+    # 早装先收尾再清理：清理会删它正在读的现行产物根（roots/<款>@现行 指向的版本）与 .early（审计 P1-146：直连命中缓存时出包比早装推得快）
     pre = early.finish() if early else None
     # Q15：成功清一次性中间产物，编库缓存跨次保留并按预算裁剪；失败留现场。
     c.begin("清理出包中间产物")
@@ -431,9 +432,12 @@ def prune_unless_follow_up(c, gid):
     if c.r.get("followUp") is True:
         c.emit(message="这款接着还要出别的平台：先留着解包与中间产物")
         return False
-    from library import prune_build
+    from library import NotManaged, prune_build
     try:
         prune_build(c, gid)
+    except NotManaged as error:   # 不在存放位置里的路径没碰：只记日志，不作为错误码给玩家看（包已出好）
+        print(f"[s2a] 清理中间产物跳过了不在存放位置里的路径：{c.redact(str(error))}", file=sys.stderr)  # 非玩家句
+        return False
     except (Failure, OSError) as error:   # #793 / #796：包已经出好，清中间产物只是收尾——游戏库在删不了文件的地方（Xbox App 管的文件夹）时
         #   原先 PermissionError 一路抛上去，出好的包被判失败；同失败收尾 clean_after_stop：记一条警告，下次空闲再清
         c.diagnostic("清理中间产物没有完成，下次空闲时会再清：" + c.redact(str(error)), code="job_failed", severity="warning")  # 非玩家句
@@ -646,8 +650,8 @@ def product_root(c, gid):
     """这款的现行产物根（打包流程的工作目录）；不存在 → None"""
     from build import oneclick_kuan
     out = layout.ios_work(c, gid, create=False)
-    r = out / "work/pkg/product" if os.name == "nt" else out / "roots" / (oneclick_kuan(c, gid) + "@现行")   # Windows：win_oneclick 的工作根（现行各项联接 + 直连库，oneclick_win.product）  # 非玩家句
-    return resolve_path(r) if (r / "main.npdm").is_file() else None
+    r = out / "work/pkg/product" if os.name == "nt" else layout.current_root(c, out / "roots" / (oneclick_kuan(c, gid) + layout.CURRENT))   # Windows：win_oneclick 的工作根（现行各项联接 + 直连库，oneclick_win.product）
+    return resolve_path(r) if r is not None and (r / "main.npdm").is_file() else None
 
 
 def usable_kit(c, gid, sid, failed=()):
@@ -887,6 +891,22 @@ def oneclick_result(path):
     return result
 
 
+def pso_env(tgt):
+    """目标设备 → 出包管线归档的目标对（pack/jobs/archs.py 读 S2A_PSO_ARCHS / S2A_PSO_OS）。认得出 GPU 架构才给；
+    系统大版本只给读得到的正值（0 / 空会出 ios0 归档）。认不出（没目标、前端没带 gpuArch）→ 空，管线段照旧按 archs.py 规则处理"""
+    arch = (tgt or {}).get("gpuArch") or ""
+    if not arch:
+        return {}
+    out = {"S2A_PSO_ARCHS": arch}
+    try:
+        osv = int((tgt or {}).get("os") or 0)
+    except (TypeError, ValueError):
+        osv = 0
+    if osv > 0:
+        out["S2A_PSO_OS"] = str(osv)
+    return out
+
+
 def resolve_target(c):
     """目标设备（只用来提示地址窗口，一包通用）：请求里给了（前端：连着的设备或玩家选的机型）就用它；没给就认连着的那一台。
     目标有什么问题都不拦出包（预检清单 #39–#42，11-13 维护者：别预先判断拦玩家）：认不出 GPU、SDK 比目标旧、读不出 SDK、
@@ -960,7 +980,7 @@ def _package_failure_phase(reason):
 
 
 def oneclick_failure(events, milestone, log, *, refresh_log=None, refresh_before=None):
-    from errors import classify_failure, player_reason, player_words, refresh_stop_phase, tool_reason
+    from errors import cause_line, classify_failure, player_reason, player_words, refresh_stop_phase, tool_reason
     name = "未记录阶段"  # 非玩家句
     result = None
     try:
@@ -1001,5 +1021,7 @@ def oneclick_failure(events, milestone, log, *, refresh_log=None, refresh_before
     texts = (reason,) + ((str(fresh_refresh),) if fresh_refresh else ())
     code, why = classify_failure(phase, log, texts)
     said, advice = player_words(code, log, texts)
+    cause = cause_line(fresh_refresh) if fresh_refresh else None   # 刷新里失败阶段自己的红行（带子命令原文），错误摘要按「失败原文：」取（report.build）
+    more = "\n失败原文：" + cause if cause and cause not in reason else ""  # 非玩家句
     # 上屏只放玩家话术；阶段 / 红行原文 / 归因依据进 internal → 诊断 detail（「复制错误摘要」带走）
-    return Failure(said, code=code, advice=advice, internal="一键出包失败（" + name + "）：" + reason + "\n" + why)  # 非玩家句
+    return Failure(said, code=code, advice=advice, internal="一键出包失败（" + name + "）：" + reason + more + "\n" + why)  # 非玩家句

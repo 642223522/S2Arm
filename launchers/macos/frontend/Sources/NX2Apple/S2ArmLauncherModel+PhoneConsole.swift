@@ -66,19 +66,36 @@ extension S2ArmLauncherModel {
         [c.byThisLauncher ? "console.choose.byLauncher" : "console.choose.byOther"] + (c.certImported ? ["console.choose.certImported"] : [])
     }
 
-    /// 「选用哪个 S2Arm」：作业 phoneChooseApp 核对它确在这台手机上后记进设备记录；成没成都重新现查总览（选的已不在 → 列表跟着变）
+    /// 「选用哪个 S2Arm」：作业 phoneChooseApp 核对它确在这台手机上后记进设备记录；成没成都重新现查总览（选的已不在 → 列表跟着变）。
+    ///   选成了、这台手机有推送因「还没选」停着（pushChoice）：接着重推那一次（同一台、同样的游戏）
     func chooseApp(device: String, bundleId: String) {
         guard consoleChoosing == nil else { return }
         consoleChoosing = bundleId; consoleChooseError = nil
         Task { @MainActor [weak self] in
             guard let self else { return }
+            var retry: (() -> Void)?
             do {
                 try await self.provider.phoneChooseApp(device: device, bundleId: bundleId)
                 self.consoleRechoose = false
+                if let p = self.pushChoice, p.device == device { retry = p.retry; self.pushChoice = nil }
             } catch { self.consoleChooseError = error.localizedDescription }
             self.consoleChoosing = nil
             await self.loadPhoneOverview(probe: true)
+            retry?()
         }
+    }
+
+    /// 推送停在「装着不止一个 S2Arm、还没选」（phone_app_choice_required）时失败页就地列的候选（作业诊断 facts，install.owner_for_push），
+    ///   retry = 选好后重推的那一次（推单款 / 更新所选，同样的参数）
+    struct PushChoice {
+        let device: String
+        let candidates: [PhoneOverview.Candidate]
+        let retry: () -> Void
+    }
+
+    /// 推送失败：是「还没选」就记下候选与重推（失败页据此列候选）；别的失败清掉
+    func notePushChoice(_ f: JobFailure, retry: @escaping () -> Void) {
+        pushChoice = PhoneOverview.choiceFacts(f.outcome.diagnostics).map { PushChoice(device: $0.device, candidates: $0.candidates, retry: retry) }
     }
 
     /// 点总控台按钮（界面和控制口走这同一个函数）。ids：推 / 导出哪几款（控制口可给；不给 = 总控台勾选的、按游戏库顺序）。→ 没做的原因（nil = 已发起）
@@ -186,6 +203,7 @@ extension S2ArmLauncherModel {
         guard resume || !order.isEmpty else { return }
         guard !phoneBusy else { phoneQueue.append((nil, { [weak self] in self?.updateSelected(resume: resume, ids: ids, device: device) })); return }
         consolePushing = nil
+        lastPushSelectedDevice = device
         start(JobSession(kind: .pushSelected, gameID: nil, name: BackendText.launcherText("console.updateSelected", language: dynamicLanguage)
             .replacingOccurrences(of: "{0}", with: "\(order.count)"))) { [weak self] sink in
             let watch = EventSink { ev in
@@ -193,7 +211,11 @@ extension S2ArmLauncherModel {
                 sink.emit(ev)
             }
             defer { Task { @MainActor in self?.consolePushing = nil; self?.refreshPhoneOverview() } }
-            _ = try await self?.provider.pushSelected(gameIds: order, device: device, resume: resume, events: watch)
+            do { _ = try await self?.provider.pushSelected(gameIds: order, device: device, resume: resume, events: watch) }
+            catch let f as JobFailure {   // 装着不止一个 S2Arm、还没选：失败页就地列候选，选好重推这一轮
+                self?.notePushChoice(f) { [weak self] in self?.updateSelected(resume: resume, ids: order, device: device) }
+                throw f
+            }
             return nil
         }
     }
@@ -209,6 +231,12 @@ extension S2ArmLauncherModel {
             self?.identityDelivered = r?.delivered
             return nil
         }
+    }
+
+    /// 「更新所选」失败页的「重试」（#1756）：同一台续推（作业层 resume：只推上一轮没推成的）
+    func retryUpdateSelected() {
+        guard let device = lastPushSelectedDevice else { return }
+        updateSelected(resume: true, device: device)
     }
 
     /// 「停下」：取消这一单（作业层推完的留着；没推完的那款下次续推）

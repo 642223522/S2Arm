@@ -32,7 +32,7 @@ import sys
 import tempfile
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -40,6 +40,7 @@ from repair_compute import Library   # 直连库容器（lib.idx + lib.NNN.pak�
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / 'tools'))
 from pool_workers import cores   # 核数 / 进程池路数唯一来源（tools/pool_workers.py，#1332）
+from progress import Ticker   # 出包进度（S2A_PROGRESS）：这段原先没有计数，界面停在「刷新各阶段 n/11 · 剩 0 秒」
 
 FORMAT = 'cs-pipelines 1'   # 改了产物形状（描述、文件名、脚本格式）就加一，旧缓存全部不中
 REPO = Path(__file__).resolve().parents[3]
@@ -130,7 +131,9 @@ def run_tt(argv, env, log):
 
 
 def clone(src, dst):
-    tmp = dst.with_name(dst.name + f'.{os.getpid()}.tmp')
+    # 临时件名带进程号 + 线程号：base_pipelines / 本工具用线程池并发出管线，两路碰上同一缓存键时同写一个目标；只带进程号时同进程两条线程共用一个临时件，
+    #   先改名的一条把它挪走，后一条 os.replace 报 FileNotFoundError，整阶段软失败、包里一份管线都没有（Ori 2 出包实例）。各写各的临时件，改名原子，后到的覆盖先到的、内容相同
+    tmp = dst.with_name(dst.name + f'.{os.getpid()}.{threading.get_ident()}.tmp')
     if subprocess.run(['cp', '-c', str(src), str(tmp)], capture_output=True).returncode:   # APFS 克隆；别的文件系统退回普通拷贝
         shutil.copyfile(src, tmp)
     os.replace(tmp, dst)
@@ -220,8 +223,9 @@ def main():
                 cf.parent.mkdir(parents=True, exist_ok=True); clone(tmp, cf)
             os.replace(tmp, dst); note('built', 1)
 
+        tk = Ticker('直连库·计算管线', len(jobs))
         with ThreadPoolExecutor(max(1, a.j)) as ex:
-            list(ex.map(one, jobs))
+            for f in as_completed([ex.submit(one, job) for job in jobs]): f.result(); tk.step()   # 按完成先后计：一支编得久，计数不停在它前面
     finally:
         shutil.rmtree(work, ignore_errors=True)
     files = [a.out / f'{ckey(k)}.metalarchive' for k in keys]

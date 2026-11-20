@@ -60,7 +60,8 @@ if (installActionProbe) { Environment.Exit(InstallActionProbe.Run(outDir)); }
 static LibraryGame MockGame(bool keysReady = true) => new(
     "0100B040192FA000", "Fire Emblem: Fortune's Weave", "v1.0.1",
     "", false, [], keysReady, keysReady ? DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 86400.0 : null,
-    true, [new("base", "0100B040192FA000", 917504, "v1.0.1", 31_000_000_000L, "")]);
+    true, [new("base", "0100B040192FA000", 917504, "v1.0.1", 31_000_000_000L, "")],
+    IphoneExpires: keysReady ? DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 6 * 86400.0 : null);   // 作业层给的免费签名到期（1 天前装、按 7 天估）
 
 static LibraryCatalog MockCatalog(bool keysReady = true)
 {
@@ -357,10 +358,12 @@ SetW(pack, "devCert", JsonDocument.Parse("{\"imported\":false,\"active\":false,\
 SaveP("win_10_export_sign_appleid", () => Navigate(pack, "build"));
 SetW(pack, "devCert", JsonDocument.Parse("""
 {"imported":true,"active":true,"cert":{"blocking":[],"warnings":[
- {"id":"devcert_entitlements","text":"描述文件没开「扩展寻址」权限：小游戏照常，大游戏可能内存不够闪退。可在开发者网站给这个 App ID 打开后重新下载描述文件。"},
+ {"id":"devcert_entitlements","text":"描述文件缺下面的权限，小游戏照常，大游戏可能起不来：\n扩展寻址（com.apple.developer.kernel.extended-virtual-addressing）——没有它大游戏可能地址不够、起不来\n可以复制下面这段话发给证书发放人，补开后重新下载描述文件再导入。\n没连着 iPhone：复制后把「<你的设备 UDID>」换成你手机的 UDID。"},
  {"id":"devcert_expiring","text":"证书将于 2026-11-30 到期（还剩 20 天）：到期后 App 打不开，记得提前换新。"}],
  "teamName":"S2Arm Test Co","teamId":"ABCDE12345","certExpires":"2026-11-30","profileExpires":"2027-05-29",
- "bundleId":"io.s2arm.games.abcde12345","wildcard":true,"allDevices":false,"deviceCount":1,"deviceListed":null}}
+ "bundleId":"io.s2arm.games.abcde12345","wildcard":true,"allDevices":false,"deviceCount":1,"deviceListed":null,
+ "missingEntitlements":["com.apple.developer.kernel.extended-virtual-addressing"],
+ "requestText":"请提供 Apple Development 开发证书（.p12，附密码）和对应的 iOS App Development 开发描述文件。描述文件要求：用显式 App ID（不要通配 *），包含我的设备 UDID：<你的设备 UDID>，并开启以下权限：调试权限（get-task-allow）、提高内存上限（com.apple.developer.kernel.increased-memory-limit）、扩展寻址（com.apple.developer.kernel.extended-virtual-addressing）。"}}
 """).RootElement.Clone());
 SaveP("win_11_export_sign_devcert", () => Navigate(pack, "build"));
 

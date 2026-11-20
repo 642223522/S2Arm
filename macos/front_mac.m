@@ -2083,6 +2083,21 @@ void s2a_front_run(void (*guest_main)(void)) {
         NSApplication *app = NSApplication.sharedApplication;
         [app setActivationPolicy:NSApplicationActivationPolicyRegular];
         S2AMacDelegate *delegate = [S2AMacDelegate new]; app.delegate = delegate; g_delegate = delegate;
+        // Dock / Cmd+Tab 图标（#994）：启动器起局带 S2A_GAME_COVER（游戏库列表同一张封面，pack/jobs/build.py runtime_env）就换成它；
+        //   横图取中央方形（同游戏库卡片裁法）。没带（无封面）/ 读不出：保持宿主包默认图标（compile_host 编进 Resources/S2ArmGame.icns）
+        { const char *cover = getenv("S2A_GAME_COVER");
+          if (cover && cover[0]) {
+              NSImage *loaded = [[NSImage alloc] initWithContentsOfFile:[NSString stringWithUTF8String:cover]];
+              CGImageRef raw = loaded ? [loaded CGImageForProposedRect:NULL context:NULL hints:nil] : NULL;
+              if (raw) {
+                  size_t w = CGImageGetWidth(raw), h = CGImageGetHeight(raw);
+                  CGImageRef square = raw;   // 方形封面原样用；横图 / 竖图取中央方形
+                  if (w != h) { size_t side = MIN(w, h); square = CGImageCreateWithImageInRect(raw, CGRectMake((w - side) / 2, (h - side) / 2, side, side)); }
+                  NSImage *icon = [[NSImage alloc] initWithCGImage:square size:NSMakeSize(CGImageGetWidth(square), CGImageGetHeight(square))];
+                  if (square != raw) CGImageRelease(square);
+                  app.applicationIconImage = icon;
+              } else fprintf(stderr, "[s2a] 【黄】游戏封面读不出来（%s），Dock 图标用宿主包默认\n", cover);
+          } }
         // 心跳（#1050）：每 10 秒一行实占 / 出帧 / 读写盘 / 缺页读入（macos/heartbeat_mac.c s2a_heartbeat_mac；只此一处用，不进 native.h），后台串行队列上打，不占主线程
         { void s2a_heartbeat_mac(void); int s2a_playtime_flush(void); static dispatch_source_t hb; dispatch_queue_t q = dispatch_queue_create("s2a.heartbeat", DISPATCH_QUEUE_SERIAL);
           hb = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, q);

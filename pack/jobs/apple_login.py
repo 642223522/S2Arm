@@ -11,6 +11,7 @@
   （同版 account.rs tfa_closure）→ canSms = True；界面「改用短信接收」往同一个文件写 sms，作业转给 plumesign，它改发短信、再提示
   「Enter the code sent via SMS」→ 再发一次 needCode（sms = True）。受信任手机号不止一个时 plumesign 要弹 dialoguer 选号菜单，
   管道里没有终端，它以「IO error: not a terminal」退出（rc 1）：报 two_factor_wrong + 定句「多个手机号选不了」，叫玩家重新登录改用设备上的验证码。
+  验证码交过一次后同一次登录又来要码（苹果接受了码却不信任这台电脑）：不再转给界面，杀掉 plumesign，报 login_identity_rejected + 定句 SAY_2FA_REPEAT。
   结果 {account, team, teamName}；失败码：apple_id_wrong（账号或密码不对）/ two_factor_wrong（验证码不对或过期）/
   signing_server_unreachable、apple_server_unreachable（连不上）/ 其余 job_failed + plumesign 原句。
 作业 appleAccount：当前登录的账号 → {account, team, teamName}；没登录 → {account: None}。
@@ -28,6 +29,11 @@ VIA_SMS = re.compile(r"code sent via sms", re.I)   # 已是短信方式
 SMS = "sms"
 NO_TERMINAL = re.compile(r"not a terminal", re.I)  # 多个受信任手机号：dialoguer 选号菜单要终端（Select::interact → NotConnected）
 SAY_SMS_PICK = "这个 Apple ID 绑了不止一个受信任手机号，S2Arm 选不了发到哪一个：重新登录，改用苹果设备上弹出的验证码。"
+# 验证码已被苹果接受、它又来要码（玩家报「输入验证码后无限循环」）：再输也一样，停下说清。plumesign 自己最多重登一次、又要码就以
+# S2A_2FA_REPEAT 退出（补丁 0002）；这里是兜底：同一次登录里交过一次 6 位码后又看到要码提示，就不再转给界面
+REPEAT = "S2A_2FA_REPEAT"
+SAY_2FA_REPEAT = ("苹果已经接受了验证码，但随后又要求再验证一次，再输也会一直这样，所以 S2Arm 先停下了。"
+                  "请改用在你自己的 iPhone 或 iPad 上登录着的那个 Apple ID 来登录（验证码会弹在那台设备上）；还不行请把诊断发给我们。")
 LOGIN_OK = "Successfully logged in"
 SAY_SIGN_IN = "登录 Apple ID"
 SAY_CODE = "等你填验证码"
@@ -90,6 +96,8 @@ def login(c):
     asked = threading.Event()
     prompt = [""]   # 最近一次验证码提示原文（判能不能改短信、是不是短信方式）
     sms_sent = False
+    code_given = False   # 已交过一次 6 位验证码：之后再要码 = 苹果接受了码却又要（见 SAY_2FA_REPEAT）
+    repeat = False
 
     def pump():
         for ln in proc.stdout:
@@ -105,6 +113,9 @@ def login(c):
         while proc.poll() is None and not c.cancelled:
             if asked.wait(0.3):
                 asked.clear()
+                if code_given:
+                    repeat = True
+                    break
                 can_sms = bool(CAN_SMS.search(prompt[0]))
                 c.begin(SAY_CODE, 1, 1, key="appleLogin.needCode")
                 c.emit("progress", account=account, canSms=can_sms, sms=bool(VIA_SMS.search(prompt[0])))
@@ -112,6 +123,7 @@ def login(c):
                 if code is None:
                     break
                 sms_sent = sms_sent or code == SMS
+                code_given = code_given or code != SMS
                 c.begin(SAY_SIGN_IN, 1, 1, key="appleLogin")
                 proc.stdin.write(code + "\n")
                 proc.stdin.flush()
@@ -137,6 +149,8 @@ def login(c):
     c.check()   # 取消（再发一次 / 关掉登录框）：照作业取消收尾
     if proc.returncode == 0 and LOGIN_OK in text:
         return _account_result(c, W)
+    if repeat or REPEAT in text:
+        raise Failure(SAY_2FA_REPEAT, code="login_identity_rejected", internal=prompt[0].strip()[-300:] if repeat else text.strip().splitlines()[-1][-300:])
     if sms_sent and NO_TERMINAL.search(text):   # 改短信时要选号：管道里选不了（见文件头）
         raise Failure(SAY_SMS_PICK, code="two_factor_wrong", internal=text.strip().splitlines()[-1][-300:] if text.strip() else "")
     code = _classify(text)

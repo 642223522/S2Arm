@@ -58,6 +58,14 @@ _, s6 = cpatch.parse_pchtxt('@nsobid-AA\n# 文件标题\n\n// 10320x4320 Docked\
 ck(f'①b 连续两行注释合成段名：{s6[0]["name"]}', s6[0]['name'] == '10320x4320 Docked · Use Extended Memory Layout')
 _, s7 = cpatch.parse_pchtxt('@nsobid-AA\n// 60 FPS\n@enabled\n00000204 00000000\n\n// 30 FPS\n@enabled\n00000208 00000000\n')
 ck('①b 单行注释段名照旧、两段各自取名', [x['name'] for x in s7] == ['60 FPS', '30 FPS'])
+# ①c 不可见字符（#1775 风花雪月：金手指地址「00000AFCC4」后夹 U+202C，int(…, 16) 抛错、整次出包停在改写）：
+#   格式字符（零宽空格、BOM、方向控制符）去掉后照常解析；去掉后仍看不懂的那一条交运行时（writes None），别的条目照收。期望手算：0x0AFCC4 = 720068
+_, ec = cpatch.parse_cheats('[A]\n04000000 00000AFCC4\u202c 52800020\n[B]\n04000000 0000ZZZZ 52800020\n[C]\n\ufeff04000000 00000100 d503201f\n')
+ec = {e['name']: e['writes'] for e in ec}
+ck('①c 金手指：去掉 U+202C / BOM 照常编进包；看不懂的那条交运行时、不抛错', ec == {'A': [(720068, bytes.fromhex('20008052'))], 'B': None, 'C': [(0x100, bytes.fromhex('1f2003d5'))]})
+_, sc = cpatch.parse_pchtxt('@nsobid-AB\n@enabled\n00000200\u200b 1F2003D5\n')
+ck('①c pchtxt：地址后的零宽空格去掉，偏移照算（0x200 − 0x100 = 0x100）', sc and sc[0]['writes'] == [(0x100, bytes.fromhex('1F2003D5'))] and not sc[0]['bad'])
+
 # ②
 ips = b'PATCH' + (0x204).to_bytes(3, 'big') + (4).to_bytes(2, 'big') + bytes.fromhex('1F2003D5') + (0x300).to_bytes(3, 'big') + (0).to_bytes(2, 'big') + (3).to_bytes(2, 'big') + b'\xaa' + b'EOF'
 ck('② IPS：0x204 → 0x104、行程 0x300 → 0x200 三个 AA', cpatch.parse_ips(ips) == [(0x104, bytes.fromhex('1F2003D5')), (0x200, b'\xaa\xaa\xaa')])

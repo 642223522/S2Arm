@@ -31,6 +31,14 @@ public sealed partial class EnvironmentWindow
     private string? consoleChoosing;
     private string consoleChooseError = "";
     private bool consoleRechoose;
+    /// <summary>推送失败「装着不止一个 S2Arm、还没选」（phone_app_choice_required，诊断 facts {device, candidates}）：失败的那一页就地列候选，
+    /// 选好（phoneChooseApp 成功）自动重推刚才那一次（同一台、同样的游戏）。installChoice = 推单款那页；consolePushChoice = 总控台「更新所选」</summary>
+    private sealed record PushChoice(string Device, IReadOnlyList<PhoneOverview.Candidate> Candidates, string Message, Func<Task> Retry);
+    private PushChoice? installChoice, consolePushChoice;
+    /// <summary>「更新所选」没走成（作业层 #1756 整单按失败报；同 Mac pushSelected 失败页）：② 区写清每一款名字 + 原因（作业层原句）、给「重试」。
+    /// Games = 逐款失败（PhoneOverview.PushFailures）；整轮停时为空，只写作业原因。Retry 只推没成的那几款、同一台</summary>
+    private sealed record PushFailed(string Device, string Message, IReadOnlyList<PhoneOverview.PushFailure> Games, Func<Task> Retry);
+    private PushFailed? consolePushFailed;
     private bool ConsoleUpdating => consoleJob is not null;
     private bool ConsoleSelected => phoneOverview is not null && selectedGame == ConsoleId;
     private PhoneOverview.Phone? ConsolePhone => phoneOverview?.Pick(consoleDevice);
@@ -71,27 +79,47 @@ public sealed partial class EnvironmentWindow
 
     /// <summary>「更新所选」/「推所选到 iPhone」（RunConsoleAction）：一单作业 pushSelected 按游戏库顺序推总控台这台（同 Mac updateSelected）。作业层一款失败接着推下一款，
     /// 换哪款都做不下去（没装 App / 手机断开）才整轮停；「停下」= 取消这一单，推完的留着</summary>
-    private async Task PushSelectedAsync(IReadOnlyList<string> order, string device)
+    /// <param name="resume">失败页「重试」且不知道逐款结果（整轮停）：按作业续推（没推到的 + 失败的），order 只作款数</param>
+    private async Task PushSelectedAsync(IReadOnlyList<string> order, string device, bool resume = false)
     {
-        if (QueuePhone(null, () => PushSelectedAsync(order, device))) return;   // 手机上有作业在跑 → 排队
-        var front = BeginJob(JobKind.Phone); consoleJob = front; consoleDone = 0; consoleTotal = order.Count; consolePushing = null;
+        if (QueuePhone(null, () => PushSelectedAsync(order, device, resume))) return;   // 手机上有作业在跑 → 排队
+        var front = BeginJob(JobKind.Phone); consoleJob = front; consoleDone = 0; consoleTotal = order.Count; consolePushing = null; consolePushChoice = null; consolePushFailed = null;
         var state = "running";
         Render();
         try
         {
-            var extra = new Dictionary<string, object?> { ["gameIds"] = order.ToArray(), ["device"] = device };
+            var extra = resume ? new Dictionary<string, object?> { ["resume"] = true, ["device"] = device }
+                : new Dictionary<string, object?> { ["gameIds"] = order.ToArray(), ["device"] = device };
             var job = await PackJobClient.RunAsync(PackRequest("pushSelected", "", extra), e => Avalonia.Threading.Dispatcher.UIThread.Post(() =>
             {
-                if (e.TryGetProperty("done", out var d) && d.ValueKind == System.Text.Json.JsonValueKind.Number) consoleDone = d.GetInt32();
-                if (e.TryGetProperty("total", out var t) && t.ValueKind == System.Text.Json.JsonValueKind.Number && t.GetInt32() > 0) consoleTotal = t.GetInt32();
-                if (e.TryGetProperty("current", out var c) && c.ValueKind == System.Text.Json.JsonValueKind.String) consolePushing = c.GetString()?.ToUpperInvariant();
+                // 款数只认带 current（正在推的游戏号）的那条（pack/jobs/install.py push_selected 每款开头发 done = 已推款数、total = 款数）：
+                //   推单款时作业里还有逐文件 / 字节的计数，原先也读成款数，界面写「正在更新 5307 / 5367 款」（D-4MPR）。同 Mac consoleProgress 只按每款一步算
+                if (e.TryGetProperty("current", out var c) && c.ValueKind == System.Text.Json.JsonValueKind.String)
+                {
+                    consolePushing = c.GetString()?.ToUpperInvariant();
+                    if (e.TryGetProperty("done", out var d) && d.ValueKind == System.Text.Json.JsonValueKind.Number) consoleDone = d.GetInt32();
+                    if (e.TryGetProperty("total", out var t) && t.ValueKind == System.Text.Json.JsonValueKind.Number && t.GetInt32() > 0) consoleTotal = t.GetInt32();
+                }
                 Render();
             }), front.Token, front.Next());
             state = job.Report.State;
+            if (!job.Report.Succeeded && PhoneOverview.ChoiceFacts(job.Report.Diagnostics) is { } choice)
+                consolePushChoice = new PushChoice(choice.Device, choice.Candidates, job.Report.Message, () => PushSelectedAsync(order, device, resume));
+            else if (state is "failed" or "interrupted" or "invalid")
+            {   // 有款没推成：逐款原因写在 ② 区，「重试」只推没成的那几款（不知道逐款 = 整轮停 → 续推）
+                var failed = PhoneOverview.PushFailures(job.Report.Diagnostics);
+                var again = PhoneOverview.RetryOrder(failed);
+                consolePushFailed = new PushFailed(device, job.Report.Message.Length > 0 ? job.Report.Message : state, failed,
+                    () => again is not null ? PushSelectedAsync(again, device) : PushSelectedAsync(order, device, resume: true));
+            }
         }
         catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
             InvalidOperationException or OperationCanceledException or System.ComponentModel.Win32Exception)
-        { state = error is OperationCanceledException ? "cancelled" : "failed"; Console.Error.WriteLine("S2Arm pushSelected: " + error.Message); }
+        {
+            state = error is OperationCanceledException ? "cancelled" : "failed"; Console.Error.WriteLine("S2Arm pushSelected: " + error.Message);
+            if (state == "failed")   // 启动器这头没跑起来：同一页写原因，「重试」照原样再推一次
+                consolePushFailed = new PushFailed(device, error.Message.Length > 0 ? error.Message : error.GetType().Name, [], () => PushSelectedAsync(order, device, resume));
+        }
         finally { EndJob(front); consoleJob = null; consolePushing = null; DynamicFinished(state); Render(); }
         await RefreshPhoneOverviewAsync();
     }
@@ -124,27 +152,35 @@ public sealed partial class EnvironmentWindow
         finally { EndJob(front); DynamicFinished(identityState); Render(); }
     }
 
-    /// <summary>「选用哪个 S2Arm」：作业 phoneChooseApp 核对它确在这台手机上后记进设备记录；成没成都重新现查总览（选的已不在 → 列表跟着变）。同 Mac chooseApp</summary>
+    /// <summary>「选用哪个 S2Arm」：作业 phoneChooseApp 核对它确在这台手机上后记进设备记录；成没成都重新现查总览（选的已不在 → 列表跟着变）。同 Mac chooseApp。
+    /// 选成了、这台手机有推送因「还没选」停着（installChoice / consolePushChoice）：接着重推那一次</summary>
     private async Task ChooseAppAsync(string device, string bundleId)
     {
         if (consoleChoosing is not null) return;
         consoleChoosing = bundleId; consoleChooseError = "";
         Render();
+        var chosen = false;
         try
         {
             var job = await PackJobClient.RunAsync(PackRequest("phoneChooseApp", "", new Dictionary<string, object?> { ["device"] = device, ["bundleId"] = bundleId }), null, CancellationToken.None);
-            if (job.Report.Succeeded) consoleRechoose = false;
+            if (job.Report.Succeeded) { consoleRechoose = false; chosen = true; }
             else consoleChooseError = job.Report.Message.Length > 0 ? job.Report.Message : job.Report.State;
         }
         catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
             InvalidOperationException or System.ComponentModel.Win32Exception)
         { consoleChooseError = error.Message.Length > 0 ? error.Message : error.GetType().Name; }
         finally { consoleChoosing = null; }
+        var retry = new List<Func<Task>>();
+        if (chosen && installChoice?.Device == device) { retry.Add(installChoice.Retry); installChoice = null; }
+        if (chosen && consolePushChoice?.Device == device) { retry.Add(consolePushChoice.Retry); consolePushChoice = null; }
         await RefreshPhoneOverviewAsync(probe: true);
+        foreach (var again in retry) await again();
     }
 
-    /// <summary>① 手机与 App 里的「选用哪个 S2Arm」：按作业给的顺序（包名排序）列出每一个，每个一颗按钮；只写事实（谁装的、证书导没导、团队号），不推荐。选过的再点「换一个」也到这里</summary>
-    private Control ConsoleChooser(PhoneOverview.Phone phone, bool offline)
+    /// <summary>① 手机与 App 里的「选用哪个 S2Arm」：按作业给的顺序（包名排序）列出每一个，每个一颗按钮；只写事实（谁装的、证书导没导、团队号），不推荐。选过的再点「换一个」也到这里。
+    /// 推送失败页（推单款、更新所选）也用它就地列候选
+    /// pick：点了哪个包名怎么办；缺省走总控台按钮（RunConsoleAction，核对总览候选）。推单款失败页传 ChooseAppAsync（候选来自失败事实，不靠总览）</summary>
+    private Control ConsoleChooser(PhoneOverview.Phone phone, bool offline, Action<string>? pick = null)
     {
         var box = new StackPanel { Spacing = 8, Margin = new Thickness(0, 4, 0, 0) };
         box.Children.Add(WrappedMuted(T("console.choose.title"), 12.5));
@@ -156,7 +192,7 @@ public sealed partial class EnvironmentWindow
             var button = new Button { Content = text, IsEnabled = !offline && consoleChoosing is null && !installBusy, Padding = new Thickness(16, 9),
                 Background = Brush.Parse("#29292D"), Foreground = Ink, CornerRadius = new CornerRadius(8) };
             var bid = c.BundleId;
-            button.Click += (_, _) => RunConsoleAction(PhoneOverview.Act.ChooseApp, phone.Device, bundleId: bid);
+            button.Click += (_, _) => { if (pick is not null) pick(bid); else RunConsoleAction(PhoneOverview.Act.ChooseApp, phone.Device, bundleId: bid); };
             Avalonia.Automation.AutomationProperties.SetAutomationId(button, "console.chooseApp." + bid);
             box.Children.Add(button);
         }
@@ -324,7 +360,9 @@ public sealed partial class EnvironmentWindow
         var actions = PhoneOverview.Actions(phone);
         var app = new StackPanel { Spacing = 8 };
         app.Children.Add(Label(ConsoleStatusText() + (phone.SignMode is { } m ? " · " + T("console.sign." + m) : "")));
-        if (phone.NeedsChoice || (consoleRechoose && (phone.Candidates?.Count ?? 0) > 1)) app.Children.Add(ConsoleChooser(phone, offline));
+        var pushChoice = consolePushChoice?.Device == phone.Device ? consolePushChoice : null;   // 「更新所选」因没选停着：候选列在 ② 失败处，这里不重复
+        if (pushChoice is not null) { /* 候选在 ② */ }
+        else if (phone.NeedsChoice || (consoleRechoose && (phone.Candidates?.Count ?? 0) > 1)) app.Children.Add(ConsoleChooser(phone, offline));
         else if ((phone.Candidates?.Count ?? 0) > 1)   // 选过了、装着不止一个：写正在用哪个 + 「换一个」
         {
             var cur = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
@@ -391,6 +429,28 @@ public sealed partial class EnvironmentWindow
             run.Children.Add(Action("console.stop", StopUpdateSelected));
         }
         sync.Children.Add(run);
+        if (pushChoice is not null && !ConsoleUpdating)   // 「更新所选」失败：装着不止一个 S2Arm、还没选 → 就在这里选，选好自动接着推
+        {
+            sync.Children.Add(new TextBlock { Text = B(pushChoice.Message), Foreground = Brush.Parse("#FF9F0A"), FontSize = 12.5, TextWrapping = TextWrapping.Wrap });
+            sync.Children.Add(ConsoleChooser(phone with { NeedsChoice = true, Candidates = pushChoice.Candidates }, offline, bid => _ = ChooseAppAsync(pushChoice.Device, bid)));
+        }
+        if (consolePushFailed is { } pushFailed && pushFailed.Device == phone.Device && !ConsoleUpdating)   // 「更新所选」有款没推成：每一款名字 + 原因、「重试」只推没成的
+        {
+            var fail = new StackPanel { Spacing = 4, Margin = new Thickness(0, 6, 0, 0) };
+            var orange = Brush.Parse("#FF9F0A");
+            fail.Children.Add(new TextBlock { Text = pushFailed.Games.Count > 0 ? Tf("console.pushFailed", pushFailed.Games.Count) : B(pushFailed.Message),
+                Foreground = orange, FontWeight = FontWeight.Bold, TextWrapping = TextWrapping.Wrap });
+            foreach (var g in pushFailed.Games)
+                fail.Children.Add(new TextBlock { Text = GameName(g.GameId) + " · " + (g.Message.Length > 0 ? B(g.Message) : g.Code), Foreground = orange, FontSize = 12.5, TextWrapping = TextWrapping.Wrap });
+            var retry = Action("phone.retry", () => _ = pushFailed.Retry(), enabled: !offline);
+            Avalonia.Automation.AutomationProperties.SetAutomationId(retry, "console.pushRetry");
+            var retryRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
+            retryRow.Children.Add(retry);
+            if (offline) retryRow.Children.Add(Offline());
+            fail.Children.Add(retryRow);
+            Avalonia.Automation.AutomationProperties.SetAutomationId(fail, "console.pushFailed");
+            sync.Children.Add(fail);
+        }
         page.Children.Add(ConsoleSection("console.section.sync", sync));
 
         // ⑥ 帮助：重看第一次的引导、故障报修（同顶栏那颗）

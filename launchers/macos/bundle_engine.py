@@ -19,7 +19,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "pack/jobs"))
 from core import Context, atomic, digest, tree_hash
-from build import compile_host
+from build import compile_host, nospace
 import toolchain
 
 INPUTS = ["runtime", "ios", "graphics", "translator", "services", "compat", "pack", "tools", "Makefile",
@@ -34,6 +34,10 @@ INPUTS = ["runtime", "ios", "graphics", "translator", "services", "compat", "pac
           "launchers/shared/game_settings.v1.json",
           # iPhone 宿主包的图标（pack/ipa_tail.py、pack/jobs/ipa.py）：引擎快照里没有它，容器就退回用游戏图标（11-08 维护者）
           "launchers/macos/Branding/AppIcon-iOS.png",
+          # Mac 宿主包的默认图标（pack/jobs/build.py compile_host，#994 无封面时的回退）：快照里没有它，编出的宿主包就没有图标
+          "launchers/macos/Branding/AppIcon-1024.png",
+          # 同一处编图标用的配方：make_icns.sh（AppIcon-1024.png → S2ArmGame.icns；宿主单测也跑它）
+          "launchers/macos/make_icns.sh",
           # 根 .gitignore（11-02 beta.3 走查）：出包会在快照副本里编出 bin/ obj/，没有忽略规则时 pack/ipa.sh「构建相关目录有未提交改动」
           #   把这些编译产物当成改动、拒绝出包——玩家导出 iPhone 版必死在最后一步
           ".gitignore",
@@ -212,6 +216,28 @@ def bundle_prebuilt_libs(tools, source_root=ROOT, env=None, developer_dir=None):
             (out / "build.txt").write_text("key=%s\nversion=%s\nsource_sha256=%s\nlib_sha256=%s\n" % (key, pin.group(1), pin.group(2), digest(out / lib)))
 
 
+def bundle_dotnet_env(c):
+    """Give NativeAOT publishes no-space cache paths.
+
+    The launcher's private tool cache inherits the repository path, which may
+    contain spaces.  NuGet's package folder is expanded into the final clang
+    command by Microsoft.NETCore.Native.targets, so its path must be stable and
+    shell-safe before restore/publish starts.
+    """
+    env = c.env()
+    for key in ("NUGET_PACKAGES", "DOTNET_CLI_HOME"):
+        raw = env.get(key)
+        if not raw or " " not in raw:
+            continue
+        path = Path(raw)
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise RuntimeError(f"无法准备 .NET 缓存目录：{path}") from error
+        env[key] = str(nospace(path))
+    return env
+
+
 def strip_debug_maps(root, developer_dir, keep_dir=None):
     """发布进 App 的二进制去掉调试映射与本地符号（strip -S -x）：调试映射记着出包机 .o 与源码目录的绝对路径；本地符号玩家机器上没有代码读
     （11-15 瘦身：宿主 121.5 → 48.7 MB，导出符号一个不少，dlsym 照常）。keep_dir 给了就先把未去符号的原件按相对路径存过去（发版存档，离线还原崩溃报告）。
@@ -249,17 +275,21 @@ def bundle(destination, developer_dir):
     else:
         host = None
         c.emit("message", "Intel Mac：本 App 带出包工具，不带在 Mac 上跑游戏的宿主；给 iPhone 出包不受影响。")
+    make_root = nospace(ROOT)
     prepare = c.private / "tools/prepare"
     # 每次从空目录编：dotnet publish -o 不清目标目录，上一次（别的编法）留下的产物会混进来（v0.4.4 第三次候选：上一版编出的 dsh_batch.dSYM
     #   残留，去符号那步拿它当二进制处理报错）。这几样工具每次本来就全量重编，清掉不损失增量
     shutil.rmtree(prepare, ignore_errors=True)
     prepare.mkdir(parents=True, exist_ok=True)
-    c.run(["make", "-C", ROOT / "graphics/metal", str(ROOT / "build/gal/gal_xc"),
+    c.run(["make", "-C", make_root / "graphics/metal", "ROOT=" + str(make_root),
+           str(make_root / "build/gal/gal_xc"),
            "DEVELOPER_DIR=" + developer_dir], c.logs / "gal-tools.log")
-    c.run(["make", "-C", ROOT / "graphics/dsx", str(ROOT / "build/dsx/libdsx.dylib"),
+    c.run(["make", "-C", make_root / "graphics/dsx", "ROOT=" + str(make_root),
+           str(make_root / "build/dsx/libdsx.dylib"),
            "DEVELOPER_DIR=" + developer_dir], c.logs / "dsx.log")
     # 出包用的 C# 工具随发版预编为 NativeAOT 单文件（romfs_index 的 PublishAot 写在工程里：服务层闭包含 netstandard2.0 生成器，-p: 全局属性会波及，同 services/aot/S2A.Aot.csproj）：
     #   玩家机每游戏构建直接执行，App 不再携带 .NET 运行时（bundle_runtime.py 也不再收）
+    dotnet_env = bundle_dotnet_env(c)
     c.run(
         [
             "dotnet",
@@ -276,6 +306,7 @@ def bundle(destination, developer_dir):
             prepare / "shbake",
         ],
         c.logs / "shbake.log",
+        env=dotnet_env,
     )
     c.run(
         [
@@ -291,6 +322,7 @@ def bundle(destination, developer_dir):
             prepare / "romfs",
         ],
         c.logs / "romfs.log",
+        env=dotnet_env,
     )
     # 直连库的 C# 批量进程（translator/dsh_batch.py）随发版编好（NativeAOT 单文件）：玩家首次出包不再现编（11-06 维护者「玩家体验至上」，Spare-host 约 25 秒 CPU），也不再要 .NET 运行时
     c.run(
@@ -309,6 +341,7 @@ def bundle(destination, developer_dir):
             prepare / "dsh_batch",
         ],
         c.logs / "dsh_batch.log",
+        env=dotnet_env,
     )
     # 推资源包流式写手机（pack/devpush，Rust，只依赖 idevice MIT；11-06 维护者：玩家 Mac / Windows 两端都要）：tools/push_pack.py 见 S2A_PREBUILT_TOOLS/devpush/s2a-devpush 就用，
     #   不在就退回 devicectl copy。--locked：按仓库里的 Cargo.lock 取依赖，发版间不漂
@@ -362,7 +395,7 @@ def bundle(destination, developer_dir):
     digest_out = subprocess.run([sys.executable, "-I", str(destination / "translator/dsh_batch.py"), "--src-digest"],
                                 env=c.env(), check=True, capture_output=True, text=True).stdout.strip()
     (tools / "dsh_batch/.src_digest").write_text(digest_out + "\n", encoding="utf-8")
-    # 同一份 App 内源码的翻译器指纹（dmsh_chain.py --xfp 按 DshXfpInput 现算）：玩家机没有 .NET（SDK 更没有），展不开清单，direct_lib.sh 出库后核库印章取这份当「本树」值
+    # 同一份 App 内源码的翻译器指纹（dmsh_chain.py --xfp 按 DshXfpInput 现算）：玩家机没有 .NET（SDK 更没有），展不开清单，direct_lib.py 出库后核库印章取这份当「本树」值
     #   （dmsh_chain.tree_xfp ← dsh_batch.prebuilt_xfp，摘要相同才认）。与内置件自报的编译期 Xfp 不同就是发版件没按这份源码编，当场停
     xfp_out = subprocess.run(
         [sys.executable, "-I", str(destination / "translator/dmsh_chain.py"), "--xfp"],

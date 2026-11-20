@@ -323,6 +323,14 @@ public sealed partial class EnvironmentWindow
         Navigate("build");
     }
 
+    /// <summary>「12 秒」「4 分 12 秒」「1 小时 3 分」：共用文案 duration.*（同 Mac ExportSessionView.duration exact），放进句子里读</summary>
+    private string Spoken(double seconds)
+    {
+        var s = (int)Math.Round(Math.Max(0, seconds));
+        string F(string id, int a, int b = 0) => T("duration." + id).Replace("{0}", a.ToString()).Replace("{1}", b.ToString());
+        return s >= 3600 ? F("hm", s / 3600, s % 3600 / 60) : s >= 60 ? F("ms", s / 60, s % 60) : F("s", s);
+    }
+
     private static string Duration(double seconds)
     {
         var s = (int)Math.Round(Math.Max(0, seconds));
@@ -1410,6 +1418,9 @@ public sealed partial class EnvironmentWindow
                 if (estimate.StepRemainingByRate is { } sr)
                     details.Add(T("export.step.left").Replace("{0}", Duration(sr)));
                 if (packTrack.Message.Length > 0) details.Add(packTrack.Message);
+                // 上次前进 N 秒前（#1770）：计数停着、这个数一直涨 = 真卡住；隔几秒就归零 = 后台在走
+                if (packTrack.SinceAdvance(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0) is { } since)
+                    details.Add(T("export.step.advanced").Replace("{0}", Spoken(Math.Max(1, since))));
                 // 这一行每秒都可能变（百分比 / 剩余 / 作业消息有无、长短）：恒占一行、不换行，下面的步骤不跟着上下跳
                 var detail = Muted(details.Count > 0 ? string.Join(" · ", details) : "\u00A0", 12);
                 detail.TextWrapping = TextWrapping.NoWrap; detail.TextTrimming = TextTrimming.CharacterEllipsis;
@@ -1709,8 +1720,9 @@ public sealed partial class EnvironmentWindow
         var buttons = new WrapPanel { Orientation = Orientation.Horizontal };
         var recheck = Action("action.recheck", () => _ = CheckInstallAsync(), !installChecking && !installBusy);
         recheck.Margin = new Thickness(0, 0, 12, 0); buttons.Children.Add(recheck);
-        var queued = PhoneQueued(game.Id);   // 别的作业在跑也能点（排队）；只有这款已排上时置灰
-        var start = Primary(T("install.start"), () => _ = InstallAsync(game), !queued);   // 不按清单置灰（同 Mac InstallView）：真做不下去的作业层开头判、回真实原因
+        var queued = PhoneQueued(game.Id);   // 别的作业在跑也能点（排队）；只有这款已排上、或正在推这一款时置灰
+        var pushing = PhonePushing(game.Id);   // D-YXDW：原先这款正在推时按钮照样能点，点一下就给同一款再排一单（推完又推一遍）
+        var start = Primary(T(pushing ? "install.start.pushing" : queued ? "install.start.queued" : "install.start"), () => _ = InstallAsync(game), !queued && !pushing);   // 不按清单置灰（同 Mac InstallView）：真做不下去的作业层开头判、回真实原因
         AutomationId(start, "install.start");
         buttons.Children.Add(start);
         if (queued)   // 已排队：手机上前一个作业完成、或这款出完包后自动接着装（同 Mac 装机窗）
@@ -1781,6 +1793,11 @@ public sealed partial class EnvironmentWindow
         var state = new StackPanel { Spacing = 16 };
         state.Children.Add(PhoneJobCard(installTrack, installState, installMessage, installDiagnostics, game.Id, notes, showsOperation: showsOperation,
             switchExport: installState is "failed" or "interrupted" && !installExport && installTrack.Kind == "install" ? () => { IosAfterPack = "export"; ExportSelfSign(game); } : null));
+        if (installState is "failed" && installChoice is { } choice)   // 装着不止一个 S2Arm、还没选：就在这页选，选好自动重推这一款
+        {
+            var phone = new PhoneOverview.Phone(choice.Device, "", true, false, null, false, null, null, null, [], NeedsChoice: true, Candidates: choice.Candidates);
+            state.Children.Add(ConsoleChooser(phone, false, bid => _ = ChooseAppAsync(choice.Device, bid)));
+        }
         if (installState is "failed" && installCode is "apple_session_expired" or "apple_not_signed_in")
         {
             // Apple ID 登录过期（Apple 1100）/ 还没登录：打开 Impactor 让玩家自己重新登录（密码不经手），登录好再点一次「推到 iPhone」
@@ -1836,9 +1853,10 @@ public sealed partial class EnvironmentWindow
     /// <param name="export">游戏库「导出自签包」：不连手机、不签名，出到文件夹（作业层 install 请求带 mode = export，不带设备）</param>
     private async Task InstallAsync(LibraryGame game, IReadOnlySet<string>? accept = null, bool ask = true, bool export = false)
     {
+        if (PhonePushing(game.Id) || PhoneQueued(game.Id)) return;   // 这一款已在推 / 已排上：不重复排（按钮已置灰；控制口来的重复请求也挡在这）。排队的那单出队后才执行、确认后的续推在前一单结束后才发，都不受影响
         if (QueuePhone(game.Id, () => InstallAsync(game, accept, ask, export))) return;   // 出包在跑不挡；手机上装机在跑 / 这款正在出包 → 排队
         accept ??= new HashSet<string>();
-        installExport = export;
+        installExport = export; installChoice = null;
         var front = BeginPhoneJob(game, "");
         string? dropAsk = null, askCode = null;
         try
@@ -1850,6 +1868,8 @@ public sealed partial class EnvironmentWindow
             if (ask && JobCode(job) is { } c && ConfirmCodes.ContainsKey(c)) { dropAsk = job.Report.Message; askCode = c; }
             installedTo = job.Report.Succeeded ? InstalledLabel(job.Report.Result) : "";
             installCode = job.Report.Succeeded ? null : JobCode(job);
+            installChoice = !job.Report.Succeeded && PhoneOverview.ChoiceFacts(job.Report.Diagnostics) is { } choice
+                ? new PushChoice(choice.Device, choice.Candidates, job.Report.Message, () => InstallAsync(game, accept, ask, export)) : null;
             installState = job.Report.State;
             installMessage = job.Report.Succeeded && job.Report.Result.TryGetProperty("device", out var device) && device.ValueKind == JsonValueKind.String
                 ? T("install.device") + " · " + device.GetString() : job.Report.Message;

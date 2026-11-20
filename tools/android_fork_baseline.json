@@ -1,24 +1,17 @@
 {
  "compat_macros": {
-  "files": {
-   "android/native/nvn/nvn_be_compat.h": 51
-  },
-  "total": 51
+  "files": {},
+  "total": 0
  },
  "mtl_defs": {
-  "files": {
-   "android/native/nvn/mtl_vk_shim.c": 20,
-   "android/native/nvn/vk_nvn_adapter.c": 15
-  },
-  "total": 35
+  "files": {},
+  "total": 0
  },
  "op_cases": {
   "files": {
-   "android/native/direct/record_flat.c": 12,
-   "android/native/direct/vk_record.c": 63,
-   "android/native/nvn/vk_nvn_adapter.c": 5
+   "android/native/nvn/nvn_vk_dq.inc": 45
   },
-  "total": 80
+  "total": 45
  },
  "shared_android": {
   "files": {

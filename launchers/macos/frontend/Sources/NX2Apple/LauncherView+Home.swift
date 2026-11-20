@@ -136,12 +136,17 @@ extension LauncherView {
                     .controllerButtonStyle(ConsoleIconButtonStyle(size: 52)).controllerID("hero.more")
                     .launcherTooltip(loc.t("home.details"), placement: .above).accessibilityLabel(loc.t("home.details"))
                     .popover(isPresented: Binding(get: { moreFor == game.id }, set: { if !$0 { moreFor = nil } }), arrowEdge: .bottom) { moreMenu(game) }
+                let favorited = home.favorites.contains(game.id)
                 Button { home.toggleFavorite(game.id) } label: {
-                    Image(systemName: home.favorites.contains(game.id) ? "heart.fill" : "heart")
-                }.controllerButtonStyle(ConsoleIconButtonStyle(size: 52)).controllerID("hero.favorite")
-                    .launcherTooltip(loc.t(home.favorites.contains(game.id) ? "home.unfavorite" : "home.favorite"), placement: .above)
-                    .accessibilityLabel(loc.t(home.favorites.contains(game.id) ? "home.unfavorite" : "home.favorite"))
-                    .accessibilityAddTraits(home.favorites.contains(game.id) ? .isSelected : [])
+                    Image(systemName: favorited ? "heart.fill" : "heart")
+                        .scaleEffect(favorited ? 1.04 : 1)
+                }
+                .controllerButtonStyle(ConsoleIconButtonStyle(size: 52, accent: favorited ? LauncherPalette.favorite : nil))
+                .controllerID("hero.favorite")
+                .animation(.spring(response: 0.26, dampingFraction: 0.72), value: favorited)
+                .launcherTooltip(loc.t(favorited ? "home.unfavorite" : "home.favorite"), placement: .above)
+                .accessibilityLabel(loc.t(favorited ? "home.unfavorite" : "home.favorite"))
+                .accessibilityAddTraits(favorited ? .isSelected : [])
             }.padding(.top, compact ? 4 : 10)
         }
         .frame(maxWidth: min(920, size.width * 0.78), alignment: .leading)
@@ -301,7 +306,13 @@ extension LauncherView {
                                     .accessibilityIdentifier("card.updateHint." + game.id)
                             }
                             if home.favorites.contains(game.id) {
-                                Image(systemName: "heart.fill").font(.system(size: 10)).padding(6).background(.black.opacity(0.6), in: Circle())
+                                Image(systemName: "heart.fill")
+                                    .font(.system(size: 10.5, weight: .semibold))
+                                    .foregroundStyle(LauncherPalette.favorite)
+                                    .padding(6.5)
+                                    .background(.black.opacity(0.58), in: Circle())
+                                    .overlay(Circle().strokeBorder(LauncherPalette.favorite.opacity(0.38), lineWidth: 0.75))
+                                    .shadow(color: .black.opacity(0.35), radius: 3, y: 1)
                             }
                         }.padding(8)
                     }
@@ -327,7 +338,7 @@ extension LauncherView {
     /// 卡片上的 iPhone 签名角标（旧版每张卡片下都有「还有 N 天 / 已过期」，新主题只在选中那款显示）：免费账号装过的款才有；
     ///   还剩 1–2 天橙色、过期红色，其余白字深底——扫一眼就知道哪款要续签
     @ViewBuilder func expiryBadge(_ game: GameSummary) -> some View {
-        if game.iphoneInstalledAt != nil, let days = game.iphoneDaysLeft() {
+        if game.iphoneInstalledAt != nil, let days = model.freeSignDaysLeft(game) {
             let color: Color = days == 0 ? LauncherPalette.danger : days <= 2 ? .orange : .white
             Label(days == 0 ? loc.t("home.card.expired") : String(format: loc.t("home.card.daysLeft"), days), systemImage: "iphone")
                 .font(.manrope(11, .bold)).labelStyle(ConsoleBadgeLabelStyle())

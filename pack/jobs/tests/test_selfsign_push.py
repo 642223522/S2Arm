@@ -94,7 +94,8 @@ class PushPhoneMac(unittest.TestCase):
             raise Failure(install.APPLE_SIGN_IN, code="apple_not_signed_in")
         with patch.object(install.os, "name", "posix"), patch.object(install, "phone", lambda c: dev), \
                 patch.object(install, "udid_of", lambda c, d: "UDID1"), patch.object(install.layout, "load_device", lambda c, k: {}), \
-                patch.object(install, "s2arm_owner", lambda c, u, r: who), patch.object(install, "mac_phone", no_account):
+                patch.object(install, "s2arm_owner", lambda c, u, r: who), patch.object(install, "mac_phone", no_account), \
+                patch.object(install, "s2arm_candidates", lambda c, u, r: []), patch.object(install.layout, "save_device", lambda c, k, r: None):
             return install.push_phone(types.SimpleNamespace(r={}))
 
     def test_external_needs_no_apple_id(self):
@@ -111,6 +112,48 @@ class PushPhoneMac(unittest.TestCase):
         with self.assertRaises(Failure) as e:
             self.phone(("launcher", "io.s2arm.games.team1"))
         self.assertEqual(e.exception.code, "apple_not_signed_in", "启动器装的照旧 mac_phone（要账号）")
+
+
+class PushChoice(unittest.TestCase):
+    """推送判出「要选」：现查的候选记进设备记录 pendingChoice、失败带 facts；选好后清掉、再推不报（真 s2arm_owner / s2arm_candidates，手机两份 S2Arm 的替身；期望手写）"""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.store = {"UDID1": dict(shellId="S1", bundleId="io.s2arm.games.team1")}
+        self.rows = [("io.s2arm.games.team1", "S2Arm", "TEAM1"), (ALT, "S2Arm", "TEAMALT")]
+        self.cands = [dict(bundleId=ALT, team="TEAMALT", byThisLauncher=False, identityTeam="TEAMALT"),
+                      dict(bundleId="io.s2arm.games.team1", team="TEAM1", byThisLauncher=True, identityTeam=None)]
+
+    def run_with(self, fn, **req):
+        c = types.SimpleNamespace(private=self.tmp.name, r=req)
+        cl = types.SimpleNamespace(apps=lambda: self.rows, get=lambda rel, dst: False)
+        dev = dict(id="DEV1", name="备用手机", productType="iPhone17,1")
+        with patch.object(install, "devpush_client", lambda c, udid, bid, w: cl), patch.object(install, "main_executable", lambda c: "S2Arm"), \
+                patch.object(install.layout, "load_device", lambda c, k: dict(self.store.get(k, {}))), \
+                patch.object(install.layout, "save_device", lambda c, k, r: self.store.__setitem__(k, r)), \
+                patch.object(install, "phone_identity_meta", lambda c, u, b: dict(team="TEAMALT") if b == ALT else None), \
+                patch.object(install.os, "name", "posix"), patch.object(install, "phone", lambda c: dev), \
+                patch.object(install, "udid_of", lambda c, d: "UDID1"), patch.object(install, "mac_phone", lambda c, **k: "MAC_PHONE"):
+            return fn(c)
+
+    def test_choose_then_push(self):
+        with self.assertRaises(Failure) as e:
+            self.run_with(install.push_phone)
+        self.assertEqual(e.exception.code, "phone_app_choice_required")
+        self.assertEqual(e.exception.facts, dict(device="UDID1", candidates=self.cands), "失败带机读候选，失败页就地列")
+        self.assertEqual(self.store["UDID1"]["pendingChoice"]["candidates"], self.cands, "同一份候选记进设备记录，总览不现查也用它")
+        self.assertEqual(self.store["UDID1"]["shellId"], "S1")
+        self.run_with(install.phone_choose_app, device="UDID1", bundleId=ALT)
+        self.assertNotIn("pendingChoice", self.store["UDID1"], "选好了：待选作废")
+        self.assertEqual(self.store["UDID1"]["chosenBundleId"], ALT)
+        ph = self.run_with(install.push_phone)
+        self.assertIsInstance(ph, install.ExternalPhone, "选过之后再推不报，推进选的那个")
+        self.assertEqual(ph.bid, ALT)
+
+    def test_stale_pending_cleared(self):
+        self.store["UDID1"]["pendingChoice"] = dict(candidates=self.cands, at=1)
+        self.rows = [("io.s2arm.games.team1", "S2Arm", "TEAM1")]   # 玩家删掉了另一个：只剩启动器装的
+        self.assertEqual(self.run_with(install.push_phone), "MAC_PHONE")
+        self.assertNotIn("pendingChoice", self.store["UDID1"], "不用选了：清掉过时的待选")
 
 
 class PushGameRoute(unittest.TestCase):
@@ -167,6 +210,15 @@ class PushGameRoute(unittest.TestCase):
         out, calls, rec = self.run_push(False, dict(shellId="SNOW", bundleId="io.s2arm.games.team1"))
         self.assertEqual((calls["sign"], calls["identity"], calls["team"]), (1, 1, ["TEAM1"]))
         self.assertNotIn("installedBy", out); self.assertNotIn("externalBundleId", rec)
+
+    def test_launcher_push_drops_old_external(self):
+        """推进启动器那份 = 这台现在用的就是它：之前记的别的工具（externalBundleId / externalAt）清掉，免费签名提醒不再被旧事实压住"""
+        _, _, rec = self.run_push(False, dict(shellId="SNOW", bundleId="io.s2arm.games.team1", externalBundleId=ALT, externalAt=5))
+        self.assertNotIn("externalBundleId", rec); self.assertNotIn("externalAt", rec)
+
+    def test_external_push_records_time(self):
+        _, _, rec = self.run_push(True, {}, meta=dict(cert_sha1="ab", team="TEAMALT"))
+        self.assertIsInstance(rec.get("externalAt"), float)
 
     def test_launcher_without_shell_asks_install(self):
         with self.assertRaises(Failure) as e:

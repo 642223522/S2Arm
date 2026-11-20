@@ -26,12 +26,34 @@ MPL-2.0（`../LICENSE-apple-codesign-MPL-2.0.txt`）。
      `tools/plumesign_build.py` 编之前跑。
   4. `apps/plumeimpactor/src/screen/settings.rs`：「重置 anisette 数据」删掉各服务器的开通状态文件。
 
-## 自编产物（v2.7.3-s2a1）
+## 0002-2fa-coherent-identity-no-loop.patch
+
+- 现象：部分账号（多见只用短信收验证码的）在 Mac 启动器和 Impactor 里输完验证码，苹果回成功，几秒后又要一个新的短信验证码，一直循环（玩家诊断里同一次登录连要 3 次「Enter the code sent via SMS」）。
+  上游同一个问题见 claration/Impactor#218，其他签名工具也有同样的帖子（altstoreio/AltStore#1772、franklintra/splice#25）。
+- 原因：验证码通过后，plumesign 照协议重新登录一次，好拿到已被信任的会话。苹果只信任「机型 / 系统 / 版本号」前后一致的机器；
+  我们发给苹果的 `X-MMe-Client-Info` 照抄 anisette 服务器报的值（默认服务器是 `<MacBookPro13,3> <Mac OS X;10.12.6;16G29>`，备用服务器是 macOS 13.1），
+  `User-Agent` 写死 `Darwin/18.7.0`（macOS 10.14），几项互相对不上。苹果接受了验证码，却不信任这台机器，重登时又回「要验证码」（`secondaryAuth` / 409），上游的登录循环就无限要码。
+  AltStore#1772 的作者逐项对比实测过：只把这一项换成当前、一致的值，同一流程重登就返回 200。
+- 改法：
+  1. `crates/plume_core/src/auth/anisette_data.rs`：发给苹果的 `X-Mme-Client-Info` 与 akd `User-Agent` 统一取 `apple_client_info()` / `apple_user_agent()`。
+     macOS 上取本机自己的机型、系统版本、版本号、CFNetwork 与 Darwin 版本（就是苹果自家 AuthKit 发的那一组）；Windows 和读不到时用一台真 Mac 上一起读出的固定一组。
+     和 anisette 服务器之间的开通（provisioning）照旧用服务器自己的值，已登录的会话不受影响（换开通身份会让所有账号重登，见 0001）。
+     `login.rs` / `token.rs` 里写死的 `Darwin/18.7.0` 改用同一个来源。
+  2. `crates/plume_core/src/auth/account/login.rs`：登录状态机抽成 `drive_login`（步骤是 `LoginSteps` trait，`Account` 实现）。
+     验证码被接受后最多重登一次；重登又要验证码（设备推送、409、短信任一种），就以 `S2A_2FA_REPEAT` 报错退出，不再让玩家输第二次、不再发第二条短信。验证码输错照上游报 `Bad2faCode`。
+  3. `crates/plume_core/src/auth/mod.rs`：`VerifyBody::sms(id)` 构造函数（检查程序要用）。
+- 检查：`check/two_factor_check.rs`（`tools/plumesign_build.py` 编之前跑）。用假登录走 6 种情形：短信通过、短信通过后又要码、设备通过后 409、设备通过后又要推送、码输错、不用双重认证；
+  核登录次数、要码次数、短信条数。再核发给苹果的各类请求头（登录、取令牌、双重认证、开发者服务）用的是同一个身份、不是服务器的旧值，以及 UA 的 Darwin 版本与本机一致。
+  负对照：去掉「最多重登一次」，检查程序当场报「要码超过 4 次：还在循环」。
+- 启动器侧（`pack/jobs/apple_login.py`）兜底：同一次登录里交过一次 6 位码后又看到要码提示，或 plumesign 报 `S2A_2FA_REPEAT`，就停下，报 `login_identity_rejected` 和一句说明（`SAY_2FA_REPEAT`）。
+- 没有在真账号上实测（要账号本人的密码和验证码）：判据是上面的检查加上同类工具的实测记录。
+
+## 自编产物（v2.7.3-s2a2，补丁 0001 + 0002）
 
 | 平台 | 文件 | SHA-256 | Rust |
 |---|---|---|---|
-| Windows | plumesign-windows-x86_64.exe | 84ce275398d2fa008eadbd11b2a6da2ffe012d18e1dd874cf1814bddc9f2c2d1 | 1.99.1 |
-| Windows | Impactor-windows-x86_64-portable.exe | 1748e5595cc8750fb34cf48d7265d65d3cd6d07dced23a4595a0c5b5f028ab23 | 1.99.1 |
-| macOS | plumesign-macos-universal | d3ca590e1e92a1e7416f1c27c1ec6749c4ad05389c9c8724faaa53bbf63ce511 | 1.94.0 |
+| Windows | plumesign-windows-x86_64.exe | 505517573afe9a5d924198fbd0a4397bcc037a250cb36228936a857079ed782b | 1.99.1 |
+| Windows | Impactor-windows-x86_64-portable.exe | f64456928d65f467b94f7ced03bf2e0edcf9fa4bcf57d76c78342e4a2019274d | 1.99.1 |
+| macOS | plumesign-macos-universal | 8d770ff3b6d6c1a8db1c0be28826cff9c6e55b9602a2791649c7c3d3e9f13d38 | 1.94.0 |
 
-可重复：同一台机器、两个工作目录各编一次（Mac 先清空固定编译目录），产物逐字节相同（11-18 核过）。
+可重复编译的做法同 s2a1（同一台机器、两个工作目录各编一次，Mac 先清空固定编译目录，11-18 核过逐字节相同）；s2a2 两端各只编了一次，没有重做这项核对。

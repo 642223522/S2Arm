@@ -696,7 +696,8 @@ def adhoc_entitle(c, app, ents, log):
         c.run(["codesign", "--force", "--sign", "-", "--entitlements", ents, app], log)
     else:
         import devcert
-        c.run([devcert.rcodesign_path(c), "sign", "--entitlements-xml-path", ents, exe], log)
+        eargs, ecwd = devcert.rcodesign_ents(ents)   # Windows 盘符：-e 按第一个冒号拆，只传文件名
+        c.run([devcert.rcodesign_path(c), "sign", *eargs, str(Path(exe).resolve())], log, cwd=ecwd)
 
 
 def write_tv_ipa(c, app, gid, pack, ipa, log):
@@ -809,7 +810,7 @@ def assemble_shell(c, shell):
         c.run([sys.executable, "-X", "utf8", "-B", c.engine / "pack/ship_ext.py", "container", "--shell-only", "--shell", shell, "--out", app,
                "--bundle-id", packer.CONTAINER_BUNDLE, "--icon", icon, "--sign", "none", "--host-abi", str(host_update.HOST_ABI),
                "--version", packer.release_version(c.engine), "--display-version", packer.display_version(c.engine)], log, tv_env(c))
-        packer.finish_container(c, app, log)
+        packer.sign_container(c, app, log)   # 0.6.0 起 ipa.finish_container 已并进 sign_container（68e5887f1），这里漏改：每次装 Apple TV 都 AttributeError（#1758）
     except BaseException:
         shutil.rmtree(out, ignore_errors=True)
         raise

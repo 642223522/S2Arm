@@ -18,7 +18,7 @@ import community
 import host_update
 import layout
 from core import Cancelled, Failure, atomic, clone, contained, digest, read, resolve_path, tree_hash
-from library import input_identity, require_game, selected_packages, source_file_bytes, source_path, stage_sources, validate_input
+from library import input_identity, require_game, selected_packages, source_path, stage_sources, validate_input
 import milestones as ms
 import toolchain
 
@@ -29,6 +29,31 @@ LANGUAGES = {
     "fr-CA": "CanadianFrench", "es-419": "LatinAmericanSpanish", "zh-Hans": "SimplifiedChinese",
     "zh-Hant": "TraditionalChinese", "pt-BR": "BrazilianPortuguese",
 }
+
+
+def nospace(path):
+    """Return a stable no-space alias for make/NativeAOT paths.
+
+    The repository and launcher cache can live under directories containing
+    spaces.  Make expands several paths into shell fragments and NativeAOT
+    passes library paths through a shell command, so those callers need an
+    alias rather than quoted argv entries.  Reuse the repository helper so the
+    alias rules stay identical for shell and Python entry points.
+    """
+    raw = os.fspath(path)
+    if " " not in raw:
+        return Path(raw)
+    helper = Path(__file__).resolve().parents[2] / "tools/nospace.sh"
+    try:
+        alias = subprocess.check_output(
+            ["bash", "-c", '. "$1"; s2a_nospace "$2"', "s2a-nospace", str(helper), raw],
+            text=True,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise Failure("无法为带空格的构建路径创建无空格别名。") from error
+    if not alias or " " in alias:
+        raise Failure("带空格的构建路径没有得到无空格别名。")
+    return Path(alias)
 
 
 def snapshot(c, root):
@@ -201,6 +226,11 @@ def runtime_env(c, game, runtime, input_ok=True):
                S2A_CHEATS_DIR=str(contained(layout.root_of(c, game["id"]), layout.path(c, game["id"], "cheats"))),
                # 资源替换类 mod（11-15）：这款游戏文件夹的 mods/（启动器「游戏设置 → Mod」导入），服务层 RomFsMods.cs 起局叠到 RomFS 上
                S2A_MODS_DIR=str(contained(layout.root_of(c, game["id"]), layout.path(c, game["id"], "mods"))))
+    # Dock / Cmd+Tab 图标（#994）：把游戏库列表同一张封面交给宿主（封面三级取法在 library.catalog：玩家换的 → 游戏自带 → 商店横图），
+    #   宿主起 App 后把图标换成它（macos/front_mac.m）。没有封面 / 文件不在了就不带，宿主用包里的默认图标（write_host_icon 编进 Resources）
+    cover = str(game.get("cover") or "")
+    if cover and Path(cover).is_file():
+        env["S2A_GAME_COVER"] = cover
     if player:
         env["S2A_PLAYER_USER"] = player["user"]
         if player.get("name"):
@@ -439,6 +469,7 @@ def launch(c):
 
 
 VAGUARD = "libs2a_vaguard.dylib"
+HOST_ICON = "S2ArmGame.icns"   # 宿主包默认图标（#994 无封面时的回退）：compile_host 用 make_icns.sh 从 Branding/AppIcon-1024.png 编出
 
 
 def host_cache_ok(app, stamp):
@@ -453,6 +484,17 @@ def host_cache_ok(app, stamp):
     for target in (guard, app):
         if subprocess.run(["codesign", "--verify", "--strict", str(target)], capture_output=True).returncode != 0:
             return False
+    return True
+
+
+def write_host_icon(c, app, log):
+    """宿主包默认图标（#994 的回退）：launchers/macos/make_icns.sh 把 Branding/AppIcon-1024.png（与启动器 App 同一原图、同一配方）
+    编成 Contents/Resources/S2ArmGame.icns → True；引擎快照里没有配方 / 原图（更早的快照）→ False，不写、调用方不给 Info.plist 加图标键"""
+    script = c.engine / "launchers/macos/make_icns.sh"
+    if not script.is_file() or not (c.engine / "launchers/macos/Branding/AppIcon-1024.png").is_file():
+        return False
+    (app / "Contents/Resources").mkdir(parents=True, exist_ok=True)
+    c.run(["bash", str(script), str(app / "Contents/Resources" / HOST_ICON)], log)
     return True
 
 
@@ -473,8 +515,32 @@ def compile_host(c, fingerprint, env, log_root):
         c.emit("cache", "已校验并复用 S2Arm Mac 宿主（含地址窗口护栏库）", cacheHit=True)
         ms.reuse(c, "host")
         return app
-    args = ["make", "-C", c.engine, "host", "S2A_CS=1", "S2A_MAC_FRONTEND=1",
-            "BUILD=" + str(host_root / "build"), "DEVELOPER_DIR=" + env["DEVELOPER_DIR"]]
+    # Create the real output directory before aliasing it.  A symlink to a
+    # not-yet-existing directory makes make's mkdir -p fail with ENOENT.
+    (host_root / "build").mkdir(parents=True, exist_ok=True)
+    # Cache roots also reach the linker through services/*.sh.  Keep their
+    # real directories present, then expose stable no-space aliases so paths
+    # under this repository's spaced parent are not split by make/shell.
+    cache_keys = ("S2A_RUN_ROOT", "S2A_CS_CACHE", "S2A_VPX_CACHE",
+                  "S2A_OPUS_CACHE", "S2A_DAV1D_CACHE")
+    for key in cache_keys:
+        raw = env.get(key)
+        if not raw:
+            if key == "S2A_DAV1D_CACHE" and env.get("S2A_RUN_ROOT"):
+                raw = str(Path(env["S2A_RUN_ROOT"]) / "s2arm/cache/dav1d")
+            else:
+                continue
+        path = Path(raw)
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise Failure(f"无法准备构建缓存目录：{path}") from error
+        env[key] = str(nospace(path))
+    engine = nospace(c.engine)
+    build = nospace(host_root / "build")
+    args = ["make", "-C", engine, "host", "S2A_CS=1", "S2A_MAC_FRONTEND=1",
+            "ROOT=" + str(engine), "BUILD=" + str(build),
+            "DEVELOPER_DIR=" + env["DEVELOPER_DIR"]]
     # c.env() 会清掉 S2A_*；构建开关显式带给 make（缺省 auto = 引擎快照里的 make 按本机探测，tools/av1hw.sh / tools/vp9hw.sh）
     for k in ("S2A_DAV1D", "S2A_VPX"):
         v = os.environ.get(k)
@@ -492,6 +558,7 @@ def compile_host(c, fingerprint, env, log_root):
         raise Failure("S2Arm Mac 宿主缺地址窗口护栏库 libs2a_vaguard.dylib。")
     shutil.copy2(guard, executable.parent / guard.name)
     c.run(["codesign", "--force", "--sign", "-", executable.parent / guard.name], log_root / "sign.log", env)
+    host_icon = write_host_icon(c, app, log_root / "icon.log")   # 宿主包默认图标（#994 无封面时的回退）：玻璃 S 标，与启动器 App 同一原图
     # 不进系统「游戏模式」：游戏模式下 GPU 忙着也被压在最低频（上游参考实现（MIT）cb59a672 / frame-rate.md：一个约 100 行、不含宿主代码的全屏 Metal 程序
     #   游戏模式下约 160 秒后 618 → 338 MHz、9.5 → 18 ms 一帧；关掉 924 MHz、约 7 ms；一款大型开放世界游戏 10.5 → 19.7 ms 落到 30 帧）。LSSupportsGameMode false 是苹果给的关法，
     #   保留游戏类别。系统记得认过游戏的包名，同一包名改成 false 仍开着游戏模式：包名换成 org.s2arm.macos.host，老玩家机器也从头算（第一次起会再问一次蓝牙权限）；
@@ -501,6 +568,8 @@ def compile_host(c, fingerprint, env, log_root):
                  NSBluetoothAlwaysUsageDescription="连接 Switch 2 Pro 手柄，接收按键与体感并发送游戏震动。",  # 非玩家句
                  NSHighResolutionCapable=True, LSSupportsGameMode=False,
                  LSApplicationCategoryType="public.app-category.games")
+    if host_icon:
+        plist["CFBundleIconFile"] = HOST_ICON   # Dock / Cmd+Tab 无封面起局时的回退（#994；有封面时 front_mac.m 按 S2A_GAME_COVER 换成游戏封面）
     (app / "Contents/Info.plist").write_bytes(plistlib.dumps(plist))
     c.run(["codesign", "--force", "--sign", "-", app], log_root / "sign.log", env)
     atomic(host_root / "ready.json", dict(schema=1, sha256=digest(executable), guard_sha256=digest(executable.parent / VAGUARD)))
@@ -686,27 +755,6 @@ def extract_nup(c, game, packages, extraction, env, logs):
 EXTRACTED_FORMATS = ("dump", "extract", "loose")
 
 
-def _dir_link(source, link):
-    """目录链接：link → source。Windows 上建符号链接要开发者模式或管理员（普通玩家 WinError 1314「客户端没有所需的特权」，
-    v0.4.0 已解包散文件出包在解包一步就失败，诊断#1fad25）：先建目录联接（本机磁盘不要特权），联接不支持的位置（网络盘等）再试符号链接，
-    都不行说清楚。Mac / Linux 照旧符号链接"""
-    if os.name != "nt":
-        os.symlink(source, link)
-        return
-    from pack.orch.winlong import create_junction
-    try:
-        create_junction(str(source), str(link))
-        return
-    except OSError as e:
-        junction_error = e
-    try:
-        os.symlink(source, link, target_is_directory=True)
-    except OSError as e:
-        raise Failure(f"没法把已解包的游戏文件夹接进出包目录：Windows 建不了目录联接（{junction_error.strerror or junction_error}），"
-                      f"也建不了符号链接（{e.strerror or e}）。游戏文件夹在网络盘上时请先拷到本机磁盘，或在 Windows 设置里打开「开发者模式」后重试。",
-                      code="permission_denied") from e
-
-
 def extract_folder(c, game, packages, extraction, env, logs):
     """已解包的游戏文件夹（导入时 library.extract_inspect 记 format）→ 共用解包目录，不要 prod.keys：
     extract 本来就是解包产物，克隆过来；dump（Switch 2 导出）交 pack/ns2_dump.py 整理（同 NUP）；loose（exefs + romfs 平铺）软链成 base/ 再走同一条路。"""
@@ -716,9 +764,9 @@ def extract_folder(c, game, packages, extraction, env, logs):
         c.run([sys.executable, c.engine / "tools/clonedir.py", source, extraction], logs / "extract.log", env)
         return
     with tempfile.TemporaryDirectory(prefix="loose-", dir=c.private) as stage:
-        if fmt == "loose":
-            _dir_link(source, Path(stage) / "base")
-        c.run([sys.executable, "-X", "utf8", c.engine / "pack/ns2_dump.py", stage if fmt == "loose" else source, extraction, "--name", game["name"]],
+        # loose：本体目录直接交 ns2_dump --base，不再链接成 <stage>/base（玩家诊断 #0fd185：安全软件拦重解析点时链接建不了；不拷，零额外空间）
+        c.run([sys.executable, "-X", "utf8", c.engine / "pack/ns2_dump.py", stage if fmt == "loose" else source, extraction, "--name", game["name"],
+               *(["--base", str(source)] if fmt == "loose" else [])],
               logs / "ns2_dump.log", dict(env, S2A_NX_UNPACK=str(reader_program(c))))
 
 
@@ -809,21 +857,19 @@ def oneclick_kuan(c, gid):
 
 
 def sibling_roots(c, game):
-    """同一款在别的平台已有的现行产物根（新的在前）：iPhone games/<英文名>/build/ios/roots/*@现行、Mac games/<英文名>/build/<键>/roots/<程序号>@现行"""
+    """同一款在别的平台已有的现行产物根（新的在前）：iPhone games/<英文名>/build/ios/roots/*@现行、Mac games/<英文名>/build/<键>/roots/<程序号>@现行（指针文件，layout.current_root）"""
     found = []
-    for link in [*layout.ios_work(c, game["id"], create=False).glob("roots/*@现行"), *(p for p in layout.build_dir(c, game["id"], create=False).glob("*/roots/*@现行") if p.parent.parent.name != "ios")]:  # 非玩家句
+    for pointer in [*layout.ios_work(c, game["id"], create=False).glob("roots/*" + layout.CURRENT), *(p for p in layout.build_dir(c, game["id"], create=False).glob("*/roots/*" + layout.CURRENT) if p.parent.parent.name != "ios")]:
         try:
-            target = Path(os.readlink(link)) if _path_is_link(link) else link
-            cur = contained(c.library, resolve_path(target if target.is_absolute() else link.parent / target))
+            cur = layout.current_root(c, pointer)
+            if cur is None:
+                continue
+            cur = contained(c.library, resolve_path(cur))
         except (Failure, OSError):
             continue
         if cur.is_dir():
             found.append((cur.stat().st_mtime, cur))
     return [p for _, p in sorted(found, reverse=True)]
-
-
-def _path_is_link(path):
-    return path.is_symlink() or getattr(os.path, "isjunction", lambda _: False)(path)
 
 
 def seed_from_sibling(c, game, roots, kuan):
@@ -849,9 +895,7 @@ def seed_from_sibling(c, game, roots, kuan):
             c.diagnostic(f"兄弟平台的产物根 {cur.name} 克隆不过来（{why}），改从解包目录准备，平台无关阶段这次要重做", code="sibling_clone_failed", severity="warning")
             return False
         route = (log.read_text(encoding="utf-8", errors="replace").strip().splitlines() or [""])[-1]
-        link = roots / (kuan + "@现行")  # 非玩家句
-        tmp = roots / ("." + kuan + "@现行.new")  # 非玩家句
-        tmp.unlink(missing_ok=True); tmp.symlink_to(dst.name); tmp.replace(link)
+        layout.set_current(c, roots, kuan, dst.name)
         src = (cur / ".root_src").read_text().strip()[:9] if (cur / ".root_src").is_file() else "未知"  # 非玩家句
         c.emit("cache", f"复用兄弟平台的产物根 {cur.name}（提交 {src}；{route}）：平台无关阶段按键核对，键相同跳过、不同照常重做", cacheHit=True)
         return True
@@ -932,7 +976,7 @@ def prepare(c):
         # 会复用缓存的步：共用解包快照对得上 → 解包；现行镜像就是从这一份产物根（同样的代码、工具、输入）出的（game.json imageKey）→ 改写与准备资源、
         #   直连库（各阶段按键跳过）。直连库若其实要重出（跑局知识等变了，DirectWatcher 看到直连临时版本），当场改回冷步
         unpack_ok = extract_valid(c, game)
-        warm = layout.game_info(c, game["id"]).get("imageKey") == key and (root / "roots" / (game["id"] + "@现行")).exists()  # 非玩家句
+        warm = layout.game_info(c, game["id"]).get("imageKey") == key and layout.current_root(c, root / "roots" / (game["id"] + layout.CURRENT)) is not None
         ms.plan(c, size_gb, "build_dual", reused=(["unpack"] if unpack_ok else []) + (["refresh", "analyze", "direct"] if warm else []))
         logs = c.logs / c.task
         logs.mkdir(parents=True, exist_ok=True)
@@ -944,7 +988,7 @@ def prepare(c):
         env["S2A_NRO_KEPT_DIR"] = str(layout.nro_kept(c, game["id"]))   # 运行时留下的 NRO（#8be819），没有 = 改写阶段当无
         # The memory table is collected from the repository table and the recent run logs only; the previously
         # installed table is not fed back (its values would never age out once the host stops needing them)
-        if not (root / "roots" / (game["id"] + "@现行")).exists() and not seed_from_sibling(c, game, root / "roots", game["id"]):  # 非玩家句
+        if layout.current_root(c, root / "roots" / (game["id"] + layout.CURRENT)) is None and not seed_from_sibling(c, game, root / "roots", game["id"]):
             c.run(["bash", c.engine / "pack/seed_root.sh", game["id"], "import-" + key, extraction], logs / "seed.log", env)
         # 出包同一条流水线（10-26 维护者 / 维护者「iOS 和 macOS 不要这儿新那旧的」）：和一键出包 --target mac 一样调 pack/refresh.sh——改写 ‖ 系统数据 ‖ 宽屏布局 ‖
         #   追加内容 → 直连配置推导 → RomFS 索引 → 抽取 → 直连库 → 直连出成则通用 lazy（C.3：不翻译 / 编译 / 预建管线，首遇安全网兜底）。
@@ -959,17 +1003,16 @@ def prepare(c):
         src = root / "src"; shutil.rmtree(src, ignore_errors=True)
         stage_sources(c, packages, src)
         env.update(
-            S2A_GAME_SRC=str(src), S2A_KEYS=str(c.keys), S2A_NX_UNPACK=str(toolchain.reader(c)),
-            S2A_SOURCE_BYTES=str(source_file_bytes(packages)),   # 原件文件总字节：随包基础管线上限 = 它的 10%（pack/stage_direct_cpso.sh）
+            S2A_GAME_SRC=str(src), S2A_KEYS=str(c.keys), S2A_NX_UNPACK=str(toolchain.reader(c))
         )
         try:
             with ms.DirectWatcher(c, root / "roots", game["id"]):
                 c.run(["bash", c.engine / "pack/refresh.sh", game["id"]], logs / "refresh.log", env)
         finally:
             shutil.rmtree(src, ignore_errors=True)
-        current = resolve_path(root / "roots" / (game["id"] + "@现行"))  # 非玩家句
-        contained(root, current)
-        if not (current / "shaders/direct/keys.tsv").is_file():   # 只有直连：refresh.sh 退 0 却没有直连库就是出包出错（11-07 拆通用模式）
+        current = layout.current_root(c, root / "roots" / (game["id"] + layout.CURRENT))
+        current = current and contained(root, current)
+        if current is None or not (current / "shaders/direct/keys.tsv").is_file():   # 只有直连：refresh.sh 退 0 却没有直连库就是出包出错（11-07 拆通用模式）
             raise Failure("直连着色器库不完整。")
         warn_offline_empty(c, current)
         notes = collect_degrade(c, current)   # 降级继续的玩家提示：随结果交给完成卡（v0.3.1）

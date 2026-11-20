@@ -153,7 +153,7 @@ def update_hints(c):
     return dict(games=games)
 
 
-SIGN_LIFETIME = dict(free=7 * 86400, paid=365 * 86400)   # 按苹果规则估：免费账号描述文件 7 天、付费 / 证书一年（手机上 App 自己读描述文件给准数）
+SIGN_LIFETIME = dict(free=7 * 86400, paid=365 * 86400)   # 读不到真实到期时按苹果规则估：免费账号描述文件 7 天、付费 / 证书一年（手机上 App 自己读描述文件给准数）
 
 
 def _game_hint(c, gid, rid, want):
@@ -197,9 +197,11 @@ def _online(c, names=None):
     return out
 
 
-def _has_game_img(c, gid):
+def _has_game_data(c, gid):
+    """快判这款的 iPhone 资源包是否仍在库里（不遍历包内文件）。新旧资源包分别以 manifest 与 game.img 为标志。"""
     try:
-        return (Path(layout.ios_pack(c, gid)) / "game.img").is_file()
+        pack = Path(layout.ios_pack(c, gid))
+        return (pack / "manifest.json").is_file() or (pack / "game.img").is_file()
     except (Failure, OSError):
         return False
 
@@ -231,12 +233,30 @@ def _can_sign(rec):
 EXTERNAL_PHONE_ACTIONS = ("exportShellIpa", "pushS2arm", "exportS2arm", "handOverIdentity")
 
 
+def _pending_choice(rec):
+    """设备记录里推送时记下的「待选」候选（install.owner_for_push 写 pendingChoice）；选过、且选的那个还在候选里 → 不算待选。没有 → None"""
+    cands = (rec.get("pendingChoice") or {}).get("candidates") if isinstance(rec.get("pendingChoice"), dict) else None
+    if not isinstance(cands, list) or not cands:
+        return None
+    chosen = (rec.get("chosenBundleId") or "").lower()
+    return None if chosen and any(str(x.get("bundleId", "")).lower() == chosen for x in cands if isinstance(x, dict)) else cands
+
+
+def _refresh_pending_choice(c, key, rec, who, cands):
+    """现查过：按现查结果刷新（还要选 → 换成这次的候选）或清掉（不用选了）设备记录里的 pendingChoice；列不出（who 为 None）不动"""
+    if who == "choose":
+        if (rec.get("pendingChoice") or {}).get("candidates") != cands:
+            layout.save_device(c, key, dict(rec, pendingChoice=dict(candidates=cands, at=time.time())))
+    elif who is not None and "pendingChoice" in rec:
+        layout.save_device(c, key, {k: v for k, v in rec.items() if k != "pendingChoice"})
+
+
 def phone_overview(c):
     """0.6.0 通用壳（开关后面）：「iPhone 总控台」的只读总览。每台见过的手机（设备记录）：名字、App 装没装、壳是不是本版、签名时刻 /
     免费账号与否 / 按苹果规则估的到期时刻 / 上次连上（lastSeen = 设备记录最后一次写入：装 App、推游戏时连着才会写）；每款状态 latest（最新）|
     suggested（建议更新，附 reasons，同 update_hints）| notPushed（游戏库里有、这台没推过）| needsData（程序推过、资源没推）；notPushed / needsData 带 dataOnComputer =
     游戏库里还有没有 game.img；signMode 见 _sign_mode。缺省只读记录（几 KB，秒回）；请求带 probe: true 才查现在连着的手机（可能要几秒），
-    结果里 online = 'usb' | 'network' | None（没查时没有这个键）。不改任何东西、不排后台活。开关关着 → {enabled: False, phones: []}"""
+    结果里 online = 'usb' | 'network' | None（没查时没有这个键）。不排后台活；只在现查时刷新 / 清掉设备记录的 pendingChoice（推送记下的待选）。开关关着 → {enabled: False, phones: []}"""
     import ipa as packer
     import rewrite_refresh
     want = engine_compat(c) or {}
@@ -261,14 +281,17 @@ def phone_overview(c):
         signed = rec.get("signed") or {}
         at = signed.get("at") if isinstance(signed.get("at"), (int, float)) else None
         free = bool(signed.get("free", True))
+        # 到期：装机时从签好的包里读到的真实值（signed.expires，#1772）；没有（旧记录、Xcode 钥匙串签的）才按苹果规则估
+        known = isinstance(signed.get("expires"), (int, float))
+        until = signed["expires"] if known else (at + SIGN_LIFETIME["free" if free else "paid"]) if at else None
         recs = {str(g).upper(): v for g, v in (rec.get("games") or {}).items() if isinstance(v, dict)}
         games = []
         for g in library:
             r = recs.get(g)
             if r is None or not (r.get("program") or r.get("pack")):
-                games.append(dict(gameId=g, state="notPushed", dataOnComputer=_has_game_img(c, g)))
+                games.append(dict(gameId=g, state="notPushed", dataOnComputer=_has_game_data(c, g)))
             elif not r.get("pack"):   # 电脑上还有没有资源本体（只看文件在不在，不打开）：界面分「点推到 iPhone 就行」和「要原件」
-                games.append(dict(gameId=g, state="needsData", dataOnComputer=_has_game_img(c, g)))
+                games.append(dict(gameId=g, state="needsData", dataOnComputer=_has_game_data(c, g)))
             elif not r.get("program"):   # 资源推过、手机上没有这款的程序包（0.5.x 整包 App 装的款：装上通用 App 后程序不在了）→ 点「推到 iPhone」只补程序
                 games.append(dict(gameId=g, state="suggested", reasons=["missing"]))
             else:
@@ -288,6 +311,9 @@ def phone_overview(c):
             who, ext = install.s2arm_owner(c, key, rec)
             if who == "choose" or rec.get("chosenBundleId"):   # 装着不止一个：列候选让玩家选（选过的也带上，可以换）
                 cands = install.s2arm_candidates(c, key, rec)
+            _refresh_pending_choice(c, key, rec, who, cands)
+        if who is None and _pending_choice(rec):   # 没现查：推送时判出「要选」记下的那份（install.owner_for_push），与推送同一份结果
+            who, cands = "choose", _pending_choice(rec)
         if who is None:
             who = "launcher" if rec.get("shellId") else "external" if rec.get("externalBundleId") else None
             ext = rec.get("externalBundleId") if who == "external" else None
@@ -297,8 +323,7 @@ def phone_overview(c):
                      installedBy=who if who in ("launcher", "external") else None, bundleId=ext if external else rec.get("bundleId") or "",
                      shellCurrent=None if external else bool(sid) and rec.get("shellId") == sid, signedAt=at, free=free,
                      signMode="external" if external else _sign_mode(c, rec, signed),
-                     expiresAtEstimate=(at + SIGN_LIFETIME["free" if free else "paid"]) if at else None,
-                     remainingDays=max(0, math.ceil((at + SIGN_LIFETIME["free" if free else "paid"] - time.time()) / 86400)) if at else None,
+                     expiresAtEstimate=until, remainingDays=max(0, math.ceil((until - time.time()) / 86400)) if until else None, expiresKnown=known,
                      lastSeen=rec.get("at") if isinstance(rec.get("at"), (int, float)) else None, canSign=_can_sign(rec), games=games)
         if external:   # 别的工具装的：给它自己的一套按钮，不出「安装 S2Arm」（会新建证书、顶掉玩家 AltStore 的证书）
             phone["actions"] = list(EXTERNAL_PHONE_ACTIONS)

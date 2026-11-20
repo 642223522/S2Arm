@@ -15,7 +15,7 @@ let package = Package(
         .executableTarget(name: "S2ArmLauncher",
                           dependencies: [.product(name: "S2ArmAppleAdapter", package: "adapter")],
                           swiftSettings: [.swiftLanguageMode(.v5)]),
-        .testTarget(name: "S2ArmLauncherTests", dependencies: ["S2ArmLauncher"],
+        .testTarget(name: "S2ArmLauncherTests", dependencies: ["S2ArmLauncher", .product(name: "TestLanguage", package: "frontend")],
                     swiftSettings: [.swiftLanguageMode(.v5)]),
         .executableTarget(name: "S2ArmApple",
                           dependencies: [.product(name: "NX2AppleUI", package: "frontend"),
@@ -23,12 +23,12 @@ let package = Package(
                           swiftSettings: [.swiftLanguageMode(.v5)],
                           // Sparkle.framework 在 App 的 Contents/Frameworks（build_app.py 放进去）
                           linkerSettings: [.unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])]),
-        .testTarget(name: "S2ArmAppleAdapterTests", dependencies: [.product(name: "S2ArmAppleAdapter", package: "adapter")],
+        .testTarget(name: "S2ArmAppleAdapterTests", dependencies: [.product(name: "S2ArmAppleAdapter", package: "adapter"), .product(name: "TestLanguage", package: "frontend")],
                     swiftSettings: [.swiftLanguageMode(.v5)]),
         // 退出探针（Tests/XCTestExitProbe/xctest_exit_probe.m）：测试进程中途自己退出时把用例名和调用栈写进日志
         .target(name: "XCTestExitProbe", path: "Tests/XCTestExitProbe", linkerSettings: [.linkedFramework("XCTest")]),
         // 新前端的本机控制口命令表（NX2Apple/S2ArmControl.swift，11-07）
-        .testTarget(name: "S2ArmAppleTests", dependencies: ["S2ArmApple", "XCTestExitProbe", .product(name: "NX2AppleUI", package: "frontend"),
+        .testTarget(name: "S2ArmAppleTests", dependencies: ["S2ArmApple", "XCTestExitProbe", .product(name: "TestLanguage", package: "frontend"), .product(name: "NX2AppleUI", package: "frontend"),
                                                             .product(name: "S2ArmAppleAdapter", package: "adapter")],
                     swiftSettings: [.swiftLanguageMode(.v5)])
     ]

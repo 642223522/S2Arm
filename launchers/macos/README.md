@@ -128,6 +128,27 @@ Mac 游戏读取同目录的 `pad-order.face.json`，保存后即时通知刷新
 专项测试覆盖默认 / Switch 位置布局、逐键修改、保存恢复、按住时切换、玩家切换及真实 SwiftUI 下拉操作；
 游戏输入与小浮窗的无资产检查运行 `bash tests/macos_native_input_test.sh`。
 
+### 模拟手柄（开发用）
+
+没有那么多实体手柄时，可以在本机构建的 App 里打开「模拟手柄」面板，加几套假的一代 Joy-Con / Joy-Con 2（各自选颜色，左只 / 右只分开连）、
+Switch Pro、Switch 2 Pro、PS5、Xbox，测手柄面板的玩家列表、玩家灯与图示颜色，以及分配玩家的拆分 / 合并（SL + SR、L + R、跨套同按）和断开重连。
+模拟的手柄走与真手柄相同的分配逻辑（`PlayerAssignment`），按键会让玩家那一行亮出按了哪个键。
+
+打开方式（只在没有更新源的构建里有效：本机构建或自测拷贝；带 `SUFeedURL` 的发行版即使开着也没有这个菜单）：
+
+```sh
+defaults write <App 的 bundle id> S2AControllerSimulate -bool YES
+```
+
+重开 App 后，App 菜单（S2Arm 菜单）里会出现「模拟手柄」，点开是一个浮动面板（不会点一下就关，可连续操作；开着时手柄弹窗点外面不会收起）。
+面板文案跟 App 界面语言（繁中 / 简中 / 英文）。关掉：
+
+```sh
+defaults write <App 的 bundle id> S2AControllerSimulate -bool NO
+```
+
+注意：模拟的手柄会写进给游戏的顺序表（`pad-order.json`），测完在面板里按「全部清除」再开游戏。
+
 ## DMG installation window / 拖拽安装窗口
 
 安装窗口沿用 [GitHub Pages 下载页](../../docs/site/index.html) 的近黑底、奶油白、
@@ -204,7 +225,9 @@ open build/macos/S2Arm.app
 
 `build_app.py` rebuilds `build/macos/Runtime` through `bundle_runtime.py` whenever it is missing or stale.
 For command-line packaging and tests, point `S2A_PY` at the same interpreter (environment variable or a
-`S2A_PY=` line in `tools/machine.local`, see `tools/machine.local.example`). Nothing in the build or packaging
+`S2A_PY=` line in `tools/machine.local`, see `tools/machine.local.example`). `build_app.py` hands the same
+choice to the scripts it starts, shell builds included: `S2A_PY` from the environment, then `tools/machine.local`,
+otherwise the interpreter running `build_app.py`. Nothing in the build or packaging
 scripts falls back to a maintainer's private paths; an unset dependency is reported, not guessed.
 Work caches go under `S2A_RUN_ROOT` (default `~/.s2arm/run`; the app always sets a private one).
 

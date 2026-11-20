@@ -115,6 +115,30 @@ class BuildTests(JobCase):
                 sealed.chmod(0o755)
         self.assertEqual(sorted(p.name for p in root.iterdir()), ["romfs"])
 
+    def test_launch_env_carries_cover_for_dock_icon(self):
+        # #994：起局把游戏库列表同一张封面文件交给宿主（S2A_GAME_COVER；封面三级取法在 library.catalog：玩家换的 → 游戏自带 → 商店横图），
+        #   宿主起 App 后把 Dock / Cmd+Tab 图标换成它（macos/front_mac.m）。没有封面 / 文件不在了就不带，宿主用包内默认图标
+        import build
+        cover = self.root / "cover.jpg"
+        cover.write_bytes(b"cover fixture")
+        for provided, expect in ((str(cover), str(cover)), ("", None), (str(self.root / "none.jpg"), None)):
+            with self.subTest(cover=provided):
+                game = dict(id="0100000000000000", name="Test title", cover=provided)
+                env = build.runtime_env(self.c, game, self.root / "runtime")
+                self.assertEqual(env.get("S2A_GAME_COVER"), expect)
+
+    def test_host_bundle_default_icon_written_from_branding(self):
+        # #994：宿主包编进默认图标（与启动器 App 同一原图、同一配方 launchers/macos/make_icns.sh），
+        #   没有游戏封面时 Dock / Cmd+Tab 回退到它；更早的引擎快照没有配方 / 原图 → 不写、返回 False，照旧不挡编宿主
+        import build
+        app = self.root / "S2ArmGame.app"
+        self.assertTrue(build.write_host_icon(self.c, app, self.root / "icon.log"))
+        icon = app / "Contents/Resources" / build.HOST_ICON
+        self.assertTrue(icon.is_file())
+        self.assertEqual(icon.read_bytes()[:4], b"icns")
+        with patch.object(self.c, "engine", self.root / "old-engine"):
+            self.assertFalse(build.write_host_icon(self.c, app, self.root / "icon.log"))
+
 
 if __name__ == "__main__":
     unittest.main()

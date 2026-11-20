@@ -111,7 +111,7 @@ function(s2a_android_nvk_sources output)
         ../graphics/nvn/replay/rp_present.c ../graphics/nvn/replay/rp_draw.c
         ../graphics/nvn/replay/nvn_unimpl.c
         # 安卓平台件
-        native/gfx_plat/nvk_session.c native/gfx_plat/plat_nvn.c native/gfx_plat/plat_nvn_vk.c native/gfx_plat/legacy_names.c
+        native/gfx_plat/nvk_session.c native/gfx_plat/plat_nvn.c native/gfx_plat/plat_nvn_vk.c
         native/nvn/nvn_vsync_android.c native/nvn/nvn_vk_lifecycle.c native/nvn/poolahb_alias.c
         # 层外按名字要的两组：C# 的帧日志转储（AndroidGameRuntime）与通用后端的编译事件（S2ACompileEvents）
         native/nvn/nvn_vk_frame_log.c native/nvn/nvn_vk_compile_events.c
@@ -123,70 +123,10 @@ function(s2a_android_nvk_sources output)
 endfunction()
 
 function(s2a_android_direct_sources output)
-    # 新回放层的源清单要 NVN 前端（hle_nvn.c 等，只在开了 S2A_ANDROID_VK_ENGINE 时编进来）才链得上；
-    # 没开引擎的单库（缺省的诊断 assembleDebug、android/test.sh 的诊断链接）只编直连核心给窗口探测用，
-    # 继续用下面这份能独立链接的清单。后端缺省改成 nvk 之后，这里不看引擎开关会让诊断单库链接失败。
-    if(S2ARM_ANDROID_VK_BACKEND STREQUAL "nvk" AND S2A_ANDROID_VK_ENGINE)
-        s2a_android_nvk_sources(sources)
-        set(${output} "${sources}" PARENT_SCOPE)
-        return()
-    endif()
-    # NVN→Vulkan 直连核心：由 NvnDirect.cmake 的 s2a_android_direct_core() 编进生产目标。
-    # 列在这里是为了让 Q19（link_symbols.py）的源码级符号扫描与实际编译源一致，
-    # 新增直连导出时只需改这一处，门禁不会漏看。
-    set(sources
-        native/direct/s2a_direct_abi.c native/direct/json.c native/direct/sha256.c
-        native/direct/graphics.c native/direct/attempt.c native/direct/selection.c
-        native/direct/control.c native/direct/vk_device.c native/direct/gs_path.c
-        native/direct/vk_sync.c native/direct/vk_track.c
-        native/direct/vk_membuf.c native/direct/vk_resid.c
-        native/nvn/nvn_vk_poolahb.c native/nvn/poolahb_cover.c native/nvn/poolahb_policy.c native/nvn/poolahb_alias.c
-        native/nvn/nvn_vk_timeline.c native/nvn/nvn_vk_threadbuf.c
-        # 逐帧上屏间隔 + 每帧 fence 等待（诊断默认关）：direct/generic 同一份环形缓冲与
-        # 转储格式（t-direct-frametimes），generic 经 DllImport 调 s2a_frame_log_present/dump，必须随直连核心编入。
-        native/nvn/nvn_vk_frame_log.c
-        # 逐帧 TSV（iOS frames.tsv 同义；诊断默认关）：present 成功点取各累计源差分写行，
-        # 拿不到的列整列不进表头。
-        native/nvn/nvn_vk_frame_tsv.c
-        native/nvn/nvn_vk_compile_events.c
-        native/direct/vk_clear.c
-        native/nvn/nvn_vk_swapchain.c native/nvn/nvn_vk_surface.c native/nvn/nvn_vk_session.c
-        # 显示节拍源：AChoreographer（nvn_vsync.h 契约 + nvn_be_link_* 助手，debug.s2a.vsync 门）
-        native/nvn/nvn_vsync_android.c
-        # B2：VK_GOOGLE_display_timing 上屏时刻计量（presentID 挂链 + 回读 + 帧号映射），直连专用。
-        native/nvn/nvn_vk_display_timing.c
-        native/nvn/nvn_vk_lifecycle.c native/nvn/nvn_vk_pipeline.c native/nvn/nvn_vk_texcache.c
-        native/nvn/nvn_vk_bcdec.c
-        # NVN ReadTexels：纯几何换算（宿主单测同源）+ guest 内存路径 + GPU 图像路径。
-        native/nvn/nvn_vk_readback_plan.c native/nvn/nvn_vk_readback.c native/nvn/nvn_vk_readback_gpu.c
-        native/nvn/mtl_vk_adapter.c native/direct/vk_record.c native/direct/t2t_plan.c native/direct/buffer_texture_plan.c
-        # 批次 1/A：命令流拍平（A2 延迟参数入记录 + A4 记录内引用重定位）；shim 的 clone_append 调用它。
-        native/direct/record_flat.c
-        native/nvn/nvn_vk_sampler_cache.c native/nvn/nvn_vk_sampler.c native/nvn/nvn_vk_format.c
-        native/nvn/nvn_vk_mrt.c
-        native/nvn/nvn_vk_program.c native/nvn/nvn_vk_draw.c native/nvn/nvn_vk_compile_facts.c
-        native/nvn/nvn_vk_pipe_recipe.c native/nvn/nvn_vk_driver_cache.c
-        native/nvn/nvn_vk_first_draw.c native/nvn/nvn_vk_draw_diag.c native/nvn/nvn_vk_program_result.c native/nvn/nvn_vk_query.c
-        native/nvn/nvn_vk_compute.c native/nvn/nvn_vk_compute_texture.c native/nvn/nvn_vk_compute_request.c
-        native/nvn/nvn_vk_compute_lookup.c native/nvn/nvn_vk_compute_bridge.c
-        native/nvn/nvn_vk_pipe_manifest.c native/nvn/nvn_vk_pcprof.c
-        native/nvn/nvn_vk_exec_owner.c native/nvn/nvn_vk_pipe_worker.c
-        # 批次 1/D：提交完成事实与批次持有（纯状态机，不碰 Vulkan；批次 2/3 接入消费）。
-        native/nvn/nvn_vk_completion.c
-        native/direct/compiler_bind.c native/direct/source_store.c native/direct/device_caps.c
-        native/direct/vk_identity.c
-        native/direct/compile_request.c native/direct/diag.c native/direct/compile_export.c native/direct/compile_export_w2.c native/direct/w2_single_query.c native/direct/input_identity.c
-        native/direct/texture_facts.c native/direct/compile_worker.c
-        native/direct/bind_defer.c
-        native/direct/program_cache.c native/direct/offline_library.c
-        native/direct/jv.c native/direct/libpack_vk.c
-        # Pure texture helpers are needed by the core even without the game frontend.
-        ../graphics/nvn/gfx/nvn/nvn_tex.c ../graphics/nvn/gfx/tex/nvn_deswizzle.c
-        # C4a 首用等待语义（iOS pso_pend 对齐）：rt 历史 + 帧预算 + 判定表，纯 C 无锁。
-        ../graphics/nvn/gfx/nvn/nvn_first_use.c
-        # 纹理缓存（nvn_vk_texcache.c）按页级写跟踪判脏，前端关也引用：nvn_dirty 与它的
-        # Android 宿主钩子（dm_* → direct_host）随直连核心编入，不再只挂在前端源列表里。
-        ../graphics/nvn/gfx/nvn/nvn_dirty.c native/nvn/nvn_host_hooks.c)
+    # 直连核心 = 新回放层（nvk）的清单。旧回放层（mtl_vk_shim / mtl_vk_adapter / nvn_vk_* 绘制与资源 / vk_record …）
+    # 与它独立能链的「引擎关」旧直连清单随旧层一起删除（#1501 owner 11-20 定删）；引擎关的构建在 CMakeLists.txt 配置时报错。
+    # 生产构建与 Q19 源码级符号扫描（core-link/link_symbols.py）读同一份。
+    s2a_android_nvk_sources(sources)
     set(${output} "${sources}" PARENT_SCOPE)
 endfunction()
 

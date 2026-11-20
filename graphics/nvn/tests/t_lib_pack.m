@@ -195,7 +195,7 @@ int main(int argc, char **argv) { @autoreleasepool {
             for (int i = 0; i < NS; i++) seg[i] = nil;
             lh = nil;
         }
-        uint64_t left = 0; for (int t = 0; t < 200 && (left = pak_bytes_in(r5, H, H + HN)); t++) usleep(10000);   // 放掉的回调在全局队列上异步跑
+        uint64_t left = 0; for (int t = 0; t < 3000 && (left = pak_bytes_in(r5, H, H + HN)); t++) usleep(10000);   // 放掉的回调在全局队列上异步跑：等到回 0，兜底 30 秒（原 2 秒，负载高时回调晚跑就假红）
         CHECK(left == 0, "段全部放掉后高位区 .pak 映射回 0（得 %llu 字节）", (unsigned long long)left);
         void *full = mmap((void *)H, 4 << 20, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);   // 区满：区间 4 MB（比段大）、整块已被别人占着
         g_hr_lo = (uint64_t)full; g_hr_hi = (uint64_t)full + (4 << 20); int red1 = g_red;
