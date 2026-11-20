@@ -644,3 +644,6 @@
 "cert.source.sidestore" = "來自 SideStore";
 "cert.source.p12" = "匯入的 .p12";
 "cert.source.pc" = "電腦交來";
+"addrshort.title" = "這台裝置的位址空間不夠這款遊戲";
+"addrshort.body" = "這款遊戲開局要一整塊很大的位址空間，這台裝置給不了這麼多：可能會非常卡，或一直停在開頭。可以先點「仍要啟動」試試；想正常玩，請換一台位址空間更大的裝置（例如記憶體更大的 iPhone / iPad / Mac），或等後續版本改進。";
+"host.startAnyway" = "仍要啟動";
