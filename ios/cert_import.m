@@ -96,16 +96,41 @@ void s2a_shell_cert_get(void) {
 }
 
 // ---------- ② SideStore ----------
+// SideStore 没交回证书（0.6.0 自签走查第 6 条）：玩家在 SideStore 里点了取消（不回调），或 SideStore 版本太旧、协议注册着却不认 certificate 这条路
+//   （openURL 照样成功、SideStore 被拉起、不回调），原先回到 S2Arm 什么也没有。发起时记下「在等」；离开过 S2Arm、又回到前台 2 秒内还没等到回调
+//   （回调本身就是把 S2Arm 拉回前台的那一下，先于这 2 秒到）→ 直说没拿到、可能的两个原因，并直接给「导入 .p12…」这条路
+static BOOL g_ss_waiting, g_ss_left;
+static void sidestore_watch(void) {
+    static int once; if (once++) return;
+    NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
+    [nc addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *n) { if (g_ss_waiting) g_ss_left = YES; }];
+    [nc addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *n) {
+        if (!g_ss_waiting || !g_ss_left) return;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (!g_ss_waiting || !g_ss_left) return;
+            g_ss_waiting = g_ss_left = NO;
+            LOG("【黄】签名证书：从 SideStore 回来没收到证书（玩家取消了，或 SideStore 版本太旧不认 sidestore://certificate）");
+            UIViewController *vc = top_vc(); if (!vc) return;
+            UIAlertController *a = [UIAlertController alertControllerWithTitle:S2AL(@"cert.failed.title") message:S2AL(@"cert.sidestore.noReply") preferredStyle:UIAlertControllerStyleAlert];
+            [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.gotIt") style:UIAlertActionStyleCancel handler:nil]];
+            [a addAction:[UIAlertAction actionWithTitle:S2AL(@"cert.pickP12") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *x) { s2a_shell_cert_p12(); }]];
+            [vc presentViewController:a animated:YES completion:nil];
+        });
+    }];
+}
 void s2a_shell_cert_sidestore(void) {   // 游戏库设置「签名证书」→「从 SideStore 获取」
     NSURL *u = s2a_cert_sidestore_request(); LOG("签名证书：打开 SideStore 取证书");
+    sidestore_watch();
     [UIApplication.sharedApplication openURL:u options:@{} completionHandler:^(BOOL ok) {
-        if (!ok) { LOG("签名证书：打不开 SideStore（这台手机上没有，或版本太老不认 sidestore://certificate）"); say(S2AL(@"cert.failed.title"), S2AL(@"cert.sidestore.missing")); }
+        if (!ok) { LOG("签名证书：打不开 SideStore（这台手机上没有，或版本太老不认 sidestore://certificate）"); say(S2AL(@"cert.failed.title"), S2AL(@"cert.sidestore.missing")); return; }
+        g_ss_waiting = YES; g_ss_left = NO;
     }];
 }
 // SideStore 的回调（app.m scene:openURLContexts: 先交给这里）：YES = 是这个回调（已处理）
 BOOL s2a_cert_handle_url(NSURL *url) {
     NSData *p12 = nil; NSString *pw = nil; int r = s2a_cert_callback_parse(url.absoluteString, &p12, &pw);
     if (r == -1) return NO;
+    g_ss_waiting = g_ss_left = NO;   // 回调到了（交回证书或空的，各有自己的提示）
     if (r) { LOG("【红】签名证书：SideStore 回调里没有能解出的证书"); say(S2AL(@"cert.failed.title"), S2AL(@"cert.sidestore.empty")); return YES; }
     LOG("签名证书：SideStore 交回证书（%lu 字节）", (unsigned long)p12.length);
     import_p12(p12, @"SideStore", pw, "sidestore", nil);   // SideStore 的 .p12 不带 MAC、密码不起作用：带它给的密码直接导，系统接口导不进时 selfsign.c 按明文格式取

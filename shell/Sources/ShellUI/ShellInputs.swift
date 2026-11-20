@@ -16,6 +16,9 @@ public enum GameState: Equatable, Sendable {
     /// S2Arm 0.6.0: this game is signed on this iPhone before it opens, and the iPhone has no certificate that can sign it.
     /// Its primary action gets one right here (`ShellActions.onGetSigningCert`); once imported the game is playable again.
     case needsCertificate(CertificateNeed)
+    /// S2Arm 0.6.0: the game's data is on this iPhone but its program (the game's .s2arm file) isn't yet, such as when only the
+    /// .img was put in. Its primary action picks the .s2arm here (`ShellActions.onImportProgram`).
+    case needsProgram
     /// `reason` is one short line for under the title, such as "Game files damaged". `detail` is a plain sentence
     /// for the player (what happened, what to do), shown under the title and in the How to fix sheet. `technical`
     /// is the underlying message, shown only as small secondary Details in the sheet.
@@ -332,6 +335,8 @@ public struct ShellActions {
     public var onSideStoreSigningCert: (() -> Void)? = nil
     /// S2Arm: a game's "Get certificate…" (state `.needsCertificate`): SideStore when it is installed, otherwise picking a .p12.
     public var onGetSigningCert: (() -> Void)? = nil
+    /// S2Arm: "Import .s2arm…" on a game that needs its program (`.needsProgram`, or an older game `.needsLegacyUpdate`): pick the file here.
+    public var onImportProgram: ((String) -> Void)? = nil
     public var onGlobalPadMapChange: ((String, String) -> Void)?
     public var onGlobalPadMapReset: (() -> Void)?
     /// The button test opened (true) or closed: the host sends `PadSnapshot`s only in between.
