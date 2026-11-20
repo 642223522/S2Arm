@@ -43,6 +43,36 @@ static uint16_t feedback_writes(struct nvn_gpu_cmd_s *c) {
 //   （非数组才记 FeedbackLoopHazards）。所以整池里与「本笔写着的附件」重叠的视图不拷快照、不拆通道、不把整组描述符改成快照（*skipped 记一笔供读数）。
 //   与「本笔不写的附件」重叠的照旧（只读通道 / 快照）：那是深度测试不写深度同时采样深度这类合法用法，拆通道把前面的写落地才读得对。
 //   nvk_pool_fb=1 回到旧行为；nvk_opt_layout 开着时池图像必须是 GENERAL（pool_check_layouts），重叠的视图要换成快照才合规，也保持旧行为。
+// 免拷只在「GENERAL 档（nvk_opt_layout=0）且没开旧行为开关（nvk_pool_fb=0）」成立；这一条写成显式函数，夹具案例 18 按 opt 0 / 1 各断言一遍。
+static inline int feedback_pool_skip_allowed(const struct nvn_gpu_cmd_s *c) { return !c->pool_fb_on && !c->opt; }
+// 免拷日志限流：每个（管线、图）首次一行，最多 FB_SKIP_LOG_MAX 行，写满后只说一句「不再逐条记」；读数仍在分时行的 pskip。
+// 管线键 = 建管线时的描述散列（p->hash）；图编号 = 贴图的访问编号（access_id，会话内不复用）。查表无锁：空槽 CAS 占位，占到的那一方打日志。
+#define FB_SKIP_LOG_MAX 64u
+static uint64_t access_id(uint64_t *slot);
+static uint64_t g_fb_skip_seen[FB_SKIP_LOG_MAX];
+static uint32_t g_fb_skip_full;
+static void feedback_pool_skip_note(const struct nvn_gpu_cmd_s *c, const struct nvn_gpu_view_s *v) {
+    struct nvn_gpu_tex_s *t = v->tex;
+    if (!t) return;
+    const uint64_t id = access_id(&t->access_id);
+    const uint64_t key = (((uint64_t)c->pipe->hash << 32) ^ id) * 0x9E3779B97F4A7C15ull | 1ull;
+    for (uint32_t i = 0; i < FB_SKIP_LOG_MAX; i++) {
+        uint64_t cur = __atomic_load_n(&g_fb_skip_seen[i], __ATOMIC_RELAXED);
+        if (cur == key) return;
+        if (cur) continue;
+        if (!__atomic_compare_exchange_n(&g_fb_skip_seen[i], &cur, key, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+            if (cur == key) return;   // 别的线程刚占了同一个键
+            continue;
+        }
+        char line[200];
+        snprintf(line, sizeof line, "整池数组免拷快照（与本笔写着的附件重叠，nvk_pool_fb=1 恢复旧行为）：管线 %08x，图 #%llu %ux%u 格式 %#x",
+                 c->pipe->hash, (unsigned long long)id, t->w, t->h, t->nvn_format);
+        nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", line);
+        return;
+    }
+    if (!__atomic_exchange_n(&g_fb_skip_full, 1u, __ATOMIC_RELAXED))
+        nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", "整池数组免拷快照：不同（管线、图）已记满，之后不再逐条记（计数见分时行 pskip）");
+}
 static int feedback_add(struct nvn_gpu_cmd_s *c, struct nvn_gpu_view_s *v, uint32_t set,
                         uint16_t writes, uint16_t *read_mask, int from_pool, int *skipped) {
     uint16_t attached = 0;
@@ -51,7 +81,7 @@ static int feedback_add(struct nvn_gpu_cmd_s *c, struct nvn_gpu_view_s *v, uint3
         if (feedback_overlap(v, d->color[i].view)) attached |= 1u << i;
     if (feedback_overlap(v, d->depth.view) || feedback_overlap(v, d->stencil.view)) attached |= 1u << 8;
     if (!attached) return 1;
-    if (from_pool && (attached & writes) && !c->pool_fb_on && !c->opt) { *skipped = 1; return 1; }
+    if (from_pool && (attached & writes) && feedback_pool_skip_allowed(c)) { feedback_pool_skip_note(c, v); *skipped = 1; return 1; }
     if (c->feedback_read_on && !(attached & writes)) {
         *read_mask |= attached;
         return 1;
