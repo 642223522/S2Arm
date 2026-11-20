@@ -345,6 +345,9 @@ public struct ShellActions {
     public var onDeleteGame: ((_ gameID: String, _ saves: Bool) -> Void)?
     /// Opens the game's save management (export / import saves) before it starts. nil: no item in the card's menu.
     public var onManageSaves: ((_ gameID: String) -> Void)?
+    /// S2Arm: "Export this game…" on a playable game (0.6.3): the host writes its .s2arm and .img and hands them to the Files
+    /// app. Nil: no item in the card's menu.
+    public var onExportGame: ((_ gameID: String) -> Void)? = nil
     /// Instant snapshot (0.6.0): whether this game has a complete snapshot to go back to, and going back to it (starts the
     /// game restored to that moment). Both nil: no snapshot item anywhere in the library.
     public var snapshotAvailable: ((_ gameID: String) -> Bool)? = nil
