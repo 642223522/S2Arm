@@ -290,6 +290,15 @@ typedef struct { uint64_t a, n; } span_t;
 static int in_ranges(uint64_t a, const uint64_t *b, const uint64_t *n, int k) { for (int i = 0; i < k; i++) if (a >= b[i] && a < b[i] + n[i]) return 1; return 0; }
 static int page_zero(const uint8_t *p) { const uint64_t *q = (const uint64_t *)p; for (size_t i = 0; i < 0x4000 / 8; i++) if (q[i]) return 0; return 1; }
 static int g_dump_noread; static uint64_t g_dump_noread_b, g_dump_released;
+// 按内容去重：一页（16 KB）内容与前面某页完全相同 → 不存数据，记（这页地址, 源页地址）进 memdup.bin，恢复时写回完再拷。
+//   一款小游戏 iPhone 上同一块约 90 MB 数据在堆里有十来份（1.3 GB 里约 870 MB 是重复页）；判重只算哈希 + 撞上时整页比，不压缩、不拖冻结
+typedef struct { uint64_t dst, src; } dup_t;
+static dup_t *g_dup; static size_t g_ndup, g_cdup;
+static uint64_t page_hash(const uint8_t *p) {   // 四路乘法异或，只求快；撞上了整页 memcmp 再认，哈希质量只影响比较次数、不影响正确性
+    const uint64_t *q = (const uint64_t *)p; uint64_t h0 = 0x243F6A8885A308D3ull, h1 = 0x13198A2E03707344ull, h2 = 0xA4093822299F31D0ull, h3 = 0x082EFA98EC4E6C89ull;
+    for (size_t i = 0; i < 0x4000 / 8; i += 4) { h0 = (h0 ^ q[i]) * 0x9E3779B97F4A7C15ull; h1 = (h1 ^ q[i + 1]) * 0xC2B2AE3D27D4EB4Full; h2 = (h2 ^ q[i + 2]) * 0x165667B19E3779F9ull; h3 = (h3 ^ q[i + 3]) * 0xD6E8FEB86659FD93ull; }
+    uint64_t h = h0 ^ (h1 >> 17) ^ (h2 << 13) ^ (h3 >> 29); h ^= h >> 31; h *= 0x9E3779B97F4A7C15ull; h ^= h >> 29; return h ? h : 1;
+}
 int s2a_snap_page_released(uint64_t hp) __attribute__((weak));   // svc_mem.c：游戏已释放、待清零的页（文件后备的懒清零）；不链 svc_mem 的单测没有
 static _Atomic int g_snap_abandoned;   // 看门狗放弃了这次存档（定义在看门狗一节）：游戏已解冻、内存权限已还原，存档线程不能再读游戏内存
 static int dump_mem(FILE *f, uint64_t *raw_out, uint64_t *comp_out, int *nreg) {
@@ -299,7 +308,8 @@ static int dump_mem(FILE *f, uint64_t *raw_out, uint64_t *comp_out, int *nreg) {
     span_t *sp = NULL; int nsp = 0, cap = 0; *nreg = 0;
     int s2a_guest_fd(void); int gfd = s2a_guest_fd(); uint64_t nfile = 0;   // vawin.c：客体内存文件后备的描述符（没开 = -1）
     struct { uint64_t a, n; int prot; } *nr = NULL; int nnr = 0, cnr = 0;   // 临时加了读权限的段（存完原样还原）
-    g_dump_noread = 0; g_dump_noread_b = 0; g_dump_released = 0;
+    g_dump_noread = 0; g_dump_noread_b = 0; g_dump_released = 0; g_ndup = 0;
+    size_t hcap = 1 << 16, hn = 0; uint64_t *hk = calloc(hcap, 8), *hv = calloc(hcap, 8); double t_hash = 0;   // 去重表：页哈希 → 首次出现的页地址
     // 1) 收集要存的连续页段：当前可读、非代码、不在服务层共享内存里、驻留（含换出）、非全零
     for (vm_address_t a = base; a < base + size; ) {   // vm_region_*_64：iOS SDK 不给 mach_vm.h（同 vawin.c / far.c）
         vm_address_t r = a; vm_size_t sz = 0; natural_t depth = 0; vm_region_submap_info_data_64_t info; mach_msg_type_number_t cnt = VM_REGION_SUBMAP_INFO_COUNT_64;
@@ -337,6 +347,19 @@ static int dump_mem(FILE *f, uint64_t *raw_out, uint64_t *comp_out, int *nreg) {
             //   原先它们按「不可读但有用」临时加读整段存进快照（iPhone 缺省开文件后备，小游戏释放过的堆全进了快照）
             if (noread && s2a_snap_page_released && s2a_snap_page_released(pa)) { g_dump_released++; continue; }
             if (in_ranges(pa, sb, sn, ns) || page_zero((const uint8_t *)pa)) continue;
+            if (hk && hv) {   // 按内容去重（见 page_hash）
+                double th = now_s(); uint64_t h = page_hash((const uint8_t *)pa); size_t j = (size_t)(h * 0x9E3779B97F4A7C15ull >> 20) & (hcap - 1); int dup = 0;
+                while (hk[j]) { if (hk[j] == h && !memcmp((const void *)hv[j], (const void *)pa, pg)) { dup = 1; break; } j = (j + 1) & (hcap - 1); }
+                if (dup) { if (g_ndup == g_cdup) { g_cdup = g_cdup ? g_cdup * 2 : 4096; g_dup = realloc(g_dup, sizeof *g_dup * g_cdup); }
+                           if (g_dup) { g_dup[g_ndup++] = (dup_t){pa, hv[j]}; t_hash += now_s() - th; continue; } }
+                else { hk[j] = h; hv[j] = pa;
+                    if (++hn * 2 > hcap) {   // 扩容：重新散列
+                        size_t nc = hcap * 2; uint64_t *nk = calloc(nc, 8), *nv = calloc(nc, 8);
+                        if (nk && nv) { for (size_t q = 0; q < hcap; q++) if (hk[q]) { size_t t = (size_t)(hk[q] * 0x9E3779B97F4A7C15ull >> 20) & (nc - 1); while (nk[t]) t = (t + 1) & (nc - 1); nk[t] = hk[q]; nv[t] = hv[q]; }
+                                        free(hk); free(hv); hk = nk; hv = nv; hcap = nc; }
+                        else { free(nk); free(nv); free(hk); free(hv); hk = hv = NULL; } } }   // 分不出内存：后面的页不再判重，照常存
+                t_hash += now_s() - th;
+            }
             if (nsp && sp[nsp - 1].a + sp[nsp - 1].n == pa && sp[nsp - 1].n < CH) sp[nsp - 1].n += pg;
             else { if (nsp == cap) { cap = cap ? cap * 2 : 4096; sp = realloc(sp, sizeof *sp * (size_t)cap); } sp[nsp++] = (span_t){pa, pg}; }
         }
@@ -364,6 +387,8 @@ static int dump_mem(FILE *f, uint64_t *raw_out, uint64_t *comp_out, int *nreg) {
     for (int i = 0; i < nnr; i++) mprotect((void *)nr[i].a, nr[i].n, (nr[i].prot & VM_PROT_WRITE ? PROT_WRITE : 0) | (nr[i].prot & VM_PROT_EXECUTE ? PROT_EXEC : 0));   // 还原（原先没有读）
     if (gfd >= 0) LOG("即时存档：客体内存文件后备 已写回文件、不在内存里的页 %llu 个按文件数据区补存（%.1f MB）", (unsigned long long)nfile, nfile * (double)pg / 1048576.0);
     if (nnr) LOG("即时存档：不可读的内存段 %d 段 %.1f MB 临时加读存进快照（游戏设的权限，恢复时照权限账收回）", nnr, g_dump_noread_b / 1048576.0);
+    free(hk); free(hv);
+    if (g_ndup) LOG("即时存档：游戏内存按内容去重 %zu 页（%.1f MB）只记引用不存数据（判重 %.2f s）", g_ndup, g_ndup * (double)pg / 1048576.0, t_hash);
     if (g_dump_released) LOG("即时存档：游戏已释放、待清零的页 %llu 个（%.1f MB）不存（语义上是零页）", (unsigned long long)g_dump_released, g_dump_released * (double)pg / 1048576.0);
     free(nr); free(sp); *raw_out = raw; *comp_out = comp; return e ? -1 : 0;
 }
@@ -518,7 +543,13 @@ static void snap_take_(const char *final_dir, int exit_after) {
     { char p[2048]; snprintf(p, sizeof p, "%s/audio.bin", dir); e |= !S2A_SnapAudioSave || S2A_SnapAudioSave(p) != 0; }
     double t3 = now_s();
     if (atomic_load(&g_snap_abandoned)) goto abandoned;
-    s2a_snap_progress("游戏内存"); f = open_in(dir, "mem.bin", "wb"); e |= !f || dump_mem(f, &raw, &comp, &nreg) || close_sync(f);
+    // 游戏内存写 mem2.bin（记录格式同旧 mem.bin），按内容去重的页另记 memdup.bin。换文件名：旧版宿主不认 memdup.bin，读到 mem.bin 会把重复页留成零；
+    //   换名后旧版找不到 mem.bin、恢复直接失败照常开局。读（load_mem）先找 mem2.bin、没有再读 mem.bin（之前的快照照常能恢复）
+    s2a_snap_progress("游戏内存"); f = open_in(dir, "mem2.bin", "wb"); e |= !f || dump_mem(f, &raw, &comp, &nreg) || close_sync(f);
+    if (!e) { FILE *fd = open_in(dir, "memdup.bin", "wb"); uint32_t mg = 0x50554431u; uint64_t nd = g_ndup;   // "1DUP"
+        e |= !fd || fwrite(&mg, 4, 1, fd) != 1 || fwrite(&nd, 8, 1, fd) != 1 || (nd && fwrite(g_dup, sizeof *g_dup, (size_t)nd, fd) != (size_t)nd);
+        if (fd) e |= close_sync(fd); }
+    free(g_dup); g_dup = NULL; g_cdup = 0;
     double t4 = now_s();
     { int s2a_snap_cs_moved(void); int mv = s2a_snap_cs_moved();   // 在服务请求里阻塞、按入口记、进了请求日志的线程：存档途中它的请求完成了，可能已建句柄、改了正在写的内核账——这次不算（不进日志的照存，见 thread.c）
       if (mv) { LOG("【黄】即时存档：%d 条进了请求日志的阻塞请求在存档途中等到了回复，这次不存（游戏照常跑；换个时机再存）", mv); e = 1; } }
@@ -804,7 +835,9 @@ uint64_t s2a_snap_scratch_map(uint64_t n); void s2a_snap_scratch_unmap(uint64_t 
 static uint64_t scratch_pick(uint64_t n) { return s2a_snap_scratch_map(n); }
 static void scratch_done(uint64_t a, uint64_t n) { s2a_snap_scratch_unmap(a, n); }
 static int load_mem(const char *dir, uint64_t *raw_out) {
-    double t_lm0 = now_s(); char p[2048]; snprintf(p, sizeof p, "%s/mem.bin", dir); int fd = open(p, O_RDONLY); if (fd < 0) return -1;
+    double t_lm0 = now_s(); char p[2048]; snprintf(p, sizeof p, "%s/mem2.bin", dir); int fd = open(p, O_RDONLY), v2 = fd >= 0;
+    if (fd < 0) { snprintf(p, sizeof p, "%s/mem.bin", dir); fd = open(p, O_RDONLY); }   // 之前版本的快照：没有按内容去重
+    if (fd < 0) return -1;
     struct stat st; fstat(fd, &st); uint8_t *m = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0); close(fd);
     if (m == MAP_FAILED) return -1;
     typedef struct { uint64_t a, n, cl; const uint8_t *d; } rec_t; rec_t *rv = NULL; int nr = 0, cap = 0; uint64_t off = 0, raw = 0;
@@ -904,13 +937,29 @@ static int load_mem(const char *dir, uint64_t *raw_out) {
     LOG("%s即时存档恢复：交出的宿主指针按身份换算 %llu 个（同址 %llu、解析不了 %llu），数据段 %d 段，游戏内存里替换 %llu 处", nunres ? "【红】" : "", (unsigned long long)nm, (unsigned long long)nsame, (unsigned long long)nunres, nr2, (unsigned long long)nrep);
     LOG("即时存档恢复：页内容拆账 映射核对 + 放开写 %.2f、写回 + 指针换算 %.2f（秒）；经后备文件写 %d 段 %.0f MB、经映射写 %d 段", tp0 - t_lm0, tp1 - tp0, nviaf, bviaf / 1048576.0, nr - nviaf);
     free(hk); free(hv); free(from); free(to); free(rg); free(rgto); free(viaf); free(foff); bad += wbad;
-    {   // 布局变了的游戏内存对象：写回全部完成后按地址排序、相邻并段，整片找一遍原地转（没有要转的直接返回）
+    // 按内容去重的页（memdup.bin，存时只记「这页 = 那页」）：源页已写回、宿主指针已换算，整页拷过去（换算按内容做，拷来的就是换算后的）。
+    //   目标页不可写的先放开（同上面记录的放开写；权限最后由权限账统一收回）
+    dup_t *dv = NULL; uint64_t ndv = 0; int dbad = 0;
+    if (v2) { FILE *df = open_in(dir, "memdup.bin", "rb"); uint32_t mg = 0;
+        if (!df || fread(&mg, 4, 1, df) != 1 || mg != 0x50554431u || fread(&ndv, 8, 1, df) != 1 || ndv > (1ull << 32)
+            || (ndv && (!(dv = malloc(sizeof *dv * ndv)) || fread(dv, sizeof *dv, (size_t)ndv, df) != (size_t)ndv))) { LOG("【红】即时存档恢复：按内容去重表 memdup.bin 读不了"); dbad++; ndv = 0; }
+        if (df) fclose(df);
+        for (uint64_t i = 0; i < ndv; i++) {
+            if (mprotect((void *)dv[i].dst, 0x4000, PROT_READ | PROT_WRITE)) { if (!dbad++) LOG("【红】即时存档恢复：去重页 %#llx 放不开写（errno %d）", (unsigned long long)dv[i].dst, errno); continue; }
+            memcpy((void *)dv[i].dst, (const void *)dv[i].src, 0x4000); }
+        if (ndv) LOG("%s即时存档恢复：按内容去重的页 %llu 个（%.0f MB）从源页拷回（失败 %d）", dbad ? "【红】" : "", (unsigned long long)ndv, ndv * 16.0 / 1024.0, dbad); }
+    bad += dbad; raw += ndv * 0x4000;
+    {   // 布局变了的游戏内存对象：写回全部完成后按地址排序、相邻并段，整片找一遍原地转（没有要转的直接返回）；去重拷回的页一并算
         int need = 0; for (int i = 0; i < g_nconv; i++) need |= g_conv[i].magic != 0;
-        uint64_t *gr = need && !bad ? malloc(16 * (size_t)(nr ? nr : 1)) : NULL; int ng = 0;
-        if (gr) { int (^cmp)(const void *, const void *) = ^int(const void *x, const void *y) { uint64_t u = ((const rec_t *)x)->a, w = ((const rec_t *)y)->a; return u < w ? -1 : u > w; };
-            qsort_b(rv, (size_t)nr, sizeof *rv, cmp);
-            for (int i = 0; i < nr; i++) { if (ng && gr[2 * ng - 2] + gr[2 * ng - 1] == rv[i].a) gr[2 * ng - 1] += rv[i].n; else { gr[2 * ng] = rv[i].a; gr[2 * ng + 1] = rv[i].n; ng++; } }
-            conv_guest_objs(gr, ng); free(gr); } }
+        uint64_t *gr = need && !bad ? malloc(16 * (size_t)(nr + ndv + 1)) : NULL; int ng = 0;
+        if (gr) { uint64_t (*ar)[2] = malloc(16 * (size_t)(nr + ndv + 1)); size_t na = 0;
+            if (ar) { for (int i = 0; i < nr; i++) { ar[na][0] = rv[i].a; ar[na++][1] = rv[i].n; } for (uint64_t i = 0; i < ndv; i++) { ar[na][0] = dv[i].dst; ar[na++][1] = 0x4000; }
+                int (^cmp)(const void *, const void *) = ^int(const void *x, const void *y) { uint64_t u = ((const uint64_t *)x)[0], w = ((const uint64_t *)y)[0]; return u < w ? -1 : u > w; };
+                qsort_b(ar, na, 16, cmp);
+                for (size_t i = 0; i < na; i++) { if (ng && gr[2 * ng - 2] + gr[2 * ng - 1] == ar[i][0]) gr[2 * ng - 1] += ar[i][1]; else { gr[2 * ng] = ar[i][0]; gr[2 * ng + 1] = ar[i][1]; ng++; } }
+                free(ar); conv_guest_objs(gr, ng); }
+            free(gr); } }
+    free(dv);
     munmap(m, (size_t)st.st_size); free(rv); *raw_out = raw;
     LOG("%s即时存档恢复：页内容 %d 段 %.0f MB 写回（放开写 %d 段，解压失败 %d）", bad ? "【红】" : "", nr, raw / 1048576.0, fixed, bad);
     return bad || hobad ? -1 : 0;
