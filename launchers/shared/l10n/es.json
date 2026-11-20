@@ -488,6 +488,8 @@
   "console.section.phone": "iPhone y app",
   "console.section.sync": "Sincronizar juegos",
   "console.section.help": "Ayuda",
+  "play.addrShort.title": "Este dispositivo no tiene espacio de direcciones suficiente para este juego",
+  "play.addrShort.body": "Este juego necesita al empezar un bloque muy grande de espacio de direcciones y este dispositivo no puede darle tanto: puede ir muy lento o quedarse parado al principio. Para jugar con normalidad, usa un dispositivo con más espacio de direcciones (por ejemplo, un Mac con más memoria) o espera a una versión posterior.",
   "console.section.apps": "Apps independientes",
   "console.app.outdated": "Nueva versión · haz clic en «Actualizar S2Arm en el iPhone» para volver a firmar",
   "console.game.standalone": "Instalado como app independiente (ver arriba)",

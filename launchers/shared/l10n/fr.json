@@ -488,6 +488,8 @@
   "console.section.phone": "iPhone et app",
   "console.section.sync": "Synchro des jeux",
   "console.section.help": "Aide",
+  "play.addrShort.title": "Cet appareil n'a pas assez d'espace d'adressage pour ce jeu",
+  "play.addrShort.body": "Ce jeu a besoin au démarrage d'un très grand bloc d'espace d'adressage, et cet appareil ne peut pas en fournir autant : il peut être très lent ou rester bloqué au début. Pour jouer normalement, utilisez un appareil avec plus d'espace d'adressage (par exemple un Mac avec plus de mémoire) ou attendez une version ultérieure.",
   "console.section.apps": "Apps autonomes",
   "console.app.outdated": "Nouvelle version · cliquez sur « Mettre à jour S2Arm sur l'iPhone » pour re-signer",
   "console.game.standalone": "Installé comme app autonome (voir ci-dessus)",

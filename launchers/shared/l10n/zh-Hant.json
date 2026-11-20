@@ -504,6 +504,8 @@
   "console.section.phone": "手機與 App",
   "console.section.sync": "遊戲同步",
   "console.section.help": "說明",
+  "play.addrShort.title": "這台裝置的位址空間不夠這款遊戲",
+  "play.addrShort.body": "這款遊戲開局要一整塊很大的位址空間，這台裝置給不了這麼多：可能會非常卡，或一直停在開頭。想正常玩，請換一台位址空間更大的裝置（例如記憶體更大的 Mac），或等後續版本改進。",
   "console.section.apps": "獨立 App",
   "console.app.outdated": "有新版 · 點「更新 iPhone 上的 S2Arm」重簽",
   "console.game.standalone": "裝成了獨立 App（見上）",
