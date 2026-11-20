@@ -19,6 +19,8 @@ struct InstallModeCard: View {
     var body: some View {
         CardGroup(ix(loc, "install.mode.device"), footnote: ix(loc, "install.mode.device_note")) {
             identity.padding(LauncherTheme.Metrics.cardInset)
+            CardDivider()
+            InstallLayoutRow(model: model).padding(LauncherTheme.Metrics.cardInset)
         }
         .onAppear { model.refreshInstallMode(); model.refreshDevCert() }
         .accessibilityElement(children: .contain)
@@ -31,6 +33,53 @@ struct InstallModeCard: View {
             DevCertRow(model: model, title: ix(loc, "install.mode.identity"), appleIdTitle: ix(loc, "export.sign.appleId"), embedded: true)
             if model.devCert?.active != true { AppleIdRow(model: model, host: "settings") }
         }
+    }
+}
+
+/// 出法（0.6.3 维护者定，两种并存、玩家自选）：通用 S2Arm（一个 App 装整个游戏库）/ 独立 App（每款一个 App，点开直接进这款）。
+///   gameId 为空 = 设置里的缺省（选中的是现在生效的那种：没选过时作业层按证书自动——分发证书独立 App，其余通用 S2Arm）；
+///   给了 gameId = 装机页单款覆盖，多一项「跟随设置（…）」= 撤掉这款的选择。分发证书时说清通用 S2Arm 里打不开（只提示，两种都能选）
+struct InstallLayoutRow: View {
+    @ObservedObject var model: S2ArmLauncherModel
+    @EnvironmentObject var loc: Localizer
+    var gameId: String? = nil
+
+    var body: some View {
+        let m = model.installMode
+        let name = { (v: String) in ix(loc, v == "standalone" ? "install.layout.standalone" : "install.layout.shell") }
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                if gameId == nil { LauncherRowIcon("square.stack.3d.up") }
+                Text(ix(loc, gameId == nil ? "install.layout.title" : "install.layout.game")).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary)
+                Spacer(minLength: 12)
+                if let gameId {
+                    let own = m.layoutGames[gameId.uppercased()]
+                    LauncherDropdown(options: [("follow", ix(loc, "install.layout.follow").replacingOccurrences(of: "{0}", with: name(m.layout))),
+                                               ("shell", name("shell")), ("standalone", name("standalone"))],
+                                     selection: own ?? "follow", label: ix(loc, "install.layout.game")) {
+                        model.setLayout($0 == "follow" ? nil : $0, gameId: gameId)
+                    }
+                    .launcherRowControls().controllerID("install.layout.game")
+                } else {
+                    LauncherDropdown(options: [("shell", name("shell")), ("standalone", name("standalone"))],
+                                     selection: m.layout, label: ix(loc, "install.layout.title")) { model.setLayout($0) }
+                        .launcherRowControls().controllerID("install.layout")
+                }
+            }
+            let now = gameId.map { m.layout(for: $0) } ?? m.layout
+            Text(ix(loc, now == "standalone" ? "install.layout.standalone_note" : "install.layout.shell_note"))
+                .font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if m.distribution {
+                Text(ix(loc, "install.layout.distribution")).font(LauncherTheme.TypeStyle.caption)
+                    .foregroundStyle(now == "shell" ? Color.yellow : Color.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if !model.layoutNotice.isEmpty && now == "standalone" {
+                Text(loc.backend(model.layoutNotice)).font(LauncherTheme.TypeStyle.caption).foregroundStyle(.yellow).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(gameId == nil ? "env.installLayout" : "install.layout")
+        .onAppear { if gameId != nil { model.refreshInstallMode() } }   // 设置卡自己已刷新；装机页打开时读一次（按款选过的、证书换过）
     }
 }
 

@@ -1534,6 +1534,15 @@ static void widget_open(NSURL *url, void *ctx) {
 #endif
     LOG("游戏库：已挂库界面（清单 %s）%s", cat.UTF8String, s2a_process_prewarmed() ? "，预热进程只显示库、不起宿主" : "");
     img_scan_bg();
+    // 独立 App（一 App 一游戏，0.6.3）：包里只有这一款、程序库也在包里 → 点开图标直接进这款，同玩家在库里点开始（崩溃恢复 → 起局前检查 → 起宿主）；
+    //   起不来（被拒）照常留在库界面、按原因标。预热进程只显示库，不起宿主
+    { char gid[64];
+      if (!s2a_process_prewarmed() && s2a_launch_ctx_single_game(s2a_launch_ctx_bundle_dir(), gid, sizeof gid)) {
+          char *g = strdup(gid); S2ASceneDelegate *sd = self;
+          LOG("游戏库：独立 App（只有 %s、程序在包里），直接进这款", gid);
+          dispatch_async(dispatch_get_main_queue(), ^{ library_play(g, (__bridge void *)sd); free(g); });
+          return;
+      } }
     // 测试开关（真机自动化点不到库界面的「开始」，同 diag.m S2A_OPEN_SETTINGS）：S2A_LIBRARY_AUTOPLAY=<程序号> 库界面挂上 2 秒后替玩家点这款的开始，
     //   走的就是玩家点开始那条路（library_play：崩溃恢复 → 起局前检查 → 起宿主），用来在多款容器里验证起局前的处理
     { const char *e = getenv("S2A_LIBRARY_AUTOPLAY");

@@ -60,8 +60,8 @@ public struct DevCertInfo: Equatable {
     /// 连着的手机在不在设备列表：nil = 没连手机 / 不知道。
     public let deviceListed: Bool?
     public let blocking: [String]
-    /// blocking 各条的码（同序）：界面按码给出路，如 devcert_distribution →「改用 Apple ID 登录」
-    public let blockingIds: [String]
+    /// 分发 / ad hoc 描述文件（缺 get-task-allow）：照常导入、独立 App 能用；通用 S2Arm 里游戏打不开，界面给「改用 Apple ID 登录 / 复制给发放人的话」
+    public let distribution: Bool
     public let warnings: [String]
     /// 描述文件缺权限时给证书发放人的一段话（作业层整句写好，界面翻译后一键复制，不在前端拼）；不缺为空
     public let requestText: String
@@ -74,7 +74,7 @@ public struct DevCertInfo: Equatable {
         deviceCount = (r["deviceCount"] as? NSNumber)?.intValue ?? 0
         deviceListed = r["deviceListed"] as? Bool
         blocking = (r["blocking"] as? [[String: Any]] ?? []).compactMap { $0["text"] as? String }
-        blockingIds = (r["blocking"] as? [[String: Any]] ?? []).compactMap { $0["id"] as? String }
+        distribution = r["distribution"] as? Bool ?? false
         warnings = (r["warnings"] as? [[String: Any]] ?? []).compactMap { $0["text"] as? String }
         requestText = s("requestText")
     }
@@ -198,6 +198,14 @@ public final class InstallService {
         var extra: [String: Any] = ["action": "import", "p12Path": p12, "profilePath": profile]
         if let device, !device.isEmpty { extra["device"] = device }
         return DevCertInfo(result: try await client.perform("devCert", extra: extra, secrets: ["S2A_DEVCERT_PASSWORD": password]).result)
+    }
+
+    /// 出法（作业 layoutSet）：layout = shell / standalone / nil（nil = 撤掉选择、回到缺省）；gameId 给了只管这一款 → 结果里的 freeLimit（不用自己的证书选独立 App 时的苹果限制提示，只提示）
+    public func layoutSet(_ layout: String?, gameId: String? = nil) async throws -> String {
+        var extra: [String: Any] = [:]   // 不带 layout = 撤掉选择（作业层 c.r.get("layout") 为空）
+        if let layout { extra["layout"] = layout }
+        if let gameId, !gameId.isEmpty { extra["gameId"] = gameId }
+        return try await client.perform("layoutSet", extra: extra).result["freeLimit"] as? String ?? ""
     }
 
     /// 签名方式三选一（作业 signModeSet：appleId / devCert / external）→ 生效后的选择
@@ -324,17 +332,30 @@ public struct PhoneIdentityResult: Equatable, Sendable {
 
 /// 签名身份（installMode 作业）：signMode = devcert（我的开发者证书）/ appleId；exportAvailable = 导出作业在不在；
 ///   signChoice = 玩家选的签名方式三选一（appleId / devCert / external = 我自己用 AltStore / SideStore 签，自签走查结构 6）
+///   出法（0.6.3）：layout = 缺省现在按哪种推（shell 通用 S2Arm / standalone 独立 App，一 App 一游戏）；layoutDefault = 玩家选过的缺省（nil = 没选、按证书自动）；
+///   layoutGames = 按款选过的 {游戏号: 出法}；distribution = 在用的是分发 / ad hoc 证书（通用 S2Arm 里游戏打不开，自动缺省独立 App）
 public struct InstallModeInfo: Equatable, Sendable {
     public let exportAvailable: Bool
     public let signMode: String
     public let signChoice: String
+    public var layout: String = "shell"
+    public var layoutDefault: String? = nil
+    public var layoutGames: [String: String] = [:]
+    public var distribution: Bool = false
     public init(exportAvailable: Bool = false, signMode: String = "appleId", signChoice: String = "appleId") {
         self.exportAvailable = exportAvailable; self.signMode = signMode; self.signChoice = signChoice
     }
     init(result r: [String: Any]) {
         self.init(exportAvailable: r["exportAvailable"] as? Bool ?? false, signMode: r["signMode"] as? String ?? "appleId",
                   signChoice: r["signChoice"] as? String ?? "appleId")
+        let choice = r["layoutChoice"] as? [String: Any] ?? [:]
+        layout = r["layout"] as? String ?? "shell"
+        layoutDefault = choice["default"] as? String
+        layoutGames = (choice["games"] as? [String: String] ?? [:]).reduce(into: [:]) { $0[$1.key.uppercased()] = $1.value }
+        distribution = r["distribution"] as? Bool ?? false
     }
+    /// 这款按哪种出法推：按款选过的 > 玩家选过的缺省 > 自动（作业层 install.chosen_layout 同序）
+    public func layout(for gameId: String) -> String { layoutGames[gameId.uppercased()] ?? layout }
 }
 
 /// Apple ID 登录结果 / 当前账号（appleLogin / appleAccount 作业）：account 为空 = 没登录；enabled = false = 这台不用 Apple ID 登录（Windows / 证书模式）
