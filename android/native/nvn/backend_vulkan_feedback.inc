@@ -57,33 +57,54 @@ static int feedback_add(struct nvn_gpu_cmd_s *c, struct nvn_gpu_view_s *v, uint3
     f->source = v; f->next = c->feedback; c->feedback = f;
     return 1;
 }
+// 同一段里同一张源图已经有过快照：复用那张图（重新拷一遍），不再每笔新建。快照图由本段的 REF_TEX 保活到 fence，
+// 段内只要有一笔反馈采样就新建一张整图大小的快照，长段里（读档时一段录几百笔）会攒到几 GB：
+// 1024x1024x8 R16 四级的影子图每笔 21 MiB，一段 182 笔 = 3.8 GB（真机读档时观察到：悬着的引用全在正在录制的这一段上）。
+// 复用是安全的：前面那几笔对旧内容的采样在命令顺序上更早，image_barrier 从 GENERAL 出来等 ALL_COMMANDS（WAR 只要执行依赖）；
+// 新一笔的描述符随 desc_dirty 重写成本笔的快照视图。只比指针、核对形状，不解引用 o->snap_src。
+static struct nvn_gpu_tex_s *feedback_snap_reuse(struct nvn_gpu_cmd_s *c, struct feedback_copy *f, struct nvn_gpu_tex_s *s) {
+    for (struct feedback_copy *o = c->feedback; o; o = o->next) {
+        struct nvn_gpu_tex_s *t = o->snap;
+        if (o == f || !t || o->snap_src != s) continue;
+        if (t->format == s->format && t->samples == s->samples && t->w == s->w && t->h == s->h && t->depth == s->depth &&
+            t->layers == s->layers && t->levels == s->levels && t->target == s->target && t->aspect == s->aspect) return t;
+    }
+    return NULL;
+}
 static int feedback_make(struct nvn_gpu_cmd_s *c, struct feedback_copy *f) {
     struct nvn_gpu_view_s *v = f->source;
     struct nvn_gpu_tex_s *s = v->tex;
-    nvn_gpu_tex_desc td = {0};
-    td.d.target = s->target; td.d.format = s->nvn_format;
-    td.d.width = s->w; td.d.height = s->h; td.d.depth = s->depth;
-    td.d.levels = s->levels; td.d.samples = s->samples;
-    td.usage = NVN_GPU_TEX_SAMPLED | ((s->view_fmt || s->fmt_n) ? NVN_GPU_TEX_VIEW_FMT : 0);   // 列表模式的源（保 UBWC）也要能按孪生格式看
-    nvn_gpu_tex t = NULL; nvn_gpu_err err = {0};
-    nvn_gpu_rc r = nvn_gpu_tex_create(&td, &t, &err);
-    if (!nvn_gpu_ok(r)) { set_sticky(c, r.code, "feedback texture: %s", err.why); return 0; }
-    cmd_ref(c, t, REF_TEX);
-    if (!rc_is(c->sticky, NVN_GPU_OK)) { nvn_gpu_tex_release(t); return 0; }
-    // 深度 / 多采样保持物理格式和样本数，绝不 resolve / 近似格式替代。
-    if (t->format != s->format || t->samples != s->samples) {
-        set_sticky(c, NVN_GPU_E_UNSUPPORTED, "feedback snapshot format/sample mismatch"); nvn_gpu_tex_release(t); return 0;
-    }
+    struct nvn_gpu_tex_s *t = feedback_snap_reuse(c, f, s);
+    const int fresh = !t;   // 新建的要在本函数末尾 release（段引用保活）；复用的不归本函数管
+    if (fresh) {
+        nvn_gpu_tex_desc td = {0};
+        td.d.target = s->target; td.d.format = s->nvn_format;
+        td.d.width = s->w; td.d.height = s->h; td.d.depth = s->depth;
+        td.d.levels = s->levels; td.d.samples = s->samples;
+        td.usage = NVN_GPU_TEX_SAMPLED | ((s->view_fmt || s->fmt_n) ? NVN_GPU_TEX_VIEW_FMT : 0);   // 列表模式的源（保 UBWC）也要能按孪生格式看
+        nvn_gpu_tex th = NULL; nvn_gpu_err err = {0};
+        nvn_gpu_rc r = nvn_gpu_tex_create(&td, &th, &err);
+        if (!nvn_gpu_ok(r)) { set_sticky(c, r.code, "feedback texture: %s", err.why); return 0; }
+        t = th;
+        cmd_ref(c, t, REF_TEX);
+        if (!rc_is(c->sticky, NVN_GPU_OK)) { nvn_gpu_tex_release(t); return 0; }
+        // 深度 / 多采样保持物理格式和样本数，绝不 resolve / 近似格式替代。
+        if (t->format != s->format || t->samples != s->samples) {
+            set_sticky(c, NVN_GPU_E_UNSUPPORTED, "feedback snapshot format/sample mismatch"); nvn_gpu_tex_release(t); return 0;
+        }
+        if (g_draw_tm) __atomic_fetch_add(&g_feedback_snap[0], 1, __ATOMIC_RELAXED);
+    } else if (g_draw_tm) __atomic_fetch_add(&g_feedback_snap[1], 1, __ATOMIC_RELAXED);
+    f->snap = t; f->snap_src = s;   // 新建的此刻已登记进本段引用表，下面失败也活到段结束
     VkImageViewCreateInfo vi = {0}; vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     vi.image = t->image; vi.viewType = v->type; vi.format = v->format; vi.components = v->components;
     vi.subresourceRange = (VkImageSubresourceRange){v->aspect, v->base_level, v->levels, v->base_layer, v->layers};
     VkResult vr = vkCreateImageView(g.d, &vi, NULL, &f->view);
     if (vr != VK_SUCCESS) {
-        set_sticky(c, NVN_GPU_E_UNSUPPORTED, "feedback vkCreateImageView failed %d", vr); nvn_gpu_tex_release(t); return 0;
+        set_sticky(c, NVN_GPU_E_UNSUPPORTED, "feedback vkCreateImageView failed %d", vr); if (fresh) nvn_gpu_tex_release(t); return 0;
     }
     image_barrier(c, s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     image_barrier(c, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    if (!rc_is(c->sticky, NVN_GPU_OK)) { nvn_gpu_tex_release(t); return 0; }
+    if (!rc_is(c->sticky, NVN_GPU_OK)) { if (fresh) nvn_gpu_tex_release(t); return 0; }
     for (uint32_t lv = v->base_level; lv < v->base_level + v->levels; lv++) {
         // 3D 图像的 arrayLayer 必须为 0；范围位于 z，保留整级的全部切片。
         const int image3d = s->target == NVN_TEXTURE_TARGET_3D;
@@ -101,7 +122,7 @@ static int feedback_make(struct nvn_gpu_cmd_s *c, struct feedback_copy *f) {
     }
     image_barrier(c, s, VK_IMAGE_LAYOUT_GENERAL);
     image_barrier(c, t, VK_IMAGE_LAYOUT_GENERAL);
-    nvn_gpu_tex_release(t); // cmd 引用保活到 fence；raw view 在 finish_cmd 中先释放
+    if (fresh) nvn_gpu_tex_release(t); // cmd 引用保活到 fence；raw view 在 finish_cmd 中先释放
     return rc_is(c->sticky, NVN_GPU_OK);
 }
 static int feedback_restart(struct nvn_gpu_cmd_s *c, uint16_t read_mask, int copy) {

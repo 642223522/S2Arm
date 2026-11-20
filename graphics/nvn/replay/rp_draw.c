@@ -1777,6 +1777,7 @@ static void dump_chain(uint64_t present_serial, uint64_t frame, uint64_t *fence)
 // 取计算程序 → 落地待折清除并结束通道（派发在通道外，且可能读写那些目标）→ 绑定 NVN 阶段 5 的资源 → 派发。
 // 范围：直接与池镜像参数的原生间接派发；常量缓冲、驱动段、按槽绑定的存储缓冲、单张组合贴图与图像。贴图数组：记账跳过。
 static nvn_hmap g_cpipes = {.klen = 8};   // 计算程序 → 计算管线
+static nvn_hmap g_cpipe_bad = {.klen = 16};   // 建管线失败过的（计算程序, 着色器）：失败是确定的，不再每次派发同步重建（读档后每帧 26 次 × ~27 毫秒）
 // 计算存储图像的视图格式：按着色器的声明取，不按贴图自己的格式（对齐 Ryujinx TextureBindingsManager 按绑定的格式取贴图 / 视图，iOS nvn_mtl.m img_fit）。
 //   声明 Unknown：数值类（dcls：0 浮点，1 uint，2 sint）和贴图相同就用贴图的格式；不同就取同字节数、目标数值类的格式
 //     （RG32F 被按位读成 uint → RG32UI，原始位不变）。Vulkan 要求视图数值类与 Sampled Type 一致（VUID-07753）。
@@ -1953,8 +1954,18 @@ void rp_dispatch(nvn_gpu_cmd c, const p_dispatch *dp, const void *rec) {
     }
     uint64_t key = (uint64_t)(uintptr_t)pg; nvn_gpu_pipe cp = nvn_hm_get(&g_cpipes, &key);
     if (!cp) {
+        uint64_t bkey[2] = {(uint64_t)(uintptr_t)pg, (uint64_t)(uintptr_t)pg->sh[0]};
+        if (nvn_hm_get(&g_cpipe_bad, bkey)) { nvn_unimpl("gpu", "compute_pipeline", rec); g_skips++; goto done; }
         nvn_gpu_stage_desc cs; memset(&cs, 0, sizeof cs); cs.sh = pg->sh[0]; nvn_gpu_err err = {0};
-        if (!nvn_gpu_ok(nvn_gpu_cpipe_get(&cs, NVN_GPU_PIPE_SYNC, &cp, &err)) || !cp) { if (nvn_unimpl("gpu", "compute_pipeline", rec) == 1) nvn_plat_log(NVN_PLAT_LOG_RED, "gpu", err.why); g_skips++; goto done; }
+        nvn_gpu_rc cr = nvn_gpu_cpipe_get(&cs, NVN_GPU_PIPE_SYNC, &cp, &err);
+        if (!nvn_gpu_ok(cr) || !cp) {
+            if (nvn_unimpl("gpu", "compute_pipeline", rec) == 1) nvn_plat_log(NVN_PLAT_LOG_RED, "gpu", err.why);
+            if (cr.code != NVN_GPU_E_STOPPED) {   // 会话关闭中不算确定失败
+                nvn_hm_put(&g_cpipe_bad, bkey, (void *)(uintptr_t)1);
+                static unsigned said; if (said < 16) { said++; char b[320]; snprintf(b, sizeof b, "计算管线建失败，记下不再重建：程序 %p 着色器 %p 码 %d：%s（第 %u 个失败的程序）", (void *)pg, (void *)pg->sh[0], cr.code, err.why, said); nvn_plat_log(NVN_PLAT_LOG_RED, "gpu", b); }
+            }
+            g_skips++; goto done;
+        }
         nvn_hm_put(&g_cpipes, &key, cp);
     }
     struct timespec tsd; clock_gettime(CLOCK_MONOTONIC, &tsd); uint64_t b0 = (uint64_t)tsd.tv_sec * 1000000000ull + (uint64_t)tsd.tv_nsec;
@@ -1988,4 +1999,4 @@ void rp_draw_reset(void) { rp_access_reset(&g_compute_access); g_compute_access_
     rp_tm_reset();   // 分时抽样的开关也重新读（#1103）
     memset(g_ind_drv_ok, 0, sizeof g_ind_drv_ok); memset(g_ind_drv, 0, sizeof g_ind_drv); memset(g_lb, 0, sizeof g_lb);   // #941
     memset(g_hzt, 0, sizeof g_hzt); g_hzi = 0; g_hz_mask = 0; g_hz_on = hz_mode(nvn_plat_flag("nvk_binst_hoist", 2));   // 批量拷开关会话打开时读定
-    free(g_cpipes.keys); free(g_cpipes.vals); nvn_hm_init(&g_cpipes, 8); g_prog = NULL; g_pipe = NULL; g_pipe_cmd = NULL; g_draws = g_skips = 0; g_prim = ~0u; g_quads = -1; g_face = -1; g_ms_off = 0; }
+    free(g_cpipes.keys); free(g_cpipes.vals); nvn_hm_init(&g_cpipes, 8); free(g_cpipe_bad.keys); free(g_cpipe_bad.vals); nvn_hm_init(&g_cpipe_bad, 16); g_prog = NULL; g_pipe = NULL; g_pipe_cmd = NULL; g_draws = g_skips = 0; g_prim = ~0u; g_quads = -1; g_face = -1; g_ms_off = 0; }
