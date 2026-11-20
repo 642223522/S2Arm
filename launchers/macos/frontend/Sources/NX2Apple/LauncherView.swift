@@ -86,7 +86,7 @@ struct LauncherView: View {
                 ExportSessionView(model: model, covers: covers, session: session, run: run, install: { installFor = $0 }, freeSpace: { spaceFor = $0 }, uiLanguage: uiLanguage)
             } else if let session = model.session, session.export == nil, !model.sessionHidden, !model.isInline(session) {
                 JobSessionView(model: model, session: session)
-            } else if let phone = model.phoneSession, phone.kind == .installUpdate, !model.phoneHidden {   // 更新 iPhone 上的 S2Arm（手机槽）：主槽没占着整页时整页显示
+            } else if let phone = model.phoneSession, phone.wholePage, !model.phoneHidden {   // 更新 iPhone 上的 S2Arm / 更新所选没走成（手机槽）：主槽没占着整页时整页显示
                 JobSessionView(model: model, session: phone)
             } else if let id = model.exportFor, let game = model.games.first(where: { $0.id == id }) {
                 ExportView(model: model, covers: covers, game: game) { installFor = game.id }
@@ -650,7 +650,7 @@ struct LauncherView: View {
                 .accessibilityLabel(loc.t("home.currentTask") + " · " + play.name)
         }
         // 收起的、或被主槽整页（出包进度等）/ 一局的页面压着的「更新 iPhone 上的 S2Arm」：回到它的进度页
-        if let phone = model.phoneSession, phone.kind == .installUpdate,
+        if let phone = model.phoneSession, phone.wholePage,
            model.phoneHidden || model.playVisible || (model.session.map { !model.sessionHidden && ($0.export != nil || !model.isInline($0)) } ?? false) {
             Button { model.phoneHidden = false; model.sessionHidden = true; model.playHidden = true } label: {
                 Label(phone.name, systemImage: "iphone").font(.manrope(12.5, .semibold)).lineLimit(1)

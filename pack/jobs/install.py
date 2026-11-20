@@ -1823,15 +1823,19 @@ def readiness_windows(c, gid):
                 account=(cert or {}).get("teamName") or "", ipaPath=ipa_path, imgPath=phone_img_path(c, gid), shaderCachePath=phone_shader_cache(c, gid), signMode="devcert" if use_cert else "appleId", devcert=cert)
 
 
-def devpush_client(c, udid, bid, work):
-    """s2a-devpush（house_arrest + AFC）：两端都随发版带，devicectl 没有的「删容器里的目录」「整目录拉回」走它"""
+def devpush_client(c, udid, bid, work, device=None):
+    """s2a-devpush（house_arrest + AFC）：两端都随发版带，devicectl 没有的「删容器里的目录」「整目录拉回」走它。
+    device = Mac 上这台的 CoreDevice 标识：写文件时 s2a-devpush 找不到设备（usbmuxd 那一刻列不出、devicectl 连着，#1756）就整份改走 devicectl"""
     sys.path.insert(0, str(c.engine / "tools"))
     import push_pack as P
     prebuilt = c.engine / "Binaries/Prepare/devpush" / P.EXE
     exe = P.devpush_path(str(prebuilt) if prebuilt.is_file() else None, c.env())
     if not exe:
         raise Failure("找不到 s2a-devpush：请重新安装完整的 S2Arm。", code="tool_missing")
-    return P.Devpush(exe, udid, bid, work, c.env())
+    cl = P.Devpush(exe, udid, bid, work, c.env())
+    if device:
+        cl.fallback = lambda src, rel: P.Devicectl(device, bid, work, env=c.env()).put(src, rel)
+    return cl
 
 
 class MacPhone:
@@ -1912,7 +1916,7 @@ class MacPhone:
         return r
 
     def client(self, work):
-        return devpush_client(self.c, self.udid, self.bid, work)
+        return devpush_client(self.c, self.udid, self.bid, work, device=self.dev["id"])   # #1756：usbmuxd 看不到这台时整份改走 devicectl
 
     def purge(self, g):
         with tempfile.TemporaryDirectory(dir=self.c.private) as w:
@@ -3023,6 +3027,11 @@ def push_selected(c):
                 rows.append(dict(gameId=g, ok=False, code="job_failed", message=str(e)[:300]))
             finally:
                 atomic(state_path, state)
+    # 有款没推成：整单按失败报（#1756：原先照报「完成」，两端界面都不看逐款结果，进度条跑完、手机上还是「需要导入」、总控台还是「更新」）。
+    #   原因用第一款失败的原话与错误码（已是给玩家的话）；失败页「重试」再推一轮，推成的那几款程序包已在手机上，按记录跳过
+    if state["failed"]:
+        first = next(r for r in rows if not r["ok"])
+        raise Failure(first["message"], code=first["code"])
     return dict(games=rows, done=len(state["done"]), failed=len(state["failed"]), remaining=len(games) - len(state["done"]))
 
 

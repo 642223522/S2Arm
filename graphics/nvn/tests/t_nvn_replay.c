@@ -32,26 +32,30 @@ static int g_red_lines; static char g_last_red[200];
 static int g_arena_truncated_lines;
 static int g_arena_detail_lines; static char g_arena_detail[256]; static char g_arena697_lines[32][256];
 static char g_ps_lines[8][320]; static int g_ps_n;   // 池统计行（cls "poolstats"）收下来给 t_pool_stats 核
+static char g_tdiag_lines[32][320], g_tdiag_summary[320]; static int g_tdiag_n, g_tdiag_summaries, g_flag_tdiag;
 static int g_csd_lines; static char g_csd_line[256];   // 类型 3 句柄的采样器号没登记、绑默认采样器：每局首次的那一行（#1594 片 6）
 static int g_ubo_zero_lines; static char g_ubo_zero_line[256];   // 常量缓冲句柄指向没登记的号、绑零贴图：每局首次的那一行（#1594 片 4）
 static int g_dl_unread, g_dl_lines;   // 逐笔日志（cls "draw"）：含「读不到」的行数 / 含「存」字段的贴图行数
-void nvn_plat_log(int level, const char *cls, const char *text) { if (cls && text && !strcmp(cls, "draw")) { if (strstr(text, "读不到")) g_dl_unread++; if (strstr(text, " 存")) g_dl_lines++; } if (level == NVN_PLAT_LOG_INFO && text && strstr(text, "类型 3 句柄的采样器号")) { g_csd_lines++; snprintf(g_csd_line, sizeof g_csd_line, "%s", text); } if (level == NVN_PLAT_LOG_INFO && text && strstr(text, "常量缓冲句柄指向没登记的贴图号")) { g_ubo_zero_lines++; snprintf(g_ubo_zero_line, sizeof g_ubo_zero_line, "%s", text); } if (cls && !strcmp(cls, "poolstats")) { if (g_ps_n < 8) snprintf(g_ps_lines[g_ps_n], 320, "%s", text); g_ps_n++; return; } if(level == NVN_PLAT_LOG_RED && strstr(text,"后续不同原因详情省略（最多8）"))g_arena_truncated_lines++; if (level == NVN_PLAT_LOG_RED && strstr(text,"arena_alloc_failed rc=")) { if(g_arena_detail_lines<32)snprintf(g_arena697_lines[g_arena_detail_lines],256,"%s",text); g_arena_detail_lines++; snprintf(g_arena_detail,sizeof g_arena_detail,"%s",text); } if (level == NVN_PLAT_LOG_RED) { g_red_lines++; snprintf(g_last_red, sizeof g_last_red, "%s", text); } }
+void nvn_plat_log(int level, const char *cls, const char *text) { if (cls && text && !strcmp(cls, "draw")) { if (strstr(text, "读不到")) g_dl_unread++; if (strstr(text, " 存")) g_dl_lines++; } if (cls && !strcmp(cls, "tex-reupload-summary")) { snprintf(g_tdiag_summary, sizeof g_tdiag_summary, "%s", text); g_tdiag_summaries++; return; } if (cls && !strcmp(cls, "tex-reupload")) { if (g_tdiag_n < 32) snprintf(g_tdiag_lines[g_tdiag_n], 320, "%s", text); g_tdiag_n++; return; } if (level == NVN_PLAT_LOG_INFO && text && strstr(text, "类型 3 句柄的采样器号")) { g_csd_lines++; snprintf(g_csd_line, sizeof g_csd_line, "%s", text); } if (level == NVN_PLAT_LOG_INFO && text && strstr(text, "常量缓冲句柄指向没登记的贴图号")) { g_ubo_zero_lines++; snprintf(g_ubo_zero_line, sizeof g_ubo_zero_line, "%s", text); } if (cls && !strcmp(cls, "poolstats")) { if (g_ps_n < 8) snprintf(g_ps_lines[g_ps_n], 320, "%s", text); g_ps_n++; return; } if(level == NVN_PLAT_LOG_RED && strstr(text,"后续不同原因详情省略（最多8）"))g_arena_truncated_lines++; if (level == NVN_PLAT_LOG_RED && strstr(text,"arena_alloc_failed rc=")) { if(g_arena_detail_lines<32)snprintf(g_arena697_lines[g_arena_detail_lines],256,"%s",text); g_arena_detail_lines++; snprintf(g_arena_detail,sizeof g_arena_detail,"%s",text); } if (level == NVN_PLAT_LOG_RED) { g_red_lines++; snprintf(g_last_red, sizeof g_last_red, "%s", text); } }
 static int g_flag_finish_lag;   // 用例设：开关 nvk_finish_lag 的值
 static int g_flag_spill = 1;    // 用例设：开关 nvk_spill（缺省同产品：开）
 static int g_flag_sync_lag;     // 用例设：开关 nvk_sync_lag 的值（产品缺省 1＝允许一格在飞；用例固定 0，测的是「真等」这条契约）
 static int g_flag_binst_hoist = -1;   // 用例设：开关 nvk_binst_hoist（-1 = 缺省）
 static int g_flag_state_keep = 1, g_flag_rt_cont = 1, g_flag_clear_park = 1, g_flag_pass_area = 1;   // 用例设：开关 nvk_state_keep / nvk_rt_cont / nvk_clear_park / nvk_pass_area 的值（缺省同产品：都开）
 static int g_flag_pool_memo = 1;   // 用例设：开关 nvk_pool_memo 的值（缺省同产品：开）；备忘每 4096 次查找才重读一次，换值后要用 pm_flag() 推一下
+static int g_flag_land_merge = 1;  // 用例设：开关 nvk_land_merge 的值（缺省同产品：开）；每 256 次登记才重读一次，换值后要用 rp_test_gw_merge_reload() 推一下
 static int g_flag_buf_dirtylog = -1, g_dirtylog_dflt = -1;   // 用例设：开关 nvk_buf_dirtylog（-1 = 没设，取产品写的缺省；--dirtylog-off 整套以 0 跑一遍）。受跟踪的池都有替身日志，见「脏页追加日志替身」
 static int g_flag_vf_key = 1;      // 用例设：开关 nvk_vf_key 的值（缺省同产品：视图表按存储认视图）；每 256 次取视图重读一次，换值后要用 vf_push() 推一下
 static int g_flag_pool_stats;   // 用例设：开关 pool_stats（缺省同产品：关）
 static int g_diag_frames;
 void s2a_direct_diag_frame(void) { g_diag_frames++; }
 int nvn_plat_flag(const char *name, int dflt) {
+    if (!strcmp(name, "nvk_tex_reupload_diag")) return g_flag_tdiag;
     if (!strcmp(name, "nvk_buf_dirtylog")) return g_flag_buf_dirtylog < 0 ? dflt : g_flag_buf_dirtylog;
     if (!strcmp(name, "pool_stats")) return g_flag_pool_stats;
     if (!strcmp(name, "nvk_spill")) return g_flag_spill;
     if (!strcmp(name, "nvk_pool_memo")) return g_flag_pool_memo;
+    if (!strcmp(name, "nvk_land_merge")) return g_flag_land_merge;
     if (!strcmp(name, "nvk_vf_key")) return g_flag_vf_key;
     if (!strcmp(name, "nvk_finish_lag")) return g_flag_finish_lag;
     if (!strcmp(name, "nvk_sync_lag")) return g_flag_sync_lag;
@@ -192,13 +196,29 @@ uint32_t nvn_gpu_format_caps(uint32_t f) { if (f == g_caps_nosample) return 0;
     if (f == g_caps_noblend) c &= ~(uint32_t)NVN_GPU_FMT_BLEND;
     for (int k = 0; k < 4; k++) if (g_caps_readback[k] && f == g_caps_readback[k]) c |= NVN_GPU_FMT_READBACK;
     return c; }
+static int g_window_capture; static uint8_t g_window_linear[512], g_window_raw[512];
+static uint64_t g_dirty_now = 100, g_dirty_written; static int g_protects, g_tdiag_race; static const void *g_prot_addr; static size_t g_prot_len;   // 最近一次保护的范围
+static const void *g_prot_log[8]; static size_t g_prot_llen[8]; static int g_prot_n;   // 每次保护的范围（前 8 次），用例核「都只罩池内窗口」
 void nvn_gpu_tex_upload(nvn_gpu_cmd c, nvn_gpu_tex t, uint32_t level, uint32_t layer, const NVNcopyRegion *r, const void *src, uint64_t row_bytes, uint64_t image_bytes) {
     (void)t; if (g_nup == 16) return;
     g_up[g_nup].pre = c->is_pre; g_up[g_nup].level = level; g_up[g_nup].layer = layer; g_up[g_nup].pitch = row_bytes; g_up[g_nup].img = image_bytes; g_up[g_nup].y = r->yoffset; g_up[g_nup].w = r->width; g_up[g_nup].h = r->height;
-    memcpy(g_up[g_nup].first, src, image_bytes < 64 ? image_bytes : 64); g_nup++; }
+    memcpy(g_up[g_nup].first, src, image_bytes < 64 ? image_bytes : 64);
+    if (g_window_capture && image_bytes == sizeof g_window_linear) memcpy(g_window_linear, src, sizeof g_window_linear);
+    g_nup++;
+    if (g_tdiag_race) { g_dirty_written = ++g_dirty_now; g_tdiag_race = 0; } }
+// 块线性上传替身：快照调用参数；能力开时回放必须传原始存储，不应先在线程解排。
+static int g_block_uploads;
+static struct { uint32_t level, layer; uint64_t bytes; const void *src; nvn_texlayout layout; } g_block_call[16];
+static int g_block_rc;   // 用例设非 0：替身报该错误码（S2：后端校验失败回 rc，回放层走 CPU 具名回退）
+nvn_gpu_rc nvn_gpu_tex_upload_blocklinear(nvn_gpu_cmd c, nvn_gpu_tex t, uint32_t level, uint32_t layer, const nvn_texlayout *L, const void *src, uint64_t bytes) {
+    (void)c; (void)t;
+    if (g_window_capture && bytes == sizeof g_window_raw) memcpy(g_window_raw, src, sizeof g_window_raw);   // 契约：入口返回前必须拍下源字节
+    if (g_block_uploads < 16) { g_block_call[g_block_uploads].level = level; g_block_call[g_block_uploads].layer = layer; g_block_call[g_block_uploads].bytes = bytes; g_block_call[g_block_uploads].src = src; g_block_call[g_block_uploads].layout = *L; }
+    g_block_uploads++;
+    return (nvn_gpu_rc){ .code = g_block_rc };
+}
 // 脏页替身：代号由用例推进
-static uint64_t g_dirty_now = 100, g_dirty_written; static int g_protects; static const void *g_prot_addr; static size_t g_prot_len;   // 最近一次保护的范围
-void nvn_dirty_protect(const void *addr, size_t len) { g_prot_addr = addr; g_prot_len = len; g_protects++; }
+void nvn_dirty_protect(const void *addr, size_t len) { g_prot_addr = addr; g_prot_len = len; if (g_prot_n < 8) { g_prot_log[g_prot_n] = addr; g_prot_llen[g_prot_n] = len; } g_prot_n++; g_protects++; }
 void nvn_dirty_stats(uint64_t *f, uint64_t *p) { *f = 0; *p = 0; }
 static uint64_t g_dirty_map = 1; uint64_t nvn_dirty_mapping_generation(void) { return g_dirty_map; }
 static int g_block_unreliable;
@@ -304,10 +324,11 @@ static uint8_t *g_block_mem;
 static uint64_t g_block_gen[BLOCK_TEST_PAGES], g_block_pages_examined;
 size_t nvn_dirty_page_size(void) { return PG; }
 // 不受写跟踪的池（用例用 g_pg_tracked=0 设）没有跟踪区间：真实现里也是返回 NULL，靠它判「每次使用都整段同步」。
+static size_t g_span_len = BLOCK_TEST_PAGES * PG;   // 用例收窄：登记的「池」比 g_block_mem 段短，越过池尾的查询没跟踪句柄
 const void *nvn_dirty_span(const void *addr, size_t len) {
     uintptr_t a = (uintptr_t)addr, e = a + len;
     if (!g_pg_tracked || e < a) return NULL;
-    if (g_block_mem && a >= (uintptr_t)g_block_mem && e <= (uintptr_t)g_block_mem + BLOCK_TEST_PAGES * PG) return g_block_mem;
+    if (g_block_mem && a >= (uintptr_t)g_block_mem && e <= (uintptr_t)g_block_mem + g_span_len) return g_block_mem;
     return a >= (uintptr_t)g_pmem && e <= (uintptr_t)g_pmem + sizeof g_pmem ? g_pmem : NULL;
 }
 // 脏页位图替身：g_wp_on 开着时按 g_wp_dirty（g_block_mem 起算的页号）答，关着答 -1（「位图不可用」→ 调用方整张传，老用例行为不变）
@@ -1674,6 +1695,116 @@ static void t_cpu_upload(void) {   // 存储里是 CPU 写的数据：首次使�
     nvn_be_tex_release(&t);
     CHECK(g_tex_releases - r0 == 1 && rp_res_tex_built() == 0);                     // CPU 内容贴图不进共用表：对象 Finalize 即放
     nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+}
+
+// 能力位开启时原始块线性数据逐级交给后端；线性贴图仍走 CPU 行拷。
+static void t_gpu_deswizzle_route(void) {
+    nvn_be_sub_begin(); res_fresh(); g_caps_extra |= NVN_GPU_CAP_GPU_DESWIZZLE; g_block_uploads = 0;
+    tex_t t = mk_tex(60001, 0, NVN_FORMAT_RGBA8, 8, 8, 2, 0);
+    memset(t.mem, 0x5a, t.L.size);
+    CHECK(rp_tex_resolve(&t, &g_fake_cmd) != NULL);
+    CHECK(g_block_uploads == 2 && g_nup == 0);
+    CHECK(g_block_call[0].level == 0 && g_block_call[1].level == 1 && g_block_call[0].layer == 0);
+    CHECK(g_block_call[0].src == t.mem && g_block_call[0].bytes == t.L.size && g_block_call[0].layout.layer_size == t.L.layer_size);
+    nvn_be_tex_release(&t); res_fresh(); g_block_uploads = 0;
+    tex_t lin = mk_tex(60002, 0, NVN_FORMAT_R8, 8, 8, 1, NVN_TEXTURE_FLAGS_LINEAR);
+    memset(lin.mem, 0x33, lin.L.size);
+    CHECK(rp_tex_resolve(&lin, &g_fake_cmd) != NULL && g_block_uploads == 0 && g_nup == 1);
+    nvn_be_tex_release(&lin); res_fresh(); g_caps_extra &= ~NVN_GPU_CAP_GPU_DESWIZZLE; g_block_uploads = 0;
+    tex_t off = mk_tex(60003, 0, NVN_FORMAT_RGBA8, 8, 8, 1, 0); memset(off.mem, 0x37, off.L.size);
+    CHECK(rp_tex_resolve(&off, &g_fake_cmd) != NULL && g_block_uploads == 0 && g_nup == 1);
+    nvn_be_tex_release(&off); nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+}
+
+// 在途 GPU 写的池镜像比游戏内存更新；不能从旧 CPU 字节建图或当成零。
+static void t_gpu_deswizzle_pending(void) {
+    extern uint64_t rp_buf_gpu_write_note(uint64_t, uint64_t, uint64_t *);
+    extern void rp_buf_gpu_write_land(uint64_t, uint64_t, int);
+    nvn_be_shutdown_session(); res_fresh(); nvn_unimpl_reset(); g_buf_cpu_auto = 1; g_pg_tracked = 0;
+    g_caps_extra |= NVN_GPU_CAP_GPU_DESWIZZLE; g_block_uploads = 0;
+    nvn_be_pool_add(g_tmem, sizeof g_tmem); nvn_be_sub_begin();
+    uint64_t base = (uint64_t)(uintptr_t)g_tmem, key = 0;
+    nvn_gpu_buf mirror = NULL; CHECK(rp_buf_resolve(&g_fake_cmd, base, sizeof g_tmem, &mirror, NULL) && mirror && mirror->cpu);
+    uint64_t id = rp_buf_gpu_write_note(base, 16, &key); CHECK(id && key == base);
+    tex_t a = mk_tex(60011, 0, NVN_FORMAT_RGBA8, 8, 8, 1, 0); a.has_layout = 1; memset(a.mem, 0x5a, a.L.size);
+    tex_t b = mk_tex(60012, 0, NVN_FORMAT_RGBA8, 8, 8, 1, NVN_TEXTURE_FLAGS_COMPRESSIBLE);
+    tex_t other = mk_tex(60013, 8192, NVN_FORMAT_RGBA8, 8, 8, 1, 0); other.has_layout = 1; memset(other.mem, 0x62, other.L.size);
+    int before = g_block_uploads, linear_before = g_nup;
+    CHECK(rp_tex_resolve(&a, &g_fake_cmd) == NULL && g_block_uploads == before);
+    CHECK(rp_tex_resolve(&b, &g_fake_cmd) == NULL && g_block_uploads == before && g_nup == linear_before);
+    CHECK(nvn_unimpl_count("tex", "gpu_deswizzle_pending_pool_write") == 2);
+    CHECK(rp_tex_resolve(&other, &g_fake_cmd) != NULL && g_block_uploads == before + 1);
+    if (mirror && mirror->cpu) memset(mirror->cpu, 0x7b, 16);
+    if (id) rp_buf_gpu_write_land(key, id, 1);
+    CHECK(rp_tex_resolve(&a, &g_fake_cmd) != NULL && g_block_uploads == before + 2 && a.mem[0] == 0x7b);
+    CHECK(rp_tex_resolve(&b, &g_fake_cmd) != NULL && g_block_uploads == before + 3);
+    nvn_be_tex_release(&a); nvn_be_tex_release(&b); nvn_be_tex_release(&other);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK); nvn_be_pool_del(g_tmem);
+    g_caps_extra &= ~NVN_GPU_CAP_GPU_DESWIZZLE; g_buf_cpu_auto = 0; g_pg_tracked = 1; nvn_be_shutdown_session(); res_fresh();
+}
+
+// 后端块线性上传报 rc（校验 / 暂存失败不粘滞命令缓冲）：回放具名回退 CPU，贴图照传且 uploaded 置位（rp_res_uploads 只在置位时 +1）。
+// 负对照：upload_all 不看 rc 直接 goto done → g_nup 不涨但 resolve 照样成，断言红。
+static void t_gpu_deswizzle_backend_fail(void) {
+    extern uint64_t rp_res_uploads(void);
+    nvn_be_sub_begin(); res_fresh(); nvn_unimpl_reset();
+    g_caps_extra |= NVN_GPU_CAP_GPU_DESWIZZLE; g_block_uploads = 0; g_nup = 0; g_block_rc = NVN_GPU_E_ARG;
+    tex_t a = mk_tex(60020, 0, NVN_FORMAT_RGBA8, 8, 8, 1, 0); a.has_layout = 1; memset(a.mem, 0x5a, a.L.size);
+    uint64_t up0 = rp_res_uploads();
+    CHECK(rp_tex_resolve(&a, &g_fake_cmd) != NULL && g_block_uploads == 1 && g_nup == 1);
+    CHECK(nvn_unimpl_count("tex", "gpu_deswizzle_backend_fail") == 1 && rp_res_uploads() == up0 + 1);
+    nvn_be_tex_release(&a); g_block_rc = 0; g_caps_extra &= ~NVN_GPU_CAP_GPU_DESWIZZLE;
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+}
+
+// 诊断只认完整、稳定的原始内容；未跟踪或上传期间有写不能算内容未变。
+static void t_tex_reupload_diag(void) {
+    nvn_be_sub_begin(); res_fresh(); g_flag_tdiag = 1; g_tdiag_n = g_tdiag_summaries = 0; g_pg_tracked = 1;
+    g_block_mem = (uint8_t *)(((uintptr_t)g_block_arena + BLOCK_TEST_ALIGN - 1) & ~(uintptr_t)(BLOCK_TEST_ALIGN - 1));
+    tex_t t = mk_tex(60101, 0, NVN_FORMAT_RGBA8, 8, 8, 1, 0); t.mem = g_block_mem; memset(t.mem, 0x55, t.L.size);
+    CHECK(rp_tex_resolve(&t, &g_fake_cmd) != NULL && g_tdiag_n == 1 && strstr(g_tdiag_lines[0], "kind=first state=initial"));
+    g_dirty_written = g_dirty_now + 1; g_dirty_now += 2; g_block_gen[0] = g_dirty_written;   // 真写同时推进被写页的代号（脏页日志按它出事件）
+    CHECK(rp_tex_resolve(&t, &g_fake_cmd) != NULL && g_tdiag_n == 2 && strstr(g_tdiag_lines[1], "kind=repeat state=same"));
+    t.mem[3] ^= 0x7f; g_dirty_written = g_dirty_now + 1; g_dirty_now += 2; g_block_gen[0] = g_dirty_written;
+    CHECK(rp_tex_resolve(&t, &g_fake_cmd) != NULL && g_tdiag_n == 3 && strstr(g_tdiag_lines[2], "kind=repeat state=changed"));
+    g_dirty_written = g_dirty_now + 1; g_dirty_now += 2; g_block_gen[0] = g_dirty_written; g_tdiag_race = 1;
+    CHECK(rp_tex_resolve(&t, &g_fake_cmd) != NULL && g_tdiag_n == 4 && strstr(g_tdiag_lines[3], "state=unknown_race"));
+    g_dirty_written = g_dirty_now + 1; g_dirty_now += 2; g_block_gen[0] = g_dirty_written;
+    CHECK(rp_tex_resolve(&t, &g_fake_cmd) != NULL && g_tdiag_n == 5 && strstr(g_tdiag_lines[4], "state=initial"));
+    g_pg_tracked = 0; g_dirty_written = g_dirty_now + 1; g_dirty_now += 2; g_block_gen[0] = g_dirty_written;
+    CHECK(rp_tex_resolve(&t, &g_fake_cmd) != NULL && g_tdiag_n == 6 && strstr(g_tdiag_lines[5], "state=unknown_untracked"));
+    g_pg_tracked = 1; g_log_fake_on = 1; g_log_unarmed[0] = 1; g_dirty_written = g_dirty_now + 1; g_dirty_now += 2; fake_log_write(0, 0x66);
+    CHECK(rp_tex_resolve(&t, &g_fake_cmd) != NULL && g_tdiag_n == 7 && strstr(g_tdiag_lines[6], "state=unknown_race"));
+    g_log_unarmed[0] = 0; g_log_fake_on = 0;
+    for (int i = 0; i < 7; i++) { char seq[24]; snprintf(seq, sizeof seq, "seq=%d ", i + 1); CHECK(!strncmp(g_tdiag_lines[i], seq, strlen(seq))); }
+    nvn_be_tex_release(&t); nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    res_fresh(); g_flag_tdiag = 0; g_pg_tracked = 1; nvn_be_sub_begin();
+    CHECK(g_tdiag_summaries == 1 && strstr(g_tdiag_summary, "events=7 first=1 repeat=6 initial=2 same=1 changed=1 unknown=3"));
+    tex_t off = mk_tex(60102, 0, NVN_FORMAT_RGBA8, 8, 8, 1, 0); off.mem = g_block_mem; memset(off.mem, 0x44, off.L.size);
+    CHECK(rp_tex_resolve(&off, &g_fake_cmd) != NULL && g_tdiag_n == 7 && g_tdiag_summaries == 1);
+    nvn_be_tex_release(&off); nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    g_block_mem = NULL; res_fresh();
+}
+
+static void t_tex_reupload_diag_gpu_pending(void) {
+    extern uint64_t rp_buf_gpu_write_note(uint64_t, uint64_t, uint64_t *);
+    extern void rp_buf_gpu_write_land(uint64_t, uint64_t, int);
+    nvn_be_shutdown_session(); res_fresh(); g_flag_tdiag = 1; g_tdiag_n = 0; g_pg_tracked = 1; g_buf_cpu_auto = 1;
+    g_block_mem = (uint8_t *)(((uintptr_t)g_block_arena + BLOCK_TEST_ALIGN - 1) & ~(uintptr_t)(BLOCK_TEST_ALIGN - 1));
+    g_tp.mem = g_block_mem; g_tp.size = BLOCK_TEST_PAGES * PG; memset(g_block_mem, 0x32, g_tp.size);
+    nvn_be_pool_add(g_block_mem, g_tp.size); nvn_be_sub_begin();
+    uint64_t base = (uint64_t)(uintptr_t)g_block_mem, key = 0; nvn_gpu_buf mirror = NULL;
+    CHECK(rp_buf_resolve(&g_fake_cmd, base, PG, &mirror, NULL) && mirror && mirror->cpu);
+    tex_t t = mk_tex(60103, 0, NVN_FORMAT_RGBA8, 8, 8, 1, 0); t.mem = g_block_mem; t.has_layout = 1;
+    CHECK(rp_tex_resolve(&t, &g_fake_cmd) && g_tdiag_n == 1 && strstr(g_tdiag_lines[0], "state=initial"));
+    uint64_t id = rp_buf_gpu_write_note(base, 16, &key); CHECK(id && key == base);
+    g_dirty_written = g_dirty_now + 1; g_dirty_now += 2; g_block_gen[0] = g_dirty_written;
+    CHECK(rp_tex_resolve(&t, &g_fake_cmd) && g_tdiag_n == 2 && strstr(g_tdiag_lines[1], "state=unknown_gpu_pending"));
+    if (id) rp_buf_gpu_write_land(key, id, 0);
+    g_dirty_written = g_dirty_now + 1; g_dirty_now += 2; g_block_gen[0] = g_dirty_written;
+    CHECK(rp_tex_resolve(&t, &g_fake_cmd) && g_tdiag_n == 3 && strstr(g_tdiag_lines[2], "state=initial"));
+    nvn_be_tex_release(&t); nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK); nvn_be_pool_del(g_block_mem);
+    g_flag_tdiag = 0; g_buf_cpu_auto = 0; g_block_mem = NULL; nvn_be_shutdown_session(); res_fresh();
 }
 
 static void t_cpu_rules(void) {   // 首用判定的三条分支
@@ -3896,7 +4027,9 @@ static void *pool_del_thread(void *p) {
     pthread_mutex_lock(&g_land_mu); g_destroy_done = 1; pthread_cond_broadcast(&g_land_cv); pthread_mutex_unlock(&g_land_mu);
     return NULL;
 }
+static int g_land_copies; static uint64_t g_land_copied;   // 落地拷贝统计：次数 / 累计字节（同段合并用例核对「合并后只拷一遍」）
 void rp_test_land_copy(void *dst, const void *src, size_t len) {
+    g_land_copies++; g_land_copied += len;
     if (!g_land_pause) { memcpy(dst, src, len); return; }
     size_t half = len / 2; memcpy(dst, src, half);
     pthread_mutex_lock(&g_land_mu); g_land_half = 1; pthread_cond_broadcast(&g_land_cv);
@@ -3953,6 +4086,102 @@ static void t_gpu_land_count_cleanup(void) {
     rp_buf_gpu_write_land(key, a, 1); rp_buf_gpu_write_land(key, b_id, 1);
     CHECK(rp_test_gw_live() == 0);
     nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK); g_pg_tracked = 1; g_buf_cpu_auto = 0; pass_fresh();
+}
+// 同段合并（开关 nvk_land_merge）：同一次提交里与已登记的显卡写相交 / 首尾相接的登记并成一条，落地只拷一遍（真机 3D 那款标题每帧 ~170 条、共 ~920 MB 在落地线程上拷）。
+// 期望值全部手算：池 g_pmem 镜像初值 0x11，「显卡写」的内容用例自己放（0xCC）。
+//   ① 同一段再登记 / 被包含 / 向后重叠 / 首尾相接 → 并成同一条（返回同一登记号，*merged = 1），区间 [64,104) → [64,112)；
+//   ② 有空隙（[120,128)）→ 另起一条（空隙里的镜像字节可能比游戏内存旧，不桥接）；一段同时接上两条 → 三条并成 [64,128)；
+//   ③ 落地：只拷 1 次共 64 字节，游戏内存 [64,128) 变 0xCC、邻接字节 63 / 128 不动；被吞掉那条的登记号迟到落地：不拷、不减账；
+//   ④ 负对照：不同提交 / 不同镜像 / 开关关 / 老入口（不带 merged）→ 都不并；
+//   ⑤ 走真提交路径：同一次提交里三笔登记（[600,616)+[608,624)+[616,640) 重叠）→ 落地 1 次共 40 字节；开关关 → 3 次共 56 字节（16+16+24，落地总字节随条数走）；
+//   ⑥ 已开始落地（拷贝在锁外、拷到一半）的登记不再扩：首尾相接的新登记另起一条，落地的那条撤账后新的一条原样还在。
+static void t_gpu_land_merge(void) {
+    extern void rp_test_gw_merge_reload(void); extern int rp_test_gw_get(uint64_t, int, uint64_t *, uint64_t *);
+    extern uint64_t rp_buf_gpu_write_note2(uint64_t, uint64_t, uint64_t *, int *);
+    pass_fresh(); g_buf_cpu_auto = 1; g_pg_tracked = 0; g_nbw = 0; memset(g_pmem, 0x11, sizeof g_pmem);
+    uint64_t base = (uint64_t)(uintptr_t)g_pmem, key = 0, o = 0, l = 0; int m = 0;
+    g_flag_land_merge = 1; rp_test_gw_merge_reload();
+    nvn_be_pool_add(g_pmem, sizeof g_pmem); nvn_be_sub_begin();
+    nvn_gpu_buf b = NULL; CHECK(rp_buf_resolve(&g_fake_cmd, base, PG, &b, NULL) == 1 && b && b->cpu);
+    if (!b || !b->cpu) return;
+    CHECK(rp_test_gw_live() == 0);
+    const uint64_t id1 = rp_buf_gpu_write_note2(base + 64, 16, &key, &m);
+    CHECK(id1 && key == base && m == 0 && rp_test_gw_live() == 1);
+    CHECK(rp_buf_gpu_write_note2(base + 64, 16, &key, &m) == id1 && m == 1 && rp_test_gw_live() == 1);   // ① 同一段再登记
+    CHECK(rp_buf_gpu_write_note2(base + 70, 4, &key, &m) == id1 && m == 1);                                 // 被包含
+    CHECK(rp_buf_gpu_write_note2(base + 72, 32, &key, &m) == id1 && m == 1);                                // 向后重叠 → [64,104)
+    CHECK(rp_test_gw_get(key, 0, &o, &l) == 1 && o == 64 && l == 40);
+    CHECK(rp_buf_gpu_write_note2(base + 104, 8, &key, &m) == id1 && m == 1);                                // 首尾相接 → [64,112)
+    CHECK(rp_test_gw_get(key, 0, &o, &l) == 1 && o == 64 && l == 48);
+    const uint64_t id5 = rp_buf_gpu_write_note2(base + 120, 8, &key, &m);                                   // ② 有空隙：另起一条
+    CHECK(id5 && id5 != id1 && m == 0 && rp_test_gw_live() == 2 && rp_test_gw_get(key, 0, &o, &l) == 2);
+    CHECK(rp_buf_gpu_write_note2(base + 112, 8, &key, &m) == id1 && m == 1);                                // 一段同时接上两条：三条并一条 [64,128)
+    CHECK(rp_test_gw_get(key, 0, &o, &l) == 1 && o == 64 && l == 64 && rp_test_gw_live() == 1);
+    memset(b->cpu + 64, 0xCC, 64); g_land_copies = 0; g_land_copied = 0;                                   // ③ 落地
+    rp_buf_gpu_write_land(key, id1, 1);
+    CHECK(g_land_copies == 1 && g_land_copied == 64 && rp_test_gw_live() == 0);
+    int bad = 0; for (unsigned i = 64; i < 128; i++) bad += g_pmem[i] != 0xCC;
+    CHECK(bad == 0 && g_pmem[63] == 0x11 && g_pmem[128] == 0x11);
+    rp_buf_gpu_write_land(key, id5, 1);                                                                     // 被吞掉那条的登记号迟到落地
+    CHECK(g_land_copies == 1 && g_land_copied == 64 && rp_test_gw_live() == 0);
+    // ④ 负对照 a：不同提交的登记不并（上一次提交的登记还没落地——显卡还在做——这一次的相接也不能并进去）
+    uint64_t ia = rp_buf_gpu_write_note2(base + 200, 16, &key, &m); CHECK(ia && m == 0);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK); nvn_be_sub_begin();
+    uint64_t ib = rp_buf_gpu_write_note2(base + 216, 16, &key, &m);
+    CHECK(ib && ib != ia && m == 0 && rp_test_gw_get(key, 0, &o, &l) == 2 && rp_test_gw_live() == 2);
+    // 负对照 b：不同镜像的登记不并（帧重叠换了一份：新那份还没建出来、当前份与已有那条不是同一份）
+    rp_buf_frame_flip();
+    uint64_t ic = rp_buf_gpu_write_note2(base + 232, 8, &key, &m); CHECK(ic && ic != ib && m == 0);
+    rp_buf_frame_flip();
+    uint64_t id = rp_buf_gpu_write_note2(base + 240, 8, &key, &m); CHECK(id && id != ic && m == 0 && rp_test_gw_get(key, 0, &o, &l) == 4);
+    // 负对照 c：开关关 → 同一段登记两次也是两条；老入口（不带 merged）从不并
+    g_flag_land_merge = 0; rp_test_gw_merge_reload();
+    uint64_t j1 = rp_buf_gpu_write_note2(base + 300, 16, &key, &m), j2 = rp_buf_gpu_write_note2(base + 300, 16, &key, &m);
+    CHECK(j1 && j2 && j1 != j2 && m == 0 && rp_test_gw_get(key, 0, &o, &l) == 6);
+    g_flag_land_merge = 1; rp_test_gw_merge_reload();
+    uint64_t k1 = rp_buf_gpu_write_note(base + 400, 16, &key), k2 = rp_buf_gpu_write_note(base + 400, 16, &key);
+    CHECK(k1 && k2 && k1 != k2 && rp_test_gw_get(key, 0, &o, &l) == 8);
+    uint64_t all[] = {ia, ib, ic, id, j1, j2, k1, k2};   // 清账：这些都是没落过地的登记，按失败撤掉（不拷）
+    for (unsigned i = 0; i < sizeof all / sizeof *all; i++) rp_buf_gpu_write_land(key, all[i], 0);
+    CHECK(rp_test_gw_live() == 0 && rp_test_gw_get(key, 0, &o, &l) == 0);
+    // ⑤ 真提交路径（rp_post_gpu_write → 提交表 → sub_done 落地）：一次提交里三笔重叠登记，只落地一次
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK); nvn_be_sub_begin();   // 当前份已回到第 0 份（上面翻过两次）
+    memset(b->cpu + 600, 0xDD, 64); g_land_copies = 0; g_land_copied = 0;
+    CHECK(rp_post_gpu_write(base + 600, 16) && rp_post_gpu_write(base + 608, 16) && rp_post_gpu_write(base + 616, 24));   // [600,616) + [608,624) + [616,640)
+    CHECK(rp_test_gw_live() == 1);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_land_copies == 1 && g_land_copied == 40 && rp_test_gw_live() == 0);
+    bad = 0; for (unsigned i = 600; i < 640; i++) bad += g_pmem[i] != 0xDD;
+    CHECK(bad == 0 && g_pmem[599] == 0x11 && g_pmem[640] == 0x11);
+    // 多行登记（读回 / 图像写，一次登记几行）不并：失败回滚只能撤掉「这一次新记的」，已有那条被扩大后缩不回。两行 [800,816) 与 [808,824) 相交也各记一条
+    nvn_be_sub_begin();
+    CHECK(rp_post_gpu_write_rows(base + 800, 16, 8, 0, 2, 1) && rp_test_gw_live() == 2);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(rp_test_gw_live() == 0);
+    g_flag_land_merge = 0; rp_test_gw_merge_reload();                                                       // 同样三笔，开关关：三条、落地 3 次共 56 字节
+    nvn_be_sub_begin(); memset(b->cpu + 600, 0xEE, 64); g_land_copies = 0; g_land_copied = 0;
+    CHECK(rp_post_gpu_write(base + 600, 16) && rp_post_gpu_write(base + 608, 16) && rp_post_gpu_write(base + 616, 24));
+    CHECK(rp_test_gw_live() == 3);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_land_copies == 3 && g_land_copied == 56 && rp_test_gw_live() == 0);
+    g_flag_land_merge = 1; rp_test_gw_merge_reload();
+    // ⑥ 已开始落地的登记不能再扩：拷贝在锁外按开始时的区间做，扩出去的字节既不会被这次拷到、又会被当成已落地撤账
+    memset(b->cpu + 700, 0x77, 16);
+    struct land_args la = {0}; int lm = 0; la.id = rp_buf_gpu_write_note2(base + 700, 16, &la.key, &lm); CHECK(la.id && lm == 0);
+    pthread_t th; g_land_pause = 1; g_land_half = g_land_resume = 0;
+    int started = pthread_create(&th, NULL, land_thread, &la); CHECK(started == 0);
+    if (!started) {
+        pthread_mutex_lock(&g_land_mu); while (!g_land_half) pthread_cond_wait(&g_land_cv, &g_land_mu); pthread_mutex_unlock(&g_land_mu);   // 拷到一半停住
+        uint64_t nid = rp_buf_gpu_write_note2(base + 716, 16, &key, &lm);                                  // 与正在落地的那条首尾相接
+        CHECK(nid && nid != la.id && lm == 0 && rp_test_gw_get(key, 0, &o, &l) == 2 && rp_test_gw_live() == 2);
+        pthread_mutex_lock(&g_land_mu); g_land_resume = 1; pthread_cond_broadcast(&g_land_cv); pthread_mutex_unlock(&g_land_mu);
+        CHECK(pthread_join(th, NULL) == 0); g_land_pause = 0;
+        CHECK(rp_test_gw_live() == 1 && rp_test_gw_get(key, 0, &o, &l) == 1 && o == 716 && l == 16);       // 落地的那条撤了，新的一条原样还在
+        rp_buf_gpu_write_land(key, nid, 0);
+    }
+    CHECK(rp_test_gw_live() == 0);
+    printf("GPU 落地合并：三笔重叠登记并成一条后落地 1 次 / 40 字节；开关关 3 次 / 56 字节\n");   // 读数行：期望 → 真结果见上面的 CHECK
+    nvn_be_pool_del(g_pmem); g_pg_tracked = 1; g_buf_cpu_auto = 0; pass_fresh();
 }
 static void t_gpu_land_destroy(void) {
     pass_fresh(); g_buf_cpu_auto = 1; g_pg_tracked = 0; memset(g_pmem, 0x11, sizeof g_pmem);
@@ -6027,6 +6256,7 @@ int main(int argc, char **argv) {
     if (argc > 1 && !strcmp(argv[1], "--gpu-land-count")) { t_gpu_land_count_cleanup(); printf("gpu land count: %d checks, %d failures\n", g_checks, g_fail); return g_fail != 0; }
     if (argc > 1 && !strcmp(argv[1], "--gpu-land-destroy")) { t_gpu_land_destroy(); printf("gpu land destroy: %d checks, %d failures\n", g_checks, g_fail); return g_fail != 0; }
     if (argc > 1 && !strcmp(argv[1], "--gpu-land")) { t_gpu_land_concurrent(); printf("gpu land: %d checks, %d failures\n", g_checks, g_fail); return g_fail != 0; }
+    if (argc > 1 && !strcmp(argv[1], "--gpu-land-merge")) { t_gpu_land_merge(); printf("gpu land merge: %d checks, %d failures\n", g_checks, g_fail); return g_fail != 0; }
 #endif
     if (argc > 1 && !strcmp(argv[1], "--sync-reuse")) { t_sync_reuse_after_gpu_write(); printf("sync reuse: %d checks, %d failures\n", g_checks, g_fail); return g_fail != 0; }
     t_invalidated_attachment_pin();
@@ -6053,6 +6283,11 @@ int main(int argc, char **argv) {
     t_read_texels_gpu_owned();
     t_read_texels_gpu();
     t_cpu_upload();
+    t_gpu_deswizzle_route();
+    t_gpu_deswizzle_pending();
+    t_gpu_deswizzle_backend_fail();
+    t_tex_reupload_diag();
+    t_tex_reupload_diag_gpu_pending();
     t_cpu_rules();
     t_linear_upload();
     t_linear_reject();
@@ -6068,6 +6303,7 @@ int main(int argc, char **argv) {
     t_gpu_land_concurrent();
     t_gpu_land_destroy();
     t_gpu_land_count_cleanup();
+    t_gpu_land_merge();
 #endif
     t_pool_gone_hold();
     t_buf_mirror();

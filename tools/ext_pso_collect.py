@@ -88,19 +88,34 @@ def sources(path):
     return src, maps
 
 
-def files(mirror, s, maps):
-    """→ [(程序号, 上游相对路径, 文件)]"""
+GAME = re.compile(r'(?:^|\s)game=(0[0-9A-Fa-f]{15})(?:\s|$)')   # 首行带程序号的清单（hermit 的 shared shader list：「# … game=<程序号> engine=…」）
+
+
+def nx_files(mirror):
+    """nxnative 格式的清单在仓库里任意位置都认（11-20：MacNativeGames 的 games/*/runtime/games/<程序号>/、hermit 的 games/<名>/shader_list[-<构建>].tsv、
+    各分叉与派生仓库各放各的）：「<程序号>/pso_manifest.tsv」，或首行写着 game=<程序号> 的 .tsv。→ [(程序号, 上游相对路径, 文件, 'nxnative')]"""
     out = []
-    if s['fmt'] == 'nxnative':
-        for p in sorted((mirror / 'dm/games').glob('*/pso_manifest.tsv')):
-            if TID.match(p.parent.name.upper()): out.append((p.parent.name.upper(), str(p.relative_to(mirror)), p))
-    elif s['fmt'] == 'mng':
-        for d, tid in sorted(maps[s['name']].items()):
-            p = mirror / 'games' / d / 'assets/shader_list.tsv'
-            if p.is_file(): out.append((tid, str(p.relative_to(mirror)), p))
-    else:
-        raise SystemExit(f'【红】来源 {s["name"]} 格式 {s["fmt"]} 认不得')
+    for p in sorted(mirror.rglob('*.tsv')):
+        rel = p.relative_to(mirror)
+        if rel.parts[0] == '.git' or not p.is_file(): continue
+        if p.name == 'pso_manifest.tsv' and TID.match(p.parent.name.upper()): out.append((p.parent.name.upper(), str(rel), p, 'nxnative')); continue
+        try:
+            with open(p, encoding='utf-8', errors='replace') as fh: first = fh.readline(4096)
+        except OSError: continue
+        m = GAME.search(first) if first.startswith('#') else None
+        if m: out.append((m.group(1).upper(), str(rel), p, 'nxnative'))
     return out
+
+
+def files(mirror, s, maps):
+    """→ [(程序号, 上游相对路径, 文件, 格式)]；同一款可有多份（调用方合并去重）"""
+    if s['fmt'] == 'nxnative':
+        return nx_files(mirror)
+    if s['fmt'] == 'mng':   # assets 下的 mng 格式按映射表认目录；runtime 下的 nxnative 格式按路径里的程序号认
+        out = [(tid, str((mirror / 'games' / d / 'assets/shader_list.tsv').relative_to(mirror)), mirror / 'games' / d / 'assets/shader_list.tsv', 'mng')
+               for d, tid in sorted(maps[s['name']].items()) if (mirror / 'games' / d / 'assets/shader_list.tsv').is_file()]
+        return out + nx_files(mirror)
+    raise SystemExit(f'【红】来源 {s["name"]} 格式 {s["fmt"]} 认不得')
 
 
 def rows(p, rlen, why, fmt, conv):
@@ -129,15 +144,26 @@ def main():
     if sk.returncode or not sk.stdout.strip().isdigit(): raise SystemExit(f'【红】量不出管线键字节数（pso_layout.py skey-size）：{sk.stderr.strip()[-200:]}')
     rlen = 2 * int(sk.stdout.strip())
     src, maps = sources(a.sources); notes = []
+    # 跨来源去重（11-20）：按来源表先后，后面的来源只写前面没有的行——分叉 / 派生仓库多半整份带着上游的清单，只留它独有的那几行，
+    #   云端包不重复存同一行，署名也只记在真正贡献这些行的来源名下
+    before = collections.defaultdict(set)
     for s in src:
         mirror = a.mirror_root / s['name']
         head = subprocess.run(['git', '-C', str(mirror), 'rev-parse', 'HEAD'], capture_output=True, text=True)
         if head.returncode: notes.append(f'{s["name"]}：没有本地检出（{mirror}），跳过'); continue
         commit = head.stdout.strip()[:12]; why = collections.Counter(); conv = collections.Counter(); n = changed = 0; got = set()
-        for tid, rel, p in files(mirror, s, maps):
-            keep = rows(p, rlen, why, s['fmt'], conv)
+        per = {}   # 程序号 → ([上游相对路径…], [行…])：同一款多份文件（hermit 按引擎 / 构建分份、MacNativeGames 两种路径）合成一份，按行去重、保留先后
+        for tid, rel, p, fmt in files(mirror, s, maps):
+            keep = rows(p, rlen, why, fmt, conv)
             if not keep: continue
+            rels, acc = per.setdefault(tid, ([], []))
+            rels.append(rel); have = set(acc); acc.extend(r for r in keep if r not in have)
+        for tid, (rels, keep) in sorted(per.items()):
+            keep = [r for r in keep if r not in before[tid]]
+            if not keep: continue
+            before[tid].update(keep)
             got.add(tid); n += len(keep)
+            rel = rels[0] + (f'（另 {len(rels) - 1} 份同款合并）' if len(rels) > 1 else '')
             text = f'# source: repo={s["repo"]} commit={commit} license={s["license"]} author={s["name"]} path={rel}\n' \
                    f'# 外部公开清单（只有标识与管线描述）：tools/ext_pso_collect.py 生成，勿手改；出包时按本包直连库的键滤\n' + '\n'.join(keep) + '\n'
             out = a.seeds / tid / f'ext_{s["name"]}.tsv'

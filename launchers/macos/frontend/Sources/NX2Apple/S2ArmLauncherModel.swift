@@ -96,6 +96,8 @@ struct JobSession: Equatable {
     /// 走过的阶段（阶段事件的作业层原句，按出现顺序、不重复）：手机作业进行中页的步骤列表
     var stages: [String] = []
     /// 手机作业（装到手机 / 续签、删除、装回、更新手机上的 S2Arm）：结局页统一用 PhoneJobPanel
+    /// 手机槽里整页显示的那几单：更新 iPhone 上的 S2Arm；「更新所选」没走成（#1756：原先这单的失败哪里都不显示，玩家只看到进度条跑完——整页写原因、给「重试」）
+    var wholePage: Bool { kind == .installUpdate || (kind == .pushSelected && phase == .finished(.failed)) }
     var isPhoneJob: Bool { [.install, .installRemove, .installRestore, .installUpdate, .pushSelected, .phoneIdentity].contains(kind) }
 }
 
@@ -237,6 +239,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var phoneOverview: PhoneOverview?
     @Published var consoleDevice: String?            // 总控台在管哪台（多台时顶部切换）；nil = 跟着默认那台
     @Published var consoleSelection: Set<String> = []   // ② 游戏同步里勾上的款（游戏号大写）
+    var lastPushSelectedDevice: String?                   // 上一单「更新所选」推的那台（失败页「重试」续推它，#1756）
     @Published var consolePushing: String?               // 「更新所选」正在推的那款（作业 pushSelected 的 progress 事件 current）
     @Published var identityDelivered: Bool?              // 「把签名身份交给手机」最近一次成功的结果（作业 phoneIdentity 的 delivered）；nil = 还没成功过 / 又点了一次
     var consoleSeeded: Set<String> = []                  // 上次自动勾过的建议更新款（玩家取消的不重勾）

@@ -186,6 +186,7 @@ extension S2ArmLauncherModel {
         guard resume || !order.isEmpty else { return }
         guard !phoneBusy else { phoneQueue.append((nil, { [weak self] in self?.updateSelected(resume: resume, ids: ids, device: device) })); return }
         consolePushing = nil
+        lastPushSelectedDevice = device
         start(JobSession(kind: .pushSelected, gameID: nil, name: BackendText.launcherText("console.updateSelected", language: dynamicLanguage)
             .replacingOccurrences(of: "{0}", with: "\(order.count)"))) { [weak self] sink in
             let watch = EventSink { ev in
@@ -209,6 +210,12 @@ extension S2ArmLauncherModel {
             self?.identityDelivered = r?.delivered
             return nil
         }
+    }
+
+    /// 「更新所选」失败页的「重试」（#1756）：同一台续推（作业层 resume：只推上一轮没推成的）
+    func retryUpdateSelected() {
+        guard let device = lastPushSelectedDevice else { return }
+        updateSelected(resume: true, device: device)
     }
 
     /// 「停下」：取消这一单（作业层推完的留着；没推完的那款下次续推）

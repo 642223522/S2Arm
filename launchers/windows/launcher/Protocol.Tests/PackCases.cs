@@ -185,8 +185,8 @@ public static class PackCases
             var tvExport = PackJobClient.Payload(new(tvPaths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", "export", ""), "win-tv2");
             var tvInstall = PackJobClient.Payload(new(tvPaths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", "install", "0100FD70134FA000"), "win-tv3");
             var want = Path.Combine(tvRoot, "Shell-tvOS");
-            check(!noTv.ContainsKey("tvShellDir") && (string?)tvIpa["tvShellDir"] == want && (string?)tvExport["tvShellDir"] == want && !tvInstall.ContainsKey("tvShellDir"),
-                "request: ipa / export carry tvShellDir only when Shell-tvOS sits next to Shell; install never");
+            check(!noTv.ContainsKey("tvShellDir") && (string?)tvIpa["tvShellDir"] == want && (string?)tvExport["tvShellDir"] == want && (string?)tvInstall["tvShellDir"] == want,
+                "request: every job carries tvShellDir when Shell-tvOS sits next to Shell, none when it is absent");
         }
         finally { try { Directory.Delete(tvRoot, true); } catch (IOException) { } }
         // 界面语言照原样带（#502：法文界面原先不带 uiLanguage，作业层回落中文，自签导出文件夹与说明成了中文）
@@ -204,8 +204,17 @@ public static class PackCases
         foreach (var op in new[] { "installCheck", "install", "installRemove", "installRestore" })
         {
             var r = PackJobClient.Payload(new(paths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", op, "0100FD70134FA000"), "win-2");
-            check((string?)r["resources"] == Path.GetFullPath(AppContext.BaseDirectory) && (op == "install") == r.ContainsKey("shellDir"),
-                $"request: {op} carries the launcher folder (bundled Impactor); only install carries the shell");
+            check((string?)r["resources"] == Path.GetFullPath(AppContext.BaseDirectory) && (string?)r["shellDir"] == Path.GetFullPath(paths.Shell),
+                $"request: {op} carries the launcher folder (bundled Impactor) and the bundled shell");
+        }
+        // 壳目录与随包资源每个作业都带（#1756 v0.6.1：「更新这 N 款 / 更新所选」的 pushSelected 原先没在点名单里，ipa.bundled_shell 回落到私有目录下
+        //   不存在的 Shell，0.5 升上来的 Windows 玩家每款报 tool_missing）。不按作业名点名：列出的现有作业和一个还不存在的作业名都要带上
+        foreach (var op in new[] { "pushSelected", "ipa", "export", "install", "installUpdate", "installUpdatePrepare", "installCheck", "installMode",
+                                   "phoneOverview", "phoneKeptPull", "phoneIdentity", "updateHints", "sgradeScan", "build", "launch", "keys", "import", "futureJobNotYetWritten" })
+        {
+            var r = PackJobClient.Payload(new(paths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", op, ""), "win-all");
+            check((string?)r["shellDir"] == Path.GetFullPath(paths.Shell) && (string?)r["resources"] == Path.GetFullPath(AppContext.BaseDirectory),
+                $"request: {op} carries the bundled shell and resources (every job, no per-operation list)");
         }
         // 开发者证书（v0.2.4）：属于这台电脑、不属于某款游戏 → 不带 gameId；密码只走 Secrets（作业进程环境），请求体里没有
         var cert = PackJobClient.Payload(new(paths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", "devCert", "",
@@ -217,7 +226,7 @@ public static class PackCases
         // 装到 iPhone 的方式 / 更新 iPhone 上的 S2Arm（v0.3.0，install.install_mode_job / update_phone）：属于这台电脑 / 这台手机，不带 gameId；
         //   都带随包资源（Impactor），installUpdate 还要组装容器，同 install 带预编壳
         var mode = PackJobClient.Payload(new(paths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", "installMode", "", null), "win-5");   // 只读签名身份（11-15 起不带 mode）
-        check(!mode.ContainsKey("mode") && !mode.ContainsKey("gameId") && !mode.ContainsKey("shellDir") &&
+        check(!mode.ContainsKey("mode") && !mode.ContainsKey("gameId") && (string?)mode["shellDir"] == Path.GetFullPath(paths.Shell) &&
               (string?)mode["resources"] == Path.GetFullPath(AppContext.BaseDirectory), "request: installMode needs no game, carries resources");
         var update = PackJobClient.Payload(new(paths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", "installUpdate", "",
             new Dictionary<string, object?> { ["acceptStale"] = true }), "win-6");
@@ -310,7 +319,8 @@ public static class PackCases
             PackJobClient.Payload(new(paths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", op, "0100FD70134FA000", extra), "win-4");
         var move = V3("moveGame", new() { ["location"] = where });
         check((string?)move["operation"] == "moveGame" && (string?)move["gameId"] == "0100FD70134FA000" && (string?)move["location"] == where &&
-              !move.ContainsKey("shellDir") && !move.ContainsKey("resources"), "request: moveGame carries game and target location, no shell / resources");
+              (string?)move["shellDir"] == Path.GetFullPath(paths.Shell) && (string?)move["resources"] == Path.GetFullPath(AppContext.BaseDirectory),
+              "request: moveGame carries game and target location (and, like every job, the bundled shell / resources)");
         check((string?)V3("relinkGame", new() { ["folder"] = where })["folder"] == where, "request: relinkGame carries the chosen folder");
         check(V3("forgetGame", null).Count == move.Count - 1, "request: forgetGame is the bare envelope");
         check((string?)V3("clean", new() { ["kind"] = "cache" })["kind"] == "cache", "request: clean kind=cache accepted");

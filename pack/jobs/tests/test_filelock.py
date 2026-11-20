@@ -355,3 +355,37 @@ class SharedLibraryLock(unittest.TestCase):
         self.assertEqual(self.produce('0100000000000001'), 'library_busy')
         self.release(d)
         self.assertEqual(self.produce('0100000000000001'), 'acquired')
+
+
+class HolderWriteOnWindowsSharing(unittest.TestCase):
+    """11-20 v0.6.1 候选 Windows 升级首启：排队的作业正读着旁挂说明时，拿到锁的一方覆盖它报 WinError 32，整单失败。
+    说明只给排队方看，写不成也要照常进锁"""
+    def setUp(self):
+        import filelock
+        self.fl = filelock
+        self.dir = Path(tempfile.mkdtemp())
+        self.lock = self.dir / '.relocate.lock'
+        self.lock.touch()
+        self.real = os.replace
+
+    def busy(self, times):
+        n = {'left': times}
+        def fake(src, dst):
+            if n['left'] > 0:
+                n['left'] -= 1
+                raise PermissionError(32, 'The process cannot access the file because it is being used by another process')
+            return self.real(src, dst)
+        return fake
+
+    def test_retries_until_reader_lets_go(self):
+        with patch.object(self.fl.os, 'replace', self.busy(3)), patch.object(self.fl.time, 'sleep'):
+            with self.fl.held(self.lock, holder=dict(operation='relocate', pid=1)):
+                self.assertEqual(self.fl.read_holder(self.lock).get('operation'), 'relocate')
+
+    def test_never_writable_still_enters_lock_and_leaves_no_tmp(self):
+        entered = False
+        with patch.object(self.fl.os, 'replace', self.busy(10 ** 6)), patch.object(self.fl.time, 'sleep'):
+            with self.fl.held(self.lock, holder=dict(operation='relocate', pid=1)):
+                entered = True
+        self.assertTrue(entered)
+        self.assertEqual([p.name for p in self.dir.iterdir() if p.name.endswith('.tmp')], [])
