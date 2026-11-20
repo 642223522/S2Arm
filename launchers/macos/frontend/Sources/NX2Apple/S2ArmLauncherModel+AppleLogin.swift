@@ -101,6 +101,13 @@ extension S2ArmLauncherModel {
         appleLoginHost = nil; appleLoginReason = nil
     }
 
+    /// 登录成功页点「换一个 Apple ID」：面板不关，回到输入页（邮箱框清空，填新账号）；同设置里「换一个 Apple ID」
+    func switchAppleLogin() {
+        appleLoginTask?.cancel(); appleLoginTask = nil
+        appleLoginReason = nil
+        appleLoginPhase = .idle
+    }
+
     /// 登录（「没收到？再发一次」也走这里：先停掉在等验证码的那次，再起一次）
     func startAppleLogin(account: String, password: String) {
         appleLoginTask?.cancel()
