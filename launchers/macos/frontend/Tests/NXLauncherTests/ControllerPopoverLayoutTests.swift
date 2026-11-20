@@ -91,14 +91,19 @@ import NXLauncher
         print("popover-cap natural=\(natural) capped=\(capped)")
     }
 
-    func testNintendoControllersDoNotShowFaceEditor() async throws {
+    func testNintendoControllersShowIndependentFaceEditor() async throws {
         _ = NSApplication.shared
         let pad = PopoverLayoutController("Pro Controller")
         for channel in [false, true] {
             let suite = "s2arm-popover-nintendo-" + UUID().uuidString
             let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
             let order = FileManager.default.temporaryDirectory.appendingPathComponent(suite + ".json")
-            defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: order) }
+            let face = order.deletingPathExtension().appendingPathExtension("face.json")
+            defer {
+                defaults.removePersistentDomain(forName: suite)
+                try? FileManager.default.removeItem(at: order)
+                try? FileManager.default.removeItem(at: face)
+            }
             // 专用通道（Switch 2 Pro）：不经系统手柄，玩家位是 whole 单元
             if channel { defaults.set(Data(#"{"units":[{"whole":{"id":"pro","kind":4}}]}"#.utf8), forKey: "S2AMacNS2PlayerAssignment") }
             let controller = NS2LauncherController(socketURL: URL(fileURLWithPath: "/tmp/" + suite + ".sock"), store: defaults,
@@ -114,8 +119,21 @@ import NXLauncher
             host.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(80))
             navigation.source.controllers = { [] }; navigation.attach(window); navigation.source.stop()
             defer { navigation.detach() }
-            XCTAssertFalse(navigation.controlTargets(in: window).contains { $0.id == "controller.player.0.faceMap" },
-                           "\(channel ? "专用通道" : "系统认的") 任天堂手柄不显示四键布局方钮（只限非 Switch 手柄）")
+            XCTAssertTrue(navigation.controlTargets(in: window).contains { $0.id == "controller.player.0.faceMap" },
+                          "\(channel ? "专用通道" : "系统认的") 任天堂手柄也应显示四键布局方钮")
+            navigation.focus("controller.player.0.faceMap"); navigation.handle(.confirm)
+            host.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(80))
+            navigation.focus("controller.face.layout"); navigation.handle(.confirm)
+            try await Task.sleep(for: .milliseconds(150))
+            let dropdownIDs = Set(navigation.controlTargets(in: window).map(\.id))
+            XCTAssertTrue(dropdownIDs.contains("dropdown.xbox"), "任天堂手柄布局选单包含 Xbox 布局")
+            XCTAssertFalse(dropdownIDs.contains("dropdown.switch"), "任天堂手柄布局选单不显示 Switch 布局")
+            navigation.focus("dropdown.xbox"); navigation.handle(.confirm)
+            try await Task.sleep(for: .milliseconds(150))
+            XCTAssertEqual(controller.faceMaps.mapping(for: .nintendo).code, 0xb1, "任天堂手柄选 Xbox 布局后立刻写入独立配置")
+            XCTAssertEqual(controller.faceMaps.mapping(for: .playstation), .identity, "改任天堂四键布局不能影响非任天堂手柄的共用配置")
+            navigation.handle(.back)
+            host.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(80))
         }
     }
 

@@ -34,16 +34,23 @@ enum SimText {
 
     /// 模拟的手柄款式：两种 Joy-Con 分左右只；其余是整只（一台）
     enum Kind: String, CaseIterable {
-        case joyCon1 = "一代", joyCon2 = "Joy-Con 2", switchPro = "Switch Pro", switch2Pro = "Switch 2 Pro", ps5 = "PS5", xbox = "Xbox"
+        case joyCon1 = "一代", joyCon2 = "Joy-Con 2", switchPro = "Switch Pro", switch2Pro = "Switch 2 Pro", ps5 = "PS5", xbox = "Xbox", thirdParty = "第三方"
         var isJoyCon: Bool { self == .joyCon1 || self == .joyCon2 }
-        var title: String { self == .joyCon1 ? SimText.pick("一代", "一代", "Gen-1") : rawValue }
-        static let whole: [Kind] = [.switchPro, .switch2Pro, .ps5, .xbox]
+        var title: String {
+            switch self {
+            case .joyCon1: return SimText.pick("一代", "一代", "Gen-1")
+            case .thirdParty: return SimText.pick("第三方", "第三方", "Third-party")
+            default: return rawValue
+            }
+        }
+        static let whole: [Kind] = [.switchPro, .switch2Pro, .ps5, .xbox, .thirdParty]
         /// 走 GameController 的系统手柄名（同真机 vendorName）；Switch 2 系列走连接程序，没有
         var systemName: String? {
             switch self {
-            case .switchPro: return "Pro Controller"
+            case .switchPro: return "Switch Pro"
             case .ps5: return "DualSense Wireless Controller"
             case .xbox: return "Xbox Wireless Controller"
+            case .thirdParty: return "Third-Party Controller"
             default: return nil
             }
         }

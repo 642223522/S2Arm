@@ -61,6 +61,26 @@ import XCTest
         XCTAssertEqual(hints[.primary], "a.circle", "重新分配主玩家时提示改用其配置")
     }
 
+    func testNintendoFaceMappingAppliesImmediatelyInLauncherNavigation() throws {
+        let pro = FaceMappingController("Switch Pro Controller")
+        var assignment = PlayerAssignment()
+        assignment.reconcile(devices: [], mergedPair: false, system: [.init(name: pro.vendorName!, index: 0)])
+        let source = LauncherPadSource()
+        source.controllers = { [pro] }; source.assignment = { assignment }; source.isActive = { true }
+        var hints: [PadShortcut: String] = [:], actions: [LauncherPadAction] = []
+        source.updatePresentation = { _, value in hints = value }; source.receive = { actions.append($0) }
+        source.faceMapping = { $0 == .nintendo ? .xboxPosition(for: .nintendo) : .identity }
+        source.tick(now: 0)
+        XCTAssertEqual(hints[.primary], "b.circle", "任天堂手柄选 Xbox 布局后主确认提示立即可见为 B")
+        XCTAssertEqual(hints[.back], "a.circle", "任天堂手柄选 Xbox 布局后返回提示立即可见为 A")
+        let pad = try XCTUnwrap(pro.extendedGamepad)
+        pad.buttonB.setValue(1); source.tick(now: 0.01)
+        XCTAssertEqual(actions, [.confirm], "任天堂手柄下键 B 应立即按映射触发确认")
+        pad.buttonB.setValue(0); source.tick(now: 0.02)
+        pad.buttonA.setValue(1); source.tick(now: 0.03)
+        XCTAssertEqual(actions.last, .back, "任天堂手柄右键 A 应立即按映射触发返回")
+    }
+
     func testChangingMappingWhileHeldRequiresReleaseBeforeAnotherAction() throws {
         let controller = GCController.withExtendedGamepad(), source = LauncherPadSource()
         let pad = try XCTUnwrap(controller.extendedGamepad)

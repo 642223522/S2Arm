@@ -60,11 +60,11 @@ struct Switch2ProConnectionPopover: View {
         case .gen1Pair: return .gen1Pair
         }
     }
-    /// 这一位能不能改四键布局：只有非任天堂的系统手柄（PlayStation、Xbox、其他）
+    /// 这一位能不能改四键布局：键盘没有四键，其余手柄（含任天堂与各类蓝牙手柄）都可以；
+    ///   任天堂手柄使用独立的 `nintendo` 映射，不与非任天堂手柄共用
     private func faceMappable(_ unit: PlayerAssignment.Unit) -> Bool {
-        guard case let .system(name, _) = unit else { return false }
-        let family = systems.pads.first { $0.name == name }?.family ?? .other
-        return ControllerFaceFamily(family) != .nintendo
+        if case .keyboard = unit { return false }
+        return true
     }
     private func unitName(_ unit: PlayerAssignment.Unit) -> String {
         switch unit {
@@ -229,8 +229,8 @@ struct Switch2ProConnectionPopover: View {
                         VStack(spacing: 8) {
                             ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
                                 // 点一行选中这一位（框线变奶油色）；按键时名字亮绿 + 按键小框照旧。平时不给 ×，分配中才有
-                                //   最右边一颗四键布局钮（键盘那一位没有）：盖在行上、不包进行的按钮里，点它不会先选中整行
-                                //   任天堂手柄（Switch 2、Switch Pro、Joy-Con）没有：本来就是原生布局，改了也没必要（11-20）
+                                //   最右边一颗四键布局钮（键盘那一位没有）：盖在行上、不包进行的按钮里，点它不会先选中整行；
+                                //   任天堂手柄（Switch 2 / Switch Pro / Joy-Con）使用独立的四键配置，不与其他手柄共用
                                 let faceMappable = controller.assignment.units.indices.contains(index) && faceMappable(controller.assignment.units[index])
                                 ZStack(alignment: .trailing) {
                                 Button { selectedPlayer = index } label: {
