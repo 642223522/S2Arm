@@ -345,6 +345,7 @@ lane_metal() {
   has "$RUNG" m3pack && job m3archive timeout 300 make -s -C graphics/metal test-m3archive
   has "$RUNG" m3pack && job cs_pipelines timeout 300 bash graphics/tools/direct/tests/t_cs_pipelines.sh   # 直连计算管线随包归档：出包 → 设备同一描述命中 / 反证不命中 / 阶段键
   has "$RUNG" m3pack && job base_pipelines timeout 300 bash graphics/tools/direct/tests/t_base_pipelines.sh   # 直连拉取基础管线随包归档：出包 → 设备同一描述命中 / 反证不命中 / 阶段
+  has "$RUNG" m3pack && job pipelines_clone timeout 120 python3 graphics/tools/direct/tests/t_pipelines_clone.py   # 管线缓存 clone 多线程同写一个目标不报错（临时件名带线程号）
   # NVN 直连层 / GL / Vulkan 前端（graphics/nvn 与根 Makefile 的 make，链 libnvn.a、build/dsx/mac/libspvc.a）：同一道先后
   need_nvn && job nvn_m3 timeout 300 make -s -C graphics/nvn test
   need_nvn_tex && job nvn_tex timeout 120 make -s -B -C graphics/nvn/gfx/tex/tests run
@@ -746,6 +747,7 @@ else rcof m3pack; r=$?; M3PACK_RESULT="Metal 3 归档出包到命中：$(grep -c
 if has "$RUNG" m3pack; then rcof m3archive; r=$?; reg $r "Metal 3 运行时包归档：$(tail -1 "$LOG/m3archive.log")（退出 ${r}）" "$LOG/m3archive.log"; fi
 if has "$RUNG" m3pack; then rcof cs_pipelines; r=$?; reg $r "直连计算管线随包归档：$(tail -1 "$LOG/cs_pipelines.log")（退出 ${r}）" "$LOG/cs_pipelines.log"; fi
 if has "$RUNG" m3pack; then rcof base_pipelines; r=$?; reg $r "直连拉取基础管线随包归档：$(tail -1 "$LOG/base_pipelines.log")（退出 ${r}）" "$LOG/base_pipelines.log"; fi
+if has "$RUNG" m3pack; then rcof pipelines_clone; r=$?; reg $r "管线缓存多线程同写：$(tail -1 "$LOG/pipelines_clone.log")（退出 ${r}）" "$LOG/pipelines_clone.log"; fi
 # Unity ComputeShader 各版本的 kernel 变体布局（shader_split.kernel_variants）：2022.3 / 2020.3 / 2018.4（#379 Moving Out）三种认得、未知布局报红
 rcof unity_kernels; r=$?; reg $r "Unity 计算着色器布局：$(tail -1 "$LOG/unity_kernels.log")（退出 ${r}）" "$LOG/unity_kernels.log"
 rcof unity55_layout; r=$?; reg $r "Unity 5.5 精确布局：$(tail -1 "$LOG/unity55_layout.log")（退出 ${r}）" "$LOG/unity55_layout.log"
