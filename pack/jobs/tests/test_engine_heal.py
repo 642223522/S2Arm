@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 S2Arm contributors
 """#304：已装的内置引擎副本被外部改过（玩家机上宿主 S2ArmGame.app 的 Info.plist 大小和清单对不上，出包一直报 runtime_invalid）→
-用前复核、对不上就从 App 包重解；App 包本身坏了才让玩家重装。期望按规则手写，夹具是合成的引擎包（含自成一库的 Git 快照）。"""
+用前复核、对不上就从 App 包重解；App 包本身坏了才让玩家重装。期望按规则手写，夹具是合成的引擎包（同发布快照，不带 .git）。"""
 import hashlib
 import json
 import os
@@ -26,12 +26,6 @@ class EngineHealTests(JobCase):
         for rel, body in ((PLIST, b"<plist>original</plist>"), (EXE, b"\x7fhost"), ("pack/jobs/x.py", b"print(1)\n"), *source):
             (self.bundle / rel).parent.mkdir(parents=True, exist_ok=True)
             (self.bundle / rel).write_bytes(body)
-        env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1", GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.invalid",
-                   GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.invalid")
-        # 清单包含 .git：禁用后台自动维护，避免提交返回后把短命的 maintenance.lock 收进不可变快照。
-        for args in (["init", "-q", "--template="], ["config", "maintenance.auto", "false"],
-                     ["add", "pack"], ["commit", "-qm", "fixture"]):
-            subprocess.run(["git", "-C", str(self.bundle), *args], env=env, check=True, stdout=subprocess.DEVNULL)
         files = {p.relative_to(self.bundle).as_posix(): [p.stat().st_size, hashlib.sha256(p.read_bytes()).hexdigest()]
                  for p in self.bundle.rglob("*") if p.is_file() and not p.is_symlink()}
         (self.bundle / "engine.json").write_text(json.dumps(dict(schema=1, id="e" * 64, files=files)))
@@ -44,24 +38,24 @@ class EngineHealTests(JobCase):
         c = self.context(); embedded.install(c)
         return c
 
-    def test_size_changed_copy_is_reinstalled_on_next_job(self):
-        c = self.installed()
-        (c.engine / PLIST).write_bytes(b"<plist>rewritten by something else</plist>")   # 玩家机上的现象：大小变了
-        c2 = self.installed()
-        self.assertEqual((c2.engine / PLIST).read_bytes(), b"<plist>original</plist>")
-        self.assertEqual(list(c2.engine.parent.glob("*.broken")), [])   # 坏副本挪开后删掉
-
-    def test_probe_uses_installed_copy_without_rechecking_build_still_heals(self):
-        # 剃刀 H4：只读探测（installCheck，装机页每 5 秒一次）有安装标记就直接用副本、不逐文件复核；同一个被改过的副本，下一个出包作业照旧复核、重解（#304 防线不丢）
+    def test_installed_copy_is_used_without_rechecking_and_heals_when_artifact_used(self):
+        # 11-19 维护者（「每次启动都很慢……这种校验是不是自己给自己挖的坑」）：装好的副本每个作业直接用，出包 / 起局 / 探测都不逐文件复核；
+        #   #304 那种被外部改了大小的宿主文件，真用到宿主（artifact）时当场从 App 包重解。期望手写：改过的副本下一个作业原样留着、标记 inode 不变，
+        #   artifact 之后变回 App 包里的原样
         from unittest.mock import patch
         c = self.installed()
-        (c.engine / PLIST).write_bytes(b"<plist>rewritten by something else</plist>")
-        probe = Context(dict(self.request, taskId="probe-1", operation="installCheck", engineBundle=str(self.bundle)))
-        with patch.object(embedded, "_ready", side_effect=AssertionError("探测作业去逐文件复核了")):
-            embedded.install(probe)
-        self.assertEqual(probe.engine, c.engine)
-        self.assertEqual((c.engine / PLIST).read_bytes(), b"<plist>rewritten by something else</plist>")   # 探测不动副本
-        self.assertEqual((self.installed().engine / PLIST).read_bytes(), b"<plist>original</plist>")   # 出包作业照旧重解
+        stamp = (c.engine / ".installed.json").stat().st_ino
+        (c.engine / PLIST).write_bytes(b"<plist>rewritten by something else</plist>")   # 玩家机上的现象：大小变了
+        for operation in ("launch", "build", "installCheck"):
+            job = Context(dict(self.request, taskId=f"use-{operation}", operation=operation, engineBundle=str(self.bundle)))
+            with patch.object(embedded, "_intact", side_effect=AssertionError(f"{operation} 作业开头去逐文件复核了")):
+                embedded.install(job)
+            self.assertEqual(job.engine, c.engine)
+        self.assertEqual((c.engine / PLIST).read_bytes(), b"<plist>rewritten by something else</plist>")   # 没用到宿主前不动副本
+        self.assertEqual((c.engine / ".installed.json").stat().st_ino, stamp)   # 没重解
+        self.assertEqual(embedded.artifact(job, "S2ArmGame.app"), c.engine / "Binaries/S2ArmGame.app")
+        self.assertEqual((c.engine / PLIST).read_bytes(), b"<plist>original</plist>")   # 用到时重解
+        self.assertEqual(list(c.engine.parent.glob("*.broken")), [])   # 坏副本挪开后删掉
 
     def test_size_changed_artifact_is_reinstalled_when_used(self):
         # v0.2.3 清理：用到产物时也只核大小（原先按摘要逐字节核，同大小改写现实里没出现过，#304 是大小变了）；大小变了照样从 App 包重解
@@ -75,22 +69,6 @@ class EngineHealTests(JobCase):
         stamp = (c.engine / ".installed.json").stat().st_ino
         c2 = self.installed()
         self.assertEqual((c2.engine / ".installed.json").stat().st_ino, stamp)   # 副本没坏：不重解
-
-    def test_git_use_in_installed_copy_is_not_damage(self):
-        """出包流水线在已装副本里跑 git（commit 会改 .git/index、COMMIT_EDITMSG 等，它们也在清单里）：复核不能把它当成被改过、不重解"""
-        c = self.installed()
-        env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1", GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.invalid",
-                   GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.invalid")
-        (c.engine / "pack/jobs/stage.txt").write_text("stage\n")
-        for args in (["add", "pack/jobs/stage.txt"], ["commit", "-qm", "a stage key commit with a long message"]):
-            subprocess.run(["git", "-C", str(c.engine), *args], env=env, check=True, stdout=subprocess.DEVNULL)
-        changed = [k for k, v in json.loads((c.engine / "engine.json").read_text())["files"].items()
-                   if k.startswith(".git/") and (not (c.engine / k).is_file() or (c.engine / k).stat().st_size != v[0])]
-        self.assertTrue(changed, "夹具要真的改到清单里的 .git 文件")   # 负对照的前提：确实有 .git 清单项变了
-        stamp = (c.engine / ".installed.json").stat().st_ino
-        c2 = self.installed()
-        self.assertEqual((c2.engine / ".installed.json").stat().st_ino, stamp)   # 没重解
-        self.assertTrue((c2.engine / "pack/jobs/stage.txt").is_file())
 
     def test_concurrent_jobs_install_same_copy_without_moving_each_other(self):
         """启动时几个作业同时初始化同一份副本（preflight + setup + catalog）：都成功、只留一份、没有作业把别人的挪走；随后同一份副本连用两次也不重解"""
@@ -122,14 +100,25 @@ class EngineHealTests(JobCase):
         self.assertIsNotNone(got)
         self.assertTrue((got / "Contents/Info.plist").is_file())
 
-    def test_broken_app_bundle_asks_for_reinstall(self):
+    def test_broken_app_bundle_warns_and_continues(self):
+        """App 包本身和清单对不上（11-17 维护者：校验不过不整个拒绝）：黄字提示是哪个文件、建议重装，照样装上用；
+        对不上的记进安装标记，下次用不再判「被改过」重解（标记的 inode 不变），用到这件产物也不报"""
         c = self.installed()
         (c.engine / PLIST).write_bytes(b"x")
-        (self.bundle / PLIST).write_bytes(b"also broken")   # App 包本身也坏了：重解没用
-        with self.assertRaises(Failure) as e:
-            self.installed()
-        self.assertEqual(e.exception.code, "engine_incomplete")
-        self.assertIn("重新安装完整的 S2Arm", str(e.exception))
+        (self.bundle / PLIST).write_bytes(b"also broken")   # App 包本身也坏了
+        c2 = self.installed()
+        embedded.artifact(c2, "S2ArmGame.app")   # 用到宿主时发现副本被改过 → 重解；App 包也对不上 → 不抛、黄字
+        warned = [d for d in c2.job["diagnostics"] if d.get("code") == "engine_incomplete"]
+        self.assertEqual(len(warned), 1)
+        self.assertEqual(warned[0].get("severity"), "warning")
+        self.assertIn(PLIST, warned[0].get("message") or warned[0].get("summary") or "")
+        mark = json.loads((c2.engine / ".installed.json").read_text())
+        self.assertEqual(mark.get("bundleMismatch"), [PLIST])
+        self.assertEqual((c2.engine / PLIST).read_bytes(), b"also broken")   # 照 App 包原样解出
+        stamp = (c2.engine / ".installed.json").stat().st_ino
+        c3 = self.installed()
+        self.assertEqual((c3.engine / ".installed.json").stat().st_ino, stamp)   # 不反复重解
+        self.assertEqual(embedded.artifact(c3, "S2ArmGame.app"), c3.engine / "Binaries/S2ArmGame.app")
 
 
 class SharedHostHealTests(JobCase):

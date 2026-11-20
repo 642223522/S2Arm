@@ -24,6 +24,7 @@
 # Usage: vk_shaders.py <SPIR-V dir>... <out dir> [--ios <dir>]   (SPIR-V dirs: the RomFS, capture folders)
 #        vk_shaders.py --header-only <out dir> [--ios <dir>]   a game whose RomFS holds no SPIR-V (it generates them at run time): tables with the header only and no
 #        library, every shader is compiled on the device the first time it is met (hle_vk.m → vk_rt.inc); packing never boots the game to capture them
+import os as _pw_os, sys as _pw_sys; _pw_sys.path.append(_pw_os.path.join(_pw_os.path.dirname(_pw_os.path.abspath(__file__)), '..', 'tools')); from pool_workers import cores  # noqa: E402  核数 / 进程池路数唯一来源（tools/pool_workers.py，#1332）
 import concurrent.futures as cf, os, shutil, subprocess, sys, tempfile
 
 # GL / Vulkan share the resource remapping and MSL backend; defaults match main.
@@ -47,7 +48,7 @@ def metallib(msls, out, sdk, extra, work):
         except ValueError as e: red(str(e))   # 工具链本身起不来：环境问题，照旧停
         if r.returncode: return None, f'{m}: metal compile failed: {r.stderr.strip()[:400]}'
         return a, None
-    with cf.ThreadPoolExecutor(os.cpu_count()) as ex: res = list(ex.map(comp, msls))
+    with cf.ThreadPoolExecutor(cores()) as ex: res = list(ex.map(comp, msls))
     bad = {m: e for m, (a, e) in zip(msls, res) if e}
     airs = [a for a, e in res if not e]
     if not airs: return None, bad
@@ -77,7 +78,7 @@ def main():
     files = [(p, r) for r in roots for p in spirv_files(r)]
     if not files and not header_only: red(f'no SPIR-V files in {" ".join(roots)}')
     with tempfile.TemporaryDirectory() as tmp:
-        with cf.ThreadPoolExecutor(os.cpu_count()) as ex: rows = list(ex.map(lambda pr: one(pr[0], tmp, pr[1]), files))
+        with cf.ThreadPoolExecutor(cores()) as ex: rows = list(ex.map(lambda pr: one(pr[0], tmp, pr[1]), files))
         seen, skipped = {}, {}
         failed = []
         for row in rows:

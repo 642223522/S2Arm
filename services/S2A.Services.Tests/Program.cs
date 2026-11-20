@@ -234,7 +234,6 @@ namespace S2A.Services.Tests
                 return failures == 0 ? 0 : 1;
             }
             if (args is ["--horizon-merge-lifecycle"]) return HorizonMergeLifecycleTest();
-            if (args is ["--filesystem-restart"]) return FileSystemRestart();
             if (args is ["--apple-audio-dispose"]) return AppleAudioDispose();
             if (IFileWriteLengthTest() != 0) return 1;
             FakeNative.Install();
@@ -1050,16 +1049,26 @@ namespace S2A.Services.Tests
                 InputPump.SetPrimary(Host.Device, Ryujinx.HLE.HOS.Services.Hid.PlayerIndex.Handheld, Ryujinx.HLE.HOS.Services.Hid.ControllerType.Handheld);
                 var npid = (uint*)(_game + 0x3E00);
                 Msg IdType(int n) { Msg m = Msg.Cmif(102, Bytes(0L)); m.X.Add(((ulong)npid, (ulong)(n * 4))); return m; }   // SetSupportedNpadIdType(aruid, X 数组)
+                // 审计 P1-192：游戏读的是手柄共享内存，不是 InputPump 的变量。这次调用返回那一刻，共享内存里 Player1 / 掌机格的样式（StyleSet 非 0 = 已连接）
+                //   期望手写：只收 Player1 → Player1 已连、掌机格断开；再收掌机格 → 掌机格已连、Player1 断开。反证：只靠输入泵下一拍 Remap 时两次都还是调用前的连接
+                string Shm() { var n = Host.Device.Hid.SharedMemory.Npads; return $"P1={(n[(int)Ryujinx.HLE.HOS.Services.Hid.PlayerIndex.Player1].InternalState.StyleSet != 0 ? "连" : "断")} 掌机={(n[(int)Ryujinx.HLE.HOS.Services.Hid.PlayerIndex.Handheld].InternalState.StyleSet != 0 ? "连" : "断")}"; }
+                Host.Device.Hid.Npads.S2AApplyConfiguration();   // 起点：掌机格已写进共享内存
+                string before = Shm();
                 npid[0] = 0;   // NpadIdType.Player1
                 Call(hid, IdType(1));
-                string only1 = InputPump.Player.ToString();
+                string only1 = InputPump.Player.ToString(), shm1 = Shm();
                 npid[0] = 0; npid[1] = 0x20;   // Player1 + Handheld
                 Call(hid, IdType(2));
-                string back = InputPump.Player.ToString();
+                string back = InputPump.Player.ToString(), shm2 = Shm();
+                Check("P1-192 声明那次 hid 调用返回时，共享内存里的连接已改（起点 / 只收 Player1 / 再收掌机格）", "P1=断 掌机=连 / P1=连 掌机=断 / P1=断 掌机=连", $"{before} / {shm1} / {shm2}");
                 var npads = Host.Device.Hid.Npads;
                 for (int i = 0; i < 9; i++) npads.SetSupportedPlayer((Ryujinx.HLE.HOS.Services.Hid.PlayerIndex)i);   // 还原成都收
                 InputPump.SetPrimary(Host.Device, Ryujinx.HLE.HOS.Services.Hid.PlayerIndex.Handheld, Ryujinx.HLE.HOS.Services.Hid.ControllerType.Handheld);
                 Check("声明手柄号的那次 hid 调用里就跟随改接（只收 Player1 → Player1；再收掌机格 → 挪回）", "Player1 / Handheld", $"{only1} / {back}");
+                // 审计 P1-192：收局摘回调（之后服务线程的声明不再改已拆掉的手柄）；再 Start 登记回去，后面的用例照旧
+                InputPump.Stop();
+                Check("P1-192 收局后声明回调已摘", "空", Ryujinx.HLE.HOS.Services.Hid.NpadDevices.S2ASupportedChanged == null ? "空" : "还挂着");
+                InputPump.Start(Host.Device);
             }
 
             // 每帧都调的上游桩（01006F8002326000 pctl IsFreeCommunicationAvailable 每秒 25 次）：稳态零分配、汇总里次数照计
@@ -1566,13 +1575,17 @@ namespace S2A.Services.Tests
                 }
 
                 // 苹果声音输出（产品后端）：渲染线程每轮 AppendBuffer → 会话 QueueBuffer，CoreAudio 回调线程按播放进度出队；整进程 300 轮折算。
-                // 外部依赖防线（10-21 维护者定）：真 CoreAudio 是外部服务，整段放后台线程、墙钟 30 秒；超时报红并跳过（不挂死整个单测进程），
+                // 外部依赖防线（10-21 维护者定）：真 CoreAudio 是外部服务，整段放后台线程；卡死报红并跳过（不挂死整个单测进程），
                 //   打不开设备时跳过并记一行（不判红：门禁机没有可用的输出设备不是产品缺陷；长时间行为在真机 / 诊断局测）
                 if (Ryujinx.Audio.Backends.Apple.AppleHardwareDeviceDriver.IsSupported)
                 {
                     string openErr = null;
                     double appleBest = double.NaN;   // 后台线程只写这个，主线程确认跑完后再登记（超时后晚到的线程不碰共享列表）
                     string appleSplit = "";
+                    // 卡死判据按进度、不按墙钟（11-17）：一共约 2450 轮、每轮睡 5 ms，理想 12 秒；门禁里多个钩子并行、本机负载高时 Sleep(5) 被拉长、
+                    //   AppendBuffer 等回调取走，原先的「墙钟 30 秒」连红 13 次（同两个提交本机单跑都过，回调 598 / 599 圈）。要防的是收尾 / 回调卡死（10-21 Join 卡住）：
+                    //   轮数 10 秒不动才判卡死，整体上限 180 秒
+                    int appleProg = 0;
                     var appleTh = new System.Threading.Thread(() =>
                     {
                         try
@@ -1585,6 +1598,7 @@ namespace S2A.Services.Tests
                                 for (int i = 0; i < n; i++)
                                 {
                                     appleDev.AppendBuffer(silence, 2);
+                                    System.Threading.Interlocked.Increment(ref appleProg);
                                     System.Threading.Thread.Sleep(5);
                                 }
                             }
@@ -1621,9 +1635,17 @@ namespace S2A.Services.Tests
                     }) { IsBackground = true, Name = "单测·苹果声音输出" };
                     appleTh.Start();
 
-                    if (!appleTh.Join(30000))
+                    bool appleDone = false; int appleLast = -1; var appleSw = System.Diagnostics.Stopwatch.StartNew(); var appleIdle = System.Diagnostics.Stopwatch.StartNew();
+                    while (!(appleDone = appleTh.Join(500)) && appleSw.Elapsed.TotalSeconds < 180)
                     {
-                        Check("苹果声音输出用例 30 秒内跑完（真 CoreAudio，外部依赖）", "跑完", "超时（跳过；CoreAudio 回调 / 收尾等不到，见线程栈）");
+                        int pg = System.Threading.Volatile.Read(ref appleProg);
+                        if (pg != appleLast) { appleLast = pg; appleIdle.Restart(); }
+                        else if (appleIdle.Elapsed.TotalSeconds >= 10) break;
+                    }
+                    if (!appleDone)
+                    {
+                        Check("苹果声音输出用例不卡死（真 CoreAudio，外部依赖；10 秒没有新的一轮才算卡死，整体上限 180 秒）", "跑完",
+                            $"卡住（跳过；第 {System.Threading.Volatile.Read(ref appleProg)} 轮后 {appleIdle.Elapsed.TotalSeconds:0} 秒没动、已用 {appleSw.Elapsed.TotalSeconds:0} 秒，CoreAudio 回调 / 收尾等不到，见线程栈）");
                     }
                     else if (openErr != null)
                     {
@@ -2331,6 +2353,9 @@ namespace S2A.Services.Tests
                     // 目录带进程号（10-24 门禁偶发红 2002-1002：几棵树的门禁同时跑、共用 TMPDIR，固定目录被别的门禁删掉重建，DLC 数据中途消失）
                     string ad = Path.Combine(Path.GetTempPath(), $"s2a_aoc_test_{Environment.ProcessId}");
                     if (Directory.Exists(ad)) Directory.Delete(ad, true);
+                    // aoc:u Count / List 按全局 DLC 目录回答：前面登记的外部游戏（S2A_TEST_GAME）若带 DLC 会算进来（#386：带 1 个 DLC 的数据 2 → 3 误红）。
+                    //   这一批只验夹具清单的两项，先清空登记再登记夹具；批次后再清掉，夹具条目不带给后面的用例（后面没有用例依赖 DLC）
+                    Aoc.Reset(); Host.Device.System.ContentManager.ClearAocData();
                     Directory.CreateDirectory(Path.Combine(ad, "aoc", "1"));
                     File.WriteAllText(Path.Combine(ad, "aoc", "1", "hello.txt"), "s2a dlc");
                     File.WriteAllText(Path.Combine(ad, "aoc.tsv"), $"idx\ttitle_id\tversion\tfiles\tbytes\n1\t{Base + 1:x16}\t0\t1\t7\n2\t{Base + 2:x16}\t0\t-1\t0\n");
@@ -2364,6 +2389,7 @@ namespace S2A.Services.Tests
                     Check("DLC 挂载：有数据的给 RomFS（头长 0x50）、仅授权的挂不上", "结果 0、头长 0x50 / 失败",
                         $"结果 {od1.Result}、头长 0x{(dst != 0 ? *(ulong*)dlch : 0):X} / {(od2.Result != 0 && od2.Move.Count == 0 ? "失败" : $"结果 {od2.Result}、{od2.Move.Count} 个句柄")}");
                     try { Directory.Delete(ad, true); } catch (IOException) { }
+                    Aoc.Reset(); Host.Device.System.ContentManager.ClearAocData();
                 }
 
                 // appletOE 命令 10 OpenApplicationProxyWithFlags（Switch 2 SDK 起局用它替代命令 0，0400A3A01EE4C000）：标志 0 → 回一个 IApplicationProxy 对象，且能照常取 ICommonStateGetter（命令 0）
@@ -2710,6 +2736,12 @@ namespace S2A.Services.Tests
                             string p178_d1 = string.Join(",", SaveTransfer.DroppedUsers(p178_tgt, p178_bak).Order());
                             string p178_d2 = string.Join(",", SaveTransfer.DroppedUsers(p178_tgt, p178_tgt).Order());
                             Check("存档恢复（P1-178）：备份里没有的本地玩家 / 两边相同", $"{p178_u2} / （空）", $"{p178_d1} / {(p178_d2.Length == 0 ? "（空）" : p178_d2)}");
+                            // 余项：要删的摘要文件名。拿掉 U2、第一个玩家是 U2 → 带后缀那份 + 无后缀那份；第一个玩家是 U1（在备份里）→ 只删 U2 带后缀那份；认不出第一个玩家（null）→ 也只删带后缀那份
+                            string p178_n1 = string.Join(",", SaveTransfer.StateFilesToDrop(new[] { p178_u2 }, p178_u2.ToUpperInvariant()));
+                            string p178_n2 = string.Join(",", SaveTransfer.StateFilesToDrop(new[] { p178_u2 }, p178_u1));
+                            string p178_n3 = string.Join(",", SaveTransfer.StateFilesToDrop(new[] { p178_u2 }, null));
+                            Check("存档恢复（P1-178 余项）：第一个玩家被拿掉 / 没被拿掉 / 认不出", $"savedata-state-{p178_u2}.txt,savedata-state.txt / savedata-state-{p178_u2}.txt / savedata-state-{p178_u2}.txt",
+                                  $"{p178_n1} / {p178_n2} / {p178_n3}");
                         }
 
                         // 审计 P1-163：摘要按内容。同路径同大小同修改时间、内容不同 → 摘要不同；只改修改时间 → 摘要不变（原先两向都错）
@@ -2773,7 +2805,10 @@ namespace S2A.Services.Tests
             }
             else
             {
-                CheckUncovered("动森登记 + fs 读 RomFS", $"未覆盖（没有 {game}/romfs，玩家自己的游戏数据）");
+                if (Environment.GetEnvironmentVariable("S2A_TEST_GAME") != null)   // gate sets it: data missing must fail loudly, not pass as uncovered
+                    Check("动森登记 + fs 读 RomFS", "有测试数据", $"缺测试数据：{game}/romfs");
+                else
+                    CheckUncovered("动森登记 + fs 读 RomFS", $"未覆盖（没有 {game}/romfs，玩家自己的游戏数据）");
             }
 
             // ---- 系统数据按号（fsp-srv OpenDataStorageByDataId）：0100152000022000 产物根的 0100000000000802 Mii 资源 ----
@@ -2801,7 +2836,10 @@ namespace S2A.Services.Tests
             }
             else
             {
-                CheckUncovered("系统数据按号", $"未覆盖（没有 {sysRoot}/0100000000000802，玩家自己的游戏数据）");
+                if (Environment.GetEnvironmentVariable("S2A_TEST_SYSTEMDATA") != null)
+                    Check("系统数据按号", "有测试数据", $"缺测试数据：{sysRoot}/0100000000000802");
+                else
+                    CheckUncovered("系统数据按号", $"未覆盖（没有 {sysRoot}/0100000000000802，玩家自己的游戏数据）");
             }
 
             // ---- 共享字体（pl:u）：本机旧库字体数据（S2A_SHARED_FONT_DIR，不进仓库；没有就记未测）----
@@ -3602,6 +3640,65 @@ namespace S2A.Services.Tests
             }
 
             Check($"声音输出样本：兼容层 {cases.Length} 种降混 / 转换组合，两块不齐的缓冲按 1001 B 读", "全部逐字节一致、DataSize = 输出字节数", bad.Count == 0 ? "全部逐字节一致、DataSize = 输出字节数" : string.Join("；", bad));
+
+            // 兼容层收别的游戏格式（audsmx 外部流可开 PcmInt8 / PcmInt32 / PcmFloat，#b36edb 格式 5）：设备不认就先解成 PCM16（取高 16 位；浮点 × 32767 截断、饱和），
+            //   再降混 / 转设备格式。游戏样本与解出的 PCM16 手写：
+            //   Float 0.5 → 16383（16383.5 截断）、−0.5 → −16383、1 → 32767、−1 → −32767、2 → 32767（饱和）、−2 → −32768、0.25 → 8191、0 → 0
+            //   Int32 0x12345678 → 0x1234 = 4660、−0x12345678 → −4661（算术右移向下取整）、int.Max → 32767、int.Min → −32768
+            //   Int8 0x40 → 16384、−0x40 → −16384、127 → 32512、−128 → −32768
+            {
+                var f32 = Ryujinx.Audio.Common.SampleFormat.PcmFloat;
+                var i32 = Ryujinx.Audio.Common.SampleFormat.PcmInt32;
+                var i8 = Ryujinx.Audio.Common.SampleFormat.PcmInt8;
+                float[] fIn = [0.5f, -0.5f, 1f, -1f, 2f, -2f, 0.25f, 0f];
+                short[] fOut = [16383, -16383, 32767, -32767, 32767, -32768, 8191, 0];
+                int[] iIn = [0x12345678, -0x12345678, int.MaxValue, int.MinValue];
+                short[] iOut = [4660, -4661, 32767, -32768];
+                sbyte[] bIn = [0x40, -0x40, 127, -128];
+                short[] bOut = [16384, -16384, 32512, -32768];
+                // 6 声道浮点两帧：第 1 帧只有左前 1.0、第 2 帧只有右前 0.5 → PCM16 后按旧降混公式（OldCompat）折成立体声
+                float[] sIn = [1f, 0, 0, 0, 0, 0, 0, 0.5f, 0, 0, 0, 0];
+                short[] sOut = [32767, 0, 0, 0, 0, 0, 0, 16383, 0, 0, 0, 0];
+
+                byte[] Bytes16(short[] v) { byte[] b = new byte[v.Length * 2]; Buffer.BlockCopy(v, 0, b, 0, b.Length); return b; }
+                byte[] Raw<T>(T[] v) where T : unmanaged => System.Runtime.InteropServices.MemoryMarshal.AsBytes(v.AsSpan()).ToArray();
+
+                // 游戏格式、声道；设备只认的声道、格式；游戏内存里的样本；期望设备拿到的字节
+                (Ryujinx.Audio.Common.SampleFormat User, uint UserCh, uint Real, Ryujinx.Audio.Common.SampleFormat Fmt, byte[] In, byte[] Expect)[] gcases =
+                [
+                    (f32, 2, 2, pcm16, Raw(fIn), Bytes16(fOut)),
+                    (i32, 2, 2, pcm16, Raw(iIn), Bytes16(iOut)),
+                    (i8, 2, 2, pcm16, Raw(bIn), Bytes16(bOut)),
+                    (f32, 6, 2, pcm16, Raw(sIn), OldCompat(Bytes16(sOut), 6, 2, pcm16)),
+                    (f32, 2, 2, i32, Raw(fIn), OldCompat(Bytes16(fOut), 2, 2, i32)),   // 设备连 PCM16 也不认：经 PCM16 再转 Int32（同 PCM16 游戏的回落链）
+                ];
+                var gbad = new List<string>();
+
+                foreach (var c in gcases)
+                {
+                    int off = 100000;
+                    c.In.CopyTo(new Span<byte>(g + off, c.In.Length));
+                    var drvC = new CaptureDriver(mem, c.Real, c.Fmt);
+                    var compat = new Ryujinx.Audio.Backends.CompatLayer.CompatLayerHardwareDeviceDriver(drvC);
+                    var s = compat.OpenDeviceSession(Ryujinx.Audio.Integration.IHardwareDeviceDriver.Direction.Output, mem, c.User, 48000, c.UserCh);
+                    var b = new Ryujinx.Audio.Common.AudioBuffer { DataPointer = (ulong)(g + off), DataSize = (ulong)c.In.Length };
+                    s.RegisterBuffer(b);
+                    s.QueueBuffer(b);
+                    byte[] got = Drain(drvC.Last.Q, 3);
+
+                    if (!got.AsSpan().SequenceEqual(c.Expect) || b.DataSize != (ulong)c.Expect.Length)
+                    {
+                        gbad.Add($"{c.User} {c.UserCh} 声道 → {c.Real} 声道 {c.Fmt}：读出 {got.Length} / 期望 {c.Expect.Length} B、DataSize {b.DataSize}、{(got.AsSpan().SequenceEqual(c.Expect) ? "内容一致" : "内容不一致")}");
+                    }
+                }
+
+                Check($"声音输出样本：兼容层收游戏 Float / Int32 / Int8（{gcases.Length} 种组合，按 3 B 读）", "全部逐字节一致、DataSize = 输出字节数", gbad.Count == 0 ? "全部逐字节一致、DataSize = 输出字节数" : string.Join("；", gbad));
+
+                // 设备直接认游戏格式：不包兼容层，原样交给设备会话
+                var direct = new Ryujinx.Audio.Backends.CompatLayer.CompatLayerHardwareDeviceDriver(new CaptureDriver(mem, 2, f32))
+                    .OpenDeviceSession(Ryujinx.Audio.Integration.IHardwareDeviceDriver.Direction.Output, mem, f32, 48000, 2);
+                Check("声音输出样本：设备认 Float 时游戏 Float 立体声的会话（直交设备、不包兼容层）", "CaptureSession", direct.GetType().Name);
+            }
         }
 
         // 旧兼容层的语义（改前 CompatLayerHardwareDeviceSession + Downmixing 整块做法，按公式重写）：PCM16 降混（6 → 2 → 1 / 2 → 1），再转格式

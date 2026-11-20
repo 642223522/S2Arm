@@ -127,7 +127,7 @@ need_texture_dma_read() { net_touched android/core-link/runtime-tests/readonly-c
 need_metal() { touched $ALL_PFX $METAL_PFX; }   # 渲染器预编 + 单测、离线库按阶段 / 大 MSL、.air 缓存
 need_cntdead() { net_touched graphics/metal/tests/cntdead/CntDead.csproj $METAL_PFX; }   # build_run.sh 先 make libnxgal.dylib，再编 CntDead（引 NxGal.csproj → Ryujinx GAL / Memory）
 need_session() { net_touched graphics/metal/tests/session/Session.csproj $METAL_PFX; }   # 同上引 NxGal.csproj；NativeAOT 发布 Session，无窗口呈现 / 读回、释放队列、原生线程上开下一局
-need_m3pack() { touched $ALL_PFX $METAL_PFX graphics/tools/shbake/ tools/; }   # t_m3pack.sh / m3archive_pack.py 现跑 shbake 的 pso_gen / pso_chunk / m3_combo / gpu_arch
+need_m3pack() { touched $ALL_PFX $METAL_PFX graphics/tools/shbake/ tools/ graphics/tools/direct/cs_pipelines.py graphics/tools/direct/base_pipelines.py graphics/tools/direct/repair_compute.py graphics/tools/direct/tests/t_cs_pipelines graphics/tools/direct/tests/t_base_pipelines pack/stage_direct_cpso.sh pack/stage_inputs/direct_cpso.tsv pack/jobs/archs.py pack/pso_targets.tsv; }   # t_m3pack.sh / m3archive_pack.py 现跑 shbake 的 pso_gen / pso_chunk / m3_combo / gpu_arch；t_cs_pipelines.sh / t_base_pipelines.sh 现跑直连计算管线 / 拉取基础管线归档（metal-tt）与它们的出包阶段
 # 直连曲面 / 共享内存溢出（组名 direct_link 沿用：11-08 起用直连翻译库 build/dsx/libdsx.dylib）：翻译段源码在 graphics/dsx；
 #   11-01 起 t_dmsh_reuse 真跑的出库每键改写是 C# 批量进程（graphics/tools/direct/dsh），它编进 Ryujinx 着色器翻译器 / Spv.Generator 与宽屏着色器分析的源码
 need_direct_link() { touched $ALL_PFX $METAL_PFX graphics/dsx/ graphics/tools/direct/ translator/ compat/tree/src/Ryujinx.Graphics.Shader/ compat/tree/src/Spv.Generator/ graphics/widen/shader/ graphics/widen/SpirvCbufUseText.cs; }
@@ -139,12 +139,56 @@ need_nvn() { touched graphics/nvn/; }   # 直连未守卫新系统 API + 两路�
 need_red() { touched graphics/nvn/ graphics/tools/direct/; }
 need_nvn_tex() { touched graphics/nvn/gfx/tex/ graphics/nvn/gfx/nvn/nvn_tex.; }
 need_dmsh_giant() { touched graphics/tools/direct/dsh/ graphics/tools/direct/tests/dsh_cmp/ graphics/tools/direct/tests/dshfn.py translator/dmsh_chain.lock graphics/tools/direct/tests/t_dmsh_giant.py; }   # 不含 graphics/gate.sh：改门禁本身不必重跑这 15 秒
+# 下面三项原先在分道 / 汇总处内联写 touched，抽成具名判据（前缀逐字照搬、行为不变），好让 GATE_HOOK_ONLY 统一按判据挑子项、门禁按判据推各子项输入
+need_compute_outline() { touched graphics/tools/direct/dsh/Outline.cs graphics/tools/direct/dsh/Flat.cs graphics/tools/direct/tests/t_compute_outline; }
+need_repair_compute() { touched graphics/tools/direct/repair_compute.py graphics/metal/tests/compute_probe.m graphics/tools/direct/tests/t_repair_compute.py; }
+need_repair_loader() { touched graphics/tools/direct/repair_compute.py graphics/tools/direct/tests/t_repair_loader graphics/nvn/gfx/nvn/nvn_mtl.m graphics/nvn/lib_pack; }
 GFX_GROUPS="track_c track_net shared_gpu_contract vulkan_diag vvl texture_dma_read metal cntdead session m3pack direct_link shbake_net frame_pacing nvn red nvn_tex dsh gl vk present_residency fps_limit present_settings shdist dmsh_giant"
 want() { case $1 in fps_limit|present_settings) need_present_residency && "need_$1";; *) "need_$1";; esac; }   # 帧率上限 / 画面设置矩阵只在上屏驻留集成里加跑
 if [ "${GFX_GATE_PLAN:-}" = 1 ]; then for g in $GFX_GROUPS; do if want "$g"; then echo "$g 跑"; else echo "$g 不跑"; fi; done; exit 0; fi
+# 只跑点名子项（门禁按子项拆步用）：GATE_HOOK_ONLY="<子项键…>"（tools/gate.sh 把 GATE_HOOK_ONLY 原样转给钩子，同时照旧放进 GATE_ONLY）。
+#   子项键 = 一个判据（上面的 need_<键>，子项要不要跑由它定）；present_residency 连带它里面的 fps_limit / present_settings 两个加跑判据；
+#   rest =「其余」：没有判据、每次都跑的那些（宏语料检查、四项棘轮、单测池里带 HOOK_REST=1 的项）。
+#   设了时：名单外的键，判据一律当「本批不涉及」——分道不起、汇总走各自现成的「不跑」分支，表述与不涉及时逐字相同；rest 不在名单时
+#   那几项各记一行「本步只跑点名子项…不跑」。名单内的键照原判据（仍看 GATE_CHANGED）。不设时本段什么都不做，行为与原先逐字节一致。
+#   本钩子原有的 GATE_ONLY 是另一套键（本机另跑的 dsh / gl / vk …），两者同设且不同 → 红；相同（tools/gate.sh 转发时两个都放）当同一请求。
+#   GATE_HOOK_LIST=1：按 GATE_CHANGED / GATE_HOOK_ONLY 打印本次要跑的子项（一行一个，present_residency 的两个加跑判据另起一行），不跑任何测试即退出。
+#   GATE_HOOK_LIST=inputs：每个子项键打一行「键<TAB>触发前缀…」——前缀 = 执行它的判据时 touched 收到的全部参数（net_touched 的 .csproj 闭包现算，
+#   多分支的判据每一支都走到）；判据在任何改动下都会判「要跑」（如闭包算不出）的键与 rest 打「*」= 推不出，按整份钩子的输入算。门禁据此给各子步算输入
+#   注意：触发前缀按 touched 的口径解释——case "$f" in "$p"*)，即 p 是 shell 通配前缀（*/build.mk 按通配、* 跨目录；Makefile 也匹配 Makefile.xxx），
+#   不是普通字符串前缀；消费方要按同一口径匹配（门禁侧用 fnmatch(p + "*")），按普通前缀比会漏改动、复用旧结果
+HOOK_KEYS="$(for g in $GFX_GROUPS; do case $g in fps_limit|present_settings) ;; *) printf '%s ' "$g";; esac; done)dsh_vk dsh_vklib compute_outline repair_compute repair_loader rest"
+hook_preds() { case $1 in present_residency) echo present_residency fps_limit present_settings;; *) echo "$1";; esac; }
+hook_sel() { [ -z "${GATE_HOOK_ONLY:-}" ] || has "$GATE_HOOK_ONLY" "$1"; }
+hook_rest_off() { [ -n "${HOOK_REST:-}" ] && ! hook_sel rest; }
+if [ "${GATE_HOOK_LIST:-}" = inputs ]; then
+  GATE_CHANGED=' '   # 非空：net_touched 见空集合会直接判「全跑」，这里要它走到算闭包、调 touched 那一步
+  touched() { HOOK_REC="$HOOK_REC $*"; return 1; }   # 只记参数、一律判没改到：|| 串起来的每一支都会走到
+  for k in $HOOK_KEYS; do
+    [ "$k" = rest ] && { printf 'rest\t*\n'; continue; }
+    HOOK_REC=; all=
+    for p in $(hook_preds "$k"); do "need_$p" && all=1; done
+    if [ -n "$all" ]; then printf '%s\t*\n' "$k"; else printf '%s\t%s\n' "$k" "$(tr ' ' '\n' <<< "$HOOK_REC" | LC_ALL=C sort -u | grep -v '^$' | tr '\n' ' ' | sed 's/ $//')"; fi
+  done; exit 0
+fi
+if [ -n "${GATE_HOOK_ONLY:-}" ]; then
+  for k in $GATE_HOOK_ONLY; do has "$HOOK_KEYS" "$k" || { echo "graphics 钩子：GATE_HOOK_ONLY 子项键 $k 认不得（只认 ${HOOK_KEYS}）→ 红"; exit 1; }; done
+  if [ -n "${GATE_ONLY:-}" ]; then [ "$GATE_ONLY" = "$GATE_HOOK_ONLY" ] || { echo "graphics 钩子：GATE_HOOK_ONLY（${GATE_HOOK_ONLY}）与 GATE_ONLY（${GATE_ONLY}）同设且不同 → 红"; exit 1; }; unset GATE_ONLY; fi
+  # 每个判据包一层：键不在名单 → 判不涉及；在名单 → 照原判据。原判据内部再调别的判据（need_dsh_vklib 调 need_dsh_vk、want 调 need_present_residency）时按原判据算，不再看名单
+  for k in $HOOK_KEYS; do [ "$k" = rest ] && continue; for p in $(hook_preds "$k"); do
+    eval "$(declare -f "need_$p" | sed "1s/^need_$p /raw_need_$p /")"
+    eval "need_$p() { [ -n \"\${HOOK_RAW:-}\" ] && { raw_need_$p; return; }; hook_sel $k || return 1; local HOOK_RAW=1; raw_need_$p; }"
+  done; done
+fi
+if [ "${GATE_HOOK_LIST:-}" = 1 ]; then
+  for g in $GFX_GROUPS dsh_vk dsh_vklib compute_outline repair_compute repair_loader; do want "$g" && echo "$g"; done; hook_sel rest && echo rest; exit 0
+fi
+# dsh 工具预编（分道前那段）有没有用：GATE_HOOK_ONLY 时看点名的键里有没有用到 dshfn / dsh_batch 的子项（按这些单测 import dshfn / dsh_batch 或读 DSH_CMP_DLL 查出）；
+#   只影响快慢——没预编时各单测照旧自己编
+dsh_prep_wanted() { [ -z "${GATE_HOOK_ONLY:-}" ] && return 0; hook_sel rest && return 0; local k; for k in red direct_link compute_outline dmsh_giant dsh dsh_vk dsh_vklib repair_compute repair_loader; do "need_$k" && return 0; done; return 1; }
 # 合成测试只跑这段生产检查，不能继续执行 GPU / regen / 编译步骤。
 if [ "${1:-}" = --check-macro-corpus ]; then check_macro_corpus; exit $?; fi
-check_macro_corpus || exit $?
+if hook_sel rest; then check_macro_corpus || exit $?; fi   # 属于「其余」（见 HOOK_KEYS）
 T0=$(date +%s); LOG=build/gate_gfx; mkdir -p "$LOG"
 # 每项一行登记（10-24：末尾汇总的 ok= / echo 两行是全仓库最热的冲突点，一天四次因新加单测互撞被列车退回）：
 #   新加的单测在自己那一步后面写一行 reg <退出码> "<汇总片段>"，不要再改末尾那两行；末尾的老项照旧
@@ -186,6 +230,9 @@ run_shared_gpu_contract() {
 run_vulkan_diag() {
   timeout 300 bash graphics/track/tests/vulkan_diag/build_run.sh > "$LOG/vulkan_diag.log" 2>&1
 }
+# 显卡独占锁只罩开真窗口 / 按真实显示时钟判的子项（11-14：原先 tools/gate.sh 给整个钩子套锁，一百多项离屏单测也排同一把，全机一次只能跑一个 graphics 钩子）。
+#   锁 = 全机共用的 Mac 局槽（与 solo、Mac 局同一把）；没给 S2A_PRIVATE_TOOLS（单机 / 本机直跑）照旧不套。用法：gpu_excl <拿齐后时限秒> <命令…>
+gpu_excl() { local lim=$1; shift; [ -n "${S2A_PRIVATE_TOOLS:-}" ] && { bash "$S2A_PRIVATE_TOOLS/mac_slot_frozen.sh" prio "graphics/gate.sh 上屏驻留" "$lim" -- "$@"; return; }; "$@"; }   # 写成 shift 后语句首执行 "$@"：接线扫描按转调函数认，被包的单测仍算接上
 run_present_residency() {
   local out="build/tests/present-residency" widen_build="build/tests/present-residency/deps"
   local widen_target="$widen_build/tests/nvn/widen/S2Arm.Gfx.Widen.dylib"
@@ -193,7 +240,7 @@ run_present_residency() {
   timeout 240 make -s -j1 S2A_CS=0 BUILD="$widen_build" "$widen_target" > "$LOG/present_residency_widen.log" 2>&1
   build_status=$?; redlog $build_status "$LOG/present_residency_widen.log"
   if [ "$build_status" = 0 ]; then
-    timeout 300 env PRESENT_RESIDENCY_BUILD="$PWD/$out" PRESENT_WIDEN_LIB="$widen_lib" \
+    gpu_excl 330 timeout 300 env PRESENT_RESIDENCY_BUILD="$PWD/$out" PRESENT_WIDEN_LIB="$widen_lib" \
       bash graphics/nvn/tests/t_present_residency.sh > "$LOG/present_residency.log" 2>&1
     test_status=$?; redlog $test_status "$LOG/present_residency.log"
   else
@@ -207,13 +254,13 @@ run_present_residency() {
   if [ "$build_status" = 0 ] && need_fps_limit; then
     # 450 秒：核心矩阵 56 个场景按真实显示时钟跑（每个约 3 秒、动态档 4 阶段），10-30 加动态换档场景后整组实测 286–303 秒，
     #   原 300 秒到点 rc=124、已跑完的全 PASS 也判红（11-01 gfx 钩子合入后层红的一项）；按实测 1.5 倍给
-    timeout 450 env FPS_HIGH_REFRESH=0 FPS_WIDEN_LIB="$widen_lib" \
+    gpu_excl 480 timeout 450 env FPS_HIGH_REFRESH=0 FPS_WIDEN_LIB="$widen_lib" \
       bash graphics/nvn/tests/t_fps_limit.sh > "$LOG/fps_limit.log" 2>&1
     fps_status=$?; redlog $fps_status "$LOG/fps_limit.log"
     PRESENT_RESIDENCY_RESULT="$PRESENT_RESIDENCY_RESULT / 帧率上限核心矩阵：$(tail -2 "$LOG/fps_limit.log" | tr '\n' ' ')（退出 ${fps_status}；120 Hz 专项须在支持设备另跑）"
   fi
   if [ "$build_status" = 0 ] && need_present_settings; then
-    timeout 300 env PRESENT_WIDEN_LIB="$widen_lib" bash graphics/nvn/tests/t_present_settings.sh > "$LOG/present_settings.log" 2>&1
+    gpu_excl 330 timeout 300 env PRESENT_WIDEN_LIB="$widen_lib" bash graphics/nvn/tests/t_present_settings.sh > "$LOG/present_settings.log" 2>&1
     settings_status=$?; redlog $settings_status "$LOG/present_settings.log"
     PRESENT_RESIDENCY_RESULT="$PRESENT_RESIDENCY_RESULT / 直连画面设置：$(tail -2 "$LOG/present_settings.log" | tr '\n' ' ')（退出 ${settings_status}）"
   fi
@@ -267,8 +314,8 @@ if [ -z "${S2A_DOTNET_LOCK:-}" ] && [ -f tools/dotnet_lock.c ] && mkdir -p build
   export S2A_DOTNET_REAL=${DOTNET:-$HOME/.dotnet/dotnet} S2A_DOTNET_LOCK=$PWD/build/.dotnet_build.lock DOTNET=$PWD/build/dotnet_lock/dotnet PATH=$PWD/build/dotnet_lock:$PATH
 fi
 JOBD=$LOG/jobs; rm -rf "$JOBD"; mkdir -p "$JOBD"; LANES=
-# job <项> <命令…>：先认领（mkdir 原子，已被别的道认领就跳过），输出进 $LOG/<项>.log、退出码原子落 $JOBD/<项>.rc，用时记 $LOG/jobs.tsv（秒数 / 项 / 退出码 / 开跑时刻 / 道）
-job() { mkdir "$JOBD/$1.claim" 2> /dev/null || return 0; local k=$1 s=$SECONDS r; shift; "$@" > "$LOG/$k.log" 2>&1 < /dev/null; r=$?; printf '%s\t%s\t%s\t%s\t%s\n' "$((SECONDS - s))" "$k" "$r" "$s" "${LANE:-}" >> "$LOG/jobs.tsv"; echo "$r" > "$JOBD/$k.rc.t"; mv "$JOBD/$k.rc.t" "$JOBD/$k.rc"; }
+# job <项> <命令…>：先认领（mkdir 原子，已被别的道认领就跳过），输出进 $LOG/<项>.log、退出码原子落 $JOBD/<项>.rc，用时记 $LOG/jobs.tsv（秒数 / 项 / 退出码 / 开跑时刻 / 道）；带 HOOK_REST=1 调的是「其余」子项（见 HOOK_KEYS），GATE_HOOK_ONLY 不点名 rest 时只记一行「不跑」、退出码 0
+job() { mkdir "$JOBD/$1.claim" 2> /dev/null || return 0; local k=$1 s=$SECONDS r; hook_rest_off && { echo "本步只跑点名子项（GATE_HOOK_ONLY=${GATE_HOOK_ONLY:-}），「其余」不在名单，不跑" > "$LOG/$k.log"; echo 0 > "$JOBD/$k.rc.t"; mv "$JOBD/$k.rc.t" "$JOBD/$k.rc"; return 0; }; unset HOOK_REST; shift; "$@" > "$LOG/$k.log" 2>&1 < /dev/null; r=$?; printf '%s\t%s\t%s\t%s\t%s\n' "$((SECONDS - s))" "$k" "$r" "$s" "${LANE:-}" >> "$LOG/jobs.tsv"; echo "$r" > "$JOBD/$k.rc.t"; mv "$JOBD/$k.rc.t" "$JOBD/$k.rc"; }
 lanes_alive() { local p; for p in $LANES; do kill -0 "$p" 2> /dev/null && return 0; done; return 1; }
 # waitfor <项>：道内等别的道的某项跑完（不写退出码）；rcof <项>：主流程取退出码，四道都结束了还没有 = 没排进任何道 → 125 判红
 waitfor() { while [ ! -f "$JOBD/$1.rc" ] && lanes_alive; do sleep 0.2; done; }
@@ -296,6 +343,8 @@ lane_metal() {
   fi
   if ! has "${GATE_SKIP:-}" m3pack && has "$RUNG" m3pack; then job m3pack timeout 300 make -s -C graphics/metal test-m3; fi
   has "$RUNG" m3pack && job m3archive timeout 300 make -s -C graphics/metal test-m3archive
+  has "$RUNG" m3pack && job cs_pipelines timeout 300 bash graphics/tools/direct/tests/t_cs_pipelines.sh   # 直连计算管线随包归档：出包 → 设备同一描述命中 / 反证不命中 / 阶段键
+  has "$RUNG" m3pack && job base_pipelines timeout 300 bash graphics/tools/direct/tests/t_base_pipelines.sh   # 直连拉取基础管线随包归档：出包 → 设备同一描述命中 / 反证不命中 / 阶段
   # NVN 直连层 / GL / Vulkan 前端（graphics/nvn 与根 Makefile 的 make，链 libnvn.a、build/dsx/mac/libspvc.a）：同一道先后
   need_nvn && job nvn_m3 timeout 300 make -s -C graphics/nvn test
   need_nvn_tex && job nvn_tex timeout 120 make -s -B -C graphics/nvn/gfx/tex/tests run
@@ -375,88 +424,97 @@ py_items() {
     job red timeout 300 python3 graphics/nvn/tests/t_red.py
     job fold timeout 300 python3 graphics/nvn/tests/t_fold.py
   fi
-  job list_arg timeout 120 "$PYV" graphics/tools/direct/tests/t_list_arg.py
-  job direct_unity timeout 300 python3 graphics/tools/direct/tests/t_unity.py   # 原先日志也叫 unity.log，把 shbake t_unity 的证据盖掉了
-  job fout_want timeout 300 python3 graphics/tools/direct/tests/t_fout_want.py
+  HOOK_REST=1 job list_arg timeout 120 "$PYV" graphics/tools/direct/tests/t_list_arg.py
+  HOOK_REST=1 job direct_unity timeout 300 python3 graphics/tools/direct/tests/t_unity.py   # 原先日志也叫 unity.log，把 shbake t_unity 的证据盖掉了
+  HOOK_REST=1 job fout_want timeout 300 python3 graphics/tools/direct/tests/t_fout_want.py
   need_dmsh_giant && job dmsh_giant timeout 300 python3 graphics/tools/direct/tests/t_dmsh_giant.py
   if has "$RUNG" direct_link; then
     job alpha_ms timeout 300 python3 graphics/tools/direct/tests/t_alpha_ms.py
+    job vs_pull timeout 300 python3 graphics/tools/direct/tests/t_vs_pull.py   # 拉取式顶点输入变体 _bp：形状 + GPU 逐格式与 Metal 顶点抓取逐位同
+    job fout_fc timeout 300 python3 graphics/tools/direct/tests/t_fout_fc.py
     job se_want timeout 60 python3 tests/se_want_test.py
   fi
-  touched graphics/tools/direct/dsh/Outline.cs graphics/tools/direct/dsh/Flat.cs graphics/tools/direct/tests/t_compute_outline && job compute_outline timeout 180 python3 graphics/tools/direct/tests/t_compute_outline.py
-  touched graphics/tools/direct/repair_compute.py graphics/metal/tests/compute_probe.m graphics/tools/direct/tests/t_repair_compute.py && job repair_compute timeout 30 python3 graphics/tools/direct/tests/t_repair_compute.py
-  touched graphics/tools/direct/repair_compute.py graphics/tools/direct/tests/t_repair_loader graphics/nvn/gfx/nvn/nvn_mtl.m graphics/nvn/lib_pack && job repair_loader timeout 180 python3 graphics/tools/direct/tests/t_repair_loader.py
-  job dmsh_ushare timeout 120 python3 graphics/tools/direct/tests/t_dmsh_ushare.py
+  need_compute_outline && job compute_outline timeout 180 python3 graphics/tools/direct/tests/t_compute_outline.py
+  need_repair_compute && job repair_compute timeout 30 python3 graphics/tools/direct/tests/t_repair_compute.py
+  need_repair_loader && job repair_loader timeout 180 python3 graphics/tools/direct/tests/t_repair_loader.py
+  HOOK_REST=1 job dmsh_ushare timeout 120 python3 graphics/tools/direct/tests/t_dmsh_ushare.py
   has "$RUNG" track_c && job track timeout 120 make -s gfx-test-track   # 只写 build/tests/t_track
-  job macrogen timeout 200 bash graphics/tools/macrogen/regen.sh check
-  job gfx_api timeout 30 python3 graphics/nvn/tests/t_gfx_api.py
-  job nxfmt timeout 120 "$PYV" graphics/tools/tests/test_nxfmt.py
-  job sdf timeout 60 "$PYV" graphics/tools/shbake/tests/t_sdf.py
-  job spch timeout 60 "$PYV" graphics/tools/shbake/tests/t_spch.py
-  job nvn_uses timeout 60 "$PYV" graphics/tools/shbake/tests/t_nvn_uses.py
-  job trpfs timeout 60 "$PYV" graphics/tools/shbake/tests/t_trpfs.py
-  job pso_spec_only timeout 60 "$PYV" graphics/tools/shbake/tests/t_pso_spec_only.py
-  job pso_int_blend timeout 60 "$PYV" graphics/tools/shbake/tests/t_pso_int_blend.py
-  job programs timeout 60 "$PYV" graphics/tools/shbake/tests/t_programs.py
-  job ue_programs timeout 60 "$PYV" graphics/tools/shbake/tests/t_ue_programs.py
-  job unity timeout 60 "$PYV" graphics/tools/shbake/tests/t_unity.py
-  job red_static timeout 60 "$PYV" graphics/tools/shbake/tests/t_red_static.py
-  job exe_shtab timeout 60 "$PYV" graphics/tools/shbake/tests/t_exe_shtab.py
-  job unpack_generic timeout 120 "$PYV" graphics/tools/shbake/tests/t_unpack_generic.py
-  job nxdecomp timeout 120 "$PYV" graphics/tools/shbake/tests/t_nxdecomp.py
-  job undecoded timeout 120 "$PYV" graphics/tools/shbake/tests/t_undecoded.py
-  job pso_cdc timeout 30 python3 graphics/tools/shbake/tests/t_pso_cdc.py
-  job psouse timeout 30 python3 graphics/tools/shbake/tests/t_psouse.py
-  job psowarm timeout 30 python3 graphics/tools/shbake/tests/t_psowarm.py
-  job zchain timeout 60 "$PYV" graphics/tools/shbake/tests/t_zchain.py
-  job adj_ghost timeout 60 "$PYV" graphics/tools/shbake/tests/t_adj_ghost.py
-  job bnsh_slice timeout 60 "$PYV" graphics/tools/shbake/tests/t_bnsh_slice.py
-  job whole_zstd_scan timeout 60 "$PYV" graphics/tools/shbake/tests/t_whole_zstd_scan.py
-  job mmap_contains timeout 60 "$PYV" graphics/tools/shbake/tests/t_mmap_contains.py
-  job zsdict_heads timeout 60 "$PYV" graphics/tools/shbake/tests/t_zsdict_heads.py
-  job container_b timeout 60 "$PYV" -B graphics/tools/shbake/tests/t_container_b.py
-  job wwise_skip timeout 120 "$PYV" graphics/tools/shbake/tests/t_wwise_skip.py
-  job ue_pak_legacy timeout 60 "$PYV" graphics/tools/shbake/tests/t_ue_pak_legacy.py
-  job zstd_lib timeout 60 "$PYV" graphics/tools/shbake/tests/t_zstd_lib.py
-  job keyscan timeout 120 "$PYV" graphics/tools/shbake/tests/t_keyscan.py
-  job ue_iostore timeout 60 "$PYV" graphics/tools/shbake/tests/t_ue_iostore.py
-  job ue_pak_frozen timeout 60 "$PYV" graphics/tools/shbake/tests/t_ue_pak_frozen.py
-  job uepak_v7 timeout 60 "$PYV" graphics/tools/shbake/tests/t_uepak_legacy_v7.py
-  job guest_cache timeout 120 "$PYV" graphics/tools/shbake/tests/t_guest_cache.py
+  HOOK_REST=1 job macrogen timeout 200 bash graphics/tools/macrogen/regen.sh check
+  HOOK_REST=1 job gfx_api timeout 30 python3 graphics/nvn/tests/t_gfx_api.py
+  HOOK_REST=1 job nxfmt timeout 120 "$PYV" graphics/tools/tests/test_nxfmt.py
+  HOOK_REST=1 job sdf timeout 60 "$PYV" graphics/tools/shbake/tests/t_sdf.py
+  HOOK_REST=1 job spch timeout 60 "$PYV" graphics/tools/shbake/tests/t_spch.py
+  HOOK_REST=1 job nvn_uses timeout 60 "$PYV" graphics/tools/shbake/tests/t_nvn_uses.py
+  HOOK_REST=1 job trpfs timeout 60 "$PYV" graphics/tools/shbake/tests/t_trpfs.py
+  HOOK_REST=1 job pso_spec_only timeout 60 "$PYV" graphics/tools/shbake/tests/t_pso_spec_only.py
+  HOOK_REST=1 job pso_int_blend timeout 60 "$PYV" graphics/tools/shbake/tests/t_pso_int_blend.py
+  HOOK_REST=1 job programs timeout 60 "$PYV" graphics/tools/shbake/tests/t_programs.py
+  HOOK_REST=1 job ue_programs timeout 60 "$PYV" graphics/tools/shbake/tests/t_ue_programs.py
+  HOOK_REST=1 job unity timeout 60 "$PYV" graphics/tools/shbake/tests/t_unity.py
+  HOOK_REST=1 job red_static timeout 60 "$PYV" graphics/tools/shbake/tests/t_red_static.py
+  HOOK_REST=1 job exe_shtab timeout 60 "$PYV" graphics/tools/shbake/tests/t_exe_shtab.py
+  HOOK_REST=1 job unpack_generic timeout 120 "$PYV" graphics/tools/shbake/tests/t_unpack_generic.py
+  HOOK_REST=1 job nxdecomp timeout 120 "$PYV" graphics/tools/shbake/tests/t_nxdecomp.py
+  HOOK_REST=1 job undecoded timeout 120 "$PYV" graphics/tools/shbake/tests/t_undecoded.py
+  HOOK_REST=1 job pso_cdc timeout 30 python3 graphics/tools/shbake/tests/t_pso_cdc.py
+  HOOK_REST=1 job psouse timeout 30 python3 graphics/tools/shbake/tests/t_psouse.py
+  HOOK_REST=1 job psowarm timeout 30 python3 graphics/tools/shbake/tests/t_psowarm.py
+  HOOK_REST=1 job zchain timeout 60 "$PYV" graphics/tools/shbake/tests/t_zchain.py
+  HOOK_REST=1 job adj_ghost timeout 60 "$PYV" graphics/tools/shbake/tests/t_adj_ghost.py
+  HOOK_REST=1 job bnsh_slice timeout 60 "$PYV" graphics/tools/shbake/tests/t_bnsh_slice.py
+  HOOK_REST=1 job whole_zstd_scan timeout 60 "$PYV" graphics/tools/shbake/tests/t_whole_zstd_scan.py
+  HOOK_REST=1 job mmap_contains timeout 60 "$PYV" graphics/tools/shbake/tests/t_mmap_contains.py
+  HOOK_REST=1 job zstd_frame_nocopy timeout 60 "$PYV" graphics/tools/shbake/tests/t_zstd_frame_nocopy.py
+  HOOK_REST=1 job zsdict_heads timeout 60 "$PYV" graphics/tools/shbake/tests/t_zsdict_heads.py
+  HOOK_REST=1 job container_b timeout 60 "$PYV" -B graphics/tools/shbake/tests/t_container_b.py
+  HOOK_REST=1 job wwise_skip timeout 120 "$PYV" graphics/tools/shbake/tests/t_wwise_skip.py
+  HOOK_REST=1 job ue_pak_legacy timeout 60 "$PYV" graphics/tools/shbake/tests/t_ue_pak_legacy.py
+  HOOK_REST=1 job zstd_lib timeout 60 "$PYV" graphics/tools/shbake/tests/t_zstd_lib.py
+  HOOK_REST=1 job keyscan timeout 120 "$PYV" graphics/tools/shbake/tests/t_keyscan.py
+  HOOK_REST=1 job ue_iostore timeout 60 "$PYV" graphics/tools/shbake/tests/t_ue_iostore.py
+  HOOK_REST=1 job ue_pak_frozen timeout 60 "$PYV" graphics/tools/shbake/tests/t_ue_pak_frozen.py
+  HOOK_REST=1 job uepak_v7 timeout 60 "$PYV" graphics/tools/shbake/tests/t_uepak_legacy_v7.py
+  HOOK_REST=1 job guest_cache timeout 120 "$PYV" graphics/tools/shbake/tests/t_guest_cache.py
   ! has "${GATE_SKIP:-}" shdist && need_shdist && job pso_tt timeout 60 bash graphics/tools/shbake/tests/t_pso_tt_retry.sh
-  job run_pairs timeout 30 python3 graphics/tools/direct/tests/t_run_pairs.py
-  job run_knowledge timeout 30 python3 graphics/tools/direct/tests/t_run_knowledge.py
-  job rt_collect timeout 30 python3 graphics/tools/direct/tests/t_rt_collect.py
-  job rt_recover timeout 60 "$PYV" graphics/tools/direct/tests/t_rt_recover.py
-  job pso_seed timeout 30 python3 graphics/tools/direct/tests/t_pso_seed.py
-  job lib_pack timeout 120 "$PYV" graphics/tools/direct/tests/t_lib_pack.py
-  job lib_pack_vk timeout 120 "$PYV" graphics/tools/direct/tests/t_lib_pack_vk.py
-  job merge_extract timeout 30 python3 graphics/tools/direct/tests/t_merge_extract.py
-  job unity_kernels timeout 30 python3 graphics/tools/direct/tests/t_unity_kernels.py
-  job unity55_layout timeout 30 "$PYV" graphics/tools/direct/tests/t_unity55_layout.py
-  job bnsh_bounds timeout 30 "$PYV" graphics/tools/direct/tests/t_bnsh_bounds.py
-  job ndsr_bare timeout 30 "$PYV" graphics/tools/direct/tests/t_ndsr_bare.py
-  job mtarc_width timeout 30 "$PYV" graphics/tools/direct/tests/t_mtarc_width.py
-  job nlg4 timeout 60 "$PYV" graphics/tools/direct/tests/t_nlg4.py
-  job source_path timeout 60 "$PYV" graphics/tools/direct/tests/t_source_path_posix.py
-  job mtspk timeout 30 "$PYV" graphics/tools/direct/tests/t_mtspk.py
-  job ue_oodle_inline timeout 30 "$PYV" graphics/tools/direct/tests/t_ue_oodle_inline.py
-  job split_oodle_default timeout 30 "$PYV" graphics/tools/direct/tests/t_split_oodle_default.py
-  job split_ctl_magic timeout 30 "$PYV" graphics/tools/direct/tests/t_split_ctl_magic.py
-  job split_file_skip timeout 30 "$PYV" graphics/tools/direct/tests/t_split_file_skip.py
-  job ue3_dnbc timeout 30 "$PYV" graphics/tools/direct/tests/t_ue3_dnbc.py
-  job unity_layouts timeout 60 "$PYV" graphics/tools/direct/tests/t_unity_layouts.py
-  job lib_pack_sys timeout 120 python3 graphics/tools/direct/tests/t_lib_pack.py
-  job lib_swap timeout 120 python3 graphics/tools/direct/tests/t_lib_swap.py
-  job metal_nospace timeout 120 python3 graphics/tools/direct/tests/t_metal_nospace.py
-  job pch_breaker timeout 120 python3 graphics/tools/direct/tests/t_pch_breaker.py
-  job fbrvars timeout 30 python3 graphics/tools/shbake/tests/t_fbrvars.py
-  job specpipe timeout 30 python3 graphics/tools/shbake/tests/t_specpipe.py
+  HOOK_REST=1 job run_pairs timeout 30 python3 graphics/tools/direct/tests/t_run_pairs.py
+  HOOK_REST=1 job run_knowledge timeout 30 python3 graphics/tools/direct/tests/t_run_knowledge.py
+  HOOK_REST=1 job rt_collect timeout 30 python3 graphics/tools/direct/tests/t_rt_collect.py
+  HOOK_REST=1 job rt_recover timeout 60 "$PYV" graphics/tools/direct/tests/t_rt_recover.py
+  HOOK_REST=1 job pso_seed timeout 30 python3 graphics/tools/direct/tests/t_pso_seed.py
+  HOOK_REST=1 job lib_pack timeout 120 "$PYV" graphics/tools/direct/tests/t_lib_pack.py
+  HOOK_REST=1 job lib_pack_vk timeout 120 "$PYV" graphics/tools/direct/tests/t_lib_pack_vk.py
+  HOOK_REST=1 job lib_pack_ident timeout 120 "$PYV" graphics/tools/direct/tests/t_lib_pack_ident.py   # 发布打包按存储身份同一份只读一次（#1331）
+  HOOK_REST=1 job lib_guest timeout 120 "$PYV" graphics/tools/direct/tests/t_lib_guest.py   # 客体输入随库带（种类 56，LibPack.GuestBlocks；读端在 t_lib_pack.m）
+  HOOK_REST=1 job lib_overlay timeout 120 "$PYV" graphics/tools/direct/tests/t_lib_overlay.py   # S 级升级补可读瓦片版的覆盖层（LibPack.Overlay）
+  HOOK_REST=1 job merge_extract timeout 30 python3 graphics/tools/direct/tests/t_merge_extract.py
+  HOOK_REST=1 job unity_kernels timeout 30 python3 graphics/tools/direct/tests/t_unity_kernels.py
+  HOOK_REST=1 job unity55_layout timeout 30 "$PYV" graphics/tools/direct/tests/t_unity55_layout.py
+  HOOK_REST=1 job bnsh_bounds timeout 30 "$PYV" graphics/tools/direct/tests/t_bnsh_bounds.py
+  HOOK_REST=1 job ndsr_bare timeout 30 "$PYV" graphics/tools/direct/tests/t_ndsr_bare.py
+  HOOK_REST=1 job unity_kw_pairs timeout 30 "$PYV" graphics/tools/direct/tests/t_unity_kw_pairs.py
+  HOOK_REST=1 job mtarc_width timeout 30 "$PYV" graphics/tools/direct/tests/t_mtarc_width.py
+  HOOK_REST=1 job nlg4 timeout 60 "$PYV" graphics/tools/direct/tests/t_nlg4.py
+  HOOK_REST=1 job source_path timeout 60 "$PYV" graphics/tools/direct/tests/t_source_path_posix.py
+  HOOK_REST=1 job mtspk timeout 30 "$PYV" graphics/tools/direct/tests/t_mtspk.py
+  HOOK_REST=1 job ue_oodle_inline timeout 30 "$PYV" graphics/tools/direct/tests/t_ue_oodle_inline.py
+  HOOK_REST=1 job split_oodle_default timeout 30 "$PYV" graphics/tools/direct/tests/t_split_oodle_default.py
+  HOOK_REST=1 job split_ctl_magic timeout 30 "$PYV" graphics/tools/direct/tests/t_split_ctl_magic.py
+  HOOK_REST=1 job split_file_skip timeout 30 "$PYV" graphics/tools/direct/tests/t_split_file_skip.py
+  HOOK_REST=1 job falcom_pkg timeout 30 "$PYV" graphics/tools/direct/tests/t_falcom_pkg.py   # Falcom 资源包（.pkg）里的着色器进直连抽取
+  HOOK_REST=1 job ue3_dnbc timeout 30 "$PYV" graphics/tools/direct/tests/t_ue3_dnbc.py
+  HOOK_REST=1 job unity_layouts timeout 60 "$PYV" graphics/tools/direct/tests/t_unity_layouts.py
+  HOOK_REST=1 job lib_pack_sys timeout 120 python3 graphics/tools/direct/tests/t_lib_pack.py
+  HOOK_REST=1 job lib_swap timeout 120 python3 graphics/tools/direct/tests/t_lib_swap.py
+  HOOK_REST=1 job metal_nospace timeout 120 python3 graphics/tools/direct/tests/t_metal_nospace.py
+  HOOK_REST=1 job pch_breaker timeout 120 python3 graphics/tools/direct/tests/t_pch_breaker.py
+  HOOK_REST=1 job fbrvars timeout 30 python3 graphics/tools/shbake/tests/t_fbrvars.py
+  HOOK_REST=1 job specpipe timeout 30 python3 graphics/tools/shbake/tests/t_specpipe.py
 }
 SNAP=${S2A_SNAP_DIR:-${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/gate_snap}/metal_$(date +%m%d%H%M%S)_$$.txt
 # 直连 C# 工具分道前编一次（S2A.Dsh 两个入口：dsh_cmp = 单测调改写函数、dsh_batch = 批量进程）：二十来支单测原先每个进程各自起一次 dotnet build / msbuild 判重，
 #   本机实测一份热跑里 dsh_cmp 被编 6 遍、每遍持 C# 构建锁 9–29 秒，四道并行后全堵在这把锁上。这里按它们自己的判重逻辑（dshfn.dll / dsh_batch.get）编一次，
 #   经它们本来就认的环境变量交给各道（DSH_CMP_DLL 同 t_dsh.sh 的用法，DSH_BATCH_CMD / DSH_BATCH_FP 即 dsh_batch.export）；编不过就不导出，各单测照旧自己编、自己报红
+if dsh_prep_wanted; then   # GATE_HOOK_ONLY 时只在点名子项里有用到它的才编（不设时照旧每次编；只是提速，编不编不改任何子项判定）
 "${S2A_PY:-python3}" - > "$LOG/dsh_tools.env" 2> "$LOG/dsh_tools.log" <<'PY'
 import json, shlex, sys
 sys.path[:0] = ['graphics/tools/direct/tests', 'translator']
@@ -466,6 +524,7 @@ for name, get in (('dsh_cmp', lambda: {'DSH_CMP_DLL': dshfn.dll()}), ('dsh_batch
     except SystemExit as e: print(f'{name} 没编成，各单测自己编：{e}', file=sys.stderr)
 PY
 . "$LOG/dsh_tools.env"
+fi
 lane_metal & LANES="$LANES $!"   # 金属道先起：原生道要等它的预编项
 lane_native & LANES="$LANES $!"
 lane_net & LANES="$LANES $!"
@@ -534,6 +593,7 @@ else cd_=0; fi
 # 图形会话与释放队列（真 NativeAOT + NxGal，graphics/metal/tests/session）：10 局 × 120 次呈现读回、每局 10032 个真缓冲释放、旧释放顺序必须红（本机负载 30 时约 55 秒）
 if has "$RUNG" session; then rcof session; ss=$?; reg $ss "图形会话：$(tail -1 "$LOG/session.log" | cut -c1-120)（退出 ${ss}）" "$LOG/session.log"
 else reg 0 "图形会话：本批没改到渲染器 / NxGal 闭包，不跑"; fi
+if hook_sel rest; then   # 下面四项棘轮属于「其余」（GATE_HOOK_ONLY 不点名 rest 时不跑，见 HOOK_KEYS）
 n4=$(bash graphics/metal/tools/mtl4_count.sh); b4=$(cat graphics/metal/tools/mtl4_baseline.txt); m4=$(python3 tools/mtl4_ratchet.py metal); r4=$?; [ $r4 = 0 ] || REGBAD="${REGBAD:+${REGBAD}；}$m4"   # Metal 4 直接调用棘轮：新代码走 graphics/metal/gal_be.h，只减不增（减了就同笔改小基线）
 # 参数绑定棘轮（#114 M3-7）：gal 层直接调参数表 setAddress 的行数只减不增——目标是全部收进 gal_be_bind 入口（M4 = setAddress，M3 = 编码器 set*Buffer）
 n5=$(bash graphics/metal/tools/setaddr_count.sh); b5=$(cat graphics/metal/tools/setaddr_baseline.txt); reg $(( n5 <= b5 ? 0 : 1 )) "参数绑定 setAddress 直调 ${n5} 行（基线 ≤ ${b5}；收一处同笔改小基线）"
@@ -541,6 +601,7 @@ n5=$(bash graphics/metal/tools/setaddr_count.sh); b5=$(cat graphics/metal/tools/
 n6=$(sed 's#//.*##' graphics/nvn/gfx/nvn/hle_nvn.c | grep -c '\bmtl_'); reg $(( n6 == 0 ? 0 : 1 )) "NVN 前端直调 mtl_ ${n6} 处（要 0：经 nvn_be_* 调后端）"
 # 直连回放层同款棘轮（#277 D3-1）：graphics/nvn/gfx 下 MTL4 出现处只减不增，新代码经 nvn_mtl.m 包装函数碰 Metal 4
 m4d=$(python3 tools/mtl4_ratchet.py nvn); reg $? "$m4d"   # 直连 MTL4 棘轮：超基线时点名新增的 文件:行（函数）；同一判定在入队预检的快步 tests/mtl4_ratchet_test.sh
+else n4="（本步不跑）"; b4="（本步不跑）"; r4=0; reg 0 "MTL4 / setAddress / NVN 前端直调 mtl_ / 直连 MTL4 四项棘轮：本步只跑点名子项（GATE_HOOK_ONLY=${GATE_HOOK_ONLY:-}），「其余」不在名单，不跑"; fi
 # 直连「未守卫新系统 API」棘轮在合入前快步 tests/avail_ratchet_test.sh（11-01 挪出：钩子是合入后层慢步，新增红会被旧红淹没）
 # 直连回放层两路后端冒烟（#277，graphics/nvn/tests/t_nvn_m3.m）：链 libnvn.a，缺省 Metal 4 与 NXGAL_BE=mtl3 各一个子进程（选路行 / 提交与完成回写 / 主拷贝 / 上屏等外部事件），约 2 秒
 if ! need_nvn; then reg 0 "直连两路后端冒烟：本批没改到 graphics/nvn，不跑"
@@ -681,11 +742,14 @@ elif ! has "$RUNG" m3pack; then reg 0 "Metal 3 归档出包到命中 / 运行时
 else rcof m3pack; r=$?; M3PACK_RESULT="Metal 3 归档出包到命中：$(grep -c '✓' "$LOG/m3pack.log") 项通过、$(grep -c '✗' "$LOG/m3pack.log") 项不符（退出 ${r}）"; reg $r "$M3PACK_RESULT" "$LOG/m3pack.log"; fi
 # 正式 GLSL 出包 → GAL 运行时归档：两程序 × 两颜色格式真命中，改变混合 / 写掩码真未命中及像素读回。
 if has "$RUNG" m3pack; then rcof m3archive; r=$?; reg $r "Metal 3 运行时包归档：$(tail -1 "$LOG/m3archive.log")（退出 ${r}）" "$LOG/m3archive.log"; fi
+if has "$RUNG" m3pack; then rcof cs_pipelines; r=$?; reg $r "直连计算管线随包归档：$(tail -1 "$LOG/cs_pipelines.log")（退出 ${r}）" "$LOG/cs_pipelines.log"; fi
+if has "$RUNG" m3pack; then rcof base_pipelines; r=$?; reg $r "直连拉取基础管线随包归档：$(tail -1 "$LOG/base_pipelines.log")（退出 ${r}）" "$LOG/base_pipelines.log"; fi
 # Unity ComputeShader 各版本的 kernel 变体布局（shader_split.kernel_variants）：2022.3 / 2020.3 / 2018.4（#379 Moving Out）三种认得、未知布局报红
 rcof unity_kernels; r=$?; reg $r "Unity 计算着色器布局：$(tail -1 "$LOG/unity_kernels.log")（退出 ${r}）" "$LOG/unity_kernels.log"
 rcof unity55_layout; r=$?; reg $r "Unity 5.5 精确布局：$(tail -1 "$LOG/unity55_layout.log")（退出 ${r}）" "$LOG/unity55_layout.log"
 rcof bnsh_bounds; r=$?; reg $r "BNSH 指针越界跳过：$(tail -1 "$LOG/bnsh_bounds.log")（退出 ${r}）" "$LOG/bnsh_bounds.log"   # shader_split.py bnsh_shaders（10-30 超级机器人大战 X）
 rcof ndsr_bare; r=$?; reg $r "NDSR 条目流 + 裸 NVN2 程序：$(tail -1 "$LOG/ndsr_bare.log")（退出 ${r}）" "$LOG/ndsr_bare.log"   # shader_split.py ndsr_shaders / ns2_shaders.py bare_programs（11-06 时之笛开局 12 支计算着色器）
+rcof unity_kw_pairs; r=$?; reg $r "Unity 按 Pass + 关键字配对：$(tail -1 "$LOG/unity_kw_pairs.log")（退出 ${r}）" "$LOG/unity_kw_pairs.log"   # shader_split.py unity_kw_pairs / unity_pass_index
 rcof mtarc_width; r=$?; reg $r "MT ARC 条目宽度：$(tail -1 "$LOG/mtarc_width.log")（退出 ${r}）" "$LOG/mtarc_width.log"   # shader_split.py mtarc_members（11-02 生化危机6：路径 64 字节）
 rcof nlg4; r=$?; reg $r "NLG 新版档案：$(tail -1 "$LOG/nlg4.log")（退出 ${r}）" "$LOG/nlg4.log"   # shader_split.py nlg4_shaders（11-02 马力欧激战前锋 1.3.2）
 rcof source_path; r=$?; reg $r "来源列路径一律 /：$(tail -1 "$LOG/source_path.log")（退出 ${r}）" "$LOG/source_path.log"   # shader_split.py / nxsh_extract.py 来源串（11-05 Windows 出包机勇者斗恶龙 XI S 来源列反斜杠、分组全落 *_other）
@@ -715,6 +779,8 @@ rcof dmsh_tess; dt_=$?; reg $dt_ "直连曲面阶段翻译：$(tail -1 "$LOG/dms
 # 直连计算着色器共享内存溢出（libdsx nxgal_dmsh_spill + S2A.Dsh NxgalSpvCross.SpillFix，10-26 怪猎脸黑）：超限改写、Metal 编过、不超限原样、认不出报错（编 dsh_cmp 冷编约 1 分钟）
 rcof dmsh_spill; ds_=$?; reg $ds_ "直连共享内存溢出：$(tail -1 "$LOG/dmsh_spill.log")（退出 ${ds_}）" "$LOG/dmsh_spill.log"
 rcof alpha_ms; am_=$?; reg $am_ "直连片元 Alpha 测试 / 多重采样关常量：$(tail -1 "$LOG/alpha_ms.log")（退出 ${am_}）" "$LOG/alpha_ms.log"
+rcof vs_pull; vp_=$?; reg $vp_ "直连拉取式顶点输入变体：$(tail -1 "$LOG/vs_pull.log")（退出 ${vp_}）" "$LOG/vs_pull.log"
+rcof fout_fc; ff_=$?; reg $ff_ "直连片元输出类型常量（#427）：$(tail -1 "$LOG/fout_fc.log")（退出 ${ff_}）" "$LOG/fout_fc.log"
 # 整份直连出库（C# dsh_batch build）缓存复用 / 只出一侧 / 发布形态：真跑翻译器与 metal，计算着色器共享内存改写要 build/dsx/libdsx.dylib，放在上面预编之后（10-30 原先排在预编前，新工作树的 gate-host 上 3 支全失败、出库 0 个库）
 rcof dmsh_reuse; r=$?; reg $r "整份直连出库缓存复用与出库形态：$(tail -1 "$LOG/dmsh_reuse.log")（退出 ${r}）" "$LOG/dmsh_reuse.log"
 rcof se_want; r=$?; reg $r "采样模拟变体请求表：$(tail -1 "$LOG/se_want.log")（退出 ${r}）" "$LOG/se_want.log"   # se_want.py 挑键（缺口族 31）；整份出库按表出 <键>_se 由 t_dmsh_reuse 守
@@ -724,13 +790,13 @@ else reg 0 "直连曲面阶段翻译 / 共享内存溢出 / 只出 iOS 与复用
 if need_dmsh_giant; then   # 前缀见 need_dmsh_giant
   rcof dmsh_giant; dg_=$?; reg $dg_ "直连巨型着色器阶梯压平：$(tail -1 "$LOG/dmsh_giant.log")（退出 ${dg_}）" "$LOG/dmsh_giant.log"
 else reg 0 "直连巨型着色器阶梯压平：本批没改到压平 / 出库脚本，不跑"; fi
-if touched graphics/tools/direct/dsh/Outline.cs graphics/tools/direct/dsh/Flat.cs graphics/tools/direct/tests/t_compute_outline; then
+if need_compute_outline; then
   rcof compute_outline; co_=$?; reg $co_ "巨型计算入口拆分：$(tail -1 "$LOG/compute_outline.log")（退出 ${co_}）" "$LOG/compute_outline.log"
 else reg 0 "巨型计算入口拆分：本批没改到计算入口改形，不跑"; fi
-if touched graphics/tools/direct/repair_compute.py graphics/metal/tests/compute_probe.m graphics/tools/direct/tests/t_repair_compute.py; then
+if need_repair_compute; then
   rcof repair_compute; cr_=$?; reg $cr_ "计算库修复与回滚：$(tail -1 "$LOG/repair_compute.log")（退出 ${cr_}）" "$LOG/repair_compute.log"
 else reg 0 "计算库修复与回滚：本批没改到本地修复脚本，不跑"; fi
-if touched graphics/tools/direct/repair_compute.py graphics/tools/direct/tests/t_repair_loader graphics/nvn/gfx/nvn/nvn_mtl.m graphics/nvn/lib_pack; then
+if need_repair_loader; then
   rcof repair_loader; cl_=$?; reg $cl_ "计算库替换真实加载：$(tail -1 "$LOG/repair_loader.log")（退出 ${cl_}）" "$LOG/repair_loader.log"
 else reg 0 "计算库替换真实加载：本批没改到修复 / 加载边界，不跑"; fi
 rcof dmsh_ushare; du_=$?; reg $du_ "直连整数输出入口编译期共用函数体：$(tail -1 "$LOG/dmsh_ushare.log")（退出 ${du_}）" "$LOG/dmsh_ushare.log"   # C# Unity.Share（dsh_batch --unity share）

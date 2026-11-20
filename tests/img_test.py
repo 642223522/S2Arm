@@ -4,9 +4,9 @@
   ② 其余文件：按路径 O(1) 查得到、起点页对齐、字节与源文件相同；查不在的路径 → None；路径重复 → 报红
   ③ RomFS 段：按 Switch 标准 RomFS 公开格式独立解析（本文件 std_romfs，不用 LibHac）——文件集合与夹具目录相同、逐文件字节相同
   ④ write：游戏号取产物根 unpack.tsv；资源包号 = 清单里除着色器库 / 覆盖层以外各行的 SHA-256（测试里按定义独立算）；exefs / ctl / aoc 进其余文件段，
-     romfs*、覆盖层、直连库、清单不进；RomFS 段来自产物根完整 romfs/（含被覆盖层替换的原文件）；有 programs/ → 报红；is_img 认魔数
+     romfs*、覆盖层、直连库、清单不进；RomFS 段来自产物根完整 romfs/（含被覆盖层替换的原文件）；有 programs/ → 进其余文件段（#1545）；is_img 认魔数
   ⑤ convert（出包交付）：资源包目录只剩 game.img + 着色器库 / 覆盖层 + 新清单；index.tsv 首行 game.img<TAB>文件长<TAB>资源包号、其余是原着色器库 / 覆盖层行；
-     manifest v3（format img、imgFile、index_sha256 = 新 index.tsv 的 SHA-256）；着色器库那行变了资源包号不变；多程序合集 → None、目录不动
+     manifest v3（format img、imgFile、index_sha256 = 新 index.tsv 的 SHA-256）；着色器库那行变了资源包号不变；多程序合集照样转（programs/ 进 IMG）、目录不动
   ⑦ 写 IMG 报字节进度（S2A_PROGRESS）：末行已写 = 总数 = 夹具 RomFS 文件 + 其余原始资源字节和
   ⑥ 原件 + 预建偏移表（11-11 真机对比：产物根 romfs 是界面覆盖后版本、有覆盖层时起局重建目录表 138.6 ms）：RomFS 段 = 产物根 romfs，覆盖清单里的文件换回 seed.txt 数据目录的原版
      （数据目录里别的文件变过也不取它）；
@@ -57,7 +57,7 @@ with tempfile.TemporaryDirectory(prefix='img test ') as t:
     T = Path(t); (T / 'romfs/a/b c').mkdir(parents=True); (T / 'o').mkdir()
     files = {'a/b c/big.bin': os.urandom(100000), 'a/小.txt': b'hi', 'empty': b''}
     for k, v in files.items(): (T / 'romfs' / k).write_bytes(v)
-    others = {'exefs/main.npdm': os.urandom(5000), 'ctl/control.nacp': b'NACP'}
+    others = {'exefs/main.npdm': os.urandom(5000), 'ctl/control.nacp': b'NACP', 'systemdata/0100000000000823/ac_0_b1_nx': b'NGWORD'}   # 系统数据是多层目录下的文件（D-4VAX）
     src = []
     for k, v in others.items(): p = T / 'o' / k.replace('/', '_'); p.write_bytes(v); src.append((k, str(p)))
     cmd, why = romfs_index_cmd(t)
@@ -69,8 +69,12 @@ with tempfile.TemporaryDirectory(prefix='img test ') as t:
         off, size = img.find(out, k); b = open(out, 'rb'); b.seek(off)
         ck(off % img.PAGE == 0 and b.read(size) == v, f'② {k} 页对齐、字节相同（偏移 {off}）')
     ck(img.find(out, 'nope') is None, '② 查不在的路径 → None')
+    ck(not [p for p, _, _ in img.entries(out) if p.endswith('/')], '② 带系统数据目录的款：目录表里只有文件、没有「/」结尾的目录项')
     try: img.toc_bytes([('x', 0, 1), ('x', 1, 1)]); ck(False, '② 路径重复应报红')
     except img.Red: ck(True, '② 路径重复报红')
+    for bad_path in ('systemdata/0100000000000823/', '', '/abs'):   # D-4VAX：「/」结尾的目录项手机上解不开；空路径、绝对路径同样不收
+        try: img.toc_bytes([('systemdata/0100000000000823/ac_0_b1_nx', 0, 1), (bad_path, 1, 1)]); ck(False, f'② 目录表收了 {bad_path!r}')
+        except img.Red: ck(True, f'② 目录表不收 {bad_path!r}')
     if cmd:
         got = std_romfs(out, h['romfs'][0])
         ck(got == files, f'③ 标准 RomFS 段：独立解析 {len(got)} 个文件，集合与字节同夹具')
@@ -108,6 +112,19 @@ with tempfile.TemporaryDirectory(prefix='img test ') as t:
         ck(ix == f'game.img\t{os.path.getsize(g)}\t{want_id}\nromfs_overlay/ui/layout.bin\t4\tx\nshaders/direct/keys.tsv\t1\tx\n', f'⑤ 新 index.tsv：{ix!r}')
         ck((m['version'], m['format'], m['imgFile'], m['index_sha256']) == (3, 'img', 'game.img', hashlib.sha256(ix.encode()).hexdigest()), f'⑤ manifest v3：{m}')
         ck(std_romfs(g, img.header(g)['romfs'][0]) == {'ui/layout.bin': b'ORIG', 'data.bin': b'DATA'} and img.find(g, 'exefs/main.npdm') is not None, '⑤ game.img 内容同 write')
+        # ⑤b 审计 P1-171：删旧形态文件那一步中断（第一次 unlink 就失败）——清单已换成 IMG 形态、game.img 在，再读清单不会指着已删的文件
+        cv2 = T / 'cv2'; shutil.copytree(pk, cv2); real_unlink = os.unlink
+        def boom(p, *a, **k):   # 只让「删旧形态文件」删到第三个时失败（写 IMG 过程中删临时文件照常）
+            if str(p).endswith(os.path.join('cv2', 'aoc', '1', 'x.bin')): raise OSError(13, '中断')
+            return real_unlink(p, *a, **k)
+        os.unlink = boom
+        try:
+            try: img.convert(str(root), str(cv2), romfs_index=cmd); ck(False, '⑤b 删旧文件失败应抛出')
+            except OSError: pass
+        finally: os.unlink = real_unlink
+        ix2 = (cv2 / 'index.tsv').read_text()
+        ck(ix2.startswith('game.img\t') and (cv2 / 'game.img').is_file() and json.loads((cv2 / 'manifest.json').read_text())['format'] == 'img'
+           and all((cv2 / l.split('\t')[0]).is_file() for l in ix2.splitlines()), f'⑤b 删旧文件中断：清单已是 IMG 形态、清单里每个文件都在（{ix2!r}）')
         # ⑥ 原件 + 预建偏移表
         orig = T / 'orig'; (orig / 'romfs/ui').mkdir(parents=True); (orig / 'romfs/ui/layout.bin').write_bytes(b'ORIGINAL'); (orig / 'romfs/data.bin').write_bytes(b'STALE')   # 数据目录播种后变过（非覆盖文件）：应取产物根那份
         r6 = T / 'root6'; (r6 / 'romfs/ui').mkdir(parents=True); (r6 / 'romfs/ui/layout.bin').write_bytes(b'OVER'); (r6 / 'romfs/data.bin').write_bytes(b'DATA')
@@ -135,10 +152,12 @@ with tempfile.TemporaryDirectory(prefix='img test ') as t:
         except img.Red: ck(True, '⑥ 没有 seed.txt 但产物根叠过覆盖 → 报红')
         (pk / 'programs/1').mkdir(parents=True); (pk / 'programs/1/a').write_bytes(b'p')
         (pk / 'index.tsv').write_text((pk / 'index.tsv').read_text() + 'programs/1/a\t1\tx\n')
-        try: img.write(str(root), str(pk), w, romfs_index=cmd); ck(False, '④ 多程序合集应报红')
-        except img.Red: ck(True, '④ 有 programs/ → 报红（这一版不出 IMG）')
-        before = sorted(p.name for p in pk.rglob('*'))
-        ck(img.convert(str(root), str(pk), romfs_index=cmd) is None and sorted(p.name for p in pk.rglob('*')) == before, '⑤ 多程序合集 → None、目录不动')
+        # #1545：多程序合集序号 1.. 的 programs/<n>/… 进 IMG 其余文件段（手机解包按原路径解回），不再报红 / 不转
+        got = img.convert(str(root), str(pk), romfs_index=cmd)
+        toc = {r: n for r, _, n in img.entries(got)} if got else {}
+        ck(got and toc.get('programs/1/a') == 1 and img.find(got, 'programs/1/a') is not None, f'④ 多程序合集：programs/1/a 进 game.img 目录表（{sorted(toc)}）')
+        ck(not (pk / 'programs').exists() and 'programs/' not in (pk / 'index.tsv').read_text() and json.loads((pk / 'manifest.json').read_text())['format'] == 'img',
+           '⑤ 转完资源包里不留 programs/ 旧文件、index.tsv 不列它、manifest 是 img 形态')
 # ⑧ #711（Windows 大游戏写 game.img 失败）：Windows 的 os.stat 没有 st_blocks，RomFS 段写满 1 秒时进度轮询原先抛 AttributeError、img.py 半路退出、
 #   留下还在写的 romfs_index 进程。用不依赖 dotnet 的假 romfs_index（睡 2.5 秒再写段、打长度）+ 没有 st_blocks 的 stat 模拟：期望照常写成、RomFS 长度等于假工具报的；
 #   等的时候本进程出错 → 假工具进程被收掉（不留在后台）
@@ -309,5 +328,40 @@ try:
     f.close(); ck((pk / 'game.img').read_bytes() == g0, '⑩ 原 game.img 字节不变')
 finally:
     shutil.rmtree(T, ignore_errors=True)
+
+# ⑫ 边写边腾（free_clones）认 RomFS 镜像 romfs.std（单个文件，各版本间是克隆 / 硬链接）：夹具 = 工作目录 work 下 roots/ 里两个版本各有一份 romfs.std
+#   （v0 是 v1 的硬链接，同一族）、解包目录 extract/romfs.std、工作目录外的解包目录 ext/romfs.std。期望手写：
+#   keep = v1 的 romfs.std → 它本身字节不变、v0 与 extract 的那份删掉、工作目录外的不动；keep = 目录形态 v1/romfs → 各份镜像也删（只留 keep 那一份数据）
+for keep_image in (True, False):
+    T = Path(tempfile.mkdtemp(prefix='img test 11 '))
+    try:
+        W = T / 'work'; R = W / 'roots'; blob = os.urandom(5000)
+        for v in ('kuan@v0', 'kuan@v1'): (R / v).mkdir(parents=True)
+        (R / 'kuan@v1' / 'romfs.std').write_bytes(blob); os.link(R / 'kuan@v1' / 'romfs.std', R / 'kuan@v0' / 'romfs.std')
+        os.symlink('kuan@v1', R / 'kuan@现行')
+        (W / 'extract').mkdir(); (W / 'extract' / 'romfs.std').write_bytes(blob)
+        (T / 'ext').mkdir(); (T / 'ext' / 'romfs.std').write_bytes(blob)
+        if not keep_image: (R / 'kuan@v1' / 'romfs').mkdir(); (R / 'kuan@v1' / 'romfs' / 'a').write_bytes(b'a')
+        root = R / 'kuan@v1'; (root / 'seed.txt').write_text(f'src={W / "extract"}\n', encoding='utf-8')
+        pk = W / 'pack'; pk.mkdir(); (pk / 'index.tsv').write_text('', encoding='utf-8')
+        keep = root / ('romfs.std' if keep_image else 'romfs')
+        img.free_clones(str(root), str(keep), str(pk), str(W))
+        left = sorted(str(p.relative_to(T)) for p in T.rglob('romfs.std'))
+        want = (['ext/romfs.std', 'work/roots/kuan@v1/romfs.std'] if keep_image else ['ext/romfs.std'])
+        ck(left == want and (not keep_image or (root / 'romfs.std').read_bytes() == blob),
+           f'⑫ keep={"镜像" if keep_image else "目录"}：留下的镜像 {left}（期望 {want}）、keep 字节不变')
+    finally:
+        shutil.rmtree(T, ignore_errors=True)
+
+# ⑬ 值不值得出着色器更新包（诊断 #0c0f75：没有着色器库的款导出了一百多 KB、什么都不换的更新包）：
+#    清单里有 shaders/ 或 romfs_overlay/ → 出；只有 romfs.s2aidx / game.imgmap 这类索引 → 不出
+T13 = Path(tempfile.mkdtemp())
+try:
+    for rows, want in ((['game.img', 'romfs.s2aidx', 'shaders/direct/keys.tsv'], True), (['game.img', 'romfs.s2aidx', 'romfs_overlay/ui/a.bflyt'], True),
+                       (['game.img', 'romfs.s2aidx', 'game.imgmap'], False)):
+        (T13 / 'index.tsv').write_text(''.join(f'{r}\t1\tx\n' for r in rows + ['manifest.json']), encoding='utf-8')
+        ck(img.update_worth(str(T13)) == want, f'⑬ 清单 {rows} → 出更新包 {want}')
+finally:
+    shutil.rmtree(T13, ignore_errors=True)
 
 print(f'img 单测：{"全通" if not bad else f"{bad} 项不通"}'); sys.exit(1 if bad else 0)

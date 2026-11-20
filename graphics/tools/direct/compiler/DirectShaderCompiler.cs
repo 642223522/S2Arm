@@ -13,6 +13,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 namespace S2A.DirectCompiler
@@ -27,8 +28,13 @@ namespace S2A.DirectCompiler
         public const string ContentContract = "s2a-direct-program-content-v1";
         public const int MaxRequestBytes = 256 << 20;
 
+        [ThreadStatic] private static string _requestSha;
+        private static string RequestSha() => _requestSha ?? "unknown";
+
         public static byte[] Compile(byte[] requestUtf8)
         {
+            // 诊断：拒收行带上请求 sha，真机上就能把拒收与同一条请求对上（不用另开请求落盘开关）。
+            _requestSha = Convert.ToHexStringLower(Sha256.HashData(requestUtf8));
             using JsonDocument document = JsonStrict.Parse(requestUtf8, MaxRequestBytes);
             JsonElement root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object)
@@ -65,21 +71,22 @@ namespace S2A.DirectCompiler
             {
                 if (!profile.Caps.SupportsGeometryShader)
                     throw new DirectCompileException("UNSUPPORTED_PROGRAM", "geometryShader is not enabled in the profile");
-                if (program.Graphics.State.Topology is InputTopology.LinesAdjacency or InputTopology.TrianglesAdjacency)
-                    throw new DirectCompileException("UNSUPPORTED_PROGRAM", "geometry adjacency topology is not implemented");
+                // 邻接图元：Vulkan 有原生邻接输入（翻译器按 InputTopology 出 InputLinesAdjacency / InputTrianglesAdjacency 执行模式），不拒。
+                // 直通型几何头（NV passthrough）：宿主不支持该扩展时翻译器生成等价的普通 GS（Ryujinx EmitterContext 的 passthrough 模拟，
+                //   以 profile 的 SupportsGeometryShaderPassthrough 为准），不拒。只校验这一段确实是几何着色器头。
                 uint header = BinaryPrimitives.ReadUInt32LittleEndian(gs.Code);
-                if (((header >> 10) & 15) != 4 || (header & (1u << 24)) != 0)
-                    throw new DirectCompileException("UNSUPPORTED_PROGRAM", "GS must have a non-passthrough geometry header");
+                if (((header >> 10) & 15) != 4)
+                    throw new DirectCompileException("UNSUPPORTED_PROGRAM", "GS slot does not hold a geometry shader header");
             }
             _ = sourceParserVersion;
 
             var queries = new List<DirectQuery>();
-            var allocator = new DirectAllocator(profile);
+            var allocator = new DirectAllocator(profile) { RequestKey = requestId };
             var accessors = new List<DirectGpuAccessor>();
             var translated = new List<(DirectStage stage, ShaderProgram shader, DirectGpuAccessor accessor)>();
-            using var context = new GpuContext(new ProfileOnlyRenderer(profile.Caps), new DirtyHacks(Array.Empty<ulong>()))
+            using var context = new GpuContext(new ProfileOnlyRenderer(profile.TranslationCaps), new DirtyHacks(Array.Empty<ulong>()))
             {
-                Capabilities = profile.Caps,
+                Capabilities = profile.TranslationCaps,
             };
             try
             {
@@ -90,6 +97,28 @@ namespace S2A.DirectCompiler
                     var accessor = new DirectGpuAccessor(profile, program, cs, 0, allocator, queries);
                     accessors.Add(accessor);
                     ShaderProgram shader = ShaderCache.DecodeComputeShader(accessor, TargetApi.Vulkan, 0).Translate();
+                    int limit = profile.Caps.MaximumComputeSharedMemorySize;
+                    if (shader.BinaryCode != null && program.Compute.SharedMemoryBytes > limit)
+                    {
+                        try
+                        {
+                            int shared = DirectSharedSpill.WorkgroupBytes(shader.BinaryCode);
+                            if (shared < 0 || shared > limit)
+                            {
+                                // 先量出要挪的字节数再占绑定号：Rewrite 用的就是这一号
+                                var pair = allocator.Spill("cs", 0);
+                                DirectSharedSpill.Result spill = DirectSharedSpill.Rewrite(shader.BinaryCode, limit, pair.SetIndex, pair.Binding)
+                                    ?? throw new DirectCompileException("UNSUPPORTED_PROGRAM", "workgroup memory could not be measured for spilling");
+                                allocator.Bindings[^1].SpillBytesPerGroup = spill.BytesPerGroup;
+                                shader = new ShaderProgram(shader.Info, shader.Language, spill.Spirv);
+                            }
+                        }
+                        catch (DirectCompileException e)
+                        {
+                            throw new DirectCompileException(e.Code, "cs: sharedMemoryBytes " + program.Compute.SharedMemoryBytes +
+                                " exceeds device compute shared memory limit " + limit + "; spill failed: " + e.Message);
+                        }
+                    }
                     translated.Add((cs, shader, accessor));
                 }
                 else
@@ -129,7 +158,7 @@ namespace S2A.DirectCompiler
             ResolvePoolSlots(translated, allocator);
             ResolveStorageSlots(translated, allocator);
 
-            bool v2 = allocator.Bindings.Any(b => b.SamplerSlot >= 0);
+            bool v2 = allocator.Bindings.Any(b => b.SamplerSlot >= 0 || b.ConstSampler >= 0 || b.Pool != null);   // 新字段（samp_slot / constSampler / pool）都按 v2 写：v1 宿主不认就整份拒
             byte[] content = WriteContent(program, profile, translated, allocator, queries, v2);
             string contentHash = "sha256-" + Convert.ToHexStringLower(Sha256.HashData(content));
             return WriteEnvelope(session, generation, requestId, content, contentHash, v2);
@@ -149,8 +178,8 @@ namespace S2A.DirectCompiler
                 throw new DirectCompileException("CONTROL_INVALID", stage.Stage + ": control local size contains zero");
             if ((ulong)x * y * z > 1024)
                 throw new DirectCompileException("CONTROL_INVALID", stage.Stage + ": control local size exceeds 1024 invocations");
-            if (shared > 0x10000)
-                throw new DirectCompileException("CONTROL_INVALID", stage.Stage + ": control shared memory exceeds 64 KiB");
+            if (shared > 48 * 1024)
+                throw new DirectCompileException("CONTROL_INVALID", stage.Stage + ": control shared memory exceeds 48 KiB");
             uint aligned = (shared + 15u) / 16u * 16u;
             if (x != (uint)facts.LocalSizeX || y != (uint)facts.LocalSizeY || z != (uint)facts.LocalSizeZ ||
                 aligned != (uint)facts.SharedMemoryBytes)
@@ -174,6 +203,7 @@ namespace S2A.DirectCompiler
                 throw new DirectCompileException("SPIRV_INVALID", stage.Stage + ": bad magic");
             if (words[1] != 0x00010300)
                 throw new DirectCompileException("SPIRV_INVALID", stage.Stage + ": target is not SPIR-V 1.3");
+            ValidateDescriptorIndexing(stage.Stage, words, profile);
             bool entry = false;
             int instructionEnd = 5;
             for (int i = 5; i < words.Length;)
@@ -234,10 +264,73 @@ namespace S2A.DirectCompiler
             }
         }
 
+        // profile 与 SPIR-V 描述符索引能力必须一致（C 片 C1）：
+        // 生成器在 MarkNonUniform 里一次声明 SPV_EXT_descriptor_indexing + ShaderNonUniform +
+        // SampledImageArrayNonUniformIndexing + StorageImageArrayNonUniformIndexing（Instructions.cs:611）。
+        //   · profile 关（设备四位不齐 / 开发期隔离）：一个都不许出现；
+        //   · profile 开：要么都没有（这支着色器没有非一致访问），要么四个齐全——缺一个就是生成器/profile 漂移。
+        public static void ValidateDescriptorIndexing(string stage, uint[] words, DirectProfile profile)
+        {
+            bool ext = false, shaderNonUniform = false, sampled = false, storage = false;
+            for (int i = 5; i < words.Length;)
+            {
+                int count = (int)(words[i] >> 16);
+                int opcode = (int)(words[i] & 0xFFFF);
+                if (count == 0 || i + count > words.Length)
+                    throw new DirectCompileException("SPIRV_INVALID", stage + ": truncated instruction");
+                if (opcode == (int)Spv.Specification.Op.OpCapability && count >= 2)
+                {
+                    switch ((Spv.Specification.Capability)words[i + 1])
+                    {
+                        case Spv.Specification.Capability.ShaderNonUniform: shaderNonUniform = true; break;
+                        case Spv.Specification.Capability.SampledImageArrayNonUniformIndexing: sampled = true; break;
+                        case Spv.Specification.Capability.StorageImageArrayNonUniformIndexing: storage = true; break;
+                        default: break;
+                    }
+                }
+                else if (opcode == (int)Spv.Specification.Op.OpExtension && count >= 2)
+                {
+                    if (SpirvLiteralIs(words, i + 1, count - 1, "SPV_EXT_descriptor_indexing")) ext = true;
+                }
+                else if (opcode != (int)Spv.Specification.Op.OpExtInstImport)
+                {
+                    break;   // 能力 / 扩展段结束
+                }
+                i += count;
+            }
+            bool any = ext || shaderNonUniform || sampled || storage;
+            if (!profile.Caps.SupportsShaderNonUniformIndexing)
+            {
+                if (any)
+                    throw new DirectCompileException("SPIRV_INVALID",
+                        stage + ": descriptor indexing declared while the enabled profile disables it");
+                return;
+            }
+            if (any && !(ext && shaderNonUniform && sampled && storage))
+                throw new DirectCompileException("SPIRV_INVALID",
+                    stage + ": descriptor indexing declaration is incomplete (ext=" + ext +
+                    " shaderNonUniform=" + shaderNonUniform + " sampled=" + sampled + " storage=" + storage + ")");
+        }
+
+        private static bool SpirvLiteralIs(uint[] words, int start, int count, string want)
+        {
+            if (count <= 0 || (long)count * 4 < want.Length + 1) return false;
+            for (int i = 0; i < want.Length; i++)
+            {
+                byte b = (byte)(words[start + i / 4] >> ((i % 4) * 8));
+                if (b != (byte)want[i]) return false;
+            }
+            return (byte)(words[start + want.Length / 4] >> ((want.Length % 4) * 8)) == 0;
+        }
+
         // 池槽位只能由反射结果决定：翻译器先建 texture binding、后 RegisterTexture，
         // 按调用顺序猜会把这几个槽位全指到第一张纹理上。cbufSlot >= 0 的句柄来自常量
-        // 缓冲：只有同句柄存在直接绑定事实时才按 NVN c2→组合槽放行；其余 cbuf 路径和
-        // separate 采样器仍未实现，明确报红，不写死 0 让运行时绑错。
+        // 缓冲：c2 只有同句柄存在直接绑定事实时才按 NVN c2→组合槽放行；游戏 UBO（c3..c18）
+        // 的单个组合句柄给出 uboSlot / uboOffset（见下）；其余 cbuf 路径和 separate 采样器
+        // 仍未实现，明确报红，不写死 0 让运行时绑错。
+        internal const int UserUboFirstCbuf = 3, UserUboLastCbuf = 18, UserUboMaxBytes = 0x10000;
+        // 类型 3 句柄的采样器号是立即数 << 20，只占句柄高 12 位：采样器池下标 0..4095。
+        private const int MaxConstSampler = 4095;
         private static void ResolvePoolSlots(List<(DirectStage stage, ShaderProgram shader, DirectGpuAccessor accessor)> translated,
             DirectAllocator allocator)
         {
@@ -257,6 +350,24 @@ namespace S2A.DirectCompiler
                     throw new DirectCompileException("SPIRV_INVALID",
                         binding.Stage + ": " + binding.Kind + " binding " + binding.Set + ":" + binding.Binding + " has no reflected descriptor");
                 TextureDescriptor resolved = found.Value;
+                // 整池数组：翻译器对追不到槽的句柄（算术 / 共享内存 / 全局内存 / phi 汇合拼出的）回退成按池编号读的两个数组
+                //   （compat BindlessElimination：贴图数组长 = max(2, 贴图池长)、采样器数组（类型 None）长 = max(2, 采样器池长)，
+                //   句柄 PackOffsets(0, 0, Direct) = 0x40000000、cbuf 0）。这不是从 c0 / c2 读句柄，不需要逐句柄事实；宿主按 NVN 池建快照绑整表。
+                //   只认长度恰好等于请求里的池长的那一对（别的 cbuf 0 数组照旧走下面的拒绝），贴图缓冲不在池里（按槽绑）
+                if (binding.Kind == "texture" && binding.Source == "texture" && resolved.CbufSlot == 0 &&
+                    resolved.HandleIndex == TextureHandle.PackOffsets(0, 0, TextureHandleType.Direct) &&
+                    resolved.ArrayLength > 1 && binding.Count == resolved.ArrayLength)
+                {
+                    bool sampPool = (resolved.Type & SamplerType.Mask) == SamplerType.None;
+                    int poolLength = Math.Max(2, sampPool ? entry.accessor.SamplerPoolLength : entry.accessor.TexturePoolLength);
+                    // 布局项的 count 是 16 位，且要多一项表尾 dummy（nvn_backend.h nvn_gpu_pool_*）：池长到 0xffff 及以上表达不了，落到下面照旧具名拒
+                    if (resolved.ArrayLength == poolLength && poolLength < 0xffff)
+                    {
+                        binding.Pool = sampPool ? "sampler" : "texture";
+                        binding.Slot = -1;
+                        continue;
+                    }
+                }
                 if (binding.Kind == "texture" && !resolved.Separate &&
                     entry.accessor.TrySeparateC2(resolved.HandleIndex, resolved.CbufSlot, out int texWord, out int samplerSlot))
                 {
@@ -264,6 +375,64 @@ namespace S2A.DirectCompiler
                         throw new DirectCompileException("UNSUPPORTED_PROGRAM", binding.Stage + ": separate sampler arrays are not implemented");
                     binding.Slot = texWord;
                     binding.SamplerSlot = samplerSlot;
+                    continue;
+                }
+                if (binding.Kind == "texture" && !resolved.Separate &&
+                    entry.accessor.TrySeparateConstC2(resolved.HandleIndex, resolved.CbufSlot, out int constTexWord, out int constSampler))
+                {
+                    // #1594：贴图字在 c2 分离贴图表、采样器是着色器里的立即数采样器池下标（类型 3）。结果给 slot = 贴图字、constSampler = 池下标
+                    //   （可选字段，按 v2 写）；宿主 / 回放按池下标直接取采样器（同 NVN_RB_SAMPI），不经 c2 采样器表。
+                    //   绝不只填 slot：宿主会把「没有 samp_slot」读成采样器取同字高位（= 池里第 0 项），静默错绑。
+                    //   所以表达不了的形态——数组、计算阶段（宿主计算侧没接）、池下标超出句柄里 12 位的范围——具名报未接，什么都不填。
+                    string shape = binding.Count != 1 || resolved.ArrayLength > 1 ? "constant sampler array" :
+                                   binding.Stage == "cs" ? "constant sampler, compute" :
+                                   constSampler > MaxConstSampler ? "constant sampler index above 4095" : null;
+                    if (shape != null)
+                        throw new DirectCompileException("UNSUPPORTED_PROGRAM",
+                            WithHandleDetail(binding.Stage + ": texture handle from cbuf slot " + resolved.CbufSlot + " is not implemented (" + shape + ")",
+                                HandleDetailFields(allocator, binding, resolved, messageHasShape: false)));
+                    binding.Slot = constTexWord;
+                    binding.ConstSampler = constSampler;
+                    continue;
+                }
+                if (binding.Kind == "texture" && !resolved.Separate &&
+                    entry.accessor.TrySeparateConstUbo(resolved.HandleIndex, resolved.CbufSlot, out int constUboWord, out int constUboCbuf, out int constUboSampler))
+                {
+                    // #1594 片 3：贴图字在游戏 UBO（c3..c18）、采样器是着色器里的立即数采样器池下标（类型 3）。结果给游戏 UBO 来源 uboSlot（NVN UBO 号 = cbuf − 3）/
+                    //   uboOffset（贴图字的字节偏移 = 字 × 4）、没有 slot，再加 constSampler = 池下标（可选字段，按 v2 写）。
+                    //   绝不只给 uboSlot / uboOffset：宿主对这种写法按「组合句柄」把采样器取成同一个字的高 12 位（那里不是采样器号），静默错绑。
+                    //   形态判据同 c2 的类型 3：数组、计算阶段（宿主计算侧没接）、池下标超出句柄里 12 位的范围，具名报未接，什么都不填。
+                    //   字偏移不用另查 64 KiB：类型 3 句柄的字只有 14 位（0..16383 = 字节 0..65532），装不下 64 KiB 以外的字。
+                    string shape = binding.Count != 1 || resolved.ArrayLength > 1 ? "constant sampler array" :
+                                   binding.Stage == "cs" ? "constant sampler, compute" :
+                                   constUboSampler > MaxConstSampler ? "constant sampler index above 4095" : null;
+                    if (shape != null)
+                        throw new DirectCompileException("UNSUPPORTED_PROGRAM",
+                            WithHandleDetail(binding.Stage + ": texture handle from cbuf slot " + resolved.CbufSlot + " is not implemented (" + shape + ")",
+                                HandleDetailFields(allocator, binding, resolved, messageHasShape: false)));
+                    binding.Slot = -1;
+                    binding.UboSlot = constUboCbuf - UserUboFirstCbuf;
+                    binding.UboOffset = constUboWord * 4;
+                    binding.ConstSampler = constUboSampler;
+                    continue;
+                }
+                if (resolved.CbufSlot >= UserUboFirstCbuf && resolved.CbufSlot <= UserUboLastCbuf)
+                {
+                    // 句柄在游戏自己的 UBO 里（#999 第 2 片）：照 Ryujinx（TextureBindingsManager 每笔读绑定 UBO 当时的句柄字）
+                    //   与 iOS NVN_RB_TEXU，结果给 uboSlot（NVN UBO 号 = cbuf − 3，同存储绑定的 uboSlot）和 uboOffset（句柄字的字节偏移
+                    //   = HandleIndex × 4），不给 slot（slot 只指 c2 句柄表 / 组合槽）。回放在绑定时读当时的 UBO 字解出贴图号 / 采样器号。
+                    //   编译期事实是这个 (stage, handle, cbufSlot) 的精确事实（NeedTexture 不借组合槽事实，缺就 MISSING_FACT）。
+                    //   只接单个、非分离的采样贴图；分离对（第 4 片）、句柄数组（第 5 片）、贴图缓冲、图像仍如实报未接。
+                    string shape = binding.Kind != "texture" ? "image" : binding.Source == "buffer-texture" ? "buffer texture" :
+                        resolved.Separate ? "separate" : binding.Count != 1 || resolved.ArrayLength > 1 ? "array" :
+                        resolved.HandleIndex < 0 || (long)resolved.HandleIndex * 4 + 4 > UserUboMaxBytes ? "offset outside 64 KiB" : null;
+                    if (shape != null)
+                        throw new DirectCompileException("UNSUPPORTED_PROGRAM",
+                            WithHandleDetail(binding.Stage + ": texture handle from cbuf slot " + resolved.CbufSlot + " is not implemented (" + shape + ")",
+                                HandleDetailFields(allocator, binding, resolved, messageHasShape: false)));
+                    binding.Slot = -1;
+                    binding.UboSlot = resolved.CbufSlot - UserUboFirstCbuf;
+                    binding.UboOffset = resolved.HandleIndex * 4;
                     continue;
                 }
                 if (resolved.CbufSlot >= 0)
@@ -276,15 +445,94 @@ namespace S2A.DirectCompiler
                     // 数组的第 k 项就是句柄表的第 k 个 8 字节项，宿主按项逐个绑（slot = 0、count = 数组长度），不需要逐句柄的事实。
                     bool handleTableArray = binding.Kind == "texture" && resolved.CbufSlot == 2 && resolved.ArrayLength > 1 &&
                                             resolved.HandleIndex == 0 && binding.Count == resolved.ArrayLength;
-                    if (!handleTableArray && (binding.Kind != "texture" || !entry.accessor.HasDirectTextureFact(resolved.HandleIndex)))
+                    // 图像句柄从 c2 图像句柄表读（字节 0x120 + 8k = 字 72 + 2k，空轨 2nd 9000 计算「cbuf slot 2」）：这个字就是 BindImages 第 k 槽的句柄，
+                    //   与立即句柄 72 + 2k 同一个图像槽（计算解析器按 72..86 换算，同 iOS C2_IMG）；要有同字直接事实（宿主按图像槽出），数组不接。
+                    bool c2Image = binding.Kind == "image" && resolved.CbufSlot == 2 && resolved.HandleIndex >= 72 && resolved.HandleIndex < 88 &&
+                                   (resolved.HandleIndex & 1) == 0 && binding.Count == 1 && resolved.ArrayLength <= 1 &&
+                                   entry.accessor.HasDirectTextureFact(resolved.HandleIndex, resolved.CbufSlot);
+                    // 单值贴图句柄直接从 c2 句柄表读（运行时句柄 / 游戏自己的句柄表）：翻译阶段已经靠同字
+                    // 事实拿到了类型与格式；这里按句柄值当槽位交给回放（解析器换算 slot = (handle − 8) / 2）。
+                    // 数组仍只认 HandleIndex == 0 的整表数组（非零起点的数组回放侧还没有消费口径）。
+                    bool c2SingleHandle = binding.Kind == "texture" && resolved.CbufSlot == 2 &&
+                                          resolved.HandleIndex >= 0 && binding.Count == 1 && resolved.ArrayLength <= 1 &&
+                                          entry.accessor.HasTextureFact(resolved.HandleIndex, resolved.CbufSlot);
+                    // 计算阶段的 c2 句柄表数组：编译先放行，回放侧现在按具名 skip "compute_texture_array" 计数
+                    // （C3 接池表消费）；图形数组仍只认 HandleIndex == 0 的整表数组。
+                    bool c2ComputeArray = binding.Kind == "texture" && resolved.CbufSlot == 2 && binding.Stage == "cs" &&
+                                          resolved.HandleIndex >= 0 && binding.Count > 1 &&
+                                          binding.Count == resolved.ArrayLength;
+                    if (!handleTableArray && !c2Image && !c2SingleHandle && !c2ComputeArray &&
+                        (binding.Kind != "texture" || !entry.accessor.HasDirectTextureFact(resolved.HandleIndex, resolved.CbufSlot)))
                         throw new DirectCompileException("UNSUPPORTED_PROGRAM",
-                            binding.Stage + ": texture handle from cbuf slot " + resolved.CbufSlot + " is not implemented");
+                            WithHandleDetail(binding.Stage + ": texture handle from cbuf slot " + resolved.CbufSlot +
+                                " is not implemented (handle=" + resolved.HandleIndex + ", arrayLength=" + resolved.ArrayLength +
+                                ", count=" + binding.Count + ", request=" + RequestSha() + ")",
+                                HandleDetailFields(allocator, binding, resolved, messageHasShape: true)));
                 }
                 if (resolved.Separate)
                     throw new DirectCompileException("UNSUPPORTED_PROGRAM",
                         binding.Stage + ": separate sampler slot is not implemented");
                 binding.Slot = resolved.HandleIndex;
             }
+        }
+
+        // #999：被拒的贴图句柄的现场，接在「texture handle from cbuf slot N is not implemented …」后面，写成 " [字段 字段 …]"，只进消息文字，不参与任何判断。
+        //   字段按重要性从前往后排，放不下的从最后一项起整项丢掉（不截半项）：
+        //   kind   = 绑定种类（texture / image）；
+        //   handle = TextureDescriptor.HandleIndex 原值（与 MISSING_FACT 消息里的 handle= 同一个数）；
+        //   word   = 句柄字在常量缓冲里的字偏移（字节偏移 = word × 4）；分离的 / 带类型的句柄（高 4 位是类型）按 TextureHandle.UnpackOffsets 拆成
+        //            word（贴图字）/ word2（采样器字）/ type（TextureHandleType 的整数值）；
+        //   cbuf   = 槽号带高 16 位时（TextureHandle.PackSlots），拆成 贴图常量缓冲号 / 采样器常量缓冲号；
+        //   count / array = 绑定的描述符个数 / 反射到的数组长度（两者决定「是不是数组」这条拒绝）；
+        //   key    = 请求的 requestId（宿主 nvk_shader.c：vs / fs / gs 各阶段的 8 字节程序键，各 16 个十六进制字符，连写，这里只取前 48 个字符）；没有就写 "-"。
+        // messageHasShape = 前面的消息已经带了 handle= / arrayLength= / count= / request=<sha>（#1488 补的 c2 / 打包槽那一处）：handle / count / array 三项不再重复写；
+        //   用户 UBO 那一处只有括号里的形态词，这三项由这里补（程序标识用 key，不带请求 sha）。
+        // 宿主按消息里的「texture handle from cbuf slot 」归类（nvk_shader.c compiler_rejected），前缀与括号里的形态词不动。
+        // 宿主（android/native/direct/compile_request.c）把整段错误 JSON 抄进 reason[320]（最多 319 个字符），截断了的 JSON 在
+        //   nvk_shader.c compiler_rejected 里解析不出来，整条归成 unclassified；JSON 的信封
+        //   {"schema":"s2a-direct-error-v1","code":"UNSUPPORTED_PROGRAM","message":"…"} 占 74 个字符，所以消息整条 ≤ 245 个字符是硬限
+        //   （第二道 message[256] 更宽）。#1488 的那条基础消息（含 64 个字符的请求 sha）典型 175 个字符（边界用例实测）、各数取 int 极值最坏 204，
+        //   留给现场的只有 41～70 个字符；
+        //   超了就从最低优先级的字段起丢（用例钉最坏情形与边界；宿主用例钉「245 个字符的消息仍归类」）。
+        private const int HandleDetailKeyChars = 48;
+        private const int HostMessageMaxChars = 245;
+
+        private static List<string> HandleDetailFields(DirectAllocator allocator, DirectBinding binding, TextureDescriptor descriptor, bool messageHasShape)
+        {
+            var fields = new List<string> { "kind=" + binding.Kind };
+            if (!messageHasShape) fields.Add("handle=" + descriptor.HandleIndex);
+            (int word, int word2, TextureHandleType type) = TextureHandle.UnpackOffsets(descriptor.HandleIndex);
+            fields.Add(type == TextureHandleType.CombinedSampler
+                ? "word=" + descriptor.HandleIndex
+                : "word=" + word + " word2=" + word2 + " type=" + (int)type);
+            if (descriptor.CbufSlot >= 0x10000)
+            {
+                (int textureBuffer, int samplerBuffer) = TextureHandle.UnpackSlots(descriptor.CbufSlot, descriptor.CbufSlot);
+                fields.Add("cbuf=" + textureBuffer + "/" + samplerBuffer);
+            }
+            if (!messageHasShape)
+            {
+                fields.Add("count=" + binding.Count);
+                fields.Add("array=" + descriptor.ArrayLength);
+            }
+            string key = allocator.RequestKey;
+            fields.Add("key=" + (string.IsNullOrEmpty(key) ? "-" : key.Length > HandleDetailKeyChars ? key.Substring(0, HandleDetailKeyChars) : key));
+            return fields;
+        }
+
+        private static string WithHandleDetail(string message, List<string> fields)
+        {
+            var text = new StringBuilder(message);
+            bool open = false;
+            foreach (string field in fields)
+            {
+                // 前面的空格（第一项是 " ["）+ 本项 + 收尾的 "]"；整条不超过宿主缓冲，一项放不下就停（后面的更低优先级，不再往后凑）
+                if (text.Length + (open ? 1 : 2) + field.Length + 1 > HostMessageMaxChars) break;
+                text.Append(open ? " " : " [").Append(field);
+                open = true;
+            }
+            if (open) text.Append(']');
+            return text.ToString();
         }
 
         // Same address provenance rules as dmsh_build.py, without guessing from allocation order.
@@ -356,6 +604,19 @@ namespace S2A.DirectCompiler
                     throw new DirectCompileException("SPIRV_INVALID", binding.Stage + " storage has no reflected descriptor");
                 ApplyStorageDescriptor(binding, found.Value);
             }
+        }
+
+        private static void WriteRanges(Utf8JsonWriter writer, int[][] ranges)
+        {
+            if (ranges == null) { writer.WriteNullValue(); return; }
+            writer.WriteStartArray();
+            foreach (int[] range in ranges)
+            {
+                writer.WriteStartArray();
+                writer.WriteNumberValue(range[0]); writer.WriteNumberValue(range[1]);
+                writer.WriteEndArray();
+            }
+            writer.WriteEndArray();
         }
 
         private static byte[] WriteContent(DirectProgram program, DirectProfile profile,
@@ -443,6 +704,16 @@ namespace S2A.DirectCompiler
                     WriteInfo(writer, shader.Info);
                     writer.WriteNumber("stateReadFlags", accessor.StateReadFlags);
                     writer.WriteNumber("attributeReadMask", accessor.AttributeReadMask);
+                    if (program.Kind == "graphics")
+                    {
+                        // 图形阶段的 c0（驱动常量段）读集：回放据此判断间接绘制要不要把 GPU 侧的 base instance 拷进 c0 + 0x644。
+                        // 分析不出（动态下标、非标准布局、多个 c0）= null = 未知，消费端照旧拷；没有 c0 绑定 = []。
+                        var stageC0 = allocator.Bindings.Where(b => b.Stage == stage.Stage && b.Kind == "uniform" && b.Slot == 0).ToArray();
+                        int[][] stageReads = stageC0.Length == 0 ? Array.Empty<int[]>() : stageC0.Length != 1 ? null :
+                            DirectComputeC0Reads.Analyze(shader.BinaryCode, stageC0[0].Set, stageC0[0].Binding);
+                        writer.WritePropertyName("c0Reads");
+                        WriteRanges(writer, stageReads);
+                    }
                     writer.WriteEndObject();
                 }
                 writer.WriteEndArray();
@@ -458,6 +729,15 @@ namespace S2A.DirectCompiler
                     writer.WriteNumber("count", binding.Count);
                     if (binding.Slot >= 0) writer.WriteNumber("slot", binding.Slot);
                     if (binding.SamplerSlot >= 0) writer.WriteNumber("samp_slot", binding.SamplerSlot);
+                    if (binding.ConstSampler >= 0) writer.WriteNumber("constSampler", binding.ConstSampler);
+                    if (binding.Pool != null) writer.WriteString("pool", binding.Pool);   // 整池数组（ResolvePoolSlots）：没有 slot，宿主按池建快照
+                    if (binding.Kind == "spill") writer.WriteNumber("bytesPerGroup", binding.SpillBytesPerGroup);
+                    if (binding.Kind == "texture" && binding.UboSlot >= 0)
+                    {
+                        // 句柄在游戏 UBO 里（ResolvePoolSlots）：没有 slot，只有这两个来源字段
+                        writer.WriteNumber("uboSlot", binding.UboSlot);
+                        writer.WriteNumber("uboOffset", binding.UboOffset);
+                    }
                     if (binding.Kind == "storage")
                     {
                         // Resolved and uniqueness-checked by ResolveStorageSlots above.

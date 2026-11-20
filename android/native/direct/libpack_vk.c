@@ -7,6 +7,7 @@
 //   或 0x5A + (reg-128)×2；img 句柄在 0x120 区 → slot = 0x48 + reg×2。
 #include "libpack_vk.h"
 #include "jv.h"   // 跨度式 JSON：_b.json 有长串字段（pos_slice 表 base64），s2a_json 短串上限吃不下
+#include "../nvn/nvn_vk_program_result.h"   // SUPPORT_DEFAULT_BYTES：计算结果的 supportLayout.requiredSize
 
 #include <errno.h>
 #include <stdarg.h>
@@ -104,16 +105,20 @@ int s2a_libpack_get(const struct s2a_libpack *lp, const uint8_t key[8], unsigned
 
 // 阶段名 ↔ StageNo（DshVk.cs StageNo 表同值）/ NVN 位序 ↔ v1 阶段名
 static int lp_stage_no(const char *s) {
-    if (!strcmp(s, "vs")) return 0; if (!strcmp(s, "hs")) return 1; if (!strcmp(s, "ds")) return 2;
-    if (!strcmp(s, "gs")) return 3; if (!strcmp(s, "ps")) return 4; if (!strcmp(s, "cs")) return 5;
+    if (!strcmp(s, "vs")) return 0;
+    if (!strcmp(s, "hs")) return 1;
+    if (!strcmp(s, "ds")) return 2;
+    if (!strcmp(s, "gs")) return 3;
+    if (!strcmp(s, "ps")) return 4;
+    if (!strcmp(s, "cs")) return 5;
     return -1;
 }
-// NVN 位 → 库内阶段名（vk 库只出 vs/ps/cs；gs/tcs/tes 给出 NULL → 程序 MISS）
+// NVN 位 → 库内阶段名（vk 库出 vs/ps/gs/cs；tcs/tes 给出 NULL → 程序 MISS）
 static const char *lp_nvn_stage_name(unsigned nvn) {
-    switch (nvn) { case 0: return "vs"; case 1: return "ps"; case 5: return "cs"; default: return NULL; }
+    switch (nvn) { case 0: return "vs"; case 1: return "ps"; case 2: return "gs"; case 5: return "cs"; default: return NULL; }
 }
 static const char *lp_v1_stage_name(const char *lib_stage) {
-    return !strcmp(lib_stage, "ps") ? "fs" : lib_stage;   // v1 用 NVN 阶段名 fs；vs/cs 同名
+    return !strcmp(lib_stage, "ps") ? "fs" : lib_stage;   // v1 用 NVN 阶段名 fs；vs/gs/cs 同名
 }
 // 纹理号 → cb2 句柄表字偏移（v1 texture slot 的约定）：0x20 区 0..31、0x168 区 128+
 static uint32_t lp_tex_slot_word(uint32_t reg) {
@@ -177,10 +182,76 @@ static int lp_fail(char *why, size_t why_size, const char *fmt, ...) {
     return -1;
 }
 
+// 句柄放在游戏用户常量缓冲里的绑定（_b.json tex_ubo / tbuf_ubo / samp_ubo，iOS nvn_refl.h NVN_RB_TEXU / TBUFU / SAMPU）：
+//   句柄字 = 用户常量槽 reg 的字节 off 处的 32 位字；sid = 这个字是采样器号（SAMPU，Ryujinx SeparateSamplerId，读出后左移 20）；
+//   pair = 同一个 Ryujinx 句柄的另一半（nvn_refl.m pair_from_name 原样移植：从绑定名解出，自己这半的 reg/off 要与名字对上才配）。
+struct lp_uword { uint32_t reg, off, pair_reg, pair_off; int sid, pair, pair_sid; };
+static int lp_isword(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'; }
+// 名字形如 <stage>_<t|i>…_cb<slots>_<HEX>（正则 ^[a-z]+_[ti]\w*?_cb(\d+)_([0-9A-F]+)）：slots = 纹理缓冲 | (采样器缓冲 + 1) << 16，
+//   HEX = 纹理字 | 采样器字 << 14 | 类型 << 28（字偏移；缓冲 c3..c16 = 用户槽 0..13）。只有类型 1 / 2 有第二个字
+static void lp_pair_from_name(const char *name, int is_samp, struct lp_uword *w) {
+    char nm[64]; size_t n = strlen(name);
+    if (n >= sizeof nm) return;
+    memcpy(nm, name, n + 1);
+    if (n > 5 && !strcmp(nm + n - 5, "Smplr")) nm[n - 5] = 0;
+    const char *p = nm;
+    if (!(*p >= 'a' && *p <= 'z')) return;
+    while (*p >= 'a' && *p <= 'z') p++;
+    if (*p++ != '_' || (*p != 't' && *p != 'i')) return;
+    p++;
+    unsigned long long slots = 0, h = 0; int ok = 0;
+    for (const char *q = p; *q && !ok; q++) {   // \w*? 懒匹配：第一个能接上 _cb<数字>_<大写十六进制> 的位置
+        if (q[0] == '_' && q[1] == 'c' && q[2] == 'b' && q[3] >= '0' && q[3] <= '9') {
+            const char *r = q + 3; unsigned long long sl = 0;
+            while (*r >= '0' && *r <= '9') sl = sl * 10 + (unsigned)(*r++ - '0');
+            if (r[0] == '_' && ((r[1] >= '0' && r[1] <= '9') || (r[1] >= 'A' && r[1] <= 'F'))) {
+                unsigned long long hv = 0;
+                for (r++; (*r >= '0' && *r <= '9') || (*r >= 'A' && *r <= 'F'); r++) hv = hv * 16 + (unsigned)(*r <= '9' ? *r - '0' : *r - 'A' + 10);
+                slots = sl; h = hv; ok = 1; break;
+            }
+        }
+        if (!lp_isword(*q)) return;
+    }
+    if (!ok) return;
+    long long tb = (long long)(slots & 0xffff), sb = (slots >> 16) ? (long long)(slots >> 16) - 1 : tb;
+    long long o0 = (long long)(h & 0x3fff) * 4, o1 = (long long)((h >> 14) & 0x3fff) * 4, ty = (long long)(h >> 28);
+    if ((ty != 1 && ty != 2) || tb < 3 || tb > 16 || sb < 3 || sb > 16) return;
+    if (is_samp) { if ((long long)w->reg != sb - 3 || (long long)w->off != o1) return; w->pair_reg = (uint32_t)(tb - 3); w->pair_off = (uint32_t)o0; w->pair_sid = 0; }
+    else { if ((long long)w->reg != tb - 3 || (long long)w->off != o0) return; w->pair_reg = (uint32_t)(sb - 3); w->pair_off = (uint32_t)o1; w->pair_sid = ty == 2; }
+    w->pair = 1;
+}
+// 读一条 *_ubo 成员的句柄字来源（reg / off / sid）并按名字配另一半
+static int lp_uword_read(struct s2a_jv b, const char *msl, int is_samp, struct lp_uword *w) {
+    memset(w, 0, sizeof *w);
+    uint32_t sid = 0;
+    if (jf_u32(b, "reg", &w->reg) || jf_u32(b, "off", &w->off) || w->reg >= 16 || w->off > 0xffff) return -1;
+    if (is_samp && !jf_bool(b, "sid", &sid)) w->sid = sid != 0;
+    lp_pair_from_name(msl, is_samp, w);
+    return 0;
+}
+// v1：{"slot":r,"offset":o[,"sid":true][,"pair":{"slot":r2,"offset":o2,"sid":bool}]}
+static void lp_uword_emit(struct jw *j, const struct lp_uword *w) {
+    jw_fmt(j, "{\"slot\":%u,\"offset\":%u", w->reg, w->off);
+    if (w->sid) jw_str(j, ",\"sid\":true");
+    if (w->pair) jw_fmt(j, ",\"pair\":{\"slot\":%u,\"offset\":%u,\"sid\":%s}", w->pair_reg, w->pair_off, w->pair_sid ? "true" : "false");
+    jw_str(j, "}");
+}
+// 同一个 bindings[] 里按 msl_name 找成员（tex_ubo 的采样器半边 = <名>Smplr）
+static int lp_find_member(struct s2a_jv arr, const char *name, struct s2a_jv *out) {
+    int n = s2a_jv_arr_count(arr);
+    for (int i = 0; i < n; i++) {
+        char msl[72] = "";
+        if (!s2a_jv_arr_item(arr, i, out) && !jf_str(*out, "msl_name", msl, sizeof msl) && !strcmp(msl, name)) return 0;
+    }
+    return -1;
+}
+
 // 一个键的 _b.json bindings[] → v1 content.bindings[]（追加进 jw；sep 管逗号）
 // stage_no = 本段 StageNo（绑定号换算用它），v1_stage = v1 阶段名标签
+// compute = 1：计算结果合同（nvn_vk_program_parse_compute）比图形严——每条带 count、storage 带
+//   cbSlot/cbOffset 出处、c0 驱动常量段（drvcb bank 0）挂 slot 0；图形输出逐字节不变。
 static int lp_emit_bindings(struct jw *j, struct s2a_jv top, const char *lib_stage,
-                            int stage_no, const char *v1_stage, int *sep, char *why, size_t why_size) {
+                            int stage_no, const char *v1_stage, int compute, int *sep, char *why, size_t why_size) {
     struct s2a_jv arr;
     if (s2a_jv_obj_find(top, "bindings", &arr) || !s2a_jv_is_array(arr))
         return lp_fail(why, why_size, "%s: no bindings array", lib_stage);
@@ -198,14 +269,52 @@ static int lp_emit_bindings(struct jw *j, struct s2a_jv top, const char *lib_sta
         size_t ml = strlen(msl);
         int sampler_half = (ml > 5 && !strcmp(msl + ml - 5, "Smplr"));
         const char *v1kind = NULL; uint32_t slot = 0; int has_slot = 0;
-        char provenance[96] = "";   // storage 三元出处（nvnSlot / uboSlot+uboOffset / uboPtr）
+        char provenance[320] = "";   // storage 三元出处（nvnSlot / uboSlot+uboOffset / uboPtr）；texture 的 uboHandle / sampler
         if (sampler_half) continue;
         if (!strcmp(kind, "tex") || !strcmp(kind, "tbuf") || !strcmp(kind, "tex_pool")) {
             uint32_t reg = 0; int has_reg = !jf_u32(b, "reg", &reg);
             v1kind = "texture";
             if (has_reg && strcmp(kind, "tex_pool")) { slot = lp_tex_slot_word(reg); has_slot = 1; }
-        } else if (!strcmp(kind, "tex_ubo") || !strcmp(kind, "tbuf_ubo") || !strcmp(kind, "tex_c2a")) {
-            v1kind = "texture";   // 句柄在游戏 UBO 里：v1 无对应字段，出绑定不挂槽（按缺席槽位如实）
+            // 分离贴图（reg ≥ 128，c2 字 90 + 2k）：v1 只有贴图槽、没有分离采样器字段，消费端按「采样器取同字高位」取（同组合槽，
+            //   也是立即句柄读这张表时的硬件语义）。只有这一条成立时才给槽：采样器半边缺（不采样：取尺寸 / texelFetch）或是
+            //   samp_tex（Dsh.cs Reflect：句柄类型 0，采样器就是同一个字）。半边是 samp（分离采样器槽）/ samp_id / samp_ubo 时
+            //   v1 表达不了，照旧不给槽，消费端如实拒，不按同字高位绑错采样器。
+            if (has_slot && reg >= 128 && !strcmp(kind, "tex")) {
+                char sn[72]; struct s2a_jv sb; char sk[24] = "";
+                snprintf(sn, sizeof sn, "%sSmplr", msl);
+                if (!lp_find_member(arr, sn, &sb) && (jf_str(sb, "kind", sk, sizeof sk) || strcmp(sk, "samp_tex"))) has_slot = 0;
+            }
+        } else if (!strcmp(kind, "tex_ubo") || !strcmp(kind, "tbuf_ubo")) {
+            v1kind = "texture";
+            // 句柄在游戏用户常量缓冲里（iOS NVN_RB_TEXU / TBUFU）：v1 带 uboHandle（句柄字来源 + 另一半），
+            //   tex_ubo 再带组合采样的采样器来源 sampler（取自 <名>Smplr 半边：samp_ubo / samp_id / samp，同 Dsh.cs DecodeUboTex 的三种）。
+            //   数组（array<…>，按 8k 逐项取句柄）还没接：照旧不挂来源，消费端如实拒
+            char ty[96] = "";
+            if (jf_str(b, "msl_type", ty, sizeof ty) || strncmp(ty, "array<", 6)) {
+                struct lp_uword w;
+                if (lp_uword_read(b, msl, 0, &w)) return lp_fail(why, why_size, "%s bindings[%u] %s: %s without reg 0..15 / off", lib_stage, i, msl, kind);
+                struct jw u = {0};
+                jw_str(&u, ",\"uboHandle\":"); lp_uword_emit(&u, &w);
+                char sn[72]; struct s2a_jv sb;
+                snprintf(sn, sizeof sn, "%sSmplr", msl);
+                if (!strcmp(kind, "tex_ubo") && !lp_find_member(arr, sn, &sb)) {
+                    char sk[24] = ""; uint32_t sreg = 0;
+                    if (jf_str(sb, "kind", sk, sizeof sk)) { free(u.b); return lp_fail(why, why_size, "%s bindings[%u] %s: sampler half without kind", lib_stage, i, msl); }
+                    if (!strcmp(sk, "samp_ubo")) {
+                        struct lp_uword sw;
+                        if (lp_uword_read(sb, sn, 1, &sw)) { free(u.b); return lp_fail(why, why_size, "%s %s: samp_ubo without reg 0..15 / off", lib_stage, sn); }
+                        jw_str(&u, ",\"sampler\":{\"source\":\"ubo\",\"handle\":"); lp_uword_emit(&u, &sw); jw_str(&u, "}");
+                    } else if (!strcmp(sk, "samp_id") && !jf_u32(sb, "reg", &sreg) && sreg <= 0xffff) {
+                        jw_fmt(&u, ",\"sampler\":{\"source\":\"id\",\"id\":%u}", sreg);
+                    } else if (!strcmp(sk, "samp") && !jf_u32(sb, "reg", &sreg) && sreg < 128) {
+                        jw_fmt(&u, ",\"sampler\":{\"source\":\"slot\",\"slot\":%u}", sreg);
+                    } else { free(u.b); return lp_fail(why, why_size, "%s %s kind '%s' not mappable as a uniform-handle sampler", lib_stage, sn, sk); }
+                }
+                if (u.oom || !u.b || u.n >= sizeof provenance) { free(u.b); return lp_fail(why, why_size, "%s %s: handle source too long", lib_stage, msl); }
+                memcpy(provenance, u.b, u.n + 1); free(u.b);
+            }
+        } else if (!strcmp(kind, "tex_c2a")) {
+            v1kind = "texture";   // 驱动表句柄数组：v1 无对应字段，出绑定不挂槽（按缺席槽位如实）
         } else if (!strcmp(kind, "samp") || !strcmp(kind, "samp_id") || !strcmp(kind, "samp_ubo")
                    || !strcmp(kind, "samp_c2a") || !strcmp(kind, "samp_pool") || !strcmp(kind, "samp_tex")) {
             continue;   // 采样器半边/独立采样器句柄：v1 是合并纹理模型，不出行
@@ -217,26 +326,45 @@ static int lp_emit_bindings(struct jw *j, struct s2a_jv top, const char *lib_sta
             uint32_t reg = 0;
             if (jf_u32(b, "reg", &reg)) return lp_fail(why, why_size, "%s bindings[%u] cbuf without reg", lib_stage, i);
             v1kind = "uniform"; slot = reg + 3; has_slot = 1;   // v1：驱动槽号，消费端 ubo_slot = slot-3
-        } else if (!strcmp(kind, "c1") || !strcmp(kind, "drvcb") || !strcmp(kind, "ubolen")
-                   || !strcmp(kind, "sbsize") || !strcmp(kind, "uvx") || !strcmp(kind, "lb")) {
-            v1kind = "uniform";   // 宿主常量/表：真实 UBO 描述符、无 guest 槽
+        } else if (!strcmp(kind, "c1")) {
+            v1kind = "uniform"; slot = 1; has_slot = 1;   // 着色器自带常量段 c[1]：v1 槽 1（消费端 NVN_RB_C1）
+        } else if (!strcmp(kind, "ubolen") || !strcmp(kind, "uvx") || !strcmp(kind, "lb") || !strcmp(kind, "sbsize")) {
+            continue;   // Metal 专用的宿主表（越界长度表 / 宽屏采样换算 / LOD 偏移 / 存储长度表）：Vulkan 版 .spv 不声明它们
+                        //   （11-13 一款 Unity 游戏全库 11052 个着色器逐个核：这四种在 _b.json 里 21599 处、.spv 里 0 处），v1 不出行
+        } else if (!strcmp(kind, "drvcb")) {
+            v1kind = "uniform";   // 宿主常量：真实 UBO 描述符、无 guest 槽（消费端还没接，按无槽如实拒）
+            // 计算：bank 是 NVN cbuf 号本身（Dsh.cs Reflect：fp_c<n>，n∉{1,3..16} 记 drvcb+bank）。c0 = 驱动常量段，
+            //   v1 槽 0（现编结果同号，消费端 NVN_RB_DRV0）；c2 = 句柄表，槽 2 交给解析器如实拒；其余 bank 不挂槽
+            uint32_t bank = 0;
+            if (compute && !jf_u32(b, "bank", &bank) && (bank == 0 || bank == 2)) { slot = bank; has_slot = 1; }
         } else if (!strcmp(kind, "geometry") || !strcmp(kind, "sbuf") || !strcmp(kind, "sbuf_ubo")
-                   || !strcmp(kind, "ubo_ptr") || !strcmp(kind, "gmem_map") || !strcmp(kind, "gmem_log")) {
+                   || !strcmp(kind, "ubo_ptr") || !strcmp(kind, "gmem_map") || !strcmp(kind, "gmem_log") || !strcmp(kind, "sbuf_push")) {
             v1kind = "storage";
             uint32_t v = 0;
+            // 计算另带 cbSlot/cbOffset（地址字在哪个 cbuf 的哪个字节）：都由 _b.json 的同一事实换出，不另造——
+            //   sbuf reg = (cb_offset×4 − 0x310)/16（Dsh.cs SSBO("cs") = 0x310）→ c0 + 0x310 + reg×16；
+            //   ubo_ptr reg = (off − 0x210)/16 → c0 + 0x210 + reg×16；sbuf_ubo reg = cb_slot − 3、off = cb_offset×4 → c(reg+3) + off
+            uint32_t cb_slot = 0, cb_off = 0; int has_cb = 0;
             if (!strcmp(kind, "sbuf")) {
-                if (!jf_u32(b, "reg", &v)) snprintf(provenance, sizeof provenance, ",\"nvnSlot\":%u", v);
+                if (!jf_u32(b, "reg", &v)) { snprintf(provenance, sizeof provenance, ",\"nvnSlot\":%u", v); cb_off = 0x310 + v * 16; has_cb = 1; }
             } else if (!strcmp(kind, "sbuf_ubo")) {
                 uint32_t off = 0;
-                if (!jf_u32(b, "reg", &v) && !jf_u32(b, "off", &off))
-                    snprintf(provenance, sizeof provenance, ",\"uboSlot\":%u,\"uboOffset\":%u", v, off);
+                if (!jf_u32(b, "reg", &v) && !jf_u32(b, "off", &off)) {
+                    snprintf(provenance, sizeof provenance, ",\"uboSlot\":%u,\"uboOffset\":%u", v, off); cb_slot = v + 3; cb_off = off; has_cb = 1; }
             } else if (!strcmp(kind, "ubo_ptr")) {
-                if (!jf_u32(b, "reg", &v)) snprintf(provenance, sizeof provenance, ",\"uboPtr\":%u", v);
+                if (!jf_u32(b, "reg", &v)) { snprintf(provenance, sizeof provenance, ",\"uboPtr\":%u", v); cb_off = 0x210 + v * 16; has_cb = 1; }
             }
-            // gmem_map/gmem_log/geometry：宿主哨兵槽，无 guest 映射——storage_kind 留 0，消费端如实报不支持
+            if (compute && has_cb) {
+                char pv[sizeof provenance]; memcpy(pv, provenance, sizeof pv);
+                int pn = snprintf(provenance, sizeof provenance, ",\"cbSlot\":%u,\"cbOffset\":%u%s", cb_slot, cb_off, pv);
+                if (pn < 0 || (size_t)pn >= sizeof provenance) return lp_fail(why, why_size, "%s bindings[%u] provenance too long", lib_stage, i);
+            }
+            // gmem_map/gmem_log/geometry：宿主哨兵槽，无 guest 映射——storage_kind 留 0，消费端如实报不支持；
+            //   sbuf_push（地址在 NVN2 推常量槽里，iOS SBUFQ）同样不挂来源（v1 没有推常量来源），与它出现前「sbuf 无槽号」的结果相同
         } else if (!strcmp(kind, "support")) {
             // v1：程序级支撑缓冲。set/binding 仍是本段的 arg_id 换算号；stage 标签 "program"
-            jw_fmt(j, "%s{\"kind\":\"support\",\"stage\":\"program\",\"set\":0,\"binding\":%u}", *sep ? "," : "", binding);
+            jw_fmt(j, "%s{\"kind\":\"support\",\"stage\":\"program\",\"set\":0,\"binding\":%u%s}", *sep ? "," : "", binding,
+                   compute ? ",\"count\":1" : "");
             *sep = 1;
             continue;
         } else {
@@ -252,6 +380,7 @@ static int lp_emit_bindings(struct jw *j, struct s2a_jv top, const char *lib_sta
         }
         jw_fmt(j, "%s{\"kind\":\"%s\",\"stage\":\"%s\",\"set\":0,\"binding\":%u", *sep ? "," : "", v1kind, v1_stage, binding);
         *sep = 1;
+        if (compute) jw_str(j, ",\"count\":1");   // 计算合同必填；.spv 里每个成员是单个描述符（数组形的 tex_c2a 等无槽，解析器另拒）
         if (has_slot) jw_fmt(j, ",\"slot\":%u", slot);
         if (provenance[0]) jw_str(j, provenance);
         if (!strcmp(v1kind, "storage")) jw_fmt(j, ",\"rw\":%s", rw ? "true" : "false");
@@ -262,36 +391,145 @@ static int lp_emit_bindings(struct jw *j, struct s2a_jv top, const char *lib_sta
 
 // 一个阶段：取键的 _b.json + _b.spv → 校验 → 往 jw 写 stage 项与 bindings 项。
 // 返回 0 成功 / 1 miss / -1 reject
-static int lp_stage_emit(struct s2a_libpack *lp, const uint8_t key[8], unsigned nvn,
+// .spv 实际声明的描述符绑定（OpDecorate Binding）与名为 support_buffer 的那一个。_b.json 是 Metal 反射，
+//   支撑缓冲在 Metal 里另有传法、_b.json 常常不列它；而 Vulkan 版 .spv 照样声明（参数号 8 处，绑定 = 8×6 + 阶段号）。
+//   只按 _b.json 出 v1 的话描述符布局里没有它，着色器读到的倍率 / 标志位是未定义值，整屏画黑（11-14 真机：一款大型
+//   开放世界游戏只放行图形预编即黑、只放行计算即正常；该款库里一对 vs / fs 的 .spv 各多一个 support_buffer 绑定 48 / 52）。
+//   返回 0 = 解析成功；*nb 个绑定号写进 out（最多 cap 个），*support = support_buffer 的绑定号（没有 = -1）。
+static int lp_spv_bindings(const uint8_t *spv, size_t n, uint32_t *out, int cap, int *nb, int *support) {
+    const uint32_t *w = (const uint32_t *)spv; size_t nw = n / 4;
+    uint32_t sid = 0; *nb = 0; *support = -1;
+    if (nw < 5) return -1;
+    for (size_t pass = 0; pass < 2; pass++)   // 第一遍找名字（OpName 在 OpDecorate 之前，但不依赖顺序）
+        for (size_t i = 5; i < nw; ) {
+            uint32_t op = w[i] & 0xffff, wc = w[i] >> 16;
+            if (!wc || i + wc > nw) return -1;
+            if (pass == 0 && op == 5 && wc >= 3 && !strncmp((const char *)&w[i + 2], "support_buffer", (wc - 2) * 4)) sid = w[i + 1];
+            if (pass == 1 && op == 71 && wc >= 4 && w[i + 2] == 33) {   // OpDecorate <id> Binding <n>
+                if (*nb < cap) out[(*nb)++] = w[i + 3];
+                if (sid && w[i + 1] == sid) *support = (int)w[i + 3];
+            }
+            i += wc;
+        }
+    return 0;
+}
+// 片元输出映射（同现编结果 info.fragmentOutputMap：每个颜色目标 4 位，第 c 分量 = 位 4×location + c）：按 .spv 的 Output 变量推。
+//   缺了这一项消费端按全 1（不屏蔽）处理，着色器没写的颜色目标也会被写入未定义值（延迟渲染的 G 缓冲被冲掉，王国之泪整屏发暗）。
+//   0 = 推出；-1 = 读不懂（数组输出、location ≥ 8、没 Location 的非内建输出等），调用方不出这一项
+int s2a_libpack_spv_frag_outputs(const uint8_t *spv, size_t n, uint32_t *map) {
+    const uint32_t *w = (const uint32_t *)spv; size_t nw = n / 4;
+    if (nw < 5 || !w[3] || w[3] > (1u << 22)) return -1;
+    uint32_t bound = w[3];
+    // 每个 id：低 8 位 location+1（0 = 没有）、8..15 位 component、位 16 = 内建；类型表：分量数（0 = 不是可用的标量 / 向量）
+    uint32_t *dec = calloc(bound, sizeof *dec), *ncomp = calloc(bound, sizeof *ncomp), *ptr_to = calloc(bound, sizeof *ptr_to);
+    int rc = -1; uint32_t m = 0;
+    if (!dec || !ncomp || !ptr_to) goto out;
+    for (size_t i = 5; i < nw; ) {
+        uint32_t op = w[i] & 0xffff, wc = w[i] >> 16;
+        if (!wc || i + wc > nw) goto out;
+        if (op == 71 && wc >= 3 && w[i + 1] < bound) {                       // OpDecorate
+            uint32_t id = w[i + 1], d = w[i + 2];
+            if (d == 30 && wc >= 4) { if (w[i + 3] >= 255) goto out; dec[id] = (dec[id] & ~0xffu) | (w[i + 3] + 1); }   // Location
+            else if (d == 31 && wc >= 4) { if (w[i + 3] > 3) goto out; dec[id] = (dec[id] & ~0xff00u) | (w[i + 3] << 8); }   // Component
+            else if (d == 11) dec[id] |= 1u << 16;                                // BuiltIn
+        } else if ((op == 21 || op == 22) && wc >= 2 && w[i + 1] < bound) ncomp[w[i + 1]] = 1;   // OpTypeInt / OpTypeFloat
+        else if (op == 23 && wc >= 4 && w[i + 1] < bound && w[i + 2] < bound && ncomp[w[i + 2]] == 1 && w[i + 3] <= 4) ncomp[w[i + 1]] = w[i + 3];   // OpTypeVector
+        else if (op == 32 && wc >= 4 && w[i + 1] < bound) ptr_to[w[i + 1]] = w[i + 2] == 3 ? w[i + 3] + 1 : 0;   // OpTypePointer Output → 指向类型 +1
+        else if (op == 59 && wc >= 4 && w[i + 3] == 3) {                     // OpVariable … Output
+            uint32_t ty = w[i + 1], id = w[i + 2];
+            if (ty >= bound || id >= bound || !ptr_to[ty]) goto out;
+            if (dec[id] >> 16 & 1) { i += wc; continue; }                        // 内建（FragDepth / SampleMask）不占颜色目标
+            uint32_t loc = dec[id] & 0xff, comp = dec[id] >> 8 & 0xff, val = ptr_to[ty] - 1, k = val < bound ? ncomp[val] : 0;
+            if (!loc || loc - 1 >= 8 || !k || comp + k > 4) goto out;
+            m |= ((1u << k) - 1u) << (4 * (loc - 1) + comp);
+        }
+        i += wc;
+    }
+    *map = m; rc = 0;
+out:
+    free(dec); free(ncomp); free(ptr_to);
+    return rc;
+}
+// _b.json 里某个参数号的绑定是不是 v1 有意不出行的种类（Metal 专用宿主表 / 采样器半边）
+static int lp_json_has_binding(struct s2a_jv top, int stage_no, uint32_t binding, int *skipped_kind) {
+    struct s2a_jv arr; *skipped_kind = 0;
+    if (s2a_jv_obj_find(top, "bindings", &arr) || !s2a_jv_is_array(arr)) return 0;
+    int n = s2a_jv_arr_count(arr);
+    for (int i = 0; i < n; i++) {
+        struct s2a_jv b; uint32_t arg = 0; char kind[24] = "";
+        if (s2a_jv_arr_item(arr, i, &b) || jf_u32(b, "arg_id", &arg) || arg * 6 + (uint32_t)stage_no != binding) continue;
+        if (!jf_str(b, "kind", kind, sizeof kind) && (!strcmp(kind, "ubolen") || !strcmp(kind, "uvx") || !strcmp(kind, "lb") || !strcmp(kind, "sbsize")))
+            { *skipped_kind = 1; continue; }
+        return 1;
+    }
+    return 0;
+}
+// 几何程序里任一阶段写视口号 / 视口掩码（OpDecorate / OpMemberDecorate BuiltIn ViewportIndex 10、ViewportMaskNV 5253、
+//   SecondaryViewportMaskNV 5258、ViewportMaskPerViewNV 5262）：回放层没有视口数组，现编（DirectShaderCompiler ValidateSpirv
+//   rejectViewportArray）对带几何的程序整支拒，这里同口径。返回 1 = 有、0 = 没有、-1 = 读不懂
+static int lp_spv_viewport_builtin(const uint8_t *spv, size_t n) {
+    const uint32_t *w = (const uint32_t *)spv; size_t nw = n / 4;
+    if (nw < 5) return -1;
+    for (size_t i = 5; i < nw; ) {
+        uint32_t op = w[i] & 0xffff, wc = w[i] >> 16;
+        if (!wc || i + wc > nw) return -1;
+        uint32_t b = op == 71 && wc >= 4 && w[i + 2] == 11 ? w[i + 3] : op == 72 && wc >= 5 && w[i + 3] == 11 ? w[i + 4] : 0;
+        if (b == 10 || b == 5253 || b == 5258 || b == 5262) return 1;
+        i += wc;
+    }
+    return 0;
+}
+// 支撑缓冲长度：离线库的翻译器回答「宿主有贴图尺寸表」（ABI 2，translator/dmsh_xlate Accessor），程序的支撑块声明到 3776 字节，
+//   偏移 2608 起是 73 项 × 16 字节的尺寸表。安卓宿主不填这张表：按 3776 分配、回放核心整块清零，表项全 0 时着色器走旧路径
+//   （倍率恒 1，与机上现编同口径）。只按 2608 绑的话越界读到的是未定义值（设备没开 robustBufferAccess）
+#define LP_SUPPORT_ABI2_BYTES 3776u
+// gs_topology：几何程序的输入图元（InputTopology 编号，见 lp_input_topology），几何段按它取 _vg<t>；不是几何程序给 -1。
+static int lp_stage_emit(struct s2a_libpack *lp, const uint8_t key[8], unsigned nvn, int compute, int gs_topology,
                          struct jw *stages, struct jw *binds, int *bind_sep, uint32_t *stage_mask,
-                         char *why, size_t why_size) {
+                         uint32_t *support_bytes, char *why, size_t why_size) {
     const char *lib_stage = lp_nvn_stage_name(nvn);
-    if (!lib_stage) return 1;   // gs/tcs/tes：vk 库不出此阶段，整个程序按 miss
+    if (!lib_stage) return 1;   // tcs/tes：vk 库不出此阶段，整个程序按 miss
+    int gs = !strcmp(lib_stage, "gs");
+    if (gs && (gs_topology < 0 || gs_topology > 4)) return 1;
     char khex[17];
     for (int i = 0; i < 8; i++) snprintf(khex + 2 * i, 3, "%02x", key[i]);
+    // 几何段：每种输入图元一份（DshVk.CompileGeometry），_vg<t>.json 种类 112+t / _vg<t>.spv 种类 120+t
+    const unsigned kjson = gs ? LP_K_VGJSON + (unsigned)gs_topology : LP_K_BJSON, kspv = gs ? LP_K_VGSPV + (unsigned)gs_topology : LP_K_BSPV;
+    char jname[12], sname[12];
+    snprintf(jname, sizeof jname, gs ? "_vg%d.json" : "_b.json", gs_topology);
+    snprintf(sname, sizeof sname, gs ? "_vg%d.spv" : "_b.spv", gs_topology);
     uint8_t *jb = NULL, *spv = NULL; size_t jn = 0, sn = 0;
     char gw[192] = "";
-    int rc = s2a_libpack_get(lp, key, LP_K_BJSON, &jb, &jn, gw, sizeof gw);
-    if (rc != S2A_LIBPACK_HIT) { if (why && why_size) snprintf(why, why_size, "%s _b.json: %s", khex, gw[0] ? gw : "absent"); free(jb); return rc; }
-    rc = s2a_libpack_get(lp, key, LP_K_BSPV, &spv, &sn, gw, sizeof gw);
-    if (rc != S2A_LIBPACK_HIT) { if (why && why_size) snprintf(why, why_size, "%s _b.spv: %s", khex, gw[0] ? gw : "absent"); free(jb); free(spv); return rc; }
+    int rc = s2a_libpack_get(lp, key, kjson, &jb, &jn, gw, sizeof gw);
+    if (rc != S2A_LIBPACK_HIT) { if (why && why_size) snprintf(why, why_size, "%s %s: %s", khex, jname, gw[0] ? gw : "absent"); free(jb); return rc; }
+    rc = s2a_libpack_get(lp, key, kspv, &spv, &sn, gw, sizeof gw);
+    if (rc != S2A_LIBPACK_HIT) { if (why && why_size) snprintf(why, why_size, "%s %s: %s", khex, sname, gw[0] ? gw : "absent"); free(jb); free(spv); return rc; }
     struct s2a_jv top = { (const char *)jb, jn };
     int out = -1;
     {   // 全文档语法核 + 顶层必须恰是一个对象（jv 不具现字符串，长串字段只吃跨度）
         const char *jend = NULL;
         if (!s2a_jv_is_object(top) || s2a_jv_scan((const char *)jb, (const char *)jb + jn, &jend)
             || jend != (const char *)jb + jn) {
-            lp_fail(why, why_size, "%s _b.json: not a complete JSON object", khex); goto done;
+            lp_fail(why, why_size, "%s %s: not a complete JSON object", khex, jname); goto done;
         }
     }
     {   // 命中判据：dm_ctl == 键 hex、stage 相符、_b.spv 是合法 SPIR-V
         char ctl[20] = "", st[8] = "";
         if (jf_str(top, "dm_ctl", ctl, sizeof ctl) || strcmp(ctl, khex))
-            { lp_fail(why, why_size, "%s _b.json dm_ctl mismatch", khex); goto done; }
+            { lp_fail(why, why_size, "%s %s dm_ctl mismatch", khex, jname); goto done; }
         if (jf_str(top, "stage", st, sizeof st) || strcmp(st, lib_stage))
-            { lp_fail(why, why_size, "%s _b.json stage is '%s' not '%s'", khex, st, lib_stage); goto done; }
+            { lp_fail(why, why_size, "%s %s stage is '%s' not '%s'", khex, jname, st, lib_stage); goto done; }
+        uint32_t gt = 0;
+        if (gs && (jf_u32(top, "gs_input_topology", &gt) || gt != (uint32_t)gs_topology))
+            { lp_fail(why, why_size, "%s %s gs_input_topology is not %d", khex, jname, gs_topology); goto done; }
         if (sn < 20 || (sn & 3) || *(const uint32_t *)spv != 0x07230203u)
-            { lp_fail(why, why_size, "%s _b.spv is not a SPIR-V module", khex); goto done; }
+            { lp_fail(why, why_size, "%s %s is not a SPIR-V module", khex, sname); goto done; }
+        // 带几何的程序：每一段都不许写视口号 / 视口掩码（lp_spv_viewport_builtin，同现编具名拒）
+        if (gs_topology >= 0) {
+            int vp = lp_spv_viewport_builtin(spv, sn);
+            if (vp) { lp_fail(why, why_size, vp > 0 ? "%s %s writes a viewport index/mask in a geometry program (not implemented)"
+                                                   : "%s %s instructions unreadable", khex, sname); goto done; }
+        }
         int stage_no = lp_stage_no(st);
         // vertex_inputs[].location → attributeReadMask
         uint32_t mask = 0;
@@ -304,16 +542,42 @@ static int lp_stage_emit(struct s2a_libpack *lp, const uint8_t key[8], unsigned 
                 if (!s2a_jv_arr_item(vi, i, &ve) && !jf_u32(ve, "location", &loc) && loc < 32) mask |= 1u << loc;
             }
         }
-        // tex_scales 非空：scaled-access 绑定映射还没接——如实拒绝不静默丢
-        struct s2a_jv ts;
-        if (!s2a_jv_obj_find(top, "tex_scales", &ts) && s2a_jv_is_array(ts) && s2a_jv_arr_count(ts) > 0)
-            { lp_fail(why, why_size, "%s has tex_scales entries (scaled-access bindings not mapped)", khex); goto done; }
+        {   // 尺寸表 ABI：2 = 读支撑缓冲 2608 起的尺寸表，要 3776 字节（见 LP_SUPPORT_ABI2_BYTES）；没有这一项 = 不读表
+            uint32_t abi = 0;
+            if (!jf_u32(top, "resolution_scale_abi", &abi) && abi == 2) { if (*support_bytes < LP_SUPPORT_ABI2_BYTES) *support_bytes = LP_SUPPORT_ABI2_BYTES; }
+            else if (abi && abi != 2) { lp_fail(why, why_size, "%s resolution_scale_abi %u unknown", khex, abi); goto done; }
+        }
+        // tex_scales（缩放访问的贴图）不再拒收：ABI 2 下换算在着色器里经支撑缓冲的尺寸表做，表项全 0 走倍率 1 的旧路径，与现编同口径
         const char *v1_stage = lp_v1_stage_name(st);
-        if (lp_emit_bindings(binds, top, st, stage_no, v1_stage, bind_sep, why, why_size)) goto done;
+        if (lp_emit_bindings(binds, top, st, stage_no, v1_stage, compute, bind_sep, why, why_size)) goto done;
+        {   // 以 .spv 声明的绑定为准：support_buffer 补出（_b.json 没列时），其余每个绑定号都得在 _b.json 里有出处，否则整个程序拒收退回现编
+            uint32_t sb[64]; int nb = 0, sup = -1;
+            if (lp_spv_bindings(spv, sn, sb, 64, &nb, &sup)) { lp_fail(why, why_size, "%s %s decorations unreadable", khex, sname); goto done; }
+            for (int i = 0; i < nb; i++) {
+                int skipped = 0;
+                if ((int)sb[i] == sup) {
+                    // _b.json 有 support 行时 lp_emit_bindings 已经出过；没有就按 .spv 补出。计算程序同样要补：supportLayout 只给尺寸，
+                    //   后端建描述符布局 / 写描述符只认 bindings 里 is_support 的那一行（nvn_vk_compute.c），漏了 = .spv 用到的绑定不在布局里
+                    if (!lp_json_has_binding(top, stage_no, sb[i], &skipped)) {
+                        jw_fmt(binds, "%s{\"kind\":\"support\",\"stage\":\"program\",\"set\":0,\"binding\":%u%s}", *bind_sep ? "," : "", sb[i],
+                               compute ? ",\"count\":1" : "");
+                        *bind_sep = 1;
+                    }
+                    continue;
+                }
+                if (!lp_json_has_binding(top, stage_no, sb[i], &skipped)) {
+                    lp_fail(why, why_size, "%s %s binding %u has no %s%s binding", khex, sname, sb[i], skipped ? "mappable " : "", jname);
+                    goto done;
+                }
+            }
+        }
         jw_fmt(stages, "%s{\"stage\":\"%s\",\"spirv\":\"", *stage_mask ? "," : "", v1_stage);
         jw_b64(stages, spv, sn);
-        if (mask) jw_fmt(stages, "\",\"attributeReadMask\":%u}", mask);
-        else jw_str(stages, "\"}");
+        jw_str(stages, "\"");
+        if (mask) jw_fmt(stages, ",\"attributeReadMask\":%u", mask);
+        uint32_t fom = 0;
+        if (!strcmp(v1_stage, "fs") && !s2a_libpack_spv_frag_outputs(spv, sn, &fom)) jw_fmt(stages, ",\"info\":{\"fragmentOutputMap\":%u}", fom);
+        jw_str(stages, "}");
         *stage_mask |= 1u << nvn;
         out = 0;
     }
@@ -322,26 +586,62 @@ done:
     return out;
 }
 
+// 绘制图元名（现编请求 graphicsState.topology 同名：nvn_vk_compile_facts.c nvk_input_topology）→ InputTopology 编号；
+//   离线库只出点 / 线 / 三角三种（DshVk.GeometryTopologies），邻接与没有来源给 -1（几何程序按 miss）
+static int lp_input_topology(const char *t) {
+    if (!t) return -1;
+    if (!strcmp(t, "Points")) return 0;
+    if (!strcmp(t, "Lines")) return 1;
+    if (!strcmp(t, "Triangles")) return 3;
+    return -1;
+}
+// 本局 effective profile 的 capabilities.supportsGeometryShader（现编 profile.Caps.SupportsGeometryShader 同一字段）：1 开 / 0 没开或读不出
+int s2a_libpack_profile_geometry_shader(const char *profile_json, size_t profile_bytes) {
+    if (!profile_json || !profile_bytes) return 0;
+    struct s2a_jv top = { profile_json, profile_bytes }, caps, f;
+    int b = 0;
+    if (!s2a_jv_is_object(top) || s2a_jv_obj_find(top, "capabilities", &caps) || !s2a_jv_is_object(caps) ||
+        s2a_jv_obj_find(caps, "supportsGeometryShader", &f) || s2a_jv_bool(f, &b)) return 0;
+    return b != 0;
+}
+
 int s2a_libpack_program_v1(const struct s2a_libpack *lp_c, const uint8_t keys[6][8], uint32_t stages,
+                           const struct s2a_libpack_gfx *gfx,
                            uint32_t direct_abi, const char *profile_hash, const char *translator_closure,
                            uint8_t **json, size_t *json_len, char *why, size_t why_size) {
     struct s2a_libpack *lp = (struct s2a_libpack *)lp_c;
     if (!lp || !lp->p.idx || !keys || !json || !json_len || !stages) return S2A_LIBPACK_INVALID;
     *json = NULL; *json_len = 0;
-    // v1 图形接受口径就是 vs+fs 两阶段（nvn_vk_program_parse_graphics 判据）：
-    //   别的形状（单阶段 / 带 gs|tcs|tes / cs 走 compute 线）本函数产不出可采纳结果，按 miss 如实回。
-    if (stages != 0x3) {
-        if (why && why_size) snprintf(why, why_size, "stages=0x%x is not a vs+fs program", stages);
+    // 图形接受口径同现编（DirectProgram.Parse）：vs+fs，或 vs+gs+fs（几何走原生几何阶段）；
+    //   别的形状（单阶段 / 带 tcs|tes / cs 走 compute 线）本函数产不出可采纳结果，按 miss 如实回。
+    if (stages != 0x3 && stages != 0x7) {
+        if (why && why_size) snprintf(why, why_size, "stages=0x%x is not a vs+fs or vs+gs+fs program", stages);
         atomic_fetch_add(&g_misses, 1);
         return S2A_LIBPACK_MISS;
     }
+    // 几何程序：设备没开 geometryShader 照旧 miss（现编同判据：profile 的 supportsGeometryShader）；
+    //   输入图元挑同号那份 _vg<t>，邻接 / 没有来源 miss（现编也还没接邻接）
+    int gs_topology = -1;
+    if (stages == 0x7) {
+        if (!gfx || !s2a_libpack_profile_geometry_shader(gfx->profile_json, gfx->profile_bytes)) {
+            if (why && why_size) snprintf(why, why_size, "geometryShader is not enabled in the profile");
+            atomic_fetch_add(&g_misses, 1);
+            return S2A_LIBPACK_MISS;
+        }
+        gs_topology = lp_input_topology(gfx->topology);
+        if (gs_topology < 0) {
+            if (why && why_size) snprintf(why, why_size, "geometry input topology %s has no library variant", gfx->topology ? gfx->topology : "(none)");
+            atomic_fetch_add(&g_misses, 1);
+            return S2A_LIBPACK_MISS;
+        }
+    }
     int worst = S2A_LIBPACK_HIT;
     struct jw st = {0}, bd = {0};
-    int sep = 0; uint32_t got = 0;
+    int sep = 0; uint32_t got = 0, support = 0;
     for (unsigned nvn = 0, idx = 0; nvn < 6 && idx < 6; nvn++) {
         if (!(stages & (1u << nvn))) continue;
         char sw[192] = "";
-        int rc = lp_stage_emit(lp, keys[idx], nvn, &st, &bd, &sep, &got, sw, sizeof sw);
+        int rc = lp_stage_emit(lp, keys[idx], nvn, 0, gs_topology, &st, &bd, &sep, &got, &support, sw, sizeof sw);
         idx++;
         if (rc == 0) continue;
         // 半程序不命中：任一所需阶段拿不到，整个程序按该段的 miss/reject 计
@@ -360,7 +660,9 @@ int s2a_libpack_program_v1(const struct s2a_libpack *lp_c, const uint8_t keys[6]
         jw_put(&j, st.b ? (char *)st.b : "", st.n);
         jw_str(&j, "],\"bindings\":[");
         jw_put(&j, bd.b ? (char *)bd.b : "", bd.n);
-        jw_str(&j, "]}}");
+        jw_str(&j, "]");
+        if (support) jw_fmt(&j, ",\"supportLayout\":{\"requiredSize\":%u}", support);
+        jw_str(&j, "}}");
         if (j.oom) { free(j.b); lp_fail(why, why_size, "v1 synthesis out of memory"); worst = S2A_LIBPACK_REJECT; goto out; }
         *json = j.b; *json_len = j.n;
         worst = S2A_LIBPACK_HIT;
@@ -371,4 +673,45 @@ out:
     else if (worst == S2A_LIBPACK_MISS) atomic_fetch_add(&g_misses, 1);
     else atomic_fetch_add(&g_rejects, 1);
     return worst;
+}
+
+// 计算程序：单键（rp_S.skey[5]）的 _b.json（stage "cs"）+ _b.spv → kind "compute" 的 v1 结果，
+//   接受口径 = nvn_vk_program_parse_compute（与现编结果同一个 build_compute）。计算合同多出的四个顶层事实：
+//   hasUnalignedStorageBuffer：false——dsh 批翻链的翻译器（translator/dmsh_xlate）不覆写
+//     IGpuAccessor.QueryHasUnalignedStorageBuffer，接口缺省 false，这份 .spv 就是按 false 翻的（照实）；
+//   c0Reads：null——_b.json 只有 drv_reads（按 MSL 文本的 vec4 粒度 + dynamic 标），给不出合同要的
+//     字节精度读集；null 是解析器认可的「未知」，运行时按完整驱动 c0 布局填；
+//   supportReads：null——_b.json 不带 support 读集，同上按「未知」写，运行时整块按恒等值填；
+//   supportLayout.requiredSize：SUPPORT_DEFAULT_BYTES（2608）——dmsh_xlate 编进的是同一份 compat
+//     Ryujinx.Graphics.Shader，SupportBuffer.RequiredSize 就是它；图形库路径不写 supportLayout，解析器也按这个数。
+//   绑定号 = arg_id×6 + 5。计数口径同 program_v1（hit / miss / reject 三个计数器共用）。
+int s2a_libpack_compute_v1(const struct s2a_libpack *lp_c, const uint8_t key[8],
+                           uint32_t direct_abi, const char *profile_hash, const char *translator_closure,
+                           uint8_t **json, size_t *json_len, char *why, size_t why_size) {
+    struct s2a_libpack *lp = (struct s2a_libpack *)lp_c;
+    if (!lp || !lp->p.idx || !key || !json || !json_len) return S2A_LIBPACK_INVALID;
+    *json = NULL; *json_len = 0;
+    struct jw st = {0}, bd = {0};
+    int sep = 0; uint32_t got = 0;
+    uint32_t csupport = 0;
+    int rc = lp_stage_emit(lp, key, 5, 1, -1, &st, &bd, &sep, &got, &csupport, why, why_size);
+    if (rc == 0 && got != (1u << 5)) rc = S2A_LIBPACK_MISS;
+    if (rc == 0) {
+        struct jw j = {0};
+        jw_fmt(&j, "{\"schema\":\"s2a-direct-program-v1\",\"content\":{\"contract\":\"s2a-direct-program-content-v1\",\"identity\":{\"directABI\":%u,\"translatorClosure\":\"%s\",\"profileHash\":\"%s\"},\"kind\":\"compute\","
+                   "\"hasUnalignedStorageBuffer\":false,\"c0Reads\":null,\"supportReads\":null,\"stages\":[",
+               direct_abi, translator_closure ? translator_closure : "", profile_hash ? profile_hash : "");
+        jw_put(&j, st.b ? (char *)st.b : "", st.n);
+        jw_str(&j, "],\"bindings\":[");
+        jw_put(&j, bd.b ? (char *)bd.b : "", bd.n);
+        jw_fmt(&j, "],\"supportLayout\":{\"requiredSize\":%u}}}", csupport > SUPPORT_DEFAULT_BYTES ? csupport : SUPPORT_DEFAULT_BYTES);
+        if (j.oom) { free(j.b); lp_fail(why, why_size, "v1 synthesis out of memory"); rc = S2A_LIBPACK_REJECT; }
+        else { *json = j.b; *json_len = j.n; }
+    } else if (rc > 0) rc = S2A_LIBPACK_MISS;
+    else rc = S2A_LIBPACK_REJECT;
+    free(st.b); free(bd.b);
+    if (rc == S2A_LIBPACK_HIT) atomic_fetch_add(&g_hits, 1);
+    else if (rc == S2A_LIBPACK_MISS) atomic_fetch_add(&g_misses, 1);
+    else atomic_fetch_add(&g_rejects, 1);
+    return rc;
 }

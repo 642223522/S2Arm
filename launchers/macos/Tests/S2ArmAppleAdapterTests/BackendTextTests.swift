@@ -3,6 +3,79 @@ import XCTest
 
 /// 作业层文字的翻译（BackendText）：真资源包（Localizable.json + 共享体验规格），期望值按对照表里的英文手写。
 final class BackendTextTests: XCTestCase {
+    func testUpdatePopupCopyInSixLanguages() {
+        let languages = ["zh-Hans", "en", "zh-Hant", "ja", "es", "fr"]
+        let expected: [(String, [String])] = [
+            ("update.menu.check", ["检查更新", "Check for Updates", "檢查更新", "アップデートを確認", "Buscar actualizaciones", "Rechercher des mises à jour"]),
+            ("update.menu.checking", ["正在检查更新", "Checking for Updates", "正在檢查更新", "アップデートを確認中", "Buscando actualizaciones", "Recherche de mises à jour"]),
+            ("update.menu.available", ["有新版本可用（v{0}）", "Update Available (v{0})", "有新版本可用（v{0}）", "新しいバージョンがあります（v{0}）", "Actualización disponible (v{0})", "Mise à jour disponible (v{0})"]),
+            ("update.menu.downloading", ["正在下载更新（{0}%）", "Downloading Update ({0}%)", "正在下載更新（{0}%）", "アップデートをダウンロード中（{0}%）", "Descargando actualización ({0}%)", "Téléchargement de la mise à jour ({0}%)"]),
+            ("update.menu.downloadingPlain", ["正在下载更新", "Downloading Update", "正在下載更新", "アップデートをダウンロード中", "Descargando actualización", "Téléchargement de la mise à jour"]),
+            ("update.menu.ready", ["更新已就绪（v{0}）", "Ready to Update (v{0})", "更新已就緒（v{0}）", "アップデートの準備完了（v{0}）", "Listo para actualizar (v{0})", "Prêt à mettre à jour (v{0})"]),
+            ("update.upToDate.title", ["已是最新版本", "You’re up to date", "已是最新版本", "最新バージョンです", "Tienes la versión más reciente", "Vous avez la dernière version"]),
+            ("update.top.restart", ["重启以更新", "Restart to update", "重啟以更新", "再起動して更新", "Reiniciar para actualizar", "Redémarrer pour mettre à jour"]),
+            ("update.checkFailed.title", ["无法检查更新", "Could not check for updates", "無法檢查更新", "アップデートを確認できませんでした", "No se pudo buscar actualizaciones", "Impossible de vérifier les mises à jour"]),
+            ("update.popup.close", ["关闭", "Close", "關閉", "閉じる", "Cerrar", "Fermer"]),
+            ("update.popup.updateNow", ["立即更新", "Update now", "立即更新", "今すぐ更新", "Actualizar ahora", "Mettre à jour"]),
+            ("update.popup.downloadingBtn", ["下载中", "Downloading…", "下載中", "ダウンロード中…", "Descargando…", "Téléchargement…"]),
+            ("update.popup.restartNow", ["立即重启", "Restart now", "立即重啟", "今すぐ再起動", "Reiniciar ahora", "Redémarrer"]),
+            ("update.popup.retryNow", ["重试", "Retry", "重試", "再試行", "Reintentar", "Réessayer"]),
+            ("update.popup.autoRestart", ["下载完自动重启", "Restart automatically when downloaded", "下載完自動重啟", "ダウンロード後に自動で再起動", "Reiniciar automáticamente al descargar", "Redémarrer automatiquement après le téléchargement"]),
+        ]
+        for (key, translations) in expected {
+            for (language, text) in zip(languages, translations) {
+                XCTAssertEqual(BackendText.launcherText(key, language: language), text, "\(language) \(key)")
+            }
+        }
+    }
+
+    /// 0.5.1 Sparkle「更新并重启」退出崩溃（11-17）：文案资源第一次用到才读，退出前重画界面时 Sparkle 正换盘上的 .app，读不到就停进程。
+    ///   修法是启动时 preload 一次读完；这里核「preload 之后翻译、取界面文案、换语言都不再读资源包」，各语言都走一遍（含叠加语言与回落）
+    func testAfterPreloadNothingReadsTheBundle() {
+        BackendText.preload()
+        let before = BackendText.resourceReads
+        for language in ["zh-Hans", "en", "zh-Hant", "ja", "es", "fr"] {   // 界面能选的语言（没有文案文件的未知语言第一次会查一次、读不到不停进程，不在这里）
+            _ = BackendText.translate("操作完成", language: language)
+            _ = BackendText.translate("上传诊断超过 90 秒还没完成（网络太慢或连接卡住），已停止。可以先导出诊断包，手动发给我们。", language: language)
+            _ = BackendText.launcherText("duration.s", language: language)
+        }
+        XCTAssertEqual(BackendText.resourceReads, before, "preload 之后不该再读资源包（Sparkle 换 .app 时读不到会停进程）")
+    }
+
+    /// 共享文案表缺这门语言回落英文、缺键才显示 [键名]（11-14 i18n 打底）：duration.s 只有 zh-Hans / en 两列
+    func testLauncherTextFallsBackToEnglish() {
+        XCTAssertEqual(BackendText.launcherText("duration.s", language: "zh-Hans"), "{0} 秒")
+        XCTAssertEqual(BackendText.launcherText("duration.s", language: "en"), "{0}s")
+        XCTAssertEqual(BackendText.launcherText("duration.s", language: "xx"), "{0}s")   // 没有文案文件的语言
+        XCTAssertEqual(BackendText.launcherText("no.such.key", language: "xx"), "[no.such.key]")
+    }
+
+    /// 作业层拼出来的整句按多占位句式翻，占位里的中文再翻、数字原样（11-14 i18n 第四批：诊断上传总时限）
+    func testMultiSlotPatternTranslatesSlots() {
+        XCTAssertEqual(BackendText.translate("上传诊断超过 90 秒还没完成（网络太慢或连接卡住），已停止。可以先导出诊断包，手动发给我们。", language: "en"),
+                       "Uploading diagnostics didn't finish within 90 seconds (the network is too slow or the connection stalled), so it was stopped. You can export a diagnostic package and send it to us yourself.")
+    }
+
+    /// Windows 环境检查「Apple 移动设备支持」：句式 → 「；」拆段 → 每段再套句式（11-14 i18n 第四批 winenv）
+    func testAppleDriverCheckedListTranslates() {
+        XCTAssertEqual(BackendText.translate("没找到Apple设备支持。查过：本机usbmux端口 127.0.0.1:27015：连不上；服务 Apple Mobile Device Service：已停止；商店版 Apple Devices：没装", language: "en"),
+                       "Apple device support not found. Checked: local usbmux port 127.0.0.1:27015: not reachable; Apple Mobile Device Service: stopped; Apple Devices (Store version): not installed")
+    }
+
+    /// 出包前空间预算提示：外层句式 → 分项按「；」拆开逐项翻（11-14 i18n：分项分隔由「，」改「；」）
+    func testSpaceBudgetWarningTranslates() {
+        XCTAssertEqual(BackendText.translate("磁盘空间不够：游戏存放位置所在的盘这次出包预计要 106 GB（解包 12 GB；单一 IMG 边写边腾解包、不另占；直连着色器上限 4 GB），现在只剩 48 GB。已按你的选择仍然继续。", language: "en"),
+                       "Not enough disk space: on the drive where the games are stored this build needs about 106 GB (Unpack 12 GB; single IMG written while freeing the unpacked files, no extra space; direct shaders up to 4 GB), but only 48 GB is left. Continuing anyway, as you chose.")
+    }
+
+    /// 叠加语言（11-14 加繁中）：资源包里的 l10n.zh-Hant.json 生效；没有文件的语言整表回落英文
+    func testOverlayLanguages() {
+        XCTAssertEqual(BackendText.launcherText("report.button", language: "zh-Hant"), "故障報修")
+        XCTAssertEqual(BackendText.translate("游戏已停止。", language: "zh-Hant"), "遊戲已停止。")
+        XCTAssertEqual(BackendText.translate("游戏已停止。", language: "xx"), "Game stopped.")
+        XCTAssertEqual(BackendText.launcherText("report.button", language: "xx"), BackendText.launcherText("report.button", language: "en"))
+    }
+
     func testWholeSentenceAndSharedLabels() {
         XCTAssertEqual(BackendText.translate("游戏已停止。", language: "en"), "Game stopped.")
         XCTAssertEqual(BackendText.translate("游戏库所在磁盘", language: "en"), "Library Drive")

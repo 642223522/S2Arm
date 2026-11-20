@@ -32,9 +32,15 @@ void *s2a_shell_library_vc(const char *catalogue_json_path);
 //   s2a_shell_install_progress：正在解的是这款 → 写已解开包数 / 总包数、返回 1；否则 0。弱缺省 0
 //   s2a_shell_pick_game_data：库里点「需要游戏数据」那款 → 宿主给导入说明（含「重新检查」）；弱定义缺省只记日志
 int s2a_shell_game_install_state(const char *game_id);
+// 这款程序是按别的宿主约定号出的（runtime s2a_launch_ctx_game_needs_update / 点开被拒 S2A_SELECT_NEEDS_UPDATE）→ 1：库卡片标「需要在电脑上更新」。
+//   实现在宿主 ios/app.m（每款读一次清单后缓存，点开被拒的也记上；库每秒重判只查缓存）；弱缺省 0
+int s2a_shell_game_needs_host_update(const char *game_id);
+// 这款程序包对不上本机这份 App（通用壳：签名 / 库校验不认、或程序库与清单 image_sha256 不符；点开被拒 S2A_SELECT_NEEDS_RESIGN）→ 1：库卡片标「需要在电脑上重装」。
+//   实现在宿主 ios/app.m（点开被拒时记下）；弱缺省 0
+int s2a_shell_game_needs_reinstall(const char *game_id);
 int s2a_shell_install_game(const char *game_id);
 int s2a_shell_install_progress(const char *game_id, int *done, int *total);
-// 库起解包被拒（s2a_shell_install_game 返回 0）时为什么：1 另一款正在解（同时只解一款）/ 2 正在整理游戏目录（#569 迁移）/ 0 没有在等的事。
+// 库起解包被拒（s2a_shell_install_game 返回 0）时为什么：1 另一款正在解（同时只解一款）/ 2 正在整理游戏目录（首次清点容器、资源包挪位，ios/app.m img_scan_bg）/ 0 没有在等的事。
 //   库据此在卡片上说「等另一款装完」「正在整理游戏目录」，不再只写「安装中」（iOS 装机剃刀 #46 / #47）。主线程；弱缺省 0
 int s2a_shell_install_wait(void);
 // 库界面第一次出现（启动打点「游戏库界面可操作」）；弱定义缺省什么都不做
@@ -46,6 +52,10 @@ int s2a_shell_install_phase(const char *game_id, int *phase, double *fraction);
 const char *s2a_shell_install_failure(const char *game_id);
 // 主屏快捷操作「设置」冷启动时宿主记下的请求：1 = 游戏库出现时要打开游戏库设置（取走即清）；运行中宿主直接发通知 S2AShellOpenSettings
 int s2a_shell_take_open_settings(void);
+// 这次安装确定丢了「提高内存上限」权限（ios/iml_probe.m，读不到不算）：返回 {"title","body"}（已按 App 语言）的 JSON，调用方 free；没丢 / 读不到返回 NULL。主线程
+char *s2a_shell_iml_notice(void);
+/* 游戏库真画出了这条提示：记下，进游戏后起局提示不再重复弹（ios/iml_probe.m） */
+void s2a_shell_iml_notice_seen(void);
 void s2a_shell_pick_game_data(const char *game_id);
 // 宿主让库界面重判各款资源包（说明里「重新检查」后调）。库界面建好时登记；没登记时 s2a_shell_refresh 什么都不做
 typedef void (*s2a_shell_refresh_fn)(void *ctx);
@@ -92,6 +102,14 @@ void s2a_shell_cloud_upload_background(const char *game_id);
 
 // 故障报修（游戏库设置页最下面）：实现在宿主 ios/diag.m（可不填的一句说明 → 打包上传、给短码）；本包弱定义缺省什么也不做
 void s2a_shell_report_problem(void);
+/// Instant snapshot (0.6.0): 1 = the game has a complete snapshot to go back to (host ios/app.m; the shell's weak stub says 0).
+int s2a_shell_snapshot_available(const char *game_id);
+/// Starts the game back at its saved moment (asks first when the game saved after that moment). The shell's weak stub does nothing.
+void s2a_shell_restore_snapshot(const char *game_id);
+/// The folder of the game's complete snapshot into `out` (0), or -1: no snapshot, snapshots off, or `out` too small. The shell's weak stub says -1.
+int s2a_shell_snapshot_dir(const char *game_id, char *out, unsigned long size);
+/// Deletes the game's snapshot with its picture and manifest, freeing the space: 0 done, -1 not (or nothing to delete). Weak stub -1.
+int s2a_shell_delete_snapshot(const char *game_id);
 
 #ifdef __cplusplus
 }

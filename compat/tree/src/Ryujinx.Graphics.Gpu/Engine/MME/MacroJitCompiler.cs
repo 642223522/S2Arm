@@ -20,6 +20,7 @@ namespace Ryujinx.Graphics.Gpu.Engine.MME
         /// <summary>
         /// Creates a new instance of the Macro Just-in-Time compiler.
         /// </summary>
+        [System.Diagnostics.CodeAnalysis.RequiresDynamicCode("S2A：DynamicMethod 要动态代码；只由 MacroJit（同样标注）在 RuntimeFeature.IsDynamicCodeSupported 为真时用")]
         public MacroJitCompiler()
         {
             _meth = new DynamicMethod("Macro", typeof(void), [typeof(MacroJitContext), typeof(IDeviceState), typeof(int)

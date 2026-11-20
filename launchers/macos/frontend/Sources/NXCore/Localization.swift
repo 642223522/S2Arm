@@ -36,7 +36,9 @@ package struct Lang: Hashable, Sendable {
     /// test can pass in languages that exist only in a temporary folder.
     package static func detect(preferred: [String], among languages: [LocalizationFiles.Language]) -> Lang {
         guard let first = preferred.first?.lowercased() else { return .en }
-        return languages.first { $0.locales.contains { first.hasPrefix($0) } }.map { Lang($0.code) } ?? .en
+        // 取匹配最长的前缀：zh-Hant-TW 同时以 zh 和 zh-hant 开头，要落繁中而不是简中（11-14 加繁中）
+        let hits = languages.compactMap { l in l.locales.filter { first.hasPrefix($0) }.map(\.count).max().map { (l, $0) } }
+        return hits.max { $0.1 < $1.1 }.map { Lang($0.0.code) } ?? .en
     }
 
     /// The device language when a file has it, else English.
@@ -51,7 +53,7 @@ package struct Lang: Hashable, Sendable {
     package static func initial() -> Lang { initial(preferred: Locale.preferredLanguages) }
 
     /// 同上，系统首选语言由调用方给（单测模拟不同系统语言与重启）：设置里选过的优先，没选过 / 选了「跟随系统」按 preferred 认。
-    /// 规则（11-13，与 Windows LauncherLanguage、iOS 同口径）：系统是中文（简繁都算，繁中先落简中）→ 简中，其余 → 英文
+    /// 规则（11-14，与 Windows LauncherLanguage、iOS 同口径）：按系统首选语言挑有文案文件的那门（繁中系统 → 繁中），都没有 → 英文
     package static func initial(preferred: [String]) -> Lang {
         find(UserDefaults.standard.string(forKey: "appLanguage") ?? "") ?? detect(preferred: preferred, among: infos)
     }
@@ -80,7 +82,7 @@ package enum L10n {
 
     /// The text of `key` in `lang`, else the English text, else the key itself (it shows up in the UI rather than a blank control).
     package static func string(_ key: String, _ lang: Lang) -> String {
-        catalogs[lang.code]?[key] ?? catalogs["en"]?[key] ?? key
+        catalogs[lang.code]?[key] ?? (lang.code == "zh-Hant" ? catalogs["zh"]?[key] : nil) ?? catalogs["en"]?[key] ?? key   // 繁中缺键先回落简中
     }
 
     /// Every key has both languages and none is empty. Logged, never fatal.

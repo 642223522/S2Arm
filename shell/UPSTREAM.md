@@ -37,6 +37,10 @@
    | `Sources/ShellUI/ShellInputs.swift`、`ShellStyle.swift`、`Resources/Localizable.xcstrings` | `InstallStage.step` 加 4（等另一款装完）、5（正在整理游戏目录）与两条文案（七种语言） | 库起解包被拒时说清在等什么（iOS 装机剃刀 #46 / #47） | — |
    | `Sources/ShellUI/LibraryView.swift`、`PortraitLibrary.swift`、`CoverFlowView.swift`、`ShellSettingsView.swift` | 空库 / 竖屏左上角加 `LibraryVersionBadge`（与右上角按钮同高）；横屏顶栏「x / N」后加同一个；设置页底部版本行改读 `ShellVersion.display`。新增 `ShellVersion.swift` 为 S2Arm 自有实现 | 游戏库与设置页显示版本字（正式版 v0.3.0、开发版 v0.2.6-dev+ba0ef07，读 Info.plist 的 `S2ADisplayVersion`，电脑组装时由 `pack/jobs/core.py display_version` 写），玩家截图就能定版（11-11 维护者） | — |
    | `Sources/ShellUI/LibraryView.swift`、`PortraitLibrary.swift`、`CoverFlowView.swift`、`SideBar.swift`、`Resources/Localizable.xcstrings` | 竖屏 / 空库顶部版本字与右侧按钮并成一行（版本字先让位）；右侧按钮、横屏顶栏、侧边条在「手柄」前加 `PlayerChip`（侧边条按它多算一格高度）；字符串表加 14 条（七种语言）：Player、Switch player、Player 1、Who’s playing?、Add Player 等。新增 `ShellPlayers.swift`（`ShellPlayer` 环境值 + `PlayerChip`）为 S2Arm 自有实现，宿主没设 `shellPlayer` 时不画 | 本地玩家（#623，维护者 11-11）：游戏库顶部显示这次用谁的身份玩、点开切换（宿主层 `S2ArmShellHost/LocalPlayers.swift`、`S2ArmPlayersView.swift`） | — |
+   | `Package.swift`、`CoverFlowView.swift`、`PortraitLibrary.swift`、`LibraryView.swift`、`EdgeSwipeBack.swift`、`GameReordering.swift`、`TouchLayoutEditorView.swift`、`TouchLayoutEditorModel.swift`、`TouchControlsPreview.swift`（整文件 `#if !os(tvOS)`）；`SideBar.swift`（侧边条按钮）、`ButtonTestView.swift`（点按热区）、`GameDetailView.swift`（Slider）、`GameStateView.swift`（文字选取）、`SensorEdge.swift`、`ShellStyle.swift`（玻璃效果可用性加 tvOS 26、`ShellFonts.tvScale`、`tvFocusLift`）、`ShellFocus.swift`（tvOS 走系统焦点）、`ControllersView.swift`、`ShellSettingsView.swift`、`ChoicePicker.swift`、`PadMappingView.swift`、`DeleteGameView.swift`（局部 `#if os(tvOS)` / 宽度乘 `tvScale`）；新增 `TVLibraryView.swift`（S2Arm 自有，首页结构借 SwitchTV，MIT） | Apple TV 版：同一个包加 `.tvOS(.v17)`，电视上换成遥控器 / 手柄走系统焦点的 `TVLibraryView`，触屏专属的视图与设置项在 tvOS 上不编；iOS / macOS 编译结果与行为不变（`tvScale` 在 iOS 为 1） | — |
+   | `Resources/Localizable.xcstrings` | 加 1 条（九种语言）：Connect a controller in Bluetooth settings.（tvOS 手柄页空态，取原句前半句的现成译文） | 同上 | — |
+   | `Sources/ShellControllers/GamepadAdapter.swift` | `attach()` 里 `valueDidChangeHandler` 闭包 | 回调在手柄的 `handlerQueue` 上跑，游戏侧（`ios/controller.m` `prepare_pad`）把它设成输入队列后不在主线程，`MainActor.assumeIsolated` 直接陷阱（D-KDJX iPhone 信号 5，栈 `GamepadAdapter.attach` → `assumeIsolated`）。改成在投递队列上读快照、不在主线程就按序派回主线程 | `908e4e848fd232304381fc19d4d847fcc10fc4c2` |
+   | `Sources/ShellUI/ShellArtwork.swift` | `Artwork` 加只读 `public var cgImage` | 宿主层把封面交给主屏小组件（`S2ArmShellHost/WidgetExport.swift`，11-16）；上游的 `image` 是模块内可见 | — |
    门禁：`tests/shellui_ios_build_test.sh` 用门禁机上每个 Xcode 各编一遍 iOS Release（11-07 起）。
 
 ### 主页联机设置
@@ -85,3 +89,10 @@ DEVELOPER_DIR=<Xcode>/Contents/Developer swift test --scratch-path <产物目录
 - 资源：`S2ArmShellUI_ShellUI.bundle`（本地化 + 字体）拷到 `$(IOS_APP)/` 根（SwiftPM 的 `Bundle.module` 按主 bundle 根找）。
 - app.m：弱链接 `s2a_shell_library_vc` / `s2a_shell_set_play_handler`（本地声明，不 include 本目录的头，缺省出壳不读本目录）。多款容器（App 包根有 `s2a_catalogue.json` 与 `Games/`）时场景先挂库界面；Play → `s2a_launch_ctx_select(gid)` → 起局前检查 → 换游戏界面 → 现行起宿主；同进程第二次 Play 拒绝（一进程一款）。容器包配了不带库界面的壳 = 提示页、不起游戏。
 - 壳编号：出壳（`pack/shell_build.sh`）不收外部开关，按 `pack/stage_inputs/shell.tsv` 有没有「入	shell」行定 `S2A_SHELLUI`。表与表里的目录都进壳编号：开关、本目录源码一变壳编号必变，同一编号不会对应带 / 不带库界面两种壳；11-07 起壳输入表带这一行（多款容器真机门验过），本目录任何改动都改壳编号（壳与游戏无关：只要重出壳、各款重组装，不冷任何按款阶段）。`make ios` 本身缺省仍是 0（门禁 `tools/gate_ios.sh` 不编本目录）。
+
+## tvOS（Apple TV）
+
+- 编译：`xcodebuild -scheme S2ArmShellUI-Package -destination 'generic/platform=tvOS'`，要装了 tvOS 平台的 Xcode（本机 Xcode 27.1 / 27.0 有 tvOS 27.0 SDK；缺省的 Xcode 26.6 没装 tvOS 平台组件，报「tvOS 26.5 is not installed」）。
+- 库界面：`S2ArmShellHostView` 在 tvOS 上挂 `TVLibraryView`；焦点由系统焦点引擎移动，`ShellFocusTarget` 只画焦点框、按 iOS 同一套焦点 id 接「把焦点交给我」的请求。
+- 文档根：tvOS 不让写 Documents，容器文档根是 `<家>/Library/Caches/S2Arm`（`S2ArmShellHost/S2ArmContainer.swift`，与宿主 `runtime/include/s2a_docs.h` 的 `S2A_CONTAINER_DOCS_REL` 同值），资源包在 `<文档根>/games/<程序号>/资源包`。
+- 存档持久化：Caches 会被系统清、免费 Apple ID 没有 iCloud；云存档的「云端」在 tvOS 上换成本机偏好存储（`launchers/shared/SaveSync` 的 `DeviceSaveStore`，LZFSE 压缩、合计 900 KB 以内进偏好、超了落 `Library/Preferences/tv-saves/`；做法借 TVPort，MIT）。触发点同 iOS：起局前 `s2a_shell_cloud_sync_vc`、切后台 `s2a_shell_cloud_upload_background`。

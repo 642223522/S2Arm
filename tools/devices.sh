@@ -89,7 +89,7 @@ s2a_device() {
     if [ "${S2A_DEVICE_NO_USB_CHECK:-0}" != 1 ]; then
       _s2a_dc_seen "$(_s2a_dc_list)" "$udid" || { echo "【红】${name}（${udid}）devicectl 看不到（USB 和局域网都没连上），换一台或先把它连上" >&2; return 1; }
     fi
-    [ -n "${S2A_TEST_ROOT:-}" ] && { lock=$S2A_TEST_ROOT/$(basename "$lock"); bdir=$S2A_TEST_ROOT/battery; }   # 单测：锁与电量目录落临时目录，不碰真锁
+    [ -n "${S2A_TEST_ROOT:-}" ] && { lock=$S2A_TEST_ROOT/$(basename "$lock"); bdir=$S2A_TEST_ROOT/battery; export S2A_DEVLOCK_ROOT=$S2A_TEST_ROOT/devices; }   # 单测：锁与电量目录落临时目录，不碰真锁；按 UDID 推锁的设备锁实现（S2A_DEVLOCK_ROOT/<UDID>/device.lock）也落这里——否则同一假 UDID 的各组抢同一把锁，dev_run_test 37 组被排成串行（单次 2 分钟 → 15 分钟）
     mkdir -p "${lock%/*}" 2> /dev/null
     _s2a_own_note "$udid" "$lock" "$bdir"
     export SW_DEVICE=$cd SW_IOS_UDID=$udid DEVNAME=$name DEVNUM=$n DEVCLASS=$(_s2a_cls "$name" "$cls") SW_DEVLOCK_DIR=$lock SW_DEVLOCK_QUEUE=${lock%.lock}.queue SW_DEVBATTERY_LOCKS=$lock DEVBATTERY_DIR=$bdir
@@ -127,7 +127,7 @@ PY
       IFS=$'\t' read -r lock bdir < "$reg"; echo "【黄】${name}（${udid}）是登记过的测试设备：沿用它的设备锁 ${lock}，不另起一把" >&2
     else
       lock=${S2A_OWN_DEV_ROOT:-$HOME/.s2arm/devices}/$udid/device.lock; bdir=${lock%/*}/battery
-      [ -n "${S2A_TEST_ROOT:-}" ] && { lock=$S2A_TEST_ROOT/own_$udid.lock; bdir=$S2A_TEST_ROOT/battery; }
+      [ -n "${S2A_TEST_ROOT:-}" ] && { lock=$S2A_TEST_ROOT/own_$udid.lock; bdir=$S2A_TEST_ROOT/battery; export S2A_DEVLOCK_ROOT=$S2A_TEST_ROOT/devices; }
     fi
     mkdir -p "${lock%/*}" "$bdir"
     S2A_DEVICES="$S2A_DEVICES"$'\n'"own|$name|$udid|$cd|$lock|$bdir"

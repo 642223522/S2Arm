@@ -26,6 +26,7 @@ void s2a_android_frame_note(void);
 // 宿主测试：线程与判定的观测口，以及整套状态复位（必须在已停之后调）。
 uint64_t s2a_cpu_floor_test_ticks(void);        // 已完成的判定周期数（一个周期的全部事做完才加）
 uint64_t s2a_cpu_floor_test_last_tick_ns(void); // 最近一个已完成周期读到的时钟
+void s2a_cpu_floor_test_kick(void);             // 模拟时钟推进后叫醒托底线程
 int s2a_cpu_floor_test_active(void);
 void s2a_cpu_floor_test_reset(void);
 #endif

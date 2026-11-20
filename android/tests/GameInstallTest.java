@@ -427,6 +427,28 @@ public final class GameInstallTest {
         }
     }
 
+    // 本次放进来的文件放时已核过、不再重读；以前装过的共享对象当年只核了大小，新版本复用时照旧重算：
+    //   同样大小的坏内容被拒，current 不动
+    private static void sharedObjectRehashed() throws Exception {
+        File games = Files.createTempDirectory("s2a-install-shared").toFile();
+        File gameRoot = new File(games, "0100000000ABCDEF");
+        GameInstall.Result first = GameInstall.install(games, GameInstall.directory(pack("one\n")), null);
+        check(first.linked, "shared store in use (hard links work here)");
+        String sha = GamePack.sha256(new byte[4096]);
+        File object = new File(gameRoot, "objects/" + sha.substring(0, 2) + "/" + sha);
+        check(object.isFile() && object.setWritable(true), "shared object present");
+        try (java.io.RandomAccessFile f = new java.io.RandomAccessFile(object, "rw")) { f.write(1); }
+        check(object.length() == 4096, "corruption keeps the size");
+        try {
+            GameInstall.install(games, GameInstall.directory(pack("two\n")), null);
+            check(false, "corrupt shared object accepted");
+        } catch (IOException e) {
+            check(e.getMessage().contains("fails size / SHA-256"), "corrupt shared object: " + e.getMessage());
+        }
+        check(current(gameRoot).equals(first.contentRoot), "refused install leaves current unchanged");
+        GameInstall.deleteTree(games);
+    }
+
     public static void main(String[] args) throws Exception {
         if (args.length == 3 && "--locked-import-child".equals(args[0])) {
             File internal = new File(args[1]), external = new File(args[2]);
@@ -606,6 +628,7 @@ public final class GameInstallTest {
         check(!new File(plainRoot, "objects/" + packSha.substring(0, 2)).exists(), "no object store when linking is refused");
         check(BootContract.open(plainRoot).modules.size() == 1, "copied revision opens");
         GameInstall.deleteTree(plainGames);
+        sharedObjectRehashed();
 
         if (args.length == 1) {   // a package from tools/make_pack.py
             File real = Files.createTempDirectory("s2a-games-real").toFile();

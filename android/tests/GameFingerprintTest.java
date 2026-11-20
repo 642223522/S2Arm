@@ -99,6 +99,27 @@ public final class GameFingerprintTest {
         catch (IOException expected) { checks++; }
         check(java.util.Arrays.equals(before,Files.readAllBytes(game.resolve("current.json"))),"bad reused CAS leaves prior current");
     }
+    // 安装时放的同时已核过的文件：按落盘身份命中、不再重读；没有身份的（以前装过的共享对象）照旧重算，坏字节被拒
+    private static void placedStamps(Path app) throws Exception {
+        Path rev=Files.createDirectories(app.resolve("placed-rev"));
+        byte[] a="alpha".getBytes(StandardCharsets.UTF_8), b="beta!".getBytes(StandardCharsets.UTF_8);
+        Path pa=Files.write(rev.resolve("a"),a), pb=Files.write(rev.resolve("b"),b);
+        java.util.List<GamePack.Entry> entries=java.util.List.of(new GamePack.Entry("a",a.length,GamePack.sha256(a)),
+                                                                 new GamePack.Entry("b",b.length,GamePack.sha256(b)));
+        java.util.List<GameFingerprint.Stamp> placed=java.util.Arrays.asList(GameFingerprint.stat(pa.toFile()),null);
+        GameFingerprint.Verification v=GameFingerprint.verifyPlaced(rev.toFile(),entries,placed);
+        check(v.hits==1 && v.recalculated==1,"placed hit 1 / rehash 1, got "+v.hits+" / "+v.recalculated);
+        // 命中即不重读：原地改 a 的一个字节、保留大小 / 修改时间 / inode，仍然命中（单写者约定，见类注释）
+        FileTime ta=Files.getLastModifiedTime(pa);
+        try (java.io.RandomAccessFile f=new java.io.RandomAccessFile(pa.toFile(),"rw")) { f.write('A'); }
+        Files.setLastModifiedTime(pa,ta);
+        v=GameFingerprint.verifyPlaced(rev.toFile(),entries,placed);
+        check(v.hits==1 && v.recalculated==1,"placed file is not re-read, got "+v.hits+" / "+v.recalculated);
+        // 没给身份的文件换了同样大小的坏内容：重算后拒
+        Files.write(pb,"BETA!".getBytes(StandardCharsets.UTF_8));
+        try { GameFingerprint.verifyPlaced(rev.toFile(),entries,placed); throw new AssertionError("accepted corrupt unplaced file"); }
+        catch (IOException expected) { check(expected.getMessage().contains("fails size / SHA-256: b"),"unexpected refusal: "+expected.getMessage()); }
+    }
     public static void main(String[] args) throws Exception {
         Path app=Files.createTempDirectory("s2a-fingerprint-");
         try {
@@ -110,6 +131,7 @@ public final class GameFingerprintTest {
                 System.out.println("GameFingerprint corrupt-only: PASS");
                 return;
             }
+            placedStamps(app);
             Path game=GameSessionAdmissionTest.fixture(app);
             String root=(String)current(game).get("contentRoot");
             Path originalTable=table(game);

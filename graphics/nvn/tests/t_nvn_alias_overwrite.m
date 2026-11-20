@@ -36,7 +36,7 @@ int main(void) {
         // ①
         static tex_t A, B, C; make(&A, 0, 512); make(&B, 0, 520); make(&C, 0, 528);
         nvn_be_reg_tex(1, &A, NULL); __weak id<MTLTexture> wa;
-        @autoreleasepool { id<MTLTexture> a = use(&A, 1); wa = a; pthread_mutex_lock(&g_rmu); REQUIRE(tex_by_id(1) != nil); pthread_mutex_unlock(&g_rmu); }
+        @autoreleasepool { id<MTLTexture> a = use(&A, 1); wa = a; os_unfair_lock_lock(&g_rmu); REQUIRE(tex_by_id(1) != nil); os_unfair_lock_unlock(&g_rmu); }
         submit();
         id<MTLTexture> b0 = use(&B, 1); submit(); idle();
         uint64_t dead0 = g_alias_dead; use(&C, 0); submit();

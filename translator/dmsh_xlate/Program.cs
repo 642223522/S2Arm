@@ -8,7 +8,8 @@
 //   Job: [{ "key", "stage": "vs|ps|cs", "code": machine code file (graphics = 0x50-byte SPH + instructions, compute = instructions),
 //           "arch": "sm86" for Ampere code (NVN2, Switch 2: a 0x80-byte SPH and 128-bit instructions; absent = Maxwell), "nvn2_cs": NVN2 compute's c[0] layout (see Dsh.cs JobFor),
 //           "tex": { "slot": "2d|2darray|cube|cubearray|3d|buffer|1d|1darray|2dms|2dmsarray", ... }, "img": { "slot": { "type", "fmt" } },
-//           "attr": { "location": "float|sint|uint" }, "fout": { "target": "float|sint|uint" }, "local": [x, y, z] }]
+//           "attr": { "location": "float|sint|uint" }, "fout": { "target": "float|sint|uint" }, "local": [x, y, z],
+//           "gs_input_topology": a native (not compute-emulated) geometry shader's input primitive, InputTopology number (absent = triangles) }]
 //   Output: <key>.spv and <key>.res.json (offsets of storage buffer slots in c0, etc.; decoding texture handle → slot number is done in the script that builds the metallib;
 //           "fetch1d": the texture slots read by 1D integer fetches translated as wrapped 2D reads, see RecordTexelFetch1D; "fetch1d_exact": Ampere's form of them, rows sized by the host to the element count)
 using Ryujinx.Common.Memory;
@@ -75,11 +76,10 @@ static class SwshXlate
         public ReadOnlySpan<ulong> GetCode(ulong address, int minimumSize) => address >= (ulong)_code.Length ? default : MemoryMarshal.Cast<byte, ulong>(new ReadOnlySpan<byte>(_code)[(int)address..]);
         // 追不到槽的句柄（Ryujinx 回退 <阶段>_<t|s>_cb0_40000000）：采样贴图按整段编号读池（纹理号 20 位、采样器号 12 位，同上游参考实现（MIT）Program.cs），
         //   S2A.Dsh PoolArrays 把这两个数组改成指向宿主池表的指针（nvn_mtl.m pool_gpu）。原先写死 32：下标夹到 31、宿主第 k 项绑第 k 个贴图槽，
-        //   句柄指的贴图编号 ≥ 32 时读到别的贴图（时之笛 4,454 支、阴影深度比较）。贴图缓冲与图像仍按槽绑 32 项（QueryBindlessSlotArrayLength、nvn_mtl.m TEXD）
+        //   句柄指的贴图编号 ≥ 32 时读到别的贴图（时之笛 4,454 支、阴影深度比较）。贴图缓冲与图像同样按整段编号（宿主按元素类型分表）
         public int QuerySamplerArrayLengthFromPool() => 1 << 12;
         public int QueryTextureArrayLengthFromBuffer(int slot) => 32;
         public int QueryTextureArrayLengthFromPool() => 1 << 20;
-        public int QueryBindlessSlotArrayLength() => 32;
 
         string Get(string table, int slot) => _job[table] is JsonObject t && t[slot.ToString()] is JsonNode n ? (n is JsonObject o ? (string)o["type"] : (string)n) : null;
         // A handle's texture or image slot, numbered as dmsh_build.py decode_tex numbers the reflection's (so an answer table row names the slot the reflection shows): the handle ORs two
@@ -162,7 +162,9 @@ static class SwshXlate
             if (_job["fout"] is JsonObject f) foreach (var kv in f) fout[int.Parse(kv.Key)] = Attr((string)kv.Value);
             // tess_mode：曲面模式（3D 寄存器 TessMode 的打包值，NVN 控制段 +0x744，同 graphics/tools/shbake TessModeOf）：位 0–1 域、4–5 分区、8 顺时针；hull / domain 阶段由 dmsh_build.py 给，其余缺省三角 / 等距
             uint tm = _job["tess_mode"] is JsonNode tmn ? (uint)tmn : 1u;   // 缺省 1 = 三角、等距、逆时针（与原先写死的相同）
-            return new GpuGraphicsState(_job["early_z"] is JsonNode ez && (bool)ez /* 片元早期深度：控制段 +0x718 位 0（Dsh JobFor） */, _job["geometry_topology"] is JsonNode gt ? (InputTopology)(int)gt : InputTopology.Triangles, (tm & 0x100) != 0, (TessPatchType)(tm & 3), (TessSpacing)((tm >> 4) & 3),
+            // gs_input_topology：原生几何阶段（不转计算，安卓离线 Vulkan 库导出）的输入图元，按 InputTopology 编号；几何着色器的 SPIR-V 随它变（输入图元执行模式、输入数组长）
+            return new GpuGraphicsState(_job["early_z"] is JsonNode ez && (bool)ez /* 片元早期深度：控制段 +0x718 位 0（Dsh JobFor） */,
+                _job["geometry_topology"] is JsonNode gt ? (InputTopology)(int)gt : _job["gs_input_topology"] is JsonNode it ? (InputTopology)(int)it : InputTopology.Triangles, (tm & 0x100) != 0, (TessPatchType)(tm & 3), (TessSpacing)((tm >> 4) & 3),
                 false, false, false, false /* depth not rewritten: dmsh_build.py adds the GL entry point (see the file header) */, false, 1f, AlphaTestOp.Always, 0f, attr, false, fout, false,
                 false /* no Y flip */, true /* origin upper-left */, false);
         }
@@ -201,14 +203,17 @@ static class SwshXlate
     [System.Diagnostics.CodeAnalysis.DynamicDependency(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.NonPublicMethods, typeof(ResourceReservations))]   // the trimmed on-device translator (S2A.Dsh) keeps TryGetOffset for the reflection below
     static JsonArray GeometryOutOffsets(ResourceReservations rr)
     {
-        var asm = typeof(ResourceReservations).Assembly;
-        Type kind = asm.GetType("Ryujinx.Graphics.Shader.IntermediateRepresentation.StorageKind", true), io = asm.GetType("Ryujinx.Graphics.Shader.IntermediateRepresentation.IoVariable", true);
-        var mi = typeof(ResourceReservations).GetMethod("TryGetOffset", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic, null,
-            new[] { kind, io, typeof(int), typeof(int), typeof(int).MakeByRefType() }, null) ?? throw new MissingMethodException("ResourceReservations.TryGetOffset(StorageKind, IoVariable, int, int, out int)");
+        // The two internal enum types are read off TryGetOffset's own parameters (not Assembly.GetType by name: that is not trim-analyzable, IL2026 in the
+        //   NativeAOT dsh_batch / on-device builds); the method itself is kept by the DynamicDependency above
+        var mi = typeof(ResourceReservations).GetMethods(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+            .SingleOrDefault(m => m.Name == "TryGetOffset" && m.GetParameters() is var ps && ps.Length == 5 && ps[0].ParameterType.Name == "StorageKind" && ps[1].ParameterType.Name == "IoVariable"
+                && ps[2].ParameterType == typeof(int) && ps[3].ParameterType == typeof(int) && ps[4].ParameterType == typeof(int).MakeByRefType())
+            ?? throw new MissingMethodException("ResourceReservations.TryGetOffset(StorageKind, IoVariable, int, int, out int)");
+        Type kind = mi.GetParameters()[0].ParameterType, io = mi.GetParameters()[1].ParameterType;
         object output = Enum.Parse(kind, "Output");
         int Off(string v, int loc) { var a = new object[] { output, Enum.Parse(io, v), loc, 0, 0 }; return (bool)mi.Invoke(rr, a) ? (int)a[4] : -1; }
-        var r = new JsonArray { JsonValue.Create(Off("Position", 0)) };   // JsonValue.Create(int), not JsonArray.Add<T>: the trimmed on-device translator has no type info for Add<int>
-        for (int n = 0; n < 32; n++) r.Add(JsonValue.Create(Off("UserDefined", n)));
+        var r = new JsonArray { (JsonNode)JsonValue.Create(Off("Position", 0)) };   // JsonValue.Create(int), not JsonArray.Add<T>: the trimmed on-device translator has no type info for Add<int>
+        for (int n = 0; n < 32; n++) r.Add((JsonNode)JsonValue.Create(Off("UserDefined", n)));
         return r;
     }
 
@@ -232,8 +237,8 @@ static class SwshXlate
         S2Arm.Gfx.Widen.SpirvFetchScale.PatchY(p.BinaryCode, S2Arm.Gfx.Widen.WidenShaders.RenderScaleMember, out var legacyScales, out _, out bool exact);
         bool resolutionExact = S2Arm.Gfx.Widen.SpirvFetchScale.AnalyzeSizeTable(p.BinaryCode, S2Arm.Gfx.Widen.WidenShaders.RenderScaleMember, out var scales, out var analysisReasons);
         var a = new JsonArray(); var seen = new HashSet<(int, int, bool)>();
-        foreach (var scale in scales) if (seen.Add(scale)) a.Add(new JsonArray(JsonValue.Create(scale.Index), JsonValue.Create(scale.Binding), JsonValue.Create(scale.Image)));
-        foreach (var scale in legacyScales) if (seen.Add(scale)) a.Add(new JsonArray(JsonValue.Create(scale.Index), JsonValue.Create(scale.Binding), JsonValue.Create(scale.Image)));
+        foreach (var scale in scales) if (seen.Add(scale)) a.Add((JsonNode)new JsonArray(JsonValue.Create(scale.Index), JsonValue.Create(scale.Binding), JsonValue.Create(scale.Image)));
+        foreach (var scale in legacyScales) if (seen.Add(scale)) a.Add((JsonNode)new JsonArray(JsonValue.Create(scale.Index), JsonValue.Create(scale.Binding), JsonValue.Create(scale.Image)));
         res["tex_scales"] = a; res["scale_exact"] = exact;
         var reasons = new SortedSet<string>(StringComparer.Ordinal);
         foreach (string reason in analysisReasons) reasons.Add("unsupported_scaled_access:" + reason);
@@ -256,7 +261,7 @@ static class SwshXlate
     static void SetResolutionMetadata(JsonObject res, IEnumerable<string> reasons)
     {
         var unique = new SortedSet<string>(reasons, StringComparer.Ordinal);
-        var a = new JsonArray(); foreach (string reason in unique) a.Add(JsonValue.Create(reason));
+        var a = new JsonArray(); foreach (string reason in unique) a.Add((JsonNode)JsonValue.Create(reason));
         res["resolution_scale_abi"] = SupportBuffer.TextureSizeTableAbi;
         res["resolution_scale_exact"] = unique.Count == 0;
         res["resolution_scale_status"] = unique.Count == 0 ? "exact" : "legacy_1x";
@@ -347,7 +352,7 @@ static class SwshXlate
                     ["geometry_max_vertices"] = geometry ? p.Info.GeometryMaxOutputVertices : 0,   // the kernel's records per invocation: a passthrough geometry shader without host passthrough emits the input primitive's vertices (ShaderDefinitions.MaxOutputVertices), not the header's count
                     ["uses_frag_coord"] = p.Info.UsesFragCoord, ["frag_out_map"] = p.Info.FragmentOutputMap,
                 };
-                foreach (var b in p.Info.CBuffers) res["cbufs"].AsArray().Add(new JsonObject { ["binding"] = b.Binding, ["slot"] = b.Slot });
+                foreach (var b in p.Info.CBuffers) res["cbufs"].AsArray().Add((JsonNode)new JsonObject { ["binding"] = b.Binding, ["slot"] = b.Slot });
                 res["cbuf_use"] = CbufUseText(p);
                 FetchScales(p, res);
                 var resolutionReasons = new List<string>(acc.MissingResolutionFacts);
@@ -356,11 +361,11 @@ static class SwshXlate
                 if ((string)job["stage"] == "gs" || geometry) resolutionReasons.Add("unsupported_scaled_access:geometry_stage");
                 if ((string)job["stage"] is "hs" or "ds") resolutionReasons.Add("unsupported_scaled_access:tessellation_stage");
                 SetResolutionMetadata(res, resolutionReasons);
-                foreach (var b in p.Info.SBuffers) res["sbufs"].AsArray().Add(new JsonObject { ["binding"] = b.Binding, ["slot"] = b.Slot, ["cb_slot"] = b.SbCbSlot, ["cb_offset"] = b.SbCbOffset, ["flags"] = (int)b.Flags });
+                foreach (var b in p.Info.SBuffers) res["sbufs"].AsArray().Add((JsonNode)new JsonObject { ["binding"] = b.Binding, ["slot"] = b.Slot, ["cb_slot"] = b.SbCbSlot, ["cb_offset"] = b.SbCbOffset, ["flags"] = (int)b.Flags });
                 foreach (var (list, name) in new[] { (p.Info.Textures, "textures"), (p.Info.Images, "images") })
-                    foreach (var t in list) res[name].AsArray().Add(new JsonObject { ["binding"] = t.Binding, ["type"] = (int)t.Type, ["format"] = t.Format.ToString(), ["cbuf_slot"] = t.CbufSlot, ["handle"] = t.HandleIndex, ["array"] = t.ArrayLength, ["separate"] = t.Separate, ["flags"] = (int)t.Flags });
+                    foreach (var t in list) res[name].AsArray().Add((JsonNode)new JsonObject { ["binding"] = t.Binding, ["type"] = (int)t.Type, ["format"] = t.Format.ToString(), ["cbuf_slot"] = t.CbufSlot, ["handle"] = t.HandleIndex, ["array"] = t.ArrayLength, ["separate"] = t.Separate, ["flags"] = (int)t.Flags });
                 // 不用 Add<int>：玩家包宿主（NativeAOT）关了反射式 JSON，没有 int 的类型信息（同 GeometryOutOffsets；11-02 疯狂兔子兜底现编整批 NotSupportedException）
-                if (acc.Fetch1D.Count > 0) { var f1 = new JsonArray(); foreach (int h in acc.Fetch1D) f1.Add(JsonValue.Create(h)); res["fetch1d"] = f1; }
+                if (acc.Fetch1D.Count > 0) { var f1 = new JsonArray(); foreach (int h in acc.Fetch1D) f1.Add((JsonNode)JsonValue.Create(h)); res["fetch1d"] = f1; }
                 // Ampere's wrapped fetch takes its row width and count from the bound 2D form and reads 0 past W * H (InstEmitAmpereMem.cs, 11-04): the host binds a texture buffer there as exact rows
                 //   (W * H = element count, W a power of two when H > 1; nvn_mtl.m tbuf_as_2d). Maxwell's wrapped fetch keeps the fixed 16384-texel rows
                 if (acc.Fetch1D.Count > 0 && (string)job["arch"] == "sm86") res["fetch1d_exact"] = true;

@@ -13,10 +13,12 @@ import plistlib
 import re
 import shutil
 import stat
+import struct
 import sys
 import tempfile
 import warnings
 import zipfile
+import zlib
 
 if __package__ in (None, ''):
     # A normal script launch adds pack/ to sys.path: its pack.py would shadow
@@ -25,6 +27,7 @@ if __package__ in (None, ''):
         sys.path.pop(0)
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pack.shell.manifest import validate_download_paths
+from pack import widget_ext
 
 
 class BundleError(ValueError):
@@ -105,6 +108,7 @@ def _executable_paths(app, entries):
             result.add(rel)
         if directory and path.parent == app / 'Frameworks' and path.suffix == '.framework':
             result.add(_executable(_plist(path / 'Info.plist'), path).relative_to(app).as_posix())
+    result.update(widget_ext.executables(app))   # 主屏小组件扩展的程序（PlugIns/*.appex，11-16）：组装 / 打 IPA 都要保留可执行位
     return result
 
 
@@ -144,6 +148,8 @@ def update_metadata(app_dir, values):
     data = _metadata(_info(app), values)
     _executable(plistlib.loads(data), app)
     _atomic_write(app / 'Info.plist', data)
+    if values.get('CFBundleIdentifier'):   # 主包名变了：小组件扩展包名跟着改成 <主包名>.widget（苹果要求扩展包名以主包名开头）
+        widget_ext.retarget(app, values['CFBundleIdentifier'])
 
 
 def write_icons(icon_path, app_dir):
@@ -159,6 +165,8 @@ def write_icons(icon_path, app_dir):
         print(f'【黄】空图标 {icon}：不加 AppIcon，沿用系统缺省图标')
         return False
     app, _ = _tree(app_dir, unsigned=True)
+    if (app / 'Assets.car').is_file():   # tvOS 壳：主屏图标已编进 Assets.car（pack/tv_icon.py，tvOS 不认散装 PNG），不写、不覆盖 CFBundleIcons（#1457）
+        return False
     info = _info(app)
     try:
         from PIL import Image
@@ -259,27 +267,92 @@ def assemble(template_app, output_app, *, bundle_id, display_name, icon, metadat
             shutil.rmtree(temp)
 
 
-def _zip_entry(name, directory, executable=False):
-    entry = zipfile.ZipInfo(name)
-    entry.create_system = 3
-    mode = 0o755 if directory or executable else 0o644
-    kind = stat.S_IFDIR if directory else stat.S_IFREG
-    entry.external_attr = ((kind | mode) << 16) | (0x10 if directory else 0)
-    entry.compress_type = zipfile.ZIP_STORED if directory else zipfile.ZIP_DEFLATED
-    return entry
+# zip32 的三道物理闸，按侧载工具真实读法分开（不写 zip64：AltServer for Windows 1.8.1 自带 minizip 1.01e 不认 zip64，
+#   强制 zip64 时本地头写占位大小、与中央目录不一致，打开条目即 UNZ_BADZIPFILE，11-04 S0-5）：
+#   ① 条目数：中央目录计数是 16 位。
+#   ② 单条目字节：大小字段是无符号 32 位，minizip 也按无符号 uLong 读、按 uLong 计解压进度 → 4 GiB − 1。
+#   ③ 整份 IPA 的字节（= 任何本地头 / 中央目录的偏移上限）：minizip 1.01e 的 ioapi 用 C 的 fseek(long) / ftell 定位，
+#      Windows 上 long 是 32 位有符号 → 2 GiB − 1。
+#   Python zipfile 把 ②③ 合成一条 ZIP64_LIMIT（2 GiB − 1）：2.40 GiB 的 S2AImages.dylib 压缩后整份不到 2 GiB，
+#   照样被拒「单个文件超过 zip 32 位上限」（#636）。所以这里自己写 zip32 条目，两道闸各管各的。
+#   超了给一条带体积账的红行，不落裸 traceback（#11：父进程只拿得到退出码）。
+ZIP32_ENTRIES = 0xFFFF            # 条目数上限（65535）
+ZIP32_ENTRY_MAX = 0xFFFFFFFF      # 单条目原大小 / 压缩后大小上限（4 GiB − 1）
+ZIP32_ARCHIVE_MAX = 0x7FFFFFFF    # 整份 IPA 字节上限（2 GiB − 1）
+_DOS_EPOCH = (0, 0x21)            # 1980-01-01 00:00:00（与 zipfile.ZipInfo 默认时间相同：签后 IPA 不带构建时间）
 
 
-# 非 zip64 归档的物理上限（条目数 / 字节数）：侧载工具不认 zip64（见下面的注释），超了 zipfile 在写条目 / 收尾时才抛
-#   LargeZipFile——它不是 OSError，调用方（pack/ipa_tail.py 的「打 ipa」步）原先把整段原因丢掉，玩家的错误码只能落到
-#   package_failed「原因没认出来」（#11：9.78 GB 的 PERSONA4 The GOLDEN 停在出包 2/5）。那单的具体原因是哪一条以红行原文为准，
-#   这里只负责：真撞到上限时给一条读得懂的红行，不落成裸 traceback。
-ZIP32_MAX = zipfile.ZIP64_LIMIT              # 单条 / 整份字节上限（2 GiB − 1）
-ZIP32_ENTRIES = zipfile.ZIP_FILECOUNT_LIMIT  # 条目数上限（65535）
+class _ArchiveFull(BundleError):
+    """压缩后整份 IPA 过了 ZIP32_ARCHIVE_MAX；write_ipa 补上体积账再报。"""
+
+
+class _Zip32Writer:
+    """只写 zip32 的流式归档：本地头先写占位，数据写完回填 CRC / 两个大小（不用数据描述符，minizip 要本地头与中央目录逐项一致）。"""
+
+    def __init__(self, stream):
+        self.stream, self.central = stream, []
+
+    def _room(self, extra):
+        if self.stream.tell() + extra > ZIP32_ARCHIVE_MAX:
+            raise _ArchiveFull(f'整份超过 {ZIP32_ARCHIVE_MAX} 字节')
+
+    def _header(self, name, directory, executable):
+        raw = name.encode('utf-8')
+        flags = 0x800 if any(ord(c) > 127 for c in name) else 0
+        method, need = (0, 20) if directory else (8, 20)   # 2.0 = deflate、无 zip64（与原 zipfile 写法相同）
+        mode = 0o755 if directory or executable else 0o644
+        kind = stat.S_IFDIR if directory else stat.S_IFREG
+        attr = ((kind | mode) << 16) | (0x10 if directory else 0)
+        self._room(30 + len(raw))
+        offset = self.stream.tell()
+        self.stream.write(struct.pack('<IHHHHHIIIHH', 0x04034b50, need, flags, method, *_DOS_EPOCH, 0, 0, 0, len(raw), 0) + raw)
+        return dict(raw=raw, flags=flags, method=method, need=need, attr=attr, offset=offset, crc=0, csize=0, usize=0)
+
+    def add_dir(self, name):
+        self.central.append(self._header(name, True, False))
+
+    def add_file(self, name, source, executable):
+        entry = self._header(name, False, executable)
+        squeeze = zlib.compressobj(zlib.Z_DEFAULT_COMPRESSION, zlib.DEFLATED, -15)
+        crc = usize = 0
+        start = self.stream.tell()
+
+        def put(data):
+            self._room(len(data))
+            self.stream.write(data)
+
+        while chunk := source.read(1024 * 1024):
+            crc, usize = zlib.crc32(chunk, crc), usize + len(chunk)
+            if usize > ZIP32_ENTRY_MAX:
+                raise BundleError(f'单个文件超过 zip 32 位上限（{ZIP32_ENTRY_MAX} 字节）、侧载工具读不了：{name}')
+            put(squeeze.compress(chunk))
+        put(squeeze.flush())
+        end = self.stream.tell()
+        csize = end - start
+        if csize > ZIP32_ENTRY_MAX:
+            raise BundleError(f'单个文件压缩后超过 zip 32 位上限（{ZIP32_ENTRY_MAX} 字节）：{name}')
+        self.stream.seek(entry['offset'] + 14)
+        self.stream.write(struct.pack('<III', crc, csize, usize))
+        self.stream.seek(end)
+        entry.update(crc=crc, csize=csize, usize=usize)
+        self.central.append(entry)
+
+    def close(self):
+        directory = b''.join(
+            struct.pack('<IHHHHHHIIIHHHHHII', 0x02014b50, (3 << 8) | 20, e['need'], e['flags'], e['method'], *_DOS_EPOCH,
+                        e['crc'], e['csize'], e['usize'], len(e['raw']), 0, 0, 0, 0, e['attr'], e['offset']) + e['raw']
+            for e in self.central)
+        self._room(len(directory) + 22)
+        start = self.stream.tell()
+        self.stream.write(directory)
+        self.stream.write(struct.pack('<IHHHHIIH', 0x06054b50, 0, 0, len(self.central), len(self.central),
+                                      len(directory), start, 0))
+        self.stream.flush()
 
 
 def _zip32_budget(entries):
     """归档前的体积账（只 lstat，不读内容）：→ (条目数, 文件总字节, 最大的那个文件 (相对路径, 字节))。
-    条目数与单文件上限能提前判死；整份的字节上限取决于压缩后大小，写的时候才知道（见 write_ipa 的 LargeZipFile 分支）。"""
+    条目数与单条目上限能提前判死；整份的字节上限取决于压缩后大小，写的时候才知道（见 write_ipa 的 _ArchiveFull 分支）。"""
     count, total, biggest = 0, 0, ('', 0)
     for path, rel, directory in entries:
         count += 1
@@ -297,35 +370,34 @@ def write_ipa(signed_app, output_ipa):
     app, entries = _tree(signed_app)
     executable = _executable_paths(app, entries)
     count, total, (biggest, biggest_size) = _zip32_budget(entries)
-    if count > ZIP32_ENTRIES:
+    if count + 2 > ZIP32_ENTRIES:   # 另有 Payload/ 与 Payload/S2Arm.app/ 两个目录条目
         raise BundleError(f'App 有 {count} 个条目，超过非 zip64 归档的 {ZIP32_ENTRIES} 个上限（侧载工具读不了 zip64）')
+    if biggest_size > ZIP32_ENTRY_MAX:
+        raise BundleError(f'单个文件超过 zip 32 位上限（{ZIP32_ENTRY_MAX} 字节）、侧载工具读不了：{biggest}（{biggest_size} 字节）')
     dest = _destination(output_ipa, app)
     fd, name = tempfile.mkstemp(prefix='.ipa-', dir=dest.parent)
     temp = Path(name)
     try:
         try:
-            with os.fdopen(fd, 'w+b') as stream, zipfile.ZipFile(stream, 'w', allowZip64=False) as archive:
+            with os.fdopen(fd, 'w+b') as stream:
+                archive = _Zip32Writer(stream)
                 prefix = 'Payload/S2Arm.app/'
-                archive.writestr(_zip_entry('Payload/', True), b'')
-                archive.writestr(_zip_entry(prefix, True), b'')
+                archive.add_dir('Payload/')
+                archive.add_dir(prefix)
                 for path, rel, directory in entries:
-                    entry = _zip_entry(prefix + rel + ('/' if directory else ''), directory, rel in executable)
                     if directory:
-                        archive.writestr(entry, b'')
-                    else:
-                        before = _plain(path)
-                        # 不写 zip64（11-04 S0-5）：AltServer for Windows 1.8.1 自带 minizip 1.01e 不认 zip64，强制 zip64 时本地头写占位大小、与中央目录不一致，
-                        #   打开条目即 UNZ_BADZIPFILE，侧载报「An unknown error occured while reading the file」。单个文件到 zip 32 位上限就报红，不静默改写格式
-                        if before.st_size > ZIP32_MAX:
-                            raise BundleError(f'单个文件超过 zip 32 位上限、侧载工具读不了：{rel}（{before.st_size} 字节）')
-                        with path.open('rb') as source, archive.open(entry, 'w', force_zip64=False) as target:
-                            shutil.copyfileobj(source, target, length=1024 * 1024)
-                        after = _plain(path)
-                        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
-                            raise BundleError(f'归档期间文件变了：{rel}')
-        except zipfile.LargeZipFile as error:   # 压缩后装不下：给一条带体积账的红行，别让它变成裸 traceback（父进程只看得到退出码）
+                        archive.add_dir(prefix + rel + '/')
+                        continue
+                    before = _plain(path)
+                    with path.open('rb') as source:
+                        archive.add_file(prefix + rel, source, rel in executable)
+                    after = _plain(path)
+                    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                        raise BundleError(f'归档期间文件变了：{rel}')
+                archive.close()
+        except _ArchiveFull as error:   # 压缩后装不下：给一条带体积账的红行
             raise BundleError(f'非 zip64 的 IPA 装不下这份 App：{count} 个条目、文件合计 {total} 字节、最大 {biggest} {biggest_size} 字节；'
-                              f'zipfile 报「{error}」') from error
+                              f'{error}（侧载工具按 32 位有符号偏移读 IPA）') from error
         # Atomic no-replace publication on both hosts; no fallback that overwrites an existing IPA.
         try:
             os.link(temp, dest)

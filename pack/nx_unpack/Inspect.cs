@@ -66,11 +66,11 @@ static partial class P {
             for (int i = 2; i < args.Length; i++) if (args[i].StartsWith("--temp-dir=", StringComparison.Ordinal)) NczCore.TempDir = args[i].Substring(11);
             LoadTitleKeys(args[0], titleKeys);
             Index(args[2], inspect: true); Resolve();
-            var packages = new List<object>();
-            foreach (var open in Where.Values.ToArray()) {
+            var packages = new List<InspectPackage>();
+            foreach (var (metaId, open) in Where.ToArray()) {
                 var meta = new Nca(Ks, open());
                 if (meta.Header.ContentType != NcaContentType.Meta) continue;
-                var fs = meta.OpenFileSystem(0, IntegrityCheckLevel.ErrorOnInvalid);
+                Stage = $"导入检查：内容清单（内容 {metaId[..8]}）"; var fs = meta.OpenFileSystem(0, LevelOf(metaId));
                 foreach (DirectoryEntryEx entry in fs.EnumerateEntries("*.cnmt", SearchOptions.Default)) {
                     byte[] raw = InspectRead(fs, entry.FullPath, 1 << 20);
                     var m = new Cnmt(new MemoryStream(raw));
@@ -88,7 +88,7 @@ static partial class P {
                         // 一份清单引用多份 Control（10-25 #418 猎天使魔女3 整合样本：更新 CNMT 两份 Control，显示 1.2.0 / 1.1.0）：与正式解包（Program.cs Cid，FirstOrDefault）
                         //   取同一份——第一份；原先遍历到最后一份覆盖，两个入口显示版本不一样。份数记在 controls，调用方据它标「显示版本有歧义」
                         if (content.Type == ContentType.Control && controls++ == 0) {
-                            var control = nca.OpenFileSystem(NcaSectionType.Data, IntegrityCheckLevel.ErrorOnInvalid);
+                            Stage = $"导入检查：控制数据（内容 {id[..8]}）"; var control = nca.OpenFileSystem(NcaSectionType.Data, LevelOf(id));
                             byte[] nacp = InspectRead(control, "/control.nacp", 1 << 20);
                             if (nacp.Length < 0x3070) throw new IOException("Short NACP");
                             name = TitleName(nacp, 14) ?? TitleName(nacp, 0) ?? TitleName(nacp, -1) ?? "";
@@ -111,13 +111,16 @@ static partial class P {
                         //（0100152000022000：1.0 是 AArch32，4.0.1 更新是 AArch64；10-23 Spare-host 一键出包被误拒）。更新的读不出就记 unknown，由调用方退回看本体
                         if (content.Type == ContentType.Program && kind == "update") {
                             try {
-                                var ucode = nca.OpenFileSystem(NcaSectionType.Code, IntegrityCheckLevel.ErrorOnInvalid);
+                                Stage = $"导入检查：更新程序（内容 {id[..8]}）"; var ucode = nca.OpenFileSystem(NcaSectionType.Code, LevelOf(id));
                                 byte[] unpdm = InspectRead(ucode, "/main.npdm", 1 << 20);
                                 guestIsa = NpdmIsa(unpdm);
                             } catch (Exception error) when (error is not IOException io || !DiskFull(io)) { guestIsa = "unknown"; }
                         }
                         if (content.Type == ContentType.Program && kind == "base") {
-                            var code = nca.OpenFileSystem(NcaSectionType.Code, IntegrityCheckLevel.ErrorOnInvalid);
+                            // 修订版卡带的稀疏本体程序（SparseInfo.Generation != 0）裁掉了被板载更新替换的 ExeFS，单独打开会读出全 0 触发 2002-4644；
+                            //   跳过单独读本体 ExeFS（保留 guestIsa="unknown"），由同容器或另行导入的更新包提供程序位数（library.py / source_pick.py 均优先取更新）
+                            if (IsSparseSection(nca, NcaSectionType.Code)) continue;
+                            Stage = $"导入检查：本体程序（内容 {id[..8]}）"; var code = nca.OpenFileSystem(NcaSectionType.Code, LevelOf(id));
                             byte[] npdm = InspectRead(code, "/main.npdm", 1 << 20);
                             guestIsa = NpdmIsa(npdm);
                             if (guestIsa == "unknown") throw new IOException("Invalid NPDM");
@@ -136,18 +139,21 @@ static partial class P {
                     long contentBytes = m.ContentEntries.Where(c => Where.ContainsKey(Convert.ToHexString(c.NcaId).ToLowerInvariant())).Sum(c => c.Size);
                     // 本包在这个文件里的各 NCA 的 content ID（任天堂按内容算的哈希）：导入按它与文件大小定原件身份，不再整份读一遍算 SHA-256（玩家反馈「只是添加也要跑几分钟」）
                     string[] contentIds = m.ContentEntries.Select(c => Convert.ToHexString(c.NcaId).ToLowerInvariant()).Where(Where.ContainsKey).OrderBy(x => x, StringComparer.Ordinal).ToArray();
-                    packages.Add(new { titleId=m.TitleId.ToString("X16"),
-                        baseId=(kind == "base" ? m.TitleId : m.ApplicationTitleId).ToString("X16"),
-                        version=m.TitleVersion.Version, type=kind, name, englishName, display, builds, guestIsa, icon, controls, contentBytes, contentIds });
+                    packages.Add(new InspectPackage(m.TitleId.ToString("X16"),
+                        (kind == "base" ? m.TitleId : m.ApplicationTitleId).ToString("X16"),
+                        m.TitleVersion.Version, kind, name, englishName, display, builds, guestIsa, icon, controls, contentBytes, contentIds));
                 }
             }
             if (packages.Count == 0) throw new IOException("No application metadata");
-            json.WriteLine(JsonSerializer.Serialize(new { schema=1, packages })); json.Flush();
+            json.WriteLine(JsonSerializer.Serialize(new InspectResult(1, packages), InspectJsonContext.Default.InspectResult)); json.Flush();   // 源码生成（InspectJson.cs）：AOT 单文件没有反射序列化
             return 0;
         } catch (UsageError u) {
             // 我们自己的用法 / 参数错（如 --title-keys 指的路径不在）不是「容器读不出」，不混进退出码 3：
             //   调用方按 3 认「这个包解不开」，把自己的用法错误说成玩家的密钥问题就是误判（10-28 #633）
             Console.Error.WriteLine("🔴 " + u.Message); return 2;
+        } catch (Exception e) when (SkipAndRetry(e)) {
+            // 哈希不符不再判「读不出」（维护者 11-17 撤掉校验不过即拒绝，#1467）：只对出错那份内容跳过校验（SkipAndRetry 记下并打黄），重读一遍
+            Console.SetOut(json); return Inspect(args);
         } catch (Exception e) {
             // 这一句必须留在输出里：pack/jobs/library.py 按「could not be decrypted」/「Check keys」认「读不出」，退出码 3 是调用方契约。
             //   10-28 #633：原先只有这一句、原因全丢——缺密钥 / 缺票据 / 容器损坏 / 文件被截断在普查日志里长得一模一样，
@@ -155,6 +161,7 @@ static partial class P {
             Console.Error.WriteLine("Container metadata could not be decrypted or verified. Check keys, tickets and file integrity.");
             var (code, message) = Explain(e);
             Console.Error.WriteLine($"【原因 {code}】{message}");
+            KeyGenLine(code);
             if (Trace()) Console.Error.WriteLine(e.ToString());
             return 3;
         }

@@ -10,8 +10,10 @@
 本模块只做**枚举**：列出每个文件条目的 (包偏移, 包名, 文件哈希, 压缩方式, 长度, 数据偏移)。
 枚举不需要 Oodle 解码器；只有要取压缩条目的内容时才需要（那一步走游戏自带解码器，见 shader_split.oodle）。
 """
-import mmap
+import os
 import struct
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'nvn', 'tools')); import romfs_list   # 按路径读经 romfs_list（目录形态同 open；RomFS 不落散文件、只有镜像时从镜像读）
 
 ONEPACK = b'ONEPACK\0'
 COMP_STORED = 0
@@ -73,7 +75,7 @@ def describe(desc):
 
 def packs(path, desc):
     """从 .trpfs 头读包表 → [(包偏移, 包名, 描述表里的包字节)]"""
-    with open(path, 'rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as d:
+    with romfs_list.map_file(path) as d:
         if len(d) < 16 or d[:8] != ONEPACK:
             raise ValueError(f'{path}: 不是 ONEPACK（前 8 字节 {bytes(d[:8])!r}）')
         sr = fb_root(d, struct.unpack_from('<Q', d, 8)[0])
@@ -92,7 +94,7 @@ def packs(path, desc):
 
 def entries(path, off):
     """一个包的文件条目 → [(文件哈希, 压缩方式, 长度, 数据偏移)]"""
-    with open(path, 'rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as d:
+    with romfs_list.map_file(path) as d:
         pr = fb_root(d, off)
         hat, hn = fb_vec(d, pr, 0)
         hashes = struct.unpack_from(f'<{hn}Q', d, hat) if hn else ()
@@ -116,7 +118,7 @@ def entries(path, off):
 
 def walk(path, desc_path, limit=None):
     """逐包产出 (包偏移, 包名, [条目…])；limit 只走前 N 个包（大文件排查用）"""
-    desc = describe(open(desc_path, 'rb').read())
+    desc = describe(romfs_list.read_file(desc_path))
     for i, (off, name, size) in enumerate(packs(path, desc)):
         if limit is not None and i >= limit:
             return

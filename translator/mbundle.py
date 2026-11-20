@@ -4,14 +4,15 @@
 #   顶层是字典「文件名 → 数据对象」，文件内容就是那个数据对象的字节。与标准格式只差一处：尾部的顶层对象字段是去掉 8 字节文件头后的字节偏移，不是对象编号
 #   （Python 自带 plistlib 因此拒收）；尾部只有 26 字节（标准格式前 6 个空字节没有，偏移表紧接其前）：偏移宽、引用宽、u64 对象数、u64 顶层偏移、u64 偏移表位置，大端。
 # 只读索引与用到的条目（mmap，最大的包近 1 GB）。用法：mbundle.py list <包> [扩展名]   |   mbundle.py get <包> <文件名> <输出文件>
-import mmap, struct, sys
+import mmap, os, struct, sys
+# RomFS 按路径读（graphics/nvn/tools/romfs_list.py open_file / map_file）：盘上同 open / mmap；RomFS 不落散文件、只有 romfs.std 镜像时从镜像读
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'graphics', 'nvn', 'tools')); import romfs_list
 
 
 class Bundle:
     def __init__(self, path):
         self.path = path
-        with open(path, 'rb') as f:
-            self.m = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        self.m = romfs_list.map_file(path)
         d = self.m
         if len(d) < 40 or d[:8] != b'bplist00':
             raise ValueError(f'{path}：不是 mbundle（开头不是 bplist00）')

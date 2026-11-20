@@ -16,6 +16,12 @@ enum Brand {
 }
 
 enum AppSetup {
+    static func defaultWindowSize(displaySize: CGSize, visibleSize: CGSize) -> CGSize {
+        // Use the whole screen's height; only shrink further when a narrow display cannot fit 16:9.
+        let height = min(displaySize.height * 0.7, min(visibleSize.height, visibleSize.width * 9 / 16))
+        return CGSize(width: height * 16 / 9, height: height)
+    }
+
     /// 源码树根（由本文件位置推出）只编进调试版：发布版不带出包机的源码绝对路径（同旧启动器 Store.sourceTree）。
     static var sourceTree: URL? {
         #if DEBUG
@@ -34,7 +40,7 @@ enum AppSetup {
 
     static func environment() -> JobEnvironment {
         let privateRoot = dataRoot(CommandLine.arguments)
-        try? FileManager.default.createDirectory(at: privateRoot, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try? FileManager.default.createDirectory(at: privateRoot, withIntermediateDirectories: true)
         let resources: URL
         if let r = Bundle.main.resourceURL, Bundle.main.bundleURL.pathExtension == "app" || FileManager.default.fileExists(atPath: r.appendingPathComponent("Jobs/main.py").path) {
             resources = r
@@ -54,6 +60,7 @@ enum AppSetup {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        BackendText.preload()   // 文案资源启动时一次读完：Sparkle「更新并重启」换盘上 .app 时不再去读（0.5.1 退出崩溃）
         // --control（S2ARM_CONTROL=1）= AI / 测试驱动的实例：按后台辅助应用起——不进 Dock、不抢焦点（窗口照建：s2armctl snapshot 截它）。
         //   S2ARM_CONTROL=1 写进本进程环境，作业层据此让测试起局的 s2arm-host 静默崩溃（pack/jobs/core.py env）
         let args = CommandLine.arguments
@@ -66,20 +73,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
     }
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 }
 
 @main
 struct S2ArmAppleApp: App {
+    @Environment(\.openWindow) private var openWindow
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    @StateObject private var model = S2ArmLauncherModel(client: JobClient(environment: AppSetup.environment()))
+    // 用 @State 只保住同一个 model，不订阅它的变更：@StateObject 会让整个 App body（含应用菜单）在每次进度变化时重建，
+    //   展开着的子菜单会被关掉；窗口里的视图和更新菜单各自观察自己要的部分
+    @State private var model = S2ArmLauncherModel(client: JobClient(environment: AppSetup.environment()))
+
+    init() { BackendText.preload() }
 
     var body: some Scene {
-        WindowGroup(Brand.name) {
+        WindowGroup(Brand.name, id: "launcher") {
             S2ArmAppleRootView(model: model, brand: Brand.name)
         }
         .windowStyle(.hiddenTitleBar)
-        .defaultSize(width: 1280, height: 900)
+        .windowResizability(.contentMinSize)
+        .defaultWindowPlacement { _, context in
+            WindowPlacement(size: AppSetup.defaultWindowSize(displaySize: context.defaultDisplay.bounds.size,
+                                                             visibleSize: context.defaultDisplay.visibleRect.size))
+        }
         .commands {
             CommandGroup(replacing: .appInfo) {
                 Button("About \(Brand.name)") {
@@ -88,7 +104,19 @@ struct S2ArmAppleApp: App {
                         .credits: NSAttributedString(string: Brand.credits),
                     ])
                 }
+                Divider()
+                S2ArmUpdateMenu(model: model, activateWindow: activateLauncherWindow)
             }
+        }
+    }
+
+    private func activateLauncherWindow() {
+        NSApp.activate()
+        if let window = NSApp.windows.first(where: { $0.title == Brand.name && ($0.isVisible || $0.isMiniaturized) }) {
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            openWindow(id: "launcher")
         }
     }
 }

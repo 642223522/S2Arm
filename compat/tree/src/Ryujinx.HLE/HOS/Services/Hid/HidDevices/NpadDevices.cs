@@ -14,6 +14,7 @@ namespace Ryujinx.HLE.HOS.Services.Hid
     public class NpadDevices : BaseDevice
     {
         private const int NoMatchNotifyFrequencyMs = 2000;
+        private const ulong SixAxisSamplePeriodNs = 5_000_000;
         private int _activeCount;
         private long _lastNotifyTimestamp;
 
@@ -195,6 +196,10 @@ namespace Ryujinx.HLE.HOS.Services.Hid
         //   宿主虚拟手柄跟随游戏声明改接（掌机格 → Player1 Pro 等）在声明这一刻同步做完，同真机——掌机里握着的 Joy-Con 在声明时就归到它收的手柄号，
         //   游戏之后 ActivateNpad、建自己的手柄对象时看到的已是改好的连接。原先只靠输入泵 250 ms 轮询，改接落在游戏初始化中途任意时刻
         public static System.Action<Switch> S2ASupportedChanged;
+        // S2A（审计 P1-192）：Configure 只记配置，写进共享内存（SetupNpad）原先只在输入泵的 Update → Remap 里做，声明那次服务调用返回时游戏读到的仍是旧连接。
+        //   S2AApplyConfiguration 在调用线程上立刻 Remap 一次；它与输入泵的 Update 用同一把锁，两条线程不会同时写手柄共享内存
+        private readonly object _s2aUpdateLock = new();
+        public void S2AApplyConfiguration() { lock (_s2aUpdateLock) Remap(); }
         internal bool IsSupportedPlayer(PlayerIndex player) => (uint)player < (uint)_supportedPlayers.Length && _supportedPlayers[(int)player];
 
         internal IEnumerable<PlayerIndex> GetSupportedPlayers()
@@ -226,7 +231,10 @@ namespace Ryujinx.HLE.HOS.Services.Hid
 
                 ControllerType currentType = (ControllerType)Base(nPadsSpan[i].InternalState.StyleSet);
 
-                if (currentType != ControllerType.None && StyleSupported(npad, acceptedTypes) && _supportedPlayers[i])   // S2Arm：连着 Joy-Con 2 时只收 Joy-Con 2 位也算（手柄设置小程序原先判不收、游戏反复重开）
+                // S2Arm：连着 Joy-Con 2 时只收 Joy-Con 2 位也算（手柄设置小程序原先判不收、游戏反复重开）。
+                //   样式按游戏实际看到的那个判（Remap 已把 Pro / 双 Joy-Con 按游戏声明互换过）：配的是 Pro、游戏只收 掌机 / 双 Joy-Con 时
+                //   共享内存里已是双 Joy-Con，原先照配置表判 Pro 不收，小程序回 0 人（#1671）
+                if (npad != ControllerType.None && currentType != ControllerType.None && StyleSupported(currentType, acceptedTypes) && _supportedPlayers[i])
                 {
                     configuredCount++;
                     if (primaryIndex == PlayerIndex.Unknown)
@@ -270,6 +278,11 @@ namespace Ryujinx.HLE.HOS.Services.Hid
         }
 
         public void Update(IList<GamepadInput> states)
+        {
+            lock (_s2aUpdateLock) UpdateLocked(states);
+        }
+
+        private void UpdateLocked(IList<GamepadInput> states)
         {
             Remap();
 
@@ -488,6 +501,7 @@ namespace Ryujinx.HLE.HOS.Services.Hid
         {
             ref SixAxisSensorState previousEntry = ref lifo.GetCurrentEntryRef();
 
+            state.DeltaTime = SixAxisSamplePeriodNs;
             state.SamplingNumber = previousEntry.SamplingNumber + 1;
 
             lifo.Write(ref state);

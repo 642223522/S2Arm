@@ -47,6 +47,7 @@ static int fence_far(uint64_t lo, uint64_t hi, uint64_t *fenced) {
     }
     return clash;
 }
+static void far_tick_start(void);
 void s2a_far_set(uint64_t lo, uint64_t hi, uint64_t sh_lo, uint64_t sh_hi) {
     if (hi <= lo || sh_hi <= sh_lo) return;
     if (hi - lo > S2A_FAR_SPAN) hi = lo + S2A_FAR_SPAN;
@@ -63,7 +64,7 @@ void s2a_far_set(uint64_t lo, uint64_t hi, uint64_t sh_lo, uint64_t sh_hi) {
 #if TARGET_OS_OSX
     const char *le = getenv("S2A_FAR_LINEAR");
     if (!le || strcmp(le, "0")) {
-        void *p = mmap(NULL, hi - lo, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
+        void *p = mmap(NULL, hi - lo, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, S2A_VMTAG_FD(S2A_VMTAG_FAR), 0);
         if (p != MAP_FAILED && !((uint64_t)(uintptr_t)p & (CHUNK - 1))) g_lin = (uint64_t)(uintptr_t)p;
         else if (p != MAP_FAILED) {   // 内核给的不按 2 MiB 对齐：多占 2 MiB 再对齐（影子块与游戏块同对齐，块内偏移一致）
             munmap(p, hi - lo); p = mmap(NULL, hi - lo + CHUNK, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
@@ -77,6 +78,7 @@ void s2a_far_set(uint64_t lo, uint64_t hi, uint64_t sh_lo, uint64_t sh_hi) {
 #endif
     LOG("远端：开，远端 %#llx +%llu MB 的内容放影子区（与堆共用 %#llx +%llu MB，影子从顶往下 2 MiB 一块），游戏一碰远端地址即缺页代执行并记点；远端空洞占住 %llu MB、与宿主映射重叠 %d 段",
         (unsigned long long)lo, (unsigned long long)((hi - lo) >> 20), (unsigned long long)sh_lo, (unsigned long long)((sh_hi - sh_lo) >> 20), (unsigned long long)(fenced >> 20), clash);
+    far_tick_start();
 }
 // 游戏地址 → 影子地址；没分块回 NULL。[*gbeg, *gend) 回差值相同的连续游戏地址（本块向前后各并一块）：代执行允许的访存范围。
 //   跨块且两块影子不相邻的访存（巫师3 sdk+0x58763c 的 16 字节 stp 正好跨块界）走 s2a_far_fault 里的两页并排槽
@@ -89,6 +91,55 @@ static uint8_t *g2h(uint64_t a, uint64_t *gbeg, uint64_t *gend) {
     return (uint8_t *)(uintptr_t)(a + (uint64_t)d);
 }
 uint8_t *s2a_far_g2h(uint64_t a) { return g2h(a, NULL, NULL); }
+
+// ---------- 即时存档：远端按游戏地址存 / 取 ----------
+// 远端的内容在影子块里，影子块的宿主地址每个进程不同（堆区顶往下切、溢出时宿主任意地址、Mac 线性预留），目录存的是「影子 − 游戏」差值。
+//   存：逐个已分块的游戏 2 MiB 块，逐页记「游戏地址、当前权限、内容（全零不存）」——只有游戏地址，不含任何宿主地址；
+//   取：按游戏地址用本进程的分配器重新分影子（s2a_far_map）、写回内容、还原权限，目录随之重建。快照格式与宿主地址、分配方式无关，跨版本同样成立
+#include "snapfmt.h"
+// 窗口内堆区里的影子块范围（内存导出要跳过：那里的字节归远端管，按游戏地址另存）；没开远端 / 线性影子回 0
+int s2a_far_shadow_in_window(uint64_t *lo, uint64_t *hi) { if (!g_dir || g_lin || !g_sh_used) return 0; *lo = g_sh_hi - g_sh_used; *hi = g_sh_hi; return 1; }
+int s2a_snap_far_save(FILE *f) {
+    sfw w; sfw_sec(&w, f, "far", 1);
+    sfw_rec(&w); sfw_u64(&w, 1, g_dir ? g_lo : 0); sfw_u64(&w, 2, g_dir ? g_hi : 0); sfw_end_rec(&w);
+    uint64_t np = 0, nz = 0; static uint8_t zero[FPG];
+    for (uint64_t i = 0; g_dir && g_lo + i * CHUNK < g_hi; i++) {
+        int64_t d = atomic_load(&g_dir[i]); if (!d) continue;
+        for (uint64_t off = 0; off < CHUNK; off += FPG) {
+            uint64_t ga = g_lo + i * CHUNK + off; if (ga >= g_hi) break;
+            uint8_t *h = (uint8_t *)(uintptr_t)(ga + (uint64_t)d);
+            vm_address_t ra = (vm_address_t)(uintptr_t)h; vm_size_t rs = 0; vm_region_basic_info_data_64_t bi; mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64; mach_port_t ob;
+            if (vm_region_64(mach_task_self(), &ra, &rs, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&bi, &cnt, &ob) != KERN_SUCCESS || ra > (vm_address_t)(uintptr_t)h) continue;
+            if (!(bi.protection & VM_PROT_READ)) continue;   // 没给过游戏的页（块内只放开了请求覆盖的那些）
+            sfw_rec(&w); sfw_u64(&w, 50, 1); sfw_u64(&w, 1, ga); sfw_u64(&w, 2, (uint64_t)bi.protection);
+            if (memcmp(h, zero, FPG)) sfw_blob(&w, 3, h, FPG); else nz++;
+            sfw_end_rec(&w); np++;
+        }
+    }
+    LOG("即时存档：远端 %s，已给游戏的页 %llu 个（全零 %llu）", g_dir ? "开" : "没开", (unsigned long long)np, (unsigned long long)nz);
+    return sfw_end(&w);
+}
+int s2a_snap_far_load(FILE *f) {
+    sfr r; int rc = sfr_sec(&r, f, "far", 1);
+    if (rc || sfr_rec(&r) != 1) { LOG("【红】即时存档恢复：远端段读不了%s", rc == -2 ? "（格式比本版新）" : ""); sfr_done(&r); return -1; }
+    uint64_t lo = sfr_u64(&r, 1, 0), hi = sfr_u64(&r, 2, 0), np = 0, bad = 0;
+    if (lo && (!g_dir || lo != g_lo || hi != g_hi)) { LOG("【红】即时存档恢复：远端范围与快照时不同（快照 %#llx–%#llx，本局 %#llx–%#llx）", (unsigned long long)lo, (unsigned long long)hi, (unsigned long long)g_lo, (unsigned long long)g_hi); sfr_done(&r); return -1; }
+    for (;;) {
+        int t = sfr_rec(&r); if (t == 0) break; if (t < 0) { bad++; break; }
+        if (sfr_u64(&r, 50, 0) != 1) continue;
+        uint64_t ga = sfr_u64(&r, 1, 0); uint32_t prot = (uint32_t)sfr_u64(&r, 2, VM_PROT_READ | VM_PROT_WRITE);
+        if (ga < g_lo || ga + FPG > g_hi || s2a_far_map(ga, FPG)) { LOG("【红】即时存档恢复：远端页 %#llx 分不到影子", (unsigned long long)ga); bad++; break; }
+        uint8_t *h = g2h(ga, NULL, NULL); if (!h) { bad++; break; }
+        uint32_t n = 0; const void *c = sfr_get(&r, 3, &n);
+        if (c && n == FPG) memcpy(h, c, FPG); else memset(h, 0, FPG);
+        int pp = (prot & VM_PROT_READ ? PROT_READ : 0) | (prot & VM_PROT_WRITE ? PROT_WRITE : 0);
+        if (pp != (PROT_READ | PROT_WRITE) && mprotect(h, FPG, pp)) { bad++; break; }
+        np++;
+    }
+    sfr_done(&r);
+    LOG("%s即时存档恢复：远端页 %llu 个按游戏地址放回（本进程重新分影子、重建目录）", bad ? "【红】" : "", (unsigned long long)np);
+    return bad ? -1 : 0;
+}
 // 已分块里 [a, a+n) 的影子页：改保护前按宿主映射项（vm_region，项内保护一致）切段、记下各段原保护，放不开时逐段退回（P2-19 后续）。
 //   影子页原保护只有两种来源——给过（读写）、没给 / 还回（不可访问），但一次请求里两种可以交错，只能逐段取。持 g_mu
 typedef struct { uint64_t h, n; int prot; } far_run;
@@ -149,7 +200,7 @@ int s2a_far_map(uint64_t a, uint64_t n) {
         uint64_t at = g_sh_hi - g_sh_used - k * CHUNK, he = s2a_mem_heap_end();
         if (g_sh_used + k * CHUNK <= g_sh_hi - g_sh_lo && at >= he) g_sh_used += k * CHUNK;
         else {
-            void *p = s2a_guest_map_any(k * CHUNK); if (p == MAP_FAILED) p = mmap(NULL, k * CHUNK, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);   // 客体内存文件后备时影子块也走文件（vawin.c）
+            void *p = s2a_guest_map_any(k * CHUNK); if (p == MAP_FAILED) p = mmap(NULL, k * CHUNK, PROT_NONE, MAP_PRIVATE | MAP_ANON, S2A_VMTAG_FD(S2A_VMTAG_FAR), 0);   // 客体内存文件后备时影子块也走文件（vawin.c）
             if (p == MAP_FAILED) { int e0 = errno; runs_undo(rv, rm); free(rv); pthread_mutex_unlock(&g_mu); LOG("【红】远端：影子区与堆撞上且宿主地址也占不到（堆顶 %#llx，堆区影子 %llu MB、堆区外 %llu MB，本次要 %llu MB，errno=%d）", (unsigned long long)he, (unsigned long long)(g_sh_used >> 20), (unsigned long long)(g_ov_used >> 20), (unsigned long long)(k * CHUNK >> 20), e0); return -1; }
             if (!g_ov_used) LOG("远端：堆区影子余量用完（堆顶 %#llx，堆区影子 %llu MB），影子块改从宿主任意空闲地址分", (unsigned long long)he, (unsigned long long)(g_sh_used >> 20));
             at = (uint64_t)(uintptr_t)p; g_ov_used += k * CHUNK; ov = 1;
@@ -182,6 +233,29 @@ void s2a_far_release(uint64_t a, uint64_t n) {
 typedef struct { _Atomic uint64_t pc; _Atomic uint64_t n; _Atomic uint32_t cls; _Atomic uint32_t fail; } site_t;
 static site_t g_site[NSLOT];
 static _Atomic uint64_t g_faults, g_emul, g_skip, g_nsite, g_full, g_fail, g_cls_fail[10];
+// 逐秒账（#442 / D-DX74：Mac 大款玩久了内存池落进远端后掉到个位数帧，「慢在缺页代执行」要有直接读数）：远端开着就每秒醒一次，
+//   这一秒有缺页才打一行（游戏没碰远端时不出行，日志不涨）；和 [longframe] / 心跳同在一份日志里按时间对齐看。S2A_FAR_TICK=0 关
+static void *far_tick(void *arg) {
+    (void)arg; pthread_setname_np("s2a-far-tick");
+    uint64_t pf = 0, pe = 0, ps = 0, pfl = 0, pn = 0, sec = 0;
+    for (;;) {
+        sleep(1); sec++;
+        uint64_t f = atomic_load(&g_faults), e = atomic_load(&g_emul), s = atomic_load(&g_skip), fl = atomic_load(&g_fail), n = atomic_load(&g_nsite);
+        if (f != pf)
+            LOG("远端每秒 第 %llu 秒：缺页 %llu、代执行 %llu、跳过 %llu、失败 %llu、新访存点 %llu（累计缺页 %llu、访存点 %llu）", (unsigned long long)sec,
+                (unsigned long long)(f - pf), (unsigned long long)(e - pe), (unsigned long long)(s - ps), (unsigned long long)(fl - pfl), (unsigned long long)(n - pn), (unsigned long long)f, (unsigned long long)n);
+        pf = f; pe = e; ps = s; pfl = fl; pn = n;
+    }
+    return NULL;
+}
+static void far_tick_start(void) {
+    static atomic_flag once = ATOMIC_FLAG_INIT;
+    const char *e = getenv("S2A_FAR_TICK");
+    if ((e && !strcmp(e, "0")) || atomic_flag_test_and_set(&once)) return;
+    pthread_t t; pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
+    if (pthread_create(&t, &a, far_tick, NULL)) LOG("【黄】远端：逐秒账线程起不来（errno=%d），只在收局 / 崩溃时打总账", errno);
+    pthread_attr_destroy(&a);
+}
 static site_t *site_get(uint64_t pc) {
     uint32_t i = (uint32_t)((pc >> 2) * 0x9E3779B97F4A7C15ull >> 48) & (NSLOT - 1);
     for (uint32_t k = 0; k < NSLOT; k++, i = (i + 1) & (NSLOT - 1)) {
@@ -279,7 +353,7 @@ static uint8_t *pair_slot(const uint8_t *p1, const uint8_t *p2) {
     for (k = 0; k < NXS; k++, i = (i + 1) % NXS) { uintptr_t z = 0, cur = atomic_load(&g_xs[i].tid);
         if (cur == tid || (!cur && atomic_compare_exchange_strong(&g_xs[i].tid, &z, tid)) || z == tid) break; }
     if (k == NXS) return NULL;
-    if (!g_xs[i].p) { void *m = mmap(NULL, 2 * FPG, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0); if (m == MAP_FAILED) return NULL; g_xs[i].p = m; }
+    if (!g_xs[i].p) { void *m = mmap(NULL, 2 * FPG, PROT_NONE, MAP_PRIVATE | MAP_ANON, S2A_VMTAG_FD(S2A_VMTAG_FAR), 0); if (m == MAP_FAILED) return NULL; g_xs[i].p = m; }
     for (int j = 0; j < 2; j++) {
         vm_address_t a = (vm_address_t)(g_xs[i].p + j * FPG); vm_prot_t cur, max;
         if (vm_remap(mach_task_self(), &a, FPG, 0, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE, mach_task_self(), (vm_address_t)(j ? p2 : p1), FALSE, &cur, &max, VM_INHERIT_NONE) != KERN_SUCCESS

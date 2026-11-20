@@ -274,6 +274,9 @@ uint64_t gl_commit(void) {
     gl_end_enc();
     id<MTLCommandBuffer> cb = gl_cmd(); uint64_t v = ++g_ev_val;
     [cb encodeSignalEvent:gl_ev value:v];
+    // GPU 安全停：先判再挂回调（D-TMM9）。原先先 enter + 挂完成回调、停了再手动 leave，可不交的命令缓冲释放时 Metal 照样调完成回调，
+    //   同一次 enter 被 leave 两次 → dispatch_group_leave 陷阱（信号 5）。停了就不进组、不挂回调、不交
+    if (!mtl_gpu_go()) { g_cb = nil; return v; }
     dispatch_group_t completions = g_completions;
     dispatch_group_enter(completions);
     [cb addCompletedHandler:^(id<MTLCommandBuffer> c) {
@@ -284,7 +287,7 @@ uint64_t gl_commit(void) {
         while (done < v && !atomic_compare_exchange_weak_explicit(&g_done, &done, v, memory_order_release, memory_order_relaxed)) {}
         dispatch_group_leave(completions);
     }];
-    if (mtl_gpu_go()) [cb commit]; else dispatch_group_leave(completions);   // GPU 安全停：不交，完成回调不会来
+    [cb commit];
     g_cb = nil;
     return v;
 }
@@ -851,3 +854,38 @@ GLB(glWaitSync, void, GLsync sync, GLbitfield flags, GLuint64 timeout) { @autore
     id<MTLSharedEvent> e = (__bridge id<MTLSharedEvent>)f->ev; if (e.signaledValue >= f->val) return;
     gl_end_enc(); [gl_cmd() encodeWaitForEvent:e value:f->val];
 }}
+
+// ---------- 即时存档：排空 + 查询 / 同步对象 ----------
+int gl_snap_drain(void) {
+    if (!g_q) return 1;
+    uint64_t v = gl_commit(); gl_wait(v);
+    if (gl_ev.signaledValue < v) return 0;
+    return !g_completions || !dispatch_group_wait(g_completions, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+}
+// 查询：存档时全部结算（排空后都能结算），存目标与结果；进行中的查询（开着没结束）恢复后照原样算「开着」，计数从恢复后重新累计
+// 同步对象：排空后全部已到，恢复成「已到」（本层栅栏 seq 0；别的队列的栅栏不再引用那个事件）
+enum { GQ_NAME = 1, GQ_TARGET, GQ_ACTIVE, GQ_RESULT, GY_NAME = 1, GQ_ACT = 1 };
+int gl_draw_snap_save(FILE *f) {
+    sfw w; sfw_sec(&w, f, "gl.query", 1);
+    for (GLuint i = 1; i < g_queries.n; i++) { gl_query *q = g_queries.v[i]; if (!q) continue; if (!q->active) q_settle(q);
+        sfw_rec(&w); GLSF_W(&w, GQ_NAME, i); GLSF_W(&w, GQ_TARGET, q->target); GLSF_W(&w, GQ_ACTIVE, q->active); GLSF_W(&w, GQ_RESULT, q->result); sfw_end_rec(&w); }
+    if (sfw_end(&w)) return -1;
+    sfw_sec(&w, f, "gl.qact", 1); sfw_rec(&w); GLSF_W(&w, GQ_ACT, g_qactive); sfw_end_rec(&w); if (sfw_end(&w)) return -1;
+    sfw_sec(&w, f, "gl.sync", 1);
+    for (GLuint i = 1; i < g_syncs.n; i++) if (g_syncs.v[i]) { sfw_rec(&w); GLSF_W(&w, GY_NAME, i); sfw_end_rec(&w); }
+    return sfw_end(&w);
+}
+int gl_draw_snap_restore(FILE *f) {
+    sfr r; int bad = sfr_sec(&r, f, "gl.query", 1) != 0;
+    while (!bad && sfr_rec(&r) == 1) { GLuint nm = 0; GLSF_R(&r, GQ_NAME, nm); gl_query *q = calloc(1, sizeof *q); if (!nm || !q) { free(q); continue; }
+        GLSF_R(&r, GQ_TARGET, q->target); GLSF_R(&r, GQ_ACTIVE, q->active); GLSF_R(&r, GQ_RESULT, q->result); q->done = !q->active;
+        if (q->active) { q->s0 = q->s1 = g_vis_next; }
+        if (!gl_name_put(&g_queries, nm, q)) { free(q); bad = 1; } }
+    sfr_done(&r);
+    if (!bad && !sfr_sec(&r, f, "gl.qact", 1)) { while (sfr_rec(&r) == 1) GLSF_R(&r, GQ_ACT, g_qactive); } else bad = 1;
+    sfr_done(&r);
+    if (!bad && sfr_sec(&r, f, "gl.sync", 1)) bad = 1;
+    while (!bad && sfr_rec(&r) == 1) { GLuint nm = 0; GLSF_R(&r, GY_NAME, nm); gl_sync *y = calloc(1, sizeof *y); if (!nm || !y) { free(y); continue; } if (!gl_name_put(&g_syncs, nm, y)) { free(y); bad = 1; } }
+    sfr_done(&r);
+    return bad ? -1 : 0;
+}

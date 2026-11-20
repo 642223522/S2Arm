@@ -40,7 +40,7 @@ int main(int argc, char **argv) { @autoreleasepool {
         @"S2ANS2ProAdapterEnabled":@NO,@"S2APlayInSilentMode":@NO,@"S2AMixWithOthers":@NO,@"splitScreen":@"auto",@"screenOrientation":@"auto",@"S2ASaveManageOnOpen":@NO,@"S2ADiagExportOnOpen":@NO,@"S2ADevHUD":@NO,@"MetalHUDForceEnabled":@NO,
         @"S2AGraphicsModeText":@"unknown",@"S2ADirectLibVersionText":@"unknown",@"S2APackTimeText":@"unknown",@"S2ABuildIDText":@"unknown"};
     NSDictionary *values=@{@"S2AResolutionScale":@[@"0.5",@"0.75",@"1",@"1.5",@"2"],@"S2AAntiAliasing":@[@"None",@"SmaaMedium",@"SmaaHigh"],
-        @"S2AScalingFilter":@[@"Bilinear",@"Nearest"],@"S2AFrameRateLimit":@[@"30",@"60",@"120",@"0"],
+        @"S2AScalingFilter":@[@"Bilinear",@"Nearest",@"MetalFX",@"Fsr"],@"S2AFrameRateLimit":@[@"30",@"60",@"120",@"0"],
         @"splitScreen":@[@"auto",@"on",@"off"],@"screenOrientation":@[@"auto",@"landscape",@"portrait"]};
     NSDictionary *expected=@{@"Phone Gyro":@"手机陀螺仪",@"Docked Mode":@"主机模式",@"Anti-Aliasing":@"抗锯齿",@"Build ID":@"包号",
         @"1× (Native)":@"1×（原生）",@"Unlimited":@"不限",@"Unknown (shown after opening a game once)":@"未知（打开一次游戏后显示）"};

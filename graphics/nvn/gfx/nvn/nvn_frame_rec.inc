@@ -1,3 +1,4 @@
+// 系统库[nvntest]：-lcompression（贴图内容快照压缩 compression_encode_buffer / compression_decode_buffer；直连层单测链 libnvn.a 时带上）
 // 帧录放（10-31 维护者：满屏 / 画面改动不进游戏、不导航，录一帧反复回放出图）。nvn_mtl.m 末尾包含（要读回放层的静态表）。说明 graphics/nvn/docs/frame_replay.md。
 //
 // 录：S2A_FRAME_REC=<目录>，或 <出图次数>[,<出图次数>…]:<目录>。到点的那次 nvnQueuePresentTexture（hle_nvn.c 持提交锁调 nvn_frec_present）把这一帧落进 <目录>/<名>/：
@@ -135,6 +136,46 @@ static unsigned fr_bpp(MTLPixelFormat f) {
 enum { FR_TK_PLAIN = 0, FR_TK_MS = 1 };
 typedef struct { uint32_t bw, bh, bb, opt; } fr_plane;   // 块宽 / 块高 / 每块字节 / blit 选项（MTLBlitOption）
 typedef struct { uint64_t ser; uint32_t type, fmt, w, h, depth, layers, levels, kind, samples, nplane, pad; fr_plane pl[2]; uint64_t bytes; } fr_tex_hd;
+// 贴图内容压缩（即时存档 / 帧录共用）：hd.pad = 0 → 后面原样跟 hd.bytes 字节（旧文件都是这样）；非 0 → 后面跟 hd.pad 字节的分块压缩体：
+//   u32 块数 n、u32 各块压后长度 × n、各块 LZFSE 数据；每块原长 FR_CHUNK（最后一块可短）。分块是为了多核并行压 / 解——整张单线程压
+//   在冻结期间要 2.5 秒（大金刚 340 MB 显卡内容），分块后按核数摊开。显卡内容大片是同色 / 空白，三款实测整份 GPU 文件压到 1/20–1/30
+#include <compression.h>
+enum { FR_CHUNK = 256 << 10 };
+static int fr_w_tex(FILE *f, fr_tex_hd *hd, const void *p, uint64_t n) {
+    hd->bytes = n; hd->pad = 0;
+    uint32_t nc = n > 4096 && n < 0x7FFFFFFFull ? (uint32_t)((n + FR_CHUNK - 1) / FR_CHUNK) : 0;
+    uint8_t *c = nc ? malloc(n) : NULL; uint32_t *cl = nc ? calloc(nc, 4) : NULL; uint64_t tot = 0; int good = c && cl;
+    if (good) {
+        __block int bad = 0;
+        dispatch_apply(nc, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t k) {
+            uint64_t o = (uint64_t)k * FR_CHUNK, m = n - o < FR_CHUNK ? n - o : FR_CHUNK;
+            size_t r = compression_encode_buffer(c + o, m, (const uint8_t *)p + o, m, NULL, COMPRESSION_LZFSE);   // 每块写回自己那段（压后不比原长大才算）
+            if (!r || r >= m) __atomic_store_n(&bad, 1, __ATOMIC_RELAXED); else cl[k] = (uint32_t)r;
+        });
+        for (uint32_t k = 0; k < nc; k++) tot += cl[k];
+        good = !bad && 4 + 4ull * nc + tot < n;
+    }
+    if (good) hd->pad = (uint32_t)(4 + 4ull * nc + tot);
+    int ok = fr_w(f, hd, sizeof *hd);
+    if (ok && good) { ok = fr_w(f, &nc, 4) && fr_w(f, cl, 4ull * nc); for (uint32_t k = 0; ok && k < nc; k++) ok = fr_w(f, c + (uint64_t)k * FR_CHUNK, cl[k]); }
+    else if (ok) ok = fr_w(f, p, n);
+    free(c); free(cl); return ok;
+}
+static int fr_skip_tex(FILE *f, const fr_tex_hd *hd) { return fseeko(f, (off_t)(hd->pad ? hd->pad : hd->bytes), SEEK_CUR) == 0; }
+static int fr_r_tex(FILE *f, const fr_tex_hd *hd, void *dst) {
+    if (!hd->pad) return fr_r(f, dst, hd->bytes);
+    uint8_t *body = malloc(hd->pad); if (!body || !fr_r(f, body, hd->pad)) { free(body); return 0; }
+    uint32_t nc; memcpy(&nc, body, 4); uint64_t need = (hd->bytes + FR_CHUNK - 1) / FR_CHUNK;
+    if (nc != need || 4 + 4ull * nc > hd->pad) { free(body); return 0; }
+    uint64_t *off = malloc(8ull * (nc + 1)); if (!off) { free(body); return 0; }
+    off[0] = 4 + 4ull * nc; for (uint32_t k = 0; k < nc; k++) { uint32_t l; memcpy(&l, body + 4 + 4ull * k, 4); off[k + 1] = off[k] + l; }
+    __block int bad = off[nc] != hd->pad;
+    if (!bad) dispatch_apply(nc, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t k) {
+        uint64_t o = (uint64_t)k * FR_CHUNK, m = hd->bytes - o < FR_CHUNK ? hd->bytes - o : FR_CHUNK;
+        if (compression_decode_buffer((uint8_t *)dst + o, m, body + off[k], off[k + 1] - off[k], NULL, COMPRESSION_LZFSE) != m) __atomic_store_n(&bad, 1, __ATOMIC_RELAXED);
+    });
+    free(off); free(body); return !bad;
+}
 #define FR_GPU_MAGIC 0x32555047u   // gpu.bin 开头（「GPU2」）：旧录像没有，读到不认就整份不写回（旧录法缺这三类，要重录）
 static int fr_compressed(MTLPixelFormat f, fr_plane *p) {   // 压缩格式的块：BC / ETC2 / EAC / ASTC（LDR、sRGB、HDR）
     switch (f) {
@@ -230,8 +271,9 @@ static int fr_ms_write(id<MTLTexture> t, id<MTLBuffer> b) {
     return cb_run(cb) && !cb.error;
 }
 // 单采样贴图各面各级各层 ↔ 缓冲（to_buf 1 = 存，0 = 放回）
-static int fr_blit_planes(id<MTLTexture> t, const fr_tex_hd *hd, id<MTLBuffer> b, int to_buf) {
-    id<MTLCommandBuffer> cb = [g_q commandBuffer]; id<MTLBlitCommandEncoder> be = [cb blitCommandEncoder]; uint64_t off = 0;
+// 一张贴图各平面 / 层级 / 层的拷贝编进给定的拷贝编码器（不提交）：恢复时成批写回共用一条命令缓冲（nvn_snap.inc snap_put_pkg）
+static void fr_blit_planes_enc(id<MTLBlitCommandEncoder> be, id<MTLTexture> t, const fr_tex_hd *hd, id<MTLBuffer> b, int to_buf) {
+    uint64_t off = 0;
     for (uint32_t k = 0; k < hd->nplane; k++) { const fr_plane *p = &hd->pl[k];
         for (uint32_t l = 0; l < hd->levels; l++) for (uint32_t s = 0; s < hd->layers; s++) {
             NSUInteger w = MAX(1, hd->w >> l), h = MAX(1, hd->h >> l), d = MAX(1, hd->depth >> l), bpr = (w + p->bw - 1) / p->bw * p->bb, bpi = bpr * ((h + p->bh - 1) / p->bh);
@@ -239,6 +281,10 @@ static int fr_blit_planes(id<MTLTexture> t, const fr_tex_hd *hd, id<MTLBuffer> b
             else [be copyFromBuffer:b sourceOffset:off sourceBytesPerRow:bpr sourceBytesPerImage:bpi sourceSize:MTLSizeMake(w, h, d) toTexture:t destinationSlice:s destinationLevel:l destinationOrigin:MTLOriginMake(0, 0, 0) options:(MTLBlitOption)p->opt];
             off += (uint64_t)bpi * d;
         } }
+}
+static int fr_blit_planes(id<MTLTexture> t, const fr_tex_hd *hd, id<MTLBuffer> b, int to_buf) {
+    id<MTLCommandBuffer> cb = [g_q commandBuffer]; id<MTLBlitCommandEncoder> be = [cb blitCommandEncoder];
+    fr_blit_planes_enc(be, t, hd, b, to_buf);
     [be endEncoding];
     return cb_run(cb) && !cb.error;
 }
@@ -273,8 +319,7 @@ static int fr_dump_gpu(const char *path, uint64_t *bytes, int *skipped) {
         if (!b) { (*skipped)++; continue; }
         int ok = hd.kind == FR_TK_MS ? fr_ms_read(t, b) : fr_blit_planes(t, &hd, b, 1);
         if (!ok) { (*skipped)++; continue; }
-        hd.bytes = tot;
-        if (!fr_w(f, &hd, sizeof hd) || !fr_w(f, b.contents, tot)) { fclose(f); return -1; }
+        if (!fr_w_tex(f, &hd, b.contents, tot)) { fclose(f); return -1; }
         *bytes += tot; saved++;
     }
     return fclose(f) == 0 ? saved : -1;
@@ -291,7 +336,7 @@ static int fr_dump_state(const char *path) {
     pthread_mutex_lock(&g_mu);
     pools = malloc((size_t)(g_npool + 1) * sizeof *pools);
     for (int i = 0; pools && i < g_npool; i++) {   // 虚拟池的段不进这张表：回放由 vpool.bin 重建时登记（s2a_hle_vpool_load）
-        if (s2a_vp_arena_has && s2a_vp_arena_has((const void *)(uintptr_t)g_pools[i].lo, g_pools[i].hi - g_pools[i].lo)) continue;
+        if (g_pools[i].vpf || (s2a_vp_arena_has && s2a_vp_arena_has((const void *)(uintptr_t)g_pools[i].lo, g_pools[i].hi - g_pools[i].lo))) continue;   // vpf：虚拟池地址上的别名 / 副本（苹果宿主）；区里的：安卓那支的宿主预留
         pools[hd.npool++] = (fr_pool){g_pools[i].lo, g_pools[i].hi - g_pools[i].lo}; }
     pthread_mutex_unlock(&g_mu);
     pthread_mutex_lock(&g_smu);
@@ -304,12 +349,12 @@ static int fr_dump_state(const char *path) {
     pthread_mutex_lock(&g_cpu_tex_mu);
     if (g_cpu_tex.n) { uint64_t *c2 = realloc(cpu, (hd.ncpu + g_cpu_tex.n + 1) * 8); if (c2) { cpu = c2; for (uint32_t i = 0; i < g_cpu_tex.cap; i++) if (g_cpu_tex.vals[i]) memcpy(&cpu[hd.ncpu++], g_cpu_tex.keys + (size_t)i * 8, 8); } }
     pthread_mutex_unlock(&g_cpu_tex_mu);
-    pthread_mutex_lock(&g_rmu);
+    os_unfair_lock_lock(&g_rmu);
     tr = malloc((size_t)(g_ntreg + 1) * sizeof *tr);
     for (int i = 0; tr && i < g_ntreg; i++) if (g_treg[i].ok) { fr_treg *e = &tr[hd.ntreg++]; memset(e, 0, sizeof *e); e->tid = i; e->t = g_treg[i].t; e->has_v = g_treg[i].has_v; if (e->has_v) e->v = g_treg[i].v; }
     sr = malloc((size_t)(g_nsreg + 1) * sizeof *sr);
     for (int i = 0; sr && i < g_nsreg; i++) if (g_sreg_ok[i]) sr[hd.nsreg++] = (fr_sreg){i, g_sreg[i]};
-    pthread_mutex_unlock(&g_rmu);
+    os_unfair_lock_unlock(&g_rmu);
     hd.nxv = (uint32_t)g_xv_npresent;
     int ok = pools && live && cpu && tr && sr && fr_w(f, &hd, sizeof hd) && fr_w(f, pools, hd.npool * sizeof *pools) && fr_w(f, live, hd.nlive * 8) && fr_w(f, cpu, hd.ncpu * 8)
              && fr_w(f, tr, hd.ntreg * sizeof *tr) && fr_w(f, sr, hd.nsreg * sizeof *sr) && fr_w(f, g_xv_present, hd.nxv * 8);
@@ -422,6 +467,21 @@ static int fr_map_mem(const char *path, uint64_t wb, uint64_t ws, uint64_t *byte
     }
     if (ok && cur_hi > cur_lo && mmap((void *)cur_lo, cur_hi - cur_lo, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_FIXED, -1, 0) == MAP_FAILED) ok = 0;
     if (!ok) { MLOG("【红】 回放：映射游戏内存段失败（errno %d）", errno); fclose(f); return 0; }
+    // 补洞（11-15）：录像只记录时可读的映射段，录时没映射的地址（例：池销毁后解除映射，贴图登记里仍留着指向池对象的指针）回放时是空洞，
+    //   宿主一读就 SIGBUS（时之笛一帧：pool_tex_obj → tex_storage_live 读 p->magic 崩在 0x7447001068）。真机上游戏地址窗口一直有映射，读到的不是 POOL 就判失效。
+    //   所以窗口里没映射 / 只占了地址（PROT_NONE）的区间补成匿名零页：读到 0、判失效，和真机一致；已有映射的一律不动（同 fr_claimable）。匿名映射按需分配，不占实存
+    { uint64_t a = wb, end = wb + ws, filled = 0, nf = 0;
+      while (a < end) {
+          vm_address_t r = (vm_address_t)a; vm_size_t rs = 0; vm_region_basic_info_data_64_t info; mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64; mach_port_t obj = MACH_PORT_NULL;
+          int kr = vm_region_64(mach_task_self(), &r, &rs, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &cnt, &obj) == KERN_SUCCESS;
+          uint64_t lo = kr ? (uint64_t)r : end; if (lo > end) lo = end;
+          if (lo > a && mmap((void *)a, lo - a, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_FIXED, -1, 0) != MAP_FAILED) { filled += lo - a; nf++; }   // 没映射的空隙
+          if (!kr || lo >= end) break;
+          uint64_t s0 = lo > a ? lo : a, hi = (uint64_t)r + rs > end ? end : (uint64_t)r + rs;
+          if (info.protection == VM_PROT_NONE && hi > s0 && mmap((void *)s0, hi - s0, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_FIXED, -1, 0) != MAP_FAILED) { filled += hi - s0; nf++; }   // 只占了地址的
+          a = hi > a ? hi : a + (uint64_t)getpagesize();
+      }
+      if (nf) MLOG("回放：地址窗口里录时没映射的 %llu 段共 %llu MB 补成零页（读旧指针得 0、判失效，同真机）", (unsigned long long)nf, (unsigned long long)(filled >> 20)); }
     // 第二遍：内容。窗口外的（命令记录宿主块）按原地址映射，占不到原地址就报红
     fseek(f, pos, SEEK_SET);
     for (;;) {
@@ -491,9 +551,9 @@ static void fr_restore_gpu(const char *path, int *put, int *miss) {
         if (!t || t.width != hd.w || t.height != hd.h || t.depth != hd.depth || (uint32_t)t.pixelFormat != hd.fmt || fr_slices(t) != hd.layers || t.mipmapLevelCount != hd.levels || t.sampleCount != hd.samples) {
             if (*miss < 32) MLOG("回放：贴图 ser=%llu 没写回：录时 %ux%ux%u 格式 %u 级 %u 层 %u 采样 %u，回放存储 %s%lux%lux%lu 格式 %lu 级 %lu", (unsigned long long)hd.ser, hd.w, hd.h, hd.depth, hd.fmt, hd.levels, hd.layers, hd.samples,
                                  t ? "" : "（没建出）", (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.depth, (unsigned long)t.pixelFormat, (unsigned long)t.mipmapLevelCount);
-            fseeko(f, (off_t)hd.bytes, SEEK_CUR); (*miss)++; continue; }
+            fr_skip_tex(f, &hd); (*miss)++; continue; }
         id<MTLBuffer> b = [g_dev newBufferWithLength:hd.bytes options:MTLResourceStorageModeShared];
-        if (!b || !fr_r(f, b.contents, hd.bytes)) { (*miss)++; break; }
+        if (!b || !fr_r_tex(f, &hd, b.contents)) { (*miss)++; break; }
         if (hd.kind == FR_TK_MS ? fr_ms_write(t, b) : fr_blit_planes(t, &hd, b, 0)) (*put)++; else (*miss)++;
     }
     fclose(f);
@@ -565,9 +625,13 @@ int nvn_frame_replay(const char *dir) {
         uint64_t tk = nvn_be_present(pt, period, crop[2] || crop[3] ? crop : NULL);
         nvn_be_present_wait(tk); mtl_finish_gpu();
         uint64_t nd = dr1 - dr0;
+        // 本遍 GPU 独占时间（gpu_tag_done 按帧号累加，同局里 frames.tsv 的 gpu_us）：完成回调可能晚于 mtl_finish_gpu 返回，等本遍各份回报完（至多 200 ms）
+        uint64_t gf = base_frame + (uint64_t)it; unsigned gk = gf % GRING;
+        for (int w = 0; w < 200 && atomic_load(&g_gpu[gk].frame) == gf && atomic_load(&g_gpu[gk].pending) > 0; w++) usleep(1000);
+        double gms = atomic_load(&g_gpu[gk].frame) == gf ? atomic_load(&g_gpu[gk].ns) / 1e6 : -1;
         // 周期数（本线程自己跑的 CPU 周期，不含被抢占、不随别的进程起伏）：tools/frame_bench.sh 拿它比编译参数，墙钟 ms 在多会话共用的机器上波动超 3%
-        MLOG("回放第 %d / %d 遍：%llu 遍渲染、%llu 笔绘制，提交线程 %.2f ms、%llu 条指令、%llu 个周期%s", it + 1, N, (unsigned long long)(ps1 - ps0), (unsigned long long)nd, (w1 - w0) / 1e6,
-             (unsigned long long)(c1[0] - c0[0]), (unsigned long long)(c1[1] - c0[1]), nd ? [NSString stringWithFormat:@"，每笔 %.1fk 条指令", (double)(c1[0] - c0[0]) / nd / 1000].UTF8String : "");
+        MLOG("回放第 %d / %d 遍：%llu 遍渲染、%llu 笔绘制，提交线程 %.2f ms、%llu 条指令、%llu 个周期%s；GPU %.3f ms", it + 1, N, (unsigned long long)(ps1 - ps0), (unsigned long long)nd, (w1 - w0) / 1e6,
+             (unsigned long long)(c1[0] - c0[0]), (unsigned long long)(c1[1] - c0[1]), nd ? [NSString stringWithFormat:@"，每笔 %.1fk 条指令", (double)(c1[0] - c0[0]) / nd / 1000].UTF8String : "", gms);
         if (it == 0) { int put = 0, miss = 0; snprintf(p, sizeof p, "%s/gpu.bin", dir); fr_restore_gpu(p, &put, &miss); MLOG("回放：GPU 私有贴图写回 %d 张（尺寸 / 格式对不上没写 %d 张，靠重画）", put, miss); }
     }
     for (int i = 0; i < 500 && !__atomic_load_n(&grabbed, __ATOMIC_ACQUIRE); i++) usleep(10000);

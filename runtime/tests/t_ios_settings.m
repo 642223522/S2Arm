@@ -15,6 +15,7 @@ static NSString *const keys[] = {@"S2AResolutionScale", @"S2AAntiAliasing", @"S2
 static void clear_environment(void) {
     for (size_t i = 0; i < 4; i++) unsetenv(variables[i]);
     unsetenv("S2A_WIDESCREEN"); unsetenv("S2A_FPS60"); unsetenv("S2A_CPATCH_ON"); unsetenv("S2A_DOCKED"); unsetenv("MTL_HUD_ENABLED");
+    unsetenv("S2A_AUDIO_DEVICE"); unsetenv("S2A_AUDIO_VS_SPEAKERS"); unsetenv("S2A_AUDIO_VS_HEADPHONES");   // 输出设备类型 + 两个虚拟环绕开关（#189 后续，5.1 虚拟环绕第二片）
 }
 
 static int reload_checks(BOOL explicit) {
@@ -141,6 +142,12 @@ int main(int argc, char **argv) {
             [d setBool:NO forKey:@"MetalHUDForceEnabled"]; s2a_ios_apply_overlay_settings(d);
             check([d objectForKey:@"MetalForceHudEnabled"] == nil, @"Metal 浮层：开关关 → 系统键删掉");
             [d removePersistentDomainForName:suite]; unsetenv("MTL_HUD_ENABLED");
+            // #1148：系统键来自删不掉的域（这里用注册缺省模拟 LiveContainer 下的情形）、开关关着时，任何偏好变更都不许「删 → 通知 → 再删」无限递归撑爆栈
+            NSUserDefaults *std = NSUserDefaults.standardUserDefaults; BOOL was = [std boolForKey:@"MetalHUDForceEnabled"];
+            [std setBool:NO forKey:@"MetalHUDForceEnabled"]; [std registerDefaults:@{@"MetalForceHudEnabled": @YES}];
+            [std setInteger:1 forKey:@"t_ios_settings.hud.poke"];   // 发一次变更通知；没有重入闸这里就栈溢出崩掉
+            check([std objectForKey:@"MetalForceHudEnabled"] != nil, @"Metal 浮层：系统键删不掉（注册缺省）时变更通知不递归、进程还活着");
+            [std removeObjectForKey:@"t_ios_settings.hud.poke"]; [std setBool:was forKey:@"MetalHUDForceEnabled"]; [std registerDefaults:@{@"MetalForceHudEnabled": @NO}];
         }
         {   // 开发设施开关（settings.m s2a_dev_plist_from，os.c s2a_dev_on 按名字取）：有键回 1，"0" 开头为关；没有键 / 非字符串 / 空串回 0（= 没有这个键）
             int s2a_dev_plist_from(NSDictionary *info, int *on); int on = -1;
@@ -310,6 +317,43 @@ int main(int argc, char **argv) {
             setenv("S2A_HUD", "0", 1); clear_environment();
             s2a_ios_apply_graphics_settings(a); check(!strcmp(getenv("S2A_HUD"), "0"), @"显式 S2A_HUD=0 优先于开关");
             unsetenv("S2A_HUD"); [a removeObjectForKey:@"S2ADevHUD"];
+        }
+
+        // 输出设备类型 + 两个虚拟环绕开关（#189 后续，5.1 虚拟环绕第二片）：按游戏存的 S2AAudioDevice / S2AAudioVsSpeakers /
+        //   S2AAudioVsHeadphones（游戏库每款设置页经 ios/game_options.m 写）→ S2A_AUDIO_*（compat/tree 的 Apple 后端读）。
+        //   没选过不设（= auto 按设备真实声道判，5.1 直通缺省不变）；开关只转拨过的（开 1 / 关 0，各存各的、只在对应显式
+        //   类型下生效——驱动侧判）；启动环境显式给的优先；非法值不转。起局语义按新进程走，每步先清环境
+        {
+            [a removeObjectForKey:@"S2AAudioDevice"]; [a removeObjectForKey:@"S2AAudioVsSpeakers"]; [a removeObjectForKey:@"S2AAudioVsHeadphones"];
+            clear_environment();
+            s2a_ios_apply_graphics_settings(a);
+            check(getenv("S2A_AUDIO_DEVICE") == NULL && getenv("S2A_AUDIO_VS_SPEAKERS") == NULL && getenv("S2A_AUDIO_VS_HEADPHONES") == NULL,
+                  @"没选过、没拨过：不设任何 S2A_AUDIO_*（= auto 按设备真实声道判，5.1 直通缺省不变）");
+            [a setObject:@"builtin" forKey:@"S2AAudioDevice"];
+            clear_environment();
+            s2a_ios_apply_graphics_settings(a);
+            check(getenv("S2A_AUDIO_DEVICE") && !strcmp(getenv("S2A_AUDIO_DEVICE"), "builtin"), @"选了内置扬声器：S2A_AUDIO_DEVICE=builtin");
+            [a setObject:@"bogus" forKey:@"S2AAudioDevice"];
+            clear_environment();
+            s2a_ios_apply_graphics_settings(a);
+            check(getenv("S2A_AUDIO_DEVICE") == NULL, @"非法值不转（游戏库侧已拒收，这里再拦一道）");
+            [a setObject:@"headphones" forKey:@"S2AAudioDevice"];
+            clear_environment();
+            s2a_ios_apply_graphics_settings(a);
+            check(getenv("S2A_AUDIO_DEVICE") && !strcmp(getenv("S2A_AUDIO_DEVICE"), "headphones"), @"选了耳机：S2A_AUDIO_DEVICE=headphones");
+            setenv("S2A_AUDIO_DEVICE", "external", 1);
+            s2a_ios_apply_graphics_settings(a);
+            check(!strcmp(getenv("S2A_AUDIO_DEVICE"), "external"), @"启动环境显式给的优先于按游戏存的值");
+            [a setBool:YES forKey:@"S2AAudioVsSpeakers"]; [a setBool:NO forKey:@"S2AAudioVsHeadphones"];
+            clear_environment();
+            s2a_ios_apply_graphics_settings(a);
+            check(getenv("S2A_AUDIO_VS_SPEAKERS") && !strcmp(getenv("S2A_AUDIO_VS_SPEAKERS"), "1") &&
+                  getenv("S2A_AUDIO_VS_HEADPHONES") && !strcmp(getenv("S2A_AUDIO_VS_HEADPHONES"), "0"),
+                  @"拨过的开关照拨的值转（开 1 / 关 0，各存各的）");
+            setenv("S2A_AUDIO_VS_HEADPHONES", "1", 1);
+            s2a_ios_apply_graphics_settings(a);
+            check(!strcmp(getenv("S2A_AUDIO_VS_HEADPHONES"), "1"), @"显式 S2A_AUDIO_VS_HEADPHONES=1 优先于按游戏存的值");
+            [a removeObjectForKey:@"S2AAudioDevice"]; [a removeObjectForKey:@"S2AAudioVsSpeakers"]; [a removeObjectForKey:@"S2AAudioVsHeadphones"];
         }
 
         // 缺口扫描族 2：设置页「完成」时掌机 / 主机运行中直接切（返回要切的值，交 s2a_console_mode_set），不算重启项；别的画面设置变了照旧要重启
@@ -625,21 +669,39 @@ int main(int argc, char **argv) {
             NSString *caps = [bundle stringByAppendingPathComponent:@"s2a_caps.tsv"], *ctsv = [bundle stringByAppendingPathComponent:@"cpatch.tsv"];
             [plain writeToFile:caps atomically:YES encoding:NSUTF8StringEncoding error:nil];
             setenv("S2A_LAUNCH_GAME_ID", "G9", 1);
-            for (int k = 0; k < 2; k++) {
+            // 11-15 维护者「没补丁的游戏手动打开满屏就走咱们通用方案」：旧键转成满屏明确开、没有自适应满屏补丁 → 我方通用满屏（VERIFIED / WIDESCREEN 都是 1），
+            //   不再看 S2A_CAPS_OWN（k 0 没设、k 2 设了，结果一样）；k 1 有自适应满屏补丁 → 补丁铺满、S2Arm 让开
+            for (int k = 0; k < 3; k++) {
                 [g9 removePersistentDomainForName:@"S2AGame.G9"];
-                if (k) { [tsv writeToFile:ctsv atomically:YES encoding:NSUTF8StringEncoding error:nil]; s2a_ios_set_fullscreen(nil, YES); }
+                if (k == 1) { [tsv writeToFile:ctsv atomically:YES encoding:NSUTF8StringEncoding error:nil]; s2a_ios_set_fullscreen(nil, YES); }
                 else [g9 setBool:YES forKey:@"S2AWidenForce"];
                 clear_environment(); unsetenv("S2A_WIDEN_VERIFIED"); unsetenv("S2A_WIDEN_CAPS");
+                if (k == 2) setenv("S2A_CAPS_OWN", "1", 1); else unsetenv("S2A_CAPS_OWN");
+                if (k == 2) [NSFileManager.defaultManager removeItemAtPath:ctsv error:nil];   // k 1 写的自适应满屏补丁表别留到旧口径那轮
                 s2a_ios_load_graphics_settings();
                 const char *v = getenv("S2A_WIDEN_VERIFIED"), *ws = getenv("S2A_WIDESCREEN"), *cpo = getenv("S2A_CPATCH_ON");
                 NSString *(^val)(const char *) = ^(const char *e) { return e ? @(e) : @"未设"; };
                 NSString *got = [NSString stringWithFormat:@"VERIFIED=%@ WIDESCREEN=%@ CPATCH_ON=%@", val(v), val(ws), val(cpo)];
-                NSString *want = k ? @"VERIFIED=未设 WIDESCREEN=0 CPATCH_ON=wsauto:fam" : @"VERIFIED=1 WIDESCREEN=1 CPATCH_ON=未设";
-                check([got isEqual:want] && (k || ([g9 boolForKey:@"S2AWidescreen"] && ![g9 objectForKey:@"S2AWidenForce"])),
-                      [NSString stringWithFormat:@"起局满屏%@：期望 %@ → 真结果 %@", k ? @"（有自适应满屏补丁）" : @"（旧键宽屏强制启用）", want, got]);
+                NSString *want = k == 1 ? @"VERIFIED=未设 WIDESCREEN=0 CPATCH_ON=wsauto:fam" : k == 2 ? @"VERIFIED=1 WIDESCREEN=1 CPATCH_ON=未设" : @"VERIFIED=1 WIDESCREEN=1 CPATCH_ON=未设";
+                check([got isEqual:want] && (k == 1 || ([g9 boolForKey:@"S2AWidescreen"] && ![g9 objectForKey:@"S2AWidenForce"])),
+                      [NSString stringWithFormat:@"起局满屏%@：期望 %@ → 真结果 %@", k == 1 ? @"（有自适应满屏补丁）" : k == 2 ? @"（旧键宽屏强制启用，旧口径）" : @"（旧键宽屏强制启用，没设旧口径径不强开）", want, got]);
             }
             [g9 removePersistentDomainForName:@"S2AGame.G9"]; unsetenv("S2A_LAUNCH_GAME_ID"); unsetenv("S2A_WIDEN_VERIFIED"); unsetenv("S2A_WIDEN_CAPS");
             [NSFileManager.defaultManager removeItemAtPath:caps error:nil]; [NSFileManager.defaultManager removeItemAtPath:ctsv error:nil];
+        }
+        {   // #1209：导入合成的 control.nacp（pack/ns2_dump.py synth_nacp：支持表只写美式英语、显示版本 0x3060 =「?」）不是真表 → 当不知道（空），下拉列全部；真表照读
+            NSString *gd = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"t_ios_lang_%d", getpid()]];
+            [NSFileManager.defaultManager createDirectoryAtPath:[gd stringByAppendingPathComponent:@"ctl"] withIntermediateDirectories:YES attributes:nil error:nil];
+            NSMutableData *n = [NSMutableData dataWithLength:0x4000]; uint32_t one = 1, real = 1u | 1u << 2 | 1u << 14;   // 美英；美英 + 日 + 简中
+            [n replaceBytesInRange:NSMakeRange(0x302C, 4) withBytes:&one]; ((uint8_t *)n.mutableBytes)[0x3060] = '?';
+            [n writeToFile:[gd stringByAppendingPathComponent:@"ctl/control.nacp"] atomically:YES]; setenv("S2A_GAME_DATA", gd.UTF8String, 1);
+            NSArray *got = s2a_ios_game_supported_languages();
+            check(got.count == 0, [NSString stringWithFormat:@"合成 nacp 的支持语言：期望 空（不知道） → 真结果 %@", got]);
+            ((uint8_t *)n.mutableBytes)[0x3060] = '1'; [n replaceBytesInRange:NSMakeRange(0x302C, 4) withBytes:&real];
+            [n writeToFile:[gd stringByAppendingPathComponent:@"ctl/control.nacp"] atomically:YES];
+            got = s2a_ios_game_supported_languages(); NSArray *want = @[@"AmericanEnglish", @"Japanese", @"SimplifiedChinese"];
+            check([got isEqual:want], [NSString stringWithFormat:@"真 nacp 的支持语言：期望 %@ → 真结果 %@", want, got]);
+            unsetenv("S2A_GAME_DATA"); [NSFileManager.defaultManager removeItemAtPath:gd error:nil];
         }
         clear_environment();
         [a removePersistentDomainForName:suiteA];

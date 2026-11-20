@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import fcntl
 import hashlib
 import importlib.util
 import json
@@ -131,7 +130,7 @@ def verify_game_provider(build_source, start_ns, apk, containerized=True):
 
 def build_backend(env):
     """出包后端自动选（#1131，owner 定）：Docker 只留给 Linux 主机——Linux 走 docker，
-    缺 docker 或 daemon 起不来直接报红；Darwin 走 host 原生，不碰 docker；其它系统报红。
+    缺 docker 命令直接报红（daemon 不预检，真跑时失败报真原因）；Darwin 走 host 原生，不碰 docker；其它系统报红。
     Darwin x86_64 宿主路径未实机验证：按 owner 复审口径明确报红「未验证」，
     不放行半通状态（维护方复审 6546409619 第 6 条）。两个方向都不自动退，也没有手工开关。"""
     system = platform.system()
@@ -146,13 +145,9 @@ def build_backend(env):
         docker = shutil.which('docker', path=env.get('PATH', os.defpath))
         if not docker:
             raise ValueError('Linux 安卓出包需要 Docker：找不到 docker 命令，请先安装并启动 Docker。')
-        try:
-            healthy = subprocess.run([docker, 'info'], env=env, stdout=subprocess.DEVNULL,
-                                     stderr=subprocess.DEVNULL, timeout=10).returncode == 0
-        except (OSError, subprocess.TimeoutExpired):
-            healthy = False
-        if not healthy:
-            raise ValueError('Linux 安卓出包需要 Docker：docker info 失败，请启动 Docker daemon。')
+        # 不先跑 docker info 判健康：那是一道 10 秒的预检，构建机负载高时 docker info 回得慢就把好好的 Docker 判成坏的，
+        #   整单出包被拦（11-19 一台 Windows 构建机的 WSL 里 Docker 一直 active，三单都在这里被挡）。Docker 真不可用时，
+        #   真正执行 docker 的那一步会报出真实原因。
         return 'docker'
     raise ValueError(f'安卓构建不支持该宿主：{system}-{platform.machine()}')
 
@@ -312,6 +307,11 @@ BUILD_ENV_ALLOWED = frozenset({
     'S2A_ANDROID_DOTNET', 'S2A_JAVAC', 'S2A_REWRITER_DEPS', 'S2A_RUN_ROOT',
     'S2A_BUILD_CACHE', 'S2ARM_ANDROID_IMAGE', 'S2ARM_ANDROID_CACHE',
     'S2A_VULKAN_PROFILE', 'S2A_VULKAN_REFS',
+    # Windows 启动器随发版预编的工具（改写器等，pack/rewriter.py prebuilt_path）；开发机现编改写器用的 C 编译器 / CMake 生成器
+    'S2A_PREBUILT_TOOLS', 'CC', 'CMAKE_GENERATOR',
+    # Windows 子进程的系统基本变量（缺 SYSTEMROOT / TEMP 时 clang、cmake、Python 自己的 random / socket 都起不来）；macOS / Linux 上没有这些名字
+    'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT', 'TEMP', 'TMP', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA',
+    'PROGRAMFILES', 'PROGRAMFILES(X86)', 'PROGRAMDATA', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE',
 })
 
 
@@ -326,7 +326,9 @@ def build_environment(environ):
                S2A_ANDROID_SKIP_APPLE_ARTIFACTS='1', S2A_TARGET='android',
                S2ARM_ANDROID_VK_ENGINE='1', S2ARM_ANDROID_VK_BACKEND=backend,
                S2ARM_ANDROID_GAME_DIR='build/android-game/input',
-               GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1')
+               GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1',
+               # 子工具输出 UTF-8（中文日志）：Windows 缺省按 cp936 解码管道，读取线程吞掉异常后 stdout 成了 None（make_pack 读改写器输出崩）
+               PYTHONUTF8='1')
     # #1207 复审二轮：local.properties 被 gitignore、不进导出树——把解析出的
     #   SDK 路径显式写进构建环境，导出树里的构建与验签用同一条结论。
     env['ANDROID_HOME'] = android_sdk_home(env)
@@ -356,7 +358,9 @@ def verify_manifest(root, apk, resources, ledger):
 
 def export_sources(destination, env):
     """Build from a committed source export outside the repository checkout."""
-    if subprocess.run(['git', '-C', str(ROOT), 'diff', '--quiet', 'HEAD', '--'], env=env).returncode:
+    # 发版快照（根有 engine.json）：工作区和 HEAD 的差异只来自打包时重签名的 Mac 二进制，不是安卓构建输入；
+    # archive HEAD 本来就只导出已提交内容。只在开发树上拦「改了没提交」（与 ipa.sh src_dirty 同一判据）
+    if not (ROOT / 'engine.json').is_file() and subprocess.run(['git', '-C', str(ROOT), 'diff', '--quiet', 'HEAD', '--'], env=env).returncode:
         raise ValueError('引擎源码有未提交的修改，无法固定安卓构建输入。')
     destination.mkdir(mode=0o700)
     archive = destination.parent / 'source.tar'
@@ -413,8 +417,75 @@ def latest_release(releases):
     return newest[1] if newest else None
 
 
-def package(root, out):
+def lock_exclusive(stream):
+    """出包锁（同一输出目录同时只出一单）：POSIX flock，Windows（启动器预编引擎组装路径）msvcrt 锁首字节，都是阻塞等。"""
+    if os.name == 'nt':
+        import msvcrt
+        stream.seek(0)
+        while True:
+            try:
+                msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
+                return
+            except OSError:   # LK_LOCK 只重试 10 秒，等不到抛错：接着等
+                continue
+    import fcntl
+    fcntl.flock(stream, fcntl.LOCK_EX)
+
+
+def build_with_gradle(build_source, game_dir, apk, env, py):
+    """本机全量构建这款的 APK（导出的源码树 + 占好的游戏目录），核运行时链接、优化参数和签名。"""
+    backend = build_backend(env)
+    builder = build_source / ('android/docker/build.sh' if backend == 'docker' else 'android/host/build.sh')
+    app_build = build_source / 'android/app/build'
+    if app_build.is_symlink():
+        raise ValueError('安卓构建目录不能是软链。')
+    if app_build.exists():
+        if not app_build.is_dir():
+            raise ValueError('安卓构建目录无效。')
+        shutil.rmtree(app_build)
+    # Existing default entry builds NativeAOT and OpenSSL; explicit second
+    # invocation selects the game provider and cleans stale app output.
+    subprocess.run(['bash', str(builder)], env=env, check=True)
+    start_ns = time.time_ns()
+    variant = build_variant()
+    task = variant.capitalize()
+    subprocess.run(['bash', str(builder), '-Ps2arm.nativeMode=game', ':app:clean',
+                    f':app:assemble{task}', f':app:lint{task}'], env=env, check=True)
+    built = build_source / apk_output(variant)
+    if built.is_symlink() or not built.is_file():
+        raise ValueError('构建未产生本次 APK。')
+    shutil.copyfile(built, apk)
+    verify_game_provider(build_source, start_ns, apk, containerized=backend == 'docker')
+    subprocess.run([py, str(build_source / 'android/verify-apk.py'), str(apk)], env=env, check=True)
+    verify_native_optimized(build_source, variant, start_ns)
+    verify_signature(build_source, apk, env, backend, variant)
+    if sha256(apk) != sha256(built):
+        raise ValueError('构建输出在签名验证期间变化。')
+
+
+def load_engine(engine):
+    sys.path.insert(0, str(ROOT / 'android/tools'))
+    import apk_assemble
+    doc, _ = apk_assemble.load_engine(engine)
+    if not (Path(engine) / 'identity.json').is_file():
+        raise ValueError(f'预编引擎目录缺 identity.json：{engine}')
+    return doc, apk_assemble
+
+
+def assemble_engine_apk(engine, doc, game_dir, apk, env, py):
+    """预编引擎 APK 换上这款的身份与数据（apk_assemble.py），再核与本机构建同一套的设备无关检查。"""
+    subprocess.run([py, str(ROOT / 'android/tools/apk_assemble.py'), str(engine), str(game_dir), str(apk)],
+                   env=env, check=True)
+    if apk_provider_build_id(apk) != doc['providerBuildId']:
+        raise ValueError('组装出的 APK 游戏运行时库与引擎记录的 build-id 不一致。')
+    subprocess.run([py, str(ROOT / 'android/verify-apk.py'), str(apk)], env=env, check=True)
+
+
+def package(root, out, engine=None):
+    """engine：预编引擎目录（android/tools/engine_template.py 产出，随启动器发版提供）。给了就不导出源码、
+    不跑 Gradle，引擎 APK 由 apk_assemble.py 换上这款的身份与数据；没给就照旧本机全量构建。"""
     root, out = Path(root).resolve(), Path(out).resolve()
+    engine = Path(engine).resolve() if engine else None
     releases = out / 'android-releases'
     if out == ROOT.resolve() or out.is_relative_to(ROOT.resolve()) or root == ROOT.resolve() or root.is_relative_to(ROOT.resolve()):
         raise ValueError('游戏输入和输出必须在源码仓库之外。')
@@ -429,12 +500,16 @@ def package(root, out):
     env = build_environment(os.environ)
     py = sys.executable
     with (out / '.android-oneclick.lock').open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        lock_exclusive(lock)
         with tempfile.TemporaryDirectory(prefix='.android-build-', dir=build_parent(out)) as build_tmp, \
              tempfile.TemporaryDirectory(prefix='.android-release-', dir=releases) as output_tmp:
             build_source = Path(build_tmp) / 'src'
-            export_sources(build_source, env)
-            tool = build_source / 'android/tools'
+            if engine:
+                engine_doc, _ = load_engine(engine)
+                tool = ROOT / 'android/tools'
+            else:
+                export_sources(build_source, env)
+                tool = build_source / 'android/tools'
             game_dir = build_source / 'build/android-game/input'
             game_dir.parent.mkdir(parents=True)
             stage = Path(output_tmp)
@@ -450,11 +525,14 @@ def package(root, out):
                 print('🟡 不带 direct-vulkan.txt（' + why_not + '）：本包照旧走通用路径。')
             subprocess.run([py, str(tool / 'make_pack.py'), str(original_pack), '--root', str(root), *vulkan_flag],
                            env=env, check=True)
-            backend = build_backend(env)
-            builder = build_source / ('android/docker/build.sh' if backend == 'docker' else 'android/host/build.sh')
-            # 描述符的翻译闭包取本源码树编译器的构建身份（与 APK 里的编译器同源同配置）。
-            subprocess.run(['bash', str(builder), '--direct-identity'], env=env, check=True)
-            identity = build_source / 'build/android-direct/identity.json'
+            if engine:
+                identity = engine / 'identity.json'   # 与引擎 APK 里的编译器同源（engine_template.py 同一次构建写出）
+            else:
+                backend = build_backend(env)
+                builder = build_source / ('android/docker/build.sh' if backend == 'docker' else 'android/host/build.sh')
+                # 描述符的翻译闭包取本源码树编译器的构建身份（与 APK 里的编译器同源同配置）。
+                subprocess.run(['bash', str(builder), '--direct-identity'], env=env, check=True)
+                identity = build_source / 'build/android-direct/identity.json'
             descriptor = stage / 'graphics.v1.json'
             subprocess.run([py, str(tool / 'direct_library.py'), 'describe', '--pack', str(original_pack),
                             '--identity', str(identity), '--descriptor', str(descriptor)], env=env, check=True)
@@ -494,31 +572,10 @@ def package(root, out):
                             '--version-code', str(version_code),
                             *(('--shader-pack', shader_pack) if shader_pack else ())],
                            env=env, check=True)
-            app_build = build_source / 'android/app/build'
-            if app_build.is_symlink():
-                raise ValueError('安卓构建目录不能是软链。')
-            if app_build.exists():
-                if not app_build.is_dir():
-                    raise ValueError('安卓构建目录无效。')
-                shutil.rmtree(app_build)
-            # Existing default entry builds NativeAOT and OpenSSL; explicit second
-            # invocation selects the game provider and cleans stale app output.
-            subprocess.run(['bash', str(builder)], env=env, check=True)
-            start_ns = time.time_ns()
-            variant = build_variant()
-            task = variant.capitalize()
-            subprocess.run(['bash', str(builder), '-Ps2arm.nativeMode=game', ':app:clean',
-                            f':app:assemble{task}', f':app:lint{task}'], env=env, check=True)
-            built = build_source / apk_output(variant)
-            if built.is_symlink() or not built.is_file():
-                raise ValueError('构建未产生本次 APK。')
-            shutil.copyfile(built, apk)
-            verify_game_provider(build_source, start_ns, apk, containerized=backend == 'docker')
-            subprocess.run([py, str(build_source / 'android/verify-apk.py'), str(apk)], env=env, check=True)
-            verify_native_optimized(build_source, variant, start_ns)
-            verify_signature(build_source, apk, env, backend, variant)
-            if sha256(apk) != sha256(built):
-                raise ValueError('构建输出在签名验证期间变化。')
+            if engine:
+                assemble_engine_apk(engine, engine_doc, game_dir, apk, env, py)
+            else:
+                build_with_gradle(build_source, game_dir, apk, env, py)
             previous = latest_release(releases)   # 持着出包锁：不会有别的出包在这时发布新的
             subprocess.run([py, str(tool / 'game_apk.py'), '--resources',
                             *(('--reuse-from', str(previous / 'resources')) if previous else ()),
@@ -542,13 +599,15 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', required=True)
     parser.add_argument('--out', required=True)
+    parser.add_argument('--engine', default=os.environ.get('S2A_ANDROID_ENGINE') or None,
+                        help='预编引擎目录（engine_template.py 产出）；缺省读 S2A_ANDROID_ENGINE，都没有就本机全量构建')
     args = parser.parse_args()
     def interrupt(_signum, _frame):
         raise InterruptedError('安卓出包已取消。')
     signal.signal(signal.SIGTERM, interrupt)
     signal.signal(signal.SIGINT, interrupt)
     try:
-        result = package(args.root, args.out)
+        result = package(args.root, args.out, args.engine)
     except subprocess.CalledProcessError as error:
         print('【红】Android 构建步骤失败，退出码 ' + str(error.returncode), file=sys.stderr)
         return 1

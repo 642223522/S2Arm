@@ -130,6 +130,12 @@ namespace S2A.Services.Tests
                 int devLen = Encoding.ASCII.GetBytes("DeviceOut", new Span<byte>(buf, 0x100));
                 Msg fs = Msg.Cmif(300, Bytes(2u, 2, 48000, 1u)); fs.A.Add(((ulong)buf, (ulong)devLen));
                 Check("auddmg 300 IsVirtualDeviceStreamFormatSupported（PcmInt16 / 2 / 48000）", "结果 0x0", $"结果 0x{Call(dev, fs).Result:X}");
+                // #b36edb：游戏问格式 5（PcmFloat）立体声，宿主经兼容层转 PCM16 播 → 支持；Int8 / Int32 / 5.1 同理
+                foreach ((uint f, int ch) in new[] { (5u, 2), (1u, 2), (4u, 2), (5u, 6) })
+                {
+                    Msg m = Msg.Cmif(300, Bytes(f, ch, 48000, 1u)); m.A.Add(((ulong)buf, (ulong)devLen));
+                    Check($"auddmg 300 IsVirtualDeviceStreamFormatSupported（格式 {f} / {ch} / 48000）", "结果 0x0", $"结果 0x{Call(dev, m).Result:X}");
+                }
 
                 byte* profile = buf + 0x400;
                 new Span<byte>(profile, 0x228).Fill(0xCC);
@@ -170,6 +176,15 @@ namespace S2A.Services.Tests
                 uint gone = Call(dev, at2).Result;
                 Check("销毁外部流对象后 700 再挂同一流号", $"结果 0x{Red.ResultUnknownCommand:X}、报红 +1", $"结果 0x{gone:X}、报红 +{Red.Total - redBefore}");
 
+                // #b36edb：PcmFloat 立体声开流成功（环帧长 8 字节：0x1040 + 961 × 8 = 0x2E48 ≤ 0x3000），关流也成功
+                byte* work3 = SmxWorkBuffer();
+                Msg cs3 = Msg.Cmif(1, Bytes(1u, 0x24u, 0x1234UL, (ulong)work3, (ulong)SmxWorkSize)); cs3.SendPid = true; cs3.A.Add(((ulong)buf, (ulong)nameLen));
+                int stream3 = *(int*)(D(cs3, userSession).Data + 4);
+                uint os3 = D(Msg.Cmif(0, Bytes(5u, 2, 48000, SmxFrames, 0, 0u)), stream3).Result;
+                uint cl3 = D(Msg.Cmif(1), stream3).Result;
+                Check("audsmx OpenStream PcmFloat / 2 声道 / 48 kHz / 960 帧；CloseStream", "结果 0x0；0x0", $"结果 0x{os3:X}；0x{cl3:X}");
+                Msg del3 = Msg.Cmif(0); del3.DomainRequestType = 2; D(del3, stream3);
+
                 // 负例：SDK 输出路径从不发的取值、开局路径不走的命令，一律报红、回未知命令
                 byte* work2 = SmxWorkBuffer();
                 Msg cs2 = Msg.Cmif(1, Bytes(1u, 0x24u, 0x1234UL, (ulong)work2, (ulong)SmxWorkSize)); cs2.SendPid = true; cs2.A.Add(((ulong)buf, (ulong)nameLen));
@@ -181,10 +196,10 @@ namespace S2A.Services.Tests
                     ("CreateStream 标志 0x64（0x40 语义不明）", () => { Msg m = Msg.Cmif(1, Bytes(1u, 0x64u, 0x1234UL, (ulong)work2, (ulong)SmxWorkSize)); m.SendPid = true; m.A.Add(((ulong)buf, (ulong)nameLen)); return D(m, userSession).Result; }),
                     ("IUserSession 3 EngageStreams（未实现）", () => { Msg m = Msg.Cmif(3); m.A.Add(((ulong)buf, 4)); return D(m, userSession).Result; }),
                     ("OpenStream 标志 1（带时间戳表）", () => D(Msg.Cmif(0, Bytes(2u, 2, 48000, SmxFrames, 0, 1u)), stream2).Result),
-                    ("OpenStream PcmFloat", () => D(Msg.Cmif(0, Bytes(5u, 2, 48000, SmxFrames, 0, 0u)), stream2).Result),
+                    ("OpenStream PcmInt24（sysmix 按 4 字节存，24 位放哪不知道）", () => D(Msg.Cmif(0, Bytes(3u, 2, 48000, SmxFrames, 0, 0u)), stream2).Result),
                     ("AcquireStreamDataEvent 方式 1（流未开）", () => D(Msg.Cmif(7, Bytes(1u, 100)), stream2).Result),
                     ("外部流 11 PurgeStream（未实现）", () => D(Msg.Cmif(11, Bytes(0)), stream2).Result),
-                    ("auddmg 300 PcmFloat", () => { Msg m = Msg.Cmif(300, Bytes(5u, 2, 48000, 1u)); m.A.Add(((ulong)buf, (ulong)devLen)); return Call(dev, m).Result; }),
+                    ("auddmg 300 PcmInt24", () => { Msg m = Msg.Cmif(300, Bytes(3u, 2, 48000, 1u)); m.A.Add(((ulong)buf, (ulong)devLen)); return Call(dev, m).Result; }),
                     ("auddmg 401 功能 2（输入）", () => { Msg m = Msg.Cmif(401, Bytes(2u)); m.B.Add(((ulong)profile, 0x228)); m.A.Add(((ulong)buf, (ulong)devLen)); return Call(dev, m).Result; }),
                     ("auddmg 700 流未打开", () => { Msg m = Msg.Cmif(700, Bytes(*(uint*)cs2r.Data, 1u)); m.A.Add(((ulong)buf, (ulong)devLen)); return Call(dev, m).Result; }),
                 ];

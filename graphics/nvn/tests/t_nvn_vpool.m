@@ -13,8 +13,6 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
-#include <spawn.h>
-#include <sys/wait.h>
 #include <mach/mach.h>
 
 extern void *h_nvnBootstrapLoader(const char *name);
@@ -145,6 +143,7 @@ static void beyond_reservation(void) {
     phase="超出预留段的映射（无人深空 52 GB 池，偏移 0x80010000）"; NVNmemoryPool v; vpool_init(&v,0xd00000000ull);
     CHECK(map(&v,0x80010000,12,2*BLOCK),"虚拟 0x80010000 起 2 块 ← 物理块 12–13 映射成功");
     NVNtexture t; tex_init(&t,&v,0x80010000); tex_count(&t,12,13,"贴图读到块 12 与块 13");
+    buf_check(&v,0x80010000+BLOCK+0x40,13,"缓冲地址 0x80010000 + 1 块 + 0x40 读到块 13（#1143 前：超出 1 GB 预留的缓冲没有宿主地址）");
     CHECK(API(nvnMemoryPoolMap)(&v)==NULL,"虚拟池 Map = NULL");
     // 游戏按存储类别选上传路：0 = CPU 经 Map 直写（真机不走，Map 为 NULL 即崩）；真驱动恒回 0x100 | kind（sdk+0x4b6834 `mov w8, #0x100; bfxil`）
     NVNtextureBuilder b; API(nvnTextureBuilderSetDefaults)(&b); API(nvnTextureBuilderSetDevice)(&b,&device); API(nvnTextureBuilderSetTarget)(&b,NVN_TEXTURE_TARGET_2D);
@@ -163,27 +162,23 @@ static void many_pools(void) {
     for (int i=0; i<N; i++) API(nvnMemoryPoolFinalize)(&v[i]);
     cases++;
 }
-// 帧录 / 帧回放：虚拟池同址重建（hle_nvn.c s2a_hle_vpool_save / load，11-05 旷野之息唯一的虚拟池不在录像里，回放读到别的映射或 SIGBUS）。本进程带 S2A_CMD_ARENA=1 当录的进程。期望手写：
-//   ① 池基址落在虚拟池区（runtime/src/vawin.c）；② 映射两段：头一块 ← 物理块 3（宿主页对齐：别名，GPU 可读）、0x11000+0x2000 ← 物理块 7（不对齐：只进页表）→ 存 1 个；
-//   ③ 池对象快照 → Finalize（池没了）→ 对象写回（回放放回游戏内存）→ 读录像：重建 1 个、页表读两段 = 块 3 / 块 7 的色、GPU 经别名读头一块 = 块 3 的色；
-//   ④ 子进程当回放进程（S2A_FRAME_REPLAY：区只占不切）：同址整段是空保留。旧实现（池地址 mmap(NULL)、录像不带虚拟池）①③④红
-extern int s2a_hle_vpool_save(FILE *f); extern int s2a_hle_vpool_load(FILE *f); extern int s2a_vp_arena_has(const void *p, uint64_t n);
+// 帧录 / 帧回放：虚拟池同址重建（hle_nvn.c s2a_hle_vpool_save / load，11-05 一款第一方游戏唯一的虚拟池不在录像里，回放读到别的映射或 SIGBUS）。期望手写：
+//   ① 池地址落在虚拟池地址窗口 [0x10000000000, 0x40000000000)，背后没有宿主映射（#1143：虚拟池不占宿主地址）；② 映射两段：头一块 ← 物理块 3、0x11000+0x2000 ← 物理块 7 → 存 1 个；
+//   ③ 池对象快照 → Finalize（池没了）→ 对象写回（回放放回游戏内存）→ 读录像：重建 1 个、页表读两段 = 块 3 / 块 7 的色、GPU 按缓冲地址读头一块 = 块 3、读 0x11000 那段 = 块 7
+extern int s2a_hle_vpool_save(FILE *f); extern int s2a_hle_vpool_load(FILE *f);
 extern int nvn_sparse_pool(const void *pool); extern uint64_t nvn_sparse_copy(const void *pool, void *dst, uint64_t a, uint64_t n);
 extern int nvn_gva_snapshot(uint64_t *out, int cap); extern void nvn_gva_restore(const uint64_t *t, int n);
-extern char **environ;
-static int replay_check(uint64_t a, uint64_t n) {
+static int host_mapped(uint64_t a) {   // 有没有宿主映射盖住 a
     vm_address_t r = (vm_address_t)a; vm_size_t rs = 0; vm_region_basic_info_data_64_t info; mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64; mach_port_t obj = MACH_PORT_NULL;
-    int in = s2a_vp_arena_has((const void *)(uintptr_t)a, n), got = vm_region_64(mach_task_self(), &r, &rs, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &cnt, &obj) == KERN_SUCCESS;
-    int empty = got && r <= a && a + n <= r + rs && info.protection == VM_PROT_NONE;
-    if (!in || !empty) fprintf(stderr, "虚拟池 %#llx+%#llx：在回放进程虚拟池区里 %d、是空保留 %d\n", (unsigned long long)a, (unsigned long long)n, in, empty);
-    return in && empty ? 0 : 1;
+    if (vm_region_64(mach_task_self(), &r, &rs, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &cnt, &obj) != KERN_SUCCESS) return 0;
+    return r <= a && a < r + rs;
 }
 static void frame_rec(void) {
-    phase="帧录 / 回放：虚拟池同址重建"; const char *self = getenv("T_NVN_VPOOL_SELF");
+    phase="帧录 / 回放：虚拟池同址重建";
     static NVNmemoryPool v; vpool_init(&v,4*BLOCK);
     REQUIRE(map(&v,0,3,BLOCK)); REQUIRE(map(&v,BLOCK+0x1000,7,0x2000));
-    uint64_t base=(uint64_t)(uintptr_t)((const pool_t *)&v)->mem;   // 池的宿主基址（贴图 / 缓冲的 CPU 地址 = 它 + 偏移；GPU 地址另算）
-    CHECK(s2a_vp_arena_has((const void *)(uintptr_t)base,4*BLOCK),"① 池基址 %#llx 在虚拟池区里",(unsigned long long)base);
+    uint64_t base=(uint64_t)(uintptr_t)((const pool_t *)&v)->mem;   // 池的地址（贴图 / 缓冲的地址 = 它 + 偏移；Switch 1 的 GPU 地址另算）
+    CHECK(base>=0x10000000000ull && base+4*BLOCK<=0x40000000000ull && !host_mapped(base) && !host_mapped(base+BLOCK+0x1000),"① 池地址 %#llx 在虚拟池窗口里、背后没有宿主映射",(unsigned long long)base);
     char path[]="/tmp/t_nvn_vpool_rec_XXXXXX"; int fd=mkstemp(path); REQUIRE(fd>=0); FILE *f=fdopen(fd,"wb"); REQUIRE(f);
     int ns=s2a_hle_vpool_save(f); fclose(f);
     CHECK(ns==1,"② 存 %d 个（期望 1）",ns);
@@ -194,40 +189,58 @@ static void frame_rec(void) {
     uint32_t a=0,b=0; nvn_sparse_copy(&v,&a,base+0x20,4); nvn_sparse_copy(&v,&b,base+BLOCK+0x1000+0x20,4);
     CHECK(nl==1 && nvn_sparse_pool(&v),"③ 重建 %d 个（期望 1）、池已登记 %d",nl,nvn_sparse_pool(&v));
     CHECK(a==color(3) && b==color(7),"③ 页表读回 %#x / %#x，期望块 3 %#x / 块 7 %#x",a,b,color(3),color(7));
-    buf_check(&v,0x20,3,"③ GPU 经别名读头一块");
-    if (self) { char sa[24], sn[24]; snprintf(sa,sizeof sa,"%#llx",(unsigned long long)base); snprintf(sn,sizeof sn,"%#llx",(unsigned long long)(4*BLOCK));
-        char *av[]={(char *)self,"--replay-check",sa,sn,NULL}; pid_t pid; int st=-1;
-        setenv("S2A_FRAME_REPLAY","/nonexistent/t_nvn_vpool",1);
-        REQUIRE(posix_spawn(&pid,self,NULL,NULL,av,environ)==0); REQUIRE(waitpid(pid,&st,0)==pid); unsetenv("S2A_FRAME_REPLAY");
-        CHECK(WIFEXITED(st) && WEXITSTATUS(st)==0,"④ 回放进程里同址是空保留（退出 %d）",WIFEXITED(st)?WEXITSTATUS(st):-1); }
+    buf_check(&v,0x20,3,"③ GPU 按缓冲地址读头一块");
+    buf_check(&v,BLOCK+0x1000+0x20,7,"③ GPU 按缓冲地址读 0x11000 那段（4 KB 对齐、16 KB 不对齐的段也是别名）");
     API(nvnMemoryPoolFinalize)(&v); cases++;
 }
-// 宿主低区被切碎、最大空洞 511 MB（S2A_VPOOL_HOLE_MB=511，11-06 FC26 真机）：512 MB 虚拟池。期望按 NVN 语义手写：池照常建成，
-//   预留内（偏移 0x100000）和预留外（偏移 0x18000000 = 384 MB，大于减半后的 256 MB）两段映射都成功；预留内 GPU 按缓冲地址读到物理块，
-//   预留外放贴图经页表读到物理块（预留外的缓冲没有宿主地址，是 beyond_reservation 那支既有的边界，不在本例）。
-//   旧实现：512 MB 预留失败整池放弃，两段 MapVirtual 都被拒（只有 >1 GB 才退一档）。子进程跑：空洞开关进程内只读一次，且不能带帧录区（区里取址不经空洞）
-static void hole_511(void) {
-    phase="最大空洞 511 MB 时的 512 MB 虚拟池"; NVNmemoryPool v; vpool_init(&v,0x20000000);
-    CHECK(map(&v,0x100000,7,BLOCK),"预留内 0x100000 ← 物理块 7 映射成功");
-    CHECK(map(&v,0x18000000,8,2*BLOCK),"预留外 0x18000000 起 2 块 ← 物理块 8–9 映射成功");
-    buf_check(&v,0x100000+0x40,7,"缓冲地址 0x100040 读到块 7");
-    NVNtexture t; tex_init(&t,&v,0x18000000); tex_count(&t,8,9,"预留外贴图读到块 8 与块 9");
-    API(nvnTextureFinalize)(&t); API(nvnMemoryPoolFinalize)(&v); cases++;
+// #1143 根修：虚拟池不占宿主地址。一款 Switch 2 竞速游戏在 iPhone 上开局一百多个虚拟池，各按池大小（封顶 1 GB）预留宿主地址，宿主 3 GB 一分钟内耗光（errno 12），之后映射全被拒。
+//   期望手写：200 个 1 GB 虚拟池全部建成、各自在池尾（0x3FFF0000）挂一块物理页成功、GPU 按缓冲地址读到挂上的块；进程的虚拟地址合计增长 < 64 MB（页表与表项，不是 200 GB）；
+//   低区账不变（虚拟池不再记账）。旧实现：每池预留 1 GB（Mac 缺省仿 iPhone 地址上限），虚拟地址合计多 200 GB、低区账多 200 GB
+#include "../../../runtime/include/s2a_lowva.h"
+static uint64_t lv_tracked(void) { uint64_t h, l, r, u, t = 0; s2a_lowva()->snapshot(&h, &l, &r, &u, &t); return t; }
+static uint64_t vsize(void) { task_vm_info_data_t vi; mach_msg_type_number_t n = TASK_VM_INFO_COUNT; return task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vi, &n) == KERN_SUCCESS ? vi.virtual_size : 0; }
+static void no_host_va(void) {
+    phase="200 个 1 GB 虚拟池不占宿主地址（#1143）"; enum { N = 200 }; static NVNmemoryPool v[N];
+    uint64_t lv0=lv_tracked(), vs0=vsize(); int ok=1;
+    for (int i=0; i<N; i++) { vpool_init(&v[i],1ull<<30); ok&=map(&v[i],0x3FFF0000,i%64,BLOCK); }
+    uint64_t vs1=vsize(), lv1=lv_tracked();
+    CHECK(ok,"200 个池全部建成、池尾一块映射成功");
+    CHECK(vs1-vs0<(64ull<<20),"进程虚拟地址合计增长 %llu MB（期望 < 64 MB；旧实现 ≈ 204800 MB）",(unsigned long long)((vs1-vs0)>>20));
+    CHECK(lv1==lv0,"低区账：建池后账面合计变化 %lld（期望 0）",(long long)(lv1-lv0));
+    for (int i=0; i<N; i+=41) { char w[64]; snprintf(w,sizeof w,"池 %d 池尾一块",i); buf_check(&v[i],0x3FFF0000+0x40,i%64,w); }
+    for (int i=0; i<N; i++) API(nvnMemoryPoolFinalize)(&v[i]);
+    cases++;
 }
-static void fragmented(void) {
-    phase="低区碎片（子进程 S2A_VPOOL_HOLE_MB=511）"; const char *self=getenv("T_NVN_VPOOL_SELF"); REQUIRE(self);
-    char *av[]={(char *)self,"--hole",NULL}; pid_t pid; int st=-1;
-    setenv("S2A_VPOOL_HOLE_MB","511",1); unsetenv("S2A_CMD_ARENA");
-    REQUIRE(posix_spawn(&pid,self,NULL,NULL,av,environ)==0); REQUIRE(waitpid(pid,&st,0)==pid);
-    setenv("S2A_CMD_ARENA","1",1); unsetenv("S2A_VPOOL_HOLE_MB");
-    CHECK(WIFEXITED(st) && WEXITSTATUS(st)==0,"子进程（512 MB 池、最大空洞 511 MB）各项全过（退出 %d）",WIFEXITED(st)?WEXITSTATUS(st):-1); cases++;
+// 映射变更日志（马车世界缺口 ①，hle_nvn.c nvn_sparse_log_seq / log_hit / runs）：期望按映射语义手写。
+//   ① 建日志后映射虚拟 0 块 ← 物理块 3：问 [0, 1 块) 命中（重叠）；② 再映射虚拟 2 块：问 [0, 1 块) 不命中、序号推进到当前，问 [2 块, 3 块) 命中；
+//   ③ 映射虚拟 1 块（与 [0, 1 块) 相邻、不重叠）：问 [0, 1 块) 不命中；④ 远处来回映射 4097 次（日志 4096 条转过一圈）：问 [0, 1 块) 命中（保守）；
+//   ⑤ 虚拟 0、1 块都挂物理块 3：[0, 2 块) 背后 2 段、各 (物理块 3 地址, 1 块)；上限给 1 → -1。反证：去掉 vpt_set 里记日志那一行 → ① 红
+extern uint64_t nvn_sparse_log_seq(const void *pool); extern int nvn_sparse_log_hit(const void *pool, uint64_t *seq, uint64_t a, uint64_t n);
+extern int nvn_sparse_runs(const void *pool, uint64_t a, uint64_t n, uint64_t (*out)[2], int max);
+static void change_log(void) {
+    phase="映射变更日志"; static NVNmemoryPool v; vpool_init(&v,8*BLOCK);
+    uint64_t base=(uint64_t)(uintptr_t)((const pool_t *)&v)->mem;
+    uint64_t s0=nvn_sparse_log_seq(&v); REQUIRE(map(&v,0,3,BLOCK));
+    uint64_t q=s0; CHECK(nvn_sparse_log_hit(&v,&q,base,BLOCK)==1,"① 映射虚拟 0 块后问 [0, 1 块)：命中（期望 1）");
+    uint64_t s1=nvn_sparse_log_seq(&v); REQUIRE(map(&v,2*BLOCK,4,BLOCK));
+    q=s1; int h0=nvn_sparse_log_hit(&v,&q,base,BLOCK); uint64_t s2=nvn_sparse_log_seq(&v);
+    uint64_t q2=s1; int h2=nvn_sparse_log_hit(&v,&q2,base+2*BLOCK,BLOCK);
+    CHECK(h0==0 && q==s2 && h2==1,"② 映射虚拟 2 块后：问 [0, 1 块) %d（期望 0）、序号 %llu（期望推进到 %llu）、问 [2 块, 3 块) %d（期望 1）",h0,(unsigned long long)q,(unsigned long long)s2,h2);
+    uint64_t s3=nvn_sparse_log_seq(&v); REQUIRE(map(&v,BLOCK,5,BLOCK));
+    q=s3; CHECK(nvn_sparse_log_hit(&v,&q,base,BLOCK)==0,"③ 映射相邻的虚拟 1 块后问 [0, 1 块)：不命中（期望 0）");
+    uint64_t s4=nvn_sparse_log_seq(&v); int ok=1;
+    for (int i=0; i<4097 && ok; i++) ok=map(&v,6*BLOCK,6+(i&1),BLOCK);
+    REQUIRE(ok); q=s4; CHECK(nvn_sparse_log_hit(&v,&q,base,BLOCK)==1,"④ 远处映射 4097 次（日志转过一圈）后问 [0, 1 块)：命中（期望 1，保守）");
+    REQUIRE(map(&v,BLOCK,3,BLOCK));   // 虚拟 0、1 块都挂物理块 3
+    uint64_t r[4][2]={{0}}; int n=nvn_sparse_runs(&v,base,2*BLOCK,r,4), n1=nvn_sparse_runs(&v,base,2*BLOCK,r+2,1);
+    uint64_t p3=(uint64_t)(uintptr_t)phys_storage+3*BLOCK;
+    CHECK(n==2 && r[0][0]==p3 && r[0][1]==BLOCK && r[1][0]==p3 && r[1][1]==BLOCK && n1==-1,"⑤ [0, 2 块) 背后 %d 段（期望 2）：(%#llx, %#llx) (%#llx, %#llx)，期望各 (%#llx, %#x)；上限 1 → %d（期望 -1）",
+          n,(unsigned long long)r[0][0],(unsigned long long)r[0][1],(unsigned long long)r[1][0],(unsigned long long)r[1][1],(unsigned long long)p3,BLOCK,n1);
+    API(nvnMemoryPoolFinalize)(&v); cases++;
 }
 int main(int argc, char **argv) { @autoreleasepool {
     setvbuf(stdout,NULL,_IOLBF,0);   // 逐行出：旧实现上某例崩了，前面各例的结论仍在
-    if (argc==4 && !strcmp(argv[1],"--replay-check")) return replay_check(strtoull(argv[2],NULL,0),strtoull(argv[3],NULL,0));
-    if (argc==2 && !strcmp(argv[1],"--hole")) { setup(); hole_511(); printf("%s 子进程 hole_511：%u 项检查、%u 项不符\n",fails?"✗":"✓",checks,fails); return fails?1:0; }
-    if (!getenv("S2A_CMD_ARENA")) { setenv("S2A_CMD_ARENA","1",1); setenv("T_NVN_VPOOL_SELF",argv[0],1); execv(argv[0],argv); perror("execv"); return 1; }   // 帧录区在构造期按环境变量占
-    static const struct { const char *name; void (*fn)(void); } all[]={{"two_runs",two_runs},{"negative_base",negative_base},{"remap",remap},{"buffer_before_map",buffer_before_map},{"beyond_reservation",beyond_reservation},{"many_pools",many_pools},{"fragmented",fragmented},{"frame_rec",frame_rec},{"zero_size",zero_size}};
+    static const struct { const char *name; void (*fn)(void); } all[]={{"change_log",change_log},{"two_runs",two_runs},{"negative_base",negative_base},{"remap",remap},{"buffer_before_map",buffer_before_map},{"beyond_reservation",beyond_reservation},{"many_pools",many_pools},{"no_host_va",no_host_va},{"frame_rec",frame_rec},{"zero_size",zero_size}};
     if (argc>2) { fprintf(stderr,"用法：%s [例名]\n",argv[0]); return 2; }
     setup();
     int ran=0; for (size_t i=0; i<sizeof all/sizeof *all; i++) if (argc==1 || !strcmp(argv[1],all[i].name)) { all[i].fn(); ran++; }
@@ -236,5 +249,5 @@ int main(int argc, char **argv) { @autoreleasepool {
     API(nvnMemoryPoolFinalize)(&phys); API(nvnMemoryPoolFinalize)(&cmd_pool); API(nvnDeviceFinalize)(&device);
     { char p[512]; snprintf(p,sizeof p,"%s/shaders/direct/game.tsv",data_dir); unlink(p); snprintf(p,sizeof p,"%s/shaders/direct",data_dir); rmdir(p); snprintf(p,sizeof p,"%s/shaders",data_dir); rmdir(p); rmdir(data_dir); }
     if (fails) { printf("✗ t_nvn_vpool：%u 项检查里 %u 项不符\n",checks,fails); return 1; }
-    printf("✓ t_nvn_vpool：%u 例 %u 项检查全过（虚拟池一律按页表：不连续映射、负偏移、改映射、未映射建缓冲、超出预留、多池、低区碎片、帧录同址重建）\n",cases,checks); return 0;
+    printf("✓ t_nvn_vpool：%u 例 %u 项检查全过（虚拟池一律按页表：不连续映射、负偏移、改映射、未映射建缓冲、池尾 / 超出 1 GB 处的缓冲、多池、200 个 1 GB 池不占宿主地址、帧录同址重建）\n",cases,checks); return 0;
 }}

@@ -166,12 +166,12 @@ class MakePackRewriterTest(unittest.TestCase):
         before = json.loads((self.directory / 'c-0-1/game-build-artifact.json').read_text())['contentRoot']
         (self.root / 'addr_need.tsv').write_text(self.table(256))
         (self.root / 'exefs/addr_need.tsv').write_text(self.table(256))
-        c, _ = self.make('c', out=self.directory / 'stray-requirements')
+        c, _ = self.make('c', out=self.directory / 'stray-requirements', S2A_REWRITE_SPIN='0')
         self.assertEqual(before, json.loads((c / 'game-build-artifact.json').read_text())['contentRoot'])
         java = REPO / 'android/app/src/main/java/org/s2arm/android'
         tests = REPO / 'android/tests'
         classes = self.directory / 'classes'; classes.mkdir()
-        sources = [str(java / (n + '.java')) for n in ('Json','BootContract','RuntimeLibrary','GamePack','GameFingerprint','GameInstall','GameStorage','GameMetadata')]
+        sources = [str(java / (n + '.java')) for n in ('Json','BootContract','RuntimeLibrary','GamePack','GameFingerprint','GameInstall','ImportReceiver','GameStorage','GameMetadata')]
         sources += [str(tests / (n + '.java')) for n in ('GamePackTest','GameInstallTest')]
         compiled = self.command(['javac', '-encoding', 'UTF-8', '-d', str(classes)] + sources, self.env)
         self.assertEqual(compiled.returncode, 0, compiled.stderr)
@@ -183,11 +183,11 @@ class MakePackRewriterTest(unittest.TestCase):
         wrapper = self.wrapper('environment')
         out, _ = self.make(S2A_REWRITER_C=wrapper, S2A_TARGET='apple')
         observed = json.loads(Path(wrapper + '.env.json').read_text())
-        self.assertEqual(observed, dict(S2A_TARGET='android',S2A_REWRITE_SPIN='0',S2A_SDK_ADDR_CUT='1'))
+        self.assertEqual(observed, dict(S2A_TARGET='android',S2A_REWRITE_SPIN='1',S2A_SDK_ADDR_CUT='1'))
         self.make(out=self.directory / 'explicit', S2A_REWRITER_C=wrapper,
-                  S2A_REWRITE_SPIN='1', S2A_SDK_ADDR_CUT='0')
+                  S2A_REWRITE_SPIN='0', S2A_SDK_ADDR_CUT='0')
         observed = json.loads(Path(wrapper + '.env.json').read_text())
-        self.assertEqual(observed, dict(S2A_TARGET='android',S2A_REWRITE_SPIN='1',S2A_SDK_ADDR_CUT='0'))
+        self.assertEqual(observed, dict(S2A_TARGET='android',S2A_REWRITE_SPIN='0',S2A_SDK_ADDR_CUT='0'))
         self.assertIn('# TARGET\tandroid', (out / 'modules/main.fixups.tsv').read_text())
 
     def test_inherited_fps_table_does_not_reach_cli(self):

@@ -3,7 +3,7 @@
 using S2Arm.Launcher.Protocol;
 
 // 启动器界面语言：第一次跟随系统（简中 / 繁中 / 英 / 日四种系统语言）；选过重启仍记住；选「跟随系统」回到跟随。
-// 期望按规则手写：中文系统（简繁都算）→ zh-Hans，其余 → en。
+// 期望按规则手写：没打进包的语言落 zh-Hans（中文系统）/ en；打进包后繁中系统 → zh-Hant、日文系统 → ja（11-14 加新语言）。
 public static class LauncherLanguageCases
 {
     public static void Run(Action<bool, string> check)
@@ -12,7 +12,12 @@ public static class LauncherLanguageCases
         try
         {
             check(LauncherLanguage.Resolve(root, "zh-CN") == "zh-Hans", "language: first launch, Simplified Chinese system");
-            check(LauncherLanguage.Resolve(root, "zh-TW") == "zh-Hans", "language: first launch, Traditional Chinese system falls back to Simplified for now");
+            check(LauncherLanguage.Resolve(root, "zh-TW") == "zh-Hans", "language: Traditional Chinese system falls back to Simplified when no zh-Hant pack is shipped");
+            LauncherLanguage.SetAvailable(["zh-Hant", "ja"]);
+            check(LauncherLanguage.Resolve(root, "zh-TW") == "zh-Hant" && LauncherLanguage.Resolve(root, "zh-Hant-HK") == "zh-Hant", "language: Traditional Chinese system picks zh-Hant once it ships");
+            check(LauncherLanguage.Resolve(root, "zh-CN") == "zh-Hans", "language: Simplified Chinese system stays zh-Hans");
+            check(LauncherLanguage.Resolve(root, "ja-JP") == "ja" && LauncherLanguage.Resolve(root, "fr-FR") == "en", "language: a shipped language is picked, one not shipped falls back to English");
+            LauncherLanguage.SetAvailable([]);
             check(LauncherLanguage.Resolve(root, "en-US") == "en", "language: first launch, English system");
             check(LauncherLanguage.Resolve(root, "ja-JP") == "en", "language: first launch, Japanese system falls back to English");
             LauncherLanguage.Save(root, "en");

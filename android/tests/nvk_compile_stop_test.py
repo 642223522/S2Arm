@@ -91,11 +91,16 @@ int s2a_direct_provider_compile_context(struct s2a_direct_compile_context *c) {
     source = source.replace('int main(int argc, char **argv) {', 'int unused_shader_pool_main(int argc, char **argv) {')
     source += '\n#include "nvk_compile_stop_test.c"\n'
     variant = out/'fixture.c'; variant.write_text(source)
-    inc = (out, include, ROOT/'android/tests', ROOT/'runtime/include', native, native/'nvn', native/'direct', gfx, gfx/'replay', gfx/'gfx/nvn', gfx/'gfx/nvn/include', ROOT/'android/tests/vkhost')
-    libs = [gfx/'replay/nvn_unimpl.c', gfx/'replay/rp_state.c', native/'nvn/nvn_vk_compute_request.c', ROOT/'runtime/src/direct_host.c']
+    inc = (out, include, ROOT/'android/tests', ROOT/'runtime/include', native, native/'nvn', native/'direct', gfx, gfx/'replay', gfx/'gfx/nvn', gfx/'gfx/nvn/include', ROOT/'android/tests/vkhost', native/'gfx_plat')
+    libs = [gfx/'replay/nvn_unimpl.c', gfx/'replay/rp_state.c', native/'nvn/nvn_vk_compute_request.c',
+            native/'nvn/nvn_vk_prog_warm.c', ROOT/'runtime/src/direct_host.c']
     libs += [native/'direct'/f for f in ('source_store.c', 'control.c', 'input_identity.c', 'texture_facts.c', 'sha256.c', 'json.c', 'compile_request.c')]
     strip = '-Wl,-dead_strip' if sys.platform == 'darwin' else '-Wl,--gc-sections'
     cc = [os.environ.get('CC', 'cc'), '-std=c11', '-O1', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter', '-ffunction-sections', '-fdata-sections', '-pthread']
+    # 与 nvk_shader_pool_test.py 同一条：host_link 自动补链的 offline_library.c / program_cache.c
+    # 在 strict c11 glibc 下要特性宏（realpath / O_CLOEXEC / openat …）；只加给非 macOS（苹果 libc 不需要）。
+    if sys.platform != 'darwin':
+        cc.append('-D_GNU_SOURCE')
     cc += ['-I'+str(p) for p in inc]
     test_shader = native/'gfx_plat/nvk_shader.c'
     if sys.argv[1:] == ['--withdraw-stop']:
@@ -105,9 +110,14 @@ int s2a_direct_provider_compile_context(struct s2a_direct_compile_context *c) {
         test_shader = out/'without-stop.c'; test_shader.write_text(src.replace(before, 'void nvk_shader_stop(void) {}'))
     elif sys.argv[1:] == ['--withdraw-admit']:
         src = test_shader.read_text()
-        before = 'if (s & NVK_SHADER_STOP_BIT) return 0;'
-        assert src.count(before) == 1
-        test_shader = out/'without-admit.c'; test_shader.write_text(src.replace(before, 'if (0 && (s & NVK_SHADER_STOP_BIT)) return 0;'))
+        # 停局挡编译有两道：准入（停局位）与三段式认领时的停局检查（#996 起，后者在更前面先拦住）。
+        #   只撤准入，这条用例走不到准入就被认领挡下，负对照红不起来；所以两道一起撤，证明「停局会挡住编译」
+        for before, after in (('if (s & NVK_SHADER_STOP_BIT) return 0;', 'if (0 && (s & NVK_SHADER_STOP_BIT)) return 0;'),
+                              ('if (shader_stopped() || (bg && g_warm_quiesced)) return -1;', 'if (bg && g_warm_quiesced) return -1;'),
+                              ('if (claim < 0 && shader_stopped()) return -1;', 'if (0 && claim < 0) return -1;')):
+            assert src.count(before) == 1, before
+            src = src.replace(before, after)
+        test_shader = out/'without-admit.c'; test_shader.write_text(src)
     elif sys.argv[1:] == ['--withdraw-activation']:
         pass
     elif sys.argv[1:]:

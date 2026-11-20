@@ -7,6 +7,7 @@ namespace Ryujinx.Graphics.Gpu.Engine.MME
     /// <summary>
     /// Represents a execution engine that uses a Just-in-Time compiler for fast execution.
     /// </summary>
+    [System.Diagnostics.CodeAnalysis.RequiresDynamicCode("S2A：宏 JIT 用 Reflection.Emit 现生成方法；没有动态代码（NativeAOT）时由 Macro.cs 走 S2AMacroAot / 解释器")]
     class MacroJit : IMacroEE
     {
         private readonly MacroJitContext _context = new();

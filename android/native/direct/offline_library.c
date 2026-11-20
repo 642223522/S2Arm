@@ -210,7 +210,7 @@ int s2a_offline_library_fetch(const char *revision_root, const struct s2a_offlin
         if (realpath(path, item_real))
             fd = open(item_real, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
         else
-            return reject(-1, why, why_size, "离线库条目链接目标不存在：%s", path);
+            return reject(dirfd, why, why_size, "离线库条目链接目标不存在：%s", path);   // reject 关掉 profile 目录 fd
     }
     if (fd < 0) {
         int err = errno;

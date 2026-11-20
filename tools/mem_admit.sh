@@ -3,12 +3,16 @@
 #   bash tools/mem_admit.sh <类别> <款/键> [--cores N] -- <命令…>      （source 后也可直接调函数 mem_admit，参数同）
 #   本机起 dsh / Metal 重活一律经它（AGENTS.md）；仓库内 dsh_batch build 在 translator/dsh_batch.py 里自动包上（谁起的都过同一本账，核数 = -j）
 #   bash tools/mem_admit.sh --status                        看账：谁占着、峰值表
-# 规则：本类别 / 本款的峰值（查表）+ 账内所有活着的预留 ≤ 物理内存 × S2A_MEM_PCT（缺省 70）%，且本作业核数 + 账内核数 ≤ 物理核数（hw.physicalcpu；S2A_MEM_CORES_MAX 可改），两样都够才放行；
+# 规则：本类别 / 本款的峰值（查表）+ 账内所有活着的预留 ≤ 物理内存 × S2A_MEM_PCT（缺省 70）%，本款峰值 + 账内各单还没用到的预留 ≤ 此刻可用内存（_ma_avail10，认 S2A_MEM_AVAIL_MB），
+#   且本作业核数 + 账内核数 ≤ 物理核数（hw.physicalcpu；S2A_MEM_CORES_MAX 可改），三样都够才放行；
 #   核数 = --cores，缺省取调用方的 J / S2A_CPU_BAKE（tools/cores.sh 的分核口径），都没有记 0。11-04 维护者：准入只按内存放开后本机 CPU 打满（idle 0.2%、负载 41–45），每款都变慢。
 #   上限取全部物理核、不扣普查跑局道的余量：各作业的 J 在入口已按「别人实际在用的核」扣过（tools/cores.sh），再扣一次会重复。不够就排队，
 #   打一行【排队】写明等谁、差多少 GB（同写 admit.log）。队首放不下时后面放得下的可插空先走；前面有票排满 S2A_MEM_STARVE_S（缺省 900）秒、且它在本机当前「空闲 + 可回收」
 #   内存下放得进，才给它预留、不再插空（防饿死，见 _ma_try）；放不进的票降回普通排队，不锁全机（11-04 晚：生键 dsh/fixture 估 50 GB 排满 900 秒后挡住后面 12 张票）。
-#   单次预留本身 > 上限时只在账空且排在队首时放行（否则永远排不上），打一行【黄】；估值（非实测）超过本机物理内存 = 永远放不进，报【红】退出 125、不排队。
+#   单次预留本身 > 上限时只在账空且排在队首时放行（否则永远排不上），打一行【黄】。估值（非实测）超过上限时按上限预留、账空独占跑，跑完按本款实测（#1229）：
+#   原先估值超过物理内存就【红】退 125、不排队，而估值只是猜的——实测表里留一条跑飞的读数（#1122：dotnet 被 Jetsam 杀前物理足迹含压缩页 160+ GB），
+#   同类最大 × 1.5 就超过物理内存，这台 Mac 上所有没出过的游戏都永远出不了包（#1229 24 GB 机器估 214.8 GB）。读不到物理内存才报【红】退 125。
+#   同类估值只用正常跑完的样本：实测表第 7 列记退出码，非 0 的（被杀 / 出错，峰值反映的是失败）与没记退出码却超过本机物理内存的旧行（只有跑飞会这样）不进同类最大值。
 # 账本 = S2A_MEM_DIR（缺省 run 区 locks/mem，10-23 建的空目录，原先没人用）：use.<pid> 放行中的预留、q.<纳秒>.<pid> 排队票、peak.tsv 实测峰值表、admit.log。
 #   单测不得记进这本共享账（11-04 两次：direct_profile_test 的 dsh/fixture 估 50 GB 排在真出库前面）：门禁步内（GATE_IN_STEP）或单测（S2A_TEST_ROOT）里
 #   没显式给 S2A_MEM_DIR 时报【红】退出 125、不碰缺省目录（同 维护方工具 的单测约定；要真记共享账就显式给 S2A_MEM_DIR）。
@@ -41,6 +45,8 @@ _ma_wait_note() { [ -n "$MA_WAITF" ] || return 0; printf '%s\t%s\n' "$MA_ME" "$1
 _ma_wait_clear() { [ -n "$MA_WAITF" ] && [ -f "$MA_WAITF" ] && [ "$(cut -f1 "$MA_WAITF" 2> /dev/null)" = "${MA_ME:-}" ] && rm -f "$MA_WAITF"; return 0; }
 # shellcheck source=plock.sh
 source "$MA_ROOT/tools/plock.sh"
+# shellcheck source=cores.sh
+source "$MA_ROOT/tools/cores.sh"   # s2a_avail_mb（此刻可用内存，认 S2A_MEM_AVAIL_MB）、s2a_direct_mb（直连库编译内存模型）：与出包分核同一份口径
 
 _ma_say() { echo "$*" >&2; echo "$(date '+%m-%d %H:%M:%S') $*" >> "$MA_LOG" 2> /dev/null; return 0; }
 _ma_t10() { awk -v x="$1" 'BEGIN{printf "%d", int(x*10+0.99)}'; }   # GB → 十分之一 GB（向上取整）：bash 3.2 没浮点，账内全用整数
@@ -59,16 +65,25 @@ _ma_total10() {
   awk -v b="$(_ma_physbytes)" -v p="${S2A_MEM_PCT:-70}" 'BEGIN{printf "%d", b/1073741824*p/100*10}'
 }
 _ma_find() { [ -f "$1" ] || return 0; awk -F'\t' -v c="$2" -v k="$3" '/^#/{next} $1==c&&$2==k{print $3, $4; exit}' "$1"; }
+# 实测行是不是跑飞值（#1312 评审）：参数 GB 值、第 7 列退出码 → 打印原因（是）/ 空（正常）。退出码非 0，或没记退出码却超过本机物理内存（只有跑飞会这样）
+_ma_badrow() { awk -v g="$1" -v r="$2" -v pb="$(_ma_physbytes)" 'BEGIN{if (r != "" && r != "0") print "实测跑失败（退出码 " r "）"; else if (r == "" && pb > 0 && g*1073741824 > pb) print "旧实测超过物理内存（跑飞）"}'; }
 # 实测表里本类别「实」行：样本数 ≥ S2A_MEM_CLASS_MIN_N（缺省 10）→ 「最大值 × S2A_MEM_CLASS_X（缺省 1.5） 同类实测最大×1.5」；样本不够 → 空
-_ma_cmax() { [ -f "$1" ] || return 0; LC_ALL=C awk -F'\t' -v c="$2" -v n0="${S2A_MEM_CLASS_MIN_N:-10}" -v x="${S2A_MEM_CLASS_X:-1.5}" '/^#/{next} $1==c&&$4=="实"{n++; if ($3+0>m) m=$3+0} END{if (n >= n0 && m > 0) printf "%.1f 同类实测最大×%s\n", m*x, x}' "$1"; }
+#   只认正常跑完的样本（#1229）：第 7 列退出码非 0 的、没记退出码却超过本机物理内存的旧行（跑飞被杀才会这样）剔除，来源里写明剔了几条
+_ma_cmax() { [ -f "$1" ] || return 0; LC_ALL=C awk -F'\t' -v c="$2" -v n0="${S2A_MEM_CLASS_MIN_N:-10}" -v x="${S2A_MEM_CLASS_X:-1.5}" -v pb="$(_ma_physbytes)" '/^#/{next} $1==c&&$4=="实"{if (($7 != "" && $7 != "0") || ($7 == "" && pb > 0 && $3*1073741824 > pb)) {d++; next} n++; if ($3+0>m) m=$3+0} END{if (n >= n0 && m > 0) printf "%.1f 同类实测最大×%s%s\n", m*x, x, (d ? "（剔除跑失败 / 超物理内存的 " d " 条）" : "")}' "$1"; }
 _ma_need() {   # 类别 键 → 「十分之一GB 来源」（实 / 估 / 生键·同类实测最大×1.5 / 生键·核数比例…；实测表、估值表都没有本键 = 生键）；要先有 MA_TOTAL10 / MA_NCORES / MA_CORES
   local v src c n p10 f
-  v=$(_ma_find "$MA_TAB" "$1" "$2"); [ -n "$v" ] || v=$(_ma_find "$MA_SEED" "$1" "$2")
+  v=$(_ma_find "$MA_TAB" "$1" "$2")
+  # 本款自己那行是跑飞值：当估值处理（来源不是「实」→ 参与封顶上限），跑成功后由 _ma_writeback 按新实测覆盖（#1312 评审）
+  if [ -n "$v" ]; then f=$(_ma_badrow "${v%% *}" "$(awk -F'\t' -v c="$1" -v k="$2" '/^#/{next} $1==c&&$2==k{print $7; exit}' "$MA_TAB")"); [ -n "$f" ] && v="${v%% *} $f"; fi
+  [ -n "$v" ] || v=$(_ma_find "$MA_SEED" "$1" "$2")
   [ -n "$v" ] || { v=$(_ma_cmax "$MA_TAB" "$1"); [ -n "$v" ] && v="${v%% *} 生键·${v#* }"; }
   if [ -z "$v" ]; then   # ④ 生键：核数比例，封顶上限一半；同类有不够数的样本时取大
     c=$MA_CORES; [ "$c" -ge 1 ] || c=1; [ "$c" -le "$MA_NCORES" ] || c=$MA_NCORES
     p10=$((MA_TOTAL10 * c / MA_NCORES)); [ "$p10" -le $((MA_TOTAL10 / 2)) ] || p10=$((MA_TOTAL10 / 2))
     v="$(_ma_gb "$p10") 生键·核数比例（${c}/${MA_NCORES} 核 × 上限 $(_ma_gb "$MA_TOTAL10") GB，封顶一半）"
+    # 直连库（dsh）按实测模型：dsh 主进程 + 1 个 metal 最大峰值 + (J − 1) × metal p90（tools/cores.sh s2a_direct_mb，S2A_DIRECT_J 就是按它反推的）。
+    #   原先估值表 dsh * 7.8（52 款大机器多路实测最大 5.2 × 1.5）对 8 GB 机器 1–2 路的直连库一律预留 7.8 GB，超过上限只能独占跑（实际约 1.2 GB）
+    [ "$1" = dsh ] && { p10=$(( ($(s2a_direct_mb "$c") * 10 + 1023) / 1024 )); v="$(_ma_gb "$p10") 生键·直连库实测模型（${c} 路：主进程 + metal 峰值 + $((c - 1)) × metal p90）"; }
     n=$(S2A_MEM_CLASS_MIN_N=1 _ma_cmax "$MA_TAB" "$1")
     [ -n "$n" ] && [ "$(_ma_t10 "${n%% *}")" -gt "$p10" ] && { v="${n%% *} 生键·同类实测最大×${S2A_MEM_CLASS_X:-1.5}（样本不足 ${S2A_MEM_CLASS_MIN_N:-10}，大于核数比例 $(_ma_gb "$p10") GB）"; p10=$(_ma_t10 "${n%% *}"); }
     # 类别下限（审计 #1534 P1-113）：仓库估值表里「<类别><TAB>*」一行 = 这一类在已量过的机器上的实测上界（不是缺省值），只在这一档取大，
@@ -81,13 +96,23 @@ _ma_need() {   # 类别 键 → 「十分之一GB 来源」（实 / 估 / 生键
 }
 _ma_phys10() { awk -v b="$(_ma_physbytes)" 'BEGIN{printf "%d", b/1073741824*10}'; }
 # 本机当前「空闲 + 可回收」内存（十分之一 GB）：vm_stat 的 free + inactive + speculative 页（macOS 不换页即可收回的部分）；Linux 取 MemAvailable。
-#   S2A_MEM_AVAIL_GB 可直接给（单测）。读不到时回物理内存（等同旧行为：防饿死不看实机内存）
+#   S2A_MEM_AVAIL_GB 可直接给（单测）；其余取 tools/cores.sh s2a_avail_mb（S2A_MEM_AVAIL_MB 覆盖 > vm_stat 空闲 + 非活跃 + 预读 + 可清除 > MemAvailable），
+#   与出包分核（本单内存预算 = 可用 ÷ 2）同一个读数：原先这里自己读 vm_stat、不认 S2A_MEM_AVAIL_MB，8 GB 机器模拟可用 4096 MB 时准入仍按物理内存放。读不到时回物理内存
 _ma_avail10() {
   [ -n "${S2A_MEM_AVAIL_GB:-}" ] && { _ma_t10 "$S2A_MEM_AVAIL_GB"; return; }
-  local v
-  v=$(vm_stat 2> /dev/null | awk '/page size of/{for (i=1;i<=NF;i++) if ($i=="of") ps=$(i+1)} /^Pages (free|inactive|speculative):/{gsub(/\./,"",$NF); n+=$NF} END{if (ps>0 && n>0) printf "%d", n*ps/1073741824*10}')
-  [ -n "$v" ] || v=$(awk '/^MemAvailable:/{printf "%d", $2/1048576*10}' /proc/meminfo 2> /dev/null)
-  echo "${v:-$(_ma_phys10)}"
+  local v; v=$(s2a_avail_mb)
+  if [ "$v" -gt 0 ] 2> /dev/null; then echo $(( (v * 10 + 1023) / 1024 )); else _ma_phys10; fi
+}
+# 账内各单「预留了还没用到」的合计（十分之一 GB）：每单 max(0, 预留 − 至今实测峰值 pk.<pid>)。此刻可用内存里已扣掉它们用到的部分，没用到的还会再要，
+#   新单要的 + 这个合计 ≤ 此刻可用才放（只按预留记账会把别人的程序 / 玩家正开着的 App 占的内存当成空的；只看可用又会把刚放行、还没涨上去的单当成空的）
+_ma_unreal10() {
+  local f p r k s=0
+  for f in "$MA_DIR"/use.*; do [ -e "$f" ] || continue
+    p=$(cut -f1 "$f" 2> /dev/null); r=$(cut -f2 "$f" 2> /dev/null); case $p$r in ''|*[!0-9]*) continue;; esac
+    k=$(cat "$MA_DIR/pk.$p" 2> /dev/null); case $k in ''|*[!0-9]*) k=0;; esac
+    k=$(( (k * 10 + 1048575) / 1048576 )); [ "$r" -gt "$k" ] && s=$((s + r - k))
+  done
+  echo "$s"
 }
 _ma_reap() {   # 清死账 / 死排队票（持有者进程不在了）
   local f p
@@ -128,11 +153,16 @@ _ma_try() {
     MA_WHY="前面 $(awk -F'\t' '{printf "%s/%s(pid %s)", $3, $4, $1}' "$old" 2> /dev/null) 已排满 ${S2A_MEM_STARVE_S:-900} 秒、本机空闲 + 可回收放得进，给它预留、不插空（账内已占 $(_ma_gb "$used") GB / 上限 $(_ma_gb "$MA_TOTAL10") GB）"
     return 2
   fi
-  usedc=$(_ma_usedc)
-  if { [ $((used + MA_NEED10)) -le "$MA_TOTAL10" ] && [ $((usedc + MA_CORES)) -le "$MA_NCORES" ]; } || { [ "$used" -eq 0 ] && [ "$usedc" -eq 0 ] && [ "$head" = "$MA_TK" ]; }; then
+  usedc=$(_ma_usedc); [ -n "$av" ] || av=$(_ma_avail10); local un; un=$(_ma_unreal10)
+  # 三样都够才放：账内预留 + 本单 ≤ 上限（物理内存 × S2A_MEM_PCT）、本单 + 账内没用到的预留 ≤ 此刻可用内存、核数够。账空且排在队首照旧放行（不堵门：账外的程序占着也只能等它自己让）
+  if { [ $((used + MA_NEED10)) -le "$MA_TOTAL10" ] && [ $((MA_NEED10 + un)) -le "$av" ] && [ $((usedc + MA_CORES)) -le "$MA_NCORES" ]; } || { [ "$used" -eq 0 ] && [ "$usedc" -eq 0 ] && [ "$head" = "$MA_TK" ]; }; then
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$MA_ME" "$MA_NEED10" "$MA_CLS" "$MA_KEY" "$(date +%s)" "$MA_CORES" > "$MA_USE"
     rm -f "$MA_TK"; MA_USED10=$used; MA_USEDC=$usedc
     return 0
+  fi
+  if [ $((used + MA_NEED10)) -le "$MA_TOTAL10" ] && [ $((MA_NEED10 + un)) -gt "$av" ]; then
+    MA_WHY="需 $(_ma_gb "$MA_NEED10") GB（${MA_SRC}），账内各单还没用到的预留 $(_ma_gb "$un") GB，本机此刻可用 $(_ma_gb "$av") GB，差 $(_ma_gb $((MA_NEED10 + un - av))) GB；等：$(_ma_list use)"
+    return 1
   fi
   if [ $((used + MA_NEED10)) -le "$MA_TOTAL10" ]; then
     MA_WHY="需 ${MA_CORES} 核，账内已占 ${usedc} 核 / 上限 ${MA_NCORES} 核（物理核数），差 $((usedc + MA_CORES - MA_NCORES)) 核；内存够（需 $(_ma_gb "$MA_NEED10") GB，已占 $(_ma_gb "$used") GB / 上限 $(_ma_gb "$MA_TOTAL10") GB）；等：$(_ma_list use)"
@@ -143,14 +173,15 @@ _ma_try() {
 }
 # 命令签名 = 前 3 个参数的文件名部分（去目录：同一命令在不同工作树里路径不同），写在实测表第 6 列
 _ma_sig() { local a s=; for a in "${@:1:3}"; do s="$s ${a##*/}"; done; s=${s# }; printf '%s' "${s//$'\t'/ }" | tr '\n' ' '; }
-# 写回实测峰值表：类别 键 十分之一GB 退出码 命令签名。退出 0 覆盖、非 0 只升不降；
+# 写回实测峰值表：类别 键 十分之一GB 退出码 命令签名（第 7 列记退出码：非 0 的行不当同类估值的样本，见 _ma_cmax）。退出 0 覆盖、非 0 只升不降；
 #   往低改只认同一命令（11-04 Switch2 线借 dsh/memrt_host0 的键跑别的命令，实测 0.4 把 5.7 覆盖了 → 该键下次少预留、可能吃光内存）：
 #   表里本键签名与本次不同（或旧行没签名）时只升不降，把本次签名记上；签名相同才按实测往低改
 _ma_writeback() {
-  local row old=0 osig= new=$3 sig=${5:-} g
-  row=$(awk -F'\t' -v c="$1" -v k="$2" '/^#/{next} $1==c&&$2==k{print $3 "\t" $6; exit}' "$MA_TAB" 2> /dev/null)
-  [ -n "$row" ] && { old=$(_ma_t10 "${row%%$'\t'*}"); osig=${row#*$'\t'}; }
-  if [ -n "$row" ] && [ "$new" -lt "$old" ] && { [ "$4" != 0 ] || [ "$osig" != "$sig" ]; }; then
+  local row old=0 osig= obad= new=$3 sig=${5:-} g
+  row=$(awk -F'\t' -v c="$1" -v k="$2" '/^#/{next} $1==c&&$2==k{print $3 "\t" $6 "\t" $7; exit}' "$MA_TAB" 2> /dev/null)
+  [ -n "$row" ] && { old=$(_ma_t10 "${row%%$'\t'*}"); osig=${row#*$'\t'}; obad=$(_ma_badrow "${row%%$'\t'*}" "${osig#*$'\t'}"); osig=${osig%%$'\t'*}; }
+  # 旧行是跑飞值（退出码非 0 / 超物理内存的旧行）：退出码 0 的新实测直接覆盖，不受借键保护（#1312 评审：否则这款以后每次都独占跑）
+  if [ -n "$row" ] && [ "$new" -lt "$old" ] && { [ "$4" != 0 ] || { [ -z "$obad" ] && [ "$osig" != "$sig" ]; }; }; then
     [ "$4" = 0 ] && [ -n "$osig" ] && _ma_say "【黄】mem_admit $1/${2}：本次命令「${sig}」与该键登记的「${osig}」不同，实测 $(_ma_gb "$new") GB 低于表里 $(_ma_gb "$old") GB，不往低改（借键不污染别人的实测）"
     [ "$4" = 0 ] && [ -z "$osig" ] || return 0
     new=$old
@@ -158,7 +189,7 @@ _ma_writeback() {
   [ "$4" != 0 ] && [ "$new" -le "$old" ] && return 0
   g=$(_ma_gb "$new")
   [ -f "$MA_TAB" ] || : > "$MA_TAB"
-  awk -F'\t' -v OFS='\t' -v c="$1" -v k="$2" -v g="$g" -v d="$(date +%F)" -v sg="$sig" '$1==c&&$2==k{next} {print} END{print c, k, g, "实", d, sg}' "$MA_TAB" > "$MA_TAB.tmp.$$" && mv "$MA_TAB.tmp.$$" "$MA_TAB"
+  awk -F'\t' -v OFS='\t' -v c="$1" -v k="$2" -v g="$g" -v d="$(date +%F)" -v sg="$sig" -v rc="$4" '$1==c&&$2==k{next} {print} END{print c, k, g, "实", d, sg, rc}' "$MA_TAB" > "$MA_TAB.tmp.$$" && mv "$MA_TAB.tmp.$$" "$MA_TAB"
 }
 mem_admit() {
   local rc r lp t0=$SECONDS tsay=$SECONDS said= src smp pk new10 key cls
@@ -177,9 +208,14 @@ mem_admit() {
   read -r MA_NEED10 src <<< "$(_ma_need "$cls" "$key")"; MA_SRC=$src   # 来源写进排队行（11-04：看得出等的是缺省估值还是实测）
   mkdir -p "$MA_DIR" || return 2
   case $src in 生键*) _ma_say "【黄】mem_admit $cls/${key}：生键（实测表、估值表都没有本键），按${src#生键·}估 $(_ma_gb "$MA_NEED10") GB";; esac
-  if [ "$src" != 实 ] && [ "$MA_NEED10" -gt "$(_ma_phys10)" ]; then
-    _ma_say "【红】mem_admit $cls/${key}：估值 $(_ma_gb "$MA_NEED10") GB（${src}）超过本机物理内存 $(_ma_gb "$(_ma_phys10)") GB，永远放不进，不排队、不起"
+  if [ "$(_ma_phys10)" -le 0 ] && [ -z "${S2A_MEM_TOTAL_GB:-}" ]; then   # 给了 S2A_MEM_TOTAL_GB 就按它定上限（#1312 评审：原先给了它就能跑）
+    _ma_say "【红】mem_admit $cls/${key}：读不到本机物理内存（sysctl hw.memsize、/proc/meminfo 都没有）也没给 S2A_MEM_TOTAL_GB，算不出放不放得下，不起"
     return 125
+  fi
+  # 估值（非实测）超过上限：按上限预留 = 账空独占跑，跑完写回本款实测（#1229：原先超过物理内存就永久拒绝，一条跑飞的同类读数让本机所有新游戏出不了包）
+  if [ "$src" != 实 ] && [ "$MA_NEED10" -gt "$MA_TOTAL10" ]; then
+    _ma_say "【黄】mem_admit $cls/${key}：估值 $(_ma_gb "$MA_NEED10") GB（${src}）超过上限 $(_ma_gb "$MA_TOTAL10") GB（本机物理内存 $(_ma_gb "$(_ma_phys10)") GB），估值不是实测：按上限预留、账空独占跑，跑完按本款实测"
+    MA_NEED10=$MA_TOTAL10; src="${src}，封顶上限独占"
   fi
   # 优先类别（11-07 维护者：上线在即启动器最高优先，它的 App 打包在排队等 CPU）：S2A_MEM_PRIO_CLASSES（缺省 appbuild）里的类别排队票名带 0 前缀、
   #   排在所有普通票前面；有活的优先票在等时，普通票不插空（_ma_try 返回 2）。不抢已放行的作业

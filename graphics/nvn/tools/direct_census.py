@@ -6,7 +6,7 @@
       没有再读产物根里的直连库映射表 shaders/direct/shader_map.tsv；都没有就只按容器判能不能离线翻。
 每行是一行 Markdown 表格，列见 HEADER；读法与判据见 docs/研究/直连泛化普查.md。
 事实取自仓库内 profile_guess.py、loader_census.py 与 nvn_got_census.py；MIT 来源保留在各文件，本文件负责分类与结论。"""
-import re, subprocess, sys
+import io, re, subprocess, sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -37,7 +37,7 @@ def casc_shaders(root):
         # 同原先 (Path(root) / 'romfs').rglob(name)：任意深度、文件与目录都算、名字逐字比对
         for p in sorted(Path(dp) / f for dp, dn, fn in romfs_list.walk(Path(root) / 'romfs') for f in dn + fn if f == name):
             try:
-                with p.open(errors='replace') as f:
+                with io.TextIOWrapper(romfs_list.open_file(p), errors='replace') as f:   # 只有 romfs.std 镜像时从镜像读（盘上有同 p.open）
                     if not f.readline().startswith('FileId!STRING:0|'): continue
                     stages, n, size = {}, 0, 0
                     for ln in f:

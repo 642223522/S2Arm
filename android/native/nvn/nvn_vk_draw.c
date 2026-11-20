@@ -415,11 +415,12 @@ static void nvk_source_pin_log(const char *why) {
     s2a_source_pin_stats(&ps);
     s2a_source_stats(&entries, &bytes, &dropped);
     draw_log("源快照 pin(%s)：pinned_entries=%u pins=%llu pin_calls=%llu pin_misses=%llu unpins=%llu "
-             "evict_skipped=%llu keep_fail_bytes=%llu keep_fail_slots=%llu | entries=%u bytes=%u dropped=%llu",
+             "evict_skipped=%llu keep_fail_bytes=%llu keep_fail_slots=%llu keep_over_budget=%llu | entries=%u bytes=%u dropped=%llu",
              why, ps.pinned_entries, (unsigned long long)ps.pins, (unsigned long long)ps.pin_calls,
              (unsigned long long)ps.pin_misses, (unsigned long long)ps.unpins,
              (unsigned long long)ps.evict_skipped, (unsigned long long)ps.keep_fail_bytes,
-             (unsigned long long)ps.keep_fail_slots, entries, bytes, (unsigned long long)dropped);
+             (unsigned long long)ps.keep_fail_slots, (unsigned long long)ps.keep_over_budget,
+             entries, bytes, (unsigned long long)dropped);
 }
 
 static void nvk_program_stats(void) {
@@ -1590,7 +1591,9 @@ static struct nvk_cached_program *nvk_program_for_draw(struct s2a_vk_device *dev
                     uint8_t *lbytes = NULL;
                     size_t llen = 0;
                     char lwhy[192] = "";
-                    int lrc = s2a_libpack_program_v1(lp_pack, state->keys, state->stages,
+                    // 几何程序（vs+fs+gs）要绘制图元与本局 profile 的 geometryShader（与现编请求同源）
+                    const struct s2a_libpack_gfx lgfx = { nvk_input_topology(state->prim), pc.profile_json, pc.profile_bytes };
+                    int lrc = s2a_libpack_program_v1(lp_pack, state->keys, state->stages, &lgfx,
                                                      pc.direct_abi, pc.profile_hash, pc.translator_closure,
                                                      &lbytes, &llen, lwhy, sizeof lwhy);
                     if (lrc == S2A_LIBPACK_HIT) {

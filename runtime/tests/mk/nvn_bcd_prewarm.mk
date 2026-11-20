@@ -1,6 +1,6 @@
 # native-test-nvn_bcd_prewarm：本单测的构建规则（runtime/build.mk 末尾按 runtime/tests/mk/*.mk 收进来；新单测只新增一个分片，不改 build.mk）
 NATIVE_TEST_OWN += nvn_bcd_prewarm
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 # 无 BC 时解压管线在设备初始化时交后台去建（#582）：有 / 无 BC 两种、Metal 4 / Metal 3 两路
 $(BUILD)/tests/t_nvn_bcd_prewarm: graphics/nvn/tests/t_nvn_bcd_prewarm.m $(NVN_MTL_DEPS) graphics/nvn/gfx/nvn/nvn_protos.h $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
 	$(CC) $(CFLAGS) -fobjc-arc -Wno-unused-function -Wno-unguarded-availability-new -Wno-unguarded-availability \

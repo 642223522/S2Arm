@@ -4,6 +4,8 @@
 #include "nvn_plat.h"
 #include "rp_exec.h"
 #include "direct/vk_device.h"
+#include "nvn/nvn_warm.h"   // 预热调度：会话 open 后起、Stop 前收（nvn_warm.h 合同）
+#include "nvn/nvn_vk_pipe_demand.h"   // 首用管线后台构建：会话 open 后起、Stop 前收（nvn_vk_pipe_demand.h 合同）
 #include <android/log.h>
 #include <android/native_window.h>
 #include <pthread.h>
@@ -20,7 +22,19 @@ static uint64_t mono_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC
 void nvk_session_request_stop(void) {
     uint64_t expected = 0, now = mono_ns();
     atomic_compare_exchange_strong_explicit(&g_stop_started, &expected, now, memory_order_acq_rel, memory_order_acquire);
+    // 首用管线后台构建先收（有界 join：丢弃未开工队列、只等当前一条建完），且必须在 nvk_shader_stop 之前：
+    // 该线程要借用程序、调 nvn_gpu_pipe_get，着色器准入还开着才借得到。
+    nvn_vk_pipe_demand_stop();
     nvk_shader_stop();
+    // 预热线程在着色器准入关闭之后收：放在 nvk_shader_stop 之后是硬要求——准入关了新工作才会被
+    // 各 owner 拒绝；迟到的结果由 owner 丢弃。
+    // nvk_warm_stop 有界（≤500 毫秒统一截止）且**不做文件 IO**：清单落盘归预热线程自己（没有预热线程时
+    // 归一次性 saver），这里只等「静默 + 落盘完成」。它占的是本会话 700 毫秒硬界限里的那一段，所以
+    // 非 0 必须在日志里点名，收尾超时的读数才归得了因。
+    if (nvk_warm_stop() != 0)
+        __android_log_print(ANDROID_LOG_ERROR, TAG,
+                            "【红】nvk stop: warm 预热的静默/清单落盘没在 500 毫秒统一截止内完成"
+                            "（本项超时；清单没写盘、旧文件保留；占的是会话 700 毫秒硬界限）");
 }
 uint64_t nvk_session_stop_deadline(void) {
     uint64_t start = atomic_load_explicit(&g_stop_started, memory_order_acquire);
@@ -74,20 +88,24 @@ int nvk_session_open(struct s2a_vk_device *dev, const char *cache_dir, char *why
     //   16 页       207 次、12 毫秒、37 毫秒，10.9 帧
     //   64 页       54 次、2 毫秒、34 毫秒，11.1 帧
     // 块越大一次缺页后要重传的字节越多，但一次缺页加两次改保护的代价抵得上拷两百多 KB。debug.s2a.nvk_chunk_pages 可改（0 = 逐页）。
-    { extern void nvn_dirty_set_chunk_pages(uint32_t); extern int nvn_plat_flag(const char *, int);
+    { extern void nvn_dirty_set_chunk_pages(uint32_t); extern int nvn_dirty_log_configure(int); extern int nvn_plat_flag(const char *, int);
       int cp = nvn_plat_flag("nvk_chunk_pages", 64);
-      nvn_dirty_set_chunk_pages(cp > 0 ? (uint32_t)cp : 0); __android_log_print(ANDROID_LOG_INFO, TAG, "nvk session: 写跟踪保护分块 %d 页", cp); }
-    // 写跟踪「取范围」的线程内备忘（#974）：缺省开（每线程 2^10 项）；debug.s2a.nvk_span_memo=0 关，n = 每线程 2^n 项（A/B 对照用）。
-    // 弱引用：不挂这份写跟踪实现的宿主单测不用替身。
-    { extern void nvn_dirty_set_span_memo(unsigned) __attribute__((weak)); extern int nvn_plat_flag(const char *, int);
-      int sm = nvn_plat_flag("nvk_span_memo", -1);
-      if (sm >= 0 && nvn_dirty_set_span_memo) { nvn_dirty_set_span_memo((unsigned)sm); __android_log_print(ANDROID_LOG_INFO, TAG, "nvk session: 写跟踪取范围备忘 %d（0 = 关，n = 每线程 2^n 项）", sm); } }
+      nvn_dirty_set_chunk_pages(cp > 0 ? (uint32_t)cp : 0); __android_log_print(ANDROID_LOG_INFO, TAG, "nvk session: 写跟踪保护分块 %d 页", cp);
+      // 脏页追加日志（#1501 A②，缺省开，debug.s2a.nvk_buf_dirtylog=0 关）：必须在登记任何池之前配置；回放核心按同一开关决定用不用
+      if (nvn_plat_flag("nvk_buf_dirtylog", 1) && !nvn_dirty_log_configure(1))
+          __android_log_print(ANDROID_LOG_WARN, TAG, "【黄】脏页追加日志未启用：已有登记池或所需原子操作非无锁，继续逐页核对"); }
     g_ready = 1;
     nvn_gpu_caps caps; nvn_gpu_caps_get(&caps);
-    __android_log_print(ANDROID_LOG_INFO, TAG, "nvk session: backend open on %s (api %u, caps %#x, 单次分配上限 %llu, SSBO 范围上限 %llu)",
+    const char *drv_name = dev && dev->driver_name[0] ? dev->driver_name : "?";
+    __android_log_print(ANDROID_LOG_INFO, TAG, "nvk session: backend open on %s (api %u, caps %#x, 单次分配上限 %llu, SSBO 范围上限 %llu, driver=%s driverID=%d)",
                         caps.name, caps.api_version, caps.caps,
-                        (unsigned long long)caps.max_buf_bytes, (unsigned long long)caps.max_ssbo_range);
+                        (unsigned long long)caps.max_buf_bytes, (unsigned long long)caps.max_ssbo_range,
+                        drv_name, dev ? dev->driver_id : -1);
     pthread_mutex_unlock(&g_mu);
+    // 开局预热（iOS 蓝本：nvn_mtl.m warm_start 在 shader map 读完就起，后台把上一局清单建出来）。
+    // 放在解锁之后：预热线程会取会话缓存目录 / 后端锁，不在 g_mu 里起线程。
+    nvk_warm_start();
+    nvn_vk_pipe_demand_start();
     return 0;
 }
 
@@ -108,14 +126,20 @@ static void dump_unimpl(void) {
     for (char *p = buf, *e; n && (e = strchr(p, '\n')); p = e + 1) { *e = 0; __android_log_print(ANDROID_LOG_INFO, TAG, "nvk unimpl\t%s", p); }
 }
 
+// 逐帧帧日志转储（android/native/nvn/nvn_vk_frame_log.c，debug.s2a.frame_log，缺省关；#1501 D①）：旧层在 adapter shutdown 转储，
+//   C# 只在通用模式收局时转（AndroidGameRuntime.Cleanup），新回放层原先没有人转。放在后端关闭之后：在途段都完成了，
+//   最后一帧的 GPU 读数也已结出。弱引用：会话宿主夹具不链帧日志。开关关着 / 没记过帧时什么都不做。
+void nvn_vk_frame_log_dump(void) __attribute__((weak));
 int nvk_session_close(void) {
     pthread_mutex_lock(&g_mu);
     if (!g_ready) { pthread_mutex_unlock(&g_mu); return 0; }
     dump_unimpl();
     rp_present_set_surface(NULL, 0); g_surface = NULL;   // 还接着的面由 nvn_gpu_close 在在途段清空后收掉
     { uint64_t sh = 0, dp = 0; rp_present_stats(&sh, &dp); __android_log_print(ANDROID_LOG_INFO, TAG, "nvk session: presents shown=%llu dropped=%llu", (unsigned long long)sh, (unsigned long long)dp); }
+    nvn_vk_pipe_demand_stop();   // 幂等：确保后台建管线线程在设备关闭前已 join
     nvn_gpu_err err = {0};
     nvn_gpu_rc rc = nvn_gpu_close(2000000000ull, &err);
+    if (nvn_vk_frame_log_dump) nvn_vk_frame_log_dump();
     if (!nvn_gpu_ok(rc)) {
         __android_log_print(ANDROID_LOG_ERROR, TAG, "【红】nvk session: backend close %d: %s", rc.code, err.why);
         pthread_mutex_unlock(&g_mu);

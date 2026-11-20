@@ -144,6 +144,10 @@ class BatchCli(unittest.TestCase):
                 rc, got = self.run_cli("mark", "--game", A, "--platform", "iphone", "--state", "running")
                 self.assertEqual(rc, 1); self.assertIn("没有进行中的批次", got["error"])
 
+    def test_create_rejects_unknown_platform_with_text(self):   # 11-15：不认识的平台明确报错（原先悄悄滤掉，上层不拦就成了静默跳过）
+        with self.assertRaisesRegex(ValueError, "不认识的出包平台：ohos"):
+            batch.create([{"gameId": "0100000000010000", "platforms": ["iphone", "ohos"]}])
+
     def test_create_does_not_overwrite_unfinished(self):   # 审计 P2-270：暂停 / 没出完的批次不被下一次 create 盖掉；出完了才能新建
         one = json.dumps({"items": [{"gameId": A, "platforms": ["iphone"]}]}); two = json.dumps({"items": [{"gameId": B, "platforms": ["iphone"]}]})
         self.run_cli("create", "--json", one)

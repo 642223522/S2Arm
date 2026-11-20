@@ -55,6 +55,41 @@ int main(void) {
         CHECK(bm == NULL && ba == 0, "没初始化成功的缓冲：Map 应 NULL（得 %p）、地址应 0（得 %#llx）", bm, (unsigned long long)ba);
         printf("✓ 池没有存储、缓冲初始化失败后 Map / 取地址：回空，不崩\n");
     }
+    // 审计 P1-190（同 #25）：从没 Initialize 过的对象（内容是垃圾）上调刷新 / 作废 / 收尾。期望：宿主不崩、不解引用里面的指针；收尾两次也不崩。
+    //   反证：去掉 hle_nvn.c 里池收尾的魔数核对 / 纹理收尾只看 serial / 缓冲刷新不过 buf_dead → 这里解引用 0xa5a5… 段错误
+    {
+        NVNbuffer buf; NVNmemoryPool pool; NVNtexture tex;
+        memset(&buf, 0xa5, sizeof buf); memset(&pool, 0xa5, sizeof pool); memset(&tex, 0xa5, sizeof tex);
+        API(nvnBufferFlushMappedRange)(&buf, 0, 64); API(nvnBufferInvalidateMappedRange)(&buf, 0, 64);
+        API(nvnMemoryPoolFlushMappedRange)(&pool, 0, 64);   // P1-190 余项：池刷新同样先核魔数（0xa5 填的 mem 非空，原先照样 ft_flush 去读）
+        API(nvnMemoryPoolFinalize)(&pool); API(nvnMemoryPoolFinalize)(&pool);
+        API(nvnTextureFinalize)(&tex); API(nvnTextureFinalize)(&tex);
+        API(nvnBufferFinalize)(&buf);
+        checks++; printf("✓ 没初始化过的缓冲刷新 / 作废、池刷新、池收尾两次、纹理收尾两次：不崩\n");
+    }
+    // 11-16 D-XDQS：缓冲 Finalize 之后游戏仍取地址（真驱动 Finalize 不清对象里存的地址，照样回原值）。期望按真驱动语义：池还活着时 Finalize 后
+    //   GetAddress = 原地址、Map = 原映射；池也 Finalize 了 → 回 0 / NULL（不解引用）；Finalize 两次不崩。反证：原先 Finalize 把魔数写 0 → 这里回 0，游戏把 0 + 偏移当地址
+    {
+        void *mem = NULL; CHECK(posix_memalign(&mem, 65536, POOL) == 0, "分配存储"); memset(mem, 0, POOL);
+        NVNmemoryPool pool; NVNmemoryPoolBuilder pb; memset(&pool, 0, sizeof pool); memset(&pb, 0, sizeof pb);
+        API(nvnMemoryPoolBuilderSetDefaults)(&pb); API(nvnMemoryPoolBuilderSetDevice)(&pb, &dev);
+        API(nvnMemoryPoolBuilderSetStorage)(&pb, mem, POOL); API(nvnMemoryPoolBuilderSetFlags)(&pb, NVN_MEMORY_POOL_FLAGS_CPU_CACHED | NVN_MEMORY_POOL_FLAGS_GPU_CACHED);
+        CHECK(API(nvnMemoryPoolInitialize)(&pool, &pb), "池初始化");
+        NVNbuffer buf; NVNbufferBuilder bb; memset(&buf, 0, sizeof buf); memset(&bb, 0, sizeof bb);
+        API(nvnBufferBuilderSetDefaults)(&bb); API(nvnBufferBuilderSetDevice)(&bb, &dev); API(nvnBufferBuilderSetStorage)(&bb, &pool, OFF, LEN);
+        CHECK(API(nvnBufferInitialize)(&buf, &bb), "缓冲初始化");
+        NVNbufferAddress ba0 = API(nvnBufferGetAddress)(&buf); void *bm0 = API(nvnBufferMap)(&buf);
+        API(nvnBufferFinalize)(&buf);
+        NVNbufferAddress ba1 = API(nvnBufferGetAddress)(&buf); void *bm1 = API(nvnBufferMap)(&buf);
+        CHECK(ba0 && ba1 == ba0 && bm1 == bm0, "Finalize 后池还活着：地址应 %#llx（得 %#llx）、Map 应 %p（得 %p）", (unsigned long long)ba0, (unsigned long long)ba1, bm0, bm1);
+        API(nvnBufferFinalize)(&buf);
+        API(nvnMemoryPoolFinalize)(&pool);
+        NVNbufferAddress ba2 = API(nvnBufferGetAddress)(&buf); void *bm2 = API(nvnBufferMap)(&buf);
+        CHECK(ba2 == 0 && bm2 == NULL, "池也 Finalize 后：地址应 0（得 %#llx）、Map 应 NULL（得 %p）", (unsigned long long)ba2, bm2);
+        NVNbuffer zero; memset(&zero, 0, sizeof zero);
+        CHECK(API(nvnBufferGetAddress)(&zero) == 0, "从没初始化过（全零）的缓冲：地址应 0");
+        free(mem); printf("✓ 缓冲 Finalize 后池还活着取地址 / Map 回原值；池也收尾后回空；全零对象回空\n");
+    }
     printf("✓ t_nvn_map_noaccess：%u 项全过\n", checks);
     return 0;
 }

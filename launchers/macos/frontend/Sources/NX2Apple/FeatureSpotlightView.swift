@@ -95,10 +95,14 @@ struct FeatureSpotlightView: View {
                     badges.padding(.horizontal, 24).padding(.top, 18)
                 }
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(text(page["kicker"])).font(.manrope(12.5, .bold)).tracking(0.8).foregroundStyle(Self.gold)
-                    Text(text(page["title"])).font(.manrope(26, .heavy)).padding(.top, 6)
+                    LauncherHeadingLine {
+                        Text(text(page["title"])).font(.manrope(26, .heavy))
+                    } subtitle: {
+                        Text(text(page["kicker"])).font(.manrope(12.5, .bold)).tracking(0.8).foregroundStyle(Self.gold)
+                            .help(Text(text(page["kicker"])))
+                    }
                     HStack(alignment: .top, spacing: 14) {
-                        cell("feature.what", page["what"]); cell("feature.how", page["how"]); cell("feature.where", page["where"])
+                        cell("feature.what", page["what"], page, "what"); cell("feature.how", page["how"], page, "how"); cell("feature.where", page["where"], page, "where")
                     }
                     .padding(.top, 12).fixedSize(horizontal: false, vertical: true)
                 }
@@ -143,9 +147,11 @@ struct FeatureSpotlightView: View {
         .padding(16)
     }
 
-    private func cell(_ label: String, _ value: Any?) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(t(label)).font(.manrope(12, .bold)).foregroundStyle(Self.gold2)
+    /// 三栏标题：这一页写了 labels（如快照页 where 换成「要知道」）就用它，否则用通用的是什么 / 怎么用 / 在哪用
+    private func cell(_ label: String, _ value: Any?, _ page: [String: Any], _ key: String) -> some View {
+        let custom = (page["labels"] as? [String: Any])?[key]
+        return VStack(alignment: .leading, spacing: 4) {
+            Text(custom != nil ? String(text(custom).characters) : t(label)).font(.manrope(12, .bold)).foregroundStyle(Self.gold2)
             Text(text(value)).font(.manrope(13.5)).foregroundStyle(Color(white: 0.86)).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 13).padding(.vertical, 11).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -164,19 +170,18 @@ struct FeatureSpotlightView: View {
             }
             if let link = (popup["url"] as? String).flatMap(URL.init(string:)) {
                 Button { NSWorkspace.shared.open(link) } label: { Text(t("feature.more")).font(.manrope(13)).underline() }
-                    .buttonStyle(.plain).foregroundStyle(LauncherPalette.cream).padding(.leading, 10).accessibilityIdentifier("feature.more")
+                    .controllerButtonStyle(.plain).foregroundStyle(LauncherPalette.cream).padding(.leading, 10).accessibilityIdentifier("feature.more").controllerShortcut(.secondary)
             }
             Spacer()
             Button(index == 0 ? t("feature.skip") : t("feature.back")) {
                 if index == 0 { model.closeUpdatePopup() } else { go(index - 1) }
             }
-            .buttonStyle(.plain).font(.manrope(14.5, .semibold)).foregroundStyle(.secondary).padding(.horizontal, 8)
+            .controllerButtonStyle(.plain).font(.manrope(14.5, .semibold)).foregroundStyle(.secondary).padding(.horizontal, 8).controllerShortcut(.back)
             .keyboardShortcut(.cancelAction).accessibilityIdentifier("feature.back")
             Button { if last { model.closeFeatureAndExport() } else { go(index + 1) } } label: {
-                Text(last ? t("feature.go") : t("feature.next")).font(.manrope(14.5, .bold)).foregroundStyle(.black)
-                    .padding(.horizontal, 24).frame(height: 42).background(LauncherPalette.cream, in: Capsule())
+                Text(last ? t("feature.go") : t("feature.next")).font(.manrope(14.5, .bold))
             }
-            .buttonStyle(.plain).keyboardShortcut(.defaultAction).accessibilityIdentifier("feature.next")
+            .controllerButtonStyle(LauncherPrimaryButtonStyle()).keyboardShortcut(.defaultAction).accessibilityIdentifier("feature.next").controllerShortcut(.rightTrigger)
         }
     }
 }

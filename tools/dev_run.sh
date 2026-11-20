@@ -248,10 +248,14 @@ IS=$(shasum -a 256 "$IPA" | cut -c1-16)
 if [ "${UNINSTALL:-0}" != 1 ] && probe_from Documents/app.id "$O/r.app.id" && [ -s "$O/r.app.id" ] && [ "$(cat "$O/r.app.id")" = "$IS $(appurl)" ]; then
   t "装包：机上已是同一包（${IS}），不重装"
 else
-  dcp 600 device install app --device "$D" "$IPA" > "$O/install.log" 2>&1 || {
+  # 装包失败一律判红停局（11-16：原写法「|| { if 空间类; then 重装; fi; } || 失败」在非空间类错误时 if 返回 0，失败被吞，
+  #   照样把新哈希写进机上 app.id，之后的局都判「机上已是同一包」、跑的是机上旧 App）。只有空间类错误先腾空间再装一次
+  if ! dcp 600 device install app --device "$D" "$IPA" > "$O/install.log" 2>&1; then
     if grep -qiE 'space|storage|disk.*full|insufficient' "$O/install.log"; then   # 空间类错误：腾一次再装一次
       t "装包失败（空间不足：$(tail -1 "$O/install.log" | cut -c1-120)）"; space_need $(( $(du -k "$IPA" | cut -f1) * 3 / 1024 + 1024 )) "装包"
-      dcp 600 device install app --device "$D" "$IPA" > "$O/install.log" 2>&1; fi; } || { t "装包失败：$(tail -2 "$O/install.log" | tr '\n' ' ' | cut -c1-200)"; fin install "装包失败"; }
+      dcp 600 device install app --device "$D" "$IPA" > "$O/install.log" 2>&1 || { t "装包失败：$(tail -2 "$O/install.log" | tr '\n' ' ' | cut -c1-200)"; fin install "装包失败"; }
+    else t "装包失败：$(grep -a -m1 -E 'ERROR|Failed' "$O/install.log" | cut -c1-200)"; fin install "装包失败"; fi
+  fi
   echo "$IS $(appurl)" > "$O/app.id"; cpto "$O/app.id" Documents/app.id; t "装包 $(basename "$IPA")（${IS}）"
 fi
 T_INST=$(date +%s)

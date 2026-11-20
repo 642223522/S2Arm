@@ -5,6 +5,8 @@
 #define GAL_MAX_SETS 8
 #define GAL_UBOLEN_BINDING 0xfffeu   // 常量缓冲长度表 gal_ubo_len 的绑定号（参数表槽 GAL_ARG_UBOLEN）
 #define GAL_OOBCNT_BINDING 0xfffdu   // 越界 / 循环到上限计数格的绑定号（参数表槽 GAL_ARG_OOBCNT）
+#define GAL_TBLEAD_BINDING0 0xfc00u   // 纹素缓冲前导元素数 gal_tbl_<名>（#798，spv_tbias）的绑定号起点：第 k 个纹素缓冲 = 起点 + k（k < GAL_TBLEAD_MAX）
+#define GAL_TBLEAD_MAX 256
 enum { GAL_OOB_UBO, GAL_OOB_SSBO, GAL_OOB_SHARED, GAL_OOB_LOCAL, GAL_OOB_VEC, GAL_OOB_LOOP, GAL_OOB_NVAR };   // 计数格 [1] 的位号；前 5 类是越界、第 6 位 = 循环到上限
 int gal_spvx_counting(void);   // 计数开着没有（NXGAL_BOUNDS_COUNT=1 开，缺省关、两端同出货口径；开着的局只读计数、不比像素）
 // SPIR-V 加固改写：返回 malloc 的新码（*onw 字数），无需改写返回 NULL；st 累加各类计数（可为 NULL）

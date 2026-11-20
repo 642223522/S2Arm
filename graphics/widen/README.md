@@ -58,7 +58,7 @@
 逐文件核（`~/.s2arm/run/s2arm/widen1021/ui/tool/verify_ov.py`，展开 zstd / Yaz0 / SARC 到叶子）：动森 12 个文件 144 个叶子、马车8 5 个文件 1628 个叶子、塞尔达 1 个文件 2157 个叶子，未改叶子逐字节一致，改了的叶子同长、只差 33 / 12 / 2 个浮点且全部 = 原值 ×k（纯色 1 个 / 真平铺 2 个，手算 15 + 9×2 = 33、6×2 = 12、1×2 = 2）；塞尔达 Bootup.pack 31918596 字节原样。
 塞尔达不加宽的 4 个：希卡石板暂停菜单底 SeekPadMenuBG_00 的 P_BG_03（同页 P_BG_02 真平铺照常加宽）、AppTool_00 / AppMapDungeon_00 的 P_BG_03、PaMap_00 的 P_MapTexDungeon_00；这些页走游戏自带宽图（第二层），两侧露同页加宽的 P_BG_02 或下层 3D 画面，不自动清黑——未实测（录像里没有菜单页，需塞尔达 Mac 局开暂停菜单录 GAL）。
 写回：zstd 包整包重压；Yaz0（.szs / .sblarc，含 SARC 里套的）用 `scan/yaz0enc.c` 重压（≤8 MB 最优分词、更大的惰性匹配），不比原包长就补零原位写，长一点借对齐留空，都不行才重排外层并报红——外层包长度不变（按资源尺寸表分配缓冲的游戏变长有加载失败风险）。
-产物缓存：`~/.s2arm/run/s2arm/widen/<款>_<main 构建号>/ui_w<W>_<工具版本>_<原版身份>/romfs/`（工具版本 = ui_lyt.py + yaz0enc.c 内容哈希，原版身份 = 原版 Layout / UI / Pack 的盘点身份；工具或原版一变就重生成），一律从原版 romfs（现行产物根 seed.txt 记的游戏数据目录）生成；出包 `pack/stage_uilayout.sh` 覆盖进产物 romfs 同路径，上一版改过、这一版不改的文件恢复成原版（单测 tests/stage_uilayout_test.sh，旧版脚本跑同一单测 6/8 不通）。
+产物缓存：`~/.s2arm/run/s2arm/widen/<款>_<main 构建号>/ui_w<W>_<工具版本>_<原版身份>/romfs/`（工具版本 = ui_lyt.py + yaz0enc.c 内容哈希，原版身份 = 原版 Layout / UI / Pack 的盘点身份；工具或原版一变就重生成），一律从原版 romfs（现行产物根 seed.txt 记的游戏数据目录）生成；出包 `pack/stage_uilayout.sh` 写进产物根的覆盖层 `ui_overlay/romfs/` 同路径（产物根 RomFS 不动，读方覆盖层优先，同 Windows），上一版改过、这一版不改的文件不再进覆盖层、读到原版（单测 tests/stage_uilayout_test.sh，旧版脚本跑同一单测 6/8 不通）。
 动森 Mac 局（10-21，新覆盖包、无存档新游戏，1 局 280 秒）：自动玩家卡在起名页（软键盘页；它用哪份布局未核），没到捏脸页；局里 GAL 录像的程序全走包内二进制（无 SPIR-V），回放出图全黑，两侧读数未取到。
 
 ## 每帧镜头位姿（`CameraTrack.cs`，frames.tsv cam_* 列，自动玩家判「输入有没有驱动镜头 / 角色」用）

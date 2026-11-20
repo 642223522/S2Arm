@@ -59,7 +59,8 @@ final class LibraryShelf extends FrameLayout {
     private final List<Game> games = new ArrayList<>();
     private final ImageView backdrop;
     private final FrameLayout deck;
-    private final TextView position, title, empty, controllerCount;
+    private final TextView position, title, played, empty, controllerCount;
+    private final LinearLayout info;   // 卡片下面：游戏名 + 游玩时间一行
     private final int touchSlop;
     private float offset;          // 卡片单位：0 = 第一张在正中
     private float cover = 1;       // 卡片宽（像素）
@@ -96,7 +97,15 @@ final class LibraryShelf extends FrameLayout {
         title.setGravity(Gravity.CENTER); title.setMaxLines(2); title.setEllipsize(TextUtils.TruncateAt.END);
         title.setShadowLayer(10 * dp, 0, 0, 0x59000000);
         title.setLetterSpacing(-0.04f);
-        addView(title, new LayoutParams(-1, -2, Gravity.TOP));
+        // 游玩时间（Playtime.java）：选中那款玩过才有这一行，落在 layoutDeck 给状态行留的 34 dp 里
+        played = text(context, 14, Typeface.NORMAL, 0xB3FFFFFF);
+        played.setGravity(Gravity.CENTER); played.setSingleLine(true); played.setVisibility(GONE);
+        info = new LinearLayout(context);
+        info.setOrientation(LinearLayout.VERTICAL);
+        info.addView(title, new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout.LayoutParams below = new LinearLayout.LayoutParams(-1, -2); below.topMargin = (int) (8 * dp);
+        info.addView(played, below);
+        addView(info, new LayoutParams(-1, -2, Gravity.TOP));
 
         empty = text(context, 18, Typeface.BOLD, 0xFFFFFFFF);
         empty.setGravity(Gravity.CENTER);
@@ -171,7 +180,7 @@ final class LibraryShelf extends FrameLayout {
             g.card.setPivotX(cw / 2f); g.card.setPivotY(ch / 2f);
         }
         if (title.getTextSize() != size * getResources().getDisplayMetrics().scaledDensity) title.setTextSize(size);   // 只在变了时设：设字号会再触发一次布局
-        title.setY(middle * dp + cardHeight * 1.06f * dp / 2 + gap * dp);
+        info.setY(middle * dp + cardHeight * 1.06f * dp / 2 + gap * dp);
         place();
     }
 
@@ -198,7 +207,7 @@ final class LibraryShelf extends FrameLayout {
     private void refresh() {
         int i = selected();
         empty.setVisibility(games.isEmpty() ? VISIBLE : GONE);
-        title.setVisibility(games.isEmpty() ? GONE : VISIBLE);
+        info.setVisibility(games.isEmpty() ? GONE : VISIBLE);
         // 只在变了时设文字：setText 会请求重新布局，而 refresh 本身就在布局里调（11-13 空库时主线程因此一直空转）
         setIfChanged(position, games.isEmpty() ? "" : getContext().getString(R.string.library_position, i + 1, games.size()));
         if (i == shown) return;
@@ -206,7 +215,23 @@ final class LibraryShelf extends FrameLayout {
         if (i < 0) { backdrop.setImageDrawable(null); return; }
         Game g = games.get(i);
         title.setText(g.title);
+        String line = playtimeLine(g.id);
+        played.setText(line == null ? "" : line);
+        played.setVisibility(line == null ? GONE : VISIBLE);
         backdrop.setImageBitmap(g.thumb);   // 48 像素小图放大即模糊（iOS 的 Artwork.thumbnail 同一个办法）
+    }
+
+    /** 回到库页时重读游玩时间（刚玩完那款的文件变了）。 */
+    void refreshPlaytime() { shown = -1; refresh(); }
+
+    // 本款 state 目录（起局交给原生层的同一个，GameSession.statePath 只算路径不建目录）里的 playtime.json；没玩过不显示
+    private String playtimeLine(String titleId) {
+        Playtime p = Playtime.read(GameSession.statePath(getContext().getFilesDir(), titleId));
+        if (p == null) return null;
+        Context c = getContext();
+        Playtime.Text t = new Playtime.Text(c.getString(R.string.library_playtime_minutes), c.getString(R.string.library_playtime_hours),
+            c.getString(R.string.library_playtime_today), c.getString(R.string.library_playtime_yesterday), c.getString(R.string.library_playtime_days_ago));
+        return p.summary(System.currentTimeMillis() / 1000, java.time.ZoneId.systemDefault(), c.getResources().getConfiguration().getLocales().get(0), t);
     }
 
     private static void setIfChanged(TextView t, CharSequence s) { if (!TextUtils.equals(t.getText(), s)) t.setText(s); }

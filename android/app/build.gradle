@@ -82,6 +82,33 @@ abstract class RewriterLicensesTask extends DefaultTask {
     }
 }
 
+
+// 第三方许可文本只在打包时进 APK：仓库里只留 third_party 下的原件（assets/ 是资源目录，
+// 公开仓扫描不读其正文）。输出目录交给 AGP 作为 assets 生成源接线，打包与 lint 都会自动依赖它。
+abstract class ThirdPartyLicenseAssetsTask extends DefaultTask {
+    @InputFile abstract RegularFileProperty getAdrenotoolsLicense()
+    @InputFile abstract RegularFileProperty getLinkernsbypassLicense()
+    @InputFile abstract RegularFileProperty getFsrLicense()
+    @OutputDirectory abstract DirectoryProperty getOutputDirectory()
+
+    @TaskAction void copy() {
+        def licenses = new File(outputDirectory.get().asFile, 'licenses')
+        if (!licenses.isDirectory() && !licenses.mkdirs())
+            throw new GradleException('Cannot create third-party license assets')
+        new File(licenses, 'libadrenotools-LICENSE.txt').bytes = adrenotoolsLicense.get().asFile.bytes
+        new File(licenses, 'liblinkernsbypass-LICENSE.txt').bytes = linkernsbypassLicense.get().asFile.bytes
+        // AMD FidelityFX FSR1 EASU (MIT): 着色器在每个包里，所以这份许可也总在包里。
+        new File(licenses, 'easu-fsr1-LICENSE.txt').bytes = fsrLicense.get().asFile.bytes
+    }
+}
+
+def thirdPartyLicenseAssets = tasks.register('thirdPartyLicenseAssets', ThirdPartyLicenseAssetsTask) {
+    adrenotoolsLicense.set(layout.file(provider { file("${rootDir}/third_party/libadrenotools/LICENSE") }))
+    linkernsbypassLicense.set(layout.file(provider { file("${rootDir}/third_party/libadrenotools/lib/linkernsbypass/LICENSE") }))
+    fsrLicense.set(layout.file(provider { file("${rootDir}/third_party/ffx_fsr1/LICENSE.txt") }))
+    outputDirectory.set(layout.buildDirectory.dir('generated/licenses'))
+}
+
 // Per-game APK (implementation plan §2.3 / §8.2): S2ARM_ANDROID_GAME_DIR or -Ps2arm.gameDir, the
 // output of tools/game_apk.py (relative to the repository), gives the app the game's own identity
 // and its rewritten modules as assets. Unset: org.s2arm.android; nativeMode=game can consume imported revisions.
@@ -185,7 +212,7 @@ android {
         // One app per game, keyed by the stable title id (an application id segment starts with a letter).
         applicationId gameDir ? "org.s2arm.game.t${game.titleId.toLowerCase()}" : 'org.s2arm.android'
         manifestPlaceholders = [appLabel: gameDir ? '@string/game_name' : '@string/app_name',
-                                appIcon: gameDir ? '@drawable/ic_launcher' : '@drawable/ic_s2arm',
+                                appIcon: gameDir ? (game.launcherIcon == 'game' ? '@mipmap/game_icon' : '@drawable/ic_launcher') : '@drawable/ic_s2arm',
                                 screenOrientation: gameDir ? 'sensorLandscape' : 'unspecified']
         testInstrumentationRunner project.findProperty('s2arm.testRunner') ?: 'org.s2arm.android.GamepadMappingInstrumentation'
         // Same switch as the native S2A_ANDROID_EXPERIMENTAL_TOUCH below: the touch menu offers passthrough only when built in.
@@ -200,10 +227,10 @@ android {
             arguments "-DS2A_ANDROID_VAMM_LAYOUT=${vammLayout}"
             arguments "-DS2A_ANDROID_REWRITER=${rewriterEnabled ? 'ON' : 'OFF'}"
             if (rewriterEnabled) {
-                targets 's2arm_android', 's2arm_rewriter'
+                targets 's2arm_android', 's2arm_rewriter', 'adrenotools', 'hook_impl', 'main_hook'
                 arguments "-DS2A_REWRITER_DEPS=${rewriterDeps}"
             } else {
-                targets 's2arm_android'
+                targets 's2arm_android', 'adrenotools', 'hook_impl', 'main_hook'
             }
             // cs/build.sh mode; "static" links the NativeAOT service layer into the host library
             arguments "-DS2A_CS_SERVICES=${System.getenv('S2ARM_ANDROID_CS_SERVICES') ?: '0'}"
@@ -256,6 +283,7 @@ android {
         onVariants(selector().all()) { variant ->
             variant.sources.assets.addGeneratedSourceDirectory(capprobeAssetTask) { task -> task.outputDirectory }
             variant.sources.jniLibs.addGeneratedSourceDirectory(capprobeJniTask) { task -> task.outputDirectory }
+            variant.sources.assets.addGeneratedSourceDirectory(thirdPartyLicenseAssets) { task -> task.outputDirectory }
         }
     }
     signingConfigs {

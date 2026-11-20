@@ -527,6 +527,15 @@ class AndroidDeliveryTest(unittest.TestCase):
              patch.dict(os.environ, {'S2A_ANDROID_SKIP_APPLE_ARTIFACTS': '1'}):
             entries = producer.entries_from_root(str(root), str(third))
         self.assertEqual([name for name, _ in entries if name.startswith('shaders/')], ['shaders/vulkan/direct'])
+        # #1434 新图形层的离线库 shaders/direct/b-<链>-vk 进包；同目录 Apple 的 Metal 库（不带 -vk）不进
+        for lib in ('b-0be3f28548fd-vk', 'b-0be3f28548fd'):
+            (root / 'shaders/direct' / lib).mkdir(parents=True); (root / 'shaders/direct' / lib / 'lib.idx').write_text('fixture')
+        fourth = self.base / 'fourth/modules'; fourth.mkdir(parents=True)
+        with patch.object(producer, 'rewrite'), patch.object(producer, 'stage_address_requirements', return_value='need'), \
+             patch.dict(os.environ, {'S2A_ANDROID_SKIP_APPLE_ARTIFACTS': '1'}):
+            entries = producer.entries_from_root(str(root), str(fourth))
+        self.assertEqual([name for name, _ in entries if name.startswith('shaders/')],
+                         ['shaders/vulkan/direct', 'shaders/direct/b-0be3f28548fd-vk'])
         for name in ('widen_enable.handheld.tsv', 'widen_full.handheld.tsv', 'widen_verified.tsv'):
             self.assertEqual((stage / name).read_text(), (root / name).read_text())
         second_stage = self.base / 'second/modules'; second_stage.mkdir(parents=True)
@@ -536,21 +545,26 @@ class AndroidDeliveryTest(unittest.TestCase):
         self.assertTrue(any(name.startswith('shaders/') for name, _ in entries))
         self.assertTrue((second_stage / 'widen_enable.handheld.tsv').is_file())
 
-    def test_selected_library_files_are_checked_before_copy(self):
+    def test_selected_library_files_are_linked_not_copied(self):
         from types import SimpleNamespace
         sys.path.insert(0, str(ROOT / 'pack/jobs'))
         from core import Failure
-        from pack.targets.android.adapter import copy_selected
+        from pack.targets.android.adapter import selected_sources
         library = self.base / 'library'; library.mkdir()
-        source = library / 'game.nsp'; source.write_bytes(b'fixture source')
-        stage = self.base / 'input'; stage.mkdir()
+        legacy = library / 'game.nsp'; legacy.write_bytes(b'fixture source')   # 0.1.0-beta.3 及以前：复制进游戏库、记相对路径
+        outside = self.base / 'originals'; outside.mkdir()
+        original = outside / 'base.xci'; original.write_bytes(b'outside source')   # 现行：导入时记原件绝对路径，原件原地只读（可在库外）
+        stage = self.base / 'input'
         context = SimpleNamespace(library=library, check=lambda: None, progress=lambda *_: None)
-        identity = hashlib.sha256(source.read_bytes()).hexdigest()
-        copy_selected(context, [dict(path='game.nsp', sha256=identity)], stage)
-        self.assertEqual((stage / 'game.nsp').read_bytes(), b'fixture source')
-        source.write_bytes(b'changed')
-        with self.assertRaises(Failure):
-            copy_selected(context, [dict(path='game.nsp', sha256=identity)], stage)
+        packages = [dict(path='game.nsp', sha256='a' * 64), dict(path=str(original), sha256='b' * 64),
+                    dict(path=str(original), sha256='b' * 64)]   # 整合版一个 xci 列两次：只进一份
+        self.assertEqual(selected_sources(context, packages, stage), [str(stage)])
+        linked = sorted(p.name for p in stage.iterdir())
+        self.assertEqual(linked, ['a' * 64 + '.nsp', 'b' * 64 + '.xci'])
+        self.assertEqual((stage / ('b' * 64 + '.xci')).read_bytes(), b'outside source')   # 软链到原件，不复制
+        self.assertTrue((stage / ('b' * 64 + '.xci')).is_symlink())
+        with self.assertRaises(Failure):   # 相对路径越出游戏库照旧拒绝（library.source_path → contained）
+            selected_sources(context, [dict(path='../escape.nsp', sha256='c' * 64)], self.base / 'input2')
 
     def test_ios_entry_does_not_require_android_target_files(self):
         isolated = self.base / 'apple-engine' / 'pack'
@@ -559,6 +573,9 @@ class AndroidDeliveryTest(unittest.TestCase):
         shutil.copytree(ROOT / 'pack/contracts', isolated / 'contracts', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
         (isolated / 'targets').mkdir()
         shutil.copytree(ROOT / 'pack/targets/ios', isolated / 'targets/ios', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+        # 宿主约定号头文件是苹果引擎的一部分（pack/jobs/host_update.py 导入时读它；Mac 应用随作业层放进 Jobs，引擎快照在 runtime/include）
+        (self.base / 'apple-engine/runtime/include').mkdir(parents=True)
+        shutil.copy2(ROOT / 'runtime/include/s2a_host_abi.h', self.base / 'apple-engine/runtime/include/s2a_host_abi.h')
         result = subprocess.run([sys.executable, '-I', '-S', str(isolated / 'jobs/target_main.py'), '--help'],
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -590,8 +607,9 @@ class AndroidDeliveryTest(unittest.TestCase):
                 adapter.check_request(request)
 
     def test_bundled_engine_includes_android_runtime_and_tools(self):
+        # 11-16 安装包瘦身：安卓导出未对玩家开放（启动器回「即将上线」），发版引擎快照不收 android/；开放时加回 INPUTS 并把这里改回 assertIn
         from launchers.macos.bundle_engine import INPUTS
-        self.assertIn('android', INPUTS)
+        self.assertNotIn('android', INPUTS)
         self.assertIn('graphics', INPUTS)
         for relative in ('android/docker/build.sh', 'android/docker/Dockerfile',
                          'android/app/build.gradle', 'android/tools/make_pack.py',
@@ -607,9 +625,11 @@ class AndroidDeliveryTest(unittest.TestCase):
                     'android/core-link/runtime-tests/foo.c',
                     'graphics/vulkan/wsi/tests/run.py',
                     'graphics/vulkan/core/cache-tests/fixture.cs')
+        # 11-16 起全快照都不收测试树（pack/tests 等，出包流程不跑测试）；根 tests/visual/galrec 出包要读，照收
+        excluded += ('pack/tests/fixture.dat', 'pack/jobs/tests/test_x.py', 'graphics/nvn/tests/t_x.c')
         included = ('android/native/selftest.c', 'android/test.sh',
                     'android/codecs/LICENSE', 'graphics/vulkan/core/DeviceFeatureSnapshot.cs',
-                    'pack/tests/fixture.dat', 'tests/visual/galrec/fixture.dat')
+                    'pack/jobs/core.py', 'tests/visual/galrec/fixture.dat')
         for path in excluded: self.assertFalse(bundle_engine.include_source(Path(path)), path)
         for path in included: self.assertTrue(bundle_engine.include_source(Path(path)), path)
 
@@ -706,8 +726,7 @@ class AndroidDeliveryTest(unittest.TestCase):
                 mod.build_backend(env)
             with patch.object(mod.shutil, 'which', return_value='/bin/docker'), \
                  patch.object(mod.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1)):
-                with self.assertRaises(ValueError):
-                    mod.build_backend(env)
+                self.assertEqual(mod.build_backend(env), 'docker')   # 不预检 daemon：真跑 docker 时失败报真原因
             with patch.object(mod.shutil, 'which', return_value='/bin/docker'), \
                  patch.object(mod.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)):
                 self.assertEqual(mod.build_backend(env), 'docker')
@@ -808,6 +827,11 @@ class AndroidDeliveryTest(unittest.TestCase):
         (repo / 'source.txt').write_text('modified')
         with patch.object(mod, 'ROOT', repo), self.assertRaisesRegex(ValueError, '未提交'):
             mod.export_sources(self.base / 'dirty-export', mod.build_environment(os.environ))
+        # 发版快照（根有 engine.json）：打包重签名让已跟踪文件和 HEAD 不同，照样导出，内容是已提交的那份
+        (repo / 'engine.json').write_text('{}')
+        with patch.object(mod, 'ROOT', repo):
+            mod.export_sources(self.base / 'snapshot-export', mod.build_environment(os.environ))
+        self.assertEqual((self.base / 'snapshot-export' / 'source.txt').read_text(), 'source')
 
     def test_game_output_cannot_be_inside_checkout(self):
         repo = self.base / 'repo'; repo.mkdir()

@@ -36,6 +36,10 @@ class ScanTests(unittest.TestCase):
         self.git('init', '-q')
         self.git('config', 'user.name', 'Fixture')
         self.git('config', 'user.email', 'fixture@example.invalid')
+        # 私有规则一律指到临时路径：单测结论不随维护方机器上有没有私有词表变
+        self.private = Path(self.tmp.name) / 'private_rules.json'
+        env = patch.dict(os.environ, {'S2A_PRIVATE_SCAN_RULES': str(self.private)})
+        env.start(); self.addCleanup(env.stop)
         self.mod = module()
 
     def git(self, *args):
@@ -56,6 +60,42 @@ class ScanTests(unittest.TestCase):
         p = subprocess.run([sys.executable, str(TOOL), '--repo', str(self.root),
                             '--path', '.', *args], capture_output=True, text=True)
         return p, json.loads(p.stdout) if p.stdout else None
+
+    def private_rules(self, regex='示例内部名'):
+        self.private.write_text(json.dumps({'version': 1, 'content_rules': [
+            {'id': 'fixture_internal', 'category': 'internal_name', 'regex': regex}]}), encoding='utf-8')
+
+    def test_private_rules_only_added_lines(self):
+        """私有规则：新增行写了词表里的词 → 增量命中、退 1；没动的旧行有同一个词 → 不计（存量也不计）"""
+        base = self.commit({'docs/a.md': '旧行 示例内部名\n'})
+        self.private_rules()
+        self.commit({'docs/a.md': '旧行 示例内部名\n新行 示例内部名\n'})
+        p, report = self.scan('--base', base)
+        self.assertEqual(p.returncode, 1, p.stderr)
+        hits = [f for f in report['findings'] if f.get('category') == 'internal_name']
+        self.assertEqual([(f['status'], f['line']) for f in hits], [('changed', 2)])
+        self.assertNotIn('示例内部名', p.stdout + p.stderr)   # 命中的词本身不外泄
+
+    def test_private_rules_neutral_word_and_missing_file(self):
+        """新增行写中性称呼不命中；私有词表不在 → 跳过、退 0；词表坏了 → 报错，不静默漏扫"""
+        base = self.commit({'docs/a.md': 'x\n'})
+        self.private_rules()
+        self.commit({'docs/a.md': 'x\n维护者\n'})
+        self.assertEqual(self.scan('--base', base)[0].returncode, 0)
+        self.commit({'docs/a.md': 'x\n维护者\n示例内部名\n'})
+        self.private.unlink()
+        self.assertEqual(self.scan('--base', base)[0].returncode, 0)
+        self.private.write_text('{', encoding='utf-8')
+        self.assertNotEqual(self.scan('--base', base)[0].returncode, 0)
+
+    def test_private_rules_commit_messages(self):
+        """提交信息也按私有词表判"""
+        base = self.commit({'a.txt': 'x\n'})
+        self.private_rules()
+        (self.root / 'a.txt').write_text('y\n'); self.git('add', '.'); self.git('commit', '-qm', '修好 示例内部名 提的问题')
+        p = subprocess.run([sys.executable, str(TOOL), '--repo', str(self.root), '--path', '.', '--messages', base],
+                           capture_output=True, text=True)
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
 
     def test_full_scan_unknown_only_is_red_and_deletion_clears(self):
         self.commit({'unknown.xyz': b'original unknown-type fixture'})
@@ -229,6 +269,36 @@ class ScanTests(unittest.TestCase):
         self.assertEqual({f['reason'] for f in report['uncovered_blocking']},
                          {'excluded_credentials', 'excluded_payload', 'non_regular'})
 
+    def test_synthetic_system_archive_rule_is_exact_and_keeps_unread_boundary(self):
+        path = 'services/S2A.Services/systemdata_synth.tar'
+        other = 'services/S2A.Services/other.tar'
+        rules = self.mod.load_rules()
+        entries = [row for row in rules['allowlist'] if row['id'] == 'generated_synthetic_systemdata_tar']
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]['paths'], [path])
+        self.assertEqual(entries[0]['categories'], ['uncovered_unreviewed_type'])
+        self.assertTrue(entries[0]['reason'])
+        archive = (ROOT / path).read_bytes()
+        self.commit({path: archive, other: archive})
+        with patch.object(self.mod, 'load_rules', return_value=rules), patch.object(
+                self.mod.Blobs, 'read', side_effect=AssertionError('archive body must remain unread')):
+            report = self.mod.scan(self.root, 'HEAD', ['.'])
+        self.assertEqual(report['coverage'], {'unreviewed_type': 2})
+        self.assertEqual([row['path'] for row in report['uncovered_allowed']], [path])
+        self.assertEqual([row['path'] for row in report['uncovered_blocking']], [other])
+        rules['allowlist'].remove(entries[0])
+        with patch.object(self.mod, 'load_rules', return_value=rules):
+            reverted = self.mod.scan(self.root, 'HEAD', ['.'])
+        self.assertEqual(len(reverted['uncovered_blocking']), 2, 'removing registration must block both TARs')
+
+    def test_synthetic_system_archive_is_verified_before_the_ci_scan(self):
+        workflow = (ROOT / '.github/workflows/ci.yml').read_text()
+        linux = workflow.split('  linux:\n', 1)[1].split('  macos:\n', 1)[0]
+        verify = 'run: python3 tests/sysdata_synth_tar_test.py'
+        scan = 'run: python3 tools/public_repo_scan.py'
+        self.assertIn(verify, linux)
+        self.assertLess(linux.index(verify), linux.index(scan))
+
     def test_extensionless_text_is_scanned_without_values(self):
         mail = 'synthetic' + '@private.test'
         names = ['THIRD_PARTY_NOTICES', 'custom/runner', 'custom/EMPTY']
@@ -337,8 +407,8 @@ class ScanTests(unittest.TestCase):
             self.assertNotIn(value, p.stdout + p.stderr)
 
     def test_internal_names_block_and_device_models_do_not(self):
-        for line in ['作者 jhz 定', 'jhz: fix', '总指挥 定的分发', '天眼（Windows 出包机）车道',
-                     '测试机2 归质量线', 'GATE_HOST=mini', '--host mini', '派 mini 上跑', 'mac-mini',
+        # 内部线名 / 设备代号这组词已挪进仓外私有词表（公开仓不明文写），它们的反向用例在维护方私有单测里
+        for line in ['作者 jhz 定', 'jhz: fix', 'GATE_HOST=mini', '--host mini', '派 mini 上跑', 'mac-mini',
                      'mac_mini.tsv', 'mini_sync.sh', 'mini_main.sh', '（mini / Air）', 'GATE_HOST=Air',
                      'Air 8 核只开 1 个槽', 'mac-air', 'mac_air']:
             with self.subTest(line=line):
@@ -587,8 +657,11 @@ class ScanTests(unittest.TestCase):
         self.commit({'docs/clean.md': 'still clean\n'})
         p, r = self.scan('--base', base)
         self.assertEqual(p.returncode, 0)
-        self.assertEqual(len(r['findings']), 1)
-        self.assertEqual(r['findings'][0]['status'], 'existing')
+        # 增量模式（11-16 起）：没改的 docs/old.md 不读——存量命中不阻挡、也不再列出；覆盖统计记 unchanged_not_read
+        self.assertEqual(r['findings'], [])
+        self.assertGreater(r['coverage'].get('unchanged_not_read', 0), 0)
+        p, r = self.scan()
+        self.assertEqual([f['status'] for f in r['findings']], ['existing'], '不给 --base 的全量清单照旧列出存量')
         self.commit({'docs/old.md': '/Users/fixtureperson/old\nunrelated edit\n'})
         p, r = self.scan('--base', base)
         self.assertEqual(p.returncode, 0)
@@ -640,6 +713,24 @@ class ScanTests(unittest.TestCase):
         self.assertEqual(p.returncode, 1)
         self.assertEqual(r['blocking_count'], len(names))
         self.assertEqual(r['uncovered'], [])
+
+    def test_reviewed_extract_failure_log_is_scanned_and_other_logs_stay_unread(self):
+        name = 'pack/jobs/tests/fixtures/extract_hash_mismatch_1411.log'
+        other = 'pack/jobs/tests/fixtures/extract_hash_mismatch_unreviewed.log'
+        self.commit({name: (ROOT / name).read_bytes(), other: b'original unread fixture'})
+        report = self.mod.scan(self.root, 'HEAD', [name])
+        self.assertEqual(report['coverage'].get('text'), 1)
+        self.assertEqual(report['findings'], [])
+        self.assertEqual(report['uncovered'], [])
+
+        self.commit({name: '/home/fixtureperson/source\n'})
+        report = self.mod.scan(self.root, 'HEAD', [name])
+        self.assertEqual(report['blocking_count'], 1, 'reviewed text must still scan its contents')
+        self.assertEqual([f['category'] for f in report['findings']], ['home_path'])
+        with patch.object(self.mod.Blobs, 'read', side_effect=AssertionError('unreviewed log read')):
+            unread = self.mod.scan(self.root, 'HEAD', [other])
+        self.assertEqual(unread['coverage'].get('excluded_payload'), 1)
+        self.assertEqual([row['path'] for row in unread['uncovered_blocking']], [other])
 
     def test_unread_payload_and_unknown_are_warning_only(self):
         base = self.commit({'safe.md': 'safe\n'})
@@ -849,7 +940,7 @@ class ScanTests(unittest.TestCase):
         self.assertNotIn('fixtureperson', red.stdout + red.stderr)
         report = json.loads((self.root / 'build/public_repo_scan.json').read_text())
         self.assertGreater(report['blocking_count'], 0)
-        self.assertTrue(any(f['status'] == 'existing' for f in report['findings']))
+        self.assertGreater(report['coverage'].get('unchanged_not_read', 0), 0)   # 存量文件没改：增量模式不读（11-16 起）
 
     def test_contrib_doc_executes_scan_and_red_takes_priority(self):
         base = self.install_gate_fixture()

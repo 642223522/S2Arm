@@ -10,6 +10,10 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
+#include "../include/s2a_init_fail.h"
+// 初启失败出口（宿主里 host_main.c 的强定义走提示页、不返回）：单测里记下码就返回，svc_mem.c 的弱定义被它顶替
+static int g_if_code;
+void s2a_init_failed(int code) { g_if_code = code; }
 #include <stdatomic.h>
 #include <mach/mach.h>
 #include <stdlib.h>
@@ -27,6 +31,7 @@ uint64_t s2a_mem_test_punch_pending(void); void s2a_mem_test_punch_stats(uint64_
 void s2a_mem_test_subpage(uint64_t a, int on); void s2a_mem_test_map(uint64_t b, uint64_t n);
 void s2a_mem_test_map_diag_reset(void); void s2a_mem_test_stack(uint64_t base, uint64_t size);
 void s2a_mem_test_astype(uint32_t t);
+void s2a_mem_test_host_avail(uint64_t v); void s2a_mem_test_headroom_div(uint64_t d);   // 扩池上限 = 池 + 池 / d（缺省 8；单测调大好用小映射测到边界）   // 应用池按宿主余量扩：测试里的宿主余量（缺省 0 = 宿主给不了，照模拟的池拒）
 int s2a_mem_mapped(uint64_t addr, uint64_t size);
 int s2a_mem_readable(uint64_t addr, uint64_t size);
 uint32_t s2a_mem_tmem_borrow(uint64_t a, uint64_t n, uint32_t perm); void s2a_mem_tmem_unborrow(uint64_t a, uint64_t n); void s2a_mem_tmem_close(uint64_t a, uint64_t n);
@@ -35,7 +40,7 @@ void s2a_mem_test_map_perm(int index, uint32_t perm);
 void s2a_mem_test_tlr(uint64_t base, uint64_t next);
 void s2a_mem_test_reset_probes(void);
 uint64_t s2a_mem_test_probes(void);
-void s2a_mem_test_sysres(uint64_t v, uint64_t heap_region); uint64_t s2a_mem_test_phys(void); int svc_mem(int num, uint64_t *regs, uint64_t orig);
+void s2a_mem_test_sysres(uint64_t v, uint64_t heap_region); void s2a_mem_test_alias_report(uint64_t v); uint64_t s2a_mem_test_phys(void); int svc_mem(int num, uint64_t *regs, uint64_t orig);
 // svc_mem.c 的其余外部依赖（本单测不走到）
 void s2a_backtrace(uint64_t fp) { (void)fp; } int s2a_det_shmem_map(uint64_t ga, const void *h, uint64_t n, uint64_t sp, int pr) { (void)ga; (void)h; (void)n; (void)sp; (void)pr; return 0; } uint64_t s2a_det_tick(uint64_t t) { return t; } uint64_t s2a_entropy64(void) { return 0; }
 void s2a_host_shutdown(const char *w) { (void)w; }
@@ -123,6 +128,11 @@ static void *sp_thread(void *x) { (void)x; uint64_t r[8] = {g_sp_addr, 0x4000, 3
 static int sp_begin(uint64_t a, uint64_t n, uint64_t src) { (void)a; (void)n; (void)src; pthread_create(&g_sp_t, NULL, sp_thread, NULL); usleep(100000); g_sp_during = atomic_load(&g_sp_done); return 0; }
 
 int s2a_va_short_last(uint64_t fa, int *num, uint64_t *a, uint64_t *n, uint64_t *count);
+// #947 替身：进程内重开请求（真的在 runtime/src/session.c）。svc_mem 经 dlsym(RTLD_DEFAULT) 找它：记调用次数、按用例回受理 / 拒绝
+static int g_restart_calls, g_restart_rc;
+int s2a_host_restart(void (*cb)(int, const char *, void *), void *ctx) { (void)cb; (void)ctx; g_restart_calls++; return g_restart_rc; }
+int s2a_mem_heap_learned_restart(void);
+void s2a_mem_test_heap_floor(uint64_t v);
 int main(void) {
     const uint64_t W = 0x7000000000ull, AB = W + 0x200000, AS = 64ull << 20, HEAP = W + 0x10000000, HCUR = 4ull << 20, MAPB = W + 0x20000000, MAPN = 0x8000;
     // 复用宿主地址护栏，先给末尾大堆测试留出真地址，再放行 xzm；不带 MAP_FIXED，不覆盖已有映射。
@@ -138,6 +148,7 @@ int main(void) {
         uint64_t b = ((uint64_t)R + 2 * MB - 1) & ~(2 * MB - 1);
         s2a_mem_test_setup(b + 4 * MB, 4 * MB, b, RS, (void *)b, 0); s2a_mem_test_sysres(0x2000000, 4 * MB);
         FILE *log = tmpfile(); CHECK(log != NULL, "族 25 单测：日志临时文件");
+        char hn[] = "/tmp/s2a_t_heap_need_XXXXXX"; int hfd = mkstemp(hn); if (hfd >= 0) close(hfd); unlink(hn); setenv("S2A_HEAP_NEED", hn, 1);   // D-NGH9：超堆区时记下要的堆
         if (log) {
             int saved = g_s2a_logfd; g_s2a_logfd = fileno(log); g_red_n = 0;
             uint64_t r[8], rc[3];
@@ -150,7 +161,33 @@ int main(void) {
             CHECK(rc[0] == 0xD001 && rc[1] == 0xE401 && rc[2] == 0xF001 && g_red_n == 0 && logged,
                   "族 25：超堆区 / 普通句柄 / 未知信息类型 期望 回 0xd001 / 0xe401 / 0xf001、报红 0 次、三行普通失败日志 → 实 %#llx / %#llx / %#llx、报红 %d 次、日志%s",
                   (unsigned long long)rc[0], (unsigned long long)rc[1], (unsigned long long)rc[2], g_red_n, logged ? "齐" : "不齐");
+            // D-NGH9 / #947：超堆区那次（6 MB）记下要的堆；再要 5 MB 不降（只增不减）；要 8 MB 升到 8 MB。期望手写 6291456 → 6291456 → 8388608
+            unsigned long long v[3] = {0}; FILE *hf;
+            hf = fopen(hn, "r"); if (hf) { if (fscanf(hf, "%llu", &v[0]) != 1) v[0] = 0; fclose(hf); }
+            memset(r, 0, sizeof r); r[1] = 5 * MB; svc_mem(0x01, r, 0);
+            hf = fopen(hn, "r"); if (hf) { if (fscanf(hf, "%llu", &v[1]) != 1) v[1] = 0; fclose(hf); }
+            memset(r, 0, sizeof r); r[1] = 8 * MB; svc_mem(0x01, r, 0);
+            hf = fopen(hn, "r"); if (hf) { if (fscanf(hf, "%llu", &v[2]) != 1) v[2] = 0; fclose(hf); }
+            CHECK(v[0] == 6291456 && v[1] == 6291456 && v[2] == 8388608, "超堆区记下要的堆：期望 6291456 / 6291456 / 8388608 → 实 %llu / %llu / %llu", v[0], v[1], v[2]);
+            // #947：堆不够已记下 8 MB、本局布局没按任何记录给（单测没走 layout_prepare，按 0）→ 自动进程内重开：请求受理（替身回 0）→ 回 1、请求 1 次；
+            //   被拒（替身回 -2，如安卓不支持重建）→ 回 0（调用方改报「再点一次开始」）、请求 2 次。期望手写
+            g_restart_calls = 0; g_restart_rc = 0; int ok1 = s2a_mem_heap_learned_restart();
+            g_restart_rc = -2; int ok2 = s2a_mem_heap_learned_restart();
+            CHECK(ok1 == 1 && ok2 == 0 && g_restart_calls == 2, "堆不够自动重开：受理 / 被拒 期望 回 1 / 0、请求 2 次 → 实 %d / %d、%d 次", ok1, ok2, g_restart_calls);
+            // 防循环：本局布局已按 8 MB 给过（= 记下的）仍不够 → 不是堆区给小，不重开、不发请求；按 4 MB 给过（< 记下的 8 MB）→ 重开。期望手写 0 / 1、请求 0 / 1 次
+            g_restart_rc = 0; g_restart_calls = 0; s2a_mem_test_heap_floor(8ull << 20); int ok3 = s2a_mem_heap_learned_restart(); int c3 = g_restart_calls;
+            s2a_mem_test_heap_floor(4ull << 20); int ok4 = s2a_mem_heap_learned_restart(); s2a_mem_test_heap_floor(0);
+            CHECK(ok3 == 0 && c3 == 0 && ok4 == 1 && g_restart_calls == 1, "堆不够自动重开防循环：本局已按 8 / 4 MB 给 期望 回 0 / 1、请求 0 / 1 次 → 实 %d / %d、%d / %d 次", ok3, ok4, c3, g_restart_calls);
+            // 小内存 iPad：堆区声明 64 MB 装得下 8 MB，但窗口只剩 16 MB、堆起点 +4 MB → 8 MB 请求越过窗口尾。
+            //   期望手写：回 0xD001、把 8388608 记进 heap_need（下一局按它给窗口），不是静默 Break。
+            unlink(hn);
+            s2a_mem_test_setup(b + 4 * MB, 4 * MB, b, RS, (void *)(b + 10 * MB), 0); s2a_mem_test_sysres(0x2000000, 64 * MB);
+            memset(r, 0, sizeof r); r[1] = 8 * MB; svc_mem(0x01, r, 0);
+            unsigned long long vw = 0; hf = fopen(hn, "r"); if (hf) { if (fscanf(hf, "%llu", &vw) != 1) vw = 0; fclose(hf); }
+            CHECK(r[0] == 0xD001 && vw == 8388608, "窗口越界的堆请求：期望 回 0xd001 且记下 8388608 → 实 %#llx / %llu",
+                  (unsigned long long)r[0], vw);
         }
+        unsetenv("S2A_HEAP_NEED"); unlink(hn);
         munmap(R, RS + 2 * MB);
     }
     s2a_mem_test_setup(AB, AS, W, 64ull << 30, (void *)HEAP, HCUR);
@@ -260,12 +297,53 @@ int main(void) {
         CHECK(r[1] == POOL - 32 * MB, "总内存不含系统资源（GetInfo 21）应 = 池 − 32 MB：实 %llu MB", (unsigned long long)(r[1] >> 20));
         memset(r, 0, sizeof r); r[1] = 6; r[2] = 0xFFFF8001; svc_mem(0x29, r, 0);
         CHECK(r[1] == POOL, "总内存（GetInfo 6）应 = 池：实 %llu MB", (unsigned long long)(r[1] >> 20));
+        // #1441 报给游戏的别名区收小：GetInfo 3 回收小的值；映射仍按内部别名区检查——越过收小处的照常成功（同收小前），并记下本款下次恢复
+        {
+            char flag[256]; snprintf(flag, sizeof flag, "/tmp/t_svc_mem_alias_full_%d", (int)getpid()); unlink(flag); setenv("S2A_ALIAS_FULL", flag, 1);
+            memset(r, 0, sizeof r); r[1] = 3; r[2] = 0xFFFF8001; svc_mem(0x29, r, 0);
+            CHECK(r[1] == PAS, "没收小：别名区大小（GetInfo 3）= 内部别名区 %llu MB：实 %llu MB", (unsigned long long)(PAS >> 20), (unsigned long long)(r[1] >> 20));
+            s2a_mem_test_alias_report(16 * MB);
+            memset(r, 0, sizeof r); r[1] = 3; r[2] = 0xFFFF8001; svc_mem(0x29, r, 0);
+            CHECK(r[1] == 16 * MB, "收小到 16 MB：GetInfo 3 应回 16 MB：实 %llu MB", (unsigned long long)(r[1] >> 20));
+            CHECK(PHYS(0x2C, b + 12 * MB, 4 * MB) == 0 && access(flag, F_OK) != 0, "收小处以内映射：成功、不记越界");
+            CHECK(PHYS(0x2D, b + 12 * MB, 4 * MB) == 0 && PHYS(0x2C, b + 18 * MB, 1 * MB) == 0, "越过收小处映射 1 MB：照常成功（内部别名区以内）");
+            CHECK(access(flag, F_OK) == 0, "越过收小处：记下本款（%s）", flag);
+            unlink(flag); unsetenv("S2A_ALIAS_FULL"); s2a_mem_test_alias_report(0);
+            CHECK(PHYS(0x2D, b + 18 * MB, 1 * MB) == 0 && PHYS(0x2C, b + 12 * MB, 4 * MB) == 0 && s2a_mem_test_phys() == 9 * MB, "还原：池子回到占满 9 MB（后面的用例要）");
+        }
         // Switch 2 新类型（switchbrew SVC [S2]）：29–32 远端区地址 / 大小 / 用量 / 峰值 = 0（宿主不给远端区），33 页大小 = Horizon 4 KB；子号非 0 回 InvalidCombination
         { uint64_t ok = 1; for (int t = 29; t <= 33; t++) { memset(r, 0, sizeof r); r[1] = t; r[2] = 0xFFFF8001; r[1] = (uint64_t)t; svc_mem(0x29, r, 0); ok &= r[0] == 0 && r[1] == (t == 33 ? 0x1000u : 0); }
           memset(r, 0, sizeof r); r[1] = 29; r[2] = 0xFFFF8001; r[3] = 1; svc_mem(0x29, r, 0);
           CHECK(ok && r[0] == 0xE801, "GetInfo 29–32 回 0、33 回 0x1000、29 子号 1 回 0xE801：实 ok=%llu rc=%#llx", (unsigned long long)ok, (unsigned long long)r[0]); }
         memset(r, 0, sizeof r); r[1] = HEAPC + 2 * MB; svc_mem(0x01, r, 0);
         CHECK(r[0] == 0x10801, "堆再加 2 MB（物理映射已占满池）：SetHeapSize 应回 0x10801，实回 %#llx", (unsigned long long)r[0]);
+        // 失败时出参 x1（堆基址）= 0（同 Ryujinx address = 0；D-ASK2：原先留着请求的大小，不看结果码的游戏拿它当基址写进宿主代码段）
+        CHECK(r[1] == 0, "SetHeapSize 失败（池满）：x1 应为 0，实 %#llx", (unsigned long long)r[1]);
+        // 应用池按宿主余量扩（#1493）：池已满 9 MB。宿主余量 512 MB + 3 MB（留 512 MB 不动 → 能多给 3 MB）：
+        //   再要 4 KB → 成功、GetInfo 6 总量 = 池 + 4 KB、已用 = 池 + 4 KB；接着要 3 MB + 4 KB（超出 3 MB 余量）→ 0x10801、记账不变；余量归 0 后池回模拟值
+        {
+            s2a_mem_test_host_avail(512 * MB + 3 * MB);
+            CHECK(PHYS(0x2C, b + 20 * MB, 0x1000) == 0 && s2a_mem_test_phys() == 9 * MB + 0x1000, "宿主有余量：超池 4 KB 应成功（记账 %llu KB）", (unsigned long long)(s2a_mem_test_phys() >> 10));
+            memset(r, 0, sizeof r); r[1] = 6; r[2] = 0xFFFF8001; svc_mem(0x29, r, 0); uint64_t tot = r[1];
+            memset(r, 0, sizeof r); r[1] = 7; r[2] = 0xFFFF8001; svc_mem(0x29, r, 0);
+            CHECK(tot == POOL + 0x1000 && r[1] == POOL + 0x1000, "扩池后总量 / 已用（GetInfo 6 / 7）都应 = 池 + 4 KB：实 %llu / %llu KB", (unsigned long long)(tot >> 10), (unsigned long long)(r[1] >> 10));
+            CHECK(PHYS(0x2C, b + 21 * MB, 3 * MB + 0x1000) == 0x10801 && s2a_mem_test_phys() == 9 * MB + 0x1000, "超出宿主余量（要 3 MB + 4 KB、能给 3 MB）：应回 0x10801 且记账不变");
+            CHECK(PHYS(0x2D, b + 20 * MB, 0x1000) == 0 && s2a_mem_test_phys() == 9 * MB, "解除那 4 KB：记账回 9 MB");
+            // 扩的上限：模拟的池 + 池 / d（产品 d = 8）。单测设 d = 1024：上限 = 池 + 池/1024（约 3.2 MB，按 4 KB 向下取整）。宿主余量给足（64 GB），池已满：
+            //   要上限以内的整 4 KB 数 → 成功；再要 4 KB（超出上限）→ 0x10801、记账不变；d 回 8
+            s2a_mem_test_host_avail(64ull << 30); s2a_mem_test_headroom_div(1024);
+            uint64_t head = (POOL / 1024) & ~0xfffull, base = b + 32 * MB;
+            CHECK(PHYS(0x2C, base, head) == 0 && s2a_mem_test_phys() == 9 * MB + head, "扩到 池 + 池/1024（%llu KB）以内：应成功", (unsigned long long)(head >> 10));
+            uint64_t ph = s2a_mem_test_phys();
+            CHECK(PHYS(0x2C, base + head, 0x1000) == 0x10801 && s2a_mem_test_phys() == ph, "超出 池 + 池/1024：宿主余量再多也回 0x10801、记账不变");
+            CHECK(PHYS(0x2D, base, head) == 0 && s2a_mem_test_phys() == 9 * MB, "解除那段：记账回 9 MB");
+            s2a_mem_test_headroom_div(8);
+            s2a_mem_test_host_avail(0);
+            memset(r, 0, sizeof r); r[1] = 6; r[2] = 0xFFFF8001; svc_mem(0x29, r, 0);
+            CHECK(r[1] == POOL, "余量归 0、扩过的池清掉：总量回到池：实 %llu MB", (unsigned long long)(r[1] >> 20));
+        }
+        memset(r, 0, sizeof r); r[1] = 3 * MB + 0x1000; svc_mem(0x01, r, 0);
+        CHECK(r[0] == 0xCA01 && r[1] == 0, "SetHeapSize 大小不对齐：应回 0xCA01 且 x1 为 0，实 %#llx / %#llx", (unsigned long long)r[0], (unsigned long long)r[1]);
         #undef PHYS
         g_nmod = 0;
     }
@@ -411,6 +489,20 @@ int main(void) {
             CHECK(success == 0 && memcmp((void *)b, (void *)(b + 0x18000), 0x4000) == 0 &&
                   lseek(g_s2a_logfd, 0, SEEK_END) == 0, "MapMemory 成功复制且不记录失败日志");
             CHECK(SV(0x05, b + 0x18000, b, 0x4000, 0) == 0, "MapMemory 成功用例解除：还回源（映射期间源是借出的，不能作下面用例的源）");
+            // #4c853c：对齐的共享映射最大权限不含写（iPad 上源在主程序数据段的私有文件映射里）→ 撤回共享映射、改走拷贝：
+            //   期望按语义写死：返回 0、目标内容 = 源、目标可写且写目标不改源（拷贝，不是共享）、解除后源拿回目标里写的内容（拷回）
+            {
+                extern int s2a_mem_test_alias_eacces; s2a_mem_test_alias_eacces = 1;
+                s2a_mem_test_stack(b + 0x30000, 0x4000);
+                memset((void *)b, 0x3c, 0x4000);
+                uint64_t fb = SV(0x04, b + 0x30000, b, 0x4000, 0);
+                int same = fb == 0 && memcmp((void *)b, (void *)(b + 0x30000), 0x4000) == 0;
+                if (fb == 0) ((volatile uint8_t *)(b + 0x30000))[0x10] = 0x77;
+                int copy = fb == 0 && ((volatile uint8_t *)b)[0x10] == 0x3c;
+                CHECK(same && copy, "MapMemory 共享映射最大权限不含写：改走拷贝，返回 0、内容一致、写目标不改源（实得 %#llx / %d / %d）", (unsigned long long)fb, same, copy);
+                CHECK(SV(0x05, b + 0x30000, b, 0x4000, 0) == 0 && ((volatile uint8_t *)b)[0x10] == 0x77, "拷贝改道的解除：内容拷回源");
+                s2a_mem_test_alias_eacces = 0;
+            }
             // 子进程解除目标宿主页映射，让生产 mprotect 真正失败；父进程的窗口保持完整。源取 b+4K（不按宿主页对齐）走拷贝路径——对齐的走共享映射、不 mprotect（族 26）
             ftruncate(g_s2a_logfd, 0); lseek(g_s2a_logfd, 0, SEEK_SET); s2a_mem_test_map_diag_reset();
             s2a_mem_test_stack(b + 0x20000, 0x4000);
@@ -505,6 +597,11 @@ int main(void) {
         s2a_mem_test_setup(AB, AS, W, WS, (void *)(tail + 128 * MB_), 0); s2a_mem_test_vamm(0x1800000, tail + 128 * MB_, 32 * MB_);
         void s2a_mem_test_peaks(uint64_t *, uint64_t *);
         uint64_t pk, ap;
+        {   // Switch 2 应用池诊断开关（S2A_APP_POOL_MB）：没设 = 9 GiB；9809 → 9809 MiB；0 / 负数 / 乱写 → 照旧 9 GiB（期望手写）
+            uint64_t s2a_ounce_pool(void); unsetenv("S2A_APP_POOL_MB"); uint64_t d0 = s2a_ounce_pool();
+            setenv("S2A_APP_POOL_MB", "9809", 1); uint64_t d1 = s2a_ounce_pool();
+            setenv("S2A_APP_POOL_MB", "-5", 1); uint64_t d2 = s2a_ounce_pool(); setenv("S2A_APP_POOL_MB", "x", 1); uint64_t d3 = s2a_ounce_pool(); unsetenv("S2A_APP_POOL_MB");
+            CHECK(d0 == 0x240000000ull && d1 == 9809ull << 20 && d2 == 0x240000000ull && d3 == 0x240000000ull, "Switch 2 应用池开关：缺省 9 GiB、9809 MiB、负数与乱写照旧"); }
         SVH(0x29, 0, 3, 0xFFFF8001, 0);
         CHECK(SVH(0x01, 0, 0x5a800000, 0, 0) == 0xD001, "无表32MiB仍真实拒绝惊奇申请");
         s2a_mem_test_peaks(&pk,&ap); CHECK(pk == 0x5a800000, "失败的合法申请必须计入需求");
@@ -534,7 +631,38 @@ int main(void) {
         if (!rc) { ((volatile uint8_t *)hb)[0]=1; ((volatile uint8_t *)hb)[0x83a00000-1]=2; }
         s2a_mem_test_peaks(&pk,&ap); CHECK(pk==0x83a00000, "成功请求继续提高需求峰值");
         SVH(0x01, 0, 0, 0, 0);
+        {   // #01b36b：窗口只有本机给得出的 3 GiB（小地址设备），游戏要的堆在堆区以内、却伸出窗口末端：物理上放不下 → 回 0xD001、出参 0，
+            //   并按「设备地址空间不够」停局（s2a_init_failed(S2A_INIT_FAIL_E_DEVICE_ADDRESS)）。原先只回 0xD001，不看结果码的游戏照样往下写进宿主映像 SIGBUS。
+            //   期望手写：堆从堆区基址起，请求 = 到窗口末端的长度 + 64 MiB（2 MiB 对齐、不超过堆区）
+            s2a_layout l3; uint64_t mb3, sb3;
+            CHECK(s2a_layout_compute(3,0,0,0,W,3*G,&l3,&mb3,&sb3)==0, "3 GiB 窗口按需布局应成功（SystemResourceSize 0，同 #01b36b 那款）");
+            s2a_mem_test_setup(l3.alias_base,l3.alias_size,W,l3.win_size,(void *)l3.heap_base,0);
+            s2a_mem_test_vamm(0x1000000,l3.heap_base,l3.heap_size);
+            uint64_t big = ((W + l3.win_size - l3.heap_base) + 64 * MB_ + 2 * MB_ - 1) & ~(2 * MB_ - 1);
+            CHECK(l3.heap_base >= W && l3.heap_base < W + l3.win_size && big <= l3.heap_size, "夹具：堆区起点在窗口内、请求 %#llx 不超过堆区 %#llx", (unsigned long long)big, (unsigned long long)l3.heap_size);
+            g_if_code = 0; uint64_t r3 = SVH(0x01, 0, big, 0, 0);
+            CHECK(r3 == 0xD001 && r[1] == 0 && g_if_code == S2A_INIT_FAIL_E_DEVICE_ADDRESS, "堆伸出本机窗口：回 %#llx、出参 %#llx、停局码 %d（期望 0xD001、0、%d）",
+                  (unsigned long long)r3, (unsigned long long)r[1], g_if_code, S2A_INIT_FAIL_E_DEVICE_ADDRESS);
+            g_if_code = 0; SVH(0x01, 0, 64 * MB_, 0, 0);
+            CHECK(r[0] == 0 && g_if_code == 0, "对照：窗口内放得下的堆照常成功、不停局（回 %#llx、码 %d）", (unsigned long long)r[0], g_if_code);
+            SVH(0x01, 0, 0, 0, 0);
+            s2a_mem_test_setup(layout.alias_base,layout.alias_size,W,layout.win_size,(void *)layout.heap_base,0);   // 还原 16 GiB 窗口，后面的用例照旧
+            s2a_mem_test_vamm(0x1000000,layout.heap_base,layout.heap_size);
+        }
         uint64_t a=layout.alias_base+2*G;
+        {   // #1143 续：学跨度只认空洞以内的地址。界设在这段映射中间（a − 窗口基址 + 0x2000）：别名区跨度截到界上 = 别名区内偏移 2 GiB + 0x2000，
+            //   完整高水位照记 2 GiB + 0x4000（地址需求表用）；界 0 = 不限
+            void s2a_mem_span_limit(uint64_t); uint64_t s2a_mem_test_alias_in(void);
+            s2a_mem_span_limit(a - W + 0x2000);
+            CHECK(SVH(0x2C,a,0x4000,0,0)==0, "跨界的别名映射照常成功");
+            CHECK(s2a_mem_test_alias_in()==2*G+0x2000, "别名区学跨度截到界上：期望 %#llx 实 %#llx", (unsigned long long)(2*G+0x2000), (unsigned long long)s2a_mem_test_alias_in());
+            s2a_mem_test_peaks(&pk,&ap); CHECK(ap==2*G+0x4000, "完整别名高水位不受界影响");
+            CHECK(SVH(0x2D,a,0x4000,0,0)==0, "解除");
+            s2a_mem_span_limit(0);
+            uint64_t s2a_span_pick(uint64_t, uint64_t, const uint64_t *, int);
+            const uint64_t B = 0x7000000000ull, e3[3] = {B + 2*G, B + 73*G, B - 0x1000};
+            CHECK(s2a_span_pick(B, 64*G, e3, 3)==2*G, "跨度：超出空洞（73 GiB > 64 GiB）的整项不算、窗口基址以下的不算 → 2 GiB");
+            CHECK(s2a_span_pick(B, 0, e3, 3)==73*G, "跨度：界 0 不限 → 73 GiB（旧口径）"); }
         CHECK(SVH(0x2C,a,0x4000,0,0)==0 && SVH(0x2D,a,0x4000,0,0)==0, "窗口内别名映射及解除");
         s2a_mem_test_peaks(&pk,&ap); CHECK(ap==2*G+0x4000, "解除映射后保留别名最高偏移");
         uint64_t far=W+layout.win_size+G;   // 16 GiB 窗口之外的别名区（远端），仍在本块预留里
@@ -898,6 +1026,20 @@ int main(void) {
         CHECK(mi.state == 0x10 && mi.base == W36 + 32 * G && mi.base + mi.size == T36, "36 位：窗口末到 2^36 → 不可访问、止于 2^36（实 起 %#llx 止 %#llx）", (unsigned long long)mi.base, (unsigned long long)(mi.base + mi.size));
         s2a_mem_test_astype(3); s2a_mem_query(T36 + 0x4000, &mi);
         CHECK(mi.state == 0x10 && mi.base == W36 + 32 * G && mi.base + mi.size == 1ull << 39, "39 位对照：窗口末之上止于 2^39（实 起 %#llx 止 %#llx）", (unsigned long long)mi.base, (unsigned long long)(mi.base + mi.size));
+        // #1419：36 位款窗口放在 2^36 以上按 2^36 对齐的一块（WH = 7 × 2^36）。期望按定义手写：QueryMemory 的地址空间末 = 这一块的末 WH + 2^36；
+        //   IPC 描述符只带地址 0–35 位（老 SDK），补上块基址后是游戏已映射的地址（堆）才补，补不上 / 本来就是游戏地址 / 0 原样；39 位款对照仍只试补第 39 位
+        { uint64_t s2a_ipc_addr39(uint64_t); const uint64_t WH = 7ull << 36, HP = WH + 2 * G, HL = 64ull << 20;
+          s2a_mem_test_setup(WH + 8 * G, 6 * G, WH, 32 * G, (void *)HP, HL); s2a_mem_test_astype(1);
+          s2a_mem_query(WH + 40 * G, &mi);
+          CHECK(mi.state == 0x10 && mi.base == WH + 32 * G && mi.base + mi.size == WH + T36, "36 位高位块：窗口末到块末 → 不可访问、止于 %#llx（实 起 %#llx 止 %#llx）", (unsigned long long)(WH + T36), (unsigned long long)mi.base, (unsigned long long)(mi.base + mi.size));
+          CHECK(s2a_ipc_addr39((HP + 0x10) & (T36 - 1)) == HP + 0x10, "36 位高位块：描述符丢了 36 位以上的堆地址 → 补回块基址（实 %#llx）", (unsigned long long)s2a_ipc_addr39((HP + 0x10) & (T36 - 1)));
+          CHECK(s2a_ipc_addr39(HP + 0x10) == HP + 0x10, "36 位高位块：本来就是游戏地址 → 原样");
+          CHECK(s2a_ipc_addr39((HP + HL + 0x1000) & (T36 - 1)) == ((HP + HL + 0x1000) & (T36 - 1)), "36 位高位块：补上也不是已映射的游戏地址 → 原样");
+          CHECK(s2a_ipc_addr39(0) == 0, "36 位高位块：0 → 0");
+          s2a_mem_test_astype(3);
+          CHECK(s2a_ipc_addr39((HP + 0x10) & (T36 - 1)) == ((HP + 0x10) & (T36 - 1)), "39 位对照：不按 2^36 块补（只试第 39 位，补上不是游戏地址 → 原样）");
+          s2a_mem_test_setup(W36 + 8 * G, 6 * G, W36, 32 * G, (void *)(W36 + 2 * G), HL); s2a_mem_test_astype(1);
+          CHECK(s2a_ipc_addr39(W36 + 2 * G + 0x10) == W36 + 2 * G + 0x10, "36 位窗口在 2^36 以下（原位置）：原样，不补"); }
     }
     printf("%s t_svc_mem：%d / %d 项通过（对拍 %d 区间不一致 %d；64 MB 整段查 8 字节 %d 次 老 %.1f ms → 新 %.2f ms）\n", bad ? "✗" : "✓", checks - bad, checks, N, diff, M, told, tnew);
     {   // #258 文件后备下还页懒清零：解除时锁内只改成不可访问并记「待清零」，不打洞；页重新放出来时就地清零（0x2C / MapMemory 拷贝路径）或只撤销标记（MapMemory 对齐路径盖掉原映射）。

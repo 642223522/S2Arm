@@ -18,14 +18,14 @@ int main(void) {
         mtl_init();
         // ② 平铺：采样器 5 重复、6 镜像重复、7 夹边（0）、8 夹边（7）；9 不登记
         reg_samp(5, 1); reg_samp(6, 6); reg_samp(7, 0); reg_samp(8, 7);
-        pthread_mutex_lock(&g_rmu);
+        os_unfair_lock_lock(&g_rmu);
         expect("采样器重复寻址 → TILE_U", wd_tex_flags(3 | 5ull << 20), S2A_WIDEN_TEX_TILE_U);
         expect("采样器镜像重复 → TILE_U", wd_tex_flags(3 | 6ull << 20), S2A_WIDEN_TEX_TILE_U);
         expect("采样器夹边（0）→ 0", wd_tex_flags(3 | 7ull << 20), 0);
         expect("采样器夹边（7）→ 0", wd_tex_flags(3 | 8ull << 20), 0);
         expect("句柄里没有采样器号 → 0", wd_tex_flags(3), 0);
         expect("采样器号没登记 → 0", wd_tex_flags(3 | 9ull << 20), 0);
-        pthread_mutex_unlock(&g_rmu);
+        os_unfair_lock_unlock(&g_rmu);
         // ① 每着色器句柄：同 wd_on 起会话与共用句柄
         g_wd = s2a_widen_init(2346, 1080, S2A_WIDEN_FULL); REQUIRE(g_wd == S2A_WIDEN_ALL);
         g_wd_sh = s2a_widen_shader(0, NULL, 0); g_wd_sh_push = s2a_widen_shader(0, NULL, S2A_WIDEN_SH_PUSH); REQUIRE(g_wd_sh > 0 && g_wd_sh_push > 0 && g_wd_sh != g_wd_sh_push);

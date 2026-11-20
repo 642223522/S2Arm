@@ -326,6 +326,13 @@ char *s2a_glsl_es_rewrite(const char *pre, size_t n, char stage, size_t *out_n, 
         body = sb_take(&o, &bn);
     } else body = es100(pre, n, stage, &bn);
     if (!body) { if (errn && !err[0]) snprintf(err, errn, "out of memory"); return NULL; }
+    // 「sample」在 GLSL ES 3.00 / 3.10 是保留字，3.20 或开了 GL_OES_shader_multisample_interpolation 才是插值限定符；ES 1.00 里是普通名字。
+    //   游戏拿它当变量名（ES 1.00 原文、或 NVIDIA 编译器放过的 3.x），升到 3.10 后 glslang 报「'sample' : Reserved word」整支编不过，
+    //   游戏查编译状态失败就断言退出（D-9EPN：5 支片元编不过、随后游戏 Break）。结果不是 3.20、也没开那个扩展时，这个词只可能是名字：整词改成 s2a_sample
+    int v320 = 0, msi = 0;
+    if (at) { size_t j = skip_space(at, rest, 8); v320 = starts(at, rest, j, "320") && (j + 3 == rest || !is_word((unsigned char)at[j + 3])); }
+    { static const char ext[] = "GL_OES_shader_multisample_interpolation"; for (size_t i = 0; !msi && i + sizeof ext - 1 <= n; i++) msi = !memcmp(pre + i, ext, sizeof ext - 1); }
+    if (!v320 && !msi) { size_t sn; char *x = sub_word(body, bn, "sample", "s2a_sample", &sn, NULL); free(body); if (!x) { if (errn && !err[0]) snprintf(err, errn, "out of memory"); return NULL; } body = x; bn = sn; }
     size_t fn; char *fx = fixups(body, bn, &fn, err, errn);
     if (!fx) return NULL;
     return flatten_blocks(fx, fn, stage, out_n);

@@ -190,7 +190,7 @@ class Ed25519Tests(unittest.TestCase):
 class VersionTests(Base):
     def release(self, tag):
         names = (updater.ASSETS["mac"], updater.MANIFEST, updater.SIGNATURE)
-        version = tag[1:] if tag.count(".") == 2 and "-" not in tag else "0.0.0"
+        version = tag[1:] if updater.version_key(tag) else "0.0.0"   # 测试版 tag 的签名清单版本同 tag（11-19）
         raw, signature = signed(version, {updater.ASSETS["mac"]: {"sha256": "0" * 64, "size": 1}})
         release = {"tag_name": tag, "assets": [{"name": n, "size": 1, "browser_download_url": "https://github.com/" + n} for n in names]}
         answers = {updater.API: json.dumps(release).encode(), "https://github.com/" + updater.MANIFEST: raw, "https://github.com/" + updater.SIGNATURE: signature}
@@ -213,6 +213,39 @@ class VersionTests(Base):
             with self.subTest(tag=tag, current=current), self.release(tag), patch.object(updater, "PUBLIC_KEY", key), patch.dict(os.environ, {"S2A_UPDATE_API": ""}):
                 self.assertEqual(updater.latest("mac", current)["available"], available)
 
+    def test_prerelease_install_gets_the_same_numbered_release(self):
+        """11-19：0.6.0 测试包装的是 0.6.0-test.N，正式 0.6.0 发布时要算更新（同号预发布 < 正式）；更高号的测试版不被旧正式版「更新」回去"""
+        key = ed25519.public_key(TEST_SECRET).hex()
+        for tag, current, available in (("v0.6.0", "0.6.0-test.1", True), ("v0.6.0", "0.6.0-test.12", True), ("v0.5.9", "0.6.0-test.1", False),
+                                         ("v0.6.0", "0.6.1-test.1", False), ("v0.6.1", "0.6.0-test.3", True), ("v0.6.0", "0.6.0", False)):
+            with self.subTest(tag=tag, current=current), self.release(tag), patch.object(updater, "PUBLIC_KEY", key), patch.dict(os.environ, {"S2A_UPDATE_API": ""}):
+                self.assertEqual(updater.latest("mac", current)["available"], available)
+
+    def test_release_players_never_get_prereleases(self):
+        """11-19 维护者：正式渠道永远不推预发布——本机是正式版时预发布一律不算更新（哪怕按语义版本更大）；本机是测试版时才看预发布。
+        GitHub 回退与官网清单两条路都核"""
+        key = ed25519.public_key(TEST_SECRET).hex()
+        cases = (("v0.6.0-test.1", "0.5.8", False), ("v0.6.0", "0.5.8", True), ("v0.6.0-test.2", "0.6.0-test.1", True),
+                 ("v0.6.0-test.1", "0.6.0-test.2", False), ("v0.6.1-test.1", "0.6.0", False))
+        for tag, current, available in cases:
+            with self.subTest(path="GitHub", tag=tag, current=current), self.release(tag), patch.object(updater, "PUBLIC_KEY", key), patch.dict(os.environ, {"S2A_UPDATE_API": ""}):
+                self.assertEqual(updater.latest("mac", current)["available"], available)
+            manifest = {"version": tag[1:], "files": {updater.ASSETS["mac"]: {"sha256": "0" * 64, "size": 1}}}
+            with self.subTest(path="官网", tag=tag, current=current), patch.object(updater, "mirror_manifest", return_value=manifest), patch.dict(os.environ, {"S2A_UPDATE_API": ""}):
+                info = updater.query_latest("mac", current)
+                self.assertEqual(info["available"], available)
+                if available:
+                    self.assertEqual(info["version"], tag[1:])
+
+    def test_version_key_orders_like_semver(self):
+        order = ["0.5.9", "0.6.0-test.1", "0.6.0-test.2", "0.6.0-test.10", "0.6.0-test.x", "0.6.0", "0.6.1-test.1", "0.6.1", "0.10.0"]
+        keys = [updater.version_key(v) for v in order]
+        self.assertTrue(all(keys), keys)
+        self.assertEqual(keys, sorted(keys))
+        self.assertEqual(updater.version_key("v0.6.0"), updater.version_key("0.6.0"))
+        for bad in ("", "0.6", "0.6.0-", "0.6.0-te st", "x0.6.0"):
+            self.assertIsNone(updater.version_key(bad), bad)
+
     def test_official_build_ignores_the_test_key(self):
         with patch.dict(os.environ, {"S2A_UPDATE_API": "", "S2A_UPDATE_PUBKEY": "00" * 32}):
             self.assertEqual(updater.public_key().hex(), updater.PUBLIC_KEY)
@@ -222,6 +255,62 @@ class VersionTests(Base):
             self.assertFalse(updater.trusted("https://evil.example/x"))
             self.assertFalse(updater.trusted("http://github.com/x"))
             self.assertTrue(updater.trusted("https://github.com/x"))
+
+
+class FreshCheckTests(Base):
+    args = ["check", "--platform", "mac", "--current", "0.1.1"]
+
+    def check(self, *flags):
+        out = io.StringIO()
+        with patch.object(sys, "stdout", out):
+            status = updater.main([*self.args, *flags])
+        return status, json.loads(out.getvalue())
+
+    def test_check_fresh_bypasses_and_replaces_recent_cache(self):
+        stale = {"available": False}
+        live = {"available": True, "version": "0.1.2", "notes": {"sections": []}}
+        cache = updater.latest_cache("mac", "0.1.1")
+        cache.write_text(json.dumps(stale), encoding="utf-8")
+        with patch.object(updater, "LATEST_TTL", 900), patch.object(updater, "query_latest", return_value=live) as query:
+            self.assertEqual(self.check(), (0, stale))
+            query.assert_not_called()
+            self.assertEqual(self.check("--fresh"), (0, live))
+            self.assertEqual(self.check(), (0, live))
+            query.assert_called_once_with("mac", "0.1.1")
+        self.assertEqual(json.loads(cache.read_text(encoding="utf-8")), live)
+
+    def test_check_fresh_reports_error_as_json_and_preserves_cache(self):
+        cache = updater.latest_cache("mac", "0.1.1")
+        cache.write_text('{"available": false}', encoding="utf-8")
+        for error, code in (
+            (updater.UpdateError("update_network", "offline"), "update_network"),
+            (updater.UpdateError("update_rate_limited", "HTTP 429"), "update_rate_limited"),
+            (updater.UpdateError("update_server", "HTTP 503"), "update_server"),
+            (updater.UpdateError("update_bad_signature", "bad signature"), "update_bad_signature"),
+            (ValueError("invalid JSON"), "update_failed"),
+        ):
+            with self.subTest(error=error), patch.object(updater, "query_latest", side_effect=error):
+                self.assertEqual(self.check("--fresh"), (0, {"available": False, "error": code}))
+        self.assertEqual(json.loads(cache.read_text(encoding="utf-8")), {"available": False})
+
+    def test_inbox_notices_only_does_not_run_update_operations(self):
+        feature = {"kind": "feature", "id": "feature-1"}
+        out = io.StringIO()
+        with patch.object(sys, "stdout", out), patch.object(updater, "notice_data", return_value=NoticeTests.ITEM), \
+                patch.object(updater, "feature_spotlight", return_value=feature), \
+                patch.object(updater, "latest") as latest, patch.object(updater, "installed_notes") as installed, \
+                patch.object(updater, "clear_stale_pending") as clear, patch.object(updater, "sweep_install_leftovers") as sweep:
+            status = updater.main(["inbox", "--platform", "mac", "--current", "0.1.1",
+                                   "--private-root", str(self.private), "--notices-only"])
+        self.assertEqual(status, 0)
+        for operation in (latest, installed, clear, sweep):
+            operation.assert_not_called()
+        info = json.loads(out.getvalue())
+        self.assertEqual(info["update"], {"available": False})
+        self.assertEqual(info["popup"], feature)
+        self.assertEqual(info["banner"]["id"], "n1")
+        self.assertEqual([(message["id"], message["kind"]) for message in info["messages"]], [("n1", "notice"), ("feature-1", "feature")])   # 新功能大窗在消息里留一条可重看
+        self.assertEqual(info["unread"], 1)
 
 
 class NoticeTests(unittest.TestCase):
@@ -480,6 +569,32 @@ class FeatureTests(unittest.TestCase):
         win = self.root / "win/Engine"
         (win / "pack/jobs").mkdir(parents=True); (win / "docs/site").mkdir(parents=True)
         self.assertEqual(updater.site_dir(win / "pack/jobs"), win / "docs/site")
+
+    def test_page_platforms_upgrade_audience_and_labels(self):
+        # 0.6.0（11-19）：页可标给哪些平台看、只给升级上来的人看、三栏标题换字；看过后「消息」里留一条可重看
+        page = {"image": "feature/a.jpg", **{k: self.T for k in updater.FEATURE_TEXTS}}
+        knows = {"zh-Hans": "要知道", "en": "Good to know"}
+        self.write(platforms=["mac", "windows", "ios"], pages=[
+            dict(page, platforms=["mac", "windows", "ios"], labels={"where": knows, "bogus": knows}),
+            dict(page, platforms=["mac", "windows"], audience="upgrade"),
+            dict(page, platforms=["ios"])])
+        mac = self.spot()
+        self.assertEqual(len(mac["pages"]), 2)                                    # 只给 ios 的那页电脑上不要
+        self.assertEqual(mac["pages"][0]["labels"], {"where": knows})               # 只认 what / how / where
+        self.assertEqual(mac["pages"][1]["audience"], "upgrade")
+        fresh = updater.inbox("mac", "0.4.0", self.private, None, [], mac)
+        self.assertEqual(len(fresh["popup"]["pages"]), 1)                           # 新装（没有 seen.json）：升级页去掉
+        self.assertEqual([m["kind"] for m in fresh["messages"]], ["feature"])     # 消息里留一条可重看
+        updater.inbox_seen(self.private, notice="n1")                               # 本机记过看过什么 = 升级上来的
+        old = updater.inbox("mac", "0.4.0", self.private, None, [], mac)
+        self.assertEqual(len(old["popup"]["pages"]), 2)
+        updater.inbox_seen(self.private, feature="v0.4.0-x")
+        again = updater.inbox("mac", "0.4.0", self.private, None, [], mac)
+        self.assertIsNone(again["popup"])                                           # 看过不再弹
+        self.assertEqual(len(next(m for m in again["messages"] if m["kind"] == "feature")["pages"]), 2)   # 但消息里还能点开
+        self.write(platforms=["mac"], pages=[dict(page, audience="upgrade")])
+        self.private = self.root / "private2"
+        self.assertIsNone(updater.inbox("mac", "0.4.0", self.private, None, [], self.spot())["popup"])   # 新装且只有升级页：不弹
 
     def test_fresh_install_without_seen_file_shows_it(self):
         self.assertFalse((self.private / "updates/seen.json").exists())

@@ -74,17 +74,16 @@ struct SaveManageSheet: View {
     /// 别的作业（一局、出包、导入……）在跑，或弹窗自己在跑：存档动作先不让点。
     private var blocked: Bool { model.busy || state.busy }
 
-    private func t(_ id: String) -> String { BackendText.launcherText(id, language: loc.lang == .zh ? "zh-Hans" : "en") }
+    private func t(_ id: String) -> String { BackendText.launcherText(id, language: loc.lang.sharedCode) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(t("save.title")).font(.manrope(26, .heavy)).tracking(-0.6)
-                Text(gameName).font(.manrope(14)).foregroundStyle(.secondary).lineLimit(1)
-                Text(t("save.hint")).font(.manrope(12.5)).foregroundStyle(.secondary)
+                LauncherSheetHeading(t("save.title"), subtitle: gameName)
+                Text(t("save.hint")).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true).padding(.top, 6)
                 // 存档位置 SaveData：原生存档放进去下次起局就用（services SaveFolder.cs）；上次没读进来的原因写在这里
-                Text(t("save.folder.note")).font(.manrope(12.5)).foregroundStyle(.secondary)
+                Text(t("save.folder.note")).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true).padding(.top, 4)
                 // 本地玩家（#623）：建过玩家时写明存档位置是谁的，备份 / iCloud 是这款所有玩家一起
                 if let player = S2ArmLauncherModel.launchPlayer() {
@@ -93,40 +92,38 @@ struct SaveManageSheet: View {
                 }
                 if let game, let why = model.saveFolderProblem(game) {
                     Label { Text(t("save.folder.problem").replacingOccurrences(of: "{0}", with: why)).fixedSize(horizontal: false, vertical: true) } icon: { Image(systemName: "exclamationmark.triangle.fill") }
-                        .font(.manrope(12)).foregroundStyle(LauncherPalette.danger).padding(.top, 4)
+                        .font(LauncherTheme.TypeStyle.caption).foregroundStyle(LauncherPalette.danger).padding(.top, 4)
                 }
                 if let game {
                     Button(t("save.folder.open")) { model.openSaveFolder(game) }
-                        .buttonStyle(LauncherSecondaryButtonStyle()).padding(.top, 8)
+                        .controllerButtonStyle(LauncherSecondaryButtonStyle()).padding(.top, 8)
                         .accessibilityIdentifier("save.folder.open")
                 }
             }
-            .padding(.horizontal, 30).padding(.top, 28).padding(.bottom, 16)
-            feedback.padding(.horizontal, 30)
+            .padding(.horizontal, LauncherTheme.Space.page).padding(.top, LauncherTheme.Space.page).padding(.bottom, 16)
+            feedback.padding(.horizontal, LauncherTheme.Space.page)
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     currentCard
                     backupCard
                     restoreCard
                 }
-                .padding(.horizontal, 30).padding(.top, 8).padding(.bottom, 24)
+                .padding(.horizontal, LauncherTheme.Space.page).padding(.top, 8).padding(.bottom, LauncherTheme.Space.section)
             }
-            Divider().opacity(0.3)
-            HStack(spacing: 14) {
+            LauncherSheetFooter {
                 if state.busy, let note = model.lockWaitNote {
-                    Text(loc.backend(note)).font(.manrope(12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Text(loc.backend(note)).font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 } else if model.busy {
-                    Text(t("save.busy")).font(.manrope(12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Text(t("save.busy")).font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 8)
                 if state.busy, state.running != .restore {
-                    Button(t("save.stop")) { state.stop() }.buttonStyle(LauncherSecondaryButtonStyle())
+                    Button(t("save.stop")) { state.stop() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerShortcut(.secondary)
                 }
                 Button(t("save.done")) { dismiss() }
-                    .buttonStyle(LauncherSecondaryButtonStyle()).keyboardShortcut(.cancelAction)
+                    .controllerButtonStyle(LauncherPrimaryButtonStyle()).keyboardShortcut(.cancelAction).controllerShortcut(.rightTrigger, .back)
                     .disabled(state.running == .restore)
             }
-            .padding(.horizontal, 30).padding(.vertical, 16)
         }
         .alert(t("save.confirmTitle"), isPresented: $confirming) {
             Button(t("save.confirm"), role: .destructive) { restore() }
@@ -143,11 +140,7 @@ struct SaveManageSheet: View {
         .onAppear { refresh(); if let source, !blocked { inspect(source) } }
         .onDisappear { state.stop() }
         .interactiveDismissDisabled(state.running == .restore)
-        .frame(width: 600, height: 640)
-        .background(LauncherPalette.background)
-        .font(.manrope(13))
-        .preferredColorScheme(.dark)
-        .tint(LauncherPalette.cream)
+        .launcherSheet()
     }
 
     /// 正在跑：做什么 + 进度条；做完 / 失败：一句结果或原因。
@@ -156,7 +149,7 @@ struct SaveManageSheet: View {
             SaveProgressLine(title: t("save.working." + op.rawValue), progress: state.progress).padding(.bottom, 14)
         } else if let failure = state.failure {
             Label { Text(failure).fixedSize(horizontal: false, vertical: true) } icon: { Image(systemName: "exclamationmark.circle.fill") }
-                .font(.manrope(12.5)).foregroundStyle(LauncherPalette.danger).padding(.bottom, 14)
+                .font(LauncherTheme.TypeStyle.detail).foregroundStyle(LauncherPalette.danger).padding(.bottom, 14)
         } else if let result = state.result {
             Label { Text(result.text).fixedSize(horizontal: false, vertical: true) } icon: {
                 Image(systemName: result.warns ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
@@ -170,11 +163,11 @@ struct SaveManageSheet: View {
             if let s = state.status {
                 if s.hasSave {
                     CardRow(t("save.files"), dot: LauncherPalette.ready) {
-                        Text("\(s.fileCount)").font(.manrope(13, .semibold)).monospacedDigit()
+                        Text("\(s.fileCount)").font(LauncherTheme.TypeStyle.section).monospacedDigit()
                     }
                     CardDivider()
                     CardRow(t("save.size")) {
-                        Text(FreeSpaceView.size(s.totalBytes)).font(.manrope(13, .semibold)).monospacedDigit()
+                        Text(FreeSpaceView.size(s.totalBytes)).font(LauncherTheme.TypeStyle.section).monospacedDigit()
                     }
                 } else {
                     CardRow(t("save.none"), dot: LauncherPalette.unbuilt) { EmptyView() }
@@ -186,18 +179,18 @@ struct SaveManageSheet: View {
                 if !s.recoveryFailed.isEmpty {
                     CardDivider()
                     CardRow(t("save.recoveryFailed"), dot: LauncherPalette.danger) {
-                        Button(t("save.reveal")) { reveal(s.recoveryFailed) }.buttonStyle(LauncherSecondaryButtonStyle())
+                        Button(t("save.reveal")) { reveal(s.recoveryFailed) }.controllerButtonStyle(LauncherSecondaryButtonStyle())
                     }
                 }
                 if !s.previousBackup.isEmpty {
                     CardDivider()
                     CardRow(t("save.previous"), detail: t("save.previousDetail")) {
-                        Button(t("save.reveal")) { reveal(s.previousBackup) }.buttonStyle(LauncherSecondaryButtonStyle())
+                        Button(t("save.reveal")) { reveal(s.previousBackup) }.controllerButtonStyle(LauncherSecondaryButtonStyle())
                     }
                 }
             } else {
                 CardRow(t(state.running == .status ? "save.working.status" : "save.unknown")) {
-                    Button(t("save.recheck")) { refresh() }.buttonStyle(LauncherSecondaryButtonStyle()).disabled(blocked)
+                    Button(t("save.recheck")) { refresh() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(blocked)
                 }
             }
         }
@@ -206,7 +199,7 @@ struct SaveManageSheet: View {
     private var backupCard: some View {
         CardGroup(t("save.backup")) {
             CardRow(t("save.backupRow"), detail: t("save.backupDetail")) {
-                Button(t("save.backupButton")) { backup() }.buttonStyle(LauncherSecondaryButtonStyle())
+                Button(t("save.backupButton")) { backup() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerShortcut(.rightTrigger, focused: true)
                     .disabled(blocked || state.status?.hasSave != true)
             }
         }
@@ -215,7 +208,7 @@ struct SaveManageSheet: View {
     private var restoreCard: some View {
         CardGroup(t("save.restore"), footnote: t("save.restoreNote") + "\n" + t("save.dropHint")) {
             CardRow(t("save.chooseRow"), detail: state.preview?.source.lastPathComponent ?? t("save.chooseDetail")) {
-                Button(t("save.choose")) { choose() }.buttonStyle(LauncherSecondaryButtonStyle()).disabled(blocked)
+                Button(t("save.choose")) { choose() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(blocked)
             }
             if let p = state.preview {
                 CardDivider()
@@ -233,19 +226,16 @@ struct SaveManageSheet: View {
                 CardDivider()
                 CardRow(t("save.verified"), detail: p.notice.isEmpty ? "" : loc.backend(p.notice),
                         dot: p.notice.isEmpty ? LauncherPalette.ready : LauncherPalette.building) {
-                    Button { confirming = true } label: {
-                        Text(t("save.restoreButton")).font(.manrope(13.5, .bold)).foregroundStyle(.black)
-                            .padding(.horizontal, 18).padding(.vertical, 8)
-                            .background(LauncherPalette.cream, in: Capsule()).contentShape(Capsule())
-                    }
-                    .buttonStyle(.plain).disabled(blocked).opacity(blocked ? 0.45 : 1)
+                    Button(t("save.restoreButton")) { confirming = true }
+                        .controllerShortcut(.rightTrigger, focused: true)
+                        .controllerButtonStyle(LauncherPrimaryButtonStyle()).disabled(blocked)
                 }
             }
         }
     }
 
     private func value(_ text: String) -> some View {
-        Text(text).font(.manrope(13, .semibold)).monospacedDigit().lineLimit(1)
+        Text(text).font(LauncherTheme.TypeStyle.section).monospacedDigit().lineLimit(1)
     }
 
     /// 失败原因：作业层原话按界面语言显示；读不全 / 起不来给界面自己的话。
@@ -336,7 +326,7 @@ private struct SaveProgressLine: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.manrope(13, .semibold))
+            Text(title).font(LauncherTheme.TypeStyle.section)
             if let fraction = progress.fraction {
                 ProgressView(value: fraction).progressViewStyle(.linear).tint(LauncherPalette.cream)
             } else {

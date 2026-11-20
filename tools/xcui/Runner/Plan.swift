@@ -1,16 +1,18 @@
 // 点按计划（纯解析，不碰 XCTest；Mac 上单测 tests/xcui_plan_test.sh）。
-// 计划 = JSON：{"bundle": "<包名>", "steps": [步, …]}，步只有六种：
+// 计划 = JSON：{"bundle": "<包名>", "steps": [步, …]}，步只有七种：
 //   {"tap": "<无障碍标识>"}        点这个控件（等它出现，最多 timeout 秒，缺省 10）
 //   {"tapxy": [x, y]}              在 App 窗口坐标（点）单指点一下
 //   {"press": [x, y, 秒]}          单指按住这么久
 //   {"slider": "<无障碍标识>", "to": 0~1}  把滑条拖到归一位置（等它出现，同 tap）
 //   {"wait": 秒}                   等
+//   {"swipe": "<无障碍标识>"}     在这个控件上向左滑（等它出现，同 tap；表格行左滑出「删除」，ios/vpad_mods.m 资源 Mod 页）
 //   {"type": "<无障碍标识>", "text": "文字"}  点中这个输入框再打字（等它出现，同 tap；系统键盘桥接验收：ios/textinput.m 的输入框标识 s2a.textinput.field）
-// 每步可带 "timeout"（只对 tap / slider / type 有意义）。认不出的步整份拒绝（不半途执行）
+//   {"orient": "landscape" | "portrait"}  把设备转成横屏（Home 条在右）/ 竖屏，App 跟着转（横屏游戏库验收）
+// 每步可带 "timeout"（只对 tap / slider / swipe / type 有意义）。认不出的步整份拒绝（不半途执行）
 import Foundation
 
 struct XCUIPlan: Equatable {
-    enum Step: Equatable { case tap(id: String, timeout: Double), slider(id: String, to: Double, timeout: Double), tapXY(x: Double, y: Double), press(x: Double, y: Double, seconds: Double), wait(Double), typeText(id: String, text: String, timeout: Double) }
+    enum Step: Equatable { case tap(id: String, timeout: Double), slider(id: String, to: Double, timeout: Double), tapXY(x: Double, y: Double), press(x: Double, y: Double, seconds: Double), wait(Double), typeText(id: String, text: String, timeout: Double), swipeLeft(id: String, timeout: Double), orient(landscape: Bool) }
     var bundle: String
     var steps: [Step]
 
@@ -26,7 +28,9 @@ struct XCUIPlan: Equatable {
             else if let p = s["tapxy"] as? [NSNumber], p.count == 2 { steps.append(.tapXY(x: p[0].doubleValue, y: p[1].doubleValue)) }
             else if let p = s["press"] as? [NSNumber], p.count == 3, p[2].doubleValue > 0 { steps.append(.press(x: p[0].doubleValue, y: p[1].doubleValue, seconds: p[2].doubleValue)) }
             else if let w = s["wait"] as? NSNumber, w.doubleValue >= 0 { steps.append(.wait(w.doubleValue)) }
+            else if let id = s["swipe"] as? String, !id.isEmpty { steps.append(.swipeLeft(id: id, timeout: to)) }
             else if let id = s["type"] as? String, !id.isEmpty, let t = s["text"] as? String, !t.isEmpty { steps.append(.typeText(id: id, text: t, timeout: to)) }
+            else if let o = s["orient"] as? String, o == "landscape" || o == "portrait" { steps.append(.orient(landscape: o == "landscape")) }
             else { throw err("第 \(i + 1) 步认不出：\(s)") }
         }
         return XCUIPlan(bundle: bundle, steps: steps)

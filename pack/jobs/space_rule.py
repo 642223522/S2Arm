@@ -9,7 +9,7 @@
 CLI：space_rule.py direct-check <产物根> <直连缓存目录> <输出目录> → 恒退 0（复核自己没跑成退 2）：预估不够只打一行【黄】提示、不拦（不许堵门，11-14）"""
 import os, shutil, sys
 
-CONTENT_DIRS = ("romfs", "exefs", "aoc")
+CONTENT_DIRS = ("romfs", "romfs.std", "exefs", "aoc")   # romfs.std：RomFS 不落散文件时的镜像（与 romfs/ 二选一，tree_bytes 对单个文件同样量）
 
 
 def tree_bytes(path):
@@ -59,6 +59,12 @@ def pack_input_bytes(packages):
         content = p.get("contentBytes", 0)
         by_sha[p["sha256"]] = (max(size, p.get("size", 0)), summed + content, max(largest, content), nup or p.get("format") == "nup")
     return sum(max(size, largest if nup else summed) for size, summed, largest, nup in by_sha.values())
+
+
+def source_file_bytes(packages):
+    """玩家导入的原件文件总字节：所选原件按 sha256 去重、取导入时记的文件大小（不含解开后的内容字节）。
+    出包阶段的随包基础管线上限按它算（S2A_SOURCE_BYTES → pack/stage_direct_cpso.sh：原件 × 10%）"""
+    return sum(int(p.get("size") or 0) for p in {p["sha256"]: p for p in packages}.values())
 
 
 def pack_direct_bytes(size):

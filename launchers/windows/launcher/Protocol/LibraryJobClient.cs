@@ -11,8 +11,7 @@ public static class LibraryJobClient
     public static async Task<LibraryJobOutput> RunAsync(LauncherPaths paths, string privateRoot, string library,
         string? libraryId, string operation, IReadOnlyList<string>? selectedPaths, CancellationToken cancellationToken, string? moveFrom = null, bool partialResults = false, string? probe = null, string? jobId = null, bool startup = false, bool freeDefault = false, IReadOnlyCollection<string>? accept = null, IReadOnlyDictionary<string, object?>? fields = null, string? gameId = null)
     {
-        if (operation is not ("setup" or "catalog" or "keys" or "import" or "diagnostics" or "diagnosticsUpload" or "exportPush" or "locations" or "storageOverview" or "spaceSurvey" or "patchMatch"))
-            throw new ArgumentException("Unsupported library operation.", nameof(operation));
+        // 操作名不在前端设白名单（同 PackJobClient，11-15）：原样交引擎，引擎不认识的回失败结果「不支持的任务类型。」
         cancellationToken.ThrowIfCancellationRequested();
         privateRoot = Path.GetFullPath(privateRoot);
         // jobId：前端作业登记先取好的任务号（控制口 /cancel 按它核对）；不给就现取
@@ -25,8 +24,7 @@ public static class LibraryJobClient
         };
         if (selectedPaths is not null) payload["paths"] = selectedPaths;
         // diagnosticsUpload（pack/jobs/diag_upload.py）：gameId / operations / summary / extra 原样进请求
-        // exportPush（pack/jobs/install.py push_export_job，11-13 自签导出推到手机）：gameId / device 原样进请求
-        if (operation is "diagnosticsUpload" or "exportPush") foreach (var (key, value) in fields ?? new Dictionary<string, object?>()) payload[key] = value;
+        if (operation is "diagnosticsUpload") foreach (var (key, value) in fields ?? new Dictionary<string, object?>()) payload[key] = value;
         JobLanguage.Stamp(payload);
         if (moveFrom is not null) payload["moveFrom"] = Path.GetFullPath(moveFrom);
         // 库路径规则只在作业层 setup（剃刀 W19）：带上启动器安装目录（库不能放在它里面或包含它），
@@ -55,14 +53,16 @@ public static class LibraryJobClient
             if (selectedPaths?.Count != 1) throw new ArgumentException("Choose exactly one file.");
             payload["path"] = selectedPaths[0];
         }
-        using var request = PrivateJobRequest.Create(privateRoot, JsonSerializer.Serialize(payload));
+        using var request = PrivateJobRequest.Create(privateRoot, JsonOut.Serialize(payload));
         var info = EnvironmentProbe.StartInfo(paths, request.FilePath);
         info.Arguments = "/d /v:off /s /c \"\"%S2A_UI_RUNTIME%\\s2arm_env.cmd\" && cd /d \"%S2A_UI_ENGINE%\" && python -X utf8 pack/jobs/main.py run --request \"%S2A_UI_REQUEST%\"\"";
         using var forcedStop = new CancellationTokenSource();
         var running = EnvironmentProbe.RunProcessAsync(info, forcedStop.Token, 8 * 1024 * 1024);
         var interrupted = Task.Delay(Timeout.Infinite, cancellationToken);
+        var cancelRequested = false;
         if (await Task.WhenAny(running, interrupted) != running)
         {
+            cancelRequested = true;
             await PackJobClient.CancelAsync(paths, request.FilePath, privateRoot, jobId);   // 同一份取消（剃刀 W17）
             // 点取消时作业恰好已经跑完：照它的真实结局走，不一律报已中断（社区贡献者补丁 #7，原先只在 PackJobClient）
             if (await Task.WhenAny(running, Task.Delay(TimeSpan.FromSeconds(3))) != running)
@@ -74,10 +74,15 @@ public static class LibraryJobClient
             }
         }
         var output = await running;
-        try { return new(LibraryJobResult.Parse(output.StandardOutput, output.ExitCode, jobId, operation), output); }
+        LibraryJobResult report;
+        try { report = LibraryJobResult.Parse(output.StandardOutput, output.ExitCode, jobId, operation); }
         catch (LibraryProtocolException error)
         {
             throw new LibraryProtocolException(error.Message + "\nExit: " + output.ExitCode + "\n" + output.StandardError, error);
         }
+        // 3 秒内结束且作业自己报「已取消」= 取消生效：按取消抛给调用方（同 3 秒没结束的强停分支）。作业抢在取消前真跑完（succeeded / failed）才照真实结局返回（社区贡献者补丁 #7）。
+        //   原先这里一律正常返回 state=cancelled 的结果，调用方当成「完成」处理（Windows 测试「accepted library cancellation」在任何机器上都红）
+        if (cancelRequested && report.State == "cancelled") throw new OperationCanceledException(cancellationToken);
+        return new(report, output);
     }
 }

@@ -33,18 +33,24 @@ internal sealed class PhoneJobTrack
     public string ExportFolder = "";
     public int ExportGames;
     public long? ExportBytes;
-    /// <summary>完成页「推到手机」（11-13）：推进手机上自签 S2Arm 的 .img 文件名（空 = 还没推）；推不成时作业给的一句「缺什么、怎么做」</summary>
-    public List<string> Pushed = [];
-    public string PushNote = "";
-    public bool Pushing;
+    /// <summary>这次新写的 .img 文件名与沿用上次导出的款数（#1132，作业结果 fresh / reused）：有沿用才在完成页点名「.img 只要拷这几个」</summary>
+    public List<string> ExportFresh = [];
+    public int ExportReused;
+    public List<string> ExportUnwritten = [];   // 只新写点的那款时，这次没写 .img 的别的款（作业结果 unwritten，游戏名）
     /// <summary>这次补进 S 级优化的各款：(游戏名, {applied, failed, error})（作业结果 sgrade，pack/jobs/install.py；完成页列打上 / 没打上，11-14）</summary>
     public List<(string Name, JsonElement Res)> SGrade = [];
+    /// <summary>「更新 S2Arm」装完后这台手机上的 0.5.x 老款（作业结果 legacy：资源在、程序包不在，这台电脑能更新的）与它们那台的设备记录键（legacyDevice）；
+    /// 要回装它的电脑更新的只记名字（legacyElsewhere）。成功页接着列出、默认全勾，点「更新这 N 款」走 pushSelected（同 Mac PhoneJobPanel legacySection）</summary>
+    public List<(string Id, string Name)> Legacy = [];
+    public List<string> LegacyElsewhere = [];
+    public string LegacyDevice = "";
 
     public void Begin(string kind, string device)
     {
         Kind = kind; Device = device; Stages.Clear(); Log.Clear(); Overall = null; Step = Steps = null;
         Started = DateTime.UtcNow; Ended = null; Suggestion = ""; PackBytes = null; PackFiles = null; Skipped = []; Version = "";
-        ExportFolder = ""; ExportGames = 0; ExportBytes = null; Pushed = []; PushNote = ""; Pushing = false; SGrade = [];
+        ExportFolder = ""; ExportGames = 0; ExportBytes = null; ExportFresh = []; ExportReused = 0; ExportUnwritten = []; SGrade = [];
+        Legacy = []; LegacyElsewhere = []; LegacyDevice = "";
     }
 
     /// <summary>作业事件：阶段进步骤列表、整体进度只认作业层 overall（只增不减）、说明行进过程记录</summary>
@@ -75,13 +81,29 @@ internal sealed class PhoneJobTrack
         if (r.TryGetProperty("packFiles", out var pf) && pf.ValueKind == JsonValueKind.Number) PackFiles = pf.GetInt32();
         if (r.TryGetProperty("skipped", out var sk) && sk.ValueKind == JsonValueKind.Array)
             Skipped = sk.EnumerateArray().Select(x => gameName(x.GetString() ?? "")).ToList();
+        if (r.TryGetProperty("legacy", out var lg) && lg.ValueKind == JsonValueKind.Array)
+            Legacy = lg.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.Object && x.TryGetProperty("gameId", out _))
+                .Select(x => ((x.GetProperty("gameId").GetString() ?? "").ToUpperInvariant(), x.TryGetProperty("name", out var nm) ? nm.GetString() ?? "" : "")).ToList();
+        if (r.TryGetProperty("legacyElsewhere", out var le) && le.ValueKind == JsonValueKind.Array)
+            LegacyElsewhere = le.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.Object)
+                .Select(x => x.TryGetProperty("name", out var nm) ? nm.GetString() ?? "" : x.TryGetProperty("gameId", out var gi) ? gi.GetString() ?? "" : "").Where(x => x.Length > 0).ToList();
+        if (r.TryGetProperty("legacyDevice", out var ld) && ld.ValueKind == JsonValueKind.String) LegacyDevice = ld.GetString() ?? "";
         if (r.TryGetProperty("sgrade", out var sg2) && sg2.ValueKind == JsonValueKind.Object)
             SGrade = sg2.EnumerateObject().OrderBy(p => p.Name, StringComparer.Ordinal).Select(p => (gameName(p.Name), p.Value.Clone())).ToList();
-        if (r.TryGetProperty("exported", out var ex) && ex.ValueKind == JsonValueKind.True && r.TryGetProperty("outputPath", out var op) && op.ValueKind == JsonValueKind.String)
-        {
-            ExportFolder = op.GetString() ?? "";
-            ExportGames = r.TryGetProperty("games", out var gs) && gs.ValueKind == JsonValueKind.Array ? gs.GetArrayLength() : 0;
+        if (r.TryGetProperty("exported", out var ex) && ex.ValueKind == JsonValueKind.True && r.TryGetProperty("s2armPath", out var sp) && sp.ValueKind == JsonValueKind.String)
+        {   // 一款导出成两件套（.s2arm + 硬链接过去的 .img）：完成页「打开文件夹」指「S2Arm 游戏包」文件夹
+            ExportFolder = Path.GetDirectoryName(sp.GetString() ?? "") ?? "";
+            ExportGames = 1;
+            if (r.TryGetProperty("s2armBytes", out var sb) && sb.ValueKind == JsonValueKind.Number) ExportBytes = sb.GetInt64();
+        }
+        else if (r.TryGetProperty("exported", out var ex2) && ex2.ValueKind == JsonValueKind.True && r.TryGetProperty("outputPath", out var op) && op.ValueKind == JsonValueKind.String)
+        {   // 导出通用 S2Arm.ipa（不带游戏）
+            ExportFolder = Path.GetDirectoryName(op.GetString() ?? "") ?? "";
+            ExportGames = 0;
             if (r.TryGetProperty("exportBytes", out var eb) && eb.ValueKind == JsonValueKind.Number) ExportBytes = eb.GetInt64();
+            if (r.TryGetProperty("fresh", out var fr) && fr.ValueKind == JsonValueKind.Array) ExportFresh = fr.EnumerateArray().Select(x => x.GetString() ?? "").Where(x => x.Length > 0).ToList();
+            if (r.TryGetProperty("reused", out var ru) && ru.ValueKind == JsonValueKind.Number) ExportReused = ru.GetInt32();
+            if (r.TryGetProperty("unwritten", out var uw) && uw.ValueKind == JsonValueKind.Array) ExportUnwritten = uw.EnumerateArray().Select(x => x.GetString() ?? "").Where(x => x.Length > 0).ToList();
         }
     }
 }
@@ -89,40 +111,47 @@ internal sealed class PhoneJobTrack
 public sealed partial class EnvironmentWindow
 {
     private readonly PhoneJobTrack installTrack = new(), updateTrack = new();
+    private readonly HashSet<string> legacyOff = new(StringComparer.OrdinalIgnoreCase);   // 「更新这 N 款」里玩家取消勾的老款（缺省全勾）
+
+    /// <summary>0.5.x 老款：装好 App 的同一页接着列出、默认全勾，点「更新这 N 款」按「更新所选」逐款推（排队、有进度、可停）；别处装的只写一行（同 Mac legacySection）</summary>
+    private Control LegacyPanel(PhoneJobTrack tr)
+    {
+        var box = new StackPanel { Spacing = 8, Margin = new Thickness(0, 10, 0, 0) };
+        if (tr.Legacy.Count > 0)
+        {
+            var title = Label(T("phone.legacy.title").Replace("{0}", tr.Legacy.Count.ToString()), 20); title.FontWeight = FontWeight.Black; title.Foreground = Brush.Parse("#FFC857");
+            box.Children.Add(title);
+            box.Children.Add(WrappedMuted(T("phone.legacy.note"), 14));
+            foreach (var (id, name) in tr.Legacy)
+            {
+                var cb = new CheckBox { Content = name.Length > 0 ? name : id, IsChecked = !legacyOff.Contains(id) };
+                cb.IsCheckedChanged += (_, _) => { if (cb.IsChecked == true) legacyOff.Remove(id); else legacyOff.Add(id); Render(); };
+                Avalonia.Automation.AutomationProperties.SetAutomationId(cb, "phone.legacy." + id);
+                box.Children.Add(cb);
+            }
+            var picked = tr.Legacy.Where(g => !legacyOff.Contains(g.Id)).Select(g => g.Id).ToList();
+            var go = Primary(T("phone.legacy.button").Replace("{0}", picked.Count.ToString()), () => { if (picked.Count > 0) _ = PushSelectedAsync(picked, tr.LegacyDevice); }, picked.Count > 0 && tr.LegacyDevice.Length > 0);
+            Avalonia.Automation.AutomationProperties.SetAutomationId(go, "phone.legacy.update");
+            box.Children.Add(go);
+        }
+        if (tr.LegacyElsewhere.Count > 0)
+            box.Children.Add(WrappedMuted(T("phone.legacy.elsewhere").Replace("{0}", tr.LegacyElsewhere.Count.ToString()).Replace("{1}", string.Join("、", tr.LegacyElsewhere)), 14));
+        return box;
+    }
 
     /// <summary>手机作业卡片。state：running / succeeded / needsPlayer / failed / invalid / interrupted / cancelled / drop（会挤掉别处装的游戏，页内确认）。
     /// retry：失败时的「重试」；confirmDrop / cancelDrop：drop 态的「仍然继续」/「先不」（在这页里问，不弹散的对话框）</summary>
-    /// <summary>导出完成页「推到手机」：把「S2Arm 自签导出」里的完整 .img 推进手机上自签装好的 S2Arm（exportPush 作业，pack/jobs/install.py push_export）</summary>
-    private async Task PushExportAsync(PhoneJobTrack tr, string? gameId)
-    {
-        if (tr.Pushing || connectedFolder is null) return;
-        tr.Pushing = true; Render();
-        try
-        {
-            var fields = new Dictionary<string, object?>();
-            if (gameId is { Length: > 0 }) fields["gameId"] = gameId;
-            var job = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder, libraryId, "exportPush", null, CancellationToken.None, fields: fields);
-            var r = job.Report.Result;
-            if (job.Report.Succeeded && r.ValueKind == JsonValueKind.Object && r.TryGetProperty("pushed", out var pu) && pu.ValueKind == JsonValueKind.Array)
-            { tr.Pushed = pu.EnumerateArray().Select(x => x.GetString() ?? "").ToList(); tr.PushNote = ""; }
-            else tr.PushNote = job.Report.Message;
-        }
-        catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
-        { tr.PushNote = error.Message; }
-        finally { tr.Pushing = false; Render(); }
-    }
-
     private Control PhoneJobCard(PhoneJobTrack tr, string state, string message, string diagnostics, string? gameId, IReadOnlyList<string>? notes = null,
-        Action? retry = null, Action? confirmDrop = null, Action? cancelDrop = null, string? dropTitle = null)
+        Action? retry = null, Action? confirmDrop = null, Action? cancelDrop = null, string? dropTitle = null, bool showsOperation = true, Action? switchExport = null)
     {
         var device = tr.Device.Length > 0 ? tr.Device : T("phone.device.unknown");
         var panel = new StackPanel { Spacing = 22, HorizontalAlignment = HorizontalAlignment.Stretch };   // 撑满卡片、贴左（同别的卡片对齐）：进度条、详细过程不被压窄
         AutomationId(panel, "phone." + state);
-        // 导出模式：装机 / 更新作业不连手机、出到文件夹。完成后看结果，进行中看当前装法
-        var exporting = tr.Kind is "install" or "installUpdate" && (tr.ExportFolder.Length > 0 || state == "running" && installMode == "export");
+        // 导出自签包：装机 / 更新作业不连手机、出到文件夹。完成后看结果，进行中看这次会话
+        var exporting = tr.Kind is "install" or "installUpdate" && (tr.ExportFolder.Length > 0 || state == "running" && (tr.Kind == "install" ? installExport : lastUpdateMode == "export"));
         var title = Label(T(exporting ? "phone.title.export" : "phone.title." + tr.Kind), 18); title.FontWeight = FontWeight.Bold;   // 这是什么操作（维护者：只看得到「更新中 · …」一小行）
         AutomationId(title, "phone.operation");
-        panel.Children.Add(title);
+        if (showsOperation) panel.Children.Add(title);   // 外层已用大标题写明是什么操作（导出自签包页）时不再画，免得「导出自签包」下面又一行「导出，自己签名安装」
         if (state == "drop")
         {
             panel.Children.Add(Seal("!", "#FFC857"));
@@ -181,6 +210,21 @@ public sealed partial class EnvironmentWindow
             panel.Children.Add(Seal("✓", "#40D678"));
             panel.Children.Add(Headline(T("phone.headline.export")));
             panel.Children.Add(WrappedMuted(T("phone.done.export").Replace("{0}", tr.ExportFolder), 17));
+            if (tr.ExportReused > 0)   // #1132：有沿用上次导出的款才点名（第一次导出全是新写的，不多这一句；同 Mac PhoneJobPanel）
+            {
+                var fresh = Label(tr.ExportFresh.Count == 0 ? T("phone.done.export.same")
+                    : T("phone.done.export.fresh").Replace("{0}", string.Join("、", tr.ExportFresh)).Replace("{1}", tr.ExportReused.ToString()), 15);
+                fresh.FontWeight = FontWeight.SemiBold; fresh.TextWrapping = TextWrapping.Wrap;
+                AutomationId(fresh, "phone.export.fresh");
+                panel.Children.Add(fresh);
+            }
+            if (tr.ExportUnwritten.Count > 0)   // 只新写了点的那款：别的款这次没写 .img（同 Mac PhoneJobPanel）
+            {
+                var unwritten = Label(T("phone.done.export.unwritten").Replace("{0}", string.Join("、", tr.ExportUnwritten)), 15);
+                unwritten.FontWeight = FontWeight.SemiBold; unwritten.TextWrapping = TextWrapping.Wrap;
+                AutomationId(unwritten, "phone.export.unwritten");
+                panel.Children.Add(unwritten);
+            }
             var stats = new WrapPanel { Orientation = Orientation.Horizontal };
             void Stat(string label, string value)
             {
@@ -196,22 +240,11 @@ public sealed partial class EnvironmentWindow
             panel.Children.Add(stats);
             panel.Children.Add(WrappedMuted(T("phone.fact.export"), 14));
             if (tr.Skipped.Count > 0) panel.Children.Add(WrappedMuted(T("phone.fact.export_skipped").Replace("{0}", string.Join("、", tr.Skipped)), 14));
-            // 推到手机（11-13，同 Mac）：推进去了说一句；没推成写作业给的原因（缺线 / 没信任 / 没装 S2Arm…）+「推到手机」重试
-            var pushLine = WrappedMuted(tr.Pushed.Count > 0 ? T("phone.export.pushed").Replace("{0}", string.Join("、", tr.Pushed)) : tr.PushNote.Length > 0 ? tr.PushNote : T("phone.export.push_hint"), 14);
-            AutomationId(pushLine, tr.Pushed.Count > 0 ? "phone.export.pushed" : "phone.export.pushNote");
-            panel.Children.Add(pushLine);
             var folder = tr.ExportFolder;
             var actions = new WrapPanel { Orientation = Orientation.Horizontal };
             var open = Primary(T("phone.export.open"), () => OpenFolder(folder));
             AutomationId(open, "phone.export.open");
             actions.Children.Add(open);
-            if (tr.Pushed.Count == 0)
-            {
-                var push = Primary(T(tr.Pushing ? "phone.export.pushing" : "phone.export.push"), () => _ = PushExportAsync(tr, gameId));
-                push.IsEnabled = !tr.Pushing; push.Margin = new Thickness(12, 0, 0, 0);
-                AutomationId(push, "phone.export.push");
-                actions.Children.Add(push);
-            }
             panel.Children.Add(actions);
             if (SGradeResultPanel(tr.SGrade) is { } sgr) panel.Children.Add(sgr);   // 补进 S 级优化的各款：打上 / 没打上（11-14）
         }
@@ -246,6 +279,7 @@ public sealed partial class EnvironmentWindow
                 }
                 foreach (var line in lines.Concat(notes ?? [])) panel.Children.Add(WrappedMuted(line, 14));
                 if (SGradeResultPanel(tr.SGrade) is { } sgr) panel.Children.Add(sgr);   // 补进 S 级优化的各款：打上 / 没打上（11-14）
+                if (tr.Kind == "installUpdate" && (tr.Legacy.Count > 0 || tr.LegacyElsewhere.Count > 0)) panel.Children.Add(LegacyPanel(tr));
             }
             else if (message.Length > 0) panel.Children.Add(WrappedMuted(B(message), 16));
         }
@@ -257,7 +291,7 @@ public sealed partial class EnvironmentWindow
         else
         {
             panel.Children.Add(Seal("!", "#E05C5C"));
-            panel.Children.Add(Headline(T("phone.failed." + tr.Kind)));
+            panel.Children.Add(Headline(T(exporting ? "phone.failed.export" : "phone.failed." + tr.Kind)));
             if (message.Length > 0) panel.Children.Add(WrappedMuted(B(message), 17));
             if (tr.Suggestion.Length > 0)
             {
@@ -274,6 +308,12 @@ public sealed partial class EnvironmentWindow
                 var again = Primary(T("phone.retry"), retry);
                 AutomationId(again, "phone.retry");
                 actions.Children.Add(again);
+            }
+            if (switchExport is not null)   // 装到 iPhone / 更新没走成（没连手机、签不上…）：换另一条路——导出自签包，不连手机也能走完
+            {
+                var sw = Action("phone.switch_export", switchExport);
+                AutomationId(sw, "phone.switchExport");
+                actions.Children.Add(sw);
             }
             actions.Children.Add(CopyReportButton(gameId, [tr.Kind], () => message + "\n" + diagnostics));
             panel.Children.Add(actions);

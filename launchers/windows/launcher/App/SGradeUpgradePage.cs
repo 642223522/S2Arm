@@ -2,7 +2,7 @@
 //   11-14 维护者：Windows 出包和 macOS 使用者一样多，功能和体验对齐 macOS）。已经装在 iPhone 上 / 导出过的游戏不用重出包就补上 S 级优化：
 //   打开即跑 sgradeScan（pack/jobs/sgrade.py）：逐款找原始程序、按启动器内置补丁库看这个版本能补什么 → 分组：可升级 / 没有对应补丁 / 出包时选了不打入 /
 //   没找到原始程序（要重新出包覆盖更新）。一款都升不了只给「确认」；有可升级的 iPhone 款给「插上手机，一键升级并安装」「自签导出 IPA」
-//   （installUpdate + sgradeUpgrade，只换程序、资源包不推；结果页列打上 / 没打上，PhoneJobCard.cs）。Windows 不运行游戏，没有 Mac 那句「下次启动自动生效」
+//   （11-18 起：玩家点「在电脑上升级」后台逐款升级 iPhone 程序件，之后照常装 / 导出就带上）
 using System.Text.Json;
 using Avalonia;
 using Avalonia.Controls;
@@ -24,6 +24,7 @@ public sealed partial class EnvironmentWindow
     {
         if (libraryId is null || libraryBusy || PackBusy) return;
         sgradeOpen = true; sgradeScan = null; sgradeScanError = "";
+        _ = PollSGradeAsync();   // 打开就读一次作业层队列状态（在跑则每 1.5 秒续读）
         Render();   // 页面渲染时发起查找（RenderSGradeUpgrade：还没结果、也没在查 → ScanSGradeAsync）
     }
 
@@ -36,7 +37,7 @@ public sealed partial class EnvironmentWindow
             if (job.Report.Succeeded && job.Report.Result.ValueKind == JsonValueKind.Object) sgradeScan = job.Report.Result.Clone();
             else sgradeScanError = job.Report.Message.Length > 0 ? job.Report.Message : job.Report.State;
         }
-        catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or InvalidOperationException or OperationCanceledException)
+        catch (Exception error)   // 任何失败都要落成错误文字：页面渲染时见「没结果、没在查、没错误」就再发，漏掉一类异常 = 无限重发卡死 UI（#1149）
         { sgradeScanError = error.Message; }
         finally { sgradeScanning = false; Dispatcher.UIThread.Post(Render); }
     }
@@ -78,9 +79,28 @@ public sealed partial class EnvironmentWindow
         bool Bo(JsonElement e, string k) => e.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.True;
         var all = scan.TryGetProperty("games", out var gs) && gs.ValueKind == JsonValueKind.Array ? gs.EnumerateArray().ToList() : [];
         var found = all.Where(g => S(g, "program") is { Length: > 0 } p && p != "none").ToList();
-        var yes = found.Where(g => N(g, "total") > 0 && !Bo(g, "off")).ToList();
-        var no = found.Where(g => N(g, "total") == 0).ToList();
-        var off = found.Where(g => N(g, "total") > 0 && Bo(g, "off")).ToList();
+        // 作业层明说还缺片上读取用的着色器（bfPending 有一边 true）：没有补丁或关了 S 级也有东西可升，进可升组（同作业层 upgradable 计数、同 Mac）
+        bool BfDue(JsonElement g) => g.TryGetProperty("bfPending", out var bf) && bf.ValueKind == JsonValueKind.Object && bf.EnumerateObject().Any(p => p.Value.ValueKind == JsonValueKind.True);
+        var yes = found.Where(g => (N(g, "total") > 0 && !Bo(g, "off")) || BfDue(g)).ToList();
+        // 没有对应补丁拆两组（定稿表，同 Mac）：补丁库里有别的版本的 → 写版本号；一类都没有 → 补丁库里没有（作业层 versions）
+        Dictionary<string, List<string>> Avail(JsonElement g) =>
+            g.TryGetProperty("versions", out var vs) && vs.ValueKind == JsonValueKind.Object && vs.TryGetProperty("available", out var av) && av.ValueKind == JsonValueKind.Object
+                ? av.EnumerateObject().Where(p => p.Value.ValueKind == JsonValueKind.Array)
+                    .ToDictionary(p => p.Name, p => p.Value.EnumerateArray().Select(x => x.GetString() ?? "").Where(x => x.Length > 0).ToList())
+                    .Where(kv => kv.Value.Count > 0).ToDictionary(kv => kv.Key, kv => kv.Value)
+                : new();
+        string Mine(JsonElement g) => g.TryGetProperty("versions", out var vs) && vs.ValueKind == JsonValueKind.Object ? S(vs, "mine") : "";
+        var noVer = found.Where(g => N(g, "total") == 0 && !BfDue(g) && Avail(g).Count > 0).ToList();
+        var no = found.Where(g => N(g, "total") == 0 && !BfDue(g) && Avail(g).Count == 0).ToList();
+        string Versions(JsonElement g)
+        {
+            var a = Avail(g); var mine = Mine(g);
+            var parts = new[] { "widescreen", "fps", "gfx", "cheat" }.Where(a.ContainsKey)
+                .Select(c => SGradeVersions.Pick(a[c], mine) is { } p ? X(c == "cheat" ? "cat.cheatPlain" : "cat." + c) + " " + p.Version : null)
+                .Where(s => s is not null);
+            return string.Join(language == "en" ? ", " : "、", parts) + (mine.Length > 0 ? X("version.mine").Replace("{0}", mine) : "");
+        }
+        var off = found.Where(g => N(g, "total") > 0 && Bo(g, "off") && !BfDue(g)).ToList();
         var missing = all.Where(g => !found.Contains(g)).ToList();
         string Gains(JsonElement g)
         {
@@ -88,12 +108,14 @@ public sealed partial class EnvironmentWindow
             int C(string k) => p.ValueKind == JsonValueKind.Object ? N(p, k) : 0;
             var parts = new List<string>();
             if (C("widescreen") > 0) parts.Add(X("cat.widescreen"));
+            else if (Bo(g, "ownWiden")) parts.Add(X("cat.ownWiden"));   // S2Arm 通用满屏（作业层 total 已算它 +1，同 Mac）
             if (C("fps") > 0) parts.Add(X("cat.fps"));
             if (C("gfx") > 0) parts.Add(X("cat.gfx"));
             if (C("cheat") > 0) parts.Add(X("cat.cheat").Replace("{0}", C("cheat").ToString()));
+            if (parts.Count == 0 && BfDue(g)) parts.Add(X("bf"));   // 没有补丁、只缺片上读取用的着色器
             return string.Join(language == "en" ? ", " : "、", parts);
         }
-        void Group(string title, IEnumerable<JsonElement> rows, bool gold = false, bool gains = false)
+        void Group(string title, IEnumerable<JsonElement> rows, bool gold = false, bool gains = false, Func<JsonElement, string>? detail = null, bool rowUpgrade = false)
         {
             // 分组标题与游戏行要一眼分得开（11-14 体验走查：同号同色粗体分不清哪行是标题）：标题小一号、金 / 灰色、带款数，游戏行缩进（同 Mac SGradeUpgradeView）
             var list = rows.ToList();
@@ -103,11 +125,35 @@ public sealed partial class EnvironmentWindow
                 if (gold) t.Foreground = new SolidColorBrush(SGold);
                 box.Children.Add(t);
             }
+            if (rowUpgrade)
+            {
+                // 「全选」（11-18 维护者：可批量、有全选）：勾上 = 选中这组里没在升级的全部
+                var free = list.Where(g => !SGradeLocked(S(g, "id"), SGradePending(g))).Select(g => S(g, "id")).ToList();
+                var all = new CheckBox { Content = X("selectAll"), FontSize = 12, IsEnabled = free.Count > 0, IsChecked = free.Count > 0 && free.All(sgradeSelected.Contains), Margin = new Thickness(12, 0, 0, 0) };
+                all.Click += (_, _) => { if (all.IsChecked == true) sgradeSelected.UnionWith(free); else sgradeSelected.ExceptWith(free); Render(); };
+                AutomationId(all, "sgrade.upgrade.selectAll");
+                box.Children.Add(all);
+            }
             foreach (var g in list)
             {
-                var line = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(title.Length > 0 ? 12 : 0, 0, 0, 0) };
-                line.Children.Add(new TextBlock { Text = S(g, "name"), FontSize = 13, TextTrimming = TextTrimming.CharacterEllipsis });
-                if (gains) { var gtx = Muted(Gains(g), 12); Grid.SetColumn(gtx, 1); line.Children.Add(gtx); }
+                var line = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,Auto"), Margin = new Thickness(title.Length > 0 ? 12 : 0, 0, 0, 0) };
+                var nameText = new TextBlock { Text = S(g, "name"), FontSize = 13, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
+                Grid.SetColumn(nameText, 1); line.Children.Add(nameText);
+                if (gains || detail is not null) { var gtx = Muted(detail is not null ? detail(g) : Gains(g), 12); gtx.VerticalAlignment = VerticalAlignment.Center; Grid.SetColumn(gtx, 2); line.Children.Add(gtx); }
+                if (rowUpgrade)
+                {
+                    // 每款勾选 +「升级」（11-18 维护者：点了才做；可批量）：点「升级」只升这一款，勾选后「批量升级所选」逐款排队；页面不关（SGradeUpgrade.cs）
+                    var id = S(g, "id");
+                    var busy = SGradeLocked(id, SGradePending(g));
+                    var pick = new CheckBox { IsChecked = !busy && sgradeSelected.Contains(id), IsEnabled = !busy, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) };
+                    pick.Click += (_, _) => { if (pick.IsChecked == true) sgradeSelected.Add(id); else sgradeSelected.Remove(id); Render(); };
+                    AutomationId(pick, "sgrade.upgrade.pick." + id);
+                    line.Children.Add(pick);
+                    var b = new Button { Content = SGradeRowTitle(id, SGradePending(g)), IsEnabled = !busy, Padding = new Thickness(12, 5), Margin = new Thickness(12, 2, 0, 2), FontSize = 12.5 };
+                    b.Click += (_, _) => UpgradeSGrade([id]);
+                    AutomationId(b, "sgrade.upgrade.row." + id);
+                    Grid.SetColumn(b, 3); line.Children.Add(b);
+                }
                 box.Children.Add(line);
             }
         }
@@ -115,28 +161,37 @@ public sealed partial class EnvironmentWindow
         else if (yes.Count == 0)
         {
             if (no.Count > 0) { box.Children.Add(WrappedMuted(X("none"), 14)); Group("", no); }
+            if (noVer.Count > 0) Group(X("no.version"), noVer, detail: Versions);
             if (off.Count > 0) Group(X("off"), off);
             OkRow();
         }
         else
         {
             box.Children.Add(Label(X("found").Replace("{0}", found.Count.ToString()), 14));
-            Group(X("yes"), yes, gold: true, gains: true);
-            if (no.Count > 0) Group(X("no"), no);
+            Group(X("yes"), yes, gold: true, gains: true, rowUpgrade: true);
+            if (noVer.Count > 0) Group(X("no.version"), noVer, detail: Versions);
+            if (no.Count > 0) Group(X("no.none"), no);
             if (off.Count > 0) Group(X("off"), off);
             if (missing.Count > 0) Group(X("missing"), missing);
-            if (yes.Any(g => Bo(g, "iphone")))
+            box.Children.Add(WrappedMuted(X("macNote"), 12));
+            var footer = new WrapPanel { Orientation = Orientation.Horizontal };
+            if (sgradeBatch is { } batch)
             {
-                box.Children.Add(WrappedMuted(X("iphoneNote"), 12));
-                var buttons = new WrapPanel { Orientation = Orientation.Horizontal };
-                var install = Primary(X("install"), () => { sgradeOpen = false; _ = UpdatePhoneAsync(false, [], mode: "device", sgradeUpgrade: true); }, !installBusy && !PackBusy);
-                AutomationId(install, "sgrade.upgrade.install"); install.Margin = new Thickness(0, 0, 12, 0); buttons.Children.Add(install);
-                var export = Action("sgrade.upgrade.export", () => { sgradeOpen = false; _ = UpdatePhoneAsync(false, [], mode: "export", sgradeUpgrade: true); }, !installBusy && !PackBusy);
-                export.Margin = new Thickness(0, 0, 12, 0); buttons.Children.Add(export);
-                buttons.Children.Add(Action("sgrade.upgrade.close", Close));
-                box.Children.Add(buttons);
+                // 批量进行中：总进度（第几款 / 共几款）+「停止」（已做完的保留）
+                var progress = Label(X("batchProgress").Replace("{0}", Math.Max(1, batch.Index).ToString()).Replace("{1}", batch.Count.ToString()), 13);
+                progress.Foreground = new SolidColorBrush(SGold); progress.VerticalAlignment = VerticalAlignment.Center; progress.Margin = new Thickness(0, 0, 12, 0);
+                AutomationId(progress, "sgrade.upgrade.batchProgress"); footer.Children.Add(progress);
+                var stop = Action("sgrade.upgrade.stop", StopSGrade); stop.Margin = new Thickness(0, 0, 12, 0); footer.Children.Add(stop);
             }
-            else OkRow();
+            else
+            {
+                var chosen = yes.Where(g => sgradeSelected.Contains(S(g, "id")) && !SGradeLocked(S(g, "id"), SGradePending(g))).Select(g => S(g, "id")).ToList();
+                var batchButton = Primary(X("batch").Replace("{0}", chosen.Count.ToString()), () => UpgradeSGrade(chosen), chosen.Count > 0);
+                AutomationId(batchButton, "sgrade.upgrade.batch"); batchButton.Margin = new Thickness(0, 0, 12, 0); footer.Children.Add(batchButton);
+            }
+            footer.Children.Add(Action("sgrade.upgrade.close", Close));
+            box.Children.Add(footer);
+
         }
         body.Children.Add(Card(box));
     }

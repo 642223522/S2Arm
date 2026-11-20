@@ -91,8 +91,8 @@
       "execution": "build",
       "startsGame": false,
       "observation": "declared",
-      "enabled": false,
-      "condition": "S2A_PACK_PLAT=android（#783）：出库 / 发布目标 android，产物根 shaders/direct/b-<链>-vk/；本段之前先跑抽取阶段（pack/stage_extract.sh，抽取没成就不跑本段）。enabled=false（11-04）：安卓运行时未读这份 LibPack，出包跳过它专用的抽取与本段，进度 / 汇总标 skipped、不伪称预编；已存在的有效 shaders/vulkan/direct 离线库照常纳入与校验，独立出库 / 诊断入口照留。恢复条件写死：#1434 接上运行时读库的同一个 PR 把 enabled 改回 true（默认开）；开着时抽取与本段任何非 0 都打黄、照常出包（安卓运行时现编）。"
+      "enabled": true,
+      "condition": "S2A_PACK_PLAT=android（#783）：出库 / 发布目标 android，产物根 shaders/direct/b-<链>-vk/；本段之前先跑抽取阶段（pack/stage_extract.sh，抽取没成就不跑本段）。enabled=true（11-13 恢复：#1434 运行时已读库，make_pack 收 shaders/direct/b-*-vk 进包）；原 11-04 关闭理由「安卓运行时未读这份 LibPack」已不成立；已存在的有效 shaders/vulkan/direct 离线库照常纳入与校验，独立出库 / 诊断入口照留。恢复条件写死：#1434 接上运行时读库的同一个 PR 把 enabled 改回 true（默认开）；开着时抽取与本段任何非 0 都打黄、照常出包（安卓运行时现编）。"
     },
     {
       "id": "rewrite",

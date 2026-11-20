@@ -27,33 +27,25 @@ using System.Reflection;
 namespace S2A.ShBake
 {
     // 渲染器代理：只记程序装载 / 创建，能力表照给，其余成员返回缺省值
-    public class FakeRenderer : System.Reflection.DispatchProxy
+    public class FakeRenderer : StubRenderer   // 手写替身（GalStubs.cs），其余成员返回缺省值
     {
         public Capabilities Caps;
         public System.Collections.Generic.List<byte[]> Loaded = new();
         public int Created;
-        protected override object Invoke(System.Reflection.MethodInfo m, object[] a)
-        {
-            switch (m.Name)
-            {
-                case "GetCapabilities": return Caps;
-                case "LoadProgramBinary": Loaded.Add((byte[])a[0]); return System.Reflection.DispatchProxy.Create<IProgram, FakeProgram>();
-                case "CreateProgram": Created++; return System.Reflection.DispatchProxy.Create<IProgram, FakeProgram>();
-            }
-            return m.ReturnType.IsValueType && m.ReturnType != typeof(void) ? Activator.CreateInstance(m.ReturnType) : null;
-        }
+        public override Capabilities GetCapabilities() => Caps;
+        public override IProgram LoadProgramBinary(byte[] programBinary, bool hasFragmentShader, ShaderInfo info) { Loaded.Add(programBinary); return new FakeProgram(); }
+        public override IProgram CreateProgram(ShaderSource[] shaders, ShaderInfo info) { Created++; return new FakeProgram(); }
     }
-    public class FakeProgram : System.Reflection.DispatchProxy
+    public class FakeProgram : StubProgram
     {
-        protected override object Invoke(System.Reflection.MethodInfo m, object[] a)
-            => m.Name == "CheckProgramLink" ? ProgramLinkStatus.Success : m.Name == "GetBinary" ? Array.Empty<byte>() : null;
+        public override ProgramLinkStatus CheckProgramLink(bool blocking) => ProgramLinkStatus.Success;
+        public override byte[] GetBinary() => Array.Empty<byte>();
     }
     // 后端合法拒绝给宿主二进制（Vulkan ShaderCollection.GetBinary：最小布局 / VKPB v1 不支持的阶段集合返回 null）
-    public class NullBinaryProgram : System.Reflection.DispatchProxy
+    public class NullBinaryProgram : StubProgram
     {
-        protected override object Invoke(System.Reflection.MethodInfo m, object[] a)
-            => m.Name == "CheckProgramLink" ? ProgramLinkStatus.Success : m.Name == "GetBinary" ? null
-                : m.ReturnType.IsValueType && m.ReturnType != typeof(void) ? Activator.CreateInstance(m.ReturnType) : null;
+        public override ProgramLinkStatus CheckProgramLink(bool blocking) => ProgramLinkStatus.Success;
+        public override byte[] GetBinary() => null;
     }
 
     static class VtgSelfTest
@@ -323,16 +315,16 @@ namespace S2A.ShBake
             CachedShaderStage[] stages = { null, new(ci, code1, Array.Empty<byte>()), null, null, new(ci, code2, Array.Empty<byte>()), new(pt, code3, Array.Empty<byte>()) };
             var gss = default(GpuChannelGraphicsState);
             var spec2 = new ShaderSpecializationState(ref gss, null, null);
-            var okVertex = new ShaderAsCompute(DispatchProxy.Create<IProgram, FakeProgram>(), ci, r);
-            var nullGeom = new ShaderAsCompute(DispatchProxy.Create<IProgram, NullBinaryProgram>(), ci, r);
-            var vtgNullGeom = new CachedShaderProgram(DispatchProxy.Create<IProgram, FakeProgram>(), okVertex, nullGeom, spec2, stages);
+            var okVertex = new ShaderAsCompute(new FakeProgram(), ci, r);
+            var nullGeom = new ShaderAsCompute(new NullBinaryProgram(), ci, r);
+            var vtgNullGeom = new CachedShaderProgram(new FakeProgram(), okVertex, nullGeom, spec2, stages);
             string geomLog = CaptureError(() => Ck(S2AVtg.GetBinary(vtgNullGeom) == null,
                 "复合二进制：几何段 GetBinary 为空时整条不落盘（不打出缺几何段的记录）"));
             Ck(geomLog.Contains("【红】") && geomLog.Contains("几何计算"), "复合二进制：几何段为空报红并点名几何计算");
             Ck(geomLog.Split("【红】").Length == 2, "复合二进制：空二进制红行每进程只打一次");
 
-            var nullVertex = new ShaderAsCompute(DispatchProxy.Create<IProgram, NullBinaryProgram>(), ci, r);
-            var vtgNull = new CachedShaderProgram(DispatchProxy.Create<IProgram, FakeProgram>(), nullVertex, (ShaderAsCompute)null, spec2, stages);
+            var nullVertex = new ShaderAsCompute(new NullBinaryProgram(), ci, r);
+            var vtgNull = new CachedShaderProgram(new FakeProgram(), nullVertex, (ShaderAsCompute)null, spec2, stages);
             string vertexLog = CaptureError(() => Ck(S2AVtg.GetBinary(vtgNull) == null,
                 "复合二进制：顶点计算段 GetBinary 为空时 GetBinary 返回 null"));
             Ck(!vertexLog.Contains("【红】"), "复合二进制：空二进制红行不重复打印");
@@ -372,7 +364,7 @@ namespace S2A.ShBake
             try
             {
                 GpuContext baseCtx = ShaderBake.MakeContext(out Capabilities caps);
-                FakeRenderer fr = System.Reflection.DispatchProxy.Create<IRenderer, FakeRenderer>() as FakeRenderer;
+                FakeRenderer fr = new FakeRenderer();
                 fr.Caps = caps;
                 GpuContext ctx2 = new((IRenderer)(object)fr, new Ryujinx.Common.Configuration.DirtyHacks(Array.Empty<ulong>())) { Capabilities = caps };
                 ShaderProgramInfo Ci2() => new(Array.Empty<BufferDescriptor>(), Array.Empty<BufferDescriptor>(), Array.Empty<TextureDescriptor>(), Array.Empty<TextureDescriptor>(), ShaderStage.Compute, 3, 4, 1, false, false, false, false, 0, -1);

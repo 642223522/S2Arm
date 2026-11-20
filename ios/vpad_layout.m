@@ -603,6 +603,32 @@ static BOOL key_style_valid(S2AVPadKeyStyle s) {
     if (_commonStore) _splitKeys=[identifier copy];
     _selectedIdentifier = [identifier copy]; _selectionProblem = nil; return YES;
 }
++ (NSUInteger)adoptLegacyLayoutsFrom:(NSURL *)appDirectory into:(NSURL *)gameDirectory {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    if (!appDirectory || !gameDirectory || [appDirectory.URLByStandardizingPath.path isEqualToString:gameDirectory.URLByStandardizingPath.path]) return 0;
+    NSURL *marker = [gameDirectory URLByAppendingPathComponent:@".legacy_adopted"];
+    if ([fm fileExistsAtPath:marker.path]) return 0;
+    NSArray<NSURL *> *urls = [fm contentsOfDirectoryAtURL:appDirectory includingPropertiesForKeys:nil options:NSDirectoryEnumerationSkipsHiddenFiles error:nil];
+    NSUInteger copied = 0; BOOL any = NO;
+    for (NSURL *url in urls) {
+        if (![url.pathExtension.lowercaseString isEqualToString:@"json"]) continue;
+        NSString *identifier = url.lastPathComponent.stringByDeletingPathExtension;
+        if (!identifier_ok(identifier) || [S2AVPadLayout isBuiltinIdentifier:identifier]) continue;
+        NSDictionary *attributes = [fm attributesOfItemAtPath:url.path error:nil];
+        if (![attributes[NSFileType] isEqualToString:NSFileTypeRegular] || [attributes[NSFileSize] unsignedLongLongValue] > 65536) continue;
+        NSData *data = [NSData dataWithContentsOfURL:url];
+        S2AVPadLayout *layout = data ? [S2AVPadLayout readData:data error:nil] : nil;
+        if (!layout || ![layout.identifier isEqualToString:identifier]) continue;
+        any = YES;
+        NSURL *target = [gameDirectory URLByAppendingPathComponent:url.lastPathComponent];
+        if ([fm fileExistsAtPath:target.path]) continue;
+        if (![fm createDirectoryAtURL:gameDirectory withIntermediateDirectories:YES attributes:nil error:nil]) return copied;
+        if ([data writeToURL:target options:NSDataWritingAtomic error:nil]) copied++;
+    }
+    if (any && [fm createDirectoryAtURL:gameDirectory withIntermediateDirectories:YES attributes:nil error:nil])
+        [[NSData data] writeToURL:marker options:NSDataWritingAtomic error:nil];   // 没有旧布局的不写标记：以后从旧版备份恢复了 App 级目录仍能接进来
+    return copied;
+}
 - (BOOL)markManual:(NSError **)error {
     if (_commonStore) { BOOL ok=[_commonStore markManual:error]; if (ok) _manualChosen=YES; return ok; }
     if (_manualChosen) return YES;

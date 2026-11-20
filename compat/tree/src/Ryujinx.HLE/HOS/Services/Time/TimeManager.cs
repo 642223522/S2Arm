@@ -100,9 +100,17 @@ namespace Ryujinx.HLE.HOS.Services.Time
                     return;
                 }
 
-                StandardSteadyClock.S2AAdvance(unseenNs - _s2aUnseen);
+                long added = unseenNs - _s2aUnseen;
+                StandardSteadyClock.S2AAdvance(added);
                 _s2aUnseen = unseenNs;
                 SharedMemory.SetSteadyClockRawTimePoint(_s2aTickSource, StandardSteadyClock.GetCurrentRawTimePoint(_s2aTickSource));
+
+                // One line per catch-up: how much was added and where the game's clocks land against the host wall clock (a calendar that
+                //   ends up hours off after a resume is otherwise impossible to tell apart from the game's own time handling)
+                long host = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                string Diff(SystemClockCore clock) => clock.GetCurrentTime(_s2aTickSource, out long t) == ResultCode.Success ? $"{t - host:+0;-0;0} s" : "读不了";
+                Ryujinx.Common.Logging.Logger.Info?.Print(Ryujinx.Common.Logging.LogClass.ServiceTime,
+                    $"时钟补时：后台 / 睡眠 +{added / 1e9:F1} s；补后与宿主墙钟相差 用户时钟 {Diff(StandardUserSystemClock)}、网络时钟 {Diff(StandardNetworkSystemClock)}、本地时钟 {Diff(StandardLocalSystemClock)}");
             }
         }
 

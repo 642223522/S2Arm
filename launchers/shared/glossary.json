@@ -1,0 +1,210 @@
+{
+  "_note": "S2Arm 固定术语表（11-14 i18n 加新语言）：所有语言的界面文案按这里的译法写。zh-Hant 由简中经 OpenCC s2twp 转出后按 zhHantFixes 纠正（tools/l10n_hant.py）；ja / es / fr 翻译时逐条遵守 terms。en 列是现有英文界面的用词。",
+  "terms": [
+    {
+      "zh-Hans": "出包",
+      "en": "Export",
+      "zh-Hant": "出包",
+      "ja": "エクスポート",
+      "es": "Exportar",
+      "fr": "Exporter"
+    },
+    {
+      "zh-Hans": "打 iPhone 包",
+      "en": "Export for iPhone",
+      "zh-Hant": "打 iPhone 包",
+      "ja": "iPhone 用にエクスポート",
+      "es": "Exportar para iPhone",
+      "fr": "Exporter pour iPhone"
+    },
+    {
+      "zh-Hans": "推到 iPhone",
+      "en": "Push to iPhone",
+      "zh-Hant": "推到 iPhone",
+      "ja": "iPhone に送る",
+      "es": "Enviar al iPhone",
+      "fr": "Envoyer sur l'iPhone"
+    },
+    {
+      "zh-Hans": "S 级优化",
+      "en": "S-grade enhancements",
+      "zh-Hant": "S 級優化",
+      "ja": "S グレード最適化",
+      "es": "Mejoras de grado S",
+      "fr": "Améliorations de rang S"
+    },
+    {
+      "zh-Hans": "金手指",
+      "en": "Cheats",
+      "zh-Hant": "金手指",
+      "ja": "チート",
+      "es": "Trucos",
+      "fr": "Codes de triche"
+    },
+    {
+      "zh-Hans": "补帧",
+      "en": "Frame interpolation",
+      "zh-Hant": "補幀",
+      "ja": "フレーム補間",
+      "es": "Interpolación de fotogramas",
+      "fr": "Interpolation d'images"
+    },
+    {
+      "zh-Hans": "满屏",
+      "en": "Full screen",
+      "zh-Hant": "滿屏",
+      "ja": "全画面",
+      "es": "Pantalla completa",
+      "fr": "Plein écran"
+    },
+    {
+      "zh-Hans": "帧率",
+      "en": "Frame rate",
+      "zh-Hant": "幀率",
+      "ja": "フレームレート",
+      "es": "Velocidad de fotogramas",
+      "fr": "Fréquence d'images"
+    },
+    {
+      "zh-Hans": "社区补丁",
+      "en": "Community patches",
+      "zh-Hant": "社群補丁",
+      "ja": "コミュニティパッチ",
+      "es": "Parches de la comunidad",
+      "fr": "Correctifs de la communauté"
+    },
+    {
+      "zh-Hans": "游戏库",
+      "en": "Library",
+      "zh-Hant": "遊戲庫",
+      "ja": "ライブラリ",
+      "es": "Biblioteca",
+      "fr": "Bibliothèque"
+    },
+    {
+      "zh-Hans": "资源包",
+      "en": "Resource pack",
+      "zh-Hant": "資源包",
+      "ja": "リソースパック",
+      "es": "Paquete de recursos",
+      "fr": "Pack de ressources"
+    },
+    {
+      "zh-Hans": "原件",
+      "en": "Original game files",
+      "zh-Hant": "原件",
+      "ja": "元のゲームファイル",
+      "es": "Archivos originales del juego",
+      "fr": "Fichiers d'origine du jeu"
+    },
+    {
+      "zh-Hans": "存档",
+      "en": "Saves",
+      "zh-Hant": "存檔",
+      "ja": "セーブデータ",
+      "es": "Partidas guardadas",
+      "fr": "Sauvegardes"
+    },
+    {
+      "zh-Hans": "密钥",
+      "en": "Keys",
+      "zh-Hant": "金鑰",
+      "ja": "キー",
+      "es": "Claves",
+      "fr": "Clés"
+    },
+    {
+      "zh-Hans": "着色器",
+      "en": "Shaders",
+      "zh-Hant": "著色器",
+      "ja": "シェーダー",
+      "es": "Sombreadores",
+      "fr": "Shaders"
+    },
+    {
+      "zh-Hans": "故障报修",
+      "en": "Report a problem",
+      "zh-Hant": "故障報修",
+      "ja": "問題を報告",
+      "es": "Informar de un problema",
+      "fr": "Signaler un problème"
+    },
+    {
+      "zh-Hans": "诊断",
+      "en": "Diagnostics",
+      "zh-Hant": "診斷",
+      "ja": "診断",
+      "es": "Diagnóstico",
+      "fr": "Diagnostic"
+    },
+    {
+      "zh-Hans": "启动器",
+      "en": "Launcher",
+      "zh-Hant": "啟動器",
+      "ja": "ランチャー",
+      "es": "Lanzador",
+      "fr": "Lanceur"
+    },
+    {
+      "zh-Hans": "启动设置",
+      "en": "Launch settings",
+      "zh-Hant": "啟動設定",
+      "ja": "起動設定",
+      "es": "Ajustes de inicio",
+      "fr": "Réglages de lancement"
+    },
+    {
+      "zh-Hans": "设置",
+      "en": "Settings",
+      "zh-Hant": "設定",
+      "ja": "設定",
+      "es": "Ajustes",
+      "fr": "Réglages"
+    },
+    {
+      "zh-Hans": "存放位置",
+      "en": "Location",
+      "zh-Hant": "存放位置",
+      "ja": "保存場所",
+      "es": "Ubicación",
+      "fr": "Emplacement"
+    },
+    {
+      "zh-Hans": "手柄",
+      "en": "Controller",
+      "zh-Hant": "手把",
+      "ja": "コントローラー",
+      "es": "Mando",
+      "fr": "Manette"
+    },
+    {
+      "zh-Hans": "签名",
+      "en": "Signing",
+      "zh-Hant": "簽名",
+      "ja": "署名",
+      "es": "Firma",
+      "fr": "Signature"
+    },
+    {
+      "zh-Hans": "自签",
+      "en": "Self-signing",
+      "zh-Hant": "自簽",
+      "ja": "自己署名",
+      "es": "Autofirma",
+      "fr": "Auto-signature"
+    },
+    {
+      "zh-Hans": "开始游戏",
+      "en": "Play",
+      "zh-Hant": "開始遊戲",
+      "ja": "プレイ",
+      "es": "Jugar",
+      "fr": "Jouer"
+    }
+  ],
+  "zhHantFixes": {
+    "S 級最佳化": "S 級優化",
+    "自籤": "自簽",
+    "手柄": "手把"
+  }
+}

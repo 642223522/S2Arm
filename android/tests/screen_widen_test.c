@@ -25,6 +25,7 @@ const char *s2a_main_build_id(void) { return ""; }   // loader.c 的桩：补丁
 
 static int run_case(int which) {
     unsetenv("S2A_SCREEN_W"); unsetenv("S2A_SCREEN_H"); unsetenv("S2A_WIDESCREEN"); unsetenv("S2A_WIDEN_CAPS");
+    setenv("S2A_CAPS_OWN", "1", 1);   // 测名单门 / 能力清单机制本身（11-15 起我方通用满屏缺省不用，runtime/src/widen.c；S2A_CAPS_OWN=1 才按名单 / 清单）
     if (which < 5) setenv("S2A_WIDEN_VERIFIED", "1", 1);
     else {
         unsetenv("S2A_WIDEN_VERIFIED");
@@ -35,7 +36,7 @@ static int run_case(int which) {
         }
         if (which == 6 || which == 8) setenv("S2A_WIDESCREEN", "1", 1);   // 显式开（F1 后与缺省同义）
         if (which == 9) setenv("S2A_WIDESCREEN", "0", 1);                 // 名单内但玩家设置关 → 名单开不了
-        if (which == 10) setenv("S2A_WIDEN_CAPS", "1", 1);                // 包内能力清单开（安卓行 → widen 1；F7 发布缺省关在名单内也开）
+        if (which == 10) { setenv("S2A_WIDEN_CAPS", "1", 1); unsetenv("S2A_CAPS_OWN"); }   // 包内能力清单开、缺省口径：11-15 起我方通用满屏不用（安卓同步撤，按维护者 11-13 决定）→ 不放、16:9
     }
     if (which == 0) {
         if (s2a_screen_w() != 0 || s2a_screen_h() != 0) return 1;
@@ -51,9 +52,9 @@ static int run_case(int which) {
     int w = s2a_screen_w();
     width = 1200; height = 900; // surface changes between the two consumer calls
     int h = s2a_screen_h();
-    const int wanted_w[] = {0, 1920, 2400, 1920, 1920, 1920, 1920, 1920, 2400, 1920, 2400};
+    const int wanted_w[] = {0, 1920, 2400, 1920, 1920, 1920, 1920, 1920, 2400, 1920, 1920};
     const int wanted_h[] = {0, 1440, 1080, 1080, 1318, 1440, 1440, 1080, 1080, 1080, 1080};
-    const int wanted_full[] = {-1, -1, -1, -1, -1, 1, 1, 0, 1, 0, 1};
+    const int wanted_full[] = {-1, -1, -1, -1, -1, 1, 1, 0, 1, 0, 0};
     if (which >= 5) {
         int full = s2a_widen_full();
         if (full != wanted_full[which]) { fprintf(stderr, "case %d: widen full=%d\n", which, full); return 1; }

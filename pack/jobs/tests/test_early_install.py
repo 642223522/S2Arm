@@ -2,9 +2,9 @@
 # Copyright 2026 S2Arm contributors
 """出包与装机重叠（pack/jobs/early.py + ipa.py installAfter，11-06 出包速度线）：一键出包与装机全换替身，只验编排。
 期望按 early.py 头注手写：
-  ① 旁路信号到 → 早装件（early_pack.sh）→ 签名装 App → 推早期资源包（.early/pack），都在出包结束之前；出包结束 → 交付进 image/ios → 装正式包 → 推正式资源包（image/ios/pack）；
+  ① 旁路信号到 → 早期资源包（early_pack.sh）→ 手机上已是本版通用壳就推进去（.early/pack），都在出包结束之前、不装 App；出包结束 → 交付进 image/ios → 装正式包 → 推正式资源包（image/ios/pack）；
      返回的推送量 = 两次之和；早装件目录收尾删掉
-  ② 早装件出不来（early_pack.sh 退 1）→ 不判整单失败、记一条进度消息、正式安装照装照推
+  ② 早期资源包出不来（early_pack.sh 退 1）→ 不判整单失败、记一条进度消息、出包结束照推这一款
   ③ 出包失败 → 抛出包的失败、不装正式包；没写信号时早装线程直接退出、不调早装件
   ④ 不带 installAfter → 不认设备、不设 S2A_EARLY_READY、不装
 """
@@ -39,7 +39,11 @@ class EarlyInstallCase(JobCase):
         from unittest.mock import patch as _patch
         p = _patch.object(install, "phone_games", lambda c, ph: set()); p.start(); self.addCleanup(p.stop)   # 读手机游戏清单另有用例
 
-    def run_ipa(self, suffix, *, install_after=True, signal=True, oneclick_fail=False, early_rc=0, push_s=0):
+    def run_ipa(self, suffix, *, install_after=True, signal=True, oneclick_fail=False, early_rc=0, push_s=0, pack_until_early=False):
+        # pack_until_early：替身「编直连库」等到早期资源包推完才结束（至多 60 秒），不按固定 2 秒——验「早装都在出包结束之前」的那条
+        #   不能赌后台线程 2 秒内走完早装件 → 装 App → 推包（11-15 门禁负载下只走完第一步，先红后绿）
+        import threading
+        early_pushed = threading.Event()
         c = Context(self.request | dict(taskId='early-' + suffix, operation='ipa', gameId=GID) | (dict(installAfter=True) if install_after else {}))
         calls, envs = [], []
         stamp = lambda what, *a: calls.append((time.time(), what) + a)
@@ -60,7 +64,7 @@ class EarlyInstallCase(JobCase):
             out = Path(args[args.index('--out') + 1])
             if signal and env.get('S2A_EARLY_READY'):
                 Path(env['S2A_EARLY_READY']).write_text('tfake@rx-1\n')
-            time.sleep(2)
+            early_pushed.wait(60) if pack_until_early else time.sleep(2)
             stamp('出包结束')
             events = Path(args[args.index('--events') + 1])
             if oneclick_fail:
@@ -89,7 +93,9 @@ class EarlyInstallCase(JobCase):
             def inst_(ipa, games, steps=True): stamp('装 App', Path(ipa).name)
             def push_(g, pack):   # 早期资源包 .early/pack，正式的 image/ios/pack：记「上级目录/名字」区分
                 name = Path(pack).parent.name + '/' + Path(pack).name; is_early = name == '.early/pack'
-                time.sleep(push_s if is_early else 0); stamp('推资源包', name); seen_udid.append(udid); return (3, 30) if is_early else (2, 20)
+                time.sleep(push_s if is_early else 0); stamp('推资源包', name); seen_udid.append(udid)
+                if is_early: early_pushed.set()
+                return (3, 30) if is_early else (2, 20)
             ph.install.side_effect = inst_; ph.push.side_effect = push_
             ph.udid = udid; ph.key = udid; ph.bid = install.container_bundle_id('TEAM1')
             ph.info = dict(device=dev['name'], team=team['name'], free=team['free'])
@@ -105,8 +111,16 @@ class EarlyInstallCase(JobCase):
                     (cache_retention, 'trim', dict(accountingComplete=True, evictionErrors=0, diskErrors=0, pressureRemaining=False,
                                                     keepTitles=3, retainedBytes=0, removedEntries=0, freeBytes=100, minFreeBytes=0)),
                     (install, 'xcode_teams', [dict(id='TEAM1', name='t', free=True)]), (install, 'phone', dict(id='DEV1', name='测试设备')),
-                    (install, 'udid_of', 'UDID1'), (install, 'MacPhone', mac_phone)):
+                    (install, 'udid_of', 'UDID1'), (install, 'mac_phone', mac_phone)):
                 st.enter_context(patch.object(obj, name, return_value=value) if not callable(value) else patch.object(obj, name, side_effect=value))
+            st.enter_context(patch.object(install, 'mac_plume', lambda c_: False))   # ipa.py 早装只对证书用户开
+            st.enter_context(patch.object(install.devcert, 'active', lambda c_: True))
+            st.enter_context(patch.object(install.devcert, 'team', lambda c_: dict(id='TEAM1', name='t', free=True)))
+            def push_game(c_, g, ph, steps=True):   # 出包结束后推这一款（install.push_game；早推过的由 push_pack 按机上清单只补差量）
+                files, size = ph.push(g, Path(c_.r.get('_pack_dir', 'image/ios/.pack')))
+                return dict(packFiles=files, packBytes=size)
+            st.enter_context(patch.object(install, 'push_game', push_game))
+            install.layout.save_device(c, 'UDID1', dict(shellId='SID1'))   # 手机上已是本版通用壳：早推才进得了对的 App
             st.enter_context(patch.object(c, 'run', side_effect=oneclick))
             st.enter_context(patch.object(early.subprocess, 'run', side_effect=sub_run))
             try: result, err = ipa.build(c), None
@@ -115,17 +129,17 @@ class EarlyInstallCase(JobCase):
         return c, result, err, calls, envs
 
     def test_overlap_order_and_totals(self):
-        c, r, err, calls, envs = self.run_ipa('ok')
+        c, r, err, calls, envs = self.run_ipa('ok', pack_until_early=True)
         calls = [x for x in calls if x[1] not in ('清理', '返回')]   # 清理 / 返回只给 P1-146 那条用
         self.assertIsNone(err)
         what = [x[1:] for x in calls]
         end = next(t for t, w, *_ in calls if w == '出包结束')
         early_steps = [(w, *a) for t, w, *a in calls if t < end]
-        self.assertEqual([s[0] for s in early_steps], ['早装件', '装 App', '推资源包'], what)   # ① 都在出包结束之前，顺序正确
+        self.assertEqual([s[0] for s in early_steps], ['早装件', '推资源包'], what)   # ① 都在出包结束之前、不装 App
         self.assertEqual(early_steps[0], ('早装件', 'tfake'))
-        self.assertEqual(early_steps[2], ('推资源包', '.early/pack'))
-        self.assertEqual([s[0] for s in [x[1:] for x in calls][-2:]], ['装 App', '推资源包'])
-        self.assertEqual(calls[-1][2:], ('ios/.pack',), what)   # 正式资源包已搬进这款的 image/ios
+        self.assertEqual(early_steps[1], ('推资源包', '.early/pack'))
+        self.assertNotIn('装 App', [x[1] for x in calls], what)
+        self.assertEqual(calls[-1][1], '推资源包', what)
         self.assertEqual(r['packFiles'], 3 + 2)   # 早推 3 + 补推 2
         self.assertTrue(r['outputPath'].endswith(os.path.join('image', 'ios')))   # 出包页「打开位置」指这款的 image/ios
 
@@ -135,10 +149,10 @@ class EarlyInstallCase(JobCase):
         self.assertIsNone(err)   # ② 不判整单失败
         what = [x[1:] for x in calls]
         self.assertNotIn(('推资源包', '.early/pack'), what)
-        self.assertEqual([s[0] for s in what[-2:]], ['装 App', '推资源包'], what)
-        self.assertEqual(what[-1], ('推资源包', 'ios/.pack'), what)
+        self.assertNotIn('装 App', [x[0] for x in what], what)
+        self.assertEqual(what[-1][0], '推资源包', what)
         msgs = [json.loads(l).get('message', '') for l in c.events.read_text().splitlines()]
-        self.assertTrue(any('先装 App、先推资源没成' in m for m in msgs), msgs[-5:])
+        self.assertTrue(any('先推资源没成' in m for m in msgs), msgs[-5:])
 
     def test_cleanup_waits_for_early_push(self):
         # 审计 P1-146：早装还在从 roots/ 与 .early 推（推得比出包慢），成功路径的清理要等它推完；失败路径要等早装线程退出再交回（main 随后清理）

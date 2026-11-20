@@ -5,6 +5,7 @@
 #include <dirent.h>
 #include <spawn.h>
 #include <sys/wait.h>
+#include <sys/mman.h>
 #include <unistd.h>
 #include <vulkan/vulkan_core.h>
 #include <stdint.h>
@@ -201,6 +202,24 @@ static void t_clear_image(void) {
     to_buffer(c, i, VK_IMAGE_ASPECT_COLOR_BIT, 0, 8, 8, l0.b); to_buffer(c, i, VK_IMAGE_ASPECT_COLOR_BIT, 1, 8, 8, l1.b);
     submit(c);
     CHECK(px(&l0, 8, 3, 3) == RGBA(255, 0, 0, 255) && px(&l1, 8, 3, 3) == RGBA(0, 0, 255, 255), "③ ClearColorImage：第 1 层红、第 2 层蓝（实测 %#x / %#x）", px(&l0, 8, 3, 3), px(&l1, 8, 3, 3));
+    {   // ③b 4 位四通道（诊断#3156b9：B4G4R4A4 原先建不出、游戏拿空图像取内存需求崩）。读回原样 16 位字，期望按 Vulkan 位排布手写：
+        //   R4G4B4A4 = R 在 12–15 位、A 在 0–3 位：清 (1,0,0,0) → 0xF000；B4G4R4A4 = B 在 12–15、R 在 4–7：清 (1,0,0,0) → 0x00F0；两者清 (0,0,0,1) → 0x000F
+        VkFormat f4[2] = {VK_FORMAT_R4G4B4A4_UNORM_PACK16, VK_FORMAT_B4G4R4A4_UNORM_PACK16}; uint16_t wr[2] = {0xF000, 0x00F0}; uint16_t got[2][2] = {{0}};
+        for (int k = 0; k < 2; k++) {
+            VkImage q = img(f4[k], 8, 8, 1, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+            CHECK(q != VK_NULL_HANDLE, "③b 格式 %d 建得出图像", f4[k]);
+            if (!q) continue;
+            VkMemoryRequirements mr; vkGetImageMemoryRequirements(device, q, &mr); CHECK(mr.size >= 8 * 8 * 2, "③b 格式 %d 内存需求 %llu ≥ 128", f4[k], (unsigned long long)mr.size);
+            VkClearColorValue rr = {.float32 = {1, 0, 0, 0}}, aa = {.float32 = {0, 0, 0, 1}};
+            VkImageSubresourceRange one = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            for (int t = 0; t < 2; t++) {
+                Buf o = buf(8 * 8 * 2, VK_BUFFER_USAGE_TRANSFER_DST_BIT); VkCommandBuffer cq = begin(VK_COMMAND_BUFFER_LEVEL_PRIMARY);
+                vkCmdClearColorImage(cq, q, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, t ? &aa : &rr, 1, &one); to_buffer(cq, q, VK_IMAGE_ASPECT_COLOR_BIT, 0, 8, 8, o.b); submit(cq);
+                memcpy(&got[k][t], o.p + (3 * 8 + 3) * 2, 2);
+            }
+            CHECK(got[k][0] == wr[k] && got[k][1] == 0x000F, "③b 格式 %d 清红读回 %#06x（期望 %#06x）、清 A 读回 %#06x（期望 0x000f）", f4[k], got[k][0], wr[k], got[k][1]);
+        }
+    }
     VkImage ds = img(VK_FORMAT_D32_SFLOAT_S8_UINT, 8, 8, 1, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
     Buf d = buf(8 * 8 * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT), st = buf(8 * 8, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
     c = begin(VK_COMMAND_BUFFER_LEVEL_PRIMARY);
@@ -1094,12 +1113,77 @@ static void t_disturbed_set(void) {
     uint32_t q = px(&out, W, 5, 5);
     CHECK(q == RGBA(0, 255, 0, 255), "㉓ 没重绑 set 0 的那笔读 0.1：取先前绑在 set 0、有 0.1 的集 XB 的绿（实测 %#x，期望 0xff00ff00；修前 Metal 槽留着上一笔的红 0xff0000ff）", q);
 }
+
+// ㉔ 即时存档（Vulkan 出图层，graphics/nvn/gfx/vk/vk_snap.inc）：子进程里开快照模式（本文件提供快照开关与固定地址区的替身），
+//   纹理按坐标写色（R = x*8、G = y*8）、最近邻采样画满 W×H 目标、读回 → 存档（vk_snap_save）→ 同进程按原址放回并重建全部 Metal 对象（vk_snap_restore：先清零旧指针，
+//   再按建法重建）→ 用同一批句柄（管线 / 描述符集 / 帧缓冲 / 命令池）再画一遍、读回。期望手算：两次每个像素都等于 RGBA(x*8, y*8, 0, 255)；建管线后模块已销毁
+//   （恢复按源码键重建）；映射指针原址原内容（0xcd 填充）；恢复后描述符的纹理不空（来源视图序号对得上）
+static int snap_on_flag;
+int s2a_snap_mode(void) { return snap_on_flag; }
+static uint8_t *snap_ca, *snap_vp; static uint64_t snap_ca_used, snap_vp_used;
+void *s2a_cmd_arena_map(uint64_t len) {
+    if (!snap_on_flag) return NULL;
+    if (!snap_ca) { snap_ca = mmap(NULL, 256ull << 20, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0); REQUIRE(snap_ca != MAP_FAILED); }
+    uint64_t n = (len + 16383) & ~16383ull; if (snap_ca_used + n > (256ull << 20)) return NULL;
+    void *p = mmap(snap_ca + snap_ca_used, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0); snap_ca_used += n; return p;
+}
+int s2a_cmd_arena_has(const void *p, uint64_t n) { return snap_ca && (const uint8_t *)p >= snap_ca && (const uint8_t *)p + n <= snap_ca + (256ull << 20); }
+void *s2a_vp_arena_map(uint64_t len) {
+    if (!snap_on_flag) return NULL;
+    if (!snap_vp) { snap_vp = mmap(NULL, 256ull << 20, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0); REQUIRE(snap_vp != MAP_FAILED); }
+    uint64_t n = (len + 16383) & ~16383ull; if (snap_vp_used + n > (256ull << 20)) return NULL; void *p = snap_vp + snap_vp_used; snap_vp_used += n; return p;
+}
+extern int vk_snap_save(const char *path); extern int vk_snap_restore(const char *path); extern int vk_snap_used(void);
+static void snap_draw(VkRenderPass p, VkFramebuffer fb, VkPipeline pl, VkPipelineLayout l, VkDescriptorSet set, VkImage target, Buf *out) {
+    VkCommandBuffer c = begin(VK_COMMAND_BUFFER_LEVEL_PRIMARY); VkClearValue cv = {.color = {{0, 0, 1, 1}}};
+    begin_pass(c, p, fb, 1, &cv, VK_SUBPASS_CONTENTS_INLINE); vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, pl);
+    vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, l, 0, 1, &set, 0, NULL); vkCmdDraw(c, 3, 1, 0, 0); vkCmdEndRenderPass(c);
+    memset(out->p, 0, (size_t)W * H * 4); to_buffer(c, target, VK_IMAGE_ASPECT_COLOR_BIT, 0, W, H, out->b); submit(c);
+}
+static int snap_bad(const Buf *b) { int bad = 0; for (uint32_t y = 0; y < H; y++) for (uint32_t x = 0; x < W; x++) bad += px(b, W, x, y) != RGBA(x * 8, y * 8, 0, 255); return bad; }
+static void t_snapshot(void) {
+    REQUIRE(vk_snap_used());
+    VkImage tex = img(VK_FORMAT_R8G8B8A8_UNORM, W, H, 1, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT); VkImageView tv = view(tex, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
+    Buf up = buf((size_t)W * H * 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+    for (uint32_t y = 0; y < H; y++) for (uint32_t x = 0; x < W; x++) { uint32_t v = RGBA(x * 8, y * 8, 0, 255); memcpy(up.p + ((size_t)y * W + x) * 4, &v, 4); }
+    VkBufferImageCopy rg = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {W, H, 1}};
+    VkCommandBuffer c = begin(VK_COMMAND_BUFFER_LEVEL_PRIMARY); vkCmdCopyBufferToImage(c, up.b, tex, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &rg); submit(c);
+    VkSamplerCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_NEAREST, .minFilter = VK_FILTER_NEAREST, .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+        .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .maxLod = 0};
+    VkSampler smp; OK(vkCreateSampler(device, &sci, NULL, &smp));
+    VkDescriptorSetLayoutBinding lb = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT};
+    VkDescriptorSetLayoutCreateInfo lci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &lb}; VkDescriptorSetLayout sl; OK(vkCreateDescriptorSetLayout(device, &lci, NULL, &sl));
+    VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1}; VkDescriptorPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &ps};
+    VkDescriptorPool dp; OK(vkCreateDescriptorPool(device, &pci, NULL, &dp));
+    VkDescriptorSetAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp, .descriptorSetCount = 1, .pSetLayouts = &sl}; VkDescriptorSet set; OK(vkAllocateDescriptorSets(device, &ai, &set));
+    VkDescriptorImageInfo ii = {smp, tv, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii};
+    vkUpdateDescriptorSets(device, 1, &w, 0, NULL);
+    VkPipelineLayout l = layout_of(1, &sl, 0, 0); VkRenderPass p = color_pass(VK_FORMAT_R8G8B8A8_UNORM, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_SAMPLE_COUNT_1_BIT);
+    VkShaderModule vm = shader("tri.vert"), fm = shader("lod.frag"); VkPipeline pl; OK(gfx_pipe_m(p, 0, l, vm, fm, VK_SAMPLE_COUNT_1_BIT, NULL, 0, NULL, &pl));
+    vkDestroyShaderModule(device, vm, NULL); vkDestroyShaderModule(device, fm, NULL);   // 游戏常这样：建完管线就销毁模块
+    VkImage target = img(VK_FORMAT_R8G8B8A8_UNORM, W, H, 1, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+    VkImageView targv = view(target, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT); VkFramebuffer fb = framebuffer(p, 1, &targv, W, H);
+    Buf rd = buf((size_t)W * H * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT); Buf keep = buf(64, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT); uint8_t *keep_p = keep.p;
+    snap_draw(p, fb, pl, l, set, target, &rd); int bad0 = snap_bad(&rd);
+    CHECK(bad0 == 0, "㉔ 存档前：%d×%d 个像素都等于 RGBA(x*8, y*8, 0, 255)：期望 0 处不符 → 真结果 %d 处", W, H, bad0);
+    char path[256]; snprintf(path, sizeof path, "%s/t_vk_snap.bin", getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp");
+    CHECK(vk_snap_save(path) == 0, "㉔ 存档：vk_snap_save 回 0");
+    CHECK(vk_snap_restore(path) == 0, "㉔ 恢复：vk_snap_restore 回 0（先清掉全部 Metal 指针、再按建法重建）");
+    int same = 1; for (int i = 0; i < 64; i++) same &= keep_p[i] == 0xcd;
+    CHECK(same, "㉔ 映射指针原址原内容：64 字节都是 0xcd");
+    snap_draw(p, fb, pl, l, set, target, &rd); int bad1 = snap_bad(&rd);
+    CHECK(bad1 == 0, "㉔ 恢复后同一批句柄再画：期望 0 处不符 → 真结果 %d 处（中心像素 %#x）", bad1, px(&rd, W, W / 2, H / 2));
+    unlink(path);
+}
 int main(int argc, char **argv) {
     (void)argc;
     if (getenv("T_VK_WIDEN")) { fk_on = 1; setup(); t_widen(); if (fails) { printf("✗ t_vk_core ⑮：%d / %d 项失败\n", fails, checks); return 1; } printf("✓ t_vk_core ⑮：%d 项全过\n", checks); return 0; }
     if (getenv("T_VK_TALL")) { fk_on = fk_tall = 1; setup(); t_tall(); if (fails) { printf("✗ t_vk_core ⑰⑱⑲：%d / %d 项失败\n", fails, checks); return 1; } printf("✓ t_vk_core ⑰⑱⑲：%d 项全过\n", checks); return 0; }
     if (getenv("T_VK_RT_PEND")) { setup(); t_rt_pending(); if (fails) { printf("✗ t_vk_core ㉑：%d / %d 项失败\n", fails, checks); return 1; } printf("✓ t_vk_core ㉑：%d 项全过\n", checks); return 0; }
+    if (getenv("T_VK_SNAP")) { snap_on_flag = 1; setup(); t_snapshot(); if (fails) { printf("✗ t_vk_core ㉔：%d / %d 项失败\n", fails, checks); return 1; } printf("✓ t_vk_core ㉔：%d 项全过\n", checks); return 0; }
     if (getenv("T_VK_AUDIT")) { setup(); t_audit1800(); if (fails) { printf("✗ t_vk_core ⑯：%d / %d 项失败\n", fails, checks); return 1; } printf("✓ t_vk_core ⑯：%d 项全过\n", checks); return 0; }
+    spawn_self(argv[0], "㉔", "T_VK_SNAP=1", NULL);   // ㉔ 子进程：快照模式在第一次分配对象时定（分配器进固定地址区），整局不变
     spawn_self(argv[0], "⑮", "T_VK_WIDEN=1", NULL);   // ⑮ 在子进程里跑：宽屏模式在第一次建附件图像时定、整局不变
     // ⑯ 在子进程里开 Metal API 校验层跑：越界的剪裁 / 拷贝 / 视图在校验层上当场断言（读回像素未必看得出：无校验层时 Metal 可能悄悄丢掉）
     spawn_self(argv[0], "⑯", "T_VK_AUDIT=1", "MTL_DEBUG_LAYER=1");

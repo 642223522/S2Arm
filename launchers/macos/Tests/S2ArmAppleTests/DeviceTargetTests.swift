@@ -3,7 +3,7 @@
 import XCTest
 @testable import NX2AppleUI
 
-// 装到哪台由玩家选（11-11 玩家实报：续签时选的 iPhone 拔了线，同网的 iPad 被装上，完成页还写「已装到 iPhone」）：
+// 装到哪台由玩家选（11-11 玩家实报：续签时选的 iPhone 拔了线，同网的 iPad 被装上，完成页还写「已推到 iPhone」）：
 // 前端只认选过的那台（按 devicectl 标识或 UDID），它不在线时不替玩家换成别的；没选过时用界面上显示的那台（有线优先）
 final class DeviceTargetTests: XCTestCase {
     private let phone: [String: Any] = ["id": "D1", "udid": "PHONE-UDID", "name": "我的手机", "productType": "iPhone17,1", "wired": false]

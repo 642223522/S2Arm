@@ -15,6 +15,15 @@ namespace S2A.Services
     {
         // 苹果侧手柄 / 触屏输入源（苹果侧接）：填按键位（HidNpadButton 位序）与左右摇杆
         public static delegate*<ref GamepadInput, void> InputHook;
+        // 平台登记的手柄反馈入口（震动 / 六轴，runtime/include/s2a_pad.h 同名函数的地址，ControllerFeedback 用）：
+        //   安卓宿主库以 RTLD_LOCAL 载入，主程序句柄查不到它的导出（docs/架构_多终端.md：按名查导出的几处接核心时改成函数指针），
+        //   由平台装配在起服务前登记（android/core-runtime/AndroidGameRuntime.cs）；没登记的（iOS / Mac）全为 0，照旧按名查主程序导出
+        [StructLayout(LayoutKind.Sequential)]
+        public struct HostFeedback
+        {
+            public nint RumbleSession, SetRumblePair, StopRumble, SetMotionEnabled, ReadMotion;
+        }
+        public static HostFeedback Feedback;
         // Optional platform touch consumer, on this same HID owner thread.
         // Absent on Apple and other hosts; no second sampler or HID writer.
         public static Action<Switch> TouchHook;
@@ -91,7 +100,8 @@ namespace S2A.Services
             Ryujinx.HLE.HOS.Services.Hid.NpadDevices.S2ASupportedChanged = FollowNow;
         }
         private static readonly object _followSync = new();
-        internal static void FollowNow(Switch device) { lock (_followSync) { FollowSupportedPlayers(device); FollowSupportedStyles(device); } }
+        // 改接之后立刻把配置写进手柄共享内存（S2AApplyConfiguration，审计 P1-192）：游戏在这次声明的服务调用返回后读到的就是新连接，不等输入泵下一拍
+        internal static void FollowNow(Switch device) { lock (_followSync) { FollowSupportedPlayers(device); FollowSupportedStyles(device); device.Hid.Npads.S2AApplyConfiguration(); } }
 
         // 游戏声明的手柄号不含掌机格、含 Player1 时（11-02 维护者 手测七龙珠电光炸裂ZERO 010035F022078000：SetSupportedNpadIdType 只给 Player1，
         //   掌机格被 Remap 断开、「No matching controllers found」，触屏手柄按什么都没反应；真机掌机模式下这时握着的 Joy-Con 当 Player1 用）：
@@ -348,7 +358,9 @@ namespace S2A.Services
             }
 
             // 主 App 的纯 C 查询不加载可选 BLE 模块；只有真实 READY 会话才创建反馈对象。
-            if (NativeLibrary.TryGetExport(NativeLibrary.GetMainProgramHandle(), "s2a_pad_rumble_session", out nint session))
+            if (Feedback.RumbleSession != 0)
+                _rumbleSession = (delegate* unmanaged<ulong>)Feedback.RumbleSession;   // 平台登记（安卓）
+            else if (NativeLibrary.TryGetExport(NativeLibrary.GetMainProgramHandle(), "s2a_pad_rumble_session", out nint session))
                 _rumbleSession = (delegate* unmanaged<ulong>)session;
             // Mac 宿主只导出六轴、没有震动会话：反馈对象照建，只走六轴
             else _motionOnly = ControllerFeedback.MotionExport(out _);
@@ -414,6 +426,11 @@ namespace S2A.Services
             _stop = true;
             if (_padWake != null) _padWake();
             _thread?.Join();
+            // 收局摘回调（审计 P1-192）：之后服务线程的声明不再改这一局已拆掉的手柄；正在跑的那次跟随做完再往下复位（同一把锁）
+            Action<Switch> follow = FollowNow;
+            if (Ryujinx.HLE.HOS.Services.Hid.NpadDevices.S2ASupportedChanged == follow) Ryujinx.HLE.HOS.Services.Hid.NpadDevices.S2ASupportedChanged = null;
+            Monitor.Enter(_followSync);
+            try {
             if (_device != null) lock (_device.Hid.Npads.RumbleSyncRoot)
             {
                 _feedback?.Stop();
@@ -432,6 +449,7 @@ namespace S2A.Services
             _movedOffHandheld = false;   // 审计 P1-94：上一局「挪出掌机格」不带进下一局（同进程重启）
             _styleBefore = ControllerType.None;   // 同上：上一局「按样式换过」不带进下一局
             _joyconBefore = ControllerType.None;   // 同上：上一局「按单只 Joy-Con 换过」不带进下一局
+            } finally { Monitor.Exit(_followSync); }
         }
 
         private static delegate* unmanaged<int*, uint> _vpadRead;
@@ -802,6 +820,7 @@ namespace S2A.Services
                 // 本地多手柄：Mac 前端报告接了几只手柄就开到几格（最多 MaxPads），接上第二只手柄即成为玩家 2
                 int livePads = _vpadPadCount != null ? _vpadPadCount() : 0;
                 if (livePads > _pads && livePads <= MaxPads) SetPads(device, livePads);
+                device.System.S2ASetLocalMultiplayer(livePads >= 2);   // 实接 ≥ 2 只：游戏看到主机运行模式（两人模式要求 TV 模式的游戏）；变化时同真机插拔底座发通知
                 if (Environment.TickCount64 >= nextFollow) { FollowNow(device); nextFollow = Environment.TickCount64 + 250; }
 
                 GamepadInput input = new() { PlayerId = _player };
@@ -813,7 +832,7 @@ namespace S2A.Services
                 if (eventInput)
                 {
                     _padReadEx(&snapshot);
-                    if (OperatingSystem.IsIOS() && !_externalController && snapshot.Source is 1 or 2)
+                    if ((OperatingSystem.IsIOS() || OperatingSystem.IsTvOS()) && !_externalController && snapshot.Source is 1 or 2)   // 平台例外：tvOS 同 iOS 走触屏 / 手柄来源判断（Apple TV 一期，遥控器按触屏来源上报）
                     {
                         // 只在首次真实 BLE / 系统手柄出现时改配；断线或后台的触屏快照不撤销偏好。
                         _externalController = true;

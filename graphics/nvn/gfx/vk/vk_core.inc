@@ -52,25 +52,32 @@ VK(vkCmdExecuteCommands, void, VkCommandBuffer cb, uint32_t n, const VkCommandBu
 VK(vkCmdNextSubpass, void, VkCommandBuffer cb, VkSubpassContents sc) { (void)sc; rec(cb, C_NEXTSP, 0); }
 
 // Compute pipelines: the shader's Metal kernel and its workgroup size from the shader table (vk_shaders.py writes w:x.y=z for compute shaders)
+static void *vs_cpipe_recipe(VkShaderModule m, VkPipelineLayout layout);   // vk_snap.inc
+// 按模块与布局填计算管线（建管线、即时存档恢复都走这里；恢复时 Metal 字段已清空）
+static void cpipe_fill(VkPipeline p, VkShaderModule m, VkPipelineLayout layout) {
+    p->layout = layout;
+    mod_ready(m); p->cs = m->si;
+    if (m->spv && m->fn) { p->se_spv = m->spv; memcpy(p->se_key, m->key, 17); }   // #800：偏置模拟变体（vk_se_obj）
+    if (!m->fn && m->rt && atomic_load_explicit(&m->rt->state, memory_order_acquire) == 0) {   // 还在现编：句柄先交，编好后第一次派发补建（cpipe_finish）
+        p->pend_c = m->rt; p->pend_spv = m->spv;
+        static _Atomic int k; if (k++ < 20) LOG("[vk] 现编：计算管线 %s 的着色器还在编，句柄先交，编好后第一次派发补建（第 %llu 帧）", m->key, (unsigned long long)g_frames);
+    }
+    else if (!m->fn || !m->si || !m->si->comp) { LOG("[vk] 【红】 compute pipeline: shader %s is not a compute shader in the library", m->key); p->feat = 1; }
+    else if (!m->si->wg[0] || !m->si->wg[1] || !m->si->wg[2]) { LOG("[vk] 【红】 compute shader %s has no workgroup size in the shader table (rebuild the package)", m->key); p->feat = 1; }
+    else {
+        @autoreleasepool {
+            NSError *err = nil; p->cps = [g_dev newComputePipelineStateWithFunction:m->fn error:&err];
+            if (!p->cps) LOG("[vk] 【红】 cannot build compute pipeline %s: %s", m->key, err.localizedDescription.UTF8String); else g_n_pso++;
+        }
+    }
+}
 VKB(vkCreateComputePipelines, VkResult, VkDevice d, VkPipelineCache c, uint32_t n, const VkComputePipelineCreateInfo *ci, const VkAllocationCallbacks *a, VkPipeline *out) {
     (void)c; dev_init(); VkResult rc = VK_SUCCESS;
     for (uint32_t i = 0; i < n; i++) {
-        VkPipeline p = obj_alloc(sizeof *p, O_PIPELINE); p->layout = ci[i].layout; VkShaderModule m = ci[i].stage.module;
+        VkPipeline p = obj_alloc(sizeof *p, O_PIPELINE); VkShaderModule m = ci[i].stage.module;
         if (ci[i].stage.pSpecializationInfo && ci[i].stage.pSpecializationInfo->mapEntryCount) RED1("specialization constants not implemented");
-        mod_ready(m); p->cs = m->si;
-        if (m->spv && m->fn) { p->se_spv = m->spv; memcpy(p->se_key, m->key, 17); }   // #800：偏置模拟变体（vk_se_obj）
-        if (!m->fn && m->rt && atomic_load_explicit(&m->rt->state, memory_order_acquire) == 0) {   // 还在现编：句柄先交，编好后第一次派发补建（cpipe_finish）
-            p->pend_c = m->rt; p->pend_spv = m->spv;
-            static _Atomic int k; if (k++ < 20) LOG("[vk] 现编：计算管线 %s 的着色器还在编，句柄先交，编好后第一次派发补建（第 %llu 帧）", m->key, (unsigned long long)g_frames);
-        }
-        else if (!m->fn || !m->si || !m->si->comp) { LOG("[vk] 【红】 compute pipeline: shader %s is not a compute shader in the library", m->key); p->feat = 1; }
-        else if (!m->si->wg[0] || !m->si->wg[1] || !m->si->wg[2]) { LOG("[vk] 【红】 compute shader %s has no workgroup size in the shader table (rebuild the package)", m->key); p->feat = 1; }
-        else {
-            @autoreleasepool {
-                NSError *err = nil; p->cps = [g_dev newComputePipelineStateWithFunction:m->fn error:&err];
-                if (!p->cps) LOG("[vk] 【红】 cannot build compute pipeline %s: %s", m->key, err.localizedDescription.UTF8String); else g_n_pso++;
-            }
-        }
+        if (vs_on()) p->recipe = vs_cpipe_recipe(m, ci[i].layout);
+        cpipe_fill(p, m, ci[i].layout);
         out[i] = p;
         // P1-46：建不成：这一项交 VK_NULL_HANDLE、整批回失败码，其余照建（同 vkCreateGraphicsPipelines）
         if (!p->cps && !p->pend_c) { RED1("vkCreateComputePipelines：管线没建成：交空句柄、回 VK_ERROR_OUT_OF_DEVICE_MEMORY"); h_vkDestroyPipeline(d, p, a); out[i] = VK_NULL_HANDLE; rc = VK_ERROR_OUT_OF_DEVICE_MEMORY; }
@@ -203,6 +210,7 @@ static MTLClearColor clear_color(VkFormat f, const VkClearColorValue *v) {   // 
         if (fmt_sint(f)) return MTLClearColorMake(v->int32[0], v->int32[1], v->int32[2], v->int32[3]);
         return MTLClearColorMake(v->uint32[0], v->uint32[1], v->uint32[2], v->uint32[3]);
     }
+    if (rb_swapped(f)) return MTLClearColorMake(v->float32[2], v->float32[1], v->float32[0], v->float32[3]);   // 存储里 R / B 对调（hle_vk.m 格式表 B4G4R4A4）
     return MTLClearColorMake(v->float32[0], v->float32[1], v->float32[2], v->float32[3]);
 }
 // vkCmdClearColorImage / vkCmdClearDepthStencilImage (outside a render pass): one Metal pass per level and layer (per slice of a 3D image) that only clears.

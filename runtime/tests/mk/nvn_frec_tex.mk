@@ -1,6 +1,6 @@
 # native-test-nvn_frec_tex：本单测的构建规则（runtime/build.mk 末尾按 runtime/tests/mk/*.mk 收进来；新单测只新增一个分片，不改 build.mk）
 NATIVE_TEST_OWN += nvn_frec_tex
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 # 帧录 GPU 贴图：深度模板 / 多重采样 / 压缩格式也存放
 $(BUILD)/tests/t_nvn_frec_tex: graphics/nvn/tests/t_nvn_frec_tex.m $(NVN_MTL_DEPS) $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
 	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -Wno-unused-function -Wno-unguarded-availability-new -Wno-unguarded-availability \

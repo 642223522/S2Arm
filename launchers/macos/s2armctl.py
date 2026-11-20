@@ -34,7 +34,9 @@ USAGE = """s2armctl —— 让 AI 助手操作 S2Arm（每条命令 = 玩家点�
   games <文件或文件夹>...            放游戏（本体、更新、DLC 放一个文件夹传文件夹即可；多个更新自动用最新版本），等导入完成再返回
   prepare <游戏号>                   Mac 编译（排队）
   ipa <游戏号> [--space-override]    打 iPhone 包（出 IPA + 资源包）；--space-override 同界面「仍然继续」，磁盘预检不够也照出（先征得玩家同意）
-  build <游戏号> [ios|mac|android|harmony] [--space-override]   出包，按目标：ios = iPhone / iPad（缺省）、mac = Mac；安卓、鸿蒙即将上线
+  selfsign <游戏号>                  导出自签包（同游戏库按钮）：能直接导出的直接导出；没出过 / 旧格式的先打 iPhone 包再导出
+  build <游戏号> [ios|mac|android|harmony] [--space-override] [--serial <安卓序列号>]   出包，按目标：ios = iPhone / iPad（缺省）、mac = Mac；
+      android 在开关后（S2A_ANDROID_EXPORT=1，缺省关回「即将上线」），--serial 出好接着装到那台手机，不给就只出 APK 不装；鸿蒙即将上线
   batch <游戏号>[:mac,iphone] … [--location 文件夹]
                                     批量出包：几款一起，每款可指定平台（缺省 iphone；同一款先 Mac 后 iPhone，解包只做一次）、一批共用一个存放位置；
                                     一款接一款地出，失败不挡后面、磁盘满暂停；等到出完，打印每款结果和汇总，有失败退出码 1
@@ -46,14 +48,15 @@ USAGE = """s2armctl —— 让 AI 助手操作 S2Arm（每条命令 = 玩家点�
   customize <游戏号> [--name 名字] [--cover 图片] [--reset-name] [--reset-cover]   改显示名 / 封面（JPG、PNG），下次装到 iPhone 时带上
   delete <游戏号>                    删除这款游戏（IPA / 资源包 / 中间产物 / 缓存；存档与原始游戏文件保留），等删完再返回
   wait <游戏号> [--op build|ipa] [--timeout 秒]
-                                    等该游戏的任务结束：build = Mac 编译（缺省），ipa = iPhone 包；逐段打印进度，失败退出码 1
+                                    等该游戏的任务结束：build = Mac 编译（缺省），ipa = iPhone 包；逐段打印进度，失败退出码 1；接在 build 后面时只等这次 build 起的那个（不拿库里以前的结果）
   targets [--models|--json]         打 iPhone 包的目标设备：当前目标、连着的设备（含设备名）、可选系统；--models 列可选机型
   target probe | target <机型号> <系统大版本>   重新检测连着的设备 / 没连时选机型
   update [restart|retry]            新版后台下载的状态；restart = 重启并换上已下载好的新版，retry = 重试下载（出包中不能重启）
   library <目录> [--move]            换游戏库位置（外接盘也行）；--move 把现有游戏、成品、缓存和存档一起搬到这个空文件夹
   cloud-folder [<iCloud 云盘里的文件夹>]   开 iCloud 存档同步（不给路径 = 关闭）；iPhone / iPad 上选同一个文件夹
   cloud-sync <游戏号>   这款立即同步一次（开局前 / 退出后会自动做）
-  display <游戏号> [--<设置项> on|off|default|<选项>]…   看 / 改这款的启动设置（设置项见 game_settings.v1.json，如 --enhance on --docked handheld），下次启动生效
+  mods <游戏号> [--import 路径]… [--off 名字]… [--on 名字]… [--remove 名字]…   资源替换 mod：列出 / 导入（zip 或文件夹）/ 关掉 / 打开 / 删除，下次开始游戏生效（同启动设置「资源 Mod」，Windows 同游戏库「Mod…」页）
+  display <游戏号> [--<设置项> on|off|default|<选项>]…   看 / 改这款的启动设置（设置项见 game_settings.v1.json，如 --quality MetalFX --docked handheld），下次启动生效
   errors [游戏号]                    最近失败任务的错误码、原因、建议、日志位置和日志末尾
   retry <任务号> | cancel <任务号>    重试 / 取消任务
   launch <游戏号>                    在 Mac 上启动游戏
@@ -220,11 +223,14 @@ AI_NEXT = {
     'devcert_invalid': ('human', '选的不是 .p12 / .mobileprovision：请玩家在出包页重新选对文件导入'),
     'devcert_mismatch': ('human', '证书和描述文件不配套：请玩家在开发者网站重新生成含这张证书的描述文件，再在出包页重新导入'),
     'devcert_missing': ('human', '开发者证书不完整：请玩家在出包页重新导入，或切回 Apple ID 签名后 s2armctl install <游戏号>'),
+    'identity_team_mismatch': ('human', '手机上的 S2Arm 是另一个团队签的：请玩家在启动器里登录装 S2Arm 用的那个 Apple ID（要输密码，AI 不代做）或选用同一团队的证书，再交一次签名身份'),
     'devcert_keychain': ('human', '证书密码存不进钥匙串：请玩家解锁登录钥匙串、允许 S2Arm 访问后在出包页重新导入'),
     'app_other_signer': ('human', '手机上已有用别的签名装的 S2Arm（包名相同）：请玩家二选一——继续用原签名工具更新它，或在 iPhone 上删掉它（先导出存档），然后 s2armctl install <游戏号>'),
     'bundle_id_switched': ('auto', '（警告）原包名被别的签名占用，已自动换新包名装好；告诉玩家手机上可能有两个 S2Arm，旧的不需要可删（先导出存档）'),
     'signing_server_unreachable': ('human', '这台电脑连不上 Impactor 签名要用的服务器 mac-ani.jkcoxson.com（DNS / 连接失败，已自动重试一次）：请玩家检查网络、换 DNS 或开关代理（AI 不改玩家网络设置），然后 s2armctl install <游戏号>'),
     'apple_session_expired': ('human', 'Apple ID 登录过期（Apple 1100）：请玩家在 Impactor「设置」里移除账号、再添加账号重新登录（要输密码，AI 不代做），然后 s2armctl install <游戏号>'),
+    'apple_not_signed_in': ('human', 'S2Arm 里还没用 Apple ID 登录：请玩家在 S2Arm「用 Apple ID 签名」里填邮箱、密码和手机上的验证码登录（要输密码，AI 不代做），然后 s2armctl install <游戏号>'),
+    'apple_server_unreachable': ('human', '这台电脑连不上苹果服务器（*.apple.com，DNS / 连接失败）：不是 Apple ID 的问题；请玩家检查网络、换 DNS 或开关代理（AI 不改玩家网络设置），然后 s2armctl install <游戏号>'),
     'app_id_taken': ('human', '包名在苹果那边已被占用（Apple 错误 9401）：请玩家确认 Impactor / Xcode 里登录的是当初装 S2Arm 的 Apple ID（要输密码，AI 不代做），或付费账号到 developer.apple.com 删掉 io.s2arm.games 开头的旧包名，然后 s2armctl install <游戏号>'),
     'signing_failed': ('ai', 's2armctl logs <任务号> 看签名哪一步报错；偶发的 s2armctl retry <任务号> 一次，再不行请玩家改用 AltStore（装机步骤页第二部分）'),
     'stage_timeout': ('ai', 's2armctl logs <任务号> 看卡在哪；s2armctl retry <任务号> 重试一次，还超时就 s2armctl diag export <输出.zip> 交给玩家反馈'),
@@ -346,13 +352,13 @@ def next_step(s, gid=None, target='ios'):
         return dict(step='出包', who='ai', do=f's2armctl build {g["id"]} ios，然后 s2armctl wait {g["id"]} --op ipa --timeout 7200', why='还没出 iPhone 版（大游戏第一次要几十分钟到一个多小时，请玩家插上电源、别让%s睡眠）' % ('电脑' if s.get('platform') == 'windows' else ' Mac '), **extra)
     if s.get('platform') == 'windows':
         if [t for t in mine if t['operation'] == 'install' and t['state'] == 'completed']:
-            return dict(step='打开游戏', who='human', do='已装到 iPhone：请玩家打开这款游戏，第一次会先导入游戏资源（几分钟），保持前台别锁屏', why='装机完成，剩下只有玩家本人在手机上打开', ipa=ipa, **extra)
+            return dict(step='打开游戏', who='human', do='已推到 iPhone：请玩家打开这款游戏，第一次会先导入游戏资源（几分钟），保持前台别锁屏', why='装机完成，剩下只有玩家本人在手机上打开', ipa=ipa, **extra)
         return dict(step='装机', who='ai', do=f's2armctl install-check {g["id"]}，没打勾的项按它说的请玩家做（Apple ID 只能玩家本人在 Impactor 里登录）；然后 s2armctl install {g["id"]}（等到装完；失败会打错误码和建议、退 1）',
                     why='iPhone 包已出好：用玩家在 Impactor 登录的 Apple ID 签名，数据线装上并拷资源包', ipa=ipa, **extra)
     # 装机主路（10-26 维护者 定）：用玩家在 Xcode 登录的 Apple ID 签名、数据线装、自动拷资源包；Xcode 没登录 / 没连设备由 install 报错码，再按 AI_NEXT 处理
     done = [t for t in mine if t['operation'] == 'install' and t['state'] == 'completed' and (t.get('ended') or 0) >= max((x.get('ended') or 0) for x in mine if x['operation'] == 'ipa' and x['state'] == 'completed')]
     if done:
-        return dict(step='打开游戏', who='human', do=f'已装到 iPhone{("「" + done[-1]["device"] + "」") if done[-1].get("device") else ""}、资源包已拷好并核对：请玩家打开这款游戏，第一次会先导入游戏资源（几分钟），保持前台别锁屏，导入完会自动进入游戏。免费 Apple ID 签的 App 7 天过期，到时连上再 s2armctl install {g["id"]}',
+        return dict(step='打开游戏', who='human', do=f'已推到 iPhone{("「" + done[-1]["device"] + "」") if done[-1].get("device") else ""}、资源包已拷好并核对：请玩家打开这款游戏，第一次会先导入游戏资源（几分钟），保持前台别锁屏，导入完会自动进入游戏。免费 Apple ID 签的 App 7 天过期，到时连上再 s2armctl install {g["id"]}',
                     why='装机完成，剩下只有玩家本人在手机上打开', ipa=ipa, **extra)
     return dict(step='装机', who='ai', do=f's2armctl install-check {g["id"]}，没打勾的项按它说的请玩家做；然后 s2armctl install {g["id"]}（等到装完；失败会打错误码和建议、退 1）',
                 why='iPhone 包已出好：用玩家在 Xcode 登录的 Apple ID 签名，数据线装上并拷资源包。玩家不想登录 Xcode 就改用 AltStore（装机步骤页第二部分）', ipa=ipa, **extra)
@@ -509,6 +515,25 @@ def wait(game, op, limit, before=None):   # before：发命令前已有的任务
         time.sleep(2)
     sys.exit(f'{limit} 秒内没结束（任务 {tid}）')
 
+# build → wait 是两条命令（两个进程）：build 发出前把这款已有的同类任务号记到数据目录，wait 读走后只等之后新起的那个。
+#   原先 wait 不知道发命令前有哪些任务，升级后库里留着老版已完成的出包任务，build 后 wait 立刻拿到它退 0、等于没等（11-16 合入运维 0.5.0 候选升级验收被骗出假绿）
+def build_op(target): return 'build' if target == 'mac' else 'android' if target == 'android' else 'ipa'
+def pending_path(game, op): return os.path.join(ROOT, 'ctl-pending', f'{game}.{op}.json')
+def remember_before(game, op):
+    before = [t['id'] for t in call('GET', '/state')['tasks'] if t.get('gameId') == game and t['operation'] == op]
+    p = pending_path(game, op); os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p + '.tmp', 'w', encoding='utf-8') as f: json.dump({'before': before, 'at': time.time()}, f)
+    os.replace(p + '.tmp', p)
+def take_before(game, op):
+    """build 记下的任务号（读一次就删：下一次 build 另记）；没有记录（如游戏里点的出包）→ None，照旧取最新一个"""
+    p = pending_path(game, op)
+    try:
+        with open(p, encoding='utf-8') as f: before = set(json.load(f)['before'])
+    except (OSError, ValueError, KeyError, TypeError): return None
+    try: os.remove(p)
+    except OSError: pass
+    return before
+
 def show_task(t, t0, last):
     """打一行进度（状态 / 里程碑 / 每 5% 变一次才打）；终态打各里程碑用时后按结果退出。返回新的 last"""
     cur = (t['state'], t.get('milestone'), int(t.get('done') or 0) // max(1, int((t.get('total') or 1) // 20)))
@@ -640,10 +665,10 @@ def diag_body(rest, now=None):
     return {'action': 'export', 'path': path}
 
 # 至少需要一个位置参数的命令：以前缺参数直接 IndexError，或把后面的选项当成游戏号发给控制口。
-NEEDS_ARG = {'install', 'uninstall', 'launch', 'cancel', 'retry', 'delete', 'customize', 'ipa', 'prepare',
+NEEDS_ARG = {'install', 'uninstall', 'launch', 'cancel', 'retry', 'delete', 'customize', 'ipa', 'prepare', 'selfsign',
              'build', 'wait', 'install-check', 'logs', 'device', 'push-pack', 'snapshot', 'select',
              'onboarding', 'target', 'keys', 'games',
-             'cloud-sync', 'display', 'library', 'restore-iphone', 'show'}   # 合入时补：这几条同样直接取 rest[0]
+             'cloud-sync', 'display', 'library', 'restore-iphone', 'show', 'mods'}   # 合入时补：这几条同样直接取 rest[0]
 
 def main():
     a = sys.argv[1:]
@@ -721,6 +746,14 @@ def main():
         print(json.dumps(call('POST', '/cloudFolder', {'path': os.path.abspath(os.path.expanduser(rest[0])) if rest else ''}), ensure_ascii=False)); return
     if cmd == 'cloud-sync':
         print(json.dumps(call('POST', '/cloudSync', {'gameId': rest[0]}), ensure_ascii=False)); return
+    if cmd == 'mods':
+        body = {'gameId': rest[0], 'import': [], 'remove': [], 'enable': {}}
+        for flag, value in zip(rest[1::2], rest[2::2]):
+            if flag == '--import': body['import'].append(os.path.abspath(os.path.expanduser(value)))
+            elif flag == '--remove': body['remove'].append(value)
+            elif flag in ('--on', '--off'): body['enable'][value] = flag == '--on'
+            else: print(USAGE); sys.exit(2)
+        print(json.dumps(call('POST', '/mods', body, timeout=600), ensure_ascii=False, indent=1)); return
     if cmd == 'display':
         # 启动设置：--<设置项> <值>，设置项 = launchers/shared/game_settings.v1.json 的 id；on / off 是开关，default 回缺省，其余原样当选项值
         settings = {}
@@ -734,10 +767,11 @@ def main():
     if cmd == 'errors': errors(rest[0] if rest else None); return
     if cmd == 'install-check': install_check(rest[0], '--json' in rest, device=rest[rest.index('--device') + 1] if '--device' in rest else None); return
     if cmd == 'build':
-        args = [a for a in rest if a != '--space-override']
+        serial = rest[rest.index('--serial') + 1] if '--serial' in rest else None   # 安卓：出好装到这台手机（adb 序列号）
+        args = [a for i, a in enumerate(rest) if a not in ('--space-override', '--serial') and (i == 0 or rest[i - 1] != '--serial')]
         target = args[1] if len(args) > 1 else 'ios'
-        if target in ('android', 'harmony'): print('即将上线，敬请期待'); sys.exit(2)
-        print(json.dumps(call('POST', '/build', {'gameId': args[0], 'target': target, **space_flag(rest)}), ensure_ascii=False)); return
+        remember_before(args[0], build_op(target))
+        print(json.dumps(call('POST', '/build', {'gameId': args[0], 'target': target, **space_flag(rest), **({'serial': serial} if serial else {})}), ensure_ascii=False)); return
     if cmd == 'diag':
         body = diag_body(rest)
         if body is None: print('用法：s2armctl diag [export [输出.zip]] | diag pull', file=sys.stderr); sys.exit(2)
@@ -779,33 +813,37 @@ def main():
         return
     if cmd == 'update-phone':
         before = {t['id'] for t in call('GET', '/state')['tasks'] if t['operation'] == 'installUpdate'}
-        body = {**({'acceptStale': True} if '--accept-stale' in rest else {}), **({'repack': True} if '--repack' in rest else {}), **({'ask': True} if '--ask' in rest else {}),
+        body = {**accept_flags(rest), **({'repack': True} if '--repack' in rest else {}), **({'ask': True} if '--ask' in rest else {}),
                 **({'device': rest[rest.index('--device') + 1]} if '--device' in rest else {}),   # 连着多台时指定哪台（同 install --device）
-                **({'acceptDropped': True} if '--accept-dropped' in rest else {}),   # 同 install --accept-dropped：玩家同意让别的电脑装的款这次带不上
-                **({'acceptNoBackup': True} if '--accept-no-backup' in rest else {})}   # 玩家同意这次不先备份存档照装（装机原则 11-11，save_backup_failed）
+                }   # 玩家同意的确认（--accept-dropped / --accept-no-backup / --accept-stale / --accept-low-space…）由 accept_flags 原样交给 App
         r = call('POST', '/update-phone', body); print(json.dumps(r, ensure_ascii=False), flush=True)   # 409（已是本版 / 有要重出的款没确认）在 call 里带原因退非 0
         if r.get('asked'): print('窗口里弹了三选一，等玩家选'); return   # --ask：同点按钮，有要重出的款时由玩家在窗口里选
         wait_op('installUpdate', before, 3600); return
     if cmd == 'wait':
         op = rest[rest.index('--op') + 1] if '--op' in rest else 'build'
         lim = float(rest[rest.index('--timeout') + 1]) if '--timeout' in rest else 14400
-        wait(rest[0], op, lim); return
+        wait(rest[0], op, lim, take_before(rest[0], op)); return
     simple = {
               'fonts': ('/fonts', lambda r: {'path': os.path.abspath(r[0]) if r and r[0] else ''}),
-              'prepare': ('/prepare', lambda r: {'gameId': r[0], **space_flag(r)}), 'ipa': ('/ipa', lambda r: {'gameId': r[0], **space_flag(r)}), 'install': ('/install', lambda r: simple_body('install', r)), 'uninstall': ('/uninstall', lambda r: {'gameId': r[0], **({'acceptDropped': True} if '--accept-dropped' in r else {}), **({'acceptNoBackup': True} if '--accept-no-backup' in r else {}), **({'acceptStale': True} if '--accept-stale' in r else {})}), 'restore-iphone': ('/restore-iphone', lambda r: {'gameId': r[0]}), 'launch': ('/launch', lambda r: {'gameId': r[0]}),
+              'prepare': ('/prepare', lambda r: {'gameId': r[0], **space_flag(r)}), 'selfsign': ('/selfsign', lambda r: {'gameId': r[0]}),   # 帮助里一直列着、表里漏了：落到兜底发 {args}，App 回「没有这个 gameId」
+              'ipa': ('/ipa', lambda r: {'gameId': r[0], **space_flag(r)}), 'install': ('/install', lambda r: simple_body('install', r)), 'uninstall': ('/uninstall', lambda r: {'gameId': r[0], **accept_flags(r)}), 'restore-iphone': ('/restore-iphone', lambda r: {'gameId': r[0]}), 'launch': ('/launch', lambda r: {'gameId': r[0]}),
               'cancel': ('/cancel', lambda r: {'taskId': r[0]}), 'retry': ('/retry', lambda r: {'taskId': r[0]}),
               'select': ('/select', lambda r: {'selection': r[0], **({'gameId': r[1]} if len(r) > 1 else {})}),
               'onboarding': ('/onboarding', lambda r: {'action': r[0], **({'step': int(r[1])} if len(r) > 1 else {})}),
               'target': ('/target', lambda r: {'action': 'probe'} if r[:1] == ['probe'] else {'productType': r[0], 'os': int(r[1])}),
               'env': ('/environment', lambda r: {}), 'show': ('/show', lambda r: {'page': r[0], **({'gameId': r[1]} if len(r) > 1 else {})}), 'refresh': ('/refresh', lambda r: {}), 'dismiss': ('/dismiss', lambda r: {})}
-    if cmd not in simple: sys.exit(f'不认识 {cmd}')
+    if cmd not in simple:   # 客户端不拦不认识的命令（11-15）：原样 POST /<命令>，App 不认识回 404「不认识」，由 call 带原因退非 0
+        print(json.dumps(call('POST', '/' + cmd, {'args': rest}), ensure_ascii=False)); return
     path, mk = simple[cmd]; print(json.dumps(call('POST', path, mk(rest)), ensure_ascii=False))
 
 def simple_body(cmd, rest):
     if cmd == 'install':
         r = rest
-        return {'gameId': r[0], **({'teamId': r[r.index('--team') + 1]} if '--team' in r else {}), **({'device': r[r.index('--device') + 1]} if '--device' in r else {}), **({'acceptDropped': True} if '--accept-dropped' in r else {}), **({'acceptNoBackup': True} if '--accept-no-backup' in r else {}), **({'acceptStale': True} if '--accept-stale' in r else {})}
+        return {'gameId': r[0], **({'teamId': r[r.index('--team') + 1]} if '--team' in r else {}), **({'device': r[r.index('--device') + 1]} if '--device' in r else {}), **accept_flags(r)}
     raise KeyError(cmd)
+
+def accept_flags(args):   # --accept-<词>… → accept<词>: true 原样交给 App（11-15：不在客户端按名字挑，漏一个就静默丢，如 --accept-low-space）
+    return {'accept' + ''.join(w.capitalize() for w in a[len('--accept-'):].split('-')): True for a in args if a.startswith('--accept-') and len(a) > 9}
 
 def space_flag(args): return {'spaceOverride': True} if '--space-override' in args else {}
 

@@ -1,6 +1,8 @@
 #!/bin/bash
 # 服务层单测：编译并跑 S2A.Services.Tests（假原生层 + 桩渲染器，经生产同一 C# 单一入口发 IPC 消息）。
 # 输出「期望 → 真结果」对位表；退出码 0 = 全过。墙钟上限 300 秒（编译 + 运行）。
+# 本机自测排在门禁后面：不在门禁里跑（没有 GATE2_PAR）就把自己降到 nice 15，子进程继承；门禁步的优先级由门禁自己定
+[ -n "${GATE2_PAR:-}" ] || renice 15 -p $$ > /dev/null 2>&1 || true
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd); DOTNET=${DOTNET:-$HOME/.dotnet/dotnet}
 # 只在 macOS 上跑（审计 #859）：原生库（libvpx / libopus 垫片按 osx 构建、libSystem 读数）都是苹果的，Linux x86_64 不能冒充 osx-x64；
@@ -33,12 +35,18 @@ bash "$HERE/build_output.sh" run "$BLOG" timeout 240 "$DOTNET" build -c Release 
 # 放在完整服务测试之前：即使后续既有 LDN 基线崩溃，这些门禁仍会执行并传播自身失败。
 s2a_modes=$(timeout 60 "$DOTNET" bin/Release/net10.0/S2A.Services.Tests.dll --list-modes) || { echo "服务专项：--list-modes 失败（退出 $?）"; exit 1; }
 # 独立模式由单测程序自己列（冻结的老模式 + 标了 [SoloTest] 的新模式，见 S2A.Services.Tests/TestDiscovery.cs）：新单测不改这里
+# 各模式本来就各占一个进程、互不共享状态（临时目录按进程号 / GUID、联机端口按空闲端口取），并行起（11-14 门禁提速：120 多个进程串行约 90 秒，
+#   每个大半是进程启动与 JIT），并发 = 核数一半；结论按清单顺序报，第一个失败的照旧打末 30 行、带它的退出码退出、不跑主测试
+MD=$HERE/S2A.Services.Tests/bin; MJ=$(( $(sysctl -n hw.ncpu 2> /dev/null || echo 2) / 2 )); [ "$MJ" -ge 1 ] || MJ=1
+for mode in $s2a_modes; do rm -f "$MD/${mode#--}.out.rc"; done
+printf '%s\n' $s2a_modes | xargs -P "$MJ" -I{} sh -c 'o="$2/${1#--}.out"; timeout 60 "$3" bin/Release/net10.0/S2A.Services.Tests.dll "$1" > "$o" 2>&1; echo $? > "$o.rc"' _ {} "$MD" "$DOTNET" \
+  || { echo "服务专项：并行起进程失败（xargs 退出 $?）"; exit 1; }
 for mode in $s2a_modes; do
-  OUT="$HERE/S2A.Services.Tests/bin/${mode#--}.out"
-  if timeout 60 "$DOTNET" bin/Release/net10.0/S2A.Services.Tests.dll "$mode" > "$OUT" 2>&1; then
+  OUT="$MD/${mode#--}.out"; rc=$(cat "$OUT.rc" 2> /dev/null || echo 1)
+  if [ "$rc" = 0 ]; then
     echo "服务专项 ${mode}：通过"
   else
-    rc=$?; echo "服务专项 ${mode}：失败（退出 ${rc}）"; tail -30 "$OUT"; exit "$rc"
+    echo "服务专项 ${mode}：失败（退出 ${rc}）"; tail -30 "$OUT"; exit "$rc"
   fi
 done
 bash "$HERE/tests/t_native_provider.sh"

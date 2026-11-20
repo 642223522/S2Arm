@@ -44,22 +44,38 @@ public sealed partial class EnvironmentWindow : Window
         using var reader = new StreamReader(stream);
         var experience = reader.ReadToEnd();
         text = new SharedText(experience);
-        PrivateJobRequest.Describe = (code, path) => T("private_root." + code).Replace("{0}", path);   // 私有目录用不了时的话按当前界面语言（#672）
-        PrivateJobRequest.Note = note => LauncherCrash.Log(null, note);   // 私有目录自愈 / 收不紧记一笔（#754）
+        PrivateJobRequest.Note = note => LauncherCrash.Log(null, note);   // 旧版收紧过的数据目录补回本人权限时记一笔
         using var table = Assembly.GetExecutingAssembly().GetManifestResourceStream("S2Arm.Localizable.json")
             ?? throw new FileNotFoundException("Localization table resource is missing.");
         using var tableReader = new StreamReader(table);
         backend = new BackendText(tableReader.ReadToEnd(), experience);
+        // 各语言叠加文案（内嵌资源 S2Arm.l10n.<语言>.json）：两张表各取一块，可选语言跟着包里有的走
+        var overlays = new List<string>();
+        foreach (var name in Assembly.GetExecutingAssembly().GetManifestResourceNames().Where(n => n.StartsWith("S2Arm.l10n.") && n.EndsWith(".json")))
+        {
+            using var s = Assembly.GetExecutingAssembly().GetManifestResourceStream(name)!;
+            var json = new StreamReader(s).ReadToEnd();
+            var code = name["S2Arm.l10n.".Length..^".json".Length];
+            text.AddOverlay(code, json); backend.AddOverlay(code, json); overlays.Add(code);
+        }
+        LauncherLanguage.SetAvailable(overlays);
         // 界面语言：设置里选过的优先，否则跟随系统（LauncherLanguage，同 Mac / iOS 规则）
         language = LauncherLanguage.Resolve(privateRoot, System.Globalization.CultureInfo.CurrentUICulture.Name);
         MetalFolder.Load(privateRoot);   // 上次手动指定的 Metal 文件夹：设进本进程环境，环境检查 / 出包子进程继承
         Width = 1080; Height = 820; MinWidth = 760; MinHeight = 600;
         Background = Canvas; Foreground = Ink;
         FontFamily = new FontFamily("avares://S2Arm/Assets/Fonts#Manrope");
-        Closed += (_, _) => { CancelJob(JobKind.Environment); ClearCovers(); DisposeRetiredCovers(all: true); CloseControl(); };
+        // 关窗每一步记进 update.log、记下走到哪（让位给安装程序时兜底按它报停在哪一步）
+        Closed += (_, _) =>
+        {
+            ExitStep = "Closed：取消环境作业"; CloseLog("关窗口：Closed 开始"); CancelJob(JobKind.Environment);
+            ExitStep = "Closed：释放封面"; ClearCovers(); DisposeRetiredCovers(all: true);
+            ExitStep = "Closed：关控制口"; CloseControl();
+            ExitStep = "Closed 之后：等应用退出"; CloseLog("关窗口：Closed 完");
+        };
         Opened += (_, _) =>
         {
-            StartControl(); FinishPendingUpdate(); SyncInstalledVersion(); _ = LoadInboxAsync();
+            StartControl(); FinishPendingUpdate(); SyncInstalledVersion(); _ = LoadInboxAsync(); StartPhoneAutoUpdate();
             _ = RecoverBatchAsync();   // 上次没出完的批量出包读回来（BatchPage.cs）
             // 已有游戏库（存过位置，或默认位置建好过）就一启动连上，同 Mac：原先只有控制口开着才连，玩家默认不开，
             //   开机 catalog 为空、点「游戏库」一直是欢迎页（社区贡献者补丁 #1）。全新玩家照旧走欢迎页，不替他建库
@@ -184,7 +200,7 @@ public sealed partial class EnvironmentWindow : Window
     private string T(string key) => text.Get(key, language);
     private readonly BackendText backend;
     /// <summary>作业层来的中文原句（报错、阶段、检查项、进度说明）在英文界面下的显示；T() 的文案本来就是英文，原样通过。#361</summary>
-    private string B(string value) => language == "en" ? backend.English(value) : value;
+    private string B(string value) => backend.Translate(value, language);
     private TextBlock Label(string value, double size = 14) => new()
     {
         Text = B(value), FontSize = size, FontWeight = size >= 18 ? FontWeight.SemiBold : FontWeight.Normal,
@@ -249,10 +265,13 @@ public sealed partial class EnvironmentWindow : Window
         rightBar.Children.Add(MessagesButton());   // 消息：公告和更新说明（旧的只在这里）
 
         // 游戏库：任何页面都能回去；出包还在跑就留在后台
+        // 0.6.0 动态窗口（开关后面）：有和 App 相关的作业时显示进度一行字、做完 ✓、失败「!」，这时点它到总控台（PhoneConsole.cs）
+        var dynamicText = DynamicLibraryText();
         var libraryBtn = new Button
         {
-            Content = T("nav.library"), Padding = new Thickness(14, 8), CornerRadius = new CornerRadius(8),
-            Background = page == "library" ? Accent : Brush.Parse("#29292D"), Foreground = page == "library" ? Canvas : Ink
+            Content = dynamicText ?? T("nav.library"), Padding = new Thickness(14, 8), CornerRadius = new CornerRadius(8),
+            Background = page == "library" ? Accent : Brush.Parse("#29292D"),
+            Foreground = dynamicAlert && dynamicText is not null ? Brush.Parse("#FF9F0A") : page == "library" ? Canvas : Ink
         };
         Avalonia.Automation.AutomationProperties.SetAutomationId(libraryBtn, "top.library");
         libraryBtn.Click += (_, _) =>
@@ -261,6 +280,7 @@ public sealed partial class EnvironmentWindow : Window
             welcomeGameId = null;   // 点「游戏库」就是要看游戏库：欢迎页记的那一款不再把它盖住（社区贡献者补丁 #1）
             welcomeHome = false;
             if (!libraryBusy) importDialog = null;   // 添加游戏弹窗开着也能直接从导航离开（同上 #3；正在导入时不关）
+            if (dynamicText is not null) { OpenConsoleFromTopBar(); return; }
             Navigate("library");
         };
         rightBar.Children.Add(libraryBtn);
@@ -300,6 +320,7 @@ public sealed partial class EnvironmentWindow : Window
         Grid.SetColumn(rightBar, 1); header.Children.Add(rightBar);
         body.Children.Add(header);
         AddNoticeBar(body);
+        AddPhoneUpdateBar(body);
         if (unexpectedError.Length > 0)
         {
             // 全局兜底接住的意外错误（Program.cs）：启动器不退出，在顶部说清楚、给日志位置，玩家可以关掉提示继续用
@@ -312,6 +333,12 @@ public sealed partial class EnvironmentWindow : Window
             dismiss.Click += (_, _) => { unexpectedError = ""; Render(); };
             panel.Children.Add(dismiss);
             body.Children.Add(Card(panel));
+        }
+        if (page != "library" && modsFor is not null)   // 出包页 S 级卡「导入 Mod…」进的「Mod」页：出包页在下面先画、会把它盖掉，所以在这里先画；「返回」清 modsFor 回出包页（#1430）
+        {
+            RenderMods(body);
+            ShowPage("mods", body);
+            return;
         }
         if (RenderPackPages(body) || RenderBatchPage()) return;
         if (importDialog is not null)
@@ -344,6 +371,12 @@ public sealed partial class EnvironmentWindow : Window
             ShowPage("cheats", body);
             return;
         }
+        if (page == "library" && modsFor is not null)   // 「Mod」页（ModsPage.cs）：从游戏库这款的菜单进、「返回」回游戏库
+        {
+            RenderMods(body);
+            ShowPage("mods", body);
+            return;
+        }
         if (page == "library" && sgradeOpen)   // 「S 级优化升级」页（SGradeUpgradePage.cs）：从游戏库进、确认 / 关闭回游戏库
         {
             RenderSGradeUpgrade(body);
@@ -373,17 +406,22 @@ public sealed partial class EnvironmentWindow : Window
     }
 
     /// <summary>设置页（入口整理）：界面语言 → 存放位置（游戏库 / iPhone 包 / 磁盘空间）→ 密钥 → 装机方式 → AI 操作 → 出包环境检查 → 运行路径（开发用）</summary>
+    private string settingsFrom = "library";
     private void RenderSettings(StackPanel body)
     {
+        var back = Action("nav.back", () => Navigate(settingsFrom == "settings" ? "library" : settingsFrom));   // 返回进来前那一页（11-16：原先只能再点一次顶栏设置图标、回不到出包页）
+        back.HorizontalAlignment = HorizontalAlignment.Left;
+        AutomationId(back, "settings.back");
+        body.Children.Add(back);
         body.Children.Add(Label(T("nav.settings"), 23));
 
         // 界面语言（原在顶栏）
         // 跟随系统 / 简体中文 / English：选了某种就记住（以后不再跟系统），选「跟随系统」回到按系统（11-13，LauncherLanguage）
-        string?[] choices = [null, "zh-Hans", "en"];
+        string?[] choices = [null, .. LauncherLanguage.Choices];   // 跟随系统 + 包里有文案的各语言（11-14 加新语言）
         var system = LauncherLanguage.FromCulture(System.Globalization.CultureInfo.CurrentUICulture.Name);
         var languages = new ComboBox
         {
-            ItemsSource = new[] { T("language.system") + " · " + T("language." + system), T("language.zh-Hans"), T("language.en") },
+            ItemsSource = choices.Select(c => c is null ? T("language.system") + " · " + T("language." + system) : T("language." + c)).ToArray(),
             SelectedIndex = Array.IndexOf(choices, LauncherLanguage.Saved(privateRoot)), IsEnabled = !busy && !libraryBusy, MinWidth = 160
         };
         Avalonia.Automation.AutomationProperties.SetAutomationId(languages, "settings.language");
@@ -407,22 +445,35 @@ public sealed partial class EnvironmentWindow : Window
         // 还没连游戏库（引导页阶段）：照样能进设置页，没有的项写「还没设置」，不灰掉、不藏起整行
         var libraryPath = connectedFolder ?? (string.IsNullOrEmpty(libraryFolder) ? null : libraryFolder);
         locations.Children.Add(SettingRow(T("settings.locations.library"), T("environment.library.detail") + (libraryPath is null ? "\n" + T("settings.locations.not_set") : ""), libraryButtons, libraryPath));
-        // 出 iPhone 包成功后组在游戏库根（pack/jobs/ipa.py refresh_library_ipa）
+        // 上一次换游戏库没换成（D-3P26）：原因常驻在这一行下面（同游戏库页「放在程序文件夹里」的提醒样式），不一闪而过；换成功才清
+        if (libraryFailure.Length > 0)
+            locations.Children.Add(new Border { Background = Brush.Parse("#2A1F14"), CornerRadius = new CornerRadius(12), Padding = new Thickness(16, 12),
+                Child = new TextBlock { Text = libraryFailure, FontSize = 13, Foreground = Ink, TextWrapping = TextWrapping.Wrap } });
+        // 「安装 S2Arm」装壳后放在游戏库根的通用 S2Arm.ipa（pack/jobs/install.py install_shell → ipa.commit_phone_ipa）
         var ipa = connectedFolder is null ? null : Path.Combine(connectedFolder, "S2Arm.ipa");
         var ipaReady = ipa is not null && File.Exists(ipa);
         locations.Children.Add(SettingRow(T("settings.locations.ipa"), ipaReady ? null : T("settings.locations.ipa_none"),
             ipaReady ? Action("progress.reveal_ipa", () => Reveal(ipa!)) : null, ipaReady ? ipa : null));
         locations.Children.Add(SettingRow(T("settings.locations.space"), libraryId is null ? T("settings.locations.not_set") : null,
             libraryId is null ? null : Action("storage.open", OpenStorage, !libraryBusy)));   // 没库时存储总览只有空页，先写「还没设置」，建好库再给按钮
-        if (PrivateJobRequest.Warning is { } privateWarning) locations.Children.Add(Muted(privateWarning));   // 私有目录收不紧：照常用，这里说一句（#754）
         body.Children.Add(Card(locations));
 
         // 密钥（原在游戏库页状态卡）：状态 + 导入
         if (catalog is not null)
-            body.Children.Add(Card(SettingRow(T("settings.keys"), catalog.KeysMessage,
+            body.Children.Add(Card(SettingRow(T("settings.keys"), B(catalog.KeysMessage),
                 Action("library.import_keys", () => BeginPicker(ChooseKeysAsync), !libraryBusy))));
 
         body.Children.Add(InstallModeCard());   // 装到 iPhone 的方式（v0.3.0，InstallModePage.cs）
+
+        var widgetRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };   // 主屏小组件（11-16，缺省开）
+        var widgetText = new StackPanel { Spacing = 4 };
+        widgetText.Children.Add(Label(T("environment.widget.title"), 16));
+        widgetText.Children.Add(Label(homeWidgetError.Length > 0 ? homeWidgetError : T("environment.widget.detail")));
+        widgetRow.Children.Add(widgetText);
+        var widgetToggle = new ToggleSwitch { IsChecked = HomeWidget, OnContent = "", OffContent = "", VerticalAlignment = VerticalAlignment.Center };
+        widgetToggle.IsCheckedChanged += (_, _) => { if (widgetToggle.IsChecked != HomeWidget) SetHomeWidget(widgetToggle.IsChecked == true); };
+        Grid.SetColumn(widgetToggle, 1); widgetRow.Children.Add(widgetToggle);
+        body.Children.Add(Card(widgetRow));
 
         var aiRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
         var aiText = new StackPanel { Spacing = 4 };

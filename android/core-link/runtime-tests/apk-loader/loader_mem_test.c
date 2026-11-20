@@ -22,6 +22,8 @@ int s2a_gfx_mode(void) { return S2A_GFX_GENERIC; }
 // Generic Android mode has no direct API interception (plat_android.c).
 uint64_t s2a_direct_lookup(const char *name) { (void)name; return 0; }
 void *s2a_libc_lookup(const char *name) { (void)name; return NULL; }
+// loader.c 只在即时存档模式（s2a_snap_mode，本夹具恒关）下取地址窗口；关着走不到，给空窗口
+void s2a_window_get(uint64_t *base, uint64_t *size) { *base = 0; *size = 0; }
 void *sw_xstack_wrap(const char *name,void *fn) { (void)name;(void)fn; assert(0); return NULL; }
 unsigned s2a_unresolved_count(void);
 const char *s2a_main_build_id(void);
@@ -95,6 +97,7 @@ int main(int argc,char **argv) {
             save(dir,"widen_enable","handheld.tsv",enable,strlen(enable));
             const char *full = "0\n";
             save(dir,"widen_full","handheld.tsv",full,strlen(full));
+            setenv("S2A_CAPS_OWN","1",1);   // 测装载器按能力清单写宽屏点的机制本身（11-15 起我方通用满屏缺省不用，runtime/src/widen.c；S2A_CAPS_OWN=1 才认清单）
             setenv("S2A_WIDEN_CAPS","1",1); setenv("S2A_SCREEN_W","2560",1);
             int s2a_widen_full(void); assert(s2a_widen_full() == 1); // pre-admission default must not mask the authenticated table
 

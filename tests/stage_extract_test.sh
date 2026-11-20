@@ -7,13 +7,18 @@
 #   GLSLC 离线编出了 .glslc → shader_split 拿到 DM_GLSLC_CAPTURE=extract/glslc_capture、要编时先编宿主；离线编失败 → 退出 3、红行带原因
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); bad=0
 export S2A_JOBS=6
+# 被测阶段只为 prog_id 才 source pack/srcs.sh，而 srcs.sh 一 source 就按 pack/nx_unpack 源码哈希定 nx_unpack、没编过就 dotnet build。
+#   假仓库没有 nx_unpack 源码：每次调阶段都对空工程 dotnet build 一次（本单测 60 多次；门禁里 dotnet 还要排同树 C# 编译锁），与判据无关。
+#   本单测不解包，按 srcs.sh 的接口给 S2A_NX_UNPACK（从不执行）
+export S2A_NX_UNPACK=$T/nx_unpack-unused
 ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
 mkdir -p $T/repo/pack $T/repo/tools $T/repo/graphics/tools/direct $T/repo/graphics/tools/shbake $T/repo/translator $T/repo/graphics/nvn/games $T/repo/graphics/nvn/tools $T/roots
 cp "$H/pack/resource_input_key.py" $T/repo/pack/; cp "$H/pack/stage_keyfiles.sh" $T/repo/pack/; cp "$H/tools/stage_deps.py" $T/repo/tools/; cp -R "$H/tools/stage_deps_hook" $T/repo/tools/   # 各阶段实际读入进键（pack/stage_keyfiles.sh，10-30）
-cp "$H/pack/roots.sh" "$H/pack/srcs.sh" "$H/pack/stage_extract.sh" "$H/pack/ue_pak.py" $T/repo/pack/; cp "$H/tools/clonedir.py" "$H/tools/host_build.sh" "$H/tools/plock.sh" "$H/tools/flock_hold.py" "$H/tools/machine.sh" "$H/tools/nostall.py" "$H/tools/progress.sh" "$H/tools/nospace.sh" $T/repo/tools/
+cp "$H/pack/roots.sh" "$H/pack/srcs.sh" "$H/pack/stage_extract.sh" "$H/pack/ue_pak.py" "$H/pack/decoder_need.sh" $T/repo/pack/; cp "$H/tools/clonedir.py" "$H/tools/host_build.sh" "$H/tools/plock.sh" "$H/tools/flock_hold.py" "$H/tools/machine.sh" "$H/tools/nostall.py" "$H/tools/progress.sh" "$H/tools/nospace.sh" $T/repo/tools/
 cp "$H/graphics/tools/direct/extract.sh" $T/repo/graphics/tools/direct/; cp "$H/graphics/tools/shbake/pak_crypto.py" "$H/graphics/tools/shbake/unreal_pak.py" "$H/graphics/tools/shbake/zstd_lib.py" $T/repo/graphics/tools/shbake/
 # romfs_list.py：仓库里唯一的 RomFS 遍历（11-03），被测脚本经它列 RomFS
 cp "$H/graphics/nvn/tools/romfs_list.py" $T/repo/graphics/nvn/tools/
+mkdir -p "$T/repo/tools"; cp "$H/tools/pool_workers.py" "$T/repo/tools/"   # romfs_list / pak_crypto 经它取核数（#1332：核数唯一来源）
 cp "$H/graphics/nvn/tools/gfx_api.py" $T/repo/graphics/nvn/tools/
 for f in translator/uepak.py translator/unityfs.py graphics/nvn/games/game.py graphics/nvn/tools/nso_syms.py graphics/nvn/tools/lz4blk.py; do echo x > $T/repo/$f; done   # 只进键，假抽取器不导入
 # 假抽取器：记一行「工具 J DM_GAME DM_UE_SHADERS」（另记一行「splitcap DM_GLSLC_CAPTURE」），出最小产物；FAKE_FAIL=split 时 shader_split 失败；
@@ -93,9 +98,9 @@ rin 'rm -f romfs/x.pak'; b=$(cur); h0=$(grep -c ^host $T/calls); o=$(FAKE_FAIL=z
 ck "两边抽取 0 支 → 照常提交：退出 0（rc=${r}）、现行换新、direct_gap.txt 写「直连抽取 0 支着色器」带切分器红行（$(cat "$(cur)/extract/direct_gap.txt" 2> /dev/null | cut -c1-120)）" '[ $r = 0 ] && [ "$(cur)" != "$b" ] && grep -q "直连库失败：直连抽取 0 支着色器（缺口：" "$(cur)/extract/direct_gap.txt" && [[ "$o" == *"【黄】acnh 抽取缺口：直连库失败：直连抽取 0 支着色器"* ]]'
 ck "没有 .pak、不需要离线编（--need no）→ 不编宿主、shader_split 不带 DM_GLSLC_CAPTURE（编宿主 $h0 → $(grep -c ^host $T/calls) 次、$(grep ^splitcap $T/calls | tail -1)）" '[ "$(grep -c ^host $T/calls)" = "$h0" ] && [ "$(grep ^splitcap $T/calls | tail -1)" = "splitcap -" ]'
 rin 'echo r4 > romfs/i'; o=$(FAKE_GLSLC=1 S 2>&1); r=$?; c=$(cur)
-ck "要离线编 → 先编宿主、glslc_offline 拿到 J（与 S2Arm 抽取并行时分到 6 − 3 = 3）与产物根、shader_split 拿到 DM_GLSLC_CAPTURE=extract/glslc_capture（rc=${r}，$(grep ^splitcap $T/calls | tail -1)）" '[ $r = 0 ] && [ "$(grep -c ^host $T/calls)" = $((h0 + 1)) ] && grep "^glslc" $T/calls | tail -1 | grep -q "^glslc 3 " && grep ^splitcap $T/calls | tail -1 | grep -q "/extract/glslc_capture$" && [ -f $c/extract/glslc_capture/glslc_0.glslc ]'
+ck "要离线编 → 先编宿主、glslc_offline 拿到 J（与 S2Arm 抽取并行时分到 6 − 3 = 3）与产物根、shader_split 拿到 DM_GLSLC_CAPTURE=extract/glslc_capture（rc=${r}，$(grep ^splitcap $T/calls | tail -1)；输出末尾 $(printf '%s' "$o" | tail -2 | tr '\n' ' ' | cut -c1-200)）" '[ $r = 0 ] && [ "$(grep -c ^host $T/calls)" = $((h0 + 1)) ] && grep "^glslc" $T/calls | tail -1 | grep -q "^glslc 3 " && grep ^splitcap $T/calls | tail -1 | grep -q "/extract/glslc_capture$" && [ -f $c/extract/glslc_capture/glslc_0.glslc ]'
 rin 'echo r5 > romfs/j'; b=$(cur); o=$(FAKE_GLSLC=1 FAKE_FAIL=glslc S 2>&1); r=$?
-ck "离线编失败 → 照常提交：退出 0（rc=${r}）、现行换新、direct_gap.txt 写「GLSLC 离线编失败」" '[ $r = 0 ] && [ "$(cur)" != "$b" ] && grep -q "直连库失败：GLSLC 离线编失败（GLSLC 工具模式失败（1/1 路）：宿主退出 134；" "$(cur)/extract/direct_gap.txt"'
+ck "离线编失败 → 照常提交：退出 0（rc=${r}；输出末尾 $(printf '%s' "$o" | tail -2 | tr '\n' ' ' | cut -c1-200)）、现行换新、direct_gap.txt 写「GLSLC 离线编失败」" '[ $r = 0 ] && [ "$(cur)" != "$b" ] && grep -q "直连库失败：GLSLC 离线编失败（GLSLC 工具模式失败（1/1 路）：宿主退出 134；" "$(cur)/extract/direct_gap.txt"'
 # 内置宿主：发版 App 自带已编好的宿主（pack/jobs/core.py 设 S2A_BUNDLED_HOST）→ 不编宿主（issue #8 根因修复）
 rin 'echo r6 > romfs/k'; h1=$(grep -c ^host $T/calls); touch $T/fake_host; o=$(FAKE_GLSLC=1 S2A_BUNDLED_HOST=$T/fake_host S 2>&1); r=$?
 ck "有内置宿主（S2A_BUNDLED_HOST）→ 不编宿主、跳过 host_build（编宿主 $h1 → $(grep -c ^host $T/calls) 次，$(echo "$o" | grep -a '使用发版' | cut -c1-60)）" '[ $r = 0 ] && [ "$(grep -c ^host $T/calls)" = "$h1" ] && [[ "$o" == *"使用发版 App 内置 Mac 宿主"* ]]'
@@ -147,6 +152,8 @@ cat > $T/bin/xcrun <<'ONCE_XCRUN'
 exit 1
 ONCE_XCRUN
 chmod +x $T/bin/xcrun
+# 假 Xcode 目录（tools/toolchain.sh 先要选中一个存在的 Xcode 目录，再经上面的 xcrun 替身问 SDK / Metal 版本）：不依赖本机装没装 Xcode，Linux 主机同样走通
+mkdir -p $T/Xcode.app/Contents/Developer; export S2A_DEVELOPER_DIR=$T/Xcode.app/Contents/Developer
 cp $T/repo/pack/resource_input_key.py $T/repo/pack/resource_input_key_impl.py
 cat > $T/repo/pack/resource_input_key.py <<'ONCE_WRAPPER'
 import os, pathlib, runpy, sys
@@ -213,7 +220,7 @@ export PATH=$P253_ORIGINAL_PATH; unset P253_ORIGINAL_PATH
 
 # P2-53 摘要memo：真实输入读取计数、保留mtime的同长写、真实root_begin克隆交接。
 "${S2A_PYTHON:-${S2A_PY:-python3}}" - "$H" <<'P253_MEMO_TESTS'
-import importlib.util, os, shutil, subprocess, tempfile, unittest
+import importlib.util, os, shutil, stat, subprocess, tempfile, time, unittest
 from pathlib import Path
 from unittest.mock import patch
 import sys
@@ -221,6 +228,14 @@ REPO=Path(sys.argv[1]);spec=importlib.util.spec_from_file_location('resource_key
 class ResourceMemo(unittest.TestCase):
  def setUp(self):
   self.tmp=tempfile.TemporaryDirectory(prefix='resource-key-memo-');self.addCleanup(self.tmp.cleanup);self.base=Path(self.tmp.name).resolve();self.root=self.base/'roots/fixture@seed';(self.root/'exefs').mkdir(parents=True);(self.root/'romfs/sub').mkdir(parents=True);(self.root/'aoc/1').mkdir(parents=True);(self.root/'exefs/main').write_bytes(b'main-input');(self.root/'romfs/a').write_bytes(b'AA');(self.root/'romfs/sub/large').write_bytes(b'L'*196608);(self.root/'aoc/1/zero').write_bytes(b'');self.addCleanup(patch.stopall);patch.dict(os.environ,{'S2A_JOBS':'1'}).start()
+ def ctime_moved(self,p,st):
+  # 缓存靠 ctime 认出「同长度改写又把 mtime 改回去」（pack/resource_input_key.py signature）。Linux 的 ext4 等按内核粗粒度时钟记 ctime（约 4 ms 一跳），
+  #   紧接着上一次读取的改写可能与改写前同值，用例的前提（ctime 已变）就没成立、偶发红：没变就等一跳再 chmod 一次（只动 ctime，不动内容与 mtime）
+  while p.stat().st_ctime_ns==st.st_ctime_ns:time.sleep(0.005);os.chmod(p,stat.S_IMODE(p.stat().st_mode))
+ def ctime_after(self,p,ref_ns):
+  # 交接判据「文件 ctime > 交接时刻（.root_pid 的 mtime）」（pack/resource_input_key.py inherit_cache）用严格大于：克隆出的文件本身 ctime 可能与交接同一跳，>= 会误拒。
+  #   Linux 粗粒度时钟（约 4 ms 一跳）下「克隆 → 写 .root_pid → 改写」可能落在同一跳、改写的 ctime 不大于交接时刻，用例的前提没成立（Linux 主机上红过）：等到确实晚于再继续
+  while p.stat().st_ctime_ns<=ref_ns:time.sleep(0.005);os.chmod(p,stat.S_IMODE(p.stat().st_mode))
  def measured(self):
   real=Path.open;counter={'opens':0,'bytes':0,'key_assemblies':0};root=self.root
   class Reader:
@@ -245,15 +260,15 @@ class ResourceMemo(unittest.TestCase):
  def test_warm_reads_no_input_bytes(self):
   k,c=self.measured();self.assertEqual(c['bytes'],len(b'main-input')+2+131072);k2,c2=self.measured();self.assertEqual(k,k2);self.assertEqual(c2,{'opens':0,'bytes':0,'key_assemblies':0})
  def test_same_length_write_preserving_mtime_only_rereads_changed(self):
-  old,_=self.measured();p=self.root/'romfs/a';st=p.stat();p.write_bytes(b'BB');os.utime(p,ns=(st.st_atime_ns,st.st_mtime_ns));new,c=self.measured();self.assertNotEqual(old,new);self.assertEqual(c,{'opens':1,'bytes':2,'key_assemblies':1})
+  old,_=self.measured();p=self.root/'romfs/a';st=p.stat();p.write_bytes(b'BB');os.utime(p,ns=(st.st_atime_ns,st.st_mtime_ns));self.ctime_moved(p,st);new,c=self.measured();self.assertNotEqual(old,new);self.assertEqual(c,{'opens':1,'bytes':2,'key_assemblies':1})
  def test_membership_and_rename(self):
   old,_=self.measured();p=self.root/'romfs/a';p.rename(self.root/'romfs/renamed');new,c=self.measured();self.assertNotEqual(old,new);self.assertEqual(c['bytes'],2);(self.root/'romfs/empty').write_bytes(b'');added,c=self.measured();self.assertNotEqual(new,added);self.assertEqual(c['bytes'],0);(self.root/'romfs/empty').unlink();self.assertEqual(self.measured()[0],new)
  def test_mtime_only_rereads_but_keeps_key(self):
   old,_=self.measured();p=self.root/'romfs/a';st=p.stat();os.utime(p,ns=(st.st_atime_ns,st.st_mtime_ns+1000000000));new,c=self.measured();self.assertEqual(old,new);self.assertEqual(c['bytes'],2)
  def test_true_clone_inherit_and_rename(self):
-  key,_=self.measured();source=self.root;target=self.clone();mod.inherit_cache(source,target);self.root=target;other,c=self.measured();self.assertEqual(key,other);self.assertEqual(c['bytes'],0);renamed=target.with_suffix('');target.rename(renamed);self.root=renamed;self.assertEqual(self.measured()[1]['bytes'],0);p=renamed/'romfs/a';p.write_bytes(b'CC');new,c=self.measured();self.assertNotEqual(key,new);self.assertEqual(c['bytes'],2)
+  key,_=self.measured();source=self.root;target=self.clone();mod.inherit_cache(source,target);self.root=target;other,c=self.measured();self.assertEqual(key,other);self.assertEqual(c['bytes'],0);renamed=target.with_suffix('');target.rename(renamed);self.root=renamed;self.assertEqual(self.measured()[1]['bytes'],0);p=renamed/'romfs/a';st=p.stat();p.write_bytes(b'CC');self.ctime_moved(p,st);new,c=self.measured();self.assertNotEqual(key,new);self.assertEqual(c['bytes'],2)
  def test_source_change_rejects_clone_inheritance(self):
-  self.measured();source=self.root;target=self.clone();p=source/'romfs/a';st=p.stat();p.write_bytes(b'BB');os.utime(p,ns=(st.st_atime_ns,st.st_mtime_ns));self.assertRaises((ValueError,OSError),mod.inherit_cache,source,target)
+  self.measured();source=self.root;target=self.clone();p=source/'romfs/a';st=p.stat();p.write_bytes(b'BB');os.utime(p,ns=(st.st_atime_ns,st.st_mtime_ns));self.ctime_moved(p,st);self.assertRaises((ValueError,OSError),mod.inherit_cache,source,target)
  def test_unrelated_clone_marker_rejected(self):
   self.measured();target=self.clone();(target/'.root_base').write_text('unrelated');self.assertRaises((ValueError,OSError),mod.inherit_cache,self.root,target)
  def test_corrupt_cache_recomputed(self):
@@ -267,13 +282,13 @@ class ResourceMemo(unittest.TestCase):
   with patch.dict(os.environ,{'S2A_JOBS':'8'}),patch.object(mod,'ThreadPoolExecutor',pool):self.measured()
   self.assertEqual(seen,[8])
  def test_main_same_length_change_is_full_rehashed(self):
-  old,_=self.measured();p=self.root/'exefs/main';st=p.stat();p.write_bytes(b'MAIN-input');os.utime(p,ns=(st.st_atime_ns,st.st_mtime_ns));new,c=self.measured();self.assertNotEqual(old,new);self.assertEqual(c,{'opens':1,'bytes':10,'key_assemblies':1})
+  old,_=self.measured();p=self.root/'exefs/main';st=p.stat();p.write_bytes(b'MAIN-input');os.utime(p,ns=(st.st_atime_ns,st.st_mtime_ns));self.ctime_moved(p,st);new,c=self.measured();self.assertNotEqual(old,new);self.assertEqual(c,{'opens':1,'bytes':10,'key_assemblies':1})
  def test_target_write_before_handoff_rejected(self):
-  key,_=self.measured();target=self.clone();p=target/'romfs/a';st=p.stat();p.write_bytes(b'BB');os.utime(p,ns=(st.st_atime_ns,st.st_mtime_ns));self.assertRaises((ValueError,OSError),mod.inherit_cache,self.root,target,key)
+  key,_=self.measured();target=self.clone();p=target/'romfs/a';st=p.stat();p.write_bytes(b'BB');os.utime(p,ns=(st.st_atime_ns,st.st_mtime_ns));self.ctime_moved(p,st);self.ctime_after(p,(target/'.root_pid').stat().st_mtime_ns);self.assertRaises((ValueError,OSError),mod.inherit_cache,self.root,target,key)
  def test_new_source_memo_cannot_replace_fixed_snapshot(self):
-  key,_=self.measured();target=self.clone();p=self.root/'romfs/a';st=p.stat();p.write_bytes(b'BB');os.utime(p,ns=(st.st_atime_ns,st.st_mtime_ns));self.measured();self.assertRaises((ValueError,OSError),mod.inherit_cache,self.root,target,key)
+  key,_=self.measured();target=self.clone();p=self.root/'romfs/a';st=p.stat();p.write_bytes(b'BB');os.utime(p,ns=(st.st_atime_ns,st.st_mtime_ns));self.ctime_moved(p,st);self.measured();self.assertRaises((ValueError,OSError),mod.inherit_cache,self.root,target,key)
  def test_read_failure_does_not_publish_new_key(self):
-  self.measured();p=self.root/'romfs/a';p.write_bytes(b'BB');real=Path.open
+  self.measured();p=self.root/'romfs/a';st=p.stat();p.write_bytes(b'BB');self.ctime_moved(p,st);real=Path.open
   def failure(path,*args,**kwargs):
    if path==p:raise OSError('original simulated read failure')
    return real(path,*args,**kwargs)

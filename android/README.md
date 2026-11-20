@@ -483,35 +483,41 @@ also has one more platform signal handler without `SA_ONSTACK` (45) than Android
 
 ## Physical gamepad mapping
 
-Physical controllers use `position` mapping by default. Use `s2arm.gamemap=label`
-to match the A/B/X/Y labels reported by an Xbox-layout controller:
+The face-button layout is the same `padFace` choice as iOS and Mac (`runtime/src/pad.c`):
+`auto` (default) follows the printed letters, `switch` puts Switch A on the right button,
+`xbox` puts it on the bottom button. Android key codes are positional on every controller
+(AOSP key layouts send `BUTTON_A` for a Nintendo pad's bottom "B"), so `auto` is the Switch
+layout on Nintendo pads (vendor `057e`, or a name with Nintendo / Switch / Joy-Con) and the
+Xbox layout on everything else (PlayStation: × confirms). Pick it in the in-game four-finger
+menu ("Controller button layout", shown while a controller is attached) or with an intent:
 
-| Android button | `position` (default) | `label` |
+| Android button (position) | `switch` | `xbox` |
 |---|---|---|
-| A | Switch B (`0x0002`) | Switch A (`0x0001`) |
-| B | Switch A (`0x0001`) | Switch B (`0x0002`) |
-| X | Switch Y (`0x0008`) | Switch X (`0x0004`) |
-| Y | Switch X (`0x0004`) | Switch Y (`0x0008`) |
+| A (bottom) | Switch B (`0x0002`) | Switch A (`0x0001`) |
+| B (right) | Switch A (`0x0001`) | Switch B (`0x0002`) |
+| X (left) | Switch Y (`0x0008`) | Switch X (`0x0004`) |
+| Y (top) | Switch X (`0x0004`) | Switch Y (`0x0008`) |
 
 ```sh
-adb shell am start -n org.s2arm.android/.MainActivity --es s2arm.gamemap label --es s2arm.touchlog on
-adb shell am start -n org.s2arm.android/.MainActivity --es s2arm.gamemap position
+adb shell am start -n org.s2arm.android/.MainActivity --es s2arm.gamemap xbox --es s2arm.touchlog on
+adb shell am start -n org.s2arm.android/.MainActivity --es s2arm.gamemap auto
 ```
 
-For a per-game APK, use its application ID with the same `org.s2arm.android.MainActivity`
-class. The option applies to physical face buttons only. Sticks, the D-pad, shoulder
-buttons and the on-screen pad keep their existing mappings. Unknown modes are rejected.
+The older values still work: `position` = `switch`, `label` = `xbox` (a saved
+`gamepadMapping` from before carries over). For a per-game APK, use its application ID with
+the same `org.s2arm.android.MainActivity` class. The option applies to physical face buttons
+only. Sticks, the D-pad, shoulder buttons and the on-screen pad keep their existing mappings.
 
-A new intent with this extra changes the current Activity's mode immediately and saves
-it in app-private preferences. An intent without it keeps the current mode; a later
-launch restores the saved mode. The first launch defaults to `position`. Unknown modes
-are rejected with an error message before they are saved; the previous saved mode remains
-active. The option is also a running-session control when a development runtime is loaded.
-Focus loss clears input but keeps the mode.
+A new intent with this extra changes the current Activity's layout immediately and saves
+it in app-private preferences (`padFace`). An intent without it keeps the current layout; a
+later launch restores the saved one. Unknown values are rejected with an error message before
+they are saved; the previous layout remains active. The option is also a running-session
+control when a development runtime is loaded. Focus loss clears input but keeps the layout.
 
-`GamepadStateTest` covers both mappings, release after switching while held, reset,
-and independent hat/trigger input. These are host tests of the production state
-implementation; physical-controller validation of `label` mode is still pending.
+`GamepadStateTest` covers all three layouts on Nintendo and other pads, the older values,
+kind detection, release after switching while held, reset, and independent hat/trigger input.
+These are host tests of the production state implementation; physical-controller validation
+is still pending.
 
 The diagnostic APK also has an SDK-only instrumentation runner (no third-party test dependency):
 
@@ -521,12 +527,32 @@ The diagnostic APK also has an SDK-only instrumentation runner (no third-party t
 adb shell am instrument -w org.s2arm.android.test/org.s2arm.android.GamepadMappingInstrumentation
 ```
 
-A successful run reports `passed=true`. It checks the real Activity, preferences, both face-button
-mappings, held-button switching/release, invalid values and Activity recreation, then restores the
-original mapping preference. It uses software KeyEvents; cold process restart and physical input
-are separate checks. `label` follows Android's reported A/B/X/Y key codes. A controller whose
-Android key layout reports a different X/Y code must still be checked against its printed labels;
-no controller-model override is applied.
+A successful run reports `passed=true`. It checks the real Activity, preferences, the default
+(`auto`, which software events without a device read as the Xbox layout), `switch`, the older
+`position` / `label` values, held-button switching/release, invalid values and Activity recreation,
+then restores the original preferences. It uses software KeyEvents; cold process restart and
+physical input are separate checks. A controller whose Android key layout reports a different X/Y
+code must still be checked against its printed labels; no controller-model override is applied.
+
+## Controller rumble and six-axis
+
+Player 1's controller is the one that last sent input (else the first attached gamepad).
+`PadFeedback.java` gives native (`native/phone_feedback.c`) its motors and sensors:
+
+- Rumble: a controller with a motor rumbles instead of the phone (four-finger menu
+  "Controller rumble", on by default). Two motors (API 31 `InputDevice.getVibratorManager`,
+  id 0 left / strong, id 1 right / weak) get the left and right HD Rumble sides; one motor
+  (or Android 10/11 `InputDevice.getVibrator`) gets the stronger side. Same 1 s lease as the
+  phone motor.
+- Six-axis (API 31 `InputDevice.getSensorManager`, only while the game wants six-axis): a
+  controller with samples wins over the phone (`runtime/src/motion_pick.c`); switching drops
+  one frame, and the phone sensors rest after the controller has supplied samples for 2 s.
+  Android keeps each driver's axes, so the conversion is per vendor: PlayStation (DS4,
+  DualSense: x right, y face normal, z toward the player) and Nintendo (Pro, Joy-Con: x top,
+  y left, z face normal). Other vendors' sensors are not used (the phone gyro stays on).
+
+`phone_feedback_test` checks the axis conversion by pose (plus SDL's Nintendo-to-PlayStation
+shuffle as a cross-check), the per-side motor levels and the source routing.
 
 ## On-screen gamepad
 

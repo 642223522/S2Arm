@@ -11,10 +11,12 @@
 "Off" = "关闭";
 "SMAA Medium" = "SMAA 中";
 "SMAA High" = "SMAA 高";
-"Used to scale the game picture to the screen; doesn’t change the internal render resolution." = "用于将游戏画面缩放到屏幕，不改变内部渲染分辨率。";
-"Scaling Filter" = "画面缩放滤镜";
-"Bilinear (Smooth)" = "双线性（平滑）";
-"Nearest Neighbor (Crisp Pixels)" = "最近邻（像素清晰）";
+"Used to scale the game picture to the screen; doesn’t change the internal render resolution. Sharp Upscaling (MetalFX) adds a little GPU time every frame, so frame rate and battery use may be slightly affected." = "用于将游戏画面缩放到屏幕，不改变内部渲染分辨率。锐利放大（MetalFX）会每帧多花一点显卡时间，帧率和能耗会略有影响。";
+"Picture Quality" = "画质提升";
+"Standard" = "标准";
+"For 2D Games" = "2D 游戏专用";
+"Sharp Upscaling (MetalFX)" = "锐利放大（MetalFX）";
+"FSR" = "FSR 锐化放大";
 "Sets a frame rate cap for the game picture; doesn’t unlock the game’s own frame rate limit. The actual frame rate also depends on the game and the screen’s refresh rate." = "设置游戏画面的帧率上限，不会解除游戏自身的帧率锁。实际帧率还取决于游戏表现和屏幕刷新率。";
 "Frame Rate Limit" = "帧率上限";
 "30 FPS" = "30 帧/秒";

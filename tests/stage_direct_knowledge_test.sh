@@ -24,6 +24,7 @@ cp "$H/pack/roots.sh" "$H/pack/stage_direct.sh" "$H/pack/stage_direct_seed.sh" "
    "$H/pack/ipa_key.sh" "$H/pack/pkg_srcs.py" "$H/pack/pkg_inputs_key.py" $T/repo/pack/
 cp "$H/tools/toolchain.sh" "$H/tools/toolchain.env" "$H/tools/machine.sh" "$H/tools/clonedir.py" "$H/tools/plock.sh" "$H/tools/flock_hold.py" "$H/tools/stage_deps.py" $T/repo/tools/; cp -R "$H/tools/stage_deps_hook" $T/repo/tools/
 cp "$H/graphics/nvn/tools/romfs_list.py" "$H/graphics/nvn/tools/gfx_api.py" $T/repo/graphics/nvn/tools/; cp "$H/graphics/tools/shbake/pak_crypto.py" $T/repo/graphics/tools/shbake/
+mkdir -p "$T/repo/tools"; cp "$H/tools/pool_workers.py" "$T/repo/tools/"   # romfs_list / pak_crypto 经它取核数（#1332：核数唯一来源）
 for f in run_knowledge.py fout_want.py se_want.py run_pairs.py pso_layout.py pso_layout.json pso_seed.py; do cp "$H/graphics/tools/direct/$f" $T/repo/graphics/tools/direct/; done
 echo m > $T/repo/graphics/metal/gal_prog.m; printf 'def version(): return "v1"\n' > $T/repo/translator/dmsh_chain.py
 printf '入\t%s\n' pack/stage_direct.sh pack/ue_pak.py graphics/metal/gal_prog.m graphics/tools/direct/run_knowledge.py > $T/repo/pack/stage_inputs/direct.tsv
@@ -35,6 +36,8 @@ cat > $T/bin/xcrun <<'EOF'
 exit 1
 EOF
 chmod +x $T/bin/xcrun; export PATH=$T/bin:$PATH DSX_LIB=$T/libdsx.dylib
+# 假 Xcode 目录（tools/toolchain.sh 先要选中一个存在的 Xcode 目录，再经上面的 xcrun 替身问 SDK / Metal 版本）：不依赖本机装没装 Xcode，Linux 门禁机同样走通
+mkdir -p $T/Xcode.app/Contents/Developer; export S2A_DEVELOPER_DIR=$T/Xcode.app/Contents/Developer
 printf 'exit 0\n' > $T/repo/pack/stage_direct_profile.sh
 printf 'import json,os\nprint(json.dumps({"profile": os.path.dirname(__file__)+"/profile/0100", "profile_key": "profile1"}))\n' > $T/repo/pack/direct_profile_stage.py
 # 假出库：库键 A B C D；记调用次数；把拿到的跑局知识快照（S2A_RUN_KNOWLEDGE）的配对表留一份看
@@ -97,9 +100,9 @@ mkdir -p $T/mods; python3 -c 'import struct,sys; b=bytearray(0x100); b[:4]=b"MET
 cp "$H/tools/pso_seed_keep.sh" "$H/tools/addr_need.py" "$H/tools/nso_plain.py" $T/repo/tools/ 2> /dev/null; source $T/repo/tools/pso_seed_keep.sh; MK=$T/run/s2arm/pso_seed/0100BBBB00000000/mac_$(pso_seed_mac_name).tsv
 printf 'S\t%s_b\t0\n%s\n' $A "$R1" > $T/pu.tsv; k1=$(DM_PSO_USER=$T/pu.tsv pso_seed_keep_mac $T/mods); c1=$(cat "$MK" 2> /dev/null)
 printf 'P\t%s\t%s\nS\t%s_b\t0\n' $C $D $A >> $T/pu.tsv; printf 'R\tlocal-only\n' >> "$MK"; k2=$(DM_PSO_USER=$T/pu.tsv pso_seed_keep_mac $T/mods)
-touch -t 202001010000.00 "$MK"; m2=$(stat -f %m "$MK" 2> /dev/null || stat -c %Y "$MK"); k3=$(DM_PSO_USER=$T/pu.tsv pso_seed_keep_mac $T/mods); m3=$(stat -f %m "$MK" 2> /dev/null || stat -c %Y "$MK")
+touch -t 202001010000.00 "$MK"; mt() { python3 -c "import os, sys; print(os.stat(sys.argv[1]).st_mtime_ns)" "$1"; }; m2=$(mt "$MK"); k3=$(DM_PSO_USER=$T/pu.tsv pso_seed_keep_mac $T/mods); m3=$(mt "$MK")
 k4=$(DM_PSO_USER=$T/没有.tsv pso_seed_keep_mac $T/mods); r4=$?
-ck "⑪ Mac 局收局并进 pso_seed/0100BBBB00000000/mac_<本机名>.tsv：首次 2 行（${k1##*（}）；再并只补 P(C,D)、旧行与本地多的一行原序不动；没有新行不动文件（${k3##*：}）；本机没有表退 0" \
+ck "⑪ Mac 局收局并进 pso_seed/0100BBBB00000000/mac_<本机名>.tsv：首次 2 行（${k1##*（}）；再并只补 P(C,D)、旧行与本地多的一行原序不动；没有新行不动文件（${k3##*：}）；本机没有表退 0（k2「${k2: -40}」、mtime ${m2} → ${m3}、r4 ${r4}、k4「${k4: -40}」）" \
   '[ "$c1" = "$(printf "S\t%s_b\t0\n%s" $A "$R1")" ] && [ "$(cat "$MK")" = "$(printf "S\t%s_b\t0\n%s\nR\tlocal-only\nP\t%s\t%s" $A "$R1" $C $D)" ] && [[ "$k2" == *"3 → 4 行"* ]] && [[ "$k3" == *没有新行* ]] && [ "$m3" = "$m2" ] && [ $r4 = 0 ] && [[ "$k4" == *不拷* ]]'
 mkdir -p $T/home/Documents/wire/0100AAAA00000000.bak; printf 'P\tbak\n' > $T/home/Documents/wire/0100AAAA00000000.bak/pso_user.tsv
 o=$(bash $T/repo/tools/pso_seed_keep.sh --all); r=$?; MA=$SD/mac_$(pso_seed_mac_name).tsv

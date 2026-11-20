@@ -4,8 +4,8 @@ namespace S2A.Services.Tests
 {
     // 前后台 / 焦点 / 底座 / 睡眠（缺口扫描族 1 / 2，11-01 体验线）：走真实 IPC 看游戏收到什么。期望按 am / psc 语义手写：
     //   ① 游戏 SetOutOfFocusSuspendingEnabled(false) → 原生层收到 0（平台壳据此不冻结）
-    //   ② 平台壳报失焦 → 游戏 ReceiveMessage 读到 FocusStateChanged(15)、GetCurrentFocusState = OutOfFocus(2)；回前台 → 15 + ChangeIntoForeground(1)、InFocus(1)
-    //   ③ 平台壳切主机 → OperationModeChanged(30) + PerformanceModeChanged(31)；游戏先关了操作模式通知 → 只有 31
+    //   ② 平台壳报失焦 → 游戏 ReceiveMessage 读到 FocusStateChanged(15)、GetCurrentFocusState = OutOfFocus(2)；回前台 → 只有 15、InFocus(1)（应用程序不收 ChangeIntoForeground，Eden lifecycle_manager）
+    //   ③ 平台壳切主机 / 掌机档 → PerformanceModeChanged(31)，游戏看到的运行模式变了才加 OperationModeChanged(30)；本地多人（实接 ≥ 2 只手柄）运行模式回主机、性能 / 显示照档位
     //   ④ psc:m 模块初始化后 GetRequest = FullAwake(0)；平台壳报睡眠 → 事件点亮、GetRequest = SleepReady(2)；Acknowledge 后回 FullAwake
     //   ⑤⑥⑦ 焦点处理模式（P2-37）：第一个标志关通知、第三个标志与失焦暂停合成 am 的三种模式（参照 libnx appletSetFocusHandlingMode 与 yuzu 系 LifecycleManager）
     //   ⑧ psc 确认看状态（P2-38）：状态与队首不符失败且不出队，没初始化回 NotInitialized；
@@ -42,7 +42,11 @@ namespace S2A.Services.Tests
                 return string.Join(",", got);
             }
             byte Focus() => *Domain(Msg.Cmif(9), common).Data;      // GetCurrentFocusState
-            Drain();   // 起局时的 InFocus + ChangeIntoForeground
+            byte Operation() => *Domain(Msg.Cmif(5), common).Data;
+            uint Performance() => *(uint*)Domain(Msg.Cmif(6), common).Data;
+            uint Height() => ((uint*)Domain(Msg.Cmif(60), common).Data)[1];
+            system.ChangeDockedModeState(false);
+            Drain();   // 起局时的焦点消息
 
             Domain(Msg.Cmif(16, Bytes((byte)0)), self);            // SetOutOfFocusSuspendingEnabled(false)
             Check("① 游戏关失焦暂停 → 原生层收到", "0", $"{_lcSuspendSeen}");
@@ -50,7 +54,7 @@ namespace S2A.Services.Tests
             _lcFocus = 0; Lifecycle.Tick(system);
             Check("② 失焦 → 消息 / 焦点状态", "15 / 2", $"{Drain()} / {Focus()}");
             _lcFocus = 1; Lifecycle.Tick(system);
-            Check("② 回前台 → 消息 / 焦点状态", "15,1 / 1", $"{Drain()} / {Focus()}");
+            Check("② 回前台 → 消息 / 焦点状态", "15 / 1", $"{Drain()} / {Focus()}");
 
             // P2-37 焦点处理模式按 am 语义生效（libnx appletSetFocusHandlingMode 的四种组合，SetFocusHandlingMode 后跟 SetOutOfFocusSuspendingEnabled）：
             //   ⑤ SuspendHomeSleep = (0,0,1) + 失焦暂停 0：不冻结、失焦焦点状态照变，但第一个标志（通知）关 → 没有焦点消息
@@ -76,13 +80,30 @@ namespace S2A.Services.Tests
             _lcFocus = 0; Lifecycle.Tick(system);
             Check("⑦ NoSuspend 失焦 → 消息 / 焦点状态", "15 / 2", $"{Drain()} / {Focus()}");
             _lcFocus = 1; Lifecycle.Tick(system);
-            Check("⑦ NoSuspend 回前台 → 消息 / 焦点状态", "15,1 / 1", $"{Drain()} / {Focus()}");
+            Check("⑦ NoSuspend 回前台 → 消息 / 焦点状态", "15 / 1", $"{Drain()} / {Focus()}");
 
+            string St() => $"{Drain()} / {Operation()} / {Performance()} / {Height()}";   // 消息 / 运行模式 / 性能模式 / 显示高度
+            Check("③ 掌机档 → 运行模式 / 性能模式 / 显示高度", "0 / 0 / 720", $"{Operation()} / {Performance()} / {Height()}");
             _lcMode = 1; Lifecycle.Tick(system);
-            Check("③ 切主机 → 消息", "30,31", Drain());
-            Domain(Msg.Cmif(11, Bytes((byte)0)), self);            // SetOperationModeChangedNotification(false)
+            Check("③ 切主机档 → 消息 / 运行模式 / 性能模式 / 显示高度", "30,31 / 1 / 1 / 1080", St());
+            system.S2ASetLocalMultiplayer(true);
+            Check("③ 主机档下接上第二只手柄 → 运行模式本就是主机，不发消息", " / 1 / 1 / 1080", St());
             _lcMode = 0; Lifecycle.Tick(system);
-            Check("③ 游戏关了操作模式通知后切掌机 → 消息", "31", Drain());
+            Check("③ 本地多人时切掌机档 → 只发性能模式，运行模式仍是主机、显示 720", "31 / 1 / 0 / 720", St());
+            system.S2ASetLocalMultiplayer(false);
+            Check("③ 拔掉第二只手柄（掌机档）→ 运行模式回掌机、发运行模式消息", "30 / 0 / 0 / 720", St());
+            system.S2ASetLocalMultiplayer(true);
+            Check("③ 掌机档接上第二只手柄 → 运行模式主机、性能 / 显示不变（两人模式要求 TV 模式的游戏能进）", "30 / 1 / 0 / 720", St());
+            system.S2ASetLocalMultiplayer(true);
+            Check("③ 同样两只、再报一次 → 不重复发消息", " / 1 / 0 / 720", St());
+            system.S2ASetLocalMultiplayer(false); Drain();
+            Domain(Msg.Cmif(11, Bytes((byte)0)), self);            // SetOperationModeChangedNotification(false)
+            system.S2ASetLocalMultiplayer(true);
+            Check("③ 游戏关了运行模式通知后接上第二只 → 不发消息、运行模式照变", " / 1 / 0 / 720", St());
+            system.S2ASetLocalMultiplayer(false);
+            _lcMode = 1; Lifecycle.Tick(system); Drain();
+            _lcMode = 0; Lifecycle.Tick(system);
+            Check("③ 游戏关了运行模式通知后切掌机档 → 只发性能模式", "31 / 0 / 0 / 720", St());
 
             Reply pm = Call(sm, Msg.Cmif(1, Name8("psc:m")));
             uint pms = pm.Move.Count == 1 ? pm.Move[0] : 0;

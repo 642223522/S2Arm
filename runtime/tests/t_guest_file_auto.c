@@ -9,7 +9,7 @@
 #include "../src/native.h"
 int s2a_guest_file_wanted2(const char *e, uint64_t pool, uint64_t room, uint64_t host, uint64_t margin);   // vawin.c（不进 native.h：抽取阶段键）
 int s2a_guest_file_wanted3(const char *e, uint64_t pool, uint64_t room, uint64_t seen, uint64_t host, uint64_t margin);
-uint64_t s2a_guest_mem_seen(void); void s2a_guest_mem_note(uint64_t footprint);
+uint64_t s2a_guest_mem_seen(void); void s2a_guest_mem_note(uint64_t footprint); const char *s2a_guest_mem_settle(int died, uint64_t room, uint64_t margin);
 int s2a_guest_file_wanted5(const char *e, uint64_t room, uint64_t seen, uint64_t margin, int died); int s2a_guest_file_wanted6(const char *e, uint64_t pool, uint64_t room, uint64_t phys, uint64_t seen, uint64_t host, uint64_t margin, int died, int *low); int s2a_guest_run_died(void); void s2a_guest_run_mark(int running);
 int s2a_guest_file_wanted_mac(const char *e, uint64_t pool, uint64_t room, int pressed); int s2a_guest_pressure_seen(void); void s2a_guest_pressure_note(void);   // #306 Mac 判定与压力记录
 #include <stdio.h>
@@ -47,11 +47,37 @@ int main(void) {
     CHECK(s2a_guest_file_wanted3(NULL, S1, 4096 * MB, 0, H2, G) == 1, "⑳ 小内存机型剩余 4096、没实测：3285 + 2048 + 512 > 4096：开");
     CHECK(s2a_guest_file_wanted3(NULL, S1, 4096 * MB, 3000 * MB, H2, G) == 0, "㉑ 剩余 4096、实测 3000 + 512 = 3512 ≤ 4096：关");
     CHECK(s2a_guest_file_wanted3(NULL, S1, R, R - G, H2, G) == 0 && s2a_guest_file_wanted3(NULL, S1, R, R - G + 1, H2, G) == 1, "㉒ 边界：实测 + 余量 = 剩余 关，多 1 字节 开");
-    {   // ㉓ 记录：只增不减、读回一致（临时文件，S2A_GUEST_MEM_PEAK 指定路径）
-        char path[] = "/tmp/t_gmem_peak_XXXXXX"; int fd = mkstemp(path); close(fd); unlink(path); setenv("S2A_GUEST_MEM_PEAK", path, 1);
-        uint64_t a0 = s2a_guest_mem_seen(); s2a_guest_mem_note(900 * MB); uint64_t a1 = s2a_guest_mem_seen(); s2a_guest_mem_note(700 * MB); uint64_t a2 = s2a_guest_mem_seen(); s2a_guest_mem_note(1200 * MB); uint64_t a3 = s2a_guest_mem_seen();
-        CHECK(a0 == 0 && a1 == 900 * MB && a2 == 900 * MB && a3 == 1200 * MB, "㉓ 实测峰值记录：没有 0 → 900 → 700 不降 → 1200（得 %llu / %llu / %llu / %llu MB）", a0 >> 20, a1 >> 20, a2 >> 20, a3 >> 20);
-        unlink(path); unsetenv("S2A_GUEST_MEM_PEAK");
+    {   // ㉓ 每局记需求、起局按上一局结算（#1634 11-19：原「只增不减 + 文件后备局不记」一局异常就永远判开）。期望按规则手写（余量 512、剩余 6141）：
+        //   a 没记录、本局心跳记 900 / 700 → 本局文件「900 MB 2 次 匿名」；结算（短局）→ 记录 900
+        //   b 记录 5835、上一局开文件后备够长（40 次）需求 4300 → 换成 4300（往下改：#1634 帖主那种一局异常就纠正）
+        //   c 记录 4300、上一局太短（5 次）需求 2000 → 不降，4300
+        //   d 记录 4300、上一局前台死掉、需求 6000（+1024 > 6141，像撞上限）→ 6000、记「死过」
+        //   e 记录 6000 死过、上一局开文件后备够长需求 4000 → 不降，6000 死过（文件后备局在内存紧的机器上量小了，不许往下改）
+        //   f 记录 6000 死过、上一局匿名够长需求 3000 → 3000、不再「死过」
+        //   g 记录 3000、上一局前台死掉但需求 2500（+1024 ≤ 6141，不是内存杀的）、够长 → 2500
+        //   反证：够长那支改回取大（只增不减）→ b 红
+        const char *(*settle)(int, uint64_t, uint64_t) = s2a_guest_mem_settle;
+        char pk[] = "/tmp/t_gmem_peak_XXXXXX", rk[] = "/tmp/t_gmem_run_XXXXXX"; int fd = mkstemp(pk); close(fd); unlink(pk); fd = mkstemp(rk); close(fd); unlink(rk);
+        setenv("S2A_GUEST_MEM_PEAK", pk, 1); setenv("S2A_GUEST_MEM_PEAK_RUN", rk, 1);
+        #define PUT(path, ...) do { FILE *f_ = fopen(path, "w"); fprintf(f_, __VA_ARGS__); fclose(f_); } while (0)
+        uint64_t a0 = s2a_guest_mem_seen(); s2a_guest_mem_note(900 * MB); s2a_guest_mem_note(700 * MB);
+        unsigned long long rn = 0, rb = 0; int rf = -1; { FILE *f = fopen(rk, "r"); if (f) { if (fscanf(f, "%llu %llu %d", &rn, &rb, &rf) != 3) rn = 0; fclose(f); } }
+        settle(0, R, G); uint64_t a1 = s2a_guest_mem_seen(); int gone = access(rk, F_OK) != 0;
+        CHECK(a0 == 0 && rn == 900 * MB && rb == 2 && rf == 0 && a1 == 900 * MB && gone, "㉓a 本局文件 %llu MB / %llu 次 / 文件后备 %d（期望 900 / 2 / 0），结算后记录 %llu MB（期望 900）、本局文件删掉 %d", rn >> 20, rb, rf, a1 >> 20, gone);
+        PUT(pk, "%llu\n", 5835 * MB); PUT(rk, "%llu 40 1\n", 4300 * MB); settle(0, R, G);
+        CHECK(s2a_guest_mem_seen() == 4300 * MB, "㉓b 记录 5835、上一局文件后备够长需求 4300：记录 %llu MB（期望 4300，往下改）", s2a_guest_mem_seen() >> 20);
+        PUT(rk, "%llu 5 0\n", 2000 * MB); settle(0, R, G);
+        CHECK(s2a_guest_mem_seen() == 4300 * MB, "㉓c 上一局太短需求 2000：记录 %llu MB（期望 4300，不降）", s2a_guest_mem_seen() >> 20);
+        PUT(rk, "%llu 3 0\n", 6000 * MB); settle(1, R, G); char w[32] = {0}; { FILE *f = fopen(pk, "r"); if (f) { unsigned long long v; if (fscanf(f, "%llu %31s", &v, w) < 1) w[0] = 0; fclose(f); } }
+        CHECK(s2a_guest_mem_seen() == 6000 * MB && !strcmp(w, "died"), "㉓d 前台死掉需求 6000（逼近上限）：记录 %llu MB（期望 6000）、标记「%s」（期望 died）", s2a_guest_mem_seen() >> 20, w);
+        PUT(rk, "%llu 40 1\n", 4000 * MB); settle(0, R, G);
+        CHECK(s2a_guest_mem_seen() == 6000 * MB, "㉓e 死过的记录、上一局文件后备够长需求 4000：记录 %llu MB（期望 6000，不降）", s2a_guest_mem_seen() >> 20);
+        PUT(rk, "%llu 40 0\n", 3000 * MB); settle(0, R, G); w[0] = 0; { FILE *f = fopen(pk, "r"); if (f) { unsigned long long v; if (fscanf(f, "%llu %31s", &v, w) < 1) w[0] = 0; fclose(f); } }
+        CHECK(s2a_guest_mem_seen() == 3000 * MB && !w[0], "㉓f 死过的记录、上一局匿名够长需求 3000：记录 %llu MB（期望 3000）、不再死过 %d", s2a_guest_mem_seen() >> 20, !w[0]);
+        PUT(rk, "%llu 40 0\n", 2500 * MB); settle(1, R, G);
+        CHECK(s2a_guest_mem_seen() == 2500 * MB, "㉓g 前台死掉但需求 2500 离上限远、够长：记录 %llu MB（期望 2500）", s2a_guest_mem_seen() >> 20);
+        #undef PUT
+        unlink(pk); unlink(rk); unsetenv("S2A_GUEST_MEM_PEAK"); unsetenv("S2A_GUEST_MEM_PEAK_RUN");
     }
     // 11-07 安全阀（11-13 起 s2a_guest_file_wanted5，died = 上一局在前台死掉）：期望按规则手写
     CHECK(s2a_guest_file_wanted5(NULL, R, 0, G, 1) == 1, "㉔ 首局判关、上局在前台死掉（标记还在）：强制开");
@@ -120,6 +146,15 @@ int main(void) {
       CHECK(s2a_guest_file_wanted6(NULL, S2, RP, PI, 0, H2, G, 1, &low) == 1 && s2a_guest_file_wanted6(NULL, S2, RP, PI, UINT64_MAX, H2, G, 0, &low) == 1, "51 上局在前台死掉 / 坏记录：开（物理内存不够也开，安全阀）");
       CHECK(s2a_guest_file_wanted6(NULL, S2, RP, PD, 2118 * MB, H2, G, 0, &low) == 0 && s2a_guest_file_wanted6(NULL, S2, RP, PD, 7800 * MB, H2, G, 0, &low) == 1, "52 有实测按实测：2118 关、7800 开（同 ㊵ ㊶）");
       CHECK(s2a_guest_file_wanted6(NULL, S2, 0, PD, 0, H2, G, 1, &low) == 0, "53 Mac（room 0）：关");
+      // #2f79dd 安全阀收窄（D-C73M 6 GB iPhone 读数）：上局前台死掉，但本款实测 + 两份余量 ≤ 剩余 → 不强制开、按实测判关；期望手算：
+      //   2372 + 2×512 = 3396 ≤ 4093 → 关；2600 + 1024 = 3624 ≤ 4093 → 关；3100 + 1024 = 4124 > 4093 → 开（那次可能真超上限、心跳漏记）；
+      //   没实测（0）→ 开（守 51）；实测本身 + 一份余量就超（3700 + 512 > 4093）→ 开
+      CHECK(s2a_guest_file_wanted6(NULL, S1, 4093 * MB, 5667 * MB, 2372 * MB, H2, G, 1, &low) == 0, "55 上局前台死掉、实测 2372 + 1024 ≤ 剩余 4093：关（不是超上限，D-C73M）");
+      CHECK(s2a_guest_file_wanted6(NULL, S1, 4093 * MB, 5667 * MB, 3069 * MB, H2, G, 1, &low) == 0 && s2a_guest_file_wanted6(NULL, S1, 4093 * MB, 5667 * MB, 3070 * MB, H2, G, 1, &low) == 1,
+            "56 边界：3069 + 1024 = 4093 ≤ 4093 关、3070 + 1024 = 4094 > 4093 开");
+      CHECK(s2a_guest_file_wanted6(NULL, S1, 4093 * MB, 5667 * MB, 0, H2, G, 1, &low) == 1, "57 上局前台死掉、没实测：开（安全阀原意）");
+      CHECK(s2a_guest_file_wanted6(NULL, S1, 4093 * MB, 5667 * MB, 3700 * MB, H2, G, 1, &low) == 1 && s2a_guest_file_wanted6(NULL, S1, 4093 * MB, 5667 * MB, 3700 * MB, H2, G, 0, &low) == 1,
+            "58 实测 3700 + 512 > 4093：死没死都开");
       CHECK(s2a_guest_file_wanted6("1", S1, RP, PI, 0, H2, G, 0, &low) == 1 && s2a_guest_file_wanted6("0", S2, R, PD, 0, H2, G, 1, &low) == 0, "54 显式 1 / 0 压过一切"); }
     printf("%s t_guest_file_auto：%d 项不符\n", bad ? "✗" : "✓", bad);
     return bad != 0;

@@ -8,7 +8,7 @@ DN=${DOTNET:-$HOME/.dotnet/dotnet}
 [ -x "$DN" ] || { echo "缺少可执行 .NET：$DN" >&2; exit 2; }
 mkdir -p "$OUT"
 make -s -C "$ROOT/graphics/metal" "$ROOT/build/gal/libnxgal.dylib"
-"$DN" publish "$HERE/Session.csproj" -c Release -r osx-arm64 --self-contained -p:PublishAot=true \
+bash "$ROOT/tools/cs_cache.sh" "$OUT/official-art" "$OUT/official-bin" "$OUT/official" "$HERE/Session.csproj" -- "$DN" publish "$HERE/Session.csproj" -c Release -r osx-arm64 --self-contained -p:PublishAot=true \
     --artifacts-path "$OUT/official-art" -p:OutDir="$OUT/official-bin/" -o "$OUT/official" -v:q -nologo > "$OUT/build.log" 2>&1
 export NXGAL_LIB="$ROOT/build/gal/libnxgal.dylib"
 timeout 90 "$OUT/official/Session" --native-create > "$OUT/run.log" 2>&1

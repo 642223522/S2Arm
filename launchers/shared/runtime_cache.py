@@ -15,10 +15,11 @@ import urllib.request
 FILES = {
     "python-3.12.10-embed-amd64.zip": ("https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip",
                                        "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3"),
-    "MinGit-2.54.0-64-bit.zip": ("https://github.com/git-for-windows/git/releases/download/v2.54.0.windows.1/MinGit-2.54.0-64-bit.zip",
-                                 "04f937e1f0918b17b9be6f2294cb2bb66e96e1d9832d1c298e2de088a1d0e668"),
     "zstd-v1.5.7-LICENSE": ("https://raw.githubusercontent.com/facebook/zstd/v1.5.7/LICENSE",
                             "7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8"),
+    # MacPorts 的 bash 包不带 COPYING 原文；非 Homebrew 出包机按钉版 SPDX 文本补进 Runtime/licenses
+    "GPL-3.0.txt": ("https://raw.githubusercontent.com/spdx/license-list-data/main/text/GPL-3.0-only.txt",
+                    "fb981668c18a279e285fc4d83fba1e836cc84dd4daa73c9697d3cfd2d8aca6e0"),
 }
 WHEELS = {
     "win_amd64": {
@@ -34,6 +35,13 @@ WHEELS = {
         "numpy==2.4.2": ("numpy-2.4.2-cp312-cp312-macosx_14_0_arm64.whl", "b3a24467af63c67829bfaa61eecf18d5432d4f11992688537be59ecd6ad32f5e"),
         "Pillow==12.3.0": ("pillow-12.3.0-cp312-cp312-macosx_11_0_arm64.whl", "ffd0c5368496f41b0944be820fcb7a838aa6e623d250b01acf2643939c3f99d7"),
         "zstandard==0.25.0": ("zstandard-0.25.0-cp312-cp312-macosx_11_0_arm64.whl", "913cbd31a400febff93b564a23e17c3ed2d56c064006f54efec210d586171c00"),
+    },
+    "macos_x64": {
+        "capstone==5.0.7": ("capstone-5.0.7-py3-none-macosx_10_9_x86_64.whl", "a9f64e3d75d8c4d7b3d26bba153b2992aadcf6b8d57674b4ef176b4ecdd9822f"),
+        "lz4==4.4.5": ("lz4-4.4.5-cp312-cp312-macosx_10_13_x86_64.whl", "df5aa4cead2044bab83e0ebae56e0944cc7fcc1505c7787e9e1057d6d549897e"),
+        "numpy==2.4.2": ("numpy-2.4.2-cp312-cp312-macosx_14_0_x86_64.whl", "805cc8de9fd6e7a22da5aed858e0ab16be5a4db6c873dde1d7451c541553aa27"),
+        "Pillow==12.3.0": ("pillow-12.3.0-cp312-cp312-macosx_10_13_x86_64.whl", "ba09209fbe443b4acccebe845d8a138b89a8f4fbaeedd44953490b5315d5e965"),
+        "zstandard==0.25.0": ("zstandard-0.25.0-cp312-cp312-macosx_10_13_x86_64.whl", "7b3c3a3ab9daa3eed242d6ecceead93aebbb8f5f84318d82cee643e019c4b73b"),
     },
 }
 

@@ -165,7 +165,7 @@ class DebugAppAdmissionTest(unittest.TestCase):
             (root / 'DebugAppProbe.java').write_text(PROBE)
             (root / 'ImportGuard.java').write_text(wrapper)
             classes = ['Json', 'BootContract', 'BootSpec', 'ProcessBirth', 'RuntimeLibrary',
-                       'GamePack', 'GameFingerprint', 'GameStorage', 'GameInstall', 'GameSession', 'GameResume']
+                       'GamePack', 'GameFingerprint', 'GameStorage', 'GameInstall', 'ImportReceiver', 'GameSession', 'GameResume']
             sources = [JAVA / (x + '.java') for x in classes]
             sources += [ANDROID / 'tests/GameSessionAdmissionTest.java', root / 'ImportGuard.java', root / 'DebugAppProbe.java']
             # Host-only Android logging seam; admission/import decisions stay production code.

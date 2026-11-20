@@ -37,6 +37,7 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "nvn/nvn_vk_program_result.h"
@@ -460,7 +461,27 @@ static void case_reads_reject_non_array(void) {
     }
 }
 
+// 共享内存溢出缓冲（kind = spill，编译器 DirectSharedSpill）：每线程组字节数进程序对象；没有客体槽；形状不对如实拒
+static void case_spill(void) {
+    group("[S] 共享内存溢出缓冲 spill 绑定");
+    struct nvn_vk_compute_program p;
+    if (accept_case("[S1] spill 40960 字节 / 组", "{\"stage\":\"cs\",\"kind\":\"spill\",\"set\":1,\"binding\":0,\"count\":1,\"bytesPerGroup\":40960}", "[]", "[]", &p) == 0) {
+        ck_u32("[S1] spill_bytes", p.spill_bytes, 40960);
+        ck_u32("[S1] binding kind 4", (uint32_t)p.bindings[0].kind, 4);
+        nvn_vk_program_free_compute(&p);
+    }
+    if (accept_case("[S2] 没有 spill 绑定", "", "[]", "[]", &p) == 0) { ck_u32("[S2] spill_bytes 为 0", p.spill_bytes, 0); nvn_vk_program_free_compute(&p); }
+    reject_case("[S3] spill 缺 bytesPerGroup", "{\"stage\":\"cs\",\"kind\":\"spill\",\"set\":1,\"binding\":0,\"count\":1}", "[]", "[]", "bytesPerGroup");
+    reject_case("[S4] spill bytesPerGroup 不是 4 的倍数", "{\"stage\":\"cs\",\"kind\":\"spill\",\"set\":1,\"binding\":0,\"count\":1,\"bytesPerGroup\":40962}", "[]", "[]", "bytesPerGroup");
+    reject_case("[S5] spill 超过 48 KiB", "{\"stage\":\"cs\",\"kind\":\"spill\",\"set\":1,\"binding\":0,\"count\":1,\"bytesPerGroup\":49156}", "[]", "[]", "bytesPerGroup");
+    reject_case("[S6] 两个 spill", "{\"stage\":\"cs\",\"kind\":\"spill\",\"set\":1,\"binding\":0,\"count\":1,\"bytesPerGroup\":4},"
+                "{\"stage\":\"cs\",\"kind\":\"spill\",\"set\":1,\"binding\":1,\"count\":1,\"bytesPerGroup\":4}", "[]", "[]", "more than one spill");
+    reject_case("[S7] spill 带客体槽", "{\"stage\":\"cs\",\"kind\":\"spill\",\"set\":1,\"binding\":0,\"count\":1,\"slot\":0,\"bytesPerGroup\":4}", "[]", "[]", "guest slot");
+    reject_case("[S8] 非 spill 绑定带 bytesPerGroup", "{\"stage\":\"cs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"slot\":8,\"count\":1,\"bytesPerGroup\":4}", "[]", "[]", "bytesPerGroup");
+}
+
 int main(void) {
+    case_spill();
     case_accept_nvn();
     case_accept_ubo_ptr();
     case_accept_ubo_address();
@@ -487,6 +508,92 @@ int main(void) {
         int rc = nvn_vk_program_parse_compute((const uint8_t *)json, (size_t)n, &p, why, sizeof why);
         ck_true("compute v2 separate maximum slots", rc == 0 && p.binding_count == 1 && p.bindings[0].tex_slot == 255 && p.bindings[0].samp_slot == 127, why);
         nvn_vk_program_free_compute(&p);
+    }
+
+    // #1594：类型 3 句柄（常量采样器）计算侧没接。带 constSampler 的 cs 贴图绑定必须具名拒绝——不能被当成「没有 samp_slot = 采样器取同字高位」
+    //   而绑成错的采样器（宿主的计算回放不认这个来源）。v1 / v2 结果都一样；没有这个字段的同槽绑定照旧接受（见上面直接读 c2 分离贴图表的字）。
+    for (int v = 1; v <= 2; ++v) {
+        static const char *const fields[] = {"\"slot\":90,\"constSampler\":257", "\"slot\":344,\"constSampler\":0", "\"slot\":90,\"constSampler\":4096", "\"constSampler\":3",
+                                             "\"uboSlot\":2,\"uboOffset\":160,\"constSampler\":260"};   // 片 3：游戏 UBO 里的贴图字（图形侧接了，计算侧不接）
+        for (unsigned k = 0; k < sizeof fields / sizeof fields[0]; k++) {
+            char json[4096], why[192] = ""; struct nvn_vk_compute_program p;
+            int n = snprintf(json, sizeof json,
+                "{\"schema\":\"s2a-direct-program-v%d\",\"content\":{"
+                "\"contract\":\"s2a-direct-program-content-v%d\",\"kind\":\"compute\","
+                "\"hasUnalignedStorageBuffer\":false,\"c0Reads\":[],"
+                "\"stages\":[{\"stage\":\"cs\",\"spirv\":\"%s\"}],"
+                "\"bindings\":[{\"stage\":\"cs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,%s,\"count\":1}],"
+                "\"supportLayout\":{\"requiredSize\":2608},\"supportReads\":[]}}", v, v, S2A_TEST_COMP_1, fields[k]);
+            memset(&p, 0, sizeof p);
+            int rc = nvn_vk_program_parse_compute((const uint8_t *)json, (size_t)n, &p, why, sizeof why);
+            char what[96]; snprintf(what, sizeof what, "compute v%d constant sampler form %u is rejected by name", v, k);
+            ck_true(what, rc != 0 && strstr(why, "constant sampler"), why);
+            nvn_vk_program_free_compute(&p);
+        }
+    }
+
+    // 计算结果是「程序」级文档：超过 1 MiB（描述文件上限）的合法结果要接；超过程序结果上限（64 MiB，同跨局缓存单条）的拒，原因带大小
+    {
+        static const uint8_t head[20] = {0x03, 0x02, 0x23, 0x07, 0x00, 0x01, 0x03, 0x00, 0, 0, 0, 0, 0x01, 0, 0, 0, 0, 0, 0, 0};
+        const size_t spv_bytes = (size_t)3 << 19;   // 1.5 MiB 的 SPIR-V（头 + 0 字；解析器只核头与对齐）
+        uint8_t *spv = calloc(1, spv_bytes); memcpy(spv, head, sizeof head);
+        static const char t64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        size_t b64n = (spv_bytes + 2) / 3 * 4; char *b64 = malloc(b64n + 1), *q = b64;
+        for (size_t i = 0; i < spv_bytes; i += 3) {
+            uint32_t v = (uint32_t)spv[i] << 16 | (i + 1 < spv_bytes ? (uint32_t)spv[i + 1] << 8 : 0) | (i + 2 < spv_bytes ? spv[i + 2] : 0);
+            *q++ = t64[v >> 18 & 63]; *q++ = t64[v >> 12 & 63]; *q++ = i + 1 < spv_bytes ? t64[v >> 6 & 63] : '='; *q++ = i + 2 < spv_bytes ? t64[v & 63] : '=';
+        }
+        *q = 0;
+        size_t cap = b64n + 1024; char *json = malloc(cap), why[192] = ""; struct nvn_vk_compute_program p;
+        int n = snprintf(json, cap,
+            "{\"schema\":\"s2a-direct-program-v1\",\"content\":{"
+            "\"contract\":\"s2a-direct-program-content-v1\",\"kind\":\"compute\","
+            "\"hasUnalignedStorageBuffer\":false,\"c0Reads\":[],"
+            "\"stages\":[{\"stage\":\"cs\",\"spirv\":\"%s\"}],\"bindings\":[],"
+            "\"supportLayout\":{\"requiredSize\":2608},\"supportReads\":[]}}", b64);
+        int rc = nvn_vk_program_parse_compute((const uint8_t *)json, (size_t)n, &p, why, sizeof why);
+        ck_true("compute result larger than 1 MiB is accepted", n > (1 << 20) && rc == 0 && p.stage.spirv_bytes == spv_bytes, why);
+        if (rc == 0) nvn_vk_program_free_compute(&p);
+        free(json); free(b64); free(spv);
+        size_t over = (size_t)NVK_PROGRAM_RESULT_MAX_BYTES + 1;
+        char *big = malloc(over); memset(big, ' ', over); big[0] = '{'; big[over - 1] = '}';
+        why[0] = 0;
+        rc = nvn_vk_program_parse_compute((const uint8_t *)big, over, &p, why, sizeof why);
+        char want[64]; snprintf(want, sizeof want, "%zu bytes", over);
+        ck_true("compute result over the program limit is rejected with its size", rc != 0 && strstr(why, want) && strstr(why, "larger than"), why);
+        free(big);
+    }
+
+    // 立即句柄直接读 c2 分离贴图表的字（空轨 2nd 9000：cs 也有）：slot 90..344 偶、无 samp_slot → 分离贴图槽 128 + k；表外 / 奇字照旧拒
+    {
+        static const struct { int slot, ok, want; } sep[] = {{90, 1, 128}, {344, 1, 255}, {92, 1, 129}, {91, 0, 0}, {346, 0, 0}, {88, 0, 0}};
+        for (unsigned k = 0; k < sizeof sep / sizeof sep[0]; k++) {
+            char b[160], why[192] = ""; struct nvn_vk_compute_program p;
+            snprintf(b, sizeof b, "{\"stage\":\"cs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"slot\":%d,\"count\":1}", sep[k].slot);
+            int rc = parse_case(b, "[]", "[]", &p, why, sizeof why);
+            checks++;
+            if (sep[k].ok && !(rc == 0 && p.binding_count == 1 && p.bindings[0].tex_slot == sep[k].want && p.bindings[0].samp_slot == -1))
+                failf("compute direct separate texture", "slot %d 期望 接受、分离贴图槽 %d，真结果 rc=%d why=%s", sep[k].slot, sep[k].want, rc, why);
+            if (!sep[k].ok && !(rc != 0 && strstr(why, "compute texture slot outside recorded range")))
+                failf("compute direct separate texture", "slot %d 期望 拒绝，真结果 rc=%d why=%s", sep[k].slot, rc, why);
+            nvn_vk_program_free_compute(&p);
+        }
+    }
+
+    // 按贴图采样 c2 图像句柄表的字（空轨 2nd compute_atmosphere_scatter：slot 72）：72..86 偶、无 samp_slot → 贴图槽 32 + k（同 iOS tex_slot_h）；奇字、表外照旧拒
+    {
+        static const struct { int slot, ok, want; } it[] = {{72, 1, 32}, {74, 1, 33}, {86, 1, 39}, {73, 0, 0}, {88, 0, 0}};
+        for (unsigned k = 0; k < sizeof it / sizeof it[0]; k++) {
+            char b[160], why[192] = ""; struct nvn_vk_compute_program p;
+            snprintf(b, sizeof b, "{\"stage\":\"cs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"slot\":%d,\"count\":1}", it[k].slot);
+            int rc = parse_case(b, "[]", "[]", &p, why, sizeof why);
+            checks++;
+            if (it[k].ok && !(rc == 0 && p.binding_count == 1 && p.bindings[0].tex_slot == it[k].want && p.bindings[0].samp_slot == -1))
+                failf("compute texture from image table", "slot %d 期望 接受、贴图槽 %d，真结果 rc=%d why=%s tex_slot=%d", it[k].slot, it[k].want, rc, why, rc == 0 ? p.bindings[0].tex_slot : -99);
+            if (!it[k].ok && !(rc != 0 && strstr(why, "compute texture slot outside recorded range")))
+                failf("compute texture from image table", "slot %d 期望 拒绝，真结果 rc=%d why=%s", it[k].slot, rc, why);
+            nvn_vk_program_free_compute(&p);
+        }
     }
 
     // 计算阶段的图像：handleIndex 72..86 偶数 = 驱动 c2 图像句柄表第 0..7 槽（同 iOS C2_IMG），槽号 = (handleIndex−72)/2；表外拒绝并报 handleIndex

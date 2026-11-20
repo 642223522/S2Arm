@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 S2Arm contributors
 NATIVE_TEST_OWN += nvn_rc_pending
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 NVN_RC_SOURCE ?= graphics/nvn/gfx/nvn/nvn_mtl.m
 NVN_RC_BINARY ?= $(BUILD)/tests/t_nvn_rc_pending
 $(NVN_RC_BINARY): graphics/nvn/tests/t_nvn_rc_pending.m $(NVN_RC_SOURCE) $(NVN_MTL_DEPS) $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)

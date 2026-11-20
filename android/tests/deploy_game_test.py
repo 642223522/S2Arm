@@ -9,9 +9,11 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import socket
 import struct
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -23,54 +25,91 @@ import game_apk
 TITLE = '0100000000ABCDEF'
 
 
-class _FakeProc:
-    """push_tree 的 Popen 替身：即时完成、空输出。"""
-    def __init__(self):
-        self.returncode = 0
-        self.stdout = io.StringIO('')
-
-    def poll(self):
-        return self.returncode
-
-    def kill(self):
-        self.returncode = -9
-
-
 class FakeAdb:
+    """模拟 adb；forward 时在本机起一个假的 App 接收端（照 ImportReceiver.java 的协议），收下的文件记在 received。"""
     serial = 'test-device'
 
-    def __init__(self, wrong_hash=False, refused=False, stale_start=False, slow_import=False):
+    def __init__(self, wrong_hash=False, refused=False, stale_start=False, slow_import=False,
+                 receive_reply=None, drop_first=0):
         self.calls = []
         self.wrong_hash, self.refused, self.stale_start = wrong_hash, refused, stale_start
         self.slow_import = slow_import   # 导入一直没做完：logcat 里没有成功行
+        self.receive_reply = receive_reply   # 非空：接收端回这一行（如 ERR …）而不是 OK
+        self.drop_first = drop_first         # 前几次连接一接上就断（设备端还没监听时 adb forward 的样子）
         self.started = False
         self.receipt = None   # (contentRoot, artifactSha256)：App 导入成功时在 logcat 打的回执（正式包读不了 current.json）
+        self.received, self.name, self.connects = {}, None, 0
+        self.digest = None    # 机上没装：真 adb 的 installed_hash 此时抛 RuntimeError（pm path 为空）
+        self.remote = {}      # 设备共享存储上已有文件的 SHA-256（路径 → 摘要），sha256sum 照它答
+        self.in_place = None  # App 收到的原地登记请求路径
+        self.in_place_refused = False
 
-    def call(self, *args, timeout=600):   # 与 deploy_game.Adb.call 同签名：tar 推送单独传超时
+    def _serve(self, server):
+        while True:
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                return
+            with conn:
+                self.connects += 1
+                if self.connects <= self.drop_first:
+                    continue
+                f = conn.makefile('rb')
+                conn.sendall(b'READY 1\n')
+                head = f.readline().decode().rstrip('\n').split(' ', 2)
+                if head[0] == 'S2A-INPLACE':
+                    self.in_place = head[2]
+                    conn.sendall(b'OK in-place\n')
+                    continue
+                self.name = head[2]
+                while True:
+                    line = f.readline().decode().rstrip('\n')
+                    if line == 'END':
+                        break
+                    _, size, path = line.split(' ', 2)
+                    self.received[path] = f.read(int(size))
+                conn.sendall(((self.receive_reply or f'OK {len(self.received)} 0') + '\n').encode())
+
+    def call(self, *args, timeout=600):
         self.calls.append(args)
-        if args[0] == 'push': self.push_timeout = timeout
         if args[0] == 'install':
             self.digest = game_apk.sha256(args[-1])
+        if args[:2] == ('forward', 'tcp:0'):
+            server = socket.socket(); server.bind(('127.0.0.1', 0)); server.listen(4)
+            self.server = server
+            threading.Thread(target=self._serve, args=(server,), daemon=True).start()
+            return f'{server.getsockname()[1]}\n'
+        if args[:2] == ('forward', '--remove'):
+            self.server.close()
         return 'Success'
-
-    def popen(self, *args):   # 整树推送走 adb.popen（轮询进度+到点杀进程）；记进 calls 供断言
-        self.calls.append(args)
-        return _FakeProc()
 
     def running(self, package):
         return False
 
     def installed_hash(self, package):
-        return '0' * 64 if self.wrong_hash else self.digest
+        if self.wrong_hash:
+            return '0' * 64
+        if self.digest is None:
+            raise RuntimeError('需要单体 APK；无法确定已安装 base APK 或发现 split APK')
+        return self.digest
 
     def shell(self, *args):
         self.calls.append(args)
         if args[:3] == ('am', 'start', '-W') and 'MainActivity' in ' '.join(args):
             self.started = True
-        if args[0] == 'mv':
-            self.name = args[-1].rsplit('/', 1)[-1]
         if args[0] == 'date':
             return '10-26 12:00:00.000'
+        if args[0] == 'sha256sum':
+            if args[1] not in self.remote:
+                raise RuntimeError('adb shell failed: no such file')
+            return f'{self.remote[args[1]]}  {args[1]}'
+        if args[0] == 'logcat' and self.in_place:
+            if self.in_place_refused:
+                return f'Game in-place registration of {self.in_place} refused: in-place file does not match index.tsv (SHA-256): romfs/data'
+            imported = (f'Game registered in place: test [{TITLE}] -> sha256-0000 (files read where they are, nothing copied)'
+                        f' from in-place {self.in_place}')
+            accepted = f'Game startup accepted: {TITLE} session 1'
+            return '\n'.join((imported, accepted) if self.started else (imported,))
         if args[0] == 'logcat':
             accepted = f'Game startup accepted: {TITLE} session 1'
             if self.refused:
@@ -206,95 +245,141 @@ class DeployTest(unittest.TestCase):
         self.assertTrue(any(x[-2:] == ('s2arm.graphics_mode', 'direct') for x in adb.calls))
         self.assertFalse(any('clear' in x or 'uninstall' in x for x in adb.calls))
 
-    def test_explicit_staging_and_wake_before_install(self):
+    def test_same_apk_already_installed_skips_install(self):
+        # 机上已是同一份 APK：不再 adb install（同版本重装在 vivo 上不弹确认也不返回、干等超时），照常直传、核哈希
         adb = FakeAdb()
-        self.deploy(adb)
+        adb.digest = game_apk.sha256(self.apk)
+        out = self.deploy(adb, mode='direct')
+        self.assertFalse(any(x[0] == 'install' for x in adb.calls))
+        self.assertTrue(json.loads((out / 'deployment.json').read_text())['startupAccepted'])
+        self.assertTrue(adb.received)
+
+    def test_direct_transfer_and_wake_before_install(self):
+        # 直传：资源树逐字节进 App 的接收端；不碰共享存储（不 push、不出现 /sdcard）；LibraryActivity 只起一次且带 IMPORT_RECEIVE
+        adb = FakeAdb()
+        out = self.deploy(adb)
         install = next(i for i, x in enumerate(adb.calls) if x[0] == 'install')
         self.assertLess(adb.calls.index(('input', 'keyevent', 'KEYCODE_WAKEUP')), install)
         self.assertLess(adb.calls.index(('wm', 'dismiss-keyguard')), install)
         imports = [x for x in adb.calls if x[:3] == ('am', 'start', '-W') and 'org.s2arm.android.LibraryActivity' in ' '.join(x)]
-        self.assertEqual(len(imports), 2)
-        self.assertNotIn('org.s2arm.android.IMPORT_STAGING', imports[0])
-        self.assertIn('org.s2arm.android.IMPORT_STAGING', imports[1])
-        self.assertEqual(imports[1][-1],
-                         f'/sdcard/Android/data/org.s2arm.game.t{TITLE.lower()}/files/import/{adb.name}')
+        self.assertEqual(len(imports), 1)
+        self.assertIn('org.s2arm.android.IMPORT_RECEIVE', imports[0])
+        self.assertIn(('forward', 'tcp:0', f'localabstract:s2arm-import.org.s2arm.game.t{TITLE.lower()}'), adb.calls)
+        self.assertTrue(any(x[:2] == ('forward', '--remove') for x in adb.calls))
+        self.assertFalse(any(x[0] == 'push' or '/sdcard' in ' '.join(map(str, x)) for x in adb.calls))
+        res = out / 'resources'
+        want = {p.relative_to(res).as_posix(): p.read_bytes() for p in res.rglob('*') if p.is_file()}
+        self.assertEqual(adb.received, want)
+        self.assertTrue(adb.name.startswith('deploy-'))
         launches = [x for x in adb.calls if x[:3] == ('am', 'start', '-W') and 'org.s2arm.android.MainActivity' in ' '.join(x)]
         self.assertEqual(len(launches), 1)
-        self.assertNotIn('org.s2arm.android.IMPORT_STAGING', launches[0])
-        cleanups = [x for x in adb.calls if x[:2] == ('rm', '-rf')]
-        self.assertEqual(len(cleanups), 1)
-        self.assertTrue(all(adb.name in path for path in cleanups[0][2:]))
 
-    def test_no_start_imports_and_cleans_only_its_tree(self):
+    REMOTE = '/storage/emulated/0/S2Arm/Games/' + TITLE
+
+    def test_in_place_pushes_to_convention_dir_then_registers(self):
+        # 原地：整份推进 .<程序号>.part、推完换名成约定目录；给本包开「所有文件访问」；只发登记请求、不直传字节；照常启动
+        adb = FakeAdb()
+        out = self.deploy(adb, in_place=True)
+        part = '/storage/emulated/0/S2Arm/Games/.' + TITLE + '.part'
+        pushes = [x for x in adb.calls if x[0] == 'push']
+        self.assertEqual(pushes, [('push', out / 'resources', part)])
+        mv = adb.calls.index(('mv', part, self.REMOTE))
+        self.assertLess(adb.calls.index(('rm', '-rf', part)), adb.calls.index(pushes[0]))
+        self.assertLess(adb.calls.index(pushes[0]), adb.calls.index(('rm', '-rf', self.REMOTE)))
+        self.assertLess(adb.calls.index(('rm', '-rf', self.REMOTE)), mv)
+        package = f'org.s2arm.game.t{TITLE.lower()}'
+        self.assertIn(('appops', 'set', package, 'MANAGE_EXTERNAL_STORAGE', 'allow'), adb.calls)
+        self.assertEqual(adb.in_place, self.REMOTE)
+        self.assertEqual(adb.received, {})
+        receipt = json.loads((out / 'deployment.json').read_text())
+        self.assertEqual(receipt['inPlace'], self.REMOTE)
+        self.assertTrue(receipt['startupAccepted'])
+
+    def test_in_place_same_content_is_not_pushed_again(self):
+        # 设备上 index.tsv 与构建描述都相同：一个字节都不推；只有构建描述不同：只推它（覆盖到约定目录里）
+        resources = self.root / 'resources'
+        game_apk.resources(self.pack, self.apk, resources)
+        for artifact_same in (True, False):
+            with self.subTest(artifact_same=artifact_same):
+                adb = FakeAdb()
+                adb.remote = {f'{self.REMOTE}/index.tsv': deploy_game.digest(resources / 'index.tsv'),
+                              f'{self.REMOTE}/game-build-artifact.json':
+                                  deploy_game.digest(resources / 'game-build-artifact.json') if artifact_same else '0' * 64}
+                work = self.root / f'work-{artifact_same}'; work.mkdir()
+                deploy_game.deploy_resources(self.apk, resources, adb, work, require_current=False, in_place=True)
+                pushes = [x for x in adb.calls if x[0] == 'push']
+                want = [] if artifact_same else [('push', resources / 'game-build-artifact.json',
+                                                  f'{self.REMOTE}/game-build-artifact.json')]
+                self.assertEqual(pushes, want)
+                self.assertFalse(any(x[0] == 'mv' for x in adb.calls))
+                self.assertEqual(adb.in_place, self.REMOTE)
+
+    def test_in_place_partial_refresh_is_red_before_push(self):
+        # --refresh-existing 的资源目录没有 romfs：设备上又没有同一份内容，原地登记必缺文件，推之前就报
+        with self.assertRaisesRegex(RuntimeError, '原地使用要整份资源'):
+            self.deploy(FakeAdb(), in_place=True, refresh_existing=True)
+
+    def test_in_place_refusal_is_red_and_never_starts(self):
+        adb = FakeAdb(); adb.in_place_refused = True
+        with self.assertRaisesRegex(RuntimeError, '原地登记被拒绝：.*romfs/data'):
+            self.deploy(adb, in_place=True)
+        self.assertFalse(any('MainActivity' in ' '.join(map(str, x)) for x in adb.calls))
+
+    def test_no_start_imports_only(self):
         adb = FakeAdb()
         out = self.deploy(adb, start=False)
         self.assertFalse(json.loads((out / 'deployment.json').read_text())['startupAccepted'])
         self.assertFalse(any('MainActivity' in ' '.join(map(str, x)) for x in adb.calls))
-        clean = next(x for x in adb.calls if x[:2] == ('rm', '-rf'))
-        self.assertTrue(all(adb.name in p for p in clean[2:]))
+
+    def test_transfer_waits_until_app_is_listening(self):
+        # 设备端还没监听时 adb forward 先接 TCP 再断：前两次连接被断，第三次读到 READY 才传
+        adb = FakeAdb(drop_first=2)
+        out = self.deploy(adb)
+        self.assertEqual(adb.connects, 3)
+        self.assertEqual(len(adb.received), sum(1 for p in (out / 'resources').rglob('*') if p.is_file()))
+
+    def test_app_refusal_is_red_and_never_starts(self):
+        adb = FakeAdb(receive_reply='ERR bad path: ../x')
+        with self.assertRaisesRegex(RuntimeError, 'App 拒收资源：ERR bad path'):
+            self.deploy(adb)
+        self.assertFalse(any('MainActivity' in ' '.join(map(str, x)) for x in adb.calls))
+        self.assertTrue(any(x[:2] == ('forward', '--remove') for x in adb.calls))
 
     def test_push_timeout_scales_with_resource_size(self):
         # 期望按 30 MB/s、2 倍余量手算：21 GB → 21e9 / 30e6 × 2 = 1400 秒（+1 取整）；小包取下限 120；显式 --push-timeout 照用
-        # （超时现在在 push_tree 轮询里执行，截获它的 timeout 入参核对估值管线）
         for size, want in ((21_000_000_000, 1401), (1_000_000, 120)):
+            seen = []
+            def fake_send(adb, package, resources, name, timeout, log):
+                adb.name = name; seen.append(timeout)
             with self.subTest(size=size), patch.object(deploy_game, 'tree_bytes', return_value=size), \
-                    patch.object(deploy_game, 'push_tree') as pt:
-                adb = FakeAdb(); self.deploy(adb)
-                self.assertEqual(pt.call_args[0][3], want)
+                    patch.object(deploy_game, 'send_tree', fake_send):
+                self.deploy(FakeAdb())
+                self.assertEqual(seen, [want])
+        seen = []
+        def fake_send50(adb, package, resources, name, timeout, log):
+            adb.name = name; seen.append(timeout)
         with patch.object(deploy_game, 'tree_bytes', return_value=21_000_000_000), \
-                patch.object(deploy_game, 'push_tree') as pt:
-            adb = FakeAdb(); self.deploy(adb, push_timeout=50)
-            self.assertEqual(pt.call_args[0][3], 50)
+                patch.object(deploy_game, 'send_tree', fake_send50):
+            self.deploy(FakeAdb(), push_timeout=50)
+            self.assertEqual(seen, [50])
 
     def test_import_wait_scales_with_resource_size(self):
-        # 期望手算，同推送：17 GB → 17e9 / 30e6 × 2 = 1133.3 → 1134 秒；小包取 --timeout（180）；--timeout 更大时照用
+        # 期望手算，同传输：17 GB → 17e9 / 30e6 × 2 = 1133.3 → 1134 秒；小包取 --timeout（180）；--timeout 更大时照用
         for size, timeout, want in ((17_000_000_000, 180, 1134), (1_000_000, 180, 180), (1_000_000, 3600, 3600)):
-            with self.subTest(size=size, timeout=timeout), patch.object(deploy_game, 'tree_bytes', return_value=size), \
-                    patch.object(deploy_game, 'tree_files', return_value=1):
+            with self.subTest(size=size, timeout=timeout), patch.object(deploy_game, 'tree_bytes', return_value=size):
                 self.assertEqual(deploy_game.import_wait_for(self.pack, timeout), want)
 
     def test_import_timeout_leaves_running_import_alone(self):
-        # 等回执超时：不强停应用、不删 import/ 下正在导入的目录（只清推送用的临时目录），报错里说清楚
+        # 等回执超时：不强停应用，报错里说清楚
         adb = FakeAdb(slow_import=True)
         with patch.object(deploy_game, 'import_wait_for', return_value=1), \
-                patch.object(deploy_game.time, 'monotonic', side_effect=[0] * 8 + [5] * 50), \
+                patch.object(deploy_game, 'send_tree'), \
+                patch.object(deploy_game.time, 'monotonic', side_effect=[0] * 2 + [5] * 50), \
                 patch.object(deploy_game.time, 'sleep'):
-            with self.assertRaisesRegex(RuntimeError, '等待导入超时.*没有强停应用.*没有删正在导入的目录'):
+            with self.assertRaisesRegex(RuntimeError, '等待导入超时.*没有强停应用'):
                 self.deploy(adb)
-        started = max(i for i, x in enumerate(adb.calls) if x[:3] == ('am', 'start', '-W') and 'IMPORT_STAGING' in ' '.join(map(str, x)))
-        after = adb.calls[started + 1:]
-        self.assertFalse(any(x[:2] == ('am', 'force-stop') for x in after))
-        cleans = [x for x in after if x[:2] == ('rm', '-rf')]
-        self.assertEqual(len(cleans), 1)
-        self.assertEqual(len(cleans[0]), 3)
-        self.assertIn('/.deploy-', cleans[0][2])
-
-    def test_failed_or_interrupted_push_cleans_own_paths(self):
-        for failure in (RuntimeError('push failed'), InterruptedError('cancelled')):
-            with self.subTest(failure=failure):
-                adb = FakeAdb()
-                def popen(*args, **kwargs):
-                    raise failure
-                adb.popen = popen
-                with self.assertRaises(type(failure)):
-                    self.deploy(adb)
-                clean = next(x for x in adb.calls if x[:2] == ('rm', '-rf'))
-                self.assertEqual(len(clean), 4)
-                self.assertIn('/.deploy-', clean[2])
-                self.assertIn('/import/deploy-', clean[3])
-
-    def test_permission_failure_still_cleans_and_cleanup_failure_is_visible(self):
-        adb = FakeAdb()
-        original = adb.shell
-        def shell(*args):
-            if args[0] == 'chmod':
-                raise RuntimeError('chmod failed')
-            if args[:2] == ('rm', '-rf'):
-                raise RuntimeError('rm failed')
-            return original(*args)
-        adb.shell = shell
-        with self.assertRaisesRegex(RuntimeError, 'chmod failed.*设备临时副本清理失败.*rm failed.*deploy-'):
-            self.deploy(adb)
+        started = max(i for i, x in enumerate(adb.calls) if x[:3] == ('am', 'start', '-W') and 'IMPORT_RECEIVE' in ' '.join(map(str, x)))
+        self.assertFalse(any(x[:2] == ('am', 'force-stop') for x in adb.calls[started + 1:]))
 
     def test_resources_current_identity_and_result(self):
         resources = self.root / 'resources'
@@ -324,7 +409,6 @@ class DeployTest(unittest.TestCase):
         adb = FakeAdb(); adb.receipt = ('sha256-' + '0' * 64, '1' * 64)
         with self.assertRaisesRegex(RuntimeError, '设备导入身份不匹配'):
             deploy_game.deploy_resources(self.apk, resources, adb, self.root)
-        self.assertTrue(any(x[:2] == ('rm', '-rf') for x in adb.calls))
         self.assertFalse(any('MainActivity' in ' '.join(map(str, x)) for x in adb.calls))
 
     def test_missing_import_receipt_is_red_and_never_starts(self):
@@ -343,11 +427,11 @@ class DeployTest(unittest.TestCase):
             self.deploy(adb)
         self.assertEqual(adb.calls, [])
 
-    def test_wrong_installed_hash_stops_before_push(self):
+    def test_wrong_installed_hash_stops_before_transfer(self):
         adb = FakeAdb(wrong_hash=True)
         with self.assertRaisesRegex(RuntimeError, '安装后的 APK 哈希'):
             self.deploy(adb)
-        self.assertFalse(any(x[0] == 'push' for x in adb.calls))
+        self.assertFalse(any(x[0] == 'forward' for x in adb.calls))
 
     def test_refused_refresh_has_no_success_receipt(self):
         with self.assertRaisesRegex(RuntimeError, '去掉 --refresh-existing'):
@@ -355,11 +439,15 @@ class DeployTest(unittest.TestCase):
         self.assertEqual(list((self.root / 'out').glob('*/deployment.json')), [])
 
     def test_startup_before_this_import_is_not_success(self):
-        # push_tree 计时也走 time.monotonic，给足返回值：前段都回 0，启动轮询处跳到超过 deadline
-        with patch.object(deploy_game.time, 'monotonic', side_effect=[0] * 8 + [5]), \
+        # 直传换成替身（它也走 time.monotonic）；导入轮询读到回执即停，启动轮询处跳到超过 deadline
+        adb0 = FakeAdb(stale_start=True); adb0.name = None
+        def fake_send(adb, package, resources, name, timeout, log):
+            adb.name = name
+        with patch.object(deploy_game, 'send_tree', fake_send), \
+                patch.object(deploy_game.time, 'monotonic', side_effect=[0] * 3 + [5] * 10), \
                 patch.object(deploy_game.time, 'sleep'):
             with self.assertRaisesRegex(RuntimeError, '超时'):
-                self.deploy(FakeAdb(stale_start=True), timeout=1)
+                self.deploy(adb0, timeout=1)
         self.assertEqual(list((self.root / 'out').glob('*/deployment.json')), [])
 
     def test_corrupt_metadata_refused(self):

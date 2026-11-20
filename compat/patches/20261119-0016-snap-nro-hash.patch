@@ -1,0 +1,42 @@
+diff --git a/src/Ryujinx.HLE/HOS/Services/Ro/IRoInterface.cs b/src/Ryujinx.HLE/HOS/Services/Ro/IRoInterface.cs
+index 73443a23dd12f586b7d0085390c77f47531ab265..e26f87ce1ed0be6a45c9fd9dfc866c4cdb30cff9 100644
+--- a/src/Ryujinx.HLE/HOS/Services/Ro/IRoInterface.cs
++++ b/src/Ryujinx.HLE/HOS/Services/Ro/IRoInterface.cs
+@@ -168,7 +168,10 @@ namespace Ryujinx.HLE.HOS.Services.Ro
+             // the game keeps the buffer, which on hardware becomes the NRO's code mapping)
+             if (S2AHooks.GuestView?.Invoke(nroAddress, (int)nroSize) is System.Memory<byte> nroView)
+             {
+-                nroHash = SHA256.HashData(nroView.Span);
++                // S2Arm: snapshot replay gives the hash the saved run computed: the request log keeps only the NRO's header and hash for NROs in the
++                //   package (they are mapped from the rewritten image by hash), not the whole file
++                nroHash = S2AHooks.SnapNroHash ?? SHA256.HashData(nroView.Span);
++                S2AHooks.SnapNroHash = null;
+ 
+                 if (!IsNroHashPresent(nroHash))
+                 {
+@@ -195,7 +198,8 @@ namespace Ryujinx.HLE.HOS.Services.Ro
+ 
+                 MemoryStream stream = new(nroData);
+ 
+-                nroHash = SHA256.HashData(stream);
++                nroHash = S2AHooks.SnapNroHash ?? SHA256.HashData(stream);   // S2Arm: snapshot replay (see above)
++                S2AHooks.SnapNroHash = null;
+ 
+                 if (!IsNroHashPresent(nroHash))
+                 {
+diff --git a/src/Ryujinx.HLE/S2AHooks.cs b/src/Ryujinx.HLE/S2AHooks.cs
+index 1c631aeaac92731f03e0917d2356a91a53a630c2..f7b291f51b03593590dab96924f5139c82215235 100644
+--- a/src/Ryujinx.HLE/S2AHooks.cs
++++ b/src/Ryujinx.HLE/S2AHooks.cs
+@@ -45,7 +45,10 @@ namespace Ryujinx.HLE
+         // (iOS cannot execute code loaded at run time); the native layer maps that image by the NRO file's SHA-256 (runtime/src/loader.c s2a_nro_map).
+         // NroMap(sha256[32], nro size, bss size, out base) -> 0 ok, 1 not in the package, 2 size / bss mismatch, 3 already loaded, 4 module table full, 5 unsupported here.
+         // NroUnmap(base) -> 0 ok, 1 not loaded. Null = upstream (Ryujinx kernel memory manager).
+-        public static delegate*<byte*, ulong, ulong, ulong*, int> NroMap;   // 宿主登记（services Native.NroMap → 原生核心 s2a_nro_map，DllImport 集中声明）
++        public static delegate*<byte*, ulong, ulong, ulong*, int> NroMap;
++        // Snapshot replay of LoadNro: the hash the saved run computed (set just before the replayed request, cleared once read). The request log keeps
++        //   only the header of an NRO that is in the package, so hashing the replayed buffer would give a different hash
++        public static byte[] SnapNroHash;   // 宿主登记（services Native.NroMap → 原生核心 s2a_nro_map，DllImport 集中声明）
+         public static delegate*<ulong, int> NroUnmap;
+         // NroKeep(sha256[32], nro bytes, size) -> 0 kept, 2 kept before (not prepared again yet), 1 failed: an NRO the package has no image of (NroMap 1) is kept
+         // as the game unpacked it, for the next preparation to rewrite (runtime/src/loader.c s2a_nro_keep). Null = not kept.

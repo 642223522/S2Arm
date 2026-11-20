@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 S2Arm contributors
 """git 调用钉死仓库（11-11 维护者 Windows 覆盖安装：Engine\\.git 缺 refs 空目录 → git 不认、一路往上认到玩家主目录的空仓库，播种报 128）。
-期望手写：缺 refs 的快照补上空目录后照常取到 HEAD；没有自己 .git 的目录不往上认外层仓库；作业层自检同样补好"""
+期望手写：缺 refs 的快照补上空目录后照常取到 HEAD；没有自己 .git 的目录不往上认外层仓库"""
 import os
 from pathlib import Path
 import shutil
@@ -53,11 +53,7 @@ class GitPinTest(unittest.TestCase):
         bare.mkdir(parents=True)
         self.assertFalse(roots.git("rev-parse", "--git-dir", repo=bare, check=False))
 
-    def test_job_check_git_repairs_too(self):
-        import embedded
-        embedded.check_git(self.engine)   # 不抛 = 认出的就是引擎自己的 .git
-        self.assertTrue((self.engine / ".git" / "refs" / "heads").is_dir())
-        self.assertEqual(embedded.repair_git_skeleton(self.engine / ".git"), [])
+    def test_repair_leaves_non_repo_alone(self):
         self.assertEqual(roots.repair_git_skeleton(self.tmp / "nope"), [], "不是仓库的目录不动")
 
 

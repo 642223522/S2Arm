@@ -29,6 +29,17 @@ int main(void) { @autoreleasepool {
     CK(l.split && rect(l.game,0,62,669,413.5),"竖向折痕仍符合自动半折条件，按中点上下分屏");
     l=S2APlayLayoutMake(b,safe,S2APlaySplitOn,NO,CGRectMake(NAN,0,10,20));
     CK(l.split && isfinite(l.game.size.height),"无效折痕不能污染区域或关闭强制分屏");
+    // iPhone Duo 外屏竖屏手动分屏（11-15 真机读数：视图 466×678 点，安全区 上 0 左 0 下 34 右 84）：上区横向按整屏 466 宽、竖向 0–339，画面贴顶；
+    //   修前是安全区 ∩ 上半屏 = 382×339。下区照旧扣安全区 = 0,339 382×305
+    l=S2APlayLayoutMake(CGRectMake(0,0,466,678),CGRectMake(0,0,382,644),S2APlaySplitOn,NO,CGRectNull);
+    CK(l.split && l.top && rect(l.game,0,0,466,339),"Duo 外屏竖屏分屏：上区整屏宽 466×339、贴顶");
+    CK(rect(l.controls,0,339,382,305),"Duo 外屏竖屏分屏：下区仍扣安全区");
+    // 普通 iPhone 竖屏手动分屏（左右缩进 0、顶部灵动岛 62）：区域与修前相同、不贴顶
+    l=S2APlayLayoutMake(CGRectMake(0,0,402,874),CGRectMake(0,62,402,778),S2APlaySplitOn,NO,CGRectNull);
+    CK(l.split && !l.top && rect(l.game,0,62,402,375),"普通 iPhone 竖屏分屏：区域不变、不贴顶");
+    // 半折内屏（有折痕）：即使安全区左右有缩进也走折痕分支，不放宽、不贴顶
+    l=S2APlayLayoutMake(b,CGRectMake(20,62,629,855),S2APlaySplitAuto,YES,fold);
+    CK(l.split && !l.top && rect(l.game,20,62,629,393.5),"半折内屏：走折痕分支，区域按安全区、不贴顶");
     CK(S2APlayPortrait(S2APlayOrientationAuto,YES) && !S2APlayPortrait(S2APlayOrientationAuto,NO),"自动方向随分屏切换");
     CK(!S2APlayPortrait(S2APlayOrientationLandscape,YES) && S2APlayPortrait(S2APlayOrientationPortrait,NO),"手动方向独立于分屏");
     CGSize t=S2APlayTargetSize(CGSizeMake(600,400));

@@ -8,8 +8,9 @@ import contextlib
 from copy import deepcopy
 import errno
 import filelock
-from space_rule import pack_direct_bytes, pack_input_bytes, pack_need_bytes, selected_packages   # 出包空间规则的唯一定义（剃刀 H11）
+from space_rule import pack_direct_bytes, pack_input_bytes, pack_need_bytes, selected_packages, source_file_bytes   # 出包空间规则的唯一定义（剃刀 H11）
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -18,8 +19,10 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
+import zlib
 import uuid
 import zipfile
 from errors import explain
@@ -35,7 +38,9 @@ import sizes
 #   中间另捞心跳行与最后一次崩溃现场，manifest.json 的 truncated 写明每份原长、留了多少、截掉多少。
 #   原先每份只留头尾各 16 KB + 心跳行，帧读数整段丢，玩家只能再传完整日志（#41）
 DELETE_LOCK_WAIT_S = 120   # 删除等执行锁的上限：启动器发删除前先取消这款在跑的任务，它杀子进程组收尾比短作业排队（core.LOCK_WAIT_S）久
-DIAGNOSTIC_LOG_LIMIT = 200 << 20     # 单份原文上限（压缩后约 20 MB）
+DIAGNOSTIC_LOG_LIMIT = 12 << 20     # 单份原文上限：诊断收件按成员解开后的大小收（tools/diag_contract/diag_contract.json limits.member_bytes 16 MB），
+#   超了整包被拒、玩家丢整份诊断（11-16 原先 200 MB，长局 Mac 日志整包 400）。头尾 12 MB + 中间心跳 / 现场段（≤ 约 160 KB）+ 脱敏与非法字节替换的余量仍在 16 MB 内；
+#   tests/diag_contract_test.sh 核「上限 + 中间段 + 余量 ≤ 契约 member_bytes」并真打超长日志过收件判定
 DIAGNOSTIC_LOG_HEAD = DIAGNOSTIC_LOG_LIMIT // 8
 DIAGNOSTIC_LOG_TAIL = DIAGNOSTIC_LOG_LIMIT - DIAGNOSTIC_LOG_HEAD
 DIAGNOSTIC_LOG_BEATS = 64000         # 中间心跳行最多保留这么多字节（10 秒一行，约一小时）
@@ -47,8 +52,8 @@ DIAGNOSTIC_LOG_SCENE = 96000         # 中间最后一次崩溃摘要 + 全线�
 class _Scene:
     """扫中段时收最后一次「崩溃摘要 + 全线程现场」（runtime/src/crash.c 打【红】CRASH 摘要行，随后 tdump.c 每行带「[现场] 」前缀，
     「===== 全线程现场：…」起、「===== 现场完 =====」止）。#141：只留头尾时崩溃在中段就整段丢了，玩家交了诊断包也定不了因"""
-    CRASH, TAG = "CRASH 信号".encode(), "[现场]".encode()
-    START, END = "===== 全线程现场".encode(), "现场完".encode()
+    CRASH, TAG = "CRASH 信号".encode(), "[现场]".encode()  # 非玩家句
+    START, END = "===== 全线程现场".encode(), "现场完".encode()  # 非玩家句
 
     def __init__(self):
         self.summary, self.block, self.in_block, self.taking = [], [], False, False
@@ -71,6 +76,19 @@ class _Scene:
             if self.END in line: self.in_block = False
 
 
+def key_generation_note(lines):
+    """读取器解不开时多打的「【密钥代】<要的代>\t<prod.keys 有到>\t<带 rights id>」（十六进制，同 prod.keys 里 master_key_XX 的写法，#1511）
+    → 玩家句补一句「这份要第几代、你的有到第几代」；读取器没给（读不出 NCA 头）就不补"""
+    line = next((x for x in lines if x.startswith("【密钥代】")), None)  # 非玩家句
+    parts = line[len("【密钥代】"):].split("\t") if line else []  # 非玩家句
+    if len(parts) < 2 or parts[1] == "-":
+        return ""
+    need, top = parts[0], parts[1]
+    if int(need, 16) > int(top, 16):
+        return "\n" + f"这份文件要 master_key_{need}，你的 prod.keys 只到 master_key_{top}：不够新。"
+    return "\n" + f"这份文件要 master_key_{need}，你的 prod.keys 有到 master_key_{top}：代数够，多半是这一行的值不对。"
+
+
 def _scene_text(summary, block, budget=DIAGNOSTIC_LOG_SCENE):
     """整段放得下就整段；放不下按优先级：崩溃摘要 → 现场块头 → 第一个非等待线程的整段栈 → 其余线程的头一行 → 现场完"""
     text = b"\n".join(summary + block)
@@ -79,14 +97,14 @@ def _scene_text(summary, block, budget=DIAGNOSTIC_LOG_SCENE):
     keep = list(summary[:24]) + block[:1]
     threads, cur = [], None
     for line in block[1:]:
-        if "[现场] 线程 ".encode() in line: cur = [line]; threads.append(cur)
+        if "[现场] 线程 ".encode() in line: cur = [line]; threads.append(cur)  # 非玩家句
         elif cur is not None and _Scene.END not in line: cur.append(line)
     first = next((t for t in threads if "等待".encode() not in t[0]), threads[0] if threads else [])
     keep += first
     used = sum(len(x) + 1 for x in keep)
     for t in threads:
         if t is first: continue
-        if used + len(t[0]) + 1 > budget - 200: keep.append(f"[现场] …（还有线程略去：现场块 {len(text)} 字节超出保留上限）".encode()); break
+        if used + len(t[0]) + 1 > budget - 200: keep.append(f"[现场] …（还有线程略去：现场块 {len(text)} 字节超出保留上限）".encode()); break  # 非玩家句
         keep.append(t[0]); used += len(t[0]) + 1
     keep += [x for x in block[-1:] if _Scene.END in x]
     return b"\n".join(keep)
@@ -104,9 +122,11 @@ def diagnostic_log_chunks(source, size, head=None, tail=None):
     + 中间的心跳行与最后一次崩溃摘要、全线程现场 + 结尾 tail（从行首起）。最后一块之后返回 (留下的字节, 截掉的字节)，经 StopIteration.value 取"""
     head = DIAGNOSTIC_LOG_HEAD if head is None else head
     tail = DIAGNOSTIC_LOG_TAIL if tail is None else tail
+    # 只读到打开时量的 size 为止（11-17 D-4PE6：游戏开着、日志边导边涨，原先读到文件尾，导出慢的时候一份 game.log 涨过收件单个成员 16 MB 上限，
+    #   整包被拒「单个文件超过 16 MB」）；导出之后才写进来的部分不收
     if size <= head + tail:
         kept = 0
-        while chunk := source.read(DIAGNOSTIC_LOG_CHUNK):
+        while kept < size and (chunk := source.read(min(DIAGNOSTIC_LOG_CHUNK, size - kept))):
             kept += len(chunk); yield chunk
         return kept, 0
     first = _line_head(source, head)
@@ -131,7 +151,7 @@ def diagnostic_log_chunks(source, size, head=None, tail=None):
             partial = b""
         for line in lines:
             if len(line) < 4096: scene.feed(line)
-            if "[心跳]".encode() in line and len(line) < 4096:
+            if "[心跳]".encode() in line and len(line) < 4096:  # 非玩家句
                 beats.append(line)
                 used += len(line) + 1
                 while used > DIAGNOSTIC_LOG_BEATS:
@@ -139,13 +159,14 @@ def diagnostic_log_chunks(source, size, head=None, tail=None):
     if partial and len(partial) < 4096: scene.feed(partial)
     omitted = tail_start - len(first)
     gap = lambda text: f"\n…（{text}）…\n".encode()
-    mid = gap(f"日志共 {size} 字节，超过 {DIAGNOSTIC_LOG_LIMIT >> 20} MB 上限，中间截掉 {omitted} 字节，只保留其中 {len(beats)} 行心跳") + b"\n".join(beats)
+    mid = gap(f"日志共 {size} 字节，超过 {DIAGNOSTIC_LOG_LIMIT >> 20} MB 上限，中间截掉 {omitted} 字节，只保留其中 {len(beats)} 行心跳") + b"\n".join(beats)  # 非玩家句
     if scene.last:
-        mid += gap("中间最后一次崩溃摘要与全线程现场") + _scene_text(*scene.last)
-    yield mid + gap("以下是日志结尾")
+        mid += gap("中间最后一次崩溃摘要与全线程现场") + _scene_text(*scene.last)  # 非玩家句
+    yield mid + gap("以下是日志结尾")  # 非玩家句
     source.seek(tail_start)
-    while chunk := source.read(DIAGNOSTIC_LOG_CHUNK):
-        kept += len(chunk); yield chunk
+    pos = tail_start
+    while pos < size and (chunk := source.read(min(DIAGNOSTIC_LOG_CHUNK, size - pos))):
+        pos += len(chunk); kept += len(chunk); yield chunk
     return kept, omitted
 
 
@@ -158,7 +179,14 @@ DIAGNOSTIC_JOB_LIMIT = 4 << 20
 PHONE_TEXT = (".log", ".txt", ".tsv", ".json", ".ips", ".csv")   # 拉回的手机诊断里按文本脱敏收的类型（host.log、logs/、frames.tsv、threads.txt、diag/*.json、metrickit 等）
 DIAG_RUN_FILE_LIMIT = 4 << 20    # 诊断局 PNG：单张上限
 DIAG_PSO_FILE_LIMIT = 4 << 20   # 本机管线记录 pso_user.tsv 单份上限（实测约 1 MB；收件单个成员上限 16 MB）
+DIAG_SALVAGE_GAME_LIMIT = (8 << 20) + (1 << 20)   # 着色器补料每款上限（运行时 S2A_SHADER_SALVAGE_MB 缺省 8 MB 的字节 + index.tsv 余量）
+DIAG_SALVAGE_TOTAL_LIMIT = 16 << 20   # 着色器补料整包上限（诊断包压缩后 ≤ 30 MB，给日志 / 截图留地方）
 DIAG_RUN_TOTAL_LIMIT = 40 << 20  # 诊断局 PNG：总量上限（#438 定）
+# 整包预算（11-16：Mac 诊断包压缩后超过收件上限整包被拒，#1308 玩家只能手删 pso / shader_miss / diagrun / phone 再传）：
+#   收件端 tools/diag_contract/diag_contract.json limits.zip_bytes = 30 MB；留 1 MB 给 manifest 与 zip 目录（tests/diag_contract_test.sh 核两者对得上）。
+#   日志与任务记录先写、优先；后面的可选成员（手机诊断、本机崩溃报告、诊断局截图、管线记录、着色器补料）放之前估压缩后大小，放不下就跳过，
+#   日志本身快到预算时余下的日志也跳过；跳过的都记进 manifest budget.skipped，不悄悄丢
+DIAGNOSTIC_ZIP_BUDGET = (30 << 20) - (1 << 20)
 # 本机（Mac）崩溃报告（11-14 诊断#43f7d3：宿主起局 1 秒内 SIGTRAP，没走到写日志，诊断包里一份现场都没有）：系统写在 ~/Library/Logs/DiagnosticReports，
 #   只收我们自己的进程（宿主 s2arm-host、启动器 S2Arm*）近 7 天的 .ips，最新的至多 10 份、单份至多 4 MB，按文本脱敏
 MAC_CRASH_DIR = Path.home() / "Library" / "Logs" / "DiagnosticReports"
@@ -349,7 +377,7 @@ def extract_inspect(c, source, icon_dir):
                     tid = int(line.split("\t")[1], 16)
                     break
             else:
-                raise ValueError("unpack.tsv 没有 title_id")
+                raise ValueError("unpack.tsv 没有 title_id")  # 非玩家句
         except (OSError, ValueError, IndexError) as e:
             raise Failure(f"读不出解包目录的元数据（{source.name}）：{e}", code="content_invalid") from None
         main_path = source / "exefs" / "main"
@@ -372,6 +400,22 @@ def extract_inspect(c, source, icon_dir):
             raise Failure(f"读不出解包目录的程序号（{source.name}）：{e}", code="content_invalid") from None
         main_path = source / "exefs" / "main"
         npdm_path = source / "exefs" / "main.npdm"
+
+    # 散文件 / Switch 2 导出没有整包校验：导入时先把程序文件（NSO）试解一遍，物理上解不开当场点名（#1522：原先到出包解包才抛 LZ4 的 Python 栈）；
+    #   段哈希对不上照常收、记黄（维护者 11-17：校验不过不拒收，可能是打过补丁 / mod 的程序）
+    if fmt in ("dump", "loose"):
+        exefs_dirs = [main_path.parent] + ([source / "updates" / n / "exefs" for n in dump.numdirs(str(source / "updates"))] if fmt == "dump" else [])
+        for exefs in exefs_dirs:
+            if not exefs.is_dir():
+                continue
+            rel = exefs.relative_to(source).as_posix()
+            try:
+                off = dump.check_exefs(str(exefs))
+            except dump.NsoDamaged as e:
+                raise Failure(f"程序文件 {rel}/{e.name} 的 {e.seg} 段解不开：这个程序文件坏了或被改过，请重新导出（最好导成 NSP / XCI）。", code="content_invalid") from None
+            if off:
+                c.diagnostic(SOURCE_INTEGRITY_SKIPPED, code="source_integrity_skipped", severity="warning",
+                             internal="；".join(f"{rel}/{n} 的 {s} 段哈希对不上" for n, s in off))  # 非玩家句
 
     # 读名称与显示版本；english = 文件夹取名用的英文名（unpack.tsv 的 name / NACP 美式 → 英式英语），没有就空
     english = ""
@@ -670,7 +714,7 @@ def copy_tree_links(src, dst, check=None):
         版本名记进 .root_tag（pack/orch/roots.py 实目录模式按它认）"""
         target = Path(os.path.realpath(a))
         copy(target, b)
-        if a.name.endswith("@现行"):
+        if a.name.endswith("@现行"):  # 非玩家句
             (b / ".root_tag").write_text(target.name + "\n", encoding="utf-8")
     def copy(a, b):
         if check:
@@ -856,7 +900,7 @@ def move_library(c, source):
             try:
                 _discard(a)
             except OSError as error:
-                c.diagnostic("游戏库已经搬好，旧位置有文件没删掉，可以手动删除：" + c.redact(str(error)), code="job_failed", severity="warning")
+                c.diagnostic("游戏库已经搬好，旧位置有文件没删掉，可以手动删除：" + c.redact(str(error)), code="job_failed", severity="warning")  # 非玩家句
     for name in (".execution.lock", ".catalog.lock", ".store-meta.lock", ".DS_Store"):
         (source / name).unlink(missing_ok=True)
     with contextlib.suppress(OSError):
@@ -997,6 +1041,10 @@ def validate_keys(path):
     # 玩家把游戏原件当密钥选了进来（诊断 D-HZF3：同一位玩家连选 4 次 .nsp / .nsz，只看到「过大」「格式无效」）：认得出就直说
     if Path(path).suffix.lower() in SOURCE_SUFFIXES:
         raise Failure("选的是游戏文件，不是密钥：这里要的是 prod.keys 文本文件（通常几十 KB）；游戏请从「添加游戏」导入。", code="keys_invalid")
+    # 选的文件不在了（被移动 / 删除，或 iCloud 占位文件没下载）：原先直接 stat 抛 FileNotFoundError，落到通用 job_failed，
+    #   报成「S2Arm 自己的文件找不到了」，方向说反（诊断#c719ce D-4R5W）
+    if not Path(path).is_file():
+        raise Failure("选的密钥文件找不到了（可能被移动、删除，或还在 iCloud 里没下载到本机）：请重新选择 prod.keys。", code="keys_invalid")
     if Path(path).stat().st_size > 1 << 20:
         raise Failure("密钥文件过大。", code="keys_invalid")
     entries = {}
@@ -1053,6 +1101,26 @@ def keys(c):
 
 # 候选游戏文件自身有毛病（截断、缺票据）：密钥验不了，但不能据此判密钥无效；导入照常、记 verified=false，源文件错误留到读那款游戏时报
 KEYS_UNVERIFIABLE = ("content_truncated", "ticket_missing")
+def integrity_skips(lines):
+    """读取器的「【校验跳过】阶段\t内容号\t第一处坏块」行 → [{stage, contents, place}]（同一处只记一次，按出现顺序）"""
+    out = []
+    for line in lines:
+        if line.startswith("【校验跳过】"):  # 非玩家句
+            stage, _, rest = line[len("【校验跳过】"):].partition("\t")  # 非玩家句
+            contents, _, place = rest.partition("\t")
+            item = dict(stage=stage.strip(), contents=contents.strip(), place=place.strip())
+            if item not in out:
+                out.append(item)
+    return out
+
+
+def integrity_skipped(game):
+    """这款导入时有内容跳过了完整性校验（任一个包记了 integritySkipped）"""
+    return any(p.get("integritySkipped") for p in (game or {}).get("packages", []))
+
+
+SOURCE_INTEGRITY_FAILED_NOTE = "导入时这款数据校验不过（多半是改版 / 整合版或个别块损坏），这次失败可能与此有关；换一份原版完整的文件再试。"
+SOURCE_INTEGRITY_SKIPPED = "这份游戏文件里有数据和原版对不上（多半是改版 / 整合版，或个别块损坏），已跳过完整性校验照常导入。"
 KEYS_CANNOT_DECRYPT = ("无法读取游戏内容：可能是文件不完整、缺票据或密钥不匹配。请核对原始文件；"
                        "若已确认 Switch 密钥版本不足，再重新导出，到「设置 → 玩家密钥」重新导入。")
 
@@ -1065,31 +1133,54 @@ def inspect(c, source, icon_dir, keyfile=None, *, source_id=None):
     # NCZ 解压临时文件落游戏库那块盘（#612：Windows 上游戏库在别的盘、系统盘只剩百来 MB 时，读取器缺省写 %TEMP%，导入报空间不足）
     scratch = tempfile.TemporaryDirectory(prefix=".s2a-inspect-", dir=c.library if c.library.is_dir() else c.private)
     try:
-        c.run(["dotnet", toolchain.reader(c), keyfile, "--inspect", source, icon_dir, f"--temp-dir={scratch.name}"],
-              c.logs / log_name, on_line=lines.append)
+        c.run(
+            [
+                toolchain.reader(c),
+                keyfile,
+                "--inspect",
+                source,
+                icon_dir,
+                f"--temp-dir={scratch.name}",
+            ],
+            c.logs / log_name,
+            on_line=lines.append,
+        )
     except Failure as error:
         if error.code not in ("tool_exit", "job_failed"):
             raise
-        if any(line.startswith("【原因 disk_full】") for line in lines):
+        if any(line.startswith("【原因 disk_full】") for line in lines):  # 非玩家句
             raise Failure("读取游戏内容时磁盘空间不足。", code="disk_full") from None
-        if "【内容截断】" in lines:
+        if "【内容截断】" in lines:  # 非玩家句
             raise Failure("游戏文件不完整，部分内容超出文件末尾。", code="content_truncated") from None
-        if any(line.startswith("【原因 ticket_missing】") for line in lines):
+        if any(line.startswith("【原因 ticket_missing】") for line in lines):  # 非玩家句
             raise Failure("缺少内容对应的票据或标题密钥，请检查源文件是否完整。", code="ticket_missing") from None
-        if any(line.startswith("【原因 keys_missing】") for line in lines):
+        if any(line.startswith("【原因 keys_missing】") for line in lines):  # 非玩家句
             raise Failure("现有 prod.keys 缺少读取此文件所需的密钥。", code="keys_outdated") from None
+        # 解不开、但同一份文件里同代密钥的别的内容能解开（#1511 再判：玩家换两组密钥同处坏、控制数据能读）：密钥是对的，是文件本身被改过 / 坏了
+        if any(line.startswith("【原因 content_damaged】") for line in lines):  # 非玩家句
+            raise Failure("这份文件的内容被改过或损坏了：同一份文件里用同一代密钥的其它内容能正常解开，密钥是对的。请换一份原版完整的文件（XCI / NSP）再导入。", code="content_invalid") from None
+        # 解出来的数据对不上（分区头魔数不对，#1511）：prod.keys 里这款那一代的密钥不对，同「缺密钥」让玩家重新导出 prod.keys，原话说清是解不开、不是文件被改过
+        if any(line.startswith("【原因 keys_wrong】") for line in lines):  # 非玩家句
+            raise Failure("现有 prod.keys 解不开这份文件：解出来的数据对不上，多半是这款用的那一代密钥不对。请用升级到最新系统的 Switch 重新导出 prod.keys 再导入。"
+                          + key_generation_note(lines), code="keys_outdated") from None
         # 读取器自己给了确定原因（「【原因 hash_mismatch】源文件数据哈希校验不过…换一份原版完整的文件」等，pack/nx_unpack Inspect.cs / Program.cs）：
         #   照它的原话报，不再落到「文件不完整、缺票据或密钥不匹配」三选一的猜测（#1008：本体哈希校验不过，玩家被指去查密钥）
-        reason = next((line.split("】", 1)[1].strip() for line in lines if line.startswith("【原因 ") and "】" in line and line.split("】", 1)[1].strip()), "")
+        reason = next((line.split("】", 1)[1].strip() for line in lines if line.startswith("【原因 ") and "】" in line and line.split("】", 1)[1].strip()), "")  # 非玩家句
         if reason:
-            raise Failure("无法读取游戏内容：" + reason, code="content_unreadable") from None
+            raise Failure("无法读取游戏内容：" + reason, code="content_unreadable") from None  # 非玩家句
         if any("could not be decrypted" in line or "Check keys" in line for line in lines):
             raise Failure(KEYS_CANNOT_DECRYPT, code="content_unreadable") from None
         raise
     finally:
         scratch.cleanup()
-    if "【内容截断】" in lines:
+    if "【内容截断】" in lines:  # 非玩家句
         raise Failure("游戏文件不完整，部分内容超出文件末尾。", code="content_truncated")
+    # 读取器哈希不符后只对那份内容跳过完整性校验、照常读出（维护者 11-17：校验不过不再整单拒收，#1467）：每处一行「【校验跳过】阶段\t内容号\t第一处坏块」。
+    #   记进这份原件的每个包（integritySkipped），游戏库据此标「数据校验不过」，之后出包 / 起局失败时报错补一句（main.py）；同时发一条 warning 级诊断
+    skipped = integrity_skips(lines)
+    if skipped:
+        c.diagnostic(SOURCE_INTEGRITY_SKIPPED, code="source_integrity_skipped", severity="warning",
+                     internal="；".join(" ".join(x for x in s.values() if x) for s in skipped))
     try:
         output = json.loads(next(line for line in reversed(lines) if line.startswith("{")))
         if output.get("schema") != 1 or not output["packages"]:
@@ -1099,6 +1190,9 @@ def inspect(c, source, icon_dir, keyfile=None, *, source_id=None):
                 raise ValueError()
             if package["type"] not in ("base", "update", "dlc") or not isinstance(package["version"], int):
                 raise ValueError()
+        if skipped:
+            for package in output["packages"]:
+                package["integritySkipped"] = skipped
         return output["packages"]
     except (KeyError, ValueError, StopIteration, TypeError):
         raise Failure("内容读取器返回的元数据不完整。", code="content_invalid") from None
@@ -1329,13 +1423,14 @@ def space_budget(c, game):
     keep = getattr(c, "r", {}).get("followUp") is True   # 同一款接着还要出别的平台：解包留着，写 IMG 不边写边删（ipa.to_img）
     copy_need = pack_need_bytes(packages, unpacked=unpacked, image=image, clones=clones, links=links, keep_unpack=keep) - direct_need
     img_extra = image and (keep or unpacked)
+    # 分项之间用「；」：两端翻译按「；」拆开逐项翻（BackendText.translate），用「，」会整串翻不了（11-14 i18n）
     unpack_note = f"解包 {'已在盘上' if unpacked else _gb(size * 11 // 10)}" + \
-        (f"，单一 IMG {_gb(size)}" if img_extra else "，单一 IMG 边写边腾解包、不另占" if image else "") + \
-        (f"，{fmt.upper()} 盘不能克隆、资源包另占 {_gb(size * 11 // 10)}" if clones is False else "") + \
-        (f"，{fmt.upper()} 盘建不了目录链接、另占 {_gb(2 * (size * 11 // 10))}" if not links else "")
+        (f"；单一 IMG {_gb(size)}" if img_extra else "；单一 IMG 边写边腾解包、不另占" if image else "") + \
+        (f"；{fmt.upper()} 盘不能克隆、资源包另占 {_gb(size * 11 // 10)}" if clones is False else "") + \
+        (f"；{fmt.upper()} 盘建不了目录链接、另占 {_gb(2 * (size * 11 // 10))}" if not links else "")
     direct_note = f"直连着色器上限 {_gb(direct_need)}"
     if loc.stat().st_dev == cache.stat().st_dev:
-        parts = [("library", loc, copy_need + direct_need, f"{unpack_note}，{direct_note}")]
+        parts = [("library", loc, copy_need + direct_need, f"{unpack_note}；{direct_note}")]
     else:
         parts = [("library", loc, copy_need, unpack_note), ("cache", cache, direct_need, direct_note)]
     volumes = []
@@ -1382,9 +1477,9 @@ def require_fat32_fits(c, game, loc):
     size = pack_input_bytes(selected_packages(game))
     if size <= FAT32_FILE_LIMIT:
         return
-    drives = "、".join(f"{root}（{fmt}，剩余 {_gb(free)}）" for root, fmt, free in ntfs_drives()[:4])
-    raise Failure(f"这款游戏的 iPhone 资源包要写成一个约 {_gb(size)} 的文件，存放位置所在的 FAT32 盘单个文件最多 4 GB：在出包页「存放位置」换到 NTFS 格式的盘"
-                  + (f"（这台电脑上可用：{drives}）" if drives else "（这台电脑上没找到 NTFS 盘：接上一块 NTFS 盘，或把一块盘格式化成 NTFS——会清空那块盘）") + "，再出包。",
+    drives = "、".join(f"{root}（{fmt}，剩余 {_gb(free)}）" for root, fmt, free in ntfs_drives()[:4])  # 非玩家句
+    raise Failure(f"这款游戏的 iPhone 资源包要写成一个约 {_gb(size)} 的文件，存放位置所在的 FAT32 盘单个文件最多 4 GB：在出包页「存放位置」换到 NTFS 格式的盘"  # 非玩家句
+                  + (f"（这台电脑上可用：{drives}）" if drives else "（这台电脑上没找到 NTFS 盘：接上一块 NTFS 盘，或把一块盘格式化成 NTFS——会清空那块盘）") + "，再出包。",  # 非玩家句
                   code="fat32_file_too_large")
 
 
@@ -1408,6 +1503,8 @@ def check_pack_space(c, game, *, compiler_policy=None):
             floor = target if any(not v["enough"] for v in relevant) else 0
             cache_result = trim(c.work_root, current_gid=game["id"],
                                 **dict(compiler_policy, min_free_bytes=floor))
+            from cache_retention import trim_build_caches
+            trim_build_caches(c.work_root / "run" / "s2arm", current_gid=game["id"])   # 盘紧时连带出包可重建缓存（aoc 等）按总量上限回收
             budget = space_budget(c, game)
             budget["compilerCache"] = cache_result
         budget["compilerMinFreeBytes"] = target
@@ -1422,17 +1519,17 @@ def check_pack_space(c, game, *, compiler_policy=None):
         where = "" if len(budget["volumes"]) == 1 else ("游戏存放位置所在的盘" if v["role"] == "library" else "工具缓存所在的盘")
         # 分项（#746：原先只给一个大数，玩家不知道为什么从 48 GB 跳到 106 GB、该清什么）
         note = f"（{v['note']}）" if v.get("note") else ""
-        head = f"磁盘空间不够：{where}这次出包预计要 {need / 1e9:.0f} GB{note}，现在只剩 {free / 1e9:.0f} GB。"
+        head = f"磁盘空间不够：{where}这次出包预计要 {need / 1e9:.0f} GB{note}，现在只剩 {free / 1e9:.0f} GB。"  # 非玩家句
         if override:
             if reclaim:   # 失败页说过「仍然继续会先删掉它」：旧包和新包同时在盘上的那段是峰值的一部分，先删才腾得出来
                 _rm(c, layout.root_of(c, game["id"].upper()), layout.ios_pack(c, game["id"].upper()))
-                c.diagnostic(head + f"已按你的选择先删掉这款上一次的 iPhone 包，腾出 {_gb(reclaim)}。", code="disk_full", severity="warning")
+                c.diagnostic(head + f"已按你的选择先删掉这款上一次的 iPhone 包，腾出 {_gb(reclaim)}。", code="disk_full", severity="warning")  # 非玩家句
                 continue
-            c.diagnostic(head + "已按你的选择仍然继续。", code="disk_full", severity="warning")
+            c.diagnostic(head + "已按你的选择仍然继续。", code="disk_full", severity="warning")  # 非玩家句
             continue
         # 预估只当提示、不拦（不许堵门，11-14 定：预估偏保守，玩家盘可能其实够）：记一条警告照常开工；真写满时写盘报 ENOSPC，那才停、归 disk_full
-        c.diagnostic(head + "这是预估，照常开工；真写满时会停下，释放空间后重试即可。"
-                     + (f"这款上一次的 iPhone 包（{_gb(reclaim)}）出完会被新包换掉。" if reclaim else ""), code="disk_full", severity="warning")
+        c.diagnostic(head + "这是预估，照常开工；真写满时会停下，释放空间后重试即可。"  # 非玩家句
+                     + (f"这款上一次的 iPhone 包（{_gb(reclaim)}）出完会被新包换掉。" if reclaim else ""), code="disk_full", severity="warning")  # 非玩家句
 
     return budget
 
@@ -1475,7 +1572,7 @@ def _wait_probe(c, what, probe, poll):
     t = threading.Thread(target=run, daemon=True); t0 = time.monotonic(); t.start()
     while not t.join(poll) and t.is_alive():
         c.check()
-        c.emit(message=f"在等系统的文件访问授权：{what}（已等 {int(time.monotonic() - t0)} 秒）。"
+        c.emit(message=f"在等系统的文件访问授权：{what}（已等 {int(time.monotonic() - t0)} 秒）。"  # 非玩家句
                        "请在系统弹出的「允许访问」对话框里点「允许」；看不到对话框就把它从别的窗口后面切出来")
     return box.get("err")
 
@@ -1493,7 +1590,7 @@ def wait_writable(c, path, poll=5.0):
     if isinstance(e, PermissionError):
         if os.name == "nt":   # D-4MAH：Windows 没有「系统设置 › 隐私与安全性」，下一步见 errors.WINDOWS_RECOVERY
             raise Failure(f"系统不让 S2Arm 往游戏库所在的磁盘写（{path}）", code="permission_denied")
-        raise Failure(f"系统不让 S2Arm 往游戏库所在的磁盘写（{path}）：到「系统设置 › 隐私与安全性 › 文件与文件夹」"
+        raise Failure(f"系统不让 S2Arm 往游戏库所在的磁盘写（{path}）：到「系统设置 › 隐私与安全性 › 文件与文件夹」"  # 非玩家句
                       "（外接盘看「可移除的宗卷」）里打开 S2Arm，再点一次", code="permission_denied")
     if e is not None:
         raise e
@@ -1522,7 +1619,7 @@ def wait_readable(c, paths, poll=5.0):
             if isinstance(e, PermissionError):
                 if os.name == "nt":   # D-4MAH：同上，Windows 的下一步见 errors.WINDOWS_RECOVERY
                     raise Failure(f"系统不让 S2Arm 读 {path.name}（{path.parent}）", code="input_permission")
-                raise Failure(f"系统不让 S2Arm 读 {path.name}（{path.parent}）：到「系统设置 › 隐私与安全性 › 文件与文件夹」"
+                raise Failure(f"系统不让 S2Arm 读 {path.name}（{path.parent}）：到「系统设置 › 隐私与安全性 › 文件与文件夹」"  # 非玩家句
                               "或「完全磁盘访问权限」里打开 S2Arm，再点一次", code="input_permission")
             raise Failure(f"读不了游戏文件 {path.name}：{e}", code="input_unreadable")
 
@@ -1590,7 +1687,7 @@ IMPORT_DIAGNOSTIC_LIMIT = 100_000
 def cap_diagnostic(text, limit=IMPORT_DIAGNOSTIC_LIMIT):
     if len(text) <= limit:
         return text
-    marker = "\n…[已省略中间部分]…\n"
+    marker = "\n…[已省略中间部分]…\n"  # 非玩家句
     keep = limit - len(marker)
     head = keep // 4
     return text[:head] + marker + text[len(text) - (keep - head):]
@@ -1891,11 +1988,14 @@ def catalog(c):
     if startup:
         sweep_residue(c)   # 崩溃 / 断电 / 被杀留下的解包与中间产物：启动时扫一次（剃刀 H14：原先每次刷新都扫两遍；正常失败与取消由 clean_after_stop 当场清）
         sweep_trash(c)   # 删除时挪进 .s2a-trash 而当时没删干净的：同在启动时清一次（玩家反馈 11-11 删除先挪再删）
+        sweep_private_tmp(c)   # 作业被打断（卡死 / 强退 / 断电）留在私有目录的临时目录：同在启动时清一次（#1471）
         unseal_builds(c)   # 旧版本留下的只读 RomFS 共享存储：每款一次加回写权限，玩家手动删旧产物不再被挡
     cat = c.catalog()
     input_supported, input_reason = toolchain.input_interface(c)
     # 设备记录里装在某台手机上的款：删除确认框据此多写一句「下次往这台手机装游戏时，手机上的这款会打不开」（容器现组时游戏库里没有它就带不进）
     on_phone = {g.upper() for _, r in layout.devices(c) if isinstance(r, dict) for g in (r.get("games") or {})}
+    import sgrade
+    sq = sgrade.queue_status(c)   # S 级升级队列（排队只在作业层一套）：每款 sgradeState / sgradeProgress，顶层 sgradeBatch
     for game in cat["games"]:
         game["missing"] = requirements(c, game)
         game["requirementDiagnostics"] = [c.describe_failure(error) for error in requirement_errors(c, game)]
@@ -1911,6 +2011,14 @@ def catalog(c):
         # 升级启动器不算要重新准备（11-08 维护者：覆盖升级状态要保留）：运行版本自带宿主，旧版照常能玩；输入变了才要重做
         game["needsPreparation"] = not game["ready"] or manifest.get("inputIdentity") != input_identity(game)
         game["iphoneReady"] = iphone_ready(c, game["id"])
+        game["iphoneExportable"] = game["iphoneReady"] and iphone_img(c, game["id"])   # 「导出自签包」能直接导出（单一 IMG 资源包）；旧格式要先重出
+        import sgrade
+        st = sgrade.upgrade_state(c, game["id"])   # S 级优化单款升级（11-17 起玩家手动点）：在跑 → 界面画进度、禁开始；标记在但作业不在 → 「升级未完成，点 S 级优化继续」
+        game["sgradeUpgrading"], game["sgradeIncomplete"] = st == "upgrading", st == "incomplete"
+        qs = next((x for x in sq["games"] if x["gameId"] == game["id"].upper()), None)   # 升级队列里这款（sgrade.queue_status）：queued / running / done / skipped / incomplete
+        game["sgradeState"] = qs["state"] if qs else ("incomplete" if st == "incomplete" else None)
+        game["sgradeProgress"] = qs["progress"] if qs else None
+        game["appleTvReady"] = tvos_ready(c, game["id"])   # Apple TV 版已出好（image/tvos 的容器件 + 资源包，pack/jobs/tvos.py）：出包页给「装到 Apple TV」
         game["downstream"] = downstream.describe(c, game)   # 下游深度方案（pack/downstream/schemes.json）：命中时启动器弹确认页
         game["sgrade"] = sgrade_badge(c, game["id"], image)   # 游戏库封面左上角金色 S（v0.4.0）
         game["iphoneRestorable"] = layout.phone_ipa(c, previous=True).is_file()   # 换壳后可装回上一版（install.restore_previous）
@@ -1939,6 +2047,9 @@ def catalog(c):
         if choices:
             game["display"] = max(choices, key=lambda p: p["version"])["display"]
         game["sizes"] = sizes.for_catalog(c, game["id"], cat["games"])   # 每款各部分大小（sizes.py：作业收尾量好记在 game.json，这里不量）
+        played = read(layout.path(c, game["id"], "playtime.json", create=False), {})   # Mac 局游玩时间（运行时 playtime.c 写，S2A_PLAYTIME）；没玩过不给
+        if isinstance(played, dict) and isinstance(played.get("seconds"), int) and played["seconds"] > 0:
+            game["playtime"] = dict(seconds=played["seconds"], lastPlayed=played.get("lastPlayed") or 0)
     try:
         validate_keys(c.keys)
         status = read(c.private / "keys/status.json", {}) | dict(ready=True)
@@ -1973,7 +2084,9 @@ def catalog(c):
         phone_updates = install.phone_updates(c)
     except (Failure, OSError, ValueError):   # 算不出本版壳号（开发树没出过壳等）：不提示，不挡游戏库
         phone_updates = []
-    return dict(games=cat["games"], profiles=[], keys=status, jobs=jobs, phoneUpdates=phone_updates,
+    # 这台电脑往几台手机装过游戏（设备记录里有款的）：启动器更新弹窗据此把按钮写成「更新启动器和 iPhone App」（11-16 维护者「点一次完成整个流程」）
+    phone_devices = sum(1 for _, r in layout.devices(c) if isinstance(r, dict) and r.get("games"))
+    return dict(games=cat["games"], sgradeBatch=dict((k, sq[k]) for k in ("running", "task", "index", "count")), profiles=[], keys=status, jobs=jobs, phoneUpdates=phone_updates, phoneDevices=phone_devices,
                 engineInfo={"inputConfig": input_supported, "inputConfigReason": input_reason})
 
 
@@ -2100,7 +2213,7 @@ def _rmdir_past_os_junk(path, error, tries=5, wait=0.2):
                 raise
         time.sleep(wait)
     others = [n for n in left if not layout.os_junk(n)]
-    raise OSError(errno.ENOTEMPTY, f"目录删不空：删的同时有程序往里写（剩 {', '.join(others[:5]) or '系统文件'}）", path) from error
+    raise OSError(errno.ENOTEMPTY, f"目录删不空：删的同时有程序往里写（剩 {', '.join(others[:5]) or '系统文件'}）", path) from error  # 非玩家句
 
 
 SHARING_RETRY_S = (0.1, 0.2, 0.4, 0.8, 1.5, 2.0)   # Windows 文件被别的程序短暂打开（杀毒 / 索引 / 预览刚扫到）时，删同一项的重试间隔（合计约 5 秒）
@@ -2125,12 +2238,13 @@ def _retry_shared(func, path, error, sleep=time.sleep):
 def _rmtree(p):
     """删整棵目录；遇到只读目录（产物根的 RomFS 共享存储 roots/.romfs_store/ 整棵只读，pack/roots.sh）先给它加回写权限再删。
     Windows 上封存不是只读位，是 ACL 里给当前用户的拒写项（pack/orch/roots.py seal → _win_acl），chmod 解不开：
-    按 roots 同一个函数把出错的项和它的父目录解封再删（11-07 Windows 出包机：启动器出包成功后清中间产物卡在 .romfs_store，WinError 5）。
+    按 roots 同一个函数把出错的项和它的父目录解封、再去掉只读位后再删（11-07 Windows 出包机：启动器出包成功后清中间产物卡在 .romfs_store，WinError 5）。
     exFAT 上删数据文件时 AppleDouble 附属文件（._*）会一并消失，scandir 里还挂着的名字再 unlink 得到 ENOENT——当作已删完。"""
     def unlock(func, path, err):
         error = err[1] if isinstance(err, tuple) else err   # onerror 给 exc_info、onexc 给异常本身
         errno_ = getattr(error, "errno", None)
-        if func in (os.rmdir, os.unlink) and errno_ == errno.ENOENT:
+        if errno_ == errno.ENOENT:
+            # 删除期间目录可能被另一个清理者先移走；扫描阶段也按幂等删除处理。其他 I/O 错误仍需上报。
             return
         if func in (os.rmdir, os.unlink) and errno_ == errno.ENOTEMPTY:
             return _rmdir_past_os_junk(path, error)
@@ -2145,6 +2259,8 @@ def _rmtree(p):
             for q in (parent, path):
                 if os.path.lexists(q) and not os.path.islink(q):
                     roots._win_acl(q, False)
+            if os.path.lexists(path) and not os.path.islink(path) and not os.path.isdir(path):
+                os.chmod(path, stat.S_IWRITE)   # 只读位（别的来源放进来的只读文件，os.unlink 不认、报 WinError 5）：去掉再删；还删不掉就照抛
         else:
             os.chmod(parent, stat.S_IMODE(os.lstat(parent).st_mode) | stat.S_IRWXU)
         func(path)
@@ -2193,7 +2309,7 @@ def _rm_entry(c, p):
 def _prune_roots(c, d):
     """产物根只留现行（*@现行 及其指向）与 RomFS 共享存储，清旧版本 → 清了几项。
     RomFS 共享存储：现行指向其中的身份，删了现行就断；没人指向的旧身份由下次提交清（pack/roots.sh root_romfs_sweep）"""
-    links = list(d.glob("*@现行"))
+    links = list(d.glob("*@现行"))  # 非玩家句
     current = {q.name for q in links}
     for q in links:
         if _is_link(q):
@@ -2225,36 +2341,65 @@ def sgrade_badge(c, gid, image):
         return False
     # 只认真打进去了的（11-14：原先「补丁库里有这款的包」也亮，没出过包的款也亮了；发布说明写的是「亮起的已经带上了」）：
     #   Mac 运行版本 / iPhone 程序件里补丁表有条目，或带着随包金手指原文（多数金手指只改内存、不进补丁表）。Mac 老游戏启动器打开时会补上（sgradeMac），补完就亮
-    for d in (Path(image), layout.ios_kit(c, gid)):
+    for d in (Path(image), layout.ios_kit_present(c, gid)):   # 只读已有的：清单里不迁移、不现建（见 layout.ios_kit_present）
+        if d is None:
+            continue
         try:
-            if table_rows(d / "cpatch.tsv") or any(d.glob("cheat-src.*")):
+            # 维护者 11-15「两者合成一套」：没补丁、但本包在宽屏已验证名单（我方通用满屏缺省开，产物根 widen_verified.tsv）也算带上了 S 级优化的满屏
+            if table_rows(d / "cpatch.tsv") or any(d.glob("cheat-src.*")) or (d / "widen_verified.tsv").is_file():
                 return True
         except OSError:
             continue
     return False
 
 
-CONTAINER_KIT = layout.IOS_KIT   # 每款 image/ios/kit：装机组装容器要用的文件，出包成功后从产物根存一份独立副本（游戏库结构 v3；旧布局是 iPhone/<号>/container-kit）
+CONTAINER_KIT = layout.IOS_KIT   # 每款 .programs/<程序号>/kit（11-16 起；之前在 image/ios/kit）：装机组装容器要用的文件，出包成功后从产物根存一份独立副本（游戏库结构 v3；旧布局是 iPhone/<号>/container-kit）
+
+
+RESOURCE_IMAGES = ("romfs.std", "game.img")   # 产物根顶层不进程序件的资源镜像（封闭集合，产出它们的就这几处）
+RESOURCE_SUFFIXES = (".nsp", ".xci", ".nca")   # 原件 / 内容包
+KIT_LOUD_BYTES = 300 * 1024 * 1024   # 程序件除改写产物外（= 常驻配方）的正常上限：11-16 常驻库 14 款都在 50 MB 以内，超过就是混进了不该有的大文件
+
+
+def is_resource_image(name):
+    return name in RESOURCE_IMAGES or Path(name).suffix.lower() in RESOURCE_SUFFIXES
+
+
+def loud_if_kit_oversized(c, gid, kit):
+    """程序件里除各模块原始程序与改写产物以外（即常驻配方那部分）超过 KIT_LOUD_BYTES：出包照常完成，但当场报出来、写出最大的几个文件——
+    下次再有新的大资源混进同层，第一次出包就被看见（11-16 romfs.std 混进配方是事后才发现的）。→ 报了没有"""
+    import programs as progs
+    skip = set(progs.MODULES) | {f"{m}.{o}" for m in progs.MODULES for o in progs.OUTPUTS}
+    files = [(p.stat().st_size, p.relative_to(kit).as_posix()) for p in Path(kit).rglob("*") if p.is_file() and p.name not in skip]
+    total = sum(n for n, _ in files)
+    if total <= KIT_LOUD_BYTES:
+        return False
+    top = "、".join(f"{name}（{n // (1024 * 1024)} MB）" for n, name in sorted(files, reverse=True)[:3])
+    c.diagnostic(f"{gid} 的程序件里混进了大文件，共 {total // (1024 * 1024)} MB（正常不到 50 MB）：{top}", code="kit_oversized", severity="warning")  # 非玩家句
+    return True
 
 
 def save_container_kit(c, gid, root, dest=None):
     """把组装容器要读的文件（ship_ext.place_game / display_name / 随包表：顶层普通文件、ctl/control.nacp、programs/<n>/）存成不依赖产物根的副本。
     root 里的链接按内容拷，之后删产物根、RomFS 存储、Windows 的 work/ 都不影响装机、续签和单壳追加。没有 main.npdm 返回 None，不动旧的。
-    dest 给了（迁移旧布局时）就存成 dest/container-kit，否则存到这款的 image/ios/kit。"""
+    dest 给了（迁移旧布局时）就存成 dest/container-kit，否则存到程序缓存的 kit、并存常驻配方（pack/jobs/programs.py）。"""
     root = Path(root)
     if not (root / "main.npdm").is_file():
         return None
-    out = Path(dest) if dest else layout.image_ios(c, gid)
+    import programs as progs   # 本函数下面另有局部变量 programs（产物根的 programs/ 目录）
+    out = Path(dest) if dest else progs.cache(c, gid)
     out.mkdir(parents=True, exist_ok=True)
     name = "container-kit" if dest else CONTAINER_KIT
     kit, temporary = out / name, out / (name + ".partial")
-    managed = c.library if dest else layout.root_of(c, gid)
+    managed = c.library if dest else c.work_root
     if temporary.exists():
         _rm(c, managed, temporary)
     def copy_files(source, dest):
         dest.mkdir(parents=True, exist_ok=True)
         for p in source.iterdir():
-            if p.is_file() and not p.name.startswith(".") and p.suffix != ".log":
+            # 产物根顶层的资源镜像（RESOURCE_IMAGES：RomFS 直出的 romfs.std、资源包、原件）是游戏资源，不是程序件：不跳过就整份进程序缓存和常驻配方
+            #   （11-16 Windows 端到端实测：romfs.std 让小款配方 315 MB，组装容器本来也不读它）。不用白名单：程序件有约 30 种、读写方各不相同，漏一项升级就坏
+            if p.is_file() and not p.name.startswith(".") and p.suffix != ".log" and not is_resource_image(p.name):
                 shutil.copyfile(p, dest / p.name)
     copy_files(root, temporary)
     if (root / "ctl/control.nacp").is_file():
@@ -2265,9 +2410,16 @@ def save_container_kit(c, gid, root, dest=None):
         for p in sorted(programs.iterdir()):
             if p.is_dir() and (p / "main.npdm").is_file():
                 copy_files(p, temporary / "programs" / p.name)
+    loud_if_kit_oversized(c, gid, temporary)
     if kit.exists():
         _rm(c, managed, kit)
     os.replace(temporary, kit)
+    if not dest:
+        progs.save_recipe(c, gid)   # 常驻配方（原始程序在常驻里的模块，改写产物不存、现建）
+        for legacy, root in ((layout.image_ios(c, gid, create=False) / CONTAINER_KIT, layout.root_of(c, gid)),
+                             (layout.program_store(c, gid) / CONTAINER_KIT, c.library)):
+            if legacy.is_dir():   # 旧位置的那份已被这次新存的取代
+                _rm(c, root, legacy)
     return kit
 
 
@@ -2284,20 +2436,21 @@ def _build_entries(c, gid):
 
 def _residue_disposable(c, gid):
     """解包和中间产物能不能删：有容器件，或这款没有已出好的 IPA。老玩家有 IPA 没容器件时，现行产物根是装机的唯一来源，留给「旧版残留」项先存容器件再删。"""
-    return (layout.ios_kit(c, gid) / "main.npdm").is_file() or not (layout.ios_pack(c, gid) / "manifest.json").is_file()
+    return layout.has_ios_kit(c, gid) or not (layout.ios_pack(c, gid) / "manifest.json").is_file()
 
 
 def _keep_stage_logs(c, gid):
     """产物根里的阶段日志要跟着删：先拷进私有日志目录，失败后的诊断包还能带上（只拷文件，单份 8 MB 以内，最多 64 份）。"""
     work = layout.ios_work(c, gid, create=False)
-    roots = [*work.glob("roots/*@现行"), *work.glob("work/pkg/product"), *layout.build_dir(c, gid, create=False).glob("*/roots/*@现行"),
+    roots = [*work.glob("roots/*@现行"), *work.glob("work/pkg/product"), *layout.build_dir(c, gid, create=False).glob("*/roots/*@现行"),  # 非玩家句
              *work.glob("work"),   # Windows 一键出包各步的日志（seed.log 等，pack/orch/oneclick_win.py Run.sh 写在工作目录下）：#754 失败后随 build/ 删掉，诊断包里没有
              # 阶段失败时各阶段把自己的日志拷进产物根旁的 .failed/（如改写 pack/stage_rewrite.sh 的 <款>_<模块>.log）：玩家报出包超时 / 改写失败时要的就是它（#251 诊断包里没有）
-             *work.glob("roots/.failed"), *layout.build_dir(c, gid, create=False).glob("*/roots/.failed")]
+             *work.glob("roots/.failed"), *layout.build_dir(c, gid, create=False).glob("*/roots/.failed"),
+             *work.glob("work/roots/.failed")]   # Windows 一键出包的产物根在工作目录下（pack/jobs/ipa.py win_oneclick --out <工作目录>/work）：改写失败留的 <款>_<模块>.rewrite.log（#1476 诊断包里只有 light.log）
     dest = c.logs / (c.task + "-stages")
     count = 0
     for root in roots:
-        for log in sorted(root.glob("*.log")):
+        for log in sorted(p for p in root.glob("*.log") if not layout.os_junk(p.name)):
             if count >= 64 or not log.is_file() or log.stat().st_size > 8 << 20:
                 continue
             dest.mkdir(parents=True, exist_ok=True)
@@ -2316,7 +2469,7 @@ def clean_after_stop(c):
                 _keep_stage_logs(c, gid)
                 prune_build(c, gid, record=False)
     except (Failure, OSError, ValueError) as error:
-        c.diagnostic("清理中间产物没有完成，下次空闲时会再清：" + c.redact(str(error)), code="job_failed", severity="warning")
+        c.diagnostic("清理中间产物没有完成，下次空闲时会再清：" + c.redact(str(error)), code="job_failed", severity="warning")  # 非玩家句
 
 
 def _residue(c):
@@ -2443,11 +2596,13 @@ def prune_build(c, gid, *, retain_compiler=True, record=True):
 
 
 def drop_from_container(c, gid):
-    """游戏库里删了的款从各台手机的记录（devices/<设备>.json）摘掉，不装机：下次给那台装机时现组的容器就不再带它（#227）"""
+    """游戏库里删了的款从各台手机的记录（devices/<设备>.json）摘掉，不装机：下次给那台装机时现组的容器就不再带它（#227）。
+    同时记进这台的 deleted（本机删过的款）：手机上它还在时，组壳提示说「已从这台电脑的游戏库删除」，不说成「在别的电脑上装的」（11-16）"""
     gid = gid.upper()
     for key, rec in layout.devices(c):
         if gid in (rec.get("games") or {}):
             rec["games"].pop(gid)
+            rec["deleted"] = sorted(set(rec.get("deleted") or []) | {gid})
             layout.save_device(c, key, rec)
 
 
@@ -2467,12 +2622,10 @@ def delete(c):
         #   下次再删又卡在同一个文件上（11-11 玩家反馈「删除有时生效有时不生效」，真 App 复现）。挪走的删不干净只记黄字，空闲时 sweep_trash 接着删
         trashed = []
         if gdir and gdir.exists():
-            # 存档有内容就保留
-            saves = gdir / "saves"
-            backups = gdir / "save-backups"
-            has_saves = layout.has_content(saves) or layout.has_content(backups)   # 只有 .DS_Store 之类不算有存档
+            # 存档类（layout.save_entries 唯一来源：saves/、save-backups/、save_backup/、SaveData*）有内容就全部保留，其余照删（金手指、mod 不算存档）
+            has_saves = any(layout.has_content(p) for p in layout.save_entries(gdir))   # 只有 .DS_Store 之类不算有存档
             root = gdir.parent.parent   # 这款所在存放位置的根（root_of 靠 find_game，认不出时会退回默认位置）
-            for item in ([i for i in gdir.iterdir() if i.name not in ("saves", "save-backups")] if has_saves else [gdir]):
+            for item in ([i for i in gdir.iterdir() if not layout.is_save_entry(i.name)] if has_saves else [gdir]):
                 moved = _to_trash(c, root, item, gid)
                 if moved:
                     trashed.append((root, moved))
@@ -2483,6 +2636,12 @@ def delete(c):
             if moved:
                 trashed.append((c.work_root, moved))
         drop_from_container(c, gid)
+        import programs as progs   # 删除游戏 = 从库里删掉、也从各台手机记录摘掉：这款的程序常驻与缓存一并删
+        for root, d in ((c.library, layout.program_store(c, gid)), (c.work_root, progs.cache(c, gid))):
+            if d.exists():
+                moved = _to_trash(c, root, d, gid)
+                if moved:
+                    trashed.append((root, moved))
         cat = c.catalog()
         cat["games"] = [g for g in cat["games"] if g["id"] != gid]
         atomic(c.library / "catalog.json", cat)
@@ -2496,7 +2655,7 @@ def delete(c):
             if p.exists() or p.is_symlink():   # 删的过程中被别处（启动时的 sweep_trash）删完了，不算没删掉
                 left.append(f"{p.name}（{e}）")
     if left:
-        c.diagnostic("这款已从游戏库删掉；有几个文件当时删不掉（可能正被别的程序打开），S2Arm 空闲时会再删：" + "；".join(left)[:400],
+        c.diagnostic("这款已从游戏库删掉；有几个文件当时删不掉（可能正被别的程序打开），S2Arm 空闲时会再删：" + "；".join(left)[:400],  # 非玩家句
                      code="job_failed", severity="warning")
     return {}
 
@@ -2523,6 +2682,39 @@ def _to_trash(c, root, item, gid):
     except OSError as e:
         raise Failure(f"删不掉「{item.name}」：{e.strerror or e}。确认这块盘没被设成只读、文件没被别的程序锁住，再删一次。", code="job_failed") from e
     return dest
+
+
+# 私有目录里作业建的临时目录：TemporaryDirectory(dir=c.private) 的缺省名 tmp + 8 位，装机 / 下游装机的 mkdtemp 前缀。只认这几种名字（我们自己建的）
+PRIVATE_TMP = re.compile(r"(tmp|s2a-install-|s2a-ds-install-)[a-z0-9_]{8}")
+PRIVATE_TMP_AGE_S = 24 * 3600
+
+
+def sweep_private_tmp(c, now=None):
+    """作业被打断后留在私有目录的临时目录（#1471：S 级优化给 Mac 补着色器的临时产物根 tmp*/roots 被打断就留下，玩家看到几十 GB）。
+    启动器开局时清：只清我们自己建的名字（PRIVATE_TMP）、真目录（不跟软链）、本库没有任务在跑（执行锁与自动重活锁都拿得到）、
+    且它和第一层内容超过一天没动过（防另一份游戏库 / 另一个启动器实例的任务还在用）。删不掉的下次再试；→ 删了几个"""
+    now = time.time() if now is None else now
+    try:
+        cands = [p for p in c.private.iterdir() if PRIVATE_TMP.fullmatch(p.name) and p.is_dir() and not _is_link(p)]
+    except OSError:
+        return 0
+    if not cands:
+        return 0
+    n = 0
+    with c.idle("execution") as free, c.idle("auto-heavy") as auto_free:
+        if not (free and auto_free):
+            return 0
+        for p in cands:
+            try:
+                newest = max([p.lstat().st_mtime] + [e.stat(follow_symlinks=False).st_mtime for e in os.scandir(p)])
+                if now - newest < PRIVATE_TMP_AGE_S:
+                    continue
+                _rm(c, c.private, p); n += 1
+            except (Failure, OSError):
+                continue
+    if n:
+        print(f"清掉私有目录里作业被打断留下的临时目录 {n} 个", file=sys.stderr)  # 非玩家句
+    return n
 
 
 def sweep_trash(c):
@@ -2562,6 +2754,8 @@ def clean(c):
             prune_build(c, game["id"], retain_compiler=False)   # 用户显式清缓存保留原有全清语义，不套用 Q15 自动保留策略
             from cache_retention import engine_installed_at, prune_tool_keys
             prune_tool_keys(c.work_root, engine_installed_at(c.engine))   # 顺带清当前引擎用不到的工具缓存旧键
+            from cache_retention import trim_build_caches
+            trim_build_caches(c.work_root / "run" / "s2arm")   # 出包可重建缓存总量上限（同 ipa.py 出包收尾）
         elif kind == "sources":
             # 只删 0.1.0-beta.3 及以前复制进游戏库的托管副本；原地导入的原件是玩家的文件，只读、不删
             other = {p["path"] for g in c.catalog()["games"] if g["id"] != game["id"] for p in g["packages"]}
@@ -2581,18 +2775,33 @@ SPACE_PARTS = (
     ("legacy", "旧版残留", "旧版本留下的解包和中间文件，出包成功后不再保留；删了不影响已出好的包和 Mac 版本"),
     ("shaders", "着色器与出包缓存", "下次出包会重新翻译着色器（大游戏要多花较长时间）"),
     ("mac", "Mac 运行版本", "下次在 Mac 上玩之前会重新准备"),
-    ("ipa", "已出好的 iPhone 包", "删了要重新出包才能再装到 iPhone；已装好的游戏不受影响"),
+    ("ipa", "已出好的 iPhone 包", "只删资源包：手机上已装的不受影响，以后更新 S2Arm 也照样带上这款；要装到别的手机或重新推资源时再出一次包"),
+    ("selfsign", "自签导出的游戏文件", "「S2Arm 自签导出」文件夹里这款的 .img：手机上已导入的不受影响；要再装到手机时重新「导出自签包」"),
 )
 SPACE_KEPT = ("saves", "logs")
+
+
+def tvos_ready(c, gid):
+    import tvos
+    return tvos.tv_ready(c, gid)
 
 
 def iphone_ready(c, gid):
     """这款的 iPhone 版能不能装（catalog 每款都问，只看几个文件，不逐文件读）：容器件主程序表 main.npdm 在且非空、有改写产物，资源包清单在。
     审计 P2-212：原先只看「有 ipa + 有资源包目录」，容器件缺 main.npdm 也报就绪，点装机才报错；逐文件完整核对仍在装机组装时（pack/ship_ext.py check_root / place_game）"""
-    kit, pack = layout.ios_kit(c, gid), layout.ios_pack(c, gid)
-    try:
-        return (kit / "main.npdm").stat().st_size > 0 and any(kit.glob("*.fixups.tsv")) and (pack / "manifest.json").is_file()
+    pack = layout.ios_pack(c, gid)
+    try:   # 程序件只问「有没有」（缓存 kit 或常驻配方），不现建：游戏库清单每款都问，现建要跑改写器
+        return layout.has_ios_kit(c, gid) and (pack / "manifest.json").is_file()
     except OSError:
+        return False
+
+
+def iphone_img(c, gid):
+    """这款的 iPhone 资源包是不是单一 IMG 形态（manifest format = img，同 install.img_pack）：是才能直接导出成 .img；
+    旧格式（散文件 / tar）点「导出自签包」时先重出 iPhone 包再导出（11-15 维护者：玩家点的是导出，就把导出做完）"""
+    try:
+        return json.loads((layout.ios_pack(c, gid) / "manifest.json").read_text(encoding="utf-8")).get("format") == "img"
+    except (OSError, ValueError, AttributeError):
         return False
 
 
@@ -2600,17 +2809,31 @@ def space_parts(c, gid):
     """{部件 id: [路径…]}，外加不给删的 saves / logs。路径都在游戏库或私有目录之内；不存在的不列"""
     out = layout.ios_work(c, gid, create=False)
     shared = {c.work_root / "cache" / "air", c.work_root / "cache" / "pso", c.work_root / "run" / "gal_dl_cache"}   # 各款共用的编库缓存：不归任何一款
-    ipa = [layout.image_ios(c, gid, create=False)]
+    layout.ios_kit(c, gid)   # 旧库程序件还在 image/ios/kit 的，先搬进专用文件夹（不随 iPhone 包一起删）
+    ipa = [layout.ios_pack(c, gid)]   # 只删资源包：程序件在专用文件夹（layout.program_store），删了 iPhone 包也照样能更新 S2Arm、带上这款
     gdir = layout.find_game(c, gid)
     parts = {
         "legacy": _build_entries(c, gid),   # 不含出包日志（下面 logs 项，只报不删）
-        "shaders": [p for p in game_caches(c, gid) if p not in shared],
+        "shaders": [p for p in game_caches(c, gid) if p not in shared] + [Path(c.work_root) / "cache" / "programs" / gid.upper()],   # 程序缓存：缺了按常驻配方现建（pack/jobs/programs.py）；出包收尾不清它
         "mac": [layout.image_mac(c, gid, create=False)] if gdir and gdir.exists() else [],
         "ipa": ipa,
-        "saves": [layout.path(c, gid, "saves", create=False)],
+        "saves": layout.save_entries(gdir) if gdir else [],   # 只报不删（SPACE_KEPT）；存档类唯一来源 layout.save_entries
         "logs": [out / "logs"],
+        "selfsign": selfsign_imgs(c, gid),
     }
     return {k: [p for p in v if p.exists() or p.is_symlink()] for k, v in parts.items()}
+
+
+def selfsign_imgs(c, gid):
+    """「S2Arm 自签导出」文件夹（中 / 英两个定名都看）里这款的 .img（完整的和着色器更新包）：单独写出、不和 games/ 共用磁盘块，
+    每款等于再占一份（#1471）。按文件头里的游戏号认，不按文件名"""
+    import install
+    out = []
+    for name in install.EXPORT_DIRS.values():
+        folder = c.library / name
+        if folder.is_dir():
+            out += [p for p in layout.entries(folder, "*.img") if p.is_file() and install._img_head(p)[0] == gid.upper()]
+    return out
 
 
 def _part_bytes(paths):
@@ -2699,7 +2922,7 @@ def space_survey(c):
     for g in games:
         c.check()
         parts = space_parts(c, g["id"])
-        shown = [(k, t, r) for k, t, r in SPACE_PARTS if k != "legacy" or parts[k]]   # 没有旧版残留就不显示
+        shown = [(k, t, r) for k, t, r in SPACE_PARTS if k not in ("legacy", "selfsign") or parts[k]]   # 没有旧版残留 / 没自签导出过这款就不显示
         combos = freeable({k: parts[k] for k, _, _ in shown})
         # 每行是「只删这一项」腾出的字节；几项共用的克隆块只在都勾上时算进合计（combos），sharedBytes = 全勾比各项单删相加多出的部分
         rows.append(dict(gameId=g["id"], name=game_custom(c, g["id"])["name"] or g.get("name") or g["id"],
@@ -2714,14 +2937,14 @@ def space_free(c):
     want = c.r.get("parts")
     ids = {k for k, _, _ in SPACE_PARTS}
     if not isinstance(want, list) or not want or any(p not in ids for p in want):
-        raise Failure("要删除的部件不对：只能选" + "、".join(t for _, t, _ in SPACE_PARTS) + "。")
+        raise Failure("要删除的部件不对：只能选" + "、".join(t for _, t, _ in SPACE_PARTS) + "。")  # 非玩家句
     with c.lock("execution"), c.lock():
         gid = c.game()["id"]
         c.begin("释放空间")
         if "legacy" in want:   # 老玩家的现行产物根是装机的唯一来源：删之前先存成容器件，否则装机会报 container_stale
             from ipa import product_root
             root = product_root(c, gid)
-            if root is not None and not (layout.ios_kit(c, gid) / "main.npdm").is_file():
+            if root is not None and not layout.has_ios_kit(c, gid):
                 save_container_kit(c, gid, root)
         parts = space_parts(c, gid)
         # 腾出多少按删前的组合账算（同 space_survey 的合计）：逐项「删前 − 删后」会把共用克隆块记在最后删的那项上、单项又各算一遍
@@ -2729,7 +2952,7 @@ def space_free(c):
         freed, done = combos[space_key(want)], []
         for k in [k for k, _, _ in SPACE_PARTS if k in want]:
             for p in parts[k]:
-                root = c.work_root if p.is_relative_to(c.work_root) else layout.root_of(c, gid)
+                root = c.work_root if p.is_relative_to(c.work_root) else c.library if k == "selfsign" else layout.root_of(c, gid)
                 _rm(c, root, p)
             done.append(dict(id=k, bytes=combos[k]))
         sizes.refresh(c, gid)
@@ -2841,25 +3064,25 @@ def diagnostics(c):
         try:
             result = subprocess.run(args, env=c.env(), capture_output=True, text=True, timeout=10)
             if result.returncode:
-                return {"error": f"命令失败（退出码 {result.returncode}）"}
-            return result.stdout.strip() or {"error": "命令输出为空"}
+                return {"error": f"命令失败（退出码 {result.returncode}）"}  # 非玩家句
+            return result.stdout.strip() or {"error": "命令输出为空"}  # 非玩家句
         except subprocess.TimeoutExpired:
             return {"error": "命令超过 10 秒"}
         except OSError:
-            return {"error": "命令无法执行"}
+            return {"error": "命令无法执行"}  # 非玩家句
 
     def launcher_version():
         # Installed Jobs live below Contents/Resources; source runs have no
         # launcher identity and must say so rather than invent a version.
         contents = next((p for p in Path(__file__).resolve().parents if p.name == "Contents"), None)
         if contents is None:
-            return {"error": "源码运行，没有启动器 Info.plist"}
+            return {"error": "源码运行，没有启动器 Info.plist"}  # 非玩家句
         try:
             info = plistlib.loads((contents / "Info.plist").read_bytes())
             value = info.get("CFBundleShortVersionString")
-            return value if isinstance(value, str) and value.strip() else {"error": "启动器版本字段缺失"}
+            return value if isinstance(value, str) and value.strip() else {"error": "启动器版本字段缺失"}  # 非玩家句
         except (OSError, ValueError, plistlib.InvalidFileException):
-            return {"error": "启动器 Info.plist 无法读取"}
+            return {"error": "启动器 Info.plist 无法读取"}  # 非玩家句
 
     destination = resolve_path(Path(c.r["path"]).expanduser())
     library = resolve_path(c.library)
@@ -2888,6 +3111,16 @@ def diagnostics(c):
         with os.fdopen(fd, "w+b") as output:
             created = os.fstat(output.fileno())
             with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+                def fits(member, estimate):
+                    # 整包预算：已写进 zip 的字节（顺序写，output.tell() 即压缩后已用）+ 这份的压缩后估算放得下才放；放不下记一笔
+                    if output.tell() + estimate + 512 > DIAGNOSTIC_ZIP_BUDGET:
+                        budget_skipped.append(member)
+                        return False
+                    return True
+
+                def packed(data):
+                    return len(zlib.compress(data, 6))   # 同 ZIP_DEFLATED 缺省级别：估压缩后大小
+
                 def write_file(parent_fd, name, member, job=False):
                     # #917：在跑的作业（含这次导出自己）一直原子替换自己的任务记录，查名字到打开之间换了一份（inode 变）很常见；
                     #   原先整包报「发生变化，请重试」不生成，重试照样撞上。改为重查名字再开，三次都在换就跳过这一份、记进 manifest changed
@@ -2928,6 +3161,8 @@ def diagnostics(c):
                         while public_member in archive.namelist() or public_member == "manifest.json":
                             n += 1
                             public_member = f"{public_stem} ({n}){suffix}"
+                        if not fits(public_member, min(opened.st_size, DIAGNOSTIC_JOB_LIMIT if job else DIAGNOSTIC_LOG_LIMIT) // 4):
+                            return   # 文本按 1/4 估（实测日志压缩约 1/10，留余量）
                         if job:
                             # 超过单份上限的任务记录（长局 / AI 连续操作攒下的事件）：留前 4 MiB、记进 manifest truncated，不再整包拒绝（#917）
                             limit = DIAGNOSTIC_JOB_LIMIT
@@ -2963,6 +3198,7 @@ def diagnostics(c):
                 step = "读日志与任务记录"
                 truncated = []
                 changed = []   # 导出期间一直在换、跳过的（#917）
+                budget_skipped = []   # 整包预算放不下、跳过的成员（DIAGNOSTIC_ZIP_BUDGET）
                 # 只带最近 DIAG_JOBS 个任务（按记录改动时间）+ 还没结束的：任务记录 / 各任务日志原先整目录收，用久了上万个文件，
                 #   超过上传服务 1000 个文件上限（「文件数超过 1000 个」）、打包也慢（11-13 维护者机器 703 个任务 + 12296 个任务日志）
                 picked, job_total, included = set(), 0, 0
@@ -3013,7 +3249,7 @@ def diagnostics(c):
                 # 手机诊断（s2armctl diag pull / 设置页「拉回 iPhone 诊断」，pack/jobs/diag.py pull）：拉回在 <私有目录>/diagnostics/<时刻>-…/，
                 #   原先导出不收，照「反复闪退：先 diag pull 再 diag export」做的玩家交上来的包里没有手机日志。只收最近一次拉回的那份；
                 #   文本走和 logs/ 同一套脱敏（拉回的是没脱敏的原始文件），渲染出的 PNG 同诊断局读数原样收、限大小，别的类型跳过并在 manifest 里写明
-                step = "读手机诊断"
+                step = "读手机诊断"  # 非玩家句
                 phone = None
                 pulls = c.private / "diagnostics"
                 latest = max((d for d in pulls.iterdir() if d.is_dir() and not d.is_symlink()), key=lambda d: d.stat().st_mtime, default=None) \
@@ -3023,7 +3259,7 @@ def diagnostics(c):
                     try:
                         phone.update({k: v for k, v in json.loads((latest / "pull.json").read_text(encoding="utf-8")).items() if k in ("pulledAt", "devices", "apps")})
                     except (OSError, ValueError):
-                        phone["pulledAt"] = time.strftime("%Y-%m-%d %H:%M:%S %z", time.localtime(latest.stat().st_mtime)) + "（按目录修改时间，旧版拉回没有记录）"
+                        phone["pulledAt"] = time.strftime("%Y-%m-%d %H:%M:%S %z", time.localtime(latest.stat().st_mtime)) + "（按目录修改时间，旧版拉回没有记录）"  # 非玩家句
                     pulls_fd = winproc.open_dir_nofollow("diagnostics", home_fd) if os.name == "nt" else os.open("diagnostics", flags, dir_fd=home_fd)
                     descriptors.append(pulls_fd)
                     latest_fd = winproc.open_dir_nofollow(latest.name, pulls_fd) if os.name == "nt" else os.open(latest.name, flags, dir_fd=pulls_fd)
@@ -3053,12 +3289,15 @@ def diagnostics(c):
                             elif name.lower().endswith(".png") and 0 < info.st_size <= DIAG_RUN_FILE_LIMIT:
                                 with (winproc.open_file(name, directory_fd) if os.name == "nt"
                                       else os.fdopen(os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd), "rb")) as f:
-                                    archive.writestr("phone/" + "/".join(redact_member_component(x) for x in member.split("/")), f.read())
+                                    data, png = f.read(), "phone/" + "/".join(redact_member_component(x) for x in member.split("/"))
+                                if not fits(png, packed(data)):
+                                    continue
+                                archive.writestr(png, data)
                                 phone["files"] += 1
                             else:
                                 phone["skipped"].append(member)
                     pulled(latest_fd)
-                step = "读本机崩溃报告"
+                step = "读本机崩溃报告"  # 非玩家句
                 mac_crash = None
                 if sys.platform == "darwin" and MAC_CRASH_DIR.is_dir() and not MAC_CRASH_DIR.is_symlink():
                     cutoff = time.time() - MAC_CRASH_DAYS * 86400
@@ -3075,11 +3314,14 @@ def diagnostics(c):
                         if size > MAC_CRASH_FILE_LIMIT:
                             mac_crash["skipped"].append(f.name)
                             continue
-                        archive.writestr("mac_crash/" + f.name, redact(f.read_text(encoding="utf-8", errors="replace")).encode())
+                        data = redact(f.read_text(encoding="utf-8", errors="replace")).encode()
+                        if not fits("mac_crash/" + f.name, packed(data)):
+                            continue
+                        archive.writestr("mac_crash/" + f.name, data)
                         mac_crash["files"] += 1
                 # 诊断局（#438，community.diag_run_env）的读数：各款游戏文件夹 diagrun/ 里的 PNG（出图画面与颜色目标，渲染出来的图、不含游戏数据），
                 #   原样放 diagrun/<游戏号>_<原名>。单张超过 4 MB 跳过、总量至多 40 MB；链接不跟（不越出游戏文件夹）
-                step = "读诊断局读数"
+                step = "读诊断局读数"  # 非玩家句
                 used = 0
                 for g in sorted(c.catalog().get("games", []), key=lambda g: g.get("id", "")) if c.library.is_dir() else []:
                     gdir = layout.find_game(c, g.get("id", ""))
@@ -3093,12 +3335,15 @@ def diagnostics(c):
                         n = f.stat().st_size
                         if not n or n > DIAG_RUN_FILE_LIMIT or used + n > DIAG_RUN_TOTAL_LIMIT:
                             continue
-                        archive.writestr(f"diagrun/{g['id']}_{f.name}", f.read_bytes())
+                        data = f.read_bytes()
+                        if not fits(f"diagrun/{g['id']}_{f.name}", packed(data)):
+                            continue
+                        archive.writestr(f"diagrun/{g['id']}_{f.name}", data)
                         used += n
                 # 本机管线记录（11-13 维护者：玩家上传的诊断收进随包种子，取件按程序号收进众包 zc_crowd.tsv）：各款文档目录 temp/<号>/wire/<号>/pso_user.tsv
                 #   （build.runtime_env 的 S2A_DOCS，宿主 nvn_mtl.m pso_user_path），原样放 pso/<号>.tsv。只有着色器键与管线状态的十六进制，不含个人信息、不过脱敏；
                 #   单份超过 4 MB 跳过；链接不跟。Windows 不在本机跑游戏，没有这份就不放
-                step = "读本机管线记录"
+                step = "读本机管线记录"  # 非玩家句
                 for g in sorted(c.catalog().get("games", []), key=lambda g: g.get("id", "")) if c.library.is_dir() else []:
                     c.check()
                     gid = (g.get("id") or "").upper()
@@ -3107,10 +3352,47 @@ def diagnostics(c):
                     f = c.library / "temp" / gid / "wire" / gid / "pso_user.tsv"
                     if f.is_symlink() or not f.is_file() or not 0 < f.stat().st_size <= DIAG_PSO_FILE_LIMIT:
                         continue
-                    archive.writestr(f"pso/{gid}.tsv", f.read_bytes())
+                    data = f.read_bytes()
+                    if fits(f"pso/{gid}.tsv", packed(data)):
+                        archive.writestr(f"pso/{gid}.tsv", data)
+                # 着色器补料（graphics/nvn/host/dsh_salvage.inc）：各款 temp/<号>/wire/<号>/shader_miss/ 里库里没有 / 现编失败的着色器（<键>.ctl / .code + index.tsv），
+                #   每款打成一个 tar 放 shader_miss/<号>.tar（诊断包成员数有上限：tools/diagnostic_report.py MAX_FILES 1000，一款就可能上千个文件）；
+                #   取件按程序号归档进管线种子目录 rt_shaders/，出包编进那款的直连库。只有游戏着色器字节与键，不含个人信息、不过脱敏（index.tsv 的失败原文是翻译器 rc，不含路径）。
+                #   每款至多 DIAG_SALVAGE_GAME_LIMIT（运行时同上限）、整包至多 DIAG_SALVAGE_TOTAL_LIMIT；索引先放，每键两份成对放（放不下整对不放）；链接不跟
+                step = "读着色器补料"  # 非玩家句
+                salvage_used = 0
+                for g in sorted(c.catalog().get("games", []), key=lambda g: g.get("id", "")) if c.library.is_dir() else []:
+                    c.check()
+                    gid = (g.get("id") or "").upper()
+                    if not re.fullmatch(r"[0-9A-F]{16}", gid):
+                        continue
+                    d = c.library / "temp" / gid / "wire" / gid / "shader_miss"
+                    if d.is_symlink() or not d.is_dir():
+                        continue
+                    picked, game_used = [], 0
+                    keys = sorted({f.name[:16] for f in d.iterdir() if re.fullmatch(r"[0-9a-f]{16}\.ctl", f.name)})
+                    for names in [("index.tsv",)] + [(f"{k}.ctl", f"{k}.code") for k in keys]:
+                        fs = [d / x for x in names]
+                        if any(f.is_symlink() or not f.is_file() for f in fs):
+                            continue
+                        n = sum(f.stat().st_size for f in fs)
+                        if not n or game_used + n > DIAG_SALVAGE_GAME_LIMIT or salvage_used + game_used + n > DIAG_SALVAGE_TOTAL_LIMIT:
+                            continue
+                        picked += fs; game_used += n
+                    if not picked:
+                        continue
+                    buf = io.BytesIO()
+                    with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as t:
+                        for f in picked:
+                            data = f.read_bytes(); ti = tarfile.TarInfo(f.name); ti.size = len(data); ti.mtime = 0; ti.mode = 0o644
+                            t.addfile(ti, io.BytesIO(data))
+                    if not fits(f"shader_miss/{gid}.tar", packed(buf.getvalue())):
+                        continue
+                    archive.writestr(f"shader_miss/{gid}.tar", buf.getvalue())
+                    salvage_used += game_used
                 manifest = dict(schema=1,   # 诊断上传服务收件要它（维护方方案「上传协议」：没有 schema 判 not_diag 拒收）；iOS ios/diag.m 同字段
                                 launcher_version=launcher_version(),
-                                macos_version=platform.mac_ver()[0] or {"error": "macOS 版本不可用"},
+                                macos_version=platform.mac_ver()[0] or {"error": "macOS 版本不可用"},  # 非玩家句
                                 xcode_version=probe(["/usr/bin/xcodebuild", "-version"]),
                                 mac_model=probe(["/usr/sbin/sysctl", "-n", "hw.model"]),
                                 xcode_signing=signing_status())
@@ -3147,6 +3429,8 @@ def diagnostics(c):
                 # These names have already been sanitized; redacting them again
                 # would hide task UUIDs and break the archive index.
                 manifest["files"] = sorted(archive.namelist() + ["manifest.json"])
+                if budget_skipped:   # 整包预算放不下跳过的成员（有才写，免得改动现有 manifest 形状）
+                    manifest["budget"] = dict(limit=DIAGNOSTIC_ZIP_BUDGET, skipped=budget_skipped)
                 manifest["truncated"] = truncated   # 超过单份上限被截的日志 / 任务记录：原长、留下、截掉的字节（空 = 全部整份）
                 manifest["changed"] = changed   # 导出期间一直在被替换、没收进来的（#917；空 = 全收到）
                 manifest["jobs"] = dict(total=job_total, included=included, limit=DIAG_JOBS, omittedLogs=skipped_logs[0])   # 任务记录共几个、收了几个（含没结束的）、省掉的任务日志数
@@ -3164,7 +3448,7 @@ def diagnostics(c):
     except OSError as error:
         # 只带步骤、错误码与系统给的原因，不带路径（路径里可能有用户名，诊断摘要会被贴到公开帖子里）
         code = getattr(error, "winerror", None) or error.errno
-        reason = (error.strerror or type(error).__name__) + (f"，错误码 {code}" if code else "")
+        reason = (error.strerror or type(error).__name__) + (f"，错误码 {code}" if code else "")  # 非玩家句
         raise Failure(f"无法安全读取或写入诊断文件，未更新诊断包（{step}：{reason}）。") from None
     finally:
         for descriptor in reversed(descriptors):

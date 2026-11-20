@@ -23,8 +23,7 @@ namespace S2A.Services
     // 起 Ryujinx 的 Switch 侧（HLE / Horizon / 声音 / 显卡逻辑），不建 Ryujinx 的游戏进程：游戏由原生层原生执行。
     public static class Host
     {
-        // 主机 / 掌机档（维护者 10-20 晚：「那就把开关调回掌机档吧，不让咱们被困在这里无法推进」；主机档保留作可选项）。
-        //   缺省掌机：DockedMode 假（apm 性能模式 / 操作模式 / 变更事件都由 Ryujinx 按它回答）；外接手柄样式独立由 InputPump 配置。S2A_DOCKED=1 只切主机档及初始手柄配置。
+        // 主机 / 掌机档影响性能、显示参数与手柄样式；游戏看到的运行模式另外在本地多人时回主机（Horizon.S2ASetLocalMultiplayer，输入泵按实接手柄数报）。
         private static Lazy<bool> LegacyDocked = new(() => Environment.GetEnvironmentVariable("S2A_DOCKED") == "1");
         private static Lazy<SystemLanguage> LegacyLanguage = new(PickLanguage);
         internal static void ResumeAudioForShutdown()
@@ -604,6 +603,7 @@ namespace S2A.Services
         {
             Ryujinx.HLE.S2AHooks.NroMap = &Native.NroMap;
             Ryujinx.HLE.S2AHooks.NroUnmap = &Native.NroUnmap;
+            Ryujinx.HLE.S2AHooks.NroKeep = &Native.NroKeep;
         }
 
         private static unsafe System.Memory<byte>? GuestViewOf(ulong va, int size) =>
@@ -764,7 +764,7 @@ namespace S2A.Services
                 Language,                         // 缺省跟设备系统首选语言（SystemLocale.cs）；带存档 / 对真值时 S2A_SYSTEM_LANGUAGE 与存档语言一致（如01006F8002326000存档 Japanese）
                 configuration?.Region ?? EnvEnum("S2A_REGION", RegionCode.USA),
                 VSyncMode.Switch,
-                enableDockedMode: Docked,         // 缺省掌机档（维护者 10-20 晚）；S2A_DOCKED=1 切主机（以后做成玩家设置）
+                enableDockedMode: Docked,
                 enablePtc: false,                 // 不用 Ryujinx 的 CPU 翻译缓存
                 ITickSource.RealityTickScalar,
                 enableInternetAccess: false,
@@ -862,6 +862,7 @@ namespace S2A.Services
         }
 
         private int _controllerStuck;
+        private (PlayerIndex Player, ControllerType Type, int Pads)? _controllerConfiguration;
 
         // 手柄设置小程序：真机上唯一手柄按「确定」即被分到游戏收的第一个手柄号。这里把唯一的虚拟手柄改配过去
         // （已发现外接手柄时优先 Pro / 双 Joy-Con；否则掌机能收就留掌机），等 HID 采样泵写进共享内存后回 true，
@@ -915,6 +916,13 @@ namespace S2A.Services
             }
 
             // 这里可选的 Pro / Handheld / JoyconPair / JoyconLeft / JoyconRight 与共享内存 FullKey / Handheld / JoyDual / JoyLeft / JoyRight 位值相同。
+            // 人数变更也会重配 Npad；不能仅凭主手柄号和样式相同，把新的多人配置累计成旧配置连续卡住。
+            var configuration = (player, type, InputPump.Pads);
+            if (_controllerConfiguration != configuration)
+            {
+                _controllerConfiguration = configuration;
+                _controllerStuck = 0;
+            }
             uint expectedStyle = (uint)type;
             const uint Joycon2Bits = 0x7000;   // 共享内存里的样式值另带 Joy-Con 2 位（NpadDevices.Joycon2StyleFor）：比一代那部分
             if (InputPump.Player == player && ((uint)Host.Device.Hid.SharedMemory.Npads[(int)player].InternalState.StyleSet & ~Joycon2Bits) == expectedStyle)

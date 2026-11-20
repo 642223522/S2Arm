@@ -100,6 +100,34 @@ planned runtime log protocol in `docs/standards/logging.md`. Runtime markers and
 measurement logs retain their existing contract. Full gate/train/merge remain
 with the owning maintainer lines.
 
+## 不接实体手柄测试交互
+
+```sh
+bash launchers/macos/test_controller.sh
+```
+
+测试使用 Apple 的可写入 [GCController 快照](https://developer.apple.com/documentation/gamecontroller/gccontroller/withextendedgamepad())，
+把按键、方向键和摇杆样本交给启动器原有的输入采样、重复节奏、焦点导航与按钮动作链。
+不需要连接手柄、辅助功能授权、游戏文件或玩家游戏库；不会往系统注册虚拟硬件。
+真实 SwiftUI 设置页、弹窗、下拉框、屏幕键盘和原生确认框使用原创夹具，
+中英文截图写入 `build/controller-qa/`。完整 Mac 回归仍用 `bash launchers/macos/test.sh`。
+专项还覆盖提示图标随连接状态显隐、单按钮单图标、失焦期间断开及出包页底栏操作；连接状态切换后原控件仍须可导航和激活。
+标题回归检查主副标题基线、长版本与路径的单行省略，以及后台任务出现和消失时原生顶栏的宽度避让。
+此检查覆盖应用内交互；蓝牙配对、射频断连、震动和实体按键手感须另用真手柄验证。
+
+四键映射在顶栏手柄弹窗编辑，所有非 Switch Pro / Joy-Con 手柄共用一份设置，不区分玩家或品牌。
+点击玩家行切换实体按键外观，Switch 一侧的映射保持一致；实体键帽和下拉框里的 Switch 键帽按平台绘制颜色、轮廓与反光。
+Switch Pro、各代 Joy-Con 使用原生布局，选中时隐藏四键设置。其他手柄未设置时按键帽语义处理
+（PS × / Xbox A 确认，PS ○ / Xbox B 返回）；可选 Switch 位置布局或逐键修改，已占用的目标自动互换。
+首页、弹窗提示固定跟随玩家分配中的主手柄，实际输入与显示使用同一份映射。
+确认键操作当前焦点组件，确认、完成、保存、准备和启动等提交动作统一用右扳机（PS R2 / Xbox RT / Switch ZR），可登记的原生确认框同样适用；Menu 不再提交。系统文件选择器仍使用 macOS 原有操作。
+多个任务同页时，先聚焦行内的启动按钮，再按右扳机执行该任务。四键的逐游戏手柄绑定下拉框隐藏；其他按键列表也对所有玩家排除实体四键，统一在顶栏手柄弹窗管理。
+Mac 游戏读取同目录的 `pad-order.face.json`，保存后即时通知刷新，并保留轮询同步；所有玩家读取同一份四键排列，
+键鼠和背键配置仍按原路径处理。文件 schema 2 的 `mapping` 保存统一排列；旧版 schema 1 按 PS、Xbox、其他的顺序取首份已保存配置。
+游戏内长按主手柄 L3 + R3 一秒显示或收起其四键小浮窗。
+专项测试覆盖默认 / Switch 位置布局、逐键修改、保存恢复、按住时切换、玩家切换及真实 SwiftUI 下拉操作；
+游戏输入与小浮窗的无资产检查运行 `bash tests/macos_native_input_test.sh`。
+
 ## DMG installation window / 拖拽安装窗口
 
 安装窗口沿用 [GitHub Pages 下载页](../../docs/site/index.html) 的近黑底、奶油白、
@@ -135,9 +163,8 @@ App 的签名，再校验 DMG，成功后才替换目标文件。签名校验也
 
 ## Build and run
 
-Apple Silicon and macOS 15+ are needed for the S2Arm app and direct-mode play on the Mac (games execute natively as arm64).
-Intel Macs are supported for building iPhone packages only, through the command-line `pack/oneclick/oneclick.sh`
-(check the environment first with `python3 pack/jobs/applenv.py`). The application bundles Python 3.12,
+Apple Silicon and macOS 15+ are needed for direct-mode play on the Mac (games execute natively as arm64).
+Intel Macs are supported for building iPhone packages only: `S2Arm.app` can be built on x86_64 to run the packaging UI and produce an IPA plus resource pack, but it contains no working Mac game host. The command-line `pack/oneclick/oneclick.sh` remains available; check the environment first with `python3 pack/jobs/applenv.py`. The application bundles Python 3.12,
 pinned `capstone`, `lz4`, `numpy`, .NET 10 runtime, `zstd`, SPIRV-Tools,
 the in-tree perl `timeout` (`tools/bin/timeout`) and the precompiled S2Arm preparation helpers. Players install no Python
 packages, .NET SDK or Homebrew. Preparing games uses an external full Xcode with
@@ -156,15 +183,17 @@ python3 launchers/macos/prepare_build.py            # add --check to only inspec
 
 | Dependency | Rule | Prepared by the command |
 | --- | --- | --- |
-| Apple Silicon Mac | The runtime keeps arm64 slices only | Checked |
+| macOS arm64 or x86_64 | The runtime keeps the build machine's slice only; x86_64 builds are packaging-only (no Mac game host, but the iPhone shell still includes the game-library UI) | Checked |
 | Full Xcode with iOS platform and Metal Toolchain | Resolved like packaging (`tools/toolchain.sh`): `S2A_DEVELOPER_DIR` or `tools/machine.local`, then `xcode-select`. A Metal compiler version different from `translator/dmsh_chain.lock` prints a `note` only (`dmsh_chain.py --build-env` lets it through; the shader cache is keyed by compiler, so a different Xcode just recompiles) | Checked |
 | .NET SDK | Whatever `compat/tree/global.json` accepts: `version` plus `rollForward: latestFeature` (currently 10.0.403 or a later 10.0 feature band / patch). The command runs `dotnet --version` inside `compat/tree`, so .NET itself applies the rule. Install with `python3 pack/jobs/applenv.py --install dotnet` (the same path the launcher uses) | Checked |
-| Homebrew `python@3.12 spirv-tools spirv-cross glslang zstd bash cmake meson ninja` | Runtime collection (`bundle_runtime.py`), C rewriter (CMake 3.18+), dav1d (meson / ninja; skipped with `S2A_DAV1D=0`) | Checked; prints the `brew install` line |
+| Homebrew `python@3.12 spirv-tools spirv-cross glslang zstd bash cmake` (+ `meson ninja` only when this Mac lacks hardware AV1 decode) | Runtime collection (`bundle_runtime.py`), C rewriter (CMake 3.18+), dav1d software fallback (meson / ninja; auto-skipped when the machine has hardware AV1 decode) — libvpx needs no formula either way | Checked; prints the `brew install` line |
 | Rust (`cargo`) | `pack/devpush` | Checked |
 | Build Python venv (default `build/venv`) | Pinned `tools/rewriter-requirements.txt`, `pack/fonts/requirements.txt` (fonttools / skia-pathops for the bundled fonts) and `launchers/macos/requirements-runtime.txt` | Created and installed |
 | C rewriter sources | Pinned Capstone / LZ4 from `runtime/rewriter/prepare_deps.py`; looked up in `S2A_REWRITER_DEPS`, then `build/rewriter-deps`, then `<S2A_RUN_ROOT>/s2arm/deps/rewriter-deps` | Downloaded to `build/rewriter-deps` when none is complete |
 
-Set `S2A_DAV1D=0` when every target Mac/iPhone has hardware AV1 decode. It skips the dav1d static library, the meson / ninja check, and the prebuilt dav1d bundle; default builds keep the software fallback for M1/M2, A16, and older devices. Do not use it for packages that may run on those devices.
+AV1 decode prefers VideoToolbox hardware decode at runtime. `S2A_DAV1D` defaults to `auto`: every build step probes this Mac (`tools/av1hw.sh` — `VTIsHardwareDecodeSupported` **plus** actually creating a VideoToolbox AV1 session with a real av1C; a probe failure conservatively keeps the fallback). On a Mac with hardware AV1 decode (M3/M4/M5, A17 Pro and later) the dav1d software fallback is not linked, its prebuilt library is not bundled, and `meson` / `ninja` are not required at all. Machines without hardware AV1 decode (M1/M2, A16 and earlier) keep the software fallback exactly as before. Set `S2A_DAV1D=1` before `prepare_build.py` / `build_app.py` when the result will be installed on machines that may lack hardware AV1 decode — notably release/packaging machines shipping the App to others — or `S2A_DAV1D=0` to force the fallback off.
+
+`S2A_VPX` works the same way for libvpx (VP8/VP9), probed by `tools/vp9hw.sh` (register the supplemental VP9 decoder, then actually create a 64x64 VP9 session — `VTIsHardwareDecodeSupported` itself is not a criterion). When the machine can take the system VP9 route, libvpx is not built, linked, or bundled (a tiny all-failure stub satisfies the C# DirectPInvoke bindings), and VP9 goes VideoToolbox-first everywhere (direct `nn::codec` line and the Nvdec service line), falling back to the managed decoder. **VP8 has no system or managed replacement on any Mac** — with the stub linked, VP8 content (e.g. the Diablo 2 intro on the Switch 1 line) fails with a clear error instead of a fake picture. Set `S2A_VPX=1` when building for machines that need VP8 or lack the system VP9 route — again, notably release machines (iOS deployment target 18 has no VideoToolbox VP9 route, so iPhone packages from a probed Mac fall back to the managed VP9 decoder and error out on VP8).
 
 Then build with the interpreter the command printed:
 

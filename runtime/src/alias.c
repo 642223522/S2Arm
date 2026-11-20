@@ -49,7 +49,7 @@ uint8_t *s2a_alias_page_rw(uint64_t host_page) {
 
 // 起局自检一次：建页 → 写 → 收成不可读 → 别名读到原值 → 源页再写 → 别名读到新值。iPhone 上能不能这样自映射匿名页以这一行为准
 static void alias_selfcheck(void) {
-    uint8_t *p = mmap(NULL, ALIAS_PG, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    uint8_t *p = mmap(NULL, ALIAS_PG, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, S2A_VMTAG_FD(S2A_VMTAG_HOST), 0);
     // 建不出测试页 = 两版都没验过：都判坏（原先只 return，可写版标志还是 0，会在没自检的情况下放行——原生层线 10-24 审出）
     if (p == MAP_FAILED) { atomic_store(&g_alias_bad, 1); atomic_store(&g_alias_rw_bad, 1); LOG("【红】别名自检：建测试页失败——缺页处模拟读 / 拦写模拟都退回老路"); return; }
     p[5] = 0x5a; mprotect(p, ALIAS_PG, PROT_NONE);
@@ -61,7 +61,7 @@ static void alias_selfcheck(void) {
     if (v1 == 0x5a && v2 == 0xa5) LOG("别名自检：宿主页只读共享别名可用（源页不可读时读到原值、源页改写后别名同步）");
     else { atomic_store(&g_alias_bad, 1); LOG("【红】别名自检：不可用（别名%s，读到 %#x / %#x，应为 0x5a / 0xa5）——缺页处模拟读退回老路", a ? "建成" : "没建成", v1, v2); }
     // 可写别名：源页不可读写时经别名写，源页放开后读到写入值
-    uint8_t *q = mmap(NULL, ALIAS_PG, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    uint8_t *q = mmap(NULL, ALIAS_PG, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, S2A_VMTAG_FD(S2A_VMTAG_HOST), 0);
     if (q == MAP_FAILED) { atomic_store(&g_alias_rw_bad, 1); LOG("【红】可写别名自检：建测试页失败——拦写模拟退回老路"); return; }
     q[9] = 0x11; mprotect(q, ALIAS_PG, PROT_NONE);
     uint8_t *w = s2a_alias_page_rw((uint64_t)q);
@@ -77,7 +77,7 @@ __attribute__((weak)) void s2a_emul_store_bench(void) {}
 void s2a_alias_thread_init(void) {
     pthread_once(&g_aonce, akey_init);
     if (pthread_getspecific(g_akey)) return;
-    uint8_t *slot = mmap(NULL, ALIAS_PG, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    uint8_t *slot = mmap(NULL, ALIAS_PG, PROT_NONE, MAP_PRIVATE | MAP_ANON, S2A_VMTAG_FD(S2A_VMTAG_HOST), 0);
     if (slot == MAP_FAILED) { LOG("【红】别名：本线程槽申请失败，本线程缺页处模拟读退回老路"); return; }
     pthread_setspecific(g_akey, slot);
     static _Atomic int checked;

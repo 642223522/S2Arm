@@ -7,8 +7,10 @@ with the rewritten modules inside the APK.
       against the package's index.tsv (index.tsv against manifest.json), reads the title id,
       name and display version from ctl/control.nacp, and writes <out>/game.properties for
       Gradle (versionCode too, default 1), <out>/res/values/game_name.xml (the launcher label:
-      "<game's own NACP title> S2Arm", pack/display_name.py — same function as the iPhone display name)
-      and <out>/assets/game/{game.properties,modules/}. With --shader-pack <make_pack shader bake
+      "<game's own NACP title> S2Arm", pack/display_name.py — same function as the iPhone display name),
+      and <out>/assets/game/{game.properties,modules/}. When available, launcher PNGs are
+      rendered deterministically from the package's icon.jpg; missing, empty or unreadable icons
+      warn and leave the APK on its default launcher icon. With --shader-pack <make_pack shader bake
       output root> (android/tools/bake_shaders.py <out>/pack, #1574) it also writes the
       deterministic assets/game/shaders.zip the runtime extracts as the offline shader pack.
       Default out: build/android-game/<title id>.
@@ -37,7 +39,7 @@ with the rewritten modules inside the APK.
 Only modules go into the APK; the resource package is deployed separately. The output is
 derived from the player's own game: it stays under build/ and never goes into the repository or
 a PR."""
-import hashlib, json, os, re, shutil, stat, struct, subprocess, sys, zipfile, zlib
+import hashlib, io, json, os, re, shutil, stat, struct, sys, warnings, zipfile, zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, '..', '..'))
@@ -116,6 +118,13 @@ def nacp_info(path):
     return f'{title_id:016X}', name, text_field(nacp, 0x3060, 0x10)
 
 
+def apk_version(version):
+    """游戏显示版本 → APK versionName 里放的文字。aapt 把以「?」开头的值当主题属性引用（?attr/…）、找不到就整包出不来：
+    pack/ns2_dump.py 合成的控制数据把显示版本写成「?」（表示不知道），也可能是空。取不到真值就写 unknown，不让出包停在 aapt。"""
+    text = version.strip()
+    return text if text.strip('?') else 'unknown'
+
+
 def properties_value(text):
     """java.util.Properties escaping for a value (non-ASCII as \\uXXXX, so any encoding reads it)."""
     out = []
@@ -135,6 +144,46 @@ def resource_string(text):
     text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
     text = text.replace('\\', '\\\\').replace("'", "\\'").replace('"', '\\"')
     return '\\' + text if text[:1] in ('@', '?') else text
+
+
+def render_game_icon(pack):
+    """控制分区导出的 icon.jpg → 密度图字节；无可读图片时使用默认图标。"""
+    icon = os.path.join(pack, 'icon.jpg')
+    try:
+        info = os.lstat(icon)
+    except FileNotFoundError:
+        print('【黄】没有游戏图标：沿用默认图标')
+        return None
+    except OSError as error:
+        print(f'【黄】游戏图标无法读取：{error}；沿用默认图标')
+        return None
+    if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+        raise ValueError('拒绝图标链接或重解析点')
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError('游戏图标不是普通文件')
+    if info.st_size == 0:
+        print('【黄】游戏图标为空：沿用默认图标')
+        return None
+    try:
+        from PIL import Image
+    except ImportError:
+        print('【黄】缺少 Pillow，无法生成游戏图标：沿用默认图标')
+        return None
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', Image.DecompressionBombWarning)
+            with Image.open(icon) as image:
+                image.load()
+                image = image.convert('RGB')
+                rendered = []
+                for density, size in (('mdpi', 48), ('hdpi', 72), ('xhdpi', 96), ('xxhdpi', 144), ('xxxhdpi', 192)):
+                    data = io.BytesIO()
+                    image.resize((size, size), Image.Resampling.LANCZOS).save(data, format='PNG')
+                    rendered.append((density, data.getvalue()))
+    except (OSError, ValueError, Image.DecompressionBombError, Image.DecompressionBombWarning) as error:
+        print(f'【黄】游戏图标打不开或缩放失败：{error}；沿用默认图标')
+        return None
+    return rendered
 
 
 ASSET_ROOT = 'game/modules'
@@ -174,20 +223,14 @@ def apk_signer_sha256(apk):
 
 
 def apk_identity(apk):
-    """Read the final manifest using the SDK tool, never infer it from title metadata."""
-    sdk = os.environ.get('ANDROID_HOME') or os.environ.get('ANDROID_SDK_ROOT')
-    tool = os.path.join(sdk, 'build-tools', '36.0.0', 'aapt2') if sdk else shutil.which('aapt2')
-    if not tool or not os.path.isfile(tool):
-        raise ValueError('APK identity requires SDK build-tools 36.0.0 aapt2 (ANDROID_HOME / ANDROID_SDK_ROOT or PATH)')
-    result = subprocess.run([tool, 'dump', 'badging', os.fspath(apk)],
-                            capture_output=True, text=True, timeout=60)
-    if result.returncode:
-        raise ValueError('Cannot read APK manifest: ' + result.stderr.strip())
-    matches = re.findall(r"^package: name='([^']+)' versionCode='([0-9]+)'", result.stdout, re.MULTILINE)
-    if len(matches) != 1:
-        raise ValueError('APK manifest must have exactly one package identity')
-    package, version = matches[0]
-    return package, int(version), 'application-debuggable' in result.stdout.splitlines()
+    """Read the final manifest itself (axml.py), never infer it from title metadata; no SDK tool needed."""
+    import axml
+    try:
+        with zipfile.ZipFile(apk) as z:
+            package, version, _, debuggable = axml.identity(z.read('AndroidManifest.xml'))
+    except (OSError, KeyError, zipfile.BadZipFile, axml.AxmlError, struct.error, IndexError) as error:
+        raise ValueError(f'Cannot read APK manifest: {error}') from error
+    return package, version, debuggable
 
 
 def validate_apk_package(title, package, debug):
@@ -400,6 +443,7 @@ def main():
             with open(os.path.join(pack, p), encoding='utf-8') as f:
                 if '# TARGET\tandroid\n' not in f.read():
                     sys.exit(f'{p} was not rewritten for Android (S2A_TARGET=android)')
+    rendered_icon = render_game_icon(pack)
     out = os.path.abspath(sys.argv[2] if len(sys.argv) == 3 else os.path.join(REPO, 'build', 'android-game', title_id))
     if os.path.exists(out):
         if not os.path.isfile(os.path.join(out, 'game.properties')):
@@ -411,8 +455,14 @@ def main():
         shutil.copyfile(os.path.join(pack, p), os.path.join(assets, p))
     if shader_pack is not None:
         write_shader_zip(shader_pack, os.path.join(assets, 'shaders.zip'))
-    props = (f'titleId={title_id}\nname={properties_value(name or title_id)}\nversion={properties_value(version)}\n'
+    for density, data in rendered_icon or ():
+        directory = os.path.join(out, 'res', f'mipmap-{density}')
+        os.makedirs(directory, exist_ok=True)
+        with open(os.path.join(directory, 'game_icon.png'), 'wb') as f:
+            f.write(data)
+    props = (f'titleId={title_id}\nname={properties_value(name or title_id)}\nversion={properties_value(apk_version(version))}\n'
              f'versionCode={version_code}\n'
+             f'launcherIcon={"game" if rendered_icon else "default"}\n'
              f'modules={",".join(p[len("modules/"):-len(".fixups.tsv")] for p in modules if p.endswith(".fixups.tsv"))}\n')
     for target in (os.path.join(out, 'game.properties'), os.path.join(assets, 'game.properties')):
         with open(target, 'w', encoding='ascii', newline='\n') as f:

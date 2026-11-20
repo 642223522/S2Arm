@@ -207,6 +207,66 @@ class ReasonsTest(unittest.TestCase):
                     dict(code=code, message_zh=message, raw=raw),
                 )
 
+    def test_nop_stale_register_only_when_left_by_a_call(self):
+        # 11-16（cpatch.nop_stale）：补丁 nop 掉的指令原本写的寄存器，后面被读、且此前最近一次是被函数调用改写的才挡。期望手写：
+        #   ① bl；adrp x8；add x8；str x8 —— nop 掉 adrp/add → 挡（x8 是调用留下的，在 0xc 被读）
+        #   ② ldr x8,[x2]；adrp x8；add x8；str x8 —— 同样 nop → 不挡（x8 是游戏自己 ldr 出的，真机一样）
+        #   ③ ldr w0,[x19,#0xa0]；bl；mov x20,x0 —— nop 掉 bl → 不挡（读的是前面 ldr 出的 x0，「关动态分辨率」写法）
+        #   ④ bl；bl；mov x20,x0 —— nop 掉第二个 bl → 挡（x0 是第一个调用的返回值）
+        sys.path.insert(0, str(ROOT / "pack")); import cpatch
+        nop = bytearray((0xD503201F).to_bytes(4, "little"))
+        img = lambda *ws: b"".join(struct.pack("<I", w) for w in ws) + bytes(0x200)
+        BL, ADRP, ADD, STR, LDR, LDRW0, MOV = 0x94000040, 0x90000008, 0x91004108, 0xF9000028, 0xF9400048, 0xB940A260, 0xAA0003F4
+        self.assertEqual(cpatch.nop_stale(img(BL, ADRP, ADD, STR), 0x100, {4: nop, 8: nop}), (4, 0xC, "x8"))
+        self.assertIsNone(cpatch.nop_stale(img(LDR, ADRP, ADD, STR), 0x100, {4: nop, 8: nop}))
+        self.assertIsNone(cpatch.nop_stale(img(LDRW0, BL, MOV), 0x100, {4: nop}))
+        self.assertEqual(cpatch.nop_stale(img(BL, BL, MOV), 0x100, {4: nop}), (4, 8, "x0"))
+
+    def test_real_plan_rejects_nop_leaving_a_call_clobbered_register(self):
+        # 出包级：补丁 nop 掉 adrp/add、x8 由前面的 bl 留下又被 str 读 → 不收，原因点名；另一份只 nop 掉 0x100 的 mov（后面不读）照收
+        with tempfile.TemporaryDirectory() as temporary:
+            root, index = fixture(Path(temporary))
+            main = bytearray((root / "exefs/main").read_bytes())
+            struct.pack_into("<IIII", main, 0x100 + 0x200, 0x94000040, 0x90000008, 0x91004108, 0xF9000028)
+            (root / "exefs/main").write_bytes(bytes(main))
+            ids = write_patches(index, [(0x204, "1F2003D51F2003D5"), (0x100, "1F2003D5")])
+            result = subprocess.run([sys.executable, str(ROOT / "pack/cpatch.py"), "plan", str(root), "", str(index)],
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            rejected = [line.split("\t") for line in (root / "cpatch_plan.log").read_text().splitlines() if line.startswith("不收\t")]
+            self.assertEqual([(r[1], r[4]) for r in rejected],
+                             [(f"gfx:{ids[0]}", "把 main+0x204 改成空指令后，它原本要写的 x8 在 main+0x20c 被读：读到的是残值，可能被当指针读而崩")])
+
+    def test_real_plan_rewrites_raised_render_resolution(self):
+        # 11-16 #b824d1 后续（维护者「补丁按咱们的需求正确生效、不直接拒掉」）：满屏补丁把渲染分辨率写成 3440×1440，原版那条高是 movz #1080。期望手写：
+        #   ① 收、日志「改分辨率 … 3440x1440 → 2580x1080」，表里写的是 movz w8,#2580 / movz w9,#1080；② 另一份写了两对（3440×1440 + 5160×2160）→ 认不全，不收
+        mz = lambda rd, imm: 0x52800000 | (imm << 5) | rd
+        with tempfile.TemporaryDirectory() as temporary:
+            root, _ = fixture(Path(temporary))
+            main = bytearray((root / "exefs/main").read_bytes())
+            struct.pack_into("<II", main, 0x100 + 0x200, mz(8, 1920), mz(9, 1080))
+            struct.pack_into("<II", main, 0x100 + 0x300, mz(8, 1920), mz(9, 1080))
+            (root / "exefs/main").write_bytes(bytes(main))
+            ws = Path(temporary) / "widescreen"; ws.mkdir()
+            hx = lambda v: struct.pack("<I", v).hex().upper()
+            bodies = {"one.pchtxt": [(0x200, mz(8, 3440)), (0x204, mz(9, 1440))],
+                      "two.pchtxt": [(0x300, mz(8, 3440)), (0x304, mz(9, 1440)), (0x308, mz(10, 5160)), (0x30C, mz(11, 2160))]}
+            with (ws / "INDEX.tsv").open("w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f, delimiter="\t", lineterminator="\n"); w.writerow(["title_id", "kind", "path", "sha256", "aspect"])
+                for name, body in bodies.items():
+                    (ws / name).write_text(f"@nsobid-{'A1' * 16}\n@flag offset_shift 0x100\n@enabled\n" + "".join(f"{o:08X} {hx(v)}\n" for o, v in body) + "@stop\n")
+                    w.writerow(["0100000000001000", "pchtxt", name, hashlib.sha256((ws / name).read_bytes()).hexdigest(), "2.333"])
+            result = subprocess.run([sys.executable, str(ROOT / "pack/cpatch.py"), "plan", str(root), "", str(ws)], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            log = (root / "cpatch_plan.log").read_text().splitlines()
+            self.assertEqual([l.split("\t")[4] for l in log if l.startswith("改分辨率\t")], ["3440x1440 → 2580x1080（原生高、按原比例）"])
+            rej = [l.split("\t")[4] for l in log if l.startswith("不收\t")]
+            self.assertEqual(len(rej), 1); self.assertIn("不止一对分辨率常数", rej[0])
+            rows = (root / "cpatch_rows.tsv").read_text()
+            # 0x200 改成 2580；0x204 改回的 movz w9,#1080 与原版那条相同 → 不用改、表里没有这一行；3440 / 1440 都不出现
+            self.assertEqual([l.split("\t")[:5] for l in rows.splitlines() if l.startswith("p\t")], [["p", "main", "200", f"{mz(8, 1920):08x}", f"{mz(8, 2580):08x}"]])
+            self.assertNotIn(f"{mz(9, 1440):08x}", rows)
+
     def test_real_plan_does_not_assume_module_or_hash_whitelist(self):
         with tempfile.TemporaryDirectory() as temporary:
             root, index = fixture(Path(temporary))

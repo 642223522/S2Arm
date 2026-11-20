@@ -14,7 +14,8 @@ Ryujinx（compat/tree，以及 graphics/vulkan/wsi）
 Copyright (c) Ryujinx Team and Contributors
 MIT License. 许可全文：compat/tree/LICENSE.txt
 
-直连图形层部分代码（graphics/nvn、translator/tbdr_*.py，以及 compat 中标注「Ported (MIT, Copyright (c) 2026 seedds …)」的文件）
+直连图形层部分代码（graphics/nvn、translator/tbdr_*.py，以及 compat 中标注「Ported (MIT, Copyright (c) 2026 seedds …)」的文件；
+graphics/nvn/gfx/nvn/nvn_stex.inc 移植自 nxnative 的分支 kartnative，https://github.com/pahorema/kartnative ）
 Copyright (c) 2026 seedds
 MIT License. 许可全文：graphics/nvn/LICENSE
 
@@ -51,6 +52,11 @@ SMAA 着色器（graphics/metal/shaders/aa_*.metal）
 Copyright (C) Jorge Jimenez 等，版权与声明全文见 graphics/metal/shaders/AA-LICENSE.txt。
 MIT License.
 
+AMD FidelityFX Super Resolution 1（EASU + RCAS，移植于 graphics/nvn/gfx/nvn/nvn_present_fsr.inc，测试参考 graphics/nvn/tests/fsr1_ref.h）
+Copyright (c) 2021 Advanced Micro Devices, Inc. All rights reserved.
+Copyright (c) 2014 Michal Drobot (for concepts used in "FLOAT APPROXIMATIONS").
+MIT License. 全文：graphics/nvn/third_party/ffx_fsr1/LICENSE.txt；两段声明同时嵌在 nvn_present_fsr.inc 的着色器源码字符串里，随二进制带走。
+
 LumaDock 移植（launchers/macos、pack/jobs 中对应部分）
 Copyright (c) 2026 LumaDock contributors
 Copyright (c) 2026 jhaizhou (derived portions)
@@ -82,7 +88,8 @@ Python 3.12、NumPy
 PSF License（Python）、BSD-3-Clause（NumPy）。随 Mac .app 的 Runtime 分发。
 
 .NET 运行时
-MIT License. 随 Mac .app 的 Runtime 分发时带上 dotnet 的 LICENSE.txt 与 ThirdPartyNotices.txt。
+MIT License. 不再随 Mac .app 的 Runtime 分发共享运行时目录：出包用的 C# 工具（读取器、RomFS 索引、着色器烘焙器、直连批量进程）随引擎以 NativeAOT 单文件预编，
+运行时代码静态编进各工具；Mac 宿主与 iOS 宿主同样静态编入。
 
 SPIRV-Tools、glslang、zstd 命令行
 随 Mac .app 的 Runtime/bin 分发。SPIRV-Tools 为 Apache-2.0，zstd 为 BSD-3-Clause，
@@ -105,3 +112,19 @@ dmsh_xlate_bin 里的预编译程序集
 
 Gradle Wrapper（android/gradle/wrapper，Gradle 9.8.1）
 Apache-2.0. 只用于安卓构建，不进 .app / IPA。
+
+libadrenotools / liblinkernsbypass（android/third_party/libadrenotools）
+Copyright © 2021 Billy Laws
+BSD-2-Clause. 许可全文：该目录 LICENSE 与 lib/linkernsbypass/LICENSE。
+经 BananaNative（MIT，Copyright (c) 2026 seedds、Swap2-Native contributors 等，
+https://git.eden-emu.dev/moceure/BananaNative 分支 android 提交 3d43275）vendored；
+src/hook/adreno_binder_compat.c 来自 BananaNative（MIT）。只进安卓 APK，且只在选择外挂驱动时加载。
+
+着色器清单数据（社区补丁统一包里 kind = pso 的 ext_<来源>.tsv：管线预建种子，只有着色器键与管线描述，不含游戏数据；
+由 tools/ext_pso_collect.py 按 tools/ext_pso_sources.tsv 定期从各来源取，每份首行记来源库与提交，出包时按本包直连库的键滤）
+nxnative（https://github.com/seedds/nxnative，dm/games/<程序号>/pso_manifest.tsv）
+Copyright (c) 2026 seedds
+MIT License. 许可全文：graphics/nvn/LICENSE
+MacNativeGames（https://github.com/ly05010419/MacNativeGames，games/<款>/assets/shader_list.tsv）
+Copyright (c) 2026 MacNativeGames contributors
+MIT License. 许可全文：graphics/nvn/third_party/macnativegames/LICENSE

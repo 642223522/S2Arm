@@ -9,16 +9,21 @@ S2Arm 本身以 Apache License 2.0 授权（仓库根目录 [LICENSE](LICENSE) �
 | Ryujinx 树 | 目录 `compat/tree`（旧文档记 1.3.2） | MIT | https://github.com/Ryujinx/Ryujinx ，许可 `compat/tree/LICENSE.txt` | 是（编进 Mac 宿主 / 出包工具） | 是（编进 iOS 宿主） |
 | Ryujinx WSI | 派生自 Ryujinx | MIT | `graphics/vulkan/wsi`，`LICENSE.Ryujinx.txt` | 安卓/Vulkan 构建用 | 否（不进 iOS IPA） |
 | 直连图形层部分代码 | 提交 `86d9ba12` | MIT | 许可全文 `graphics/nvn/LICENSE`，版权 © 2026 seedds | 是 | 是 |
+| HDR 上屏 present_mode 数学（`graphics/nvn/gfx/nvn/nvn_hdr_policy.h` 的六态模式与 PQ/肩部纯函数、`nvn_mtl.m` present_pipeline 模式化着色器、`nvn2.c` 出图侧读数；单测 `graphics/nvn/tests/t_present_hdr.m`） | 提交 `3e120874062b`（PR #1176） | MIT | https://github.com/seedds/nxnative PR #1176（co-author：beecrepaldi-afk 的 PQ 层、b1tdr3amer24 的 present-after-GPU、Amost- 的纸白/peak 处理），版权 © 2026 seedds，许可全文同 `graphics/nvn/LICENSE`；适配式移植融入本仓结构（不建 vendored 子树） | 是 | 是 |
+| 放置式稀疏贴图块管理（`graphics/nvn/gfx/nvn/nvn_stex.inc`、单测 `runtime/tests/t_nvn_stex.m`） | kartnative 提交 `47f2d1d5` | MIT | https://github.com/pahorema/kartnative （nxnative 的分支）`dm/gfx/tex/nvn_sparse_tex.m`，版权 © 2026 seedds，许可全文同 `graphics/nvn/LICENSE` | 是 | 是 |
+| APK v2 签名 / RSA / 自签证书（`android/tools/apk_sign.py`） | nx2android 仓库 `nxnative/dm/android/apk/apksign.py` | MIT | 版权 © 2026 seedds，许可全文同 `graphics/nvn/LICENSE`；改动：签名钥按机器存 `~/.s2arm/android/signing-key.json`、签磁盘上的 ZIP（文件头写明出处与改动）。启动器出安卓包时给组装好的 APK 签名 | 发版带安卓预编引擎时是（引擎树） | 否 |
 | ns2pro-bridge | 基线 `4d7ce092` | MIT | https://github.com/DanielZhangyc/ns2pro-bridge ，`runtime/ns2pro/LICENSE` | 按需编进 framework 时是 | 按需编进 framework 时是 |
 | Vulkan-Headers | 1.4.363 | Apache-2.0 OR MIT | https://github.com/KhronosGroup/Vulkan-Headers ，`graphics/nvn/third_party/vulkan-headers` | 否（只是编译用头） | 否 |
 | SPIRV-Cross | vulkan-sdk-1.4.363.0 | Apache-2.0 | https://github.com/KhronosGroup/SPIRV-Cross ，源码在 `graphics/third_party/spirv_cross`（旧文档写「不进仓库」是错的）。命令行另从 Homebrew 打进 .app | 是（源码在引擎树；`spirv-cross` 在 Runtime/bin） | 是（`graphics/build.mk` 把源码编进 iOS 渲染器静态库 `libnxgal.a`，首遇着色器在机上现编用） |
 | SPIRV-Tools | Homebrew 构建时的版本，写入 Runtime `versions.json` | Apache-2.0 | https://github.com/KhronosGroup/SPIRV-Tools | 是（`spirv-as` / `spirv-val`） | 否 |
 | glslang | Homebrew 构建时的版本 | 以该包 `LICENSE.txt` 为准（BSD-3-Clause 等，与 Apache-2.0 兼容） | https://github.com/KhronosGroup/glslang | 是（`glslangValidator`） | 否 |
+| Arm ASTC Encoder | 5.7.0（库源码原样） | Apache-2.0 | https://github.com/ARM-software/astc-encoder ，`graphics/third_party/astc-encoder`（许可 `LICENSE.txt`）；出包时 `pack/astc_pack.py` 把 BC 贴图预转成 ASTC（Apple TV），机制参考 brad-n/TVPort（MIT） | 否（只在出包机上编成出包工具） | 否（运行时只读预转好的包） |
 | bcdec | 提交 80859ed（经 MacNativeGames） | MIT 或 Unlicense | https://github.com/iOrange/bcdec ，`graphics/nvn/third_party/bcdec` | 是（链进图形层） | 是 |
 | nvn_bcdec | MacNativeGames `84eebcd0985c` | MIT | https://github.com/ly05010419/MacNativeGames ，`graphics/nvn/gfx/tex/nvn_bcdec.c`；同源移植还有 `nvn_mtl.m` 几处；许可全文 `graphics/nvn/third_party/macnativegames/LICENSE` | 是 | 是 |
 | nvn.h | h1k421，自公开 DWARF 重建 | MIT | `graphics/nvn/gfx/nvn/include/nvn.h` | 是（当头文件编译） | 是 |
 | D3D11 细分参照 | Mesa main，2026-10-21 取 | MIT | Microsoft，经 Mesa `src/gallium/auxiliary/tessellator`；`graphics/metal/gal_tess_d3d.h` | 是 | 是 |
 | SMAA | 经 Ryujinx 着色器转出（不带 FXAA：NVIDIA FXAA 3.11 没有授权条款） | MIT | `graphics/metal/shaders/AA-LICENSE.txt` | 是 | 是 |
+| AMD FidelityFX Super Resolution 1（EASU + RCAS） | Ryujinx `FsrScaling.glsl` / `FsrSharpening.glsl` 内嵌的 `ffx_a.h` / `ffx_fsr1.h`（2021 版）手工移植成 Metal 着色器 | MIT（© 2021 Advanced Micro Devices, Inc.；浮点近似部分 © 2014 Michal Drobot） | `graphics/nvn/gfx/nvn/nvn_present_fsr.inc`（直连上屏的 `Fsr` 滤镜）；许可全文 `graphics/nvn/third_party/ffx_fsr1/LICENSE.txt`，两段声明另嵌在着色器源码字符串里随二进制带走（`native-test-present_fsr` 核） | 是（链进图形层） | 是 |
 | LumaDock 移植 | `238c1dd` | MIT | https://github.com/Xc1Ym/LumaDock ，全文 `launchers/macos/LICENSE.LumaDock.txt` | 是（启动器） | 否 |
 | LibHac | 0.21.0-alpha.133 | MIT（© 2018 Alex Barney）+ ISC（hactool，© 2018 SciresM）+ XTSSharp 声明，以包内 `LICENSE` 为准 | nupkg：`compat/packages/ryujinx.libhac.0.21.0-alpha.133.nupkg` | 是（编进 NSP/XCI 读取器） | 否 |
 | Ryujinx 引用的 NuGet 包 | MsgPack.Cli 1.0.1、Humanizer 3.0.10、Gommon 2.8.1.2、Microsoft.IO.RecyclableMemoryStream 3.0.1、Microsoft.IdentityModel.JsonWebTokens 8.19.1、SkiaSharp 3.119.4、NetCoreServer 8.0.7、Open.Nat.V2 3.2.1、System.IO.Hashing 10.0.9（版本见 `compat/tree/Directory.Packages.props`） | MsgPack.Cli 为 Apache-2.0，其余 MIT（按各包 nuspec 与包内 LICENSE 核过） | NuGet，经 Ryujinx.Common / HLE / Horizon / Input 进入产品引用闭包 | 是（随 Ryujinx 工具链） | 在引用闭包里；NativeAOT 裁剪后各自是否保留未逐一核 |
@@ -37,8 +42,9 @@ S2Arm 本身以 Apache License 2.0 授权（仓库根目录 [LICENSE](LICENSE) �
 | dmgbuild | 1.6.7 | MIT | https://github.com/dmgbuild/dmgbuild ，仅维护者 DMG 打包用，钉在 `launchers/macos/requirements-dmg.txt`；不修改上游文件，许可随安装包保存在 `dmgbuild-1.6.7.dist-info/licenses/LICENSE` | 否 | 否 |
 | ds-store | 1.3.3 | MIT | https://github.com/dmgbuild/ds_store ，DMG 的 Finder 布局元数据；不修改上游文件，许可随安装包保存在 `ds_store-1.3.3.dist-info/licenses/LICENSE` | 否 | 否 |
 | mac-alias | 2.2.3 | MIT | https://github.com/dmgbuild/mac_alias ，DMG 背景文件引用；不修改上游文件，许可随安装包保存在 `mac_alias-2.2.3.dist-info/licenses/LICENSE` | 否 | 否 |
-| .NET 运行时 | 10.x（构建机已装的 10.* 最新补丁） | MIT | https://github.com/dotnet/runtime | 是（Runtime/dotnet） | 是（NativeAOT 把运行时代码静态编进 iOS 宿主；不带共享运行时目录） |
+| .NET 运行时 | 10.x（构建机已装的 10.* 最新补丁） | MIT | https://github.com/dotnet/runtime | 是（NativeAOT 把运行时代码静态编进 Mac 宿主与出包工具：Engine/Binaries 里的读取器 / RomFS 索引 / 着色器烘焙器 / 直连批量进程全为单文件；不带共享运行时目录） | 是（NativeAOT 把运行时代码静态编进 iOS 宿主；不带共享运行时目录） |
 | zstd 命令行与 libzstd | Homebrew 构建时的版本 | BSD-3-Clause | https://github.com/facebook/zstd | 是 | 否 |
+| zstd 单文件解码器（zstddeclib.c） | 1.5.7（官方发行包 `zstd-1.5.7.tar.gz`，sha256 `eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3`，用包内 `build/single_file_libs/combine.py` 生成，未改） | BSD-3-Clause（上游 BSD / GPLv2 二选一，本项目选 BSD） | https://github.com/facebook/zstd ，源码与许可全文在 `runtime/third_party/zstd/`；`runtime/src/pack_apply.c` 整份编入，只解压传输压缩的 game.img 块 | 是（编进 Mac 宿主） | 是（编进 iOS 宿主；安卓同链 pack_apply.c） |
 | libvpx | 1.17.0 | BSD-3-Clause（附专利授权） | https://chromium.googlesource.com/webm/libvpx ，由 `services/vpx/build.sh` 按 sha256 取，不入库，构建时打 S2Arm 补丁 `services/vpx/patches/`（Nvdec VP9 作业接口，不改未调用时的解码结果）；VP9 重打包压缩头的写出顺序与默认概率表镜像其 BSD 实现（`Vp9CompressedHeader.cs`、`android/codecs/vpxbench/hdr.c`，出处 `vp9_decodeframe.c::read_compressed_header`/`vp9_entropymode.h`）；发版时 iOS arm64 / macOS arm64 静态库预编进 App（`Engine/Binaries/Prepare/libs/vpx/`），玩家出包只链接 | 是（静态链进 Mac 宿主；预编库随 App） | 是（静态链进 iOS 宿主） |
 | libopus | 1.6.1 | BSD-3-Clause（附专利授权） | https://opus-codec.org ，由 `services/opus/build.sh` 按 sha256 取，不入库 | 是 | 是 |
 | dav1d | 1.5.4 | BSD-2-Clause | https://code.videolan.org/videolan/dav1d ，由 `services/dav1d/build.sh` 按 sha256（与 downloads.videolan.org 同目录 .sha256 一致）取、在开发 / 发版机构建，不入库；发版时 iOS arm64 / macOS arm64 静态库预编进 App（`Engine/Binaries/Prepare/libs/dav1d/`，带许可原文 COPYING），玩家出包只链接。AV1 软件解码（VideoToolbox 不支持 AV1 的机器上 Switch 2 片头用） | 是（静态链进 Mac 宿主；预编库随 App） | 是（静态链进 iOS 宿主） |
@@ -73,6 +79,7 @@ S2Arm 本身以 Apache License 2.0 授权（仓库根目录 [LICENSE](LICENSE) �
 | .NET 运行时（linux-bionic） | 10.x | MIT | https://github.com/dotnet/runtime | 是（NativeAOT 静态编进单库） |
 | libopus / libvpx | 同上表 1.6.1 / 1.17.0 | BSD-3-Clause（附专利授权） | 按 sha256 取固定源码，不入库 | 是 |
 | Ryujinx 树、Ryujinx 子集、直连图形层等共用组件 | 同上表 | 同上表 | 同上表 | 是（安卓单库共用同一份托管代码与原生层） |
+| libadrenotools / liblinkernsbypass | Eden 分支 `8ba23b42d7` / liblinkernsbypass `aa3975893d`，经 BananaNative `3d43275` vendored | BSD-2-Clause（© 2021 Billy Laws）；`adreno_binder_compat.c` 来自 BananaNative（MIT） | https://github.com/bylaws/libadrenotools 、https://github.com/bylaws/liblinkernsbypass ；源码 `android/third_party/libadrenotools`，许可全文该目录 `LICENSE` 与 `lib/linkernsbypass/LICENSE` | 是（编成 `libadrenotools.so` / `libhook_impl.so` / `libmain_hook.so`；只在选择外挂驱动时加载。驱动二进制本身不进 APK、不入库） |
 
 ## 已经从出包路径拿掉的 GPL
 

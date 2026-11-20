@@ -53,6 +53,14 @@ static int load(void) {
     CHECK(gl_entry("eglGetDisplay") != NULL); // Existing registration positive control.
     CHECK(eglGetProcAddress("eglGetDisplay") == gl_entry("eglGetDisplay"));
     CHECK(!gl_entry("eglNotAnActualEntry") && !eglGetProcAddress("eglNotAnActualEntry"));
+    // 扩展别名交核心实现（D-RVTY）：核心吸收的同签名别名 = 核心入口；语义不同的、厂商后缀的、核心也没有的照旧回空
+    CHECK(gl_entry("glActiveTexture") && eglGetProcAddress("glActiveTextureARB") == gl_entry("glActiveTexture"));
+    CHECK(gl_entry("glBindBuffer") && eglGetProcAddress("glBindBufferARB") == gl_entry("glBindBuffer"));
+    CHECK(gl_entry("glBlitFramebuffer") && eglGetProcAddress("glBlitFramebufferEXT") == gl_entry("glBlitFramebuffer"));
+    CHECK(gl_entry("glGetProgramiv") && !eglGetProcAddress("glGetProgramivARB"));
+    CHECK(gl_entry("glIsProgram") && !eglGetProcAddress("glIsProgramARB"));
+    CHECK(!eglGetProcAddress("glBindBufferOffsetNV"));
+    CHECK(!eglGetProcAddress("glSyncTextureINTEL"));
     for (unsigned i = 0; i < sizeof missing / sizeof *missing; i++) {
         void *entry = gl_entry(missing[i]);
         fprintf(stderr, "[egl-core] %s: %s\n", missing[i], entry ? "registered" : "NULL");

@@ -7,7 +7,7 @@ import NXModel
 extension S2ArmLauncherModel {
     /// 有任务在跑时的说明；不忙为 nil
     func busyHint(_ loc: Localizer) -> String? {
-        guard busy, let s = session else { return nil }
+        guard let s = busySession else { return nil }   // 主槽优先，其次一局、手机作业
         let key = "s2arm.job.title." + s.kind.rawValue
         let action = loc.t(key) == key ? loc.t("s2arm.job.running") : loc.t(key)
         let name = s.gameID == nil ? "" : loc.t("s2arm.busy.game").replacingOccurrences(of: "{0}", with: s.name)

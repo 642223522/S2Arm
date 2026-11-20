@@ -17,6 +17,8 @@ typedef struct {
   /* 补丁包 [code] 段（补丁包_v1设计.md 12.11，正确性类补丁）：<补丁目录>/<程序号>/patch.tsv，NULL = 没有。
    * code_build：本包主程序构建号（main NSO 头 0x40 起 16 字节，32 位小写十六进制）；与补丁文件头 build 相同按偏移打，不同按特征扫 */
   const char *code_patch, *code_build;
+  /* 游戏缺陷修补表（runtime/fix/<main 构建号前 16 位>.tsv，出包时按构建号从仓库取）：同帧率表 c 行格式，只收 word 种类；NULL = 没有 */
+  const char* fix_tsv;
 } s2a_rewrite_request;
 int s2a_rewrite_files(const s2a_rewrite_request* request, FILE* log);
 /* The original request layout and entry point remain ABI-compatible. NULL

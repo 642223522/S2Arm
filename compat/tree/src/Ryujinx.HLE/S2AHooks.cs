@@ -14,6 +14,12 @@ namespace Ryujinx.HLE
         // 游戏是 Switch 2 程序（NPDM 是 Switch 2 的 ACID 布局；services Application.Register 按 NpdmCompat 设）。只给语义随机型变的命令分派用
         public static bool Switch2;
 
+        // OpenDataStorageWithProgramIndex (fs 205) for a program index other than the caller's own: answer with the caller's own data storage
+        // when the index equals this (-1 = never; upstream throws "Accessing storage from other programs is not supported").
+        // services Application.Register sets 0 for a standalone program n (n >= 1) that is the only program in its package: the package
+        // carries a single RomFS, and a Switch 2 Edition program 1 also reads index 0 (#1567).
+        public static int DataStorageAliasIndex = -1;
+
         // GetDesiredLanguage when the game does not support the system language: try these in order before upstream's "first supported"
         // (the host passes the system's preferred languages, then Simplified / Traditional Chinese, then English). Null = upstream.
         public static Ryujinx.HLE.HOS.SystemState.TitleLanguage[] TitleLanguageFallback;
@@ -39,8 +45,14 @@ namespace Ryujinx.HLE
         // (iOS cannot execute code loaded at run time); the native layer maps that image by the NRO file's SHA-256 (runtime/src/loader.c s2a_nro_map).
         // NroMap(sha256[32], nro size, bss size, out base) -> 0 ok, 1 not in the package, 2 size / bss mismatch, 3 already loaded, 4 module table full, 5 unsupported here.
         // NroUnmap(base) -> 0 ok, 1 not loaded. Null = upstream (Ryujinx kernel memory manager).
-        public static delegate*<byte*, ulong, ulong, ulong*, int> NroMap;   // 宿主登记（services Native.NroMap → 原生核心 s2a_nro_map，DllImport 集中声明）
+        public static delegate*<byte*, ulong, ulong, ulong*, int> NroMap;
+        // Snapshot replay of LoadNro: the hash the saved run computed (set just before the replayed request, cleared once read). The request log keeps
+        //   only the header of an NRO that is in the package, so hashing the replayed buffer would give a different hash
+        public static byte[] SnapNroHash;   // 宿主登记（services Native.NroMap → 原生核心 s2a_nro_map，DllImport 集中声明）
         public static delegate*<ulong, int> NroUnmap;
+        // NroKeep(sha256[32], nro bytes, size) -> 0 kept, 2 kept before (not prepared again yet), 1 failed: an NRO the package has no image of (NroMap 1) is kept
+        // as the game unpacked it, for the next preparation to rewrite (runtime/src/loader.c s2a_nro_keep). Null = not kept.
+        public static delegate*<byte*, byte*, ulong, int> NroKeep;
         public static bool NroHooked => NroMap != null;
         public static int NroUnmapAt(ulong mapped) => NroUnmap(mapped);
 
@@ -56,6 +68,16 @@ namespace Ryujinx.HLE
         // A command under Services.Fs failed (S2AFsFail): command name, result + path(s), and whether it is red
         // (false = a probing result the game is expected to handle: path not found / already exists, save data not found)
         public static System.Action<string, string, bool> FsFailed;
+        // S2Arm instant snapshot: set while the request log is being replayed. An open that succeeded when it was logged but finds no
+        //   such path now (the file was deleted later, before the snapshot) gets an empty placeholder so the object numbering stays the
+        //   same; each placeholder registers its removal here and the replayer runs them once the log is done.
+        public static bool SnapReplaying;
+        public static readonly System.Collections.Generic.List<System.Func<bool>> SnapReplayUndo = new();
+        // S2Arm instant snapshot: domain object ids a replayed request must hand out (the ids it got when it was logged). Requests of
+        //   several threads on one domain finish in a different order than they were logged, so allocating lowest-free on replay can
+        //   number the objects differently, and the game memory holds the logged ids. Set by the replayer for one request at a time.
+        [System.ThreadStatic] public static System.Collections.Generic.Queue<int> SnapForceDomainIds;
+        public static int SnapForceDomainIdMiss;
         // Service-owned physical memory. Null preserves upstream allocation; a supplied
         // factory transfers a block of the requested size to Switch's lifetime.
         public static System.Func<ulong, Ryujinx.Memory.MemoryBlock> CreateServiceMemory;

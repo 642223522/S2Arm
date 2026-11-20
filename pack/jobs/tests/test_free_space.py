@@ -264,11 +264,12 @@ class FreeSpace(JobCase):
             "shaders": [write(W / "run" / "s2arm" / "cache" / "direct" / GID / "lib.bin", 2 * MIB),
                         write(W / "run" / "s2arm" / "cache" / "bake" / f"{GID.lower()}-x" / "b.bin", 1 * MIB)],
             "mac": [write(layout.image_mac(self.c, GID) / "app.bin", 1 * MIB)],
-            "ipa": [write(layout.image_ios(self.c, GID) / "kit" / "main.patched.bin", 3 * MIB), write(layout.image_ios(self.c, GID) / "pack" / "r.bin", 1 * MIB)],
+            "ipa": [write(layout.image_ios(self.c, GID) / ".pack" / "r.bin", 1 * MIB)],   # 只有资源包：程序件在游戏程序专用文件夹，不算「iPhone 包」（下面 programs）
+            "programs": [write(layout.program_store(self.c, GID, create=True) / "kit" / "main.patched.bin", 3 * MIB)],   # 释放空间哪一项都不删它：删了 iPhone 包也照样能更新 S2Arm 带上这款
             "saves": [write(layout.path(self.c, GID, "saves") / "slot0.bin", 1 * MIB)],
             "logs": [write(ios / "logs" / "build.log", 1 * MIB)],   # 在 build/ 里，但不算「旧版残留」，只报不删
         }
-        self.mib = {"legacy": 4, "shaders": 3, "mac": 1, "ipa": 4, "saves": 1, "logs": 1}
+        self.mib = {"legacy": 4, "shaders": 3, "mac": 1, "ipa": 1, "saves": 1, "logs": 1, "selfsign": 0}   # 这套夹具没导出过自签包
         self.shared = [write(W / "cache" / "air" / "shared.bin", 1 * MIB)]   # 各款共用的编库缓存：不归任何一款
         self.other = [write(layout.build_dir(self.c, OTHER) / "x.bin", 1 * MIB), write(layout.image_ios(self.c, OTHER) / "pack" / "o.bin", 1 * MIB)]
 
@@ -291,7 +292,7 @@ class FreeSpace(JobCase):
                 self.assert_mib(row["bytes"], self.mib[row["id"]])
         self.assertTrue(all(p["title"] and p["rebuild"] for p in g["parts"]))
         self.assert_mib(g["sharedBytes"], 0)   # 这套合成文件各项不共用
-        self.assert_mib(g["combos"]["ipa+mac"], 5)
+        self.assert_mib(g["combos"]["ipa+mac"], 2)
         everyone = library.space_survey(self.context("spaceSurvey"))
         self.assertEqual([g["gameId"] for g in everyone["games"]], [GID, OTHER])
         other = everyone["games"][1]
@@ -300,11 +301,30 @@ class FreeSpace(JobCase):
         with self.assertRaises(Failure):
             library.space_survey(self.context("spaceSurvey", gameId="0100000000000FFF"))
 
+    def test_selfsign_export_img_is_listed_and_freed_per_game(self):
+        # #1471：「S2Arm 自签导出」里每款一份完整 .img（不和 games/ 共用块），按文件头游戏号归到这款；只删这款的，别款的留着
+        def img(path, gid, size):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            head = b"S2AIMG01" + (1).to_bytes(4, "little") + b"\0" * 4 + gid.upper().encode("ascii")
+            with open(path, "wb") as f:
+                f.write(head + b"\1" * (size - len(head)))
+            return path
+        mine = img(self.c.library / "S2Arm 自签导出" / "游戏A.img", GID, 2 * MIB)
+        other = img(self.c.library / "S2Arm Self-Sign Export" / "Game B.img", OTHER, 1 * MIB)
+        g = library.space_survey(self.context("spaceSurvey", gameId=GID))["games"][0]
+        self.assertEqual([p["id"] for p in g["parts"]], ["legacy", "shaders", "mac", "ipa", "selfsign"])
+        self.assert_mib(next(p["bytes"] for p in g["parts"] if p["id"] == "selfsign"), 2)
+        out = library.space_free(self.context("spaceFree", gameId=GID, library=str(self.c.library), parts=["selfsign"]))
+        self.assertEqual([p["id"] for p in out["parts"]], ["selfsign"])
+        self.assertFalse(mine.exists())
+        self.assertTrue(other.exists())
+        self.assertNotIn("selfsign", [p["id"] for p in library.space_survey(self.context("spaceSurvey", gameId=GID))["games"][0]["parts"]])
+
     def test_free_deletes_only_chosen_parts(self):
         out = library.space_free(self.context("spaceFree", gameId=GID, library=str(self.c.library), parts=["ipa", "shaders"]))
         self.assertEqual(out["gameId"], GID)
         self.assertEqual([p["id"] for p in out["parts"]], ["shaders", "ipa"])   # 按部件表顺序
-        self.assert_mib(out["parts"][0]["bytes"], 3); self.assert_mib(out["parts"][1]["bytes"], 4)
+        self.assert_mib(out["parts"][0]["bytes"], 3); self.assert_mib(out["parts"][1]["bytes"], 1)
         self.assertEqual(out["freedBytes"], sum(p["bytes"] for p in out["parts"]))
         for k, paths in self.files.items():
             for p in paths:
@@ -320,13 +340,14 @@ class FreeSpace(JobCase):
         self.assert_mib(out["freedBytes"], sum(self.mib[k] for k in ids))
         for k, paths in self.files.items():
             for p in paths:
-                self.assertEqual(p.exists(), k in ("saves", "logs"), p)
+                self.assertEqual(p.exists(), k in ("saves", "logs", "programs"), p)
 
     def test_free_rejects_bad_parts_and_busy_library(self):
         for bad in (["saves"], ["logs"], ["ipa", "games"]):
             with self.subTest(parts=bad), self.assertRaises(Failure):
                 library.space_free(self.context("spaceFree", gameId=GID, library=str(self.c.library), parts=bad))
-        with (self.c.library / ".execution.lock").open("a") as f:   # 另一个任务在跑
+        import core
+        with (self.c.library / ".execution.lock").open("a") as f, patch.object(core, "LOCK_WAIT_S", 0.3):   # 另一个任务在跑   # 排队上限调短（同 test_filelock / test_probe_jobs 的 0.3 秒口径）：这里核的是「锁被占 → 报忙、不动东西」，不是等满产品缺省 30 秒（11-14 门禁提速：原先每例白等 30 秒）
             filelock.try_lock(f)
             try:
                 with self.assertRaises(Failure) as e:

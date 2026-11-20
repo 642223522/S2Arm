@@ -62,11 +62,11 @@ def fetch_rcodesign(dest, side, cache=None):
         try:
             urllib.request.urlretrieve(RCODESIGN_DOWNLOAD + name, tmp)
         except OSError as e:
-            raise SystemExit(f"【红】取不到 {RCODESIGN_DOWNLOAD + name}（{e}）：在能连 GitHub 的机器上下好放进 {cache}（或用 S2A_RCODESIGN_CACHE 指过去）再打")
+            raise SystemExit(f"【红】取不到 {RCODESIGN_DOWNLOAD + name}（{e}）：在能连 GitHub 的机器上下好放进 {cache}（或用 S2A_RCODESIGN_CACHE 指过去）再打")  # 非玩家句
         os.replace(tmp, src)
     got = _h.sha256(src.read_bytes()).hexdigest()
     if got != want:
-        raise SystemExit(f"【红】{src} 的 SHA-256 是 {got}，钉的是 {want}：不是 apple-codesign {RCODESIGN_VERSION} 官方发布件，拒打")
+        raise SystemExit(f"【红】{src} 的 SHA-256 是 {got}，钉的是 {want}：不是 apple-codesign {RCODESIGN_VERSION} 官方发布件，拒打")  # 非玩家句
     dest.mkdir(parents=True, exist_ok=True)
     top = name.rsplit(".tar.gz", 1)[0].rsplit(".zip", 1)[0]
     for inner, out in ((member, member), ("COPYING", "LICENSE-apple-codesign-MPL-2.0.txt")):
@@ -78,7 +78,7 @@ def fetch_rcodesign(dest, side, cache=None):
                 data = t.extractfile(f"{top}/{inner}").read()
         (dest / out).write_bytes(data)
     os.chmod(dest / member, 0o755)
-    (dest / "来源.txt").write_text(f"rcodesign（apple-codesign {RCODESIGN_VERSION}，Gregory Szorc，MPL-2.0：LICENSE-apple-codesign-MPL-2.0.txt），官方发布件原样附带。\n"
+    (dest / "来源.txt").write_text(f"rcodesign（apple-codesign {RCODESIGN_VERSION}，Gregory Szorc，MPL-2.0：LICENSE-apple-codesign-MPL-2.0.txt），官方发布件原样附带。\n"  # 非玩家句
                                   f"来源：{RCODESIGN_DOWNLOAD}{name}\n源码：{RCODESIGN_SOURCE}\n", encoding="utf-8")
     return dest / member
 
@@ -257,7 +257,7 @@ def normalize_p12(src, dest, password):
                 os.close(cr)
             ok, why = b.returncode == 0, why + b.stderr.decode(errors="replace")
         elif a.returncode == 0:
-            why += "；p12 里缺私钥或证书"
+            why += "；p12 里缺私钥或证书"  # 非玩家句
     if not ok or not Path(dest).is_file():
         Path(dest).unlink(missing_ok=True)
         raise Failure("证书打不开：密码不对，或 .p12 文件坏了。", code="devcert_password", internal=why.strip()[-400:])
@@ -273,7 +273,7 @@ def _dpapi(data, protect):
     class Blob(ctypes.Structure):
         _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
     buf = ctypes.create_string_buffer(data, len(data))
-    src, out = Blob(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char))), Blob()
+    src, out = Blob(len(data), ctypes.cast(ctypes.addressof(buf), ctypes.POINTER(ctypes.c_char))), Blob()
     fn = ctypes.windll.crypt32.CryptProtectData if protect else ctypes.windll.crypt32.CryptUnprotectData
     if not fn(ctypes.byref(src), None, None, None, None, 0, ctypes.byref(out)):
         raise OSError(ctypes.GetLastError(), "DPAPI 失败")
@@ -299,7 +299,7 @@ class Secrets:
         r = subprocess.run(["/usr/bin/security", "-i"], input=f'add-generic-password -U -s {KEYCHAIN_SERVICE} -a {account} -l "S2Arm developer certificate" -w {encoded}\n',
                            capture_output=True, text=True)
         if r.returncode or "error" in (r.stdout + r.stderr).lower():
-            raise Failure("证书密码没存进钥匙串：" + (r.stderr or r.stdout).strip()[-200:], code="devcert_keychain")
+            raise Failure("证书密码没存进钥匙串：" + (r.stderr or r.stdout).strip()[-200:], code="devcert_keychain")  # 非玩家句
 
     def load(self, account):
         if os.name == "nt":
@@ -357,6 +357,88 @@ def stored(c):
     if not (d / "cert.p12").is_file() or not (d / "profile.mobileprovision").is_file() or pw is None:
         raise Failure("开发者证书不完整（证书、描述文件或密码缺了）：在出包页重新导入一次。", code="devcert_missing")
     return d / "cert.p12", (d / "profile.mobileprovision").read_bytes(), pw
+
+
+def _orch(c):
+    """pack/orch/install_win.py 里的 DER 小工具（pkcs1_der / cert_modulus_and_start，两端通用的纯 Python）：按请求给的引擎树（c.engine）导入，
+    同 install.win_install_mod（App 里作业层和引擎分两处，按本文件位置找不到 pack/orch）；引擎树里没有时（单测的空引擎）才退回本文件所在的源码树"""
+    import sys
+    d = Path(c.engine) / "pack/orch"
+    d = str(d if (d / "install_win.py").is_file() else Path(__file__).resolve().parents[1] / "orch")
+    if d not in sys.path:
+        sys.path.insert(0, d)
+    import install_win
+    return install_win
+
+
+def _der_len(n):
+    if n < 0x80:
+        return bytes([n])
+    b = n.to_bytes((n.bit_length() + 7) // 8, "big")
+    return bytes([0x80 | len(b)]) + b
+
+
+def _der_int(raw):
+    """大端无符号字节 → DER INTEGER（去前导零，最高位是 1 就补一个 0）"""
+    raw = raw.lstrip(b"\0") or b"\0"
+    if raw[0] & 0x80:
+        raw = b"\0" + raw
+    return b"\x02" + _der_len(len(raw)) + raw
+
+
+def _pkcs1_from_params(p):
+    """.NET RSAParameters（各字段 base64、大端）→ RSAPrivateKey（PKCS#1）DER"""
+    body = _der_int(b"\0") + b"".join(_der_int(base64.b64decode(p[k])) for k in ("Modulus", "Exponent", "D", "P", "Q", "DP", "DQ", "InverseQ"))
+    return b"\x30" + _der_len(len(body)) + body
+
+
+def _key_modulus(c, der):
+    w = _orch(c)
+    _, s, e = w._tlv(der, 0)
+    _, ms, me = w._children(der, s, e)[1]
+    return int.from_bytes(der[ms:me], "big")
+
+
+def _read_p12(c, p12, password):
+    """规整后的 p12 → (PKCS#1 私钥 DER, 签名用的那张证书 DER)。私钥只在内存里（管道 / 标准输出），不落盘"""
+    env = dict(os.environ, S2A_P12_PW=password, S2A_P12_IN=str(p12))
+    if os.name == "nt":
+        ps = ("$ErrorActionPreference='Stop';$f=[System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable;"
+              "$c=New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection;$c.Import($env:S2A_P12_IN,$env:S2A_P12_PW,$f);"
+              "$x=$c|Where-Object{$_.HasPrivateKey}|Select-Object -First 1;"
+              "$k=[System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($x).ExportParameters($true);"
+              "$o=@{cert=[Convert]::ToBase64String($x.RawData)};foreach($n in 'Modulus','Exponent','D','P','Q','DP','DQ','InverseQ'){$o[$n]=[Convert]::ToBase64String($k.$n)};"
+              "$o|ConvertTo-Json -Compress")
+        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], env=env, capture_output=True, text=True, errors="replace")
+        if r.returncode:
+            raise Failure("证书里的私钥读不出来，没能交给 iPhone 上的 S2Arm：在设置里重新导入一次证书。", code="devcert_invalid", internal=r.stderr.strip()[-400:])
+        import json
+        got = json.loads(r.stdout)
+        return _pkcs1_from_params(got), base64.b64decode(got["cert"])
+    r = subprocess.run(["/usr/bin/openssl", "pkcs12", "-in", str(p12), "-passin", "env:S2A_P12_PW", "-nodes", "-clcerts"], env=env, capture_output=True)
+    pem = r.stdout.decode("ascii", errors="replace")
+    keys = re.findall(r"-----BEGIN ([A-Z ]*PRIVATE KEY)-----.*?-----END \1-----", pem, re.S)
+    key = re.search(r"-----BEGIN ([A-Z ]*PRIVATE KEY)-----.*?-----END \1-----", pem, re.S)
+    cert = re.search(r"-----BEGIN CERTIFICATE-----(.*?)-----END CERTIFICATE-----", pem, re.S)
+    der = _orch(c).pkcs1_der(key.group(0)) if key else None
+    if r.returncode or len(keys) != 1 or not cert or der is None:
+        raise Failure("证书里的私钥读不出来，没能交给 iPhone 上的 S2Arm：在设置里重新导入一次证书。", code="devcert_invalid",
+                      internal=r.stderr.decode(errors="replace").strip()[-400:])
+    return der, base64.b64decode("".join(cert.group(1).split()))
+
+
+def identity(c):
+    """0.6.0 通用壳（install.deliver_identity）：证书签名用户交给 App 的身份——导入时存的 p12 里的私钥（PKCS#1）+ 签名用的那张证书（DER）。
+    → {key, cert, created, key_fp, team}；key_fp = 存着的 p12 文件 SHA-256 前 16 位（换证书 / 重新导入就变，调用方据此判「交过了」）。
+    没在用自己的证书 → None；证书缺件 / 读不出私钥 / 私钥和证书对不上 → Failure"""
+    if not active(c):
+        return None
+    p12, _, pw = stored(c)
+    key, cert = _read_p12(c, p12, pw)
+    mod, created = _orch(c).cert_modulus_and_start(cert)
+    if mod is None or mod != _key_modulus(c, key):
+        raise Failure("证书里的私钥读不出来，没能交给 iPhone 上的 S2Arm：在设置里重新导入一次证书。", code="devcert_invalid", internal="私钥与证书公钥对不上")  # 非玩家句（internal 只进日志）
+    return dict(key=key, cert=cert, created=created, key_fp=hashlib.sha256(Path(p12).read_bytes()).hexdigest()[:16], team=team(c)["id"])
 
 
 def summary(c, udid=None):

@@ -25,8 +25,10 @@ let package = Package(
                           linkerSettings: [.unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])]),
         .testTarget(name: "S2ArmAppleAdapterTests", dependencies: [.product(name: "S2ArmAppleAdapter", package: "adapter")],
                     swiftSettings: [.swiftLanguageMode(.v5)]),
+        // 退出探针（Tests/XCTestExitProbe/xctest_exit_probe.m）：测试进程中途自己退出时把用例名和调用栈写进日志
+        .target(name: "XCTestExitProbe", path: "Tests/XCTestExitProbe", linkerSettings: [.linkedFramework("XCTest")]),
         // 新前端的本机控制口命令表（NX2Apple/S2ArmControl.swift，11-07）
-        .testTarget(name: "S2ArmAppleTests", dependencies: [.product(name: "NX2AppleUI", package: "frontend"),
+        .testTarget(name: "S2ArmAppleTests", dependencies: ["S2ArmApple", "XCTestExitProbe", .product(name: "NX2AppleUI", package: "frontend"),
                                                             .product(name: "S2ArmAppleAdapter", package: "adapter")],
                     swiftSettings: [.swiftLanguageMode(.v5)])
     ]

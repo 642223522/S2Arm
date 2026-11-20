@@ -11,7 +11,8 @@
 #   root_abort <款> <提交>        出包失败：删 W.tmp，现行不动
 #   root_cur <款>                 打印现行版本的实际目录（读方一律先解析成实际目录再读，别跟着软链读到一半被切换）
 #   root_gc <款>                  取现行时自动调（root_cur）：修剪旧版 + 清无主 RomFS 身份 + 死持有者 .tmp / .trash 残余；提交锁被占就跳过
-# 每款只留现行 + 上一版（10-19 维护者：磁盘；commit 与取现行时都修剪，#338）。根目录 S2A_ROOTS，缺省 ~/.s2arm/run/s2arm/roots。
+#                                 S2A_ROOT_GC_FORCE=1 越过 10 分钟节流（出包收尾当场收，pack/refresh.sh 的 tail_gc：开工的取现行刚写过节流戳）
+# 每款只留现行 + 上一版（10-19 维护者：磁盘；commit、取现行与出包收尾都修剪，#338）。根目录 S2A_ROOTS，缺省 ~/.s2arm/run/s2arm/roots。
 # RomFS 共享存储（11-03 维护者「火纹冷出包 30 分钟」：Switch 2 火纹 RomFS 27.4 万条目，每个阶段开工克隆整棵根、提交后删旧版，Spare-host 上各约 14 秒、7 个阶段累计 3–4 分钟）：
 #   RomFS 是不可变的游戏输入，只有播种与界面布局阶段换它的内容。各版本的 romfs 是指向 $S2A_ROOTS/.romfs_store/<款>/<身份>/ 的相对软链（../.romfs_store/<款>/<身份>），
 #   开发 / 门禁机（S2A_ROMFS_SEAL=1，tools/gate.sh 设）身份目录整棵只读（chmod a-w：阶段往 romfs 写 / 删 / 建都会 EACCES 响亮失败，改不到共享份）；
@@ -80,6 +81,18 @@ _root_identity_shared() {
   actual=$(_root_resolve_dir "$S2A_ROOTS") || return 1
   shared=$(_root_resolve_dir "$S2A_ROOTS_SHARED") || return 1
   [ "$actual" = "$shared" ]
+}
+# 本树提交号（.root_src）：发布快照不带 .git，读打包时写进 engine.json 的 commit；快照只有那一个提交，「a 是 b 的祖先」只在两者都是它时成立（与原先在快照库里跑 merge-base 结果相同）
+_root_snap_commit() {
+  local e; e=$(dirname "${BASH_SOURCE[0]}")/../engine.json; [ -f "$e" ] || return 1
+  "${S2A_PYTHON:-${S2A_PY:-python3}}" -B -I -c 'import json, sys
+c = json.load(open(sys.argv[1], encoding="utf-8")).get("commit")
+if not c: sys.exit(1)
+print(c)' "$e"
+}
+_root_head() { _root_snap_commit || git -C "$(dirname "${BASH_SOURCE[0]}")/.." rev-parse HEAD 2> /dev/null; }
+_root_is_ancestor() {
+  local h; if h=$(_root_snap_commit); then [ "$1" = "$h" ] && [ "$2" = "$h" ]; else git -C "$(dirname "${BASH_SOURCE[0]}")/.." merge-base --is-ancestor "$1" "$2" 2> /dev/null; fi
 }
 _root_tree_ok() {   # 本树能不能改共享现行（$1 = 款）：HEAD 是 origin/main 上的提交（不是分支）、阶段相关目录干净、不比现行的来源提交旧（只许往前，不乒乓）
   local r why= src cur; r=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -233,7 +246,7 @@ root_begin() {
   else mkdir -p "$w.tmp"; fi
   ( cd "$w.tmp" && for f in .stage_*; do [ -f "$f" ] && printf '%s\t%s\n' "$f" "$(cat "$f")"; done ) > "$w.tmp/.root_base_stages" 2> /dev/null   # 开工时各阶段键（root_commit 判别的树动没动过同一阶段）
   _root_owner > "$w.tmp/.root_pid"   # 持有者（root_gc 只删持有者已死的 .tmp；10-23 排烘焙道 2 小时的 .tmp 被按时间删掉、出包中途失败）
-  basename "${cur:-无}" > "$w.tmp/.root_base"; git -C "$(dirname "${BASH_SOURCE[0]}")/.." rev-parse HEAD > "$w.tmp/.root_src" 2> /dev/null   # 来源提交：护栏判「只许往前」
+  basename "${cur:-无}" > "$w.tmp/.root_base"; _root_head > "$w.tmp/.root_src"   # 来源提交：护栏判「只许往前」
   echo "$w.tmp"
 }
 _root_shards() {   # _root_shards <目录> <标签>：记一行直连库分片清点（11-01 究极4 分片丢在出包之后某步，要能定位）；记不成不影响提交。日志 ${S2A_SHARD_LOG}（缺省 ${S2A_ROOTS}/.shard_inventory.log）
@@ -274,7 +287,7 @@ _root_replay() {   # _root_replay <W.tmp> <新现行> <路径…>：新现行克
   done
   # 来源提交取两边较新的：新现行来自更新的 main 时留它的（旧树重放一个没被动过的阶段，不把共享现行的来源退回旧提交）
   local ns ms; ns=$(cat "$r/.root_src" 2> /dev/null); ms=$(cat "$w/.root_src" 2> /dev/null)
-  { [ -z "$ns" ] || git -C "$(dirname "${BASH_SOURCE[0]}")/.." merge-base --is-ancestor "$ns" "$ms" 2> /dev/null; } && cp "$w/.root_src" "$r/.root_src" 2> /dev/null
+  { [ -z "$ns" ] || _root_is_ancestor "$ns" "$ms"; } && cp "$w/.root_src" "$r/.root_src" 2> /dev/null
   basename "$now" > "$r/.root_base"
   _root_shards "$r" "replay·换完路径后"
   _root_trash "$w" && mv "$r" "$w"
@@ -293,7 +306,7 @@ root_commit() {
     if _root_shared && [ "$now" != 无 ]; then local ns ms st touched=; ns=$(cat "$(root_cur "$g")/.root_src" 2> /dev/null); ms=$(cat "$w.tmp/.root_src" 2> /dev/null)
       for st in ${ROOT_REPLAY:-}; do case $st in .stage_*) [ "$(cat "$(root_cur "$g")/$st" 2> /dev/null)" = "$(awk -F'\t' -v k="$st" '$1 == k { print $2 }' "$w.tmp/.root_base_stages" 2> /dev/null)" ] || touched=$st;; esac; done
       [ -z "${ROOT_REPLAY:-}" ] && touched=整份   # 不声明产物路径的阶段本来就不重放
-      if [ -n "$touched" ] && [ -n "$ns" ] && [ -n "$ms" ] && ! git -C "$(dirname "${BASH_SOURCE[0]}")/.." merge-base --is-ancestor "$ns" "$ms" 2> /dev/null; then
+      if [ -n "$touched" ] && [ -n "$ns" ] && [ -n "$ms" ] && ! _root_is_ancestor "$ns" "$ms"; then
         _root_unlock "$g"; _root_rm "$w.tmp"
         echo "【红】$g 现行在本阶段期间已由更新的 main ${ns:0:9} 刷过（本树 ${ms:0:9}）：共享现行只许往前，丢弃 $(basename "$w")、不重放；要用本树产物走私有根 S2A_ROOTS=${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/roots_priv/<名>" >&2; return 1; fi
     fi
@@ -334,7 +347,7 @@ root_gc() {
   [ -d "$S2A_ROOTS" ] || return 0
   [ -z "${_ROOT_LOCK_PID:-}" ] || return 0   # 自己持着提交锁（root_commit 里取现行）：commit 收尾自己修剪，不再试锁
   stamp="$S2A_ROOTS/.gc.$g.stamp"
-  [ -n "$(find "$stamp" -mmin -10 2> /dev/null)" ] && return 0   # 节流：同一款 10 分钟内最多回收一次
+  [ -z "${S2A_ROOT_GC_FORCE:-}" ] && [ -n "$(find "$stamp" -mmin -10 2> /dev/null)" ] && return 0   # 节流：同一款 10 分钟内最多回收一次；出包收尾的强制回收（S2A_ROOT_GC_FORCE=1，pack/refresh.sh tail_gc）越过节流——最后一笔提交时并行段进程还活着钉着各自的根，只剪得动一部分，收尾各段已退出才收得全
   type plock_take > /dev/null 2>&1 || source "$(dirname "${BASH_SOURCE[0]}")/../tools/plock.sh" || return 0
   # 有 commit 在跑：它收尾会修剪；同样记一次节流，别让并行的 root_cur 反复起锁进程试锁
   plock_take "$S2A_ROOTS/.$g.commit.lock" 0 > /dev/null 2>&1 || { touch "$stamp" 2> /dev/null; return 0; }

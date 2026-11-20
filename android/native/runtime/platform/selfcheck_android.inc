@@ -20,7 +20,7 @@ int s2a_selfcheck(void) {
     s2a_window_get(&base, &size);
     if (!s2a_window_ok() || !base || (base & ((1ull << 30) - 1)) ||
         size != S2A_WIN_SIZE || base > (1ull << 39) - size)
-        return selfcheck_fail("尚未持有完整、1 GiB 对齐且位于 39 位地址范围内的 68 GiB 游戏窗口");
+        return selfcheck_fail("尚未持有完整、1 GiB 对齐且位于 39 位地址范围内的 72 GiB 游戏窗口");
     const s2a_host_api_v1 *host = s2a_host_get();
     if (!host || host->hdr.size < sizeof *host || host->hdr.abi_version != S2A_HOST_API_ABI_VERSION ||
         !(host->capabilities & S2A_HOST_CAP_MEMINFO) || !host->meminfo ||

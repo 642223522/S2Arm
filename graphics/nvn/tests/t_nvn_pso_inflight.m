@@ -12,6 +12,12 @@
 //   ⑨ main0 体 8202 行、没有助手 → 「over the 8192-line split threshold, not split」、总行数 8203；两个 s2a_outline_ 助手 → 「split into 2 helpers」；体 3 行 → 「under …」
 //   ⑩ 编 300 ms、门槛改成 100 ms → 日志「still compiling after 100 ms … MSL: <调用方给的摘要>」，源文件留一份 <键>.slow.metal、内容逐字节相同
 //   ⑪ 编得快（门槛内返回）→ 不留源（反证）
+//   重译抢跑（v0.4.1，par_compute_wait 的 t_par_race；门槛改 100 ms、有界等待 300 ms、抢跑在途上限 2 秒）：期望按「谁先好用谁、做不了回原上限、都没好到上限才跳过」手写：
+//   ⑫ 原编译不返回、抢跑 50 ms 后给出 Y → 约 150 ms 返回 Y（同一对象）、gave_up 0；超过原上限 300 ms 也没跳过的反面看 ⑬
+//   ⑬ 原编译不返回、抢跑做不了（nil）→ 回原上限：约 300 ms 跳过（gave_up 1）
+//   ⑭ 原编译 30 ms 就好 → 抢跑不起（起抢跑计数不变），拿到原管线
+//   ⑮ 原编译不返回、抢跑也卡 3 秒 → 抢跑在途上限 600 ms 到了跳过（gave_up 1，用时 < 1 秒）
+//   ⑯ 抢跑先好、原编译之后才好 → 原结果登记给下一次同键请求（g_par_late）：下一次拿到原管线 X，建管线不再调
 #include "../gfx/nvn/nvn_mtl.m"
 static unsigned checks, failures;
 #define REQUIRE(c) do { if (!(c)) { fprintf(stderr, "FAIL setup %s:%d: %s\n", __FILE__, __LINE__, #c); exit(1); } } while (0)
@@ -107,6 +113,32 @@ int main(void) { @autoreleasepool {
     (void)par_compute_wait(fn, @"t-s2", &e, -1, NULL); t_par_msl_note = t_par_msl_src = NULL; usleep(300000);
     VERIFY(![NSFileManager.defaultManager fileExistsAtPath:keep11], "⑪ 门槛内编完：不留源（%s）", [NSFileManager.defaultManager fileExistsAtPath:keep11] ? "留了" : "没留");
     [NSFileManager.defaultManager removeItemAtPath:dir error:nil];
+    // ⑫–⑯
+    id<MTLLibrary> lib2 = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\nkernel void k2(device uint *o [[buffer(0)]], uint i [[thread_position_in_grid]]) { o[i] = i + 1; }\n" options:nil error:&e];
+    REQUIRE(lib2); id<MTLComputePipelineState> Y = par_compute_([lib2 newFunctionWithName:@"k2"], nil, &e); REQUIRE(Y && Y != X);
+    g_par_slow_ms = 100; g_par_race_wait_ns = 2000 * NSEC_PER_MSEC;
+    g_par_compute_impl = stub_hang; g_hang = dispatch_semaphore_create(0); g_stub_ret = X;
+    ParRace rY = ^id<MTLComputePipelineState>{ usleep(50000); return Y; }, rNil = ^id<MTLComputePipelineState>{ return nil; };
+    uint64_t won0 = atomic_load(&g_par_race_won), n0 = atomic_load(&g_par_race_n);
+    gu = 7; t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW); t_par_race = rY;
+    id r12 = par_compute_wait(fn, @"t-r1", &e, 300 * NSEC_PER_MSEC, &gu); double ms12 = ms_since(t0);
+    VERIFY(r12 == Y && gu == 0 && ms12 > 140 && ms12 < 290 && atomic_load(&g_par_race_won) == won0 + 1, "⑫ 原编译卡住、抢跑 50 ms 给出：%.0f ms 返回%s、gave_up %d、抢跑赢 +%llu", ms12, r12 == Y ? "抢跑那份" : "别的", gu, (unsigned long long)(atomic_load(&g_par_race_won) - won0));
+    gu = 0; t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW); t_par_race = rNil;
+    id r13 = par_compute_wait(fn, @"t-r2", &e, 300 * NSEC_PER_MSEC, &gu); double ms13 = ms_since(t0);
+    VERIFY(!r13 && gu == 1 && ms13 > 290 && ms13 < 600, "⑬ 抢跑做不了：%.0f ms 跳过（gave_up %d）", ms13, gu);
+    g_par_compute_impl = stub_slow; g_stub_sleep_ms = 30; n0 = atomic_load(&g_par_race_n); gu = 7; t_par_race = rY;
+    id r14 = par_compute_wait(fn, @"t-r3", &e, 300 * NSEC_PER_MSEC, &gu);
+    VERIFY(r14 == X && gu == 0 && atomic_load(&g_par_race_n) == n0, "⑭ 原编译 30 ms 就好：拿到原管线（%s）、起抢跑 +%llu", r14 == X ? "是" : "否", (unsigned long long)(atomic_load(&g_par_race_n) - n0));
+    g_par_compute_impl = stub_hang; g_par_race_wait_ns = 600 * NSEC_PER_MSEC; gu = 0; t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    t_par_race = ^id<MTLComputePipelineState>{ usleep(3000000); return Y; };
+    id r15 = par_compute_wait(fn, @"t-r4", &e, 300 * NSEC_PER_MSEC, &gu); double ms15 = ms_since(t0);
+    VERIFY(!r15 && gu == 1 && ms15 > 590 && ms15 < 1000, "⑮ 两边都卡：%.0f ms 跳过（gave_up %d）", ms15, gu);
+    // ⑯：⑫ 的原编译（t-r1）放行，结果登记给下一次
+    for (int i = 0; i < 4; i++) dispatch_semaphore_signal(g_hang);
+    atomic_store(&g_stub_calls, 0); id r16 = nil; gu = 0; t_par_race = nil;
+    for (int i = 0; i < 100 && r16 != X; i++) { usleep(10000); r16 = par_compute_wait(fn, @"t-r1", &e, 300 * NSEC_PER_MSEC, &gu); }
+    VERIFY(r16 == X && atomic_load(&g_stub_calls) == 0, "⑯ 抢跑赢后原编译好了：下一次同键拿到原管线（%s）、建管线调 %d 次", r16 == X ? "是" : "否", atomic_load(&g_stub_calls));
+    t_par_race = nil; g_par_race_wait_ns = 60ll * 1000000000;
     g_par_slow_ms = PAR_SLOW_MS; g_par_compute_impl = par_compute_;
   }
     if (failures) { printf("✗ t_nvn_pso_inflight：%u 项里 %u 项不符\n", checks, failures); return 1; }

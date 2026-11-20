@@ -30,5 +30,14 @@ wait "$py_gui" || py_rc=$?; cat build/macos/tests/py-gui-jobs.log
 cat build/macos/tests/swift-execution.log
 python3 launchers/macos/check_xctest.py build/macos/tests/swift-discovery.log build/macos/tests/swift-execution.log
 [ "$swift_rc" = 0 ] || exit "$swift_rc"
+# SwiftPM does not run a dependency package's tests with the parent package.
+# Keep frontend layout, controller and language regressions in the standard Mac test entry point.
+frontend_args=(--disable-sandbox --cache-path "$R/build/macos/spm-cache" --package-path launchers/macos/frontend --scratch-path build/macos/frontend-ui)
+swift test "${frontend_args[@]}" list > build/macos/tests/frontend-discovery.log
+frontend_rc=0
+swift test "${frontend_args[@]}" > build/macos/tests/frontend-execution.log 2>&1 || frontend_rc=$?
+cat build/macos/tests/frontend-execution.log
+python3 launchers/macos/check_xctest.py build/macos/tests/frontend-discovery.log build/macos/tests/frontend-execution.log
+[ "$frontend_rc" = 0 ] || exit "$frontend_rc"
 # 原生输入（input_test.m）与系统键盘桥接（textinput_test.m）的 C / ObjC 单测挪到 tests/macos_native_input_test.sh（合入前层、按依赖文件路由；
 #   11-10：#417 Joy-Con 体感改走 HID 后 input_test 漏链 joycon_imu.m，这里只在合入后层跑，守望才发现）

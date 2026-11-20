@@ -701,6 +701,150 @@ oom:
     free(o); return NULL;
 }
 
+// ---------- 纹素缓冲前导元素（#798，直连口径）----------
+// Metal 的纹素缓冲视图只能建在 minimumLinearTextureAlignmentForPixelFormat 的整数倍偏移上（Mac 16、iPhone 64 字节）；建在更小的偏移上，GPU 从向下取整处读
+//   （M5 Max 实测 R32F 偏移 4 / 8 / 12 整体错后 1 / 2 / 3 个元素，docs/坑记录.md）。NVN 的纹素缓冲可以在任意按元素对齐的池偏移上。照参考实现
+//   （nxnative 3c4de03c7，MIT）的做法：宿主把视图建在向下取整的对齐边界上、宽度多出「前导元素数」，着色器每次取数把下标加上它，取宽度减去它，原地读池里的字节、
+//   看得见同一次提交里 GPU 先写的内容。前导数由宿主给：本改写给每个单个（非数组）纹素缓冲变量 V 新增一个只读存储缓冲 gal_tbl_<V 的名字>（uint data[1]，
+//   绑定号 GAL_TBLEAD_BINDING0 + k），反射按名字认（Dsh.cs kind tblead、for = V），宿主把它指向常量表里值为前导数的那一格（nvn_mtl.m tbl_bind）。
+//   数组（array<texture_buffer>）与改不了的访问不动，宿主照旧走 GPU 对齐副本（tba_copy）。
+// 下标改写：moved = c + lead（无符号）；moved < lead 说明 c 是负数（-lead .. -1），保持原值：同硬件一样落在缓冲之外、读 0（参考实现同）
+typedef struct { uint32_t var, k, tvar; } tb_ent;
+static uint32_t tb_lead(sx *s, wbuf *o, const tb_ent *e, uint32_t ptr_u32) {
+    uint32_t pc = s->nb++, v = s->nb++;
+    W(o, OPW(SpvOpAccessChain, 6), ptr_u32, pc, e->tvar, sx_cst(s, 0), sx_cst(s, 0));
+    W(o, OPW(SpvOpLoad, 4), s->tu32, v, pc);
+    return v;
+}
+// 坐标 c（32 位整数标量）挪 lead；返回新坐标 id（同 c 的类型），0 = 改不了
+static uint32_t tb_move(sx *s, wbuf *o, uint32_t c, uint32_t lead) {
+    uint32_t t = c < s->bound ? s->rtype[c] : 0;
+    if (!is_op(s, t, SpvOpTypeInt) || s->in[s->pos[t] + 2] != 32) return 0;
+    uint32_t cu = as_u32(s, o, c); if (!cu) return 0;
+    uint32_t mv = s->nb++, lt = s->nb++, sel = s->nb++;
+    W(o, OPW(SpvOpIAdd, 5), s->tu32, mv, cu, lead);
+    W(o, OPW(SpvOpULessThan, 5), s->tbool, lt, mv, lead);
+    W(o, OPW(SpvOpSelect, 6), s->tu32, sel, lt, cu, mv);
+    if (t == s->tu32) return sel;
+    uint32_t r = s->nb++; W(o, OPW(SpvOpBitcast, 4), t, r, sel); return r;
+}
+static uint32_t *spv_tbias(const uint32_t *in, uint32_t nw, uint32_t *onw, uint32_t *nmoved) {
+    *onw = 0; *nmoved = 0;
+    if (nw < 5 || in[0] != SpvMagicNumber) return NULL;
+    sx S = {0}, *s = &S; s->in = in; s->nw = nw; s->bound = in[3]; s->nb = in[3]; s->direct = 1;
+    uint32_t B = s->bound;
+    s->pos = calloc(B, 4); s->rtype = calloc(B, 4); s->dset = calloc(B, 4); s->ptrs = calloc(B, 4);
+    uint32_t *nm_at = calloc(B, 4), *ent_of = calloc(B, 4); uint8_t *img_buf = calloc(B, 1);   // 按字节：原先同一句声明成 uint32_t * 却只分 B 字节，读写越界踩坏堆（ampere_isa 冷跑卡死 / 段错误）；nm_at[id] = 该 id 的 OpName 位置；img_buf[类型] = Dim Buffer 的图像类型；ent_of[变量 / 载入值] = 1 + 表项号
+    tb_ent *ent = NULL; int nent = 0;
+    uint32_t *out = NULL; wbuf body = {0};
+    g_wb_bad = 0;
+    if (!s->pos || !s->rtype || !s->dset || !s->ptrs || !nm_at || !img_buf || !ent_of) { GLOG("【红】纹素缓冲前导改写：按 ID 上限 %u 分配表失败，本支不改", B); goto fail; }
+    for (uint32_t i = 5; i < nw; ) {
+        uint32_t n = in[i] >> 16, op = in[i] & 0xffff;
+        if (!n || i + n > nw) goto fail;
+        bool hr = 0, ht = 0; SpvHasResultAndType((SpvOp)op, &hr, &ht);
+        if (hr) { uint32_t id = in[i + (ht ? 2 : 1)]; if (id >= B) goto fail; s->pos[id] = i; if (ht) s->rtype[id] = in[i + 1]; }
+        switch (op) {
+        case SpvOpTypeInt: if (in[i + 2] == 32 && in[i + 3] == 0 && !s->tu32) s->tu32 = in[i + 1]; break;
+        case SpvOpTypeBool: if (!s->tbool) s->tbool = in[i + 1]; break;
+        case SpvOpTypeImage: if (n > 3 && in[i + 3] == SpvDimBuffer) img_buf[in[i + 1]] = 1; break;
+        case SpvOpTypeSampledImage: if (n > 2 && in[i + 2] < B && img_buf[in[i + 2]]) img_buf[in[i + 1]] = 1; break;   // Ryujinx 把纹素缓冲也声明成采样图像，取数前 OpImage 取出图像
+        case SpvOpTypePointer: s->ptrs[s->nptr++] = in[i + 1]; break;
+        case SpvOpMemoryModel: s->mm_pos = i; break;
+        case SpvOpFunction: if (!s->first_fn) s->first_fn = i; break;
+        case SpvOpName: s->name_end = i + n; if (in[i + 1] < B) nm_at[in[i + 1]] = i; break;
+        case SpvOpMemberName: s->name_end = i + n; break;
+        case SpvOpDecorate: if (in[i + 1] < B && in[i + 2] == SpvDecorationDescriptorSet && n > 3) s->dset[in[i + 1]] = in[i + 3]; break;
+        }
+        if (op == SpvOpDecorate || op == SpvOpMemberDecorate || op == SpvOpDecorationGroup || op == SpvOpGroupDecorate || op == SpvOpGroupMemberDecorate ||
+            op == SpvOpDecorateId || op == SpvOpDecorateString || op == SpvOpMemberDecorateString) { if (!s->ann_beg) s->ann_beg = i; s->ann_end = i + n; }
+        i += n;
+    }
+    if (!s->first_fn || !s->mm_pos || !s->ann_end) goto fail;
+    // 单个纹素缓冲变量（UniformConstant 指针 → Dim Buffer 图像，或包着它的采样图像）；有名字的才收（反射靠名字配对）
+    for (uint32_t id = 1; id < B; id++) {
+        if (!is_op(s, id, SpvOpVariable) || s->in[s->pos[id] + 3] != 0 /* UniformConstant */ || !nm_at[id]) continue;
+        uint32_t pt = s->rtype[id], t = is_op(s, pt, SpvOpTypePointer) ? s->in[s->pos[pt] + 3] : 0;
+        if (!t || t >= B || !img_buf[t]) continue;
+        if (nent >= GAL_TBLEAD_MAX) { GRED_ONCE("纹素缓冲前导改写：一支着色器的纹素缓冲超过 %d 个（首例），其余不改、宿主走对齐副本", GAL_TBLEAD_MAX); break; }
+        tb_ent *ne = realloc(ent, (size_t)(nent + 1) * sizeof *ent); if (!ne) goto fail; ent = ne;
+        ent[nent] = (tb_ent){id, (uint32_t)nent, 0}; ent_of[id] = (uint32_t)nent + 1; nent++;
+    }
+    if (!nent) goto fail;
+    if (!s->tu32) { s->tu32 = s->nb++; s->new_tu32 = 1; W(&s->glob, OPW(SpvOpTypeInt, 4), s->tu32, 32, 0); }
+    if (!s->tbool) { s->tbool = s->nb++; s->new_tbool = 1; W(&s->glob, OPW(SpvOpTypeBool, 2), s->tbool); }
+    // 每个纹素缓冲一个 gal_tbl_<名>：uint 数组[1] → 结构体（BufferBlock、只读）→ Uniform 指针 → 变量（同集，绑定 GAL_TBLEAD_BINDING0 + k）
+    uint32_t arr = s->nb++, st = s->nb++, pst, ptr_u32;
+    W(&s->glob, OPW(SpvOpTypeArray, 4), arr, s->tu32, sx_cst(s, 1));
+    W(&s->glob, OPW(SpvOpTypeStruct, 3), st, arr);
+    pst = sx_ptr(s, SC_Uniform, st); ptr_u32 = sx_ptr(s, SC_Uniform, s->tu32);
+    W(&s->deco_add, OPW(SpvOpDecorate, 4), arr, SpvDecorationArrayStride, 4);
+    W(&s->deco_add, OPW(SpvOpDecorate, 3), st, SpvDecorationBufferBlock);
+    W(&s->deco_add, OPW(SpvOpMemberDecorate, 5), st, 0, SpvDecorationOffset, 0);
+    W(&s->deco_add, OPW(SpvOpMemberDecorate, 4), st, 0, SpvDecorationNonWritable);
+    for (int k = 0; k < nent; k++) {
+        uint32_t var = s->nb++; ent[k].tvar = var;
+        W(&s->glob, OPW(SpvOpVariable, 4), pst, var, SC_Uniform);
+        W(&s->deco_add, OPW(SpvOpDecorate, 4), var, SpvDecorationDescriptorSet, s->dset[ent[k].var]);
+        W(&s->deco_add, OPW(SpvOpDecorate, 4), var, SpvDecorationBinding, GAL_TBLEAD_BINDING0 + (uint32_t)k);
+        // 名字 = "gal_tbl_" + 原名（原名是 OpName 的字面量；SPIRV-Cross 参数块成员名 = 变量名）
+        const uint32_t *np = in + nm_at[ent[k].var]; uint32_t nn = np[0] >> 16;
+        const char *orig = (const char *)(np + 2); size_t ol = strnlen(orig, (size_t)(nn - 2) * 4);
+        char buf[512]; int bl = snprintf(buf, sizeof buf, "gal_tbl_%.*s", (int)ol, orig);
+        if (bl <= 0 || bl >= (int)sizeof buf) goto fail;
+        uint32_t words = (uint32_t)(bl + 4) / 4, tmp[130] = {0}; memcpy(tmp, buf, (size_t)bl);
+        uint32_t hdr[2] = { OPW(SpvOpName, 2 + words), var }; wb_put(&s->names, hdr, 2); wb_put(&s->names, tmp, words);
+    }
+    // ---- 函数体：载入值认表项，取数 / 读写 / 纹素指针挪下标，取宽度减前导 ----
+    for (uint32_t i = s->first_fn; i < nw; ) {
+        uint32_t n = in[i] >> 16, op = in[i] & 0xffff; const uint32_t *p = in + i;
+        if (op == SpvOpLoad && n >= 4 && p[3] < B && ent_of[p[3]] && p[2] < B) ent_of[p[2]] = ent_of[p[3]];   // OpLoad 结果类型 结果 指针
+        if ((op == SpvOpCopyObject || op == SpvOpImage) && n >= 4 && p[3] < B && ent_of[p[3]] && p[2] < B) ent_of[p[2]] = ent_of[p[3]];
+        int ci = 0, ii = 0;   // 坐标、图像操作数所在字号
+        if (op == SpvOpImageFetch || op == SpvOpImageRead) { ii = 3; ci = 4; }
+        else if (op == SpvOpImageWrite) { ii = 1; ci = 2; }
+        else if (op == SpvOpImageTexelPointer) { ii = 3; ci = 4; }
+        if (ci && n > (uint32_t)ci && p[ii] < B && ent_of[p[ii]]) {
+            const tb_ent *e = &ent[ent_of[p[ii]] - 1];
+            uint32_t lead = tb_lead(s, &body, e, ptr_u32), c2 = tb_move(s, &body, p[ci], lead);
+            if (c2) {
+                uint32_t at = body.n; wb_put(&body, p, n); body.w[at + ci] = c2; (*nmoved)++;
+                i += n; continue;
+            }
+            GRED_ONCE("纹素缓冲前导改写：坐标不是 32 位整数标量（首例），这一处不挪");
+        }
+        if (op == SpvOpImageQuerySize && n >= 4 && p[3] < B && ent_of[p[3]] && is_op(s, p[1], SpvOpTypeInt) && s->in[s->pos[p[1]] + 2] == 32) {
+            const tb_ent *e = &ent[ent_of[p[3]] - 1];
+            uint32_t r0 = s->nb++, at = body.n; wb_put(&body, p, n); body.w[at + 2] = r0;
+            uint32_t lead = tb_lead(s, &body, e, ptr_u32), lt = lead;
+            if (p[1] != s->tu32) { lt = s->nb++; W(&body, OPW(SpvOpBitcast, 4), p[1], lt, lead); }
+            W(&body, OPW(SpvOpISub, 5), p[1], p[2], r0, lt); (*nmoved)++;
+            i += n; continue;
+        }
+        wb_put(&body, p, n); i += n;
+    }
+    if (!*nmoved) goto fail;
+    // ---- 拼模块（同 spv_bounds）：头 + 原名字段 + 新名 + 原注解 + 新修饰 + 原类型段 + 新全局 + 函数体 ----
+    {
+        wbuf o = {0}; wb_put(&o, in, 5);
+        uint32_t name_at = s->name_end ? s->name_end : s->ann_beg;
+        for (uint32_t i = 5; i < s->first_fn; ) {
+            uint32_t n = in[i] >> 16;
+            if (i == name_at) wb_put(&o, s->names.w, s->names.n);
+            wb_put(&o, in + i, n); i += n;
+            if (i == s->ann_end) wb_put(&o, s->deco_add.w, s->deco_add.n);
+        }
+        wb_put(&o, s->glob.w, s->glob.n); wb_put(&o, body.w, body.n);
+        if (g_wb_bad || !o.w) { free(o.w); goto fail; }
+        o.w[3] = s->nb; out = o.w; *onw = o.n;
+    }
+fail:
+    if (!out) *nmoved = 0;
+    free(s->pos); free(s->rtype); free(s->dset); free(s->ptrs); free(nm_at); free(img_buf); free(ent_of); free(ent);
+    free(s->glob.w); free(s->deco_add.w); free(s->names.w); free(body.w);
+    return out;
+}
+
 // 参照后端（galplay --ref 的 Ryujinx Vulkan@MoltenVK）用：只加循环上限（与我方同一套工作量 / 整次派发口径），不加越界钳位（不改正常语义）、不接计数收尾。
 // 10-21 08:02 / 08:20 两次整卡重置：参照端跑八方2 选项页的坏常量循环，没有上限，一直跑到系统杀卡。返回 malloc 的新码（nxgal_spv_free 放），无循环或失败返回 NULL
 NXGAL_API uint32_t *nxgal_spv_loop_guard(const uint32_t *in, uint32_t nw, uint32_t *onw) {
@@ -729,6 +873,10 @@ static uint32_t *spv_harden(const uint32_t *in, uint32_t nw, uint32_t *onw, uint
     const uint32_t *src = a ? a : in; uint32_t sn = a ? n1 : nw;
     uint32_t *b = direct ? NULL : spv_loop_guard(src, sn, model == SpvExecutionModelGLCompute ? GAL_LOOP_CAP_CS : GAL_LOOP_CAP_GFX, model == SpvExecutionModelGLCompute, &n2, s, &vars[GAL_OOB_LOOP]);
     if (b) { free(a); a = b; n1 = n2; src = a; sn = n1; }
+    if (direct) {   // #798 纹素缓冲前导（见 spv_tbias）：越界改写之后再挪下标
+        uint32_t nt = 0, moved = 0, *t = spv_tbias(src, sn, &nt, &moved);
+        if (t) { free(a); a = t; n1 = nt; src = a; sn = n1; }
+    }
     uint32_t *c = gal_spvx_counting() ? spv_count_flush(src, sn, vars, &n3) : NULL;
     for (int k = 0; k < GAL_SPVX_NSTAT; k++) { g_sx_tot[k] += s[k]; if (st) st[k] += s[k]; }
     if (c) { free(a); *onw = n3; return c; }

@@ -56,6 +56,8 @@ public sealed partial class EnvironmentWindow
                     Foreground = Brush.Parse("#A8A6A1"), TextWrapping = TextWrapping.Wrap });
             panel.Children.Add(running);
         }
+        else if (libraryFailCode == LibraryChooseDrive && LibraryDrivePicker() is { } choose)
+            panel.Children.Add(choose);   // 第一次建库先选盘（LibraryDrivePicker 选盘模式）：选好建完库再出拖拽区
         else
         {
             var zone = new Border
@@ -101,11 +103,15 @@ public sealed partial class EnvironmentWindow
         if (!libraryBusy && !importBusy && (connectedFolder is null || libraryId is null))
         {
             var fix = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(0, 10, 0, 0) };
-            var retry = Action("welcome.sheet.libraryRetry", () => EnsureLibrary(() => { }));
-            AutomationId(retry, "import.library.retry");
             var change = Action("welcome.sheet.libraryChange", () => BeginPicker(ChangeLibraryAsync));
             AutomationId(change, "import.library.change");
-            fix.Children.Add(retry); fix.Children.Add(change);
+            if (libraryFailCode != LibraryChooseDrive)   // 选盘时「重试」就是不选直接建在缺省位置，只留「换一个文件夹」（自己挑文件夹）
+            {
+                var retry = Action("welcome.sheet.libraryRetry", () => EnsureLibrary(() => { }));
+                AutomationId(retry, "import.library.retry");
+                fix.Children.Add(retry);
+            }
+            fix.Children.Add(change);
             panel.Children.Add(fix);
         }
 
@@ -282,6 +288,8 @@ public sealed partial class EnvironmentWindow
         if (importBusy || connectedFolder is null || libraryId is null) return;
         var front = BeginJob(JobKind.Import); importError = ""; importNotice = ""; importJobName = Path.GetFileName(filePaths[0]); importJobMessage = "";
         keysRejected = false; Render();
+        // 导入前库里还没有可见的游戏 = 第一次用：导入后欢迎页接着带这一款出包；库里已有游戏时不进欢迎页（同 Mac selectImportedGame 的 wasEmpty）
+        var wasEmpty = catalog is null || catalog.Games.All(g => g.Hidden);
         try
         {
             var result = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder, libraryId,
@@ -314,12 +322,11 @@ public sealed partial class EnvironmentWindow
                 "catalog", null, front.Token, jobId: front.Next(), startup: TakeStartupCatalog());
             if (listing.Report.Succeeded)
             {
-                catalog = LibraryCatalog.Parse(listing.Report.Result); ClearCovers();
-                if (welcomeGameId == null)
-                {
-                    var visible = catalog.Games.Where(g => !g.Hidden).ToArray();
-                    if (visible.Length > 0) welcomeGameId = visible[0].Id;
-                }
+                var listed = catalog = LibraryCatalog.Parse(listing.Report.Result); ClearCovers();
+                // 选中的是这次导入的那一款（玩家反馈：Windows 添加游戏后总跳到上一款的出包页——原先欢迎页取目录里排第一的可见游戏、
+                //   记过一款后就不再换，「一键出包」带去的是上一款）。同 Mac：选中新导入的；只有导入前是空库才进欢迎页
+                var (selected, welcome) = ImportOutcome.AfterImport(result.Report.Result, listed.Games, wasEmpty);
+                if (selected is not null) { selectedGame = selected; welcomeGameId = welcome; }
             }
             pendingImportPaths = [];
             // 批量出包（v0.2.4）：一次放进多款 → 列成清单连续出包，认不出的也列上、写原因
@@ -357,12 +364,5 @@ public sealed partial class EnvironmentWindow
 
     private static string? GetDiagCode(LibraryJobOutput job) => DiagnosticCode(job.Report.Diagnostics);
 
-    private static string? DiagnosticCode(System.Text.Json.JsonElement diagnostics)
-    {
-        if (diagnostics.ValueKind == System.Text.Json.JsonValueKind.Array)
-            foreach (var d in diagnostics.EnumerateArray())
-                if (d.TryGetProperty("code", out var code) && code.GetString() is { Length: > 0 } c)
-                    return c;
-        return null;
-    }
+    private static string? DiagnosticCode(System.Text.Json.JsonElement diagnostics) => LibraryJobResult.FailureCodeOf(diagnostics);
 }

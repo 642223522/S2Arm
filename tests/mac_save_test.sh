@@ -11,8 +11,12 @@ o=$(run acnh $T/d1)
 ck "① 缺省：S2A_SAVE_DIR 指局目录副本、内容同原件、system_time 带上（${o}）" '[ "$o" = "$T/d1/save|1700000000" ] && [ "$(cat $T/d1/save/device/a.bin)" = 原件 ]'
 echo 局里改了 > $T/d1/save/device/a.bin
 ck "② 改副本、原件不变" '[ "$(cat $T/saves/acnh_$BID/device/a.bin)" = 原件 ]'
+mkdir -p $T/mine/device; printf 12345 > $T/mine/device/b.bin
 o=$(EXPL=$T/mine run acnh $T/d2)
-ck "③ 显式给了 S2A_SAVE_DIR → 照用、不拷（${o}）" '[ "${o%%|*}" = "$T/mine" ] && [ ! -e $T/d2/save ]'
+ck "③ 显式给了 S2A_SAVE_DIR → 照用、不拷，打实际带上的 1 个文件、5 字节（${o}）" '[ "${o%%|*}" = "$T/mine" ] && [ ! -e $T/d2/save ] && grep -q "1 个文件、5 字节" $T/d2.out'
+# ⑦ 显式给了但 0 个文件（11-15 #1238：指到空目录，几局都没带上存档）→ 报红、返回非 0（run_mac 据此不起局）；目录不在同样
+mkdir -p $T/empty; for e in $T/empty $T/nonexist; do ( unset S2A_SAVE_DIR; export S2A_SAVE_DIR=$e; source $H/tools/mac_save.sh; mac_save_prep acnh $T/in $T/d10 > $T/d10.out ); r=$?
+  ck "⑦ 显式给 $(basename $e)（0 个文件）→ 报红、返回非 0" '[ $r != 0 ] && grep -q "0 个文件" $T/d10.out'; done
 o=$(run botw $T/d3)
 ck "④ 没有该款存档 → 不带、不报错（${o}）" '[ "$o" = "|" ] && [ ! -e $T/d3/save ] && grep -q 不带存档 $T/d3.out'
 # ⑤ 存档类型对不上游戏（10-27 动森设备存档被放成 account/）：产物根 control.nacp 账户 0、设备 >0 → account/ 存档报红、不起局（显式 / 缺省两条路）；device/ 照常

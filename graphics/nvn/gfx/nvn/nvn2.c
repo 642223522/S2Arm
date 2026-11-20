@@ -2,6 +2,7 @@
 // 设备值表与驱动常量的读法移植自 参考实现（MIT）hle_nvn.c g_devinfo2 / loader.c dm_sdk_nvn2_item（c4b0618c、163a9905）
 #include <dlfcn.h>
 #include "nvn2.h"
+#include "nvn_hdr_policy.h"   // HDR 上屏策略（评审稿 v3 §2.2 / §4 PR3a）：hdr_snapshot + choose_mode + 层 tick / peak 纯函数 + nvn2_hdr_* 入口
 #include "../../host/dm.h"
 #include "../tex/nvn_deswizzle.h"
 #include <CommonCrypto/CommonDigest.h>
@@ -433,8 +434,40 @@ static uint32_t vi_create_layer_cs(void **out, void *disp, const int32_t *cs) { 
 static uint32_t vi_special_layer(void **out, void *disp, const void *cs) { (void)disp; (void)cs; if (out) *out = NULL; LOG("【红】vi::Create{Sharing,Recording,MovieMaker}Layer：宿主不串流、不录屏，没有这种图层，回失败"); return 0x2a2; }
 static uint32_t vi_native_window(void **out, void *layer) { (void)layer; *out = &g_vi_native; return 0; }
 static uint32_t vi_ok_vrr(void *disp, unsigned on) { (void)disp; static _Atomic int n; if (!atomic_exchange(&n, 1)) LOG("vi::SetDisplayVrrCapability %u：宿主固定刷新率，不开 VRR", on & 0xff); return 0; }
-static uint32_t vi_ok_cap(void *disp, unsigned on) { (void)disp; (void)on; return 0; }   // HDR / 120 Hz 能力：只是「允许」，宿主出 SDR 60 Hz，查询照实报
-static uint32_t vi_ok_hdr(void *layer, unsigned lo, unsigned hi) { (void)layer; (void)lo; (void)hi; return 0; }
+// PR1 探针（HDR 全链路评审稿 v2）：游戏经 nn::vi Set* 交来的 HDR 元数据「接收即存储」——原先五个入口直接丢弃，M0 跑局判读（评审稿 G0）无从知道游戏设了什么。
+//   只存不改答：所有查询回答照旧（QueryDisplayHdrStatus on=0、PaperWhite 203、刷新 60），游戏可见行为零变化。
+//   变化才打一行（幂等）：同一值反复设不再打；变化本身照 nvn_mtl.m mtl_sub_counter 的 2 的幂次节流——第 1、2、4、8…次变化各打一行，防逐帧抖动刷屏。
+//   三个 Clear*（gamut / tonemap / bezier）共用 vi_layer_clear：层级元数据整组回缺省。真机各 Clear* 只清自己那项，宿主整组清只是多丢一点观察样本，不改任何游戏可见行为；
+//   SetDisplayHdrCapability 是显示级、没有对应 Clear*，不随层清空。读数接口 nvn2_vi_hdr_probe 在 vi_layer_clear 后面（照 hle_nvn.c dm_vi_layer_crop 的 accessor 先例）。
+static pthread_mutex_t g_hdr_mu = PTHREAD_MUTEX_INITIALIZER;
+static struct {
+    unsigned cap;                // SetDisplay{Hdr,HdrPrivate,120HzRefreshRate}Capability 三名共用：显示级能力开关
+    unsigned lo, hi;             // SetLayerNextHdr{Extended,Standard}ContentLuminanceRangeMetadata：亮度范围（u16 两档共用一对）
+    int gamut, tonemap;          // SetLayerNextHdrContentGamutMetadata / …ToSdrToneMappingMetadata：sdk 枚举原值
+    float bezier[3];             // SetLayerNextHdrAdjustableBezierMetadata：三系数
+    unsigned long long chg[6];   // 各组变化计数（2 的幂次才打日志）：0 cap、1 亮度范围、2 色域、3 tonemap、4 bezier、5 Clear
+} g_hdr;
+static int hdr_chg_log(unsigned long long *n) { return ++*n && (*n & (*n - 1)) == 0; }   // 变化计到 2 的幂次才打（mtl_sub_counter 先例）；首次变化 = 1 必打
+static uint32_t vi_ok_cap(void *disp, unsigned on) {
+    (void)disp;
+    on &= 0xff;   // bool 参数：寄存器只有低 8 位有定义，高位垃圾不能算成「变了」
+    pthread_mutex_lock(&g_hdr_mu);
+    int ch = g_hdr.cap != on; if (ch) g_hdr.cap = on;
+    int first = ch && hdr_chg_log(&g_hdr.chg[0]);
+    pthread_mutex_unlock(&g_hdr_mu);
+    if (first) LOG("vi::SetDisplay{Hdr,HdrPrivate,120HzRefreshRate}Capability on=%u：HDR 探针记下（只是「允许」，宿主出 SDR 60 Hz，查询回答不变）", on);
+    return 0;
+}
+static uint32_t vi_ok_hdr(void *layer, unsigned lo, unsigned hi) {
+    (void)layer;
+    lo &= 0xffff; hi &= 0xffff;   // u16 亮度：只取原宽度，高位垃圾不能算成「变了」、也不进日志
+    pthread_mutex_lock(&g_hdr_mu);
+    int ch = g_hdr.lo != lo || g_hdr.hi != hi; if (ch) { g_hdr.lo = lo; g_hdr.hi = hi; }
+    int first = ch && hdr_chg_log(&g_hdr.chg[1]);
+    pthread_mutex_unlock(&g_hdr_mu);
+    if (first) LOG("vi::SetLayerNextHdr{Extended,Standard}ContentLuminanceRangeMetadata lo=%u hi=%u：HDR 探针记下（查询回答不变）", lo, hi);
+    return 0;
+}
 // 火纹 Fortune's Weave（11-03，main 导入，不接管就进 sdk 要 nn::gs 而中止）：HDR 状态 / 纸白 / 显示最大缓冲 / VRR / 扩展交换间隔 / HDR 色域元数据。
 //   宿主出 SDR、固定刷新率；BufferMaxResolution 是 u32 档位（0 = 720p、1 = 1080p、2 = 1440p、3 = 4K）：回 0 时火纹按 720p 出图（DLSS 输入 640x360），
 //   照 Switch 2：主机模式 4K、掌机模式屏幕 1080p。事实取自 参考实现（MIT）dm/gfx/hle_vi.c（0a759de7），代码自写
@@ -450,13 +483,55 @@ static uint32_t vi_refresh2(uint32_t *hz, uint8_t *vrr, const void *disp) { (voi
 static uint32_t vi_avail_refresh(int *n, void *out, int max, void *disp) { (void)out; (void)max; (void)disp; if (n) *n = 0; LOG("【红】vi::QueryDisplayAvailableRefreshRates：表项后 13 个字含义未核，宿主不编，回失败"); return 0x2a2; }
 static uint32_t vi_ext_swap(void *layer, int a, int b) { (void)layer; static _Atomic int n; if (!atomic_exchange(&n, 1)) LOG("vi::SetLayerExtendedSwapInterval %d %d：宿主没有 VRR，NVN 的交换间隔照旧", a, b); return 0; }
 static uint32_t vi_ext_swap_clear(void *layer) { (void)layer; return 0; }
-static uint32_t vi_hdr_gamut(void *layer, int g) { (void)layer; (void)g; return 0; }
-static uint32_t vi_hdr_bezier(void *layer, float a, float b, float c) { (void)layer; (void)a; (void)b; (void)c; return 0; }
+static uint32_t vi_hdr_gamut(void *layer, int g) {
+    (void)layer;
+    pthread_mutex_lock(&g_hdr_mu);
+    int ch = g_hdr.gamut != g; if (ch) g_hdr.gamut = g;
+    int first = ch && hdr_chg_log(&g_hdr.chg[2]);
+    pthread_mutex_unlock(&g_hdr_mu);
+    if (first) LOG("vi::SetLayerNextHdrContentGamutMetadata gamut=%d：HDR 探针记下（查询回答不变）", g);
+    return 0;
+}
+static uint32_t vi_hdr_bezier(void *layer, float a, float b, float c) {
+    (void)layer;
+    pthread_mutex_lock(&g_hdr_mu);
+    int ch = g_hdr.bezier[0] != a || g_hdr.bezier[1] != b || g_hdr.bezier[2] != c;
+    if (ch) { g_hdr.bezier[0] = a; g_hdr.bezier[1] = b; g_hdr.bezier[2] = c; }
+    int first = ch && hdr_chg_log(&g_hdr.chg[4]);
+    pthread_mutex_unlock(&g_hdr_mu);
+    if (first) LOG("vi::SetLayerNextHdrAdjustableBezierMetadata a=%g b=%g c=%g：HDR 探针记下（查询回答不变）", a, b, c);
+    return 0;
+}
 // 金刚 / raiders（11-04，main 导入，不接管就进 sdk 要 nn::gs：金刚开局跳空地址崩在 main+0x203704）：
 //   HDR → SDR 色调映射元数据（宿主出 SDR，无处可用，回成功）；显示 vsync 事件（宿主线程按 60 Hz 触发，自动清除）。
 //   事实取自 参考实现（MIT）dm/gfx/hle_vi.c、dm/host/hle_sdk16.c h_vi_VsyncEvent（777a5f6c），代码自写
-static uint32_t vi_hdr_tonemap(void *layer, int m) { (void)layer; (void)m; return 0; }
-static uint32_t vi_layer_clear(void *layer) { (void)layer; return 0; }
+static uint32_t vi_hdr_tonemap(void *layer, int m) {
+    (void)layer;
+    pthread_mutex_lock(&g_hdr_mu);
+    int ch = g_hdr.tonemap != m; if (ch) g_hdr.tonemap = m;
+    int first = ch && hdr_chg_log(&g_hdr.chg[3]);
+    pthread_mutex_unlock(&g_hdr_mu);
+    if (first) LOG("vi::SetLayerNextHdrToSdrToneMappingMetadata tonemap=%d：HDR 探针记下（查询回答不变）", m);
+    return 0;
+}
+static uint32_t vi_layer_clear(void *layer) {
+    (void)layer;
+    pthread_mutex_lock(&g_hdr_mu);
+    int ch = g_hdr.lo || g_hdr.hi || g_hdr.gamut || g_hdr.tonemap || g_hdr.bezier[0] || g_hdr.bezier[1] || g_hdr.bezier[2];
+    if (ch) { g_hdr.lo = g_hdr.hi = 0; g_hdr.gamut = g_hdr.tonemap = 0; g_hdr.bezier[0] = g_hdr.bezier[1] = g_hdr.bezier[2] = 0; }
+    int first = ch && hdr_chg_log(&g_hdr.chg[5]);
+    pthread_mutex_unlock(&g_hdr_mu);
+    if (first) LOG("vi::ClearLayerNextHdr{ContentGamut,ToneMapping,Bezier}Metadata：HDR 探针层级元数据整组回缺省（查询回答不变）");
+    return 0;
+}
+// PR1 探针读数：宿主 / 单测取游戏 Set* 交来的当前值（整份拷出，空指针跳项）。只读不触发日志；层级三组之上还有显示级 cap（不随 Clear）
+void nvn2_vi_hdr_probe(unsigned *cap, unsigned *lo, unsigned *hi, int *gamut, int *tonemap, float bez[3]) {
+    pthread_mutex_lock(&g_hdr_mu);
+    if (cap) *cap = g_hdr.cap; if (lo) *lo = g_hdr.lo; if (hi) *hi = g_hdr.hi;
+    if (gamut) *gamut = g_hdr.gamut; if (tonemap) *tonemap = g_hdr.tonemap;
+    if (bez) { bez[0] = g_hdr.bezier[0]; bez[1] = g_hdr.bezier[1]; bez[2] = g_hdr.bezier[2]; }
+    pthread_mutex_unlock(&g_hdr_mu);
+}
 // 图层的帧号：Unreal 按它定节奏（参考实现 记八方旅人 0）；宿主的帧号 = 游戏已上屏的帧数（hle_nvn.c；单测不链它，弱定义回 0）。帧历史宿主不留：0 项
 __attribute__((weak)) uint64_t dm_nvn_frame_count(void) { return 0; }
 static uint32_t vi_frame_no(uint64_t *out, const void *layer) { (void)layer; if (out) *out = dm_nvn_frame_count(); return 0; }
@@ -542,8 +617,128 @@ void *nvn2_vi_entry(const char *name) {
     return NULL;
 }
 
+// ---------- HDR 上屏策略（评审稿 v3 §2.2 / §2.3 / §4 PR3a）：屏幕能力快照存储 + 层 tick / peak 状态 + S2A_HDR 三态 + 同源答案入口 ----------
+//   纯策略在 nvn_hdr_policy.h（hdr_snapshot + choose_mode + hdr_layer_tick_* + hdr_vi_peak_nits 纯函数；合成快照 + 合成时钟全分支单测在 t_nvn2 V4 段），
+//   这里只做存取与接线（同 PR1 g_hdr 探针存储的口径）：host_adapt.m（iOS 挂层块）/ front_mac.m（screen_edr_note）查屏经
+//   nvn2_hdr_snapshot_publish 发布环境读数，层 tick 状态机与 peak 步进的状态也收在本文件的同一把锁后（nxnative dm_hdr_layer_tick /
+//   vi_screen_peak 的散布式全局态收进策略层单点——评审稿 §2.7，不引其形态）；vi 门控（PR5）与出图（PR4）经 nvn2_hdr_answer 只读
+//   同一份——事件档读策略、出图热路径只读已算好的结果。缺省全 0 = 「无 HDR」：不发布（单测 / 安卓 / 无头局）——现状行为分毫不差
+static pthread_mutex_t g_hdr_snap_mu = PTHREAD_MUTEX_INITIALIZER;
+static hdr_snapshot g_hdr_snap;
+static hdr_peak_state g_hdr_peak;
+// PR3b vi 答问簿记（nxnative g_vi_hdr_answered / g_vi_told_peak 收编进策略层存储，§2.7）：vi 答过 HDR 的 latch——答过永不清（切 SDR 后游戏保持 HDR 窗期间
+//   present 照解码，nxnative 口径；RGB10A2 窗只在它 =1 后才当 PQ 码值）；已告知 peak = 最近一次 on=1 答案的 peak（mode 1/4 的源峰取小另一半）。
+//   全原子：出图热路径（nvn2_hdr_present）无锁读，vi 门控（PR5）答案时写
+static _Atomic int g_hdr_vi_answered;
+static _Atomic int g_hdr_told_peak;
+
+void nvn2_hdr_snapshot_publish(const hdr_snapshot *s) {
+    if (!s) return;
+    pthread_mutex_lock(&g_hdr_snap_mu);
+    hdr_snapshot kept = g_hdr_snap;   // 发布 = 环境读数刷新（potential_edr / current_headroom / s1_ready / paper_white）：层状态机簿记
+    kept.potential_edr = s->potential_edr;   // （can_settled / layer_pq / sdr_run / 滞回时间戳）归 hdr_layer_tick_* 所有，发布不回卷——
+    kept.current_headroom = s->current_headroom;   // 换屏 / 拨 HDR 开关后的重探不把层状态打回 SDR（PR4 排空语义的前提）
+    kept.s1_ready = s->s1_ready;
+    kept.paper_white = s->paper_white;
+    g_hdr_snap = kept;
+    pthread_mutex_unlock(&g_hdr_snap_mu);
+}
+void nvn2_hdr_snapshot_probe(hdr_snapshot *out) {
+    if (!out) return;
+    pthread_mutex_lock(&g_hdr_snap_mu);
+    *out = g_hdr_snap;
+    pthread_mutex_unlock(&g_hdr_snap_mu);
+}
+int nvn2_hdr_switch(void) {   // S2A_HDR 三态（§2.5）：不设 / off / 看不懂 = off 缺省（缺省关，字节级回现状）。逐次读环境：
+    const char *v = getenv("S2A_HDR");   // PR4 起开关名 S2A_ 前缀（项目开关惯例——维护者 PR #1640 意见，覆盖 v3 文档口径的 S2ARM_HDR）；dm_opmode 读 S2A_DOCKED 同款；事件档频率（发布 / tick / 答案入口），热路径（dm.h g_flag 那类）不这么读
+    if (v) {
+        if (!strcmp(v, "off")) return HDR_OFF;
+        if (!strcmp(v, "auto")) return HDR_AUTO;
+        if (!strcmp(v, "on")) return HDR_ON;
+        static _Atomic int said;
+        if (*v && !atomic_exchange(&said, 1)) LOG("【红】S2A_HDR=%s 看不懂（要 off / auto / on），按 off（缺省关，字节级回现状）", v);   // 不静默吞玩家的拼写错误
+    }
+    return HDR_OFF;
+}
+void nvn2_hdr_tick(int sw, int raw_can, unsigned long long now_ms) {   // 层 tick——can 滞回 + 进层（事件档，PR4 接线）
+    pthread_mutex_lock(&g_hdr_snap_mu);
+    hdr_layer_tick_can(&g_hdr_snap, sw, raw_can, now_ms);
+    pthread_mutex_unlock(&g_hdr_snap_mu);
+}
+void nvn2_hdr_tick_frame(int sw, int frame_is_pq) {   // 层 tick——排空喂入（每帧，PR4 接线）
+    pthread_mutex_lock(&g_hdr_snap_mu);
+    hdr_layer_tick_frame(&g_hdr_snap, sw, frame_is_pq);
+    pthread_mutex_unlock(&g_hdr_snap_mu);
+}
+void nvn2_hdr_preattach(int raw_can, unsigned long long now_ms) {   // PR4 开机预挂的存储侧（§4 PR4 ③：识别 Switch 2 游戏即进层，赶在首查询前——Bananza 首查询即定窗口，nxnative dm_hdr_boot 形态）。
+    pthread_mutex_lock(&g_hdr_snap_mu);   // 开机无翻屏史，滞回防的是运行中拖窗沿两屏边缘的 flap——这里 can 直接按持稳记，后续 tick 无缝衔接；
+    if (raw_can && g_hdr_snap.s1_ready && !g_hdr_snap.layer_pq && nvn2_hdr_switch() != HDR_OFF) {   // SDR 屏 / s1_ready 未过 / 已在层内 / off 各自让位（off ⇒ 层恒 S0）
+        g_hdr_snap.last_can_raw = raw_can;
+        g_hdr_snap.can_chg_ms = now_ms;
+        g_hdr_snap.can_settled = raw_can;
+        g_hdr_snap.layer_pq = 1;
+        g_hdr_snap.sdr_run = 0;
+        LOG("直连：HDR 层开机预挂（Switch 2 游戏识别即进层，赶在首查询前；can=%d s1_ready=%d）", raw_can, g_hdr_snap.s1_ready);
+    }
+    pthread_mutex_unlock(&g_hdr_snap_mu);
+}
+hdr_decision nvn2_hdr_answer(int src_hdr, unsigned long long now_ms) {   // 同源答案入口：三态开关 + 已发布快照 + 存储的 peak 状态进 choose_mode
+    hdr_snapshot s; hdr_peak_state pk;
+    pthread_mutex_lock(&g_hdr_snap_mu);
+    s = g_hdr_snap; pk = g_hdr_peak;
+    pthread_mutex_unlock(&g_hdr_snap_mu);
+    hdr_decision d = hdr_choose_mode(nvn2_hdr_switch(), src_hdr, &s, &pk, now_ms);
+    pthread_mutex_lock(&g_hdr_snap_mu);
+    g_hdr_peak = pk;
+    pthread_mutex_unlock(&g_hdr_snap_mu);
+    if (d.vi_on) {   // PR3b：vi 答过 latch + 已告知 peak（答过永不清——游戏保持 HDR 窗期间 present 照解码）
+        atomic_store(&g_hdr_vi_answered, 1);
+        atomic_store(&g_hdr_told_peak, d.vi_peak);
+    }
+    return d;
+}
+// PR3b：SDR gamma 口径（§2.4 Q13 待验证——G1 真机对比后定稿，参数留可调）：S2A_HDR_SDR_GAMMA 不设 = 纯幂 2.2（缺省）；
+//   0 = 分段 sRGB 曲线（会抬暗部：码 16 = 2.2 的 2.3 倍光）；0 < 值 ≤ 16 = 纯幂曲线；看不懂打一次红行按缺省（不静默吞拼写错误）。
+//   出图热路径不逐帧读环境（nvn_hdr_policy.h 头注的口径）：一次缓存（present_options 同款幂等静态）
+static double nvn2_hdr_sdr_gamma(void) {
+    static double g = 2.2; static int initialized;
+    if (!initialized) {
+        const char *e = getenv("S2A_HDR_SDR_GAMMA");
+        if (e && *e) {
+            char *end = NULL; double v = strtod(e, &end);
+            if (end == e || *end || !(v >= 0.0 && v <= 16.0)) { static _Atomic int said; if (!atomic_exchange(&said, 1)) LOG("【红】S2A_HDR_SDR_GAMMA=%s 看不懂（要 0 = 分段 sRGB 或 0 < 值 ≤ 16 = 纯幂曲线），按缺省 2.2", e); }
+            else g = v;
+        }
+        initialized = 1;
+    }
+    return g;
+}
+int nvn2_hdr_present(float p[8], int src_pf, int dst_pt) {   // PR3b 出图热路径：读已算好的结果（快路径 = 一次宽松原子读；非 PQ 目标上只有「vi 答过 ∧ HDR10 源」出 mode 1，其余恒平凡直通——与 hdr_present_mode 同判）
+    if (!p) return hdr_present_mode(src_pf, dst_pt, 0);
+    int answered = atomic_load_explicit(&g_hdr_vi_answered, memory_order_relaxed);
+    if (dst_pt != HDR_PT_PQ10 && !(answered && src_pf == HDR_PF_HDR10)) {   // 快路径（off 缺省 / 未答过 / 已答过的排空帧 = 非 PQ 目标上除 mode 1 本体外全部路径）：一次原子读，连锁都不进
+        for (int i = 0; i < 8; i++) p[i] = 0.0f;
+        return HDR_PV_TRIVIAL;
+    }
+    int told = atomic_load_explicit(&g_hdr_told_peak, memory_order_relaxed);
+    unsigned declared = 0;
+    pthread_mutex_lock(&g_hdr_mu); declared = g_hdr.hi; pthread_mutex_unlock(&g_hdr_mu);   // PR1 存储的声明范围 hi（同一把锁）
+    double headroom = 0;
+    pthread_mutex_lock(&g_hdr_snap_mu); headroom = g_hdr_snap.current_headroom; pthread_mutex_unlock(&g_hdr_snap_mu);   // mode 4 的 target = 纸白 × 当前净空
+    return hdr_present_fill(p, src_pf, dst_pt, answered, headroom, (int)declared, told, nvn2_hdr_sdr_gamma());
+}
+
 void nvn2_device_init(void) {
     if (!nvn2_on()) return;
     nvn_gob_switch2 = getenv("DM_NVN_GOB_X1") ? 0 : 1;   // DM_NVN_GOB_X1=1 (diagnostic): the Tegra X1's order, to compare against on a Switch 2 game
     LOG("[nvn] Switch 2 进程：NVN2 设备（贴图按 Switch 2 的 GOB 内次序解交错，着色器按 NVN2 控制段取键）");
 }
+// 即时存档：图形系统启动记账（nv::InitializeGraphics 的池、游戏分配器）存取；指针都是游戏地址
+int nvn2_snap_gs_save(FILE *f) { int in = atomic_load(&g_nv_pool.inited); uint64_t m = (uint64_t)(uintptr_t)g_nv_pool.mem, s = g_nv_pool.size;
+    return fwrite(&in, 4, 1, f) != 1 || fwrite(&m, 8, 1, f) != 1 || fwrite(&s, 8, 1, f) != 1 || fwrite(&g_nv_alloc, sizeof g_nv_alloc, 1, f) != 1 || fwrite(&g_nv_devtools_alloc, sizeof g_nv_devtools_alloc, 1, f) != 1 ? -1 : 0; }
+int nvn2_snap_gs_restore(FILE *f) { int in; uint64_t m, s;
+    if (fread(&in, 4, 1, f) != 1 || fread(&m, 8, 1, f) != 1 || fread(&s, 8, 1, f) != 1 || fread(&g_nv_alloc, sizeof g_nv_alloc, 1, f) != 1 || fread(&g_nv_devtools_alloc, sizeof g_nv_devtools_alloc, 1, f) != 1) return -1;
+    g_nv_pool.mem = (void *)(uintptr_t)m; g_nv_pool.size = (size_t)s; atomic_store(&g_nv_pool.inited, in); return in; }
+
+#include "../../../../runtime/src/snapfmt.h"
+void nvn2_snap_fps(snap_fp_cb cb) { cb("nvn2.alloc", SNAP_FP_OF(g_nv_alloc)); cb("nvn2.pool", SNAP_FP_OF(g_nv_pool)); }

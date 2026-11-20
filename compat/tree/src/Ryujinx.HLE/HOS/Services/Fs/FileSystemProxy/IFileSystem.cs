@@ -20,6 +20,37 @@ namespace Ryujinx.HLE.HOS.Services.Fs.FileSystemProxy
             _s2aGameSave = s2aGameSave;
         }
 
+        // S2Arm instant snapshot: while the request log is replayed, an open that is in the log succeeded back then; if the path is gone
+        //   now (deleted later, before the snapshot), create an empty one so the open succeeds and the object numbering after it stays
+        //   the same, and register its removal for the end of the replay (S2AHooks.SnapReplayUndo).
+        private bool S2AReplayPlaceholder(in Path name, bool directory)
+        {
+            if (!S2AHooks.SnapReplaying)
+            {
+                return false;
+            }
+
+            Result made = directory ? _fileSystem.Get.CreateDirectory(in name) : _fileSystem.Get.CreateFile(in name, 0, 0);
+
+            if (made.IsFailure())
+            {
+                return false;
+            }
+
+            Path path = name;
+            SharedRef<LibHac.FsSrv.Sf.IFileSystem> fs = SharedRef<LibHac.FsSrv.Sf.IFileSystem>.CreateCopy(in _fileSystem);
+
+            S2AHooks.SnapReplayUndo.Add(() =>
+            {
+                Result r = directory ? fs.Get.DeleteDirectory(in path) : fs.Get.DeleteFile(in path);
+                fs.Destroy();
+
+                return r.IsSuccess();
+            });
+
+            return true;
+        }
+
         public SharedRef<LibHac.FsSrv.Sf.IFileSystem> GetBaseFileSystem()
         {
             return SharedRef<LibHac.FsSrv.Sf.IFileSystem>.CreateCopy(in _fileSystem);
@@ -119,9 +150,14 @@ namespace Ryujinx.HLE.HOS.Services.Fs.FileSystemProxy
 
             Result result = _fileSystem.Get.OpenFile(ref file.Ref, in name, mode);
 
+            if (result.IsFailure() && S2AReplayPlaceholder(in name, false))
+            {
+                result = _fileSystem.Get.OpenFile(ref file.Ref, in name, mode);
+            }
+
             if (result.IsSuccess())
             {
-                IFile fileInterface = new(ref file.Ref);
+                IFile fileInterface = new(ref file.Ref, name.ToString());   // S2Arm：带上路径，读失败 / 静默短读的黄字点名文件
 
                 MakeObject(context, fileInterface);
             }
@@ -139,6 +175,11 @@ namespace Ryujinx.HLE.HOS.Services.Fs.FileSystemProxy
             using SharedRef<LibHac.FsSrv.Sf.IDirectory> dir = new();
 
             Result result = _fileSystem.Get.OpenDirectory(ref dir.Ref, in name, mode);
+
+            if (result.IsFailure() && S2AReplayPlaceholder(in name, true))
+            {
+                result = _fileSystem.Get.OpenDirectory(ref dir.Ref, in name, mode);
+            }
 
             if (result.IsSuccess())
             {

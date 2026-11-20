@@ -17,6 +17,10 @@ class HashDedupe(JobCase):
         self.c.r["engineBundle"] = "/Applications/S2Arm.app/Contents/Resources/engine"
         self.assertIsNone(build.source_fingerprint(self.c))
         del self.c.r["engineBundle"]
+        # 源码树开发：对临时目录里的小假引擎算（真引擎要哈希 ENGINE_SOURCES 下全部文件，这里只证明给了源码摘要）
+        engine = self.root / "fake-engine"; (engine / "runtime").mkdir(parents=True)
+        (engine / "runtime" / "a.c").write_text("int a;\n"); (engine / "Makefile").write_text("all:\n")
+        self.c.engine = engine
         fp = build.source_fingerprint(self.c)
         self.assertIsInstance(fp, str); self.assertEqual(len(fp), 64)
 
@@ -33,7 +37,7 @@ class HashDedupe(JobCase):
         # 预检清单 #16（11-13）：清单没写 index_sha256 不再整单不装；资源包号按推送实际用的 index.tsv 现算（期望用 hashlib 独立算）
         import hashlib
         gid = "0100000000000001"
-        kit = layout.ios_kit(self.c, gid); kit.mkdir(parents=True); (kit / "main.npdm").write_bytes(b"n")
+        kit = layout.ios_kit(self.c, gid); kit.mkdir(parents=True); (kit / "main.npdm").write_bytes(b"n"); (kit / "main.fixups.tsv").write_text("")
         pack = layout.ios_pack(self.c, gid); pack.mkdir(parents=True); atomic(pack / "manifest.json", {"version": 2})
         self.assertEqual(install.ios_pack(self.c, gid), pack)
         self.assertEqual(install.pack_id(pack), "")   # 连 index.tsv 都没有：没有号（推送那一步会因缺 index.tsv 照实报）

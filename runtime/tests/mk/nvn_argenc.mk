@@ -1,6 +1,6 @@
 # native-test-nvn_argenc：本单测的构建规则（runtime/build.mk 末尾按 runtime/tests/mk/*.mk 收进来；新单测只新增一个分片，不改 build.mk）
 NATIVE_TEST_OWN += nvn_argenc
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 # 参数块长度按反射算、不再问 Metal（nvn_mtl.m shader_args_init）：模拟编译服务失效（函数无参数块、反射说有）不崩，反证子进程问 Metal 必 SIGABRT
 $(BUILD)/tests/t_nvn_argenc: graphics/nvn/tests/t_nvn_argenc.m $(NVN_MTL_DEPS) $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
 	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -Wno-unused-function -Wno-unguarded-availability-new -Wno-unguarded-availability \

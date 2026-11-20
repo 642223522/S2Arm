@@ -91,6 +91,22 @@ var languageKeys = new SharedText("""
 {"schema":1,"contract":"s2a.experience.v1","launcher":{"items":[{"id":"language.zh-Hans","zh-Hans":"简体中文","en":"Simplified Chinese"},{"id":"language.en","zh-Hans":"英文","en":"English"}]},"errors":{"items":[]}}
 """);
 Check(languageKeys.Get("language.en", "en") == "English", "language id is not mistaken for a translated leaf");
+var extraLanguage = new SharedText("""
+{"schema":1,"contract":"s2a.experience.v1","launcher":{"items":[{"id":"action.check","zh-Hans":"检查","en":"Check","ja":"確認"}]},"errors":{"items":[]}}
+""");
+Check(extraLanguage.Get("action.check", "ja") == "確認", "a language column beyond zh-Hans / en is read");
+Check(extraLanguage.Get("action.check", "fr") == "Check", "a language without this key's translation falls back to English");
+var overlaid = new SharedText("""
+{"schema":1,"contract":"s2a.experience.v1","launcher":{"items":[{"id":"a","zh-Hans":"检查","en":"Check"},{"id":"b","zh-Hans":"出包","en":"Export"}]},"errors":{"items":[]}}
+""");
+overlaid.AddOverlay("zh-Hant", """{"launcher":{"a":"檢查"}}"""); overlaid.AddOverlay("ja", """{"launcher":{"a":"確認"}}""");
+Check(overlaid.Get("a", "zh-Hant") == "檢查" && overlaid.Get("a", "ja") == "確認", "overlay text wins for its language");
+Check(overlaid.Get("b", "zh-Hant") == "出包" && overlaid.Get("b", "ja") == "Export", "missing overlay key: zh-Hant falls back to Simplified Chinese, others to English");
+var backendOverlay = new BackendText("""[{"source":"游戏已停止。","en":"Game stopped."},{"source":"还剩 {0} 款","en":"{0} left"}]""", """{"schema":1}""");
+backendOverlay.AddOverlay("zh-Hant", """{"text":{"游戏已停止。":"遊戲已停止。"}}"""); backendOverlay.AddOverlay("ja", """{"text":{"还剩 {0} 款":"残り {0} 本"}}""");
+Check(backendOverlay.Translate("游戏已停止。", "zh-Hant") == "遊戲已停止。" && backendOverlay.Translate("还剩 3 款", "ja") == "残り 3 本", "backend overlay: whole sentence and pattern");
+Check(backendOverlay.Translate("还剩 3 款", "zh-Hant") == "还剩 3 款" && backendOverlay.Translate("游戏已停止。", "ja") == "Game stopped.", "backend overlay fallback: zh-Hant keeps the source, ja falls back to English");
+Check(backendOverlay.Translate("游戏已停止。", "zh-Hans") == "游戏已停止。" && backendOverlay.Translate("游戏已停止。", "en") == "Game stopped.", "backend: zh-Hans source and English unchanged");
 void RejectResource(string items, string label)
 {
     var json = "{\"schema\":1,\"contract\":\"s2a.experience.v1\",\"launcher\":{\"items\":" + items + "},\"errors\":{\"items\":[]}}";
@@ -111,9 +127,12 @@ var advisory = EnvironmentReport.Parse("""
 Check(advisory.Ready && !advisory.Checks[0].Blocking, "signing tool is advisory and does not block");
 Check(report.Checks[1].Blocking, "reports without the field still block on anything not ok");
 LibraryJobCases.Run(Check);
+PhoneOverviewCases.Run(Check);
 LibraryFolderCases.Run(Check);
 MetalFolderCases.Run(Check);
+JsonOutCases.Run(Check);
 LauncherLanguageCases.Run(Check);
+SGradeVersionsCases.Run(Check);
 PackCases.Run(Check);
 BatchCases.Run(Check);
 ExportStreamCases.Run(Check);

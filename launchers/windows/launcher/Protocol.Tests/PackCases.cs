@@ -105,7 +105,7 @@ public static class PackCases
         // ---- checklist results ----
         const string checklist = """
 {"gameId":"G","items":[{"id":"package","ok":true,"waiting":false,"title":"t","detail":"","who":"human"},
- {"id":"impactor","ok":false,"waiting":false,"title":"t","detail":"d","who":"human","url":"https://github.com/claration/impactor/releases/tag/v2.7.2"},
+ {"id":"impactor","ok":false,"waiting":false,"title":"t","detail":"d","who":"human","url":"https://github.com/claration/impactor/releases/tag/v2.7.3"},
  {"id":"connected","ok":false,"waiting":false,"title":"t","detail":"d","who":"human"}],"ready":false,"device":"","account":""}
 """;
         using (var doc = JsonDocument.Parse(checklist))
@@ -161,6 +161,33 @@ public static class PackCases
               (string?)ipa["shellDir"] == Path.GetFullPath(paths.Shell) && (int?)ipa["parentPid"] == Environment.ProcessId &&
               (string?)ipa["resources"] == Path.GetFullPath(AppContext.BaseDirectory),
             "request: ipa carries game, library id, bundled shell, bundled resources (fonts) and launcher pid");
+        // Apple TV 预编壳（安装包带了才有，同 Shell 放在启动器目录）：目录在 → ipa / export 带 tvShellDir；不在 → 不带（作业层 tvos.derive 报安装包没带）
+        var tvRoot = Path.Combine(Path.GetTempPath(), "s2a-tvshell-" + Environment.ProcessId);
+        try
+        {
+            var tvPaths = new LauncherPaths(Path.Combine(tvRoot, "Engine"), Path.Combine(tvRoot, "Runtime"), Path.Combine(tvRoot, "Shell"));
+            var noTv = PackJobClient.Payload(new(tvPaths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", "ipa", "0100FD70134FA000"), "win-tv0");
+            Directory.CreateDirectory(Path.Combine(tvRoot, "Shell-tvOS"));
+            var tvIpa = PackJobClient.Payload(new(tvPaths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", "ipa", "0100FD70134FA000"), "win-tv1");
+            var tvExport = PackJobClient.Payload(new(tvPaths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", "export", ""), "win-tv2");
+            var tvInstall = PackJobClient.Payload(new(tvPaths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", "install", "0100FD70134FA000"), "win-tv3");
+            var want = Path.Combine(tvRoot, "Shell-tvOS");
+            check(!noTv.ContainsKey("tvShellDir") && (string?)tvIpa["tvShellDir"] == want && (string?)tvExport["tvShellDir"] == want && !tvInstall.ContainsKey("tvShellDir"),
+                "request: ipa / export carry tvShellDir only when Shell-tvOS sits next to Shell; install never");
+        }
+        finally { try { Directory.Delete(tvRoot, true); } catch (IOException) { } }
+        // 界面语言照原样带（#502：法文界面原先不带 uiLanguage，作业层回落中文，自签导出文件夹与说明成了中文）
+        var langBefore = JobLanguage.Current;
+        try
+        {
+            foreach (var lang in new[] { "fr", "ja", "zh-Hant", "en", "zh-Hans" })
+            {
+                JobLanguage.Current = lang;
+                var p = PackJobClient.Payload(new(paths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", "install", "0100FD70134FA000"), "win-lang");
+                check(p.TryGetValue("uiLanguage", out var got) && (string?)got == lang, $"request: interface language {lang} is passed to the job layer as is");
+            }
+        }
+        finally { JobLanguage.Current = langBefore; }
         foreach (var op in new[] { "installCheck", "install", "installRemove", "installRestore" })
         {
             var r = PackJobClient.Payload(new(paths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", op, "0100FD70134FA000"), "win-2");
@@ -176,21 +203,86 @@ public static class PackCases
             "request: devCert needs no game and never carries the password");
         // 装到 iPhone 的方式 / 更新 iPhone 上的 S2Arm（v0.3.0，install.install_mode_job / update_phone）：属于这台电脑 / 这台手机，不带 gameId；
         //   都带随包资源（Impactor），installUpdate 还要组装容器，同 install 带预编壳
-        check(PackJobClient.Operations.Contains("installMode") && PackJobClient.Operations.Contains("installUpdate"),
-            "request: installMode / installUpdate are launcher operations");
-        var mode = PackJobClient.Payload(new(paths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", "installMode", "",
-            new Dictionary<string, object?> { ["mode"] = "device" }), "win-5");
-        check((string?)mode["mode"] == "device" && !mode.ContainsKey("gameId") && !mode.ContainsKey("shellDir") &&
-              (string?)mode["resources"] == Path.GetFullPath(AppContext.BaseDirectory), "request: installMode needs no game, carries mode and resources");
+        var mode = PackJobClient.Payload(new(paths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", "installMode", "", null), "win-5");   // 只读签名身份（11-15 起不带 mode）
+        check(!mode.ContainsKey("mode") && !mode.ContainsKey("gameId") && !mode.ContainsKey("shellDir") &&
+              (string?)mode["resources"] == Path.GetFullPath(AppContext.BaseDirectory), "request: installMode needs no game, carries resources");
         var update = PackJobClient.Payload(new(paths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", "installUpdate", "",
             new Dictionary<string, object?> { ["acceptStale"] = true }), "win-6");
         check(update["acceptStale"] is true && !update.ContainsKey("gameId") && (string?)update["shellDir"] == Path.GetFullPath(paths.Shell) &&
               (string?)update["resources"] == Path.GetFullPath(AppContext.BaseDirectory), "request: installUpdate needs no game, carries acceptStale, shell and resources");
-        check(PackJobClient.Operations.Contains("delete"), "request: delete (remove the whole game, saves kept) is a launcher operation since library layout v3");
+        // 启动器升级顺带更新 iPhone（0.5.0）：2 分钟循环的 phoneKeptPull、新版首启的 installUpdatePrepare 都是 PackRequest(op, "")——
+        //   不带游戏号也要能发出去（原先这里抛 ArgumentException，被循环的 catch 吞掉，Windows 上一次都没发出去）
+        foreach (var op in new[] { "phoneKeptPull", "installUpdatePrepare" })
+        {
+            Dictionary<string, object?>? body = null; string why = "";
+            try { body = PackJobClient.Payload(new(paths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", op, ""), "win-auto"); }
+            catch (ArgumentException e) { why = e.Message; }
+            check(body is not null && (string?)body["operation"] == op && !body.ContainsKey("gameId"), $"request: {op} needs no game and is sent ({why})");
+        }
+        // 手动更新（11-16 维护者：「改成更稳妥的手动更新吧，启动器和移动端都是」）：2 分钟循环（App/PhoneAutoUpdate.cs PhoneAutoUpdateTickAsync）
+        //   手机在线、有更新、跑多少轮都只发现、重读游戏库亮「更新 iPhone」，不发起装机——循环方法体里不许出现装机调用（原实现在这里 UpdatePhoneAsync）
+        {
+            var src = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "AppSource", "PhoneAutoUpdate.cs"));
+            var tickAt = src.IndexOf("Task<bool> PhoneAutoUpdateTickAsync()", StringComparison.Ordinal);
+            var body = tickAt < 0 ? "" : src[tickAt..];
+            check(tickAt >= 0 && !body.Contains("UpdatePhoneAsync(") && !body.Contains("\"installUpdate\"") && body.Contains("RefreshLibraryAsync()"),
+                "phone auto tick: finds updates and refreshes the library, never starts an iPhone install (manual update)");
+            // 只按真冲突互斥：别的作业在跑照样收（升级首启迁移时原先整轮跳过，拉回拖到第 360 秒）；手机在用由作业层的手机锁判
+            check(tickAt >= 0 && !body.Contains("ControlBusy"), "phone auto tick: not skipped just because another job is running");
+            check(tickAt >= 0 && body.Contains("NotePhoneTick(skip)"), "phone auto tick: every skip reason is written to phone-auto-update.log");
+        }
+        // 关窗口让位给安装程序（11-16 第 2 份候选手动更新：安装程序等旧进程 90 秒没等到）：两个关闭处理都按作业登记处等收尾、有上限，
+        //   不再等某个任务变量（它可能被立刻返回的任务盖掉，等完作业其实还在，重入时被取消关闭、再也没人关）
+        {
+            string Method(string file, string name)
+            {
+                var src = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "AppSource", file));
+                var at = src.IndexOf(name, StringComparison.Ordinal);
+                if (at < 0) return "";
+                var end = src.IndexOf("\n    }", at, StringComparison.Ordinal);
+                return end < 0 ? src[at..] : src[at..end];
+            }
+            var lib = Method("LibraryPage.cs", "void CloseLibraryAsync(");
+            var pack = Method("ExportPages.cs", "void ClosePackAsync(");
+            var slots = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "AppSource", "JobSlots.cs"));
+            check(lib.Contains("WaitJobsEndAsync(JobKind.Library)") && !lib.Contains("libraryOperation") && lib.Contains("closeAnyway"),
+                "close: library handler waits on the job registry, not on one task variable");
+            check(pack.Contains("WaitJobsEndAsync(JobKind.Pack)") && !pack.Contains("packOperation") && pack.Contains("closeAnyway"),
+                "close: pack handler waits on the job registry, not on one task variable");
+            check(slots.Contains("CloseWaitLimit = TimeSpan.FromSeconds(20)") && slots.Contains("closeAnyway = true"),
+                "close: waiting for jobs is capped well under the installer's 90 s, then the window closes anyway");
+        }
+        // 更新装完拉起不靠当前目录（NetSparkle 脚本 cd 不带 /d，装在非系统盘时相对的 S2Arm.exe 找不到、静默不拉起）：可执行文件给绝对路径、前缀 cd /d
+        {
+            var upd = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "AppSource", "UpdateFlow.cs"));
+            check(upd.Contains("RestartExecutableName = Path.Combine(InstallDir,") && upd.Contains("RelaunchAfterUpdateCommandPrefix = $\"cd /d"),
+                "update: relaunch uses the absolute exe path and cd /d (works when installed on a non-system drive)");
+        }
+        // 客户端不判要不要游戏号（自己人之间不设允许清单，#1149）：以后新增一种不带游戏号的作业不用改客户端；
+        //   要游戏的作业空着游戏号也照样发出去，由作业层报「请求里没有游戏号」（pack/jobs/core.py Context.game）
+        foreach (var op in new[] { "someFutureMachineJob", "ipa" })
+        {
+            Dictionary<string, object?>? body = null; string why = "";
+            try { body = PackJobClient.Payload(new(paths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", op, ""), "win-nogame"); }
+            catch (ArgumentException e) { why = e.Message; }
+            check(body is not null && (string?)body["operation"] == op && !body.ContainsKey("gameId"),
+                $"request: {op} with no game is sent as is, the job layer decides ({why})");
+        }
+        // 没有前端操作白名单（11-15）：引擎不认识的操作照样发出去，引擎回失败结果，界面拿到的是一条带文字的失败，不是异常（#1149 卡死的根）
+        {
+            var odd = PackJobClient.Payload(new(paths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", "noSuchOperation", "G"), "win-8");
+            check((string?)odd["operation"] == "noSuchOperation", "request: an operation the engine does not know is passed through, not refused in the launcher");
+            var r = new JobEventReader("win-8", "noSuchOperation");
+            r.Accept("""{"schema":1,"jobId":"win-8","taskId":"win-8","operation":"noSuchOperation","seq":1,"type":"result","state":"failed","message":"不支持的任务类型。","result":{},"diagnostics":[]}""");
+            var rep = r.Finish(1);
+            check(!rep.Succeeded && rep.Message == "不支持的任务类型。", "result: engine refusal of an unknown operation comes back as a failure with its text (the page shows it, no exception, no resend)");
+            var scan = PackJobClient.Payload(new(paths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", "sgradeScan", ""), "win-7");
+            check((string?)scan["operation"] == "sgradeScan" && !scan.ContainsKey("gameId") &&
+                  (string?)scan["resources"] == Path.GetFullPath(AppContext.BaseDirectory),
+                "request: sgradeScan scans the whole library, no game, uses bundled patch resources");
+        }
         foreach (var (operation, extra, label) in new (string, Dictionary<string, object?>?, string)[]
         {
-            ("launch", null, "request: operations outside export / install / remove / library layout refused (Windows does not run games)"),
-            ("communitySave", null, "request: game options are not a launcher operation (维护者 11-07)"),
             ("install", new() { ["gameId"] = "other" }, "request: extra fields cannot replace the envelope")
         })
         {
@@ -230,4 +322,5 @@ public static class PackCases
             throw new Exception("accepted " + label);
         }
     }
+    private static string SourceFile([System.Runtime.CompilerServices.CallerFilePath] string path = "") => path;
 }

@@ -19,10 +19,14 @@ IN=$(LC_ALL=C awk -F'\t' '$1 == "入" { print $2 }' "$R/pack/stage_inputs/shell.
 # shellcheck disable=SC2086
 [ -z "$(git -C "$R" status --porcelain -- $IN pack/stage_inputs/shell.tsv)" ] || { echo "【红】壳输入表里的文件有未提交改动，壳编号对不上源码，不出"; exit 1; }
 source "$R/tools/toolchain.sh" || exit 2
-# 壳编号里记了 iOS SDK 主版本（tools/toolchain.env，审计 P1-124）：实际 SDK 对不上就不出，免得同一个编号对应两种链接 SDK
-SDKV=$(xcrun --sdk iphoneos --show-sdk-version 2> /dev/null) || { echo "【红】读不出 iOS SDK 版本（xcrun --sdk iphoneos）"; exit 1; }
-SDKM=$(awk -F= '$1 == "IPHONEOS_SDK_MAJOR" { print $2 }' "$R/tools/toolchain.env")
-[ "${SDKV%%.*}" = "$SDKM" ] || { echo "【红】这台机器的 iOS SDK 是 ${SDKV}，tools/toolchain.env 钉的主版本是 ${SDKM}：换 Xcode 大版本要同时改 IPHONEOS_SDK_MAJOR"; exit 1; }
+# Apple TV（11-15）：S2A_APPLE_OS=tvos 出 tvOS 壳（同一套配方：顶层 Makefile 换 SDK / 三元组 / 下限，壳编号带 tvos，pack/shell/manifest.py）
+OS=${S2A_APPLE_OS:-ios}; export S2A_APPLE_OS=$OS
+case $OS in ios) SDKN=iphoneos; SDKK=IPHONEOS_SDK_MAJOR; GX=; ENT=$R/pack/app.entitlements ;; tvos) SDKN=appletvos; SDKK=TVOS_SDK_MAJOR; GX=-tvos; ENT=$R/pack/app_tvos.entitlements ;;
+  *) echo "【红】S2A_APPLE_OS 只认 ios / tvos，给的是 $OS"; exit 1 ;; esac
+# 壳编号里记了 SDK 主版本（tools/toolchain.env，审计 P1-124）：实际 SDK 对不上就不出，免得同一个编号对应两种链接 SDK
+SDKV=$(xcrun --sdk $SDKN --show-sdk-version 2> /dev/null) || { echo "【红】读不出 ${SDKN} SDK 版本（xcrun --sdk ${SDKN}）"; exit 1; }
+SDKM=$(awk -F= -v k=$SDKK '$1 == k { print $2 }' "$R/tools/toolchain.env")
+[ "${SDKV%%.*}" = "$SDKM" ] || { echo "【红】这台机器的 $SDKN SDK 是 ${SDKV}，tools/toolchain.env 钉的主版本是 ${SDKM}：换 Xcode 大版本要同时改 $SDKK"; exit 1; }
 source "$R/tools/cores.sh"; s2a_cores || exit 1
 # 引擎树里的 iOS 编译中间产物（渲染器 / 直连层静态库、gal_helpers 含 m3、宿主目标文件缓存）按修改时间增量，不认编译器（审计 #1534 P1-107）：
 #   工具链版本行与上次出壳记的不同就整份清掉重编（tools/toolchain.sh s2a_tc_sweep），只在真换了 Xcode / Metal 组件时发生；中间产物在出壳镜像的 build/ 里，清扫放在同步镜像之后
@@ -38,28 +42,43 @@ trap 'rm -rf "${B:?}"' EXIT
 TK=$(printf %s "$R" | shasum | cut -c1-12); SM=${S2A_SHELL_MIRROR_DIR:-${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/shell_src}/$TK; S=$SM/src; mkdir -p "$S" || exit 1
 until mkdir "$S.lock" 2> /dev/null; do p=$(cat "$S.lock/pid" 2> /dev/null); [ -n "$p" ] && ! kill -0 "$p" 2> /dev/null && rm -rf "$S.lock"; sleep 1; done
 echo $$ > "$S.lock/pid"; trap 'rm -rf "${B:?}" "$S.lock"' EXIT; echo "$R" > "$SM/tree"
+# 镜像按树一份、工作树越开越多：取用即刷新本镜像时间，再按出包可重建缓存同一口径回收别的树最久没用的镜像（pack/jobs/cache_retention.py trim，
+#   1 小时内用过的不删；缺省位置连同运行区别的可重建缓存一起算总量，另指的镜像目录只算它自己）
+touch "$SM"; RR=${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm
+if [ "$(dirname "$SM")" = "$RR/shell_src" ]; then python3 "$R/pack/jobs/cache_retention.py" trim "$RR" > /dev/null 2>&1; else python3 "$R/pack/jobs/cache_retention.py" trim "$RR" "$(dirname "$SM")" > /dev/null 2>&1; fi
 rsync -rlpDc --delete --exclude /build/ --exclude .git --exclude obj/ --exclude bin/ --exclude __pycache__/ "$R/" "$S/" || { echo "【红】源码同步到出壳镜像失败（${S}）"; exit 1; }
 # 设旧访问时间会改文件状态时间：出壳流程里任何 git 命令（取提交号、看改动）都会因此把整棵树重读核对一遍、闭包核不了（11-04 实测一次 git status 读 9635/9638 个）。
 #   本次出壳的子进程一律让 git 不信状态时间（只看修改时间 / 大小 / inode），只作用于本次出壳、不改仓库配置
 n=${GIT_CONFIG_COUNT:-0}; export "GIT_CONFIG_KEY_$n=core.trustctime" "GIT_CONFIG_VALUE_$n=false" GIT_CONFIG_COUNT=$((n + 1))
-s2a_tc_sweep "$S/build/.ios_toolchain" "$S/build/gal/ios" "$S/build/nvn/ios" "$S/build/ios_objcache" || { echo "【红】清不掉旧工具链编出的 iOS 中间产物（$S/build）"; exit 1; }
+s2a_tc_sweep "$S/build/.${OS}_toolchain" "$S/build/gal$GX/ios" "$S/build/nvn$GX/ios" "$S/build/${OS}_objcache" || { echo "【红】清不掉旧工具链编出的 iOS 中间产物（$S/build）"; exit 1; }
 SN=$(s2a_nospace "$S") || { echo "【红】建不了无空格别名（${S}）"; exit 1; }
 "${S2A_PY:-python3}" "$H/shell/closure.py" mark "$S" --list-from "$R" || { echo "【红】设不了出壳镜像文件访问时间（壳输入闭包）"; exit 1; }
 t0=$SECONDS
-# 游戏库界面（runtime/build.mk S2A_SHELLUI）开不开只看壳输入表：有「入 shell」行才编进壳。不收外部开关——表与表里的目录都进壳编号，
-#   开关与库界面源码一变壳编号必变，同一壳编号不会对应带 / 不带库界面两种壳
+# 游戏库界面（runtime/build.mk S2A_SHELLUI）缺省按壳输入表：有「入 shell」行才编进壳。
+# Intel Mac 只有 tvOS 平台组件没装、xcodebuild 解析不出 generic/platform=tvOS；iOS 平台组件已装，xcodebuild 能编出库界面。
+# 通用容器 App（s2a_catalogue.json）必须带库界面，否则 iPad 上打开就报「没带游戏库」，不能为了省编译跳过。
 SHELLUI=0; printf '%s\n' "$IN" | grep -qx 'shell' && SHELLUI=1
+if [ "$(uname -m)" = x86_64 ] && [ "$OS" = tvos ] && [ "$SHELLUI" = 1 ] && [ -z "${S2A_SHELLUI:-}" ]; then
+  echo "🟡 Intel Mac：本机没装 tvOS 平台组件，跳过电视壳的游戏库界面；iPhone 壳照常带库界面"
+  SHELLUI=0
+elif [ -n "${S2A_SHELLUI:-}" ]; then
+  SHELLUI=$S2A_SHELLUI
+fi
 # 提交号在工作树里取好再交给 make（镜像没有 .git：runtime/build.mk 写进 Info.plist 的 S2ACommit 原先现取 git rev-parse，镜像里会成 unknown）
 HC=$(git -C "$R" rev-parse HEAD) || { echo "【红】取不到本树提交号"; exit 1; }
-"$MK" -C "$SN" ROOT="$SN" -j"$S2A_JOBS" -s ios S2A_CS=1 S2A_SHELLUI=$SHELLUI IOS_BUNDLE=dev.s2arm.shell IOS_DISPLAY=S2Arm BUILD="$B/build" IOS_OBJ_CACHE="$SN/build/ios_objcache" S2A_COMMIT="$HC" > "$B/make.log" 2>&1 \
+"$MK" -C "$SN" ROOT="$SN" -j"$S2A_JOBS" -s ios S2A_APPLE_OS=$OS S2A_CS=1 S2A_SHELLUI=$SHELLUI IOS_BUNDLE=dev.s2arm.shell IOS_DISPLAY=S2Arm BUILD="$B/build" IOS_OBJ_CACHE="$SN/build/${OS}_objcache" S2A_COMMIT="$HC" > "$B/make.log" 2>&1 \
   || { echo "【红】make ios 失败：$(grep -a -m1 -E 'error:|🔴|【红】' "$B/make.log" | cut -c1-200)"; tail -20 "$B/make.log"; exit 1; }
 APP=$B/build/ios/S2Arm.app
-HL=$S/build/gal/ios/gal_helpers
-{ [ -f "$HL/.stamp" ] || "$MK" -C "$SN" ROOT="$SN" -s "$SN/build/gal/ios/gal_helpers/.stamp" >> "$B/make.log" 2>&1; } \
+HL=$S/build/gal$GX/ios/gal_helpers   # make ios 编渲染器库时一并出（graphics/metal ios 目标）
+{ [ -f "$HL/.stamp" ] || "$MK" -C "$SN" ROOT="$SN" -s "$SN/build/gal$GX/ios/gal_helpers/.stamp" >> "$B/make.log" 2>&1; } \
   && mkdir -p "$APP/gal_helpers/m3" && cp "$HL"/*.metallib "$APP/gal_helpers/" && cp "$HL"/m3/*.metallib "$APP/gal_helpers/m3/" \
   || { echo "【红】渲染器内部辅助库拷不进壳（${HL}）"; exit 1; }
-TABLES=$("$MK" -C "$SN" -s print-app-tables) || { echo "【红】取不到随包表清单"; exit 1; }
-"${S2A_PY:-python3}" "$H/ship_ext.py" shell --app "$APP" --out "$OUT" --tables "$TABLES" || exit 1
+# 壳本体去调试映射与本地符号（11-15 瘦身：125 → 50 MB；玩家机器上没有代码读本地符号）；未去符号原件放壳目录旁 <壳目录>.symbols/（不进壳、不进 App，发版存档用来离线还原崩溃报告）
+rm -rf "$OUT.symbols" && mkdir -p "$OUT.symbols" && cp "$APP/S2Arm" "$OUT.symbols/S2Arm" && xcrun strip -S -x "$APP/S2Arm" || { echo "【红】壳去符号失败"; exit 1; }
+# tvOS 主屏图标（#1457）：tvOS 只认 actool 编的 Assets.car（分层品牌图标），出壳时编一次放进壳，玩家机上组装沿用（pack/tv_icon.py）
+[ "$OS" = tvos ] && { "${S2A_PY:-python3}" "$H/tv_icon.py" "$R/launchers/macos/Branding/AppIcon-iOS.png" "$APP" || exit 1; }
+TABLES=$("$MK" -C "$SN" -s print-app-tables S2A_APPLE_OS=$OS) || { echo "【红】取不到随包表清单"; exit 1; }
+"${S2A_PY:-python3}" "$H/ship_ext.py" shell --app "$APP" --out "$OUT" --tables "$TABLES" --entitlements "$ENT" || exit 1
 if [ -n "${S2A_SHELL_CLOSURE_SUGGEST:-}" ]; then "${S2A_PY:-python3}" "$H/shell/closure.py" suggest "$S" > "$S2A_SHELL_CLOSURE_SUGGEST" || exit 1
 else "${S2A_PY:-python3}" "$H/shell/closure.py" check "$S" || { rm -rf "${OUT:?}"; exit 1; }; fi
 echo "🟢 出壳用时 $((SECONDS - t0)) 秒"

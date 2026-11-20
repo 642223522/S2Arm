@@ -1,7 +1,10 @@
 """社区资源（pack/jobs/community.py，10-27 维护者 01:4x 口径）：宽屏 / 60 帧是宿主开关（缺省开、可关），版本不符走跨版本定位不判死，
 画面同互斥组单选；Mac 启动按选择设 S2A_WIDESCREEN=0 / S2A_FPS60=0。期望按规则手写"""
+import unittest.mock as um
+import importlib.util
 import json, os, shutil, sys, tempfile, unittest
 from pathlib import Path
+from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import community
 import layout
@@ -16,6 +19,7 @@ REPO = Path(__file__).resolve().parents[3]
 class Ctx:
     def __init__(self, root):
         self.library, self.engine, self.private, self.r = root / "lib", root / "engine", root / "priv", {"gameId": GID}
+        self.work_root = root / "work"   # 程序缓存 cache/programs（pack/jobs/programs.py）
         table = self.engine / community.SETTINGS_TABLE   # 定义表用仓库里的真表
         table.parent.mkdir(parents=True, exist_ok=True); shutil.copyfile(REPO / community.SETTINGS_TABLE, table)
     def begin(self, *a): pass
@@ -87,6 +91,13 @@ class CommunityTests(unittest.TestCase):
         write(cd / "uw/full/y/INDEX.tsv", "game\ttitle_id\tversion\tbuild_id\taspect\tkind\tui_fix\tsource\tin_pack\tsha256\n"
               f"Spl\t{GID}\t4.1.0\t\t21:9\tpchtxt\tyes\tuwrepo\tyes\t111\n")
 
+    def test_snapshot_switch_env(self):
+        # 即时快照（0.6.0，全部游戏共用，宿主苹果端缺省开）：没选过 / 选开 → 不写（宿主缺省开）；选关 → S2A_SNAP_MODE=0。存数据目录 game-settings.json
+        self.assertNotIn("S2A_SNAP_MODE", community.launch_env(self.c, GID))
+        for on, want in ((True, None), (False, "0")):
+            write(self.c.private / "game-settings.json", json.dumps({"schema": 1, "settings": {"snapshot": on}}))
+            self.assertEqual(community.launch_env(self.c, GID).get("S2A_SNAP_MODE"), want, f"snapshot={on}")
+
     def test_defaults_and_sources(self):
         r = community.listing(self.c)
         ws, fps = r["widescreen"], r["fps60"]
@@ -94,11 +105,55 @@ class CommunityTests(unittest.TestCase):
         self.assertEqual((fps["available"], fps["verified"], fps["enabled"], fps["sources"], fps["relocate"]), (True, False, True, ["fpsrepo"], True))   # 1.1.1≠4.1.0：跨版本定位、不判死；30 帧那条不算
         self.assertEqual([(it["id"], it["enabled"], it["license"]) for it in r["graphics"]], [("widescreen:aa", True, "MIT"), ("gfx:bb", True, "")])   # 11-13 起没选过 = 默认开（Mac 画面类也开）；帧率 / 金手指不在这里
 
+    def test_other_kind_default_off(self):
+        # 11-15：认不出是画面的补丁（other:，声音 / 玩法等）列出来可开，但没选过 = 关：启动设置里 enabled 假、起局开关列表不带；玩家明确开了才带。期望手写
+        p = layout.image_mac(self.c, GID) / "cpatch.tsv"
+        write(p, p.read_text(encoding="utf-8") + "other:ee\tmain\t3\tother\tNo Music\t\to.pchtxt\t\t0\n")
+        g = {it["id"]: it for it in community.listing(self.c)["graphics"]}
+        self.assertEqual((g["other:ee"]["enabled"], g["other:ee"]["kind"], g["gfx:bb"]["enabled"]), (False, "other", True))
+        self.assertEqual(community.launch_env(self.c, GID)["S2A_CPATCH_ON"], "gfx:bb,widescreen:aa")
+        self.c.r = {"gameId": GID, "graphics": {"other:ee": True}}
+        community.save(self.c)
+        self.assertEqual(community.launch_env(self.c, GID)["S2A_CPATCH_ON"], "gfx:bb,other:ee,widescreen:aa")
+
+    def test_load_direction_default_off(self):
+        # 11-16 维护者：降负载的画面补丁（表第 14 列方向 load）没选过 = 关、玩家可手动开；玩家开过的照旧开；提画质（quality）/ 没写方向的画面补丁照旧缺省开。期望手写：
+        #   aa 宽屏开、bb 没方向开、qq 提画质开、ll 降负载没选过关、kk 降负载玩家开过开 → 起局列表 gfx:bb,gfx:kk,gfx:qq,widescreen:aa
+        write(layout.image_mac(self.c, GID) / "cpatch.tsv", "编号\t模块\t位\t类别\t段名\t许可\t来源\t数据写入\t缺省开\t目标帧率\t画幅\t模式\t组\t方向\n"
+              "widescreen:aa\tmain\t0\twidescreen\t21:9\tMIT\tx.pchtxt\t\t0\t\t\t\t\t\ngfx:bb\tmain\t1\tgfx\tLOD\t\ty.pchtxt\t\t0\t\t\t\t\t\n"
+              "gfx:qq\tmain\t2\tgfx\t4K\t\tq.pchtxt\t\t0\t\t\t\t\tquality\ngfx:ll\tmain\t3\tgfx\tDisable DOF\t\tl.pchtxt\t\t0\t\t\t\t\tload\n"
+              "gfx:kk\tmain\t4\tgfx\tNo Shadows\t\tk.pchtxt\t\t0\t\t\t\t\tload\n")
+        self.c.r = {"gameId": GID, "graphics": {"gfx:kk": True}}
+        community.save(self.c)
+        g = {it["id"]: it["enabled"] for it in community.listing(self.c)["graphics"]}
+        self.assertEqual(g, {"widescreen:aa": True, "gfx:bb": True, "gfx:qq": True, "gfx:ll": False, "gfx:kk": True})
+        self.assertEqual(community.launch_env(self.c, GID)["S2A_CPATCH_ON"], "gfx:bb,gfx:kk,gfx:qq,widescreen:aa")
+        # 玩家再手动开 ll、关 qq：照玩家的 → gfx:bb,gfx:kk,gfx:ll,widescreen:aa
+        self.c.r = {"gameId": GID, "graphics": {"gfx:ll": True, "gfx:qq": False}}
+        community.save(self.c)
+        self.assertEqual(community.launch_env(self.c, GID)["S2A_CPATCH_ON"], "gfx:bb,gfx:kk,gfx:ll,widescreen:aa")
+
+    def test_reclassified_keeps_player_choice(self):
+        # 11-15 升级改正分类：原先误判成画面、默认开着的去声音补丁（gfx:ff，没选过）重编后成 other:ff → 关；
+        #   玩家在旧编号上手动开过的（gfx:gg 记了 True）重编后 other:gg → 照旧开（玩家自行选择优先）；手动关过的（gfx:hh False）照旧关。期望手写
+        data = community.load_launch(self.c, GID)
+        p = layout.image_mac(self.c, GID) / "cpatch.tsv"
+        write(p, "编号\t模块\t位\t类别\t段名\t许可\t来源\t数据写入\t缺省开\n"
+              "other:ff\tmain\t0\tother\tNo Music\t\tf.pchtxt\t\t0\nother:gg\tmain\t1\tother\tRemove Audio\t\tg.pchtxt\t\t0\n"
+              "other:hh\tmain\t2\tother\tSkip Intro\t\th.pchtxt\t\t0\n")
+        self.assertEqual(community.choice({"gfx:gg": True}, "other:gg"), True)
+        self.assertEqual(community.choice({"gfx:gg": True}, "other:ff"), None)
+        self.assertEqual(community.choice({"other:gg": False, "gfx:gg": True}, "other:gg"), False)   # 新编号上的选择优先
+        with um.patch.object(community, "load_launch", return_value=dict(data, patches={"gfx:gg": True, "gfx:hh": False})):
+            g = {it["id"]: it["enabled"] for it in community.listing(self.c)["graphics"]}
+            self.assertEqual(g, {"other:ff": False, "other:gg": True, "other:hh": False})
+            self.assertEqual(community.launch_env(self.c, GID)["S2A_CPATCH_ON"], "other:gg")
+
     def test_save_and_launch_env(self):
         self.assertEqual(community.launch_env(self.c, GID), {"S2A_CPATCH_ON": "gfx:bb,widescreen:aa", "S2A_WIDESCREEN": "0"})   # 没选过：包里的补丁全开（11-13），开着宽屏补丁 S2Arm 满屏让开；60 帧由宿主定
         self.c.r.update(settings={"widescreen": False, "fps60": False}, graphics={"gfx:bb": True})
         community.save(self.c)
-        self.assertEqual(community.launch_env(self.c, GID), {"S2A_WIDESCREEN": "0", "S2A_FPS60": "0", "S2A_CPATCH_ON": "gfx:bb,widescreen:aa"})   # 玩家明确关：写 0；没关过的补丁照开
+        self.assertEqual(community.launch_env(self.c, GID), {"S2A_WIDESCREEN": "0", "S2A_FPS60": "0", "DM_PRESENT_FI": "0", "S2A_CPATCH_ON": "gfx:bb,widescreen:aa"})   # 玩家明确关：写 0；没关过的补丁照开
         self.c.r = {"gameId": GID, "graphics": {"widescreen:aa": True}}
         r = community.save(self.c); g = {it["id"]: it for it in r["graphics"]}
         self.assertEqual((g["widescreen:aa"]["enabled"], g["gfx:bb"]["enabled"]), (True, True))
@@ -148,6 +203,34 @@ class CommunityTests(unittest.TestCase):
         self.assertNotIn("S2A_AUDIO_BUFFER_FRAMES", community.launch_env(self.c, GID))
         self.c.r = {"gameId": GID, "settings": {"audioLatency": "16"}}
         with self.assertRaises(Failure): community.save(self.c)
+
+    def test_audio_device_ios_same_as_table(self):
+        # 输出设备类型（定义表 audioDevice）与 iOS 同一组值同序：ios/settings.m 起局只转 builtin / headphones / external
+        #   （"auto" = 没选过不设）、ios/game_options.m 选项块认同一组、shell S2ArmGameSettings 的多选四项同值同序、
+        #   C# 选择器认得表里每个值；iOS 平台在表里声明了
+        item = next(i for i in json.loads((REPO / community.SETTINGS_TABLE).read_text(encoding="utf-8"))["items"] if i["id"] == "audioDevice")
+        values = [o["value"] for o in item["options"]]
+        self.assertEqual(values, ["auto", "builtin", "headphones", "external"])
+        self.assertIn("ios", item["platforms"])
+        accept = '[@[@"builtin", @"headphones", @"external"] containsObject:'
+        for path in ("ios/settings.m", "ios/game_options.m"):
+            self.assertIn(accept, (REPO / path).read_text(encoding="utf-8"))   # 两处接受的显式类型同一组
+        shell = (REPO / "shell/Sources/S2ArmShellHost/S2ArmGameSettings.swift").read_text(encoding="utf-8")
+        self.assertIn('["auto", "builtin", "headphones", "external"]', shell)   # shell 多选与表同值同序
+        csharp = (REPO / "compat/tree/src/Ryujinx.Audio.Backends.Apple/AppleAudioDeviceType.cs").read_text(encoding="utf-8")
+        self.assertEqual([v for v in values if f'"{v}"' not in csharp], [])   # C# 选择器认得表里每个值
+    def test_resolution_scale_and_fps_limit(self):
+        # 渲染分辨率 / 帧率上限（11-17，Mac 补上 iPhone 已有的两项）：缺省 1× / 不限不设变量；0.5× → S2A_RES_SCALE=0.5，30 帧 → S2A_FPS=30；表外取值拒收
+        env = community.launch_env(self.c, GID)
+        self.assertNotIn("S2A_RES_SCALE", env); self.assertNotIn("S2A_FPS", env)
+        self.c.r = {"gameId": GID, "settings": {"resolutionScale": "0.5", "fpsLimit": "30"}}; community.save(self.c)
+        env = community.launch_env(self.c, GID)
+        self.assertEqual((env["S2A_RES_SCALE"], env["S2A_FPS"]), ("0.5", "30"))
+        self.c.r = {"gameId": GID, "settings": {"resolutionScale": "1", "fpsLimit": "0"}}; community.save(self.c)
+        env = community.launch_env(self.c, GID)
+        self.assertNotIn("S2A_RES_SCALE", env); self.assertNotIn("S2A_FPS", env)
+        self.c.r = {"gameId": GID, "settings": {"resolutionScale": "3"}}
+        with self.assertRaises(Failure): community.save(self.c)
     def test_game_language_only_supported(self):
         # 11-14 维护者「按你的建议加上」：只列这款 control.nacp 支持的语言；系统语言不支持时在设置里写明起局用哪种（不弹窗）。期望按 NACP 位序手算
         def nacp(*bits):
@@ -155,6 +238,10 @@ class CommunityTests(unittest.TestCase):
         self.assertEqual(community.nacp_languages(nacp(0, 2, 13, 14)), ["AmericanEnglish", "Japanese", "TraditionalChinese", "SimplifiedChinese"])
         self.assertEqual(community.nacp_languages(nacp()), [])            # 合成的 nacp 不声明：不知道
         self.assertEqual(community.nacp_languages(b"short"), [])
+        # #1209：导入合成的 nacp（ns2_dump.synth_nacp）支持表只写了美式英语、显示版本「?」——不是真表，当不知道，下拉列全部（选得到中文）
+        spec = importlib.util.spec_from_file_location("ns2_dump", REPO / "pack/ns2_dump.py"); ns2 = importlib.util.module_from_spec(spec); spec.loader.exec_module(ns2)
+        self.assertEqual(community.nacp_languages(ns2.synth_nacp(0x0400486024DEC000, "x")), [])
+        self.assertEqual(community.nacp_languages(nacp(0)), ["AmericanEnglish"])   # 真表只声明英语（显示版本不是「?」）：照真表
         ctl = layout.image_mac(self.c, GID) / "ctl" / "control.nacp"
         self.assertNotIn("choices", community.mac_settings(self.c, GID)["language"])   # 还没出包（没有 nacp）：照旧列全部
         write(ctl, ""); ctl.write_bytes(nacp(0, 2, 14))                      # 美英、日、简中
@@ -187,9 +274,9 @@ class CommunityTests(unittest.TestCase):
         values = [o["value"] for o in item["options"]]
         ios = re.search(r"s2a_ios_game_languages\(void\) \{\s*return @\[(.*?)\];", (REPO / "ios/settings.m").read_text(encoding="utf-8"), re.S).group(1)
         self.assertEqual(re.findall(r'@"(\w+)"', ios), values)
-        menu = (REPO / "ios/app_settings.m").read_text(encoding="utf-8")
-        labels = re.search(r"labels = @\[S2AL\(@\"settings.gameLanguage.system\"\),(.*?)\];", menu, re.S).group(1)
-        self.assertEqual(len(re.findall(r'@"[^"]+"\)?', labels)) + 1, len(values))   # 字面量与 S2AL(@"键") 各算一项
+        # 给玩家看的名字：游戏内设置页与游戏库每款设置页共用 settings.m s2a_ios_game_language_label（#1252），除「跟随系统」外每个值都要有名字
+        label = re.search(r"NSString \*s2a_ios_game_language_label\(NSString \*value\) \{(.*?)\n\}", (REPO / "ios/settings.m").read_text(encoding="utf-8"), re.S).group(1)
+        self.assertEqual(sorted(re.findall(r'@"(\w+)": ', label)), sorted(values[1:]))
         enum = (REPO / "compat/tree/src/Ryujinx.HLE/HOS/SystemState/SystemLanguage.cs").read_text(encoding="utf-8")
         self.assertEqual([v for v in values[1:] if not re.search(r"\b%s,?\s" % v, enum)], [])
         self.assertIn("ios", item["platforms"])
@@ -251,9 +338,9 @@ class MacDisplayTests(unittest.TestCase):
         m = self.mac()
         self.assertEqual((m["fps60"]["available"], m["fps60"]["value"]), (True, False))   # 清单 1 但原因不是已验证来源：缺省原帧率（同宿主）
         self.assertEqual((m["widescreen"]["available"], m["widescreen"]["value"]), (True, False))   # 清单 widen 0「缺省关」：没选过显示关、可以开
-        self.assertEqual((m["enhance"]["available"], m["enhance"]["value"]), (True, False))
+        self.assertEqual((m["quality"]["available"], m["quality"]["value"], m["quality"].get("blocked")), (True, "Bilinear", None))   # 画质提升缺省标准，三档都能选
         self.assertEqual((m["docked"]["value"], m["rumble"]["value"], m["rumbleLevel"]["value"], m["motion"]["value"], m["hud"]["value"]),
-                         ("docked", True, "2", True, False))   # 定义表缺省：Mac 主机模式、震动开标准档、体感开、浮层关
+                         ("handheld", True, "2", True, False))   # 定义表缺省：掌机模式（11-17 起同 iPhone）、震动开标准档、体感开、浮层关
         self.assertEqual(community.launch_env(self.c, GID), {})
 
     def test_fps60_default_follows_the_verified_reason_like_the_host(self):
@@ -277,10 +364,45 @@ class MacDisplayTests(unittest.TestCase):
         (layout.image_mac(self.c, GID) / "s2a_caps.tsv").unlink()   # 还没出 Mac 版（读不到清单）：照旧都列、先存偏好
         self.assertEqual((self.mac()["fps60"].get("hidden"), self.mac()["widescreen"].get("hidden")), (None, None))
 
+    def test_audio_device_and_virtual_surround(self):
+        # 输出设备类型 + 两个虚拟环绕开关（#189 后续，5.1 虚拟环绕第二片，与 iPhone ios/settings.m 同口径）：没选过不设任何变量
+        #   （= auto 按设备真实声道判，5.1 直通缺省不变）；显式选了类型设 S2A_AUDIO_DEVICE、拨过的开关设 1 / 0（各存各的，
+        #   只在对应显式类型下生效——驱动侧判）；表外取值拒收。Mac 启动页两个开关只在对应类型下可用、值照旧显示
+        env = community.launch_env(self.c, GID)
+        self.assertNotIn("S2A_AUDIO_DEVICE", env); self.assertNotIn("S2A_AUDIO_VS_SPEAKERS", env); self.assertNotIn("S2A_AUDIO_VS_HEADPHONES", env)
+        for device in ("builtin", "headphones", "external"):
+            self.c.r = {"gameId": GID, "settings": {"audioDevice": device}}; community.save(self.c)
+            self.assertEqual(community.launch_env(self.c, GID).get("S2A_AUDIO_DEVICE"), device)
+        self.c.r = {"gameId": GID, "settings": {"audioDevice": "auto"}}; community.save(self.c)
+        self.assertNotIn("S2A_AUDIO_DEVICE", community.launch_env(self.c, GID))   # 「自动」：起局与没选过一致
+        self.c.r = {"gameId": GID, "settings": {"audioDevice": "soundbar"}}
+        with self.assertRaises(Failure): community.save(self.c)
+        self.c.r = {"gameId": GID, "settings": {"vsSpeakers": True, "vsHeadphones": False}}; community.save(self.c)
+        env = community.launch_env(self.c, GID)
+        self.assertEqual((env.get("S2A_AUDIO_VS_SPEAKERS"), env.get("S2A_AUDIO_VS_HEADPHONES")), ("1", "0"))
+        self.assertNotIn("S2A_AUDIO_DEVICE", env)   # 只拨开关不算选了类型：设备仍按真实声道判（驱动侧 VS 只在显式类型生效）
+        # Mac 启动页：没选类型 = 两个开关都置灰（值照旧显示，拨过的各存各的）；选了耳机只放开耳机开关
+        m = self.mac()
+        self.assertEqual((m["vsSpeakers"]["available"], m["vsHeadphones"]["available"]), (False, False))
+        self.assertEqual((m["vsSpeakers"]["value"], m["vsHeadphones"]["value"]), (True, False))
+        self.assertEqual(m["vsSpeakers"]["reason"], community.NO_VS_SPEAKERS)
+        self.c.r = {"gameId": GID, "settings": {"audioDevice": "headphones"}}; community.save(self.c)
+        m = self.mac()
+        self.assertEqual((m["vsSpeakers"]["available"], m["vsHeadphones"]["available"]), (False, True))
+        self.assertEqual(m["vsHeadphones"]["reason"], "")
+        self.c.r = {"gameId": GID, "settings": {"audioDevice": "builtin"}}; community.save(self.c)
+        m = self.mac()
+        self.assertEqual((m["vsSpeakers"]["available"], m["vsHeadphones"]["available"]), (True, False))
+        self.assertEqual(m["audioDevice"]["available"], True)   # 设备类型本身不受开关影响，随时可选
+        self.c.r = {"gameId": GID, "settings": {"audioDevice": "external", "vsSpeakers": True, "vsHeadphones": False}}; community.save(self.c)
+        m = self.mac()
+        self.assertEqual((m["vsSpeakers"]["available"], m["vsHeadphones"]["available"]), (False, False))
+        self.assertEqual((m["vsSpeakers"]["value"], m["vsHeadphones"]["value"]), (True, False))   # 拨过的值照显示（切换类型各自恢复）
+
     def test_every_mac_item_of_the_table_is_on_the_page(self):
-        # 定义表里 platforms 含 mac 的 bool / choice 项 = enhance fps60 widescreen docked rumble rumbleLevel motion hud（11-13 widenForce 并进 widescreen）
+        # 定义表里 platforms 含 mac 的 bool / choice 项 = quality（11-15 取代 enhance）fps60 widescreen docked rumble rumbleLevel motion hud（11-13 widenForce 并进 widescreen）
         self.caps()
-        self.assertEqual(sorted(self.mac()), sorted(["enhance", "fps60", "fpsPick", "widescreen", "docked", "language", "rumble", "rumbleLevel", "motion", "padFace", "hud", "pauseUnfocused", "audioLatency", "diagRun"]))
+        self.assertEqual(sorted(self.mac()), sorted(["quality", "fps60", "fpsPick", "resolutionScale", "fpsLimit", "widescreen", "docked", "language", "rumble", "rumbleLevel", "motion", "motionInvertY", "motionInvertX", "padFace", "hud", "snapshot", "pauseUnfocused", "audioLatency", "audioDevice", "vsSpeakers", "vsHeadphones", "diagRun"]))
 
     def test_fps_pick_level(self):
         # 帧率档位（11-13）：包里帧率补丁（编号 fps:）目标帧率两档以上才出；选具体档 → S2A_FPS_PICK=档，选自动（"0"）不写；表外取值拒收
@@ -301,33 +423,65 @@ class MacDisplayTests(unittest.TestCase):
     def test_game_without_a_mac_build_can_still_pick(self):
         # v0.3.1：还没出 Mac 版也能先选、存成偏好（出好后生效）——原先整页置灰写「还没有做好 Mac 版」，玩家只能先去出包
         m = self.mac()
-        for key in ("fps60", "widescreen", "enhance", "docked", "hud"):
+        for key in ("fps60", "widescreen", "quality", "docked", "hud"):
             self.assertTrue(m[key]["available"]); self.assertEqual(m[key]["reason"], "")
 
     def test_missing_capabilities_give_their_own_reason(self):
         self.caps("widen\t0\ndirect\t0\n")
         m = self.mac()
         self.assertEqual(m["fps60"]["reason"], community.NO_FPS60)
-        self.assertEqual(m["enhance"]["reason"], community.NO_DIRECT)
+        # 画质提升：没走直连只是锐利放大用不了——这一行照样能选标准 / 2D，锐利放大置灰、写原因
+        self.assertEqual((m["quality"]["available"], m["quality"]["blocked"], m["quality"]["reason"]), (True, ["MetalFX", "Fsr"], community.NO_DIRECT))
         self.assertTrue(m["widescreen"]["available"])   # 「缺省关」不是强信号：照样能开
         self.caps("widen\t0\t# 强信号：宽屏画面坏\ndirect\t1\n")
         self.assertEqual((self.mac()["widescreen"]["available"], self.mac()["widescreen"]["reason"]), (False, community.NO_WIDEN))
 
-    def test_enhance_reaches_launch_and_turns_back_off(self):
+    def test_quality_reaches_launch_and_turns_back_off(self):
+        # 画质提升（11-15）：2D 游戏专用 → S2A_SCALING_FILTER=Nearest；锐利放大 → MetalFX（只在走直连时）；标准 / 回缺省不写；表外取值拒收
         self.caps()
-        self.save(enhance=True)
+        self.save(quality="MetalFX")
         self.assertEqual(community.launch_env(self.c, GID), {"S2A_SCALING_FILTER": "MetalFX"})
-        self.assertTrue(self.mac()["enhance"]["value"])
-        self.save(enhance=None)   # 回缺省：文件里不留这一项
-        self.assertEqual((community.launch_env(self.c, GID), self.launch_file()["settings"]), ({}, {}))
-        self.save(enhance=True)
-        self.caps("fps60\t1\ndirect\t0\n")
+        self.assertEqual(self.mac()["quality"]["value"], "MetalFX")
+        self.save(quality="Nearest")
+        self.assertEqual(community.launch_env(self.c, GID), {"S2A_SCALING_FILTER": "Nearest"})
+        self.save(quality="Bilinear")
         self.assertEqual(community.launch_env(self.c, GID), {})
+        self.save(quality=None)   # 回缺省：文件里不留这一项
+        self.assertEqual((community.launch_env(self.c, GID), self.launch_file()["settings"]), ({}, {}))
+        self.save(quality="MetalFX")
+        self.caps("fps60\t1\ndirect\t0\n")
+        self.assertEqual(community.launch_env(self.c, GID), {})   # 没走直连：锐利放大不生效
+        self.save(quality="Nearest")
+        self.assertEqual(community.launch_env(self.c, GID), {"S2A_SCALING_FILTER": "Nearest"})   # 2D 不要直连
+        # Fsr（FSR 1）是表里的第四档：走直连才设，没走直连不设（同锐利放大）
+        self.save(quality="Fsr")
+        self.assertEqual(community.launch_env(self.c, GID), {})
+        self.caps("fps60\t1\ndirect\t1\n")
+        self.assertEqual(community.launch_env(self.c, GID), {"S2A_SCALING_FILTER": "Fsr"})
+        self.c.r = {"gameId": GID, "settings": {"quality": "Lanczos"}}   # 表外值
+        with self.assertRaises(Failure): community.save(self.c)
+
+    def test_old_enhance_switch_becomes_sharp_upscaling(self):
+        # 旧 launch.json 的「画面增强模式」（enhance）11-15 并进画质提升：开 → 锐利放大（MetalFX），关 → 缺省标准；下次存盘旧键删掉
+        self.caps()
+        path = community.launch_path(self.c, GID)
+        write(path, json.dumps({"schema": 1, "settings": {"enhance": True, "hud": True}, "patches": {}}))
+        self.assertEqual(self.mac()["quality"]["value"], "MetalFX")
+        self.assertEqual(community.launch_env(self.c, GID)["S2A_SCALING_FILTER"], "MetalFX")
+        self.save(docked="handheld")
+        self.assertEqual(self.launch_file()["settings"], {"quality": "MetalFX", "hud": True, "docked": "handheld"})
+        write(path, json.dumps({"schema": 1, "settings": {"enhance": False}, "patches": {}}))
+        self.assertEqual(self.mac()["quality"]["value"], "Bilinear")
+        self.save(hud=True)
+        self.assertEqual(self.launch_file()["settings"], {"hud": True})
+        write(path, json.dumps({"schema": 1, "settings": {"enhance": True, "quality": "Nearest"}, "patches": {}}))   # 两个都有：新键为准
+        self.assertEqual(self.mac()["quality"]["value"], "Nearest")
 
     def test_full_screen_matches_iphone(self):
         # 满屏明确开 = 没验证过也铺满（同 iPhone settings.m）；明确关 = 16:9；强信号判坏的款明确开也不开
         self.caps()
         self.save(widescreen=True)
+        # 11-15 维护者「没补丁的游戏手动打开满屏就走咱们通用方案」：明确开 = 我方通用满屏，不要 S2A_CAPS_OWN（原先要，手动开也不生效）
         self.assertEqual(community.launch_env(self.c, GID), {"S2A_WIDEN_VERIFIED": "1", "S2A_WIDESCREEN": "1"})
         self.save(widescreen=False)
         self.assertEqual(community.launch_env(self.c, GID), {"S2A_WIDESCREEN": "0"})
@@ -382,33 +536,52 @@ class MacDisplayTests(unittest.TestCase):
         self.caps()
         write(community.launch_path(self.c, GID), json.dumps({"schema": 1, "settings": {"widenForce": True}, "patches": {}}))
         self.assertTrue(self.mac()["widescreen"]["value"])
-        self.assertEqual(community.launch_env(self.c, GID), {"S2A_WIDEN_VERIFIED": "1", "S2A_WIDESCREEN": "1"})
+        self.assertEqual(community.launch_env(self.c, GID), {"S2A_WIDEN_VERIFIED": "1", "S2A_WIDESCREEN": "1"})   # 11-15：明确开 = 我方通用满屏
 
     def test_fps60_off_and_manual_on_over_a_red_game(self):
         self.caps()
         self.save(fps60=False)
-        self.assertEqual(community.launch_env(self.c, GID), {"S2A_FPS60": "0"})             # 玩家明确关：写 0
+        self.assertEqual(community.launch_env(self.c, GID), {"S2A_FPS60": "0", "DM_PRESENT_FI": "0"})             # 玩家明确关：写 0
         self.assertFalse(self.mac()["fps60"]["value"])
         self.save(fps60=True)                                                               # 清单开的款玩家开：也要明确传 1（宿主不再看清单）
-        self.assertEqual(community.launch_env(self.c, GID), {"S2A_FPS60": "1"})
+        self.assertEqual(community.launch_env(self.c, GID), {"S2A_FPS60": "1", "DM_PRESENT_FI": "1"})
         self.caps("fps60\t0\t# 判红\ndirect\t1\n")
         self.save(fps60=True)
-        self.assertEqual(community.launch_env(self.c, GID), {"S2A_FPS60": "1"})
+        self.assertEqual(community.launch_env(self.c, GID), {"S2A_FPS60": "1", "DM_PRESENT_FI": "1"})
         self.assertTrue(self.mac()["fps60"]["value"])
 
     def test_changing_one_switch_does_not_decide_the_others(self):
-        # 判红的款：改画面增强不能顺手把 60 帧存成开；文件里只有这一项
+        # 判红的款：改画质提升不能顺手把 60 帧存成开；文件里只有这一项
         self.caps("fps60\t0\t# 判红\ndirect\t1\n")
-        self.save(enhance=True)
+        self.save(quality="MetalFX")
         self.assertFalse(self.mac()["fps60"]["value"])
-        self.assertEqual(self.launch_file()["settings"], {"enhance": True})
+        self.assertEqual(self.launch_file()["settings"], {"quality": "MetalFX"})
         self.assertEqual(community.launch_env(self.c, GID), {"S2A_SCALING_FILTER": "MetalFX"})
+
+    def test_chosen_docked_survives_the_handheld_default(self):
+        # 11-17 缺省改掌机：玩家在这款设置里选过主机的，launch.json 里存着 docked，起局照旧主机（build.launch 在缺省之后合并 launch_env）；没选过的不写，走缺省
+        self.caps()
+        self.assertNotIn("S2A_DOCKED", community.launch_env(self.c, GID))
+        self.save(docked="docked")
+        self.assertEqual(community.launch_env(self.c, GID)["S2A_DOCKED"], "1")
+        self.assertEqual(self.mac()["docked"]["value"], "docked")
 
     def test_controls_and_mode_reach_the_host(self):
         # 掌机 → S2A_DOCKED=0；浮层开 → S2A_HUD=1；震动关 → S2A_RUMBLE=0；强度「强」(4) → 倍率 1.8；体感关 → S2A_MOTION=0
         self.caps()
         self.save(docked="handheld", hud=True, rumble=False, rumbleLevel="4", motion=False)
         self.assertEqual(community.launch_env(self.c, GID), {"S2A_DOCKED": "0", "S2A_HUD": "1", "S2A_RUMBLE": "0", "S2A_RUMBLE_SCALE": "1.8", "S2A_MOTION": "0"})
+
+    def test_motion_invert_reaches_the_host(self):
+        # #1551：体感上下 / 左右反过来，开着才写 S2A_MOTION_INVERT_Y / _X=1；缺省（没选过）与关都不写
+        self.caps()
+        self.assertNotIn("S2A_MOTION_INVERT_Y", community.launch_env(self.c, GID))
+        self.save(motionInvertY=True)
+        env = community.launch_env(self.c, GID)
+        self.assertEqual((env.get("S2A_MOTION_INVERT_Y"), env.get("S2A_MOTION_INVERT_X")), ("1", None))
+        self.save(motionInvertY=False, motionInvertX=True)
+        env = community.launch_env(self.c, GID)
+        self.assertEqual((env.get("S2A_MOTION_INVERT_Y"), env.get("S2A_MOTION_INVERT_X")), (None, "1"))
 
     def test_max_blast_rumble_level(self):
         # 「震爆我」(5) → 倍率 5.0；iOS ios/controller.m 的六档倍率表与定义表一致
@@ -456,12 +629,12 @@ class MacDisplayTests(unittest.TestCase):
         self.assertEqual(self.launch_file()["settings"], {"hud": True})
 
     def test_old_community_file_is_moved_once(self):
-        # schema 3：widenForce / metalfx / fps60 都是玩家选的 → widescreen（满屏明确开，11-13 并入）/ enhance / fps60；补丁带过去；旧文件删掉
+        # schema 3：widenForce / metalfx / fps60 都是玩家选的 → widescreen（满屏明确开，11-13 并入）/ quality 锐利放大（11-15 并进画质提升）/ fps60；补丁带过去；旧文件删掉
         self.caps()
         old = layout.path(self.c, GID, "community.json")
         write(old, json.dumps({"schema": 3, "widescreen": False, "fps60": True, "widenForce": True, "metalfx": True, "enabled": {"gfx:a": True}}))
-        self.assertTrue(self.mac()["enhance"]["value"])
-        self.assertEqual(self.launch_file(), {"schema": 1, "settings": {"widescreen": True, "enhance": True, "fps60": True}, "patches": {"gfx:a": True}})
+        self.assertEqual(self.mac()["quality"]["value"], "MetalFX")
+        self.assertEqual(self.launch_file(), {"schema": 1, "settings": {"widescreen": True, "quality": "MetalFX", "fps60": True}, "patches": {"gfx:a": True}})
         self.assertFalse(old.exists())
 
     def test_old_file_written_by_the_previous_panel_is_not_a_manual_choice(self):

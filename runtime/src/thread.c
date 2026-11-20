@@ -82,6 +82,7 @@ void s2a_thread_stop_point(void);
 // G 内采样的唤醒目标身份；不跨锁保留 thr 指针，id 防句柄代际回绕后误认新线程。
 typedef struct { uint32_t handle; uint64_t id, nsvc; } peer_wait_t;
 
+struct snap_mach_ctx { uint64_t regs[34]; uint8_t neon[32 * 16]; uint32_t fpsr, fpcr; };   // 即时存档：Mach 挂住的线程现场（x0–x28、fp、lr、sp、pc、cpsr；向量寄存器；浮点状态）
 typedef struct thr {
     uint32_t handle; uint64_t id;
     uint64_t entry, arg, stack_top; int prio, core; uint64_t mask;
@@ -96,6 +97,8 @@ typedef struct thr {
 #if defined(__APPLE__)
     mach_port_t mport;
     int kqw, kqfd; // Apple timed waits use this thread-owned kqueue.
+    // 即时存档：冻结时停在游戏原代码里（忙等，不进门）的线程被 Mach 挂住，记下完整寄存器现场（恢复时装回、从原指令接着跑）
+    int snap_run; struct snap_mach_ctx *snap_mc;   // 即时存档：Mach 挂住时的现场（用时才分配；开关关着恒空）
     // 停稳 ack（同安卓同名字段，审计 P1-49）：持 G 写。目标自己进 pause_park 时置；pwait = 暂停方代置（目标在系统调用里 / Mach 挂在游戏代码里），恢复方收回
     _Atomic int paused_ack; int pwait;
 #else
@@ -118,6 +121,11 @@ typedef struct thr {
     uint64_t wseq;                     // 登记等待的先后：同优先级先到先醒（同 Horizon KThread 等待树）
     struct thr *next, *all;            // 等待链 / 全部线程链
     int last_svc; uint64_t last_lr, last_fp, nsvc;
+    // 交给 C# 服务层处理的系统调用（s2a_svc_ctx_fill / s2a_svc_cs_returned）：号、会话句柄、开始时刻、回来次数。
+    //   即时存档：同步 IPC 在 C# 里阻塞（等网络、等别的服务）时线程不会回门，冻结把它当「入口」安全点（恢复后重发这次请求），见 snap_cs_blocked
+    int cs_svc; uint32_t cs_h; uint64_t cs_t0; _Atomic uint32_t cs_ret;
+    int cs_seq, snap_cs_seq;   // 正在 C# 里处理的这条请求在服务请求日志里的序号（不进日志的 / 没在处理 < 0）；冻结判齐那一刻另存一份
+    int snap_cs; uint32_t snap_cs_ret; uint8_t snap_cs_frame[832], snap_cs_msg[256];   // 冻结判齐那一刻另存的门帧与请求消息（C# 写回复之前）
     // 最近 8 次同步类系统调用（0x1a–0x1d / 0x34 / 0x35）：号、参数、地址处的值（调前 / 调后）、返回码、返回地址。
     //   停帧现场只打「在跑」线程的：同步原语每圈都掉进系统调用的空转（11-14 #35fdbb 166 号 SignalToAddress 11 万次、162 号对空闲锁 ArbitrateLock 2.6 万次）
     //   要看游戏给了什么、我们回了什么，光有最后一个调用号判不了是哪个输入错
@@ -135,6 +143,7 @@ typedef struct thr {
     uint64_t wait_t0;                  // 诊断：这次开始等待的时刻（mach 时基），线程表打「已等多久」
     _Atomic int in_svc;                // 此刻在系统调用里（含阻塞在等待里）
     _Atomic int pause; int pmach;
+    int park_at;                       // 即时存档：最近一次停进 pause_park 的位置（1 系统调用入口、2 出口、3 宿主函数回客体、0 其他）
 #if defined(__APPLE__)
     arm_thread_state64_t pst; arm_neon_state64_t pns;
 #endif   // SetThreadActivity：在系统调用里的在出入口挂起；在游戏代码里的 Mach 挂起
@@ -168,6 +177,9 @@ typedef struct thr {
 } thr_t;
 
 static pthread_mutex_t G = PTHREAD_MUTEX_INITIALIZER;
+#ifdef S2A_UNIT_TEST
+void s2a_test_glock_hold(int on) { if (on) pthread_mutex_lock(&G); else pthread_mutex_unlock(&G); }   // t_thread：ArbitrateLock 快路径（持着 G 也能回）
+#endif
 // 诊断：全局锁 G 的争用（S2A_DIAG_STAMP 设了才计；没设直接加锁，不多一次原子操作）。trylock 拿到不计时；拿不到就计等了多久，按量级计数
 static _Atomic uint64_t g_gl_try, g_gl_wait, g_gl_b[7], g_gl_max;
 static int lw_on(void) { static int v = -1; if (v < 0) v = getenv("S2A_DIAG_STAMP") != NULL; return v; }   // 诊断开关：没设不计数
@@ -250,7 +262,101 @@ static uint16_t g_gen;
 int s2a_det_mode(void), s2a_det_in_turn(void);
 #endif
 static uint16_t g_gen_async __attribute__((unused));
-static uint32_t h_new(uint32_t kind, void *obj, uint64_t cookie) {   // 持 G；满了返回 0（调用方报红回 OutOfHandles）
+// ---------- 即时存档：句柄创建 / 关闭的有序日志（存档模式）与恢复时的强制分配 ----------
+// 日志项：类型（0 建、1 关）、句柄值、种类、上下文（≥0 = 服务请求日志序号；-2 = 服务层在请求外建的（初始化 / 宿主线程）；-1 = 游戏系统调用在原生层建的）、
+//   关的时候记「此前最后一条记过日志的请求序号」，恢复重放时按这个次序穿插执行关闭
+// pin（原填充位）：建的那条被几条留在请求日志里的请求递过（钉住的建 / 关两条不成对删：重放那些请求要靠它把句柄建出来）；uid（原填充位）：建的那条的编号（解钉按它找，句柄值会复用）
+typedef struct { uint8_t op, cs; uint16_t pin; uint32_t h, kind; int32_t ctx, after; uint64_t a, b; uint32_t c, uid; } snap_hlog_t;
+static snap_hlog_t *g_hlog; static int g_nhlog, g_caphlog; static _Atomic int g_snap_lastseq = -1; static uint32_t g_huid;
+static int hlog_last_create(uint32_t h) { for (int i = g_nhlog - 1; i >= 0; i--) if (g_hlog[i].op == 0 && g_hlog[i].h == h) return i; return -1; }
+static void hlog_del(int i) { memmove(&g_hlog[i], &g_hlog[i + 1], sizeof *g_hlog * (size_t)(g_nhlog - i - 1)); g_nhlog--; }
+static __thread int t_cs_h, t_snap_ctx = -2;
+static __thread int t_close_cs;   // 本线程这次关句柄是服务层（C#，s2a_handle_close）关的：关的那条日志记 cs = 1，恢复重放时留给服务自己关（snap_apply_closes）
+static __thread const uint32_t *t_force; static __thread int t_nforce, t_iforce;
+int s2a_snap_mode(void); int s2a_snap_logging(void);
+// 单独链本文件的线程单测（t_thread / t_thread_plat / t_thread_wait_diag，含安卓适配层那份）没有快照引擎：弱缺省 = 快照关、不记；
+//   放在苹果专属段外面（安卓适配层把那段整个关掉，hlog_add / svc_thread 照样引用）。宿主 / iOS 壳链进 snapshot.c / snapsw.c 的真定义
+__attribute__((weak)) void s2a_snap_mark_old(void) {}
+__attribute__((weak)) int s2a_snap_restoring(void) { return 0; }
+__attribute__((weak)) int s2a_snap_logging(void) { return 0; }
+void s2a_snap_hctx(int seq) { t_snap_ctx = seq; thr_t *t = thread_current_or_null(); if (t) t->cs_seq = seq; }   // C# 请求开始时设本线程的请求序号（结束设 -2）
+// 请求日志收住用的四个导出：安卓快照恒关不调，安卓那份由 snapsw.c 给空实现（两边都定义会重复）
+#if defined(__APPLE__)
+// 请求日志要删第 seq 条之前问：它建的句柄还有活着的吗（活着的要靠重放这条建，不能删）
+int s2a_snap_seq_live(int seq) {
+    glock(); int live = 0;
+    for (int i = 0; i < g_nhlog && !live; i++) if (g_hlog[i].op == 0 && g_hlog[i].cs && g_hlog[i].ctx == seq) {
+        live = 1; for (int j = i + 1; j < g_nhlog; j++) if (g_hlog[j].op == 1 && g_hlog[j].h == g_hlog[i].h) { live = 0; break; } }
+    pthread_mutex_unlock(&G); return live;
+}
+// 请求日志删掉了第 seq 条：它建的句柄（都已关）建 / 关两条一起删
+void s2a_snap_hlog_forget(int seq) {
+    glock();
+    for (int i = 0; i < g_nhlog; ) {
+        if (g_hlog[i].op == 0 && g_hlog[i].cs && g_hlog[i].ctx == seq && !g_hlog[i].pin) {
+            uint32_t h = g_hlog[i].h; hlog_del(i);
+            for (int j = i; j < g_nhlog; j++) if (g_hlog[j].op == 1 && g_hlog[j].h == h) { hlog_del(j); break; }
+        } else i++;
+    }
+    pthread_mutex_unlock(&G);
+}
+// 一条要留在请求日志里的请求在消息里递了句柄 h（复制 / 移交）：钉住建 h 的那条（之后 h 关了也不成对删，重放这条时要靠它把 h 建出来）。
+//   回建 h 的请求序号（是游戏系统调用 / 服务层请求外建的回 -1），*uid = 那条的编号（解钉用）；日志里没有建 h 的那条回 -1、*uid = 0
+int s2a_snap_handle_use(uint32_t h, uint32_t *uid) {
+    glock(); int c = hlog_last_create(h), seq = -1; *uid = 0;
+    if (c >= 0) { if (g_hlog[c].pin < UINT16_MAX) g_hlog[c].pin++; *uid = g_hlog[c].uid; if (g_hlog[c].cs && g_hlog[c].ctx >= 0) seq = g_hlog[c].ctx; }
+    pthread_mutex_unlock(&G); return seq;
+}
+// 递 h 的那条请求从日志删了（或当时失败）：解钉；钉数归零、h 已关、又不靠请求重放建的，建 / 关两条成对删（同 hlog_add）
+void s2a_snap_handle_unuse(uint32_t uid) {
+    if (!uid) return;
+    glock();
+    for (int i = 0; i < g_nhlog; i++) if (g_hlog[i].op == 0 && g_hlog[i].uid == uid) {
+        if (g_hlog[i].pin) g_hlog[i].pin--;
+        if (!g_hlog[i].pin && (!g_hlog[i].cs || g_hlog[i].ctx < 0))
+            for (int j = i + 1; j < g_nhlog; j++) if (g_hlog[j].op == 1 && g_hlog[j].h == g_hlog[i].h) { hlog_del(j); hlog_del(i); break; }
+        break;
+    }
+    pthread_mutex_unlock(&G);
+}
+#endif
+void s2a_snap_hcommit(int seq) { if (seq >= 0) atomic_store(&g_snap_lastseq, seq); }   // C# 请求完成、追加进日志时设：此后的关闭记在它之后（日志按完成先后，SnapLog.cs）
+void s2a_snap_force(const uint32_t *v, int n) { t_force = v; t_nforce = n; t_iforce = 0; }        // 恢复重放：本线程接下来服务层建的句柄按这串值分
+int s2a_snap_force_left(void) { return t_nforce - t_iforce; }
+// 句柄日志按「此刻活着的」有界（维护者 11-19：不能随游玩时长增长）：一个句柄的建 / 关两条，在建它的是游戏系统调用或服务层请求外（不靠请求重放建）时，
+//   关的那一刻成对删掉；服务层请求里建的，跟那条请求同进退——请求从请求日志里删掉时（services SnapLog.cs ReqTable）调 s2a_snap_hlog_forget 一起删
+static void hlog_add(int op, uint32_t h, uint32_t kind, int cs, void *obj) {   // 持 G
+    if (!s2a_snap_logging()) return;
+    if (g_nhlog == g_caphlog) { g_caphlog = g_caphlog ? g_caphlog * 2 : 4096; g_hlog = realloc(g_hlog, sizeof *g_hlog * (size_t)g_caphlog); }
+    // 关：记在哪条之后。服务层在处理第 N 条请求的过程中关的（本线程 t_snap_ctx = N）记在 N 之后：恢复重放 N 时它自己会再关一次，
+    //   重放完按「还在才关」就跳过；N 当时失败没重放的，这里照样关。原先一律记「此前最后完成的那条」（N−1）：重放 N−1 后先关一次、
+    //   重放 N 时服务又关同一个句柄，回 InvalidHandle、恢复中止（大乱斗第 187 条关 AudioDevice 会话）
+    int after = op == 1 && t_snap_ctx >= 0 ? t_snap_ctx : atomic_load(&g_snap_lastseq);   // 关调用不带 cs（是不是服务层建的由重放时查建的那条）
+    if (op == 1) { int c = hlog_last_create(h); if (c >= 0 && !g_hlog[c].pin && (!g_hlog[c].cs || g_hlog[c].ctx < 0)) { hlog_del(c); return; } }   // 不靠请求重放建的、没被留下的请求递过：建 / 关成对删
+    snap_hlog_t x = {(uint8_t)op, (uint8_t)cs, 0, h, kind, op == 0 ? (cs ? t_snap_ctx : -1) : 0, after, 0, 0, 0, op == 0 ? ++g_huid : 0};
+    if (op == 0 && (kind & 15) == S2A_OBJ_TMEM && obj) { tmem_t *tm = obj; x.a = tm->addr; x.b = tm->size; x.c = tm->perm; }
+    if (op == 0 && ((kind & 15) == S2A_OBJ_EVENT_R || (kind & 15) == S2A_OBJ_EVENT_W)) x.a = (uint64_t)(uintptr_t)obj;   // 事件：A 里的事件对象身份
+    g_hlog[g_nhlog++] = x;
+}
+static uint32_t h_new_raw(uint32_t kind, void *obj, uint64_t cookie);
+static uint32_t h_new(uint32_t kind, void *obj, uint64_t cookie) {
+    if (t_cs_h && t_iforce < t_nforce) {   // 恢复重放：按 A 的值放
+        uint32_t v = t_force[t_iforce++], i = v & 0x7fff; uint16_t g = (uint16_t)(v >> 15);
+        if (i && i < MAX_H && !g_h[i].kind) {
+            g_h[i].kind = kind; g_h[i].gen = g; g_h[i].obj = obj; g_h[i].cookie = cookie; g_h_used++; g_kcnt[kind & 15]++;
+            return v;
+        }
+        LOG("【红】即时存档恢复：强制分配句柄 %#x 时格已占（种类 %u），改按常规分配", v, i < MAX_H ? g_h[i].kind : 0);
+    }
+    uint32_t h = h_new_raw(kind, obj, cookie);
+    if (h) hlog_add(0, h, kind, t_cs_h, obj);
+    return h;
+}
+static uint32_t h_new_cs(uint32_t kind, void *obj, uint64_t cookie) { t_cs_h = 1; uint32_t h = h_new(kind, obj, cookie); t_cs_h = 0; return h; }
+// 存档：句柄日志写出
+int s2a_snap_hlog_save(FILE *f) { glock(); int e = fwrite(&g_nhlog, sizeof g_nhlog, 1, f) != 1 || (g_nhlog && fwrite(g_hlog, sizeof *g_hlog, (size_t)g_nhlog, f) != (size_t)g_nhlog); int n = g_nhlog; pthread_mutex_unlock(&G);
+    LOG("即时存档：句柄日志 %d 项", n); return e ? -1 : 0; }
+static uint32_t h_new_raw(uint32_t kind, void *obj, uint64_t cookie) {   // 持 G；满了返回 0（调用方报红回 OutOfHandles）
     // 确定性档：游戏线程持串行锁时分配的（游戏可见、顺序确定）用前半表与 g_gen；宿主线程异步分配的用后半表与另一个代数——
     // 否则异步分配插队，游戏拿到的句柄号每局不同（10-20 重放第 101 项 ConnectToNamedPort 分叉）
     int lo = 1, hi = MAX_H; uint16_t *gen = &g_gen;
@@ -595,12 +701,14 @@ static int thread_keys_init(void) {
 // TLR+0x1F8 = 当前线程对象指针：SDK 内部临界区从这里取，主线程与宿主借建的线程没人填，给一块零初始化对象（旧库同做法）
 // TLR+0x110 = 当前线程句柄：Horizon 内核建线程时无条件写（主线程起进程时 / svcCreateThread）；Switch 2 SDK 的
 // InternalCriticalSection::IsLockedByCurrentThread 拿它比互斥锁属主，留 0 则没人持的锁读成「本线程持有」直接 abort（火纹 Fortune's Weave）
+uint64_t s2a_guest_x18_now(void) { return (uint64_t)(uintptr_t)pthread_getspecific(g_key18); }   // 本线程游戏 x18 的槽值（crash.c 崩溃现场打，诊断#ff9a04）
 static void guest_thread_init(thr_t *t) {
     pthread_setspecific(g_keygate, (void *)sw_gate);
     pthread_setspecific(g_key18, 0);
     void **blk = calloc(3, sizeof *blk);
 #ifndef S2A_UNIT_TEST
-    if (s2a_det_mode() >= 2) { void *s2a_det_arena_alloc(size_t); blk[0] = s2a_det_arena_alloc(TLS_SIZE); blk[1] = s2a_det_arena_alloc(THREAD_OBJ_SIZE); blk[2] = (void *)1; } else
+    int s2a_snap_mode(void);
+    if (s2a_det_mode() >= 2 || s2a_snap_mode()) { void *s2a_det_arena_alloc(size_t); blk[0] = s2a_det_arena_alloc(TLS_SIZE); blk[1] = s2a_det_arena_alloc(THREAD_OBJ_SIZE); blk[2] = (void *)1; } else
 #endif
     { blk[0] = calloc(1, TLS_SIZE); blk[1] = calloc(1, THREAD_OBJ_SIZE); }
     t->tlr = s2a_tlr_alloc();
@@ -962,6 +1070,7 @@ static pthread_cond_t g_pause_cv = PTHREAD_COND_INITIALIZER;
 // 进后台冻结（iOS 失去前台，app.m）：全部游戏线程在系统调用出入口停住，回前台放开。与游戏自己的 SetThreadActivity 暂停（t->pause）各管各的，互不覆盖；
 // 正在游戏代码里算的线程跑到下一次系统调用才停（不 Mach 挂起：停在宿主代码里可能持 malloc 锁，卡住主线程）
 static _Atomic int g_frz;
+static _Atomic int g_snap_frz;   // 即时存档冻结中（只在门里停：入口 / 出口 / 等待 / 睡眠）
 static void preempt_init(void);   // 时钟抢占（S2A_CORES）：cores_on 首次开时注册信号 + 起核抢占看门狗
 // ---------- 虚拟核（S2A_CORES=1，修干净清单 #1；帧率能耗线 10-20，底本旧库 sw/host/hle_thread.c:148）----------
 // Horizon 上同一个核同一时刻只跑一条线程，换人只在阻塞 / 让出 / 被高优先级抢占时发生；任天堂系引擎依赖它（同核线程轮流用不带锁的数据）。
@@ -1652,7 +1761,7 @@ static void svc_leave_check(thr_t *t) {
     while (!atomic_load(&g_session_stop) && (atomic_load(&t->pause) || atomic_load(&g_frz))) {
         int had = t->held_core != 0;   // 只本线程从 0 改成非 0：出口持着核的停完重取，收局停住（park_forever 已放核）的不取
         atomic_store(&t->in_svc, 1);
-        pause_park(t);
+        t->park_at = 2; pause_park(t);
         if (had) core_acquire(t);
         atomic_store(&t->in_svc, 0);
     }
@@ -1667,7 +1776,8 @@ static _Atomic int g_unpaired_n;   // 回客体时发现 DM_BLOCK 未配对的�
 void s2a_guest_return(void) {
     if (!lazy_core()) return;
     thr_t *t = thread_current_or_null(); if (!t) return;
-    if (atomic_load(&t->pause) || atomic_load(&g_frz)) pause_park(t);
+    // 即时存档冻结时不在这里停：这里是宿主函数回客体的半路，现场不在门帧里，存不下；放它跑到下一次系统调用入口再停
+    if (atomic_load(&t->pause) || (atomic_load(&g_frz) && !atomic_load(&g_snap_frz))) { t->park_at = 3; pause_park(t); }
     if (t_blk > 0) {   // 有 DM_BLOCK 没配对：不取核（惰性化后不再崩，而是让这条线程饿死自己），打红早报
         if (atomic_fetch_add(&g_unpaired_n, 1) < 8) LOG("【红】回客体时 DM_BLOCK 未配对（t_blk=%d），不取核", t_blk);
         return; }
@@ -1705,14 +1815,14 @@ static void svc_enter(thr_t *t, uint64_t *regs, int num) {
                 (unsigned long long)t->id, gap / 1e6, cpu / 1e6, blk / 1e6, cw / 1e6, kn[k], t->tr_ret_svc, num, (unsigned long long)regs[30]); }
     }
     t->svc_regs = regs; t->last_svc = num; t->last_lr = regs[30]; t->last_fp = regs[29]; t->nsvc++;
-    atomic_store(&t->in_svc, 1); if (atomic_load(&t->pause) || atomic_load(&g_frz)) pause_park(t);
+    atomic_store(&t->in_svc, 1); if (atomic_load(&t->pause) || atomic_load(&g_frz)) { t->park_at = 1; pause_park(t); }
 }
 // 时钟抢占：宿主区被请求让核时（on_preempt 宿主分支置 preempt_req），这里是它的主场消费点。
 //   atomic_exchange 取走请求再显式放核：core_acquire 只看「已持有核且掩码含它」就直接返回、不会重新排队，
 //   所以必须先放，这一次 acquire 才会按优先级重新竞争——更高优先级的等核者在这之间上核（thread.c 116 行注释描述的就是这里）。
 static void svc_exit(thr_t *t) {
     s2a_thread_stop_point();
-    if (atomic_load(&t->pause) || atomic_load(&g_frz)) pause_park(t);
+    if (atomic_load(&t->pause) || atomic_load(&g_frz)) { t->park_at = 2; pause_park(t); }
     if (atomic_load(&g_t_preempt_consume) && atomic_exchange(&t->preempt_req, 0)) core_release(t);
     core_acquire(t);
     s2a_thread_stop_point();
@@ -2054,7 +2164,15 @@ static uint32_t thr_pause(thr_t *t) {
             return R_BAD_STATE;
         }
         pthread_mutex_lock(&g_susp_mu); thread_resume(t->mport); pthread_mutex_unlock(&g_susp_mu);
-        if (now_ns() - t0 > 2000000000ull) die("【红】SetThreadActivity：线程 %#x 2 秒内没停到游戏代码或系统调用里（重试 %d 次）", t->handle, k);
+        if (now_ns() - t0 > 2000000000ull) {
+            // 取证（D-QJTH）：目标这 2 秒一直在宿主代码里（不在游戏代码、不在系统调用）——记下最后一次挂住时的 pc / lr 落在哪个宿主函数，
+            //   定它是在哪种宿主调用里长时间不回（图形 API 等 GPU？），再判该等它回游戏代码还是直接致命
+            uint64_t pc = __darwin_arm_thread_state64_get_pc(st), lr = __darwin_arm_thread_state64_get_lr(st); Dl_info di = {0}, dl = {0};
+            int okp = n == ARM_THREAD_STATE64_COUNT && dladdr((void *)pc, &di), okl = n == ARM_THREAD_STATE64_COUNT && dladdr((void *)lr, &dl);
+            die("【红】SetThreadActivity：线程 %#x 2 秒内没停到游戏代码或系统调用里（重试 %d 次）；最后一次挂住时 pc %#llx（%s+%#llx）lr %#llx（%s+%#llx）", t->handle, k,
+                (unsigned long long)pc, okp && di.dli_sname ? di.dli_sname : "?", (unsigned long long)(okp && di.dli_saddr ? pc - (uint64_t)di.dli_saddr : 0),
+                (unsigned long long)lr, okl && dl.dli_sname ? dl.dli_sname : "?", (unsigned long long)(okl && dl.dli_saddr ? lr - (uint64_t)dl.dli_saddr : 0));
+        }
         usleep(20);
     }
 }
@@ -2067,6 +2185,543 @@ int s2a_guest_pause_all(void) {
     for (int i = 0; i < n; i++) { if (thr_pause(v[i]) == 0) ok++; thr_unpin(v[i]); }
     return ok;
 }
+// 即时存档可行性：冻结不退出探针（快照开时才开：苹果端缺省开、S2A_SNAP_MODE=0 关，或恢复局 S2A_SNAP_RESTORE）。置全局冻结，轮询直到每条游戏线程都到安全点：
+//   ① 自己停进 pause_park（系统调用出入口 / 回客体）；② 阻塞在内核等待里（in_svc 且 wkind≠0、未被唤醒）；③ 在游戏代码里被 Mach 挂住。
+//   在系统调用里正在处理（in_svc、无等待）或在宿主函数里的算「未到」，继续等；超时不致命，记下未到的线程。返回到齐用时（微秒，-1 = 超时）
+// ---------- 即时存档：冻结到「门里」安全点并抓线程现场 / 句柄表 ----------
+// 安全点只认门里的四种：入口停（park_at 1，门帧是入参）、出口停（2，门帧是返回值）、内核等待中（未被唤醒）、SleepThread 睡着。
+//   不 Mach 挂起游戏代码里的线程（现场不在门帧里），冻结期间它们跑到下一次系统调用入口自己停；宿主函数回客体处不停（s2a_guest_return 看 g_snap_frz）。
+// 成功回 0 并保持冻结（g_frz、g_snap_frz 不清；调用方存完就退出进程）；超时回 -1 并放开
+static uint64_t tsd_slot(thr_t *t, pthread_key_t k);
+enum { SNAP_T_ENTRY = 1, SNAP_T_EXIT = 2, SNAP_T_WAIT = 3, SNAP_T_SLEEP = 4, SNAP_T_DEAD = 5, SNAP_T_UNSTARTED = 6, SNAP_T_RUN = 7 };   // RUN：停在游戏原代码里、Mach 挂住
+static int snap_state_raw(thr_t *t);
+// 门帧没有切栈槽 = 在宿主栈上进的门（如 NVN 命令内存回调里调游戏函数、游戏函数再进门）：帧下面是宿主返回地址，快照存不下，不算安全点，等它出来再冻
+static int snap_state(thr_t *t) {   // 持 G
+    int st = snap_state_raw(t);
+    if (st >= SNAP_T_ENTRY && st <= SNAP_T_SLEEP && t->svc_regs && !((const uint64_t *)t->svc_regs)[816 / 8]) return 0;
+    return st;
+}
+// 同步 IPC（0x21 走 TLS 消息）在 C# 服务里已阻塞 0.3 秒以上：回复还没写，门帧与 TLS 里的请求原样——当入口安全点（恢复后重发这次请求）。
+//   短请求不算（照旧等它回门停在出口），免得判齐后它恰好完成、这次存档作废
+static int snap_cs_blocked(thr_t *t) { return atomic_load(&t->in_svc) && t->cs_svc == 0x21 && t->tlr && t->svc_regs && now_ns() - t->cs_t0 > 300000000ull; }
+static int snap_state_raw(thr_t *t) {   // 持 G
+    if (t->exited) return SNAP_T_DEAD;
+    if (!t->started && !t->is_main) return SNAP_T_UNSTARTED;
+#if defined(__APPLE__)
+    if (t->snap_run) return SNAP_T_RUN;
+#endif
+    if (atomic_load(&t->paused_ack) && (t->park_at == 1 || t->park_at == 2)) return t->park_at == 1 ? SNAP_T_ENTRY : SNAP_T_EXIT;
+    int ins = atomic_load(&t->in_svc);
+    if (ins && t->wkind && !t->woke) return SNAP_T_WAIT;
+    if (ins && t->last_svc == 0x0B && !atomic_load(&t->paused_ack)) return SNAP_T_SLEEP;
+    if (snap_cs_blocked(t)) return SNAP_T_ENTRY;
+    return 0;
+}
+// 解冻（存档进程）：Mach 挂住的线程放开（停在原指令上，接着跑）；门里停着的线程放开冻结标志后各自继续。冻结放弃、存完接着玩都走这里
+void s2a_snap_thaw(void) {
+#if defined(__APPLE__)
+    glock(); for (thr_t *t = g_all; t; t = t->all) if (t->snap_run) { t->snap_run = 0; thread_resume(t->mport); } pthread_mutex_unlock(&G);
+#endif
+    glock(); atomic_store(&g_frz, 0); atomic_store(&g_snap_frz, 0); pthread_cond_broadcast(&g_pause_cv); pthread_mutex_unlock(&G);
+}
+#if !defined(S2A_UNIT_TEST)
+void s2a_where(uint64_t a, char *b, size_t n); int s2a_frames_of(uint64_t fp, uint64_t *lr, int max);   // crash.c
+#endif
+int s2a_snap_freeze(int timeout_ms, int *nthr, int *nst) {
+    glock(); atomic_store(&g_snap_frz, 1); atomic_store(&g_frz, 1); pthread_mutex_unlock(&G);
+    uint64_t t0 = now_ns(), dl = t0 + (uint64_t)timeout_ms * 1000000;
+    for (;;) {
+        int n = 0, left = 0; memset(nst, 0, sizeof(int) * 8);
+        glock();
+        for (thr_t *t = g_all; t; t = t->all) { n++; int st = snap_state(t); nst[st]++; if (!st) left++; }
+        if (!left) {   // 判齐：C# 里阻塞的那些，此刻另存门帧与请求消息（之后它若完成、C# 会改写这两处）
+            for (thr_t *t = g_all; t; t = t->all) { t->snap_cs = 0; if (atomic_load(&t->paused_ack) || t->wkind || !snap_cs_blocked(t)) continue;
+                t->snap_cs_ret = atomic_load(&t->cs_ret); memcpy(t->snap_cs_frame, t->svc_regs, sizeof t->snap_cs_frame); memcpy(t->snap_cs_msg, t->tlr, sizeof t->snap_cs_msg);
+                if (atomic_load(&t->cs_ret) == t->snap_cs_ret && snap_cs_blocked(t)) { t->snap_cs = 1; t->snap_cs_seq = t->cs_seq; LOG("即时存档：线程 id %llu 在服务请求里阻塞（会话 %#x），按入口记、恢复后重发", (unsigned long long)t->id, t->cs_h); } }
+            *nthr = n; pthread_mutex_unlock(&G); return (int)((now_ns() - t0) / 1000); }   // 持 G 判定全员到齐；之后调用方再持 G 抓现场
+#if defined(__APPLE__)
+        // 0.5 秒还没到门的：不在系统调用里、停在游戏原代码上（忙等等着别的已冻线程）——Mach 挂住、取完整现场，当作安全点；停在宿主代码 / 补丁岛的放开再等
+        if (now_ns() - t0 > 500000000ull) for (thr_t *t = g_all; t; t = t->all) {
+            if (snap_state(t) || t->snap_run || !t->mport || atomic_load(&t->in_svc)) continue;
+            if (thread_suspend(t->mport) != KERN_SUCCESS) continue;
+            arm_thread_state64_t st; mach_msg_type_number_t cnt = ARM_THREAD_STATE64_COUNT; arm_neon_state64_t ns; mach_msg_type_number_t nc = ARM_NEON_STATE64_COUNT;
+            if (!atomic_load(&t->in_svc) && thread_get_state(t->mport, ARM_THREAD_STATE64, (thread_state_t)&st, &cnt) == KERN_SUCCESS && pc_in_guest_text(__darwin_arm_thread_state64_get_pc(st))
+                && thread_get_state(t->mport, ARM_NEON_STATE64, (thread_state_t)&ns, &nc) == KERN_SUCCESS) {
+                if (!t->snap_mc && !(t->snap_mc = calloc(1, sizeof *t->snap_mc))) { thread_resume(t->mport); continue; }
+                struct snap_mach_ctx *mc = t->snap_mc;
+                for (int r = 0; r < 29; r++) mc->regs[r] = st.__x[r];
+                mc->regs[29] = __darwin_arm_thread_state64_get_fp(st); mc->regs[30] = __darwin_arm_thread_state64_get_lr(st);
+                mc->regs[31] = __darwin_arm_thread_state64_get_sp(st); mc->regs[32] = __darwin_arm_thread_state64_get_pc(st); mc->regs[33] = st.__cpsr;
+                memcpy(mc->neon, &ns.__v, sizeof mc->neon); mc->fpsr = ns.__fpsr; mc->fpcr = ns.__fpcr; t->snap_run = 1;
+                LOG("即时存档：线程 id %llu 停在游戏代码 %#llx（忙等不进门），Mach 挂住取现场", (unsigned long long)t->id, (unsigned long long)mc->regs[32]);
+            } else thread_resume(t->mport);
+        }
+#endif
+        pthread_mutex_unlock(&G);
+        if (now_ns() > dl) {   // 没到齐：逐条说清哪条线程、停在哪、为什么不算安全点（定因用）
+            glock(); int k = 0;
+            for (thr_t *t = g_all; t; t = t->all) { if (snap_state(t)) continue; int raw = snap_state_raw(t);
+                if (k++ < 8) LOG("即时存档诊断：线程 id %llu 没到安全点（原始停法 %d、在系统调用 %d、最近 svc %#x、等待种类 %d、门帧%s切栈槽）", (unsigned long long)t->id, raw, atomic_load(&t->in_svc), t->last_svc, t->wkind,
+                                 t->svc_regs ? (((const uint64_t *)t->svc_regs)[816 / 8] ? "有" : "没有") : "（无）");
+#if defined(__APPLE__) && !defined(S2A_UNIT_TEST)   // 单测单独链本文件、不链 crash.c
+                // 停在宿主函数里的（门里调宿主、宿主那边等着）：挂一下只取 pc 与帧链（只读内存、不取锁），放开后再符号化打日志——
+                //   挂着时打日志会和被挂线程手里的锁（malloc / dyld）互等。定因用：说清卡在哪个宿主函数
+                if (k <= 8 && t->mport && thread_suspend(t->mport) == KERN_SUCCESS) {
+                    arm_thread_state64_t st; mach_msg_type_number_t cnt = ARM_THREAD_STATE64_COUNT; uint64_t pc = 0, lr[12]; int nf = 0;
+                    if (thread_get_state(t->mport, ARM_THREAD_STATE64, (thread_state_t)&st, &cnt) == KERN_SUCCESS) {
+                        pc = (uint64_t)__darwin_arm_thread_state64_get_pc(st); nf = s2a_frames_of((uint64_t)__darwin_arm_thread_state64_get_fp(st), lr, 12); }
+                    thread_resume(t->mport);
+                    if (pc) { char w[160]; s2a_where(pc, w, sizeof w); LOG("即时存档诊断：线程 id %llu 现在 pc %s", (unsigned long long)t->id, w);
+                        for (int f = 0; f < nf; f++) { s2a_where(lr[f], w, sizeof w); LOG("即时存档诊断：  #%d %s", f, w); } } }
+#endif
+            }
+            pthread_mutex_unlock(&G);
+            *nthr = n; s2a_snap_thaw(); return -1; }
+        usleep(100);
+    }
+}
+// 存档写完前核对：判齐时按入口记下的「C# 里阻塞」线程，期间有没有哪条的请求完成了（完成 = 回复已写进游戏内存 / 请求日志，快照前后不一致）。回完成了的条数
+// 按入口记的阻塞请求在存档途中完成了：只有进了服务请求日志的才作数（它完成时可能建句柄、改内核账，而内核账正在写）。
+//   它完成后才追加进请求日志（SnapLog.cs 按完成先后记），可能已写进刚存的日志之外，恢复时照常从入口重发；不进日志的（套接字等待 / 读取）完成了也不改服务状态，回复写进的 TLS 恢复时按判齐那一刻的请求消息写回、重发，输出缓冲在回复前对游戏无意义——照存
+int s2a_snap_cs_moved(void) {
+    int n = 0, quiet = 0; glock();
+    for (thr_t *t = g_all; t; t = t->all) if (t->snap_cs && atomic_load(&t->cs_ret) != t->snap_cs_ret) { if (t->snap_cs_seq >= 0) n++; else quiet++; }
+    pthread_mutex_unlock(&G);
+    if (quiet) LOG("即时存档：%d 条不进请求日志的阻塞请求在存档途中等到了回复（不影响这份快照，恢复后照常重发）", quiet);
+    return n;
+}
+static int sw(FILE *f, const void *p, size_t n) { return fwrite(p, 1, n, f) == n ? 0 : -1; }
+// 线程记录（版本 1）。门帧 832 字节原样存：[0,800) 寄存器 / 状态、[800] 客体 sp（含借的 32 字节）；客体栈上借存的 x16/x17 随游戏内存走
+typedef struct {
+    uint32_t handle, state, last_svc, prio, base_prio, core, started, exited, closed, cancel, is_main, pinned, pin_core, wkind, wtype, wtag, yielded, _p;
+    uint64_t id, entry, arg, stack_top, mask, pin_mask, waddr, wkey, wtmo_left, wseq, tlr, k18, ktls, ktlr, own_tls, own_obj;
+    int32_t wval, _q;
+    uint8_t frame[832];
+    uint64_t rregs[34]; uint8_t rneon[32 * 16]; uint32_t rfpsr, rfpcr;   // RUN：Mach 现场（x0–x28、fp、lr、sp、pc、cpsr；向量寄存器；浮点状态）
+    uint8_t csmsg[256]; uint32_t has_csmsg;   // 入口停在 C# 阻塞的 IPC 里：判齐那一刻的 TLS 请求消息（恢复时写回再重发）
+} snap_thr_rec;
+#include "snapfmt.h"
+void s2a_snap_mark_old(void);   // snapshot.c：记「旧版快照接不上」（给玩家的提示分类）
+// 线程记录的字段号（带版本格式，snapfmt.h）：标量各一号；门帧按语义存（通用寄存器 / 向量寄存器 / 标志 / 浮点状态 / 客体 sp / 有没有切栈槽），
+//   恢复时由本版按自己的门帧格局（entry.S）摆回——门帧格局变了也接得上。版本 1
+#define SNAP_THR_FIELDS(X) \
+    X(1, handle) X(2, state) X(3, last_svc) X(4, prio) X(5, base_prio) X(6, core) X(7, started) X(8, exited) X(9, closed) X(10, cancel) X(11, is_main) \
+    X(12, pinned) X(13, pin_core) X(14, wkind) X(15, wtype) X(16, wtag) X(17, yielded) X(20, id) X(21, entry) X(22, arg) X(23, stack_top) X(24, mask) \
+    X(25, pin_mask) X(26, waddr) X(27, wkey) X(28, wtmo_left) X(29, wseq) X(30, tlr) X(31, k18) X(32, ktls) X(33, ktlr) X(34, own_tls) X(35, own_obj) X(36, wval)
+enum { THR_F_XREGS = 50, THR_F_VREGS = 51, THR_F_NZCV = 52, THR_F_FPSR = 53, THR_F_FPCR = 54, THR_F_GSP = 55, THR_F_SWSLOT = 56, THR_F_GATE_ORIG = 57, THR_F_GATE_KIND = 58,
+       THR_F_RUN_REGS = 60, THR_F_RUN_NEON = 61, THR_F_RUN_FPSR = 62, THR_F_RUN_FPCR = 63, THR_F_CS_MSG = 64 };
+int s2a_gate_identity(uint64_t ret, uint64_t *orig, int *kind); uint64_t s2a_gate_by_identity(uint64_t orig, int kind);   // gate.c
+// 单独链本文件的线程单测没有门表：弱缺省 = 门身份查不到；宿主 / iOS 壳链进 gate.c 的真定义
+__attribute__((weak)) int s2a_gate_identity(uint64_t ret, uint64_t *orig, int *kind) { (void)ret; (void)orig; (void)kind; return -1; }
+__attribute__((weak)) uint64_t s2a_gate_by_identity(uint64_t orig, int kind) { (void)orig; (void)kind; return 0; }
+static int g_snap_gate_miss;   // 恢复：门身份在本版门表里找不到的线程数（> 0 = 改写器约定变了，C 档拒绝）
+// 本版门帧格局（entry.S sw_gate）：x0–x30 在 0、q0–q31 在 256、nzcv 768、fpsr 776、fpcr 784、客体 sp 800、切栈槽 816
+enum { GF_X = 0, GF_Q = 256, GF_NZCV = 768, GF_FPSR = 776, GF_FPCR = 784, GF_GSP = 800, GF_SWSLOT = 816 };
+static void snap_thr_write(sfw *w, const snap_thr_rec *r) {
+    sfw_rec(w);
+#define WF(id, f) sfw_u64(w, id, (uint64_t)r->f);
+    SNAP_THR_FIELDS(WF)
+#undef WF
+    const uint8_t *F = r->frame;
+    sfw_blob(w, THR_F_XREGS, F + GF_X, 31 * 8); sfw_blob(w, THR_F_VREGS, F + GF_Q, 32 * 16);
+    uint64_t v; memcpy(&v, F + GF_NZCV, 8); sfw_u64(w, THR_F_NZCV, v); memcpy(&v, F + GF_FPSR, 8); sfw_u64(w, THR_F_FPSR, v); memcpy(&v, F + GF_FPCR, 8); sfw_u64(w, THR_F_FPCR, v);
+    memcpy(&v, F + GF_GSP, 8); sfw_u64(w, THR_F_GSP, v); memcpy(&v, F + GF_SWSLOT, 8); sfw_u64(w, THR_F_SWSLOT, v != 0);
+    if (r->has_csmsg) sfw_blob(w, THR_F_CS_MSG, r->csmsg, sizeof r->csmsg);
+    if (r->state == SNAP_T_RUN) { sfw_blob(w, THR_F_RUN_REGS, r->rregs, sizeof r->rregs); sfw_blob(w, THR_F_RUN_NEON, r->rneon, sizeof r->rneon); sfw_u64(w, THR_F_RUN_FPSR, r->rfpsr); sfw_u64(w, THR_F_RUN_FPCR, r->rfpcr); }
+    if (r->state >= SNAP_T_ENTRY && r->state <= SNAP_T_SLEEP) {   // 门帧的返回点（x30）在补丁岛里：另记门身份，跨版本按身份换回新返回点
+        uint64_t ret; memcpy(&ret, F + GF_X + 30 * 8, 8); uint64_t orig; int kind;
+        if (!s2a_gate_identity(ret, &orig, &kind)) { sfw_u64(w, THR_F_GATE_ORIG, orig); sfw_u64(w, THR_F_GATE_KIND, (uint64_t)kind); } }
+    sfw_end_rec(w);
+}
+static void snap_thr_read(const sfr *rd, snap_thr_rec *r) {
+    memset(r, 0, sizeof *r);
+#define RF(id, f) r->f = (typeof(r->f))sfr_u64(rd, id, 0);
+    SNAP_THR_FIELDS(RF)
+#undef RF
+    uint8_t *F = r->frame;
+    sfr_into(rd, THR_F_XREGS, F + GF_X, 31 * 8); sfr_into(rd, THR_F_VREGS, F + GF_Q, 32 * 16);
+    uint64_t v = sfr_u64(rd, THR_F_NZCV, 0); memcpy(F + GF_NZCV, &v, 8); v = sfr_u64(rd, THR_F_FPSR, 0); memcpy(F + GF_FPSR, &v, 8); v = sfr_u64(rd, THR_F_FPCR, 0); memcpy(F + GF_FPCR, &v, 8);
+    v = sfr_u64(rd, THR_F_GSP, 0); memcpy(F + GF_GSP, &v, 8); v = sfr_u64(rd, THR_F_SWSLOT, 0); memcpy(F + GF_SWSLOT, &v, 8);   // 非 0 = 有切栈槽，续跑时改成本进程的槽
+    sfr_into(rd, THR_F_RUN_REGS, r->rregs, sizeof r->rregs); sfr_into(rd, THR_F_RUN_NEON, r->rneon, sizeof r->rneon);
+    r->rfpsr = (uint32_t)sfr_u64(rd, THR_F_RUN_FPSR, 0); r->rfpcr = (uint32_t)sfr_u64(rd, THR_F_RUN_FPCR, 0);
+    if (sfr_get(rd, THR_F_CS_MSG, NULL)) { sfr_into(rd, THR_F_CS_MSG, r->csmsg, sizeof r->csmsg); r->has_csmsg = 1; }
+    if (sfr_get(rd, THR_F_GATE_ORIG, NULL)) {   // 门帧：按门身份在本版门表里取返回点（同一份镜像时与原值相同）
+        uint64_t orig = sfr_u64(rd, THR_F_GATE_ORIG, 0); int kind = (int)sfr_u64(rd, THR_F_GATE_KIND, 0); uint64_t nr = s2a_gate_by_identity(orig, kind);
+        if (!nr) { g_snap_gate_miss++; if (g_snap_gate_miss <= 4) LOG("【红】即时存档恢复：线程 id %llu 停在原地址 %#llx 的门（类型 %d），本版门表里没有这道门", (unsigned long long)r->id, (unsigned long long)orig, kind); }
+        else memcpy(F + GF_X + 30 * 8, &nr, 8);
+    }
+}
+int s2a_snap_kernel_save(FILE *f) {
+    int e = 0; uint32_t mg = 0x324E524Bu;   // "KRN2"：段式带版本字段格式（snapfmt.h）
+    glock();
+    // 冻结判齐（s2a_snap_freeze）到这里取锁之间放过锁：宿主服务线程不冻，会给游戏事件发信号，把等待中的游戏线程唤醒——它此刻在走向出口、不在安全点
+    //   （一款大游戏：等 svc 0x18 的线程在这段空窗被唤醒，记录写成停法 0、门帧全空，恢复时跳到地址 0 崩）。持锁重判，有没到的放锁等它停到出口再判；
+    //   之后全程持锁写，唤醒（wake 持 G）进不来
+    { uint64_t dl = now_ns() + 2000000000ull; int k = 0;
+      for (;;) { int left = 0; for (thr_t *t = g_all; t; t = t->all) if (!snap_state(t)) left++;
+        if (!left) break;
+        if (now_ns() > dl) { pthread_mutex_unlock(&G); LOG("【红】即时存档：判齐后有 %d 条线程离开安全点、2 秒没回来，这次不存", left); return -1; }
+        if (!k++) LOG("即时存档：判齐后有 %d 条线程被唤醒离开安全点（宿主服务发的信号），等它们停到出口", left);
+        pthread_mutex_unlock(&G); usleep(100); glock(); } }
+    e |= sw(f, &mg, 4);
+    { sfw hw; sfw_sec(&hw, f, "kernel", 1); sfw_rec(&hw); sfw_u64(&hw, 1, g_gen); sfw_u64(&hw, 2, g_gen_async); sfw_u64(&hw, 3, g_next_id); sfw_u64(&hw, 4, g_wseq); sfw_end_rec(&hw); e |= sfw_end(&hw); }
+    // 句柄表：非空格一条记录。obj（A 里的对象地址）只当身份用：同一事件被读写两端句柄共用时按它配对
+    uint32_t nh = 0; for (int i = 1; i < MAX_H; i++) nh += g_h[i].kind != 0;
+    { sfw hw; sfw_sec(&hw, f, "handles", 1);
+      for (uint32_t i = 1; i < MAX_H; i++) if (g_h[i].kind) {
+        sfw_rec(&hw); sfw_u64(&hw, 1, i); sfw_u64(&hw, 2, g_h[i].kind); sfw_u64(&hw, 3, g_h[i].gen); sfw_u64(&hw, 4, (uint64_t)(uintptr_t)g_h[i].obj); sfw_u64(&hw, 5, g_h[i].cookie);
+        uint32_t k = g_h[i].kind & 15;
+        if (k == S2A_OBJ_EVENT_R || k == S2A_OBJ_EVENT_W) { event_t *ev = g_h[i].obj; sfw_u64(&hw, 10, (uint64_t)ev->signaled); sfw_u64(&hw, 11, (uint64_t)ev->refs); sfw_u64(&hw, 12, ev->did); }
+        else if (k == S2A_OBJ_TMEM) { tmem_t *tm = g_h[i].obj; sfw_u64(&hw, 20, tm->addr); sfw_u64(&hw, 21, tm->size); sfw_u64(&hw, 22, tm->perm); }
+        else if (k == S2A_OBJ_SHMEM) { shmem_t *sm = g_h[i].obj; sfw_u64(&hw, 30, sm->size); sfw_u64(&hw, 31, (uint64_t)sm->refs); sfw_u64(&hw, 32, (uint64_t)sm->owned);
+            if (sm->owned) sfw_blob(&hw, 33, sm->buf, (uint32_t)sm->size); }   // 游戏自建的共享内存：内容随快照；服务层建的（owned 0）内容由服务重生
+        sfw_end_rec(&hw); }
+      e |= sfw_end(&hw); }
+    // 线程
+    uint32_t nt = 0; for (thr_t *t = g_all; t; t = t->all) nt++;
+    e |= sw(f, &nt, 4);
+    sfw tw; sfw_sec(&tw, f, "threads", 1);
+    int nslot0 = 0;
+    uint64_t now = now_ns();
+    int bad = 0;
+    for (thr_t *t = g_all; t; t = t->all) {
+        snap_thr_rec r; memset(&r, 0, sizeof r);
+        r.handle = t->handle; r.state = (uint32_t)snap_state(t); r.last_svc = (uint32_t)t->last_svc; r.prio = (uint32_t)t->prio; r.base_prio = (uint32_t)t->base_prio;
+        r.core = (uint32_t)t->core; r.started = (uint32_t)t->started; r.exited = (uint32_t)t->exited; r.closed = (uint32_t)t->closed; r.cancel = (uint32_t)t->cancel; r.is_main = (uint32_t)t->is_main;
+        r.pinned = (uint32_t)t->pinned; r.pin_core = (uint32_t)t->pin_core; r.wkind = (uint32_t)t->wkind; r.wtype = (uint32_t)t->wtype; r.wtag = t->wtag; r.yielded = (uint32_t)t->yielded;
+        r.id = t->id; r.entry = t->entry; r.arg = t->arg; r.stack_top = t->stack_top; r.mask = t->mask; r.pin_mask = t->pin_mask; r.waddr = t->waddr; r.wkey = t->wkey;
+        r.wtmo_left = t->wtmo > 0 && t->wait_t0 ? (uint64_t)t->wtmo : (uint64_t)t->wtmo;   // 剩余超时：首版按原超时（恢复后多等一点不改语义）
+        r.wseq = t->wseq; r.tlr = (uint64_t)(uintptr_t)t->tlr; r.wval = t->wval;
+        if (t->tsd && !t->exited && r.state != SNAP_T_DEAD && r.state != SNAP_T_UNSTARTED) { /* 已退出的线程宿主栈已还，TSD 基址失效 */ r.k18 = tsd_slot(t, g_key18); r.ktls = tsd_slot(t, g_keytls); r.ktlr = tsd_slot(t, g_keytlr); uint64_t own = tsd_slot(t, g_own_key);
+            if (own) { r.own_tls = ((uint64_t *)(uintptr_t)own)[0]; r.own_obj = ((uint64_t *)(uintptr_t)own)[1]; } }
+        if (t->snap_cs && r.state == SNAP_T_ENTRY && atomic_load(&t->cs_ret) == t->snap_cs_ret) { memcpy(r.frame, t->snap_cs_frame, sizeof r.frame); memcpy(r.csmsg, t->snap_cs_msg, sizeof r.csmsg); r.has_csmsg = 1; }
+        else if ((r.state >= SNAP_T_ENTRY && r.state <= SNAP_T_SLEEP) && t->svc_regs) memcpy(r.frame, t->svc_regs, sizeof r.frame);
+        else if (r.state >= SNAP_T_ENTRY && r.state <= SNAP_T_SLEEP) bad++;
+        if (!r.state) bad++;   // 不在安全点的线程绝不写成空现场（上面已判齐，这里只是兜住）
+#if defined(__APPLE__)
+        if (r.state == SNAP_T_RUN) { if (t->snap_mc) { memcpy(r.rregs, t->snap_mc->regs, sizeof r.rregs); memcpy(r.rneon, t->snap_mc->neon, sizeof r.rneon); r.rfpsr = t->snap_mc->fpsr; r.rfpcr = t->snap_mc->fpcr; } else bad++; }
+#endif
+        if (r.last_svc == 0x18 && r.state >= SNAP_T_ENTRY && r.state <= SNAP_T_SLEEP) { uint64_t *fr = (uint64_t *)r.frame;   // 诊断：0x18 的入参
+            LOG("即时存档诊断：线程 id %llu 停法 %u svc 0x18 x0 %#llx x1 %#llx x2 %llu 首句柄 %#x", (unsigned long long)r.id, r.state, (unsigned long long)fr[0], (unsigned long long)fr[1], (unsigned long long)fr[2], fr[1] ? *(uint32_t *)(uintptr_t)fr[1] : 0); }
+        if (r.state >= SNAP_T_ENTRY && r.state <= SNAP_T_SLEEP) { uint64_t sl; memcpy(&sl, r.frame + 816, 8); if (!sl) { nslot0++;
+            if (nslot0 <= 6) LOG("即时存档诊断：线程 id %llu 停法 %u 门帧没有切栈槽（宿主栈上进门 / 本线程没槽），帧 %p、svc %#x", (unsigned long long)r.id, r.state, (void *)t->svc_regs, r.last_svc); } }
+        snap_thr_write(&tw, &r);
+    }
+    if (nslot0) LOG("即时存档诊断：门里的线程有 %d 条门帧没有切栈槽", nslot0);
+    e |= sfw_end(&tw);
+    (void)now;
+    pthread_mutex_unlock(&G);
+    if (bad) LOG("【红】即时存档：%d 条线程在门里却没有门帧指针", bad);
+    LOG("即时存档：内核账 句柄 %u 个、线程 %u 条、g_gen %u、g_next_id %llu", nh, nt, g_gen, (unsigned long long)g_next_id);
+    return e || bad ? -1 : 0;
+}
+// ---------- 即时存档恢复（阶段 2）：句柄表 / 事件 / 传输内存 / 游戏自建共享内存 / 线程 ----------
+static int sr(FILE *f, void *p, size_t n) { return fread(p, 1, n, f) == n ? 0 : -1; }
+static snap_hlog_t *g_rhlog; static int g_nrhlog;
+static int snap_last_create_cs(uint32_t h);
+static struct { uint32_t idx, kind; uint16_t gen; int signaled; uint64_t aobj; } *g_skip;
+static struct { uint32_t idx, kind; uint16_t gen; void *obj; uint64_t cookie; int placed; } *g_defer; static int g_ndefer, g_capdefer;
+static uint32_t g_temp[64]; static int g_ntemp;   // 重放临时造的游戏句柄（请求后摘掉）
+static int defer_place(int j) {   // 持 G
+    if (g_defer[j].placed) return 0;
+    uint32_t idx = g_defer[j].idx;
+    if (g_h[idx].kind) { LOG("【红】即时存档恢复：游戏句柄格 %u 要放时已被占（种类 %u 代 %u）", idx, g_h[idx].kind, g_h[idx].gen); return -1; }
+    g_h[idx].kind = g_defer[j].kind; g_h[idx].gen = g_defer[j].gen; g_h[idx].obj = g_defer[j].obj; g_h[idx].cookie = g_defer[j].cookie; g_defer[j].placed = 1; return 0;
+}
+// 重放某条请求前：它要拷贝 / 移交的游戏句柄若还没放，先放
+int s2a_snap_need_handle(uint32_t h) {
+    glock(); int r = 1, i = h_idx(h);
+    if (!i) { r = -1; for (int j = 0; j < g_ndefer; j++) if (((uint32_t)g_defer[j].gen << 15 | g_defer[j].idx) == h) { r = defer_place(j); break; } }
+    pthread_mutex_unlock(&G);
+    if (r < 0) {   // A 里后来关了：按日志里最后一次「建」临时造一个同号对象，这条请求之后摘掉
+        snap_hlog_t *c = NULL; for (int i = g_nrhlog - 1; i >= 0 && !c; i--) if (!g_rhlog[i].op && g_rhlog[i].h == h) c = &g_rhlog[i];
+        if (c && (c->kind & 15) == S2A_OBJ_TMEM) {
+            tmem_t *tm = malloc(sizeof *tm); tm->addr = c->a; tm->size = c->b; tm->perm = c->c;
+            glock(); uint32_t idx = h & 0x7fff; if (!g_h[idx].kind) { g_h[idx].kind = c->kind; g_h[idx].gen = (uint16_t)(h >> 15); g_h[idx].obj = tm; g_h[idx].cookie = 0; r = 0; if (g_ntemp < 64) g_temp[g_ntemp++] = h; } pthread_mutex_unlock(&G);
+            LOG("%s即时存档恢复：重放要用的传输内存句柄 %#x（A 里后来关了）临时按日志建（%#llx +%#llx）", r ? "【红】" : "", h, (unsigned long long)tm->addr, (unsigned long long)tm->size);
+        } else LOG("【红】即时存档恢复：重放要用的游戏句柄 %#x 不在快照最终表里、日志里也造不出（种类 %u）", h, c ? c->kind : 0);
+    }
+    return r;
+}
+// 重放结束后：放剩下的游戏句柄
+int s2a_snap_defer_finish(void) { int bad = 0, n = 0; glock(); for (int j = 0; j < g_ndefer; j++) if (!g_defer[j].placed) { bad += defer_place(j) != 0; n++; } pthread_mutex_unlock(&G);
+    LOG("%s即时存档恢复：游戏句柄放回 %d 个，失败 %d", bad ? "【红】" : "", n, bad); return bad ? -1 : 0; } static int g_nskip, g_capskip;   // 交给服务重放的句柄（重放后核对、补事件状态）
+// 重放之后：服务层重建的句柄必须与 A 同格同代同种；事件按 A 的已触发位补上
+int s2a_snap_kernel_post(void) {
+    int bad = 0, ev = 0; glock();
+    for (int i = 0; i < g_nskip; i++) {
+        uint32_t idx = g_skip[i].idx;
+        uint32_t k0 = g_skip[i].kind & 15;
+        if (!g_h[idx].kind && (k0 == S2A_OBJ_EVENT_R || k0 == S2A_OBJ_EVENT_W)) {   // 服务层在请求外建的事件句柄（B 里没建）：找 A 里同一事件的别的句柄在 B 的对象，复制一个同号句柄
+            event_t *ev = NULL;
+            for (int j = 0; j < g_nskip && !ev; j++) if (j != i && g_skip[j].aobj == g_skip[i].aobj) { uint32_t jx = g_skip[j].idx; if (g_h[jx].kind && g_h[jx].gen == g_skip[j].gen) ev = g_h[jx].obj; }
+            int fresh = !ev; if (fresh) { ev = calloc(1, sizeof *ev); ev->signaled = g_skip[i].signaled; }
+            ev->refs++; g_h[idx].kind = g_skip[i].kind; g_h[idx].gen = g_skip[i].gen; g_h[idx].obj = ev; g_h[idx].cookie = 0;
+            LOG("【黄】即时存档恢复：服务层请求外建的事件句柄格 %u %s", idx, fresh ? "在 B 里找不到同一事件，新建一个（服务不会触发它）" : "按同一事件的别的句柄补上");
+        }
+        if (g_h[idx].kind != g_skip[i].kind || g_h[idx].gen != g_skip[i].gen) {
+            if (bad++ < 20) LOG("【红】即时存档恢复：重放后句柄格 %u 不对（应为 种类 %u 代 %u，实为 种类 %u 代 %u）", idx, g_skip[i].kind, g_skip[i].gen, g_h[idx].kind, g_h[idx].gen);
+            continue;
+        }
+        uint32_t k = g_skip[i].kind & 15;
+        if ((k == S2A_OBJ_EVENT_R || k == S2A_OBJ_EVENT_W) && g_h[idx].obj) { ((event_t *)g_h[idx].obj)->signaled = g_skip[i].signaled; ev++; }
+    }
+    // B 里多出来的句柄（A 最终表里没有）：A 的服务层在请求外建过、或关闭没对上
+    int extra = 0;
+    for (int i = 1; i < MAX_H; i++) if (g_h[i].kind) {
+        int found = 0; for (int j = 0; j < g_nskip && !found; j++) found = g_skip[j].idx == (uint32_t)i;
+        if (!found && snap_last_create_cs(((uint32_t)g_h[i].gen << 15) | (uint32_t)i) == 1) extra++;
+    }
+    g_h_used = 0; memset(g_kcnt, 0, sizeof g_kcnt); for (int i = 1; i < MAX_H; i++) if (g_h[i].kind) { g_h_used++; g_kcnt[g_h[i].kind & 15]++; }
+    pthread_mutex_unlock(&G);
+    LOG("%s即时存档恢复：服务层句柄核对 %d 个，不对 %d、事件状态补 %d、B 里多出 %d", bad ? "【红】" : "", g_nskip, bad, ev, extra);
+    return bad ? -1 : 0;
+}
+static snap_thr_rec *g_snap_thr; static uint32_t g_snap_nthr;
+static thr_t **g_snap_t;   // 与 g_snap_thr 一一对应的新对象
+// skip(h, kind)：这个句柄由服务层在重放时按原值重建（返回 1 则跳过）；NULL = 全部按快照建
+int s2a_snap_kernel_load(FILE *f, int (*skip)(uint32_t h, uint32_t kind)) {
+    uint32_t mg = 0, nh = 0, nt = 0; uint16_t gen, gena; uint64_t nid, wseq;
+    if (sr(f, &mg, 4) || mg != 0x324E524Bu) { LOG("【红】即时存档恢复：内核账文件头不对（%s）", mg == 0x314E524Bu ? "旧的整块格式，本版不读" : "不认识"); return -1; }
+    { sfr hr; int rc = sfr_sec(&hr, f, "kernel", 1);
+      if (rc || sfr_rec(&hr) != 1) { LOG("【红】即时存档恢复：内核账头段读不了%s", rc == -2 ? "（格式比本版新）" : ""); sfr_done(&hr); return -1; }
+      gen = (uint16_t)sfr_u64(&hr, 1, 0); gena = (uint16_t)sfr_u64(&hr, 2, 0); nid = sfr_u64(&hr, 3, 0); wseq = sfr_u64(&hr, 4, 0);
+      int t = sfr_rec(&hr); sfr_done(&hr); if (t != 0) { LOG("【红】即时存档恢复：内核账头段尾不对"); return -1; } }
+    sfr hr; { int rc = sfr_sec(&hr, f, "handles", 1); if (rc) { LOG("【红】即时存档恢复：句柄表段读不了%s", rc == -2 ? "（格式比本版新）" : ""); return -1; } }
+    nh = MAX_H;   // 逐条读到段尾为止（下面的循环在段尾退出）
+    struct { uint64_t old; void *nw; } *evm = calloc(nh + 1, sizeof *evm); int nev = 0, e = 0, kept = 0, made = 0, skipped = 0, conflict = 0;
+    struct { uint32_t idx; uint64_t old; } *thm = calloc(nh + 1, sizeof *thm); int nthm = 0;
+    glock();
+    uint32_t nread = 0;
+    for (;;) {
+        int rc = sfr_rec(&hr); if (rc == 0) break; if (rc < 0) { e = -1; break; }
+        nread++;
+        uint32_t idx = (uint32_t)sfr_u64(&hr, 1, 0), kind = (uint32_t)sfr_u64(&hr, 2, 0); uint16_t g = (uint16_t)sfr_u64(&hr, 3, 0); uint64_t obj = sfr_u64(&hr, 4, 0), cookie = sfr_u64(&hr, 5, 0);
+        if (!idx || idx >= MAX_H) { e = -1; break; }
+        uint32_t kk = kind & 15, h = ((uint32_t)g << 15) | idx;
+        event_t evr = {0}; tmem_t tmr = {0}; uint64_t ssize = 0; int srefs = 0, sown = 0; uint8_t *scont = NULL;
+        if (kk == S2A_OBJ_EVENT_R || kk == S2A_OBJ_EVENT_W) { evr.signaled = (int)sfr_u64(&hr, 10, 0); evr.refs = (int)sfr_u64(&hr, 11, 0); evr.did = (uint32_t)sfr_u64(&hr, 12, 0); }
+        else if (kk == S2A_OBJ_TMEM) { tmr.addr = sfr_u64(&hr, 20, 0); tmr.size = sfr_u64(&hr, 21, 0); tmr.perm = (uint32_t)sfr_u64(&hr, 22, 0); }
+        else if (kk == S2A_OBJ_SHMEM) { ssize = sfr_u64(&hr, 30, 0); srefs = (int)sfr_u64(&hr, 31, 0); sown = (int)sfr_u64(&hr, 32, 0);
+            if (sown) { uint32_t cn = 0; const void *cp = sfr_get(&hr, 33, &cn); if (!cp || cn != ssize) { e = -1; break; }
+                scont = mmap(NULL, (size_t)((ssize + 0x3fff) & ~0x3fffull), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0); if (scont == MAP_FAILED) { e = -1; break; } memcpy(scont, cp, cn); } }
+        if (skip && skip(h, kind)) { skipped++; if (scont) munmap(scont, (size_t)((ssize + 0x3fff) & ~0x3fffull));
+            if (g_nskip == g_capskip) { g_capskip = g_capskip ? g_capskip * 2 : 256; g_skip = realloc(g_skip, sizeof *g_skip * (size_t)g_capskip); }
+            g_skip[g_nskip++] = (typeof(*g_skip)){idx, kind, g, evr.signaled, obj}; continue; }
+        if (g_h[idx].kind && !(snap_last_create_cs(h) == 0)) {   // B 起局时已占：同种同代 = 同一个（服务层初始化建的），留 B 的
+            if (g_h[idx].kind == kind && g_h[idx].gen == g) { kept++; continue; }
+            LOG("【红】即时存档恢复：句柄格 %u 冲突（快照 种类 %u 代 %u，当前 种类 %u 代 %u）", idx, kind, g, g_h[idx].kind, g_h[idx].gen); conflict++; continue;
+        }
+        void *nobj = NULL;
+        if (kk == S2A_OBJ_EVENT_R || kk == S2A_OBJ_EVENT_W) {
+            for (int i = 0; i < nev; i++) if (evm[i].old == obj) { nobj = evm[i].nw; break; }
+            if (!nobj) { event_t *ev = calloc(1, sizeof *ev); *ev = evr; ev->trace_id = 0; nobj = ev; evm[nev].old = obj; evm[nev++].nw = ev; }
+        } else if (kk == S2A_OBJ_TMEM) { tmem_t *tm = malloc(sizeof *tm); *tm = tmr; nobj = tm; }
+        else if (kk == S2A_OBJ_SHMEM) {
+            if (!sown) { LOG("【红】即时存档恢复：服务层的共享内存句柄 %#x 没被重放接管", h); conflict++; continue; }
+            shmem_t *sm = calloc(1, sizeof *sm); sm->buf = scont; sm->size = ssize; sm->refs = srefs; sm->owned = 1; sm->next = g_shmem; g_shmem = sm; nobj = sm;
+        } else if (kk == S2A_OBJ_THREAD) { thm[nthm].idx = idx; thm[nthm++].old = obj; nobj = NULL; }
+        else { LOG("【红】即时存档恢复：句柄 %#x 种类 %u 没被重放接管、首版不会建", h, kind); conflict++; continue; }
+        if (g_ndefer == g_capdefer) { g_capdefer = g_capdefer ? g_capdefer * 2 : 256; g_defer = realloc(g_defer, sizeof *g_defer * (size_t)g_capdefer); }
+        g_defer[g_ndefer++] = (typeof(*g_defer)){idx, kind, g, nobj, cookie, 0}; made++;   // 先不放进表：服务重放期间 A 的同号格可能还被服务层的句柄占着
+    }
+    sfr_done(&hr); nh = nread;
+    // 线程记录
+    if (!e && sr(f, &nt, 4)) e = -1;
+    if (!e) { g_snap_thr = calloc(nt ? nt : 1, sizeof *g_snap_thr); g_snap_t = calloc(nt ? nt : 1, sizeof *g_snap_t); g_snap_nthr = nt;
+              sfr tr; int rc = sfr_sec(&tr, f, "threads", 1);
+              if (rc == -2) { LOG("【红】即时存档恢复：线程记录格式版本 %u 比本版新（旧版不读新快照）", tr.ver); e = -1; }
+              else if (rc) { LOG("【红】即时存档恢复：线程记录段读不了"); e = -1; }
+              for (uint32_t i = 0; i < nt && !e; i++) { if (sfr_rec(&tr) != 1) { e = -1; break; } snap_thr_read(&tr, &g_snap_thr[i]); }
+              if (!e && sfr_rec(&tr) != 0) e = -1;   // 段尾
+              if (!e && g_snap_gate_miss) { LOG("【红】即时存档恢复：%d 条线程停的门在本版改写产物里找不到（改写器约定变了），这个快照是旧版存的，接不上，拒绝恢复；游戏自己的存档不受影响", g_snap_gate_miss); s2a_snap_mark_old(); e = -1; }
+              sfr_done(&tr); }
+    for (uint32_t i = 0; i < nt && !e; i++) {
+        snap_thr_rec *r = &g_snap_thr[i]; thr_t *t = calloc(1, sizeof *t); pthread_cond_init(&t->cv, NULL);
+        t->handle = r->handle; t->id = r->id; t->entry = r->entry; t->arg = r->arg; t->stack_top = r->stack_top; t->prio = (int)r->prio; t->base_prio = (int)r->base_prio;
+        t->core = (int)r->core; t->mask = r->mask; t->started = (int)r->started; t->exited = (int)r->exited; t->closed = (int)r->closed; t->cancel = (int)r->cancel; t->is_main = (int)r->is_main;
+        t->pinned = (int)r->pinned; t->pin_core = (int)r->pin_core; t->pin_mask = r->pin_mask; t->tlr = (void *)(uintptr_t)r->tlr;
+        atomic_store(&t->in_svc, 1);
+        g_snap_t[i] = t;
+        // 句柄表里指向它的格（A 里的 thr_t 指针按句柄对上）
+        uint32_t idx = r->handle & 0x7fff;
+        for (int j = 0; j < g_ndefer; j++) if (g_defer[j].idx == idx && (g_defer[j].kind & 15) == S2A_OBJ_THREAD && !r->closed) g_defer[j].obj = t;
+    }
+    // g_all 按快照顺序（快照里是表头在前）
+    for (int i = (int)nt - 1; i >= 0 && !e; i--) { g_snap_t[i]->all = g_all; g_all = g_snap_t[i]; }
+    for (int j = 0; j < g_ndefer; j++) if ((g_defer[j].kind & 15) == S2A_OBJ_THREAD && !g_defer[j].obj) { LOG("【红】即时存档恢复：线程句柄格 %u 没对上线程记录", g_defer[j].idx); conflict++; }
+    g_gen = gen; g_gen_async = gena; g_next_id = nid; g_wseq = wseq;
+    g_h_used = 0; memset(g_kcnt, 0, sizeof g_kcnt); for (int i = 1; i < MAX_H; i++) if (g_h[i].kind) { g_h_used++; g_kcnt[g_h[i].kind & 15]++; }
+    pthread_mutex_unlock(&G);
+    free(evm); free(thm);
+    LOG("%s即时存档恢复：内核账 句柄 %u 个（新建 %d、留 B 的 %d、交给服务重放 %d、冲突 %d）、事件对象 %d、线程 %u 条", e || conflict ? "【红】" : "", nh, made, kept, skipped, conflict, nev, nt);
+    return e || conflict ? -1 : 0;
+}
+// ---------- 即时存档恢复（阶段 3 配合）：句柄日志驱动的重放 ----------
+static uint32_t close_handle(uint32_t h);
+static uint32_t *g_rforce; static int g_nrforce;
+// 「最终仍活着的句柄」是不是服务层建的：按值找它最后一次「建」的那条日志
+static int snap_last_create_cs(uint32_t h) { for (int i = g_nrhlog - 1; i >= 0; i--) if (g_rhlog[i].op == 0 && g_rhlog[i].h == h) return g_rhlog[i].cs; return -1; }
+// 即时存档：进程内重建开新一局时（开着快照才调），句柄代数与句柄日志归全新进程的初值——新一局的日志从开局记起、重放出的句柄值与冷启动相同
+//   （进程内「回到快照」：上一局用到第 300 代，重放建的句柄成了第 301 代起，与快照里的第 2 代起对不上 → 恢复失败）
+void s2a_snap_kernel_fresh(void) { glock(); g_gen = 0; g_gen_async = 0; g_nhlog = 0; atomic_store(&g_snap_lastseq, -1); pthread_mutex_unlock(&G); }
+// 恢复局接着记：快照里的句柄日志整份当开头（恢复完成、游戏线程放开之前调，见 snapshot.c snap_live_after_restore）
+void s2a_snap_hlog_continue(void) {
+    glock();
+    if (g_nrhlog > g_caphlog) { g_caphlog = g_nrhlog + 4096; g_hlog = realloc(g_hlog, sizeof *g_hlog * (size_t)g_caphlog); }
+    if (g_nrhlog) memcpy(g_hlog, g_rhlog, sizeof *g_hlog * (size_t)g_nrhlog);
+    g_nhlog = g_nrhlog; int last = -1; for (int i = 0; i < g_nrhlog; i++) { if (g_rhlog[i].ctx > last) last = g_rhlog[i].ctx; if (g_rhlog[i].uid > g_huid) g_huid = g_rhlog[i].uid; }
+    if (last >= 0) atomic_store(&g_snap_lastseq, last);
+    pthread_mutex_unlock(&G);
+}
+int s2a_snap_hlog_load(FILE *f) {
+    if (fread(&g_nrhlog, sizeof g_nrhlog, 1, f) != 1 || g_nrhlog < 0) return -1;
+    g_rhlog = malloc(sizeof *g_rhlog * (size_t)(g_nrhlog ? g_nrhlog : 1));
+    if (g_nrhlog && fread(g_rhlog, sizeof *g_rhlog, (size_t)g_nrhlog, f) != (size_t)g_nrhlog) return -1;
+    g_rforce = malloc(sizeof *g_rforce * (size_t)(g_nrhlog ? g_nrhlog : 1));
+    int ncs_req = 0, ncs_out = 0, nguest = 0, ncl = 0;
+    for (int i = 0; i < g_nrhlog; i++) { snap_hlog_t *x = &g_rhlog[i]; if (x->op) ncl++; else if (!x->cs) nguest++; else if (x->ctx >= 0) ncs_req++; else ncs_out++; }
+    LOG("即时存档恢复：句柄日志 %d 项（服务请求里建 %d、服务层请求外建 %d、游戏系统调用建 %d、关 %d）", g_nrhlog, ncs_req, ncs_out, nguest, ncl);
+    return 0;
+}
+int s2a_snap_skip_cs(uint32_t h, uint32_t kind) { (void)kind; return snap_last_create_cs(h) == 1; }
+// 重放第 seq 条之前：把 A 里这条请求建的句柄按顺序装成本线程的强制分配串
+int s2a_snap_replay_begin(int seq) {
+    g_nrforce = 0;
+    for (int i = 0; i < g_nrhlog; i++) if (g_rhlog[i].op == 0 && g_rhlog[i].cs && g_rhlog[i].ctx == seq) g_rforce[g_nrforce++] = g_rhlog[i].h;
+    s2a_snap_force(g_rforce, g_nrforce); return g_nrforce;
+}
+// 首条之前（seq = -1）与每条之后：按日志执行「此后、下一条之前」发生的关闭——只关服务层建的、在 B 里此刻还在的句柄
+static int snap_apply_closes(int after) {
+    int n = 0;
+    for (int i = 0; i < g_nrhlog; i++) {
+        snap_hlog_t *x = &g_rhlog[i]; if (!x->op || x->after != after) continue;
+        // 服务自己关的（Dispose / 关会话时级联释放的对象）：重放引发它的那件事（请求、或游戏关会话）时服务会再关一次，这里替它关就成了关两次
+        //   （一款大游戏：先按日志关掉 AudioDevice 的事件句柄，再关它的会话时 Dispose 又关一遍 → InvalidHandle，收局 Horizon 服务停止也报错）
+        if (x->cs) continue;
+        // 这条关闭之前、同值最后一次建是不是服务层建的
+        int cs = -1; for (int j = i - 1; j >= 0; j--) if (g_rhlog[j].op == 0 && g_rhlog[j].h == x->h) { cs = g_rhlog[j].cs; break; }
+        if (cs != 1) continue;
+        glock(); int alive = h_idx(x->h) != 0; pthread_mutex_unlock(&G);
+        if (alive) { close_handle(x->h); n++; }
+    }
+    return n;
+}
+int s2a_snap_replay_end(int seq) {
+    if (g_ntemp) { glock(); for (int i = 0; i < g_ntemp; i++) { int ix = h_idx(g_temp[i]); if (ix) { free(g_h[ix].obj); memset(&g_h[ix], 0, sizeof g_h[ix]); } } g_ntemp = 0; pthread_mutex_unlock(&G); }
+    int left = s2a_snap_force_left(); s2a_snap_force(NULL, 0);
+    if (left) LOG("【红】即时存档恢复：重放第 %d 条后还有 %d 个句柄没按 A 的值建出来（这条请求在 B 里少建了句柄）", seq, left);
+    snap_apply_closes(seq);
+    return left ? -1 : 0;
+}
+int s2a_snap_replay_prelude(void) { return snap_apply_closes(-1); }
+uint64_t gate_dispatch(uint64_t ret_addr, uint64_t *regs);
+void *sw_xstack_slot(void);
+void sw_snap_resume(void *frame) __attribute__((noreturn));
+// 线程单测不链 gate.c / entry.S：快照恢复线程在单测里永远不起（快照关），弱缺省只为链得上
+__attribute__((weak)) uint64_t gate_dispatch(uint64_t ret_addr, uint64_t *regs) { (void)ret_addr; (void)regs; return 0; }
+__attribute__((weak)) void *sw_xstack_slot(void) { return 0; }
+__attribute__((weak, noreturn)) void sw_snap_resume(void *frame) { (void)frame; abort(); }
+static _Atomic int g_snap_settled;
+// 恢复的游戏线程：绑宿主、按快照装 TSD / TLR，宿主栈上做一个门帧，按停法续跑。全程 g_frz 开着：续跑出来的线程都停回门里，等全体就位后统一放开
+#if defined(__APPLE__)
+// 弱缺省定义：真定义在 GL 出图层 graphics/nvn/gfx/gl/egl.m（线程本地的当前上下文按快照接回，同一个程序里强定义盖过它）；不链图形库的宿主构建与只链 thread.c 的单测用这份空实现
+__attribute__((weak)) void gl_snap_thread_bind(uint64_t tid) { (void)tid; }
+#endif
+// 当前线程的客体线程号（不是游戏线程回 0）：GL 出图层按它记各线程的当前上下文（即时存档）
+uint64_t s2a_snap_thread_self(void) { thr_t *t = thread_current_or_null(); return t ? t->id : 0; }
+static void *snap_thread_main(void *arg) {
+    snap_thr_rec *r = &g_snap_thr[(uintptr_t)arg]; thr_t *t = g_snap_t[(uintptr_t)arg];
+#if defined(__APPLE__)
+    set_qos(guest_qos(t->is_main, t->mask));
+#endif
+    if (pthread_setspecific(g_keythr, t)) die("恢复线程 TSD 失败");
+    { char nm[24]; snprintf(nm, sizeof nm, "nx-%llu", (unsigned long long)t->id); pthread_setname_np(nm); }
+    t->mport = pthread_mach_thread_np(pthread_self()); t->tsd = plat_tsd_base(); t->pt = pthread_self();
+    s2a_crash_thread_init();
+#if defined(__APPLE__)
+    gl_snap_thread_bind(t->id);
+#endif
+    pthread_setspecific(g_keygate, (void *)sw_gate);
+    pthread_setspecific(g_key18, (void *)(uintptr_t)r->k18);
+    pthread_setspecific(g_keytls, (void *)(uintptr_t)r->ktls);
+    pthread_setspecific(g_keytlr, (void *)(uintptr_t)r->ktlr);
+    { void **blk = calloc(3, sizeof *blk); blk[0] = (void *)(uintptr_t)r->own_tls; blk[1] = (void *)(uintptr_t)r->own_obj; blk[2] = (void *)1; pthread_setspecific(g_own_key, blk); }
+    uint64_t F[832 / 8] __attribute__((aligned(16)));
+    uint64_t here = ((uint64_t)__builtin_frame_address(0) - 0x400) & ~0xfull;   // 门帧 F 在本帧里、比 here 高；切栈游标从 here 往下用
+    sw_xstack_thread_init(here, t->stack_top);
+    memcpy(F, r->frame, sizeof F);
+    uint64_t *slot = sw_xstack_slot();
+    if (F[816 / 8]) { F[808 / 8] = slot[0]; F[816 / 8] = (uint64_t)(uintptr_t)slot; slot[0] = (uint64_t)(uintptr_t)F; }
+    t->svc_regs = F; t->last_svc = (int)r->last_svc;
+    int reblock = r->state == SNAP_T_WAIT && (r->last_svc == 0x1C || (r->last_svc == 0x34 && r->wtype == 1));
+    atomic_fetch_add(&g_snap_settled, 1);   // 已就位（下面的动作都会停回门里 / 挂进等待）
+#if defined(__APPLE__)
+    if (r->state == SNAP_T_RUN) {   // 停在游戏代码里的：TSD / 切栈槽已按本进程设好；在内核里等着，放开冻结时由 s2a_snap_unfreeze 写入快照现场、从原指令接着跑
+        atomic_store(&t->in_svc, 0); t->snap_run = 1;
+        for (;;) pause();
+    }
+#endif
+    if (r->state == SNAP_T_EXIT) {
+        svc_exit(t);                                  // 冻结中：先停在出口，放开后取核、清 in_svc
+    } else if (reblock) {
+        glock(); t->wkey = r->wkey; t->waddr = r->waddr; t->wtag = r->wtag; t->wtype = (int)r->wtype; t->wval = r->wval;
+        int64_t res = block(t, (int)r->wkind, (int64_t)F[3]); pthread_mutex_unlock(&G);   // 0x1C / 0x34 的超时参数都在 x3（-1 = 无限等）；首版按原超时重新计时
+        F[0] = (uint64_t)res; svc_exit(t);
+    } else {
+        // 入口停 / 睡眠 / 可重发的等待：门帧是入参，重新分派一次（冻结中会停在入口，放开后照常执行）
+        if (r->last_svc == 0x18) LOG("即时存档恢复诊断：线程 id %llu 停法 %u 重发 svc 0x18 x0 %#llx x1 %#llx x2 %llu 首句柄 %#x", (unsigned long long)t->id, r->state, (unsigned long long)F[0], (unsigned long long)F[1], (unsigned long long)F[2], F[1] ? *(uint32_t *)(uintptr_t)F[1] : 0);
+        if (r->has_csmsg && r->tlr) memcpy((void *)(uintptr_t)r->tlr, r->csmsg, sizeof r->csmsg);   // C# 里阻塞的 IPC：判齐那一刻的请求消息写回 TLS，再重发
+        gate_dispatch(F[30], F);
+    }
+    sw_snap_resume(F);
+}
+// 起全部恢复的线程（冻结开着）；回 0 = 全部就位
+int s2a_snap_threads_start(void) {
+    glock(); atomic_store(&g_snap_frz, 1); atomic_store(&g_frz, 1); pthread_mutex_unlock(&G);
+    // 等待中的按原等待先后起（同优先级先到先醒的次序靠它），其余在后
+    uint32_t n = g_snap_nthr, *ord = calloc(n ? n : 1, sizeof *ord), k = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        for (uint32_t i = 0; i < n; i++) { int w = g_snap_thr[i].state == SNAP_T_WAIT; if ((pass == 0) == w) ord[k++] = i; }
+        if (pass == 0) for (uint32_t a = 0; a + 1 < k; a++) for (uint32_t b = a + 1; b < k; b++) if (g_snap_thr[ord[b]].wseq < g_snap_thr[ord[a]].wseq) { uint32_t x = ord[a]; ord[a] = ord[b]; ord[b] = x; }
+    }
+    int started = 0;
+    for (uint32_t j = 0; j < n; j++) {
+        uint32_t i = ord[j]; snap_thr_rec *r = &g_snap_thr[i]; thr_t *t = g_snap_t[i];
+        if (r->state == SNAP_T_DEAD) continue;
+        pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setstacksize(&a, 8u << 20);
+        atomic_fetch_add(&g_live_threads, 1);
+        int rc = r->state == SNAP_T_UNSTARTED ? pthread_create(&t->pt, &a, thread_main, t) : pthread_create(&t->pt, &a, snap_thread_main, (void *)(uintptr_t)i);
+        pthread_attr_destroy(&a);
+        if (rc) { LOG("【红】即时存档恢复：起线程 id %llu 失败 rc=%d", (unsigned long long)t->id, rc); free(ord); return -1; }
+        if (r->state != SNAP_T_UNSTARTED) started++;
+        // 等它就位再起下一条（等待先后不乱）
+        uint64_t dl = now_ns() + 2000000000ull;
+        while (atomic_load(&g_snap_settled) < started && now_ns() < dl) usleep(50);
+        if (r->state == SNAP_T_WAIT) { dl = now_ns() + 200000000ull; while (now_ns() < dl) { glock(); int in = t->wkind != 0 || atomic_load(&t->paused_ack); pthread_mutex_unlock(&G); if (in) break; usleep(50); } }
+    }
+    free(ord);
+    LOG("即时存档恢复：起了 %d 条线程（另有已退出 / 未启动的按快照留着）", started);
+    return 0;
+}
+void s2a_snap_unfreeze(void) {
+#if defined(__APPLE__)
+    // 停在游戏代码里的线程：挂住 → 中止它在内核里的等待 → 写入快照里的寄存器现场（PC 是游戏原代码地址，跨版本不变）→ 放行
+    int nrun = 0, nbad = 0;
+    for (uint32_t i = 0; i < g_snap_nthr; i++) { snap_thr_rec *r = &g_snap_thr[i]; thr_t *t = g_snap_t[i]; if (r->state != SNAP_T_RUN || !t || !t->mport) continue;
+        if (!pc_in_guest_text(r->rregs[32])) { LOG("【红】即时存档恢复：线程 id %llu 的现场 PC %#llx 不在本局游戏代码里", (unsigned long long)t->id, (unsigned long long)r->rregs[32]); nbad++; continue; }
+        if (thread_suspend(t->mport) != KERN_SUCCESS) { nbad++; continue; }
+        thread_abort(t->mport);
+        arm_thread_state64_t st; memset(&st, 0, sizeof st); for (int k = 0; k < 29; k++) st.__x[k] = r->rregs[k];
+        __darwin_arm_thread_state64_set_fp(st, r->rregs[29]); __darwin_arm_thread_state64_set_lr_fptr(st, (void *)(uintptr_t)r->rregs[30]);
+        __darwin_arm_thread_state64_set_sp(st, r->rregs[31]); __darwin_arm_thread_state64_set_pc_fptr(st, (void *)(uintptr_t)r->rregs[32]); st.__cpsr = (uint32_t)r->rregs[33];
+        arm_neon_state64_t ns; memset(&ns, 0, sizeof ns); memcpy(&ns.__v, r->rneon, sizeof ns.__v); ns.__fpsr = r->rfpsr; ns.__fpcr = r->rfpcr;
+        if (thread_set_state(t->mport, ARM_THREAD_STATE64, (thread_state_t)&st, ARM_THREAD_STATE64_COUNT) != KERN_SUCCESS
+            || thread_set_state(t->mport, ARM_NEON_STATE64, (thread_state_t)&ns, ARM_NEON_STATE64_COUNT) != KERN_SUCCESS) { LOG("【红】即时存档恢复：线程 id %llu 写不进寄存器现场", (unsigned long long)t->id); nbad++; }
+        t->snap_run = 0; thread_resume(t->mport); nrun++; }
+    if (nrun || nbad) LOG("%s即时存档恢复：停在游戏代码里的线程 %d 条按快照现场接着跑（失败 %d）", nbad ? "【红】" : "", nrun, nbad);
+#endif
+    glock(); atomic_store(&g_frz, 0); atomic_store(&g_snap_frz, 0); pthread_cond_broadcast(&g_pause_cv); pthread_mutex_unlock(&G); LOG("即时存档恢复：放开冻结，游戏接着跑"); }
 static uint32_t thr_unpause(thr_t *t) {
     glock();
     if (!atomic_load(&t->pause)) { pthread_mutex_unlock(&G); return R_BAD_STATE; }
@@ -2214,7 +2869,7 @@ static uint32_t close_handle(uint32_t h) {   // 不持 G 进来
     glock();
     int i = h_idx(h); uint32_t kind = i ? g_h[i].kind : 0; uint64_t cookie = i ? g_h[i].cookie : 0;
     if (!i) { pthread_mutex_unlock(&G); return R_BAD_HANDLE; }
-    void *o = g_h[i].obj, *cm = NULL; h_free(i);
+    void *o = g_h[i].obj, *cm = NULL; hlog_add(1, h, kind, t_close_cs, NULL); h_free(i);
     switch (kind) {
     case S2A_OBJ_EVENT_R: case S2A_OBJ_EVENT_W: if (--((event_t *)o)->refs == 0) { if (((event_t *)o)->did) evmap_del(o); free(o); } break;
     case S2A_OBJ_TMEM: break;   // 放锁后还回源再释放：还回取 svc_mem 的锁，那边持锁时会来取 G（s2a_tmem_get）
@@ -2456,6 +3111,10 @@ static int svc_thread_impl(thr_t *me, int num, uint64_t *regs) {
         uint64_t addr = regs[1]; int64_t r = 0;
         if (addr & 3) { regs[0] = 0xCC01; return 1; }   // InvalidAddress：锁字要 4 字节对齐（Ryujinx IsAddressNotWordAligned）
         tag_check(me, (uint32_t)regs[2], "ArbitrateLock", addr);
+        // 快路径（11-16 能耗线，借同赛道 MIT 移植的做法）：锁字已不是「持有者 | 等待位」就直接回 0、不拿全局锁 G——同 Horizon，游戏回用户态重抢。
+        //   不拿锁读到旧值只等于一次本来就会发生的竞争（游戏照样重试）；宿主改锁字的 lock_handoff 都在 G 里，对得上时下面持 G 再核一遍。
+        //   G 每秒上万次加锁、5.5% 要等（大金刚 Mac 局 S2A_DIAG_STAMP 读数）
+        if (ld32(addr) != ((uint32_t)regs[0] | WAITERS_BIT)) { regs[0] = 0; return 1; }
         glock();
         if (ld32(addr) == ((uint32_t)regs[0] | WAITERS_BIT)) {
             if (!h_obj((uint32_t)regs[0], S2A_OBJ_THREAD)) r = R_BAD_HANDLE;   // 持有者句柄无效：照 Ryujinx ArbitrateLock 回 InvalidHandle（原先挂上去永远等不到交锁）
@@ -2627,11 +3286,24 @@ static int svc_thread_impl(thr_t *me, int num, uint64_t *regs) {
         int64_t deadline = ns > 0 ? now_mono_ns() + ns : 0, r; int idx = -1;
         if (n < 0 || n > 64) { regs[0] = 0xEE01; return 1; }   // OutOfRange（Horizon 上限 64）
         glock(); me->wh = hs; me->wn = n;
-        for (;;) {
+        // 句柄只在进入时校验并换成对象（同 Horizon / Ryujinx：等的是对象，不是句柄）：事件多持一份引用，等待中途游戏关掉句柄（#1520 D-BJZ6：视频解码线程收尾时
+        //   关了被等的事件句柄），对象照样活着、别处触发照样唤醒；原先每次醒来按句柄重查，查不到就回句柄无效（2001-0114），游戏随即中止。线程照旧按句柄查，
+        //   中途关掉的当作不会再触发
+        event_t *pin[64] = {0}; int bad = 0;
+        for (int i = 0; i < n && !bad; i++) { if (hs[i] == S2A_H_CUR_THREAD) continue; int ix = h_idx(hs[i]); uint32_t k = ix ? g_h[ix].kind : 0;
+            if (k == S2A_OBJ_EVENT_R) { pin[i] = g_h[ix].obj; pin[i]->refs++; } else if (k != S2A_OBJ_THREAD) bad = 1; }
+        if (bad) { r = R_BAD_HANDLE;
+            if (s2a_snap_restoring()) for (int i = 0; i < n; i++) { int b2 = 0; sig_obj(hs[i], &b2);   // 即时存档恢复局：说清是哪个句柄
+                if (b2) LOG("【红】即时存档恢复局：WaitSynchronization 第 %d 个句柄 %#x 无效（格 %u：种类 %u 代 %u）", i, hs[i], hs[i] & 0x7fff, g_h[hs[i] & 0x7fff].kind, g_h[hs[i] & 0x7fff].gen); } }
+        for (; !bad;) {
             if (me->cancel) { me->cancel = 0; r = R_CANCELLED; break; }
-            int bad = 0;
-            for (int i = 0; i < n && idx < 0; i++) if (sig_obj(hs[i], &bad)) idx = i;
-            if (bad) { r = R_BAD_HANDLE; break; }
+            for (int i = 0; i < n && idx < 0; i++) {
+                if (pin[i]) {
+#ifndef S2A_UNIT_TEST
+                    if (!pin[i]->did && s2a_det_in_turn()) ev_expose(pin[i]);   // 确定性档：同 sig_obj
+#endif
+                    if (pin[i]->signaled) idx = i; }
+                else { int gone = 0; if (sig_obj(hs[i], &gone)) idx = i; } }   // 线程（或当前线程伪句柄）；中途关掉的 gone，不当无效
             if (idx >= 0) { r = 0; break; }
             int64_t left = ns < 0 ? -1 : ns == 0 ? 0 : deadline - now_mono_ns();
             if (ns > 0 && left <= 0) { r = R_TIMEOUT; break; }
@@ -2641,6 +3313,7 @@ static int svc_thread_impl(thr_t *me, int num, uint64_t *regs) {
             // re-enqueueing it would keep this thread alive indefinitely.
             if (r == R_TIMEOUT || r == R_CANCELLED) break;
         }
+        for (int i = 0; i < n; i++) if (pin[i] && --pin[i]->refs == 0) { if (pin[i]->did) evmap_del(pin[i]); free(pin[i]); }   // 还回进入时多持的那份（同 close_handle）
         me->wn = 0; pthread_mutex_unlock(&G);
         regs[0] = (uint64_t)r; regs[1] = idx >= 0 ? (uint64_t)idx : 0; return 1;
     }
@@ -2685,8 +3358,11 @@ void s2a_svc_ctx_fill(s2a_svc_ctx *c, int num, uint64_t *regs) {
         uint32_t h = (uint32_t)(num == 0x21 ? regs[0] : regs[2]);
         glock(); int i = h_idx(h); if (i) { c->obj_kind = g_h[i].kind; c->obj = g_h[i].cookie; } pthread_mutex_unlock(&G);
     }
+    if (t) { t->cs_svc = num; t->cs_h = (uint32_t)(num == 0x21 ? regs[0] : regs[2]); t->cs_t0 = now_ns(); t->cs_seq = -1; }   // 序号由 C# 请求开始时设（s2a_snap_hctx）
     if (t) { t->svc_regs = regs; atomic_store(&t->in_svc, 1); }   // C# 里可能阻塞：算在系统调用里（暂停取门帧）
 }
+// C# 处理完一次系统调用、回到原生层的第一时间（gate.c，取核之前）：回复已写进游戏的消息区 / 寄存器帧。即时存档据此判断「判齐后这次请求有没有完成」
+void s2a_svc_cs_returned(void) { thr_t *t = thread_current_or_null(); if (t) { t->cs_svc = 0; atomic_fetch_add(&t->cs_ret, 1); } }
 void s2a_svc_ctx_done(void) { thr_t *t = thread_current_or_null(); if (t) {
 #if !defined(__APPLE__)
     svc_exit(t);
@@ -2705,7 +3381,7 @@ void *s2a_native_handle_obj(uint32_t h, uint32_t sub) { glock(); int i = h_idx(h
 void s2a_handle_kind_count(uint32_t kind, int *cur, int *peak) { glock(); *cur = g_kcnt[kind & 15]; *peak = g_kpeak[kind & 15]; pthread_mutex_unlock(&G); }
 uint32_t s2a_handle_new(uint32_t kind, uint64_t cookie) {
     if (kind != S2A_OBJ_SESSION && kind != S2A_OBJ_PORT && kind != S2A_OBJ_CS_OTHER) { LOG("【红】s2a_handle_new：种类 %u 不归 C# 发", kind); return 0; }
-    glock(); uint32_t h = h_new(kind, NULL, cookie); pthread_mutex_unlock(&G); return h;
+    glock(); uint32_t h = h_new_cs(kind, NULL, cookie); pthread_mutex_unlock(&G); return h;
 }
 int s2a_handle_get(uint32_t h, uint32_t *kind, uint64_t *cookie) {
     if (h == S2A_H_CUR_PROCESS) { *kind = S2A_OBJ_PROCESS; *cookie = s2a_process_id(); return 1; }   // 进程伪句柄：cookie = 进程号
@@ -2726,7 +3402,8 @@ int s2a_handle_get(uint32_t h, uint32_t *kind, uint64_t *cookie) {
 // 1 = 关掉了，0 = 无此句柄（与 s2a_handle_get 同口径）。C# 关不存在的句柄多半是两边对句柄归属的理解不一致（已转给游戏 / 已被游戏关掉 / 从没建过），打一行红区分
 int s2a_handle_close(uint32_t h) {
     if (trace_on()) LOG("[句柄] C# 关 %#x", h);
-    if (close_handle(h) == 0) return 1;
+    int was = t_close_cs; t_close_cs = 1; uint32_t r = close_handle(h); t_close_cs = was;
+    if (r == 0) return 1;
     glock(); unsigned i = h & 0x7fff, gen = h >> 15; int used = i && i < MAX_H, live = used && g_h[i].kind; unsigned cur = used ? g_h[i].gen : 0; pthread_mutex_unlock(&G);
     LOG("【红】s2a_handle_close：C# 关不存在的句柄 %#x（%s）", h, !h ? "句柄 0：从没建过" : !used ? "格子越界：不是原生句柄" : live ? "格子已被别的对象复用（这个句柄早已被关）" : cur == gen ? "已被关掉（游戏或服务先关了）" : "已被关掉、格子空着");
     return 0;
@@ -2737,8 +3414,8 @@ uint64_t s2a_event_create(uint32_t *h_read, uint32_t *h_write) {
 #ifndef S2A_UNIT_TEST
     if (s2a_det_in_turn()) ev_expose(e);   // 确定性档：游戏线程持锁时建的当场编号；异步建的等第一次对游戏可见再编
 #endif
-    uint32_t hr = h_new(S2A_OBJ_EVENT_R, e, 0); if (hr) e->refs++;
-    uint32_t hw = h_write && hr ? h_new(S2A_OBJ_EVENT_W, e, 0) : 0; if (hw) e->refs++;
+    uint32_t hr = h_new_cs(S2A_OBJ_EVENT_R, e, 0); if (hr) e->refs++;
+    uint32_t hw = h_write && hr ? h_new_cs(S2A_OBJ_EVENT_W, e, 0) : 0; if (hw) e->refs++;
     pthread_mutex_unlock(&G);
     if (!hr || (h_write && !hw)) { LOG("【红】s2a_event_create：句柄表满"); if (hr) close_handle(hr); if (hw) close_handle(hw); free(e); return 0; }
     *h_read = hr; if (h_write) *h_write = hw;
@@ -2768,7 +3445,7 @@ void s2a_event_release(uint64_t ev) { if (!ev) return; glock(); event_t *e = (ev
 // 给读端再发一个句柄（复制句柄语义：服务每次应答都应给新句柄，游戏关掉它不影响服务手里的事件）
 uint32_t s2a_event_dup_read(uint64_t ev) {
     if (!ev) return 0;
-    glock(); event_t *e = (event_t *)(uintptr_t)ev; uint32_t h = h_new(S2A_OBJ_EVENT_R, e, 0); if (h) e->refs++;
+    glock(); event_t *e = (event_t *)(uintptr_t)ev; uint32_t h = h_new_cs(S2A_OBJ_EVENT_R, e, 0); if (h) e->refs++;
 #ifndef S2A_UNIT_TEST
     if (h && !e->did && s2a_det_in_turn()) ev_expose(e);
 #endif
@@ -2780,9 +3457,9 @@ uint32_t s2a_event_dup_read(uint64_t ev) {
 uint32_t s2a_shmem_create(uint64_t size, void **host) {
     if (!size) return 0;
     shmem_t *sm = calloc(1, sizeof *sm); sm->size = size; sm->refs = 1; sm->owned = 1;
-    sm->buf = mmap(NULL, (size + 0x3FFF) & ~0x3FFFull, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANON, -1, 0);   // MAP_SHARED：vm_remap 别名到游戏地址后同一批物理页
+    sm->buf = mmap(NULL, (size + 0x3FFF) & ~0x3FFFull, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANON, S2A_VMTAG_FD(S2A_VMTAG_SHMEM), 0);   // MAP_SHARED：vm_remap 别名到游戏地址后同一批物理页
     if (sm->buf == MAP_FAILED) die("共享内存后备 mmap %#llx", (unsigned long long)size);
-    glock(); uint32_t h = h_new(S2A_OBJ_SHMEM, sm, 0);
+    glock(); uint32_t h = h_new_cs(S2A_OBJ_SHMEM, sm, 0);
     if (h) { sm->next = g_shmem; g_shmem = sm; } pthread_mutex_unlock(&G);
     if (!h) { munmap(sm->buf, (size + 0x3FFF) & ~0x3FFFull); free(sm); return 0; }
     *host = sm->buf; return h;
@@ -2799,7 +3476,7 @@ uint32_t s2a_shmem_wrap(void *host, uint64_t size) {
     if (size & 0x3FFF) LOG("s2a_shmem_wrap：大小 %#llx 不是 16 KB 整数倍，映射给游戏时末页多出的 %#llx 字节也会别名过去", (unsigned long long)size, (unsigned long long)(0x4000 - (size & 0x3FFF)));
 #endif
     shmem_t *sm = calloc(1, sizeof *sm); sm->size = size; sm->refs = 1; sm->buf = host;
-    glock(); uint32_t h = h_new(S2A_OBJ_SHMEM, sm, 0);
+    glock(); uint32_t h = h_new_cs(S2A_OBJ_SHMEM, sm, 0);
     if (h) { sm->next = g_shmem; g_shmem = sm; } pthread_mutex_unlock(&G);
     if (!h) free(sm);
     return h;
@@ -3105,6 +3782,16 @@ void s2a_thread_dump(void) {
                     mach_ms(now - g_cvl[i].t), g_cvl[i].woken, g_cvl[i].left, mine);
             else LOG("    条件键 %#llx 当前值 %#x，已等 %.0f ms；此键从没被发过信号（或记录被别的键覆盖）%s",
                      (unsigned long long)t->wkey, ld32(t->wkey), mach_ms(now - t->wait_t0), mine);
+            // 锁 / 键周围的原样内存（#19361b：上古卷轴加载线程在 WaitLightEvent 里等，键「从没被发过信号」、锁字 0——
+            //   判不了是「事件已置位、唤醒丢了」还是「根本没人置位」：两者只差键后面那几个字节里的「已置位」标志）。
+            //   从锁地址按 16 对齐往前 16 字节起打 48 字节，盖住游戏自己包在外面的锁字与 SDK 事件的锁 / 键 / 已置位
+#if defined(__APPLE__)   // 安全读靠 Mach vm_read_overwrite（同上面抽样回溯）；安卓不打
+            { uint64_t a0 = (t->waddr < t->wkey ? t->waddr : t->wkey) & ~0xFull; a0 -= 0x10; uint32_t m[12]; vm_size_t got = 0;
+              if (vm_read_overwrite(mach_task_self(), (vm_address_t)a0, sizeof m, (vm_address_t)m, &got) == KERN_SUCCESS && got == sizeof m)
+                  LOG("    键周围内存 %#llx：%08x %08x %08x %08x | %08x %08x %08x %08x | %08x %08x %08x %08x", (unsigned long long)a0,
+                      m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11]);
+              else LOG("    键周围内存 %#llx：读不了", (unsigned long long)a0); }
+#endif
         }
         if (t->wkind && t->wkind != 2 && !t->exited) LOG("    已等 %.0f ms", mach_ms(thread_clock() - t->wait_t0));
         if (t->wkind == 4 && t->wn > 0) {   // 在等哪些句柄：种类 + cookie（C# 对象 / 事件号）——事件一直不来时据此找是哪个服务的
@@ -3133,3 +3820,13 @@ int s2a_test_wait_enabled(void) { return wait_diag_on(); }
 int s2a_test_wait_source_svc(void) { return g_wd_test_source_svc; }
 void s2a_wait_diag_report(void) { wait_diag_flush(2); }
 #endif
+// 即时存档：宿主子系统里存的「事件对象」与游戏句柄互查（存时把宿主事件指针换成句柄号，恢复后按句柄号取回本进程的事件对象并加一份引用）
+uint32_t s2a_snap_event_handle_of(uint64_t ev) {
+    glock(); uint32_t h = 0;
+    for (int i = 1; i < MAX_H && !h; i++) if ((g_h[i].kind & 15) == S2A_OBJ_EVENT_R && g_h[i].obj == (void *)(uintptr_t)ev) h = ((uint32_t)g_h[i].gen << 15) | (uint32_t)i;
+    pthread_mutex_unlock(&G); return h;
+}
+uint64_t s2a_snap_event_of_handle(uint32_t h) {
+    glock(); int i = h_idx(h); event_t *e = i && ((g_h[i].kind & 15) == S2A_OBJ_EVENT_R || (g_h[i].kind & 15) == S2A_OBJ_EVENT_W) ? g_h[i].obj : NULL; if (e) e->refs++;
+    pthread_mutex_unlock(&G); return (uint64_t)(uintptr_t)e;
+}

@@ -35,6 +35,12 @@ struct s2a_nvn_texture_fact {
 int s2a_nvn_texture_fact(uint32_t nvn_format, uint32_t nvn_target, uint32_t layers,
                          struct s2a_nvn_texture_fact *out, char *why, size_t why_size);
 
+// 池里没登记描述符的号 / 槽的默认事实：与 Ryujinx TextureBindingsManager.GetTextureDescriptor 对齐（IsValidId = 0 <= id - pool_base < pool_n）。
+//   池内（合法但没登记）按全零 TIC 解码 {1d, 不归一化}；池外（越过池容量 / 负号 / 池基址未知）按上游显式默认 {2d, 归一化}。
+//   两种都是格式 Unknown、数组长度 1、非 buffer。图形 / 计算的组合槽和游戏常量缓冲里的贴图句柄共用这一个函数，口径只此一处。
+//   返回 1 = 池内、0 = 池外（调用方区分两种事实 / 记账用）；out 可为 NULL（只要分类）。
+int s2a_nvn_default_texture_fact(int64_t id, int32_t pool_base, uint32_t pool_n, struct s2a_nvn_texture_fact *out);
+
 // BUFFER facts for the staged implementation. Producers must reject replay of
 // the resulting buffer binding until texel views can be bound.
 // array_length is descriptor count 1, not the texture's element count.
@@ -49,6 +55,10 @@ int s2a_nvn_texture_format_at(unsigned index, uint32_t *nvn_format, const char *
 // 索引与 s2a_nvn_texture_format_at / g_targets 同源，新增名字只改一处。
 int s2a_nvn_texture_format_index(const char *name, uint16_t *out);
 int s2a_nvn_texture_target_index(const char *name, uint8_t *out);
+// 身份解码用：稳定小整数 → 名字（与 *_index 同一张表；越界返回 -1）。
+// 调用方必须再做一次 name → index 的往返校验：表里允许两个目标共享一个名字（"2d"），
+// 只有编码器会产出的那个索引才是规范索引。
+int s2a_nvn_texture_target_at(uint8_t index, const char **name);
 
 #ifdef __cplusplus
 }

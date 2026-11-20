@@ -102,11 +102,12 @@ namespace S2A.Services.Tests
                     Put(mods, "codeonly/exefs/main", 16, 0xEE);
                     Put(mods, ".DS_Store", 8, 0x01);
                     Put(mods, "codeonly/romfs/._a.bin", 8, 0x01);
+                    Put(mods, ".off-disabled/romfs/a.bin", 50, 0x0F);   // 启动器 / iPhone 关掉的 mod（pack/jobs/mods.py OFF、ios/vpad_mods.m）：留在 mods/ 里但不叠；③ 起它一直在，「加载 2 个 mod」也证明不算进去
                     using (IStorage b = OpenBase(program, image))
                     {
                         lines.Clear();
                         IStorage s = RomFsMods.Apply(b, mods);
-                        Check($"{form}：mod 里没有 romfs 文件 → 原对象返回", "True", ReferenceEquals(s, b).ToString());
+                        Check($"{form}：mod 里没有 romfs 文件（关掉的 .off- 那份也不算）→ 原对象返回", "True", ReferenceEquals(s, b).ToString());
                         Check($"{form}：mod 里没有 romfs 文件 → 与原路径逐字节一致", "True", want.AsSpan().SequenceEqual(All(s)).ToString());
                         Check($"{form}：exefs/ 被忽略并记黄", "1", lines.Count(l => l.Contains("【黄】") && l.Contains("codeonly") && l.Contains("exefs/")).ToString());
                     }
@@ -353,10 +354,14 @@ namespace S2A.Services.Tests
                 {
                     Environment.SetEnvironmentVariable("S2A_DOCS", Path.Combine(root, "docsroot"));
                     Check("S2A_DOCS → <文档根>/mods", Path.Combine(root, "docsroot", "mods"), RomFsMods.ModsDir() ?? "null");
+                    // Mac 作业层直接给这款游戏文件夹的 mods/（S2A_MODS_DIR，pack/jobs/build.py）：优先于 S2A_DOCS
+                    Environment.SetEnvironmentVariable("S2A_MODS_DIR", Path.Combine(root, "gamefolder", "mods"));
+                    Check("S2A_MODS_DIR 优先于 S2A_DOCS", Path.Combine(root, "gamefolder", "mods"), RomFsMods.ModsDir() ?? "null");
+                    Environment.SetEnvironmentVariable("S2A_MODS_DIR", null);
                     Environment.SetEnvironmentVariable("S2A_DOCS", null);
                     Check("Mac 没有 S2A_DOCS → 不启用（不碰用户文稿夹）", "null", RomFsMods.ModsDir() ?? "null");
                 }
-                finally { Environment.SetEnvironmentVariable("S2A_DOCS", was); }
+                finally { Environment.SetEnvironmentVariable("S2A_DOCS", was); Environment.SetEnvironmentVariable("S2A_MODS_DIR", null); }
             }
             finally
             {

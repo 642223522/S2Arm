@@ -20,6 +20,7 @@
 #include "s2a_pad.h"
 #include "s2a_programs.h"
 #include "s2a_launch_ctx.h"
+#include "dev_serial_lock.h"   // Mac 开发机局串行锁（只在 Mac 分支调用）
 #include "../../graphics/nvn/gfx/nvn/dmsh_chain.h"   // DMSH_CHAIN：直连安全网诊断信息里写翻译链
 #include <unistd.h>
 #include <sys/stat.h>
@@ -53,6 +54,7 @@ __attribute__((weak)) int s2a_front_is_running(void) { return 0; }   // iOS 壳 
 #include "s2a_lan_discovery.h"
 // Hosts without a discovery implementation leave LAN unavailable explicitly.
 __attribute__((weak)) const s2a_lan_discovery_v1 *s2a_ldn_lan_provider(void) { return NULL; }
+__attribute__((weak)) void s2a_window_span_arm(void) {}   // vawin.c（Apple）强定义：低区碰底死的局记跨度用的路径先备好（#1143）
 void s2a_crash_install(void); void s2a_term_install(void);
 uint64_t s2a_mem_init(const char *npdm);
 void s2a_boot_mark(const char *stage);
@@ -218,11 +220,27 @@ int s2a_host_rebuild(void) {
     // 审计 P2-15：设置里的立刻重启不经过进后台，上一局按着的键 / 摇杆不能带进新局第一次读
     s2a_pad_session_reset();
     void s2a_gfx_mode_session_reset(void); s2a_gfx_mode_session_reset();
+    { void s2a_snap_session_fresh(int); const char *r = getenv("S2A_SNAP_RESTORE"); s2a_snap_session_fresh(r && *r); }   // 即时存档：新一局日志从头记（开关关着什么都不做）
     if (s2a_session_try_boot(load_session_modules, NULL)) return -1;
+    // 即时存档：进程内重建按快照恢复（界面设了 S2A_SNAP_RESTORE 再请求重启）。核对在服务层起来之前（同首次起局）；没过就照常起这一局
+    { const char *s2a_snap_path(const char *); const char *sr = s2a_snap_path(getenv("S2A_SNAP_RESTORE"));
+      if (sr && *sr) { int s2a_snap_restore_check(const char *); void s2a_snap_result_note(int);
+          if (s2a_snap_restore_check(sr)) { s2a_snap_result_note(0); unsetenv("S2A_SNAP_RESTORE"); void s2a_snap_session_fresh(int); s2a_snap_session_fresh(0);
+              LOG("即时存档恢复（进程内）：核对没过，照常起这一局（结果已写 snap_result.tsv）"); }
+          else LOG("即时存档恢复（进程内）：校验通过，起服务层后按快照恢复"); } }
     if (!S2A_InitSession || S2A_InitSession()) return -1;
     // Providers are initialized now; establish a background/restart hold
     // before the replacement guest thread can execute or submit its first frame.
     if (s2a_session_guest_start_prepare(s2a_session_generation())) return -1;
+    { const char *s2a_snap_path(const char *); const char *sr = s2a_snap_path(getenv("S2A_SNAP_RESTORE"));
+      if (sr && *sr) { int s2a_snap_restore(const char *); void s2a_snap_result_note(int);   // 核对在重建开头（服务层起来之前）已做，见上
+          if (s2a_session_guest_begin(s2a_session_generation())) return -1;
+          int rc = s2a_snap_restore(sr); s2a_snap_result_note(!rc); unsetenv("S2A_SNAP_RESTORE"); s2a_session_guest_end(0);
+          if (rc) {   // 游戏内存已动过，这一局接不下去：不起游戏线程，本次重建照常收尾，随即不带快照再重启一次（重新开局），不退回主屏
+              void s2a_snap_result_midway(int); void s2a_session_fresh_restart(void);
+              LOG("【红】即时存档恢复（进程内）失败：游戏内存已动过，这局不起；重新开始游戏（游戏存档未被改动）");
+              s2a_snap_result_midway(1); unsetenv("S2A_SNAP_SAVE_ROLLBACK"); s2a_session_fresh_restart(); return 0; }
+          return 0; } }
     return start_guest_thread();
 }
 
@@ -291,10 +309,16 @@ static int host_run(int argc, char **argv) {
           _exit(s2a_pack_apply(docs));
 #endif
       } }
+#if TARGET_OS_IPHONE
+    { int s2a_window_reserve_late(void); s2a_window_reserve_late(); }   // 构造期容器里还没有游戏、启动后才导入的：自检前补占窗口（vawin.c）
+#endif
     { int s2a_selfcheck(void); void s2a_ios_show_notice(const char *, const char *, const char *, int, int, int); void s2a_selfcheck_page(const char **, const char **);
       if (!s2a_selfcheck()) {
 #if TARGET_OS_IPHONE
           const char *t, *b; s2a_selfcheck_page(&t, &b);   // 细节（地址上限、内存上限）已在 host.log「【红】自检不过」，随诊断包带走
+          // 弱链接[host]：s2a_iml_claim（ios/iml_probe.m 提供；Mac 宿主与原生单测不链它，取不到就不记）
+          // 这页会说「缺提高内存上限权限」：记下这次打开已说过，诊断询问与游戏里提示条不再重复说（ios/iml_probe.m；输入工作台没链进来时弱引用为空）
+          { extern int s2a_iml_claim(void) __attribute__((weak_import)); if (s2a_iml_claim) (void)s2a_iml_claim(); }
           int s2a_selfcheck_can_continue(void); int s2a_ios_ask_continue(const char *, const char *, const char *, const char *);
           // 只差内存上限：提示页多一个「仍要启动」，玩家点了就照常起局（v0.3.1 装机原则）；物理上起不来的照旧只给提示、不起游戏
           if (s2a_selfcheck_can_continue() && s2a_ios_ask_continue("exclamationmark.triangle.fill", t, b, S2A_SELFCHECK_GO))
@@ -327,7 +351,9 @@ static int host_run(int argc, char **argv) {
         if (!nvn_pso_harvest) die("【红】S2A_PSO_HARVEST：这个宿主没链直连后端（nvn_pso_harvest）");
         exit(nvn_pso_harvest(hv)); } }
 #endif
-    if (!s2a_window_ok()) die("【红】地址窗口不足：首选位置整块 64 GB 与退路（2^39 以下 ≥ 32 GB 的空洞）都没占到，起不了局（见上面的地址表）");
+    // 窗口没占到：按本局实际的跨度与上界说（vawin.c s2a_window_fatal_msg；原先写死「首选 64 GB / 退路 2^39」，36 位款对不上）
+    if (!s2a_window_ok()) { char m[512]; uint64_t need = 0, fit = 0; s2a_window_need(&need, &fit);
+        s2a_window_fatal_msg(m, sizeof m, need, fit, s2a_window_hole_top(), s2a_window_hi36_tried()); die("%s", m); }
     s2a_crash_install(); s2a_term_install();
 #if !TARGET_OS_IPHONE
     // 帧回放（S2A_FRAME_REPLAY=<录像目录>，graphics/nvn/docs/frame_replay.md）：地址窗口占好后不装游戏、不起游戏线程，把录下的一帧喂给直连回放层，出截图 / 满屏判据 / 每笔指令数就退出
@@ -364,11 +390,26 @@ static int host_run(int argc, char **argv) {
     // 诊断钩子（diag_brk.c，S2A_DIAG_DELAY / S2A_DIAG_STAMP / S2A_DIAG_DUMP 设了才装，只 Mac）
     { void s2a_diag_brk_arm(void); s2a_diag_brk_arm(); }
     LOG("主程序构建号 %s", s2a_main_build_id());
+    // 即时存档恢复（S2A_SNAP_RESTORE=<快照目录>）：布局已定、服务层还没起、没碰存档目录——先核清单，不符当场拒绝退出
+    { const char *s2a_snap_path(const char *); const char *sr = s2a_snap_path(getenv("S2A_SNAP_RESTORE")); if (sr && *sr) { int s2a_snap_restore_check(const char *);
+        void s2a_snap_result_note(int); if (s2a_snap_restore_check(sr)) { s2a_snap_result_note(0);
+            if (s2a_unattended()) { s2a_logcon_flush(); _exit(3); }   // 自动化 / 开发工具局：退出码 3 给脚本判
+            LOG("即时存档恢复：核对没过，这局照常开局（结果已写 snap_result.tsv，界面按分类提示）"); unsetenv("S2A_SNAP_RESTORE"); goto snap_check_done; }
+        LOG("即时存档恢复：校验通过，起服务层后按快照恢复（不起游戏主线程）"); } }
+    snap_check_done:;
     s2a_boot_mark("装载 / 重定位 / 门表");
     s2a_boot_mark("内存布局");
 #if TARGET_OS_IPHONE
     // 游戏数据（服务接入线登记游戏用：exefs/main.npdm、romfs/、ctl/control.nacp）在资源包根（测试层契约），没给就指过去
     if (!getenv("S2A_GAME_DATA")) { setenv("S2A_GAME_DATA", lc->game_data, 0); LOG("游戏数据：%s", lc->game_data); }   // 启动上下文资源包根（兼容 = $HOME/Documents/资源包）
+#if TARGET_OS_TV
+    // Apple TV（11-15）：资源包里有 BC → ASTC 预转包（pack/jobs/tvos.py derive 出、随资源包推进电视）就交给渲染器（graphics/metal/gal_astc.m 查包）；
+    //   A15 不支持 BC 贴图，没这个包就在 CPU 上整张解成未压缩、贴图内存涨 4–8 倍。已设的环境变量优先（诊断 / 对照局）
+    { const char *gd = getenv("S2A_GAME_DATA"); char ap[1100]; struct stat st;
+      if (gd && *gd && !getenv("NXGAL_ASTC_PACK") && snprintf(ap, sizeof ap, "%s/astc.pack", gd) < (int)sizeof ap && !stat(ap, &st) && S_ISREG(st.st_mode)) {
+          setenv("NXGAL_ASTC_PACK", ap, 0); LOG("贴图：用 ASTC 预转包 %s（%lld MB）", ap, (long long)(st.st_size >> 20)); }
+      else if (!getenv("NXGAL_ASTC_PACK")) LOG("【黄】贴图：资源包里没有 ASTC 预转包（%s/astc.pack），BC 贴图在 CPU 上解压，内存占用高", gd ? gd : "?"); }
+#endif
 #endif
     // 出包期工具模式（Oodle：oodle_tool.c；GLSLC：glslc_tool.c）：只要装好的模块与游戏主线程，不起图形 / 前端、不进 nnMain——起游戏主线程，做完就退出。
     //   Oodle 解码器在 SDK 初始化前做完，不要 C#；GLSLC 与 LZ5（勇者斗恶龙 XI S 的 LZ5_decompress_safe，要游戏 malloc）要等 nninitStartup 与各模块全局构造，
@@ -407,7 +448,8 @@ static int host_run(int argc, char **argv) {
           fn, (unsigned long long)fs, (unsigned long long)fh); }
     { void s2a_vm_top(const char *); s2a_vm_top("C# 初始化后"); void s2a_vm_low(const char *); s2a_vm_low("C# 初始化后"); }
     { void s2a_guest_va_report(const char *); s2a_guest_va_report("C# 初始化后"); }
-    if (s2a_dev_on()) { void s2a_va_watch_start(void); s2a_va_watch_start(); }   // 地址走势（30 秒一行）：开发设施，玩家口径不起
+    s2a_window_span_arm();   // 低区碰底死的局在崩溃处理里记跨度：路径与取数函数这里先备好（vawin.c，#1143）
+    { void s2a_va_watch_start(void); s2a_va_watch_start(); }   // 地址走势（30 秒一行、只进日志）：11-17 归「诊断读数」，玩家包也开（远程定因要它）
     s2a_lowva_start();   // 低区统一记账巡检（lowva.c）：每秒实测保留量、余量不够叫可腾退的腾
     LOG("S2A 就绪");   // 测试层契约第 4 节：运行时（原生层 + C#）已起来
     if (s2a_autoplay_on && s2a_autoplay_on()) LOG("通用自动玩家已开（AI 看屏驾驶）");
@@ -416,18 +458,41 @@ static int host_run(int argc, char **argv) {
     //   首帧后前台满 60 秒清零（ap_host.c 上屏 / app.m 前后台）。放在起游戏主线程之前：此前的崩溃都发生在游戏线程起来之后
     if (s2a_gfx_mode() == S2A_GFX_DIRECT) { uint64_t s2a_npdm_program_id(void); const char *s2a_ios_host_commit(void);   // diag.m：Info.plist S2ACommit
         int fails = s2a_dguard_begin(s2a_npdm_program_id(), s2a_dguard_pack_fp(getenv("S2A_GAME_DATA")), s2a_ios_host_commit());
-        if (fails >= S2A_DGUARD_LIMIT) {
+        char known[48];
+        if (s2a_dguard_known_last(known, sizeof known)) {   // 上一局已知不是直连（游戏要的地址超出这台设备给的窗口等）：说设备内存不够，不叫更新重出包；不拦
+            LOG("直连安全网：上一局失败已知不是直连（%s），起局前说明这台设备内存不够", known);
+            if (!s2a_unattended()) { void s2a_ios_dguard_prompt(const char *diag, int device); s2a_ios_dguard_prompt(known, 1); LOG("直连安全网：玩家选了仍然启动"); }
+        } else if (fails >= S2A_DGUARD_LIMIT) {
             static char diag[2048]; s2a_dguard_diag(diag, sizeof diag, s2a_main_build_id(), DMSH_CHAIN);
             LOG("【红】直连安全网：本款直连已连续失败 %d 次，起局前提示玩家更新后重新出包；诊断：\n%s", fails, diag);
             // 自动化 / 开发工具起的局（s2a_unattended.h）不停在提示页：记录留着（出包指纹或宿主提交号变了才从 0 数），本局收掉
             if (s2a_unattended()) failed_session(S2A_INIT_FAIL_E_DGUARD_LIMIT);
-            void s2a_ios_dguard_prompt(const char *diag); s2a_ios_dguard_prompt(diag);   // 玩家点「仍然启动」才返回
+            void s2a_ios_dguard_prompt(const char *diag, int device); s2a_ios_dguard_prompt(diag, 0);   // 玩家点「仍然启动」才返回
             LOG("直连安全网：玩家选了仍然启动");
         }
         s2a_dguard_arm(now_ns());
     }
 #endif
-    if (start_guest_thread()) failed_session(S2A_INIT_FAIL_E_GAME_THREAD);
+    { const char *s2a_snap_path(const char *); const char *sr = s2a_snap_path(getenv("S2A_SNAP_RESTORE"));
+      if (sr && *sr) { int s2a_snap_restore(const char *);
+          if (s2a_session_guest_begin(s2a_session_generation())) failed_session(S2A_INIT_FAIL_E_GAME_THREAD);
+          void s2a_snap_result_note(int);
+          if (s2a_snap_restore(sr)) {
+              void s2a_snap_result_midway(int); void s2a_session_fresh_restart(void);
+              if (!s2a_session_rebuild_supported()) { LOG("【红】即时存档恢复失败（原因见上面的红行）：不起游戏，退出；存档目录未被改动"); s2a_snap_result_midway(0); s2a_logcon_flush(); _exit(6); }
+              // 游戏内存已动过：这一局不起游戏线程，界面照常起来，随即不带快照进程内重启（重新开局），不退回主屏
+              LOG("【红】即时存档恢复失败（原因见上面的红行）：这局不起，重新开始游戏；存档目录未被改动");
+              s2a_snap_result_midway(1); unsetenv("S2A_SNAP_RESTORE"); unsetenv("S2A_SNAP_SAVE_ROLLBACK");
+              s2a_session_guest_end(0); s2a_session_fresh_restart();
+          } else {
+              s2a_snap_result_note(1);
+              if (start_timer("S2A_RUN_S", run_timer)) LOG("【红】局时定时器起不来");
+              s2a_session_guest_end(0); }
+      } else {
+#if TARGET_OS_IPHONE
+          s2a_load_front_wait();   // 前台激活门（s2a_loadprog.h）：系统弹框盖着时加载照做、到这里才等激活，激活后马上开跑
+#endif
+          if (start_guest_thread()) failed_session(S2A_INIT_FAIL_E_GAME_THREAD); } }
     if (s2a_session_running(s2a_session_generation())) failed_session(S2A_INIT_FAIL_E_SERVICE_EARLY);
     s2a_boot_mark("S2A 就绪 → 起游戏主线程");
     s2a_front_run(NULL);
@@ -448,7 +513,7 @@ const char *s2a_host_pre_ui_checks(void) {
       if (!(e && *e == '1')) imp = s2a_import_needs_ui(); }
     int saves = manage_saves && manage_saves();
     // 直连安全网（dguard.c）：记录里已连续失败满 3 次，起局前要弹提示页、等玩家选
-    if (!imp && s2a_dguard_needs_ui()) { imp = 2; LOG("直连安全网：此前连续失败已满 %d 次，起局前提示", S2A_DGUARD_LIMIT); }
+    if (!imp && s2a_dguard_needs_ui()) { imp = 2; LOG("直连安全网：此前连续失败已满 %d 次或上一局已知不是直连，起局前提示", S2A_DGUARD_LIMIT); }
     // 加载页进度模型（loadprog.c）：本包没完整预热过 = 首次（完整加载页），否则简短启动画面
     { const char *gd = getenv("S2A_GAME_DATA"); if (!gd || !*gd) gd = s2a_launch_ctx_get()->game_data;
       s2a_load_begin(now_ns(), s2a_load_first_run(s2a_dguard_pack_fp(gd))); }
@@ -476,6 +541,7 @@ int main(int argc, char **argv) {
     s2a_front_run(prewarmed_host_run);
     return 0;
 #else
+    s2a_dev_serial_lock();   // 开发机上几个 Mac 局排队一个一个跑（dev_serial_lock.h；玩家机器不生效）
     return host_run(argc, argv);
 #endif
 }

@@ -34,7 +34,7 @@ public struct LaunchSettingRow: Codable, Identifiable, Equatable {
     public var id: String { env }
 }
 
-/// 本适配层自己记的前端选择（<数据目录>/apple-frontend/launch-settings.json）：现在只有出包页的平台勾选。
+/// 本适配层自己记的前端选择（<数据目录>/apple-frontend/launch-settings.json）：出包平台、存放位置及前端设置。
 /// 这里没有每款的游戏选项：游戏语言、主机模式、帧率、满屏等逐款选项都在启动设置（LaunchSettingsSheet，共享定义表 + 作业层 community 存 launch.json；
 /// 游戏语言 11-14 维护者确认玩家可选，推翻 11-07「不给玩家选」）。旧文件里的 games（语言 / 底座）读时丢掉。
 public final class SettingsProvider {
@@ -44,17 +44,32 @@ public final class SettingsProvider {
     private let lock = NSLock()
     /// 出包页记住的平台勾选（同一个文件的 exportTargets；没存过为 nil，读旧启动器 preferences.exportTargets）。
     private var targets: [String]?
+    /// 出包页最后一次手动选择的文件夹；尚未出包、尚未登记的位置也要记住。
+    private var location: String?
+    /// 每款游戏手动选过的文件夹（游戏号 → 路径）：玩家给哪款选的只管哪款，不拿去覆盖别的游戏现在放的位置（「玩家自行选择优先」）
+    private var picks: [String: String]
     /// 「允许 AI 操作 S2Arm」（本机控制口，见 ControlPort）：缺省关；--control / S2ARM_CONTROL=1 启动时强制开、不写这里。
     private var ai: Bool
     /// iCloud 存档同步的云盘文件夹（玩家在环境页选的；iPhone 上选同一个）。没选 = 不同步
     private var cloud: String?
+    /// 「装到 iPhone 时带主屏小组件」（11-16，缺省开；玩家关掉才记 homeWidget: false）：装机 / 更新 / 导出请求里关掉时带 widget: false
+    private var widget: Bool
+    /// 玩家在环境页自己选的 Xcode.app（D-9WFW：装在扩展硬盘等自动找不到的位置）。没选 = 自动找（XcodeLocator.detect）
+    private var xcode: String?
+    /// 「启动游戏时自动全屏」（#575，缺省关；打开才记 launchFullscreen: true）：起局请求里带 launchFullscreen，作业层给宿主全局缺省，单款显式设过的照单款
+    private var fullscreen: Bool
 
     public init(client: JobClient, store: URL? = nil) {
         self.client = client
         self.store = store ?? client.environment.privateRoot.appendingPathComponent("apple-frontend/launch-settings.json")
         targets = Self.read(self.store)
+        location = Self.object(self.store)?["exportLocation"] as? String
+        picks = Self.object(self.store)?["exportLocationByGame"] as? [String: String] ?? [:]
         ai = Self.object(self.store)?["aiControl"] as? Bool ?? false
         cloud = Self.object(self.store)?["cloudSavesFolder"] as? String
+        widget = Self.object(self.store)?["homeWidget"] as? Bool ?? true
+        xcode = Self.object(self.store)?["xcodeApp"] as? String
+        fullscreen = Self.object(self.store)?["launchFullscreen"] as? Bool ?? false
     }
 
     private static func object(_ url: URL) -> [String: Any]? {
@@ -71,6 +86,27 @@ public final class SettingsProvider {
     public func setAIControl(_ on: Bool) throws {
         let before = lock.withLock { () -> Bool in let b = ai; ai = on; return b }
         do { try write() } catch { lock.withLock { ai = before }; throw JobClientError("「允许 AI 操作」的开关没能写进磁盘（\(error.localizedDescription)）。") }
+    }
+
+    public var homeWidget: Bool { lock.withLock { widget } }
+
+    public func setHomeWidget(_ on: Bool) throws {
+        let before = lock.withLock { () -> Bool in let b = widget; widget = on; return b }
+        do { try write() } catch { lock.withLock { widget = before }; throw JobClientError("「装到 iPhone 时带主屏小组件」的开关没能写进磁盘（\(error.localizedDescription)）。") }
+    }
+
+    public var xcodeApp: String? { lock.withLock { xcode } }
+
+    public func setXcodeApp(_ path: String?) throws {
+        let before = lock.withLock { () -> String? in let b = xcode; xcode = path; return b }
+        do { try write() } catch { lock.withLock { xcode = before }; throw JobClientError("选的 Xcode 没能写进磁盘（\(error.localizedDescription)）。") }
+    }
+
+    public var launchFullscreen: Bool { lock.withLock { fullscreen } }
+
+    public func setLaunchFullscreen(_ on: Bool) throws {
+        let before = lock.withLock { () -> Bool in let b = fullscreen; fullscreen = on; return b }
+        do { try write() } catch { lock.withLock { fullscreen = before }; throw JobClientError("「启动游戏时自动全屏」的开关没能写进磁盘（\(error.localizedDescription)）。") }
     }
 
     public var cloudSavesFolder: String? { lock.withLock { cloud } }
@@ -93,15 +129,30 @@ public final class SettingsProvider {
         do { try write() } catch { lock.withLock { targets = before }; throw JobClientError("出包平台的勾选没能写进磁盘（\(error.localizedDescription)）。") }
     }
 
+    public var exportLocation: String? { lock.withLock { location } }
+
+    /// 玩家给这款手动选过的文件夹；没选过为 nil
+    public func exportLocation(forGame id: String) -> String? { lock.withLock { picks[id] } }
+
+    public func setExportLocation(_ path: String, game id: String? = nil) throws {
+        let before = lock.withLock { () -> (String?, [String: String]) in let b = (location, picks); location = path; if let id { picks[id] = path }; return b }
+        do { try write() } catch { lock.withLock { (location, picks) = before }; throw JobClientError("出包存放位置没能写进磁盘（\(error.localizedDescription)）。") }
+    }
+
     private func write() throws {
         let dir = store.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         var file: [String: Any] = ["schema": 1]
         if let saved = lock.withLock({ targets }) { file["exportTargets"] = saved }
+        if let saved = lock.withLock({ location }) { file["exportLocation"] = saved }
+        let byGame = lock.withLock { picks }
+        if !byGame.isEmpty { file["exportLocationByGame"] = byGame }
         if lock.withLock({ ai }) { file["aiControl"] = true }
         if let folder = lock.withLock({ cloud }) { file["cloudSavesFolder"] = folder }
+        if !lock.withLock({ widget }) { file["homeWidget"] = false }
+        if let app = lock.withLock({ xcode }) { file["xcodeApp"] = app }
+        if lock.withLock({ fullscreen }) { file["launchFullscreen"] = true }
         let data = try JSONSerialization.data(withJSONObject: file, options: [.sortedKeys])
         try data.write(to: store, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: store.path)
     }
 }

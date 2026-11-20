@@ -6,6 +6,7 @@ import json
 import os
 import platform
 import re
+import tempfile
 import threading
 import time
 import subprocess
@@ -13,13 +14,31 @@ import sys
 from core import Failure, atomic, digest, read, tree_hash
 
 
-def installed_xcodes(apps_dirs=("/Applications", str(Path.home() / "Applications")), select="/usr/bin/xcode-select"):
+def default_app_dirs(volumes="/Volumes"):
+    """找 Xcode 的目录：/Applications、~/Applications，加上每块外接卷的 Applications 与卷根（玩家把 Xcode 装在扩展硬盘上，
+    原先只看前两处，预检一直报「没找到完整的 Xcode」）。/Volumes 里的软链（启动盘指回 /）跳过；同一份从两条路径都看到时由
+    installed_xcodes 按版本 + 构建号去重。与前端 XcodeLocator 同一组目录，两处改一处要同步改另一处"""
+    dirs = ["/Applications", str(Path.home() / "Applications")]
+    try:
+        vols = sorted(Path(volumes).iterdir())
+    except OSError:
+        vols = []
+    for v in vols:
+        if v.is_symlink() or not v.is_dir():
+            continue
+        dirs += [str(v / "Applications"), str(v)]
+    return tuple(dirs)
+
+
+def installed_xcodes(apps_dirs=None, select="/usr/bin/xcode-select"):
     """装着的完整 Xcode（com.apple.dt.Xcode 且有 usr/bin/xcodebuild），按（版本号, 构建号）认、去重，版本新的在前：[(版本元组, 版本串, 构建号, Developer 目录)]。
     11-07 gate-host：Xcode-27.1.app 是指向 Xcode-27.app 的软链，而 Xcode-27.app 已被 App Store 原地升到 27.1——按路径名认就成了「27.0 + 27.1 两套」，
     其实是同一份。所以路径名不参与判定：版本读 Contents/Info.plist（CFBundleShortVersionString），构建号读 Contents/version.plist（ProductBuildVersion，
     同 xcodebuild -version 的 Build version，不起进程）；同版本同构建号（软链 / 改名 / 拷贝）只留第一个见到的路径（xcode-select 指的那份排最前）。
     构建号读不到的按实际路径（解软链）去重。门禁 / 工具链列 Xcode 一律走这里（tests/shellui_ios_build_test.sh 等）"""
     import plistlib
+    if apps_dirs is None:
+        apps_dirs = default_app_dirs()
     apps = []
     try:
         sel = subprocess.run([select, "-p"], capture_output=True, text=True, timeout=10).stdout.strip()
@@ -55,7 +74,7 @@ def installed_xcodes(apps_dirs=("/Applications", str(Path.home() / "Applications
     return out
 
 
-def detect_xcode(apps_dirs=("/Applications", str(Path.home() / "Applications")), select="/usr/bin/xcode-select"):
+def detect_xcode(apps_dirs=None, select="/usr/bin/xcode-select"):
     """装着的 Xcode 里版本最新的一个（含 xcode-select 指的那个）的 Contents/Developer；没有返回 None。规则见 installed_xcodes（按版本号 + 构建号认，不按路径名）。
     与前端 Store.detectXcode 同一规则（打 iPhone 包的着色器按目标系统大版本出，老 SDK 出不了新系统的）；两处改一处要同步改另一处。
     tools/toolchain.sh 没指定 Xcode 时也调这里（11-07：壳也要最新 SDK 链接，旧 SDK 的壳在 iOS 新机型上缩小显示），select / apps_dirs 由它传（单测换假的）"""
@@ -155,9 +174,14 @@ def input_interface(c, executable=None):
     return False, "没有找到可检查的 Mac 宿主，无法确认该引擎是否支持输入接口"
 
 
+READER_RECIPE = "aot1"  # 读取器发布方式（NativeAOT 单文件）的配方号：改动发布命令时升它，缓存键跟着换（键只算源码内容，不含本文件的改动）
+
+
 def reader_key(c):
     c.require_source()
-    return tree_hash(c.engine, ["pack/nx_unpack", "compat/packages"])[:24]
+    return hashlib.sha256(
+        (tree_hash(c.engine, ["pack/nx_unpack", "compat/packages"]) + READER_RECIPE).encode()
+    ).hexdigest()[:24]
 
 
 def reader(c):
@@ -169,15 +193,21 @@ def reader(c):
             same = (d / ".src_digest").read_text(encoding="utf-8").strip() == oneclick_win.nx_unpack_id()
         except OSError:
             same = False
-        if same and (d / "nx_unpack.dll").is_file():
-            return d / "nx_unpack.dll"
+        # nx_unpack.exe 是 NativeAOT 单文件（v0.5.0 Windows 去 .NET，bundle_prepare_win.py），调用方直接执行，作业环境不带 .NET
+        #   维护者 11-17：校验不过不再整个拒绝——源码身份对不上但读取工具在，就黄字提示后照常用（读取器只读原件、只产出这款的产物）；工具根本不在才停
+        if (d / "nx_unpack.exe").is_file():
+            if not same:
+                c.diagnostic("S2Arm 读取工具与引擎版本不符，这次照常使用；解包出错时请重新安装完整的 S2Arm。", code="reader_unavailable", severity="warning")
+            return d / "nx_unpack.exe"
         raise Failure("S2Arm 读取工具缺失或与引擎版本不符，请重新安装完整的 S2Arm。", code="reader_unavailable")
     from embedded import artifact
     bundled = artifact(c, "Reader")
     if bundled:
-        return bundled / "nx_unpack.dll"
+        return (
+            bundled / "nx_unpack"
+        )  # 发版件：NativeAOT 单文件（bundle_engine.py 发版时照同一配方编），直接执行、不再要 .NET 运行时
     folder = c.private / "tools" / reader_key(c)
-    path = folder / "nx_unpack.dll"
+    path = folder / "nx_unpack"
     stamp = read(folder / "ready.json", {})
     if not path.is_file() or stamp.get("sha256") != digest(path):
         raise Failure("S2Arm 读取工具尚未准备或源码已变化，请点击准备引擎工具。", code="reader_unavailable")
@@ -192,11 +222,27 @@ def prepare(c):
     c.begin("编译 S2Arm 内容读取工具", 1, 1)
     folder = c.private / "tools" / reader_key(c)
     folder.mkdir(parents=True, exist_ok=True)
-    c.run(["dotnet", "build", c.engine / "pack/nx_unpack/nx_unpack.csproj", "-c", "Release",
-           "-o", folder, "--nologo", "-p:UseAppHost=false", "-p:BaseIntermediateOutputPath=" + str(folder / "obj") + "/"],
-          c.logs / (c.task + "-reader.log"))
-    (folder / "nx_unpack").unlink(missing_ok=True)
-    path = folder / "nx_unpack.dll"
+    # NativeAOT 单文件（同发版件 Binaries/Reader 的形态，-r 按本机架构）：读取器在玩家机 / 源码树都是自包含可执行文件，作业环境不再需要 .NET 运行时
+    rid = "osx-arm64" if platform.machine() == "arm64" else "osx-x64"
+    c.run(
+        [
+            "dotnet",
+            "publish",
+            c.engine / "pack/nx_unpack/nx_unpack.csproj",
+            "-c",
+            "Release",
+            "-r",
+            rid,
+            "-o",
+            folder,
+            "--nologo",
+            "-p:PublishAot=true",
+            "-p:UseSharedCompilation=false",
+            "-p:BaseIntermediateOutputPath=" + str(folder / "obj") + "/",
+        ],
+        c.logs / (c.task + "-reader.log"),
+    )
+    path = folder / "nx_unpack"
     if not path.is_file():
         raise Failure("读取工具未生成完整产物。")
     atomic(folder / "ready.json", dict(schema=1, sha256=digest(path)))
@@ -220,10 +266,10 @@ def preflight_windows(c):
     try:
         report = json.loads(r.stdout)
     except ValueError:
-        raise Failure("Windows 环境检查没有给出结果：" + (r.stderr or r.stdout).strip()[-300:], code="win_check_failed")
+        raise Failure("Windows 环境检查没有给出结果：" + (r.stderr or r.stdout).strip()[-300:], code="win_check_failed")  # 非玩家句
     if report.get("error") or not report.get("checks"):   # winenv 自己报错（请求 / 错误码合同）= 检查没做成，不能当成一份空清单转给启动器
         err = report.get("error") or {}
-        raise Failure("Windows 环境检查没做成：" + str(err.get("message") or "清单为空") + "（" + str(err.get("code") or "") + "）", code="win_check_failed")
+        raise Failure("Windows 环境检查没做成：" + str(err.get("message") or "清单为空") + "（" + str(err.get("code") or "") + "）", code="win_check_failed")  # 非玩家句
     return dict(checks=report["checks"], ready=report["ready"], engineInfo={"inputConfig": False, "inputConfigReason": "Windows 版不出 Mac 宿主"},
                 canUninstallMetal=False)
 
@@ -234,7 +280,7 @@ def preflight(c):
     checks = []
     c.last_log = c.logs / (c.task + "-preflight.log")
     c.last_log.parent.mkdir(parents=True, exist_ok=True)
-    c.last_log.touch(mode=0o600)
+    c.last_log.touch()
     def add(cid, name, ok, message, scopes=("prepare",), action=None, code=None, group=None):
         # cid：稳定的英文检查项 id（剃刀 M11：前端原先按中文 name 分组判状态，这里一改名四行工具全显示「等待」）；name 只给人看
         check = dict(id=cid, name=name, ok=bool(ok), message=message, requiredFor=list(scopes),
@@ -242,11 +288,16 @@ def preflight(c):
         with c.last_log.open("a") as log:
             log.write(c.redact(f"{name}: {'OK' if ok else 'FAIL'}: {message}") + "\n")
         if not ok:
-            code = code or {"apple_silicon": "architecture_unsupported", "macos": "os_unsupported",
-                            "python": "engine_incomplete", "engine": "engine_incomplete",
-                            "dotnet": "dotnet_unavailable", "metal": "metal_unavailable",
-                            "xcode": "xcode_unavailable", "dotnet_sdk": "dotnet_sdk_missing",
-                            "reader": "reader_unavailable"}.get(cid, "tool_missing")
+            code = code or {
+                "apple_silicon": "architecture_unsupported",
+                "macos": "os_unsupported",
+                "python": "engine_incomplete",
+                "engine": "engine_incomplete",
+                "metal": "metal_unavailable",
+                "xcode": "xcode_unavailable",
+                "dotnet_sdk": "dotnet_sdk_missing",
+                "reader": "reader_unavailable",
+            }.get(cid, "tool_missing")
             check["diagnostic"] = c.describe_failure(Failure(message, code=code))
         checks.append(check)
         c.emit("check", check=check)
@@ -268,8 +319,12 @@ def preflight(c):
         add("library_location", "游戏库所在位置", cloud is None or accepted,
             (libloc.CLOUD_ACCEPTED_MESSAGE if accepted else libloc.CLOUD_MESSAGE).format(cloud=cloud) if cloud else "游戏库不在云盘同步目录里。",
             action="library", code="library_in_cloud", group="storage")
-    add("apple_silicon", "Apple Silicon", platform.system() == "Darwin" and platform.machine() == "arm64",
-        "需要 Apple Silicon Mac。", ("prepare", "launch"))
+    if platform.system() == "Darwin" and platform.machine() == "x86_64":
+        # 给 iPhone 出包是 Intel Mac 的正式用法（#152）：Mac 本机起游戏才要 Apple 芯片，别把出包路径整段标红
+        add("apple_silicon", "Apple Silicon", True, "Intel Mac：给 iPhone 出包可用；在 Mac 上起游戏仍要 Apple 芯片。", ("ipa",))
+    else:
+        add("apple_silicon", "Apple Silicon", platform.system() == "Darwin" and platform.machine() == "arm64",
+            "需要 Apple Silicon Mac。", ("prepare", "launch"))
     add("macos", "macOS", platform.system() == "Darwin" and int(platform.mac_ver()[0].split(".")[0] or 0) >= 15,
         "启动器需要 macOS 15 或更新版本。", ("prepare", "launch"))
     add("python", "Python", sys.version_info >= PYTHON_MINIMUM, "需要 Python %s 或更新版本。" % ".".join(map(str, PYTHON_MINIMUM)), ("prepare", "launch"))
@@ -279,10 +334,8 @@ def preflight(c):
     except Failure:
         source_ok = False
     add("engine", "S2Arm 内置引擎", source_ok, "应用内置 S2Arm 宿主和准备工具。", ("prepare", "launch"))
+    # .NET 检查项已删（出包 C# 工具全为随 App 预编的原生单文件，运行不再要 .NET）：源码树要 SDK 的只剩「打 iPhone 包」（下面的 dotnet_sdk 项）与命令行现编入口（各自报红）
     packaged = bool(c.r.get("engineBundle"))
-    ok, version = probe(c, ["dotnet", "--list-runtimes" if packaged else "--list-sdks"])
-    add("dotnet", ".NET 10", ok and ("Microsoft.NETCore.App 10." in version if packaged else any(line.startswith("10.") for line in version.splitlines())),
-        "应用内置 .NET 10 运行时。" if packaged else "开发构建需要 .NET 10 SDK。")
     ok, version = probe(c, ["xcrun", "--sdk", "macosx", "metal", "--version"])
     developer = Path(c.r.get("developerDir") or "")
     # 没找到 Xcode 时启动器传空串：Path("") 拼出的相对路径会按工作目录（从 Finder 打开是 /）落到系统自带的
@@ -302,7 +355,7 @@ def preflight(c):
     if has_xcode:   # 打 iPhone 包 / 装到 iPhone 都要（出壳 ShellUI、申请开发描述文件走 xcodebuild 真机目标）；只在 Mac 上玩不需要
         platform_ok, sdk, why, platform_action = ios_platform(c)
         with c.last_log.open("a") as log:
-            log.write(c.redact(f"iOS 平台组件判据：{why}") + "\n")
+            log.write(c.redact(f"iOS 平台组件判据：{why}") + "\n")  # 非玩家句
         if platform_ok is not None:
             if platform_ok:
                 message = f"已装 Xcode 的 iOS {sdk} 平台组件。"
@@ -333,18 +386,18 @@ def preflight(c):
                 why = "内置引擎里没有准备工具清单"
         except (Failure, OSError) as e:   # 原因写进检查项和日志，不再只剩一个 FAIL（v0.2.0 前回归时查不到为什么）
             ready_tools, why = False, str(e)
-            c.emit("message", "S2Arm 游戏准备工具不可用：" + why)
+            c.emit("message", "S2Arm 游戏准备工具不可用：" + why)  # 非玩家句
         add("pack_tools", "S2Arm 游戏准备工具", ready_tools, "应用内置着色器翻译器、资源索引器和 GAL 工具。" + ("（" + why + "）" if why else ""))
     for module in ("capstone", "lz4", "numpy", "zstandard"):   # zstandard：读 zstd 存储的 Switch 2 .nup（pack/ns2_nup.py；内置 Python 3.12 没有 compression.zstd）
         ok, _ = probe(c, [sys.executable, "-c", "import " + module])
-        add("python_" + module.lower(), "Python / " + module, ok, "应用内置 " + module + "；组件损坏时请重新安装完整应用。")
+        add("python_" + module.lower(), "Python / " + module, ok, "应用内置 " + module + "；组件损坏时请重新安装完整应用。")  # 非玩家句
     # timeout 实跑一次限时命令判可用（#1133：内附的 tools/bin/timeout 不认 --version、返回 125，探 --version 把可用的它判成缺）
     for command, args in (("zstd", ["--version"]), ("spirv-as", ["--version"]), ("spirv-val", ["--version"]), ("timeout", ["5", "/usr/bin/true"])):
         ok, _ = probe(c, [command, *args])
         add(command.replace("-", "_"), command, ok,
-            "应用内置 " + command + "。" if packaged else "构建环境缺少 " + command + "。")
+            "应用内置 " + command + "。" if packaged else "构建环境缺少 " + command + "。")  # 非玩家句
     # 打 iPhone 包要现编 iOS 版 C# 库：需要 .NET 10 SDK（用户目录 ~/.dotnet，一键安装不要管理员密码）。只算「打 iPhone 包」的条件，不挡 Mac 打包和启动
-    #   发版应用不要：C# 件随发版预编、iOS 壳随包（Resources/Shell），只用内置 .NET 运行时；只有源码树开发构建要
+    #   发版应用不要：C# 件随发版预编为原生单文件、iOS 壳随包（Resources/Shell），运行不要任何 .NET；只有源码树开发构建要
     if not packaged:
         from ipa import dotnet_sdk
         add("dotnet_sdk", ".NET SDK（打 iPhone 包）", dotnet_sdk()[1] is not None,
@@ -378,7 +431,7 @@ def download_metal(c):
             text = Path(log).read_text(encoding="utf-8", errors="replace")[-16000:] if log else ""
         except OSError:
             text = ""
-        code = log_cause([("下载日志", text)], log)[0]
+        code = log_cause([("下载日志", text)], log)[0]  # 非玩家句
         if code:
             raise Failure(PLAYER_REASON.get(code) or str(e), code=code) from e
         raise
@@ -466,6 +519,24 @@ def _wait_runtime_ready(c, allowed, ver, seconds):
     return _runtime_ready(c, allowed, ver)
 
 
+def _iphoneos_sdk_usable(c):
+    """Intel Mac 不跑模拟器：只要 xcrun clang 能用这套 iphoneos SDK 编出 arm64 目标，就能出壳 / 打 IPA。
+    临时文件用完即删，不动仓库，也不下载。"""
+    env = c.env()
+    sdk = subprocess.run(["xcrun", "--sdk", "iphoneos", "--show-sdk-path"], env=env,
+                         capture_output=True, text=True)
+    if sdk.returncode != 0 or not sdk.stdout.strip():
+        return False
+    with tempfile.TemporaryDirectory() as folder:
+        source = Path(folder) / "probe.c"
+        source.write_text("int s2a_probe(void) { return 0; }\n", encoding="utf-8")
+        probe = subprocess.run(["xcrun", "--sdk", "iphoneos", "clang", "-arch", "arm64",
+                                "-isysroot", sdk.stdout.strip(), "-c", str(source),
+                                "-o", str(Path(folder) / "probe.o")],
+                               env=env, capture_output=True, text=True)
+        return probe.returncode == 0
+
+
 def ios_platform(c):
     """选中 Xcode 的 iOS 平台组件装了没有 → (ok, SDK 版本, 详情, 一键处理)；ok=None 表示读不到、不判。
     11-07 定因（本机 Xcode 26.6 编得过、gate-host 同版编不过对照）：Xcode 26 起「iOS 平台」= 与该 Xcode 的 iOS SDK 配套的 iOS 模拟器运行时，首次打开时另下；
@@ -481,14 +552,18 @@ def ios_platform(c):
     if rows is None:
         return None, ver, "读不到已装的 iOS 运行时", None
     have = [f"{v}（{b or '?'}）" for v, b, _ in rows]
-    why = (f"SDK {ver}（{build}）可配运行时 {sorted(allowed)}，已装 {have or '无'}" if allowed else
-           f"SDK {ver}（{build or '?'}）没有配套表，按同版本号比；已装 {have or '无'}")
+    why = (f"SDK {ver}（{build}）可配运行时 {sorted(allowed)}，已装 {have or '无'}" if allowed else  # 非玩家句
+           f"SDK {ver}（{build or '?'}）没有配套表，按同版本号比；已装 {have or '无'}")  # 非玩家句
+    # Intel Mac 不出 Mac 局、也不跑 iOS 模拟器：装 8 GB 模拟器运行时对出 iPhone 包没有用处。
+    # 只要本机 SDK 能直接编 arm64 目标就认这套 Xcode 可用（Xcode 26.5 / SDK 26.5 实走）。
+    if platform.system() == "Darwin" and platform.machine() == "x86_64" and _iphoneos_sdk_usable(c):
+        return True, ver, why + "；Intel Mac 用 iphoneos SDK 直接出壳，不要求模拟器运行时", None  # 非玩家句（拼进详情 why）
     ready = [r for r in rows if r[2] and _runtime_matches(ver, allowed, r[0], r[1])]
     pending = [r for r in rows if not r[2] and _runtime_matches(ver, allowed, r[0], r[1])]
     if ready:
         return True, ver, why, None
     if pending:
-        return False, ver, why + "；有已下载、还没就绪的镜像", "recheck"
+        return False, ver, why + "；有已下载、还没就绪的镜像", "recheck"  # 非玩家句
     return False, ver, why, "downloadIosPlatform"
 
 
@@ -569,7 +644,7 @@ def install_dotnet(c):
             got = archive.stat().st_size if archive.exists() else 0
             if got:
                 c.emit(done=float(got), total=float(total or got), unit="B")
-                print(f"  .NET SDK 已下载 {got >> 20} MB" + (f" / {total >> 20} MB" if total else ""), file=sys.stderr, flush=True)
+                print(f"  .NET SDK 已下载 {got >> 20} MB" + (f" / {total >> 20} MB" if total else ""), file=sys.stderr, flush=True)  # 非玩家句
     t = threading.Thread(target=watch, daemon=True); t.start()
     try:
         c.run(args, env=env)

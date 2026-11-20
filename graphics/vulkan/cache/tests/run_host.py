@@ -13,6 +13,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", required=True, type=Path, help="new absolute directory outside checkout")
     parser.add_argument("--metadata-boundaries", action="store_true", help="run the metadata regression cases only")
+    parser.add_argument("--artifacts", type=Path, help="artifacts path where CodecTests is already built by the caller (skip restore and build)")
     args = parser.parse_args()
     here = Path(__file__).resolve().parent
     root = here.parents[3]
@@ -54,9 +55,10 @@ def main():
             binary = output / (stage + ".spv")
             run([paths["spirv-as"], "--target-env", "vulkan1.2", str(here / (stage + ".spvasm")), "-o", str(binary)])
             run([paths["spirv-val"], "--target-env", "vulkan1.2", str(binary)])
-        artifacts = output / "build"
-        run([paths["dotnet"], "restore", str(project), "--configfile", str(here / "NuGet.Config"), "--artifacts-path", str(artifacts)])
-        run([paths["dotnet"], "build", str(project), "--no-restore", "--artifacts-path", str(artifacts), "-c", "Release"])
+        artifacts = args.artifacts or output / "build"
+        if not args.artifacts:
+            run([paths["dotnet"], "restore", str(project), "--configfile", str(here / "NuGet.Config"), "--artifacts-path", str(artifacts)])
+            run([paths["dotnet"], "build", str(project), "--no-restore", "--artifacts-path", str(artifacts), "-c", "Release"])
         binary = artifacts / "bin" / "CodecTests" / "release" / "CodecTests.dll"
         command = [paths["dotnet"], str(binary), str(output)]
         if args.metadata_boundaries:

@@ -127,7 +127,7 @@ namespace Ryujinx.Horizon.Sdk.Audio.Detail
         }
 
         // 300 IsVirtualDeviceStreamFormatSupported：A 缓冲（设备名）；in StreamFormat @0（12 字节）、u32 功能 @0xc；只回结果码（成功 = 支持）。
-        //   宿主能直接播的格式回成功；不支持时真机回哪个结果码不知道 → 报红（游戏的 Open 随之失败，红行带着格式）
+        //   宿主能播的格式（ExternalOutputStream.IsHostSupported）回成功；不支持时真机回哪个结果码不知道 → 报红（游戏的 Open 随之失败，红行带着格式）
         [CmifCommand(300)]
         public Result IsVirtualDeviceStreamFormatSupported([Buffer(HipcBufferFlags.In | HipcBufferFlags.MapAlias)] ReadOnlySpan<byte> name, StreamFormat format, uint functionality)
         {
@@ -135,7 +135,7 @@ namespace Ryujinx.Horizon.Sdk.Audio.Detail
 
             if (!ExternalOutputStream.IsHostSupported(format))
             {
-                throw new NotImplementedException($"auddmg:u IUserSession 300：{format} 宿主不能直接播，不知道真机回哪个结果码");
+                throw new NotImplementedException($"auddmg:u IUserSession 300：{format} 宿主不能播，不知道真机回哪个结果码");
             }
 
             return Result.Success;

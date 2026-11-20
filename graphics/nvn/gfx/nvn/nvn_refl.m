@@ -55,7 +55,7 @@ static void pair_from_name(NSString *nm, nvn_rbind *r) {
     r->pair = 1;
 }
 int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
-    memset(o, 0, sizeof *o);
+    memset(o, 0, sizeof *o); if (errlen > 0) err[0] = 0;   // success leaves err empty, or a note (drv_unfilled)
     #define FAIL(...) do { free(o->c1); o->c1 = NULL; free(o->b); o->b = NULL; snprintf(err, errlen, __VA_ARGS__); return 1; } while (0)
     if (![j[@"route"] isEqual:@"B"]) FAIL("not a B reflection (route ≠ B; route A / PC-chain reflection is retired)");
     {   // Translated original Switch shaders: kind and NVN slot number are already parsed from the MSL member names by dmsh_build.py
@@ -64,11 +64,13 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
         if (bs.count > NVN_REFL_MAXARG) FAIL("%lu bindings, over the argument buffer limit %d", (unsigned long)bs.count, NVN_REFL_MAXARG);   // each binding takes at least one entry
         if (!(o->b = calloc(bs.count ? bs.count : 1, sizeof *o->b))) FAIL("allocation of %lu bindings failed", (unsigned long)bs.count);
         o->route_b = 1; o->abi = 0;   // spirv-cross set 0 → [[buffer(0)]]
+        NSMutableDictionary<NSString *, NSNumber *> *by_name = [NSMutableDictionary dictionary], *lead_for = [NSMutableDictionary dictionary];   // #798 TBLEAD：成员名 → 下标；前导项下标 → 它所属的成员名
         for (NSDictionary *b in bs) {
             NSString *k = b[@"kind"]; nvn_rbind *r = &o->b[o->nb];
             id rg = b[@"reg"]; int reg = [rg isKindOfClass:[NSNumber class]] ? [rg intValue] : -1, aid = [b[@"arg_id"] intValue];
             r->aid = (uint16_t)aid; r->reg = reg < 0 ? 0 : (uint16_t)reg;
             NSString *nm = b[@"msl_name"], *ty = b[@"msl_type"];
+            if ([nm isKindOfClass:[NSString class]]) by_name[nm] = @(o->nb);
             // Ryujinx's fallback for a handle it cannot trace to one slot (handle type 4: <stage>_<t|tb|s>_cb0_40000000, declared array<element, n>); the build leaves it without a slot
             // ('tbuf' / 'tex' with no reg, '?' for the samplers). Octopath Traveler 0's vertex shaders pick one of several c2 table slots at run time (61 shaders, slots 0-10)
             NSString *el; int n = arr_len(ty, &el);
@@ -86,7 +88,8 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
                 r->kind = NVN_RB_IMGA; r->rw = 1; o->nb++; continue;
             }
             if ([k isEqualToString:@"cbuf"]) r->kind = NVN_RB_CBUF;
-            else if ([k isEqualToString:@"samp"]) r->kind = NVN_RB_SAMP;
+            else if ([k isEqualToString:@"samp"]) { r->kind = NVN_RB_SAMP;   // declared as an array (the sampler half of a separate handle pair whose texture half is a run-time c2 array, Dsh.cs C2Array): every element is this one sampler
+                if (n > 1) { if (n > 32) FAIL("B binding %s: array of %d", nm.UTF8String, n); r->n = (uint8_t)n; } }
             else if ([k isEqualToString:@"samp_tex"]) r->kind = NVN_RB_SAMPT;
             else if ([k isEqualToString:@"tex"]) { r->kind = NVN_RB_TEX; dummy_kind(b[@"msl_type"], &r->dtt, &r->dpf); r->f1d = [b[@"fetch1d"] boolValue] ? ([b[@"fetch1d_exact"] boolValue] ? 2 : 1) : 0;
                 // #968: the s2a_flags.yzw bit the translator reads for this binding's coordinate normalization (Dsh.cs Reflect); absent in an older library = no bit, as before
@@ -102,7 +105,8 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
                 if (n) { if (n > 32) FAIL("B binding %s: array of %d", nm.UTF8String, n); r->n = (uint8_t)n; } }
             else if ([k isEqualToString:@"samp_id"]) r->kind = NVN_RB_SAMPI;
             // The pools, indexed by the handle's IDs (nvn_refl.h TEXP / SAMPP): which texture is read is known only when the GPU runs the draw
-            else if ([k isEqualToString:@"tex_pool"]) { if (![b[@"elem"] isKindOfClass:[NSString class]]) FAIL("B binding %s: texture pool without its element type", [nm description].UTF8String); r->kind = NVN_RB_TEXP; dummy_kind(b[@"elem"], &r->dtt, &r->dpf); o->bindless = o->pool = 1; }
+            else if ([k isEqualToString:@"tex_pool"]) { if (![b[@"elem"] isKindOfClass:[NSString class]]) FAIL("B binding %s: texture pool without its element type", [nm description].UTF8String); r->kind = NVN_RB_TEXP; dummy_kind(b[@"elem"], &r->dtt, &r->dpf); o->bindless = o->pool = 1;
+                r->rw = [b[@"elem"] containsString:@"access::write"] || [b[@"elem"] containsString:@"access::read_write"]; }   // an image pool (the shader writes through it): nvn_mtl.m pool_fit / pool_mark_writes
             else if ([k isEqualToString:@"samp_pool"]) { r->kind = NVN_RB_SAMPP; o->bindless = o->pool = 1; }
             else if ([k isEqualToString:@"tex_c2a"] || [k isEqualToString:@"samp_c2a"]) {   // an array of the driver table's handles (nvn_refl.h TEXA / SAMPA)
                 if (n < 1 || n > 32) FAIL("B binding %s: array of %d", nm.UTF8String, n);
@@ -131,12 +135,17 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
             else if ([k isEqualToString:@"gmem_map"]) { r->kind = NVN_RB_GMEM; r->rw = [b[@"rw"] boolValue]; }   // raw memory pool table (nvn_refl.h GMEM)
             else if ([k isEqualToString:@"gmem_log"]) { r->kind = NVN_RB_GMEML; r->rw = 1; }
             else if ([k isEqualToString:@"sbuf_ubo"]) { r->kind = NVN_RB_SBUFU; r->rw = sbuf_rw(b); r->off = (uint16_t)[b[@"off"] intValue]; }
+            else if ([k isEqualToString:@"sbuf_push"]) { int off = [b[@"off"] intValue];   // its address pushed into NVN2 push slot reg (Dsh.cs sbuf_push; nvn_refl.h SBUFQ)
+                if (reg < 0 || reg >= NVN_REFL_PUSH_SLOTS || off < 0 || off + 8 > NVN_REFL_PUSH_BYTES) FAIL("B binding %s: push slot %d + %d outside the %d slots of %d bytes", [nm description].UTF8String, reg, off, NVN_REFL_PUSH_SLOTS, NVN_REFL_PUSH_BYTES);
+                r->kind = NVN_RB_SBUFQ; r->rw = sbuf_rw(b); r->off = (uint16_t)off; }
             else if ([k isEqualToString:@"geometry"]) { if (reg < 0 || reg > 4) FAIL("invalid geometry helper slot"); r->kind = NVN_RB_GEOMETRY; }
             else if ([k isEqualToString:@"support"]) r->kind = NVN_RB_SUPPORT;
             else if ([k isEqualToString:@"uvx"]) r->kind = NVN_RB_UVX;
             else if ([k isEqualToString:@"lb"]) r->kind = NVN_RB_LB;   // S2Arm #800 sampler LOD bias table (dmsh_red.py fs_lb)
             else if ([k isEqualToString:@"ubolen"]) r->kind = NVN_RB_UBOLEN;   // #1204 T1 uniform buffer length table (gal_spvx.m direct form)
             else if ([k isEqualToString:@"sbsize"]) r->kind = NVN_RB_SBSZ;     // SPIRV-Cross storage buffer byte sizes (by argument id)
+            else if ([k isEqualToString:@"tblead"]) { if (![b[@"for"] isKindOfClass:[NSString class]]) FAIL("B binding %s: texel buffer lead without its buffer", [nm description].UTF8String);
+                r->kind = NVN_RB_TBLEAD; lead_for[@(o->nb)] = b[@"for"]; }   // #798（nvn_refl.h TBLEAD）
             else if ([k isEqualToString:@"c1"]) r->kind = NVN_RB_C1;
             // 常量库 c[24 + k]：NVN2（Ampere）的推常量槽 k（nvn2_cmd.h；PushGraphics / ComputeConstants 推进来的那 256 字节），不是驱动段
             else if ([k isEqualToString:@"drvcb"] && [b[@"bank"] intValue] >= 24 && [b[@"bank"] intValue] < 32) { r->kind = NVN_RB_PUSH; r->reg = (uint16_t)([b[@"bank"] intValue] - 24); }
@@ -147,13 +156,29 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
             if (r->kind == NVN_RB_TEXU || r->kind == NVN_RB_SAMPU || r->kind == NVN_RB_TBUFU || r->kind == NVN_RB_IMGU) pair_from_name(nm, r);   // the second word of a separate handle
             o->nb++;
         }
+        for (NSNumber *li in lead_for) {   // #798：前导项配给它的纹素缓冲（名字对上、且是纹素缓冲那几种）
+            NSNumber *ti = by_name[lead_for[li]]; int L = li.intValue, T = ti ? ti.intValue : -1;
+            // 几何拓扑缓冲 trb_data：翻译器先把它声明成纹素缓冲，spv_tbias（gal_spvx.c）照例给它加了前导项；几何变体再把它改写成宿主填的 uint 指针
+            //   （Dsh.cs TopologyPointer），反射里成了几何辅助缓冲。宿主自己写的缓冲没有不对齐偏移，前导数恒为 0——不配对正是 0（tbl_lead_of 无配对返回 0），
+            //   和 #798 之前一样。原先整支判失败：几何核编不出、整批几何绘制被跳过（11-16 一款 Switch 2 游玩帧 121 笔）。
+            // 图像纹素缓冲（可写，img / img_ubo 声明成 texture_buffer）：spv_tbias 同样给它加前导项，宿主的前导视图（tbl_view）只做只读纹素缓冲，
+            //   不配对 = 前导数 0 = #798 之前的行为（那时这些着色器照常编、照常画）。原先整支判失败（11-16 一款 Unreal 游戏一局 188 处）。别的种类照旧报错
+            if (T >= 0 && T < o->nb && (o->b[T].kind == NVN_RB_GEOMETRY ||
+                ((o->b[T].kind == NVN_RB_IMG || o->b[T].kind == NVN_RB_IMGU) && o->b[T].dtt == (uint8_t)MTLTextureTypeTextureBuffer))) continue;
+            if (T < 0 || T >= o->nb || !(o->b[T].kind == NVN_RB_TBUF || o->b[T].kind == NVN_RB_TBUFU || (o->b[T].kind == NVN_RB_TEX && o->b[T].dtt == (uint8_t)MTLTextureTypeTextureBuffer)))
+                FAIL("B binding gal_tbl_%s: no texel buffer of that name", [lead_for[li] description].UTF8String);
+            o->b[T].tbl = (uint16_t)(L + 1); o->b[L].tbl = (uint16_t)(T + 1); o->has_tbl = 1;
+        }
         NSDictionary *dr = j[@"drv_reads"];
         if ([dr isKindOfClass:[NSDictionary class]]) { o->drv_read[0] = dr[@"0"] != nil; o->drv_read[2] = dr[@"2"] != nil; }
         // A declared driver-segment binding means the shader reads it: the build's drv_reads scan (dmsh_build.py) matches only fragment-shader names (fp_c0 / fp_c2), so vertex and compute
         // shaders reading c0 got an all-zero segment (Link's Awakening's light culling multiplied the tile row by a zero workgroup count: every row's lights landed in row 0)
         for (int i = 0; i < o->nb; i++) { if (o->b[i].kind == NVN_RB_DRV0) o->drv_read[0] = 1; else if (o->b[i].kind == NVN_RB_DRV2) o->drv_read[2] = 1; }
         NSArray *uf = j[@"drv_unfillable"];
-        if ([uf isKindOfClass:[NSArray class]] && uf.count) FAIL("reads driver-bank locations at run time that the replay layer cannot fill: %s", [[uf componentsJoinedByString:@" "] UTF8String]);
+        // Locations the replay layer does not fill (a dynamic index, a word outside its tables) read 0, as every location of a vertex / compute shader the build does not scan does:
+        //   the shader is used, with a note (S2Arm, no refusal on a check that only says "not filled": 0100853015E86000's pixel shaders read c0 by a dynamic index and c0+0x630,
+        //   and the whole program was refused, so every draw with it was skipped, #bbd549). The dynamic index lands in the tables the layer fills when it indexes them
+        if ([uf isKindOfClass:[NSArray class]] && uf.count) { o->drv_unfilled = 1; if (errlen > 0) snprintf(err, errlen, "reads driver-bank locations the replay layer does not fill (they read 0): %s", [[uf componentsJoinedByString:@" "] UTF8String]); }
         NSString *c1 = j[@"c1"];
         if (c1.length % 2 || c1.length / 2 > 0xffff) FAIL("c1 is %lu bytes: over the limit or an odd hex length", (unsigned long)c1.length / 2);
         if (c1.length && !(o->c1 = malloc(c1.length / 2))) FAIL("c1 allocation of %lu bytes failed", (unsigned long)c1.length / 2);
@@ -203,6 +228,8 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
             if (ok) o->uv_aff_attr[l] = (int8_t)a; }
         NSArray *su = [ra isKindOfClass:[NSDictionary class]] ? ra[@"scr_uv"] : nil;   // 10-30：屏幕坐标插值量（见 nvn_refl.h scr_uv）
         if ([su isKindOfClass:[NSArray class]]) for (NSNumber *l in su) if ([l isKindOfClass:[NSNumber class]] && l.intValue >= 0 && l.intValue < 32) o->scr_uv |= 1u << l.intValue;
+        NSArray *sp = [ra isKindOfClass:[NSDictionary class]] ? ra[@"scr_pos"] : nil;   // #1152：等于 gl_Position 的插值量（见 nvn_refl.h scr_pos）
+        if ([sp isKindOfClass:[NSArray class]]) for (NSNumber *l in sp) if ([l isKindOfClass:[NSNumber class]] && l.intValue >= 0 && l.intValue < 32) o->scr_pos |= 1u << l.intValue;
         NSDictionary *uv = [ra isKindOfClass:[NSDictionary class]] ? ra[@"uv_from_attr"] : nil;
         if ([uv isKindOfClass:[NSDictionary class]]) for (NSString *k in uv) { int l = k.intValue, a = [uv[k] intValue]; if (l >= 0 && l < 32 && a >= 0 && a < 16) o->uv_attr[l] = (int8_t)a; }
         NSDictionary *fe = j[@"fetch"];
@@ -210,9 +237,10 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
             for (NSDictionary *c in fe[@"calls"]) { int i = [c[@"fc"] intValue], r = [c[@"tex_reg"] intValue], l = [c[@"varying_locn"] intValue];
                 if (i != o->nfc || i >= 32 || r < 0 || r >= 256 || l < 0 || l >= 32) FAIL("fetch call table not contiguous or out of range (entry %d)", i);
                 if ([c[@"proj"] intValue]) o->fc_proj |= 1u << o->nfc;
+                if ([c[@"ndc"] intValue]) o->fc_ndc |= 1u << o->nfc;
                 o->fc_reg[o->nfc] = (uint8_t)r; o->fc_locn[o->nfc] = (uint8_t)l; o->nfc++; }
             for (NSNumber *r in fe[@"mixed_regs"]) if (r.intValue >= 0 && r.intValue < 256) o->fc_mixed[r.intValue >> 6] |= 1ull << (r.intValue & 63);
-            for (NSDictionary *u in fe[@"outputs"]) { if (o->nfo >= 4) FAIL("more than 4 fetch outputs"); o->fo_color[o->nfo++] = (uint8_t)[u[@"color"] intValue]; }
+            for (NSDictionary *u in fe[@"outputs"]) { if (o->nfo >= 8) FAIL("more than 8 fetch outputs"); o->fo_color[o->nfo++] = (uint8_t)[u[@"color"] intValue]; }
         }
         for (NSDictionary *u in j[@"first_store"]) { if (![u isKindOfClass:[NSDictionary class]]) FAIL("first_store entry is not an object"); if (o->nfirst >= 4) FAIL("more than 4 first-invocation stores");
             int reg = [u[@"reg"] intValue], word = [u[@"word"] intValue];

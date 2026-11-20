@@ -113,12 +113,33 @@ namespace Ryujinx.Audio.Backends.Apple
         //   S2A_AUDIO_HEAL=0 关（同包 A/B）；S2A_AUDIO_TEST_STALL_AT=<秒>：开播后到点暂停一次队列（模拟系统停播，测试用）
         private const int StallMs = 1000;
         private const int HealBackoffMs = 2000;
+        // S2Arm (#1598 Mac 无声)：一次交设备（AudioQueueEnqueueBuffer，问音频服务进程）卡这么久 = 输出队列卡死，看门狗重启它。
+        //   正常是微秒级；iPhone 上问音频服务的调用偶发最长约 50 ms（见 Pump 头注释）。玩家 M2 局：渲染一拍里「DSP」从 10 ms 级跳到 340 ms → 2.3 / 4.9 / 6.7 s、
+        //   随后停流全无声，切窗口走解冻路径重启输出队列后立刻回到 10 ms 级——慢的是交设备这一步而不是混音计算（快路径是进程级静态开关，重启队列碰不到它）。
+        //   原兜底只看「设备多久没回调、在途有数据」，交设备本身卡住时生产方被拖住、在途见底，兜底不触发；iOS 有回调静默兜底，Mac 这条从来接不住
+        private const int EnqueueStuckMs = 250;
+        private long _enqStuckTicks;   // 上次看门狗以来最长的一次交设备（Submit 写，看门狗取走清零）
+        // 测试钩子：S2A_AUDIO_TEST_ENQ_STALL_AT=<秒>:<毫秒> —— 开播后到点，一次交设备在计时窗口里睡这么久，模拟输出队列卡死（服务层单测 --apple-audio-enqueue-stuck）
+        private static readonly (int AtS, int Ms) _testEnqStall = ParseProdStall(Environment.GetEnvironmentVariable("S2A_AUDIO_TEST_ENQ_STALL_AT"));
+        private bool _testEnqStallDone;
         private static readonly bool _healOn = Environment.GetEnvironmentVariable("S2A_AUDIO_HEAL") != "0";
+        // S2Arm (#1632 / #1598)：重启输出队列只看返回码，不知道设备有没有真的重新播。重启后按退避窗口核一次：窗口里设备交还的帧数不到墙钟应播的一半、
+        //   而在途还有数据（不缺声音）、期间没有失焦冻结 = 没恢复 → 再重启，窗口翻倍（2、4、8… 秒，封顶 30 秒）；够一半 = 恢复，打一行。
+        //   玩家 M2 局：重启后 10 秒回调 994 / 653 次（正常约 2000）、真缺口 5.0 / 6.7 秒，回调没断，「设备 1 秒没回调」那条兜底接不住
+        private const int VerifyMaxMs = 30000;
+        private long _verifyTicks, _verifyPlayed0, _verifySeq;
+        private int _verifyFails;
+        // 测试钩子：S2A_AUDIO_TEST_SLOW_AFTER_HEAL=<n> —— 第 n 次重启之后、下一次重启之前，看门狗每拍轮流「播 1 拍、停 3 拍」（AudioQueuePause / Start），
+        //   设备有回调但只播约四分之一（恢复时会先补播一段，实测 2 秒窗口约 48% → 原「停 2 拍」离一半太近），最长停 750 ms（< StallMs，没回调兜底不触发）；服务层单测 --apple-audio-recover-verify
+        private static readonly int _testSlowAfterHeal = int.TryParse(Environment.GetEnvironmentVariable("S2A_AUDIO_TEST_SLOW_AFTER_HEAL"), out int sh) ? sh : 0;
+        private int _testSlowTick;
         private static readonly int _testStallAtS = int.TryParse(Environment.GetEnvironmentVariable("S2A_AUDIO_TEST_STALL_AT"), out int s) ? s : 0;
         private static readonly AppleHardwareDeviceSession[] _watched = new AppleHardwareDeviceSession[8];
         private static int _watchdogStarted;
         private long _lastCallbackTicks;
         private long _lastHealTicks;
+        // S2Arm (#1384): 已处理过的客机冻结次数（S2AGuestFreeze.Seq）。建会话时取当前值，之前的冻结不算
+        private long _thawSeq = Interlocked.Read(ref Ryujinx.Audio.Integration.S2AGuestFreeze.Seq);
         private int _heals;
         private bool _testStallDone;
         // 测试钩子：S2A_AUDIO_TEST_PRODUCER_STALL_AT=<秒>:<毫秒> —— 开播后到点在送声音的入口（QueueBuffer）睡一次，模拟 GC 停顿卡住生产方、吃光缓冲垫
@@ -164,10 +185,22 @@ namespace Ryujinx.Audio.Backends.Apple
             //   折到 1.536（2632/4800 采样削波）、六路全 0.9 折到 2.399（3484/4800 削波）；系统的显式下混归一化
             //   （前 0.4142、中置 / 同侧环绕 0.2929、LFE 丢弃，最坏 0.4142+2×0.2929=1.0）不削波。帧数不变，
             //   泵 / 播放信用 / 缓冲释放节奏不变，换档不改延迟；缺省 native 不走这里，行为同现状（渲染器自己下混）
+            // S2Arm（#189 后续，5.1 虚拟环绕）：产品路径——用户选的设备类型 + 对应 VS 开（S2A_AUDIO_DEVICE=builtin /
+            //   headphones + S2A_AUDIO_VS_SPEAKERS / S2A_AUDIO_VS_HEADPHONES）走 AUSM 虚拟环绕档（显式输出类型；
+            //   .auto 在 5.1 路径上三路由实测全退化为 ExternalSpeakers，见 docs/坑记录.md）。external 永不虚拟环绕：
+            //   驱动 ≥6 才报 5.1，这里走现有 6ch 直通队列 + 5.1 布局（无处理器）。优先级：CH2 / STEREO >
+            //   S2A_AUDIO_OUT=sys / matrix（内部 A/B）> 设备类型 + VS > 缺省 builtin + VS 关（2ch，不套 AUSM）
             if (requestedChannelCount == 6)
             {
                 string configuredMode = Environment.GetEnvironmentVariable("S2A_AUDIO_OUT");
                 AppleOutputMode mode = AppleOutputModeSelector.FromEnvironment();
+                AppleAudioDeviceType deviceType = AppleAudioDeviceTypeSelector.FromEnvironment();
+                AppleOutputMode? spatialMode = deviceType switch
+                {
+                    AppleAudioDeviceType.BuiltInSpeakers when AppleAudioDeviceTypeSelector.VirtualSurround(deviceType) => AppleOutputMode.SpatialSpeakers,
+                    AppleAudioDeviceType.Headphones when AppleAudioDeviceTypeSelector.VirtualSurround(deviceType) => AppleOutputMode.SpatialHeadphones,
+                    _ => null,
+                };
 
                 if (mode != AppleOutputMode.Native)
                 {
@@ -180,6 +213,20 @@ namespace Ryujinx.Audio.Backends.Apple
                         _deviceChannelCount = 2;
                         _processor = AppleOutputProcessor.Create(mode, (int)requestedSampleRate, MaxFrames);
                         Console.Error.WriteLine($"[声] 5.1→2.0 档「{AppleOutputModeSelector.ModeName(_processor.EffectiveMode)}」：6 声道 FL FR FC LFE BL BR → 2 声道（S2A_AUDIO_OUT；一片最多 {MaxFrames} 帧）" +
+                            (_processor.InitError != null ? $"；【红】器件没建起来，这一路按矩阵下混：{_processor.InitError}" : ""));
+                    }
+                }
+                else if (spatialMode != null)
+                {
+                    if (requestedSampleFormat != SampleFormat.PcmInt16)
+                    {
+                        Console.Error.WriteLine($"[声] 【红】设备类型 {AppleAudioDeviceTypeSelector.DeviceName(deviceType)} + VS 开只支持 PCM16 的 5.1（本次 {requestedSampleFormat}）：按 native 直交 AudioQueue");
+                    }
+                    else
+                    {
+                        _deviceChannelCount = 2;
+                        _processor = AppleOutputProcessor.Create(spatialMode.Value, (int)requestedSampleRate, MaxFrames);
+                        Console.Error.WriteLine($"[声] 5.1→2.0 虚拟环绕档「{AppleOutputModeSelector.ModeName(_processor.EffectiveMode)}」（设备类型 {AppleAudioDeviceTypeSelector.DeviceName(deviceType)}、VS 开、{requestedSampleFormat}）：6 声道 FL FR FC LFE BL BR → AUSM → 2 声道（一片最多 {MaxFrames} 帧）" +
                             (_processor.InitError != null ? $"；【红】器件没建起来，这一路按矩阵下混：{_processor.InitError}" : ""));
                     }
                 }
@@ -287,6 +334,14 @@ namespace Ryujinx.Audio.Backends.Apple
                 S2AAudioNotes.PostForTest("AVAudioSessionInterruptionNotification", 0);
             }
 
+            if (_testSlowAfterHeal > 0 && _heals == _testSlowAfterHeal)
+            {
+                int phase = _testSlowTick++ % 4;
+                if (phase == 0) AudioQueueStart(_audioQueue, nint.Zero);
+                else if (phase == 1) AudioQueuePause(_audioQueue);
+                if (_testSlowTick == 1) Console.Error.WriteLine($"[声] 测试钩子：输出 #{_diag.Index} 第 {_testSlowAfterHeal} 次重启后轮流播 1 拍、停 3 拍（设备有回调但只播约四分之一）");
+            }
+
             if (_testResetAtS > 0 && !_testResetDone && since >= (long)_testResetAtS * Stopwatch.Frequency)
             {
                 _testResetDone = true;
@@ -316,20 +371,53 @@ namespace Ryujinx.Audio.Backends.Apple
         {
             int zero = Interlocked.Exchange(ref _zeroReturns, 0);
             long returned = Interlocked.Exchange(ref _returnedBytes, 0), elapsed = now - _timelineTicks;
+            long enq = Interlocked.Exchange(ref _enqStuckTicks, 0);
 
             _timelineTicks = now;
 
             if (!_started || !_queueRunning)
             {
                 _timeline.Reset();
+                _verifyTicks = 0;   // 游戏停播 / 没开播：这次重启不下结论
 
+                return;
+            }
+
+            // #1598：交设备卡死（见 EnqueueStuckMs）→ 与解冻路径同一个动作：停队列、收回在途、重新开播。各平台都接，退避同下面的兜底
+            if (enq * 1000 >= (long)EnqueueStuckMs * Stopwatch.Frequency && _healOn && now - _lastHealTicks >= (long)HealBackoffMs * Stopwatch.Frequency / 1000)
+            {
+                _timeline.Reset();
+                S2ARecover($"兜底：一次交设备（AudioQueueEnqueueBuffer）卡了 {enq * 1000 / Stopwatch.Frequency} ms，输出队列卡死", false, now, true);
+
+                return;
+            }
+
+            // S2Arm (#1384): 客机冻结（失焦暂停）放开后，macOS 也重置时间轴、重启一次输出队列。11-13 的前提「macOS 队列自己恢复」在部分外接输出上不成立：
+            //   玩家外接 DP 显示器（48 kHz）失焦暂停切回后画面恢复、一直无声；他在解冻时重置时间轴 + 重启输出队列，同机两轮都好了。
+            //   每次冻结只做一次，在解冻后第一次检查时做；iOS / tvOS 照旧走下面的时间轴自愈
+            long freezeSeq = Interlocked.Read(ref Ryujinx.Audio.Integration.S2AGuestFreeze.Seq);
+            if (freezeSeq != _thawSeq && Ryujinx.Audio.Integration.S2AGuestFreeze.Frozen == 0)
+            {
+                _thawSeq = freezeSeq;
+
+                if (OperatingSystem.IsMacOS())   // 平台例外：苹果后端内部，iOS / tvOS 解冻由下面的时间轴自愈接住
+                {
+                    _timeline.Reset();
+                    S2ARecover($"客机解冻（失焦暂停放开，第 {freezeSeq} 次）：重置时间轴、重启输出队列", false, now, false);
+
+                    return;
+                }
+            }
+
+            if (S2AVerifyRecover(now, freezeSeq))
+            {
                 return;
             }
 
             // S2Arm (11-13 断音): iOS only. A macOS queue recovers by itself (QueueTimelineWatch), and its criterion cannot tell a timeline
             //   ahead from a queue playing at zero margin: 0400486024DEC000 Mac 局第 26 秒 a 30 ms render stall left zero margin, this fired, and the
             //   synchronous stop / restart only cut the audio once more (zero-in-flight hand-backs 24 → 39 in the next window)
-            if (OperatingSystem.IsIOS() && _timeline.Tick(zero, returned, elapsed) && now - _lastHealTicks >= (long)HealBackoffMs * Stopwatch.Frequency / 1000)   // 平台例外：苹果后端内部，iOS 队列跑前要重启、macOS 队列自己恢复
+            if ((OperatingSystem.IsIOS() || OperatingSystem.IsTvOS()) && _timeline.Tick(zero, returned, elapsed) && now - _lastHealTicks >= (long)HealBackoffMs * Stopwatch.Frequency / 1000)   // 平台例外：苹果后端内部，iOS 队列跑前要重启、macOS 队列自己恢复
             {
                 S2ARecover($"队列时间轴跑到声音前面（这 {elapsed * 1000 / Stopwatch.Frequency} ms 交还 {returned / _bytesPerFrame} 帧、{zero} 次交还后在途为 0：欠载后交的缓冲排在已过去的时刻，没播就交还）",
                            false, now, false);
@@ -384,7 +472,59 @@ namespace Ryujinx.Audio.Backends.Apple
         private static int s_stallDumps;
 
         [DllImport("s2a_native")]
-        private static extern int s2a_dump_threads(string why);   // runtime/src/tdump.c：全线程宿主栈（自动玩家卡住、崩溃时同一份）
+        private static extern int s2a_dump_threads(string why);
+
+        [DllImport("s2a_native")]
+        private static extern int s2a_audio_volume();   // runtime/src/game_volume.c：游戏音量 0–100（#1186）
+
+        private static bool s_gameVolumeGone;   // 原生层没有这个导出（旧宿主 / 只链托管的单测）：按 100，不再试
+
+        private static int S2AGameVolume()
+        {
+            if (s_gameVolumeGone)
+                return 100;
+            try { return s2a_audio_volume(); }
+            catch (Exception e) when (e is DllNotFoundException || e is EntryPointNotFoundException) { s_gameVolumeGone = true; return 100; }
+        }   // runtime/src/tdump.c：全线程宿主栈（自动玩家卡住、崩溃时同一份）
+
+        // 重启后核对（见 VerifyMaxMs）：窗口到点才下结论；返回 true = 这一拍又重启了
+        private bool S2AVerifyRecover(long now, long freezeSeq)
+        {
+            int windowMs = (int)Math.Min((long)HealBackoffMs << Math.Min(_verifyFails, 8), VerifyMaxMs);
+            if (_verifyTicks == 0 || now - _verifyTicks < (long)windowMs * Stopwatch.Frequency / 1000)
+            {
+                return false;
+            }
+
+            long elapsed = now - _verifyTicks;
+            long played = _diag.FramesPlayed - _verifyPlayed0, want = elapsed * RequestedSampleRate / Stopwatch.Frequency;
+            _verifyTicks = 0;
+
+            if (freezeSeq != _verifySeq || Ryujinx.Audio.Integration.S2AGuestFreeze.Frozen != 0)
+            {
+                return false;   // 期间失焦冻结过：交还少是因为游戏停了，解冻那条路径会重启，这里不下结论
+            }
+
+            long ms = elapsed * 1000 / Stopwatch.Frequency;
+            if (played * 2 >= want)
+            {
+                Console.Error.WriteLine($"[声] 输出 #{_diag.Index}：重启后设备恢复播放（{ms} ms 交还 {played} 帧，应约 {want} 帧）{(_verifyFails > 0 ? $"，此前连续 {_verifyFails} 次没恢复" : "")}");
+                _verifyFails = 0;
+
+                return false;
+            }
+
+            if (_pump.InFlightBytes == 0)
+            {
+                return false;   // 设备手上没声音可播：交还少是游戏没送，不是设备没播
+            }
+
+            _verifyFails++;
+            S2ARecover($"重启后设备没恢复播放：{ms} ms 交还 {played} 帧（应约 {want} 帧，不到一半），再重启（连续第 {_verifyFails} 次没恢复，" +
+                       $"下次 {Math.Min((long)HealBackoffMs << Math.Min(_verifyFails, 8), VerifyMaxMs) / 1000} 秒后再核）", false, now, true);
+
+            return true;
+        }
 
         // 恢复输出流：iOS 重新激活会话 → 同步停队列（重置时重建）→ 收回在途 → 重新排进去 → 开播
         private void S2ARecover(string why, bool rebuild, long now, bool red)
@@ -454,10 +594,15 @@ namespace Ryujinx.Audio.Backends.Apple
                     _queueRunning = false;
                 }
 
+                // 重启后核对（S2AVerifyRecover）：开播成功才核，从此刻起算
+                _verifyTicks = startRc == 0 ? Stopwatch.GetTimestamp() : 0;
+                _verifyPlayed0 = _diag.FramesPlayed;
+                _verifySeq = Interlocked.Read(ref Ryujinx.Audio.Integration.S2AGuestFreeze.Seq);
+
                 Volatile.Write(ref _lastCallbackTicks, Stopwatch.GetTimestamp());
 
                 Console.Error.WriteLine($"[声] {(red ? "【红】" : "")}输出 #{_diag.Index}：{why}（在途 {inFlightFrames} 帧）→ {(rebuild ? "重建" : "重启")}输出队列（第 {++_heals} 次）：" +
-                    $"{(OperatingSystem.IsIOS() ? $"重新激活音频会话 {(active ? "成功" : "失败")}、" : "")}停队列 rc={stopRc}、收回 {reclaimed / _bytesPerFrame} 帧" +
+                    $"{((OperatingSystem.IsIOS() || OperatingSystem.IsTvOS()) ? $"重新激活音频会话 {(active ? "成功" : "失败")}、" : "")}停队列 rc={stopRc}、收回 {reclaimed / _bytesPerFrame} 帧" +   // 平台例外：tvOS 与 iOS 走同一分支
                     $"{(rebuild ? $"、新建队列 rc={newRc}" : "")}、重新开播 rc={startRc}{(startRc == 0 ? "" : "（没开播：游戏停着或开播失败，下一笔声音到时再试）")}");
             }
         }
@@ -511,6 +656,7 @@ namespace Ryujinx.Audio.Backends.Apple
             // S2Arm (11-14 设备缓冲): 设备 IO 缓冲是出声延迟的地板——建队（起会话与自愈重建共用）先请求它，
             //   再挂布局 / 分配缓冲。失败按原样继续（见 S2AApplyDeviceBufferFrames）
             S2AApplyDeviceBufferFrames();
+            S2ALogOutputDevice();
 
             // S2Arm（#189）：6 声道队列声明 5.1 布局（起会话与重建共用这条路径）：不声明时系统隐式 6→2 只复制
             //   FL/FR，中置（对白）与环绕整段丢失；真 5.1 设备声明后按布局直通。设置失败按无布局继续（打出【红】，
@@ -612,6 +758,51 @@ namespace Ryujinx.Audio.Backends.Apple
             Console.Error.WriteLine($"[声] 输出 #{_diag.Index}：设备缓冲请求 {frames} 帧，设备实给 {granted} 帧 ≈ {granted * 1000.0 / RequestedSampleRate:F1} ms（只作用于本进程，其他 App 不受影响）");
         }
 
+        // S2Arm (11-16 声音诊断)：建队时记一行系统默认输出设备的传输方式、IO 周期、标称采样率、静音与音量（#1308 爆音 / #1245、诊断#a51362 无声：
+        //   交设备的声音非零，判不了是设备静音、走了蓝牙 / 虚拟设备，还是内容本身）。只读，不改设备；仅 macOS（iOS 没有 HAL 设备属性）
+        private void S2ALogOutputDevice()
+        {
+            if (!OperatingSystem.IsMacOS())   // 平台例外：HAL 设备属性只有 macOS
+            {
+                return;
+            }
+
+            AudioObjectPropertyAddress a = new() { Selector = kAudioHardwarePropertyDefaultOutputDevice, Scope = kAudioObjectPropertyScopeGlobal, Element = kAudioObjectPropertyElementMain };
+            uint device = 0, size = sizeof(uint);
+
+            if (AudioObjectGetPropertyData(kAudioObjectSystemObject, ref a, 0, nint.Zero, ref size, ref device) != 0 || device == 0)
+            {
+                Console.Error.WriteLine($"[声] 【红】输出 #{_diag.Index}：读不到系统默认输出设备");
+                return;
+            }
+
+            string U32(uint selector, uint scope)
+            {
+                AudioObjectPropertyAddress q = new() { Selector = selector, Scope = scope, Element = kAudioObjectPropertyElementMain };
+                uint v = 0, n = sizeof(uint);
+                return AudioObjectGetPropertyData(device, ref q, 0, nint.Zero, ref n, ref v) == 0 ? v.ToString() : null;
+            }
+
+            AudioObjectPropertyAddress t = new() { Selector = kAudioDevicePropertyTransportType, Scope = kAudioObjectPropertyScopeGlobal, Element = kAudioObjectPropertyElementMain };
+            uint tran = 0, ts = sizeof(uint);
+            string transport = AudioObjectGetPropertyData(device, ref t, 0, nint.Zero, ref ts, ref tran) == 0
+                ? (tran switch
+                {
+                    0x626C746E => "内置", 0x626C7565 => "蓝牙", 0x626C6561 => "蓝牙低功耗", 0x75736220 => "USB", 0x68646D69 => "HDMI", 0x64707274 => "DisplayPort",
+                    0x61697270 => "AirPlay", 0x67727570 => "聚合", 0x76697274 => "虚拟", 0x7468756E => "雷雳", 0x70636920 => "PCI", _ => $"其他 0x{tran:x8}",
+                })
+                : "读不到";
+            AudioObjectPropertyAddress r = new() { Selector = kAudioDevicePropertyNominalSampleRate, Scope = kAudioObjectPropertyScopeGlobal, Element = kAudioObjectPropertyElementMain };
+            double rate = 0; uint rs = sizeof(double);
+            string rateText = AudioObjectGetPropertyDataDouble(device, ref r, 0, nint.Zero, ref rs, ref rate) == 0 ? $"{rate:F0} Hz" : "读不到";
+            AudioObjectPropertyAddress vq = new() { Selector = kAudioDevicePropertyVolumeScalar, Scope = kAudioDevicePropertyScopeOutput, Element = kAudioObjectPropertyElementMain };
+            float vol = 0; uint vs = sizeof(float);
+            string volText = AudioObjectGetPropertyDataFloat(device, ref vq, 0, nint.Zero, ref vs, ref vol) == 0 ? $"{vol:F2}" : "主元素读不到（多为按声道调音量的设备）";
+            string frames = U32(kAudioDevicePropertyBufferFrameSize, kAudioObjectPropertyScopeGlobal);
+            string mute = U32(kAudioDevicePropertyMute, kAudioDevicePropertyScopeOutput);
+            Console.Error.WriteLine($"[声] 输出 #{_diag.Index}：系统默认输出设备 {device}，传输方式 {transport}、IO 周期 {frames ?? "读不到"} 帧、标称采样率 {rateText}（本会话 {RequestedSampleRate} Hz）、静音 {mute ?? "读不到"}、音量 {volText}");
+        }
+
         // S2Arm: the device side of DeviceBufferPump: pool buffer i is _audioQueueBuffers[i]
         private sealed unsafe class Pump : DeviceBufferPump
         {
@@ -652,7 +843,22 @@ namespace Ryujinx.Audio.Backends.Apple
                 buffer->AudioDataByteSize = (uint)bytes;
                 _s._diag.OnSubmit(new ReadOnlySpan<byte>((void*)buffer->AudioData, bytes), InFlightBytes - bytes);
 
+                long t0 = Stopwatch.GetTimestamp();
+                if (_testEnqStall.AtS > 0 && !_s._testEnqStallDone && _s._started && t0 - _s._startTicks >= (long)_testEnqStall.AtS * Stopwatch.Frequency)
+                {
+                    _s._testEnqStallDone = true;
+                    Console.Error.WriteLine($"[声] 测试钩子：输出 #{_s._diag.Index} 开播后第 {_testEnqStall.AtS} 秒一次交设备卡 {_testEnqStall.Ms} ms（模拟输出队列卡死）");
+                    Thread.Sleep(_testEnqStall.Ms);
+                }
                 AudioQueueEnqueueBuffer(_s._audioQueue, bufferPtr, 0, nint.Zero);
+                long dt = Stopwatch.GetTimestamp() - t0;
+
+                // 泵锁内调用，同一时刻只有一个写方；看门狗用 Interlocked.Exchange 取走
+                _s._diag.OnEnqueue(dt);
+                if (dt > Volatile.Read(ref _s._enqStuckTicks))
+                {
+                    Volatile.Write(ref _s._enqStuckTicks, dt);
+                }
             }
 
             protected override void OnReturned(int bytes, long inFlightAfter)
@@ -799,7 +1005,8 @@ namespace Ryujinx.Audio.Backends.Apple
 
         private unsafe void ApplyVolume(nint dataPtr, int byteSize)
         {
-            float volume = Math.Clamp(_volume * _driver.Volume, 0f, 1f);
+            // S2A：游戏音量（#1186，runtime/src/game_volume.c；按游戏存、局中齿轮菜单可改）乘进来；100 时同原来整段跳过
+            float volume = Math.Clamp(_volume * _driver.Volume * (S2AGameVolume() / 100f), 0f, 1f);
             if (volume >= 0.999f)
                 return;
 
@@ -1076,6 +1283,13 @@ namespace Ryujinx.Audio.Backends.Apple
 
                     if (!leaked)
                     {
+                        // S2Arm（#189 后续，评审 11-16）：VS / 下混档收局统计——渲染失败片数与截幅采样累计，
+                        //   判断「VS 开了声音发破 / 偶尔没声」是不是 AUSM 档的原因（只在有记录时打一行）
+                        if (_processor != null && (_processor.FailureCount > 0 || _processor.ClippedSampleCount > 0))
+                        {
+                            Console.Error.WriteLine($"[声] 输出 #{_diag.Index} 收局：5.1→2.0 档「{AppleOutputModeSelector.ModeName(_processor.EffectiveMode)}」渲染失败 {_processor.FailureCount} 片、截幅 {_processor.ClippedSampleCount} 采样（int16 满幅计）");
+                        }
+
                         _processor?.Dispose();   // S2Arm (#189): the explicit downmix stage (AudioConverter) goes with the queue
                     }
 

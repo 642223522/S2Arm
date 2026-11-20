@@ -164,7 +164,7 @@ namespace S2A.Services.Tests
             }
 
             // GetAddrInfoRequest（命令 6）：host、service、hints 三个 A 缓冲，回 packed addrinfo；只核 netdb / gai / 序列化长度
-            (int NetDb, int Gai, int Size) AddrInfo(string name, string service)
+            (int NetDb, int Gai, int Size) AddrInfo(string name, string service, int hintFlags = -1)
             {
                 byte* hostIn = _game + 0x7D00, serviceIn = _game + 0x7D80, hostOut = _game + 0x7E00;
                 new Span<byte>(hostIn, 0x80).Clear();
@@ -176,7 +176,18 @@ namespace S2A.Services.Tests
                 m.SendPid = true;
                 m.A.Add(((ulong)hostIn, (ulong)name.Length + 1));
                 m.A.Add(((ulong)serviceIn, (ulong)service.Length + 1));
-                m.A.Add(((ulong)hostOut, 0));
+                if (hintFlags < 0)
+                {
+                    m.A.Add(((ulong)hostOut, 0));
+                }
+                else
+                {
+                    // hints：packed addrinfo 头 6 个大端 u32（magic 0xBEEFCAFE、flags、family 2、socktype 2、protocol 0、地址长 0），没有地址
+                    byte* hints = _game + 0x7CC0;
+                    uint[] hw = { 0xBEEFCAFE, (uint)hintFlags, 2, 2, 0, 0 };
+                    for (int i = 0; i < 6; i++) System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(new Span<byte>(hints + 4 * i, 4), hw[i]);
+                    m.A.Add(((ulong)hints, 24));
+                }
                 m.B.Add(((ulong)hostOut, 0x100));
                 Reply r = Call(dns, m);
 
@@ -199,6 +210,22 @@ namespace S2A.Services.Tests
                 $"netdb {any.NetDb}、gai {any.Gai}、长度 {(any.Size > 0 ? "> 0" : any.Size.ToString())}、{(any.Any ? "唯一地址 0.0.0.0" : "地址不是唯一的 0.0.0.0")} / " +
                 $"netdb {lo.NetDb}、{(lo.Loopback ? "唯一地址" : "地址不是唯一的")} 127.0.0.1 / " +
                 $"netdb {gai.NetDb}、gai {gai.Gai}、长度 {(gai.Size > 0 ? "> 0" : gai.Size.ToString())}");
+
+            // 没有主机名（getaddrinfo(NULL, port, hints)，#5a3e66 0100D58012E12000 断网时这样调）不用 DNS：hints 带 AI_PASSIVE（1）→ 0.0.0.0（绑本机服务端），
+            //   不带 → 127.0.0.1（POSIX getaddrinfo）。回包 = packed addrinfo 头 24 字节 + sockaddr_in（长度、族、端口、4 字节地址），地址在 +28。旧版回 netdb 1、长度 0
+            byte* gaiOut = _game + 0x7E00;
+            var gp = AddrInfo("", "7777", 1);
+            byte[] ap = new ReadOnlySpan<byte>(gaiOut + 28, 4).ToArray();
+            var gl = AddrInfo("", "7777", 0);
+            byte[] al = new ReadOnlySpan<byte>(gaiOut + 28, 4).ToArray();
+            var gn = AddrInfo("", "7777");
+            byte[] an = new ReadOnlySpan<byte>(gaiOut + 28, 4).ToArray();
+            // 回环的 4 字节同上面 hostent 的核法两种字节序都认（序列化字节序不在本改动范围）
+            static string Lo(byte[] a) => (a[0] == 127 && a[1] == 0 && a[2] == 0 && a[3] == 1) || (a[0] == 1 && a[1] == 0 && a[2] == 0 && a[3] == 127) ? "回环" : string.Join(".", a);
+            Check("sfdnsres 离线：GetAddrInfo 空主机名 + AI_PASSIVE / 空主机名不带 / 空主机名无 hints",
+                "netdb 0、gai 0、长度 > 0、地址 0.0.0.0 / netdb 0、gai 0、地址 回环 / netdb 0、gai 0、地址 回环",
+                $"netdb {gp.NetDb}、gai {gp.Gai}、长度 {(gp.Size > 0 ? "> 0" : gp.Size.ToString())}、地址 {string.Join(".", ap)} / " +
+                $"netdb {gl.NetDb}、gai {gl.Gai}、地址 {Lo(al)} / netdb {gn.NetDb}、gai {gn.Gai}、地址 {Lo(an)}");
 
             // 会等宿主网络的模块（sfdnsres / ssl）不和通用锁上的服务串行：联网时一次慢解析只挡它自己（不让所有游戏线程跟着停帧）。
             // 正对照：两个 nifm 会话在同一串行域

@@ -44,6 +44,7 @@
 候选表列：模块<TAB>偏移<TAB>种类<TAB>证据（十六进制指令字或浮点对）。
 并行（10-25 维护者「多核加速……要适配机器的核心数」：动森出包这一步单进程 88 秒）：指令按区间分块、按本机核数（S2A_JOBS，缺省 os.cpu_count）开进程，
   每块只产出起点在本块的候选、前后窗口照读全段，结果合并后与逐条串行逐字节相同；capsz 要全段的 lytsz 位置，先并行出 lytsz 再并行出 capsz。"""
+import os as _pw_os, sys as _pw_sys; _pw_sys.path.append(_pw_os.path.join(_pw_os.path.dirname(_pw_os.path.abspath(__file__)), '..', '..', '..', 'tools')); from pool_workers import process_pool_size, env_jobs  # noqa: E402  核数 / 进程池路数唯一来源（tools/pool_workers.py，#1332）
 import multiprocessing, os, struct, sys
 import os as _os, sys as _sys; _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '../../../tools')); from nso_plain import plain as _nso_plain   # ZBIC（NSO 标志 0x80）先经 nx_unpack 规整成不压缩段，不各写一份解码（tools/nso_plain.py）
 
@@ -79,6 +80,10 @@ ASP_LO = (0x8e39, 0x8e3b)
 F2W = {fhi(w): fhi(h) for w, h in CLS}
 # 宽高比上限常量（低 16 位 → 高 16 位）：19:9 = 0x40071c72、21:9 = 0x40155555
 CAP = {0x1c72: 0x4007, 0x5555: 0x4015}
+# 热路径查表（_main_part 每条指令都要判，原先逐档调 movz / 生成器，单进程一款上千万次函数调用）：与 movz(w, v) 逐字等价——
+#   movz(w, v) ⇔ (w & 0x7FFFFFE0) == 0x52800000 | (v << 5) ⇔ (w & 0x7FE00000) == 0x52800000 且立即数 (w >> 5) & 0xffff == v
+CLS_H = dict(CLS)                                            # 档宽 → 档高（CLS 各档宽互不相同）
+ASP_W = frozenset(0x52800000 | (v << 5) for v in ASP_LO)      # (w & 0x7FFFFFE0) 落在这里 = movz(w, 16:9 浮点低 16 位)
 
 
 def _cap_use(W, i, n, d):
@@ -152,9 +157,10 @@ def _main_part(lo, hi):
     W, n = _W, _N; out = []
     for i in range(lo, hi):
         w = W[i]
-        if (w & 0x7F800000) == 0x52800000:   # MOVZ：显示宽度
-            for vw, vh in CLS:
-                if movz(w, vw) and any(movz(W[j], vh) or (W[j] & 0xFFFFFFE0) == (0xF2C00000 | (vh << 5)) for j in range(max(0, i - 16), min(n, i + 17))):
+        vh = CLS_H.get((w >> 5) & 0xffff) if (w & 0x7FE00000) == 0x52800000 else None   # MOVZ #档宽（hw 0）：显示宽度；同原先逐档 movz(w, vw)
+        if vh is not None:
+            mh = 0x52800000 | (vh << 5); kh = 0xF2C00000 | (vh << 5)
+            if any((W[j] & 0x7FFFFFE0) == mh or (W[j] & 0xFFFFFFE0) == kh for j in range(max(0, i - 16), min(n, i + 17))):
                     out.append((i * 4, 'movz', '%08x' % w))
                     # movzh：配对的那条纯 MOVZ #高（11-02 窄屏：游戏按更高的画布渲染、裁切跟着变高，界面不被竖向拉伸；宿主按屏高填值，缺省关）。MOVK 打包的高不单列
                     out.extend((j * 4, 'movzh', '%08x' % W[j]) for j in range(max(0, i - 16), min(n, i + 17)) if movz(W[j], vh))
@@ -165,12 +171,11 @@ def _main_part(lo, hi):
                         for j in range(i + 1, min(n, i + 17)):
                             if W[j] == want: out.append((j * 4, 'i2h', '%08x %08x' % (W[j], w))); break
                             if (W[j] & 31) == d: break
-                    break
         if (w & 0xFFE00000) == 0x52A00000 and (w & 31) != 31 and (w >> 5) & 0xffff in F2W:   # movz 装 16:9 档宽的浮点（见模块说明 movzh）
             hh = F2W[(w >> 5) & 0xffff]
             pj = [j for j in range(max(0, i - 24), min(n, i + 25)) if (W[j] & 0xFFE00000) == 0x52A00000 and (W[j] & 31) != 31 and (W[j] >> 5) & 0xffff == hh and _fuse(W, j, n)]
             if pj and _fuse(W, i, n): out.append((i * 4, 'movz', '%08x' % w)); out.extend((j * 4, 'movzh', '%08x' % W[j]) for j in pj)
-        if any(movz(w, lo_) for lo_ in ASP_LO) and i + 1 < n and movk16(W[i + 1], 0x3fe3) and (W[i + 1] & 31) == (w & 31): out.append((i * 4, 'asp', '%08x %08x' % (w, W[i + 1])))
+        if (w & 0x7FFFFFE0) in ASP_W and i + 1 < n and movk16(W[i + 1], 0x3fe3) and (W[i + 1] & 31) == (w & 31): out.append((i * 4, 'asp', '%08x %08x' % (w, W[i + 1])))
         if (w & 0xFFE00000) == 0x52800000 and (w >> 5) & 0xffff in CAP and i + 1 < n and movk16(W[i + 1], CAP[(w >> 5) & 0xffff]) and (W[i + 1] & 0xFFE0001F) == 0x72A00000 | (w & 31):
             k = _cap_use(W, i, n, w & 31)
             if k: out.append((i * 4, k, '%08x %08x' % (w, W[i + 1])))
@@ -334,24 +339,53 @@ def _sead_persp(W, n):
     return out
 
 
-def _parts(fn, n, jobs):
-    """把 [0, n) 切成 jobs × 4 块交给 fn 并行（jobs ≤ 1 或段太短就本进程跑），按块序拼回"""
-    # 并行靠 fork 继承模块镜像等全局（fn 读它们）；没有 fork 的平台（Windows）本进程顺序跑，结果逐字节相同
-    if jobs <= 1 or n < 1 << 16 or 'fork' not in multiprocessing.get_all_start_methods(): return fn(0, n)
+def _init_shared(name, n, ls):
+    """spawn 起的子进程（没有 fork 的平台，Windows）：从共享内存接上模块镜像（不复制），设好 _main_part / _lyt_part / _cap_part 读的全局"""
+    global _W, _N, _LS, _SHM
+    from multiprocessing import shared_memory
+    _SHM = shared_memory.SharedMemory(name=name)   # 子进程持有到退出（池关时随进程释放）
+    _W = _SHM.buf[:n * 4].cast('I'); _N = n; _LS = ls
+
+
+def _parts(fn, n, jobs, shm=None, start=None):
+    """把 [0, n) 切成 jobs × 4 块交给 fn 并行（jobs ≤ 1 或段太短就本进程跑），按块序拼回，结果与本进程顺序跑逐字节相同。
+    有 fork 时子进程直接继承模块镜像等全局；没有 fork（Windows）用 spawn，镜像经共享内存 shm 给子进程（11-16 出包提速：原先 Windows 一律本进程顺序跑，
+    一款动森主程序单进程 1–2 分钟）。start 只给单测强制选法"""
+    if jobs <= 1 or n < 1 << 16: return fn(0, n)
+    start = start or ('fork' if 'fork' in multiprocessing.get_all_start_methods() else 'spawn')
+    if start == 'spawn' and shm is None: return fn(0, n)
     step = -(-n // (jobs * 4)); rs = [(lo, min(n, lo + step)) for lo in range(0, n, step)]
-    with multiprocessing.get_context('fork').Pool(jobs) as pool: return [x for part in pool.starmap(fn, rs) for x in part]
+    ctx = multiprocessing.get_context(start)
+    pool = ctx.Pool(jobs) if start == 'fork' else ctx.Pool(jobs, initializer=_init_shared, initargs=(shm.name, n, _LS))
+    with pool: return [x for part in pool.starmap(fn, rs) for x in part]
 
 
-def scan(b, jobs=None):
-    """返回 [(偏移, 种类, 证据)]，按偏移排序。jobs：并行进程数（缺省 S2A_JOBS / 本机核数）"""
+def scan(b, jobs=None, start=None):
+    """返回 [(偏移, 种类, 证据)]，按偏移排序。jobs：并行进程数（缺省 S2A_JOBS / 本机核数）；start：进程起法（单测用，缺省按平台）"""
     global _W, _N, _LS
-    jobs = jobs or int(os.environ.get('J') or os.environ.get('S2A_JOBS') or os.cpu_count() or 1)   # 进程数（J / S2A_JOBS / 本机核数）
-    n = min(len(b), 0x6000000) // 4; _W = memoryview(bytes(b[:n * 4])).cast('I'); _N = n   # 小端（arm64 / x86），同 struct '<I'
-    out = _parts(_main_part, n, jobs)
-    lyt = _parts(_lyt_part, n, jobs); out += lyt
-    _LS = frozenset(o // 4 for o, _, _ in lyt); out += _parts(_cap_part, n, jobs)
-    out += _sead_persp(_W, n)   # 一次扫完（只看 MOVZ -1.0f 附近，快）
-    te = _text_end(b)
+    jobs = process_pool_size(jobs or env_jobs('J', 'S2A_JOBS'))   # 进程数（J / S2A_JOBS / 本机核数）；Windows 进程池至多 61 路（#1332：88 核 Pool(88) 卡死在八个轻阶段）
+    n = min(len(b), 0x6000000) // 4; _N = n
+    spawn = jobs > 1 and n >= 1 << 16 and (start or ('fork' if 'fork' in multiprocessing.get_all_start_methods() else 'spawn')) == 'spawn'
+    shm = None
+    if spawn:   # 镜像放共享内存：本进程与各子进程读同一份（_init_shared）
+        from multiprocessing import shared_memory
+        shm = shared_memory.SharedMemory(create=True, size=max(1, n * 4)); shm.buf[:n * 4] = b[:n * 4]; _W = shm.buf[:n * 4].cast('I')
+    else:
+        _W = memoryview(bytes(b[:n * 4])).cast('I')   # 小端（arm64 / x86），同 struct '<I'
+    try:
+        _LS = frozenset()
+        out = _parts(_main_part, n, jobs, shm, start)
+        lyt = _parts(_lyt_part, n, jobs, shm, start); out += lyt
+        _LS = frozenset(o // 4 for o, _, _ in lyt); out += _parts(_cap_part, n, jobs, shm, start)
+        out += _sead_persp(_W, n)
+    finally:
+        if shm is not None:
+            _W.release(); _W = None; shm.close(); shm.unlink()
+    return _scan_tail(b, out)
+
+
+def _scan_tail(b, out):
+    te = _text_end(b)   # （_sead_persp 一次扫完、只看 MOVZ -1.0f 附近，已在 scan 里随镜像一起做）
     f = struct.pack('<ff', 1920.0, 1080.0); o = b.find(f, te)   # f32 同 aspf / i32 只认代码段之后（审计 #829 F-scan-f32-text：代码段里凑巧的浮点对不是分辨率表）
     while o >= 0:
         nb = [struct.unpack_from('<ff', b, o + d) for d in (-8, 8) if 0 <= o + d <= len(b) - 8]

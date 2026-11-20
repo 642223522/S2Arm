@@ -17,7 +17,7 @@ namespace NxGal
         {
             if (Path.IsPathRooted(p)) return p;
             string d = Environment.GetEnvironmentVariable("S2A_DOCS");
-            if (string.IsNullOrEmpty(d)) d = OperatingSystem.IsIOS() ? Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments) : Directory.GetCurrentDirectory();
+            if (string.IsNullOrEmpty(d)) d = (OperatingSystem.IsIOS() || OperatingSystem.IsTvOS()) ? Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments) : Directory.GetCurrentDirectory();
             return Path.Combine(d, p);
         }
 
@@ -72,7 +72,7 @@ namespace NxGal
             if (string.IsNullOrEmpty(pd)) pd = Path.Combine(home, "Library", "Application Support", "S2A", "pso_dev");
             if (Environment.GetEnvironmentVariable("S2A_COLD_KEEP_PSODEV") == "1") what.Append("渲染器设备归档（S2A_COLD_KEEP_PSODEV=1，保留）；");
             else { Clear(pd, "渲染器设备归档"); Clear(Path.Combine(home, "Library", "Caches", "S2A", "pso_dev"), "渲染器设备归档（老位置 Caches）"); }
-            if (OperatingSystem.IsIOS())
+            if ((OperatingSystem.IsIOS() || OperatingSystem.IsTvOS()))
             {
                 string c1 = Path.Combine(Environment.GetEnvironmentVariable("HOME") ?? "", "Library", "Caches", "com.apple.metal");
                 Clear(c1, "Metal 系统缓存（容器 Library/Caches）");

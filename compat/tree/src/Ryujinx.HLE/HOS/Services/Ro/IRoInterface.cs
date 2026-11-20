@@ -168,7 +168,10 @@ namespace Ryujinx.HLE.HOS.Services.Ro
             // the game keeps the buffer, which on hardware becomes the NRO's code mapping)
             if (S2AHooks.GuestView?.Invoke(nroAddress, (int)nroSize) is System.Memory<byte> nroView)
             {
-                nroHash = SHA256.HashData(nroView.Span);
+                // S2Arm: snapshot replay gives the hash the saved run computed: the request log keeps only the NRO's header and hash for NROs in the
+                //   package (they are mapped from the rewritten image by hash), not the whole file
+                nroHash = S2AHooks.SnapNroHash ?? SHA256.HashData(nroView.Span);
+                S2AHooks.SnapNroHash = null;
 
                 if (!IsNroHashPresent(nroHash))
                 {
@@ -195,7 +198,8 @@ namespace Ryujinx.HLE.HOS.Services.Ro
 
                 MemoryStream stream = new(nroData);
 
-                nroHash = SHA256.HashData(stream);
+                nroHash = S2AHooks.SnapNroHash ?? SHA256.HashData(stream);   // S2Arm: snapshot replay (see above)
+                S2AHooks.SnapNroHash = null;
 
                 if (!IsNroHashPresent(nroHash))
                 {
@@ -307,6 +311,19 @@ namespace Ryujinx.HLE.HOS.Services.Ro
             }
 
             nroMappedAddress = mapped;
+
+            // S2Arm: not in the package (#8be819: a game keeps its NRO inside its own encrypted archive, which packing cannot read). The game has just
+            // unpacked it into memory: the native layer keeps that file so the next preparation of the game rewrites it
+            if (rc == 1 && S2AHooks.NroKeep != null && S2AHooks.GuestView?.Invoke(info.NroAddress, (int)info.NroSize) is System.Memory<byte> nroView
+                && System.Security.Cryptography.SHA256.HashData(nroView.Span).AsSpan().SequenceEqual(info.Hash))
+            {
+                using System.Buffers.MemoryHandle pin = nroView.Pin();
+
+                fixed (byte* hash = info.Hash)
+                {
+                    S2AHooks.NroKeep(hash, (byte*)pin.Pointer, info.NroSize);
+                }
+            }
 
             switch (rc)
             {

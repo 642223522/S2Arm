@@ -318,8 +318,11 @@ int main(int argc, char **argv) {
     { static uint8_t pkgdata[1 << 20]; for (int i = 0; i < W * H; i++) memcpy(pkgdata + 4 * i, GREY, 4);   // 宿主按存储大小（块线性，大于 W×H×4）拷
       NVNtexture P, PZ; texture_offset = (texture_offset + 65535) / 65536 * 65536;   // 新起一页：前面贴图所在页已被写保护（单测桩不接缺页钩子），建时拷打包数据会 SIGBUS
       make_tex_pkg(&P, NVN_FORMAT_RGBA8, NVN_TEXTURE_FLAGS_COMPRESSIBLE, pkgdata); make_tex(&PZ, NVN_FORMAT_DEPTH32F, NVN_TEXTURE_FLAGS_COMPRESSIBLE);
+      uint64_t up0 = g_pfv_upgrades;
       begin(); { const NVNtexture *ts[1] = {&P}; API(nvnCommandBufferSetRenderTargets)(&commands, 1, ts, NULL, &PZ, NULL); float f[4] = {0, 0, 1, 1};
           API(nvnCommandBufferSetScissor)(&commands, 0, 0, W, H); API(nvnCommandBufferClearColor)(&commands, 0, f, 15); API(nvnCommandBufferClearDepthStencil)(&commands, 1.0f, 1, 0, 0xff); } submit();
+      // #1634：打包贴图建时就带渲染目标用途，第一次当附件不再整张复制补用途（修前这一遍 +1）
+      printf("  打包颜色目标当附件：贴图升级 +%llu（期望 0）\n", (unsigned long long)(g_pfv_upgrades - up0)); REQUIRE(g_pfv_upgrades == up0);
       int cw = 0, ch = 0, zw = 0, zh = 0, cs = nvn_be_tex_storage_size(&P, &cw, &ch), zs = nvn_be_tex_storage_size(&PZ, &zw, &zh);
       printf("  颜色存储 %dx%d 记录 %d，深度存储 %dx%d 记录 %d（期望两者相同）\n", cw, ch, cs, zw, zh, zs);
       REQUIRE(cw == zw && ch == zh);
@@ -701,6 +704,23 @@ int main(int argc, char **argv) {
       nvn_be_tex_storage_read(&W2, raw, (size_t)WSW * 4); paint(rawwant, WSW, WSH, RED, r1, 1, WMUL, WDIV); compare(raw, rawwant, WSW, WSH, NULL, 0, 0, "W2 原样存储 = 手算的存储尺寸图");
       paint(want, W, H, RED, r1, 1, 1, 1); read_game(&W2, got); compare(got, want, W, H, NULL, 0, 0, "W2 ReadTexels = 游戏尺寸期望");
       present_grab(&W2, NULL); grab_is(W, H, W, H); paint(want, W, H, RED, r1f, 1, 1, 1); if (grab_w == W && grab_h == H) compare(grab_px, want, W, H, NULL, 0, 0, "W2 抓图 = 游戏尺寸期望（翻正）"); }
+    done();
+
+    // 30. 缩放过的深度（D32F）拷进打包的原尺寸深度图（打包贴图建时不带渲染目标用途），以及拷进普通的原尺寸深度图。D-HT4P：渲染倍率不是 1x 时，
+    //     1080x608 → 1440x810 这笔深度拷贝走到「没实现」、目标留旧深度，3D 场景按旧深度算雾 → 隔几帧蒙一层白。
+    //     期望（手算）：两笔拷贝都不走「没实现」（g_t2t_unimpl 不涨；修前打包目标那笔 +1）；普通目标读回全图 = 源清成的 0.25（证明深度缩放拷贝写得对）。
+    //     打包目标不读回：打包图的 ReadTexels 读包里数据，读存储对深度图本身不可用
+    phase = "30 缩放深度拷进不带渲染目标用途的原尺寸深度图";
+    { extern uint64_t g_t2t_unimpl; NVNtexture ZA, ZB, ZC; static uint8_t zpkg[1 << 20]; for (int i = 0; i < (1 << 20) / 4; i++) ((float *)zpkg)[i] = 0.5f;
+      make_tex(&ZA, NVN_FORMAT_DEPTH32F, NVN_TEXTURE_FLAGS_COMPRESSIBLE); make_tex_pkg(&ZB, NVN_FORMAT_DEPTH32F, 0, zpkg); make_tex(&ZC, NVN_FORMAT_DEPTH32F, 0);
+      begin(); { API(nvnCommandBufferSetRenderTargets)(&commands, 0, NULL, NULL, &ZA, NULL); API(nvnCommandBufferSetScissor)(&commands, 0, 0, W, H);
+          API(nvnCommandBufferClearDepthStencil)(&commands, 0.25f, 1, 0, 0xff); } submit();
+      uint64_t u0 = g_t2t_unimpl;
+      begin(); { NVNcopyRegion r = {0, 0, 0, W, H, 1}; API(nvnCommandBufferCopyTextureToTexture)(&commands, &ZA, NULL, &r, &ZB, NULL, &r, 0);
+          API(nvnCommandBufferCopyTextureToTexture)(&commands, &ZA, NULL, &r, &ZC, NULL, &r, 0); } submit();
+      printf("  走到「没实现」%llu 次（期望 0）\n", (unsigned long long)(g_t2t_unimpl - u0)); REQUIRE(g_t2t_unimpl == u0);
+      float *zw = (float *)want; for (int i = 0; i < W * H; i++) zw[i] = 0.25f;
+      read_game(&ZC, got); compare(got, want, W, H, NULL, 0, 0, "ZC 深度 = 0.25（缩放深度拷贝写对）"); }
     done();
     unlink(map); unlink(user);
     if (fails) { printf("t_nvn_rscale %s：%u 组、%u 项里 %u 项不通\n", argv[1], cases, checks, fails); return 1; }

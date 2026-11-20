@@ -318,8 +318,15 @@ namespace S2A.Services
         //   按 romfs.s2aidx 的文件顺序给每个文件在 game.img 里的绝对偏移，-1 = 读界面覆盖层。和 romfs.s2aidx 一起在就走单文件镜像同一条预建路径（IndexedStorage），
         //   起局不重建 RomFS 目录表（11-11 真机对比：有覆盖层时 RomFsBuilder 重建约 10 万条目 138.6 ms，预建路径 7.9 ms）
         public const string ImgMapName = "game.imgmap";
+        // 一款一份资源（0.6.0）：Mac 运行目录 image/mac 不再放 romfs.std，放一个 game.img——它是 iPhone 资源包 .pack/game.img 的硬链接（同一个文件）。
+        //   Mac 目录不放偏移表 / 索引：起局走下面现建那条（同原先 romfs.std 的 OpenStd：没有覆盖层直接交 RomFS 段，有覆盖层按 IMG 目录表里的 romfs.list 现建），
+        //   起局耗时与原先一致；Mac 的界面覆盖层在 ui_overlay/romfs，由调用方传进来
         private static ReadOnlySpan<byte> ImgMagic => "S2AIMG01"u8;
-        public static IStorage OpenImg(string programDir)
+
+        public static IStorage OpenImg(string programDir) => OpenImg(programDir, null);
+
+        /// <summary>overlayDir：界面覆盖层目录（Mac = ui_overlay/romfs）；null = 本目录的 romfs_overlay（iPhone 资源包）</summary>
+        public static IStorage OpenImg(string programDir, string overlayDir)
         {
             string path = Path.Combine(programDir, ImgName);
             if (!File.Exists(path)) return null;
@@ -327,7 +334,7 @@ namespace S2A.Services
             byte[] hdr = new byte[136];
             if (RandomAccess.Read(h, hdr, 0) != hdr.Length || !hdr.AsSpan(0, 8).SequenceEqual(ImgMagic)) { h.Dispose(); throw new InvalidDataException($"不是 S2Arm 资源包 IMG：{path}"); }
             uint fmt = BitConverter.ToUInt32(hdr, 8);
-            if (fmt != 1) { h.Dispose(); throw new InvalidDataException($"资源包 IMG 格式号 {fmt}，这个 S2Arm 只认 1：请更新 S2Arm（{path}）"); }
+            if (fmt != 1) Red.Waive($"资源包 IMG 格式号 {fmt}，这个 S2Arm 只认 1，按 1 照常读（出问题先更新 S2Arm）", path);   // 11-17 维护者：校验不过不整个拒，黄字照常继续
             long ro = BitConverter.ToInt64(hdr, 96), rl = BitConverter.ToInt64(hdr, 104), to = BitConverter.ToInt64(hdr, 112), tl = BitConverter.ToInt64(hdr, 120), total = BitConverter.ToInt64(hdr, 128);
             if (RandomAccess.GetLength(h) != total || rl <= 0)
             {
@@ -335,9 +342,9 @@ namespace S2A.Services
                 // 推到一半（审计 P1-170）：旁边还有旧形态的 romfs/ 目录就退回读它（同单文件镜像不完整时）；没有就是资源确实没传完，
                 //   物理上起不了：抛错让会话失败，宿主按事实归到「游戏文件缺失，请在电脑上重新装到 iPhone」（init_fail.c），不再报「缺 romfs/」后照样起空数据
                 if (Directory.Exists(Path.Combine(programDir, "romfs"))) { Red.Report($"资源包 IMG 不完整（{have} / {total} 字节，多半推到一半），这局改读 romfs/ 目录", path); return null; }
-                throw new InvalidDataException($"资源包 IMG 没传完（{have} / {total} 字节）：请在电脑上的 S2Arm 里对这款游戏重新「装到 iPhone」（{path}）");
+                throw new InvalidDataException($"资源包 IMG 没传完（{have} / {total} 字节）：请在电脑上的 S2Arm 里对这款游戏重新「推到 iPhone」（{path}）");
             }
-            Dictionary<string, string> overlay = OverlayFiles(Path.Combine(programDir, ImageOverlayDir));
+            Dictionary<string, string> overlay = OverlayFiles(overlayDir ?? Path.Combine(programDir, ImageOverlayDir));
             string map = Path.Combine(programDir, ImgMapName), index = Path.Combine(programDir, FileName);
             if (File.Exists(map) && File.Exists(index))
             {
@@ -364,6 +371,119 @@ namespace S2A.Services
                 builder.AddFile("/" + rel, new RangeFile(romfs, data + info.Offset, info.Length));
             }
             return builder.Build();
+        }
+
+        // 标准 RomFS 镜像（产物根里与 romfs/ 同级的 romfs.std、DLC 的 aoc/<idx>.std：LibHac RomFsBuilder 建的 Switch 标准 RomFS，同 IMG 里那段）。
+        //   约定同 graphics/nvn/tools/romfs_list.py：目录 <top> 在就照旧读目录；目录不在、旁边有 <top>.std 才读镜像（StdOf）。
+        //   没有界面覆盖层 → 整个文件直接交给游戏（不建表、不枚举）；有覆盖层 → 按镜像自己的文件表重建虚拟 RomFS，同路径的读覆盖层那份（同 OpenImg 的覆盖层语义）
+        public const string StdSuffix = ".std";
+
+        /// <summary>目录 dir 不在、dir.std 是文件 → dir.std 的完整路径；否则 null（目录在照旧读目录）</summary>
+        public static string StdOf(string dir)
+        {
+            if (Directory.Exists(dir)) return null;
+            string std = Path.TrimEndingDirectorySeparator(dir) + StdSuffix;
+            return File.Exists(std) ? std : null;
+        }
+
+        public static IStorage OpenStd(string path, string overlayDir = null)
+        {
+            var h = File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.Read, FileOptions.RandomAccess);
+            IStorage romfs = new HandleRange(h, 0, RandomAccess.GetLength(h));
+            Dictionary<string, string> overlay = OverlayFiles(overlayDir);
+            if (overlay == null) return romfs;
+            RomFsFileSystem fs = new(romfs);
+            long data = fs.Header.DataOffset;
+            List<string> files = new();
+            ListFiles(fs.FileTable, "", files);
+            files.Sort(StringComparer.Ordinal);   // 同目录现建 / 预建索引的加入顺序（RomFsFromDirectory）：同一份文件建出同一布局
+            RomFsBuilder builder = new();
+            foreach (string rel in files)
+            {
+                if (overlay.TryGetValue(rel, out string over)) { builder.AddFile("/" + rel, new LazyHostFile(over, new FileInfo(over).Length)); continue; }
+                fs.FileTable.TryOpenFile("/" + rel, out RomFileInfo info);
+                builder.AddFile("/" + rel, new RangeFile(romfs, data + info.Offset, info.Length));
+            }
+            return builder.Build();
+        }
+
+        // 镜像文件表里的全部文件（相对路径、/ 分隔、无前导 /）
+        internal static void ListFiles(HierarchicalRomFileTable<RomFileInfo> table, string dir, List<string> into)
+        {
+            if (!table.TryOpenDirectory(dir.Length == 0 ? "/" : "/" + dir, out FindPosition start))
+                throw new InvalidDataException($"RomFS 文件表里打不开目录 /{dir}");
+            FindPosition p = start;
+            while (table.FindNextFile(ref p, out RomFileInfo _, out string n)) into.Add(dir.Length == 0 ? n : dir + "/" + n);
+            p = start;
+            while (table.FindNextDirectory(ref p, out string n)) ListFiles(table, dir.Length == 0 ? n : dir + "/" + n, into);
+        }
+
+        // 诊断（缺省关）：S2A_ROMFS_READLOG=<文件> 时，交给游戏的每份 RomFS（本体、DLC）每次读完记一行
+        //   「起局后毫秒 \t 来源 \t RomFS 内路径 \t 文件内偏移 \t 长度 \t 读到字节的 sha256」；一次读跨几个文件按文件拆开，落在文件数据以外（头 / 文件表 / 填充）的
+        //   记 <元数据> 与镜像内偏移。按 RomFS 内路径记、不按镜像偏移：目录形态与镜像形态（romfs.std）读到的同一个文件逐行可比。只作对拍手段，不得变成产品行为
+        private static readonly string ReadLogPath = Environment.GetEnvironmentVariable("S2A_ROMFS_READLOG");
+        public static IStorage ReadLog(IStorage storage, string source) => ReadLog(storage, source, ReadLogPath);
+        internal static IStorage ReadLog(IStorage storage, string source, string logPath) =>
+            storage == null || string.IsNullOrEmpty(logPath) ? storage : new LoggedStorage(storage, source, logPath);
+
+        private sealed class LoggedStorage : IStorage
+        {
+            private static readonly object Gate = new();
+            private static readonly Dictionary<string, StreamWriter> Outs = new(StringComparer.Ordinal);   // 同一记录文件多份 RomFS（本体 + DLC）共用一个写入器
+            private readonly StreamWriter _out;
+            private static readonly long T0 = System.Diagnostics.Stopwatch.GetTimestamp();
+            private readonly IStorage _s;
+            private readonly string _source;
+            private readonly long[] _start, _len;   // 非空文件的数据区间（镜像内偏移），按起点升序
+            private readonly string[] _path;
+
+            public LoggedStorage(IStorage s, string source, string logPath)
+            {
+                _s = s; _source = source;
+                RomFsFileSystem fs = new(s);
+                List<string> files = new();
+                ListFiles(fs.FileTable, "", files);
+                List<(long Start, long Len, string Path)> spans = new(files.Count);
+                foreach (string rel in files)
+                    if (fs.FileTable.TryOpenFile("/" + rel, out RomFileInfo info) && info.Length > 0) spans.Add((fs.Header.DataOffset + info.Offset, info.Length, rel));
+                spans.Sort((a, b) => a.Start.CompareTo(b.Start));
+                _start = spans.ConvertAll(x => x.Start).ToArray(); _len = spans.ConvertAll(x => x.Len).ToArray(); _path = spans.ConvertAll(x => x.Path).ToArray();
+                lock (Gate)
+                {
+                    if (!Outs.TryGetValue(logPath, out _out)) Outs[logPath] = _out = new StreamWriter(logPath, append: true, new UTF8Encoding(false)) { AutoFlush = true };
+                }
+                Console.Error.WriteLine($"[S2A RomFS] 读记录已开：{source} {spans.Count} 个文件 → {logPath}（S2A_ROMFS_READLOG，诊断）");
+            }
+
+            public override Result Read(long offset, Span<byte> destination)
+            {
+                Result r = _s.Read(offset, destination);
+                if (r.IsFailure() || destination.IsEmpty) return r;
+                long ms = (long)System.Diagnostics.Stopwatch.GetElapsedTime(T0).TotalMilliseconds;
+                StringBuilder sb = new();
+                for (long at = offset, end = offset + destination.Length; at < end;)
+                {
+                    int i = Array.BinarySearch(_start, at);
+                    if (i < 0) i = ~i - 1;   // 起点 ≤ at 的最后一个文件
+                    long stop; string what; long inner;
+                    if (i >= 0 && at < _start[i] + _len[i]) { stop = Math.Min(end, _start[i] + _len[i]); what = _path[i]; inner = at - _start[i]; }
+                    else { stop = i + 1 < _start.Length ? Math.Min(end, _start[i + 1]) : end; what = "<元数据>"; inner = at; }
+                    ReadOnlySpan<byte> part = destination.Slice((int)(at - offset), (int)(stop - at));
+                    sb.Append(ms).Append('\t').Append(_source).Append('\t').Append(what).Append('\t').Append(inner).Append('\t').Append(part.Length).Append('\t')
+                      .Append(Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(part))).Append('\n');
+                    at = stop;
+                }
+                lock (Gate) _out.Write(sb.ToString());
+                return r;
+            }
+
+            public override Result GetSize(out long size) => _s.GetSize(out size);
+            public override Result Write(long offset, ReadOnlySpan<byte> source) => _s.Write(offset, source);
+            public override Result Flush() => _s.Flush();
+            public override Result SetSize(long size) => _s.SetSize(size);
+            public override Result OperateRange(Span<byte> outBuffer, OperationId operationId, long offset, long size, ReadOnlySpan<byte> inBuffer) =>
+                _s.OperateRange(outBuffer, operationId, offset, size, inBuffer);
+            public override void Dispose() { _s.Dispose(); base.Dispose(); }
         }
 
         // IMG 目录表里按名取一条（目录表只在起局时读一次、条目少，线性扫即可；按路径 O(1) 查的算法见 pack/img.py find）
@@ -393,7 +513,15 @@ namespace S2A.Services
                 if (offset < 0 || offset + destination.Length > _len) return ResultFs.OutOfRange.Value;
                 for (int got = 0; got < destination.Length;)
                 {
-                    int n = RandomAccess.Read(_h, destination[got..], _off + offset + got);
+                    int n;
+                    try { n = RandomAccess.Read(_h, destination[got..], _off + offset + got); }
+                    catch (IOException e) when (e.HResult == LazyHostFile.EFault)
+                    {
+                        // 目标是游戏内存、读盘期间页被写保护（#602，同 IndexedStorage 读镜像那条）：剩下的部分经宿主中转缓冲读、报一次写再拷
+                        Span<byte> left = destination[got..];
+                        return LazyHostFile.ReadViaBounce(_h, left, _off + offset + got, "RomFS 镜像", out long bounced) && bounced == left.Length
+                            ? Result.Success : ResultFs.HostFileDataCorrupted.Value;
+                    }
                     if (n <= 0) return ResultFs.OutOfRange.Value;
                     got += n;
                 }
@@ -431,8 +559,8 @@ namespace S2A.Services
         public static Source Decide(bool imageOpened, bool imageFileExists, bool romfsDirExists, string programDir)
         {
             if (imageOpened) return Source.Image;
-            if (imageFileExists && !romfsDirExists)
-                throw new InvalidDataException($"RomFS 单文件镜像不完整（长度与对照表不符或缺对照表 / 索引，多半推到一半），也没有 romfs/ 可退：{programDir}；请重新装到 iPhone");
+            if (imageFileExists && !romfsDirExists)   // 11-17 维护者：不整个拒——黄字记下、照常开局，游戏读不到文件时按原因报（报红带上这条）
+                Red.Waive("RomFS 单文件镜像不完整（长度与对照表不符或缺对照表 / 索引，多半推到一半），也没有 romfs/ 可退，照常开局（可能缺文件或闪退，重新装到 iPhone 可解）", programDir);
             return romfsDirExists ? Source.Directory : Source.Missing;
         }
 

@@ -15,12 +15,19 @@
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
 #endif
+// 容器文档根相对 HOME 的位置（11-15 Apple TV 版）：iOS / Mac = Documents；tvOS 不让 App 写 Documents、大文件只能放 Caches（系统空间紧时可清），
+//   电视上用 Library/Caches/S2Arm：多款容器 games/<游戏号>、资源包 games/<游戏号>/资源包 都在它下面（资源包被清后电脑端「装到 Apple TV」重推）
+#if defined(__APPLE__) && TARGET_OS_TV
+#define S2A_CONTAINER_DOCS_REL "Library/Caches/S2Arm"
+#else
+#define S2A_CONTAINER_DOCS_REL "Documents"
+#endif
 
 // 文档根写进 out；返回 snprintf 的长度（截断时 ≥ n）
 static inline int s2a_docs_root(char *out, size_t n) {
     const char *d = getenv("S2A_DOCS"), *h = getenv("HOME");
     if (d && *d) return snprintf(out, n, "%s", d);
-    return snprintf(out, n, "%s/Documents", h && *h ? h : ".");
+    return snprintf(out, n, "%s/" S2A_CONTAINER_DOCS_REL, h && *h ? h : ".");
 }
 
 // <文档根>/<按 fmt 拼的相对路径> 写进 out（fmt 为 NULL / 空 = 文档根本身）；返回总长度（截断时 ≥ n）
@@ -42,7 +49,7 @@ static inline int s2a_docs_path(char *out, size_t n, const char *fmt, ...) {
 //   别的文档根（单款兼容 App、Mac 局、单测临时目录）资源包照旧在 <文档根>/资源包。唯一取法：宿主、电脑端推包（pack/jobs/install.py game_pack）、
 //   出容器（pack/ship_ext.py launch.ctx game_data）都按这一条，不许另拼。只看一处目录在不在（下面的备用位置），不读别的
 // 备用位置 <容器>/Library/S2Arm（v0.3.3，iOS 27 玩家机上 Library/Application Support/S2Arm 整条归 root、App 写不进，连迁移的新树都建不出来）：
-//   Library 本身归 App。<容器>/Library/S2Arm/games 在就用它（s2a_games_repair 搬过来时建；电脑端推包同一判据，pack/jobs/install.py pack_listing）
+//   Library 本身归 App。<容器>/Library/S2Arm/games 在就用它（v0.3.3–v0.4.4 的迁移建过的玩家机上还在用；迁移已撤，不再新建；电脑端推包同一判据，pack/jobs/install.py pack_listing）
 #define S2A_PACK_BASE_REL "Library/Application Support/S2Arm"
 #define S2A_PACK_BASE_ALT_REL "Library/S2Arm"
 static inline int s2a_pack_legacy_root(char *out, size_t n, const char *docs) { return snprintf(out, n, "%s/资源包", docs); }
@@ -51,7 +58,24 @@ static inline const char *s2a_pack_base_rel(const char *container, int clen) {  
     snprintf(alt, sizeof alt, "%.*s/" S2A_PACK_BASE_ALT_REL "/games", clen, container);
     return !stat(alt, &st) && S_ISDIR(st.st_mode) ? S2A_PACK_BASE_ALT_REL : S2A_PACK_BASE_REL;
 }
+// App 包内的资源包（11-16 Apple TV 安装包导出：pack/jobs/tvos.py export_tv 把这款资源包整份打进 App 本体 <App>/Games/<游戏号>/资源包/，
+//   包内带 .applied，电视上闸门判「已应用」、不在只读区写）：docs 以 /games/<游戏号> 结尾、<bundle>/Games/<游戏号>/资源包/manifest.json 在
+//   → 写包内路径、回长度；否则回 0（照旧找 Library/Caches）。纯函数，单测 runtime/tests/t_docs.c；只在 tvOS 上由 s2a_pack_root 先调（没上电视验过）
+static inline int s2a_pack_root_in_bundle(char *out, size_t n, const char *bundle, const char *docs) {
+    const char *k = docs ? strrchr(docs, '/') : NULL;
+    if (!bundle || !*bundle || !k || k - docs < 6 || strncmp(k - 6, "/games", 6) || !k[1] || k[1] == '.') return 0;
+    char m[2048]; struct stat st;
+    if (snprintf(m, sizeof m, "%s/Games/%s/资源包/manifest.json", bundle, k + 1) >= (int)sizeof m || stat(m, &st) || !S_ISREG(st.st_mode)) return 0;
+    int r = snprintf(out, n, "%s/Games/%s/资源包", bundle, k + 1);
+    return r > 0 ? r : 0;
+}
+#if defined(__APPLE__) && TARGET_OS_TV
+const char *s2a_launch_ctx_bundle_dir(void) __attribute__((weak_import));   // runtime/src/launchctx.c：App 包根（单测不链它）
+#endif
 static inline int s2a_pack_root(char *out, size_t n, const char *docs) {
+#if defined(__APPLE__) && TARGET_OS_TV
+    { int r = s2a_launch_ctx_bundle_dir ? s2a_pack_root_in_bundle(out, n, s2a_launch_ctx_bundle_dir(), docs) : 0; if (r) return r; }   // 电视：先找包内，没有再找 Library/Caches
+#endif
     static const char key[] = "/Documents/games/";
     const char *k = docs ? strstr(docs, key) : NULL;
     if (k) {
@@ -77,6 +101,6 @@ static inline int s2a_pack_base_alt(char *out, size_t n, const char *proc_docs) 
 //   只在 iOS 编出来：Mac 代码调不到它，不会再落到用户文稿夹
 static inline int s2a_container_docs(char *out, size_t n) {
     const char *h = getenv("HOME");
-    return snprintf(out, n, "%s/Documents", h && *h ? h : ".");
+    return snprintf(out, n, "%s/" S2A_CONTAINER_DOCS_REL, h && *h ? h : ".");
 }
 #endif

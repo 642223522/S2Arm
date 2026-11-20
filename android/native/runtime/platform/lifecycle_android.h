@@ -20,3 +20,8 @@ void s2a_android_guest_writers_describe(char *out, size_t cap);
 
 // Terminal-only writer acquisition; requires the SVC stop gate already closed.
 int s2a_android_guest_shutdown_writers_begin(void);
+
+// #528 第 15 项：会话标记 <files>/s2a_session.mark（外壳 LastSession.java 写）。只删内容恰好是 "end\n" 的标记
+//   （Java 在玩家 / 游戏自己结束这一局时写）：1 = 删了；0 = 没有标记 / 不是 end / 读不到读不全，留着
+//   （库页照样提示「上一局异常结束」，宁可多问一次）；-1 = 目录不对或删不掉。
+int s2a_android_sesmark_clear(const char *files_dir);

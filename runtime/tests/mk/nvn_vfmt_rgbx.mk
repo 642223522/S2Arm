@@ -1,6 +1,6 @@
 # 缺口族 43：RGBX 顶点格式并到同宽 RGB（生产 state_op + pso_desc，真 Metal 设备读回）。反证：NVN_VFMT_SOURCE=<旧 nvn_mtl.m>
 NATIVE_TEST_OWN += nvn_vfmt_rgbx
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 NVN_VFMT_SOURCE ?= graphics/nvn/gfx/nvn/nvn_mtl.m
 NVN_VFMT_BINARY ?= $(BUILD)/tests/t_nvn_vfmt_rgbx
 $(NVN_VFMT_BINARY): graphics/nvn/tests/t_nvn_vfmt_rgbx.m $(NVN_VFMT_SOURCE) $(NVN_MTL_DEPS) graphics/nvn/gfx/nvn/nvn_obj.h $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
