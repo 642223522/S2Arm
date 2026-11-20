@@ -5,6 +5,7 @@
 import os
 import shutil
 import stat
+import subprocess
 import tempfile
 import types
 import unittest
@@ -37,6 +38,20 @@ class RewriteRefreshTests(unittest.TestCase):
         self.sg_calls = []
         self.c = jobcase.fake_context(self.tmp, private=self.tmp, emit=lambda kind, text, **_: self.events.append(text), library=self.tmp / "library", work_root=self.tmp / "work",
                                        catalog=lambda: {"games": [{"id": g} for g in ("0100A", "0100B")]})
+
+    def test_rewriter_bin_decodes_utf8_child_output_explicitly(self):
+        binary = self.tmp / "rewriter"
+        binary.write_text("fixture")
+
+        def run(args, **kwargs):
+            # The Windows child runs with -X utf8, while the host locale may be GBK.
+            # Require a decoder that can read the child's UTF-8 output and diagnostics.
+            self.assertEqual(kwargs.get("encoding"), "utf-8")
+            self.assertEqual(kwargs.get("errors"), "replace")
+            return subprocess.CompletedProcess(args, 0, stdout=f"{binary}\n", stderr="")
+
+        with patch.object(rr.subprocess, "run", side_effect=run):
+            self.assertEqual(rr.rewriter_bin(self.c), str(binary))
 
     def kit(self, gid):
         k = self.tmp / ("kit-" + gid); k.mkdir(exist_ok=True)
