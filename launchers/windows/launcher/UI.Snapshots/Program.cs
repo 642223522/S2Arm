@@ -30,7 +30,9 @@ if (settingsProbe) args = args[1..];
 var reportProbe = args.Length > 0 && args[0] == "--report-probe";
 // --build-route-probe <目录>：A 在出包时打开 B 的出包页，停在 B 自己的页、说清排在 A 后面（玩家反馈，BuildRouteProbe.cs）
 var buildRouteProbe = args.Length > 0 && args[0] == "--build-route-probe";
-if (reportProbe || buildRouteProbe) args = args[1..];
+// --dismiss-probe <目录>：控制口 /dismiss（s2armctl dismiss）关得掉新功能大窗 / 更新弹窗（DismissProbe.cs）
+var dismissProbe = args.Length > 0 && args[0] == "--dismiss-probe";
+if (reportProbe || buildRouteProbe || dismissProbe) args = args[1..];
 var outDir = args.Length > 0 ? args[0] : Path.Combine(
     Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
     ".s2arm/run/s2arm/cmdr/evidence/launcher/win");
@@ -49,6 +51,7 @@ if (flickerProbe) { Environment.Exit(FlickerProbe.Run(outDir)); }
 if (settingsProbe) { Environment.Exit(SettingsProbe.Run(outDir)); }
 if (reportProbe) { Environment.Exit(ReportProbe.Run(outDir)); }
 if (buildRouteProbe) { Environment.Exit(BuildRouteProbe.Run(outDir)); }
+if (dismissProbe) { Environment.Exit(DismissProbe.Run(outDir)); }
 
 // ── 统一夹具游戏（不用固定游戏名字符串以外的占位）────────────────────
 static LibraryGame MockGame(bool keysReady = true) => new(

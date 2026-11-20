@@ -664,7 +664,7 @@ def diag_body(rest, now=None):
     return {'action': 'export', 'path': path}
 
 # 至少需要一个位置参数的命令：以前缺参数直接 IndexError，或把后面的选项当成游戏号发给控制口。
-NEEDS_ARG = {'install', 'uninstall', 'launch', 'cancel', 'retry', 'delete', 'customize', 'ipa', 'prepare',
+NEEDS_ARG = {'install', 'uninstall', 'launch', 'cancel', 'retry', 'delete', 'customize', 'ipa', 'prepare', 'selfsign',
              'build', 'wait', 'install-check', 'logs', 'device', 'push-pack', 'snapshot', 'select',
              'onboarding', 'target', 'keys', 'games',
              'cloud-sync', 'display', 'library', 'restore-iphone', 'show', 'mods'}   # 合入时补：这几条同样直接取 rest[0]
@@ -824,7 +824,8 @@ def main():
         wait(rest[0], op, lim, take_before(rest[0], op)); return
     simple = {
               'fonts': ('/fonts', lambda r: {'path': os.path.abspath(r[0]) if r and r[0] else ''}),
-              'prepare': ('/prepare', lambda r: {'gameId': r[0], **space_flag(r)}), 'ipa': ('/ipa', lambda r: {'gameId': r[0], **space_flag(r)}), 'install': ('/install', lambda r: simple_body('install', r)), 'uninstall': ('/uninstall', lambda r: {'gameId': r[0], **accept_flags(r)}), 'restore-iphone': ('/restore-iphone', lambda r: {'gameId': r[0]}), 'launch': ('/launch', lambda r: {'gameId': r[0]}),
+              'prepare': ('/prepare', lambda r: {'gameId': r[0], **space_flag(r)}), 'selfsign': ('/selfsign', lambda r: {'gameId': r[0]}),   # 帮助里一直列着、表里漏了：落到兜底发 {args}，App 回「没有这个 gameId」
+              'ipa': ('/ipa', lambda r: {'gameId': r[0], **space_flag(r)}), 'install': ('/install', lambda r: simple_body('install', r)), 'uninstall': ('/uninstall', lambda r: {'gameId': r[0], **accept_flags(r)}), 'restore-iphone': ('/restore-iphone', lambda r: {'gameId': r[0]}), 'launch': ('/launch', lambda r: {'gameId': r[0]}),
               'cancel': ('/cancel', lambda r: {'taskId': r[0]}), 'retry': ('/retry', lambda r: {'taskId': r[0]}),
               'select': ('/select', lambda r: {'selection': r[0], **({'gameId': r[1]} if len(r) > 1 else {})}),
               'onboarding': ('/onboarding', lambda r: {'action': r[0], **({'step': int(r[1])} if len(r) > 1 else {})}),

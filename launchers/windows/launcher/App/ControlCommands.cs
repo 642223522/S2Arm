@@ -363,8 +363,10 @@ public sealed partial class EnvironmentWindow
                 libraryFolder = connectedFolder ?? libraryFolder;
                 libraryOperation = RunLibraryAsync("catalog", null);
                 return ControlReply.Ok();
-            case ("POST", "/dismiss"):
-                importError = ""; keysRejected = false; Render();
+            case ("POST", "/dismiss"):   // 关掉提示框：报错条，以及更新弹窗 / 新功能大窗（同玩家点关闭：这一版 / 这一期不再弹）
+                importError = ""; keysRejected = false;
+                if (updatePopup is not null) CloseUpdatePopup();
+                Render();
                 return ControlReply.Ok();
             default:
                 return ControlReply.Bad($"不认识 {r.Method} {r.Path}", 404);

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # 通用着色器抽取：递归（Yaz0 / SARC / zstd，认不出的打包格式按 zlib 流）扫游戏资源目录与主程序模块，找标准容器 BNSH / 引擎归档 BAHS / 相邻的控制段+机器码，
 # 沿 变体 → 二进制程序 → 各阶段代码记录 取出 Maxwell 机器码与控制段，按运行时键落盘。
-# 运行时键（与 nvn_mtl.m prog_get 同口径）= sha256(控制段[0 : 控制段+0x20 处的长度] ‖ 机器码[0 : 控制段+0x704 处的长度]) 前 16 位十六进制。
+# 运行时键（与 nvn_mtl.m prog_get 同口径）= sha256(控制段[0 : 控制段+0x20 处的长度]，两段易变字段置零（translator/nvn_key.py） ‖ 机器码[0 : 控制段+0x704 处的长度]) 前 16 位十六进制。
 #   （暗黑的控制段能唯一标识着色器；塞尔达 10918 份机器码只有 7163 种控制段，键必须把机器码算进去）
 # 用法：nxsh_extract.py <输出目录> <资源目录…> [--nso <主程序 NSO>…]   环境 J=并发
 # 输出：<输出目录>/src/<键>.code / .ctl，<输出目录>/index.tsv（键、阶段、来源、容器内变体号）
@@ -9,6 +9,7 @@ import bisect, sys, os, re, struct, zlib, hashlib, collections, concurrent.futur
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')))
 import nxfmt
+sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', 'translator'))); import nvn_key   # Switch 1 键规则（宿主 nvn_key.h 同一口径）
 # 仓库里唯一的 RomFS 遍历（graphics/nvn/tools/romfs_list.py：walk 同 os.walk，heads 给清单里的文件头，同一份 RomFS 只读一次）
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'nvn', 'tools'))); import romfs_list
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', 'tools'))); from pool_workers import process_pool_size   # 进程池路数（Windows 至多 61，#1332）
@@ -60,7 +61,7 @@ def trpfs_report(root, outdir, stat, rf=None):
 def key_of(ctl, code):
     cn = struct.unpack_from('<I', ctl, 0x20)[0]; dn = struct.unpack_from('<I', ctl, 0x704)[0]
     if ctl[:4] != bytes.fromhex('34127698') or cn != len(ctl) or dn != len(code): return None
-    return hashlib.sha256(ctl + code).hexdigest()[:16]
+    return hashlib.sha256(nvn_key.key_bytes(ctl) + code).hexdigest()[:16]   # 第 2 代：两段易变字段置零（translator/nvn_key.py）
 def sph(code):
     """SPH（机器码 +0x30 起 0x50 字节，NVIDIA 公开布局）的通用属性接口位图 (读, 写)，逐分量一位；与 ShaderBake.cs Sph 同口径（程序表读取器按接口配阶段用：red_static_programs 曲面、ue_programs 全局几何）"""
     h = code[0x30:0x80]

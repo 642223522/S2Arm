@@ -10434,5 +10434,13 @@
  {
   "source": "Intel Mac：给 iPhone 出包可用；在 Mac 上起游戏仍要 Apple 芯片。",
   "en": "Intel Mac: building for iPhone works; playing games on this Mac still needs Apple silicon."
+ },
+ {
+  "source": "没读到登录的 Apple ID，这份游戏包未签名，导入后由手机上的 S2Arm 签名。",
+  "en": "No signed-in Apple ID was found, so this game pack is unsigned. S2Arm on your phone signs it after import."
+ },
+ {
+  "source": "没读到登录的 Apple ID，这份游戏包未签名；手机上的 S2Arm 还没拿到签名身份，导入后签不了：先在启动器里登录 Apple ID（或选用自己的证书），连上手机推一次游戏，把签名身份交给它。",
+  "en": "No signed-in Apple ID was found, so this game pack is unsigned, and S2Arm on your phone doesn't have a signing identity yet, so it can't sign it after import. Sign in with your Apple ID in the launcher (or choose your own certificate), connect your phone and send a game once to hand the signing identity to it."
  }
 ]

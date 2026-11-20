@@ -14,6 +14,8 @@ def ctl_of(n, fill, code_len):
     c = bytearray([fill]) * n; struct.pack_into('<I', c, 0, 0x98761234); struct.pack_into('<I', c, 0x20, n); struct.pack_into('<I', c, 0x704, code_len)
     return bytes(c)
 def code_of(fill, n=0x200): return bytes([fill]) * n
+def z(ctl):   # 键第 2 代：控制段 [0x790,0x798)、[0x7d0,0x7e8) 落在长度内的字节按 0 算（translator/nvn_key.py；这里按规则另写，不调被测实现）
+    c = bytearray(ctl); c[0x790:min(0x798, len(c))] = bytes(max(0, min(0x798, len(c)) - 0x790)); c[0x7d0:min(0x7e8, len(c))] = bytes(max(0, min(0x7e8, len(c)) - 0x7d0)); return bytes(c)
 def rec(code, ctl):
     r = bytearray(b'BTCDBTCD' + bytes(0x30)); struct.pack_into('<2I', r, 0x28, len(ctl), len(code)); return bytes(r) + code + ctl
 
@@ -25,15 +27,15 @@ def run(case, tamper=False, tg=(8, 4, 1), missing=False):
     nxp = os.path.join(t, 'nxpkg'); s2 = os.path.join(t, 's2'); os.makedirs(nxp); os.makedirs(os.path.join(s2, 'src'))
     # 直连抽取：A（顶点，0x880）、B（像素，0x880）
     cA, kA_ctl = code_of(1), ctl_of(0x880, 0x11, 0x200); cB, kB_ctl = code_of(2), ctl_of(0x880, 0x22, 0x200)
-    kA = hashlib.sha256(kA_ctl + cA).hexdigest()[:16]; kB = hashlib.sha256(kB_ctl + cB).hexdigest()[:16]
+    kA = hashlib.sha256(z(kA_ctl) + cA).hexdigest()[:16]; kB = hashlib.sha256(z(kB_ctl) + cB).hexdigest()[:16]
     open(os.path.join(nxp, 'vs_t.bin'), 'wb').write(rec(cA, kA_ctl)); open(os.path.join(nxp, 'ps_t.bin'), 'wb').write(rec(cB, kB_ctl))
     mp = os.path.join(t, 'map.tsv')
     open(mp, 'w').write('# 测试表\npackage\tindex\tstage\tdm_ctl_sha16\tsource\n'
                         f'vs_t.bin\t0\tvertex\t{"0" * 16 if tamper else kA}\tx#a\nps_t.bin\t0\tpixel\t{kB}\tx#b\n')
     # S2Arm：A 同一份；C 顶点控制段 0x848（取自报长度 0x848）；D 计算控制段 0x88c（直连口径截到 0x880，S2Arm 原键按整段 0x88c）
     cC, ctlC = code_of(3), ctl_of(0x848, 0x33, 0x200); cD, ctlD = code_of(4), cs_ctl(0x88c, 0x44, 0x200, tg, 100)
-    kC = hashlib.sha256(ctlC + cC).hexdigest()[:16]
-    kD = hashlib.sha256(ctlD[:0x880] + cD).hexdigest()[:16]; kD_s2 = hashlib.sha256(ctlD + cD).hexdigest()[:16]
+    kC = hashlib.sha256(z(ctlC) + cC).hexdigest()[:16]
+    kD = hashlib.sha256(z(ctlD[:0x880]) + cD).hexdigest()[:16]; kD_s2 = hashlib.sha256(z(ctlD) + cD).hexdigest()[:16]
     idx = ['# 键\t阶段\t首个来源\t变体号']; sw = srcpack.Writer(s2)   # S2Arm 抽取的着色器字节写成 src/*.pk（同生产写端）
     for k, st, c, l in ((kA, 'vs', cA, kA_ctl), (kC, 'vs', cC, ctlC), (kD_s2, 'cs', cD, ctlD)):
         sw.put(k, c, l); idx.append(f'{k}\t{st}\tsrc/{k}\t0')
@@ -66,7 +68,7 @@ check(os.path.exists(os.path.join(out, 'pkg', 'vs_t.bin')) and open(os.path.join
 check(not os.path.exists(os.path.join(out, 'code_key.tsv')), '不出 code_key.tsv（整段机器码哈希对不上运行时客体代码；seen 用的表改由烘焙出 guest_keys.tsv）')
 check(open(os.path.join(out, 'union_keys.tsv')).read().split() == sorted([k['kA'], k['kB'], k['kC'], k['kD']]), 'union_keys 为 4 个键升序')
 # 反向：直连抽取独有的 B 按 S2Arm 口径（整段控制段 0x880）补进 s2a_src；键对照表含 4 行
-kB_s2 = hashlib.sha256(ctl_of(0x880, 0x22, 0x200) + code_of(2)).hexdigest()[:16]
+kB_s2 = hashlib.sha256(z(ctl_of(0x880, 0x22, 0x200)) + code_of(2)).hexdigest()[:16]
 sb = srcpack.Src(os.path.join(out, 's2a_src'))
 check(kB_s2 in sb and sb.get(kB_s2) == (code_of(2), ctl_of(0x880, 0x22, 0x200)), '直连抽取独有 B 按 S2Arm 格式补进 s2a_src/src/*.pk')
 ix = [l.split('\t') for l in open(os.path.join(out, 's2a_src', 'index.tsv')) if not l.startswith('#')]

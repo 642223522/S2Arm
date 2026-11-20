@@ -4,6 +4,7 @@
 #include "direct/compile_export_w2.h"
 #include "direct/source_store.h"
 #include "direct/sha256.h"
+#include "nvn_key.h"
 #include "nvn/nvn_vk_compile_facts.h"
 #include "nvn.h"
 #include <stdint.h>
@@ -36,7 +37,8 @@ static int lookup(int id, struct nvk_tex_desc *out, void *ctx) {
 }
 static void hash_source(const uint8_t *code, size_t cn, const uint8_t *ctl,size_t tn,uint8_t key[8]) {
     s2a_sha256 c; uint8_t sha[32]; s2a_sha256_init(&c);
-    s2a_sha256_update(&c,ctl,tn);s2a_sha256_update(&c,code,cn);s2a_sha256_final(&c,sha);memcpy(key,sha,8);
+    uint8_t kc[S2A_SOURCE_CONTROL_BYTES];memcpy(kc,ctl,tn);nvn_key_ctl_zero(kc,(uint32_t)tn);   /* 第 2 代键（nvn_key.h，同 source_store） */
+    s2a_sha256_update(&c,kc,tn);s2a_sha256_update(&c,code,cn);s2a_sha256_final(&c,sha);memcpy(key,sha,8);
 }
 static struct s2a_compile_export_w2_key threaded_key;
 static int threaded_result;
