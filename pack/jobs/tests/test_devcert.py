@@ -362,5 +362,16 @@ class RealTools(unittest.TestCase):
         self.assertIn("Payload/S2Arm.app/_CodeSignature/CodeResources", zipfile.ZipFile(out).namelist())
 
 
+class RcodesignEnts(unittest.TestCase):
+    """rcodesign_ents：给 rcodesign 传权限文件的唯一口子（D-J7CH：下游装机直接传盘符路径，-e 按第一个冒号拆成「作用范围 C」、os error 3）。
+    期望手写：参数只含文件名、不含冒号；运行目录 = 权限文件所在目录"""
+    def test_drive_path_passes_name_only(self):
+        p = Path("C:") / "Users" / "p" / "downstream.entitlements"   # 带冒号的一段同 Windows 盘符（rcodesign 按第一个冒号拆）
+        args, cwd = devcert.rcodesign_ents(p)
+        self.assertEqual(args, ["-e", "downstream.entitlements"])
+        self.assertEqual(cwd, Path("C:") / "Users" / "p")
+        self.assertFalse(any(":" in a for a in args))
+
+
 if __name__ == "__main__":
     unittest.main()
