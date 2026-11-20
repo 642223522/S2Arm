@@ -312,6 +312,7 @@ struct LaunchSettingsSheet: View {
                 Button(t("input.save")) {
                     Task { await load([item.id: options[item.id]?.value as? String ?? ""]) }
                 }.buttonStyle(LauncherSecondaryButtonStyle()).disabled(saving || model.busy)
+            }
         case "mods":
             CardRow(title, detail: modsNote(item)) {
                 HStack(spacing: 10) {
