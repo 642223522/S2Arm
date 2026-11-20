@@ -81,6 +81,18 @@ class AndroidDeliveryTest(unittest.TestCase):
         self.assertEqual(child(mod.build_environment(dirty)), baseline)
         self.assertNotEqual(child(dirty), baseline)  # removing the whitelist is a real red control
 
+    def test_release_keystore_override_reaches_host_builder(self):
+        keystore = str(self.base / 'custom signing' / 'release.p12')
+        base = {'HOME': str(self.base), 'PATH': os.defpath}
+        env = mod.build_environment(dict(base, S2ARM_ANDROID_RELEASE_KEYSTORE=keystore,
+                                         S2ARM_ANDROID_RELEASE_PASSWORD='must not reach the child'))
+        source = ('import os; '
+                  'print(os.environ.get("S2ARM_ANDROID_RELEASE_KEYSTORE", "")); '
+                  'assert "S2ARM_ANDROID_RELEASE_PASSWORD" not in os.environ')
+        self.assertEqual(subprocess.check_output([sys.executable, '-I', '-c', source], env=env, text=True),
+                         keystore + '\n')
+        self.assertNotIn('S2ARM_ANDROID_RELEASE_KEYSTORE', mod.build_environment(base))
+
     def test_docker_builder_forwards_direct_backend_to_container(self):
         commands = self.base / 'bin'; commands.mkdir()
         capture = self.base / 'docker-args'
