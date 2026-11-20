@@ -102,8 +102,8 @@
     "en": "① In AltStore or SideStore settings, **export your signing certificate** and set a password. ② Open S2Arm: gear → **Signing certificate** → **Import .p12…**, pick the certificate and enter the password. ③ Put the .s2arm and .img files into S2Arm's **Import Here** folder."
    },
    "where": {
-    "zh-Hans": "同一个 Apple ID 只在一台电脑的 AltServer 上管理：两台电脑都用会互相作废证书，AltStore 会弹「Multiple AltServers」。每 7 天在 AltStore 里点「Refresh All」续签。",
-    "en": "Manage each Apple ID from AltServer on only one computer: using two makes them revoke each other's certificates, and AltStore shows \"Multiple AltServers\". Refresh every 7 days with Refresh All in AltStore."
+    "zh-Hans": "同一个 Apple ID 只在一台电脑的 AltServer 上管理：两台电脑都用会互相作废证书，AltStore 会弹「Multiple AltServers」。7 天到期前在 AltStore 点「Refresh All」即可，S2Arm 里不用再做什么。",
+    "en": "Manage each Apple ID from AltServer on only one computer: using two makes them revoke each other's certificates, and AltStore shows \"Multiple AltServers\". Before the 7 days run out, just tap Refresh All in AltStore; nothing else to do in S2Arm."
    },
    "labels": {
     "where": {
