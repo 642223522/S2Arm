@@ -118,7 +118,7 @@ def _find(root, gid):
             continue
         target = next((q.upper() for q in reversed((root.parent.name, root.name) + rel) if GID_RE.fullmatch(q)), gid)
         if target != gid:
-            if not gid.endswith("0") or target[:-1] != gid[:-1]:
+            if target[:-1] != gid[:-1]:   # 同一合集 = 应用号相同（程序号去掉末位的程序序号）；单独导出的程序 n（末位非 0，#1567）也认主程序那份
                 notes.append("「%s」是给另一款游戏（%s）的，没收" % ("/".join(rel) or d.name, target))
                 continue
             if code:

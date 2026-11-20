@@ -131,6 +131,18 @@ class ModsTests(unittest.TestCase):
         mods.set_enabled(self.c, self.game, {name: False})
         self.assertIn({"name": name, "enabled": False, "files": 1, "bytes": 3, "code": 0}, mods.listing(self.c, self.game))
 
+    def test_standalone_program_n_accepts_same_collection_mods(self):
+        # 单独导出的程序 1（游戏号末位 1，#1567）：同合集主程序（末位 0）的资源 Mod 照收、存成 romfs.<主程序号>；别的应用照旧不收（期望手写）
+        game = {"id": GID[:-1] + "1"}
+        main, foreign = GID, "0100FFFF00000000"
+        package = self.zip({f"atmosphere/contents/{main}/romfs/a.bin": b"main", f"atmosphere/contents/{foreign}/romfs/a.bin": b"x"}, "Coll.zip")
+        result = mods.import_paths(self.c, game, [str(package)])
+        home = self.t / "lib" / game["id"] / "mods"
+        name, = result["imported"]
+        self.assertEqual((home / name / f"romfs.{main}/a.bin").read_bytes(), b"main")
+        self.assertTrue(any(foreign in note for note in result["notes"]))
+        self.assertFalse(any(main in note for note in result["notes"]), "主程序那份不当成别的游戏")
+
     def test_direct_target_directory_and_romfs_keep_their_full_target(self):
         target = GID[:-1] + "1"
         source = self.tree({f"{target}/romfs/a.bin": b"sub", f"{target}/Variant/romfs/a.bin": b"sub"}) / target

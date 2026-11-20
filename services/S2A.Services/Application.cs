@@ -112,6 +112,7 @@ namespace S2A.Services
             IStorage imgV1 = RomFsIndex.OpenImg(programDir, Directory.Exists(overlayDir) ? overlayDir : null);
             if (imgV1 != null)
             {
+                // programIndex 是目录槽（0 = 这个包的根程序，单独导出的程序 n 也在槽 0），不是程序身份序号：没标目标的 romfs/ Mod 给根程序，按身份序号改会错
                 imgV1 = RomFsMods.ApplyAtLaunch(imgV1, programIndex, ProgramId);   // 资源替换类 mod（RomFsMods.cs）：没有 mod 原对象返回；下面几处同
                 device.Configuration.VirtualFileSystem.SetRomFs(pid, RomFsIndex.ReadLog(imgV1, readLogAs));
                 Native.Mark("服务：RomFS 单一 IMG\0"u8);
