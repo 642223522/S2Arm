@@ -71,7 +71,7 @@ Importa juegos directamente en el teléfono, sin iniciar sesión con tu Apple ID
 2. Abre S2Arm: engranaje → Certificado de firma → Importar .p12…, elige el certificado e introduce la contraseña.
 3. Después pon los archivos .s2arm e .img (exportados desde tu ordenador o compartidos por un amigo) en la carpeta Import Here de S2Arm, y a jugar.
 
-Nota: gestiona cada Apple ID desde AltServer en un solo ordenador. Si usas dos, se anulan los certificados mutuamente y AltStore muestra «Multiple AltServers». Renueva cada 7 días con Refresh All en AltStore.
+Nota: gestiona cada Apple ID desde AltServer en un solo ordenador. Si usas dos, se anulan los certificados mutuamente y AltStore muestra «Multiple AltServers». Antes de que pasen los 7 días, basta con pulsar Refresh All en AltStore; en S2Arm no hay que hacer nada más.
 
 ### Actualizar desde la 0.5
 

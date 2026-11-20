@@ -71,7 +71,7 @@ Importez des jeux directement sur le téléphone, sans vous connecter à votre i
 2. Ouvrez S2Arm : roue dentée → Certificat de signature → Importer un .p12…, choisissez le certificat et saisissez le mot de passe.
 3. Placez ensuite les fichiers .s2arm et .img (exportés depuis votre ordinateur ou partagés par un ami) dans le dossier Import Here de S2Arm, et jouez.
 
-Attention : gérez chaque identifiant Apple depuis AltServer sur un seul ordinateur. Avec deux, chacun annule les certificats de l’autre et AltStore affiche « Multiple AltServers ». Renouvelez tous les 7 jours avec Refresh All dans AltStore.
+Attention : gérez chaque identifiant Apple depuis AltServer sur un seul ordinateur. Avec deux, chacun annule les certificats de l’autre et AltStore affiche « Multiple AltServers ». Avant la fin des 7 jours, il suffit de toucher Refresh All dans AltStore ; rien d’autre à faire dans S2Arm.
 
 ### Mettre à niveau depuis la 0.5
 

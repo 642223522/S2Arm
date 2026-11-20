@@ -71,7 +71,7 @@ Import games right on your phone, with no Apple ID sign-in on a computer and no 
 2. Open S2Arm: gear → Signing certificate → Import .p12…, pick the certificate and enter the password.
 3. Then put .s2arm and .img files (exported from your computer or shared by a friend) into S2Arm's Import Here folder, and play.
 
-Note: manage each Apple ID from AltServer on only one computer. Using two makes them revoke each other's certificates, and AltStore shows "Multiple AltServers". Refresh every 7 days with Refresh All in AltStore.
+Note: manage each Apple ID from AltServer on only one computer. Using two makes them revoke each other's certificates, and AltStore shows "Multiple AltServers". Before the 7 days run out, just tap Refresh All in AltStore; nothing else to do in S2Arm.
 
 ### Upgrading from 0.5
 

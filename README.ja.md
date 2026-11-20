@@ -71,7 +71,7 @@ Mac で直接遊ぶこともできます。「この Mac」を選ぶだけです
 2. S2Arm を開き、歯車 →「署名証明書」→「.p12 を読み込む…」で、その証明書を選んでパスワードを入力します。
 3. あとはパソコンで書き出した、または友だちから受け取った .s2arm と .img を S2Arm の「Import Here」フォルダに入れれば遊べます。
 
-注意：1 つの Apple ID は 1 台のパソコンの AltServer だけで管理してください。2 台で使うと互いの証明書が無効になり、AltStore に「Multiple AltServers」と表示されます。7 日ごとに AltStore の「Refresh All」で再署名します。
+注意：1 つの Apple ID は 1 台のパソコンの AltServer だけで管理してください。2 台で使うと互いの証明書が無効になり、AltStore に「Multiple AltServers」と表示されます。7 日の期限が来る前に AltStore で「Refresh All」をタップするだけで、S2Arm 側の操作は不要です。
 
 ### 0.5 からのアップグレード
 

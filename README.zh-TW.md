@@ -71,7 +71,7 @@
 2. 打開 S2Arm：齒輪 →「簽名憑證」→「匯入 .p12…」，選這份憑證，輸入密碼。
 3. 之後把電腦匯出的或朋友分享的 .s2arm 和 .img 放進 S2Arm 的「放这里导入」資料夾，就能玩。
 
-注意：同一個 Apple ID 只在一台電腦的 AltServer 上管理；兩台電腦都用會互相作廢憑證，AltStore 會跳出「Multiple AltServers」。每 7 天在 AltStore 裡點「Refresh All」續簽。
+注意：同一個 Apple ID 只在一台電腦的 AltServer 上管理；兩台電腦都用會互相作廢憑證，AltStore 會跳出「Multiple AltServers」。7 天到期前在 AltStore 點「Refresh All」即可，S2Arm 裡不用再做什麼。
 
 ### 從 0.5 升級
 
