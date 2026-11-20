@@ -34,6 +34,10 @@ INPUTS = ["runtime", "ios", "graphics", "translator", "services", "compat", "pac
           "launchers/shared/game_settings.v1.json",
           # iPhone 宿主包的图标（pack/ipa_tail.py、pack/jobs/ipa.py）：引擎快照里没有它，容器就退回用游戏图标（11-08 维护者）
           "launchers/macos/Branding/AppIcon-iOS.png",
+          # Mac 宿主包的默认图标（pack/jobs/build.py compile_host，#994 无封面时的回退）：快照里没有它，编出的宿主包就没有图标
+          "launchers/macos/Branding/AppIcon-1024.png",
+          # 同一处编图标用的配方：make_icns.sh（AppIcon-1024.png → S2ArmGame.icns；宿主单测也跑它）
+          "launchers/macos/make_icns.sh",
           # 根 .gitignore（11-02 beta.3 走查）：出包会在快照副本里编出 bin/ obj/，没有忽略规则时 pack/ipa.sh「构建相关目录有未提交改动」
           #   把这些编译产物当成改动、拒绝出包——玩家导出 iPhone 版必死在最后一步
           ".gitignore",
