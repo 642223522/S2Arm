@@ -618,10 +618,12 @@
 "cert.failed.message" = "このファイルは使える署名証明書（.p12）ではありません。";
 "cert.done.title" = "署名証明書を読み込みました";
 "cert.done.message" = "チーム %@。この iPhone で読み込んだゲームは、起動前にこの証明書で署名されます。";
-"cert.teamMismatch" = "注意：この証明書はチーム %1$@ のものですが、この S2Arm はチーム %2$@ でインストールされています。この証明書で署名したゲームはシステムに拒否されます。S2Arm のインストールに使った証明書を使うか、この証明書で S2Arm を入れ直してください。";
+"cert.teamMismatch" = "注意：この証明書はチーム %1$@ のものですが、この S2Arm はチーム %2$@ でインストールされているため、この証明書で署名したゲームは開けません。証明書は保存され、これまで使えていた証明書はそのまま使えます。S2Arm をインストールしたアプリ（AltStore または SideStore）で証明書を書き出して読み込んでください。";
 "cert.sidestore.missing" = "SideStore を開けません：この iPhone に SideStore がないか、バージョンが古すぎます。";
 "cert.sidestore.empty" = "SideStore から証明書が返ってきませんでした。SideStore で「Export」をタップしてからもう一度お試しください。";
 "cert.status" = "チーム %1$@ · %2$@";
+"cert.status.otherTeam" = "S2Arm と別の Apple ID";
+"cert.status.replaced" = "無効になりました";
 "cert.source.sidestore" = "SideStore から";
 "cert.source.p12" = "読み込んだ .p12";
 "cert.source.pc" = "コンピュータから";

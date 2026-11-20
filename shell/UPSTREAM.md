@@ -42,6 +42,7 @@
    | `Sources/ShellControllers/GamepadAdapter.swift` | `attach()` 里 `valueDidChangeHandler` 闭包 | 回调在手柄的 `handlerQueue` 上跑，游戏侧（`ios/controller.m` `prepare_pad`）把它设成输入队列后不在主线程，`MainActor.assumeIsolated` 直接陷阱（D-KDJX iPhone 信号 5，栈 `GamepadAdapter.attach` → `assumeIsolated`）。改成在投递队列上读快照、不在主线程就按序派回主线程 | `908e4e848fd232304381fc19d4d847fcc10fc4c2` |
    | `Sources/ShellUI/ShellArtwork.swift` | `Artwork` 加只读 `public var cgImage` | 宿主层把封面交给主屏小组件（`S2ArmShellHost/WidgetExport.swift`，11-16）；上游的 `image` 是模块内可见 | — |
    | `Sources/ShellUI/ShellSettingsView.swift`、`ShellInputs.swift`、`LibraryView.swift`、`Resources/Localizable.xcstrings` | 设置页加「签名证书」一组（状态行 +「从 SideStore 获取」「导入 .p12…」）；`ShellActions` 加 `signingCertStatus` / `onImportSigningCert` / `onSideStoreSigningCert`；文案 5 条（六种语言） | 0.6.0：买了证书的玩家、SideStore 装的玩家在手机上直接拿签名证书（宿主 `ios/cert_import.m`）；上游没有手机自签 | — |
+   | `Sources/ShellUI/ShellInputs.swift`、`ShellStyle.swift`、`GameStateView.swift`、`LibraryView.swift`、`TVLibraryView.swift`、`Resources/Localizable.xcstrings` | `GameState` 加 `needsCertificate(CertificateNeed)`（没证书 / 别的 Apple ID / 证书已换 / 签名格式老）及各处 `switch`；`ShellActions` 加 `onGetSigningCert`（卡片主按钮）；文案 10 条（六种语言） | 0.6.0：签名证书是手机上游戏状态的一部分，库列出时就判，主按钮直接导证书，导好卡片自己恢复（宿主 `ios/sign_state.m`、`s2a_shell_game_sign_state`）；上游没有手机自签 | — |
    门禁：`tests/shellui_ios_build_test.sh` 用门禁机上每个 Xcode 各编一遍 iOS Release（11-07 起）。
 
 ## catalogue（游戏目录清单 JSON）

@@ -15,16 +15,17 @@
 #include <unistd.h>
 
 #include "native.h"   // s2a_log_line（static inline，不能另写外部声明：iOS 链接找不到定义）
-int s2a_identity_keychain(SecKeyRef *key, SecCertificateRef *cert);   // runtime/src/selfsign.c
+int s2a_identity_keychain(const char *sha, SecKeyRef *key, SecCertificateRef *cert);   // runtime/src/selfsign.c（按证书 sha1 取）
+int s2a_cert_settle(const char *home);   // ios/sign_state.m：current.json 指向与 App 同团队、还在描述文件里的那张
 CFArrayRef s2a_selfsign_chain_for(SecCertificateRef leaf);
 int s2a_selfsign_macho(const uint8_t *in, size_t n, const char *ident, const char *team, const char *appid, SecKeyRef key, CFArrayRef chain, uint8_t **out, size_t *out_n, char *why, size_t why_n);
 int s2a_prov_signing_ids_self(char *team, size_t team_n, char *appid, size_t appid_n);   // ios/prov_expiry.m
 #define RLOG(...) s2a_log_line("[s2a] " __VA_ARGS__)
 
-static int (*g_get_identity)(SecKeyRef *, SecCertificateRef *) = s2a_identity_keychain;
+static int (*g_get_identity)(const char *, SecKeyRef *, SecCertificateRef *) = s2a_identity_keychain;
 static int (*g_prov_ids)(char *, size_t, char *, size_t) = s2a_prov_signing_ids_self;
 #ifdef S2A_UNIT_TEST
-void s2a_program_resign_test_identity(int (*f)(SecKeyRef *, SecCertificateRef *)) { g_get_identity = f ? f : s2a_identity_keychain; }   // 单测换掉钥匙串
+void s2a_program_resign_test_identity(int (*f)(const char *, SecKeyRef *, SecCertificateRef *)) { g_get_identity = f ? f : s2a_identity_keychain; }   // 单测换掉钥匙串
 void s2a_program_resign_test_prov(int (*f)(char *, size_t, char *, size_t)) { g_prov_ids = f ? f : s2a_prov_signing_ids_self; }   // 单测换掉「读包里的描述文件」
 #endif
 
@@ -56,6 +57,7 @@ static int program_resign(const char *home, const char *game_data, const char *g
     @autoreleasepool {
         if (why && why_n) why[0] = 0;
         if (!home || !game_data || !gid || !module_dir || !images) return 0;
+        s2a_cert_settle(home);   // 手机上有几张证书时用与 App 同团队、还能用的那张（导入别的团队的证书不顶掉它）
         NSString *idp = [@(home) stringByAppendingPathComponent:@"Library/Application Support/S2Arm/identity/current.json"];
         NSDictionary *cur = read_json(idp); NSString *cur_sha = str(cur[@"cert_sha1"]).lowercaseString, *cur_team = str(cur[@"team"]);
         if (!cur_sha) return 0;   // 手机上没有身份（电脑签好推上来的玩家）：不碰
@@ -75,7 +77,7 @@ static int program_resign(const char *home, const char *game_data, const char *g
             FAIL("手机上的签名证书是团队 %s 的，这个 App 是团队 %s 签的（启动器里登录的 Apple ID 和装 App 用的不是同一个）：在启动器里登录装 App 用的那个 Apple ID 后再连一次电脑",
                  cur_team.UTF8String, pteam);
         SecKeyRef key = NULL; SecCertificateRef leaf = NULL;
-        if (g_get_identity(&key, &leaf) || !key || !leaf) { if (key) CFRelease(key); if (leaf) CFRelease(leaf); FAIL("钥匙串里没有签名身份（电脑交来的身份还没导入）"); }
+        if (g_get_identity(cur_sha.UTF8String, &key, &leaf) || !key || !leaf) { if (key) CFRelease(key); if (leaf) CFRelease(leaf); FAIL("钥匙串里没有证书 %s 的签名身份", cur_sha.UTF8String); }
         CFArrayRef chain = s2a_selfsign_chain_for(leaf);
         const char *steam = pr >= 0 ? pteam : cur_team.UTF8String, *sappid = pr >= 0 ? pappid : NULL;
         NSData *in = [NSData dataWithContentsOfFile:@(images)];

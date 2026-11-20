@@ -44,6 +44,7 @@ public struct GameStateView: View {
         case .needsGameData: actions.onPickGameData(game.id)
         case .needsAppUpdate: actions.onAppUpdate?()
         case .needsGameUpdate, .needsLegacyUpdate: break   // needsHelp：上面已展开说明
+        case .needsCertificate: actions.onGetSigningCert?()   // 直接导证书（装了 SideStore 向它要，否则选 .p12），导好库自己回「可以玩」
         case .broken: actions.onShowLog?(game.id)
         case .installing(let stage): if stage.phase == .failed { actions.onPlay(game.id) }   // 重试解开；传着 / 解着按钮按不动
         }

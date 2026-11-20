@@ -26,8 +26,8 @@ public final class S2ArmShellHostModel {
     @ObservationIgnored private let installState: (String) -> Int32
     /// 这款程序按别的宿主约定号出、要在电脑上按新版更新（s2a_shell_game_needs_host_update：宿主每款读一次清单后缓存，点开被拒的也记上）
     @ObservationIgnored private let needsHostUpdate: (String) -> Bool
-    /// 这款程序包对不上本机这份 App、要在电脑上对这款重装（s2a_shell_game_needs_reinstall：点开被拒时宿主记下）
-    @ObservationIgnored private let needsReinstall: (String) -> Bool
+    /// 这款的签名状态（s2a_shell_game_sign_state，0.6.0：签名证书是游戏状态的一部分）：0 可玩 / 1–4 要导签名证书（各有原因）/ 5 只能电脑上重装
+    @ObservationIgnored private let signState: (String) -> Int32
     /// 这款完整快照的目录（宿主 s2a_shell_snapshot_dir；开关关着 / 没有快照为 nil）。单测换成临时目录
     @ObservationIgnored private let snapshotDir: (String) -> URL?
     /// 删这款的快照（宿主 s2a_shell_delete_snapshot，连同缩略图、清单）；单测换成删临时目录
@@ -100,7 +100,7 @@ public final class S2ArmShellHostModel {
                 installPhase: ((String) -> (Int, Double?)?)? = nil, installFailure: ((String) -> String?)? = nil, installWait: (() -> Int32)? = nil,
                 now: @escaping () -> Date = Date.init, pickGameData: ((String) -> Void)? = nil, identityStore: GameIdentityStore = .live,
                 gamesRoot: URL = S2ArmContainer.gamesRoot(), packGamesRoot: URL? = nil,
-                imlNotice: (() -> String?)? = nil, needsHostUpdate: ((String) -> Bool)? = nil, needsReinstall: ((String) -> Bool)? = nil,
+                imlNotice: (() -> String?)? = nil, needsHostUpdate: ((String) -> Bool)? = nil, signState: ((String) -> Int32)? = nil,
                 reloadCatalogue: (() -> Catalogue)? = nil, snapshotDir: ((String) -> URL?)? = nil, deleteSnapshot: ((String) -> Bool)? = nil, featureDir: URL? = nil) {
         self.reloadCatalogue = reloadCatalogue
         featureIntro = Self.loadFeatureIntro(featureDir ?? Bundle.main.bundleURL.appendingPathComponent("Feature"))
@@ -121,7 +121,7 @@ public final class S2ArmShellHostModel {
         self.play = play ?? { id in _ = id.withCString { s2a_shell_play($0) } }
         self.installState = installState ?? { id in id.withCString { s2a_shell_game_install_state($0) } }
         self.needsHostUpdate = needsHostUpdate ?? { id in id.withCString { s2a_shell_game_needs_host_update($0) } != 0 }
-        self.needsReinstall = needsReinstall ?? { id in id.withCString { s2a_shell_game_needs_reinstall($0) } != 0 }
+        self.signState = signState ?? { id in id.withCString { s2a_shell_game_sign_state($0) } }
         self.snapshotDir = snapshotDir ?? { id in
             var buf = [CChar](repeating: 0, count: 2048)
             return id.withCString { s2a_shell_snapshot_dir($0, &buf, UInt(buf.count)) } == 0 ? URL(fileURLWithPath: String(decoding: buf.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self), isDirectory: true) : nil
@@ -243,7 +243,7 @@ public final class S2ArmShellHostModel {
             let id = allGames[i].id, listed = listedStates[id] ?? allGames[i].game.state
             let want: GameState
             switch installState(id) {
-            case 1, 4: want = listed != .playable ? listed : needsReinstall(id) || needsHostUpdate(id) ? .needsGameUpdate : listed; installTried.remove(id)   // 程序约定号对不上本宿主、签名或文件对不上本机这份 App：都标「需要在电脑上更新」（修法同一个：电脑上对这款再装一次），点开只展开说明；4 = 只缺非核心文件：库里照样可玩，点开始时宿主问一次「仍要启动」（v0.3.1）
+            case 1, 4: want = listed != .playable ? listed : needsHostUpdate(id) ? .needsGameUpdate : Self.signed(listed, signState(id)); installTried.remove(id)   // 程序约定号对不上本宿主：「需要在电脑上更新」，点开只展开说明；签名：缺证书的各按原因「需要签名证书」（主按钮直接导），有证书仍被拒的才回电脑；4 = 只缺非核心文件：库里照样可玩，点开始时宿主问一次「仍要启动」（v0.3.1）
             case 2: want = .installing(unpackStage(id))
             case 3: want = .installing(transferStage(id))   // 断了也接着看：电脑重新插上续传时字节又涨
             default:   // 资源不在：玩家删掉的不显示；没删过的留在库里显示「需要游戏数据」，Play 点到只给导入说明，不放行（审计 P1-155）
@@ -262,6 +262,21 @@ public final class S2ArmShellHostModel {
                 if want.installPhase != allGames[i].game.state.installPhase { NSLog("S2Arm 游戏库：%@ → %@", id, String(describing: want)) }
                 allGames[i].game.state = want
             }
+        }
+    }
+
+    /// 签名状态 → 卡片（宿主 s2a_shell_game_sign_state 的码，见 s2a_shell.h）：1–4 手机上就能修（导证书），5 只能电脑上重装，其余照清单
+    static func signed(_ listed: GameState, _ code: Int32) -> GameState {
+        #if os(tvOS)
+        if (1...5).contains(code) { return .needsGameUpdate }   // Apple TV 上没有导证书的入口（没有文件选择器、不装 SideStore）：照旧回电脑
+        #endif
+        switch code {
+        case 1: .needsCertificate(.missing)
+        case 2: .needsCertificate(.otherTeam)
+        case 3: .needsCertificate(.replaced)
+        case 4: .needsCertificate(.oldSignature)
+        case 5: .needsGameUpdate
+        default: listed
         }
     }
 
@@ -470,6 +485,7 @@ public final class S2ArmShellHostModel {
         actions.signingCertStatus = { String(cString: s2a_shell_cert_status()) }   // 签名证书（0.6.0，宿主 ios/cert_import.m）：手机上自己签导入的游戏用哪张
         actions.onImportSigningCert = { s2a_shell_cert_p12() }
         actions.onSideStoreSigningCert = { s2a_shell_cert_sidestore() }
+        actions.onGetSigningCert = { s2a_shell_cert_get() }   // 库卡片「需要签名证书」的主按钮
         #endif
         actions.featureIntro = featureIntro   // 新功能介绍（0.6.0 起 iPhone 两页）：有才在游戏库设置里出「再看一遍」那一行
         // 快照（0.6.0）：有完整快照的那款，长按卡片多一项「回到上次存下的这一刻」（宿主 ios/app.m；开关关着时宿主回 0，菜单里没有这一项）
