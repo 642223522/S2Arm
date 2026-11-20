@@ -10498,5 +10498,45 @@
  {
   "source": "验证码没能交给登录作业：S2Arm 的数据目录写不进去，检查磁盘空间和权限后再试。",
   "en": "Couldn't pass the code to sign-in: S2Arm's data folder can't be written. Check disk space and permissions, then try again."
+ },
+ {
+  "source": "套用预设",
+  "en": "Apply preset"
+ },
+ {
+  "source": "动作",
+  "en": "Action"
+ },
+ {
+  "source": "赛车",
+  "en": "Racing"
+ },
+ {
+  "source": "回合制",
+  "en": "Turn-based"
+ },
+ {
+  "source": "WASD 走位、鼠标转视角、左右键分担攻击与闪避，适合动作 / 开放世界",
+  "en": "WASD to move, mouse to look, left/right buttons for attack and dodge. For action / open-world games"
+ },
+ {
+  "source": "WASD 转向与油门刹车、鼠标视角灵敏度调低并关闭回中，适合赛车 / 飞行",
+  "en": "WASD to steer, accelerate and brake; lower mouse look sensitivity with recentering off. For racing / flight games"
+ },
+ {
+  "source": "方向键选单、空格确认、加减键翻页，鼠标不驱动视角，适合回合制 / 战棋",
+  "en": "Arrow keys for menus, Space to confirm, +/- to turn pages; the mouse doesn’t move the camera. For turn-based / tactics games"
+ },
+ {
+  "source": "：这是显卡驱动的管线缓存，不需要",
+  "en": ": this is the graphics driver’s pipeline cache and isn’t needed"
+ },
+ {
+  "source": "：认不出（要 yuzu 系的 *.bin，或含 shared.toc / guest.toc 的 Ryujinx 缓存目录）",
+  "en": ": not recognized (needs a yuzu-style *.bin, or a Ryujinx cache folder containing shared.toc / guest.toc)"
+ },
+ {
+  "source": "：拷贝失败（",
+  "en": ": copy failed ("
  }
 ]
