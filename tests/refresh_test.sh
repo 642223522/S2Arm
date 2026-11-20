@@ -21,13 +21,13 @@ printf '#!/bin/bash\necho "原件核对桩 rc=${FAKE_SRCVER_RC:-0}"; exit ${FAKE
 for s in rewrite sysdata uilayout aoc caps romfsidx direct_profile extract direct_seed direct_cpso direct; do
   cat > $T/repo/pack/stage_$s.sh <<EOF
 #!/bin/bash
-echo "$s 起 \$(python3 -c 'import time;print(time.time())') \${S2A_SHADER_NO_PSO:-0}\${S2A_SHADER_NO_DL:-0} J=\${J:-无} DD=\${DEVELOPER_DIR:-无} LZ=\${S2A_SHADER_LAZY:-0} BK=\${S2A_CPU_BAKE:-无}" >> $T/log
+echo "$s 起 \$(date +%s.%N) \${S2A_SHADER_NO_PSO:-0}\${S2A_SHADER_NO_DL:-0} J=\${J:-无} DD=\${DEVELOPER_DIR:-无} LZ=\${S2A_SHADER_LAZY:-0} BK=\${S2A_CPU_BAKE:-无}" >> $T/log
 [ "$s" = direct ] && sleep \${FAKE_DIRECT_SLEEP:-0}   # 缺省不睡：二十多次编排每次睡 1 秒是本单测的大头；要量用时的那一次显式给（①）
 [ "$s" = rewrite ] && sleep \${FAKE_RW_SLEEP:-0}
 # FAKE_RW_UNTIL=<阶段>：改写等那个阶段在日志里记下「起」才结束（最多 30 秒）——按事件判并行，不靠墙钟窗口（⑬a：满载时直连库可能晚于固定的 2 秒才起）
 if [ "$s" = rewrite ] && [ -n "\${FAKE_RW_UNTIL:-}" ]; then for i in \$(seq 600); do grep -q "^\$FAKE_RW_UNTIL 起 " $T/log && break; sleep 0.05; done; fi
 if [ "$s" = direct ]; then d=\$(cd -P $T/roots/acnh@现行 && pwd)/shaders/direct; rm -rf "\$d"; if [ -n "\${FAKE_RTONLY:-}" ]; then mkdir -p "\$d" && : > "\$d/keys.tsv" && echo 缺口 > "\$d/runtime_only.txt"; elif [ -n "\${FAKE_VKHDR:-}" ]; then mkdir -p "\$d/vk" && : > "\$d/keys.tsv" && printf "# key\tfile\n" > "\$d/vk/vk_shaders.tsv"; else [ -n "\${FAKE_NODIRECT:-}" ] || { mkdir -p "\$d" && echo k > "\$d/keys.tsv"; }; fi; fi
-echo "$s 止 \$(python3 -c 'import time;print(time.time())')" >> $T/log
+echo "$s 止 \$(date +%s.%N)" >> $T/log
 [ "\${FAKE_FAIL:-}" = "$s" ] && { echo "🔴 $s 桩失败"; exit 1; }
 [ "\${FAKE_GAP:-}" = "$s" ] && { echo "【黄】acnh 直连缺口：桩缺口 3 支"; exit 3; }
 [ "\${FAKE_DFAIL:-}" = "$s" ] && { echo "【红】acnh 直连库失败：直连抽取失败（桩：Unity 无类型树）"; exit 3; }
