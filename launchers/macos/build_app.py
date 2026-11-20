@@ -104,14 +104,14 @@ def release_identity(engine_json):
                 S2ABuildID=f"{commit}{dirty}-{source[:8]}", S2ADisplayVersion=display)
 
 
-def bundle_shell(engine_json, dest, env, apple_os="ios"):
+def bundle_shell(engine_json, dest, env, apple_os="ios", sid=None):
     """iOS 预编壳随应用分发（11-07 启动器线：玩家打 iPhone 包不再现出壳 → 不要 .NET SDK；壳里的 NativeAOT C# 库只能用 SDK 编，与游戏无关、按提交编一次）。
     壳编号取引擎清单 shellId；出包机壳缓存（同 pack/ipa.sh：S2A_SHELL_CACHE 或 <运行区>/s2arm/cache/shell/<壳编号>）有就核清单后用，没有就 pack/shell_build.sh 现出进缓存。
     布局同 Windows 发版（launchers/windows/bundle_win.py）：Resources/Shell/{manifest.json, root/}；作业层 ipa.bundled_shell 交给 S2A_SHELL"""
     # Apple TV（0.5.2）：同一套出壳 / 核对，换 tvOS——壳号取 engine.json 的 shellIdTvos，缓存 <运行区>/s2arm/cache/shell-tvos/<壳号>（同 pack/jobs/tvos.py 开发树取法），
     #   SDK 换 appletvos，出壳带 S2A_APPLE_OS=tvos；放 Resources/Shell-tvOS（作业层 tvos.tv_shell 发版时读这里）
     tv = apple_os == "tvos"
-    sid = json.loads(Path(engine_json).read_text())["shellIdTvos" if tv else "shellId"]
+    sid = sid or json.loads(Path(engine_json).read_text())["shellIdTvos" if tv else "shellId"]
     run = Path(os.environ.get("S2A_RUN_ROOT") or Path.home() / ".s2arm/run")
     cache = (run / "s2arm/cache/shell-tvos" if tv else Path(os.environ.get("S2A_SHELL_CACHE") or run / "s2arm/cache/shell")) / sid
     sdk_name, label = ("appletvos", "tvOS") if tv else ("iphoneos", "iOS")
@@ -140,6 +140,8 @@ def bundle_shell(engine_json, dest, env, apple_os="ios"):
     if linked_sdk(cache / "root/S2Arm") != want:
         raise SystemExit(f"【红】发版壳 {cache} 链接的 {label} SDK 是 {linked_sdk(cache / 'root/S2Arm')}，不是本机最新 Xcode 的 {want}")
     print(f"发版{label}壳：{sid}，{label} SDK {'.'.join(map(str, want))}（{newest}）")
+    if dest is None:   # 只备缓存（--shells-only）
+        return cache
     shutil.copytree(cache, dest, symlinks=True)
     if os.environ.get("S2A_SYMBOLS_OUT") and (cache.parent / (cache.name + ".symbols")).is_dir():   # 壳的未去符号原件（pack/shell_build.sh 放在壳目录旁）随发版存档
         shutil.copytree(cache.parent / (cache.name + ".symbols"), Path(os.environ["S2A_SYMBOLS_OUT"]) / ("Shell-tvOS" if tv else "Shell"), dirs_exist_ok=True)
@@ -155,6 +157,9 @@ def main():
     # 出前端用与门禁 / 出包同一套 Xcode：tools/toolchain.sh 解析（指定 / 本机配置 > xcode-select，10-25 起不读仓库里写的版本）
     picked = subprocess.run(["bash", "-c", 'S2A_TC_QUIET=1 source tools/toolchain.sh > /dev/null && printf %s "$DEVELOPER_DIR"'], cwd=ROOT, capture_output=True, text=True)
     parser.add_argument("--developer-dir", default=picked.stdout.strip() or None)
+    # 只出壳（11-19 发版提速）：壳编号按提交算（pack.shell.manifest.current_id，与引擎清单 shellId 同源），把 iOS / tvOS 壳备进出包机壳缓存就退出，
+    #   不建 App。发版脚本开局先单独跑它，Windows 拿到壳就能往下走，不必等整个 build_app；之后 build_app 照常跑、壳缓存命中
+    parser.add_argument("--shells-only", action="store_true")
     args = parser.parse_args()
     # 出哪个前端（S2A_APP_FRONTEND，缺省 apple = S2Arm × NX2Apple；launcher = 旧启动器，留作回退）：见 frontend_layout.py
     front = frontend_layout.pick()
@@ -165,6 +170,12 @@ def main():
     env = dict(os.environ, DEVELOPER_DIR=args.developer_dir,
                CLANG_MODULE_CACHE_PATH=str(output / "clang-cache"),
                SWIFTPM_MODULECACHE_OVERRIDE=str(output / "swift-cache"))
+    if args.shells_only:
+        sys.path.insert(0, str(ROOT)); from pack.shell.manifest import current_id
+        for apple_os in ("ios", "tvos"):
+            cache = bundle_shell(None, None, env, apple_os, sid=current_id(apple_os))
+            print(f"壳已出：{apple_os} {cache.name}")
+        return
     sdk_version = subprocess.check_output(["xcrun", "--sdk", "macosx", "--show-sdk-version"],
                                           env=env, text=True).strip()
     # Sparkle 二进制包不在仓库里（公开仓扫描不收二进制包）：构建前按钉死的校验值备到 frontend/Vendor/（本机缓存有就拷，没有下一次）
