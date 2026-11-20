@@ -2497,6 +2497,20 @@ class JobsTests(unittest.TestCase):
         self.assertEqual(events[-1]["artifactRef"], "/result")
         self.assertEqual(json.loads(self.c.jobpath.read_text())["state"], "completed")
 
+    def test_advanced_at_moves_only_on_real_progress(self):
+        # #1770：上次前进时刻只在换步 / 计数变了时更新；同样的计数再发（批次活动脉冲）、心跳都不更新。期望手写（时刻打桩）
+        import core
+        clock = [1000.0]
+        with patch.object(core.time, "time", lambda: clock[0]), patch.object(core.time, "monotonic", lambda: clock[0]):   # 0.2 秒节流也按同一时钟
+            self.c.begin("编译着色器库", 1, 2)                          # 换步：1000
+            clock[0] = 1003; self.c.emit(done=1, total=10)              # 计数变：1003
+            clock[0] = 1010; self.c.emit(done=1, total=10)              # 同样的计数（脉冲）：仍 1003
+            clock[0] = 1012; self.c.emit("heartbeat")                   # 心跳：仍 1003
+            clock[0] = 1020; self.c.emit(done=1, total=10, counters=[dict(name="直连库·采样模拟变体", done=7, total=9)])   # 子计数器变：1020
+        events = [json.loads(line) for line in self.output.getvalue().splitlines()]
+        self.assertEqual([e["advancedAt"] for e in events[-5:]], [1000, 1003, 1003, 1003, 1020])
+        self.assertEqual(json.loads(self.c.jobpath.read_text())["advancedAt"], 1020)
+
     def test_finish_records_ipa_device_and_pushed_files_for_relaunch(self):
         # 启动器重开后完成卡从任务记录读 IPA（11-01：原先只在结果事件里，重开后画面模式「未知」）
         self.c.finish("completed", "done", {"outputPath": "/out", "ipa": "/out/x.ipa", "device": "测试设备1", "packFiles": 3})

@@ -202,6 +202,8 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var phoneQueue: [(gameID: String?, run: () -> Void)] = []
     /// 这款的手机作业排着队（手机槽前一个还没完 / 这款正在出包，出完接着装）：装机窗显示「已排队」，按钮不重复排
     func phoneQueued(_ gameID: String) -> Bool { phoneQueue.contains { $0.gameID == gameID } || installAfterQueue.contains(gameID) }
+    /// 手机槽正在推这一款（装机作业在跑、装的就是它）
+    func phonePushing(_ gameID: String) -> Bool { phoneBusy && phoneSession?.kind == .install && phoneSession?.gameID == gameID }
     /// 出包页开着的那一款（nil = 游戏库）。
     @Published var exportFor: String?
     /// 下游深度方案确认页（DownstreamConfirmSheet）：导出 iPhone 前弹，选完记下（downstreamChoice 作业）再接着导出这一单
@@ -1258,6 +1260,8 @@ public final class S2ArmLauncherModel: ObservableObject {
         let accept = acceptDropped ? accept.union(["acceptDropped"]) : accept
         // 不在这里再核装机页清单（启动器剃刀 M1）：装机页按钮和控制口调用前各自核过；批量出完自动装的款从没打开过装机页，原先在这里被悄悄挡掉、队列停住
         // 出包等主槽作业照跑也能装（手机槽）；手机槽忙 / 这款正被主槽占着（正在出这款）→ 排队，那单结束接着装
+        // 这一款已在推 / 已排上：不重复排（D-YXDW：点一下就给同一款再排一单，推完又推一遍）。排队那单出队后才执行、确认后的续推在前一单结束后才发，都不受影响
+        if phonePushing(game.id) || phoneQueued(game.id) { return }
         guard !phoneBusy, !mainHolds(game.id) else {
             phoneQueue.append((game.id, { [weak self] in self?.install(game, teamId: teamId, device: device, accept: accept, ask: ask, export: export) })); return
         }
