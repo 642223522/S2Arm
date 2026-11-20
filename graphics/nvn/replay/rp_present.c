@@ -224,6 +224,16 @@ static uint64_t present_impl(const tex_t *t, double period_s, const int crop[4])
     if (fit >= 0) memcpy(d.crop, c, sizeof c);   // 非法裁剪：按整张显示
     double cw = d.crop[2] > 0 ? (double)d.crop[2] : (double)t->d.width, ch = d.crop[3] > 0 ? (double)d.crop[3] : (double)t->d.height;
     pf_vp vp = pf_viewport(dr.w, dr.h, cw, ch);
+    {   // 铺满方式（nvk_present_fill，缺省 0 = 等比加黑边，与改前相同）：1 = 拉伸到整屏（画面与屏的比例差 ≤ 15% 才拉）；
+        //   2 = 等比放大、裁掉多出的边（窄屏裁左右、宽屏裁上下，角上的界面可能被裁；比例差 1%–30% 才裁）。
+        //   这是显示层的选项：游戏自己没有按屏幕比例出图时用，不改游戏的出图尺寸。矩形怎么算见 nvn_present_fit.h pf_fill。
+        static int fill = -1; static unsigned tick;
+        if (fill < 0 || !(++tick & 255)) fill = nvn_plat_flag("nvk_present_fill", 0);   // 每 256 帧重读一次，局中可切
+        if (fill > 0) {
+            const int src[4] = {d.crop[2] > 0 ? d.crop[0] : 0, d.crop[3] > 0 ? d.crop[1] : 0, (int)cw, (int)ch}; int fc[4];
+            if (pf_fill(fill, dr.w, dr.h, src, fc, &vp) == 2) { d.crop[0] = fc[0]; d.crop[1] = fc[1]; d.crop[2] = fc[2]; d.crop[3] = fc[3]; }
+        }
+    }
     d.dst[0] = (int32_t)(vp.x + 0.5); d.dst[1] = (int32_t)(vp.y + 0.5); d.dst[2] = (int32_t)(vp.w + 0.5); d.dst[3] = (int32_t)(vp.h + 0.5);
     if (d.dst[0] + d.dst[2] > (int32_t)dr.w) d.dst[2] = (int32_t)dr.w - d.dst[0];
     if (d.dst[1] + d.dst[3] > (int32_t)dr.h) d.dst[3] = (int32_t)dr.h - d.dst[1];
