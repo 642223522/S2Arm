@@ -789,7 +789,10 @@ private struct ControllerToolbarButton: View {
             ControllerColorSimulator.shared.controller = target
             ControllerColorSimulator.shared.onChange.append { [weak target] in target?.reconcile() }
         }   // 手柄上的玩家灯跟着分配（一代 Joy-Con、系统手柄；Joy-Con 2 由连接程序写）
-        .onReceive(systems.$gen1) { controller.updateGen1($0) }   // 一代 Joy-Con 按设备（D2）   // 用送来的新值（@Published 在改之前就送，读属性还是旧的）
+        .onReceive(systems.$gen1) { controller.updateGen1($0) }
+        // 一代 Joy-Con 的拆合手势常挂（#918：原先只在「分配玩家」面板开着时挂，局内按 L + R / SL + SR 送不到）：
+        //   分配中照登记 / 拆合，局内只对已登记的拆合（NS2LauncherController.registerGen1 自己分）。重复设同一个回调无妨
+        .onAppear { systems.watchGen1 { id, side, gesture in controller.registerGen1(id: id, side: side, gesture: gesture) } }   // 一代 Joy-Con 按设备（D2）   // 用送来的新值（@Published 在改之前就送，读属性还是旧的）
         // 游戏打开了系统的手柄设置画面：面板自己弹出来（已进分配玩家）
         .onChange(of: controller.panelRequested) { wanted in if wanted { controller.panelRequested = false; if !show { toggle() } } }
     }
