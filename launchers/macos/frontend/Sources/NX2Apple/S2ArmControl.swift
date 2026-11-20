@@ -440,8 +440,12 @@ import S2ArmAppleAdapter
             // 窗口在屏幕上的位置（左上角原点，单位点），给客户端用系统 screencapture -R 截真画面
             "windows": NSApp.windows.filter(\.isVisible).map { w -> [String: Any] in
                 let top = (NSScreen.screens.first?.frame.maxY ?? 0) - w.frame.maxY
+                // 排查「整窗发灰却看不到面板」用：挂着的 sheet（含不可见、透明、零尺寸的）逐个列出，外观是深色还是浅色
+                let sheets = w.sheets.map { s -> [String: Any] in
+                    ["visible": s.isVisible, "alpha": s.alphaValue, "size": [s.frame.width, s.frame.height], "appearance": s.effectiveAppearance.name.rawValue] }
                 return ["title": w.title, "number": w.windowNumber, "sheet": w.sheetParent != nil, "main": w.isMainWindow,
-                        "rect": [w.frame.minX, top, w.frame.width, w.frame.height]] },
+                        "rect": [w.frame.minX, top, w.frame.width, w.frame.height],
+                        "appearance": w.effectiveAppearance.name.rawValue, "attachedSheets": sheets] },
         ]
     }
 
