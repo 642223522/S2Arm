@@ -4274,6 +4274,13 @@ int nvn_buf_extent(uint64_t cpu_addr, uint64_t *base, uint64_t *size) {
     BREG_UNLOCK();
     return hit;
 }
+// 登记表累计走过的 split / merge 步数（nvn_breg.steps）：单测 t_nvn_bufreg_rate.m 按 N / 4N 的步数比判建删复杂度（不用墙钟比，见 nvn_buf_reg.h）
+uint64_t nvn_buf_reg_steps(void) {
+    BREG_LOCK();
+    uint64_t s = g_breg.steps;
+    BREG_UNLOCK();
+    return s;
+}
 
 NVN(nvnBufferBuilderSetDevice, void, NVNbufferBuilder *b, NVNdevice *d) { BB(b)->dev = d; }
 NVN(nvnBufferBuilderSetStorage, void, NVNbufferBuilder *b, NVNmemoryPool *p, ptrdiff_t off, size_t n) { BB(b)->pool = (const pool_t *)p; BB(b)->off = off; BB(b)->size = n; }
