@@ -2647,6 +2647,10 @@ def _identity_on_phone(c, ph, sha1):
     return False
 
 
+IDENTITY_NOT_HERE = ("这台电脑上没有这个 Apple ID 能交给手机的签名证书，启动器不会为此新建（新建会让 AltStore 或 Side"
+                     "Store 正在用的证书失效）。用 AltStore 或 SideStore 装的 S2Arm：在 AltStore 或 SideStore 的设置里导出签名证书，到手机上 S2Arm 的「签名证书」里导入就行。确实想让启动器新建证书，就点「安装 S2Arm」，它会先告诉你会让哪张证书失效，再由你决定。")
+
+
 def _identity_source(c, ph):
     """这次交给 App 的身份从哪来 → (团队号, 私钥指纹, 取身份的函数, source)；交不了 → None。
     证书签名用户（devcert.active，两端都行）：导入时存的 p12；Windows Apple ID 与 Mac 通用壳 Apple ID（PlumeMacPhone）：plumesign 的 keys/<团队>/key.pem。
@@ -2711,6 +2715,8 @@ def deliver_identity(c, ph, strict=False, force=False):
     try:
         src = _identity_source(c, ph)
         if not src:
+            if strict and hasattr(ph, "W"):   # Apple ID 方式、这台电脑上没有可交的证书：不为此新建（会顶掉玩家 AltStore / SideStore 的证书，11-19 实测），引导手机上导入证书
+                raise Failure(IDENTITY_NOT_HERE, code="identity_unavailable")
             if strict:
                 raise Failure("现在没在用你自己的开发者证书签名，没有要交给 iPhone 的证书：先在设置里导入并选用你的证书。", code="devcert_missing")
             return None

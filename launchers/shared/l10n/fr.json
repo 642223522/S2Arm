@@ -1194,7 +1194,7 @@
   "errors.phone_app_running.title": "S2Arm est en cours d’exécution sur l’iPhone",
   "errors.phone_app_running.detail": "Si vous changez les sauvegardes pendant que le jeu est ouvert, le jeu les écrase et les abîme.",
   "console.button.identity": "Transmettre l'identité de signature au téléphone",
-  "console.identity.note": "S2Arm installé avec AltStore, SideStore ou une app de certificats : transmettez l'identité de signature une fois, puis il suffit de mettre les paquets de jeu dans « Import Here » pour jouer",
+  "console.identity.note": "S2Arm installé avec AltStore ou SideStore : exportez le certificat de signature dans leurs réglages et importez-le dans « Certificat de signature » de S2Arm sur le téléphone pour jouer. Ce bouton ne transmet qu'une identité de signature déjà présente sur cet ordinateur et ne crée jamais de nouveau certificat",
   "console.identity.done": "L'identité de signature est maintenant dans S2Arm sur votre téléphone : désormais, mettez les fichiers .s2arm et .img dans « Import Here » et ouvrez S2Arm pour jouer.",
   "console.identity.already": "S2Arm sur votre téléphone a déjà cette identité de signature ; inutile de la transmettre à nouveau.",
   "phone.title.phoneIdentity": "Transmettre l'identité de signature au téléphone",
@@ -4109,6 +4109,10 @@
   "手机上的 S2Arm 是用另一个 Apple ID 或证书签的（团队 {0}），和这台电脑上的签名身份（团队 {1}）不是同一个团队，交过去也签不了游戏：请在启动器里登录装 S2Arm 用的那个 Apple ID，或选用同一团队的证书。": "S2Arm sur votre téléphone a été signé avec un autre identifiant Apple ou certificat (équipe {0}), qui n'est pas de la même équipe que l'identité de signature de cet ordinateur (équipe {1}) : le téléphone ne pourra pas signer les jeux avec. Connectez-vous dans le lanceur avec l'identifiant Apple utilisé pour installer S2Arm, ou choisissez un certificat de la même équipe.",
   "手机上的 S2Arm 不是这个团队签的": "S2Arm sur le téléphone est signé par une autre équipe",
   "装 S2Arm 用的 Apple ID 或证书，和这台电脑上的不是同一个团队。": "L'identifiant Apple ou le certificat utilisé pour installer S2Arm appartient à une autre équipe que celle de cet ordinateur.",
-  "子程序 %s 的代码补丁暂不支持，没收": "Les correctifs de code du sous-programme %s ne sont pas encore pris en charge : ils n'ont pas été importés"
+  "子程序 %s 的代码补丁暂不支持，没收": "Les correctifs de code du sous-programme %s ne sont pas encore pris en charge : ils n'ont pas été importés",
+  "这台电脑上没有这个 Apple ID 能交给手机的签名证书，启动器不会为此新建（新建会让 AltStore 或 SideStore 正在用的证书失效）。用 AltStore 或 SideStore 装的 S2Arm：在 AltStore 或 SideStore 的设置里导出签名证书，到手机上 S2Arm 的「签名证书」里导入就行。确实想让启动器新建证书，就点「安装 S2Arm」，它会先告诉你会让哪张证书失效，再由你决定。": "Cet ordinateur n'a aucun certificat de signature de cet identifiant Apple à transmettre au téléphone, et le lanceur n'en créera pas pour cela (un nouveau invaliderait le certificat qu'utilise AltStore ou SideStore). Pour S2Arm installé avec AltStore ou SideStore : exportez le certificat de signature dans les réglages d'AltStore ou de SideStore, puis importez-le dans « Certificat de signature » de S2Arm sur le téléphone. Si vous voulez vraiment que le lanceur crée un certificat, cliquez sur « Installer S2Arm » : il vous indique d'abord quel certificat cesserait de fonctionner, puis vous décidez.",
+  "在 AltStore 或 SideStore 的设置里导出签名证书，打开手机上的 S2Arm →「签名证书」→「导入 .p12…」导入；想让启动器新建证书就点「安装 S2Arm」（会先说明会让哪张证书失效）。": "Exportez le certificat de signature dans les réglages d'AltStore ou de SideStore, puis ouvrez S2Arm sur le téléphone → « Certificat de signature » → « Importer un .p12… ». Pour que le lanceur crée un certificat, cliquez sur « Installer S2Arm » (il explique d'abord quel certificat cesserait de fonctionner).",
+  "这台电脑上没有可交的签名证书": "Aucun certificat de signature à transmettre sur cet ordinateur",
+  "启动器不会为此新建证书，以免让 AltStore 或 SideStore 的证书失效。": "Le lanceur ne crée pas de nouveau certificat pour cela, afin de ne pas invalider celui d'AltStore ou de SideStore."
  }
 }

@@ -10454,5 +10454,13 @@
  {
   "source": "子程序 %s 的代码补丁暂不支持，没收",
   "en": "Code patches for subprogram %s aren't supported yet, so they weren't imported"
+ },
+ {
+  "source": "这台电脑上没有这个 Apple ID 能交给手机的签名证书，启动器不会为此新建（新建会让 AltStore 或 SideStore 正在用的证书失效）。用 AltStore 或 SideStore 装的 S2Arm：在 AltStore 或 SideStore 的设置里导出签名证书，到手机上 S2Arm 的「签名证书」里导入就行。确实想让启动器新建证书，就点「安装 S2Arm」，它会先告诉你会让哪张证书失效，再由你决定。",
+  "en": "This computer has no signing certificate for this Apple ID to hand to the phone, and the launcher won't create one for this (a new one would invalidate the certificate AltStore or SideStore is using). For S2Arm installed with AltStore or SideStore: export the signing certificate in AltStore or SideStore settings and import it under “Signing certificate” in S2Arm on your phone. If you really want the launcher to create a certificate, click “Install S2Arm”; it tells you which certificate would stop working first and lets you decide."
+ },
+ {
+  "source": "在 AltStore 或 SideStore 的设置里导出签名证书，打开手机上的 S2Arm →「签名证书」→「导入 .p12…」导入；想让启动器新建证书就点「安装 S2Arm」（会先说明会让哪张证书失效）。",
+  "en": "Export the signing certificate in AltStore or SideStore settings, then open S2Arm on your phone → “Signing certificate” → “Import .p12…”. To have the launcher create a certificate, click “Install S2Arm” (it first explains which certificate would stop working)."
  }
 ]
