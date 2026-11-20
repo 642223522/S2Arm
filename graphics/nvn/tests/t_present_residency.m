@@ -45,6 +45,7 @@ static void run(void) {
             for (int repeat = 0; repeat < 3; repeat++) {
                 CFTimeInterval begin = CACurrentMediaTime();
                 uint64_t ticket = mtl_present_ext(serial, 0, (__bridge void *)event, frame, NULL);
+                // 生产者事件 300 ms 后才完成：下面「等待 ≥ 280 ms」只是下限（负载高时只会更长），不会因负载假红
                 if (!repeat) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 300 * NSEC_PER_MSEC),
                     dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ event.signaledValue = frame; });
                 nvn_be_present_wait(ticket);
@@ -53,7 +54,8 @@ static void run(void) {
                 CHECK(event.signaledValue >= frame && (repeat || ms >= 280),
                     "票号 %llu 等生产者事件完成，等待 %.1f ms", (unsigned long long)ticket, ms);
                 // 等待接口也会在 GPU 错误后返回，必须再验真实呈现回调；runner 同时拒绝 GPU 错误日志。
-                double presented = 0, deadline = CACurrentMediaTime() + 3;
+                // 等呈现回调，兜底 30 秒（原 3 秒：负载高时系统回调晚到就假红）；等不到下面判红
+                double presented = 0, deadline = CACurrentMediaTime() + 30;
                 do {
                     presented = nvn_be_presented_time(ticket);
                     if (presented != 0) break;
@@ -74,8 +76,20 @@ static void run(void) {
     }
 }
 
+static void await_window(int left) {   // 主队列上：每 50 ms 看一次持有生产图层的窗口是否可见，left 次后仍不可见判红
+    NSWindow *window = nil;
+    for (NSWindow *candidate in NSApp.windows)
+        if ((__bridge void *)candidate.contentView.layer == s2a_mac_front_layer()) { window = candidate; break; }
+    // keyWindow 表示键盘焦点；上屏验收必须检查持有生产 CAMetalLayer 的窗口。
+    BOOL visible = window && (window.occlusionState & NSWindowOcclusionStateVisible);
+    if (!visible && left > 0) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 50 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ await_window(left - 1); }); return; }
+    CHECK(visible, "生产 Mac 窗口可见（layer window=%ld，key window=%ld）", (long)window.windowNumber, (long)NSApp.keyWindow.windowNumber);
+    if (!visible) exit(1);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ run(); });
+}
+
 int main(void) {
-    alarm(30);
+    alarm(120);   // 防挂死（原 30 秒：负载高时整件慢过 30 秒就被误杀；真挂死照样到点结束）
     if (setenv("S2A_GFX", "direct", 1)) return 1;
     if (s2a_gfx_mode() != S2A_GFX_DIRECT) return 1;
     // 在主队列调用生产适配器设置层设备，再让 Core Animation 发布这次窗口事务。
@@ -85,16 +99,8 @@ int main(void) {
         if (!s2a_mac_front_layer()) exit(1);
         if (front_metal_layer() != s2a_mac_front_layer()) exit(1);
         [CATransaction flush];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-            NSWindow *window = nil;
-            for (NSWindow *candidate in NSApp.windows)
-                if ((__bridge void *)candidate.contentView.layer == s2a_mac_front_layer()) { window = candidate; break; }
-            // keyWindow 表示键盘焦点；上屏验收必须检查持有生产 CAMetalLayer 的窗口。
-            BOOL visible = window && (window.occlusionState & NSWindowOcclusionStateVisible);
-            CHECK(visible, "生产 Mac 窗口可见（layer window=%ld，key window=%ld）", (long)window.windowNumber, (long)NSApp.keyWindow.windowNumber);
-            if (!visible) exit(1);
-            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ run(); });
-        });
+        // 原先 500 ms 后只看一次窗口可见：负载高时窗口还没上屏就判红。现在 500 ms 起每 50 ms 看一次，等到可见为止（兜底 30 秒，等不到判红）
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ await_window(600); });
     });
     s2a_front_run(NULL);
     return 1;

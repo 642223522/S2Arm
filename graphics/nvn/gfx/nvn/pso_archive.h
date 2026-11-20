@@ -368,7 +368,9 @@ static void par_flush_bg(void) {
     MLOG("pipeline archive: %llu pipelines the prewarm compiled written so far in %.1f s beside it, %lu still to write (Metal build folders removed so far %llu)",
          (unsigned long long)(atomic_load(&g_par_written) - n0), (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0) / 1e9, left, (unsigned long long)atomic_load(&g_par_ga_removed));
 }
-static _Atomic uint64_t g_par_dedup, g_par_dedup_ns;   // 等了别人在编的同一条：次数、总等待
+static _Atomic uint64_t g_par_dedup, g_par_dedup_ns;
+// 只读计数（单测按事件判、不量墙钟，t_nvn_pso_inflight）：进入「等别人在编的同键」的次数；编完时慢编译定时器还没到的次数。不改行为
+static _Atomic uint64_t g_par_wait_enter, g_par_slow_fast;   // 等了别人在编的同一条：次数、总等待
 static void par_count(int hit) {
     uint64_t h = hit ? atomic_fetch_add(&g_par_hits, 1) + 1 : atomic_load(&g_par_hits), m = hit ? atomic_load(&g_par_misses) : atomic_fetch_add(&g_par_misses, 1) + 1;
     if (!((h + m) & (h + m - 1)) && h + m >= 256) MLOG("pipeline archive: %llu builds, %llu from the archive, %llu compiled; %llu written this run, %llu stale files rewritten; %llu waited for the same key another thread was building (%.1f ms in all)",
@@ -398,7 +400,7 @@ static int par_fl_enter_wait(NSString *key, id *out, ParFlight **mine, int64_t w
         if (wait_ns >= 0 && atomic_load(&f->gave_up)) { os_unfair_lock_unlock(&g_par_fl_lock); if (gave_up) *gave_up = 1; return 1; }   // 已有人等超时：不再每次都等满
         pthread_override_t ov = f->builder && !pthread_equal(f->builder, pthread_self()) ? pthread_override_qos_class_start_np(f->builder, qos_class_self(), 0) : NULL;
         os_unfair_lock_unlock(&g_par_fl_lock);
-        struct timespec t0, t1; clock_gettime(CLOCK_MONOTONIC, &t0);
+        struct timespec t0, t1; clock_gettime(CLOCK_MONOTONIC, &t0); atomic_fetch_add(&g_par_wait_enter, 1);
         long w = dispatch_group_wait(f->done, wait_ns < 0 ? DISPATCH_TIME_FOREVER : dispatch_time(DISPATCH_TIME_NOW, wait_ns));
         clock_gettime(CLOCK_MONOTONIC, &t1);
         if (ov) pthread_override_qos_class_end_np(ov);
@@ -459,6 +461,7 @@ static void par_slow_end(ParSlow *w, int ok) {
     double ms = (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - w->t0) / 1e6;
     if (ms >= g_par_slow_ms) MLOG("%s%s pipeline %s (functions %s) %s after %.0f ms on thread %s", ok ? "" : "【红】 ", w->kind, w->key, w->fns, ok ? "built" : "FAILED", ms, w->thread[0] ? w->thread : "?");
     if (atomic_exchange(&w->done, 1) == 2) free(w);   // the timer already ran: the memory is the end's to free
+    else atomic_fetch_add(&g_par_slow_fast, 1);
 }
 // Build a render pipeline through the archive. key = par_rkey(...), nil = not archived (built as before)
 static id<MTLRenderPipelineState> par_render(MTLRenderPipelineDescriptor *d, NSString *key, NSError **e) {

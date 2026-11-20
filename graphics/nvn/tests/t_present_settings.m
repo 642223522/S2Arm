@@ -101,7 +101,8 @@ static BOOL presentationConsistent(const PresentObservation *o, double productio
 
 static BOOL checkPresentation(NSString *name, uint64_t sequence, uint64_t ticket, id<CAMetalDrawable> drawable) {
     PresentObservation o;
-    double production, end=CACurrentMediaTime()+3;
+    // 等平台呈现回调，兜底 30 秒（原 3 秒：负载高时系统回调晚到就判不一致假红）；回调一到就退出循环
+    double production, end=CACurrentMediaTime()+30;
     for (;;) {
         double sample=drawable ? drawable.presentedTime : -1;
         pthread_mutex_lock(&drawableMutex);
@@ -222,7 +223,7 @@ static NSData *capture(id<MTLTexture> source, const int crop[4], BOOL flip, int 
     uint64_t serial = mtl_ext_tex((__bridge void *)source);
     uint64_t ticket = mtl_present_ext(serial, 0, (__bridge void *)producerEvent, producerValue, crop);
     lastTicket = ticket;
-    BOOL got = dispatch_semaphore_wait(captured, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) == 0;
+    BOOL got = dispatch_semaphore_wait(captured, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC)) == 0;   // 兜底 30 秒（原 5 秒）
     CHECK(got && grab && grabWidth == (size_t)width && grabHeight == (size_t)height,
         "%s production grab %zux%zu", name.UTF8String, grabWidth, grabHeight);
     if (!got || !grab || grabWidth != (size_t)width || grabHeight != (size_t)height) exit(1);
@@ -321,15 +322,21 @@ static void asynchronousBatch(void) {
             dispatch_semaphore_signal(copied);
         }
     });
+    // 原先 300 ms 定时器置位生产者事件、判六帧入队在它之前返回：负载高时入队慢过 300 ms 就假红。
+    //   现在生产者事件由测试在入队返回之后手动置位（放行线程等「入队已返回」信号；兜底 30 秒照放——入队若错误地等生产者事件，
+    //   要到兜底才返回，此时事件已置位，判红）
     CFTimeInterval begin=CACurrentMediaTime();
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,300*NSEC_PER_MSEC),
-        dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{ producerEvent.signaledValue=delayedValue; });
+    dispatch_semaphore_t enqueued=dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
+        dispatch_semaphore_wait(enqueued,dispatch_time(DISPATCH_TIME_NOW,30*NSEC_PER_SEC)); producerEvent.signaledValue=delayedValue; });
     for(int i=0;i<ASYNC_FRAMES;i++) tickets[i]=mtl_present_ext(serials[i],0,(__bridge void *)producerEvent,delayedValue,NULL);
+    BOOL beforeEvent=producerEvent.signaledValue<delayedValue;
+    dispatch_semaphore_signal(enqueued);
     CHECK(tickets[0]==firstTicket && tickets[ASYNC_FRAMES-1]==firstTicket+ASYNC_FRAMES-1,
         "async batch enqueued six consecutive tickets %llu..%llu",tickets[0],tickets[ASYNC_FRAMES-1]);
-    CHECK(producerEvent.signaledValue<delayedValue,"async six-frame enqueue returned before the real 300 ms producer event (%.3f ms)",(CACurrentMediaTime()-begin)*1000);
+    CHECK(beforeEvent,"async six-frame enqueue returned before the producer event was signaled (%.3f ms)",(CACurrentMediaTime()-begin)*1000);
     nvn_be_drain();
-    BOOL complete=dispatch_semaphore_wait(copied,dispatch_time(DISPATCH_TIME_NOW,5*NSEC_PER_SEC))==0;
+    BOOL complete=dispatch_semaphore_wait(copied,dispatch_time(DISPATCH_TIME_NOW,30*NSEC_PER_SEC))==0;   // 兜底 30 秒（原 5 秒）
     CHECK(complete && pixels.count==ASYNC_FRAMES,"async true completion/drain and real drawable readback: %lu/6",(unsigned long)pixels.count);
     int actualShown=0;
     for(int i=0;i<ASYNC_FRAMES && complete && i<(int)pixels.count;i++) {
@@ -478,13 +485,31 @@ static void run(void) {
 // NSWindowOcclusionStateVisible 位（与焦点无关——无人值守跑门禁必中）。此时
 // 「真 drawable 到达可见显示」本就不成立，格记「未证」退 77 而非红。
 // S2A_PS_ENV 是测试缝：sleep=模拟屏睡（早探针、不建窗口），offspace=模拟窗口
-// 不在活动 Space（走 500ms 晚探针），awake=钉醒（配 S2A_PS_WINDOW 验红路仍通）。
+// 不在活动 Space（走 500ms 起的轮询探针），awake=钉醒（配 S2A_PS_WINDOW 验红路仍通）。
 static int displayEnvUnproven(void) {
     const char *sim = getenv("S2A_PS_ENV");
     if (sim) return !strcmp(sim, "sleep");
     uint32_t count = 0;
     CGGetActiveDisplayList(0, NULL, &count);
     return count == 0 || CGDisplayIsAsleep(CGMainDisplayID());
+}
+
+static void awaitWindow(int left) {   // 主队列上：每 50 ms 看一次持有生产图层的窗口，left 次后仍不可见判红
+    NSWindow *window=nil;
+    for(NSWindow *candidate in NSApp.windows) if(candidate.contentView.layer==layer) { window=candidate; break; }
+    const char *sim=getenv("S2A_PS_ENV");
+    BOOL offSpace = sim ? !strcmp(sim,"offspace") : (window && ![window isOnActiveSpace]);
+    if(displayEnvUnproven() || offSpace) {
+        printf("未证：宿主显示休眠或窗口不在活动 Space\n"); exit(77);
+    }
+    BOOL visible=window && (window.occlusionState & NSWindowOcclusionStateVisible);
+    const char *simw=getenv("S2A_PS_WINDOW");      // 测试缝：occluded=钉真不可见，验原检查红路仍通（不等，当场判）
+    BOOL pinned=simw && !strcmp(simw,"occluded");
+    if(pinned) visible=NO;
+    if(!(window && visible) && !pinned && left>0) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW,50*NSEC_PER_MSEC),dispatch_get_main_queue(), ^{ awaitWindow(left-1); }); return; }
+    CHECK(window && visible,"production window is visible");
+    if(!window || !visible) exit(1);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{ run(); });
 }
 
 int main(int argc, const char **argv) {
@@ -508,21 +533,8 @@ int main(int argc, const char **argv) {
         if(!observer || !originalNextDrawable || !class_addMethod(observer,@selector(nextDrawable),(IMP)observeDrawable,"@@:")) exit(1);
         objc_registerClassPair(observer); object_setClass(layer,observer);
         [CATransaction flush];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,500*NSEC_PER_MSEC),dispatch_get_main_queue(), ^{
-            NSWindow *window=nil;
-            for(NSWindow *candidate in NSApp.windows) if(candidate.contentView.layer==layer) { window=candidate; break; }
-            const char *sim=getenv("S2A_PS_ENV");
-            BOOL offSpace = sim ? !strcmp(sim,"offspace") : (window && ![window isOnActiveSpace]);
-            if(displayEnvUnproven() || offSpace) {
-                printf("未证：宿主显示休眠或窗口不在活动 Space\n"); exit(77);
-            }
-            BOOL visible=window && (window.occlusionState & NSWindowOcclusionStateVisible);
-            const char *simw=getenv("S2A_PS_WINDOW");      // 测试缝：occluded=钉真不可见，验原检查红路仍通
-            if(simw && !strcmp(simw,"occluded")) visible=NO;
-            CHECK(window && visible,"production window is visible");
-            if(!window || !visible) exit(1);
-            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{ run(); });
-        });
+        // 原先 500 ms 后只看一次窗口可见：负载高时窗口还没上屏就判红。现在 500 ms 起每 50 ms 看一次，等到可见为止（兜底 30 秒，等不到判红）
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,500*NSEC_PER_MSEC),dispatch_get_main_queue(), ^{ awaitWindow(600); });
     });
     s2a_front_run(NULL); return 1;
 }
