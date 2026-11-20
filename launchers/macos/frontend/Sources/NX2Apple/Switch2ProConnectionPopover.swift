@@ -208,7 +208,7 @@ struct Switch2ProConnectionPopover: View {
                     // 进分配画面焦点落在「完成」：按「分配玩家」那一下时这两颗还没注册，导航会先挑最左边的「取消」，等注册好再放一次
                     DispatchQueue.main.async { (padControls as? LauncherPadNavigation)?.focus("controller.assign.done") }
                     systems.watchAssign { controller.registerSystem(name: $0, index: $1) }
-                    systems.watchGen1 { id, side, gesture in controller.registerGen1(id: id, side: side, gesture: gesture) }
+                    // 一代 Joy-Con 的手势回调由主界面常挂（LauncherView），这里不挂不摘：摘掉会让局内拆合也收不到
                     // 键盘：分配中按任一键就登记成下一位（#520 讨论，不加提示）；这一下吞掉，不给 S2Arm 别处当快捷键 / 不响提示音
                     keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { _ in controller.registerKeyboard(); return nil }
                 }
@@ -216,7 +216,6 @@ struct Switch2ProConnectionPopover: View {
                     // 完成 / 取消回来：焦点回到「分配玩家」那颗（不然导航会挑最上面别的按钮，例如蓝牙设置）
                     DispatchQueue.main.async { (padControls as? LauncherPadNavigation)?.focus("controller.assign") }
                     systems.watchAssign(nil)
-                    systems.watchGen1(nil)
                     if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
                     keyMonitor = nil
                 }
