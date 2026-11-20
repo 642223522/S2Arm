@@ -3023,6 +3023,11 @@ def push_selected(c):
                 rows.append(dict(gameId=g, ok=False, code="job_failed", message=str(e)[:300]))
             finally:
                 atomic(state_path, state)
+    # 有款没推成：整单按失败报（#1756：原先照报「完成」，两端界面都不看逐款结果，进度条跑完、手机上还是「需要导入」、总控台还是「更新」）。
+    #   原因用第一款失败的原话与错误码（已是给玩家的话）；失败页「重试」再推一轮，推成的那几款程序包已在手机上，按记录跳过
+    if state["failed"]:
+        first = next(r for r in rows if not r["ok"])
+        raise Failure(first["message"], code=first["code"])
     return dict(games=rows, done=len(state["done"]), failed=len(state["failed"]), remaining=len(games) - len(state["done"]))
 
 
