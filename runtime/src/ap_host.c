@@ -199,6 +199,7 @@ static void *stall_watch(void *a) { s2a_thread_name("s2a-ap-stall");
                 "停帧就有外因，判引擎卡死前先看这一行）",
                 focused ? focused() : -1, suspend ? suspend() : -1, sleeping ? sleeping() : -1, frozen ? frozen() : -1);
             if (td) td();
+            { void (*wd)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "s2a_direct_wait_dump"); if (wd) wd(); }   // 直连：图形层各等待点（已提交 / 已完成栅栏、队列在等的别家事件；direct_host.c）——停帧多半是队列在等一个不来的事件；只链本文件的单测取不到就不打
             if (hd) { char w[96]; snprintf(w, sizeof w, "出图停住看门：停在第 %llu 帧已 %d 秒", (unsigned long long)f, stall_s()); hd(w); }
             continue;
         }

@@ -1,6 +1,8 @@
 #!/bin/bash
 # 服务层单测：编译并跑 S2A.Services.Tests（假原生层 + 桩渲染器，经生产同一 C# 单一入口发 IPC 消息）。
 # 输出「期望 → 真结果」对位表；退出码 0 = 全过。墙钟上限 300 秒（编译 + 运行）。
+# 本机自测排在门禁后面：不在门禁里跑（没有 GATE2_PAR）就把自己降到 nice 15，子进程继承；门禁步的优先级由门禁自己定
+[ -n "${GATE2_PAR:-}" ] || renice 15 -p $$ > /dev/null 2>&1 || true
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd); DOTNET=${DOTNET:-$HOME/.dotnet/dotnet}
 # 只在 macOS 上跑（审计 #859）：原生库（libvpx / libopus 垫片按 osx 构建、libSystem 读数）都是苹果的，Linux x86_64 不能冒充 osx-x64；

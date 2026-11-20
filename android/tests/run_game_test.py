@@ -701,6 +701,10 @@ if cmd == "shell":
                     # logcat_dump 剥行前缀派生；priv_frame_log 旋钮给显式文件内容
                     # （比如 logcat 分片被截断但文件完整的救场局）。
                     dd = DATA_DIRS.setdefault("/data/data/" + st["package"], {})
+                    # 现编崩溃留下的在编请求（compile_request.c）：priv_inflight 给 {文件名: 内容}，<SESSION_UUID> 同上替换
+                    for n_, t_ in (st.get("priv_inflight") or {}).items():
+                        u_ = st["props"].get("debug.s2a.session_uuid") or "-"
+                        dd["files/" + n_] = t_.replace("<SESSION_UUID>", u_).encode().hex()
                     if st.get("no_priv_seed"):
                         pass    # 零匹配负控：finish 不落 frame-log
                     elif st.get("priv_frame_log") is not None:
@@ -951,15 +955,6 @@ class RunGameTest(unittest.TestCase):
             return base64.b64decode(
                 "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
 
-    def _aapt2(self, version_code=200):
-        """aapt2 替身：apk_identity 只读 badging 的 package/versionCode 行。"""
-        tool = self.tmp / "sdk" / "build-tools" / "36.0.0" / "aapt2"
-        tool.parent.mkdir(parents=True, exist_ok=True)
-        tool.write_text("#!/bin/sh\necho \"package: name='" + PKG + "' versionCode='" +
-                        str(version_code) + "' versionName='1.0'\"\n")
-        tool.chmod(0o755)
-        return self.tmp / "sdk"
-
     def run_tool(self, state=None, argv=None, seconds=3, new_vc=200, out_name="out_1",
                  discharge_settle="0"):
         st_kw = {"test_apk_vc": new_vc}
@@ -968,8 +963,6 @@ class RunGameTest(unittest.TestCase):
         out = self.tmp / out_name
         fake = self.tmp / "fake_adb.py"
         fake.write_text(FAKE_ADB)
-        old_home = os.environ.get("ANDROID_HOME")
-        os.environ["ANDROID_HOME"] = str(self._aapt2(new_vc))
         args = ["--apk", str(self.apk), "--package", PKG, "--serial", SERIAL,
                 "--out", str(out), "--seconds", str(seconds),
                 "--adb", f"{sys.executable} {fake} {state}",
@@ -978,16 +971,12 @@ class RunGameTest(unittest.TestCase):
         if discharge_settle is not None:   # None = 命令行不带旗标（跑默认口径）
             args += ["--discharge-settle", str(discharge_settle)]
         args += argv or []
-        try:
-            clock = FixtureClock()
-            with mock.patch.object(run_game, "time", clock), \
-                    mock.patch.object(run_game.dev_runtime, "time", clock):
-                rc = run_game.main(args)
-        finally:
-            if old_home is None:
-                os.environ.pop("ANDROID_HOME", None)
-            else:
-                os.environ["ANDROID_HOME"] = old_home
+        clock = FixtureClock()
+        import game_apk   # apk_identity 读清单：这里的 APK 是假字节，直接给新包身份
+        with mock.patch.object(run_game, "time", clock), \
+                mock.patch.object(run_game.dev_runtime, "time", clock), \
+                mock.patch.object(game_apk, "apk_identity", return_value=(PKG, new_vc, False)):
+            rc = run_game.main(args)
         return rc, out, state
 
     def _qc(self, out):
@@ -2786,6 +2775,23 @@ class RunGameTest(unittest.TestCase):
         for rec in bound:
             body = (out / "host_logs" / rec["name"]).read_bytes()
             self.assertIn(ru, body, f"{rec['name']} bound 但内容没有本局 uuid：判据被绕过")
+
+    def test_private_logs_compile_inflight(self):
+        """#1501 D②：现编崩溃落下的 compile-inflight-<pid>-<槽>.log 和 frame-log 一样收；
+        首行 pid 与文件名对上、uuid 是本局号 → bound；首行 pid 对不上 → unproven。"""
+        head = "[s2a] compile-inflight v1 pid={} session=7 generation=3 bytes=2 sha256={} uuid=<SESSION_UUID>\n{{}}"
+        state = {"priv_inflight": {"compile-inflight-4242-0.log": head.format(4242, "0" * 64),
+                                   "compile-inflight-4242-1.log": head.format(9999, "1" * 64)}}
+        rc, out, _ = self.run_tool(seconds=30, state=state)
+        self.assertEqual(0, rc)
+        man = json.loads((out / "run-manifest.json").read_text())
+        recs = {r["name"]: r for r in man["private_logs"]}
+        self.assertEqual("bound", recs["compile-inflight-4242-0.log"]["session"])
+        self.assertTrue(recs["compile-inflight-4242-0.log"]["verified"])
+        self.assertTrue((out / "host_logs/compile-inflight-4242-0.log").read_bytes().endswith(b"\n{}"))
+        self.assertEqual("unproven", recs["compile-inflight-4242-1.log"]["session"],
+                         "首行 pid 与文件名对不上不许 bound")
+        self.assertTrue(any("compile-inflight-4242-1.log" in n and "pid" in n for n in man["notes"]), man["notes"])
 
     def test_private_logs_no_birth_attribution_unproven(self):
         """㉔ qa-fone 负控：墙钟正常但 /proc/<pid>/stat 读拒 → 进程 birth 证不了，

@@ -54,9 +54,16 @@ s2a_tc_sweep "$S/build/.${OS}_toolchain" "$S/build/gal$GX/ios" "$S/build/nvn$GX/
 SN=$(s2a_nospace "$S") || { echo "【红】建不了无空格别名（${S}）"; exit 1; }
 "${S2A_PY:-python3}" "$H/shell/closure.py" mark "$S" --list-from "$R" || { echo "【红】设不了出壳镜像文件访问时间（壳输入闭包）"; exit 1; }
 t0=$SECONDS
-# 游戏库界面（runtime/build.mk S2A_SHELLUI）开不开只看壳输入表：有「入 shell」行才编进壳。不收外部开关——表与表里的目录都进壳编号，
-#   开关与库界面源码一变壳编号必变，同一壳编号不会对应带 / 不带库界面两种壳
+# 游戏库界面（runtime/build.mk S2A_SHELLUI）缺省按壳输入表：有「入 shell」行才编进壳。
+# Intel Mac 只有 tvOS 平台组件没装、xcodebuild 解析不出 generic/platform=tvOS；iOS 平台组件已装，xcodebuild 能编出库界面。
+# 通用容器 App（s2a_catalogue.json）必须带库界面，否则 iPad 上打开就报「没带游戏库」，不能为了省编译跳过。
 SHELLUI=0; printf '%s\n' "$IN" | grep -qx 'shell' && SHELLUI=1
+if [ "$(uname -m)" = x86_64 ] && [ "$OS" = tvos ] && [ "$SHELLUI" = 1 ] && [ -z "${S2A_SHELLUI:-}" ]; then
+  echo "🟡 Intel Mac：本机没装 tvOS 平台组件，跳过电视壳的游戏库界面；iPhone 壳照常带库界面"
+  SHELLUI=0
+elif [ -n "${S2A_SHELLUI:-}" ]; then
+  SHELLUI=$S2A_SHELLUI
+fi
 # 提交号在工作树里取好再交给 make（镜像没有 .git：runtime/build.mk 写进 Info.plist 的 S2ACommit 原先现取 git rev-parse，镜像里会成 unknown）
 HC=$(git -C "$R" rev-parse HEAD) || { echo "【红】取不到本树提交号"; exit 1; }
 "$MK" -C "$SN" ROOT="$SN" -j"$S2A_JOBS" -s ios S2A_APPLE_OS=$OS S2A_CS=1 S2A_SHELLUI=$SHELLUI IOS_BUNDLE=dev.s2arm.shell IOS_DISPLAY=S2Arm BUILD="$B/build" IOS_OBJ_CACHE="$SN/build/${OS}_objcache" S2A_COMMIT="$HC" > "$B/make.log" 2>&1 \
@@ -68,6 +75,8 @@ HL=$S/build/gal$GX/ios/gal_helpers   # make ios 编渲染器库时一并出（gr
   || { echo "【红】渲染器内部辅助库拷不进壳（${HL}）"; exit 1; }
 # 壳本体去调试映射与本地符号（11-15 瘦身：125 → 50 MB；玩家机器上没有代码读本地符号）；未去符号原件放壳目录旁 <壳目录>.symbols/（不进壳、不进 App，发版存档用来离线还原崩溃报告）
 rm -rf "$OUT.symbols" && mkdir -p "$OUT.symbols" && cp "$APP/S2Arm" "$OUT.symbols/S2Arm" && xcrun strip -S -x "$APP/S2Arm" || { echo "【红】壳去符号失败"; exit 1; }
+# tvOS 主屏图标（#1457）：tvOS 只认 actool 编的 Assets.car（分层品牌图标），出壳时编一次放进壳，玩家机上组装沿用（pack/tv_icon.py）
+[ "$OS" = tvos ] && { "${S2A_PY:-python3}" "$H/tv_icon.py" "$R/launchers/macos/Branding/AppIcon-iOS.png" "$APP" || exit 1; }
 TABLES=$("$MK" -C "$SN" -s print-app-tables S2A_APPLE_OS=$OS) || { echo "【红】取不到随包表清单"; exit 1; }
 "${S2A_PY:-python3}" "$H/ship_ext.py" shell --app "$APP" --out "$OUT" --tables "$TABLES" --entitlements "$ENT" || exit 1
 if [ -n "${S2A_SHELL_CLOSURE_SUGGEST:-}" ]; then "${S2A_PY:-python3}" "$H/shell/closure.py" suggest "$S" > "$S2A_SHELL_CLOSURE_SUGGEST" || exit 1

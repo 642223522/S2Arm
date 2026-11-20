@@ -16,6 +16,7 @@
 "Standard" = "標準";
 "For 2D Games" = "2D ゲーム向け";
 "Sharp Upscaling (MetalFX)" = "シャープ拡大（MetalFX）";
+"FSR" = "FSR";
 "Sets a frame rate cap for the game picture; doesn’t unlock the game’s own frame rate limit. The actual frame rate also depends on the game and the screen’s refresh rate." = "ゲーム画面のフレームレート上限を設定します。ゲーム独自のフレームレート制限は解除されません。実際のフレームレートはゲームのパフォーマンスと画面のリフレッシュレートにも依存します。";
 "Frame Rate Limit" = "フレームレート上限";
 "30 FPS" = "30 FPS";

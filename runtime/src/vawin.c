@@ -175,20 +175,62 @@ uint64_t s2a_guest_mem_seen(void) {
     FILE *f = fopen(p, "r"); if (!f) return errno == ENOENT ? 0 : S2A_GUEST_SEEN_BAD;
     unsigned long long v = 0; int ok = fscanf(f, "%llu", &v) == 1 && v; fclose(f); return ok ? v : S2A_GUEST_SEEN_BAD;
 }
-// 心跳调（每 10 秒，后台串行队列）：footprint = 进程实占字节。只记没开文件后备的局：开着时客体脏页不计实占，加文件块又只涨不降（#783），都不是「匿名内存要多少」。
-//   比记录大才写（tmp + rename）
+// 每局记自己的需求、下一局起局按上一局结算（#1634，11-19 维护者：峰值只增不减 + 开着文件后备的局不记 → 一局异常就永远判开，玩家每局写闪存 16–45 GB）。
+//   本局需求 = 匿名内存的局：进程实占；开着文件后备的局：进程实占 + 窗口里在内存的客体页（文件页不计实占，换成匿名就都要算）——两种局都量得出「匿名要多少」。
+//   心跳把本局最大需求与心跳次数写进同目录 mem_peak_run（「字节 心跳数 文件后备」）。下一局起局（s2a_guest_mem_settle）按上一局结算进 mem_peak_anon：
+//     ① 上一局在前台死掉、且需求 + 两份余量 > 剩余（像是撞了单进程上限）：记录取大、标「死过」——死过的记录只认够长的匿名局往下改，
+//        文件后备局在内存紧的机器上页被逐出、量小了，不许它往下改，免得「改小 → 匿名被杀 → 开 → 又改小」来回；
+//     ② 上一局干净（或死掉但离上限远，不是内存杀的）且够长（心跳 ≥ 30 次 = 5 分钟）：记录换成这一局的需求，可以往下改（一局异常下一局就纠正）；
+//     ③ 太短的局：只往上改（菜单里待 30 秒的局代表不了进场景要多少）。
+//   记录格式「字节[ died]」，旧记录（只有字节）读作没死过
+enum { GMEM_BEATS_MIN = 30 };
+static int run_peak_path(char *out, size_t n) {
+    const char *ov = getenv("S2A_GUEST_MEM_PEAK_RUN"); if (ov && *ov) { snprintf(out, n, "%s", ov); return 1; }   // 单测指定
+    char p[1024]; if (!mem_peak_path(p, sizeof p)) return 0;
+    char *sl = strrchr(p, '/'); if (!sl) return 0; *sl = 0; snprintf(out, n, "%s/mem_peak_run", p); return 1;
+}
+static int write_line(const char *p, const char *line) {   // tmp + rename
+    char t[1100]; { char d[1024]; snprintf(d, sizeof d, "%s", p); char *sl = strrchr(d, '/'); if (sl) { *sl = 0; mkdir(d, 0755); } }
+    snprintf(t, sizeof t, "%s.tmp", p); FILE *f = fopen(t, "w"); if (!f) return -1;
+    fputs(line, f); fclose(f); return rename(t, p);
+}
+static int rec_died(const char *p) { FILE *f = fopen(p, "r"); if (!f) return 0; unsigned long long v = 0; char w[16] = {0}; int n = fscanf(f, "%llu %15s", &v, w); fclose(f); return n == 2 && !strcmp(w, "died"); }
+// 起局判文件后备之前调：把上一局的 mem_peak_run 结算进记录、删掉它。died = 上一局在前台死掉；room = 此刻离单进程上限的剩余；margin = 余量。返回一句说法（日志用，没有上一局记录给 NULL）
+const char *s2a_guest_mem_settle(int died, uint64_t room, uint64_t margin) {
+    static char why[200]; char rp[1100], pp[1024];
+    if (!run_peak_path(rp, sizeof rp) || !mem_peak_path(pp, sizeof pp)) return NULL;
+    FILE *f = fopen(rp, "r"); if (!f) return NULL;
+    unsigned long long need = 0, beats = 0; int file = 0; int n = fscanf(f, "%llu %llu %d", &need, &beats, &file); fclose(f); unlink(rp);
+    if (n < 2 || !need) return NULL;
+    uint64_t rec = s2a_guest_mem_seen(); if (rec == S2A_GUEST_SEEN_BAD) rec = 0;
+    int sticky = rec && rec_died(pp), mem_kill = died && need + 2 * margin > room, longrun = beats >= GMEM_BEATS_MIN;
+    uint64_t v; int vs; const char *how;
+    if (mem_kill) { v = need > rec ? need : rec; vs = 1; how = "上一局在前台死掉、需求逼近上限：取大、记「死过」"; }
+    else if (longrun && !(sticky && file)) { v = need; vs = 0; how = need < rec ? "上一局够长：换成它的需求（往下改）" : "上一局够长：换成它的需求"; }
+    else { v = need > rec ? need : rec; vs = sticky; how = sticky && file && longrun ? "记录死过、上一局开着文件后备：不往下改" : "上一局太短：只往上改"; }
+    char line[64]; snprintf(line, sizeof line, vs ? "%llu died\n" : "%llu\n", (unsigned long long)v); write_line(pp, line);
+    snprintf(why, sizeof why, "%s（上一局需求 %llu MB、%llu 次心跳%s；记录 %llu → %llu MB）", how, need >> 20, beats, file ? "、文件后备" : "", (unsigned long long)(rec >> 20), (unsigned long long)(v >> 20));
+    return why;
+}
+static uint64_t window_resident(void) {   // 窗口里在内存的页（文件后备局：这些就是换成匿名要算进实占的客体页）
+    if (!g_base || !g_size) return 0;
+    static unsigned char vec[4096]; size_t pg = (size_t)getpagesize(); uint64_t got = 0;
+    for (uint64_t a = g_base, e = g_base + g_size; a < e; a += sizeof vec * pg) {
+        size_t len = (size_t)MIN((uint64_t)sizeof vec * pg, e - a); if (mincore((void *)(uintptr_t)a, len, (char *)vec)) continue;
+        for (size_t i = 0; i < (len + pg - 1) / pg; i++) if (vec[i] & MINCORE_INCORE) got += pg;
+    }
+    return got;
+}
+// 心跳调（每 10 秒，后台串行队列）：footprint = 进程实占字节。记本局最大需求与心跳次数（见上）
 static void span_note(void);
 void s2a_guest_mem_note(uint64_t footprint) {
     span_note();   // 心跳顺带记本局跨度（#783）
-    if (g_gfd >= 0) return;
-    uint64_t total = footprint;
-    static uint64_t rec; static int loaded; if (!loaded) { rec = s2a_guest_mem_seen(); if (rec == UINT64_MAX) rec = 0; loaded = 1; }   // 坏记录：本局的实测覆盖它
-    if (total <= rec) return;
-    char p[1024], t[1100]; if (!mem_peak_path(p, sizeof p)) return;
-    { char d[1024]; snprintf(d, sizeof d, "%s", p); char *sl = strrchr(d, '/'); if (sl) { *sl = 0; mkdir(d, 0755); } }
-    snprintf(t, sizeof t, "%s.tmp", p); FILE *f = fopen(t, "w"); if (!f) return;
-    fprintf(f, "%llu\n", (unsigned long long)total); fclose(f);
-    if (!rename(t, p)) rec = total;
+    static uint64_t run_max, beats;
+    uint64_t need = footprint + (g_gfd >= 0 ? window_resident() : 0);
+    if (need > run_max) run_max = need;
+    beats++;
+    char p[1100], line[96]; if (!run_peak_path(p, sizeof p)) return;
+    snprintf(line, sizeof line, "%llu %llu %d\n", (unsigned long long)run_max, (unsigned long long)beats, g_gfd >= 0); write_line(p, line);
 }
 // 本款本机学到的地址跨度（#783）：同目录 span_peak，一行十进制字节数 = 局中碰到的最高地址 − 窗口基址（svc_mem.c s2a_mem_span_now，心跳每 10 秒比大才写）。
 //   窗口放不下标准布局时按它给窗口、其余留给宿主（s2a_window_host_below）；没记录 / 读不出 = 0（照旧只留 HOST_BELOW）
@@ -334,8 +376,10 @@ static void guest_file_attach_(void) {
     uint64_t room = os_proc_available_memory(), ballast = test_ballast_bytes();   // 预热进程（ActivePrewarm）此刻的上限可能是后台档，偏小只会多开、不会漏开
     // 余量缺省 512 MB（S2A_GUEST_FILE_MARGIN_MB）；池只作日志里的上界，不作判据（#783，见 s2a_guest_file_wanted5）
     if (ballast) { room = room > ballast ? room - ballast : 1; LOG("【黄】测试压舱：文件后备判定按余量少 %llu MB 算（S2A_TEST_BALLAST_MB，装模块前才真占）", (unsigned long long)(ballast >> 20)); }
-    uint64_t margin = env_mb("S2A_GUEST_FILE_MARGIN_MB", 512), seen = s2a_guest_mem_seen(), host = env_mb("S2A_GUEST_FILE_HOST_MB", 2048), phys = phys_mem();
+    uint64_t margin = env_mb("S2A_GUEST_FILE_MARGIN_MB", 512), host = env_mb("S2A_GUEST_FILE_HOST_MB", 2048), phys = phys_mem();
     int died = room && s2a_guest_run_died(), low = 0;
+    { const char *st = room ? s2a_guest_mem_settle(died, room, margin) : NULL; if (st) LOG("客体内存实测记录：%s", st); }
+    uint64_t seen = s2a_guest_mem_seen();
     if (room && s2a_guest_run_crashed()) LOG("客体内存文件后备：上一局在前台闪退（我们的崩溃处理记过现场，不是被内存上限杀），不强制开、按实测判");
     char pp0[1024]; int known = mem_peak_path(pp0, sizeof pp0);   // 多款容器还没选游戏：池是容器缺省、读不到本款记录，先不判（装游戏前按本款再判）
     int on = s2a_guest_file_wanted6(e, known || (e && *e) ? pool : 0, room, phys, seen, host, margin, died, &low);
@@ -403,13 +447,16 @@ static void guest_file_map(void) {
 //   只在窗口还原封不动（整段一块 PROT_NONE 的匿名保留）时才换：换成文件是整段 MAP_FIXED，窗口里已经有东西就会被抹掉，那种情形不换、照旧匿名。
 //   还是不够：报红，并在屏幕上告诉玩家差多少空间（不然这款几分钟后涨到单进程上限被系统收掉，没有崩溃报告，玩家只看到闪退）
 #ifdef S2A_UNIT_TEST
+// 快照相关的弱缺省已由本文件后部的通用定义提供（合并 upstream 后统一，勿在此重复定义）
 void s2a_guest_file_test_pending(void) { g_gfile_pending = 1; }
 void s2a_guest_file_test_late(void) { g_gfile_late = 1; }   // 单测（t_guest_file_retry ④）：造「多款容器、已选定游戏、要按本款再判」的状态   // 单测（t_guest_file_retry）：造「装游戏前要换成文件」的状态（真机只由多款容器按本款再判置位，Mac 上 room 0 走不到）
 #endif
 int s2a_guest_file_retry(void) {
     if (g_gfile_late && g_gfd < 0 && g_ok) {   // 多款容器：此刻已选定游戏，按本款实测 / 「在跑」标记再判（剩余用起局时那一刻的，和单款同口径）
         g_gfile_late = 0;
-        uint64_t margin = env_mb("S2A_GUEST_FILE_MARGIN_MB", 512), seen = s2a_guest_mem_seen(), host = env_mb("S2A_GUEST_FILE_HOST_MB", 2048), phys = phys_mem();
+        uint64_t margin = env_mb("S2A_GUEST_FILE_MARGIN_MB", 512), host = env_mb("S2A_GUEST_FILE_HOST_MB", 2048), phys = phys_mem();
+        { const char *st = s2a_guest_mem_settle(s2a_guest_run_died(), g_gfile_room0, margin); if (st) LOG("客体内存实测记录：%s", st); }
+        uint64_t seen = s2a_guest_mem_seen();
         // 此刻已选定游戏、模块目录已是这一款，但布局还没按本款排（s2a_app_pool 仍是容器缺省）：按本款 main.npdm 取池（Switch 2 9 GiB），读不到退回 s2a_app_pool
         uint64_t pool = 0;
         { const char *(*dirf)(void) = (const char *(*)(void))dlsym(RTLD_DEFAULT, "s2a_module_dir"); uint64_t (*npf)(const char *) = (uint64_t (*)(const char *))dlsym(RTLD_DEFAULT, "s2a_npdm_app_pool");
@@ -659,6 +706,23 @@ uint64_t s2a_window_host_below(uint64_t fit, uint64_t learned) {
     uint64_t host = fit > win ? (fit - win) & ~(G - 1) : 0;
     return host > HOST_BELOW ? host : HOST_BELOW;
 }
+// 小内存 iPad（4 GB 机，2^39 以下只有 6 GB 空洞）上 HOST_BELOW 固定 3 GiB 把窗口压到 3 GiB；
+//   Switch 1 的 SDK 开局按应用池 3285 MB 调 SetHeapSize（不是按游戏文件大小，Ryujinx KSystemControl.GetApplicationPoolSize），
+//   紧凑布局的堆起点在窗口 +约 380 MB，3 GiB 窗口放不下 3234 MB 堆 → 0xD001 → nninitStartup Break。
+//   池是 NPDM 可认定的真值（Switch 1 3285 MiB / Switch 2 9 GiB），按它给窗口；下方宿主至少 2 GiB
+//   （旧版 1 GiB 在时之笛 Switch 2 上低区碰底崩，3 GiB 是为大款留的，小款不该按大款扣）。
+//   已学到更大跨度（#783）时不能反向压小：宿主按更大的那个值留。
+#define HOST_BELOW_MIN (2ull << 30)
+#define HEAP_FRONT (512ull << 20)   // 紧凑布局堆起点上界（模块段 + TLS/IO + 栈；实测 378 MB，留余量）
+uint64_t s2a_window_host_below_for_pool(uint64_t fit, uint64_t learned, uint64_t pool) {
+    uint64_t base = s2a_window_host_below(fit, learned);
+    if (!pool) return base;
+    uint64_t G = 1ull << 30;
+    uint64_t want = (pool + HEAP_FRONT + G - 1) & ~(G - 1);
+    uint64_t host = fit > want ? (fit - want) & ~(G - 1) : 0;
+    if (host < HOST_BELOW_MIN) host = HOST_BELOW_MIN;
+    return host < base ? host : base;
+}
 // 起局当场自愈（v0.3.4）：窗口按学到的跨度收窄后布局放不下（svc_mem.c layout_prepare 判 -2 那一刻）——删掉记录，窗口往下放宽回缺省给法（下方只留 HOST_BELOW 给宿主），
 //   布局重算、本局照常起。原先只删记录、本局照样失败，玩家第二次打开才好（v0.3.3 已记下坏记录的玩家装新版后头一次仍失败）。
 //   放宽的那段 [新起点, 窗口底) 起局后可能已被宿主映射占了一部分（lp_map 带提示往这里放直连库段等）：新起点取「已占映射末端（1 GiB 向上取整）」与「留宿主底 + HOST_BELOW」的大者，
@@ -849,8 +913,11 @@ static uint64_t need_from_npdm(void) {
 #else
     { int ac = *_NSGetArgc(); char **av = *_NSGetArgv(); if (ac < 2) return 0; strlcpy(dir, av[1], sizeof dir); }   // Mac：s2arm-host <模块目录>
 #endif
-    { uint64_t (*pf)(const char *) = (uint64_t (*)(const char *))dlsym(RTLD_DEFAULT, "s2a_npdm_pid"); char np[1100]; snprintf(np, sizeof np, "%s/main.npdm", dir);
-      g_ctor_pid = pf ? pf(np) : 0; }   // 单款：文件后备按它找本款实测峰值 / 死亡标记（mem_peak_path）
+    { uint64_t (*pf)(const char *) = (uint64_t (*)(const char *))dlsym(RTLD_DEFAULT, "s2a_npdm_pid");
+      uint64_t (*pl)(const char *) = (uint64_t (*)(const char *))dlsym(RTLD_DEFAULT, "s2a_npdm_app_pool");
+      char np[1100]; snprintf(np, sizeof np, "%s/main.npdm", dir);
+      g_ctor_pid = pf ? pf(np) : 0;
+      g_ctr_pool = pl ? pl(np) : 0; }   // 单款也按本款 NPDM 认应用池（小内存 iPad 按池给窗口）；多款在容器循环里取最大
     g_span_learned = s2a_window_span_seen(g_ctor_pid);
     return need_dir(dir);
 }
@@ -945,7 +1012,11 @@ static void vawin_reserve(void) {
     if (g_span_learned && !s2a_window_span_rec_ok(g_span_learned, g_fit)) {
         LOG("【黄】地址窗口：本机学到的跨度 %llu MB 不小于这块空洞 %llu MB（旧版把窗口外的远端映射也算进去了），当作没学到、这一局重新学", (unsigned long long)(g_span_learned >> 20), (unsigned long long)(g_fit >> 20));
         g_span_learned = 0; }
-    if (!sz && g_fit >= MIN_WIN + HOST_BELOW) { uint64_t below = s2a_window_host_below(g_fit, g_span_learned);
+    if (!sz && g_fit >= MIN_WIN + HOST_BELOW) {
+        uint64_t pool = s2a_window_container_pool();   // 多款容器在构造期逐款读过 NPDM；单款 0 = 不知道，照旧 3 GiB
+        uint64_t below = s2a_window_host_below_for_pool(g_fit, g_span_learned, pool);
+        if (pool && below != HOST_BELOW) LOG("地址窗口：按本款应用池 %llu MB 定宿主保留 %llu MB（固定 %llu MB 时窗口放不下 SDK 开局要的堆）",
+            (unsigned long long)(pool >> 20), (unsigned long long)(below >> 20), (unsigned long long)(HOST_BELOW >> 20));
 #if !TARGET_OS_OSX
         { const char *rec = getenv("S2A_FRAME_REC"); uint64_t A = (1ull << 30) + (2ull << 30);   // 即时存档（1 GB 同下文 CMD_ARENA）：命令记录区 1 GB + 虚拟池区 2 GB 从窗口里让出来，放宿主段最底部（cmd_arena_reserve）
           if (!(rec && *rec) && s2a_snap_mode() && g_fit >= below + A + MIN_WIN) { below += A; g_snap_below = A; } }
@@ -983,6 +1054,29 @@ static void vawin_reserve(void) {
 void s2a_window_reserve(void) {
     static pthread_once_t once = PTHREAD_ONCE_INIT;
     pthread_once(&once, vawin_reserve);
+}
+// 多款容器构造期一款可算的游戏都没有（全新安装后才用 .s2arm 导入、或删光了再导入）：构造期跨度 0、不占窗口，玩家「导入 → 点开始」同一进程起局，
+//   自检报「读不到本款的 main.npdm」，要重开 App 才能玩（11-18 iPhone 实机回归）。起宿主之前补一次：这时 s2a_window_container_need 扫得到刚导入的款，
+//   按同一套取法占。构造期算出过跨度的（不论占没占成）不重来，已有游戏的进程照旧只在构造期占
+// 构造期占过、但只够当时那几款的（窗口按它们的最大跨度占）：启动后又导入了一款要得更多的，起宿主前放掉旧窗口、按现在的最大值重占。
+//   这时窗口里还什么都没放（布局、模块、尾部分配都在自检之后），放掉不碰任何东西。按需档（窗口已是本机最大一块、比要的小）重占也大不了，不动
+int s2a_window_reserve_late(void) {
+    if (g_noreserve) return g_ok;
+    if (!g_ok && !g_need) {
+        LOG("地址窗口：构造期容器里没有可算的游戏（启动后才导入），起宿主前按现在的游戏补占");
+        vawin_reserve();
+        return g_ok;
+    }
+    if (g_ok && g_ctr && g_size >= g_need) {
+        uint64_t was = g_need, now = need_from_npdm();
+        if (now > was) {
+            LOG("地址窗口：构造期按 %llu MB 占的窗口 %#llx +%llu MB，启动后导入的款要 %llu MB，起宿主前放掉重占",
+                (unsigned long long)(was >> 20), (unsigned long long)g_base, (unsigned long long)(g_res >> 20), (unsigned long long)(now >> 20));
+            munmap((void *)g_base, g_res); g_ok = 0; g_base = g_size = g_res = 0;
+            vawin_reserve();
+        }
+    }
+    return g_ok;
 }
 // ---------- 命令记录区（帧录放专用，Mac）----------
 // 帧录（S2A_FRAME_REC）把 NVN 命令记录宿主块（graphics/nvn hle_nvn.c 影子块）按原地址存进录像，帧回放（S2A_FRAME_REPLAY）是另一个进程、要在原地址放回。

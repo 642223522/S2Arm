@@ -57,9 +57,11 @@ public final class S2ArmEngineProvider: EngineProvider {
     public init(client: JobClient, xcodeLocator: @escaping () -> String? = XcodeLocator.detect) {
         self.client = client
         library = LibraryProvider(client: client)
-        settings = SettingsProvider(client: client)
+        let settings = SettingsProvider(client: client)
+        self.settings = settings
         play = PlayService(client: client)
-        environment = EnvironmentService(client: client, xcodeLocator: xcodeLocator)
+        // 玩家在环境页自己选过、而且是完整的 Xcode 就用它（玩家自选优先）；没选或选的不可用照旧自动找
+        environment = EnvironmentService(client: client, xcodeLocator: { settings.xcodeApp.flatMap(XcodeLocator.developerDir(app:)) ?? xcodeLocator() })
         installer = InstallService(client: client)
         space = SpaceService(client: client)
     }
@@ -253,6 +255,11 @@ public final class S2ArmEngineProvider: EngineProvider {
     }
 
     /// 打 iPhone 包的目标设备探测（targetDevice 作业）：connected / models / osChoices；quick 只给静态机型表、不读设备。
+    /// 已连接的安卓手机（androidDevices 作业，adb devices -l）→ {enabled, adb, devices: [{serial, state, model}]}；enabled = 安卓出包开没开。
+    public func androidDevices() async throws -> [String: Any] {
+        try await client.perform("androidDevices").result
+    }
+
     public func targetDevices(quick: Bool = false) async throws -> [String: Any] {
         try await client.perform("targetDevice", extra: quick ? ["quick": true] : [:]).result
     }
@@ -266,7 +273,9 @@ public final class S2ArmEngineProvider: EngineProvider {
     /// 起一局：settings 只用 uiLanguage 与 Switch 2 Pro 的本机转发通道；游戏语言跟系统、主机模式、宽屏 / 60 帧都由作业层定。
     /// 事件：作业事件按序转出，最后一条是这局的结局（result）。
     public func run(_ game: InstalledGame, settings s: Settings, events: EventSink) throws -> RunningGame {
-        let handle = try play.play(gameId: game.gameId, uiLanguage: s.uiLanguage, arguments: Self.launchArguments(s),
+        var arguments = Self.launchArguments(s)
+        if settings.launchFullscreen { arguments["launchFullscreen"] = true }   // 启动器设置「启动游戏时自动全屏」（#575）
+        let handle = try play.play(gameId: game.gameId, uiLanguage: s.uiLanguage, arguments: arguments,
                                    onEvent: { if !$0.isFinal { events.emit(EngineEvent(job: $0)) } },
                                    onFinish: { events.emit(EngineEvent(outcome: $0)) })
         return RunningGame(gameId: game.gameId, taskId: handle.id)
@@ -277,6 +286,7 @@ public final class S2ArmEngineProvider: EngineProvider {
         var arguments: [String: Any] = [:]
         if let autoConnect = s.values["switch2ProAutoConnect"] { arguments["switch2ProAutoConnect"] = autoConnect == "1" }
         if let relaySocket = s.values["switch2ProRelaySocket"] { arguments["switch2ProRelaySocket"] = relaySocket }
+        if let xboxRelay = s.values["xboxGipRelaySocket"] { arguments["xboxGipRelaySocket"] = xboxRelay }
         // 本地玩家（#623）：player 字段 {user, name, folder}；没带 = 旧行为
         if let user = s.values["playerUser"] {
             arguments["player"] = ["user": user, "name": s.values["playerName"] ?? "", "folder": s.values["playerFolder"] ?? "SaveData"]
@@ -309,9 +319,6 @@ public final class S2ArmEngineProvider: EngineProvider {
                                     widget: settings.homeWidget, cloudSaves: settings.cloudSavesFolder, events: events)
     }
 
-    public func exportPush(gameId: String?, device: String? = nil, events: EventSink = .discard) async throws -> [String] {
-        try await installer.exportPush(gameId: gameId, device: device, events: events)
-    }
     public func installMode() async throws -> InstallModeInfo { try await installer.installMode() }
     /// 0.6.0 通用壳（开关后面）的快速比对「建议更新」（作业 updateHints，pack/jobs/host_update.py）：每款只读 game.json。
     ///   开关关着 → nil（界面什么都不出）；开着 → 游戏号（大写）→ 原因（rewriter / hostAbi / shader），没对不上的款不在表里
@@ -328,7 +335,7 @@ public final class S2ArmEngineProvider: EngineProvider {
     }
     public func updateHints() async throws -> [String: [String]]? {
         let r = try await client.perform("updateHints").result
-        guard r["enabled"] as? Bool == true else { return nil }
+        guard r["games"] is [Any] else { return nil }
         var out: [String: [String]] = [:]
         for g in r["games"] as? [[String: Any]] ?? [] {
             if let id = g["gameId"] as? String, let why = g["reasons"] as? [String], !why.isEmpty { out[id.uppercased()] = why }

@@ -117,6 +117,9 @@ static partial class P {
                             } catch (Exception error) when (error is not IOException io || !DiskFull(io)) { guestIsa = "unknown"; }
                         }
                         if (content.Type == ContentType.Program && kind == "base") {
+                            // 修订版卡带的稀疏本体程序（SparseInfo.Generation != 0）裁掉了被板载更新替换的 ExeFS，单独打开会读出全 0 触发 2002-4644；
+                            //   跳过单独读本体 ExeFS（保留 guestIsa="unknown"），由同容器或另行导入的更新包提供程序位数（library.py / source_pick.py 均优先取更新）
+                            if (IsSparseSection(nca, NcaSectionType.Code)) continue;
                             Stage = $"导入检查：本体程序（内容 {id[..8]}）"; var code = nca.OpenFileSystem(NcaSectionType.Code, LevelOf(id));
                             byte[] npdm = InspectRead(code, "/main.npdm", 1 << 20);
                             guestIsa = NpdmIsa(npdm);

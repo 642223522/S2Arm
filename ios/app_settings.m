@@ -60,10 +60,10 @@ S2ASettingsRuntime *s2a_settings_runtime(void) { return g_runtime; }
 @end
 
 static NSArray *toggleKeys(void) {
-    return @[@"S2ANS2ProAdapterEnabled", @"S2APhoneGyro", @"S2APhoneHaptics", @"S2ADiagExportOnOpen", @"S2ADevHUD", @"MetalHUDForceEnabled", @"S2AWidescreen", @"S2AFps60", @"S2A.touchHud", @"S2ADockedMode", @"S2ADiagRunNext", @"S2APerfHUD"];
+    return @[@"S2ANS2ProAdapterEnabled", @"S2APhoneGyro", @"S2APhoneHaptics", @"S2ADiagExportOnOpen", @"S2ADevHUD", @"MetalHUDForceEnabled", @"S2AWidescreen", @"S2AFps60", @"S2A.touchHud", @"S2ADockedMode", @"S2ADiagRunNext", @"S2APerfHUD", @"S2ASnapshot"];
 }
 static NSArray *toggleTitles(void) {
-    return @[S2AL(@"vpad.menu.ns2pro"), S2AL(@"vpad.menu.gyro"), S2AL(@"settings.toggle.phoneHaptics"), S2AL(@"settings.toggle.diagOnOpen"), S2AL(@"settings.toggle.devHud"), S2AL(@"settings.toggle.metalHud"), S2AL(@"settings.toggle.fullscreen"), S2AL(@"cpatch.group.fps"), S2AL(@"settings.toggle.touchHud"), S2AL(@"settings.toggle.docked"), S2AL(@"settings.toggle.diagRun"), S2AL(@"vpad.menu.hud")];
+    return @[S2AL(@"vpad.menu.ns2pro"), S2AL(@"vpad.menu.gyro"), S2AL(@"settings.toggle.phoneHaptics"), S2AL(@"settings.toggle.diagOnOpen"), S2AL(@"settings.toggle.devHud"), S2AL(@"settings.toggle.metalHud"), S2AL(@"settings.toggle.fullscreen"), S2AL(@"cpatch.group.fps"), S2AL(@"settings.toggle.touchHud"), S2AL(@"settings.toggle.docked"), S2AL(@"settings.toggle.diagRun"), S2AL(@"vpad.menu.hud"), S2AL(@"settings.toggle.snapshot")];
 }
 static UILabel *textLabel(UIFontTextStyle style) {
     UILabel *label = [UILabel new]; label.font = [UIFont preferredFontForTextStyle:style];
@@ -325,14 +325,14 @@ static UILabel *textLabel(UIFontTextStyle style) {
     NSString *key = toggleKeys()[index]; UITableViewCell *cell = [self baseCell:toggleTitles()[index]];
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
     UISwitch *control = [UISwitch new]; id saved = [s2a_ios_settings_defaults() objectForKey:key];
-    control.on = [key isEqualToString:@"S2AFps60"] ? s2a_ios_fps60_on() : saved ? [saved boolValue] : (index == 1 || index == 2 || index == 6);   // 60 帧显示实际生效的（没选过的缺省按清单，不一律显示开）
+    control.on = [key isEqualToString:@"S2AFps60"] ? s2a_ios_fps60_on() : saved ? [saved boolValue] : (index == 1 || index == 2 || index == 6 || [key isEqualToString:@"S2ASnapshot"]);   // 即时快照缺省开（宿主苹果端缺省开，runtime/src/snapsw.c）   // 60 帧显示实际生效的（没选过的缺省按清单，不一律显示开）
     control.accessibilityLabel = toggleTitles()[index]; control.accessibilityIdentifier = [@"settings." stringByAppendingString:key];
     // 主机模式（#352，维护者 11-09：手机缺省掌机，玩家可自己开）：标题下一行写明代价——更耗电换画质，手机上不建议开
     // 诊断局（#438）同样在标题下写一行：怎么用、只管下一局、会变慢
-    if ([key isEqualToString:@"S2ADockedMode"] || [key isEqualToString:@"S2ADiagRunNext"]) {
+    if ([key isEqualToString:@"S2ADockedMode"] || [key isEqualToString:@"S2ADiagRunNext"] || [key isEqualToString:@"S2ASnapshot"]) {
         UITableViewCell *sub = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
         sub.textLabel.text = cell.textLabel.text; sub.textLabel.font = cell.textLabel.font; sub.textLabel.adjustsFontForContentSizeCategory = YES; sub.textLabel.numberOfLines = 0;
-        sub.detailTextLabel.text = [key isEqualToString:@"S2ADiagRunNext"] ? S2AL(@"settings.diagRun.note") : S2AL(@"settings.docked.note"); sub.detailTextLabel.numberOfLines = 0; sub.detailTextLabel.textColor = UIColor.secondaryLabelColor;
+        sub.detailTextLabel.text = [key isEqualToString:@"S2ADiagRunNext"] ? S2AL(@"settings.diagRun.note") : [key isEqualToString:@"S2ASnapshot"] ? S2AL(@"settings.snapshot.note") : S2AL(@"settings.docked.note"); sub.detailTextLabel.numberOfLines = 0; sub.detailTextLabel.textColor = UIColor.secondaryLabelColor;
         sub.detailTextLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]; sub.detailTextLabel.adjustsFontForContentSizeCategory = YES;
         sub.selectionStyle = UITableViewCellSelectionStyleNone; cell = sub;
     }
@@ -410,7 +410,7 @@ static UILabel *textLabel(UIFontTextStyle style) {
     cell.accessoryView = control; return cell;
 }
 - (NSInteger)rowsForGroup:(NSInteger)group {
-    if (group == 6) return s2a_ios_play_resizable() ? 1 : 2;   // 自由窗口（Duo 内屏 / iPad）方向交给系统，「方向」那行不列（#1364）
+    if (group == 6) return (s2a_ios_play_resizable() ? 1 : 2) + 1;   // 末行：即时快照（全部游戏共用，0.6.0）   // 自由窗口（Duo 内屏 / iPad）方向交给系统，「方向」那行不列（#1364）
     if (group == 7) return 2;   // 界面语言、游戏语言
     if (group == 8) return 1 + (_patchGroups.count > 0);   // S 级优化：社区补丁（这款有才列）+ 金手指
     if (group == 2) return 5;   // 开发者页：打开时导出 / 诊断局 / 触屏诊断 / S2Arm 浮层 / Metal 浮层
@@ -446,6 +446,7 @@ static UILabel *textLabel(UIFontTextStyle style) {
         cell.accessibilityIdentifier = @"settings.devEntry"; return cell;
     }
     if (group == 6) {
+        if (row == [self rowsForGroup:6] - 1) return [self toggleCell:(NSInteger)[toggleKeys() indexOfObject:@"S2ASnapshot"]];   // 即时快照
         BOOL split=row==0;
         NSString *key=split?S2APlaySplitKey:S2APlayOrientationKey;
         NSArray *values=split?@[@"auto",@"on",@"off"]:@[@"auto",@"landscape",@"portrait"];
@@ -528,10 +529,11 @@ static UILabel *textLabel(UIFontTextStyle style) {
         NSArray *values = option[@"values"];
         NSInteger selected = [values indexOfObject:s2a_ios_graphics_snapshot(s2a_ios_settings_defaults())[option[@"key"]]];
         // 画质提升（11-15 维护者：标准 / 2D 游戏专用 / 锐利放大）：选了锐利放大（MetalFX）才在标题下写一行代价，另两档不写；
-        //   这款没走直连（锐利放大用不了）：锐利放大置灰，标题下写为什么
+        //   这款没走直连（锐利放大用不了）：锐利放大置灰，标题下写为什么。FSR（AMD FSR 1）同样只直连上屏有：一并置灰、补一句；存过 Fsr 又用不了时
+        //   同已存 MetalFX 的做法，照显示（通用路径按双线性 = 标准，services/S2A.Services/GraphicsSettings.cs）
         BOOL blocked = s2a_ios_metalfx_blocked(nil);
-        NSString *note = blocked ? S2AL(@"gfx.filter.metalfx.noDirect") : [values[MAX(selected, 0)] isEqual:@"MetalFX"] ? S2AL(@"gfx.filter.metalfx.note") : nil;
-        return [self dropdown:option[@"title"] note:note labels:option[@"labels"] selected:selected enabled:^BOOL(NSInteger index) { return !(blocked && [values[index] isEqual:@"MetalFX"]); } choose:^(NSInteger index) {
+        NSString *note = blocked ? [NSString stringWithFormat:@"%@ %@", S2AL(@"gfx.filter.metalfx.noDirect"), S2AL(@"gfx.filter.fsr.noDirect")] : [values[MAX(selected, 0)] isEqual:@"MetalFX"] ? S2AL(@"gfx.filter.metalfx.note") : nil;
+        return [self dropdown:option[@"title"] note:note labels:option[@"labels"] selected:selected enabled:^BOOL(NSInteger index) { return !(blocked && ([values[index] isEqual:@"MetalFX"] || [values[index] isEqual:@"Fsr"])); } choose:^(NSInteger index) {
             [s2a_ios_settings_defaults() setObject:values[index] forKey:option[@"key"]]; [weakSelf refresh];
         } identifier:@"settings.filter"];
     }

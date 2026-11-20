@@ -363,7 +363,7 @@ static id mtk_warm(const pso_skey *sk, NSString *mkey, NSString *fkey, NSString 
     NvShader *ms = warm_shader(mkey, sk->vs_stage), *fs = fkey.length ? warm_shader(fkey, sk->fs_stage) : nil, *ts = tkey.length ? warm_shader(tkey, 3) : nil;
     if (!ms || ms->mesh_kind != 2 || (fkey.length && !fs) || (tkey.length && !ts)) return nil;
     id<MTLFunction> pf = nil;
-    if (pad && !(pf = vp_fn(ms, pad))) return nil;   // the padded variant is made at its first use on this device (vp_ask); not yet: the draw builds it then
+    if (pad && !(pf = vp_warm(ms, pad))) return nil;   // the padded variant: made now from this device's translation on disk (vp_warm); none there yet: the draw makes it (vp_ask)
     mtk_key mk; mtk_warm_key(sk, ts, ms, fs, pad, &mk);
     if (mk.k.fc && fs && !se_warm(fs, mk.k.fc)) return nil;   // a sampler-emulation variant this device has not made yet (as R rows)
     NSError *e = nil; uint64_t t0 = bp_now();
@@ -630,7 +630,7 @@ static int geo_stage_ranges(NvShader *gs, int st, geo_rg *rd, int *nrd, geo_rg *
                 (w ? wr : rd)[(w ? (*nwr)++ : (*nrd)++)] = (geo_rg){u->addr, u->addr + (u->size ? u->size : 1)};
                 break; }
             case NVN_RB_IMG: case NVN_RB_IMGA: if (b->rw) k &= ~GEO_WK; break;   // 图像写：所写贴图的内存这里不列举（读的贴图不在缓冲区间里，不影响读位）
-            case NVN_RB_IMGU: case NVN_RB_SBUFU: k &= ~(b->rw ? GEO_WK | GEO_RK : GEO_RK); break;   // 地址在统一缓冲 / 贴图句柄里：不列举
+            case NVN_RB_IMGU: case NVN_RB_SBUFU: case NVN_RB_SBUFQ: k &= ~(b->rw ? GEO_WK | GEO_RK : GEO_RK); break;   // 地址在统一缓冲 / 贴图句柄 / 推常量里：不列举
             case NVN_RB_TBUF: case NVN_RB_TBUFU: k &= ~GEO_RK; break;   // 贴图缓冲只读
             case NVN_RB_GMEM:   // 原始池表（地址从内存读来）：可达任一列表里的池，读区间列举不全；写区间在预测生效时 = 学到的池（gml_take 记写的同一份），否则也不全（审计 P1-119 / 120）
                 k &= ~GEO_RK;
@@ -882,8 +882,8 @@ static void geo_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0) {
     if (wait) { mdi_wait(); if (g_mdi_ev.signaledValue < g_mdi_v) return; memset(g_vconv, 0, sizeof g_vconv); }
     if (ind) {
         uint32_t a[5] = {0}; size_t n = dw0 ? 16 : 20;
-        if (!nvn_host_readable(ind, n)) { GEO_RED("【红】 geometry indirect arguments are not readable"); return; }
-        memcpy(a, (void *)(uintptr_t)ind, n);
+        const uint8_t *ha = nvn_host_ptr(ind, n); if (!ha) { GEO_RED("【红】 geometry indirect arguments are not readable"); return; }
+        memcpy(a, ha, n);
         if (!a[0] || !a[1]) return;
         if (a[0] > INT32_MAX || a[1] > INT32_MAX) { GEO_RED("【红】 geometry indirect draw exceeds the host count range"); return; }
         if (dw0) { dw.count = a[0]; dw.instances = a[1]; dw.first = a[2]; dw.base_instance = a[3]; dw.ind = dw.mdi_cnt = 0; }
@@ -921,13 +921,14 @@ static void geo_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0) {
     int restart = di0 && S.restart.on;
     int isz = di0 ? 1 << di.itype : 0;
     uint32_t restart_index = S.restart.index & (isz == 1 ? UINT8_MAX : isz == 2 ? UINT16_MAX : UINT32_MAX);
-    if (di0 && (di.itype < 0 || di.itype > 2 || !nvn_host_readable(di.ibuf, (uint64_t)count * isz))) {
+    const uint8_t *hib = NULL;   // the index bytes on the host (nvn_host_ptr: a virtual pool's address is no host memory)
+    if (di0 && (di.itype < 0 || di.itype > 2 || !(hib = nvn_host_ptr(di.ibuf, (uint64_t)count * isz)))) {
         GEO_RED("【红】 geometry index buffer is not readable"); return;
     }
     // 没有图元重启时（11-16 能耗线：040074A01BF12000 帧回放，一帧 121 笔几何、每笔约 1k 个下标，这段原占 geo_draw 约三成指令）：按下标宽度各走一个紧循环，
     //   只记 order 与上下界（编译器向量化），去重直接读 order（装配之后它不再用），不再逐个抄进 unique；有重启时照旧逐个判
     if (!restart) {
-        const uint8_t *q = di0 ? (const uint8_t *)(uintptr_t)di.ibuf : NULL; uint32_t l = UINT32_MAX, h = 0;
+        const uint8_t *q = di0 ? hib : NULL; uint32_t l = UINT32_MAX, h = 0;
         if (!di0) { for (int i = 0; i < count; i++) order[i] = (uint32_t)i; l = 0; h = (uint32_t)count - 1; }
         else if (isz == 2) for (int i = 0; i < count; i++) { uint16_t x; memcpy(&x, q + 2 * (size_t)i, 2); order[i] = x; l = MIN(l, (uint32_t)x); h = MAX(h, (uint32_t)x); }
         else if (isz == 4) for (int i = 0; i < count; i++) { uint32_t x; memcpy(&x, q + 4 * (size_t)i, 4); order[i] = x; l = MIN(l, x); h = MAX(h, x); }
@@ -936,7 +937,7 @@ static void geo_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0) {
     } else for (int i = 0; i < count; i++) {
         uint32_t v = (uint32_t)i;
         if (di0) {   // typed loads, not a variable-length memcpy per index (a library call each; unaligned-safe through memcpy of a fixed size)
-            const uint8_t *q = (const uint8_t *)(uintptr_t)di.ibuf + (size_t)i * isz;
+            const uint8_t *q = hib + (size_t)i * isz;
             if (isz == 2) { uint16_t h; memcpy(&h, q, 2); v = h; } else if (isz == 4) memcpy(&v, q, 4); else v = *q;
         }
         order[i] = v;
@@ -1074,8 +1075,9 @@ static void vcap_draw(NvProg *pr, const p_draw *dw, const p_draw_idx *di, uint64
     if (dw) { first = dw->first; span = dw->count > 0 ? (uint64_t)dw->count : 0; }
     else {   // the index range the draw uses, read on the CPU (as geo_draw)
         int isz = 1 << di->itype; uint32_t lo = UINT32_MAX, hi = 0;
-        if (di->itype < 0 || di->itype > 2 || di->count <= 0 || !nvn_host_readable(di->ibuf, (uint64_t)di->count * isz)) { MLOG("【红】 DM_NVN_VCAP draw %ld: index buffer not readable", n); return; }
-        for (int i = 0; i < di->count; i++) { uint32_t v = 0; memcpy(&v, (const uint8_t *)(uintptr_t)di->ibuf + (size_t)i * isz, isz); if (S.restart.on && v == (S.restart.index & (isz == 1 ? UINT8_MAX : isz == 2 ? UINT16_MAX : UINT32_MAX))) continue; lo = MIN(lo, v); hi = MAX(hi, v); }
+        const uint8_t *hib = NULL;
+        if (di->itype < 0 || di->itype > 2 || di->count <= 0 || !(hib = nvn_host_ptr(di->ibuf, (uint64_t)di->count * isz))) { MLOG("【红】 DM_NVN_VCAP draw %ld: index buffer not readable", n); return; }
+        for (int i = 0; i < di->count; i++) { uint32_t v = 0; memcpy(&v, hib + (size_t)i * isz, isz); if (S.restart.on && v == (S.restart.index & (isz == 1 ? UINT8_MAX : isz == 2 ? UINT16_MAX : UINT32_MAX))) continue; lo = MIN(lo, v); hi = MAX(hi, v); }
         if (lo > hi) return;
         first = (int64_t)lo + di->base_vertex; span = (uint64_t)hi - lo + 1;
     }
@@ -1129,11 +1131,12 @@ static int sx_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0) {
     int64_t first = dw.first; uint64_t span = (uint64_t)count; uint32_t *uix = NULL; size_t nu = 0;
     if (di0) {   // the vertices the indices name, each once (sorted, as geo_draw's capture), drawn as 32-bit indices: NVN's 8-bit indices have no Metal type
         int isz = di.itype >= 0 && di.itype <= 2 ? 1 << di.itype : 0;
-        if (!isz || !nvn_host_readable(di.ibuf, (uint64_t)count * isz)) { if (!said++) GEO_RED("【红】 rasterizer discard: index buffer of vertex shader %s not readable: not run", vs->key); else nvn_be_bad_draw_feat(); return 1; }
+        const uint8_t *hib = isz ? nvn_host_ptr(di.ibuf, (uint64_t)count * isz) : NULL;
+        if (!hib) { if (!said++) GEO_RED("【红】 rasterizer discard: index buffer of vertex shader %s not readable: not run", vs->key); else nvn_be_bad_draw_feat(); return 1; }
         mdi_wait(); if (g_mdi_ev.signaledValue < g_mdi_v) return 1;
         uint32_t restart_index = S.restart.index & (isz == 1 ? UINT8_MAX : isz == 2 ? UINT16_MAX : UINT32_MAX), lo = UINT32_MAX, hi = 0;
         if (!(uix = malloc((size_t)count * 4))) { GEO_RED("【红】 rasterizer discard: index allocation failed"); return 1; }
-        for (int i = 0; i < count; i++) { uint32_t v = 0; memcpy(&v, (const uint8_t *)(uintptr_t)di.ibuf + (size_t)i * isz, isz); if (S.restart.on && v == restart_index) continue; lo = MIN(lo, v); hi = MAX(hi, v); uix[nu++] = v; }
+        for (int i = 0; i < count; i++) { uint32_t v = 0; memcpy(&v, hib + (size_t)i * isz, isz); if (S.restart.on && v == restart_index) continue; lo = MIN(lo, v); hi = MAX(hi, v); uix[nu++] = v; }
         if (lo > hi) { free(uix); return 1; }
         static uint64_t *uq_bm; static size_t uq_words; nu = nvn_geo_unique_sorted(uix, nu, lo, hi, uix, &uq_bm, &uq_words);   // submit thread only
         first = (int64_t)lo + di.base_vertex; span = (uint64_t)hi - lo + 1;

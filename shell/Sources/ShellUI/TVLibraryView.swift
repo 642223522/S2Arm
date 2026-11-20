@@ -32,6 +32,7 @@ public struct TVLibraryView: View {
     /// 请求把系统焦点交给某个焦点 id（`ShellFocusTarget` 在 tvOS 上接）
     @State private var request = FocusAppearance()
     @FocusState private var focusedTile: String?
+    @State private var lastBack: Date?   // 上次关层的时刻（back() 去重）
     @FocusState private var focusedTop: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -79,12 +80,15 @@ public struct TVLibraryView: View {
         .onReceive(NotificationCenter.default.publisher(for: .shellOpenSettings)) { _ in openShellSettings() }
     }
 
-    /// 宿主递来的手柄事件：只接 X（游戏设置）与 Y（手柄），方向、确定、返回系统焦点已经处理过
+    /// 宿主递来的手柄事件：接 X（游戏设置）、Y（手柄）与 B（关最上面那层）；方向、确定系统焦点已经处理过。
+    ///   B：宿主在听 GameController，手柄 B 不一定再变成系统的「返回」（#1455 实测库界面按 B 没反应），这里接；什么都没开时不接（不退出 App）。
+    ///   有的手柄 B 系统也会当「返回」送一次 onExitCommand：back() 记下时刻，0.3 秒内的第二次不再关一层
     private func hostInput(_ log: ShellInputLog) {
         for event in log.since(inputSeen) where !event.released {
             switch event.action {
             case .settings: if topLayer == nil, let selected { openSettings(selected.id) }
             case .controllers: if topLayer == nil { openControllers() }
+            case .back: if topLayer != nil { back() }
             default: break
             }
         }
@@ -332,7 +336,7 @@ public struct TVLibraryView: View {
         case .playable: actions.onPlay(detail.id)
         case .needsGameData: actions.onPickGameData(detail.id)
         case .needsAppUpdate: actions.onAppUpdate?()
-        case .needsGameUpdate: break   // needsHelp：上面已展开说明
+        case .needsGameUpdate, .needsLegacyUpdate: break   // needsHelp：上面已展开说明
         case .broken: actions.onShowLog?(detail.id)
         case .installing(let stage): if stage.phase == .failed { actions.onPlay(detail.id) }   // 重试解开；传着 / 解着按了不动
         }
@@ -422,6 +426,9 @@ public struct TVLibraryView: View {
     }
     /// 「返回」：关最上面那层，顺序同 iOS 的 back()
     private func back() {
+        let now = Date()
+        if let last = lastBack, now.timeIntervalSince(last) < 0.3 { return }   // 同一下 B：宿主事件与系统「返回」各来一次，只关一层
+        lastBack = now
         if padMapping?.row != nil { closePadRow() }
         else if padMapping != nil { closePadMapping() }
         else if choice != nil { closeChoice() }

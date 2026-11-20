@@ -18,7 +18,7 @@ import zipfile
 
 from jobcase import JobCase, JOBS, ROOT, ios_fixture
 from core import Context, Failure, Cancelled, atomic
-from errors import RECOVERY
+from errors import RECOVERY, WINDOWS_RECOVERY
 import build
 import ipa
 import install
@@ -317,37 +317,15 @@ class MacFailures(JobCase):
 
 class InstallFailures(JobCase):
     def test_install_rc_four_causes_and_unknown(self):
-        import diag
-        gid = "0100000000000000"
-        ios_fixture(self.c, gid)   # 出好的 iPhone 版（容器件 + 资源包）：有资源包才装（审计 18:00 P1-58：没有资源包先报 pack_missing、不走到装机）
-        archive = self.root / "test.ipa"
-        with zipfile.ZipFile(archive, "w") as z:
-            z.writestr("Payload/Test.app/Info.plist", plistlib.dumps({"CFBundleIdentifier": "test"}))
-            z.writestr("Payload/Test.app/S2Arm", b"bin")
-        self.c.r.update(gameId=gid)
-        import ipa as packer
-        def fake_assemble(c, g, others=(), failed=(), root=None, dest=None, agreed=()):
-            return archive, [gid], "SID1"
-        def unpack(args, **kw):
-            with zipfile.ZipFile(archive) as z: z.extractall(args[-1])
-            import subprocess
-            return subprocess.CompletedProcess(args, 0, "", "")
+        # 装 App 时设备 / devicectl 拒收的原文 → 错误码（install.classify 的 SIGN_ERRORS 表，装机失败按 device_install_failed 兜底）
         cases = (("The maximum number of apps for free development profiles has been reached", "free_app_limit"),   # 装机时设备拒收 = 同时 3 个自签 App
                  ("Developer Mode is disabled on this device", "developer_mode_required"),
                  ("The pairing record is invalid. Please pair the device again", "device_pairing_required"),
                  ("The provisioning profile has expired", "provisioning_expired"),
                  ("synthetic unknown installation error", "device_install_failed"))
         for raw, code in cases:
-            with self.subTest(code=code), patch.object(install, "xcode_teams", return_value=[dict(id="TESTTEAM", name="Test", free=True)]), \
-                 patch.object(install, "phone", return_value=dict(id="fixture", name="Synthetic")), \
-                 patch.object(install, "udid_of", return_value=""), patch.object(install, "pull_seen"), \
-                 patch.object(install, "backup_saves"), patch.object(packer, "assemble", side_effect=fake_assemble), \
-                 patch.object(self.c, "run"), \
-                 patch.object(install.subprocess, "run", side_effect=unpack), \
-                 patch.object(diag, "devicectl", return_value=(9, {}, raw)):
-                with self.assertRaises(Failure) as got: install.install(self.c)
-                self.assertEqual(got.exception.code, code)
-                self.assertIn(raw, str(got.exception))
+            with self.subTest(code=code):
+                self.assertEqual(install.classify(raw, default="device_install_failed"), code)
 
     def test_resource_transfer_preserves_control_failures(self):
         pack = self.root / "pack"; pack.mkdir(); (pack / "manifest.json").write_text('{"version": 2, "index_sha256": "x"}')
@@ -470,7 +448,10 @@ class FreeAccountLimits(unittest.TestCase):
             with self.subTest(code=code):
                 self.assertTrue(loc.get(RECOVERY[code]) and spec[code]["title"]["en"] and spec[code]["detail"]["en"] and code in guide)
                 self.assertEqual(ctl.AI_NEXT[code][0], "human")
-        self.assertIn("添加账号", RECOVERY["apple_not_signed_in"]); self.assertNotIn("过期", RECOVERY["apple_not_signed_in"])
+        self.assertIn("添加账号", WINDOWS_RECOVERY["apple_not_signed_in"]); self.assertNotIn("过期", WINDOWS_RECOVERY["apple_not_signed_in"])
+        # Mac 通用壳登录框（apple_login）：Mac 不再叫玩家去开 Impactor（期望手写）
+        self.assertNotIn("Impactor", RECOVERY["apple_not_signed_in"]); self.assertIn("S2Arm 不保存", RECOVERY["apple_not_signed_in"])
+        self.assertTrue(loc.get(WINDOWS_RECOVERY["apple_not_signed_in"]))
         self.assertIn("DNS", RECOVERY["apple_server_unreachable"]); self.assertIn("不是 Apple ID", RECOVERY["apple_server_unreachable"])
         for other, code in (("Developer API error 9401: An App ID with Identifier 'x' is not available.", "app_id_taken"),
                             ("-21669 verification code", "two_factor_wrong"), ("-20101 entered incorrectly", "apple_id_wrong")):
@@ -650,6 +631,25 @@ class LogCauses(JobCase):
         self.assertEqual(d["code"], "package_failed")
         self.assertIn("候选 disk_full 未采信", d["detail"])
         self.assertIn("40.0 GB", d["detail"])
+
+    def test_final_disk_full_error_is_believed_despite_free_space(self):
+        # 诊断 #9ac7f7：让这一步退出的就是盘满那个异常（回溯末行 WinError 112），失败后临时文件已删、事后量还剩 17 GB → 照报 disk_full，
+        #   说明里写「这一步写满了盘」；旧字样后面还有别的输出的（上一条）仍按 H9 核实
+        with um.patch("errors._free_bytes", return_value=17 << 30):
+            error, d = self.mac_refresh(["Traceback (most recent call last):", '  File "deliver_pack.py", line 26, in clone', "    shutil.copy2(src, dst)",
+                                         "OSError: [WinError 112] 磁盘空间不足。"])
+        self.assertEqual(d["code"], "disk_full")
+        self.assertIn("这一步写满了盘", d["detail"])
+
+    def test_disk_full_measures_the_disk_the_failed_write_names(self):
+        # #df9fd6：Windows 交付资源包 shutil.copy2 报 WinError 112，库盘还剩 226.7 GB、写满的是目标盘；winlong 给报错补上源 / 目标之后，
+        #   命中行点名两条路径。期望手写：按点名路径里剩得最少的那块盘核（C: 1.0 GB < 5 GB）→ 采信 disk_full，依据点名 C:
+        free = lambda p: (1 << 30) if str(p).startswith("C:") else int(226.7 * (1 << 30))
+        with um.patch("errors._free_bytes", side_effect=free):
+            error, d = self.mac_refresh(["OSError: [WinError 112] 磁盘空间不足。: 'E:\\lib\\games\\t1\\pack\\a.bin' -> 'C:\\out\\t1资源包\\a.bin'",
+                                         "【红】fixture 刷新停在 sysdata 阶段（rc=1），现行 = fixture@ex-1"])
+        self.assertEqual(error.code, "disk_full")
+        self.assertIn("C:", d["detail"]); self.assertIn("1.0 GB", d["detail"])
 
     def test_command_not_found_for_present_tool_is_not_believed(self):
         # 剃刀 H9 反例：「x: command not found」但 x 现在找得到（可选探测、PATH 一时没带上）→ 不叫玩家去装工具，按阶段归

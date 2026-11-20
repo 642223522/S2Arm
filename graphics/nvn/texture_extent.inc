@@ -51,6 +51,6 @@ static tex_extent tex_extent_grow(const tex_t *t, id<MTLTexture> storage, NSUInt
     e.requested_known = 1;
     e.canvas = (tex_size){MAX(e.canvas.width, e.requested.width), MAX(e.canvas.height, e.requested.height)};
     e.physical = e.canvas;
-    if (storage && rs_state(storage) == RS_SCALED) e.physical = (tex_size){rs_up(e.canvas.width, g_rs), rs_up(e.canvas.height, g_rs)};   // S2Arm internal resolution: a scaled storage grows scaled
+    if (storage && rs_state(storage) == RS_SCALED) e.physical = (tex_size){rs_up(e.canvas.width, rs_of(storage)), rs_up(e.canvas.height, rs_of(storage))};   // S2Arm internal resolution: a scaled storage grows scaled
     return e;
 }

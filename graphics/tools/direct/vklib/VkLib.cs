@@ -2,11 +2,12 @@
 //   着色器包目录（每个 <阶段>*.bin 是一串以 "BTCDBTCD" 起头的记录；记录 +0x28 = 控制段字节数、+0x2c = 代码字节数，代码从 +0x38 起、控制段紧随其后），
 //   配置档目录（shader_map.tsv 每行：包文件名 \t 记录序号 \t … \t 键 \t …；shader_facts.tsv / shader_pairs.tsv 等答案表，同 DshTables）。
 // 逐键（按键名排序）走 DshVk.CompileWithSpv（DshCompiler.PackOut：产物留内存），只把 <key>_b.json 与 <key>_b.spv 写进输出目录（临时名再改名），
-//   另写 vk_build.tsv（键 \t 阶段 \t 状态 \t 原因）。gs / hs / ds 不出 .spv（DshVk 报红），记 skipped；其余报红记 failed，不中止整批。
+//   另写 vk_build.tsv（键 \t 阶段 \t 状态 \t 原因）。几何着色器走 DshVk.CompileGeometry（原生几何阶段，每种输入图元一份 <key>_vg<t>.json + .spv；
+//   直通型几何头不出，记 skipped）；hs / ds 不出 .spv，记 skipped；其余报红记 failed，不中止整批。
 // Vulkan 侧指纹（直连线 11-02 答 a、#1419 审 1）：VkLib.Fp = 源码部分 VkFp.V（VkFp.targets：DshVk.cs、本目录、libdsx 导出接口、SPIRV-Cross 链锁与源码）
 //   与翻译器指纹 DshCompiler.Xfp（S2A.Dsh 的 DshXfpInput：翻译器本体）合成的 16 位十六进制，翻译器一变它就变；汇总行带上，dsh_vklib --fp 只打印它。
 // 离线 Vulkan 库容器（#783 直连线答 a、合入线答 ①）：给了 --lib <目录> --chain <链号> 就把逐键产物打成 LibPack 容器（lib.idx + lib.NNN.pak，_b.json 种类 1 / _b.spv 种类 52，
-//   头部 36–43 记 VkLib.Fp），写进 <目录>（出包时是 shaders/direct/b-<链号>-vk/）；逐键产物与 vk_build.tsv 仍在 --out。
+//   几何的 _vg<t>.json 种类 112+t / _vg<t>.spv 种类 120+t，头部 36–43 记 VkLib.Fp），写进 <目录>（出包时是 shaders/direct/b-<链号>-vk/）；逐键产物与 vk_build.tsv 仍在 --out。
 // 用法：dsh_vklib --pkg <包目录> --profile <配置档目录> --out <输出目录> --spirv-cross <命令行> --dsx <libdsx> [--work <工作目录>] [--lib <库目录> --chain <链号>]；dsh_vklib --fp
 using S2A.Dsh;
 using System;
@@ -49,12 +50,18 @@ namespace S2A.DshVkLib
                     if (!packs.TryGetValue(pk, out var recs)) packs[pk] = recs = File.Exists(Path.Combine(pkg, pk)) ? PkgRead.Records(File.ReadAllBytes(Path.Combine(pkg, pk))) : new List<byte[]>();
                     var cc = idx >= 0 && idx < recs.Count && PkgRead.Fits(recs[idx]) ? PkgRead.Split(recs[idx]) : ((byte[] Code, byte[] Ctl)?)null;   // 越界记 failed（dsh_batch 那边不核，坏记录整份出库停住）
                     if (cc == null) { row.Status = "failed"; row.Why = $"record {pk}#{idx} missing or truncated"; continue; }
-                    if (stage is "gs" or "hs" or "ds") { row.Status = "skipped"; row.Why = stage + " 不出 .spv（DshVk）"; continue; }
+                    if (stage is "hs" or "ds") { row.Status = "skipped"; row.Why = stage + " 不出 .spv（DshVk）"; continue; }
+                    if (stage == "gs" && DshVk.GeometrySkip(cc.Value.Code, cc.Value.Ctl) is string gskip) { row.Status = "skipped"; row.Why = "gs: " + gskip; continue; }
                     try
                     {
-                        DshVk.CompileWithSpv(key, stage, cc.Value.Code, cc.Value.Ctl, outDir, xc, profile, work);
-                        Write(outDir, key + "_b.json", Encoding.UTF8.GetBytes(DshCompiler.PackFiles[key + "_b.json"]));
-                        Write(outDir, key + "_b.spv", DshVk.PackSpv[key + "_b.spv"]);
+                        if (stage == "gs")
+                            foreach (var (name, bytes) in DshVk.CompileGeometry(key, cc.Value.Code, cc.Value.Ctl, xc, profile, work)) Write(outDir, name, bytes);
+                        else
+                        {
+                            DshVk.CompileWithSpv(key, stage, cc.Value.Code, cc.Value.Ctl, outDir, xc, profile, work);
+                            Write(outDir, key + "_b.json", Encoding.UTF8.GetBytes(DshCompiler.PackFiles[key + "_b.json"]));
+                            Write(outDir, key + "_b.spv", DshVk.PackSpv[key + "_b.spv"]);
+                        }
                     }
                     catch (DshError e) { row.Status = "failed"; row.Why = (e.Status + ": " + e.Detail).Replace('\t', ' ').Replace('\n', ' '); }
                     // 同 dsh_batch Translate：其它异常（如 libdsx 少导出、DllImport 找不到入口）也只记这一键失败，不中止整批
@@ -66,11 +73,12 @@ namespace S2A.DshVkLib
             return rows;
         }
 
-        /// <summary>把 keysDir 里逐键的 _b.json / _b.spv 打成离线 Vulkan 库写进 libDir（LibPack.PackFiles，头部记完整指纹 Fp）→ (红行, 汇总行)；libDir 里已有 lib.idx 报红</summary>
+        /// <summary>把 keysDir 里逐键的 _b.json / _b.spv（几何：_vg&lt;t&gt;.json / .spv）打成离线 Vulkan 库写进 libDir（LibPack.PackFiles，头部记完整指纹 Fp）→ (红行, 汇总行)；libDir 里已有 lib.idx 报红</summary>
         public static (List<string> Bad, string Line) Pack(string keysDir, string libDir, string chain)
         {
             Directory.CreateDirectory(libDir);
-            var names = Directory.EnumerateFiles(keysDir).Select(Path.GetFileName).Where(n => !n.StartsWith("._", StringComparison.Ordinal) && (n.EndsWith("_b.json", StringComparison.Ordinal) || n.EndsWith("_b.spv", StringComparison.Ordinal))).ToList();
+            var vg = new System.Text.RegularExpressions.Regex(@"_vg\d\.(json|spv)\z", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+            var names = Directory.EnumerateFiles(keysDir).Select(Path.GetFileName).Where(n => !n.StartsWith("._", StringComparison.Ordinal) && (n.EndsWith("_b.json", StringComparison.Ordinal) || n.EndsWith("_b.spv", StringComparison.Ordinal) || vg.IsMatch(n))).ToList();
             return LibPack.PackFiles(names, n => File.ReadAllBytes(Path.Combine(keysDir, n)), libDir, chain, Fp);
         }
 
@@ -103,12 +111,11 @@ namespace S2A.DshVkLib
             string work = a.GetValueOrDefault("--work", Path.Combine(a["--out"], ".work"));
             var rows = VkLib.Build(a["--pkg"], a["--profile"], a["--out"], new CliSpvCross(a["--spirv-cross"], work), work);
             Console.WriteLine(VkLib.Summary(rows));
+            // 个别键翻不了不拒绝整库：失败的键记在 vk_build.tsv（出库脚本按它报 🟡 缺口、keys.tsv 不列它们），运行时对缺的键现编；成功的照常打库发布。
+            // 原先只要有 1 键失败就整库不出，手机上上万支全部退回现编（010028600EBDA000 的 11194 键里 17 键失败就是这样）
             int failed = rows.Count(row => row.Status == "failed");
-            if (failed > 0)
-            {
-                Console.Error.WriteLine($"[RED] Vulkan 翻译失败 {failed} 键；详见 vk_build.tsv");
-                return 1;
-            }
+            if (failed > 0) Console.Error.WriteLine($"[RED] Vulkan 翻译失败 {failed} 键（其余照常出库，这几键运行时现编）；详见 vk_build.tsv");
+            if (failed > 0 && !rows.Any(row => row.Status == "ok")) return 1;   // 一键都没成：没有可发布的库
             if (a.TryGetValue("--lib", out var lib))
             {
                 var (bad, line) = VkLib.Pack(a["--out"], lib, a["--chain"]);

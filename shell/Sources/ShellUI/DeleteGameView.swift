@@ -92,10 +92,10 @@ extension EnvironmentValues {
 }
 /// Goes back to the game's saved moment (instant snapshot). Nil, or no snapshot for the game: no item in the card's menu.
 private struct ShellSnapshotKey: EnvironmentKey {
-    nonisolated(unsafe) static let defaultValue: (available: (String) -> Bool, restore: (String) -> Void)? = nil
+    nonisolated(unsafe) static let defaultValue: (available: (String) -> Bool, restore: (String) -> Void, delete: ((String) -> Void)?)? = nil
 }
 extension EnvironmentValues {
-    var shellSnapshot: (available: (String) -> Bool, restore: (String) -> Void)? {
+    var shellSnapshot: (available: (String) -> Bool, restore: (String) -> Void, delete: ((String) -> Void)?)? {
         get { self[ShellSnapshotKey.self] }
         set { self[ShellSnapshotKey.self] = newValue }
     }
@@ -103,6 +103,8 @@ extension EnvironmentValues {
 public extension Notification.Name {
     /// The host asks the library to open its own settings (the Home Screen quick action Settings).
     static let shellOpenSettings = Notification.Name("S2AShellOpenSettings")
+    /// The library's settings ask to show "What's new" again.
+    static let shellOpenFeatureIntro = Notification.Name("S2AShellOpenFeatureIntro")
 }
 
 /// Long press on a library card: a menu with the game's settings and, where the library allows it, Delete game…

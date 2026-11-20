@@ -184,6 +184,25 @@ final class SettingsProviderTests: XCTestCase {
         XCTAssertEqual(settings.exportTargets, targetsBefore)
         XCTAssertThrowsError(try settings.setExportLocation("/original/storage"))
         XCTAssertNil(settings.exportLocation)
+        XCTAssertThrowsError(try settings.setLaunchFullscreen(true))
+        XCTAssertFalse(settings.launchFullscreen)
+    }
+
+    /// #575「启动游戏时自动全屏」：缺省关、不写文件；打开写 launchFullscreen: true 并重开仍在；关掉后文件里不再带这一项
+    func testLaunchFullscreenDefaultsOffAndPersists() throws {
+        let box = try Sandbox(); defer { box.remove() }
+        let c = client(box, FakeRunner())
+        let file = box.privateRoot.appendingPathComponent("apple-frontend/launch-settings.json")
+        let settings = SettingsProvider(client: c)
+        XCTAssertFalse(settings.launchFullscreen)
+        try settings.setLaunchFullscreen(true)
+        let saved = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        XCTAssertEqual(saved["launchFullscreen"] as? Bool, true)
+        XCTAssertTrue(SettingsProvider(client: c).launchFullscreen)
+        try settings.setLaunchFullscreen(false)
+        let off = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        XCTAssertNil(off["launchFullscreen"])
+        XCTAssertFalse(SettingsProvider(client: c).launchFullscreen)
     }
 }
 

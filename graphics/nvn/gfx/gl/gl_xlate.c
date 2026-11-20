@@ -173,7 +173,8 @@ static int has_word(const char *s, const char *w) {
 static const char *const VEC_TYPES[] = {"float", "vec2", "vec3", "vec4", "int", "ivec2", "ivec3", "ivec4", "uint", "uvec2", "uvec3", "uvec4", "bool", "mat2", "mat3", "mat4"};
 static int vec_type(const char *t) { for (size_t i = 0; i < sizeof VEC_TYPES / sizeof *VEC_TYPES; i++) if (!strcmp(VEC_TYPES[i], t)) return 1; return 0; }
 
-// 默认 uniform 块成员 → u: 字段；结构体成员（不是数组的）按 GL 命名展开成「名字.成员」、偏移加上结构体自己的偏移（GameMaker 内置着色器的 uniform LightEnv u_LightEnv），
+// 默认 uniform 块成员 → u: 字段；结构体成员按 GL 命名展开成「名字.成员」、偏移加上结构体自己的偏移（GameMaker 内置着色器的 uniform LightEnv u_LightEnv），
+//   一维定长的结构体数组逐元素展开成「名字[i].成员」，
 //   展开的成员排在原位、按声明序（gl_shaders.py 同口径）；接不上的类型 / 数组记进 bad
 static void ubo_members(spvc_compiler c, spvc_type_id st_id, const char *prefix, unsigned base, sb *field, sb *bad) {
     spvc_type bt = spvc_compiler_get_type_handle(c, st_id); spvc_type_id st_base = spvc_type_get_base_type_id(bt); char tn[64], name[256];
@@ -183,6 +184,12 @@ static void ubo_members(spvc_compiler c, spvc_type_id st_id, const char *prefix,
         snprintf(name, sizeof name, "%s%s", prefix, spvc_compiler_get_member_name(c, st_base, m));
         spvc_compiler_type_struct_member_offset(c, bt, m, &off);
         if (spvc_type_get_basetype(mh) == SPVC_BASETYPE_STRUCT && !nd) { char sub[260]; snprintf(sub, sizeof sub, "%s.", name); ubo_members(c, mt, sub, base + off, field, bad); continue; }
+        // 一维、定长的结构体数组按 GL 命名逐元素展开成「名字[i].成员」，第 i 个元素的偏移 = 结构体数组偏移 + i × 数组步长（D-FTA8：uniform Light Lights[N]）
+        if (spvc_type_get_basetype(mh) == SPVC_BASETYPE_STRUCT && nd == 1 && d0 && spvc_compiler_has_decoration(c, mt, SpvDecorationArrayStride)) {
+            unsigned as = spvc_compiler_get_decoration(c, mt, SpvDecorationArrayStride);
+            for (unsigned i = 0; i < d0; i++) { char sub[260]; snprintf(sub, sizeof sub, "%s[%u].", name, i); ubo_members(c, mt, sub, base + off + i * as, field, bad); }
+            continue;
+        }
         type_name(c, mt, tn, sizeof tn);
         if (!vec_type(tn) || nd > 1 || (nd && !d0)) { sb_fmt(bad, "%s普通 uniform %s：类型 / 数组尚未接入运行时", bad->n ? "; " : "", name); continue; }
         if (nd && spvc_compiler_has_decoration(c, mt, SpvDecorationArrayStride)) stride = spvc_compiler_get_decoration(c, mt, SpvDecorationArrayStride);

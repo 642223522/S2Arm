@@ -285,11 +285,24 @@ def make_request(request_id=None, profile_hash=PROFILE, closure=CLOSURE, abi=1, 
     }
 
 
+def make_geometry_request():
+    """v2 request (five NVN slots, null = unbound) for a vs+fs+gs program, as the device sends it for native geometry."""
+    request = make_request()
+    vs, fs = request['program']['stages']
+    gs = dict(fs, constantBufferUse=2)
+    gs['stage'] = 'gs'
+    request['schema'] = 's2a-direct-compile-v2'
+    request['program']['stages'] = [vs, fs, gs, None, None]
+    request['requestId'] = '0123456789abcdef' * 3
+    return request
+
+
 def make_result(request, request_id=None, corrupt=None):
     kind = request['program']['kind']
-    order = ['vs', 'fs'] if kind == 'graphics' else ['cs']
-    requested = {stage['stage']: stage for stage in request['program']['stages']}
-    cb_use = {stage['stage']: stage['constantBufferUse'] for stage in request['program']['stages']}
+    requested = {stage['stage']: stage for stage in request['program']['stages'] if stage is not None}
+    cb_use = {name: stage['constantBufferUse'] for name, stage in requested.items()}
+    # the compiler writes graphics stages in pipeline order (vs, gs, fs)
+    order = (['vs', 'gs', 'fs'] if 'gs' in requested else ['vs', 'fs']) if kind == 'graphics' else ['cs']
     stages = []
     for name in order:
         spirv_sha = '0' * 64 if corrupt == 'spirv_sha' else sha256(SPIRV)
@@ -427,6 +440,58 @@ class LibraryTest(unittest.TestCase):
     def read_pack_rows(self, pack):
         return direct_library.read_index(Path(pack) / 'index.tsv')
 
+    # -- 原生几何：v2 请求（五个 NVN 槽）与 vs / gs / fs 结果 -----------------------------
+    def test_geometry_program_request_result_and_build(self):
+        request = make_geometry_request()
+        parsed = direct_library.validate_request(json.dumps(request).encode(), 'gs request')
+        self.assertEqual(parsed['_stages'], ['vs', 'fs', 'gs'])
+        result = make_result(request)
+        self.assertEqual([s['stage'] for s in json.loads(result)['content']['stages']], ['vs', 'gs', 'fs'])
+        direct_library.validate_result(result, 'gs result', request=parsed)
+        # 整条生产链：带几何的捕获对照常建库、复检
+        self.write_capture([(identity('gs'), request, result)])
+        built = self.build()
+        self.assertEqual(built['entries'], 1)
+        direct_library.verify_library(str(self.lib), self.load_descriptor())
+
+    def test_geometry_program_negative_cases(self):
+        good = make_geometry_request()
+        def bad_request(mutate, pattern):
+            request = json.loads(json.dumps(good))
+            mutate(request)
+            with self.assertRaisesRegex(direct_library.LibraryError, pattern):
+                direct_library.validate_request(json.dumps(request).encode(), 'bad')
+        # v1 请求没有几何（编译器只在 v2 收 gs）
+        def v1_with_gs(r):
+            r['schema'] = 's2a-direct-compile-v1'
+            r['program']['stages'] = [s for s in r['program']['stages'] if s is not None]
+        bad_request(v1_with_gs, "not one of vs/fs/cs")
+        # v2 槽位与阶段名对不上（gs 放进 fs 槽）
+        def swapped(r):
+            st = r['program']['stages']
+            st[1], st[2] = st[2], st[1]
+        bad_request(swapped, 'does not match its NVN slot')
+        # v2 不是五个槽 / 不是图形
+        bad_request(lambda r: r['program']['stages'].pop(), 'five NVN slots')
+        bad_request(lambda r: r['program'].__setitem__('kind', 'compute'), 'five NVN slots')
+        # vs + gs 没有 fs
+        bad_request(lambda r: r['program']['stages'].__setitem__(1, None), r"is not \['vs', 'fs'\] or")
+        # 结果：阶段顺序不是 vs, gs, fs；结果缺 gs 而请求有
+        parsed = direct_library.validate_request(json.dumps(good).encode(), 'gs request')
+        result = json.loads(make_result(good))
+        def raw():
+            body = json.dumps(result['content'], separators=(',', ':')).encode()
+            result['contentHash'] = 'sha256-' + sha256(body)
+            return json.dumps(result, separators=(',', ':')).encode()
+        st = result['content']['stages']
+        st[1], st[2] = st[2], st[1]
+        with self.assertRaisesRegex(direct_library.LibraryError, 'content.stages is'):
+            direct_library.validate_result(raw(), 'order')
+        st[1], st[2] = st[2], st[1]
+        result['content']['stages'] = [s for s in st if s['stage'] != 'gs']
+        with self.assertRaisesRegex(direct_library.LibraryError, 'are not the request stages'):
+            direct_library.validate_result(raw(), 'missing gs', request=parsed)
+
     # -- 32 位 constantBufferUse 合同 ------------------------------------------------
     def test_constant_buffer_use_is_full_32_bit(self):
         # 编译器 DirectProgram.Parse 上限已到 0xFFFFFFFF：>=5 号 cbuf（NVN 用户槽 >=2）不再丢信息，
@@ -462,6 +527,102 @@ class LibraryTest(unittest.TestCase):
         result['schema'] = 's2a-direct-program-v1'
         result['content']['contract'] = 's2a-direct-program-content-v1'
         with self.assertRaises(direct_library.LibraryError): direct_library.validate_result(raw(), 'v1 extra source')
+
+    def test_v2_const_sampler_contract(self):
+        # #1594：类型 3 句柄的 constSampler（采样器池下标 0..4095）：与宿主解析同一份合同——v2、单个贴图；贴图字来源二选一：
+        #   c2 分离贴图表（slot 90..345 偶数）或游戏 UBO（平铺 uboSlot 0..15 + uboOffset 4 的倍数，没有 slot）；
+        #   不能同时有 samp_slot / uboHandle / sampler 对象；计算结果不收（宿主计算侧没接）。下标 0 与 4095 都是真下标。
+        #   build 的 program_kind 是程序类型（graphics / compute）；fields 里的 kind 是绑定自己的种类（texture / uniform ...）。
+        def build(program_kind='graphics', drop=(), **fields):
+            request = make_request(kind=program_kind)
+            result = json.loads(make_result(request))
+            result['schema'] = 's2a-direct-program-v2'
+            result['content']['contract'] = 's2a-direct-program-content-v2'
+            binding = {'stage': 'fs' if program_kind == 'graphics' else 'cs', 'kind': 'texture', 'set': 2, 'binding': 0,
+                       'slot': 90, 'constSampler': 257, 'count': 1}
+            binding.update(fields)
+            for key in drop:
+                binding.pop(key, None)
+            result['content']['bindings'] = [binding]
+            def raw():
+                body = json.dumps(result['content'], separators=(',', ':')).encode()
+                result['contentHash'] = 'sha256-' + sha256(body)
+                return json.dumps(result, separators=(',', ':')).encode()
+            return result, raw
+        # 接受：典型值、两端、最大贴图字
+        for sampler in (257, 0, 4095):
+            _, raw = build(constSampler=sampler)
+            direct_library.validate_result(raw(), f'const sampler {sampler}')
+        _, raw = build(slot=344)
+        direct_library.validate_result(raw(), 'last separate texture word')
+        # 拒绝：每一条都是宿主解析会拒的形态，库校验要在入库前同样拒掉
+        bad = {
+            'sampler above 12 bits': dict(constSampler=4096),
+            'negative sampler': dict(constSampler=-1),
+            'fractional sampler': dict(constSampler=1.5),
+            'string sampler': dict(constSampler='7'),
+            'boolean sampler': dict(constSampler=True),
+            'odd texture word': dict(slot=91),
+            'texture word before the table': dict(slot=88),
+            'texture word after the table': dict(slot=346),
+            'no texture word': dict(slot=None),
+            'array': dict(count=2),
+            'with samp_slot': dict(samp_slot=3),
+            'with uboHandle': dict(uboHandle={'slot': 1, 'offset': 16}),
+            'with sampler object': dict(sampler={'source': 'id', 'id': 3}),
+            'c2 slot together with uboSlot': dict(uboSlot=1, uboOffset=16),
+            'not a texture': dict(kind='uniform'),
+        }
+        for name, change in bad.items():
+            result, raw = build(**{k: v for k, v in change.items() if v is not None})
+            if 'slot' in change and change['slot'] is None:
+                del result['content']['bindings'][0]['slot']
+            with self.assertRaises(direct_library.LibraryError, msg=name):
+                direct_library.validate_result(raw(), name)
+        # v1 结果没有这个字段的合同
+        result, raw = build()
+        result['schema'] = 's2a-direct-program-v1'
+        result['content']['contract'] = 's2a-direct-program-content-v1'
+        with self.assertRaises(direct_library.LibraryError, msg='v1'): direct_library.validate_result(raw(), 'v1 const sampler')
+        # 计算结果不收
+        _, raw = build(program_kind='compute')
+        with self.assertRaises(direct_library.LibraryError, msg='compute'): direct_library.validate_result(raw(), 'compute const sampler')
+        # 没有 constSampler 的同槽条目照旧接受（只改了带这个字段的）
+        result, raw = build()
+        del result['content']['bindings'][0]['constSampler']
+        direct_library.validate_result(raw(), 'plain separate texture word')
+        # 片 3：贴图字在游戏 UBO 里（平铺 uboSlot / uboOffset，没有 slot）。接受：典型值、两端
+        for ubo, offset, sampler in ((2, 160, 260), (0, 0, 0), (15, 65532, 4095)):
+            _, raw = build(drop=('slot',), uboSlot=ubo, uboOffset=offset, constSampler=sampler)
+            direct_library.validate_result(raw(), f'UBO const sampler {ubo}/{offset}/{sampler}')
+        # 拒绝：每一条都是宿主解析会拒的形态
+        bad_ubo = {
+            'uboSlot after the last UBO': dict(uboSlot=16),
+            'negative uboSlot': dict(uboSlot=-1),
+            'fractional uboSlot': dict(uboSlot=1.5),
+            'uboOffset not a word offset': dict(uboOffset=6),
+            'uboOffset above 64 KiB': dict(uboOffset=65536),
+            'negative uboOffset': dict(uboOffset=-4),
+            'sampler above 12 bits': dict(constSampler=4096),
+            'array': dict(count=2),
+            'with samp_slot': dict(samp_slot=3),
+            'with uboHandle': dict(uboHandle={'slot': 1, 'offset': 16}),
+            'with sampler object': dict(sampler={'source': 'id', 'id': 3}),
+            'with c2 slot': dict(slot=90),
+            'not a texture': dict(kind='uniform'),
+        }
+        for name, change in bad_ubo.items():
+            _, raw = build(drop=() if 'slot' in change else ('slot',), **{'uboSlot': 2, 'uboOffset': 160, **change})
+            with self.assertRaises(direct_library.LibraryError, msg=f'UBO form: {name}'):
+                direct_library.validate_result(raw(), f'UBO form: {name}')
+        _, raw = build(drop=('slot', 'uboOffset'), uboSlot=2)
+        with self.assertRaises(direct_library.LibraryError, msg='UBO form: no uboOffset'): direct_library.validate_result(raw(), 'UBO form: no uboOffset')
+        _, raw = build(program_kind='compute', drop=('slot',), uboSlot=2, uboOffset=160)
+        with self.assertRaises(direct_library.LibraryError, msg='UBO form: compute'): direct_library.validate_result(raw(), 'UBO form: compute')
+        result, raw = build(drop=('slot',), uboSlot=2, uboOffset=160)
+        result['schema'] = 's2a-direct-program-v1'
+        result['content']['contract'] = 's2a-direct-program-content-v1'
+        with self.assertRaises(direct_library.LibraryError, msg='UBO form: v1'): direct_library.validate_result(raw(), 'UBO form: v1')
 
     # -- build / layout -------------------------------------------------------------
     def test_descriptor_never_omits_a_scanned_vertex_write(self):

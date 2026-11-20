@@ -127,10 +127,10 @@ for s in rewrite sysdata uilayout aoc; do ( t=$SECONDS; bash "$H/stage_$s.sh" "$
 # 直连库要的 C# 批量进程（translator/dsh_batch.py：按源码摘要编、带文件锁）快路开头就后台编好，不压在抽取之后的关键链上
 #   （11-06 出包速度线：玩家引擎副本没有 build/dsh_batch，首次出包原先在直连库里现编，Spare-host 约 25 秒）。编不出不在这里报：直连库那次调用照旧编、照旧报红
 { "${S2A_PY:-python3}" "$H/../translator/dsh_batch.py" --xfp > "$L/dsh_prewarm.out" 2>&1 < /dev/null & }
-RD=0; RN=10   # 进度格数：界面布局 ‖ 追加内容 2 + 配置推导 · 抽取 2 + 直连库 + 种子表 + 旁路（改写 / 系统数据 / 能力表 / RomFS 索引）4
+RD=0; RN=11   # 进度格数：界面布局 ‖ 追加内容 2 + 配置推导 · 抽取 2 + 直连库 + 种子表 + 计算管线归档 + 旁路（改写 / 系统数据 / 能力表 / RomFS 索引）4
 rt() { RD=$((RD + ${1:-1})); prog_tick 刷新各阶段 "$RD" "$RN"; }
 # 依赖重排（11-06 出包速度线）：直连链（配置推导 / 抽取 / 直连库）只读 exefs/main、romfs、追加内容与配置推导结果，不读改写 / 系统数据 / 能力表 / RomFS 索引的产物。
-#   关键链：追加内容 ‖ 界面布局 → 配置推导 → 抽取 → 直连库 → 管线种子表。
+#   关键链：追加内容 ‖ 界面布局 → 配置推导 → 抽取 → 直连库 → 管线种子表 → 计算管线归档。
 #     界面布局改 romfs、抽取与直连库的键含 romfs 抽样（resource_input_key），所以它必须在抽取开工前落定，否则下次热出包白重抽一遍。
 #   旁路（后台，与关键链并行）：改写 ‖ 系统数据 → 能力表 → 宽屏自动出表；RomFS 索引（界面布局之后）。各段照旧提交（声明了 ROOT_REPLAY，并发提交时重放到新现行），
 #     旁路的输出与红行在关键链末尾汇合打出，任一段红照旧退 1；直连库开工前旁路已红就当场停（不白编十几分钟）。
@@ -149,7 +149,7 @@ run_extract() {   # 抽着色器（只做一次：直连库要的两份抽取出
   [ $rc = 3 ] && { echo "$out" | sed '$d' | tail -3; dred "抽取阶段" "$(echo "$out" | grep -a '直连库失败：' | tail -1 | sed 's/^.*\(直连库失败：\)/\1/' | cut -c1-260)"; }
   [ $rc = 0 ] || { echo "$out" | sed '$d' | tail -3; echo "【红】$G 刷新停在抽取阶段（rc=${rc}）：抽取是出包内部出错，现行 = $(basename "$(root_cur "$G")")"; exit 1; }
 }
-direct_tail() {   # 直连库 → 管线种子表
+direct_tail() {   # 直连库 → 管线种子表 → 计算管线归档
   local rc t
   CT=${J:-${S2A_DIRECT_J:-$S2A_CPU_BAKE}}
   # 只把编译路数给 J；S2A_CPU_BAKE 留 tools/cores.sh 按内存算的值，直连阶段里的抽取按它封顶（#711：原先两个都设成直连库路数，抽取跟着开到 J 路）
@@ -160,6 +160,7 @@ direct_tail() {   # 直连库 → 管线种子表
   root_has_direct "$(root_cur "$G")" || dred "直连库" "直连库阶段退 0 但产物根里没有 shaders/direct/keys.tsv"
   rt
   st1 direct_seed; rt   # 管线种子表（审计 #1534 P1-54 B3）：只写 pso_manifest.tsv 的轻阶段，键 = 直连库阶段键 + 跑局知识 seen.tsv
+  J=$CT st1 direct_cpso; rt   # 计算管线归档：按出包目标 GPU 架构离线编直连库全部计算着色器的管线（shaders/direct/pipelines/），键 = 直连库阶段键 + 目标对
 }
 chk() {   # chk <阶段>：照原口径打该段末行，非 0 → 红行、退 1（.out 是该段的整段输出）
   local rc; tail -1 "$L/$1.out"; rc=$(cat "$L/$1.rc" 2>/dev/null || echo 9)

@@ -1,3 +1,6 @@
+// 系统库[nvntest]：-framework VideoToolbox（直连层单测链 libnvn.a 时带上，tools/weak_link_decl.py flags nvntest 输出）
+// 系统库[nvntest]：-framework CoreMedia
+// 系统库[nvntest]：-framework CoreVideo
 // Switch 2 直连档：nn::codec 视频解码器、解码图像池、nn::syncpt::sdk 同步点事件、nn::gs::TryWaitNativeSync，以及 NVN2 的原生图像（nvnNativeImage* /
 //   nvnTextureInitializeFromNativeImage）——宿主自己解码、自己给图像与同步点，不进 gsv 服务。
 // 为什么：Switch 2 SDK 的 nn::codec 视频解码器经 nn::gsv::GetUserSession() 走 gsv 服务（NVIDIA 硬件解码器）。真机由 NVN2 驱动初始化时拉起 gsv，直连档把 NVN 换成
@@ -15,10 +18,11 @@
 //     Acquire 不进服务、直接出环（sdk+0x336400；空环 subsdk2 直接中止）；第 k 个发出去的同步句柄由第 k 帧达到，所以帧按登记 / 释放次序填图。
 //   - 同步句柄 NativeSyncHandle = {u32 ~计数器号, u32 模式, u64 值}，模式 1 比 64 位、否则 32 位回绕比；全 0 视为已达到。
 // 解码：VP9 / VP8 用仓库现成的 libvpx（services/vpx/build.sh，垫片 s2a_vp9.c / s2a_vp8.c，与服务层 Nvdec 同源）；AV1 用 VideoToolbox 硬件解码
-//   VP9 默认 libvpx；S2A_VP9_SYSTEM=1（仅 macOS）时整帧改走 VideoToolbox（关键帧解析 → vpcC，420v/420f → I420，失败自动回退 libvpx）
+//   VP9 默认 libvpx；S2A_VP9_SYSTEM=1（仅 macOS）时整帧改走 VideoToolbox（关键帧解析 → vpcC，420v/420f → I420，失败自动回退 libvpx）；
+//   S2A_VPX 探测到本机可走系统 VP9（tools/vp9hw.sh）不链真 libvpx 时（链空垫片）默认就走系统，S2A_VPX=1 / =0 照旧显式给
 //   （火纹 82 支片头全是 AV1：2560x1440 78 支、1920x1080 4 支），VideoToolbox 不支持 AV1 的机器（M1 / M2、A16 及更早）用 dav1d 软件解码
-//   （services/dav1d/build.sh，垫片 s2a_av1.c）；S2A_AV1_SOFT=1 强制软解（验收用，缺省关）。确认所有目标机都有 AV1 硬件解码的本地构建可设
-//   S2A_DAV1D=0 不链 dav1d（无硬解时 AV1 初始化报错，不会出假画面）。H.264 走 VideoToolbox 硬件解码（每台苹果设备都有）：输入按 Annex B（起始码）
+//   （services/dav1d/build.sh，垫片 s2a_av1.c）；S2A_AV1_SOFT=1 强制软解（验收用，缺省关）。S2A_DAV1D 缺省 auto：探测到本机有 AV1 硬解
+//   （tools/av1hw.sh：VideoToolbox 建得出 AV1 会话）就不链 dav1d（无硬解时 AV1 初始化报错，不会出假画面）；出包要落到无硬解机器上时设 S2A_DAV1D=1。H.264 走 VideoToolbox 硬件解码（每台苹果设备都有）：输入按 Annex B（起始码）
 //   或 4 字节长度前缀分 NAL，SPS / PPS 取自码流（变了就重建会话），样本按 AVCC 送；按解码次序出帧（带 B 帧的流显示次序会错，见到时间戳倒退报一次黄）。
 // 原生图像：main 拿帧的原生图像句柄（movie::VideoFrame::GetNativeImageHandle）经 nvnNativeImage* 建 NVN 纹理（火纹 main+0x1900d80：格式 0x38 RGBA8_SRGB）。
 //   宿主把这张图像的内存当成一个 CPU 可写的 NVN 内存池、纹理建成线性（LINEAR，行距 = 图像行距）：Metal 端是池缓冲上的零拷贝线性纹理（nvn_mtl.m tex_linear），
@@ -45,21 +49,24 @@
 // 弱链接[nvntest]：s2a_vp8_open（同上）
 // 弱链接[nvntest]：s2a_vp8_decode（同上）
 // 弱链接[nvntest]：s2a_vp8_close（同上）
-// 弱链接[nvntest]：s2a_av1_open（services/dav1d 提供；同上）
-// 弱链接[nvntest]：s2a_av1_decode（同上）
-// 弱链接[nvntest]：s2a_av1_close（同上）
+// 弱链接[nvntest,host,ios]：s2a_av1_open（services/dav1d 提供；NVN 单测不链服务层编解码库；宿主 / iOS 的 S2A_DAV1D 缺省 auto 探测到本机有 AV1 硬解时不链 dav1d（tools/av1hw.sh），那时 host / ios 链接也要放行未定义）
+// 弱链接[nvntest,host,ios]：s2a_av1_decode（同上）
+// 弱链接[nvntest,host,ios]：s2a_av1_close（同上）
 void *s2a_vp9_open(int threads) __attribute__((weak));
 int s2a_vp9_decode(void *h, const uint8_t *data, uint32_t len, uint8_t **planes, int32_t *strides, int32_t *info) __attribute__((weak));
 void s2a_vp9_close(void *h) __attribute__((weak));
 void *s2a_vp8_open(void) __attribute__((weak));
 int s2a_vp8_decode(void *h, const uint8_t *data, uint32_t len, uint8_t **planes, int32_t *strides, int32_t *wh) __attribute__((weak));
 void s2a_vp8_close(void *h) __attribute__((weak));
+// 弱链接[nvntest]：s2a_vpx_linked（真 libvpx 回 1 / 空垫片 services/vpx/stub.c 回 0；宿主与 iOS 链二者之一，
+//   = 0 时 VP9 默认走系统（见 vp9_system_enabled）；NVN 单测两样都不链：弱引用 NULL，调用前判）
+int s2a_vpx_linked(void) __attribute__((weak));
 // services/dav1d 的垫片（libs2a_dav1d.a：同上一起链）
 void *s2a_av1_open(int threads) __attribute__((weak));
 int s2a_av1_decode(void *h, const uint8_t *data, uint32_t len, uint8_t **planes, int32_t *strides, int32_t *info) __attribute__((weak));
-// 视频按片源帧率出图（nvn_vpace.h，hle_nvn.c s2a_video_frame）：Switch 1 由 Ryujinx Nvdec 每解一帧报一次（services/aot/Compose.cs），Switch 2 由这里 cv_emit
+// 视频按片源帧率出图（nvn_vpace.h，hle_nvn.c s2a_video_frame / s2a_video_frame_pts）：Switch 1 由 Ryujinx Nvdec 每解一帧报一次（services/aot/Compose.cs），Switch 2 由这里 cv_emit
 //   每交出一帧新解码的画面报一次，同一口径；片源不超过 30 帧且这段主要在放视频时出图封顶 30。弱链接：单测不链 hle_nvn.c
-void s2a_video_frame(void) __attribute__((weak));
+void s2a_video_frame_pts(int64_t pts_ns) __attribute__((weak));   // 同上，带这一帧的片源时间戳（片源帧率按时间戳判，不被出图节拍反拖）
 void s2a_av1_close(void *h) __attribute__((weak));
 
 // SDK 的「环空 / 还没有帧」结果
@@ -679,7 +686,7 @@ static int cv_emit(cvdec *d, void (*wr)(const cv_img *, void *), void *arg, uint
     pthread_cond_broadcast(&d->cv);
     pthread_mutex_unlock(&d->mu);
     // 达到缓冲 i 的句柄（它的序号），唤醒游戏的同步点事件
-    if (wr && !eos && s2a_video_frame) s2a_video_frame();   // 新解码的一帧报给出图节奏（重复上一帧 / 结束标记不算）；在唤醒游戏之前报，游戏拿到帧时这一帧已经计上
+    if (wr && !eos && s2a_video_frame_pts) s2a_video_frame_pts(pts_ns);   // 新解码的一帧报给出图节奏（重复上一帧 / 结束标记不算）；在唤醒游戏之前报，游戏拿到帧时这一帧已经计上
     sp_incr(d->ctr);
     d->frames++;
     return 1;
@@ -721,15 +728,20 @@ static void vt_out(void *ref, void *src, OSStatus st, VTDecodeInfoFlags fl, CVIm
 static int cv_threads(void) { long n = sysconf(_SC_NPROCESSORS_ONLN); return n >= 8 ? 4 : 2; }
 // S2A_AV1_SOFT=1：AV1 强制走 dav1d（有硬件的机器上验收软解用；缺省关）
 static int av1_soft_forced(void) { const char *e = getenv("S2A_AV1_SOFT"); return e && !strcmp(e, "1"); }
-// S2A_VP9_SYSTEM=1：nn::codec 的整帧 VP9 走 macOS VideoToolbox（仅 macOS；默认 libvpx，失败自动回退）
+// S2A_VP9_SYSTEM=1：nn::codec 的整帧 VP9 走 macOS VideoToolbox（仅 macOS）；=0 强制 libvpx。没设时：宿主链的是空垫片（S2A_VPX
+//   探测到本机可走系统 VP9、不链真 libvpx，tools/vp9hw.sh；s2a_vpx_linked() = 0）→ 默认走系统；链了真身的机器默认 libvpx，失败自动回退
 #if TARGET_OS_OSX
-static int vp9_system_enabled(void) { const char *e = getenv("S2A_VP9_SYSTEM"); return e && !strcmp(e, "1"); }
+static int vp9_system_enabled(void) {
+    const char *e = getenv("S2A_VP9_SYSTEM");
+    if (e) return !strcmp(e, "1");
+    return s2a_vpx_linked && !s2a_vpx_linked();
+}
 #endif
 static _Atomic unsigned long long g_vp9_vt_frames;
 unsigned long long nvn2_vp9_vt_frames(void) { return atomic_load(&g_vp9_vt_frames); }
 static void cv_soft_open(cvdec *d, const char *why) {
     long n = sysconf(_SC_NPROCESSORS_ONLN);
-    if (!s2a_av1_open) die("Switch 2 视频：%s；宿主没链 dav1d 垫片（services/dav1d，S2A_DAV1D=0 的构建不链），解不了 AV1（%dx%d）", why, d->w, d->h);
+    if (!s2a_av1_open) die("Switch 2 视频：%s；宿主没链 dav1d 垫片（services/dav1d；本机构建有 AV1 硬解时不链，S2A_DAV1D），解不了 AV1（%dx%d）", why, d->w, d->h);
     if (!(d->av1 = s2a_av1_open(n >= 8 ? 6 : (int)n))) die("Switch 2 视频：dav1d 建不出 AV1 解码器（%dx%d）", d->w, d->h);
     if (!d->av1_soft++) LOG("Switch 2 视频：AV1 %dx%d 走 dav1d 软件解码（%s）", d->w, d->h, why);
 }
@@ -944,6 +956,7 @@ static void cv_decode(cvdec *d, const cv_in *in, int gen) {
     if (in->n && d->codec == CV_VP9 && d->vp9_system && !d->vp9_no_vt) vt_handled = cv_vp9_vt_decode(d, in, pts, gen);
 #endif
     if (!vt_handled && in->n && (d->codec == CV_VP9 || d->codec == CV_VP8)) {
+        if (!d->vpx && s2a_vpx_linked && !s2a_vpx_linked()) die("Switch 2 视频：宿主没链真 libvpx（S2A_VPX 探测到本机可走系统 VP9 不链，tools/vp9hw.sh），这条 %s 流走不了系统路线又没有软解兜底，解不了（要兜底设 S2A_VPX=1）", cv_name[d->codec]);
         if (!d->vpx && !s2a_vp9_open) die("Switch 2 视频：宿主没链 libvpx 垫片（services/vpx），解不了 %s", cv_name[d->codec]);
         if (!d->vpx && !(d->vpx = d->codec == CV_VP9 ? s2a_vp9_open(cv_threads()) : s2a_vp8_open())) die("Switch 2 视频：libvpx 建不出 %s 解码器", cv_name[d->codec]);
         uint8_t *pl[3]; int32_t st[3], info[4] = { 0, 0, -1, 0 }; uint64_t t0 = now_ns();
@@ -1038,7 +1051,7 @@ static Result cv_init(void *t, int codec, uint32_t w, uint32_t h) {
     d->guest = t; d->codec = codec; d->w = (int)w; d->h = (int)h; d->last = -1;
 #if TARGET_OS_OSX
     d->vp9_system = codec == CV_VP9 && vp9_system_enabled();
-    if (d->vp9_system) LOG("Switch 2 视频：VP9 系统解码开关 S2A_VP9_SYSTEM=1（VideoToolbox，失败回退 libvpx）");
+    if (d->vp9_system) LOG("Switch 2 视频：VP9 走系统解码（VideoToolbox；%s，失败回退 libvpx）", getenv("S2A_VP9_SYSTEM") && !strcmp(getenv("S2A_VP9_SYSTEM"), "1") ? "S2A_VP9_SYSTEM=1" : "宿主没链真 libvpx，默认系统");
 #endif
     d->qcap = 64; d->q = calloc((size_t)d->qcap, sizeof *d->q);
     pthread_mutex_init(&d->mu, NULL); pthread_cond_init(&d->cv, NULL);
@@ -1561,7 +1574,7 @@ __attribute__((constructor)) static void snap_slot_range(void) { if (s2a_snap_ha
 
 // 即时存档：本文件按整块存的宿主结构的布局指纹（snapfmt.h；不同 = 布局变了，恢复拒绝）
 #include "../../../../runtime/src/snapfmt.h"
-void nvn2_codec_snap_fps(void (*cb)(const char *name, uint64_t fp)) {
+void nvn2_codec_snap_fps(snap_fp_cb cb) {
     cb("codec.ctr", SNAP_FP_OF(g_ctr[0])); cb("codec.slot", SNAP_FP_OF(g_slot[0])); cb("codec.img", SNAP_FP_OF(g_img[0])); cb("codec.cvp", SNAP_FP_OF(g_cvp[0]));
     cb("codec.cvdec", SNAP_FP_TYPE(cvdec));
 }

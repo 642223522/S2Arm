@@ -166,17 +166,21 @@ public sealed partial class EnvironmentWindow
 
         // ② 游戏同步
         var sync = new StackPanel { Spacing = 6 };
-        foreach (var game in (catalog?.Games ?? []).Where(g => !g.Hidden))
+        // 0.5 → 0.6 升级后的老款（资源在、程序包不在：suggested + missing）排最上面、醒目标出，直到更新完（同 Mac consoleOrdered）
+        PhoneOverview.Game RowOf(string id) => phone.Games.FirstOrDefault(x => string.Equals(x.GameId, id, StringComparison.OrdinalIgnoreCase))
+                    ?? new PhoneOverview.Game(id.ToUpperInvariant(), PhoneOverview.GameState.NotPushed, [], null);
+        static bool Legacy(PhoneOverview.Game g) => g.State == PhoneOverview.GameState.Suggested && g.Reasons.Contains("missing");
+        var shown = (catalog?.Games ?? []).Where(g => !g.Hidden).ToList();
+        foreach (var game in shown.Where(x => Legacy(RowOf(x.Id))).Concat(shown.Where(x => !Legacy(RowOf(x.Id)))))
         {
-            var g = phone.Games.FirstOrDefault(x => string.Equals(x.GameId, game.Id, StringComparison.OrdinalIgnoreCase))
-                    ?? new PhoneOverview.Game(game.Id.ToUpperInvariant(), PhoneOverview.GameState.NotPushed, [], null);
+            var g = RowOf(game.Id);
             var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
             var box = new CheckBox { IsChecked = consoleSelection.Contains(game.Id), IsEnabled = !ConsoleUpdating };
             box.IsCheckedChanged += (_, _) => { if (box.IsChecked == true) consoleSelection.Add(game.Id); else consoleSelection.Remove(game.Id); Render(); };
             row.Children.Add(box);
             var pushing = ConsoleUpdating && string.Equals(consolePushing, game.Id, StringComparison.OrdinalIgnoreCase);
             row.Children.Add(new TextBlock { Text = (pushing ? "⟳ " : "") + game.Name, MinWidth = 180, Foreground = Ink, VerticalAlignment = VerticalAlignment.Center });
-            var (text, color) = g.State switch
+            var (text, color) = Legacy(g) ? (T("console.legacy.badge"), "#FFC857") : g.State switch
             {
                 PhoneOverview.GameState.Latest => (T("console.game.latest"), "#30D158"),
                 PhoneOverview.GameState.Suggested => (T("update.hint.badge") + " · " + string.Join(" ", g.Reasons.Select(UpdateReasonKey).OfType<string>().Select(T)), "#FF9F0A"),

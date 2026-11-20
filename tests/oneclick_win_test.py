@@ -640,6 +640,32 @@ class InstallWin(unittest.TestCase):
             self.ns = old_ns
         self.assertIsInstance(e, install_win.Fail); self.assertEqual(e.err, 'app_id_taken'); self.assertNotIn('push', got)
 
+    def test_9401_on_widget_id_installs_without_the_widget(self):
+        # 11-18 Windows 实机：这个 Apple ID 早先被不带包名签过一次，主包名被拒、扩展却注册成了 io.s2arm.games.<大写团队号>.widget，
+        #   之后小写主包名 + 小写扩展永远在扩展上 9401，旧写法重试又在主包名上 9401。期望（手写）：认出被拒的是 .widget → 去掉 PlugIns/ 用同一个
+        #   小写包名再签一次，装上、照常推资源；两次输出都在日志里。假 plumesign：包里有扩展就在扩展包名上 9401，没有就装好
+        body = ("pkg = a[a.index('--package') + 1]; ident = a[a.index('--custom-identifier') + 1]\n"
+                "has = any('/PlugIns/' in n for n in zipfile.ZipFile(pkg).namelist())\nprint('try', ident, 'widget' if has else 'nowidget')\n"
+                "if has:\n"
+                "    print(\"Error: Developer API error 9401 (HTTP Some(200)): An App ID with Identifier '\" + ident + \".widget' is not available.\"); sys.exit(1)\n"
+                "print('Installation complete!')\nz = zipfile.ZipFile(a[a.index('-o') + 1], 'w')\n"
+                "z.writestr('Payload/S2Arm.app/Info.plist', ('<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>' + ident + '</string></dict></plist>').encode())\nz.close()\n")
+        old_ns = self.ns
+        def ns(d, exe):
+            import zipfile
+            with zipfile.ZipFile(Path(d, 'w.ipa'), 'w') as z:
+                z.writestr('Payload/S2Arm.app/Info.plist', b'x'); z.writestr('Payload/S2Arm.app/PlugIns/S2ArmWidget.appex/Info.plist', b'x')
+            return __import__("argparse").Namespace(**dict(vars(old_ns(d, exe)), ipa=str(Path(d, 'w.ipa')), bundle="io.s2arm.games.abcde12345"))
+        self.ns = ns
+        try:
+            bid, got, log = self.run_fake(body)
+        finally:
+            self.ns = old_ns
+        self.assertEqual(bid, 'io.s2arm.games.abcde12345')
+        self.assertEqual(got['push'][1], 'io.s2arm.games.abcde12345')
+        self.assertIn('try io.s2arm.games.abcde12345 widget', log); self.assertIn('try io.s2arm.games.abcde12345 nowidget', log)
+        self.assertNotIn('ABCDE12345', log)   # 不走旧写法重试
+
     def test_already_registered_device_signs_then_installs(self):
         # #800：Windows 设备号不带横线、苹果存的带横线，plumesign 精确比较认不出已登记的这台 → 再登记被拒 35「already exists on this team」。
         #   期望（手写）：认出这句改成只签名（命令里没有 --register-and-install / --udid）、再 device --install 装签好的包，照常推资源、回包名；

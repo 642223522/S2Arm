@@ -65,7 +65,7 @@ static NvPresentFX *present_fx_prepare(int slot, NSUInteger iw, NSUInteger ih, N
     MTLTextureUsage cu = [(id<MTLFXSpatialScalerBase>)sc colorTextureUsage], ou = [(id<MTLFXSpatialScalerBase>)sc outputTextureUsage];
     f->input = present_aa_texture(MTLPixelFormatBGRA8Unorm, iw, ih, cu | MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget);
     f->output = present_aa_texture(MTLPixelFormatBGRA8Unorm, ow, oh, ou | MTLTextureUsageShaderRead);
-    f->cropUV = [g_dev newBufferWithLength:8 * sizeof(float) options:MTLResourceStorageModeShared];
+    f->cropUV = [g_dev newBufferWithLength:16 * sizeof(float) options:MTLResourceStorageModeShared];   // PR3b：16 浮点（后 8 = present 模式参数——这份缓冲也喂过 present_blit_m4 的共享着色器，Crop 全量读）
     if (!f->input || !f->output || !f->cropUV) { MLOG("【红】 MetalFX：图 / 缓冲分配失败"); return nil; }
     NSError *error = nil;
     if (!g_m3) { f->cropTable = tab_new(1, 1, 1, &error); if (!f->cropTable) { MLOG("【红】 MetalFX 参数表：%s", error.localizedDescription.UTF8String); return nil; } }

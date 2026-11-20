@@ -61,7 +61,7 @@ class PhoneSaves(unittest.TestCase):
         return layout.path(self.c, G, "save_backup", create=False)
 
     def snap(self, ph, on=True):
-        with patch.object(program_pack, "enabled", lambda c: on), patch.object(install, "trace", lambda *a, **k: None):
+        with patch.object(install, "trace", lambda *a, **k: None):
             return install.snapshot_phone_saves(self.c, ph, [G])
 
     def marked(self):
@@ -97,12 +97,9 @@ class PhoneSaves(unittest.TestCase):
         ra, rb = self.snap(a)[G], self.snap(b)[G]
         self.assertNotEqual(ra, rb, "另一台手机同内容也各留一份（按台按款）")
 
-    def test_failure_does_not_block_and_switch_off(self):
+    def test_failure_does_not_block(self):
         ph = FakePhone(self.c); ph.saves = {"a.dat": b"v"}; ph.fail = "锁屏"
         self.assertEqual(self.snap(ph), {})
-        ph.fail = None
-        self.assertEqual(self.snap(ph, on=False), {})
-        self.assertEqual(ph.n, 0, "开关关着不拉")
 
     def test_list_marked_and_legacy(self):
         old = layout.path(self.c, G, "save_backup", "20261001-120000"); old.mkdir(parents=True); (old / "x.dat").write_bytes(b"old")
@@ -115,7 +112,7 @@ class PhoneSaves(unittest.TestCase):
 
     def restore(self, ph, name):
         self.c.r.update(gameId=G, backup=name)
-        with patch.object(program_pack, "enabled", lambda c: True), patch.object(install, "phone_for", lambda c: ph), \
+        with patch.object(install, "phone_for", lambda c: ph), \
                 patch.object(install, "trace", lambda *a, **k: None):
             return install.restore_phone_save(self.c)
 

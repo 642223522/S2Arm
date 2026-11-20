@@ -1,0 +1,112 @@
+diff --git a/src/Ryujinx.Audio.Backends.Apple/AppleHardwareDeviceSession.cs b/src/Ryujinx.Audio.Backends.Apple/AppleHardwareDeviceSession.cs
+index 996881f50da81fa9bc90a3cc858a9b90a2f9d518..49ddf79098f2d6436ea13c0650eb961d1be97a87 100644
+--- a/src/Ryujinx.Audio.Backends.Apple/AppleHardwareDeviceSession.cs
++++ b/src/Ryujinx.Audio.Backends.Apple/AppleHardwareDeviceSession.cs
+@@ -113,6 +113,15 @@ namespace Ryujinx.Audio.Backends.Apple
+         //   S2A_AUDIO_HEAL=0 关（同包 A/B）；S2A_AUDIO_TEST_STALL_AT=<秒>：开播后到点暂停一次队列（模拟系统停播，测试用）
+         private const int StallMs = 1000;
+         private const int HealBackoffMs = 2000;
++        // S2Arm (#1598 Mac 无声)：一次交设备（AudioQueueEnqueueBuffer，问音频服务进程）卡这么久 = 输出队列卡死，看门狗重启它。
++        //   正常是微秒级；iPhone 上问音频服务的调用偶发最长约 50 ms（见 Pump 头注释）。玩家 M2 局：渲染一拍里「DSP」从 10 ms 级跳到 340 ms → 2.3 / 4.9 / 6.7 s、
++        //   随后停流全无声，切窗口走解冻路径重启输出队列后立刻回到 10 ms 级——慢的是交设备这一步而不是混音计算（快路径是进程级静态开关，重启队列碰不到它）。
++        //   原兜底只看「设备多久没回调、在途有数据」，交设备本身卡住时生产方被拖住、在途见底，兜底不触发；iOS 有回调静默兜底，Mac 这条从来接不住
++        private const int EnqueueStuckMs = 250;
++        private long _enqStuckTicks;   // 上次看门狗以来最长的一次交设备（Submit 写，看门狗取走清零）
++        // 测试钩子：S2A_AUDIO_TEST_ENQ_STALL_AT=<秒>:<毫秒> —— 开播后到点，一次交设备在计时窗口里睡这么久，模拟输出队列卡死（服务层单测 --apple-audio-enqueue-stuck）
++        private static readonly (int AtS, int Ms) _testEnqStall = ParseProdStall(Environment.GetEnvironmentVariable("S2A_AUDIO_TEST_ENQ_STALL_AT"));
++        private bool _testEnqStallDone;
+         private static readonly bool _healOn = Environment.GetEnvironmentVariable("S2A_AUDIO_HEAL") != "0";
+         private static readonly int _testStallAtS = int.TryParse(Environment.GetEnvironmentVariable("S2A_AUDIO_TEST_STALL_AT"), out int s) ? s : 0;
+         private static readonly AppleHardwareDeviceSession[] _watched = new AppleHardwareDeviceSession[8];
+@@ -318,6 +327,7 @@ namespace Ryujinx.Audio.Backends.Apple
+         {
+             int zero = Interlocked.Exchange(ref _zeroReturns, 0);
+             long returned = Interlocked.Exchange(ref _returnedBytes, 0), elapsed = now - _timelineTicks;
++            long enq = Interlocked.Exchange(ref _enqStuckTicks, 0);
+ 
+             _timelineTicks = now;
+ 
+@@ -328,6 +338,15 @@ namespace Ryujinx.Audio.Backends.Apple
+                 return;
+             }
+ 
++            // #1598：交设备卡死（见 EnqueueStuckMs）→ 与解冻路径同一个动作：停队列、收回在途、重新开播。各平台都接，退避同下面的兜底
++            if (enq * 1000 >= (long)EnqueueStuckMs * Stopwatch.Frequency && _healOn && now - _lastHealTicks >= (long)HealBackoffMs * Stopwatch.Frequency / 1000)
++            {
++                _timeline.Reset();
++                S2ARecover($"兜底：一次交设备（AudioQueueEnqueueBuffer）卡了 {enq * 1000 / Stopwatch.Frequency} ms，输出队列卡死", false, now, true);
++
++                return;
++            }
++
+             // S2Arm (#1384): 客机冻结（失焦暂停）放开后，macOS 也重置时间轴、重启一次输出队列。11-13 的前提「macOS 队列自己恢复」在部分外接输出上不成立：
+             //   玩家外接 DP 显示器（48 kHz）失焦暂停切回后画面恢复、一直无声；他在解冻时重置时间轴 + 重启输出队列，同机两轮都好了。
+             //   每次冻结只做一次，在解冻后第一次检查时做；iOS / tvOS 照旧走下面的时间轴自愈
+@@ -730,7 +749,22 @@ namespace Ryujinx.Audio.Backends.Apple
+                 buffer->AudioDataByteSize = (uint)bytes;
+                 _s._diag.OnSubmit(new ReadOnlySpan<byte>((void*)buffer->AudioData, bytes), InFlightBytes - bytes);
+ 
++                long t0 = Stopwatch.GetTimestamp();
++                if (_testEnqStall.AtS > 0 && !_s._testEnqStallDone && _s._started && t0 - _s._startTicks >= (long)_testEnqStall.AtS * Stopwatch.Frequency)
++                {
++                    _s._testEnqStallDone = true;
++                    Console.Error.WriteLine($"[声] 测试钩子：输出 #{_s._diag.Index} 开播后第 {_testEnqStall.AtS} 秒一次交设备卡 {_testEnqStall.Ms} ms（模拟输出队列卡死）");
++                    Thread.Sleep(_testEnqStall.Ms);
++                }
+                 AudioQueueEnqueueBuffer(_s._audioQueue, bufferPtr, 0, nint.Zero);
++                long dt = Stopwatch.GetTimestamp() - t0;
++
++                // 泵锁内调用，同一时刻只有一个写方；看门狗用 Interlocked.Exchange 取走
++                _s._diag.OnEnqueue(dt);
++                if (dt > Volatile.Read(ref _s._enqStuckTicks))
++                {
++                    Volatile.Write(ref _s._enqStuckTicks, dt);
++                }
+             }
+ 
+             protected override void OnReturned(int bytes, long inFlightAfter)
+diff --git a/src/Ryujinx.Audio.Backends.Apple/S2AOutputDiag.cs b/src/Ryujinx.Audio.Backends.Apple/S2AOutputDiag.cs
+index 433e265c66a3e892211c406e2dc7b47226d0a283..cb7c3b67b0267bca573df1d54ef1e0fc49e2e764 100644
+--- a/src/Ryujinx.Audio.Backends.Apple/S2AOutputDiag.cs
++++ b/src/Ryujinx.Audio.Backends.Apple/S2AOutputDiag.cs
+@@ -152,6 +152,8 @@ namespace Ryujinx.Audio.Backends.Apple
+         private long _maxStarveTicks;
+         private long _minInFlight = long.MaxValue;
+         private long _maxGapTicks;
++        // S2Arm (#1598): 这 10 秒里最长的一次交设备（AudioQueueEnqueueBuffer）耗时；正常微秒级，几百毫秒以上 = 输出队列卡死（会话看门狗据此重启队列）
++        private long _maxEnqTicks;
+         // S2Arm (11-03 太鼓 iPhone 断续): 交还迟到 = 两次交还相隔超过一拉（放回提前量）+ 5 ms：设备照网格拉，回调却晚送到。真缺口按「已交 vs 墙钟」
+         //   只数超过开局最大落后量的增长，开局 300 ms 落后之后每秒一次 40–55 ms 的断口一次都不数（11-03 测试设备1 太鼓：真缺口 0、录屏每秒断 55 ms），
+         //   这里直接数回调晚到；次数和最晚超出一拉多少 ms 进 10 秒行
+@@ -357,6 +359,14 @@ namespace Ryujinx.Audio.Backends.Apple
+         /// <summary>
+         /// The device handed back a buffer of <paramref name="bytes"/>; <paramref name="inFlightAfter"/> bytes are still in flight.
+         /// </summary>
++        public void OnEnqueue(long ticks)
++        {
++            if (ticks > Volatile.Read(ref _maxEnqTicks))
++            {
++                Volatile.Write(ref _maxEnqTicks, ticks);
++            }
++        }
++
+         public void OnReturned(int bytes, long inFlightAfter)
+         {
+             long now = Stopwatch.GetTimestamp();
+@@ -626,6 +636,7 @@ namespace Ryujinx.Audio.Backends.Apple
+                     long minInFlight = d._minInFlight;
+                     double maxStarveMs = d._maxStarveTicks * 1000.0 / Stopwatch.Frequency;
+                     double maxGapMs = d._maxGapTicks * 1000.0 / Stopwatch.Frequency;
++                    double maxEnqMs = Interlocked.Exchange(ref d._maxEnqTicks, 0) * 1000.0 / Stopwatch.Frequency;
+ 
+                     d._maxStarveTicks = 0;
+                     d._minInFlight = long.MaxValue;
+@@ -640,7 +651,7 @@ namespace Ryujinx.Audio.Backends.Apple
+                     Console.Error.WriteLine(
+                         $"[声] 输出 #{d.Index} 10 秒：回调 {cb - d._repCallbacks} 次，交设备 {sub - d._repSubmitted} 帧、播完 {pl - d._repPlayed} 帧，" +
+                         $"账上在途归零 {und - d._repUnderruns} 次（最长 {maxStarveMs:F1} ms；设备交还早于播完，归零时设备内部仍有缓冲，断音看真缺口与交还迟到）、停流 {pau - d._repPauses} 次，回调后最少在途 {(minInFlight == long.MaxValue ? -1 : minInFlight)} 帧，" +
+-                        $"回调最长间隔 {maxGapMs:F1} ms；渲染丢周期 {skipped}、周期最晚 {lateNs / 1e6:F1} ms；真缺口 {gap - d._repGapFrames} 帧（{(gap - d._repGapFrames) * 1000.0 / d._rate:F1} ms）；放回提前量 {Volatile.Read(ref d._leadFrames)} 帧；交还迟到 {lb - d._repLateBursts} 次（最多比一拉晚 {lateOverMs:F1} ms）{lat}{level}{(d._ring != null ? $"；wav 丢 {d._ringDropped} B" : "")}");
++                        $"回调最长间隔 {maxGapMs:F1} ms、交设备入队最长 {maxEnqMs:F1} ms；渲染丢周期 {skipped}、周期最晚 {lateNs / 1e6:F1} ms；真缺口 {gap - d._repGapFrames} 帧（{(gap - d._repGapFrames) * 1000.0 / d._rate:F1} ms）；放回提前量 {Volatile.Read(ref d._leadFrames)} 帧；交还迟到 {lb - d._repLateBursts} 次（最多比一拉晚 {lateOverMs:F1} ms）{lat}{level}{(d._ring != null ? $"；wav 丢 {d._ringDropped} B" : "")}");
+ 
+                     HudAudio(d.Index, gap * 1000 / d._rate, 0);
+ 

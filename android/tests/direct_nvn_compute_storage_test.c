@@ -461,7 +461,27 @@ static void case_reads_reject_non_array(void) {
     }
 }
 
+// 共享内存溢出缓冲（kind = spill，编译器 DirectSharedSpill）：每线程组字节数进程序对象；没有客体槽；形状不对如实拒
+static void case_spill(void) {
+    group("[S] 共享内存溢出缓冲 spill 绑定");
+    struct nvn_vk_compute_program p;
+    if (accept_case("[S1] spill 40960 字节 / 组", "{\"stage\":\"cs\",\"kind\":\"spill\",\"set\":1,\"binding\":0,\"count\":1,\"bytesPerGroup\":40960}", "[]", "[]", &p) == 0) {
+        ck_u32("[S1] spill_bytes", p.spill_bytes, 40960);
+        ck_u32("[S1] binding kind 4", (uint32_t)p.bindings[0].kind, 4);
+        nvn_vk_program_free_compute(&p);
+    }
+    if (accept_case("[S2] 没有 spill 绑定", "", "[]", "[]", &p) == 0) { ck_u32("[S2] spill_bytes 为 0", p.spill_bytes, 0); nvn_vk_program_free_compute(&p); }
+    reject_case("[S3] spill 缺 bytesPerGroup", "{\"stage\":\"cs\",\"kind\":\"spill\",\"set\":1,\"binding\":0,\"count\":1}", "[]", "[]", "bytesPerGroup");
+    reject_case("[S4] spill bytesPerGroup 不是 4 的倍数", "{\"stage\":\"cs\",\"kind\":\"spill\",\"set\":1,\"binding\":0,\"count\":1,\"bytesPerGroup\":40962}", "[]", "[]", "bytesPerGroup");
+    reject_case("[S5] spill 超过 48 KiB", "{\"stage\":\"cs\",\"kind\":\"spill\",\"set\":1,\"binding\":0,\"count\":1,\"bytesPerGroup\":49156}", "[]", "[]", "bytesPerGroup");
+    reject_case("[S6] 两个 spill", "{\"stage\":\"cs\",\"kind\":\"spill\",\"set\":1,\"binding\":0,\"count\":1,\"bytesPerGroup\":4},"
+                "{\"stage\":\"cs\",\"kind\":\"spill\",\"set\":1,\"binding\":1,\"count\":1,\"bytesPerGroup\":4}", "[]", "[]", "more than one spill");
+    reject_case("[S7] spill 带客体槽", "{\"stage\":\"cs\",\"kind\":\"spill\",\"set\":1,\"binding\":0,\"count\":1,\"slot\":0,\"bytesPerGroup\":4}", "[]", "[]", "guest slot");
+    reject_case("[S8] 非 spill 绑定带 bytesPerGroup", "{\"stage\":\"cs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"slot\":8,\"count\":1,\"bytesPerGroup\":4}", "[]", "[]", "bytesPerGroup");
+}
+
 int main(void) {
+    case_spill();
     case_accept_nvn();
     case_accept_ubo_ptr();
     case_accept_ubo_address();
@@ -488,6 +508,28 @@ int main(void) {
         int rc = nvn_vk_program_parse_compute((const uint8_t *)json, (size_t)n, &p, why, sizeof why);
         ck_true("compute v2 separate maximum slots", rc == 0 && p.binding_count == 1 && p.bindings[0].tex_slot == 255 && p.bindings[0].samp_slot == 127, why);
         nvn_vk_program_free_compute(&p);
+    }
+
+    // #1594：类型 3 句柄（常量采样器）计算侧没接。带 constSampler 的 cs 贴图绑定必须具名拒绝——不能被当成「没有 samp_slot = 采样器取同字高位」
+    //   而绑成错的采样器（宿主的计算回放不认这个来源）。v1 / v2 结果都一样；没有这个字段的同槽绑定照旧接受（见上面直接读 c2 分离贴图表的字）。
+    for (int v = 1; v <= 2; ++v) {
+        static const char *const fields[] = {"\"slot\":90,\"constSampler\":257", "\"slot\":344,\"constSampler\":0", "\"slot\":90,\"constSampler\":4096", "\"constSampler\":3",
+                                             "\"uboSlot\":2,\"uboOffset\":160,\"constSampler\":260"};   // 片 3：游戏 UBO 里的贴图字（图形侧接了，计算侧不接）
+        for (unsigned k = 0; k < sizeof fields / sizeof fields[0]; k++) {
+            char json[4096], why[192] = ""; struct nvn_vk_compute_program p;
+            int n = snprintf(json, sizeof json,
+                "{\"schema\":\"s2a-direct-program-v%d\",\"content\":{"
+                "\"contract\":\"s2a-direct-program-content-v%d\",\"kind\":\"compute\","
+                "\"hasUnalignedStorageBuffer\":false,\"c0Reads\":[],"
+                "\"stages\":[{\"stage\":\"cs\",\"spirv\":\"%s\"}],"
+                "\"bindings\":[{\"stage\":\"cs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,%s,\"count\":1}],"
+                "\"supportLayout\":{\"requiredSize\":2608},\"supportReads\":[]}}", v, v, S2A_TEST_COMP_1, fields[k]);
+            memset(&p, 0, sizeof p);
+            int rc = nvn_vk_program_parse_compute((const uint8_t *)json, (size_t)n, &p, why, sizeof why);
+            char what[96]; snprintf(what, sizeof what, "compute v%d constant sampler form %u is rejected by name", v, k);
+            ck_true(what, rc != 0 && strstr(why, "constant sampler"), why);
+            nvn_vk_program_free_compute(&p);
+        }
     }
 
     // 计算结果是「程序」级文档：超过 1 MiB（描述文件上限）的合法结果要接；超过程序结果上限（64 MiB，同跨局缓存单条）的拒，原因带大小

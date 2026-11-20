@@ -31,7 +31,7 @@ def comp_unknown(src):   # 帧头不写原长：用流式 API 压、不给 pledg
     z.ZSTD_compressStream2.restype = ctypes.c_size_t; z.ZSTD_compressStream2.argtypes = [ctypes.c_void_p, ctypes.POINTER(Buf), ctypes.POINTER(Buf), ctypes.c_int]
     z.ZSTD_freeCCtx.argtypes = [ctypes.c_void_p]
     cctx = z.ZSTD_createCCtx(); cap = z.ZSTD_compressBound(len(src)) + 64; out = ctypes.create_string_buffer(cap); inb = ctypes.create_string_buffer(src, len(src))
-    ob = Buf(ctypes.cast(out, ctypes.c_void_p), cap, 0); ib = Buf(ctypes.cast(inb, ctypes.c_void_p), len(src), 0)
+    ob = Buf(ctypes.addressof(out), cap, 0); ib = Buf(ctypes.addressof(inb), len(src), 0)
     while True:   # ZSTD_e_end = 2；没设 pledgedSrcSize → 帧头不写原长
         r = z.ZSTD_compressStream2(cctx, ctypes.byref(ob), ctypes.byref(ib), 2)
         assert not z.ZSTD_isError(r)

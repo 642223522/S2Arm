@@ -98,6 +98,11 @@ static void fr_perf_project(int i, uint64_t v) {
     int k = fr_slot_of(i);
     if (k >= 0) __atomic_fetch_add(&g_fr_perf[k], v, __ATOMIC_RELAXED);
 }
+// 逐帧帧日志的 fence 字段（nvn_vk_frame_log.c，#1501 D①）：每次同步等待 / Finish 等待记一次，口径同 RP_PERF_WAIT_N + RP_PERF_WAIT_FIN_N
+//   （含「进等待时已完成」与放行的那几次）。弱引用：宿主单测 / 鸿蒙不链帧日志。开关关着时函数里只判一次缓存标志。
+// 弱链接[replay]：nvn_vk_frame_log_fence_wait
+void nvn_vk_frame_log_fence_wait(uint64_t wait_ns) __attribute__((weak));
+static void fl_fence(uint64_t ns) { if (nvn_vk_frame_log_fence_wait) nvn_vk_frame_log_fence_wait(ns); }
 void rp_perf_add(int i, uint64_t v) { pf_add(i, v); fr_perf_project(i, v); }   // 5 秒窗口 + 帧级分项（后者只在 nvk_hitch_log 打开时记）
 // GPU 忙时估算：每段完成时按完成顺序累计「显卡真正在跑」的区间（判 GPU 到底忙多久、是不是墙）。
 // busy += done_i - max(commit_i, done_{i-1})（第一段：done_0 - commit_0）。commit 在提交前取，done 在完成回调里取；
@@ -134,7 +139,8 @@ static uint64_t g_split_base;  // 上次中途交段时的累计绘制笔数
 static int g_ret_n;            // OP_CALL 嵌套深度
 int nvn_cmd_call_resolve(uint64_t h, uint64_t *to);   // hle_nvn.c：CALL 目标解析（0 照执行，2 跳到同设备地址的新录制，1 隔离中，-1 块已复用）
 
-static void red(const char *fmt, const char *why) { char b[256]; snprintf(b, sizeof b, fmt, why); nvn_plat_log(NVN_PLAT_LOG_RED, "replay", b); }
+// 缓冲 512：最长的中文前缀约 150 字节 + 原因串最多 191 字节；256 时 gcc -O2 -Werror=format-truncation 在 Linux 容器编译红
+static void red(const char *fmt, const char *why) { char b[512]; snprintf(b, sizeof b, fmt, why); nvn_plat_log(NVN_PLAT_LOG_RED, "replay", b); }
 static void pre_done(void *user, const nvn_gpu_done *d) {
     struct pre_note *p = user;
     if (d->status == NVN_GPU_DONE_FAILED) red("前置段失败：%s", d->why ? d->why : "?");
@@ -442,7 +448,7 @@ void nvn_be_finish_wait(uint64_t fence) {
     if (!fence) return;
     uint64_t t0 = now_ns();
     nvn_gpu_rc r = nvn_gpu_fence_wait(fence, 5000000000ull, NULL);
-    pf_add(RP_PERF_WAIT_FIN_N, 1); pf_add(RP_PERF_WAIT_FIN_NS, now_ns() - t0);
+    { uint64_t w = now_ns() - t0; pf_add(RP_PERF_WAIT_FIN_N, 1); pf_add(RP_PERF_WAIT_FIN_NS, w); fl_fence(w); }
     (void)r;   // 时间线已失败时这里也等不到：失败本身已在 sub_done 报红，Finish 不因此卡游戏线程
 }
 
@@ -452,7 +458,7 @@ static int g_wrote_since_wait;   // 本轮等待之后有没有「显卡写游�
 int nvn_be_wait(uint64_t fence, uint64_t timeout_ns) {
     if (!fence) return 1;
     uint64_t t0 = now_ns();
-    if (rp_fence_done(fence)) { pf_add(RP_PERF_WAIT_NS, now_ns() - t0); pf_add(RP_PERF_WAIT_N, 1); pf_add(RP_PERF_WAIT_ALREADY_N, 1); return 1; }
+    if (rp_fence_done(fence)) { uint64_t w = now_ns() - t0; pf_add(RP_PERF_WAIT_NS, w); pf_add(RP_PERF_WAIT_N, 1); pf_add(RP_PERF_WAIT_ALREADY_N, 1); fl_fence(w); return 1; }
     {   // 开关 debug.s2a.nvk_sync_lag（缺省 0 = 旧行为：真等）：
         //   1 = 允许「最多一次提交还在显卡上飞」：等的时候若这一栅栏只领先已完成值一格就不真等（返回已满足），
         //       下一次提交前换一份池镜像（照 nvk_finish_lag 的做法，见 rp_buf_frame_flip），让 CPU 回放与显卡执行重叠。
@@ -476,11 +482,11 @@ int nvn_be_wait(uint64_t fence, uint64_t timeout_ns) {
             // 不能放行：双镜像只保护 GPU 读，不会阻止完成回调覆盖新的 CPU 写。
             // 时间戳同样会覆盖游戏内存，SyncWait 不能像 Finish 一样排除它；只读提交仍保留重叠。
             if (__atomic_load_n(&g_wait_effect_fence, __ATOMIC_ACQUIRE) > done) allow = 0;
-            if (allow) { rp_buf_frame_flip(); pf_add(RP_PERF_WAIT_NS, now_ns() - t0); pf_add(RP_PERF_WAIT_N, 1); pf_add(RP_PERF_WAIT_FAKED_N, 1); return 1; }
+            if (allow) { rp_buf_frame_flip(); uint64_t w = now_ns() - t0; pf_add(RP_PERF_WAIT_NS, w); pf_add(RP_PERF_WAIT_N, 1); pf_add(RP_PERF_WAIT_FAKED_N, 1); fl_fence(w); return 1; }
         } }
     nvn_gpu_rc r = nvn_gpu_fence_wait(fence, timeout_ns, NULL);
     __atomic_store_n(&g_wrote_since_wait, 0, __ATOMIC_RELEASE);   // 真等过：显卡写的缓冲已经落地
-    pf_add(RP_PERF_WAIT_NS, now_ns() - t0); pf_add(RP_PERF_WAIT_N, 1);
+    { uint64_t w = now_ns() - t0; pf_add(RP_PERF_WAIT_NS, w); pf_add(RP_PERF_WAIT_N, 1); fl_fence(w); }
     // 时间线已失败：再等也不会完成。按「已结束」放行，让游戏线程不死等；失败本身已在 sub_done 报红
     return nvn_gpu_ok(r) || r.code == NVN_GPU_E_FAILED || r.code == NVN_GPU_E_DEVICE;
 }
@@ -607,9 +613,46 @@ int rp_hitch_line(char *b, size_t n, uint64_t gap_ns, uint64_t exec_ns, uint64_t
 // 线程：[提交]（回放线程）；OP_CALL 的递归也在同一条线程上，嵌套深度记在 g_ret_n。
 // 生命周期：无（只读命令流，写帧级账 / 逐命令账两个全局计数器）。
 // 出错：没有失败路径；坏记录与深度超限按未接登记后照常结束本列表（不返回假成功）。
+// #658：仅保存正式解码后的第一条及标量元数据，不读取 GPU 参数/count 内容。
+struct rp_count_group { p_draw dr; p_draw_idx di; const void *rec; uint32_t n; int indexed; uint64_t stride; };
+static void count_flush(struct rp_count_group *g, int tm) {
+    if (!g->n) return;
+    uint64_t t = tm ? now_ns() : 0;
+    rp_draw_count_batch(g_cmd, g->indexed ? NULL : &g->dr, g->indexed ? &g->di : NULL, g->rec, g->n, g->stride);
+    if (tm) pf_add(RP_PERF_EXEC_DRAW_NS, now_ns() - t);
+    g->n = 0;
+}
+static void count_feed(struct rp_count_group *g, const p_draw *dr, const p_draw_idx *di, const void *rec, int tm) {
+    (void)tm;
+    int ix = di != NULL;
+    uint64_t cnt = ix ? di->mdi_cnt : dr->mdi_cnt, ind = ix ? di->ind : dr->ind;
+    int32_t seq = ix ? di->mdi_i : dr->mdi_i;
+    uint64_t first = g->indexed ? g->di.ind : g->dr.ind;
+    uint64_t oldcnt = g->indexed ? g->di.mdi_cnt : g->dr.mdi_cnt;
+    int same = g->n && g->n < 1024 && ix == g->indexed && cnt == oldcnt && seq == (int32_t)g->n;
+    if (same) same = ix ? di->prim == g->di.prim && di->itype == g->di.itype && di->ibuf == g->di.ibuf : dr->prim == g->dr.prim && dr->tfc == g->dr.tfc;
+    uint64_t stride = g->stride;
+    if (same && g->n == 1) { if (ind <= first) same = 0; else stride = ind - first; }
+    if (same && (stride < (ix ? 20u : 16u) || (stride & 3) || stride > UINT32_MAX)) same = 0;
+    if (same && ((uint64_t)g->n > (UINT64_MAX - first) / stride || ind != first + g->n * stride)) same = 0;
+    if (same) { g->n++; g->stride = stride; if (g->n == 1024) count_flush(g, 0); return; }
+    count_flush(g, 0);   // 调用处 t_cmd 已覆盖本次绘制，避免重复计时。
+    if (!cnt || seq != 0) { rp_draw(g_cmd, dr, di, rec); return; }
+    g->indexed = ix; g->rec = rec; g->n = 1; g->stride = ix ? 20 : 16;
+    if (ix) g->di = *di; else g->dr = *dr;
+}
+#ifdef S2A_RP_EXEC_TEST_COUNT_EXIT
+void s2a_rp_test_count_exit(uint32_t pending);
+#endif
 static uint64_t exec_list(const uint8_t *p) {
     static int inited; if (!inited) { inited = 1; rp_state_reset(); }
-    if (!p) return 0;   // 没有列表：不取时刻、不计时（上沿允许 nvn_be_exec(NULL)）
+    struct rp_count_group count_group = {0};
+    if (!p) {
+#ifdef S2A_RP_EXEC_TEST_COUNT_EXIT
+        s2a_rp_test_count_exit(count_group.n);
+#endif
+        return 0;   // 没有列表：不取时刻、不计时（上沿允许 nvn_be_exec(NULL)）
+    }
     // 回放耗时按命令类别分（开关 debug.s2a.nvk_exec_tm，缺省 0）：绘制类 vs 其余（传输 / 整屏清除 / 派发 / 状态），
     // 用来判「回放总时长里有多少不在 rp_draw 的各步上」。取时刻本身有开销，只在量的时候开。
     static int tm = -1;
@@ -621,7 +664,8 @@ static uint64_t exec_list(const uint8_t *p) {
     for (;;) {
         nvn_plat_safepoint();   // 一次提交可连续回放数秒：让平台的停世界事务在命令之间越过本线程（nvn_plat.h）
         op_hdr h; memcpy(&h, p, sizeof h);
-        if (rec_bad(h)) { nvn_unimpl("rec", "bad_record", p); break; }   // 按这条列表的 END 处理：走下面唯一的出口
+        if (rec_bad(h)) { count_flush(&count_group, tm); nvn_unimpl("rec", "bad_record", p); break; }   // 按这条列表的 END 处理：走下面唯一的出口
+        if ((h.op != OP_DRAW && h.op != OP_DRAW_IDX && h.op != OP_JUMP) || g_rc_skip) count_flush(&count_group, tm);
         uint64_t t_cmd = tm ? now_ns() : 0;
         const void *a = p + 8;
         switch (h.op) {
@@ -653,8 +697,8 @@ static uint64_t exec_list(const uint8_t *p) {
                 break; }
             case OP_RESET_COUNTER: { uint64_t t; memcpy(&t, a, 8); if (t == NVN_COUNTER_TYPE_SAMPLES_PASSED) occ_reset(g_cmd); break; }   // 其余计数器的报告值本来就写 0，复位无事可做
             case OP_RENDER_COND: rc_cond(a); break;
-            case OP_DRAW: { if (g_rc_skip) break; p_draw t; rp_draw(g_cmd, draw_rec(a, h.size, &t), NULL, p); break; }
-            case OP_DRAW_IDX: { if (g_rc_skip) break; p_draw_idx t; rp_draw(g_cmd, NULL, draw_idx_rec(a, h.size, &t), p); break; }
+            case OP_DRAW: { if (g_rc_skip) break; p_draw t; count_feed(&count_group, draw_rec(a, h.size, &t), NULL, p, tm); break; }
+            case OP_DRAW_IDX: { if (g_rc_skip) break; p_draw_idx t; count_feed(&count_group, NULL, draw_idx_rec(a, h.size, &t), p, tm); break; }
             case OP_MULTI_DRAW: { if (g_rc_skip) break; p_multi_draw m; if (h.size - 8 < sizeof m) { nvn_unimpl("rec", "multi_draw_short", p); break; } memcpy(&m, a, sizeof m); rp_multi_draw(g_cmd, &m, p); break; }
             case OP_SET_RT: { p_set_rt t; rp_pass_set_rt(g_cmd, set_rt_rec(a, h.size, &t)); sub_split(); break; }
             case OP_CLEAR_COLOR: if (!g_rc_skip) rp_pass_clear_color(g_cmd, a, p); break;
@@ -664,9 +708,9 @@ static uint64_t exec_list(const uint8_t *p) {
             case OP_CLEAR_TEX: rp_pass_flush(g_cmd); rp_op_clear_tex(g_cmd, a, p); break;
             case OP_COPY_B2T: rp_pass_flush(g_cmd); rp_op_copy_b2t(g_cmd, a, p); break;   // 传输在通道外
             case OP_COPY_T2T: rp_pass_flush(g_cmd); rp_op_copy_t2t(g_cmd, a, p); break;   // 先落地待折清除：拷贝可能读写那些目标
-            case OP_UPDATE_UB: rp_op_update_ub(a, p); break;
-            case OP_COPY_B2B: rp_op_copy_b2b(a, p); break;
-            case OP_CLEAR_BUF: rp_op_clear_buf(a, p); break;
+            case OP_UPDATE_UB: if (!rp_op_update_ub_gpu(g_cmd, a, p)) rp_op_update_ub(a, p); break;   // 碰到还没落地的 GPU 写才走 GPU（#1022）
+            case OP_COPY_B2B: if (!rp_op_copy_b2b_gpu(g_cmd, a, p)) rp_op_copy_b2b(a, p); break;
+            case OP_CLEAR_BUF: if (!rp_op_clear_buf_gpu(g_cmd, a, p)) rp_op_clear_buf(a, p); break;
             case OP_WAIT_SYNC: {
                 const sync_t *s; void *ev; uint64_t v;
                 memcpy(&s, a, sizeof s);
@@ -700,6 +744,10 @@ static uint64_t exec_list(const uint8_t *p) {
         p += h.size;
     }
 out:
+#ifdef S2A_RP_EXEC_TEST_COUNT_EXIT
+    s2a_rp_test_count_exit(count_group.n);
+#endif
+    // 到这里组一定已 flush：空指针早返在建组前，bad_record / OP_END 已 flush。
     {
         const uint64_t t1 = timed ? now_ns() : 0;
         // 帧级账只由最外层累加一次：里层的时间已经包括在外层的墙钟里，再记一层就是重复统计。

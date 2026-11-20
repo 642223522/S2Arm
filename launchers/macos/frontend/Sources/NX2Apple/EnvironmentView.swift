@@ -81,6 +81,21 @@ struct EnvironmentView: View {
                                 .controllerID("settings.keys.import")
                         }
                     }
+                    // Xcode：现在用的是哪一份，可自己选（装在扩展硬盘等自动找不到的位置）；选过的优先用，可改回自动查找
+                    CardGroup(loc.t("s2arm.env.xcode.group")) {
+                        CardRow(loc.t("s2arm.env.xcode.title"), detail: xcodeDetail) {
+                            if model.chosenXcode != nil {
+                                LauncherRowActions {
+                                    Button(loc.t("s2arm.env.xcode.auto")) { model.setXcode(nil) }
+                                        .controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy || model.checking)
+                                        .accessibilityIdentifier("env.xcode.auto")
+                                    xcodeChooseButton
+                                }
+                            } else {
+                                xcodeChooseButton
+                            }
+                        }
+                    }
                     InstallModeCard(model: model)   // 装到 iPhone 的方式（v0.3.0：签名 / 安装入口收在这一处）
                     // 主屏小组件（11-16）：装到 iPhone / 更新 / 导出时带不带 iPhone 桌面的游戏机小组件；缺省开，关掉后请求里带 widget: false
                     CardGroup(loc.t("s2arm.env.widget.group")) {
@@ -89,6 +104,15 @@ struct EnvironmentView: View {
                                 .toggleStyle(LauncherSwitchStyle()).labelsHidden()
                                 .accessibilityLabel(loc.t("s2arm.env.widget.title"))
                                 .accessibilityIdentifier("env.homeWidget")
+                        }
+                    }
+                    // 启动游戏时自动全屏（#575）：对所有游戏生效，单款在 env.txt 显式写过 S2A_FULLSCREEN 的照单款
+                    CardGroup(loc.t("s2arm.env.fullscreen.group")) {
+                        CardRow(loc.t("s2arm.env.fullscreen.title"), detail: model.launchFullscreenError.map(loc.backend) ?? loc.t("s2arm.env.fullscreen.detail")) {
+                            Toggle("", isOn: Binding(get: { model.launchFullscreen }, set: { model.setLaunchFullscreen($0) }))
+                                .toggleStyle(LauncherSwitchStyle()).labelsHidden()
+                                .accessibilityLabel(loc.t("s2arm.env.fullscreen.title"))
+                                .accessibilityIdentifier("env.launchFullscreen")
                         }
                     }
                     let failing = model.checks.filter { !$0.ok }
@@ -218,26 +242,21 @@ struct EnvironmentView: View {
                 return s("update.settings.ready").replacingOccurrences(of: "{0}", with: v)
             }
             if case .working(let id, let percent) = model.updateState {
-                return s(id).replacingOccurrences(of: "{0}", with: "\(percent ?? 0)")
+                if id == "update.downloading", percent == nil { return s("update.menu.downloadingPlain") }
+                return s(id).replacingOccurrences(of: "{0}", with: percent.map(String.init) ?? "")
             }
-            if model.updateCheckFeedback == "checking" {
+            if model.isCheckingForUpdates {
                 return s("update.settings.checking")
             }
             if let v = foundVersion {
                 return s("update.settings.found").replacingOccurrences(of: "{0}", with: v)
             }
-            if model.updateCheckFeedback == "upToDate" {
-                return s("update.settings.upToDate").replacingOccurrences(of: "{0}", with: current)
-            }
-            if model.updateCheckFeedback == "failed" {
-                return s("update.settings.failed")
-            }
             return s("update.settings.current").replacingOccurrences(of: "{0}", with: current)
         }()
         let manualButtonTitle: String = {
-            if model.updateState == .ready { return s("update.settings.btn.now") }
+            if model.updateState == .ready { return s("update.top.restart") }
             if isWorking { return s("update.settings.btn.downloading") }
-            if model.updateCheckFeedback == "checking" { return s("update.settings.btn.checking") }
+            if model.isCheckingForUpdates { return s("update.settings.btn.checking") }
             if foundVersion != nil { return s("update.settings.btn.view") }
             return s("update.settings.btn.check")
         }()
@@ -260,18 +279,45 @@ struct EnvironmentView: View {
             CardDivider()
             CardRow(s("update.settings.manual"), detail: manualDetail) {
                 Button(manualButtonTitle) {
-                    if model.updateState == .ready || model.availableUpdate != nil {
+                    if model.updateState == .ready {
+                        model.showEnvironment = false
+                        model.restartToUpdate()
+                    } else if model.availableUpdate != nil {
                         model.showUpdatePopup()
                         model.showEnvironment = false
                     } else {
-                        model.manualCheckForUpdates()
+                        model.checkForUpdatesManually()
                     }
                 }
                 .controllerButtonStyle(LauncherSecondaryButtonStyle())
-                .disabled(isWorking || model.updateCheckFeedback == "checking")
+                .disabled(isWorking || model.isCheckingForUpdates)
                 .accessibilityIdentifier("settings.updates.check")
             }
         }
+    }
+
+    private var xcodeChooseButton: some View {
+        Button(loc.t("s2arm.env.xcode.choose")) { chooseXcode() }
+            .controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy || model.checking)
+            .accessibilityIdentifier("env.xcode.choose")
+    }
+
+    private var xcodeDetail: String {
+        if let error = model.xcodeChooseError { return error.hasPrefix("s2arm.") ? loc.t(error) : loc.backend(error) }
+        let dev = model.activeDeveloperDir
+        let app = dev.hasSuffix("/Contents/Developer") ? String(dev.dropLast("/Contents/Developer".count)) : dev
+        if app.isEmpty { return loc.t("s2arm.env.xcode.none") }
+        return String(format: loc.t(model.chosenXcode != nil ? "s2arm.env.xcode.chosen" : "s2arm.env.xcode.found"), app)
+    }
+
+    private func chooseXcode() {
+        let panel = NSOpenPanel()
+        panel.title = loc.t("s2arm.env.xcode.choose")
+        panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.applicationBundle]
+        panel.directoryURL = URL(fileURLWithPath: "/Volumes", isDirectory: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        model.setXcode(url)
     }
 
     private func chooseLibrary() {

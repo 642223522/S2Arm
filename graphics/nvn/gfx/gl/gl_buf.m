@@ -203,3 +203,62 @@ GL(glVertexAttrib1fv, void, GLuint i, const GLfloat *v) { CTX(); attr_cur_set(i,
 GL(glVertexAttrib2fv, void, GLuint i, const GLfloat *v) { CTX(); attr_cur_set(i, 2, v); }
 GL(glVertexAttrib3fv, void, GLuint i, const GLfloat *v) { CTX(); attr_cur_set(i, 3, v); }
 GL(glVertexAttrib4fv, void, GLuint i, const GLfloat *v) { CTX(); attr_cur_set(i, 4, v); }
+
+// ---------- 即时存档：缓冲（内容整块存，共享存储直接读）与顶点数组 ----------
+// 映射着的缓冲（持久映射：LÖVE 引擎建一次、一直拿着指针往里写）：游戏内存里存着 MTLBuffer 内容的宿主地址。存档时按「gl:map:<名字>:<偏移>:<长度>」登记
+//   （gl_snap_handout_now，快照引擎写交出指针表之前调），恢复时快照引擎按身份要新地址：这里先按长度建出存储（gl_buf_snap_map），之后恢复内容时沿用这块
+enum { GB_NAME = 1, GB_SIZE, GB_LEN, GB_MAPACC, GB_USED, GB_MAPBITS, GB_MAPOFF, GB_MAPLEN, GB_STORAGE, GV_NAME = 1, GV_ATTR, GV_EBO };
+void s2a_snap_handout_id(uint64_t v, const char *id) __attribute__((weak));
+void gl_buf_snap_handout(void) {
+    if (!s2a_snap_handout_id) return; int n = 0;
+    for (GLuint i = 1; i < gl_buffers.n; i++) { struct gl_buffer *b = gl_buffers.v[i]; if (!b || !b->map_access || !b->buf) continue;
+        char id[96]; snprintf(id, sizeof id, "gl:map:%u:%zu:%lu", i, b->map_off, (unsigned long)b->buf.length);
+        s2a_snap_handout_id((uint64_t)(uintptr_t)((uint8_t *)b->buf.contents + b->map_off), id); n++; }
+    if (n) GLOG("即时存档：映射着的缓冲 %d 个（指针按身份登记）", n);
+}
+static struct gl_buffer *buf_shell(GLuint name, size_t len) {   // 恢复：按名字取 / 建缓冲对象，存储按长度建（已有同长存储就沿用）
+    struct gl_buffer *b = gl_name_get(&gl_buffers, name);
+    if (!b) { b = calloc(1, sizeof *b); if (!b || !gl_name_put(&gl_buffers, name, b)) { free(b); return NULL; } }
+    if (len && (!b->buf || b->buf.length != len)) { gl_dev_init(); b->buf = [gl_dev newBufferWithLength:len options:MTLResourceStorageModeShared]; if (!b->buf) return NULL; }
+    return b;
+}
+uint64_t gl_buf_snap_map(const char *id) {   // "<名字>:<偏移>:<长度>"
+    unsigned nm = 0; size_t off = 0; unsigned long len = 0; if (sscanf(id, "%u:%zu:%lu", &nm, &off, &len) != 3 || !nm || off > len) return 0;
+    struct gl_buffer *b = buf_shell(nm, len); return b && b->buf ? (uint64_t)(uintptr_t)((uint8_t *)b->buf.contents + off) : 0;
+}
+int gl_buf_snap_save(FILE *f) {
+    sfw w; sfw_sec(&w, f, "gl.buf", 1); uint32_t n = 0;
+    for (GLuint i = 1; i < gl_buffers.n; i++) { struct gl_buffer *b = gl_buffers.v[i]; if (!b) continue;
+        uint64_t len = b->buf ? b->buf.length : 0;
+        sfw_rec(&w); GLSF_W(&w, GB_NAME, i); GLSF_W(&w, GB_SIZE, b->size); GLSF_W(&w, GB_LEN, len); GLSF_W(&w, GB_MAPACC, b->map_access); GLSF_W(&w, GB_USED, b->used);
+        GLSF_W(&w, GB_MAPBITS, b->map_bits); GLSF_W(&w, GB_MAPOFF, b->map_off); GLSF_W(&w, GB_MAPLEN, b->map_len); GLSF_W(&w, GB_STORAGE, b->storage); sfw_end_rec(&w); n++; }
+    if (sfw_end(&w)) return -1;
+    // 内容：按名字顺序紧跟（长度见上面的记录）
+    uint64_t bytes = 0;
+    for (GLuint i = 1; i < gl_buffers.n; i++) { struct gl_buffer *b = gl_buffers.v[i]; if (!b || !b->buf) continue;
+        if (fwrite(b->buf.contents, 1, b->buf.length, f) != b->buf.length) return -1; bytes += b->buf.length; }
+    sfw_sec(&w, f, "gl.vao", 1);
+    for (GLuint i = 1; i < gl_vaos.n; i++) { struct gl_vao *v = gl_vaos.v[i]; if (!v) continue; sfw_rec(&w); GLSF_W(&w, GV_NAME, i); GLSF_W(&w, GV_ATTR, v->a); GLSF_W(&w, GV_EBO, v->ebo); sfw_end_rec(&w); }
+    GLOG("即时存档：GL 缓冲 %u 个 %.1f MB", n, bytes / 1048576.0);
+    return sfw_end(&w);
+}
+int gl_buf_snap_restore(FILE *f) {
+    sfr r; if (sfr_sec(&r, f, "gl.buf", 1)) return -1;
+    GLuint *names = NULL; uint64_t *lens = NULL; uint32_t n = 0, cap = 0; int bad = 0;
+    while (sfr_rec(&r) == 1) {
+        GLuint nm = 0; uint64_t len = 0; GLSF_R(&r, GB_NAME, nm); GLSF_R(&r, GB_LEN, len); if (!nm) continue;
+        struct gl_buffer *b = buf_shell(nm, (size_t)len); if (!b) { bad = 1; break; }
+        GLSF_R(&r, GB_SIZE, b->size); GLSF_R(&r, GB_MAPACC, b->map_access); GLSF_R(&r, GB_USED, b->used); GLSF_R(&r, GB_MAPBITS, b->map_bits);
+        GLSF_R(&r, GB_MAPOFF, b->map_off); GLSF_R(&r, GB_MAPLEN, b->map_len); GLSF_R(&r, GB_STORAGE, b->storage);
+        b->idx16 = nil; b->fan32_cache = nil; b->last_use = 0;
+        if (len) { if (n == cap) { cap = cap ? cap * 2 : 256; names = realloc(names, cap * sizeof *names); lens = realloc(lens, cap * sizeof *lens); } names[n] = nm; lens[n++] = len; }
+    }
+    sfr_done(&r);
+    for (uint32_t i = 0; !bad && i < n; i++) { struct gl_buffer *b = gl_name_get(&gl_buffers, names[i]); if (fread(b->buf.contents, 1, (size_t)lens[i], f) != lens[i]) bad = 1; }
+    free(names); free(lens);
+    if (bad || sfr_sec(&r, f, "gl.vao", 1)) return -1;
+    while (sfr_rec(&r) == 1) { GLuint nm = 0; GLSF_R(&r, GV_NAME, nm); struct gl_vao *v = calloc(1, sizeof *v); if (!nm || !v) { free(v); continue; }
+        GLSF_RC(&r, GV_ATTR, v->a, "gl.attrib", gl_attrib); GLSF_R(&r, GV_EBO, v->ebo); if (!gl_name_put(&gl_vaos, nm, v)) { free(v); bad = 1; } }
+    sfr_done(&r);
+    return bad ? -1 : 0;
+}

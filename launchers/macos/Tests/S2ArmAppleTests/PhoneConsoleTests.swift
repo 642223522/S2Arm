@@ -31,8 +31,8 @@ import S2ArmAppleAdapter
     }
 
     func testParseResult() {
-        XCTAssertNil(PhoneOverview(result: ["enabled": false, "phones": []]), "开关关着 → 不出首位卡")
-        let o = PhoneOverview(result: ["enabled": true, "phones": [
+        XCTAssertNil(PhoneOverview(result: [:]), "结果里没有 phones（作业层太旧）→ 不出首位卡")
+        let o = PhoneOverview(result: ["phones": [
             ["device": "D1", "name": "我的手机", "installed": true, "shellCurrent": false, "free": true, "expiresAtEstimate": 2_000_000_000, "lastSeen": 1_999_990_000,
              "online": NSNull(), "signMode": "devCert",
              "games": [["gameId": "0100a", "state": "suggested", "reasons": ["hostAbi"]], ["gameId": "0100B", "state": "needsData", "dataOnComputer": false],
@@ -141,12 +141,13 @@ private final class ConsoleRunner: JobProcessRunner {
     func start(executable: URL, arguments: [String], environment: [String: String],
                onLine: @escaping (Data) -> Void, onStderr: @escaping (Data) -> Void,
                onExit: @escaping (Int32) -> Void) throws -> JobProcessHandle {
+        objc_sync_enter(self); defer { objc_sync_exit(self) }   // 作业客户端在并发线程池里同时调 start：替身状态串行改（无锁并发追加数组会 SIGSEGV 带崩整个测试进程）
         var taskId = ""; var request: [String: Any] = [:]
         if let last = arguments.last, last.hasSuffix(".json"), let data = try? Data(contentsOf: URL(fileURLWithPath: last)),
            let r = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] { request = r; taskId = r["taskId"] as? String ?? "" }
         let result: [String: Any] = switch request["operation"] as? String ?? "" {
         case "catalog": ["games": ["0100A", "0100B", "0100C"].map { ["id": $0, "name": $0, "ready": true, "missing": [String]()] }]
-        case "phoneOverview": ["enabled": true, "phones": [["device": "D9", "name": "测试手机", "installed": true, "shellCurrent": true, "games": [[String: Any]]()]]]
+        case "phoneOverview": ["phones": [["device": "D9", "name": "测试手机", "installed": true, "shellCurrent": true, "games": [[String: Any]]()]]]
         default: [:]
         }
         let event: [String: Any] = ["schema": 1, "taskId": taskId, "type": "result", "state": "succeeded", "result": result, "message": ""]

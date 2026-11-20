@@ -343,6 +343,8 @@ def rewrite_plan(game, current, deps):
                      and len(line.split('\t')) >= 4 and line.split('\t')[0].upper() == pid
                      and line.split('\t')[1].lower() == bid and line.split('\t')[3].lower() == 'apple'), '')   # F7 #1574：苹果路线只取 apple 行
     fps = REPO / f'runtime/fps/{bid[:16]}.tsv'
+    # 我方帧率表（c 行改指令）只在内部对照口径 S2A_CAPS_OWN=1 进包，同 stage_rewrite.sh FT（11-18，#1607：60 帧关着游戏也被解锁）
+    fps = fps if env.get('S2A_CAPS_OWN') == '1' and fps.is_file() else None
     fix = REPO / f'runtime/fix/{bid[:16]}.tsv'   # 游戏缺陷修补表（改写器 fix_rows）：仓库源表，改写器直接读，不进产物根
     dirs, selection, on = community_selection(env, pid, bid)
     if env.get('S2A_COMMUNITY_SELECT'):
@@ -384,14 +386,14 @@ def rewrite_plan(game, current, deps):
     else:
         patch = None
     key = digest(f'{key} backend={rk.strip()}{ck}{code}' +
-                 (f' fps={digest(fps.read_bytes())}' if fps.is_file() else '') +
+                 (f' fps={digest(fps.read_bytes())}' if fps else '') +
                  (f' fix={digest(fix.read_bytes())}' if fix.is_file() else '') +
                  (f' verified={digest(verified)}' if verified else ''), 10)
     key = digest(f'{key} inputs={rewrite_inputs(current)}', 10)
     tag = f'rw-{key}' + (f'-{target}' if target != 'apple' else '') + ('-spin' if spin else '')
     deps.record('graphics/nvn/tools/romfs_list.py')
     return dict(key=key, tag=tag, bid=bid, tables=tables, verified=verified,
-                fps=fps if fps.is_file() else None, fix=fix if fix.is_file() else None, patch=patch, addr=addr,
+                fps=fps, fix=fix if fix.is_file() else None, patch=patch, addr=addr,
                 addr_log=ad / 'log', community=bool(ck), dirs=dirs, selection=selection)
 
 
@@ -724,13 +726,14 @@ class Stages:
         deps = Dependencies(stage, current)
         try:
             base, plan = self._caps_plan(current, deps)
-            replay = ('s2a_caps.tsv', 's2a_caps.all.tsv', 'caps.log', '.stage_caps', '.stage_caps.deps')
+            replay = ('s2a_caps.tsv', 's2a_caps.all.tsv', 'caps.log', '.stage_caps', '.stage_caps.deps') + \
+                (('widen_verified.tsv',) if plan else ())   # 安卓标记是本阶段产物：重放到新现行时按它换（同 pack/stage_caps.sh）
             key = base
             if read(current / f'.stage_{stage}') == deps.key(base):
                 return self._result(stage, start, current, key, skipped=True)
             tx = self.roots.begin(game, self.roots.tag(game, stage + '-' + digest(key, 8)), env=deps.env)
             try:
-                self._caps(tx.path, deps)
+                self._caps(tx.path, deps, plan)
                 deps.save(tx.path, base)
                 text(tx.path / f'.stage_{stage}', key + '\n')
                 result = self._result(stage, start, tx.path, key)
@@ -745,10 +748,37 @@ class Stages:
             deps.close()
 
     @staticmethod
+    def _caps_target(deps):
+        """清单 / 失效键 / 验证行按平台分（同 pack/stage_caps.sh TGT）：S2A_PACK_PLAT=android → android，其余 apple"""
+        return 'android' if deps.env.get('S2A_PACK_PLAT', 'ios') == 'android' else 'apple'
+
+    @staticmethod
+    def _caps_android_rewrite(current, pid, deps):
+        """安卓（F7 #1574，同 pack/stage_caps.sh）：改写由 android/tools/make_pack.py 出包时跑、模块不进产物根，没有 .stage_rewrite——
+        键改按「宽屏已验证表的安卓行 + 安卓改写键（改写器源码指纹 + 后端键 + ABI / spin / sdkcut）」；返回 (改写键, 安卓验证行或 '')"""
+        bid = (current / 'exefs/main').read_bytes()[0x40:0x50].hex()
+        table = Path(deps.env.get('S2A_WIDEN_DIR') or REPO / 'graphics/widen/tables') / 'verified.tsv'
+        verified = ''
+        if table.is_file():
+            for line in read(table).splitlines():
+                cols = line.split('\t')
+                if not line.startswith('#') and len(cols) > 3 and cols[0].upper() == pid and cols[1].lower() == bid and cols[3].lower() == 'android':
+                    verified = line
+                    break
+        abi = re.search(r"^REWRITE_ABI = '([^']+)'", read(REPO / 'android/tools/make_pack.py'), re.M)
+        if not abi:
+            raise StageError('取不到安卓改写 ABI（android/tools/make_pack.py REWRITE_ABI）')
+        sd, _ = deps.python('pack/rewriter.py', 'source')
+        rk, _ = deps.python('pack/rewriter.py', 'key')
+        rwk = (f"target=android rewriter={sd.strip()}:{rk.strip()} abi={abi[1]} spin={deps.env.get('S2A_REWRITE_SPIN', '0')}"
+               f" sdkcut={deps.env.get('S2A_SDK_ADDR_CUT', '1')}")
+        if verified:
+            rwk += ' verified=' + hashlib.sha256(verified.encode()).hexdigest()[:16]
+        return rwk, verified
+
+    @staticmethod
     def _caps_plan(current, deps):
-        rewrite = read(current / '.stage_rewrite')
-        if not rewrite:
-            raise StageError('能力清单需要已完成的改写阶段')
+        target = Stages._caps_target(deps)
         pid = '-'
         try:
             npdm = (current / 'exefs/main.npdm').read_bytes()
@@ -757,22 +787,34 @@ class Stages:
                 pid = f'{struct.unpack_from("<Q", npdm, aci + 0x10)[0]:016X}'
         except (OSError, ValueError, struct.error):
             pass  # The bash key also uses '-' when metadata cannot identify a PID.
-        signals, _ = deps.python('tools/caps_policy.py', 'signal-files', '--target', 'apple')
+        verified = None
+        if target == 'android':
+            rewrite, verified = Stages._caps_android_rewrite(current, pid, deps)
+        else:
+            rewrite = read(current / '.stage_rewrite')
+            if not rewrite:
+                raise StageError('能力清单需要已完成的改写阶段')
+        signals, _ = deps.python('tools/caps_policy.py', 'signal-files', '--target', target)
         signals = signals.strip()
         if not signals:
             raise StageError('取不到能力实现文件清单')
         deps.env['S2A_DEPS_KEYED'] = os.pathsep.join(['docs/名单_验证账.tsv', *signals.split(':')])
-        signal_hash, _ = deps.python('tools/caps_policy.py', 'signal-hash', '--target', 'apple')
+        signal_hash, _ = deps.python('tools/caps_policy.py', 'signal-hash', '--target', target)
         # Like grep -i '^<PID>\t': keep exact matching row bytes and order.
         rows = ''.join(line + '\n' for line in read(REPO / 'docs/名单_验证账.tsv').splitlines()
                        if line.split('\t', 1)[0].upper() == pid.upper())
         deps.record('pack/gen_caps.sh')
-        return digest(rows + 'rewrite=' + rewrite + '\n' + signal_hash), None
+        return digest(rows + 'rewrite=' + rewrite + '\n' + signal_hash), verified   # 第二项：安卓 = 验证行（可为 ''），苹果 = None
 
     @staticmethod
-    def _caps(output, deps):
+    def _caps(output, deps, verified=None):
+        target = 'apple' if verified is None else 'android'
+        if target == 'android':   # 克隆根可能带别的平台或已撤销的旧标记：先清，再按当前安卓验证账重建（同 pack/stage_caps.sh）
+            (output / 'widen_verified.tsv').unlink(missing_ok=True)
+            if verified:
+                text(output / 'widen_verified.tsv', verified + '\n')
         lines, _ = deps.python('tools/caps_policy.py', 'decide',
-                               deps.env.get('S2A_CAPS_REPO') or REPO, output, '--both', '--target', 'apple',
+                               deps.env.get('S2A_CAPS_REPO') or REPO, output, '--both', '--target', target,
                                log=output / 'caps.log')
         Stages._light_log(output / 'caps.log')
         rows = [line.split('\t') for line in lines.splitlines()]
@@ -784,7 +826,7 @@ class Stages:
                  '--all-caps 出包：有来源即开、不看强信号')
         for filename, head, row in zip(('s2a_caps.tsv', 's2a_caps.all.tsv'), heads, rows):
             fps, fps_reason, widen, widen_reason, display = row
-            content = ('plat\tapple\n'   # F7 #1574：清单首行标平台，安卓打包只收 plat android 头
+            content = (f'plat\t{target}\n'   # F7 #1574：清单首行标平台，安卓打包只收 plat android 头
                        f'# 包内能力清单（{head}）\n'
                        '# 格式：<能力>\\t<值>\\t# <原因>（1 = 开，0 = 显式关）；优先级：启动环境 > Settings.bundle（用户改过的设置）> 本文件\n'
                        f'widen\t{widen}\t# {widen_reason}\nfps60\t{fps}\t# {fps_reason}\n'

@@ -216,10 +216,20 @@ namespace S2A.Services
 
         // ---------- 会话表（cookie = 下标 + 1） ----------
 
+        // 即时存档重放：这条请求建的会话按存档时的 cookie 放（SnapLog.SessionCookiesOf）；那格被占了就照常按先后分配（重放会点名对不上的会话）
+        internal Queue<ulong> SnapForceCookies;
+
         internal ulong AddSession(SessionTarget target)
         {
             lock (_sessionLock)
             {
+                if (SnapForceCookies is { Count: > 0 } fq)
+                {
+                    ulong want = fq.Dequeue();
+                    while (want > (ulong)_sessions.Length) Array.Resize(ref _sessions, _sessions.Length * 2);
+                    if (want > 0 && _sessions[want - 1] == null) { _sessions[want - 1] = target; _sessionCount++; return want; }
+                    Console.Error.WriteLine($"[s2a] 【黄】即时存档恢复：会话按原 cookie {want} 放，那格已被占，按先后分配");
+                }
                 for (int n = 0; n < _sessions.Length; n++)
                 {
                     int i = (_freeHint + n) % _sessions.Length;
@@ -269,6 +279,7 @@ namespace S2A.Services
         internal uint NewSessionHandle(SessionTarget target)
         {
             ulong cookie = AddSession(target);
+            if (SnapSwitch.Save) SnapLog.SessionCreated(cookie);   // 即时存档：新会话挂到建它的那条请求名下（请求日志按活对象收，SnapLog.cs ReqTable）
             uint h = Native.HandleNew((uint)ObjKind.Session, cookie);
 
             if (h == 0)
@@ -599,9 +610,9 @@ namespace S2A.Services
 
             if (SnapSwitch.Save)
             {
-                SnapLog.Begin(_snapNum, cookie, t, msg, size, CommandId(msg, size));
+                int seq = SnapLog.Begin(_snapNum, cookie, t, msg, size, CommandId(msg, size));
                 try { return RequestCoreTail(t, msg, size); }
-                finally { SnapLog.End(); }
+                finally { SnapLog.End(seq, msg, size); }   // 处理后消息缓冲已是应答：失败的这条记成「当时失败」，恢复时不重放
             }
 
             return RequestCoreTail(t, msg, size);
@@ -638,6 +649,7 @@ namespace S2A.Services
             if ((ObjKind)kind == ObjKind.Session)
             {
                 RemoveSession(cookie);
+                if (SnapSwitch.Save) SnapLog.SessionClosed(cookie);   // 即时存档：会话关了，它和它的域对象的请求、建它的那条从请求日志收掉
             }
         }
 
@@ -904,6 +916,7 @@ namespace S2A.Services
         {
             Dispatcher d = Instance;
             ulong cookie = d.AddSession(new HleTarget(obj));
+            if (SnapSwitch.Save) SnapLog.SessionCreated(cookie);   // HLE 服务交出的非域对象也是新会话：挂到正在处理的那条请求名下（请求日志按活对象收、重放按原 cookie 分配）
             d.ServerProcess.HandleTable.GenerateHandle(new S2ASessionObject(d.Kernel, cookie), out int sh);
             return sh;
         }

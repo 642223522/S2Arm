@@ -4,11 +4,12 @@
 v0.3.10 起，下载、验签、替换、回滚、重启都交给业界标准组件：Mac 用 Sparkle 2，Windows 用 NetSparkle（appcast 在 dl.s2arm.com/appcast/，
 发版用 Ed25519 私钥签）。这里不再有任何换版代码，只剩：
 
-check       查最新版本（官网签名清单，取不到回退 GitHub Release），打印一行 JSON。
+check       查最新版本（官网签名清单，取不到回退 GitHub Release），打印一行 JSON。--fresh 跳过缓存，失败也返回 JSON。
 inbox       启动器打开时要给玩家看什么：查版本 + 取公告（notice.json，取不到用随包那份），按「永远只给最新一期」算出
             最多一个弹窗（这版更新了什么 / 有新版）、横幅（最新一条重要公告）、消息列表与未读数；打印一行 JSON。只读。
             顺带清掉旧自写换版在 updates/ 下留的残留（clear_stale_pending）。
             新功能大窗（docs/site/feature.json，随包）：本机没看过这一期就弹（新装、更新上来都弹一次），排在更新弹窗前面。
+            --notices-only 只取公告和新功能大窗，供更新模拟模式使用。
 inbox-seen  玩家关掉了：记进数据目录 updates/seen.json（--update 版本 / --after 版本 / --notice 最新看过的公告号 / --feature 新功能期号）。
 """
 import argparse
@@ -55,6 +56,31 @@ class UpdateError(Exception):
 def version_tuple(text):
     match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", (text or "").strip())
     return tuple(int(n) for n in match.groups()) if match else None
+
+
+_SEMVER = re.compile(r"v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*))?")
+
+
+def version_key(text):
+    """比新旧用的键（语义版本 2.0.0 的先后）：X.Y.Z 或 X.Y.Z-预发布段（如 0.6.0-test.1）；认不出 → None。
+    同号的预发布排在正式版之前（0.6.0-test.1 < 0.6.0）、预发布段逐段比（数字段按数、数字段先于字母段）：
+    装了测试版的人能收到同号正式版，正式版之间照旧；正式版玩家看不看预发布见 newer"""
+    m = _SEMVER.fullmatch((text or "").strip())
+    if not m:
+        return None
+    pre = m[4]
+    ids = tuple((0, int(p), "") if p.isdigit() else (1, 0, p) for p in pre.split(".")) if pre else ()
+    return (int(m[1]), int(m[2]), int(m[3]), 0 if pre else 1, ids)
+
+
+def newer(candidate, current):
+    """更新源里的 candidate 要不要给本机 current：要比它新，且正式版玩家只收正式版——
+    本机是正式版（0.5.8）时预发布版（0.6.0-test.1）一律不算更新，哪怕按语义版本更大（正式渠道永远不推测试版，11-19 维护者）；
+    本机是测试版时正式版和更新的测试版都收（0.6.0-test.1 → 0.6.0-test.2 / 0.6.0）"""
+    c, m = version_key(candidate), version_key(current)
+    if not c or not m or c <= m:
+        return False
+    return c[3] == 1 or m[3] == 0
 
 
 def trusted(url):
@@ -149,7 +175,7 @@ def signed_manifest(assets, tag_version):
     if not ed25519.verify(public_key(), raw, signature):
         raise UpdateError("update_bad_signature", "新版的签名校验没通过，已停止，当前版本没有变化。")
     manifest = json.loads(raw)
-    if version_tuple(manifest.get("version")) != tag_version or not isinstance(manifest.get("files"), dict):
+    if version_key(manifest.get("version")) != version_key(tag_version) or not isinstance(manifest.get("files"), dict):
         raise UpdateError("update_bad_signature", "新版的清单和发布版本对不上，已停止，当前版本没有变化。")
     return manifest
 
@@ -165,8 +191,7 @@ def latest_cache(platform, current):
 
 
 def latest(platform, current, fresh=False):
-    """→ {available, version, ...}，15 分钟内查过就用上次的结果（latest_cache）。fresh=True（真要下载时，prepare）不读缓存、现查，结果写回缓存：
-    启动时的「有没有新版」可以用缓存省限流额度，真下载必须是此刻的发布（剃刀 H18：热修发出后 15 分钟内查不到、查完到下载之间撤版会报 update_none）"""
+    """→ {available, version, ...}，启动检查可读 15 分钟缓存。玩家主动检查时 fresh=True，现查并写回缓存。"""
     cache = latest_cache(platform, current)
     try:
         if not fresh and time.time() - cache.stat().st_mtime < LATEST_TTL:
@@ -177,9 +202,15 @@ def latest(platform, current, fresh=False):
         pass
     info = query_latest(platform, current)
     try:
-        tmp = cache.with_suffix(".tmp")
-        tmp.write_text(json.dumps(info), encoding="utf-8")
-        tmp.replace(cache)
+        # 主动检查可以和启动检查并行，各自写自己的临时文件再替换缓存。
+        with tempfile.NamedTemporaryFile(dir=cache.parent, prefix=cache.name + ".", delete=False, mode="w", encoding="utf-8") as out:
+            tmp = Path(out.name)
+            try:
+                json.dump(info, out)
+                out.close()
+                tmp.replace(cache)
+            finally:
+                tmp.unlink(missing_ok=True)
     except OSError:
         pass
     return info
@@ -208,7 +239,7 @@ def mirror_manifest():
         manifest = json.loads(raw)
     except (UpdateError, OSError, http.client.HTTPException, ValueError):
         return None
-    return manifest if isinstance(manifest, dict) and version_tuple(manifest.get("version")) and isinstance(manifest.get("files"), dict) else None
+    return manifest if isinstance(manifest, dict) and version_key(manifest.get("version")) and isinstance(manifest.get("files"), dict) else None
 
 
 def offer(platform, version, mine, files, url_of, notes=None):
@@ -217,15 +248,16 @@ def offer(platform, version, mine, files, url_of, notes=None):
     （11-11 维护者：原先按签名不对报 update_bad_signature，只发一个平台时另一平台的老用户每次启动都看到错误）。
     清单本身验签不过、清单与发布版本对不上、下载下来的包与清单校验值不符，仍各自报错（signed_manifest / prepare）"""
     name = ASSETS[platform]
+    version = version.removeprefix("v") if isinstance(version, str) else ".".join(map(str, version))   # 版本号字串（可带预发布段）或旧的数字三元组
     wanted = files.get(name)
     if not isinstance(wanted, dict):
-        print(f"更新：{'.'.join(map(str, version))} 的签名清单里没有 {name}（这一版没给本平台出包），按没有新版处理", file=sys.stderr)
+        print(f"更新：{version} 的签名清单里没有 {name}（这一版没给本平台出包），按没有新版处理", file=sys.stderr)
         return {"available": False}
-    info = {"available": True, "version": ".".join(map(str, version)), "size": wanted["size"], "sha256": wanted["sha256"],
+    info = {"available": True, "version": version, "size": wanted["size"], "sha256": wanted["sha256"],
             "asset": url_of(name), "assetName": name}
     if notes_valid(notes):   # 这版给玩家看的更新说明（签过名的清单里带的，见 notes_from_markdown）
         info["notes"] = notes_valid(notes)
-    delta = DELTAS[platform].format(".".join(map(str, mine)))
+    delta = DELTAS[platform].format(mine if isinstance(mine, str) else ".".join(map(str, mine)))   # mine：本机版本（字串原样，测试版 0.6.0-test.1 没有差分包、走整包）
     entry = files.get(delta)
     if isinstance(entry, dict) and url_of(delta):   # 差分包同样要在清单里，不在就只走整包
         info.update(delta=url_of(delta), deltaName=delta, deltaSize=entry["size"], deltaSha256=entry["sha256"])
@@ -236,28 +268,28 @@ def query_latest(platform, current):
     """→ {available, version, ...}。只提供严格更高的版本（防降级）；校验值和大小都取自签过名的清单，不信 Release 页面。
     先查官网（mirror_manifest）：验签通过就以它为准——不比当前新就是没有新版，不再去问 GitHub（省下的正是限流的那 60 次）；
     官网拿不到 / 验签不过才查 GitHub Release。"""
-    mine = version_tuple(current)
+    mine_name = (current or "").strip().removeprefix("v")   # 本机可以是测试版（0.6.0-test.1）：比新旧见 newer
     manifest = mirror_manifest()
     if manifest is not None:
-        version = version_tuple(manifest["version"])
-        if not mine or version <= mine:
+        version = str(manifest["version"]).strip().removeprefix("v")
+        if not newer(version, current):
             return {"available": False}
         template = os.environ.get("S2A_UPDATE_API") and os.environ.get("S2A_UPDATE_DOWNLOAD") or RELEASE_DOWNLOAD   # 假 Release 验收时下载也指到本机
-        v = ".".join(map(str, version))
-        info = offer(platform, version, mine, manifest["files"], lambda name: template.format(version=v, name=name), manifest.get("notes"))
+        v = version
+        info = offer(platform, version, mine_name, manifest["files"], lambda name: template.format(version=v, name=name), manifest.get("notes"))
         # 安装包先走官方域名（R2）、GitHub 当退路；假 Release 验收只认 S2A_UPDATE_R2，没设就不走（单测不连真网）
         r2 = os.environ.get("S2A_UPDATE_R2", "") if os.environ.get("S2A_UPDATE_API") else R2_DOWNLOAD
         if info.get("available") and r2:
             info.update(asset=r2.format(version=v, name=info["assetName"]), assetFallback=info["asset"])
         return info
     release = json.loads(fetch(os.environ.get("S2A_UPDATE_API") or API, 15, 8 << 20))
-    version = version_tuple(release.get("tag_name"))
+    version = str(release.get("tag_name") or "").strip().removeprefix("v")
     assets = {a.get("name"): a for a in release.get("assets") or [] if isinstance(a, dict)}
     package = assets.get(ASSETS[platform])
-    if not version or not mine or version <= mine or not package or MANIFEST not in assets or SIGNATURE not in assets:
+    if not newer(version, current) or not package or MANIFEST not in assets or SIGNATURE not in assets:
         return {"available": False}
     manifest = signed_manifest(assets, version)
-    return offer(platform, version, mine, manifest["files"], lambda name: assets[name]["browser_download_url"] if name in assets else None, manifest.get("notes"))
+    return offer(platform, version, mine_name, manifest["files"], lambda name: assets[name]["browser_download_url"] if name in assets else None, manifest.get("notes"))
 
 
 NOTICE_URL = "https://jhaizhou-ops.github.io/S2Arm/notice.json"   # docs/site/notice.json，Pages 发布（docs/site/README.md）
@@ -318,7 +350,9 @@ def feature_spotlight(platform, current, path=None, withdrawn=()):
     """docs/site/feature.json → 这一期新功能大窗 {id, badge, url?, pages:[…]}，每页 image = {zh-Hans, en} 绝对路径；不弹 → None。每页两种版式（通用多页轮播，两端照 layout 画）：
       poster = 只写 image：一张图铺满大窗（首页海报）；detail = image + kicker / title / what / how / where（各中英两份）：上大图、下说明。
     不弹的情形：文件没有 / 格式不对 / 不给本平台 / 本机版本低于 minVersion（功能还没进这一版，热修不能先把大窗带出去）/ 官网 notice.json 的 featureWithdrawn 列了这一期。
-    图不在、或说明页的文字缺一项 / 中英缺一，这一页不要；一页都不剩就不弹。"""
+    图不在、或说明页的文字缺一项 / 中英缺一，这一页不要；一页都不剩就不弹。
+    每页还可以写（0.6.0 起，11-19 维护者定）：platforms = 只给这几个平台看（不写 = 文件里列的平台都看；iPhone App 读同一份文件、只取标了 ios 的页）；
+      audience = "upgrade"：只给从旧版升上来的玩家看（inbox 判，新装的跳过）；labels = 三栏标题换字（如 where 写「要知道」），各中英两份。"""
     import urllib.parse
     path = Path(path) if path else feature_file()
     try:
@@ -346,6 +380,9 @@ def feature_spotlight(platform, current, path=None, withdrawn=()):
     for row in data.get("pages") or []:
         if not isinstance(row, dict):
             continue
+        only = row.get("platforms")
+        if isinstance(only, list) and platform not in only:
+            continue
         # 图跟界面语言走（11-14 维护者：海报和启动器语言要一致）：image 写一个路径 = 两种语言同图；写 {zh-Hans, en} = 各用各的，英文缺了用中文
         raw = row.get("image")
         raw = raw if isinstance(raw, dict) else {"zh-Hans": raw}
@@ -358,7 +395,14 @@ def feature_spotlight(platform, current, path=None, withdrawn=()):
             continue
         texts = {key: _bilingual(row.get(key)) for key in FEATURE_TEXTS}
         if None not in texts.values():   # 说明页：大图 + 标题 + 是什么 / 怎么用 / 在哪用
-            pages.append(dict(texts, layout="detail", image=image))
+            page = dict(texts, layout="detail", image=image)
+            labels = {k: v for k, v in ((k, _bilingual(v)) for k, v in (row.get("labels") or {}).items() if k in ("what", "how", "where")) if v} \
+                if isinstance(row.get("labels"), dict) else {}
+            if labels:
+                page["labels"] = labels
+            if row.get("audience") == "upgrade":
+                page["audience"] = "upgrade"
+            pages.append(page)
     if not pages:
         return None
     out = {"kind": "feature", "id": ident, "badge": _bilingual(data.get("badge")) or {"zh-Hans": "新功能", "en": "New"}, "pages": pages}  # 非玩家句
@@ -511,7 +555,7 @@ def installed_notes(private_root, version):
         return None
 
 
-def inbox(platform, current, private_root, check=None, notices=None, feature=None):
+def inbox(platform, current, private_root, check=None, notices=None, feature=None, *, notices_only=False):
     """启动器打开时要给玩家看什么（两端共用，11-13 维护者定：永远只给最新一期，不叠加、不补弹）→
       popup：最多一个。「这版更新了什么」（刚换上新版、这版说明里有「亮点」、没关过）优先，其次「有新版」（这一版没提示过）；
              跳过的版本不补弹——只看当前版本和最新那一版。
@@ -522,7 +566,7 @@ def inbox(platform, current, private_root, check=None, notices=None, feature=Non
     新功能大窗排在最前：本机没看过这一期（seen.json featureSeen）就弹，新装（没有 seen.json）和更新上来都算；更新弹窗留到下次打开。
     只读，不改 seen.json（玩家关掉时 inbox_seen 才记）"""
     seen = seen_state(private_root)
-    check = check if isinstance(check, dict) else {"available": False}
+    check = check if not notices_only and isinstance(check, dict) else {"available": False}
     notices = notices or []
     seen_at = next((i for i, n in enumerate(notices) if n["id"] == seen.get("noticeSeen")), None)
     def is_seen(i):
@@ -531,7 +575,11 @@ def inbox(platform, current, private_root, check=None, notices=None, feature=Non
         n["unread"] = not is_seen(i) and i == 0
     popup = None
     # 这版的说明只在「从旧版里点更新、换上这一版」时记在本机（启动器开始下载新版时写 updates/notes/<版本>.json），有它就说明是刚更新上来的；手动装的新版没有，不弹
-    mine = installed_notes(private_root, current)
+    mine = None if notices_only else installed_notes(private_root, current)
+    # 只给升级上来的玩家看的页（audience=upgrade）：本机记过「看过什么」（seen.json）或有从旧版点更新留下的这版说明 = 升级上来的；新装的去掉这几页
+    if feature and not (seen or mine) and any(p.get("audience") == "upgrade" for p in feature.get("pages") or []):
+        pages = [p for p in feature["pages"] if p.get("audience") != "upgrade"]
+        feature = dict(feature, pages=pages) if pages else None
     if feature and seen.get("featureSeen") != feature["id"]:
         popup = feature
     elif mine and mine.get("highlights") and seen.get("afterShown") != current:
@@ -541,6 +589,8 @@ def inbox(platform, current, private_root, check=None, notices=None, feature=Non
     important = next(((i, n) for i, n in enumerate(notices) if n.get("level") == "important"), None)
     banner = important[1] if important and not is_seen(important[0]) else None
     messages = [dict(n, kind="notice") for n in notices]
+    if feature:   # 新功能大窗看过之后在「消息」里留一条，点开再看一遍（11-19 维护者定）
+        messages.append(dict(feature, kind="feature"))
     if check.get("available") and check.get("version"):
         messages.append({"kind": "update", "version": check["version"], "notes": check.get("notes"), "installed": False})
     if mine:
@@ -734,29 +784,34 @@ def main(argv=None):
     p = sub.add_parser("check")
     p.add_argument("--platform", required=True, choices=sorted(ASSETS))
     p.add_argument("--current", required=True)
+    p.add_argument("--fresh", action="store_true")
     p = sub.add_parser("inbox"); p.add_argument("--private-root", required=True); p.add_argument("--platform", required=True, choices=sorted(ASSETS))
     p.add_argument("--current", required=True)
+    p.add_argument("--notices-only", action="store_true")
     p = sub.add_parser("inbox-seen"); p.add_argument("--private-root", required=True)
     p.add_argument("--update"); p.add_argument("--after"); p.add_argument("--notice"); p.add_argument("--feature")
     a = ap.parse_args(argv)
     # 打开时要看什么（inbox）：查版本、取公告都可能失败，失败不走下面的更新失败记录（不写 update.log），查不到就当没有新版、没有公告，界面照常
     if a.command == "inbox":
-        try:
-            clear_stale_pending(a.private_root, a.current)
-        except OSError:
-            pass
-        try:
-            sweep_install_leftovers(a.private_root)
-        except OSError:
-            pass
-        try:
-            check = latest(a.platform, a.current)
-        except (UpdateError, OSError, ValueError, KeyError, __import__("http.client").client.HTTPException) as error:
-            check = {"available": False, "error": getattr(error, "code", type(error).__name__)}
+        check = None
+        if not a.notices_only:
+            try:
+                clear_stale_pending(a.private_root, a.current)
+            except OSError:
+                pass
+            try:
+                sweep_install_leftovers(a.private_root)
+            except OSError:
+                pass
+            try:
+                check = latest(a.platform, a.current)
+            except (UpdateError, OSError, ValueError, KeyError, __import__("http.client").client.HTTPException) as error:
+                check = {"available": False, "error": getattr(error, "code", type(error).__name__)}
         data = notice_data()
         withdrawn = [i for i in data.get("featureWithdrawn") or [] if isinstance(i, str)] if isinstance(data.get("featureWithdrawn"), list) else []
         feature = feature_spotlight(a.platform, a.current, withdrawn=withdrawn)
-        print(json.dumps(inbox(a.platform, a.current, a.private_root, check, notice_messages(data, a.platform, a.current), feature), ensure_ascii=False))
+        print(json.dumps(inbox(a.platform, a.current, a.private_root, check, notice_messages(data, a.platform, a.current),
+                               feature, notices_only=a.notices_only), ensure_ascii=False))
         return 0
     if a.command == "inbox-seen":
         try:
@@ -767,12 +822,19 @@ def main(argv=None):
         print(json.dumps({"ok": True}))
         return 0
     try:
-        print(json.dumps(latest(a.platform, a.current), ensure_ascii=False))   # check
+        print(json.dumps(latest(a.platform, a.current, fresh=a.fresh), ensure_ascii=False))   # check
         return 0
     except UpdateError as error:
+        if a.fresh:
+            emit(available=False, error=error.code)
+            return 0
         record_failure(a, error.code, str(error), error.detail)
         emit(state="failed", code=error.code, message=str(error))
-    except (OSError, ValueError, KeyError, ImportError, subprocess.SubprocessError, __import__("zipfile").BadZipFile, __import__("http.client").client.HTTPException) as error:
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, ImportError, subprocess.SubprocessError,
+            __import__("zipfile").BadZipFile, __import__("http.client").client.HTTPException) as error:
+        if a.fresh:
+            emit(available=False, error="update_failed")
+            return 0
         record_failure(a, "update_failed", type(error).__name__, f"{error}\n{getattr(error, 'stderr', '') or ''}")
         emit(state="failed", code="update_failed", message=f"更新没有完成，旧版没有变化（{type(error).__name__}）。请检查网络后重试。")
     return 1

@@ -234,7 +234,6 @@ namespace S2A.Services.Tests
                 return failures == 0 ? 0 : 1;
             }
             if (args is ["--horizon-merge-lifecycle"]) return HorizonMergeLifecycleTest();
-            if (args is ["--filesystem-restart"]) return FileSystemRestart();
             if (args is ["--apple-audio-dispose"]) return AppleAudioDispose();
             if (IFileWriteLengthTest() != 0) return 1;
             FakeNative.Install();
@@ -3641,6 +3640,65 @@ namespace S2A.Services.Tests
             }
 
             Check($"声音输出样本：兼容层 {cases.Length} 种降混 / 转换组合，两块不齐的缓冲按 1001 B 读", "全部逐字节一致、DataSize = 输出字节数", bad.Count == 0 ? "全部逐字节一致、DataSize = 输出字节数" : string.Join("；", bad));
+
+            // 兼容层收别的游戏格式（audsmx 外部流可开 PcmInt8 / PcmInt32 / PcmFloat，#b36edb 格式 5）：设备不认就先解成 PCM16（取高 16 位；浮点 × 32767 截断、饱和），
+            //   再降混 / 转设备格式。游戏样本与解出的 PCM16 手写：
+            //   Float 0.5 → 16383（16383.5 截断）、−0.5 → −16383、1 → 32767、−1 → −32767、2 → 32767（饱和）、−2 → −32768、0.25 → 8191、0 → 0
+            //   Int32 0x12345678 → 0x1234 = 4660、−0x12345678 → −4661（算术右移向下取整）、int.Max → 32767、int.Min → −32768
+            //   Int8 0x40 → 16384、−0x40 → −16384、127 → 32512、−128 → −32768
+            {
+                var f32 = Ryujinx.Audio.Common.SampleFormat.PcmFloat;
+                var i32 = Ryujinx.Audio.Common.SampleFormat.PcmInt32;
+                var i8 = Ryujinx.Audio.Common.SampleFormat.PcmInt8;
+                float[] fIn = [0.5f, -0.5f, 1f, -1f, 2f, -2f, 0.25f, 0f];
+                short[] fOut = [16383, -16383, 32767, -32767, 32767, -32768, 8191, 0];
+                int[] iIn = [0x12345678, -0x12345678, int.MaxValue, int.MinValue];
+                short[] iOut = [4660, -4661, 32767, -32768];
+                sbyte[] bIn = [0x40, -0x40, 127, -128];
+                short[] bOut = [16384, -16384, 32512, -32768];
+                // 6 声道浮点两帧：第 1 帧只有左前 1.0、第 2 帧只有右前 0.5 → PCM16 后按旧降混公式（OldCompat）折成立体声
+                float[] sIn = [1f, 0, 0, 0, 0, 0, 0, 0.5f, 0, 0, 0, 0];
+                short[] sOut = [32767, 0, 0, 0, 0, 0, 0, 16383, 0, 0, 0, 0];
+
+                byte[] Bytes16(short[] v) { byte[] b = new byte[v.Length * 2]; Buffer.BlockCopy(v, 0, b, 0, b.Length); return b; }
+                byte[] Raw<T>(T[] v) where T : unmanaged => System.Runtime.InteropServices.MemoryMarshal.AsBytes(v.AsSpan()).ToArray();
+
+                // 游戏格式、声道；设备只认的声道、格式；游戏内存里的样本；期望设备拿到的字节
+                (Ryujinx.Audio.Common.SampleFormat User, uint UserCh, uint Real, Ryujinx.Audio.Common.SampleFormat Fmt, byte[] In, byte[] Expect)[] gcases =
+                [
+                    (f32, 2, 2, pcm16, Raw(fIn), Bytes16(fOut)),
+                    (i32, 2, 2, pcm16, Raw(iIn), Bytes16(iOut)),
+                    (i8, 2, 2, pcm16, Raw(bIn), Bytes16(bOut)),
+                    (f32, 6, 2, pcm16, Raw(sIn), OldCompat(Bytes16(sOut), 6, 2, pcm16)),
+                    (f32, 2, 2, i32, Raw(fIn), OldCompat(Bytes16(fOut), 2, 2, i32)),   // 设备连 PCM16 也不认：经 PCM16 再转 Int32（同 PCM16 游戏的回落链）
+                ];
+                var gbad = new List<string>();
+
+                foreach (var c in gcases)
+                {
+                    int off = 100000;
+                    c.In.CopyTo(new Span<byte>(g + off, c.In.Length));
+                    var drvC = new CaptureDriver(mem, c.Real, c.Fmt);
+                    var compat = new Ryujinx.Audio.Backends.CompatLayer.CompatLayerHardwareDeviceDriver(drvC);
+                    var s = compat.OpenDeviceSession(Ryujinx.Audio.Integration.IHardwareDeviceDriver.Direction.Output, mem, c.User, 48000, c.UserCh);
+                    var b = new Ryujinx.Audio.Common.AudioBuffer { DataPointer = (ulong)(g + off), DataSize = (ulong)c.In.Length };
+                    s.RegisterBuffer(b);
+                    s.QueueBuffer(b);
+                    byte[] got = Drain(drvC.Last.Q, 3);
+
+                    if (!got.AsSpan().SequenceEqual(c.Expect) || b.DataSize != (ulong)c.Expect.Length)
+                    {
+                        gbad.Add($"{c.User} {c.UserCh} 声道 → {c.Real} 声道 {c.Fmt}：读出 {got.Length} / 期望 {c.Expect.Length} B、DataSize {b.DataSize}、{(got.AsSpan().SequenceEqual(c.Expect) ? "内容一致" : "内容不一致")}");
+                    }
+                }
+
+                Check($"声音输出样本：兼容层收游戏 Float / Int32 / Int8（{gcases.Length} 种组合，按 3 B 读）", "全部逐字节一致、DataSize = 输出字节数", gbad.Count == 0 ? "全部逐字节一致、DataSize = 输出字节数" : string.Join("；", gbad));
+
+                // 设备直接认游戏格式：不包兼容层，原样交给设备会话
+                var direct = new Ryujinx.Audio.Backends.CompatLayer.CompatLayerHardwareDeviceDriver(new CaptureDriver(mem, 2, f32))
+                    .OpenDeviceSession(Ryujinx.Audio.Integration.IHardwareDeviceDriver.Direction.Output, mem, f32, 48000, 2);
+                Check("声音输出样本：设备认 Float 时游戏 Float 立体声的会话（直交设备、不包兼容层）", "CaptureSession", direct.GetType().Name);
+            }
         }
 
         // 旧兼容层的语义（改前 CompatLayerHardwareDeviceSession + Downmixing 整块做法，按公式重写）：PCM16 降混（6 → 2 → 1 / 2 → 1），再转格式

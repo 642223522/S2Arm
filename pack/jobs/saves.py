@@ -28,7 +28,7 @@ import save_formats
 import layout
 import layout as _lay   # external_archive 里有同名局部变量 layout（存档结构），那里用这个别名
 
-OPERATIONS = {"saveStatus", "saveBackup", "saveInspect", "saveRestore"}
+OPERATIONS = {"saveStatus", "saveBackup", "saveInspect", "saveRestore", "savePrevious", "saveRestorePrevious"}
 TREES = ("bis/user/save", "bis/system/save")
 PROFILE = "system/Profiles.json"
 SAVE_INDEX = "bis/system/save/8000000000000000/0/imkvdb.arc"
@@ -635,7 +635,7 @@ def recovery_message(error):
 
 
 def recover_once(c, game):
-    """Caller MUST hold the library execution lock, including build.launch.
+    """Caller MUST hold the library execution lock (exclusive), or, in build.launch, the shared execution lock plus this game's lock.
     返回 True = 回退了一次没做完的事务；False = 没有事务或已提交；失败抛 RecoveryFailed（不删记录）。"""
     root, transactions, _ = locations(c, game)
     journal = safe_path(layout.root_of(c, game["id"]), transactions / (game["id"] + ".json"))

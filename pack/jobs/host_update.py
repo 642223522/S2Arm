@@ -116,14 +116,22 @@ def shader_hint(c, gid, ios_count=None):
     return ios_count is None and got["mac"] > 0 and built_older(c, _mac_built(c, gid))
 
 
+# 直连库内容代数（同 sgrade_bf.BF_GEN 的做法）：库里多出旧包没有、设备又要用的内容时 +1；出包时记进 game.json ios.libGen / Mac 运行版本 manifest.json libGen。
+#   1 = 库带客体输入（库容器种类 56）：设备上现做补齐 / 采样模拟 / 任务阶段变体从包里取（不再拷源快照）；旧包没有，游戏回收控制段后这些变体做不了（那一对绘制跳过、不崩），
+#   重出这一款就补齐，所以旧代数的款在「建议更新」里列出（原因 libGen，前端用着色器那条文案）
+#   2 = 着色器键第 2 代（graphics/nvn/gfx/nvn/nvn_key.h）+ 包内键别名表 key_alias.tsv：旧包靠宿主先新后旧兜底照常能用，重出后库按新键去重、首用现编与读档换键都对上新键
+LIB_GEN = 2
+
+
+def lib_stale(gen):
+    return int(gen or 0) < LIB_GEN
+
+
 def update_hints(c):
     """0.6.0 通用壳（开关后面）：启动器新版本打开时的快速比对（《文件与程序管理体系》⑦ ③，11-17 维护者定）。每款只读程序兼容记录
     （game.json 的 ios，没有读专用文件夹那份，layout.program_info，几 KB），比对改写器指纹 / 宿主约定号 / 着色器链与本版启动器的值；
     对不上的款给出「建议更新」与原因，玩家点了才做。不读游戏大文件（game.img、资源包、程序件）、不排后台重活、不改任何东西。
     没打过 iPhone 包的款没有记录，不标。开关关着 → {enabled: False, games: []}"""
-    import program_pack
-    if not program_pack.enabled(c):
-        return dict(enabled=False, games=[])
     want = engine_compat(c) or {}
     import rewrite_refresh
     try:
@@ -135,9 +143,12 @@ def update_hints(c):
         why = _game_hint(c, g["id"], rid, want)
         if shader_hint(c, g["id"]):
             why.append("shaderMiss")
+        mac = layout.image_mac(c, g["id"], create=False) / "manifest.json"
+        if "libGen" not in why and mac.is_file() and lib_stale(read(mac, {}).get("libGen")):
+            why.append("libGen")   # Mac 运行版本的库是旧代数（iPhone 那份在 _game_hint 判）
         if why:
             games.append(dict(gameId=g["id"].upper(), reasons=why))
-    return dict(enabled=True, games=games)
+    return dict(games=games)
 
 
 SIGN_LIFETIME = dict(free=7 * 86400, paid=365 * 86400)   # 按苹果规则估：免费账号描述文件 7 天、付费 / 证书一年（手机上 App 自己读描述文件给准数）
@@ -155,6 +166,8 @@ def _game_hint(c, gid, rid, want):
         why.append("hostAbi")
     if want and ios.get("dmshChain", LEGACY_CHAIN) != want["dmshChain"]:
         why.append("shader")
+    if lib_stale(ios.get("libGen")):
+        why.append("libGen")
     return why
 
 
@@ -214,9 +227,6 @@ def phone_overview(c):
     suggested（建议更新，附 reasons，同 update_hints）| notPushed（游戏库里有、这台没推过）| needsData（程序推过、资源没推）；notPushed / needsData 带 dataOnComputer =
     游戏库里还有没有 game.img；signMode 见 _sign_mode。缺省只读记录（几 KB，秒回）；请求带 probe: true 才查现在连着的手机（可能要几秒），
     结果里 online = 'usb' | 'network' | None（没查时没有这个键）。不改任何东西、不排后台活。开关关着 → {enabled: False, phones: []}"""
-    import program_pack
-    if not program_pack.enabled(c):
-        return dict(enabled=False, phones=[])
     import ipa as packer
     import rewrite_refresh
     want = engine_compat(c) or {}
@@ -266,7 +276,7 @@ def phone_overview(c):
         if online is not None:
             phone["online"] = online.get(key)
         phones.append(phone)
-    return dict(enabled=True, phones=phones)
+    return dict(phones=phones)
 
 
 def compatible(c, entry):
@@ -325,10 +335,11 @@ def host_exe(c, sha):
     return contained(c.library, layout.hosts_mac(c) / sha / EXE)
 
 
-def install_host(c, app):
-    """把一份 S2ArmGame.app 放进 hosts/mac/<摘要>（已有就不动）→ 摘要"""
+def install_host(c, app, sha=None):
+    """把一份 S2ArmGame.app 放进 hosts/mac/<摘要>（已有就不动）→ 摘要。sha：调用方已知的摘要前 12 位（内置宿主取 engine.json 清单里的，
+    起局不再每次现算 49 MB 的 SHA-256，11-19）；不给才现算"""
     from build import clone_tree
-    sha = digest(Path(app) / "Contents/MacOS/s2arm-host")[:12]
+    sha = sha or digest(Path(app) / "Contents/MacOS/s2arm-host")[:12]
     dest = layout.hosts_mac(c) / sha
     if not _same_files(Path(app), dest / APP):   # 已有的一份被外部改过（#304 同类：Info.plist 大小变了）也重放，不只看可执行文件在不在
         temporary = dest.with_name(sha + ".partial")
@@ -384,7 +395,7 @@ def choose(c, gid, image, manifest):
     current = info.get("hostMac")
     if status(c, gid, image, manifest) in ("swap", "current"):   # current 也过一遍：hosts/mac 那份被外部改过就从内置宿主重放（#304），没变是几十次 lstat
         from embedded import artifact
-        sha = install_host(c, artifact(c, APP))
+        sha = install_host(c, artifact(c, APP), bundled_sha(c))
         return sha, sha != current
     if not current or not host_exe(c, current).is_file():
         raise Failure("这款游戏的 Mac 宿主不在了，请重新准备这款游戏。", code="runtime_invalid")

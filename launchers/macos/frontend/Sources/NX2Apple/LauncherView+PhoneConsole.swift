@@ -147,7 +147,7 @@ extension LauncherView {
     /// ② 游戏同步：每款一行写这台手机上的状态，可勾选；「更新所选」一款款推，有总进度、能停
     private func consoleSyncSection(_ phone: PhoneOverview.Phone) -> some View {
         consoleSection(sx("console.section.sync")) {
-            ForEach(model.games) { game in
+            ForEach(consoleOrdered) { game in
                 let g = model.consoleGame(game)
                 let id = game.id.uppercased()
                 let pushing = model.consoleUpdating && model.consolePushing == id
@@ -158,7 +158,7 @@ extension LauncherView {
                     GameArtwork(covers: covers, cover: game.cover).frame(width: 28, height: 28).clipShape(RoundedRectangle(cornerRadius: 5))
                         .overlay { if pushing { Circle().stroke(.orange, lineWidth: 2).padding(-3) } }
                     Text(game.name).font(.manrope(13, .medium)).lineLimit(1).frame(minWidth: 160, alignment: .leading)
-                    Text(consoleGameText(g)).font(.manrope(12.5)).foregroundStyle(consoleGameColor(g)).lineLimit(2)
+                    Text(consoleGameText(g)).font(.manrope(12.5, g.isLegacy ? .bold : .regular)).foregroundStyle(consoleGameColor(g)).lineLimit(2)
                     Spacer(minLength: 0)
                 }
                 .accessibilityElement(children: .combine).accessibilityIdentifier("console.game." + id)
@@ -181,7 +181,14 @@ extension LauncherView {
         }.accessibilityIdentifier("console.section.sync")
     }
 
+    /// 0.5 → 0.6 升级后的老款（资源在、程序包不在）排最上面、醒目标出，直到更新完（更新完状态变了就回到游戏库顺序）
+    private var consoleOrdered: [GameSummary] {
+        let legacy = model.games.filter { model.consoleGame($0).isLegacy }
+        return legacy + model.games.filter { !model.consoleGame($0).isLegacy }
+    }
+
     private func consoleGameText(_ g: PhoneOverview.Game) -> String {
+        if g.isLegacy { return sx("console.legacy.badge") }
         switch g.state {
         case .latest: return sx("console.game.latest")
         case .suggested: return sx("update.hint.badge") + " · " + g.reasons.compactMap(S2ArmLauncherModel.updateReasonKey).map(sx).joined(separator: " ")
@@ -190,6 +197,7 @@ extension LauncherView {
         }
     }
     private func consoleGameColor(_ g: PhoneOverview.Game) -> Color {
+        if g.isLegacy { return LauncherPalette.building }
         switch g.state { case .latest: return .green; case .suggested: return .orange; case .notPushed: return .white.opacity(0.6); case .needsData: return .yellow }
     }
 
@@ -202,4 +210,9 @@ extension LauncherView {
             }
         }
     }
+}
+
+extension PhoneOverview.Game {
+    /// 0.5.x 整包装的老款：资源推过、程序包不在（作业层 host_update.phone_overview suggested + missing）
+    var isLegacy: Bool { state == .suggested && reasons.contains("missing") }
 }

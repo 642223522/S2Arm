@@ -146,9 +146,8 @@ extension LauncherView {
 
     /// 卡片和大图上的状态：两端都算（原作者只看 Mac 版）。
     func statusLine(_ game: GameSummary) -> (text: String, color: Color) {
-        if model.mainBusy && model.session?.gameID == game.id {
-            return (loc.t(model.session?.kind == .play ? "s2arm.library.running" : "s2arm.job.running"), LauncherPalette.building)
-        }
+        if model.playHolds(game.id) { return (loc.t("s2arm.library.running"), LauncherPalette.building) }   // 「运行中」按游戏槽判
+        if model.mainBusy && model.session?.gameID == game.id { return (loc.t("s2arm.job.running"), LauncherPalette.building) }
         if model.exportQueue.contains(where: { $0.game.id == game.id }) { return (txt("export.status.queued"), LauncherPalette.building) }
         // 存放位置（游戏库结构 v3）：移动硬盘没插 → 灰色「未连接」，插回来自动恢复；文件夹没了 → 红字，点卡片重新指定或移除
         // 未连接给具体路径（同出包页下拉框）：卷名会重名（内置盘一律「系统盘」），看不出是哪个位置没连上
@@ -209,6 +208,14 @@ extension LauncherView {
         if game.integritySkipped {
             Label(loc.backend(LauncherView.integritySkippedNote), systemImage: "exclamationmark.triangle.fill")
                 .font(.manrope(12, .medium)).foregroundStyle(.yellow).fixedSize(horizontal: false, vertical: true)
+        }
+        // S 级优化升级没做完（上次中途退出了启动器）：一行说明，点了打开「S 级优化升级」页接着升（11-18 维护者）
+        if game.sgradeIncomplete && !model.sgradeUpgrading(game.id) {
+            Button { model.sgradeUpgradeOpen = true } label: {
+                Label(txt("sgrade.upgrade.incomplete"), systemImage: "exclamationmark.arrow.circlepath")
+                    .font(.manrope(12, .medium)).foregroundStyle(SGradeCardView.gold).fixedSize(horizontal: false, vertical: true)
+            }
+            .buttonStyle(.plain).accessibilityIdentifier("sgrade.incomplete." + game.id)
         }
         updateHintLines(game)
         }

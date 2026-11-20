@@ -111,7 +111,7 @@ public sealed partial class EnvironmentWindow
 
     private Control GameCover(LibraryGame game, int size)
     {
-        var cover = WithUpdateHintBadge(game, WithIntegrityBadge(game, GameCoverImage(game, size), size), size);
+        var cover = WithSGradeProgress(game, WithUpdateHintBadge(game, WithIntegrityBadge(game, GameCoverImage(game, size), size), size), size);
         if (!game.SGrade) return cover;
         var s = Math.Max(20, size / 3.2);
         var badge = new Panel { Width = s, Height = s, Margin = new Thickness(3), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top,
@@ -185,8 +185,9 @@ public sealed partial class EnvironmentWindow
         var heroBusy = BusyFor(hero) || hero.LocationState is "missing" or "offline";
         if (hero.IphoneReady)
         {
-            var install = Primary(T("library.hero.install"),
-                () => { libraryFolder = libraryFolderBox.Text ?? libraryFolder; selectedGame = hero.Id; readinessFor = null; if (!installBusy) installExport = false; Navigate("install"); }, !PhoneBlockedFor(hero));   // 出包在跑也能去装（装机页里排队）
+            var upgrading = SGradeUpgrading(hero);   // 这款在升 S 级优化：按钮上直接写进度、不可点（11-18 维护者）
+            var install = Primary(upgrading ? SGradeUpgradingTitle(hero) : T("library.hero.install"),
+                () => { libraryFolder = libraryFolderBox.Text ?? libraryFolder; selectedGame = hero.Id; readinessFor = null; if (!installBusy) installExport = false; Navigate("install"); }, !PhoneBlockedFor(hero) && !upgrading);   // 出包在跑也能去装（装机页里排队）
             AutomationId(install, "library.hero.install");
             heroActions.Children.Add(install);
         }
@@ -249,6 +250,7 @@ public sealed partial class EnvironmentWindow
             overlay.Children.Add(Label(hero.Name, 32));
             overlay.Children.Add(Muted(T("library.version") + " · " + hero.Version, 14));
             if (IntegrityLine(hero) is { } heroNote) overlay.Children.Add(heroNote);
+            if (SGradeLine(hero) is { } sgNote) overlay.Children.Add(sgNote);
             if (UpdateHintLines(hero) is { } heroHint) overlay.Children.Add(heroHint);
             overlay.Children.Add(HeroActions(hero));   // 有横图时按钮也叠在底部渐变上（v0.4.5 修：说明写着「常驻」，之前只画了大图）
             art.Children.Add(overlay);
@@ -263,6 +265,7 @@ public sealed partial class EnvironmentWindow
             title.Children.Add(Label(hero.Name, 28));
             title.Children.Add(Label(T("library.version") + " · " + hero.Version));
             if (IntegrityLine(hero) is { } heroNote) title.Children.Add(heroNote);
+            if (SGradeLine(hero) is { } sgNote) title.Children.Add(sgNote);
             if (UpdateHintLines(hero) is { } heroHint) title.Children.Add(heroHint);
             title.Children.Add(HeroActions(hero));
             Grid.SetColumn(title, 1); banner.Children.Add(title); body.Children.Add(Card(banner, 20));
@@ -323,8 +326,9 @@ public sealed partial class EnvironmentWindow
                 ? (Action)(() => { libraryFolder = libraryFolderBox.Text ?? ""; selectedGame = game.Id; readinessFor = null; if (!installBusy) installExport = false; Navigate("install"); })
                 : game.LocationState == "missing" ? () => _ = MissingAsync(game)
                 : () => { libraryFolder = libraryFolderBox.Text ?? ""; selectedGame = game.Id; OpenBuild(); };
-            // 装机在跑时别的游戏照常能选、看详情、出包（只锁正在装的那款；同时只装一款：点别的「装到 iPhone」进装机页提示「另一款正在装 · 查看那一款」）
-            var select = Action(primaryKey, primaryAction, (game.IphoneReady ? !PhoneBlockedFor(game) : !BusyFor(game)) && (game.IphoneReady || game.LocationState != "offline"));   // 装到 iPhone：出包在跑也能去（排队）
+            // 装机在跑时别的游戏照常能选、看详情、出包（只锁正在装的那款；同时只装一款：点别的「推到 iPhone」进装机页提示「另一款正在装 · 查看那一款」）
+            var select = Action(primaryKey, primaryAction, (game.IphoneReady ? !PhoneBlockedFor(game) : !BusyFor(game)) && (game.IphoneReady || game.LocationState != "offline") && !SGradeUpgrading(game));   // 装到 iPhone：出包在跑也能去（排队）；升 S 级优化中不可点
+            if (SGradeUpgrading(game)) select.Content = SGradeUpgradingTitle(game);
             select.VerticalAlignment = VerticalAlignment.Center;
             // secondary: show past result if one exists and game is not currently running
             if (finishedPacks.TryGetValue(game.Id, out _) && !(packRunning && packGame?.Id == game.Id))
@@ -853,6 +857,7 @@ public sealed partial class EnvironmentWindow
             catalog = LibraryCatalog.Parse(listing.Report.Result); ClearCovers();
             if (!catalog.Games.Any(g => g.Id == selectedGame && !g.Hidden)) selectedGame = null;
             librarySummary = "library.completed";
+            ResumeSGradeWatch();   // S 级批量升级队列还在跑就接着读进度（SGradeUpgrade.cs）
             _ = PreparePhoneUpdateAsync();   // 新版启动器头一次读到要更新的手机：后台准备 iPhone App 更新（PhoneAutoUpdate.cs）
         }
         catch (LibraryProtocolException error)

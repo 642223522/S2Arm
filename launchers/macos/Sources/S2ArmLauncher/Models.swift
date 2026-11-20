@@ -67,7 +67,7 @@ struct TaskRecord: Codable, Identifiable {
     var target: String?
     // 装到 iPhone：这次推了几个资源包文件（成功句按它写，审计 18:00 P1-58）
     var packFiles: Int?
-    // 装到 iPhone：资源传完但电脑没拉起 App 解开时的那句（作业结果 unpackPending，11-09 #336）；有它就不说「已装到 iPhone」
+    // 装到 iPhone：资源传完但电脑没拉起 App 解开时的那句（作业结果 unpackPending，11-09 #336）；有它就不说「已推到 iPhone」
     var unpackPending: String?
     var diagnostics: [TaskDiagnostic]?
     var space: SpaceBudget?
@@ -106,7 +106,7 @@ struct TaskRecord: Codable, Identifiable {
         if let platform = BuildPlatform(rawValue:target ?? ""), operation.hasPrefix("platform") {
             return platform.name + " · " + L(["platformCheck":"检查环境", "platformBuild":"编译", "platformSource":"添加平台支持", "platformSetup":"准备工具链"][operation] ?? operation)
         }
-        return ["saveBackup":L("备份存档"),"saveInspect":L("检查存档备份"),"saveRestore":L("恢复存档"),"catalog":L("读取游戏库"),"saveInput":L("保存映射"),"worker":L("本地任务"),"setup":L("创建游戏库"),"clean":L("清理游戏文件"),"remove":L("移出游戏库"),"delete":L("删除游戏"),"diagnostics":L("导出诊断"),"prepareEngine":L("准备引擎工具"),"downloadMetal":L("下载 Metal 编译组件"),"downloadIosPlatform":L("下载 iOS 平台组件"),"pullDiagnostics":L("拉回 iPhone 诊断"),"ipa":L("编译 iPhone 应用"),"install":L("装到 iPhone"),"installDotnet":L("安装 .NET SDK"),"import":L("导入游戏"),"build":L("编译游戏"),"launch":L("运行游戏"),"keys":L("导入密钥"),"preflight":L("环境检查")][operation] ?? operation }
+        return ["saveBackup":L("备份存档"),"saveInspect":L("检查存档备份"),"saveRestore":L("恢复存档"),"catalog":L("读取游戏库"),"saveInput":L("保存映射"),"worker":L("本地任务"),"setup":L("创建游戏库"),"clean":L("清理游戏文件"),"remove":L("移出游戏库"),"delete":L("删除游戏"),"diagnostics":L("导出诊断"),"prepareEngine":L("准备引擎工具"),"downloadMetal":L("下载 Metal 编译组件"),"downloadIosPlatform":L("下载 iOS 平台组件"),"pullDiagnostics":L("拉回 iPhone 诊断"),"ipa":L("编译 iPhone 应用"),"install":L("推到 iPhone"),"installDotnet":L("安装 .NET SDK"),"import":L("导入游戏"),"build":L("编译游戏"),"launch":L("运行游戏"),"keys":L("导入密钥"),"preflight":L("环境检查")][operation] ?? operation }
 }
 struct ToolCheck: Decodable, Identifiable {
     var id: String { name }; var name: String; var ok: Bool; var message: String

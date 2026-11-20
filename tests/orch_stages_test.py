@@ -14,8 +14,17 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO))
 from pack.orch import roots, stages, refresh
+
+
+def outside_repo_tempdir(prefix):
+    """临时根放在仓库检出目录之外：调用方把 TMPDIR 设在检出目录里时，直连配置阶段按产品规则拒绝输出落在仓库里
+    （graphics/nvn/tools/direct_profile.py validate_output：output must be outside source/input root），这时挪到检出目录旁边建"""
+    base = Path(tempfile.gettempdir()).resolve()
+    inside = base == REPO or REPO in base.parents
+    return tempfile.TemporaryDirectory(prefix=prefix, dir=str(REPO.parent) if inside else None)
 
 
 class RunFailTail(unittest.TestCase):
@@ -30,7 +39,7 @@ class RunFailTail(unittest.TestCase):
 
 class StageTest(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix='s2a-orch-stage-')
+        self.temp = outside_repo_tempdir('s2a-orch-stage-')
         self.home = Path(self.temp.name)
         self.store = roots.Roots(self.home / 'roots', shared=False)
         self.source = self.home / 'input'
@@ -325,8 +334,15 @@ class StageTest(unittest.TestCase):
         if os.name == 'nt':
             env['PATH'] = str(Path(bash).parent.parent / 'usr/bin/core_perl') + os.pathsep + env['PATH']
         keys = []
-        for present in (False, True):
-            with self.subTest(kind=kind, present=present):
+        # 我方帧率表只在内部对照口径 S2A_CAPS_OWN=1 进包（11-18 #1607）：fps 这一组先按该口径测转发与键，
+        #   再测缺省口径——表在仓库里也不进包，键与没有表时相同（第三轮，own=False）
+        states = ((False, True), (True, True), (True, False)) if kind == 'fps' else ((False, False), (True, False))
+        for present, own in states:
+            if own:
+                env['S2A_CAPS_OWN'] = '1'
+            else:
+                env.pop('S2A_CAPS_OWN', None)
+            with self.subTest(kind=kind, present=present, own=own):
                 if present:
                     rows = {'code': [(patchfile, code_bytes)], 'fps': [(fps, fps_bytes)],
                             'widen': [(table, table_bytes), (verified, verified_bytes)],
@@ -337,7 +353,7 @@ class StageTest(unittest.TestCase):
                         p.write_bytes(data)
                     if kind == 'community':
                         env.update(S2A_COMMUNITY_PATCHES='1', S2A_CPATCH_DIRS=str(index.parent))
-                keyfile = self.home / ('oracle-' + str(present))
+                keyfile = self.home / ('oracle-' + str(present) + '-' + str(own))
                 oracle = dict(env, S2A_STAGE_KEYS=keyfile.as_posix())
                 if os.name == 'nt' and oracle['S2A_CPATCH_DIRS']:
                     # bash uses POSIX colon-separated paths, Python uses os.pathsep.
@@ -354,22 +370,24 @@ class StageTest(unittest.TestCase):
                         self.assertEqual(keyfile.read_bytes(), ('rewrite\t' + plan['key'] + '~d\n').encode())
                         keys.append(plan['key'])
                         self.assertEqual(bool(plan['patch']), present and kind == 'code')
-                        self.assertEqual(bool(plan['fps']), present and kind == 'fps')
+                        self.assertEqual(bool(plan['fps']), present and kind == 'fps' and own)
                         self.assertEqual(bool(plan['tables']), present and kind == 'widen')
                         self.assertEqual(bool(plan['community']), present and kind == 'community')
                         if present and kind == 'community':
                             self.assertEqual(plan['selection'], 'gfx:verified,gfx:explicit')
-                        self._check_rewrite_forwarding(deps, plan, kind, present, table_bytes,
+                        self._check_rewrite_forwarding(deps, plan, kind, present and (own or kind != 'fps'), table_bytes,
                                                        verified_bytes, fps_bytes, verified_platform)
-                        if present:
+                        if present and len(keys) == 2:
                             self.assertNotEqual(keys[0], keys[1], kind + ' must invalidate the stage key')
+                        if len(keys) == 3:
+                            self.assertEqual(keys[2], keys[0], 'own frame table must stay out of the default pack')
                     finally:
                         deps.close()
 
     def _check_rewrite_forwarding(self, deps, plan, kind, present, table_bytes, verified_bytes, fps_bytes, verified_platform):
         # Protocol-only C boundary: assertions inspect the environment and the
         # copied inputs. It does not prove patched machine-code output bytes.
-        output = self.home / ('forward-' + kind + '-' + str(present))
+        output = Path(tempfile.mkdtemp(prefix='forward-' + kind + '-' + str(present) + '-', dir=self.home))   # fps 组同 present 跑两轮（缺省 / 内部口径）
         (output / 'exefs').mkdir(parents=True)
         (output / 'romfs').mkdir()
         (output / 'exefs/main').write_bytes(b'original boundary')
@@ -650,7 +668,10 @@ class StageTest(unittest.TestCase):
     def test_real_index_core_structure_and_repeat_cache(self):
         initial = refresh.seed(self.store, '原创', self.source)
         tool = os.environ.get('S2A_ORCH_TEST_DOTNET') or shutil.which('dotnet')
-        with patch.dict(os.environ, {'DOTNET': tool, 'S2A_PREBUILT_TOOLS': '', 'S2A_RUN_ROOT': str(self.home / 'run')}):
+        # 运行根放常驻缓存：产品按身份把 romfs_index 编一次存在 <运行根>/s2arm/bin/romfs_index_<身份>（_index_tool，首次编 / 再次复用由
+        #   test_index_tool_* 用替身单独测），运行根在临时目录里就每跑一次都现编（Mac 约 20 秒、Linux 主机更久）
+        run_root = Path(os.environ.get('S2A_TEST_CACHE') or Path.home() / '.cache/s2a-test') / 'orch-stages-run'
+        with patch.dict(os.environ, {'DOTNET': tool, 'S2A_PREBUILT_TOOLS': '', 'S2A_RUN_ROOT': str(run_root)}):
             engine = stages.Stages(self.store)
             try:
                 result = engine.execute('原创', 'romfsidx')

@@ -85,6 +85,37 @@ def bundle_id_of(ipa):
         return plistlib.loads(z.read(n))['CFBundleIdentifier']
 
 
+IML_KEY = 'com.apple.developer.kernel.increased-memory-limit'
+
+
+def iml_facts(ipa):
+    """签好的 ipa 里主 App 的描述文件（embedded.mobileprovision）：带不带「提高内存上限」、描述文件名、应用号 → dict；读不到 → None。
+    plumesign 签主 App 用的权限就是描述文件里的那份（v2.7.2 signer.rs sign_single_bundle：merge_entitlements 只补钥匙串组），
+    描述文件里没有 = 装上就丢（宿主首启复核【红】[IML]，诊断 #7c32b3 等一族 4 份，丢在哪一步原先看不到）"""
+    try:
+        with zipfile.ZipFile(ipa) as z:
+            n = next((x for x in z.namelist() if re.fullmatch(r'Payload/[^/]+\.app/embedded\.mobileprovision', x)), None)
+            if not n:
+                return None
+            raw = z.read(n)
+        a, b = raw.find(b'<?xml'), raw.rfind(b'</plist>')
+        prof = plistlib.loads(raw[a:b + 8]) if a >= 0 and b > a else {}
+    except (OSError, zipfile.BadZipFile, plistlib.InvalidFileException, ValueError):
+        return None
+    ent = prof.get('Entitlements') or {}
+    return dict(iml=bool(ent.get(IML_KEY)), name=str(prof.get('Name') or ''), app_id=str(ent.get('application-identifier') or ''),
+                team=str((prof.get('TeamIdentifier') or [''])[0]))
+
+
+def iml_line(ipa):
+    """装机日志 / 进度里的一行：签出的 S2Arm 带不带「提高内存上限」。丢了的那行以「【IML 丢了】」开头（作业层据此记诊断、黄字提示玩家）"""
+    f = iml_facts(ipa)
+    if f is None:
+        return '【IML】读不到签好的包里的描述文件，没核「提高内存上限」'  # 非玩家句
+    where = f'描述文件「{f["name"]}」、应用号 {f["app_id"]}、团队 {f["team"]}'  # 非玩家句
+    return f'【IML】签好的 S2Arm 带「提高内存上限」（{where}）' if f['iml'] else f'【IML 丢了】签好的 S2Arm 描述文件里没有「提高内存上限」（{where}）'  # 非玩家句
+
+
 def legacy_case_bundle(bundle):
     """容器包名的旧写法：0.2.1 及以前 Windows 由 plumesign 自己在包名后接「.大写团队号」（io.s2arm.games.<大写团队号>），0.2.2 起和 Mac 统一小写。
     苹果的包名不分大小写，这个 Apple ID 早先注册过大写那个时，新写法去注册会被拒（9401），plumesign 查已有 App ID 却分大小写、认不出旧的。
@@ -93,10 +124,25 @@ def legacy_case_bundle(bundle):
     return m[1] + m[2].upper() if m and m[2] != m[2].upper() else None
 
 
+WIDGET_TAKEN = re.compile(r"Identifier '[^']+\.widget' is not available", re.I)   # 9401 被拒的是小组件扩展的包名（pack/widget_ext.py SUFFIX）
+
+
+def strip_plugins(src, dst):
+    """另存一份去掉扩展（Payload/*.app/PlugIns/）的 ipa → 原包里有没有扩展。没有就不写 dst（同 pack/jobs/install.py ipa_strip_widget）"""
+    with zipfile.ZipFile(src) as z:
+        names = z.infolist()
+        drop = [i for i in names if re.match(r'Payload/[^/]+\.app/PlugIns/', i.filename)]
+        if not drop: return False
+        with zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as o:
+            for i in names:
+                if i not in drop: o.writestr(i, z.read(i), compress_type=i.compress_type)
+    return True
+
+
 def plumesign_env():
     """起 plumesign 的环境：日志级别固定 info，不继承玩家机上的 RUST_LOG（#585：环境里有 RUST_LOG=warn，info 级的「Installation complete」
     被压掉，装好了、退出码 0 也判成失败）。判装机成功靠这行，级别得由我们定"""
-    return dict(os.environ, RUST_LOG='info')
+    return impactor.plume_env()   # S2A_PLUME_HOME 设了（Mac 通用壳）→ XDG_CONFIG_HOME：账号存档与私钥放启动器私有目录
 
 
 def sign_install(exe, ipa, dev_id, name, log, out_ipa, bundle=None, register=True):
@@ -204,7 +250,7 @@ PLUME_MACHINE_NAME = 'AltStore'   # plumesign v2.7.2 sign 不传机器名时的�
 def cert_check(exe, team, appdata=None, log=None, run=subprocess.run):
     """签名前核：要不要问玩家（见上）→ None（不用问）| {name, machine, created}（plumesign 这次会新建证书、列表里有别人的；满了会撤的那张 = 第一张）。
     列不出来（没联网 / 会话过期 / 工具旧）→ None：照原来签（判不了就不加阻碍，记日志）"""
-    base = appdata or os.environ.get('APPDATA') or os.path.join(os.path.expanduser('~'), '.config')
+    base = impactor.data_base(appdata)
     key = Path(base) / 'PlumeImpactor' / 'keys' / team / 'key.pem'
     mine = key_modulus(key.read_text(encoding='utf-8')) if key.is_file() else None
     try:
@@ -228,7 +274,7 @@ def cert_check(exe, team, appdata=None, log=None, run=subprocess.run):
 
 def plume_key_path(team, appdata=None):
     """plumesign 存私钥的地方（同版 v2.7.2 apps/plumesign/src/main.rs get_data_path）：Windows %APPDATA%，别的系统 $XDG_CONFIG_HOME 或 ~/.config；下面 PlumeImpactor/keys/<团队>/key.pem"""
-    base = appdata or os.environ.get('APPDATA') or os.environ.get('XDG_CONFIG_HOME') or os.path.join(os.path.expanduser('~'), '.config')
+    base = impactor.data_base(appdata)
     return Path(base) / 'PlumeImpactor' / 'keys' / team / 'key.pem'
 
 
@@ -382,17 +428,36 @@ def install_app(a, say=lambda m: print(m, flush=True)):
                 finally:
                     Path(log).write_text(first + '\n--- 设备已在团队里：只签名再装 ---\n' + Path(log).read_text(encoding='utf-8', errors='replace'), encoding='utf-8')
         except Fail:
-            # 9401 = 这个包名苹果那边已被占用。本机记录里没有旧包名时（换了电脑 / 重装启动器 / 新游戏库），旧写法是唯一可能的占用者：换它重试一次，
-            #   成功后调用方把实际包名记进设备记录，下次直接用（install.WinPhone.bundle_for_signing）。两次的输出都留在日志里
-            legacy = legacy_case_bundle(bundle)
             first = Path(log).read_text(encoding='utf-8', errors='replace') if Path(log).is_file() else ''
-            if not legacy or impactor.explain(first) != 'app_id_taken': raise
-            say(f'包名 {bundle} 被苹果拒绝（9401），改用这个 Apple ID 早先注册的写法 {legacy} 重试')
-            try:
-                sign_install(exe, a.ipa, dev, a.name, log, out, legacy)
-            finally:
-                Path(log).write_text(first + f'\n--- 9401：改用 {legacy} 重试 ---\n' + Path(log).read_text(encoding='utf-8', errors='replace'), encoding='utf-8')
+            if impactor.explain(first) != 'app_id_taken': raise
+            nowidget = Path(t, 'nowidget.ipa')
+            if WIDGET_TAKEN.search(first) and strip_plugins(a.ipa, nowidget):
+                # 被拒的是小组件扩展的包名（<主包名>.widget）：主包名本身没问题。plumesign 给主程序和扩展同时注册 App ID，
+                #   查已有的又分大小写——这个 Apple ID 早先被不带包名签过一次（plumesign 自己接「.大写团队号」），主包名被拒、
+                #   扩展却注册成了大写那个，之后小写的扩展包名永远 9401（11-18 Windows 实机复现）。同 Mac（sign_with_apple_id）：
+                #   绝不因小组件装不上，这次不带小组件把 S2Arm 装上
+                say('小组件的包名被苹果拒绝（9401），这次先不带主屏小组件装上 S2Arm')
+                try:
+                    sign_install(exe, nowidget, dev, a.name, log, out, bundle)
+                finally:
+                    Path(log).write_text(first + '\n--- 9401 在小组件包名：不带小组件重签 ---\n' + Path(log).read_text(encoding='utf-8', errors='replace'), encoding='utf-8')
+            else:
+                # 9401 = 这个包名苹果那边已被占用。本机记录里没有旧包名时（换了电脑 / 重装启动器 / 新游戏库），旧写法是唯一可能的占用者：换它重试一次，
+                #   成功后调用方把实际包名记进设备记录，下次直接用（install.WinPhone.bundle_for_signing）。两次的输出都留在日志里
+                legacy = legacy_case_bundle(bundle)
+                if not legacy: raise
+                say(f'包名 {bundle} 被苹果拒绝（9401），改用这个 Apple ID 早先注册的写法 {legacy} 重试')
+                try:
+                    sign_install(exe, a.ipa, dev, a.name, log, out, legacy)
+                finally:
+                    Path(log).write_text(first + f'\n--- 9401：改用 {legacy} 重试 ---\n' + Path(log).read_text(encoding='utf-8', errors='replace'), encoding='utf-8')
         bid = bundle_id_of(out) if out.is_file() else None
+        if out.is_file():
+            line = iml_line(out)   # 核对结果一律进装机日志；丢了才交给调用方（作业层记黄字诊断，不当进度显示）
+            with open(log, 'a', encoding='utf-8') as f:
+                f.write('\n' + line + '\n')
+            if line.startswith('【IML 丢了】'):
+                say(line)
     if not bid: raise Fail('装好了但读不到签好的 ipa 里的包名，推不了资源包', 1, 'device_install_failed')
     return bid
 

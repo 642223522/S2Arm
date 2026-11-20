@@ -10,8 +10,8 @@ internal static class PhoneOverviewCases
     public static void Run(Action<bool, string> check)
     {
         static JsonElement J(string s) => JsonDocument.Parse(s).RootElement.Clone();
-        check(PhoneOverview.Parse(J("""{"enabled":false,"phones":[]}""")) is null, "console: switch off → no first card");
-        var o = PhoneOverview.Parse(J("""{"enabled":true,"phones":[ {"device":"D1","name":"我的手机","installed":true,"shellCurrent":false,"online":null,"lastSeen":1999990000,"signMode":"devCert", "games":[{"gameId":"0100a","state":"suggested","reasons":["hostAbi"]},{"gameId":"0100B","state":"needsData","dataOnComputer":false},{"gameId":"0100C","state":"weird"}]}, {"device":"D2","name":"旧手机","lastSeen":1999000000}]}"""))!;
+        check(PhoneOverview.Parse(J("""{}""")) is null, "console: no phones key (old job layer) → no first card");
+        var o = PhoneOverview.Parse(J("""{"phones":[ {"device":"D1","name":"我的手机","installed":true,"shellCurrent":false,"online":null,"lastSeen":1999990000,"signMode":"devCert", "games":[{"gameId":"0100a","state":"suggested","reasons":["hostAbi"]},{"gameId":"0100B","state":"needsData","dataOnComputer":false},{"gameId":"0100C","state":"weird"}]}, {"device":"D2","name":"旧手机","lastSeen":1999000000}]}"""))!;
         var p = o.Phones[0];
         check(o.Phones.Count == 2 && p.SignMode == "devCert" && !p.ShellCurrent, "console: phone fields parsed");
         check(p.Probed && p.KnownOffline && !o.Phones[1].Probed, "console: online key present and null = probed and offline; absent = not probed");

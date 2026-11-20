@@ -165,6 +165,47 @@ namespace S2A.Services
 
         // 从 a 起最长 n 字节的一段（同 far.c piece）：回段长，host = 这段的宿主地址。远端之下 / 之上原样；远端内到块尾为止、加该块差值
         //（差值 0 = 这块没映射：原样，碰到即缺页走原生层兜底 / 报红，同修前）
+        // 音频 DSP 在实时线程上读游戏挂给音频渲染器的内存池（采样数据）。客体内存走文件后备时（8 GB Mac 缺省），内存吃紧系统先赶文件页，
+        //   池里久没播的音效被赶出去，下次播时 DSP 在实时线程上从盘读回、单拍卡几百毫秒。池挂着期间锁进物理内存（mlock），摘下时解锁（按段，远端分块逐块）；
+        //   锁不上（超系统上限等）照常用、记一行。Ryujinx.Audio 在池映射 / 解映射时调（S2AAudioPoolResident.Hook，服务层启动时挂）
+        [DllImport("libc", SetLastError = true)]
+        private static extern int mlock(void* addr, nuint len);
+
+        [DllImport("libc", SetLastError = true)]
+        private static extern int munlock(void* addr, nuint len);
+
+        public static void AudioPoolResident(ulong va, ulong size, bool on)
+        {
+            long* dir = FarDir();
+            ulong lo = dir != null ? Native.Far->Lo : 0;
+            int err = 0;
+
+            for (ulong a = va, left = size; left != 0;)
+            {
+                ulong h = a, k = dir != null ? FarPiece(dir, lo, a, left, out h) : left;
+
+                if (k == 0)
+                {
+                    break;
+                }
+
+                if ((on ? mlock((void*)h, (nuint)k) : munlock((void*)h, (nuint)k)) != 0 && err == 0)
+                {
+                    err = Marshal.GetLastPInvokeError();
+                }
+
+                a += k;
+                left -= k;
+            }
+
+            if (on)
+            {
+                Console.Error.WriteLine(err == 0
+                    ? $"[声] 音频内存池 {size / 1024} KB 已锁进物理内存（实时音频线程读采样不会因内存吃紧从盘读回）"
+                    : $"[声] 【黄】音频内存池 {size / 1024} KB 锁不进物理内存（errno {err}），照常用；内存吃紧时音频可能断续");
+            }
+        }
+
         private static ulong FarPiece(long* dir, ulong lo, ulong a, ulong n, out ulong host)
         {
             ulong off = a - lo;

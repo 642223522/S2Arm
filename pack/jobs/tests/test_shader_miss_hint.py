@@ -20,7 +20,7 @@ import tests.test_jobs as tj  # noqa: E402
 from tests.jobcase import ios_fixture  # noqa: E402
 
 A, B = "0100000000010000", "0100000000020000"
-OK = dict(rewriterId="RID", hostAbi=2, dmshChain="chain1")
+OK = dict(rewriterId="RID", hostAbi=2, dmshChain="chain1", libGen=host_update.LIB_GEN)
 
 
 class ShaderMissHint(unittest.TestCase):
@@ -32,7 +32,7 @@ class ShaderMissHint(unittest.TestCase):
         self.c.catalog = lambda: {"games": [{"id": A, "name": "甲"}, {"id": B, "name": "乙"}]}
 
     def run_hints(self):
-        with patch.object(program_pack, "enabled", lambda c: True), patch.object(core, "release_version", lambda e: "0.6.0"), \
+        with patch.object(core, "release_version", lambda e: "0.6.0"), \
                 patch.object(rewrite_refresh, "rewriter_id", lambda c: "RID"), patch.object(host_update, "engine_compat", lambda c: dict(hostAbi=2, dmshChain="chain1")):
             return {g["gameId"]: g["reasons"] for g in host_update.update_hints(self.c)["games"]}
 
@@ -51,7 +51,7 @@ class ShaderMissHint(unittest.TestCase):
     def test_mac_counter_from_library_temp(self):
         self.fixture()
         mac = layout.image_mac(self.c, B); mac.mkdir(parents=True, exist_ok=True)
-        (mac / "manifest.json").write_text(json.dumps(dict(builtBy=dict(version="0.5.0"))))
+        (mac / "manifest.json").write_text(json.dumps(dict(builtBy=dict(version="0.5.0"), libGen=host_update.LIB_GEN)))
         t = Path(self.c.library) / "temp" / B; t.mkdir(parents=True)
         (t / host_update.SHADER_FALLBACK).write_text(json.dumps(dict(count=5, at=1, app="0.5.0")))
         self.assertEqual(self.run_hints(), {B: ["shaderMiss"]}, "Mac 局现场翻译过、Mac 运行版本是旧版打的 → 标")
@@ -61,7 +61,7 @@ class ShaderMissHint(unittest.TestCase):
         layout.save_device(self.c, "PHONE-1", dict(shellId="S", games={A: dict(program=dict(sha="s", host_abi=2, rewriter_id="RID"), pack="P")},
                                                    shaderFallback={A: dict(count=3)}))
         layout.save_device(self.c, "PHONE-2", dict(shellId="S", games={A: dict(program=dict(sha="s", host_abi=2, rewriter_id="RID"), pack="P")}))
-        with patch.object(program_pack, "enabled", lambda c: True), patch.object(core, "release_version", lambda e: "0.6.0"), \
+        with patch.object(core, "release_version", lambda e: "0.6.0"), \
                 patch.object(rewrite_refresh, "rewriter_id", lambda c: "RID"), patch.object(host_update, "engine_compat", lambda c: dict(hostAbi=2, dmshChain="chain1")):
             ph = {p["device"]: {g["gameId"]: g for g in p["games"]} for p in host_update.phone_overview(self.c)["phones"]}
         self.assertEqual(ph["PHONE-1"][A], dict(gameId=A, state="suggested", reasons=["shaderMiss"]))

@@ -35,6 +35,7 @@ int s2a_gate_inflight(void) { session_unbacked(); return -1; }
 #undef session_unbacked
 // 即时存档：服务层 SnapLog.cs 每条请求前后设当前请求序号（游戏目标由 runtime/src/thread.c 提供）；诊断目标没有线程核心、快照恒关，不做事
 void s2a_snap_hctx(int seq) { (void)seq; }
+void s2a_snap_hcommit(int seq) { (void)seq; }   // 同上：请求完成、追加进请求日志时设（日志按完成先后）
 
 void s2a_android_set_screen_w(int width) { atomic_store(&g_screen_w, width); }
 const char *s2a_android_last_boot_mark(void) { return g_boot_mark; }
@@ -96,6 +97,7 @@ uint64_t s2a_process_id(void) { unbacked(__func__); return 0; }
 uint64_t s2a_program_id(void) { unbacked(__func__); return 0; }
 int s2a_register_cs(const s2a_cs_api *api) { (void)api; unbacked(__func__); return -1; }
 // nn::ro 装 / 卸 NRO（runtime/src/loader.c；返回码见 Ryujinx.HLE/S2AHooks.cs）：诊断目标不跑原生核心，按失败返回——1 = 包里没有这个 NRO / 没装载
+int s2a_nro_known(const uint8_t sha[32]) { (void)sha; return 0; }   // 安卓没有快照：请求日志照旧抄整个模块
 int s2a_nro_map(const uint8_t sha[32], uint64_t size, uint64_t bss, uint64_t *base) {
     (void)sha; (void)size; (void)bss; if (base) *base = 0; unbacked(__func__); return 1;
 }

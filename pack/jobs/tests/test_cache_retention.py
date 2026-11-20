@@ -13,6 +13,34 @@ import layout
 import library
 
 
+class CacheRootsTests(unittest.TestCase):
+    """trim(cache_roots=…)：缓存根经软链放在别处时，按 private 推的固定布局带链接、整根不扫（unscannedRoots 1、删 0）；
+    传真实路径就扫得到，按同一规则回收最冷的、最近 3 款不动。期望手写"""
+    def test_symlinked_root_needs_cache_roots(self):
+        import os, time
+        import cache_retention
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            real = d / 'ext/s2arm_run/cache'
+            paths = []
+            for i in range(4):
+                store = real / f'direct/{i:016X}/store'
+                p = store / 'dshb/aa' / ('aa' + 'f' * 62 + '.e')
+                p.parent.mkdir(parents=True); p.write_bytes(b'x' * 1000)
+                old = time.time() - 7200 - i * 100
+                os.utime(p, (old, old)); os.utime(store, (old, old))
+                paths.append(p)
+            priv = d / 'priv'; (priv / 'run/s2arm').mkdir(parents=True)
+            os.symlink(real, priv / 'run/s2arm/cache')
+            r = cache_retention.trim(priv, min_free_bytes=1 << 30, free_bytes=lambda: 0)
+            self.assertEqual((r['unscannedRoots'] >= 1, r['removedEntries']), (True, 0))   # 带链接：整根不扫
+            r = cache_retention.trim(d / 'ext/s2arm_run', min_free_bytes=1 << 30, free_bytes=lambda: (1 << 40) if not paths[3].exists() else 0,
+                                     cache_roots=((real / 'direct', 'direct'),))
+            self.assertEqual(r['removedEntries'], 1)
+            self.assertFalse(paths[3].exists())                 # 最冷的一款回收
+            self.assertTrue(all(p.exists() for p in paths[:3]))  # 最近 3 款不动
+
+
 class CompilerRetentionTests(unittest.TestCase):
     def _preflight_fixture(self, root):
         import os
@@ -324,15 +352,16 @@ class BudgetTests(unittest.TestCase):
         import os
         base = 'run/s2arm/cache/direct/0100000000000000/store/'
         entry = self.put(base + 'dshb/ab/ab' + '0' * 62 + '.e')
+        cpso = self.put(base + 'cpso/ab/ab' + '3' * 62 + '.e')   # compute pipeline archive cache (graphics/tools/direct/cs_pipelines.py), same layout
         shard = self.put(base + 'cd.pack')
         misfiled = self.put(base + 'dshb/ef/ab' + '1' * 62 + '.e')
         other = self.put(base + 'dshb/ab/ab' + '2' * 62 + '.metallib')
         os.utime(self.private / base, (1, 1))
         newer = self.direct('0100000000000001', key='c', age=-1)   # the newer title holds the single protected slot
         result = self.trim(0, keep_titles=1)
-        self.assertFalse(entry.exists() or shard.exists())
+        self.assertFalse(entry.exists() or shard.exists() or cpso.exists())
         self.assertTrue(misfiled.exists() and other.exists() and newer.exists())
-        self.assertEqual(result['removedEntries'], 2)
+        self.assertEqual(result['removedEntries'], 3)
 
     def test_successful_title_is_hot_even_when_dmsh_did_not_touch_entries(self):
         from cache_retention import trim

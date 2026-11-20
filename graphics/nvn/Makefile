@@ -19,6 +19,8 @@ AA_LUTH := $(OUT)/gen/nvn_aa_lut.h
 GENH  := $(OUT)/gen/gal_tess_msl.h
 SRCS  := $(sort $(wildcard gfx/nvn/*.c gfx/nvn/*.m gfx/nvn/*.S gfx/tex/*.c gfx/tex/*.m gfx/vk/*.m gfx/gl/*.m)) host_adapt.m graphics_session.c   # gfx/vk：Vulkan 款（直连层 hle_vk.m，10-24 搬入）
 HDRS  := $(wildcard gfx/nvn/*.h gfx/nvn/*.inc gfx/nvn/include/*.h gfx/tex/*.h gfx/vk/*.h gfx/vk/*.inc gfx/gl/*.h host/*.h host/*.inc) graphics_session.h ../track/s2a_track.h texture_extent.inc widen_glue.inc widen_fallback.inc fe_stat.h lib_pack.inc lib_pack_core.inc $(ROOT)/graphics/widen/export/s2a_widen.h $(ROOT)/graphics/metal/fit_judge.h $(ROOT)/runtime/src/native.h $(ROOT)/runtime/include/s2a_gfx_mode.h $(AA_MSLH) $(AA_LUTH) $(GENH)
+# 本库源码 include 的运行时头文件也要进依赖：漏了改头文件不重编库，各编译单元对共用结构的理解前后不一（11-18 改 snapfmt.h 的结构，库里还是旧目标文件）
+HDRS  += $(ROOT)/runtime/src/snapfmt.h $(wildcard $(ROOT)/runtime/include/*.h)
 # 源 / 头清单戳（11-05 合入运维线：门禁常驻工作树跨批增量编，某批分支删 / 改名一个源文件后，余下源都比库旧、库不重建，
 #   旧库里留着已删文件的目标文件，引用的宿主符号已不在 → 偶发「Undefined symbols」（nvn_rec_cover 构建失败 12 次，干净重跑就绿）。
 #   清单变了就改写戳（内容不变不改写，不触发重编），各库依赖它
@@ -122,8 +124,9 @@ $(OUT)/tests/widen_stubs.inc: $(ROOT)/graphics/widen/export/s2a_widen.h Makefile
 widen-stubs: $(OUT)/tests/widen_stubs.inc
 # 直连层单测链 libnvn.a 不链原生层：libnvn 引用的宿主符号放行参数只从源码「// 弱链接[nvntest]：<符号>」登记生成（同 runtime/build.mk NVN_TEST_WEAK，
 #   tools/weak_link_decl.py 一处口径；11-01 合入线：这里原先手抄 -U，帧录放加 3 个符号漏了一处，graphics/gate 直连两路冒烟链接红）。不要在链接行手写放行参数
-# nvn2_codec.c（Switch 2 视频解码接管）用 VideoToolbox / CoreMedia / CoreVideo 系统框架，同 runtime/build.mk NVN_TEST_WEAK 一起带上
-NVN_TEST_WEAK := $(shell python3 $(ROOT)/tools/weak_link_decl.py flags nvntest) -framework VideoToolbox -framework CoreMedia -framework CoreVideo
+# 直连层要链的系统框架 / 库也在用到它的源文件里登记「// 系统库[nvntest]：-framework Xxx」（同一工具一起输出）：这一行不再随功能增减改动
+# 延迟求值（=）：只有链 t_nvn_m3 时才起 python3 扫登记；make mac 只编库不该读全部宿主源码（它算进只链库的单测的实读输入）
+NVN_TEST_WEAK = $(shell python3 $(ROOT)/tools/weak_link_decl.py flags nvntest)
 $(OUT)/tests/t_nvn_m3: $(OUT)/mac/libnvn.a tests/t_nvn_m3.m tests/host_stubs.h $(OUT)/tests/widen_stubs.inc $(ROOT)/tools/weak_link_decl.py
 	clang $(PFX) -std=gnu11 -O1 -g -fobjc-arc -mmacosx-version-min=$(MACOSX_DEPLOYMENT_TARGET) -Wall $(INC) -I$(OUT)/tests -Itests -o $@ tests/t_nvn_m3.m $(OUT)/mac/libnvn.a \
 	  -framework Metal -framework Foundation -framework QuartzCore -framework CoreGraphics -framework ImageIO -framework UniformTypeIdentifiers -lc++ $(NVN_TEST_WEAK)
@@ -138,9 +141,9 @@ test: $(OUT)/tests/t_nvn_m3
 	# 存储缓冲大小表（nvn_refl.h nvn_sbsz_fill）：几何辅助缓冲按本笔临时区段长进表（11-06 鬼灭 #37 脸空白 / 手缺失）
 	clang $(PFX) -std=gnu11 -O1 -Wall -o $(OUT)/tests/t_sbsz tests/t_sbsz.c
 	timeout 30 $(OUT)/tests/t_sbsz
-	# 直连库打包容器的读法（lib_pack.inc）：两个小 metallib 现编，测试按格式手造容器
+	# 直连库打包容器的读法（lib_pack.inc）：两个小 metallib 现编，测试按格式手造容器；客体输入（种类 56）用 zlib 库压块、读端用 Foundation 解
 	xcrun -sdk macosx metal tests/t_lib_pack_a.metal -o $(OUT)/tests/t_lib_pack_a.metallib && xcrun -sdk macosx metal tests/t_lib_pack_b.metal -o $(OUT)/tests/t_lib_pack_b.metallib
-	clang $(PFX) -std=gnu11 -O1 -g -fobjc-arc -mmacosx-version-min=$(MACOSX_DEPLOYMENT_TARGET) -Wall -o $(OUT)/tests/t_lib_pack tests/t_lib_pack.m -framework Metal -framework Foundation
+	clang $(PFX) -std=gnu11 -O1 -g -fobjc-arc -mmacosx-version-min=$(MACOSX_DEPLOYMENT_TARGET) -Wall -o $(OUT)/tests/t_lib_pack tests/t_lib_pack.m -framework Metal -framework Foundation -lz
 	timeout 60 $(OUT)/tests/t_lib_pack $(OUT)/tests/t_lib_pack_a.metallib $(OUT)/tests/t_lib_pack_b.metallib
 	# 曲面细分固定核单测（tests/t_tess_triangle.m）：三角patch已知因子 → 已知点数/索引数
 	clang $(PFX) -std=gnu11 -O1 -g -fobjc-arc -mmacosx-version-min=$(MACOSX_DEPLOYMENT_TARGET) -Wall $(INC) -o $(OUT)/tests/t_tess_triangle tests/t_tess_triangle.m -framework Metal -framework Foundation

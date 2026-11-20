@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Device-free CPU tests: C/C++, CMake 3.18+, JDK 17, Android NDK 29.0.14206865,
 # pinned offline rewriter sources and Python Capstone 5.0.7 / LZ4 4.4.5.
+# 本机自测排在门禁后面：不在门禁里跑（没有 GATE2_PAR）就把自己降到 nice 15，子进程继承；门禁步的优先级由门禁自己定
+[ -n "${GATE2_PAR:-}" ] || renice 15 -p $$ > /dev/null 2>&1 || true
 set -euo pipefail
 android_dir=$(cd "$(dirname "$0")" && pwd)
 repo_dir=$(cd "$android_dir/.." && pwd)
@@ -336,6 +338,8 @@ s2a_gate_step "$PY" "$android_dir/tests/graphics_request_name_test.py"
 # 新回放层：真实图形/计算请求生产入口的贴图池容量、超限与调试读数。
 s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_pool_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_pool_test.py" --withdraw
+# 几何着色器走出包预编库的负对照（正例在上面无参那一步里单独起进程跑）：撤掉接线各一处，--gs-libpack 必红
+s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_pool_test.py" --gs-libpack-mutants
 # Shutdown admission, bounded waits and active-context retention (including negative controls).
 s2a_gate_step "$PY" "$android_dir/tests/nvk_shutdown_test.py"
 # GS 脏位、阶段绑定、管线和原始图元拒绝的独立回退反证。
@@ -368,6 +372,8 @@ s2a_gate_step "$PY" "$android_dir/tests/compile_export_w2_test.py"
 # kindCheck 调试开关只走请求 JSON（DirectShaderCompiler.cs:39 只读 JSON、不读进程 env）：默认构建不带该键，
 # 调试门开 + debug.s2a.kind_check=0 才写 "kindCheck":false；撤成 execute 里 setenv 或删掉该键必须红（宿主 C 编译，秒级）。
 s2a_gate_step "$PY" "$android_dir/tests/direct_compile_request_host_test.py"
+# 现编时翻译器崩溃留下输入（#1501 D②）：崩溃线程正在编的请求原样落 compile-inflight-<pid>-<槽>.log；crash.c 安卓分支弱引用调（宿主 C 编译，秒级）。
+s2a_gate_step "$PY" "$android_dir/tests/compile_inflight_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/w2_compute_integration_test.py"
 # W2 single missing coordinate: standalone synthetic host contract, no provider/device wiring.
 s2a_gate_step "$PY" "$android_dir/tests/w2_single_query_test.py"
@@ -395,6 +401,8 @@ s2a_gate_step bash "$android_dir/tools/nvk_pipe_flight_test.sh"
 # 首用待定表（纯逻辑）与 demand 后台建管线（fake Vulkan）：状态机 / 同键合并 / 有界等待 / late-stuck / P0 不串管线。
 s2a_gate_step bash "$android_dir/tools/nvk_pipe_pend_test.sh"
 s2a_gate_step bash "$android_dir/tools/nvn_vk_pipe_demand_test.sh"
+# 新层首用管线异步的绘制级用例：真 rp_draw / rp_pass + 真 demand / 待定表 / 判定表，可控建管线闸（跳 / 等 / 预算 / 上限 / 停局丢弃）。
+s2a_gate_step bash "$android_dir/tools/nvk_pipe_async_draw_test.sh"
 s2a_gate_step bash "$android_dir/tools/nvk_shader_lease_test.sh"
 # 按结果合并（#1355 方案 A）：编译结果相同（结果摘要 + 负载长度 + 阶段数 + c1 有无与内容都相同）的身份共用一份
 # 着色器记录与句柄、管线随之合并；真 program_cache.c + 真缓存文件，ASan 下覆盖「收尾后不留悬空」。
@@ -481,6 +489,9 @@ s2a_gate_step javac -encoding UTF-8 -d "$out/java" -cp "$out/java" \
 s2a_gate_step java -cp "$out/java" org.s2arm.android.ImportReceiverTest
 s2a_gate_step "$PY" "$android_dir/tests/deploy_game_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/test_app_id_test.py"
+s2a_gate_step "$PY" "$android_dir/tests/apk_assemble_test.py"   # 预编引擎 APK 组装：aapt2 造引擎，aapt2 dump / apksigner 判包名 / 显示名 / 图标 / 对齐 / v2 签名
+s2a_gate_step "$PY" "$android_dir/tests/ns2_synth_nacp_test.py"   # Switch 2 合成控制数据：应用号非 0、显示版本「?」不让 aapt 停
+s2a_gate_step "$PY" "$android_dir/tests/game_icon_test.py"   # 合成控制分区图标、各密度资源、回退与链接拒绝
 s2a_gate_step "$PY" "$android_dir/tests/debug_app_admission_test.py"
 s2a_gate_step javac -encoding UTF-8 -d "$out/java" -cp "$out/java" "$android_dir/tests/GameSessionAdmissionTest.java" "$android_dir/tests/GameFingerprintTest.java"
 s2a_gate_step java -cp "$out/java" org.s2arm.android.GameSessionAdmissionTest
@@ -503,6 +514,14 @@ s2a_gate_step "$ndk_cc" -O1 -Wall -Werror -I"$repo_dir/runtime/include" "$androi
     "$repo_dir/runtime/src/emul_sp.c" "$repo_dir/runtime/src/emul_ld.c" "$repo_dir/runtime/src/emul_st.c" -o "$out/emul-sp-android-test"
 s2a_gate_step "$PY" "$android_dir/native/runtime/platform/tests/shutdown_wait_test.py"
 s2a_gate_step "$PY" "$android_dir/native/direct-vk-tests/run_shutdown_contract.py"
+# Switch 2 SDK 接管（直连 s2a_direct_lookup 对 nv:: / nn::vi 导入的应答）：真 direct_session.c + 假 nvn2 入口，6 组（选择状态 × 游戏代际）+ 内置负对照
+#   编译运行段要链 wsi_lease.c（pthread_condattr_setclock）与 direct/selection.c（getrandom），只在 Linux；非 Linux 宿主只跑接线检查（纯源码次序）并登记未测
+if [ "$(uname -s)" = Linux ]; then
+    s2a_gate_step "$PY" "$android_dir/native/direct-vk-tests/run_ns2_lookup.py"
+else
+    s2a_gate_step "$PY" "$android_dir/native/direct-vk-tests/run_ns2_lookup.py" --wiring-only
+    s2a_gate_note "未测：run_ns2_lookup.py 的 6 组查找与负对照（链 wsi_lease.c 的 pthread_condattr_setclock、direct/selection.c 的 getrandom）需 Linux；接线检查已跑"
+fi
 # App 纯 Java 层整体编译：抓 import 漏缺 / 签名不匹配这类编译错（#38 GameLibrary 漏 import 让 main 编不过就是这类）。
 # SDK 依赖的类（GameLibrary / MainActivity / NativeBridge / BootSpecSource / TouchPadView 等 import android.*）需 Android SDK，
 # 留给带 SDK 的 Gradle 构建，不在无设备门禁编。新增纯 Java 类时补到这份清单。
@@ -537,6 +556,7 @@ s2a_gate_step "$PY" "$android_dir/contracts/validate.py"
 s2a_gate_step "$PY" "$android_dir/tests/contract_validation_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/device_retirement_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/copy_3d_depth_test.py"
+s2a_gate_step "$PY" "$android_dir/tests/guest_window_crop_test.py"
 # A3：记录快照的对象身份复核 + 有界退休墓碑 + 附件解析类型化失败（宿主 mock，--source-ref 红）。
 s2a_gate_step "$PY" "$android_dir/tests/tex_identity_state_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/tex_identity_state_test.py" --withdraw

@@ -10,6 +10,8 @@ static unsigned checks, failures;
 #define REQUIRE(c) do { if (!(c)) { fprintf(stderr, "SETUP FAIL %s:%d %s\n", __FILE__, __LINE__, #c); exit(2); } } while (0)
 #define CHECK(c, ...) do { checks++; int ok_ = !!(c); failures += !ok_; printf("%s ", ok_ ? "PASS" : "FAIL"); printf(__VA_ARGS__); putchar('\n'); fflush(stdout); } while (0)
 enum { MB = 1 << 20 };
+// 池注销按回放顺序（pool_reap）：注销后要再回放完一次提交才真正下表；这里直接走过两次提交再看池表
+static void reap(void) { pthread_mutex_lock(&g_mu); g_sub_serial += 2; pool_reap(0, 0); pthread_mutex_unlock(&g_mu); }
 int main(void) { @autoreleasepool {
     setvbuf(stdout, NULL, _IOLBF, 0); alarm(120);
     setenv("S2A_POOL_MAXLEN_MB", "64", 1);
@@ -37,14 +39,14 @@ int main(void) { @autoreleasepool {
             else if (got) { id<MTLBuffer> mb = (__bridge id<MTLBuffer>)b; uint64_t v = 0; memcpy(&v, (uint8_t *)mb.contents + o2, sizeof v); if (v != off || o2 + lens[li] > mb.length) badbytes++; }
         }
     CHECK(mism == 0 && badbytes == 0, "② %d 个区间：查得到与否全按区间算术（不符 %d）、查到的 buffer + 偏移读到原地址的标记（不符 %d）", tried, mism, badbytes);
-    nvn_be_pool_del(base);
+    nvn_be_pool_del(base); reap();
     pthread_mutex_lock(&g_mu); n = g_npool; pthread_mutex_unlock(&g_mu);
     CHECK(n == 0, "③ 注销后 4 块都不在（剩 %d 条）", n);
     uint8_t *small = mmap(NULL, 16ull * MB, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0); REQUIRE(small != MAP_FAILED);
     nvn_be_pool_add(small, 16ull * MB);
     pthread_mutex_lock(&g_mu); n = g_npool; int whole = n == 1 && g_pools[0].lo == (uintptr_t)small && g_pools[0].hi == (uintptr_t)small + 16ull * MB; pthread_mutex_unlock(&g_mu);
     CHECK(whole, "④ 16 MB 池（< 上限）只登记 1 条、覆盖整池（实 %d 条）", n);
-    nvn_be_pool_del(small);
+    nvn_be_pool_del(small); reap();
     // ⑤ 直接建零拷贝失败（诊断#36fc20）：改在重映射视图上建，仍是同一份内存——池里写、buffer 读到；buffer 里写、池里读到
     g_pool_refuse = 1; memset(small, 0x11, 16ull * MB);
     nvn_be_pool_add(small, 16ull * MB);
@@ -53,14 +55,14 @@ int main(void) { @autoreleasepool {
     if (vb) { uint8_t *c = (uint8_t *)vb.contents; view = c != small; small[12345] = 0x5a; c[777] = 0xa5; same = c[12345] == 0x5a && small[777] == 0xa5 && vb.length == 16ull * MB; }
     void *b5 = NULL; uint64_t o5 = 0; int got5 = nvn_be_addr((uint64_t)(uintptr_t)(small + MB), 4096, &b5, &o5);
     CHECK(n == 1 && view && same && got5 && o5 == MB, "⑤ 直接建失败 → 视图上建：登记 %d 条、buffer 在另一地址 %d、两边互见写入 %d、按池地址查到偏移 %llu（应 1 MB）", n, view, same, (unsigned long long)o5);
-    nvn_be_pool_del(small);
+    nvn_be_pool_del(small); reap();
     // ⑥ 视图也失败：不登记、不中止（走到这里本身就是没中止）
     g_pool_refuse = 2;
     nvn_be_pool_add(small, 16ull * MB);
     pthread_mutex_lock(&g_mu); n = g_npool; pthread_mutex_unlock(&g_mu);
     int got6 = nvn_be_addr((uint64_t)(uintptr_t)small, 4096, &b5, &o5);
     CHECK(n == 0 && !got6, "⑥ 视图也建不出：不登记（%d 条）、查不到（%d）、进程照跑", n, got6);
-    nvn_be_pool_del(small); g_pool_refuse = 0;
+    nvn_be_pool_del(small); reap(); g_pool_refuse = 0;
     printf("%s t_nvn_pool_chunk：%u 项，%u 项不符\n", failures ? "✗" : "✓", checks, failures);
     return failures != 0;
 } }

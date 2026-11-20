@@ -8,7 +8,7 @@ iPhone 资源包 image/ios/.pack/game.img 是真身；Mac 运行版本 image/mac
 先逐字节核 game.img 的 RomFS 段与 romfs.std 相同，再建链、改清单、删 romfs.std；任何一步之前断了，下次从头再核（建链之后断了，下次认出链已在、直接接着做）。
 旧库（11-16 前）的 Mac 运行版本是 romfs/ 散文件目录：逐文件核与 game.img 的 RomFS 段同一份（文件集合相同、每个文件逐字节相同）才合并，
 删 romfs/ 与它的索引 romfs.s2aidx；有一个文件不同（老的就地改界面布局）就原样不动。
-按款加锁（拿不到就跳过：别的进程正在做）。挂通用壳开关（program_pack.enabled）：开关关着一个字节不动。
+按款加锁（拿不到就跳过：别的进程正在做）。
 谁调：出完 iPhone 包（ipa 换包之后）、出完 Mac 版、Mac 起局后游戏跑满 MIGRATE_AFTER_S 秒在后台做（玩家不等；游戏退出就停，下次再做）。"""
 from __future__ import annotations
 
@@ -47,9 +47,6 @@ def _same_range(a_path, a_off, b_path, b_off, n, stop):
 def dedupe(c, gid, stop=None, keep_dir=False):
     """→ (结果, 说明)。结果：linked = 这次合并了；done = 早已合并；skip = 不合并（说明写原因）；stopped = 中途放弃（下次再做）。
     keep_dir：游戏正在跑（Mac 起局后后台做）——旧形态 romfs/ 散文件是游戏现读的，只核、建链，不删（游戏退出后 during 收尾删）"""
-    import program_pack
-    if not program_pack.enabled(c):
-        return "skip", "通用壳开关关着"  # 非玩家句
     stop = stop or (lambda: False)
     mac = layout.image_mac(c, gid, create=False)
     std, link, img = mac / "romfs.std", mac / "game.img", layout.ios_pack(c, gid) / "game.img"
@@ -192,10 +189,7 @@ def note(c, gid, result):
 
 def background(c, gid, delay=MIGRATE_AFTER_S):
     """Mac 起局时调：返回 stop()。游戏跑满 delay 秒后在后台线程里合并；stop() 让它停下并等它收尾（游戏退出时调）"""
-    import program_pack
     halt = threading.Event()
-    if not program_pack.enabled(c):
-        return lambda: None
     def run():
         if halt.wait(delay):
             return
@@ -223,9 +217,6 @@ def during(c, gid, run):
 
 def _finish_after_exit(c, gid):
     """游戏退出后：后台已核完、建好链，只剩旧形态 romfs/ 散文件没删 → 现在删（没建链就什么都不做，不在这里现核）"""
-    import program_pack
-    if not program_pack.enabled(c):
-        return
     mac = layout.image_mac(c, gid, create=False)
     link, img = mac / "game.img", layout.ios_pack(c, gid) / "game.img"
     try:

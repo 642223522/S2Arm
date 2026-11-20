@@ -4852,10 +4852,6 @@
   "en": "This game"
  },
  {
-  "source": "iPhone 包已出好。用数据线连上 iPhone，在打包任务页点「装到 iPhone」就能装上（也可以按装机步骤改用 AltStore）。",
-  "en": "iPhone package ready. Connect your iPhone with a cable and click “Install on iPhone” on the Packing page (or use AltStore — see the install steps)."
- },
- {
   "source": "不想在 Xcode 里登录 Apple ID，或想让 App 在 Wi-Fi 下自动续签，就用 AltStore：",
   "en": "If you'd rather not sign in to Xcode, or want the app to refresh automatically over Wi‑Fi, use AltStore:"
  },
@@ -4870,14 +4866,6 @@
  {
   "source": "启动器出的包是自签的，iPhone 不认，要用你自己的 Apple ID 重新签一次。打包本来就要装 Xcode，用它最省事：",
   "en": "The package is self-signed, so iPhone won't accept it until it's signed with your own Apple ID. You already have Xcode for packing — that's the easiest way:"
- },
- {
-  "source": "回到 S2Arm，在打包任务页点「装到 iPhone」：自动签名、安装，并把资源包拷进去、逐个文件核对。",
-  "en": "Back in S2Arm, click “Install on iPhone” on the Packing page: it signs, installs, and copies the resource pack, checking every file."
- },
- {
-  "source": "已装到 iPhone",
-  "en": "Installed on iPhone"
  },
  {
   "source": "打开 Xcode →「设置」→「账户」，点「+」登录你的 Apple ID。免费的就可以，只要登录一次。",
@@ -5208,10 +5196,6 @@
   "en": "This is Apple's limit for free Apple IDs: at most 10 App IDs can be registered in 7 days, and this account has used them all. Removing apps from the iPhone does not give the quota back. Options: wait a few days, as the quota comes back once the earliest App IDs are 7 days old; sign in with a different Apple ID in Xcode or Impactor and install again; or use a paid Apple Developer account, which has no such limit."
  },
  {
-  "source": "打开 Xcode →「设置」→「账户」，点「+」登录你的 Apple ID（免费的就可以），再点一次「装到 iPhone」；不想登录 Xcode 也可以改用 AltStore 安装。",
-  "en": "Open Xcode → Settings → Accounts, sign in with your Apple ID (a free account works), then retry installation. AltStore is also an installation option."
- },
- {
   "source": "让你选的那台 iPhone / iPad 连上这台电脑：插上数据线，或解锁后和电脑连同一个 Wi-Fi；第一次连要在设备上点「信任」，并在「设置 → 隐私与安全性 → 开发者模式」打开开发者模式，然后再试。",
   "en": "Connect the iPhone or iPad you chose to this computer: plug in a cable, or unlock it on the same Wi-Fi. The first time, tap Trust on the device and enable Developer Mode under Settings → Privacy & Security, then retry."
  },
@@ -5222,10 +5206,6 @@
  {
   "source": "查看本任务日志里签名那一步的报错；确认 Xcode 能用你的账号给这台 iPhone 签名，或改用 AltStore 安装。",
   "en": "Check the signing error in the job log. Confirm that Xcode can sign for this iPhone with your account, or install with AltStore."
- },
- {
-  "source": "解锁这台 iPhone（保持亮屏、停在主屏幕），再点一次「装到 iPhone」；装机过程中别锁屏。",
-  "en": "Unlock the iPhone and keep it awake on the Home Screen, then retry installation. Do not lock it during installation."
  },
  {
   "source": "本体已出好，照常安装即可；没解出的追加内容不在包里，游戏里用不到那部分内容。请导出诊断反馈，解码支持后重新打包即可带上。",
@@ -5604,16 +5584,8 @@
   "en": "In development: the current build only produces native object files; HAP packaging is not available yet"
  },
  {
-  "source": "iPhone 包已出好。用数据线连上 iPhone，在编译任务页点「装到 iPhone」就能装上（也可以按装机步骤改用 AltStore）。",
-  "en": "iPhone package ready. Connect your iPhone with a cable and click “Install on iPhone” on the Compiling page (or use AltStore — see the install steps)."
- },
- {
   "source": "启动器出的包是自签的，iPhone 不认，要用你自己的 Apple ID 重新签一次。编译本来就要装 Xcode，用它最省事：",
   "en": "The package is self-signed, so iPhone won't accept it until it's signed with your own Apple ID. You already have Xcode for compiling — that's the easiest way:"
- },
- {
-  "source": "回到 S2Arm，在编译任务页点「装到 iPhone」：自动签名、安装，并把资源包拷进去、逐个文件核对。",
-  "en": "Back in S2Arm, click “Install on iPhone” on the Compiling page: it signs, installs, and copies the resource pack, checking every file."
  },
  {
   "source": "添加的游戏放进来就自动编译，更新和 DLC 自动按版本合并。准备完成后由你点击启动。",
@@ -5658,10 +5630,6 @@
  {
   "source": "已自动安装 .NET SDK，但复查仍未通过，iPhone 包没有开始出。请在「设置 → 环境检查」查看 .NET 一项的说明，处理后再点「打 iPhone 包」。",
   "en": ".NET SDK was installed automatically, but the recheck still fails, so the iPhone package was not started. Open Settings → Environment check, follow the .NET item's instructions, then click “Pack for iPhone” again."
- },
- {
-  "source": "iPhone 包已出好。可以用数据线连上 iPhone，在打包任务页点「装到 iPhone」（这条路还在真机验证，装不上请按装机步骤改用 AltStore）。",
-  "en": "iPhone package ready. You can connect your iPhone with a cable and click “Install on iPhone” on the Packing page (this path is still being verified on real devices; if it fails, use AltStore — see the install steps)."
  },
  {
   "source": "鼠标移动控制右摇杆，停手后保持在原处，不回中。",
@@ -6084,10 +6052,6 @@
   "en": "The request carries the retired old memory layout setting (vammLayout)"
  },
  {
-  "source": "起局前这里校验就没过：{0}",
-  "en": "Before launch, this check had already failed: {0}"
- },
- {
   "source": "运行文件 {0} 缺失或大小不符",
   "en": "Runtime file {0} is missing or the wrong size"
  },
@@ -6258,10 +6222,6 @@
  {
   "source": "用数据线把 iPhone 连到这台电脑，解锁手机并点「信任」。",
   "en": "Connect the iPhone to this computer with a cable, unlock it and tap Trust."
- },
- {
-  "source": "没找到可用的开发签名团队：请在 Xcode「设置 → 账户」确认 Apple ID、团队和开发证书，再点一次「装到 iPhone」。",
-  "en": "No usable development signing team: check the Apple ID, team and development certificate in Xcode Settings → Accounts, then click Install on iPhone again."
  },
  {
   "source": "连着不止一台 iPhone / iPad：只留要装的那一台再试。",
@@ -6528,14 +6488,6 @@
   "en": "Your Apple ID is signed in, but this Mac has no signing team yet. Click How to fix to open the ready-made helper project, choose Personal Team in Xcode, connect your phone and run it once; this page updates by itself. You can also check whether the team list appears under Xcode › Settings › Apple Accounts."
  },
  {
-  "source": "在装机页点「解决办法」打开引导项目，在 Xcode 里选 Personal Team，连上手机点运行一次，再点一次「装到 iPhone」。也可以先到 Xcode › Settings › Apple Accounts 看团队列表有没有显示。",
-  "en": "On the install page, click How to fix to open the helper project, choose Personal Team in Xcode, connect your phone and run it once, then install again. You can also check whether the team list appears under Xcode › Settings › Apple Accounts."
- },
- {
-  "source": "打开 Xcode，点菜单 Xcode › Settings › Apple Accounts，选中账号后点 Manage Certificates，点 + 选 Apple Development，再点一次「装到 iPhone」。",
-  "en": "Open Xcode, choose Xcode › Settings › Apple Accounts, select your account, click Manage Certificates, click + and choose Apple Development, then install again."
- },
- {
   "source": "找不到游戏原件：{0}。原件所在的磁盘没接上，或文件被挪走 / 改名了；接上磁盘，或把原件重新放进来一次",
   "en": "Original game file not found: {0}. Its drive is not connected, or the file was moved or renamed. Connect the drive, or add the original file again"
  },
@@ -6576,10 +6528,6 @@
   "en": "Click again to install anyway: your saves are not backed up, so a problem during the overwrite could lose them. To back them up first, unlock the phone, plug the cable in firmly, and click again."
  },
  {
-  "source": "确认后再点一次：点名的游戏会暂时不能玩（存档和资源包留在手机上），到装它们的那台电脑上再「装到 iPhone」一次就回来；不想这样就先别装。",
-  "en": "Click again to confirm: the games named will stop working for now (their saves and resources stay on the phone). Install them on iPhone again from the computer they came from to bring them back. If you don't want that, don't install now."
- },
- {
   "source": "这款没法和手机上已有的游戏放进同一个 App：先从 iPhone 删掉不兼容的那款。",
   "en": "This game cannot share one app with the games already on your phone: remove the incompatible game from iPhone first."
  },
@@ -6590,10 +6538,6 @@
  {
   "source": "手机解锁、数据线插稳后再删一次；不影响其他游戏。",
   "en": "Unlock the phone, check the cable, and remove it again; other games are not affected."
- },
- {
-  "source": "在这台 Mac 屏幕上的钥匙串弹窗里点「始终允许」（需要的话输入 Mac 登录密码），再点一次「装到 iPhone」。",
-  "en": "In the keychain prompt on this Mac's screen, click \"Always Allow\" (enter your Mac login password if asked), then install on iPhone again."
  },
  {
   "source": "路径太长：把游戏库搬到盘符根目录附近的短路径（比如 D:\\S2Arm），再打一次包；反馈时请带上错误摘要。",
@@ -7068,10 +7012,6 @@
   "en": "The original task process is gone, but the library lock is still held. Reconnect or remount the library drive and retry. Do not delete the lock file; no game files were changed."
  },
  {
-  "source": "Apple ID 登录已过期，请重新登录后再装：在装机页点「打开 Impactor」→「设置」，选中你的 Apple ID 点「移除账号」，再点「添加账号」用同一个 Apple ID 重新登录（邮箱、密码、手机上的验证码，输入前切到英文输入法），然后回来再点一次「装到 iPhone」。密码只在 Impactor 里输，S2Arm 不经手。",
-  "en": "Your Apple ID sign-in has expired. Sign in again, then install: on the install page click Open Impactor → Settings, select your Apple ID and click Remove Account, then Add Account and sign in with the same Apple ID (email, password and the code on your devices; switch the keyboard to English first). Come back and click Install to iPhone again. You enter the password only in Impactor; S2Arm never sees it."
- },
- {
   "source": "游戏存放位置或游戏库所在的盘不支持 S2Arm 需要的文件操作（常见于 exFAT / FAT 格式的外接盘）：把这款游戏的存放位置换到 APFS 格式的盘（Mac 内置盘就是；外接盘可在「磁盘工具」里另分一个 APFS 分区），再重试；游戏原件不用挪。",
   "en": "The drive holding this game's storage location or the game library doesn't support the file operations S2Arm needs (common on exFAT / FAT external drives). Move this game's storage location to an APFS drive (the Mac's built-in drive is APFS; on an external drive you can add an APFS partition in Disk Utility), then try again. The original game files can stay where they are."
  },
@@ -7162,10 +7102,6 @@
  {
   "source": "导出诊断包发给我们。",
   "en": "Export a diagnostics package and send it to us."
- },
- {
-  "source": "手机上已经有一个用别的签名装的 S2Arm（包名相同、签名不同），系统不让覆盖。二选一：继续用你原来的签名工具更新它；或者在 iPhone 上长按 S2Arm 删掉它（里面的存档会一起删，先在 S2Arm 里导出存档），再点「装到 iPhone」。",
-  "en": "Your iPhone already has an S2Arm installed with a different signature (same app ID, different signer), and iOS won't replace it. Either keep updating it with your own signing tool, or long-press S2Arm on the iPhone and delete it (its saves go with it, so export them in S2Arm first), then click Install to iPhone again."
  },
  {
   "source": "这个包名之前被别的签名用过（多半是你自己签名装 S2Arm 时用了同一个包名），这次已自动换成新包名装好。手机上可能有两个 S2Arm：新装的这个里有这台电脑装的游戏；旧的那个不再需要的话可以删掉（先导出存档）。",
@@ -7324,10 +7260,6 @@
   "en": "This computer's device service doesn't see an iPhone or iPad: plug it in with a cable, unlock it, tap Trust on the device, then try again."
  },
  {
-  "source": "这台电脑连不上 Impactor 签名要用的登录辅助服务器（mac-ani.jkcoxson.com，Impactor 内置、改不了），已自动重试过一次。检查这台电脑的网络：浏览器能打开这个地址就再点一次「装到 iPhone」；打不开就换个 DNS（如 223.5.5.5 或 1.1.1.1）或开 / 关代理后再装。手机、已装的 App 和存档都不受影响。",
-  "en": "This computer cannot reach the sign-in helper server Impactor needs for signing (mac-ani.jkcoxson.com, built into Impactor and not configurable); S2Arm already retried once. Check this computer's network: if a browser can open that address, click Install to iPhone again; if not, switch DNS (for example 223.5.5.5 or 1.1.1.1) or turn a proxy on or off, then install again. The iPhone, installed apps and saves are not affected."
- },
- {
   "source": "要装的那台（{0}）这次没列出来；这台电脑现在看得到：{1}——在装机页选其中一台再装。",
   "en": "The chosen device ({0}) isn't listed right now. This computer can see: {1}. Pick one of them on the install page and install again."
  },
@@ -7372,20 +7304,12 @@
   "en": "After this install, these games on the phone won't open (their saves and resources stay on the phone)."
  },
  {
-  "source": "它们是在别的电脑上装的，到那台电脑上再「装到 iPhone」一次就回来：{0}",
-  "en": "Installed from another computer; they come back once you \"Install on iPhone\" again from that computer: {0}"
- },
- {
   "source": "它们已从这台电脑的游戏库删除，重新加回游戏库、「打 iPhone 包」再装一次就回来：{0}",
   "en": "Deleted from this computer's library; they come back once you add them again, \"Build for iPhone\" and install: {0}"
  },
  {
   "source": "确认继续再点一次。",
   "en": "Confirm and try again to continue."
- },
- {
-  "source": "确认后再点一次：点名的游戏会暂时打不开（存档和资源包留在手机上）。别的电脑装的，到那台电脑上再「装到 iPhone」一次就回来；已从游戏库删除的，重新加回、「打 iPhone 包」再装就回来。不想这样就先别装。",
-  "en": "Confirm and try again: the games named won't open for now (their saves and resources stay on the phone). Ones installed from another computer come back once you \"Install on iPhone\" again from that computer; ones deleted from the library come back once you add them again, \"Build for iPhone\" and install. If you don't want that, don't install yet."
  },
  {
   "source": "关掉打开着这个文件夹的资源管理器窗口和自签工具（如 Sideloadly），稍等杀毒软件扫完再重试；若开了「受控文件夹访问」（Windows 安全中心 → 病毒和威胁防护 → 勒索软件防护），把 S2Arm 加进「允许的应用」。",
@@ -8160,24 +8084,12 @@
   "en": "devicectl exited with {0} (no error details)"
  },
  {
-  "source": "「导出，自己签名安装」下一版提供。",
-  "en": "\"Export and sign it yourself\" comes in the next version."
- },
- {
   "source": "写导出用的游戏文件失败：{0}",
   "en": "Couldn't write the game files for export: {0}"
  },
  {
   "source": "写着色器更新包失败：{0}",
   "en": "Couldn't write the shader update pack: {0}"
- },
- {
-  "source": "导出文件夹里还没有 .img：先点「导出，自己签名安装」，导出完再推到手机。",
-  "en": "There's no .img in the export folder yet. Click \"Export and sign it yourself\" first, then push to the phone when it's done."
- },
- {
-  "source": "导出文件夹里还没有这款游戏的 .img：先点「导出，自己签名安装」，导出完再推到手机。",
-  "en": "There's no .img for this game in the export folder yet. Click \"Export and sign it yourself\" first, then push to the phone when it's done."
  },
  {
   "source": "找连着的 iPhone",
@@ -8276,10 +8188,6 @@
   "en": "These games need to be built again for the new version and won't open until then: {0}. Click again to confirm the update."
  },
  {
-  "source": "手机上的游戏都要按新版重新出包，这次没法只更新 S2Arm（更新后一款都打不开）。可以先给它们各「打 iPhone 包」，再点「装到 iPhone」，游戏和 S2Arm 会一起换成新版；存档和资源都留在手机上。「只更新 S2Arm、暂不带游戏」下一版开放。",
-  "en": "All games on the phone need to be built again for the new version, so S2Arm can't be updated on its own this time (none would open afterwards). Build the iPhone package for each, then click \"Install to iPhone\"; the games and S2Arm will be updated together, and saves and resources stay on the phone. \"Update only S2Arm without games\" comes in the next version."
- },
- {
   "source": "手机上的 S2Arm 里本来就没有 {0}，不用删",
   "en": "{0} isn't in S2Arm on the phone, nothing to delete"
  },
@@ -8302,10 +8210,6 @@
  {
   "source": "组装可直接侧载的 S2Arm.ipa（含 {0} 款）",
   "en": "Assembling a sideloadable S2Arm.ipa ({0} games)"
- },
- {
-  "source": "游戏库根目录的 S2Arm.ipa 这次没更新（{0}）：这款的 iPhone 版已出好，「装到 iPhone」时会照常组装。",
-  "en": "S2Arm.ipa in the library folder wasn't updated this time ({0}). This game's iPhone version is ready and will be assembled as usual when you install to iPhone."
  },
  {
   "source": "一键出包结束了，但产物根里没有组装 iPhone 版要用的文件（main.npdm），请查看日志。",
@@ -9860,10 +9764,6 @@
   "en": "Adding this game to S2Arm on the Apple TV"
  },
  {
-  "source": "把游戏推进 Apple TV（只推变了的文件；第一次大游戏要几分钟）",
-  "en": "Sending the game to the Apple TV (only changed files; a large game takes a few minutes the first time)"
- },
- {
   "source": "这台电脑上还没有 Apple TV 版的预编壳：先给这款出一次 Apple TV 包，再装到 Apple TV。",
   "en": "This computer doesn't have the prebuilt Apple TV shell yet: build this game for Apple TV once, then install on Apple TV."
  },
@@ -9932,14 +9832,6 @@
   "en": "Adding the permissions the app requests"
  },
  {
-  "source": "这款选的下游方案是独立 App，资源要由电脑推进去：连上手机后点「装到 iPhone」；想导出自签包就在确认页改选「仍用原版方案」。",
-  "en": "The port chosen for this game is a separate app whose resources are copied over from your computer: connect your phone and click Install on iPhone. To export a self-sign package instead, choose Keep the standard route on the confirmation page."
- },
- {
-  "source": "这款用的是 {0} 方案（独立 App），现在只能「装到 iPhone」，还不能导出自签包。",
-  "en": "This game uses {0} (a separate app): for now it can only be installed with Install on iPhone, not exported as a self-sign package."
- },
- {
   "source": "下游方案只能装到 iPhone",
   "en": "This port can only be installed on iPhone"
  },
@@ -10000,14 +9892,6 @@
   "en": "The game still installs and plays normally; this game's program files just picked up a large file that does not belong there, which takes extra disk space and makes installs push more data. Please export a diagnostic report and send it to us."
  },
  {
-  "source": "Impactor 里还没登录 Apple ID：在装机页点「打开 Impactor」→「设置」→「添加账号」，用你的 Apple ID 登录（邮箱、密码、手机上的验证码，输入前切到英文输入法）；已经存了几个账号的，选中要用的那个（或移除后重新添加）。然后回来再点一次「装到 iPhone」。密码只在 Impactor 里输，S2Arm 不经手。",
-  "en": "No Apple ID is signed in to Impactor: on the install page click Open Impactor → Settings → Add Account and sign in with your Apple ID (email, password and the code on your devices; switch the keyboard to English first). If several accounts are saved, select the one you want (or remove it and add it again). Then come back and click Install to iPhone again. You enter the password only in Impactor; S2Arm never sees it."
- },
- {
-  "source": "这台电脑连不上苹果的服务器（Impactor 登录和签名都要连），不是 Apple ID 或密码的问题。检查这台电脑的网络：浏览器能打开 appleid.apple.com 就再点一次「装到 iPhone」；打不开就换个 DNS（如 223.5.5.5 或 1.1.1.1）或开 / 关代理后再装。手机、已装的 App 和存档都没动。",
-  "en": "This computer cannot reach Apple's servers (Impactor needs them to sign in and to sign). This is not a problem with your Apple ID or password. Check this computer's network: if a browser can open appleid.apple.com, click Install to iPhone again; if it cannot, switch DNS (for example 1.1.1.1) or turn your proxy on or off, then install again. Your phone, installed apps and saves were not touched."
- },
- {
   "source": "Switch 2 游戏在 Apple TV 上要「扩展虚拟寻址」权限，只有付费 Apple 开发者账号签得了：在 Xcode「设置 → 账户」登录付费开发者账号或选付费团队，再装到 Apple TV（Switch 1 游戏用免费 Apple ID 就能装）。",
   "en": "Switch 2 games need the Extended Virtual Addressing capability on Apple TV, which only a paid Apple Developer account can sign: sign in to a paid developer account (or pick a paid team) in Xcode's Settings → Accounts, then install on Apple TV again (Switch 1 games install with a free Apple ID)."
  },
@@ -10042,10 +9926,6 @@
  {
   "source": "{0} 还没有 iPhone 程序件：先「打 iPhone 包」",
   "en": "{0} has no iPhone program files yet. Use \"Pack for iPhone\" first."
- },
- {
-  "source": "用数据线把这台 iPhone 连到这台 Mac，解锁后在手机上点「信任」；打开开发者模式（设置 → 隐私与安全性 → 开发者模式，开了要重启手机）；等 Xcode 菜单「窗口 → 设备与模拟器」里出现这台，再点一次「装到 iPhone」。",
-  "en": "Connect this iPhone to this Mac with a cable, unlock it and tap \"Trust\" on the phone. Turn on Developer Mode (Settings → Privacy & Security → Developer Mode; the phone restarts). Once it appears in Xcode under Window → Devices and Simulators, retry installation."
  },
  {
   "source": "Xcode 看不到这台 iPhone",
@@ -10148,10 +10028,6 @@
   "en": "Click Continue anyway to use this game library; if it isn’t the one you want, choose your game library again in Settings."
  },
  {
-  "source": "先试这两步：①在 iPhone 上打开一次 S2Arm，等游戏库界面出来；②回电脑对这款游戏再点一次「装到 iPhone」，会接着已传的部分继续，不用从头来。还是写不进，就要删掉 iPhone 上的 S2Arm App 再重装：先在游戏菜单「存档管理」里导出存档，存到 S2Arm 文件夹以外（比如 iCloud 云盘）；再在 iPhone 桌面长按 S2Arm，删除 App；然后在电脑上的 S2Arm 里对这款游戏再点一次「装到 iPhone」；装好后在「存档管理」里导回存档。电脑上的游戏和 S2Arm 都不用删。",
-  "en": "Try these two steps first: 1) Open S2Arm on the iPhone once and wait for the game library to appear; 2) Back on your computer, click “Install on iPhone” for this game again. It picks up from what was already copied, so it won’t start over. If it still can’t write, delete the S2Arm app on your iPhone and install it again: export your saves from the game menu (Manage saves) to a place outside the S2Arm folder, such as iCloud Drive; on the iPhone Home Screen, touch and hold S2Arm and delete the app; in S2Arm on your computer, click Install on iPhone for this game again; once it’s installed, import your saves again in Manage saves. You don’t need to delete the games or S2Arm on your computer."
- },
- {
   "source": "S2Arm 读取工具与引擎版本不符，这次照常使用；解包出错时请重新安装完整的 S2Arm。",
   "en": "The S2Arm reader tool doesn't match the engine version. It will be used anyway this time; if unpacking fails, reinstall the complete S2Arm."
  },
@@ -10250,5 +10126,329 @@
  {
   "source": "没能把证书写进 iPhone 上的 S2Arm：确认 iPhone 连着、已解锁，再试一次。",
   "en": "Couldn't write the certificate into S2Arm on your iPhone. Make sure the iPhone is connected and unlocked, then try again."
+ },
+ {
+  "source": "这款游戏正在升级 S 级优化，升级完成后就能开始。",
+  "en": "This game is upgrading its S-Grade optimization. You can start it once the upgrade finishes."
+ },
+ {
+  "source": "这款游戏正在运行或正在升级，等它结束后再点「S 级优化」。",
+  "en": "This game is running or already upgrading. Click “S-Grade optimization” again after it finishes."
+ },
+ {
+  "source": "补上 S 级优化（满屏 / 帧率 / 金手指）",
+  "en": "Adding S-Grade optimization (full screen / frame rate / cheats)"
+ },
+ {
+  "source": "补上片上读取用的着色器（首次要几分钟）",
+  "en": "Adding on-chip read shaders (first time takes a few minutes)"
+ },
+ {
+  "source": "补上 iPhone 版的 S 级优化",
+  "en": "Adding S-Grade optimization to the iPhone version"
+ },
+ {
+  "source": "等这款的 S 级优化升级做完（游戏上有进度），再点开始游戏；别的游戏照常能玩。",
+  "en": "Wait for this game's S-Grade optimization upgrade to finish (progress shows on the game), then click Start. Other games can be played as usual."
+ },
+ {
+  "source": "登录 Apple ID",
+  "en": "Sign in with Apple ID"
+ },
+ {
+  "source": "等你填验证码",
+  "en": "Waiting for your verification code"
+ },
+ {
+  "source": "填好 Apple ID 邮箱和密码再登录。",
+  "en": "Enter your Apple ID email and password, then sign in."
+ },
+ {
+  "source": "Apple ID 登录没成功：{0}",
+  "en": "Apple ID sign-in failed: {0}"
+ },
+ {
+  "source": "还没用 Apple ID 登录：在 S2Arm 里用你的 Apple ID 登录一次（邮箱、密码、手机上的验证码），再装到 iPhone。",
+  "en": "Not signed in with an Apple ID yet: sign in with your Apple ID in S2Arm once (email, password and the verification code on your phone), then install on iPhone."
+ },
+ {
+  "source": "在「Windows 安全中心 → 保护历史记录」看是谁拦的。杀毒软件拦的：把 S2Arm 安装文件夹加进信任再重试；「智能应用控制」拦的：它不能单独放行，只能在「应用和浏览器控制 → 智能应用控制」里关掉（关掉后要重装 Windows 才能再打开）；公司电脑请让管理员放行。",
+  "en": "Check Windows Security → Protection history to see what blocked it. If it was antivirus, add the S2Arm install folder to its trusted list and try again. If it was Smart App Control, it can't allow a single app — it can only be turned off under App & browser control → Smart App Control (turning it off needs a Windows reinstall to turn it back on). On a work PC, ask your administrator to allow it."
+ },
+ {
+  "source": "S2Arm 自带的工具",
+  "en": "one of S2Arm's own tools"
+ },
+ {
+  "source": "{0}拦下了 S2Arm 自带的工具「{1}」，没让它运行。",
+  "en": "{0} stopped S2Arm's tool \"{1}\" from running."
+ },
+ {
+  "source": "Windows 的「智能应用控制」",
+  "en": "Windows Smart App Control"
+ },
+ {
+  "source": "这台电脑的组策略（公司 / 学校管理的电脑常见）",
+  "en": "this PC's group policy (common on work or school PCs)"
+ },
+ {
+  "source": "杀毒软件",
+  "en": "Antivirus software"
+ },
+ {
+  "source": "这次签好的 S2Arm 没带「提高内存上限」权限：装上后能玩，但大游戏可能内存不够、开局中止。",
+  "en": "The S2Arm signed this time is missing the \"Increased Memory Limit\" entitlement: it installs and runs, but large games may run out of memory and stop at launch."
+ },
+ {
+  "source": "电脑连不上这台 iPhone 的开发者通道（手机通过 Wi-Fi 连着时最常见，不是没解锁）：用数据线把手机直接插到这台电脑（别经过扩展坞或集线器），解锁停在主屏幕，再点一次；还不行就重启一次手机，插上后在手机上重新点「信任」。",
+  "en": "This Mac can't reach the iPhone's developer connection (most common when the phone is connected over Wi-Fi; it isn't about being locked): plug the phone straight into this Mac with a cable (not through a dock or hub), unlock it to the Home Screen, and try again. If it still fails, restart the phone, plug it back in and tap \"Trust\" again on the phone."
+ },
+ {
+  "source": "Xbox GIP 本机通道设置无效。",
+  "en": "Invalid Xbox GIP native channel setting."
+ },
+ {
+  "source": "查上一份存档",
+  "en": "Checking for a previous save"
+ },
+ {
+  "source": "回到上一份存档",
+  "en": "Going back to the previous save"
+ },
+ {
+  "source": "这款游戏没有上一份存档。",
+  "en": "This game has no previous save."
+ },
+ {
+  "source": "没能回到上一份存档，存档保持原样。",
+  "en": "Couldn’t go back to the previous save. Your save is unchanged."
+ },
+ {
+  "source": "没能回到上一份存档，而且有存档没能换回原样，请导出诊断包。",
+  "en": "Couldn’t go back to the previous save, and some saves couldn’t be switched back. Please export a diagnostic report."
+ },
+ {
+  "source": "仅设备类型为「内置扬声器」时可用。",
+  "en": "Only available while the device type is Built-in speakers."
+ },
+ {
+  "source": "仅设备类型为「耳机」时可用。",
+  "en": "Only available while the device type is Headphones."
+ },
+ {
+  "source": "找 iPhone",
+  "en": "Finding the iPhone"
+ },
+ {
+  "source": "删除手机上这款",
+  "en": "Deleting this game from the iPhone"
+ },
+ {
+  "source": "定不出手机上 S2Arm 的包名（这台电脑没装过、也读不到当前签名账号）：先在这台电脑上「安装 S2Arm」一次再删。",
+  "en": "Can't tell the bundle ID of S2Arm on the iPhone (it was never installed from this computer and the current signing account can't be read). Click \"Install S2Arm\" once on this computer, then delete again."
+ },
+ {
+  "source": "先在 iPhone 上退出 S2Arm，再删这款。",
+  "en": "Quit S2Arm on the iPhone first, then delete this game."
+ },
+ {
+  "source": "没能删掉手机上这款的数据：确认 iPhone 连着、已解锁，再试一次。",
+  "en": "Couldn't delete this game's data on the iPhone. Make sure the iPhone is connected and unlocked, then try again."
+ },
+ {
+  "source": "安卓出包还没开放：等新版本开放后再出。",
+  "en": "Android export isn't open yet: wait for a version that opens it."
+ },
+ {
+  "source": "检查网络后重试；也可以自己装 Android SDK Platform-Tools（含 adb），装好后再试。",
+  "en": "Check your network and try again, or install Android SDK Platform-Tools (with adb) yourself and retry."
+ },
+ {
+  "source": "重新插好数据线，在手机上允许 USB 调试，然后点「刷新」再试。",
+  "en": "Reconnect the cable, allow USB debugging on the phone, then tap Refresh and try again."
+ },
+ {
+  "source": "安卓出包还没开放。",
+  "en": "Android export isn't open yet."
+ },
+ {
+  "source": "下载安卓调试工具（adb）",
+  "en": "Downloading the Android debugging tool (adb)"
+ },
+ {
+  "source": "adb devices 失败：",
+  "en": "adb devices failed: "
+ },
+ {
+  "source": "下载的 platform-tools 里没有 adb。",
+  "en": "The downloaded platform-tools has no adb."
+ },
+ {
+  "source": "下载安卓调试工具（adb）失败：{0}。检查网络后重试；也可以自己装 Android SDK Platform-Tools。",
+  "en": "Downloading the Android debugging tool (adb) failed: {0}. Check your network and try again, or install Android SDK Platform-Tools yourself."
+ },
+ {
+  "source": "起局前已知：{0}",
+  "en": "Known before launch: {0}"
+ },
+ {
+  "source": "自签导出的游戏文件",
+  "en": "Self-sign export game file"
+ },
+ {
+  "source": "「S2Arm 自签导出」文件夹里这款的 .img：手机上已导入的不受影响；要再装到手机时重新「导出自签包」",
+  "en": "This game's .img in the “S2Arm Self-Sign Export” folder: games already imported on your phone are not affected; export a self-sign package again when you want to install it on a phone."
+ },
+ {
+  "source": "iPhone 包已出好。用数据线连上 iPhone，在打包任务页点「推到 iPhone」就能装上（也可以按装机步骤改用 AltStore）。",
+  "en": "iPhone package ready. Connect your iPhone with a cable and click “Push to iPhone” on the Packing page (or use AltStore — see the install steps)."
+ },
+ {
+  "source": "回到 S2Arm，在打包任务页点「推到 iPhone」：自动签名、安装，并把资源包拷进去、逐个文件核对。",
+  "en": "Back in S2Arm, click “Push to iPhone” on the Packing page: it signs, installs, and copies the resource pack, checking every file."
+ },
+ {
+  "source": "已推到 iPhone",
+  "en": "Pushed to iPhone"
+ },
+ {
+  "source": "推到 iPhone",
+  "en": "Push to iPhone"
+ },
+ {
+  "source": "打开 Xcode →「设置」→「账户」，点「+」登录你的 Apple ID（免费的就可以），再点一次「推到 iPhone」；不想登录 Xcode 也可以改用 AltStore 安装。",
+  "en": "Open Xcode → Settings → Accounts, sign in with your Apple ID (a free account works), then retry installation. AltStore is also an installation option."
+ },
+ {
+  "source": "解锁这台 iPhone（保持亮屏、停在主屏幕），再点一次「推到 iPhone」；装机过程中别锁屏。",
+  "en": "Unlock the iPhone and keep it awake on the Home Screen, then retry installation. Do not lock it during installation."
+ },
+ {
+  "source": "iPhone 包已出好。用数据线连上 iPhone，在编译任务页点「推到 iPhone」就能装上（也可以按装机步骤改用 AltStore）。",
+  "en": "iPhone package ready. Connect your iPhone with a cable and click “Push to iPhone” on the Compiling page (or use AltStore — see the install steps)."
+ },
+ {
+  "source": "回到 S2Arm，在编译任务页点「推到 iPhone」：自动签名、安装，并把资源包拷进去、逐个文件核对。",
+  "en": "Back in S2Arm, click “Push to iPhone” on the Compiling page: it signs, installs, and copies the resource pack, checking every file."
+ },
+ {
+  "source": "iPhone 包已出好。可以用数据线连上 iPhone，在打包任务页点「推到 iPhone」（这条路还在真机验证，装不上请按装机步骤改用 AltStore）。",
+  "en": "iPhone package ready. You can connect your iPhone with a cable and click “Push to iPhone” on the Packing page (this path is still being verified on real devices; if it fails, use AltStore — see the install steps)."
+ },
+ {
+  "source": "没找到可用的开发签名团队：请在 Xcode「设置 → 账户」确认 Apple ID、团队和开发证书，再点一次「推到 iPhone」。",
+  "en": "No usable development signing team: check the Apple ID, team and development certificate in Xcode Settings → Accounts, then click Push to iPhone again."
+ },
+ {
+  "source": "在装机页点「解决办法」打开引导项目，在 Xcode 里选 Personal Team，连上手机点运行一次，再点一次「推到 iPhone」。也可以先到 Xcode › Settings › Apple Accounts 看团队列表有没有显示。",
+  "en": "On the install page, click How to fix to open the helper project, choose Personal Team in Xcode, connect your phone and run it once, then install again. You can also check whether the team list appears under Xcode › Settings › Apple Accounts."
+ },
+ {
+  "source": "打开 Xcode，点菜单 Xcode › Settings › Apple Accounts，选中账号后点 Manage Certificates，点 + 选 Apple Development，再点一次「推到 iPhone」。",
+  "en": "Open Xcode, choose Xcode › Settings › Apple Accounts, select your account, click Manage Certificates, click + and choose Apple Development, then install again."
+ },
+ {
+  "source": "确认后再点一次：点名的游戏会暂时不能玩（存档和资源包留在手机上），到装它们的那台电脑上再「推到 iPhone」一次就回来；不想这样就先别装。",
+  "en": "Click again to confirm: the games named will stop working for now (their saves and resources stay on the phone). Install them on iPhone again from the computer they came from to bring them back. If you don't want that, don't install now."
+ },
+ {
+  "source": "在这台 Mac 屏幕上的钥匙串弹窗里点「始终允许」（需要的话输入 Mac 登录密码），再点一次「推到 iPhone」。",
+  "en": "In the keychain prompt on this Mac's screen, click \"Always Allow\" (enter your Mac login password if asked), then install on iPhone again."
+ },
+ {
+  "source": "Apple ID 登录已过期，请重新登录后再装：在装机页点「打开 Impactor」→「设置」，选中你的 Apple ID 点「移除账号」，再点「添加账号」用同一个 Apple ID 重新登录（邮箱、密码、手机上的验证码，输入前切到英文输入法），然后回来再点一次「推到 iPhone」。密码只在 Impactor 里输，S2Arm 不经手。",
+  "en": "Your Apple ID sign-in has expired. Sign in again, then install: on the install page click Open Impactor → Settings, select your Apple ID and click Remove Account, then Add Account and sign in with the same Apple ID (email, password and the code on your devices; switch the keyboard to English first). Come back and click Push to iPhone again. You enter the password only in Impactor; S2Arm never sees it."
+ },
+ {
+  "source": "手机上已经有一个用别的签名装的 S2Arm（包名相同、签名不同），系统不让覆盖。二选一：继续用你原来的签名工具更新它；或者在 iPhone 上长按 S2Arm 删掉它（里面的存档会一起删，先在 S2Arm 里导出存档），再点「推到 iPhone」。",
+  "en": "Your iPhone already has an S2Arm installed with a different signature (same app ID, different signer), and iOS won't replace it. Either keep updating it with your own signing tool, or long-press S2Arm on the iPhone and delete it (its saves go with it, so export them in S2Arm first), then click Push to iPhone again."
+ },
+ {
+  "source": "这台电脑连不上 Impactor 签名要用的登录辅助服务器（mac-ani.jkcoxson.com，Impactor 内置、改不了），已自动重试过一次。检查这台电脑的网络：浏览器能打开这个地址就再点一次「推到 iPhone」；打不开就换个 DNS（如 223.5.5.5 或 1.1.1.1）或开 / 关代理后再装。手机、已装的 App 和存档都不受影响。",
+  "en": "This computer cannot reach the sign-in helper server Impactor needs for signing (mac-ani.jkcoxson.com, built into Impactor and not configurable); S2Arm already retried once. Check this computer's network: if a browser can open that address, click Push to iPhone again; if not, switch DNS (for example 223.5.5.5 or 1.1.1.1) or turn a proxy on or off, then install again. The iPhone, installed apps and saves are not affected."
+ },
+ {
+  "source": "它们是在别的电脑上装的，到那台电脑上再「推到 iPhone」一次就回来：{0}",
+  "en": "Installed from another computer; they come back once you \"Push to iPhone\" again from that computer: {0}"
+ },
+ {
+  "source": "确认后再点一次：点名的游戏会暂时打不开（存档和资源包留在手机上）。别的电脑装的，到那台电脑上再「推到 iPhone」一次就回来；已从游戏库删除的，重新加回、「打 iPhone 包」再装就回来。不想这样就先别装。",
+  "en": "Confirm and try again: the games named won't open for now (their saves and resources stay on the phone). Ones installed from another computer come back once you \"Push to iPhone\" again from that computer; ones deleted from the library come back once you add them again, \"Build for iPhone\" and install. If you don't want that, don't install yet."
+ },
+ {
+  "source": "手机上的游戏都要按新版重新出包，这次没法只更新 S2Arm（更新后一款都打不开）。可以先给它们各「打 iPhone 包」，再点「推到 iPhone」，游戏和 S2Arm 会一起换成新版；存档和资源都留在手机上。「只更新 S2Arm、暂不带游戏」下一版开放。",
+  "en": "All games on the phone need to be built again for the new version, so S2Arm can't be updated on its own this time (none would open afterwards). Build the iPhone package for each, then click \"Push to iPhone\"; the games and S2Arm will be updated together, and saves and resources stay on the phone. \"Update only S2Arm without games\" comes in the next version."
+ },
+ {
+  "source": "游戏库根目录的 S2Arm.ipa 这次没更新（{0}）：这款的 iPhone 版已出好，「推到 iPhone」时会照常组装。",
+  "en": "S2Arm.ipa in the library folder wasn't updated this time ({0}). This game's iPhone version is ready and will be assembled as usual when you install to iPhone."
+ },
+ {
+  "source": "这款选的下游方案是独立 App，资源要由电脑推进去：连上手机后点「推到 iPhone」；想导出自签包就在确认页改选「仍用原版方案」。",
+  "en": "The port chosen for this game is a separate app whose resources are copied over from your computer: connect your phone and click Push to iPhone. To export a self-sign package instead, choose Keep the standard route on the confirmation page."
+ },
+ {
+  "source": "这款用的是 {0} 方案（独立 App），现在只能「推到 iPhone」，还不能导出自签包。",
+  "en": "This game uses {0} (a separate app): for now it can only be installed with Push to iPhone, not exported as a self-sign package."
+ },
+ {
+  "source": "Impactor 里还没登录 Apple ID：在装机页点「打开 Impactor」→「设置」→「添加账号」，用你的 Apple ID 登录（邮箱、密码、手机上的验证码，输入前切到英文输入法）；已经存了几个账号的，选中要用的那个（或移除后重新添加）。然后回来再点一次「推到 iPhone」。密码只在 Impactor 里输，S2Arm 不经手。",
+  "en": "No Apple ID is signed in to Impactor: on the install page click Open Impactor → Settings → Add Account and sign in with your Apple ID (email, password and the code on your devices; switch the keyboard to English first). If several accounts are saved, select the one you want (or remove it and add it again). Then come back and click Push to iPhone again. You enter the password only in Impactor; S2Arm never sees it."
+ },
+ {
+  "source": "这台电脑连不上苹果的服务器（Impactor 登录和签名都要连），不是 Apple ID 或密码的问题。检查这台电脑的网络：浏览器能打开 appleid.apple.com 就再点一次「推到 iPhone」；打不开就换个 DNS（如 223.5.5.5 或 1.1.1.1）或开 / 关代理后再装。手机、已装的 App 和存档都没动。",
+  "en": "This computer cannot reach Apple's servers (Impactor needs them to sign in and to sign). This is not a problem with your Apple ID or password. Check this computer's network: if a browser can open appleid.apple.com, click Push to iPhone again; if it cannot, switch DNS (for example 1.1.1.1) or turn your proxy on or off, then install again. Your phone, installed apps and saves were not touched."
+ },
+ {
+  "source": "用数据线把这台 iPhone 连到这台 Mac，解锁后在手机上点「信任」；打开开发者模式（设置 → 隐私与安全性 → 开发者模式，开了要重启手机）；等 Xcode 菜单「窗口 → 设备与模拟器」里出现这台，再点一次「推到 iPhone」。",
+  "en": "Connect this iPhone to this Mac with a cable, unlock it and tap \"Trust\" on the phone. Turn on Developer Mode (Settings → Privacy & Security → Developer Mode; the phone restarts). Once it appears in Xcode under Window → Devices and Simulators, retry installation."
+ },
+ {
+  "source": "先试这两步：①在 iPhone 上打开一次 S2Arm，等游戏库界面出来；②回电脑对这款游戏再点一次「推到 iPhone」，会接着已传的部分继续，不用从头来。还是写不进，就要删掉 iPhone 上的 S2Arm App 再重装：先在游戏菜单「存档管理」里导出存档，存到 S2Arm 文件夹以外（比如 iCloud 云盘）；再在 iPhone 桌面长按 S2Arm，删除 App；然后在电脑上的 S2Arm 里对这款游戏再点一次「推到 iPhone」；装好后在「存档管理」里导回存档。电脑上的游戏和 S2Arm 都不用删。",
+  "en": "Try these two steps first: 1) Open S2Arm on the iPhone once and wait for the game library to appear; 2) Back on your computer, click “Push to iPhone” for this game again. It picks up from what was already copied, so it won’t start over. If it still can’t write, delete the S2Arm app on your iPhone and install it again: export your saves from the game menu (Manage saves) to a place outside the S2Arm folder, such as iCloud Drive; on the iPhone Home Screen, touch and hold S2Arm and delete the app; in S2Arm on your computer, click Push to iPhone for this game again; once it’s installed, import your saves again in Manage saves. You don’t need to delete the games or S2Arm on your computer."
+ },
+ {
+  "source": "还没用 Apple ID 登录：在 S2Arm 的「用 Apple ID 签名」里填邮箱和密码登录（你的苹果设备上会弹出验证码），再点一次「推到 iPhone」。密码只用于这次向 Apple 登录，S2Arm 不保存。",
+  "en": "No Apple ID signed in: in S2Arm, open \"Sign with Apple ID\", enter your email and password (a verification code will appear on your Apple devices), then click \"Push to iPhone\" again. The password is only used for this sign-in with Apple; S2Arm doesn't store it."
+ },
+ {
+  "source": "把游戏资源推进 Apple TV（只推变了的文件；第一次大游戏要几分钟）",
+  "en": "Sending the game's resources to the Apple TV (only changed files; a large game takes a few minutes the first time)"
+ },
+ {
+  "source": "把游戏的程序推进 Apple TV",
+  "en": "Sending the game's program to the Apple TV"
+ },
+ {
+  "source": "组 Apple TV 上的 S2Arm（不带游戏）",
+  "en": "Building S2Arm for Apple TV (without games)"
+ },
+ {
+  "source": "已送到手机，打开 S2Arm 时自动装好。",
+  "en": "Sent to your phone. It installs automatically the next time you open S2Arm."
+ },
+ {
+  "source": "等 iPhone 上的 S2Arm 装好这款的程序",
+  "en": "Waiting for S2Arm on the iPhone to install this game's program"
+ },
+ {
+  "source": "Intel Mac：给 iPhone 出包可用；在 Mac 上起游戏仍要 Apple 芯片。",
+  "en": "Intel Mac: building for iPhone works; playing games on this Mac still needs Apple silicon."
+ },
+ {
+  "source": "没读到登录的 Apple ID，这份游戏包未签名，导入后由手机上的 S2Arm 签名。",
+  "en": "No signed-in Apple ID was found, so this game pack is unsigned. S2Arm on your phone signs it after import."
+ },
+ {
+  "source": "没读到登录的 Apple ID，这份游戏包未签名；手机上的 S2Arm 还没拿到签名身份，导入后签不了：先在启动器里登录 Apple ID（或选用自己的证书），连上手机推一次游戏，把签名身份交给它。",
+  "en": "No signed-in Apple ID was found, so this game pack is unsigned, and S2Arm on your phone doesn't have a signing identity yet, so it can't sign it after import. Sign in with your Apple ID in the launcher (or choose your own certificate), connect your phone and send a game once to hand the signing identity to it."
+ },
+ {
+  "source": "在启动器里登录装 S2Arm 用的那个 Apple ID（或选用和装 S2Arm 同一团队的证书），再点一次「把签名身份交给手机」。",
+  "en": "In the launcher, sign in with the Apple ID you used to install S2Arm (or choose a certificate from the same team as the one that installed S2Arm), then click “Give the signing identity to the phone” again."
+ },
+ {
+  "source": "手机上的 S2Arm 是用另一个 Apple ID 或证书签的（团队 {0}），和这台电脑上的签名身份（团队 {1}）不是同一个团队，交过去也签不了游戏：请在启动器里登录装 S2Arm 用的那个 Apple ID，或选用同一团队的证书。",
+  "en": "S2Arm on your phone was signed with a different Apple ID or certificate (team {0}), not the same team as the signing identity on this computer (team {1}), so the phone can't sign games with it. Sign in with the Apple ID you used to install S2Arm in the launcher, or choose a certificate from the same team."
  }
 ]

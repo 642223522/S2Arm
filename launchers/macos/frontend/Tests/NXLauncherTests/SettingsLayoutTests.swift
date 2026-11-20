@@ -4,6 +4,7 @@ import AppKit
 import GameController
 import LauncherPadBridge
 import SwiftUI
+import Vision
 import XCTest
 import NXCore
 import NXModel
@@ -13,6 +14,62 @@ import S2ArmAppleAdapter
 
 /// Real SwiftUI pages with original, asset-free job responses; never reads the player's library.
 @MainActor final class SettingsLayoutTests: XCTestCase {
+    func testHomeIconTooltipsAppearImmediatelyAndPointTowardTheirButtons() async throws {
+        let fixture = try SettingsFixture()
+        defer { fixture.remove() }
+        fixture.model.refresh()
+        for _ in 0..<100 where fixture.model.games.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        for language in [Lang.zh, .en] {
+            for width: CGFloat in [800, 1120, 1440] {
+                let page = AnyView(LauncherView(model: fixture.model, brand: "Original tooltip fixture")
+                    .frame(width: width, height: 760))
+                let (host, window) = try await render(page, fixture: fixture, language: language)
+                defer { window.close() }
+                // 游戏库读取期间有的按钮置灰、不登记手柄目标：先等读完，再轮询等目标出现
+                for _ in 0..<300 where fixture.model.loading { try await Task.sleep(for: .milliseconds(10)) }
+                let anchors = descendants(try XCTUnwrap(window.contentView?.superview))
+                    .filter { $0.identifier?.rawValue == "launcher.tooltip.anchor" }
+                for (id, above) in [("hero.more", true), ("top.settings", false), ("home.more", false)] {   // 刷新在「更多」菜单里，顶栏图标看「更多」
+                    var found = fixture.model.gamepad.controlTargets(in: window).first { $0.id == id }
+                    for _ in 0..<300 where found == nil {
+                        try await Task.sleep(for: .milliseconds(10))
+                        found = fixture.model.gamepad.controlTargets(in: window).first { $0.id == id }
+                    }
+                    let button = try XCTUnwrap(found, "\(id) 的手柄目标没出现")
+                    let anchor = try XCTUnwrap(anchors.first {
+                        let frame = window.convertToScreen($0.convert($0.bounds, to: nil))
+                        return abs(frame.midX - button.frame.midX) < 2 && abs(frame.midY - button.frame.midY) < 2
+                    }, "\(id) 必须使用即时提示，不能等系统 help 的计时器")
+                    let event = try XCTUnwrap(NSEvent.enterExitEvent(with: .mouseEntered, location: .zero,
+                        modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                        eventNumber: 0, trackingNumber: 0, userData: nil))
+                    let started = ProcessInfo.processInfo.systemUptime
+                    anchor.mouseEntered(with: event)
+                    let panel = try XCTUnwrap(window.childWindows?.first { $0.identifier?.rawValue == "launcher.tooltip" && $0.isVisible },
+                        "悬停进入时必须同步显示提示")
+                    let elapsed = ProcessInfo.processInfo.systemUptime - started
+                    print("tooltip \(language.code)/\(Int(width))/\(id): \(elapsed * 1000) ms, above=\(above)")
+                    XCTAssertLessThan(elapsed, 0.1)
+                    XCTAssertTrue(panel.ignoresMouseEvents, "提示不能挡住原按钮的鼠标操作")
+                    XCTAssertFalse(panel.canBecomeKey, "提示不能夺走键盘或手柄窗口")
+                    let frame = window.convertToScreen(anchor.convert(anchor.bounds, to: nil))
+                    if above { XCTAssertGreaterThanOrEqual(panel.frame.minY, frame.maxY + 4) }
+                    else { XCTAssertLessThanOrEqual(panel.frame.maxY, frame.minY - 4) }
+                    XCTAssertTrue(window.frame.insetBy(dx: 4, dy: 4).contains(panel.frame), "提示不能跑出窗口边缘")
+                    let label = try XCTUnwrap(descendants(try XCTUnwrap(panel.contentView)).compactMap { $0 as? NSTextField }.first)
+                    XCTAssertFalse(label.stringValue.isEmpty)
+                    XCTAssertEqual(label.textColor, NSColor.white)
+                    XCTAssertGreaterThanOrEqual(label.frame.width, label.intrinsicContentSize.width, "提示文字必须完整显示，包含原生控件的内边距")
+                    if width == 1120 { try snapshot(try XCTUnwrap(panel.contentView), "tooltip-\(id)-\(language.code)") }
+                    anchor.mouseExited(with: event)
+                    XCTAssertFalse(panel.isVisible, "离开图标立即收起")
+                }
+                _ = host
+            }
+        }
+    }
+
     func testControllerSettingsHideSharedFaceBindingsForEveryPlayer() async throws {
         let fixture = try SettingsFixture()
         defer { fixture.remove() }
@@ -111,7 +168,7 @@ import S2ArmAppleAdapter
             for (width, height): (CGFloat, CGFloat) in [(800, 450), (1120, 630), (1440, 810)] {
                 let session = JobSession(kind: .play, gameID: game.id, name: game.name,
                     phase: .finished(.completed), stage: "游戏运行中")
-                fixture.model.session = session
+                fixture.model.playSession = session
                 let page = AnyView(PlaySessionView(model: fixture.model, covers: covers, session: session,
                     uiLanguage: language == .zh ? "zh-Hans" : "en")
                     .background(LauncherWindowMaterial()).foregroundStyle(LauncherTheme.Colors.text)
@@ -156,7 +213,7 @@ import S2ArmAppleAdapter
         let game = try XCTUnwrap(fixture.model.games.first)
         for phase in [JobSession.Phase.running, .stopping, .finished(.failed)] {
             let session = JobSession(kind: .play, gameID: game.id, name: game.name, phase: phase, stage: "游戏运行中")
-            fixture.model.session = session
+            fixture.model.playSession = session   // 一局在游戏槽
             let page = AnyView(PlaySessionView(model: fixture.model, covers: CoverCache(), session: session, uiLanguage: "en")
                 .background(LauncherWindowMaterial()).frame(width: 800, height: 450))
             let (host, window) = try await render(page, fixture: fixture, language: .en)
@@ -179,13 +236,13 @@ import S2ArmAppleAdapter
             }
             if phase == .finished(.failed) {
                 for action in [LauncherPadAction.confirm, .submit, .back] {
-                    fixture.model.session = session
+                    fixture.model.playSession = session
                     navigation.focus("play.back"); navigation.handle(action)
-                    XCTAssertNil(fixture.model.session, "A、R2 与 B 均应执行原有回库操作")
+                    XCTAssertNil(fixture.model.playSession, "A、R2 与 B 均应执行原有回库操作")
                 }
             } else {
                 navigation.handle(.submit)
-                XCTAssertEqual(fixture.model.session?.phase, .stopping)
+                XCTAssertEqual(fixture.model.playSession?.phase, .stopping)
             }
             XCTAssertFalse(fixture.runner.requests.contains { $0["operation"] as? String == "launch" }, "底栏操作不能意外重启游戏")
             try snapshot(host, "play-footer-\(actionID)-\(phase == .stopping ? "stopping" : "active")")
@@ -813,7 +870,7 @@ import S2ArmAppleAdapter
         }
     }
 
-    /// 首页：左右移动就是选中；焦点所在的卡片按 A = 主操作（同 R2 / ZR）。确认键界面一律显示 A（单只 Joy-Con 没有 ZR），按住不连发
+    /// 首页：左右移动就是选中；按界面映射后的确认键执行主操作（同 R2 / ZR），按住不连发。
     func testHomeConfirmOnFocusedCardRunsThePrimaryActionLikeRightTrigger() async throws {
         let fixture = try SettingsFixture()
         defer { fixture.remove() }
@@ -827,18 +884,27 @@ import S2ArmAppleAdapter
             .frame(width: 1120, height: 630)), fixture: fixture, language: .zh)
         navigation.attach(window); navigation.source.stop(); navigation.source.isActive = { true }
         defer { navigation.detach(); window.close() }
+        // 生产路由优先处理 keyWindow；合成按键前明确把焦点交给被测窗口。
+        window.makeKeyAndOrderFront(nil)
+        try await waitUntil { navigation.activeWindow === window && navigation.inMainContent }
         let controller = GCController.withExtendedGamepad(), pad = try XCTUnwrap(controller.extendedGamepad)
+        let receive = navigation.source.receive
+        var actions: [LauncherPadAction] = []
+        navigation.source.receive = { actions.append($0); receive($0) }
         navigation.source.controllers = { [controller] }; navigation.source.tick(now: 0)
         navigation.focus("card." + game.id)
         fixture.model.selectedID = game.id
         XCTAssertEqual(navigation.shortcutTargets(in: window)[.rightTrigger], ["hero.export"])
         try snapshot(host, "home-r2-prepare")
-        pad.buttonA.setValue(1); navigation.source.tick(now: 0.01)
-        XCTAssertEqual(fixture.model.exportFor, game.id, "卡片按 A 执行主操作（准备游戏），同 R2")
+        let mapping = navigation.source.faceMapping(ControllerFaceFamily.of(controller))
+        let confirm = [pad.buttonA, pad.buttonB, pad.buttonX, pad.buttonY][mapping.source(for: 0)]
+        confirm.setValue(1); navigation.source.tick(now: 0.01)
+        XCTAssertEqual(actions, [.confirm], "合成输入须按当前四键映射产出确认，不能假定本机使用默认排列")
+        XCTAssertEqual(fixture.model.exportFor, game.id, "卡片确认执行主操作（准备游戏），同 R2")
         try await Task.sleep(for: .milliseconds(150))
         navigation.source.tick(now: 0.8)
         XCTAssertFalse(fixture.runner.requests.contains { $0["operation"] as? String == "export" },
-            "按住 A 从首页进入出包页，不能再触发新页面的开始出包")
+            "按住确认键从首页进入出包页，不能再触发新页面的开始出包")
     }
 
     /// v0.5.0 手柄验收 A1：首页横向封面，手柄左右切游戏，选中的游戏（大图与标题）跟着换。注入 GCController 十字键，走生产输入路径
@@ -895,7 +961,117 @@ import S2ArmAppleAdapter
         }
     }
 
-    func testTitlebarActionsAlignWithTheHomeControls() async throws {
+    func testWelcomeDoesNotUseTheLibrarySelectionAsANewImport() async throws {
+        for language in [Lang.zh, .en] {
+            let fixture = try SettingsFixture()
+            defer { fixture.remove() }
+            fixture.model.refresh()
+            fixture.model.checkEnvironment()
+            try await waitUntil { !fixture.model.games.isEmpty && !fixture.model.checking }
+            fixture.model.welcomeHome = true
+            XCTAssertNotNil(fixture.model.selected)
+            XCTAssertNil(fixture.model.welcomeGame)
+            XCTAssertEqual(fixture.model.keysReady, false)
+            let (host, window) = try await render(AnyView(WelcomeView(model: fixture.model).frame(width: 1440, height: 900).background(Color.black)), fixture: fixture, language: language)
+            fixture.navigation.source.controllers = { [] }; fixture.navigation.attach(window); fixture.navigation.source.stop()
+            defer { fixture.navigation.detach(); window.close() }
+            let texts = normalizedText(try renderedText(host, language: language).map(\.text).joined(separator: "\n"))
+            XCTAssertTrue(texts.contains(normalizedText(BackendText.launcherText("welcome.step.mac.done", language: language.sharedCode))), "必须实际读到欢迎页文案，避免空图让否定断言空过")
+            XCTAssertFalse(texts.contains(normalizedText(BackendText.launcherText("welcome.step.keys.notNeeded", language: language.sharedCode))), "库里选中的游戏不能让本次引导跳过密钥")
+            XCTAssertFalse(texts.contains(normalizedText("Original UI fixture 0")), "本次还没选游戏，不应显示库里选中的那款")
+            XCTAssertFalse(fixture.navigation.shortcutTargets(in: window)[.rightTrigger, default: []].contains("welcome.library"), "进入游戏库不能占用提交键")
+            XCTAssertTrue(fixture.navigation.controlTargets(in: window).contains { $0.id == "welcome.library" }, "已有游戏时，回库入口不应依赖本次引导进度")
+            try snapshot(host, "welcome-existing-library-" + language.code)
+            fixture.navigation.focus("welcome.library"); fixture.navigation.handle(.confirm)
+            XCTAssertFalse(fixture.model.showsWelcome)
+        }
+    }
+
+    func testWelcomeImportKeepsExportAsTheDefaultAction() async throws {
+        for language in [Lang.zh, .en] {
+            for keyboard in [false, true] {
+                let fixture = try SettingsFixture()
+                defer { fixture.remove() }
+                fixture.model.checkEnvironment()
+                try await waitUntil { !fixture.model.checking }
+                fixture.model.importGames([fixture.root.appendingPathComponent("original-game.nup")], partialResults: false)
+                try await waitUntil { !fixture.model.busy && fixture.model.welcomeGame != nil }
+                let (host, window) = try await render(AnyView(WelcomeView(model: fixture.model).frame(width: 1440, height: 900).background(Color.black)), fixture: fixture, language: language)
+                fixture.navigation.source.controllers = { [] }; fixture.navigation.attach(window); fixture.navigation.source.stop()
+                defer { fixture.navigation.detach(); window.close() }
+                let targets = fixture.navigation.controlTargets(in: window)
+                let export = try XCTUnwrap(targets.first { $0.id == "welcome.oneclick" })
+                let library = try XCTUnwrap(targets.first { $0.id == "welcome.library" })
+                XCTAssertGreaterThan(export.frame.minY, library.frame.maxY, "回库次按钮放在一键出包下面")
+                XCTAssertEqual(fixture.navigation.shortcutTargets(in: window)[.rightTrigger], ["welcome.oneclick"])
+                try snapshot(host, "welcome-import-" + language.code + (keyboard ? "-keyboard" : "-controller"))
+                if keyboard {
+                    let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                        windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+                    XCTAssertTrue(window.performKeyEquivalent(with: event))
+                } else {
+                    fixture.navigation.handle(.submit)
+                }
+                XCTAssertEqual(fixture.model.exportFor, "fixture", "Return 和 R2 都应打开本次导入游戏的出包页")
+            }
+        }
+    }
+
+    func testWelcomeToolNamesShareTheSameColumn() async throws {
+        let fixture = try SettingsFixture()
+        defer { fixture.remove() }
+        fixture.runner.preflightChecks = [["id": "xcode", "name": "Xcode", "ok": false, "action": "appStoreXcode", "requiredFor": ["prepare", "ipa"]]]
+        fixture.model.checkEnvironment()
+        try await waitUntil { !fixture.model.checking }
+        do {
+            let language = Lang.zh
+            let (host, window) = try await render(AnyView(WelcomeView(model: fixture.model).frame(width: 1440, height: 1100).background(Color.black)), fixture: fixture, language: language)
+            defer { window.close() }
+            let texts = try renderedText(host, language: language)
+            try snapshot(host, "welcome-tools-" + language.code)
+            let names = try ["Xcode", "Metal", "iOS", "Apple ID"].map { title in
+                let item = try XCTUnwrap(texts.first { $0.text.localizedCaseInsensitiveContains(title) }, title)
+                let range = try XCTUnwrap(item.text.range(of: title, options: .caseInsensitive))
+                let bounds = try XCTUnwrap(item.candidate.boundingBox(for: range)).boundingBox
+                return CGRect(x: bounds.minX * host.bounds.width, y: bounds.minY * host.bounds.height,
+                              width: bounds.width * host.bounds.width, height: bounds.height * host.bounds.height)
+            }
+            for frame in names {
+                XCTAssertGreaterThan(frame.width, 0)
+                // OCR 测的是不同首字母的字形边界，容许 3 pt 字面差异；原 iOS 行缺列会偏移 36 pt。
+                XCTAssertEqual(frame.minX, names[0].minX, accuracy: 3, "包括 iOS 组件在内的四行工具名应左对齐（实际字形边界）")
+            }
+            print("welcome-tool-columns \(language.code): \(names.map(\.minX))")
+        }
+    }
+
+    func testReportRemainsAvailableOnWelcomeExportAndJobPages() async throws {
+        let fixture = try SettingsFixture()
+        defer { fixture.remove() }
+        fixture.model.refresh()
+        try await waitUntil { !fixture.model.games.isEmpty }
+        fixture.model.gamepad.source.controllers = { [] }
+        let (host, window) = try await render(AnyView(LauncherView(model: fixture.model, brand: "Original UI fixture").frame(width: 1440, height: 900)), fixture: fixture, language: .zh)
+        defer { window.close() }
+        for page in ["welcome", "export", "job"] {
+            fixture.model.goToLibrary()
+            switch page {
+            case "welcome": fixture.model.welcomeHome = true
+            case "export": fixture.model.exportFor = "fixture"
+            default: fixture.model.playSession = JobSession(kind: .play, gameID: "fixture", name: "Original session")
+            }
+            try await settle(window, fixture.model.gamepad)
+            XCTAssertTrue(fixture.model.gamepad.controlTargets(in: window).contains { $0.id == "top.report" }, "\(page) 页面应直接看到全局故障报修")
+            if page != "welcome" {
+                fixture.model.gamepad.handle(.back)
+                try await settle(window, fixture.model.gamepad)
+                XCTAssertTrue(fixture.model.gamepad.controlTargets(in: window).contains { $0.id == "home.more" }, "\(page) 返回应直接到游戏库")
+            }
+        }
+        try snapshot(window.contentView?.superview ?? host, "review-global-titlebar")
+    }
+
+    func testTitlebarActionsKeepTheConfirmedCompactRightInset() async throws {
         let fixture = try SettingsFixture()
         defer { fixture.remove() }
         fixture.model.refresh()
@@ -909,15 +1085,16 @@ import S2ArmAppleAdapter
                 // The native titlebar has its own hosting view; it registers its controls on a later main-loop pass.
                 try await waitUntil {
                     let ids = Set(fixture.model.gamepad.controlTargets(in: window).map(\.id))
-                    return ids.contains("top.report") && ids.contains("home.refresh")
+                    return ids.contains("top.report") && ids.contains("home.more")
                 }
                 let targets = fixture.model.gamepad.controlTargets(in: window)
                 let report = try XCTUnwrap(targets.first { $0.id == "top.report" })
-                let refresh = try XCTUnwrap(targets.first { $0.id == "home.refresh" })
+                let more = try XCTUnwrap(targets.first { $0.id == "home.more" })
                 let bounds = window.convertToScreen(host.bounds)
-                print("titlebar-right-edge \(language.code)/\(width): report=\(bounds.maxX - report.frame.maxX), home=\(bounds.maxX - refresh.frame.maxX)")
-                XCTAssertEqual(report.frame.maxX, refresh.frame.maxX, accuracy: 0.5, "报修按钮应与游戏库控件共用右边缘")
-                XCTAssertEqual(bounds.maxX - report.frame.maxX, LauncherTheme.Space.section, accuracy: 0.5)
+                print("titlebar-right-edge \(language.code)/\(width): report=\(bounds.maxX - report.frame.maxX), home=\(bounds.maxX - more.frame.maxX)")
+                XCTAssertEqual(bounds.maxX - report.frame.maxX, 6, accuracy: 0.5, "保留已确认的标题栏右侧 6 pt 留白")
+                XCTAssertEqual(bounds.maxX - more.frame.maxX, 48, accuracy: 0.5, "首页控制栏继续使用原边距")
+                XCTAssertFalse(targets.contains { $0.id == "home.refresh" }, "刷新保留在更多菜单中")
                 try snapshot(host, "titlebar-alignment-\(language.code)-\(Int(width))")
             }
         }
@@ -1043,12 +1220,14 @@ import S2ArmAppleAdapter
         return navigation.activeWindow === k.panel && navigation.controlTargets(in: k.panel).contains { $0.id == "pad.key.q" }
     }
 
+    /// 按条件等：满足立刻返回，上限 10 秒。原先 2 秒，门禁机整套并发跑、负载高时搜索胶囊展开 + 拿焦点会超时偶发红
+    ///   （11-18 合入后步红在首页搜索用例，单跑必过），条件判定不变，快的时候不多等
     private func waitUntil(_ ready: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
-        for _ in 0..<100 {
+        for _ in 0..<500 {
             if ready() { return }
             try await Task.sleep(for: .milliseconds(20))
         }
-        XCTAssertTrue(ready(), "界面未在 2 秒内完成状态切换", file: file, line: line)
+        XCTAssertTrue(ready(), "界面未在 10 秒内完成状态切换", file: file, line: line)
     }
 
     func testHomeSearchExpandsInsideTheHomeWindowAndKeepsItsQuery() async throws {
@@ -1100,7 +1279,7 @@ import S2ArmAppleAdapter
                 try await Task.sleep(for: .milliseconds(80))
                 XCTAssertEqual(fixture.model.home.search, "Original", "输入必须写回真实首页查询")
                 XCTAssertTrue(window.convertToScreen(host.bounds).contains(field.frame))
-                for id in ["home.search", "home.refresh", "library.sgradeUpgrade", "home.group.all", "home.group.ready", "home.group.recent", "home.group.favorites"] {
+                for id in ["home.search", "home.more", "library.sgradeUpgrade", "home.group.all", "home.group.ready", "home.group.recent", "home.group.favorites"] {
                     let control = try XCTUnwrap(navigation.controlTargets(in: window).first { $0.id == id })
                     XCTAssertTrue(window.convertToScreen(host.bounds).contains(control.frame), "\(language)/\(width): 展开后控件必须留在窗口内")
                     XCTAssertLessThanOrEqual(control.frame.height, 44, "\(language)/\(width): 首页控件不能被换行撑高")
@@ -1133,6 +1312,11 @@ import S2ArmAppleAdapter
                 navigation.focus("home.group.ready"); navigation.handle(.confirm)
                 XCTAssertEqual(fixture.model.home.group.rawValue, "ready")
                 fixture.model.home.group = .all
+                navigation.focus("home.more"); navigation.handle(.confirm)
+                try await waitUntil { navigation.activeWindow.map { menu in navigation.controlTargets(in: menu).contains { $0.id == "home.refresh" } } == true }
+                XCTAssertFalse(navigation.controlTargets(in: window).contains { $0.id == "top.library" })
+                navigation.focus("home.refresh"); navigation.handle(.confirm)
+                try await waitUntil { navigation.activeWindow === window && !fixture.model.loading }
             }
         }
     }
@@ -1392,7 +1576,7 @@ import S2ArmAppleAdapter
         let games = (1...9).map { SGradeScanGame(["id": "original-\($0)", "name": "Original game \($0)", "program": "original", "total": 1, "iphone": true, "patches": ["fps": 1]]) }
         for language in [Lang.zh, .en] {
             let code = language == .zh ? "zh-Hans" : "en"
-            let page = AnyView(SGradeUpgradeBody(games: games, failure: nil, zh: language == .zh, busy: false,
+            let page = AnyView(SGradeUpgradeBody(games: games, failure: nil, zh: language == .zh,
                 x: { BackendText.launcherText("sgrade.upgrade." + $0, language: code) }, upgrade: { _ in }, close: {}).frame(height: 500))
             let (host, window) = try await render(page, fixture: fixture, language: language)
             defer { window.close() }
@@ -1400,11 +1584,129 @@ import S2ArmAppleAdapter
             let list = try XCTUnwrap(scrollViews(in: host).first { $0.hasVerticalScroller })
             XCTAssertGreaterThan(list.contentView.bounds.height, 60, "游戏列表不能被压成不可见的滚动区")
             XCTAssertGreaterThan(try XCTUnwrap(list.documentView).bounds.height, 100)
-            for id in ["sgrade.upgrade.install", "sgrade.upgrade.export"] {
+            for id in ["sgrade.upgrade.close"] {
                 let action = try XCTUnwrap(fixture.navigation.controlTargets(in: window).first { $0.id == id }, "升级操作必须始终可见")
                 XCTAssertTrue(bounds.contains(action.frame))
             }
             try snapshot(host, "upgrade-short-\(language.code)")
+        }
+    }
+
+    /// S 级优化手动 / 批量升级（11-18 维护者：点了才做；可批量，写明批量升级、有全选）：每款一个勾选框和「升级」，
+    ///   点某款「升级」只交那一款；页脚「批量升级所选（N 款）」N 跟勾选走、没勾时不可点；正在升级的那款勾选框和按钮都不可用；
+    ///   批量进行中页脚换成「第 i 款 / 共 n 款」+「停止」；没有可升级的款不出行按钮；进度环 / 进度条四种状态出图
+    /// 回到上一份存档（Mac）：上一局出事才问；回到上一份 → 再换回，两次都交 saveRestorePrevious、状态翻回原样；齿轮页一行有上一份才出
+    func testPreviousSaveAskRestoreAndSwitchBack() async throws {
+        let fixture = try SettingsFixture()
+        defer { fixture.remove() }
+        let game = GameSummary(id: "fixture", name: "Original UI fixture")
+        fixture.runner.previousTrouble = ""
+        let quiet = await fixture.model.previousSavePromptIfNeeded(game, uiLanguage: "zh-Hans")
+        XCTAssertNil(quiet, "有上一份但上一局没出事：不问")
+        fixture.runner.previousTrouble = "earlyCrash"
+        let ask = await fixture.model.previousSavePromptIfNeeded(game, uiLanguage: "zh-Hans")
+        XCTAssertEqual(ask?.trouble, "earlyCrash", "上一局开局就崩、有上一份：问")
+        let first = await fixture.model.switchPreviousSave("fixture")
+        XCTAssertNil(first)
+        XCTAssertTrue(fixture.runner.previousSwapped, "回到上一份")
+        XCTAssertEqual(fixture.model.previousSaveSwitched, "fixture", "换完提示可以换回来")
+        fixture.model.previousSaveSwitched = nil
+        let second = await fixture.model.switchPreviousSave("fixture")
+        XCTAssertNil(second)
+        XCTAssertFalse(fixture.runner.previousSwapped, "再点一次换回原样")
+        XCTAssertEqual(fixture.runner.requests.filter { $0["operation"] as? String == "saveRestorePrevious" }.count, 2)
+        for language in [Lang.zh, .en] {
+            let code = language == .zh ? "zh-Hans" : "en"
+            let t = { (k: String) in BackendText.launcherText(k, language: code) }
+            XCTAssertEqual(t("save.previous.ask.title"), language == .zh ? "这款上次没能正常读存档，要回到上一份存档吗？" : "This game couldn’t load its save last time. Go back to the previous save?")
+            XCTAssertEqual(t("save.previous.ask.restore"), language == .zh ? "回到上一份" : "Go back")
+            XCTAssertEqual(t("save.previous.ask.start"), language == .zh ? "照常开始" : "Start as usual")
+            let (host, window) = try await render(AnyView(PreviousSaveRow(model: fixture.model, gameID: "fixture", t: t).frame(width: 640).padding(24).launcherSheet()), fixture: fixture, language: language)
+            defer { window.close() }
+            for _ in 0..<40 where !Set(fixture.navigation.controlTargets(in: window).map(\.id)).contains("save.previous.switch") { try await Task.sleep(nanoseconds: 50_000_000) }
+            XCTAssertTrue(Set(fixture.navigation.controlTargets(in: window).map(\.id)).contains("save.previous.switch"), "有上一份：齿轮页出「换到上一份」")
+            window.setContentSize(host.fittingSize)   // 首次渲染时还没查到「有上一份」、那一行是空的，窗口按空的量：查到后按实际内容重量再截
+            host.layoutSubtreeIfNeeded()
+            try snapshot(host, "previous-save-row-" + language.code)
+        }
+    }
+
+    func testSGradeManualUpgradeOnMac() async throws {
+        let fixture = try SettingsFixture()
+        defer { fixture.remove() }
+        let games = [SGradeScanGame(["id": "alpha", "name": "Original Alpha", "program": "original", "total": 2, "patches": ["fps": 1, "widescreen": 1]]),
+                     SGradeScanGame(["id": "beta", "name": "Original Beta", "program": "original", "total": 1, "patches": ["fps": 1]])]
+        for language in [Lang.zh, .en] {
+            let code = language == .zh ? "zh-Hans" : "en"
+            let x = { (k: String) in BackendText.launcherText("sgrade.upgrade." + k, language: code) }
+            var picked: [[String]] = []
+            let body = SGradeUpgradeBody(games: games, failure: nil, zh: language == .zh, x: x, upgrade: { picked.append($0) }, close: {}, upgrading: ["beta"])
+            body.upgrade(["alpha"])
+            XCTAssertEqual(picked, [["alpha"]], "点某款只交那一款")
+            XCTAssertEqual(body.chosen, [], "没勾选时批量所选为空")
+            let (host, window) = try await render(AnyView(body), fixture: fixture, language: language)
+            defer { window.close() }
+            let ids = Set(fixture.navigation.controlTargets(in: window).map(\.id))
+            XCTAssertTrue(ids.isSuperset(of: ["sgrade.upgrade.row.alpha", "sgrade.upgrade.pick.alpha", "sgrade.upgrade.selectAll"]), "每款有勾选和「升级」，组标题旁有全选")
+            XCTAssertFalse(ids.contains("sgrade.upgrade.row.beta"), "正在升级的那款按钮不可点")
+            XCTAssertFalse(ids.contains("sgrade.upgrade.pick.beta"), "正在升级的那款勾选框不可选")
+            XCTAssertFalse(ids.contains("sgrade.upgrade.batch"), "没勾选时「批量升级所选」不可点")
+            XCTAssertEqual(x("batch").replacingOccurrences(of: "{0}", with: "2"), language == .zh ? "批量升级所选（2 款）" : "Batch upgrade selected (2)")
+            try snapshot(host, "sgrade-manual-page-" + language.code)
+            let running = SGradeUpgradeBody(games: games, failure: nil, zh: language == .zh, x: x, upgrade: { _ in }, close: {},
+                                            upgrading: ["alpha", "beta"], batch: SGradeBatch(running: true, index: 1, count: 2),
+                                            states: ["alpha": "running", "beta": "queued"], progress: ["alpha": 0.37])
+            XCTAssertEqual(running.rowTitle("alpha"), language == .zh ? "正在升级 37%" : "Upgrading 37%", "正在做的那行带百分比")
+            XCTAssertEqual(running.rowTitle("beta"), language == .zh ? "排队中" : "Queued", "排着的写排队中，不冒充在升")
+            let after = SGradeUpgradeBody(games: games, failure: nil, zh: language == .zh, x: x, upgrade: { _ in }, close: {},
+                                          states: ["alpha": "done", "beta": "incomplete"])
+            XCTAssertEqual(after.rowTitle("alpha"), language == .zh ? "已完成" : "Done")
+            XCTAssertEqual(after.rowTitle("beta"), language == .zh ? "继续升级" : "Resume upgrade", "被停 / 出错的款再点接着升")
+            let skipped = SGradeUpgradeBody(games: games, failure: nil, zh: language == .zh, x: x, upgrade: { _ in }, close: {}, states: ["alpha": "skipped"])
+            XCTAssertEqual(skipped.rowTitle("alpha"), language == .zh ? "正在玩，稍后再升" : "Playing — upgrade later")
+            XCTAssertEqual(skipped.rowTitle("beta"), language == .zh ? "升级" : "Upgrade")
+            // 作业层说已没有要补的段（bfPending 全 false）：写「已完成」、不可点不可选；有一边要补的照常「升级」
+            let current = [SGradeScanGame(["id": "gamma", "name": "Up to date", "program": "original", "total": 3, "bfPending": ["iphone": false, "mac": false]]),
+                           SGradeScanGame(["id": "delta", "name": "Needs iPhone", "program": "original", "total": 3, "bfPending": ["iphone": true, "mac": false]])]
+            let cur = SGradeUpgradeBody(games: current, failure: nil, zh: language == .zh, x: x, upgrade: { _ in }, close: {})
+            XCTAssertEqual(cur.rowTitle("gamma"), language == .zh ? "已完成" : "Done", "已是最新的款不再显示「升级」")
+            XCTAssertTrue(cur.locked("gamma")); XCTAssertFalse(cur.locked("delta"))
+            XCTAssertEqual(cur.rowTitle("delta"), language == .zh ? "升级" : "Upgrade")
+            let curStopped = SGradeUpgradeBody(games: current, failure: nil, zh: language == .zh, x: x, upgrade: { _ in }, close: {}, states: ["gamma": "incomplete"])
+            XCTAssertFalse(curStopped.locked("gamma"), "被停的款即使查找时没要补的也能再点（查找结果可能是旧的）")
+            // 没有补丁（total 0）但还缺片上读取用的着色器（bfPending 有一边 true）：进可升组、能点能勾（同作业层 upgradable 计数）
+            let bfOnly = SGradeUpgradeBody(games: [SGradeScanGame(["id": "eps", "name": "Shader only", "program": "original", "total": 0, "bfPending": ["iphone": true, "mac": false]]),
+                                                  SGradeScanGame(["id": "zeta", "name": "Nothing", "program": "original", "total": 0, "bfPending": ["iphone": false, "mac": false]])],
+                                           failure: nil, zh: language == .zh, x: x, upgrade: { _ in }, close: {})
+            XCTAssertEqual(bfOnly.upgradeIDs, ["eps"], "只缺片上读取着色器的款可升，什么都不缺的不进可升组")
+            XCTAssertFalse(bfOnly.locked("eps"))
+            XCTAssertEqual(x("bf"), language == .zh ? "补上片上读取用的着色器" : "Add on-chip read shaders")
+            let (host3, window3) = try await render(AnyView(running), fixture: fixture, language: language)
+            defer { window3.close() }
+            let ids3 = Set(fixture.navigation.controlTargets(in: window3).map(\.id))
+            XCTAssertTrue(ids3.contains("sgrade.upgrade.stop"), "批量进行中有「停止」")
+            XCTAssertFalse(ids3.contains("sgrade.upgrade.batch"), "批量进行中不出「批量升级所选」")
+            XCTAssertEqual(x("batchProgress").replacingOccurrences(of: "{0}", with: "1").replacingOccurrences(of: "{1}", with: "2"),
+                           language == .zh ? "批量升级：第 1 款 / 共 2 款" : "Batch upgrade: game 1 of 2")
+            try snapshot(host3, "sgrade-manual-batch-running-" + language.code)
+            let noPatch = [SGradeScanGame(["id": "delta", "name": "No patch", "program": "original", "total": 0])]
+            let none = AnyView(SGradeUpgradeBody(games: noPatch, failure: nil, zh: language == .zh, x: x, upgrade: { _ in }, close: {}))
+            let (_, window2) = try await render(none, fixture: fixture, language: language)
+            defer { window2.close() }
+            XCTAssertFalse(fixture.navigation.controlTargets(in: window2).contains { $0.id.hasPrefix("sgrade.upgrade.row.") }, "没有可升级的款不出行按钮")
+            let txt = { (id: String) in BackendText.launcherText(id, language: code) }
+            XCTAssertEqual(LauncherView.sgradeUpgradingTitle(0.379, txt), language == .zh ? "正在升级 37%" : "Upgrading 37%")
+            XCTAssertEqual(LauncherView.sgradeUpgradingTitle(nil, txt), language == .zh ? "正在升级…" : "Upgrading…")
+        }
+        for (name, p) in [("0", 0.0), ("37", 0.37), ("100", 1.0), ("wait", -1.0)] as [(String, Double)] {
+            let progress: Double? = p < 0 ? nil : p
+            let view = AnyView(VStack(spacing: 18) {
+                SGradeUpgradeRing(progress: progress, side: 180).frame(width: 180, height: 180).background(Color.gray)
+                SGradeUpgradeBar(progress: progress).frame(width: 220).padding(8).background(Color.white)
+            }.padding(20))
+            let (host, window) = try await render(view, fixture: fixture, language: .zh)
+            defer { window.close() }
+            try snapshot(host, "sgrade-manual-progress-" + name)
         }
     }
 
@@ -1419,25 +1721,26 @@ import S2ArmAppleAdapter
         ]
         for language in [Lang.zh, .en] {
             let code = language == .zh ? "zh-Hans" : "en"
-            let page = AnyView(SGradeUpgradeBody(games: games, failure: nil, zh: language == .zh, busy: false,
+            let page = AnyView(SGradeUpgradeBody(games: games, failure: nil, zh: language == .zh,
                 x: { BackendText.launcherText("sgrade.upgrade." + $0, language: code) }, upgrade: { _ in }, close: {}))
             let (host, window) = try await render(page, fixture: fixture, language: language)
             defer { window.close() }
             let bounds = window.convertToScreen(host.bounds)
             let actions = fixture.navigation.controlTargets(in: window)
-            XCTAssertEqual(actions.count, 1)
-            let button = try XCTUnwrap(actions.first)
+            XCTAssertTrue(Set(actions.map(\.id)).isSuperset(of: ["sgrade.upgrade.row.alpha", "sgrade.upgrade.row.beta", "sgrade.upgrade.selectAll", "sgrade.upgrade.close"]), "每款「升级」、全选、关闭都在")
+            let button = try XCTUnwrap(actions.first { $0.id == "sgrade.upgrade.close" })   // 最右那颗量边距
             print("upgrade-footer \(language.code): bottom=\(button.frame.minY - bounds.minY), right=\(bounds.maxX - button.frame.maxX)")
             XCTAssertEqual(button.frame.minY - bounds.minY, 16, accuracy: 1, "升级弹窗应使用与设置页一致的 16 pt 底边距")
             XCTAssertEqual(bounds.maxX - button.frame.maxX, 32, accuracy: 1)
             let document = try XCTUnwrap(scrollViews(in: host).first?.documentView)
             let bitmap = try XCTUnwrap(document.bitmapImageRepForCachingDisplay(in: document.bounds))
             document.cacheDisplay(in: document.bounds, to: bitmap)
-            // Only the two gray descriptions occupy the right half; the title and names are on the left.
+            // Only the two gray descriptions occupy the middle column; names are on the left, the per-game buttons and
+            //   「全选」 on the far right (scan stops before them).
             var rows: [(firstY: Int, lastY: Int, minX: Int)] = []
             for y in 0..<bitmap.pixelsHigh {
                 var first: Int?
-                for x in (bitmap.pixelsWide / 2)..<bitmap.pixelsWide {
+                for x in (bitmap.pixelsWide / 2)..<(bitmap.pixelsWide * 7 / 10) {
                     if let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB),
                        min(color.redComponent, color.greenComponent, color.blueComponent) > 0.4 {
                         first = x; break
@@ -1725,6 +2028,28 @@ import S2ArmAppleAdapter
         }
     }
 
+    /// 「现在更新并重启」时有局在跑（11-18 维护者）：弹窗里的确认块写清关掉哪款、给「取消 / 仍然重启」两个按钮，都能用手柄点到
+    func testUpdateRestartConfirmShowsGameAndBothChoices() async throws {
+        let fixture = try SettingsFixture()
+        defer { fixture.remove() }
+        for language in [Lang.zh, .en] {
+            let uiLanguage = language == .zh ? "zh-Hans" : "en"
+            fixture.model.updatePopup = ["kind": "available", "version": "1.0.0", "notes": NSNull()]
+            fixture.model.playSession = JobSession(kind: .play, gameID: "fixture", name: "Original Game")
+            fixture.model.updateGate = "update.gate.confirm"
+            let (host, window) = try await render(AnyView(UpdatePopupView(model: fixture.model, language: uiLanguage)), fixture: fixture, language: language)
+            defer { window.close() }
+            let ids = Set(fixture.navigation.controlTargets(in: window).map(\.id))
+            XCTAssertTrue(ids.isSuperset(of: ["update.gate.cancel", "update.gate.restart"]), "确认块两个按钮都在：\(language.code)")
+            XCTAssertEqual(fixture.model.updateRestartImpactText { BackendText.launcherText($0, language: uiLanguage) },
+                           language == .zh ? "正在玩的「Original Game」会被关掉，没存的进度会丢；可以先在游戏里存一下再重启。"
+                                           : "\"Original Game\" will be closed and unsaved progress will be lost — save in the game first if you can.")
+            try snapshot(host, "update-restart-confirm-" + language.code)
+            fixture.model.updateGate = nil
+            fixture.model.playSession = nil
+        }
+    }
+
     func testAllUtilitySheetsRenderWithContainedControlsInBothLanguages() async throws {
         let fixture = try SettingsFixture()
         defer { fixture.remove() }
@@ -1749,7 +2074,7 @@ import S2ArmAppleAdapter
                 ("update", AnyView(UpdatePopupView(model: fixture.model, language: uiLanguage))),
                 ("messages", AnyView(MessagesPanel(model: fixture.model, language: uiLanguage))),
                 ("diagnostics", AnyView(UploadDiagnosticsSheet(model: fixture.model, gameID: nil, operations: nil, fallback: "") {})),
-                ("upgrade", AnyView(SGradeUpgradeBody(games: [], failure: nil, zh: language == .zh, busy: false,
+                ("upgrade", AnyView(SGradeUpgradeBody(games: [], failure: nil, zh: language == .zh,
                     x: { BackendText.launcherText("sgrade.upgrade." + $0, language: uiLanguage) }, upgrade: { _ in }, close: {})))
             ]
             for (name, page) in pages {
@@ -1862,6 +2187,22 @@ import S2ArmAppleAdapter
         return view.subviews.flatMap { scrollViews(in: $0) }
     }
 
+    private func normalizedText(_ text: String) -> String { text.filter { !$0.isWhitespace }.lowercased() }
+
+    /// SwiftUI 的滚动内容没有完整暴露静态 AX 文本，用实际字形核对文案与对齐。
+    private func renderedText(_ host: NSView, language: Lang) throws -> [(text: String, candidate: VNRecognizedText)] {
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.recognitionLanguages = language == .zh ? ["zh-Hans", "en-US"] : ["en-US"]
+        try VNImageRequestHandler(cgImage: XCTUnwrap(bitmap.cgImage)).perform([request])
+        return try (request.results ?? []).map { observation in
+            let candidate = try XCTUnwrap(observation.topCandidates(1).first)
+            return (candidate.string, candidate)
+        }
+    }
+
     private func snapshot(_ host: NSView, _ name: String) throws {
         guard let output = ProcessInfo.processInfo.environment["S2A_SETTINGS_SHOTS"] else { return }
         let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
@@ -1919,6 +2260,11 @@ private final class SettingsRunner: JobProcessRunner {
     private var needsPreparation = false
     private var cover = ""
     private var storage: [String: Any] = [:]
+    private var checks: [[String: Any]] = [["id": "xcode", "name": "Xcode", "ok": true, "group": "apple", "requiredFor": ["prepare", "launch", "ipa"]]]
+    var preflightChecks: [[String: Any]] {
+        get { lock.withLock { checks } }
+        set { lock.withLock { checks = newValue } }
+    }
     var storageResponse: [String: Any] {
         get { lock.withLock { storage } }
         set { lock.withLock { storage = newValue } }
@@ -1946,9 +2292,18 @@ private final class SettingsRunner: JobProcessRunner {
         get { lock.withLock { playtime } }
         set { lock.withLock { playtime = newValue } }
     }
+    private var trouble = ""
+    private var swapped = false
+    /// 回到上一份存档：savePrevious 回的 trouble；saveRestorePrevious 每次把「已换到上一份」翻转一次（作业层的交换是可逆的）
+    var previousTrouble: String {
+        get { lock.withLock { trouble } }
+        set { lock.withLock { trouble = newValue } }
+    }
+    var previousSwapped: Bool { lock.withLock { swapped } }
     var requests: [[String: Any]] { lock.withLock { captured } }
     func start(executable: URL, arguments: [String], environment: [String: String], onLine: @escaping (Data) -> Void,
                onStderr: @escaping (Data) -> Void, onExit: @escaping (Int32) -> Void) throws -> JobProcessHandle {
+        objc_sync_enter(self); defer { objc_sync_exit(self) }   // 作业客户端在并发线程池里同时调 start：替身状态串行改（无锁并发追加数组会 SIGSEGV 带崩整个测试进程）
         let request = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: arguments.last!))) as! [String: Any]
         lock.withLock { captured.append(request) }
         var result: [String: Any] = [:]
@@ -1959,7 +2314,7 @@ private final class SettingsRunner: JobProcessRunner {
                        "recommend": "使用推荐方案", "original": "使用原版方案"],
                 "en": ["title": "Choose a configuration", "body": "Original layout fixture for long content", "points": (1...24).map { "Original item \($0): a longer configuration description to verify scrolling and keep the actions visible" },
                        "recommend": "Use recommended", "original": "Use original"]]
-            result = ["games": (0..<catalogGameCount).map { index in
+            result = ["keys": ["ready": false], "games": (0..<catalogGameCount).map { index in
                 var game: [String: Any] = ["id": index == 0 ? "fixture" : "fixture-\(index)", "name": "Original UI fixture \(index)", "cover": catalogCover, "ready": true, "needsPreparation": catalogNeedsPreparation, "missing": [],
                  "downstream": ["id": "original-demo", "name": "Original Demo", "eligible": true, "copy": copy]]
                 if index == 0, let playtime = catalogPlaytime { game["playtime"] = playtime }
@@ -1967,6 +2322,7 @@ private final class SettingsRunner: JobProcessRunner {
                 return game
             }]
         }
+        if request["operation"] as? String == "import" { result = ["imports": [["id": "fixture"]]] }
         if request["operation"] as? String == "community" {
             var options: [String: Any] = [:]
             for item in try GameSettingsSpec.macItems() {
@@ -1980,8 +2336,10 @@ private final class SettingsRunner: JobProcessRunner {
             result = ["ready": true, "items": [["id": "appleId", "title": "Apple ID", "detail": "请在 Xcode 登录 Apple ID", "ok": false]]]
         }
         if request["operation"] as? String == "preflight" {
-            result = ["checks": [["id": "xcode", "name": "Xcode", "ok": true, "group": "apple", "requiredFor": ["prepare", "launch", "ipa"]]]]
+            result = ["checks": preflightChecks]
         }
+        if request["operation"] as? String == "savePrevious" { result = ["hasPrevious": true, "saveIds": ["0000000000000001"], "trouble": previousTrouble] }
+        if request["operation"] as? String == "saveRestorePrevious" { lock.withLock { swapped.toggle() }; result = ["restored": 1] }
         if request["operation"] as? String == "saveStatus" {
             result = ["hasSave": true, "fileCount": 3, "totalBytes": 20480]
         }

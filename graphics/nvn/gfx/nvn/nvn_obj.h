@@ -102,7 +102,7 @@ typedef struct { uint32_t magic; volatile uint32_t *val; const pool_t *pool; int
 typedef struct { NVNdevice *dev; void *native; int32_t ntex, interval; NVNtexture *tex[4]; int32_t nactive; } win_builder_t;
 FITS(win_builder_t, NVNwindowBuilder);
 // avail[i]: time at which swapchain image i can be acquired again (ns, monotonic clock) = its display time + one present period; pace: target time of this window's present pacer
-typedef struct { uint32_t magic; void *native; int32_t ntex, interval, next, nactive, crop[4]; NVNtexture *tex[4]; uint64_t presents, avail[4], pace, ticket[4]; int32_t shown, nat; } win_t;   // ticket[i]: ticket of the most recent present of image i; shown: image of the most recent present + 1 (0 = none yet; on the device it stays on screen until the next present flips, so it is not returned)；nat：原生窗口交换间隔同步开着（hle_nvn.c nat_itv）
+typedef struct { uint32_t magic; void *native; int32_t ntex, interval, next, nactive, crop[4]; NVNtexture *tex[4]; uint64_t presents, avail[4], pace, ticket[4]; int32_t shown, nat, present_ll; } win_t;   // ticket[i]: ticket of the most recent present of image i; shown: image of the most recent present + 1 (0 = none yet; on the device it stays on screen until the next present flips, so it is not returned)；nat：原生窗口交换间隔同步开着（hle_nvn.c nat_itv）
 FITS(win_t, NVNwindow);
 
 // Command buffer: records are written into host blocks of each recording (hle_nvn.c, command buffer), handle = first record; a device cursor walks the command memory the game gives
@@ -364,7 +364,8 @@ void nvn_be_unreg_tex_range(int base, int n);   // 贴图池销毁时清它那�
 // textures written by WriteTexels (recorded by serial): the replay layer treats them like packaged textures, uploaded from guest memory and re-uploaded on dirty pages
 void nvn_be_tex_cpu_written(const tex_t *t);
 int nvn_be_tex_gpu_owned(uint64_t serial);                                  // its host texture is a render target or shader-writable: GPU content, never re-uploaded from guest memory
-// A program's per-stage shader key (hle_nvn.c): the first 8 bytes of sha256(first 0x880 bytes of the control section (its own length when shorter) + code area). Computed at SetShaders (NVN lets the caller free the control section once it returns, and Unity does);
+// A program's per-stage shader key (hle_nvn.c): the first 8 bytes of sha256(first 0x880 bytes of the control section (its own length when shorter; two volatile spans zeroed, nvn_key.h) + code area);
+//   an old package keyed without the zeroing gets its old key (keys_hash). Computed at SetShaders (NVN lets the caller free the control section once it returns, and Unity does);
 // a stage whose code area was not yet in any memory pool then is computed the first time it is asked for. Returns 0 = no such stage
 int prog_key(const prog_t *p, unsigned stage, uint8_t key[8]);
 void nvn_be_reg_samp(int id, const samp_par *p);

@@ -60,13 +60,17 @@ def parse_pchtxt(text):
     for block in blocks:
         m = re.search(r'@nsobid-([0-9A-Fa-f]+)', block)
         bid = m.group(1).upper() if m else ''
-        cur, name, shift = None, '', 0
+        cur, name, shift, prev_c = None, '', 0, False
         for line in block.splitlines():
             s = line.strip()
-            if not s: cur = None; continue
+            if not s: cur = None; prev_c = False; continue
             if s.startswith('//') or s.startswith('#'):
-                if s.startswith('//') or s.startswith('#'): name = s.lstrip('/#').strip()
-                continue
+                # 段名 = 段前紧挨着的那几行注释，连在一起（#1493：作者写「// 10320x4320 Docked」「// Use Extended Memory Layout」两行，
+                #   原先只取最后一行，玩家看到的名字成了「Use Extended Memory Layout」、分辨率丢了）；隔了空行或别的行就重新算
+                t = s.lstrip('/#').strip()
+                name = (f'{name} · {t}' if name and t else name or t) if prev_c else t
+                prev_c = True; continue
+            prev_c = False
             if s.startswith('@'):
                 w = s.split()[0]
                 if w in ('@enabled', '@disabled'): cur = {'bid': bid, 'name': name, 'enabled': w == '@enabled', 'writes': [], 'bad': ''}; secs.append(cur)
@@ -972,7 +976,10 @@ def module_layout(path):
     text_end, ro, data = segs[0][0] + len(segs[0][1]), segs[1][0], segs[2][0]
     ln = data + len(segs[2][1]) + struct.unpack_from('<I', hdr, 0x3c)[0]
     bias = (0x4000 - (data & 0x3fff)) & 0x3fff if data < ((text_end + 0x3fff) & ~0x3fff) else 0
-    return text_end, ro, ln, min((ln + 0x3fff) & ~0x3fff, ((ln + bias + 0x3fff) & ~0x3fff) - bias)
+    return text_end, ro, ln, min((ln + KEY_TAIL_MIN + 0x3fff) & ~0x3fff, ((ln + bias + KEY_TAIL_MIN + 0x3fff) & ~0x3fff) - bias)
+
+
+KEY_TAIL_MIN = 0x1000   # 映像结尾到键页至少留的可写空余（同 runtime/rewriter/rewriter.c KEY_TAIL_MIN；#1628 结尾压 16 KB 边界时原先为 0）
 
 
 MIRROR_FPSL = 0x400   # 映像结尾可写空余的分区：前 0x400 字节给金手指空洞开关表，之后给 FPSLocker 变量（各管各的，不重叠）

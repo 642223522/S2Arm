@@ -119,6 +119,16 @@ class BundleTests(unittest.TestCase):
         self.assertEqual(self.read_info()['CFBundleIcons'],
                          {'CFBundlePrimaryIcon': {'CFBundleIconFiles': ['AppIcon60x60']}})
 
+    def test_tvos_compiled_icon_kept(self):
+        # #1457（期望手写）：tvOS 壳里已有 actool 编的 Assets.car、CFBundleIcons 指着品牌名 → 组装不写散装 PNG、不覆盖图标键
+        (self.app / 'Assets.car').write_bytes(b'CAR')
+        info = self.read_info(); info['CFBundleIcons'] = {'CFBundlePrimaryIcon': 'App Icon'}
+        (self.app / 'Info.plist').write_bytes(plistlib.dumps(info))
+        before = inventory(self.app)
+        self.assertFalse(bundle.write_icons(self.icon, self.app))
+        self.assertEqual(inventory(self.app), before)
+        self.assertEqual(self.read_info()['CFBundleIcons'], {'CFBundlePrimaryIcon': 'App Icon'})
+
     def test_missing_and_empty_icon_leave_app_unchanged(self):
         before = inventory(self.app)
         missing = self.root / 'missing.png'

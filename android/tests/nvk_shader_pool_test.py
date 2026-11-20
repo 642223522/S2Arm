@@ -104,6 +104,32 @@ def main():
             print(f'PASS: {name} event removal produces expected behavior failure')
         return 0
 
+    if sys.argv[1:] == ['--gs-libpack-mutants']:
+        # 负对照：三段程序查出包预编库的两处接线各撤一处，--gs-libpack 必红
+        code = original.read_text()
+        for name, old, new, expected in (
+            ('mask-0x3', 'lrc = s2a_libpack_program_v1(lp, keys, stages, &g,', 'lrc = s2a_libpack_program_v1(lp, keys, 0x3, &g,',
+             'hit from the library, compiler not called'),
+            ('no-topology', 'const struct s2a_libpack_gfx g = { topology, pc->profile_json, pc->profile_bytes };',
+             'const struct s2a_libpack_gfx g = { NULL, pc->profile_json, pc->profile_bytes }; (void)topology;',
+             'hit from the library, compiler not called'),
+            ('vs-fs-only', '((stages != 0x3u && stages != 0x7u) || !state_ok)', '(stages != 0x3u || !state_ok)',
+             'hit from the library, compiler not called'),
+        ):
+            assert code.count(old) == 1, (name, 'mutation anchor')
+            path = out / ('gs-libpack-mutant-' + name + '.c')
+            path.write_text(code.replace(old, new))
+            result = run('gs-libpack-' + name, path, args=('--gs-libpack',))
+            assert result.returncode != 0 and expected in result.stderr, (name, result.stdout, result.stderr)
+            print(f'{name}: expected assertion failure: {expected}', flush=True)
+        print('PASS: 3 libpack GS negative controls')
+        return 0
+
+    if sys.argv[1:] == ['--gs-libpack']:
+        result = run('gs-libpack', original, args=('--gs-libpack',))
+        sys.stdout.write(result.stdout); sys.stderr.write(result.stderr)
+        return result.returncode
+
     if sys.argv[1:] == ['--diag-compile']:
         result = run('diag-compile', original, args=('--diag-compile',))
         sys.stdout.write(result.stdout); sys.stderr.write(result.stderr)
@@ -113,6 +139,30 @@ def main():
         result = run('compute-warm', original, args=(sys.argv[1],))
         sys.stdout.write(result.stdout); sys.stderr.write(result.stderr)
         return result.returncode
+
+    if sys.argv[1:] == ['--high-slot-controls']:
+        code = original.read_text()
+        base_sha = subprocess.check_output(['git', 'merge-base', 'HEAD', 'origin/main'], cwd=ROOT, text=True).strip()
+        baseline = subprocess.check_output(['git', 'show', base_sha + ':' + original.relative_to(ROOT).as_posix()], cwd=ROOT, text=True)
+        changes = [
+            ('main-high-slots', baseline, 'high-slot texture fact'),
+            ('high-facts-withdraw', code.replace('for (int slot = 0; slot < 8; slot++) {\n            long id = handles[slot]',
+                                               'for (int slot = 0; slot < 0; slot++) {\n            long id = handles[slot]'), 'high-slot texture fact'),
+            ('high-signature-withdraw', code.replace('MIX(graphics_high_fact_sig(st));', '(void)graphics_high_fact_sig;'),
+             'high-slot image precedence invalidates identity'),
+            ('high-image-precedence-withdraw', code.replace('rp_S.img[st][slot] ? rp_S.img[st][slot] : rp_S.tex[st][32 + slot]',
+                                                          'rp_S.tex[st][32 + slot]'), 'high-slot image precedence invalidates identity'),
+        ]
+        for name, changed, expected in changes:
+            assert changed != code, (name, 'mutation anchor')
+            path = out / (name + '.c')
+            path.write_text(changed)
+            result = run(name, path)
+            (out / (name + '.log')).write_text(result.stdout + result.stderr)
+            assert result.returncode and expected in result.stderr, (name, result.stdout, result.stderr)
+            print(name + ': expected assertion failure: ' + expected, flush=True)
+        print('PASS: main baseline and 3 high-slot negative controls')
+        return 0
 
     if len(sys.argv) in (3, 4) and sys.argv[1] == '--tbuf-layout':
         exe = out/'tbuf-layout'
@@ -143,7 +193,7 @@ def main():
         assert before_lines[1] == after_lines[1], 'legacy S2AI1 bytes changed'
         print(f'legacy request and canonical identity byte-for-byte unchanged versus {base_sha}')
         return 0
-    if len(sys.argv) == 6 and sys.argv[1] in ('--emit-reuse-texture', '--emit-reuse-rt', '--emit-reuse-inactive', '--emit-real', '--emit-real-tbuf', '--execute-tbuf', '--emit-compute-tbuf', '--execute-compute-tbuf', '--reject-graphics-tbufu', '--reject-compute-tbufu'):
+    if len(sys.argv) == 6 and sys.argv[1] in ('--emit-high-slot', '--execute-high-slot', '--emit-reuse-texture', '--emit-reuse-rt', '--emit-reuse-inactive', '--emit-real', '--emit-real-tbuf', '--execute-tbuf', '--emit-compute-tbuf', '--execute-compute-tbuf', '--reject-graphics-tbufu', '--reject-compute-tbufu'):
         result = run('emit-real', original, args=sys.argv[1:])
         sys.stdout.write(result.stdout); sys.stderr.write(result.stderr)
         return result.returncode
@@ -209,6 +259,12 @@ def main():
         text = original.read_text(encoding='utf-8')
         changes = [
             ('gs-source-epoch', 'MIX(s2a_source_epoch());\n    MIX(stages);', '(void)s2a_source_epoch();\n    MIX(stages);', 1, 'poisoned GS source cannot hit fast cache'),
+            ('cs-query-proof-omitted', 'e->prog.sampler_unused[0][e->prog.nent[0]] = (uint8_t)s2a_spirv_sampler_unused(',
+             'e->prog.sampler_unused[0][e->prog.nent[0]] = 0 && (uint8_t)s2a_spirv_sampler_unused(', 1,
+             'production compute builder retains sampler use proof: query=1'),
+            ('cs-query-proof-forced', 'e->prog.sampler_unused[0][e->prog.nent[0]] = (uint8_t)s2a_spirv_sampler_unused(',
+             'e->prog.sampler_unused[0][e->prog.nent[0]] = 1 || (uint8_t)s2a_spirv_sampler_unused(', 1,
+             'production compute builder retains sampler use proof: query=0'),
             ('gs-slot', '(const char *const[]){"vs", "fs", "gs"}[st]',
              '(const char *const[]){"vs", "fs", "fs"}[st]', 3, 'GS production request reaches compiler'),
             ('ubo-learn-reported-red', 'g_ubo_learned = 1;\n            else red1("compile_failed", oc.summary);',
@@ -293,6 +349,50 @@ def main():
             # 开关关闭态（--alias-off 另起进程）：开关读了不用，关闭态下 B 就会被合并，「B 读自己的文件」必须变红
             ('alias-flag-ignored', 'if (v < 0) v = nvn_plat_flag("nvk_alias", 1) ? 1 : 0; return v;',
              'if (v < 0) { (void)nvn_plat_flag("nvk_alias", 1); v = 1; } return v;', 1, 'alias[off] s2: B reads its own file', ('--alias-off',)),
+            # 编译被拒时的上下文日志（#999，只加日志）：每个分类、每个打印项、每道预算各撤一次，对应用例必须变红
+            ('img-unbound-as-no-texture', 'miss->why = handles[slot] ? IMGF_NO_TEXTURE : IMGF_UNBOUND; continue;',
+             'miss->why = IMGF_NO_TEXTURE; continue;', 1, 'slot unbound, pool entry 0 not registered: counter image_fact_unbound'),
+            ('img-no-texture-as-unbound', 'miss->why = handles[slot] ? IMGF_NO_TEXTURE : IMGF_UNBOUND; continue;',
+             'miss->why = IMGF_UNBOUND; continue;', 1, 'image handle names an unregistered texture: counter image_fact_no_texture'),
+            ('img-no-fact-dropped', '{ miss->why = IMGF_NO_FACT; continue; }', '{ continue; }', 1,
+             'registered texture whose format has no fact: counter image_fact_no_fact'),
+            ('img-format-not-printed', '(unsigned)m->fmt, (unsigned)m->target, (unsigned)m->layers', '0u, (unsigned)m->target, (unsigned)m->layers', 1,
+             'registered texture whose format has no fact: image line says why'),
+            ('img-texture-not-printed', '" handle=0x%x texture=%d", (unsigned)m->handle, (int)m->id', '" handle=0x%x texture=%d", (unsigned)m->handle, 0', 1,
+             'image handle names an unregistered texture: image line says why'),
+            ('reject-context-never-called', '    if (snap) reject_context(snap, reason, message);', '    if (0 && snap) reject_context(snap, reason, message);', 1,
+             'one program line and one image line, both with the program key'),
+            ('learning-step-logs', 'compiler_rejected(oc.summary, learned ? NULL : s);', 'compiler_rejected(oc.summary, s);', 1,
+             'a rejection that only taught a coordinate prints no program-key line'),
+            ('final-rejection-silent', 'compiler_rejected(oc.summary, learned ? NULL : s);', 'compiler_rejected(oc.summary, learned ? NULL : NULL);', 1,
+             'a rejection nothing can be learned from prints its program key'),
+            ('key-from-stage-0', 'o += snprintf(key + o, sizeof key - (size_t)o, "%02x", s->keys[st][b]);', 'o += snprintf(key + o, sizeof key - (size_t)o, "%02x", s->keys[0][b]);', 1,
+             'one program line and one image line, both with the program key'),
+            ('program-line-budget-removed', 'if (g_reject_lines < REJECT_LINES_MAX) {', 'if (1) {', 1, 'each kind of line stops at 128 per session'),
+            ('image-line-budget-removed', 'if (g_img_reject_lines >= REJECT_LINES_MAX) return;', 'if (0) return;', 1, 'each kind of line stops at 128 per session'),
+            ('line-budget-halved', 'enum { REJECT_LINES_MAX = 128 };', 'enum { REJECT_LINES_MAX = 64 };', 1, 'each kind of line stops at 128 per session'),
+            ('line-budget-not-reset', '    g_reject_lines = g_img_reject_lines = g_reject_total = g_img_reject_total = 0;\n', '    (void)g_reject_lines;\n', 1, 'a new session gets its line budget back'),
+            ('reject-total-not-reset', '    g_reject_lines = g_img_reject_lines = g_reject_total = g_img_reject_total = 0;\n', '    g_reject_lines = g_img_reject_lines = 0;\n', 1,
+             'a new session gets its line budget back (and no stale truncation notice)'),
+            # 超预算时的「已截断，共 N 条」：读数整条撤掉 / 两个总数各撤一次，对应用例必须变红
+            ('truncation-notice-dropped', 'if (g_reject_total > g_reject_lines || g_img_reject_total > g_img_reject_lines) {', 'if (0) {', 1,
+             'a truncated session says how many rejections there were'),
+            ('program-total-not-counted', '    g_reject_total++;\n', '', 1, 'a truncated session says how many rejections there were'),
+            ('image-total-not-counted', '    g_img_reject_total++;\n', '', 1, 'a truncated session says how many rejections there were'),
+            # 常量缓冲槽号：只有 2 才是 c2 图像句柄表；槽号检查撤掉 / 其它槽也算出 c2 槽位 / 行里不带槽号，对应用例必须变红
+            ('cbuf-slot-ignored', 'const int c2 = cbuf == 2;', 'const int c2 = 1;', 1, 'user cbuf slot 3, word 74: counter image_fact_cbuf_other'),
+            ('cbuf-other-slot-computed', 'const int slot = c2 && w && word >= 72', 'const int slot = w && word >= 72', 1,
+             'user cbuf slot 3, word 74: the image line names the cbuf slot and reads no c2 record'),
+            ('cbuf-not-printed', 'st == 2 ? "gs" : "?", cbuf, slot, word, key);', 'st == 2 ? "gs" : "?", 2ul, slot, word, key);', 1,
+             'user cbuf slot 3, word 74: the image line names the cbuf slot and reads no c2 record'),
+            ('word-range-widened', 'word >= 72 && word <= 86 && !(word & 1)', 'word >= 72 && word <= 90 && !(word & 1)', 1, 'word 88 is outside the image table: counter'),
+            ('odd-word-accepted', 'word >= 72 && word <= 86 && !(word & 1)', 'word >= 72 && word <= 86', 1, 'odd word: counter'),
+            ('stage-prefix-ignored', 'const int st = !strncmp(message, "vs:", 3) ? 0 : !strncmp(message, "fs:", 3) ? 1 : !strncmp(message, "gs:", 3) ? 2 : -1;', 'const int st = 1;', 1,
+             'vertex stage slot 0 (word 72)'),
+            ('texture-kind-counted-as-image', 'const char *img = strstr(message, "[kind=image ");', 'const char *img = strstr(message, "[kind=");', 1,
+             'a texture-kind rejection prints only the program line'),
+            ('image-counter-not-recorded', '    nvn_unimpl("shader", name, NULL);\n    g_img_reject_total++;',
+             '    (void)0;\n    g_img_reject_total++;', 1, 'slot unbound, pool entry 0 not registered: counter image_fact_unbound'),
         ]
         for name, before, after, count, expected, *more in changes:
             assert text.count(before) == count, (name, 'mutation anchor')
@@ -345,6 +445,13 @@ def main():
     sys.stdout.write(decl.stdout); sys.stderr.write(decl.stderr)
     if decl.returncode:
         return decl.returncode
+    # #1594：类型 3 句柄（常量采样器）的布局映射：真实结果解析 + 生产 layout_ent（编码 / 下标 0 与 4095 / 其它来源不变）
+    exe = out/'const-sampler-layout'
+    host_link.run(base + [str(ROOT/'android/tests/const_sampler_layout_test.c'), *[str(p) for p in libs]] + [strip, '-lm', '-o', str(exe)], check=True, timeout=60)
+    csl = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30)
+    sys.stdout.write(csl.stdout); sys.stderr.write(csl.stderr)
+    if csl.returncode:
+        return csl.returncode
     diag = run('diag-compile', original, args=('--diag-compile',))
     sys.stdout.write(diag.stdout); sys.stderr.write(diag.stderr)
     if diag.returncode:
@@ -352,6 +459,9 @@ def main():
     result = run('test', original)
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
+    # 三段程序（vs + fs + gs）查出包预编库：环境变量与深度能力缓存是进程级的，单独起一个进程
+    gsl = run('test-gs-libpack', original, args=('--gs-libpack',))
+    sys.stdout.write(gsl.stdout); sys.stderr.write(gsl.stderr)
     # 结果合并开关关闭态（debug.s2a.nvk_alias=0）：开关在进程内只读一次，单独起一个进程
     off = run('test-alias-off', original, args=('--alias-off',))
     sys.stdout.write(off.stdout)
@@ -366,7 +476,7 @@ def main():
         env.update(S2A_COMPUTE_WARM='0', S2A_DIRECT_CACHE_DIR=str(cache_off))
         cs_off = run('test-compute-warm-off', original, args=('--compute-warm-off',), env=env)
         sys.stdout.write(cs_off.stdout); sys.stderr.write(cs_off.stderr)
-    return result.returncode or off.returncode or on.returncode or cs_off.returncode
+    return result.returncode or gsl.returncode or off.returncode or on.returncode or cs_off.returncode
 
 if __name__ == '__main__':
     raise SystemExit(main())

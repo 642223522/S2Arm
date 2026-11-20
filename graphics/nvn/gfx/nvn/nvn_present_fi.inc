@@ -1,12 +1,15 @@
 // 出图补帧（11-14 维护者手测后定，取代我方 60 帧；DM_PRESENT_FI=1 备好功能，iOS 设置页缺省写 1，开不开按这款的「补帧」开关当场定，s2a_fi_set_live）。给原本 30 帧的游戏在屏上补到 60 帧：游戏一帧不少画、节拍不动。
-// 流程：游戏每交一帧，出图线程只把它缩拷成一张输入图（BGRA8，按游戏画面比例、高 ≤ DM_PRESENT_FI_MAXH，缺省 1080）就返回（不等 GPU）；这次拷贝做完的回调
-//   把这一帧交给补帧队列（串行），那里用 MetalFX 帧插值（MTLFXFrameInterpolator，iOS / macOS 26）由上一帧与这一帧补出正中的一帧：
+// 流程：游戏每交一帧，出图线程在上屏那条 Metal 4 队列（g_q4）上一次编完、提交、不等 GPU：缩拷成输入图（BGRA8，按游戏画面比例、高 ≤ DM_PRESENT_FI_MAXH，缺省 1080）
+//   → 1/4 亮度图 → 块匹配运动矢量 → MetalFX 帧插值（MTL4FXFrameInterpolator，iOS / macOS 26）由上一帧与这一帧补出正中的一帧 → 画进画布上屏；再把真帧画进第二张画布：
 //   整画面插值，深度填常数 1、运动矢量填 0（同 devinhurry/nxnative fix/ios-framegen-reference 的 nvn_fg.inc，MIT；一台 iPhone 上一款 30 帧开放世界游戏实测 28.56 → 59.98 帧、GPU 15.36 ms）；
 //   先上补出来的帧，再隔半个游戏周期把游戏的原图直接画上屏（原分辨率），原图上屏的命令做完才把这一帧的票记完成。
 //   比 11-13 的 VideoToolbox 版少了 RGB ↔ YUV 两次转换（那一版只走流程就 +1.3 W）；MetalFX 在单独一条 Metal 命令队列上编码，输入图写完（Metal 4 回调）才编、做完才上屏。
-// 超时：补帧在 DM_PRESENT_FI_BUDGET_MS（缺省 12）毫秒内没做完就跳过这一次，直接上真帧，不等它。
+// 为什么在同一条队列上（11-17 改）：原先拷贝做完回调到 CPU、再在单独的 Metal 3 队列上编码插值，那时游戏下一帧的 GPU 工作已经在跑，两边分时共用 GPU。
+//   iPad M4（#1510 诊断 D-PRA5）每次插值 GPU 墙钟 7.4–9.0 ms、作业均 9 ms，预算 12 ms 超时跳过约 1/3，屏上 45–50 帧；同一插值单独跑在 M5 Max 上 1080p 只要 0.8 ms
+//   （1/4 尺寸运动矢量，按 GPU 核数折到 M4 约 3–4 ms）。现在插值在 GPU 上紧跟这一帧的画面、排在游戏下一帧之前，不再分时、CPU 不等，也就没有超时跳过；
+//   插值做完前真帧不会先上屏（同一队列按序），补出的帧先上、真帧隔半个游戏周期再上（presentAfterMinimumDuration）。
 // 只走 Metal 4 + 有窗口的出图线程（开着时从启动就不建显示链接）；系统不支持、任何一步建不出来就整段回退到原来的出图，报红一次。
-// 线程：present_blit_m4 用到出图的共用状态（遍描述、管线缓存、驻留集提交），出图线程与补帧队列在 g_fi_enc_mu 下串行编码。
+// 线程：全部在出图线程上编码（g_fi_enc_mu 护着与出图共用的状态：遍描述、管线缓存、驻留集提交）。
 // MetalFX 头由 nvn_mtl.m 先包含的 nvn_present_fx.inc 带进来（本文件只在它之后被包含；不在共用文件里再直接包含苹果头，分层规则 R-02）
 #include "nvn_fi_rule.h"   // 逐帧判定：只补 30 帧档或更低档、跑满的帧（dm_fi_should_interp）
 
@@ -14,25 +17,27 @@ API_AVAILABLE(macos(26.0), ios(26.0))
 @interface NvPresentFI : NSObject {
 @public
     int w, h; NSUInteger hw, hh; MTLPixelFormat hpf; uint64_t n;
-    id<MTLTexture> in_tex[3], mid_tex, depth, motion;   // 输入图三张轮换（这一帧 / 上一帧 / 出图线程正在写的下一帧，读写不撞同一张）、补出的帧、常数深度、零运动
-    id<MTLFXFrameInterpolator> mfx; id<MTLCommandQueue> mq;   // MetalFX 帧插值在自己的 Metal 命令队列上编码
-    id<MTLRenderPipelineState> psoCopy;
-    id<MTLComputePipelineState> mvDown, mvMatch, mvSpread; id<MTLTexture> lumaCur, lumaPrev; id<MTLBuffer> mvBlocks; int qw, qh, bw, bh;   // 自算运动矢量（DM_PRESENT_FI_MV）
-    id<MTLBuffer> uv[4]; id tab[4];   // 命令槽 0 写输入（出图线程）、1 上补出的帧、2 上真帧（补帧队列）
+    id<MTLTexture> in_tex[2], mid_tex, depth, motion;   // 输入图两张轮换（这一帧 / 上一帧；同一队列按序，读写不会撞）、补出的帧、常数深度、运动矢量
+    id<MTLTexture> fsr_in;   // S2A_SCALING_FILTER=Fsr 且要做切镜头检查时：fsMid 先把「补出的帧 / 切镜头时的这一帧」画进它，再过 FSR（首次用时建）
+    id mfx;   // MTL4FXFrameInterpolator：编进上屏那条 Metal 4 队列的命令缓冲
+    id<MTLRenderPipelineState> psoCopy, psoMid;
+    id<MTLComputePipelineState> mvDown, mvDown2, mvMatch, mvSpread, mvCut; id<MTLTexture> luma[2], luma16[2]; id<MTLBuffer> mvBlocks, mvCoarse, mvSad, mvFlag, mvArgs; id mvTab; int qw, qh, bw, bh, cw16, ch16, cbw, cbh;   // 自算运动矢量（DM_PRESENT_FI_MV）：亮度图随输入图轮换，上一帧的不重算
+    id<MTLBuffer> uv[4]; id tab[4];   // 命令槽 1 写输入 + 插值 + 上补出的帧（uv/tab 0 写输入、2 上补出的帧），槽 2 上真帧（uv/tab 3）
     id alloc[3], cb[3];   // Metal 4 分配器 / 命令缓冲（MTL4 棘轮：用 id，经 nvn_mtl.m 的 m4_* 包装）
     dispatch_semaphore_t slot_free[3];
-    int in_busy[3];   // 每张输入图上还在 GPU 上算的 MetalFX 读者数（g_pq_mu 下）：出图线程写这张前等它归零（fi_in_wait）
-    dispatch_queue_t q; uint64_t last_seq, jobs;
-    uint64_t made, skipped, shown_mid, declined, last_in_ns; double ms_sum, ms_max, gpu_sum;
-    double bd_enc, bd_queue, bd_cb, bd_n; uint64_t made_win0;   // made_win0：本窗口开头的补成数（MetalFX GPU 平均按本窗口补成次数除）   // 拆账（常开，每 300 帧一行）：作业开始→提交 / 提交→GPU 开始（排在游戏 GPU 工作后面等）/ GPU 结束→完成回调，毫秒累计   // declined：按规则不补的帧（60 帧档 / 跑不满），原图直接上屏
+    uint64_t last_seq, last_pair_seq, jobs;
+    uint64_t made, shown_mid, declined, last_in_ns, made_win0;   // declined：按规则不补的帧（60 帧档 / 跑不满），原图直接上屏
+    uint64_t unpaired, gpu_n, cuts; double gpu_sum, gpu_max; _Atomic uint64_t cut_seq;   // cuts / cut_seq：判成切镜头的次数 / 最近一次的帧号（完成回调里写；下一次插值据此重置历史）   // unpaired：上一帧没进输入图 / 没取到画布，这一帧只当下一帧的前一帧；gpu_*：插值那一槽（缩拷 + 运动矢量 + MetalFX + 画进画布）的 GPU 时间，完成回调里在 g_pq_mu 下累计（每 300 帧一行）
 }
 @end
-@implementation NvPresentFI @end
+@implementation NvPresentFI
+// fsr_in（FSR 补出帧的中间图）随这一代退休：同 NvPresentFSR 的 dealloc，交给 defer_obj_release，下一次游戏提交做完才出驻留集
+- (void)dealloc { if (fsr_in) defer_obj_release(fsr_in); }
+@end
 
 __attribute__((weak)) int s2a_fps_source(void) { return 1; }   // runtime/src/caps.c 给强定义（2 = 社区帧率补丁开着）；图形单测不链宿主时按「补帧」
 static int g_fi_state = -1;   // -1 没读开关；0 关 / 已回退；1 开
 static id g_fi;               // NvPresentFI
-static double g_fi_budget_ms = 12;
 // 和显示链互斥（11-15 #ee56e7 / #1155：补帧开着时出图切到显示链模式，补帧任务在自己队列里照样 nextDrawable，Core Animation 抛
 //   CAMetalLayerInvalidOperation 整个 App 退出；切换前后新旧两路同时交帧 = 频闪）。经典出图线程取画布时 g_classic_busy、显示链挂图层前先占 g_link_owns_layer 再等它归零
 //   （nvn_mtl.m link_main）；补帧任务不在这套里。现在：派任务时在途数 +1、两张画布交完 -1，显示链等「经典出图空闲且没有在途补帧」才挂；
@@ -57,9 +62,9 @@ static void fi_link_follow(int fi) {
 static int fi_wanted_now(void);
 static int fi_wanted(void) { int on = fi_wanted_now(); if (g_fi_state == 1) fi_link_follow(on); return on; }
 static int fi_wanted_now(void) {
-    if (g_fi_state < 0) { const char *e = getenv("DM_PRESENT_FI"), *b = getenv("DM_PRESENT_FI_BUDGET_MS");
-        g_fi_state = e && !strcmp(e, "1") && !g_m3; if (b && atof(b) > 0) g_fi_budget_ms = atof(b);
-        if (g_fi_state) { MLOG("present frame interpolation: on (DM_PRESENT_FI=1), budget %.1f ms, display link off", g_fi_budget_ms); } }
+    if (g_fi_state < 0) { const char *e = getenv("DM_PRESENT_FI");
+        g_fi_state = e && !strcmp(e, "1") && !g_m3;
+        if (g_fi_state) { MLOG("present frame interpolation: on (DM_PRESENT_FI=1), encoded on the present queue right after the game frame, display link off"); } }
     if (g_fi_state != 1) return 0;
     // 帧率来源（runtime/include/caps.h s2a_fps_source：补丁 > 补帧 > 原帧率）：有开着的社区帧率补丁这一帧就不补、走原出图路径（显示链照常，补丁的 60–120 Hz 才生效）；
     //   每帧按当下来源判，60 帧开关局中切换、补丁跟着开关变也随即跟上
@@ -81,10 +86,14 @@ static id<MTLTexture> fi_tex(MTLPixelFormat pf, int w, int h, MTLTextureUsage u)
 // 输入缩拷与补出帧上屏共用的一遍：采源图（按裁剪）写目标
 API_AVAILABLE(macos(26.0), ios(26.0))
 // 自算运动矢量（DM_PRESENT_FI_MV，缺省 1；-1 取反对照方向，0 = 零矢量）：零矢量时 MetalFX 只能混合前后两帧，镜头快转时重影（11-14 iPhone 实机 一款 30 帧开放世界游戏：主角半透明叠在岩壁上）。
-//   在 1/4 分辨率亮度图上做块匹配：块 8×8（原图 32×32 像素），每块一个线程组、1024 线程各算一个位移（-16..15，原图约 ±64 像素），块与搜索窗先读进组内共享内存；
+//   两层（学 FSR 3 光流的金字塔，11-17）：先在 1/16 亮度图上粗搜（块 8×8 = 原图 128×128，位移 -16..15 = 原图约 ±256 像素），再在 1/4 亮度图上以粗矢量为中心细搜
+//   （块 8×8 = 原图 32×32，再 ±16 = 原图 ±64）。单层时只有 ±64：1080p 镜头快转一帧约 80 像素就追丢（重影）。每块一个线程组、1024 线程各算一个位移，块与搜索窗先读进组内共享内存；
+//   零位移的差另算，与最好的差相近（平坦 / 不动）时取零；
+//   切镜头（学 FSR 3 光流的场景切换判断）：粗层各块对准后的差取平均（每像素亮度差，0..1），超过 DM_PRESENT_FI_CUT（缺省 0.12）判切镜头，标志写进 mvFlag：
+//   上补出帧那一遍在 GPU 上看标志，切镜头就画这一帧的原图（不上把两个场景混在一起的鬼影），CPU 不等；完成回调读到标志，下一次插值重置历史；
 //   块位移按块中心双线性铺成整张运动矢量图（输入图像素，当前帧 → 前一帧）；-1 = 取反（MetalFX 方向约定没把握时对照用）。
 //   11-14 第一版每块一个线程（全画面约 920 线程、每线程串行 7 万次比较）在iPhone 实机 上多花约 5 ms、九成多帧超预算跳过，改成每块一组
-static int fi_mv_mode(void) { static int v = -2; if (v == -2) { const char *e = getenv("DM_PRESENT_FI_MV"); v = e ? atoi(e) : 1; if (v) MLOG("present frame interpolation: computed motion vectors (DM_PRESENT_FI_MV=%d), 8x8 blocks on a quarter-size luma, search +-16", v); } return v; }
+static int fi_mv_mode(void) { static int v = -2; if (v == -2) { const char *e = getenv("DM_PRESENT_FI_MV"); v = e ? atoi(e) : 1; if (v) MLOG("present frame interpolation: computed motion vectors (DM_PRESENT_FI_MV=%d), two levels: 1/16-size luma +-16 then 1/4-size luma +-16 around it (about +-320 pixels)", v); } return v; }
 API_AVAILABLE(macos(26.0), ios(26.0))
 static int fi_mv_setup(NvPresentFI *f) {
     static const char *msl =
@@ -93,22 +102,35 @@ static int fi_mv_setup(NvPresentFI *f) {
         "  if (g.x >= dst.get_width() || g.y >= dst.get_height()) return; float s = 0;\n"
         "  for (uint y = 0; y < 4; y++) for (uint x = 0; x < 4; x++) { float3 c = src.read(uint2(g.x * 4 + x, g.y * 4 + y)).rgb; s += dot(c, float3(0.299, 0.587, 0.114)); }\n"
         "  dst.write(float4(s / 16, 0, 0, 0), g); }\n"
-        "kernel void match(texture2d<float, access::read> cur [[texture(0)]], texture2d<float, access::read> prev [[texture(1)]], device float2* out [[buffer(0)]], constant uint2& nb [[buffer(1)]],\n"
+        "kernel void down2(texture2d<float, access::read> src [[texture(0)]], texture2d<float, access::write> dst [[texture(1)]], uint2 g [[thread_position_in_grid]]) {\n"
+        "  if (g.x >= dst.get_width() || g.y >= dst.get_height()) return; float s = 0;\n"
+        "  for (uint y = 0; y < 4; y++) for (uint x = 0; x < 4; x++) s += src.read(min(uint2(g.x * 4 + x, g.y * 4 + y), uint2(src.get_width() - 1, src.get_height() - 1))).r;\n"
+        "  dst.write(float4(s / 16, 0, 0, 0), g); }\n"
+        // gm：块数 x / y、这一层每像素折原图几像素 L、预测网格每格几块；pred / pn：上一层的矢量（原图像素）与网格尺寸，pn.x = 0 没有预测
+        "kernel void match(texture2d<float, access::read> cur [[texture(0)]], texture2d<float, access::read> prev [[texture(1)]], device float2* out [[buffer(0)]], constant uint4& gm [[buffer(1)]],\n"
+        "                  device const float2* pred [[buffer(2)]], constant uint2& pn [[buffer(3)]], device float* bs [[buffer(4)]],\n"
         "                  uint2 b [[threadgroup_position_in_grid]], uint2 t [[thread_position_in_threadgroup]], uint li [[thread_index_in_threadgroup]], uint sl [[thread_index_in_simdgroup]], uint sg [[simdgroup_index_in_threadgroup]]) {\n"
-        "  threadgroup float blk[64]; threadgroup float win[40 * 40]; threadgroup uint part[32]; threadgroup float zsad;\n"
-        "  int W = cur.get_width(), H = cur.get_height(); int2 o = int2(b) * 8;\n"
-        "  if (li < 64) { int2 p = clamp(o + int2(li % 8, li / 8), int2(0), int2(W - 1, H - 1)); blk[li] = cur.read(uint2(p)).r; }\n"
-        "  for (uint k = li; k < 1600; k += 1024) { int2 q = clamp(o + int2(int(k % 40) - 16, int(k / 40) - 16), int2(0), int2(W - 1, H - 1)); win[k] = prev.read(uint2(q)).r; }\n"
+        "  threadgroup float blk[64]; threadgroup float win[40 * 40]; threadgroup uint part[32]; threadgroup float zp[64];\n"
+        "  int W = cur.get_width(), H = cur.get_height(); int2 o = int2(b) * 8; int L = int(gm.z);\n"
+        "  int2 pq = int2(0); if (pn.x) { uint2 pb = min(b / gm.w, pn - 1); pq = int2(round(pred[pb.y * pn.x + pb.x] / float(L))); }   // 上一层矢量折到这一层像素：搜索窗以它为中心\n"
+        "  if (li < 64) { int2 p = clamp(o + int2(li % 8, li / 8), int2(0), int2(W - 1, H - 1)); blk[li] = cur.read(uint2(p)).r; zp[li] = abs(blk[li] - prev.read(uint2(p)).r); }\n"
+        "  for (uint k = li; k < 1600; k += 1024) { int2 q = clamp(o + pq + int2(int(k % 40) - 16, int(k / 40) - 16), int2(0), int2(W - 1, H - 1)); win[k] = prev.read(uint2(q)).r; }\n"
         "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
         "  float sad = 0; for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) sad += abs(blk[y * 8 + x] - win[(int(t.y) + y) * 40 + int(t.x) + x]);\n"
-        "  if (t.x == 16 && t.y == 16) zsad = sad;\n"
         "  uint key = (as_type<uint>(sad) & ~0x3FFu) | li;   // 正浮点按位序即数值序：低 10 位换成线程号，取最小同时带出位移\n"
         "  key = simd_min(key); if (sl == 0) part[sg] = key;\n"
         "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
         "  if (sg == 0) { uint k2 = simd_min(sl < 32 ? part[sl] : 0xFFFFFFFFu);\n"
-        "    if (sl == 0) { uint bi = k2 & 0x3FFu; float best = as_type<float>(k2 & ~0x3FFu); int2 bd = int2(int(bi % 32) - 16, int(bi / 32) - 16);\n"
+        "    if (sl == 0) { uint bi = k2 & 0x3FFu; float best = as_type<float>(k2 & ~0x3FFu); int2 bd = pq + int2(int(bi % 32) - 16, int(bi / 32) - 16);\n"
+        "      float zsad = 0; for (int i = 0; i < 64; i++) zsad += zp[i];   // 零位移的差（搜索窗不一定含零位移）\n"
         "      if (zsad <= best * 1.02 + 0.05) bd = int2(0);   // 不动或平坦处偏向零位移，免得乱跳\n"
-        "      out[b.y * nb.x + b.x] = float2(bd) * 4; } } }\n"
+        "      out[b.y * gm.x + b.x] = float2(bd * L); bs[b.y * gm.x + b.x] = min(best, zsad) / 64; } } }\n"
+        // 切镜头：粗层每块对准后的平均亮度差再取整帧平均，超过阈值写 1（一个线程组，块数不多）
+        "kernel void cut(device const float* bs [[buffer(0)]], constant uint4& gm [[buffer(1)]], constant float& th [[buffer(2)]], device uint* flag [[buffer(3)]], uint li [[thread_index_in_threadgroup]]) {\n"
+        "  threadgroup float acc[256]; float s = 0; uint n = gm.x * gm.y; for (uint i = li; i < n; i += 256) s += bs[i]; acc[li] = s;\n"
+        "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+        "  for (uint w = 128; w > 0; w >>= 1) { if (li < w) acc[li] += acc[li + w]; threadgroup_barrier(mem_flags::mem_threadgroup); }\n"
+        "  if (li == 0) flag[0] = acc[0] / float(max(n, 1u)) > th ? 1u : 0u; }\n"
         "kernel void spread(device const float2* blk [[buffer(0)]], constant uint2& nb [[buffer(1)]], constant float& sign [[buffer(2)]], constant uint& sc [[buffer(3)]], texture2d<float, access::write> mv [[texture(0)]],\n"
         "                   texture2d<float, access::read> cur [[texture(1)]], texture2d<float, access::read> prev [[texture(2)]], uint2 g [[thread_position_in_grid]]) {\n"
         "  if (g.x >= mv.get_width() || g.y >= mv.get_height()) return;\n"
@@ -122,30 +144,61 @@ static int fi_mv_setup(NvPresentFI *f) {
     f->mvDown = [g_dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"down"] error:&e];
     f->mvMatch = [g_dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"match"] error:&e];
     f->mvSpread = [g_dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"spread"] error:&e];
+    f->mvDown2 = [g_dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"down2"] error:&e];
+    f->mvCut = [g_dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"cut"] error:&e];
     f->qw = f->w / 4; f->qh = f->h / 4; f->bw = (f->qw + 7) / 8; f->bh = (f->qh + 7) / 8;
-    f->lumaCur = fi_tex(MTLPixelFormatR16Float, f->qw, f->qh, MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite);
-    f->lumaPrev = fi_tex(MTLPixelFormatR16Float, f->qw, f->qh, MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite);
+    f->cw16 = (f->qw + 3) / 4; f->ch16 = (f->qh + 3) / 4; f->cbw = (f->cw16 + 7) / 8; f->cbh = (f->ch16 + 7) / 8;
+    for (int i = 0; i < 2; i++) { f->luma[i] = fi_tex(MTLPixelFormatR16Float, f->qw, f->qh, MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite);
+                                  f->luma16[i] = fi_tex(MTLPixelFormatR16Float, f->cw16, f->ch16, MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite); }
     f->mvBlocks = [g_dev newBufferWithLength:(NSUInteger)(f->bw * f->bh) * 8 options:MTLResourceStorageModePrivate];
-    if (!f->mvDown || !f->mvMatch || !f->mvSpread || !f->lumaCur || !f->lumaPrev || !f->mvBlocks) { MLOG("【红】 frame interpolation motion setup: %s", e.localizedDescription.UTF8String ?: "resources"); return 0; }
+    f->mvCoarse = [g_dev newBufferWithLength:(NSUInteger)(f->cbw * f->cbh) * 8 options:MTLResourceStorageModePrivate];
+    f->mvSad = [g_dev newBufferWithLength:(NSUInteger)MAX(f->bw * f->bh, f->cbw * f->cbh) * 4 options:MTLResourceStorageModePrivate];   // 每块对准后的差：粗层写完由切镜头核读，细层随后覆盖
+    f->mvFlag = [g_dev newBufferWithLength:4 options:MTLResourceStorageModeShared]; if (f->mvFlag) memset(f->mvFlag.contents, 0, 4);
+    // Metal 4 没有 setBytes：常量都在这一块共享缓冲里按偏移绑（建时写一次，方向每帧写）：0 细层块数 uint2（铺开用）、8 方向 float、12 铺开比例 uint、
+    //   16 粗层 gm uint4、32 细层 gm uint4、48 粗层 pn uint2（0 = 没有预测）、56 细层 pn uint2（粗层网格）、64 切镜头阈值 float
+    f->mvArgs = [g_dev newBufferWithLength:80 options:MTLResourceStorageModeShared];
+    NSError *te = nil; f->mvTab = tab_new(4, 3, 1, &te);
+    if (!f->mvDown || !f->mvDown2 || !f->mvMatch || !f->mvSpread || !f->mvCut || !f->luma[0] || !f->luma[1] || !f->luma16[0] || !f->luma16[1] || !f->mvBlocks || !f->mvCoarse || !f->mvSad || !f->mvFlag || !f->mvArgs || !f->mvTab) {
+        MLOG("【红】 frame interpolation motion setup: %s", (e ?: te).localizedDescription.UTF8String ?: "resources"); return 0; }
+    res_add(f->mvBlocks); res_add(f->mvCoarse); res_add(f->mvSad); res_add(f->mvFlag); res_add(f->mvArgs);
+    uint32_t *a = f->mvArgs.contents; memset(a, 0, 80);
+    a[0] = (uint32_t)f->bw; a[1] = (uint32_t)f->bh;
+    a[4] = (uint32_t)f->cbw; a[5] = (uint32_t)f->cbh; a[6] = 16; a[7] = 1;   // 粗层：每像素 16 原图像素
+    a[8] = (uint32_t)f->bw; a[9] = (uint32_t)f->bh; a[10] = 4; a[11] = 4;    // 细层：每像素 4 原图像素，粗层一块（1/16 的 8 像素 = 1/4 的 32 像素）盖细层 4 块
+    a[14] = (uint32_t)f->cbw; a[15] = (uint32_t)f->cbh;
+    { const char *c = getenv("DM_PRESENT_FI_CUT"); float th = c && atof(c) > 0 ? (float)atof(c) : 0.12f; memcpy(&a[16], &th, 4); }
     return 1;
 }
-// 在 MetalFX 之前编进同一条命令缓冲：前后两帧缩成 1/4 亮度 → 逐块匹配 → 铺成运动矢量图（写 f->motion）
+// 在 MetalFX 之前编进同一条 Metal 4 命令缓冲：这一帧缩成 1/4 亮度（luma[k]；上一帧的 luma[k ^ 1] 上一帧已缩好）；pair 时再逐块匹配 → 铺成运动矢量图（写 f->motion）。
+//   编码器前后是队列级全屏障（同上屏编码器），与前面的缩拷、后面的 MetalFX 按序；编码器里两步之间是编码器内屏障
 API_AVAILABLE(macos(26.0), ios(26.0))
-static void fi_mv_encode(NvPresentFI *f, id<MTLCommandBuffer> c, id<MTLTexture> cur, id<MTLTexture> prev, float sign) {
-    id<MTLComputeCommandEncoder> en = [c computeCommandEncoder];
-    MTLSize tg = MTLSizeMake(8, 8, 1);
-    [en setComputePipelineState:f->mvDown];
-    [en setTexture:cur atIndex:0]; [en setTexture:f->lumaCur atIndex:1]; [en dispatchThreads:MTLSizeMake(f->qw, f->qh, 1) threadsPerThreadgroup:tg];
-    [en setTexture:prev atIndex:0]; [en setTexture:f->lumaPrev atIndex:1]; [en dispatchThreads:MTLSizeMake(f->qw, f->qh, 1) threadsPerThreadgroup:tg];
-    [en memoryBarrierWithScope:MTLBarrierScopeTextures];
-    uint32_t nb[2] = {(uint32_t)f->bw, (uint32_t)f->bh};
-    [en setComputePipelineState:f->mvMatch]; [en setTexture:f->lumaCur atIndex:0]; [en setTexture:f->lumaPrev atIndex:1];
-    [en setBuffer:f->mvBlocks offset:0 atIndex:0]; [en setBytes:nb length:sizeof nb atIndex:1];
-    [en dispatchThreadgroups:MTLSizeMake(f->bw, f->bh, 1) threadsPerThreadgroup:MTLSizeMake(32, 32, 1)];   // 每块一组，组内 1024 线程各算一个位移（±16 → 32×32）
-    [en memoryBarrierWithScope:MTLBarrierScopeBuffers];
-    [en setComputePipelineState:f->mvSpread]; [en setBuffer:f->mvBlocks offset:0 atIndex:0]; [en setBytes:nb length:sizeof nb atIndex:1]; [en setBytes:&sign length:4 atIndex:2]; uint32_t sc = (uint32_t)(f->w / f->motion.width); [en setBytes:&sc length:4 atIndex:3];
-    [en setTexture:f->motion atIndex:0]; [en setTexture:cur atIndex:1]; [en setTexture:prev atIndex:2]; [en dispatchThreads:MTLSizeMake(f->motion.width, f->motion.height, 1) threadsPerThreadgroup:tg];
-    [en endEncoding];
+static void fi_mv_encode(NvPresentFI *f, id cb, int k, int pair, float sign) {
+    uint32_t *a = f->mvArgs.contents; memcpy(&a[2], &sign, 4); a[3] = (uint32_t)(f->w / f->motion.width);
+    id t = f->mvTab; id e = enc_c_begin_on(cb, YES); [e setArgumentTable:t];
+    MTLSize tg = MTLSizeMake(8, 8, 1), tm = MTLSizeMake(32, 32, 1);   // 匹配：每块一组，组内 1024 线程各算一个位移（±16 → 32×32）
+    [e setComputePipelineState:f->mvDown]; tab_tex(t, f->in_tex[k], 0); tab_tex(t, f->luma[k], 1);
+    [e dispatchThreads:MTLSizeMake((NSUInteger)f->qw, (NSUInteger)f->qh, 1) threadsPerThreadgroup:tg];
+    enc_c_inner_barrier(e);
+    [e setComputePipelineState:f->mvDown2]; tab_tex(t, f->luma[k], 0); tab_tex(t, f->luma16[k], 1);
+    [e dispatchThreads:MTLSizeMake((NSUInteger)f->cw16, (NSUInteger)f->ch16, 1) threadsPerThreadgroup:tg];
+    if (pair) {
+        enc_c_inner_barrier(e);
+        [e setComputePipelineState:f->mvMatch];   // 粗层（1/16，没有预测）
+        tab_tex(t, f->luma16[k], 0); tab_tex(t, f->luma16[k ^ 1], 1); tab_buf(t, f->mvCoarse, 0, 0); tab_buf(t, f->mvArgs, 16, 1); tab_buf(t, f->mvCoarse, 0, 2); tab_buf(t, f->mvArgs, 48, 3); tab_buf(t, f->mvSad, 0, 4);
+        [e dispatchThreadgroups:MTLSizeMake((NSUInteger)f->cbw, (NSUInteger)f->cbh, 1) threadsPerThreadgroup:tm];
+        enc_c_inner_barrier(e);
+        [e setComputePipelineState:f->mvCut]; tab_buf(t, f->mvSad, 0, 0); tab_buf(t, f->mvArgs, 16, 1); tab_buf(t, f->mvArgs, 64, 2); tab_buf(t, f->mvFlag, 0, 3);
+        [e dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        enc_c_inner_barrier(e);
+        [e setComputePipelineState:f->mvMatch];
+        tab_tex(t, f->luma[k], 0); tab_tex(t, f->luma[k ^ 1], 1); tab_buf(t, f->mvBlocks, 0, 0); tab_buf(t, f->mvArgs, 32, 1); tab_buf(t, f->mvCoarse, 0, 2); tab_buf(t, f->mvArgs, 56, 3); tab_buf(t, f->mvSad, 0, 4);   // 细层（1/4，以粗矢量为中心）
+        [e dispatchThreadgroups:MTLSizeMake((NSUInteger)f->bw, (NSUInteger)f->bh, 1) threadsPerThreadgroup:tm];
+        enc_c_inner_barrier(e);
+        [e setComputePipelineState:f->mvSpread]; tab_buf(t, f->mvBlocks, 0, 0); tab_buf(t, f->mvArgs, 0, 1); tab_buf(t, f->mvArgs, 8, 2); tab_buf(t, f->mvArgs, 12, 3);
+        tab_tex(t, f->motion, 0); tab_tex(t, f->in_tex[k], 1); tab_tex(t, f->in_tex[k ^ 1], 2);
+        [e dispatchThreads:MTLSizeMake(f->motion.width, f->motion.height, 1) threadsPerThreadgroup:tg];
+    }
+    enc_end_on(e, YES);
 }
 API_AVAILABLE(macos(26.0), ios(26.0))
 static int fi_copy_setup(NvPresentFI *f) {
@@ -154,13 +207,17 @@ static int fi_copy_setup(NvPresentFI *f) {
         "struct V { float4 p [[position]]; float2 uv; };\n"
         "vertex V vs(uint id [[vertex_id]]) { float2 uv = float2((id << 1) & 2, id & 2); V o; o.p = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1); o.uv = uv; return o; }\n"
         "struct Crop { float4 rect; float4 edge; };\n"
-        "fragment float4 fsCopy(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant Crop& c [[buffer(0)]]) { return float4(t.sample(s, clamp(in.uv * c.rect.zw + c.rect.xy, c.edge.xy, c.edge.zw)).rgb, 1); }\n";
+        "fragment float4 fsCopy(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant Crop& c [[buffer(0)]]) { return float4(t.sample(s, clamp(in.uv * c.rect.zw + c.rect.xy, c.edge.xy, c.edge.zw)).rgb, 1); }\n"
+        // 上补出的帧：切镜头标志为 1 时画这一帧的输入图（t1），不画插值结果
+        "fragment float4 fsMid(V in [[stage_in]], texture2d<float> t [[texture(0)]], texture2d<float> c1 [[texture(1)]], sampler s [[sampler(0)]], constant Crop& c [[buffer(0)]], device const uint* cut [[buffer(1)]]) {\n"
+        "  float2 uv = clamp(in.uv * c.rect.zw + c.rect.xy, c.edge.xy, c.edge.zw); return float4((cut[0] ? c1 : t).sample(s, uv).rgb, 1); }\n";
     NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(msl) options:nil error:&e];
     if (!lib) { MLOG("【红】 frame interpolation shader: %s", e.localizedDescription.UTF8String); return 0; }
     MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
     pd.vertexFunction = [lib newFunctionWithName:@"vs"]; pd.fragmentFunction = [lib newFunctionWithName:@"fsCopy"]; pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
     f->psoCopy = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
-    if (!f->psoCopy) { MLOG("【红】 frame interpolation pipeline: %s", e.localizedDescription.UTF8String); return 0; }
+    pd.fragmentFunction = [lib newFunctionWithName:@"fsMid"]; f->psoMid = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
+    if (!f->psoCopy || !f->psoMid) { MLOG("【红】 frame interpolation pipeline: %s", e.localizedDescription.UTF8String); return 0; }
     return 1;
 }
 // 建 / 重建（画布尺寸与格式跟着 layer；画面比例变了整个重建）。返回 nil = 回退
@@ -172,8 +229,7 @@ static NvPresentFI *fi_get(CAMetalLayer *layer, NSUInteger cw, NSUInteger ch) {
     double s = ch > (NSUInteger)maxh ? (double)maxh / ch : 1;
     int iw = (int)(cw * s) & ~1, ih = (int)(ch * s) & ~1;
     if (f && f->hw == hw && f->hh == hh && f->hpf == layer.pixelFormat && f->w == iw && f->h == ih) return f;
-    if (f && (f->w != iw || f->h != ih)) {   // 画面比例变了（11-13 iPhone 实机：开局竖屏、几秒后转横屏）：插值器的输入尺寸是建时定死的，等在途的活做完、整个重建
-        dispatch_sync(f->q, ^{});
+    if (f && (f->w != iw || f->h != ih)) {   // 画面比例变了（11-13 iPhone 实机：开局竖屏、几秒后转横屏）：插值器的输入尺寸是建时定死的，整个重建（旧对象的在途 GPU 工作由命令缓冲持有）
         MLOG("present frame interpolation: the game picture changed to %lux%lu (input %dx%d → %dx%d), rebuilding", (unsigned long)cw, (unsigned long)ch, f->w, f->h, iw, ih);
         g_fi = nil; f = nil;
     }
@@ -188,25 +244,28 @@ static NvPresentFI *fi_get(CAMetalLayer *layer, NSUInteger cw, NSUInteger ch) {
         int mw = mvq && fi_mv_mode() ? iw / 4 : iw, mh = mvq && fi_mv_mode() ? ih / 4 : ih;
         d.outputWidth = (NSUInteger)iw; d.outputHeight = (NSUInteger)ih; d.inputWidth = (NSUInteger)mw; d.inputHeight = (NSUInteger)mh;
         d.colorTextureFormat = d.outputTextureFormat = MTLPixelFormatBGRA8Unorm; d.depthTextureFormat = MTLPixelFormatR32Float; d.motionTextureFormat = MTLPixelFormatRG16Float;
-        f->mfx = [d newFrameInterpolatorWithDevice:g_dev]; f->mq = [g_dev newCommandQueue];
-        if (!f->mfx || !f->mq) { fi_off("MetalFX makes no frame interpolator for this size"); return nil; }
-        for (int i = 0; i < 3; i++) f->in_tex[i] = fi_tex(MTLPixelFormatBGRA8Unorm, iw, ih, f->mfx.colorTextureUsage | MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead);
-        f->mid_tex = fi_tex(MTLPixelFormatBGRA8Unorm, iw, ih, f->mfx.outputTextureUsage | MTLTextureUsageShaderRead);
-        f->depth = fi_tex(MTLPixelFormatR32Float, mw, mh, f->mfx.depthTextureUsage | MTLTextureUsageRenderTarget);
-        f->motion = fi_tex(MTLPixelFormatRG16Float, mw, mh, f->mfx.motionTextureUsage | MTLTextureUsageRenderTarget | MTLTextureUsageShaderWrite);
-        if (!f->in_tex[0] || !f->in_tex[1] || !f->in_tex[2] || !f->mid_tex || !f->depth || !f->motion) { fi_off("cannot create the interpolation textures"); return nil; }
-        {   // 常数深度 1、零运动：清一次
-            id<MTLCommandBuffer> c = [f->mq commandBuffer]; MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor new];
+        id comp = present_fx_compiler(); f->mfx = comp ? [d newFrameInterpolatorWithDevice:g_dev compiler:comp] : nil;   // Metal 4 版：编进上屏队列的命令缓冲
+        if (!f->mfx) { fi_off("MetalFX makes no Metal 4 frame interpolator for this size"); return nil; }
+        id<MTLFXFrameInterpolatorBase> fb = f->mfx;
+        [fb setFence:[g_dev newFence]];   // 同 MTL4FX 空间放大：Metal 4 下 MetalFX 要带栅栏（只给它内部用；前后顺序由我们编码器的队列级全屏障保证）
+        for (int i = 0; i < 2; i++) f->in_tex[i] = fi_tex(MTLPixelFormatBGRA8Unorm, iw, ih, fb.colorTextureUsage | MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead);
+        f->mid_tex = fi_tex(MTLPixelFormatBGRA8Unorm, iw, ih, fb.outputTextureUsage | MTLTextureUsageShaderRead);
+        f->depth = fi_tex(MTLPixelFormatR32Float, mw, mh, fb.depthTextureUsage | MTLTextureUsageRenderTarget);
+        f->motion = fi_tex(MTLPixelFormatRG16Float, mw, mh, fb.motionTextureUsage | MTLTextureUsageRenderTarget | MTLTextureUsageShaderWrite);
+        if (!f->in_tex[0] || !f->in_tex[1] || !f->mid_tex || !f->depth || !f->motion) { fi_off("cannot create the interpolation textures"); return nil; }
+        {   // 常数深度 1、零运动：清一次（建时一次性，用一条临时 Metal 3 队列、等它做完）
+            id<MTLCommandBuffer> c = [[g_dev newCommandQueue] commandBuffer]; MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor new];
             rp.colorAttachments[0].texture = f->depth; rp.colorAttachments[0].loadAction = MTLLoadActionClear; rp.colorAttachments[0].storeAction = MTLStoreActionStore; rp.colorAttachments[0].clearColor = MTLClearColorMake(1, 0, 0, 0);
             rp.colorAttachments[1].texture = f->motion; rp.colorAttachments[1].loadAction = MTLLoadActionClear; rp.colorAttachments[1].storeAction = MTLStoreActionStore; rp.colorAttachments[1].clearColor = MTLClearColorMake(0, 0, 0, 0);
             [[c renderCommandEncoderWithDescriptor:rp] endEncoding]; [c commit]; [c waitUntilCompleted];
         }
         NSError *te = nil;
-        for (int i = 0; i < 4; i++) { f->uv[i] = [g_dev newBufferWithLength:8 * sizeof(float) options:MTLResourceStorageModeShared]; res_add(f->uv[i]); f->tab[i] = tab_new(1, 1, 1, &te); if (!f->uv[i] || !f->tab[i]) { fi_off("cannot create the blit tables"); return nil; } }
+        for (int i = 0; i < 4; i++) { f->uv[i] = [g_dev newBufferWithLength:16 * sizeof(float) options:MTLResourceStorageModeShared]; res_add(f->uv[i]); f->tab[i] = tab_new(i == 2 ? 2 : 1, i == 2 ? 2 : 1, 1, &te); if (!f->uv[i] || !f->tab[i]) { fi_off("cannot create the blit tables"); return nil; } }   // PR3b：16 浮点（uv[2]/uv[3] 也喂 present_blit_m4 的共享着色器，Crop 全量读；fi_pass 自家 fsCopy/fsMid 的 32 字节 Crop 不变）
         for (int i = 0; i < 3; i++) { f->alloc[i] = [g_dev newCommandAllocator]; f->cb[i] = [g_dev newCommandBuffer]; f->slot_free[i] = dispatch_semaphore_create(1); if (!f->alloc[i] || !f->cb[i]) { fi_off("cannot create the command buffers"); return nil; } }
-        f->q = dispatch_queue_create("dm.nvn.present-fi", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0)); f->last_seq = UINT64_MAX;
+        f->last_seq = f->last_pair_seq = UINT64_MAX; atomic_store(&f->cut_seq, UINT64_MAX);
         if (!fi_copy_setup(f)) { fi_off("cannot create the copy pipeline"); return nil; }
         if (fi_mv_mode() && !fi_mv_setup(f)) { fi_off("cannot create the motion-vector pipelines"); return nil; }
+        if (f->mvFlag) tab_buf(f->tab[2], f->mvFlag, 0, 1);   // 上补出帧那一遍读切镜头标志
         res_commit();
         MLOG("present frame interpolation: MetalFX, input %dx%d (game picture %lux%lu), constant depth, zero motion", f->w, f->h, (unsigned long)cw, (unsigned long)ch);
     }
@@ -254,7 +313,7 @@ static int fi_pass(id cb, id<MTLRenderPipelineState> pso, id table, id<MTLBuffer
 }
 // 在命令槽 s 上编码并提交（dr 非空 = 这次画进画布）。after 在 GPU 做完的回调里调。槽的分配器要等它上一次提交做完才能重用
 API_AVAILABLE(macos(26.0), ios(26.0))
-static int fi_commit(NvPresentFI *f, int s, id<CAMetalDrawable> dr, int (^enc)(id cb), void (^after)(int ok)) {
+static int fi_commit(NvPresentFI *f, int s, id<CAMetalDrawable> dr, int (^enc)(id cb), void (^after)(int ok, double gpu_ms)) {
     dispatch_semaphore_wait(f->slot_free[s], DISPATCH_TIME_FOREVER);
     pthread_mutex_lock(&g_fi_enc_mu);
     present_pipeline(MTLPixelFormatBGRA8Unorm);   // 取样器（g_blit_samp）在这里建
@@ -265,61 +324,81 @@ static int fi_commit(NvPresentFI *f, int s, id<CAMetalDrawable> dr, int (^enc)(i
     if (!ok) { if (dr) [g_q4 signalDrawable:dr]; pthread_mutex_unlock(&g_fi_enc_mu); dispatch_semaphore_signal(f->slot_free[s]); return 0; }
     dispatch_semaphore_t fr = f->slot_free[s];
     id o = fb_new(); fb_add(o, ^(id fbk) { NSError *fe = [fbk error]; int good = !fe; if (!good) MLOG("【红】 frame interpolation command buffer error (slot %d): %s", s, fe.description.UTF8String);
-                                dispatch_semaphore_signal(fr); if (after) after(good); });
+                                double gs = [fbk GPUStartTime], ge = [fbk GPUEndTime];
+                                dispatch_semaphore_signal(fr); if (after) after(good, gs > 0 && ge >= gs ? (ge - gs) * 1000 : -1); });
     res_commit(); m4_commit_one(cb, o);
     if (dr) [g_q4 signalDrawable:dr];
     pthread_mutex_unlock(&g_fi_enc_mu);
     return 1;
 }
 static void fi_ticket_done(uint64_t ticket) { pthread_mutex_lock(&g_pq_mu); if (ticket > g_pq_done) g_pq_done = ticket; pthread_cond_broadcast(&g_pq_cv); pthread_mutex_unlock(&g_pq_mu); }
-// 补帧队列：这一帧的输入图已经在 GPU 上写好（in_tex[k]；上一帧在 in_tex[(k + 2) % 3]）
+// 出图线程上的一帧（游戏原图 src 已在上屏队列里画好）：good = 这一帧写进输入图并可能插值（0 = 只上真帧，回退 / 单测用）；allow = 规则允许补这一帧。
+//   槽 1：缩拷进输入图 k → 1/4 亮度 →（与上一帧成对时）块匹配 + MetalFX 插值 → 补出的帧画进画布；槽 2：真帧画进第二张画布。两槽连着提交到上屏队列，CPU 不等 GPU
 API_AVAILABLE(macos(26.0), ios(26.0))
 static void fi_job(NvPresentFI *f, CAMetalLayer *layer, id<MTLTexture> src, fi_crop cr, BOOL flip, int k, uint64_t seq, double period, uint64_t ticket, int good, int allow) { @autoreleasepool {
-    const int *crop = cr.has ? cr.c : NULL; int have_mid = 0; uint64_t t0 = now_ns(); id<MTLTexture> mid = f->mid_tex;
+    const int *crop = cr.has ? cr.c : NULL;
     static int novt = -1; if (novt < 0) novt = getenv("DM_PRESENT_FI_NOVT") != NULL;   // 拆账用：不调 MetalFX，中间那一帧直接用上一帧
-    int dup = fi_dup();
-    if (good && dup && allow) have_mid = 1;
-    else if (good && !allow) f->last_seq = seq;   // 这一帧按规则不补：只当下一帧的前一帧
-    else if (good) {
-        int pair = seq > 0 && f->last_seq == seq - 1;
-        if (pair && novt) { have_mid = 1; mid = f->in_tex[(k + 2) % 3]; }
-        else if (pair) {
-            id<MTLFXFrameInterpolator> fx = f->mfx; static uint64_t last_pair_seq = UINT64_MAX;
-            fx.colorTexture = f->in_tex[k]; fx.prevColorTexture = f->in_tex[(k + 2) % 3]; fx.outputTexture = f->mid_tex;
-            fx.depthTexture = f->depth; fx.motionTexture = f->motion; fx.motionVectorScaleX = fx.motionVectorScaleY = (float)f->motion.width / (float)f->w;   // 矢量按全尺寸像素算；按 1/4 尺寸交时换成输入像素
-            fx.deltaTime = period > 0 ? (float)period : 1.f / 30; fx.nearPlane = .1f; fx.farPlane = 1000; fx.fieldOfView = 60; fx.aspectRatio = (float)f->w / f->h;
-            fx.jitterOffsetX = fx.jitterOffsetY = 0; fx.depthReversed = NO; fx.shouldResetHistory = last_pair_seq == UINT64_MAX || seq - 1 != last_pair_seq;   // 断开过（不补的帧 / 跳过）就重置历史
-            id<MTLCommandBuffer> c = [f->mq commandBuffer]; c.label = @"present frame interpolation (MetalFX)";
-            if (fi_mv_mode()) fi_mv_encode(f, c, f->in_tex[k], f->in_tex[(k + 2) % 3], fi_mv_mode() < 0 ? -1.f : 1.f);
-            [fx encodeToCommandBuffer:c]; fx.outputTexture = fx.prevColorTexture = fx.colorTexture = nil;
-            dispatch_semaphore_t done = dispatch_semaphore_create(0); __block int ok = 0; __block double gms = 0, gstart = 0, gend = 0, cbt = 0;
-            double tcommit = CACurrentMediaTime(), tenc = (now_ns() - t0) / 1e6;
-            int kp = (k + 2) % 3; pthread_mutex_lock(&g_pq_mu); f->in_busy[k]++; f->in_busy[kp]++; pthread_mutex_unlock(&g_pq_mu);   // 这两张输入图被这次插值读着
-            [c addCompletedHandler:^(id<MTLCommandBuffer> x) { pthread_mutex_lock(&g_pq_mu); f->in_busy[k]--; f->in_busy[kp]--; pthread_cond_broadcast(&g_pq_cv); pthread_mutex_unlock(&g_pq_mu);
-                                                               cbt = CACurrentMediaTime(); gstart = x.GPUStartTime; gend = x.GPUEndTime; ok = x.error == nil; gms = (x.GPUEndTime - x.GPUStartTime) * 1000; if (x.error) MLOG("【红】 MetalFX frame interpolation failed: %s", x.error.description.UTF8String); dispatch_semaphore_signal(done); }];
-            [c commit];
-            // 预算内做完才上补出的帧；超时就不再等（审计 P1-189：原先超时后再等最多 1 秒才上真帧、才记票，30 帧款的上屏节拍被拖长）——直接往下上真帧、记票。
-            //   迟到的那次接着在 GPU 上跑完：它读的两张输入图由 in_busy 护着（出图线程见到被占就这一帧不写不补，fi_input_free），写的 mid_tex 下一次插值在同一命令队列上排在它后面
-            int in_time = !dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(g_fi_budget_ms * 1e6)));
-            if (in_time && ok) { have_mid = 1; last_pair_seq = seq; f->gpu_sum += gms; }
-            if (in_time && gstart > 0 && gend >= gstart && cbt >= gend) { f->bd_enc += tenc; f->bd_queue += (gstart - tcommit) * 1000; f->bd_cb += (cbt - gend) * 1000; f->bd_n++; }   // 拆账只算预算内做完的（迟到的那次不等它，回调里的时刻这时还没写）
-        }
-        f->last_seq = seq;
-    }
-    if (seq > 0 && !allow) f->declined++;
-    else if (seq > 0) { double ms = (now_ns() - t0) / 1e6; f->ms_sum += ms; if (ms > f->ms_max) f->ms_max = ms; if (have_mid) f->made++; else f->skipped++; }
-    // 先上补出的帧，再隔半个游戏周期上真帧（游戏原图直接画进画布）。图层已归显示链（正在切过去）：两张都不取，只记票完成
+    int dup = fi_dup();   // 拆账用：每个游戏帧原图上屏两次
+    // 图层已归显示链（正在切过去）：两张都不取，只记票完成；这一帧没进输入图，下一帧不跟它配对
     pthread_mutex_lock(&g_pq_mu); int mine = fi_may_take_drawable(); pthread_mutex_unlock(&g_pq_mu);
-    if (!mine) { static _Atomic int said; if (!atomic_fetch_add(&said, 1)) MLOG("present frame interpolation: the display link owns the layer; this job takes no drawable (frame %llu dropped, no two presenters)", (unsigned long long)seq);
-                 fi_ticket_done(ticket); fi_inflight_add(-1); return; }
-    double half = period > 0 ? period / 2 : 1.0 / 60; int mid_shown = 0;
-    // 补出帧的摆放比例要和真帧一致（#1165：自适应满屏补丁开着时真帧走 present_blit_m4 按 s2a_cpatch_present_aspect 拉满到屏幕画幅，补出帧按输入图 16:9 摆，
-    //   两侧黑边隔一帧一有，看着闪）：有补丁画幅就按它，没有照旧按输入图比例
-    double pa = s2a_cpatch_present_aspect();
-    if (have_mid) { id<CAMetalDrawable> dm = [layer nextDrawable]; NSUInteger vh = (NSUInteger)f->h, vw = pa > 0 ? (NSUInteger)llround(f->h * pa) : (NSUInteger)f->w;
-        if (dm && fi_commit(f, 1, dm, ^int(id cb) { return dup ? present_blit_m4(cb, src, dm.texture, crop, f->uv[2], f->tab[2], flip, 1) : fi_pass(cb, f->psoCopy, f->tab[2], f->uv[2], mid, nil, dm.texture, NULL, NO, vw, vh); }, nil)) { fi_count_on(dm, &g_fi_on_mid); [dm present]; mid_shown = 1; f->shown_mid++; } }
+    if (!mine) { static _Atomic int said; if (!atomic_fetch_add(&said, 1)) MLOG("present frame interpolation: the display link owns the layer; this frame takes no drawable (frame %llu dropped, no two presenters)", (unsigned long long)seq);
+                 f->last_seq = UINT64_MAX; fi_ticket_done(ticket); fi_inflight_add(-1); return; }
+    int cont = good && seq > 0 && f->last_seq == seq - 1;   // 上一帧也写进了输入图（k ^ 1）
+    int pair = cont && allow;
+    // 30 帧档里按规则不补的帧（来晚了）照样编码插值、不上屏：MetalFX 的历史要逐对连续。断一对时下一对只能重置历史，重置后输出的就是这一帧原图（白算一次、屏上重复一帧）；
+    //   接着上一对的旧历史不重置又会偏向前一帧（t_fi_link ⑤ 第 3 遍：竖条中心 435、前一帧原位全亮）。这一帧原先省下的插值挪到这里，下一对照常补；60 帧档不补也不编码
+    int prime = cont && !allow && dm_fi_tier(period);
+    if (seq > 0 && !allow) f->declined++;
+    else if (seq > 0 && good && !pair) f->unpaired++;
+    int mid_shown = 0;
+    if (good) {
+        id<CAMetalDrawable> dm = pair ? [layer nextDrawable] : nil;
+        int use_fx = ((pair && dm) || prime) && !dup && !novt;
+        id<MTLTexture> mid = novt ? f->in_tex[k ^ 1] : f->mid_tex;
+        // 补出帧的摆放比例要和真帧一致（#1165：自适应满屏补丁开着时真帧走 present_blit_m4 按 s2a_cpatch_present_aspect 拉满到屏幕画幅，补出帧按输入图 16:9 摆，
+        //   两侧黑边隔一帧一有，看着闪）：有补丁画幅就按它，没有照旧按输入图比例
+        double pa = s2a_cpatch_present_aspect(); NSUInteger vh = (NSUInteger)f->h, vw = pa > 0 ? (NSUInteger)llround(f->h * pa) : (NSUInteger)f->w;
+        int ok = fi_commit(f, 1, dm, ^int(id cb) {
+            if (!fi_pass(cb, f->psoCopy, f->tab[0], f->uv[0], src, nil, f->in_tex[k], crop, flip, 0, 0)) return 0;
+            if (fi_mv_mode()) fi_mv_encode(f, cb, k, use_fx, fi_mv_mode() < 0 ? -1.f : 1.f);   // 亮度每帧都缩（下一帧配对要用）；匹配只在要插值时做
+            if (use_fx) {
+                id<MTLFXFrameInterpolatorBase> fx = f->mfx;
+                fx.colorTexture = f->in_tex[k]; fx.prevColorTexture = f->in_tex[k ^ 1]; fx.outputTexture = f->mid_tex;
+                fx.depthTexture = f->depth; fx.motionTexture = f->motion; fx.motionVectorScaleX = fx.motionVectorScaleY = (float)f->motion.width / (float)f->w;   // 矢量按全尺寸像素算；按 1/4 尺寸交时换成输入像素
+                fx.deltaTime = period > 0 ? (float)period : 1.f / 30; fx.nearPlane = .1f; fx.farPlane = 1000; fx.fieldOfView = 60; fx.aspectRatio = (float)f->w / f->h;
+                fx.jitterOffsetX = fx.jitterOffsetY = 0; fx.depthReversed = NO; fx.shouldResetHistory = f->last_pair_seq == UINT64_MAX || seq - 1 != f->last_pair_seq || atomic_load(&f->cut_seq) == seq - 1;   // 断开过（不补的帧 / 没配上）或上一帧切了镜头就重置历史
+                [(id)f->mfx encodeToCommandBuffer:cb];   // 同 nvn_present_fx.inc：经 id 发消息（MTL4 棘轮：新代码不直接写 MTL4 类型） fx.outputTexture = fx.prevColorTexture = fx.colorTexture = nil;
+            }
+            if (!dm) return 1;
+            if (dup) return present_blit_m4(cb, src, dm.texture, crop, f->uv[2], f->tab[2], flip, 1);
+            int cut_check = use_fx && fi_mv_mode() && f->mvFlag;   // 切镜头时 GPU 上改画这一帧的输入图
+            if (g_present_fsr) {   // FSR 1（nvn_present_fsr.inc）：补出的帧与真帧一样过 FSR。切镜头检查在 GPU 上选图，先由 fsMid 画进同尺寸的 fsr_in 再过 FSR；
+                //   最后那次上屏拷贝用空着的 uv / tab 1（2 号这一遍已被 fsMid 占用）。-1 = 做不了（已报红），照原样
+                id<MTLTexture> fin = mid;
+                if (cut_check) {
+                    if (!f->fsr_in) f->fsr_in = fi_tex(MTLPixelFormatBGRA8Unorm, f->w, f->h, MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead);
+                    fin = f->fsr_in;
+                    if (fin && !fi_pass(cb, f->psoMid, f->tab[2], f->uv[2], mid, f->in_tex[k], fin, NULL, NO, 0, 0)) return 0;
+                }
+                if (fin) { int fr = present_fsr_encode(cb, fin, dm.texture, NULL, FSR_SLOT_FI_MID, NO, YES, 0, f->uv[1], f->tab[1], f); if (fr >= 0) return fr; }
+            }
+            return fi_pass(cb, cut_check ? f->psoMid : f->psoCopy, f->tab[2], f->uv[2], mid, cut_check ? f->in_tex[k] : nil, dm.texture, NULL, NO, vw, vh);
+        }, use_fx ? ^(int gok, double gms) {
+            int cut = fi_mv_mode() && f->mvFlag && *(volatile uint32_t *)f->mvFlag.contents;
+            pthread_mutex_lock(&g_pq_mu); if (gok && gms >= 0) { f->gpu_n++; f->gpu_sum += gms; if (gms > f->gpu_max) f->gpu_max = gms; } if (cut) f->cuts++; pthread_mutex_unlock(&g_pq_mu);
+            if (cut) atomic_store(&f->cut_seq, seq); } : nil);
+        if (ok) {
+            f->last_seq = seq;
+            if (use_fx) { f->last_pair_seq = seq; if (dm) f->made++; }
+            if (dm) { fi_count_on(dm, &g_fi_on_mid); [dm present]; mid_shown = 1; f->shown_mid++; }
+        } else f->last_seq = UINT64_MAX;   // 输入图没写成：下一帧不跟它配对
+    } else f->last_seq = UINT64_MAX;
+    // 真帧（游戏原图直接画进画布）：有补出的帧就隔半个游戏周期再上
+    double half = period > 0 ? period / 2 : 1.0 / 60;
     id<CAMetalDrawable> dr = [layer nextDrawable];
-    if (dr && fi_commit(f, 2, dr, ^int(id cb) { return present_blit_m4(cb, src, dr.texture, crop, f->uv[3], f->tab[3], flip, 1); }, ^(int ok) { (void)ok; fi_ticket_done(ticket); })) {
+    if (dr && fi_commit(f, 2, dr, ^int(id cb) {
+            if (g_present_fsr && !dup) { int fr = present_fsr_encode(cb, src, dr.texture, crop, FSR_SLOT_FI_REAL, flip, YES, 0, f->uv[3], f->tab[3], f); if (fr >= 0) return fr; }   // FSR 1，真帧
+            return present_blit_m4(cb, src, dr.texture, crop, f->uv[3], f->tab[3], flip, 1); }, ^(int ok2, double gms) { (void)ok2; (void)gms; fi_ticket_done(ticket); })) {
 #if !TARGET_OS_SIMULATOR
         present_note(dr, ticket); fi_count_on(dr, &g_fi_on_real);
         if (mid_shown) [dr presentAfterMinimumDuration:half]; else [dr present];
@@ -327,40 +406,25 @@ static void fi_job(NvPresentFI *f, CAMetalLayer *layer, id<MTLTexture> src, fi_c
         [dr present];
 #endif
     } else fi_ticket_done(ticket);
-    if (++f->jobs % 300 == 0) { MLOG("present frame interpolation up to game frame %llu: interpolated %llu, skipped %llu (over %.1f ms or failed), not interpolated by the rule %llu (60 fps tier or frame late), shown %llu; job mean %.2f ms, max %.2f ms, MetalFX GPU mean %.2f ms; on screen (system reported) interpolated %llu, game frames %llu",
-                                     (unsigned long long)f->jobs, (unsigned long long)f->made, (unsigned long long)f->skipped, g_fi_budget_ms, (unsigned long long)f->declined, (unsigned long long)f->shown_mid, f->ms_sum / 300, f->ms_max, f->made > f->made_win0 ? f->gpu_sum / (double)(f->made - f->made_win0) : 0,
-                                     (unsigned long long)atomic_load(&g_fi_on_mid), (unsigned long long)atomic_load(&g_fi_on_real)); f->ms_sum = f->ms_max = f->gpu_sum = 0; f->made_win0 = f->made;
-                                 if (f->bd_n) MLOG("present frame interpolation breakdown (%.0f jobs): start → commit %.2f ms, commit → GPU start %.2f ms (waiting behind other GPU work), GPU %s, GPU end → completion callback %.2f ms",
-                                                   f->bd_n, f->bd_enc / f->bd_n, f->bd_queue / f->bd_n, "see MetalFX GPU mean above", f->bd_cb / f->bd_n);
-                                 f->bd_enc = f->bd_queue = f->bd_cb = f->bd_n = 0; }
+    if (++f->jobs % 300 == 0) {
+        pthread_mutex_lock(&g_pq_mu); uint64_t gn = f->gpu_n, cuts = f->cuts; double gsum = f->gpu_sum, gmax = f->gpu_max; f->gpu_n = 0; f->gpu_sum = f->gpu_max = 0; pthread_mutex_unlock(&g_pq_mu);
+        MLOG("present frame interpolation up to game frame %llu: interpolated %llu (scene cuts shown as the game frame %llu), not interpolated by the rule %llu (60 fps tier or frame late), not paired %llu (previous frame not in the input or no drawable), shown %llu; "
+             "GPU per interpolation (copy + motion + MetalFX + present, on the present queue) mean %.2f ms, max %.2f ms over %llu; on screen (system reported) interpolated %llu, game frames %llu",
+             (unsigned long long)f->jobs, (unsigned long long)f->made, (unsigned long long)cuts, (unsigned long long)f->declined, (unsigned long long)f->unpaired, (unsigned long long)f->shown_mid,
+             gn ? gsum / (double)gn : 0, gmax, (unsigned long long)gn, (unsigned long long)atomic_load(&g_fi_on_mid), (unsigned long long)atomic_load(&g_fi_on_real));
+    }
     fi_inflight_add(-1);   // 两张画布都交完（或没取到）：显示链可以挂了
 } }
-// 这张输入图此刻能不能写：迟到的插值（fi_job 预算内没做完、接着在 GPU 上跑）还在读它就不能。不等（审计 P1-189：原先出图线程在这里最多等 1 秒，
-//   迟到一次就把出图线程挡住）——调用方这一帧不写输入、不补，只把真帧交给补帧队列按顺序上屏
-API_AVAILABLE(macos(26.0), ios(26.0))
-static int fi_input_free(NvPresentFI *f, int k) {
-    pthread_mutex_lock(&g_pq_mu); int busy = f->in_busy[k]; pthread_mutex_unlock(&g_pq_mu);
-    return !busy;
-}
-// 出图线程：游戏的一帧。返回 1 = 已接手（票由补帧队列记完成），-1 = 没接手（调用方照原样出图）
+// 出图线程：游戏的一帧。返回 1 = 已接手（票由真帧那一槽做完时记完成），-1 = 没接手（调用方照原样出图）
 API_AVAILABLE(macos(26.0), ios(26.0))
 static int fi_frame(id<MTLTexture> src, const int crop[4], CAMetalLayer *layer, double period, uint64_t ticket) {
     NSUInteger cw = crop && (crop[2] || crop[3]) ? (NSUInteger)crop[2] : src.width, ch = crop && (crop[2] || crop[3]) ? (NSUInteger)crop[3] : src.height;
     NvPresentFI *f = fi_get(layer, cw, ch); if (!f) return -1;
     uint64_t now = now_ns(); double gap = f->last_in_ns ? (now - f->last_in_ns) / 1e9 : 0; f->last_in_ns = now;
     int allow = dm_fi_should_interp(period, gap);   // 游戏声明的节拍（period，由交换间隔折成）+ 这一帧是否跑满；60 帧档一律不补
-    uint64_t seq = f->n++; int k = (int)(seq % 3); BOOL flip = atomic_load_explicit(&g_origin_ll, memory_order_relaxed) != 0;
+    uint64_t seq = f->n++; BOOL flip = present_ll() != 0;   // the presented window's origin (nvn_mtl.m g_present_ll)
     fi_crop cr = {0}; if (crop) { cr.has = 1; memcpy(cr.c, crop, sizeof cr.c); }
-    const int *cp = cr.has ? cr.c : NULL;   // 块里用值拷贝
-    fi_inflight_add(1);   // 出图线程还在 g_classic_busy 里：显示链此刻挂不上，任务派出后它会等这一笔
-    if (fi_dup()) { dispatch_async(f->q, ^{ fi_job(f, layer, src, cr, flip, k, seq, period, ticket, 1, allow); }); return 1; }   // 拆账：不写输入
-    if (!fi_input_free(f, k)) {   // 输入图还被迟到的插值读着：这一帧不写不补（good = 0 只上真帧），任务照样进同一队列，和在途的补帧按顺序上屏、不两路交帧；
-        //   这一帧不算进连续对（f->last_seq 不动），下一帧不会拿旧输入去插
-        static _Atomic uint64_t skips; if (atomic_fetch_add(&skips, 1) % 300 == 0) MLOG("present frame interpolation: input %d still read by a late interpolation; this frame is shown without interpolating (no wait)", k);
-        dispatch_async(f->q, ^{ fi_job(f, layer, src, cr, flip, k, seq, period, ticket, 0, allow); }); return 1;
-    }
-    if (!fi_commit(f, 0, nil, ^int(id cb) { fi_crop c2 = cr; const int *c = c2.has ? c2.c : NULL; (void)cp;
-            return fi_pass(cb, f->psoCopy, f->tab[0], f->uv[0], src, nil, f->in_tex[k], c, flip, 0, 0); },
-        ^(int ok) { dispatch_async(f->q, ^{ fi_job(f, layer, src, cr, flip, k, seq, period, ticket, ok, allow); }); })) { fi_inflight_add(-1); fi_off("cannot write the interpolation input"); return -1; }
+    fi_inflight_add(1);   // 出图线程还在 g_classic_busy 里：显示链此刻挂不上
+    fi_job(f, layer, src, cr, flip, (int)(seq & 1), seq, period, ticket, 1, allow);
     return 1;
 }

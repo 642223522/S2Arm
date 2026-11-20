@@ -255,10 +255,10 @@ struct VkBuffer_T { VkDeviceSize size; VkBufferUsageFlags usage; VkDeviceMemory 
 struct VkBufferView_T { VkBuffer buf; const fmt_t *f; VkDeviceSize off, range; __strong id<MTLTexture> tex; };
 struct VkImage_T { __strong id<MTLTexture> tex; const fmt_t *f; VkFormat fmt; VkImageType type; uint32_t w, h, d, mips, layers, samples; VkDeviceSize size; uint64_t serial; uint32_t wid; int swap; uint32_t ext_w, ext_h;   // wid：宽屏核心的贴图号（vk_widen.inc）；w 是游戏的宽，贴图可能被放宽
                   VkImageUsageFlags usage; uint32_t pitch; uint32_t bc; uint64_t mem, bc_orig;   // mem：贴图实际分配字节（Metal allocatedSize，记账用）；bc_orig：解压图按原 BC 格式本该占的字节   // bc：显卡不认 BC 时这张图建成了解压格式，这里记原来的 BC 格式号（nvn_bcdec 的编号；0 = 不是这种图）；pitch: row pitch of a linear image (its texture is made over the bound memory), 0 otherwise
-                  VkImageView views; };   // 本图像的视图链（宽屏按内容判画布后重建存储时按原参数重派生，vk_widen.inc wd_promote）
+                  VkImageView views; VkDeviceMemory lmem; VkDeviceSize loff; };   // lmem / loff：线性图像绑的内存与偏移（即时存档恢复按它重派生贴图）   // 本图像的视图链（宽屏按内容判画布后重建存储时按原参数重派生，vk_widen.inc wd_promote）
 struct VkImageView_T { __strong id<MTLTexture> tex; VkImage img; uint32_t wid, gw, gh;   // wid / gw / gh：宽屏核心的视图号与游戏看到的宽高
                       VkImageView vnext; MTLPixelFormat pf; MTLTextureType tt; uint32_t lv0, lvn, ly0, lyn; MTLTextureSwizzleChannels sw; int whole; };   // 派生参数（whole = 就是图像本身的贴图）
-struct VkSampler_T { __strong id<MTLSamplerState> s; float lb; };   // lb：本机 GPU 不认的 LOD 偏置（g_vk_lb_emu），着色器模拟加它；0 = 没有或在采样器上
+struct VkSampler_T { __strong id<MTLSamplerState> s; float lb; VkSamplerCreateInfo ci; };   // ci：建法（pNext 置空；即时存档恢复按它重建，samp_fill）   // lb：本机 GPU 不认的 LOD 偏置（g_vk_lb_emu），着色器模拟加它；0 = 没有或在采样器上
 struct rt_ent;
 struct VkShaderModule_T { const shinfo *si; __strong id<MTLFunction> fn, fn_d; char key[17]; int tried_d; struct rt_ent *rt; __strong NSData *spv; uint32_t vin_s, vin_u; };   // spv：g_vk_lb_emu 时 / 顶点输入有整型时留的 SPIR-V（LOD 偏置模拟变体、顶点输入重翻在设备上重翻用，vk_se_fn / vk_vin.inc）   // vin_s / vin_u：顶点入口有符号 / 无符号整型输入的 location 位（vk_vin.inc vin_scan）   // rt：离线库里没有、交设备现编的那一份（vk_rt.inc）   // fn_d: the dual-source variant vk_<key>_d, looked up on first use
 struct VkPipelineCache_T { int unused; };
@@ -281,7 +281,8 @@ struct VkDescriptorSetLayout_T { uint32_t n, total, ndyn; lbind b[MAXB]; int8_t 
 // used to point at this layer's view / sampler / buffer structs, and Super Mario Galaxy 2 crashed reading a freed view's texture from element 1 of its 8-texture array
 // when the ship took off after its first galaxy (GitHub issue 68). buf / off: the buffer's memory and its offset there plus the descriptor's; tex: an image view's
 // texture or a texel buffer's
-typedef struct { __strong id<MTLBuffer> buf; VkDeviceSize off, range; __strong id<MTLTexture> tex; __strong id<MTLSamplerState> smp; uint32_t wid, gw, gh; float lb; } desc_t;   // lb：采样器的模拟 LOD 偏置（VkSampler_T.lb）   // range 0 = 到缓冲末尾；wid / gw / gh：图像视图的宽屏号与游戏宽高
+typedef struct { __strong id<MTLBuffer> buf; VkDeviceSize off, range; __strong id<MTLTexture> tex; __strong id<MTLSamplerState> smp; uint32_t wid, gw, gh; float lb;
+                 void *src_t, *src_s; uint64_t seq_t, seq_s; VkDeviceSize src_off; } desc_t;   // src_*：写它时的来源对象（视图 / 缓冲视图 / 缓冲，采样器）与其建立序号、缓冲内偏移（即时存档恢复按来源重建，vk_snap.inc）   // lb：采样器的模拟 LOD 偏置（VkSampler_T.lb）   // range 0 = 到缓冲末尾；wid / gw / gh：图像视图的宽屏号与游戏宽高
 struct VkDescriptorPool_T { struct VkDescriptorSet_T *sets; };
 struct VkDescriptorSet_T { VkDescriptorSetLayout L; VkDescriptorPool pool; struct VkDescriptorSet_T *prev, *next; desc_t *d; };   // d: L->total descriptors (ARC objects: no flexible array)
 struct VkDescriptorUpdateTemplate_T { uint32_t n; VkDescriptorUpdateTemplateEntry e[]; };
@@ -313,6 +314,7 @@ struct VkPipeline_T {
     //   着色器编好后第一次绘制 / 派发补建（pipe_finish / cpipe_finish）；编好之前的绘制照安全网跳过。原先顶点着色器在编的整条交空句柄回失败码（游戏不重试就永久缺这条），
     //   片元着色器在编的建成「没有片元函数」的管线、编好也不补（静默不出颜色）。指现编条目（rt_ent，整个进程不释放），不指模块：游戏建完管线可以销毁模块
     __strong MTLRenderPipelineDescriptor *pend_pd; struct rt_ent *pend_v, *pend_f, *pend_c; int pend_dual; __strong NSData *pend_spv;
+    void *recipe;   // 即时存档：快照开时的建法（区里，vk_snap.inc；图形 = 深拷贝的创建信息，计算 = 模块键 + 布局），恢复按它重填
 };
 struct VkCommandPool_T { struct VkCommandBuffer_T *cbs; };
 struct VkCommandBuffer_T { void *loader; VkCommandPool pool; struct VkCommandBuffer_T *prev, *next; uint8_t *buf; size_t n, cap; };
@@ -329,13 +331,95 @@ enum { OKB_MAP_TYPE0, OKB_PRESENT_IDX, OKB_FEAT_ROBUST, OKB_FEAT_SSR, OKB_N };
 static _Atomic uint64_t g_okb[OKB_N];
 uint64_t dm_vk_ok_but_bad(int k) { return k >= 0 && k < OKB_N ? atomic_load(&g_okb[k]) : 0; }
 static void *zalloc(size_t n) { void *p = calloc(1, n); if (!p) die("[vk] out of memory %zu", n); return p; }
+// ---------- 即时存档：宿主对象放固定地址区（vk_snap.inc 文件头讲为什么） ----------
+// 快照开（S2A_SNAP_MODE / S2A_SNAP_RESTORE）时，交给游戏的对象（句柄就是它们的地址）和对象自有的数组从命令记录区（runtime/src/vawin.c s2a_cmd_arena_map，
+//   固定地址、快照按原址存回）里切；快照关时一律 calloc / free，与原来逐字节相同。分配器自己的账（块链、空闲链）也放在区里，随区一起存回
+// 弱链接[nvntest]：s2a_cmd_arena_map（runtime/src/vawin.c 提供；图形单测不链宿主，没有就不进区）
+// 弱链接[nvntest]：s2a_snap_conv_get（runtime/src/snapshot.c 提供；vk_snap.inc 恢复时取布局转换表项，图形单测不链宿主）
+// 弱链接[nvntest]：s2a_vk_entry（graphics/nvn/host_adapt.m 提供；vk_snap.inc 恢复时按「vk:export:<名>」换算交给游戏的 vk* 地址，图形单测不链它）
+void *s2a_cmd_arena_map(uint64_t len) __attribute__((weak)); int s2a_cmd_arena_has(const void *p, uint64_t n) __attribute__((weak));
+int s2a_snap_mode(void) __attribute__((weak));
+enum { VS_NCLS = 17, VS_CHUNK = 4u << 20, VS_MAGIC = 0x56534131u };   // 尺寸档 16 B … 1 MB（2 的幂）；更大的整段切；"VSA1"
+typedef struct vs_blk { uint32_t magic, cls; uint64_t size, seq, pad; } vs_blk;   // 每块前 32 字节；cls = VS_NCLS 表示整段切的大块；seq：是对象时它的建立序号（obj_alloc 填）
+typedef struct { uint32_t magic, nseg; void *free_[VS_NCLS]; uint8_t *cur, *end; struct { uint64_t at, len; } seg[1024]; } vs_meta;   // seg：从区里切来的段（存档按它整段存）
+static vs_meta *g_vs; static int g_vs_on = -1; static pthread_mutex_t g_vs_mu = PTHREAD_MUTEX_INITIALIZER;
+static void *vs_seg(uint64_t len) {   // 持 g_vs_mu
+    if (!g_vs || g_vs->nseg >= 1024) return NULL;
+    void *p = s2a_cmd_arena_map(len); if (!p) return NULL;
+    g_vs->seg[g_vs->nseg].at = (uint64_t)(uintptr_t)p; g_vs->seg[g_vs->nseg].len = len; g_vs->nseg++; return p;
+}
+static int vs_on(void) {
+    if (g_vs_on >= 0) return g_vs_on;
+    pthread_mutex_lock(&g_vs_mu);
+    if (g_vs_on < 0) {
+        g_vs_on = 0;
+        if (s2a_snap_mode && s2a_snap_mode() && s2a_cmd_arena_map) {
+            vs_meta *m = s2a_cmd_arena_map(VS_CHUNK);
+            if (m) { m->magic = VS_MAGIC; g_vs = m; m->seg[0].at = (uint64_t)(uintptr_t)m; m->seg[0].len = VS_CHUNK; m->nseg = 1; m->cur = (uint8_t *)m + ((sizeof *m + 4095) & ~4095ul); m->end = (uint8_t *)m + VS_CHUNK; g_vs_on = 1; }
+            else LOG("[vk] 【红】 即时存档：命令记录区切不出 Vulkan 对象区，这局的 Vulkan 状态存不进快照");
+        }
+    }
+    pthread_mutex_unlock(&g_vs_mu);
+    return g_vs_on;
+}
+static int vs_has(const void *p) { return p && g_vs && s2a_cmd_arena_has && s2a_cmd_arena_has(p, 1); }
+// room：块里另留的余量（不计进 size）。对象按 VS_ROOM 留：换版本后结构长了，只要还放得下原块，恢复时就地按新布局转，句柄与互指一个都不用改
+enum { VS_ROOM = 64 };
+static void *vs_alloc_room(size_t n, size_t room) {   // 清零的块；区切满时退回 calloc（记红一次）
+    uint32_t c = 0; while (c < VS_NCLS && (16ull << c) < n + room) c++;
+    pthread_mutex_lock(&g_vs_mu); vs_blk *b = NULL;
+    if (c < VS_NCLS && g_vs->free_[c]) { b = g_vs->free_[c]; g_vs->free_[c] = *(void **)(b + 1); }
+    else {
+        uint64_t need = sizeof(vs_blk) + (c < VS_NCLS ? (16ull << c) : (n + room + 16383) & ~16383ull);
+        if (c == VS_NCLS || g_vs->cur + need > g_vs->end) {
+            if (c == VS_NCLS) b = vs_seg((need + 16383) & ~16383ull);
+            else { uint8_t *p = vs_seg(VS_CHUNK); if (p) { g_vs->cur = p; g_vs->end = p + VS_CHUNK; } }
+        }
+        if (!b && c < VS_NCLS && g_vs->cur + need <= g_vs->end) { b = (vs_blk *)g_vs->cur; g_vs->cur += need; }
+    }
+    pthread_mutex_unlock(&g_vs_mu);
+    if (!b) { static int once; if (!once++) LOG("[vk] 【红】 即时存档：Vulkan 对象区切满，之后的对象不在区里（快照恢复后会缺）"); return zalloc(n); }
+    b->magic = VS_MAGIC; b->cls = c; b->size = n; b->seq = 0; memset(b + 1, 0, n); return b + 1;
+}
+static void *vs_alloc(size_t n) { return vs_alloc_room(n, 0); }
+static void vs_free(void *p) {
+    vs_blk *b = (vs_blk *)p - 1; if (b->magic != VS_MAGIC) die("[vk] 即时存档对象区：释放的块头不对 %p", p);
+    if (b->cls >= VS_NCLS) return;   // 整段切的大块：区地址不回收（同命令记录区），只少一块
+    pthread_mutex_lock(&g_vs_mu); *(void **)(b + 1) = g_vs->free_[b->cls]; g_vs->free_[b->cls] = b; pthread_mutex_unlock(&g_vs_mu);
+}
+// 设备内存段（虚拟池区里、按原址存回；mem_buf 记）：与对象段分开记，存档时整段存内容
+// 弱链接[nvntest]：s2a_vp_arena_map（runtime/src/vawin.c 提供；同上）
+void *s2a_vp_arena_map(uint64_t len) __attribute__((weak));
+static struct { uint64_t at, len; } *g_vs_mem; static uint32_t g_vs_nmem, g_vs_cmem;   // 宿主堆（不进区）：存档前按它整段存；恢复时从快照读回
+static void vs_note_mem(void *at, uint64_t len) {
+    pthread_mutex_lock(&g_vs_mu);
+    if (g_vs_nmem == g_vs_cmem) { g_vs_cmem = g_vs_cmem ? g_vs_cmem * 2 : 64; g_vs_mem = realloc(g_vs_mem, g_vs_cmem * sizeof *g_vs_mem); }
+    g_vs_mem[g_vs_nmem].at = (uint64_t)(uintptr_t)at; g_vs_mem[g_vs_nmem++].len = len;
+    pthread_mutex_unlock(&g_vs_mu);
+}
+static void vs_forget_mem(void *at) {
+    pthread_mutex_lock(&g_vs_mu);
+    for (uint32_t i = 0; i < g_vs_nmem; i++) if (g_vs_mem[i].at == (uint64_t)(uintptr_t)at) { g_vs_mem[i] = g_vs_mem[--g_vs_nmem]; break; }
+    pthread_mutex_unlock(&g_vs_mu);
+}
+static uint64_t vs_seq(const void *h) { return vs_has(h) ? ((const vs_blk *)h - 1)->seq : 0; }   // 对象的建立序号（不在区里 = 0：快照关）
+// 对象与对象自有数组的分配 / 释放 / 扩容：快照开走区，关走 calloc / free
+static void *vk_mem(size_t n) { return vs_on() ? vs_alloc(n) : zalloc(n); }
+static void vk_mfree(void *p) { if (!p) return; if (vs_has(p)) vs_free(p); else free(p); }
+static void *vk_mrealloc(void *p, size_t n) {
+    if (!vs_has(p) && !(vs_on() && !p)) return realloc(p, n);
+    void *q = vs_alloc(n); if (p) { size_t o = ((vs_blk *)p - 1)->size; memcpy(q, p, o < n ? o : n); vs_free(p); } return q;
+}
 typedef enum { O_PLAIN, O_MEMORY, O_BUFFER_VIEW, O_IMAGE, O_IMAGE_VIEW, O_SAMPLER, O_SHADER,
-    O_PIPELINE, O_LAYOUT, O_SET, O_COMMAND, O_QUERY } object_kind;
-typedef struct vk_object { struct vk_object *next; void *ptr; object_kind kind; } vk_object;
+    O_PIPELINE, O_LAYOUT, O_SET, O_COMMAND, O_QUERY, O_FENCE, O_SWAPCHAIN,
+    O_BUFFER, O_RENDERPASS, O_FRAMEBUFFER } object_kind;   // O_FENCE / O_SWAPCHAIN：即时存档恢复要改它们（vk_snap.inc）；O_BUFFER 起（只加在末尾，旧快照里的值不变）：
+                                                           //   带布局指纹的类型各有自己的种类，换版本布局变了按种类认出该按哪个布局原地转（vk_snap.inc vs_conv_objects）
+typedef struct vk_object { struct vk_object *next; void *ptr; object_kind kind; uint64_t seq; } vk_object;   // seq：建立序号（描述符记来源时连序号一起记，恢复时认得出来源是不是原来那个）
 static vk_object *g_objects;
 static pthread_mutex_t g_object_mu = PTHREAD_MUTEX_INITIALIZER;
 static void *obj_alloc(size_t size, object_kind kind) {
-    void *ptr = zalloc(size); vk_object *node = zalloc(sizeof *node); node->ptr = ptr; node->kind = kind;
+    static _Atomic uint64_t seq; void *ptr = vs_on() ? vs_alloc_room(size, VS_ROOM) : zalloc(size); vk_object *node = vk_mem(sizeof *node); node->ptr = ptr; node->kind = kind; node->seq = atomic_fetch_add(&seq, 1) + 1;
+    if (vs_has(ptr)) ((vs_blk *)ptr - 1)->seq = node->seq;
     pthread_mutex_lock(&g_object_mu); node->next = g_objects; g_objects = node; pthread_mutex_unlock(&g_object_mu);
     return ptr;
 }
@@ -346,7 +430,7 @@ static void obj_free(void *ptr) {
     if (!*link) die("[vk] freeing an unregistered object %p", ptr);
     vk_object *node = *link; *link = node->next;
     pthread_mutex_unlock(&g_object_mu);
-    free(node); free(ptr);
+    vk_mfree(node); vk_mfree(ptr);
 }
 static VkResult debug_instance_create(const VkInstanceCreateInfo *, const VkAllocationCallbacks *, VkInstance *);
 static void debug_instance_destroy(VkInstance, const VkAllocationCallbacks *);
@@ -594,7 +678,12 @@ static id<MTLBuffer> mem_buf(VkDeviceMemory m) {
     if (r) return (__bridge id<MTLBuffer>)r;
     pthread_mutex_lock(&g_mem_mu);
     if (!m->buf) {
-        m->buf = [g_dev newBufferWithLength:m->size ? m->size : 16 options:MTLResourceStorageModeShared];
+        uint64_t vn = ((m->size ? m->size : 16) + 16383) & ~16383ull; void *va = vs_on() && s2a_vp_arena_map ? s2a_vp_arena_map(vn) : NULL;   // 即时存档：放虚拟池区（固定地址，映射指针恢复后原样有效）
+        if (va && mmap(va, vn, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0) == va) {
+            m->buf = [g_dev newBufferWithBytesNoCopy:va length:vn options:MTLResourceStorageModeShared deallocator:nil];
+            if (m->buf) vs_note_mem(va, vn);
+        } else if (va) LOG("[vk] 【红】 即时存档：虚拟池区 %p 放不开写，这块设备内存退回普通分配（快照不含它）", va);
+        if (!m->buf) m->buf = [g_dev newBufferWithLength:m->size ? m->size : 16 options:MTLResourceStorageModeShared];
         if (!m->buf) LOG("[vk] 【红】 cannot create an MTLBuffer of %llu bytes", (unsigned long long)m->size);
         else { atomic_store_explicit(&m->raw, (__bridge void *)m->buf, memory_order_release); g_mem_bytes += m->size; }
     }
@@ -611,6 +700,7 @@ VK(vkAllocateMemory, VkResult, VkDevice d, const VkMemoryAllocateInfo *ai, const
 VKB(vkFreeMemory, void, VkDevice d, VkDeviceMemory m, const VkAllocationCallbacks *a) {
     (void)d; (void)a; if (!m) return;
     if (m->buf) g_mem_bytes -= m->size;
+    if (m->buf) vs_forget_mem(m->buf.contents);   // 即时存档：虚拟池区那段不再存（地址不回收，同命令记录区）
     m->buf = nil; obj_free(m);
 }
 VKB(vkMapMemory, VkResult, VkDevice d, VkDeviceMemory m, VkDeviceSize off, VkDeviceSize size, VkMemoryMapFlags fl, void **pp) {
@@ -629,7 +719,7 @@ VK(vkFlushMappedMemoryRanges, VkResult, VkDevice d, uint32_t n, const VkMappedMe
 VK(vkInvalidateMappedMemoryRanges, VkResult, VkDevice d, uint32_t n, const VkMappedMemoryRange *r) { (void)d; (void)n; (void)r; return VK_SUCCESS; }
 
 VK(vkCreateBuffer, VkResult, VkDevice d, const VkBufferCreateInfo *ci, const VkAllocationCallbacks *a, VkBuffer *out) {
-    (void)d; (void)a; VkBuffer b = obj_alloc(sizeof *b, O_PLAIN); b->size = ci->size; b->usage = ci->usage; *out = b; return VK_SUCCESS;
+    (void)d; (void)a; VkBuffer b = obj_alloc(sizeof *b, O_BUFFER); b->size = ci->size; b->usage = ci->usage; *out = b; return VK_SUCCESS;
 }
 VK(vkDestroyBuffer, void, VkDevice d, VkBuffer b, const VkAllocationCallbacks *a) { (void)d; (void)a; obj_free(b); }
 VK(vkGetBufferMemoryRequirements, void, VkDevice d, VkBuffer b, VkMemoryRequirements *r) {
@@ -801,6 +891,7 @@ VK(vkGetImageSubresourceLayout, void, VkDevice d, VkImage im, const VkImageSubre
 VKB(vkBindImageMemory, VkResult, VkDevice d, VkImage im, VkDeviceMemory m, VkDeviceSize off) {   // other images keep their own storage
     (void)d; if (!im->pitch) return VK_SUCCESS;
     id<MTLBuffer> b = mem_buf(m); if (!b) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    im->lmem = m; im->loff = off;
     @autoreleasepool {
         MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:im->f->pf width:im->w height:im->h mipmapped:NO];
         td.storageMode = MTLStorageModeShared; td.resourceOptions = MTLResourceStorageModeShared;
@@ -886,8 +977,8 @@ static MTLSamplerAddressMode addr_mode(VkSamplerAddressMode m) {
         default: return MTLSamplerAddressModeClampToEdge;
     }
 }
-VKB(vkCreateSampler, VkResult, VkDevice d, const VkSamplerCreateInfo *ci, const VkAllocationCallbacks *a, VkSampler *out) {
-    (void)d; (void)a; dev_init();
+// 按建法填采样器的 Metal 状态（建采样器、即时存档恢复都走这里）
+static void samp_fill(VkSampler s, const VkSamplerCreateInfo *ci) {
     @autoreleasepool {
         MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new];
         sd.minFilter = ci->minFilter == VK_FILTER_LINEAR ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
@@ -903,13 +994,20 @@ VKB(vkCreateSampler, VkResult, VkDevice d, const VkSamplerCreateInfo *ci, const 
         // LOD bias: Vulkan clamps it to ±maxSamplerLodBias (15, reported above; Super Mario Galaxy 2 asks for 1.0 on some samplers). Metal has it on the sampler from macOS / iOS 26
         //   (lodBias, S4.6, [-16, 15.999]), and only some GPUs apply it (#800, gal_samp_caps.h: M5 / M4 Pro yes, M3 silently not): where this GPU does not (g_vk_lb_emu, systems before 26
         //   too) the sampler carries none and the draws that bind it run the pipeline's emulation variant, which adds it to each sample's LOD (vk_lbias.inc, vk_se_pso)
-        VkSampler s = obj_alloc(sizeof *s, O_SAMPLER);
+        s->lb = 0;
         if (ci->mipLodBias != 0) {
             float b = fminf(fmaxf(ci->mipLodBias, -15.0f), 15.0f);
             if (g_vk_lb_emu) s->lb = b; else if (@available(macOS 26.0, iOS 26.0, *)) sd.lodBias = b;
         }
         s->s = [g_dev newSamplerStateWithDescriptor:sd];
         if (!s->s) LOG("[vk] 【红】 cannot create the sampler");
+    }
+}
+VKB(vkCreateSampler, VkResult, VkDevice d, const VkSamplerCreateInfo *ci, const VkAllocationCallbacks *a, VkSampler *out) {
+    (void)d; (void)a; dev_init();
+    @autoreleasepool {
+        VkSampler s = obj_alloc(sizeof *s, O_SAMPLER); s->ci = *ci; s->ci.pNext = NULL;
+        samp_fill(s, ci);
         *out = s;
     }
     return VK_SUCCESS;
@@ -943,7 +1041,7 @@ VK(vkCreateDescriptorSetLayout, VkResult, VkDevice d, const VkDescriptorSetLayou
         L->idx[b->binding] = (int8_t)L->n++; L->total += b->descriptorCount;
     }
     if (nimm) {
-        L->imm = zalloc(umax(1, L->total) * sizeof *L->imm);
+        L->imm = vk_mem(umax(1, L->total) * sizeof *L->imm);
         for (uint32_t i = 0, k = 0; i < ci->bindingCount; i++) {
             const VkDescriptorSetLayoutBinding *b = src[i]; if (b->binding >= 128) continue;
             if (L->b[k].imm) memcpy(&L->imm[L->b[k].base], b->pImmutableSamplers, b->descriptorCount * sizeof *L->imm);
@@ -967,7 +1065,7 @@ static void set_free(VkDescriptorSet s) {
     if (s->prev) s->prev->next = s->next; else p->sets = s->next;
     if (s->next) s->next->prev = s->prev;
     for (uint32_t k = 0; k < s->L->total; k++) s->d[k] = (desc_t){0};   // releases what the descriptors hold
-    free(s->d); obj_free(s);
+    vk_mfree(s->d); obj_free(s);
 }
 VK(vkResetDescriptorPool, VkResult, VkDevice d, VkDescriptorPool p, VkDescriptorPoolResetFlags f) { (void)d; (void)f; while (p->sets) set_free(p->sets); return VK_SUCCESS; }
 VK(vkDestroyDescriptorPool, void, VkDevice d, VkDescriptorPool p, const VkAllocationCallbacks *a) { (void)a; if (p) { h_vkResetDescriptorPool(d, p, 0); obj_free(p); } }
@@ -975,9 +1073,9 @@ VK(vkAllocateDescriptorSets, VkResult, VkDevice d, const VkDescriptorSetAllocate
     (void)d;
     for (uint32_t i = 0; i < ai->descriptorSetCount; i++) {
         VkDescriptorSetLayout L = ai->pSetLayouts[i];
-        VkDescriptorSet s = obj_alloc(sizeof *s, O_SET); s->d = zalloc(umax(1, L->total) * sizeof(desc_t));
+        VkDescriptorSet s = obj_alloc(sizeof *s, O_SET); s->d = vk_mem(umax(1, L->total) * sizeof(desc_t));
         s->L = L; s->pool = ai->descriptorPool; s->next = s->pool->sets; if (s->next) s->next->prev = s; s->pool->sets = s;
-        if (L->imm) for (uint32_t k = 0; k < L->total; k++) { s->d[k].smp = L->imm[k] ? L->imm[k]->s : nil; s->d[k].lb = L->imm[k] ? L->imm[k]->lb : 0; }
+        if (L->imm) for (uint32_t k = 0; k < L->total; k++) { s->d[k].smp = L->imm[k] ? L->imm[k]->s : nil; s->d[k].src_s = L->imm[k]; s->d[k].seq_s = vs_seq(L->imm[k]); s->d[k].lb = L->imm[k] ? L->imm[k]->lb : 0; }
         out[i] = s;
     }
     return VK_SUCCESS;
@@ -995,14 +1093,15 @@ static desc_t *set_elem(VkDescriptorSet s, uint32_t binding, uint32_t elem, cons
 }
 static void desc_write(desc_t *e, const lbind *lb, VkDescriptorType t, const VkDescriptorImageInfo *ii, const VkDescriptorBufferInfo *bi, const VkBufferView *bv) {
     switch (t) {
-        case VK_DESCRIPTOR_TYPE_SAMPLER: if (!lb->imm) { e->smp = ii->sampler ? ii->sampler->s : nil; e->lb = ii->sampler ? ii->sampler->lb : 0; } break;
-        case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER: e->tex = ii->imageView ? ii->imageView->tex : nil; if (!lb->imm) { e->smp = ii->sampler ? ii->sampler->s : nil; e->lb = ii->sampler ? ii->sampler->lb : 0; }
+        case VK_DESCRIPTOR_TYPE_SAMPLER: if (!lb->imm) { e->smp = ii->sampler ? ii->sampler->s : nil; e->lb = ii->sampler ? ii->sampler->lb : 0; e->src_s = ii->sampler; e->seq_s = vs_seq(ii->sampler); } break;
+        case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER: e->tex = ii->imageView ? ii->imageView->tex : nil; e->src_t = ii->imageView; e->seq_t = vs_seq(ii->imageView);
+            if (!lb->imm) { e->smp = ii->sampler ? ii->sampler->s : nil; e->lb = ii->sampler ? ii->sampler->lb : 0; e->src_s = ii->sampler; e->seq_s = vs_seq(ii->sampler); }
             e->wid = ii->imageView ? ii->imageView->wid : 0; e->gw = ii->imageView ? ii->imageView->gw : 0; e->gh = ii->imageView ? ii->imageView->gh : 0; break;
-        case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE: case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE: case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT: e->tex = ii->imageView ? ii->imageView->tex : nil;
+        case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE: case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE: case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT: e->tex = ii->imageView ? ii->imageView->tex : nil; e->src_t = ii->imageView; e->seq_t = vs_seq(ii->imageView);
             e->wid = ii->imageView ? ii->imageView->wid : 0; e->gw = ii->imageView ? ii->imageView->gw : 0; e->gh = ii->imageView ? ii->imageView->gh : 0; break;
-        case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER: case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER: e->tex = *bv ? bview_tex(*bv) : nil; break;
+        case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER: case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER: e->tex = *bv ? bview_tex(*bv) : nil; e->src_t = *bv; e->seq_t = vs_seq(*bv); break;
         case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER: case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER: case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC: case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC: {
-            VkBuffer b = bi->buffer; e->buf = b && b->mem ? mem_buf(b->mem) : nil; e->off = b ? b->off + bi->offset : 0; e->range = bi->range == VK_WHOLE_SIZE ? 0 : bi->range; break;   // a buffer is bound to its memory before it is written
+            VkBuffer b = bi->buffer; e->buf = b && b->mem ? mem_buf(b->mem) : nil; e->off = b ? b->off + bi->offset : 0; e->src_t = b; e->seq_t = vs_seq(b); e->range = bi->range == VK_WHOLE_SIZE ? 0 : bi->range; break;   // a buffer is bound to its memory before it is written
         }
         default: RED1("descriptor type %d not implemented", t); break;
     }
@@ -1054,7 +1153,7 @@ VK(vkDestroyPipelineLayout, void, VkDevice d, VkPipelineLayout l, const VkAlloca
 VK(vkCreateRenderPass, VkResult, VkDevice d, const VkRenderPassCreateInfo *ci, const VkAllocationCallbacks *a, VkRenderPass *out) {
     (void)d; (void)a;
     if (ci->attachmentCount > 16 || !ci->subpassCount || ci->subpassCount > 8) { LOG("[vk] 【红】 render pass: %u attachments, %u subpasses", ci->attachmentCount, ci->subpassCount); return VK_ERROR_OUT_OF_HOST_MEMORY; }
-    VkRenderPass rp = obj_alloc(sizeof *rp, O_PLAIN); rp->natt = ci->attachmentCount; rp->nsub = ci->subpassCount;
+    VkRenderPass rp = obj_alloc(sizeof *rp, O_RENDERPASS); rp->natt = ci->attachmentCount; rp->nsub = ci->subpassCount;
     memset(rp->first, -1, sizeof rp->first); memset(rp->last, -1, sizeof rp->last);
     for (uint32_t i = 0; i < rp->natt; i++) {
         const VkAttachmentDescription *at = &ci->pAttachments[i];
@@ -1081,7 +1180,7 @@ VK(vkDestroyRenderPass, void, VkDevice d, VkRenderPass rp, const VkAllocationCal
 VK(vkCreateFramebuffer, VkResult, VkDevice d, const VkFramebufferCreateInfo *ci, const VkAllocationCallbacks *a, VkFramebuffer *out) {
     (void)d; (void)a;
     if (ci->attachmentCount > 16) { LOG("[vk] 【红】 framebuffer with %u attachments", ci->attachmentCount); return VK_ERROR_OUT_OF_HOST_MEMORY; }
-    VkFramebuffer fb = obj_alloc(sizeof *fb, O_PLAIN); fb->n = ci->attachmentCount; fb->w = ci->width; fb->h = ci->height; fb->layers = ci->layers;
+    VkFramebuffer fb = obj_alloc(sizeof *fb, O_FRAMEBUFFER); fb->n = ci->attachmentCount; fb->w = ci->width; fb->h = ci->height; fb->layers = ci->layers;
     memcpy(fb->v, ci->pAttachments, fb->n * sizeof *fb->v);
     *out = fb; return VK_SUCCESS;
 }
@@ -1148,18 +1247,34 @@ static id vk_se_obj(VkPipeline p, int comp) {
     }
     return p->se_state == 1 ? (comp ? (id)p->cps_se : (id)p->pso_se) : nil;
 }
-VKB(vkCreateShaderModule, VkResult, VkDevice d, const VkShaderModuleCreateInfo *ci, const VkAllocationCallbacks *a, VkShaderModule *out) {
-    (void)d; (void)a; dev_init();
-    uint8_t h[CC_SHA256_DIGEST_LENGTH]; CC_SHA256(ci->pCode, (CC_LONG)ci->codeSize, h);
-    VkShaderModule m = obj_alloc(sizeof *m, O_SHADER);
+// 即时存档：快照开时按源码键在固定区里留一份 SPIR-V（同键一份、不释放）——游戏建完管线常销毁模块，恢复时按键临时建回模块重建管线（vk_snap.inc）
+typedef struct vs_spv { struct vs_spv *next; char key[17]; uint32_t size; uint32_t code[]; } vs_spv;
+static vs_spv *g_vs_spv;   // 表头在区外（宿主静态区）：存档记它的值、恢复写回；节点在区里
+static void vs_spv_note(const char *key, const void *code, size_t size) {
+    if (!vs_on()) return;
+    pthread_mutex_lock(&g_vs_mu); vs_spv *e = g_vs_spv; while (e && memcmp(e->key, key, 16)) e = e->next; pthread_mutex_unlock(&g_vs_mu);
+    if (e) return;
+    e = vs_alloc(sizeof *e + size); memcpy(e->key, key, 17); e->size = (uint32_t)size; memcpy(e->code, code, size);
+    pthread_mutex_lock(&g_vs_mu); e->next = g_vs_spv; g_vs_spv = e; pthread_mutex_unlock(&g_vs_mu);
+}
+static const vs_spv *vs_spv_find(const char *key) { pthread_mutex_lock(&g_vs_mu); vs_spv *e = g_vs_spv; while (e && memcmp(e->key, key, 16)) e = e->next; pthread_mutex_unlock(&g_vs_mu); return e; }
+// 按 SPIR-V 填模块（建模块、即时存档恢复都走这里）
+static void mod_fill(VkShaderModule m, const uint32_t *code, size_t size) {
+    uint8_t h[CC_SHA256_DIGEST_LENGTH]; CC_SHA256(code, (CC_LONG)size, h);
     for (int i = 0; i < 8; i++) snprintf(m->key + 2 * i, 3, "%02x", h[i]);
-    sh_capture(m->key, ci->pCode, ci->codeSize);
-    vin_scan(ci->pCode, ci->codeSize / 4, &m->vin_s, &m->vin_u);
-    if (g_vk_lb_emu || m->vin_s || m->vin_u) m->spv = [NSData dataWithBytes:ci->pCode length:ci->codeSize];   // #800：偏置模拟变体要在设备上重翻它（vk_se_fn）；顶点输入格式与符号性不一致时重翻（vk_vin.inc）
+    sh_capture(m->key, code, size);
+    vs_spv_note(m->key, code, size);
+    vin_scan(code, size / 4, &m->vin_s, &m->vin_u);
+    if (g_vk_lb_emu || m->vin_s || m->vin_u) m->spv = [NSData dataWithBytes:code length:size];   // #800：偏置模拟变体要在设备上重翻它（vk_se_fn）；顶点输入格式与符号性不一致时重翻（vk_vin.inc）
     m->si = sh_find(m->key);
     @autoreleasepool { if (m->si && g_lib) m->fn = [g_lib newFunctionWithName:[NSString stringWithFormat:@"vk_%s", m->key]]; }
-    if (!m->fn) { m->rt = rt_get(m->key, ci->pCode, ci->codeSize); mod_ready(m); }   // 离线库没有：设备现编（已编好 / 上次持久化的直接用，否则后台编，编好前建的管线照安全网跳过）
+    if (!m->fn) { m->rt = rt_get(m->key, code, size); mod_ready(m); }   // 离线库没有：设备现编（已编好 / 上次持久化的直接用，否则后台编，编好前建的管线照安全网跳过）
     else OLOG("CreateShaderModule %s", m->key);
+}
+VKB(vkCreateShaderModule, VkResult, VkDevice d, const VkShaderModuleCreateInfo *ci, const VkAllocationCallbacks *a, VkShaderModule *out) {
+    (void)d; (void)a; dev_init();
+    VkShaderModule m = obj_alloc(sizeof *m, O_SHADER);
+    mod_fill(m, ci->pCode, ci->codeSize);
     *out = m; return VK_SUCCESS;
 }
 VKB(vkDestroyShaderModule, void, VkDevice d, VkShaderModule m, const VkAllocationCallbacks *a) { (void)d; (void)a; if (m) { m->fn = m->fn_d = nil; m->spv = nil; obj_free(m); } }
@@ -1199,8 +1314,9 @@ static int dual_source(const VkPipelineColorBlendStateCreateInfo *cb) {   // a b
     return 0;
 }
 static int rt_state(struct rt_ent *e) { return e ? atomic_load_explicit(&e->state, memory_order_acquire) : 1; }
-static VkPipeline pipe_make(const VkGraphicsPipelineCreateInfo *ci) {
-    VkPipeline p = obj_alloc(sizeof *p, O_PIPELINE); p->layout = ci->layout;
+// 按创建信息填管线（建管线、即时存档恢复都走这里；恢复时 Metal 字段已清空）
+static void pipe_fill(VkPipeline p, const VkGraphicsPipelineCreateInfo *ci) {
+    p->layout = ci->layout;
     @autoreleasepool {
         MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
         char keys[64] = ""; int dual = dual_source(ci->pColorBlendState); VkShaderModule vm = NULL; uint32_t u8 = 0, u16 = 0;
@@ -1223,7 +1339,7 @@ static VkPipeline pipe_make(const VkGraphicsPipelineCreateInfo *ci) {
             else { RED1("shader stage %#x not implemented", st->stage); p->feat = 1; if (st->stage == VK_SHADER_STAGE_GEOMETRY_BIT) p->gs = 1; }
             strlcat(keys, s ? " " : "", sizeof keys); strlcat(keys, m->key, sizeof keys);
         }
-        if (!pd.vertexFunction && !p->pend_v) { LOG("[vk] 【红】 pipeline has no usable vertex shader (%s)", keys); return p; }
+        if (!pd.vertexFunction && !p->pend_v) { LOG("[vk] 【红】 pipeline has no usable vertex shader (%s)", keys); return; }
         const VkPipelineVertexInputStateCreateInfo *vi = ci->pVertexInputState;
         MTLVertexDescriptor *vd = [MTLVertexDescriptor vertexDescriptor];
         uint32_t used = 0;   // bindings some mapped attribute reads: Metal's validation rejects a buffer layout no attribute uses
@@ -1245,7 +1361,7 @@ static VkPipeline pipe_make(const VkGraphicsPipelineCreateInfo *ci) {
         pd.vertexDescriptor = vd;
         if (u8 | u16) {   // 8 / 16 位无符号格式喂有符号输入：用按本管线格式重翻的那支顶点着色器（vk_vin.inc）
             rt_ent *v = vin_variant(vm, u8, u16); int vs = rt_state(v);
-            if (vs == 2) { LOG("[vk] 【红】 pipeline (%s): the vertex shader retranslated for its integer attribute formats is not usable", keys); return p; }
+            if (vs == 2) { LOG("[vk] 【红】 pipeline (%s): the vertex shader retranslated for its integer attribute formats is not usable", keys); return; }
             if (vs == 1) { pd.vertexFunction = v->fn; p->vs = &v->si; p->pend_v = NULL; } else { pd.vertexFunction = nil; p->pend_v = v; }
         }
         switch (ci->pInputAssemblyState ? ci->pInputAssemblyState->topology : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST) {
@@ -1315,7 +1431,7 @@ static VkPipeline pipe_make(const VkGraphicsPipelineCreateInfo *ci) {
         if (!p->dyn_sc && vs && vs->pScissors && vs->scissorCount) { p->sc = vs->pScissors[0]; p->has_sc = 1; }
         if (p->pend_v || p->pend_f) {   // 着色器还在现编：描述存下，编好后第一次绘制补建（pipe_finish）
             p->pend_pd = pd; static _Atomic int n; if (n++ < 20) LOG("[vk] 现编：管线 (%s) 的着色器还在编，句柄先交，编好后第一次绘制补建（第 %llu 帧）", keys, (unsigned long long)g_frames);
-            return p;
+            return;
         }
         NSError *err = nil;
         p->pso = [g_dev newRenderPipelineStateWithDescriptor:pd error:&err];
@@ -1323,6 +1439,13 @@ static VkPipeline pipe_make(const VkGraphicsPipelineCreateInfo *ci) {
         else g_n_pso++;
         if (p->pso && p->se_spv) p->se_pd = pd;   // 偏置模拟变体照同一份描述建，只换片元函数
     }
+    return;
+}
+static void *vs_pipe_recipe(const VkGraphicsPipelineCreateInfo *ci);   // vk_snap.inc：快照开时把创建信息深拷贝进区（模块按键记）
+static VkPipeline pipe_make(const VkGraphicsPipelineCreateInfo *ci) {
+    VkPipeline p = obj_alloc(sizeof *p, O_PIPELINE);
+    if (vs_on()) p->recipe = vs_pipe_recipe(ci);
+    pipe_fill(p, ci);
     return p;
 }
 static _Atomic uint64_t g_pend_made, g_pend_bad;   // 等现编的管线：补建成 / 着色器编不过（补不成，绘制照安全网跳过）
@@ -1404,7 +1527,7 @@ static void *rec(VkCommandBuffer cb, uint32_t op, size_t sz) {
     size_t need = (sizeof(chdr) + sz + 7) & ~(size_t)7;
     if (cb->n + need > cb->cap) {
         size_t c = cb->cap ? cb->cap * 2 : 4096; while (c < cb->n + need) c *= 2;
-        cb->buf = realloc(cb->buf, c); if (!cb->buf) die("[vk] out of command buffer memory %zu", c); cb->cap = c;
+        cb->buf = vk_mrealloc(cb->buf, c); if (!cb->buf) die("[vk] out of command buffer memory %zu", c); cb->cap = c;
     }
     chdr *h = (chdr *)(cb->buf + cb->n); h->op = op; h->size = (uint32_t)need; cb->n += need;
     return h + 1;
@@ -1416,7 +1539,7 @@ static void cb_free(VkCommandBuffer cb) {
     VkCommandPool p = cb->pool;
     if (cb->prev) cb->prev->next = cb->next; else p->cbs = cb->next;
     if (cb->next) cb->next->prev = cb->prev;
-    free(cb->buf); obj_free(cb);
+    vk_mfree(cb->buf); obj_free(cb);
 }
 VK(vkDestroyCommandPool, void, VkDevice d, VkCommandPool p, const VkAllocationCallbacks *a) { (void)d; (void)a; if (p) { while (p->cbs) cb_free(p->cbs); obj_free(p); } }
 VK(vkTrimCommandPool, void, VkDevice d, VkCommandPool p, VkCommandPoolTrimFlags f) { (void)d; (void)p; (void)f; }   // command buffers keep no pooled memory to give back
@@ -2385,7 +2508,7 @@ void dm_vk_drain(void) { pthread_mutex_lock(&g_qmu); uint64_t v = g_ev_val; pthr
 VKB(vkQueueWaitIdle, VkResult, VkQueue q) { (void)q; pthread_mutex_lock(&g_qmu); uint64_t v = g_ev_val; pthread_mutex_unlock(&g_qmu); wait_done(v); return vk_stopping() ? VK_ERROR_DEVICE_LOST : VK_SUCCESS; }
 VKB(vkDeviceWaitIdle, VkResult, VkDevice d) { (void)d; return h_vkQueueWaitIdle(&g_queue); }
 VK(vkCreateFence, VkResult, VkDevice d, const VkFenceCreateInfo *ci, const VkAllocationCallbacks *a, VkFence *out) {
-    (void)d; (void)a; VkFence f = obj_alloc(sizeof *f, O_PLAIN); atomic_store(&f->val, ci->flags & VK_FENCE_CREATE_SIGNALED_BIT ? 0 : FENCE_NONE); *out = f; return VK_SUCCESS;
+    (void)d; (void)a; VkFence f = obj_alloc(sizeof *f, O_FENCE); atomic_store(&f->val, ci->flags & VK_FENCE_CREATE_SIGNALED_BIT ? 0 : FENCE_NONE); *out = f; return VK_SUCCESS;
 }
 VK(vkDestroyFence, void, VkDevice d, VkFence f, const VkAllocationCallbacks *a) { (void)d; (void)a; obj_free(f); }
 VK(vkResetFences, VkResult, VkDevice d, uint32_t n, const VkFence *f) { (void)d; for (uint32_t i = 0; i < n; i++) atomic_store(&f[i]->val, FENCE_NONE); return VK_SUCCESS; }
@@ -2409,12 +2532,12 @@ VK(vkCreateQueryPool, VkResult, VkDevice d, const VkQueryPoolCreateInfo *ci, con
     (void)d; (void)a;
     if (ci->queryType != VK_QUERY_TYPE_TIMESTAMP && ci->queryType != VK_QUERY_TYPE_OCCLUSION) LOG("[vk] 【红】 query pool type %d not implemented", ci->queryType);
     VkQueryPool q = obj_alloc(sizeof *q, O_QUERY); q->type = ci->queryType; q->n = ci->queryCount;
-    q->val = zalloc(umax(1, q->n) * sizeof *q->val); q->ticket = zalloc(umax(1, q->n) * sizeof *q->ticket);
+    q->val = vk_mem(umax(1, q->n) * sizeof *q->val); q->ticket = vk_mem(umax(1, q->n) * sizeof *q->ticket);
     for (uint32_t i = 0; i < q->n; i++) q->ticket[i] = FENCE_NONE;
     VLOG("query pool %p: type %d, %u queries", (void *)q, q->type, q->n);
     *out = q; return VK_SUCCESS;
 }
-VK(vkDestroyQueryPool, void, VkDevice d, VkQueryPool q, const VkAllocationCallbacks *a) { (void)d; (void)a; if (q) { free(q->val); free(q->ticket); obj_free(q); } }
+VK(vkDestroyQueryPool, void, VkDevice d, VkQueryPool q, const VkAllocationCallbacks *a) { (void)d; (void)a; if (q) { vk_mfree(q->val); vk_mfree(q->ticket); obj_free(q); } }
 VKB(vkGetQueryPoolResults, VkResult, VkDevice d, VkQueryPool q, uint32_t first, uint32_t n, size_t size, void *data, VkDeviceSize stride, VkQueryResultFlags fl) {
     (void)d; VkResult res = VK_SUCCESS; int w64 = fl & VK_QUERY_RESULT_64_BIT, av = fl & VK_QUERY_RESULT_WITH_AVAILABILITY_BIT;
     for (uint32_t i = 0; i < n && first + i < q->n; i++) {
@@ -2446,7 +2569,7 @@ VKB(vkCreateSwapchainKHR, VkResult, VkDevice d, const VkSwapchainCreateInfoKHR *
     (void)d; (void)a; dev_init();
     const fmt_t *f = fmt_of(ci->imageFormat);
     if (!f || f->pf == MTLPixelFormatInvalid) { LOG("[vk] 【红】 swap chain format %d not mapped", ci->imageFormat); return VK_ERROR_FORMAT_NOT_SUPPORTED; }
-    VkSwapchainKHR sc = obj_alloc(sizeof *sc, O_PLAIN); sc->n = umin(umax(ci->minImageCount, 2), 4);
+    VkSwapchainKHR sc = obj_alloc(sizeof *sc, O_SWAPCHAIN); sc->n = umin(umax(ci->minImageCount, 2), 4);
     @autoreleasepool {
         for (uint32_t i = 0; i < sc->n; i++) {
             uint32_t wid = wd_new_id(), th = ci->imageExtent.height, tw = wd_image(wid, ci->imageExtent.width, th, 0, &th);   // 交换链图像同样是放宽 / 加高的渲染目标（上屏时核心按屏幕比裁）
@@ -2553,7 +2676,9 @@ static void *vk_lookup(const char *name) {
     return fn;
 }
 void *dm_vk_lookup(const char *name) { return vk_lookup(name); }   // S2Arm 改：给 S2Arm 装载器 / 适配层（host_adapt.m）按名字取实现
-VK(vkGetInstanceProcAddr, PFN_vkVoidFunction, VkInstance i, const char *name) { (void)i; return (PFN_vkVoidFunction)vk_lookup(name); }
-VK(vkGetDeviceProcAddr, PFN_vkVoidFunction, VkDevice d, const char *name) { (void)d; return (PFN_vkVoidFunction)vk_lookup(name); }
+void vs_ho(const void *p, const char *fmt, const char *arg);   // vk_snap.inc：交出的取函数地址按身份登记（即时存档）
+VK(vkGetInstanceProcAddr, PFN_vkVoidFunction, VkInstance i, const char *name) { (void)i; void *f = vk_lookup(name); vs_ho(f, "vk:proc:%s", name); return (PFN_vkVoidFunction)f; }
+VK(vkGetDeviceProcAddr, PFN_vkVoidFunction, VkDevice d, const char *name) { (void)d; void *f = vk_lookup(name); vs_ho(f, "vk:proc:%s", name); return (PFN_vkVoidFunction)f; }
 
 #include "vk_session.inc"
+#include "vk_snap.inc"   // 即时存档（缺省关）
