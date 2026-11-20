@@ -6780,10 +6780,6 @@
   "en": "Regenerate the provisioning profile on the developer website with this certificate selected, download it, and import it together with the certificate."
  },
  {
-  "source": "点「改用 Apple ID 登录」用 Apple ID 签名；或点「复制给证书发放人的话」发给对方，换成开发证书和开发描述文件后重新导入。",
-  "en": "Click “Sign In with Apple ID Instead” to sign with your Apple ID, or click “Copy Message for Certificate Issuer” and send it to them, then import the development certificate and profile you get back."
- },
- {
   "source": "在出包页「我的开发者证书」里重新导入证书和描述文件，或切回「Apple ID 签名」。",
   "en": "Import the certificate and profile again under “My developer certificate” on the export page, or switch back to “Apple ID signing”."
  },
@@ -10706,5 +10702,9 @@
  {
   "source": "免费 Apple ID 有苹果的限制：同时最多装 3 个自己签的 App（AltStore / SideStore 也算），每 7 天最多注册 10 个 App ID；独立 App 每款占一个。装满了就在 iPhone 上删掉不玩的那个再装。",
   "en": "A free Apple ID has Apple's limits: at most 3 self-signed apps installed at once (AltStore / SideStore count too), and at most 10 App IDs registered every 7 days. Each Standalone App uses one. If you hit the limit, delete an app you no longer play from the iPhone and install again."
+ },
+ {
+  "source": "推到 iPhone 的方式选「独立 App」，用这张证书照常能玩；要用通用 S2Arm：点「改用 Apple ID 登录」用 Apple ID 签名，或点「复制给证书发放人的话」发给对方，换成开发证书和开发描述文件后重新导入。",
+  "en": "Choose “Standalone app” as the way games go to your iPhone and this certificate works as usual. To use the S2Arm app instead, click “Sign In with Apple ID Instead” to sign with your Apple ID, or click “Copy Message for Certificate Issuer” and send it to them, then import the development certificate and profile you get back."
  }
 ]

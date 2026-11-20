@@ -64,6 +64,8 @@ struct InstallView: View {
                         .padding(model.pickDeviceFocus ? 8 : 0)
                         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(LauncherPalette.cream, lineWidth: model.pickDeviceFocus ? 1.5 : 0))
                         .id(Self.deviceRowID)
+                    // 这款推成通用 S2Arm 里的一款还是独立 App（0.6.3）：缺省跟随设置，单款可改
+                    if let game { InstallLayoutRow(model: model, gameId: game.id) }
                     if let r = model.installReadiness {
                         CardGroup(loc.t("s2arm.install.checklist"), footnote: footnote(r)) {
                             ForEach(r.items) { item in

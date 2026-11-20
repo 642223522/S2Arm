@@ -126,7 +126,7 @@ class PutApp(unittest.TestCase):
         self.c = ctx(self.t)
         self.pack = self.t / "pack"; self.pack.mkdir()
         (self.pack / "manifest.json").write_text(json.dumps({"index_sha256": "P1"}))
-        self.calls = dict(install=[], push=[], snap=[])
+        self.calls = dict(install=[], push=[], snap=[], assemble=[])
         self.ph = self.phone()
 
     def phone(self):
@@ -152,6 +152,7 @@ class PutApp(unittest.TestCase):
         import rewrite_refresh
         import sgrade_bf
         def assemble(c, g, others=(), dest=None, **k):
+            self.calls["assemble"].append(k.get("standalone"))   # 独立 App：主屏名 / 图标按这款组（ship_ext container --standalone）
             ipa = Path(dest) / "S2Arm.ipa"
             with zipfile.ZipFile(ipa, "w") as z:
                 z.writestr("Payload/S2Arm.app/S2Arm", b"x")
@@ -169,6 +170,7 @@ class PutApp(unittest.TestCase):
         out = self.run_put()
         bid, names = self.calls["install"][0]
         self.assertEqual(bid, APP1, "按独立包名签装")
+        self.assertEqual(self.calls["assemble"], [True], "按独立 App 组（主屏名 / 图标是这款的）")
         self.assertIn(f"Payload/S2Arm.app/Frameworks/S2AImages-{G1}.dylib", names)
         self.assertFalse([n for n in names if "/PlugIns/" in n], "去掉小组件")
         self.assertEqual(self.calls["push"], [(APP1, G1)], "资源推进独立 App")
@@ -262,6 +264,49 @@ class UpdateApps(unittest.TestCase):
             out = install.update_phone(self.c)
         self.assertEqual(done, [G1, G2, "0100000000040000"])
         self.assertEqual([r["gameId"] for r in out["apps"]], [G1, G2, "0100000000040000"])
+
+
+class AppsOnlyPhone(unittest.TestCase):
+    """只装了独立 App、没装通用壳的手机（分发证书玩家的常态）：启动器升级后照样出「更新」按钮，更新只重签独立 App、不装通用壳；
+    总控台每台手机带 apps 行。期望手写：本版壳号 SID2；甲 SID1（旧）、乙 SID2（新）；甲签名时刻 1000、真实到期 1000 + 10 天"""
+    def setUp(self):
+        self.t = Path(tempfile.mkdtemp()); self.addCleanup(shutil.rmtree, self.t, True)
+        self.c = ctx(self.t)
+        self.c.catalog = lambda: {"games": [{"id": G1, "name": "甲"}, {"id": G2, "name": "乙"}]}
+        self.rec = dict(apps={G1: dict(bundleId=APP1, shellId="SID1", signed=dict(at=1000.0, free=False, expires=1000.0 + 10 * 86400)),
+                              G2: dict(bundleId="b2", shellId="SID2", signed=dict(at=2000.0, free=True))})
+        layout.save_device(self.c, "UDID1", self.rec)
+        self.ph = types.SimpleNamespace(key="UDID1", info=dict(free=False, device="X"))
+
+    def test_update_button_lists_old_apps(self):
+        import ipa as packer
+        import rewrite_refresh
+        with patch.object(packer, "current_shell_id", lambda c: "SID2"), patch.object(rewrite_refresh, "kept_todo", lambda *a: self.fail("没装通用壳不查程序补推")):
+            out = install.phone_updates(self.c)
+        self.assertEqual(out, [dict(device="UDID1", name="", fromShell="SID1", toShell="SID2", games=[], stale=[], kept=[], apps=[dict(gameId=G1, name="甲")])])
+        layout.save_device(self.c, "UDID1", dict(self.rec, apps={G2: self.rec["apps"][G2]}))
+        with patch.object(packer, "current_shell_id", lambda c: "SID2"):
+            self.assertEqual(install.phone_updates(self.c), [], "独立 App 都是本版：没有按钮")
+
+    def test_update_does_not_install_shell(self):
+        import ipa as packer
+        done = []
+        with patch.object(install, "phone_for", lambda c: self.ph), patch.object(install, "install_shell", lambda c, ph: self.fail("只装了独立 App：不装通用壳")), \
+                patch.object(install, "put_app", lambda c, g, ph, steps=True: done.append(g)), patch.object(packer, "current_shell_id", lambda c: "SID2"), \
+                patch.object(packer, "usable_kit", lambda c, g, sid, failed=(): "/kit"), patch.object(packer, "phone_lock", lambda c: contextlib.nullcontext()), \
+                patch("core.preempt_jobs", lambda *a, **k: None):
+            out = install.update_phone(self.c)
+        self.assertEqual(done, [G1], "只重签壳号旧的甲")
+        self.assertEqual((out["toShell"], out["games"], out["apps"]), ("SID2", [], [dict(gameId=G1, ok=True)]))
+
+    def test_overview_app_rows(self):
+        import host_update
+        with patch.object(host_update.time, "time", lambda: 1000.0 + 3.5 * 86400):
+            rows = host_update._app_rows(self.rec, "SID2")
+        self.assertEqual(rows, [
+            dict(gameId=G1, bundleId=APP1, shellCurrent=False, signedAt=1000.0, free=False, expiresAtEstimate=1000.0 + 10 * 86400, remainingDays=7, expiresKnown=True),
+            dict(gameId=G2, bundleId="b2", shellCurrent=True, signedAt=2000.0, free=True, expiresAtEstimate=606800.0, remainingDays=4, expiresKnown=False)])
+        # 甲：到期 865000、此刻 303400 → 6.5 天 → 7；乙：免费按 7 天估 2000 + 604800 = 606800 → 3.51 天 → 4
 
 
 class SavesPerApp(unittest.TestCase):

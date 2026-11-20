@@ -3173,7 +3173,7 @@ def put_app(c, gid, ph, steps=True):
             if sgrade_bf.rechain_ios(c, gid) == "unavailable":
                 trace(c, f"{gid} 着色器链更新了，这次没重编着色器库（原因见上一行；「建议更新」照旧提示）")  # 非玩家句
             refresh_ios(c, [gid])
-            ipa, games, sid = packer.assemble(c, gid, dest=tmp)
+            ipa, games, sid = packer.assemble(c, gid, dest=tmp, standalone=True)   # 主屏名 / 图标是这款的
         plain = tmp / "S2Arm-app.ipa"
         if ipa_strip_widget(ipa, plain):
             ipa = plain
@@ -3388,24 +3388,28 @@ def shell_outdated(c, rec, sid, games=None):
 
 
 def phone_updates(c):
-    """游戏库页右上角「更新 iPhone 上的 S2Arm」：各台手机的设备记录里，壳比本版旧的 → [{device, name, fromShell, toShell, games, stale}]。
+    """游戏库页右上角「更新 iPhone 上的 S2Arm」：各台手机的设备记录里，壳比本版旧的 → [{device, name, fromShell, toShell, games, stale, kept, apps}]。
+    apps = 壳号旧了的独立 App（设备记录 apps，0.6.3）：只装了独立 App 的手机也出按钮（update_phone 只重签它们、不装通用壳）。
     只读本机记录（不连手机、不跑出包），catalog 每次带上；没有装过 iPhone 的玩家不算壳号"""
-    recs = [(k, r) for k, r in layout.devices(c) if isinstance(r, dict) and r.get("games") and r.get("shellId")]
+    recs = [(k, r) for k, r in layout.devices(c) if isinstance(r, dict) and (r.get("games") and r.get("shellId") or r.get("apps"))]
     if not recs:
         return []
     import ipa as packer
     sid = packer.current_shell_id(c)
     out = []
     import rewrite_refresh
+    names = {g["id"].upper(): g.get("name") or g["id"] for g in c.catalog()["games"]}
     for key, rec in recs:
         st = shell_outdated(c, rec, sid)
         # 运行时留下、已收回游戏库还没补进 iPhone 件的 NRO（#8be819）：壳是本版也要更新（只推程序），按钮亮、启动器自动发起（kept 列这几款）
-        kept = [g for g in rec.get("games") or [] if isinstance(g, str) and rewrite_refresh.kept_todo(c, g, layout.ios_kit(c, g))]
-        if st or kept:
+        kept = [g for g in rec.get("games") or [] if isinstance(g, str) and rewrite_refresh.kept_todo(c, g, layout.ios_kit(c, g))] if rec.get("shellId") else []
+        old = {g: v["shellId"] for g, v in sorted((rec.get("apps") or {}).items()) if isinstance(v, dict) and v.get("shellId") and v["shellId"] != sid and g.upper() in names}
+        if st or kept or old:
             if not st:
-                names = {g["id"].upper(): g.get("name") or g["id"] for g in c.catalog()["games"]}
-                st = dict(fromShell=rec["shellId"], toShell=sid, games=[dict(gameId=g, name=names.get(g, g)) for g in sorted(rec.get("games") or {})], stale=[])
-            out.append(dict(device=key, name=(rec.get("signed") or {}).get("device") or "", **st, kept=[dict(gameId=g, name=g) for g in kept]))
+                st = dict(fromShell=rec.get("shellId") or next(iter(old.values())), toShell=sid,
+                          games=[dict(gameId=g, name=names.get(g, g)) for g in sorted(rec.get("games") or {})] if rec.get("shellId") else [], stale=[])
+            out.append(dict(device=key, name=(rec.get("signed") or {}).get("device") or "", **st, kept=[dict(gameId=g, name=g) for g in kept],
+                            apps=[dict(gameId=g, name=names[g.upper()]) for g in old]))
     return out
 
 
@@ -3659,7 +3663,12 @@ def _update_phone(c):
         if hint:
             raise Failure(hint, code="device_not_connected") from e
         raise
-    out = install_shell(c, ph)   # 「安装 / 续签 / 更新 S2Arm」只装壳，不碰各款
+    rec = layout.load_device(c, ph.key)
+    if rec.get("apps") and not rec.get("shellId"):   # 这台只装了独立 App（分发证书玩家的常态）：不顺手装一个通用壳（占 App 名额，分发证书签的还打不开游戏）
+        import ipa as packer
+        out = dict(updated=True, bundleId="", games=[], toShell=packer.current_shell_id(c), **ph.info)
+    else:
+        out = install_shell(c, ph)   # 「安装 / 续签 / 更新 S2Arm」只装壳，不碰各款
     rows = update_apps(c, ph, out["toShell"])   # 各款独立 App 壳号旧了的逐个重签（一款失败不挡后面）
     return dict(out, **({"apps": rows} if rows else {}))
 
