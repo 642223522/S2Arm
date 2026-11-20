@@ -4099,6 +4099,7 @@
   "在启动器里登录装 S2Arm 用的那个 Apple ID（或选用和装 S2Arm 同一团队的证书），再点一次「把签名身份交给手机」。": "Dans le lanceur, connectez-vous avec l'identifiant Apple utilisé pour installer S2Arm (ou choisissez un certificat de la même équipe que celle qui a installé S2Arm), puis cliquez à nouveau sur « Transmettre l'identité de signature au téléphone ».",
   "手机上的 S2Arm 是用另一个 Apple ID 或证书签的（团队 {0}），和这台电脑上的签名身份（团队 {1}）不是同一个团队，交过去也签不了游戏：请在启动器里登录装 S2Arm 用的那个 Apple ID，或选用同一团队的证书。": "S2Arm sur votre téléphone a été signé avec un autre identifiant Apple ou certificat (équipe {0}), qui n'est pas de la même équipe que l'identité de signature de cet ordinateur (équipe {1}) : le téléphone ne pourra pas signer les jeux avec. Connectez-vous dans le lanceur avec l'identifiant Apple utilisé pour installer S2Arm, ou choisissez un certificat de la même équipe.",
   "手机上的 S2Arm 不是这个团队签的": "S2Arm sur le téléphone est signé par une autre équipe",
-  "装 S2Arm 用的 Apple ID 或证书，和这台电脑上的不是同一个团队。": "L'identifiant Apple ou le certificat utilisé pour installer S2Arm appartient à une autre équipe que celle de cet ordinateur."
+  "装 S2Arm 用的 Apple ID 或证书，和这台电脑上的不是同一个团队。": "L'identifiant Apple ou le certificat utilisé pour installer S2Arm appartient à une autre équipe que celle de cet ordinateur.",
+  "子程序 %s 的代码补丁暂不支持，没收": "Les correctifs de code du sous-programme %s ne sont pas encore pris en charge : ils n'ont pas été importés"
  }
 }
