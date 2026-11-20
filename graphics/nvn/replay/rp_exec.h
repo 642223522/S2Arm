@@ -24,6 +24,7 @@ int rp_buf_resolve_multi(int n, const uint64_t *addr, const uint64_t *len, nvn_g
 // 写入区间日志（rp_draw 的暂存片复用判定用）：记号 + 「记号之后有没有人写过这一段」
 uint64_t rp_write_mark(void);
 int rp_write_touched(uint64_t mark, uint64_t addr, uint64_t len);
+void rp_write_note(uint64_t addr, uint64_t len);   // 记一笔「回放自己在 CPU 上改了游戏内存这一段」：段内切片表按它作废；不受写跟踪的池里对应的镜像页也按它作废（rp_buf.c）
 void rp_buf_stats(uint64_t *bytes, uint64_t *runs);   // 累计同步字节数 / 段数
 int rp_buf_mirrors(void);                             // 现有镜像个数
 // 缓冲类命令（rec = 命令记录地址，只进未接日志）
@@ -97,6 +98,7 @@ enum { RP_PERF_SUBMIT_NS, RP_PERF_COMMIT_NS, RP_PERF_SUBS, RP_PERF_WAIT_NS, RP_P
        RP_PERF_BUF_GPU_ORDER_N, RP_PERF_UBO_MIRROR_N,   // 改 / 拷游戏内存的命令因还没落地的 GPU 写改在 GPU 上做的次数；常量缓冲因此直接绑镜像的次数（#1022）
        RP_PERF_UBO_FILL_N, RP_PERF_UBO_FILL_WAIT_N,   // 其中交给后端异步填的次数（nvn_gpu_arena_fill）/ 改游戏内存前因区间重叠等它填完的次数（rp_ub_fill_fence）
        RP_PERF_BUF_FAST_N, RP_PERF_BUF_SLOW_N, RP_PERF_BUF_NOSPAN_N, RP_PERF_BUF_PAGES_N,   // 缓冲解析：快路命中 / 走逐页慢路 / 不受写跟踪 / 慢路里一共查了多少页
+       RP_PERF_BUF_NOSPAN_FRESH_N,   // 其中不受写跟踪的池里、这一段本次提交里都同步过而免传的次数（page_fresh）
        RP_PERF_BUF_LOG_EV, RP_PERF_BUF_LOG_WORDS, RP_PERF_BUF_LOG_REBUILD,   // 脏页追加日志（nvk_buf_dirtylog）：灌进镜像的事件数 / 求交时看的位图字数 / 日志不可用、按逐页代号重建的次数
        RP_PERF_RES_FIND_NS, RP_PERF_RES_FAST_NS, RP_PERF_RES_SLOW_NS, RP_PERF_RES_N,   // 缓冲解析三段耗时：找池与取镜像 / 快路逐页核对 / 慢路同步（开关 nvk_res_tm）
        RP_PERF_RES_LW_NS, RP_PERF_RES_LA_NS,   // 批量解析里：抢锁等待 / 持锁解析（开关 nvk_res_tm）
