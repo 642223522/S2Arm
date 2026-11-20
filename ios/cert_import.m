@@ -59,6 +59,8 @@ static void import_p12(NSData *p12, NSString *name, NSString *password, const ch
 }
 
 // ---------- ① 选 .p12 文件 ----------
+// tvOS 没有文件选择器（UIDocumentPicker 不可用）：Apple TV 壳上「导入 .p12…」是空操作，入口本来也只在 iOS 接线（S2ArmShellHostModel #if !os(tvOS)）
+#if !TARGET_OS_TV
 @interface S2ACertPicker : NSObject <UIDocumentPickerDelegate> @end
 @implementation S2ACertPicker
 - (void)documentPicker:(UIDocumentPickerViewController *)c didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
@@ -76,6 +78,9 @@ void s2a_shell_cert_p12(void) {   // 游戏库设置「签名证书」→「导�
     UIDocumentPickerViewController *p = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[p12, UTTypeData] asCopy:YES];
     p.delegate = delegate; [top_vc() presentViewController:p animated:YES completion:nil];
 }
+#else
+void s2a_shell_cert_p12(void) {}
+#endif
 
 // ---------- ② SideStore ----------
 void s2a_shell_cert_sidestore(void) {   // 游戏库设置「签名证书」→「从 SideStore 获取」
