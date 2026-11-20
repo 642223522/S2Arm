@@ -54,7 +54,7 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
     static string ToolFp;
 
     static int Fail(string msg) { Console.Out.Flush(); Console.Error.WriteLine(msg); Console.Error.Flush(); return 1; }
-    static void Say(string s) { lock (Console.Out) { Console.Out.WriteLine(s); Console.Out.Flush(); } }
+    internal static void Say(string s) { lock (Console.Out) { Console.Out.WriteLine(s); Console.Out.Flush(); } }
     // 重活并行循环按序一次领一个（Parallel.ForEach 对 List 默认静态切块、对枚举攒块领：「大的先编」不成立，最大几批落进同一线程串行成长尾）
     static OrderablePartitioner<T> InOrder<T>(IEnumerable<T> s) => Partitioner.Create(s, EnumerablePartitionerOptions.NoBuffering);
     static readonly Stopwatch Clock = Stopwatch.StartNew(); static double LastPhase;
@@ -638,16 +638,16 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
         int Mb(long n) => (int)Math.Max(1, (n + (1 << 20) - 1) >> 20);
         var jobs = reuse.Values.Select(h => (Run: (Action)(() => Reused(h, false)), Mb: 0)).Concat(vinReuse.Values.Select(h => (Run: (Action)(() => Reused(h, true)), Mb: 0)))
             .Concat(units.Select(b => (Run: (Action)(() => OneBatch(b)), Mb: Mb(b.Sum(k => plan.Len[k]))))).Concat(vinPlanOrder.Select(b => (Run: (Action)(() => VinOne(b)), Mb: Mb(b.Sum(k => Unity.PyLen(vinSrc[k])))))).ToList();
-        int lanes = jobs.Any(j => j.Mb > 0) ? LiveLanes("编批库") : NJ; using var wide = Metal.Widen(lanes);   // 全拿缓存（没有要编的批）不读内存、不打行；先于 Ticker：活动记录报放宽后的路数
+        int lanes = jobs.Any(j => j.Mb > 0) ? LiveLanes("编批库") : NJ; using var wide = Metal.Widen(lanes, jobs.Any(j => j.Mb > 0) ? "编批库" : null);   // 全拿缓存（没有要编的批）不读内存、不打行；先于 Ticker：活动记录报放宽后的路数
         using var tk = new Ticker("直连库·编批库（MB）", jobs.Sum(j => j.Mb));
-        Parallel.ForEach(InOrder(jobs), new ParallelOptions { MaxDegreeOfParallelism = lanes * 2 }, j => { j.Run(); tk.Step(j.Mb); });   // 大的先编；拼源码与回填在多出的那些线程里做，Metal 不断粮
+        Parallel.ForEach(InOrder(jobs), new ParallelOptions { MaxDegreeOfParallelism = Pool(lanes) }, j => { j.Run(); tk.Step(j.Mb); });   // 大的先编；拼源码与回填在多出的那些线程里做，Metal 不断粮
         var vinOrder = vinPlanOrder;
         if (!failed.IsEmpty)
         {
             var fs = new HashSet<string>(failed.Keys, StringComparer.Ordinal);
             var (_, order) = Unity.VinPlan(vinReps, Hot, UNITY, Dg, vinSrc, vinCap, fs);
             foreach (var m in fs) foreach (var sd in dirs) sd.Drop(m + "_bv.metallib");
-            Parallel.ForEach(InOrder(order.Where(b => !vinBuilt.ContainsKey(string.Join(',', b)))), new ParallelOptions { MaxDegreeOfParallelism = lanes * 2 }, VinOne);
+            Parallel.ForEach(InOrder(order.Where(b => !vinBuilt.ContainsKey(string.Join(',', b)))), new ParallelOptions { MaxDegreeOfParallelism = Pool(lanes) }, VinOne);
             vinOrder = order;
         }
         Count("vin batches", vinOrder.Count(b => vinBuilt.GetValueOrDefault(string.Join(',', b))) + vinReuse.Values.Count(h => vinBuilt.GetValueOrDefault(string.Join(',', h.Keys))));
@@ -772,7 +772,9 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
         Say($"{phase}：{lanes} 路编（-j {NJ}；此刻空闲内存 {avail} MB 的一半按 metal 峰值 {peak} MB + 每路 p90 {p90} MB 重算，上限本单 {jobs} 核）");
         return lanes;
     }
-    static long AvailMb()   // 此刻空闲内存（MB），同 tools/cores.sh s2a_avail_mb：S2A_MEM_AVAIL_MB 覆盖 > macOS vm_stat 空闲 + 非活跃 + 预读 + 可清除 > Linux MemAvailable；读不到 0
+    // 工作线程数：编译路数由 Metal 的闸管，线程按「本单核数 × 2」开（段内放宽后线程够用；拼源码、回填在多出的线程里做，Metal 不断粮）；不比 lanes × 2 少
+    static int Pool(int lanes) { int j = int.TryParse(Environment.GetEnvironmentVariable("S2A_JOBS"), out var v) && v > 0 ? v : Environment.ProcessorCount; return Math.Max(lanes, j) * 2; }
+    internal static long AvailMb()   // 此刻空闲内存（MB），同 tools/cores.sh s2a_avail_mb：S2A_MEM_AVAIL_MB 覆盖 > macOS vm_stat 空闲 + 非活跃 + 预读 + 可清除 > Linux MemAvailable；读不到 0
     {
         if (long.TryParse(Environment.GetEnvironmentVariable("S2A_MEM_AVAIL_MB"), out var o) && o > 0) return o;
         try
@@ -808,10 +810,10 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
         var all = Keys.Where(k => MAC.Has(k + "_b.metal")).ToList();
         Count("se tried", all.Count);
         // 进度：这一段在「编批库」计数满了之后才跑，没计数器时界面停在 100% 像卡住（0.6.0 实测 1 万多键单核十几分钟）。按键计：改写完一键不计，编完（成或败）才计
-        int lanes = LiveLanes("采样模拟变体"); using var wide = Metal.Widen(lanes);
+        int lanes = LiveLanes("采样模拟变体"); using var wide = Metal.Widen(lanes, "采样模拟变体");
         using var tk = new Ticker("直连库·采样模拟变体", all.Count);
         var vs = new ConcurrentDictionary<string, string>(StringComparer.Ordinal);
-        Parallel.ForEach(InOrder(all), new ParallelOptions { MaxDegreeOfParallelism = lanes * 2 }, k =>
+        Parallel.ForEach(InOrder(all), new ParallelOptions { MaxDegreeOfParallelism = Pool(lanes) }, k =>
         {
             bool done = true;
             try
@@ -844,7 +846,7 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
             }
         }
         Count(tag + " batches", batches.Count);
-        Parallel.ForEach(InOrder(batches), new ParallelOptions { MaxDegreeOfParallelism = lanes * 2 }, ks =>
+        Parallel.ForEach(InOrder(batches), new ParallelOptions { MaxDegreeOfParallelism = Pool(lanes) }, ks =>
         {
             try
             {
@@ -887,10 +889,10 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
         var vs = stage.Where(x => x.Value == "vs").Select(x => x.Key).Where(k => MAC.Has(k + "_b.metal")).ToList();
         Count("vp vertex shaders", vs.Count);
         if (union == 0) return;
-        int lanes = LiveLanes("顶点补齐变体"); using var wide = Metal.Widen(lanes);
+        int lanes = LiveLanes("顶点补齐变体"); using var wide = Metal.Widen(lanes, "顶点补齐变体");
         using var tk = new Ticker("直连库·顶点补齐变体", vs.Count);   // 进度：同 SeFinish，先逐键补齐（只吃 CPU），再按批合编（VarBatches），编完才计
         var src = new ConcurrentDictionary<string, string>(StringComparer.Ordinal); var masks = new ConcurrentDictionary<string, (uint Got, int N)>(StringComparer.Ordinal);
-        Parallel.ForEach(InOrder(vs), new ParallelOptions { MaxDegreeOfParallelism = lanes * 2 }, k =>
+        Parallel.ForEach(InOrder(vs), new ParallelOptions { MaxDegreeOfParallelism = Pool(lanes) }, k =>
         {
             bool done = true;
             try
@@ -1218,14 +1220,45 @@ static class Metal
     }
     // name：源文件名（不带 .metal），按它编。有全局构造函数的源码，库里嵌着文件名（_GLOBAL__sub_I_<name>.metal）：这种库按「名 + 源码」缓存，
     //   其余（库里没有文件名）按源码缓存、同源的键共用；查时先源码键、再名键
-    /// <summary>同时编译的 metal 进程临时放宽到 lanes 路（Build.LiveLanes）；Dispose 收回到 -j。期间 Cur = 实际路数（不比 -j 宽时就是 -j）</summary>
-    public static IDisposable Widen(int lanes)
+    /// <summary>同时编译的 metal 进程临时放宽到 lanes 路（Build.LiveLanes）；Dispose 收回到 -j。期间 Cur = 实际路数（不比 -j 宽时就是 -j）。
+    /// 段内继续按实时空闲内存放宽（11-20 出包提速：开头那一刻算的路数整段沿用，16 GB 机器开头空闲少时后面空出来的核一直闲着）：
+    ///   每 S2A_LANE_GROW_S（缺省 5）秒读一次此刻空闲内存（已扣掉正在编的各路），一半里还放得下「metal 峰值 + 2 路 p90」就多放 1 路（一次只加 1 路、留 1 路余量，
+    ///   新加的那路要过几秒才吃到内存），上限本单核数 S2A_JOBS；只放宽不收窄。空闲内存是给定值（S2A_MEM_AVAIL_MB，单测）或读不到时不放宽：没有实时读数</summary>
+    public static IDisposable Widen(int lanes, string phase = null)
     {
         int extra = Math.Max(0, lanes - Cap); Cur = Cap + extra;
         if (extra > 0) Gate.Release(extra);
-        return new Narrow(extra);
+        return new Narrow(extra, phase);
     }
-    sealed class Narrow(int extra) : IDisposable { public void Dispose() { for (int i = 0; i < extra; i++) Gate.Wait(); Cur = 0; } }
+    sealed class Narrow : IDisposable
+    {
+        int extra, grown; readonly string phase; readonly Timer timer; readonly object mu = new();
+        public Narrow(int extra, string phase)
+        {
+            this.extra = extra; this.phase = phase;
+            bool live = phase != null && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("S2A_MEM_AVAIL_MB"));
+            int sec = int.TryParse(Environment.GetEnvironmentVariable("S2A_LANE_GROW_S"), out var g) && g > 0 ? g : 5;
+            if (live) timer = new Timer(_ => Grow(), null, sec * 1000, sec * 1000);
+        }
+        void Grow()
+        {
+            static int Env(string n, int d) => int.TryParse(Environment.GetEnvironmentVariable(n), out var v) && v > 0 ? v : d;
+            int cap = Env("S2A_JOBS", Environment.ProcessorCount), peak = Env("S2A_DIRECT_METAL_PEAK_MB", 1065), p90 = Env("S2A_DIRECT_METAL_P90_MB", 420);
+            lock (mu)
+            {
+                if (timer == null || Cap + extra >= cap) return;
+                long avail = Build.AvailMb();
+                if (avail <= 0 || avail / 2 < peak + 2L * p90) return;
+                extra++; grown++; Cur = Cap + extra; Gate.Release(1);
+            }
+        }
+        public void Dispose()
+        {
+            int n, g; lock (mu) { timer?.Dispose(); n = extra; g = grown; }
+            if (g > 0) Build.Say($"{phase}：段内按此刻空闲内存又放宽 {g} 路，最多 {Cap + n} 路");
+            for (int i = 0; i < n; i++) Gate.Wait(); Cur = 0;
+        }
+    }
     public static byte[] Compile(string target, string msl, string name) => Compile(target, msl, name, out _);
     /// <summary>编译身份（编译约定 + 编译器版本）的十六进制：批成员索引按它分键，换编译器不拿旧库</summary>
     public static string IdentHex(string target) => Convert.ToHexString(T[target].Ident).ToLowerInvariant()[..16];
