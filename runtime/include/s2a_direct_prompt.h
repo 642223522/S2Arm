@@ -46,8 +46,8 @@ extern "C" {
 // 档位梯子压回 30 帧（#1688，macos/front_mac.m s2a_ios_fps_capped；iOS 用 ios/l10n 的 app.fpsCap.*）：说清这一局为什么回原帧率，给「再试 60 帧」
 #define S2A_DPROMPT_FPS_CAP_TITLE   "60 帧"
 #define S2A_DPROMPT_FPS_CAP_TITLE_EN "60 FPS"
-#define S2A_DPROMPT_FPS_CAP_BODY    "这一局跑不稳 60 帧，已回到原生帧率。下次开游戏会重新从 60 帧开始；想现在再试，点「再试 60 帧」。"
-#define S2A_DPROMPT_FPS_CAP_BODY_EN "This session can't hold 60 FPS steadily, so the game is back at its native frame rate. It starts at 60 FPS again the next time you open the game; click \"Try 60 FPS again\" to retry now."
+#define S2A_DPROMPT_FPS_CAP_BODY    "这一局跑不稳 60 帧，已先回到原生帧率；下次开游戏会重新从 60 帧开始。"
+#define S2A_DPROMPT_FPS_CAP_BODY_EN "This session can't hold 60 FPS steadily, so the game is back at its native frame rate for now. It starts at 60 FPS again the next time you open the game."
 #define S2A_DPROMPT_FPS_CAP_RETRY   "再试 60 帧"
 #define S2A_DPROMPT_FPS_CAP_RETRY_EN "Try 60 FPS again"
 #define S2A_DPROMPT_FPS_CAP_BACK    "60 帧已恢复。"

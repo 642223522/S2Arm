@@ -267,7 +267,7 @@
 "about.mode.direct" = "Direct";
 "about.mode.unrecorded" = "Inconnu (ce package n'a pas enregistré de mode graphique)";
 "about.unknown" = "Inconnu";
-"app.fpsCap.ladder" = "Cette partie ne tient pas 60 FPS de façon stable ; le jeu est revenu à sa fréquence native. Il repartira à 60 FPS la prochaine fois que vous ouvrirez le jeu ; touchez « Réessayer 60 FPS » pour réessayer maintenant.";
+"app.fpsCap.ladder" = "Cette session ne peut pas maintenir 60 FPS de façon stable ; le jeu revient pour l'instant à sa fréquence native. Il repartira à 60 FPS la prochaine fois que vous ouvrirez le jeu.";
 "app.fpsCap.restored" = "60 FPS est rétabli.";
 "app.fpsCap.retry" = "Réessayer 60 FPS";
 "app.lowRam.title" = "Cet appareil n'a peut-être pas assez de mémoire";
