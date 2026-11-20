@@ -503,6 +503,7 @@
   "console.updateSelected": "Actualizar selección ({0})",
   "console.progress": "Juego {0} de {1}",
   "console.stop": "Detener",
+  "console.pushFailed": "{0} juegos no se actualizaron",
   "console.help.guide": "Ver otra vez la guía inicial",
   "console.help.report": "Informar de un problema",
   "dynamic.batch": "Enviando {0}/{1}",

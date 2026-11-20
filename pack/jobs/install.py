@@ -3046,10 +3046,11 @@ def push_selected(c):
             finally:
                 atomic(state_path, state)
     # 有款没推成：整单按失败报（#1756：原先照报「完成」，两端界面都不看逐款结果，进度条跑完、手机上还是「需要导入」、总控台还是「更新」）。
-    #   原因用第一款失败的原话与错误码（已是给玩家的话）；失败页「重试」再推一轮，推成的那几款程序包已在手机上，按记录跳过
+    #   原因用第一款失败的原话与错误码（已是给玩家的话）；失败页「重试」再推一轮，推成的那几款程序包已在手机上，按记录跳过。
+    #   逐款结果放进机读事实 facts {games: [{gameId, ok, code?, message?}]}：失败页逐款写「哪一款、因为什么」，「重试」只推没成的那几款
     if state["failed"]:
         first = next(r for r in rows if not r["ok"])
-        raise Failure(first["message"], code=first["code"])
+        raise Failure(first["message"], code=first["code"], facts=dict(games=rows))
     return dict(games=rows, done=len(state["done"]), failed=len(state["failed"]), remaining=len(games) - len(state["done"]))
 
 
