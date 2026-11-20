@@ -1424,6 +1424,78 @@ void s2a_shell_pick_s2arm(const char *gid) {   // 主线程（s2a_shell.h）
     if (!top) { LOG("【红】游戏库：没有窗口，.s2arm 选择器开不出来"); return; }
     [top presentViewController:p animated:YES completion:nil];
 }
+// 长按卡片「导出这一款…」（0.6.3，GitHub #1793：分发证书玩家换签名重装后不想再从电脑整套重推）：后台生成这款的 <名>.s2arm + <名>.img
+//   （game_export.m，.img 是资源包 game.img 的同卷硬链接，不拷副本），放本款文档根下的临时文件夹 game-exports/<随机名>/，交「文件」App 存走（asCopy）。
+//   选好或取消都清掉临时件（同 save_transfer.m 存档导出：玩家选的目标正是临时件本身时那个不删）；导不出按码说人话。同时只做一次
+#include "game_export.h"
+@interface S2AGameExporter : NSObject <UIDocumentPickerDelegate> @property (copy) NSString *gid, *dir; @property (copy) NSArray<NSString *> *files; @end
+static S2AGameExporter *g_gexp;
+static void gexp_clear(S2AGameExporter *x, NSArray<NSURL *> *kept) {
+    NSFileManager *fm = NSFileManager.defaultManager; BOOL keep = NO;
+    for (NSString *f in x.files) {
+        NSURL *u = [NSURL fileURLWithPath:f].URLByResolvingSymlinksInPath; BOOL mine = NO;
+        for (NSURL *k in kept) mine |= [k.URLByResolvingSymlinksInPath isEqual:u];
+        if (mine) { keep = YES; continue; }
+        NSError *e = nil;
+        if (![fm removeItemAtPath:f error:&e] && [fm fileExistsAtPath:f]) LOG("【黄】导出这一款：临时件 %s 没删掉：%s", f.UTF8String, e.localizedDescription.UTF8String);
+    }
+    if (!keep && x.dir) [fm removeItemAtPath:x.dir error:nil];
+}
+@implementation S2AGameExporter
+- (void)documentPicker:(UIDocumentPickerViewController *)c didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+    (void)c; LOG("导出这一款：%s 存到了 %s 等 %lu 处", self.gid.UTF8String, urls.firstObject.path.UTF8String, (unsigned long)urls.count);
+    gexp_clear(self, urls); g_gexp = nil;
+}
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)c { (void)c; LOG("导出这一款：%s 玩家取消", self.gid.UTF8String); gexp_clear(self, nil); g_gexp = nil; }
+@end
+static NSString *gexp_text(int r, const char *why) {
+    switch (r) {
+    case S2A_GEXP_NO_PROGRAM: return S2AL(@"gameExport.noProgram");
+    case S2A_GEXP_IN_BUNDLE: return S2AL(@"gameExport.inBundle");
+    case S2A_GEXP_PARTIAL: return S2AL(@"gameExport.partial");
+    case S2A_GEXP_NO_IMG: return S2AL(@"gameExport.noImg");
+    default: return [NSString stringWithFormat:S2AL(@"gameExport.ioFailed"), @(why)];
+    }
+}
+void s2a_shell_export_game(const char *gid_c) {   // 主线程（s2a_shell.h）
+    if (!gid_c || strlen(gid_c) != 16) return;
+    if (g_gexp) { LOG("导出这一款：%s 上一次还没完，这次不接", g_gexp.gid.UTF8String); return; }
+    S2AGameExporter *x = [S2AGameExporter new]; x.gid = @(gid_c); g_gexp = x;
+    char d[1024]; s2a_container_docs(d, sizeof d); NSString *docs = @(d);
+    NSString *root = [docs stringByAppendingPathComponent:[NSString stringWithFormat:@"games/%@/game-exports", x.gid]];
+    [NSFileManager.defaultManager removeItemAtPath:root error:nil];   // 上次导出途中 App 被关留下的
+    x.dir = [root stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
+    // 生成要几秒（程序库 + 着色器库原样写一遍）：0.3 秒还没好才弹「正在生成」，说明写在里面（同 library_pack_help 的「正在检查」）
+    __block BOOL done = NO; __block UIAlertController *wait = nil;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (done) return;
+        UIViewController *top = lib_top(); if (!top) return;
+        wait = [UIAlertController alertControllerWithTitle:S2AL(@"gameExport.preparing") message:S2AL(@"gameExport.hint") preferredStyle:UIAlertControllerStyleAlert];
+        [top presentViewController:wait animated:YES completion:nil];
+    });
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        char s2[2400] = "", im[2400] = "", why[1024] = ""; int r; NSError *e = nil;
+        CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
+        if (![NSFileManager.defaultManager createDirectoryAtPath:x.dir withIntermediateDirectories:YES attributes:nil error:&e]) {
+            r = S2A_GEXP_IO; snprintf(why, sizeof why, "建导出文件夹失败：%s", e.localizedDescription.UTF8String); }
+        else r = s2a_game_export(docs.fileSystemRepresentation, x.gid.UTF8String, x.dir.fileSystemRepresentation, s2, sizeof s2, im, sizeof im, why, sizeof why);
+        LOG("导出这一款：%s %s（%.0f 毫秒）%s", x.gid.UTF8String, r ? "导不出" : "已生成", (CFAbsoluteTimeGetCurrent() - t0) * 1000, r ? why : s2);
+        NSString *s2s = @(s2), *ims = @(im), *text = r ? gexp_text(r, why) : nil;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            done = YES;
+            void (^next)(void) = ^{
+                if (r) { gexp_clear(x, nil); g_gexp = nil; if (g_lib_window) top_alert(g_lib_window, S2AL(@"gameExport.failed.title"), text); return; }
+                x.files = @[s2s, ims];
+                UIViewController *top = lib_top();
+                if (!top) { LOG("【红】导出这一款：没有窗口，「文件」导出页开不出来"); gexp_clear(x, nil); g_gexp = nil; return; }
+                UIDocumentPickerViewController *p = [[UIDocumentPickerViewController alloc] initForExportingURLs:@[[NSURL fileURLWithPath:s2s], [NSURL fileURLWithPath:ims]] asCopy:YES];
+                p.delegate = x;
+                [top presentViewController:p animated:YES completion:nil];
+            };
+            if (wait && wait.presentingViewController) [wait dismissViewControllerAnimated:NO completion:next]; else next();
+        });
+    });
+}
 #endif
 static void widget_open(NSURL *url, void *ctx) {
     if (url.isFileURL && [url.pathExtension.lowercaseString isEqualToString:@"s2arm"]) { s2arm_open(url); return; }

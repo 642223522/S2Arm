@@ -308,6 +308,14 @@
 "img.noShaders.body" = "「%@」不完整。請把電腦上「S2Arm 游戏包」資料夾裡這款的 .s2arm 也一起放進來（它帶著這款要用的著色器），或者在電腦的 S2Arm 裡連著手機點「推到 iPhone」。";
 "img.updateSkipped.title" = "這份著色器更新已略過";
 "img.updateSkipped.body" = "「%@」和目前遊戲版本不配套，已略過、沒有套用。遊戲照常能玩；要用這份更新，請把電腦上同一次匯出的完整 .img 和它一起放進來。";
+"gameExport.preparing" = "正在產生匯出檔案…";
+"gameExport.hint" = "產生 .s2arm 和 .img 兩個檔案存到「檔案」App，換簽名重裝 S2Arm 後放進「放这里导入」即可匯回。";
+"gameExport.failed.title" = "無法匯出這一款";
+"gameExport.noProgram" = "這一款是舊方式安裝的（程式在 App 裡），手機上無法匯出。請在電腦上的 S2Arm 裡匯出這一款。";
+"gameExport.inBundle" = "這一款裝在 App 包裡，手機上無法匯出。";
+"gameExport.partial" = "這一款缺了部分檔案（只能部分遊玩），補齊後再匯出。";
+"gameExport.noImg" = "這一款的遊戲資源是舊格式（沒有 game.img），手機上無法匯出。請在電腦上的 S2Arm 裡匯出這一款。";
+"gameExport.ioFailed" = "無法寫出匯出檔案：%@";
 "container.locked.title" = "S2Arm 的部分檔案被系統鎖住了";
 "container.locked.body" = "這台裝置上有 %@ GB 的 S2Arm 舊檔案被系統鎖住，S2Arm 改不了也刪不掉，只能刪除 App 時一起清掉。\n\n要騰出這些空間：\n1. 在每款遊戲裡打開選單 →「存檔管理」→「匯出目前存檔…」，存到「檔案」裡 S2Arm 資料夾以外（例如 iCloud 雲碟；刪除 App 時 S2Arm 資料夾會一起被刪）\n2. 刪除並重新安裝 S2Arm\n3. 用「存檔管理」→「選擇備份並檢查…」匯回存檔";
 "diag.fileWord" = "診斷";

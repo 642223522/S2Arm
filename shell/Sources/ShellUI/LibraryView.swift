@@ -339,6 +339,7 @@ public struct LibraryView: View {
         .environment(\.shellShowHelp, { game in openHelp(game.id) })
         .environment(\.shellAskDelete, actions.onDeleteGame == nil ? nil : { game in openDelete(game.id) })
         .environment(\.shellManageSaves, guardedActions.onManageSaves)
+        .environment(\.shellExportGame, guardedActions.onExportGame)
         .environment(\.shellSnapshot, { () -> (available: (String) -> Bool, restore: (String) -> Void, delete: ((String) -> Void)?)? in
             guard let has = actions.snapshotAvailable, let go = guardedActions.onRestoreSnapshot else { return nil }
             return (available: has, restore: go, delete: guardedActions.onDeleteSnapshot) }())
@@ -532,6 +533,7 @@ public struct LibraryView: View {
         a.onGlobalPadMapReset = o.onGlobalPadMapReset.map { act in { if !echo() { act() } } }
         a.onDeleteGame = o.onDeleteGame.map { act in { if !echo() { act($0, $1) } } }
         a.onManageSaves = o.onManageSaves.map { act in { if !echo() { act($0) } } }
+        a.onExportGame = o.onExportGame.map { act in { if !echo() { act($0) } } }
         a.onRestoreSnapshot = o.onRestoreSnapshot.map { act in { if !echo() { act($0) } } }
         a.onDeleteSnapshot = o.onDeleteSnapshot.map { act in { if !echo() { act($0) } } }
         return a
