@@ -66,7 +66,7 @@ int s2a_source_keep(const uint8_t key[8], uint32_t array_index, const void *code
                     const void *control, uint32_t control_bytes);
 // 按 key+nvn_stage 查（回放/补编用）。返回 1 命中并填 view（指针在下次 keep/释放前有效）。
 int s2a_source_get(const uint8_t key[8], uint32_t array_index, struct s2a_source_entry_view *out);
-// 只按 key 查：同一个 key 就是同一份字节内容（key = sha256(control‖code) 前 8 字节）。
+// 只按 key 查：同一个 key 就是同一份编译输入（key = sha256(control‖code) 前 8 字节，control 两段易变字段按 0 算，nvn_key.h）。
 int s2a_source_get_key(const uint8_t key[8], struct s2a_source_entry_view *out);
 // 是否已有一份完整快照（Bind 时用它避免重读可能已失效的 guest control）。
 int s2a_source_has(const uint8_t key[8]);
