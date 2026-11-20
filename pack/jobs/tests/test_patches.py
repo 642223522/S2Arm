@@ -116,6 +116,27 @@ class PatchesTests(unittest.TestCase):
         self.assertNotIn("S2A_PSO_SOURCES_EXTRA", env)
         self.assertFalse(d.exists())
 
+    def test_pso_sources_include_iphone_seen_first(self):
+        # 期望手写（11-20）：这款 games/<程序号>/seen/ 里有 iPhone 拉回的见过表（.tsv）→ S2A_PSO_SOURCES_EXTRA = seen 目录、云端种子目录，按这个先后；
+        #   seen 只有别的文件 / 没有 seen → 同原来只交云端目录；云端也没有、只有 seen → 只交 seen
+        import layout
+        seed = b"R\t" + b"00" * 432 + b"\n"
+        self.bundles[f"g/{GID}"].append(it(seed, "pso", "pso", "a.tsv", [GID], [], repo="S2Arm/pso-seeds"))
+        self.publish()
+        import cheats
+        real = cheats.main_build; cheats.main_build = lambda c, g: "FF1D1C05670DB602"; self.addCleanup(setattr, cheats, "main_build", real)
+        self.c.library = self.t / "lib"; self.c.engine = self.t / "engine"
+        seen = layout.path(self.c, GID, "seen"); seen.mkdir(parents=True, exist_ok=True); (seen / "notes.txt").write_text("x")
+        env = {}; patches.prepare(self.c, dict(id=GID), self.t, env)
+        cloud = env["S2A_PSO_SOURCES_EXTRA"]
+        self.assertNotIn(os.pathsep, cloud)                                   # seen 里没有 .tsv：只交云端
+        (seen / "phone1.tsv").write_text("S\t1111222233334444_b\t0\n")
+        env = {}; patches.prepare(self.c, dict(id=GID), self.t, env)
+        self.assertEqual(env["S2A_PSO_SOURCES_EXTRA"].split(os.pathsep), [str(seen), cloud])
+        self.bundles[f"g/{GID}"].pop(); self.publish()
+        env = {}; patches.prepare(self.c, dict(id=GID), self.t, env)
+        self.assertEqual(env["S2A_PSO_SOURCES_EXTRA"], str(seen))             # 云端撤了种子、本机见过表还在：只交 seen
+
     def test_cheat_rows(self):
         self.assertEqual(patches.cheat_rows(self.c, GID, {"FF1D1C05670DB602"}),
                          [("FF1D1C05670DB602", self.ch.decode(), "bad1dea/NXCheats", "a", "MIT", "x")])
