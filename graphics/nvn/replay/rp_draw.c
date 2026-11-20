@@ -1253,7 +1253,9 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
         if (np != g_prog) { g_prog = np; rp_pso_dirty = 1; }
     }
     // 仅拒绝绑定 DRV0 且未证明不读 base instance 的已解码 count 组；单条间接/#941 和 OP_MULTI_DRAW 保持原路径。
-    if (g_decoded_count_n) {
+    // 组大小 1（max_draws = 1）只有一条命令，没有「别的命令的 firstInstance 被第一条顶替」的问题，语义与单条间接绘制相同：
+    //   不跳，走下面单条间接的那次 4 字节拷贝（firstInstance 取这一条记录的）。组大小 ≥ 2 照旧具名跳（#1787 第二处）。
+    if (g_decoded_count_n > 1) {
         for (int st = 0; st < RP_PROG_STAGES; st++)
             for (uint32_t i = 0; i < g_prog->nent[st]; i++)
                 if (g_prog->ent[st][i].src_kind == NVN_RB_DRV0 && !(g_prog->binst_unread >> st & 1)) {
