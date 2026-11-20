@@ -5179,6 +5179,8 @@ static nvn_gpu_samp c976b_samp(const float border[4], uint8_t ws, nvn_gpu_err *e
     return s;
 }
 static int c976b_why(const nvn_gpu_err *e, const char *want) { return !strncmp(e->why, want, strlen(want)); }
+static void c976b_nearest_cb(void *user, const char *name, uint64_t v) { if (!strcmp(name, "sampler_border_color_nearest")) *(uint64_t *)user = v; }
+static uint64_t c976b_nearest(void) { uint64_t v = 0; nvn_gpu_stats(c976b_nearest_cb, &v, 0); return v; }
 static void c976b_border_color(const char *dir) {
     printf("C976b 自定义边框色：设备 custom_border=%d without_format=%d max=%u\n", C976_CB_ENABLED, C976_CB_NOFMT, C976_CB_MAX);
     static const float odd[4] = {0.2f, 0.4f, 0.6f, 0.8f};
@@ -5198,9 +5200,12 @@ static void c976b_border_color(const char *dir) {
               fixed[k][0], fixed[k][1], fixed[k][2], fixed[k][3], r.code, e.why);
         if (s) nvn_gpu_samp_release(s);
     }
-    // 没有扩展
+    // 没有扩展：就近建成，具名计数 sampler_border_color_nearest 按建成次数 +1（上面内置三档、不用边框的不计）
+    const uint64_t nb0 = c976b_nearest();
     s = c976b_samp(odd, NVN_WRAP_MODE_CLAMP_TO_BORDER, &e, &r);
     CHECK(OK(r) && s, "C976b 没有扩展：期望就近取内置档建成（不丢绘制）→ rc=%d 句柄=%p why=%s", r.code, (void *)s, e.why);
+    CHECK(c976b_nearest() == nb0 + 1, "C976b 没有扩展：sampler_border_color_nearest 期望 +1 → %llu → %llu",
+          (unsigned long long)nb0, (unsigned long long)c976b_nearest());
     printf("C976b 没有扩展：自定义边框色就近建采样器 rc=%d\n", r.code);
     if (s) nvn_gpu_samp_release(s);
     C976_CB_ENABLED = had; C976_CB_NOFMT = had_nofmt;

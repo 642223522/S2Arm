@@ -392,6 +392,8 @@ struct nvn_gpu_vk {
 
 static struct nvn_gpu_vk g;
 static _Atomic int g_open;   // 跨线程：close 置 0 后其他线程据此拒收
+static uint64_t g_border_nearest;     // sampler_border_color_nearest 计数（samp_border_nearest_note）
+static int g_border_nearest_said;     // 本局已打过边框色就近那一行：开会话时清零
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 // 诊断读数（nvk_gputime 开着时每 300 次上屏打一行）：每帧新建了多少个驱动对象、写了多少次描述符、开了多少个查询。
 enum { OC_RP, OC_FB, OC_CPOOL, OC_DPOOL, OC_DALLOC, OC_DWRITE, OC_QUERY, OC_VIEW, OC_N };
@@ -2229,6 +2231,7 @@ nvn_gpu_rc nvn_gpu_open(const nvn_gpu_open_desc *d, nvn_gpu_err *err) {
     report_timestamp_open();
     fill_caps(&g, d);
     g_ref_n = g_ref_hit = 0;
+    __atomic_store_n(&g_border_nearest_said, 0, __ATOMIC_RELAXED);   // 边框色就近那一行每局首个打一次
     if (pthread_create(&g.worker, NULL, worker_main, &g) != 0)
         return fail(err, NVN_GPU_E_DEVICE, "worker 线程创建失败");
     g.worker_started = 1;
@@ -6590,26 +6593,16 @@ static int32_t samp_border_int(float f) {
     return out;
 }
 
-// 没有 VK_EXT_custom_border_color 时的就近替代：同一组边框色只记一次（最多记 32 组，之后不再记）。
-static pthread_mutex_t g_border_approx_mu = PTHREAD_MUTEX_INITIALIZER;
-static float g_border_approx_seen[32][4];
-static uint32_t g_border_approx_n;
-static void samp_border_approx_once(const float b[4], int pf, int pi) {
+// 没有 VK_EXT_custom_border_color 时的就近替代（降级，不是错误）：具名计数 sampler_border_color_nearest 按采样器建成次数计
+//   （进程累计，nvn_gpu_stats 读），每局（开会话起）只打首个一行信息级日志：原色 → 浮点 / 整数各取的内置档。
+static void samp_border_nearest_note(const float b[4], int pf, int pi) {
     static const char *const name[3] = {"透明黑", "不透明黑", "不透明白"};
-    int report = 0;
-    pthread_mutex_lock(&g_border_approx_mu);
-    if (g_border_approx_n < 32) {
-        report = 1;
-        for (uint32_t k = 0; k < g_border_approx_n; k++)
-            if (!memcmp(g_border_approx_seen[k], b, sizeof g_border_approx_seen[k])) { report = 0; break; }
-        if (report) memcpy(g_border_approx_seen[g_border_approx_n++], b, sizeof g_border_approx_seen[0]);
-    }
-    pthread_mutex_unlock(&g_border_approx_mu);
-    if (!report) return;
-    char line[240];
-    snprintf(line, sizeof line, "【黄】sampler_border_color_nearest：设备没有 VK_EXT_custom_border_color，边框色 %g %g %g %g 就近取浮点%s / 整数%s（近似，绘制照画）",
+    __atomic_fetch_add(&g_border_nearest, 1, __ATOMIC_RELAXED);
+    if (__atomic_exchange_n(&g_border_nearest_said, 1, __ATOMIC_RELAXED)) return;
+    char line[260];
+    snprintf(line, sizeof line, "sampler_border_color_nearest：设备没有 VK_EXT_custom_border_color，边框色 (%g, %g, %g, %g) → 浮点%s / 整数%s（就近取内置档，绘制照画；本局首个，之后只计数）",
              b[0], b[1], b[2], b[3], name[pf], name[pi]);
-    nvn_plat_log(NVN_PLAT_LOG_WARN, "gpu", line);
+    nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", line);
 }
 
 static void samp_border_unreserve(const struct nvn_gpu_samp_s *s) {
@@ -6702,12 +6695,12 @@ nvn_gpu_rc nvn_gpu_samp_create(const samp_par *p, nvn_gpu_samp *out, nvn_gpu_err
     const int reach = ci.addressModeU == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER ||
                       ci.addressModeV == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER ||
                       ci.addressModeW == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-    // 设备没有 VK_EXT_custom_border_color（如 Maleoon 920）：不丢绘制，浮点 / 整数采样器各按 RGBA 距离取最近的内置档（见 nvn_vk_border.h），记一次黄色日志。
+    // 设备没有 VK_EXT_custom_border_color（如 Maleoon 920）：不丢绘制，浮点 / 整数采样器各按 RGBA 距离取最近的内置档（见 nvn_vk_border.h），
+    //   建成后计 sampler_border_color_nearest、每局首个打一行信息级日志（samp_border_nearest_note）。
     const int approx = preset < 0 && reach && !g.dev->custom_border_enabled;
     const int custom = preset < 0 && reach && !approx;
     const int preset_f = approx ? nvk_border_nearest(p->border, 0) : preset < 0 ? 1 : preset;
     const int preset_i = approx ? nvk_border_nearest(p->border, 1) : preset < 0 ? 1 : preset;
-    if (approx) samp_border_approx_once(p->border, preset_f, preset_i);
     if (custom && !g.dev->custom_border_without_format) {
         free(s);
         return fail(err, NVN_GPU_E_UNSUPPORTED, "sampler_border_color_custom_format：设备没有 customBorderColorWithoutFormat，建采样器时不知道视图格式");
@@ -6773,6 +6766,7 @@ nvn_gpu_rc nvn_gpu_samp_create(const samp_par *p, nvn_gpu_samp *out, nvn_gpu_err
     pthread_mutex_unlock(&g_mu);
     *out = s;
     if (mapping_fallback) nvn_unimpl("gpu", "sampler_reduction_average_no_component_mapping", NULL);
+    if (approx) samp_border_nearest_note(p->border, preset_f, preset_i);
     return rc(NVN_GPU_OK);
 }
 
@@ -8087,6 +8081,7 @@ void nvn_gpu_stats(nvn_gpu_stat_fn fn, void *user, int take) {
     fn(user, "shader_missing_vertex_stores", __atomic_load_n(&g_vfeat_missing[0], __ATOMIC_RELAXED));   // 顶点前阶段写存储、设备没启用 vertexPipelineStoresAndAtomics 的着色器数
     fn(user, "shader_missing_clip_distance", __atomic_load_n(&g_vfeat_missing[1], __ATOMIC_RELAXED));
     fn(user, "shader_missing_cull_distance", __atomic_load_n(&g_vfeat_missing[2], __ATOMIC_RELAXED));
+    fn(user, "sampler_border_color_nearest", __atomic_load_n(&g_border_nearest, __ATOMIC_RELAXED));   // 没有自定义边框色扩展、边框色就近取内置档建成的采样器数（进程累计）
 }
 
 // 用例读：视图全局链与帧缓冲缓存的当前账。0 现存视图数；1 旧路径（nvk_ulist=0）摘链累计走过的节点数（缺省路径恒为 0）；
