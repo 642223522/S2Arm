@@ -91,7 +91,7 @@ import NXLauncher
         print("popover-cap natural=\(natural) capped=\(capped)")
     }
 
-    func testNintendoControllersGetTheFaceEditor() async throws {
+    func testNintendoControllersDoNotShowFaceEditor() async throws {
         _ = NSApplication.shared
         let pad = PopoverLayoutController("Pro Controller")
         for channel in [false, true] {
@@ -112,9 +112,10 @@ import NXLauncher
             window.isReleasedWhenClosed = false; window.contentView = host; window.orderBack(nil)
             defer { window.close() }
             host.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(80))
-            let ids = Set(navigation.controlTargets(in: window).map(\.id))
-            XCTAssertTrue(ids.isSuperset(of: ["controller.face.0", "controller.face.3", "controller.face.xbox", "controller.face.reset"]),
-                          "\(channel ? "专用通道" : "系统认的") 任天堂手柄也要看得到四键布局：\(ids.sorted())")
+            navigation.source.controllers = { [] }; navigation.attach(window); navigation.source.stop()
+            defer { navigation.detach() }
+            XCTAssertFalse(navigation.controlTargets(in: window).contains { $0.id == "controller.player.0.faceMap" },
+                           "\(channel ? "专用通道" : "系统认的") 任天堂手柄不显示四键布局方钮（只限非 Switch 手柄）")
         }
     }
 
@@ -142,9 +143,8 @@ import NXLauncher
                 }
                 host.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(80))
                 let frames = navigation.controlTargets(in: window).map { window.convertFromScreen($0.frame) }
-                XCTAssertEqual(Set(navigation.controlTargets(in: window).map(\.id)), ["controller.settings", "controller.system.settings", "controller.player.0", "controller.assign",
-                    "controller.face.0", "controller.face.1", "controller.face.2", "controller.face.3", "controller.face.switch", "controller.face.reset"],
-                               "Switch 2 连接 / 断开不给手柄按（只给鼠标）；齿轮、蓝牙设置、玩家选择、四键映射与分配玩家")
+                XCTAssertEqual(Set(navigation.controlTargets(in: window).map(\.id)), ["controller.settings", "controller.system.settings", "controller.player.0.faceMap", "controller.player.0", "controller.assign"],
+                               "Switch 2 连接 / 断开不给手柄按（只给鼠标）；齿轮、蓝牙设置、玩家选择与它那一行的四键方钮、分配玩家（四键编辑收在子页面）")
                 XCTAssertEqual(host.bounds.width, 380, accuracy: 0.5)
                 XCTAssertGreaterThanOrEqual(frames.count, 2, "必须测到齿轮和蓝牙设置按钮")
                 print("popover-insets name=\(name) zh=\(zh) width=\(host.bounds.width) frames=\(frames)")
@@ -157,6 +157,39 @@ import NXLauncher
                     host.cacheDisplay(in: host.bounds, to: bitmap)
                     try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
                         .write(to: URL(fileURLWithPath: output).appendingPathComponent("controller-popover.png"))
+                }
+                if name == "DualSense Wireless Controller" {
+                    navigation.source.controllers = { [] }; navigation.attach(window); navigation.source.stop()
+                    defer { navigation.detach() }
+                    // 四键布局：同齿轮选单的浮层，开着时手柄方向键只在浮层里走，面板高度不变；改了立刻生效，B 关浮层回方钮
+                    let panelHeight = host.bounds.height
+                    navigation.focus("controller.player.0.faceMap"); navigation.handle(.confirm)
+                    host.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(80))
+                    let sub = Set(navigation.controlTargets(in: window).map(\.id))
+                    XCTAssertEqual(sub, ["controller.face.layout", "controller.face.0", "controller.face.1", "controller.face.2", "controller.face.3"],
+                                   "浮层开着只能在四键编辑里移动")
+                    XCTAssertEqual(host.fittingSize.height, panelHeight, accuracy: 0.5, "浮层不改面板高度")
+                    if let output = ProcessInfo.processInfo.environment["S2A_SNAPSHOT_OUT"] {
+                        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+                        host.cacheDisplay(in: host.bounds, to: bitmap)
+                        try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                            .write(to: URL(fileURLWithPath: output).appendingPathComponent("controller-popover-facemap-\(zh ? "zh" : "en").png"))
+                    }
+                    // B 只关最里面那一层：选单开着按 B 只收选单，浮层还在；改布局立刻写入，再按 B 关浮层回到面板
+                    navigation.focus("controller.face.layout"); navigation.handle(.confirm)
+                    try await Task.sleep(for: .milliseconds(150))
+                    navigation.handle(.back)
+                    host.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(150))
+                    XCTAssertTrue(navigation.controlTargets(in: window).contains { $0.id == "controller.face.layout" }, "选单开着按 B：只关选单，四键浮层还在")
+                    navigation.focus("controller.face.layout"); navigation.handle(.confirm)
+                    try await Task.sleep(for: .milliseconds(150))
+                    navigation.focus("dropdown.switch"); navigation.handle(.confirm)
+                    try await Task.sleep(for: .milliseconds(150))
+                    XCTAssertEqual(controller.faceMaps.mapping(for: .playstation).code, 0xb1, "改了立刻写入")
+                    navigation.handle(.back)
+                    host.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(80))
+                    XCTAssertTrue(navigation.controlTargets(in: window).contains { $0.id == "controller.assign" }, "B 关浮层回到面板")
+                    controller.faceMaps.set(nil, for: .playstation)
                 }
                 if name == "DualSense Wireless Controller", zh {
                     navigation.source.controllers = { [] }

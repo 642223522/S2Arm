@@ -156,8 +156,13 @@ static void on_queue(dispatch_block_t block) {
     if (dispatch_get_specific(&queueKey)) block(); else dispatch_sync(bleQueue, block);
 }
 
-// 玩家 1 灯（09/07 bitmask）：握手第 7 步与运行中保活共用
-static const uint8_t ledPlayer1[16] = {9, 0x91, 1, 7, 0, 8, 0, 0, 1};
+// 玩家灯（09/07 bitmask，第 8 字节 = 四颗灯）：握手第 7 步与运行中保活共用；按设备 id 记的灯型（ns2_set_player_lights），没设过亮玩家 1。只在 bleQueue 上读写
+static NSMutableDictionary<NSString *, NSNumber *> *ledMasks;
+static NSData *led_command(CBPeripheral *device) {
+    NSNumber *mask = device.identifier ? ledMasks[device.identifier.UUIDString] : nil;
+    uint8_t bytes[16] = {9, 0x91, 1, 7, 0, 8, 0, 0, mask ? (uint8_t)(mask.unsignedIntValue & 0xf) : 1};
+    return [NSData dataWithBytes:bytes length:sizeof bytes];
+}
 typedef struct { unsigned center[2], above[2], below[2]; } ns2_calibration;
 static void unpack12(const uint8_t *p, unsigned out[2]) {
     out[0] = p[0] | (p[1] & 15u) << 8; out[1] = p[1] >> 4 | (unsigned)p[2] << 4;
@@ -317,6 +322,7 @@ static NS2Bridge *bridge;
     uint8_t sequence;
     // 主机绑定：bondWanted = 这次是配对广播连上、要在握手末尾写入绑定；waitsForWake = 绑定过的手柄，直连不设期限等玩家按键
     BOOL bondWanted, waitsForWake;
+    BOOL ledDirty;   // 玩家灯改了、还没写到手柄（下一拍写，不等保活间隔）
     uint8_t bondKeys[32];
 }
 - (NSUInteger)initializationSteps;
@@ -550,7 +556,7 @@ static NS2Bridge *bridge;
             break;
         // 玩家1常亮；采用已公开且在冷启动有效的 09/07 bitmask 命令。
         // Player1 steady light, using the documented 09/07 bitmask command that works on cold start.
-        case 7: memcpy(bytes, ledPlayer1, sizeof ledPlayer1); length = sizeof ledPlayer1; break;
+        case 7: { NSData *led = led_command(device); memcpy(bytes, led.bytes, led.length); length = led.length; ledDirty = NO; break; }
         // 固件内置的连接成功音型，只播放一次；不建立持续震动任务。
         // Play firmware connection sample 3 once, without starting a rumble loop.
         case 8: bytes[0] = 0x0a; bytes[3] = 2; bytes[5] = 4; bytes[8] = 3; length = 12; break;
@@ -935,9 +941,10 @@ static NS2Bridge *bridge;
     }
     // 保活：运行中空闲 NS2_KEEPALIVE_NS 没写过手柄，就写一次玩家 1 灯（同握手第 7 步）。参考实现记录主机约 10 秒不写入链路就断，
     //   它每秒写一次玩家灯；本传输不震动时原本完全不写。应答不占指令通道（awaitingAck 不置），迟到的应答按指令号对不上会被忽略
-    if (!stopped && softState == NS2SoftRunning && !awaitingAck && !pendingCommand && device.canSendWriteWithoutResponse && ns2_keepalive_due(lastWrite, now)) {
-        [device writeValue:[NSData dataWithBytes:ledPlayer1 length:sizeof ledPlayer1] forCharacteristic:command type:CBCharacteristicWriteWithoutResponse];
-        lastWrite = now;
+    //   玩家灯改了（ledDirty）也走这里，马上写新的灯型
+    if (!stopped && softState == NS2SoftRunning && !awaitingAck && !pendingCommand && device.canSendWriteWithoutResponse && (ledDirty || ns2_keepalive_due(lastWrite, now))) {
+        [device writeValue:led_command(device) forCharacteristic:command type:CBCharacteristicWriteWithoutResponse];
+        lastWrite = now; ledDirty = NO;
     }
     pthread_mutex_lock(&stateMu);
     // 本链路只处理自己负责的侧（Pro / 单只是两侧，与改前相同）。
@@ -1524,6 +1531,21 @@ int ns2_disconnect_device(const char *identifier) {
         }
     });
     return found;
+}
+void ns2_set_player_lights(const char *identifier, unsigned mask) {
+    if (!identifier || !*identifier) return;
+    NSString *key = @(identifier);
+    on_queue(^{
+        if (!ledMasks) ledMasks = [NSMutableDictionary dictionary];
+        if ([ledMasks[key] isEqual:@(mask & 0xf)]) return;
+        ledMasks[key] = @(mask & 0xf);
+        LOG("NS2 Pro BLE 玩家灯：%s → %x", identifier, mask & 0xf);
+        for (unsigned i = 0; i < 2; i++) {
+            NS2Link *link = bridge ? bridge->links[i] : nil;
+            if (!link || !link->device || ![link->device.identifier.UUIDString isEqualToString:key]) continue;
+            link->ledDirty = YES; [link tick];
+        }
+    });
 }
 void ns2_set_joycon_split(int split) {
     atomic_store(&splitDefault, split ? 1 : 0);

@@ -181,7 +181,7 @@ import XCTest
         defer { try? FileManager.default.removeItem(at: root) }
         let store = ControllerFaceMapStore(fileURL: root.appendingPathComponent("nintendo.json"))
         let navigation = LauncherPadNavigation()
-        let host = NSHostingView(rootView: ControllerFaceMappingEditor(store: store, family: .nintendo, simplifiedChinese: true)
+        let host = NSHostingView(rootView: ControllerFaceMappingEditor(store: store, family: .nintendo, lang: "zh")
             .padding(20).frame(width: 380).launcherDropdownHost().environment(\.padControls, navigation))
         let window = NSWindow(contentRect: CGRect(origin: .zero, size: host.fittingSize), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = host; window.orderBack(nil)
@@ -189,12 +189,21 @@ import XCTest
         defer { navigation.detach(); window.close() }
         try await Task.sleep(for: .milliseconds(100))
         let ids = Set(navigation.controlTargets(in: window).map(\.id))
-        XCTAssertTrue(ids.isSuperset(of: ["controller.face.0", "controller.face.1", "controller.face.2", "controller.face.3", "controller.face.xbox", "controller.face.reset"]))
-        XCTAssertFalse(ids.contains("controller.face.switch"), "任天堂手柄本来就是 Switch 位置，不给这个空按钮")
-        navigation.focus("controller.face.xbox"); navigation.handle(.confirm)
+        XCTAssertTrue(ids.isSuperset(of: ["controller.face.layout", "controller.face.0", "controller.face.1", "controller.face.2", "controller.face.3"]))
+        XCTAssertFalse(ids.contains("controller.face.cancel"), "不在面板浮层里：改了立刻写入，没有取消 / 确认")
+        navigation.focus("controller.face.layout"); navigation.handle(.confirm)
+        try await Task.sleep(for: .milliseconds(150))
+        let options = Set(navigation.controlTargets(in: window).map(\.id))
+        XCTAssertTrue(options.isSuperset(of: ["dropdown.default", "dropdown.xbox", "dropdown.custom"]), "任天堂手柄：默认、Xbox、自定义：\(options.sorted())")
+        XCTAssertFalse(options.contains("dropdown.switch"), "任天堂手柄的默认就是 Switch 布局，不重复列")
+        navigation.focus("dropdown.xbox"); navigation.handle(.confirm)
+        try await Task.sleep(for: .milliseconds(150))
         XCTAssertEqual(store.mapping(for: .nintendo).code, 0xb1)
         XCTAssertEqual(store.sharedMapping, .identity)
-        navigation.focus("controller.face.reset"); navigation.handle(.confirm)
+        navigation.focus("controller.face.layout"); navigation.handle(.confirm)
+        try await Task.sleep(for: .milliseconds(150))
+        navigation.focus("dropdown.default"); navigation.handle(.confirm)
+        try await Task.sleep(for: .milliseconds(150))
         XCTAssertEqual(store.mapping(for: .nintendo), .identity)
     }
 
@@ -205,7 +214,7 @@ import XCTest
         for family in [ControllerFaceFamily.playstation, .xbox] {
             let store = ControllerFaceMapStore(fileURL: root.appendingPathComponent(family.rawValue + ".json"))
             let navigation = LauncherPadNavigation()
-            let host = NSHostingView(rootView: ControllerFaceMappingEditor(store: store, family: family, simplifiedChinese: true)
+            let host = NSHostingView(rootView: ControllerFaceMappingEditor(store: store, family: family, lang: "zh")
                 .padding(20).frame(width: 380).background(Color(white: 0.12)).preferredColorScheme(.dark)
                 .launcherDropdownHost().environment(\.padControls, navigation))
             let window = NSWindow(contentRect: CGRect(origin: .zero, size: host.fittingSize), styleMask: [.borderless], backing: .buffered, defer: false)
@@ -220,7 +229,14 @@ import XCTest
             try await Task.sleep(for: .milliseconds(200))
             XCTAssertEqual(store.mapping(for: family).target(for: 0), 1)
             XCTAssertEqual(store.mapping(for: family).target(for: 1), 0, "改给已占用的目标时互换，保留四键可用")
-            navigation.focus("controller.face.switch"); navigation.handle(.confirm)
+            // 逐键改过 = 不等于任何预设：跨 App 重开（新建 store 读同一个文件）照样是这份自定义
+            let custom = store.mapping(for: family)
+            XCTAssertNotEqual(custom, .identity); XCTAssertNotEqual(custom, .switchPosition(for: family))
+            XCTAssertEqual(ControllerFaceMapStore(fileURL: root.appendingPathComponent(family.rawValue + ".json")).mapping(for: family), custom, "自定义要跨 App 重开保存")
+            navigation.focus("controller.face.layout"); navigation.handle(.confirm)
+            try await Task.sleep(for: .milliseconds(150))
+            navigation.focus("dropdown.switch"); navigation.handle(.confirm)
+            try await Task.sleep(for: .milliseconds(150))
             XCTAssertEqual(store.mapping(for: family).code, 0xb1)
             if let output = ProcessInfo.processInfo.environment["S2A_SETTINGS_SHOTS"] {
                 host.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(100))
@@ -228,7 +244,10 @@ import XCTest
                 host.cacheDisplay(in: host.bounds, to: bitmap)
                 try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: output).appendingPathComponent("face-map-" + family.rawValue + ".png"))
             }
-            navigation.focus("controller.face.reset"); navigation.handle(.confirm)
+            navigation.focus("controller.face.layout"); navigation.handle(.confirm)
+            try await Task.sleep(for: .milliseconds(150))
+            navigation.focus("dropdown.default"); navigation.handle(.confirm)
+            try await Task.sleep(for: .milliseconds(150))
             XCTAssertEqual(store.mapping(for: family), .identity)
             XCTAssertEqual(store.sharedMapping, .identity)
         }

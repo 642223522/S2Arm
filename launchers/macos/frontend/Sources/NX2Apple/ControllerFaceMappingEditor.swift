@@ -6,45 +6,49 @@ import NXLauncher
 struct ControllerFaceMappingEditor: View {
     @ObservedObject var store: ControllerFaceMapStore
     let family: ControllerFaceFamily
-    let simplifiedChinese: Bool
-    private var zh: Bool { simplifiedChinese }
+    let lang: String   // 界面语言代码（Lang.code），文案走 l10n 的 s2arm.controller.faceMap.*
+    private func t(_ key: String) -> String { NS2LauncherController.text("s2arm.controller.faceMap." + key, lang) }
     private var mapping: ControllerFaceMapping { store.mapping(for: family) }
 
+    /// 「四键布局」选单：默认（照键上字母）、另一种常见布局（非任天堂手柄 = Switch 布局右键确认；任天堂手柄 = Xbox 布局下键确认）、
+    ///   自定义。自定义不是一种排列：四键不等于前两种时自动显示成它；选它本身不改键位
+    private var presets: [(value: String, mapping: ControllerFaceMapping)] {
+        [("default", .identity), family == .nintendo ? ("xbox", .xboxPosition(for: family)) : ("switch", .switchPosition(for: family))]
+    }
+    private var layoutSelection: String { presets.first { $0.mapping == mapping }?.value ?? "custom" }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(zh ? "四键布局" : "Button layout").font(.manrope(15, .semibold))
-            Text(family == .nintendo ? (zh ? "所有 Switch Pro / Joy-Con 手柄共用" : "Shared by all Switch Pro / Joy-Con controllers")
-                : zh ? "所有非 Switch Pro / Joy-Con 手柄共用" : "Shared by all controllers except Switch Pro / Joy-Con")
-                .font(.manrope(12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Text(zh ? "实体按键 → Switch" : "Physical button → Switch")
-                .font(.manrope(12)).foregroundStyle(.secondary)
+        // 由上到下：标题 + 布局选单 → 四键对应 → 说明小字（共用范围、怎么看、游戏内查看，一块放）。区块间距 16，块内 4（4 的倍数）
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                Text(t("title")).font(.manrope(15, .semibold))
+                Spacer(minLength: 8)
+                LauncherDropdown(options: presets.map { ($0.value, t("layout." + $0.value)) } + [("custom", t("layout.custom"))],
+                                 selection: layoutSelection, label: t("title"), fill: true, artwork: nil) { value in
+                    if let preset = presets.first(where: { $0.value == value }) { store.set(preset.mapping, for: family) }
+                }
+                .frame(width: 168).controllerID("controller.face.layout")
+            }
             let positions = family.diamond
-            VStack(spacing: 2) {
+            VStack(spacing: 4) {
                 binding(positions[0])
                 HStack(spacing: 8) { binding(positions[1]); Spacer(minLength: 0); binding(positions[3]) }
                 binding(positions[2])
             }.frame(maxWidth: .infinity)
-            HStack(spacing: 8) {
-                if family == .nintendo {
-                    Button(zh ? "Xbox 位置布局" : "Xbox positions") { store.set(.xboxPosition(for: family), for: family) }
-                        .controllerButtonStyle(LauncherSecondaryButtonStyle(fill: true)).controllerID("controller.face.xbox")
-                } else {
-                    Button(zh ? "Switch 位置布局" : "Switch positions") { store.set(.switchPosition(for: family), for: family) }
-                        .controllerButtonStyle(LauncherSecondaryButtonStyle(fill: true)).controllerID("controller.face.switch")
+            VStack(alignment: .leading, spacing: 4) {
+                Text(t("direction"))
+                Text(t(family == .nintendo ? "sharedNintendo" : "sharedOther"))
+                Text(t("hint"))
+                if let problem = store.problem {
+                    Text(t("problem").replacingOccurrences(of: "{0}", with: problem)).foregroundStyle(LauncherPalette.danger)
                 }
-                Button(zh ? "恢复默认" : "Reset") { store.set(nil, for: family) }
-                    .controllerButtonStyle(LauncherSecondaryButtonStyle(fill: true)).controllerID("controller.face.reset")
             }
-            Text(zh ? "游戏内长按 L3 + R3 1 秒查看对照" : "In game, hold L3 + R3 for 1 second to view the map")
-                .font(.manrope(12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            if let problem = store.problem {
-                Text((zh ? "键位未能保存或读取：" : "Could not save or read buttons: ") + problem)
-                    .font(.manrope(12)).foregroundStyle(LauncherPalette.danger).fixedSize(horizontal: false, vertical: true)
-            }
+            .font(.manrope(12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }.accessibilityIdentifier("controller.face-mapping")
     }
     private func binding(_ source: Int) -> some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 8) {
             ControllerFaceButton(family: family, source: source)
             Image(systemName: "arrow.right").font(.system(size: 10)).foregroundStyle(.secondary)
             LauncherDropdown(options: ControllerFaceMapping.labels.enumerated().map { (String($0.offset), $0.element) },
@@ -52,6 +56,6 @@ struct ControllerFaceMappingEditor: View {
                 artwork: { value in AnyView(ControllerFaceButton(family: .nintendo, source: Int(value) ?? 0, size: 30)) }) { target in
                 if let target = Int(target) { store.set(mapping.assigning(source: source, to: target), for: family) }
             }.frame(width: 88).controllerID("controller.face.\(source)")
-        }.frame(width: 146)
+        }.frame(width: 148)
     }
 }
