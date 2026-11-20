@@ -344,7 +344,12 @@ def rechain_ios(c, gid):
     want = host_update.engine_compat(c)
     side = layout.game_info(c, gid).get("ios") or {}
     # 库内容代数（host_update.LIB_GEN）旧了也重编：链号没变、库里却缺了设备要用的内容（0.5.x 出的库不带客体输入，同链号）
-    if not want or (side.get("dmshChain", host_update.LEGACY_CHAIN) == want["dmshChain"] and not host_update.lib_stale(side.get("libGen"))):
+    # 手机上现场翻译过包里没有的着色器、库又是旧版启动器出的（「建议更新」原因 shaderMiss）也重编：同链号同代数，本版出包能多覆盖；
+    #   原先只认链号 / 代数，玩家点「更新这款」推完提示照旧（#1756）。重编后记本版 builtBy，这条原因随之消掉
+    if not want:
+        return "skip"
+    if side.get("dmshChain", host_update.LEGACY_CHAIN) == want["dmshChain"] and not host_update.lib_stale(side.get("libGen")) \
+            and not (host_update.shader_misses(c, gid)["ios"] > 0 and host_update.built_older(c, side.get("builtBy"))):
         return "skip"
     pack = Path(layout.ios_pack(c, gid))
     direct = pack / "shaders/direct"
@@ -371,7 +376,7 @@ def rechain_ios(c, gid):
         shutil.rmtree(old, ignore_errors=True)
         rels = [p.relative_to(pack).as_posix() for p in sorted(direct.rglob("*")) if p.is_file()]
         pid = add_to_pack(pack, "shaders/direct/", rels)
-    layout.update_info(c, gid, ios={**side, "dmshChain": want["dmshChain"], "bfGen": BF_GEN, "libGen": host_update.LIB_GEN, "pack": pid})
+    layout.update_info(c, gid, ios={**side, "dmshChain": want["dmshChain"], "bfGen": BF_GEN, "libGen": host_update.LIB_GEN, "pack": pid, "builtBy": host_update.built_by(c)})
     return "updated"
 
 
