@@ -106,7 +106,7 @@ out = ow.direct(ow.Run(work), root, "ios", os.cpu_count() or 4, tid)
 
 
 def _rebuild_win(c, gid, src_root, work):
-    """Windows 重出直连库：同 Windows 出 iOS 包的直连库那一步（oneclick_win.direct：Git Bash 跑 graphics/tools/direct/direct_lib.sh，没有现成抽取就当场抽，
+    """Windows 重出直连库：同 Windows 出 iOS 包的直连库那一步（oneclick_win.direct：原生 Python 跑 graphics/tools/direct/direct_lib.py，没有现成抽取就当场抽，
     Metal for Windows 编）。照出包作业那样另起进程、用作业层的环境（c.env：随包预编件 S2A_PREBUILT_TOOLS 等；作业进程自己的环境里没有）＋ iOS 平台。
     输入是 ios_inputs 建的产物根形态目录（临时目录，就地补配置档）。直连缓存用这款出包时那份（library.direct_cache_dir：Metal 编译结果按内容寻址，
     没变的着色器多数命中）。→ 新的 shaders/direct 目录；这台电脑没装 Metal 开发工具 → None（同 Windows 出包：不带着色器库）"""

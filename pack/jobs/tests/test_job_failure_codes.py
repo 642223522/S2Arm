@@ -460,7 +460,7 @@ class FreeAccountLimits(unittest.TestCase):
 
 class LogCauses(JobCase):
     """11-07 现场（联合开发者 Mac 启动器旷野之息）：直连库出库写盘失败只报「刷新停在 direct 阶段（rc=1）」+ package_failed。
-    日志夹具按真实产出格式手写：refresh.sh 终止红行、pack/stage_direct.sh 转述 direct_lib.sh 的「🔴 出库失败 rc=…（<build.log>）」、.NET 未处理异常。"""
+    日志夹具按真实产出格式手写：refresh.sh 终止红行、pack/stage_direct.sh 转述 direct_lib.py 的「🔴 出库失败 rc=…（<build.log>）」、.NET 未处理异常。"""
     GID = "01007EF00011E000"
     STOP = "【红】01007EF00011E000 刷新停在 direct 阶段（rc=1），现行 = 01007EF00011E000@ex-b3eed688"
 
@@ -557,7 +557,7 @@ class LogCauses(JobCase):
         self.assertEqual(error.code, "metal_unavailable")
 
     def test_chain_mismatch_from_newer_xcode_says_update_s2arm(self):
-        # 11-07 联合开发者现场（beta.4 + Xcode 27.2，metal 32023.922 比锁 32023.921 新）：direct_lib.sh 把编译器提示当链号读，
+        # 11-07 联合开发者现场（beta.4 + Xcode 27.2，metal 32023.922 比锁 32023.921 新）：当时的 direct_lib.sh 把编译器提示当链号读，
         #   报「链号前后不一（c7a4970bffe5 / note:）」→ 刷新停在 direct 阶段。上屏：这版 S2Arm 不认识你的 Xcode；下一步：更新 S2Arm
         from errors import RECOVERY
         error, d = self.mac_refresh(["[直连库] 🔴 链号前后不一（c7a4970bffe5 / note:）", self.STOP])
@@ -572,6 +572,26 @@ class LogCauses(JobCase):
         error, d = self.mac_refresh(self.direct_refresh_lines(self.root / "gone/work.stage.1/build.log"))
         self.assertEqual(error.code, "package_failed")
         self.assertIn("复制错误摘要", d["suggestion"])
+
+    def test_unclassified_failure_carries_subcommand_text_into_summary(self):
+        # #1725 / #1730 / #1744（Mac 0.5.8 玩家）：判不出原因落 package_failed，错误摘要只剩「出包未完成。」。直连库子命令以 1 退出、stderr 带特征串：
+        #   direct_lib.py 的 🔴 行带子命令名 / 退出码 / 原文，stage_direct.sh 原样转进刷新红行，后面是刷新终止转述行 → 诊断 detail 有「失败原文：」那一行，
+        #   错误摘要（report.build）里看得到特征串。期望值手写
+        sig = "Unhandled exception. System.AggregateException: SIG_CS_FAIL_9d2e"
+        red = "【红】01007EF00011E000 直连库出库失败（rc=1，[直连库] 🔴 出库失败 rc=1：dsh_batch.py 退出码 1：%s ⏎ at S2A.Dsh.Batch.Build.Run()（/w/build.log））" % sig
+        error, d = self.mac_refresh(["[直连库] 第 3/5 步 翻译 + 编库（8 路）", red, self.STOP])
+        self.assertEqual(error.code, "package_failed")
+        self.assertEqual(str(error), "出包未完成。")   # 上屏那句照旧（11-07：原文不上屏）
+        self.assertIn("失败原文：" + red[:60], d["detail"])
+        self.assertIn("SIG_CS_FAIL_9d2e", d["detail"].split("失败原文：", 1)[1].splitlines()[0])
+        import report
+        private = self.root / "rep"; (private / "jobs").mkdir(parents=True); (private / "keys").mkdir()
+        (private / "jobs" / "t.json").write_text(json.dumps({"id": "t", "operation": "build", "state": "failed", "milestone": "refresh", "message": str(error), "diagnostics": [d]}))
+        (private / "jobs" / "t.request.json").write_text(json.dumps({"operation": "build"}))
+        text = report.build(private, "t")
+        summary = text.split("【游戏】")[0].split("【电脑】")[0]   # 摘要上半（出错段），不算日志末尾
+        self.assertIn("原文：", summary)
+        self.assertIn("SIG_CS_FAIL_9d2e", summary)
 
     def test_cause_beyond_bounded_tail_is_not_read(self):
         # 子日志只读尾 32000 字节：根因行之后再有 40 KB 输出就读不到，按阶段归（射程有界的反证）

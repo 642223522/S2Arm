@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# 游戏用哪种图形接口画主画面（出包分流的唯一判法：graphics/tools/direct/direct_lib.sh 调；接口说明 docs/研究/GL前端接口.md 第 1 节）。
+# 游戏用哪种图形接口画主画面（出包分流的唯一判法：graphics/tools/direct/direct_lib.py 调；接口说明 docs/研究/GL前端接口.md 第 1 节）。
 # 看 exefs/main（静态，零配置；只有「按名取 Vulkan」的候选才另读 ExeFS 其它模块的导出表）：
 #   Vulkan：不导入 nvnBootstrapLoader，且下面两种形态之一（判法在 vulkan_why，profile_guess.py shader_sources 也调它，单一来源）：
 #     静态：main 导入 vk*（哈迪斯：vk* 100 个、NVN 0）；

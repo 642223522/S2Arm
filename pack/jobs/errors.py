@@ -330,7 +330,7 @@ def _where(error):
 
 
 # 实际阶段或命令确定分类，不从错误 prose 猜编译器/输入的根因（日志里有确凿根因字样的先由 LOG_CAUSES 判，见 classify_failure）。
-# direct（直连库出库，pack/stage_direct.sh → graphics/tools/direct/direct_lib.sh）：内容缺口退 3 走黄、到不了这里；其余非零按 stage_direct.sh 注
+# direct（直连库出库，pack/stage_direct.sh → graphics/tools/direct/direct_lib.py）：内容缺口退 3 走黄、到不了这里；其余非零按 stage_direct.sh 注
 #   是「基础设施出错」——dsh_batch（.NET）翻译 + Metal 编库，归编译失败（恢复口径＝检查 Xcode / Metal 组件 / .NET SDK）。
 STAGE_CODES = {
     "unpack": "content_invalid", "configure": "configuration_failed",
@@ -384,7 +384,7 @@ LOG_CAUSES = (
     (r"dofork: child -1 - forked process \d+ died unexpectedly, retry \d+, exit code 0xC0000142", "windows_mandatory_aslr"),
     (r"No space left on device|\bENOSPC\b|\[Errno 28\]|\berrno\s*[=:]?\s*28\b"          # POSIX / Python OSError / .NET IOException（Mac）  # 非玩家句
      r"|There is not enough space on the disk|\bDisk full\b|WinError 112|ERROR_DISK_FULL|0x80070070"   # Windows / .NET
-     r"|STATUS_DISK_FULL|磁盘空间不足|【写满】", "disk_full"),                                       # Windows 退出码注（direct_lib.sh 127）/ 我方字样
+     r"|STATUS_DISK_FULL|磁盘空间不足|【写满】", "disk_full"),                                       # Windows 退出码注（direct_lib.py 127）/ 我方字样
     # 内存用完（#711：Windows 16 GB 抽取按核数开满进程池，Python 子进程 MemoryError）：Python / .NET / Windows 提交上限原样字样
     (r"(?m:^\s*MemoryError\b)|OutOfMemoryException|\[WinError 1455\]|paging file is too small|页面文件太小|Cannot allocate memory|\bENOMEM\b", "out_of_memory"),  # 非玩家句
     # 盘不支持某种文件操作（exFAT 外接盘不支持原子改名 / 克隆 / 硬链接，实测 errno 45）：出包写入的这块盘格式不对，说清换 APFS 盘（11-10 网友：存放位置设到外接盘写入失败）
@@ -676,6 +676,40 @@ def tool_reason(log):
     return "工具未提供错误详情，请保留本阶段日志。"
 
 
+CAUSE_BYTES = 2400   # 失败原文行按字节封顶（UTF-8 按字节截、不截半个字）
+
+
+def cause_line(log):
+    """这一步失败的原文：日志末尾最后一行红行；它是 refresh 的终止转述行（「【红】<款> 刷新停在 <阶段>…」）就取它前一行红行——
+    那是失败阶段自己的红行，带失败子命令的名字、退出码与输出原文（如直连库「…出库失败 rc=1，[直连库] 🔴 …：dsh_batch.py 退出码 1：<原文>」）。
+    没有红行 → None。#1725 / #1730 / #1744：判不出原因落 package_failed 时，错误摘要只剩「出包未完成。」，原文只在日志里"""
+    if not log:
+        return None
+    try:
+        with open(log, "rb") as stream:
+            stream.seek(0, 2)
+            stream.seek(max(0, stream.tell() - 16000))
+            lines = stream.read().decode("utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    red = [l.strip() for l in lines if l.strip() and not l.strip().startswith("[s2a] ") and any(mark in l for mark in _RED)]
+    if not red:
+        return None
+    stop = lambda l: "刷新停在" in l  # 非玩家句
+    if stop(red[-1]):
+        # 终止转述行之前、上一次终止行之后（同一轮刷新里）最后一行非终止的红行；没有就不另给（旧轮的红行不归给本轮）
+        prev = [l for l in red[:-1]]
+        cut = max((i for i, l in enumerate(prev) if stop(l)), default=-1)
+        mine = [l for l in prev[cut + 1:] if not stop(l)]
+        if not mine:
+            return None
+        line = mine[-1]
+    else:
+        line = red[-1]
+    b = line.encode("utf-8")
+    return line if len(b) <= CAUSE_BYTES else b[:CAUSE_BYTES].decode("utf-8", errors="ignore") + "…"
+
+
 def last_output_lines(log, limit=5):
     """日志末尾最有用的几行（红行优先，保持原顺序），每行截到 300 字；脱敏由调用方（Context.redact）做"""
     if not log:
@@ -725,6 +759,8 @@ def build_tool_failure(args, milestone, log):
         phase = "unpack"
     code, why = classify_failure(phase, log)
     said, advice = player_words(code, log)
+    cause = cause_line(log)   # 失败阶段自己的红行（带子命令原文）：终止转述行之外另记一行，错误摘要按「失败原文：」取（report.build）
+    more = "\n失败原文：" + cause if cause and cause != reason else ""  # 非玩家句
     # 上屏只放玩家话术；阶段 / rc / 构建号 / 红行原文进 internal → 诊断 detail（「复制错误摘要」带走）；机读事实进 facts（前端按字段显示）
-    return Failure(said, code=code, advice=advice, internal="Mac 准备失败（" + (phase or "未识别阶段") + "）：" + reason + "\n" + why,  # 非玩家句
+    return Failure(said, code=code, advice=advice, internal="Mac 准备失败（" + (phase or "未识别阶段") + "）：" + reason + more + "\n" + why,  # 非玩家句
                    facts=cause_facts(code, log))

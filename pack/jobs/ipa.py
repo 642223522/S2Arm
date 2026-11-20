@@ -980,7 +980,7 @@ def _package_failure_phase(reason):
 
 
 def oneclick_failure(events, milestone, log, *, refresh_log=None, refresh_before=None):
-    from errors import classify_failure, player_reason, player_words, refresh_stop_phase, tool_reason
+    from errors import cause_line, classify_failure, player_reason, player_words, refresh_stop_phase, tool_reason
     name = "未记录阶段"  # 非玩家句
     result = None
     try:
@@ -1021,5 +1021,7 @@ def oneclick_failure(events, milestone, log, *, refresh_log=None, refresh_before
     texts = (reason,) + ((str(fresh_refresh),) if fresh_refresh else ())
     code, why = classify_failure(phase, log, texts)
     said, advice = player_words(code, log, texts)
+    cause = cause_line(fresh_refresh) if fresh_refresh else None   # 刷新里失败阶段自己的红行（带子命令原文），错误摘要按「失败原文：」取（report.build）
+    more = "\n失败原文：" + cause if cause and cause not in reason else ""  # 非玩家句
     # 上屏只放玩家话术；阶段 / 红行原文 / 归因依据进 internal → 诊断 detail（「复制错误摘要」带走）
-    return Failure(said, code=code, advice=advice, internal="一键出包失败（" + name + "）：" + reason + "\n" + why)  # 非玩家句
+    return Failure(said, code=code, advice=advice, internal="一键出包失败（" + name + "）：" + reason + more + "\n" + why)  # 非玩家句

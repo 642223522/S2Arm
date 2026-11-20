@@ -2160,7 +2160,7 @@ def aoc_cache_dir(c, gid):
 
 
 def direct_cache_dir(c, gid):
-    """本款直连缓存（graphics/tools/direct/direct_lib.sh 的 S2A_DIRECT_CACHE：内容寻址仓 + 编译中的翻译中间产物，大游戏编译中几十 GB）。
+    """本款直连缓存（graphics/tools/direct/direct_lib.py 的 S2A_DIRECT_CACHE：内容寻址仓 + 编译中的翻译中间产物，大游戏编译中几十 GB）。
     存放位置与工具缓存在同一块盘：工具缓存下（同原来）；不在同一块盘（游戏放外接盘）：这款游戏文件夹第一层的 direct-cache/，
     大头写入跟着游戏落到外接盘，系统盘只留固定开销（引擎、宿主）。放在 build/ 外面：出包成功后清 build/ 不带走它，重出包照样复用"""
     tool = c.work_root / "run" / "s2arm" / "cache" / "direct" / gid.upper()
@@ -2202,7 +2202,7 @@ def _direct_base(c, direct):
 def direct_transients(c, direct):
     """Only disposable direct-build work; never remove the store (store/, logs/) or unknown layouts.
     S2Arm 11-01: the direct cache is one content-addressed store, one file per entry (C# dsh_batch build, store/dshb/); the former per-key trees
-    ios/ and mac/ (b-<chain>/, cas/…) and work/ are the old layout, which direct_lib.sh deletes on its next build anyway"""
+    ios/ and mac/ (b-<chain>/, cas/…) and work/ are the old layout, which direct_lib.py deletes on its next build anyway"""
     from cache_retention import _safe_root
     if _safe_root(_direct_base(c, direct), direct) != 'safe':
         return []

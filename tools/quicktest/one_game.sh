@@ -61,7 +61,7 @@ if [ $urc = 0 ] && [ -z "$PK" ]; then
   cp "$O/logs/timing.tsv" "$KL/" 2> /dev/null
   G=$(grep -a -o -m1 "款 [A-Za-z0-9_-]*" "$KL/oneclick.log" | cut -d' ' -f2); G=${G:--}
   PID=$(grep -a -m1 "① 认出" "$KL/oneclick.log" | grep -o "程序号 [0-9A-Fa-f]\{16\}" | cut -d' ' -f2); PID=${PID:--}
-  # 直连编不过的键清单（direct_lib.sh 写进直连缓存 logs/）：拷进局日志，普查总表「直连编不过」列读它；这次出包之前写的旧清单不拷
+  # 直连编不过的键清单（direct_lib.py 写进直连缓存 logs/）：拷进局日志，普查总表「直连编不过」列读它；这次出包之前写的旧清单不拷
   DCL=${S2A_DIRECT_CACHE:-${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/cache/direct/$(echo "${PID:-}" | tr a-z A-Z)}/logs/direct_fail.log
   [ -f "$DCL" ] && [ "$DCL" -nt "$KL/.pack_start" ] && cp "$DCL" "$KL/direct_fail.tsv"   # -nt 是 bash 内建，Linux 同样可用（不用 macOS 的 stat -f）
   # 出库日志（汇总行：着色器缓存命中、#1429 验收的「ast mem order kept」等）：同样只拷这次出包写的；直连缓存可被淘汰、远端缓存不拉回，局日志里这份才留得住
