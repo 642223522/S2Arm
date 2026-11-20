@@ -45,6 +45,10 @@
    | `Sources/ShellUI/ShellInputs.swift`、`ShellStyle.swift`、`GameStateView.swift`、`LibraryView.swift`、`TVLibraryView.swift`、`Resources/Localizable.xcstrings` | `GameState` 加 `needsCertificate(CertificateNeed)`（没证书 / 别的 Apple ID / 证书已换 / 签名格式老）及各处 `switch`；`ShellActions` 加 `onGetSigningCert`（卡片主按钮）；文案 10 条（六种语言） | 0.6.0：签名证书是手机上游戏状态的一部分，库列出时就判，主按钮直接导证书，导好卡片自己恢复（宿主 `ios/sign_state.m`、`s2a_shell_game_sign_state`）；上游没有手机自签 | — |
    门禁：`tests/shellui_ios_build_test.sh` 用门禁机上每个 Xcode 各编一遍 iOS Release（11-07 起）。
 
+### 主页联机设置
+
+- `Sources/ShellUI/ShellSettingsStore.swift`、`ShellSettingsView.swift`、`Resources/Localizable.xcstrings`：新增联机模式、指定 IPv4 与本机中继开关（中英）。App 全局偏好交给 iOS 原生启动层；默认不写联机环境，保留既有自动发现；完整退出重开 App 后生效。
+
 ## catalogue（游戏目录清单 JSON）
 
 字段取上游 `game.manifest.json`（schema 1）的必要子集，同名同义；不认识的键忽略：

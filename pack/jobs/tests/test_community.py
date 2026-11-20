@@ -29,6 +29,51 @@ def write(path, text):
     path.parent.mkdir(parents=True, exist_ok=True); path.write_text(text, encoding="utf-8")
 
 
+class LdnEnvTests(unittest.TestCase):
+    def test_default_and_explicit_auto_preserve_legacy_environment(self):
+        self.assertEqual(community.ldn_env({}), {})
+        self.assertEqual(community.ldn_env({"ldnMode": "auto", "ldnHost": True}), {})
+
+    def test_manual_host_and_client(self):
+        self.assertEqual(community.ldn_env({"ldnMode": "manual", "ldnHost": True}),
+                         {"S2A_LDN_SERVER": "127.0.0.1", "S2A_LDN_RELAY": "1", "S2A_LDN_LISTEN": "0.0.0.0"})
+        self.assertEqual(community.ldn_env({"ldnMode": "manual", "ldnAddress": " 192.168.1.21 "}),
+                         {"S2A_LDN_SERVER": "192.168.1.21", "S2A_LDN_RELAY": "0"})
+        self.assertEqual(community.ldn_env({"ldnMode": "manual", "ldnAddress": ""}),
+                         {"S2A_LDN_SERVER": "0.0.0.0", "S2A_LDN_RELAY": "0"})
+
+    def test_shared_settings_save_and_launch_wiring(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        table = {it["id"]: it for it in json.loads((REPO / community.SETTINGS_TABLE).read_text(encoding="utf-8"))["items"]}
+        game, shared = {"schema": 1, "settings": {}, "patches": {}}, {"schema": 1, "settings": {}}
+        context = SimpleNamespace(r={"gameId": GID, "settings": {"ldnMode": "manual", "ldnHost": False, "ldnAddress": "192.168.1.21"}})
+        writes = {}
+        with patch.object(community, "settings_table", return_value=table), \
+             patch.object(community, "game_of", return_value={"id": GID}), \
+             patch.object(community, "load_launch", return_value=game), \
+             patch.object(community, "load_app", return_value=shared), \
+             patch.object(community, "launch_path", return_value="game"), \
+             patch.object(community, "app_path", return_value="app"), \
+             patch.object(community, "atomic", side_effect=lambda path, data: writes.update({path: data})), \
+             patch.object(community, "describe_game", return_value={}), \
+             patch.object(community, "runtime_caps", return_value={}), \
+             patch.object(community, "runtime_caps_rows", return_value={}), \
+             patch.object(community, "game_languages", return_value=[]), \
+             patch.object(community, "adaptive_patches", return_value=([], False)), \
+             patch.object(community, "packed_patches", return_value=[]):
+            community.save(context)
+            self.assertEqual(writes["game"]["settings"], {})
+            self.assertEqual(writes["app"]["settings"], context.r["settings"])
+            self.assertEqual(community.mac_settings(context, GID)["ldnAddress"]["value"], "192.168.1.21")
+            self.assertEqual(community.launch_env(context, GID), {"S2A_LDN_SERVER": "192.168.1.21", "S2A_LDN_RELAY": "0"})
+            self.assertEqual(community.launch_env(context, GID, {"S2A_LDN_SERVER": "10.0.0.5"}), {})
+
+    def test_explicit_server_wins_as_a_whole(self):
+        for server in ("10.0.0.5", ""):
+            self.assertEqual(community.ldn_env({"ldnMode": "manual", "ldnHost": True}, {"S2A_LDN_SERVER": server}), {})
+
+
 class CommunityTests(unittest.TestCase):
     def setUp(self):
         self.t = Path(tempfile.mkdtemp()); self.c = Ctx(self.t)
@@ -117,6 +162,27 @@ class CommunityTests(unittest.TestCase):
         self.assertEqual((r["widescreen"]["enabled"], r["fps60"]["enabled"]), (False, False))       # 没带的项不变
         self.c.r = {"gameId": GID, "graphics": {"nope": True}}
         with self.assertRaises(Failure): community.save(self.c)
+
+    def test_ldn_manual_settings(self):
+        def ldn():
+            return {k: v for k, v in community.launch_env(self.c, GID).items() if k.startswith("S2A_LDN_")}
+        self.assertEqual(ldn(), {})
+        self.c.r.update(settings={"ldnMode": "manual", "ldnHost": True, "ldnAddress": "192.168.1.20"})
+        community.save(self.c)
+        self.assertEqual(ldn(), {"S2A_LDN_SERVER": "127.0.0.1", "S2A_LDN_RELAY": "1", "S2A_LDN_LISTEN": "0.0.0.0"})
+        self.assertNotIn("ldnMode", community.load_launch(self.c, GID)["settings"])
+        self.assertEqual(community.mac_settings(self.c, GID)["ldnAddress"]["value"], "192.168.1.20")
+        self.c.r.update(settings={"ldnHost": False, "ldnAddress": " 192.168.1.21 "})
+        community.save(self.c)
+        self.assertEqual(ldn(), {"S2A_LDN_SERVER": "192.168.1.21", "S2A_LDN_RELAY": "0"})
+        # 未填写不能回到发现 / 选举；保留游戏启动，把连接失败交给宿主。
+        self.c.r.update(settings={"ldnAddress": ""}); community.save(self.c)
+        self.assertEqual(ldn(), {"S2A_LDN_SERVER": "0.0.0.0", "S2A_LDN_RELAY": "0"})
+        self.c.r.update(settings={"ldnMode": "auto"}); community.save(self.c)
+        self.assertEqual(ldn(), {})
+        for change in ({"ldnMode": "other"}, {"ldnHost": "true"}, {"ldnAddress": 123}):
+            self.c.r.update(settings=change)
+            with self.assertRaises(Failure): community.save(self.c)
 
     def test_game_language(self):
         # 游戏语言（启动设置页）：跟随系统不设变量（宿主读系统首选语言）；选了哪种就把宿主枚举名交给 S2A_SYSTEM_LANGUAGE；不在表里的值拒收
@@ -336,7 +402,7 @@ class MacDisplayTests(unittest.TestCase):
     def test_every_mac_item_of_the_table_is_on_the_page(self):
         # 定义表里 platforms 含 mac 的 bool / choice 项 = quality（11-15 取代 enhance）fps60 widescreen docked rumble rumbleLevel motion hud（11-13 widenForce 并进 widescreen）
         self.caps()
-        self.assertEqual(sorted(self.mac()), sorted(["quality", "fps60", "fpsPick", "resolutionScale", "fpsLimit", "widescreen", "docked", "language", "rumble", "rumbleLevel", "motion", "motionInvertY", "motionInvertX", "padFace", "hud", "snapshot", "pauseUnfocused", "audioLatency", "audioDevice", "vsSpeakers", "vsHeadphones", "diagRun"]))
+        self.assertEqual(sorted(self.mac()), sorted(["quality", "fps60", "fpsPick", "resolutionScale", "fpsLimit", "widescreen", "docked", "language", "rumble", "rumbleLevel", "motion", "motionInvertY", "motionInvertX", "ldnMode", "ldnHost", "ldnAddress", "padFace", "hud", "snapshot", "pauseUnfocused", "audioLatency", "audioDevice", "vsSpeakers", "vsHeadphones", "diagRun"]))
 
     def test_fps_pick_level(self):
         # 帧率档位（11-13）：包里帧率补丁（编号 fps:）目标帧率两档以上才出；选具体档 → S2A_FPS_PICK=档，选自动（"0"）不写；表外取值拒收

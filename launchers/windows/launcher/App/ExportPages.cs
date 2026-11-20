@@ -1823,17 +1823,14 @@ public sealed partial class EnvironmentWindow
     /// 维护者 11-11：「玩家都主动点装机了……能认出的问题让用户确认，用户确认可以继续装，认不出的直接装」。
     /// container_would_drop：手机上别的电脑装的游戏这次带不上；save_backup_failed：覆盖前没能备份手机上的存档；container_stale：旧资源包要按新版重出。
     /// </summary>
-    internal static readonly IReadOnlyDictionary<string, string> ConfirmCodes = new Dictionary<string, string>
-    {
-        ["container_would_drop"] = "acceptDropped", ["save_backup_failed"] = "acceptNoBackup", ["container_stale"] = "acceptStale",
-        ["device_space_low"] = "acceptLowSpace", ["cert_revoke_confirm"] = "acceptCertRevoke",
-    };
+    /// 11-19 结构 9：表只在共享体验表 errors 的 accept 一处（Mac 读同一处），不在这里另写——原先两端各写一份，Mac 缺 cert_revoke_confirm。
+    private IReadOnlyDictionary<string, string> ConfirmCodes => text.ConfirmFlags;
 
     /// <summary>可确认的停装码要问的那句标题：文案表有 errors.&lt;码&gt;.title 就用它，没有用通用的 install.drop_title</summary>
     private string ConfirmTitle(string? code) => code is { Length: > 0 } && text.Has("errors." + code + ".title") ? T("errors." + code + ".title") : T("install.drop_title");
 
     /// <summary>控制口请求里带的确认参数（acceptDropped / acceptNoBackup / acceptStale）</summary>
-    private static HashSet<string> AcceptFlags(ControlRequest r) => ConfirmCodes.Values.Where(r.Flag).ToHashSet();
+    private HashSet<string> AcceptFlags(ControlRequest r) => ConfirmCodes.Values.Where(r.Flag).ToHashSet();
 
     /// <summary>accept：玩家已同意的确认参数（ConfirmCodes 的值，逐次累积）。ask = false（控制口）原样失败、不弹确认，由调用方带参数再发。</summary>
     /// <param name="export">游戏库「导出自签包」：不连手机、不签名，出到文件夹（作业层 install 请求带 mode = export，不带设备）</param>
@@ -1977,10 +1974,8 @@ public sealed partial class EnvironmentWindow
 
     /// <summary>换游戏库 setup 撞上认得出的风险 → 问玩家时带的参数（同 Mac S2ArmLauncherModel.libraryConfirmCodes）：
     /// library_in_cloud 选的文件夹在云盘同步目录里；library_folder_not_empty 文件夹里已有别的文件、又不是游戏库（S2Arm 只动自己建的文件）</summary>
-    internal static readonly IReadOnlyDictionary<string, string> LibraryConfirmCodes = new Dictionary<string, string>
-    {
-        ["library_in_cloud"] = "acceptCloud", ["library_folder_not_empty"] = "acceptForeign",
-    };
+    /// 同一张表（共享体验表 errors 的 accept；library_bad_format 带 accept_ui，由选盘页 LibraryDrivePicker 带 acceptFormat，不在这里问）
+    private IReadOnlyDictionary<string, string> LibraryConfirmCodes => text.ConfirmFlags;
 
     /// <summary>setup 没成、失败码是认得出的风险、这一项还没确认过：问「仍然继续 / 先不」；同意就把对应参数加进 accept 返回 true，调用方带着它重发（参数累积）</summary>
     private async Task<bool> ConfirmLibraryAsync(LibraryJobOutput setup, HashSet<string> accept)

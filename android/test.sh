@@ -160,6 +160,8 @@ if [ -z "${S2A_TEST_NO_NATIVE:-}" ]; then
     [ "$(uname -s)" = Linux ] ||
         s2a_gate_note "未测：android_memory / android_plat（mremap）、android_guest_signal（SIGRTMIN）、android_host_android（eventfd）、android_wsi_lease（pthread_condattr_setclock）、android_direct_selection（getrandom）、android_tsd / android_module（/proc/self/maps）需 Linux"
 fi
+s2a_gate_step "$PY" "$android_dir/tests/ldn_settings_test.py"
+s2a_gate_step "$PY" "$android_dir/tests/ldn_dialog_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/debug_environment_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/debug_gate_test.py"
 # 通用层零专用配置（#1357）：native / gfx 源码不得出现具体游戏包名

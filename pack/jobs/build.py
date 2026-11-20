@@ -376,7 +376,7 @@ def launch(c):
         back = cheats.restore_after_update(c, game)
         if back:
             c.diagnostic("上次游戏崩溃时自动关掉的设置，新版 S2Arm 已重新打开：" + "、".join("帧率" if t == "fps" else "满屏" if t == "fs" else k.split("/", 1)[-1] for t, k in back) + "。", code="crash_restored", severity="warning")
-        env.update(community.launch_env(c, game["id"]))   # 宽屏 / 60 帧宿主开关（社区资源面板，10-27）：关掉的才设，下次启动生效
+        env.update(community.launch_env(c, game["id"], existing=env))   # 宽屏 / 60 帧宿主开关（社区资源面板，10-27）：关掉的才设，下次启动生效
         # 宿主菜单栏「切换游戏」（macos/front_mac.m）：收尾前在这里留标记，结果带 returnToLibrary，启动器回到游戏库。先删上一局残留
         marker = c.private / "runtime-return" / (c.task + ".flag")
         marker.parent.mkdir(parents=True, exist_ok=True)

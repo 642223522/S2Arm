@@ -23920,6 +23920,118 @@
           }
         }
       }
+    },
+    "Auto joins local wireless when a game requests it. Manual uses the same relay for every player; host the relay on this device or enter its IPv4 address. Port 30456. Fully quit and reopen the app to apply. IPv6 is not supported.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auto joins local wireless when a game requests it. Manual uses the same relay for every player; host the relay on this device or enter its IPv4 address. Port 30456. Fully quit and reopen the app to apply. IPv6 is not supported."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自动模式会在游戏请求时加入本地联机。指定 IP 模式下所有玩家使用同一中继；可在本机托管中继，或输入其中继 IPv4 地址。端口 30456，完整退出并重新打开本应用后生效。不支持 IPv6。"
+          }
+        }
+      }
+    },
+    "Keeps the relay on this device while the app is in the foreground and the network is reachable.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keeps the relay on this device while the app is in the foreground and the network is reachable."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "中继将在本应用保持前台且网络可达时运行。"
+          }
+        }
+      }
+    },
+    "Enter an IPv4 address reachable by every player. Port 30456.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter an IPv4 address reachable by every player. Port 30456."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "输入所有玩家均可访问的 IPv4 地址。端口 30456。"
+          }
+        }
+      }
+    },
+    "Host on this device": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Host on this device"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在本机托管"
+          }
+        }
+      }
+    },
+    "Relay IPv4 address": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Relay IPv4 address"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "中继 IPv4 地址"
+          }
+        }
+      }
+    },
+    "Manual": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Manual"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "指定 IP"
+          }
+        }
+      }
+    },
+    "Local wireless": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Local wireless"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "联机模式"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

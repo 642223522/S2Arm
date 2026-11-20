@@ -305,7 +305,26 @@ NSDictionary *s2a_ios_graphics_snapshot(NSUserDefaults *defaults) {
     return snapshot;
 }
 
+void s2a_ios_apply_ldn_settings(NSUserDefaults *defaults) {
+    if (![[defaults stringForKey:@"S2ALdnMode"] isEqualToString:@"manual"]) return;
+    // 保留工具 / env.txt 的显式服务器，不能混进另一套托管设置。
+    if (getenv("S2A_LDN_SERVER")) return;
+    BOOL hosting = [defaults boolForKey:@"S2ALdnHost"];
+    NSString *address = [[defaults stringForKey:@"S2ALdnAddress"]
+        stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!hosting && !address.length) {
+        // 未填写也不能偷偷回到自动发现；交给连接路径报错，不拦启动游戏。
+        fprintf(stderr, "[S2A 联机] 指定 IP 模式尚未填写中继 IPv4 地址，请在主页设置中填写后重新启动 App\n");
+        address = @"0.0.0.0";
+    }
+    // Host 的 LdnServer 在进程内缓存：不纳入画面设置的会话撤销字典。
+    setenv("S2A_LDN_SERVER", (hosting ? @"127.0.0.1" : address).UTF8String, 0);
+    setenv("S2A_LDN_RELAY", hosting ? "1" : "0", 0);
+    if (hosting) setenv("S2A_LDN_LISTEN", "0.0.0.0", 0);
+}
+
 void s2a_ios_apply_graphics_settings(NSUserDefaults *defaults) {
+    s2a_ios_apply_ldn_settings(NSUserDefaults.standardUserDefaults);
     // 字符串与 Settings.bundle 一致。起局工具显式给出的环境变量优先。
     const struct {
         __unsafe_unretained NSString *key;
