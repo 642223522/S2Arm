@@ -115,6 +115,17 @@ static double run_frame(uint64_t frame, int flags, const int *prims, int n) {
 static const int TRI[] = {4};
 // 后台建完第 k 次（从 0 数）为止：最多等 2 秒
 static int wait_bg_built(int k) { for (int i = 0; i < 2000; i++) { pthread_mutex_lock(&g_bmu); int b = g_bg_builds; pthread_mutex_unlock(&g_bmu); if (b > k) return 1; sleep_ms(1); } return 0; }
+// 放闸后等结果真发布进待取表（需求模块 published 涨过放闸前的值）再画下一帧：后台建好（g_bg_builds）在发布之前，
+//   中间若下一帧先到，那笔管线还挂着「卡住」标记，同管线直接跳过（0 ms），用例 6 就红在「建好后照画」。
+//   一台测试主机上 16 路并跑：只等建好 80 次红 16 次（全在 :212，现场 gdraws=0、第 2 帧 0 ms、built=1）；等发布 128 次全绿。
+static uint64_t demand_published(void) { struct nvn_pipe_demand_stats st; nvn_vk_pipe_demand_stats(&st); return st.published; }
+static int open_and_wait_published(int k) {
+    const uint64_t p0 = demand_published();
+    gate_open(k);
+    if (!wait_bg_built(k)) return 0;
+    for (int i = 0; i < 2000; i++) { if (demand_published() > p0) return 1; sleep_ms(1); }
+    return 0;
+}
 // 定时放闸：ms 毫秒后放第 k 次
 struct rel { int k; unsigned ms; };
 static void *rel_main(void *a) { struct rel *r = a; sleep_ms(r->ms); gate_open(r->k); return NULL; }
@@ -143,7 +154,7 @@ static void c_steady_skip(void) {
     const double ms = run_frame(3, F_CLEAR, pts2, 2);
     CHECK(g_gdraws == 2);                                         // 两笔都跳了
     CHECK(ms >= g_item_ms - 2 && ms < 2.0 * g_item_ms);           // 第一笔等满单项上限，第二笔不再等
-    gate_open(k); CHECK(wait_bg_built(k));
+    CHECK(open_and_wait_published(k));
     const int fg0 = g_fg_builds;
     const int pts1[] = {0};
     run_frame(4, F_CLEAR, pts1, 1);
@@ -207,7 +218,7 @@ static void c_stuck_cap(void) {
     const double ms = run_frame(1, F_CLEAR, tri2, 2);
     CHECK(g_gdraws == 0);
     CHECK(ms >= g_unsafe_ms - 3 && ms < g_unsafe_ms + 40);       // 第一笔等满上限，第二笔不再等
-    gate_open(k); CHECK(wait_bg_built(k));
+    CHECK(open_and_wait_published(k));
     run_frame(2, F_CLEAR, TRI, 1);
     CHECK(g_gdraws == 1 && g_bad_draw == 0);
     session_end(); CASE_END("不可跳的笔：等满 unsafe 上限后跳过、stuck 后同管线直接跳、建好后照画");
