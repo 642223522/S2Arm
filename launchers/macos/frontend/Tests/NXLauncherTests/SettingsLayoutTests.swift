@@ -1258,11 +1258,19 @@ import S2ArmAppleAdapter
                         return stable >= 8
                     }
                 }
+                // 点搜索按钮，按事件等它切换：看「展开的输入框在不在」翻没翻，没翻（负载高时合成点击偶尔被吞，门禁 b0f9f16b3c5e49a2 等满 30 秒假红）
+                //   就重新取位置再点，不靠等时间；最多 5 次，真点不开照样红
                 func toggleSearch() async throws {
-                    try await settleSearch()
-                    let target = try XCTUnwrap(navigation.controlTargets(in: window).first { $0.id == "home.search" })
-                    let rect = window.convertFromScreen(target.frame)
-                    try click(CGPoint(x: rect.midX, y: rect.midY), in: window)
+                    let expanded = { navigation.controlTargets(in: window).contains { $0.id == "home.search.field" } }
+                    let before = expanded()
+                    for _ in 0..<5 {
+                        try await settleSearch()
+                        let target = try XCTUnwrap(navigation.controlTargets(in: window).first { $0.id == "home.search" })
+                        let rect = window.convertFromScreen(target.frame)
+                        try click(CGPoint(x: rect.midX, y: rect.midY), in: window)
+                        for _ in 0..<100 where expanded() == before { try await Task.sleep(for: .milliseconds(20)) }
+                        if expanded() != before { return }
+                    }
                 }
                 let initialWindows = Set(NSApp.windows.filter(\.isVisible).map(\.windowNumber))
                 XCTAssertFalse(navigation.controlTargets(in: window).contains { $0.id == "home.filter" }, "首页不再显示重复的筛选按钮")
