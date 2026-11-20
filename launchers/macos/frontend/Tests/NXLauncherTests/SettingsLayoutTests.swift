@@ -648,11 +648,11 @@ import S2ArmAppleAdapter
         fixture.model.install(a, device: "dev-1")
         XCTAssertTrue(fixture.model.phoneQueued(a.id), "装正在出包的 A：排队")
         fixture.model.install(b, device: "dev-1")
-        XCTAssertEqual(fixture.model.phoneQueue.map(\.gameID), [a.id, b.id], "手机槽忙时再装 B：排在后面")
+        XCTAssertEqual(fixture.model.phoneQueue.map(\.gameID), [a.id], "B 正在推时再装 B：不再排第二单（D-YXDW）")
         for _ in 0..<200 where installs(b.id) < 1 || fixture.model.phoneBusy { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertEqual(installs(a.id), 0, "A 还在出包：A 的装机不发")
-        for _ in 0..<200 where installs(b.id) < 2 { try await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertEqual(installs(b.id), 2, "手机槽空了：排着的 B 接上（A 被主槽占着跳过它）")
+        XCTAssertEqual(installs(b.id), 1, "B 只推一遍")
+        XCTAssertFalse(fixture.model.phoneBusy, "手机槽空了：排着的 A 被主槽占着，不起")
         XCTAssertEqual(fixture.model.phoneQueue.map(\.gameID), [a.id])
 
         fixture.model.finish(.completed, message: "")   // A 出包结束
