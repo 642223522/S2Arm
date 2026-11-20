@@ -2789,9 +2789,16 @@ void s2a_snap_heap(uint64_t *base, uint64_t *cur) { GMU_LOCK(); *base = (uint64_
 uint64_t s2a_snap_scratch_map(uint64_t n) {
     // 取别名区顶端，但不能伸出宿主窗口：开远端时（iPhone 大地址档）别名区顶落在远端，那段游戏地址在服务层的内存追踪里无效，
     //   重放请求的应答一写进消息后面的接收区就报无效内存区（一款大游戏：AudioDevice#10、DeliveryCacheProgressService#1 等）
+    //   窗口小（没有扩展寻址的机型：4 GB 窗口、别名区整段在窗口外）时窗口顶落在别名区之下的堆区：那段只能用堆区还没提交的部分（恢复时堆大小
+    //   已先按快照还原，svcmem.bin 在重放之前读）。原先不分区一律按别名区掩码查，地址在别名区之下时下标下溢、读野地址崩在这里（D-PYHB、#093702）
     uint64_t wb, ws; s2a_window_get(&wb, &ws); uint64_t top = L.alias_base + L.alias_size; if (top > wb + ws) top = wb + ws;
-    uint64_t a = top - n; GMU_LOCK();
-    for (uint64_t p = a; p < a + n; p += HPG) if (*amask_at(p)) { GMU_UNLOCK(); return 0; }
+    if (top < n + wb) return 0;
+    uint64_t a = top - n, ae = L.alias_base + L.alias_size; GMU_LOCK();
+    uint64_t hfree = (uint64_t)(uintptr_t)g_heap + g_heap_cur, hend = L.heap_base + L.heap_size;
+    for (uint64_t p = a; p < a + n; p += HPG) {
+        int ok = p >= L.alias_base && p + HPG <= ae ? !*amask_at(p) : p >= hfree && p + HPG <= hend;
+        if (!ok) { GMU_UNLOCK(); return 0; }
+    }
     if (map_find(a, n) || mprotect((void *)(uintptr_t)a, (size_t)n, PROT_READ | PROT_WRITE)) { GMU_UNLOCK(); return 0; }
     map_add(a, n, 0, ST_STACK, 0); GMU_UNLOCK(); return a;
 }
