@@ -473,7 +473,27 @@ import S2ArmAppleAdapter
         }
         guard let v = main.contentView?.superview ?? main.contentView, let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) else { return nil }
         v.cacheDisplay(in: v.bounds, to: rep)
-        lastSnapshotPath = "视图层级（不含弹出层、毛玻璃）"
-        return rep.representation(using: .png, properties: [:])
+        // 主窗口开着弹出层（设置、登录面板等 sheet）时，系统会把主窗口压暗：只画主窗口就是一张整体发灰、按钮发暗的图，看着像界面卡了一层蒙层。
+        //   把弹出层按它在主窗口里的位置叠上去，截图与屏幕一致（毛玻璃画不出来，退成不透明底）
+        let sheets = vis.filter { $0 !== main && ($0.sheetParent === main || $0.parent === main) }
+        lastSnapshotPath = sheets.isEmpty ? "视图层级（不含毛玻璃）" : "视图层级（叠了 \(sheets.count) 层弹出层，不含毛玻璃）"
+        return Self.overlay(sheets, on: rep, main: main)?.representation(using: .png, properties: [:]) ?? rep.representation(using: .png, properties: [:])
+    }
+
+    /// 视图层级截图上叠弹出层：各层按窗口坐标换算到主窗口截图里的位置（左下原点、按主图像素比例缩放）
+    static func overlay(_ windows: [NSWindow], on base: NSBitmapImageRep, main: NSWindow) -> NSBitmapImageRep? {
+        guard !windows.isEmpty, let ctx = NSGraphicsContext(bitmapImageRep: base) else { return nil }
+        let scale = CGFloat(base.pixelsWide) / max(main.frame.width, 1)
+        NSGraphicsContext.saveGraphicsState(); defer { NSGraphicsContext.restoreGraphicsState() }
+        NSGraphicsContext.current = ctx
+        for w in windows {
+            guard let v = w.contentView?.superview ?? w.contentView, let r = v.bitmapImageRepForCachingDisplay(in: v.bounds) else { continue }
+            v.cacheDisplay(in: v.bounds, to: r)
+            let at = CGRect(x: (w.frame.minX - main.frame.minX) * scale, y: (w.frame.minY - main.frame.minY) * scale,
+                            width: w.frame.width * scale, height: w.frame.height * scale)
+            NSColor.windowBackgroundColor.setFill(); at.fill()
+            r.draw(in: at, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: false, hints: nil)
+        }
+        return base
     }
 }
