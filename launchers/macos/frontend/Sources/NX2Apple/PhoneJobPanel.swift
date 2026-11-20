@@ -248,6 +248,9 @@ struct PhoneJobPanel: View {
             if !session.suggestion.isEmpty {
                 PhoneJobFact(label: t("phone.next"), text: loc.backend(session.suggestion))
             }
+            if let choice = model.pushChoice, session.failureCode == PhoneOverview.choiceRequiredCode, session.kind == .install || session.kind == .pushSelected {
+                chooser(choice)
+            }
             ReportHint()
             HStack(spacing: 12) {
                 // 还没用 Apple ID 登录 / 登录过期（0.6.0 Mac：S2Arm 自己登录）：就在这里登录，登录好再点一次（RECOVERY 的「登录 Apple ID」指的就是它）
@@ -274,6 +277,31 @@ struct PhoneJobPanel: View {
             }
         }
         .accessibilityIdentifier("phone.failed")
+    }
+
+    /// 推送停在「装着不止一个 S2Arm、还没选」：就在失败页列出候选（同总控台「选用哪个 S2Arm」：只写事实、不推荐），点一个记住并自动重推刚才那一次
+    private func chooser(_ choice: S2ArmLauncherModel.PushChoice) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(t("console.choose.title")).font(.manrope(13)).foregroundStyle(.white.opacity(0.8)).fixedSize(horizontal: false, vertical: true)
+            ForEach(choice.candidates, id: \.bundleId) { c in
+                Button { model.chooseApp(device: choice.device, bundleId: c.bundleId) } label: {
+                    HStack(spacing: 10) {
+                        if model.consoleChoosing == c.bundleId { ProgressView().controlSize(.small) } else { Image(systemName: "app.badge.checkmark") }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(S2ArmLauncherModel.candidateLabelKeys(c).map { t($0) }.joined(separator: " · ")).font(.manrope(13, .medium))
+                            Text(c.bundleId + (c.team.isEmpty ? "" : " · " + t("console.choose.team").replacingOccurrences(of: "{0}", with: c.team)))
+                                .font(.manrope(11)).foregroundStyle(.white.opacity(0.55))
+                        }
+                    }
+                }
+                .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("phone.chooseApp." + c.bundleId)
+                .disabled(model.consoleChoosing != nil || model.phoneBusy)
+                .accessibilityIdentifier("phone.chooseApp." + c.bundleId)
+            }
+            if let why = model.consoleChooseError {
+                Text(loc.backend(why)).font(.manrope(12)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
+        }.accessibilityIdentifier("phone.chooseApp")
     }
 
     /// 这次失败是作业层可确认继续的停装（会挤掉别处装的游戏 / 存档没能备份 / 都要按新版重出……，S2ArmLauncherModel.confirmCodes），且待确认的就是这一单

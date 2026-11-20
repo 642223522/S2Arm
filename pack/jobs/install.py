@@ -2225,18 +2225,29 @@ def push_phone(c):
     否则同 phone_for。不读电脑的签名方式（sign_mode）：电脑选什么，手机上照样可能是 AltStore 装的"""
     if os.name == "nt":
         ph = WinPhone(c)
-        who, bid = s2arm_owner(c, ph.udid, layout.load_device(c, ph.key))
-        if who == "choose":
-            raise Failure(PHONE_APP_CHOICE, code="phone_app_choice_required")
+        who, bid = owner_for_push(c, ph.udid, ph.key)
         if who == "external":
             ph.bid, ph.external = bid, True
         return ph
     dev = phone(c)
     udid = udid_of(c, dev["id"])
-    who, bid = s2arm_owner(c, udid, layout.load_device(c, udid or dev["id"]))
-    if who == "choose":   # 装着不止一个、玩家还没选：不替玩家挑，总控台列出来让他选（phoneChooseApp）
-        raise Failure(PHONE_APP_CHOICE, code="phone_app_choice_required")
+    who, bid = owner_for_push(c, udid, udid or dev["id"])
     return ExternalPhone(c, bid, dev, udid) if who == "external" else mac_phone(c, dev=dev, udid=udid)
+
+
+def owner_for_push(c, udid, key):
+    """推送前判这台手机用哪个 S2Arm（s2arm_owner）。装着不止一个、玩家还没选（choose）：不替玩家挑——现查的候选记进设备记录 pendingChoice
+    （总览不现查时也按这同一份给 needsChoice / candidates，两处不各判各的），失败带 facts {device, candidates}，失败页就地列出来让玩家选（phoneChooseApp），
+    选好自动重推。判出来不是 choose：清掉过时的 pendingChoice"""
+    rec = layout.load_device(c, key)
+    who, bid = s2arm_owner(c, udid, rec)
+    if who == "choose":
+        cands = s2arm_candidates(c, udid, rec)
+        layout.save_device(c, key, dict(rec, pendingChoice=dict(candidates=cands, at=time.time())))
+        raise Failure(PHONE_APP_CHOICE, code="phone_app_choice_required", facts=dict(device=key, candidates=cands))
+    if who is not None and "pendingChoice" in rec:
+        layout.save_device(c, key, {k: v for k, v in rec.items() if k != "pendingChoice"})
+    return who, bid
 
 
 GID_RE = re.compile(r"[0-9A-F]{16}")
@@ -2816,6 +2827,7 @@ def phone_choose_app(c):
     if not hit:
         raise Failure(PHONE_APP_GONE, code="phone_app_gone")
     rec = layout.load_device(c, udid)
+    rec = {k: v for k, v in rec.items() if k != "pendingChoice"}   # 选好了：推送时记下的「待选」作废
     layout.save_device(c, udid, dict(rec, chosenBundleId=hit))
     return dict(device=udid, bundleId=hit)
 
