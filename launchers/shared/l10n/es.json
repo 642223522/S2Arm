@@ -4212,6 +4212,15 @@
   "Windows 的强制 ASLR 开着": "La ASLR obligatoria de Windows está activada",
   "出包工具起不了子进程。": "Las herramientas de empaquetado no pueden iniciar procesos secundarios.",
   "Windows 的强制 ASLR 开着：出包工具起不了子进程。": "La ASLR obligatoria de Windows está activada: las herramientas de empaquetado no pueden iniciar procesos secundarios.",
-  "打开「Windows 安全中心 → 应用和浏览器控制 → 漏洞利用保护设置 → 系统设置」，把「强制映像随机化（强制性 ASLR）」改回「使用默认值（关）」，再打一次包。": "Abre Seguridad de Windows → Control de aplicaciones y navegador → Configuración de Protección contra vulnerabilidades → Configuración del sistema, vuelve a poner «Forzar aleatorización de imágenes (ASLR obligatorio)» en «Usar valor predeterminado (desactivado)» y empaqueta de nuevo."
+  "打开「Windows 安全中心 → 应用和浏览器控制 → 漏洞利用保护设置 → 系统设置」，把「强制映像随机化（强制性 ASLR）」改回「使用默认值（关）」，再打一次包。": "Abre Seguridad de Windows → Control de aplicaciones y navegador → Configuración de Protección contra vulnerabilidades → Configuración del sistema, vuelve a poner «Forzar aleatorización de imágenes (ASLR obligatorio)» en «Usar valor predeterminado (desactivado)» y empaqueta de nuevo.",
+  "这是分发（发布）证书的描述文件，缺下面的权限：可以照常用它装「独立 App」（一个 App 一款游戏），通用 S2Arm 里的游戏用它签了打不开。": "Este es un perfil de un certificado de distribución (publicación) y le faltan los permisos siguientes. Puedes seguir usándolo para instalar apps independientes (una app por juego), pero los juegos del S2Arm universal firmado con él no se abrirán.",
+  "要用通用 S2Arm：改用 Apple ID 登录签名，或复制下面这段话发给证书发放人，换成开发证书和开发描述文件后再导入。": "Para usar el S2Arm universal: firma con Apple ID en su lugar, o copia el mensaje de abajo y envíalo a quien te dio el certificado; después importa un certificado y un perfil de desarrollo.",
+  "调试权限（get-task-allow）——没有它，通用 S2Arm 里的游戏打不开（「独立 App」不受影响）": "Depuración (get-task-allow) — sin él, los juegos del S2Arm universal no se pueden abrir (las apps independientes no se ven afectadas)",
+  "免费 Apple ID 有苹果的限制：同时最多装 3 个自己签的 App（AltStore / SideStore 也算），每 7 天最多注册 10 个 App ID；独立 App 每款占一个。": "Un Apple ID gratuito tiene los límites de Apple: como máximo 3 apps autofirmadas instaladas a la vez (AltStore / SideStore también cuentan) y como máximo 10 App ID registrados cada 7 días. Cada app independiente usa uno.",
+  "组这款的独立 App": "Montando la app independiente de este juego",
+  "描述文件是显式 App ID，只能用它那一个包名 {0}：每款独立 App 和通用 S2Arm 都装成它，装一个会顶掉另一个。": "El perfil usa un App ID explícito, así que solo se puede usar su identificador de paquete {0}: cada app independiente y el S2Arm universal se instalan con él, e instalar uno reemplaza al otro.",
+  "现在用的证书缺「调试权限（get-task-allow）」（分发证书），通用 S2Arm 里的游戏打不开：在设置里把出法改成「独立 App」就能玩。": "El certificado en uso no tiene el permiso de depuración (get-task-allow) (es un certificado de distribución), así que los juegos del S2Arm universal no se pueden abrir. Cambia el modo de instalación a app independiente en Ajustes para jugar.",
+  "「{0}」的独立 App 要按新版重新出包：先给它「打 iPhone 包」，再推到 iPhone。": "La app independiente de «{0}» debe volver a compilarse para la nueva versión: ejecuta «Compilar para iPhone» y luego envíala al iPhone.",
+  "「{0}」的独立 App 这次没更新：{1}": "La app independiente de «{0}» no se actualizó esta vez: {1}"
  }
 }

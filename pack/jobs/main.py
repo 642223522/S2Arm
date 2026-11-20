@@ -110,6 +110,7 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
                   "tvInstall": tvos.install_tv, "tvExport": tvos.export_tv, "tvDevices": tvos.devices_job, "tvSaveBackup": tvos.autobackup,   # Apple TV（tvOS 版，pack/jobs/tvos.py）
                   "pushSelected": install.push_selected,
                   "signModeSet": install.sign_mode_set,
+                  "layoutSet": install.layout_set,   # 出法：通用 S2Arm / 独立 App（一 App 一游戏，0.6.3）
                   "saveStatus": saves.status, "saveBackup": saves.backup, "saveInspect": saves.inspect, "saveRestore": saves.restore, "savePrevious": save_previous.status, "saveRestorePrevious": save_previous.restore,
                   "community": community.listing, "communitySave": community.save, "patchMatch": patches.match, "sgradeScan": sgrade.scan, "sgradeUpgradeGame": sgrade.upgrade_one, "sgradeUpgradeBatch": sgrade.upgrade_batch, "sgradeUpgradeStop": sgrade.upgrade_stop, "sgradeUpgradeStatus": sgrade.upgrade_status, "updateHints": host_update.update_hints, "phoneOverview": host_update.phone_overview, "sgradeMac": sgrade.mac_all, "sgradeReenable": sgrade.reenable, "devCert": devcert.operation, "export": export_plan.export,
                   "android": android_export.build_job, "androidDevices": android_export.devices_job}

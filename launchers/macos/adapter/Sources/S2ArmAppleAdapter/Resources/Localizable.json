@@ -10658,5 +10658,41 @@
  {
   "source": "游戏输入键 {0}",
   "en": "Game input key {0}"
+ },
+ {
+  "source": "这是分发（发布）证书的描述文件，缺下面的权限：可以照常用它装「独立 App」（一个 App 一款游戏），通用 S2Arm 里的游戏用它签了打不开。",
+  "en": "This is a distribution (release) certificate profile and it lacks the entitlements below. You can still use it to install Standalone Apps (one app per game), but games in the universal S2Arm won't open when signed with it."
+ },
+ {
+  "source": "要用通用 S2Arm：改用 Apple ID 登录签名，或复制下面这段话发给证书发放人，换成开发证书和开发描述文件后再导入。",
+  "en": "To use the universal S2Arm: sign with your Apple ID instead, or copy the message below and send it to whoever issued the certificate, then import a development certificate and development profile."
+ },
+ {
+  "source": "调试权限（get-task-allow）——没有它，通用 S2Arm 里的游戏打不开（「独立 App」不受影响）",
+  "en": "Debugging (get-task-allow) — without it, games in the universal S2Arm can't open (Standalone Apps aren't affected)"
+ },
+ {
+  "source": "免费 Apple ID 有苹果的限制：同时最多装 3 个自己签的 App（AltStore / SideStore 也算），每 7 天最多注册 10 个 App ID；独立 App 每款占一个。",
+  "en": "A free Apple ID has Apple's limits: at most 3 self-signed apps installed at once (AltStore / SideStore count too), and at most 10 App IDs registered every 7 days. Each Standalone App uses one."
+ },
+ {
+  "source": "组这款的独立 App",
+  "en": "Building this game's Standalone App"
+ },
+ {
+  "source": "描述文件是显式 App ID，只能用它那一个包名 {0}：每款独立 App 和通用 S2Arm 都装成它，装一个会顶掉另一个。",
+  "en": "The profile uses an explicit App ID, so only its one bundle ID {0} can be used: every Standalone App and the universal S2Arm install as it, and installing one replaces the other."
+ },
+ {
+  "source": "现在用的证书缺「调试权限（get-task-allow）」（分发证书），通用 S2Arm 里的游戏打不开：在设置里把出法改成「独立 App」就能玩。",
+  "en": "The certificate in use lacks the debugging entitlement (get-task-allow) (it's a distribution certificate), so games in the universal S2Arm can't open. Switch the install style to Standalone App in Settings to play."
+ },
+ {
+  "source": "「{0}」的独立 App 要按新版重新出包：先给它「打 iPhone 包」，再推到 iPhone。",
+  "en": "The Standalone App for \"{0}\" needs to be built again for the new version: run \"Build for iPhone\" for it, then push it to the iPhone."
+ },
+ {
+  "source": "「{0}」的独立 App 这次没更新：{1}",
+  "en": "The Standalone App for \"{0}\" wasn't updated this time: {1}"
  }
 ]
