@@ -283,8 +283,10 @@ import S2ArmAppleAdapter
             return .ok()
         case ("POST", "/refresh"):
             model.refresh(); return .ok()
-        case ("POST", "/dismiss"):
-            model.dismissErrors(); return .ok()
+        case ("POST", "/dismiss"):   // 关掉提示框：报错，以及更新弹窗 / 新功能大窗（同玩家点关闭：这一版 / 这一期不再弹）
+            model.dismissErrors()
+            if model.updatePopup != nil { model.closeUpdatePopup() }
+            return .ok()
         case ("POST", "/diagnostics"):
             if let b = busy() { return b }
             switch str("action") {
