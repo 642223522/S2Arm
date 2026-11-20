@@ -161,7 +161,7 @@ static void warm_prune(const char *dir, const char *keep_path) {
         if (!warm_name_is_ours(e->d_name) || !strcmp(e->d_name, keep) || n >= 32) continue;
         char pth[NVK_PROG_WARM_MAX_PATH]; struct stat st;
         if (snprintf(pth, sizeof pth, "%s/%s", dir, e->d_name) >= (int)sizeof pth || stat(pth, &st)) continue;
-        snprintf(names[n], sizeof names[n], "%s", e->d_name); mt[n] = st.st_mtime; n++;
+        memcpy(names[n], e->d_name, sizeof NVK_PROG_WARM_PREFIX - 1 + 16 + 4 + 1); mt[n] = st.st_mtime; n++;   // 名字长度已由 warm_name_is_ours 定死（32 + NUL）
     }
     closedir(d);
     for (int k = 0; k < NVK_PROG_WARM_KEEP - 1 && k < n; k++) {   // 最新的几份挪到前面（n 很小，选择排序）
@@ -256,7 +256,7 @@ int nvk_prog_warm_load(void) {
         pthread_mutex_unlock(&g.mu);
         if (e == ENOENT) {
             const char *nm = strrchr(path, '/');
-            char m[200]; snprintf(m, sizeof m, "程序清单：目录里还没有这一版翻译器的清单 %s（本局从零记录）", nm ? nm + 1 : path);
+            char m[200]; snprintf(m, sizeof m, "程序清单：目录里还没有这一版翻译器的清单 %.48s（本局从零记录）", nm ? nm + 1 : path);
             nvn_plat_log(NVN_PLAT_LOG_INFO, "warm", m);
             return 0;
         }

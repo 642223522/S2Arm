@@ -25,7 +25,7 @@ closure = '        if (memcmp(hdr_closure, closure_sha, 8)) { bad = "翻译器�
 profile = '        else if (memcmp(hdr_profile, profile_sha, 32)) { bad = "设备 profile 不同（同一版翻译器；设备能力 / 驱动 / 画质开关变了）"; mismatch = 1; }\n'
 cases = [
     ('profile-first', [(closure, profile.replace('        else if', '        if')), (profile, closure.replace('        if', '        else if'))], 'closure is reported before profile'),
-    ('one-file', [('"%s/" NVK_PROG_WARM_PREFIX "%s.bin", dir, hx', '"%s/programs-v1.bin%.0s", dir, hx')], 'both arms keep their own manifest'),
+    ('one-file', [('"%s/" NVK_PROG_WARM_PREFIX "%s.bin", dir, hx', '"%s/programs-v1.bin%.0s", dir, hx')], 'manifest file exists after save'),   # 文件名回到一款一份：按闭包命名的那份根本不出现
     ('no-prune', [('    if (!rc) warm_prune(dir, path);', '    if (0) warm_prune(dir, path);')], 'the oldest (A) is pruned'),
     ('prune-keeps-legacy', [('    { char pth[NVK_PROG_WARM_MAX_PATH]; if (snprintf(pth, sizeof pth, "%s/%s", dir, NVK_PROG_WARM_FILE) < (int)sizeof pth) unlink(pth); }\n', '')], 'legacy-named file is removed'),
     ('no-legacy-fallback', [('    if (rf && e == ENOENT) {', '    if (0 && rf && e == ENOENT) {')], 'legacy-named manifest of the same closure is accepted'),
