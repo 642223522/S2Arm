@@ -85,6 +85,29 @@ static int cert_issuer_serial(const uint8_t *der, size_t n, buf *out) {
     buf s = {0}; int r = bput(&s, issuer, issuer_n) || bput(&s, serial, serial_n) || der_wrap(out, 0x30, &s); free(s.p); return r;
 }
 
+// 叶证书 subject 里的 OU（苹果开发证书的 OU = 团队号）→ out；0 = 取到，-1 = 没有 / 读不了
+static const uint8_t SS_OID_OU[] = {0x55, 0x04, 0x0b};
+static int cert_team(const uint8_t *der, size_t n, char *out, size_t on) {
+    const uint8_t *end = der + n, *nx, *c; uint8_t t; size_t l; out[0] = 0;
+    if (!(c = der_read(der, end, &t, &l, &nx)) || t != 0x30) return -1;                                        // Certificate
+    const uint8_t *tend; if (!(c = der_read(c, c + l, &t, &l, &tend)) || t != 0x30) return -1;                 // TBSCertificate
+    const uint8_t *p = c, *pend = c + l;
+    if (p < pend && *p == 0xa0) { if (!der_read(p, pend, &t, &l, &nx)) return -1; p = nx; }                    // [0] version
+    for (int i = 0; i < 4; i++) { if (!der_read(p, pend, &t, &l, &nx)) return -1; p = nx; }                     // serial / 签名算法 / issuer / validity
+    const uint8_t *sub = der_read(p, pend, &t, &l, &nx); if (!sub || t != 0x30) return -1;                     // subject
+    for (const uint8_t *q = sub, *qend = sub + l; q < qend; ) {
+        const uint8_t *set = der_read(q, qend, &t, &l, &nx); if (!set || t != 0x31) return -1; q = nx;          // RDN（SET）
+        for (const uint8_t *r = set, *rend = set + l; r < rend; ) {
+            const uint8_t *nx2, *av = der_read(r, rend, &t, &l, &nx2); if (!av || t != 0x30) return -1; r = nx2;   // AttributeTypeAndValue
+            const uint8_t *nx3, *oid = der_read(av, av + l, &t, &l, &nx3); if (!oid || t != 0x06) return -1;
+            if (l != sizeof SS_OID_OU || memcmp(oid, SS_OID_OU, l)) continue;
+            const uint8_t *nx4, *v = der_read(nx3, nx2, &t, &l, &nx4); if (!v || l + 1 > on) return -1;
+            memcpy(out, v, l); out[l] = 0; return 0;
+        }
+    }
+    return -1;
+}
+
 // ---------- CodeDirectory ----------
 // 返回 CD 字节（cd）；sig_off = 签名在文件里的偏移（= codeLimit），code = 文件前 sig_off 字节
 static int build_cd(const uint8_t *code, uint32_t limit, const char *ident, const char *team, const uint8_t req_hash[32], const uint8_t *ent_hash, const uint8_t *ent_der_hash, uint64_t exec_base, uint64_t exec_limit, uint64_t exec_flags, buf *cd) {
@@ -343,6 +366,15 @@ static int write_file(const char *path, const char *text) {
     char tmp[1100]; snprintf(tmp, sizeof tmp, "%s.tmp", path); FILE *f = fopen(tmp, "w"); if (!f) return -1;
     int ok = fputs(text, f) >= 0; if (fclose(f)) ok = 0; return ok && !rename(tmp, path) ? 0 : -1;
 }
+// 导入成功后写不含私钥的 current.json（电脑推送时读它判要不要重交；起局重签按它认现在这张证书），source = pc（电脑交来）/ p12（手机上直接导入）
+static void current_write(const char *cur, const char *team, const char *sha, const char *source, const char *note) {
+    char prev[64] = {0}; { size_t pn = 0; uint8_t *pb = slurp(cur, &pn); char *ps = pb ? realloc(pb, pn + 1) : NULL; if (ps) { ps[pn] = 0; json_str(ps, "cert_sha1", prev, sizeof prev); free(ps); } else free(pb); }
+    char cj[300]; snprintf(cj, sizeof cj, "{\"schema\": 1, \"team\": \"%s\", \"cert_sha1\": \"%s\", \"imported\": %ld, \"source\": \"%s\"}\n", team, sha, (long)time(NULL), source);
+    if (write_file(cur, cj)) LOG("【黄】签名身份已进钥匙串，但 current.json 写不进（起局重签认不到这张证书；电脑下次推送会重交一次）");
+    int changed = strcasecmp(prev, sha) != 0;
+    LOG("签名身份已导入钥匙串（%s）：团队 %s、证书 sha1 %s（%s）；%s", source, team[0] ? team : "?", sha, !prev[0] ? "第一次" : changed ? "换了证书" : "同一张证书", note);
+    if (changed && prev[0]) LOG("签名证书换了：各款不批量重签，玩家起哪款、起局时发现签名证书不同就当场重签那一款（维护者 0.6.0 总原则：点了才做、只做这一款）");
+}
 // 返回 0 = 没有要导入的；1 = 导入成功；-1 = 失败（已写 import_error.txt）
 int s2a_identity_import(const char *home) {
     if (!home) return 0;
@@ -368,14 +400,98 @@ int s2a_identity_import(const char *home) {
     }
     if (kb) { memset(kb, 0, kn); free(kb); } free(cb); if (k) CFRelease(k); if (c) CFRelease(c);
     if (rc) { char t[400]; snprintf(t, sizeof t, "%s\n", why); write_file(err, t); LOG("【红】签名身份导入失败：%s（incoming/ 留着，电脑下次推送时说明；起局照常用电脑签好的）", why); return -1; }
-    char prev[64] = {0}; { size_t pn = 0; uint8_t *pb = slurp(cur, &pn); char *ps = pb ? realloc(pb, pn + 1) : NULL; if (ps) { ps[pn] = 0; json_str(ps, "cert_sha1", prev, sizeof prev); free(ps); } else free(pb); }
     unlink(pk); unlink(pc); unlink(pj); unlink(err); rmdir(inc);   // 先删私钥，再写 current.json
-    char cj[300]; snprintf(cj, sizeof cj, "{\"schema\": 1, \"team\": \"%s\", \"cert_sha1\": \"%s\", \"imported\": %ld}\n", team, sha, (long)time(NULL));
-    if (write_file(cur, cj)) LOG("【黄】签名身份已进钥匙串，但 current.json 写不进（电脑下次推送会重交一次）");
-    int changed = strcasecmp(prev, sha) != 0;
-    LOG("签名身份已导入钥匙串：团队 %s、证书 sha1 %s（%s）；incoming/ 已删", team[0] ? team : "?", sha, !prev[0] ? "第一次" : changed ? "换了证书" : "同一张证书");
-    if (changed && prev[0]) LOG("签名证书换了：各款不批量重签，玩家起哪款、起局时发现签名证书不同就当场重签那一款（维护者 0.6.0 总原则：点了才做、只做这一款）");
+    current_write(cur, team, sha, "pc", "incoming/ 已删");
     return 1;
+}
+
+// 不带 MAC、不加密的 PKCS#12（SideStore「导出证书给别的 App」给的就是这种：CodeSignKit PKCS12Builder 只拼 keyBag + certBag，密码参数不用，没有 macData）。
+//   系统 SecPKCS12Import 对它的结果因系统版本而异，导不进时按结构直接取：PFX { 版本 3, ContentInfo(data) { AuthenticatedSafe { ContentInfo(data) { SafeContents { SafeBag… } } … } } }。
+//   keyBag（1.2.840.113549.1.12.10.1.1）里是 PKCS#8 PrivateKeyInfo → 取里面的 RSAPrivateKey（PKCS#1）；certBag（…10.1.3）里 x509Certificate 的 OCTET STRING 是证书 DER。
+//   加密的 bag（shroudedKeyBag、encryptedData）这里不解：那种 p12 系统接口认。0 = 取到私钥与证书（指向输入内部），-1 = 不是这种格式
+static const uint8_t SS_OID_KEYBAG[] = {0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x0c,0x0a,0x01,0x01}, SS_OID_CERTBAG[] = {0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x0c,0x0a,0x01,0x03};
+static int oid_is(const uint8_t *p, const uint8_t *end, const uint8_t *oid, size_t on, const uint8_t **next) {
+    uint8_t t; size_t l; const uint8_t *v = der_read(p, end, &t, &l, next); return v && t == 0x06 && l == on && !memcmp(v, oid, on);
+}
+static const uint8_t *data_content(const uint8_t *ci, size_t n, size_t *out_n) {   // ContentInfo(data) → [0] OCTET STRING 的内容
+    const uint8_t *end = ci + n, *nx; uint8_t t; size_t l;
+    if (!oid_is(ci, end, SS_OID_DATA, sizeof SS_OID_DATA, &nx)) return NULL;
+    const uint8_t *e0 = der_read(nx, end, &t, &l, &nx); if (!e0 || t != 0xa0) return NULL;
+    const uint8_t *nx2, *oc = der_read(e0, e0 + l, &t, out_n, &nx2); return oc && t == 0x04 ? oc : NULL;
+}
+static int p12_plain(const uint8_t *p, size_t n, const uint8_t **key, size_t *key_n, const uint8_t **cert, size_t *cert_n) {
+    const uint8_t *end = p + n, *nx, *c; uint8_t t; size_t l; *key = *cert = NULL;
+    if (!(c = der_read(p, end, &t, &l, &nx)) || t != 0x30) return -1;                                   // PFX
+    const uint8_t *pend = c + l, *v = der_read(c, pend, &t, &l, &nx); if (!v || t != 0x02 || l != 1 || *v != 3) return -1;   // 版本 3
+    const uint8_t *ci = der_read(nx, pend, &t, &l, &nx); if (!ci || t != 0x30) return -1;              // authSafe ContentInfo
+    size_t an; const uint8_t *as = data_content(ci, l, &an); if (!as) return -1;
+    const uint8_t *asq = der_read(as, as + an, &t, &l, &nx); if (!asq || t != 0x30) return -1;          // AuthenticatedSafe
+    for (const uint8_t *q = asq, *qend = asq + l; q < qend; ) {
+        const uint8_t *ci2 = der_read(q, qend, &t, &l, &nx); if (!ci2 || t != 0x30) return -1; q = nx;
+        size_t sn; const uint8_t *sc = data_content(ci2, l, &sn); if (!sc) continue;                     // 加密的 ContentInfo：跳过
+        const uint8_t *scq = der_read(sc, sc + sn, &t, &l, &nx); if (!scq || t != 0x30) continue;        // SafeContents
+        for (const uint8_t *b = scq, *bend = scq + l; b < bend; ) {
+            const uint8_t *bnx, *bag = der_read(b, bend, &t, &l, &bnx); if (!bag || t != 0x30) break; b = bnx;
+            const uint8_t *bagend = bag + l, *vnx;
+            int is_key = oid_is(bag, bagend, SS_OID_KEYBAG, sizeof SS_OID_KEYBAG, &vnx), is_cert = !is_key && oid_is(bag, bagend, SS_OID_CERTBAG, sizeof SS_OID_CERTBAG, &vnx);
+            if (!is_key && !is_cert) continue;
+            const uint8_t *e0 = der_read(vnx, bagend, &t, &l, &vnx); if (!e0 || t != 0xa0) continue;
+            const uint8_t *inner = der_read(e0, e0 + l, &t, &l, &vnx); if (!inner || t != 0x30) continue;
+            const uint8_t *iend = inner + l, *x;
+            if (is_key) {   // PrivateKeyInfo { INTEGER 版本, AlgorithmIdentifier, OCTET STRING RSAPrivateKey }
+                if (!der_read(inner, iend, &t, &l, &x) || t != 0x02) continue;
+                if (!der_read(x, iend, &t, &l, &x) || t != 0x30) continue;
+                const uint8_t *k = der_read(x, iend, &t, &l, &x); if (!k || t != 0x04) continue;
+                *key = k; *key_n = l;
+            } else {        // CertBag { x509Certificate OID, [0] OCTET STRING 证书 DER }
+                if (!der_read(inner, iend, &t, &l, &x) || t != 0x06) continue;
+                const uint8_t *ce0 = der_read(x, iend, &t, &l, &x); if (!ce0 || t != 0xa0) continue;
+                const uint8_t *cd = der_read(ce0, ce0 + l, &t, &l, &x); if (!cd || t != 0x04) continue;
+                if (!*cert) { *cert = cd; *cert_n = l; }   // 第一张是叶证书（后面若有中间证书不要）
+            }
+        }
+    }
+    return *key && *cert ? 0 : -1;
+}
+
+// 玩家在手机上直接导入 .p12（0.6.0：买了开发者证书的玩家不经电脑）：解 p12 → 存钥匙串（同电脑交来的身份，标签 SS_KC_LABEL，换掉旧的）→ 写 current.json（source p12）。
+//   source 写进 current.json（p12 = 玩家选的 .p12 文件，sidestore = SideStore「导出证书」回调；NULL 按 p12）。团队号取叶证书的 OU（苹果开发证书的 OU 就是团队号）。返回 0 = 导入了（team 带回团队号）；1 = 密码不对（调用方再问一次）；-1 = 失败（why 写原因）。
+//   p12 文件本身由调用方在成功后删（它在「放这里导入」里）
+int s2a_identity_import_p12(const char *home, const void *p12, size_t n, const char *password, const char *source, char *team, size_t team_n, char *why, size_t why_n) {
+    if (team && team_n) team[0] = 0;
+    if (why && why_n) why[0] = 0;
+    if (!home || !p12 || !n) { snprintf(why, why_n, "没有文件内容"); return -1; }
+    SecKeyRef key = NULL; CFArrayRef chain = NULL;
+    int rc = s2a_selfsign_identity(p12, n, password, &key, &chain);
+    if (rc || !key || !chain || CFArrayGetCount(chain) < 1) {   // 系统导不进：试不带 MAC、不加密的那种（SideStore 导出），按结构直接取
+        if (key) CFRelease(key); if (chain) CFRelease(chain); key = NULL; chain = NULL;
+        const uint8_t *kd, *cd; size_t kn, cn;
+        if (!p12_plain(p12, n, &kd, &kn, &cd, &cn)) {
+            CFDataRef kdat = CFDataCreate(NULL, kd, (CFIndex)kn), cdat = CFDataCreate(NULL, cd, (CFIndex)cn);
+            const void *ak[] = {kSecAttrKeyType, kSecAttrKeyClass}, *av[] = {kSecAttrKeyTypeRSA, kSecAttrKeyClassPrivate};
+            CFDictionaryRef ka = CFDictionaryCreate(NULL, ak, av, 2, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+            key = SecKeyCreateWithData(kdat, ka, NULL); SecCertificateRef c = SecCertificateCreateWithData(NULL, cdat);
+            CFRelease(ka); CFRelease(kdat); CFRelease(cdat);
+            if (key && c) { const void *cv[] = {c}; chain = CFArrayCreate(NULL, cv, 1, &kCFTypeArrayCallBacks); LOG(".p12 导入：系统接口导不进（%d），按不带 MAC 的明文 PKCS#12 取到私钥与证书（SideStore 导出的格式）", rc); rc = 0; }
+            if (c) CFRelease(c);
+            if (rc) { if (key) CFRelease(key); key = NULL; }
+        }
+        if (rc == errSecAuthFailed) return 1;   // -25293：密码不对（明文格式也取不到时才算）
+        if (rc || !key || !chain) { if (key) CFRelease(key); if (chain) CFRelease(chain); snprintf(why, why_n, "不是能用的证书文件（.p12 读不了：%d）", rc); return -1; }
+    }
+    SecCertificateRef leaf = (SecCertificateRef)CFArrayGetValueAtIndex(chain, 0);
+    CFDataRef der = SecCertificateCopyData(leaf); char t[64] = "", sha[41] = "";
+    if (der) { uint8_t h[CC_SHA1_DIGEST_LENGTH]; CC_SHA1(CFDataGetBytePtr(der), (CC_LONG)CFDataGetLength(der), h); for (int i = 0; i < CC_SHA1_DIGEST_LENGTH; i++) snprintf(sha + 2 * i, 3, "%02x", h[i]);
+               cert_team(CFDataGetBytePtr(der), (size_t)CFDataGetLength(der), t, sizeof t); CFRelease(der); }
+    char w[256] = ""; rc = der ? g_kc_store(key, leaf, w, sizeof w) : -1;
+    CFRelease(key); CFRelease(chain);
+    if (rc) { snprintf(why, why_n, "%s", w[0] ? w : "证书读不了"); LOG("【红】.p12 导入失败：%s", why); return -1; }
+    char dir[1024], cur[1200]; snprintf(dir, sizeof dir, "%s/Library/Application Support/S2Arm/identity", home); snprintf(cur, sizeof cur, "%s/current.json", dir);
+    for (char *q = dir + 1; *q; q++) if (*q == '/') { *q = 0; mkdir(dir, 0755); *q = '/'; } mkdir(dir, 0755);
+    if (!source || !*source) source = "p12";
+    current_write(cur, t, sha, source, !strcmp(source, "sidestore") ? "从 SideStore 取来的证书" : "玩家在手机上导入的 .p12");
+    if (team && team_n) snprintf(team, team_n, "%s", t);
+    return 0;
 }
 
 // ---------- 手机上签程序要的身份与证书链（0.6.0 通用壳：起局时按款重签，ios/program_resign.m）----------
@@ -402,9 +518,12 @@ int s2a_identity_keychain(SecKeyRef *key, SecCertificateRef *cert) {
     CFRelease(got); return r;
 }
 
+// 弱链接[host,nvntest]：s2a_prov_app_json_self（ios/prov_expiry.m，同下一行）
 // 弱链接[host,nvntest]：s2a_prov_signing_ids_self（ios/prov_expiry.m 只在 iOS App 里；Mac 宿主与单测链接行按这行放行未定义）
 int s2a_prov_signing_ids_self(char *team, size_t team_n, char *appid, size_t appid_n) __attribute__((weak_import));   // ios/prov_expiry.m（只在 iOS App 里）
+int s2a_prov_app_json_self(const char *home) __attribute__((weak_import));   // ios/prov_expiry.m（只在 iOS App 里）
 void s2a_selfsign_probe(void) {
+    if (s2a_prov_app_json_self && s2a_prov_app_json_self(getenv("HOME"))) LOG("【黄】本 App 的签名身份写不进 identity/app.json（电脑推送前核团队用）");
     s2a_identity_import(getenv("HOME"));   // 电脑交来的签名身份（有才做；没有立即返回）
     const char *p12 = getenv("S2A_SELFSIGN_P12"), *in = getenv("S2A_SELFSIGN_IN"), *out = getenv("S2A_SELFSIGN_OUT");
     if (!p12 || !in || !out) return;

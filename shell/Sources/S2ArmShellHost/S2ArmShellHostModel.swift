@@ -466,6 +466,11 @@ public final class S2ArmShellHostModel {
                      onManageSaves: { [weak self] id in self?.manageSaves(id) })
         actions.onReorderGames = { [weak self] sources, before in self?.reorderGames(sources, before: before) ?? false }
         actions.onReportProblem = { s2a_shell_report_problem() }
+        #if !os(tvOS)
+        actions.signingCertStatus = { String(cString: s2a_shell_cert_status()) }   // 签名证书（0.6.0，宿主 ios/cert_import.m）：手机上自己签导入的游戏用哪张
+        actions.onImportSigningCert = { s2a_shell_cert_p12() }
+        actions.onSideStoreSigningCert = { s2a_shell_cert_sidestore() }
+        #endif
         actions.featureIntro = featureIntro   // 新功能介绍（0.6.0 起 iPhone 两页）：有才在游戏库设置里出「再看一遍」那一行
         // 快照（0.6.0）：有完整快照的那款，长按卡片多一项「回到上次存下的这一刻」（宿主 ios/app.m；开关关着时宿主回 0，菜单里没有这一项）
         actions.snapshotAvailable = { id in s2a_shell_snapshot_available(id) != 0 }

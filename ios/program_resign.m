@@ -22,8 +22,10 @@ int s2a_prov_signing_ids_self(char *team, size_t team_n, char *appid, size_t app
 #define RLOG(...) s2a_log_line("[s2a] " __VA_ARGS__)
 
 static int (*g_get_identity)(SecKeyRef *, SecCertificateRef *) = s2a_identity_keychain;
+static int (*g_prov_ids)(char *, size_t, char *, size_t) = s2a_prov_signing_ids_self;
 #ifdef S2A_UNIT_TEST
 void s2a_program_resign_test_identity(int (*f)(SecKeyRef *, SecCertificateRef *)) { g_get_identity = f ? f : s2a_identity_keychain; }   // 单测换掉钥匙串
+void s2a_program_resign_test_prov(int (*f)(char *, size_t, char *, size_t)) { g_prov_ids = f ? f : s2a_prov_signing_ids_self; }   // 单测换掉「读包里的描述文件」
 #endif
 
 static NSString *hex(const uint8_t *d, size_t n) { NSMutableString *s = [NSMutableString stringWithCapacity:n * 2]; for (size_t i = 0; i < n; i++) [s appendFormat:@"%02x", d[i]]; return s; }
@@ -66,10 +68,15 @@ static int program_resign(const char *home, const char *game_data, const char *g
         NSString *why_sign = force ? @"程序库签名本机注册不了" : was_sha ? @"程序库是另一张证书签的" : team ? @"程序库是别的团队签的" : @"程序库还没签名";
         uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
 #define FAIL(...) do { if (why && why_n) snprintf(why, why_n, __VA_ARGS__); RLOG("【黄】起局重签：游戏 %s %s，要用手机上的签名身份重签，没签成：%s；照旧用原来的程序库", gid, why_sign.UTF8String, why); return -1; } while (0)
+        // 证书的团队（电脑交身份时写进 current.json）和装这个 App 的团队（包里描述文件）不同：签出来的程序库团队号与 App 对不上，系统一定不认（库校验要同团队），
+        //   签了也白签。AltStore / SideStore 装的 App 是玩家在那边登录的 Apple ID 的团队，启动器里登录了另一个 Apple ID 就是这种情况：把原因说清楚，不签
+        char pteam[64] = "", pappid[512] = ""; int pr = g_prov_ids(pteam, sizeof pteam, pappid, sizeof pappid);
+        if (pr >= 0 && cur_team && ![cur_team isEqualToString:@(pteam)])
+            FAIL("手机上的签名证书是团队 %s 的，这个 App 是团队 %s 签的（启动器里登录的 Apple ID 和装 App 用的不是同一个）：在启动器里登录装 App 用的那个 Apple ID 后再连一次电脑",
+                 cur_team.UTF8String, pteam);
         SecKeyRef key = NULL; SecCertificateRef leaf = NULL;
         if (g_get_identity(&key, &leaf) || !key || !leaf) { if (key) CFRelease(key); if (leaf) CFRelease(leaf); FAIL("钥匙串里没有签名身份（电脑交来的身份还没导入）"); }
         CFArrayRef chain = s2a_selfsign_chain_for(leaf);
-        char pteam[64] = "", pappid[512] = ""; int pr = s2a_prov_signing_ids_self(pteam, sizeof pteam, pappid, sizeof pappid);
         const char *steam = pr >= 0 ? pteam : cur_team.UTF8String, *sappid = pr >= 0 ? pappid : NULL;
         NSData *in = [NSData dataWithContentsOfFile:@(images)];
         uint8_t *out = NULL; size_t on = 0; char w[256] = "";

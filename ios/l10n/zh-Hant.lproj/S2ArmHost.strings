@@ -615,3 +615,19 @@
 "vpad.snap.deleteFailed" = "這次沒刪乾淨，稍後再試一次";
 "snap.result.title" = "沒能回到那一刻";
 "snap.result.generic" = "回到那一刻沒成功，已重新開始遊戲，遊戲存檔沒受影響。";
+
+"cert.password.title" = "輸入憑證密碼";
+"cert.password.message" = "「%@」要密碼才能匯入。";
+"cert.password.wrong" = "密碼不對，請再輸入一次（「%@」）。";
+"cert.import" = "匯入";
+"cert.failed.title" = "沒能匯入憑證";
+"cert.failed.message" = "這個檔案不是能用的簽名憑證（.p12）。";
+"cert.done.title" = "簽名憑證已匯入";
+"cert.done.message" = "團隊 %@。之後在這台 iPhone 上匯入的遊戲會用它簽好再玩。";
+"cert.teamMismatch" = "注意：這張憑證是團隊 %1$@ 的，這個 S2Arm 是團隊 %2$@ 安裝的，用它簽的遊戲系統不認。請換成安裝 S2Arm 時用的那張憑證，或用這張憑證重新安裝 S2Arm。";
+"cert.sidestore.missing" = "打不開 SideStore：這台 iPhone 上沒裝 SideStore，或版本太舊。";
+"cert.sidestore.empty" = "SideStore 沒有交回憑證，請在 SideStore 裡點「Export」後再試。";
+"cert.status" = "團隊 %1$@ · %2$@";
+"cert.source.sidestore" = "來自 SideStore";
+"cert.source.p12" = "匯入的 .p12";
+"cert.source.pc" = "電腦交來";
