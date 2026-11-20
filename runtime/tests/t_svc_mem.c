@@ -1045,6 +1045,33 @@ int main(void) {
           s2a_mem_test_setup(W36 + 8 * G, 6 * G, W36, 32 * G, (void *)(W36 + 2 * G), HL); s2a_mem_test_astype(1);
           CHECK(s2a_ipc_addr39(W36 + 2 * G + 0x10) == W36 + 2 * G + 0x10, "36 位窗口在 2^36 以下（原位置）：原样，不补"); }
     }
+    {   // #ef04e6 即时存档档 TLS 块 / 线程对象回收：线程退出挂回同尺寸空闲表、新线程先复用（原先只分配不回收，线程起落多的游戏把 TLS/IO 区吃光后致命退出）
+        //   期望按「同尺寸后进先出复用、复用的块清零、不同尺寸互不串、不在 arena 的地址忽略」手写
+        void *s2a_det_arena_alloc(size_t); void s2a_det_arena_free(void *, size_t); void s2a_mem_test_tlsio(uint64_t, uint64_t);
+        const uint64_t TS = 8192, OS = 0x400, AR = 256 * 1024;   // 区 256 KB：不回收时约 28 个线程就满
+        uint8_t *R = mmap(NULL, AR, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+        CHECK(R != MAP_FAILED, "TLS 回收：预留 256 KB");
+        if (R != MAP_FAILED) {
+            s2a_mem_test_tlsio((uint64_t)R, AR);
+            uint8_t *a = s2a_det_arena_alloc(TS), *o = s2a_det_arena_alloc(OS);
+            CHECK(a && o && a != o, "TLS 回收①：分到 TLS 块与线程对象");
+            memset(a, 0x5a, TS); memset(o, 0x6b, OS);
+            s2a_det_arena_free(a, TS); s2a_det_arena_free(o, OS);
+            uint8_t *o2 = s2a_det_arena_alloc(OS), *a2 = s2a_det_arena_alloc(TS);
+            CHECK(a2 == a && o2 == o, "TLS 回收②：同尺寸取回同一块（a %p→%p，o %p→%p）", (void *)a, (void *)a2, (void *)o, (void *)o2);
+            int z = 1; for (uint64_t k = 0; k < TS; k++) z &= a2[k] == 0; for (uint64_t k = 0; k < OS; k++) z &= o2[k] == 0;
+            CHECK(z, "TLS 回收③：复用的块清零");
+            uint8_t *b = s2a_det_arena_alloc(TS);
+            CHECK(b && b < a2, "TLS 回收④：空闲表空了才往下新分");
+            uint8_t outside[64]; s2a_det_arena_free(outside, TS);
+            uint8_t *c = s2a_det_arena_alloc(TS);
+            CHECK(c && c < b, "TLS 回收⑤：不在 arena 的地址不收进空闲表");
+            int ok = 1;   // ⑥ 线程起落 10000 次（每次一块 TLS + 一块对象）不出区：原先只分不回收 256 KB 撑不过 30 次
+            for (int k = 0; k < 10000 && ok; k++) { void *t = s2a_det_arena_alloc(TS), *u = s2a_det_arena_alloc(OS); ok = t && u; s2a_det_arena_free(t, TS); s2a_det_arena_free(u, OS); }
+            CHECK(ok, "TLS 回收⑥：起落 10000 次不出区");
+            munmap(R, AR);
+        }
+    }
     printf("%s t_svc_mem：%d / %d 项通过（对拍 %d 区间不一致 %d；64 MB 整段查 8 字节 %d 次 老 %.1f ms → 新 %.2f ms）\n", bad ? "✗" : "✓", checks - bad, checks, N, diff, M, told, tnew);
     {   // #258 文件后备下还页懒清零：解除时锁内只改成不可访问并记「待清零」，不打洞；页重新放出来时就地清零（0x2C / MapMemory 拷贝路径）或只撤销标记（MapMemory 对齐路径盖掉原映射）。
         //   期望按语义手写：解除后页立刻不可访问、待清零计数 = 页数；放出来一律读到零 / 源内容；非文件后备路径行为不变
