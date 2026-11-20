@@ -1201,7 +1201,12 @@
   "phone.status.running.phoneIdentity": "Transmission",
   "phone.done.phoneIdentity": "Identité de signature transmise à S2Arm sur {0}",
   "phone.failed.phoneIdentity": "Non transmise",
-  "phone.headline.phoneIdentity": "Transmise"
+  "phone.headline.phoneIdentity": "Transmise",
+  "console.status.externalApp": "S2Arm installé · avec un autre outil",
+  "console.button.exportShellIpa": "Exporter S2Arm.ipa",
+  "console.button.pushS2arm": "Envoyer la sélection sur l'iPhone ({0})",
+  "console.button.exportS2arm": "Exporter la sélection en .s2arm ({0})",
+  "console.external.note": "Le S2Arm de ce téléphone a été installé avec un autre outil, comme AltStore ou SideStore : les jeux envoyés sont signés sur le téléphone par S2Arm avec le certificat que vous avez importé, sans connexion à un Apple ID sur cet ordinateur. Pour passer à un nouveau S2Arm, exportez S2Arm.ipa, puis signez-le et installez-le avec ce même outil."
  },
  "text": {
   "满屏补丁（按屏幕比例自动选）": "Correctif plein écran (choisi selon votre ratio d'écran)",
@@ -4115,6 +4120,8 @@
   "这台电脑上没有这个 Apple ID 能用的开发证书，要新建一张。账号证书满了的话，苹果会撤掉列表里的第一张「{0}」（{1} 生效），它可能正是 AltStore / SideStore 在用的那张；撤掉后 AltStore / SideStore 自己和它们装的 App 都会打不开。": "Cet ordinateur n’a aucun certificat de développement utilisable pour cet identifiant Apple ; il faut en créer un. Si les certificats de votre compte sont pleins, Apple révoquera le premier de la liste, « {0} » (valide depuis {1}), qui est peut-être celui qu’utilise AltStore / SideStore ; une fois révoqué, AltStore / SideStore et les apps qu’ils ont installées ne s’ouvriront plus.",
   "这台电脑上没有这个 Apple ID 能交给手机的签名证书，启动器不会为此新建（账号证书满了时，新建会让苹果撤掉一张，可能正是 AltStore 或 SideStore 在用的那张）。用 AltStore 或 SideStore 装的 S2Arm：在 AltStore 或 SideStore 的设置里导出签名证书，到手机上 S2Arm 的「签名证书」里导入就行。确实想让启动器新建证书，就点「安装 S2Arm」，它会先告诉你可能撤掉哪张证书，再由你决定。": "Cet ordinateur n’a pas de certificat de signature de cet identifiant Apple à transmettre au téléphone, et le lanceur n’en créera pas pour cela (si les certificats de votre compte sont pleins, un nouveau fait révoquer un certificat par Apple, peut-être celui qu’utilise AltStore ou SideStore). Pour S2Arm installé avec AltStore ou SideStore : exportez le certificat de signature dans les réglages d’AltStore ou de SideStore et importez-le dans « Certificat de signature » de S2Arm sur le téléphone. Si vous voulez vraiment que le lanceur crée un certificat, cliquez sur « Installer S2Arm » : il indique d’abord quel certificat pourrait être révoqué et vous laisse décider.",
   "「{0}」空间不够：这一步还要约 {1} GB，盘上只剩 {2} GB。": "Espace insuffisant sur « {0} » : cette étape nécessite environ {1} Go, mais il ne reste que {2} Go.",
-  "在「{0}」上腾出至少 {3} GB 后重试；游戏原件、存档和上次成功的运行版本别删。": "Libérez au moins {3} Go sur « {0} », puis réessayez. Ne supprimez ni les fichiers du jeu, ni les sauvegardes, ni la dernière version qui a fonctionné."
+  "在「{0}」上腾出至少 {3} GB 后重试；游戏原件、存档和上次成功的运行版本别删。": "Libérez au moins {3} Go sur « {0} », puis réessayez. Ne supprimez ni les fichiers du jeu, ni les sauvegardes, ni la dernière version qui a fonctionné.",
+  "已送到手机，但手机上的 S2Arm 还没有签名证书，这款还开不了：在手机上打开 S2Arm → 齿轮 →「签名证书」，SideStore 装的点「从 SideStore 获取」；AltStore 装的先在 AltStore 设置里导出签名证书，再点「导入 .p12…」。": "Envoyé sur le téléphone, mais S2Arm sur votre téléphone n'a pas encore de certificat de signature, ce jeu ne peut donc pas démarrer : sur le téléphone, ouvrez S2Arm → roue dentée → « Certificat de signature ». Si SideStore l'a installé, touchez « Récupérer depuis SideStore » ; si c'est AltStore, exportez d'abord le certificat de signature dans les réglages d'AltStore, puis touchez « Importer un .p12… ».",
+  "已送到手机，但手机上的 S2Arm 导入的签名证书（团队 {0}）不是给这个 S2Arm 签名的那张（团队 {1}），这款还开不了：在手机上打开 S2Arm → 齿轮 →「签名证书」，SideStore 装的点「从 SideStore 获取」；AltStore 装的先在 AltStore 设置里重新导出签名证书，再点「导入 .p12…」。": "Envoyé sur le téléphone, mais le certificat de signature importé dans S2Arm (équipe {0}) n'est pas celui qui a signé ce S2Arm (équipe {1}), ce jeu ne peut donc pas démarrer : sur le téléphone, ouvrez S2Arm → roue dentée → « Certificat de signature ». Si SideStore l'a installé, touchez « Récupérer depuis SideStore » ; si c'est AltStore, exportez à nouveau le certificat de signature dans les réglages d'AltStore, puis touchez « Importer un .p12… »."
  }
 }

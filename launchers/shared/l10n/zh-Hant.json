@@ -1197,7 +1197,12 @@
   "phone.status.running.phoneIdentity": "交付中",
   "phone.done.phoneIdentity": "已把簽名身分交給 {0} 上的 S2Arm",
   "phone.failed.phoneIdentity": "沒交成",
-  "phone.headline.phoneIdentity": "交好了"
+  "phone.headline.phoneIdentity": "交好了",
+  "console.status.externalApp": "已裝 S2Arm · 用別的工具裝的",
+  "console.button.exportShellIpa": "匯出 S2Arm.ipa",
+  "console.button.pushS2arm": "推所選到 iPhone（{0}）",
+  "console.button.exportS2arm": "匯出所選 .s2arm（{0}）",
+  "console.external.note": "這台手機上的 S2Arm 是用 AltStore / SideStore 等別的工具裝的：推過去的遊戲由手機上的 S2Arm 用你匯入的簽名憑證來簽，不用在電腦上登入 Apple ID；要換新版 S2Arm，匯出 S2Arm.ipa 用原來的工具簽好裝上。"
  },
  "text": {
   "直连": "直連",
@@ -4225,6 +4230,8 @@
   "这台电脑上没有这个 Apple ID 能用的开发证书，要新建一张。账号证书满了的话，苹果会撤掉列表里的第一张「{0}」（{1} 生效），它可能正是 AltStore / SideStore 在用的那张；撤掉后 AltStore / SideStore 自己和它们装的 App 都会打不开。": "這臺電腦上沒有這個 Apple ID 能用的開發證書，要新建一張。賬號證書滿了的話，蘋果會撤掉列表裡的第一張「{0}」（{1} 生效），它可能正是 AltStore / SideStore 在用的那張；撤掉後 AltStore / SideStore 自己和它們裝的 App 都會打不開。",
   "账号证书满了时，新建证书会让苹果撤掉列表里的第一张，它可能正是 AltStore / SideStore 在用的那张；撤掉后 AltStore / SideStore 自己和它们装的 App 都会打不开。": "賬號證書滿了時，新建證書會讓蘋果撤掉列表裡的第一張，它可能正是 AltStore / SideStore 在用的那張；撤掉後 AltStore / SideStore 自己和它們裝的 App 都會打不開。",
   "「{0}」空间不够：这一步还要约 {1} GB，盘上只剩 {2} GB。": "「{0}」空間不夠：這一步還要約 {1} GB，磁碟上只剩 {2} GB。",
-  "在「{0}」上腾出至少 {3} GB 后重试；游戏原件、存档和上次成功的运行版本别删。": "在「{0}」上騰出至少 {3} GB 後重試；遊戲原件、存檔和上次成功的執行版本別刪。"
+  "在「{0}」上腾出至少 {3} GB 后重试；游戏原件、存档和上次成功的运行版本别删。": "在「{0}」上騰出至少 {3} GB 後重試；遊戲原件、存檔和上次成功的執行版本別刪。",
+  "已送到手机，但手机上的 S2Arm 还没有签名证书，这款还开不了：在手机上打开 S2Arm → 齿轮 →「签名证书」，SideStore 装的点「从 SideStore 获取」；AltStore 装的先在 AltStore 设置里导出签名证书，再点「导入 .p12…」。": "已送到手機，但手機上的 S2Arm 還沒有簽名憑證，這款還開不了：在手機上開啟 S2Arm → 齒輪 →「簽名憑證」，SideStore 裝的點「從 SideStore 取得」；AltStore 裝的先在 AltStore 設定裡匯出簽名憑證，再點「匯入 .p12…」。",
+  "已送到手机，但手机上的 S2Arm 导入的签名证书（团队 {0}）不是给这个 S2Arm 签名的那张（团队 {1}），这款还开不了：在手机上打开 S2Arm → 齿轮 →「签名证书」，SideStore 装的点「从 SideStore 获取」；AltStore 装的先在 AltStore 设置里重新导出签名证书，再点「导入 .p12…」。": "已送到手機，但手機上的 S2Arm 匯入的簽名憑證（團隊 {0}）不是給這個 S2Arm 簽名的那張（團隊 {1}），這款還開不了：在手機上開啟 S2Arm → 齒輪 →「簽名憑證」，SideStore 裝的點「從 SideStore 取得」；AltStore 裝的先在 AltStore 設定裡重新匯出簽名憑證，再點「匯入 .p12…」。"
  }
 }

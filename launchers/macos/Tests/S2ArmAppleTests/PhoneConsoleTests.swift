@@ -125,6 +125,112 @@ import S2ArmAppleAdapter
         XCTAssertFalse(m.consoleUpdating, "停下 = 取消这一单")
         XCTAssertEqual(runner.installs.count, 0, "不再一款款排装机作业")
     }
+
+    // ---- 11-19 自签走查结构 4、5：别的工具（AltStore / SideStore）装的 S2Arm。期望按作业契约（host_update.phone_overview）手写 ----
+    private let alt = "io.s2arm.games.example01"
+    private let externalFour: [S2ArmLauncherModel.ConsoleAction] = [.exportShellIpa, .pushS2arm, .exportS2arm, .handOverIdentity]
+    private func externalPhone(online: String?? = .some("usb"), actions: [String] = ["exportShellIpa", "pushS2arm", "exportS2arm", "handOverIdentity"]) -> PhoneOverview.Phone {
+        PhoneOverview.Phone(device: "ALT-1", name: "备用手机", installed: true, shellCurrent: false, bundleId: alt, signedAt: nil, free: true,
+                            expiresAtEstimate: nil, online: online, lastSeen: nil, signMode: .external, games: [], installedBy: .external, actions: actions)
+    }
+
+    func testParseInstalledByAndActions() {
+        let o = PhoneOverview(result: ["phones": [
+            ["device": "ALT-1", "installed": true, "installedBy": "external", "bundleId": alt, "shellCurrent": NSNull(), "signMode": "external",
+             "actions": ["exportShellIpa", "pushS2arm", "exportS2arm", "handOverIdentity"]],
+            ["device": "P1", "installed": true, "installedBy": "launcher", "shellCurrent": true],
+            ["device": "OLD", "installed": true, "shellCurrent": true]]])
+        let ps = o?.phones ?? []
+        XCTAssertEqual(ps.map(\.installedBy), [.external, .launcher, nil], "旧作业不带 installedBy → nil")
+        XCTAssertEqual(ps.first?.actions, ["exportShellIpa", "pushS2arm", "exportS2arm", "handOverIdentity"])
+        XCTAssertEqual(ps.first?.bundleId, alt); XCTAssertEqual(ps.first?.shellCurrent, false, "shellCurrent = null 按 false 解")
+        XCTAssertEqual(ps.last?.actions, [], "没给 actions = 空")
+    }
+
+    func testExternalPhoneOwnStateAndFourButtonsNoInstall() throws {
+        let m = try makeModel()
+        m.phoneOverview = PhoneOverview(phones: [externalPhone()])
+        XCTAssertEqual(m.consoleStatus(now: now), .externalApp, "没有签名时刻与壳号：不走没装 / 有新版 / 到期，进自己的状态")
+        let acts = m.consoleActions(m.consolePhone!)
+        XCTAssertEqual(acts, externalFour, "按作业给的 actions 出四个按钮、顺序不变")
+        XCTAssertTrue(Set(acts).isDisjoint(with: [.installShell, .updateShell, .renewShell]), "绝不出安装 / 更新 / 续签 S2Arm")
+        m.phoneOverview = PhoneOverview(phones: [externalPhone(actions: ["installShell", "renewShell", "handOverIdentity"])])
+        XCTAssertEqual(m.consoleActions(m.consolePhone!), [.handOverIdentity], "作业就算给了安装 / 续签也不出")
+        m.phoneOverview = PhoneOverview(phones: [externalPhone(actions: [])])
+        XCTAssertEqual(m.consoleActions(m.consolePhone!), externalFour, "作业没给 actions：按四个缺省")
+        m.phoneOverview = PhoneOverview(phones: [externalPhone(online: .some(nil))])
+        XCTAssertEqual(m.consoleStatus(now: now), .notConnected(lastSeen: nil), "没连照旧排在前面")
+        // 启动器装的照旧：一颗随状态变 + 交身份 + 更新所选
+        m.phoneOverview = PhoneOverview(phones: [phone()])
+        XCTAssertEqual(m.consoleActions(m.consolePhone!), [.renewShell, .handOverIdentity, .updateSelected])
+        m.phoneOverview = PhoneOverview(phones: [phone(installed: false)])
+        XCTAssertEqual(m.consoleActions(m.consolePhone!).first, .installShell)
+        m.phoneOverview = PhoneOverview(phones: [phone(current: false)])
+        XCTAssertEqual(m.consoleActions(m.consolePhone!).first, .updateShell)
+    }
+
+    func testControlStatePhoneConsoleSameSourceAsUI() throws {
+        let m = try makeModel()
+        let o = PhoneOverview(phones: [externalPhone(), phone(device: "P1"), phone(installed: false, device: "NEW")])
+        m.phoneOverview = o
+        let rows = S2ArmControl.phoneConsole(o, model: m)
+        func row(_ d: String) -> [String: Any] { rows.first { $0["device"] as? String == d } ?? [:] }
+        let ext = row("ALT-1"), ins = ext["installed"] as? [String: Any] ?? [:]
+        XCTAssertEqual(ins["by"] as? String, "other"); XCTAssertEqual(ins["bundleId"] as? String, alt)
+        XCTAssertEqual(ext["actions"] as? [String], ["exportShellIpa", "pushS2arm", "exportS2arm", "handOverIdentity"], "验收判据：没有 installShell、有 handOverIdentity")
+        XCTAssertEqual((row("P1")["installed"] as? [String: Any])?["by"] as? String, nil, "测试替身 phone() 没给 installedBy → null")
+        XCTAssertTrue((row("P1")["installed"] as? [String: Any])?["by"] is NSNull)
+        XCTAssertEqual(row("P1")["actions"] as? [String], ["renewShell", "handOverIdentity", "updateSelected"])
+        XCTAssertEqual(row("NEW")["actions"] as? [String], ["installShell", "handOverIdentity", "updateSelected"])
+        let launcher = PhoneOverview(phones: [PhoneOverview.Phone(device: "L", name: "", installed: true, shellCurrent: true, bundleId: "", signedAt: nil, free: true,
+                                                                  expiresAtEstimate: nil, online: nil, lastSeen: nil, signMode: .appleId, games: [], installedBy: .launcher)])
+        let l = S2ArmControl.phoneConsole(launcher, model: m).first?["installed"] as? [String: Any]
+        XCTAssertEqual(l?["by"] as? String, "s2arm"); XCTAssertTrue(l?["bundleId"] is NSNull, "没有包名 = null")
+    }
+
+    func testIntroStartProbesFirstAndStopsOnExternalApp() async throws {
+        let runner = ConsoleRunner(probePhones: [["device": "ALT-1", "name": "备用手机", "installed": true, "installedBy": "external", "bundleId": alt,
+                                                  "shellCurrent": NSNull(), "signMode": "external", "online": "usb",
+                                                  "actions": ["exportShellIpa", "pushS2arm", "exportS2arm", "handOverIdentity"], "games": [[String: Any]]()]])
+        let m = try makeModel(runner)
+        m.consoleIntroStart(language: "zh-Hans")
+        for _ in 0..<300 where m.phoneOverview == nil { try? await Task.sleep(for: .milliseconds(10)) }
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(runner.overviewProbes, [true], "介绍卡主动作先现查（probe），只查一次")
+        XCTAssertEqual(m.consoleStatus(now: now), .externalApp)
+        XCTAssertEqual(m.consoleDevice, "ALT-1")
+        XCTAssertFalse(runner.operations.contains("installUpdate"), "手机上已有别的工具装的 S2Arm：不装第二个（不新建证书）")
+    }
+
+    func testIntroStartInstallsWhenProbeFindsNothing() async throws {
+        let runner = ConsoleRunner(probePhones: [])
+        let m = try makeModel(runner)
+        m.consoleIntroStart(language: "zh-Hans")
+        for _ in 0..<300 where !runner.operations.contains("installUpdate") { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(runner.overviewProbes.first, true, "先现查")
+        XCTAssertEqual(runner.overviewProbes.filter { $0 }.count, 1, "只现查一次（装完那次照旧不带 probe 地重读）")
+        XCTAssertEqual(runner.operations.filter { $0 == "phoneOverview" || $0 == "installUpdate" }.prefix(2), ["phoneOverview", "installUpdate"],
+                       "什么都没装：现查完才接着原来的装机")
+    }
+
+    func testExternalButtonsDispatch() async throws {
+        let runner = ConsoleRunner()
+        let m = try makeModel(runner)
+        m.refresh()
+        for _ in 0..<300 where m.games.count < 3 { try? await Task.sleep(for: .milliseconds(10)) }
+        m.phoneOverview = PhoneOverview(phones: [externalPhone()])
+        XCTAssertEqual(m.runConsoleAction(.pushS2arm, device: "ALT-1", language: "zh-Hans"), "没选游戏", "没勾就不发")
+        m.consoleSelection = ["0100B", "0100A"]
+        XCTAssertNil(m.runConsoleAction(.pushS2arm, device: "ALT-1", language: "zh-Hans"))
+        for _ in 0..<300 where runner.pushes.isEmpty { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(runner.pushes.first?["gameIds"] as? [String], ["0100A", "0100B"], "推游戏 = 同一单 pushSelected、按游戏库顺序")
+        XCTAssertEqual(runner.pushes.first?["device"] as? String, "ALT-1")
+        for _ in 0..<300 where m.phoneBusy { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertNil(m.runConsoleAction(.exportShellIpa, device: "ALT-1", language: "zh-Hans"))
+        for _ in 0..<300 where runner.updates.isEmpty { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(runner.updates.first?["mode"] as? String, "export", "导出 S2Arm.ipa = installUpdate + mode export（作业 export_shell_ipa）")
+        XCTAssertNil(runner.updates.first?["device"], "导出不连手机、不带设备")
+    }
 }
 
 /// 假作业进程：记下 install / pushSelected 请求；holdPush 时 pushSelected 挂着直到取消，其余作业照常成功
@@ -136,8 +242,13 @@ private final class ConsoleRunner: JobProcessRunner {
     }
     var installs: [[String: Any]] = []
     var pushes: [[String: Any]] = []
+    var updates: [[String: Any]] = []
+    var operations: [String] = []
+    var overviewProbes: [Bool] = []
     let holdPush: Bool
-    init(holdPush: Bool = false) { self.holdPush = holdPush }
+    /// 给了：phoneOverview 按这份回（介绍卡测试用）；没给：照旧一台 D9
+    let probePhones: [[String: Any]]?
+    init(holdPush: Bool = false, probePhones: [[String: Any]]? = nil) { self.holdPush = holdPush; self.probePhones = probePhones }
     func start(executable: URL, arguments: [String], environment: [String: String],
                onLine: @escaping (Data) -> Void, onStderr: @escaping (Data) -> Void,
                onExit: @escaping (Int32) -> Void) throws -> JobProcessHandle {
@@ -147,12 +258,16 @@ private final class ConsoleRunner: JobProcessRunner {
            let r = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] { request = r; taskId = r["taskId"] as? String ?? "" }
         let result: [String: Any] = switch request["operation"] as? String ?? "" {
         case "catalog": ["games": ["0100A", "0100B", "0100C"].map { ["id": $0, "name": $0, "ready": true, "missing": [String]()] }]
+        case "phoneOverview" where probePhones != nil: ["phones": probePhones!]
         case "phoneOverview": ["phones": [["device": "D9", "name": "测试手机", "installed": true, "shellCurrent": true, "games": [[String: Any]]()]]]
         default: [:]
         }
         let event: [String: Any] = ["schema": 1, "taskId": taskId, "type": "result", "state": "succeeded", "result": result, "message": ""]
         let finish = { onLine(try! JSONSerialization.data(withJSONObject: event)); onExit(0) }
         if request["operation"] as? String == "install" { installs.append(request) }
+        if request["operation"] as? String == "installUpdate" { updates.append(request) }
+        if request["operation"] as? String == "phoneOverview" { overviewProbes.append(request["probe"] as? Bool == true) }
+        operations.append(request["operation"] as? String ?? "")
         if request["operation"] as? String == "pushSelected" {
             pushes.append(request)
             if holdPush {   // 挂着直到取消（SIGTERM）：作业层以取消收尾、退出码 130

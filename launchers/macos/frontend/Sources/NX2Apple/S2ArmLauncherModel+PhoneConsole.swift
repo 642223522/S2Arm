@@ -11,15 +11,72 @@ extension S2ArmLauncherModel {
     var consoleSelected: Bool { selectedID == Self.consoleID }
 
     func refreshPhoneOverview(probe: Bool = false) {
+        Task { await loadPhoneOverview(probe: probe) }
+    }
+
+    func loadPhoneOverview(probe: Bool) async {
+        // 读不到不弹框（首位卡是附带的入口），但不吞：记日志，保持上次的值
+        do {
+            let o = try await provider.phoneOverview(probe: probe)
+            phoneOverview = o
+            if let o, !o.phones.contains(where: { $0.device == consoleDevice }) { consoleDevice = nil }
+            seedConsoleSelection()
+        } catch { NSLog("S2Arm phoneOverview: %@", String(describing: error)) }
+    }
+
+    /// 介绍卡「连上 iPhone 开始」（11-19 自签走查结构 5：从连着的手机上实际装了什么出发）：先现查连着的手机（probe）；
+    ///   查到手机上已有 S2Arm（别的工具装的 → 总控台「用别的工具装的」那套按钮；启动器装的 → 它自己的状态）就停在总控台，不装第二个；
+    ///   什么都没装（或查不出）才接着原来的装机（安装 S2Arm）。只在玩家点了才 probe，启动时不多发
+    func consoleIntroStart(language: String) {
         Task {
-            // 读不到不弹框（首位卡是附带的入口），但不吞：记日志，保持上次的值
-            do {
-                let o = try await provider.phoneOverview(probe: probe)
-                phoneOverview = o
-                if let o, !o.phones.contains(where: { $0.device == consoleDevice }) { consoleDevice = nil }
-                seedConsoleSelection()
-            } catch { NSLog("S2Arm phoneOverview: %@", String(describing: error)) }
+            await loadPhoneOverview(probe: true)
+            if let p = consolePhone, p.installedBy != nil { consoleDevice = p.device; return }
+            updatePhone(acceptStale: false, repack: [], language: language, device: consolePhone?.device)
         }
+    }
+
+    /// 总控台一台手机上的按钮（界面和控制口 GET /state 的 phoneConsole 同一个来源；动作名同控制口 POST /console-action）
+    enum ConsoleAction: String, CaseIterable {
+        case installShell, updateShell, renewShell   // ① 启动器装的：安装 / 更新 / 续签 S2Arm（同一颗按钮随状态变）
+        case exportShellIpa                          // ① 别的工具装的：导出通用 S2Arm.ipa（玩家拿去用原来的工具签、覆盖装新版）
+        case handOverIdentity                        // ① 把签名身份交给手机（作业 phoneIdentity）
+        case updateSelected                          // ② 启动器装的：更新所选（作业 pushSelected）
+        case pushS2arm                               // ② 别的工具装的：把所选推到 iPhone（同一单 pushSelected，作业层推未签名 .s2arm、手机自己签）
+        case exportS2arm                             // ② 别的工具装的：导出所选的 .s2arm
+    }
+
+    /// 这台手机显示哪些按钮。别的工具装的：按作业给的 actions（认不得的丢掉；作业没给按四个缺省），绝不出安装 / 续签 / 更新 S2Arm；
+    ///   其余：① 安装 / 更新 / 续签 一颗 + 交签名身份，② 更新所选
+    func consoleActions(_ p: PhoneOverview.Phone) -> [ConsoleAction] {
+        if p.installedBy == .external {
+            let shell: Set<ConsoleAction> = [.installShell, .updateShell, .renewShell, .updateSelected]
+            let given = p.actions.compactMap(ConsoleAction.init).filter { !shell.contains($0) }
+            return given.isEmpty ? [.exportShellIpa, .pushS2arm, .exportS2arm, .handOverIdentity] : given
+        }
+        return [!p.installed ? .installShell : !p.shellCurrent ? .updateShell : .renewShell, .handOverIdentity, .updateSelected]
+    }
+
+    /// 点总控台按钮（界面和控制口走这同一个函数）。ids：推 / 导出哪几款（控制口可给；不给 = 总控台勾选的、按游戏库顺序）。→ 没做的原因（nil = 已发起）
+    @discardableResult
+    func runConsoleAction(_ a: ConsoleAction, device: String, ids: [String]? = nil, language: String) -> String? {
+        let order = ids?.map { $0.uppercased() } ?? games.filter { consoleSelection.contains($0.id.uppercased()) }.map { $0.id.uppercased() }
+        switch a {
+        case .installShell, .updateShell, .renewShell:
+            updatePhone(acceptStale: false, repack: [], language: language, device: device)
+        case .exportShellIpa:
+            updatePhone(acceptStale: false, repack: [], language: language, mode: "export")
+        case .handOverIdentity:
+            phoneIdentity(device: device)
+        case .updateSelected, .pushS2arm:
+            if order.isEmpty { return "没选游戏" }
+            if consoleUpdating { return "正在更新所选" }
+            updateSelected(ids: order, device: device)
+        case .exportS2arm:
+            let picked = order.compactMap { id in games.first { $0.id.uppercased() == id } }
+            if picked.isEmpty { return "没选游戏" }
+            picked.forEach(exportSelfSign)
+        }
+        return nil
     }
 
     /// 总控台当前这台：选过的那台；没选过 → 连着的那台 → 最近同步过的那台
@@ -35,6 +92,7 @@ extension S2ArmLauncherModel {
         case introduce                       // 从没装过、也没连过：「在 iPhone 上玩」介绍卡
         case updating(done: Int, total: Int) // 正在更新所选
         case notConnected(lastSeen: Date?)   // 问过 USB、没连
+        case externalApp                     // 手机上的 S2Arm 是别的工具（AltStore / SideStore…）装的：没有我们的签名时刻与壳号，不判没装 / 有新版 / 到期
         case notInstalled
         case appOutdated
         case expired
@@ -47,6 +105,7 @@ extension S2ArmLauncherModel {
         guard let p = consolePhone else { return .introduce }
         if consoleUpdating { let p = consoleProgress; return .updating(done: p.done, total: p.total) }
         if case .some(.none) = p.online { return .notConnected(lastSeen: p.lastSeen) }
+        if p.installedBy == .external { return .externalApp }
         if !p.installed { return .notInstalled }
         if !p.shellCurrent { return .appOutdated }
         let days = p.expiresAtEstimate.map { Self.daysLeft(until: $0, now: now) }
