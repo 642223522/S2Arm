@@ -1192,7 +1192,16 @@
   "errors.cert_revoke_confirm.title": "Puede revocarse otro certificado de desarrollo",
   "errors.cert_revoke_confirm.detail": "Si los certificados de tu cuenta están completos, crear uno nuevo hace que Apple revoque el primero de la lista y las apps firmadas con él dejan de abrirse; si no están completos, no se revoca nada.",
   "errors.phone_app_running.title": "S2Arm se está ejecutando en el iPhone",
-  "errors.phone_app_running.detail": "Si cambias las partidas guardadas con el juego abierto, el juego las sobrescribe y las daña."
+  "errors.phone_app_running.detail": "Si cambias las partidas guardadas con el juego abierto, el juego las sobrescribe y las daña.",
+  "console.button.identity": "Entregar la identidad de firma al teléfono",
+  "console.identity.note": "S2Arm instalado con AltStore, SideStore o una app de certificados: entrega la identidad de firma una vez y luego basta con poner los paquetes de juego en «Import Here» para jugar",
+  "console.identity.done": "La identidad de firma ya está en S2Arm en tu teléfono: a partir de ahora, pon los archivos .s2arm e .img en «Import Here» y abre S2Arm para jugar.",
+  "console.identity.already": "S2Arm en tu teléfono ya tiene esta identidad de firma; no hace falta entregarla otra vez.",
+  "phone.title.phoneIdentity": "Entregar la identidad de firma al teléfono",
+  "phone.status.running.phoneIdentity": "Entregando",
+  "phone.done.phoneIdentity": "Identidad de firma entregada a S2Arm en {0}",
+  "phone.failed.phoneIdentity": "No se entregó",
+  "phone.headline.phoneIdentity": "Entregada"
  },
  "text": {
   "满屏补丁（按屏幕比例自动选）": "Parche de pantalla completa (elegido según la proporción de tu pantalla)",

@@ -23,6 +23,10 @@ public sealed partial class EnvironmentWindow
     private FrontJob? consoleJob;                 // 「更新所选」那一单（作业 pushSelected）；null = 没在更新
     private int consoleDone, consoleTotal;        // 这一轮推完几款 / 共几款（作业 progress 事件 done / total）
     private string? consolePushing;               // 正在推的那款（progress 事件 current）
+    // 「把签名身份交给手机」（作业 phoneIdentity）：这一单的状态（running / succeeded / failed / cancelled…）、失败原因与诊断、成功时 delivered
+    private readonly PhoneJobTrack identityTrack = new();
+    private string identityState = "", identityMessage = "", identityDiagnostics = "";
+    private bool identityDelivered;
     private bool ConsoleUpdating => consoleJob is not null;
     private bool ConsoleSelected => phoneOverview is not null && selectedGame == ConsoleId;
     private PhoneOverview.Phone? ConsolePhone => phoneOverview?.Pick(consoleDevice);
@@ -94,6 +98,53 @@ public sealed partial class EnvironmentWindow
         await RefreshPhoneOverviewAsync();
     }
 
+    /// <summary>「把签名身份交给手机」：作业 phoneIdentity 把这台电脑的签名身份交给总控台这台手机上的 S2Arm（别的工具装的团队对得上也交；同 Mac phoneIdentity）。
+    /// 成功记下 delivered（完成提示分「交好了」/「已经有了」）；失败用手机作业结局卡（PhoneJobCard：原因 + 下一步 + 复制错误摘要）</summary>
+    private async Task PhoneIdentityAsync(string device, bool force = false)
+    {
+        if (connectedFolder is null || libraryId is null) return;
+        if (QueuePhone(null, () => PhoneIdentityAsync(device, force))) return;   // 手机上有作业在跑 → 排队
+        var front = BeginJob(JobKind.Phone);
+        identityTrack.Begin("phoneIdentity", ConsolePhone is { Name.Length: > 0 } p ? p.Name : device);
+        identityState = "running"; identityMessage = identityDiagnostics = ""; identityDelivered = false;
+        Render();
+        try
+        {
+            var extra = new Dictionary<string, object?> { ["device"] = device };
+            if (force) extra["force"] = true;
+            var job = await PackJobClient.RunAsync(PackRequest("phoneIdentity", "", extra),
+                e => Avalonia.Threading.Dispatcher.UIThread.Post(() => { identityTrack.Ingest(e); Render(); }), front.Token, front.Next());
+            identityTrack.Finish(job, GameName);
+            identityState = job.Report.State;
+            if (job.Report.Succeeded)
+                identityDelivered = job.Report.Result.ValueKind == System.Text.Json.JsonValueKind.Object && job.Report.Result.TryGetProperty("delivered", out var d) && d.ValueKind == System.Text.Json.JsonValueKind.True;
+            else { identityMessage = job.Report.Message.Length > 0 ? job.Report.Message : job.Report.State; identityDiagnostics = JobDiagnostics(job); }
+        }
+        catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
+            InvalidOperationException or OperationCanceledException or System.ComponentModel.Win32Exception)
+        { identityMessage = error.Message.Length > 0 ? error.Message : error.GetType().Name; identityState = error is OperationCanceledException ? "cancelled" : "failed"; identityTrack.Ended = DateTime.UtcNow; }
+        finally { EndJob(front); DynamicFinished(identityState); Render(); }
+    }
+
+    /// <summary>① 手机与 App 里的「把签名身份交给手机」（次要按钮 + 一行说明 + 进行中 / 完成提示 / 失败卡）</summary>
+    private Control ConsoleIdentity(PhoneOverview.Phone phone, bool offline)
+    {
+        var box = new StackPanel { Spacing = 6, Margin = new Thickness(0, 6, 0, 0) };
+        var running = identityState == "running";
+        box.Children.Add(Action("console.button.identity", () => _ = PhoneIdentityAsync(phone.Device), !offline && !running));
+        box.Children.Add(WrappedMuted(T("console.identity.note"), 12));
+        if (running) box.Children.Add(new TextBlock { Text = "⟳ " + T("phone.status.running.phoneIdentity"), Foreground = Ink, FontSize = 12.5 });
+        else if (identityState == "succeeded")
+        {
+            var done = new TextBlock { Text = T(identityDelivered ? "console.identity.done" : "console.identity.already"), Foreground = Brush.Parse("#30D158"), FontSize = 13, TextWrapping = TextWrapping.Wrap };
+            Avalonia.Automation.AutomationProperties.SetAutomationId(done, "console.identity.result");
+            box.Children.Add(done);
+        }
+        else if (identityState.Length > 0) box.Children.Add(PhoneJobCard(identityTrack, identityState, identityMessage, identityDiagnostics, null, showsOperation: false));
+        Avalonia.Automation.AutomationProperties.SetAutomationId(box, "console.identity");
+        return box;
+    }
+
     /// <summary>「停下」：取消这一单（推完的留着；没推完的那款下次续推）</summary>
     private void StopUpdateSelected() => consoleJob?.Cancellation.Cancel();
 
@@ -162,6 +213,7 @@ public sealed partial class EnvironmentWindow
         appRow.Children.Add(Action(appKey, () => _ = UpdatePhoneAsync(false, [], device: phone.Device), !offline));
         if (offline) appRow.Children.Add(Offline());
         app.Children.Add(appRow);
+        app.Children.Add(ConsoleIdentity(phone, offline));
         page.Children.Add(ConsoleSection("console.section.phone", app));
 
         // ② 游戏同步
@@ -235,6 +287,7 @@ public sealed partial class EnvironmentWindow
     {
         if (phoneOverview is null) return null;
         if (ConsoleUpdating) return "⟳ " + Tf("dynamic.batch", Math.Min(consoleDone + 1, Math.Max(consoleTotal, 1)), Math.Max(consoleTotal, 1));
+        if (identityState == "running") return "⟳ " + T("phone.title.phoneIdentity");   // 交签名身份占着手机槽：写它自己的名字，不借「更新 S2Arm」
         if (installBusy || phoneUpdating)
         {
             var pct = installDone is { } d && installTotal is { } t && t > 0 ? " " + (100 * d / t) + "%" : "";
