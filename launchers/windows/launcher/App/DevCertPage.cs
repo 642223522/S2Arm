@@ -75,15 +75,19 @@ public sealed partial class EnvironmentWindow
             b.Click += (_, _) => handler();
             return b;
         }
-        var apple = Mode("appleId", !active, () => _ = SetDevCertAsync(false), appleIdTitle);
-        var mine = Mode("devcert", active, () => { if (imported) _ = SetDevCertAsync(true); else _ = ImportDevCertAsync(); });
+        // 签名方式三选一（自签走查结构 6）：Apple ID / 我的证书 / 我自己用 AltStore / SideStore 签（作业 signModeSet 记下，之后导出照这个）
+        var external = signChoice == "external";
+        var apple = Mode("appleId", !active && !external, () => _ = SetSignChoiceAsync("appleId"), appleIdTitle);
+        var mine = Mode("devcert", active && !external, () => { if (imported) _ = SetSignChoiceAsync("devCert"); else _ = ImportDevCertAsync(); });
+        var other = Mode("external", external, () => _ = SetSignChoiceAsync("external"));
         var segment = new Border { Background = Brush.Parse("#29292D"), CornerRadius = new CornerRadius(9), Padding = new Thickness(3),
             VerticalAlignment = VerticalAlignment.Center,
-            Child = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2, Children = { apple, mine } } };
+            Child = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2, Children = { apple, mine, other } } };
         AutomationId(segment, "export.sign.segment");
         Grid.SetColumn(segment, 1); line.Children.Add(segment);
         panel.Children.Add(line);
-        if (active && st is { } s && s.TryGetProperty("cert", out var c) && c.ValueKind == JsonValueKind.Object)
+        if (external) panel.Children.Add(new TextBlock { Text = S("externalNote"), TextWrapping = TextWrapping.Wrap, Foreground = Brush.Parse("#A8A6A1"), FontSize = 12 });
+        if (active && !external && st is { } s && s.TryGetProperty("cert", out var c) && c.ValueKind == JsonValueKind.Object)
         {
             var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("120,*"), RowSpacing = 4, Margin = new Thickness(4, 4, 0, 0) };
             var rows = new List<(string, string)>
@@ -121,6 +125,18 @@ public sealed partial class EnvironmentWindow
         }
         panel.Children.Add(Muted(S("switchNote"), 12.5));
         return card ? Card(panel, 14) : panel;
+    }
+
+    private async Task SetSignChoiceAsync(string mode)
+    {
+        try
+        {
+            var job = await PackJobClient.RunAsync(PackRequest("signModeSet", "", new Dictionary<string, object?> { ["mode"] = mode }), null, CancellationToken.None);
+            if (job.Report.Succeeded && job.Report.Result.TryGetProperty("signMode", out var m) && m.ValueKind == JsonValueKind.String) signChoice = m.GetString() ?? mode;
+        }
+        catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
+            InvalidOperationException or System.ComponentModel.Win32Exception) { }
+        await RefreshDevCertAsync();
     }
 
     private async Task SetDevCertAsync(bool on)

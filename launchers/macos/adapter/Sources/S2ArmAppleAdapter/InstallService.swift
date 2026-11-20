@@ -10,15 +10,21 @@ public struct InstallItem: Identifiable, Equatable {
     public let detail: String
     /// human = 只能玩家本人做；app = 启动器自己能做（如先做 iPhone 版）。
     public let who: String
+    /// 没好时启动器的本地动作（落点表唯一来源：共享规格 install_landing，BackendText.installLandingActions）；
+    ///   好了、等前一步、不用人做的为 nil。清单按钮与控制口 /install-action 都按它派发
+    public let action: String?
+    /// 没好时要打开的官方网页（install_landing 里写 @url 的项，如证书设备不在描述文件里 → 苹果开发者网站设备页）
+    public let url: String?
 
-    public init(id: String, ok: Bool, waiting: Bool = false, title: String, detail: String = "", who: String = "human") {
-        self.id = id; self.ok = ok; self.waiting = waiting; self.title = title; self.detail = detail; self.who = who
+    public init(id: String, ok: Bool, waiting: Bool = false, title: String, detail: String = "", who: String = "human", action: String? = nil, url: String? = nil) {
+        self.id = id; self.ok = ok; self.waiting = waiting; self.title = title; self.detail = detail; self.who = who; self.action = action; self.url = url
     }
 
     public init?(json i: [String: Any]) {
         guard let id = i["id"] as? String, let title = i["title"] as? String else { return nil }
         self.init(id: id, ok: i["ok"] as? Bool ?? false, waiting: i["waiting"] as? Bool ?? false, title: title,
-                  detail: i["detail"] as? String ?? "", who: i["who"] as? String ?? "human")
+                  detail: i["detail"] as? String ?? "", who: i["who"] as? String ?? "human", action: (i["action"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+                  url: (i["url"] as? String).flatMap { $0.hasPrefix("https://") ? $0 : nil })
     }
 }
 
@@ -188,6 +194,11 @@ public final class InstallService {
         return DevCertInfo(result: try await client.perform("devCert", extra: extra, secrets: ["S2A_DEVCERT_PASSWORD": password]).result)
     }
 
+    /// 签名方式三选一（作业 signModeSet：appleId / devCert / external）→ 生效后的选择
+    public func signModeSet(_ mode: String) async throws -> String {
+        try await client.perform("signModeSet", extra: ["mode": mode]).result["signMode"] as? String ?? mode
+    }
+
     /// 出包装机用开发者证书（true）还是 Apple ID（false）。
     public func devCertUse(_ active: Bool) async throws {
         _ = try await client.perform("devCert", extra: ["action": "use", "active": active])
@@ -197,6 +208,44 @@ public final class InstallService {
     public func devCertDelete() async throws {
         _ = try await client.perform("devCert", extra: ["action": "delete"])
     }
+
+    // ---- Apple ID 登录（0.6.0 Mac：随包 plumesign 自己登录，pack/jobs/apple_login.py）----
+
+    /// 登录：密码只经环境变量给这一次作业（S2A_APPLE_PASSWORD），不进请求文件、不进日志。
+    ///   要两步验证码时作业发 stageKey = appleLogin.needCode 的事件（AppleLoginPrompt(event:) 认），界面拿到码后调 appleLoginCode 写进去；
+    ///   「没收到？再发一次」= 取消这次（外层 Task 取消）再调一次。成功回账号；失败抛 JobFailure（码见作业层文件头）
+    public func appleLogin(account: String, password: String, events: EventSink = .discard) async throws -> AppleAccount {
+        AppleAccount(result: try await client.perform("appleLogin", extra: ["account": account], secrets: [Self.applePasswordEnv: password], events: events).result)
+    }
+
+    /// 当前登录的账号（没登录 → account 为空）
+    public func appleAccount() async throws -> AppleAccount {
+        AppleAccount(result: try await client.perform("appleAccount").result)
+    }
+
+    /// 把验证码（6 位数字）或 sms（改用短信接收）交给在等的登录作业：写 <私有目录>/login/<作业号>.code（作业读到即删）。
+    ///   先写临时文件再改名，作业不会读到半截；目录与文件只归当前用户
+    public func appleLoginCode(_ code: String, taskId: String) throws {
+        let text = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.range(of: #"^\d{6}$"#, options: .regularExpression) != nil || text.lowercased() == "sms" else {
+            throw JobClientError("验证码是 6 位数字。")
+        }
+        guard !taskId.isEmpty, !taskId.contains("/") else { throw JobClientError("登录作业还没开始。") }
+        let dir = Self.appleLoginDir(privateRoot: client.environment.privateRoot)
+        let fm = FileManager.default
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let tmp = dir.appendingPathComponent("." + taskId + ".code.tmp")
+        guard fm.createFile(atPath: tmp.path, contents: Data(text.lowercased().utf8), attributes: [.posixPermissions: 0o600]) else {
+            throw JobClientError("验证码没能交给登录作业：S2Arm 的数据目录写不进去，检查磁盘空间和权限后再试。")
+        }
+        let dest = dir.appendingPathComponent(taskId + ".code")
+        try? fm.removeItem(at: dest)
+        try fm.moveItem(at: tmp, to: dest)
+    }
+
+    public static let applePasswordEnv = "S2A_APPLE_PASSWORD"
+    /// 作业层 apple_login._code_file 的目录：<私有目录>/login
+    public static func appleLoginDir(privateRoot: URL) -> URL { privateRoot.appendingPathComponent("login", isDirectory: true) }
 
     /// 生成给「没有签名团队」玩家用的 Xcode 引导项目，返回项目路径。
     public func signingProject() async throws -> String {
@@ -267,14 +316,48 @@ public struct PhoneIdentityResult: Equatable, Sendable {
     }
 }
 
-/// 签名身份（installMode 作业）：signMode = devcert（我的开发者证书）/ appleId；exportAvailable = 导出作业在不在
+/// 签名身份（installMode 作业）：signMode = devcert（我的开发者证书）/ appleId；exportAvailable = 导出作业在不在；
+///   signChoice = 玩家选的签名方式三选一（appleId / devCert / external = 我自己用 AltStore / SideStore 签，自签走查结构 6）
 public struct InstallModeInfo: Equatable, Sendable {
     public let exportAvailable: Bool
     public let signMode: String
-    public init(exportAvailable: Bool = false, signMode: String = "appleId") {
-        self.exportAvailable = exportAvailable; self.signMode = signMode
+    public let signChoice: String
+    public init(exportAvailable: Bool = false, signMode: String = "appleId", signChoice: String = "appleId") {
+        self.exportAvailable = exportAvailable; self.signMode = signMode; self.signChoice = signChoice
     }
     init(result r: [String: Any]) {
-        self.init(exportAvailable: r["exportAvailable"] as? Bool ?? false, signMode: r["signMode"] as? String ?? "appleId")
+        self.init(exportAvailable: r["exportAvailable"] as? Bool ?? false, signMode: r["signMode"] as? String ?? "appleId",
+                  signChoice: r["signChoice"] as? String ?? "appleId")
+    }
+}
+
+/// Apple ID 登录结果 / 当前账号（appleLogin / appleAccount 作业）：account 为空 = 没登录；enabled = false = 这台不用 Apple ID 登录（Windows / 证书模式）
+public struct AppleAccount: Equatable, Sendable {
+    public let account: String
+    public let team: String
+    public let teamName: String
+    public let enabled: Bool
+    public var signedIn: Bool { !account.isEmpty }
+    public init(account: String = "", team: String = "", teamName: String = "", enabled: Bool = true) {
+        self.account = account; self.team = team; self.teamName = teamName; self.enabled = enabled
+    }
+    init(result r: [String: Any]) {
+        self.init(account: r["account"] as? String ?? "", team: r["team"] as? String ?? "", teamName: r["teamName"] as? String ?? "",
+                  enabled: r["enabled"] as? Bool ?? true)
+    }
+}
+
+/// 登录作业在等验证码（事件 stageKey = appleLogin.needCode）：taskId = 写验证码文件用的作业号；canSms = 能改用短信接收；sms = 这次是短信方式
+public struct AppleLoginPrompt: Equatable, Sendable {
+    public static let stageKey = "appleLogin.needCode"
+    public let taskId: String
+    public let canSms: Bool
+    public let sms: Bool
+    public init(taskId: String, canSms: Bool = false, sms: Bool = false) { self.taskId = taskId; self.canSms = canSms; self.sms = sms }
+    /// 只认作业层发的那条 progress（带 canSms）；同阶段的 stage 事件不算（canSms / sms 只在 progress 上）
+    public init?(event e: EngineEvent) {
+        guard e.fields["stageKey"] as? String == Self.stageKey, e.ev == "progress", e.fields["canSms"] != nil,
+              let task = e.fields["taskId"] as? String, !task.isEmpty else { return nil }
+        self.init(taskId: task, canSms: e.fields["canSms"] as? Bool ?? false, sms: e.fields["sms"] as? Bool ?? false)
     }
 }

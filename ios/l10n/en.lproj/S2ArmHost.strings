@@ -624,10 +624,14 @@
 "cert.failed.message" = "This file isn’t a signing certificate S2Arm can use (.p12).";
 "cert.done.title" = "Signing certificate imported";
 "cert.done.message" = "Team %@. Games you import on this iPhone will be signed with it before they start.";
-"cert.teamMismatch" = "Note: this certificate belongs to team %1$@, but this S2Arm was installed by team %2$@, so games signed with it won’t open. Use the certificate S2Arm was installed with, or reinstall S2Arm with this certificate.";
+"cert.teamMismatch" = "Note: this certificate belongs to team %1$@, but this S2Arm was installed by team %2$@, so games signed with it won’t open. It has been kept, and the certificate you already had still works. Export the certificate from the app you installed S2Arm with (AltStore or SideStore) and import it.";
 "cert.sidestore.missing" = "Couldn’t open SideStore: it isn’t on this iPhone, or its version is too old.";
 "cert.sidestore.empty" = "SideStore didn’t send a certificate back. Tap “Export” in SideStore and try again.";
+"cert.sidestore.noReply" = "SideStore didn’t send back a certificate. You may have tapped Cancel, or this SideStore is too old to share its certificate with other apps. Update SideStore and try again, or export the certificate as a .p12 file and import it.";
+"cert.pickP12" = "Import .p12…";
 "cert.status" = "Team %1$@ · %2$@";
+"cert.status.otherTeam" = "different Apple ID from S2Arm";
+"cert.status.replaced" = "no longer valid";
 "cert.source.sidestore" = "From SideStore";
 "cert.source.p12" = "Imported .p12";
 "cert.source.pc" = "From your computer";

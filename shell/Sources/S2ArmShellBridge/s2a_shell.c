@@ -37,7 +37,7 @@ void s2a_shell_refresh(void) { if (g_refresh) g_refresh(g_refresh_ctx); }
 // 本款资源包：宿主（ios/app.m）有强定义时用它；本包单独编时按就绪、点了只记日志
 __attribute__((weak)) int s2a_shell_game_install_state(const char *game_id) { (void)game_id; return 1; }
 __attribute__((weak)) int s2a_shell_game_needs_host_update(const char *game_id) { (void)game_id; return 0; }
-__attribute__((weak)) int s2a_shell_game_needs_reinstall(const char *game_id) { (void)game_id; return 0; }
+__attribute__((weak)) int s2a_shell_game_sign_state(const char *game_id) { (void)game_id; return 0; }
 __attribute__((weak)) int s2a_shell_install_game(const char *game_id) { (void)game_id; return 0; }
 __attribute__((weak)) int s2a_shell_install_progress(const char *game_id, int *done, int *total) { (void)game_id; (void)done; (void)total; return 0; }
 __attribute__((weak)) int s2a_shell_install_wait(void) { return 0; }
@@ -55,6 +55,8 @@ __attribute__((weak)) void s2a_shell_report_problem(void) {}
 __attribute__((weak)) const char *s2a_shell_cert_status(void) { return ""; }
 __attribute__((weak)) void s2a_shell_cert_p12(void) {}
 __attribute__((weak)) void s2a_shell_cert_sidestore(void) {}
+__attribute__((weak)) void s2a_shell_cert_get(void) {}
+__attribute__((weak)) void s2a_shell_pick_s2arm(const char *game_id) { (void)game_id; }
 __attribute__((weak)) int s2a_shell_snapshot_available(const char *game_id) { (void)game_id; return 0; }
 __attribute__((weak)) void s2a_shell_restore_snapshot(const char *game_id) { (void)game_id; }
 __attribute__((weak)) int s2a_shell_snapshot_dir(const char *game_id, char *out, unsigned long size) { (void)game_id; (void)out; (void)size; return -1; }

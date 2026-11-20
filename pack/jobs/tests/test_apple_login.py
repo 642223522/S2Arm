@@ -41,9 +41,18 @@ FAKE = textwrap.dedent('''\
     if mode == "badpw":
         print("Error: Authentication failed: -20101 Your Apple ID or password was entered incorrectly."); sys.exit(1)
     print("Logging in...")
-    print("[INFO plumesign::commands::account] Enter 2FA code: ", flush=True)
+    if mode in ("sms", "smsmany"):   # 设备方式、账号有受信任手机号（同版 account.rs tfa_closure 原句）
+        print("[INFO plumesign::commands::account] Enter the code sent to your device, or type 'sms' to receive it by text message: ", flush=True)
+    else:
+        print("[INFO plumesign::commands::account] Enter 2FA code: ", flush=True)
     code = sys.stdin.readline().strip()
     open(rec + ".stdin", "a").write(code + "\\n")
+    if code == "sms" and mode == "smsmany":   # 多个受信任手机号：dialoguer 选号菜单在管道里起不来
+        print("Error: Authentication SRP error 0: Failed to get 2FA code: IO error: not a terminal"); sys.exit(1)
+    if code == "sms":
+        print("[INFO plumesign::commands::account] Enter the code sent via SMS: ", flush=True)
+        code = sys.stdin.readline().strip()
+        open(rec + ".stdin", "a").write(code + "\\n")
     if mode == "badcode":
         print("Error: -21669 Incorrect verification code"); sys.exit(1)
     home = os.path.join(os.environ["XDG_CONFIG_HOME"], "PlumeImpactor"); os.makedirs(home, exist_ok=True)
@@ -91,6 +100,52 @@ class AppleLogin(unittest.TestCase):
         self.assertFalse((self.t / "private/login/login1.code").exists())   # 验证码读完即删
         self.assertIsNone(self.c.apple_password)
         self.assertEqual(apple_login.account(self.c), dict(account=ACCOUNT, team=TEAM, teamName="Tester", enabled=True))
+
+    def answer(self, replies):
+        """界面替身：每收到一次 needCode 事件，按顺序往验证码文件写下一句（记下事件带的 canSms / sms）"""
+        self.prompts = []
+        def emit(kind="progress", message="", *a, **k):
+            self.c.events.append((kind, message))
+            if kind == "progress" and "canSms" in k:
+                self.prompts.append((k["canSms"], k["sms"]))
+                self.code(replies[len(self.prompts) - 1])
+        self.c.emit = emit
+
+    def test_sms_switch(self):
+        # 设备方式能改短信 → 界面写 sms → plumesign 改发短信、再要码 → 写短信里的码 → 登录成功
+        with patch.dict(os.environ, {"FAKE_PLUME_MODE": "sms"}):
+            self.answer(["sms", "654321"])
+            got = apple_login.login(self.c)
+        self.assertEqual(got["account"], ACCOUNT)
+        self.assertEqual(self.prompts, [(True, False), (False, True)])
+        self.assertEqual(Path(str(self.rec) + ".stdin").read_text(), PASSWORD + "\nsms\n654321\n")
+        self.assertEqual(self.keys, ["appleLogin", "appleLogin.needCode", "appleLogin", "appleLogin.needCode", "appleLogin"])
+
+    def test_sms_many_numbers_fails_readably(self):
+        # 受信任手机号不止一个：plumesign 要终端选号、在管道里退出 → 定句失败，不卡住
+        with patch.dict(os.environ, {"FAKE_PLUME_MODE": "smsmany"}):
+            self.answer(["sms"])
+            with self.assertRaises(Failure) as e:
+                apple_login.login(self.c)
+        self.assertEqual(e.exception.code, "two_factor_wrong")
+        self.assertEqual(str(e.exception), apple_login.SAY_SMS_PICK)
+        self.assertIn("not a terminal", e.exception.internal)
+
+    def test_sms_not_offered_is_ignored(self):
+        # 提示里没有 type 'sms'（没有受信任手机号）：界面写的 sms 不转给 plumesign，读到即删、接着等真验证码
+        class Proc:
+            def poll(self): return None
+        f = self.t / "private/login/login1.code"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("sms", encoding="utf-8")
+        with patch.object(apple_login, "CODE_WAIT", 1):
+            self.assertIsNone(apple_login._wait_code(self.c, Proc()))
+        self.assertFalse(f.exists())
+        f.write_text("sms", encoding="utf-8")
+        self.assertEqual(apple_login._wait_code(self.c, Proc(), allow_sms=True), "sms")
+        f.write_text("12345", encoding="utf-8")
+        with patch.object(apple_login, "CODE_WAIT", 1):
+            self.assertIsNone(apple_login._wait_code(self.c, Proc(), allow_sms=True), "不是 6 位数字不收")
 
     def test_wrong_password_and_code(self):
         for mode, want in (("badpw", "apple_id_wrong"), ("badcode", "two_factor_wrong")):

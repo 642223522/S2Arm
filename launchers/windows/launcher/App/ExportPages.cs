@@ -48,11 +48,12 @@ public sealed partial class EnvironmentWindow
     /// <summary>装机前清单按钮的唯一派发（11-19 维护者：test.3 Mac 清单 Apple ID 按钮把人引到环境检查和 Xcode；Windows 同口径核出两处——
     /// impactor_login 数据说 openImpactor、说明写「点『打开 Impactor』」，按钮却是「去设置」跳设置页；package 没好没有按钮）。
     /// 项上的 action 是按钮落点的唯一来源；控制口 /install-action 走这同一个函数。→ 做成了没有</summary>
-    private bool RunInstallAction(string action, LibraryGame game)
+    /// game：清单那一款；确认页的另一条路（更新页不属于哪一款）传 null，只有 openExport 要它
+    private bool RunInstallAction(string action, LibraryGame? game)
     {
         switch (action)
         {
-            case "openExport": selectedGame = game.Id; OpenBuild(); break;   // 这款的出包页（同游戏库「出包」）
+            case "openExport": if (game is null) return false; selectedGame = game.Id; OpenBuild(); break;   // 这款的出包页（同游戏库「出包」）
             case "openImpactor": if (!TryOpenBundledImpactor()) return false; break;   // 随包 Impactor：Apple ID 在它里面登录
             case "devCertSettings": Navigate("settings"); break;   // 设置页「装到 iPhone 的方式」：开发者证书在那里导入 / 切换
             default: return false;
@@ -62,10 +63,8 @@ public sealed partial class EnvironmentWindow
         return true;
     }
 
-    private static string? InstallActionLabel(string action) => action switch
-    {
-        "openExport" => "nav.build", "openImpactor" => "action.open_impactor", "devCertSettings" => "install.mode.go_settings", _ => null,
-    };
+    /// <summary>按钮文案键只认共享体验表 install_landing.actions（结构 9：两端一处给出，不在这里另写一份）</summary>
+    private string? InstallActionLabel(string action) => text.InstallActionLabel(action);
 
     private const string PlatformIos = "ios";
     private const string PlatformTv = "tvos";
@@ -947,7 +946,6 @@ public sealed partial class EnvironmentWindow
     }
 
     /// <summary>玩家选了「出完导出自签 IPA」：自动装到手机（连上就更新、新版首启横幅）一律跳过，玩家自己签名安装</summary>
-    private bool IosAfterPackIsExport => IosAfterPack == "export";
 
     /// <summary>出包页的「开始」：出 iPhone 时按「出完之后」那条路一步走完（装到 iPhone / 导出自签包）</summary>
     private void StartPackBranch(LibraryGame game)
@@ -1825,17 +1823,14 @@ public sealed partial class EnvironmentWindow
     /// 维护者 11-11：「玩家都主动点装机了……能认出的问题让用户确认，用户确认可以继续装，认不出的直接装」。
     /// container_would_drop：手机上别的电脑装的游戏这次带不上；save_backup_failed：覆盖前没能备份手机上的存档；container_stale：旧资源包要按新版重出。
     /// </summary>
-    internal static readonly IReadOnlyDictionary<string, string> ConfirmCodes = new Dictionary<string, string>
-    {
-        ["container_would_drop"] = "acceptDropped", ["save_backup_failed"] = "acceptNoBackup", ["container_stale"] = "acceptStale",
-        ["device_space_low"] = "acceptLowSpace", ["cert_revoke_confirm"] = "acceptCertRevoke",
-    };
+    /// 11-19 结构 9：表只在共享体验表 errors 的 accept 一处（Mac 读同一处），不在这里另写——原先两端各写一份，Mac 缺 cert_revoke_confirm。
+    private IReadOnlyDictionary<string, string> ConfirmCodes => text.ConfirmFlags;
 
     /// <summary>可确认的停装码要问的那句标题：文案表有 errors.&lt;码&gt;.title 就用它，没有用通用的 install.drop_title</summary>
     private string ConfirmTitle(string? code) => code is { Length: > 0 } && text.Has("errors." + code + ".title") ? T("errors." + code + ".title") : T("install.drop_title");
 
     /// <summary>控制口请求里带的确认参数（acceptDropped / acceptNoBackup / acceptStale）</summary>
-    private static HashSet<string> AcceptFlags(ControlRequest r) => ConfirmCodes.Values.Where(r.Flag).ToHashSet();
+    private HashSet<string> AcceptFlags(ControlRequest r) => ConfirmCodes.Values.Where(r.Flag).ToHashSet();
 
     /// <summary>accept：玩家已同意的确认参数（ConfirmCodes 的值，逐次累积）。ask = false（控制口）原样失败、不弹确认，由调用方带参数再发。</summary>
     /// <param name="export">游戏库「导出自签包」：不连手机、不签名，出到文件夹（作业层 install 请求带 mode = export，不带设备）</param>
@@ -1872,7 +1867,7 @@ public sealed partial class EnvironmentWindow
             OperationCanceledException or PlatformNotSupportedException or System.ComponentModel.Win32Exception)
         { installState = "failed"; installDiagnostics = error.Message; }
         finally { EndJob(front); readinessFor = null; DynamicFinished(installState); AfterArtifactJob(); Render(); }
-        if (dropAsk is not null && await ConfirmInstallActionAsync("install.drop", dropAsk, ConfirmTitle(askCode)))
+        if (dropAsk is not null && await ConfirmInstallActionAsync("install.drop", dropAsk, ConfirmTitle(askCode), askCode, game))
             await InstallAsync(game, new HashSet<string>(accept) { ConfirmCodes[askCode!] }, export: export);
     }
 
@@ -1979,10 +1974,8 @@ public sealed partial class EnvironmentWindow
 
     /// <summary>换游戏库 setup 撞上认得出的风险 → 问玩家时带的参数（同 Mac S2ArmLauncherModel.libraryConfirmCodes）：
     /// library_in_cloud 选的文件夹在云盘同步目录里；library_folder_not_empty 文件夹里已有别的文件、又不是游戏库（S2Arm 只动自己建的文件）</summary>
-    internal static readonly IReadOnlyDictionary<string, string> LibraryConfirmCodes = new Dictionary<string, string>
-    {
-        ["library_in_cloud"] = "acceptCloud", ["library_folder_not_empty"] = "acceptForeign",
-    };
+    /// 同一张表（共享体验表 errors 的 accept；library_bad_format 带 accept_ui，由选盘页 LibraryDrivePicker 带 acceptFormat，不在这里问）
+    private IReadOnlyDictionary<string, string> LibraryConfirmCodes => text.ConfirmFlags;
 
     /// <summary>setup 没成、失败码是认得出的风险、这一项还没确认过：问「仍然继续 / 先不」；同意就把对应参数加进 accept 返回 true，调用方带着它重发（参数累积）</summary>
     private async Task<bool> ConfirmLibraryAsync(LibraryJobOutput setup, HashSet<string> accept)
@@ -1994,7 +1987,9 @@ public sealed partial class EnvironmentWindow
     }
 
     /// <summary>Confirm dialog for a phone-side action; texts are &lt;prefix&gt;_title / _body / _confirm.</summary>
-    private async Task<bool> ConfirmInstallActionAsync(string prefix, string? bodyText = null, string? titleText = null)
+    /// askCode：作业层的可确认停装码；它在共享体验表登记了 alternate（如新建证书确认的「改用已有证书」）就多画一个并列按钮，
+    /// 点了不重发（返回 false）、按 alternate 的动作走装机前清单同一个派发 RunInstallAction（devCertSettings = 设置页签名方式那一栏）
+    private async Task<bool> ConfirmInstallActionAsync(string prefix, string? bodyText = null, string? titleText = null, string? askCode = null, LibraryGame? game = null)
     {
         var dialog = new Window
         {
@@ -2013,6 +2008,16 @@ public sealed partial class EnvironmentWindow
             Margin = new Thickness(0, 0, 12, 0) };
         cancel.Click += (_, _) => dialog.Close();
         buttons.Children.Add(cancel);
+        string? alternate = null;
+        if (askCode is { Length: > 0 } && text.ConfirmAlternates.TryGetValue(askCode, out var alt))
+        {
+            var other = new Button { Content = T(alt.Label), Padding = new Thickness(16, 9),
+                Background = Brush.Parse("#29292D"), Foreground = Ink, CornerRadius = new CornerRadius(8),
+                Margin = new Thickness(0, 0, 12, 0) };
+            AutomationId(other, prefix + "_alternate");
+            other.Click += (_, _) => { alternate = alt.Action; dialog.Close(); };
+            buttons.Children.Add(other);
+        }
         var confirm = new Button { Content = T(prefix + "_confirm"), Padding = new Thickness(16, 9),
             Background = Accent, Foreground = Canvas, CornerRadius = new CornerRadius(8) };
         AutomationId(confirm, prefix + "_confirm");
@@ -2021,6 +2026,7 @@ public sealed partial class EnvironmentWindow
         body.Children.Add(buttons);
         dialog.Content = body;
         await dialog.ShowDialog(this);
+        if (alternate is not null) RunInstallAction(alternate, game);
         return confirmed;
     }
 
@@ -2045,7 +2051,7 @@ public sealed partial class EnvironmentWindow
             OperationCanceledException or PlatformNotSupportedException or System.ComponentModel.Win32Exception)
         { installState = "failed"; installMessage = T(prefix + "_failed"); installDiagnostics = error.Message; }
         finally { EndJob(front); AfterArtifactJob(); Render(); }
-        if (dropAsk is not null && await ConfirmInstallActionAsync("install.drop", dropAsk, ConfirmTitle(askCode)))
+        if (dropAsk is not null && await ConfirmInstallActionAsync("install.drop", dropAsk, ConfirmTitle(askCode), askCode, game))
             await RunPhoneJobAsync(game, operation, prefix, new HashSet<string>(accept) { ConfirmCodes[askCode!] });
     }
 

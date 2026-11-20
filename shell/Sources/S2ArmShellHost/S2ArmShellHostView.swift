@@ -195,7 +195,7 @@ public func s2a_shell_library_vc(_ cataloguePath: UnsafePointer<CChar>?) -> Unsa
     g_refreshModel = model
     s2a_shell_set_refresh_handler({ ctx in
         guard let ctx else { return }
-        MainActor.assumeIsolated { Unmanaged<S2ArmShellHostModel>.fromOpaque(ctx).takeUnretainedValue().refreshGameData() }
+        MainActor.assumeIsolated { Unmanaged<S2ArmShellHostModel>.fromOpaque(ctx).takeUnretainedValue().rescanCatalogue() }   // 重读清单再重判：导入文件夹里新导入的 .s2arm（App 开着 / 冷启动 / 在「文件」里点开）马上列出，不用切后台再回来（0.6.0 自签走查 B1 / B5）
     }, Unmanaged.passUnretained(model).toOpaque())
     let vc = LibraryHostingController(rootView: S2ArmShellHostView(model: model))
     return Unmanaged.passRetained(vc as UIViewController).toOpaque()

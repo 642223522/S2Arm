@@ -1,14 +1,16 @@
 // 缓冲建删的增长率回归（11-07 时之笛 Switch 2 室外 30 → 5–6 帧）：经公开 NVN 接口（hle_nvn.c）跑 nvnBufferInitialize / Finalize，
-//   N 个与 4N 个缓冲各跑一遍（先全部建好、活缓冲数随之涨到 N / 4N，再全部注销），比较两次耗时。
-//   期望不依赖被测实现，只由复杂度推出：每次建删 O(log 活缓冲数) → 总耗时近线性，4N / N ≈ 4（加 log 因子约 4.6）；
-//   每次建删 O(活缓冲数)（810f70a2b 的无序数组线性扫描）→ 总耗时平方级，比值 ≈ 16。比值 > 8 判红。
-//   ① 单线程；② 4 线程（各建删自己那 1/4，建完等齐再一起删）抓锁争用：锁内做 O(n) 活时等锁时间同样平方级涨。
-//   只比比值、不设绝对耗时上限：机器快慢 / 负载高低同时作用于两次测量，比值不受影响。每档取 5 次里最快的一次压掉偶发抖动。
-//   负对照：同一单测放在 810f70a2b 的 hle_nvn.c 上跑，① ② 比值都约 16、判红（见坑记录 11-07）。
+//   N 个与 4N 个缓冲各跑一遍（先全部建好、活缓冲数随之涨到 N / 4N，再全部注销），比较两次登记表走过的步数（nvn_buf_reg_steps：split / merge 次数）。
+//   期望不依赖被测实现，只由复杂度推出：每次建删 O(log 活缓冲数) → 总步数近线性，4N / N ≈ 4（加 log 因子约 4.6）；
+//   每次建删 O(活缓冲数) → 总步数平方级，比值 ≈ 16。比值 > 8 判红。
+//   ① 单线程；② 4 线程（各建删自己那 1/4，建完等齐再一起删）：锁内做的事就是这些步数，锁内 O(n) 时等锁也跟着平方级涨。
+//   11-19 改判据：原先比墙钟耗时，门禁负载 62 时比值 11.77 判红、功能并没退化（等于在测机器负载，不是测我们的输出）。步数与机器快慢、负载高低无关，跑一次即可。
+//   负对照（判据本身）：t_buf_reg.c ③ 把优先级全设成 0、树退化成链，同样的建删步数比 > 8（平方级）；正常优先级 ≤ 8。
+//   实测（11-19，本机负载约 40–60）：① 单线程每次 4.73（单线程建删顺序固定，步数确定）；② 4 线程随线程交错先后起伏，37 次 3.66–6.57、中位 4.76；
+//     退化成链约 16。阈值 8 在两者之间，与机器快慢、负载高低无关
 // 建删计时与登记功能分开验证：
 //   缺省 = 安卓路线：S2A_NVN_BUF_REG=1 强制登记（安卓后端 nvn_be_buf_extent_consumer 报 1 时同一条路径）；③ 功能：每个活缓冲内的地址
 //     nvn_buf_extent 都命中 {该缓冲起点, 长度}，注销后不再命中；再跑 ① ②。
-//   metal = Metal 路线：不设开关，后端（nvn_mtl.m）报没有查询方 → ④ 建了 4N 个活缓冲，nvn_buf_extent 一个都不命中（一次登记都没发生）；① ② 只报耗时不判。
+//   metal = Metal 路线：不设开关，后端（nvn_mtl.m）报没有查询方 → ④ 建了 4N 个活缓冲，nvn_buf_extent 一个都不命中（一次登记都没发生）；① ② 的步数必须是 0。
 //   nvk / nvk-forced = 只测登记：前端接真实 rp_entry.c 的能力查询，同一夹具验证缺省不登记、强制打开能登记。
 #include "nvn_protos.h"
 #include "nvn_obj.h"
@@ -24,7 +26,7 @@
 #include <unistd.h>
 
 extern void *h_nvnBootstrapLoader(const char *name);
-enum { N = 10000, NMAX = 4 * N, BUF = 256, THREADS = 4, REPS = 5 };
+enum { N = 10000, NMAX = 4 * N, BUF = 256, THREADS = 4 };
 static const double LIMIT = 8.0;
 static NVNdevice device;
 static NVNmemoryPool pool;
@@ -35,7 +37,7 @@ static int fails, metal;
 #define REQUIRE(x) do { if (!(x)) { printf("✗ t_nvn_bufreg_rate：准备失败 %s（%s:%d）\n", #x, __FILE__, __LINE__); exit(1); } } while (0)
 static void *load(const char *name) { void *e = h_nvnBootstrapLoader(name); REQUIRE(e != NULL); return e; }
 #define API(name) ((NVNT_##name)load(#name))
-static double now(void) { struct timespec s; clock_gettime(CLOCK_MONOTONIC, &s); return s.tv_sec + s.tv_nsec * 1e-9; }
+extern uint64_t nvn_buf_reg_steps(void);   // hle_nvn.c：登记表累计 split / merge 步数
 
 static void setup(void) {
     char dir[256], p[512]; snprintf(dir, sizeof dir, "%s/t_nvn_bufreg_rate.%d", getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp", (int)getpid());
@@ -66,19 +68,23 @@ static void *work(void *arg) {
     for (int i = s->lo; i < s->hi; i++) p_fini(&bufs[i]);
     return NULL;
 }
-static double run_once(int n, int nthreads) {
+static uint64_t run_once(int n, int nthreads) {   // → 这一轮建删走过的登记表步数
     pthread_t th[THREADS]; span_t sp[THREADS]; atomic_store(&built, 0);
-    double t0 = now();
+    uint64_t s0 = nvn_buf_reg_steps();
     for (int t = 0; t < nthreads; t++) { sp[t] = (span_t){n * t / nthreads, n * (t + 1) / nthreads, nthreads}; pthread_create(&th[t], NULL, work, &sp[t]); }
     for (int t = 0; t < nthreads; t++) pthread_join(th[t], NULL);
-    return now() - t0;
+    return nvn_buf_reg_steps() - s0;
 }
-static double best(int n, int nthreads) { double m = 1e30; for (int r = 0; r < REPS; r++) { double d = run_once(n, nthreads); if (d < m) m = d; } return m; }
 static void judge(const char *what, int nthreads) {
-    double a = best(N, nthreads), b = best(NMAX, nthreads), ratio = b / a;
-    printf("  %s：N=%d %.1f ms，4N=%d %.1f ms，比值 %.2f（线性约 4、平方级约 16，> %.0f 判红）\n", what, N, a * 1e3, NMAX, b * 1e3, ratio, LIMIT);
-    if (metal) return;   // Metal 路线不登记，建删只剩百纳秒级的对象写入：总耗时亚毫秒、比值被起线程等固定开销淹没，只报不判（零登记由 ④ 证）
-    if (!(ratio <= LIMIT)) { fails++; printf("✗ t_nvn_bufreg_rate：%s 建删耗时随活缓冲数超线性增长（比值 %.2f > %.0f）\n", what, ratio, LIMIT); }
+    uint64_t a = run_once(N, nthreads), b = run_once(NMAX, nthreads);
+    if (metal) {   // Metal 路线不登记：一步都不该走
+        printf("  %s：N=%d 步数 %llu，4N=%d 步数 %llu（Metal 路线不登记，应为 0）\n", what, N, (unsigned long long)a, NMAX, (unsigned long long)b);
+        if (a || b) { fails++; printf("✗ t_nvn_bufreg_rate：%s Metal 路线建删走了登记表（%llu / %llu 步）\n", what, (unsigned long long)a, (unsigned long long)b); }
+        return;
+    }
+    double ratio = a ? (double)b / (double)a : 0;
+    printf("  %s：N=%d 步数 %llu，4N=%d 步数 %llu，比值 %.2f（对数级约 4.6、平方级约 16，> %.0f 判红）\n", what, N, (unsigned long long)a, NMAX, (unsigned long long)b, ratio, LIMIT);
+    if (!a || !(ratio <= LIMIT)) { fails++; printf("✗ t_nvn_bufreg_rate：%s 建删步数随活缓冲数超线性增长（比值 %.2f > %.0f）\n", what, ratio, LIMIT); }
 }
 
 // ③ / ④：建 n 个活缓冲，逐个查缓冲中间的地址；want = 1 应命中自身 {起点, 长度}，0 应全不命中；全部注销后再查一遍应全不命中
@@ -109,12 +115,12 @@ int main(int argc, char **argv) {
         setup();
         extent_check(NMAX, want, backend);
         if (nvk) return fails != 0;
-        run_once(NMAX, 1);   // 预热：表的结点池 / 页面先长到 4N，不算进计时
+        run_once(NMAX, 1);   // 预热：表的结点池先长到 4N（步数判据本身不受影响，留着同原先的跑法）
         judge("① 单线程", 1);
         judge("② 4 线程", THREADS);
     }
     if (fails) return 1;
     printf("✓ t_nvn_bufreg_rate（%s）：%s\n", metal ? "Metal 路线" : "安卓路线",
-           metal ? "活缓冲零登记（耗时只报不判）" : "按地址查长度全对；单线程与 4 线程的缓冲建删耗时均随活缓冲数近线性增长");
+           metal ? "活缓冲零登记、建删零步" : "按地址查长度全对；单线程与 4 线程的缓冲建删步数均随活缓冲数近线性增长");
     return 0;
 }

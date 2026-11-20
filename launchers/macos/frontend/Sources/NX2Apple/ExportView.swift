@@ -91,7 +91,10 @@ struct ExportView: View {
         VStack(alignment: .leading, spacing: 12) {
             locationRow
             if model.exportTargets.contains(.ios) { IosAfterPackPicker(model: model) }   // 出完之后：装到 iPhone / 导出自签 IPA（11-16 维护者：一个入口、两条分叉各走到底）
-            if model.exportTargets.contains(.tvos) || game.appleTvReady { appleTVRow }   // 签名 / 安装方式收进环境检查（v0.3.0），这里只读 + 更改
+            if model.exportTargets.contains(.tvos) || game.appleTvReady {
+                appleTVRow
+                AppleTVXcodeTeam(model: model).padding(.leading, 2)   // Apple TV 装机仍用 Xcode 团队（tvos.install_tv）：引导项目 / 手填团队号只在这里
+            }
             if model.exportTargets.contains(.android) { androidRow }   // 出好装到哪台安卓手机（adb 列出的）；不选 / 没连 = 只出 APK
             if let error = model.choiceError {
                 Text(loc.backend(error)).font(.manrope(12)).foregroundStyle(LauncherPalette.danger).fixedSize(horizontal: false, vertical: true)

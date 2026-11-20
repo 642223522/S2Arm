@@ -14,15 +14,15 @@
 
 int s2a_selfsign_identity(const void *p12, size_t n, const char *password, SecKeyRef *key, CFArrayRef *chain);
 int s2a_program_resign_if_needed(const char *home, const char *game_data, const char *gid, char *module_dir, char *images, size_t n, char *why, size_t why_n);
-void s2a_program_resign_test_identity(int (*f)(SecKeyRef *, SecCertificateRef *));
+void s2a_program_resign_test_identity(int (*f)(const char *, SecKeyRef *, SecCertificateRef *));
 void s2a_program_resign_test_prov(int (*f)(char *, size_t, char *, size_t));
 int s2a_program_resign_force(const char *home, const char *game_data, const char *gid, char *module_dir, char *images, size_t n, char *why, size_t why_n);
 
 static int bad;
 static void ck(int ok, NSString *what) { printf("%s %s\n", ok ? "  通" : "  【红】", what.UTF8String); if (!ok) bad++; }
 static SecKeyRef g_key; static SecCertificateRef g_cert;
-static int id_ok(SecKeyRef *k, SecCertificateRef *c) { *k = (SecKeyRef)CFRetain(g_key); *c = (SecCertificateRef)CFRetain(g_cert); return 0; }
-static int id_none(SecKeyRef *k, SecCertificateRef *c) { (void)k; (void)c; return -1; }
+static int id_ok(const char *sha, SecKeyRef *k, SecCertificateRef *c) { (void)sha; *k = (SecKeyRef)CFRetain(g_key); *c = (SecCertificateRef)CFRetain(g_cert); return 0; }
+static int id_none(const char *sha, SecKeyRef *k, SecCertificateRef *c) { (void)sha; (void)k; (void)c; return -1; }
 static int prov_other(char *t, size_t tn, char *a, size_t an) { snprintf(t, tn, "FGHIJ67890"); snprintf(a, an, "FGHIJ67890.io.s2arm.games.FGHIJ67890"); return 0; }   // AltStore 装的 App：别的团队
 static int prov_same(char *t, size_t tn, char *a, size_t an) { snprintf(t, tn, "ABCDE12345"); snprintf(a, an, "ABCDE12345.io.s2arm.games.ABCDE12345"); return 0; }
 static NSString *sha_file(NSString *p) { NSData *d = [NSData dataWithContentsOfFile:p]; uint8_t h[32]; CC_SHA256(d.bytes, (CC_LONG)d.length, h);

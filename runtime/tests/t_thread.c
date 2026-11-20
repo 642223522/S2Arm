@@ -60,6 +60,12 @@ static void (*g_hw_hook)(void);   // 暂停读上下文用：0x33 放开全局�
 void s2a_host_write_hook(uint64_t a, uint64_t n) { (void)a; (void)n; if (g_hw_hook) g_hw_hook(); }
 // ⑦ 用：空转函数所在的一段地址算「游戏代码」（让 SetThreadActivity 走 Mach 挂起分支）
 static void guest_spin(uint64_t arg);
+// 冻结代放核用例只在苹果正常构建跑：安卓暂停夹具（run_pause_wait_host.py）把 thread.c 拼进同一单元、关掉了苹果段（没有 s2a_snap_freeze / thaw），
+//   那时 native.h 先于本文件定义了 S2A_LOG_OUT_WEAK（本文件正常构建时自己先定义 S2A_LOGCAP_IMPL，不会有它）
+#if defined(__APPLE__) && !defined(S2A_LOG_OUT_WEAK)
+#define T_FZ 1
+static void fz_spin(uint64_t arg);   // 冻结代放核：持核在游戏代码里忙等（module_of 桩认它）
+#endif
 static void preempt_spin(uint64_t arg);   // ⑫ 用：纯自旋客体线程（时钟抢占测）
 static void ss_spin(uint64_t arg);        // ⑮ 用：纯自旋客体线程（调度计数正对照要在游戏代码里暂停它）
 static void ua_spin(uint64_t arg);        // ⑰ 用：纯自旋客体线程（游戏代码里暂停 / 恢复它）
@@ -95,6 +101,10 @@ module_t *module_of(const void *p) {
     if (a >= lo8 && a < lo8 + 0x400) { g_fake_mod.base = (uint8_t *)lo8; g_fake_mod.patch_off = -1; return &g_fake_mod; }
     uint64_t lo9 = (uint64_t)(void *)pm_spin;
     if (a >= lo9 && a < lo9 + 0x400) { g_fake_mod.base = (uint8_t *)lo9; g_fake_mod.patch_off = -1; return &g_fake_mod; }
+#ifdef T_FZ
+    uint64_t lo10 = (uint64_t)(void *)fz_spin;
+    if (a >= lo10 && a < lo10 + 0x400) { g_fake_mod.base = (uint8_t *)lo10; g_fake_mod.patch_off = -1; return &g_fake_mod; }
+#endif
     uint64_t lo3 = (uint64_t)(void *)ss_spin;
     if (a >= lo3 && a < lo3 + 0x400) { g_fake_mod.base = (uint8_t *)lo3; g_fake_mod.patch_off = -1; return &g_fake_mod; }
     return NULL;
@@ -557,6 +567,24 @@ __attribute__((noinline)) static void hz_spin(uint64_t arg) { (void)arg;
     uint64_t e[31] = {0}; svc_thread(0x0A, e); }
 static void hz_taker(uint64_t arg) { (void)arg; uint64_t r[31] = {0}; svc_thread(0x25, r); atomic_store(&g_hz_done, 1); uint64_t e[31] = {0}; svc_thread(0x0A, e); }
 static int wait_flag(_Atomic int *f, int ms) { for (int i = 0; i < ms && !atomic_load(f); i++) usleep(1000); return atomic_load(f); }
+// ---- 冻结代放核（即时存档 s2a_snap_freeze，虚拟核开）：S 持核在游戏代码里忙等（不进门，冻结 0.5 秒后被 Mach 挂住当安全点），
+//   T 与 S 同核、进系统调用后卡在出口取核（in_svc 还是 1、不算安全点）。期望按语义：冻结方代放 S 的核 → T 拿到核、停进出口 → 冻结在时限内判齐；
+//   解冻后 S 先取核再回游戏代码、接着计数；T 最终拿到核走完。修前：S 被挂住仍持核，T 永远到不了安全点，冻结超时（回 -1）
+#ifdef T_FZ
+int s2a_snap_freeze(int timeout_ms, int *nthr, int *nst); void s2a_snap_thaw(void);
+static _Atomic int g_fz_ready, g_fz_stop, g_fz_tdone, g_fz_rc = 99; static _Atomic uint64_t g_fz_n;
+// 冻结判安全点要看门帧 +816 的切栈槽（产品门帧 832 字节，单测别处的 31 字寄存器数组读到那里是越界垃圾）：本用例进门一律用整帧、切栈槽置非零
+#define FZ_FRAME(v) uint64_t v[104] = {0}; v[102] = 1
+static __attribute__((noinline)) void fz_spin(uint64_t arg) {
+    (void)arg; FZ_FRAME(r); svc_thread(0x25, r);   // 进一次门：出口取到 0 号核
+    atomic_store(&g_fz_ready, 1);
+    while (!atomic_load(&g_fz_stop)) atomic_fetch_add(&g_fz_n, 1);   // 持核、纯游戏代码忙等
+    FZ_FRAME(e); svc_thread(0x0A, e);
+}
+static void fz_taker(uint64_t arg) { (void)arg; FZ_FRAME(r); svc_thread(0x25, r); atomic_store(&g_fz_tdone, 1); FZ_FRAME(e); svc_thread(0x0A, e); }
+static void *fz_freezer(void *a) {   // 宿主线程发起冻结（同产品：存档线程不是游戏线程）
+    (void)a; int n = 0, nst[8] = {0}; int rc = s2a_snap_freeze(3000, &n, nst); atomic_store(&g_fz_rc, rc); if (rc >= 0) s2a_snap_thaw(); return NULL; }
+#endif
 // ---- ⑩ yield 同优先级轮转：A/B 同优先级、同一单核（掩码 0x1）；A 持核空转，B 等核；A SleepThread(0) 让核 → 同优先级的 B 拿到核（Switch yield 轮转）。
 //      旧代码（yield 后立即重取、同优先级不让）B 拿不到 → 反证不过 ----
 static _Atomic int g_y_aready, g_y_bgo, g_y_bdone, g_y_bheld = -9, g_y_stop;
@@ -902,6 +930,25 @@ int main(void) {
       CHECK(!rc && !result, "unbound host thread acquired a guest identity after initialization"); }
     // W 的掩码显式设成 0~2（理想核 0）：S2A_HZ_CORE 开时主线程按 Horizon 只给缺省核（掩码 0x1），后面的用例都按「W 可用 0~2 号核」排的局面，开关两边一致
     { uint64_t m[31] = {g_wtag, 0, 0x7}; svc_thread(0x0F, m); }
+#ifdef T_FZ
+    {   // 冻结代放核（见 fz_spin 处说明）：虚拟核开（本段 S2A_CORES=1）
+        g_case = "冻结代放核";
+        void s2a_core_leave(void);
+        spawn(fz_spin, 0, NULL); s2a_core_leave();
+        CHECK(wait_flag(&g_fz_ready, 2000), "冻结代放核：忙等线程没起来");
+        spawn(fz_taker, 0, NULL); s2a_core_leave(); usleep(300000);
+        CHECK(!atomic_load(&g_fz_tdone), "冻结代放核：前提不成立——同核线程没被挡在出口（忙等线程没持核）");
+        pthread_t fz; pthread_create(&fz, NULL, fz_freezer, NULL);
+        FZ_FRAME(sl); sl[0] = 4000000000ull; svc_thread(0x0B, sl);   // W 睡在门里（安全点），等冻结 / 解冻走完
+        pthread_join(fz, NULL);
+        int rc = atomic_load(&g_fz_rc);
+        CHECK(rc >= 0, "冻结代放核：冻结在 3 秒内没判齐（rc %d）——挂住的忙等线程仍持核，同核等核线程到不了安全点", rc);
+        uint64_t n1 = atomic_load(&g_fz_n); usleep(200000); uint64_t n2 = atomic_load(&g_fz_n);
+        CHECK(n2 > n1, "冻结代放核：解冻后忙等线程没接着跑（计数 %llu → %llu）", (unsigned long long)n1, (unsigned long long)n2);
+        atomic_store(&g_fz_stop, 1);
+        CHECK(wait_flag(&g_fz_tdone, 3000), "冻结代放核：同核等核线程解冻后 3 秒没拿到核走完");
+    }
+#endif
     {   // 理想核 -1 / -3（照 Ryujinx KThread.SetCoreAndAffinityMask；Blade II 起局：设（-1, 0x2）后把读回值原样设给新线程，原先 -1 记成 0 → 读回（0, 0x2）→ InvalidCombination、Break）
         g_case = "理想核 -1 / -3";
         uint64_t a[31] = {0, (uint64_t)reader, 0, 0, 44, 0}; svc_thread(0x08, a);

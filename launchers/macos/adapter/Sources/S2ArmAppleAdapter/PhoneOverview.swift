@@ -6,6 +6,8 @@ import Foundation
 ///   probe = false 只读设备记录（秒回）；true 才问 USB 上连着谁（online）。开关关着作业回 enabled = false → nil
 public struct PhoneOverview: Equatable {
     public enum SignMode: String { case appleId, devCert, external }
+    /// 手机上的 S2Arm 是谁装的（作业 installedBy）：启动器装的 / 别的工具（AltStore、SideStore…）装的；nil = 没装或判不出（旧作业不带这个键也是 nil）
+    public enum InstalledBy: String { case launcher, external }
     public enum GameState: String { case latest, suggested, notPushed, needsData }
     public struct Game: Equatable {
         public let gameId: String
@@ -32,11 +34,15 @@ public struct PhoneOverview: Equatable {
         public let lastSeen: Date?
         public let signMode: SignMode?
         public let games: [Game]
+        public let installedBy: InstalledBy?
+        /// 作业给的这台手机的按钮（别的工具装的才有：exportShellIpa / pushS2arm / exportS2arm / handOverIdentity，按此顺序）；没给 = 空
+        public let actions: [String]
         public init(device: String, name: String, installed: Bool, shellCurrent: Bool, bundleId: String, signedAt: Date?, free: Bool,
-                    expiresAtEstimate: Date?, online: String??, lastSeen: Date?, signMode: SignMode?, games: [Game]) {
+                    expiresAtEstimate: Date?, online: String??, lastSeen: Date?, signMode: SignMode?, games: [Game],
+                    installedBy: InstalledBy? = nil, actions: [String] = []) {
             self.device = device; self.name = name; self.installed = installed; self.shellCurrent = shellCurrent; self.bundleId = bundleId
             self.signedAt = signedAt; self.free = free; self.expiresAtEstimate = expiresAtEstimate; self.online = online; self.lastSeen = lastSeen
-            self.signMode = signMode; self.games = games
+            self.signMode = signMode; self.games = games; self.installedBy = installedBy; self.actions = actions
         }
     }
     public let phones: [Phone]
@@ -57,7 +63,8 @@ public struct PhoneOverview: Equatable {
             return Phone(device: device, name: p["name"] as? String ?? "", installed: p["installed"] as? Bool == true, shellCurrent: p["shellCurrent"] as? Bool == true,
                          bundleId: p["bundleId"] as? String ?? "", signedAt: date(p["signedAt"]), free: p["free"] as? Bool == true,
                          expiresAtEstimate: date(p["expiresAtEstimate"]), online: online, lastSeen: date(p["lastSeen"]),
-                         signMode: (p["signMode"] as? String).flatMap(SignMode.init), games: games)
+                         signMode: (p["signMode"] as? String).flatMap(SignMode.init), games: games,
+                         installedBy: (p["installedBy"] as? String).flatMap(InstalledBy.init), actions: p["actions"] as? [String] ?? [])
         }
     }
 }

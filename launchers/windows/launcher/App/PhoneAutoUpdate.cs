@@ -64,7 +64,7 @@ public sealed partial class EnvironmentWindow
     /// <summary>这次启动头一次读到要更新的手机：后台准备一次</summary>
     private async Task PreparePhoneUpdateAsync()
     {
-        if (phonePrepareTried || IosAfterPackIsExport || catalog is not { PhoneUpdates.Count: > 0 } || !AutoUpdatePhoneOn || connectedFolder is null || libraryId is null) return;
+        if (phonePrepareTried || catalog is not { PhoneUpdates.Count: > 0 } || !AutoUpdatePhoneOn || connectedFolder is null || libraryId is null) return;
         phonePrepareTried = true;
         var ok = false;
         try
@@ -130,7 +130,7 @@ public sealed partial class EnvironmentWindow
         // 玩家在出包页选了「出完之后导出自签」：不走启动器装机，自动装到手机也不做（玩家选择优先）
         // 只按真冲突跳过（维护者「只按真冲突互斥」）：别的作业在跑照样收（升级首启迁移几分钟，原先「有任何作业就整轮跳过」拖到第 360 秒）；
         //   和同一台手机上装机 / 推包的冲突由作业层判（phoneKeptPull 拿不到手机锁就这一轮不收）
-        var skip = IosAfterPackIsExport ? "出包页选了导出自签" : phoneAutoTicking ? "上一轮还没完" : connectedFolder is null || libraryId is null ? "游戏库没连上"
+        var skip = phoneAutoTicking ? "上一轮还没完" : connectedFolder is null || libraryId is null ? "游戏库没连上"
             : batchRunning ? "批量出包在跑" : null;
         NotePhoneTick(skip);
         if (skip is not null) return false;

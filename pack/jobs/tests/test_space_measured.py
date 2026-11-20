@@ -235,6 +235,25 @@ class SpaceMeasured(JobCase):
         with patch.object(library.layout, "find_game", return_value=None):
             self.assertEqual(library.direct_cache_dir(c, GID), tool)
 
+    def test_aoc_cache_follows_game_volume(self):
+        # #1725（诊断 D-K82N）：游戏库在外接盘，DLC 解到工具缓存（系统盘）写满。追加内容缓存同直连缓存跟着游戏走：
+        #   同一块盘 → 工具缓存下的 cache/aoc（同原来）；游戏在另一块盘 → 这款文件夹第一层 aoc-cache/；还没有游戏文件夹 → 工具缓存；出包环境把它交给 S2A_AOC_CACHE
+        c = self.context("ipa")
+        tool = c.work_root / "run" / "s2arm" / "cache" / "aoc"
+        game_dir = Path(self.root) / "ext" / "games" / GID
+        class St:
+            def __init__(self, dev): self.st_dev = dev
+        def existing(dev_of_game):
+            return lambda p: type("V", (), {"stat": lambda self: St(dev_of_game if Path(p) == game_dir else 1)})()
+        with patch.object(library.layout, "find_game", return_value=game_dir), patch.object(library, "_existing", side_effect=existing(1)):
+            self.assertEqual(library.aoc_cache_dir(c, GID), tool)
+        with patch.object(library.layout, "find_game", return_value=game_dir), patch.object(library, "_existing", side_effect=existing(2)):
+            self.assertEqual(library.aoc_cache_dir(c, GID), game_dir / "aoc-cache")
+        with patch.object(library.layout, "find_game", return_value=None):
+            self.assertEqual(library.aoc_cache_dir(c, GID), tool)
+        import sizes
+        self.assertIn("aoc-cache", sizes.CACHE_NAMES, "空间页把它算进这款的缓存（清缓存能清掉）")
+
     def test_ledger_does_not_change_budget(self):
         c = self.context("ipa")
         self.ledger(("2026-11-07T10:00:00", GID, "ipa", "1", 16 * 10**9, 500 * 10**9, "旧账"))

@@ -624,10 +624,14 @@
 "cert.failed.message" = "这个文件不是能用的签名证书（.p12）。";
 "cert.done.title" = "签名证书已导入";
 "cert.done.message" = "团队 %@。之后在这台 iPhone 上导入的游戏会用它签好再玩。";
-"cert.teamMismatch" = "注意：这张证书是团队 %1$@ 的，这个 S2Arm 是团队 %2$@ 装的，用它签的游戏系统不认。请换成安装 S2Arm 时用的那张证书，或者用这张证书重新安装 S2Arm。";
+"cert.teamMismatch" = "注意：这张证书是团队 %1$@ 的，这个 S2Arm 是团队 %2$@ 装的，用它签的游戏系统不认。它已存下，原来能用的证书不受影响。请在装 S2Arm 的那个工具（AltStore 或 SideStore）里导出证书再导入。";
 "cert.sidestore.missing" = "打不开 SideStore：这台 iPhone 上没装 SideStore，或者版本太旧。";
 "cert.sidestore.empty" = "SideStore 没有交回证书，请在 SideStore 里点「Export」后再试。";
+"cert.sidestore.noReply" = "SideStore 没有交回证书：可能点了取消，或者这个 SideStore 版本太旧、还不能把证书交给别的 App。可以更新 SideStore 后再试，或者把证书导出成 .p12 文件再导入。";
+"cert.pickP12" = "导入 .p12…";
 "cert.status" = "团队 %1$@ · %2$@";
+"cert.status.otherTeam" = "和 S2Arm 不是同一个 Apple ID";
+"cert.status.replaced" = "已失效";
 "cert.source.sidestore" = "来自 SideStore";
 "cert.source.p12" = "导入的 .p12";
 "cert.source.pc" = "电脑交来";

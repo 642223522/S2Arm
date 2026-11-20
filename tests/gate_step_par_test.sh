@@ -106,4 +106,13 @@ chk "⑪ 卡住不动：rc=124、show 红 1、记「挂死」、${s11} 秒 < 20"
 ( cd "$H" && LJ=(); TKS=(); GATE_NOSTALL_S=3 S2A_NOSTALL_POLL=1 GATE_HARD_X=10 GATE_STEP_PAR=4 GATE_TOKEN_DIR=$T/tok.m job pr 'for i in 1 2 3 4 5 6; do echo x; sleep 1; done' 2; wait "${LJ[@]}" )
 r12=$(CUR=测; show "" pr "单测 pr" 2 > $L/pr.out; echo "$? $(read -r a b < $L/pr.rc; echo $a)")
 chk "⑫ 一直有输出、超过本步上限 2 秒 → 不被杀、绿" "0 0" "$r12"
+# ⑭ 挂死时步自己点名的「哪一组还在跑」摘进红行细节（11-19：runtime/gate.sh hung_report 写了点名，show 挂死分支只摘看门狗两行，点名丢了）：
+#   步收到 TERM 时打「✗ 组 hold：被停时还在跑…」+ 输出尾巴 → show 的细节里要有这两行；负对照：摘取那一句删掉 → 没有（手跑核过）
+cat > $T/hang.sh <<'EOS'
+trap 'echo "✗ 组 hold：被停时还在跑（已 9 秒），输出尾部："; echo "    尾巴：等 join"; exit 143' TERM
+sleep 30 & wait
+EOS
+( cd "$H" && LJ=(); TKS=(); GATE_NOSTALL_S=3 S2A_NOSTALL_POLL=1 GATE_STEP_PAR=4 GATE_TOKEN_DIR=$T/tok.m job hg "bash $T/hang.sh" 60; wait "${LJ[@]}" )
+CUR=测; show "" hg "单测 hg" 60 > $L/hg.out
+chk "⑭ 挂死红行带步自己的点名与尾巴" "有|有" "$(grep -q '    | ✗ 组 hold：被停时还在跑' $L/hg.out && echo 有)|$(grep -q '    |     尾巴：等 join' $L/hg.out && echo 有)"
 [ $bad = 0 ] && echo "门禁步数上限 / 超时未判单测全绿" || { echo "门禁步数上限 / 超时未判单测有红"; exit 1; }

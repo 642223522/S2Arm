@@ -3400,6 +3400,20 @@ static pthread_mutex_t g_flip_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_flip_cv = PTHREAD_COND_INITIALIZER;
 // 审计 #1534 P1-24：按活跃张数轮换（NVN 语义：SetNumActiveTextures 之后只轮换前 nactive 张，未设时 = 全部）。11-04 普查 485 份日志里超级马力欧兄弟 惊奇
 //   （010015100B514000）设 2 of 3，原先仍按 3 张轮换、交出被排除的第 3 张。活跃张数为 0（窗口没有纹理，或 SetNumActiveTextures(0)）没有可交的纹理：回 NATIVE_ERROR
+// 取图时定、上屏时用的「这一帧是不是显示链路的节拍控的」（nvn_pace_follow）：按窗口对象放一张旁挂小表，不放进 win_t——
+//   win_t 在游戏内存里、登记了即时存档的布局指纹（nvn.win），加字段就改了布局。表按窗口地址直接映射，撞了槽或读档后表是空的 = 0（照旧按节拍器走一个周期）
+static struct { _Atomic(const void *) w; _Atomic int follow; } g_pace_follow[8];
+static inline unsigned pace_follow_slot(const void *w) { return (unsigned)(((uintptr_t)w >> 4) & 7); }
+static void pace_follow_set(const win_t *o, int follow) {
+    unsigned k = pace_follow_slot(o);
+    atomic_store_explicit(&g_pace_follow[k].follow, follow, memory_order_relaxed);
+    atomic_store_explicit(&g_pace_follow[k].w, (const void *)o, memory_order_release);
+}
+static int pace_follow_take(const win_t *o) {   // 用一次就清：两次上屏之间没取图（取图不走这条路的调用方）不沿用上一帧的
+    unsigned k = pace_follow_slot(o);
+    if (atomic_load_explicit(&g_pace_follow[k].w, memory_order_acquire) != (const void *)o) return 0;
+    return atomic_exchange_explicit(&g_pace_follow[k].follow, 0, memory_order_relaxed);
+}
 NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsync *s, int *idx) {
     win_t *o = (win_t *)w;
     int nact = __atomic_load_n(&o->nactive, __ATOMIC_RELAXED);
@@ -3463,8 +3477,10 @@ NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsyn
         if (rtp && rt_period != rtp) { rt_period = rtp; set_time_constraint(rtp); }
         rt_comp_tick(rtp);
         uint64_t p0 = now_ns();
-        if (nvn_be_link_active()) { if (!nvn_be_link_wait_tick(link_vsyncs(o), period ? 2 * period : 33333333ull) && wait) sleep_until_ns(at); }   // DM_PRESENT_LINK: pacing fully follows the display link (wait for the present interval's display-link ticks when running fast, go immediately when behind); our own 60 Hz clock is only the fallback when no display-link tick arrives
+        int follow = 0;   // 这一帧是不是显示链路的节拍控的（等到了节拍）：上屏时节拍器跟着它重新起拍，不再自己走一个周期（nvn_pace_follow）
+        if (nvn_be_link_active()) { if (nvn_be_link_wait_tick(link_vsyncs(o), period ? 2 * period : 33333333ull)) follow = 1; else if (wait) sleep_until_ns(at); }   // DM_PRESENT_LINK: pacing fully follows the display link (wait for the present interval's display-link ticks when running fast, go immediately when behind); our own 60 Hz clock is only the fallback when no display-link tick arrives
         else if (wait) sleep_until_ns(at);
+        pace_follow_set(o, follow);
         pace_ns = now_ns() - p0;
     } else {   // DM_DETCLOCK_PACE=1 (used by the screenshot gate): while the guest clock advances per frame, each frame's wall clock is no shorter than one step -- frame count and in-game time are deterministic, and the background loading thread has at least one step of wall clock available per frame;
                // When the machine is fully loaded frames only get slower and the background only gets more wall clock, so the picture captured at "the Nth frame after the message" is independent of load
@@ -4205,7 +4221,8 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     uint64_t period = present_period(o), now = dm_detclock_enabled() ? guest_ns() : now_ns();
     g_hold_ring[o->presents % 16] = (uint8_t)present_itv(o);
     nvn_pacer pc = {o->pace};
-    uint64_t slot = now + nvn_pace(&pc, now, period);
+    uint64_t slot = now;   // 显示链路控了节奏的帧：从这次上屏起显示，节拍跟着它重新起拍（nvn_pace_follow）；否则照旧按节拍器排槽
+    if (pace_follow_take(o)) nvn_pace_follow(&pc, now); else slot += nvn_pace(&pc, now, period);
     o->pace = pc.target;
     if (idx >= 0 && idx < 4) o->avail[idx] = period ? slot + period : 0;
     static uint64_t prev_slot; if (prev_slot && period) trow(f, "@display_ms", (slot - prev_slot) / 1e6); prev_slot = slot;   // display interval between two adjacent frames on screen (this is the one to look at for dropped frames)
@@ -4273,6 +4290,13 @@ int nvn_buf_extent(uint64_t cpu_addr, uint64_t *base, uint64_t *size) {
     int hit = nvn_breg_find(&g_breg, cpu_addr, base, size);
     BREG_UNLOCK();
     return hit;
+}
+// 登记表累计走过的 split / merge 步数（nvn_breg.steps）：单测 t_nvn_bufreg_rate.m 按 N / 4N 的步数比判建删复杂度（不用墙钟比，见 nvn_buf_reg.h）
+uint64_t nvn_buf_reg_steps(void) {
+    BREG_LOCK();
+    uint64_t s = g_breg.steps;
+    BREG_UNLOCK();
+    return s;
 }
 
 NVN(nvnBufferBuilderSetDevice, void, NVNbufferBuilder *b, NVNdevice *d) { BB(b)->dev = d; }

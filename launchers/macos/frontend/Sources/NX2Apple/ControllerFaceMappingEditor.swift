@@ -13,7 +13,8 @@ struct ControllerFaceMappingEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(zh ? "四键布局" : "Button layout").font(.manrope(15, .semibold))
-            Text(zh ? "所有非 Switch Pro / Joy-Con 手柄共用" : "Shared by all controllers except Switch Pro / Joy-Con")
+            Text(family == .nintendo ? (zh ? "所有 Switch Pro / Joy-Con 手柄共用" : "Shared by all Switch Pro / Joy-Con controllers")
+                : zh ? "所有非 Switch Pro / Joy-Con 手柄共用" : "Shared by all controllers except Switch Pro / Joy-Con")
                 .font(.manrope(12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Text(zh ? "实体按键 → Switch" : "Physical button → Switch")
                 .font(.manrope(12)).foregroundStyle(.secondary)
@@ -24,8 +25,13 @@ struct ControllerFaceMappingEditor: View {
                 binding(positions[2])
             }.frame(maxWidth: .infinity)
             HStack(spacing: 8) {
-                Button(zh ? "Switch 位置布局" : "Switch positions") { store.set(.switchPosition(for: family), for: family) }
-                    .controllerButtonStyle(LauncherSecondaryButtonStyle(fill: true)).controllerID("controller.face.switch")
+                if family == .nintendo {
+                    Button(zh ? "Xbox 位置布局" : "Xbox positions") { store.set(.xboxPosition(for: family), for: family) }
+                        .controllerButtonStyle(LauncherSecondaryButtonStyle(fill: true)).controllerID("controller.face.xbox")
+                } else {
+                    Button(zh ? "Switch 位置布局" : "Switch positions") { store.set(.switchPosition(for: family), for: family) }
+                        .controllerButtonStyle(LauncherSecondaryButtonStyle(fill: true)).controllerID("controller.face.switch")
+                }
                 Button(zh ? "恢复默认" : "Reset") { store.set(nil, for: family) }
                     .controllerButtonStyle(LauncherSecondaryButtonStyle(fill: true)).controllerID("controller.face.reset")
             }
