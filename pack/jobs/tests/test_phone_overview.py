@@ -28,7 +28,7 @@ class PhoneOverview(unittest.TestCase):
     A, B, C, D, E = "0100000000010000", "0100000000020000", "0100000000030000", "0100000000040000", "0100000000050000"
 
     def fixture(self):
-        ok = dict(rewriterId="RIDNOW", hostAbi=2, dmshChain="chainNOW")
+        ok = dict(rewriterId="RIDNOW", hostAbi=2, dmshChain="chainNOW", libGen=host_update.LIB_GEN)   # 出好的款带当前直连库内容代数（不带 = 旧库，进「建议更新」原因 libGen）
         for g in (self.A, self.C, self.D):
             ios_fixture(self.c, g, compat=ok)
         ios_fixture(self.c, self.B, compat=dict(ok, rewriterId="RIDOLD"))   # 游戏库这款的程序要按新改写器更新
