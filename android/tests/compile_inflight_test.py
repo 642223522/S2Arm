@@ -85,7 +85,7 @@ def main():
     link = LINK_SOURCES.read_text(encoding='utf-8')
     lists = [m.group(1) for m in re.finditer(r'function\((s2a_android_(?:nvk|direct)_sources)\b', link)]
     assert set(lists) >= {'s2a_android_nvk_sources', 's2a_android_direct_sources'}, f'源表函数名变了：{lists}'
-    assert link.count('native/direct/compile_request.c') >= 2, 'nvk 与旧直连两份源表都要编 compile_request.c'
+    assert link.count('native/direct/compile_request.c') >= 1, 'nvk 源表要编 compile_request.c（旧直连源表已删，s2a_android_direct_sources 只转调 nvk 源表）'
     print('crash.c: android_crash_fatal 在链回之前弱引用调 s2a_compile_inflight_dump')
 
     with tempfile.TemporaryDirectory(prefix='compile-inflight-') as td:

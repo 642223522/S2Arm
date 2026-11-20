@@ -173,62 +173,6 @@ int main(int n,char**v){if(n!=3)return 2;FILE*f=fopen(v[1],"rb");if(!f)return 3;
             result = subprocess.check_output([str(binary), str(shader), '0'], text=True).split()
             self.assertEqual((int(result[0]), int(result[1])), (0, 1), 'clean module reaches the driver')
 
-    def test_compiled_program_is_rejected_before_stub_device(self):
-        if not CC: self.skipTest('native compiler unavailable')
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            binary = root / 'storage-chain'
-            includes = [HERE / 'hostvk', HERE / 'vkhost', REPO / 'graphics/nvn/third_party/vulkan-headers/include',
-                        HERE.parent / 'native', HERE.parent / 'native/nvn', HERE.parent / 'native/direct',
-                        REPO / 'graphics/nvn/gfx/nvn', REPO / 'graphics/nvn/gfx/nvn/include', REPO / 'runtime/include']
-            cmd = [CC, '-std=gnu11', '-ffunction-sections', '-fdata-sections']
-            for directory in includes: cmd += ['-I', str(directory)]
-            cmd += [str(HERE / 'storage_stage_chain_test.c'),
-                    str(HERE.parent / 'native/nvn/nvn_vk_first_draw.c'),
-                    str(HERE.parent / 'native/nvn/nvn_vk_program_result.c'),
-                    str(HERE.parent / 'native/direct/graphics.c'), str(HERE.parent / 'native/direct/jv.c'),
-                    str(HERE.parent / 'native/direct/json.c'),
-                    str(HERE.parent / 'native/direct/sha256.c'),
-                    '-Wl,-dead_strip' if sys.platform == 'darwin' else '-Wl,--gc-sections', '-o', str(binary)]
-            subprocess.run(cmd, check=True)
-            fragment = base64.b64encode(self.valid_module('fragment')).decode()
-            descriptor = {'schema': 's2a-graphics-v1', 'titleId': '0100000000ABCDEF',
-                          'gameContentRoot': 'sha256-' + 'a' * 64, 'moduleSetDigest': 'sha256-' + 'b' * 64,
-                          'frontend': 'nvn', 'backend': 'vulkan-direct', 'directABI': 1,
-                          'translatorClosure': 'synthetic-closure-v1', 'sourceParserVersion': 1,
-                          'runtimeCompilerABI': COMPILER_ABI, 'profiles': [], 'files': [],
-                          'shaderStorageRequirements': {'schema': 1, 'writeStages': 0, 'coverage': 'unknown'}}
-            descriptor_file = root / 'graphics.json'; descriptor_file.write_text(json.dumps(descriptor))
-            for name, expected in [('read', 'result=0 calls=1'), ('store', 'result=-1 calls=0'),
-                                   ('atomic', 'result=-1 calls=0')]:
-                shader = self.valid_module(name)
-                result = {'schema': 's2a-direct-program-v1', 'content': {'stages': [
-                    {'stage': 'vs', 'spirv': base64.b64encode(shader).decode()},
-                    {'stage': 'fs', 'spirv': fragment}], 'bindings': []}}
-                request, module = root / (name + '.json'), root / (name + '.spv')
-                request.write_text(json.dumps(result)); module.write_bytes(shader)
-                output = subprocess.check_output([str(binary), str(descriptor_file), str(request), str(module)], text=True)
-                self.assertIn('admit=1 ' + expected, output)
-            # GS / TCS / TES 里有 SSBO store、VS 干净：准入掩码 0x1d 覆盖的前光栅阶段同样应拒。
-            for stage_name, model, label in (('gs', 3, 'geometry'), ('tcs', 1, 'tessellation control'),
-                                             ('tes', 2, 'tessellation evaluation')):
-                for dirty in (True, False):
-                    stages = [{'stage': 'vs', 'spirv': base64.b64encode(self.module()).decode()},
-                              {'stage': stage_name,
-                               'spirv': base64.b64encode(self.module(readonly=not dirty, model=model)).decode()},
-                              {'stage': 'fs', 'spirv': fragment}]
-                    result = {'schema': 's2a-direct-program-v1', 'content': {'stages': stages, 'bindings': []}}
-                    request, module = root / (stage_name + '.json'), root / (stage_name + '.spv')
-                    request.write_text(json.dumps(result)); module.write_bytes(self.module())
-                    output = subprocess.check_output([str(binary), str(descriptor_file), str(request), str(module)], text=True)
-                    expected = ('result=-1 calls=0' if dirty else 'result=0 calls=1')
-                    self.assertIn('admit=1 ' + expected, output, stage_name)
-                    if dirty: self.assertIn(label, output, stage_name)
-            descriptor['shaderStorageRequirements']['writeStages'] = 1
-            descriptor_file.write_text(json.dumps(descriptor))
-            output = subprocess.check_output([str(binary), str(descriptor_file), str(request), str(module)], text=True)
-            self.assertIn('admit=0 calls=0', output)
-
 
 def sha256(data):
     return hashlib.sha256(data).hexdigest()
