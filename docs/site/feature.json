@@ -177,8 +177,8 @@
     "en": "In a game, tap the translucent button in the top-right corner to save; press and hold it and choose **Go back to the saved moment**. Next time, **Continue from this moment** at the top of the library takes you straight there."
    },
    "where": {
-    "zh-Hans": "每款只留最新一份，新存的会盖掉旧的。每份约 0.3～1.2 GB（随游戏不同），占手机空间：长按可以删除，腾出空间；不想用可以在设置里关掉。快照只在存下它的那台设备上可用。",
-    "en": "Each game keeps only the latest one, and a new save replaces the old. Each takes about 0.3–1.2 GB of your phone's storage, depending on the game: press and hold to delete it and free the space, or turn snapshots off in Settings. A snapshot only works on the device that saved it."
+    "zh-Hans": "每款只留最新一份，新存的会盖掉旧的。大小随游戏不同（iPhone 上实测一款卡牌游戏约 0.2 GB、一款大型格斗游戏约 0.5 GB），占手机空间：长按可以删除，腾出空间；不想用可以在设置里关掉。快照只在存下它的那台设备上可用。",
+    "en": "Each game keeps only the latest one, and a new save replaces the old. It uses phone storage and its size depends on the game (measured on iPhone: about 0.2 GB for a card game, about 0.5 GB for a large fighting game): press and hold to delete it and free the space, or turn snapshots off in Settings. A snapshot only works on the device that saved it."
    }
   },
   {
