@@ -284,6 +284,8 @@ def _build(c):
             if name.startswith('DOTNET_ROOT_'):
                 env.pop(name)
         env.update(S2A_PACK_PLAT="ios", S2A_TARGET="ios", S2A_PY=os.sys.executable)
+        for k, v in pso_env(tgt).items():   # 随包管线（计算 / 基础）按目标设备出：不传时 pack/jobs/archs.py 对用户 iPhone 包不猜、管线段整段跳过（0 份）
+            env.setdefault(k, v)
         from library import source_file_bytes
         env["S2A_SOURCE_BYTES"] = str(source_file_bytes(selected_packages(game)))   # 原件文件总字节：随包基础管线上限 = 它的 10%（pack/stage_direct_cpso.sh）
         # 存档游戏身份（和 Mac 存档作业 saves.identity 同一份）：一键出包只在「从原件出包」时自己生成，启动器走 --from-extract 一直缺，
@@ -885,6 +887,22 @@ def oneclick_result(path):
     except OSError:
         return None
     return result
+
+
+def pso_env(tgt):
+    """目标设备 → 出包管线归档的目标对（pack/jobs/archs.py 读 S2A_PSO_ARCHS / S2A_PSO_OS）。认得出 GPU 架构才给；
+    系统大版本只给读得到的正值（0 / 空会出 ios0 归档）。认不出（没目标、前端没带 gpuArch）→ 空，管线段照旧按 archs.py 规则处理"""
+    arch = (tgt or {}).get("gpuArch") or ""
+    if not arch:
+        return {}
+    out = {"S2A_PSO_ARCHS": arch}
+    try:
+        osv = int((tgt or {}).get("os") or 0)
+    except (TypeError, ValueError):
+        osv = 0
+    if osv > 0:
+        out["S2A_PSO_OS"] = str(osv)
+    return out
 
 
 def resolve_target(c):
