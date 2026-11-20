@@ -2853,19 +2853,24 @@ static void t_storage_null_binding(void) {
     p_bind_buf *b = put(&missing, OP_BIND_SSBO, sizeof *b); b->stage = 0; b->index = 0; b->addr = 0x12340; b->size = 32;
     q_draw(&missing); end(&missing); submit1(&missing); fake_complete(NVN_GPU_DONE_OK);
     CHECK(g_gdraws == 2 && nvn_unimpl_count("draw", "storage_buffer_unresolved") == 1);
-    // 地址或长度只空一个，以及 UBO 指针来源，不能被合法空 SBUFP 路径接走。
-    for (int k = 0; k < 3; k++) {
+    // 地址或长度只空一个的存储缓冲槽 = 没映射（Ryujinx TranslateAndCreateMultiBuffers：gpuVa == 0 || size == 0 → PteUnmapped；BindBuffers 不发这一格）：
+    //   照画，绑同一份 64 KiB 空缓冲、不另建缓冲、不登记回写（k = 3：可写的也一样）。UBO 指针来源（k = 2）没绑仍具名跳过，不被这条路接走。
+    for (int k = 0; k < 4; k++) {
         stream invalid = {0}; q_env(&invalid);
         g_fprog.nent[0] = 1; e = &g_fprog.ent[0][0];
-        e->cls = NVN_GPU_RES_SSBO; e->src_kind = k == 2 ? NVN_RB_UBOP : NVN_RB_SBUFP; e->src_reg = 0; e->access = NVN_GPU_ACC_R;
-        if (k < 2) {
+        e->cls = NVN_GPU_RES_SSBO; e->src_kind = k == 2 ? NVN_RB_UBOP : NVN_RB_SBUFP; e->src_reg = 0; e->access = k == 3 ? NVN_GPU_ACC_R | NVN_GPU_ACC_W : NVN_GPU_ACC_R;
+        if (k != 2) {
             b = put(&invalid, OP_BIND_SSBO, sizeof *b); b->stage = 0; b->index = 0;
-            b->addr = k == 0 ? 0x12340 : 0; b->size = k == 0 ? 0 : 32;
+            b->addr = k == 1 ? 0 : 0x12340; b->size = k == 1 ? 32 : 0;
         }
-        int draws = g_gdraws, allocated = g_buf_creates;
-        uint64_t unbound = nvn_unimpl_count("draw", "storage_buffer_unbound");
+        int draws = g_gdraws, allocated = g_buf_creates; memset(g_nfb, 0, sizeof g_nfb);
+        uint64_t unbound = nvn_unimpl_count("draw", "storage_buffer_unbound"); int kinds = nvn_unimpl_kinds();
         q_draw(&invalid); end(&invalid); submit1(&invalid); fake_complete(NVN_GPU_DONE_OK);
-        CHECK(g_gdraws == draws && nvn_unimpl_count("draw", "storage_buffer_unbound") == unbound + 1 && g_buf_creates == allocated);
+        if (k == 2) CHECK(g_gdraws == draws && nvn_unimpl_count("draw", "storage_buffer_unbound") == unbound + 1 && g_buf_creates == allocated);
+        else {
+            CHECK(g_gdraws == draws + 1 && nvn_unimpl_count("draw", "storage_buffer_unbound") == unbound && nvn_unimpl_kinds() == kinds && g_buf_creates == allocated);
+            CHECK(g_nfb[0] == 1 && g_fb[0][0].u.b.buf == empty && g_fb[0][0].u.b.off == 0 && g_fb[0][0].u.b.len == 0x10000);
+        }
     }
     pass_fresh();
     CHECK(g_buf_releases == released + 1);

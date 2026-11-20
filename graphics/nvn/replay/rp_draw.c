@@ -579,6 +579,11 @@ static nvn_gpu_buf g_disp_ind; static uint64_t g_disp_ind_off;
 // 本笔绘制在开通道之前解析好的图形阶段存储缓冲（[阶段][布局项]）；只在 rp_draw 里填、在同一笔的发绑定里用
 static nvn_gpu_buf g_sb_buf[RP_PROG_STAGES][RP_PROG_ENT_MAX]; static uint64_t g_sb_off[RP_PROG_STAGES][RP_PROG_ENT_MAX];
 static uint8_t g_sb_ok[RP_PROG_STAGES][RP_PROG_ENT_MAX];
+// 存储缓冲槽「没映射」：地址 0 或长度 0（Ryujinx BufferCache.TranslateAndCreateMultiBuffers：gpuVa == 0 || size == 0 → MultiRange(PteUnmapped)；
+//   BufferManager.BindBuffers 对 IsUnmapped 的槽不发绑定，Vulkan 后端那一格留着建会话时的 64 KiB 空缓冲 / 空描述符，这一笔照画）。
+//   不是「整笔跳过」：长度 0 的绑定在着色器里本来就够不着内容（游戏的着色器按描述符里的长度判界）。只管 NVN 存储缓冲槽（SBUFP）；
+//   计算阶段把统一缓冲当存储读（UBOP）的没绑仍具名跳过（统一缓冲没映射时 Ryujinx 也不绑，但它是另一条来源，这次不动）。
+static int sb_unmapped(const p_bind_buf *sb) { return !sb->addr || !sb->size; }
 // Per-draw GPU-populated driver slices. Never retained by the binding cache.
 static nvn_gpu_slice g_ind_drv[RP_PROG_STAGES];
 static uint8_t g_ind_drv_ok[RP_PROG_STAGES];
@@ -725,7 +730,7 @@ static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st
             case NVN_RB_SBUFP: case NVN_RB_UBOP: {   // 存储缓冲：取地址、绑池镜像里的那一段；可写的登记一次 GPU 写（完成后回写游戏内存）。两种来源只差在哪张表给地址：
                 // SBUFP 按 NVN 存储缓冲槽（rp_S.ssbo）；UBOP 按计算阶段的用户 UBO 槽（rp_S.ubo；反射映射 NVK_STORAGE_UBO_PTR），段的范围就是这个 UBO 绑定的地址与大小
                 const p_bind_buf *sb = e->src_reg < 16 ? (e->src_kind == NVN_RB_UBOP ? &rp_S.ubo[st][e->src_reg] : &rp_S.ssbo[st][e->src_reg]) : NULL;
-                if (sb && e->src_kind == NVN_RB_SBUFP && !sb->addr && !sb->size) {
+                if (sb && e->src_kind == NVN_RB_SBUFP && sb_unmapped(sb)) {   // 没映射的存储缓冲槽：绑 64 KiB 空缓冲、照画（同 Ryujinx，见 sb_unmapped）
                     o->u.b.buf = rp_buf_for_null_storage();
                     if (!o->u.b.buf) return skip("storage_buffer_empty_failed", rec);
                     o->u.b.off = 0; o->u.b.len = 0x10000; break;
@@ -1339,7 +1344,7 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
             if (e->src_kind == NVN_RB_SBUFP || e->src_kind == NVN_RB_UBOP) {
                 const p_bind_buf *sb = e->src_reg < 16 ? (e->src_kind == NVN_RB_UBOP ? &rp_S.ubo[st][e->src_reg] : &rp_S.ssbo[st][e->src_reg]) : NULL;
                 if (g_sb_ok[st][i] && sb) { uint64_t wa, wl; (void)sb_window(sb, e->src_kind == NVN_RB_SBUFP, &wa, &wl); ACCESS_READ(compute_read_buf(g_sb_buf[st][i], g_sb_off[st][i], wl)); }
-                else if (sb && !sb->addr && !sb->size && e->src_kind == NVN_RB_SBUFP) ACCESS_READ(compute_read_buf(rp_buf_for_null_storage(), 0, 0x10000));
+                else if (sb && sb_unmapped(sb) && e->src_kind == NVN_RB_SBUFP) ACCESS_READ(compute_read_buf(rp_buf_for_null_storage(), 0, 0x10000));
             } else if (e->src_kind == NVN_RB_TEX || e->src_kind == NVN_RB_TEXU || e->src_kind == NVN_RB_TBUF) {
                 if (e->count > 1) { for (uint32_t k = 0; k < e->count && !need; k++) ACCESS_READ(compute_read_view(g_av[st][k])); }
                 else ACCESS_READ(compute_read_view(tv[st][i]));
