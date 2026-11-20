@@ -467,6 +467,7 @@ py_items() {
   HOOK_REST=1 job zstd_frame_nocopy timeout 60 "$PYV" graphics/tools/shbake/tests/t_zstd_frame_nocopy.py
   HOOK_REST=1 job zsdict_heads timeout 60 "$PYV" graphics/tools/shbake/tests/t_zsdict_heads.py
   HOOK_REST=1 job container_b timeout 60 "$PYV" -B graphics/tools/shbake/tests/t_container_b.py
+  HOOK_REST=1 job mdb1 timeout 60 "$PYV" -B graphics/tools/shbake/tests/t_mdb1.py
   HOOK_REST=1 job wwise_skip timeout 120 "$PYV" graphics/tools/shbake/tests/t_wwise_skip.py
   HOOK_REST=1 job ue_pak_legacy timeout 60 "$PYV" graphics/tools/shbake/tests/t_ue_pak_legacy.py
   HOOK_REST=1 job zstd_lib timeout 60 "$PYV" graphics/tools/shbake/tests/t_zstd_lib.py
@@ -706,6 +707,7 @@ rcof whole_zstd_scan; wz=$?; reg $wz "整文件 zstd 解开后不盲搜压缩流
 rcof mmap_contains; mmc=$?; reg $mmc "大文件按 mmap 扫时 SPCH 照样认：$(tail -1 "$LOG/mmap_contains.log")（退出 ${mmc}）" "$LOG/mmap_contains.log"   # nxsh_extract _scan_blob（mmap 上子串 in 恒假，大文件里的 SPCH 判不中）
 rcof zsdict_heads; zh=$?; reg $zh "zstd 字典收集按头筛选、有界排队：$(tail -1 "$LOG/zsdict_heads.log")（退出 ${zh}）" "$LOG/zsdict_heads.log"   # nxsh_extract find_zsdicts（#639 用到字典的款整读全部小文件）
 rcof container_b; r=$?; reg $r "着色器容器 B 组：$(tail -1 "$LOG/container_b.log")（退出 ${r}）" "$LOG/container_b.log"   # kitpak.py / hgpak.py + nxsh_extract work_members、scan_adj 背靠背机器码在前（11-02 Unravel Two / No Man's Sky）
+rcof mdb1; r=$?; reg $r "MVGL 归档与 NXFS 容器：$(tail -1 "$LOG/mdb1.log")（退出 ${r}）" "$LOG/mdb1.log"   # translator/mdb1.py + nxsh_extract scan_nxfs / mdb1_visit（时空异客）
 rcof wwise_skip; ww=$?; reg $ww "Wwise 音频包跳过边界：$(tail -1 "$LOG/wwise_skip.log")（退出 ${ww}）" "$LOG/wwise_skip.log"   # nxsh_extract top_wwise：确证 Wwise 包不扫、核查模式数反例
 # 旧版 UE4 pak（v1–v9 经典索引，10-23 Blade II v4 一支没抽到；11-02 BRAVELY DEFAULT Ⅱ v8）：v4 / v5 / v1 / v8 / v9 逐字节解出、加密与非 Zlib 拒绝、v9 冻结索引拒绝、条目内 zlib 着色器抽得出
 rcof ue_pak_legacy; upk=$?; upkc=$(tail -1 "$LOG/ue_pak_legacy.log")
