@@ -31,7 +31,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <time.h>
 #include <unistd.h>
 
 #include "nvn_plat.h"
@@ -54,7 +53,7 @@
 
 struct slot {
     struct nvk_prog_rec rec;
-    uint64_t last_use_ms;
+    uint64_t last_use_rank;
 };
 
 static struct {
@@ -72,18 +71,13 @@ static struct {
     uint8_t profile_sha[32];
     int32_t direct_abi;
     uint8_t closure_sha[32];
-    uint64_t max_ts;
+    uint64_t max_rank;
     uint64_t reset_seq;           // 只由会话 reset 推进；锁外读盘不能跨会话提交
     struct nvk_prog_warm_stats st;
 } g = { .mu = PTHREAD_MUTEX_INITIALIZER, .limit = NVK_PROG_WARM_DEFAULT_MAX };
 // 落盘串行：预热线程的 30 秒定期写与收尾写不并发（否则两个临时文件抢同一个 rename 目标）。
 static pthread_mutex_t g_save_mu = PTHREAD_MUTEX_INITIALIZER;
 
-static uint64_t warm_now_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    return (uint64_t)ts.tv_sec * 1000ull + (uint64_t)ts.tv_nsec / 1000000ull;
-}
 static void warm_sha256(const void *p, size_t n, uint8_t out[32]) {
     s2a_sha256 c; s2a_sha256_init(&c); s2a_sha256_update(&c, p, n); s2a_sha256_final(&c, out);
 }
@@ -118,7 +112,7 @@ static void reset_locked(void) {
     g.n = g.cap = 0;
     g.plan_n = g.plan_i = 0;
     g.limit = 0;   // 下一局（或下一个 load）按当时的 flag 重读上限
-    g.dirty = 0; g.have_facts = 0; g.max_ts = 0;
+    g.dirty = 0; g.have_facts = 0; g.max_rank = 0;
     memset(g.profile_sha, 0, sizeof g.profile_sha); memset(g.closure_sha, 0, sizeof g.closure_sha);
     g.direct_abi = 0;
     stats_reset();
@@ -179,6 +173,26 @@ static uint32_t warm_limit(void) {
     if ((unsigned)v > NVK_PROG_WARM_ABS_MAX) return NVK_PROG_WARM_ABS_MAX;
     return (uint32_t)v;
 }
+static int rank_ref_cmp(const void *pa, const void *pb) {
+    const struct slot *a = *(struct slot * const *)pa;
+    const struct slot *b = *(struct slot * const *)pb;
+    return (a->last_use_rank > b->last_use_rank) - (a->last_use_rank < b->last_use_rank);
+}
+// Rebase only the ranks, keeping slot order and preserving equal ranks. Old v1
+// wall-clock values are ordered, not interpreted as time. `refs` has n slots.
+static uint64_t rebase_ranks(struct slot *v, uint32_t n, struct slot **refs, uint64_t start) {
+    if (!n) return start;
+    for (uint32_t i = 0; i < n; i++) refs[i] = &v[i];
+    qsort(refs, n, sizeof *refs, rank_ref_cmp);
+    uint64_t prev = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        uint64_t old = refs[i]->last_use_rank;
+        if (i == 0 || old != prev) start++;
+        refs[i]->last_use_rank = start;
+        prev = old;
+    }
+    return start;
+}
 // uses 降序；同 uses 用 last_use 降序（谁最近用过谁先）；再同按 identity 升序，保证同一份清单两次落盘逐字节一致。
 // 落盘排序只排一份下标表，不动 g.v：本局实时表可能正被 note / 淘汰改（虽然都在锁里，就地 qsort 会让
 // 「这一份快照」和「take 看到的东西」分家，外部复核就是这个 repro 的根因之一）。
@@ -186,13 +200,13 @@ static const struct slot *g_cmp_base;
 static int slot_cmp_idx(const void *pa, const void *pb) {
     const struct slot *a = &g_cmp_base[*(const uint32_t *)pa], *b = &g_cmp_base[*(const uint32_t *)pb];
     if (a->rec.uses != b->rec.uses) return a->rec.uses < b->rec.uses ? 1 : -1;
-    if (a->last_use_ms != b->last_use_ms) return a->last_use_ms < b->last_use_ms ? 1 : -1;
+    if (a->last_use_rank != b->last_use_rank) return a->last_use_rank < b->last_use_rank ? 1 : -1;
     return memcmp(a->rec.identity, b->rec.identity, 32);
 }
 static int slot_cmp(const void *pa, const void *pb) {
     const struct slot *a = (const struct slot *)pa, *b = (const struct slot *)pb;
     if (a->rec.uses != b->rec.uses) return a->rec.uses < b->rec.uses ? 1 : -1;
-    if (a->last_use_ms != b->last_use_ms) return a->last_use_ms < b->last_use_ms ? 1 : -1;
+    if (a->last_use_rank != b->last_use_rank) return a->last_use_rank < b->last_use_rank ? 1 : -1;
     return memcmp(a->rec.identity, b->rec.identity, 32);
 }
 static int find_locked(const uint8_t identity[32], uint32_t *at) {
@@ -326,7 +340,7 @@ int nvk_prog_warm_load(void) {
         s.rec.lp_ok = e[61];   // 2 = 按含「存储缓冲不对齐」的规则判可用；旧清单里的 1 当不可用
         memcpy(s.rec.c1, e + 64, sizeof s.rec.c1);
         s.rec.uses = get_u32(e + 60 + 4 + 768);
-        s.last_use_ms = get_u64(e + 60 + 4 + 768 + 4);
+        s.last_use_rank = get_u64(e + 60 + 4 + 768 + 4);
         if (!rec_well_formed(&s.rec)) { filtered++; continue; }
         if (usable == keep_cap) { filtered++; continue; }   // 本局上限比文件小：更冷的丢掉
         if (usable < keep_cap) disk[usable] = s;
@@ -340,12 +354,12 @@ int nvk_prog_warm_load(void) {
     if (cap < g.n) cap = g.n;
     struct slot *merged = cap ? (struct slot *)malloc((size_t)cap * sizeof *merged) : NULL;
     struct nvk_prog_rec *plan = usable ? (struct nvk_prog_rec *)malloc((size_t)usable * sizeof *plan) : NULL;
-    if ((cap && !merged) || (usable && !plan)) {
-        free(merged); free(plan); free(disk);
+    struct slot **refs = cap ? (struct slot **)malloc((size_t)cap * sizeof *refs) : NULL;
+    if ((cap && (!merged || !refs)) || (usable && !plan)) {
+        free(merged); free(plan); free(disk); free(refs);
         pthread_mutex_unlock(&g.mu); free(buf); return 0;
     }
     uint32_t n = g.n, plan_n = 0, loaded = 0;
-    uint64_t max_ts = g.max_ts;
     if (n) memcpy(merged, g.v, (size_t)n * sizeof *merged);
     int cs = nvn_plat_flag("nvk_compute_warm", 0);
     for (uint32_t i = 0; i < usable; i++) {
@@ -359,15 +373,19 @@ int nvk_prog_warm_load(void) {
         } else if (merged[at].rec.uses < disk[i].rec.uses) {
             merged[at].rec.uses = disk[i].rec.uses;
         }
-        if (disk[i].last_use_ms > max_ts) max_ts = disk[i].last_use_ms;
         // 冻结集仅来自本次接纳的磁盘条目，不把本局新 note 送去额外编译。
         if (cs || merged[at].rec.stage_mask != 32u) plan[plan_n++] = merged[at].rec;
         loaded++;
     }
+    // Loaded history and pre-load live notes are distinct domains. Normalize
+    // each in order, placing live notes after disk without affecting the plan.
+    uint64_t max_rank = n > g.n ? rebase_ranks(merged + g.n, n - g.n, refs, 0) : 0;
+    max_rank = rebase_ranks(merged, g.n, refs, max_rank);
+    free(refs);
     free(disk);
     free(g.v); g.v = merged; g.n = n; g.cap = cap;
     free(g.plan); g.plan = plan; g.plan_n = plan_n; g.plan_i = 0;
-    g.limit = limit; g.max_ts = max_ts;
+    g.limit = limit; g.max_rank = max_rank;
     g.st.loaded = loaded;
     g.st.rejected = filtered;
     // recorded / dirty / 构建与命中统计属于本局，不因读取成功或失败清零。
@@ -413,14 +431,18 @@ void nvk_prog_warm_note(const struct nvk_prog_rec *rec) {
     pthread_mutex_lock(&g.mu);
     if (!g.cap && ensure_cap_locked(64)) { pthread_mutex_unlock(&g.mu); return; }
     if (!g.limit) g.limit = warm_limit();
-    uint64_t ts = warm_now_ms();
-    if (ts <= g.max_ts) ts = g.max_ts + 1;   // 时钟回拨/同一毫秒：保持文件内单调，跨会话排序才有意义
-    g.max_ts = ts;
+    if (g.max_rank == UINT64_MAX) {
+        struct slot **refs = g.n ? (struct slot **)malloc((size_t)g.n * sizeof *refs) : NULL;
+        if (g.n && !refs) { pthread_mutex_unlock(&g.mu); return; }
+        g.max_rank = rebase_ranks(g.v, g.n, refs, 0);
+        free(refs);
+    }
+    uint64_t rank = ++g.max_rank;
     uint32_t at = 0;
     if (find_locked(rec->identity, &at)) {
         struct slot *s = &g.v[at];
         if (s->rec.uses != 0xFFFFFFFFu) s->rec.uses++;
-        s->last_use_ms = ts;
+        s->last_use_rank = rank;
         s->rec.stage_mask = rec->stage_mask; s->rec.lp_ok = rec->lp_ok;   // 同身份即同状态：旧清单读来的 0 在这里刷新
         memcpy(s->rec.keys, rec->keys, sizeof s->rec.keys);
         // c1 只在这次快照确实带回来时才覆盖（真实 resolve 有视图；清单加载来的记录没有新视图）。
@@ -441,10 +463,10 @@ void nvk_prog_warm_note(const struct nvk_prog_rec *rec) {
         uint32_t cold = 0;
         for (uint32_t i = 1; i < g.n; i++) {
             if (g.v[i].rec.uses < g.v[cold].rec.uses ||
-                (g.v[i].rec.uses == g.v[cold].rec.uses && g.v[i].last_use_ms < g.v[cold].last_use_ms))
+                (g.v[i].rec.uses == g.v[cold].rec.uses && g.v[i].last_use_rank < g.v[cold].last_use_rank))
                 cold = i;
         }
-        g.v[cold] = (struct slot){ .rec = *rec, .last_use_ms = ts };
+        g.v[cold] = (struct slot){ .rec = *rec, .last_use_rank = rank };
         g.v[cold].rec.uses = rec->uses ? rec->uses : 1;
         g.st.recorded++;
         g.dirty = 1;
@@ -452,7 +474,7 @@ void nvk_prog_warm_note(const struct nvk_prog_rec *rec) {
         return;
     }
     if (ensure_cap_locked(g.n + 1)) { pthread_mutex_unlock(&g.mu); return; }
-    g.v[g.n] = (struct slot){ .rec = *rec, .last_use_ms = ts };
+    g.v[g.n] = (struct slot){ .rec = *rec, .last_use_rank = rank };
     if (!g.v[g.n].rec.uses) g.v[g.n].rec.uses = 1;
     g.n++;
     g.st.recorded++;
@@ -575,7 +597,7 @@ void nvk_prog_warm_save(void) {
             put_u8(&p, s->rec.c1_ok); put_u8(&p, s->rec.lp_ok); p += 2;   // 保留
             memcpy(p, s->rec.c1, sizeof s->rec.c1); p += sizeof s->rec.c1;
             put_u32(&p, s->rec.uses);
-            put_u64(&p, s->last_use_ms);
+            put_u64(&p, s->last_use_rank);
         }
         free(idx);
         put_u64(&p, fnv1a64(buf, len - NVK_PROG_WARM_SUM));
