@@ -31,6 +31,7 @@ WIN = os.name == 'nt'
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..', '..', '..', 'tools'))
 from progress import Ticker  # noqa: E402
+import pool_workers  # noqa: E402
 
 T_START = time.monotonic()
 
@@ -387,7 +388,7 @@ class Lib:
                 if rc != 0 or not sc: red('Windows 上编不出 spirv-cross 命令行（translator/spvc_inproc.py cli）', cmd, rc, run.err + '\n' + sc)
                 os.environ['PATH'] = os.path.dirname(sc) + os.pathsep + os.environ.get('PATH', '')
         # 并行路数（10-25 维护者「多核要适配机器的核心数」）：J / S2A_CPU_BAKE = 本阶段分到的路数，都没给才用 S2A_JOBS / 本机核数；导出给下面每个工具
-        self.J = os.environ.get('J') or os.environ.get('S2A_CPU_BAKE') or os.environ.get('S2A_JOBS') or str(os.cpu_count() or 1)
+        self.J = str(pool_workers.env_jobs('J', 'S2A_CPU_BAKE', 'S2A_JOBS'))   # 都没给 → 本机核数（tools/pool_workers.cores，认 S2A_NCPU）
         os.environ['J'] = self.J
         if not ((os.path.isdir(ROOT + '/romfs') or os.path.isfile(ROOT + '/romfs.std')) and os.path.isfile(ROOT + '/exefs/main')):
             die(f'🔴 {ROOT} 缺 romfs/（或镜像 romfs.std）或 exefs/main')   # RomFS 目录或镜像都行（romfs_list.py image_of）

@@ -19,6 +19,7 @@ WIN = os.name == 'nt'
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..', '..', '..', 'tools'))
 from progress import Ticker  # noqa: E402
+import pool_workers  # noqa: E402
 
 T_START = time.monotonic()
 
@@ -85,7 +86,7 @@ def main(argv):
     X = fwd(os.path.abspath(argv[1])) if WIN else argv[1]
     R = fwd(os.path.normpath(os.path.join(HERE, '..', '..', '..'))); NX = R + '/graphics/nvn'
     PY = os.environ.get('S2A_PYTHON') or os.environ.get('S2A_PY') or sys.executable
-    J = os.environ.get('J') or os.environ.get('S2A_CPU_BAKE') or os.environ.get('S2A_JOBS') or str(os.cpu_count() or 1)
+    J = str(pool_workers.env_jobs('J', 'S2A_CPU_BAKE', 'S2A_JOBS'))   # 都没给 → 本机核数（tools/pool_workers.cores）
     # 抽取每路吃内存（#711：Windows 16 GB 抽取 MemoryError）：给了 S2A_CPU_BAKE（按内存封顶的重活路数）就不超过它——调用方常把 J 设成直连库编译的路数
     cap = os.environ.get('S2A_CPU_BAKE', '')
     if cap.isdigit() and int(cap) >= 1 and J.isdigit() and int(J) > int(cap): J = cap

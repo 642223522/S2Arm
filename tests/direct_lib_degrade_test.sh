@@ -11,7 +11,7 @@
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); trap 'rm -rf "$T"' EXIT; bad=0
 ck() { if [ "$2" = "$3" ]; then echo "通 $1：期望 $2 → 真结果 $3"; else echo "不通 $1：期望 $2 → 真结果 $3"; bad=1; fi; }
 F=$T/repo; mkdir -p $F/graphics/tools/direct $F/graphics/nvn/tools $F/pack $F/tools $F/translator $T/bin
-cp "$H/graphics/tools/direct/direct_lib.py" $F/graphics/tools/direct/; cp "$H/tools/progress.py" $F/tools/
+cp "$H/graphics/tools/direct/direct_lib.py" $F/graphics/tools/direct/; cp "$H/tools/progress.py" "$H/tools/pool_workers.py" $F/tools/
 printf 'import sys\nprint("gl\\tstub")\n' > $F/graphics/nvn/tools/gfx_api.py
 printf 'import os, sys\na=sys.argv[sys.argv.index("--")+1:]; os.execv(a[0], a)\n' > $F/tools/nostall.py
 cat > $F/translator/gl_shaders.py <<'EOF'

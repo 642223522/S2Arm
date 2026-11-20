@@ -8,7 +8,7 @@
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); bad=0; trap 'rm -rf "$T"' EXIT
 ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
 P=$T/repo; mkdir -p $P/graphics/tools/direct $P/graphics/nvn/tools $P/graphics/nvn/games $P/translator $P/tools $T/prof
-cp "$H/graphics/tools/direct/direct_lib.py" $P/graphics/tools/direct/; cp "$H/tools/progress.py" "$H/tools/clonedir.py" $P/tools/
+cp "$H/graphics/tools/direct/direct_lib.py" $P/graphics/tools/direct/; cp "$H/tools/progress.py" "$H/tools/pool_workers.py" "$H/tools/clonedir.py" $P/tools/
 cat > $P/graphics/nvn/tools/gfx_api.py <<'PY'
 import os, sys
 if os.environ.get('FAKE_GFX_FAIL'): print('SIG_GFX_STDERR_4b1 读 NSO 导入表失败', file=sys.stderr); sys.exit(1)

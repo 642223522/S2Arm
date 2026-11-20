@@ -16,7 +16,7 @@ with tempfile.TemporaryDirectory(prefix='direct gl ') as td:
     for d in ('graphics/tools/direct', 'graphics/nvn/tools', 'pack', 'tools', 'translator'):
         (fake / d).mkdir(parents=True, exist_ok=True)
     shutil.copy(repo / 'graphics/tools/direct/direct_lib.py', fake / 'graphics/tools/direct/direct_lib.py')
-    shutil.copy(repo / 'tools/progress.py', fake / 'tools/progress.py')
+    shutil.copy(repo / 'tools/progress.py', fake / 'tools/progress.py'); shutil.copy(repo / 'tools/pool_workers.py', fake / 'tools/pool_workers.py')
     (fake / 'graphics/nvn/tools/gfx_api.py').write_text('import sys\nprint("1\\tstub" if "--gl-also" in sys.argv else "gl\\tstub")\n')
     # 调用真 gl_shaders.translate 的预处理命令选择；后续翻译由桩终止并写合成表头。
     (fake / 'translator/gl_shaders.py').write_text('''import os, pathlib, subprocess, sys
