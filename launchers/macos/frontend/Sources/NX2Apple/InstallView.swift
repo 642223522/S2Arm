@@ -145,7 +145,7 @@ struct InstallView: View {
                         .controllerButtonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("install.revealIpa").controllerShortcut(.secondary)
                 }
                 Button(loc.t("launch.done")) { dismiss() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerShortcut(.rightTrigger, .back, focused: true)
-                Button(loc.t("s2arm.install.start")) {
+                Button(queued ? text("install.start.queued") : loc.t("s2arm.install.start")) {
                     if let game { model.clearInlineFailure(); model.install(game) }
                 }
                 .controllerButtonStyle(LauncherPrimaryButtonStyle()).keyboardShortcut(.defaultAction).controllerShortcut(.rightTrigger)

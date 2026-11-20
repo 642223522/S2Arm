@@ -846,18 +846,8 @@ final class NS2LauncherController: ObservableObject {
         reconcile()
     }
     func registerGen1(id: String, side: Int, gesture: Int, at time: TimeInterval = ProcessInfo.processInfo.systemUptime) {
-        if assigning { assignment.gen1(id: id, side: side, gesture: gesture, at: time, present: gen1Devices, system: systemKeys); return }
-        // 局内拆合（#918 / 玩家反馈「分体横握进游戏后切不回单人合体」）：原先只在「分配玩家」开着时认手势，局内按 L + R / SL + SR 都被丢掉。
-        //   已登记的一代再按 SL + SR（拆）或两只单只各按 L / R（0.5 秒内，合）照分配时同一套规则改顺序、写顺序表：
-        //   宿主约 2 秒内重读（macos/front_mac.m pad-order.json），服务层按在线手柄数增减格数、按实体样式重配（InputPump.ShrinkPads / SlotPick）。
-        //   没登记的手柄局内按手势不登记（登记仍走分配玩家），别的手势不动
-        guard gesture == 2 || gesture == 3, assignment.registeredGen1.contains(id) else { return }
-        let before = assignment
+        guard assigning else { return }
         assignment.gen1(id: id, side: side, gesture: gesture, at: time, present: gen1Devices, system: systemKeys)
-        guard assignment != before else { return }   // 合要两只各按一下：第一下只记着，等第二下
-        NSLog("[分配玩家] 局内一代 Joy-Con %@ 拆 / 合，照新顺序写顺序表", id)
-        sendPlan()
-        persist()
     }
     func registerKeyboard() {
         guard assigning else { return }
