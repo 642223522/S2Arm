@@ -27,7 +27,10 @@ import S2ArmAppleAdapter
             privateRoot: root, resources: root, library: root.appendingPathComponent("lib").path, libraryId: "fixture"), runner: runner))
     }
 
-    override func tearDown() async throws { try? FileManager.default.removeItem(at: root) }
+    // 先关执行器再删目录（11-20 全套里偶发 XCTUnwrap 读不到请求文件、记在别的用例头上）：async tearDown 不在主线程，
+    //   主线程上一单收尾后自动接起的作业（排队的装机、刷新）会和删目录同时进行——请求刚写进去就被删、假执行器读空。
+    //   close 与读请求同一把锁：删目录一定排在进行中的读取之后；之后才到的作业按「空结果」结束，不属于任何用例
+    override func tearDown() async throws { runner.close(); try? FileManager.default.removeItem(at: root) }
 
     func testExportingOtherGameAllowsPlay() {
         model.session = JobSession(kind: .export, gameID: a.id, name: a.name)
@@ -129,12 +132,21 @@ private final class PlaySlotRunner: JobProcessRunner {
     final class Handle: JobProcessHandle { func terminate() {} }
     private let lock = NSLock()
     private var held: (() -> Void)?
+    private var closed = false
+
+    /// 用例收尾：之后再起的作业不读请求文件（目录要删了），当场按空结果结束
+    func close() { lock.withLock { closed = true } }
 
     func endLaunch() { let f = lock.withLock { () -> (() -> Void)? in let f = held; held = nil; return f }; f?() }
 
     func start(executable: URL, arguments: [String], environment: [String: String],
                onLine: @escaping (Data) -> Void, onStderr: @escaping (Data) -> Void, onExit: @escaping (Int32) -> Void) throws -> JobProcessHandle {
-        let request = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: try XCTUnwrap(arguments.last)))) as? [String: Any])
+        let path = try XCTUnwrap(arguments.last)
+        let read = try lock.withLock { () -> [String: Any]? in
+            if closed { return nil }
+            return try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: path))) as? [String: Any])
+        }
+        guard let request = read else { DispatchQueue.main.async { onExit(0) }; return Handle() }
         let task = request["taskId"] ?? ""
         func line(_ e: [String: Any]) { onLine(try! JSONSerialization.data(withJSONObject: e)) }
         if request["operation"] as? String == "launch" {
