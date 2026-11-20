@@ -69,7 +69,7 @@ class PhoneOverview(unittest.TestCase):
         self.assertEqual({k: p1[k] for k in ("device", "name", "installed", "bundleId", "shellCurrent", "signedAt", "free", "expiresAtEstimate")},
                          dict(device="PHONE-1", name="手机甲", installed=True, bundleId="io.example.one", shellCurrent=True, signedAt=T, free=False,
                               expiresAtEstimate=T + 365 * 86400))
-        # C：电脑上 game.img 在（放一个）→ 推一下就行；E：程序推过、游戏库里没有这款的 game.img → 要原件
+        # C：电脑上 game.img 在（放一个）→ 推一下就行；E：游戏库没有资源清单 → 要原件
         self.assertEqual(p1["games"], [dict(gameId=self.A, state="latest"), dict(gameId=self.B, state="suggested", reasons=["rewriter"]),
                                        dict(gameId=self.C, state="needsData", dataOnComputer=True), dict(gameId=self.D, state="suggested", reasons=["hostAbi"]),
                                        dict(gameId=self.E, state="needsData", dataOnComputer=False)])
@@ -82,8 +82,8 @@ class PhoneOverview(unittest.TestCase):
                 p = next(x for x in self.overview()["phones"] if x["device"] == "PHONE-2")
             self.assertEqual(p["remainingDays"], want)
         self.assertEqual({g["state"] for g in p2["games"]}, {"notPushed"})   # 手机 2 一款都没推
-        # 没推过的也带电脑上资源在不在（A、C 放了 game.img）：界面提前说「要原件」
-        self.assertEqual({g["gameId"]: g["dataOnComputer"] for g in p2["games"]}, {self.A: True, self.B: False, self.C: True, self.D: False, self.E: False})
+        # IMG 与目录式资源包（ios_fixture 的 manifest/index）都算电脑上有资源；E 没有资源清单。
+        self.assertEqual({g["gameId"]: g["dataOnComputer"] for g in p2["games"]}, {self.A: True, self.B: True, self.C: True, self.D: True, self.E: False})
         self.assertNotIn("online", p1, "没带 probe：不查连接、不出 online")
 
     def test_real_expiry_beats_estimate(self):
@@ -100,6 +100,12 @@ class PhoneOverview(unittest.TestCase):
         r = self.overview(probe=True, online={"PHONE-1": "usb"})
         on = {p["device"]: p["online"] for p in r["phones"]}
         self.assertEqual(on, {"PHONE-1": "usb", "PHONE-2": None})
+
+    def test_has_game_data_accepts_legacy_img_without_manifest(self):
+        pack = layout.image_ios(self.c, self.A) / ".pack"
+        pack.mkdir(parents=True)
+        (pack / "game.img").write_bytes(b"legacy")
+        self.assertTrue(host_update._has_game_data(self.c, self.A))
 
     def test_reads_records_only(self):
         # 只读记录：不打开游戏大文件（game.img、资源包里的文件）
