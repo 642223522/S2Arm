@@ -39,7 +39,7 @@ STAGE_INPUTS = (
     "tools/stage_deps_hook/sitecustomize.py",
     "tools/addr_need.py", "tools/caps_policy.py", "tools/clonedir.py", "tools/direct_shards.py", "tools/flock_hold.py",
     "tools/fps_generic.py", "tools/fps_relocate.py", "tools/fps_warehouse.py", "tools/nostall.py", "tools/nro_exports.py",
-    "tools/nso_plain.py", "tools/pool_workers.py", "tools/reglist.py", "tools/ue_cvar_loc.py", "tools/widen_accept.py",
+    "tools/nso_plain.py", "tools/pool_workers.py", "tools/progress.py", "tools/reglist.py", "tools/ue_cvar_loc.py", "tools/widen_accept.py",
 )
 
 
