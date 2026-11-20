@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import zipfile
 from pathlib import Path
@@ -431,9 +432,12 @@ def prune_unless_follow_up(c, gid):
     if c.r.get("followUp") is True:
         c.emit(message="这款接着还要出别的平台：先留着解包与中间产物")
         return False
-    from library import prune_build
+    from library import NotManaged, prune_build
     try:
         prune_build(c, gid)
+    except NotManaged as error:   # 不在存放位置里的路径没碰：只记日志，不作为错误码给玩家看（包已出好）
+        print(f"[s2a] 清理中间产物跳过了不在存放位置里的路径：{c.redact(str(error))}", file=sys.stderr)  # 非玩家句
+        return False
     except (Failure, OSError) as error:   # #793 / #796：包已经出好，清中间产物只是收尾——游戏库在删不了文件的地方（Xbox App 管的文件夹）时
         #   原先 PermissionError 一路抛上去，出好的包被判失败；同失败收尾 clean_after_stop：记一条警告，下次空闲再清
         c.diagnostic("清理中间产物没有完成，下次空闲时会再清：" + c.redact(str(error)), code="job_failed", severity="warning")  # 非玩家句

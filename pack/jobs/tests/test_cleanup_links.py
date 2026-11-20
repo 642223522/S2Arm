@@ -139,6 +139,35 @@ class CleanupLinkTests(unittest.TestCase):
         self.assertFalse(scratch.parent.exists())
         self.assertEqual(outside.read_bytes(), b"player data must survive")
 
+    def test_library_reached_through_a_link_still_counts_as_managed(self):
+        # 游戏库经符号链接（或在另一块盘上挂出来）访问：记着的库路径是别名、要删的路径是真实写法（或反过来），原先按字面比报「操作路径不属于托管目录」。
+        #   期望（手写）：两种写法都照常删掉中间件；库里一级目录链进存档的照样拒删（只解析锚这一级，锚以下不跟随链接）
+        alias = self.root / "library-alias"
+        alias.symlink_to(self.c.library, target_is_directory=True)
+        for root, base in ((alias, self.c.library), (self.c.library, alias)):
+            with self.subTest(root=root.name, path=base.name):
+                scratch = self.payload(self.output / "scratch")
+                library._rm(self.c, root, base / scratch.parent.relative_to(self.c.library))
+                self.assertFalse(scratch.parent.exists())
+        payload = self.payload(layout.path(self.c, self.gid, "saves"))
+        link = self.output / "intermediate"
+        link.symlink_to(payload.parent, target_is_directory=True)
+        with self.assertRaises(Failure):
+            library._rm(self.c, alias, link / payload.name)
+        self.assertEqual(payload.read_bytes(), b"player data must survive")
+
+    def test_cleanup_skipping_an_unmanaged_path_is_not_shown_as_an_error(self):
+        # 真不在存放位置里的路径：清理收尾只记日志，不作为第二个错误码（job_failed）给玩家看（原先把排查带偏）
+        notes = []
+        self.c.diagnostic = lambda message, **k: notes.append((message, k))
+        def outside(c, gid, **k):
+            library._rm(c, c.library, self.payload(self.root / "outside"))
+        from unittest.mock import patch
+        import ipa
+        with patch.object(library, "prune_build", outside):
+            self.assertFalse(ipa.prune_unless_follow_up(self.c, self.gid))
+        self.assertEqual(notes, [])
+
     @unittest.skipUnless(os.name == "nt", "Windows junction requires Windows")
     def test_junction_is_removed_without_deleting_its_target(self):
         payload = self.payload(layout.path(self.c, self.gid, "saves"))
