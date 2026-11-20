@@ -5255,6 +5255,60 @@ static void t_draw_ind_binst(void) {
     g_fprog = saved;
 }
 
+// 已解码 count 组与 base instance（#1787 第二处）：组大小 1 只有一条命令，语义与单条间接绘制相同——绑 DRV0 且没证明不读 c0 + 0x644 的程序照画，
+//   firstInstance 取这一条记录的（4 字节拷贝：源 = 记录 + 16，目标 = 驱动段切片 + 0x644）；组大小 ≥ 2 照旧具名跳 indirect_count_driver_base_instance
+//   （每条命令各有 firstInstance，驱动段那一个字只拷得了第一条的）；两阶段都证明不读的，大小任意都照画、不拷；OP_MULTI_DRAW 保持原路径（照画、拷第一条的）。
+//   紧跟 t_draw_ind_binst，沿用它的池与渲染目标；每段自己设两阶段各一项 DRV0 布局项。
+static void t_draw_mdi_binst(void) {
+    uint64_t base = (uint64_t)(uintptr_t)g_pmem, ind = base + 4 * PG, cnt = base + 5 * PG;
+    struct rp_prog saved = g_fprog;
+    tex_t rtt = mk_tex(94, 0, NVN_FORMAT_RGBA8, 64, 36, 1, 0);
+    g_caps_extra = NVN_GPU_CAP_INDIRECT_COUNT;
+    g_flag_binst_hoist = 0; rp_draw_reset();   // 逐笔拷（count 组本来就不进批量拷）
+    // kind 0 = 已解码 count 组（n 条记录，序号 0..n-1）；kind 1 = OP_MULTI_DRAW（max = n）
+    static const struct { int kind, n; uint8_t unread; int draws, copies, passes; uint8_t need; const char *what; } cases[] = {
+        { 0, 1, 0, 1, 2, 1, 3, "group of 1, both stages read: drawn, vs + fs each copy the record's firstInstance" },
+        { 0, 1, 1, 1, 1, 1, 2, "group of 1, vs proven unread: only fs copies" },
+        { 0, 1, 2, 1, 1, 1, 1, "group of 1, fs proven unread: only vs copies" },
+        { 0, 1, 3, 1, 0, 1, 0, "group of 1, both proven unread: drawn, no copy" },
+        { 0, 2, 0, 0, 0, 0, 0, "group of 2, both stages read: skipped by name (the copy only carries the first command's firstInstance)" },
+        { 0, 3, 0, 0, 0, 0, 0, "group of 3, both stages read: skipped by name" },
+        { 0, 3, 1, 0, 0, 0, 0, "group of 3, fs still reads: skipped by name" },
+        { 0, 2, 3, 1, 0, 1, 0, "group of 2, both proven unread: drawn with max_draws 2, no copy" },
+        { 0, 3, 3, 1, 0, 1, 0, "group of 3, both proven unread: drawn with max_draws 3, no copy" },
+        { 1, 2, 0, 1, 2, 1, 3, "OP_MULTI_DRAW of 2, both read: unchanged original path, drawn, copies the first record's firstInstance" },
+    };
+    for (size_t k = 0; k < sizeof cases / sizeof cases[0]; k++) {
+        rp_draw_reset();
+        for (int st = 0; st < 2; st++) { g_fprog.nent[st] = 1; nvn_gpu_layout_ent *e = &g_fprog.ent[st][0]; memset(e, 0, sizeof *e); e->src_reg2 = UINT16_MAX; e->cls = NVN_GPU_RES_UBO; e->src_kind = NVN_RB_DRV0; e->count = 1; }
+        g_fprog.binst_unread = cases[k].unread; g_arena_used = 0;
+        int c0 = g_ncopy4, p0 = g_npd, d0 = g_gdraws; g_nc4 = g_ndd = 0; g_dd_on = 1;
+        uint64_t sk0 = nvn_unimpl_count("draw", "indirect_count_driver_base_instance"), br0 = nvn_unimpl_count("draw", "indirect_count_group_broken");
+        stream s = {0}; mdi_prelude(&s, &rtt);
+        if (cases[k].kind == 0) {
+            for (int i = 0; i < cases[k].n; i++) {
+                p_draw_idx *di = put(&s, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->instances = 1; di->ibuf = base + 3 * PG;
+                di->ind = ind + (uint64_t)i * 20; di->mdi_cnt = cnt; di->mdi_i = i;
+            }
+        } else {
+            p_multi_draw *md = put(&s, OP_MULTI_DRAW, sizeof *md);
+            md->ind = ind; md->cnt = cnt; md->ibuf = base + 3 * PG; md->stride = 20; md->max = cases[k].n; md->prim = 4; md->itype = 1;
+        }
+        end(&s); submit1(&s); fake_complete(NVN_GPU_DONE_OK); g_dd_on = 0;
+        const uint64_t skipped = nvn_unimpl_count("draw", "indirect_count_driver_base_instance") - sk0;
+        if (g_gdraws - d0 != cases[k].draws || g_ncopy4 - c0 != cases[k].copies || g_npd - p0 != cases[k].passes || skipped != (cases[k].draws ? 0u : 1u)
+            || nvn_unimpl_count("draw", "indirect_count_group_broken") != br0 || (cases[k].draws && g_last_da.max_draws != (uint32_t)cases[k].n)) {
+            printf("  %s: draws %d copies %d passes %d named skips %llu max_draws %u (expect %d / %d / %d / %d / %d)\n", cases[k].what, g_gdraws - d0, g_ncopy4 - c0, g_npd - p0,
+                   (unsigned long long)skipped, g_last_da.max_draws, cases[k].draws, cases[k].copies, cases[k].passes, cases[k].draws ? 0 : 1, cases[k].n);
+            CHECK(0);
+        }
+        const uint64_t ro[1] = {4 * PG}; const int md0[1] = {0};
+        if (!binst_slices_ok(cases[k].draws, cases[k].need, ro, md0, cases[k].what)) CHECK(0);
+    }
+    g_flag_binst_hoist = -1; rp_draw_reset();
+    g_fprog = saved;
+}
+
 extern int rp_split_draws;
 static void t_clean_read_order(void) {
     const int old_split = rp_split_draws;
@@ -5516,7 +5570,7 @@ static void t_draw(void) {   // 绘制：状态在绘制时才变成后端的管
     submit1(&x); fake_complete(NVN_GPU_DONE_OK);
     CHECK(g_gdraws == d0 + 19);   // 新拓扑6笔 + 点模式1笔成功 + #977 重启值改写 3 笔；不支持的线模式不绘制
     uint64_t dr_n = 0, sk_n = 0; rp_draw_stats(&dr_n, &sk_n); CHECK(dr_n == 22 && sk_n == 5);   // #977 间接 + 非全 1 重启值跳过 1 笔
-    g_resolve_rc = 0; t_draw_mdi(); t_draw_ind_binst();   // 间接计数多绘：放在 t_draw 末尾、池和贴图还没释放时，沿用同一套绑定（它多画的几笔不扰动上面按笔数的断言）
+    g_resolve_rc = 0; t_draw_mdi(); t_draw_ind_binst(); t_draw_mdi_binst();   // 间接计数多绘：放在 t_draw 末尾、池和贴图还没释放时，沿用同一套绑定（它多画的几笔不扰动上面按笔数的断言）
     g_resolve_rc = 0; nvn_be_tex_release(&rtt); nvn_be_tex_release(&tx); nvn_be_pool_del(g_pmem); pass_fresh();
 }
 
