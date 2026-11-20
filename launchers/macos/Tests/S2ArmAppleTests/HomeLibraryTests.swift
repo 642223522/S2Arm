@@ -184,7 +184,10 @@ import LauncherPadBridge
         model.gamepad.handle(.submit)
         for _ in 0..<50 where runner.lastLaunch == nil { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertEqual(runner.lastLaunch, String(format: "%016X", 19), "R2 必须启动当前选中的游戏")
-        try await Task.sleep(for: .milliseconds(80))
+        // 先等 R2 起的那一局收完尾再换夹具（11-20 连跑偶发红）：假执行器的结局是 main.async 回的，负载高时晚到，
+        //   会落在下面换上的夹具局上、把它标成已结束，goToLibrary 就把它清掉而不是收起。按状态等，不按时间等
+        for _ in 0..<300 where model.playBusy { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertFalse(model.playBusy, "R2 起的那一局要先收尾")
         model.playSession = JobSession(kind: .play, gameID: firstID, name: "Fixture")   // 一局在游戏槽
         model.gamepad.handle(.back)
         try await Task.sleep(for: .milliseconds(100))
