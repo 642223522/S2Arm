@@ -258,6 +258,12 @@ def main():
     if sys.argv[1:] == ['--withdraw']:
         text = original.read_text(encoding='utf-8')
         changes = [
+            # 出包预编库缺失 / 坏要说出来（--gs-libpack 单独进程；offline-shader-miss 修法）
+            ('libpack-missing-silent', "                nvn_plat_log(NVN_PLAT_LOG_WARN, \"shader\", b);\n            }\n        }\n    }\n    return lp;",
+             "                (void)b;\n            }\n        }\n    }\n    return lp;", 1, 'missing libpack directory is one yellow line', ('--gs-libpack',)),
+            ('libpack-missing-every-call', 'else if (strcmp(said_root, root)) {', 'else if (1) {', 1, 'missing libpack directory is one yellow line', ('--gs-libpack',)),
+            ('libpack-state-not-set', 'atomic_store(&g_lp_state, orc < 0 ? LP_ST_BAD : LP_ST_MISSING);', '(void)0;', 1, 'libpack tally says the library is missing', ('--gs-libpack',)),
+            ('libpack-bad-as-missing', 'atomic_store(&g_lp_state, orc < 0 ? LP_ST_BAD : LP_ST_MISSING);', 'atomic_store(&g_lp_state, LP_ST_MISSING);', 1, 'broken container: tally says bad', ('--gs-libpack',)),
             ('gs-source-epoch', 'MIX(s2a_source_epoch());\n    MIX(stages);', '(void)s2a_source_epoch();\n    MIX(stages);', 1, 'poisoned GS source cannot hit fast cache'),
             ('cs-query-proof-omitted', 'e->prog.sampler_unused[0][e->prog.nent[0]] = (uint8_t)s2a_spirv_sampler_unused(',
              'e->prog.sampler_unused[0][e->prog.nent[0]] = 0 && (uint8_t)s2a_spirv_sampler_unused(', 1,
