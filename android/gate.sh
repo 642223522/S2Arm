@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # 门禁路由：android/
+# 门禁层：合入后
 # 门禁本机：* android/test.sh 要 CMake 3.18+ / NDK 29.0.14206865 / JDK 17 / 固定 venv（Capstone 5.0.7、LZ4 4.4.5）；门禁机没有 CMake
 # 安卓无设备 CPU 测的门禁钩子：整套 android/test.sh（Java 单测 / 原生宿主单测与变异对照 / Python 契约 / 可移植改写准备回归）。
 # 11-11 旧安卓三钩子删除后（017d7695b）android/ 是无钩子路径（tools/gate_route.py NOHOOK），test.sh 没有任何门禁入口在跑；
