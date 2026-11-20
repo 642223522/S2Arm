@@ -69,6 +69,10 @@ void s2a_selfcheck_screen(int win_ok, int mem_ok, int ent, uint64_t need_mb, int
     if (!win_ok && !need_mb) { *title = S2A_SELFCHECK_PKG_TITLE; *body = S2A_SELFCHECK_PKG_BODY; return; }
     *title = S2A_SELFCHECK_DEVICE_TITLE; *body = S2A_SELFCHECK_DEVICE_BODY;
 }
+// 独立 App（一 App 一游戏：包里只有一款且程序在包里，launchctx.c s2a_launch_ctx_single_game）没有「续签 S2Arm」那一格：缺权限的两句换成独立 App 的说法，其余原样
+const char *s2a_selfcheck_app_body(const char *b) {
+    return !strcmp(b, S2A_SELFCHECK_ENT_BODY) ? S2A_SELFCHECK_ENT_BODY_APP : !strcmp(b, S2A_SELFCHECK_MEM_BODY) ? S2A_SELFCHECK_MEM_BODY_APP : b;
+}
 // 内存门槛只拦没签权限的（#29：4500 MB 是「有没有签权限」的分界，不是游戏的需求；6 GB 机型签了权限也可能不到，不能因此把所有游戏挡住）
 int s2a_selfcheck_mem_blocks(int mem_ok, int ent) { return !mem_ok && ent == 0; }
 static const char *g_scr_title = "", *g_scr_body = "";
@@ -80,6 +84,7 @@ void s2a_selfcheck_page(const char **title, const char **body) { *title = g_scr_
 
 #ifndef S2A_UNIT_TEST
 #include <sys/sysctl.h>
+#include "s2a_launch_ctx.h"
 #include <unistd.h>
 #include <stdlib.h>
 int csops(pid_t pid, unsigned int ops, void *useraddr, size_t usersize);
@@ -119,6 +124,7 @@ int s2a_selfcheck(void) {
         int ast = s2a_window_astype();   // main.npdm 的地址空间类型（跨度为 0 时 vawin.c 读的，-1 = 没读到）
         s2a_selfcheck_explain(g_hint, sizeof g_hint, win_ok, !mem_block, ent, avail, pm, top, fit >> 20, need >> 20, ast);
         s2a_selfcheck_screen(win_ok, !mem_block, ent, need >> 20, ast, &g_scr_title, &g_scr_body);
+        { char g[17]; if (s2a_launch_ctx_single_game(s2a_launch_ctx_bundle_dir(), g, sizeof g)) g_scr_body = s2a_selfcheck_app_body(g_scr_body); }
         g_can_continue = win_ok && mem_block;
         LOG("【红】自检不过：%s", g_hint); ok = 0;
     }
