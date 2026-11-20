@@ -86,9 +86,14 @@ public sealed partial class EnvironmentWindow
             var extra = new Dictionary<string, object?> { ["gameIds"] = order.ToArray(), ["device"] = device };
             var job = await PackJobClient.RunAsync(PackRequest("pushSelected", "", extra), e => Avalonia.Threading.Dispatcher.UIThread.Post(() =>
             {
-                if (e.TryGetProperty("done", out var d) && d.ValueKind == System.Text.Json.JsonValueKind.Number) consoleDone = d.GetInt32();
-                if (e.TryGetProperty("total", out var t) && t.ValueKind == System.Text.Json.JsonValueKind.Number && t.GetInt32() > 0) consoleTotal = t.GetInt32();
-                if (e.TryGetProperty("current", out var c) && c.ValueKind == System.Text.Json.JsonValueKind.String) consolePushing = c.GetString()?.ToUpperInvariant();
+                // 款数只认带 current（正在推的游戏号）的那条（pack/jobs/install.py push_selected 每款开头发 done = 已推款数、total = 款数）：
+                //   推单款时作业里还有逐文件 / 字节的计数，原先也读成款数，界面写「正在更新 5307 / 5367 款」（D-4MPR）。同 Mac consoleProgress 只按每款一步算
+                if (e.TryGetProperty("current", out var c) && c.ValueKind == System.Text.Json.JsonValueKind.String)
+                {
+                    consolePushing = c.GetString()?.ToUpperInvariant();
+                    if (e.TryGetProperty("done", out var d) && d.ValueKind == System.Text.Json.JsonValueKind.Number) consoleDone = d.GetInt32();
+                    if (e.TryGetProperty("total", out var t) && t.ValueKind == System.Text.Json.JsonValueKind.Number && t.GetInt32() > 0) consoleTotal = t.GetInt32();
+                }
                 Render();
             }), front.Token, front.Next());
             state = job.Report.State;
