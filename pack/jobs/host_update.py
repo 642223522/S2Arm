@@ -231,12 +231,30 @@ def _can_sign(rec):
 EXTERNAL_PHONE_ACTIONS = ("exportShellIpa", "pushS2arm", "exportS2arm", "handOverIdentity")
 
 
+def _pending_choice(rec):
+    """设备记录里推送时记下的「待选」候选（install.owner_for_push 写 pendingChoice）；选过、且选的那个还在候选里 → 不算待选。没有 → None"""
+    cands = (rec.get("pendingChoice") or {}).get("candidates") if isinstance(rec.get("pendingChoice"), dict) else None
+    if not isinstance(cands, list) or not cands:
+        return None
+    chosen = (rec.get("chosenBundleId") or "").lower()
+    return None if chosen and any(str(x.get("bundleId", "")).lower() == chosen for x in cands if isinstance(x, dict)) else cands
+
+
+def _refresh_pending_choice(c, key, rec, who, cands):
+    """现查过：按现查结果刷新（还要选 → 换成这次的候选）或清掉（不用选了）设备记录里的 pendingChoice；列不出（who 为 None）不动"""
+    if who == "choose":
+        if (rec.get("pendingChoice") or {}).get("candidates") != cands:
+            layout.save_device(c, key, dict(rec, pendingChoice=dict(candidates=cands, at=time.time())))
+    elif who is not None and "pendingChoice" in rec:
+        layout.save_device(c, key, {k: v for k, v in rec.items() if k != "pendingChoice"})
+
+
 def phone_overview(c):
     """0.6.0 通用壳（开关后面）：「iPhone 总控台」的只读总览。每台见过的手机（设备记录）：名字、App 装没装、壳是不是本版、签名时刻 /
     免费账号与否 / 按苹果规则估的到期时刻 / 上次连上（lastSeen = 设备记录最后一次写入：装 App、推游戏时连着才会写）；每款状态 latest（最新）|
     suggested（建议更新，附 reasons，同 update_hints）| notPushed（游戏库里有、这台没推过）| needsData（程序推过、资源没推）；notPushed / needsData 带 dataOnComputer =
     游戏库里还有没有 game.img；signMode 见 _sign_mode。缺省只读记录（几 KB，秒回）；请求带 probe: true 才查现在连着的手机（可能要几秒），
-    结果里 online = 'usb' | 'network' | None（没查时没有这个键）。不改任何东西、不排后台活。开关关着 → {enabled: False, phones: []}"""
+    结果里 online = 'usb' | 'network' | None（没查时没有这个键）。不排后台活；只在现查时刷新 / 清掉设备记录的 pendingChoice（推送记下的待选）。开关关着 → {enabled: False, phones: []}"""
     import ipa as packer
     import rewrite_refresh
     want = engine_compat(c) or {}
@@ -291,6 +309,9 @@ def phone_overview(c):
             who, ext = install.s2arm_owner(c, key, rec)
             if who == "choose" or rec.get("chosenBundleId"):   # 装着不止一个：列候选让玩家选（选过的也带上，可以换）
                 cands = install.s2arm_candidates(c, key, rec)
+            _refresh_pending_choice(c, key, rec, who, cands)
+        if who is None and _pending_choice(rec):   # 没现查：推送时判出「要选」记下的那份（install.owner_for_push），与推送同一份结果
+            who, cands = "choose", _pending_choice(rec)
         if who is None:
             who = "launcher" if rec.get("shellId") else "external" if rec.get("externalBundleId") else None
             ext = rec.get("externalBundleId") if who == "external" else None

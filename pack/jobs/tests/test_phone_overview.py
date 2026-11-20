@@ -197,6 +197,31 @@ class PhoneOverview(unittest.TestCase):
         self.assertEqual((p["installedBy"], p["bundleId"], p["actions"], p["candidates"], p.get("needsChoice")),
                          ("external", "io.s2arm.games.a", ["exportShellIpa", "pushS2arm", "exportS2arm", "handOverIdentity"], cand, None))
 
+    def test_pending_choice_without_probe(self):
+        """没现查：推送时记下的 pendingChoice 照样给 needsChoice + 那份候选（与推送同一份结果）；选过且选的在候选里 → 不算待选"""
+        cand = [dict(bundleId="io.s2arm.games.a", team="TA", byThisLauncher=False, identityTeam="TA"),
+                dict(bundleId="io.s2arm.games.b", team="TB", byThisLauncher=True, identityTeam=None)]
+        layout.save_device(self.c, "TWO-3", dict(shellId="SNOW", bundleId="io.s2arm.games.b", pendingChoice=dict(candidates=cand, at=T), games={}))
+        layout.save_device(self.c, "TWO-4", dict(shellId="SNOW", bundleId="io.s2arm.games.b", chosenBundleId="io.s2arm.games.a",
+                                                 pendingChoice=dict(candidates=cand, at=T), games={}))
+        ps = {p["device"]: p for p in self.overview()["phones"]}
+        p = ps["TWO-3"]
+        self.assertEqual((p["installed"], p["installedBy"], p["needsChoice"], p["bundleId"], p["actions"], p["candidates"]),
+                         (True, None, True, "", ["chooseApp"], cand))
+        self.assertEqual((ps["TWO-4"]["installedBy"], ps["TWO-4"].get("needsChoice")), ("launcher", None), "选过了：按记录照旧")
+
+    def test_probe_refreshes_pending_choice(self):
+        """现查：还要选 → 记下这次的候选；不用选了 → 清掉 pendingChoice"""
+        old = [dict(bundleId="io.s2arm.games.a", team="TA", byThisLauncher=False, identityTeam=None)]
+        cand = old + [dict(bundleId="io.s2arm.games.c", team="TC", byThisLauncher=False, identityTeam=None)]
+        layout.save_device(self.c, "TWO-5", dict(pendingChoice=dict(candidates=old, at=T), games={}))
+        layout.save_device(self.c, "TWO-6", dict(pendingChoice=dict(candidates=old, at=T), games={}))
+        self.overview(probe=True, online={"TWO-5": "usb", "TWO-6": "usb"},
+                      owners={"TWO-5": ("choose", None), "TWO-6": ("external", "io.s2arm.games.a")}, cands={"TWO-5": cand})
+        recs = dict(layout.devices(self.c))
+        self.assertEqual(recs["TWO-5"]["pendingChoice"]["candidates"], cand)
+        self.assertNotIn("pendingChoice", recs["TWO-6"])
+
 
 if __name__ == "__main__":
     unittest.main()

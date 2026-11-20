@@ -246,6 +246,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var consoleChoosing: String?              // 「选用哪个 S2Arm」正在记的那个包名（作业 phoneChooseApp 在跑）；nil = 没在选
     @Published var consoleChooseError: String?           // 上一次选没选成的原因（作业层原句，界面按当前语言翻）；nil = 没出错
     @Published var consoleRechoose = false               // 选过了、玩家点了「换一个 S2Arm」：重新列出候选
+    @Published var pushChoice: PushChoice?               // 推送停在「装着不止一个 S2Arm、还没选」：失败页就地列的候选与选好后重推的那一次；nil = 没有
     @Published var dynamicDone = false    // 顶栏动态窗口：手机作业刚做完，闪一下 ✓（2 秒后回普通图标，S2ArmLauncherModel+PhoneConsole）
     @Published var dynamicAlert = false   // 手机作业失败 / 停下：橙色「!」一直留着，直到玩家点开看过
     @Published var phoneUpdates: [PhoneUpdate] = []
@@ -1277,6 +1278,10 @@ public final class S2ArmLauncherModel: ObservableObject {
                                                 accept: accept.union([Self.confirmCodes[f.code ?? ""]!]), device: device, export: export)
                 throw f
             }
+            catch let f as JobFailure {   // 装着不止一个 S2Arm、还没选：失败页就地列候选，选好重推这一款（同样的参数）
+                self?.notePushChoice(f) { [weak self] in self?.install(game, teamId: teamId, device: device, accept: accept, ask: ask, export: export) }
+                throw f
+            }
             return nil
         }
     }
@@ -1753,6 +1758,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         let slot: Slot = fresh.isPhoneJob ? .phone : fresh.kind == .play ? .game : .main
         setJob(slot, fresh)
         if Self.phoneKinds.contains(fresh.kind) { phoneResult = nil }
+        if fresh.isPhoneJob { pushChoice = nil }   // 上一次「还没选」的失败页换成这一单了
         let sink = EventSink { [weak self] event in self?.ingest(event, slot: slot) }
         let task = Task { [weak self] in
             do {
