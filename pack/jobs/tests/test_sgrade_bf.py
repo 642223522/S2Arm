@@ -18,6 +18,11 @@ import sgrade_bf
 from core import Failure
 
 
+def setUpModule():
+    # 临时目录放哪（library.scratch_root，跟着游戏走）另在 test_space_measured 测；这里的合成作业没有游戏库，临时活放私有目录
+    p = patch.object(sgrade_bf, "_scratch", lambda c, g: c.private); p.start(); unittest.addModuleCleanup(p.stop)
+
+
 class AddToPack(unittest.TestCase):
     def test_rows_under_prefix_replaced_and_manifest_rewritten(self):
         with tempfile.TemporaryDirectory() as t:
