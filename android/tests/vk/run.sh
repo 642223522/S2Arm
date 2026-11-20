@@ -362,7 +362,7 @@ case "$mode" in
     --tsan) cflags+=(-fsanitize=thread) ;;
     --asan) cflags+=(-fsanitize=address,undefined -fno-omit-frame-pointer) ;;
     --shown-only) cflags+=(-DS2A_C883_TEST=1) ;;
-    --pipe-call-lifetime) cflags+=(-D_GNU_SOURCE -DS2A_BACKEND_PIPE_CALL_TEST=1) ;;
+    --pipe-call-lifetime) cflags+=(-DS2A_BACKEND_PIPE_CALL_TEST=1) ;;
     ""|--sampler-minmax-only|--c63-same-view|--stencil8-only|--ds-upload-only|--msaa-only|--msaa-neg-pick|--msaa-neg-pipe|--msaa-neg-sampled|--msaa-neg-attachment|--present-only|--present-upscale|--separate-core|--separate-neg-sampler|--tbuf-core|--tbuf-compiler-core|--tbuf-neg-resolve|--tbuf-neg-format|--tbuf-neg-elements|--gs-only|--gs-compiler|--gs-core|--gs-no-cap|--gs-neg-stage|--gs-neg-flags|--gs-neg-cap|--clear-capacity|--clear-capacity-neg|--cmdpool-only|--cmdpool-neg) ;;
     *) echo "未知参数：${mode}（可用 --tsan / --asan）" >&2; exit 64 ;;
 esac
