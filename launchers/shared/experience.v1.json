@@ -758,6 +758,7 @@
       {"id": "msg_files", "macro": "S2A_INIT_FAIL_MSG_FILES", "zh-Hans": "游戏文件缺失，请重新导入：在 电脑上的 S2Arm 里对这款游戏再点一次「推到 iPhone」。", "en": "Game files are missing. Import them again: in S2Arm on your computer, choose \"Push to iPhone\" for this game again."},
       {"id": "msg_device", "macro": "S2A_INIT_FAIL_MSG_DEVICE", "zh-Hans": "这台设备的内存和地址空间不够运行这款游戏，换一台内存更大的 iPhone / iPad 再试；诊断里有它要多少、这台设备有多少。", "en": "This device doesn't have enough memory and address space to run this game. Try an iPhone or iPad with more memory; the diagnostics show how much it needs and how much this device has."},
       {"id": "msg_exec", "macro": "S2A_INIT_FAIL_MSG_EXEC", "zh-Hans": "系统不允许运行这款游戏的代码：用 LiveContainer 之类的工具装的 S2Arm 会这样。请改用电脑上的 S2Arm，对这款游戏点「推到 iPhone」安装后再打开。", "en": "The system won't let this game's code run. This happens when S2Arm was installed with a tool such as LiveContainer. Install it from S2Arm on your computer instead (choose \"Push to iPhone\" for this game), then open it again."},
+      {"id": "msg_exec_cert", "macro": "S2A_INIT_FAIL_MSG_EXEC_CERT", "zh-Hans": "安装这个 S2Arm 用的证书缺「调试权限（get-task-allow）」，没有它系统不让游戏运行。请找证书发放人要含这项权限的 Apple Development 开发证书和开发描述文件（在电脑上的 S2Arm 导入证书时会列出全部缺项，并给出可直接复制给发放人的话），或在电脑上的 S2Arm 改用 Apple ID 登录后重新安装。", "en": "The certificate used to install this S2Arm is missing the debugging entitlement (get-task-allow), and without it iOS won't let games run. Ask whoever issued the certificate for an Apple Development certificate and development provisioning profile that include it (importing the certificate in S2Arm on your computer lists everything that's missing and gives you a message to send them), or sign in with an Apple ID in S2Arm on your computer and install again."},
       {"id": "msg_heap", "macro": "S2A_INIT_FAIL_MSG_HEAP", "zh-Hans": "这款需要更多内存，已经记下，再点一次开始就能进。", "en": "This game needs more memory. It has been noted, so tap Start again and it will run."},
       {"id": "msg_shaders", "macro": "S2A_INIT_FAIL_MSG_SHADERS", "zh-Hans": "这台设备的图形芯片跑不了 S2Arm（需要 A13 / M1 或更新的芯片）：换一台更新的 iPhone / iPad 再试。", "en": "This device's graphics chip can't run S2Arm (it needs an A13 / M1 or newer chip). Try a newer iPhone or iPad."}
     ],
@@ -772,7 +773,8 @@
       {"id": "direct_lib_missing", "enum": "S2A_INIT_FAIL_E_DIRECT_LIB", "message": "msg_shaders"},
       {"id": "device_address_space", "enum": "S2A_INIT_FAIL_E_DEVICE_ADDRESS", "message": "msg_device"},
       {"id": "heap_learned", "enum": "S2A_INIT_FAIL_E_HEAP_LEARNED", "message": "msg_heap"},
-      {"id": "image_exec_denied", "enum": "S2A_INIT_FAIL_E_IMAGE_EXEC", "message": "msg_exec"}
+      {"id": "image_exec_denied", "enum": "S2A_INIT_FAIL_E_IMAGE_EXEC", "message": "msg_exec"},
+      {"id": "image_exec_cert", "enum": "S2A_INIT_FAIL_E_IMAGE_EXEC_CERT", "message": "msg_exec_cert"}
     ]
   },
 
