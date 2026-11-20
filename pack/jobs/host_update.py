@@ -140,6 +140,8 @@ def update_hints(c):
         rid = None   # 取不到改写器指纹：这一项不判（不因此给所有款标「建议更新」）
     games = []
     for g in c.catalog()["games"]:
+        if not layout.program_info(c, g["id"]):
+            continue   # #1712：没打过 iPhone 包（只在 Mac 出包 / 玩）的款不标——「更新这款」就是推到 iPhone，Mac 那份旧不该弹手机提示
         why = _game_hint(c, g["id"], rid, want)
         if shader_hint(c, g["id"]):
             why.append("shaderMiss")
