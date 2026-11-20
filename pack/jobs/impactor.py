@@ -158,6 +158,13 @@ EXPLAIN = (
     #   要在 Impactor 里重新登录；原先落到 device_install_failed，建议写「检查设备连接与包的有效性」，把玩家往错的方向引
     # 连不上苹果自己的服务器（登录 gsa.apple.com、签名 developerservices2.apple.com）：网络问题，不是 Apple ID 的问题（#edc5f5 拆分）
     (r'error sending request for url \(https?://[^\s)]*\bapple\.com', 'apple_server_unreachable'),
+    # 苹果服务器回了 5xx（D-KF34 / #1798，Mac 0.6.1 plumesign 登录 10 次：「HTTP request error 503 attempting to connect to https://gsa.apple.com/grandslam/GsService2」）：
+    #   请求到了、被苹果那边拒（限流 / 出口被拒 / 服务暂时不可用），账号密码还没到校验；同属「不是 Apple ID 的问题」。原先落 job_failed、英文原句上屏
+    (r'http request error 5\d\d attempting to connect to https?://[^\s]*\bapple\.com', 'apple_server_unreachable'),
+    # 装机时恢复保存的登录要交互（D-G8Z8，Mac 0.6.1 plumesign「Restoring session for …」后「IO error: not a terminal」×6）：
+    #   会话恢复要重新验证、管道里没终端问不了 → 等同登录过期，叫玩家重新登录。原先落 device_install_failed、建议「检查设备连接」，方向全错。
+    #   只认「恢复会话」后面紧跟的这句：登录作业里多手机号选号的 not a terminal 由 apple_login.NO_TERMINAL 先认（不经过恢复会话）
+    (r'restoring session for[^\n]*\n(?:[^\n]*\n){0,3}?[^\n]*not a terminal', 'apple_session_expired'),
     (r'developer api error 1100\b|\b1100\b[^\n]{0,40}session|session has expired|please log ?in again', 'apple_session_expired'),
     # 还没登录 / 存了账号却没选中（D-ZM37 plumesign 原文「No account selected. Please login first」）：原先归「登录已过期」，
     #   对从没登录成功过的玩家措辞不对（#edc5f5）。添加即选中（v2.7.2 accounts_add 设 selected_account）；只存了一个的在签名前已替玩家选上（select_only_account）
