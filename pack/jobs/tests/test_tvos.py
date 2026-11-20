@@ -248,6 +248,25 @@ class AssembleShellTest(TvCase):
         self.assertEqual((runs, signed, app), (["tvos"], [out / "S2Arm.app"], out / "S2Arm.app"))
 
 
+class AssembleRealTest(TvCase):
+    def test_real_assemble_signs_and_lists_games(self):
+        # tvos.assemble 不换替身（#1758 同类：组装函数在装机测试里都被换掉，内部调了不存在的函数测不出）：只桩子进程、容器件查找、签名。
+        # 期望（手写）：组一次容器（带这款与 H 的 --game、tvOS 环境），对同一个 S2Arm.app 签一次，返回 (临时目录, S2Arm.app, [G, H])
+        import ipa
+        kits = {G: self.c.private / "kG", H: self.c.private / "kH"}
+        runs, signed = [], []
+        def run(cmd, log, env=None):
+            cmd = [str(x) for x in cmd]; runs.append((env.get("S2A_APPLE_OS"), [cmd[i + 1] for i, x in enumerate(cmd) if x == "--game"]))
+            app = Path(cmd[cmd.index("--out") + 1]); app.mkdir(parents=True)
+            (app / "s2a_catalogue.json").write_text(json.dumps({"games": [{"title_id": G}, {"title_id": H}]}), encoding="utf-8")
+        with um.patch.object(self.c, "run", run), um.patch.object(tvos, "usable_kit", lambda c, g, sid: kits.get(g)), \
+             um.patch.object(ipa, "sign_container", lambda c, app, log: signed.append(app)), \
+             um.patch.object(ipa, "release_version", lambda e: "1"), um.patch.object(ipa, "display_version", lambda e: "0.6.0"):
+            out, app, games = tvos.assemble(self.c, G, [H], self.c.private / "shell", "SID")
+        self.addCleanup(shutil.rmtree, out, True)
+        self.assertEqual((runs, signed, app, games), ([("tvos", [str(kits[G]), str(kits[H])])], [out / "S2Arm.app"], out / "S2Arm.app", [G, H]))
+
+
 class TvProgramPushTest(TvCase):
     def test_push_programs_drops_unusable_other_game(self):
         # 期望（手写）：G 的程序件能用 → 签 tvOS 版、打成 .s2arm 推进电视上 App 的导入文件夹 Library/Caches/S2Arm/Import Here；
