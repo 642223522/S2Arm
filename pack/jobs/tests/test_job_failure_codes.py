@@ -622,6 +622,33 @@ class LogCauses(JobCase):
         error, _ = self.mac_refresh(["pack/stage_x.sh: line 9: spirv-cross: command not found", "【红】fixture 刷新停在 caps 阶段（rc=1），现行 = fixture@ex-1"])
         self.assertEqual(error.code, "tool_missing")
 
+    # #1762（Windows 0.6.0，诊断附件原文）：随包 bash 起子进程连续 0xC0000142，玩家关掉「强制 ASLR」后出包恢复
+    DOFORK = ("15909633 [main] bash 1387 dofork: child -1 - forked process 45140 died unexpectedly, retry 0, exit code 0xC0000142, errno 11",
+              "E:/S2ARM/S2Arm/Engine/graphics/tools/direct/direct_lib.sh: fork: Resource temporarily unavailable",
+              "【红】fixture 刷新停在 direct 阶段（rc=254），现行 = fixture@ex-1")
+
+    def test_dofork_with_mandatory_aslr_on_names_it(self):
+        # 期望手写：注册表核实强制 ASLR 开着 → windows_mandatory_aslr，上屏句与恢复句都点名「强制 ASLR」与关的位置
+        with um.patch("errors._mandatory_aslr_on", return_value="注册表 kernel 开着"):
+            error, d = self.mac_refresh(list(self.DOFORK))
+        self.assertEqual((error.code, d["code"]), ("windows_mandatory_aslr", "windows_mandatory_aslr"))
+        self.assertEqual(d["summary"], "Windows 的强制 ASLR 开着：出包工具起不了子进程。")
+        self.assertIn("漏洞利用保护设置", d["suggestion"])
+
+    def test_dofork_without_mandatory_aslr_is_not_believed(self):
+        # 剃刀 H9 反例：同样的 0xC0000142，但强制 ASLR 没开（别的原因：桌面堆、注入）→ 不点名 ASLR，字样与未采信理由进 detail
+        with um.patch("errors._mandatory_aslr_on", return_value=None):
+            error, d = self.mac_refresh(list(self.DOFORK))
+        self.assertNotEqual(d["code"], "windows_mandatory_aslr")
+        self.assertIn("候选 windows_mandatory_aslr 未采信", d["detail"])
+
+    def test_force_relocate_bits(self):
+        # winnt.h：FORCE_RELOCATE_IMAGES 在位 8–9，1 = 总开、2 = 总关、3 = 总开且要求重定位；第 0 字节（DEP 等）不影响
+        from errors import _force_relocate_on
+        self.assertEqual([_force_relocate_on(bytes([0xFF, b])) for b in (0, 1, 2, 3, 0x11, 0x12)], [False, True, False, True, True, False])
+        self.assertFalse(_force_relocate_on(b"\x01"))
+        self.assertFalse(_force_relocate_on(None))
+
     def test_disk_full_words_with_free_space_are_not_believed(self):
         # 剃刀 H9 反例：日志里有 [Errno 28] 字样（例如前面一次已重试成功的写），但点名的盘还剩 40 GB → 不说盘满，按阶段归；字样与未采信理由进 detail
         #   （坑记录 11-09：Windows rc=127 被一律译成盘满，玩家照提示删了 37 GB）
