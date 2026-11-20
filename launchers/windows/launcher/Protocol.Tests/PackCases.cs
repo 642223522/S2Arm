@@ -153,6 +153,19 @@ public static class PackCases
         }
         using (var doc = JsonDocument.Parse(bundledChecklist.Replace("\"openImpactor\"", "\"C:/x.exe\"")))
             check(InstallReadiness.Parse(doc.RootElement).Items[1].Action is null, "checklist: unknown / path action never becomes an action (dropped, razor W7)");
+        // 11-19 landing contract (same names as Mac): each open item's button comes only from its action — openExport (package), openImpactor, devCertSettings
+        const string landingChecklist = """
+{"gameId":"G","items":[{"id":"package","ok":false,"waiting":false,"title":"t","detail":"d","who":"app","url":null,"action":"openExport"},
+ {"id":"devcert:install","ok":false,"waiting":false,"title":"t","detail":"d","who":"human","url":null,"action":"devCertSettings"},
+ {"id":"connected","ok":false,"waiting":false,"title":"t","detail":"d","who":"human","url":null,"action":"pickDevice"}],"ready":false,"device":"","account":""}
+""";
+        using (var doc = JsonDocument.Parse(landingChecklist))
+        {
+            var ready = InstallReadiness.Parse(doc.RootElement);
+            check(ready.Items[0].Action == "openExport" && ready.Items[1].Action == "devCertSettings",
+                "checklist: package carries openExport and the certificate item carries devCertSettings (landing contract)");
+            check(ready.Items[2].Action is null, "checklist: pickDevice has no Windows landing (no device picker) and is dropped, not shown as a dead button");
+        }
 
         // ---- request body ----
         var paths = new LauncherPaths(Path.Combine(Path.GetTempPath(), "E"), Path.Combine(Path.GetTempPath(), "R"), Path.Combine(Path.GetTempPath(), "S"));
