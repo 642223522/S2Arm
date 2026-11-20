@@ -17798,6 +17798,7 @@ static void xq_unwind_push(const uint8_t *p);   // nvn_xqueue.inc
 //   再按里到外记各层调用方的续点（同原先递归逐层返回的顺序）。深度不吃宿主栈；真成环（命令内存被改写成调回自己）到 CALL_DEPTH_MAX 层报红跳过这次调用。
 //   g_ret / g_ret_n 照旧：前 16 层返回点给前视扫描读，g_ret_n 是总深度
 #define CALL_DEPTH_MAX 256
+static uint64_t g_call_cycle_n; static int g_call_cycle_depth;   // 调回调用栈上已有列表、被跳过的次数与最近一次的深度（单测 t_nvn_call_depth 读；只在回放线程上改）
 static const uint8_t **g_cstk_ret, **g_cstk_list; static int g_cstk_cap;
 static int call_push(const uint8_t *ret, const uint8_t *list) {
     if (g_ret_n >= g_cstk_cap) { int cap = g_cstk_cap ? g_cstk_cap * 2 : 32; const uint8_t **r = realloc(g_cstk_ret, cap * sizeof *r), **l = r ? realloc(g_cstk_list, cap * sizeof *l) : NULL;
@@ -17852,6 +17853,16 @@ void nvn_be_exec(const uint8_t *p) {
                     if (ck > 0) { static _Atomic uint64_t n; uint64_t k = atomic_fetch_add(&n, 1) + 1;
                         if (k <= 8 || !(k & (k - 1))) MLOG("【黄】 command-list call into an overwritten recording still in quarantine: target %#llx (blocks intact, run as recorded); caller list %p, depth %d, frame %llu (%llu so far)",
                                                            (unsigned long long)t, list, g_ret_n - base, (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)k); }
+                }
+                {   // 调回调用栈上已有的列表（#1728 旷野之息 Mac 卡死）：真机上这等于 GPU 永远转圈，游戏不会这么录；宿主上出现只能是替代执行的旧内容
+                    //   （隔离区里照跑的已覆盖录制、按设备地址跟随到的新录制）接上了已失效的调用关系，如 t → Y → t。原先要嵌到 CALL_DEPTH_MAX 层才停，
+                    //   前 255 层把同一批命令在 GPU 上重复跑完（3 秒判卡住、画面碎开）。第一次进环就不执行这次调用，CALL 之后照常接着跑
+                    const uint8_t *tp = (const uint8_t *)t; int cyc = tp == list;
+                    for (int i = 0; !cyc && i < g_ret_n; i++) cyc = g_cstk_list[i] == tp;
+                    if (cyc) { uint64_t k = ++g_call_cycle_n; g_call_cycle_depth = g_ret_n - base + 1;
+                        if (k <= 8 || !(k & (k - 1))) MLOG("【红】 command-list call back into a list already running on this call stack: target %#llx (caller list %p, depth %d, frame %llu): skipped this call, the commands after it go on (%llu so far)",
+                                                           (unsigned long long)t, list, g_ret_n - base + 1, (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)k);
+                        break; }
                 }
                 if (g_ret_n - base >= CALL_DEPTH_MAX || !call_push(p + h.size, list)) {
                     static int red; if (!red++) MLOG("【红】 command-list call nested %d deep (limit %d, or the return stack could not grow): skipped this call; the commands may call back into themselves (first case)", g_ret_n - base, CALL_DEPTH_MAX);
