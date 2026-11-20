@@ -149,6 +149,10 @@ static const uint32_t CAP_UNUSED_SPV[] = { 0x07230203u, 0x00010000u, 0u, 3u, 0u,
     0x00020011u, 1u, 0x00020011u, 10u, 0x00040015u, 1u, 32u, 0u, 0x00020011u, 11u, 0x00030016u, 2u, 32u };
 static const uint32_t CAP_F64_SPV[] = { 0x07230203u, 0x00010000u, 0u, 3u, 0u,
     0x00020011u, 1u, 0x00020011u, 10u, 0x00030016u, 2u, 64u };
+// 只有 64 位常量类型、没有运算：OpTypeFloat %2 64 只被 OpConstant %3 = 1.0 引用（双字字面量 0x3ff00000_00000000）。
+//   判据以类型声明为准：照样算用到 Float64 → 拒收，不删能力声明（删了模块就不合法）
+static const uint32_t CAP_F64_CONST_SPV[] = { 0x07230203u, 0x00010000u, 0u, 4u, 0u,
+    0x00020011u, 1u, 0x00020011u, 10u, 0x00030016u, 2u, 64u, 0x0005002bu, 2u, 3u, 0u, 0x3ff00000u };
 static const uint32_t CAP_I64A_SPV[] = { 0x07230203u, 0x00010000u, 0u, 3u, 0u, 0x00020011u, 1u, 0x00020011u, 12u };
 static const char *CS_F64_JSON =
     "{\"key\":\"f0f1f2f3f4f5f6f7_b\",\"stage\":\"cs\",\"dm_ctl\":\"f0f1f2f3f4f5f6f7\",\"bindings\":[]}";
@@ -761,8 +765,10 @@ int main(void) {
             CHECK(s2a_libpack_open(&cl, g_dir) == 1 && cl, "open compute float64 pack");
             const uint8_t kf[8] = { 0xf0, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7 };
             w[0] = 0;
+            const uint64_t rj0 = s2a_libpack_rejects();
             rc = cl ? s2a_libpack_compute_v1(cl, kf, 1, "h", "c", &j, &jl, w, sizeof w) : -9;
-            CHECK(rc == -1 && !j && strstr(w, "Float64"), "模块用 OpTypeFloat 64 → 计算程序 REJECT（退回现编）");
+            CHECK(rc == -1 && !j && strstr(w, "fp64_type_used") && strstr(w, "Float64"), "模块用 OpTypeFloat 64 → 计算程序 REJECT（退回现编），原因 fp64_type_used");
+            CHECK(s2a_libpack_rejects() == rj0 + 1, "能力核拒收走库拒收计数 +1");
             s2a_libpack_close(cl); cl = NULL;
             CHECK(mk_pack(rc4, 4, pc, nc, 1) == 0, "compute pack rewritten after float64 case");
             CHECK(s2a_libpack_open(&cl, g_dir) == 1 && cl, "reopen compute pack after float64 case");
@@ -921,15 +927,23 @@ int main(void) {
     {   // 能力核：用不上的 Float64 / Int64 声明删掉（其余字不动），真用到的 / Int64Atomics 拒
         uint32_t m[sizeof CAP_UNUSED_SPV / 4]; memcpy(m, CAP_UNUSED_SPV, sizeof m);
         size_t n = sizeof m; char cw[128] = "";
+        const uint64_t c0 = s2a_libpack_caps_stripped();
         const uint32_t want[] = { 0x07230203u, 0x00010000u, 0u, 3u, 0u, 0x00020011u, 1u, 0x00040015u, 1u, 32u, 0u, 0x00030016u, 2u, 32u };
         CHECK(s2a_libpack_spv_admit_caps((uint8_t *)m, &n, cw, sizeof cw) == 0 && n == sizeof want && !memcmp(m, want, sizeof want),
               "能力核：无 64 位类型 → 删 Float64 + Int64 两条，留 Shader 与类型");
+        CHECK(s2a_libpack_caps_stripped() == c0 + 1, "能力核：删过能力声明的模块计 1 条（libpack_caps_stripped）");
         size_t n2 = n;
         CHECK(s2a_libpack_spv_admit_caps((uint8_t *)m, &n2, cw, sizeof cw) == 0 && n2 == n, "能力核：再核一遍不变（幂等）");
+        CHECK(s2a_libpack_caps_stripped() == c0 + 1, "能力核：再核一遍没删东西，不再计");
         uint32_t f[sizeof CAP_F64_SPV / 4]; memcpy(f, CAP_F64_SPV, sizeof f); n = sizeof f; cw[0] = 0;
-        CHECK(s2a_libpack_spv_admit_caps((uint8_t *)f, &n, cw, sizeof cw) == -1 && strstr(cw, "Float64") && n == sizeof f, "能力核：OpTypeFloat 64 → 拒");
+        CHECK(s2a_libpack_spv_admit_caps((uint8_t *)f, &n, cw, sizeof cw) == -1 && strstr(cw, "fp64_type_used") && strstr(cw, "Float64") && n == sizeof f,
+              "能力核：OpTypeFloat 64 → 拒，原因 fp64_type_used");
+        uint32_t fc[sizeof CAP_F64_CONST_SPV / 4]; memcpy(fc, CAP_F64_CONST_SPV, sizeof fc); n = sizeof fc; cw[0] = 0;
+        CHECK(s2a_libpack_spv_admit_caps((uint8_t *)fc, &n, cw, sizeof cw) == -1 && strstr(cw, "fp64_type_used") && n == sizeof fc
+              && !memcmp(fc, CAP_F64_CONST_SPV, sizeof fc), "能力核：只有 64 位常量类型、没有运算 → 拒收（不是删能力），模块原样");
         uint32_t a[sizeof CAP_I64A_SPV / 4]; memcpy(a, CAP_I64A_SPV, sizeof a); n = sizeof a; cw[0] = 0;
-        CHECK(s2a_libpack_spv_admit_caps((uint8_t *)a, &n, cw, sizeof cw) == -1 && strstr(cw, "Int64Atomics"), "能力核：Int64Atomics → 拒");
+        CHECK(s2a_libpack_spv_admit_caps((uint8_t *)a, &n, cw, sizeof cw) == -1 && strstr(cw, "int64_atomics_used") && strstr(cw, "Int64Atomics"), "能力核：Int64Atomics → 拒，原因 int64_atomics_used");
+        CHECK(s2a_libpack_caps_stripped() == c0 + 1, "能力核：拒收的模块不计入删能力计数");
         uint32_t ok[sizeof CS_SPV / 4]; memcpy(ok, CS_SPV, sizeof ok); n = sizeof ok;
         CHECK(s2a_libpack_spv_admit_caps((uint8_t *)ok, &n, cw, sizeof cw) == 0 && n == sizeof CS_SPV, "能力核：无能力声明的模块原样过");
     }
