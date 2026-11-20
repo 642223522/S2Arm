@@ -264,7 +264,9 @@ int nvn_gpu_view_access_span(nvn_gpu_view v, nvn_gpu_access_span *out) {
 }
 static uint8_t *g_buf_cpu_fake;   // 用例要「GPU 写过镜像」时把它指到一块等大的内存；NULL = 这种缓冲 CPU 读不到
 uint8_t *nvn_gpu_buf_cpu(nvn_gpu_buf b) { return b && b->cpu ? b->cpu : g_buf_cpu_fake; }
-void nvn_gpu_buf_release(nvn_gpu_buf b, nvn_gpu_retired_fn retired, void *user) { (void)retired; (void)user; g_buf_releases++; free(b->cpu); free(b); }
+static const void *g_rel_log[64]; static int g_rel_n;   // 放过的缓冲指针（只比对、不解引用）：「放过的句柄又被录制」用例查它（用例开头清零，指针复用只在用例内比）
+static int rel_log_has(const void *p) { for (int i = 0; i < g_rel_n; i++) if (g_rel_log[i] == p) return 1; return 0; }
+void nvn_gpu_buf_release(nvn_gpu_buf b, nvn_gpu_retired_fn retired, void *user) { (void)retired; (void)user; g_buf_releases++; if (g_rel_n < 64) g_rel_log[g_rel_n++] = b; free(b->cpu); free(b); }
 void nvn_gpu_buf_write(nvn_gpu_cmd c, nvn_gpu_buf dst, uint64_t off, const void *src, uint64_t bytes) {
     if (g_order_active) {
         if (g_order_n >= 16 || bytes > sizeof g_order_ev[0].data) g_order_overflow++;
@@ -3709,11 +3711,66 @@ static void t_gpu_land_destroy(void) {
     g_land_resume = 1; pthread_cond_broadcast(&g_land_cv); pthread_mutex_unlock(&g_land_mu);
     CHECK(pthread_join(land, NULL) == 0); CHECK(pthread_join(del, NULL) == 0);
     g_destroy_test = 0; g_land_pause = 0;
-    printf("GPU 落地期间销毁：拷回完成前 pool_del 已返回=%d，镜像释放=%d\n", early, g_buf_releases - releases);
-    CHECK(early == 0); CHECK(g_buf_releases - releases == 1); CHECK(g_pmem[128] == 0xee && g_pmem[143] == 0xee);
-    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK); g_pg_tracked = 1; g_buf_cpu_auto = 0; pass_fresh();
+    printf("GPU 落地期间销毁：拷回完成前 pool_del 已返回=%d，镜像释放=%d（回放窗口开着：别的线程销毁的镜像缓冲延到提交收尾再放）\n", early, g_buf_releases - releases);
+    CHECK(early == 0); CHECK(g_buf_releases - releases == 0); CHECK(g_pmem[128] == 0xee && g_pmem[143] == 0xee);   // 落地等完才返回；回放线程手里的 b 此刻还不能放
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK); CHECK(g_buf_releases - releases == 1); g_pg_tracked = 1; g_buf_cpu_auto = 0; pass_fresh();
 }
 #endif
+
+// 回放窗口：别的线程在提交回放中途销毁池。回放线程用 rp_buf_resolve 取到镜像缓冲句柄之后、后端 cmd_ref 登记它之前，游戏的别的线程销毁了这个池
+// （MapVirtual 合并 / 拆分 run 时先 pool_del 再 pool_add；MemoryPoolFinalize）：当场放缓冲 = 回放线程随后录制一个放过的句柄 =
+// 后端「release 之后仍在使用句柄」契约违规，整段提交失败、时间线进失败终态（真机 3D 那款标题的长局里出现过，读数见 PR）。
+// 期望值手算：一份镜像 1 次释放，帧重叠换过一份的池 2 次；窗口开着时别的线程销毁 0 次，窗口收尾才放；窗口外、同线程销毁照旧当场放。
+void rp_buf_frame_flip(void); void rp_buf_reset(void);
+static void *pool_del_plain_thread(void *p) { nvn_be_pool_del(p); return NULL; }
+static void pool_del_other_thread(const void *mem) {
+    pthread_t th; int r = pthread_create(&th, NULL, pool_del_plain_thread, (void *)mem); CHECK(r == 0);
+    if (r == 0) pthread_join(th, NULL);
+}
+static void t_pool_gone_hold(void) {
+    pass_fresh(); g_buf_cpu_auto = 1; g_pg_tracked = 0; memset(g_pmem, 0x11, sizeof g_pmem);
+    const uint64_t base = (uint64_t)(uintptr_t)g_pmem; nvn_gpu_buf b = NULL; int r0;
+    // ① 窗口开着，别的线程销毁：回放线程手里已取到的缓冲此刻还活着（录制它合法），池的影子照撤，窗口收尾才放
+    nvn_be_pool_add(g_pmem, sizeof g_pmem); nvn_be_sub_begin();
+    CHECK(rp_buf_resolve(&g_fake_cmd, base, PG, &b, NULL) == 1 && b);
+    g_rel_n = 0; r0 = g_buf_releases;
+    pool_del_other_thread(g_pmem);
+    CHECK(g_buf_releases == r0 && !rel_log_has(b));
+    CHECK(rp_buf_mirrors() == 0);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_buf_releases == r0 + 1 && rel_log_has(b));
+    // ② 同线程销毁（回放线程自己不会在回放中途销毁池）：窗口开着也照旧当场放，收尾不多放
+    nvn_be_pool_add(g_pmem, sizeof g_pmem); nvn_be_sub_begin();
+    b = NULL; CHECK(rp_buf_resolve(&g_fake_cmd, base, PG, &b, NULL) == 1 && b);
+    r0 = g_buf_releases; nvn_be_pool_del(g_pmem);
+    CHECK(g_buf_releases == r0 + 1);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_buf_releases == r0 + 1);
+    // ③ 窗口已关（提交收尾之后），别的线程销毁：当场放
+    nvn_be_pool_add(g_pmem, sizeof g_pmem); nvn_be_sub_begin();
+    b = NULL; CHECK(rp_buf_resolve(&g_fake_cmd, base, PG, &b, NULL) == 1 && b);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    r0 = g_buf_releases; pool_del_other_thread(g_pmem);
+    CHECK(g_buf_releases == r0 + 1);
+    // ④ 帧重叠换过一份镜像的池：两份都延到收尾
+    nvn_be_pool_add(g_pmem, sizeof g_pmem); nvn_be_sub_begin();
+    b = NULL; CHECK(rp_buf_resolve(&g_fake_cmd, base, PG, &b, NULL) == 1 && b);
+    rp_buf_frame_flip(); nvn_gpu_buf b1 = NULL; CHECK(rp_buf_resolve(&g_fake_cmd, base, PG, &b1, NULL) == 1 && b1 && b1 != b); rp_buf_frame_flip();
+    r0 = g_buf_releases; pool_del_other_thread(g_pmem);
+    CHECK(g_buf_releases == r0);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_buf_releases == r0 + 2);
+    // ⑤ 窗口没配上收尾（失败路径 / 会话收尾）：rp_buf_reset 也把延后的缓冲放掉，不漏
+    nvn_be_pool_add(g_pmem, sizeof g_pmem); nvn_be_sub_begin();
+    b = NULL; CHECK(rp_buf_resolve(&g_fake_cmd, base, PG, &b, NULL) == 1 && b);
+    r0 = g_buf_releases; pool_del_other_thread(g_pmem);
+    CHECK(g_buf_releases == r0);
+    rp_buf_reset();
+    CHECK(g_buf_releases == r0 + 1);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_buf_releases == r0 + 1);
+    g_pg_tracked = 1; g_buf_cpu_auto = 0; pass_fresh();
+}
 
 static void fake_complete_first(int n) {   // 只做完最早交的 n 段
     for (int i = 0; i < n && i < g_npend; i++) { nvn_gpu_done d = {0}; d.signal = g_pend[i].signal; d.status = NVN_GPU_DONE_OK; g_pend[i].fn(g_pend[i].user, &d); g_fdone = g_pend[i].signal; }
@@ -5678,6 +5735,7 @@ int main(int argc, char **argv) {
     t_gpu_land_destroy();
     t_gpu_land_count_cleanup();
 #endif
+    t_pool_gone_hold();
     t_buf_mirror();
     t_buf_dirtylog();
     t_buf_mirror_fail_once();
