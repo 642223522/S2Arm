@@ -1156,16 +1156,23 @@ int s2a_s2arm_import(const char *proc_docs, const char *src, char *gid_out, size
 // 导入文件夹里认领 / 导入失败过的文件（0.6.0 自签走查 B1）：原先失败的文件原样留着、每次扫描（回前台、文件夹有写入、「重新检查」）都整份重新解压 / 读一遍。
 //   按「路径 + 大小 + 修改时间」记住，没变就跳过；玩家换了文件、或文件还在拷而变大，下次照常再试。进程内表（重开 App 会再试一次、再报一次）。持 s2a_img_scan 的锁用
 static struct { char path[600]; off_t size; long long mtime; } g_scan_failed[32]; static int g_scan_failed_n;
+static long long st_mtime_ns(const struct stat *st) {   // 苹果叫 st_mtimespec，安卓 / Linux 叫 st_mtim（本文件安卓也编）
+#ifdef __APPLE__
+    return (long long)st->st_mtimespec.tv_sec * 1000000000LL + st->st_mtimespec.tv_nsec;
+#else
+    return (long long)st->st_mtim.tv_sec * 1000000000LL + st->st_mtim.tv_nsec;
+#endif
+}
 static int scan_failed_same(const char *p, const struct stat *st) {
     for (int i = 0; i < g_scan_failed_n; i++)
-        if (!strcmp(g_scan_failed[i].path, p)) return g_scan_failed[i].size == st->st_size && g_scan_failed[i].mtime == (long long)st->st_mtimespec.tv_sec * 1000000000LL + st->st_mtimespec.tv_nsec;
+        if (!strcmp(g_scan_failed[i].path, p)) return g_scan_failed[i].size == st->st_size && g_scan_failed[i].mtime == st_mtime_ns(st);
     return 0;
 }
 static void scan_failed_note(const char *p, const struct stat *st) {
     int i = 0; while (i < g_scan_failed_n && strcmp(g_scan_failed[i].path, p)) i++;
     if (i == g_scan_failed_n) { if (g_scan_failed_n < 32) g_scan_failed_n++; else i = (int)(st->st_ino % 32); }
     snprintf(g_scan_failed[i].path, sizeof g_scan_failed[i].path, "%s", p); g_scan_failed[i].size = st->st_size;
-    g_scan_failed[i].mtime = (long long)st->st_mtimespec.tv_sec * 1000000000LL + st->st_mtimespec.tv_nsec;
+    g_scan_failed[i].mtime = st_mtime_ns(st);
 }
 static int img_scan_dir(const char *proc_docs, const char *dir, int depth, int pass, int *placed) {
     DIR *d = opendir(dir); if (!d) return 0;
