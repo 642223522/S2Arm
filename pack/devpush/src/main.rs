@@ -489,6 +489,6 @@ async fn main() {
     let a: Vec<String> = std::env::args().collect();
     // launch 可以不带环境变量（多款容器推完拉起到游戏库，tools/push_pack.py Devpush.launch({})）：原先一律要 ≥ 5 个参数，这种调用只打用法、退 2，
     //   Windows 上「分开的文件」资源包推完永远拉不起 App（11-11 Windows 实机实测）
-    if a.len() < 5 && !(a.len() == 4 && (a[3] == "launch" || a[3] == "devices")) { eprintln!("用法：s2a-devpush <udid> <包名> put <本地> <远端> | put-at <本地> <远端> <偏移> | head <远端> <字节数> <本地> | get <远端> <本地> | ls <目录> | du <目录>… | mv <远端> <远端> | mkdir <远端目录>"); std::process::exit(2); }
+    if a.len() < 5 && !(a.len() == 4 && (a[3] == "launch" || a[3] == "devices" || a[3] == "apps")) { eprintln!("用法：s2a-devpush <udid> <包名> put <本地> <远端> | put-at <本地> <远端> <偏移> | head <远端> <字节数> <本地> | get <远端> <本地> | ls <目录> | du <目录>… | mv <远端> <远端> | mkdir <远端目录> ；s2a-devpush <udid> - apps | devices | launch"); std::process::exit(2); }
     if let Err(e) = run(&a).await { eprintln!("{e}"); std::process::exit(1); }
 }
