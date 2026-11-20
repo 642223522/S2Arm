@@ -139,7 +139,7 @@ rl = subprocess.run([*CMD, 'build', '--pkg', PKG, '--profile', P, '--game', TID,
                      '--lock', os.path.join(t, 'no_such.lock')], capture_output=True, text=True)
 check(rl.returncode != 0 and '[RED] --lock' in rl.stdout + rl.stderr, f'①′ --lock 指向不存在的文件：退出 {rl.returncode}（期望非 0）、报 [RED] --lock')
 rows = [l.rstrip('\n').split('\t') for l in open(progress)] if os.path.exists(progress) else []
-for stg, total in (('直连库·翻译与收尾', 3), ('直连库·编批库（MB）', None)):
+for stg, total in (('直连库·翻译与收尾', 3), ('直连库·编批库（MB）', None), ('直连库·采样模拟变体', 3)):   # 采样模拟变体在编批库满了之后逐键编：要有自己的计数，界面才不停在 100%
     v = [(int(x[2]), int(x[3])) for x in rows if len(x) == 4 and x[1] == stg]
     check(bool(v) and v[0][0] == 0 and v[-1][0] == v[-1][1] and all(a <= b for (a, _), (b, _) in zip(v, v[1:])) and (total is None or v[-1][1] == total),
           f'① 进度 {stg} 从 0 到完成：{v}')
@@ -232,6 +232,20 @@ check(rc == 0 and 'lib.idx' in mlibs and not perkey(iosm) and '只出 Mac：Mac 
 for tb in ('c1_full.tsv', 'cb_extent.tsv'):
     p = os.path.join(P, tb); head = open(p).readline().rstrip('\n') if os.path.exists(p) else None
     check(head is not None and head.startswith(f'# chain b-{chain} inputs '), f'⑪ {tb} 在、首行 {head!r}（期望以「# chain b-{chain} inputs 」开头）')
+
+# ⑬ 编 Metal 的几段（编批库 / _se / _vp）按此刻空闲内存重算编译路数（Build.cs LiveLanes）：-j 2，空闲 6000 MB / 本单 8 核 → 1 + (3000 − 1065) ÷ 420 = 5 路；
+#    空闲 1000 MB 算出来不到 -j → 照旧 2 路（只放宽、不收窄）；本单 3 核 → 封顶 3 路
+for avail, jobs, want in (('6000', '8', 5), ('1000', '8', 2), ('6000', '3', 3)):
+    lp = os.path.join(t, f'lanes{avail}_{jobs}.progress.tsv')
+    rc, o, _, _, _, _ = build(f'lanes{avail}_{jobs}', 'cas_lanes', progress=lp, env_add={'S2A_MEM_AVAIL_MB': avail, 'S2A_JOBS': jobs})
+    acts = [json.loads(l.split('\t', 1)[1]) for l in open(lp, encoding='utf-8') if l.startswith('#dsh_activity\t')] if os.path.exists(lp) else []
+    se = [(x['target'], x['pool']) for x in acts if x['stage'] == '直连库·采样模拟变体' and x['state'] == 'active']
+    check(se == [(want, want * 2)], f'⑬ 空闲 {avail} MB、本单 {jobs} 核：采样模拟变体的活动记录报放宽后的路数 目标 / 任务池 {se}（期望 [({want}, {want * 2})]）')
+    m = re.search(r'采样模拟变体：(\d+) 路编', o)
+    check(rc == 0 and m is not None and int(m.group(1)) == want, f'⑬ 空闲 {avail} MB、本单 {jobs} 核：采样模拟变体 {m.group(1) if m else "没打"} 路（期望 {want}），退出 {rc}')
+    u = re.search(r'编批库：(\d+) 路编', o)   # 只有第一次冷编有批要编；后两次批全拿缓存，这段不读内存、不打行
+    check((u is not None and int(u.group(1)) == want) if (avail, jobs) == ('6000', '8') else u is None,
+          f'⑬ 空闲 {avail} MB、本单 {jobs} 核：编批库 {u.group(1) + " 路" if u else "没打（批全拿缓存）"}（期望 {str(want) + " 路" if (avail, jobs) == ("6000", "8") else "没打"}）')
 
 shutil.rmtree(t, ignore_errors=True)
 print(f't_dmsh_reuse：{"全符" if not fails else f"{len(fails)} 例不符"}')

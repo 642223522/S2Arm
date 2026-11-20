@@ -44,7 +44,7 @@ import sys
 import tempfile
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -52,6 +52,7 @@ from cs_pipelines import container, lib_functions, tt_command, tt_suffix, run_tt
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / 'tools'))
 from pool_workers import cores   # 核数 / 进程池路数唯一来源（tools/pool_workers.py，#1332）
+from progress import Ticker   # 出包进度（S2A_PROGRESS）：这段原先没有计数，界面停在「刷新各阶段 n/11 · 剩 0 秒」（一款体育游戏 6000 对单路二十多分钟）
 
 FORMAT = 'base-pipelines 2'   # 改了产物形状（描述、文件名、脚本格式、压缩）就加一，旧缓存全部不中（2：iPhone 逐对 lzfse，缓存存压过的）
 K_B, K_JSON, K_BP = 0, 1, 55   # 库容器种类：库段、反射、拉取式顶点库（graphics/nvn/lib_pack_core.inc）
@@ -294,8 +295,10 @@ def main():
             else:
                 clone(wlib, warm_files[1]); warm = '1 份' + ('（缓存命中）' if r == 'hit' else '')
                 used = sum(x.stat().st_size for x in warm_files)
+        tk = Ticker('直连库·拉取基础管线', len(jobs))   # 按对计
         with ThreadPoolExecutor(max(1, a.j)) as ex:   # 全装：plan 出的对全部并行编
-            for job, r in zip(jobs, ex.map(one, jobs)): res[job] = r
+            fut = {ex.submit(one, job): job for job in jobs}
+            for f in as_completed(fut): res[fut[f]] = f.result(); tk.step()   # 按完成先后计：一对编一分多钟时，按提交顺序取会让计数停在它前面（界面看着像卡住）
         for job in jobs:   # 没编成的不留同名旧文件
             if isinstance(res[job][0], tuple): path(job).unlink(missing_ok=True)
     finally:
