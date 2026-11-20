@@ -164,7 +164,8 @@ EXPLAIN = (
     (r'no account selected|please log ?in first|not logged in', 'apple_not_signed_in'),
     # 验证码不对排在「incorrect」前：苹果这句是「Incorrect verification code」（-21669），原先先命中账号密码那条，玩家被叫去重输密码
     (r'-21669|verification code|two.?factor|2fa', 'two_factor_wrong'),
-    (r'-2097\d|-20101|incorrect|entered incorrectly', 'apple_id_wrong'),
+    # -22406「Enter the correct password for this Apple Account」（D-W2VH，Mac 0.6.1 plumesign）：同是密码不对，原先没认出、玩家看到英文原句
+    (r'-2097\d|-20101|-22406|incorrect|entered incorrectly|enter the correct password', 'apple_id_wrong'),
     (r'unknown error occured while reading the file|unknown error occurred while reading the file|zip64', 'ipa_needs_repack'),
     (r'name for this app is invalid', 'ipa_needs_repack'),
     # 免费 Apple ID 两个上限分开报（依据同 pack/jobs/install.py SIGN_ERRORS 注释）：说「App ID」/ 9120 的是 7 天 10 个包名额度，
