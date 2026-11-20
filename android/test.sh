@@ -57,6 +57,10 @@ s2a_gate_step bash "$android_dir/core-link/provider-tests/run.sh"
 if [ "$(uname -s)" = Linux ]; then
     s2a_gate_step bash "$android_dir/tests/run_dq_queue.sh"
 fi
+# 游戏档（nvk_game_profile，plat_nvn.c 用 <link.h> 的 dl_iterate_phdr 认模块）：macOS 没有 <link.h>，只在 Linux 上跑
+if [ "$(uname -s)" = Linux ]; then
+    s2a_gate_step "$PY" "$android_dir/tests/nvk_game_profile_test.py"
+fi
 # 描述符写入初始化（宿主）：三路描述符必须整结构清零、dstArrayElement=0；「漏字段」反例必须被抓到。
 # 曾经漏填 dstArrayElement，真机第一笔 draw 就把 Adreno 驱动写崩。
 s2a_gate_step bash "$android_dir/tools/nvn_vk_desc_write_test.sh"
@@ -238,6 +242,9 @@ s2a_gate_step java -cp "$out/java" org.s2arm.android.BootContractTest
 # B6-1 F01 data/editor model: reads the existing iOS reference; no SDK or device evidence.
 s2a_gate_step "$PY" "$android_dir/tests/strings_translation_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/touch_layout_model_test.py"
+# 触屏外观（尺寸 / 透明度的模型与接线，含两条负对照）：之前没有门禁入口（11-20 android/gate.sh 接回时 test_wired 查出）
+s2a_gate_step "$PY" "$android_dir/tests/touch_appearance_model_test.py"
+s2a_gate_step "$PY" "$android_dir/tests/touch_appearance_wiring_test.py"
 s2a_gate_step javac -encoding UTF-8 -d "$out/java" -cp "$out/java" \
     "$android_dir/app/src/main/java/org/s2arm/android/BootSpec.java" \
     "$android_dir/app/src/main/java/org/s2arm/android/ProcessBirth.java" \
