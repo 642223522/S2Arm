@@ -55,10 +55,10 @@ ck "证据：只改工具 → 单测即可" '[[ "$(r evidence tools/safe_killpg.
 o=$(r owns graphics/gate.sh graphics/nvn/gfx/nvn/nvn_mtl.m runtime/src/gfxmode.c docs/a.md tools/pack_fp.sh); ck "owns graphics/gate.sh：只打 graphics/nvn/… 与 runtime/src/gfxmode.c（实得：${o}）" '[ "$o" = "graphics/nvn/gfx/nvn/nvn_mtl.m runtime/src/gfxmode.c " ]'
 ck "owns：只改 tools/ 与文档 → 空" '[ -z "$(r owns graphics/gate.sh tools/pack_fp.sh docs/a.md | tr -d " ")" ]'
 # 10-27 两例选测缺口：改 pack/jobs/saves.py（tool 档不跑 launchers/macos 钩子）→ 必选 pack_jobs 单测；改 pack/stage_direct.sh（在直连阶段闭包里；11-05 前样例是 runtime/run_mac.sh，出包不再起局后它不在闭包里）→ 必选 stage_keys 单测；
-#   改 tools/safe_killpg.sh 两者都不选；临时克隆里 stage_direct.sh 新调用一个新脚本 tools/zz_probe.py（#550 的 mac_chain_check.py 同型）→ 改它也必选 stage_keys
+#   改不在任何阶段闭包里的工具（tools/redline.py）两者都不选（原样例 tools/safe_killpg.sh 11-19 起被计算管线归档阶段 cs_pipelines.py 调用、进了阶段闭包，选 stage_keys 是对的）；临时克隆里 stage_direct.sh 新调用一个新脚本 tools/zz_probe.py（#550 的 mac_chain_check.py 同型）→ 改它也必选 stage_keys
 o=$(r tests pack/jobs/saves.py); ck "改 pack/jobs/saves.py → 含 pack_jobs 单测（实得：${o}）" '[[ "$o" == *tests/pack_jobs_test.sh* ]]'
 o=$(r tests pack/stage_direct.sh); ck "改 pack/stage_direct.sh → 含 stage_keys 单测" '[[ "$o" == *tests/stage_keys_test.sh* ]]'
-o=$(r tests tools/safe_killpg.sh); ck "改 tools/safe_killpg.sh → 不含 pack_jobs / stage_keys 单测" '[[ "$o" != *pack_jobs_test* ]] && [[ "$o" != *stage_keys_test* ]]'
+o=$(r tests tools/redline.py); ck "改 tools/redline.py（不在阶段闭包）→ 不含 pack_jobs / stage_keys 单测" '[[ "$o" != *pack_jobs_test* ]] && [[ "$o" != *stage_keys_test* ]]'
 T=$(mktemp -d); git clone -q --shared "$H" "$T/c" 2> /dev/null && (cd "$T/c" && git checkout -q "$(git -C "$H" rev-parse HEAD)" 2> /dev/null; cp "$H/tools/gate_route.py" "$H/tests/stage_keys_test.sh" "$H/tests/pack_jobs_test.sh" "$T/c/tools/" 2> /dev/null
   cp "$H/tools/gate_route.py" tools/; cp "$H/tests/stage_keys_test.sh" "$H/tests/pack_jobs_test.sh" tests/; rm -f tools/stage_keys_test.sh tools/pack_jobs_test.sh
   echo 'print(1)' > tools/zz_probe.py; printf '\npython3 "$R/tools/zz_probe.py" > /dev/null\n' >> pack/stage_direct.sh
