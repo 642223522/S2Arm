@@ -2838,6 +2838,7 @@ static uint64_t gpu_s_guest_ns(double s) {   // a feedback GPU time (seconds on 
 //   frame to frame (upstream: a 2026 kart game's distant detail flickered with 5-6 ms of gaps a frame on an M5; another game read 16 ms where the GPU worked 8). Lowering the resolution cannot
 //   shorten the host's translation, so the gaps are left out. A gap counts once the time is past its middle: a boundary's heap stamp is written either in the command buffer before the commit or at
 //   the start of the next, never inside the gap. A command buffer with no feedback yet gives no gap. c0: the GPU start of the submission's last command buffer
+static _Atomic uint64_t g_ts_idle_cut_n;   // 只读计数（单测按事件判、不量 GPU 时间，t_nvn_cut_busy ⑦）：报告时刻里扣掉了空闲缝的次数。不改行为
 static uint64_t seg_idle_before(seg_clk *sc, uint64_t ns, uint64_t c0) {
     uint64_t idle = 0;
     for (uint32_t i = 0; i < sc->ncm; i++) {
@@ -2857,7 +2858,7 @@ static uint64_t rep_ticks(const post_op *o, seg_clk *sc, uint32_t last, uint64_t
     }
     if (!ns && sc && o->seg < last && o->seg < SEG_CLK_N) ns = atomic_load(&sc->t[o->seg][!top]);
     if (!ns) ns = top ? c0 : c1;
-    if (ns && sc && ts_mode() == 1) { uint64_t idle = seg_idle_before(sc, ns, c0); if (idle < ns) ns -= idle; }
+    if (ns && sc && ts_mode() == 1) { uint64_t idle = seg_idle_before(sc, ns, c0); if (idle < ns) { ns -= idle; if (idle) atomic_fetch_add(&g_ts_idle_cut_n, 1); } }
     return ns ? ns * 12 / 625 : gpu_ticks();
 }
 
@@ -3142,14 +3143,18 @@ uint64_t nvn_be_sub_commit(void) {
 uint64_t nvn_be_last_fence(void) { return g_fence; }
 int mtl_last_commit_error(void) { return atomic_load(&g_last_commit_error); }
 
+// 只读计数（单测按事件判、不量墙钟，t_nvn_nvrm）：此刻阻塞在 nvn_be_wait 里的线程数。不改行为
+static _Atomic int g_be_wait_blocked;
+int nvn_be_wait_blocked(void) { return atomic_load(&g_be_wait_blocked); }
 int nvn_be_wait(uint64_t fence, uint64_t timeout_ns) {
     struct timespec dl; clock_gettime(CLOCK_REALTIME, &dl);
     uint64_t ns = (uint64_t)dl.tv_nsec + (timeout_ns > 3600000000000ull ? 3600000000000ull : timeout_ns);
     dl.tv_sec += ns / 1000000000ull; dl.tv_nsec = ns % 1000000000ull;
     pthread_mutex_lock(&g_mu);
-    int r = 0, blk = g_done < fence; if (blk) { pthread_mutex_unlock(&g_mu); DM_BLOCK_BEGIN(); pthread_mutex_lock(&g_mu); }
+    int r = 0, blk = g_done < fence; if (blk) { pthread_mutex_unlock(&g_mu); DM_BLOCK_BEGIN(); pthread_mutex_lock(&g_mu); atomic_fetch_add(&g_be_wait_blocked, 1); }
     while (g_done < fence && !dm_gfx_session_stopping()) if ((r = pthread_cond_timedwait(&g_cv, &g_mu, &dl))) break;
     int ok = g_done >= fence;
+    if (blk) atomic_fetch_sub(&g_be_wait_blocked, 1);
     pthread_mutex_unlock(&g_mu);
     if (blk) DM_BLOCK_END();
     return ok;
@@ -10505,7 +10510,9 @@ static void pso_budget_skip_note(void) {
 enum { FU_YIELD_MAX_MS = 3000 };
 static _Atomic int g_fu_waiting, g_warm_busy;
 static _Atomic uint64_t g_fu_yield_n, g_fu_yield_ns;
+static _Atomic int g_fu_yield_in;   // 只读计数（单测按事件判、不量墙钟，t_nvn_warmbump ④）：此刻正在让路的预热工人数。不改行为
 static int fu_yield_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_PSO_FU_YIELD"); v = !(e && !strcmp(e, "0")); } return v; }
+static uint64_t g_pp_wait_n;   // 只读计数（单测按事件判、不量墙钟，t_nvn_smg3_stall）：pso_pend_take 进入「等后台编完」的次数（g_pp_mu 下改）。不改行为
 static id<MTLRenderPipelineState> pso_pend_take(const pso_key *k, int *timed_out, int may_skip) {   // Called by the submit thread: if it is in the table, wait for it to finish compiling and take it; otherwise return nil. *timed_out: 1 = past its own limit (late), 2 = the frame's budget ran out
     pthread_mutex_lock(&g_pp_mu);
     // may_skip = 0 (skip_safe: a draw whose target keeps content across frames, or one a shader writes storage in): no limit and no budget, it waits until the pipeline is compiled.
@@ -10521,7 +10528,7 @@ static id<MTLRenderPipelineState> pso_pend_take(const pso_key *k, int *timed_out
         if (left < (ms ? ms : INT64_MAX)) { cut = 1; ms = (int)left; }
         if (cut && !ms) { pthread_mutex_unlock(&g_pp_mu); *timed_out = 2; pso_budget_skip_note(); return nil; }
     }
-    if (at >= 0) { blk = !g_pp[at].done; if (blk) DM_BLOCK_BEGIN(); uint64_t w0 = bp_now();
+    if (at >= 0) { blk = !g_pp[at].done; if (blk) { DM_BLOCK_BEGIN(); g_pp_wait_n++; } uint64_t w0 = bp_now();
         struct timespec dl; clock_gettime(CLOCK_REALTIME, &dl); dl.tv_sec += ms / 1000; dl.tv_nsec += (long)(ms % 1000) * 1000000; if (dl.tv_nsec >= 1000000000) { dl.tv_sec++; dl.tv_nsec -= 1000000000; }
         while (!g_pp[at].done) if (ms ? pthread_cond_timedwait(&g_pp_cv, &g_pp_mu, &dl) == ETIMEDOUT : pthread_cond_wait(&g_pp_cv, &g_pp_mu)) break;
         if (blk) g_pp_bud_ns += bp_now() - w0;
@@ -10992,9 +10999,9 @@ static void warm_urgent_end(void) { os_unfair_lock_lock(&g_wu_lock); g_wu_pairs 
 // 工人领下一行：先急件，再按清单顺序；已领的跳过。→ 下标，-1 = 没有了
 static long warm_pick(_Atomic long *next, long n) {
     if (fu_yield_on() && atomic_load(&g_fu_waiting)) {   // 首遇让路：提交线程在等首遇管线时不领新行
-        uint64_t t0 = bp_now();
+        uint64_t t0 = bp_now(); atomic_fetch_add(&g_fu_yield_in, 1);
         while (atomic_load(&g_fu_waiting) && (bp_now() - t0) < FU_YIELD_MAX_MS * 1000000ull && !dm_gfx_session_stopping()) usleep(500);
-        atomic_fetch_add(&g_fu_yield_n, 1); atomic_fetch_add(&g_fu_yield_ns, bp_now() - t0);
+        atomic_fetch_add(&g_fu_yield_n, 1); atomic_fetch_add(&g_fu_yield_ns, bp_now() - t0); atomic_fetch_sub(&g_fu_yield_in, 1);
     }
     for (;;) {
         long i = -1;

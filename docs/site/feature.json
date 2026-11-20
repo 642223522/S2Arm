@@ -225,8 +225,8 @@
     "en": "Exporting includes **Compile shader library**: the game's shaders are compiled for Apple graphics ahead of time, so they don't have to be compiled while you play and new areas hitch less the first time."
    },
    "how": {
-    "zh-Hans": "什么都不用做，照常出包。大游戏这一步要多花一些时间。",
-    "en": "Nothing to do; export as usual. Big games take a bit longer on this step."
+    "zh-Hans": "什么都不用做，照常出包。iPhone 要连着推过去才带预编管线；导出自签包时这一版仍是首次遇到现编，后续版本改进。",
+    "en": "Nothing to do; export as usual. On iPhone, precompiled pipelines come only when you Push to iPhone with it connected; self-signing exports still compile on first use for now."
    },
    "where": {
     "zh-Hans": "出包进度里的「编译着色器库」。从 0.5 升上来的游戏，点「更新这 N 款」时电脑会按新版重编。",

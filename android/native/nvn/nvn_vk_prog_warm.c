@@ -73,6 +73,7 @@ static struct {
     int32_t direct_abi;
     uint8_t closure_sha[32];
     uint64_t max_ts;
+    uint64_t reset_seq;           // 只由会话 reset 推进；锁外读盘不能跨会话提交
     struct nvk_prog_warm_stats st;
 } g = { .mu = PTHREAD_MUTEX_INITIALIZER, .limit = NVK_PROG_WARM_DEFAULT_MAX };
 // 落盘串行：预热线程的 30 秒定期写与收尾写不并发（否则两个临时文件抢同一个 rename 目标）。
@@ -111,6 +112,7 @@ static int rec_well_formed(const struct nvk_prog_rec *r) {
 }
 static void stats_reset(void) { memset(&g.st, 0, sizeof g.st); }
 static void reset_locked(void) {
+    g.reset_seq++;
     free(g.v); g.v = NULL;
     free(g.plan); g.plan = NULL;
     g.n = g.cap = 0;
@@ -232,6 +234,9 @@ static uint64_t get_u64(const uint8_t *p) {
 }
 
 int nvk_prog_warm_load(void) {
+    pthread_mutex_lock(&g.mu);
+    uint64_t reset_seq = g.reset_seq;
+    pthread_mutex_unlock(&g.mu);
     // 本局有效性事实：拿不到（provider 还没激活）就返回 -1 让调度器重试，不拿“没有清单”糊弄过去。
     const char *dir = nvn_plat_dir(NVN_PLAT_DIR_CACHE);
     if (!dir || !dir[0]) return -1;
@@ -250,13 +255,13 @@ int nvk_prog_warm_load(void) {
     }
     if (rf) {
         pthread_mutex_lock(&g.mu);
-        reset_locked();
-        g.have_facts = 1; memcpy(g.profile_sha, profile_sha, 32); g.direct_abi = pc_abi; memcpy(g.closure_sha, closure_sha, 32);
-        g.limit = warm_limit();
+        if (g.reset_seq == reset_seq && !g.have_facts) {
+            g.have_facts = 1; memcpy(g.profile_sha, profile_sha, 32); g.direct_abi = pc_abi; memcpy(g.closure_sha, closure_sha, 32);
+        }
         pthread_mutex_unlock(&g.mu);
         if (e == ENOENT) {
             const char *nm = strrchr(path, '/');
-            char m[200]; snprintf(m, sizeof m, "程序清单：目录里还没有这一版翻译器的清单 %.48s（本局从零记录）", nm ? nm + 1 : path);
+            char m[200]; snprintf(m, sizeof m, "程序清单：目录里还没有这一版翻译器的清单 %.48s（保留本局记录）", nm ? nm + 1 : path);
             nvn_plat_log(NVN_PLAT_LOG_INFO, "warm", m);
             return 0;
         }
@@ -289,11 +294,15 @@ int nvk_prog_warm_load(void) {
         else if (memcmp(hdr_profile, profile_sha, 32)) { bad = "设备 profile 不同（同一版翻译器；设备能力 / 驱动 / 画质开关变了）"; mismatch = 1; }
     }
     pthread_mutex_lock(&g.mu);
-    reset_locked();
-    g.have_facts = 1; memcpy(g.profile_sha, profile_sha, 32); g.direct_abi = pc_abi; memcpy(g.closure_sha, closure_sha, 32);
-    g.limit = warm_limit();
+    if (g.reset_seq != reset_seq || (g.have_facts &&
+        (memcmp(g.profile_sha, profile_sha, 32) || g.direct_abi != pc_abi ||
+         memcmp(g.closure_sha, closure_sha, 32)))) {
+        pthread_mutex_unlock(&g.mu); free(buf); return 0;
+    }
+    if (!g.have_facts) {
+        g.have_facts = 1; memcpy(g.profile_sha, profile_sha, 32); g.direct_abi = pc_abi; memcpy(g.closure_sha, closure_sha, 32);
+    }
     if (bad) {
-        g.st.rejected = count;
         pthread_mutex_unlock(&g.mu);
         free(buf);
         { char m[288]; snprintf(m, sizeof m, "%s程序清单整份拒绝：%s（%u 条）", mismatch ? "【黄】" : "【红】", bad, (unsigned)count);
@@ -302,8 +311,10 @@ int nvk_prog_warm_load(void) {
     }
     // 逐条：结构合法性；本局上限内按 uses 热点保留。超过本局上限的（上次上限更大）按 rejected 记。
     uint32_t usable = 0, filtered = 0;
-    uint32_t keep_cap = count < g.limit ? count : g.limit;
-    if (keep_cap && ensure_cap_locked(keep_cap)) { pthread_mutex_unlock(&g.mu); free(buf); return 0; }
+    uint32_t limit = warm_limit();
+    uint32_t keep_cap = count < limit ? count : limit;
+    struct slot *disk = keep_cap ? (struct slot *)malloc((size_t)keep_cap * sizeof *disk) : NULL;
+    if (keep_cap && !disk) { pthread_mutex_unlock(&g.mu); free(buf); return 0; }
     for (uint32_t i = 0; i < count; i++) {
         const uint8_t *e = buf + NVK_PROG_WARM_HDR_FIELDS + (size_t)i * NVK_PROG_WARM_ENTRY;
         struct slot s;
@@ -318,30 +329,56 @@ int nvk_prog_warm_load(void) {
         s.last_use_ms = get_u64(e + 60 + 4 + 768 + 4);
         if (!rec_well_formed(&s.rec)) { filtered++; continue; }
         if (usable == keep_cap) { filtered++; continue; }   // 本局上限比文件小：更冷的丢掉
-        if (usable < keep_cap) g.v[usable] = s;
-        if (s.last_use_ms > g.max_ts) g.max_ts = s.last_use_ms;
+        if (usable < keep_cap) disk[usable] = s;
         usable++;
     }
-    g.n = usable;
-    qsort(g.v, g.n, sizeof g.v[0], slot_cmp);
-    // 冻结本局预热集：拿文件顺序（热点降序）的一份值拷贝。之后 g.v 怎么 note / 淘汰 / 重排都影响不到它。
-    free(g.plan); g.plan = NULL; g.plan_n = g.plan_i = 0;
-    if (g.n) {
-        g.plan = (struct nvk_prog_rec *)malloc((size_t)g.n * sizeof *g.plan);
-        if (g.plan) { int cs = nvn_plat_flag("nvk_compute_warm", 0); for (uint32_t i = 0; i < g.n; i++) if (cs || g.v[i].rec.stage_mask != 32u) g.plan[g.plan_n++] = g.v[i].rec; }
-        else nvn_plat_log(NVN_PLAT_LOG_RED, "warm", "【红】程序清单：本局预热集快照分配失败（本局不预热，清单照常记录）");
+    if (usable) qsort(disk, usable, sizeof *disk, slot_cmp);
+    // 事务提交：当前局记录优先，磁盘按热点填空位。重合身份保留当前元数据，
+    // uses 取较大值，不把可能已保存过的同一段历史再相加。
+    uint32_t cap = g.n + usable;
+    if (cap > limit) cap = limit;
+    if (cap < g.n) cap = g.n;
+    struct slot *merged = cap ? (struct slot *)malloc((size_t)cap * sizeof *merged) : NULL;
+    struct nvk_prog_rec *plan = usable ? (struct nvk_prog_rec *)malloc((size_t)usable * sizeof *plan) : NULL;
+    if ((cap && !merged) || (usable && !plan)) {
+        free(merged); free(plan); free(disk);
+        pthread_mutex_unlock(&g.mu); free(buf); return 0;
     }
-    g.st.loaded = g.n;
+    uint32_t n = g.n, plan_n = 0, loaded = 0;
+    uint64_t max_ts = g.max_ts;
+    if (n) memcpy(merged, g.v, (size_t)n * sizeof *merged);
+    int cs = nvn_plat_flag("nvk_compute_warm", 0);
+    for (uint32_t i = 0; i < usable; i++) {
+        uint32_t at;
+        // writer 的磁盘条目身份唯一；只需与 load 前的本局记录查重，
+        // 不再扫描刚合入的磁盘项，空本局的常见启动路径保持线性。
+        if (!find_locked(disk[i].rec.identity, &at)) {
+            if (n >= limit) { filtered++; continue; }
+            at = n;
+            merged[n++] = disk[i];
+        } else if (merged[at].rec.uses < disk[i].rec.uses) {
+            merged[at].rec.uses = disk[i].rec.uses;
+        }
+        if (disk[i].last_use_ms > max_ts) max_ts = disk[i].last_use_ms;
+        // 冻结集仅来自本次接纳的磁盘条目，不把本局新 note 送去额外编译。
+        if (cs || merged[at].rec.stage_mask != 32u) plan[plan_n++] = merged[at].rec;
+        loaded++;
+    }
+    free(disk);
+    free(g.v); g.v = merged; g.n = n; g.cap = cap;
+    free(g.plan); g.plan = plan; g.plan_n = plan_n; g.plan_i = 0;
+    g.limit = limit; g.max_ts = max_ts;
+    g.st.loaded = loaded;
     g.st.rejected = filtered;
-    g.dirty = 0;
+    // recorded / dirty / 构建与命中统计属于本局，不因读取成功或失败清零。
     pthread_mutex_unlock(&g.mu);
     free(buf);
     {
         char m[224];
-        snprintf(m, sizeof m, "程序清单：可用 %u 条（上限 %u，过滤 %u 条），热点优先", (unsigned)g.st.loaded, (unsigned)g.limit, (unsigned)filtered);
+        snprintf(m, sizeof m, "程序清单：可用 %u 条（上限 %u，过滤 %u 条），热点优先", (unsigned)loaded, (unsigned)limit, (unsigned)filtered);
         nvn_plat_log(NVN_PLAT_LOG_INFO, "warm", m);
     }
-    return (int)g.st.loaded;
+    return (int)loaded;
 }
 
 // 只走开局冻结的快照：与 note / 淘汰 / 落盘排序完全解耦（快照不可变，所以这里不需要持锁读内容，

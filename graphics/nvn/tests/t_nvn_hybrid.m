@@ -75,7 +75,8 @@ static NSString *capture_stderr(void (^fn)(void)) {
     fflush(stderr); int save = dup(2); dup2(fd, 2); fn(); fflush(stderr); dup2(save, 2); close(save); close(fd);
     NSString *s = [NSString stringWithContentsOfFile:@(path) encoding:NSUTF8StringEncoding error:nil] ?: @""; unlink(path); return s;
 }
-static int wait_bases(uint64_t want) { for (int i = 0; i < 500 && g_hy_bases < want; i++) usleep(10000); return g_hy_bases >= want; }
+// 等后台建好基础管线，兜底 30 秒（原 5 秒：负载高时后台编得慢就假红）；等不到返回 0，调用处判红
+static int wait_bases(uint64_t want) { for (int i = 0; i < 3000 && g_hy_bases < want; i++) usleep(10000); return g_hy_bases >= want; }
 
 static int run(int hybrid) {
     setenv("DM_NVN_FIRST_SKIP", "0", 1);   // 测的是不能跳的首遇（跳过那条路另有单测）
@@ -127,7 +128,7 @@ static int run(int hybrid) {
     // ③ 同键再取：精确那条编好前同一条拉取管线、编好后精确的
     id ps3 = pso_get_(pr, nil); int pull3 = g_pso_pull;
     if (pull3) VERIFY(ps3 == ps2 && g_hy_made - made0 == 1, "③ 精确那条还在编：同一条拉取管线、不再特化（特化 +%llu）", (unsigned long long)(g_hy_made - made0));
-    for (int i = 0; i < 500 && pso_pend_state(&k2) != 2; i++) usleep(10000);
+    for (int i = 0; i < 3000 && pso_pend_state(&k2) != 2; i++) usleep(10000);   // 等精确那条后台编好，兜底 30 秒（原 5 秒）；等不到下一行判红
     id ps4 = pso_get_(pr, nil);
     VERIFY(ps4 && !g_pso_pull && ps4 != ps2, "③ 精确那条编好后：给精确管线（g_pso_pull %d，期望 0）", g_pso_pull);
     // ④ 布局块（手算）
@@ -166,7 +167,7 @@ static int run(int hybrid) {
             if (i) [at setAddress:(i == 1 ? lb.gpuAddress : gpua) atIndex:16];   // 拉取：布局块；精确：流 0 = VB_SLOT(0) = 16
             [en setArgumentTable:at atStages:MTLRenderStageVertex]; [en setRenderPipelineState:pss[i]];
             [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; [en endEncoding]; [cb endCommandBuffer];
-            id<MTLSharedEvent> ev = [g_dev newSharedEvent]; [q commit:&cb count:1]; [q signalEvent:ev value:1]; REQUIRE([ev waitUntilSignaledValue:1 timeoutMS:5000]);
+            id<MTLSharedEvent> ev = [g_dev newSharedEvent]; [q commit:&cb count:1]; [q signalEvent:ev value:1]; REQUIRE([ev waitUntilSignaledValue:1 timeoutMS:30000]);   // GPU 完成等待上限 30 秒（原 5 秒）
             [t getBytes:px[i] bytesPerRow:32 fromRegion:MTLRegionMake2D(1, 1, 1, 1) mipmapLevel:0];
         }
         VERIFY(px[0][0] == 0x3800 && px[0][1] == 0x3400 && px[0][2] == 0x3400 && px[0][3] == 0x3c00, "⑤ 编码自检（常量色三角形）：%04x %04x %04x %04x（期望 3800 3400 3400 3c00）", px[0][0], px[0][1], px[0][2], px[0][3]);

@@ -94,6 +94,11 @@ int main(void) {
     { uint64_t g = G + 0x240; uint32_t st; *(uint64_t *)(h0 + 0x240) = 1; *(uint64_t *)(h0 + 0x248) = 2;
       __asm__ volatile("1: ldxp x8, x9, [%1]\n add x8, x8, #10\n add x9, x9, #20\n stxp %w0, x8, x9, [%1]\n cbnz %w0, 1b" : "=&r"(st) : "r"(g) : "x8", "x9", "memory");
       EQ("独占对 前半 1 → 11", 11, *(uint64_t *)(h0 + 0x240)); EQ("独占对 后半 2 → 22", 22, *(uint64_t *)(h0 + 0x248)); }
+    // 写独占对的第二个寄存器是 xzr（stlxp w8, x21, xzr, [x28]：一款游戏在远端清一个 16 字节槽的后半，玩家诊断三份因此 SIGSEGV）：前半写值、后半写 0
+    { uint64_t g = G + 0x250; uint32_t st; *(uint64_t *)(h0 + 0x250) = 5; *(uint64_t *)(h0 + 0x258) = 6;
+      g_refused = 0;   // 不认这一形的旧代码会拒绝代执行：跳回这里报红，不在独占循环里重试挂死
+      if (!sigsetjmp(g_jb, 1)) __asm__ volatile("1: ldaxp x8, x9, [%1]\n add x8, x8, #1\n stlxp %w0, x8, xzr, [%1]\n cbnz %w0, 1b" : "=&r"(st) : "r"(g) : "x8", "x9", "memory");
+      EQ("写独占对带 xzr：不拒绝", 0, g_refused); EQ("写独占对带 xzr 前半 5 → 6", 6, *(uint64_t *)(h0 + 0x250)); EQ("写独占对带 xzr 后半写成 0", 0, *(uint64_t *)(h0 + 0x258)); }
     // SDK 内存函数族（s2a_far_bind）：G 起两块已分（[G, +32K) 与 [G+2M−16K, G+2M+16K)，两块影子不相邻）
     { void *(*mc)(void *, const void *, size_t) = (void *)s2a_far_bind("memcpy", 1), *(*ms)(void *, int, size_t) = (void *)s2a_far_bind("memset", 1),
            *(*mm)(void *, const void *, size_t) = (void *)s2a_far_bind("memmove", 1);

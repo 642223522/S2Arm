@@ -308,6 +308,8 @@ s2a_gate_step "$PY" "$repo_dir/graphics/nvn/tests/gs_replay_mutation_test.py"
 s2a_gate_step "$PY" "$repo_dir/graphics/nvn/tests/dirty_span_memo_mutation_test.py"
 # 存储缓冲槽长度语义：地址有效、长度 0 按硬件语义绑真实内存（池剩余长度，回写按它登记），没有可绑内存才绑空缓冲照画；5 个点变异各撤一处必红（纯宿主 C）
 s2a_gate_step "$PY" "$repo_dir/graphics/nvn/tests/storage_unmapped_mutation_test.py"
+# ReadTexels 读 GPU 内容（rp_read_texels.inc / 旁路段 / rp_entry 分支）：等之前的活、提交锁、行距片距、READBACK 与块对齐、栅栏推进、提交内拒绝、修前，各撤一处必红（纯宿主 C）
+s2a_gate_step "$PY" "$repo_dir/graphics/nvn/tests/read_texels_gpu_mutation_test.py"
 # 原创 Maxwell 经生产请求、真实编译器与生产结果解析；GPU 像素由 Vulkan 门禁另验。
 s2a_gate_step "$PY" "$android_dir/tests/gs_compiler_chain_test.py"
 # BUFFER texture: real producer, Maxwell compiler and SPIR-V parser.
@@ -337,6 +339,10 @@ s2a_gate_step "$PY" "$android_dir/tests/w2_observation_core_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/replay_exec_time_test.py"
 # 预热调度时序合同：先程序后管线、在途重试、有界 Stop、开关关时不起线程。
 s2a_gate_step bash "$android_dir/tools/nvn_warm_test.sh"
+# 真实回放/着色器收尾清掉上一局的程序预热清单；宿主两局与遗漏 reset 负对照。
+if [ "$(uname -s)" = Linux ]; then
+    s2a_gate_step sh "$android_dir/tools/nvk_prog_warm_session_test.sh"
+fi
 # 预热用的两个清单模块与「同一配方只有一份」的双检（纯逻辑）：往返一致、碰撞不去重、坏文件整份拒绝、
 # 4 线程并发建同一配方只装一份。
 s2a_gate_step bash "$android_dir/tools/nvk_warm_modules_test.sh"
