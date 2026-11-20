@@ -123,6 +123,7 @@ int rp_tex_snap_by_id(int id, tex_t *t, view_t *v, int *h) {
     memset(t, 0, sizeof *t); memset(v, 0, sizeof *v); t->d.format = NVN_FORMAT_RGBA8; t->d.target = NVN_TEXTURE_TARGET_2D; t->d.depth = 1;
     if (separate_fixture == 3) t->d.target = NVN_TEXTURE_TARGET_BUFFER;
     if (separate_fixture == 4) t->d.format = NVN_FORMAT_RGBA8_UI2F;   // 登记了，但 UI2F 不出编译事实
+    if (separate_fixture == 5 && id != 77) { t->d.target = NVN_TEXTURE_TARGET_2D_ARRAY; t->d.depth = id == 78 ? 2 : 8; }   // 78 / 79：二维数组贴图，层数 2 / 8（事实里的 array_length）
     *h = id == 77 && separate_fixture != 3; if (*h) { v->set_target = 1; v->target = NVN_TEXTURE_TARGET_RECTANGLE; } return 1;
 }
 // 用户常量缓冲夹具：rp_pool_find 只认这块宿主内存（真实实现在 rp_entry.c，查登记过的池）
@@ -749,6 +750,34 @@ static void graphics_fact_reuse_test(void) {
     rp_shader_reset(); rp_state_reset();
 }
 
+// 组合槽里的二维数组贴图：事实的 array_length 是贴图层数（texture_facts.c LAYERS_COUNT），不是「槽是数组」。
+// 编译器没查过的槽换一张层数不同的数组贴图，复用同一份程序、不再编；查过的槽整条事实（含层数）仍在键里，变了照常重编。
+static void graphics_fact_array_length_test(void) {
+    rp_shader_reset(); s2a_source_clear(); rp_state_reset(); nvn_unimpl_reset();
+    uint8_t keys[3][8]; for (unsigned st = 0; st < 3; st++) gs_source(st, 0, keys[st]);
+    memset(&gs_program, 0, sizeof gs_program); gs_program.magic = MAGIC('P','R','O','G');
+    gs_program.serial = 900; gs_program.nstage = 3;
+    memset(gs_stages, 0xff, sizeof gs_stages); memset(gs_keys, 0, sizeof gs_keys);
+    for (unsigned st = 0; st < 3; st++) { gs_stages[st] = (uint8_t)st; memcpy(gs_keys[st], keys[st], 8); }
+    gs_keys_ok = 7; p_bind_program_id bind = {&gs_program, gs_program.serial, 0x1f, 0};
+    CHECK(rp_state_op(OP_BIND_PROGRAM, &bind, sizeof bind + 8), "array length program binds");
+    bind_pools(100); fake_gs_success = fake_gs_fact_deps = 1; separate_fixture = 5; fake_reg_changes = 0;
+    struct rp_shader_req q = {0}; q.prim = 4; const struct rp_prog *p = NULL;
+    rp_S.tex[0][2] = 78;   // 没查过的槽里常驻一张 2 层的数组贴图
+    compiler_calls = 0; CHECK(!rp_shader_resolve(&q, &p) && p && compiler_calls == 1, "array length initial real producer resolves");
+    const struct rp_prog *first = p;
+    rp_S.tex[0][2] = 79;   // 同一槽换成 8 层：身份只差没查过的槽的 array_length
+    CHECK(!rp_shader_resolve(&q, &p) && p == first && compiler_calls == 1, "unqueried 2d-array layer count reuses compiled program");
+    rp_S.tex[1][5] = 78;
+    CHECK(!rp_shader_resolve(&q, &p) && p == first && compiler_calls == 1, "other stage unqueried 2d-array texture reuses program");
+    // 负对照：查过的槽（依赖里的 texture-fact:vs:8:-1）
+    rp_S.tex[0][0] = 78;
+    CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == 2, "queried slot becoming a 2d-array recompiles");
+    rp_S.tex[0][0] = 79;
+    CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == 3, "queried 2d-array layer count stays in the key and recompiles");
+    fake_gs_success = fake_gs_fact_deps = 0; separate_fixture = 0; fake_reg_changes = 1;
+    rp_shader_reset(); rp_state_reset();
+}
 static void graphics_high_slot_test(void) {
     rp_shader_reset(); s2a_source_clear(); rp_state_reset(); nvn_unimpl_reset();
     memset(&gs_program, 0, sizeof gs_program); gs_program.magic = MAGIC('P','R','O','G');
@@ -1464,6 +1493,7 @@ int main(int argc, char **argv) {
     }
     if (argc != 1) return 2;
     graphics_fact_reuse_test();
+    graphics_fact_array_length_test();
     graphics_high_slot_test();
     graphics_active_ubo_test();
     graphics_alias_test(1);
