@@ -15,31 +15,15 @@ from core import Failure, atomic, digest, read, tree_hash
 
 
 def default_app_dirs():
-    """找 Xcode 先看的目录：/Applications、~/Applications（xcode-select 指的那份由 installed_xcodes 另加）。与前端 XcodeLocator.searchDirs 同一组，两处改一处要同步改另一处"""
+    """自动找 Xcode 的目录：/Applications、~/Applications（xcode-select 指的那份由 installed_xcodes 另加）。与前端 XcodeLocator.searchDirs 同一组，两处改一处要同步改另一处。
+    不翻 /Volumes：列外接卷会弹系统隐私窗「想访问可移除卷上的文件」，6aaab23d4（11-18）起每建一个任务都列一遍，接着外接盘的玩家一开启动器就弹、
+    无人值守时作业挂在 opendir（0.6.2 验收卡在这里）。Xcode 装在外接盘上的玩家在设置页「选择 Xcode…」自己选（launch-settings.json 的 xcodeApp，玩家自选优先）"""
     return ("/Applications", str(Path.home() / "Applications"))
 
 
-def external_app_dirs(volumes="/Volumes"):
-    """兜底目录：每块外接卷的 Applications 与卷根（玩家把 Xcode 装在扩展硬盘上，只看内置盘时预检一直报「没找到完整的 Xcode」）。
-    /Volumes 里的软链（启动盘指回 /）跳过。只在内置位置一份完整 Xcode 都没有时才列：列外接卷会弹系统隐私窗「想访问可移除卷上的文件」，
-    原先每建一个任务都列一遍，接着外接盘的玩家一开启动器就弹、无人值守时作业挂在 opendir。与前端 XcodeLocator.externalDirs 同一组"""
-    dirs = []
-    try:
-        vols = sorted(Path(volumes).iterdir())
-    except OSError:
-        vols = []
-    for v in vols:
-        if v.is_symlink() or not v.is_dir():
-            continue
-        dirs += [str(v / "Applications"), str(v)]
-    return tuple(dirs)
-
-
 def installed_xcodes(apps_dirs=None, select="/usr/bin/xcode-select"):
-    """没给 apps_dirs：先找 xcode-select 指的与内置目录（default_app_dirs），一份都没有才翻外接卷（external_app_dirs）；给了就只看给的。规则见 _scan_xcodes"""
-    if apps_dirs is not None:
-        return _scan_xcodes(apps_dirs, select)
-    return _scan_xcodes(default_app_dirs(), select) or _scan_xcodes(external_app_dirs(), select)
+    """没给 apps_dirs 用 default_app_dirs（不含外接卷）；规则见 _scan_xcodes"""
+    return _scan_xcodes(default_app_dirs() if apps_dirs is None else apps_dirs, select)
 
 
 def _scan_xcodes(apps_dirs, select):
