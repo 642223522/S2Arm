@@ -154,9 +154,10 @@ int main(void) {
       pid_t c = fork();
       if (c == 0) {
           g_s2a_logfd = fd; setenv("S2A_WRITE_WATCH", env, 1); s2a_crash_install();
-          usleep(50000); pg[9] = 0x1111;
-          usleep(20000); pg[0x40] = 0x2222;
-          usleep(20000); pg[8] = 0x3333;
+          int s2a_ww_armed(int);   // 每次写之前等后台把页重新设只读（按事件，30 秒兜底），不睡固定时长
+          for (int i = 0; i < 30000 && s2a_ww_armed(0) != 1; i++) usleep(1000); pg[9] = 0x1111;
+          for (int i = 0; i < 30000 && s2a_ww_armed(0) != 1; i++) usleep(1000); pg[0x40] = 0x2222;
+          for (int i = 0; i < 30000 && s2a_ww_armed(0) != 1; i++) usleep(1000); pg[8] = 0x3333;
           usleep(20000); _exit(pg[9] == 0x1111 && pg[0x40] == 0x2222 && pg[8] == 0x3333 ? 0 : 3);
       }
       int ws = 0; waitpid(c, &ws, 0);

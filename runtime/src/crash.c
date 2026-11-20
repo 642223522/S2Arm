@@ -434,6 +434,9 @@ static void *ww_thread(void *arg) {
     }
     return NULL;
 }
+// 第 i 处监视的页此刻是否已设只读（单测读口：写之前等它为 1，不按墙钟睡 —— 11-19 原先睡 20～50 ms 当「已设好」，负载高时后台没跑到、写不缺页 → 假红）
+int s2a_ww_armed(int i);
+int s2a_ww_armed(int i) { return i >= 0 && i < g_nww ? atomic_load(&g_ww[i].armed) : -1; }
 static void ww_start(void) {
     const char *e = getenv("S2A_WRITE_WATCH"); if (!e || !*e) return;
     for (const char *s = e; s && *s && g_nww < WW_MAX; ) {

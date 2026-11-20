@@ -233,8 +233,15 @@ void s2a_far_release(uint64_t a, uint64_t n) {
 typedef struct { _Atomic uint64_t pc; _Atomic uint64_t n; _Atomic uint32_t cls; _Atomic uint32_t fail; } site_t;
 static site_t g_site[NSLOT];
 static _Atomic uint64_t g_faults, g_emul, g_skip, g_nsite, g_full, g_fail, g_cls_fail[10];
+uint64_t s2a_far_faults_total(void) { return atomic_load(&g_faults); }
 // 逐秒账（#442 / D-DX74：Mac 大款玩久了内存池落进远端后掉到个位数帧，「慢在缺页代执行」要有直接读数）：远端开着就每秒醒一次，
 //   这一秒有缺页才打一行（游戏没碰远端时不出行，日志不涨）；和 [longframe] / 心跳同在一份日志里按时间对齐看。S2A_FAR_TICK=0 关
+// 逐秒账已结算到的累计缺页数（每秒醒来记账后存）：单测读口，等它追上 s2a_far_faults_total 再判，不按墙钟对齐秒边界（11-19：原先静 1.2 秒 / 等 2.2 秒，
+//   负载高时醒得晚、前面的缺页混进来或 5 次读跨两秒 → 行数不对 → 假红）。只读，行为不变
+static _Atomic uint64_t g_tick_seen, g_tick_n;   // g_tick_n：醒了几次（每秒一次，有没有缺页都算）
+uint64_t s2a_far_tick_seen(void); uint64_t s2a_far_faults_total(void); uint64_t s2a_far_tick_n(void);
+uint64_t s2a_far_tick_seen(void) { return atomic_load(&g_tick_seen); }
+uint64_t s2a_far_tick_n(void) { return atomic_load(&g_tick_n); }
 static void *far_tick(void *arg) {
     (void)arg; pthread_setname_np("s2a-far-tick");
     uint64_t pf = 0, pe = 0, ps = 0, pfl = 0, pn = 0, sec = 0;
@@ -244,7 +251,7 @@ static void *far_tick(void *arg) {
         if (f != pf)
             LOG("远端每秒 第 %llu 秒：缺页 %llu、代执行 %llu、跳过 %llu、失败 %llu、新访存点 %llu（累计缺页 %llu、访存点 %llu）", (unsigned long long)sec,
                 (unsigned long long)(f - pf), (unsigned long long)(e - pe), (unsigned long long)(s - ps), (unsigned long long)(fl - pfl), (unsigned long long)(n - pn), (unsigned long long)f, (unsigned long long)n);
-        pf = f; pe = e; ps = s; pfl = fl; pn = n;
+        pf = f; pe = e; ps = s; pfl = fl; pn = n; atomic_store(&g_tick_seen, f); atomic_fetch_add(&g_tick_n, 1);
     }
     return NULL;
 }
