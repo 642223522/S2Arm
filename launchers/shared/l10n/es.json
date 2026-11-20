@@ -4152,6 +4152,16 @@
   "Apple TV / 独立 App 方案用的 Xcode 团队": "Equipo de Xcode para Apple TV / esquemas de app independiente",
   "验证码是 6 位数字。": "El código tiene 6 dígitos.",
   "登录作业还没开始。": "El inicio de sesión aún no ha empezado.",
-  "验证码没能交给登录作业：S2Arm 的数据目录写不进去，检查磁盘空间和权限后再试。": "No se pudo pasar el código al inicio de sesión: no se puede escribir en la carpeta de datos de S2Arm. Comprueba el espacio en disco y los permisos e inténtalo de nuevo."
+  "验证码没能交给登录作业：S2Arm 的数据目录写不进去，检查磁盘空间和权限后再试。": "No se pudo pasar el código al inicio de sesión: no se puede escribir en la carpeta de datos de S2Arm. Comprueba el espacio en disco y los permisos e inténtalo de nuevo.",
+  "套用预设": "Aplicar preajuste",
+  "动作": "Acción",
+  "赛车": "Carreras",
+  "回合制": "Por turnos",
+  "WASD 走位、鼠标转视角、左右键分担攻击与闪避，适合动作 / 开放世界": "WASD para moverte, ratón para mirar y botones izquierdo/derecho para atacar y esquivar. Para juegos de acción / mundo abierto",
+  "WASD 转向与油门刹车、鼠标视角灵敏度调低并关闭回中，适合赛车 / 飞行": "WASD para girar, acelerar y frenar; sensibilidad de cámara del ratón más baja y sin recentrado. Para juegos de carreras / vuelo",
+  "方向键选单、空格确认、加减键翻页，鼠标不驱动视角，适合回合制 / 战棋": "Flechas para los menús, Espacio para confirmar y +/- para pasar de página; el ratón no mueve la cámara. Para juegos por turnos / tácticos",
+  "：这是显卡驱动的管线缓存，不需要": ": es la caché de canalizaciones del controlador gráfico y no hace falta",
+  "：认不出（要 yuzu 系的 *.bin，或含 shared.toc / guest.toc 的 Ryujinx 缓存目录）": ": no se reconoce (hace falta un *.bin de tipo yuzu o una carpeta de caché de Ryujinx con shared.toc / guest.toc)",
+  "：拷贝失败（": ": no se pudo copiar ("
  }
 }

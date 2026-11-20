@@ -4152,6 +4152,16 @@
   "Apple TV / 独立 App 方案用的 Xcode 团队": "Équipe Xcode pour Apple TV / schémas d’app autonome",
   "验证码是 6 位数字。": "Le code comporte 6 chiffres.",
   "登录作业还没开始。": "La connexion n’a pas encore commencé.",
-  "验证码没能交给登录作业：S2Arm 的数据目录写不进去，检查磁盘空间和权限后再试。": "Impossible de transmettre le code à la connexion : le dossier de données de S2Arm n’est pas accessible en écriture. Vérifiez l’espace disque et les autorisations, puis réessayez."
+  "验证码没能交给登录作业：S2Arm 的数据目录写不进去，检查磁盘空间和权限后再试。": "Impossible de transmettre le code à la connexion : le dossier de données de S2Arm n’est pas accessible en écriture. Vérifiez l’espace disque et les autorisations, puis réessayez.",
+  "套用预设": "Appliquer un préréglage",
+  "动作": "Action",
+  "赛车": "Course",
+  "回合制": "Tour par tour",
+  "WASD 走位、鼠标转视角、左右键分担攻击与闪避，适合动作 / 开放世界": "WASD pour se déplacer, souris pour regarder, clics gauche/droit pour attaquer et esquiver. Pour l’action / le monde ouvert",
+  "WASD 转向与油门刹车、鼠标视角灵敏度调低并关闭回中，适合赛车 / 飞行": "WASD pour diriger, accélérer et freiner ; sensibilité de la caméra à la souris réduite et recentrage désactivé. Pour la course / le vol",
+  "方向键选单、空格确认、加减键翻页，鼠标不驱动视角，适合回合制 / 战棋": "Flèches pour les menus, Espace pour valider, +/- pour changer de page ; la souris ne bouge pas la caméra. Pour le tour par tour / la tactique",
+  "：这是显卡驱动的管线缓存，不需要": " : c’est le cache de pipelines du pilote graphique, inutile ici",
+  "：认不出（要 yuzu 系的 *.bin，或含 shared.toc / guest.toc 的 Ryujinx 缓存目录）": " : non reconnu (il faut un *.bin de type yuzu, ou un dossier de cache Ryujinx contenant shared.toc / guest.toc)",
+  "：拷贝失败（": " : échec de la copie ("
  }
 }
