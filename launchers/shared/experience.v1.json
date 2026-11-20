@@ -781,7 +781,17 @@
     ]
   },
 
-  "launcher": {
+  "install_landing": {
+    "note": "装机前清单按钮落点的唯一来源（11-19 落点契约；Mac 与 Windows、作业层、候选验收 landing_check 都读这一处）。actions：动作名 → 按钮文案键（launcher.items 的 id；null = 那一端自画）。items：每端「清单项 id → 没好时该带的 action」；null = 只能人做、不该有按钮（插线 / 解锁）；\"@url\" = 带官方网页（url 字段）。新加清单项要先在这里登记，pack/jobs/tests/test_landing_contract.py 用后端真实产生的清单核",
+    "actions": {"openExport": "nav.build", "openImpactor": "action.open_impactor", "devCertSettings": "install.mode.go_settings",
+                "appleLogin": null, "pickDevice": null, "trustHelp": null, "developerModeHelp": null},
+    "items": {
+      "mac": {"package": "openExport", "appleId": "appleLogin", "connected": "pickDevice", "trusted": "trustHelp", "developerMode": "developerModeHelp",
+              "devcert": "devCertSettings", "devcertDevice": "@url"},
+      "windows": {"package": "openExport", "impactor": "openImpactor|@url", "impactor_login": "openImpactor", "connected": null,
+                  "devcert": "devCertSettings", "devcertDevice": "@url"}
+    }
+  },  "launcher": {
     "note": "启动器客户端界面文案（Windows Avalonia 客户端 #1629 起；Mac 新前端可复用）。键 = 客户端界面元素 id，zh-Hans / en 两份必填，客户端按界面语言取，缺键显示 [键名]、不在客户端存副本。环境检查项本身的名称 / 说明 / 下一步与官方页由后端给（pack/jobs/winenv.py checks[].name / message / action / url）；错误码的标题 / 说明用本文件 errors 段。加键：同一提交加 zh-Hans + en，revision +1（README「口径号」规则）。",
     "items": [
       {"id": "app.title", "zh-Hans": "S2Arm", "en": "S2Arm"},
