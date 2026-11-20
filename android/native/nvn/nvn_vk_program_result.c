@@ -828,31 +828,3 @@ int nvn_vk_program_parse_compute(const uint8_t *bytes, size_t length,
     return 0;
 }
 
-// SPIR-V ExecutionModel per stage slot; slots 0/1 feed the vs/fs draw paths,
-// slots 2-4 only feed the pre-raster storage scan below.
-static const uint32_t FD_STAGE_MODEL[FD_MAX_STAGES] = { 0, 4, 3, 1, 2, 5 };
-static const char *const FD_STAGE_LABEL[FD_MAX_STAGES] = {
-    "vertex", "fragment", "geometry", "tessellation control", "tessellation evaluation", "compute" };
-// Pre-raster stages covered by the writeStages 0x1d admission mask: vs, gs, tcs, tes.
-static const int FD_SCAN_STAGES[4] = { 0, 2, 3, 4 };
-int nvn_vk_program_vertex_storage_safe(const uint8_t *bytes, size_t length, char *why, size_t why_size) {
-    struct fd_program p;
-    memset(&p, 0, sizeof p);
-    int rc = nvn_vk_program_parse_graphics(bytes, length, &p, why, why_size);
-    if (!rc) {
-        for (int s = 0; s < 4 && !rc; s++) {
-            int idx = FD_SCAN_STAGES[s];
-            if (!p.stage[idx].present) continue;
-            int need = s2a_spirv_storage_need(p.stage[idx].spirv, p.stage[idx].spirv_bytes,
-                                              FD_STAGE_MODEL[idx]);
-            if (need != 0) {
-                char text[160];
-                snprintf(text, sizeof text, need < 0 ? "%s SPIR-V storage check invalid" :
-                         "%s program requires vertexPipelineStoresAndAtomics", FD_STAGE_LABEL[idx]);
-                rc = fail(why, why_size, text);
-            }
-        }
-    }
-    nvn_vk_program_free(&p);
-    return rc;
-}

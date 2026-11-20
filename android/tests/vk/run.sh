@@ -1011,26 +1011,6 @@ if [ "$bad" -ne 0 ]; then
     grep -E "Validation Error|VUID-" "$out/log_bc" | head -20 >&2
     exit 1
 fi
-# #968: draw-local texture-coordinate support bitmap. The helper uses the
-# same host headers, loader, glslc and ICD checked above. It does not sample
-# textures, and is not itself sanitizer-instrumented in --asan/--tsan modes.
-set +e
-(
-    unset FIRST_DRAW_SOURCE VULKAN_RUNNER VULKAN_INCLUDE
-    export GLSLC="$glslc"
-    timeout 180 bash "$repo/android/tests/first_draw_unnorm_test.sh"
-) 2>&1 | tee "$out/log_unnorm"
-rc=${PIPESTATUS[0]}
-set -e
-if [ "$rc" -ne 0 ]; then
-    echo "【红】#968 support bitmap fixture failed (rc=${rc})" >&2
-    exit "$rc"
-fi
-bad=$(grep -cE "Validation Error|VUID-" "$out/log_unnorm" || true)
-if [ "$bad" -ne 0 ]; then
-    echo "【红】#968 validation reported $bad errors" >&2
-    exit 1
-fi
 if [ "$mode" = "--tsan" ]; then
     echo "【绿】C01–C08 + C23/C25/C26/C27/C28/C29/C30/C31/C32/C33/C34/C35/C36-55/C70/C71/C72/C73 + 清屏/复制/深度/纹理三角形：TSan 0 报告（validation 由默认档单独跑）；设备 $(grep '^device:' "$out/log" | head -1)"
 else

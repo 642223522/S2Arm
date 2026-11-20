@@ -130,7 +130,9 @@ def run_tt(argv, env, log):
 
 
 def clone(src, dst):
-    tmp = dst.with_name(dst.name + f'.{os.getpid()}.tmp')
+    # 临时件名带进程号 + 线程号：base_pipelines / 本工具用线程池并发出管线，两路碰上同一缓存键时同写一个目标；只带进程号时同进程两条线程共用一个临时件，
+    #   先改名的一条把它挪走，后一条 os.replace 报 FileNotFoundError，整阶段软失败、包里一份管线都没有（Ori 2 出包实例）。各写各的临时件，改名原子，后到的覆盖先到的、内容相同
+    tmp = dst.with_name(dst.name + f'.{os.getpid()}.{threading.get_ident()}.tmp')
     if subprocess.run(['cp', '-c', str(src), str(tmp)], capture_output=True).returncode:   # APFS 克隆；别的文件系统退回普通拷贝
         shutil.copyfile(src, tmp)
     os.replace(tmp, dst)

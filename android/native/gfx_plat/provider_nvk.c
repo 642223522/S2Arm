@@ -406,11 +406,6 @@ void s2a_direct_vk_on_window_offered(void) {
     ctl_wake();   // owner poll 醒来处理新窗口，不必等下一次 present
 }
 
-// 兼容只有“晚挂”入口的旧构建：返回 0 = 已挂上，非 0 = 没有窗口。
-int s2a_direct_vk_try_attach_window(void) {
-    return s2a_direct_vk_sync_window() == 0 ? 0 : -1;
-}
-
 // 窗口撤销（surfaceDestroyed）：surface 的合同要求 revoke 返回后没有线程再用它。
 // 必须先在 g_mu 下拆后端交换链并观察最后一帧的 present fence，成功后才 release_window +
 // released 归还租约；拿不到呈现退休证明时保留 swapchain/present fence 与租约（不 ACK），

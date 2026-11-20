@@ -321,6 +321,7 @@ void rp_exec_reset(void) {   // 会话收尾：遮挡计数与条件渲染的账
 }
 
 void nvn_be_sub_begin(void) {
+    rp_buf_hold_begin();   // 回放窗口开：到 nvn_be_sub_commit 收尾之前，别的线程销毁池不当场放镜像缓冲（rp_buf.c）
     g_sub = calloc(1, sizeof *g_sub);
     if (g_sub) g_sub->refs = 1;
     rc_retire(); g_rc_npend = 0; g_rc_skip = 0;
@@ -381,7 +382,13 @@ static void seg_cut(int next_occ) {
     rp_dirty_all();
 }
 
+static uint64_t sub_commit_body(void);
 uint64_t nvn_be_sub_commit(void) {
+    const uint64_t f = sub_commit_body();
+    rp_buf_hold_end();   // 回放窗口关（各条返回路径都经过这里）：窗口里别的线程销毁池延后的镜像缓冲此刻才放，命令已 cmd_ref 的由后端保活
+    return f;
+}
+static uint64_t sub_commit_body(void) {
     struct sub *s = g_sub; g_sub = NULL;
     rp_pass_flush(g_cmd);   // 打开的通道与待折清除不跨提交
     if (!g_cmd) {   // 没有段（开段失败，或中途交段之后开新段失败）：副作用无处挂，按失败丢弃（不写假成功）

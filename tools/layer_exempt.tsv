@@ -103,28 +103,21 @@ R-02	runtime/src/vawin.c	<mach/vm_map.h>	存量：共用文件直接包含苹果
 R-02	runtime/src/vawin.c	<os/proc.h>	存量：共用文件直接包含苹果系统头（方案 H3 / H14 / M6）；清零条件：收进平台实现或契约后同笔删本行
 R-02	runtime/src/xstack.c	<mach-o/getsect.h>	存量：共用文件直接包含苹果系统头（方案 H3 / H14 / M6）；清零条件：收进平台实现或契约后同笔删本行
 R-04	graphics/nvn/gfx/nvn/hle_nvn.c	android/native/runtime/vm/backing.h	存量：图形反向依赖平台私有实现（方案 H15 / M1 / L1）；清零条件：改走公开平台接缝后同笔删本行
-R-04	android/native/direct/compile_export.c	android/native/debug_gate.h	存量：图形反向依赖平台私有实现（方案 H15 / M1 / L1）；清零条件：改走公开平台接缝后同笔删本行
 R-04	android/native/direct/gs_path.c	android/native/capprobe/capprobe.h	存量：图形反向依赖平台私有实现（方案 H15 / M1 / L1）；清零条件：改走公开平台接缝后同笔删本行
 R-04	android/native/direct/gs_path.c	android/native/debug_gate.h	存量：图形反向依赖平台私有实现（方案 H15 / M1 / L1）；清零条件：改走公开平台接缝后同笔删本行
 R-04	android/native/direct/kind_check.h	android/native/debug_gate.h	存量：图形反向依赖平台私有实现（方案 H15 / M1 / L1）；清零条件：改走公开平台接缝后同笔删本行
-R-04	android/native/direct/provider_vk.c	android/native/debug_gate.h	存量：图形反向依赖平台私有实现（方案 H15 / M1 / L1）；清零条件：改走公开平台接缝后同笔删本行
-R-04	android/native/direct/provider_vk.c	android/native/wsi_lease.h	存量：图形反向依赖平台私有实现（方案 H15 / M1 / L1）；清零条件：改走公开平台接缝后同笔删本行
 R-04	android/native/gfx_plat/plat_nvn.c	android/native/debug_gate.h	新回放层的安卓平台件（docs/设计_Vulkan回放层重搭.md）：接替 direct/provider_vk.c 的同名越界，旧 provider 删除时它那两行同笔删、净数不增；清零条件：窗口租约与调试入口门改走公开平台接缝后同笔删本行
 R-04	android/native/gfx_plat/provider_nvk.c	android/native/debug_gate.h	新回放层的安卓平台件（docs/设计_Vulkan回放层重搭.md）：接替 direct/provider_vk.c 的同名越界，旧 provider 删除时它那两行同笔删、净数不增；清零条件：窗口租约与调试入口门改走公开平台接缝后同笔删本行
 R-04	android/native/gfx_plat/provider_nvk.c	android/native/wsi_lease.h	新回放层的安卓平台件（docs/设计_Vulkan回放层重搭.md）：接替 direct/provider_vk.c 的同名越界，旧 provider 删除时它那两行同笔删、净数不增；清零条件：窗口租约与调试入口门改走公开平台接缝后同笔删本行
 R-04	android/native/direct/vk_device.c	android/native/capprobe/capprobe.h	存量：图形反向依赖平台私有实现（方案 H15 / M1 / L1）；清零条件：改走公开平台接缝后同笔删本行
 R-04	android/native/nvn/backend_vulkan.c	android/native/capprobe/capprobe.h	存量：图形反向依赖平台私有实现（方案 H15 / M1 / L1）；清零条件：改走公开平台接缝后同笔删本行
-R-04	android/native/nvn/mtl_vk_shim.c	android/native/redlog.h	存量：图形反向依赖平台私有实现（方案 H15 / M1 / L1）；清零条件：改走公开平台接缝后同笔删本行
 R-04	android/native/nvn/nvn_vk_compile_events.c	android/native/debug_gate.h	存量：图形反向依赖平台私有实现（方案 H15 / M1 / L1）；清零条件：改走公开平台接缝后同笔删本行
-R-04	android/native/nvn/nvn_vk_compute_bridge.c	android/native/debug_gate.h	存量：图形反向依赖平台私有实现（方案 H15 / M1 / L1）；清零条件：改走公开平台接缝后同笔删本行
 R-04	android/native/nvn/nvn_vk_frame_log.c	android/native/debug_gate.h	存量：图形反向依赖平台私有实现（方案 H15 / M1 / L1）；清零条件：改走公开平台接缝后同笔删本行
-R-04	android/native/nvn/nvn_vk_poolahb.c	android/native/runtime/tracking/runtime.h	存量：图形反向依赖平台私有实现（方案 H15 / M1 / L1）；清零条件：改走公开平台接缝后同笔删本行
 R-04	android/native/nvn/s2a_vp_alias.c	android/native/runtime/vm/backing.h	存量：图形反向依赖平台私有实现（方案 H15 / M1 / L1）；清零条件：改走公开平台接缝后同笔删本行
 R-05	runtime/src/host_main.c	graphics/nvn/gfx/nvn/dmsh_chain.h	存量：平台壳包含图形内部头（方案 M3 / H1）；清零条件：改用公开图形接口后同笔删本行
 R-05	android/native/bridge.cpp	android/native/direct/diag.h	存量：平台壳包含图形内部头（方案 M3 / H1）；清零条件：改用公开图形接口后同笔删本行
 R-05	android/native/bridge.cpp	android/native/direct/s2a_direct.h	存量：平台壳包含图形内部头（方案 M3 / H1）；清零条件：改用公开图形接口后同笔删本行
 R-05	android/native/bridge.cpp	android/native/direct/selection.h	存量：平台壳包含图形内部头（方案 M3 / H1）；清零条件：改用公开图形接口后同笔删本行
-R-05	android/native/bridge.cpp	android/native/nvn/nvn_vk_first_draw.h	存量：平台壳包含图形内部头（方案 M3 / H1）；清零条件：改用公开图形接口后同笔删本行
 R-05	android/native/direct_session.c	android/native/direct/selection.h	存量：平台壳包含图形内部头（方案 M3 / H1）；清零条件：改用公开图形接口后同笔删本行
 R-05	android/native/runtime/runtime.c	android/native/direct/graphics.h	存量：平台壳包含图形内部头（方案 M3 / H1）；清零条件：改用公开图形接口后同笔删本行
 R-05	android/native/runtime/runtime.c	android/native/direct/json.h	存量：平台壳包含图形内部头（方案 M3 / H1）；清零条件：改用公开图形接口后同笔删本行

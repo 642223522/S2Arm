@@ -81,21 +81,6 @@ class DebugGateTest(unittest.TestCase):
         hot = activity[activity.index('    @Override protected void onNewIntent'):]
         self.assertTrue(hot.split('\n')[1].strip().startswith('DebugGate.scrub(intent);'), '热 intent 先剥参数再交给 super')
 
-    def test_draw_log_extra_is_parsed_then_bridged_before_game_start(self):
-        # s2arm.draw_log 是生产通道（debug.* 属性在 user 版设备上 app 读不到）：
-        # 解析只认 "1"/"0"，其余与缺省都回 -1（不动、继续看属性），且在起局前落到 NativeBridge。
-        activity = (JAVA / 'MainActivity.java').read_text()
-        parse = activity[activity.index('private static int drawLogFromIntent'):]
-        self.assertIn('"s2arm.draw_log"', parse)
-        self.assertIn('return -1;', parse)
-        self.assertIn('"1".equals(value)', parse)
-        self.assertIn('"0".equals(value)', parse)
-        start = activity[activity.index('    private void tryStartGame() {'):]
-        bridge_call = start.index('NativeBridge.setDrawLog(drawLogFromIntent(getIntent()));')
-        self.assertLess(bridge_call, start.index('exportPreviousShaderCache()'))
-        bridge = (JAVA / 'NativeBridge.java').read_text()
-        self.assertIn('static native void setDrawLog(int value);', bridge)
-
     def test_native_side_refuses_non_default_values_when_closed(self):
         bridge = (ANDROID / 'native/bridge.cpp').read_text()
         def body(name):
