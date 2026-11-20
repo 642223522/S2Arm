@@ -204,7 +204,9 @@ open build/macos/S2Arm.app
 
 `build_app.py` rebuilds `build/macos/Runtime` through `bundle_runtime.py` whenever it is missing or stale.
 For command-line packaging and tests, point `S2A_PY` at the same interpreter (environment variable or a
-`S2A_PY=` line in `tools/machine.local`, see `tools/machine.local.example`). Nothing in the build or packaging
+`S2A_PY=` line in `tools/machine.local`, see `tools/machine.local.example`). `build_app.py` hands the same
+choice to the scripts it starts, shell builds included: `S2A_PY` from the environment, then `tools/machine.local`,
+otherwise the interpreter running `build_app.py`. Nothing in the build or packaging
 scripts falls back to a maintainer's private paths; an unset dependency is reported, not guessed.
 Work caches go under `S2A_RUN_ROOT` (default `~/.s2arm/run`; the app always sets a private one).
 
