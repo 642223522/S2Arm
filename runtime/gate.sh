@@ -21,7 +21,7 @@ G=0; R=0; WHY=; DET=; TM=
 # 组并行（10-28 质量线门禁提速：100 组逐个跑本机 212 秒、gate-host 276 秒，单组最慢 13 秒，瓶颈是串行）：每组一个 make 进后台，同时至多 NATIVE_GATE_J 组
 #   （缺省核数一半），各组输出进临时目录，跑完按原顺序判。NVN 组共用的前置（宿主对象 / libnvn / 宽屏核心）先由 native-test-prereq 建一次，
 #   各组带 NVN_TEST_PREBUILT=1 不再各自 FORCE 重入（并行时会同时写同一个库）。对负载 / 计时敏感、偶发过的组（SER）放最后串行跑
-SER=" thread thread_plat svc_mem vawin vawin_ios26 nvn_bufreg_rate "   # nvn_bufreg_rate：耗时比判据，并行组抢核会抖
+SER=" thread thread_plat svc_mem vawin vawin_ios26 "   # 11-19：nvn_bufreg_rate 改判登记表步数比、不再比墙钟，不怕抢核，移出串行组
 J=${NATIVE_GATE_J:-$(( $(sysctl -n hw.ncpu 2> /dev/null || nproc 2> /dev/null || echo 4) / 2 ))}; [ "$J" -ge 1 ] 2> /dev/null || J=1
 OUT=$(mktemp -d "${TMPDIR:-/tmp}/s2a_native_gate_XXXXXX"); trap 'rm -rf "$OUT"' EXIT
 # 整步被外面停掉（门禁无进展看门狗、步时限发 TERM）时先说清还有哪几组在跑、各跑了多久、输出尾巴，再退：原先 EXIT 只删临时目录，
