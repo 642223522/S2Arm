@@ -74,8 +74,13 @@ public sealed record LibraryGame(string Id, string Name, string Version, string 
     bool IphoneFree = false, IReadOnlyList<GamePackage>? Packages = null, bool CustomName = false, bool CustomCover = false,
     GameLocation? Location = null, bool IphoneRestorable = false, GameSizes? Sizes = null, bool NeedsKeys = false, string IphoneInstallDevice = "",
     bool OnPhone = false, string Banner = "", bool SGrade = false, bool IphoneExportable = false, DownstreamOffer? Downstream = null,
-    bool SGradeUpgrading = false, bool SGradeIncomplete = false, string? SGradeState = null, double? SGradeProgress = null)   // S 级优化单款升级正在跑 / 上次中途退出没做完（catalog sgradeUpgrading / sgradeIncomplete，11-18）   // SGrade：已打上 S 级优化（catalog sgrade，pack/jobs/library.py sgrade_badge）→ 封面左上角金色 S（同 Mac）
+    bool SGradeUpgrading = false, bool SGradeIncomplete = false, string? SGradeState = null, double? SGradeProgress = null, double? IphoneExpires = null)   // S 级优化单款升级正在跑 / 上次中途退出没做完（catalog sgradeUpgrading / sgradeIncomplete，11-18）   // SGrade：已打上 S 级优化（catalog sgrade，pack/jobs/library.py sgrade_badge）→ 封面左上角金色 S（同 Mac）
 {
+    /// <summary>免费签名还剩几天（到期 = 0）：只在作业层判出「那台手机现在用的就是启动器免费签的那份」（free）且给了到期时刻 expires 时有，
+    /// expires 是签好的包里的真值、读不到时作业层按 7 天估（pack/jobs/layout.py install_record），这里不再自己加天数；其余为 null。同 Mac GameSummary.iphoneDaysLeft</summary>
+    public int? FreeSignDaysLeft(DateTimeOffset now) =>
+        IphoneFree && IphoneExpires is { } end ? Math.Max(0, (int)Math.Ceiling((end - now.ToUnixTimeMilliseconds() / 1000.0) / 86400.0)) : null;
+
     /// <summary>Storage state (library layout v3): ok / offline / missing / none; older catalogues without the field read as none.</summary>
     public string LocationState => Location?.State ?? "none";
 
@@ -220,13 +225,15 @@ public sealed record LibraryCatalog(IReadOnlyList<LibraryGame> Games, bool KeysR
                         var skipped = p.TryGetProperty("integritySkipped", out var isk) && isk.ValueKind == JsonValueKind.Array && isk.GetArrayLength() > 0;
                         packages.Add(new(ptype, titleId, version, display, size, format, sha, content, skipped));
                     }
-                // iphoneInstall: { at, free, deviceKey } — matches the Mac adapter's LibraryProvider；deviceKey = 当初装的那台（续签装回它，不换别的）
-                double? iphoneAt = null; var iphoneFree = false; var iphoneDevice = "";
+                // iphoneInstall: { at, free, deviceKey, expires } — matches the Mac adapter's LibraryProvider；deviceKey = 当初装的那台（续签装回它，不换别的）；
+                //   expires = 免费签名到期时刻（只在 free 时有）
+                double? iphoneAt = null, iphoneExpires = null; var iphoneFree = false; var iphoneDevice = "";
                 if (game.TryGetProperty("iphoneInstall", out var inst) && inst.ValueKind == JsonValueKind.Object)
                 {
                     if (inst.TryGetProperty("at", out var at) && at.ValueKind == JsonValueKind.Number) iphoneAt = at.GetDouble();
                     if (inst.TryGetProperty("free", out var fr) && fr.GetBoolean()) iphoneFree = true;
                     if (inst.TryGetProperty("deviceKey", out var dk) && dk.ValueKind == JsonValueKind.String) iphoneDevice = dk.GetString() ?? "";
+                    if (inst.TryGetProperty("expires", out var ex) && ex.ValueKind == JsonValueKind.Number) iphoneExpires = ex.GetDouble();
                 }
                 var iphoneReady = game.TryGetProperty("iphoneReady", out var ir) && ir.GetBoolean();
                 games.Add(new(id, LibraryJobResult.Text(game, "name"),
@@ -246,7 +253,7 @@ public sealed record LibraryCatalog(IReadOnlyList<LibraryGame> Games, bool KeysR
                     game.TryGetProperty("sgradeUpgrading", out var sgu) && sgu.ValueKind == JsonValueKind.True,
                     game.TryGetProperty("sgradeIncomplete", out var sgi) && sgi.ValueKind == JsonValueKind.True,
                     game.TryGetProperty("sgradeState", out var sgs) && sgs.ValueKind == JsonValueKind.String ? sgs.GetString() : null,
-                    game.TryGetProperty("sgradeProgress", out var sgp) && sgp.ValueKind == JsonValueKind.Number ? sgp.GetDouble() : null));
+                    game.TryGetProperty("sgradeProgress", out var sgp) && sgp.ValueKind == JsonValueKind.Number ? sgp.GetDouble() : null, iphoneExpires));
             }
             var keys = result.GetProperty("keys");
             return new(games.AsReadOnly(), keys.GetProperty("ready").GetBoolean(),

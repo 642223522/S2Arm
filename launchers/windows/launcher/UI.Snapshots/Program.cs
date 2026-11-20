@@ -60,7 +60,8 @@ if (installActionProbe) { Environment.Exit(InstallActionProbe.Run(outDir)); }
 static LibraryGame MockGame(bool keysReady = true) => new(
     "0100B040192FA000", "Fire Emblem: Fortune's Weave", "v1.0.1",
     "", false, [], keysReady, keysReady ? DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 86400.0 : null,
-    true, [new("base", "0100B040192FA000", 917504, "v1.0.1", 31_000_000_000L, "")]);
+    true, [new("base", "0100B040192FA000", 917504, "v1.0.1", 31_000_000_000L, "")],
+    IphoneExpires: keysReady ? DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 6 * 86400.0 : null);   // 作业层给的免费签名到期（1 天前装、按 7 天估）
 
 static LibraryCatalog MockCatalog(bool keysReady = true)
 {

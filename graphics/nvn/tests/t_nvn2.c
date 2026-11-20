@@ -557,6 +557,91 @@ int main(void) {
         }
     }
 
+    // ---------- V5 PR5 vi 门控（评审稿 v3 §2.3 判定次序 / §2.5 S2A_HDR_PEAK / §4 PR5）：vi 入口按 L2 快照 + 层状态回答——假屏注入 × 三态 × 层状态 × peak 步进 × 纸白 × off 不变量 ----------
+    //   假屏注入走本文件既定的弱符号替身接缝（文件头注口径：t_nvn2 给 nvn2.c 的弱定义/宿主接口提供替身；V4 段同款——nvn2_hdr_snapshot_publish 合成快照 +
+    //   nvn2_hdr_tick 合成时钟 + setenv S2A_HDR / S2A_HDR_PEAK；t_present_hdr 前端替身同源），vi 侧经 nvn2_vi_entry 注册表条目直调（游戏真实路径）。
+    //   基线（无 PR5 实现）上 vi_paper_white 答 203、vi_hdr_status 恒 on=0/fmt=0/peak=0——本段红；PR5 上绿。峰值期望全部手算、不跑被测实现得出（V4 段口径）：
+    //   地板 125 → 步 4 → 125.89 → 量化 130；200 → 步 12；250 → 步 16；400 → 步 24；1000 → 步 40；10000 → 步 80；890 → 步 78；
+    //   带宽容 ±2 步（带内答案不动）、出带候选持稳 1s 采纳。层簿记走合成时钟（tick 进参），peak 持稳走真实单调钟（vi 入口内部取）——跨 1s 用 usleep。
+    {   // V4 存储段遗留的共享状态（同文件已定）：快照全 0、层已排空、已答 peak=250（步 16）、S2A_HDR 已 unset
+        uint32_t (*pw)(uint16_t *, const void *) = (uint32_t (*)(uint16_t *, const void *))nvn2_vi_entry("_ZN2nn2vi25QueryDisplayHdrPaperWhiteEPtPKNS0_7DisplayE");
+        CHECK(pw);
+        // ① 纸白 100（§1.4 判读③：v3 定稿 PQ 相对模型锚 EDR=nits/100——203 是 BT.2408 参考白、游戏缺省声明值，m0b 实证被 told peak 覆盖；游戏侧后果未实测 T15 专项）
+        uint16_t pwv = 9; CHECK(pw(&pwv, dp) == 0 && pwv == 100);
+        // ② 假 HDR 屏注入（U2720QM 开态形状）+ auto 进层：快照发布 + tick 持稳（合成时钟：V4 末次 raw 变化 1500 起，100000 早过 500ms）→ can_settled ∧ s1_ready ∧ 层已排空 → 即进层
+        hdr_snapshot pub5 = { .potential_edr = 4.555, .current_headroom = 0.5, .s1_ready = 1, .paper_white = 100 };
+        unsetenv("S2A_HDR_PEAK");
+        nvn2_hdr_snapshot_publish(&pub5);
+        setenv("S2A_HDR", "auto", 1);
+        nvn2_hdr_tick(HDR_AUTO, 1, 100000);
+        hdr_snapshot rb5; nvn2_hdr_snapshot_probe(&rb5);
+        CHECK(rb5.can_settled == 1 && rb5.layer_pq == 1);   // 层已持 PQ——「先持层再答」的前提就位
+        // ③ off 不变量：off + 假 HDR 屏 + 层已持 PQ → vi 恒 on=0 / fmt=0 / peak=0（无视快照与层状态，§2.3 第 1 条）
+        setenv("S2A_HDR", "off", 1);
+        uint8_t on5 = 1; uint32_t fmt5 = 9; uint16_t peak5 = 9;
+        CHECK(hs(&on5, &fmt5, &peak5, dp) == 0 && on5 == 0 && fmt5 == 0 && peak5 == 0);
+        // ④ auto + 层已持：首查询即答 on=1 / fmt=1（Bananza 首查询即定窗口，不等 headroom 爬坡）；peak=纸白×headroom 步进——headroom 0.5 目标 130（地板），
+        //   与已答 250（V4 遗留，步 16）差 12 步出带 → 候选计时中，本问仍答 250（出带候选持稳 1s 才采纳，绝不答 0）
+        setenv("S2A_HDR", "auto", 1);
+        on5 = 1; fmt5 = 9; peak5 = 9; CHECK(hs(&on5, &fmt5, &peak5, dp) == 0 && on5 == 1 && fmt5 == 1 && peak5 == 250 && peak5 > 0);
+        usleep(1100000);   // 跨 1s 持稳（vi 入口走真实单调钟）
+        on5 = 1; peak5 = 9; CHECK(hs(&on5, &fmt5, &peak5, dp) == 0 && on5 == 1 && peak5 == 130);   // 地板 1.25×纸白=125 夹入 → 步 4 → 125.89 → 量化 130 采纳
+        // ⑤ 带内（同值）：headroom 0.6 → 原料 60 仍夹地板 125 → 130，与已答差 ±0 → 答案不动、候选撤销（带内保持，1s 不参与）
+        pub5.current_headroom = 0.6; nvn2_hdr_snapshot_publish(&pub5);
+        on5 = 1; peak5 = 9; CHECK(hs(&on5, &fmt5, &peak5, dp) == 0 && on5 == 1 && peak5 == 130);
+        // ⑥ S2A_HDR_PEAK 固定值（诊断）：180 盖过步进算法（已告知 peak 与 vi 回答同源——present 经 latch 读到同一份）
+        setenv("S2A_HDR_PEAK", "180", 1);
+        on5 = 1; peak5 = 9; CHECK(hs(&on5, &fmt5, &peak5, dp) == 0 && on5 == 1 && fmt5 == 1 && peak5 == 180);
+        // ⑦ 非法值当 unset（红日志打一次）：abc / 0 / 上界外都回步进算法的答案——0 也非法（绝不答 0：固定值 0 不生效，答 130）
+        setenv("S2A_HDR_PEAK", "abc", 1);
+        on5 = 1; peak5 = 9; CHECK(hs(&on5, &fmt5, &peak5, dp) == 0 && on5 == 1 && peak5 == 130);
+        setenv("S2A_HDR_PEAK", "0", 1);
+        on5 = 1; peak5 = 9; CHECK(hs(&on5, &fmt5, &peak5, dp) == 0 && on5 == 1 && peak5 == 130 && peak5 != 0);
+        unsetenv("S2A_HDR_PEAK");
+        // ⑧ 顶帽：headroom 200 → 原料 20000 夹顶帽 10000（步 80，与已答 130 步 5 差 75 出带）→ 候选计时中仍答 130，持稳 1s 采纳 10000
+        pub5.current_headroom = 200.0; nvn2_hdr_snapshot_publish(&pub5);
+        on5 = 1; peak5 = 9; CHECK(hs(&on5, &fmt5, &peak5, dp) == 0 && on5 == 1 && peak5 == 130);
+        usleep(1100000);
+        on5 = 1; peak5 = 9; CHECK(hs(&on5, &fmt5, &peak5, dp) == 0 && on5 == 1 && peak5 == 10000);
+        // ⑨ 带内 ±2 步：headroom 90 → 目标 890（步 78）与已答 10000（步 80）差 2 → 带内答案不动（10000，不降到 890）
+        pub5.current_headroom = 90.0; nvn2_hdr_snapshot_publish(&pub5);
+        on5 = 1; peak5 = 9; CHECK(hs(&on5, &fmt5, &peak5, dp) == 0 && on5 == 1 && peak5 == 10000);
+        // ⑩ 无前端：headroom 未发布（0）→ 恒 1000（步 40，出带候选）→ 持稳 1s 采纳
+        pub5.current_headroom = 0.0; nvn2_hdr_snapshot_publish(&pub5);
+        on5 = 1; peak5 = 9; CHECK(hs(&on5, &fmt5, &peak5, dp) == 0 && on5 == 1 && peak5 == 10000);
+        usleep(1100000);
+        on5 = 1; peak5 = 9; CHECK(hs(&on5, &fmt5, &peak5, dp) == 0 && on5 == 1 && peak5 == 1000);
+        // ⑪ 先层后答（§2.3 第 4 条）——两道门各自断言：
+        //   a. s1_ready 硬门槛（G1 大面积烟囱未过）：can 持稳 ∧ 层已持 → auto 仍恒 on=0（不虚假宣传）
+        pub5.current_headroom = 2.5; pub5.s1_ready = 0; nvn2_hdr_snapshot_publish(&pub5);
+        on5 = 1; peak5 = 9; CHECK(hs(&on5, &fmt5, &peak5, dp) == 0 && on5 == 0 && fmt5 == 0 && peak5 == 0);
+        //   b. 排空（层未持）：s1 未过时连续两帧非 PQ → 层切回 SDR；随后 can/s1 都就绪、层未持 → 本问不放行（Bananza 下一发布周期补答）
+        nvn2_hdr_tick_frame(HDR_AUTO, 0);
+        nvn2_hdr_tick_frame(HDR_AUTO, 0);
+        nvn2_hdr_snapshot_probe(&rb5);
+        CHECK(rb5.layer_pq == 0 && rb5.sdr_run == 0);   // 排空切回 SDR
+        pub5.s1_ready = 1; nvn2_hdr_snapshot_publish(&pub5);
+        on5 = 1; peak5 = 9; CHECK(hs(&on5, &fmt5, &peak5, dp) == 0 && on5 == 0 && fmt5 == 0 && peak5 == 0);   // 层未就绪恒 on=0（先层后答次序）
+        //   c. 层重进（tick 即时进层——进入不等排空）后：同快照同问 → on=1 / fmt=1；peak：目标 250（步 16）与已答 1000（步 40）差 24 出带 → 候选计时中仍答 1000
+        nvn2_hdr_tick(HDR_AUTO, 1, 110000);
+        nvn2_hdr_snapshot_probe(&rb5);
+        CHECK(rb5.layer_pq == 1);
+        on5 = 1; peak5 = 9; CHECK(hs(&on5, &fmt5, &peak5, dp) == 0 && on5 == 1 && fmt5 == 1 && peak5 == 1000);
+        // ⑫ on 强制（S2A_HDR=on）：can 持稳但 s1_ready 未过 → S3 强制路径 vi 仍答 on=1 / fmt=1（宿主 mode 1 映射上屏）；peak 目标 400（步 24）出带候选中仍答 1000
+        setenv("S2A_HDR", "on", 1);
+        {   hdr_snapshot s3 = { .potential_edr = 2.0, .current_headroom = 4.0, .s1_ready = 0, .paper_white = 100 };
+            nvn2_hdr_snapshot_publish(&s3); }
+        on5 = 1; peak5 = 9; CHECK(hs(&on5, &fmt5, &peak5, dp) == 0 && on5 == 1 && fmt5 == 1 && peak5 == 1000);
+        // ⑬ 段末清回缺省（照 V4 段口径）：off 排空两层、开关与环境全 unset、快照清零（后继段不触 HDR 态，仅防跨段污染）
+        setenv("S2A_HDR", "off", 1);
+        nvn2_hdr_tick_frame(HDR_OFF, 0);
+        nvn2_hdr_tick_frame(HDR_OFF, 0);
+        unsetenv("S2A_HDR");
+        unsetenv("S2A_HDR_PEAK");
+        memset(&pub5, 0, sizeof pub5);
+        nvn2_hdr_snapshot_publish(&pub5);
+    }
+
     // ---------- P 推常量的参数规整（nvn2_cmd.h nvn2_push_range）：槽取低 3 位、偏移取低 8 位、字节数夹到 256 且不越过槽尾、不足 4 字节不发 ----------
     unsigned ps, po, pn;
     CHECK(nvn2_push_range(0, 0, 16, &ps, &po, &pn) && ps == 0 && po == 0 && pn == 16);   // 马车世界的唯一一次：(0, 0, 16, float[4])

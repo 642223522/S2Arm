@@ -82,6 +82,9 @@ public struct GameSummary: Identifiable, Equatable {
     public let iphoneFree: Bool
     /// 上次装的那台设备（设备记录键，UDID）：「续签」装回当初那台，不换别的（pack/jobs/layout.py install_record 的 deviceKey）
     public var iphoneInstallDevice: String? = nil
+    /// 免费签名的到期时刻（秒；pack/jobs/layout.py install_record 的 expires：签好的包里的真值，读不到时作业层按 7 天估）。
+    ///   作业层只在那台手机现在用的就是启动器免费签的那份时给（换成别的工具装 / 换签名方式后不给，提醒随之消失）
+    public var iphoneExpires: Double? = nil
     /// Apple TV 版已出好（catalog appleTvReady：image/tvos 的容器件 + 资源包都在）：出包页给「装到 Apple TV」
     public var appleTvReady = false
     /// 「导出自签包」能直接导出：iPhone 包就绪且是单一 IMG 资源包（catalog iphoneExportable）；不能就先重出 iPhone 包再导出
@@ -135,6 +138,7 @@ public struct GameSummary: Identifiable, Equatable {
                   hostUpdate: g["hostUpdate"] as? String ?? "none", location: GameLocation(catalog: g["location"] as? [String: Any] ?? [:]), iphoneRestorable: g["iphoneRestorable"] as? Bool ?? false,
                   sizes: GameSizes(catalog: g["sizes"] as? [String: Any] ?? [:]))
         self.iphoneInstallDevice = (g["iphoneInstall"] as? [String: Any])?["deviceKey"] as? String
+        self.iphoneExpires = ((g["iphoneInstall"] as? [String: Any])?["expires"] as? NSNumber)?.doubleValue
         self.iphoneExportable = g["iphoneExportable"] as? Bool ?? false
         self.appleTvReady = g["appleTvReady"] as? Bool ?? false
         self.onPhone = g["onPhone"] as? Bool ?? false
@@ -163,10 +167,10 @@ public struct GameSummary: Identifiable, Equatable {
         Dictionary(grouping: packages, by: \.sha256).values.compactMap(\.first).reduce(0) { $0 + $1.size }
     }
 
-    /// 免费签名还剩几天（到期 = 0）；付费账号或没装过为 nil。
+    /// 免费签名还剩几天（到期 = 0）；不是启动器免费签的那份（付费 / 证书 / 别的工具装的）或没装过为 nil。到期时刻用作业层给的 expires，不在这里再估
     public func iphoneDaysLeft(now: Date = Date()) -> Int? {
-        guard iphoneFree, let at = iphoneInstalledAt else { return nil }
-        return max(0, Int(((at + 7 * 86400 - now.timeIntervalSince1970) / 86400).rounded(.up)))
+        guard iphoneFree, let end = iphoneExpires else { return nil }
+        return max(0, Int(((end - now.timeIntervalSince1970) / 86400).rounded(.up)))
     }
 
     /// 出包要不要 prod.keys：只有加密原件（NSP / XCI）要，解包好的游戏和 NUP 不要。

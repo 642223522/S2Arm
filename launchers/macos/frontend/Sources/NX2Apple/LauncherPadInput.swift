@@ -159,9 +159,9 @@ struct LauncherPadRepeater {
         var symbols: [PadShortcut: String] = [:]
         if let primary {
             let family = ControllerFaceFamily.of(primary)
-            symbols = (family == .nintendo ? .identity : faceMapping(family)).symbols(for: family)
+            symbols = faceMapping(family).symbols(for: family)
         } else if assignment().primaryIsNintendo || relayConnected() || relay.ready != 0 {
-            symbols = ControllerFaceMapping.identity.symbols(for: .nintendo)
+            symbols = faceMapping(.nintendo).symbols(for: .nintendo)
         }
         updatePresentation(!pads.isEmpty || relayConnected() || relay.ready != 0, symbols)
     }
@@ -200,7 +200,7 @@ struct LauncherPadRepeater {
         for controller in pads {
             guard let pad = controller.extendedGamepad else { continue }
             let family = ControllerFaceFamily.of(controller)
-            let mapping = family == .nintendo ? .identity : faceMapping(family)
+            let mapping = faceMapping(family)
             controllerTokens.append("\(ObjectIdentifier(controller)):\(mapping.code)")
             let state = LauncherPadInput.system(pad, mapping: mapping)
             input.buttons |= state.buttons
@@ -208,14 +208,15 @@ struct LauncherPadRepeater {
             if abs(state.y) > abs(input.y) { input.y = state.y }
             if abs(state.rightY) > abs(input.rightY) { input.rightY = state.rightY }
         }
+        let nintendoMapping = faceMapping(.nintendo)
         if relay.ready != 0 {
-            input.buttons |= relay.buttons
+            input.buttons |= nintendoMapping.apply(relay.buttons)
             if abs(relay.x) > abs(input.x) { input.x = relay.x }
             if abs(relay.y) > abs(input.y) { input.y = relay.y }
             if abs(relay.right_y) > abs(input.rightY) { input.rightY = relay.right_y }
         }
         let nextToken = controllerTokens.joined(separator: ",")
-            + ":\(relay.ready):\(relay.epoch):\(primary.map { String(describing: ObjectIdentifier($0)) } ?? ""):\(players.generation)"
+            + ":\(relay.ready):\(relay.epoch):\(nintendoMapping.code):\(primary.map { String(describing: ObjectIdentifier($0)) } ?? ""):\(players.generation)"
         if token != nextToken { token = nextToken; repeater.reset() }
         for action in repeater.actions(input, time: now) { receive(action) }
     }

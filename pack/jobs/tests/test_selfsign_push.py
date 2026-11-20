@@ -211,6 +211,15 @@ class PushGameRoute(unittest.TestCase):
         self.assertEqual((calls["sign"], calls["identity"], calls["team"]), (1, 1, ["TEAM1"]))
         self.assertNotIn("installedBy", out); self.assertNotIn("externalBundleId", rec)
 
+    def test_launcher_push_drops_old_external(self):
+        """推进启动器那份 = 这台现在用的就是它：之前记的别的工具（externalBundleId / externalAt）清掉，免费签名提醒不再被旧事实压住"""
+        _, _, rec = self.run_push(False, dict(shellId="SNOW", bundleId="io.s2arm.games.team1", externalBundleId=ALT, externalAt=5))
+        self.assertNotIn("externalBundleId", rec); self.assertNotIn("externalAt", rec)
+
+    def test_external_push_records_time(self):
+        _, _, rec = self.run_push(True, {}, meta=dict(cert_sha1="ab", team="TEAMALT"))
+        self.assertIsInstance(rec.get("externalAt"), float)
+
     def test_launcher_without_shell_asks_install(self):
         with self.assertRaises(Failure) as e:
             self.run_push(False, {})

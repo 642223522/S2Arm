@@ -157,9 +157,9 @@ import XCTest
                                                                          hidNames: ["Lic Pro Controller", "DualSense Wireless Controller"]), false))
         try snapshot("system_long_en", Self.panel(c, S(pads: [edge, S.Pad(id: ObjectIdentifier(NSObject()), name: "Xbox Wireless Controller", family: .xbox)]), false))
         try snapshot("system_two_zh", Self.panel(c, S(pads: [ps, xb]), true))
-        let all: [(ControllerIcon.Glyph, String)] = [(.left, "Joy-Con 2 (L)"), (.right, "Joy-Con 2 (R)"), (.leftSideways, "Joy-Con 2 (L) 单只玩家"), (.rightSideways, "Joy-Con 2 (R) 单只玩家"), (.pairHead, "Joy-Con 2 (L + R)"), (.pro, "Switch 2 Pro / Pro"),
+        let all: [(ControllerIcon.Glyph, String)] = [(.left, "Joy-Con 2 (L)"), (.right, "Joy-Con 2 (R)"), (.leftSideways, "Joy-Con 2 (L) 单只玩家"), (.rightSideways, "Joy-Con 2 (R) 单只玩家"), (.pairHead, "Joy-Con 2 (L + R)"), (.pro2, "Switch 2 Pro"), (.pro, "Switch Pro"),
             (.gen1Left, "Joy-Con (L)"), (.gen1Right, "Joy-Con (R) *"), (.gen1LeftSideways, "Joy-Con (L) 单只玩家"), (.gen1RightSideways, "Joy-Con (R) 单只玩家"), (.gen1Pair, "Joy-Con (L/R) *"), (.playstation, "PlayStation"),
-            (.xbox, "Xbox *"), (.otherPad, "其他（同 Pro）"), (.unknown, "未知型号"), (.keyboard, "键盘 *"), (.mobile, "手机（预留，面板不显示）")]
+            (.xbox, "Xbox *"), (.otherPad, "其他 / 第三方（缺省）"), (.unknown, "未知型号"), (.keyboard, "键盘 *"), (.mobile, "手机（预留，面板不显示）")]
         try snapshot("icons", VStack(alignment: .leading, spacing: 10) {
             ForEach(Array(all.enumerated()), id: \.offset) { _, item in
                 HStack(spacing: 14) { ControllerIcon(glyph: item.0).frame(width: 72, height: 54); Text(item.1).font(.system(size: 15, weight: .semibold)) }
@@ -227,11 +227,13 @@ import XCTest
         XCTAssertEqual(sideFresh.units, [.single(id: "L1", kind: 2), .single(id: "R1", kind: 3)], "SL + SR 登记过的单只：另一侧接上自己一位，不并成一对")
         XCTAssertTrue(sideFresh.wantsSplit(devices: devs), "传输层缺省拼成一对时要照分配拆开")
         XCTAssertEqual(sideFresh.helperPlan(devices: devs)["split"] as? Bool, true)
-        // 拔掉再接：横握标记跟着清掉，没再按 SL + SR 就照旧自动拼
+        // 拔掉再接：横握标记留着（11-20：拆开的一对断开重连不能自己拼回），要拼回就按 L + R
         sideFresh.reconcile(devices: [], mergedPair: false, system: [])
         sideFresh.reconcile(devices: [devs[0]], mergedPair: false, system: [])
         sideFresh.reconcile(devices: devs, mergedPair: true, system: [])
-        XCTAssertEqual(sideFresh.units, [.pair(left: "L1", right: "R1")], "没按 SL + SR 的单只：另一侧接上照旧自动拼成一对")
+        XCTAssertEqual(sideFresh.units, [.single(id: "L1", kind: 2), .single(id: "R1", kind: 3)], "拆开过的：拔掉再接仍各自一位")
+        sideFresh.ns2(id: "L1", kind: 2, gesture: 3, at: 20); sideFresh.ns2(id: "R1", kind: 3, gesture: 3, at: 20.1)
+        XCTAssertEqual(sideFresh.units, [.pair(left: "L1", right: "R1")], "按 L + R 拼回一对")
         // 同侧两只（L + L / R + R）永远不拼：第二只左只自己一位
         var sameSide = PlayerAssignment()
         sameSide.reconcile(devices: [devs[0]], mergedPair: false, system: [])
@@ -242,7 +244,7 @@ import XCTest
         var savedSide = PlayerAssignment()
         savedSide.ns2(id: "R1", kind: 3, gesture: 2, at: 0)
         let decoded = try JSONDecoder().decode(PlayerAssignment.self, from: JSONEncoder().encode(savedSide))
-        XCTAssertEqual(decoded.sideways, ["R1"])
+        XCTAssertEqual(decoded.sideways, [], "横握记号不存偏好：重开 App 后第一次连上照常拼成一对")
         // ×：平时清掉一位 = 连着但没有玩家位、不自动排回来；分配中再按键登记就回来
         var x = PlayerAssignment()
         x.reconcile(devices: devs, mergedPair: true, system: [.init(name: "DualSense", index: 0)])
@@ -418,12 +420,12 @@ import XCTest
         one1.reconcile(devices: [], mergedPair: false, system: [c0], gen1: Array(jc.prefix(2)))
         one1.gen1(id: "L1", side: 0, gesture: 2, at: 0, present: Array(jc.prefix(2)), system: [c0])
         XCTAssertEqual(one1.units, [.gen1(id: "L1", side: 0), .gen1(id: "R1", side: 1)], "只有一套：不用学也认得出")
-        // 负对照：两套都没学过、直接按 SL + SR：认不出是哪一套，只登记按的那只、别的不动
+        // 两套都没学过、直接按 SL + SR：照连接先后认出是第 2 套，只拆第 2 套（11-20：不再多出一只）
         var unknown = PlayerAssignment()
         unknown.reconcile(devices: [], mergedPair: false, system: two, gen1: jc)
         unknown.gen1(id: "L2", side: 0, gesture: 2, at: 0, present: jc, system: two)
-        XCTAssertEqual(unknown.units, [.system(name: combined, index: 0), .system(name: combined, index: 1), .gen1(id: "L2", side: 0)], "认不出：只登记这一只，不拆别人")
-        XCTAssertTrue(unknown.splitCombined.isEmpty)
+        XCTAssertEqual(unknown.units, [.system(name: combined, index: 0), .gen1(id: "L2", side: 0), .gen1(id: "R2", side: 1)], "照先后认出第 2 套：只拆它")
+        XCTAssertEqual(unknown.splitCombined, [c1])
         // 四套一代 → 学过后四套各拆开 = 8 位；拆一套时其余三套照旧合成
         let gen1Eight = (1...4).flatMap { [PlayerAssignment.Gen1Device(id: "l\($0)", side: 0), .init(id: "r\($0)", side: 1)] }
         let gen1Four = (0..<4).map { PlayerAssignment.SystemKey(name: combined, index: $0) }
@@ -455,6 +457,90 @@ import XCTest
         XCTAssertEqual(c.units.count, 8, "最多 8 位（同原机）")
         XCTAssertEqual(playerLights(5), [true, false, false, true], "P5 灯同原机")
         XCTAssertEqual(playerLights(8), [false, true, true, false], "P8 灯同原机")
+        // 手柄上的玩家灯：灯型位 0–3 = 四颗灯（同 playerLights）；一对两只同一位
+        XCTAssertEqual([1, 2, 4, 5, 8, 9].map { PlayerAssignment.lightMask(player: $0) }, [0x1, 0x3, 0xF, 0x9, 0x6, 0x0])
+        var lit = PlayerAssignment()
+        lit.reconcile(devices: [.init(id: "L1", kind: 2), .init(id: "R1", kind: 3), .init(id: "P1", kind: 1)], mergedPair: true,
+                      system: [.init(name: "DualSense Wireless Controller", index: 0)])
+        let masks = lit.lightMasks()
+        XCTAssertEqual(masks["L1"], masks["R1"], "一对两只亮同一位")
+        XCTAssertEqual(Set(masks.keys), ["L1", "R1", "P1"], "系统手柄不在这张表（走 playerIndex）")
+        XCTAssertEqual(lit.systemPlayers().count, 1)
+        XCTAssertEqual(SystemControllers.playerIndex(2), .index2)
+        XCTAssertEqual(SystemControllers.playerIndex(5), .indexUnset, "GameController 只有 1–4 号")
+        // 系统合成的一代 Joy-Con 断一只 / 接回：名字变了（(L/R) → (L) → (L/R)）也留在原位（同 Joy-Con 2），不跑到最后
+        typealias U = PlayerAssignment.Unit
+        var jc1 = PlayerAssignment()
+        let lr = PlayerAssignment.SystemKey(name: "Joy-Con (L/R)", index: 0), lOnly = PlayerAssignment.SystemKey(name: "Joy-Con (L)", index: 0)
+        let ds = PlayerAssignment.SystemKey(name: "DualSense Wireless Controller", index: 0)
+        let hidLR: [PlayerAssignment.Gen1Device] = [.init(id: "jl", side: 0), .init(id: "jr", side: 1)]
+        jc1.reconcile(devices: [], mergedPair: false, system: [lr, ds], gen1: hidLR)
+        XCTAssertEqual(jc1.units, [U.system(name: lr.name, index: 0), U.system(name: ds.name, index: 0)])
+        jc1.reconcile(devices: [], mergedPair: false, system: [ds, lOnly], gen1: [hidLR[0]])
+        XCTAssertEqual(jc1.units.first, U.system(name: lOnly.name, index: 0), "断了右只：剩左只，还是 P1")
+        jc1.reconcile(devices: [], mergedPair: false, system: [ds, lr], gen1: [hidLR[0]])   // 系统表先到、HID 表还没看到右只
+        jc1.reconcile(devices: [], mergedPair: false, system: [ds, lr], gen1: hidLR)
+        XCTAssertEqual(jc1.units.first, U.system(name: lr.name, index: 0), "接回：原位并回（两张表一前一后到也一样）")
+        // 两套一代各连一只（系统给两位单只「Joy-Con (L)」「Joy-Con (R)」）：分配中左只按 L、右只按 R 同一刻 → 合成一对（同 Joy-Con 2）
+        var cross = PlayerAssignment()
+        let sl = PlayerAssignment.SystemKey(name: "Joy-Con (L)", index: 0), sr = PlayerAssignment.SystemKey(name: "Joy-Con (R)", index: 0)
+        let halves: [PlayerAssignment.Gen1Device] = [.init(id: "a-L", side: 0), .init(id: "b-R", side: 1)]
+        cross.reconcile(devices: [], mergedPair: false, system: [sl, sr], gen1: halves)
+        XCTAssertEqual(cross.units.count, 2)
+        cross.gen1(id: "a-L", side: 0, gesture: 3, at: 10, present: halves, system: [sl, sr])
+        cross.gen1(id: "b-R", side: 1, gesture: 3, at: 10.1, present: halves, system: [sl, sr])
+        XCTAssertEqual(cross.units, [U.gen1Pair(left: "a-L", right: "b-R")])
+        cross.reconcile(devices: [], mergedPair: false, system: [sl, sr], gen1: halves)
+        XCTAssertEqual(cross.units.count, 1, "合成后系统那两位不再排回来")
+        // 两只单只左手一代（系统给「Joy-Con (L)」第 0、1 只）：第 2 只按 SL + SR 改按设备读，再拿掉第 1 只——
+        //   第 2 只的系统号码挪成第 0 只，不能又以系统那一位多排一次（11-20 模拟手柄移除后玩家列表多一只）
+        var g1TwoLeft = PlayerAssignment()
+        let l0 = PlayerAssignment.SystemKey(name: "Joy-Con (L)", index: 0), l1 = PlayerAssignment.SystemKey(name: "Joy-Con (L)", index: 1)
+        let both: [PlayerAssignment.Gen1Device] = [.init(id: "A", side: 0), .init(id: "B", side: 0)]
+        g1TwoLeft.reconcile(devices: [], mergedPair: false, system: [l0, l1], gen1: both)
+        g1TwoLeft.gen1(id: "B", side: 0, gesture: 2, at: 1, present: both, system: [l1])
+        XCTAssertTrue(g1TwoLeft.units.contains(U.gen1(id: "B", side: 0)))
+        g1TwoLeft.reconcile(devices: [], mergedPair: false, system: [l0], gen1: [.init(id: "B", side: 0)])
+        XCTAssertEqual(g1TwoLeft.units, [U.gen1(id: "B", side: 0)], "同一只只占一位")
+        // 左只单独连着、分配时按 SL + SR（横握单只），之后右只接上（系统合成「Joy-Con (L/R)」）：右只自己排一位，不消失、也不把左只算两次
+        var lateRight = PlayerAssignment()
+        let lOnly0 = PlayerAssignment.SystemKey(name: "Joy-Con (L)", index: 0), lr0 = PlayerAssignment.SystemKey(name: "Joy-Con (L/R)", index: 0)
+        lateRight.reconcile(devices: [], mergedPair: false, system: [lOnly0], gen1: [.init(id: "a", side: 0)])
+        lateRight.gen1(id: "a", side: 0, gesture: 2, at: 1, present: [.init(id: "a", side: 0)], system: [lOnly0])
+        XCTAssertEqual(lateRight.units, [U.gen1(id: "a", side: 0)])
+        let pair: [PlayerAssignment.Gen1Device] = [.init(id: "a", side: 0), .init(id: "b", side: 1)]
+        lateRight.reconcile(devices: [], mergedPair: false, system: [lr0], gen1: [.init(id: "a", side: 0)])   // 系统表先到、HID 表还没看到右只
+        lateRight.reconcile(devices: [], mergedPair: false, system: [lr0], gen1: pair)
+        lateRight.reconcile(devices: [], mergedPair: false, system: [lr0], gen1: pair)
+        XCTAssertEqual(lateRight.units, [U.gen1(id: "a", side: 0), U.gen1(id: "b", side: 1)], "右只自己一位（同 Joy-Con 2）")
+        // 两套合成的一对（「Joy-Con (L/R)」第 0、1 只，没按过 L + R 学到），第 1 套的左只按 SL + SR：拆的是第 1 套（照连接先后对），不多出一只
+        var twoPairs = PlayerAssignment()
+        let p0 = PlayerAssignment.SystemKey(name: "Joy-Con (L/R)", index: 0), p1 = PlayerAssignment.SystemKey(name: "Joy-Con (L/R)", index: 1)
+        let g1Four: [PlayerAssignment.Gen1Device] = [.init(id: "aL", side: 0), .init(id: "aR", side: 1), .init(id: "bL", side: 0), .init(id: "bR", side: 1)]
+        twoPairs.reconcile(devices: [], mergedPair: false, system: [p0, p1], gen1: g1Four)
+        twoPairs.gen1(id: "aL", side: 0, gesture: 2, at: 1, present: g1Four, system: [p0, p1])
+        XCTAssertEqual(twoPairs.units, [U.gen1(id: "aL", side: 0), U.gen1(id: "aR", side: 1), U.system(name: p1.name, index: 1)])
+        twoPairs.reconcile(devices: [], mergedPair: false, system: [p0, p1], gen1: g1Four)
+        XCTAssertEqual(twoPairs.units.count, 3, "拆完不多出一只")
+        // Joy-Con 2 对照：一对断一只剩单只、接回拼回原位
+        var jc2 = PlayerAssignment()
+        jc2.reconcile(devices: [.init(id: "L", kind: 2), .init(id: "R", kind: 3)], mergedPair: true, system: [ds])
+        jc2.reconcile(devices: [.init(id: "L", kind: 2)], mergedPair: true, system: [ds])
+        XCTAssertEqual(jc2.units.first, U.single(id: "L", kind: 2))
+        jc2.reconcile(devices: [.init(id: "L", kind: 2), .init(id: "R", kind: 3)], mergedPair: true, system: [ds])
+        XCTAssertEqual(jc2.units.first, U.pair(left: "L", right: "R"))
+        // 模拟手柄开关：偏好开着且没有更新源才有（同模拟更新）
+        XCTAssertTrue(ControllerColorSimulator.isAllowed(preference: true, info: [:]))
+        XCTAssertFalse(ControllerColorSimulator.isAllowed(preference: false, info: [:]))
+        XCTAssertFalse(ControllerColorSimulator.isAllowed(preference: true, info: ["SUFeedURL": "https://example.invalid/appcast.xml"]), "发行版没有")
+        // 一代 Joy-Con SPI 0x6050 应答 → 机身 / 按键颜色；全 FF（第三方没写颜色）不算
+        var reply = [UInt8](repeating: 0, count: 49); reply[0] = 0x21; reply[13] = 0x90; reply[14] = 0x10; reply[15] = 0x50; reply[16] = 0x60; reply[19] = 6
+        reply.replaceSubrange(20..<26, with: [0x0a, 0xb9, 0xe6, 0x00, 0x1e, 0x1e])
+        XCTAssertEqual(Gen1HIDWatcher.color(report: reply), ControllerTint(body: 0x0ab9e6, buttons: 0x001e1e))
+        reply.replaceSubrange(20..<26, with: Array(repeating: 0xff, count: 6))
+        XCTAssertNil(Gen1HIDWatcher.color(report: reply), "全 FF = 没写过颜色，照缺省色")
+        reply[15] = 0x3d
+        XCTAssertNil(Gen1HIDWatcher.color(report: reply), "别的地址的 SPI 应答不当颜色")
         XCTAssertEqual(NS2SecondHelper.environment(base: [:], upstream: "/u", rememberDevice: true, group: 3)["S2A_NS2_GROUP"], "3", "第 4 组连接程序")
         XCTAssertEqual(NS2SecondHelper.environment(base: [:], upstream: "/u", rememberDevice: true, group: 3)["S2A_NS2_DEFAULTS_SUITE"], "org.s2arm.macos.game.4", "每组自己的重连记忆")
         let eight = Self.isolated()
@@ -474,6 +560,236 @@ import XCTest
         let ps = SystemControllers.Pad(id: ObjectIdentifier(NSObject()), name: "DualSense", family: .playstation)
         try snapshot("assign_zh", Self.panel(ctl, SystemControllers(pads: [ps]), true))
         try snapshot("assign_en", Self.panel(ctl, SystemControllers(pads: [ps]), false))
+    }
+
+    /// 模拟手柄面板（本地 / 自测构建的开发工具）：加两只一代（同一套）、一只 Joy-Con 2（断开）、一台 PS5，看排版
+    @MainActor
+    func testControllerSimulatorPanel() throws {
+        let sim = ControllerColorSimulator.shared
+        sim.clear()
+        sim.setColor(.joyCon1, left: true, ControllerColorSimulator.gen1Presets[5])
+        sim.setColor(.joyCon1, left: false, ControllerColorSimulator.gen1Presets[4])
+        sim.addJoyCon(.joyCon1, left: true)
+        sim.addJoyCon(.joyCon1, left: false)
+        XCTAssertEqual(sim.kits.count, 1, "另一边连着：补进同一套")
+        XCTAssertEqual(sim.systemPads().map(\.name), ["Joy-Con (L/R)"], "一代两只都连着：系统合成一个")
+        sim.addJoyCon(.joyCon2, left: true)
+        sim.toggleConnected(sim.rows[2])
+        sim.addWhole(.ps5)
+        XCTAssertEqual(sim.rows.count, 4)
+        sim.selected = Set(sim.rows.prefix(2).map(\.id))
+        XCTAssertTrue(sim.canPressSelected)
+        try snapshot("controller_simulator", ControllerSimulatorPanelView().frame(width: 440, height: 400))
+        sim.clear()
+    }
+
+    /// 一代 Joy-Con 全情境（11-20 一次对齐）：几套一代各左右只连 / 断，系统手柄表与 HID 表照连接顺序生成（同真机、同模拟手柄），
+    ///   每一步看玩家列表。规则：同一只实体手柄最多一位；一套里有一只按设备登记了，系统那一位就不排，另一侧自己一位（同 Joy-Con 2）
+    func testGen1JoyConScenarios() {
+        struct Kit { var l: String?; var r: String? }
+        func feed(_ kits: [Kit]) -> ([PlayerAssignment.SystemKey], [PlayerAssignment.Gen1Device]) {
+            var keys: [PlayerAssignment.SystemKey] = [], gen1: [PlayerAssignment.Gen1Device] = [], seen: [String: Int] = [:]
+            for k in kits {
+                let name: String? = k.l != nil && k.r != nil ? "Joy-Con (L/R)" : k.l != nil ? "Joy-Con (L)" : k.r != nil ? "Joy-Con (R)" : nil
+                if let name { keys.append(.init(name: name, index: seen[name, default: 0])); seen[name, default: 0] += 1 }
+                if let l = k.l { gen1.append(.init(id: l, side: 0)) }
+                if let r = k.r { gen1.append(.init(id: r, side: 1)) }
+            }
+            return (keys, gen1)
+        }
+        func step(_ a: inout PlayerAssignment, _ kits: [Kit]) { let (s, g) = feed(kits); a.reconcile(devices: [], mergedPair: false, system: s, gen1: g) }
+        func press(_ a: inout PlayerAssignment, _ kits: [Kit], _ id: String, _ side: Int, _ gesture: Int, at t: TimeInterval) {
+            let (s, g) = feed(kits); a.gen1(id: id, side: side, gesture: gesture, at: t, present: g, system: s)
+        }
+        func show(_ a: PlayerAssignment) -> [String] {
+            a.units.map { u -> String in
+                switch u {
+                case let .system(n, i): return "\(n)#\(i)"
+                case let .gen1(id, _): return id
+                case let .gen1Pair(l, r): return l + "+" + r
+                default: return "?"
+                }
+            }
+        }
+        // A 一对拆开（左只 SL + SR）→ 两位；右只断开 → 剩左只；右只接回 → 右只自己一位（不并回、不多一只）
+        var a = PlayerAssignment(); var k = [Kit(l: "a", r: "b")]
+        step(&a, k); XCTAssertEqual(show(a), ["Joy-Con (L/R)#0"], "A 连上缺省合成一位")
+        press(&a, k, "a", 0, 2, at: 1); step(&a, k); XCTAssertEqual(show(a), ["a", "b"], "A SL + SR 拆成两位")
+        k[0].r = nil; step(&a, k); step(&a, k); XCTAssertEqual(show(a), ["a"], "A 右只断开")
+        k[0].r = "b"; step(&a, k); step(&a, k); XCTAssertEqual(show(a), ["a", "b"], "A 右只接回自己一位")
+        // B 一对没拆：右只断开 → 原位剩左只；接回 → 原位并回一对
+        var b = PlayerAssignment(); var kb = [Kit(l: "x", r: nil), Kit(l: "a", r: "b")]
+        kb[0].l = nil; step(&b, kb)
+        kb[1].r = nil; step(&b, kb); XCTAssertEqual(show(b), ["Joy-Con (L)#0"], "B 右只断开")
+        kb[1].r = "b"; step(&b, kb); XCTAssertEqual(show(b), ["Joy-Con (L/R)#0"], "B 接回并回一对")
+        // C 两套合成的一对，第 1 套左只 SL + SR → 拆的是第 1 套
+        var c = PlayerAssignment(); var kc = [Kit(l: "a1", r: "b1"), Kit(l: "a2", r: "b2")]
+        step(&c, kc); XCTAssertEqual(show(c), ["Joy-Con (L/R)#0", "Joy-Con (L/R)#1"])
+        press(&c, kc, "a1", 0, 2, at: 1); step(&c, kc); XCTAssertEqual(show(c), ["a1", "b1", "Joy-Con (L/R)#1"], "C 拆第 1 套")
+        // E 接着两只右只都断开 → 第 1 套剩 a1（按设备）、第 2 套剩系统的左只；不重复、不少
+        kc[0].r = nil; kc[1].r = nil; step(&c, kc); step(&c, kc); XCTAssertEqual(show(c), ["a1", "Joy-Con (L)#1"], "E 两只右只断开")
+        // K 两套，拆第 2 套
+        var kk = PlayerAssignment(); let k2 = [Kit(l: "a1", r: "b1"), Kit(l: "a2", r: "b2")]
+        step(&kk, k2); press(&kk, k2, "a2", 0, 2, at: 1); step(&kk, k2)
+        XCTAssertEqual(show(kk), ["Joy-Con (L/R)#0", "a2", "b2"], "K 拆第 2 套")
+        // D 两套没拆，两只右只都断开 → 各剩左只、原位
+        var d = PlayerAssignment(); var kd = [Kit(l: "a1", r: "b1"), Kit(l: "a2", r: "b2")]
+        step(&d, kd); kd[0].r = nil; kd[1].r = nil; step(&d, kd); XCTAssertEqual(show(d), ["Joy-Con (L)#0", "Joy-Con (L)#1"], "D")
+        // F 两套各只连左只，移除第 1 套 → 剩一位
+        var f = PlayerAssignment(); var kf = [Kit(l: "A", r: nil), Kit(l: "B", r: nil)]
+        step(&f, kf); XCTAssertEqual(show(f), ["Joy-Con (L)#0", "Joy-Con (L)#1"], "F 两只左只各一位")
+        kf.removeFirst(); step(&f, kf); XCTAssertEqual(show(f), ["Joy-Con (L)#0"], "F 移除一套")
+        // G 两只单只左手，第 2 只 SL + SR，再移除第 1 只 → 只剩第 2 只（按设备），不重复
+        var g = PlayerAssignment(); var kg = [Kit(l: "A", r: nil), Kit(l: "B", r: nil)]
+        step(&g, kg); press(&g, kg, "B", 0, 2, at: 1); step(&g, kg); XCTAssertEqual(show(g), ["Joy-Con (L)#0", "B"], "G 第 2 只改按设备")
+        kg.removeFirst(); step(&g, kg); step(&g, kg); XCTAssertEqual(show(g), ["B"], "G 移除第 1 只")
+        // H 左只单独连、SL + SR，之后右只接上同一套 → 右只自己一位
+        var h = PlayerAssignment(); var kh = [Kit(l: "a", r: nil)]
+        step(&h, kh); press(&h, kh, "a", 0, 2, at: 1); step(&h, kh); XCTAssertEqual(show(h), ["a"])
+        kh[0].r = "b"; step(&h, kh); step(&h, kh); XCTAssertEqual(show(h), ["a", "b"], "H 后接上的右只自己一位")
+        // I 两套各只连一边（一左一右），同按 L + R → 合成一对；之后不重复
+        var i = PlayerAssignment(); let ki = [Kit(l: "a", r: nil), Kit(l: nil, r: "b")]
+        step(&i, ki); XCTAssertEqual(show(i), ["Joy-Con (L)#0", "Joy-Con (R)#0"])
+        press(&i, ki, "a", 0, 3, at: 5); press(&i, ki, "b", 1, 3, at: 5.1); step(&i, ki); XCTAssertEqual(show(i), ["a+b"], "I 跨套 L + R 合成")
+        // L 四套一代（P1–P4 各一对），各种拆 / 合 / 断 / 接回交错，每一步每只实体手柄都只在一位里
+        var m = PlayerAssignment()
+        var km = [Kit(l: "1L", r: "1R"), Kit(l: "2L", r: "2R"), Kit(l: "3L", r: "3R"), Kit(l: "4L", r: "4R")]
+        step(&m, km); XCTAssertEqual(show(m), ["Joy-Con (L/R)#0", "Joy-Con (L/R)#1", "Joy-Con (L/R)#2", "Joy-Con (L/R)#3"], "L 四套各一位")
+        press(&m, km, "3R", 1, 2, at: 1); step(&m, km)
+        XCTAssertEqual(show(m), ["Joy-Con (L/R)#0", "Joy-Con (L/R)#1", "3R", "3L", "Joy-Con (L/R)#3"], "L 拆第 3 套（按的那只留原位、另一只接在后面；系统仍列着第 3 套合成的那一位，第 4 套还是 #3）")
+        press(&m, km, "1L", 0, 2, at: 2); step(&m, km)
+        XCTAssertEqual(show(m), ["1L", "1R", "Joy-Con (L/R)#1", "3R", "3L", "Joy-Con (L/R)#3"], "L 再拆第 1 套")
+        km[1].r = nil; step(&m, km); step(&m, km)   // 第 2 套断右只（没拆过）
+        XCTAssertEqual(show(m), ["1L", "1R", "Joy-Con (L)#0", "3R", "3L", "Joy-Con (L/R)#2"], "L 第 2 套断右只：原位剩左只；第 4 套号码挪成 #2 也跟着走")
+        km[0].r = nil; step(&m, km); step(&m, km)   // 第 1 套断右只（拆过）
+        XCTAssertEqual(show(m), ["1L", "Joy-Con (L)#1", "3R", "3L", "Joy-Con (L/R)#1"], "L 第 1 套断右只")
+        km[1].r = "2R"; step(&m, km); step(&m, km)   // 第 2 套接回
+        XCTAssertEqual(Set(show(m)).count, show(m).count, "L 不重复")
+        XCTAssertEqual(show(m).count, 5, "L 第 2 套接回：1L、2 一对、3R、3L、4 一对")
+        km[0].r = "1R"; step(&m, km); step(&m, km)   // 第 1 套接回（拆过：右只自己一位）
+        XCTAssertTrue(show(m).contains("1R") && show(m).contains("1L"), "L 第 1 套右只接回自己一位")
+        press(&m, km, "3R", 1, 3, at: 10); press(&m, km, "3L", 0, 3, at: 10.1); step(&m, km)   // 第 3 套按 L + R 合回
+        XCTAssertTrue(show(m).contains("3L+3R"), "L 第 3 套合回一对")
+        XCTAssertEqual(show(m).count, 5, "L 合回后：1L、1R、2 一对、3 一对、4 一对")
+        let allIDs = ["1L", "1R", "2L", "2R", "3L", "3R", "4L", "4R"]
+        let (keysNow, devsNow) = feed(km)
+        let owners = m.gen1Owners(system: keysNow, gen1: devsNow)
+        for id in allIDs {
+            let direct = m.units.filter { if case let .gen1(x, _) = $0 { return x == id }; if case let .gen1Pair(l, r) = $0 { return l == id || r == id }; return false }.count
+            let viaSystem = m.units.filter { if case let .system(n, i) = $0 { return owners[.init(name: n, index: i)]?.values.contains(id) == true }; return false }.count
+            XCTAssertEqual(direct + viaSystem, 1, "L \(id) 恰好一位")
+        }
+        // M 两套，分配时拆第 1 套、按「完成」，第 1 套两只都断开再接回 → 照常回来（接回是新连上：缺省合成一位，同 Joy-Con 2 断开后忘了横握）
+        var mm = PlayerAssignment(); var km2 = [Kit(l: "1L", r: "1R"), Kit(l: "2L", r: "2R")]
+        step(&mm, km2); press(&mm, km2, "1L", 0, 2, at: 1)
+        do { let (s0, g0) = feed(km2); mm.finish(presentSystem: s0, devices: [], gen1: g0) }
+        step(&mm, km2); XCTAssertEqual(show(mm), ["1L", "1R", "Joy-Con (L/R)#1"], "M 拆完按完成")
+        km2[0] = Kit(l: nil, r: nil); step(&mm, km2); step(&mm, km2); XCTAssertEqual(show(mm), ["Joy-Con (L/R)#0"], "M 第 1 套断开：第 2 套号码挪成 #0 跟着走")
+        km2[0] = Kit(l: "1L", r: "1R"); step(&mm, km2); step(&mm, km2)
+        XCTAssertEqual(show(mm).count, 2, "M 第 1 套接回：两套都在，现在是 \(show(mm))")
+        // N 同 M，但照真机 / 模拟手柄的样子：一只一只断开 / 接回，系统手柄表与 HID 表一前一后到（两种先后都试）
+        for systemFirst in [true, false] {
+            var n = PlayerAssignment(); var kn = [Kit(l: "1L", r: "1R"), Kit(l: "2L", r: "2R")]
+            func lag(_ next: [Kit]) {
+                let (s0, g0) = feed(kn), (s1, g1) = feed(next)
+                if systemFirst { n.reconcile(devices: [], mergedPair: false, system: s1, gen1: g0) } else { n.reconcile(devices: [], mergedPair: false, system: s0, gen1: g1) }
+                n.reconcile(devices: [], mergedPair: false, system: s1, gen1: g1); kn = next
+            }
+            lag(kn); press(&n, kn, "1L", 0, 2, at: 1)
+            do { let (s0, g0) = feed(kn); n.finish(presentSystem: s0, devices: [], gen1: g0) }
+            lag(kn); XCTAssertEqual(show(n), ["1L", "1R", "Joy-Con (L/R)#1"], "N\(systemFirst) 拆完")
+            var k1 = kn; k1[0].l = nil; lag(k1)
+            k1[0].r = nil; lag(k1); XCTAssertEqual(show(n), ["Joy-Con (L/R)#0"], "N\(systemFirst) 第 1 套两只都断开")
+            k1[0].l = "1L"; lag(k1)
+            k1[0].r = "1R"; lag(k1)
+            XCTAssertEqual(show(n).count, 2, "N\(systemFirst) 第 1 套接回：两套都在，现在是 \(show(n))")
+        }
+        // O 11-20 日志重现：两套，拆第 2 套（左只 SL + SR）、按完成；第 2 套左只断开再接回 → 左只回来自己一位，不消失
+        for systemFirst in [true, false] {
+            var o = PlayerAssignment(); var ko = [Kit(l: "1L", r: "1R"), Kit(l: "2L", r: "2R")]
+            func lag(_ next: [Kit]) {
+                let (s0, g0) = feed(ko), (s1, g1) = feed(next)
+                if systemFirst { o.reconcile(devices: [], mergedPair: false, system: s1, gen1: g0) } else { o.reconcile(devices: [], mergedPair: false, system: s0, gen1: g1) }
+                o.reconcile(devices: [], mergedPair: false, system: s1, gen1: g1); ko = next
+            }
+            lag(ko); press(&o, ko, "2L", 0, 2, at: 1)
+            do { let (s0, g0) = feed(ko); o.finish(presentSystem: s0, devices: [], gen1: g0) }
+            lag(ko); XCTAssertEqual(show(o), ["Joy-Con (L/R)#0", "2L", "2R"], "O\(systemFirst) 拆第 2 套")
+            var k2 = ko; k2[1].l = nil; lag(k2); XCTAssertEqual(show(o), ["Joy-Con (L/R)#0", "2R"], "O\(systemFirst) 左只断开")
+            k2[1].l = "2L"; lag(k2); XCTAssertEqual(show(o), ["Joy-Con (L/R)#0", "2R", "2L"], "O\(systemFirst) 左只接回自己一位")
+        }
+        // P 11-20 日志重现：拆开后又按 L + R 合回一对（按设备读的一对），右只断开 → 剩左只；右只接回 → 原位并回一对（没重新配对也一样，同 Joy-Con 2）
+        for systemFirst in [true, false] {
+            var q = PlayerAssignment(); var kq = [Kit(l: "1L", r: "1R"), Kit(l: "2L", r: "2R")]
+            func lag(_ next: [Kit]) {
+                let (s0, g0) = feed(kq), (s1, g1) = feed(next)
+                if systemFirst { q.reconcile(devices: [], mergedPair: false, system: s1, gen1: g0) } else { q.reconcile(devices: [], mergedPair: false, system: s0, gen1: g1) }
+                q.reconcile(devices: [], mergedPair: false, system: s1, gen1: g1); kq = next
+            }
+            lag(kq); press(&q, kq, "1L", 0, 2, at: 1); lag(kq)
+            press(&q, kq, "1L", 0, 3, at: 5); press(&q, kq, "1R", 1, 3, at: 5.1); lag(kq)
+            XCTAssertEqual(show(q), ["1L+1R", "Joy-Con (L/R)#1"], "P\(systemFirst) 合回一对")
+            var k3 = kq; k3[0].r = nil; lag(k3); XCTAssertEqual(show(q), ["1L", "Joy-Con (L/R)#0"], "P\(systemFirst) 右只断开（第 2 套号码挪成 #0）")
+            k3[0].r = "1R"; lag(k3); XCTAssertEqual(show(q), ["1L+1R", "Joy-Con (L/R)#1"], "P\(systemFirst) 右只接回：原位并回")
+            // 剩下那只先按 SL + SR（要横握单只）→ 接回的另一只自己一位
+            k3[0].r = nil; lag(k3); press(&q, k3, "1L", 0, 2, at: 9); k3[0].r = "1R"; lag(k3)
+            XCTAssertEqual(show(q), ["1L", "Joy-Con (L/R)#1", "1R"], "P\(systemFirst) 按过 SL + SR 就不并")
+        }
+        // J 全部移除
+        step(&i, []); step(&a, []); step(&c, []); XCTAssertEqual(show(i) + show(a) + show(c), [], "J 全部移除")
+    }
+
+    /// Joy-Con 2 两套都拆开（SL + SR），任一只断开再接回都不拼回一组；没拆过的一对断一只再接回照旧拼回原位
+    func testJoyCon2SplitSurvivesReconnect() {
+        struct Kit { var l: Bool; var r: Bool }
+        func devices(_ kits: [Kit]) -> (devs: [PlayerAssignment.Device], merged: Set<Int>) {
+            var devs: [PlayerAssignment.Device] = [], merged = Set<Int>()
+            for (n, k) in kits.enumerated() {
+                if k.l { devs.append(.init(id: "\(n + 1)L", kind: 2, group: 100 + n)) }
+                if k.r { devs.append(.init(id: "\(n + 1)R", kind: 3, group: 100 + n)) }
+                if k.l && k.r { merged.insert(100 + n) }
+            }
+            return (devs, merged)
+        }
+        func show(_ a: PlayerAssignment) -> [String] {
+            a.units.map { u in switch u { case let .pair(l, r): return l + "+" + r; case let .single(id, _): return id; default: return "?" } }
+        }
+        for victim in ["1L", "1R", "2L", "2R"] {
+            var a = PlayerAssignment(); var kits = [Kit(l: true, r: true), Kit(l: true, r: true)]
+            func step() { let d = devices(kits); a.reconcile(devices: d.devs, mergedGroups: d.merged, system: []) }
+            step(); XCTAssertEqual(show(a), ["1L+1R", "2L+2R"])
+            a.ns2(id: "1L", kind: 2, gesture: 2, at: 1); a.ns2(id: "2R", kind: 3, gesture: 2, at: 2); step()
+            XCTAssertEqual(show(a), ["1L", "1R", "2R", "2L"], "两套都拆开")
+            let n = Int(String(victim.first!))! - 1, left = victim.hasSuffix("L")
+            if left { kits[n].l = false } else { kits[n].r = false }; step()
+            if left { kits[n].l = true } else { kits[n].r = true }; step()
+            XCTAssertEqual(show(a).count, 4, "\(victim) 断开重连：仍是四位，不拼回一组（现在 \(show(a))）")
+        }
+        // 11-20 日志重现：两套都拆开，1L 断开重连、再 1R 断开重连；再两只一起断开重连 → 都不拼回
+        var c = PlayerAssignment(); var kc = [Kit(l: true, r: true), Kit(l: true, r: true)]
+        func stepC() { let d = devices(kc); c.reconcile(devices: d.devs, mergedGroups: d.merged, system: []) }
+        stepC(); c.ns2(id: "1L", kind: 2, gesture: 2, at: 1); c.ns2(id: "2L", kind: 2, gesture: 2, at: 2); stepC()
+        kc[0].l = false; stepC(); kc[0].l = true; stepC()
+        kc[0].r = false; stepC(); kc[0].r = true; stepC()
+        XCTAssertEqual(show(c).count, 4, "一只一只断开重连：仍是四位（现在 \(show(c))）")
+        kc[0] = Kit(l: false, r: false); stepC(); kc[0] = Kit(l: true, r: true); stepC()
+        XCTAssertEqual(show(c).count, 4, "两只一起断开重连：仍是四位（现在 \(show(c))）")
+        // 按 L + R 才拼回
+        c.ns2(id: "1L", kind: 2, gesture: 3, at: 10); c.ns2(id: "1R", kind: 3, gesture: 3, at: 10.1); stepC()
+        XCTAssertEqual(show(c).count, 3, "按 L + R 拼回一对")
+        // 11-20 日志重现：跨套按 L + R 拼成一对（2L + 1R），1R 断开再接回 → 原位并回，不变成单只
+        var x = PlayerAssignment(); var kx = [Kit(l: true, r: true), Kit(l: true, r: true)]
+        func stepX() { let d = devices(kx); x.reconcile(devices: d.devs, mergedGroups: d.merged, system: []) }
+        stepX(); x.ns2(id: "1L", kind: 2, gesture: 2, at: 1); x.ns2(id: "2L", kind: 2, gesture: 2, at: 2); stepX()
+        x.ns2(id: "2L", kind: 2, gesture: 3, at: 5); x.ns2(id: "1R", kind: 3, gesture: 3, at: 5.1); stepX()
+        XCTAssertTrue(show(x).contains("2L+1R"), "跨套拼成一对")
+        kx[0].r = false; stepX(); XCTAssertFalse(show(x).contains("2L+1R"))
+        kx[0].r = true; stepX(); XCTAssertTrue(show(x).contains("2L+1R"), "1R 接回：原位并回（现在 \(show(x))）")
+        XCTAssertEqual(show(x).count, 3)
+        // 对照：没拆过的一对断一只再接回 → 原位拼回
+        var b = PlayerAssignment(); var kb = [Kit(l: true, r: true)]
+        func stepB() { let d = devices(kb); b.reconcile(devices: d.devs, mergedGroups: d.merged, system: []) }
+        stepB(); kb[0].r = false; stepB(); XCTAssertEqual(show(b), ["1L"]); kb[0].r = true; stepB(); XCTAssertEqual(show(b), ["1L+1R"], "没拆过：接回拼回原位")
     }
 
     private func snapshot<V: View>(_ name: String, _ root: V) throws {

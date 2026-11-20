@@ -2968,8 +2968,11 @@ def push_game(c, gid, ph, steps=True):
             progs = push_programs(c, ph.client(w), [gid], rec, team, bid, signer)
     old = rec.get("games", {}).get(gid) or {}
     rec = layout.load_device(c, ph.key)
+    # 别的工具装的：记下包名与时刻（总控台不查手机时也认得出这台是别的工具装的；游戏库的免费签名提醒按时刻判谁在后，layout.launcher_free_in_use）。
+    # 推进启动器那份 = 这台现在用的就是它：之前记的别的工具作废
+    rec = {k: v for k, v in rec.items() if ext or k not in ("externalBundleId", "externalAt")}
     layout.save_device(c, ph.key, dict(rec, games=dict(rec.get("games") or {}, **{gid: dict(old, program=progs[gid])}), at=time.time(),
-                                       **({"externalBundleId": ph.bid} if ext else {})))   # 总控台不查手机时也认得出这台是别的工具装的
+                                       **({"externalBundleId": ph.bid, "externalAt": time.time()} if ext else {})))
     if not ext:   # 别的工具装的：签名身份由玩家在总控台「把签名身份交给手机」单独交（phoneIdentity，按团队对得上的那个包名），推送不顺带
         deliver_identity(c, ph)   # 0.6.0：手机自签要的私钥交给 App（交过了 / 交不出都直接跳过，不挡推送）
     if steps: c.begin("把这款的资源推进 iPhone（只推变了的文件；第一次大游戏要几分钟）", 3, 3)
@@ -3043,10 +3046,11 @@ def push_selected(c):
             finally:
                 atomic(state_path, state)
     # 有款没推成：整单按失败报（#1756：原先照报「完成」，两端界面都不看逐款结果，进度条跑完、手机上还是「需要导入」、总控台还是「更新」）。
-    #   原因用第一款失败的原话与错误码（已是给玩家的话）；失败页「重试」再推一轮，推成的那几款程序包已在手机上，按记录跳过
+    #   原因用第一款失败的原话与错误码（已是给玩家的话）；失败页「重试」再推一轮，推成的那几款程序包已在手机上，按记录跳过。
+    #   逐款结果放进机读事实 facts {games: [{gameId, ok, code?, message?}]}：失败页逐款写「哪一款、因为什么」，「重试」只推没成的那几款
     if state["failed"]:
         first = next(r for r in rows if not r["ok"])
-        raise Failure(first["message"], code=first["code"])
+        raise Failure(first["message"], code=first["code"], facts=dict(games=rows))
     return dict(games=rows, done=len(state["done"]), failed=len(state["failed"]), remaining=len(games) - len(state["done"]))
 
 

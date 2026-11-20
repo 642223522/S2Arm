@@ -199,7 +199,7 @@ class Upgrade3Tests(JobCase):
         b = L / "iPhone" / B; root = b / "roots/tb@pkg-1"
         (root / "romfs").mkdir(parents=True); (root / "romfs/huge.bin").write_bytes(b"x" * 100)
         (root / "main.npdm").write_bytes(b"META-B"); (root / "main.fixups.tsv").write_text(""); (root / "build.log").write_text("log")
-        (b / "roots/tb@现行").symlink_to("tb@pkg-1")
+        (b / "roots/tb@现行").symlink_to("tb@pkg-1")   # 老库：现行还是软链（读的时候迁移成指针文件，layout.current_root）
         (b / "tb资源包").mkdir(); (b / "tb资源包/manifest.json").write_text('{"index_sha256": "pb"}')
         (b / "shell.id").write_text("SIDB"); (b / "tb.ipa").write_bytes(b"ipa")
         (L / "iPhone" / C / "tc资源包").mkdir(parents=True); (L / "iPhone" / C / "tc.ipa").write_bytes(b"ipa")
@@ -299,6 +299,49 @@ class DevicesTests(JobCase):
         with patch("sys.stderr"):
             self.assertEqual([k for k, _ in layout.devices(self.c)], ["phone-1"])
             self.assertEqual(layout.install_record(self.c, A), dict(at=5, free=False, device="甲机", deviceKey="phone-1"))
+
+
+class FreeSignReminderTests(JobCase):
+    """install_record 的免费到期只给「这台手机现在用的就是启动器免费签的那份」（维护者 11-20：换了自签 / 别的方式后提醒一直挂着取消不了）。
+    期望按规则手写：签名时刻 at=1000，7 天 = 604800 秒"""
+    OWN, ALT = "io.s2arm.games.team1", "com.altstore.s2arm"
+
+    def put(self, **rec):
+        d = self.c.library / layout.DEVICES; d.mkdir(parents=True, exist_ok=True)
+        atomic(d / "phone-1.json", dict(dict(games={A: {}}, shellId="SID", bundleId=self.OWN, signed=dict(at=1000, free=True, device="甲机")), **rec))
+
+    def test_launcher_free_estimates_seven_days(self):
+        self.put()
+        self.assertEqual(layout.install_record(self.c, A),
+                         dict(at=1000, free=True, device="甲机", deviceKey="phone-1", expires=605800, expiresKnown=False))
+
+    def test_real_expiry_wins(self):
+        self.put(signed=dict(at=1000, free=True, device="甲机", expires=500000))
+        self.assertEqual(layout.install_record(self.c, A),
+                         dict(at=1000, free=True, device="甲机", deviceKey="phone-1", expires=500000, expiresKnown=True))
+
+    def test_switched_away_no_reminder(self):
+        gone = dict(at=1000, free=False, device="甲机", deviceKey="phone-1")
+        cases = (("之后推进了别的工具装的 S2Arm", dict(externalBundleId=self.ALT, externalAt=2000)),
+                 ("旧记录：推过别的工具装的、没记时刻", dict(externalBundleId=self.ALT)),
+                 ("总控台选用的是别的那份", dict(chosenBundleId=self.ALT)),
+                 ("证书 / 付费账号重装过（这次签名不是免费的）", dict(signed=dict(at=1000, free=False, device="甲机"))))
+        for name, rec in cases:
+            with self.subTest(name):
+                self.put(**rec)
+                self.assertEqual(layout.install_record(self.c, A), gone)
+
+    def test_setting_switched_but_not_reinstalled_still_reminds(self):
+        """电脑设置换成证书签 / 别的工具签、手机上那份免费签的还没重装：照样 7 天到期，照旧提醒（设置只管下一次怎么签）"""
+        self.put()
+        (self.c.private / "devcert").mkdir(parents=True, exist_ok=True)
+        self.assertEqual(layout.install_record(self.c, A),
+                         dict(at=1000, free=True, device="甲机", deviceKey="phone-1", expires=605800, expiresKnown=False))
+
+    def test_launcher_reinstalled_after_external_shows_again(self):
+        """先推过别的工具装的（externalAt=500），后来又用启动器免费签装回来（at=1000）：现在用的是启动器那份，照旧提醒"""
+        self.put(externalBundleId=self.ALT, externalAt=500, chosenBundleId=self.OWN.upper())
+        self.assertTrue(layout.install_record(self.c, A)["free"])
 
 
 class LocationTests(JobCase):
@@ -419,17 +462,18 @@ class LocationTests(JobCase):
             layout.remove_tree(x)
 
     def test_cross_volume_move_keeps_links_as_links(self):
-        """跨卷移动不把链接展开（Windows junction 同理，Windows 实机另验）：产物根的「现行」这类相对链接原样；指向文件夹内部的绝对链接改指新位置"""
+        """跨卷移动不把链接展开（Windows junction 同理，Windows 实机另验）：相对链接原样；指向文件夹内部的绝对链接改指新位置；现行指针文件照拷"""
         d = layout.game_dir(self.c, A)
         root = d / "build" / "k" / "roots"; (root / "t@pkg").mkdir(parents=True); (root / "t@pkg" / "main.npdm").write_bytes(b"n")
-        (root / "t@现行").symlink_to("t@pkg")                                   # 相对
+        (root / "t@现行").write_text("t@pkg\n")                                   # 现行指针文件
+        (root / "rel-link").symlink_to("t@pkg")                                  # 相对
         (d / "abs-link").symlink_to(root / "t@pkg")                            # 绝对、指向文件夹内部
         with patch.object(layout, "_same_volume", return_value=False):
             moved = layout.move_game(self.c, A, self.disk)
         r = moved / "build" / "k" / "roots"
-        self.assertTrue((r / "t@现行").is_symlink()); self.assertEqual(os.readlink(r / "t@现行"), "t@pkg")
+        self.assertTrue((r / "rel-link").is_symlink()); self.assertEqual(os.readlink(r / "rel-link"), "t@pkg")
         self.assertTrue((moved / "abs-link").is_symlink()); self.assertEqual(Path(os.readlink(moved / "abs-link")), r / "t@pkg")
-        self.assertEqual((r / "t@现行" / "main.npdm").read_bytes(), b"n")
+        self.assertEqual((r / "t@现行").read_text(), "t@pkg\n"); self.assertEqual((r / "t@pkg" / "main.npdm").read_bytes(), b"n")
 
     def test_last_used_location_is_default_for_new_games(self):
         layout.use_location(self.c, self.disk)

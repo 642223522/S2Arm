@@ -191,7 +191,8 @@ def integrity_note(c):
         if library.integrity_skipped(game):
             c.diagnostic(library.SOURCE_INTEGRITY_FAILED_NOTE, code="source_integrity_skipped", severity="warning")
         # 出包时资源包核对没对上（pack/verify.py 改黄后照常出包，原因落 <包目录>.verify_warn.txt；全对时它会删掉旧的）：现行产物根里还留着就补一句
-        if any(layout.build_dir(c, gid, create=False).glob("*/roots/*@现行/pkg/*.verify_warn.txt")):  # 非玩家句（路径）
+        roots = (layout.current_root(c, p) for p in layout.build_dir(c, gid, create=False).glob("*/roots/*" + layout.CURRENT))
+        if any(r is not None and any(r.glob("pkg/*.verify_warn.txt")) for r in roots):
             c.diagnostic(PACK_VERIFY_NOTE, code="source_integrity_skipped", severity="warning")
     except (Failure, OSError, ValueError, KeyError, TypeError):
         pass

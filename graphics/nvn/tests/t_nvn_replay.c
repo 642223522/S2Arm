@@ -2726,6 +2726,105 @@ static void q_env(stream *s) {
 }
 static void q_draw(stream *s) { p_draw *d = put(s, OP_DRAW, sizeof *d); d->prim = 4; d->count = 3; d->instances = 1; }
 
+// #1581 H：合成输入，只验替身后端调用轨迹，不代表 GPU 像素/真机通过。
+static void t_pass_shared_extent(void) {
+    int old_area = g_flag_pass_area;
+    for (int area = 0; area < 2; area++) for (int mip = 0; mip < 2; mip++) {
+        pass_fresh(); g_flag_pass_area = area; g_resolve_rc = 0;
+        tex_t a = mk_tex(781, 0, NVN_FORMAT_RGBA8, 64 << mip, 16 << mip, 1 + mip, 0);
+        tex_t z = mk_tex(782, 0x10000, NVN_FORMAT_DEPTH24_STENCIL8, 16, 64, 1, 0);
+        stream s = {0}; q_env(&s);
+        p_set_rt r; memset(&r, 0, sizeof r); r.n = 2; r.color[1] = &a; r.depth = &z;
+        if (mip) { r.has_cview[1] = 1; r.cview[1].set_levels = 1; r.cview[1].base_level = 1; r.cview[1].nlevels = 1; }
+        uint8_t *rt = put(&s, OP_SET_RT, set_rt_size(&r)); set_rt_put(rt, &r);
+        q_draw(&s); end(&s); submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+        int found = 0;
+        for (int i = 0; i < g_npd && i < 8; i++) {
+            const nvn_gpu_pass_desc *d = &g_pd[i];
+            if (d->ncolor == 2 && d->color[1].view && d->depth.view) {
+                found++;
+                CHECK(!d->color[0].view && d->w == 16 && d->h == 16);
+                CHECK(d->color[1].load == NVN_GPU_LOAD_LOAD); // fresh 大附件的全清不能只覆盖交集
+            }
+        }
+        CHECK(found == 1 && g_npd <= 8);
+        CHECK(rp_S.vp[0][2] == 64 && rp_S.vp[0][3] == 36);
+        CHECK(g_last_dyn.nvp == 1 && g_last_dyn.vp[0][2] == 64); // 保留逻辑视口
+        CHECK(nvn_unimpl_kinds() == 0);
+    }
+    g_flag_pass_area = old_area; pass_fresh();
+}
+
+static void t_pass_shared_pending_clear(void) {
+    // draw=0 走提交末 flush；draw=1 在绘制前落地。depth_only 不清模板，不能误清另一面。
+    for (int draw = 0; draw < 2; draw++) for (int depth_only = 0; depth_only < 2; depth_only++) {
+        pass_fresh(); g_resolve_rc = 0;
+        tex_t a = mk_tex(783, 0, NVN_FORMAT_RGBA8, 64, 16, 1, 0);
+        tex_t z = mk_tex(784, 0x10000, NVN_FORMAT_DEPTH24_STENCIL8, 16, 64, 1, 0);
+        stream s = {0}; q_env(&s); put_set_rt(&s, &a, &z);
+        p_clear_color *cc = put(&s, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf; cc->rgba[0] = 0.25f;
+        p_clear_ds *cd = put(&s, OP_CLEAR_DS, sizeof *cd); cd->depth_mask = 1; cd->depth = 0.5f; cd->stencil_mask = depth_only ? 0 : 0xff; cd->stencil = 7;
+        if (draw) q_draw(&s);
+        end(&s); submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+        int color_clear = -1, depth_clear = -1, shared = -1;
+        for (int i = 0; i < g_npd && i < 8; i++) {
+            const nvn_gpu_pass_desc *d = &g_pd[i];
+            if (d->color[0].view && d->color[0].load == NVN_GPU_LOAD_CLEAR && d->w == 64 && d->h == 16) {
+                color_clear = i; CHECK(!d->depth.view && d->color[0].clear.f[0] == 0.25f);
+            }
+            if (d->depth.view && d->depth.load == NVN_GPU_LOAD_CLEAR && d->w == 16 && d->h == 64) {
+                depth_clear = i; CHECK(!d->color[0].view && d->clear_depth == 0.5f);
+                CHECK(d->stencil.load == (depth_only ? NVN_GPU_LOAD_LOAD : NVN_GPU_LOAD_CLEAR));
+                if (!depth_only) CHECK(d->clear_stencil == 7);
+            }
+            if (d->color[0].view && d->depth.view) {
+                shared = i; CHECK(d->w == 16 && d->h == 16);
+                CHECK(d->color[0].load == NVN_GPU_LOAD_LOAD && d->depth.load == NVN_GPU_LOAD_LOAD && d->stencil.load == NVN_GPU_LOAD_LOAD);
+            }
+        }
+        CHECK(g_npd <= 8 && color_clear >= 0 && depth_clear >= 0);
+        if (draw) CHECK(shared > color_clear && shared > depth_clear);
+        CHECK(nvn_unimpl_kinds() == 0);
+    }
+    pass_fresh();
+}
+
+static void t_pass_shared_explicit_rect(void) {
+    for (int ds = 0; ds < 2; ds++) {
+    pass_fresh(); g_resolve_rc = 0;
+    tex_t a = mk_tex(785, 0, NVN_FORMAT_RGBA8, 64, 16, 1, 0);
+    tex_t z = mk_tex(786, 0x10000, NVN_FORMAT_DEPTH24_STENCIL8, 16, 64, 1, 0);
+    stream s = {0}; q_env(&s); put_set_rt(&s, &a, &z); q_draw(&s);
+    p_scissor *sc = put(&s, OP_SCISSOR, sizeof *sc); sc->x = ds ? 0 : 8; sc->y = ds ? 8 : 0; sc->w = ds ? 12 : 40; sc->h = ds ? 40 : 12;
+    if (ds) {
+        p_clear_ds *cd = put(&s, OP_CLEAR_DS, sizeof *cd); cd->depth_mask = 1; cd->depth = 0.5f; cd->stencil_mask = 0x0f; cd->stencil = 7;
+    } else {
+        p_clear_color *cc = put(&s, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0x7; cc->rgba[1] = 0.75f;
+    }
+    end(&s); submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+    // 逐点计数仅代表发出的矩形并集；保留掩码，不能漏共享区外 32×12 或重清。
+    unsigned char seen[12][40]; memset(seen, 0, sizeof seen);
+    CHECK(g_ncr > 0 && g_ncr <= 8 && g_npd <= 8);
+    for (int i = 0; i < g_ncr && i < 8; i++) {
+        const nvn_gpu_clear *c = &g_cr[i].d;
+        if (ds) CHECK(c->color == -1 && c->depth && c->stencil && c->depth_value == 0.5f && c->stencil_mask == 0x0f && c->stencil_value == 7);
+        else CHECK(c->color == 0 && c->color_mask == 0x7 && c->value.f[1] == 0.75f && !c->depth && !c->stencil);
+        CHECK(g_cr[i].npd > 0 && g_cr[i].npd <= 8 && g_cr[i].ends < g_cr[i].npd);
+        if (g_cr[i].npd > 0 && g_cr[i].npd <= 8) {
+            const nvn_gpu_pass_desc *d = &g_pd[g_cr[i].npd - 1];
+            CHECK(c->x >= 0 && c->y >= 0 && (uint64_t)c->x + c->w <= d->w && (uint64_t)c->y + c->h <= d->h);
+        }
+        int32_t cx = ds ? c->y : c->x, cy = ds ? c->x : c->y;
+        uint32_t cw = ds ? c->h : c->w, ch = ds ? c->w : c->h;
+        CHECK(cx >= 8 && cy >= 0 && (uint64_t)cx + cw <= 48 && (uint64_t)cy + ch <= 12);
+        for (int y = 0; y < 12; y++) for (int x = 8; x < 48; x++)
+            if (x >= cx && y >= cy && (uint64_t)x < (uint64_t)cx + cw && (uint64_t)y < (uint64_t)cy + ch) seen[y][x - 8]++;
+    }
+    for (int y = 0; y < 12; y++) for (int x = 0; x < 40; x++) CHECK(seen[y][x] == 1);
+    CHECK(nvn_unimpl_kinds() == 0); pass_fresh();
+    }
+}
+
 static void put_set_rt_v(stream *s, const tex_t *color, const view_t *cv);
 // 连续绘制只改一项状态：后端必须拿到该次绘制的管线描述；不变的命令不额外重取。
 static void dirty_strip(stream *s, uint64_t base) {
@@ -6313,6 +6412,9 @@ int main(int argc, char **argv) {
     t_buf_multi_tail();
     t_buf_ops();
     t_copy_b2t();
+    t_pass_shared_extent();
+    t_pass_shared_pending_clear();
+    t_pass_shared_explicit_rect();
     t_pass_clear_fold();
     t_pass_depth_shadow();
     t_pass_no_attachment();

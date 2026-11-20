@@ -3340,9 +3340,11 @@ static int alias_overwritten(const alias_key *a, int64_t lo, int64_t hi, uint64_
     }
     return 0;
 }
+static void cpu_key_gpu_write(const alias_key *k, const tex_t *t);   // with tex_cpu_content
 static void alias_note_write(const tex_t *t) {   // gpw_mark: the texture's storage was GPU-written now
     alias_key ak; alias_key_of(&ak, t);
-    pthread_mutex_lock(&g_smu); if (nvn_hm_get(&g_alias, &ak)) nvn_hm_put(&g_alias_wrote, &ak, (void *)(uintptr_t)(g_fence + 1)); pthread_mutex_unlock(&g_smu);
+    pthread_mutex_lock(&g_smu); int shared = nvn_hm_get(&g_alias, &ak) != NULL; if (shared) nvn_hm_put(&g_alias_wrote, &ak, (void *)(uintptr_t)(g_fence + 1)); pthread_mutex_unlock(&g_smu);
+    cpu_key_gpu_write(&ak, t);   // CPU-written textures over the same storage (g_cpu_key)
 }
 // 存储接管后被丢掉的贴图（弱引用）：它们本该在 GPU 用完后释放；还活着的就是有别处留着（内存统计行报数量 / 大小、其中多少被块压缩别名表留着）
 static NSHashTable *g_evict_w; static os_unfair_lock g_evict_lk = OS_UNFAIR_LOCK_INIT; static uint64_t g_evict_n;
@@ -5504,11 +5506,83 @@ static int pool_gpu_written(const void *pool) {
     return r;
 }
 static nvn_hmap g_cpu_unc = {.klen = 8};   // serial → pool: the uncompressed 2D textures tex_cpu_content took from their storage, which leave the CPU-written set at their pool's first GPU write (under g_cpu_tex_mu)
+// CPU-written textures (NvPkg) by the sharing table's key of their storage (#768): an NvPkg is uploaded from guest memory and never sees a GPU write made through another object.
+//   One storage named by an image object (IMAGE: a GPU texture in the sharing table) and by a sampled object the CPU-written rule took (tex_cpu_content: a 3D or block-compressed
+//   texture whose storage held data at its first use) was two textures: the compute kernel wrote one, the shaders sampled the other, which held guest memory's bytes for good
+//   (#768 Trails in the Sky the 2nd: a 3D RGBA16F volume a compute kernel writes, its deferred lighting black). The first GPU write through the shared texture makes such an
+//   NvPkg that texture (cpu_key_gpu_write); tex_cpu_content takes no storage the GPU already wrote that way. NvPkgs another rule made (WriteTexels, a CPU write since init, a
+//   linear texture) stay as they are: the split is logged instead (split_log). Packaged-layout textures are not kept here (game assets: no GPU texture shares their storage).
+//   At most CPU_KEY_MAX objects per storage (the oldest leaves); under g_cpu_tex_mu
+enum { CPU_KEY_MAX = 8 };
+typedef struct { uint32_t n; uint64_t ser[CPU_KEY_MAX]; uint32_t flags[CPU_KEY_MAX]; uint8_t content[CPU_KEY_MAX], logged[CPU_KEY_MAX]; } cpu_key_set;
+static nvn_hmap g_cpu_key = {.klen = sizeof(alias_key)};   // alias key → cpu_key_set *
+static _Atomic uint32_t g_cpu_key_n;   // entries in g_cpu_key (the GPU-write path looks only when there are some)
+static void cpu_key_add(const tex_t *t, int content) {   // content: taken from storage by tex_cpu_content
+    alias_key k; alias_key_of(&k, t);
+    pthread_mutex_lock(&g_cpu_tex_mu);
+    cpu_key_set *s = nvn_hm_get(&g_cpu_key, &k);
+    if (!s && (s = calloc(1, sizeof *s))) { nvn_hm_put(&g_cpu_key, &k, s); atomic_fetch_add(&g_cpu_key_n, 1); }
+    if (s) { uint32_t i = 0; while (i < s->n && s->ser[i] != t->serial) i++;
+        if (i == CPU_KEY_MAX) { memmove(s->ser, s->ser + 1, (CPU_KEY_MAX - 1) * sizeof *s->ser); memmove(s->flags, s->flags + 1, (CPU_KEY_MAX - 1) * sizeof *s->flags);
+            memmove(s->content, s->content + 1, CPU_KEY_MAX - 1); memmove(s->logged, s->logged + 1, CPU_KEY_MAX - 1); i = CPU_KEY_MAX - 1; }
+        else if (i == s->n) s->n++;
+        s->ser[i] = t->serial; s->flags[i] = t->d.flags; s->content[i] = (uint8_t)content; s->logged[i] = 0; }
+    pthread_mutex_unlock(&g_cpu_tex_mu);
+}
+// One storage, two textures: the GPU wrote it through one (gpu: the shared texture, or a CPU-written texture of its own) and a CPU-written object over it does not see that. Once per
+//   object; each kind of the other side (still an NvPkg / made a GPU texture of its own by cpu_unc_drop) × format class (block-compressed / 3D / other) logs its first 4 cases, in the
+//   near-miss line's form
+static uint64_t g_split_logged;   // lines logged so far (t_nvn_img_split)
+static void split_log(const alias_key *k, uint64_t cser, uint32_t cflags, int pkg, const tex_t *g, int gpkg) {
+    static int n[2][3]; int cls = fmt_compressed(k->d.format) ? 0 : k->d.target == NVN_TEXTURE_TARGET_3D ? 1 : 2;
+    if (n[pkg][cls]++ >= 4) return;
+    g_split_logged++; const nvn_texdesc *d = &k->d;
+    MLOG("[alias] split pool=%#llx off=%#llx cpu=[ser%llu t%d f%d %ux%ux%u lv%u flags%#x %s] gpu=[ser%llu t%d f%d %ux%ux%u lv%u flags%#x %s]: one storage, two textures; the GPU write through one does not reach the other",
+         (unsigned long long)k->pool, (unsigned long long)k->off, (unsigned long long)cser, d->target, d->format, d->width, d->height, d->depth, d->levels, cflags,
+         pkg ? "CPU-written" : "own GPU texture", (unsigned long long)g->serial, g->d.target, g->d.format, g->d.width, g->d.height, g->d.depth, g->d.levels, g->d.flags, gpkg ? "CPU-written" : "shared");
+}
+// The GPU wrote storage k through t (alias_note_write). Through the shared texture: the CPU-written objects over it taken from storage (tex_cpu_content) resolve to that texture from
+//   now on. Every other CPU-written object over it that resolves elsewhere (another rule's NvPkg, one cpu_unc_drop made its own GPU texture; or t is itself CPU-written, a write into
+//   its own copy) is logged once. Submit thread (encoding)
+static void cpu_key_gpu_write(const alias_key *k, const tex_t *t) {
+    if (!atomic_load_explicit(&g_cpu_key_n, memory_order_relaxed)) return;
+    uint64_t ser[CPU_KEY_MAX], join[CPU_KEY_MAX]; uint32_t flags[CPU_KEY_MAX]; uint8_t content[CPU_KEY_MAX]; uint32_t n = 0, nj = 0;
+    pthread_mutex_lock(&g_cpu_tex_mu);   // nearly every write: no CPU-written object over its storage
+    cpu_key_set *s = nvn_hm_get(&g_cpu_key, k);
+    if (s) for (uint32_t i = 0; i < s->n; i++) if (!s->logged[i] && s->ser[i] != t->serial) { ser[n] = s->ser[i]; flags[n] = s->flags[i]; content[n++] = s->content[i]; }
+    pthread_mutex_unlock(&g_cpu_tex_mu);
+    if (!n) return;
+    __unsafe_unretained id w = tex_get(t->serial); int wpkg = [w isKindOfClass:[NvPkg class]];
+    pthread_mutex_lock(&g_smu); id shared = hm_get_id(&g_alias, k); pthread_mutex_unlock(&g_smu);
+    if (!wpkg && !shared) return;
+    for (uint32_t i = 0; i < n; i++) {
+        __unsafe_unretained id o = tex_get(ser[i]);
+        if (!o || o == shared || o == w) continue;
+        int pkg = [o isKindOfClass:[NvPkg class]];
+        if (!wpkg && pkg && content[i] && !((NvPkg *)o)->view) { join[nj++] = ser[i]; continue; }
+        split_log(k, ser[i], flags[i], pkg, t, wpkg);
+        pthread_mutex_lock(&g_cpu_tex_mu); if ((s = nvn_hm_get(&g_cpu_key, k))) for (uint32_t j = 0; j < s->n; j++) if (s->ser[j] == ser[i]) s->logged[j] = 1; pthread_mutex_unlock(&g_cpu_tex_mu);
+    }
+    if (!nj) return;
+    pthread_mutex_lock(&g_cpu_tex_mu);   // out of the CPU-written set (and this table) first, as cpu_unc_drop: a resolution in between must not make the NvPkg again
+    for (uint32_t i = 0; i < nj; i++) { nvn_hm_del(&g_cpu_unc, &join[i]); if (g_cpu_tex.klen) nvn_hm_del(&g_cpu_tex, &join[i]);
+        if ((s = nvn_hm_get(&g_cpu_key, k))) for (uint32_t j = 0; j < s->n; j++) if (s->ser[j] == join[i]) {
+            s->n--; memmove(s->ser + j, s->ser + j + 1, (s->n - j) * sizeof *s->ser); memmove(s->flags + j, s->flags + j + 1, (s->n - j) * sizeof *s->flags);
+            memmove(s->content + j, s->content + j + 1, s->n - j); memmove(s->logged + j, s->logged + j + 1, s->n - j); break; } }
+    if ((s = nvn_hm_get(&g_cpu_key, k)) && !s->n) { free(nvn_hm_del(&g_cpu_key, k)); atomic_fetch_sub(&g_cpu_key_n, 1); }
+    pthread_mutex_unlock(&g_cpu_tex_mu);
+    for (uint32_t i = 0; i < nj; i++) tex_put(join[i], shared);   // the NvPkg is dropped behind the submissions that use it (obj_drop)
+    static int nl; if (nl++ < 8) MLOG("storage the GPU wrote through its shared texture ser=%llu: %u CPU-written texture(s) over it resolve to that texture from now on (#768)", (unsigned long long)t->serial, nj);
+}
 static void pool_gpuw_drop(const void *pool) {   // the pool is finalized (nvn_be_alias_drop_pool): its address may come back as another pool
     uint64_t k = (uint64_t)(uintptr_t)pool;
     pthread_mutex_lock(&g_pool_gpuw_mu); if (nvn_hm_del(&g_pool_gpuw, &k)) atomic_fetch_add(&g_pool_gpuw_gen, 1); pthread_mutex_unlock(&g_pool_gpuw_mu);
     pthread_mutex_lock(&g_cpu_tex_mu);
     for (uint32_t i = 0; i < g_cpu_unc.cap;) if (g_cpu_unc.vals[i] == pool) { uint64_t ser; memcpy(&ser, g_cpu_unc.keys + (size_t)i * 8, 8); nvn_hm_del(&g_cpu_unc, &ser); } else i++;
+    for (uint32_t i = 0; i < g_cpu_key.cap;) {
+        alias_key ck; memcpy(&ck, g_cpu_key.keys + (size_t)i * g_cpu_key.klen, sizeof ck);
+        if (g_cpu_key.vals[i] && ck.pool == k) { free(nvn_hm_del(&g_cpu_key, &ck)); atomic_fetch_sub(&g_cpu_key_n, 1); } else i++;
+    }
     pthread_mutex_unlock(&g_cpu_tex_mu);
 }
 // Storage the CPU wrote before the texture's first use (upstream reference implementation, MIT, 37c7eaa8 + 75e5ddd8; every game). Until the GPU first uses a texture it has not written it,
@@ -5532,6 +5606,9 @@ static int tex_cpu_content(const tex_t *t) {
     if (!unc && bcal_has(t)) return 0;   // the GPU wrote this storage through such an image (No Man's Sky): its bytes come from there (bcal_sync), guest memory holds stale ones
     if ((t->d.flags & (NVN_TEXTURE_FLAGS_COMPRESSIBLE | NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET | NVN_TEXTURE_FLAGS_SPARSE))
         || ((t->d.flags & NVN_TEXTURE_FLAGS_IMAGE) && !fmt_compressed(t->d.format))) return 0;
+    alias_key ak; alias_key_of(&ak, t);   // the GPU wrote this storage through a shared texture (an image object over it, #768): that texture holds its content, not guest memory
+    pthread_mutex_lock(&g_smu); int gpu = nvn_hm_get(&g_alias_wrote, &ak) != NULL; pthread_mutex_unlock(&g_smu);
+    if (gpu) return 0;
     if (!mem_any_touched(t->mem, t->L.size)) return 0;
     if (unc) { uint64_t ser = t->serial; pthread_mutex_lock(&g_cpu_tex_mu); nvn_hm_put(&g_cpu_unc, &ser, (void *)t->pool); pthread_mutex_unlock(&g_cpu_tex_mu); }
     static uint64_t n[2]; if (n[unc]++ < 4) MLOG("texture written by the CPU before its first use ser=%llu %ux%ux%u format %#x%s pool flags %#x: uploaded from its storage, re-uploaded when it changes (%llu so far)",
@@ -5811,7 +5888,8 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
     }
     id have = tex_get(t->serial);
     if (!packaged && !have && DM_GAME_TEX_DIRTY_UPLOAD && t->mem && on_sub_thread()) { int nvn_ft_written(const tex_t *); packaged = nvn_ft_written(t); }   // first use of a texture the CPU wrote since init without a flush (hle_nvn.c)
-    if (!packaged && !have && on_sub_thread() && tex_cpu_content(t)) { nvn_be_tex_cpu_written(t); packaged = 1; }
+    int content = 0;   // taken from its storage (tex_cpu_content): a GPU write through a shared texture over it makes it that texture (cpu_key_gpu_write)
+    if (!packaged && !have && on_sub_thread() && tex_cpu_content(t)) { nvn_be_tex_cpu_written(t); packaged = content = 1; }
     if (!packaged && !have && on_sub_thread() && tex_linear_needs_upload(t)) { nvn_be_tex_cpu_written(t); packaged = 1; }   // 建不了零拷贝视图的只读线性贴图：上传 + CPU 写后重传（#255 / #262）   // storage the CPU wrote before its first use (tex_cpu_content)
     if (packaged && atomic_load(&g_sub_thread_set) && !on_sub_thread()) {
         // S2Arm 10-25：上传批只归提交线程（up_owner_check），上屏线程等别的线程用到 CPU 写过的贴图时不上传：已传过的用现有那份（脏了留给提交线程下次用到时重传），
@@ -5914,6 +5992,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
         if (pk->sparse) sparse_view(pk, t);
         zb_report(t, pk->sparse ? (unsigned)pk->vbase : 0, "upload");
         tex_put(t->serial, pk);
+        if (!t->has_layout && !pk->sparse) cpu_key_add(t, content);   // by its storage (g_cpu_key)
         if (g_snap_newtex_log > 0) { g_snap_newtex_log--; MLOG("即时存档诊断：新建预排布贴图 ser=%llu %ux%u 级 %u 格式 %#x 池 %p+%#llx 稀疏 %d 从显卡贴图带过来的格 %d", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.levels, t->d.format, (void *)t->pool, (unsigned long long)t->off, pk->sparse, gn); }
         if (g_snap_ghost_pend.n) snap_ghost_apply(t->serial, pk);
         if (gn) carry_gpu(t, pk->tex, gfrom, gr, gn, gb);   // after tex_put: pkg_gpu_wrote notes the pages on this NvPkg
@@ -9005,6 +9084,10 @@ static void img_fit_upgrade(void) {
     g_imfit_npend = 0;
     os_unfair_lock_unlock(&g_rmu);
 }
+static void img_fit_note(int tid) {   // queued for img_fit_upgrade (once). Caller holds g_rmu
+    for (int i = 0; i < g_imfit_npend; i++) if (g_imfit_pend[i] == tid) return;
+    if (g_imfit_npend < 16) g_imfit_pend[g_imfit_npend++] = tid;
+}
 // A texture bound to an image slot that was made without the shader-write usage: the NVN object lacks NVN_TEXTURE_FLAGS_IMAGE, which the Switch's hardware does not check (Ryujinx gives
 // every storage-capable format the storage usage). The Witcher 3 makes its 1x1 R32F eye-adaptation values with COMPRESSIBLE only and has a compute kernel write them as images: bound as
 // the dummy, every write was lost, exposure stayed at its initial value and the direct picture was overexposed (10-26; the renderer does not overexpose). The texture is upgraded in place
@@ -9035,8 +9118,7 @@ static id<MTLTexture> img_fit(int tid, id<MTLTexture> t, int dpf, uint64_t *rid)
     if (pf == MTLPixelFormatInvalid || tid < 0 || tid >= g_ntreg) {
         RED_ONCE(106, "image read as %s in the shader, texture of Metal format %lu (texture ID %d): no view of that class, the slot gets the dummy image", u ? "uint" : "int", (unsigned long)t.pixelFormat, tid); return nil; }
     if (cls && !(base.usage & MTLTextureUsagePixelFormatView)) {   // made without the format-view usage (it costs lossless compression, so textures get it only when needed): upgraded before the next
-        int seen = 0; for (int i = 0; i < g_imfit_npend; i++) seen |= g_imfit_pend[i] == tid;   // draw pass opens, as an upgrade copies the texture and so cannot run inside this draw's pass;
-        if (!seen && g_imfit_npend < 16) g_imfit_pend[g_imfit_npend++] = tid;                  // until then the slot gets the dummy image
+        img_fit_note(tid);   // draw pass opens, as an upgrade copies the texture and so cannot run inside this draw's pass; until then the slot gets the dummy image (a dispatch upgrades its own first: img_wr_prescan)
         return nil; }
     treg_t *r = &g_treg[tid];
     if (r->im && r->im_of == (__bridge void *)t && ((__bridge id<MTLTexture>)r->im).pixelFormat == pf) { *rid = r->im_rid; return (__bridge id<MTLTexture>)r->im; }
@@ -9063,10 +9145,7 @@ static id<MTLTexture> tex_float_fit(int tid, id<MTLTexture> t, uint64_t *rid) {
     }
     if (tid < 0 || tid >= g_ntreg || t.textureType == MTLTextureTypeTextureBuffer) return nil;
     id<MTLTexture> base = t.parentTexture ? t.parentTexture : t;
-    if (!(base.usage & MTLTextureUsagePixelFormatView)) {
-        int seen = 0; for (int i = 0; i < g_imfit_npend; i++) seen |= g_imfit_pend[i] == tid;
-        if (!seen && g_imfit_npend < 16) g_imfit_pend[g_imfit_npend++] = tid;
-        return nil; }
+    if (!(base.usage & MTLTextureUsagePixelFormatView)) { img_fit_note(tid); return nil; }
     treg_t *r = &g_treg[tid];
     if (r->im && r->im_of == (__bridge void *)t && ((__bridge id<MTLTexture>)r->im).pixelFormat == pf) { *rid = r->im_rid; return (__bridge id<MTLTexture>)r->im; }
     if (r->im) { defer_obj_unref((__bridge id)r->im); CFRelease(r->im); r->im = r->im_of = NULL; r->im_rid = 0; }
@@ -10032,16 +10111,19 @@ static id<MTLFunction> se_build(NvShader *sh, const uint8_t md[8], uint64_t code
     sh->se_fold = se_lib_fold(lib);
     return f;
 }
-// The variant the package precompiled (library container kind LP_K_SE, <key>_se.metallib, entry main0; the package builds it for the keys whose pipelines a census run recorded
+// The variant the package precompiled (library container kind LP_K_SE, <key>_se.metallib, entry main0, or s<key>_main0 in a batched one; the package builds it for the keys whose pipelines a census run recorded
 //   with the SE_RD bit: pso_user.tsv C lines' fc, R lines' pso_key.fc): loaded at once, so its first draw already runs it. nil: not in the package (made on the device, se_build)
 static id<MTLFunction> se_packed(NvShader *sh) {
     char nm[32]; snprintf(nm, sizeof nm, "%.16s_se", sh->key);
     if (!lp_pack_get()) return nil;
     NSError *e = nil; id<MTLLibrary> lib = lib_from_pack(nm, &e); if (!lib) return nil;
-    id<MTLFunction> f = lib_entry(lib, @"main0");
+    // a batched variant library (11-20: the package compiles the variants in batches, S2A.Dsh Build.SeFinish): its functions are s<key>_main0 / s<key>_main0_fold (the folded-texture marker s2a_se_fold, renamed so a batch has one per key)
+    NSString *pre = [NSString stringWithFormat:@"s%.16s_", sh->key];
+    BOOL batched = [lib.functionNames containsObject:[pre stringByAppendingString:@"main0"]];
+    id<MTLFunction> f = lib_entry(lib, batched ? [pre stringByAppendingString:@"main0"] : @"main0");
     NSUInteger al = f && sh->rf.nb ? [f newArgumentEncoderWithBufferIndex:sh->rf.abi].encodedLength : sh->arg_len;
     if (!f || al != sh->arg_len) { MLOG("【红】 packaged sampler-emulation variant %s %s: made on the device instead", nm, f ? "takes another argument buffer than the library's main0" : "has no main0"); return nil; }
-    sh->se_fold = se_lib_fold(lib);
+    sh->se_fold = batched ? [lib.functionNames containsObject:[pre stringByAppendingString:@"main0_fold"]] : se_lib_fold(lib);
     return f;
 }
 // The variant is there (f) or not (why): published to the draws (se_st), counted, one line (t0: when its first use asked for it; how: 包内 / 后台编 / 同步现编)
@@ -10137,9 +10219,13 @@ static void vp_pack(NvShader *vs) {
     if (tried || st == SE_READY || st == SE_BUSY || !lp_pack_get()) return;
     char nm[32]; snprintf(nm, sizeof nm, "%.16s_vp", vs->key);
     NSError *e = nil; id<MTLLibrary> lib = lib_from_pack(nm, &e); if (!lib) return;
+    // a batched variant library (11-20, Build.cs VarBatches): the shader's functions are s<key>_<entry> and its mask s<key>_main0_vpmask_<hex>
+    NSString *pre = [NSString stringWithFormat:@"s%.16s_", vs->key], *ent = vs->ventry;
+    BOOL batched = [lib.functionNames containsObject:[pre stringByAppendingString:ent]];
+    NSString *mp = batched ? [pre stringByAppendingString:@"main0_vpmask_"] : @"dm_vp_mask_";
     uint32_t mask = 0;
-    for (NSString *n in lib.functionNames) if ([n hasPrefix:@"dm_vp_mask_"]) mask = (uint32_t)strtoul(n.UTF8String + 11, NULL, 16);
-    id<MTLFunction> f = lib_entry(lib, vs->ventry);
+    for (NSString *n in lib.functionNames) if ([n hasPrefix:mp]) mask = (uint32_t)strtoul(n.UTF8String + mp.length, NULL, 16);
+    id<MTLFunction> f = lib_entry(lib, batched ? [pre stringByAppendingString:ent] : ent);
     NSUInteger al = f && vs->rf.nb ? [f newArgumentEncoderWithBufferIndex:vs->rf.abi].encodedLength : vs->arg_len;
     if (!f || !mask || al != vs->arg_len) { MLOG("【红】 packaged padded vertex variant %s %s: made on the device per pair instead", nm, !f ? "has no such entry" : !mask ? "carries no mask" : "takes another argument buffer than the library's entry"); return; }
     pthread_mutex_lock(&g_vp_mu); int took = vs->vp_st != SE_READY; if (took) { vs->vp_main = f; vs->vp_mask = mask; vs->vp_st = SE_READY; } pthread_mutex_unlock(&g_vp_mu);
@@ -16703,7 +16789,9 @@ static id<MTL4ComputeCommandEncoder> dispatch_enc(const disp_rng *rg) {
     args_dirty_all();
     return g_blit;
 }
-// A dispatch's own image slots holding textures made without shader writes (see img_wr_note): queued so they are upgraded before its encoder opens
+// A dispatch's own image slots holding textures made without shader writes (see img_wr_note), or read in another class than their texture's with no format-view usage (img_fit):
+//   queued so they are upgraded before its encoder opens. Draws get both upgrades when their pass opens; a dispatch has no such point after its slots resolve, and img_fit left the
+//   format-view case for the next draw pass: the dispatch wrote into the dummy image, and a kernel run once (a precomputed table) lost its output for good (#768)
 static void img_wr_prescan(NvShader *sh, int nvn_stage) {
     os_unfair_lock_lock(&g_rmu);
     for (int i = 0; i < sh->rf.nb; i++) { const nvn_rbind *b = &sh->rf.b[i];
@@ -16712,7 +16800,9 @@ static void img_wr_prescan(NvShader *sh, int nvn_stage) {
         if (tid < 0 || tid >= g_ntreg || !g_treg[tid].ok) continue;
         nvn_be_pool_gpu_written(g_treg[tid].t.pool);   // before it resolves: a shader image is a GPU write into its pool (tex_cpu_content)
         id<MTLTexture> t = tex_mtl(&g_treg[tid].t); if (t.parentTexture) t = t.parentTexture;
-        if (t && !(t.usage & MTLTextureUsageShaderWrite) && !mtl_fmt_depth(t.pixelFormat)) img_wr_note(tid); }
+        if (t && !(t.usage & MTLTextureUsageShaderWrite) && !mtl_fmt_depth(t.pixelFormat)) img_wr_note(tid);
+        size_t n = t ? mtl_pf_bytes(t.pixelFormat) : 0;   // the class views img_fit makes: same texel size, 1 / 2 / 4 / 8 / 16 bytes
+        if (t && b->dpf != NVN_DPF_FLOAT && mtl_pf_dpf(t.pixelFormat) != b->dpf && !(t.usage & MTLTextureUsagePixelFormatView) && (n == 1 || n == 2 || n == 4 || n == 8 || n == 16)) img_fit_note(tid); }
     os_unfair_lock_unlock(&g_rmu);
 }
 static void tensor_standin(NvShader *cs);   // nvn_tensor.inc
@@ -16795,6 +16885,7 @@ static void dispatch(const p_dispatch *dp) {
     if (g_nubd && ubd_conflict_cs(cs, dp->ind)) { g_ubd_conflicts++; ubd_land(); }   // see ubd_conflict_cs
     if (!img_atomic_prepare(cs, 5)) return;
     img_wr_prescan(cs, 5); if (g_imwr_npend) img_wr_upgrade();   // image textures made without shader writes: upgraded before this dispatch's encoder opens (img_wr_note)
+    if (g_imfit_npend) img_fit_upgrade();   // and those its image slots read through a view of another class (img_fit)
     rp_flush();   // a full clear with no draw after it waits for the next pass on its targets, but it comes before this dispatch, which may read or write them as images: land it first, as copy_t2t does (upstream reference implementation, MIT)
     rs_pre_compute(cs);   // S2Arm internal resolution: scaled textures this dispatch reads / writes go back to 1 first (nvn_rscale_ops.inc)
     tba_prepare(cs, nil, nil, nil, nil, 1);   // #309: as for draws (see tba_ent)

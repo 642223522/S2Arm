@@ -44,7 +44,7 @@ AFFECTED = re.compile(r"'(?:x18_spdyn|pacga)':\s*(\d+)")
 def rewriter_id(c):
     """本引擎改写器的身份：编译输入的内容指纹（同 stage_rewrite.sh 的 KR 口径，pack/rewriter.py source）"""
     r = subprocess.run([os.sys.executable, "-X", "utf8", c.engine / "pack/rewriter.py", "source"], cwd=c.engine, env=c.env(),
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
     if r.returncode or not r.stdout.strip():
         raise Failure("取不到改写器指纹：" + (r.stderr.strip()[-200:] or "无输出"))  # 非玩家句
     return hashlib.sha256(r.stdout.encode()).hexdigest()[:16]
@@ -52,7 +52,7 @@ def rewriter_id(c):
 
 def rewriter_bin(c):
     r = subprocess.run([os.sys.executable, "-X", "utf8", c.engine / "pack/rewriter.py", "c-path"], cwd=c.engine, env=c.env(),
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
     path = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else ""
     if r.returncode or not Path(path).is_file():
         raise Failure("找不到改写器：" + (r.stderr.strip()[-200:] or "无输出"))  # 非玩家句
@@ -242,7 +242,7 @@ def rewrite_modules(binary, env, exefs, out, widen):
     hit = []
     for m in modules_of(exefs):
         args = [binary, str(Path(exefs) / m), str(out), m] + ([str(widen)] if Path(widen).is_file() else [])
-        r = subprocess.run(args, env=env, capture_output=True, text=True, timeout=600)
+        r = subprocess.run(args, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
         if r.returncode and not (r.returncode == 3 and (Path(out) / f"{m}.patched.bin").is_file()):
             raise Failure(f"重跑改写 {m} 失败（退出码 {r.returncode}）：" + ((r.stderr.strip().splitlines() or [""])[-1])[:200])  # 非玩家句
         if max((int(x) for x in AFFECTED.findall(r.stdout)), default=0) > 0:
@@ -351,14 +351,16 @@ def sgrade_rewrite(c, game, base, exefs, target, work):
     rewrite_modules(binary, env, exefs, root, widen)   # 不带补丁的一轮：出表按它的改写点预筛（同 stage_rewrite.sh rw_all 0）
     py = [os.sys.executable, "-X", "utf8", str(Path(c.engine) / "pack/cpatch.py")]
     for _ in range(6):
-        r = subprocess.run(py + ["plan", str(root), ""] + [str(d) for d in dirs], cwd=c.engine, env=env, capture_output=True, text=True, timeout=600)
+        r = subprocess.run(py + ["plan", str(root), ""] + [str(d) for d in dirs], cwd=c.engine, env=env, capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", timeout=600)
         if r.returncode:
             raise Failure("社区补丁出表出错：" + ((r.stderr.strip().splitlines() or [""])[-1])[:200])  # 非玩家句
         rows = root / "cpatch_rows.tsv"
         if not rows.is_file() or not rows.stat().st_size:
             break
         rewrite_modules(binary, dict(env, S2A_CPATCH_TSV=str(rows)), exefs, root, widen)
-        p = subprocess.run(py + ["prune", str(root)], cwd=c.engine, env=env, capture_output=True, text=True, timeout=600)
+        p = subprocess.run(py + ["prune", str(root)], cwd=c.engine, env=env, capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", timeout=600)
         if p.returncode == 10:
             continue
         if p.returncode:
@@ -466,7 +468,7 @@ def add_kept_nros(c, gid, base, target):
         for p in todo:
             shutil.copyfile(p, t / "k" / p.name)
         r = subprocess.run([os.sys.executable, "-X", "utf8", str(c.engine / "runtime/rewriter/nro_to_nso.py"), str(t / "romfs"), str(t / "nso"), str(t / "k")],
-                           env=c.env(), capture_output=True, text=True, timeout=600)
+                           env=c.env(), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
         made = [l.split("\t") for l in ((t / "nso/nro_modules.tsv").read_text().splitlines() if (t / "nso/nro_modules.tsv").is_file() else []) if l and not l.startswith("#")]
         if r.returncode or not made:
             raise Failure("运行时留下的模块转不出来：" + ((r.stderr.strip() or r.stdout.strip()).splitlines() or ["无输出"])[-1][:200])
@@ -476,7 +478,7 @@ def add_kept_nros(c, gid, base, target):
             name = f"nro{nxt}"; nxt += 1
             shutil.copyfile(t / "nso" / name0, t / name)
             args = [binary, str(t / name), str(out), name] + ([str(widen)] if widen.is_file() else [])
-            rr = subprocess.run(args, env=env, capture_output=True, text=True, timeout=600)
+            rr = subprocess.run(args, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
             if rr.returncode and not (rr.returncode == 3 and (out / f"{name}.patched.bin").is_file()):
                 raise Failure(f"改写运行时留下的模块 {name} 失败（退出码 {rr.returncode}）：" + ((rr.stderr.strip().splitlines() or [""])[-1])[:200])
             names.append(name); add.append("\t".join((name, sha, size, bss, src)))

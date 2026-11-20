@@ -303,6 +303,10 @@ static uint8_t *amask_at(uint64_t a) { AMASK_PROBE(); if (!g_amask) g_amask = ca
 // ---------- TLR：窗口 TLS/IO 区里按 0x200 一格分配（§5）----------
 static uint64_t g_tlr_next; static void *g_tlr_free;
 static uint64_t g_user_exception_context, g_det_arena_top;
+// 确定性 arena 的空闲表（即时存档档才回收：游戏线程退出后它的 TLS 块 / 线程对象挂回这里，下一个新线程按同尺寸先取）。
+//   表头按尺寸分两格（TLS 块、线程对象）；下一项指针存在空闲块自己的开头，块在客体内存里、随存档一起存，存档只多记两格表头（字段 34–37）
+#define DET_FREE_SLOTS 2
+static struct { uint64_t n, head; } g_det_free[DET_FREE_SLOTS];
 static uint64_t g_entropy[4]; static int g_entropy_ready;
 void *s2a_tlr_alloc(void) {
     GMU_LOCK(); void *p = g_tlr_free;
@@ -1031,6 +1035,8 @@ void s2a_mem_test_vamm(uint64_t sysres, uint64_t heap_base, uint64_t heap_size) 
 void s2a_mem_test_subpage(uint64_t a, int on) { uint8_t *m = amask_at(a), bit = (uint8_t)(1u << ((a & (HPG - 1)) >> 12)); *m = on ? (*m | bit) : (*m & ~bit); }
 void s2a_mem_test_map(uint64_t b, uint64_t n) { map_add(b, n, 0, ST_STACK, 0); }
 void s2a_mem_test_sysres(uint64_t v, uint64_t heap_region) { L.sys_resource_size = v; L.heap_size = heap_region; }
+// 单测：给 TLS/IO 区（确定性 arena 从它顶端往下分），arena 与空闲表清零
+void s2a_mem_test_tlsio(uint64_t base, uint64_t size) { L.tlsio_base = base; L.tlsio_size = size; g_tlr_next = base; g_det_arena_top = 0; memset(g_det_free, 0, sizeof g_det_free); }
 uint64_t s2a_mem_test_phys(void) { return g_phys; }
 void s2a_mem_test_svc_perm(int num, int on) { if (on) g_svc_perm[num >> 6] |= 1ull << (num & 63); else g_svc_perm[num >> 6] &= ~(1ull << (num & 63)); }
 uint64_t s2a_mem_test_alias_in(void) { return g_pk_alias_in; }
@@ -2492,6 +2498,10 @@ int s2a_det_mem_regions(uint64_t *b, uint64_t *n, int max) {
 void *s2a_det_arena_alloc(size_t n) {
     n = (n + 15) & ~(size_t)15;
     GMU_LOCK();
+    for (int i = 0; i < DET_FREE_SLOTS; i++) if (g_det_free[i].n == n && g_det_free[i].head) {   // 有同尺寸的空闲块：先复用（#ef04e6：只分配不回收，线程起落多的游戏几分钟就把 TLS/IO 区吃光、致命退出）
+        uint64_t b = g_det_free[i].head; g_det_free[i].head = *(uint64_t *)(uintptr_t)b; GMU_UNLOCK();
+        memset((void *)(uintptr_t)b, 0, n); return (void *)(uintptr_t)b;
+    }
     if (!g_det_arena_top) g_det_arena_top = L.tlsio_base + L.tlsio_size;
     uint64_t lo = g_det_arena_top - n;
     if (lo < g_tlr_next + HPG) die("确定性：TLS/IO 区放不下 TLS 块");
@@ -2500,6 +2510,18 @@ void *s2a_det_arena_alloc(size_t n) {
     if (mprotect((void *)pg, g_det_arena_top - pg, PROT_READ | PROT_WRITE)) die("确定性：TLS 块页 mprotect errno=%d", errno);
     g_det_arena_top = lo; GMU_UNLOCK();
     memset((void *)lo, 0, n); return (void *)lo;
+}
+// 线程退出：块挂回同尺寸空闲表（thread.c own_free，只在即时存档档调；确定性诊断档照旧不回收，地址每局相同）。不在 arena 里的忽略
+void s2a_det_arena_free(void *p, size_t n) {
+    n = (n + 15) & ~(size_t)15; uint64_t b = (uint64_t)(uintptr_t)p;
+    GMU_LOCK();
+    if (b && g_det_arena_top && b >= g_det_arena_top && b + n <= L.tlsio_base + L.tlsio_size) {
+        int k = -1;
+        for (int i = 0; i < DET_FREE_SLOTS && k < 0; i++) if (g_det_free[i].n == n) k = i;
+        for (int i = 0; i < DET_FREE_SLOTS && k < 0; i++) if (!g_det_free[i].n) { g_det_free[i].n = n; k = i; }
+        if (k >= 0) { *(uint64_t *)(uintptr_t)b = g_det_free[k].head; g_det_free[k].head = b; }
+    }
+    GMU_UNLOCK();
 }
 // TLR 区（每线程 0x200：IPC 消息缓冲在 +0；+0x1F8 是宿主分配的 TLS 块指针，每局不同，哈希时跳过）
 void s2a_det_tlr_region(uint64_t *b, uint64_t *n) { GMU_LOCK(); *b = L.tlsio_base; *n = g_tlr_next > L.tlsio_base ? g_tlr_next - L.tlsio_base : 0; GMU_UNLOCK(); }
@@ -2535,7 +2557,7 @@ void s2a_mem_session_reset(void) {
     g_cur_st = g_cur_sh = g_pk_st = g_pk_sh = 0;
     g_pk_st_end = g_pk_sh_end = g_pk_heap = g_pk_heap_request = g_pk_alias_end = g_pk_alias_in = 0;
     g_tlr_next = 0; g_tlr_free = NULL;
-    g_user_exception_context = g_det_arena_top = 0;
+    g_user_exception_context = g_det_arena_top = 0; memset(g_det_free, 0, sizeof g_det_free);
     memset(g_entropy, 0, sizeof g_entropy); g_entropy_ready = 0;
     g_lay_ok = 0; g_mod_base = g_shadow_base = g_lay_need = 0;
     atomic_store(&g_heap_noted, 0); atomic_store(&g_heap_noted_size, 0); g_lay_heap_floor = 0;   // 进程内重开：上一局的「堆不够已记下」不带进新局
@@ -2642,6 +2664,7 @@ int s2a_snap_svcmem_save(FILE *f) {
 #undef WL
     sfw_u64(&w, 20, heap); sfw_u64(&w, 21, hc); sfw_u64(&w, 22, g_phys); sfw_u64(&w, 23, g_mstack);
     sfw_u64(&w, 30, g_tlr_next); sfw_u64(&w, 31, tf); sfw_u64(&w, 32, g_user_exception_context); sfw_u64(&w, 33, g_det_arena_top);
+    for (int i = 0; i < DET_FREE_SLOTS; i++) { sfw_u64(&w, 34 + 2 * i, g_det_free[i].n); sfw_u64(&w, 35 + 2 * i, g_det_free[i].head); }   // 空闲表表头（旧版存档没有 → 读成空表）
     sfw_blob(&w, 40, g_entropy, sizeof g_entropy); sfw_u64(&w, 41, (uint64_t)g_entropy_ready);
     sfw_end_rec(&w);
     for (int i = 0; i < g_nmap; i++) { sfw_rec(&w); sfw_u64(&w, 50, 1); sfw_u64(&w, 1, g_map[i].base); sfw_u64(&w, 2, g_map[i].size); sfw_u64(&w, 3, g_map[i].src); sfw_u64(&w, 4, g_map[i].state); sfw_u64(&w, 5, g_map[i].h); sfw_u64(&w, 6, g_map[i].perm); sfw_end_rec(&w); }
@@ -2684,6 +2707,7 @@ int s2a_snap_svcmem_load(FILE *f) {
     }
     heap = sfr_u64(&r, 20, 0); hc = sfr_u64(&r, 21, 0); phys = sfr_u64(&r, 22, 0); mstack = sfr_u64(&r, 23, 0);
     tn = sfr_u64(&r, 30, 0); tf = sfr_u64(&r, 31, 0); uec = sfr_u64(&r, 32, 0); dat = sfr_u64(&r, 33, 0);
+    for (int i = 0; i < DET_FREE_SLOTS; i++) { g_det_free[i].n = sfr_u64(&r, 34 + 2 * i, 0); g_det_free[i].head = sfr_u64(&r, 35 + 2 * i, 0); }
     uint8_t ent[sizeof g_entropy]; int ent_ok = sfr_into(&r, 40, ent, sizeof ent); int ent_ready = (int)sfr_u64(&r, 41, 0);
     if (heap != (uint64_t)(uintptr_t)g_heap && g_heap) { LOG("【红】即时存档恢复：堆基址不同（快照 %#llx，当前 %p）", (unsigned long long)heap, (void *)g_heap); sfr_done(&r); return -1; }
     GMU_LOCK();

@@ -151,8 +151,17 @@ SPARKLE_FEED = "https://dl.s2arm.com/appcast/mac.xml"
 SPARKLE_PUBLIC_KEY = "WoZkGLOTuLU2zl0gsPX+4sTKRsIN9ahBEfj0ulkqOqc="   # 验签公钥（Ed25519）；对应私钥只在发版机，不进仓库
 
 
+def build_python():
+    """出壳等子脚本用的 Python（S2A_PY）：调用方环境 → tools/machine.local（tools/machine.sh get，同出包链取法）→ 跑本脚本的解释器。
+    pack/shell_build.sh 等用 ${S2A_PY:-python3}：不交就退到 PATH 上的 python3，那份不一定装了钉版依赖（11-20：tvOS 壳的 tv_icon.py 缺 PIL）；
+    本脚本按 README 用 prepare_build.py 建的 venv 跑，同字体生成器缺省 os.sys.executable"""
+    picked = subprocess.run(["bash", str(ROOT / "tools/machine.sh"), "get", "S2A_PY"], capture_output=True, text=True).stdout.strip()
+    return picked or sys.executable
+
+
 def main():
     os.environ["MACOSX_DEPLOYMENT_TARGET"] = runtime_sources.deployment_target()   # clang、cmake、rustc 都读它：包内自己编的程序不能比声明的系统高
+    os.environ["S2A_PY"] = build_python()   # 出壳 / make / 工具链解析等子进程都拿同一个解释器（见 build_python）
     parser = argparse.ArgumentParser(description=__doc__)
     # 出前端用与门禁 / 出包同一套 Xcode：tools/toolchain.sh 解析（指定 / 本机配置 > xcode-select，10-25 起不读仓库里写的版本）
     picked = subprocess.run(["bash", "-c", 'S2A_TC_QUIET=1 source tools/toolchain.sh > /dev/null && printf %s "$DEVELOPER_DIR"'], cwd=ROOT, capture_output=True, text=True)
@@ -164,6 +173,7 @@ def main():
     # 出哪个前端（S2A_APP_FRONTEND，缺省 apple = S2Arm × NX2Apple；launcher = 旧启动器，留作回退）：见 frontend_layout.py
     front = frontend_layout.pick()
     print(f"前端：{front['key']}（{front['product']} → {front['app']}）")
+    print(f"子脚本 Python（S2A_PY）：{os.environ['S2A_PY']}")
     if not args.developer_dir:
         raise SystemExit("🔴 没有可用的 Xcode：" + (picked.stderr.strip().splitlines() or ["tools/toolchain.sh 解析失败"])[-1])
     output = ROOT / "build/macos"

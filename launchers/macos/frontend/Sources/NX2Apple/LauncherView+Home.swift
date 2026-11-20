@@ -338,7 +338,7 @@ extension LauncherView {
     /// 卡片上的 iPhone 签名角标（旧版每张卡片下都有「还有 N 天 / 已过期」，新主题只在选中那款显示）：免费账号装过的款才有；
     ///   还剩 1–2 天橙色、过期红色，其余白字深底——扫一眼就知道哪款要续签
     @ViewBuilder func expiryBadge(_ game: GameSummary) -> some View {
-        if game.iphoneInstalledAt != nil, let days = game.iphoneDaysLeft() {
+        if game.iphoneInstalledAt != nil, let days = model.freeSignDaysLeft(game) {
             let color: Color = days == 0 ? LauncherPalette.danger : days <= 2 ? .orange : .white
             Label(days == 0 ? loc.t("home.card.expired") : String(format: loc.t("home.card.daysLeft"), days), systemImage: "iphone")
                 .font(.manrope(11, .bold)).labelStyle(ConsoleBadgeLabelStyle())

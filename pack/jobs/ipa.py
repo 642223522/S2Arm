@@ -278,7 +278,7 @@ def _build(c):
         except OSError as e:
             c.emit("message", f"【黄】原始程序没存下（以后升级要回原件）：{e}")
         kuan = oneclick_kuan(c, gid)
-        if os.name != "nt" and not (out / "roots" / (kuan + "@现行")).exists():   # Windows 机上没有 Mac 包可克隆  # 非玩家句
+        if os.name != "nt" and layout.current_root(c, out / "roots" / (kuan + layout.CURRENT)) is None:   # Windows 机上没有 Mac 包可克隆
             seed_from_sibling(c, game, out / "roots", kuan)
         # 出 iPhone 包：平台换成 iOS；.NET 只在源码树现编 C#（壳 / iOS 库）时用已确认的外部 SDK（发版应用全用随包预编，运行不要 .NET）
         for name in tuple(env):
@@ -374,7 +374,7 @@ def _build(c):
         from build import warn_offline_empty, collect_degrade
         warn_offline_empty(c, root)   # 离线 0 支（#470）：照常交付，完成页带黄字
         notes = collect_degrade(c, root)   # 降级继续的玩家提示：随结果交给完成卡（v0.3.1）；清理会删产物根，先读
-    # 早装先收尾再清理：清理会删它正在读的 roots/<款>@现行 与 .early（审计 P1-146：直连命中缓存时出包比早装推得快）
+    # 早装先收尾再清理：清理会删它正在读的现行产物根（roots/<款>@现行 指向的版本）与 .early（审计 P1-146：直连命中缓存时出包比早装推得快）
     pre = early.finish() if early else None
     # Q15：成功清一次性中间产物，编库缓存跨次保留并按预算裁剪；失败留现场。
     c.begin("清理出包中间产物")
@@ -650,8 +650,8 @@ def product_root(c, gid):
     """这款的现行产物根（打包流程的工作目录）；不存在 → None"""
     from build import oneclick_kuan
     out = layout.ios_work(c, gid, create=False)
-    r = out / "work/pkg/product" if os.name == "nt" else out / "roots" / (oneclick_kuan(c, gid) + "@现行")   # Windows：win_oneclick 的工作根（现行各项联接 + 直连库，oneclick_win.product）  # 非玩家句
-    return resolve_path(r) if (r / "main.npdm").is_file() else None
+    r = out / "work/pkg/product" if os.name == "nt" else layout.current_root(c, out / "roots" / (oneclick_kuan(c, gid) + layout.CURRENT))   # Windows：win_oneclick 的工作根（现行各项联接 + 直连库，oneclick_win.product）
+    return resolve_path(r) if r is not None and (r / "main.npdm").is_file() else None
 
 
 def usable_kit(c, gid, sid, failed=()):
@@ -980,7 +980,7 @@ def _package_failure_phase(reason):
 
 
 def oneclick_failure(events, milestone, log, *, refresh_log=None, refresh_before=None):
-    from errors import classify_failure, player_reason, player_words, refresh_stop_phase, tool_reason
+    from errors import cause_line, classify_failure, player_reason, player_words, refresh_stop_phase, tool_reason
     name = "未记录阶段"  # 非玩家句
     result = None
     try:
@@ -1021,5 +1021,7 @@ def oneclick_failure(events, milestone, log, *, refresh_log=None, refresh_before
     texts = (reason,) + ((str(fresh_refresh),) if fresh_refresh else ())
     code, why = classify_failure(phase, log, texts)
     said, advice = player_words(code, log, texts)
+    cause = cause_line(fresh_refresh) if fresh_refresh else None   # 刷新里失败阶段自己的红行（带子命令原文），错误摘要按「失败原文：」取（report.build）
+    more = "\n失败原文：" + cause if cause and cause not in reason else ""  # 非玩家句
     # 上屏只放玩家话术；阶段 / 红行原文 / 归因依据进 internal → 诊断 detail（「复制错误摘要」带走）
-    return Failure(said, code=code, advice=advice, internal="一键出包失败（" + name + "）：" + reason + "\n" + why)  # 非玩家句
+    return Failure(said, code=code, advice=advice, internal="一键出包失败（" + name + "）：" + reason + more + "\n" + why)  # 非玩家句

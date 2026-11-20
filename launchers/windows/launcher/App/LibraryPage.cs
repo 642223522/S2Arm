@@ -364,6 +364,8 @@ public sealed partial class EnvironmentWindow
     private Control GameStatusLine(LibraryGame game)
     {
         string text; string color;
+        // 免费签名还剩几天（作业层只在那台手机现在用的就是启动器免费签的那份时给；玩家关了「免费签名到期提醒」→ null，只写「已推到 iPhone」）
+        var freeDays = FreeSignReminder.On(privateRoot) ? game.FreeSignDaysLeft(DateTimeOffset.UtcNow) : null;
         // Running or queued
         if (packRunning && packGame?.Id == game.Id)
         {
@@ -386,16 +388,8 @@ public sealed partial class EnvironmentWindow
             {
                 if (game.IphoneInstalledAt is not null)
                 {
-                    // days left (free signing = 7 days from install)
-                    if (game.IphoneFree)
-                    {
-                        var daysLeft = (int)Math.Ceiling((game.IphoneInstalledAt.Value + 7 * 86400 - DateTimeOffset.UtcNow.ToUnixTimeSeconds()) / 86400.0);
-                        daysLeft = Math.Max(0, daysLeft);
-                        if (daysLeft == 0)
-                            parts.Add(T("library.status.expired"));
-                        else
-                            parts.Add(T("library.status.installed").Replace("{0}", daysLeft.ToString()));
-                    }
+                    if (freeDays is { } daysLeft)
+                        parts.Add(daysLeft == 0 ? T("library.status.expired") : T("library.status.installed").Replace("{0}", daysLeft.ToString()));
                     else parts.Add(T("library.status.installedPaid"));
                 }
                 else parts.Add(T("library.status.iphone"));
@@ -406,9 +400,7 @@ public sealed partial class EnvironmentWindow
                 goto render;
             }
             text = string.Join(" · ", parts);
-            color = game.IphoneInstalledAt is not null && game.IphoneFree &&
-                (int)Math.Ceiling((game.IphoneInstalledAt.Value + 7 * 86400 - DateTimeOffset.UtcNow.ToUnixTimeSeconds()) / 86400.0) == 0
-                ? "#E05C5C" : "#52C87A";
+            color = game.IphoneInstalledAt is not null && freeDays == 0 ? "#E05C5C" : "#52C87A";
         }
         render:
         var dot = new Border { Width = 7, Height = 7, CornerRadius = new CornerRadius(4),
@@ -416,6 +408,16 @@ public sealed partial class EnvironmentWindow
         var lbl = new TextBlock { Text = text, FontSize = 12, Foreground = Brush.Parse(color), TextWrapping = TextWrapping.Wrap };
         var row = new StackPanel { Orientation = Orientation.Horizontal };
         row.Children.Add(dot); row.Children.Add(lbl);
+        if (game.IphoneReady && game.IphoneInstalledAt is not null && freeDays is not null && !(packRunning && packGame?.Id == game.Id) && game.LocationState is not ("offline" or "missing"))
+        {
+            // 「×」= 不再提醒（关掉设置里的「免费签名到期提醒」，重新打开恢复；维护者 11-20：玩家换成自签后提醒挂着取消不了）
+            var dismiss = new Button { Content = "✕", FontSize = 10, Padding = new Thickness(5, 0), Margin = new Thickness(6, 0, 0, 0), MinHeight = 0,
+                Background = Brushes.Transparent, Foreground = Brush.Parse("#8C8A85"), VerticalAlignment = VerticalAlignment.Top };
+            ToolTip.SetTip(dismiss, T("library.banner.dismiss"));
+            Avalonia.Automation.AutomationProperties.SetAutomationId(dismiss, "library.renew.dismiss");
+            dismiss.Click += (_, e) => { e.Handled = true; SetFreeSignReminder(false); };
+            row.Children.Add(dismiss);
+        }
         return row;
     }
 
@@ -856,7 +858,13 @@ public sealed partial class EnvironmentWindow
             DisplayJob(listing);
             if (!listing.Report.Succeeded) { librarySummary = "library.failed"; if (JobCode(listing) == "library_id_mismatch") otherLibrary = listing.Report.Message; return; }
             catalog = LibraryCatalog.Parse(listing.Report.Result); ClearCovers();
-            if (!catalog.Games.Any(g => g.Id == selectedGame && !g.Hidden)) selectedGame = null;
+            if (selectedGame is not null && !catalog.Games.Any(g => g.Id == selectedGame && !g.Hidden))
+            {
+                // #1392 读数：清空选中之前记一行（logs/launcher-crash.log）——选中的款、是缺席还是 Hidden、目录总款数、当时的出包款与状态
+                var present = catalog.Games.FirstOrDefault(g => g.Id == selectedGame);
+                LauncherCrash.Log(null, $"library.select.clear selected={selectedGame} state={(present is null ? "absent" : "hidden")} catalog={catalog.Games.Count} pack={packGame?.Id ?? "null"}/{(packState == "" ? "null" : packState)} result=cleared");
+                selectedGame = null;
+            }
             librarySummary = "library.completed";
             ResumeSGradeWatch();   // S 级批量升级队列还在跑就接着读进度（SGradeUpgrade.cs）
             _ = PreparePhoneUpdateAsync();   // 新版启动器头一次读到要更新的手机：后台准备 iPhone App 更新（PhoneAutoUpdate.cs）

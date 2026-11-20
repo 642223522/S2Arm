@@ -465,6 +465,18 @@ public sealed partial class EnvironmentWindow : Window
 
         body.Children.Add(InstallModeCard());   // 装到 iPhone 的方式（v0.3.0，InstallModePage.cs）
 
+        var remindRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };   // 免费签名到期提醒（11-20，缺省开）：游戏库状态行「×」关掉后在这里重新打开
+        var remindText = new StackPanel { Spacing = 4 };
+        remindText.Children.Add(Label(T("settings.freeSignReminder"), 16));
+        remindText.Children.Add(Label(freeSignReminderError.Length > 0 ? freeSignReminderError : T("settings.freeSignReminder.detail")));
+        remindRow.Children.Add(remindText);
+        var remindOn = FreeSignReminder.On(privateRoot);
+        var remindToggle = new ToggleSwitch { IsChecked = remindOn, OnContent = "", OffContent = "", VerticalAlignment = VerticalAlignment.Center };
+        Avalonia.Automation.AutomationProperties.SetAutomationId(remindToggle, "settings.freeSignReminder");
+        remindToggle.IsCheckedChanged += (_, _) => { if (remindToggle.IsChecked != remindOn) SetFreeSignReminder(remindToggle.IsChecked == true); };
+        Grid.SetColumn(remindToggle, 1); remindRow.Children.Add(remindToggle);
+        body.Children.Add(Card(remindRow));
+
         var widgetRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };   // 主屏小组件（11-16，缺省开）
         var widgetText = new StackPanel { Spacing = 4 };
         widgetText.Children.Add(Label(T("environment.widget.title"), 16));

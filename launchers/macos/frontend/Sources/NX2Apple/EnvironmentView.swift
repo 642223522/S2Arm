@@ -219,6 +219,15 @@ struct EnvironmentView: View {
                     .controllerID("env.homeWidget")
             }
         }
+        // 免费签名到期提醒（11-20，缺省开）：游戏库顶部横幅点「×」即关，在这里重新打开
+        CardGroup(s("settings.freeSignReminder")) {
+            CardRow(s("settings.freeSignReminder"), detail: s("settings.freeSignReminder.detail")) {
+                Toggle("", isOn: $model.freeSignReminder)
+                    .toggleStyle(LauncherSwitchStyle()).labelsHidden()
+                    .accessibilityLabel(s("settings.freeSignReminder"))
+                    .accessibilityIdentifier("settings.freeSignReminder")
+            }
+        }
         // iCloud 存档同步（S2ArmLauncherModel+CloudSaves）：选 iCloud 云盘里的文件夹，iPhone / iPad 上选同一个
         CardGroup(loc.t("s2arm.env.cloud.group")) {
             CardRow(loc.t("s2arm.env.cloud.title"), detail: loc.t(model.cloudFolder == nil ? "s2arm.env.cloud.off" : "s2arm.env.cloud.on"),
