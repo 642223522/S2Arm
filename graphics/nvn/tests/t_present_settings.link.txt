@@ -170,6 +170,7 @@ dyn _s2a_av1_decode
 dyn _s2a_av1_open
 dyn _s2a_gl_xlate
 dyn _s2a_gl_xlate_tag
+dyn _s2a_prov_app_json_self
 dyn _s2a_prov_signing_ids_self
 dyn _s2a_vp8_close
 dyn _s2a_vp8_decode
