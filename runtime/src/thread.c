@@ -1093,8 +1093,18 @@ static thr_t *g_cown[NCORE]; static uint64_t g_cown_t[NCORE]; enum { CW_MAX = 10
 //   按需 0 崩（并发 0）——按维护者口径「全关 0 崩、计数无害即全关」。S2A_CORES=1 全部参与（10-20 起的完整虚拟核），可选「按需」（S2A_CORES=ondemand）——调过 GetCurrentProcessorNumber（0x10）或掩码只含一个核的线程参与核互斥：
 //   Horizon 同核同优先级不互相抢占，游戏据此写「读核号 → 改本核无锁数据」；没读过核号的线程写不出按核数据，自由跑（省掉全员等核 / 交核，直连同包 −1 W 量级）。
 //   按需曾在 Mac 怪猎 3 局都在每帧 700+ 渲染遍后 Metal 驱动中止，渲染器命令缓冲上限（fix/cb-pass-cap）修好后同场景 0 崩
-static int cores_mode(void) { static int v = -1; if (v < 0) { const char *e = getenv("S2A_CORES"); v = e && !strcmp(e, "1") ? 2 : e && !strcmp(e, "ondemand") ? 1 : 0;
-    LOG("虚拟核：%s", v == 2 ? "全部游戏线程参与（S2A_CORES=1）" : v == 1 ? "按需（S2A_CORES=ondemand：读过核号 0x10 或钉单核的线程同核互斥）" : "关（缺省；S2A_CORES=1 全部参与、=ondemand 按需）");
+// 11-19 维护者定：苹果平台缺省改「按需」。Switch 上同一核同一时刻只跑一条线程，游戏据此「读核号 → 改本核数据」不加锁；缺省关时这个前提每局都被打破
+//   （王国之泪 Mac 两局「读过核号的两线程同核同跑」129 / 161 次，按需档 0 次、帧数持平；8 GB Mac 上沿 +0x18 父指针读到正被改写的节点而崩，#9113f9）。
+//   显式设的照旧优先：S2A_CORES=0 关、=1 全部参与、=ondemand 按需。安卓侧缺省不变（另行评估）
+#if defined(__APPLE__)
+enum { CORES_DEFAULT = 1 };
+#else
+enum { CORES_DEFAULT = 0 };
+#endif
+static int cores_mode(void) { static int v = -1; if (v < 0) { const char *e = getenv("S2A_CORES");
+    v = !e || !*e ? CORES_DEFAULT : !strcmp(e, "1") ? 2 : !strcmp(e, "ondemand") ? 1 : 0;
+    LOG("虚拟核：%s%s", v == 2 ? "全部游戏线程参与（S2A_CORES=1）" : v == 1 ? "按需（读过核号 0x10 或钉单核的线程同核互斥）" : "关（游戏线程即宿主线程、不限同核并发）",
+        !e || !*e ? "——缺省；S2A_CORES=0 关、=1 全部参与、=ondemand 按需" : "——S2A_CORES 显式设");
     if (v) preempt_init(); } return v; }
 static int cores_on(void) { return cores_mode() != 0; }
 // 按需参与者：读过核号（0x10），或掩码只含一个核——钉在单核上的线程不用问也知道自己在哪个核，同样能写按核数据
@@ -1704,11 +1714,18 @@ void s2a_core_enter(void) { thr_t *t = thread_current_or_null(); if (t) { core_a
 #else
 #define S2A_ASM_INTERNAL
 #endif
+// 11-19 苹果平台缺省开：虚拟核缺省改按需（cores_mode）后，block_end 当场取核的旧行为在按需档复现了同一类锁环（一款赛车游戏 Mac 6 局 1 局：
+//   nx-82 持 g_rmu 在 up_wait_zero 的 DM_BLOCK_END 里等核 1、nx-86 持核 1 在 nvn_be_reg_tex 里等 g_rmu）。惰性取核是这类环的结构性解，随按需一起成缺省
+#if defined(__APPLE__)
+enum { LAZY_DEFAULT = 1 };
+#else
+enum { LAZY_DEFAULT = 0 };
+#endif
 S2A_ASM_INTERNAL int g_lazy_core = -1;   // -1 未读、0 关（缺省旧行为）、1 开。非 static：entry.S 的钩子先读它，读到 0 就一条 cbz 走开
 static int lazy_core(void) {
     int v = g_lazy_core;
     if (v < 0) { const char *e = getenv("S2A_LAZY_CORE");
-                 v = (e && *e && strcmp(e, "0")) ? 1 : 0;
+                 v = e && *e ? strcmp(e, "0") != 0 : LAZY_DEFAULT;   // 不设取缺省（苹果开，见 LAZY_DEFAULT）
                  g_lazy_core = v; LOG("虚拟核：惰性取核 %s（S2A_LAZY_CORE）", v ? "开" : "关"); }
     return v;
 }
