@@ -364,7 +364,8 @@ static int sb_window(const p_bind_buf *sb, int align_down, uint64_t *wa, uint64_
     // 游戏绑的长度伸出所在池的池尾（实测：4096 字节的池里偏移 2560 处绑 1872 字节）：真机上着色器只读得到池里有的那一段，
     // 这里把窗口夹到池尾照画（返回值第 2 位），不整笔丢。起点不在任何池里的仍然由解析那一步拒绝。
     const uint8_t *pm = NULL; uint64_t ps = 0;
-    if (l && !rp_pool_find(a, l, NULL, NULL) && rp_pool_find(a, 1, &pm, &ps)) {
+    //   只对 NVN 存储缓冲槽（SBUFP，align_down 各调用处都等于它）夹：计算阶段把统一缓冲当存储读（UBOP）伸出池尾的照旧拒（storage_buffer_unresolved）。
+    if (align_down && l && !rp_pool_find(a, l, NULL, NULL) && rp_pool_find(a, 1, &pm, &ps)) {
         const uint64_t rem = ps - (a - (uint64_t)(uintptr_t)pm);
         if (rem && rem < l) {
             static unsigned said;
