@@ -19,6 +19,7 @@ public sealed partial class EnvironmentWindow
 {
     private bool exportAvailable;                // 作业层读回的 exportAvailable：只报给控制口（ControlInstallMode），界面不再据它置灰
     private bool installModeTried, installModeLoading;
+    private string signChoice = "appleId";   // installMode 作业的 signChoice：appleId / devCert / external
     // 更新作业：正在跑 / 计数；结果没看过时顶栏留一个可点掉的提示（"" = 成功，否则失败原因）
     private bool phoneUpdating;
     private long? updateDone, updateTotal;
@@ -38,8 +39,15 @@ public sealed partial class EnvironmentWindow
             new HashSet<string>(lastUpdate.Accept) { ConfirmCodes.GetValueOrDefault(updateAskCode, "acceptDropped") }, mode: lastUpdateMode, sgradeUpgrade: lastUpdateSGrade),
         dropTitle: ConfirmTitle(updateAskCode),
         cancelDrop: () => { updateState = ""; updateOutcome = null; Navigate("library"); },
+        alternateDrop: UpdateDropAlternate(),
         switchExport: updateState is "failed" or "invalid" or "interrupted" && lastUpdateMode != "export"
-            ? () => { IosAfterPack = "export"; _ = UpdatePhoneAsync(lastUpdate.AcceptStale, lastUpdate.Repack, lastUpdate.Accept, mode: "export", sgradeUpgrade: lastUpdateSGrade); } : null);
+            ? () => { _ = UpdatePhoneAsync(lastUpdate.AcceptStale, lastUpdate.Repack, lastUpdate.Accept, mode: "export", sgradeUpgrade: lastUpdateSGrade); } : null);
+    /// <summary>更新页 drop 态问的码有并列的另一条路（共享体验表 alternate，自签走查结构 7）：按钮文案键 + 点了做什么（不重发，走清单同一个派发）</summary>
+    private (string Label, Action Run)? UpdateDropAlternate()
+    {
+        if (updateState != "drop" || !text.ConfirmAlternates.TryGetValue(updateAskCode, out var alt)) return null;
+        return (alt.Label, () => { updateState = ""; updateOutcome = null; RunInstallAction(alt.Action, null); });
+    }
     private string updateDiagnostics = "";
     /// <summary>这一批是「更新并重新出这几款」排的：整批出完（没暂停、没取消）逐款装到 iPhone（BatchFinishedAsync）</summary>
     private bool batchInstallAfter;
@@ -55,7 +63,11 @@ public sealed partial class EnvironmentWindow
         try
         {
             var job = await PackJobClient.RunAsync(PackRequest("installMode", ""), null, CancellationToken.None);
-            if (job.Report.Succeeded) exportAvailable = Flag(job.Report.Result, "exportAvailable");
+            if (job.Report.Succeeded)
+            {
+                exportAvailable = Flag(job.Report.Result, "exportAvailable");
+                signChoice = Str(job.Report.Result, "signChoice") is { Length: > 0 } sc ? sc : "appleId";   // 签名方式三选一（自签走查结构 6）
+            }
         }
         catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
             InvalidOperationException or System.ComponentModel.Win32Exception) { }
@@ -195,7 +207,7 @@ public sealed partial class EnvironmentWindow
     private async Task UpdatePhoneAsync(bool acceptStale, IReadOnlyList<string> repack, IReadOnlySet<string>? accept = null, bool ask = true, string? mode = null, bool sgradeUpgrade = false, string? device = null)
     {
         if (connectedFolder is null || libraryId is null) return;
-        mode ??= IosAfterPack == "export" ? "export" : null;   // 没指定这次怎么走：按出包页「出完之后」玩家选的那条（选了自签 = 不连手机、导出更新后的自签包）
+        // 没指定这次怎么走 = 装到手机（11-19 自签走查结构 8）：出包页「出完之后」只管出包页那一次，不当续签 / 更新的全局开关
         if (QueuePhone(null, () => UpdatePhoneAsync(acceptStale, repack, accept, ask, mode, sgradeUpgrade, device))) return;   // 出包在跑不挡；手机上有作业在跑 → 排队
         accept ??= new HashSet<string>();
         lastUpdate = (acceptStale, repack, accept);   // 失败页「重试」/ 挤掉确认的「仍然继续」按同样的参数再来

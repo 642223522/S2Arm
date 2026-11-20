@@ -313,6 +313,7 @@ public final class S2ArmEngineProvider: EngineProvider {
         try await installer.devCertImport(p12: p12, profile: profile, password: password, device: device)
     }
     public func devCertUse(_ active: Bool) async throws { try await installer.devCertUse(active) }
+    public func signModeSet(_ mode: String) async throws -> String { try await installer.signModeSet(mode) }
     public func appleLogin(account: String, password: String, events: EventSink = .discard) async throws -> AppleAccount {
         try await installer.appleLogin(account: account, password: password, events: events)
     }

@@ -94,6 +94,36 @@ import S2ArmAppleAdapter
         for _ in 0..<300 where model.busy { try? await Task.sleep(for: .milliseconds(10)) }
         XCTAssertEqual(model.lastPhoneSession?.phase, .finished(.completed), "确认后更新成")
     }
+
+    // 自签走查结构 7：新建开发证书前的确认（cert_revoke_confirm）除了「仍然继续」（带 acceptCertRevoke 重发），并列一条「改用已有证书」。
+    //   期望（手写）：共享表给这个码登记了 alternate = devCertSettings + 文案键；点了不重发（装机请求仍只有 1 次）、确认收起，
+    //   落到设置里签名方式那一栏（showEnvironment、settingsFocus = devCertSettings，presented 同清单按钮那一项）
+    func testCertRevokeAlternateGoesToSettingsWithoutResend() async throws {
+        _ = NSApplication.shared
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("s2arm-confirm-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("Jobs"), withIntermediateDirectories: true)
+        try Data().write(to: root.appendingPathComponent("Jobs/main.py"))
+        let alt = try XCTUnwrap(S2ArmLauncherModel.confirmAlternates["cert_revoke_confirm"], "新建证书确认要有「改用已有证书」")
+        XCTAssertEqual(alt.action, "devCertSettings"); XCTAssertEqual(alt.labelKey, "confirm.alternate.useExistingCert")
+        XCTAssertFalse(BackendText.launcherText(alt.labelKey, language: "zh-Hans").hasPrefix("["), "按钮文案键在共享表里")
+        XCTAssertNil(S2ArmLauncherModel.confirmAlternates["save_backup_failed"], "没登记的码不多画按钮")
+        let runner = ConfirmRunner(codes: ["cert_revoke_confirm"])
+        let model = S2ArmLauncherModel(client: JobClient(environment: JobEnvironment(
+            privateRoot: root, resources: root, library: root.appendingPathComponent("lib").path, libraryId: "fixture"), runner: runner))
+        let game = GameSummary(id: "0100A", name: "示例游戏")
+        model.install(game, device: "D1")
+        for _ in 0..<300 where model.busy || model.dropConfirm == nil { try? await Task.sleep(for: .milliseconds(10)) }
+        let ask = try XCTUnwrap(model.dropConfirm)
+        XCTAssertEqual(ask.code, "cert_revoke_confirm"); XCTAssertEqual(ask.accept, ["acceptCertRevoke"])
+        for _ in 0..<300 where model.lastPhoneSession == nil { try? await Task.sleep(for: .milliseconds(10)) }
+        model.takeConfirmAlternate(ask)
+        for _ in 0..<50 { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertNil(model.dropConfirm, "确认收起")
+        XCTAssertEqual(runner.installs.count, 1, "改用已有证书：不重发")
+        XCTAssertTrue(model.showEnvironment); XCTAssertEqual(model.settingsFocus, "devCertSettings")
+        XCTAssertEqual(model.presented, "devCertSettings", "落点同清单按钮 devCertSettings")
+    }
 }
 
 /// 假作业进程：装机 / 删除请求按 codes 依次失败（每个码只在还没带对应参数时失败一次），之后成功
@@ -103,7 +133,7 @@ private final class ConfirmRunner: JobProcessRunner {
     let codes: [String]
     let warning: String?   // 失败前先记的一条警告诊断的码（模拟作业中途的警告排在停装码前面）
     init(codes: [String], warning: String? = nil) { self.codes = codes; self.warning = warning }
-    static let param = ["container_would_drop": "acceptDropped", "save_backup_failed": "acceptNoBackup"]
+    static let param = ["container_would_drop": "acceptDropped", "save_backup_failed": "acceptNoBackup", "cert_revoke_confirm": "acceptCertRevoke"]
     func start(executable: URL, arguments: [String], environment: [String: String],
                onLine: @escaping (Data) -> Void, onStderr: @escaping (Data) -> Void,
                onExit: @escaping (Int32) -> Void) throws -> JobProcessHandle {

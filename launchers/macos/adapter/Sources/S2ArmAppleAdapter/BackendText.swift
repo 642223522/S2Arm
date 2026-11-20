@@ -133,6 +133,20 @@ public enum BackendText {
         }, uniquingKeysWith: { first, _ in first })
     }()
 
+    /// 确认页上与「仍然继续」并列的另一条路 = errors 各码的 alternate（自签走查结构 7：新建证书确认可「改用已有证书」）：
+    ///   码 → (action：装机前清单动作表 install_landing.actions 里的动作名，点了走同一个派发、不重发；labelKey：按钮文案键)
+    public static let confirmAlternates: [String: (action: String, labelKey: String)] = {
+        guard let data = try? Data(contentsOf: experienceURL()),
+              let spec = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let errors = spec["errors"] as? [String: Any],
+              let items = errors["items"] as? [[String: Any]] else { return [:] }
+        return Dictionary(items.compactMap { item in
+            guard let code = item["code"] as? String, let alt = item["alternate"] as? [String: Any],
+                  let action = alt["action"] as? String, let label = alt["label"] as? String else { return nil }
+            return (code, (action: action, labelKey: label))
+        }, uniquingKeysWith: { first, _ in first })
+    }()
+
     /// 「建议更新」原因 → 共享文案键 = update_reasons（不认识的原因不显示）
     public static let updateReasonKeys: [String: String] = {
         guard let data = try? Data(contentsOf: experienceURL()),

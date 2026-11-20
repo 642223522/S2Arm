@@ -21,6 +21,8 @@ struct DevCertRow: View {
     @State private var confirmDelete = false
 
     private var on: Bool { model.devCert?.active == true }
+    /// 选了「我自己用 AltStore / SideStore 签」（自签走查结构 6）
+    private var external: Bool { model.installMode.signChoice == "external" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -28,13 +30,14 @@ struct DevCertRow: View {
                 if !embedded { LauncherRowIcon("signature") }
                 Text(title ?? sx(loc, "title")).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary)
                 Spacer(minLength: 12)
-                LauncherDropdown(options: [("xcode", appleIdTitle ?? sx(loc, "appleId")), ("certificate", sx(loc, "devcert"))],
-                                 selection: on ? "certificate" : "xcode", label: title ?? sx(loc, "title")) {
-                    model.setDevCertActive($0 == "certificate")
+                LauncherDropdown(options: [("xcode", appleIdTitle ?? sx(loc, "appleId")), ("certificate", sx(loc, "devcert")), ("external", sx(loc, "external"))],
+                                 selection: external ? "external" : on ? "certificate" : "xcode", label: title ?? sx(loc, "title")) {
+                    model.setSignChoice($0)
                 }
                 .launcherRowControls().controllerID("export.sign.mode")
             }
-            if on, let cert = model.devCert?.cert { details(cert) }
+            if on && !external, let cert = model.devCert?.cert { details(cert) }
+            if external { Text(sx(loc, "externalNote")).font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
             Text(sx(loc, "switchNote")).font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
         .padding(embedded ? 0 : LauncherTheme.Metrics.cardInset)
@@ -44,7 +47,7 @@ struct DevCertRow: View {
                     .overlay(RoundedRectangle(cornerRadius: LauncherTheme.Metrics.cardRadius).strokeBorder(LauncherTheme.Colors.border))
             }
         }
-        .onAppear { model.refreshDevCert() }
+        .onAppear { model.refreshDevCert(); model.refreshInstallMode(silent: true) }
         .onChange(of: model.selectedDevice?["udid"] as? String) { _ in model.refreshDevCert() }
         .sheet(isPresented: $model.showDevCertImport) { DevCertSheet(model: model).environmentObject(loc) }
         .alert(sx(loc, "deleteConfirm"), isPresented: $confirmDelete) {
