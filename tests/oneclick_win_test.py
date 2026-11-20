@@ -377,7 +377,7 @@ class SeedAoc(unittest.TestCase):   # ④ 播种与轻阶段带 S2A_SEED_AOC=1�
             t = Path(t); run = oneclick_win.Run(t / 'out'); seen = {}
             def sh(args, log, env=None, ok=(0,), cwd=None): seen[log] = ((env or {}).get('S2A_SEED_AOC'), (env or {}).get('S2A_NX_UNPACK')); return 0
             run.sh = sh
-            (t / 'out/roots').mkdir(parents=True); (t / 'ver').mkdir(); os.symlink(t / 'ver', t / 'out/roots/tx@现行')
+            (t / 'out/roots/tx@v1').mkdir(parents=True); (t / 'out/roots/tx@现行').write_text('tx@v1\n')   # 现行指针文件
             tool = t / 'out/bin/nx_unpack_abc/nx_unpack.exe'
             with patch.object(oneclick_win, "nx_unpack", lambda r: tool):
                 oneclick_win.stages(run, 'tx', t / 'x', t / 'src')

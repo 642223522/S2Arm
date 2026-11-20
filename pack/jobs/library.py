@@ -710,12 +710,13 @@ def copy_tree_links(src, dst, check=None):
     src, dst = Path(src), Path(dst)
     isjunction = getattr(os.path, "isjunction", lambda _: False)
     def materialize(a, b):
-        """目标盘建不了链接（exFAT / FAT32，v0.3.1 玩家确认过照用）：把链接指向的目录整份拷过来。产物根的「<款>@现行」拷成真目录，
-        版本名记进 .root_tag（pack/orch/roots.py 实目录模式按它认）"""
+        """目标盘建不了链接（exFAT / FAT32，v0.3.1 玩家确认过照用）：把链接指向的目录整份拷过来。
+        老库产物根的现行链接「<款>@现行」不展开：拷成指针文件（内容 = 指向的版本目录名，pack/orch/current.py；那个版本目录同在这棵树里照拷）"""
         target = Path(os.path.realpath(a))
+        if a.name.endswith(layout.CURRENT):
+            b.write_text(target.name + "\n", encoding="utf-8")
+            return
         copy(target, b)
-        if a.name.endswith("@现行"):  # 非玩家句
-            (b / ".root_tag").write_text(target.name + "\n", encoding="utf-8")
     def copy(a, b):
         if check:
             check()
@@ -1290,7 +1291,7 @@ class _CloneInfo:
 
 def disk_bytes(roots, device, skip_names=(), skip_under=(), state=None):
     """这些目录在 device 卷上实际分配的字节：按 (卷, inode) 去重（硬链接只算一次；多个根互相包含也只算一次），
-    不跟软链（原件软链、@现行 指向）、不跨到别的卷（私有目录在内置盘时不计入外接盘游戏库的账）。
+    不跟软链（原件软链、RomFS 存储链接）、不跨到别的卷（私有目录在内置盘时不计入外接盘游戏库的账）。
     APFS 克隆（#303）：同一克隆族（_CloneInfo）的共享块只算一次——每份记独占字节，族的共享部分取最大一份加一次；
     取不到克隆信息的文件照 st_blocks 算。skip_names / skip_under 只用于按部分分账。
     state（sizes.measure 分部分量一款时传同一个 {}）：几次调用共用「见过的 inode」与「克隆族已记的共享块」——硬链接、克隆族跨部分也只算一次，
@@ -2333,14 +2334,14 @@ def _rm_entry(c, p):
 
 
 def _prune_roots(c, d):
-    """产物根只留现行（*@现行 及其指向）与 RomFS 共享存储，清旧版本 → 清了几项。
+    """产物根只留现行（*@现行 指针文件及其指向的版本目录）与 RomFS 共享存储，清旧版本 → 清了几项。
     RomFS 共享存储：现行指向其中的身份，删了现行就断；没人指向的旧身份由下次提交清（pack/roots.sh root_romfs_sweep）"""
-    links = list(d.glob("*@现行"))  # 非玩家句
-    current = {q.name for q in links}
-    for q in links:
-        if _is_link(q):
-            target = Path(os.readlink(q))
-            current.add(resolve_path(target if target.is_absolute() else q.parent / target).name)
+    pointers = list(d.glob("*" + layout.CURRENT))
+    current = {q.name for q in pointers}
+    for q in pointers:
+        version = layout.current_root(c, q)   # 老库的链接在这里先迁移成指针文件
+        if version is not None:
+            current.add(version.name)
     n = 0
     for q in d.iterdir():
         if q.name not in current and q.name != ".romfs_store":
@@ -2466,7 +2467,8 @@ def _residue_disposable(c, gid):
 def _keep_stage_logs(c, gid):
     """产物根里的阶段日志要跟着删：先拷进私有日志目录，失败后的诊断包还能带上（只拷文件，单份 8 MB 以内，最多 64 份）。"""
     work = layout.ios_work(c, gid, create=False)
-    roots = [*work.glob("roots/*@现行"), *work.glob("work/pkg/product"), *layout.build_dir(c, gid, create=False).glob("*/roots/*@现行"),  # 非玩家句
+    current = [layout.current_root(c, p) for p in [*work.glob("roots/*" + layout.CURRENT), *layout.build_dir(c, gid, create=False).glob("*/roots/*" + layout.CURRENT)]]
+    roots = [*(r for r in current if r is not None), *work.glob("work/pkg/product"),
              *work.glob("work"),   # Windows 一键出包各步的日志（seed.log 等，pack/orch/oneclick_win.py Run.sh 写在工作目录下）：#754 失败后随 build/ 删掉，诊断包里没有
              # 阶段失败时各阶段把自己的日志拷进产物根旁的 .failed/（如改写 pack/stage_rewrite.sh 的 <款>_<模块>.log）：玩家报出包超时 / 改写失败时要的就是它（#251 诊断包里没有）
              *work.glob("roots/.failed"), *layout.build_dir(c, gid, create=False).glob("*/roots/.failed"),

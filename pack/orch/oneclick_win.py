@@ -476,8 +476,11 @@ def stages(run, game, x, src_dir, own=False):
     if not prebuilt(ROMFS_EXE) and not (proj / 'obj/project.assets.json').is_file():   # 用预编 RomFS 索引（stages.py 同口径）就不编、不用还原
         run.step('还原 RomFS 索引依赖', lambda: run.sh(['dotnet', 'restore', str(proj), '-nologo', '-v', 'q'], 'romfs_index_restore.log'))
     run.step('八个轻阶段', lambda: run.sh([PY, '-X', 'utf8', '-m', 'pack.orch.refresh', game, '--roots', str(roots), '--stages', 'all-light'], 'light.log', env=env))
-    cur = roots / f'{game}@现行'
-    return Path(os.path.realpath(cur))
+    from pack.orch import current   # 现行指针文件（轻阶段刚提交过：已是指针，不会走到迁移）
+    found = current.read(roots, game)
+    if found is None:
+        raise RuntimeError(f'{game} 轻阶段跑完后没有合规的现行（{roots}）')
+    return Path(os.path.realpath(found))
 
 
 def pso_sources(tid, know=None):

@@ -122,8 +122,8 @@ o=$(S2A_METAL_TT=$T/badtt BP "$T/o4" --os "$MAJ" --arch "$ARCH" --cache "$T/cach
 ck "⑤ metal-tt 失败：退出 3、0 个文件、读数失败 4 对、预热对没编成（退出 ${r}，$(ls "$T/o4" 2> /dev/null | wc -l | tr -d ' ') 个文件）" \
    '[ $r = 3 ] && [ -z "$(ls "$T/o4")" ] && [[ "$(tail -1 <<< "$o")" == *"失败 4 对；首查预热对 没编成"* ]]'
 # ⑥ 阶段：假产物根（只有直连库目录与直连库阶段键），私有根
-RT=$T/roots; mkdir -p "$RT/fx@v1/shaders"; cp -R "$F" "$RT/fx@v1/shaders/"; echo k1 > "$RT/fx@v1/.stage_direct"; printf 'title_id\t0100aaaa00000000\n' > "$RT/fx@v1/unpack.tsv"; ln -s fx@v1 "$RT/fx@现行"
-cur() { cd -P "$RT/fx@现行" && pwd; }
+RT=$T/roots; mkdir -p "$RT/fx@v1/shaders"; cp -R "$F" "$RT/fx@v1/shaders/"; echo k1 > "$RT/fx@v1/.stage_direct"; printf 'title_id\t0100aaaa00000000\n' > "$RT/fx@v1/unpack.tsv"; printf '%s\n' fx@v1 > "$RT/fx@现行"
+cur() { cd -P "$RT/$(cat "$RT/fx@现行")" && pwd; }
 stage() { S2A_ROOTS=$RT S2A_ROOTS_SHARED=$T/shared S2A_RUN_ROOT=$T/run S2A_PACK_PLAT=macos S2A_MAC_OS=$MAJ S2A_PSO_ARCHS=$ARCH J=2 bash "$H/pack/stage_direct_cpso.sh" fx 2>&1; }
 o=$(stage); r=$?; [ $r = 0 ] || echo "$o" | tail -5
 ck "⑥ 阶段：退出 ${r}、现行根 pipelines/ 恰是这 4 个 + 预热对两份、记了键（$(grep -o '拉取基础管线归档[^；]*' <<< "$o" | head -1 | cut -c1-100)）" \

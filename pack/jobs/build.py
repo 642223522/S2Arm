@@ -878,21 +878,19 @@ def oneclick_kuan(c, gid):
 
 
 def sibling_roots(c, game):
-    """同一款在别的平台已有的现行产物根（新的在前）：iPhone games/<英文名>/build/ios/roots/*@现行、Mac games/<英文名>/build/<键>/roots/<程序号>@现行"""
+    """同一款在别的平台已有的现行产物根（新的在前）：iPhone games/<英文名>/build/ios/roots/*@现行、Mac games/<英文名>/build/<键>/roots/<程序号>@现行（指针文件，layout.current_root）"""
     found = []
-    for link in [*layout.ios_work(c, game["id"], create=False).glob("roots/*@现行"), *(p for p in layout.build_dir(c, game["id"], create=False).glob("*/roots/*@现行") if p.parent.parent.name != "ios")]:  # 非玩家句
+    for pointer in [*layout.ios_work(c, game["id"], create=False).glob("roots/*" + layout.CURRENT), *(p for p in layout.build_dir(c, game["id"], create=False).glob("*/roots/*" + layout.CURRENT) if p.parent.parent.name != "ios")]:
         try:
-            target = Path(os.readlink(link)) if _path_is_link(link) else link
-            cur = contained(c.library, resolve_path(target if target.is_absolute() else link.parent / target))
+            cur = layout.current_root(c, pointer)
+            if cur is None:
+                continue
+            cur = contained(c.library, resolve_path(cur))
         except (Failure, OSError):
             continue
         if cur.is_dir():
             found.append((cur.stat().st_mtime, cur))
     return [p for _, p in sorted(found, reverse=True)]
-
-
-def _path_is_link(path):
-    return path.is_symlink() or getattr(os.path, "isjunction", lambda _: False)(path)
 
 
 def seed_from_sibling(c, game, roots, kuan):
@@ -918,9 +916,7 @@ def seed_from_sibling(c, game, roots, kuan):
             c.diagnostic(f"兄弟平台的产物根 {cur.name} 克隆不过来（{why}），改从解包目录准备，平台无关阶段这次要重做", code="sibling_clone_failed", severity="warning")
             return False
         route = (log.read_text(encoding="utf-8", errors="replace").strip().splitlines() or [""])[-1]
-        link = roots / (kuan + "@现行")  # 非玩家句
-        tmp = roots / ("." + kuan + "@现行.new")  # 非玩家句
-        tmp.unlink(missing_ok=True); tmp.symlink_to(dst.name); tmp.replace(link)
+        layout.set_current(c, roots, kuan, dst.name)
         src = (cur / ".root_src").read_text().strip()[:9] if (cur / ".root_src").is_file() else "未知"  # 非玩家句
         c.emit("cache", f"复用兄弟平台的产物根 {cur.name}（提交 {src}；{route}）：平台无关阶段按键核对，键相同跳过、不同照常重做", cacheHit=True)
         return True
@@ -1001,7 +997,7 @@ def prepare(c):
         # 会复用缓存的步：共用解包快照对得上 → 解包；现行镜像就是从这一份产物根（同样的代码、工具、输入）出的（game.json imageKey）→ 改写与准备资源、
         #   直连库（各阶段按键跳过）。直连库若其实要重出（跑局知识等变了，DirectWatcher 看到直连临时版本），当场改回冷步
         unpack_ok = extract_valid(c, game)
-        warm = layout.game_info(c, game["id"]).get("imageKey") == key and (root / "roots" / (game["id"] + "@现行")).exists()  # 非玩家句
+        warm = layout.game_info(c, game["id"]).get("imageKey") == key and layout.current_root(c, root / "roots" / (game["id"] + layout.CURRENT)) is not None
         ms.plan(c, size_gb, "build_dual", reused=(["unpack"] if unpack_ok else []) + (["refresh", "analyze", "direct"] if warm else []))
         logs = c.logs / c.task
         logs.mkdir(parents=True, exist_ok=True)
@@ -1013,7 +1009,7 @@ def prepare(c):
         env["S2A_NRO_KEPT_DIR"] = str(layout.nro_kept(c, game["id"]))   # 运行时留下的 NRO（#8be819），没有 = 改写阶段当无
         # The memory table is collected from the repository table and the recent run logs only; the previously
         # installed table is not fed back (its values would never age out once the host stops needing them)
-        if not (root / "roots" / (game["id"] + "@现行")).exists() and not seed_from_sibling(c, game, root / "roots", game["id"]):  # 非玩家句
+        if layout.current_root(c, root / "roots" / (game["id"] + layout.CURRENT)) is None and not seed_from_sibling(c, game, root / "roots", game["id"]):
             c.run(["bash", c.engine / "pack/seed_root.sh", game["id"], "import-" + key, extraction], logs / "seed.log", env)
         # 出包同一条流水线（10-26 维护者 / 维护者「iOS 和 macOS 不要这儿新那旧的」）：和一键出包 --target mac 一样调 pack/refresh.sh——改写 ‖ 系统数据 ‖ 宽屏布局 ‖
         #   追加内容 → 直连配置推导 → RomFS 索引 → 抽取 → 直连库 → 直连出成则通用 lazy（C.3：不翻译 / 编译 / 预建管线，首遇安全网兜底）。
@@ -1035,9 +1031,9 @@ def prepare(c):
                 c.run(["bash", c.engine / "pack/refresh.sh", game["id"]], logs / "refresh.log", env)
         finally:
             shutil.rmtree(src, ignore_errors=True)
-        current = resolve_path(root / "roots" / (game["id"] + "@现行"))  # 非玩家句
-        contained(root, current)
-        if not (current / "shaders/direct/keys.tsv").is_file():   # 只有直连：refresh.sh 退 0 却没有直连库就是出包出错（11-07 拆通用模式）
+        current = layout.current_root(c, root / "roots" / (game["id"] + layout.CURRENT))
+        current = current and contained(root, current)
+        if current is None or not (current / "shaders/direct/keys.tsv").is_file():   # 只有直连：refresh.sh 退 0 却没有直连库就是出包出错（11-07 拆通用模式）
             raise Failure("直连着色器库不完整。")
         warn_offline_empty(c, current)
         notes = collect_degrade(c, current)   # 降级继续的玩家提示：随结果交给完成卡（v0.3.1）

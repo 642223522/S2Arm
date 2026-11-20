@@ -57,15 +57,15 @@ def rebuild(c, gid, src_root, plat, work):
     for stale_out in ("shaders/direct", ".stage_direct", ".stage_direct_seed", ".stage_direct_cpso"):   # 旧库与它的阶段键不带进来：键对得上会被当成「已是本树」跳过
         p = roots / tag / stale_out
         shutil.rmtree(p) if p.is_dir() else p.unlink(missing_ok=True)
-    os.symlink(tag, roots / f"{gid}@现行")  # 非玩家句
+    layout.set_current(c, roots, gid, tag)
     env = c.env()
     env.update(S2A_ROOTS=str(roots), S2A_ROOTS_SHARED=str(work / "never-shared"), S2A_ROOTS_PRIV=str(work / "roots-private"), S2A_PACK_PLAT=plat)
     logs = Path(c.logs) / c.task; logs.mkdir(parents=True, exist_ok=True)
     for st, extra in STAGES:
         c.run(["bash", Path(c.engine) / f"pack/stage_{st}.sh", gid, *extra], logs / f"sgbf_{st}.log", env)
-    cur = Path(os.path.realpath(roots / f"{gid}@现行"))  # 非玩家句
-    new = cur / "shaders/direct"
-    if not (new / "keys.tsv").is_file() or lib_dir(new) is None:
+    cur = layout.current_root(c, roots / (gid + layout.CURRENT))
+    new = cur / "shaders/direct" if cur is not None else None
+    if new is None or not (new / "keys.tsv").is_file() or lib_dir(new) is None:
         raise Failure("重出的直连着色器库不完整")  # 非玩家句
     return new
 

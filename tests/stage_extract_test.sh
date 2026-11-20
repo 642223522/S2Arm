@@ -14,7 +14,7 @@ export S2A_NX_UNPACK=$T/nx_unpack-unused
 ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
 mkdir -p $T/repo/pack $T/repo/tools $T/repo/graphics/tools/direct $T/repo/graphics/tools/shbake $T/repo/translator $T/repo/graphics/nvn/games $T/repo/graphics/nvn/tools $T/roots
 cp "$H/pack/resource_input_key.py" $T/repo/pack/; cp "$H/pack/stage_keyfiles.sh" $T/repo/pack/; cp "$H/tools/stage_deps.py" $T/repo/tools/; cp -R "$H/tools/stage_deps_hook" $T/repo/tools/   # 各阶段实际读入进键（pack/stage_keyfiles.sh，10-30）
-cp "$H/pack/roots.sh" "$H/pack/srcs.sh" "$H/pack/stage_extract.sh" "$H/pack/ue_pak.py" "$H/pack/decoder_need.sh" $T/repo/pack/; cp "$H/tools/clonedir.py" "$H/tools/host_build.sh" "$H/tools/plock.sh" "$H/tools/flock_hold.py" "$H/tools/machine.sh" "$H/tools/nostall.py" "$H/tools/progress.sh" "$H/tools/nospace.sh" $T/repo/tools/
+cp "$H/pack/roots.sh" "$H/pack/srcs.sh" "$H/pack/stage_extract.sh" "$H/pack/ue_pak.py" "$H/pack/decoder_need.sh" $T/repo/pack/; mkdir -p $T/repo/pack/orch && cp "$H/pack/orch/current.py" $T/repo/pack/orch/; cp "$H/tools/clonedir.py" "$H/tools/host_build.sh" "$H/tools/plock.sh" "$H/tools/flock_hold.py" "$H/tools/machine.sh" "$H/tools/nostall.py" "$H/tools/progress.sh" "$H/tools/nospace.sh" $T/repo/tools/
 cp "$H/graphics/tools/direct/extract.sh" $T/repo/graphics/tools/direct/; cp "$H/graphics/tools/shbake/pak_crypto.py" "$H/graphics/tools/shbake/unreal_pak.py" "$H/graphics/tools/shbake/zstd_lib.py" $T/repo/graphics/tools/shbake/
 # romfs_list.py：仓库里唯一的 RomFS 遍历（11-03），被测脚本经它列 RomFS
 cp "$H/graphics/nvn/tools/romfs_list.py" $T/repo/graphics/nvn/tools/
@@ -65,9 +65,9 @@ printf '.PHONY: host\nhost:\n\t@echo host >> $(FAKE_CALLS)\n' > $T/repo/Makefile
 (cd $T/repo && git init -q && git add -A && git -c user.email=t@t -c user.name=t commit -qm x)
 export S2A_ROOTS=$T/roots S2A_ROOTS_SHARED=$T/shared FAKE_CALLS=$T/calls
 mkdir -p $T/roots/acnh@s0/romfs $T/roots/acnh@s0/exefs $T/roots/acnh@s0/aoc/1; echo r > $T/roots/acnh@s0/romfs/f; echo main > $T/roots/acnh@s0/exefs/main; echo d > $T/roots/acnh@s0/aoc/1/f
-printf 'title_id\t0100aaaa00000000\n' > $T/roots/acnh@s0/unpack.tsv; ln -s acnh@s0 $T/roots/acnh@现行
+printf 'title_id\t0100aaaa00000000\n' > $T/roots/acnh@s0/unpack.tsv; printf '%s\n' acnh@s0 > $T/roots/acnh@现行
 S() { bash $T/repo/pack/stage_extract.sh acnh; }
-cur() { cd -P $T/roots/acnh@现行 && pwd; }
+cur() { cd -P $T/roots/$(cat $T/roots/acnh@现行) && pwd; }
 n() { grep -c "^$1 " $T/calls 2>/dev/null || echo 0; }
 # 现行的 RomFS 是只读共享存储（pack/roots.sh，11-03），已提交的版本不许改：「游戏输入变」按真实流程做——
 #   开一个自持 RomFS 的阶段（ROOT_OWN_ROMFS=1，同界面布局阶段），在它的工作根里改，提交成新现行。文件从只读存储克隆来，原地改的先 chmod u+w
@@ -183,11 +183,11 @@ for api in nvn vulkan gl; do
   (cd $T/repo && git add -A && git -c user.email=t@t -c user.name=t commit -qm "once-$api")
   g=once_$api; mkdir -p "$T/roots/$g@s0/romfs" "$T/roots/$g@s0/exefs"
   echo original > "$T/roots/$g@s0/romfs/f"; echo main > "$T/roots/$g@s0/exefs/main"
-  printf 'title_id\t0100aaaa00000000\n' > "$T/roots/$g@s0/unpack.tsv"; ln -s "$g@s0" "$T/roots/$g@现行"
+  printf 'title_id\t0100aaaa00000000\n' > "$T/roots/$g@s0/unpack.tsv"; printf '%s\n' "$g@s0" > "$T/roots/$g@现行"
   export ONCE_CALLS=$T/count-$api; : > "$ONCE_CALLS"
   o=$(S2A_RESOURCE_KEY_ONCE_FILE="$T/run-$api" bash $T/repo/pack/stage_extract.sh "$g" 2>&1); xrc=$?
   o2=$(S2A_RESOURCE_KEY_ONCE_FILE="$T/run-$api" DSX_LIB="$T/not-built" bash $T/repo/pack/stage_direct.sh "$g" 2>&1); drc=$?
-  c2=$(cd -P "$T/roots/$g@现行" && pwd)
+  c2=$(cd -P "$T/roots/$(cat "$T/roots/$g@现行")" && pwd)
   ck "once $api 两阶段成功、KR计算入口1次（extract=$xrc direct=$drc calc=$(grep -c '^KR$' "$ONCE_CALLS") clone=$(grep -c '^clone$' "$ONCE_CALLS");$(echo "$o $o2" | tail -1 | cut -c1-90)）" '[ $xrc = 0 ] && [ $drc = 0 ] && [ "$(grep -c "^KR$" "$ONCE_CALLS")" = 1 ] && [ -f "$c2/shaders/direct/keys.tsv" ]'
   # 真实roots协议的后续阶段桩：输入不动，只提交一份guest映射，再开始下一轮刷新。
   : > "$ONCE_CALLS.extra.bytes"
@@ -205,10 +205,10 @@ for api in nvn vulkan gl; do
   new_input_key=$(cut -f3 "$T/input-$api"); changed_bytes=$(awk '{s+=$1} END {print s+0}' "$input_calls.bytes")
   ck "clone $api 后续阶段改main：只重读5字节且KR变化（rc=$irc0/$irc1/$irc2 bytes=${changed_bytes}）" '[ $irc0 = 0 ] && [ $irc1 = 0 ] && [ $irc2 = 0 ] && [ "$changed_bytes" = 5 ] && [ "$new_input_key" != "$old_input_key" ]'
   # 新增刷新单列账本，原下面的计数和断言不变。
-  c2=$(cd -P "$T/roots/$g@现行" && pwd)
+  c2=$(cd -P "$T/roots/$(cat "$T/roots/$g@现行")" && pwd)
   # 新根未经过资源clone交接，不能盲复用同轮旧字符串。
   fresh=$T/roots/$g@foreign; python3 "$H/tools/clonedir.py" "$c2" "$fresh"; echo changed > "$fresh/romfs/f"
-  ln -sfn "$g@foreign" "$T/roots/$g@现行"
+  printf '%s\n' "$g@foreign" > "$T/roots/$g@现行"
   o3=$(S2A_RESOURCE_KEY_ONCE_FILE="$T/run-$api" DSX_LIB="$T/not-built" bash $T/repo/pack/stage_direct.sh "$g" 2>&1); frc=$?
   ck "once $api 未认证新根重新核算（rc=$frc calc=$(grep -c '^KR$' "$ONCE_CALLS")）" '[ $frc = 0 ] && [ "$(grep -c "^KR$" "$ONCE_CALLS")" = 2 ]'
   printf 'truncated\n' > "$T/run-$api"
@@ -255,7 +255,7 @@ class ResourceMemo(unittest.TestCase):
   with patch.object(Path,'open',opening),patch.object(mod.hashlib,'sha256',hashing):key=mod.resource_key(root)
   return key,counter
  def clone(self):
-  env=dict(os.environ,S2A_ROOTS=str(self.root.parent),S2A_ROOTS_SHARED=str(self.base/'unrelated-shared'),S2A_ROOTS_NO_BOOT='1');(self.root.parent/'fixture@现行').symlink_to(self.root.name)
+  env=dict(os.environ,S2A_ROOTS=str(self.root.parent),S2A_ROOTS_SHARED=str(self.base/'unrelated-shared'),S2A_ROOTS_NO_BOOT='1');(self.root.parent/'fixture@现行').write_text(self.root.name + '\n')
   out=subprocess.check_output(['bash','-c','source "$1"; ROOT_OWN_ROMFS=1 root_begin fixture next','test',str(REPO/'pack/roots.sh')],env=env,text=True);return Path(out.strip())
  def test_warm_reads_no_input_bytes(self):
   k,c=self.measured();self.assertEqual(c['bytes'],len(b'main-input')+2+131072);k2,c2=self.measured();self.assertEqual(k,k2);self.assertEqual(c2,{'opens':0,'bytes':0,'key_assemblies':0})
@@ -322,8 +322,8 @@ class ResourceMemo(unittest.TestCase):
  def test_real_replay_changed_input_only_rehashes_changed_file(self):
   key,c=self.replay_result('romfs/a',b'BB');self.assertEqual(c['bytes'],2);self.assertEqual(c['key_assemblies'],1)
  def test_optional_clone_cache_failure_does_not_abort_root(self):
-  repo=self.base/'cache-fails-repo';(repo/'pack').mkdir(parents=True);(repo/'tools').mkdir();shutil.copy(REPO/'pack/roots.sh',repo/'pack/roots.sh');shutil.copy(REPO/'tools/clonedir.py',repo/'tools/clonedir.py');shutil.copy(REPO/'tools/plock.sh',repo/'tools');shutil.copy(REPO/'tools/flock_hold.py',repo/'tools');(repo/'pack/resource_input_key.py').write_text('raise SystemExit(7)\n')
-  (self.root.parent/'fixture@现行').symlink_to(self.root.name);env=dict(os.environ,S2A_ROOTS=str(self.root.parent),S2A_ROOTS_SHARED=str(self.base/'unrelated-shared'),S2A_ROOTS_NO_BOOT='1');out=subprocess.check_output(['bash','-c','source "$1"; W=$(root_begin fixture fallback) || exit; test -f "$W/.root_pid" || exit; root_commit fixture fallback || exit; root_cur fixture','test',str(repo/'pack/roots.sh')],env=env,text=True);self.assertTrue((Path(out.strip())/'romfs/a').is_file())
+  repo=self.base/'cache-fails-repo';(repo/'pack').mkdir(parents=True);(repo/'tools').mkdir();shutil.copy(REPO/'pack/roots.sh',repo/'pack/roots.sh');(repo/'pack/orch').mkdir();shutil.copy(REPO/'pack/orch/current.py',repo/'pack/orch/current.py');shutil.copy(REPO/'tools/clonedir.py',repo/'tools/clonedir.py');shutil.copy(REPO/'tools/plock.sh',repo/'tools');shutil.copy(REPO/'tools/flock_hold.py',repo/'tools');(repo/'pack/resource_input_key.py').write_text('raise SystemExit(7)\n')
+  (self.root.parent/'fixture@现行').write_text(self.root.name + '\n');env=dict(os.environ,S2A_ROOTS=str(self.root.parent),S2A_ROOTS_SHARED=str(self.base/'unrelated-shared'),S2A_ROOTS_NO_BOOT='1');out=subprocess.check_output(['bash','-c','source "$1"; W=$(root_begin fixture fallback) || exit; test -f "$W/.root_pid" || exit; root_commit fixture fallback || exit; root_cur fixture','test',str(repo/'pack/roots.sh')],env=env,text=True);self.assertTrue((Path(out.strip())/'romfs/a').is_file())
 if __name__=='__main__':unittest.main(argv=['resource-memo'],verbosity=2)
 
 P253_MEMO_TESTS
