@@ -42,7 +42,7 @@ def selected_packages(game):
     # source is moved or removed. Prefer a source that still exists so a stale
     # first entry cannot pin the build to the wrong game version.
     def rank(package):
-        path = package["path"]
+        path = package.get("path") or ""   # 没记路径的包（夹具 / 旧目录）当作在
         available = os.path.exists(path) if os.path.isabs(path) else True
         return package["version"], available
 
