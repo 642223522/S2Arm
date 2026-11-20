@@ -1879,6 +1879,23 @@ import S2ArmAppleAdapter
         model.closeAppleLogin()
     }
 
+    // #1756：「更新所选」没走成时整页显示原因、给「重试」（原先这单的失败页哪里都不显示，玩家只看到进度条跑完）。
+    //   期望（手写）：失败的 pushSelected 整页（wholePage），完成的不整页；整页里有「重试」，点了按上一单那台续推（作业请求带 resume）
+    func testFailedUpdateSelectedShowsWholePageWithRetry() async throws {
+        let fixture = try SettingsFixture()
+        defer { fixture.remove() }
+        var failed = JobSession(kind: .pushSelected, gameID: nil, name: "更新所选", phase: .finished(.failed))
+        failed.message = "资源包写进 iPhone 时中断（连不上 Apple 设备服务）"
+        XCTAssertTrue(failed.wholePage)
+        XCTAssertFalse(JobSession(kind: .pushSelected, gameID: nil, name: "更新所选", phase: .finished(.completed)).wholePage, "推成了不整页")
+        XCTAssertTrue(JobSession(kind: .installUpdate, gameID: nil, name: "更新 S2Arm").wholePage, "更新 S2Arm 照旧整页")
+        fixture.model.lastPushSelectedDevice = "PHONE-1"
+        let (_, window) = try await render(AnyView(JobSessionView(model: fixture.model, session: failed)), fixture: fixture, language: .zh)
+        fixture.navigation.source.controllers = { [] }; fixture.navigation.attach(window)
+        defer { fixture.navigation.detach(); window.close() }
+        XCTAssertTrue(fixture.navigation.controlTargets(in: window).contains { $0.id == "phone.retry" }, "失败页有「重试」")
+    }
+
     func testSettingsPagesHaveRoomForDescriptionAndControls() async throws {
         let fixture = try SettingsFixture()
         defer { fixture.remove() }
