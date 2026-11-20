@@ -170,6 +170,7 @@ static void zst_cases(const char *T) {
 //   ① 导好：程序进 program/v-<image_sha256 前 16 位>-s2arm/、清单补上 dir 换上、派生件进 资源包/、临时 tar 不留；游戏号按大写
 //   ② 帧没到尾（拷了一半）→ 1、什么都不写 ③ 第一个条目不是 s2arm.json → -2 / ios_install_manifest_bad ④ 条目路径带 .. → -2、清单不换
 //   ⑤ 放进「放这里导入」：扫描导入、导好删掉原文件
+//   ⑥ 导入文件夹里的坏 .s2arm：扫描报失败（码 ios_install_manifest_bad、原因带文件名，库界面才弹得出来）、文件留着；没改再扫 → 跳过、不报；改了再扫 → 重试、再报
 int s2a_s2arm_import(const char *proc_docs, const char *src, char *gid_out, size_t gid_n); const char *s2a_s2arm_import_code(void);
 static void s2arm_pack(const char *T, const char *out, const char *first, const char *bad_name) {
     char tp[1024]; snprintf(tp, sizeof tp, "%s/s2arm.tar", T); FILE *f = fopen(tp, "wb"); CHECK(f != NULL, "造 .s2arm tar 失败"); if (!f) return;
@@ -216,6 +217,17 @@ static void s2arm_cases(const char *T) {
     snprintf(src, sizeof src, "%s/放这里导入/d.s2arm", docs); s2arm_pack(T, src, "s2arm.json", NULL);
     s2a_img_scan(docs);
     CHECK(stat(src, &st) != 0 && stat(p, &st) == 0, "⑤ 导入文件夹里的 .s2arm：导好、原文件删掉");
+    // ⑥ 坏 .s2arm 放进导入文件夹
+    snprintf(src, sizeof src, "%s/放这里导入/bad.s2arm", docs); s2arm_pack(T, src, "readme.txt", NULL);
+    s2a_img_scan(docs);
+    CHECK(!strcmp(s2a_img_scan_code(), "ios_install_manifest_bad") && strstr(s2a_img_scan_failure(), "bad.s2arm") && stat(src, &st) == 0,
+          "⑥ 坏 .s2arm：码「%s」（期望 ios_install_manifest_bad）、原因「%s」带文件名、文件留着", s2a_img_scan_code(), s2a_img_scan_failure());
+    s2a_img_scan(docs);
+    CHECK(!s2a_img_scan_code()[0] && !s2a_img_scan_failure()[0] && stat(src, &st) == 0, "⑥ 没改再扫：跳过（码「%s」、原因「%s」都应为空），文件还在", s2a_img_scan_code(), s2a_img_scan_failure());
+    { FILE *f = fopen(src, "ab"); if (f) { fputc(0, f); fclose(f); } }
+    s2a_img_scan(docs);
+    CHECK(s2a_img_scan_code()[0] && strstr(s2a_img_scan_failure(), "bad.s2arm"), "⑥ 改了再扫：重试、再报（码「%s」）", s2a_img_scan_code());
+    unlink(src);
 }
 // 两路同时解同一款（11-19 Duo：游戏库与资源导入闸门各起一路，后一路打开已被前一路解完删掉的 tar 回 errno 2、按失败收场）。
 //   A 解完第 1 个包时（进度回调）起 B，A 再停 300 毫秒：串行时 B 等 A 做完、见待解包已空且 .applied = 清单号 → 直接成功；

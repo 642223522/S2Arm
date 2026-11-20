@@ -59,7 +59,7 @@ char *s2a_shell_iml_notice(void);
 /* 游戏库真画出了这条提示：记下，进游戏后起局提示不再重复弹（ios/iml_probe.m） */
 void s2a_shell_iml_notice_seen(void);
 void s2a_shell_pick_game_data(const char *game_id);
-// 宿主让库界面重判各款资源包（说明里「重新检查」后调）。库界面建好时登记；没登记时 s2a_shell_refresh 什么都不做
+// 宿主让库界面重读游戏清单并重判各款资源包（说明里「重新检查」、后台解包完成、导入文件夹导入 .s2arm 后调）。库界面建好时登记；没登记时 s2a_shell_refresh 什么都不做
 typedef void (*s2a_shell_refresh_fn)(void *ctx);
 void s2a_shell_set_refresh_handler(s2a_shell_refresh_fn fn, void *ctx);
 void s2a_shell_refresh(void);
