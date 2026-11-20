@@ -7,7 +7,10 @@
 //      其余字段与源清单相同；白名单派生件逐字节在、黑名单一个没带
 //   ③ .img 放进「放这里导入」（s2a_img_scan）认领成功、game.img 逐字节相同、index.tsv 留着着色器库行；再解开（s2a_pack_apply）成功
 //   负对照：④ .s2arm 末尾内容校验改一个字节 → 导入失败；⑤ 不去清单的 dir → 导入后能查出重复的 dir 键
-//   具名失败：⑥ 有 .partial → S2A_GEXP_PARTIAL ⑦ 没有 game.img → S2A_GEXP_NO_IMG ⑧ 没有程序包清单 → S2A_GEXP_NO_PROGRAM
+//   具名失败：⑥ 有 .partial → S2A_GEXP_PARTIAL ⑦ 没有 game.img（也没有 romfs.img）→ S2A_GEXP_NO_IMG ⑧ 没有程序包清单 → S2A_GEXP_NO_PROGRAM
+//   ⑩ 推送布局（romfs.img + 散文件，没有 game.img）：.img 是 romfs.img 的硬链接；pack/ = index.tsv 列的其余文件 + index.tsv + manifest.json，机上状态文件不带；
+//      s2arm.json 的 img_kind / img_size / img_fp 按造的镜像算；导进空容器 → 负对照（同大小不同内容、拷一半、全长但尾巴没写）都不认领 →
+//      完整 .img 认领成 romfs.img（逐字节相同）→ s2a_pack_apply（推送装好后同一条）写 .applied、index_check 全过、游戏库判就绪
 //   ⑨ XXH64 规范已知值（空串、"abc"、0..99、0..36 各字节）
 #import <Foundation/Foundation.h>
 #include <stdio.h>
@@ -21,6 +24,7 @@
 int s2a_s2arm_import(const char *proc_docs, const char *src, char *gid_out, size_t gid_n);
 int s2a_img_scan(const char *proc_docs); const char *s2a_img_scan_code(void); const char *s2a_img_scan_failure(void);
 int s2a_pack_apply(const char *docs); const char *s2a_pack_apply_failure(void);
+int s2a_pack_check(const char *root, char *first, size_t n); int s2a_game_install_state(const char *proc_docs, const char *gid);
 uint64_t s2a_xxh64_digest(const void *data, size_t n);
 extern int s2a_game_export_test_keep_dir;
 uint64_t now_ns(void) { return 0; }   // pack_apply.c 计时用
@@ -108,7 +112,7 @@ int main(void) { @autoreleasepool {
     ck([head[@"format"] isEqual:@"s2arm"] && [head[@"schema"] isEqual:@1] && [head[@"title_id"] isEqual:G] && [head[@"image_sha256"] isEqual:sha]
        && [head[@"name"] isEqual:cat[@"name"]] && [head[@"display_version"] isEqual:@"1.0.2"] && [head[@"host_abi"] isEqual:@3] && [head[@"chain"] isEqual:@"chain-x"]
        && [head[@"rewriter_id"] isEqual:@"rw-y"] && [head[@"image"] isEqual:img] && [head[@"source_sha256"] isEqual:@"5555"] && [head[@"pack"] isEqual:@"imgT1"]
-       && [head[@"signer"] isEqual:cat[@"signer"]] && [head[@"exported_by"] isEqual:@"phone"] && [head[@"bytes"] unsignedIntegerValue] == inbytes,
+       && [head[@"signer"] isEqual:cat[@"signer"]] && [head[@"exported_by"] isEqual:@"phone"] && !head[@"img_kind"] && !head[@"img_size"] && !head[@"img_fp"] && [head[@"bytes"] unsignedIntegerValue] == inbytes,
        [NSString stringWithFormat:@"① s2arm.json 字段（bytes 期望 %lu）：%@", (unsigned long)inbytes, head]);
     // ---- ② 导进另一个空容器 ----
     NSString *D = [T stringByAppendingPathComponent:@"dst/Documents"], *DB = [T stringByAppendingPathComponent:[@"dst/Library/Application Support/S2Arm/games" stringByAppendingPathComponent:G]];
@@ -156,6 +160,80 @@ int main(void) { @autoreleasepool {
       int r5 = rc ? rc : s2a_s2arm_import(D5.fileSystemRepresentation, s2p, g, sizeof g);
       NSString *c5 = [NSString stringWithContentsOfFile:[T stringByAppendingPathComponent:[NSString stringWithFormat:@"dst5/Library/Application Support/S2Arm/games/%@/program/catalogue.json", G]] encoding:NSUTF8StringEncoding error:nil];
       ck(r5 == 0 && count_of(c5 ?: @"", @"\"dir\"") == 2, [NSString stringWithFormat:@"⑤ 不去 dir：导入后清单里 dir 出现 %lu 次（期望 2，② 的「只有一个」判据会红）", (unsigned long)count_of(c5 ?: @"", @"\"dir\"")]); }
+    // ---- ⑩ 推送布局（iPhone 实机：电脑「推到 iPhone」装的款没有 game.img，是 romfs.img + 散文件）：导出 → 导进空容器 → 认领 → 解开 ----
+    { NSString *G2 = @"0100ABCDE0002000", *SB2 = [T stringByAppendingPathComponent:[@"src/Library/Application Support/S2Arm/games" stringByAppendingPathComponent:G2]];
+      NSString *pk2 = [SB2 stringByAppendingPathComponent:@"资源包"];
+      [fm createDirectoryAtPath:SB2 withIntermediateDirectories:YES attributes:nil error:nil];
+      ck([fm copyItemAtPath:prog toPath:[SB2 stringByAppendingPathComponent:@"program"] error:nil], @"⑩ 程序包照抄一份给第二款");
+      // romfs.img：三个「文件」首尾相接（pack/romfs_image.py 的拼接镜像），romfs.imgmap 按它的格式记偏移；3 MB 出头，头尾 1 MB 的指纹窗口不重叠
+      NSData *f0 = rnd(1500 * 1024 + 3, 20), *f1 = rnd(700 * 1024, 21), *f2 = rnd(1100 * 1024 + 9, 22);
+      NSMutableData *rom = [NSMutableData dataWithData:f0]; [rom appendData:f1]; [rom appendData:f2];
+      NSMutableData *map = [NSMutableData dataWithBytes:"S2ARIM01" length:8]; int64_t tl = (int64_t)rom.length; int32_t nf3 = 3; int64_t offs[3] = {0, (int64_t)f0.length, (int64_t)(f0.length + f1.length)};
+      [map appendBytes:&tl length:8]; [map appendBytes:&nf3 length:4]; [map appendBytes:offs length:sizeof offs];
+      NSDictionary<NSString *, NSData *> *loose = @{   // index.tsv 列的散文件（romfs.img 以外）
+          @"romfs.imgmap": map, @"romfs.s2aidx": rnd(96, 23), @"exefs/main": rnd(40000, 24), @"exefs/main.npdm": rnd(900, 25), @"ctl/control.nacp": rnd(0x4000, 26),
+          @"aoc.tsv": [@"0100ABCDE0003001\t1\n" dataUsingEncoding:NSUTF8StringEncoding], @"systemdata/0100000000000823/x.bin": rnd(77, 27), @"shaders/a.metallib": rnd(2048, 28) };
+      put([pk2 stringByAppendingPathComponent:@"romfs.img"], rom);
+      NSMutableString *idx2 = [NSMutableString stringWithFormat:@"romfs.img\t%lu\t%@\n", (unsigned long)rom.length, @"aa"];
+      for (NSString *k in [loose.allKeys sortedArrayUsingSelector:@selector(compare:)]) { put([pk2 stringByAppendingPathComponent:k], loose[k]); [idx2 appendFormat:@"%@\t%lu\t-\n", k, (unsigned long)loose[k].length]; }
+      NSDictionary<NSString *, NSData *> *meta = @{ @"index.tsv": [idx2 dataUsingEncoding:NSUTF8StringEncoding],
+          @"manifest.json": [@"{\"version\": 3, \"index_sha256\": \"push2\"}\n" dataUsingEncoding:NSUTF8StringEncoding] };
+      for (NSString *k in meta) put([pk2 stringByAppendingPathComponent:k], meta[k]);
+      NSArray<NSString *> *state = @[@".applied", @".applied_by_shell", @".incoming/1_000.tar", @".pushed", @".s2a-write-probe", @"index.applied.tsv", @"junk.txt"];   // junk.txt：不在 index.tsv 里
+      for (NSString *k in state) puts_([pk2 stringByAppendingPathComponent:k], @"no");
+      NSString *o10 = [S stringByAppendingPathComponent:[NSString stringWithFormat:@"games/%@/game-exports/a", G2]]; [fm createDirectoryAtPath:o10 withIntermediateDirectories:YES attributes:nil error:nil];
+      rc = s2a_game_export(S.fileSystemRepresentation, G2.UTF8String, o10.fileSystemRepresentation, s2p, sizeof s2p, imp, sizeof imp, why, sizeof why);
+      NSString *s10 = @(s2p), *i10 = @(imp);
+      ck(rc == 0 && [s10 hasSuffix:@"/Test  Game.s2arm"] && [i10 hasSuffix:@"/Test  Game.img"], [NSString stringWithFormat:@"⑩ romfs.img 布局导出：返回 %d（期望 0）%@", rc, @(why)]);
+      ck(!stat(imp, &a) && !stat([pk2 stringByAppendingPathComponent:@"romfs.img"].fileSystemRepresentation, &b) && a.st_ino == b.st_ino, @"⑩ .img 是资源包 romfs.img 的硬链接（同一个 inode）");
+      NSString *tar10 = [T stringByAppendingPathComponent:@"x10.tar"];
+      int d10 = sh([NSString stringWithFormat:@"command -v zstd >/dev/null 2>&1 && zstd -q -d -f --check -o '%@' '%@' || python3 -c \"import sys\nfrom compression import zstd\nopen(sys.argv[2],'wb').write(zstd.decompress(open(sys.argv[1],'rb').read()))\" '%@' '%@'", tar10, s10, s10, tar10]);
+      NSString *ls10 = sh_out([NSString stringWithFormat:@"python3 -c \"import sys,tarfile,json\nt=tarfile.open(sys.argv[1],format=tarfile.USTAR_FORMAT)\nm=t.getmembers()\nprint('\\n'.join(x.name for x in m if x.name.startswith('pack/')))\nprint('JSON '+json.dumps(json.load(t.extractfile(m[0])),sort_keys=True))\" '%@'", tar10]);
+      NSMutableArray *pn = [NSMutableArray array]; NSDictionary *h10 = nil;
+      for (NSString *l in [ls10 componentsSeparatedByString:@"\n"]) { if ([l hasPrefix:@"JSON "]) h10 = [NSJSONSerialization JSONObjectWithData:[[l substringFromIndex:5] dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil]; else if (l.length) [pn addObject:l]; }
+      NSMutableArray *wantp = [NSMutableArray array]; for (NSString *k in [[loose.allKeys arrayByAddingObjectsFromArray:meta.allKeys] sortedArrayUsingSelector:@selector(compare:)]) [wantp addObject:[@"pack/" stringByAppendingString:k]];
+      ck(d10 == 0 && [pn isEqualToArray:wantp], [NSString stringWithFormat:@"⑩ pack/ 条目 = index.tsv 列的除 romfs.img 外全部 + index.tsv + manifest.json：%@（期望 %@）", [pn componentsJoinedByString:@" "], [wantp componentsJoinedByString:@" "]]);
+      // 指纹期望：按定义从造的 rom 算（头 1 MB ‖ 尾 1 MB 的 XXH64；XXH64 本身由 ⑨ 的规范已知值核过）
+      NSMutableData *hw = [NSMutableData dataWithData:[rom subdataWithRange:NSMakeRange(0, 1 << 20)]]; [hw appendData:[rom subdataWithRange:NSMakeRange(rom.length - (1 << 20), 1 << 20)]];
+      NSString *wfp = [NSString stringWithFormat:@"%016llx", (unsigned long long)s2a_xxh64_digest(hw.bytes, hw.length)];
+      ck([h10[@"img_kind"] isEqual:@"romfs"] && [h10[@"img_size"] unsignedIntegerValue] == rom.length && [h10[@"img_fp"] isEqual:wfp] && [h10[@"pack"] isEqual:@"push2"] && [h10[@"title_id"] isEqual:G2],
+         [NSString stringWithFormat:@"⑩ s2arm.json：img_kind romfs、img_size %lu、img_fp %@（%@）", (unsigned long)rom.length, wfp, h10]);
+      // 导进空容器
+      NSString *D2 = [T stringByAppendingPathComponent:@"dst10/Documents"], *DP2 = [T stringByAppendingPathComponent:[NSString stringWithFormat:@"dst10/Library/Application Support/S2Arm/games/%@/资源包", G2]];
+      NSString *imd = [D2 stringByAppendingPathComponent:@"放这里导入"]; [fm createDirectoryAtPath:imd withIntermediateDirectories:YES attributes:nil error:nil];
+      rc = s2a_s2arm_import(D2.fileSystemRepresentation, s10.fileSystemRepresentation, g, sizeof g);
+      NSString *mk = [DP2 stringByAppendingPathComponent:@".s2arm_expect_romfs"];
+      ck(rc == 0 && !strcmp(g, G2.UTF8String) && [fm fileExistsAtPath:mk] && ![fm fileExistsAtPath:[DP2 stringByAppendingPathComponent:@"manifest.json"]],
+         [NSString stringWithFormat:@"⑩ 导入 .s2arm：返回 %d、等待标记在、manifest.json 先不落盘（等镜像）", rc]);
+      BOOL lsame = YES; for (NSString *k in loose) lsame &= same([pk2 stringByAppendingPathComponent:k], [DP2 stringByAppendingPathComponent:k]);
+      ck(lsame && same([pk2 stringByAppendingPathComponent:@"index.tsv"], [DP2 stringByAppendingPathComponent:@"index.tsv"]), @"⑩ 散文件与 index.tsv 逐字节相同");
+      NSMutableArray *lk = [NSMutableArray array]; for (NSString *k in state) if ([fm fileExistsAtPath:[DP2 stringByAppendingPathComponent:k]]) [lk addObject:k];
+      if ([fm fileExistsAtPath:[DP2 stringByAppendingPathComponent:@".incoming"]]) [lk addObject:@".incoming/"];
+      ck(!lk.count, [NSString stringWithFormat:@"⑩ 机上状态文件一个没带（带了：%@）", lk]);
+      NSString *drop = [imd stringByAppendingPathComponent:@"Test  Game.img"], *droom = [DP2 stringByAppendingPathComponent:@"romfs.img"];
+      // 负对照 a：大小相同、内容不同 → 不认领
+      put(drop, rnd(rom.length, 99)); int n10 = s2a_img_scan(D2.fileSystemRepresentation);
+      ck(n10 == 0 && [fm fileExistsAtPath:drop] && [fm fileExistsAtPath:mk] && ![fm fileExistsAtPath:droom], [NSString stringWithFormat:@"⑩ 负对照：同大小不同内容 → 认领 %d 个（期望 0）、原样留着", n10]);
+      // 负对照 b：拷了一半 → 当还在拷
+      put(drop, [rom subdataWithRange:NSMakeRange(0, rom.length / 2)]); n10 = s2a_img_scan(D2.fileSystemRepresentation);
+      ck(n10 == 0 && [fm fileExistsAtPath:drop] && [fm fileExistsAtPath:mk], [NSString stringWithFormat:@"⑩ 负对照：拷一半 → 认领 %d 个（期望 0）、原样留着", n10]);
+      // 负对照 c：先撑满全长、尾巴还没写到（D-4VAX 的拷法）→ 当还在拷
+      NSMutableData *pre = [NSMutableData dataWithData:[rom subdataWithRange:NSMakeRange(0, rom.length - 4096)]]; [pre increaseLengthBy:4096];
+      put(drop, pre); n10 = s2a_img_scan(D2.fileSystemRepresentation);
+      ck(n10 == 0 && [fm fileExistsAtPath:drop] && [fm fileExistsAtPath:mk], [NSString stringWithFormat:@"⑩ 负对照：全长但尾 4 KB 还是 0 → 认领 %d 个（期望 0）", n10]);
+      // 拷完：认领
+      ck([fm removeItemAtPath:drop error:nil] && [fm copyItemAtPath:i10 toPath:drop error:nil], @"⑩ 完整 .img 拷进「放这里导入」");
+      n10 = s2a_img_scan(D2.fileSystemRepresentation);
+      ck(n10 == 1 && !*s2a_img_scan_code() && ![fm fileExistsAtPath:drop] && ![fm fileExistsAtPath:mk] && [[NSData dataWithContentsOfFile:droom] isEqualToData:rom]
+         && same([pk2 stringByAppendingPathComponent:@"manifest.json"], [DP2 stringByAppendingPathComponent:@"manifest.json"]),
+         [NSString stringWithFormat:@"⑩ 认领 %d 个（期望 1）、码「%@」、romfs.img 逐字节相同、标记删掉、manifest.json 写回且同源", n10, @(s2a_img_scan_code())]);
+      // 推送装好后的同一条应用流程
+      rc = s2a_pack_apply([D2 stringByAppendingPathComponent:[@"games" stringByAppendingPathComponent:G2]].fileSystemRepresentation);
+      NSString *ap = [NSString stringWithContentsOfFile:[DP2 stringByAppendingPathComponent:@".applied"] encoding:NSUTF8StringEncoding error:nil];
+      char ex[600] = ""; int miss = s2a_pack_check(DP2.fileSystemRepresentation, ex, sizeof ex);
+      ck(rc == 0 && [ap isEqualToString:@"push2"] && miss == 0 && same([pk2 stringByAppendingPathComponent:@"index.tsv"], [DP2 stringByAppendingPathComponent:@"index.applied.tsv"])
+         && [fm fileExistsAtPath:[DP2 stringByAppendingPathComponent:@".applied_by_shell"]] && s2a_game_install_state(D2.fileSystemRepresentation, G2.UTF8String) == 1,
+         [NSString stringWithFormat:@"⑩ s2a_pack_apply 返回 %d（%@）、.applied =「%@」（期望 push2）、index_check 缺 %d（%s）、游戏库判就绪", rc, @(s2a_pack_apply_failure()), ap, miss, ex]); }
     // ---- ⑥⑦⑧ 具名失败 ----
     NSString *o6 = [S stringByAppendingPathComponent:[NSString stringWithFormat:@"games/%@/game-exports/c", G]]; [fm createDirectoryAtPath:o6 withIntermediateDirectories:YES attributes:nil error:nil];
     puts_([pk stringByAppendingPathComponent:@".partial"], @"x\n1\n");
