@@ -43,6 +43,15 @@ extern "C" {
 #define S2A_DPROMPT_SWITCH_GAME_BODY_EN "Save in the game first. When you confirm, this game ends and S2Arm closes; open S2Arm again to return to the game library and pick another game. Quitting waits for the game to finish writing its save; progress you haven't saved in the game will be lost."
 #define S2A_DPROMPT_SWITCH_GAME_ACCEPT "已存档，切换"
 #define S2A_DPROMPT_SWITCH_GAME_ACCEPT_EN "Saved, switch"
+// 档位梯子压回 30 帧（#1688，macos/front_mac.m s2a_ios_fps_capped；iOS 用 ios/l10n 的 app.fpsCap.*）：说清这一局为什么回原帧率，给「再试 60 帧」
+#define S2A_DPROMPT_FPS_CAP_TITLE   "60 帧"
+#define S2A_DPROMPT_FPS_CAP_TITLE_EN "60 FPS"
+#define S2A_DPROMPT_FPS_CAP_BODY    "这一局跑不稳 60 帧，已回到原生帧率。下次开游戏会重新从 60 帧开始；想现在再试，点「再试 60 帧」。"
+#define S2A_DPROMPT_FPS_CAP_BODY_EN "This session can't hold 60 FPS steadily, so the game is back at its native frame rate. It starts at 60 FPS again the next time you open the game; click \"Try 60 FPS again\" to retry now."
+#define S2A_DPROMPT_FPS_CAP_RETRY   "再试 60 帧"
+#define S2A_DPROMPT_FPS_CAP_RETRY_EN "Try 60 FPS again"
+#define S2A_DPROMPT_FPS_CAP_BACK    "60 帧已恢复。"
+#define S2A_DPROMPT_FPS_CAP_BACK_EN "60 FPS is back."
 // 实体手柄退出游戏（#276，macos/front_mac.m；按住 Home 2 秒或「+」「-」同按 2 秒弹出，按 A 退出、按 B 回到游戏）
 #define S2A_DPROMPT_HOME_QUIT_TITLE   "退出游戏？"
 #define S2A_DPROMPT_HOME_QUIT_TITLE_EN "Quit game?"

@@ -1864,6 +1864,17 @@ static NSString *lan_warning(void) {
 @property NSRect windowedFrame;   // 进全屏前的窗口位置大小，退全屏时放回
 @end
 static __weak S2AMacDelegate *g_delegate;
+// 档位梯子压回 30 帧 / 放开（runtime/src/qladder_host.c 调，任意线程；runtime/src/fps.c 弱定义）：#1688 原先 Mac 不提示，玩家只看到帧率补丁「全关」、以为 60 帧开关没用。
+//   压回时横幅说清原因、带「再试 60 帧」（s2a_ql_retry60，梯子下一帧回 60 帧档）；横幅被别的提示占着就 5 秒后再试
+void s2a_ql_retry60(void);
+void s2a_ios_fps_capped(int reason) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        S2APromptBanner *b = g_delegate.banner; if (!b) return;
+        if (!b.hidden) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ s2a_ios_fps_capped(reason); }); return; }
+        if (reason != 4) { b.onAnswer = nil; [b showTitle:@S2A_DPROMPT_FPS_CAP_TITLE body:@S2A_DPROMPT_FPS_CAP_BACK accept:nil decline:nil seconds:6]; return; }
+        b.onAnswer = ^(BOOL accept) { if (accept) { fprintf(stderr, "[s2a] 档位梯子：玩家点了再试 60 帧\n"); s2a_ql_retry60(); } };
+        [b showTitle:@S2A_DPROMPT_FPS_CAP_TITLE body:@S2A_DPROMPT_FPS_CAP_BODY accept:@S2A_DPROMPT_FPS_CAP_RETRY decline:@S2A_DPROMPT_OK seconds:15]; });
+}
 @implementation S2AMacDelegate
 - (void)connectNS2:(id)sender {
     self.ns2ReconnectPending = YES;

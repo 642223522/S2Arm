@@ -272,8 +272,9 @@
 "about.unknown" = "Unknown";
 
 /* 宿主其余界面（#316 第二轮）：设置页、提示页 / 加载页、存档管理、手柄连接、诊断、联机、文字输入等 */
-"app.fpsCap.ladder" = "This device can't hold 60 FPS steadily right now, so the game is back at its native frame rate. It will try 60 FPS again automatically once things are stable.";
+"app.fpsCap.ladder" = "This session can't hold 60 FPS steadily, so the game is back at its native frame rate. It starts at 60 FPS again the next time you open the game; tap \"Try 60 FPS again\" to retry now.";
 "app.fpsCap.restored" = "60 FPS is back.";
+"app.fpsCap.retry" = "Try 60 FPS again";
 "app.lowRam.title" = "This device may not have enough memory";
 "app.lowRam.body" = "This game needs more memory than this device has. It will still start, but it may stutter or be closed by the system.";
 "app.gpuStop.body" = "Swipe this app away in the app switcher and open it again — you can usually keep playing from where the game last saved. To help us find the cause, tap “Report a Problem” to send us diagnostics.";

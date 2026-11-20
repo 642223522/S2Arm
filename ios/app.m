@@ -610,9 +610,13 @@ void s2a_dprompt_notice(NSString *title, NSString *body, double delay, double se
 void s2a_ios_low_ram_notice(void) {
     dispatch_async(dispatch_get_main_queue(), ^{ s2a_dprompt_notice(S2AL(@"app.lowRam.title"), S2AL(@"app.lowRam.body"), 3, 10); });
 }
+//   压回时带「再试 60 帧」按钮（#1688）：点了梯子回 60 帧档（s2a_ql_retry60）；下一局本来就从 60 帧起
+void s2a_dprompt_ask(NSString *title, NSString *body, NSString *accept, NSString *decline, double delay, double seconds, void (^cb)(BOOL));   // dprompt.m
+void s2a_ql_retry60(void);   // runtime/src/qladder_host.c
 void s2a_ios_fps_capped(int reason) {
-    NSString *body = reason == 4 ? S2AL(@"app.fpsCap.ladder") : S2AL(@"app.fpsCap.restored");
-    dispatch_async(dispatch_get_main_queue(), ^{ s2a_dprompt_notice(S2AL(@"cpatch.group.fps"), body, 0, 6); });
+    if (reason != 4) { dispatch_async(dispatch_get_main_queue(), ^{ s2a_dprompt_notice(S2AL(@"cpatch.group.fps"), S2AL(@"app.fpsCap.restored"), 0, 6); }); return; }
+    s2a_dprompt_ask(S2AL(@"cpatch.group.fps"), S2AL(@"app.fpsCap.ladder"), S2AL(@"app.fpsCap.retry"), S2AL(@"common.gotIt"), 0, 15, ^(BOOL accept) {
+        if (accept) { LOG("档位梯子：玩家点了再试 60 帧"); s2a_ql_retry60(); } });
 }
 // 满屏自检自动退回（runtime/src/qprompt_host.c widen_auto_revert，11-06 满屏泛化）：记进本 App 设置（宽屏关 = 下次起局 16:9，设置页可改回），横幅一行告诉玩家
 //   persist（11-06 起）：两次不同启动都触发才记住（runtime/src/widen_remember.c）；只一次的不写设置，下次启动重新试满屏
