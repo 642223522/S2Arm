@@ -896,11 +896,14 @@ static int self_get_task_allow(void) {
 }
 static void map_blk(module_t *m, vm_address_t to, const blk_t *b, unsigned long skip, int code) {   // 块 b 从第 skip 字节起映射到 to
     int e = 0, rc = s2a_imgpack_map(b->pk, (void *)to, b->off + skip, b->len - skip, code, &e);
-    if (rc && code && e == EPERM) {   // 签名已注册、系统却不许把这段代码映成可执行（#63639b：所见 4 张卡都是 LiveContainer 装法）：停在说真原因的提示页，不按崩溃闪退
+    if (rc && code && e == EPERM) {   // 签名已注册、系统却不许把这段代码映成可执行：停在说真原因的提示页，不按崩溃闪退
         LOG("【红】%s 外置镜像映射 %#lx（文件偏移 %#llx，%#lx 字节，代码）被系统拒：返回 %d errno=%d（EPERM：不许可执行映射）", m->name, (unsigned long)to, (unsigned long long)(b->off + skip), b->len - skip, rc, e);
         int gta = self_get_task_allow();   // 不带 get-task-allow = 分发证书签的 App，物理上映射不了（#1760）：提示页说证书原因，别的仍按原口径
         LOG("外置镜像被拒时本进程签名 get-task-allow：%s", gta == 1 ? "带" : gta == 0 ? "不带（分发 / ad hoc / 企业证书签的 App）" : "读不到");
-        s2a_init_failed(gta == 0 ? S2A_INIT_FAIL_E_IMAGE_EXEC_CERT : S2A_INIT_FAIL_E_IMAGE_EXEC);   // 宿主里不返回
+        // LiveContainer 里（它给客体进程设 LC_HOME_PATH）：起局本该用它存的证书重签程序库（ios/program_resign.m，#63639b），到这里 = 没取到它的证书或证书不能用
+        int lc = getenv("LC_HOME_PATH") != NULL;
+        if (lc) LOG("外置镜像被拒时本进程在 LiveContainer 里");
+        s2a_init_failed(gta == 0 ? S2A_INIT_FAIL_E_IMAGE_EXEC_CERT : lc ? S2A_INIT_FAIL_E_IMAGE_EXEC_LC : S2A_INIT_FAIL_E_IMAGE_EXEC);   // 宿主里不返回
     }
     if (rc) die("%s 外置镜像映射 %#lx（文件偏移 %#llx，%#lx 字节，%s）失败：返回 %d errno=%d", m->name, (unsigned long)to, (unsigned long long)(b->off + skip), b->len - skip, code ? "代码" : "可写", rc, e);
 }
