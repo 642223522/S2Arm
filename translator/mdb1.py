@@ -4,7 +4,7 @@
 """Media.Vision 的 MDB1（.mvgl）归档（shader_split.py 用）：Cyber Sleuth（32 位、doboz）与 Time Stranger / THL（64 位、LZ4）。
 布局（小端，Switch 上明文；SydMontague/MVGLTools 的 MDB1.h，BSD-3）：
   32 位头 0x14：'MDB1' u16 树项 u16 名项 u32 数据项 u32 数据区起 u32 总长；树项 8B {u16 比较位, u16 数据号, u16 左, u16 右}；
-    名项 0x40B {char ext[4], char name[0x3C]}；数据项 12B {u32 偏移, u32 原长, u32 存储长}；doboz v0 压缩（mvgl.py 的 doboz 解）。
+    名项 0x40B {char ext[4], char name[0x3C]}；数据项 12B {u32 偏移, u32 原长, u32 存储长}；doboz v0 压缩（本文件未实现，压缩条目报不支持）。
   64 位头 0x20：'MDB1' u32 树项 u32 名项 u32 数据项 u64 数据区起 u64 总长；树项 16B {u32 比较位, u32 数据号, u32 左, u32 右}；
     名项 128B {char ext[4], char name[0x7C]}；数据项 16B {u64 偏移, u32 原长, u32 存储长}；LZ4 块压缩。
   数据区偏移都相对数据区起；存储长 == 原长 = 原样存，存储长 < 原长 = 压缩。名字与树项按位置一一对应，名字经树项的数据号间接指到数据项。
@@ -87,6 +87,8 @@ class Archive:
         if ln == 0 and cn == 0: return b''
         self.f.seek(self.data_start + off)
         blob = self.f.read(cn if cn < ln else ln)
+        if cn < ln and self.bits == 32:   # 32 位（Cyber Sleuth）是 doboz 压缩，这里没实现：明说不支持，不拿 LZ4 错解
+            raise ValueError('MDB1 32-bit compressed entry (doboz) not supported')
         if cn < ln:
             import lz4.block
             blob = lz4.block.decompress(blob, uncompressed_size=ln)

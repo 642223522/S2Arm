@@ -979,14 +979,14 @@ def mdb1_visit(path, arc, rows, blobs, stat, depth=0):
     """MVGL（MDB1）归档按条目解出逐个 visit（条目里是控制段 + 机器码背靠背的着色器条目、模型 / 贴图 / 脚本包，
     scan_blob 的相邻扫描照常配对）。大归档（时空异客 app_0 6.2 GB、17.7 万条目）整读进内存吃不消：
     调用方给 romfs_list.open_file 流式读，条目逐个解、逐个扫，不整份落内存"""
-    try: entries = list(arc.entries())
+    n0 = len(rows)
+    try:
+        for did, nm, blob in arc.entries():   # 生成器逐条取：不 list()，6.2 GB 的归档同一时刻只有一个条目在内存
+            if not blob: continue
+            visit(f'{path}//{nm or f"entry{did}"}', blob, rows, blobs, stat, depth + 1)
     except Exception as e:
         stat['【红】MDB1 条目解不出'] += 1
         print(f'【红】MDB1 归档条目解不出：{path}（{type(e).__name__}：{e}）', file=sys.stderr, flush=True); return
-    n0 = len(rows)
-    for did, nm, blob in entries:
-        if not blob: continue
-        visit(f'{path}//{nm or f"entry{did}"}', blob, rows, blobs, stat, depth + 1)
     stat['MDB1 归档'] += 1; stat['MDB1 着色器条目'] += len(rows) - n0
 def work(args):
     root, files, outdir = args; rows, blobs, stat = [], {}, collections.Counter()
@@ -998,11 +998,12 @@ def work(args):
             pk = head4 == b'pkzl'
             if head4 == b'MDB1':   # MVGL 归档：条目逐个解出逐个 visit（不整读大归档，见 mdb1_visit）
                 stat['顶层文件'] += 1
-                try: arc = mdb1.Archive(romfs_list.open_file(p))
-                except ValueError as e:
-                    stat['【红】MDB1 解析失败'] += 1
-                    print(f'【红】MDB1 归档解析失败：{_rel(p, root)}（{e}）', file=sys.stderr, flush=True); continue
-                mdb1_visit(_rel(p, root), arc, rows, blobs, stat)
+                with romfs_list.open_file(p) as f:
+                    try: arc = mdb1.Archive(f)
+                    except ValueError as e:
+                        stat['【红】MDB1 解析失败'] += 1
+                        print(f'【红】MDB1 归档解析失败：{_rel(p, root)}（{e}）', file=sys.stderr, flush=True); continue
+                    mdb1_visit(_rel(p, root), arc, rows, blobs, stat)
                 continue
             if pk:   # 按索引逐成员解压；不整读大 PKZ，也不排盲扫分段作业
                 with romfs_list.map_file(p) as data:
