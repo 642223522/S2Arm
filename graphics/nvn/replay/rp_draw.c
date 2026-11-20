@@ -359,8 +359,21 @@ static int sb_window(const p_bind_buf *sb, int align_down, uint64_t *wa, uint64_
     const nvn_gpu_caps *cp = caps_cached();
     uint64_t a = sb->addr, l = sb_len(sb, align_down);   // align_down 各调用处都等于「是 SBUFP」
     if (align_down && cp->min_ssbo_align > 1) { const uint64_t r = a & (uint64_t)(cp->min_ssbo_align - 1); a -= r; l += r; }
-    const int clamped = cp->max_ssbo_range && l > cp->max_ssbo_range;
+    int clamped = cp->max_ssbo_range && l > cp->max_ssbo_range;
     if (clamped) l = cp->max_ssbo_range;
+    // 游戏绑的长度伸出所在池的池尾（实测：4096 字节的池里偏移 2560 处绑 1872 字节）：真机上着色器只读得到池里有的那一段，
+    // 这里把窗口夹到池尾照画（返回值第 2 位），不整笔丢。起点不在任何池里的仍然由解析那一步拒绝。
+    const uint8_t *pm = NULL; uint64_t ps = 0;
+    //   只对 NVN 存储缓冲槽（SBUFP，align_down 各调用处都等于它）夹：计算阶段把统一缓冲当存储读（UBOP）伸出池尾的照旧拒（storage_buffer_unresolved）。
+    if (align_down && l && !rp_pool_find(a, l, NULL, NULL) && rp_pool_find(a, 1, &pm, &ps)) {
+        const uint64_t rem = ps - (a - (uint64_t)(uintptr_t)pm);
+        if (rem && rem < l) {
+            static unsigned said;
+            if (said < 4) { said++; char d[160]; snprintf(d, sizeof d, "存储缓冲伸出池尾，夹到池尾：addr=%#llx 绑 %llu，池里只有 %llu；池尾之后%s别的池", (unsigned long long)a, (unsigned long long)l, (unsigned long long)rem, rp_pool_find(a + rem, 1, NULL, NULL) ? "紧挨着" : "没有");
+                nvn_plat_log(NVN_PLAT_LOG_INFO, "draw", d); }
+            l = rem; clamped |= 2;
+        }
+    }
     *wa = a; *wl = l; return clamped;
 }
 // Bounded per-session first-cause detail; bytes do not split one cause into repeated messages.
@@ -898,7 +911,8 @@ static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st
                 // 镜像偏移必须对齐；UBOP 着色器按原基址取数，不能通过移动窗口补救。
                 const uint32_t al = caps_cached()->min_ssbo_align;
                 if (al > 1 && (go & (al - 1))) return skip("storage_buffer_offset_unaligned", rec);
-                if (clamped) nvn_unimpl("draw", "storage_buffer_window_clamped", rec);   // 超出 maxStorageBufferRange 的部分着色器访问不到：照画，具名记账
+                if (clamped & 1) nvn_unimpl("draw", "storage_buffer_window_clamped", rec);   // 超出 maxStorageBufferRange 的部分着色器访问不到：照画，具名记账
+                if (clamped & 2) nvn_unimpl("draw", "storage_buffer_past_pool_end_clamped", rec);   // 伸出池尾的部分没有存储：照画，具名记账
                 // 回写只登记游戏绑定的那一段（窗口前补的余数字节不是这个缓冲的，回写会盖掉相邻内容）
                 if (e->access & NVN_GPU_ACC_W) { const uint64_t reach = wa + wl - sb->addr;   // 窗口里属于这个缓冲的长度（余数 < 对齐 ≤ 256，上限 ≥ 128 MiB，不会为负）
                     rp_post_gpu_write(sb->addr, reach < blen ? reach : blen); }
