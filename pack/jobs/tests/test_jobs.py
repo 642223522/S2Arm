@@ -716,8 +716,9 @@ class JobsTests(unittest.TestCase):
         gdir = layout.find_game(self.c, "0100000000000000")
         self.assertEqual(Path(a[a.index("--out") + 1]), gdir / "build" / "ios")
         self.assertEqual((seen["env"]["S2A_PACK_PLAT"], seen["env"]["DOTNET_ROOT"]), ("ios", str(home)))
-        # 直连包与机型无关（一包通用 10-30）：不把目标架构 / 系统大版本交给出包
-        self.assertNotIn("S2A_PSO_ARCHS", seen["env"]); self.assertNotIn("S2A_PSO_OS", seen["env"])
+        # 直连包本身仍与机型无关（一包通用 10-30）；随包管线归档按架构出，目标设备认得出 GPU 架构就交给出包（ipa.pso_env），
+        #   别的机型装这个包照常能玩，只是首遇现编（11-20 维护者定）
+        self.assertEqual((seen["env"]["S2A_PSO_ARCHS"], seen["env"]["S2A_PSO_OS"]), ("applegpu_g17p", "26"))
         self.assertEqual(r["buildId"], "abc-123")
         image = gdir / "image" / "ios"
         self.assertEqual((r["ipa"], r["outputPath"]), ("", str(image)))   # 不再交付单款 ipa：装机时现组容器
