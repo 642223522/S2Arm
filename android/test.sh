@@ -401,6 +401,8 @@ s2a_gate_step bash "$android_dir/tools/nvk_pipe_flight_test.sh"
 # 首用待定表（纯逻辑）与 demand 后台建管线（fake Vulkan）：状态机 / 同键合并 / 有界等待 / late-stuck / P0 不串管线。
 s2a_gate_step bash "$android_dir/tools/nvk_pipe_pend_test.sh"
 s2a_gate_step bash "$android_dir/tools/nvn_vk_pipe_demand_test.sh"
+# 会话关闭留存合同：需求线程未静止时不销毁后端，静止后可重试并安全重开。
+s2a_gate_step "$PY" "$android_dir/tests/nvk_session_budget_test.py" --demand-close
 # 新层首用管线异步的绘制级用例：真 rp_draw / rp_pass + 真 demand / 待定表 / 判定表，可控建管线闸（跳 / 等 / 预算 / 上限 / 停局丢弃）。
 s2a_gate_step bash "$android_dir/tools/nvk_pipe_async_draw_test.sh"
 s2a_gate_step bash "$android_dir/tools/nvk_shader_lease_test.sh"
