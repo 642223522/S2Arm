@@ -402,9 +402,12 @@ int s2a_identity_keychain(SecKeyRef *key, SecCertificateRef *cert) {
     CFRelease(got); return r;
 }
 
+// 弱链接[host,nvntest]：s2a_prov_app_json_self（ios/prov_expiry.m，同下一行）
 // 弱链接[host,nvntest]：s2a_prov_signing_ids_self（ios/prov_expiry.m 只在 iOS App 里；Mac 宿主与单测链接行按这行放行未定义）
 int s2a_prov_signing_ids_self(char *team, size_t team_n, char *appid, size_t appid_n) __attribute__((weak_import));   // ios/prov_expiry.m（只在 iOS App 里）
+int s2a_prov_app_json_self(const char *home) __attribute__((weak_import));   // ios/prov_expiry.m（只在 iOS App 里）
 void s2a_selfsign_probe(void) {
+    if (s2a_prov_app_json_self && s2a_prov_app_json_self(getenv("HOME"))) LOG("【黄】本 App 的签名身份写不进 identity/app.json（电脑推送前核团队用）");
     s2a_identity_import(getenv("HOME"));   // 电脑交来的签名身份（有才做；没有立即返回）
     const char *p12 = getenv("S2A_SELFSIGN_P12"), *in = getenv("S2A_SELFSIGN_IN"), *out = getenv("S2A_SELFSIGN_OUT");
     if (!p12 || !in || !out) return;
