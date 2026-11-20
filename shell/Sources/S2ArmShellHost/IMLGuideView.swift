@@ -18,7 +18,7 @@ struct IMLGuideView: View {
 
     static var ways: [Way] {
         [Way(id: "launcher", name: shellText("S2Arm launcher (recommended)"), verdict: .keeps,
-             steps: shellText("In S2Arm on your Mac or Windows PC, click “Renew S2Arm” on the phone bar. It signs with your Apple ID and keeps this permission, even with a free Apple ID. If you still see the notice after reinstalling, add it with GetMoreRam below, then click “Renew S2Arm” again.")),
+             steps: shellText("In S2Arm on your Mac or Windows PC, click “Renew S2Arm” on the S2Arm card first in the library. It signs with your Apple ID and keeps this permission, even with a free Apple ID. If you still see the notice after reinstalling, add it with GetMoreRam below, then click “Renew S2Arm” again.")),
          Way(id: "cert", name: shellText("Your own developer certificate"), verdict: .fixes,
              steps: shellText("If you sign with your own .p12 certificate and provisioning profile: on the Apple Developer website, turn on “Increased Memory Limit” for S2Arm’s App ID, regenerate the provisioning profile, then sign and install S2Arm again with the new profile. A profile without it can’t carry this permission.")),
          Way(id: "altstore", name: "AltStore Classic", verdict: .keeps,
