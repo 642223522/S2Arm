@@ -81,6 +81,7 @@ pack/app.entitlements	平台壳	iOS签名	终端壳
 tools/	工具与测试	工具	工具与文档
 tests/	工具与测试	单测	工具与文档
 docs/	文档与约定	文档	工具与文档
+notes/	文档与约定	发版说明	工具与文档
 skills/	文档与约定	代理手册	工具与文档
 .github/	文档与约定	模板	工具与文档
 Makefile	工具与测试	顶层构建	工具与文档
