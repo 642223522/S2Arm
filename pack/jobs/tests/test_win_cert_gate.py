@@ -173,8 +173,8 @@ class Gate(unittest.TestCase):
         with self.assertRaises(Failure) as e:
             self.gate(self.ctx(), W)
         self.assertEqual(e.exception.code, "cert_revoke_confirm")
-        self.assertIn("第一张「Apple Development: Fake Xcode」（在 Fake-Mac 上创建，2025-03-01 生效），", str(e.exception))
-        self.assertIn("它可能正是 AltStore / SideStore 在用的那张", str(e.exception))   # 11-19：不再说「没满就什么都不撤」（别的工具可能撤）
+        self.assertIn("第一张「Apple Development: Fake Xcode」（在 Fake-Mac 上创建，2025-03-01 生效）。", str(e.exception))
+        self.assertIn("在 AltStore / SideStore 上创建的那张就是它们在用的证书", str(e.exception))   # 11-19 Duo 实测撤的就是点名的这张（在 AltStore 上创建）；不再说「可能」
         self.assertNotIn("没满就什么都不撤", str(e.exception))
         self.assertEqual(calls, [("plumesign.exe", TEAM)])
 
@@ -183,8 +183,8 @@ class Gate(unittest.TestCase):
         W, _ = self.W(dict(name="Apple Development: Fake Other", machine="", created="2024-05-05"))
         with self.assertRaises(Failure) as e:
             self.gate(self.ctx(), W)
-        self.assertIn("第一张「Apple Development: Fake Other」（2024-05-05 生效），", str(e.exception))
-        self.assertNotIn("?", str(e.exception)); self.assertNotIn("上创建", str(e.exception))
+        self.assertIn("第一张「Apple Development: Fake Other」（2024-05-05 生效）。", str(e.exception))
+        self.assertNotIn("?", str(e.exception)); self.assertNotIn("（在 ", str(e.exception))
 
     def test_accepted_skips(self):
         W, calls = self.W(dict(name="X", machine="M", created="2025-03-01"))

@@ -91,7 +91,10 @@ struct ExportView: View {
         VStack(alignment: .leading, spacing: 12) {
             locationRow
             if model.exportTargets.contains(.ios) { IosAfterPackPicker(model: model) }   // 出完之后：装到 iPhone / 导出自签 IPA（11-16 维护者：一个入口、两条分叉各走到底）
-            if model.exportTargets.contains(.tvos) || game.appleTvReady { appleTVRow }   // 签名 / 安装方式收进环境检查（v0.3.0），这里只读 + 更改
+            if model.exportTargets.contains(.tvos) || game.appleTvReady {
+                appleTVRow
+                AppleTVXcodeTeam(model: model).padding(.leading, 2)   // Apple TV 装机仍用 Xcode 团队（tvos.install_tv）：引导项目 / 手填团队号只在这里
+            }
             if model.exportTargets.contains(.android) { androidRow }   // 出好装到哪台安卓手机（adb 列出的）；不选 / 没连 = 只出 APK
             if let error = model.choiceError {
                 Text(loc.backend(error)).font(.manrope(12)).foregroundStyle(LauncherPalette.danger).fixedSize(horizontal: false, vertical: true)
@@ -242,8 +245,18 @@ struct ExportView: View {
                 Spacer(minLength: 0)
             }
             .padding(16).frame(maxWidth: .infinity, minHeight: 126, maxHeight: .infinity, alignment: .topLeading)
-            .background(on ? LauncherPalette.cream.opacity(hovered ? 0.08 : 0.05) : LauncherPalette.surface.opacity(open ? (hovered ? 0.9 : 0.75) : 0.4), in: RoundedRectangle(cornerRadius: 14))
-            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(on ? LauncherPalette.cream.opacity(hovered ? 0.85 : 0.7) : (hovered ? Color.white.opacity(0.18) : LauncherTheme.Colors.border), lineWidth: on ? 1.5 : 1))
+            .background {
+                RoundedRectangle(cornerRadius: 14)
+                    .fill(LauncherPalette.surface.opacity(on ? 0.90 : (open ? (hovered ? 0.68 : 0.54) : 0.32)))
+                    .overlay {
+                        if on {
+                            RoundedRectangle(cornerRadius: 14)
+                                .fill(LauncherPalette.cream.opacity(hovered ? 0.13 : 0.08))
+                        }
+                    }
+            }
+            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(on ? LauncherPalette.cream.opacity(hovered ? 0.95 : 0.82) : (hovered ? Color.white.opacity(0.20) : LauncherTheme.Colors.border), lineWidth: on ? 1.5 : 1))
+            .shadow(color: on ? LauncherPalette.cream.opacity(0.10) : .clear, radius: 10, y: 2)
             .contentShape(RoundedRectangle(cornerRadius: 14))
             .opacity(open ? 1 : 0.5)
         }

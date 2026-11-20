@@ -11,15 +11,122 @@ extension S2ArmLauncherModel {
     var consoleSelected: Bool { selectedID == Self.consoleID }
 
     func refreshPhoneOverview(probe: Bool = false) {
+        Task { await loadPhoneOverview(probe: probe) }
+    }
+
+    func loadPhoneOverview(probe: Bool) async {
+        // 读不到不弹框（首位卡是附带的入口），但不吞：记日志，保持上次的值
+        do {
+            let o = try await provider.phoneOverview(probe: probe, device: consoleDevice)   // 带上总控台当前这台
+            phoneOverview = o
+            if let o, !o.phones.contains(where: { $0.device == consoleDevice }) { consoleDevice = nil }
+            seedConsoleSelection()
+        } catch { NSLog("S2Arm phoneOverview: %@", String(describing: error)) }
+    }
+
+    /// 介绍卡「连上 iPhone 开始」（11-19 自签走查结构 5：从连着的手机上实际装了什么出发）：先现查连着的手机（probe）；
+    ///   查到手机上已有 S2Arm（别的工具装的 → 总控台「用别的工具装的」那套按钮；启动器装的 → 它自己的状态）就停在总控台，不装第二个；
+    ///   什么都没装（或查不出）才接着原来的装机（安装 S2Arm）。只在玩家点了才 probe，启动时不多发
+    func consoleIntroStart(language: String) {
         Task {
-            // 读不到不弹框（首位卡是附带的入口），但不吞：记日志，保持上次的值
-            do {
-                let o = try await provider.phoneOverview(probe: probe)
-                phoneOverview = o
-                if let o, !o.phones.contains(where: { $0.device == consoleDevice }) { consoleDevice = nil }
-                seedConsoleSelection()
-            } catch { NSLog("S2Arm phoneOverview: %@", String(describing: error)) }
+            await loadPhoneOverview(probe: true)
+            if let p = consolePhone, p.installedBy != nil { consoleDevice = p.device; return }
+            updatePhone(acceptStale: false, repack: [], language: language, device: consolePhone?.device)
         }
+    }
+
+    /// 总控台一台手机上的按钮（界面和控制口 GET /state 的 phoneConsole 同一个来源；动作名同控制口 POST /console-action）
+    enum ConsoleAction: String, CaseIterable {
+        case installShell, updateShell, renewShell   // ① 启动器装的：安装 / 更新 / 续签 S2Arm（同一颗按钮随状态变）
+        case exportShellIpa                          // ① 别的工具装的：导出通用 S2Arm.ipa（玩家拿去用原来的工具签、覆盖装新版）
+        case handOverIdentity                        // ① 把签名身份交给手机（作业 phoneIdentity）
+        case updateSelected                          // ② 启动器装的：更新所选（作业 pushSelected）
+        case pushS2arm                               // ② 别的工具装的：把所选推到 iPhone（同一单 pushSelected，作业层推未签名 .s2arm、手机自己签）
+        case exportS2arm                             // ② 别的工具装的：导出所选的 .s2arm
+        case chooseApp                               // ① 同一台手机上装着不止一个 S2Arm：选用哪一个（作业 phoneChooseApp）；选过了也能「换一个」
+    }
+
+    /// 这台手机显示哪些按钮。别的工具装的：按作业给的 actions（认不得的丢掉；作业没给按四个缺省），绝不出安装 / 续签 / 更新 S2Arm；
+    ///   其余：① 安装 / 更新 / 续签 一颗 + 交签名身份，② 更新所选
+    ///   装着不止一个、玩家还没选（needsChoice）：只出「选用哪个 S2Arm」；选过了、候选不止一个：末尾加「换一个」
+    func consoleActions(_ p: PhoneOverview.Phone) -> [ConsoleAction] {
+        if p.needsChoice { return [.chooseApp] }
+        let change: [ConsoleAction] = p.candidates.count > 1 ? [.chooseApp] : []
+        if p.installedBy == .external {
+            let shell: Set<ConsoleAction> = [.installShell, .updateShell, .renewShell, .updateSelected, .chooseApp]
+            let given = p.actions.compactMap(ConsoleAction.init).filter { !shell.contains($0) }
+            return (given.isEmpty ? [.exportShellIpa, .pushS2arm, .exportS2arm, .handOverIdentity] : given) + change
+        }
+        return [!p.installed ? .installShell : !p.shellCurrent ? .updateShell : .renewShell, .handOverIdentity, .updateSelected] + change
+    }
+
+    /// 候选的标签（文案键，按顺序拼）：这台电脑的启动器装的 / 别的工具装的；导入的签名证书团队与 App 团队对得上时追加「已导入签名证书」。
+    ///   只陈述事实、不推荐哪一个（候选按作业给的包名顺序列）
+    static func candidateLabelKeys(_ c: PhoneOverview.Candidate) -> [String] {
+        [c.byThisLauncher ? "console.choose.byLauncher" : "console.choose.byOther"] + (c.certImported ? ["console.choose.certImported"] : [])
+    }
+
+    /// 「选用哪个 S2Arm」：作业 phoneChooseApp 核对它确在这台手机上后记进设备记录；成没成都重新现查总览（选的已不在 → 列表跟着变）。
+    ///   选成了、这台手机有推送因「还没选」停着（pushChoice）：接着重推那一次（同一台、同样的游戏）
+    func chooseApp(device: String, bundleId: String) {
+        guard consoleChoosing == nil else { return }
+        consoleChoosing = bundleId; consoleChooseError = nil
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            var retry: (() -> Void)?
+            do {
+                try await self.provider.phoneChooseApp(device: device, bundleId: bundleId)
+                self.consoleRechoose = false
+                if let p = self.pushChoice, p.device == device { retry = p.retry; self.pushChoice = nil }
+            } catch { self.consoleChooseError = error.localizedDescription }
+            self.consoleChoosing = nil
+            await self.loadPhoneOverview(probe: true)
+            retry?()
+        }
+    }
+
+    /// 推送停在「装着不止一个 S2Arm、还没选」（phone_app_choice_required）时失败页就地列的候选（作业诊断 facts，install.owner_for_push），
+    ///   retry = 选好后重推的那一次（推单款 / 更新所选，同样的参数）
+    struct PushChoice {
+        let device: String
+        let candidates: [PhoneOverview.Candidate]
+        let retry: () -> Void
+    }
+
+    /// 推送失败：是「还没选」就记下候选与重推（失败页据此列候选）；别的失败清掉
+    func notePushChoice(_ f: JobFailure, retry: @escaping () -> Void) {
+        pushChoice = PhoneOverview.choiceFacts(f.outcome.diagnostics).map { PushChoice(device: $0.device, candidates: $0.candidates, retry: retry) }
+    }
+
+    /// 点总控台按钮（界面和控制口走这同一个函数）。ids：推 / 导出哪几款（控制口可给；不给 = 总控台勾选的、按游戏库顺序）。→ 没做的原因（nil = 已发起）
+    @discardableResult
+    ///   bundleId：chooseApp 选哪一个（必须是这台手机的候选之一）
+    func runConsoleAction(_ a: ConsoleAction, device: String, ids: [String]? = nil, bundleId: String? = nil, language: String) -> String? {
+        let order = ids?.map { $0.uppercased() } ?? games.filter { consoleSelection.contains($0.id.uppercased()) }.map { $0.id.uppercased() }
+        switch a {
+        case .installShell, .updateShell, .renewShell:
+            updatePhone(acceptStale: false, repack: [], language: language, device: device)
+        case .exportShellIpa:
+            updatePhone(acceptStale: false, repack: [], language: language, mode: "export")
+        case .handOverIdentity:
+            phoneIdentity(device: device)
+        case .updateSelected, .pushS2arm:
+            if order.isEmpty { return "没选游戏" }
+            if consoleUpdating { return "正在更新所选" }
+            updateSelected(ids: order, device: device)
+        case .exportS2arm:
+            let picked = order.compactMap { id in games.first { $0.id.uppercased() == id } }
+            if picked.isEmpty { return "没选游戏" }
+            picked.forEach(exportSelfSign)
+        case .chooseApp:
+            let cands = phoneOverview?.phones.first { $0.device == device }?.candidates ?? []
+            guard let bid = bundleId, cands.contains(where: { $0.bundleId == bid }) else {
+                return "bundleId 不在这台手机的候选里（此刻有：\(cands.map(\.bundleId).joined(separator: " / "))）"
+            }
+            if consoleChoosing != nil { return "正在记下上一次的选择" }
+            chooseApp(device: device, bundleId: bid)
+        }
+        return nil
     }
 
     /// 总控台当前这台：选过的那台；没选过 → 连着的那台 → 最近同步过的那台
@@ -35,6 +142,8 @@ extension S2ArmLauncherModel {
         case introduce                       // 从没装过、也没连过：「在 iPhone 上玩」介绍卡
         case updating(done: Int, total: Int) // 正在更新所选
         case notConnected(lastSeen: Date?)   // 问过 USB、没连
+        case chooseApp                       // 装着不止一个 S2Arm、玩家还没选用哪一个
+        case externalApp                     // 手机上的 S2Arm 是别的工具（AltStore / SideStore…）装的：没有我们的签名时刻与壳号，不判没装 / 有新版 / 到期
         case notInstalled
         case appOutdated
         case expired
@@ -47,6 +156,8 @@ extension S2ArmLauncherModel {
         guard let p = consolePhone else { return .introduce }
         if consoleUpdating { let p = consoleProgress; return .updating(done: p.done, total: p.total) }
         if case .some(.none) = p.online { return .notConnected(lastSeen: p.lastSeen) }
+        if p.needsChoice { return .chooseApp }
+        if p.installedBy == .external { return .externalApp }
         if !p.installed { return .notInstalled }
         if !p.shellCurrent { return .appOutdated }
         let days = p.expiresAtEstimate.map { Self.daysLeft(until: $0, now: now) }
@@ -92,6 +203,7 @@ extension S2ArmLauncherModel {
         guard resume || !order.isEmpty else { return }
         guard !phoneBusy else { phoneQueue.append((nil, { [weak self] in self?.updateSelected(resume: resume, ids: ids, device: device) })); return }
         consolePushing = nil
+        lastPushSelectedDevice = device
         start(JobSession(kind: .pushSelected, gameID: nil, name: BackendText.launcherText("console.updateSelected", language: dynamicLanguage)
             .replacingOccurrences(of: "{0}", with: "\(order.count)"))) { [weak self] sink in
             let watch = EventSink { ev in
@@ -99,7 +211,11 @@ extension S2ArmLauncherModel {
                 sink.emit(ev)
             }
             defer { Task { @MainActor in self?.consolePushing = nil; self?.refreshPhoneOverview() } }
-            _ = try await self?.provider.pushSelected(gameIds: order, device: device, resume: resume, events: watch)
+            do { _ = try await self?.provider.pushSelected(gameIds: order, device: device, resume: resume, events: watch) }
+            catch let f as JobFailure {   // 装着不止一个 S2Arm、还没选：失败页就地列候选，选好重推这一轮
+                self?.notePushChoice(f) { [weak self] in self?.updateSelected(resume: resume, ids: order, device: device) }
+                throw f
+            }
             return nil
         }
     }
@@ -115,6 +231,12 @@ extension S2ArmLauncherModel {
             self?.identityDelivered = r?.delivered
             return nil
         }
+    }
+
+    /// 「更新所选」失败页的「重试」（#1756）：同一台续推（作业层 resume：只推上一轮没推成的）
+    func retryUpdateSelected() {
+        guard let device = lastPushSelectedDevice else { return }
+        updateSelected(resume: true, device: device)
     }
 
     /// 「停下」：取消这一单（作业层推完的留着；没推完的那款下次续推）

@@ -1628,7 +1628,11 @@ NVN(nvnQueueWaitSync, NVNboolean, NVNqueue *q, const NVNsync *s) {
 // ZCull data: the host does no ZCull, so there is nothing to save / restore
 NVN(nvnCommandBufferRestoreZCullData, void, NVNcommandBuffer *c, NVNbufferAddress a, size_t n) { (void)c; (void)a; (void)n; }
 NVN(nvnCommandBufferSaveZCullData, void, NVNcommandBuffer *c, NVNbufferAddress a, size_t n) { (void)c; (void)a; (void)n; }
-// A sync never fenced counts as signaled: ALREADY_SIGNALED at once, whatever the timeout. 11-06 质量线（DOOM Eternal 起局 90 秒无首帧，c1106_rj3）：渲染线程在
+// 没打过栅栏的同步对象：立即回 FAILED(3)，不论超时。11-19 按真机驱动核定（一款 UE4 游戏随包的 NVN 驱动：nvnSyncInitialize 把类型字段置 0，nvnSyncWait 先置结果 3、
+//   按类型跳表，类型 0 直达收尾返回 3；nvnCommandBufferFenceSync 录制时不碰同步对象，提交后才有类型）。原先回 ALREADY_SIGNALED：诊断 #343862（010097100EDD6000，
+//   3 台 23 次崩）UE4 粒子实例计数回读先 Clear 栅栏（Finalize + Initialize）、把拷贝与栅栏排给 RHI 线程，工作线程以超时 0 轮询，拿到 0 当成数据已就绪，
+//   去锁还没建出的暂存缓冲（+0x18 空）读 0x28 崩。下面两款的约束照样满足：都是立即返回，DOOM Eternal 只在 TIMEOUT 时睡下再查。
+// 以下为旧注释（「回已触发」的依据是推断，真机实为 FAILED）：A sync never fenced counts as signaled: ALREADY_SIGNALED at once, whatever the timeout. 11-06（DOOM Eternal 起局 90 秒无首帧，c1106_rj3）：渲染线程在
 //   main+0x2c2cac0 以超时 0 轮询每帧两个同步对象里的「上一个」，回 TIMEOUT_EXPIRED 就睡 50 µs 再查（svc 0xb 21 万次）；两个槽只 SyncInitialize、要提交后才
 //   QueueFenceSync，帧开头先等的槽 1 第一次一定没打过栅栏——游戏在真机上能跑，真机对「初始化过、没打栅栏」的同步对象就不回超时（同 InitializeFromNvRmSyncNVX
 //   「一开始就已触发」）。下面怒之铁拳4 的约束（带长超时等没围栏的对象，必须立刻返回）照样满足。原注释：A sync never fenced returns TIMEOUT_EXPIRED at once. 11-01 原生崩溃线：缺口族 40（34a54ae83）把这里改成「睡到别的线程围栏或超时、封顶 1 小时」，
@@ -1636,19 +1640,25 @@ NVN(nvnCommandBufferSaveZCullData, void, NVNcommandBuffer *c, NVNbufferAddress a
 //   主线程睡在这里 120 秒无首帧（10-29 普查立刻返回时直连通过）。立刻返回是普查全部款跑过的行为
 // 栅栏打在有停住工作的队列上（欠着，nvn_mtl.m nvn_xqueue.inc）：先等它发布（别的线程提交了那笔信号、停住的部分回放），按游戏给的超时；无限等时 100 ms 还没发布就把那条队列
 //   停住的工作强制放行回放（报红），不让 CPU 等死在一个可能只由本线程之后才提交的信号上
+// 只读计数（单测按事件判、不量墙钟，t_nvn_glsync ⑦）：nvnSyncWait 进入带超时（> 0）阻塞等待的次数。只增不减，不改行为
+static _Atomic uint64_t g_syncwait_blocks;
+uint64_t s2a_nvn_syncwait_blocks(void) { return atomic_load_explicit(&g_syncwait_blocks, memory_order_relaxed); }
 NVN(nvnSyncWait, NVNsyncWaitResult, const NVNsync *s, uint64_t timeout) {
     uint64_t fence;
     { void *owner = NULL;
       if (nvn_be_xq_owed(s, &owner)) {
           uint64_t first = timeout < 100000000ull ? timeout : 100000000ull;
+          if (first) atomic_fetch_add_explicit(&g_syncwait_blocks, 1, memory_order_relaxed);
           if (!nvn_be_xq_owed_wait(s, first)) {
               if (timeout <= first) return NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
               xq_lock(); nvn_be_xq_flush(owner, "the CPU waits on a fence taken behind it (SyncWait, 100 ms)"); xq_unlock();
           } } }
-    if (!sync_published((const sync_t *)s, &fence)) return NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED;
+    if (!sync_published((const sync_t *)s, &fence)) return NVN_SYNC_WAIT_RESULT_FAILED;   // 没打过栅栏：同真机驱动回 3（见上）
     { int ext = 0; if (sync_ext_wait((const sync_t *)s, 0, &ext)) return NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED;
-      if (ext) return sync_ext_wait((const sync_t *)s, timeout, &ext) ? NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED : NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED; }
+      if (ext) { if (timeout) atomic_fetch_add_explicit(&g_syncwait_blocks, 1, memory_order_relaxed);
+                 return sync_ext_wait((const sync_t *)s, timeout, &ext) ? NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED : NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED; } }
     if (nvn_be_wait(fence, 0)) return NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED;
+    if (timeout) atomic_fetch_add_explicit(&g_syncwait_blocks, 1, memory_order_relaxed);
     return nvn_be_wait(fence, timeout) ? NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED : NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
 }
 NVN(nvnEventBuilderSetDefaults, void, NVNeventBuilder *b) { memset(b, 0, sizeof(ev_builder_t)); }
@@ -2786,6 +2796,10 @@ __attribute__((weak)) uint64_t nvn_be_finish_publish(void) { nvn_be_finish(); re
 __attribute__((weak)) void nvn_be_finish_wait(uint64_t fence) { (void)fence; }
 static void xq_lock(void) { pthread_mutex_lock(&g_sub_mu); }
 static void xq_unlock(void) { pthread_mutex_unlock(&g_sub_mu); }
+// 提交锁给回放核心（graphics/nvn/replay/rp_entry.c）：ReadTexels 读 GPU 内容要开一段旁路段，开段 / 交段与栅栏值分配都归提交线程，
+//   和 nvnQueueSubmitCommands 串行。苹果后端不调它（nvn_mtl.m 的读回走自己的旧队列），对苹果没有行为变化
+void nvn_hle_submit_lock(void) { xq_lock(); }
+void nvn_hle_submit_unlock(void) { xq_unlock(); }
 static void queue_finish(void) { pthread_mutex_lock(&g_sub_mu); uint64_t f = nvn_be_finish_publish(); pthread_mutex_unlock(&g_sub_mu); nvn_be_finish_wait(f); }
 int nvn_frec_on(void); void nvn_frec_submit(const uint64_t *h, int n); void nvn_frec_present(const tex_t *t, double period, const int crop[4]);   // 帧录（nvn_frame_rec.inc）
 static NVNqueue *g_err_queue;   // 最近一次提交的队列（nvnDeviceWaitForError 报错时填进错误信息）
@@ -3364,6 +3378,10 @@ static double g_rt_comp_ms;   // Currently declared real-time computation amount
 static double g_rt_period_ms;
 static _Atomic mach_port_t g_rt_port;   // the acquire thread that holds the time-constraint declaration (set_time_constraint_comp); the 300-frame status line reads it
 static void sleep_until_ns(uint64_t dl);
+// 只读计数（单测按事件判、不量墙钟，t_fps_limit）：本线程进入节拍等待的次数——sleep_until_ns 真睡了，或取图里去等显示链接拍。
+//   单测在上屏前后各读一次，判「上屏只入队、不承担限帧等待」；只增不减，不改行为
+static _Thread_local uint64_t t_pace_waits;
+uint64_t s2a_nvn_pace_waits_self(void) { return t_pace_waits; }
 static uint64_t present_period(const win_t *o);
 static uint64_t rt_period_ns(const win_t *o, uint64_t period);
 static int present_itv(const win_t *o);
@@ -3398,8 +3416,25 @@ static uintptr_t g_pace_cand; static int g_pace_run;   // 上屏侧：候选主�
 //   节拍主人 / 最近一次呈现那张的取图线程就是本线程时不进入等待（下一次呈现多半由本线程自己发出），直接按原行为交出并报红
 static pthread_mutex_t g_flip_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_flip_cv = PTHREAD_COND_INITIALIZER;
+// 只读计数（单测按事件判、不量墙钟，t_nvn_win_shown）：[0] 进入 #141 翻走等待的次数，[1] 借帧线程立即交出的次数，[2] 没等就交出还在屏上那张的次数。只增不减，不改行为
+static _Atomic uint64_t g_acq_cnt[3];
+void s2a_nvn_acq_counts(uint64_t c[3]) { for (int i = 0; i < 3; i++) c[i] = atomic_load_explicit(&g_acq_cnt[i], memory_order_relaxed); }
 // 审计 #1534 P1-24：按活跃张数轮换（NVN 语义：SetNumActiveTextures 之后只轮换前 nactive 张，未设时 = 全部）。11-04 普查 485 份日志里超级马力欧兄弟 惊奇
 //   （010015100B514000）设 2 of 3，原先仍按 3 张轮换、交出被排除的第 3 张。活跃张数为 0（窗口没有纹理，或 SetNumActiveTextures(0)）没有可交的纹理：回 NATIVE_ERROR
+// 取图时定、上屏时用的「这一帧是不是显示链路的节拍控的」（nvn_pace_follow）：按窗口对象放一张旁挂小表，不放进 win_t——
+//   win_t 在游戏内存里、登记了即时存档的布局指纹（nvn.win），加字段就改了布局。表按窗口地址直接映射，撞了槽或读档后表是空的 = 0（照旧按节拍器走一个周期）
+static struct { _Atomic(const void *) w; _Atomic int follow; } g_pace_follow[8];
+static inline unsigned pace_follow_slot(const void *w) { return (unsigned)(((uintptr_t)w >> 4) & 7); }
+static void pace_follow_set(const win_t *o, int follow) {
+    unsigned k = pace_follow_slot(o);
+    atomic_store_explicit(&g_pace_follow[k].follow, follow, memory_order_relaxed);
+    atomic_store_explicit(&g_pace_follow[k].w, (const void *)o, memory_order_release);
+}
+static int pace_follow_take(const win_t *o) {   // 用一次就清：两次上屏之间没取图（取图不走这条路的调用方）不沿用上一帧的
+    unsigned k = pace_follow_slot(o);
+    if (atomic_load_explicit(&g_pace_follow[k].w, memory_order_acquire) != (const void *)o) return 0;
+    return atomic_exchange_explicit(&g_pace_follow[k].follow, 0, memory_order_relaxed);
+}
 NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsync *s, int *idx) {
     win_t *o = (win_t *)w;
     int nact = __atomic_load_n(&o->nactive, __ATOMIC_RELAXED);
@@ -3414,6 +3449,7 @@ NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsyn
     if (pt0 && pt0 != (uintptr_t)pthread_self()) {
         int sh = __atomic_load_n(&o->shown, __ATOMIC_RELAXED);
         if (*idx < 4) atomic_store_explicit(&g_acq_thr[*idx], (uintptr_t)pthread_self(), memory_order_relaxed);
+        atomic_fetch_add_explicit(&g_acq_cnt[1], 1, memory_order_relaxed);
         { static _Atomic uint64_t bn; uint64_t bk = atomic_fetch_add(&bn, 1) + 1;
           if (bk <= 8 || !(bk & (bk - 1))) LOG("[nvn] WindowAcquireTexture：非出帧线程借一帧，立即交出图 %d（%s），累计 %llu 次", *idx, sh && *idx == sh - 1 ? "是屏上那张" : "不在屏上", (unsigned long long)bk); }
         if (s) sync_publish((sync_t *)s, nvn_be_last_fence());
@@ -3439,6 +3475,7 @@ NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsyn
                 // 上限 500 ms（原 2 个呈现周期 ≈ 33 ms）：D-9EQT（0100BB8017F24000，Mac）这款取图线程连取两张、上屏在别的线程，那笔呈现慢过 33 ms 就兜底交出在屏那张，
                 //   崩局 3/3 紧随其后（游戏按图号取的对象为空，读 +0x40），不崩的 17 局 0 次。真机这里一直阻塞到翻走；500 ms 只兜「真没有呈现方」的局，不卡死
                 uint64_t bound = 500000000ull; (void)present_period;
+                atomic_fetch_add_explicit(&g_acq_cnt[0], 1, memory_order_relaxed);
                 struct timespec dl; clock_gettime(CLOCK_REALTIME, &dl); dl.tv_nsec += (long)(bound % 1000000000ull); dl.tv_sec += (time_t)(bound / 1000000000ull);
                 if (dl.tv_nsec >= 1000000000L) { dl.tv_nsec -= 1000000000L; dl.tv_sec++; }
                 uint64_t w0 = now_ns(); DM_BLOCK_BEGIN();
@@ -3452,7 +3489,8 @@ NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsyn
                 if (flip) { waited = 1; static _Atomic uint64_t wn; uint64_t wk = atomic_fetch_add(&wn, 1) + 1;
                     if (wk <= 20 || !(wk & (wk - 1))) LOG("[nvn] WindowAcquireTexture 撞上还在屏上的那张：图 %d 等了 %.1f ms 等到下一次呈现翻走才交出（真机语义），累计 %llu 次",
                                                            *idx, (now_ns() - w0) / 1e6, (unsigned long long)wk); } }
-            if (!waited) { static _Atomic uint64_t n; uint64_t k = atomic_fetch_add(&n, 1) + 1;
+            if (!waited) { atomic_fetch_add_explicit(&g_acq_cnt[2], 1, memory_order_relaxed);
+                static _Atomic uint64_t n; uint64_t k = atomic_fetch_add(&n, 1) + 1;
                 if (k <= 20 || !(k & (k - 1))) LOG("【红】 [nvn] WindowAcquireTexture 交出了还在屏上的那张：图 %d 是最近一次呈现的、还没被下一次呈现翻走（真机不会交出；原因：%s），累计 %llu 次；活跃 %d / %d 张、间隔 %d、已呈现 %llu 次",
                                                    *idx, why, (unsigned long long)k, nact, o->ntex, o->interval, (unsigned long long)o->presents); } } }
     if (*idx >= 0 && *idx < 4) atomic_store_explicit(&g_acq_thr[*idx], (uintptr_t)pthread_self(), memory_order_relaxed);
@@ -3463,8 +3501,10 @@ NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsyn
         if (rtp && rt_period != rtp) { rt_period = rtp; set_time_constraint(rtp); }
         rt_comp_tick(rtp);
         uint64_t p0 = now_ns();
-        if (nvn_be_link_active()) { if (!nvn_be_link_wait_tick(link_vsyncs(o), period ? 2 * period : 33333333ull) && wait) sleep_until_ns(at); }   // DM_PRESENT_LINK: pacing fully follows the display link (wait for the present interval's display-link ticks when running fast, go immediately when behind); our own 60 Hz clock is only the fallback when no display-link tick arrives
+        int follow = 0;   // 这一帧是不是显示链路的节拍控的（等到了节拍）：上屏时节拍器跟着它重新起拍，不再自己走一个周期（nvn_pace_follow）
+        if (nvn_be_link_active()) { t_pace_waits++; if (nvn_be_link_wait_tick(link_vsyncs(o), period ? 2 * period : 33333333ull)) follow = 1; else if (wait) sleep_until_ns(at); }   // DM_PRESENT_LINK: pacing fully follows the display link (wait for the present interval's display-link ticks when running fast, go immediately when behind); our own 60 Hz clock is only the fallback when no display-link tick arrives
         else if (wait) sleep_until_ns(at);
+        pace_follow_set(o, follow);
         pace_ns = now_ns() - p0;
     } else {   // DM_DETCLOCK_PACE=1 (used by the screenshot gate): while the guest clock advances per frame, each frame's wall clock is no shorter than one step -- frame count and in-game time are deterministic, and the background loading thread has at least one step of wall clock available per frame;
                // When the machine is fully loaded frames only get slower and the background only gets more wall clock, so the picture captured at "the Nth frame after the message" is independent of load
@@ -3820,6 +3860,7 @@ void dm_rt_encode_tick(void) { rt_work_tick(2); }   // nvn_rec.h 编码线程每
 static void sleep_until_ns(uint64_t dl) {   // absolute time on the monotonic clock
     static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb);
     uint64_t now = now_ns(); if (dl <= now) return;
+    t_pace_waits++;
     DM_BLOCK_BEGIN(); mach_wait_until(mach_absolute_time() + (dl - now) * tb.denom / tb.numer); DM_BLOCK_END();
 }
 // Present is fixed at 60 Hz: the adaptive mechanism stepped down at frame 60 in 24/24 real-device logs and never came back up, so for this phase 60 fps is the hard floor.
@@ -4205,7 +4246,8 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     uint64_t period = present_period(o), now = dm_detclock_enabled() ? guest_ns() : now_ns();
     g_hold_ring[o->presents % 16] = (uint8_t)present_itv(o);
     nvn_pacer pc = {o->pace};
-    uint64_t slot = now + nvn_pace(&pc, now, period);
+    uint64_t slot = now;   // 显示链路控了节奏的帧：从这次上屏起显示，节拍跟着它重新起拍（nvn_pace_follow）；否则照旧按节拍器排槽
+    if (pace_follow_take(o)) nvn_pace_follow(&pc, now); else slot += nvn_pace(&pc, now, period);
     o->pace = pc.target;
     if (idx >= 0 && idx < 4) o->avail[idx] = period ? slot + period : 0;
     static uint64_t prev_slot; if (prev_slot && period) trow(f, "@display_ms", (slot - prev_slot) / 1e6); prev_slot = slot;   // display interval between two adjacent frames on screen (this is the one to look at for dropped frames)

@@ -655,3 +655,4 @@
 20261119-1149-snap-applet-messages.patch
 20261119-2317-docked-operation-mode.patch
 20261119-1303-local-multiplayer-operation-mode.patch
+20261119-2131-audio-pace-thread-outlives-driver.patch

@@ -5,6 +5,7 @@
 #endif
 #include NVN_SHADER_FLIGHT_SOURCE
 
+// 等事件 / GPU 完成的上限一律 30 秒（原 10 秒：负载高时后台预取、编译、完成回调都会变慢，等不到就假红）；不该发生的事用短窗负对照，见各处注释
 static unsigned checks, failures;
 #define REQUIRE(c) do { if (!(c)) { fprintf(stderr,"SETUP FAIL %s:%d %s\n",__FILE__,__LINE__,#c); exit(2); } } while(0)
 #define CHECK(c, ...) do { checks++; int ok=!!(c); failures+=!ok; printf("%s ",ok?"PASS":"FAIL"); printf(__VA_ARGS__); putchar('\n'); fflush(stdout); } while(0)
@@ -44,7 +45,7 @@ static NvShader *prefetch(NSString *key) {
     uint8_t md[8]; const char *s=key.UTF8String;
     for(int i=0;i<8;i++) { unsigned v; REQUIRE(sscanf(s+2*i,"%2x",&v)==1); md[i]=(uint8_t)v; }
     nvn_be_shader_prefetch(md);
-    uint64_t deadline=bp_now()+10000000000ull;
+    uint64_t deadline=bp_now()+30000000000ull;
     while(bp_now()<deadline) {
         NvShader *found=nil;
         os_unfair_lock_lock(&g_warm_lock);
@@ -111,18 +112,19 @@ static void independent_keys(void) {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{ @autoreleasepool {
         dispatch_semaphore_signal(started); a=warm_shader(slow,0); dispatch_semaphore_signal(slow_done);
     } });
-    REQUIRE(!dispatch_semaphore_wait(started,dispatch_time(DISPATCH_TIME_NOW,10000000000ll)));
+    REQUIRE(!dispatch_semaphore_wait(started,dispatch_time(DISPATCH_TIME_NOW,30000000000ll)));
 #ifdef NVN_SHADER_FLIGHT_IMPL
-    uint64_t deadline=bp_now()+10000000000ull;
+    uint64_t deadline=bp_now()+30000000000ull;
     while(!atomic_load(&g_shader_build_live) && bp_now()<deadline) sched_yield();
     REQUIRE(atomic_load(&g_shader_build_live));
 #endif
     // lib_from_file really opens this FIFO; there is no substituted loader.
+    // 负对照短窗：FIFO 没人写，100 ms 内不该完成（负载高时只会漏检，不会假红）
     CHECK(dispatch_semaphore_wait(slow_done,dispatch_time(DISPATCH_TIME_NOW,100000000ll))!=0,"first identity waits in real library file open");
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{ @autoreleasepool {
         b=shader_get(fast,0); dispatch_semaphore_signal(fast_done);
     } });
-    int progressed=!dispatch_semaphore_wait(fast_done,dispatch_time(DISPATCH_TIME_NOW,10000000000ll));
+    int progressed=!dispatch_semaphore_wait(fast_done,dispatch_time(DISPATCH_TIME_NOW,30000000000ll));
     CHECK(progressed && b && b->fn,"different identity completes while first library input is unavailable");
 #ifdef NVN_SHADER_FLIGHT_IMPL
     uint64_t waits=atomic_load(&g_shader_waits);
@@ -133,18 +135,19 @@ static void independent_keys(void) {
         follower=shader_get(slow,0); dispatch_semaphore_signal(follower_done);
     } });
     const uint8_t md[8]={0x44,0x44,0x44,0x44,0x44,0x44,0x44,0x44}; nvn_be_shader_prefetch(md);
-    deadline=bp_now()+10000000000ull;
+    deadline=bp_now()+30000000000ull;
     while(atomic_load(&g_shader_waits)<waits+2 && bp_now()<deadline) sched_yield();
     CHECK(atomic_load(&g_shader_waits)==waits+2,"runtime and actual prefetch join the blocked warm attempt");
+    // 负对照短窗：库输入不可用期间，跟随者 10 ms 内不该完成（只会漏检，不会假红）
     CHECK(dispatch_semaphore_wait(follower_done,dispatch_time(DISPATCH_TIME_NOW,10000000ll))!=0,"submit load is genuinely blocked while the shared library input is unavailable");
 #endif
     int fd=open(path.fileSystemRepresentation,O_WRONLY|O_NONBLOCK); REQUIRE(fd>=0);
     close(fd); // An empty FIFO is correctly rejected, never treated as a library.
-    REQUIRE(!dispatch_semaphore_wait(slow_done,dispatch_time(DISPATCH_TIME_NOW,10000000000ll)));
-    if(!progressed) REQUIRE(!dispatch_semaphore_wait(fast_done,dispatch_time(DISPATCH_TIME_NOW,10000000000ll)));
+    REQUIRE(!dispatch_semaphore_wait(slow_done,dispatch_time(DISPATCH_TIME_NOW,30000000000ll)));
+    if(!progressed) REQUIRE(!dispatch_semaphore_wait(fast_done,dispatch_time(DISPATCH_TIME_NOW,30000000000ll)));
     CHECK(!a,"empty library input is a real construction failure");
 #ifdef NVN_SHADER_FLIGHT_IMPL
-    REQUIRE(!dispatch_semaphore_wait(follower_done,dispatch_time(DISPATCH_TIME_NOW,10000000000ll)));
+    REQUIRE(!dispatch_semaphore_wait(follower_done,dispatch_time(DISPATCH_TIME_NOW,30000000000ll)));
     CHECK(!follower,"an existing waiter receives the failed attempt, without fake success");
     uint64_t frame_ns_after=0; nvn_be_create_ns(&frame_ns_after,&pso_ns);
     CHECK(g_bp_lib_n==builds_before && g_bp_lib_wait_ns>frame_wait_before &&

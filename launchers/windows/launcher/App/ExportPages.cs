@@ -48,11 +48,12 @@ public sealed partial class EnvironmentWindow
     /// <summary>装机前清单按钮的唯一派发（11-19 维护者：test.3 Mac 清单 Apple ID 按钮把人引到环境检查和 Xcode；Windows 同口径核出两处——
     /// impactor_login 数据说 openImpactor、说明写「点『打开 Impactor』」，按钮却是「去设置」跳设置页；package 没好没有按钮）。
     /// 项上的 action 是按钮落点的唯一来源；控制口 /install-action 走这同一个函数。→ 做成了没有</summary>
-    private bool RunInstallAction(string action, LibraryGame game)
+    /// game：清单那一款；确认页的另一条路（更新页不属于哪一款）传 null，只有 openExport 要它
+    private bool RunInstallAction(string action, LibraryGame? game)
     {
         switch (action)
         {
-            case "openExport": selectedGame = game.Id; OpenBuild(); break;   // 这款的出包页（同游戏库「出包」）
+            case "openExport": if (game is null) return false; selectedGame = game.Id; OpenBuild(); break;   // 这款的出包页（同游戏库「出包」）
             case "openImpactor": if (!TryOpenBundledImpactor()) return false; break;   // 随包 Impactor：Apple ID 在它里面登录
             case "devCertSettings": Navigate("settings"); break;   // 设置页「装到 iPhone 的方式」：开发者证书在那里导入 / 切换
             default: return false;
@@ -945,7 +946,6 @@ public sealed partial class EnvironmentWindow
     }
 
     /// <summary>玩家选了「出完导出自签 IPA」：自动装到手机（连上就更新、新版首启横幅）一律跳过，玩家自己签名安装</summary>
-    private bool IosAfterPackIsExport => IosAfterPack == "export";
 
     /// <summary>出包页的「开始」：出 iPhone 时按「出完之后」那条路一步走完（装到 iPhone / 导出自签包）</summary>
     private void StartPackBranch(LibraryGame game)
@@ -1781,6 +1781,11 @@ public sealed partial class EnvironmentWindow
         var state = new StackPanel { Spacing = 16 };
         state.Children.Add(PhoneJobCard(installTrack, installState, installMessage, installDiagnostics, game.Id, notes, showsOperation: showsOperation,
             switchExport: installState is "failed" or "interrupted" && !installExport && installTrack.Kind == "install" ? () => { IosAfterPack = "export"; ExportSelfSign(game); } : null));
+        if (installState is "failed" && installChoice is { } choice)   // 装着不止一个 S2Arm、还没选：就在这页选，选好自动重推这一款
+        {
+            var phone = new PhoneOverview.Phone(choice.Device, "", true, false, null, false, null, null, null, [], NeedsChoice: true, Candidates: choice.Candidates);
+            state.Children.Add(ConsoleChooser(phone, false, bid => _ = ChooseAppAsync(choice.Device, bid)));
+        }
         if (installState is "failed" && installCode is "apple_session_expired" or "apple_not_signed_in")
         {
             // Apple ID 登录过期（Apple 1100）/ 还没登录：打开 Impactor 让玩家自己重新登录（密码不经手），登录好再点一次「推到 iPhone」
@@ -1838,7 +1843,7 @@ public sealed partial class EnvironmentWindow
     {
         if (QueuePhone(game.Id, () => InstallAsync(game, accept, ask, export))) return;   // 出包在跑不挡；手机上装机在跑 / 这款正在出包 → 排队
         accept ??= new HashSet<string>();
-        installExport = export;
+        installExport = export; installChoice = null;
         var front = BeginPhoneJob(game, "");
         string? dropAsk = null, askCode = null;
         try
@@ -1850,6 +1855,8 @@ public sealed partial class EnvironmentWindow
             if (ask && JobCode(job) is { } c && ConfirmCodes.ContainsKey(c)) { dropAsk = job.Report.Message; askCode = c; }
             installedTo = job.Report.Succeeded ? InstalledLabel(job.Report.Result) : "";
             installCode = job.Report.Succeeded ? null : JobCode(job);
+            installChoice = !job.Report.Succeeded && PhoneOverview.ChoiceFacts(job.Report.Diagnostics) is { } choice
+                ? new PushChoice(choice.Device, choice.Candidates, job.Report.Message, () => InstallAsync(game, accept, ask, export)) : null;
             installState = job.Report.State;
             installMessage = job.Report.Succeeded && job.Report.Result.TryGetProperty("device", out var device) && device.ValueKind == JsonValueKind.String
                 ? T("install.device") + " · " + device.GetString() : job.Report.Message;
@@ -1867,7 +1874,7 @@ public sealed partial class EnvironmentWindow
             OperationCanceledException or PlatformNotSupportedException or System.ComponentModel.Win32Exception)
         { installState = "failed"; installDiagnostics = error.Message; }
         finally { EndJob(front); readinessFor = null; DynamicFinished(installState); AfterArtifactJob(); Render(); }
-        if (dropAsk is not null && await ConfirmInstallActionAsync("install.drop", dropAsk, ConfirmTitle(askCode)))
+        if (dropAsk is not null && await ConfirmInstallActionAsync("install.drop", dropAsk, ConfirmTitle(askCode), askCode, game))
             await InstallAsync(game, new HashSet<string>(accept) { ConfirmCodes[askCode!] }, export: export);
     }
 
@@ -1987,7 +1994,9 @@ public sealed partial class EnvironmentWindow
     }
 
     /// <summary>Confirm dialog for a phone-side action; texts are &lt;prefix&gt;_title / _body / _confirm.</summary>
-    private async Task<bool> ConfirmInstallActionAsync(string prefix, string? bodyText = null, string? titleText = null)
+    /// askCode：作业层的可确认停装码；它在共享体验表登记了 alternate（如新建证书确认的「改用已有证书」）就多画一个并列按钮，
+    /// 点了不重发（返回 false）、按 alternate 的动作走装机前清单同一个派发 RunInstallAction（devCertSettings = 设置页签名方式那一栏）
+    private async Task<bool> ConfirmInstallActionAsync(string prefix, string? bodyText = null, string? titleText = null, string? askCode = null, LibraryGame? game = null)
     {
         var dialog = new Window
         {
@@ -2006,6 +2015,16 @@ public sealed partial class EnvironmentWindow
             Margin = new Thickness(0, 0, 12, 0) };
         cancel.Click += (_, _) => dialog.Close();
         buttons.Children.Add(cancel);
+        string? alternate = null;
+        if (askCode is { Length: > 0 } && text.ConfirmAlternates.TryGetValue(askCode, out var alt))
+        {
+            var other = new Button { Content = T(alt.Label), Padding = new Thickness(16, 9),
+                Background = Brush.Parse("#29292D"), Foreground = Ink, CornerRadius = new CornerRadius(8),
+                Margin = new Thickness(0, 0, 12, 0) };
+            AutomationId(other, prefix + "_alternate");
+            other.Click += (_, _) => { alternate = alt.Action; dialog.Close(); };
+            buttons.Children.Add(other);
+        }
         var confirm = new Button { Content = T(prefix + "_confirm"), Padding = new Thickness(16, 9),
             Background = Accent, Foreground = Canvas, CornerRadius = new CornerRadius(8) };
         AutomationId(confirm, prefix + "_confirm");
@@ -2014,6 +2033,7 @@ public sealed partial class EnvironmentWindow
         body.Children.Add(buttons);
         dialog.Content = body;
         await dialog.ShowDialog(this);
+        if (alternate is not null) RunInstallAction(alternate, game);
         return confirmed;
     }
 
@@ -2038,7 +2058,7 @@ public sealed partial class EnvironmentWindow
             OperationCanceledException or PlatformNotSupportedException or System.ComponentModel.Win32Exception)
         { installState = "failed"; installMessage = T(prefix + "_failed"); installDiagnostics = error.Message; }
         finally { EndJob(front); AfterArtifactJob(); Render(); }
-        if (dropAsk is not null && await ConfirmInstallActionAsync("install.drop", dropAsk, ConfirmTitle(askCode)))
+        if (dropAsk is not null && await ConfirmInstallActionAsync("install.drop", dropAsk, ConfirmTitle(askCode), askCode, game))
             await RunPhoneJobAsync(game, operation, prefix, new HashSet<string>(accept) { ConfirmCodes[askCode!] });
     }
 

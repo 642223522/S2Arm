@@ -45,8 +45,9 @@ LOCALIZABLE = ADAPTER / "Sources" / "S2ArmAppleAdapter" / "Resources" / "Localiz
 REQUIRED_STATES = ["idle", "keys_missing", "importing", "preparing", "ready", "running", "failed", "recovering"]
 REQUIRED_LANGS = ["zh-Hans", "en"]
 ERROR_KEYS = {"code", "title", "detail", "severity", "retryable", "recoverable", "next_action"}
-# 可选：玩家确认后续跑的参数（确认码唯一来源，两端都读这一处）；accept_ui 标由专门页面处理、不进通用确认
-ERROR_OPT_KEYS = {"accept", "accept_ui"}
+# 可选：玩家确认后续跑的参数（确认码唯一来源，两端都读这一处）；accept_ui 标由专门页面处理、不进通用确认；
+#   alternate = 确认界面上与「仍然继续」并列的另一条路 {action: install_landing.actions 里的动作, label: launcher 文案键}，点了不重发、走那个动作的落点
+ERROR_OPT_KEYS = {"accept", "accept_ui", "alternate"}
 # 不是 RECOVERY 的键，但确实是出包链抛出的码（pack/targets/ios/adapter.py），恢复口径在 pack/contracts/README.md
 EXTRA_CODES = {"artifact_invalid"}
 EXTRA_CODE_SOURCES = {"artifact_invalid": "pack/contracts/README.md"}
@@ -177,11 +178,20 @@ def main() -> int:
     for code in TERMINAL_CODES:
         ok(code not in codes, f"{code} 是任务终态，不是错误码，应放 event_map.terminal_results")
 
+    landing_actions = set((spec.get("install_landing") or {}).get("actions") or {})
+    launcher_ids = {it.get("id") for it in (spec.get("launcher") or {}).get("items") or []}
     for e in items:
         code = e["code"]
         ok(ERROR_KEYS <= set(e) <= ERROR_KEYS | ERROR_OPT_KEYS, f"error {code}: 字段只能是 {sorted(ERROR_KEYS)} + 可选 {sorted(ERROR_OPT_KEYS)}，实际 {sorted(e)}")
         ok(e.get("accept") is None or re.fullmatch(r"accept[A-Z][A-Za-z]+", e["accept"]) is not None, f"error {code}: accept 必须是 acceptXxx 参数名")
         ok("accept_ui" not in e or ("accept" in e and e["accept_ui"] == "drive_picker"), f"error {code}: accept_ui 只认 drive_picker，且要带 accept")
+        alt = e.get("alternate")
+        if "alternate" in e:
+            ok(isinstance(alt, dict) and set(alt) == {"action", "label"}, f"error {code}: alternate 只能是 {{action, label}} 两个键")
+            ok("accept" in e and "accept_ui" not in e, f"error {code}: alternate 只在通用确认（带 accept、不带 accept_ui）上画")
+            if isinstance(alt, dict):
+                ok(alt.get("action") in landing_actions, f"error {code}: alternate.action {alt.get('action')} 不在 install_landing.actions 里")
+                ok(alt.get("label") in launcher_ids, f"error {code}: alternate.label {alt.get('label')} 不是 launcher 文案键")
         ok(re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]*", code) is not None, f"错误码格式不对：{code}")
         text_field(e, f"error {code}")
         ok(e.get("severity") in {"info", "warn", "error"}, f"error {code}: severity 不认识")

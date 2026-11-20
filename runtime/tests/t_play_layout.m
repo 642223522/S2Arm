@@ -94,7 +94,13 @@ int main(void) { @autoreleasepool {
     l=S2APlayLayoutMake(phone,phoneSafe,S2APlaySplitOn,NO,CGRectNull);
     CK(l.split && rect(l.game,0,62,420,394) && rect(l.controls,0,456,420,422) && S2APlayPortrait(S2APlayOrientationAuto,l.split),"普通手机强制分屏也可自动竖屏、上画面下按键");
     CK(!s2a_ios_split_active(),"读取偏好和纯几何预览不提前发布运行时分屏");
+    // 倒着拿（期望按定义手算；内屏数据取自 iPhone Duo 模拟器 iOS 27.1：设备 2 → 界面 3、设备 1 → 界面 4、设备 3 → 界面 1，设备 4 时界面不转）
+    CK(S2APlayLearnK(2,3)==270 && S2APlayLearnK(1,4)==270 && S2APlayLearnK(3,1)==-1 && S2APlayLearnK(5,3)==-1,"学差值：内屏横屏两次都学到 270°；竖屏、平放不学");
+    CK(S2APlayLearnK(3,3)==0 && S2APlayLearnK(4,4)==0,"学差值：普通手机 / 外屏横屏是 0°");
+    CK(S2APlayHoldAction(4,1,270)==1 && S2APlayHoldAction(3,1,270)==0 && S2APlayHoldAction(4,3,270)==2,"内屏：设备 4 该倒置竖屏、停在正竖屏转 180°、停在横屏先申请竖屏；设备 3 正常");
+    CK(S2APlayHoldAction(2,1,0)==1 && S2APlayHoldAction(1,1,0)==0 && S2APlayHoldAction(2,2,0)==0 && S2APlayHoldAction(3,3,0)==0,"外屏：倒着拿停在正竖屏转 180°；系统真转了倒置、正着、横屏都不动");
+    CK(S2APlayHoldAction(5,1,0)==-1 && S2APlayHoldAction(2,1,-1)==-1,"平放 / 差值没学到：保持原样");
     [d removePersistentDomainForName:suite];
-    printf("%s t_play_layout：%d/%d 项符合（开关、区域、方向、上区宽屏比例）\n",bad?"✗":"✓",checks-bad,checks);
+    printf("%s t_play_layout：%d/%d 项符合（开关、区域、方向、上区宽屏比例、倒着拿）\n",bad?"✗":"✓",checks-bad,checks);
     return bad?1:0;
 } }

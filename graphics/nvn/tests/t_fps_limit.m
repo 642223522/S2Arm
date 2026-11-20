@@ -39,6 +39,7 @@ int nvn_be_link_wait_tick(int vsyncs, uint64_t timeout_ns);
 int dm_focus_now(void);
 uint64_t dm_focus_in_since(void);
 uint64_t now_ns(void);
+uint64_t s2a_nvn_pace_waits_self(void);   // hle_nvn.c 只读计数：本线程进入节拍等待（限帧睡眠 / 等显示链接拍）的次数
 
 static int checked, failed, interval, windowed, check_hud, dynamic, return_one, deactivate, samples = 60;
 static int focus_probe, focus_lost, focus_restored, stall_probe, flap;
@@ -147,7 +148,7 @@ static void nvn_frames(void) {
     NV(nvnWindowBuilderSetTextures)(&wb, 3, ptrs);
     NV(nvnWindowBuilderSetPresentInterval)(&wb, interval);
     CHECK(NV(nvnWindowInitialize)(&window, &wb), "NVN 生产窗口初始化");
-    double submit[60], phase_stamp[4][61] = {0}, phase_hz[4] = {0}, transition[4][12] = {0};
+    double submit[60]; uint64_t present_pace = 0; double phase_stamp[4][61] = {0}, phase_hz[4] = {0}, transition[4][12] = {0};
     uint64_t phase_n = 0, phase_ns = 0;
     int frames = flap ? 360 : deactivate || focus_probe || stall_probe ? 139 : dynamic ? 4 * 109 : 49 + samples;
     uint64_t inactive_n = 0, inactive_ns = 0;
@@ -214,13 +215,14 @@ static void nvn_frames(void) {
             });
             window_state(0, frame);
         }
-        double t = clock_s(); NV(nvnQueuePresentTexture)(NULL, &window, index);
-        if (local >= 49 && local < 109) submit[local - 49] = (clock_s() - t) * 1000;
+        double t = clock_s(); uint64_t pw = s2a_nvn_pace_waits_self(); NV(nvnQueuePresentTexture)(NULL, &window, index);
+        if (local >= 49 && local < 109) { submit[local - 49] = (clock_s() - t) * 1000; present_pace += s2a_nvn_pace_waits_self() - pw; }
     }
     // 同时核公开查询：上限不可通过改写游戏 interval 实现。
     CHECK(NV(nvnWindowGetPresentInterval)(&window) == interval, "NVN 游戏 interval 仍为 %d", interval);
     double total = 0; for (int i = 0; i < 60; i++) total += submit[i];
-    CHECK(total / 60 < 5, "NVN present 只入队：均值 %.3f ms（不得承担 %.3f ms 限帧等待）", total / 60, target_ms);
+    // 原判上屏均值 < 5 ms：负载高时上屏线程被抢占就假红。改判上屏里进入节拍等待的次数 = 0（限帧等待只许在取图里做）；用时只打出来参考
+    CHECK(present_pace == 0, "NVN present 只入队：60 次上屏里进入限帧等待 %llu 次（期望 0；均值 %.3f ms 仅供参考，不得承担 %.3f ms 限帧等待）", (unsigned long long)present_pace, total / 60, target_ms);
     nvn_be_drain();
     if (deactivate) {
         uint64_t n, ns; nvn_be_link_sample(&n, &ns);
@@ -255,9 +257,10 @@ static void nvn_frames(void) {
         // tick wait itself, without relying on the drawable hold/backpressure.
         NV(nvnWindowSetPresentInterval)(&window, 1);
         CHECK(NV(nvnWindowGetPresentInterval)(&window) == 1, "混合会话回1保持公开interval");
-        for (int i = 0; i < 2; i++) CHECK(nvn_be_link_wait_tick(1, 100000000), "cap30直接真实tick预热%d", i);
+        // 等真实显示链接拍的上限 30 秒（原 100 ms：负载高时链接回调晚到就判「没等到拍」假红）；拍到了就返回，下面的均值判据不受影响
+        for (int i = 0; i < 2; i++) CHECK(nvn_be_link_wait_tick(1, 30000000000ull), "cap30直接真实tick预热%d", i);
         double start = clock_s();
-        for (int i = 0; i < 20; i++) CHECK(nvn_be_link_wait_tick(1, 100000000), "cap30直接真实tick%d", i);
+        for (int i = 0; i < 20; i++) CHECK(nvn_be_link_wait_tick(1, 30000000000ull), "cap30直接真实tick%d", i);
         double mean = (clock_s() - start) * 1000 / 20;
         CHECK(mean >= 30 && mean <= 1000.0 / 30 * 1.3,
             "cap30无队列反压直接wait_tick(1)均值 %.3f ms，期望33.333ms", mean);
@@ -324,7 +327,9 @@ static void hud_result(void) {
         CHECK(a && b > a, "HUD真实时间戳%llu递增", (unsigned long long)i);
         if (b - a > 1500000000ull / (uint64_t)want) slow++;   // 独立真值：1.5 × 1/目标（30 → 50 ms，120 → 12.5 ms）
     }
-    CHECK(slow > 0 && slow < 10, "200ms真实停顿产生少量慢帧：%u/%llu间隔", slow, (unsigned long long)(n - 1));
+    // 原另判慢帧 < 10：负载高时真实帧间隔多被拖长就假红（慢帧数随负载涨，不是 HUD 的错）。HUD 的判据是它算出的慢帧占比与同一批真实时间戳独立数出的一致（下面），
+    //   这里只留「200 ms 停顿至少产生一个慢帧」
+    CHECK(slow > 0, "200ms真实停顿产生慢帧：%u/%llu间隔", slow, (unsigned long long)(n - 1));
     char text[4096]; char *out = text;
     dispatch_sync(dispatch_get_main_queue(), ^{
         s2a_hud_host h = {.thermal = "未测", .build_id = "fps-limit-test", .battery_rate_pm = NAN, .battery_level = -1};

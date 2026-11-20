@@ -8,7 +8,7 @@ import contextlib
 from copy import deepcopy
 import errno
 import filelock
-from space_rule import pack_direct_bytes, pack_input_bytes, pack_need_bytes, selected_packages, source_file_bytes   # 出包空间规则的唯一定义（剃刀 H11）
+from space_rule import pack_direct_bytes, pack_input_bytes, pack_need_bytes, selected_packages   # 出包空间规则的唯一定义（剃刀 H11）
 import hashlib
 import io
 import json
@@ -2092,6 +2092,17 @@ def catalog(c):
 
 # 这一款在私有目录里按程序号存的出包缓存（直连 / 翻译 / 追加内容 / 原件核对 / 宽屏；都在 S2A_RUN_ROOT = <私有>/run 下，pack/jobs/core.py Context.env）
 # 显式清理/删除含共享编库缓存；Q15 成功后的自动清理仅清本款中间产物，保留可复用编库条目。
+def aoc_cache_dir(c, gid):
+    """本款追加内容（DLC）缓存（pack/stages/aoc.sh 的 S2A_AOC_CACHE，按键存解出的 DLC，大游戏的 DLC RomFS 好几 GB）。
+    同 direct_cache_dir：游戏和工具缓存在同一块盘 → 工具缓存下（同原来）；游戏放外接盘 → 这款游戏文件夹第一层的 aoc-cache/，
+    解包写入跟着游戏落到外接盘，不再把几 GB 写进系统盘、再跨盘拷回游戏（#1725 诊断 D-K82N：游戏库在外接盘，DLC 解到内置盘写满）"""
+    tool = c.work_root / "run" / "s2arm" / "cache" / "aoc"
+    loc = layout.find_game(c, gid)
+    if loc is None or _existing(loc).stat().st_dev == _existing(c.work_root).stat().st_dev:
+        return tool
+    return loc / "aoc-cache"
+
+
 def direct_cache_dir(c, gid):
     """本款直连缓存（graphics/tools/direct/direct_lib.sh 的 S2A_DIRECT_CACHE：内容寻址仓 + 编译中的翻译中间产物，大游戏编译中几十 GB）。
     存放位置与工具缓存在同一块盘：工具缓存下（同原来）；不在同一块盘（游戏放外接盘）：这款游戏文件夹第一层的 direct-cache/，
@@ -2270,15 +2281,29 @@ def _rmtree(p):
         shutil.rmtree(p, onerror=unlock)
 
 
+NOT_MANAGED = "操作路径不属于托管目录。"
+
+
+class NotManaged(Failure):
+    """要删 / 挪的路径不在这个存放位置里：清理收尾只记日志、不进错误摘要（不是这次失败的原因，原先作为第二个 job_failed 把人带偏）"""
+
+
+def _managed_anchor(root, p):
+    """p 在存放位置 root 里 → (锚, 相对部分)。锚是 p 的某一级上级目录：就是 root，或它的真实路径等于 root 的真实路径
+    （游戏库经符号链接、换了一种写法、在另一块盘上挂出来访问时，原先按字面比判成「不属于托管目录」）。只解析锚这一级，锚以下照原样、不跟随链接
+    （_rm 逐级查目录链接靠它：顺着链接删进 saves/ 不行）。p 就是 root 本身、或哪一级都对不上 → NotManaged"""
+    root, p = Path(os.path.abspath(root)), Path(os.path.abspath(p))
+    real = os.path.realpath(root)
+    for anchor in p.parents:
+        if anchor == root or os.path.realpath(anchor) == real:
+            return anchor, p.relative_to(anchor)
+    raise NotManaged(NOT_MANAGED)
+
+
 def _rm(c, root, p):
     # Check the entry before resolving it: a link into saves/ is not disposable.
-    root, p = Path(os.path.abspath(root)), Path(os.path.abspath(p))
-    try:
-        relative = p.relative_to(root)
-    except ValueError:
-        raise Failure("操作路径不属于托管目录。") from None
-    if not relative.parts:
-        raise Failure("操作路径不属于托管目录。")
+    p = Path(os.path.abspath(p))
+    root, relative = _managed_anchor(root, p)
     parent = root
     for part in relative.parts[:-1]:
         parent = parent / part
@@ -2466,6 +2491,8 @@ def clean_after_stop(c):
             if idle and _residue_disposable(c, gid):
                 _keep_stage_logs(c, gid)
                 prune_build(c, gid, record=False)
+    except NotManaged as error:   # 不是这次失败的原因：只记日志，不作为第二个错误码给玩家看
+        print(f"[s2a] 清理中间产物跳过了不在存放位置里的路径：{c.redact(str(error))}", file=sys.stderr)  # 非玩家句
     except (Failure, OSError, ValueError) as error:
         c.diagnostic("清理中间产物没有完成，下次空闲时会再清：" + c.redact(str(error)), code="job_failed", severity="warning")  # 非玩家句
 
@@ -2663,9 +2690,10 @@ TRASH = ".s2a-trash"   # 每个存放位置根下：删除时先把这款整块�
 
 def _to_trash(c, root, item, gid):
     """把 root 下的 item 改名挪进 root/.s2a-trash/<游戏号>-<毫秒>-<原名>（同盘改名）→ 新路径；已经不在了 → None；挪不动（权限 / 只读盘）照实报"""
-    root, item = Path(os.path.abspath(root)), Path(os.path.abspath(item))
-    if root not in item.parents or _is_link(item):   # 不在这个存放位置里的、链接都不碰（同 _rm 的托管目录检查）
-        raise Failure("操作路径不属于托管目录。")
+    item = Path(os.path.abspath(item))
+    root, _ = _managed_anchor(root, item)   # 不在这个存放位置里的、链接都不碰（同 _rm 的托管目录检查）
+    if _is_link(item):
+        raise NotManaged(NOT_MANAGED)
     dest = root / TRASH / f"{gid}-{int(time.time() * 1000)}-{item.name}"
     n = 1
     while os.path.lexists(dest):   # 同一毫秒挪两个同名的（widen/ 与 widen/auto/ 下同名的缓存目录）

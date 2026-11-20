@@ -21527,46 +21527,6 @@
         }
       }
     },
-    "On a Mac, click “Install on iPhone”. It signs with the Apple ID you added in Xcode and keeps this permission, even with a free Apple ID. On Windows, the launcher signs with Impactor 2.7.2, which keeps it too. If you still see the notice after reinstalling, add it with GetMoreRam below, then click “Install on iPhone” again.": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "On a Mac, click “Install on iPhone”. It signs with the Apple ID you added in Xcode and keeps this permission, even with a free Apple ID. On Windows, the launcher signs with Impactor 2.7.2, which keeps it too. If you still see the notice after reinstalling, add it with GetMoreRam below, then click “Install on iPhone” again."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "En un Mac, haz clic en «Instalar en el iPhone». Firma con el Apple ID que añadiste en Xcode y conserva este permiso, incluso con un Apple ID gratuito. En Windows, el lanzador firma con Impactor 2.7.2, que también lo conserva. Si sigues viendo el aviso después de reinstalar, añádelo con GetMoreRam (abajo) y vuelve a hacer clic en «Instalar en el iPhone»."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Sur Mac, cliquez sur « Installer sur l'iPhone ». La signature utilise l'identifiant Apple ajouté dans Xcode et conserve ce droit, même avec un identifiant gratuit. Sous Windows, le lanceur signe avec Impactor 2.7.2, qui le conserve aussi. Si l'avis apparaît encore après la réinstallation, ajoutez-le avec GetMoreRam (ci-dessous), puis cliquez à nouveau sur « Installer sur l'iPhone »."
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mac では「iPhone にインストール」をクリックします。Xcode に追加した Apple ID で署名され、無料の Apple ID でもこの権限が付きます。Windows ではランチャーが Impactor 2.7.2 で署名し、同じく権限が付きます。再インストール後もこの案内が出る場合は、下の GetMoreRam で追加してから、もう一度「iPhone にインストール」をクリックしてください。"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "在 Mac 上点「装到 iPhone」，用你在 Xcode 里登录的 Apple ID 签名，会带上这项权限，免费 Apple ID 也行。Windows 上启动器用 Impactor 2.7.2 签名，同样会带上。重装后还看到这条提示，就用下面的 GetMoreRam 补上，再点一次「装到 iPhone」。"
-          }
-        },
-        "zh-Hant": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "在 Mac 上點「裝到 iPhone」，用你在 Xcode 裡登入的 Apple ID 簽署，會帶上這項權限，免費 Apple ID 也可以。Windows 上啟動器用 Impactor 2.7.2 簽署，同樣會帶上。重裝後還看到這則提示，就用下面的 GetMoreRam 補上，再點一次「裝到 iPhone」。"
-          }
-        }
-      }
-    },
     "Your own developer certificate": {
       "localizations": {
         "en": {
@@ -23081,86 +23041,6 @@
         }
       }
     },
-    "Update once on your computer": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Update once on your computer"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Actualízalo una vez en tu ordenador"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "À mettre à jour une fois sur l'ordinateur"
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "パソコンで一度更新"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "在电脑上更新一次"
-          }
-        },
-        "zh-Hant": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "在電腦上更新一次"
-          }
-        }
-      }
-    },
-    "This game was installed with an older S2Arm. Its saves and game data are still on this iPhone. In S2Arm on your computer, update your older games once (they're listed right after you update S2Arm, and in the iPhone console) and it's ready to play.": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "This game was installed with an older S2Arm. Its saves and game data are still on this iPhone. In S2Arm on your computer, update your older games once (they're listed right after you update S2Arm, and in the iPhone console) and it's ready to play."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Este juego se instaló con una versión anterior de S2Arm. Sus partidas guardadas y datos siguen en este iPhone. En S2Arm en tu ordenador, actualiza una vez tus juegos anteriores (aparecen justo después de actualizar S2Arm y en la consola del iPhone) y estará listo para jugar."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ce jeu a été installé avec une ancienne version de S2Arm. Ses sauvegardes et ses données sont toujours sur cet iPhone. Dans S2Arm sur l'ordinateur, mettez à jour une fois vos anciens jeux (ils sont listés juste après la mise à jour de S2Arm, et dans la console iPhone) et il sera prêt à jouer."
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "このゲームは旧バージョンの S2Arm でインストールされました。ゲームデータとセーブデータはこの iPhone に残っています。パソコンの S2Arm で旧ゲームを一度更新すれば遊べます（S2Arm を更新した直後の画面と iPhone コンソールに一覧が出ます）。"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "这款是用旧版 S2Arm 装的，游戏资源和存档都还在这台 iPhone 上。在电脑上的 S2Arm 里把旧游戏更新一次就能玩（更新 S2Arm 后同一页会列出来，iPhone 总控台里也能点）。"
-          }
-        },
-        "zh-Hant": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "這款是用舊版 S2Arm 裝的，遊戲資源和存檔都還在這台 iPhone 上。在電腦上的 S2Arm 裡把舊遊戲更新一次就能玩（更新 S2Arm 後同一頁會列出來，iPhone 總控台裡也能點）。"
-          }
-        }
-      }
-    },
     "Signing certificate": {
       "localizations": {
         "en": {
@@ -23357,6 +23237,798 @@
           "stringUnit": {
             "state": "translated",
             "value": "Importer un .p12…"
+          }
+        }
+      }
+    },
+    "Needs a signing certificate": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Needs a signing certificate"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Necesita un certificado de firma"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Certificat de signature requis"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "署名証明書が必要"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要签名证书"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要簽名憑證"
+          }
+        }
+      }
+    },
+    "Certificate is from another Apple ID": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Certificate is from another Apple ID"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El certificado es de otro Apple ID"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Certificat d’un autre identifiant Apple"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "証明書が別の Apple ID のもの"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "证书和 S2Arm 不是同一个 Apple ID"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "憑證和 S2Arm 不是同一個 Apple ID"
+          }
+        }
+      }
+    },
+    "Signing certificate has changed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Signing certificate has changed"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El certificado de firma ha cambiado"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le certificat de signature a changé"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "署名証明書が変わりました"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "签名证书已更换"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "簽名憑證已更換"
+          }
+        }
+      }
+    },
+    "Needs signing on this iPhone": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Needs signing on this iPhone"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hay que firmarlo en este iPhone"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "À signer sur cet iPhone"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この iPhone での署名が必要"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要在手机上重新签名"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要在手機上重新簽名"
+          }
+        }
+      }
+    },
+    "This iPhone signs this game before it opens, and it has no signing certificate yet. Export the certificate from the app you installed S2Arm with (AltStore or SideStore) and import it here. The game is ready as soon as it's in.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This iPhone signs this game before it opens, and it has no signing certificate yet. Export the certificate from the app you installed S2Arm with (AltStore or SideStore) and import it here. The game is ready as soon as it's in."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Este iPhone firma el juego antes de abrirlo y todavía no tiene un certificado de firma. Exporta el certificado desde la app con la que instalaste S2Arm (AltStore o SideStore) e impórtalo aquí. El juego estará listo en cuanto lo importes."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cet iPhone signe ce jeu avant de l’ouvrir, et il n’a pas encore de certificat de signature. Exportez le certificat depuis l’app qui a installé S2Arm (AltStore ou SideStore) et importez-le ici. Le jeu est prêt dès qu’il est importé."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このゲームは開く前にこの iPhone で署名されますが、まだ署名証明書がありません。S2Arm をインストールしたアプリ（AltStore または SideStore）で証明書を書き出し、ここで読み込んでください。読み込めばすぐ遊べます。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这款游戏要先在这台 iPhone 上签名才能打开，可手机上还没有签名证书。请在装 S2Arm 的那个工具（AltStore 或 SideStore）里导出证书，再导进来。导好这款就能玩。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "這款遊戲要先在這台 iPhone 上簽名才能開啟，可手機上還沒有簽名憑證。請在安裝 S2Arm 的那個工具（AltStore 或 SideStore）裡匯出憑證，再匯入進來。匯入好這款就能玩。"
+          }
+        }
+      }
+    },
+    "The signing certificate on this iPhone is from a different Apple ID than the one S2Arm was installed with, so games signed with it won't open. Import the certificate from the app you installed S2Arm with. The other certificate stays as it is.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The signing certificate on this iPhone is from a different Apple ID than the one S2Arm was installed with, so games signed with it won't open. Import the certificate from the app you installed S2Arm with. The other certificate stays as it is."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El certificado de firma de este iPhone es de un Apple ID distinto del que usaste para instalar S2Arm, así que los juegos firmados con él no se abren. Importa el certificado de la app con la que instalaste S2Arm. El otro certificado se queda como está."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le certificat de signature de cet iPhone vient d’un autre identifiant Apple que celui qui a installé S2Arm : les jeux signés avec lui ne s’ouvrent pas. Importez le certificat de l’app qui a installé S2Arm. L’autre certificat reste tel quel."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この iPhone の署名証明書は S2Arm をインストールした Apple ID とは別のものなので、それで署名したゲームは開けません。S2Arm をインストールしたアプリの証明書を読み込んでください。もう一方の証明書はそのまま残ります。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这台 iPhone 上的签名证书和装 S2Arm 用的不是同一个 Apple ID，用它签的游戏打不开。请导入装 S2Arm 的那个工具里的证书，原来那张不受影响。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "這台 iPhone 上的簽名憑證和安裝 S2Arm 用的不是同一個 Apple ID，用它簽的遊戲打不開。請匯入安裝 S2Arm 的那個工具裡的憑證，原本那張不受影響。"
+          }
+        }
+      }
+    },
+    "The certificate S2Arm was installed with has been replaced or revoked, for example when another computer refreshed it, so the one on this iPhone no longer works. Export the current certificate from the app you installed S2Arm with and import it again.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The certificate S2Arm was installed with has been replaced or revoked, for example when another computer refreshed it, so the one on this iPhone no longer works. Export the current certificate from the app you installed S2Arm with and import it again."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El certificado con el que se instaló S2Arm se ha sustituido o revocado (por ejemplo, porque otro ordenador lo renovó), así que el de este iPhone ya no sirve. Exporta el certificado actual desde la app con la que instalaste S2Arm e impórtalo de nuevo."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le certificat qui a installé S2Arm a été remplacé ou révoqué (par exemple quand un autre ordinateur l’a actualisé) : celui de cet iPhone ne fonctionne plus. Exportez le certificat actuel depuis l’app qui a installé S2Arm et importez-le à nouveau."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "S2Arm のインストールに使った証明書が置き換えられたか失効しました（別のパソコンで更新した場合など）。この iPhone の証明書はもう使えません。S2Arm をインストールしたアプリで今の証明書を書き出し、もう一度読み込んでください。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "装 S2Arm 用的证书已经换过或被吊销（比如另一台电脑刷新过），手机上这张已经不能用了。请在装 S2Arm 的那个工具里重新导出现在的证书，再导入一次。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安裝 S2Arm 用的憑證已經換過或被撤銷（例如另一台電腦重新整理過），手機上這張已經不能用了。請在安裝 S2Arm 的那個工具裡重新匯出現在的憑證，再匯入一次。"
+          }
+        }
+      }
+    },
+    "This game was signed in a way this iPhone doesn't accept. Import your signing certificate and S2Arm signs it again on this iPhone when you play.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This game was signed in a way this iPhone doesn't accept. Import your signing certificate and S2Arm signs it again on this iPhone when you play."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Este juego se firmó de una forma que este iPhone no acepta. Importa tu certificado de firma y S2Arm lo volverá a firmar en este iPhone cuando juegues."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ce jeu a été signé d’une façon que cet iPhone n’accepte pas. Importez votre certificat de signature : S2Arm le signera à nouveau sur cet iPhone quand vous jouerez."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このゲームの署名はこの iPhone では認められません。署名証明書を読み込めば、プレイ時に S2Arm がこの iPhone で署名し直します。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这款游戏的签名这台 iPhone 不认。导入你的签名证书，开始游戏时 S2Arm 会在手机上重新签好。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "這款遊戲的簽名這台 iPhone 不認。匯入你的簽名憑證，開始遊戲時 S2Arm 會在手機上重新簽好。"
+          }
+        }
+      }
+    },
+    "Get certificate…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Get certificate…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Obtener certificado…"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Obtenir le certificat…"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "証明書を取得…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "获取签名证书…"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取得簽名憑證…"
+          }
+        }
+      }
+    },
+    "Get certificate": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Get certificate"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Obtener certificado"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Obtenir le certificat"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "証明書を取得"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "获取证书"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取得憑證"
+          }
+        }
+      }
+    },
+    "Needs its .s2arm once": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Needs its .s2arm once"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Necesita su .s2arm una vez"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Son .s2arm à importer une fois"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": ".s2arm の読み込みが一度必要"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要导入一次 .s2arm"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要匯入一次 .s2arm"
+          }
+        }
+      }
+    },
+    "This game was installed with an older S2Arm. Its saves and game data are still on this iPhone; it only needs its program once. Import this game's .s2arm file here (exported from S2Arm on a computer, or shared by a friend), or update your older games once in S2Arm on your computer.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This game was installed with an older S2Arm. Its saves and game data are still on this iPhone; it only needs its program once. Import this game's .s2arm file here (exported from S2Arm on a computer, or shared by a friend), or update your older games once in S2Arm on your computer."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Este juego se instaló con una versión anterior de S2Arm. Sus partidas y datos siguen en este iPhone; solo necesita su programa una vez. Importa aquí el archivo .s2arm del juego (exportado desde S2Arm en un ordenador o compartido por un amigo), o actualiza tus juegos antiguos una vez en S2Arm en tu ordenador."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ce jeu a été installé avec une version précédente de S2Arm. Ses sauvegardes et ses données sont toujours sur cet iPhone ; il ne lui manque que son programme, une seule fois. Importez ici le fichier .s2arm du jeu (exporté depuis S2Arm sur un ordinateur ou partagé par un ami), ou mettez à jour vos anciens jeux une fois dans S2Arm sur votre ordinateur."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このゲームは以前の S2Arm でインストールされました。セーブとゲームデータはこの iPhone に残っていて、プログラムを一度入れるだけです。ここでこのゲームの .s2arm（パソコンの S2Arm で書き出したもの、または友だちから共有されたもの）を読み込むか、パソコンの S2Arm で古いゲームを一度更新してください。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这款是旧版 S2Arm 装的，存档和游戏数据都还在这台 iPhone 上，只差一次程序。在这里导入这款的 .s2arm（电脑上的 S2Arm 导出的，或朋友分享的）；也可以在电脑上的 S2Arm 里把旧游戏更新一次。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "這款是舊版 S2Arm 安裝的，存檔和遊戲資料都還在這台 iPhone 上，只差一次程式。在這裡匯入這款的 .s2arm（電腦上的 S2Arm 匯出的，或朋友分享的）；也可以在電腦上的 S2Arm 裡把舊遊戲更新一次。"
+          }
+        }
+      }
+    },
+    "Needs its .s2arm file": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Needs its .s2arm file"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Falta su archivo .s2arm"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Il manque son fichier .s2arm"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": ".s2arm ファイルが足りません"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "还缺这款的 .s2arm"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "還缺這款的 .s2arm"
+          }
+        }
+      }
+    },
+    "This game's data is on this iPhone, but its program, the game's .s2arm file, isn't yet. Import the .s2arm here, or put it in the Import Here folder in Files. If your computer is sending it, it arrives on its own.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This game's data is on this iPhone, but its program, the game's .s2arm file, isn't yet. Import the .s2arm here, or put it in the Import Here folder in Files. If your computer is sending it, it arrives on its own."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Los datos de este juego ya están en este iPhone, pero falta su programa, el archivo .s2arm del juego. Importa el .s2arm aquí o ponlo en la carpeta Import Here de Archivos. Si lo está enviando tu ordenador, llegará solo."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Les données de ce jeu sont sur cet iPhone, mais pas encore son programme, le fichier .s2arm du jeu. Importez le .s2arm ici ou placez-le dans le dossier Import Here de Fichiers. Si votre ordinateur est en train de l’envoyer, il arrivera tout seul."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このゲームのデータはこの iPhone にありますが、プログラム（ゲームの .s2arm ファイル）がまだありません。ここで .s2arm を読み込むか、「ファイル」の Import Here フォルダに入れてください。パソコンから送信中なら、そのまま届きます。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这款的游戏数据已经在这台 iPhone 上，还缺它的程序，也就是这款的 .s2arm 文件。在这里导入 .s2arm，或者放进「文件」里的「放这里导入」；如果是电脑正在推送，等它自己到就行。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "這款的遊戲資料已經在這台 iPhone 上，還缺它的程式，也就是這款的 .s2arm 檔案。在這裡匯入 .s2arm，或放進「檔案」裡的「放這裡匯入」；如果是電腦正在推送，等它自己到就行。"
+          }
+        }
+      }
+    },
+    "Import .s2arm…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Import .s2arm…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Importar .s2arm…"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Importer le .s2arm…"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": ".s2arm を読み込む…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导入 .s2arm…"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "匯入 .s2arm…"
+          }
+        }
+      }
+    },
+    "Import": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Import"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Importar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Importer"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "読み込む"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导入"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "匯入"
+          }
+        }
+      }
+    },
+    "Auto joins local wireless when a game requests it. Manual uses the same relay for every player; host the relay on this device or enter its IPv4 address. Port 30456. Fully quit and reopen the app to apply. IPv6 is not supported.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auto joins local wireless when a game requests it. Manual uses the same relay for every player; host the relay on this device or enter its IPv4 address. Port 30456. Fully quit and reopen the app to apply. IPv6 is not supported."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自动模式会在游戏请求时加入本地联机。指定 IP 模式下所有玩家使用同一中继；可在本机托管中继，或输入其中继 IPv4 地址。端口 30456，完整退出并重新打开本应用后生效。不支持 IPv6。"
+          }
+        }
+      }
+    },
+    "Keeps the relay on this device while the app is in the foreground and the network is reachable.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keeps the relay on this device while the app is in the foreground and the network is reachable."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "中继将在本应用保持前台且网络可达时运行。"
+          }
+        }
+      }
+    },
+    "Enter an IPv4 address reachable by every player. Port 30456.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter an IPv4 address reachable by every player. Port 30456."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "输入所有玩家均可访问的 IPv4 地址。端口 30456。"
+          }
+        }
+      }
+    },
+    "Host on this device": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Host on this device"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在本机托管"
+          }
+        }
+      }
+    },
+    "Relay IPv4 address": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Relay IPv4 address"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "中继 IPv4 地址"
+          }
+        }
+      }
+    },
+    "Manual": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Manual"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "指定 IP"
+          }
+        }
+      }
+    },
+    "Local wireless": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Local wireless"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "联机模式"
+          }
+        }
+      }
+    },
+    "In S2Arm on your Mac or Windows PC, click “Renew S2Arm” on the S2Arm card first in the library. It signs with your Apple ID and keeps this permission, even with a free Apple ID. If you still see the notice after reinstalling, add it with GetMoreRam below, then click “Renew S2Arm” again.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "In S2Arm on your Mac or Windows PC, click “Renew S2Arm” on the S2Arm card first in the library. It signs with your Apple ID and keeps this permission, even with a free Apple ID. If you still see the notice after reinstalling, add it with GetMoreRam below, then click “Renew S2Arm” again."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "En S2Arm en tu Mac o PC con Windows, haz clic en «Renovar S2Arm» en la ficha «S2Arm» (la primera de la biblioteca). Firma con tu Apple ID y conserva este permiso, incluso con un Apple ID gratuito. Si sigues viendo el aviso después de reinstalar, añádelo con GetMoreRam (abajo) y vuelve a hacer clic en «Renovar S2Arm»."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dans S2Arm sur votre Mac ou PC Windows, cliquez sur « Renouveler S2Arm » dans la vignette « S2Arm » (la première de la bibliothèque). La signature utilise votre identifiant Apple et conserve ce droit, même avec un identifiant gratuit. Si l'avis apparaît encore après la réinstallation, ajoutez-le avec GetMoreRam (ci-dessous), puis cliquez à nouveau sur « Renouveler S2Arm »."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "パソコン（Mac または Windows）の S2Arm で、ライブラリ先頭の「S2Arm」タイルの「S2Arm を再署名」をクリックします。あなたの Apple ID で署名され、無料の Apple ID でもこの権限が付きます。再インストール後もこの案内が出る場合は、下の GetMoreRam で追加してから、もう一度「S2Arm を再署名」をクリックしてください。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在电脑上的 S2Arm（Mac 或 Windows）里点游戏库第一格「S2Arm」里的「续签 S2Arm」，用你的 Apple ID 签名，会带上这项权限，免费 Apple ID 也行。重装后还看到这条提示，就用下面的 GetMoreRam 补上，再点一次「续签 S2Arm」。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在電腦上的 S2Arm（Mac 或 Windows）裡點遊戲庫第一格「S2Arm」裡的「續簽 S2Arm」，用你的 Apple ID 簽署，會帶上這項權限，免費 Apple ID 也可以。重裝後還看到這則提示，就用下面的 GetMoreRam 補上，再點一次「續簽 S2Arm」。"
           }
         }
       }

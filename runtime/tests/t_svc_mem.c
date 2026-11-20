@@ -1,5 +1,6 @@
 // svc_mem.c 单测：s2a_mem_mapped（C# IsRangeMapped 用）与「逐段 s2a_mem_query、遇权限 0 即否」同判，且不随映射段长变慢。
 //   期望值：手写几例（按 Horizon 语义直接写出）+ 随机区间对拍逐段查询的老算法（C# GuestMemory.IsRangeMapped 原循环原样搬来）
+// 等事件的上限只当兜底（11-19：原先 1～5 秒，负载高时线程没跑到就判红 → 一律 30 秒，正常时一到就返回）
 #include "../src/native.h"
 #include <time.h>
 #include <errno.h>
@@ -57,6 +58,7 @@ void s2a_window_get(uint64_t *b, uint64_t *s) { *b = *s = 0; } void s2a_window_t
 // #258 懒清零的桩：g_gfile=1 时把 [g_gfile_lo, g_gfile_hi) 当成文件后备窗口（没有文件后备时还页照旧换匿名占位）
 static int g_gfile; static uint64_t g_gfile_lo, g_gfile_hi;
 int s2a_guest_in_file(uint64_t a, uint64_t n) { return g_gfile && n && a >= g_gfile_lo && a + n <= g_gfile_hi; }
+void s2a_guest_commit(uint64_t a, uint64_t n) { (void)a; (void)n; }   // vawin.c 的桩：放开前按块定后备（文件后备溢出模式；本测不链 vawin.c）
 uint64_t s2a_module_span(const char *d) { (void)d; return 0; }   // 桩：模块跨度（loader.c；本单测不装模块）
 
 static int bad, checks;
@@ -84,7 +86,7 @@ static void wb_host_write(uint64_t a, uint64_t n) {
     if (!g_wb_phase) return;
     if (g_wb_tx_open) g_wb_in_tx++;
     atomic_store(&g_wb_q, 0); pthread_t q; pthread_create(&q, NULL, wb_query, NULL);
-    for (int i = 0; i < 2000 && !atomic_load(&g_wb_q); i++) usleep(1000);
+    for (int i = 0; i < 30000 && !atomic_load(&g_wb_q); i++) usleep(1000);
     if (atomic_load(&g_wb_q)) pthread_join(q, NULL); else { g_wb_bad_lock++; pthread_detach(q); }
     uint64_t gs = g_wb_src + 0x10, gd = g_wb_dst + 0x20;
     if (g_wb_phase == 1 && a <= gs && gs < a + n) { g_wb_hit[0]++; *(uint8_t *)gs = 0x5a; }
@@ -217,11 +219,12 @@ int main(void) {
     for (uint64_t a = AB; a < AB + AS; a += 0x1000) s2a_mem_test_subpage(a, 1);
     const int M = 2000; volatile int sink = 0; double t0 = now_ms();
     for (int i = 0; i < M; i++) sink += old_mapped(AB + AS / 2 + (uint64_t)(i % 64) * 8, 8);
-    double t1 = now_ms();
+    double t1 = now_ms(); uint64_t s2a_mem_mapped_steps(void); uint64_t st0 = s2a_mem_mapped_steps();
     for (int i = 0; i < M; i++) sink += s2a_mem_mapped(AB + AS / 2 + (uint64_t)(i % 64) * 8, 8);
-    double t2 = now_ms(), told = t1 - t0, tnew = t2 - t1;
+    double t2 = now_ms(), told = t1 - t0, tnew = t2 - t1; uint64_t steps = s2a_mem_mapped_steps() - st0;
     CHECK(sink == 2 * M, "整段映射里查 8 字节都应已映射（%d / %d）", sink, 2 * M);
-    CHECK(tnew * 20 < told, "整段 64 MB 映射里查 8 字节 %d 次：新 %.2f ms 应比老 %.2f ms 快 20 倍以上", M, tnew, told);
+    // 判步数不判耗时（照 bufreg 的改法）：整段已映射的页掩码满，查 8 字节一步就过；逐页并（老算法约 4096 个宿主页）的实现步数会成千倍。耗时只打印
+    CHECK(steps <= 2 * (uint64_t)M, "整段 64 MB 映射里查 8 字节 %d 次：新算法应每次一步到位，共走 %llu 步（上限 %d；耗时新 %.2f ms / 老 %.2f ms 仅供参考）", M, (unsigned long long)steps, 2 * M, tnew, told);
     // Read permission is stricter than merely mapped: preserve the readonly-copy predicate.
     CHECK(s2a_mem_readable(HEAP + 8, 8) && !s2a_mem_readable(HEAP + HCUR - 4, 8), "可读检查：堆与跨尾");
     CHECK(s2a_mem_readable(UINT64_MAX, 0) && !s2a_mem_readable(UINT64_MAX - 3, 8), "可读检查：空范围与溢出");
@@ -541,7 +544,7 @@ int main(void) {
                 }
                 close(qp[1]); close(lp[1]);
                 struct pollfd pf = {qp[0], POLLIN, 0};
-                int queried = held > 0 && poll(&pf, 1, 1200) > 0;
+                int queried = held > 0 && poll(&pf, 1, 30000) > 0;   // 30 秒兜底（原 1.2 秒：负载高时查询线程慢一点就被当成卡在锁上）
                 if (held > 0) { kill(held, SIGKILL); waitpid(held, NULL, 0); }
                 CHECK(held > 0 && !queried, "诊断关闭时 mprotect fatal 持 g_mu 终止，并发查询 1 s 内不得完成");
                 close(qp[0]); close(lp[0]);

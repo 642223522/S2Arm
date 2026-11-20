@@ -1411,28 +1411,29 @@ def readiness(c):
     def item(key, ok, title, detail, who="human", waiting=False, note="", action=None, url=None):
         wait = waiting and not ok
         # 等前一步的不给说明，免得 AI 拿去催玩家；好了的项也不带说明，只有 note（好了但值得知道的，如只靠网络连着）照带
-        # action / url：没好的项的按钮落点（11-19 落点契约，动作名单见 launchers/shared/experience.v1.json installActions；同 readiness_windows）
+        # action / url：没好的项的按钮落点（11-19 落点契约，唯一来源 launchers/shared/experience.v1.json install_landing；同 readiness_windows）；
+        #   等前一步的也不带（那一步还轮不到玩家做，启动器不画按钮）
         items.append(dict(id=key, ok=bool(ok), waiting=wait, blocking=key == "package" and not ok, title=title, detail=note if ok else "" if wait else detail, who=who,
-                          action=None if ok else action, url=None if ok else url))
+                          action=None if ok or wait else action, url=None if ok or wait else url))
     import downstream
     scheme = downstream.requested(c, next((g for g in c.catalog()["games"] if g["id"].upper() == gid.upper()), dict(id=gid)))
     if scheme:   # 下游深度方案出的是独立 App（install → downstream.install_ios）：iPhone 版看它自己的出包记录，不看容器件（原先一律报没做好，实际装得上）
         rec = downstream.last_record(c, gid.upper(), scheme)
         ipa_path = (rec or {}).get("ipa") or ""
-        item("package", bool(rec), "这款游戏的 iPhone 版已经做好", "还没做好：先做 iPhone 版，做好后这里自动打勾。", who="app")
+        item("package", bool(rec), "这款游戏的 iPhone 版已经做好", "还没做好：先做 iPhone 版，做好后这里自动打勾。", who="app", action="openExport")
     else:
         try:
             ios_pack(c, gid)
             ipa_path = phone_ipa_path(c)
             item("package", True, "这款游戏的 iPhone 版已经做好", "")
         except Failure:
-            item("package", False, "这款游戏的 iPhone 版已经做好", "还没做好：先做 iPhone 版，做好后这里自动打勾。", who="app")
+            item("package", False, "这款游戏的 iPhone 版已经做好", "还没做好：先做 iPhone 版，做好后这里自动打勾。", who="app", action="openExport")
     use_cert = devcert.active(c)
     team = None
     if not use_cert:   # Apple ID 用随包 plumesign 登录（mac_plume）：看它当前选中的账号，不看 Xcode
         acct = plume_account(c, win_install_mod(c)) if mac_plume(c) else None
         team = dict(id=acct["team"], name=acct["teamName"] or acct["account"]) if acct else None
-        item("appleId", team, "已登录 Apple ID", "" if team else APPLE_SIGN_IN)
+        item("appleId", team, "已登录 Apple ID", "" if team else APPLE_SIGN_IN, action="appleLogin")   # S2Arm 自己的登录面板
     # 清单只看玩家选的那台、每次现查（11-11 玩家实报：没插线却亮「iPhone 已用数据线连上」——原先没选设备时作业自己挑了同网的 iPad 来打勾）
     want = (c.r.get("device") or "").strip()
     link = device_link(c, want, polling=True) if want else dict(device=None, stage="connected", problem=S_DEVICE_REQUIRED, trace=[], devices=[])
@@ -1442,12 +1443,12 @@ def readiness(c):
     kind = device_kind(one) if one else "iPhone / iPad"
     how = "数据线" if one and _link(one).get("transportType") == "wired" else "同一 Wi-Fi"
     item("connected", one, "{0}「{1}」已连上（{2}）".replace("{0}", kind).replace("{1}", name).replace("{2}", how) if one else "选的设备已连上（数据线或同一 Wi-Fi）",
-         link["problem"] if stage == "connected" else "", note=S_NETWORK if one and how != "数据线" else "")   # 只靠网络连着：能装，但提醒插线更稳（玩家反馈 11-11）
+         link["problem"] if stage == "connected" else "", note=S_NETWORK if one and how != "数据线" else "", action="pickDevice")   # 只靠网络连着：能装，但提醒插线更稳（玩家反馈 11-11）
     paired = bool(one) and stage != "trusted"
-    item("trusted", paired, "{0} 已信任这台 Mac".replace("{0}", kind), link["problem"] if stage == "trusted" else S_TRUST, waiting=not one)
+    item("trusted", paired, "{0} 已信任这台 Mac".replace("{0}", kind), link["problem"] if stage == "trusted" else S_TRUST, waiting=not one, action="trustHelp")
     mode_pending = paired and stage == "prepare" and one.get("deviceProperties", {}).get("developerModeStatus") not in ("enabled", None)
     dev_mode = paired and stage != "developerMode" and not mode_pending
-    item("developerMode", dev_mode, "{0} 已打开开发者模式".replace("{0}", kind), S_DEV_MODE, waiting=not paired or mode_pending)
+    item("developerMode", dev_mode, "{0} 已打开开发者模式".replace("{0}", kind), S_DEV_MODE, waiting=not paired or mode_pending, action="developerModeHelp")
     item("deviceReady", dev_mode and stage == "", "{0} 已准备好安装".replace("{0}", kind), link["problem"] if stage == "prepare" else "", who="app", waiting=not paired or stage == "developerMode")
     account = (cert or {}).get("teamName") or "" if use_cert else (team["name"] or team["id"]) if team else ""
     return dict(gameId=gid, items=items, ready=not any(i["blocking"] for i in items), device=name, deviceKind=kind.lower() if one else "", account=account, ipaPath=ipa_path, imgPath=phone_img_path(c, gid), shaderCachePath=phone_shader_cache(c, gid),
@@ -1822,26 +1823,31 @@ def readiness_windows(c, gid):
                 account=(cert or {}).get("teamName") or "", ipaPath=ipa_path, imgPath=phone_img_path(c, gid), shaderCachePath=phone_shader_cache(c, gid), signMode="devcert" if use_cert else "appleId", devcert=cert)
 
 
-def devpush_client(c, udid, bid, work):
-    """s2a-devpush（house_arrest + AFC）：两端都随发版带，devicectl 没有的「删容器里的目录」「整目录拉回」走它"""
+def devpush_client(c, udid, bid, work, device=None):
+    """s2a-devpush（house_arrest + AFC）：两端都随发版带，devicectl 没有的「删容器里的目录」「整目录拉回」走它。
+    device = Mac 上这台的 CoreDevice 标识：写文件时 s2a-devpush 找不到设备（usbmuxd 那一刻列不出、devicectl 连着，#1756）就整份改走 devicectl"""
     sys.path.insert(0, str(c.engine / "tools"))
     import push_pack as P
     prebuilt = c.engine / "Binaries/Prepare/devpush" / P.EXE
     exe = P.devpush_path(str(prebuilt) if prebuilt.is_file() else None, c.env())
     if not exe:
         raise Failure("找不到 s2a-devpush：请重新安装完整的 S2Arm。", code="tool_missing")
-    return P.Devpush(exe, udid, bid, work, c.env())
+    cl = P.Devpush(exe, udid, bid, work, c.env())
+    if device:
+        cl.fallback = lambda src, rel: P.Devicectl(device, bid, work, env=c.env()).put(src, rel)
+    return cl
 
 
 class MacPhone:
     """Mac：Xcode 账号签名 + devicectl 装 + push_pack 推（出包重叠早装传入开工前认好的账号与设备）"""
 
-    def __init__(self, c, team=None, dev=None, udid=None):
+    def __init__(self, c, team=None, dev=None, udid=None, bid=None):
         self.c = c
         self.team = team or devcert.team(c)   # PlumeMacPhone 传 plumesign 账号的团队；直接构造 MacPhone 的只有证书用户（mac_phone）
         self.dev = dev or phone(c)
         self.udid = udid if udid is not None else udid_of(c, self.dev["id"])
-        self.bid = devcert.state(c)["bundleId"] if devcert.active(c) else container_bundle_id(self.team["id"], c)   # 证书模式：描述文件定的包名（和 Apple ID 模式是两个 App）
+        # 证书模式：描述文件定的包名（和 Apple ID 模式是两个 App）；ExternalPhone 直接给手机上装着的那个
+        self.bid = bid or (devcert.state(c)["bundleId"] if devcert.active(c) else container_bundle_id(self.team["id"], c))
         self.key = self.udid or self.dev["id"]   # devices/<设备>.json 的键
         # deviceKind / deviceName：完成页、诊断写「已装到 iPad「名字」」，不写死 iPhone
         self.info = dict(device=self.dev["name"], deviceName=self.dev["name"],
@@ -1910,15 +1916,15 @@ class MacPhone:
         return r
 
     def client(self, work):
-        return devpush_client(self.c, self.udid, self.bid, work)
+        return devpush_client(self.c, self.udid, self.bid, work, device=self.dev["id"])   # #1756：usbmuxd 看不到这台时整份改走 devicectl
 
     def purge(self, g):
         with tempfile.TemporaryDirectory(dir=self.c.private) as w:
             return purge_game(devpush_client(self.c, self.udid, self.bid, w), g)
 
 
-CERT_REVOKE_ASK = "这台电脑上没有这个 Apple ID 能用的开发证书，要新建一张。账号证书满了的话，苹果会撤掉列表里的第一张「{0}」（在 {1} 上创建，{2} 生效），它可能正是 AltStore / SideStore 在用的那张；撤掉后 AltStore / SideStore 自己和它们装的 App 都会打不开。"
-CERT_REVOKE_ASK_NO_MACHINE = "这台电脑上没有这个 Apple ID 能用的开发证书，要新建一张。账号证书满了的话，苹果会撤掉列表里的第一张「{0}」（{1} 生效），它可能正是 AltStore / SideStore 在用的那张；撤掉后 AltStore / SideStore 自己和它们装的 App 都会打不开。"   # 苹果列表里这张没记机器名
+CERT_REVOKE_ASK = "这台电脑上没有这个 Apple ID 能用的开发证书，要新建一张。账号证书满了的话，苹果会撤掉列表里的第一张「{0}」（在 {1} 上创建，{2} 生效）。在 AltStore / SideStore 上创建的那张就是它们在用的证书，撤掉后 AltStore / SideStore 和它们装的 App 会打不开。"
+CERT_REVOKE_ASK_NO_MACHINE = "这台电脑上没有这个 Apple ID 能用的开发证书，要新建一张。账号证书满了的话，苹果会撤掉列表里的第一张「{0}」（{1} 生效）。在 AltStore / SideStore 上创建的那张就是它们在用的证书，撤掉后 AltStore / SideStore 和它们装的 App 会打不开。"   # 苹果列表里这张没记机器名
 
 
 def win_cert_gate(c, W, exe):
@@ -2057,6 +2063,9 @@ class WinPhone:
                     raise win_install_failure(e2) from e2
                 why = WIDGET_QUOTA if e.err == "free_appid_limit" else str(first)
                 self.c.diagnostic(f"这次没装小组件：{why}", code="widget_skipped", severity="warning")
+            got = getattr(ns, "signed_expiry", None)
+            if got:   # 签好的包里的真实期限（#1772）：免费 / 付费照它判，不再按账号猜（plumesign 判不了付费，PlumeMacPhone 原先一律记免费、付费账号显示 7 天）
+                self.info.update(expires=got["expires"], free=got["days"] <= 7)
         rec = layout.load_device(self.c, self.key)
         layout.save_device(self.c, self.key, dict(rec, bundleId=self.bid))
 
@@ -2179,7 +2188,7 @@ class PlumeMacPhone(MacPhone):
         acct = plume_account(c, self.W)
         if not acct:
             raise Failure(APPLE_SIGN_IN, code="apple_not_signed_in")
-        # free：plumesign 判不了付费 / 免费，一律按免费记
+        # free：plumesign 登录时判不了付费 / 免费，先按免费记；装好后按签好的包里的真实期限改（WinPhone.install，#1772）
         super().__init__(c, team=dict(id=acct["team"], name=acct["teamName"] or acct["account"], free=True), dev=dev, udid=udid)
 
     install = WinPhone.install                       # plumesign 签名装机（含 9401 旧写法、设备已登记、小组件去掉重来）
@@ -2190,12 +2199,55 @@ class PlumeMacPhone(MacPhone):
         raise AssertionError("PlumeMacPhone 不处理证书签名")  # 非玩家句
 
 
+class ExternalPhone(MacPhone):
+    """Mac：别的工具（AltStore / SideStore / ESign …）装的 S2Arm（11-19 走查结构 4）：不要 Apple ID、不签名、不装 App，包名就是手机上装着的那个。
+    只推文件进它的容器：程序包是未签名的 .s2arm（进「放这里导入」，手机用导入的证书签），资源包照旧按 sha256 推；备份 / 推 / 查进程照旧 Mac（devicectl + s2a-devpush）"""
+    external = True
+
+    def __init__(self, c, bid, dev=None, udid=None):
+        super().__init__(c, team=dict(id=None, name="", free=True), dev=dev, udid=udid, bid=bid)
+
+    def install(self, *a, **k):   # 这类手机不由启动器装 App（会新建证书、顶掉玩家 AltStore 的证书）
+        raise AssertionError("别的工具装的 S2Arm 不由启动器装")  # 非玩家句
+
+
 def mac_phone(c, team=None, dev=None, udid=None):
     return PlumeMacPhone(c, dev, udid) if mac_plume(c) else MacPhone(c, team, dev, udid)
 
 
 def phone_for(c):
     return WinPhone(c) if os.name == "nt" else mac_phone(c)
+
+
+def push_phone(c):
+    """推游戏（推到 iPhone / 更新这款 / 更新所选）用的手机对象（11-19 走查结构 4）：手机上装的是别的工具的 S2Arm（external_s2arm）→ 推进那个包名
+    （Mac：ExternalPhone，不要 Apple ID；Windows：WinPhone 换成那个包名），程序包不签、由手机用导入的证书签，不进签名 / 新建证书那条路（phone_signing）；
+    否则同 phone_for。不读电脑的签名方式（sign_mode）：电脑选什么，手机上照样可能是 AltStore 装的"""
+    if os.name == "nt":
+        ph = WinPhone(c)
+        who, bid = owner_for_push(c, ph.udid, ph.key)
+        if who == "external":
+            ph.bid, ph.external = bid, True
+        return ph
+    dev = phone(c)
+    udid = udid_of(c, dev["id"])
+    who, bid = owner_for_push(c, udid, udid or dev["id"])
+    return ExternalPhone(c, bid, dev, udid) if who == "external" else mac_phone(c, dev=dev, udid=udid)
+
+
+def owner_for_push(c, udid, key):
+    """推送前判这台手机用哪个 S2Arm（s2arm_owner）。装着不止一个、玩家还没选（choose）：不替玩家挑——现查的候选记进设备记录 pendingChoice
+    （总览不现查时也按这同一份给 needsChoice / candidates，两处不各判各的），失败带 facts {device, candidates}，失败页就地列出来让玩家选（phoneChooseApp），
+    选好自动重推。判出来不是 choose：清掉过时的 pendingChoice"""
+    rec = layout.load_device(c, key)
+    who, bid = s2arm_owner(c, udid, rec)
+    if who == "choose":
+        cands = s2arm_candidates(c, udid, rec)
+        layout.save_device(c, key, dict(rec, pendingChoice=dict(candidates=cands, at=time.time())))
+        raise Failure(PHONE_APP_CHOICE, code="phone_app_choice_required", facts=dict(device=key, candidates=cands))
+    if who is not None and "pendingChoice" in rec:
+        layout.save_device(c, key, {k: v for k, v in rec.items() if k != "pendingChoice"})
+    return who, bid
 
 
 GID_RE = re.compile(r"[0-9A-F]{16}")
@@ -2351,7 +2403,7 @@ def import_inbox(cl, docs="Documents"):
     return f"{docs}/{have or IMPORT_DIRS[1]}"
 
 
-def push_program(cl, gid, pkg, inbox, custom=None):
+def push_program(cl, gid, pkg, inbox, custom=None, cat=None):
     """签好的程序包（program_pack.sign 的目录）推进手机（11-19 维护者定：电脑推送与玩家分享同一个 .s2arm、同一条安装路径）：
     打成一个 .s2arm（同电脑导出两件套的格式：zstd 一帧带内容校验、里面 ustar，第一个条目 s2arm.json；只放程序 program/，资源包照旧由 push_pack 按 sha256 推），
     一次写进手机 App 的导入文件夹 inbox。App 用导入同一条代码解开、校验、写进自己的版本目录 program/v-<sha16>-s2arm/、最后改名换上清单
@@ -2364,7 +2416,8 @@ def push_program(cl, gid, pkg, inbox, custom=None):
     import program_pack
     import tarfile
     gid, pkg = gid.upper(), Path(pkg)
-    cat = json.loads((pkg / program_pack.CATALOGUE).read_text(encoding="utf-8"))
+    # cat：未签名包（别的工具装的 S2Arm，push_programs team 为空）没有 catalogue.json 文件，由调用方现算传进来；团队号为空 = 手机导入后用导入的证书签
+    cat = cat or json.loads((pkg / program_pack.CATALOGUE).read_text(encoding="utf-8"))
     vdir = f"v-{cat['image_sha256'][:16]}-s2arm"   # 手机导入写的版本目录（pack_apply.c s2a_s2arm_import）
     shown = dict(cat)
     files = [("program/" + p.relative_to(pkg).as_posix(), p) for p in sorted(pkg.rglob("*"))
@@ -2412,7 +2465,7 @@ def push_program(cl, gid, pkg, inbox, custom=None):
                 if isinstance(e, Failure):
                     raise
                 raise Failure(str(e), code=getattr(e, "err", None) or "resource_transfer_failed") from e
-    return dict(sha=cat["image_sha256"], team=cat["team"], host_abi=cat["host_abi"], rewriter_id=cat.get("rewriter_id", ""), dir=vdir, look=look_of(custom))
+    return dict(sha=cat["image_sha256"], team=cat.get("team"), host_abi=cat["host_abi"], rewriter_id=cat.get("rewriter_id", ""), dir=vdir, look=look_of(custom))
 
 
 def push_programs(c, cl, games, rec, team, bundle, signer, docs="Documents"):
@@ -2425,20 +2478,42 @@ def push_programs(c, cl, games, rec, team, bundle, signer, docs="Documents"):
     inbox = None
     for g in games:
         old = (rec.get("games", {}).get(g) or {}).get("program")
-        pkg = program_pack.sign(c, g, team, bundle, signer)
+        cat = None
+        if team:
+            pkg = program_pack.sign(c, g, team, bundle, signer)
+        else:   # 别的工具装的 S2Arm（push_phone）：不签——build 出的程序库自带 ad-hoc 签名（手机签名要它，别去掉），清单团队号为空，手机导入后用导入的证书签
+            pkg = program_pack.build(c, g)
+            meta = json.loads((Path(pkg) / program_pack.META).read_text(encoding="utf-8"))
+            cat = program_pack.catalogue(g, meta, Path(pkg) / program_pack.image_name(g), None)
         custom = next((v for k, v in looks.items() if k.upper() == g.upper()), None)
-        want = dict(json.loads((Path(pkg) / "catalogue.json").read_text(encoding="utf-8")), look=look_of(custom))
+        want = dict(cat or json.loads((Path(pkg) / "catalogue.json").read_text(encoding="utf-8")), look=look_of(custom))
         why = program_pack.need(c, g, old, team, want=want)
         if not why:
             out[g] = old
             continue
         note(c, f"{g} 的程序推进手机（{'、'.join(sorted(why))}）")  # 非玩家句
         inbox = inbox or import_inbox(cl, docs)
-        out[g] = push_program(cl, g, pkg, inbox, custom=custom)
+        out[g] = push_program(cl, g, pkg, inbox, custom=custom, cat=cat)
     return out
 
 
 PROGRAM_SENT = "已送到手机，打开 S2Arm 时自动装好。"   # 推完程序包、手机还没导入（App 没开 / 等不到）时完成页的那句（结果 unpackPending）
+# 别的工具装的 S2Arm 推完核签名身份（导入不签名、起局时才签：没身份或团队对不上，推完别报「装好了」）。文案维护者 11-20 定（译文进 Localizable.json 与 l10n 四语）
+EXTERNAL_NO_IDENTITY = "已送到手机，但手机上的 S2Arm 还没有签名证书，这款还开不了：在手机上打开 S2Arm → 齿轮 →「签名证书」，SideStore 装的点「从 SideStore 获取」；AltStore 装的先在 AltStore 设置里导出签名证书，再点「导入 .p12…」。"
+EXTERNAL_IDENTITY_TEAM = "已送到手机，但手机上的 S2Arm 导入的签名证书（团队 {0}）不是给这个 S2Arm 签名的那张（团队 {1}），这款还开不了：在手机上打开 S2Arm → 齿轮 →「签名证书」，SideStore 装的点「从 SideStore 获取」；AltStore 装的先在 AltStore 设置里重新导出签名证书，再点「导入 .p12…」。"
+
+
+def external_identity_gap(c, ph):
+    """别的工具装的 S2Arm 推完：手机上的签名身份够不够起这款 → (code, 那句话) | None（够）。
+    没导入（current.json 不在）→ phone_identity_missing；导入了、但团队与手机上这个包的团队（installed_s2arm 读得到时）对不上 → phone_identity_team_mismatch"""
+    meta = phone_identity_meta(c, ph.udid, ph.bid)
+    if not meta:
+        return "phone_identity_missing", EXTERNAL_NO_IDENTITY
+    team = next((a["team"] for a in installed_s2arm(c, ph) or [] if a["bundleId"].lower() == ph.bid.lower()), None)
+    got = meta.get("team") or ""
+    if team and got and got != team:
+        return "phone_identity_team_mismatch", EXTERNAL_IDENTITY_TEAM.format(got, team)
+    return None
 PROGRAM_WAIT = "等 iPhone 上的 S2Arm 装好这款的程序"
 IMPORT_WAIT_S = (300, 20)   # App 开着：等它导入的上限（大游戏 1.6 GB 程序包在手机上解开、校验）；查不清开没开（Windows 没有 devicectl）：只看这么久
 
@@ -2684,12 +2759,98 @@ IDENTITY_TEAM_MISMATCH = ("手机上的 S2Arm 是用另一个 Apple ID 或证书
 def installed_s2arm(c, ph):
     """手机上装着的 S2Arm（启动器装的、AltStore / SideStore / ESign 等别的工具装的都认）→ [{bundleId, team}]（team 读不到为 None）；
     按包名前缀 io.s2arm.games 或主程序名（main_executable）认。列不出（工具旧 / 断开）→ None"""
+    return installed_s2arm_on(c, ph.udid)
+
+
+def installed_s2arm_on(c, udid):
+    """同 installed_s2arm，按 UDID 查（总控台逐台现查、推送前还没有手机对象时用）"""
+    if not udid:
+        return None
     with tempfile.TemporaryDirectory(dir=c.private) as w:
-        rows = devpush_client(c, ph.udid, "-", w).apps() if ph.udid else None
+        rows = devpush_client(c, udid, "-", w).apps()
     if rows is None:
         return None
     main = main_executable(c)
     return [dict(bundleId=b, team=t or None) for b, e, t in rows if b.lower().startswith(S2ARM_BID_PREFIX) or e == main]
+
+
+def s2arm_owner(c, udid, rec):
+    """这台手机上用哪个 S2Arm（11-19 走查结构 4、5；总控台与推送共用这一个判断）→ (谁, 包名)：
+    ('launcher', 包名)：用的是这台电脑的启动器装的（设备记录 rec 有壳号、记下的包名还装着）；('external', 包名)：用的是别的工具（AltStore / SideStore / ESign …）装的；
+    ('choose', None)：装着两个及以上、玩家还没选（或选过的那个已经不在）——让玩家在总控台选（phoneChooseApp），不替玩家挑（11-20 维护者：玩家自选优先，
+    原先按「已导入签名身份 → 包名排序」挑，同机还装着别的电脑的启动器装的那份时挑错）；('none', None)：一个都没装；(None, None)：列不出已装 App（工具旧 / 断开）。
+    只有一个时直接用它。不看电脑的签名方式（sign_mode 管电脑签不签，与手机上是谁装的正交）"""
+    apps = installed_s2arm_on(c, udid)
+    if apps is None:
+        return None, None
+    if not apps:
+        return "none", None
+    own = (rec.get("bundleId") or "").lower() if rec.get("shellId") else ""
+    if len(apps) == 1:
+        bid = apps[0]["bundleId"]
+    else:
+        chosen = (rec.get("chosenBundleId") or "").lower()
+        bid = next((a["bundleId"] for a in apps if chosen and a["bundleId"].lower() == chosen), None)
+        if not bid:
+            return "choose", None
+    return ("launcher" if own and bid.lower() == own else "external"), bid
+
+
+def s2arm_candidates(c, udid, rec):
+    """总控台让玩家选的候选（s2arm_owner 判 choose 时列）：手机上装着的每个 S2Arm → [{bundleId, team, byThisLauncher, identityTeam}]，按包名排序；
+    byThisLauncher = 这台电脑的启动器装的（设备记录的壳号与包名），identityTeam = 这个 S2Arm 导入的签名证书的团队（没导入为 None）。列不出 → []"""
+    apps = installed_s2arm_on(c, udid) or []
+    own = (rec.get("bundleId") or "").lower() if rec.get("shellId") else ""
+    out = []
+    for a in sorted(apps, key=lambda a: a["bundleId"]):
+        meta = phone_identity_meta(c, udid, a["bundleId"])
+        out.append(dict(bundleId=a["bundleId"], team=a["team"], byThisLauncher=bool(own) and a["bundleId"].lower() == own,
+                        identityTeam=(meta or {}).get("team") or None))
+    return out
+
+
+PHONE_APP_CHOICE = "这台 iPhone 上装着不止一个 S2Arm：先在 iPhone 总控台选好用哪一个，再推游戏。"
+PHONE_APP_GONE = "选的这个 S2Arm 不在这台 iPhone 上了：在总控台重新选一次。"
+
+
+def phone_choose_app(c):
+    """作业 phoneChooseApp（总控台「选用哪个 S2Arm」，11-20 维护者：玩家自选优先）：请求带 device（UDID）与 bundleId；核实它现在装在这台手机上，
+    记进设备记录 chosenBundleId，之后推送 / 总控台都用它，直到它不在了再问。→ {device, bundleId}"""
+    udid = (c.r.get("device") or "").strip()
+    want = (c.r.get("bundleId") or "").strip()
+    if not udid or not want:
+        raise Failure("没说要选哪台 iPhone 上的哪一个 S2Arm。", code="job_failed")  # 非玩家句（前端按清单发，不会缺）
+    apps = installed_s2arm_on(c, udid)
+    if apps is None:
+        raise Failure("读不出这台 iPhone 上装了哪些 App：确认 iPhone 连着、已解锁，再试一次。", code="device_not_ready")
+    hit = next((a["bundleId"] for a in apps if a["bundleId"].lower() == want.lower()), None)
+    if not hit:
+        raise Failure(PHONE_APP_GONE, code="phone_app_gone")
+    rec = layout.load_device(c, udid)
+    rec = {k: v for k, v in rec.items() if k != "pendingChoice"}   # 选好了：推送时记下的「待选」作废
+    layout.save_device(c, udid, dict(rec, chosenBundleId=hit))
+    return dict(device=udid, bundleId=hit)
+
+
+def phone_identity_meta(c, udid, bid):
+    """手机上这个 S2Arm 导入过的签名身份（App 导入证书后写 IDENTITY_CURRENT：cert_sha1 / team，不含私钥）→ dict；没导入 / 读不到 → None"""
+    if not udid or not bid:
+        return None
+    with tempfile.TemporaryDirectory(dir=c.private) as w:
+        dst = Path(w) / "current.json"
+        try:
+            if not devpush_client(c, udid, bid, w).get(IDENTITY_CURRENT, dst):
+                return None
+            got = json.loads(dst.read_text(encoding="utf-8"))
+        except (OSError, ValueError, Failure):
+            return None
+    return got if isinstance(got, dict) else None
+
+
+def external_s2arm(c, udid, rec):
+    """别的工具装的那个 S2Arm 的包名（s2arm_owner 判 external）；启动器装的 / 一个都没装 / 列不出 → None（照旧走启动器那条路）"""
+    who, bid = s2arm_owner(c, udid, rec)
+    return bid if who == "external" else None
 
 
 def identity_target(c, ph, team):
@@ -2787,12 +2948,14 @@ def push_game(c, gid, ph, steps=True):
     gid = gid.upper()
     pack = ios_pack(c, gid)
     rec = layout.load_device(c, ph.key)
-    if not rec.get("shellId") or not ph.bid:
-        raise Failure(SHELL_INSTALL_FIRST, code="shell_install_required")
-    if rec["shellId"] != packer.current_shell_id(c):
-        raise Failure(SHELL_UPDATE_FIRST, code="shell_update_required")
+    ext = getattr(ph, "external", False)   # 别的工具装的 S2Arm（push_phone）：不查启动器的壳号、不签名、不交身份，推进它自己的包名
+    if not ext:
+        if not rec.get("shellId") or not ph.bid:
+            raise Failure(SHELL_INSTALL_FIRST, code="shell_install_required")
+        if rec["shellId"] != packer.current_shell_id(c):
+            raise Failure(SHELL_UPDATE_FIRST, code="shell_update_required")
     snapshot_phone_saves(c, ph, [gid])   # 0.6.0：推游戏不再覆盖存档，开头顺手把手机上这款的存档拉回电脑（内容变了才新建、每台每款留 10 份）
-    team, bid, signer = phone_signing(c, ph)
+    team, bid, signer = (None, ph.bid, None) if ext else phone_signing(c, ph)
     if steps: c.begin("把这款的程序推进 iPhone", 2, 3)
     from rewrite_refresh import refresh_ios
     ph.pull_kept([gid])   # 机上留下的 NRO 先收回（#8be819），refresh_ios 补进程序件
@@ -2805,8 +2968,10 @@ def push_game(c, gid, ph, steps=True):
             progs = push_programs(c, ph.client(w), [gid], rec, team, bid, signer)
     old = rec.get("games", {}).get(gid) or {}
     rec = layout.load_device(c, ph.key)
-    layout.save_device(c, ph.key, dict(rec, games=dict(rec.get("games") or {}, **{gid: dict(old, program=progs[gid])}), at=time.time()))
-    deliver_identity(c, ph)   # 0.6.0：手机自签要的私钥交给 App（交过了 / 交不出都直接跳过，不挡推送）
+    layout.save_device(c, ph.key, dict(rec, games=dict(rec.get("games") or {}, **{gid: dict(old, program=progs[gid])}), at=time.time(),
+                                       **({"externalBundleId": ph.bid} if ext else {})))   # 总控台不查手机时也认得出这台是别的工具装的
+    if not ext:   # 别的工具装的：签名身份由玩家在总控台「把签名身份交给手机」单独交（phoneIdentity，按团队对得上的那个包名），推送不顺带
+        deliver_identity(c, ph)   # 0.6.0：手机自签要的私钥交给 App（交过了 / 交不出都直接跳过，不挡推送）
     if steps: c.begin("把这款的资源推进 iPhone（只推变了的文件；第一次大游戏要几分钟）", 3, 3)
     files = size = 0
     pushed, mods = old.get("pack", ""), old.get("mods") or {}
@@ -2825,8 +2990,12 @@ def push_game(c, gid, ph, steps=True):
     if progs[gid] != old.get("program") and not ph.pending:   # 这次推了程序包（没推的原样带回）：App 导入换上了才算装好
         if steps: c.begin(PROGRAM_WAIT, 3, 3)
         ph.pending = await_import(c, ph, gid, progs[gid]["dir"])
+    gap = external_identity_gap(c, ph) if ext else None   # 导入不签名、起局才签：没身份就别报「装好了」
+    if gap:
+        ph.pending = gap[1]
     extra = dict(unpackPending=ph.pending) if ph.pending else {}
-    return dict(bundleId=ph.bid, games=[gid], packFiles=files, packBytes=size, **ph.info, **extra, openToFinish=True)
+    return dict(bundleId=ph.bid, games=[gid], packFiles=files, packBytes=size, **ph.info, **extra, openToFinish=True,
+                **({"installedBy": "external"} if ext else {}), **({"phoneIdentity": gap[0]} if gap else {}))
 
 
 PUSH_SELECTED = "push_selected.json"   # 「更新所选」这一轮的进度（私有目录）：{device, games, done, failed}，续推按它接着来
@@ -2843,7 +3012,7 @@ def push_selected(c):
     state_path = c.private / PUSH_SELECTED
     with packer_phone_lock(c):
         c.begin("找签名账号与 iPhone", 1, 1)
-        ph = phone_for(c)
+        ph = push_phone(c)   # 别的工具装的 S2Arm 推进它自己的包名（结构 4）
         if c.r.get("resume") is True:
             old = read(state_path, {}) or {}
             games = [g for g in old.get("games") or [] if g not in (old.get("done") or [])] if old.get("device") == ph.key else []
@@ -2873,6 +3042,11 @@ def push_selected(c):
                 rows.append(dict(gameId=g, ok=False, code="job_failed", message=str(e)[:300]))
             finally:
                 atomic(state_path, state)
+    # 有款没推成：整单按失败报（#1756：原先照报「完成」，两端界面都不看逐款结果，进度条跑完、手机上还是「需要导入」、总控台还是「更新」）。
+    #   原因用第一款失败的原话与错误码（已是给玩家的话）；失败页「重试」再推一轮，推成的那几款程序包已在手机上，按记录跳过
+    if state["failed"]:
+        first = next(r for r in rows if not r["ok"])
+        raise Failure(first["message"], code=first["code"])
     return dict(games=rows, done=len(state["done"]), failed=len(state["failed"]), remaining=len(games) - len(state["done"]))
 
 
@@ -2899,7 +3073,8 @@ def install_shell(c, ph, steps=True):
     ph.install(ipa, [], steps=False)
     forget_other_app(c, ph)
     rec = layout.load_device(c, ph.key)
-    signed = dict(signed=dict(at=time.time(), free=bool(ph.info["free"]), device=ph.info["device"], mode=sign_mode(c))) if "free" in ph.info else {}
+    signed = dict(signed=dict(at=time.time(), free=bool(ph.info["free"]), device=ph.info["device"], mode=sign_mode(c),
+                              **({"expires": ph.info["expires"]} if ph.info.get("expires") else {}))) if "free" in ph.info else {}
     # 换了签名方式后第一次装（Mac 从 Xcode 钥匙串换到 plumesign、证书 ↔ Apple ID）：结果带 signerSwitched，完成页写「这一次要重新装一下」，只这一次
     now = signer_kind(c, ph)
     layout.save_device(c, ph.key, dict(rec, shellId=sid, bundleId=ph.bid or rec.get("bundleId", ""), at=time.time(), signer=now, **signed))
@@ -3252,7 +3427,7 @@ def _install(c):
     if wants_export(c):   # 一款导出成小游戏包 .s2arm + 资源本体原位（两件套）
         return export_s2arm(c, gid)
     c.begin("找签名账号与 iPhone", 1, 6)
-    return push_game(c, gid, phone_for(c))   # 「推到 iPhone」只推这一款，不装壳
+    return push_game(c, gid, push_phone(c))   # 「推到 iPhone」只推这一款，不装壳；别的工具装的 S2Arm 推进它自己的包名（结构 4）
 
 
 def restore_previous(c):

@@ -56,6 +56,7 @@ import ShellUI
     nacp.replaceSubrange(0 ..< 3, with: Data("Old".utf8))
     try fm.createDirectory(at: root.appendingPathComponent("0100000000050000/资源包/ctl"), withIntermediateDirectories: true)
     try nacp.write(to: root.appendingPathComponent("0100000000050000/资源包/ctl/control.nacp"))
+    try Data("sha".utf8).write(to: root.appendingPathComponent("0100000000050000/资源包/.applied"))   // 0.5 App 解开过（没有 0.6 的来源标记）
     var en = Data(count: 16 * 0x300); en.replaceSubrange(0 ..< 3, with: Data("Old".utf8))
     try fm.createDirectory(at: root.appendingPathComponent("0100000000080000/资源包/ctl"), withIntermediateDirectories: true)
     try en.write(to: root.appendingPathComponent("0100000000080000/资源包/ctl/control.nacp"))
@@ -70,6 +71,30 @@ import ShellUI
     let o = Catalogue.load(path: old.path, programRoot: root)
     #expect(o.tiles.map(\.id) == ["0100000000050000", "0100000000060000"], "老容器不额外列只有资源包的 H（实际 \(o.tiles.map(\.id))）")
     #expect(o.tiles.first?.title == "E" && o.tiles.first?.state == .playable, "老容器 App 包里的 E 照旧")
+}
+
+// 「0.5 老款」按来源标记认，不按目录形态（0.6.0 自签走查第 9 条）：期望按规则手写——
+//   A 资源包只有 .applied（0.5 App 解开的）→ 老款；B .applied + .applied_by_shell（这一版解开的，电脑先推了资源、程序还没到）→ 还缺 .s2arm；
+//   C 玩家放的 .img（.imported，已解开）→ 还缺 .s2arm；D 资源包刚放进来、还没解开（什么标记都没有）→ 还缺 .s2arm
+@Test func legacyJudgedBySourceMarks() throws {
+    let fm = FileManager.default
+    let tmp = fm.temporaryDirectory.appendingPathComponent("s2a-legacymark-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: tmp) }
+    let root = tmp.appendingPathComponent("games")
+    let marks: [String: [String]] = ["010000000000A000": [".applied"], "010000000000B000": [".applied", ".applied_by_shell"],
+                                     "010000000000C000": [".applied", ".imported"], "010000000000D000": []]
+    for (id, files) in marks {
+        let pack = root.appendingPathComponent(id).appendingPathComponent("资源包")
+        try fm.createDirectory(at: pack, withIntermediateDirectories: true)
+        for f in files { try Data("sha".utf8).write(to: pack.appendingPathComponent(f)) }
+    }
+    let shell = tmp.appendingPathComponent("shell.json"); try Data(#"{"schema":1,"shell_id":"x","games":[]}"#.utf8).write(to: shell)
+    let c = Catalogue.load(path: shell.path, programRoot: root)
+    let st = Dictionary(uniqueKeysWithValues: c.tiles.map { ($0.id, $0.state) })
+    #expect(st["010000000000A000"] == .needsLegacyUpdate, "A 只有 .applied → 0.5 老款")
+    #expect(st["010000000000B000"] == .needsProgram, "B 这一版解开的 → 还缺 .s2arm")
+    #expect(st["010000000000C000"] == .needsProgram, "C 玩家放的 .img → 还缺 .s2arm（不再说成老款）")
+    #expect(st["010000000000D000"] == .needsProgram, "D 还没解开 → 还缺 .s2arm")
 }
 
 // 只装壳的容器：App 包清单 games 为空、也没有程序包 → 空游戏库，不报「清单读不了」

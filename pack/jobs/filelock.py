@@ -151,6 +151,26 @@ def holder_is_stale(holder, *, current_host=None, windows=None, pid_start=None):
     return created > float(started)
 
 
+def _write_holder(mine, holder, tries=20, pause=0.02):
+    """写旁挂的占锁说明（谁拿着、从什么时候）。它只是给排队的一方看的说明，写不成不能让拿到锁的作业失败：
+    Windows 上排队的一方每 poll 秒读一次这个文件，读的那一刻覆盖（os.replace）会报 WinError 32「另一个程序正在使用此文件」——
+    11-20 v0.6.1 候选 Windows 升级首启：几个作业同时排搬库锁，setup 写说明撞上，整单报「游戏库没建好」。短暂重试几次，仍不成就不写（不抛）"""
+    tmp = mine.with_name(mine.name + '.%d.tmp' % os.getpid())
+    try:
+        tmp.write_text(json.dumps(holder, ensure_ascii=False), encoding='utf-8')
+        for i in range(tries):
+            try:
+                os.replace(tmp, mine)
+                return True
+            except PermissionError:   # WinError 32 / 5：读的一方正开着，稍等再换
+                time.sleep(pause)
+    except OSError:
+        pass
+    with contextlib.suppress(OSError):
+        tmp.unlink()
+    return False
+
+
 @contextlib.contextmanager
 def held(lock, *, wait_s=0.0, holder=None, on_wait=None, poll=0.5, shared=False):
     """拿 lock（Path）：拿不到每 poll 秒再试，最多等 wait_s 秒，期间占锁者变了就调 on_wait(holder, 已等秒数)；到上限抛 Busy。
@@ -178,9 +198,7 @@ def held(lock, *, wait_s=0.0, holder=None, on_wait=None, poll=0.5, shared=False)
                 path.unlink()
         try:
             if holder is not None:
-                tmp = mine.with_name(mine.name + '.%d.tmp' % os.getpid())
-                tmp.write_text(json.dumps(holder, ensure_ascii=False), encoding='utf-8')
-                os.replace(tmp, mine)
+                _write_holder(mine, holder)
             yield
         finally:
             if holder is not None and _read(mine) == holder:

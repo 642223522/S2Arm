@@ -65,7 +65,7 @@ class Parse(unittest.TestCase):
         p = devcert.parse_profile(profile(ents={EVA: None}))
         self.assertEqual(devcert.entitlements(p, "io.s2arm.games.abcde12345"),
                          {"application-identifier": f"{TEAM}.io.s2arm.games.abcde12345", "com.apple.developer.team-identifier": TEAM, "get-task-allow": True, IML: True})
-        # 发布描述文件 get-task-allow 是 false：照它带 false
+        # 签进去的权限照抄描述文件（false 照带 false）；分发描述文件能不能用由 inspect 判（Inspect.test_distribution_profile_blocks）
         p = devcert.parse_profile(profile(ents={"get-task-allow": False}))
         self.assertIs(devcert.entitlements(p, "x")["get-task-allow"], False)
 
@@ -101,6 +101,48 @@ class Inspect(unittest.TestCase):
         r = self.check(profile(certs=(b"other",)))
         self.assertEqual(self.codes(r), (["devcert_mismatch"], []))
 
+    # 三项权限各自的「中文名（技术名）——后果」与给证书发放人的话：手写期望，不从 devcert 里取
+    GTA_LINE = "调试权限（get-task-allow）——没有它任何游戏都打不开"
+    IML_LINE = "提高内存上限（com.apple.developer.kernel.increased-memory-limit）——没有它大游戏可能内存不够、起不来"
+    EVA_LINE = "扩展寻址（com.apple.developer.kernel.extended-virtual-addressing）——没有它大游戏可能地址不够、起不来"
+    UDID = "00000000-000A1B2C3D4E5F60"
+
+    @staticmethod
+    def request(udid):
+        return ("请提供 Apple Development 开发证书（.p12，附密码）和对应的 iOS App Development 开发描述文件。描述文件要求：用显式 App ID（不要通配 *），"
+                f"包含我的设备 UDID：{udid}，并开启以下权限：调试权限（get-task-allow）、提高内存上限（com.apple.developer.kernel.increased-memory-limit）、"
+                "扩展寻址（com.apple.developer.kernel.extended-virtual-addressing）。")
+
+    def test_distribution_profile_blocks(self):
+        # 分发描述文件：get-task-allow 是 false（或干脆没有）、两项内核权限都没有 → 根本签不了；三项全列，给发放人的话带连着的 UDID
+        for gta in (False, None):
+            with self.subTest(get_task_allow=gta):
+                r = self.check(profile(ents={"get-task-allow": gta, IML: None, EVA: None}), udid=self.UDID)
+                self.assertEqual(self.codes(r), (["devcert_distribution"], []))
+                self.assertEqual(r["missingEntitlements"], ["get-task-allow", IML, EVA])
+                self.assertEqual(r["blocking"][0]["text"].split("\n"), [
+                    "这是分发（发布）证书的描述文件，缺下面的权限，S2Arm 0.6 起用它签出来的 App 每款游戏都打不开：",
+                    self.GTA_LINE, self.IML_LINE, self.EVA_LINE,
+                    "可以改用 Apple ID 登录签名，或复制下面这段话发给证书发放人，换成开发证书和开发描述文件后再导入。"])
+                self.assertEqual(r["requestText"], self.request(self.UDID))
+        # 和不配套一起出现：两条都报，不配套在前（导入失败码取第一条）
+        self.assertEqual(self.codes(self.check(profile(certs=(b"other",), ents={"get-task-allow": False}))), (["devcert_mismatch", "devcert_distribution"], []))
+
+    def test_missing_iml_dev_profile_warns(self):
+        # 开发描述文件只缺提高内存上限：照常导入（不 blocking），只列这一项；没连手机 → UDID 写占位、提示玩家自己填
+        r = self.check(profile(ents={IML: None}))
+        self.assertEqual((self.codes(r), r["missingEntitlements"]), (([], ["devcert_entitlements"]), [IML]))
+        self.assertEqual(r["warnings"][0]["text"].split("\n"), [
+            "描述文件缺下面的权限，小游戏照常，大游戏可能起不来：", self.IML_LINE,
+            "可以复制下面这段话发给证书发放人，补开后重新下载描述文件再导入。",
+            "没连着 iPhone：复制后把「<你的设备 UDID>」换成你手机的 UDID。"])
+        self.assertEqual(r["requestText"], self.request("<你的设备 UDID>"))
+
+    def test_complete_dev_profile_clean(self):
+        r = self.check(profile(), udid=self.UDID)
+        self.assertEqual((self.codes(r), r["missingEntitlements"]), (([], []), []))
+        self.assertNotIn("requestText", r)
+
     def test_device_listing(self):
         self.assertEqual(self.codes(self.check(profile(), udid="00000000-FFFFFFFFFFFFFFFF")), ([], ["devcert_device"]))
         r = self.check(profile(all_devices=True), udid="00000000-FFFFFFFFFFFFFFFF")   # 企业描述文件：没有列表，不报不在列
@@ -115,9 +157,8 @@ class Inspect(unittest.TestCase):
     def test_missing_entitlement_named(self):
         r = self.check(profile(ents={EVA: None}))
         self.assertEqual((self.codes(r), r["missingEntitlements"]), (([], ["devcert_entitlements"]), [EVA]))
-        self.assertIn("扩展寻址", r["warnings"][0]["text"])
+        self.assertIn(self.EVA_LINE, r["warnings"][0]["text"])
         self.assertNotIn("提高内存上限", r["warnings"][0]["text"])
-
 
 class Secrets:
     def __init__(self):
@@ -168,6 +209,20 @@ class Operation(unittest.TestCase):
         self.assertEqual(e.exception.code, "devcert_mismatch")
         self.assertEqual(self.sec.d, {SHA1: "pw"})   # 旧证书和密码原样留着
         self.assertEqual(devcert.parse_profile((self.t / "private/devcert/profile.mobileprovision").read_bytes())["DeveloperCertificates"], [DER])
+
+    def test_distribution_import_refused_keeps_previous(self):
+        self.imp()
+        (self.t / "in.mobileprovision").write_bytes(profile(ents={"get-task-allow": False}))
+        with self.assertRaises(Failure) as e:
+            self.imp(password="new")
+        self.assertEqual(e.exception.code, "devcert_distribution")
+        # 缺项和给发放人的话作为机读事实带给前端（导入失败页「复制」用）；导入请求没带设备 → UDID 是占位
+        self.assertEqual(e.exception.facts["missingEntitlements"], ["get-task-allow"])
+        self.assertIn("包含我的设备 UDID：<你的设备 UDID>，", e.exception.facts["requestText"])
+        self.assertEqual(self.sec.d, {SHA1: "pw"})   # 旧证书、密码、描述文件原样留着
+        kept = devcert.parse_profile((self.t / "private/devcert/profile.mobileprovision").read_bytes())
+        self.assertIs(kept["Entitlements"]["get-task-allow"], True)
+        self.assertTrue(devcert.active(self.ctx()))
 
     def test_no_password(self):
         with self.assertRaises(Failure) as e:

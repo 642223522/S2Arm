@@ -1,7 +1,9 @@
 // 命令列表嵌套调用不吃宿主栈（nvn_mtl.m nvn_be_exec 的显式返回栈）：直接包含生产 nvn_mtl.m，在真 Metal 队列上回放手写的记录流，
 //   整个提交跑在一条只有 256 KB 栈的线程上（游戏线程宿主栈是 1 MB；11-12 旷野之息 Mac 嵌套 24 层以上时递归版吃满栈 SIGBUS）。
 //   期望按 NVN 语义手写：① 200 层 CALL 链，最里层把 W 填 0x33，最外层 CALL 之后把 W 拷到 V → V = 0x33（每层返回后接着跑调用方 CALL 之后）
-//   ② 列表调用自己（命令内存被改写成调回自己）：在深度上限处跳过这次调用、不死循环，外层 CALL 之后的「Q 填 0x66」照常执行
+//   ② 列表调用自己（命令内存被改写成调回自己）：第一次自调用就跳过（深度 2、计 1 次，#1728 不再嵌到上限），外层 CALL 之后的「Q 填 0x66」照常执行
+//   ③ 两段成环 A → B → A（#1728 旷野之息 Mac：隔离区旧内容 t 调 Y、Y 又调回 t）：在 B 调回 A 那一层跳过（深度 3、再计 1 次）；B 自己的「R 填 0x77」执行了，
+//     A 里 CALL 之后的「S 填 0x88」照常执行。负对照：去掉调用栈查环，②③ 计数都是 0（停在深度上限）
 //   负对照（11-13）：换回递归版 nvn_be_exec，② 在 256 KB 栈上 SIGBUS（退出码 138，同旷野之息现场）；① 递归版也能过（这条路径每层帧小），① 只证明返回顺序对
 #include "../gfx/nvn/nvn_mtl.m"
 #include <pthread.h>
@@ -15,8 +17,8 @@ static void copy(stream *s, const uint8_t *src, uint8_t *dst, uint64_t n) { uint
 static void call(stream *s, const stream *t) { uint64_t p = (uint64_t)(uintptr_t)t->b; put(s, OP_CALL, &p, 8); }
 static void end(stream *s) { put(s, OP_END, NULL, 0); }
 #define DEPTH 200   // 上限 CALL_DEPTH_MAX 256 以内
-static stream g_chain[DEPTH], g_top, g_loop, g_top2;
-static uint8_t *W, *V, *P, *Q;
+static stream g_chain[DEPTH], g_top, g_loop, g_top2, g_a, g_b, g_top3;
+static uint8_t *W, *V, *P, *Q, *BR, *AS;
 static void *run(void *arg) { (void)arg; @autoreleasepool {
     static queue_t QA; uint64_t frame = 1;
     // ① 200 层：chain[i] 调 chain[i+1]，最里层填 W
@@ -28,20 +30,31 @@ static void *run(void *arg) { (void)arg; @autoreleasepool {
     g_loop.n = 0; fill(&g_loop, P, 4096, 0x55555555u); call(&g_loop, &g_loop); end(&g_loop);
     g_top2.n = 0; call(&g_top2, &g_loop); fill(&g_top2, Q, 4096, 0x66666666u); end(&g_top2);
     h = (uint64_t)(uintptr_t)g_top2.b; nvn_be_set_frame(++frame); nvn_be_submit(&QA, &h, 1);
-    VERIFY(nvn_be_wait(nvn_be_last_fence(), 5000000000ull), "② 成环的调用在深度上限处停下，提交完成（不死循环）");
+    VERIFY(nvn_be_wait(nvn_be_last_fence(), 5000000000ull), "② 成环的调用停下，提交完成（不死循环）");
+    VERIFY(g_call_cycle_n == 1 && g_call_cycle_depth == 2, "② 自调用第一次就跳过：计 %llu 次（期望 1）、深度 %d（期望 2：top2 → loop → 这次 loop）", (unsigned long long)g_call_cycle_n, g_call_cycle_depth);
+    // ③ A = 「调 B → S 填 0x88 → 结束」；B = 「R 填 0x77 → 调 A → 结束」；top3 = 「调 A → 结束」
+    g_a.n = 0; call(&g_a, &g_b); fill(&g_a, AS, 4096, 0x88888888u); end(&g_a);
+    g_b.n = 0; fill(&g_b, BR, 4096, 0x77777777u); call(&g_b, &g_a); end(&g_b);
+    g_top3.n = 0; call(&g_top3, &g_a); end(&g_top3);
+    h = (uint64_t)(uintptr_t)g_top3.b; nvn_be_set_frame(++frame); nvn_be_submit(&QA, &h, 1);
+    VERIFY(nvn_be_wait(nvn_be_last_fence(), 5000000000ull), "③ A → B → A 提交完成");
+    VERIFY(g_call_cycle_n == 2 && g_call_cycle_depth == 3, "③ B 调回 A 那一层跳过：累计 %llu 次（期望 2）、深度 %d（期望 3：top3 → A → B → 这次 A）", (unsigned long long)g_call_cycle_n, g_call_cycle_depth);
     return NULL; } }
 int main(void) { @autoreleasepool {
     setvbuf(stdout, NULL, _IOLBF, 0); alarm(120);
     setenv("DM_PRESENT_LINK", "0", 1);
     mtl_init(); state_reset();
     uint8_t *pool = NULL; REQUIRE(!posix_memalign((void **)&pool, 65536, 1 << 20)); memset(pool, 0, 1 << 20); nvn_be_pool_add(pool, 1 << 20);
-    W = pool; V = pool + 4096; P = pool + 8192; Q = pool + 12288; memset(V, 0x11, 4096); memset(Q, 0x11, 4096);
+    W = pool; V = pool + 4096; P = pool + 8192; Q = pool + 12288; BR = pool + 16384; AS = pool + 20480; memset(V, 0x11, 4096); memset(Q, 0x11, 4096); memset(BR, 0x11, 4096); memset(AS, 0x11, 4096);
     pthread_attr_t a; pthread_attr_init(&a); REQUIRE(!pthread_attr_setstacksize(&a, 256 << 10));
     pthread_t t; REQUIRE(!pthread_create(&t, &a, run, NULL)); pthread_join(t, NULL);
     int v_ok = 1, q_ok = 1; for (int i = 0; i < 4096; i++) { v_ok &= V[i] == 0x33; q_ok &= Q[i] == 0x66; }
     VERIFY(v_ok, "① 最里层的填写经 200 层返回后被最外层 CALL 之后的拷贝读到：V = 0x33");
     VERIFY(P[0] == 0x55, "② 成环列表本身的命令执行了：P = 0x55");
     VERIFY(q_ok, "② 成环调用被跳过后，外层 CALL 之后的命令照常执行：Q = 0x66");
+    int r_ok = 1, s_ok = 1; for (int i = 0; i < 4096; i++) { r_ok &= BR[i] == 0x77; s_ok &= AS[i] == 0x88; }
+    VERIFY(r_ok, "③ B 自己的命令执行了：R = 0x77");
+    VERIFY(s_ok, "③ A 里 CALL 之后的命令照常执行：S = 0x88");
     printf("%s t_nvn_call_depth：%u 项，不符 %u\n", failures ? "✗" : "✓", checks, failures);
     return failures ? 1 : 0;
 } }

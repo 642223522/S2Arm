@@ -89,6 +89,8 @@ int rp_pass_begin(nvn_gpu_cmd c) {
 void rp_pass_flush(nvn_gpu_cmd c) { if (pass_open) { nvn_gpu_pass_end(c); pass_open = 0; } }
 nvn_gpu_cmd rp_xfer_cmd(uint64_t *last) { if (pass_open) xfer_after_pass++; rp_pass_flush(active_cmd); if (last) *last = 1; return active_cmd; }
 void rp_buf_reset(void);
+void rp_buf_pool_gone(const void *mem);
+static void *pool_gone_thread(void *mem) { rp_buf_pool_gone(mem); return NULL; }   // 游戏的别的线程销毁池（MapVirtual 改 run / MemoryPoolFinalize 最终都走 nvn_be_pool_del → rp_buf_pool_gone）
 
 int main(int argc, char **argv) {
     if (argc != 2) return 2;
@@ -109,7 +111,8 @@ int main(int argc, char **argv) {
     target_tex.d.width = target_tex.d.height = 4; target_tex.d.depth = target_tex.d.levels = 1; target_tex.serial = 7;
     memset(&target, 0, sizeof target); target.n = 1; target.color[0] = &target_tex;
     const uint32_t values[4] = {0x02030405u, 0x06070809u, 0x0a0b0c0du, 0x0e0f1011u};
-    memcpy(guest + 256, values, sizeof values); memset(&pool, 0, sizeof pool); pool.mem = guest; pool.size = sizeof guest;
+    memcpy(guest + 256, values, sizeof values); memset(guest + 512, 0xa5, 16);   // +512 的 16 字节：回放窗口那一段用例从镜像里拷出来核对
+    memset(&pool, 0, sizeof pool); pool.mem = guest; pool.size = sizeof guest;
     memset(&buffer_tex, 0, sizeof buffer_tex); buffer_tex.magic = MAGIC('T','E','X','T'); buffer_tex.serial = 88;
     buffer_tex.d.target = NVN_TEXTURE_TARGET_BUFFER; buffer_tex.d.format = NVN_FORMAT_R32UI; buffer_tex.d.width = 4;
     buffer_tex.pool = &pool; buffer_tex.off = 256; buffer_tex.mem = guest + 256;
@@ -118,6 +121,7 @@ int main(int argc, char **argv) {
     rp_draw(active_cmd, &draw, NULL, &draw);
     const uint32_t updated[4] = {0x03040506u, 0x0708090au, 0x0b0c0d0eu, 0x0f101112u};
     memcpy(guest + 256, updated, sizeof updated);
+    rp_write_note((uint64_t)(uintptr_t)(guest + 256), sizeof updated);   // 本夹具的池不受写跟踪（nvn_dirty_span 恒空）：同一次提交里第二次解析只认回放自己登记的写（等同按序的 OP_UPDATE_UB），裸写游戏内存不再重读
     rp_draw(active_cmd, &draw, NULL, &draw);
     uint64_t drawn = 0, skipped = 0; rp_draw_stats(&drawn, &skipped);
     CHECK(drawn == 2 && skipped == 0, "two TBUF draws without skips");
@@ -131,6 +135,23 @@ int main(int argc, char **argv) {
         for (int i = 0; i < 16; i++) { const uint8_t *p = buf_cpu(rb) + i * 4;
             CHECK(!memcmp(p, expected, 4), "TBUF pixel %d: %u,%u,%u,%u expected 9,13,4,255", i, p[0], p[1], p[2], p[3]); }
     } else nvn_gpu_cmd_abort(active_cmd);
+    // 回放窗口：游戏的别的线程在提交回放中途销毁池，回放线程手里已取到的镜像缓冲照常录制得了。
+    // 真后端的 cmd_ref 把「release 之后再录制」当契约违规整段失败：「release 之后仍在使用句柄（buf …，录制于 …）」（真机 3D 那款标题的长局里出现过，时间线进失败终态，读数见 PR）。
+    if (drawn == 2) {
+        nvn_gpu_buf mb = NULL; uint64_t moff = 0; pthread_t th;
+        active_cmd = begin_cmd(); pass_open = 0;
+        rp_buf_hold_begin();
+        CHECK(rp_buf_resolve(active_cmd, (uint64_t)(uintptr_t)guest + 512, 16, &mb, &moff) && mb, "window: resolve the pool mirror");
+        CHECK(pthread_create(&th, NULL, pool_gone_thread, guest) == 0, "window: create the destroying thread"); pthread_join(th, NULL);
+        if (mb) nvn_gpu_copy_buf(active_cmd, mb, moff, rb, 0, 16);   // 回放线程此刻才录制它
+        nvn_gpu_err e = {0}; nvn_gpu_rc rc = nvn_gpu_cmd_commit(active_cmd, 2, on_done, NULL, &e);
+        CHECK(OK(rc), "window: commit after the pool was destroyed by another thread: %d %s", rc.code, e.why);
+        rp_buf_hold_end();
+        if (OK(rc)) {
+            rc = nvn_gpu_fence_wait(2, 5000000000ull, &e); CHECK(OK(rc), "window wait: %d %s", rc.code, e.why);
+            for (int i = 0; i < 16; i++) CHECK(buf_cpu(rb)[i] == 0xa5, "window copy byte %d: %02x expected a5", i, buf_cpu(rb)[i]);
+        }
+    }
     rp_buf_reset(); nvn_gpu_shader_release(prog.sh[0]); nvn_gpu_shader_release(prog.sh[1]); free(vsm); free(fsm);
     nvn_gpu_view_release(target_view); nvn_gpu_tex_release(output); nvn_gpu_buf_release(rb, NULL, NULL);
     nvn_gpu_err err = {0}; CHECK(OK(nvn_gpu_close(5000000000ull, &err)), "close session"); s2a_vk_device_destroy(&g_dev, 1);

@@ -583,6 +583,47 @@ nonisolated(unsafe) private var lastPlayed = ""
     #expect(state?.explanation.hasPrefix(why + "\n") == true)
 }
 
+// 联机设置是 App 全局偏好，供 ios/settings.m 在 App 启动时读取；未设置时保持原有自动联机行为。
+@MainActor @Test func shellLdnSettingsPersistAndExposeConditionalRows() throws {
+    let defaults = UserDefaults.standard
+    let keys = [ShellSettingsStore.ldnModeKey, ShellSettingsStore.ldnHostKey, ShellSettingsStore.ldnAddressKey]
+    let previous = Dictionary(uniqueKeysWithValues: keys.map { ($0, defaults.object(forKey: $0)) })
+    defer {
+        for (key, value) in previous {
+            if let value { defaults.set(value, forKey: key) } else { defaults.removeObject(forKey: key) }
+        }
+    }
+    keys.forEach(defaults.removeObject(forKey:))
+    let store = ShellSettingsStore()
+    #expect(store.ldnMode == "auto")
+    #expect(store.ldnHost == false)
+    #expect(store.ldnAddress.isEmpty)
+    #expect(ShellSettingsRows.ldnModeRow(store).value == "auto")
+    #expect(ShellSettingsRows.ldnHostRow(store) == nil)
+    #expect(!ShellSettingsRows.showsLdnAddress(store))
+
+    ShellSettingsRows.apply(ShellSettingsRows.ldnMode, value: "manual", to: store)
+    #expect(defaults.string(forKey: ShellSettingsStore.ldnModeKey) == "manual")
+    #expect(ShellSettingsRows.ldnHostRow(store)?.value == "0")
+    #expect(ShellSettingsRows.showsLdnAddress(store))
+    ShellSettingsRows.apply(ShellSettingsRows.ldnHost, value: "1", to: store)
+    #expect(defaults.bool(forKey: ShellSettingsStore.ldnHostKey))
+    #expect(!ShellSettingsRows.showsLdnAddress(store))
+    ShellSettingsRows.apply(ShellSettingsRows.ldnHost, value: "0", to: store)
+    ShellSettingsRows.apply(ShellSettingsRows.ldnAddress, value: "192.168.1.42", to: store)
+    #expect(store.ldnAddress == "192.168.1.42")
+    ShellSettingsRows.apply(ShellSettingsRows.ldnMode, value: "invalid", to: store)
+    #expect(store.ldnMode == "manual")
+    #expect(ShellSettingsStore().ldnAddress == "192.168.1.42")
+    ShellSettingsRows.apply(ShellSettingsRows.ldnMode, value: "auto", to: store)
+    #expect(store.ldnMode == "auto")
+    #expect(defaults.object(forKey: ShellSettingsStore.ldnModeKey) == nil)
+    #expect(ShellSettingsRows.ldnHostRow(store) == nil)
+    #expect(!ShellSettingsRows.showsLdnAddress(store))
+    defaults.set("invalid", forKey: ShellSettingsStore.ldnModeKey)
+    #expect(store.ldnMode == "auto")
+}
+
 // 共享表 app scope 的规范 id，与原生 / 设置 App 共用；旧键只迁移一次。
 @MainActor @Test func playSettingsCanonicalMigration() throws {
     let suite = "s2a.test.play." + UUID().uuidString

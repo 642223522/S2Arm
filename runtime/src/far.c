@@ -22,6 +22,7 @@ static uint64_t g_lin;   // 线性影子基址（0 = 分块）：影子 = g_lin 
 static uint64_t g_ov_used;   // 堆区装不下后从宿主任意空闲地址分的影子（目录存的是每块差值，影子块放哪都成立；不占堆区，不影响 s2a_far_floor）
 __attribute__((weak)) uint64_t s2a_mem_heap_end(void) { return 0; }   // svc_mem.c；只链本文件的单测没有堆
 __attribute__((weak)) int s2a_guest_map_fixed(uint64_t a, uint64_t len) { (void)a; (void)len; return 1; }   // vawin.c：线性影子块走文件后备（1 = 没开文件后备）
+__attribute__((weak)) void s2a_guest_commit(uint64_t a, uint64_t len) { (void)a; (void)len; }   // vawin.c：堆区影子在窗口里，放开前按块定后备（文件后备溢出模式）；窗口外的不管
 // 每 2 MiB 游戏块一项「影子 − 游戏」的差值：0 = 没分块（影子在窗口前段、远端在窗口之外，差值不可能为 0）。
 //   改写器的翻译跳板（runtime/rewriter，S2A_FAR_TSV 列的点）与缺页代执行查同一张表：s2a_far_desc = {远端起点, 目录}
 static _Atomic int64_t *g_dir;
@@ -176,6 +177,7 @@ int s2a_far_map(uint64_t a, uint64_t n) {
     far_run *rv = NULL; int rm = 0;   // 已分块里的页：先记原保护，再逐段放开；中途放不开退回已改的段
     if (old_runs(a, n, &rv, &rm)) { pthread_mutex_unlock(&g_mu); LOG("【红】远端：取不到已分块影子页的原保护（游戏 %#llx +%#llx），不改", (unsigned long long)a, (unsigned long long)n); return -1; }
     for (int r = 0; r < rm; r++) {
+        if (rv[r].prot != (PROT_READ | PROT_WRITE)) s2a_guest_commit(rv[r].h, rv[r].n);   // 还回过的影子页（窗口里的块多半已定，不加锁直接回）
         if (rv[r].prot == (PROT_READ | PROT_WRITE) || !mprotect((void *)(uintptr_t)rv[r].h, rv[r].n, PROT_READ | PROT_WRITE)) continue;
         int e = errno; runs_undo(rv, r); free(rv); pthread_mutex_unlock(&g_mu);
         LOG("【红】远端：已分块影子页放不开（游戏 %#llx +%#llx，errno=%d），已改的 %d 段退回原保护", (unsigned long long)a, (unsigned long long)n, e, r);
@@ -208,6 +210,7 @@ int s2a_far_map(uint64_t a, uint64_t n) {
         for (uint64_t i = i0, j = 0; i <= i1; i++) {   // 新块里请求覆盖的页（块内连续）
             if (atomic_load(&g_dir[i])) continue;
             uint64_t cb = g_lo + i * CHUNK, lo = a > cb ? a : cb, hi = a + n < cb + CHUNK ? a + n : cb + CHUNK;
+            if (!ov) s2a_guest_commit(at + j * CHUNK + (lo - cb), hi - lo);   // 堆区影子在窗口里（宿主任意地址分的那种已按文件后备映射，见上）
             if (mprotect((void *)(uintptr_t)(at + j++ * CHUNK + (lo - cb)), hi - lo, PROT_READ | PROT_WRITE)) {
                 int e = errno;
                 if (ov) { munmap((void *)(uintptr_t)at, k * CHUNK); g_ov_used -= k * CHUNK; }
@@ -233,8 +236,15 @@ void s2a_far_release(uint64_t a, uint64_t n) {
 typedef struct { _Atomic uint64_t pc; _Atomic uint64_t n; _Atomic uint32_t cls; _Atomic uint32_t fail; } site_t;
 static site_t g_site[NSLOT];
 static _Atomic uint64_t g_faults, g_emul, g_skip, g_nsite, g_full, g_fail, g_cls_fail[10];
+uint64_t s2a_far_faults_total(void) { return atomic_load(&g_faults); }
 // 逐秒账（#442 / D-DX74：Mac 大款玩久了内存池落进远端后掉到个位数帧，「慢在缺页代执行」要有直接读数）：远端开着就每秒醒一次，
 //   这一秒有缺页才打一行（游戏没碰远端时不出行，日志不涨）；和 [longframe] / 心跳同在一份日志里按时间对齐看。S2A_FAR_TICK=0 关
+// 逐秒账已结算到的累计缺页数（每秒醒来记账后存）：单测读口，等它追上 s2a_far_faults_total 再判，不按墙钟对齐秒边界（11-19：原先静 1.2 秒 / 等 2.2 秒，
+//   负载高时醒得晚、前面的缺页混进来或 5 次读跨两秒 → 行数不对 → 假红）。只读，行为不变
+static _Atomic uint64_t g_tick_seen, g_tick_n;   // g_tick_n：醒了几次（每秒一次，有没有缺页都算）
+uint64_t s2a_far_tick_seen(void); uint64_t s2a_far_faults_total(void); uint64_t s2a_far_tick_n(void);
+uint64_t s2a_far_tick_seen(void) { return atomic_load(&g_tick_seen); }
+uint64_t s2a_far_tick_n(void) { return atomic_load(&g_tick_n); }
 static void *far_tick(void *arg) {
     (void)arg; pthread_setname_np("s2a-far-tick");
     uint64_t pf = 0, pe = 0, ps = 0, pfl = 0, pn = 0, sec = 0;
@@ -244,7 +254,7 @@ static void *far_tick(void *arg) {
         if (f != pf)
             LOG("远端每秒 第 %llu 秒：缺页 %llu、代执行 %llu、跳过 %llu、失败 %llu、新访存点 %llu（累计缺页 %llu、访存点 %llu）", (unsigned long long)sec,
                 (unsigned long long)(f - pf), (unsigned long long)(e - pe), (unsigned long long)(s - ps), (unsigned long long)(fl - pfl), (unsigned long long)(n - pn), (unsigned long long)f, (unsigned long long)n);
-        pf = f; pe = e; ps = s; pfl = fl; pn = n;
+        pf = f; pe = e; ps = s; pfl = fl; pn = n; atomic_store(&g_tick_seen, f); atomic_fetch_add(&g_tick_n, 1);
     }
     return NULL;
 }
@@ -311,7 +321,7 @@ static int far_atomic(_STRUCT_ARM_THREAD_STATE64 *ss, uint32_t i, uint64_t delta
             uint64_t e = (uint64_t)g_mon[k].val; int ok = g_mon[k].len == n && g_mon[k].addr == ea && cas_n(h, n, &e, rx(ss, Rt));
             g_mon[k].len = 0; wx(ss, Rs, ok ? 0 : 1); return 1;
         }
-        if (!o2 && o1 && Rt2 != 31 && size >= 2) {   // LDXP / LDAXP / STXP / STLXP（每个寄存器 4 / 8 字节）
+        if (!o2 && o1 && size >= 2) {   // LDXP / LDAXP / STXP / STLXP（每个寄存器 4 / 8 字节）；第二个寄存器可以是 xzr（写 0）。与 CASP 的区分靠位 31（CASP 恒 0、独占对恒 1），不靠 Rt2
             int k = mon_slot((uintptr_t)pthread_self()); unsigned e1 = size == 3 ? 8 : 4; if (k < 0) return 0;
             if (L) { unsigned __int128 v = size == 3 ? __atomic_load_n((unsigned __int128 *)h, __ATOMIC_SEQ_CST) : __atomic_load_n((uint64_t *)h, __ATOMIC_SEQ_CST);
                 g_mon[k].addr = ea; g_mon[k].len = 2 * e1; g_mon[k].val = v;

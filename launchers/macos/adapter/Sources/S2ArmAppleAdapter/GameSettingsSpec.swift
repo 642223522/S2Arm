@@ -9,7 +9,7 @@ public struct GameSettingItem: Equatable, Identifiable {
         public func detail(_ language: String) -> String? { (note[language] ?? note["zh-Hans"]).flatMap { $0.isEmpty ? nil : $0 } }
     }
     public let id: String
-    /// bool / choice / patches / page
+    /// bool / choice / text / patches / page
     public let type: String
     /// display / controls / other
     public let group: String

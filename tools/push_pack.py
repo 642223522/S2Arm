@@ -106,6 +106,9 @@ STALE = re.compile(r"\d+_\d{3}\.tar")
 EXE = "s2a-devpush.exe" if os.name == "nt" else "s2a-devpush"
 
 
+NOT_FOUND = "找不到设备"   # s2a-devpush 的原话（pack/devpush/src/main.rs：usbmuxd 列不出这台 / 连不上 usbmuxd）  # 非玩家句
+
+
 class Fail(Exception):
     """推包失败：reason 是给调用方 fin / 启动器看的一句话"""
 
@@ -202,9 +205,15 @@ class Devpush:
         rc, _ = self.call("get", rel, dst)
         return rc == 0 and Path(dst).is_file()
 
+    fallback = None   # Mac：usbmuxd 看不到这台（s2a-devpush「找不到设备」）时整份改走的另一条路 (src, rel) → None（install.MacPhone.client 给 devicectl）
+
     def put(self, src, rel):
         rc, out = self.call("put", src, rel)
         if rc and DENIED in out: rc, out = self.rewrite(src, rel, out)
+        if rc and self.fallback and NOT_FOUND in out:   # #1756：手机在 devicectl 那边连着、usbmuxd 那一刻列不出（无线隧道 / 间歇断开），推 .s2arm 次次失败
+            with open(self.work / "devpush.log", "a", encoding="utf-8") as f:
+                f.write(f"[{time.strftime('%H:%M:%S')}] put {rel}：s2a-devpush 找不到设备，改走 devicectl\n")
+            return self.fallback(src, rel)
         if rc:
             raise Fail(f"资源包写进 iPhone 时中断（{out.splitlines()[-1] if out else f'退出码 {rc}'}）：确认手机解锁、数据线插稳后再点一次")   # 哪个文件写进 devpush.log
 

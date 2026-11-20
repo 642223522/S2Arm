@@ -73,7 +73,7 @@ public enum BackendText {
     ///   App 开着时包被挪走 / 删掉（拖进「应用程序」、更新换包的空档），首次显示某句报错才去读文件会读不到而停
     ///   （0.5.1 欢迎页崩溃）。资源真缺仍在这里当场停，装包错误照旧不放过
     public static func preload() {
-        _ = entries; _ = english; _ = chinese; _ = forward; _ = reverse; _ = launcherItems
+        _ = entries; _ = english; _ = chinese; _ = forward; _ = reverse; _ = launcherItems; _ = installLandingActions
         let resources = (try? resourceBundle().resourceURL) ?? nil
         let names = resources.flatMap { try? FileManager.default.contentsOfDirectory(atPath: $0.path) } ?? []
         for name in names where name.hasPrefix("l10n.") && name.hasSuffix(".json") {
@@ -90,6 +90,15 @@ public enum BackendText {
         guard let item = launcherItems[id] else { return "[\(id)]" }
         return overlay(language).launcher[id] ?? item[language] ?? item[fallback(language)] ?? item["en"] ?? "[\(id)]"
     }
+
+    /// 装机前清单按钮落点的动作表（共享规格 install_landing.actions，Windows SharedText.InstallActionLabel 同一处）：动作名 → 按钮文案键；
+    ///   值为 nil = 表里写 null（这一端自画文案）。不在表里的动作不画按钮、不派发（两端不另写一份动作表）
+    public static let installLandingActions: [String: String?] = {
+        guard let data = try? Data(contentsOf: experienceURL()),
+              let spec = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let actions = (spec["install_landing"] as? [String: Any])?["actions"] as? [String: Any] else { return [:] }
+        return actions.mapValues { $0 as? String }
+    }()
 
     /// 报错页统一的一句「故障报修」指引（11-13）：文字只在共享规格 report.hint 一处，{button} 换成顶栏按钮名 report.button（Windows SharedText.ReportHint 同一取法）
     public static func reportHint(language: String) -> String {
@@ -121,6 +130,20 @@ public enum BackendText {
         return Dictionary(items.compactMap { item in
             guard let code = item["code"] as? String, let accept = item["accept"] as? String, item["accept_ui"] == nil else { return nil }
             return (code, accept)
+        }, uniquingKeysWith: { first, _ in first })
+    }()
+
+    /// 确认页上与「仍然继续」并列的另一条路 = errors 各码的 alternate（自签走查结构 7：新建证书确认可「改用已有证书」）：
+    ///   码 → (action：装机前清单动作表 install_landing.actions 里的动作名，点了走同一个派发、不重发；labelKey：按钮文案键)
+    public static let confirmAlternates: [String: (action: String, labelKey: String)] = {
+        guard let data = try? Data(contentsOf: experienceURL()),
+              let spec = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let errors = spec["errors"] as? [String: Any],
+              let items = errors["items"] as? [[String: Any]] else { return [:] }
+        return Dictionary(items.compactMap { item in
+            guard let code = item["code"] as? String, let alt = item["alternate"] as? [String: Any],
+                  let action = alt["action"] as? String, let label = alt["label"] as? String else { return nil }
+            return (code, (action: action, labelKey: label))
         }, uniquingKeysWith: { first, _ in first })
     }()
 

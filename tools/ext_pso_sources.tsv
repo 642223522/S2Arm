@@ -1,9 +1,34 @@
 # 外部公开着色器 / 管线清单来源（tools/ext_pso_collect.py 读）：只收公开许可、只含标识与管线描述的清单，含游戏代码或资源的文件不收。
-# 来源行：来源	名字	仓库	许可	格式（nxnative = dm/games/<程序号>/pso_manifest.tsv，与我方种子表同格式；mng = games/<目录>/assets/shader_list.tsv）
+# 来源行：来源	名字	仓库	许可	格式（nxnative = 仓库里任意位置的 <程序号>/pso_manifest.tsv 或首行带 game=<程序号> 的清单，与我方种子表同格式；
+#   mng = games/<目录>/assets/shader_list.tsv，外加同仓库里 nxnative 格式的那些）
+# 入选（11-20）：MIT（或同等宽松许可，读 LICENSE 原文定）、只含键与管线描述、对已收来源有增量；GPL / 没有许可的不收。按表中先后跨来源去重：后面的来源只留前面没有的行
+#   普查与证据：维护方私有的上游普查报告（11-20，按款列出各来源独有行数）
 # 映射行（mng 格式的目录名 → 程序号；登记不到的目录不收）：映射	名字	目录	程序号
 # NOTICE「着色器清单数据」按这里的来源署名；改这张表同笔改 NOTICE
 来源	nxnative	https://github.com/seedds/nxnative	MIT	nxnative
 来源	macnativegames	https://github.com/ly05010419/MacNativeGames	MIT	mng
+来源	hermit	https://github.com/azmasm/hermit	MIT	nxnative
+来源	plumber_racer_2	https://github.com/cheemu21/plumber-racer-2	MIT	nxnative
+来源	nxnative_easy	https://github.com/nalancer08/nxnative-easy	MIT	nxnative
+来源	kartnative	https://github.com/pahorema/kartnative	MIT	nxnative
+来源	ouncenative	https://github.com/kirakira-dev/OunceNative	MIT	nxnative
+来源	aethernx	https://github.com/iCosiSenpai/AetherNX	MIT	nxnative
+来源	ffr_on_mac	https://github.com/DeDao2333/ffr-on-mac	MIT	nxnative
+来源	oot_framegen	https://github.com/pedroohaubert/nxnative-oot-framegen	MIT	nxnative
+来源	jhoisaac	https://github.com/Jhoisaac/nxnative	MIT	nxnative
+来源	no_lag_kart	https://github.com/kingbumi31/no-lag-kart	MIT	nxnative
+来源	userderezzed	https://github.com/UserDerezzed/nxnative	MIT	nxnative
+来源	khalilgharbaoui	https://github.com/khalilgharbaoui/nxnative-ultimate	MIT	nxnative
+来源	aeonitis	https://github.com/Aeonitis/nxnative	MIT	nxnative
+来源	amateurwizrd	https://github.com/AmateurWizrd/nxnative	MIT	nxnative
+来源	aznracer	https://github.com/Aznracer/Mighty-Green-Kokiri-Kid	MIT	nxnative
+来源	ednofedulo	https://github.com/ednofedulo/kid-with-sword-remake	MIT	nxnative
+来源	kid_with_sword	https://github.com/cheemu21/kid-with-sword-remake	MIT	nxnative
+来源	idams	https://github.com/iDams/nxnative	MIT	nxnative
+来源	mizukico	https://github.com/mizukico/nxnative	MIT	nxnative
+来源	yubismartlabs	https://github.com/yubismartlabs/nxnative	MIT	nxnative
+来源	borischubiryaev	https://github.com/BorisChubiryaev/nxnative	MIT	nxnative
+来源	forbesfields	https://github.com/forbesfields/nxnative	MIT	nxnative
 映射	macnativegames	botw	01007EF00011E000
 映射	macnativegames	dkb	040074A01BF12000
 映射	macnativegames	dread	010093801237C000
@@ -16,3 +41,5 @@
 映射	macnativegames	ssbu	01006A800016E000
 映射	macnativegames	totk	0100F2C0115B6000
 映射	macnativegames	wonder	010015100B514000
+映射	macnativegames	mvdk	0100B99019412000
+映射	macnativegames	tmnt	0100FE701475A000

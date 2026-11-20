@@ -47,7 +47,8 @@ struct WelcomeView: View {
         let hasXcode = xcode?.ok == true || firstLaunch
         let xcodeState: Tool.State = firstLaunch ? .needs(metal!) : (xcode.map { $0.ok ? .ok : .needs($0) } ?? .waiting)
         let metalState: Tool.State = !hasXcode || firstLaunch ? .waiting : (metal.map { $0.ok ? .ok : .needs($0) } ?? .waiting)
-        let appleState: Tool.State = !hasXcode || firstLaunch ? .waiting : (check("apple_team").map { $0.ok ? .ok : .needs($0) } ?? .waiting)
+        // 用自己的开发者证书时作业层不出 apple_team（推到 iPhone 不用 Apple ID）：查过了却没有这一项 = 不用做
+        let appleState: Tool.State = !hasXcode || firstLaunch ? .waiting : (check("apple_team").map { $0.ok ? .ok : .needs($0) } ?? (model.checks.isEmpty ? .waiting : .ok))
         let iosState: Tool.State = !hasXcode || firstLaunch ? .waiting : (ios.map { $0.ok ? .ok : .needs($0) } ?? .waiting)
         return [
             Tool(id: "xcode", symbol: "hammer", name: w("tool.xcode.name"), what: w(firstLaunch ? "tool.xcode.open" : "tool.xcode.what"),
@@ -240,7 +241,6 @@ struct WelcomeView: View {
                         Text(tool.meta).font(.manrope(12)).foregroundStyle(Color.white.opacity(0.58))
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    if tool.id == "apple", case .needs(let c) = tool.state { appleGuide(pending: c.code == "xcode_team_pending") }
                     if let job = downloading(tool) { InlineProgress(session: job).padding(.top, 8) }
                     if let failed = failure(of: tool) {
                         Text(loc.backend(failed)).font(.manrope(12.5)).foregroundStyle(LauncherPalette.danger).fixedSize(horizontal: false, vertical: true).padding(.top, 4)
@@ -267,7 +267,9 @@ struct WelcomeView: View {
                     .disabled(model.session?.phase == .stopping)
             } else if tool.id == "apple" {
                 VStack(alignment: .leading, spacing: 8) {
-                    repairButton(c, primary: false)
+                    // 0.6.0 Mac 推到 iPhone 的 Apple ID 在 S2Arm 里登录（作业层 apple_team 只给 appleLogin）：直接开登录面板，不讲 Xcode 步骤
+                    Button(BackendText.launcherText("install.login.open", language: language)) { model.openAppleLogin(host: "main") }
+                        .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("welcome.appleLogin")
                     Button(loc.t("s2arm.env.recheck")) { model.checkEnvironment() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(model.checking)
                 }
             } else if model.repairQueue.contains(c) {
@@ -276,21 +278,6 @@ struct WelcomeView: View {
                 repairButton(c, primary: tool.id == primaryToolID)
             }
         }
-    }
-
-    /// 登录 Apple ID 的分步指引（判据是团队号出现，所以最后一步是等团队列表）。
-    private func appleGuide(pending: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if pending { Text(w("tool.apple.pending")).font(.manrope(12.5, .semibold)).foregroundStyle(LauncherPalette.building).fixedSize(horizontal: false, vertical: true) }
-            ForEach(1...4, id: \.self) { n in
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text("\(n)").font(.manrope(12, .bold)).monospacedDigit().foregroundStyle(LauncherPalette.cream).frame(width: 12)
-                    Text(w("tool.apple.step\(n)")).font(.manrope(12.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            Text(w("tool.apple.note")).font(.manrope(12)).foregroundStyle(Color.white.opacity(0.58)).fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(.top, 6)
     }
 
     private func downloading(_ tool: Tool) -> JobSession? {

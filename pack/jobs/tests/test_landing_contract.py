@@ -22,14 +22,10 @@ from test_win_jobs import FakeW  # noqa: E402
 ROOT = Path(__file__).resolve().parents[3]
 TABLE = json.loads((ROOT / "launchers/shared/experience.v1.json").read_text(encoding="utf-8"))["install_landing"]
 FIXTURE = ROOT / "launchers/windows/launcher/UI.Snapshots/landing_items.json"
-# Mac 清单里还没接落点的项（fix/mac-appleid-login-ui 接：package / appleId / connected / trusted / developerMode）。那支合入时删掉这个集合
-MAC_PENDING = {"package", "appleId", "connected", "trusted", "developerMode"}
-
-
-def violations(items, platform, pending=frozenset()):
+def violations(items, platform):
     table, bad = TABLE["items"][platform], []
     for i in items:
-        if i["ok"] or i.get("waiting") or i["id"] in pending:
+        if i["ok"] or i.get("waiting"):
             continue
         iid, act, url = i["id"], i.get("action"), i.get("url")
         if iid not in table:
@@ -111,7 +107,20 @@ class Mac(unittest.TestCase):
         with patch.object(devcert, "summary", lambda c, udid=None: dict(bad_cert, udid=udid)):
             r, it = self._ready([dict(self._dev(), hardwareProperties=dict(self._dev()["hardwareProperties"], udid="U1"))])
         self.assertIn("devcert", it); self.assertIn("devcertDevice", it)
-        self.assertEqual(violations(r["items"], "mac", pending=MAC_PENDING), [])
+        self.assertEqual(violations(r["items"], "mac"), [])
+
+    def test_main_items_follow_table(self):
+        """Apple ID 签名的清单（不用证书）按表全量核：没出包 / 没登录 / 没连 → 没信任 → 没开开发者模式，三个场景盖住 Mac 每一项"""
+        gid = "0100535012974000"; self.c.r.update(gameId=gid)
+        scenes = {"M2 没出包、没登录、没连": self._ready([], teams=()),
+                  "M3 连上没信任": self._ready([self._dev(pairing="unpaired", devmode=None)], teams=()),
+                  "M4 信任了、开发者模式没开": self._ready([self._dev(devmode="disabled")], teams=())}
+        seen = set()
+        for name, (r, it) in scenes.items():
+            with self.subTest(name):
+                self.assertEqual(violations(r["items"], "mac"), [])
+                seen |= {i["id"] for i in r["items"] if not i["ok"] and not i["waiting"]}
+        self.assertLessEqual({"package", "appleId", "connected", "trusted", "developerMode"}, seen, "三个场景要盖住这五项")
 
 
 if __name__ == "__main__":

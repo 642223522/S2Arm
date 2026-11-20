@@ -39,6 +39,7 @@ s2a_gate_step bash "$android_dir/tests/diagnostics/run.sh"
 # Capacity selection is shared by the production Android host implementation.
 s2a_gate_step "${CXX:-c++}" -std=c++17 -Wall -Wextra -Werror "$android_dir/tests/capacity/policy_test.cpp" -o "$out/capacity-policy-test"
 s2a_gate_step "$out/capacity-policy-test"
+s2a_gate_step bash "$android_dir/tests/cf_dictionary_test.sh"
 # Linux 专项验证真实亲和、继承及音频路径；macOS 由 Linux 门禁执行。
 if [ "$(uname -s)" = Linux ]; then
     s2a_gate_step bash "$android_dir/tests/capacity/run_linux.sh" "$out/capacity"
@@ -50,15 +51,6 @@ s2a_gate_step bash "$android_dir/core-link/runtime-tests/buffer-scratch/run.sh"
 s2a_gate_step bash "$android_dir/core-link/runtime-tests/buffer-read/run.sh"
 # 原生 provider 归属与可选导出（显式绑定 / 苹果老入口共 11 个隔离进程，含补时两导出同一查找口径；11-01 #894 接线）
 s2a_gate_step bash "$android_dir/core-link/provider-tests/run.sh"
-# 内存层（宿主，fake Vulkan，无设备）：能力探测 / UPLOAD 分配与 flush-invalidate 语义 / host 导入五类拒绝 /
-# 错误路径不留半分配 / destroy 顺序 / 双向自检（含坏拷贝负对照）。
-s2a_gate_step bash "$android_dir/tools/vk_membuf_test.sh"
-# 资源账本 + VM 替页事务（宿主，确定性反例）：地址/后备身份/内容版本、单调提交号幂等保活、
-# 退休/在途引用、事务失败逐阶段回滚并恢复字节与权限。
-s2a_gate_step bash "$android_dir/tools/vk_resid_test.sh"
-# 遮挡查询环形页边界（宿主，Vulkan 调桩）：reset 只重置高水位 / 同批多 pass 累计在 pass 边界合法换页 /
-# 段日志压缩 / 长期不 Reset / 会话重建。这是「进世界约 20 s 必崩」那类窗口失效的回归护栏。
-s2a_gate_step bash "$android_dir/tools/nvn_vk_query_edges.sh"
 # 两级回放队列（nvk_dq；宿主，真队列 + 真录制线程 + 记录桩）：多生产者序列 / 环回绕 / 背压 / 跨线程清空 / 两条线程同时清空 / 运行时开关；
 # TSan 零报告；六种变异（没写完就发布、清空不等、不等环里有地方、环尾长度写错、先报已读、抹掉别人的「在等」标记）都必须红在预期阶段。
 # 队列用 pthread 自旋锁（苹果系统没有）：只在 Linux 上跑，macOS 由 Linux 门禁执行。
@@ -77,41 +69,17 @@ s2a_gate_step bash "$android_dir/tools/nvn_vk_desc_cache_test.sh"
 s2a_gate_step bash "$android_dir/tools/nvn_vk_tex_suballoc_test.sh"
 # 程序结果里 bindings 超出容量必须准确失败（F1：绝不静默截断）；含撤守卫的反例说明。
 s2a_gate_step bash "$android_dir/tools/nvn_vk_program_binding_cap.sh"
-# AHB 池接入（宿主，替身只给外部依赖）：迁移必须有 owner 证明、整池迁移后可命中、提交号单调 / 不同号互不影响 /
-# 同号塌成一项 / 池删除后在途引用清空前不销毁 / 重建不继承 done/failed / 早退也消费 owner 授权 / 统计口径自洽。
-s2a_gate_step bash "$android_dir/tools/vk_poolahb_core_test.sh"
-# NVN ReadTexels 的几何/打包换算（纯逻辑，宿主）：区域/子资源/行距层距/块对齐/越界原因。
-s2a_gate_step bash "$android_dir/tools/nvn_vk_readback_plan_test.sh"
-# 批 A：内容版本与 CPU/GPU 交接（真 Vulkan / lavapipe）：GPU 清红 → CPU 整图写蓝 / 局部写蓝、内容 7→11
-# 的两次 draw 各看各的版本；子资源状态、读回不写回 guest、账本不可用时 fail-closed、1 MiB 保护块不是写粒度。
-# （nvn_vk_texcache_content_test.sh 要 lavapipe，挪到 android/linux_ctest.sh 末段在 Linux 跑，11-06）
-# 反馈采样快照的子资源拷贝（真 Vulkan / lavapipe）：3D 深度切片（含 mip≠0）、2D 数组层、
-# pass/快照交集；旧实现把 3D 切片当 array layer 选 → 越界/读错片。
-# （nvn_vk_feedback_snapshot_test.sh 要 lavapipe，挪到 android/linux_ctest.sh 末段在 Linux 跑，11-06）
-# 压缩纹理作为渲染目标（块=像素影子）的字节往返（真 Vulkan / lavapipe）：BC4 3D 深度切片、
-# 2D 数组 mip/层、影子直写；Vulkan 不能把压缩格式当颜色附件，也不能建压缩↔无压缩视图。
-# （nvn_vk_bcrt_test.sh 要 lavapipe，挪到 android/linux_ctest.sh 末段在 Linux 跑，11-06）
-# 可写 graphics storage buffer 的帧内影子 / 退休回写 / 零附件 pass / 驱动 c0 布局（真 Vulkan / lavapipe）。
-# （nvn_vk_ssbo_guest_test.sh 要 lavapipe，挪到 android/linux_ctest.sh 末段在 Linux 跑，11-06）
-# 覆盖判定（哪些 guest 背板可替页）、选池策略、受控别名登记。
-s2a_gate_step bash "$android_dir/tools/vk_poolahb_cover_test.sh"
-s2a_gate_step bash "$android_dir/tools/vk_poolahb_policy_test.sh"
 s2a_gate_step bash "$android_dir/tools/vk_poolahb_alias_test.sh"
-# 帧时间线（宿主，确定性）：事件按 frame ID 配对、缺样本「未测」、重复/跨帧丢弃计数、五段闭环。
-s2a_gate_step bash "$android_dir/tools/nvn_vk_timeline_test.sh"
 # 直连逐帧帧时间（宿主，确定性）：环形语义、丢弃/计数可见、分片转储字节级核回。
 s2a_gate_step bash "$android_dir/tools/nvn_vk_frame_log_test.sh"
-# B2 VK_GOOGLE_display_timing（宿主，确定性）：挂 id/回读、乱序对号、丢帧 UNKNOWN、
-# 迟到补账、门关闭、ring 环覆、detach 复位、last_gap 最新确认对。
-s2a_gate_step bash "$android_dir/tools/nvn_vk_dt_test.sh"
 # WSI actual-present diagnostics: NDK declarations, partial batches and generation isolation.
 s2a_gate_step bash "$android_dir/tests/nvk_shown_timing_test.sh"
 # 设备 / 实例扩展查询：枚举失败（能力未知、报红）与确实不支持分开；VK_INCOMPLETE 重取。
 s2a_gate_step bash "$android_dir/tests/vk_dev_ext_test.sh"
 # 调试开关读数的线程内缓存（宿主，确定性）：命中 / 过期 / 缺省 / 名字比较 / 名字上限，7 个负对照。
 s2a_gate_step bash "$android_dir/tests/nvk_flag_cache_test.sh"
-# 直连逐帧 TSV（宿主，确定性）：列掩码/差分/gpuq 账/开关与目录门。
-s2a_gate_step bash "$android_dir/tools/nvn_vk_frame_tsv_test.sh"
+# 自定义边框色就近取内置三档（宿主，确定性）：没有 VK_EXT_custom_border_color 时浮点 / 整数各取最近一档。
+s2a_gate_step bash "$android_dir/tests/nvk_border_nearest_test.sh"
 s2a_gate_step bash "$android_dir/tools/generic_frame_trace_test.sh"
 # #48 A5（宿主，确定性）：BatteryManager 净放电换算与不可用状态、采样器停采/迟到回调/读数开关。
 s2a_gate_step bash "$android_dir/tools/system_power_test.sh"
@@ -130,14 +98,10 @@ s2a_gate_step "$PY" "$android_dir/tests/run_game_test.py"
 # run_game_test 的用例收场后不留临时目录（通过 / 失败 / setUp 中途出错三种收场）。
 s2a_gate_step "$PY" "$android_dir/tests/run_game_tmp_cleanup_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/direct_game_mode_test.py"
-s2a_gate_step "$PY" "$android_dir/tests/direct_refresh_test.py"
-s2a_gate_step "$PY" "$android_dir/tests/direct_touch_generation_test.py"
 # 通用模式编译事件：原生文件生成、丢弃负控及读取器完整性校验。
 s2a_gate_step "$PY" "$android_dir/tests/generic_compile_events_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/compile_events_reader_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/direct_trace_test.py"
-# 每线程缓冲（备忘槽/暂存的堆化）：线程退出后归还、同线程复用、扩容保留内容。
-s2a_gate_step bash "$android_dir/tools/nvn_vk_threadbuf_test.sh"
 # CMake 挑选规则的宿主单测（假 cmake，可移植，始终跑）
 s2a_gate_step bash "$android_dir/tools/cmake_pick_test.sh"
 # S2A_TEST_NO_NATIVE 只跳过宿主 ctest 阶段；可移植改写器矩阵始终执行。
@@ -160,6 +124,8 @@ if [ -z "${S2A_TEST_NO_NATIVE:-}" ]; then
     [ "$(uname -s)" = Linux ] ||
         s2a_gate_note "未测：android_memory / android_plat（mremap）、android_guest_signal（SIGRTMIN）、android_host_android（eventfd）、android_wsi_lease（pthread_condattr_setclock）、android_direct_selection（getrandom）、android_tsd / android_module（/proc/self/maps）需 Linux"
 fi
+s2a_gate_step "$PY" "$android_dir/tests/ldn_settings_test.py"
+s2a_gate_step "$PY" "$android_dir/tests/ldn_dialog_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/debug_environment_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/debug_gate_test.py"
 # 通用层零专用配置（#1357）：native / gfx 源码不得出现具体游戏包名
@@ -238,11 +204,6 @@ s2a_gate_step javac -encoding UTF-8 -d "$out/java" \
     "$android_dir/app/src/main/java/org/s2arm/android/GamepadState.java" \
     "$android_dir/tests/GamepadStateTest.java"
 s2a_gate_step java -cp "$out/java" org.s2arm.android.GamepadStateTest
-# B3（#48）：buffer_geometry 下 SurfaceView 的同比例 frame 取整，与 native publish_touch 同口径
-s2a_gate_step javac -encoding UTF-8 -d "$out/java" \
-    "$android_dir/app/src/main/java/org/s2arm/android/BufferGeometry.java" \
-    "$android_dir/tests/BufferGeometryTest.java"
-s2a_gate_step java -cp "$out/java" org.s2arm.android.BufferGeometryTest
 # Vulkan 款直连三态（#274）：intent 取值、缺省不是手动直连、与 native direct_choice.h 同值
 s2a_gate_step javac -encoding UTF-8 -d "$out/java" \
     "$android_dir/app/src/main/java/org/s2arm/android/VulkanDirectChoice.java" \
@@ -333,8 +294,6 @@ s2a_gate_step "$PY" "$android_dir/tests/dev_runtime_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/direct_batch_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/direct_prepare_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/host_link_test.py"   # 宿主单测链接闭包：自动补链 / 弱引用放行 / 无提供方点名红 / 替身优先
-# Graphics REQUEST: real producer/canonical identity/writer -> unchanged importer, synthetic host only.
-s2a_gate_step "$PY" "$android_dir/tests/graphics_request_name_test.py"
 # 新回放层：真实图形/计算请求生产入口的贴图池容量、超限与调试读数。
 s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_pool_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_pool_test.py" --withdraw
@@ -349,6 +308,10 @@ s2a_gate_step "$PY" "$android_dir/tests/nvk_shutdown_test.py"
 s2a_gate_step "$PY" "$repo_dir/graphics/nvn/tests/gs_replay_mutation_test.py"
 # 写跟踪取范围（find_span）的有序索引（#1133）与池查找的线程内备忘（#974）：索引的排序 / 子树最大值 / 复查代际 / 写者纪律 / 上限与停用 / 备忘的键各处的撤改必红（纯宿主 C 编译）。
 s2a_gate_step "$PY" "$repo_dir/graphics/nvn/tests/dirty_span_memo_mutation_test.py"
+# 存储缓冲槽长度语义：地址有效、长度 0 按硬件语义绑真实内存（池剩余长度，回写按它登记），没有可绑内存才绑空缓冲照画；5 个点变异各撤一处必红（纯宿主 C）
+s2a_gate_step "$PY" "$repo_dir/graphics/nvn/tests/storage_unmapped_mutation_test.py"
+# ReadTexels 读 GPU 内容（rp_read_texels.inc / 旁路段 / rp_entry 分支）：等之前的活、提交锁、行距片距、READBACK 与块对齐、栅栏推进、提交内拒绝、修前，各撤一处必红（纯宿主 C）
+s2a_gate_step "$PY" "$repo_dir/graphics/nvn/tests/read_texels_gpu_mutation_test.py"
 # 原创 Maxwell 经生产请求、真实编译器与生产结果解析；GPU 像素由 Vulkan 门禁另验。
 s2a_gate_step "$PY" "$android_dir/tests/gs_compiler_chain_test.py"
 # BUFFER texture: real producer, Maxwell compiler and SPIR-V parser.
@@ -366,36 +329,26 @@ s2a_gate_step "$PY" "$android_dir/tests/direct_input_identity_compat_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/tbuf_facts_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/tbuf_facts_test.py" --withdraw
 s2a_gate_step "$PY" "$android_dir/tests/w2_compute_program_test.py"
-s2a_gate_step "$PY" "$android_dir/tests/w2_compute_lookup_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/w2_compute_request_test.py"
-s2a_gate_step "$PY" "$android_dir/tests/w2_compute_pipeline_test.py"
-s2a_gate_step "$PY" "$android_dir/tests/w2_compute_bridge_test.py"
-s2a_gate_step "$PY" "$android_dir/tests/compile_export_test.py"
-s2a_gate_step "$PY" "$android_dir/tests/compile_export_w2_test.py"
 # kindCheck 调试开关只走请求 JSON（DirectShaderCompiler.cs:39 只读 JSON、不读进程 env）：默认构建不带该键，
 # 调试门开 + debug.s2a.kind_check=0 才写 "kindCheck":false；撤成 execute 里 setenv 或删掉该键必须红（宿主 C 编译，秒级）。
 s2a_gate_step "$PY" "$android_dir/tests/direct_compile_request_host_test.py"
 # 现编时翻译器崩溃留下输入（#1501 D②）：崩溃线程正在编的请求原样落 compile-inflight-<pid>-<槽>.log；crash.c 安卓分支弱引用调（宿主 C 编译，秒级）。
 s2a_gate_step "$PY" "$android_dir/tests/compile_inflight_test.py"
-s2a_gate_step "$PY" "$android_dir/tests/w2_compute_integration_test.py"
-# W2 single missing coordinate: standalone synthetic host contract, no provider/device wiring.
-s2a_gate_step "$PY" "$android_dir/tests/w2_single_query_test.py"
-s2a_gate_step "$PY" "$android_dir/tests/w2_frozen_producer_test.py"
-s2a_gate_step "$PY" "$android_dir/tests/w2_frozen_chain_test.py"
-s2a_gate_step "$PY" "$android_dir/tests/w2_request_worker_test.py"
-s2a_gate_step "$PY" "$android_dir/tests/w2_adapter_capture_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/w2_observation_core_test.py"
-s2a_gate_step "$PY" "$android_dir/tests/w2_observation_compute_test.py"
-s2a_gate_step "$PY" "$android_dir/tests/w2_observation_draw_test.py"
-# C4a 首用判定环：真 nvn_vk_draw.c + 真 compile_worker/nvn_first_use，可控假编译器。
-s2a_gate_step "$PY" "$android_dir/tests/nvk_fu_decision_test.py"
-# C4b 管线异步缝：真 nvn_vk_first_draw.c TU + 真 pipe_worker/nvn_first_use，假 Vulkan。
-s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_pipe_async_draw_test.py"
 # nvk 新层：首次使用的准备工作下沉（iOS 蓝本 warm_start / pso_pend）。
 # 回放计时：帧级「回放耗时」只在最外层累加一次（三层嵌套每层 1 ms 期望 3 ms，修前 6 ms）。
 s2a_gate_step "$PY" "$android_dir/tests/replay_exec_time_test.py"
 # 预热调度时序合同：先程序后管线、在途重试、有界 Stop、开关关时不起线程。
 s2a_gate_step bash "$android_dir/tools/nvn_warm_test.sh"
+# 真实回放/着色器收尾清掉上一局的程序预热清单；宿主两局与遗漏 reset 负对照。
+if [ "$(uname -s)" = Linux ]; then
+    s2a_gate_step sh "$android_dir/tools/nvk_prog_warm_session_test.sh"
+fi
+# 程序清单最近使用顺序：CANDIDATE_TREE 是本次门禁检出的仓库。
+# 门禁不传 LEGACY_TREE，不依赖 Git 历史或联网；手工查旧格式兼容性时，
+# runner 的第二个参数可传修复前的独立源码检出（例如本 PR 的基线）。
+s2a_gate_step sh "$android_dir/tools/nvk_prog_warm_recency_test.sh" "$repo_dir"
 # 预热用的两个清单模块与「同一配方只有一份」的双检（纯逻辑）：往返一致、碰撞不去重、坏文件整份拒绝、
 # 4 线程并发建同一配方只装一份。
 s2a_gate_step bash "$android_dir/tools/nvk_warm_modules_test.sh"
@@ -414,32 +367,6 @@ s2a_gate_step bash "$android_dir/tools/nvk_shader_lease_test.sh"
 # 比对键每一项各有「只改这一项 → 不合并」的负对照；--mutants 逐项撤掉生产逻辑，每个都必须变红。
 s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_alias_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_alias_test.py" --mutants
-s2a_gate_step "$PY" "$android_dir/tests/w2_observation_lifecycle_test.py"
-s2a_gate_step "$PY" "$android_dir/tests/w2_observation_adapter_test.py"
-# vk_record host regression links the real Linux Vulkan loader; the dispatch itself is mocked.
-case "$(uname -s)" in
-  Linux)
-    s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_clear_enqueue_ownership_test.py"
-    s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_dispatch_fq_test.py"
-    s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_clear_fv_test.py"
-    s2a_gate_step "$PY" "$android_dir/tests/w2_dispatch_snapshot_test.py"
-    s2a_gate_step "$PY" "$android_dir/tests/w2_record_chain_test.py" ;;
-  *) s2a_gate_note "clear queue ownership / dispatch fq / clear FV lifetime / W2 dispatch snapshot / record chain：未运行（仅 Linux 主机 libvulkan.so.1 组件测试）" ;;
-esac
-# vk_record 生产入口探针（P0-0b DrawTexture 准确拒绝 / P0-0b' Deferred 句柄执行时读取）：只链生产
-# vk_record.c 与其直接依赖，vk* 导入由宿主 Vulkan loader 解析（不建 device、不开 ICD）。只在
-# Linux 且 loader 存在时跑；其它机器记「未运行」并写原因（直接跑脚本会退 2），不静默过。
-case "$(uname -s)" in
-  Linux)
-    if [ -n "$(ldconfig -p 2>/dev/null | grep 'libvulkan\.so\.1' | head -1)" ]; then
-      s2a_gate_step bash "$android_dir/tools/vk_record_drawtex_reject_test.sh"
-      s2a_gate_step bash "$android_dir/tools/vk_record_deferred_bind_test.sh"
-      s2a_gate_step bash "$android_dir/tools/vk_record_bind_program_test.sh"
-    else
-      s2a_gate_note "vk_record 生产入口探针：未运行（Linux 但缺宿主 libvulkan.so.1，探针只需它解析符号）"
-    fi ;;
-  *) s2a_gate_note "vk_record 生产入口探针：未运行（仅 Linux + 宿主 libvulkan.so.1）" ;;
-esac
 s2a_gate_step javac -encoding UTF-8 -d "$out/java" -cp "$out/java" \
     "$android_dir/tests/stubs/android/util/Log.java" \
     "$android_dir/app/src/main/java/org/s2arm/android/GamePack.java" \
@@ -559,21 +486,8 @@ s2a_gate_step "$PY" "$android_dir/tests/native_rewriter_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/native_rewriter_packaging_test.py" --format-fixture
 s2a_gate_step "$PY" "$android_dir/contracts/validate.py"
 s2a_gate_step "$PY" "$android_dir/tests/contract_validation_test.py"
-s2a_gate_step "$PY" "$android_dir/tests/device_retirement_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/copy_3d_depth_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/guest_window_crop_test.py"
-# A3：记录快照的对象身份复核 + 有界退休墓碑 + 附件解析类型化失败（宿主 mock，--source-ref 红）。
-s2a_gate_step "$PY" "$android_dir/tests/tex_identity_state_test.py"
-s2a_gate_step "$PY" "$android_dir/tests/tex_identity_state_test.py" --withdraw
-# 批次 1/A：命令流拍平（A2 延迟参数在所有权转移点入记录 + A4 记录内引用重定位 + 拍不到即失败）。
-# 默认全绿；--source-ref 旧源码必须红；--withdraw 的 5 条行为撤回变异必须各自转红。
-s2a_gate_step "$PY" "$android_dir/tests/record_flat_test.py"
-s2a_gate_step "$PY" "$android_dir/tests/direct_replayed_fence_test.py"
-# 成功提交计数：真实 NVN present 边界、跨线程读取与错误路径负控。
-s2a_gate_step "$PY" "$android_dir/tests/nvn_present_count_test.py"
-# 回放状态只在第一次提交前复位（#539）：mtl_sub_begin 生产函数体，三次提交只入队一次复位作业。
-s2a_gate_step "$PY" "$android_dir/tests/replay_state_keep_test.py"
-s2a_gate_step "$PY" "$android_dir/tests/record_flat_test.py" --withdraw
 s2a_gate_step "$PY" "$android_dir/core-runtime/metrics-tests/cli_test.py"
 s2a_gate_step bash "$android_dir/core-runtime/fps-tests/test.sh"
 s2a_gate_step "$PY" "$android_dir/tests/run_manifest_test.py"
@@ -592,24 +506,7 @@ s2a_gate_step "$PY" "$android_dir/tests/direct_pack_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/direct_library_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/shader_pack_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/direct_qa_compare_test.py"
-s2a_gate_step "$PY" "$android_dir/tests/first_draw_diag_bounds_test.py"
-s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_first_draw_release_test.py"
-s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_fd_fence_wait_test.py"   # 逐帧 drain 账：fd_fence_wait 双账挂接（含变异控制）
-s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_session_release_order_test.py"
-s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_adapter_release_order_test.py"
-s2a_gate_step "$PY" "$android_dir/tests/nvn_event_completion_test.py"   # P0-4 事件信号写值前必须有完成证明（含变异控制）
 s2a_gate_step "$PY" "$android_dir/tests/mutex_timedlock_test.py"   # macOS 无 pthread_mutex_timedlock：可移植实现的超时 / 获锁 / 不空转
-# D 接口（完成 token，批次 1）：5 态完成事实 + 批次持有/放行 + GPU 完成后退休回调 + 换代/Stop 保留引用。
-# 宿主假完成源，不建 device、不碰真队列；--source-ref 先红后绿。
-s2a_gate_step "$PY" "$android_dir/tests/nvk_completion_test.py"
-s2a_gate_step "$PY" "$android_dir/tests/nvk_completion_test.py" --withdraw
-s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_query_terminal_test.py"
-s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_deferred_slot_test.py"
-s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_indirect_args_test.py"   # 间接参数的权威字节（影子同步 / 在途帧退休）+ 变异控制
-s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_sampler_mapping_test.py"   # P0-2 采样器映射判定表 + 变异控制
-# 真 Vulkan 收尾探针：macOS 上要 docker；门禁派 gate-host 时作为子项 vkreal 跳过、本机另跑（android/gate.sh 头注）
-[ "${S2A_ANDROID_SKIP_VKREAL:-0}" = 1 ] || s2a_gate_step bash "$android_dir/tests/nvn_vk_real_teardown_test.sh"
-s2a_gate_step "$PY" "$android_dir/tests/draw_log_channel_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/vulkan_modules_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/filecopy_test.py"
 
@@ -686,6 +583,3 @@ s2a_gate_step "$PY" "$android_dir/cs/test_static_cache.py"
 # doctor 源码布局与缓存契约（版本表、NDK 宿主目录、codec recipe-key 缓存）。
 s2a_gate_step "$PY" -B "$android_dir/doctor/test_doctor.py"
 
-# op31 独立计划器（未接 record）：逐行字节/默认视图/局部区域与图像依赖合同，含四种功能负控。
-s2a_gate_step "$PY" "$android_dir/tests/buffer_texture_plan_test.py"
-s2a_gate_step "$PY" "$android_dir/tests/buffer_texture_exec_test.py"

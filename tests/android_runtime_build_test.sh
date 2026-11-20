@@ -4,7 +4,7 @@
 # 起因（11-12）：一笔只改 runtime/src/pack_apply.c 的提交在安卓构建里 -Werror=unused-function 编不过（iOS 专用函数没进平台条件），
 #   合入前层没拦住——改 runtime/src 的支不路由到任何安卓原生编译，合进 main 后安卓出包才红。
 # 做法：用固定版本的 NDK（android/tools/versions.sh 从 android/docker/Dockerfile 读）与固定版本的 CMake 按出包同一组开关
-#   （pack/targets/android/package.py：game 模式、正式构建、VK 引擎 nvn_vk、静态服务层）配置 android/CMakeLists.txt，
+#   （pack/targets/android/package.py：game 模式、正式构建、VK 引擎 + nvk 新回放层、静态服务层）配置 android/CMakeLists.txt，
 #   编译参数一律取 CMake 导出的 compile_commands.json，不在这里另抄一份；源文件清单由 CMake 现算
 #   android/core-link/Runtime.cmake 的 s2a_android_game_sources，逐个 -c 编一遍（不链接：静态服务层归档 / 编解码库不在合入前层）。
 #   静态服务层用 S2A_ANDROID_LINK_PROBE 代替（CMakeLists 里与 static 分支给 game 源同一组宏 S2A_CS_STATIC=1）。
@@ -48,7 +48,7 @@ EOF
 : > "$T/link_probe.c"
 if ! "$CMAKE" -S android -B "$T/b" -G Ninja -DCMAKE_MAKE_PROGRAM="$NINJA" -DCMAKE_TOOLCHAIN_FILE="$TC" \
      -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-29 -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-     -DS2A_ANDROID_NATIVE_MODE=game -DS2A_ANDROID_VK_ENGINE=ON -DS2ARM_ANDROID_VK_BACKEND=nvn_vk \
+     -DS2A_ANDROID_NATIVE_MODE=game -DS2A_ANDROID_VK_ENGINE=ON -DS2ARM_ANDROID_VK_BACKEND=nvk \
      -DS2A_ANDROID_LINK_PROBE="$T/link_probe.c" > "$T/configure.log" 2>&1; then
   cat "$T/configure.log"; echo "android_runtime_build：CMake 配置 android/CMakeLists.txt 失败（见上）"; exit 1
 fi

@@ -29,6 +29,11 @@ public sealed class SharedText
             var code = item.GetProperty("code").GetString()!;
             if (item.TryGetProperty("accept", out var accept) && accept.ValueKind == JsonValueKind.String && !item.TryGetProperty("accept_ui", out _))
                 confirmFlags[code] = accept.GetString()!;
+            // 确认页上与「仍然继续」并列的另一条路（自签走查结构 7）：alternate = {action: install_landing.actions 里的动作, label: 按钮文案键}
+            if (item.TryGetProperty("alternate", out var alt) && alt.ValueKind == JsonValueKind.Object &&
+                alt.TryGetProperty("action", out var altAction) && altAction.ValueKind == JsonValueKind.String &&
+                alt.TryGetProperty("label", out var altLabel) && altLabel.ValueKind == JsonValueKind.String)
+                confirmAlternates[code] = (altAction.GetString()!, altLabel.GetString()!);
             Flatten(item.GetProperty("title"), "errors." + code + ".title");
             Flatten(item.GetProperty("detail"), "errors." + code + ".detail");
         }
@@ -49,6 +54,12 @@ public sealed class SharedText
 
     /// <summary>可确认停装码 → 玩家点「仍然继续」后重发带的参数（共享体验表 errors 的 accept；装机 / 更新 / 换游戏库共用一张）</summary>
     public IReadOnlyDictionary<string, string> ConfirmFlags => confirmFlags;
+
+    private readonly Dictionary<string, (string Action, string Label)> confirmAlternates = new(StringComparer.Ordinal);
+
+    /// <summary>确认页上与「仍然继续」并列的另一条路（共享体验表 errors 的 alternate，同 Mac BackendText.confirmAlternates）：
+    /// 码 → (装机前清单动作名：点了走 RunInstallAction 同一个派发、不重发；按钮文案键)</summary>
+    public IReadOnlyDictionary<string, (string Action, string Label)> ConfirmAlternates => confirmAlternates;
 
     /// <summary>「建议更新」原因的文案键（共享体验表 update_reasons）；不认识的原因 → null（不显示）</summary>
     public string? UpdateReasonKey(string reason) => updateReasonKeys.TryGetValue(reason, out var key) ? key : null;

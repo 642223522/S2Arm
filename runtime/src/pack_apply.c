@@ -561,6 +561,7 @@ static int pack_apply_locked(const char *docs) {
             else { char tp[2100]; snprintf(tp, sizeof tp, "%s/.transfer", root); unlink(tp); } }
         else if (copy_atomic(root, "index.tsv", "index.applied.tsv")) { rc = -4; g_fail_errno = errno; snprintf(what, sizeof what, "存 index.applied.tsv"); }   // 「机上实际有什么」：执行器据它算补推
         else if (write_atomic(root, ".applied", sha)) { rc = -4; g_fail_errno = errno; snprintf(what, sizeof what, "写 .applied"); }
+        else if (write_atomic(root, ".applied_by_shell", sha)) LOG("【黄】资源包来源标记 .applied_by_shell 写不进（游戏库会把还没收到程序的这款当成 0.5 老款）");   // 0.6 起解开的资源包（游戏库据此分清 0.5 老款与还没收到 .s2arm 的新款：shell Catalogue.swift）
         else { char tp[2100], pp[2100]; snprintf(tp, sizeof tp, "%s/.transfer", root); unlink(tp); snprintf(pp, sizeof pp, "%s/.partial", root); unlink(pp); } }   // 解开了：这次推送的传输清单（tools/push_pack.py 写）用完，游戏库不再按它画进度；齐了就撤掉部分可玩标记
     time_t now = time(NULL); char ts[32]; strftime(ts, sizeof ts, "%m-%d %H:%M:%S", localtime(&now));
     FILE *lf = fopen(logp, "a"); int lerr = lf ? 0 : errno;
@@ -1053,6 +1054,7 @@ const char *s2a_s2arm_import_code(void) { return g_s2arm_code; }
 static int s2arm_fail(int rc, const char *code, const char *fmt, ...) {
     snprintf(g_s2arm_code, sizeof g_s2arm_code, "%s", code);
     va_list ap; va_start(ap, fmt); vsnprintf(g_s2arm_err, sizeof g_s2arm_err, fmt, ap); va_end(ap);
+    LOG("【红】.s2arm 导入（%s）：%s", g_s2arm_code, g_s2arm_err);   // 每条失败都进日志（11-17 真机：解压 / 建临时文件阶段失败原先只设码不打日志，看不出是没扫到还是失败）
     return rc;
 }
 static int s2arm_json_str(const char *j, const char *key, char *out, size_t n) {   // 电脑端 json.dumps 写的平铺字符串字段（不处理嵌套）
@@ -1101,7 +1103,7 @@ int s2a_s2arm_import(const char *proc_docs, const char *src, char *gid_out, size
             if (rc) break; }
     }
     ZSTD_freeDStream(z); close(in);
-    if (!rc && last != 0) rc = 1;   // 帧没到尾：还在拷（或拷断了），下次再看
+    if (!rc && last != 0) { rc = 1; LOG(".s2arm 导入：%s 的 zstd 帧还没读到尾，当作还在拷，原样留着，下次扫再看", src); }   // 帧没到尾：还在拷（或拷断了）
     if (rc) { close(out); unlink(tarp); return rc; }
     // ② 读 tar：第一个条目必须是 s2arm.json
     char gid[17] = "", sha[80] = "", root[1400], prog[1400], vdir[64], fmt[32] = "", *cat = NULL; size_t catn = 0; unsigned nprog = 0, npack = 0; uint64_t off = 0;
@@ -1148,10 +1150,31 @@ int s2a_s2arm_import(const char *proc_docs, const char *src, char *gid_out, size
         if (!ok || rename(tp, cp)) { int e = errno; unlink(tp); rc = s2arm_fail(-4, e == ENOSPC ? "ios_install_no_space" : "ios_install_dir_unwritable", "写程序包清单 %s 失败：%s", cp, strerror(e)); }
     }
     free(cat);
-    if (rc) { LOG("【红】.s2arm 导入（%s）：%s", g_s2arm_code, g_s2arm_err); return rc; }
+    if (rc) return rc;   // 原因已在 s2arm_fail 记过
     if (gid_out && gid_n) snprintf(gid_out, gid_n, "%s", gid);
     LOG(".s2arm 导入：%s → 程序 %s（%u 个文件）、资源包派生件 %u 个；game.img 照常放「放这里导入」认领", gid, vdir, nprog, npack);
     return 0;
+}
+// 导入文件夹里认领 / 导入失败过的文件（0.6.0 自签走查 B1）：原先失败的文件原样留着、每次扫描（回前台、文件夹有写入、「重新检查」）都整份重新解压 / 读一遍。
+//   按「路径 + 大小 + 修改时间」记住，没变就跳过；玩家换了文件、或文件还在拷而变大，下次照常再试。进程内表（重开 App 会再试一次、再报一次）。持 s2a_img_scan 的锁用
+static struct { char path[600]; off_t size; long long mtime; } g_scan_failed[32]; static int g_scan_failed_n;
+static long long st_mtime_ns(const struct stat *st) {   // 苹果叫 st_mtimespec，安卓 / Linux 叫 st_mtim（本文件安卓也编）
+#ifdef __APPLE__
+    return (long long)st->st_mtimespec.tv_sec * 1000000000LL + st->st_mtimespec.tv_nsec;
+#else
+    return (long long)st->st_mtim.tv_sec * 1000000000LL + st->st_mtim.tv_nsec;
+#endif
+}
+static int scan_failed_same(const char *p, const struct stat *st) {
+    for (int i = 0; i < g_scan_failed_n; i++)
+        if (!strcmp(g_scan_failed[i].path, p)) return g_scan_failed[i].size == st->st_size && g_scan_failed[i].mtime == st_mtime_ns(st);
+    return 0;
+}
+static void scan_failed_note(const char *p, const struct stat *st) {
+    int i = 0; while (i < g_scan_failed_n && strcmp(g_scan_failed[i].path, p)) i++;
+    if (i == g_scan_failed_n) { if (g_scan_failed_n < 32) g_scan_failed_n++; else i = (int)(st->st_ino % 32); }
+    snprintf(g_scan_failed[i].path, sizeof g_scan_failed[i].path, "%s", p); g_scan_failed[i].size = st->st_size;
+    g_scan_failed[i].mtime = st_mtime_ns(st);
 }
 static int img_scan_dir(const char *proc_docs, const char *dir, int depth, int pass, int *placed) {
     DIR *d = opendir(dir); if (!d) return 0;
@@ -1166,9 +1189,14 @@ static int img_scan_dir(const char *proc_docs, const char *dir, int depth, int p
         char p[2400]; struct stat st; snprintf(p, sizeof p, "%s/%s", dir, names[i]);
         if (!lstat(p, &st)) {
             if (S_ISDIR(st.st_mode) && depth < 2) img_scan_dir(proc_docs, p, depth + 1, pass, placed);
+            else if (S_ISREG(st.st_mode) && scan_failed_same(p, &st)) { /* 上次失败、文件没变：不再整份重解 */ }
             else if (S_ISREG(st.st_mode) && pass == 0 && ends_with(names[i], ".s2arm")) { char g[17]; int r = s2a_s2arm_import(proc_docs, p, g, sizeof g);
-                if (!r) { unlink(p); (*placed)++; } else if (r < 0) snprintf(g_img_code, sizeof g_img_code, "%s", g_s2arm_code); }   // 导好就删（同 IMG 认领后挪走）；失败原样留着、码交给库界面
-            else if (S_ISREG(st.st_mode) && st.st_size >= 4096) { int r = img_place(proc_docs, p, pass); if (!r) (*placed)++; else if (r < 0) { int e = errno;
+                // 导好就删（同 IMG 认领后挪走）；失败原样留着，码与原因都交给库界面（原先只给码、原因空 → 库上不弹，失败没有一点声音）
+                if (!r) { unlink(p); (*placed)++; }
+                else if (r < 0) { snprintf(g_img_code, sizeof g_img_code, "%s", g_s2arm_code); snprintf(g_img_err, sizeof g_img_err, "%s：%s", names[i], g_s2arm_err[0] ? g_s2arm_err : g_s2arm_code);
+                    if (!strstr(g_img_code, "space")) scan_failed_note(p, &st);   // 空间不够：腾出来后同一个文件要能再导，不记
+                    LOG("【红】资源导入（%s）：%s", g_img_code, g_img_err); } }
+            else if (S_ISREG(st.st_mode) && st.st_size >= 4096) { int r = img_place(proc_docs, p, pass); if (!r) (*placed)++; else if (r < 0) { int e = errno; if (r != -13 && e != ENOSPC && e != EDQUOT) scan_failed_note(p, &st);   // 更新包等本体（-13）、空间不够：条件变了同一个文件要再试，不记
                 snprintf(g_img_code, sizeof g_img_code, "%s", r == -13 ? "ios_import_update_no_base" : r == -14 ? "ios_import_update_mismatch" : r == -11 ? "ios_install_img_format" : r == -4 && (e == ENOSPC || e == EDQUOT) ? "ios_install_no_space" : "ios_import_img_failed");
                 LOG("【红】资源导入（%s）：%s", g_img_code, g_img_err); } }
         }

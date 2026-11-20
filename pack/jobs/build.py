@@ -18,7 +18,7 @@ import community
 import host_update
 import layout
 from core import Cancelled, Failure, atomic, clone, contained, digest, read, resolve_path, tree_hash
-from library import input_identity, require_game, selected_packages, source_file_bytes, source_path, stage_sources, validate_input
+from library import input_identity, require_game, selected_packages, source_path, stage_sources, validate_input
 import milestones as ms
 import toolchain
 
@@ -29,6 +29,31 @@ LANGUAGES = {
     "fr-CA": "CanadianFrench", "es-419": "LatinAmericanSpanish", "zh-Hans": "SimplifiedChinese",
     "zh-Hant": "TraditionalChinese", "pt-BR": "BrazilianPortuguese",
 }
+
+
+def nospace(path):
+    """Return a stable no-space alias for make/NativeAOT paths.
+
+    The repository and launcher cache can live under directories containing
+    spaces.  Make expands several paths into shell fragments and NativeAOT
+    passes library paths through a shell command, so those callers need an
+    alias rather than quoted argv entries.  Reuse the repository helper so the
+    alias rules stay identical for shell and Python entry points.
+    """
+    raw = os.fspath(path)
+    if " " not in raw:
+        return Path(raw)
+    helper = Path(__file__).resolve().parents[2] / "tools/nospace.sh"
+    try:
+        alias = subprocess.check_output(
+            ["bash", "-c", '. "$1"; s2a_nospace "$2"', "s2a-nospace", str(helper), raw],
+            text=True,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise Failure("无法为带空格的构建路径创建无空格别名。") from error
+    if not alias or " " in alias:
+        raise Failure("带空格的构建路径没有得到无空格别名。")
+    return Path(alias)
 
 
 def snapshot(c, root):
@@ -376,7 +401,7 @@ def launch(c):
         back = cheats.restore_after_update(c, game)
         if back:
             c.diagnostic("上次游戏崩溃时自动关掉的设置，新版 S2Arm 已重新打开：" + "、".join("帧率" if t == "fps" else "满屏" if t == "fs" else k.split("/", 1)[-1] for t, k in back) + "。", code="crash_restored", severity="warning")
-        env.update(community.launch_env(c, game["id"]))   # 宽屏 / 60 帧宿主开关（社区资源面板，10-27）：关掉的才设，下次启动生效
+        env.update(community.launch_env(c, game["id"], existing=env))   # 宽屏 / 60 帧宿主开关（社区资源面板，10-27）：关掉的才设，下次启动生效
         # 宿主菜单栏「切换游戏」（macos/front_mac.m）：收尾前在这里留标记，结果带 returnToLibrary，启动器回到游戏库。先删上一局残留
         marker = c.private / "runtime-return" / (c.task + ".flag")
         marker.parent.mkdir(parents=True, exist_ok=True)
@@ -473,8 +498,32 @@ def compile_host(c, fingerprint, env, log_root):
         c.emit("cache", "已校验并复用 S2Arm Mac 宿主（含地址窗口护栏库）", cacheHit=True)
         ms.reuse(c, "host")
         return app
-    args = ["make", "-C", c.engine, "host", "S2A_CS=1", "S2A_MAC_FRONTEND=1",
-            "BUILD=" + str(host_root / "build"), "DEVELOPER_DIR=" + env["DEVELOPER_DIR"]]
+    # Create the real output directory before aliasing it.  A symlink to a
+    # not-yet-existing directory makes make's mkdir -p fail with ENOENT.
+    (host_root / "build").mkdir(parents=True, exist_ok=True)
+    # Cache roots also reach the linker through services/*.sh.  Keep their
+    # real directories present, then expose stable no-space aliases so paths
+    # under this repository's spaced parent are not split by make/shell.
+    cache_keys = ("S2A_RUN_ROOT", "S2A_CS_CACHE", "S2A_VPX_CACHE",
+                  "S2A_OPUS_CACHE", "S2A_DAV1D_CACHE")
+    for key in cache_keys:
+        raw = env.get(key)
+        if not raw:
+            if key == "S2A_DAV1D_CACHE" and env.get("S2A_RUN_ROOT"):
+                raw = str(Path(env["S2A_RUN_ROOT"]) / "s2arm/cache/dav1d")
+            else:
+                continue
+        path = Path(raw)
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise Failure(f"无法准备构建缓存目录：{path}") from error
+        env[key] = str(nospace(path))
+    engine = nospace(c.engine)
+    build = nospace(host_root / "build")
+    args = ["make", "-C", engine, "host", "S2A_CS=1", "S2A_MAC_FRONTEND=1",
+            "ROOT=" + str(engine), "BUILD=" + str(build),
+            "DEVELOPER_DIR=" + env["DEVELOPER_DIR"]]
     # c.env() 会清掉 S2A_*；构建开关显式带给 make（缺省 auto = 引擎快照里的 make 按本机探测，tools/av1hw.sh / tools/vp9hw.sh）
     for k in ("S2A_DAV1D", "S2A_VPX"):
         v = os.environ.get(k)
@@ -761,9 +810,10 @@ def ensure_extract(c, game, packages, env, logs, valid=None):
                 #   Mac 准备（build）在 core.run 里已按 build_tool_failure 归好类、码不是 tool_exit，不走这里。两种作业同一判法：按解包阶段归类
                 if error.code != "tool_exit":
                     raise
-                from errors import cause_facts, classify_failure, player_reason, tool_reason
+                from errors import cause_facts, classify_failure, player_words, tool_reason
                 code, why = classify_failure("unpack", logs / "extract.log")
-                raise Failure(player_reason(code), code=code, internal="解包失败：" + tool_reason(logs / "extract.log") + "\n" + why,  # 非玩家句
+                said, advice = player_words(code, logs / "extract.log")
+                raise Failure(said, code=code, advice=advice, internal="解包失败：" + tool_reason(logs / "extract.log") + "\n" + why,  # 非玩家句
                               facts=cause_facts(code, logs / "extract.log")) from error
         c.emit(
             "message", "解包已完成，正在校验合并结果并写入缓存"
@@ -958,8 +1008,7 @@ def prepare(c):
         src = root / "src"; shutil.rmtree(src, ignore_errors=True)
         stage_sources(c, packages, src)
         env.update(
-            S2A_GAME_SRC=str(src), S2A_KEYS=str(c.keys), S2A_NX_UNPACK=str(toolchain.reader(c)),
-            S2A_SOURCE_BYTES=str(source_file_bytes(packages)),   # 原件文件总字节：随包基础管线上限 = 它的 10%（pack/stage_direct_cpso.sh）
+            S2A_GAME_SRC=str(src), S2A_KEYS=str(c.keys), S2A_NX_UNPACK=str(toolchain.reader(c))
         )
         try:
             with ms.DirectWatcher(c, root / "roots", game["id"]):

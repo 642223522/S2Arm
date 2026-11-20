@@ -1388,9 +1388,9 @@
   "s2arm.install.account": "簽名團隊：%@",
   "s2arm.install.checklist": "裝之前",
   "s2arm.install.device": "裝置：%@",
-  "s2arm.install.note": "用你在 Xcode 登入的 Apple ID 簽名、資料線裝上。免費 Apple ID 籤的 App 7 天過期，到時再裝一次。",
+  "s2arm.install.note": "用你在 S2Arm 裡登入的 Apple ID 簽名、資料線裝上。免費 Apple ID 簽的 App 7 天過期，到時再裝一次。",
   "s2arm.install.start": "開始裝",
-  "s2arm.install.teamManual": "解決辦法",
+  "s2arm.install.teamManual": "Apple TV 用的 Xcode 團隊",
   "s2arm.install.teamManualField": "10 位 Team ID",
   "s2arm.install.teamManualHelp": "如果 Xcode 裡已經登入卻查不到團隊，可以手動填 Team ID（在 Xcode 賬戶頁或 Apple 開發者網站檢視）。也可以用「顯示 IPA」找到安裝包，用 Sideloadly 或 AltStore 自己裝，再用訪達把資源包拷進 App。",
   "s2arm.install.teamManualUse": "用這個團隊裝",
@@ -1788,5 +1788,7 @@
   "s2arm.env.xcode.none": "還沒找到 Xcode",
   "s2arm.env.xcode.choose": "選擇 Xcode…",
   "s2arm.env.xcode.auto": "改回自動尋找",
-  "s2arm.env.xcode.invalid": "選的不是完整的 Xcode（要有 Contents/Developer/usr/bin/xcodebuild），沒有變更。"
+  "s2arm.env.xcode.invalid": "選的不是完整的 Xcode（要有 Contents/Developer/usr/bin/xcodebuild），沒有變更。",
+  "s2arm.env.action.appleLogin": "登入 Apple ID",
+  "s2arm.fail.appleAccount": "讀不出登入的 Apple ID"
 }

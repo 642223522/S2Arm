@@ -33,23 +33,39 @@ class PushSelected(unittest.TestCase):
         self.c.r.clear(); self.c.r.update(req)
         ph = types.SimpleNamespace(key=device)
         with patch.object(install, "push_game", fake_push), \
-                patch.object(install, "phone_for", lambda c: ph), patch.object(install, "packer_phone_lock", lambda c: contextlib.nullcontext()), \
+                patch.object(install, "push_phone", lambda c: ph), patch.object(install, "packer_phone_lock", lambda c: contextlib.nullcontext()), \
                 patch.object(install, "trace", lambda *a, **k: None):
             try:
                 return install.push_selected(self.c), pushed
             except BaseException as e:
                 return e, pushed
 
+    def progress(self):
+        return install.read(self.c.private / install.PUSH_SELECTED, {})
+
     def test_one_failure_does_not_block_next(self):
         r, pushed = self.run_job({B: Failure("这款资源包缺件", code="pack_missing")}, gameIds=[A, B.lower(), C, A])
         self.assertEqual(pushed, [A, B, C], "按所选顺序、去重、大写")
-        self.assertEqual([(x["gameId"], x["ok"], x.get("code")) for x in r["games"]], [(A, True, None), (B, False, "pack_missing"), (C, True, None)])
-        self.assertEqual((r["done"], r["failed"], r["remaining"]), (2, 1, 1))
+        st = self.progress()
+        self.assertEqual((st["done"], list(st["failed"])), ([A, C], [B]))
 
     def test_unexpected_error_recorded_and_continues(self):
         r, pushed = self.run_job({A: RuntimeError("意外")}, gameIds=[A, B])
         self.assertEqual(pushed, [A, B])
-        self.assertEqual((r["games"][0]["code"], r["games"][1]["ok"]), ("job_failed", True))
+        self.assertEqual((self.progress()["failed"][A]["code"], self.progress()["done"]), ("job_failed", [B]))
+
+    def test_any_failure_fails_the_job_with_first_reason(self):
+        # #1756：0.5 升 0.6.0 的玩家点「更新所选」，每款都在推 .s2arm 时「找不到设备」，作业却报完成——界面进度条跑完、总控台还是「更新」、手机上还是「需要导入」。
+        #   期望（手写）：推完一轮后整单失败，原因与码 = 第一款失败的原话；推成的照记
+        boom = Failure("资源包写进 iPhone 时中断（找不到设备 X：device not found）", code="resource_transfer_failed")
+        r, pushed = self.run_job({A: boom, B: boom}, gameIds=[A, B, C])
+        self.assertEqual(pushed, [A, B, C], "一款失败不挡后面的")
+        self.assertIsInstance(r, Failure)
+        self.assertEqual((r.code, str(r)), ("resource_transfer_failed", str(boom)))
+        self.assertEqual(self.progress()["done"], [C])
+        r, pushed = self.run_job({}, gameIds=[A, B])
+        self.assertIsInstance(r, dict, "全推成：照常报完成")
+        self.assertEqual((r["done"], r["failed"]), (2, 0))
 
     def test_stop_codes_end_the_round(self):
         for code in install.PUSH_SELECTED_STOP:
