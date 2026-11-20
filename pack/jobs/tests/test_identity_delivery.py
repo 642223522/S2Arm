@@ -176,3 +176,51 @@ class DeliverIdentity(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IdentityTarget(unittest.TestCase):
+    """11-19：交签名身份不只认启动器装的 App——AltStore / SideStore / ESign 装的 S2Arm 包名被改过，按手机上实际装着、团队对得上的那个交（期望手写）"""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.c = types.SimpleNamespace(r={}, private=self.tmp.name)
+        self.ph = types.SimpleNamespace(udid="UDID1", bid="io.s2arm.games.team1")
+
+    def target(self, rows, team="TEAM1"):
+        cl = types.SimpleNamespace(apps=lambda: rows)
+        with patch.object(install, "devpush_client", lambda c, udid, bid, w: cl), patch.object(install, "main_executable", lambda c: "S2Arm"):
+            return install.identity_target(self.c, self.ph, team)
+
+    def test_altstore_renamed_bundle_same_team(self):
+        rows = [("com.example.other", "Other", "TEAM1"), ("io.s2arm.games.team1.TEAM1", "S2Arm", "TEAM1")]
+        self.assertEqual(self.target(rows), "io.s2arm.games.team1.TEAM1", "启动器的包名没装：交给 AltStore 改过名的那个")
+
+    def test_own_bundle_preferred_and_by_executable(self):
+        rows = [("io.s2arm.games.team1", "S2Arm", "TEAM1"), ("io.s2arm.games.team1.TEAM1", "S2Arm", "TEAM1")]
+        self.assertEqual(self.target(rows), "io.s2arm.games.team1", "两份都在：启动器装的优先")
+        self.assertEqual(self.target([("com.esign.renamed", "S2Arm", "TEAM1")]), "com.esign.renamed", "包名全改了：按主程序名认")
+
+    def test_team_unknown_still_delivers(self):
+        self.assertEqual(self.target([("io.s2arm.games.x", "S2Arm", "")]), "io.s2arm.games.x", "读不到团队号：照交，手机侧核团队")
+
+    def test_other_team_reports_which(self):
+        with self.assertRaises(install.Failure) as e:
+            self.target([("io.s2arm.games.team9.TEAM9", "S2Arm", "TEAM9")])
+        self.assertEqual(e.exception.code, "identity_team_mismatch")
+        self.assertIn("团队 TEAM9", str(e.exception)); self.assertIn("团队 TEAM1", str(e.exception))
+
+    def test_none_installed_and_cannot_list(self):
+        with self.assertRaises(install.Failure) as e:
+            self.target([("com.example.other", "Other", "TEAM1")])
+        self.assertEqual(e.exception.code, "shell_install_required")
+        self.assertEqual(self.target(None), "io.s2arm.games.team1", "列不出（工具旧 / 断开）：照旧用启动器的包名")
+
+
+class DevpushApps(unittest.TestCase):
+    def test_parse_rows(self):
+        sys.path.insert(0, str(JOBS.parents[1] / "tools"))
+        import push_pack as P
+        d = P.Devpush("x", "U", "-", tempfile.mkdtemp())
+        with patch.object(d, "call", lambda *a: (0, "a.b\tA\tT1\nio.s2arm.games.t\tS2Arm\t\n\n")):
+            self.assertEqual(d.apps(), [("a.b", "A", "T1"), ("io.s2arm.games.t", "S2Arm", "")])
+        with patch.object(d, "call", lambda *a: (1, "不认识的操作 apps")):
+            self.assertIsNone(d.apps(), "工具太旧：None，调用方照旧用启动器的包名")

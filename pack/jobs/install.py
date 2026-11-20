@@ -2667,6 +2667,40 @@ def _identity_source(c, ph):
     return team, fp, plume, "appleId"
 
 
+S2ARM_BID_PREFIX = "io.s2arm.games"   # 启动器装的包名前缀；AltStore / SideStore 等会在后面加一段（常见 .<团队号>），前缀不变
+IDENTITY_TEAM_MISMATCH = ("手机上的 S2Arm 是用另一个 Apple ID 或证书签的（团队 {0}），和这台电脑上的签名身份（团队 {1}）不是同一个团队，交过去也签不了游戏："
+                          "请在启动器里登录装 S2Arm 用的那个 Apple ID，或选用同一团队的证书。")
+
+
+def installed_s2arm(c, ph):
+    """手机上装着的 S2Arm（启动器装的、AltStore / SideStore / ESign 等别的工具装的都认）→ [{bundleId, team}]（team 读不到为 None）；
+    按包名前缀 io.s2arm.games 或主程序名（main_executable）认。列不出（工具旧 / 断开）→ None"""
+    with tempfile.TemporaryDirectory(dir=c.private) as w:
+        rows = devpush_client(c, ph.udid, "-", w).apps() if ph.udid else None
+    if rows is None:
+        return None
+    main = main_executable(c)
+    return [dict(bundleId=b, team=t or None) for b, e, t in rows if b.lower().startswith(S2ARM_BID_PREFIX) or e == main]
+
+
+def identity_target(c, ph, team):
+    """交签名身份交给手机上的哪个 S2Arm（11-19 维护者：不管 App 是谁装的，团队号对上就交）→ 包名。
+    启动器自己的包名装着且团队对得上（或读不到团队）优先；否则挑团队相同的那个；都不是这个团队 → identity_team_mismatch（照实说是哪个团队）。
+    列不出已装 App（工具旧 / 断开）→ 照旧用启动器的包名；一个都没装 → shell_install_required"""
+    apps = installed_s2arm(c, ph)
+    if apps is None:
+        return ph.bid
+    if not apps:
+        raise Failure(SHELL_INSTALL_FIRST, code="shell_install_required")
+    ok = [a for a in apps if a["team"] in (team, None)]
+    mine = [a for a in ok if ph.bid and a["bundleId"].lower() == ph.bid.lower()]
+    known = [a for a in ok if a["team"] == team]
+    pick = (mine or known or ok)
+    if not pick:
+        raise Failure(IDENTITY_TEAM_MISMATCH.format("、".join(sorted({a["team"] for a in apps})), team), code="identity_team_mismatch")
+    return pick[0]["bundleId"]
+
+
 def deliver_identity(c, ph, strict=False, force=False):
     """0.6.0 通用壳：把手机自签要的私钥 + 叶证书交给 App（cmdr 方案「私钥怎么交给 App」，11-17 真机验过 DER 两份能配成签名身份）。
     只走本机 USB（s2a-devpush），写进 App 数据容器 IDENTITY_INCOMING：key.der（PKCS#1）、cert.der、最后改名就位的 identity.json（不含私钥）。
@@ -2728,7 +2762,10 @@ def phone_identity(c):
     with packer_phone_lock(c):   # 装机类作业一次一个（ipa.phone_lock）
         c.begin("把证书交给 iPhone 上的 S2Arm", 1, 1)
         ph = phone_for(c)
-        return dict(deliver_identity(c, ph, strict=True, force=c.r.get("force") is True), device=ph.key)
+        src = _identity_source(c, ph)
+        if src:   # 别的工具装的 S2Arm（包名被改过）也交：按手机上实际装着、团队对得上的那个（identity_target）
+            ph.bid = identity_target(c, ph, src[0])
+        return dict(deliver_identity(c, ph, strict=True, force=c.r.get("force") is True), device=ph.key, bundleId=ph.bid)
 
 
 def push_game(c, gid, ph, steps=True):
