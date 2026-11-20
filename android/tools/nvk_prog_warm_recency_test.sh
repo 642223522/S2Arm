@@ -12,11 +12,14 @@ CC=${CC:-cc}
 compile() {
     tree=$1 name=$2
     native="$tree/android/native"
-    "$CC" -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -pthread \
+    set -- -std=c11 -D_DEFAULT_SOURCE -Wall -Wextra -Werror -pthread
+    # Keep O_NOFOLLOW visible when compiling the production writer on Darwin.
+    if [ "$(uname -s)" = Darwin ]; then set -- "$@" -D_DARWIN_C_SOURCE; fi
+    "$CC" "$@" \
         -I"$native/nvn" -I"$native" -I"$tree/graphics/nvn/replay" \
         -Dclock_gettime=nvk_recency_test_clock_gettime \
         -c "$native/nvn/nvn_vk_prog_warm.c" -o "$BUILD/$name.o"
-    "$CC" -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -pthread \
+    "$CC" "$@" \
         -I"$native/nvn" -I"$native" -I"$tree/graphics/nvn/replay" \
         "$ROOT/android/tests/nvn_prog_warm_recency_test.c" "$native/direct/sha256.c" \
         "$BUILD/$name.o" -o "$BUILD/$name"
