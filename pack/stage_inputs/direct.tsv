@@ -50,6 +50,7 @@
 入	translator/uepak.py
 入	translator/ns2_shaders.py	Switch 2（NVN2）GLSLC 输出与控制段读取（shader_split 调用）
 入	translator/nvn_key.py	Switch 1 着色器键规则（第 2 代置零两段易变字段；shader_split / merge_extract / nxsh_extract / rt_dump_merge 调用）
+入	translator/mdb1.py	Media.Vision MVGL（MDB1）归档逐条目解出（nxsh_extract mdb1_visit 调用）
 入	translator/unityfs.py
 入	translator/vk_shaders.py
 入	graphics/nvn/ios/tools/ios_metal.py
