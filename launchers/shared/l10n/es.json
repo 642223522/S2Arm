@@ -4093,6 +4093,8 @@
   "这台电脑上没有这个 Apple ID 能用的开发证书，要新建一张。如果你的账号证书已满，苹果会撤掉列表里的第一张「{0}」（{1} 生效），用它签的 App（可能是 Xcode 或 AltStore 装的）会打不开；没满就什么都不撤。": "Este ordenador no tiene ningún certificado de desarrollo utilizable para este Apple ID, así que necesita crear uno. Si los certificados de tu cuenta están completos, Apple revocará el primero de la lista, «{0}» (válido desde {1}), y las apps firmadas con él (posiblemente instaladas con Xcode o AltStore) dejarán de abrirse; si no están completos, no se revoca nada.",
   "点「仍然继续」就照签。想保住那一张，要先删掉一张不用的开发证书：有 Mac 的话，在 Mac 上 Xcode 的「设置 → 账户 → 管理证书」里删，删完回来再装一次。": "Haz clic en Continuar de todos modos para firmar. Para conservar ese certificado, elimina antes uno de desarrollo que ya no uses: si tienes un Mac, hazlo en Xcode en el Mac, en Ajustes → Cuentas → Gestionar certificados, y luego vuelve e instala de nuevo.",
   "已送到手机，打开 S2Arm 时自动装好。": "Enviado al teléfono. Se instalará automáticamente la próxima vez que abras S2Arm.",
-  "等 iPhone 上的 S2Arm 装好这款的程序": "Esperando a que S2Arm en el iPhone instale el programa de este juego"
+  "等 iPhone 上的 S2Arm 装好这款的程序": "Esperando a que S2Arm en el iPhone instale el programa de este juego",
+  "没读到登录的 Apple ID，这份游戏包未签名，导入后由手机上的 S2Arm 签名。": "No se encontró ningún Apple ID con sesión iniciada, así que este paquete de juego no está firmado. S2Arm lo firmará en el teléfono tras importarlo.",
+  "没读到登录的 Apple ID，这份游戏包未签名；手机上的 S2Arm 还没拿到签名身份，导入后签不了：先在启动器里登录 Apple ID（或选用自己的证书），连上手机推一次游戏，把签名身份交给它。": "No se encontró ningún Apple ID con sesión iniciada, así que este paquete de juego no está firmado, y S2Arm en el teléfono aún no tiene una identidad de firma, por lo que no podrá firmarlo tras importarlo. Inicia sesión con tu Apple ID en el lanzador (o elige tu propio certificado), conecta el teléfono y envía un juego una vez para entregarle la identidad de firma."
  }
 }

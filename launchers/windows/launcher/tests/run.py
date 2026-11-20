@@ -78,6 +78,12 @@ def main():
                        "--build-route-probe", str(Path(temporary) / "out"), "--data-root=" + str(Path(temporary) / "data")], env)
             if "✓ 出包页打开哪一款" not in out.stdout:
                 raise RuntimeError("build route probe did not report success")
+        # 控制口 /dismiss（s2armctl dismiss）关得掉新功能大窗 / 更新弹窗（UI.Snapshots/DismissProbe.cs）
+        with tempfile.TemporaryDirectory(prefix="s2arm-dismiss-probe-") as temporary:
+            out = run([dotnet, "run", "--project", str(probe), "--no-build", "--configuration", "Release", "--",
+                       "--dismiss-probe", str(Path(temporary) / "out"), "--data-root=" + str(Path(temporary) / "data")], env)
+            if "✓ 控制口 dismiss 关弹窗" not in out.stdout:
+                raise RuntimeError("dismiss probe did not report success")
         if args.negative_controls:
             with tempfile.TemporaryDirectory(prefix="s2arm-ui-negative-") as temporary:
                 target = Path(temporary).resolve()

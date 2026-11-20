@@ -30,6 +30,7 @@ static char rt_stage[16];   // 最近一次 mtl_shmap_rt_add 的阶段名（32 /
 void mtl_shmap_rt_add(const char *key, const char *stage) { (void)key; snprintf(rt_stage, sizeof rt_stage, "%s", stage); }
 void mtl_se_stats(uint64_t out[2]) { out[0] = out[1] = 0; }   // 采样器模拟变体计数（nvn_mtl.m）：本测不建变体
 void mtl_vp_stats(uint64_t out[2]) { out[0] = out[1] = 0; }   // 顶点补齐变体计数（nvn_mtl.m）：本测不建变体
+void mtl_hybrid_pkg_stats(uint64_t out[7]) { for (int i = 0; i < 7; i++) out[i] = 0; }   // 随包拉取基础管线计数（nvn_hybrid.inc）：本测不建管线
 static uint64_t now_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000 + t.tv_nsec; }
 static int compiled_stage = -1;   // 最近一次交给 S2A.Dsh 的阶段号（34–36 核 NVN2 任务 / 网格 = 4 / 5）
 static const char *chain_name(void);   // DMSH_CHAIN（dmsh_chain.h 随 dsh_miss.inc 在下面才包含）

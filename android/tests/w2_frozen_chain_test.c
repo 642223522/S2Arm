@@ -56,12 +56,14 @@ static int32_t managed_compile(uint64_t session, uint64_t generation, s2a_direct
     return S2A_DIRECT_RES_ARGUMENT;
 }
 
+#include "nvn_key.h"
 #include "whole_chain_adapter.inc"
 
 static void source_key(const uint8_t *code, size_t code_bytes, const uint8_t *control,
                         size_t control_bytes, uint8_t key[8]) {
     s2a_sha256 hash; uint8_t digest[32];
-    s2a_sha256_init(&hash); s2a_sha256_update(&hash, control, control_bytes);
+    uint8_t kc[S2A_SOURCE_CONTROL_BYTES]; memcpy(kc, control, control_bytes); nvn_key_ctl_zero(kc, (uint32_t)control_bytes);   /* 第 2 代键（nvn_key.h，同 source_store） */
+    s2a_sha256_init(&hash); s2a_sha256_update(&hash, kc, control_bytes);
     s2a_sha256_update(&hash, code, code_bytes); s2a_sha256_final(&hash, digest);
     memcpy(key, digest, 8);
 }

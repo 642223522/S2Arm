@@ -154,15 +154,20 @@ class ErrorRecoveryTests(JobCase):
             raise ValueError("synthetic callback failure")
         # Bound the pre-fix failure as well: a swallowed callback exception must
         # not leave the test sleeping indefinitely or leave its child running.
-        timer = threading.Timer(3, self.c.stop)
+        # The judgment is our own output, not wall-clock time (a loaded host stretches any time
+        # bound): the run must end through the callback-failure path, never through this backstop.
+        backstop = threading.Event()
+        def stop_by_backstop():
+            backstop.set()
+            self.c.stop()
+        timer = threading.Timer(20, stop_by_backstop)
         timer.start()
-        start = time.monotonic()
         try:
             with patch("threading.excepthook"), self.assertRaisesRegex(ValueError, "synthetic callback failure"):
                 self.c.run([sys.executable, "-c", "import time; print('fixture', flush=True); time.sleep(30)"], on_line=broken)
         finally:
             timer.cancel()
-        self.assertLess(time.monotonic() - start, 3)
+        self.assertFalse(backstop.is_set(), "the child was stopped by the backstop timer, not by the callback-failure path")
         self.assertTrue(children)
         self.assertTrue(all(child.poll() is not None for child in children))
         self.assertFalse(self.c.children)

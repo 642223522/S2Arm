@@ -4,10 +4,11 @@ sed_edit() { sed -i.s2a-bak "$1" "$2" && rm -f "$2.s2a-bak"; }
 # 门禁闭包：--table pack/stage_inputs/direct.tsv pack/stage_direct.sh graphics/metal/gal_prog.m
 # 门禁闭包：--table pack/stage_inputs/extract.tsv pack/stage_extract.sh
 # 门禁闭包：--table pack/stage_inputs/direct_seed.tsv pack/stage_direct_seed.sh
+# 门禁闭包：--table pack/stage_inputs/direct_cpso.tsv pack/stage_direct_cpso.sh
 # 门禁覆盖：pack/stage_*.sh pack/stage_keyfiles.sh pack/stage_inputs/* tools/stage_inputs.py graphics/tools/direct/* graphics/tools/shbake/*.py graphics/nvn/* graphics/metal/gal_*
 # 阶段源码键单测（pack/stage_keyfiles.sh + pack/stage_inputs/*.tsv + tools/stage_inputs.py；维护者 10-26 20:3x 直连库 / 抽取键收窄）：bash tests/stage_keys_test.sh
 # 期望按规则手写：
-#   ① 本仓库：直连库 / 抽取 / 管线种子表（审计 #1534 P1-54）三个阶段从起点扫出的依赖闭包里每个文件都在各自声明表里归了类（入 / 外），表里每个文件都在 HEAD
+#   ① 本仓库：直连库 / 抽取 / 管线种子表（审计 #1534 P1-54）/ 计算管线归档四个阶段从起点扫出的依赖闭包里每个文件都在各自声明表里归了类（入 / 外），表里每个文件都在 HEAD
 #   ② 临时克隆里提交改动：宿主运行时代码（graphics/nvn/gfx/nvn/nvn_mtl.m，不在表里）改一行 → 两个键都不变（旧算法整树对象号会变：反证）；
 #      「外」文件（tools/clonedir.py）改一行 → 键不变；「入」文件改一行（se_want.py → 直连库键变、nxsh_extract.py → 抽取键变）；
 #      gal_prog.m 里 gal_spv_hash 改一处取值（摘要偏移 d → d + 8）→ 直连库键变（gal_prog.m 整份进键：直连出库经 libnxgal 调它的共享内存溢出改写）
@@ -23,7 +24,8 @@ ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
 # 入口取自头部「门禁闭包」行（门禁路由 tools/gate_route.py 按同一份算闭包选本单测，两处不各写一份）
 ENT_direct=$(sed -n 's#^\# 门禁闭包：--table pack/stage_inputs/direct.tsv ##p' "$0"); ENT_extract=$(sed -n 's#^\# 门禁闭包：--table pack/stage_inputs/extract.tsv ##p' "$0")
 ENT_direct_seed=$(sed -n 's#^\# 门禁闭包：--table pack/stage_inputs/direct_seed.tsv ##p' "$0")
-[ -n "$ENT_direct" ] && [ -n "$ENT_extract" ] && [ -n "$ENT_direct_seed" ] || { echo "不通 头部「门禁闭包」行读不到入口"; exit 1; }
+ENT_direct_cpso=$(sed -n 's#^\# 门禁闭包：--table pack/stage_inputs/direct_cpso.tsv ##p' "$0")
+[ -n "$ENT_direct" ] && [ -n "$ENT_extract" ] && [ -n "$ENT_direct_seed" ] && [ -n "$ENT_direct_cpso" ] || { echo "不通 头部「门禁闭包」行读不到入口"; exit 1; }
 miss() {   # miss <仓库> <阶段> → 闭包里有、声明表里没有的文件（一行一个）
   local r=$1 st=$2 e; e=ENT_$st
   # shellcheck disable=SC2086
@@ -32,7 +34,7 @@ miss() {   # miss <仓库> <阶段> → 闭包里有、声明表里没有的文�
 }
 key() { bash -c 'source "$1/pack/stage_keyfiles.sh"; stage_files_key "$2" "$1"' _ "$1" "$2"; }
 # ①
-for st in direct extract direct_seed; do
+for st in direct extract direct_seed direct_cpso; do
   m=$(miss "$H" $st); k=$(key "$H" $st 2> $T/err)
   ck "① ${st}：闭包都在声明表里（漏 $(grep -c . <<< "$m") 个：$(tr '\n' ' ' <<< "$m" | cut -c1-120)）、键算得出（${k}）" '[ -z "$m" ] && [ ${#k} = 16 ]'
 done
