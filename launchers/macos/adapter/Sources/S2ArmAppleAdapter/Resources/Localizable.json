@@ -6248,8 +6248,8 @@
   "en": "This computer has no usable development certificate for this Apple ID, so it needs to create one. If your account's certificates are full, Apple will revoke the first one in the list, “{0}” (valid from {1}), which may be the one AltStore / SideStore is using; once it is revoked, AltStore / SideStore themselves and the apps they installed will stop opening."
  },
  {
-  "source": "点「仍然继续」就照签。想保住那一张，要先删掉一张不用的开发证书：有 Mac 的话，在 Mac 上 Xcode 的「设置 → 账户 → 管理证书」里删，删完回来再装一次。",
-  "en": "Click Continue anyway to sign. To keep that one, first delete a development certificate you no longer use: if you have a Mac, delete it in Xcode on the Mac under Settings → Accounts → Manage Certificates, then come back and install again."
+  "source": "点「仍然继续」会新建证书照签。不想动现有证书的话，点「改用已有证书」，把在 AltStore / SideStore 导出的 .p12 导进来，就不用新建。",
+  "en": "Click Continue anyway to create a new certificate and sign. To keep your current certificates, click Use an existing certificate and import the .p12 you exported from AltStore / SideStore, so nothing new is created."
  },
  {
   "source": "点「仍然继续」照传：手机报的空闲不含系统随时能清掉的空间，实际多半放得下，真写满了会停下并说明还差多少；也可以先在「设置 → 通用 → iPhone 储存空间」腾出空间。",
