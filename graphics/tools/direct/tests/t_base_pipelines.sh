@@ -116,6 +116,12 @@ o=$(BP "$T/o3" --os "$MAJ" --arch "$ARCH" --cache "$T/cache" 2>&1); r=$?
 same() { local f; for f in $(want); do cmp -s "$1/$f" "$2/$f" || return 1; done; }
 ck "④ 再跑：缓存命中 4、现编 0、预热对缓存命中、文件逐字节相同（$(tail -1 <<< "$o" | grep -o '缓存命中[^）]*')；$(tail -1 <<< "$o" | grep -o '首查预热对[^；]*')）" \
    '[ $r = 0 ] && [[ "$o" == *"缓存命中 4、现编 0"* ]] && [[ "$o" == *"首查预热对 1 份（缓存命中）"* ]] && same "$T/o1" "$T/o3"'
+# ④b 热缓存先查缓存、不包单函数库：xcrun 套一层记 metallib 次数，只剩首查预热对那 1 次（改前每对的顶点 / 片元模块各包一次）
+mkdir -p "$T/shim"; RX=$(command -v xcrun)
+printf '#!/bin/bash\nfor x in "$@"; do [ "$x" = metallib ] && echo 1 >> "%s/metallib.n"; done\nexec "%s" "$@"\n' "$T" "$RX" > "$T/shim/xcrun"; chmod +x "$T/shim/xcrun"; : > "$T/metallib.n"
+o=$(PATH="$T/shim:$PATH" BP "$T/o3b" --os "$MAJ" --arch "$ARCH" --cache "$T/cache" 2>&1); r=$?
+nm=$(wc -l < "$T/metallib.n" | tr -d ' ')
+ck "④b 热缓存再跑：xcrun metallib 只跑 ${nm} 次（期望 1：预热对），缓存命中 4、文件逐字节相同" '[ $r = 0 ] && [ "$nm" = 1 ] && [[ "$o" == *"缓存命中 4、现编 0"* ]] && same "$T/o1" "$T/o3b"'
 # ⑤
 printf '#!/bin/sh\necho "fake metal-tt: broken" >&2; exit 1\n' > "$T/badtt"; chmod +x "$T/badtt"
 o=$(S2A_METAL_TT=$T/badtt BP "$T/o4" --os "$MAJ" --arch "$ARCH" --cache "$T/cache4" 2>&1); r=$?
