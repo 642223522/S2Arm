@@ -135,6 +135,7 @@ RECOVERY = {
     "devcert_invalid": "选导出的 .p12 证书和开发者网站下载的 .mobileprovision 描述文件，再导入一次。",   # 开发者证书签名（pack/jobs/devcert.py，v0.2.4）
     "devcert_mismatch": "在开发者网站重新生成描述文件并勾上这张证书，下载后和证书一起重新导入。",   # 开发者证书签名（pack/jobs/devcert.py，v0.2.4）
     "devcert_missing": "在出包页「我的开发者证书」里重新导入证书和描述文件，或切回「Apple ID 签名」。",   # 开发者证书签名（pack/jobs/devcert.py，v0.2.4）
+    "identity_team_mismatch": "在启动器里登录装 S2Arm 用的那个 Apple ID（或选用和装 S2Arm 同一团队的证书），再点一次「把签名身份交给手机」。",   # 交签名身份（install.identity_target，11-19）：手机上的 S2Arm 是别的团队签的（AltStore 等用了另一个 Apple ID），交过去手机也签不了游戏
     "devcert_keychain": "解锁登录钥匙串并允许 S2Arm 访问后，重新导入证书。",   # 开发者证书签名（pack/jobs/devcert.py，v0.2.4）
     "source_integrity_skipped": "能玩就照常用；出包或游戏里出现花屏、闪退时，换一份原版完整的文件（本体与更新 / DLC 分开的那种）再试。",   # 维护者 11-17：校验不过不再拒收（#1467）
     "widget_skipped": "App 已装好、游戏照常玩。想要主屏小组件：用 Apple ID 签名（不是自己的开发者证书）再装一次；免费 Apple ID 包名额度满了就等几天再装。",   # 主屏小组件（install.widget_skip，11-16）

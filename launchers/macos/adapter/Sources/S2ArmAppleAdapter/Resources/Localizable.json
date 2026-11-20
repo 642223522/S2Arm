@@ -10442,5 +10442,13 @@
  {
   "source": "没读到登录的 Apple ID，这份游戏包未签名；手机上的 S2Arm 还没拿到签名身份，导入后签不了：先在启动器里登录 Apple ID（或选用自己的证书），连上手机推一次游戏，把签名身份交给它。",
   "en": "No signed-in Apple ID was found, so this game pack is unsigned, and S2Arm on your phone doesn't have a signing identity yet, so it can't sign it after import. Sign in with your Apple ID in the launcher (or choose your own certificate), connect your phone and send a game once to hand the signing identity to it."
+ },
+ {
+  "source": "在启动器里登录装 S2Arm 用的那个 Apple ID（或选用和装 S2Arm 同一团队的证书），再点一次「把签名身份交给手机」。",
+  "en": "In the launcher, sign in with the Apple ID you used to install S2Arm (or choose a certificate from the same team as the one that installed S2Arm), then click “Give the signing identity to the phone” again."
+ },
+ {
+  "source": "手机上的 S2Arm 是用另一个 Apple ID 或证书签的（团队 {0}），和这台电脑上的签名身份（团队 {1}）不是同一个团队，交过去也签不了游戏：请在启动器里登录装 S2Arm 用的那个 Apple ID，或选用同一团队的证书。",
+  "en": "S2Arm on your phone was signed with a different Apple ID or certificate (team {0}), not the same team as the signing identity on this computer (team {1}), so the phone can't sign games with it. Sign in with the Apple ID you used to install S2Arm in the launcher, or choose a certificate from the same team."
  }
 ]
