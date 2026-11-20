@@ -30,8 +30,8 @@ void s2a_adpf_gpu_segment(uint64_t gpu_ns);
 void s2a_adpf_gpu_frame_end(void);
 
 // ---- 纯函数（宿主测试直接喂输入）----
-// ADPF 目标 = 本局最短周期 × 3/4；本局还没登记（0）时退回本帧周期 × 3/4。
-int64_t s2a_adpf_target_ns(uint64_t session_period_ns, int64_t frame_period_ns);
+// ADPF 目标 = 本帧周期 × 3/4（不用本局最短周期，见 adpf_hint.c）。
+int64_t s2a_adpf_target_ns(int64_t frame_period_ns);
 // 忙线程挑选：must 里的线程先入（去重），其余按两次扫描间的 utime+stime 增量从大到小，
 // 增量 ≥ 15% 一个核（wall_ns 内）且上次扫描时已在的才入，合计最多 max 条。返回条数。
 struct s2a_adpf_task { int32_t tid; uint64_t ticks; };

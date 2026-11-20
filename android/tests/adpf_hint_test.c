@@ -172,10 +172,9 @@ static void set_tasks(const struct s2a_adpf_task *t, int n) { memcpy(tasks, t, s
 
 // 本局最短周期与 ADPF 目标（手算）：16,666,667 × 3/4 = 12,500,000；33,333,334 × 3/4 = 25,000,000；8,333,333 封到 16,666,667
 static void test_target(void) {
-    CHECK(s2a_adpf_target_ns(16666667, 33333334) == 12500000);
-    CHECK(s2a_adpf_target_ns(33333334, 33333334) == 25000000);
-    CHECK(s2a_adpf_target_ns(0, 16666667) == 12500000);
-    CHECK(s2a_adpf_target_ns(0, 0) == 0);
+    CHECK(s2a_adpf_target_ns(33333334) == 25000000);
+    CHECK(s2a_adpf_target_ns(16666667) == 12500000);
+    CHECK(s2a_adpf_target_ns(0) == 0);
     s2a_android_session_period_reset();
     CHECK(s2a_android_session_period_ns() == 0);
     s2a_android_present_note(16666667); s2a_android_present_note(33333334);
@@ -190,15 +189,15 @@ static void test_target(void) {
     s2a_android_set_battery_limit(1);                              // 省电档：按 30 帧判
     CHECK(s2a_android_session_period_ns() == 33333334);
     s2a_android_set_battery_limit(0);
-    // 接线：当前周期 33.3 ms、本局最短 16.7 ms → 会话目标 12,500,000，不是 25,000,000
+    // 接线：本局最短 16.7 ms（菜单跑过 60 帧）、当前周期 33.3 ms → 会话目标跟当前周期 = 25,000,000，不是 12,500,000
     s2a_adpf_test_reset(); caps = 0;
     s2a_adpf_set_foreground(1); s2a_adpf_set_surface(1); thread_id = 42;
+    s2a_android_session_period_reset(); s2a_android_present_note(16666667); s2a_android_present_note(33333334);
     const int c0 = creates;
     frame(10000, 20, 33333334);
-    CHECK(creates == c0 + 1 && created_target == 12500000);
-    s2a_android_session_period_reset(); s2a_android_present_note(33333334);   // 固定 30 帧的游戏：25,000,000
-    frame(10100, 20, 33333334);
-    CHECK(updated_target == 25000000);
+    CHECK(creates == c0 + 1 && created_target == 25000000);
+    frame(10100, 20, 16666667);                                    // 回到 60 帧档：目标跟着收紧到 12,500,000
+    CHECK(updated_target == 12500000);
     s2a_android_session_period_reset();
 }
 

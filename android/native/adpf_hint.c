@@ -204,10 +204,11 @@ static int backend_init(void) {
 }
 #endif
 // ---- 纯函数 ----
-int64_t s2a_adpf_target_ns(uint64_t session_period_ns, int64_t frame_period_ns) {
-    // 目标收紧到周期的 3/4（参照 BOTWRecompAndroid）：给满整个周期时，21 ms 的帧在 33 ms 目标下显得宽裕，调度器把频率压到
-    //   「刚好够」，稍重一帧就晚一个刷新。周期取本局最短的（参照 BananaNative），掉档后仍按升得回去的周期要时钟。
-    const int64_t base = session_period_ns && session_period_ns <= (uint64_t)INT64_MAX ? (int64_t)session_period_ns : frame_period_ns;
+int64_t s2a_adpf_target_ns(int64_t frame_period_ns) {
+    // 目标收紧到当前周期的 3/4（参照 BOTWRecompAndroid）：给满整个周期时，21 ms 的帧在 33 ms 目标下显得宽裕，调度器把频率压到
+    //   「刚好够」，稍重一帧就晚一个刷新。用当前周期、不用本局最短周期：锁 30 帧的游戏若菜单跑过 60 帧，按最短周期会一直要
+    //   12.5 ms 的时钟，白耗电也涨不了帧（ADPF 没有「没收益就退避」）；掉档追回由 CPU 托底按本局最短周期判（它有退避）。
+    const int64_t base = frame_period_ns;
     return base > 0 ? base / 4 * 3 + base % 4 * 3 / 4 : 0;   // = floor(base × 3 / 4)，不溢出
 }
 static int tid_in(const int32_t *a, int n, int32_t t) {
@@ -412,10 +413,9 @@ void s2a_adpf_frame_end(int64_t target_ns, uint64_t seq) {
     const uint64_t elapsed = now - began;
     if (elapsed > (uint64_t)INT64_MAX || !backend_init()) { pthread_mutex_unlock(&mu); return; }
     const int cap = backend_caps();
-    // 周期 = 本局最短周期（还没登记就用本帧的）；ADPF 目标 = 它的 3/4；负载信号对周期本身比，不对收紧后的目标比
-    const uint64_t session_period = s2a_android_session_period_ns();
-    const int64_t period = session_period && session_period <= (uint64_t)INT64_MAX ? (int64_t)session_period : target_ns;
-    const int64_t adpf_target = s2a_adpf_target_ns(session_period, target_ns);
+    // 周期 = 本帧周期；ADPF 目标 = 它的 3/4；负载信号对周期本身比，不对收紧后的目标比
+    const int64_t period = target_ns;
+    const int64_t adpf_target = s2a_adpf_target_ns(target_ns);
     // Preserve the sample before replacing a previous owner's session.
     if (session && session_tid != tid) close_locked();
     if (session && threads_dirty && !(cap & CAP_THREADS)) close_locked();   // API 33 没有 setThreads：换成员只能重建
