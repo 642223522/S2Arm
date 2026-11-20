@@ -22,7 +22,7 @@ from test_win_jobs import FakeW  # noqa: E402
 ROOT = Path(__file__).resolve().parents[3]
 TABLE = json.loads((ROOT / "launchers/shared/experience.v1.json").read_text(encoding="utf-8"))["install_landing"]
 FIXTURE = ROOT / "launchers/windows/launcher/UI.Snapshots/landing_items.json"
-# Mac 清单里还没接落点的项（开发甲 fix/mac-appleid-login-ui 接：package / appleId / connected / trusted / developerMode）。那支合入时删掉这个集合
+# Mac 清单里还没接落点的项（fix/mac-appleid-login-ui 接：package / appleId / connected / trusted / developerMode）。那支合入时删掉这个集合
 MAC_PENDING = {"package", "appleId", "connected", "trusted", "developerMode"}
 
 
