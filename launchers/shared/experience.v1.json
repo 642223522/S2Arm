@@ -1347,6 +1347,7 @@
       {"id": "console.updateSelected", "zh-Hans": "更新所选（{0}）", "en": "Update selected ({0})"},
       {"id": "console.progress", "zh-Hans": "第 {0} / {1} 款", "en": "Game {0} of {1}"},
       {"id": "console.stop", "zh-Hans": "停下", "en": "Stop"},
+      {"id": "console.pushFailed", "zh-Hans": "{0} 款没推成", "en": "{0} games weren't updated"},
       {"id": "console.help.guide", "zh-Hans": "重看第一次的引导", "en": "Show the first-time guide again"},
       {"id": "console.help.report", "zh-Hans": "故障报修", "en": "Report a problem"},
       {"id": "console.status.chooseApp", "zh-Hans": "装着不止一个 S2Arm · 选用哪一个", "en": "More than one S2Arm installed · choose one"},

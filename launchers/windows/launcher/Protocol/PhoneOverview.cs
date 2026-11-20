@@ -137,6 +137,30 @@ public sealed record PhoneOverview(IReadOnlyList<PhoneOverview.Phone> Phones)
         return null;
     }
 
+    /// <summary>「更新所选」没推成的一款：游戏号、错误码、原因（作业层给玩家的原句）</summary>
+    public sealed record PushFailure(string GameId, string Code, string Message);
+
+    /// <summary>「更新所选」（作业 pushSelected）失败时诊断带的逐款结果 facts {games: [{gameId, ok, code?, message?}]}（install.push_selected）→ 没推成的那几款，按推的顺序。
+    /// 换哪款都做不下去整轮停（没装 App / 手机断开…）的失败不带逐款结果 → 空：失败页只写作业原因，「重试」走续推</summary>
+    public static IReadOnlyList<PushFailure> PushFailures(JsonElement diagnostics)
+    {
+        static string? S(JsonElement o, string k) => o.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        var failed = new List<PushFailure>();
+        if (diagnostics.ValueKind != JsonValueKind.Array) return failed;
+        foreach (var d in diagnostics.EnumerateArray())
+            if (d.ValueKind == JsonValueKind.Object && d.TryGetProperty("facts", out var f) && f.ValueKind == JsonValueKind.Object
+                && f.TryGetProperty("games", out var gs) && gs.ValueKind == JsonValueKind.Array)
+                foreach (var g in gs.EnumerateArray())
+                    if (g.ValueKind == JsonValueKind.Object && S(g, "gameId") is { Length: > 0 } id && !(g.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.True)
+                        && failed.All(x => !string.Equals(x.GameId, id, StringComparison.OrdinalIgnoreCase)))
+                        failed.Add(new PushFailure(id.ToUpperInvariant(), S(g, "code") ?? "job_failed", S(g, "message") ?? ""));
+        return failed;
+    }
+
+    /// <summary>失败页「重试」推哪几款（同一台）：知道逐款结果 → 只推没成的那几款；不知道（整轮停）→ null，按作业续推（resume：没推到的 + 失败的）</summary>
+    public static IReadOnlyList<string>? RetryOrder(IReadOnlyList<PushFailure> failed) =>
+        failed.Count > 0 ? failed.Select(x => x.GameId).ToArray() : null;
+
     /// <summary>总控台当前这台：选过的那台；没选过 → 连着的那台 → 最近同步过的那台</summary>
     public Phone? Pick(string? chosen) =>
         Phones.FirstOrDefault(p => p.Device == chosen)
