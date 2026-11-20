@@ -662,17 +662,19 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
     // 分批（11-08 巫师3 Windows 出包机三次盘满，rc=127 死在收尾）：这一步把每支 MSL 明文写进临时目录再交子进程，巫师3 约 3 万键、明文近百 GB。子进程逐支独立分析（C1Cb.Cli 每支一个任务），
     //   按累计字节切批（缺省 256 MB，S2A_C1CB_CHUNK_MB，0 = 每支一批），一批跑完删目录，临时盘峰值 = 一批。原缺省 4 GB 对玩家等于不切：怪猎崛起后台遍
     //   整份 2.08 GB 一次落盘、正叠在编批库的盘峰值上（v0.2.4 出包空间）；后台遍与编批库并发，多起几次子进程不进墙钟
-    static Dictionary<string, (string C1, string Row)> C1CbChild(IReadOnlyList<string> names, string tag, Dictionary<string, string> sigs)
+    //   进度（11-20 010015100B514000：后台遍比编批库 / 两类变体晚完 85 秒，「等两张表」期间进度不动）：给了 tick = 阶段名，子进程每算完一支按全遍累计计一次
+    static Dictionary<string, (string C1, string Row)> C1CbChild(IReadOnlyList<string> names, string tag, Dictionary<string, string> sigs, string tick = null)
     {
         var res = new Dictionary<string, (string C1, string Row)>(StringComparer.Ordinal);
         long limit = long.TryParse(Environment.GetEnvironmentVariable("S2A_C1CB_CHUNK_MB"), out var mb) && mb >= 0 ? mb * 1000000 : 256000000L;
         var cur = new List<string>(); long bytes = 0; int part = 0;
-        void Flush() { if (cur.Count == 0) return; foreach (var kv in C1CbChunk(cur, tag + part++, sigs)) res[kv.Key] = kv.Value; cur = new List<string>(); bytes = 0; }
+        int done = 0; using var tk = tick == null ? null : new Ticker(tick, names.Count, 0, activity: false);
+        void Flush() { if (cur.Count == 0) return; foreach (var kv in C1CbChunk(cur, tag + part++, sigs, tick == null ? null : new[] { tick, done.ToString(), names.Count.ToString() })) res[kv.Key] = kv.Value; done += cur.Count; cur = new List<string>(); bytes = 0; }
         foreach (var n in names) { var m = MAC.Get(n); if (m == null) continue; if (cur.Count > 0 && bytes + m.Length > limit) Flush(); cur.Add(n); bytes += m.Length; }
-        Flush();
+        Flush(); tk?.Step(names.Count);   // 收满（没有 Mac 侧产物的那几支不进子进程）
         return res;
     }
-    static Dictionary<string, (string C1, string Row)> C1CbChunk(IReadOnlyList<string> names, string tag, Dictionary<string, string> sigs)
+    static Dictionary<string, (string C1, string Row)> C1CbChunk(IReadOnlyList<string> names, string tag, Dictionary<string, string> sigs, string[] tick)
     {
         var res = new Dictionary<string, (string C1, string Row)>(StringComparer.Ordinal);
         if (names.Count == 0) return res;
@@ -687,7 +689,7 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
             }
             var self = Path.GetFileNameWithoutExtension(Environment.ProcessPath) == "dotnet" ? new[] { Environment.ProcessPath, typeof(Build).Assembly.Location } : new[] { Environment.ProcessPath };
             var psi = new ProcessStartInfo(self[0]) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
-            foreach (var x in self[1..].Concat(new[] { "--c1cb", dir, "-j", NJ.ToString() })) psi.ArgumentList.Add(x);
+            foreach (var x in self[1..].Concat(new[] { "--c1cb", dir, "-j", NJ.ToString() }).Concat(tick == null ? Array.Empty<string>() : new[] { "--tick" }.Concat(tick))) psi.ArgumentList.Add(x);
             using var p = Process.Start(psi); var e = p.StandardError.ReadToEndAsync();
             string ln;
             while ((ln = p.StandardOutput.ReadLine()) != null)
@@ -708,7 +710,7 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
         var names = C1CbNames(); var sigs = new Dictionary<string, string>(StringComparer.Ordinal);
         Dictionary<string, (string C1, string Row)> r;
         // 后台遍只是预算，失败不算整次失败（同 Python 打黄字、收尾全算）：快照置空，收尾遍按最终产物重算（合入线 11-02 对照 #4）
-        try { r = C1CbChild(names, "bg", sigs); }
+        try { r = C1CbChild(names, "bg", sigs, "直连库·两张表"); }
         catch (Exception e) { C1CbSnap = null; Say($"[YELLOW] c1 / cb tables: the background pass failed, the final pass computes them all: {Trunc(e.Message, 300)}"); return; }
         C1CbSnap = names.Where(r.ContainsKey).ToDictionary(n => n, n => (sigs[n], r[n]), StringComparer.Ordinal);
         Say($"[分段] 两张表后台遍：{names.Count} 支，第 {t0:F1} 秒起、用 {Clock.Elapsed.TotalSeconds - t0:F1} 秒");
@@ -1074,9 +1076,16 @@ sealed class Ticker : IDisposable
 {
     readonly string stage, path; readonly int total; int done; long last;
     bool disposed;
+    readonly bool activity = true;
     public Ticker(string stage, int total)
     {
         this.stage = stage; this.total = Math.Max(total, 0); path = Environment.GetEnvironmentVariable("S2A_PROGRESS");
+        Write(true); PublishActivity(false);
+    }
+    /// <summary>从 done0 起计（同一段分几个子进程接力计数）；activity = false 不写活动记录（并发的旁路工作，不改界面的路数）</summary>
+    public Ticker(string stage, int total, int done0, bool activity)
+    {
+        this.stage = stage; this.total = Math.Max(total, 0); done = done0; this.activity = activity; path = Environment.GetEnvironmentVariable("S2A_PROGRESS");
         Write(true); PublishActivity(false);
     }
     public void Step(int n = 1) { int d = Interlocked.Add(ref done, n); Write(d >= total); }
@@ -1093,7 +1102,7 @@ sealed class Ticker : IDisposable
     }
     void PublishActivity(bool ending)
     {
-        if (string.IsNullOrEmpty(path) || Build.Jobs <= 0) return;
+        if (!activity || string.IsNullOrEmpty(path) || Build.Jobs <= 0) return;
         lock (this)
         {
             // Two columns: old four-column readers ignore this optional activity record.
