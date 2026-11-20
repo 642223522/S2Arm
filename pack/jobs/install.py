@@ -3262,15 +3262,20 @@ def push_selected(c):
     state_path = c.private / PUSH_SELECTED
     with packer_phone_lock(c):
         c.begin("找签名账号与 iPhone", 1, 1)
-        ph = push_phone(c)   # 别的工具装的 S2Arm 推进它自己的包名（结构 4）
+        old = (read(state_path, {}) or {}) if c.r.get("resume") is True else {}
         if c.r.get("resume") is True:
-            old = read(state_path, {}) or {}
-            games = [g for g in old.get("games") or [] if g not in (old.get("done") or [])] if old.get("device") == ph.key else []
+            games = [g for g in old.get("games") or [] if g not in (old.get("done") or [])]
         else:
             games = list(dict.fromkeys(str(g).upper() for g in c.r.get("gameIds") or []))
+        # 所选全是独立 App（0.6.3 起）：只要签名用的手机，不找通用壳——手机上装着几个 S2Arm、没选用哪个，也不挡独立 App；
+        #   有推进通用壳的款才取 push_phone（别的工具装的 S2Arm 推进它自己的包名，结构 4）
+        alone = bool(games) and all(chosen_layout(c, g) == "standalone" for g in games)
+        ph = phone_for(c) if alone else push_phone(c)
+        if c.r.get("resume") is True and old.get("device") != ph.key:
+            games = []
         state = dict(device=ph.key, games=games, done=[], failed={})
         atomic(state_path, state)
-        rows, signer = [], None   # signer：独立 App 要签名的手机对象（用到才取；别的工具装的 S2Arm 那台 push_phone 不签名）
+        rows, signer = [], ph if alone else None   # signer：独立 App 要签名的手机对象（用到才取；别的工具装的 S2Arm 那台 push_phone 不签名）
         for i, g in enumerate(games, 1):
             c.check()
             c.begin("按顺序把所选游戏推到 iPhone", i, len(games), key="pushSelected")

@@ -344,6 +344,17 @@ class ConsoleActionsPerLayout(unittest.TestCase):
         self.assertEqual(self.log, [("put_app", G1), ("push_game", G2)])
         self.assertEqual(out["done"], 2)
 
+    def test_push_selected_only_standalone_skips_shell_owner(self):
+        # 所选全是独立 App：不找通用壳（手机上装着几个 S2Arm、没选用哪个也不挡）——Duo 真机抓到的：原先开头 push_phone 就报「先选用哪一个」
+        import ipa as packer
+        self.c.r = dict(gameIds=[G1])
+        def owner(c): raise Failure("这台 iPhone 上装着不止一个 S2Arm", code="phone_app_choice_required")
+        with patch.object(install, "push_phone", owner), patch.object(install, "phone_for", lambda c: self.ph), \
+                patch.object(install, "put_app", lambda c, g, ph, steps=True: self.log.append(("put_app", g, ph is self.ph))), \
+                patch.object(packer, "phone_lock", lambda c: contextlib.nullcontext()), patch("core.preempt_jobs", lambda *a, **k: None):
+            out = install.push_selected(self.c)
+        self.assertEqual((self.log, out["done"]), ([("put_app", G1, True)], 1))
+
     def test_remove_standalone_uninstalls_that_app(self):
         import ipa as packer
         self.c.r = dict(gameId=G1)
