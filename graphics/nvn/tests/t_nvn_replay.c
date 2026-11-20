@@ -42,6 +42,7 @@ static int g_flag_sync_lag;     // 用例设：开关 nvk_sync_lag 的值（产�
 static int g_flag_binst_hoist = -1;   // 用例设：开关 nvk_binst_hoist（-1 = 缺省）
 static int g_flag_state_keep = 1, g_flag_rt_cont = 1, g_flag_clear_park = 1, g_flag_pass_area = 1;   // 用例设：开关 nvk_state_keep / nvk_rt_cont / nvk_clear_park / nvk_pass_area 的值（缺省同产品：都开）
 static int g_flag_pool_memo = 1;   // 用例设：开关 nvk_pool_memo 的值（缺省同产品：开）；备忘每 4096 次查找才重读一次，换值后要用 pm_flag() 推一下
+static int g_flag_land_merge = 1;  // 用例设：开关 nvk_land_merge 的值（缺省同产品：开）；每 256 次登记才重读一次，换值后要用 rp_test_gw_merge_reload() 推一下
 static int g_flag_buf_dirtylog = -1, g_dirtylog_dflt = -1;   // 用例设：开关 nvk_buf_dirtylog（-1 = 没设，取产品写的缺省；--dirtylog-off 整套以 0 跑一遍）。受跟踪的池都有替身日志，见「脏页追加日志替身」
 static int g_flag_vf_key = 1;      // 用例设：开关 nvk_vf_key 的值（缺省同产品：视图表按存储认视图）；每 256 次取视图重读一次，换值后要用 vf_push() 推一下
 static int g_flag_pool_stats;   // 用例设：开关 pool_stats（缺省同产品：关）
@@ -52,6 +53,7 @@ int nvn_plat_flag(const char *name, int dflt) {
     if (!strcmp(name, "pool_stats")) return g_flag_pool_stats;
     if (!strcmp(name, "nvk_spill")) return g_flag_spill;
     if (!strcmp(name, "nvk_pool_memo")) return g_flag_pool_memo;
+    if (!strcmp(name, "nvk_land_merge")) return g_flag_land_merge;
     if (!strcmp(name, "nvk_vf_key")) return g_flag_vf_key;
     if (!strcmp(name, "nvk_finish_lag")) return g_flag_finish_lag;
     if (!strcmp(name, "nvk_sync_lag")) return g_flag_sync_lag;
@@ -3896,7 +3898,9 @@ static void *pool_del_thread(void *p) {
     pthread_mutex_lock(&g_land_mu); g_destroy_done = 1; pthread_cond_broadcast(&g_land_cv); pthread_mutex_unlock(&g_land_mu);
     return NULL;
 }
+static int g_land_copies; static uint64_t g_land_copied;   // 落地拷贝统计：次数 / 累计字节（同段合并用例核对「合并后只拷一遍」）
 void rp_test_land_copy(void *dst, const void *src, size_t len) {
+    g_land_copies++; g_land_copied += len;
     if (!g_land_pause) { memcpy(dst, src, len); return; }
     size_t half = len / 2; memcpy(dst, src, half);
     pthread_mutex_lock(&g_land_mu); g_land_half = 1; pthread_cond_broadcast(&g_land_cv);
@@ -3953,6 +3957,102 @@ static void t_gpu_land_count_cleanup(void) {
     rp_buf_gpu_write_land(key, a, 1); rp_buf_gpu_write_land(key, b_id, 1);
     CHECK(rp_test_gw_live() == 0);
     nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK); g_pg_tracked = 1; g_buf_cpu_auto = 0; pass_fresh();
+}
+// 同段合并（开关 nvk_land_merge）：同一次提交里与已登记的显卡写相交 / 首尾相接的登记并成一条，落地只拷一遍（真机 3D 那款标题每帧 ~170 条、共 ~920 MB 在落地线程上拷）。
+// 期望值全部手算：池 g_pmem 镜像初值 0x11，「显卡写」的内容用例自己放（0xCC）。
+//   ① 同一段再登记 / 被包含 / 向后重叠 / 首尾相接 → 并成同一条（返回同一登记号，*merged = 1），区间 [64,104) → [64,112)；
+//   ② 有空隙（[120,128)）→ 另起一条（空隙里的镜像字节可能比游戏内存旧，不桥接）；一段同时接上两条 → 三条并成 [64,128)；
+//   ③ 落地：只拷 1 次共 64 字节，游戏内存 [64,128) 变 0xCC、邻接字节 63 / 128 不动；被吞掉那条的登记号迟到落地：不拷、不减账；
+//   ④ 负对照：不同提交 / 不同镜像 / 开关关 / 老入口（不带 merged）→ 都不并；
+//   ⑤ 走真提交路径：同一次提交里三笔登记（[600,616)+[608,624)+[616,640) 重叠）→ 落地 1 次共 40 字节；开关关 → 3 次共 56 字节（16+16+24，落地总字节随条数走）；
+//   ⑥ 已开始落地（拷贝在锁外、拷到一半）的登记不再扩：首尾相接的新登记另起一条，落地的那条撤账后新的一条原样还在。
+static void t_gpu_land_merge(void) {
+    extern void rp_test_gw_merge_reload(void); extern int rp_test_gw_get(uint64_t, int, uint64_t *, uint64_t *);
+    extern uint64_t rp_buf_gpu_write_note2(uint64_t, uint64_t, uint64_t *, int *);
+    pass_fresh(); g_buf_cpu_auto = 1; g_pg_tracked = 0; g_nbw = 0; memset(g_pmem, 0x11, sizeof g_pmem);
+    uint64_t base = (uint64_t)(uintptr_t)g_pmem, key = 0, o = 0, l = 0; int m = 0;
+    g_flag_land_merge = 1; rp_test_gw_merge_reload();
+    nvn_be_pool_add(g_pmem, sizeof g_pmem); nvn_be_sub_begin();
+    nvn_gpu_buf b = NULL; CHECK(rp_buf_resolve(&g_fake_cmd, base, PG, &b, NULL) == 1 && b && b->cpu);
+    if (!b || !b->cpu) return;
+    CHECK(rp_test_gw_live() == 0);
+    const uint64_t id1 = rp_buf_gpu_write_note2(base + 64, 16, &key, &m);
+    CHECK(id1 && key == base && m == 0 && rp_test_gw_live() == 1);
+    CHECK(rp_buf_gpu_write_note2(base + 64, 16, &key, &m) == id1 && m == 1 && rp_test_gw_live() == 1);   // ① 同一段再登记
+    CHECK(rp_buf_gpu_write_note2(base + 70, 4, &key, &m) == id1 && m == 1);                                 // 被包含
+    CHECK(rp_buf_gpu_write_note2(base + 72, 32, &key, &m) == id1 && m == 1);                                // 向后重叠 → [64,104)
+    CHECK(rp_test_gw_get(key, 0, &o, &l) == 1 && o == 64 && l == 40);
+    CHECK(rp_buf_gpu_write_note2(base + 104, 8, &key, &m) == id1 && m == 1);                                // 首尾相接 → [64,112)
+    CHECK(rp_test_gw_get(key, 0, &o, &l) == 1 && o == 64 && l == 48);
+    const uint64_t id5 = rp_buf_gpu_write_note2(base + 120, 8, &key, &m);                                   // ② 有空隙：另起一条
+    CHECK(id5 && id5 != id1 && m == 0 && rp_test_gw_live() == 2 && rp_test_gw_get(key, 0, &o, &l) == 2);
+    CHECK(rp_buf_gpu_write_note2(base + 112, 8, &key, &m) == id1 && m == 1);                                // 一段同时接上两条：三条并一条 [64,128)
+    CHECK(rp_test_gw_get(key, 0, &o, &l) == 1 && o == 64 && l == 64 && rp_test_gw_live() == 1);
+    memset(b->cpu + 64, 0xCC, 64); g_land_copies = 0; g_land_copied = 0;                                   // ③ 落地
+    rp_buf_gpu_write_land(key, id1, 1);
+    CHECK(g_land_copies == 1 && g_land_copied == 64 && rp_test_gw_live() == 0);
+    int bad = 0; for (unsigned i = 64; i < 128; i++) bad += g_pmem[i] != 0xCC;
+    CHECK(bad == 0 && g_pmem[63] == 0x11 && g_pmem[128] == 0x11);
+    rp_buf_gpu_write_land(key, id5, 1);                                                                     // 被吞掉那条的登记号迟到落地
+    CHECK(g_land_copies == 1 && g_land_copied == 64 && rp_test_gw_live() == 0);
+    // ④ 负对照 a：不同提交的登记不并（上一次提交的登记还没落地——显卡还在做——这一次的相接也不能并进去）
+    uint64_t ia = rp_buf_gpu_write_note2(base + 200, 16, &key, &m); CHECK(ia && m == 0);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK); nvn_be_sub_begin();
+    uint64_t ib = rp_buf_gpu_write_note2(base + 216, 16, &key, &m);
+    CHECK(ib && ib != ia && m == 0 && rp_test_gw_get(key, 0, &o, &l) == 2 && rp_test_gw_live() == 2);
+    // 负对照 b：不同镜像的登记不并（帧重叠换了一份：新那份还没建出来、当前份与已有那条不是同一份）
+    rp_buf_frame_flip();
+    uint64_t ic = rp_buf_gpu_write_note2(base + 232, 8, &key, &m); CHECK(ic && ic != ib && m == 0);
+    rp_buf_frame_flip();
+    uint64_t id = rp_buf_gpu_write_note2(base + 240, 8, &key, &m); CHECK(id && id != ic && m == 0 && rp_test_gw_get(key, 0, &o, &l) == 4);
+    // 负对照 c：开关关 → 同一段登记两次也是两条；老入口（不带 merged）从不并
+    g_flag_land_merge = 0; rp_test_gw_merge_reload();
+    uint64_t j1 = rp_buf_gpu_write_note2(base + 300, 16, &key, &m), j2 = rp_buf_gpu_write_note2(base + 300, 16, &key, &m);
+    CHECK(j1 && j2 && j1 != j2 && m == 0 && rp_test_gw_get(key, 0, &o, &l) == 6);
+    g_flag_land_merge = 1; rp_test_gw_merge_reload();
+    uint64_t k1 = rp_buf_gpu_write_note(base + 400, 16, &key), k2 = rp_buf_gpu_write_note(base + 400, 16, &key);
+    CHECK(k1 && k2 && k1 != k2 && rp_test_gw_get(key, 0, &o, &l) == 8);
+    uint64_t all[] = {ia, ib, ic, id, j1, j2, k1, k2};   // 清账：这些都是没落过地的登记，按失败撤掉（不拷）
+    for (unsigned i = 0; i < sizeof all / sizeof *all; i++) rp_buf_gpu_write_land(key, all[i], 0);
+    CHECK(rp_test_gw_live() == 0 && rp_test_gw_get(key, 0, &o, &l) == 0);
+    // ⑤ 真提交路径（rp_post_gpu_write → 提交表 → sub_done 落地）：一次提交里三笔重叠登记，只落地一次
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK); nvn_be_sub_begin();   // 当前份已回到第 0 份（上面翻过两次）
+    memset(b->cpu + 600, 0xDD, 64); g_land_copies = 0; g_land_copied = 0;
+    CHECK(rp_post_gpu_write(base + 600, 16) && rp_post_gpu_write(base + 608, 16) && rp_post_gpu_write(base + 616, 24));   // [600,616) + [608,624) + [616,640)
+    CHECK(rp_test_gw_live() == 1);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_land_copies == 1 && g_land_copied == 40 && rp_test_gw_live() == 0);
+    bad = 0; for (unsigned i = 600; i < 640; i++) bad += g_pmem[i] != 0xDD;
+    CHECK(bad == 0 && g_pmem[599] == 0x11 && g_pmem[640] == 0x11);
+    // 多行登记（读回 / 图像写，一次登记几行）不并：失败回滚只能撤掉「这一次新记的」，已有那条被扩大后缩不回。两行 [800,816) 与 [808,824) 相交也各记一条
+    nvn_be_sub_begin();
+    CHECK(rp_post_gpu_write_rows(base + 800, 16, 8, 0, 2, 1) && rp_test_gw_live() == 2);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(rp_test_gw_live() == 0);
+    g_flag_land_merge = 0; rp_test_gw_merge_reload();                                                       // 同样三笔，开关关：三条、落地 3 次共 56 字节
+    nvn_be_sub_begin(); memset(b->cpu + 600, 0xEE, 64); g_land_copies = 0; g_land_copied = 0;
+    CHECK(rp_post_gpu_write(base + 600, 16) && rp_post_gpu_write(base + 608, 16) && rp_post_gpu_write(base + 616, 24));
+    CHECK(rp_test_gw_live() == 3);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_land_copies == 3 && g_land_copied == 56 && rp_test_gw_live() == 0);
+    g_flag_land_merge = 1; rp_test_gw_merge_reload();
+    // ⑥ 已开始落地的登记不能再扩：拷贝在锁外按开始时的区间做，扩出去的字节既不会被这次拷到、又会被当成已落地撤账
+    memset(b->cpu + 700, 0x77, 16);
+    struct land_args la = {0}; int lm = 0; la.id = rp_buf_gpu_write_note2(base + 700, 16, &la.key, &lm); CHECK(la.id && lm == 0);
+    pthread_t th; g_land_pause = 1; g_land_half = g_land_resume = 0;
+    int started = pthread_create(&th, NULL, land_thread, &la); CHECK(started == 0);
+    if (!started) {
+        pthread_mutex_lock(&g_land_mu); while (!g_land_half) pthread_cond_wait(&g_land_cv, &g_land_mu); pthread_mutex_unlock(&g_land_mu);   // 拷到一半停住
+        uint64_t nid = rp_buf_gpu_write_note2(base + 716, 16, &key, &lm);                                  // 与正在落地的那条首尾相接
+        CHECK(nid && nid != la.id && lm == 0 && rp_test_gw_get(key, 0, &o, &l) == 2 && rp_test_gw_live() == 2);
+        pthread_mutex_lock(&g_land_mu); g_land_resume = 1; pthread_cond_broadcast(&g_land_cv); pthread_mutex_unlock(&g_land_mu);
+        CHECK(pthread_join(th, NULL) == 0); g_land_pause = 0;
+        CHECK(rp_test_gw_live() == 1 && rp_test_gw_get(key, 0, &o, &l) == 1 && o == 716 && l == 16);       // 落地的那条撤了，新的一条原样还在
+        rp_buf_gpu_write_land(key, nid, 0);
+    }
+    CHECK(rp_test_gw_live() == 0);
+    printf("GPU 落地合并：三笔重叠登记并成一条后落地 1 次 / 40 字节；开关关 3 次 / 56 字节\n");   // 读数行：期望 → 真结果见上面的 CHECK
+    nvn_be_pool_del(g_pmem); g_pg_tracked = 1; g_buf_cpu_auto = 0; pass_fresh();
 }
 static void t_gpu_land_destroy(void) {
     pass_fresh(); g_buf_cpu_auto = 1; g_pg_tracked = 0; memset(g_pmem, 0x11, sizeof g_pmem);
@@ -6027,6 +6127,7 @@ int main(int argc, char **argv) {
     if (argc > 1 && !strcmp(argv[1], "--gpu-land-count")) { t_gpu_land_count_cleanup(); printf("gpu land count: %d checks, %d failures\n", g_checks, g_fail); return g_fail != 0; }
     if (argc > 1 && !strcmp(argv[1], "--gpu-land-destroy")) { t_gpu_land_destroy(); printf("gpu land destroy: %d checks, %d failures\n", g_checks, g_fail); return g_fail != 0; }
     if (argc > 1 && !strcmp(argv[1], "--gpu-land")) { t_gpu_land_concurrent(); printf("gpu land: %d checks, %d failures\n", g_checks, g_fail); return g_fail != 0; }
+    if (argc > 1 && !strcmp(argv[1], "--gpu-land-merge")) { t_gpu_land_merge(); printf("gpu land merge: %d checks, %d failures\n", g_checks, g_fail); return g_fail != 0; }
 #endif
     if (argc > 1 && !strcmp(argv[1], "--sync-reuse")) { t_sync_reuse_after_gpu_write(); printf("sync reuse: %d checks, %d failures\n", g_checks, g_fail); return g_fail != 0; }
     t_invalidated_attachment_pin();
@@ -6068,6 +6169,7 @@ int main(int argc, char **argv) {
     t_gpu_land_concurrent();
     t_gpu_land_destroy();
     t_gpu_land_count_cleanup();
+    t_gpu_land_merge();
 #endif
     t_pool_gone_hold();
     t_buf_mirror();

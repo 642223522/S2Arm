@@ -121,6 +121,7 @@ enum { RP_PERF_SUBMIT_NS, RP_PERF_COMMIT_NS, RP_PERF_SUBS, RP_PERF_WAIT_NS, RP_P
        RP_PERF_TEX_EPOCH_MISS, RP_PERF_TEX_CHECK_PAGES,   // CPU 贴图内容检查：本可按纪元跳过却没跳成的次数（已传过、没待重传、有跟踪句柄，但全局写代号 / 段号 / 映射代际变了）；逐页比对写代号的页数（每次调 nvn_dirty_since 记整个范围的页数，是上限：遇到脏页会提前停）
        RP_PERF_BINST_HZ, RP_PERF_BINST_ONE, RP_PERF_BINST_CUT, RP_PERF_BINST_SCAN, RP_PERF_BINST_WASTE,   // 间接绘制 base instance 拷贝：批量前移供上的笔数 / 逐笔拷的笔数 / 其中为它收了开着的通道 / 前移扫描次数 / 前移了没用上的笔数（rp_draw.c 通道级批量拷）
        RP_PERF_TM_FRAMES,      // 分时抽样：窗口里逐步计时过的帧数（#1103）；绘制各步 / 开通道细分 / 贴图解析等锁持锁按它求每帧值
+       RP_PERF_GW_REG_N, RP_PERF_GW_REG_KB, RP_PERF_GW_MERGED_N, RP_PERF_GW_MERGED_KB,   // 显卡写登记：收到的登记条数 / 千字节；同段合并掉的条数 / 因重叠省下的千字节（落地拷贝按合并后的条数算，见 rp_buf.c rp_buf_gpu_write_note2）
        RP_PERF_N };   // P_CONT：同目标续接命中的 SET_RT 次数；P_CLEARONLY：一笔绘制都没有的通道数；P_PARK：记进挂起表的待折清除条数；BIND_FAST：整组绑定直接沿用没重建；TEX_EPOCH：贴图内容检查按纪元跳过的次数；PC_HIT/MISS：后端开通道缓存命中 / 新建   /* FX_*：做完时要写回游戏内存的提交数，和各类回写的个数（事件 / 计数器报告 / 遮挡事件 / 显卡写缓冲） */   // TEX_UP_*：贴图整张上传的次数与千字节；BUF_SYNC_KB：池镜像同步的千字节   // P_*：通道的构成（见 rp_pass.c rp_pass_end）   // D_*：一笔绘制里各步（见 rp_draw.c）
 void rp_perf_add(int i, uint64_t v);
 // 分时读数抽样（#1103）：一笔绘制取 10 次时钟 + 9 次原子加、一次贴图解析取 3 次、一个通道取 5 次，世界稳态每帧合计约 2.2 万次取时钟，占回放线程约 3%。
@@ -179,6 +180,8 @@ int rp_post_gpu_write_rows(uint64_t addr, uint64_t row_bytes, uint64_t row_strid
 // [addr, addr + len) 有没有还没落地的 GPU 写（登记中或正在锁外拷回）：1 有、0 没有、-1 地址不在登记过的池里。线程：[提交]。
 int rp_buf_gpu_write_pending(uint64_t addr, uint64_t len);
 uint64_t rp_buf_gpu_write_note(uint64_t addr, uint64_t len, uint64_t *pool_key); void rp_buf_gpu_write_land(uint64_t pool_key, uint64_t id, int ok);
+// 同段合并版登记（merged 非空才合并，开关 nvk_land_merge）：本次提交里相交 / 首尾相接的已有登记并成一条，*merged = 1、返回已有那条的登记号（不要再记新落地项）。
+uint64_t rp_buf_gpu_write_note2(uint64_t addr, uint64_t len, uint64_t *pool_key, int *merged);
 int rp_rc_skip(void);                   // 条件渲染判成不画的那一段里
 void rp_pass_note_draw(int uses_ds);   // 一笔绘制进了当前通道（uses_ds：这笔开着深度测试 / 深度写 / 模板测试）
 int rp_pass_slot_attached(int i);   // 当前目标的颜色槽 i 真的挂了附件（有图，且不是重复挂的同一张）：管线描述按它给格式

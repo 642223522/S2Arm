@@ -548,12 +548,15 @@ int rp_post_gpu_write_rows(uint64_t addr, uint64_t bytes, uint64_t row, uint64_t
         if (!n) return 0;
         s->gw = n; s->gwcap = cap;
     }
+    // 只有单笔（存储缓冲写）才允许并进本次提交里已有的登记：多行的失败回滚只能撤掉「这一次新记的」，已有那条被扩大后缩不回去
+    // （扩出去的字节从没被显卡写过，落地会拿镜像里可能偏旧的内容盖掉游戏内存）。
     for (uint32_t z = 0; z < images; z++) for (uint32_t y = 0; y < rows; y++) {
-        uint64_t key = 0, id = rp_buf_gpu_write_note(addr + (uint64_t)z * image + (uint64_t)y * row, bytes, &key);
+        int merged = 0; uint64_t key = 0, id = rp_buf_gpu_write_note2(addr + (uint64_t)z * image + (uint64_t)y * row, bytes, &key, count == 1 ? &merged : NULL);
         if (!id) {
             while (s->ngw > start) { struct gw_ev v = s->gw[--s->ngw]; rp_buf_gpu_write_land(v.pool_key, v.id, 0); }
             return 0;
         }
+        if (merged) continue;   // 并进了本次提交已记的一条，它的落地项已在本次提交的表里
         s->gw[s->ngw++] = (struct gw_ev){key, id};
     }
     return 1;
