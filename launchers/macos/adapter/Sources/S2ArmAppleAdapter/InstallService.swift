@@ -60,7 +60,11 @@ public struct DevCertInfo: Equatable {
     /// 连着的手机在不在设备列表：nil = 没连手机 / 不知道。
     public let deviceListed: Bool?
     public let blocking: [String]
+    /// blocking 各条的码（同序）：界面按码给出路，如 devcert_distribution →「改用 Apple ID 登录」
+    public let blockingIds: [String]
     public let warnings: [String]
+    /// 描述文件缺权限时给证书发放人的一段话（作业层整句写好，界面翻译后一键复制，不在前端拼）；不缺为空
+    public let requestText: String
 
     public init(result r: [String: Any]) {
         func s(_ k: String) -> String { r[k] as? String ?? "" }
@@ -70,7 +74,9 @@ public struct DevCertInfo: Equatable {
         deviceCount = (r["deviceCount"] as? NSNumber)?.intValue ?? 0
         deviceListed = r["deviceListed"] as? Bool
         blocking = (r["blocking"] as? [[String: Any]] ?? []).compactMap { $0["text"] as? String }
+        blockingIds = (r["blocking"] as? [[String: Any]] ?? []).compactMap { $0["id"] as? String }
         warnings = (r["warnings"] as? [[String: Any]] ?? []).compactMap { $0["text"] as? String }
+        requestText = s("requestText")
     }
 }
 
