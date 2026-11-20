@@ -2138,7 +2138,7 @@ static void t_decl_view(void) {
     CHECK(g_tex_releases == releases + 17 && g_view_releases == view_releases + 17);
 }
 
-// 数组各元素共享着色器声明：整数视图不能作为浮点元素交给后端。
+// 数组各元素共享着色器声明：整数视图不能作为浮点元素交给后端。不匹配的元素绑声明类型的零贴图（整笔照画），具名记账；类型相符的元素照常取登记的视图。
 static void t_decl_array_numeric(void) {
     nvn_be_sub_begin(); res_fresh(); nvn_unimpl_reset(); nvn_be_set_tex_pool_n(8); rp_view_pin_begin();
     tex_t u = mk_tex(7091, 0, NVN_FORMAT_RG16UI, 4, 4, 1, 0);
@@ -2146,12 +2146,23 @@ static void t_decl_array_numeric(void) {
     view_t uv = {0}; uv.set_format = 1; uv.format = NVN_FORMAT_RGBA8UI;
     nvn_be_reg_tex(1, &u, NULL); nvn_be_reg_tex(2, &f, &uv); nvn_be_reg_tex(3, &f, NULL);
     uint8_t dtt = NVN_TEXTURE_TARGET_2D + 1;
-    CHECK(!rp_view_by_id_decl(1, dtt, 0, 1, &g_fake_cmd, NULL));
+    nvn_gpu_view zf = rp_view_by_id_decl(1, dtt, 0, 1, &g_fake_cmd, NULL);   // uint 贴图进了声明成浮点的数组
+    CHECK(zf && zf->of->d.d.width == 1 && zf->of->d.d.height == 1 && zf->of->d.d.format == NVN_FORMAT_RGBA8);   // 拿到的是浮点的 1x1 零贴图，不是登记的 4x4 整数贴图
     tex_t snap; memset(&snap, 0x5A, sizeof snap);
-    CHECK(!rp_view_by_id_decl(2, dtt, 0, 1, &g_fake_cmd, &snap) && snap.serial == 0);   // 拒绝：调用方的快照清零，不留下脏字节
-    CHECK(nvn_unimpl_count("tex", "sampled_array_numeric_mismatch") == 2);
-    CHECK(rp_view_by_id_decl(1, dtt, 1, 1, &g_fake_cmd, &snap) && snap.serial == 7091);
-    CHECK(rp_view_by_id_decl(3, dtt, 0, 1, &g_fake_cmd, NULL));
+    CHECK(rp_view_by_id_decl(2, dtt, 0, 1, &g_fake_cmd, &snap) == zf && snap.serial == 0);   // 视图把格式改成整数的同理：同一张零贴图；调用方的快照清零，不留下脏字节
+    CHECK(nvn_unimpl_count("tex", "sampled_array_numeric_mismatch") == 2);   // 每个不匹配的元素记一次
+    nvn_gpu_view zs = rp_view_by_id_decl(1, dtt, 2, 1, &g_fake_cmd, NULL);   // uint 贴图进了声明成 sint 的数组：零贴图跟声明走（R32I）
+    CHECK(zs && zs != zf && zs->of->d.d.width == 1 && zs->of->d.d.format == NVN_FORMAT_R32I);
+    CHECK(nvn_unimpl_count("tex", "sampled_array_numeric_mismatch") == 3);
+    // 负对照：类型相符的元素拿登记的那张，不记账
+    nvn_gpu_view real = rp_view_by_id_decl(1, dtt, 1, 1, &g_fake_cmd, &snap);
+    CHECK(real && real != zf && real != zs && real->of->d.d.width == 4 && snap.serial == 7091);
+    nvn_gpu_view rf = rp_view_by_id_decl(3, dtt, 0, 1, &g_fake_cmd, NULL);
+    CHECK(rf && rf != zf && rf->of->d.d.width == 4);
+    CHECK(nvn_unimpl_count("tex", "sampled_array_numeric_mismatch") == 3);
+    // 负对照：没有命令段时零贴图建不出来，返回空（调用方照旧按 texture_slot_unresolved 跳笔），仍记账
+    CHECK(!rp_view_by_id_decl(1, NVN_TEXTURE_TARGET_3D + 1, 0, 1, NULL, NULL));
+    CHECK(nvn_unimpl_count("tex", "sampled_array_numeric_mismatch") == 4);
     rp_view_pin_end(); nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK); res_fresh();
 }
 

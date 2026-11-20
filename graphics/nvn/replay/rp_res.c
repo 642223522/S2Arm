@@ -927,9 +927,13 @@ nvn_gpu_view rp_view_by_id_decl(int id, uint8_t dtt, uint8_t dcls, int elem, nvn
                 int stencil = fi.stencil && (!fi.depth || (has_v && v.set_dsmode && v.dsmode == NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL));
                 int cls = stencil || fi.kind == NVN_FMT_UINT ? 1 : fi.kind == NVN_FMT_SINT ? 2 : 0;
                 if (cls && cls != dcls) {
-                    if (t_out) memset(t_out, 0, sizeof *t_out);   // 调用方持有的快照：没取到清零
+                    // 数组各元素共用一个声明的数值类型，这个元素登记的是另一类（整数贴图进了声明成浮点的数组等）：登记的视图不能交给后端。
+                    //   止血（#1803 第 4 条）：这一个元素绑声明类型的零贴图，整笔照画，不再让调用方按 texture_slot_unresolved 整笔跳过；
+                    //   仍具名记账（每个不匹配的元素一次），读数里看得见。着色器从这个元素读到的是 0，不是游戏的贴图：按实际元素数值型出变体是另一件事。
+                    //   零贴图建不出来（没有命令段等）时返回空，调用方照旧跳笔。
+                    if (t_out) memset(t_out, 0, sizeof *t_out);   // 调用方持有的快照：不是登记的那张，清零
                     nvn_unimpl("tex", "sampled_array_numeric_mismatch", NULL);
-                    return NULL;   // 不能用零元素掩盖已登记的整数视图。
+                    return decl_zero(dtt, dcls, c);
                 }
             }
         }
