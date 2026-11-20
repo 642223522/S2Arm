@@ -1227,7 +1227,9 @@
   "install.action.pickDevice": "デバイスを選ぶ",
   "install.action.howTo": "やり方",
   "install.help.ok": "OK",
-  "install.login.expired": "Apple ID のサインインの有効期限が切れました。もう一度サインインしてください。メールアドレスは入力済みです。"
+  "install.login.expired": "Apple ID のサインインの有効期限が切れました。もう一度サインインしてください。メールアドレスは入力済みです。",
+  "export.sign.external": "自分で AltStore / SideStore で署名する",
+  "export.sign.externalNote": "S2Arm はこのコンピュータでは署名しません。AltStore または SideStore で S2Arm.ipa をインストールし、それぞれの設定で署名証明書を書き出して iPhone の S2Arm に読み込んでください。ここから書き出したゲームパックは未署名で、iPhone の S2Arm がその証明書で署名します。"
  },
  "text": {
   "满屏补丁（按屏幕比例自动选）": "全画面パッチ（画面比率に応じて自動選択）",

@@ -1223,7 +1223,9 @@
   "install.action.pickDevice": "選裝置",
   "install.action.howTo": "怎麼做",
   "install.help.ok": "好",
-  "install.login.expired": "Apple ID 登入已過期：重新登入一次，電子郵件已經填好。"
+  "install.login.expired": "Apple ID 登入已過期：重新登入一次，電子郵件已經填好。",
+  "export.sign.external": "我自己用 AltStore / SideStore 簽",
+  "export.sign.externalNote": "S2Arm 不在電腦上簽名。用 AltStore 或 SideStore 安裝 S2Arm.ipa，在它們的設定裡匯出簽名憑證、匯入手機上的 S2Arm；之後從這裡匯出的遊戲包不簽名，由手機上的 S2Arm 用這張憑證簽。"
  },
  "text": {
   "直连": "直連",

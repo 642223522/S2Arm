@@ -194,6 +194,11 @@ public final class InstallService {
         return DevCertInfo(result: try await client.perform("devCert", extra: extra, secrets: ["S2A_DEVCERT_PASSWORD": password]).result)
     }
 
+    /// 签名方式三选一（作业 signModeSet：appleId / devCert / external）→ 生效后的选择
+    public func signModeSet(_ mode: String) async throws -> String {
+        try await client.perform("signModeSet", extra: ["mode": mode]).result["signMode"] as? String ?? mode
+    }
+
     /// 出包装机用开发者证书（true）还是 Apple ID（false）。
     public func devCertUse(_ active: Bool) async throws {
         _ = try await client.perform("devCert", extra: ["action": "use", "active": active])
@@ -311,15 +316,18 @@ public struct PhoneIdentityResult: Equatable, Sendable {
     }
 }
 
-/// 签名身份（installMode 作业）：signMode = devcert（我的开发者证书）/ appleId；exportAvailable = 导出作业在不在
+/// 签名身份（installMode 作业）：signMode = devcert（我的开发者证书）/ appleId；exportAvailable = 导出作业在不在；
+///   signChoice = 玩家选的签名方式三选一（appleId / devCert / external = 我自己用 AltStore / SideStore 签，自签走查结构 6）
 public struct InstallModeInfo: Equatable, Sendable {
     public let exportAvailable: Bool
     public let signMode: String
-    public init(exportAvailable: Bool = false, signMode: String = "appleId") {
-        self.exportAvailable = exportAvailable; self.signMode = signMode
+    public let signChoice: String
+    public init(exportAvailable: Bool = false, signMode: String = "appleId", signChoice: String = "appleId") {
+        self.exportAvailable = exportAvailable; self.signMode = signMode; self.signChoice = signChoice
     }
     init(result r: [String: Any]) {
-        self.init(exportAvailable: r["exportAvailable"] as? Bool ?? false, signMode: r["signMode"] as? String ?? "appleId")
+        self.init(exportAvailable: r["exportAvailable"] as? Bool ?? false, signMode: r["signMode"] as? String ?? "appleId",
+                  signChoice: r["signChoice"] as? String ?? "appleId")
     }
 }
 

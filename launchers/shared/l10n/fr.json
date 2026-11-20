@@ -1227,7 +1227,9 @@
   "install.action.pickDevice": "Choisir l’appareil",
   "install.action.howTo": "Comment faire",
   "install.help.ok": "OK",
-  "install.login.expired": "Votre connexion à l’identifiant Apple a expiré. Reconnectez-vous ; votre e-mail est déjà saisi."
+  "install.login.expired": "Votre connexion à l’identifiant Apple a expiré. Reconnectez-vous ; votre e-mail est déjà saisi.",
+  "export.sign.external": "Je signe moi-même avec AltStore / SideStore",
+  "export.sign.externalNote": "S2Arm ne signera pas sur cet ordinateur. Installez S2Arm.ipa avec AltStore ou SideStore, exportez le certificat de signature depuis leurs réglages et importez-le dans S2Arm sur le téléphone. Les paquets de jeu exportés d'ici ne sont pas signés : S2Arm sur le téléphone les signe avec ce certificat."
  },
  "text": {
   "满屏补丁（按屏幕比例自动选）": "Correctif plein écran (choisi selon votre ratio d'écran)",

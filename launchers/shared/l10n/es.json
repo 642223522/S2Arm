@@ -1227,7 +1227,9 @@
   "install.action.pickDevice": "Elegir dispositivo",
   "install.action.howTo": "Cómo hacerlo",
   "install.help.ok": "Aceptar",
-  "install.login.expired": "Tu sesión del Apple ID ha caducado. Vuelve a iniciar sesión; tu correo ya está escrito."
+  "install.login.expired": "Tu sesión del Apple ID ha caducado. Vuelve a iniciar sesión; tu correo ya está escrito.",
+  "export.sign.external": "Firmo yo con AltStore / SideStore",
+  "export.sign.externalNote": "S2Arm no firmará en este ordenador. Instala S2Arm.ipa con AltStore o SideStore, exporta el certificado de firma desde sus ajustes e impórtalo en S2Arm en el teléfono. Los paquetes de juego exportados desde aquí van sin firmar y S2Arm en el teléfono los firma con ese certificado."
  },
  "text": {
   "满屏补丁（按屏幕比例自动选）": "Parche de pantalla completa (elegido según la proporción de tu pantalla)",

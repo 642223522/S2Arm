@@ -19,6 +19,7 @@ public sealed partial class EnvironmentWindow
 {
     private bool exportAvailable;                // 作业层读回的 exportAvailable：只报给控制口（ControlInstallMode），界面不再据它置灰
     private bool installModeTried, installModeLoading;
+    private string signChoice = "appleId";   // installMode 作业的 signChoice：appleId / devCert / external
     // 更新作业：正在跑 / 计数；结果没看过时顶栏留一个可点掉的提示（"" = 成功，否则失败原因）
     private bool phoneUpdating;
     private long? updateDone, updateTotal;
@@ -55,7 +56,11 @@ public sealed partial class EnvironmentWindow
         try
         {
             var job = await PackJobClient.RunAsync(PackRequest("installMode", ""), null, CancellationToken.None);
-            if (job.Report.Succeeded) exportAvailable = Flag(job.Report.Result, "exportAvailable");
+            if (job.Report.Succeeded)
+            {
+                exportAvailable = Flag(job.Report.Result, "exportAvailable");
+                signChoice = Str(job.Report.Result, "signChoice") is { Length: > 0 } sc ? sc : "appleId";   // 签名方式三选一（自签走查结构 6）
+            }
         }
         catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
             InvalidOperationException or System.ComponentModel.Win32Exception) { }
