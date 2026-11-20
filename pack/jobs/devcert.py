@@ -114,6 +114,14 @@ def rcodesign_path(c):
     raise Failure("找不到签名工具 rcodesign：请重新安装完整的 S2Arm。", code="tool_missing")
 
 
+def rcodesign_ents(ents):
+    """rcodesign 的 -e / --entitlements-xml-path 是「作用范围:路径」格式、按第一个冒号拆：Windows 绝对路径带盘符（C:\\…）
+    会把权限挂到不存在的路径「C」上（os error 3），目录名带冒号也拆错。所有给 rcodesign 传权限文件的地方都经这里：
+    返回 (参数, 运行目录)——在权限文件所在目录里跑、只传不含冒号的文件名"""
+    p = Path(ents)   # 文件名都是我们自己起的（ents.plist / downstream.entitlements / 出包时写的权限文件），不含冒号
+    return ["-e", p.name], p.parent
+
+
 # ---------- 解析 ----------
 
 def parse_profile(data):
@@ -575,5 +583,6 @@ def sign_app(c, app, log):
         #   或目录名带冒号都会拆错，所以在权限文件所在目录里跑、只传不含冒号的文件名
         # --timestamp-url none（#794）：rcodesign 缺省向苹果时间戳服务器（timestamp.apple.com/ts01）要安全时间戳，连不上就整次签名失败、装不了也更新不了。
         #   开发签名装自己的设备不需要安全时间戳（苹果自己的 codesign 对开发签名也不打，pack/dev_sign.py 同样 --timestamp=none）
-        c.run([rcs, "sign", "--p12-file", p12, "--p12-password-file", pf, "--team-name", got["teamId"], "--timestamp-url", "none", "-e", ef.name, app], log, cwd=ef.parent)
+        eargs, ecwd = rcodesign_ents(ef)
+        c.run([rcs, "sign", "--p12-file", p12, "--p12-password-file", pf, "--team-name", got["teamId"], "--timestamp-url", "none", *eargs, app], log, cwd=ecwd)
     return got["bundleId"], got
