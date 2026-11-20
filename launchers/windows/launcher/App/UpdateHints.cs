@@ -42,8 +42,7 @@ public sealed partial class EnvironmentWindow
         try
         {
             var job = await PackJobClient.RunAsync(PackRequest("updateHints", ""), null, CancellationToken.None);
-            if (job.Report.Succeeded && job.Report.Result.TryGetProperty("enabled", out var on) && on.ValueKind == System.Text.Json.JsonValueKind.True
-                && job.Report.Result.TryGetProperty("games", out var games) && games.ValueKind == System.Text.Json.JsonValueKind.Array)
+            if (job.Report.Succeeded && job.Report.Result.TryGetProperty("games", out var games) && games.ValueKind == System.Text.Json.JsonValueKind.Array)
                 foreach (var g in games.EnumerateArray())
                 {
                     if (!g.TryGetProperty("gameId", out var id) || id.GetString() is not { Length: > 0 } gid || !g.TryGetProperty("reasons", out var rs)

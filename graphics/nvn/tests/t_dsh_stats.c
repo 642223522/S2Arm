@@ -51,7 +51,7 @@ static int compiler_(const char *key, int stage, const char *out) {
             if (stage == 5) fputs("struct dm_vertex_t {\n    float4 position [[position]];\n};\nstruct dm_prim_t {\n};\nvoid main0() {\n        dm_vertex_t v;\n}\n", f);
             fclose(f);
         }
-        snprintf(p, sizeof p, "%s/%s_b.json", out, key); if ((f = fopen(p, "w"))) { fprintf(f, "{\n \"chain\": \"%s\",\n \"xfp\": \"" XFP "\",\n \"stage\": \"%s\"\n}\n", chain_name(), stage == 5 ? "ms" : stage == 0 ? "vs" : "cs"); fclose(f); }   // 0 顶点 = "vs"（同 S2A.Dsh；47 核顶点补齐按它认阶段）
+        snprintf(p, sizeof p, "%s/%s_b.json", out, key); if ((f = fopen(p, "w"))) { fprintf(f, "{\n \"chain\": \"%s\",\n \"xfp\": \"" XFP "\",\n \"stage\": \"%s\"\n}\n", chain_name(), stage == 5 ? "ms" : stage == 0 ? "vs" : stage == 1 ? "ps" : "cs"); fclose(f); }   // 0 顶点 = "vs"（同 S2A.Dsh；47 核顶点补齐按它认阶段）
     }
     return compile_rc;
 }
@@ -82,7 +82,9 @@ static void check(int ok) { if (!ok) _exit(40); }
 static void crash_handler44(int sig) { (void)sig; s2a_dsh_crash_dump(); _exit(0); }   // 照 crash.c：原始现场后调 s2a_dsh_crash_dump
 static void scenario(int n) {
     alarm(10); setvbuf(stdout, NULL, _IONBF, 0);
-    setenv("S2A_DSH_EAGER_MAX", n >= 39 ? "8" : "0", 1);   // 0–38 是登记时不编的旧语义（后台预编关）；39–41 测后台预编
+    // 后台预编只给测它的 39–41 开；其余场景是登记时不编的语义（后台预编关）。原为 n >= 39，之后新加的 42–53 都被顺带打开：
+    //   场景 51 断言「首遇时代码区不可读 → 不调编译器」，后台预编用登记时拷的代码区抢先编完时编译器替身被调，60 次红 7 次（11-19）
+    setenv("S2A_DSH_EAGER_MAX", n >= 39 && n <= 41 ? "8" : "0", 1);
     uint32_t size = sizeof code, csize = sizeof ctl;
     memcpy(ctl + 0x704, &size, 4); memcpy(ctl + 0x20, &csize, 4);
     setenv("DM_MSL_FALLBACK", "/dev/null", 1); // 编译器桩不写文件。
@@ -233,6 +235,13 @@ static void scenario(int n) {
         if (n == 37) check(got == 0 && compiler_calls == 0 && !rt_stage[0]);
         else check(got == 1 && compiled_stage == (n == 35 ? 4 : 5) && !strcmp(rt_stage, n == 35 ? "task" : "mesh"));
     }
+    if (n == 54 || n == 55) {   // 一款 Switch 2 游戏的 14 支：控制段阶段字节 1、代码区没有 SPH、游戏在派发 → 按计算（阶段号 2、映射名 compute）；55 代码区开头写像素 SPH（类型 2、阶段 5：0x000c5482）→ 仍按像素
+        nvn2 = 1; uint8_t c2[0xe0] = {0}; uint32_t m = NVN2_CTL_MAGIC, v = NVN2_CTL_VERSION, own = sizeof c2, nc = sizeof code;
+        memcpy(c2, &m, 4); memcpy(c2 + 4, &v, 4); memcpy(c2 + 0x30, &own, 4); memcpy(c2 + 0x44, &nc, 4); c2[0x56] = 1;
+        if (n == 55) { uint32_t sph = 0x000c5482; memcpy(code, &sph, 4); }
+        int got = dm_shader_miss_late("0000000000000000", (uint64_t)(uintptr_t)code, c2);
+        check(got == 1 && compiled_stage == (n == 54 ? 2 : 1) && !strcmp(rt_stage, n == 54 ? "compute" : "pixel"));
+    }
     if (n == 38) {   // 没登记过的键：兜底目录里上局现编的网格（json stage "ms"）按 mesh 加映射、不调编译器
         char d[] = "/tmp/t_dsh_reuseXXXXXX", p[256]; check(mkdtemp(d) != NULL); setenv("DM_MSL_FALLBACK", d, 1);
         snprintf(p, sizeof p, "%s/0000000000000000_b.metal", d); FILE *f = fopen(p, "w"); check(f != NULL); fclose(f);
@@ -280,6 +289,20 @@ static void scenario(int n) {
         char want[256]; snprintf(want, sizeof want, "%s/0000000000000000_vp8.metal", d);
         if (n == 47) check(rc == 0 && !strcmp(path, want) && atomic_load(&compiler_calls) == 1 && compiled_stage == 0 && atomic_load(&vp_calls) == 1 && vp_mask == 0x8);
         else check(rc == 1 && atomic_load(&compiler_calls) == 0 && atomic_load(&vp_calls) == 0);
+        snprintf(p, sizeof p, "%s/0000000000000000_b.json", d); unlink(p); snprintf(p, sizeof p, "%s/0000000000000000_b.metal", d); unlink(p); rmdir(d);
+    }
+    if (n == 52 || n == 53) {   // 采样器模拟变体（nvn_mtl.m se_build）控制段过期：诊断里 55 次没出成的变体 46 次是「游戏已不持有控制段」。包内片元着色器只在 SetShaders 时留输入快照（52）；
+        //   游戏复用控制段之后，首次绑 min / max 采样器时从快照现编基础源码再出变体（编译器 1 次、阶段 1、模拟桩 1 次、路径 <键>_se.metal）。53 负对照：没留快照 → 做不了、两个桩都不调
+        uint32_t ps = 5 << 10; const uint8_t magic[] = {0x78,0x56,0x34,0x12}; memcpy(code, magic, 4); memcpy(code + 0x30, &ps, 4);
+        char d[] = "/tmp/t_dsh_sesnap.XXXXXX", p[256], path[256] = ""; check(mkdtemp(d) != NULL); setenv("DM_MSL_FALLBACK", d, 1);
+        write_out = 1; inlib = 1; known = 1;
+        dm_shader_miss(key, (uint64_t)(uintptr_t)code, ctl); if (n == 52) dm_shader_vs_hold_key(key, (uint64_t)(uintptr_t)code, ctl);
+        check(atomic_load(&compiler_calls) == 0);   // SetShaders 路径不编
+        memset(ctl, 0, sizeof ctl); memset(code, 0, sizeof code);   // 模拟游戏释放 / 复用 guest 输入
+        int rc = dm_shader_se_cached(key, 1, path, sizeof path);
+        char want[256]; snprintf(want, sizeof want, "%s/0000000000000000_se.metal", d);
+        if (n == 52) check(rc == 0 && !strcmp(path, want) && atomic_load(&compiler_calls) == 1 && compiled_stage == 1 && atomic_load(&se_calls) == 1);
+        else check(rc == 1 && atomic_load(&compiler_calls) == 0 && atomic_load(&se_calls) == 0);
         snprintf(p, sizeof p, "%s/0000000000000000_b.json", d); unlink(p); snprintf(p, sizeof p, "%s/0000000000000000_b.metal", d); unlink(p); rmdir(d);
     }
     if (n == 42) {   // 审计 #1646 P1-123：后台预编在编片元 0 时来一支输出类型变体（同键）：变体要的源码走同一把锁、锁里复查，不并发进 C# 现编入口、不重编
@@ -339,10 +362,14 @@ int main(void) {
         "成功 0、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 48 负对照：没留快照 → 做不了
         "成功 0、失败 0、跳过 1、复用上局 0、输出类型变体 0（正常收局）",   // 49 控制段自报长度越过映射末尾：放弃这一份、不崩（#354a81）
         "成功 0、失败 0、跳过 1、复用上局 0、输出类型变体 0（正常收局）",   // 50 控制段短于代码长字段位置：认不出、不现编（#fb7116）
-        "成功 0、失败 0、跳过 1、复用上局 0、输出类型变体 0（正常收局）"    // 51 登记后代码区被解除映射：首遇放弃、不崩
+        "成功 0、失败 0、跳过 1、复用上局 0、输出类型变体 0（正常收局）",   // 51 登记后代码区被解除映射：首遇放弃、不崩
+        "成功 0、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 52 包内片元：SetShaders 快照 → 控制段过期后照样出采样器模拟变体
+        "成功 0、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 53 负对照：没留快照 → 做不了
+        "成功 1、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 54 NVN2 阶段字节 1、代码没有 SPH（计算着色器）：按计算现编
+        "成功 1、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）"    // 55 负对照：阶段字节 1、代码带像素 SPH：仍按像素
     };
     int bad = 0;
-    for (int n = 0; n < 52; n++) {
+    for (int n = 0; n < 56; n++) {
         int fd[2]; pipe(fd); pid_t p = fork();
         if (!p) { close(fd[0]); dup2(fd[1], 1); close(fd[1]); scenario(n); }
         close(fd[1]); char buf[1024]; size_t at = 0; ssize_t got;
@@ -367,5 +394,5 @@ int main(void) {
         printf("%s 着色器覆盖计数文件：新建 %llu（期望 2）、app %s（期望 0.6.0）、再加 1 → %llu（期望 3）、别的形状返回 %d（期望 -1）且不写文件 %d（期望 1）\n", ok ? "✓" : "✗", c1, app1, c2, r3, none);
         bad += !ok; snprintf(mk, sizeof mk, "rm -rf '%s'", t); system(mk);
     }
-    printf("%s t_dsh_stats：52 场景，%d 处不符\n", bad ? "✗" : "✓", bad); return bad != 0;
+    printf("%s t_dsh_stats：56 场景，%d 处不符\n", bad ? "✗" : "✓", bad); return bad != 0;
 }

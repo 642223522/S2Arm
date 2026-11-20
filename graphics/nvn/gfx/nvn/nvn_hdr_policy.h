@@ -9,9 +9,10 @@
 #include <math.h>
 
 // 上屏模式（§2.3 矩阵）：S0 = SDR 直通（BGRA8Unorm + 显式 sRGB tag——创建与从 PQ 层切回两处都设，PR4/PR7 落地）；S1 = PQ 直通层（主路径）；
-//   S3 = HDR→SDR（宿主 mode 1 映射兜底：S2ARM_HDR=on ∧ can 不行 / s1_ready 未过时强制，净空塌缩兜底）
+//   S3 = HDR→SDR（宿主 mode 1 映射兜底：S2A_HDR=on ∧ can 不行 / s1_ready 未过时强制，净空塌缩兜底）
 enum { HDR_S0 = 0, HDR_S1, HDR_S3 };
-// S2ARM_HDR 三态（§2.5）：off 缺省——字节级回现状（不变量：off ⇒ choose_mode 恒 HDR_S0 ∧ vi 恒 on=0，两处同时回退）；
+// S2A_HDR 三态（§2.5；PR4 起开关名按项目惯例 S2A_ 前缀——维护者 PR #1640 意见，覆盖 v3 文档口径的 S2ARM_HDR）：
+//   off 缺省——字节级回现状（不变量：off ⇒ choose_mode 恒 HDR_S0 ∧ vi 恒 on=0，两处同时回退）；
 //   auto 按快照自动；on 强制 HDR 管线（游戏 HDR 分支 + 宿主按屏选 S1/S3——can 不行 / s1_ready 未过走 S3）
 enum { HDR_OFF = 0, HDR_AUTO, HDR_ON };
 
@@ -102,6 +103,22 @@ static inline void hdr_layer_tick_frame(hdr_snapshot *s, int sw, int frame_is_pq
     if (++s->sdr_run >= HDR_SDR_DRAIN_FRAMES) { s->layer_pq = 0; s->sdr_run = 0; }   // 连续两帧非 PQ：排空切回 SDR
 }
 
+// ---------- PR4：层配置解析（§2.3 S0/S1 行 + 注意事项①）----------
+//   出图层两个物理配置，宿主两平台（host_adapt.m iOS 挂层 / Mac 前端窗口层被直连取用）共用这一份——策略单源（§2.2 接缝）：
+//   S0 = 8 位 SDR（BGRA8Unorm）+ 显式 sRGB tag、无 EDR；S1 = 10 位 PQ（RGB10A2Unorm）+ ITU-R BT.2100 PQ 标签 + wantsExtendedDynamicRangeContent；
+//   CAEDRMetadata 两态都不挂（默认关——PR8+ 经 S2A_HDR_META 实验；「不挂」由 metadata 恒 0 表达，平台侧照它不写 CAEDRMetadata）。
+//   注意事项①：从 PQ 层切回的层保留 PQ 色彩空间——S0 的显式 sRGB tag 在创建点与切回点都要设（平台侧两处调 hdr_layer_config 同一份配置）；
+//   色彩标签种类由平台映射到 kCGColorSpaceSRGB / kCGColorSpaceITUR_2100_PQ（纯 C 不引平台头，同本头口径）。
+//   层持不持 PQ（快照 layer_pq）是唯一输入：off / can 不行 / 排空完成都落 S0 配置（off 不变量的层侧由 hdr_layer_tick_* 保证——off 不进层、喂入排空）。
+enum { HDR_LPF_SDR8 = 0, HDR_LPF_PQ10 };   // 像素格式种类：8 位 SDR 直通（BGRA8Unorm）/ 10 位 PQ 直通层（RGB10A2Unorm）
+enum { HDR_LCS_SRGB = 0, HDR_LCS_PQ };     // 色彩空间标签：显式 sRGB（S0）/ BT.2100 PQ（S1）
+typedef struct { int pf; int color; int wants_edr; int metadata; } hdr_layer_cfg;
+static inline hdr_layer_cfg hdr_layer_config(int layer_pq) {
+    hdr_layer_cfg c = { HDR_LPF_SDR8, HDR_LCS_SRGB, 0, 0 };   // S0（层不持 PQ 的唯一配置）
+    if (layer_pq) { c.pf = HDR_LPF_PQ10; c.color = HDR_LCS_PQ; c.wants_edr = 1; }   // S1（层已持 PQ——hdr_layer_tick_can 进层 / 开机预挂后）
+    return c;
+}
+
 // 判定次序（§2.3，纯函数；合成快照 + 合成时钟全分支单测，t_nvn2 V4 段）：
 //   1. off → 恒 S0 ∧ vi 恒 on=0（不变量，无视快照与层状态——出图 S0 直通 + 游戏回 SDR 分支，两处同时回退）；
 //   2. 源非 HDR（8 位窗 / color_space=0 / 未知枚举一律按非 HDR——Q1 口径，调用方传 src_hdr=0）→ SDR 语义：vi 不答 on=1，层不因源切回（层在 PQ 态仍 S1，逐帧 mode 2 上屏——PR3b）；
@@ -125,13 +142,125 @@ static inline hdr_decision hdr_choose_mode(int sw, int src_hdr, const hdr_snapsh
     return d;
 }
 
+// ---------- PR3b：present_mode 数学（评审稿 v3 §2.4 模式矩阵 / §4 PR3b；数学移植自 nxnative #1176，登记口径 §2.7）----------
+//   着色器六分支的数值与 nxnative present.metal 逐条对齐（ST 2084 EOTF/逆 EOTF、BT.709↔BT.2020 矩阵、present_shoulder 有理肩部）；
+//   这一层只做模式判定与 UV 常量缓冲参数包（纯函数、无状态），状态由 nvn2.c 存储侧喂进来。
+// 纸白锚：PQ 相对模型 EDR = nits/100 的锚（§1.4 判读②，v3 定稿 100；present 侧恒 100——nxnative dm_hdr_sdr_white 同值，非 vi 答询值）
+#define HDR_PAPER_WHITE_NITS 100.0
+
+// present 源格式种类（纯分类：nvn_mtl.m 把 MTLPixelFormat 归好类再进来，本头不引平台头）
+enum { HDR_PF_SDR8 = 0, HDR_PF_HDR10, HDR_PF_FLOAT, HDR_PF_OTHER };
+//   HDR_PF_SDR8：8 位 SDR 窗（RGBA8/BGRA8 含 sRGB 变体——scan-out 语义按原样字节，sRGB 存量经非 sRGB 视图读，present_raw_src 先例）
+//   HDR_PF_HDR10：RGB10A2 窗（vi 答过 HDR 才当 PQ 码值——m0b 实证游戏在 on=1 后才建 0x3d 窗；未答过按 10 位 gamma SDR 读，即 mode 2 语义）
+//   HDR_PF_FLOAT：float 窗（线性 BT.709，负值矩阵后才截断——scRGB 广色域保真；本作无样本，占位。四款与 nxnative present_mode 逐一同：
+//     RGBA16F / RGBA32F / RG11B10F / RGB9E5F，归类在 nvn_mtl.m present_hdr_pf）
+// present 目标种类：PR3b 阶段 dst 恒 SDR8（PQ 层 PR4 落地）；单测直接建 RGB10A2 目标驱动全矩阵
+enum { HDR_PT_SDR8 = 0, HDR_PT_PQ10 };
+
+// present 六个语义态（Q11：nxnative 着色器编号 0–4 共五个 + 「SDR 平凡直通」——后者即本仓现状 trivial 采样，
+//   nxnative 把它折进 mode 0「as stored」（其 present.metal：Mode 0 is origin/main's sample, bit for bit）；本枚举把第六态显式单列，
+//   经 hdr_present_shader_mode 折回着色器模式号 0——平凡直通与 PQ 直通在着色器里同走「原样采样」出口，逐字节一致）。
+enum {
+    HDR_PV_TRIVIAL = 0,  // 平凡直通：现状 trivial 采样（S0/off 不变量所在；无任何色彩转换，alpha 原样）
+    HDR_PV_SDR     = 1,  // 着色器 mode 1：HDR10 窗 → 8 位 SDR（S3 兜底 + PR6 截图/判定/录像共用）：先 BT.2020→BT.709 矩阵（负值截断在矩阵后）→ 肩部压缩到 SDR 白 → SDR gamma 编码
+    HDR_PV_TO_PQ   = 2,  // 着色器 mode 2：SDR8（含未答过的 10 位窗）→ PQ 层：gamma 解码 → BT.709→BT.2020 → PQ 编码到纸白
+    HDR_PV_FLOAT   = 3,  // 着色器 mode 3：float 线性 BT.709 → PQ 层：BT.2020 矩阵（负值截断在矩阵后）→ PQ 编码到纸白
+    HDR_PV_ROLL    = 4,  // 着色器 mode 4：HDR10 窗 → PQ 层（无 metadata）：有理肩部滚降，膝点码值以下逐位直通
+    HDR_PV_PASS    = 5,  // 着色器 mode 0 的 PQ 直通语义：游戏已按 told peak 自 tone-map，PQ 码值原样写进 PQ 层（主路径）
+};
+
+// present_mode 纯函数（§2.4：src/dst 格式 + vi 答过 latch 三元判定；nxnative present_mode 同参——模式选择只看格式与 latch，不看三态开关：
+//   off 从头 ⇒ vi 永不答 on=1 ⇒ latch 恒 0 ⇒ 恒 TRIVIAL，off 不变量由此成立；层还持 PQ 的排空帧按实际格式选转换，PR4 语义）
+static inline int hdr_present_mode(int src_pf, int dst_pt, int vi_answered) {
+    if (dst_pt == HDR_PT_PQ10) {   // PQ 层目标（PR4 起的层；PR3b 阶段仅单测驱动）
+        if (src_pf == HDR_PF_HDR10) return vi_answered ? HDR_PV_PASS : HDR_PV_TO_PQ;   // 未答过的 10 位窗按 gamma SDR 编进 PQ 层
+        if (src_pf == HDR_PF_FLOAT) return HDR_PV_FLOAT;
+        if (src_pf == HDR_PF_SDR8) return HDR_PV_TO_PQ;
+        return HDR_PV_TRIVIAL;
+    }
+    if (src_pf == HDR_PF_HDR10 && vi_answered) return HDR_PV_SDR;   // mode 1：S3 强制路径与 PR6 截图共用（vi 答过才当 PQ 码值解码）
+    return HDR_PV_TRIVIAL;   // 8 位 SDR 源 / 未答过的 10 位窗 / float 窗 → 8 位目标：原样直通
+}
+
+// 六态 → 着色器模式号（平凡直通与 PQ 直通都折 0：mode 0 即「原样采样」，第六态与 PQ 直通同出口）
+static inline int hdr_present_shader_mode(int pv) { return pv == HDR_PV_PASS ? 0 : pv; }
+
+// ST 2084 双精度换算（nxnative t_present_hdr 的 pq_code/pq_nits 口径；膝点码值与单测期望共用同一份）：
+//   nit → 10 位码值；10 位码值 → nit（着色器 10 位解出的码值换回亮度，对拍期望用）
+static inline double hdr_pq_code(double nits) {
+    const double m1 = 2610.0 / 16384, m2 = 2523.0 / 32, c1 = 3424.0 / 4096, c2 = 2413.0 / 128, c3 = 2392.0 / 128;
+    double y = pow(nits / 10000.0, m1);
+    return pow((c1 + c2 * y) / (1.0 + c3 * y), m2) * 1023.0;
+}
+static inline double hdr_pq_nits(double code) {
+    const double m1 = 2610.0 / 16384, m2 = 2523.0 / 32, c1 = 3424.0 / 4096, c2 = 2413.0 / 128, c3 = 2392.0 / 128;
+    double e = pow(code / 1023.0, 1.0 / m2);
+    return 10000.0 * pow(fmax(e - c1, 0.0) / (c2 - c3 * e), 1.0 / m1);
+}
+
+// 游戏可能画到的峰值（nit）：声明范围 hi 与已告知 peak 取小；都没说 → 0（MKW 声明 1801 只画 357 nit——只看声明会压它没画的高光，
+//   nxnative dm_hdr_source_peak 口径；声明 0 → 取告知的峰值）
+static inline int hdr_source_peak_nits(int declared_hi, int told_peak) {
+    int d = declared_hi, t = told_peak;
+    if (t > 0 && (d <= 0 || t < d)) d = t;
+    return d;   // 0 = 都没说（mode 1 的肩部退化为膝点以上线性到 target、只在 target 处截断）
+}
+
+// mode 4 滚降门与参数（nxnative dm_hdr_rolloff 收编为纯函数；无 metadata 前提——S2Arm 默认不挂 CAEDRMetadata，PR8+ 实验开关）：
+//   target = 纸白 × 当前净空（跟着净空走，不跟已告知 peak 的步进保持）；knee = max(纸白, 0.75×target)——游戏的白永不被碰；
+//   source = min(声明 hi, 已告知 peak)。不滚降的三个门（返回 0 = 维持直通）：无净空读数（≤0/NaN）或 source 无值；
+//   source ≤ 1.05×target（自动 peak 量化到 10 nit 的余量）；knee > 0.9×target（白上没余量：让屏去截断，不硬滚）。
+static inline int hdr_present_rolloff(double *knee, double *target, double *source,
+                                     double headroom, int declared_hi, int told_peak, double paper_white) {
+    int d = hdr_source_peak_nits(declared_hi, told_peak);
+    if (!(headroom > 0.0) || !isfinite(headroom) || d <= 0) return 0;
+    double t = paper_white * headroom, k = 0.75 * t;
+    if (k < paper_white) k = paper_white;
+    if ((double)d <= 1.05 * t || k > 0.9 * t) return 0;
+    if (knee) *knee = k; if (target) *target = t; if (source) *source = (double)d;
+    return 1;
+}
+
+// present 出图参数包（UV 常量缓冲 p[0..7]，照 nxnative present.metal 的 mode/xf 两组并一行）：
+//   p[0] = 着色器模式号（0–4；平凡直通与 PQ 直通都 0）；p[1] = 纸白（nit，mode 1/2/3 的 PQ/SDR 白锚）；
+//   p[2] = knee（mode 1 是纸白倍数 0.75；mode 4 是 nit）；p[3] = target（mode 1 是纸白倍数 1；mode 4 是 nit）；
+//   p[4] = 源峰（mode 1 是纸白倍数——肩部精确落 target 的锚；mode 4 是 nit）；
+//   p[5] = 膝点 PQ 码值（mode 4：归一化 0–1，各通道都 ≤ 它的像素逐位直通）；
+//   p[6] = SDR gamma（mode 1/2：>0 纯幂曲线（缺省 2.2，Q13 留可调）；0 = 分段 sRGB 曲线——会抬暗部）。
+//   返回六态模式；直通两态全 0（mode 0 = 原样采样，逐字节同改前）。纯函数，全分支合成参数单测 + 着色器对拍（t_present_hdr）
+static inline int hdr_present_fill(float p[8], int src_pf, int dst_pt, int vi_answered,
+                                   double headroom, int declared_hi, int told_peak, double sdr_gamma) {
+    int pv = hdr_present_mode(src_pf, dst_pt, vi_answered);
+    if (!p) return pv;
+    for (int i = 0; i < 8; i++) p[i] = 0.0f;
+    if (pv == HDR_PV_PASS) {   // PQ 直通的滚降细化（§2.4 mode 4）：门限不过维持直通，过了升 mode 4
+        double k, t, s;
+        if (hdr_present_rolloff(&k, &t, &s, headroom, declared_hi, told_peak, HDR_PAPER_WHITE_NITS)) {
+            pv = HDR_PV_ROLL;
+            p[0] = 4.0f; p[1] = (float)HDR_PAPER_WHITE_NITS; p[2] = (float)k; p[3] = (float)t; p[4] = (float)s;
+            p[5] = (float)(hdr_pq_code(k) / 1023.0);   // 归一化膝点码值（着色器采样值同为归一化码值）
+        }
+    } else if (pv == HDR_PV_SDR) {   // mode 1：knee/target = 0.75/1（纸白倍数），源峰 = min(声明 hi, 已告知 peak)/纸白
+        p[0] = 1.0f; p[1] = (float)HDR_PAPER_WHITE_NITS; p[2] = 0.75f; p[3] = 1.0f;
+        p[4] = (float)((double)hdr_source_peak_nits(declared_hi, told_peak) / HDR_PAPER_WHITE_NITS);
+        p[6] = (float)sdr_gamma;
+    } else if (pv == HDR_PV_TO_PQ) {   // mode 2：SDR 源按 gamma 解码、纸白 100 nit 编进 PQ 层
+        p[0] = 2.0f; p[1] = (float)HDR_PAPER_WHITE_NITS; p[6] = (float)sdr_gamma;
+    } else if (pv == HDR_PV_FLOAT) {   // mode 3：float 线性源（已线性，无 gamma 参数）
+        p[0] = 3.0f; p[1] = (float)HDR_PAPER_WHITE_NITS;
+    }
+    return pv;
+}
+
 // nvn2.c 侧的存储与入口（实现都在 nvn2.c：同 PR1 探针 nvn2_vi_hdr_probe 的口径，声明不进 nvn2.h，统一收在本头）。
 //   快照与层状态机 / peak 状态都存 nvn2.c（PR1 g_hdr 探针存储同款先例，同一把锁）：nvn2.c 仍纯 C、不引平台头、不对宿主符号有链接依赖（宿主侧调进来，方向同 nvn2_sev_attach_register）；
 //   nxnative dm_hdr_layer_tick / vi_screen_peak 的散布式全局态由此收进本文件单点（评审稿 §2.7）。
 //   缺省全 0 = 「无 HDR」：不发布（单测 / 安卓 / 无头局）——现状行为分毫不差
 void nvn2_hdr_snapshot_publish(const hdr_snapshot *s);   // 平台侧（host_adapt.m 挂层块 / front_mac.m screen_edr_note）发布环境读数；只刷 potential_edr / current_headroom / s1_ready / paper_white，层簿记不回卷；空指针忽略
 void nvn2_hdr_snapshot_probe(hdr_snapshot *out);         // 读回整份（含层簿记；出图 / 门控 / 单测只读）；空指针忽略
-int  nvn2_hdr_switch(void);                              // S2ARM_HDR 三态解析：不设 / off / 看不懂 = off 缺省（缺省关，字节级回现状；看不懂打一次红行）
+int  nvn2_hdr_switch(void);                              // S2A_HDR 三态解析：不设 / off / 看不懂 = off 缺省（缺省关，字节级回现状；看不懂打一次红行）
 void nvn2_hdr_tick(int sw, int raw_can, unsigned long long now_ms);      // 层 tick——can 滞回 + 进层，对存储快照（事件档：250ms timer / 换屏通知，PR4 接线）
 void nvn2_hdr_tick_frame(int sw, int frame_is_pq);                       // 层 tick——排空喂入，对存储快照（每帧，PR4 接线）
+void nvn2_hdr_preattach(int raw_can, unsigned long long now_ms);         // PR4 开机预挂的存储侧：识别 Switch 2 游戏即进层——不滞回（开机无翻屏史），赶在首查询前（§4 PR4 ③）；SDR 屏 / off / 已在层内各自让位
 hdr_decision nvn2_hdr_answer(int src_hdr, unsigned long long now_ms);    // 同源答案入口：三态开关 + 已发布快照 + 存储的 peak 状态进 choose_mode——vi 门控 / 出图都从这读，不各自判
+int nvn2_hdr_present(float p[8], int src_pf, int dst_pt);   // PR3b 出图热路径读已算好的结果：返回六态模式（HDR_PV_*）并填 UV 常量缓冲 p[0..7]（hdr_present_fill 喂存储态：vi 答过 latch + 已告知 peak + PR1 声明的范围 hi + 快照净空）

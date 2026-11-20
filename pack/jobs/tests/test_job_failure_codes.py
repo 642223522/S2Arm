@@ -317,37 +317,15 @@ class MacFailures(JobCase):
 
 class InstallFailures(JobCase):
     def test_install_rc_four_causes_and_unknown(self):
-        import diag
-        gid = "0100000000000000"
-        ios_fixture(self.c, gid)   # 出好的 iPhone 版（容器件 + 资源包）：有资源包才装（审计 18:00 P1-58：没有资源包先报 pack_missing、不走到装机）
-        archive = self.root / "test.ipa"
-        with zipfile.ZipFile(archive, "w") as z:
-            z.writestr("Payload/Test.app/Info.plist", plistlib.dumps({"CFBundleIdentifier": "test"}))
-            z.writestr("Payload/Test.app/S2Arm", b"bin")
-        self.c.r.update(gameId=gid)
-        import ipa as packer
-        def fake_assemble(c, g, others=(), failed=(), root=None, dest=None, agreed=()):
-            return archive, [gid], "SID1"
-        def unpack(args, **kw):
-            with zipfile.ZipFile(archive) as z: z.extractall(args[-1])
-            import subprocess
-            return subprocess.CompletedProcess(args, 0, "", "")
+        # 装 App 时设备 / devicectl 拒收的原文 → 错误码（install.classify 的 SIGN_ERRORS 表，装机失败按 device_install_failed 兜底）
         cases = (("The maximum number of apps for free development profiles has been reached", "free_app_limit"),   # 装机时设备拒收 = 同时 3 个自签 App
                  ("Developer Mode is disabled on this device", "developer_mode_required"),
                  ("The pairing record is invalid. Please pair the device again", "device_pairing_required"),
                  ("The provisioning profile has expired", "provisioning_expired"),
                  ("synthetic unknown installation error", "device_install_failed"))
         for raw, code in cases:
-            with self.subTest(code=code), patch.object(install, "xcode_teams", return_value=[dict(id="TESTTEAM", name="Test", free=True)]), \
-                 patch.object(install, "phone", return_value=dict(id="fixture", name="Synthetic")), \
-                 patch.object(install, "udid_of", return_value=""), patch.object(install, "pull_seen"), \
-                 patch.object(install, "backup_saves"), patch.object(packer, "assemble", side_effect=fake_assemble), \
-                 patch.object(self.c, "run"), \
-                 patch.object(install.subprocess, "run", side_effect=unpack), \
-                 patch.object(diag, "devicectl", return_value=(9, {}, raw)):
-                with self.assertRaises(Failure) as got: install.install(self.c)
-                self.assertEqual(got.exception.code, code)
-                self.assertIn(raw, str(got.exception))
+            with self.subTest(code=code):
+                self.assertEqual(install.classify(raw, default="device_install_failed"), code)
 
     def test_resource_transfer_preserves_control_failures(self):
         pack = self.root / "pack"; pack.mkdir(); (pack / "manifest.json").write_text('{"version": 2, "index_sha256": "x"}')

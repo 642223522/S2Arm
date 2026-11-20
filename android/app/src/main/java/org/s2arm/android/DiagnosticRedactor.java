@@ -99,6 +99,11 @@ final class DiagnosticRedactor {
         for (String reason : ERRNO_REASONS) reasons.append(reasons.length() == 0 ? "" : "|").append(Pattern.quote(reason));
         REASON_TAIL = re("(?i): (?:(?:clonefile|fclonefileat|copyfile) failed: )?(?:" + reasons + ")\\.?[ \\t]*\\z");   // \z, not $: Java's $ also stops before a final CR, U+0085 or U+2028; Python's only before LF
     }
+    // redact.py _MEASURE_END / _MEASURE_WORD: a reading our own logs write right after a path (save commit "<path> 克隆 + 原子交换 25.5 ms",
+    //   "<path> 1834 lines", "<path>（12.5 MB）") stays; only Chinese words, symbols, numbers and a unit may sit in that tail, so an
+    //   English directory name with spaces is still part of the path. Short end-anchored pattern + a backward word walk (linear).
+    private static final Pattern MEASURE_END = re("(?:[ \\t]+|[ \\t]*[（(])[0-9][0-9.,]*[ \\t]?(?:ms|µs|us|ns|s|秒|毫秒|分钟|KB|MB|GB|TB|KiB|MiB|GiB|B|%|帧|fps|次|项|条|个|块|行|款|份|lines|files)[)）\\]]*\\.?[ \\t]*\\z");
+    private static final Pattern MEASURE_WORD = re("[^\\x00-\\x7f" + SPACE + "]+|[+=#×~≈-]|[0-9][0-9.,]*");
     private static final Pattern UUID_SHAPE = re(NOT_WORD_BEFORE
         + "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" + NOT_WORD_AFTER);
     private static final Pattern KEY_MATERIAL = re(NOT_WORD_BEFORE + "[0-9a-fA-F]{64,}" + NOT_WORD_AFTER);
@@ -247,15 +252,31 @@ final class DiagnosticRedactor {
         return "[PRIVATE_PATH len=" + path.codePointCount(0, path.length()) + " depth=" + depth + "]";
     }
 
-    /** redact.py _private_path_keep_reason: a trailing strerror text from the known list survives. */
+    /** redact.py _measure_tail_start: where a trailing reading begins, or -1. */
+    private static int measureTailStart(String text) {
+        Matcher end = MEASURE_END.matcher(text);
+        if (!end.find()) return -1;
+        int start = end.start();
+        while (true) {
+            int cut = start;
+            while (cut > 0 && text.charAt(cut - 1) != ' ' && text.charAt(cut - 1) != '\t') cut--;   // the previous word
+            String word = text.substring(cut, start);
+            int gap = cut;
+            while (gap > 0 && (text.charAt(gap - 1) == ' ' || text.charAt(gap - 1) == '\t')) gap--;
+            if (word.isEmpty() || gap == cut || !MEASURE_WORD.matcher(word).matches()) return start;
+            start = gap;
+        }
+    }
+
+    /** redact.py _private_path_keep_reason: a trailing strerror text from the known list, or a trailing reading, survives. */
     private static String replacePaths(Pattern pattern, String text) {
         Matcher m = pattern.matcher(text);
         StringBuffer out = new StringBuffer(text.length());
         while (m.find()) {
             String path = m.group();
             Matcher tail = REASON_TAIL.matcher(path);
-            String replaced = tail.find() && tail.start() > 0
-                ? privatePath(path.substring(0, tail.start())) + path.substring(tail.start()) : privatePath(path);
+            int at = tail.find() ? tail.start() : measureTailStart(path);   // a strerror tail at 0 still means "all path", as in redact.py
+            String replaced = at > 0 ? privatePath(path.substring(0, at)) + path.substring(at) : privatePath(path);
             m.appendReplacement(out, Matcher.quoteReplacement(replaced));
         }
         m.appendTail(out);

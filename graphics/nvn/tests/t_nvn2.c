@@ -518,20 +518,20 @@ int main(void) {
                 hdr_peak_state nk = {0};
                 CHECK(hdr_vi_peak_nits(&npw, &nk, 0) == 200); } }
 
-        // nvn2.c 存储与入口（同 PR1 nvn2_vi_hdr_probe 的直调口径）：S2ARM_HDR 三态解析、发布 / 读回、层 tick 接入与同源答案入口
+        // nvn2.c 存储与入口（同 PR1 nvn2_vi_hdr_probe 的直调口径）：S2A_HDR 三态解析、发布 / 读回、层 tick 接入与同源答案入口
         {   hdr_snapshot rb, pub = { .potential_edr = 4.555, .current_headroom = 2.0, .s1_ready = 1, .paper_white = 100 };
-            unsetenv("S2ARM_HDR");
+            unsetenv("S2A_HDR");
             CHECK(nvn2_hdr_switch() == HDR_OFF);                        // 不设 = off 缺省（字节级回现状）
-            setenv("S2ARM_HDR", "off", 1);  CHECK(nvn2_hdr_switch() == HDR_OFF);
-            setenv("S2ARM_HDR", "auto", 1); CHECK(nvn2_hdr_switch() == HDR_AUTO);
-            setenv("S2ARM_HDR", "on", 1);   CHECK(nvn2_hdr_switch() == HDR_ON);
-            setenv("S2ARM_HDR", "1", 1);    CHECK(nvn2_hdr_switch() == HDR_OFF);   // 看不懂按 off（打一次红行，断言只认值）
+            setenv("S2A_HDR", "off", 1);  CHECK(nvn2_hdr_switch() == HDR_OFF);
+            setenv("S2A_HDR", "auto", 1); CHECK(nvn2_hdr_switch() == HDR_AUTO);
+            setenv("S2A_HDR", "on", 1);   CHECK(nvn2_hdr_switch() == HDR_ON);
+            setenv("S2A_HDR", "1", 1);    CHECK(nvn2_hdr_switch() == HDR_OFF);   // 看不懂按 off（打一次红行，断言只认值）
             nvn2_hdr_snapshot_publish(&pub);
             rb = (hdr_snapshot){0};
             nvn2_hdr_snapshot_probe(&rb);
             CHECK(rb.potential_edr == 4.555 && rb.current_headroom == 2.0 && rb.s1_ready == 1 && rb.paper_white == 100);   // 发布 / 读回：环境读数逐项相等
             CHECK(rb.can_settled == 0 && rb.layer_pq == 0 && rb.sdr_run == 0);   // 层簿记缺省 0（tick 还没跑）
-            setenv("S2ARM_HDR", "auto", 1);
+            setenv("S2A_HDR", "auto", 1);
             nvn2_hdr_tick(HDR_AUTO, 1, 1000);   // 记变化
             nvn2_hdr_tick(HDR_AUTO, 1, 1500);   // 持稳 500ms → can_settled=1 ∧ s1_ready=1 → 进层
             nvn2_hdr_snapshot_probe(&rb);
@@ -544,14 +544,14 @@ int main(void) {
             CHECK(ad.mode == HDR_S1 && ad.vi_on == 1 && ad.vi_fmt == 1 && ad.vi_peak == 250);   // 同源答案入口：三态 + 快照 + tick 状态进 choose_mode；headroom 2.5 首答 250
             ad = nvn2_hdr_answer(1, 1600);
             CHECK(ad.mode == HDR_S1 && ad.vi_on == 1 && ad.vi_peak == 250);   // 同值带内：答案与层都不动
-            setenv("S2ARM_HDR", "off", 1);
+            setenv("S2A_HDR", "off", 1);
             ad = nvn2_hdr_answer(1, 1700);
             CHECK(ad.mode == HDR_S0 && ad.vi_on == 0 && ad.vi_fmt == 0 && ad.vi_peak == 0);   // off 不变量经存储入口同成立
             nvn2_hdr_tick_frame(HDR_OFF, 0);
             nvn2_hdr_tick_frame(HDR_OFF, 0);
             nvn2_hdr_snapshot_probe(&rb);
             CHECK(rb.layer_pq == 0 && rb.sdr_run == 0);   // off：不再 want，两帧非 PQ 排空切回 SDR
-            unsetenv("S2ARM_HDR");
+            unsetenv("S2A_HDR");
             memset(&pub, 0, sizeof pub);
             nvn2_hdr_snapshot_publish(&pub);   // 段末清回缺省（照 V3 段 Clear 恢复默认收尾；层已排空、簿记本就 0）
         }

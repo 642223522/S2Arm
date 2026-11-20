@@ -2,8 +2,8 @@ import SwiftUI
 
 // 把 iPhone 包装到手机（10-26 维护者定：出完包的提示常驻、带「查看装机步骤」，启动器里另有固定入口）：
 //   启动器出的 IPA 是自签的，iPhone 不认（测试设备1 实测 ApplicationVerificationFailed），要用玩家自己的 Apple ID 重签。步骤与 docs/内测教程.md 第八、九节一致
-//   10-26 维护者 定：主路 = Xcode 里登录的 Apple ID + 数据线，启动器「装到 iPhone」一键签名安装并拷资源包（pack/jobs/install.py）；AltStore 作备选，下面原来的五步就是它
-//   11-02 用户体验线：主路从一页静态说明改成会自己打勾的清单（pack/jobs/install.py readiness，每 4 秒查一次）；玩家点了「装到 iPhone」的，清单齐了自动开装
+//   10-26 维护者 定：主路 = Xcode 里登录的 Apple ID + 数据线，启动器「推到 iPhone」一键签名安装并拷资源包（pack/jobs/install.py）；AltStore 作备选，下面原来的五步就是它
+//   11-02：主路从一页静态说明改成会自己打勾的清单（pack/jobs/install.py readiness，每 4 秒查一次）；玩家点了「推到 iPhone」的，清单齐了自动开装
 struct InstallCheckItem: Identifiable, Equatable {
     let id: String, title: String, detail: String, who: String
     let ok: Bool, waiting: Bool
@@ -34,12 +34,12 @@ struct InstallReadiness: Equatable {
 }
 
 extension Store {
-    /// 装机前清单要查哪款：点「装到 iPhone」时那款；从设置进来的，取选中的、再不行取最近出过 iPhone 包的
+    /// 装机前清单要查哪款：点「推到 iPhone」时那款；从设置进来的，取选中的、再不行取最近出过 iPhone 包的
     var installGuideTarget: Game? {
         let id = installGuideGame ?? selectedGame ?? packShelf.first(where: { $0.latest != nil })?.gameId
         return games.first { $0.id == id }
     }
-    /// 「装到 iPhone」：先开清单页；清单齐了自动开装，不齐就停在页上告诉玩家还差什么（已经齐的玩家照旧一次点击装上）
+    /// 「推到 iPhone」：先开清单页；清单齐了自动开装，不齐就停在页上告诉玩家还差什么（已经齐的玩家照旧一次点击装上）
     func requestInstall(_ game: Game) {
         installGuideGame = game.id; installWhenReady = true; installReadiness = nil; showInstallGuide = true
         checkInstallReadiness()
@@ -78,7 +78,7 @@ struct InstallGuideView: View {
     private var readiness: InstallReadiness? { store.installReadiness.flatMap { $0.gameId == store.installGuideTarget?.id ? $0 : nil } }
     var body: some View {
         VStack(alignment:.leading,spacing:WorkspaceLayout.sectionSpacing) {
-            WorkspaceHeading(title:"装到 iPhone",subtitle:store.installGuideTarget?.name ?? "",symbol:"iphone.and.arrow.forward") {EmptyView()}
+            WorkspaceHeading(title:"推到 iPhone",subtitle:store.installGuideTarget?.name ?? "",symbol:"iphone.and.arrow.forward") {EmptyView()}
             ScrollView {
             VStack(alignment:.leading,spacing:WorkspaceLayout.sectionSpacing) {
             HStack(spacing:8) {
@@ -111,7 +111,7 @@ struct InstallGuideView: View {
                 if store.installWhenReady, readiness?.ready != true { Label(L("齐了会自动开始装"),systemImage:"clock").font(.callout).foregroundStyle(.secondary) }
                 Spacer()
                 Button(L("关闭")) { dismiss() }.keyboardShortcut(.cancelAction)
-                // 清单缺「iPhone 版」时直接给出路：先去做（做好后再点「装到 iPhone」，清单会自己打勾）
+                // 清单缺「iPhone 版」时直接给出路：先去做（做好后再点「推到 iPhone」，清单会自己打勾）
                 if readiness?.items.first(where: { $0.id == "package" })?.ok == false, let g = store.installGuideTarget {
                     Button { dismiss(); store.packIPhone(g) } label: { Label(L("先做 iPhone 版"),systemImage:"hammer") }.disabled(store.executionBusy)
                 }

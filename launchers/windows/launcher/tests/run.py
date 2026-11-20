@@ -72,6 +72,12 @@ def main():
                        "--report-probe", str(Path(temporary) / "out"), "--data-root=" + str(Path(temporary) / "data")], env)
             if "✓ 各页顶栏故障报修键" not in out.stdout:
                 raise RuntimeError("report probe did not report success")
+        # 出包页打开哪一款（玩家反馈：A 在出包时点 B 的出包进的是 A 的页面；UI.Snapshots/BuildRouteProbe.cs）
+        with tempfile.TemporaryDirectory(prefix="s2arm-build-route-probe-") as temporary:
+            out = run([dotnet, "run", "--project", str(probe), "--no-build", "--configuration", "Release", "--",
+                       "--build-route-probe", str(Path(temporary) / "out"), "--data-root=" + str(Path(temporary) / "data")], env)
+            if "✓ 出包页打开哪一款" not in out.stdout:
+                raise RuntimeError("build route probe did not report success")
         if args.negative_controls:
             with tempfile.TemporaryDirectory(prefix="s2arm-ui-negative-") as temporary:
                 target = Path(temporary).resolve()

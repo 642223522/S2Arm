@@ -32,7 +32,7 @@ class PushSelected(unittest.TestCase):
                 raise e
         self.c.r.clear(); self.c.r.update(req)
         ph = types.SimpleNamespace(key=device)
-        with patch.object(program_pack, "enabled", lambda c: on), patch.object(install, "push_game", fake_push), \
+        with patch.object(install, "push_game", fake_push), \
                 patch.object(install, "phone_for", lambda c: ph), patch.object(install, "packer_phone_lock", lambda c: contextlib.nullcontext()), \
                 patch.object(install, "trace", lambda *a, **k: None):
             try:
@@ -74,11 +74,6 @@ class PushSelected(unittest.TestCase):
         self.run_job({B: Failure("缺件", code="pack_missing")}, gameIds=[A, B])
         r, pushed = self.run_job({}, resume=True)
         self.assertEqual(pushed, [B], "失败的那款续推时再试")
-
-    def test_switch_off(self):
-        r, pushed = self.run_job({}, on=False, gameIds=[A])
-        self.assertEqual((r, pushed), (dict(enabled=False), []))
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -20,6 +20,8 @@ struct PhoneJobPanel: View {
     /// 外层已用大标题写明是什么操作（导出自签包弹层）时不再画这一行，免得「导出自签包」下面又一行「导出，自己签名安装」
     var showsOperation = true
     @State private var showDetails = false
+    /// 「更新这 N 款」里玩家取消勾的老款（缺省全勾）
+    @State private var legacyOff: Set<String> = []
 
     private var language: String { loc.lang.sharedCode }
     /// 共用体验表的文案；查不到（不该发生，单测守着）退回 fallback，不把键名上屏
@@ -154,8 +156,33 @@ struct PhoneJobPanel: View {
                 }
             }
             if let o { SGradeResultView(results: o.sgrade, text: { t($0) }) }   // 补进 S 级优化的各款：打上 / 没打上（11-14）
+            if session.kind == .installUpdate, let o, !(o.legacy.isEmpty && o.legacyElsewhere.isEmpty) { legacySection(o) }
         }
         .accessibilityIdentifier("phone.done")
+    }
+
+    // ---- 0.5.x 老款：装好 App 的同一页接着列出、默认全勾，点「更新这 N 款」按「更新所选」逐款推（排队、有进度、可停）；别处装的只写一行 ----
+    private func legacySection(_ o: PhoneOutcome) -> some View {
+        let picked = o.legacy.filter { !legacyOff.contains($0.id) }
+        return VStack(alignment: .leading, spacing: 12) {
+            if !o.legacy.isEmpty {
+                Text(t("phone.legacy.title").replacingOccurrences(of: "{0}", with: "\(o.legacy.count)")).font(.manrope(20, .heavy)).foregroundStyle(LauncherPalette.building)
+                Text(t("phone.legacy.note")).font(.manrope(14)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                ForEach(o.legacy) { g in
+                    Toggle(isOn: Binding(get: { !legacyOff.contains(g.id) }, set: { on in if on { legacyOff.remove(g.id) } else { legacyOff.insert(g.id) } })) {
+                        Text(g.name).font(.manrope(15))
+                    }.toggleStyle(.checkbox).controllerID("phone.legacy." + g.id)
+                }
+                Button { model.updateSelected(ids: picked.map(\.id), device: o.legacyDevice.isEmpty ? nil : o.legacyDevice) } label: {
+                    LauncherHeroActionLabel(title: t("phone.legacy.button").replacingOccurrences(of: "{0}", with: "\(picked.count)"), symbol: "arrow.up.circle")
+                }.controllerButtonStyle(.plain).disabled(picked.isEmpty || model.phoneBusy).controllerID("phone.legacy.update").controllerShortcut(.rightTrigger)
+            }
+            if !o.legacyElsewhere.isEmpty {
+                Text(t("phone.legacy.elsewhere").replacingOccurrences(of: "{0}", with: "\(o.legacyElsewhere.count)").replacingOccurrences(of: "{1}", with: o.legacyElsewhere.joined(separator: "、")))
+                    .font(.manrope(14)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .accessibilityIdentifier("phone.legacy")
     }
 
     // ---- 导出好了：放进哪个文件夹、几款、多大，怎么装一句话，打开文件夹（作业完成时已自动打开一次）----
@@ -204,23 +231,9 @@ struct PhoneJobPanel: View {
                     Text(line).font(.manrope(14)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             }
-            // 推到手机（11-13）：推进去了说一句；没推成写作业给的原因（缺线 / 没信任 / 没装 S2Arm…）+「推到手机」重试
-            if !o.pushed.isEmpty {
-                Label(t("phone.export.pushed").replacingOccurrences(of: "{0}", with: o.pushed.joined(separator: "、")), systemImage: "checkmark.circle")
-                    .font(.manrope(14)).fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("phone.export.pushed")
-            } else {
-                Text(o.pushNote.isEmpty ? t("phone.export.push_hint") : loc.backend(o.pushNote))
-                    .font(.manrope(14)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("phone.export.pushNote")
-            }
             HStack(spacing: 12) {
                 Button { NSWorkspace.shared.open(URL(fileURLWithPath: o.exportFolder)) } label: { LauncherHeroActionLabel(title: t("phone.export.open"), symbol: "folder") }
                     .controllerButtonStyle(.plain).accessibilityIdentifier("phone.export.open")
-                if o.pushed.isEmpty {
-                    Button { model.pushExportToPhone(gameID: session.gameID) } label: {
-                        LauncherHeroActionLabel(title: model.exportPushing ? t("phone.export.pushing") : t("phone.export.push"), symbol: "iphone.and.arrow.forward")
-                    }
-                    .controllerButtonStyle(.plain).disabled(model.exportPushing).controllerID("phone.export.push").controllerShortcut(.rightTrigger)
-                }
             }
             SGradeResultView(results: o.sgrade, text: { t($0) })   // 补进 S 级优化的各款：打上 / 没打上（11-14）
         }

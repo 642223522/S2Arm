@@ -164,7 +164,32 @@ void rp_pool_stats_end(void) {
 //   弱引用：回放核心宿主单测与鸿蒙不链帧日志，地址为空就不调；开关关着时函数里只判一次缓存标志。
 // 弱链接[replay]：s2a_frame_log_present_timed
 void s2a_frame_log_present_timed(uint64_t acquire_ns, uint64_t present_ns) __attribute__((weak));
+// ADPF 帧负载上报（android/native/adpf_hint.c；原先只接在旧层 mtl_vk_shim.c，缺省的新回放层构建不编它，CPU 调度器一直拿不到帧负载）：
+//   一帧的工作 = 上一次出图返回 → 这一次取图之前（游戏逻辑 + 录命令 + 回放），取图 / 呈现的阻塞是节拍不是工作。
+//   每次出图前对本帧报 frame_end（目标 = 游戏登记的上屏周期），出图后对下一帧开 work_begin；没有显示面时关会话（invisible），不报。
+//   序号独立计（不借票号：票号在出图锁里发，ADPF 不该在出图锁里调）。弱引用：回放核心宿主单测与鸿蒙不链 ADPF，地址为空就不调。
+// 弱链接[replay]：s2a_adpf_work_begin
+void s2a_adpf_work_begin(uint64_t seq) __attribute__((weak));
+// 弱链接[replay]：s2a_adpf_frame_end
+void s2a_adpf_frame_end(int64_t target_ns, uint64_t seq) __attribute__((weak));
+// 弱链接[replay]：s2a_adpf_invisible
+void s2a_adpf_invisible(void) __attribute__((weak));
+static _Atomic uint64_t g_adpf_seq;
+static uint64_t present_impl(const tex_t *t, double period_s, const int crop[4]);
 uint64_t nvn_be_present(const tex_t *t, double period_s, const int crop[4]) {
+    pthread_mutex_lock(&g_pmu); const int surf = g_surf != NULL; pthread_mutex_unlock(&g_pmu);
+    const uint64_t seq = atomic_load_explicit(&g_adpf_seq, memory_order_relaxed);
+    if (!surf) { if (s2a_adpf_invisible) s2a_adpf_invisible(); }
+    else if (seq && s2a_adpf_frame_end) {
+        const double ns = period_s * 1e9;
+        s2a_adpf_frame_end(ns > 0 && ns < 9.0e18 ? (int64_t)ns : 0, seq);
+    }
+    const uint64_t ticket = present_impl(t, period_s, crop);
+    const uint64_t next = atomic_fetch_add_explicit(&g_adpf_seq, 1, memory_order_relaxed) + 1;
+    if (surf && s2a_adpf_work_begin) s2a_adpf_work_begin(next);
+    return ticket;
+}
+static uint64_t present_impl(const tex_t *t, double period_s, const int crop[4]) {
     (void)period_s;
     rp_pool_stats_frame();   // 池统计（开关 pool_stats；关着每帧只读一次开关，回放与池查找路径不动）
     rp_tm_frame_end();   // 一帧结束：刚结束的是采样帧就记一帧，再定下一帧要不要逐步计时（分时抽样，#1103）
@@ -250,6 +275,11 @@ uint64_t nvn_be_present(const tex_t *t, double period_s, const int crop[4]) {
                 snprintf(b, sizeof b, "分时（贴图解析，每帧）：等锁 %.2f 毫秒、持锁 %.2f 毫秒、没见过的序号 %.1f 个、新建视图 %.1f 个、内容检查按纪元跳过 %.0f 次；影子附件 %.2f 毫秒；新贴图：后端建 %.2f 毫秒、扫存储 %.2f 毫秒、上传 %.1f 张 %.2f 毫秒、填零 %.1f 张 %.2f 毫秒、改由通道清零 %.1f 张",
                          (double)pf[RP_PERF_RES_LOCK] / 1e6 / fs, (double)pf[RP_PERF_RES_INIT] / 1e6 / fs, (double)pf[RP_PERF_RES_NEW] / f, (double)pf[RP_PERF_RES_VIEWMAKE] / f, (double)pf[RP_PERF_TEX_EPOCH] / f, (double)pf[RP_PERF_PB_SHADOW] / 1e6 / f,
                          (double)pf[RP_PERF_RES_MAKE] / 1e6 / f, (double)pf[RP_PERF_RES_SCAN] / 1e6 / f, (double)pf[RP_PERF_RES_UPN] / f, (double)pf[RP_PERF_RES_UP] / 1e6 / f, (double)pf[RP_PERF_RES_ZERON] / f, (double)pf[RP_PERF_RES_ZERO] / 1e6 / f, (double)pf[RP_PERF_RES_ZDEFER] / f);
+                snprintf(b + strlen(b), sizeof b - strlen(b), "；内容检查：纪元没命中 %.0f 次、逐页比对 %.0f 页", (double)pf[RP_PERF_TEX_EPOCH_MISS] / f, (double)pf[RP_PERF_TEX_CHECK_PAGES] / f);   // 缺省常开、只计数：纪元快路没跳成的次数与逐页比的页数（上限）
+                if (pf[RP_PERF_TEX_LOG_N] || pf[RP_PERF_TEX_LOG_FALLBACK])   // 脏页日志（nvk_buf_dirtylog）开着才有
+                    snprintf(b + strlen(b), sizeof b - strlen(b), "；按脏页日志核对 %.0f 次（读事件 %.0f 条）、日志不可用退回逐页 %.2f 次", (double)pf[RP_PERF_TEX_LOG_N] / f, (double)pf[RP_PERF_TEX_LOG_EV] / f, (double)pf[RP_PERF_TEX_LOG_FALLBACK] / f);
+                if (pf[RP_PERF_TEX_UNARMED])   // 上传时加保护没落地（下一次必重传）
+                    snprintf(b + strlen(b), sizeof b - strlen(b), "；上传时加保护没落地 %llu 次（窗口合计，下一次重传）", (unsigned long long)pf[RP_PERF_TEX_UNARMED]);
                 nvn_plat_log(NVN_PLAT_LOG_INFO, "present", b);
                 snprintf(b, sizeof b, "分时（通道，每帧）：%.1f 个，共 %.1f 百万像素；颜色附件载入 %.1f 个；挂深度模板的 %.1f 个，其中整个通道没用到它的 %.1f 个；只有 0–1 笔绘制的 %.1f 个（挂深度模板 %.1f / 不挂 %.1f，共 %.1f 百万像素；一笔都没画的 %.1f 个）；同目标续接 %.1f 次、挂起清除 %.1f 条、缩小区域 %.1f 个（共 %.1f 百万像素）、影子附件 %.1f 个；开着的通道被结束的原因：换目标 %.1f、通道中途的整屏清除 %.1f、同一提交里第二次同步 %.1f",
                          (double)pf[RP_PERF_PASSES] / f, (double)pf[RP_PERF_P_KPIX] / 1e3 / f, (double)pf[RP_PERF_P_LOADC] / f, (double)pf[RP_PERF_P_DS] / f, (double)pf[RP_PERF_P_DS_IDLE] / f, (double)pf[RP_PERF_P_ONE] / f, (double)pf[RP_PERF_P_TINY_DS] / f, (double)pf[RP_PERF_P_TINY_NODS] / f, (double)pf[RP_PERF_P_TINY_KPIX] / 1e3 / f, (double)pf[RP_PERF_P_CLEARONLY] / f, (double)pf[RP_PERF_P_CONT] / f, (double)pf[RP_PERF_P_PARK] / f, (double)pf[RP_PERF_P_AREA] / f, (double)pf[RP_PERF_P_AREA_KPIX] / 1e3 / f, (double)pf[RP_PERF_P_SHADOW] / f, (double)pf[RP_PERF_P_CUT_RT] / f, (double)pf[RP_PERF_P_CUT_CLEAR] / f, (double)pf[RP_PERF_P_CUT_XFER] / f);
@@ -341,4 +371,4 @@ double nvn_be_presented_time(uint64_t n) {
     return at;
 }
 void rp_present_stats(uint64_t *shown, uint64_t *dropped) { pthread_mutex_lock(&g_pmu); if (shown) *shown = g_n_shown; if (dropped) *dropped = g_n_dropped; pthread_mutex_unlock(&g_pmu); }
-void rp_present_reset(void) { pthread_mutex_lock(&g_pmu); g_surf = NULL; g_hz = 0; g_ticket = 0; g_n_shown = g_n_dropped = 0; memset(g_shown, 0, sizeof g_shown); memset(&g_fseg, 0, sizeof g_fseg); pthread_mutex_unlock(&g_pmu); }
+void rp_present_reset(void) { atomic_store(&g_adpf_seq, 0); pthread_mutex_lock(&g_pmu); g_surf = NULL; g_hz = 0; g_ticket = 0; g_n_shown = g_n_dropped = 0; memset(g_shown, 0, sizeof g_shown); memset(&g_fseg, 0, sizeof g_fseg); pthread_mutex_unlock(&g_pmu); }

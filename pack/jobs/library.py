@@ -2776,6 +2776,7 @@ SPACE_PARTS = (
     ("shaders", "着色器与出包缓存", "下次出包会重新翻译着色器（大游戏要多花较长时间）"),
     ("mac", "Mac 运行版本", "下次在 Mac 上玩之前会重新准备"),
     ("ipa", "已出好的 iPhone 包", "只删资源包：手机上已装的不受影响，以后更新 S2Arm 也照样带上这款；要装到别的手机或重新推资源时再出一次包"),
+    ("selfsign", "自签导出的游戏文件", "「S2Arm 自签导出」文件夹里这款的 .img：手机上已导入的不受影响；要再装到手机时重新「导出自签包」"),
 )
 SPACE_KEPT = ("saves", "logs")
 
@@ -2818,8 +2819,21 @@ def space_parts(c, gid):
         "ipa": ipa,
         "saves": layout.save_entries(gdir) if gdir else [],   # 只报不删（SPACE_KEPT）；存档类唯一来源 layout.save_entries
         "logs": [out / "logs"],
+        "selfsign": selfsign_imgs(c, gid),
     }
     return {k: [p for p in v if p.exists() or p.is_symlink()] for k, v in parts.items()}
+
+
+def selfsign_imgs(c, gid):
+    """「S2Arm 自签导出」文件夹（中 / 英两个定名都看）里这款的 .img（完整的和着色器更新包）：单独写出、不和 games/ 共用磁盘块，
+    每款等于再占一份（#1471）。按文件头里的游戏号认，不按文件名"""
+    import install
+    out = []
+    for name in install.EXPORT_DIRS.values():
+        folder = c.library / name
+        if folder.is_dir():
+            out += [p for p in layout.entries(folder, "*.img") if p.is_file() and install._img_head(p)[0] == gid.upper()]
+    return out
 
 
 def _part_bytes(paths):
@@ -2908,7 +2922,7 @@ def space_survey(c):
     for g in games:
         c.check()
         parts = space_parts(c, g["id"])
-        shown = [(k, t, r) for k, t, r in SPACE_PARTS if k != "legacy" or parts[k]]   # 没有旧版残留就不显示
+        shown = [(k, t, r) for k, t, r in SPACE_PARTS if k not in ("legacy", "selfsign") or parts[k]]   # 没有旧版残留 / 没自签导出过这款就不显示
         combos = freeable({k: parts[k] for k, _, _ in shown})
         # 每行是「只删这一项」腾出的字节；几项共用的克隆块只在都勾上时算进合计（combos），sharedBytes = 全勾比各项单删相加多出的部分
         rows.append(dict(gameId=g["id"], name=game_custom(c, g["id"])["name"] or g.get("name") or g["id"],
@@ -2938,7 +2952,7 @@ def space_free(c):
         freed, done = combos[space_key(want)], []
         for k in [k for k, _, _ in SPACE_PARTS if k in want]:
             for p in parts[k]:
-                root = c.work_root if p.is_relative_to(c.work_root) else layout.root_of(c, gid)
+                root = c.work_root if p.is_relative_to(c.work_root) else c.library if k == "selfsign" else layout.root_of(c, gid)
                 _rm(c, root, p)
             done.append(dict(id=k, bytes=combos[k]))
         sizes.refresh(c, gid)

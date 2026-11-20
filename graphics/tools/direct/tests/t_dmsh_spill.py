@@ -42,7 +42,7 @@ def kernel(n, extra=''):
 def call(src):
     o = ctypes.c_void_p(); nb = ctypes.c_uint32(); err = ctypes.create_string_buffer(256)
     rc = f(src.encode(), 27, ctypes.byref(o), ctypes.byref(nb), err, 256)
-    out = ctypes.cast(o, ctypes.c_char_p).value.decode() if o.value else None
+    out = ctypes.cast(o.value, ctypes.c_char_p).value.decode() if o.value else None
     if o.value: fr(o)
     return rc, out, nb.value, err.value.decode()
 

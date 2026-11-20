@@ -20,6 +20,17 @@ rewriter = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rewriter)
 
 
+def pick_cmake():
+    # Same CMake rule as android/test.sh (tools/cmake_pick.sh: $CMAKE -> PATH -> highest SDK cmake);
+    # hosts whose CMake lives only in the SDK must not fail here with "cmake: not found".
+    result = subprocess.run(['bash', '-c', 'source "$1" && s2a_cmake_pick && printf %s "$S2A_CMAKE"', '_',
+                             str(ROOT / 'android/tools/cmake_pick.sh')], capture_output=True, text=True, timeout=30)
+    if result.returncode or not result.stdout:
+        print(result.stderr.strip() or '【红】找不到 CMake（tools/cmake_pick.sh）', file=sys.stderr)
+        raise SystemExit(1)
+    return result.stdout
+
+
 def run(base):
     # Direct callers also use the production resolver, without requiring an env
     # override. Resolve before JDK/build work and keep only this boundary terse.
@@ -48,9 +59,10 @@ def run(base):
     if '17.' not in version.stdout + version.stderr:
         raise RuntimeError('JDK17 is required')
     build = base / 'build'
-    command(['cmake', '-S', ROOT / 'android/rewriter', '-B', build,
+    cmake = pick_cmake()
+    command([cmake, '-S', ROOT / 'android/rewriter', '-B', build,
              '-DS2A_REWRITER_DEPS=' + str(deps), '-DCMAKE_BUILD_TYPE=Release'])
-    command(['cmake', '--build', build, '--target', 's2arm_rewriter', 's2a-rewrite', '--parallel', '2'])
+    command([cmake, '--build', build, '--target', 's2arm_rewriter', 's2a-rewrite', '--parallel', '2'])
     fixture = base / '私有输入😀'; fixture.mkdir(mode=0o700)
     command([sys.executable, ROOT / 'android/tools/selftest_nso.py', fixture / 'main.nso'])
     data = bytearray((fixture / 'main.nso').read_bytes())

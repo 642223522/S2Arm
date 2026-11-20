@@ -28,6 +28,12 @@ public final class S2ArmShellHostModel {
     @ObservationIgnored private let needsHostUpdate: (String) -> Bool
     /// 这款程序包对不上本机这份 App、要在电脑上对这款重装（s2a_shell_game_needs_reinstall：点开被拒时宿主记下）
     @ObservationIgnored private let needsReinstall: (String) -> Bool
+    /// 这款完整快照的目录（宿主 s2a_shell_snapshot_dir；开关关着 / 没有快照为 nil）。单测换成临时目录
+    @ObservationIgnored private let snapshotDir: (String) -> URL?
+    /// 删这款的快照（宿主 s2a_shell_delete_snapshot，连同缩略图、清单）；单测换成删临时目录
+    @ObservationIgnored private let deleteSnapshotFile: (String) -> Bool
+    /// 快照的图解一次就留着：图的修改时间不变就用同一份，库每秒重判时不重解、界面也不因此重画
+    @ObservationIgnored private var momentCache: [String: (stamp: Date, moment: SavedMoment)] = [:]
     /// 重读清单（App 包清单 + 各款程序包清单，Catalogue.load）：回到前台 / 游戏库页出现时调 rescanCatalogue。0.6.0「推到 iPhone」只推这一款、
     ///   不重装也不拉起 App，App 开着时推进来的新款要靠这一下才列出来。单测不给 = 不重读
     @ObservationIgnored private let reloadCatalogue: (() -> Catalogue)?
@@ -46,6 +52,8 @@ public final class S2ArmShellHostModel {
     ///   没显示的款一开始传就出现（真机实测：App 先被拉起、推包随后才写传输清单），已经能玩的款重推 / 装更新时也立刻画上蒙版
     ///   （#399 真机验收：原先「全都能玩了就停」，开着库重推一款已装好的游戏，整个推送过程库里一直显示可玩、没有进度）。App 退到后台时计时器随之暂停
     @ObservationIgnored private var ticker: Timer?
+    /// 这一版的新功能介绍（App 包里 Feature/feature.json，出壳时 pack/feature_bundle.py 从 docs/site 取标了 ios 的页）；读一次留着
+    @ObservationIgnored private let featureIntro: FeatureIntro?
     var watching: Bool { ticker != nil }
     /// 传输清单和它列的文件这么久都没动 = 传断了（拔线、电脑那边停了）。90 秒：电脑经 devicectl 写 ≤1 GB 的一批要写完才落盘，实测约 33 秒，留余量
     static let transferStall: TimeInterval = 90
@@ -80,6 +88,10 @@ public final class S2ArmShellHostModel {
     public static let guideSeenKey = "S2AGuideSeen.v1"
     public private(set) var guideOpen = false
     public var guidePage = 0
+    /// 这一版的新功能介绍（iPhone 两页）盖在库界面上：排在首次引导之后，只给升级上来的玩家（看过引导、没看过这一期）；新装的关引导时一并记看过
+    public private(set) var featureOpen = false
+    public var featurePage = 0
+    public var featureIntroContent: FeatureIntro? { featureIntro }
 
     /// play 缺省走 C 出口；单测可换
     public init(catalogue: Catalogue, play: ((String) -> Void)? = nil, stores: S2ArmGameSettings.Stores = .live,
@@ -89,8 +101,9 @@ public final class S2ArmShellHostModel {
                 now: @escaping () -> Date = Date.init, pickGameData: ((String) -> Void)? = nil, identityStore: GameIdentityStore = .live,
                 gamesRoot: URL = S2ArmContainer.gamesRoot(), packGamesRoot: URL? = nil,
                 imlNotice: (() -> String?)? = nil, needsHostUpdate: ((String) -> Bool)? = nil, needsReinstall: ((String) -> Bool)? = nil,
-                reloadCatalogue: (() -> Catalogue)? = nil) {
+                reloadCatalogue: (() -> Catalogue)? = nil, snapshotDir: ((String) -> URL?)? = nil, deleteSnapshot: ((String) -> Bool)? = nil, featureDir: URL? = nil) {
         self.reloadCatalogue = reloadCatalogue
+        featureIntro = Self.loadFeatureIntro(featureDir ?? Bundle.main.bundleURL.appendingPathComponent("Feature"))
         self.gamesRoot = gamesRoot
         self.packGamesRoot = packGamesRoot ?? Self.packGamesRoot(for: gamesRoot)
         self.stores = stores; self.layoutState = layoutState; bannerURLs = catalogue.bannerURLs
@@ -109,6 +122,11 @@ public final class S2ArmShellHostModel {
         self.installState = installState ?? { id in id.withCString { s2a_shell_game_install_state($0) } }
         self.needsHostUpdate = needsHostUpdate ?? { id in id.withCString { s2a_shell_game_needs_host_update($0) } != 0 }
         self.needsReinstall = needsReinstall ?? { id in id.withCString { s2a_shell_game_needs_reinstall($0) } != 0 }
+        self.snapshotDir = snapshotDir ?? { id in
+            var buf = [CChar](repeating: 0, count: 2048)
+            return id.withCString { s2a_shell_snapshot_dir($0, &buf, UInt(buf.count)) } == 0 ? URL(fileURLWithPath: String(decoding: buf.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self), isDirectory: true) : nil
+        }
+        self.deleteSnapshotFile = deleteSnapshot ?? { id in id.withCString { s2a_shell_delete_snapshot($0) } == 0 }
         self.installGame = installGame ?? { id in id.withCString { s2a_shell_install_game($0) } != 0 }
         self.installWait = installWait ?? { s2a_shell_install_wait() }
         self.installProgress = installProgress ?? { id in
@@ -143,6 +161,12 @@ public final class S2ArmShellHostModel {
         #else
         guideOpen = !stores.app.bool(forKey: Self.guideSeenKey) && env["S2A_SHELL_PLAY"] == nil && env["S2A_SHELL_OPEN_LAYOUT_EDITOR"] == nil
         if env["S2A_SHELL_GUIDE"] == "1" { guideOpen = true }   // 测试开关：看过也强制弹一次（真机截图验证排版用；同上，只有 devicectl / Xcode 起 App 能给）
+        // 新功能介绍：首次引导没开（看过了）、这一期没看过、不是测试链直接开局 / 开编辑页才弹；S2A_SHELL_FEATURE=1 强制弹（截图验排版）
+        if let intro = featureIntro {
+            featureOpen = !guideOpen && stores.app.bool(forKey: Self.guideSeenKey) && stores.app.string(forKey: Self.featureSeenKey) != intro.id
+                && env["S2A_SHELL_PLAY"] == nil && env["S2A_SHELL_OPEN_LAYOUT_EDITOR"] == nil
+            if env["S2A_SHELL_FEATURE"] == "1" { guideOpen = false; featureOpen = true }
+        }
         #endif
         if let id = env["S2A_SHELL_OPEN_LAYOUT_EDITOR"], allGames.contains(where: { $0.id == id }) {
             editingLayout = id; NSLog("S2Arm 游戏库：S2A_SHELL_OPEN_LAYOUT_EDITOR 直接开 %@ 的调整位置页", id)
@@ -168,7 +192,7 @@ public final class S2ArmShellHostModel {
             return GameTile(id: id, title: nacpTitle(try? Data(contentsOf: ctl.appendingPathComponent("control.nacp"))) ?? id,
                             icon: icon.flatMap { Artwork(id: id + ".icon", data: $0) },
                             state: .broken(reason: shellText("Reinstall from the original computer"),
-                                           detail: shellText("This game was installed from another computer. Its saves and game data are still on this iPhone; on that computer, choose “Install to iPhone” again to bring it back.")))
+                                           detail: shellText("This game was installed from another computer. Its saves and game data are still on this iPhone; on that computer, choose “Push to iPhone” again to bring it back.")))
         }
     }
 
@@ -232,11 +256,68 @@ public final class S2ArmShellHostModel {
             if allGames[i].game.isNew != fresh { allGames[i].game.isNew = fresh }
             let played = playtimeLine(id)   // 游玩时间（11-15 维护者）：有就进「最近玩过」与这款的那一行，没玩过不显示
             if allGames[i].game.recentlyPlayed != played { allGames[i].game.recentlyPlayed = played }
+            let moment = savedMoment(id)   // 快照（0.6.0）：游戏库「从这一刻继续」那一条读它
+            if allGames[i].game.moment != moment { allGames[i].game.moment = moment }
             if allGames[i].game.state != want {
                 if want.installPhase != allGames[i].game.state.installPhase { NSLog("S2Arm 游戏库：%@ → %@", id, String(describing: want)) }
                 allGames[i].game.state = want
             }
         }
+    }
+
+    static let featureSeenKey = "S2AFeatureSeen"
+
+    /// 读新功能介绍：文字按界面语言取中文或英文（文件只有这两种），图解一次。文件没有 / 不对 / 一页不剩 → nil（不弹、设置里也没有那一行）
+    static func loadFeatureIntro(_ dir: URL, language: String = Locale.preferredLanguages.first ?? "en") -> FeatureIntro? {
+        guard let data = try? Data(contentsOf: dir.appendingPathComponent("feature.json")),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let id = root["id"] as? String else { return nil }
+        let lang = language.hasPrefix("zh") ? "zh-Hans" : "en"
+        func pick(_ v: Any?) -> String? { (v as? [String: Any])?[lang] as? String }
+        let pages: [FeatureIntro.Page] = (root["pages"] as? [[String: Any]] ?? []).compactMap { p in
+            guard let kicker = pick(p["kicker"]), let title = pick(p["title"]), let what = pick(p["what"]), let how = pick(p["how"]), let whereText = pick(p["where"]) else { return nil }
+            let file = pick(p["image"]).map { dir.appendingPathComponent($0) }
+            let picture = file.flatMap { try? Data(contentsOf: $0) }.flatMap { Artwork(id: "feature.\(id).\($0.count)", data: $0) }
+            let labels = (p["labels"] as? [String: Any] ?? [:]).compactMapValues { pick($0) }
+            return FeatureIntro.Page(picture: picture, kicker: kicker, title: title, what: what, how: how, whereText: whereText, labels: labels)
+        }
+        return pages.isEmpty ? nil : FeatureIntro(id: id, badge: pick(root["badge"]) ?? "", pages: pages)
+    }
+
+    /// 这款的快照：存下的时刻 + 那一刻的画面。图先用快照里的小图 thumb.png，没有就用整帧 a_last.png；时刻读清单 manifest.tsv 的「保存时刻」
+    ///   （UTC 秒），旧快照没有这一项就用图的修改时间（存下那一刻写的）。没有完整快照为 nil
+    func savedMoment(_ id: String) -> SavedMoment? {
+        guard let dir = snapshotDir(id) else { momentCache[id] = nil; return nil }
+        let fm = FileManager.default
+        let pic = ["thumb.png", "a_last.png"].map { dir.appendingPathComponent($0) }.first { fm.fileExists(atPath: $0.path) }
+        let stamp = pic.flatMap { (try? fm.attributesOfItem(atPath: $0.path))?[.modificationDate] as? Date }
+            ?? (try? fm.attributesOfItem(atPath: dir.appendingPathComponent("manifest.tsv").path))?[.modificationDate] as? Date ?? .distantPast
+        if let hit = momentCache[id], hit.stamp == stamp { return hit.moment }
+        let manifest = (try? String(contentsOf: dir.appendingPathComponent("manifest.tsv"), encoding: .utf8)) ?? ""
+        let saved = manifest.split(separator: "\n").lazy.compactMap { line -> Date? in
+            let f = line.split(separator: "\t", maxSplits: 1)
+            guard f.count == 2, f[0] == "保存时刻", let s = Double(f[1].trimmingCharacters(in: .whitespaces)) else { return nil }
+            return Date(timeIntervalSince1970: s)
+        }.first
+        let moment = SavedMoment(savedAt: saved ?? (stamp == .distantPast ? now() : stamp),
+                                 picture: pic.flatMap { try? Data(contentsOf: $0) }.flatMap { Artwork(id: "moment.\(id).\(stamp.timeIntervalSince1970)", data: $0) },
+                                 bytes: Self.allocatedBytes(dir))
+        momentCache[id] = (stamp, moment)
+        return moment
+    }
+
+    /// 目录下所有文件实际占的空间（按分配块算：删掉就腾出这么多）
+    static func allocatedBytes(_ dir: URL) -> Int64 {
+        guard let it = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: [.totalFileAllocatedSizeKey]) else { return 0 }
+        var n: Int64 = 0
+        for case let u as URL in it { n += Int64((try? u.resourceValues(forKeys: [.totalFileAllocatedSizeKey]))?.totalFileAllocatedSize ?? 0) }
+        return n
+    }
+
+    /// 删掉这款的快照（玩家在游戏库长按确认过）：删完立刻重判，这一格和卡片角标随之消失
+    func deleteSnapshot(_ id: String) {
+        _ = deleteSnapshotFile(id)
+        momentCache[id] = nil
+        refreshGameData()
     }
 
     /// 这款在这台设备上的游玩时间：运行时 runtime/src/playtime.c 写 <游戏根>/<游戏号>/playtime.json（{"seconds":N,"lastPlayed":<Unix 秒>}），
@@ -385,11 +466,13 @@ public final class S2ArmShellHostModel {
                      onManageSaves: { [weak self] id in self?.manageSaves(id) })
         actions.onReorderGames = { [weak self] sources, before in self?.reorderGames(sources, before: before) ?? false }
         actions.onReportProblem = { s2a_shell_report_problem() }
+        actions.featureIntro = featureIntro   // 新功能介绍（0.6.0 起 iPhone 两页）：有才在游戏库设置里出「再看一遍」那一行
         // 快照（0.6.0）：有完整快照的那款，长按卡片多一项「回到上次存下的这一刻」（宿主 ios/app.m；开关关着时宿主回 0，菜单里没有这一项）
         actions.snapshotAvailable = { id in s2a_shell_snapshot_available(id) != 0 }
         actions.onRestoreSnapshot = { [weak self] id in
             guard let self, let g = self.allGames.first(where: { $0.id == id }), g.game.state == .playable else { return }
             s2a_shell_restore_snapshot(id) }   // 故障报修（宿主 ios/diag.m：可不填的一句说明 + 打包上传、给短码）
+        actions.onDeleteSnapshot = { [weak self] id in self?.deleteSnapshot(id) }   // 游戏库长按「删除这一刻」（玩家确认过）
         return actions
     }
 
@@ -677,7 +760,31 @@ public final class S2ArmShellHostModel {
     public func closeGuide() {
         guard guideOpen else { return }
         guideOpen = false; stores.app.set(true, forKey: Self.guideSeenKey)
+        if let id = featureIntro?.id { stores.app.set(id, forKey: Self.featureSeenKey) }   // 新装的：引导讲过入口，这一期新功能不再连弹一套
         NSLog("S2Arm 游戏库：首次引导看过（停在第 %d 页关）", guidePage + 1)
+    }
+    /// 关掉新功能介绍（×、开始游戏、手柄 B）：记这一期看过
+    public func closeFeature() {
+        guard featureOpen else { return }
+        featureOpen = false
+        if let id = featureIntro?.id { stores.app.set(id, forKey: Self.featureSeenKey) }
+        NSLog("S2Arm 游戏库：新功能介绍看过（停在第 %d 页关）", featurePage + 1)
+    }
+    /// 游戏库设置里「再看一遍」
+    public func openFeature() {
+        guard featureIntro != nil, !guideOpen else { return }
+        featurePage = 0; featureOpen = true
+    }
+    /// 新功能介绍开着时手柄输入走这里：左右翻页，A 下一页 / 最后一页完成，B 关
+    func featureInput(_ action: ShellInput.Action) {
+        let last = max((featureIntro?.pages.count ?? 1) - 1, 0)
+        switch action {
+        case .right: featurePage = min(featurePage + 1, last)
+        case .left: featurePage = max(featurePage - 1, 0)
+        case .activate: if featurePage >= last { closeFeature() } else { featurePage += 1 }
+        case .back: closeFeature()
+        default: break
+        }
     }
     /// 引导开着时手柄输入走这里：左右翻页，A 下一页 / 最后一页完成，B 关
     func guideInput(_ action: ShellInput.Action) {
@@ -723,10 +830,11 @@ public final class S2ArmShellHostModel {
         adapter.onInput = { [weak self] action, device in
             guard let self else { return }
             if self.guideOpen { self.guideInput(action); return }   // 引导盖着库界面：手柄只管引导
+            if self.featureOpen { self.featureInput(action); return }   // 新功能介绍同理
             self.input.append(action, device: device)
         }
         adapter.onRelease = { [weak self] action, device in
-            guard let self, !self.guideOpen else { return }
+            guard let self, !self.guideOpen, !self.featureOpen else { return }
             self.input.append(action, device: device, released: true)
         }
         adapter.onControllersChange = { [weak self] connected in

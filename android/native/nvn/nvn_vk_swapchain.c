@@ -902,6 +902,11 @@ int nvn_vk_swapchain_present_image(struct nvn_vk_swapchain *sc, VkImage src, VkF
     int32_t dst_x = (int32_t)((dst_w - draw_w) / 2), dst_y = (int32_t)((dst_h - draw_h) / 2);
     blit.dstOffsets[0] = (VkOffset3D){ dst_x, dst_y, 0 };
     blit.dstOffsets[1] = (VkOffset3D){ dst_x + (int32_t)draw_w, dst_y + (int32_t)draw_h, 1 };
+    {   // 旧层（mtl_vk_shim.c）：窗口建时的原点与当前原点不同 → 上下翻（目标两个 y 对调，vkCmdBlitImage 按偏移方向镜像）
+        // 弱链接[androiddraw]：mtl_vk_present_flip（宿主单测 nvn_vk_swapchain_host_test 不链旧层 mtl_vk_shim.c）
+        extern int mtl_vk_present_flip(void) __attribute__((weak));
+        if (mtl_vk_present_flip && mtl_vk_present_flip()) { int32_t y0 = blit.dstOffsets[0].y; blit.dstOffsets[0].y = blit.dstOffsets[1].y; blit.dstOffsets[1].y = y0; }
+    }
     {
         static int logged;
         if (!logged) {

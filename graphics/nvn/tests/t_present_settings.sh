@@ -8,14 +8,19 @@ cd "$root"
 source "$root/tools/toolchain.sh"
 out=${PRESENT_SETTINGS_BUILD:-$root/build/tests/present-settings}
 [[ "$out" = /* ]] || out="$root/$out"
-mkdir -p "$out/host"
+# 宿主侧只编、只链清单列的源文件（t_present_settings.link.txt：t_present_settings_closure.py 按链接器实算的闭包，门禁按同一份清单算本测输入）。
+#   不链的文件物理上进不了产物，所以清单外的宿主改动不必重跑本测；清单本身由下面三项核对兜住：链接报未定义符号、编译实读了清单外的头、
+#   链出来多了运行期查找的符号——任一项红就是清单过期，重跑生成器。PRESENT_SETTINGS_GEN=1 + PRESENT_SETTINGS_LIST 只给生成器用：编候选全集、只构建
+list=${PRESENT_SETTINGS_LIST:-$root/graphics/nvn/tests/t_present_settings.link.txt}
+gen=${PRESENT_SETTINGS_GEN:-0}
+rm -rf "$out/host"; mkdir -p "$out/host"   # 旧清单留下的目标文件不许混进来
 if [[ -n ${PRESENT_WIDEN_LIB:-} ]]; then
     widen=$PRESENT_WIDEN_LIB
     [[ "$widen" = /* ]] || widen="$root/$widen"
     [[ -r "$widen" ]] || { printf 'Missing production Widen: %s\n' "$widen" >&2; exit 2; }
 else
-    widen="$out/deps/tests/nvn/widen/S2Arm.Gfx.Widen.dylib"
-    make -j1 S2A_CS=0 BUILD="$out/deps" "$widen"
+    widen="$out/deps/widen/S2Arm.Gfx.Widen.dylib"
+    bash "$root/graphics/widen/publish_native.sh" "$out/deps/widen-artifacts" "$out/deps/widen"   # 不经顶层 Makefile：它解析时扫全部宿主源码
 fi
 make -j1 -C "$root/graphics/nvn" mac
 make -j1 -C "$root/graphics/metal" mac OUT="$out/gal"
@@ -24,33 +29,36 @@ nvn="$root/build/nvn/mac/libnvn.a"
 gal="$out/gal/mac/libnxgal.a"
 dsx="$out/dsx/mac/libdsx.a"
 common=(-O1 -g -Wall -Wextra -Wno-unused-parameter -mmacosx-version-min="$MACOSX_DEPLOYMENT_TARGET" -I"$root/runtime/include" -I"$root/runtime/ns2pro/include" -DNS2_SCAN_SECONDS=60)   # Mac 前端源文件含 Switch 2 Pro 连接（macos/ns2_controller.c、runtime/ns2pro，#277），同 launchers/macos/build.mk
+srcs=(); while IFS= read -r rel; do srcs+=("$rel"); done < <(python3 graphics/nvn/tests/t_present_settings.py sources "$list")
+[[ ${#srcs[@]} -gt 0 ]] || { printf 'Link list is empty: %s\n' "$list" >&2; exit 2; }
 objects=()
-for src in "$root"/runtime/src/*.c "$root"/runtime/src/*.S "$root/platform/apple/plat_apple.c" "$root/graphics/track/track.c" "$root/graphics/track/glue.c"; do
-    rel=${src#"$root"/}
-    [[ "$rel" != runtime/src/host_main.c ]] || continue
-    object="$out/host/${rel//\//_}.o"
-    xcrun --sdk macosx clang "${common[@]}" -c "$src" -o "$object"
-    objects+=("$object")
-done
-front_srcs=$(printf '%s\n' 'present-settings-front:;@echo $(HOST_SRCS)' | make -s -f "$root/launchers/macos/build.mk" -f - present-settings-front S2A_MAC_FRONTEND=1)
-read -r -a front_srcs <<< "$front_srcs"
-[[ ${#front_srcs[@]} -gt 0 ]] || { echo 'Production Mac source list is empty' >&2; exit 2; }
-for rel in "${front_srcs[@]}"; do
-    object="$out/host/front_${rel//\//_}.o"
-    xcrun --sdk macosx clang "${common[@]}" -fobjc-arc -c "$root/$rel" -o "$object"
-    objects+=("$object")
-done
-# 原生层链接库同生产（runtime/build.mk 的 HOST_LIBS：Foundation、Security 等）：本脚本整目录编 runtime/src，手写框架表会漏新依赖（11-17 selfsign.c 加 Security 后这里链接红）
-weak_output=$(printf '%s\n' 'present-settings-weak:;@echo $(NVN_TEST_WEAK) $(HOST_LIBS)' | make -s -f "$root/runtime/build.mk" -f - present-settings-weak)
-read -r -a weak_flags <<< "$weak_output"
-xcrun --sdk macosx clang "${common[@]}" -std=gnu11 -fobjc-arc \
+for rel in "${srcs[@]}"; do objects+=("$out/host/${rel//\//_}.o"); done
+# 并行编（一个源文件一个进程，失败的整批报红）；-MD 记实读头文件给下面核对
+printf '%s\n' "${srcs[@]}" | xargs -P "$(sysctl -n hw.ncpu)" -I{} bash -c 'out=$1 root=$2 rel=$3; shift 3; arc=(); [[ "$rel" != *.m ]] || arc=(-fobjc-arc)
+    o="$out/host/${rel//\//_}.o"; exec xcrun --sdk macosx clang "$@" ${arc[@]+"${arc[@]}"} -MD -MF "$o.d" -c "$root/$rel" -o "$o"' _ "$out" "$root" {} "${common[@]}" \
+    || { echo 'host object compile failed' >&2; exit 1; }
+main_obj="$out/host/t_present_settings.m.o"
+xcrun --sdk macosx clang "${common[@]}" -std=gnu11 -fobjc-arc -MD -MF "$main_obj.d" \
     -I"$root/graphics/nvn/gfx/nvn" -I"$root/graphics/nvn/gfx/nvn/include" -I"$root/graphics/nvn/host" \
-    "$root/graphics/nvn/tests/t_present_settings.m" "${objects[@]}" "$nvn" "$gal" "$dsx" "$widen" -o "$out/t_present_settings" \
-    -Wl,-dead_strip -Wl,-export_dynamic -Wl,-u,_s2a_mac_front_layer -Wl,-u,_nxgal_gpu_hold "${weak_flags[@]}" \
+    -c "$root/graphics/nvn/tests/t_present_settings.m" -o "$main_obj"
+if [[ "$gen" != 1 ]]; then
+    ds=(); for o in "${objects[@]}" "$main_obj"; do ds+=("$o.d"); done
+    python3 graphics/nvn/tests/t_present_settings.py depcheck "$list" "$root" "${ds[@]}"
+fi
+# 放行参数按链接输入实算：只被弱引用、谁都不定义的符号（同生产「缺定义即空指针」）。系统库：原生层 HOST_LIBS（Foundation、Security、compression）
+#   + 视频解码接管（VideoToolbox / CoreMedia / CoreVideo）+ 宿主目标文件要的 CoreFoundation，同 runtime/build.mk NVN_TEST_WEAK / HOST_LIBS；清单里的文件再加系统依赖会在这里链接报红
+read -r -a weak_flags <<< "$(python3 graphics/nvn/tests/t_present_settings.py weak "${objects[@]}" "$main_obj" "$nvn" "$gal" "$dsx")"
+link=(xcrun --sdk macosx clang -mmacosx-version-min="$MACOSX_DEPLOYMENT_TARGET" -fobjc-arc "$main_obj" "${objects[@]}" "$nvn" "$gal" "$dsx" "$widen" -o "$out/t_present_settings" \
+    -Wl,-dead_strip -Wl,-export_dynamic -Wl,-u,_s2a_mac_front_layer -Wl,-u,_nxgal_gpu_hold ${weak_flags[@]+"${weak_flags[@]}"} \
     -Wl,-rpath,"$(dirname "$widen")" -framework AppKit -framework GameController -framework CoreHaptics -framework CoreBluetooth -framework IOKit -framework Metal -framework Foundation \
-    -framework QuartzCore -framework CoreGraphics -framework ImageIO -framework UniformTypeIdentifiers -lc++
-shasum -a 256 "$root/graphics/nvn/tests/t_present_settings.m" "$root/graphics/nvn/tests/t_present_settings.sh" \
-    "${objects[@]}" "$nvn" "$gal" "$dsx" "$widen" "$out/t_present_settings" > "$out/link-inputs.sha256"
+    -framework QuartzCore -framework CoreGraphics -framework ImageIO -framework UniformTypeIdentifiers -lc++ \
+    -framework Security -framework CoreFoundation -framework VideoToolbox -framework CoreMedia -framework CoreVideo -lcompression)
+printf '%s\0' "${link[@]}" > "$out/link.args0"   # 生成器拿同一条链接行做闭包实验
+"${link[@]}"
+[[ "$gen" == 1 ]] || python3 graphics/nvn/tests/t_present_settings.py dyncheck "$list" "$out/t_present_settings"
+shasum -a 256 "$root/graphics/nvn/tests/t_present_settings.m" "$root/graphics/nvn/tests/t_present_settings.sh" "$list" \
+    "${objects[@]}" "$main_obj" "$nvn" "$gal" "$dsx" "$widen" "$out/t_present_settings" > "$out/link-inputs.sha256"
+if [[ "$gen" == 1 ]]; then printf 'present settings candidate build: %s\n' "$out/t_present_settings"; exit 0; fi
 
 # Compile diagnostics while another real game owns the screen.
 if [[ ${PRESENT_SETTINGS_BUILD_ONLY:-0} == 1 ]]; then
@@ -63,7 +71,7 @@ rm -f "$out"/mtl?-*/edge-*.bgra
 bad=0; unproven=0; unpr=' '
 for backend in mtl3 mtl4; do
     for aa in None SmaaMedium SmaaHigh; do
-        for filter in Nearest Bilinear MetalFX; do
+        for filter in Nearest Bilinear MetalFX Fsr; do   # Fsr = AMD FSR 1
             name="$backend-$aa-$filter"
             runtime="$out/$name"
             mkdir -p "$runtime"
@@ -94,6 +102,12 @@ for backend in mtl3 mtl4; do
             if [[ "$filter" == MetalFX ]]; then
                 if [[ "$backend" == mtl3 ]]; then fx='MetalFX 空间放大：67x53 → 134x106（Metal 3）'; else fx='MetalFX 空间放大：67x53 → 134x106（Metal 4）'; fi
                 /usr/bin/grep -Fq "$fx" "$runtime/run.log" || ok=0
+            fi
+            # Fsr：67x53 → 134x106 必须真走了 EASU → RCAS（带抗锯齿时前面多一步），且在被测的后端上
+            if [[ "$filter" == Fsr ]]; then
+                if [[ "$aa" == None ]]; then chain='EASU → RCAS'; else chain='抗锯齿 → EASU → RCAS'; fi
+                if [[ "$backend" == mtl3 ]]; then fsr="直连上屏 FSR：67x53 → 134x106，${chain}（Metal 3）"; else fsr="直连上屏 FSR：67x53 → 134x106，${chain}（Metal 4）"; fi
+                /usr/bin/grep -Fq "$fsr" "$runtime/run.log" || ok=0
             fi
             # This graphics-only process has no game NPDM and requests no guest
             # address window. Keep that expected production diagnostic in the
@@ -127,11 +141,15 @@ for backend in mtl3 mtl4; do
         if [[ "$unpr" == *" $backend-${modes[i]}-MetalFX "* || "$unpr" == *" $backend-${modes[i]}-Bilinear "* ]]; then dskip=$((dskip+1))
         elif [[ -s "$a" && -s "$b" ]] && ! cmp -s "$a" "$b"; then distinctions=$((distinctions+1))
         else printf 'FAIL %s %s MetalFX and Bilinear produce identical pixels\n' "$backend" "${modes[i]}" >&2; fi
+        a="$out/$backend-${modes[i]}-Fsr/edge-scaled.bgra"   # FSR 1 对双线性（存的是真画布，不是抓图）
+        if [[ "$unpr" == *" $backend-${modes[i]}-Fsr "* || "$unpr" == *" $backend-${modes[i]}-Bilinear "* ]]; then dskip=$((dskip+1))
+        elif [[ -s "$a" && -s "$b" ]] && ! cmp -s "$a" "$b"; then distinctions=$((distinctions+1))
+        else printf 'FAIL %s %s Fsr and Bilinear produce identical pixels\n' "$backend" "${modes[i]}" >&2; fi
     done
 done
-printf 'present settings matrix: %d/18 passed, %d unproven (logs/images: %s)\n' "$((18-bad-unproven))" "$unproven" "$out"
-printf 'present settings output distinctions: %d/18 passed, %d skipped\n' "$distinctions" "$dskip"
+printf 'present settings matrix: %d/24 passed, %d unproven (logs/images: %s)\n' "$((24-bad-unproven))" "$unproven" "$out"
+printf 'present settings output distinctions: %d/24 passed, %d skipped\n' "$distinctions" "$dskip"
 if ((unproven)); then printf 'present settings: %d cells 未证（宿主显示环境不给真上屏位）\n' "$unproven"; fi
-# 18 格全未证 = 这次一格真上屏都没验：退 75（门禁记「环境未就绪」重排），不能当绿（判据绿着失效）；部分未证照跳过那几格
-if ((unproven == 18)); then exit 75; fi
-[[ "$bad" == 0 && $((distinctions+dskip)) == 18 ]]   # 每个后端：3 种模式两两 3 对 + 每模式最近邻对双线性 3 次 + MetalFX 对双线性 3 次 = 9，两个后端 18；未证格的对子计 skip 不判（10-30 去掉 FXAA 前 4 种模式是 28）
+# 24 格（加 Fsr 一列前 18）全未证 = 这次一格真上屏都没验：退 75（门禁记「环境未就绪」重排），不能当绿（判据绿着失效）；部分未证照跳过那几格
+if ((unproven == 24)); then exit 75; fi
+[[ "$bad" == 0 && $((distinctions+dskip)) == 24 ]]   # 每个后端：3 种模式两两 3 对 + 每模式最近邻对双线性 3 次 + MetalFX 对双线性 3 次 + FSR 对双线性 3 次 = 12，两个后端 24；未证格的对子计 skip 不判（10-30 去掉 FXAA 前 4 种模式是 28）

@@ -35,6 +35,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import warnings
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -549,7 +550,9 @@ def preprocess_active_lines(text, defines, verbose=False):
     comparisons and __has_include. Function-like macros are left alone; this
     only decides which source lines participate in the definition scan.
     """
-    text = text.replace("\r\n", "\n")
+    # Comments go first, as in the C preprocessor: a trailing // or /* */ on a directive is not part
+    # of its condition or macro value (string literals keep their "//").
+    text = strip_c_comments(text.replace("\r\n", "\n"))
     lines = text.split("\n")
     # Join directive continuations so a macro definition is one logical line.
     logical = []
@@ -636,7 +639,9 @@ def eval_cpp_condition(expr, defines, verbose=False):
         # definition that the real preprocessor might select.
         return True
     try:
-        return bool(eval(expr, {"__builtins__": {}}, {}))
+        with warnings.catch_warnings():   # function-like macros become "0(0)": Python warns before raising; the except below includes the block
+            warnings.simplefilter("ignore", SyntaxWarning)
+            return bool(eval(expr, {"__builtins__": {}}, {}))
     except Exception:
         if verbose:
             print("警告：无法求值预处理条件，按包含处理：%s" % expr)
@@ -646,7 +651,6 @@ def eval_cpp_condition(expr, defines, verbose=False):
 def c_definitions(path, defines, verbose=False):
     raw = path.read_text(encoding="utf-8", errors="replace")
     text = preprocess_active_lines(raw, defines, verbose)
-    text = strip_c_comments(text)
     definitions = []
     depth = 0
     extern_c_depth = None

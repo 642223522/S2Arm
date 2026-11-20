@@ -102,7 +102,7 @@ struct FeatureSpotlightView: View {
                             .help(Text(text(page["kicker"])))
                     }
                     HStack(alignment: .top, spacing: 14) {
-                        cell("feature.what", page["what"]); cell("feature.how", page["how"]); cell("feature.where", page["where"])
+                        cell("feature.what", page["what"], page, "what"); cell("feature.how", page["how"], page, "how"); cell("feature.where", page["where"], page, "where")
                     }
                     .padding(.top, 12).fixedSize(horizontal: false, vertical: true)
                 }
@@ -147,9 +147,11 @@ struct FeatureSpotlightView: View {
         .padding(16)
     }
 
-    private func cell(_ label: String, _ value: Any?) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(t(label)).font(.manrope(12, .bold)).foregroundStyle(Self.gold2)
+    /// 三栏标题：这一页写了 labels（如快照页 where 换成「要知道」）就用它，否则用通用的是什么 / 怎么用 / 在哪用
+    private func cell(_ label: String, _ value: Any?, _ page: [String: Any], _ key: String) -> some View {
+        let custom = (page["labels"] as? [String: Any])?[key]
+        return VStack(alignment: .leading, spacing: 4) {
+            Text(custom != nil ? String(text(custom).characters) : t(label)).font(.manrope(12, .bold)).foregroundStyle(Self.gold2)
             Text(text(value)).font(.manrope(13.5)).foregroundStyle(Color(white: 0.86)).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 13).padding(.vertical, 11).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

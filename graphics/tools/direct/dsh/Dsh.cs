@@ -442,9 +442,10 @@ namespace S2A.Dsh
                     full = VsPush(full);
                 }
                 // 片元：Alpha 测试与多重采样关的可选函数常量（FsAlphaMs，族 34 / 37）进库里的主入口；src 不带它（反射、可读瓦片 _bf、输出类型 _ft 照旧读 src）
-                string srcx = stage == "ps" ? FsAlphaMs(src) : src;
+                string srcx = stage == "ps" ? FsFout(FsAlphaMs(src)) : src;
                 if (stage == "ps") full = srcx;
-                var (fu, uMask) = stage == "ps" ? FsUint(srcx, colorAnalysis) : (null, 0u);
+                bool fout = srcx.Contains(FOUT_MARK, StringComparison.Ordinal);   // 输出类型由常量选（FsFout）：不再另出整数输出入口 main0_u / 输出类型变体 _ft
+                var (fu, uMask) = stage == "ps" && !fout ? FsUint(srcx, colorAnalysis) : (null, 0u);
                 if (fu != null) { plain = srcx; full = fu; }
                 var res = JsonNode.Parse(XIo.ReadAllText(Path.Combine(W, Key + ".res.json"))).AsObject();
                 full = DshFlat.GiantFix(full).Item1;   // 巨型着色器的尾部阶梯压平（同 dmsh_build.py giant_fix）
@@ -489,7 +490,7 @@ namespace S2A.Dsh
                 foreach (var field in ScaleMetadata(res)) refl[field.Key] = field.Value;
                 SaveJson(Key + "_b.json", refl);
                 if (PackOut && stage == "vs") VinFinish(full);   // 同 dmsh_build.py finish：vin_finish(key, open(msl).read(), refl)，msl 此时 = 写出的 _b.metal（全部入口、压平后）
-                if (PackOut && stage == "ps") { FtFinish(src, refl); BfFinish(src, refl); }   // 同 fetch_finish(key, src, refl)：src = color_round 之后、未接 main0_u（fs_uint 只出 fu，不改 src）
+                if (PackOut && stage == "ps") { if (!fout) FtFinish(src, refl); BfFinish(src, refl); }   // 同 fetch_finish(key, src, refl)：src = color_round 之后、未接 main0_u（fs_uint 只出 fu，不改 src）
             }
 
             // ---- 任务 / 网格（上游参考实现（MIT） dmsh_build.py finish 1d4b8e82b，MIT）：计算核 MSL 包成对象 / 网格函数（MeshStage.ToStage）；反射字段按接口约定 6 ----
@@ -565,19 +566,33 @@ namespace S2A.Dsh
             //   json 的 tess 写各域的库名、记录标志（gal_internal.h GAL_REC_*）与输出控制点数
             static readonly Dictionary<int, string> TESS_DOM = new() { [0] = "isolines", [1] = "triangles", [2] = "quads" };
             const uint TESS_BASE = 20;   // 曲面接口缓冲的第一个 Metal 槽（同 dmsh_build.py TESS_BASE）
+            // 外壳要出的各域 →（域, 模式字, 是否本款扫到）。本款域着色器扫到的域按扫到的模式字在前（第一种进 <键>_b，同原先）；没扫到的域也补上：运行时才配上的域着色器
+            //   （romfs 晚装、设备上现编）用到它时包里就有核（诊断 18 款「hull shader … has no isolines-domain kernel (variants: triangles)」，那组曲面绘制整笔跳过）。
+            //   补的域取外壳自己的模式字、换掉低 2 位的域（外壳翻译里只有域改变曲面因子的布局，分区 / 绕序 / 点模式运行时由域着色器交给固定核）。域着色器只出它自己那一个域
+            internal static List<(int Dom, uint Mode, bool Seen)> TessDomains(string stage, long mode, IReadOnlyDictionary<int, uint> seen)
+            {
+                var r = new List<(int, uint, bool)>();
+                if (stage != "hs") { r.Add(((int)(mode & 3), (uint)mode, true)); return r; }
+                if (seen.Count > 0) foreach (var kv in seen) r.Add((kv.Key, kv.Value, true));
+                else r.Add(((int)(mode & 3), (uint)mode, true));
+                for (int d = 0; d < 3; d++) if (!r.Any(x => x.Item1 == d)) r.Add((d, (uint)((mode & ~3L) | (long)d), false));
+                return r;
+            }
             void TessFinish(JsonObject j, byte[] c1)
             {
                 string stage = (string)j["stage"]; long mode = (long)j["tess_mode"];
-                var doms = stage == "hs" && T.TessModes.Count > 0 ? T.TessModes.Keys.ToList() : new List<int> { (int)(mode & 3) };
                 var variants = new PyDict(); string first = null;
-                foreach (int d in doms)
+                foreach (var (d, dmode, seen) in TessDomains(stage, mode, T.TessModes))
                 {
                     string lk = Key + (first == null ? "_b" : "_b_t" + d), spv = Spv;
                     if (stage == "hs" && first != null)   // 同一外壳按这一域的模式再翻一次
                     {
-                        var jj = (JsonObject)j.DeepClone(); jj["key"] = Key + "_t" + d; jj["tess_mode"] = (long)T.TessModes[d];
+                        var jj = (JsonObject)j.DeepClone(); jj["key"] = Key + "_t" + d; jj["tess_mode"] = (long)dmode;
                         var (rc, err) = RunXlate(WriteJobs(new[] { jj }, "job_t_" + Key + "_" + d + ".json"), W); spv = Path.Combine(W, Key + "_t" + d + ".spv");
-                        if (rc != 0 || !XIo.Exists(spv)) throw new DshError("translation failed", Sl($"hull shader for {TESS_DOM.GetValueOrDefault(d, d.ToString())}: " + err.Trim(), 0, 160));
+                        if (rc != 0 || !XIo.Exists(spv)) {
+                            if (!seen) continue;   // 补出的域翻不出来：只是少这一域，本款扫到的域照旧（原先没有它）
+                            throw new DshError("translation failed", Sl($"hull shader for {TESS_DOM.GetValueOrDefault(d, d.ToString())}: " + err.Trim(), 0, 160));
+                        }
                     }
                     var (src, flags, ocp) = NxgalSpvCross.TessMsl(NxgalSpvCross.Harden(XIo.ReadAllBytes(spv)), 0, TESS_BASE);
                     src = Precise(WideLoads(MulExtended(PoolArrays(GatherOffsets(src))))); Save(lk + ".metal", src);
@@ -1347,6 +1362,49 @@ namespace S2A.Dsh
             outp = outp[..sx] + "\n    uint s2a_smask [[sample_mask, function_constant(S2A_MSOFF_ON)]];" + outp[sx..];
             int u2 = outp.IndexOf("using namespace metal;\n", StringComparison.Ordinal) + "using namespace metal;\n".Length;
             return outp[..u2] + "\n" + FC_DECL + "\n" + outp[u2..];
+        }
+
+        // ---- 片元输出类型由函数常量选（#427，11-19）：主入口 main0 再带两个可选常量，宿主建管线时按画布格式特化（nvn_mtl.m fs_atms_fn） ----
+        //   S2A_FU（uint，102）位 n = color(n) 的画布是无符号整数、S2A_FS（uint，103）位 n = 有符号整数；S2A_FS 位 8 = 画布 0 用第二源混合（宿主 PSO_FOUT_DUAL >> 8，同 FsTyped）。
+        //   原先这些靠另外的入口：整数位刚好等于 u_mask 的用 main0_u（FsUint，整份函数体复制一遍），别的掩码靠出包按种子表预编的 _ft，种子表里没有的在设备提交线程上
+        //   从源码现编（#427 空之轨迹 the 1st：G-buffer 三张整数目标、掩码 0xe，一局 7 次各 90–157 ms）。常量版：每个浮点颜色输出旁加同位置的 uint / int 成员（各由一个
+        //   派生常量开关，三者互斥），返回前按位原样取（as_type，同 FsRetyped：硬件往整数画布写的就是输出寄存器的位）；函数体不动、不复制。宿主不给常量 = 全浮点 = 原样。
+        //   声明接在 FC_DECL 那一行末尾（成批合编按整行提到批顶只出一次，Unity.cs UG）；FsAlphaMs 没加声明的（不是片元主入口、早测池读）原样返回，宿主照旧走旧路
+        internal const string FOUT_MARK = "constant uint S2A_FU [[function_constant(102)]];";
+        internal static readonly string FOUT_DECL = " " + FOUT_MARK + " constant uint S2A_FS [[function_constant(103)]]; "
+            + "constant uint S2A_FU_V = is_function_constant_defined(S2A_FU) ? S2A_FU : 0u; constant uint S2A_FS_V = is_function_constant_defined(S2A_FS) ? S2A_FS : 0u; "
+            + "constant bool S2A_DUAL = (S2A_FS_V & 0x100u) != 0u;"
+            + string.Concat(Enumerable.Range(0, 8).Select(n => { string d = n == 1 ? "!S2A_DUAL && " : ""; uint b = 1u << n;   // 双源时输出 1 改去 [[color(0), index(1)]]
+                return $" constant bool S2A_U{n} = {d}(S2A_FU_V & {b}u) != 0u; constant bool S2A_I{n} = {d}!S2A_U{n} && (S2A_FS_V & {b}u) != 0u; constant bool S2A_F{n} = {d}!S2A_U{n} && !S2A_I{n};"; }));
+        internal static string FsFout(string src)
+        {
+            int dl = src.IndexOf("constant int S2A_AT [[function_constant(100)]];", StringComparison.Ordinal);
+            if (dl < 0 || src.Contains(FOUT_MARK, StringComparison.Ordinal)) return src;
+            var sig = Search(@"^(?:\[\[[^\]]*\]\]\s*)*fragment main0_out main0\(.*\)\n\{\n", src, RegexOptions.Multiline);
+            var st = Search(@"\nstruct main0_out\n\{\n(.*?)\n\};", src, RegexOptions.Singleline);
+            if (!sig.Success || !st.Success) return src;
+            int open = sig.Index + sig.Length, close = -1, depth = 1;   // main0 的函数体（同 FsAlphaMs 按花括号配对）
+            for (int i = open; i < src.Length; i++) { if (src[i] == '{') depth++; else if (src[i] == '}' && --depth == 0) { close = i; break; } }
+            if (close < 0) return src;
+            var cols = All(@"^    (float\d?) (\w+) \[\[color\(([0-7])\)\]\];$", st.Groups[1].Value, RegexOptions.Multiline)
+                .Select(m => (Ty: m.Groups[1].Value, Nm: m.Groups[2].Value, N: int.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture))).ToList();
+            var mem = new StringBuilder(); var conv = new StringBuilder();
+            foreach (var (ty, nm, n) in cols)
+            {
+                string uty = ty.Replace("float", "uint"), ity = ty.Replace("float", "int");
+                mem.Append($"\n    {uty} {nm}_s2u [[color({n}), function_constant(S2A_U{n})]];\n    {ity} {nm}_s2i [[color({n}), function_constant(S2A_I{n})]];");
+                conv.Append($"if (S2A_U{n}) out.{nm}_s2u = as_type<{uty}>(out.{nm}); if (S2A_I{n}) out.{nm}_s2i = as_type<{ity}>(out.{nm}); ");
+                if (n == 1) { mem.Append($"\n    {ty} {nm}_s2d [[color(0), index(1), function_constant(S2A_DUAL)]];"); conv.Append($"if (S2A_DUAL) out.{nm}_s2d = out.{nm}; "); }
+            }
+            var c0 = cols.FirstOrDefault(c => c.N == 0);
+            if (c0.Nm != null && !cols.Any(c => c.N == 1))   // 不写输出 1 的：第二源恒 0（同 FsTyped / Ryujinx 开双源时先把输出 1 置 0）
+            { mem.Append($"\n    {c0.Ty} s2a_src1 [[color(0), index(1), function_constant(S2A_DUAL)]];"); conv.Append($"if (S2A_DUAL) out.s2a_src1 = {c0.Ty}(0); "); }
+            var g = st.Groups[1]; int eol = src.IndexOf('\n', dl);
+            if (!(eol < g.Index && g.Index + g.Length < open)) return src;   // 声明行、结构体、main0 依次在前（SPIRV-Cross 的次序）；不是就不动
+            string members = R(@"^    (float\d?) (\w+) \[\[color\(([0-7])\)\]\];$", RegexOptions.Multiline)
+                .Replace(g.Value, m => $"    {m.Groups[1].Value} {m.Groups[2].Value} [[color({m.Groups[3].Value}), function_constant(S2A_F{m.Groups[3].Value})]];") + mem;
+            string body = src[open..close].Replace("return out;", conv + "return out;");
+            return src[..eol] + FOUT_DECL + src[eol..g.Index] + members + src[(g.Index + g.Length)..open] + body + src[close..];
         }
 
         internal static string FsUvx(string src)

@@ -62,6 +62,7 @@ static class Fn
                     "vs_layer_entry" => DshCompiler.VsLayerEntry(S(0)) is var (f, l) ? new List<object> { f, l } : null,
                     "vs_push" => DshCompiler.VsPush(S(0)),
                     "fs_alpha_ms" => DshCompiler.FsAlphaMs(S(0)),
+                    "fs_fout" => DshCompiler.FsFout(S(0)),
                     "fs_uvx" => DshCompiler.FsUvx(S(0)),
                     "fs_lb" => DshCompiler.FsLb(S(0)),
                     "fs_rd" => DshCompiler.FsRd(S(0)),
@@ -80,6 +81,8 @@ static class Fn
                     "job_ds_tess_mode" => ((Func<object>)(() => { string w = Path.Combine(Path.GetTempPath(), "dshfn_job_" + Guid.NewGuid().ToString("N")[..8]); Directory.CreateDirectory(w);
                         try { var (j, _) = new DshCompiler.Ctx { Key = "k", Out = w, W = w, T = DshTables.Empty() }.JobFor("ds", H(0), H(1)); return (long)j["tess_mode"]; }
                         finally { Directory.Delete(w, true); } }))(),
+                    // 外壳要出的各域（DshCompiler.Ctx.TessDomains）：参数 [阶段, 模式字, {域: 扫到的模式字}]，返回 [[域, 模式字, 是否扫到], …]
+                    "tess_domains" => DshCompiler.Ctx.TessDomains(S(0), (long)a[1], a[2].AsObject().ToDictionary(kv => int.Parse(kv.Key), kv => (uint)(long)kv.Value)).Select(x => (object)new List<object> { (long)x.Dom, (long)x.Mode, x.Seen }).ToList(),
                     "vertex_ab" => DshCompiler.Ctx.VertexAb("k", H(0), H(1)) is { } ab ? new List<object> { Convert.ToHexStringLower(ab.Item1), Convert.ToHexStringLower(ab.Item2) } : null,
                     "geo_records" => DshCompiler.GeoRecords((uint)a[0], a[1].AsObject()) is var (gv, gi) ? new List<object> { (long)gv, (long)gi } : null,
                     "spv_single_lane" => SpvFile(tmp, H(0), p => DshCompiler.SpvSingleLane(p)),

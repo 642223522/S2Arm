@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Windows 一键出包（Windows 出包机道，11-05 维护者「大游戏在 windows 上编，不用在 Mac 上挤」）：原件 → 解包 → 八个轻阶段 → 抽取 + 直连库 → 产物，全在本机。
 
-  python -X utf8 -m pack.orch.oneclick_win <原件目录 | Switch 2 导出目录 | .nup> --out <工作目录> [--target ios|mac]
+  python -X utf8 -m pack.orch.oneclick_win <原件目录 | Switch 2 导出目录 | .nup> --out <工作目录> [--target ios|mac|android] [--install-serial <安卓序列号>]
          [--title-id <程序号>] [--bundle-id <包名>] [--shell <预编壳目录>] [--jobs N] [--install <手机 UDID> [--name <桌面显示名>]]
   python -X utf8 -m pack.orch.oneclick_win --check [--target ios|mac] [--shell <壳目录>]    只做环境自检（一行一项，缺件退 75）
     启动器客户端不读这里：读 pack/jobs/winenv.py --json（统一开始前检查，出包件这几项就取本文件 env_items）
@@ -519,33 +519,56 @@ def dcache_lru(run, root, tid):
     except Fail as e: run.say(f'【黄】直连缓存淘汰没跑成（{e}），本单产物不受影响；缓存可能超预算')   # 淘汰是收尾附带的，不改本单结论
 
 
+def _win_mem():
+    """Windows GlobalMemoryStatusEx → (物理内存总量, 此刻可用：空闲 + 可回收的备用页) 字节；读不到 None"""
+    import ctypes
+    class MS(ctypes.Structure):
+        _fields_ = [('dwLength', ctypes.c_ulong), ('dwMemoryLoad', ctypes.c_ulong)] + \
+                   [(n, ctypes.c_ulonglong) for n in ('total', 'avail', 'pagefile', 'availpage', 'virt', 'availvirt', 'availext')]
+    m = MS(); m.dwLength = ctypes.sizeof(MS)
+    return (m.total, m.avail) if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)) and m.total else None
+
+
 def mem_gb():
     """本机物理内存（GB，取整）；读不到返回 None。S2A_MEM_TOTAL_GB 可手动指定（同 tools/cores.sh）"""
     v = os.environ.get('S2A_MEM_TOTAL_GB')
     if v and v.isdigit() and int(v) > 0:
         return int(v)
     if sys.platform == 'win32':   # 按真实平台（WIN 在单测里会被打桩成 True）
-        import ctypes
-        class MS(ctypes.Structure):
-            _fields_ = [('dwLength', ctypes.c_ulong), ('dwMemoryLoad', ctypes.c_ulong)] + \
-                       [(n, ctypes.c_ulonglong) for n in ('total', 'avail', 'pagefile', 'availpage', 'virt', 'availvirt', 'availext')]
-        m = MS(); m.dwLength = ctypes.sizeof(MS)
-        return int(m.total >> 30) if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)) and m.total else None
+        m = _win_mem()
+        return int(m[0] >> 30) if m else None
     try: return int(os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES') >> 30) or None
     except (ValueError, OSError, AttributeError): return None
 
 
-def parallel(jobs, gb):
-    """(抽取 / 改写这类吃内存的重活路数 S2A_CPU_BAKE, 直连库编译路数 J)：同 Mac tools/cores.sh 的口径，按物理内存封顶。
+def mem_avail_mb():
+    """此刻可用的物理内存（MB，空闲 + 可回收的备用页）：Windows 才读（Mac 走 tools/cores.sh 与 mem_admit.sh）；读不到 / 别的平台 None。
+    S2A_MEM_AVAIL_MB 可手动指定"""
+    v = os.environ.get('S2A_MEM_AVAIL_MB')
+    if v and v.isdigit() and int(v) > 0:
+        return int(v)
+    if sys.platform != 'win32':
+        return None
+    m = _win_mem()
+    return int(m[1] >> 20) if m else None
+
+
+def parallel(jobs, gb, avail_mb=None):
+    """(抽取 / 改写这类吃内存的重活路数 S2A_CPU_BAKE, 直连库编译路数 J)：同 Mac tools/cores.sh 的口径，按内存封顶。
     #711（11-11）：原先两者都直接取 --jobs（缺省逻辑核数），16 GB / 16 核以上的 Windows 机抽取开满核数路、MemoryError。
     Windows 有提交上限（物理内存 + 页面文件），超了直接 MemoryError，不像 Mac 能靠交换区硬扛。
-    - 重活：min(jobs, 物理内存 × 3/4 ÷ 1.5 GB)
-    - 直连库：min(jobs, 1 + (物理内存 × 3/4 − dsh 主进程 1740 MB − 1 个 metal 峰值 1065 MB) ÷ metal p90 420 MB)
+    预算 = 物理内存 × 3/4，和「此刻可用内存 − 1 GB」取小（执行锁读写化后玩着一款时也能出包：那局占着的内存不算进来就会开过头；
+    机器空闲时可用内存比总量的 3/4 多，预算和原来一样）：
+    - 重活：min(jobs, 预算 GB ÷ 1.5 GB)
+    - 直连库：min(jobs, 1 + (预算 MB − dsh 主进程 1740 MB − 1 个 metal 峰值 1065 MB) ÷ metal p90 420 MB)
     都至少 1；环境给了 S2A_CPU_BAKE / S2A_DIRECT_J 就用给的；内存读不到按 jobs（不拦，照旧跑）"""
     bake = direct_j = jobs
     if gb:
-        bake = min(jobs, gb * 3 // 4 * 2 // 3)
-        direct_j = min(jobs, 1 + (gb * 1024 * 3 // 4 - 1740 - 1065) // 420)
+        budget_gb, budget_mb = gb * 3 // 4, gb * 1024 * 3 // 4
+        if avail_mb is not None:
+            budget_gb, budget_mb = min(budget_gb, max(0, avail_mb - 1024) // 1024), min(budget_mb, max(0, avail_mb - 1024))
+        bake = min(jobs, budget_gb * 2 // 3)
+        direct_j = min(jobs, 1 + (budget_mb - 1740 - 1065) // 420)
     env = lambda k, d: int(os.environ[k]) if os.environ.get(k, '').isdigit() and int(os.environ[k]) > 0 else d
     return max(1, env('S2A_CPU_BAKE', bake)), max(1, env('S2A_DIRECT_J', direct_j))
 
@@ -565,8 +588,8 @@ def direct(run, cur, target, jobs, tid=None, name='direct'):
     dp = cur / 'direct_profile.json'   # 配置推导阶段写的档（零配置生成的在产物根 direct-profile/<键>/，手写档在仓库 graphics/nvn/games）
     prof = json.loads(dp.read_text(encoding='utf-8')) if dp.is_file() else {}
     games = cur / prof['DM_GAMES_DIR'] if prof.get('DM_GAMES_DIR') else R / 'graphics/nvn/games'
-    gb = mem_gb(); bake, dj = parallel(jobs, gb)
-    run.say(f'并行度：核数 {jobs}、物理内存 {gb if gb else "读不到"} GB → 抽取 / 改写 {bake} 路、直连库编译 {dj} 路')
+    gb, avail = mem_gb(), mem_avail_mb(); bake, dj = parallel(jobs, gb, avail)
+    run.say(f'并行度：核数 {jobs}、物理内存 {gb if gb else "读不到"} GB、此刻可用 {f"{avail / 1024:.1f} GB" if avail else "读不到"} → 抽取 / 改写 {bake} 路、直连库编译 {dj} 路')
     env = dict(os.environ, PYTHONUTF8='1', S2A_DIRECT_TARGETS=target, S2A_DIRECT_PUBLISH=target, J=str(dj), S2A_CPU_BAKE=str(bake),
                DM_GAMES_DIR=mixed(games), DM_GAMES_FIRST='1',
                S2A_PY=sys.executable, S2A_PYTHON=sys.executable)
@@ -730,6 +753,25 @@ def Early(run, a, cur, game):
     return early.Overlap(build, install)
 
 
+def android(run, cur, serial=None):
+    """--target android：同 Mac 一键出包的安卓段（pack/oneclick/oneclick.sh）——package.py 用预编引擎 APK 组装（S2A_ANDROID_ENGINE，
+    启动器随发版带的 Binaries/Android/engine；Windows 上没有 Gradle 路径），给了 --install-serial 就接着 deploy_game.py 装到那台手机（S2A_ADB）。
+    → (apk, 资源包, 账本)"""
+    run.step('安卓出包', lambda: run.sh([PY, '-X', 'utf8', str(R / 'pack/targets/android/package.py'), '--root', str(cur), '--out', str(run.out)], 'android.log'))
+    try:
+        delivery = json.loads((run.out / 'android.log').read_text(encoding='utf-8').strip().splitlines()[-1])
+        apk, res, art = Path(delivery['apk']), Path(delivery['resources']), Path(delivery['artifact'])
+    except (OSError, ValueError, KeyError, IndexError) as e:
+        raise Fail(f'安卓出包没报告交付物（android.log）：{e}') from None
+    if not (apk.is_file() and (res / 'manifest.json').is_file() and art.is_file()):
+        raise Fail('安卓交付不完整')
+    if serial:
+        run.say(f'装到手机 {serial}：手机上弹出安装确认（如「未经安全检测」）时，勾选并点「继续安装」；同款旧包签名不同时要先在手机上卸载')
+        run.step('安装与导入', lambda: run.sh([PY, '-X', 'utf8', str(R / 'android/tools/deploy_game.py'), '--apk', str(apk), '--resources', str(res),
+                                           '--serial', serial, '--no-start'], 'android-install.log', cwd=R / 'android/tools'))
+    return apk, res, art
+
+
 def install(run, a, ipa_path, pk):   # --install：签名装机 + 推资源包（pack/orch/install_win.py）
     from pack.orch import install_win
     ns = argparse.Namespace(ipa=str(ipa_path), pack=str(pk), udid=a.install, name=a.name, plumesign=a.plumesign, devpush=a.devpush, full=False,
@@ -811,13 +853,17 @@ def main(argv=None):
     for s in (sys.stdout, sys.stderr):
         if hasattr(s, 'reconfigure'): s.reconfigure(encoding='utf-8')
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument('source', nargs='*'); ap.add_argument('--out'); ap.add_argument('--target', choices=('ios', 'mac'), default='ios')
+    ap.add_argument('source', nargs='*'); ap.add_argument('--out'); ap.add_argument('--target', choices=('ios', 'mac', 'android'), default='ios')
     ap.add_argument('--title-id'); ap.add_argument('--bundle-id'); ap.add_argument('--shell'); ap.add_argument('--jobs', type=int, default=cores())
     ap.add_argument('--check', action='store_true'); ap.add_argument('--from-extract'); ap.add_argument('--events')
     ap.add_argument('--rt-shaders', metavar='DIR')   # 内部验证包：真机转储的着色器并进解包目录（put_rt）；不给 = 不带（缺省行为不变）
     ap.add_argument('--install', metavar='UDID'); ap.add_argument('--name'); ap.add_argument('--suffix'); ap.add_argument('--plumesign'); ap.add_argument('--devpush')
+    ap.add_argument('--install-serial', metavar='SERIAL')   # 安卓：出好装到这台手机（adb 序列号）
     a = ap.parse_args(argv)
     if a.install and a.target != 'ios': ap.error('--install 只用于 --target ios')
+    if a.install_serial and a.target != 'android': ap.error('--install-serial 只用于 --target android')
+    if a.target == 'android':   # 同 pack/oneclick/oneclick.sh：各阶段按安卓出（改写目标、出库平台），宽屏不自动跑
+        os.environ.update(S2A_PACK_PLAT='android', S2A_TARGET='android', S2A_WIDEN_AUTO_RUN='0')
     items = env_items(a.target, a.shell)
     bad = [i for i in items if not i[1]]
     if a.check:
@@ -850,6 +896,11 @@ def main(argv=None):
         if WIN: host_decoder_gate(run, x); glslc_gate(run, x)
         game = 't' + tid.lower()
         cur = stages(run, game, x, src_dir, own=not a.from_extract)   # 本单自己解的包（下次解包整目录重建）：播种整目录搬 RomFS；--from-extract 是别人的目录，照旧克隆
+        if a.target == 'android':
+            apk, res, art = android(run, cur, a.install_serial)
+            run.say(f'🟢 {tid} 安卓包 → {apk} + 资源包 {res}；合计 {time.time() - t0:.0f} 秒')
+            run.ev('result', ok=True, apk=str(apk), pack=str(res), artifact=str(art), aoc_missing=aoc_missing(cur), elapsed=int(time.time() - t0))
+            return 0
         early = Early(run, a, cur, game).start() if a.install and a.target == 'ios' else None
         dlib = direct(run, cur, a.target, a.jobs, tid)
         w = run.step('组工作根', lambda: product(run, cur, dlib))

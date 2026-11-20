@@ -33,7 +33,7 @@ public struct S2ArmShellHostView: View {
             // 库顶上的提示：这次安装丢了「提高内存上限」权限（可关，只管这次打开；「了解详情」看各装法怎么带上）；删除游戏的进度与结果（点一下收起结果）
             .overlay(alignment: .top) {
                 VStack(spacing: 10) {
-                    if let iml = model.imlNotice, !model.guideOpen {   // 首次引导开着时先不出（引导盖在上面、点不到关闭），引导关了再出
+                    if let iml = model.imlNotice, !model.guideOpen, !model.featureOpen {   // 首次引导 / 新功能介绍开着时先不出（盖在上面、点不到关闭），关了再出
                         IMLNoticeBar(notice: iml, close: { model.closeIMLNotice() }, more: { model.openIMLGuide() })
                             .onAppear { s2a_shell_iml_notice_seen() }   // 真显示出来才记（起局那条不再重复）
                             .transition(.move(edge: .top).combined(with: .opacity))
@@ -56,6 +56,17 @@ public struct S2ArmShellHostView: View {
                 }
             }
             .animation(.smooth(duration: 0.25), value: model.guideOpen)
+        #if !os(tvOS)
+            // 这一版的新功能介绍（iPhone 两页）：排在首次引导之后，同样盖在最上面、手柄能翻页能关；设置里「再看一遍」再开
+            .overlay {
+                if model.featureOpen, let intro = model.featureIntroContent {
+                    FeatureIntroView(intro: intro, index: Binding(get: { model.featurePage }, set: { model.featurePage = $0 }), close: { model.closeFeature() })
+                        .transition(.opacity)
+                }
+            }
+            .animation(.smooth(duration: 0.25), value: model.featureOpen)
+            .onReceive(NotificationCenter.default.publisher(for: .shellOpenFeatureIntro)) { _ in model.openFeature() }
+        #endif
         #if canImport(UIKit) && !os(tvOS)
             // 回前台重判资源包：玩家去「文件」/ 访达拷完资源包回来，不用重开 App
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in model.rescanCatalogue() }
@@ -164,7 +175,9 @@ import UIKit
 final class LibraryHostingController<Content: View>: UIHostingController<Content> {
     // 按 SDK 判、不按编译器判：Xcode 27.0 与 27.1 都是 Swift 6.4，但只有 27.1 的 iOS SDK 有 UIVerticalBarBehavior（UIKit 9127.0.85 起）——
     //   原先 compiler(>=6.4) 在 27.0 上也成立，门禁机每个 Xcode 各编一遍时 27.0 报找不到类型（同 ios/play_layout.h 按 __IPHONE_27_1 判）
-    #if os(iOS) && canImport(UIKit, _underlyingVersion: 9127.0.85)
+    //   Intel 出壳走 swift build --sdk，UIKit 没有 user version number（Swift 警告 #ModuleVersionMissing），
+    //     canImport(..., _underlyingVersion:) 里的版本会被忽略、在 26.5 SDK 上误成立；那条路径打 -DS2A_UIKIT_VERSION_UNKNOWN 关掉这段覆盖。
+    #if os(iOS) && canImport(UIKit, _underlyingVersion: 9127.0.85) && !S2A_UIKIT_VERSION_UNKNOWN
     @available(iOS 27.1, *)
     override var preferredVerticalBarBehavior: UIVerticalBarBehavior { .disabled }
     #endif

@@ -20,6 +20,7 @@
 #include "s2a_pad.h"
 #include "s2a_programs.h"
 #include "s2a_launch_ctx.h"
+#include "dev_serial_lock.h"   // Mac 开发机局串行锁（只在 Mac 分支调用）
 #include "../../graphics/nvn/gfx/nvn/dmsh_chain.h"   // DMSH_CHAIN：直连安全网诊断信息里写翻译链
 #include <unistd.h>
 #include <sys/stat.h>
@@ -235,7 +236,10 @@ int s2a_host_rebuild(void) {
       if (sr && *sr) { int s2a_snap_restore(const char *); void s2a_snap_result_note(int);   // 核对在重建开头（服务层起来之前）已做，见上
           if (s2a_session_guest_begin(s2a_session_generation())) return -1;
           int rc = s2a_snap_restore(sr); s2a_snap_result_note(!rc); unsetenv("S2A_SNAP_RESTORE"); s2a_session_guest_end(0);
-          if (rc) { LOG("【红】即时存档恢复（进程内）失败：游戏内存已动过，退出（游戏存档未被改动）"); s2a_logcon_flush(); _exit(6); }
+          if (rc) {   // 游戏内存已动过，这一局接不下去：不起游戏线程，本次重建照常收尾，随即不带快照再重启一次（重新开局），不退回主屏
+              void s2a_snap_result_midway(int); void s2a_session_fresh_restart(void);
+              LOG("【红】即时存档恢复（进程内）失败：游戏内存已动过，这局不起；重新开始游戏（游戏存档未被改动）");
+              s2a_snap_result_midway(1); unsetenv("S2A_SNAP_SAVE_ROLLBACK"); s2a_session_fresh_restart(); return 0; }
           return 0; } }
     return start_guest_thread();
 }
@@ -473,11 +477,22 @@ static int host_run(int argc, char **argv) {
       if (sr && *sr) { int s2a_snap_restore(const char *);
           if (s2a_session_guest_begin(s2a_session_generation())) failed_session(S2A_INIT_FAIL_E_GAME_THREAD);
           void s2a_snap_result_note(int);
-          if (s2a_snap_restore(sr)) { LOG("【红】即时存档恢复失败（原因见上面的红行）：不起游戏，退出；存档目录未被改动"); s2a_snap_result_note(0); s2a_logcon_flush(); _exit(6); }
-          s2a_snap_result_note(1);
-          if (start_timer("S2A_RUN_S", run_timer)) LOG("【红】局时定时器起不来");
-          s2a_session_guest_end(0);
-      } else if (start_guest_thread()) failed_session(S2A_INIT_FAIL_E_GAME_THREAD); }
+          if (s2a_snap_restore(sr)) {
+              void s2a_snap_result_midway(int); void s2a_session_fresh_restart(void);
+              if (!s2a_session_rebuild_supported()) { LOG("【红】即时存档恢复失败（原因见上面的红行）：不起游戏，退出；存档目录未被改动"); s2a_snap_result_midway(0); s2a_logcon_flush(); _exit(6); }
+              // 游戏内存已动过：这一局不起游戏线程，界面照常起来，随即不带快照进程内重启（重新开局），不退回主屏
+              LOG("【红】即时存档恢复失败（原因见上面的红行）：这局不起，重新开始游戏；存档目录未被改动");
+              s2a_snap_result_midway(1); unsetenv("S2A_SNAP_RESTORE"); unsetenv("S2A_SNAP_SAVE_ROLLBACK");
+              s2a_session_guest_end(0); s2a_session_fresh_restart();
+          } else {
+              s2a_snap_result_note(1);
+              if (start_timer("S2A_RUN_S", run_timer)) LOG("【红】局时定时器起不来");
+              s2a_session_guest_end(0); }
+      } else {
+#if TARGET_OS_IPHONE
+          s2a_load_front_wait();   // 前台激活门（s2a_loadprog.h）：系统弹框盖着时加载照做、到这里才等激活，激活后马上开跑
+#endif
+          if (start_guest_thread()) failed_session(S2A_INIT_FAIL_E_GAME_THREAD); } }
     if (s2a_session_running(s2a_session_generation())) failed_session(S2A_INIT_FAIL_E_SERVICE_EARLY);
     s2a_boot_mark("S2A 就绪 → 起游戏主线程");
     s2a_front_run(NULL);
@@ -526,6 +541,7 @@ int main(int argc, char **argv) {
     s2a_front_run(prewarmed_host_run);
     return 0;
 #else
+    s2a_dev_serial_lock();   // 开发机上几个 Mac 局排队一个一个跑（dev_serial_lock.h；玩家机器不生效）
     return host_run(argc, argv);
 #endif
 }

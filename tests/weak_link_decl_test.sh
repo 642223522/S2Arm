@@ -21,7 +21,7 @@ ck "Python 侧与 make 侧 host 放行参数同一份（$(echo "$py" | grep -c .
 
 # 负对照：临时仓库里加一个新弱符号 s2a_zz_probe（gfxmode.c 声明并引用）
 git clone -q --shared "$H" "$T/c" 2> /dev/null && git -C "$T/c" checkout -q "$(git -C "$H" rev-parse HEAD)" 2> /dev/null
-for f in tools/weak_link_decl.py runtime/build.mk runtime/src/gfxmode.c runtime/src/host_main.c runtime/tests/t_gfxmode.c graphics/nvn/Makefile tests/vk_indirect_count/Makefile; do cp "$H/$f" "$T/c/$f"; done
+for f in tools/weak_link_decl.py runtime/build.mk runtime/src/gfxmode.c runtime/src/host_main.c runtime/tests/t_gfxmode.c graphics/nvn/Makefile tests/vk_indirect_count/Makefile graphics/nvn/gfx/nvn/nvn2_codec.c graphics/nvn/gfx/nvn/nvn_frame_rec.inc; do cp "$H/$f" "$T/c/$f"; done
 # 编译缓存（门禁经 tools/cc_cache.sh 开的 ccache）按 CCACHE_BASEDIR 把路径改成相对才能跨次命中：临时克隆和产物目录不在门禁树下，
 #   路径每次随机、58 次编译只中 2 次（11-16 门禁提速）。克隆里编、产物也放克隆的 build/ 下，基准指到克隆
 [ -n "${CCACHE_BASEDIR:-}" ] && export CCACHE_BASEDIR="$T/c"
@@ -77,4 +77,24 @@ ck "场合整词：Python 侧 host 不含 s2a_zz_hostlike、myhost_probe 含它"
 ck "场合整词：make 侧 host 不含 s2a_zz_hostlike、myhost_probe 含它" '! mk host | grep -q _s2a_zz_hostlike && mk myhost_probe | grep -q _s2a_zz_hostlike'
 old=$(cd "$T/c" && LC_ALL=C sed -n 's/.*弱链接\[[^]]*host[^]]*\]：\([A-Za-z0-9_]*\).*/\1/p' runtime/src/gfxmode.c)
 ck "负对照：旧 make 规则（子串）会把 s2a_zz_hostlike 收进 host（收到：${old}）" 'grep -qx s2a_zz_hostlike <<< "$old"'
+# 系统库登记（11-19：NVN_TEST_WEAK 一行原先写死系统框架 / 库，谁加减都改这一行、支与支反复撞）：在用到它的源文件里登记「// 系统库[nvntest]：…」，
+#   本工具一起输出、两处链接行（graphics/nvn/Makefile、runtime/build.mk）只调本工具。期望手写：
+#   本仓库 nvntest 输出含 -lcompression 与 -framework VideoToolbox / CoreMedia / CoreVideo；make 侧 NVN_TEST_WEAK 也含；host 场合不带这几个；
+#   撤掉 nvn_frame_rec.inc 的登记 → -lcompression 消失；在 hle_nvn.c 登记 -lz → 出现
+py=$(cd "$T/c" && python3 tools/weak_link_decl.py flags nvntest)
+ck "系统库：nvntest 含 -lcompression 与三个框架" '[[ " $py " == *" -lcompression "* && " $py " == *" -framework VideoToolbox "* && " $py " == *" -framework CoreMedia "* && " $py " == *" -framework CoreVideo "* ]]'
+ck "系统库：host 场合不带它们" '! (cd "$T/c" && python3 tools/weak_link_decl.py flags host) | grep -qE -- "-lcompression|-framework"'
+if [ "$(uname -s)" = Darwin ]; then   # NVN_TEST_WEAK 在 runtime/build.mk 的 Darwin 分支里定义，别的系统上本来就空（同上面 S2A_HOST_WEAK 的说明）
+mkw=$(cd "$T/c" && make -s --no-print-directory -f - BUILD=$T/b s2a_print_nvn <<'EOF' 2>/dev/null
+include runtime/build.mk
+s2a_print_nvn:; @echo $(NVN_TEST_WEAK)
+EOF
+)
+ck "系统库：runtime/build.mk 的 NVN_TEST_WEAK 也含 -lcompression 与 VideoToolbox" '[[ " $mkw " == *" -lcompression "* && " $mkw " == *" -framework VideoToolbox "* ]]'
+fi
+sed -i.bak '/系统库\[nvntest\]：-lcompression/d' "$T/c/graphics/nvn/gfx/nvn/nvn_frame_rec.inc"; rm -f "$T/c/graphics/nvn/gfx/nvn/nvn_frame_rec.inc.bak"
+ck "系统库：撤掉登记 → -lcompression 消失" '! (cd "$T/c" && python3 tools/weak_link_decl.py flags nvntest) | grep -q -- "-lcompression"'
+sed -i.bak '1a\
+// 系统库[nvntest]：-lz（单测探针）' "$T/c/graphics/nvn/gfx/nvn/hle_nvn.c"; rm -f "$T/c/graphics/nvn/gfx/nvn/hle_nvn.c.bak"
+ck "系统库：在 hle_nvn.c 登记 -lz → 出现" '(cd "$T/c" && python3 tools/weak_link_decl.py flags nvntest) | grep -q -- "-lz"'
 [ $bad = 0 ] && echo "弱链接登记单测全过" || { echo "弱链接登记单测有不通"; exit 1; }

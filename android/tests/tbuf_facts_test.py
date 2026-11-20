@@ -33,6 +33,17 @@ if sys.argv[1:] == ['--withdraw']:
          'buffer fact retains target'),
         ('unguarded-runtime', 'if (nvn_target == NVN_TEXTURE_TARGET_BUFFER) { setwhy(why, why_size, "buffer texture execution is not implemented"); return -1; }',
          '', 'existing runtime producer rejects buffer'),
+        # 没登记描述符的默认事实（组合槽与常量缓冲里的贴图句柄共用，#1594 片 4）
+        ('default-fact-pool-end-off-by-one', '(uint64_t)(id - pool_base) < pool_n;', '(uint64_t)(id - pool_base) <= pool_n;',
+         'default fact classification: one past the pool'),
+        ('default-fact-unknown-base-in-pool', 'const int in_pool = pool_base >= 0 && id >= pool_base', 'const int in_pool = id >= pool_base',
+         'default fact classification: unknown pool base'),
+        ('default-fact-always-2d', 'snprintf(out->sampler_type, sizeof out->sampler_type, "%s", in_pool ? "1d" : "2d");',
+         'snprintf(out->sampler_type, sizeof out->sampler_type, "2d");', 'default fact sampler / coordinates follow the pool class'),
+        ('default-fact-always-normalized', 'out->normalized = in_pool ? 0 : 1;', 'out->normalized = 1;',
+         'default fact sampler / coordinates follow the pool class'),
+        ('default-fact-array-length', 'out->array_length = 1;\n    return in_pool;', 'out->array_length = 0;\n    return in_pool;',
+         'default fact is {Unknown, 1 layer, not buffer}'),
     ]
     for name, before, after, expected in mutations:
         assert source.count(before) == 1, (name, 'mutation anchor')

@@ -64,7 +64,9 @@ typedef struct dirty_log {
     struct { _Atomic uint64_t seq; _Atomic uintptr_t a, b; } ev[];
 } dirty_log;
 typedef struct { uintptr_t base, end, mem; _Atomic uint8_t *state; _Atomic uint64_t *gen; size_t cap; _Atomic int live;
-                 _Atomic(dirty_log *) log; } range_t;
+                 _Atomic(dirty_log *) log;
+                 _Atomic uint64_t last; } range_t;   // last: the largest write generation of any page in the range (CAS max next to every gen store): a range not written since a stamp answers without its page scan
+static inline void last_max(range_t *r, uint64_t g) { uint64_t c = atomic_load(&r->last); while (c < g && !atomic_compare_exchange_weak(&r->last, &c, g)) {} }   // async-signal-safe: atomics only
 static _Atomic(range_t *) g_blk[NBLK];
 static inline range_t *rg(int i) { return &atomic_load_explicit(&g_blk[i >> BLK_SHIFT], memory_order_acquire)[i & (BLK - 1)]; }
 static _Atomic int g_nr;
@@ -392,6 +394,7 @@ static int unprotect_span_pages(range_t *r, uintptr_t first, uintptr_t last) {
     }
     const uint64_t g = atomic_fetch_add(&g_now, 1) + 1;
     for (uintptr_t k = first; k <= last; k++) { atomic_store(&r->gen[k], g); atomic_store(&r->state[k], PG_NONE); }
+    last_max(r, g);
     return 1;
 }
 // 解除 p 所在的整块。块边界以所属映射为基准（chunk_first/last_page），不越界保护相邻内存。
@@ -501,6 +504,7 @@ int nvn_dirty_replace_range(const void *mem, size_t size) {
     const uint64_t newg = atomic_fetch_add(&g_now, 1) + 1;
     { dirty_log *lg = atomic_load_explicit(&r->log, memory_order_acquire); if (lg) atomic_store(&lg->bad, 1); }   // 换底不走解保护，日志里没有这次「整段变了」：作废
     for (uintptr_t k = 0; k < np; k++) { atomic_store(&r->state[k], PG_NONE); atomic_store(&r->gen[k], newg); }
+    last_max(r, newg);
     atomic_fetch_add(&g_mapping_gen, 1);
     for (uintptr_t k = 0; k < np; ) {
         uintptr_t first = chunk_first_page(r, k), last = chunk_last_page(r, k);
@@ -606,7 +610,7 @@ void nvn_dirty_add_range(const void *mem, size_t size) {
             if (ol && base < other->end && other->base < end) atomic_store(&ol->bad, 1);
         }
     }
-    r->base = base; r->end = end; r->mem = (uintptr_t)mem; r->state = state; r->gen = gen;
+    r->base = base; r->end = end; r->mem = (uintptr_t)mem; r->state = state; r->gen = gen; atomic_store(&r->last, 0);   // every gen is 0 here (calloc / memset above)
     atomic_store_explicit(&r->log, lg, memory_order_release);
     if (slot == n) atomic_store(&g_nr, n + 1);
     atomic_store_explicit(&r->live, 1, memory_order_release);
@@ -661,6 +665,7 @@ int nvn_dirty_since_span(const void *span, const void *addr, size_t len, uint64_
     if (!r || !atomic_load_explicit(&r->live, memory_order_acquire) || a0 < r->base || a0 + len > r->end) r = find_span(a0, len);
     if (!r) return 1;   // When untracked, conservatively treat as dirty: better to upload more than to show stale content
     if (atomic_load(&g_track_unreliable)) return 1;   // 有保护失败过：一律视为脏，不靠旧代际比较
+    if (atomic_load(&r->last) <= stamp) return 0;   // nothing in the whole range written after the stamp (马车世界缺口 ①：稀疏贴图每次提交按物理段查，段多的池不再逐页扫)
     uintptr_t a = (uintptr_t)addr, p = (a - r->base) >> g_shift, q = (a + len - 1 - r->base) >> g_shift;
     for (uintptr_t i = p; i <= q; i++) if (atomic_load(&r->gen[i]) > stamp) return 1;   // The generation of the last write before upload is <= the stamp; any later write must be > the stamp
     return 0;

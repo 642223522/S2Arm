@@ -4,7 +4,6 @@
 #include "s2a_launch_ctx.h"
 #include "s2a_docs.h"   // 多款容器每款资源包根（s2a_pack_root）
 #include "s2a_host_abi.h"
-#include <CommonCrypto/CommonDigest.h>   // 程序包 image_sha256 核对（program_sha_check）
 #include <dlfcn.h>                       // s2a_imgpack_open：宿主才链（imgpack.c），单测不链 → 不预注册   // S2A_HOST_ABI：宿主读产物的约定号（选游戏时核）
 #include <errno.h>
 #include <pthread.h>
@@ -233,23 +232,6 @@ int s2a_program_catalogue_path(char *out, size_t n, const char *game_data) {
     return 0;
 }
 
-// 程序包清单里这款的 image_sha256（64 位十六进制）与程序库整份文件的 SHA-256 比：→ 0 一致或清单没写这一项；1 不一致；-1 读不了（why 写原因）
-static int program_sha_check(const char *game_data, const char *gid, const char *image, char *why, size_t why_n) {
-    char pc[S2A_LCTX_PATH], want[80] = ""; size_t n;
-    if (s2a_program_catalogue_path(pc, sizeof pc, game_data)) { WHY("资源包根太长"); return -1; }
-    char *buf = slurp(pc, &n, why, why_n); if (!buf) return -1;
-    const char *os, *oe; int has = find_obj(buf, n, gid, &os, &oe) && obj_str(os, oe, "image_sha256", want, sizeof want); free(buf);
-    if (!has) return 0;
-    if (strlen(want) != 64) { WHY("程序包清单 image_sha256 不是 64 位十六进制"); return 1; }
-    FILE *f = fopen(image, "rb"); if (!f) { WHY("程序库 %s 打不开（errno %d）", image, errno); return -1; }
-    CC_SHA256_CTX x; CC_SHA256_Init(&x); unsigned char blk[1 << 16]; size_t got;
-    while ((got = fread(blk, 1, sizeof blk, f)) > 0) CC_SHA256_Update(&x, blk, (CC_LONG)got);
-    int err = ferror(f); fclose(f); if (err) { WHY("程序库 %s 读失败", image); return -1; }
-    unsigned char d[CC_SHA256_DIGEST_LENGTH]; CC_SHA256_Final(d, &x); char hex[65];
-    for (int i = 0; i < 32; i++) snprintf(hex + 2 * i, 3, "%02x", d[i]);
-    if (strcasecmp(hex, want)) { WHY("游戏 %s 的程序库和程序包清单不是同一次出的（SHA-256 %.12s…，清单 %.12s…）：要在电脑上重新签名推回去", gid, hex, want); return 1; }
-    return 0;
-}
 // 本款程序包（game_data = 这款资源包根）：清单不在 → 0；在 → 写随行目录 <程序包>/Games/<gid> 与镜像包 <程序包>/<清单 image>、回 1；
 //   清单读不了 / 没这款 / image 不合规 / 缺件 → -1（why 写原因）。module_dir、images 各 S2A_LCTX_PATH 字节
 static int program_paths(const char *game_data, const char *gid, char *module_dir, char *images, char *why, size_t why_n) {
@@ -455,8 +437,10 @@ int s2a_launch_ctx_game_needs_update(const char *gid) {
 
 static int g_sel_kind;   // 上一次 s2a_launch_ctx_select 被拒的类别（S2A_SELECT_*）：库界面按它给玩家说人话，原文只进日志
 int s2a_launch_ctx_select_kind(void) { return g_sel_kind; }
+static uint64_t lctx_ms(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (uint64_t)ts.tv_sec * 1000ull + (uint64_t)ts.tv_nsec / 1000000ull; }
 const char *s2a_launch_ctx_select(const char *gid) {
     static char why[700];
+    uint64_t t0 = lctx_ms();   // 选游戏耗时（点开始 → 选好），进末尾那行日志（11-19：去掉起局前整份程序库 SHA-256 前后对比用）
     pthread_once(&g_once, decide);
     g_sel_kind = S2A_SELECT_OTHER;
     if (!g_container) return "不是多款容器（包根没有 s2a_catalogue.json，或设了 S2A_LAUNCH_CTX）：启动上下文已在构造期定好，不能再选游戏";
@@ -478,12 +462,10 @@ const char *s2a_launch_ctx_select(const char *gid) {
             (int (*)(const char *, const char *, const char *, char *, char *, size_t, char *, size_t))dlsym(RTLD_DEFAULT, "s2a_program_resign_if_needed");
         if (rs) { char rw[300]; rs(getenv("HOME"), c.game_data, gid, c.module_dir, c.images, sizeof c.images, rw, sizeof rw); }
     }
-    {   // 程序签名（通用壳 11-16）：程序包里的程序库要和清单 image_sha256 一致（推了一半 / 换了别的版本 = 清单和库不是同一次出的），
-        //   且能被本机这份 App 注册签名 + 库校验（同团队）。对不上 → 回游戏库标「要在电脑上重新签名」，不进宿主（原先进局后 loader.c die「外置镜像包打不开」，
-        //   App 无提示直接退回主屏，11-16 Duo 实测 ad-hoc 程序库 errno=1）。注册在这里先做一次，进局后 s2a_imgpack_open 同一路径回同一个包
-        int ks = c.from_program ? program_sha_check(c.game_data, gid, c.images, w, sizeof w) : 0;
-        if (ks > 0) waive("%s：版本不配，可能闪退，在电脑上重新签名 / 装到 iPhone 可解（ios_program_resign）", w);   // 校验不过照常进（11-17 维护者）；签名系统不认（下面 rc == 3）物理上加载不了，照旧拒
-        if (ks < 0) waive("游戏 %s 的程序包核不了：%s", gid, w);
+    {   // 程序签名（通用壳 11-16）：程序库要能被本机这份 App 注册签名 + 库校验（同团队）——物理上必须，进程只认登记过签名的代码页。
+        //   原先这里还给整份程序库算 SHA-256 和清单 image_sha256 比（每次起局读完一两百 MB），核不过也只是黄字照常进，只剩花时间：11-19 维护者定
+        //   起局前的完整性校验一律去掉，坏了让这一步失败、报清楚原因（文件不完整 / 格式不对 / 签名不认，imgpack.c）。注册在这里先做一次，
+        //   进局后 s2a_imgpack_open 同一路径回同一个包（原先进局后 loader.c die「外置镜像包打不开」，App 无提示退回主屏，11-16 Duo 实测）
         int (*open_pk)(const char *, void **, char *, size_t) = (int (*)(const char *, void **, char *, size_t))dlsym(RTLD_DEFAULT, "s2a_imgpack_open");
         void *pk = NULL; int rc = c.from_program && open_pk ? open_pk(c.images, &pk, w, sizeof w) : 0;   // 只对程序包里的款：App 包里的款（0.6.0 前玩家手上全是这种）照旧进局后由装载器打开，行为同改造前
         if (rc == 3) {   // 注册签名失败（证书和手机身份相同、但签名格式老，如 Windows plumesign 签的程序库）：手机上有身份就当场强制重签一次，签好再注册；还不行才回游戏库
@@ -496,7 +478,7 @@ const char *s2a_launch_ctx_select(const char *gid) {
             }
         }
         if (rc == 3) { snprintf(why, sizeof why, "ios_program_resign：游戏 %s 的程序库签名本机不认（%s）：要在电脑上重新签名这款", gid, w); g_sel_kind = S2A_SELECT_NEEDS_RESIGN; r = why; goto out; }   // 3 = S2A_IMG_ESIGN（runtime/src/imgpack.h）
-        if (rc) { snprintf(why, sizeof why, "游戏 %s 的程序库打不开（返回 %d）：%s", gid, rc, w); g_sel_kind = S2A_SELECT_APP_INCOMPLETE; r = why; goto out; }
+        if (rc) { snprintf(why, sizeof why, "游戏 %s 的程序库坏了或不完整（%s）：在电脑上重新把这一款推到 iPhone", gid, w); g_sel_kind = S2A_SELECT_APP_INCOMPLETE; r = why; goto out; }
     }
     // 本款文档根第一次用时还不在（存档 / wire / 加载页标记各自只建最后一级）：逐级建好
     for (char *q = c.docs + 1; ; q++) {
@@ -510,7 +492,7 @@ const char *s2a_launch_ctx_select(const char *gid) {
     g_ctx = c;
     if (export_env()) { snprintf(why, sizeof why, "%s", g_err); memset(&g_ctx, 0, sizeof g_ctx); r = why; goto out; }
     g_selected = 1; atomic_store(&g_ok, 1);
-    LOG("启动上下文：多款容器选了游戏 %s，模块 %s，镜像包 %s，资源包 %s，文档 %s", c.game_id, c.module_dir, c.images, c.game_data, c.docs);
+    LOG("启动上下文：多款容器选了游戏 %s（选游戏 %llu ms），模块 %s，镜像包 %s，资源包 %s，文档 %s", c.game_id, (unsigned long long)(lctx_ms() - t0), c.module_dir, c.images, c.game_data, c.docs);
 out:
     pthread_mutex_unlock(&g_sel_mu);
     if (r) LOG("【红】启动上下文：选游戏 %s 被拒：%s", gid ? gid : "", r);

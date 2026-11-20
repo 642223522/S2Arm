@@ -72,12 +72,15 @@ long nvn_dirty_page_gens(const void *s,const void *a,size_t l,uint64_t *g,size_t
 void nvn_dirty_protect(const void *a,size_t n){(void)a;(void)n;}
 void rp_view_pin_begin(void){}void rp_view_pin_end(void){}
 nvn_gpu_view rp_view_by_id(int i,nvn_gpu_cmd c,tex_t *t){(void)i;(void)c;if (t) memset(t, 0, sizeof *t);return NULL;}
+uint32_t rp_storage_srgb_alias(uint32_t f) { (void)f; return 0; }
 nvn_gpu_view rp_view_by_id_decl(int i,uint8_t t,uint8_t k,int e,nvn_gpu_cmd c,tex_t *o){(void)i;(void)t;(void)k;(void)e;(void)c;if (o) memset(o, 0, sizeof *o);return NULL;}
+nvn_gpu_view rp_view_by_ubo_handle_decl(int i,uint8_t t,uint8_t k,nvn_gpu_cmd c,tex_t *o){return rp_view_by_id_decl(i,t,k,0,c,o);}   // 夹具不另判「没登记」：同 rp_view_by_id_decl 替身
 nvn_gpu_pool_table rp_pool_table(nvn_gpu_cmd c,int samp,int base,uint32_t n,uint8_t dtt,uint8_t dcls,const char **why){(void)c;(void)samp;(void)base;(void)n;(void)dtt;(void)dcls;if(why)*why="pool_table_unresolved";return NULL;}   // 本夹具不出整池数组
 // 此夹具未提供查询采样器证明，不使用内部查询对象。
 nvn_gpu_samp rp_sampler_for_query(void) { return NULL; }
 nvn_gpu_samp rp_samp_by_id(int i){(void)i;return NULL;}
 nvn_gpu_samp rp_samp_for_tex(int sid, int tid) { (void)tid; return rp_samp_by_id(sid); }   // #1072：替身不判过滤能力
+nvn_gpu_samp rp_samp_for_const_handle(int sid, int tid, int pb, int pn) { (void)pb; (void)pn; return rp_samp_for_tex(sid, tid); }   // 同 rp_samp_for_tex：替身不给默认采样器
 uint32_t rp_fmt_caps(uint32_t f) { return nvn_gpu_format_caps(f); }
 int rp_tex_snap_by_id(int i,tex_t *t,view_t *v,int *h){(void)i;(void)t;(void)v;(void)h;return 0;}
 uint64_t rp_tex_reg_gen(void){return 1;}uint64_t rp_tex_fact_sig(const uint64_t *h,int n,int b,int c){(void)h;(void)n;(void)b;(void)c;return 0;}
@@ -133,8 +136,8 @@ static void run_case(struct s2a_vk_device *d,const char *dir,int index,int mdi){
    expect_no_draw=1;
   }
 
-  if(index){p_draw_idx a={0};a.prim=4;a.itype=index;a.ibuf=(uint64_t)(uintptr_t)(guest+2052);a.ind=direct?0:(uint64_t)(uintptr_t)(guest+32);a.count=direct?6:0;a.instances=direct?1:0;a.base_vertex=direct?0:INT32_MAX;a.base_instance=direct?0:INT32_MAX;if(mdi==2){a.mdi_cnt=(uint64_t)(uintptr_t)(guest+16);a.mdi_i=mdi;}if(neg){a.prim=badprim;a.itype=badtype;if(badind)a.ind=badind;if(badidx)a.ibuf=badidx;}rp_draw(active,NULL,&a,&a);}
-  else{p_draw a={0};a.prim=4;a.ind=direct?0:(uint64_t)(uintptr_t)(guest+32);a.count=direct?6:0;a.first=direct?0:INT32_MAX;a.instances=direct?1:0;a.base_instance=direct?0:INT32_MAX;if(mdi==2){a.mdi_cnt=(uint64_t)(uintptr_t)(guest+16);a.mdi_i=mdi;}if(neg){a.prim=badprim;if(badind)a.ind=badind;}rp_draw(active,&a,NULL,&a);}
+  if(index){p_draw_idx a={0};a.prim=4;a.itype=index;a.ibuf=(uint64_t)(uintptr_t)(guest+2052);a.ind=direct?0:(uint64_t)(uintptr_t)(guest+32);a.count=direct?6:0;a.instances=direct?1:0;a.base_vertex=direct?0:INT32_MAX;a.base_instance=direct?0:INT32_MAX;if(mdi==2||mdi==4){a.mdi_cnt=(uint64_t)(uintptr_t)(guest+16);a.mdi_i=mdi==4?2:0;}if(neg){a.prim=badprim;a.itype=badtype;if(badind)a.ind=badind;if(badidx)a.ibuf=badidx;}rp_draw(active,NULL,&a,&a);}
+  else{p_draw a={0};a.prim=4;a.ind=direct?0:(uint64_t)(uintptr_t)(guest+32);a.count=direct?6:0;a.first=direct?0:INT32_MAX;a.instances=direct?1:0;a.base_instance=direct?0:INT32_MAX;if(mdi==2||mdi==4){a.mdi_cnt=(uint64_t)(uintptr_t)(guest+16);a.mdi_i=mdi==4?2:0;}if(neg){a.prim=badprim;if(badind)a.ind=badind;}rp_draw(active,&a,NULL,&a);}
   if(neg){expect_no_draw=0;REQUIRE(emitted==before);REQUIRE(nvn_unimpl_count("draw",reason)==1);REQUIRE(nvn_unimpl_count("buf","address_outside_pools")== (unsigned)(mdi==10||mdi==11));REQUIRE(nvn_unimpl_kinds()==((mdi==10||mdi==11)?2:1));}
  }
  rp_pass_flush(active);nvn_gpu_copy_tex_buf(active,tex,0,0,NULL,rb,0,256,16384);GPU(nvn_gpu_cmd_commit(active,1,done,NULL,&err));GPU(nvn_gpu_fence_wait(1,5000000000ull,&err));
@@ -143,7 +146,11 @@ static void run_case(struct s2a_vk_device *d,const char *dir,int index,int mdi){
  else pixels(nvn_gpu_buf_cpu(rb),!mdi);
  REQUIRE(emitted-before==(unsigned)(drv?3:!mdi));
  if(neg)printf("boundary index=%d mode=%d reason=%s no-draw clear-unchanged\n",index,mdi,reason);
- if(mdi==2){REQUIRE(nvn_unimpl_count("draw","indirect_count_group_unavailable")==1);}rp_buf_gpu_write_land(key,id,0);rp_draw_reset();rp_buf_reset();nvn_gpu_shader_release(prog.sh[0]);nvn_gpu_shader_release(prog.sh[1]);nvn_gpu_view_release(target_view);nvn_gpu_tex_release(tex);int t=atomic_load(&retired)+1;nvn_gpu_buf_release(rb,retirement,NULL);struct timespec pause={0,1000000};for(int i=0;i<5000&&atomic_load(&retired)<t;i++)nanosleep(&pause,NULL);GPU(nvn_gpu_close(5000000000ull,&err));
+ // 带计数的记录由命令循环按已解码记录成组（#658，rp_exec.c count_feed → rp_draw_count_batch），rp_draw 不往后读命令流：
+ //   mdi=2：组首（序号 0）直接进 rp_draw、没有成组的计数 → indirect_count_group_unavailable；
+ //   mdi=4：组中记录（序号 2）单独进 rp_draw = 组没成 → indirect_count_group_broken。两种都不画、不报另一个名字。
+ if(mdi==2){REQUIRE(nvn_unimpl_count("draw","indirect_count_group_unavailable")==1);REQUIRE(nvn_unimpl_count("draw","indirect_count_group_broken")==0);}
+ if(mdi==4){REQUIRE(nvn_unimpl_count("draw","indirect_count_group_broken")==1);REQUIRE(nvn_unimpl_count("draw","indirect_count_group_unavailable")==0);}rp_buf_gpu_write_land(key,id,0);rp_draw_reset();rp_buf_reset();nvn_gpu_shader_release(prog.sh[0]);nvn_gpu_shader_release(prog.sh[1]);nvn_gpu_view_release(target_view);nvn_gpu_tex_release(tex);int t=atomic_load(&retired)+1;nvn_gpu_buf_release(rb,retirement,NULL);struct timespec pause={0,1000000};for(int i=0;i<5000&&atomic_load(&retired)<t;i++)nanosleep(&pause,NULL);GPU(nvn_gpu_close(5000000000ull,&err));
 }
 // Empty valid storage descriptors must still execute the actual draw. Read both
 // ends of Ryujinx's 64 KiB fallback; padding in the readback stays untouched.
@@ -239,7 +246,7 @@ int main(int argc,char **argv) {
  if(s2a_vk_device_create(&d,why,sizeof why)){fprintf(stderr,"%s\n",why);return 2;}
  if(mirror_only){run_color_mirror(&d);REQUIRE(!s2a_vk_device_destroy(&d,1));return 0;}
  if(!depth_only){
-  for(int index=0;index<3;index++){run_case(&d,argv[1],index,0);run_case(&d,argv[1],index,2);run_case(&d,argv[1],index,3);}
+  for(int index=0;index<3;index++){run_case(&d,argv[1],index,0);run_case(&d,argv[1],index,2);run_case(&d,argv[1],index,4);run_case(&d,argv[1],index,3);}
   for(int index=0;index<3;index++)for(int mode=10;mode<=22;mode++){if(!index&&((mode>=13&&mode<=15)||mode>=20))continue;run_case(&d,argv[1],index,mode);}
   run_null_storage(&d,argv[1]);run_null_storage(&d,argv[1]);
   run_depth_state_restore(&d,argv[1]);
@@ -250,7 +257,7 @@ int main(int argc,char **argv) {
  uint64_t dq=nvn_vk_dbg_dq_recs();REQUIRE(getenv("S2A_REPLAY_INDIRECT_DQ")?dq>0:dq==0);
  printf("DQ records=%llu\n",(unsigned long long)dq);REQUIRE(!s2a_vk_device_destroy(&d,1));
  if(depth_only)puts("real depth-copy only: 4 format/subresource cases passed");
- else printf("real rp_draw/rp_buf ordinary-indirect+DRV0 cases9 plus-boundaries33 pixel-failures%u\n",failures);
+ else printf("real rp_draw/rp_buf ordinary-indirect+DRV0 cases12 plus-boundaries33 pixel-failures%u\n",failures);
  return failures?1:0;
 }
 

@@ -31,6 +31,9 @@ static void write_file(const char *p, const char *body) {
 // 宿主的 s2a_imgpack_open（imgpack.c，本单测不链）的桩：launchctx.c 选游戏时按名字 dlsym 它。记调用次数，恒回 3（= S2A_IMG_ESIGN，签名本机不认）——
 //   App 包里的款（没有程序包，0.6.0 前玩家手上全是这种）选游戏时不许调它（行为同改造前：进局后由装载器打开）；改造前的写法对所有款都预开，这一桩会把合规款判成「要重签」
 static int g_imgpack_calls;
+// 黄字记录（waived.c 的 s2a_check_waived，本单测不链）的桩：launchctx.c 的 waive 按名 dlsym 它。记下所有黄字，第 7 款核「不再给程序库整份算 SHA-256」
+static char g_waived[4096];
+__attribute__((visibility("default"), used)) void s2a_check_waived(const char *m) { size_t l = strlen(g_waived); snprintf(g_waived + l, sizeof g_waived - l, "%s\n", m ? m : ""); }
 __attribute__((visibility("default"), used)) int s2a_imgpack_open(const char *path, void **out, char *why, size_t n) { (void)path; (void)out; if (why && n) why[0] = 0; g_imgpack_calls++; return 3; }
 static int g_ctor_ran, g_ctor_container, g_ctor_frozen;
 // 同 vawin.c constructor(101)：构造期第一次取上下文。只在 exec 出来的副本里取（父进程取了会把兼容冻结带进下面 fork 的子进程）
@@ -86,6 +89,9 @@ static int child_waive(const char *gid) {
         CK(s2a_launch_ctx_get() && getenv("S2A_DOCS"), "约定号对不上：照常冻结上下文、写环境");
     } else {
         CK(r && !strstr(r, "不是同一次出的") && strstr(r, "签名本机不认"), "校验值对不上 → 不再按校验值拒；只剩签名不认（物理上加载不了）那一项拒");
+        // 11-19 起局前完整性校验去掉：清单 image_sha256 全 0（一定对不上），旧代码会整份读程序库算 SHA-256、黄字记「不是同一次出的」；现在一个字都不读、不记
+        CK(!strstr(g_waived, "不是同一次出的") && !strstr(g_waived, "SHA-256") && !strstr(g_waived, "程序包核不了"), "选游戏不再给程序库算 SHA-256（没有校验值那条黄字）");
+        if (g_waived[0]) printf("    黄字：%s", g_waived);
         if (r) printf("    原因：%s\n", r);
     }
     return bad;

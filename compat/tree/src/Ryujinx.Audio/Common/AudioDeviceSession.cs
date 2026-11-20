@@ -441,6 +441,47 @@ namespace Ryujinx.Audio.Common
             return false;
         }
 
+        // S2Arm 即时存档：缓冲队列与已播采样数。存：还没交还的（正在放 + 排着，按放的顺序）与已交还、游戏还没取走的（按交还顺序），各存 tag / 地址 / 大小；
+        //   恢复（新会话、重放已 Start）：已交还的直接放回「已交还」并发事件，没交还的按顺序重新追加给硬件（样本在已恢复的游戏内存里），
+        //   已播采样数按偏移接上（游戏拿它做音画同步，不能从 0 重来）。原先这个队列不存：恢复后游戏一直等它以为还排着的缓冲交还，音频线程卡住、跟音频走的动画定格
+        private ulong _s2aPlayedOffset;
+        public ulong S2APlayedSampleCount => GetPlayedSampleCount();
+        public (ulong Tag, ulong Ptr, ulong Size)[] S2APending()
+        {
+            uint n = _bufferRegisteredCount + _bufferAppendedCount;
+            var r = new (ulong, ulong, ulong)[n];
+            uint first = (_hardwareBufferIndex - _bufferRegisteredCount) % Constants.AudioDeviceBufferCountMax;
+            for (uint i = 0; i < n; i++) { AudioBuffer b = _buffers[(first + i) % Constants.AudioDeviceBufferCountMax]; r[i] = (b.BufferTag, b.DataPointer, b.DataSize); }
+            return r;
+        }
+        public (ulong Tag, ulong Ptr, ulong Size)[] S2AReleased()
+        {
+            var r = new (ulong, ulong, ulong)[_bufferReleasedCount];
+            uint first = (_releasedBufferIndex - _bufferReleasedCount) % Constants.AudioDeviceBufferCountMax;
+            for (uint i = 0; i < _bufferReleasedCount; i++) { AudioBuffer b = _buffers[(first + i) % Constants.AudioDeviceBufferCountMax]; r[i] = (b.BufferTag, b.DataPointer, b.DataSize); }
+            return r;
+        }
+        /// <returns>重新追加成功的在途缓冲个数（放不进的不算）</returns>
+        public int S2ARestore((ulong Tag, ulong Ptr, ulong Size)[] released, (ulong Tag, ulong Ptr, ulong Size)[] pending, ulong played)
+        {
+            if (GetTotalBufferCount() != 0 || released.Length + pending.Length > Constants.AudioDeviceBufferCountMax) return -1;   // 只给刚重建的空会话用
+            // 已交还的：占环最前面几格，计数直接记成已交还（不经硬件）；_hardwareBufferIndex / _serverBufferIndex 跟着前移，之后追加的接在后面
+            for (int i = 0; i < released.Length; i++)
+            {
+                AudioBuffer b = _slots[_serverBufferIndex];
+                b.BufferTag = released[i].Tag; b.DataPointer = released[i].Ptr; b.DataSize = released[i].Size; b.PlayedTimestamp = (ulong)PerformanceCounter.ElapsedNanoseconds; b.Data = null; b.SampleReader = null;
+                _buffers[_serverBufferIndex] = b;
+                _serverBufferIndex = (_serverBufferIndex + 1) % Constants.AudioDeviceBufferCountMax;
+            }
+            _hardwareBufferIndex = _serverBufferIndex; _releasedBufferIndex = _serverBufferIndex; _bufferReleasedCount = (uint)released.Length;
+            int ok = 0;
+            foreach (var p in pending) if (AppendBuffer(p.Tag, p.Ptr, p.Size)) ok++;
+            ulong now = _state == AudioDeviceState.Stopped ? 0 : _hardwareDeviceSession.GetPlayedSampleCount();
+            _s2aPlayedOffset = played > now ? played - now : 0;
+            if (released.Length > 0) _bufferEvent.Signal();
+            return ok;
+        }
+
         /// <summary>
         /// Get the count of sample played in this session.
         /// </summary>
@@ -452,7 +493,7 @@ namespace Ryujinx.Audio.Common
                 return 0;
             }
 
-            return _hardwareDeviceSession.GetPlayedSampleCount();
+            return _hardwareDeviceSession.GetPlayedSampleCount() + _s2aPlayedOffset;
         }
 
         /// <summary>

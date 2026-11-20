@@ -217,6 +217,29 @@ static void s2arm_cases(const char *T) {
     s2a_img_scan(docs);
     CHECK(stat(src, &st) != 0 && stat(p, &st) == 0, "⑤ 导入文件夹里的 .s2arm：导好、原文件删掉");
 }
+// 两路同时解同一款（11-19 Duo：游戏库与资源导入闸门各起一路，后一路打开已被前一路解完删掉的 tar 回 errno 2、按失败收场）。
+//   A 解完第 1 个包时（进度回调）起 B，A 再停 300 毫秒：串行时 B 等 A 做完、见待解包已空且 .applied = 清单号 → 直接成功；
+//   旧实现里 B 在这 300 毫秒里解掉第 2、3 个包并删掉，A 醒来打开第 2 个包回 errno 2 → A 失败
+#include <pthread.h>
+static char g_race_docs[600]; static pthread_t g_race_b; static int g_race_brc = -100, g_race_started; static pthread_t g_race_a;
+static void *race_b(void *a) { (void)a; g_race_brc = s2a_pack_apply(g_race_docs); return NULL; }
+static void race_prog(int d, int t) { (void)t; if (pthread_equal(pthread_self(), g_race_a) && d == 1 && !g_race_started) { g_race_started = 1; pthread_create(&g_race_b, NULL, race_b, NULL); usleep(300000); } }
+static void race_case(const char *T) {
+    char c[4096]; snprintf(g_race_docs, sizeof g_race_docs, "%s/race", T);
+    snprintf(c, sizeof c, "cd %s && mkdir -p rsrc/exefs race/资源包/.incoming && printf npdm > rsrc/exefs/main.npdm && printf a > rsrc/a.txt && printf bb > rsrc/b.txt && printf ccc > rsrc/c.txt && "
+        "cd rsrc && COPYFILE_DISABLE=1 tar " TAR_OPTIONS " -cf ../race/资源包/.incoming/9_000.tar exefs a.txt && "
+        "COPYFILE_DISABLE=1 tar " TAR_OPTIONS " -cf ../race/资源包/.incoming/9_001.tar b.txt && COPYFILE_DISABLE=1 tar " TAR_OPTIONS " -cf ../race/资源包/.incoming/9_002.tar c.txt && cd .. && "
+        "printf '{\"version\":2,\"index_sha256\":\"race01\"}' > race/资源包/manifest.json && printf 'a.txt\\t1\\tx\\nb.txt\\t2\\tx\\nc.txt\\t3\\tx\\n" NPDM_ROW "' > race/资源包/index.tsv", T);
+    CHECK(sh(c) == 0, "两路并发：造包失败");
+    g_race_a = pthread_self(); s2a_pack_apply_progress = race_prog; int ra = s2a_pack_apply(g_race_docs);
+    if (g_race_started) pthread_join(g_race_b, NULL);
+    s2a_pack_apply_progress = NULL;
+    CHECK(g_race_started, "两路并发：B 没起来（进度回调没到第 1 个包）");
+    CHECK(ra == 0, "两路并发：A 应成功（实际 %d：%s）", ra, s2a_pack_apply_failure());
+    CHECK(g_race_brc == 0, "两路并发：B 应成功（实际 %d：%s）", g_race_brc, s2a_pack_apply_failure());
+    snprintf(c, sizeof c, "cd %s/race/资源包 && test \"$(cat a.txt b.txt c.txt)\" = abbccc && grep -qx race01 .applied && test -z \"$(ls .incoming)\"", T);
+    CHECK(sh(c) == 0, "两路并发：三个文件都在、.applied = race01、待解包已空");
+}
 int main(void) {
     char T[] = "/tmp/s2a_t_pack_XXXXXX"; if (!mkdtemp(T)) return 1;
     boundary_cases(T);
@@ -723,12 +746,6 @@ int main(void) {
         struct stat ei; char ef[1500]; snprintf(ef, sizeof ef, "%s/放这里导入/导出.img", Di); long long big = stat(ef, &ei) ? -1 : (long long)ei.st_size;
         CHECK(s2a_img_scan(Di) == 1, "⑭i 认领");
         char gi[1500]; snprintf(gi, sizeof gi, "%s/games/0100ABCD0000000C", Di);
-        extern int g_s2a_v060;
-        g_s2a_v060 = 0;   // 开关关着（0.6.0 之前的缺省）：解开照旧，本体一个字节不动
-        CHECK(s2a_pack_apply(gi) == 0, "⑭i 开关关：解开（%s）", s2a_pack_apply_failure());
-        { struct stat s0; char gimg[1600]; snprintf(gimg, sizeof gimg, "%s/资源包/game.img", gi);
-          CHECK(!stat(gimg, &s0) && (long long)s0.st_size == big, "⑭i 开关关：本体长度不变（%lld，导入时 %lld）", (long long)s0.st_size, big); }
-        g_s2a_v060 = 1;   // 开关开（0.6.0）：下面核截掉
         CHECK(s2a_pack_apply(gi) == 0, "⑭i 解开（%s）", s2a_pack_apply_failure());
         snprintf(c, sizeof c, "set -e; g='%s/资源包'; s=$(stat -f %%z \"$g/game.img\"); test \"$s\" -lt %lld"
                  " && python3 '%s/pack/img.py' ls \"$g/game.img\" | sort | cmp -s - '%s/orig.ls'"
@@ -741,8 +758,7 @@ int main(void) {
         snprintf(c, sizeof c, "shasum '%s/资源包/game.img' > '%s/after1.sha'", gi, Di); sh(c);
         CHECK(s2a_pack_apply(gi) == 0, "⑭i 再应用一次仍成功");
         snprintf(c, sizeof c, "shasum '%s/资源包/game.img' | cmp -s - '%s/after1.sha'", gi, Di);
-        CHECK(sh(c) == 0, "⑭i 再应用一次本体不变");
-        g_s2a_v060 = 0; }
+        CHECK(sh(c) == 0, "⑭i 再应用一次本体不变"); }
       // 格式号 9（更新版 S2Arm 做的；2 是着色器更新包，见 ⑭c）：不认、原样留着，给码 ios_install_img_format
       char D4[1300], f4[1400]; snprintf(D4, sizeof D4, "%s/img_docs4", T); mkdir(D4, 0755); snprintf(f4, sizeof f4, "%s/Import Here", D4); mkdir(f4, 0755);
       snprintf(f4, sizeof f4, "%s/Import Here/新格式.img", D4);   // 英文界面建的导入文件夹名也认
@@ -1066,5 +1082,6 @@ int main(void) {
       snprintf(c, sizeof c, "%s/不存在", T); CHECK(s2a_pack_repair_tree(c) == 0, "启动补权限：目录不存在 → 0");
       snprintf(c, sizeof c, "chmod -R u+w '%s' 2>/dev/null; rm -rf '%s'", L, L); sh(c); }
 zst_cases(T);
+race_case(T);
 printf("%s t_pack_apply：%d 处不符\n", bad ? "✗" : "✓", bad); return bad != 0;
 }

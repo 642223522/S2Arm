@@ -1,5 +1,6 @@
 """Mac preparation/launch adapter. All engine transformations stay in S2Arm."""
 from __future__ import annotations
+import contextlib
 import hashlib
 import importlib.util
 import json
@@ -134,6 +135,11 @@ def validate_runtime(c, runtime, full=False, files=True, doubts=None):
             #   表坏了最多是布局提示归 0，不该挡起局；只记一笔
             print("[s2a] 内存配置表（addr_need.tsv）和清单记的不一致，照常起局（布局提示可能不生效）", file=sys.stderr)
     return manifest
+
+
+def runtime_manifest(runtime):
+    """起局用：只读运行版本清单，不核任何文件（11-19）。读不到 → {}（随后按「与所选游戏不匹配」报）"""
+    return read(resolve_path(runtime) / "manifest.json", {})
 
 
 def missing_after_crash(c, runtime, manifest):
@@ -319,8 +325,16 @@ def keep_runtime_nros(c, game_id, source):
 
 def launch(c):
     import sgrade
-    with c.lock("execution"), c.idle(sgrade.game_lock(c.r.get("gameId") or "")) as free:
-        if not free:   # 这款正在升级 S 级优化（sgrade.upgrade_game 拿着这款的锁）：只挡这一款，升级做完自动解除
+    # 执行锁读写化（11-19）：起局整局只拿执行锁的共享模式——别的游戏照样能起、能出包；清理 / 删除 / 搬家等全库动作（独占）照旧等这局结束。
+    #   这一款由按款锁挡：同一款的出包（produce_locks）、S 级升级、再起一局都要等这局结束
+    with c.lock("execution", shared=True), c.idle(sgrade.game_lock(c.r.get("gameId") or "")) as free:
+        if not free:
+            import filelock
+            holder = filelock.read_holder(c.library / ("." + sgrade.game_lock(c.r.get("gameId") or "") + ".lock"))
+            if holder.get("operation") in ("launch", "build", "ipa"):   # 拿着这款锁的是起局 / 出包：同原先排执行锁到上限后的说法
+                from errors import library_lock_failure
+                raise library_lock_failure(holder, "另一个任务正在使用游戏库，请稍后重试。", f"这款的按款锁被占：{holder}")  # 非玩家句
+            # 这款正在升级 S 级优化（sgrade.upgrade_game 拿着这款的锁）：只挡这一款，升级做完自动解除
             raise Failure("这款游戏正在升级 S 级优化，升级完成后就能开始。", code="sgrade_upgrading")
         game = c.game()
         from saves import recover
@@ -329,16 +343,15 @@ def launch(c):
         # 起局前不再自动补 S 级优化 / 按新改写器重改写（11-17 维护者：「改成不自动运行，玩家手动点击 S 级优化再升级」，sgrade.upgrade_game）
         from rewrite_refresh import kept_nros_mac
         kept_nros_mac(c, game["id"], runtime)   # 运行时留下、还没补进的 NRO（#8be819）：上次收局没补成的这里再补
-        c.begin("验证运行文件")
-        # 校验不过不拒起局（11-17 维护者）：请求带已停用的旧字段 vammLayout（旧启动器发的，照常起、不用它）、清单对不上、主程序 / 程序描述缺或大小不符，
-        #   都黄字点名哪里没过、照常起；这局真出问题时，报错里带上「起局前这里校验就没过」
+        c.begin("验证运行文件")   # 阶段名是前端固定的机读名（PlaySessionView.stages），这一段现在只读清单、不核文件
+        # 起局前不核任何运行文件（11-19 维护者：「能不能去掉检验……动了启动失败就行了」）：原先这里核主程序 / 程序描述在不在、大小对不对，
+        #   再给内存配置表算一次摘要；坏了照样起（11-17 起不拒），这一步只剩花时间。真读到坏的，游戏非正常退出后 missing_after_crash 再核一遍、说清缺什么
         doubts = ["请求里带着已停用的旧内存布局设置（vammLayout）"] if "vammLayout" in c.r else []
-        manifest = validate_runtime(c, runtime, files=False, doubts=doubts)   # 只核主程序 / 程序描述（QUICK_FILES），其余直接起（v0.3.1）
-        print("[起局] 只核主程序与程序描述，其余文件不逐个核（真读到坏的、游戏退出后再核、说清缺什么）", file=sys.stderr, flush=True)
+        manifest = runtime_manifest(runtime)
         for doubt in doubts:
-            print("[起局] 校验没过，照常起局：" + doubt, file=sys.stderr, flush=True)  # 非玩家句
+            print("[起局] 照常起局：" + doubt, file=sys.stderr, flush=True)  # 非玩家句
             c.diagnostic(f"{doubt}，先照常启动；起不来的话重新出一次 Mac 版。", code="runtime_invalid", severity="warning")
-        doubt_note = ("\n" + f"起局前这里校验就没过：{'；'.join(doubts)}") if doubts else ""
+        doubt_note = ("\n" + f"起局前已知：{'；'.join(doubts)}") if doubts else ""
         if manifest.get("gameId") != game["id"]:
             raise Failure("运行资源与所选游戏不匹配。", code="runtime_invalid")
         if manifest.get("memoryRequirementsVersion") != 2:
@@ -462,9 +475,11 @@ def compile_host(c, fingerprint, env, log_root):
         return app
     args = ["make", "-C", c.engine, "host", "S2A_CS=1", "S2A_MAC_FRONTEND=1",
             "BUILD=" + str(host_root / "build"), "DEVELOPER_DIR=" + env["DEVELOPER_DIR"]]
-    dav1d = os.environ.get("S2A_DAV1D")   # c.env() 会清掉 S2A_*；构建开关显式带给 make（缺省 1 不用带）
-    if dav1d in ("0", "1"):
-        args.append("S2A_DAV1D=" + dav1d)
+    # c.env() 会清掉 S2A_*；构建开关显式带给 make（缺省 auto = 引擎快照里的 make 按本机探测，tools/av1hw.sh / tools/vp9hw.sh）
+    for k in ("S2A_DAV1D", "S2A_VPX"):
+        v = os.environ.get(k)
+        if v in ("0", "1"):
+            args.append(k + "=" + v)
     c.run(args, log_root / "host.log", env)
     binary = host_root / "build/s2arm-host"
     if not binary.is_file():
@@ -866,8 +881,17 @@ def prune_runtime_extras(root):
             _rmtree(extra)   # 走统一删除：pkg/pack/romfs 克隆自产物根，可能带只读目录；删不掉要报出来，不能悄悄留半棵进运行版本
 
 
+@contextlib.contextmanager
+def produce_locks(c):
+    """出包（Mac prepare、iPhone ipa.build）拿的锁（执行锁读写化，11-19）：执行锁共享（和起局并行，挡全库独占动作）+ 出包锁独占（两次出包照旧
+    一个接一个：共用编译缓存、缓存修剪 cache_retention 要独占）+ 这一款的按款锁（这款在玩 / 在升级 S 级优化时等它结束）"""
+    import sgrade
+    with c.lock("execution", shared=True), c.lock("produce"), c.lock(sgrade.game_lock(c.r.get("gameId") or "")):
+        yield
+
+
 def prepare(c):
-    with c.lock("execution"):
+    with produce_locks(c):
         c.begin("检查游戏输入")
         c.require_source()
         game = c.game()

@@ -157,11 +157,22 @@ struct ShellSettingsView: View {
                                 }.equatable()
                             }
                         }
+                        // S2Arm: this version's "What's new" again (decided 11-19)
+                        if actions.featureIntro != nil {
+                            SettingsGroup(title: ShellStrings.text("What's new")) {
+                                SourceRow(symbol: "sparkles", title: ShellStrings.text("What's new"),
+                                          note: ShellStrings.text("What this version adds and how to use it.")) {
+                                    Button(ShellStrings.text("See it again")) { onClose(); NotificationCenter.default.post(name: .shellOpenFeatureIntro, object: nil) }
+                                        .buttonStyle(ShellButtonStyle(fills: true)).accessibilityIdentifier("shellSettings.whatsNew")
+                                        .shellTarget("shs.whatsNew") { onClose(); NotificationCenter.default.post(name: .shellOpenFeatureIntro, object: nil) }
+                                }
+                            }
+                        }
                         // S2Arm: at the bottom, "Report a problem" (the host asks for an optional sentence, then uploads the logs and shows a short code)
                         if let report = actions.onReportProblem {
                             SettingsGroup(title: ShellStrings.text("Report a problem")) {
                                 SourceRow(symbol: "exclamationmark.bubble", title: ShellStrings.text("Report a problem"),
-                                          note: ShellStrings.text("Sends this device's logs to the developers and gives you a short code. You can add a sentence about what happened.")) {
+                                          note: ShellStrings.text("Sends this device's logs to the developers and gives you a short code. Tell us which game, what you did and what you saw.")) {
                                     Button(ShellStrings.text("Report…")) { report() }
                                         .buttonStyle(ShellButtonStyle(fills: true)).accessibilityIdentifier("shellSettings.report")
                                         .shellTarget("shs.report") { report() }

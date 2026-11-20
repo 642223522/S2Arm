@@ -63,8 +63,7 @@ def measure(c, gid, games=None, with_categories=True):
         sizes["imageIos"] = _bytes([d / "image" / "ios"], state=state)
         sizes["saves"] = _bytes(layout.save_entries(d), state=state)   # 存档类唯一来源（含 save_backup/、SaveData*）
     sizes["sources"] = _source_share(gid, games)
-    import program_pack
-    if with_categories and program_pack.enabled(c):   # 0.6.0 四类（开关关着不带，两端启动器照旧五项）
+    if with_categories:   # 0.6.0 四类
         sizes["categories"] = categories(c, gid, d)
     return sizes
 
@@ -132,8 +131,7 @@ def for_catalog(c, gid, games):
     out = {k: int(saved.get(k) or 0) for k in PARTS}
     out["sources"] = _source_share(gid.upper(), games)
     out["measured"] = bool(saved)
-    import program_pack
-    if program_pack.enabled(c) and isinstance(saved.get("categories"), dict):
+    if isinstance(saved.get("categories"), dict):
         out["categories"] = {k: int(saved["categories"].get(k) or 0) for k in CATEGORIES}
     return out
 
@@ -169,7 +167,8 @@ def _shared_paths(c):
         "ipa": [layout.phone_ipa(c), layout.phone_ipa(c, previous=True)],
         # tool-cache 就是现在的工作目录（core.Context.work_root），旧位置（私有目录 / 库内 .s2arm-work 的 cache、run）没迁完时也算；
         #   去掉落在别项里面的，免得同一份量两遍（Windows 实跑：W = L/tool-cache 时总览报成两倍）
-        "toolCache": _outermost([L / "tool-cache", W / "cache", W / "run", P / "cache", P / "run", L / ".s2arm-work" / "cache", L / ".s2arm-work" / "run"]),
+        #   <私有目录>/tools 是「准备引擎工具」按源码身份编出的读取工具（toolchain.reader），同属跨游戏工具缓存；漏算时外接盘 3 款实测总览少 7.9%
+        "toolCache": _outermost([L / "tool-cache", W / "cache", W / "run", P / "cache", P / "run", P / "tools", L / ".s2arm-work" / "cache", L / ".s2arm-work" / "run"]),
         "temp": temps,
         "logs": [L / "logs", P / "logs", P / "jobs"],
     }
@@ -198,32 +197,26 @@ def overview(c):
     c.require_library()
     c.begin("统计游戏库占用的空间")
     games = [g for g in c.catalog()["games"] if not g.get("hidden")]
-    import program_pack
-    v060 = program_pack.enabled(c)
-    state = {} if v060 else None   # 0.6.0：各款四类与公共件同一份去重状态现量一遍，加起来就是盘上真占的（体系文档 K）
+    state = {}   # 各款四类与公共件同一份去重状态现量一遍，加起来就是盘上真占的（体系文档 K）
     rows, used = [], {}
     for g in games:
         c.check()
         gid = g["id"].upper()
         where, place = layout.state(c, gid)
-        if where == "ok" and (v060 or layout.read_sizes(c, gid) is None):
-            if v060:
-                sizes = measure(c, gid, games, with_categories=False)
-                sizes["categories"] = categories(c, gid, layout.find_game(c, gid), state=state)
-                layout.write_sizes(c, gid, sizes)
-            else:
-                refresh(c, gid)
+        if where == "ok":
+            sizes = measure(c, gid, games, with_categories=False)
+            sizes["categories"] = categories(c, gid, layout.find_game(c, gid), state=state)
+            layout.write_sizes(c, gid, sizes)
         s = for_catalog(c, gid, games)
         root = place.parent.parent if where == "ok" else place
         if where == "ok":
-            used[str(root)] = used.get(str(root), 0) + (sum(s["categories"].values()) if v060 and "categories" in s
+            used[str(root)] = used.get(str(root), 0) + (sum(s["categories"].values()) if "categories" in s
                                                         else sum(s[k] for k in ("imageMac", "imageIos", "saves", "cache")))
         rows.append(dict(gameId=gid, name=game_custom(c, gid)["name"] or g.get("name") or gid, state=where,
                          location=str(root) if root else "", sizes=s))
     shared, under = [], {}
     paths = _shared_paths(c)
-    if v060:
-        paths.update(_shared_paths_060(c, games, paths))
+    paths.update(_shared_paths_060(c, games, paths))
     for k, v in paths.items():
         n = 0
         for p in (p for p in v if os.path.lexists(p)):
