@@ -1,5 +1,8 @@
 #!/bin/bash
-# pack/refresh.sh 单测（各阶段换成桩，只验编排；约 10 秒）：bash tests/refresh_test.sh
+# pack/refresh.sh 单测（各阶段换成桩，只验编排）：bash tests/refresh_test.sh
+# 用时（11-19 实测，负载约 40）：约 27 秒，满载门禁约 110 秒。全测跑 39 次真编排（每种情形一次，就是本测要验的东西），每次约 0.7 秒：
+#   refresh.sh 自身约 0.4 秒（每次约 170 个小外部命令：ps / basename / awk / find…，负载下每个几毫秒，没有单个大头），
+#   阶段桩约 0.2 秒，真依赖判据的 python（解码器款 / GLSLC 款 / 核数）约 0.14 秒。再快只能拆成几份并行跑，不能删情形
 # 期望（10-25 维护者「一次出完整包」，按编排规则手写）：
 #   ① 只有直连（10-30 直连单轨；11-07 拆兼容模式、精简档与只服务通用模式的着色器阶段 / 客体代码表）：出直连库，不再跑 shaders / direct_gk；
 #     管线种子表 direct_seed（审计 #1534 P1-54）在直连库之后、只跑一次；计算管线归档 direct_cpso 在种子表之后、只跑一次、路数同直连库
@@ -21,13 +24,13 @@ printf '#!/bin/bash\necho "原件核对桩 rc=${FAKE_SRCVER_RC:-0}"; exit ${FAKE
 for s in rewrite sysdata uilayout aoc caps romfsidx direct_profile extract direct_seed direct_cpso direct; do
   cat > $T/repo/pack/stage_$s.sh <<EOF
 #!/bin/bash
-echo "$s 起 \$(python3 -c 'import time;print(time.time())') \${S2A_SHADER_NO_PSO:-0}\${S2A_SHADER_NO_DL:-0} J=\${J:-无} DD=\${DEVELOPER_DIR:-无} LZ=\${S2A_SHADER_LAZY:-0} BK=\${S2A_CPU_BAKE:-无}" >> $T/log
+echo "$s 起 \$(date +%s.%N) \${S2A_SHADER_NO_PSO:-0}\${S2A_SHADER_NO_DL:-0} J=\${J:-无} DD=\${DEVELOPER_DIR:-无} LZ=\${S2A_SHADER_LAZY:-0} BK=\${S2A_CPU_BAKE:-无}" >> $T/log
 [ "$s" = direct ] && sleep \${FAKE_DIRECT_SLEEP:-0}   # 缺省不睡：二十多次编排每次睡 1 秒是本单测的大头；要量用时的那一次显式给（①）
 [ "$s" = rewrite ] && sleep \${FAKE_RW_SLEEP:-0}
 # FAKE_RW_UNTIL=<阶段>：改写等那个阶段在日志里记下「起」才结束（最多 30 秒）——按事件判并行，不靠墙钟窗口（⑬a：满载时直连库可能晚于固定的 2 秒才起）
 if [ "$s" = rewrite ] && [ -n "\${FAKE_RW_UNTIL:-}" ]; then for i in \$(seq 600); do grep -q "^\$FAKE_RW_UNTIL 起 " $T/log && break; sleep 0.05; done; fi
 if [ "$s" = direct ]; then d=\$(cd -P $T/roots/acnh@现行 && pwd)/shaders/direct; rm -rf "\$d"; if [ -n "\${FAKE_RTONLY:-}" ]; then mkdir -p "\$d" && : > "\$d/keys.tsv" && echo 缺口 > "\$d/runtime_only.txt"; elif [ -n "\${FAKE_VKHDR:-}" ]; then mkdir -p "\$d/vk" && : > "\$d/keys.tsv" && printf "# key\tfile\n" > "\$d/vk/vk_shaders.tsv"; else [ -n "\${FAKE_NODIRECT:-}" ] || { mkdir -p "\$d" && echo k > "\$d/keys.tsv"; }; fi; fi
-echo "$s 止 \$(python3 -c 'import time;print(time.time())')" >> $T/log
+echo "$s 止 \$(date +%s.%N)" >> $T/log
 [ "\${FAKE_FAIL:-}" = "$s" ] && { echo "🔴 $s 桩失败"; exit 1; }
 [ "\${FAKE_GAP:-}" = "$s" ] && { echo "【黄】acnh 直连缺口：桩缺口 3 支"; exit 3; }
 [ "\${FAKE_DFAIL:-}" = "$s" ] && { echo "【红】acnh 直连库失败：直连抽取失败（桩：Unity 无类型树）"; exit 3; }
