@@ -151,11 +151,15 @@ with tempfile.TemporaryDirectory(prefix='img test ') as t:
         try: img.orig_romfs(str(r6), str(T)); ck(False, '⑥ 没有 seed.txt 但叠过覆盖应报红')
         except img.Red: ck(True, '⑥ 没有 seed.txt 但产物根叠过覆盖 → 报红')
         (pk / 'programs/1').mkdir(parents=True); (pk / 'programs/1/a').write_bytes(b'p')
-        (pk / 'index.tsv').write_text((pk / 'index.tsv').read_text() + 'programs/1/a\t1\tx\n')
+        # #1782：序号 1 的 RomFS 行清单里叫 programs/1/romfs.img，库内实际是标准镜像 programs/1/romfs.std（0.6.0 起 RomFS 不落散文件）
+        (pk / 'programs/1/romfs.std').write_bytes(b'STD1')
+        (pk / 'index.tsv').write_text((pk / 'index.tsv').read_text() + 'programs/1/a\t1\tx\nprograms/1/romfs.img\t4\ty\n')
         # #1545：多程序合集序号 1.. 的 programs/<n>/… 进 IMG 其余文件段（手机解包按原路径解回），不再报红 / 不转
         got = img.convert(str(root), str(pk), romfs_index=cmd)
         toc = {r: n for r, _, n in img.entries(got)} if got else {}
         ck(got and toc.get('programs/1/a') == 1 and img.find(got, 'programs/1/a') is not None, f'④ 多程序合集：programs/1/a 进 game.img 目录表（{sorted(toc)}）')
+        ck(got and toc.get('programs/1/romfs.std') == 4 and 'programs/1/romfs.img' not in toc,
+           f'④ 多程序合集：序号 1 的 RomFS 按库内形态 programs/1/romfs.std 进 IMG（宿主照它读），不再报「romfs.img 不在」（{sorted(toc)}）')
         ck(not (pk / 'programs').exists() and 'programs/' not in (pk / 'index.tsv').read_text() and json.loads((pk / 'manifest.json').read_text())['format'] == 'img',
            '⑤ 转完资源包里不留 programs/ 旧文件、index.tsv 不列它、manifest 是 img 形态')
 # ⑧ #711（Windows 大游戏写 game.img 失败）：Windows 的 os.stat 没有 st_blocks，RomFS 段写满 1 秒时进度轮询原先抛 AttributeError、img.py 半路退出、
