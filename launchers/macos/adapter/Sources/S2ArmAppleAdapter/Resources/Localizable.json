@@ -10622,5 +10622,13 @@
  {
   "source": "苹果已经接受了验证码，但随后又要求再验证一次，再输也会一直这样，所以 S2Arm 先停下了。请改用在你自己的 iPhone 或 iPad 上登录着的那个 Apple ID 来登录（验证码会弹在那台设备上）；还不行请把诊断发给我们。",
   "en": "Apple accepted the verification code but then asked for another one, and it would keep doing that however many codes you enter, so S2Arm stopped. Sign in with the Apple ID that's signed in on your own iPhone or iPad instead (the code will appear on that device). If that still doesn't work, please send us a diagnostic."
+ },
+ {
+  "source": "直连库·采样模拟变体 {0}",
+  "en": "Direct library · sampler emulation variants {0}"
+ },
+ {
+  "source": "直连库·顶点补齐变体 {0}",
+  "en": "Direct library · padded vertex variants {0}"
  }
 ]
