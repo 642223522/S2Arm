@@ -561,6 +561,7 @@ static int pack_apply_locked(const char *docs) {
             else { char tp[2100]; snprintf(tp, sizeof tp, "%s/.transfer", root); unlink(tp); } }
         else if (copy_atomic(root, "index.tsv", "index.applied.tsv")) { rc = -4; g_fail_errno = errno; snprintf(what, sizeof what, "存 index.applied.tsv"); }   // 「机上实际有什么」：执行器据它算补推
         else if (write_atomic(root, ".applied", sha)) { rc = -4; g_fail_errno = errno; snprintf(what, sizeof what, "写 .applied"); }
+        else if (write_atomic(root, ".applied_by_shell", sha)) LOG("【黄】资源包来源标记 .applied_by_shell 写不进（游戏库会把还没收到程序的这款当成 0.5 老款）");   // 0.6 起解开的资源包（游戏库据此分清 0.5 老款与还没收到 .s2arm 的新款：shell Catalogue.swift）
         else { char tp[2100], pp[2100]; snprintf(tp, sizeof tp, "%s/.transfer", root); unlink(tp); snprintf(pp, sizeof pp, "%s/.partial", root); unlink(pp); } }   // 解开了：这次推送的传输清单（tools/push_pack.py 写）用完，游戏库不再按它画进度；齐了就撤掉部分可玩标记
     time_t now = time(NULL); char ts[32]; strftime(ts, sizeof ts, "%m-%d %H:%M:%S", localtime(&now));
     FILE *lf = fopen(logp, "a"); int lerr = lf ? 0 : errno;

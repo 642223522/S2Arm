@@ -282,6 +282,7 @@ int main(void) {
     struct stat st; snprintf(d, sizeof d, "%s/docs/资源包/空.txt", T); CHECK(!stat(d, &st) && st.st_size == 0, "空文件没解出来");
     snprintf(d, sizeof d, "%s/docs/资源包/.incoming/1_000.tar", T); CHECK(stat(d, &st) != 0, "解完的 tar 没删");
     snprintf(c, sizeof c, "grep -qx deadbeef01 %s/docs/资源包/.applied", T); CHECK(sh(c) == 0, ".applied 不对");
+    snprintf(c, sizeof c, "grep -qx deadbeef01 %s/docs/资源包/.applied_by_shell", T); CHECK(sh(c) == 0, ".applied_by_shell（0.6 起解开的来源标记，游戏库据此不当 0.5 老款）没写或不对");
     // 4 个文件 = 文件.bin、a.txt、exefs/main.npdm（1_000.tar）+ 空.txt（1_001.tar）；目录不计
     snprintf(c, sizeof c, "grep -q '解开 2 个包 4 个文件' %s/docs/unpack.log && ! grep -q '返回 -' %s/docs/unpack.log", T, T); CHECK(sh(c) == 0, "unpack.log 行不对");
     snprintf(c, sizeof c, "test $(grep -c '进度：解开 1_00' %s/docs/unpack.log) = 2 && grep -q '清掉不在 index.tsv 里的旧文件 1 个' %s/docs/unpack.log", T, T); CHECK(sh(c) == 0, "进度行（每个 tar 一行）或清旧文件行不对");

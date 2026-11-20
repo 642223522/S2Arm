@@ -23081,86 +23081,6 @@
         }
       }
     },
-    "Update once on your computer": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Update once on your computer"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Actualízalo una vez en tu ordenador"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "À mettre à jour une fois sur l'ordinateur"
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "パソコンで一度更新"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "在电脑上更新一次"
-          }
-        },
-        "zh-Hant": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "在電腦上更新一次"
-          }
-        }
-      }
-    },
-    "This game was installed with an older S2Arm. Its saves and game data are still on this iPhone. In S2Arm on your computer, update your older games once (they're listed right after you update S2Arm, and in the iPhone console) and it's ready to play.": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "This game was installed with an older S2Arm. Its saves and game data are still on this iPhone. In S2Arm on your computer, update your older games once (they're listed right after you update S2Arm, and in the iPhone console) and it's ready to play."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Este juego se instaló con una versión anterior de S2Arm. Sus partidas guardadas y datos siguen en este iPhone. En S2Arm en tu ordenador, actualiza una vez tus juegos anteriores (aparecen justo después de actualizar S2Arm y en la consola del iPhone) y estará listo para jugar."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ce jeu a été installé avec une ancienne version de S2Arm. Ses sauvegardes et ses données sont toujours sur cet iPhone. Dans S2Arm sur l'ordinateur, mettez à jour une fois vos anciens jeux (ils sont listés juste après la mise à jour de S2Arm, et dans la console iPhone) et il sera prêt à jouer."
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "このゲームは旧バージョンの S2Arm でインストールされました。ゲームデータとセーブデータはこの iPhone に残っています。パソコンの S2Arm で旧ゲームを一度更新すれば遊べます（S2Arm を更新した直後の画面と iPhone コンソールに一覧が出ます）。"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "这款是用旧版 S2Arm 装的，游戏资源和存档都还在这台 iPhone 上。在电脑上的 S2Arm 里把旧游戏更新一次就能玩（更新 S2Arm 后同一页会列出来，iPhone 总控台里也能点）。"
-          }
-        },
-        "zh-Hant": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "這款是用舊版 S2Arm 裝的，遊戲資源和存檔都還在這台 iPhone 上。在電腦上的 S2Arm 裡把舊遊戲更新一次就能玩（更新 S2Arm 後同一頁會列出來，iPhone 總控台裡也能點）。"
-          }
-        }
-      }
-    },
     "Signing certificate": {
       "localizations": {
         "en": {
@@ -23757,6 +23677,246 @@
           "stringUnit": {
             "state": "translated",
             "value": "取得憑證"
+          }
+        }
+      }
+    },
+    "Needs its .s2arm once": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Needs its .s2arm once"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Necesita su .s2arm una vez"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Son .s2arm à importer une fois"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": ".s2arm の読み込みが一度必要"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要导入一次 .s2arm"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要匯入一次 .s2arm"
+          }
+        }
+      }
+    },
+    "This game was installed with an older S2Arm. Its saves and game data are still on this iPhone; it only needs its program once. Import this game's .s2arm file here (exported from S2Arm on a computer, or shared by a friend), or update your older games once in S2Arm on your computer.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This game was installed with an older S2Arm. Its saves and game data are still on this iPhone; it only needs its program once. Import this game's .s2arm file here (exported from S2Arm on a computer, or shared by a friend), or update your older games once in S2Arm on your computer."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Este juego se instaló con una versión anterior de S2Arm. Sus partidas y datos siguen en este iPhone; solo necesita su programa una vez. Importa aquí el archivo .s2arm del juego (exportado desde S2Arm en un ordenador o compartido por un amigo), o actualiza tus juegos antiguos una vez en S2Arm en tu ordenador."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ce jeu a été installé avec une version précédente de S2Arm. Ses sauvegardes et ses données sont toujours sur cet iPhone ; il ne lui manque que son programme, une seule fois. Importez ici le fichier .s2arm du jeu (exporté depuis S2Arm sur un ordinateur ou partagé par un ami), ou mettez à jour vos anciens jeux une fois dans S2Arm sur votre ordinateur."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このゲームは以前の S2Arm でインストールされました。セーブとゲームデータはこの iPhone に残っていて、プログラムを一度入れるだけです。ここでこのゲームの .s2arm（パソコンの S2Arm で書き出したもの、または友だちから共有されたもの）を読み込むか、パソコンの S2Arm で古いゲームを一度更新してください。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这款是旧版 S2Arm 装的，存档和游戏数据都还在这台 iPhone 上，只差一次程序。在这里导入这款的 .s2arm（电脑上的 S2Arm 导出的，或朋友分享的）；也可以在电脑上的 S2Arm 里把旧游戏更新一次。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "這款是舊版 S2Arm 安裝的，存檔和遊戲資料都還在這台 iPhone 上，只差一次程式。在這裡匯入這款的 .s2arm（電腦上的 S2Arm 匯出的，或朋友分享的）；也可以在電腦上的 S2Arm 裡把舊遊戲更新一次。"
+          }
+        }
+      }
+    },
+    "Needs its .s2arm file": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Needs its .s2arm file"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Falta su archivo .s2arm"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Il manque son fichier .s2arm"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": ".s2arm ファイルが足りません"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "还缺这款的 .s2arm"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "還缺這款的 .s2arm"
+          }
+        }
+      }
+    },
+    "This game's data is on this iPhone, but its program, the game's .s2arm file, isn't yet. Import the .s2arm here, or put it in the Import Here folder in Files. If your computer is sending it, it arrives on its own.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This game's data is on this iPhone, but its program, the game's .s2arm file, isn't yet. Import the .s2arm here, or put it in the Import Here folder in Files. If your computer is sending it, it arrives on its own."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Los datos de este juego ya están en este iPhone, pero falta su programa, el archivo .s2arm del juego. Importa el .s2arm aquí o ponlo en la carpeta Import Here de Archivos. Si lo está enviando tu ordenador, llegará solo."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Les données de ce jeu sont sur cet iPhone, mais pas encore son programme, le fichier .s2arm du jeu. Importez le .s2arm ici ou placez-le dans le dossier Import Here de Fichiers. Si votre ordinateur est en train de l’envoyer, il arrivera tout seul."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このゲームのデータはこの iPhone にありますが、プログラム（ゲームの .s2arm ファイル）がまだありません。ここで .s2arm を読み込むか、「ファイル」の Import Here フォルダに入れてください。パソコンから送信中なら、そのまま届きます。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这款的游戏数据已经在这台 iPhone 上，还缺它的程序，也就是这款的 .s2arm 文件。在这里导入 .s2arm，或者放进「文件」里的「放这里导入」；如果是电脑正在推送，等它自己到就行。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "這款的遊戲資料已經在這台 iPhone 上，還缺它的程式，也就是這款的 .s2arm 檔案。在這裡匯入 .s2arm，或放進「檔案」裡的「放這裡匯入」；如果是電腦正在推送，等它自己到就行。"
+          }
+        }
+      }
+    },
+    "Import .s2arm…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Import .s2arm…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Importar .s2arm…"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Importer le .s2arm…"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": ".s2arm を読み込む…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导入 .s2arm…"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "匯入 .s2arm…"
+          }
+        }
+      }
+    },
+    "Import": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Import"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Importar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Importer"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "読み込む"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导入"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "匯入"
           }
         }
       }

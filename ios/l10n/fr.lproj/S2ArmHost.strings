@@ -621,6 +621,8 @@
 "cert.teamMismatch" = "Remarque : ce certificat appartient à l’équipe %1$@, mais ce S2Arm a été installé par l’équipe %2$@ : les jeux signés avec lui ne s’ouvriront pas. Il a été conservé et le certificat que vous aviez fonctionne toujours. Exportez le certificat depuis l’app qui a installé S2Arm (AltStore ou SideStore), puis importez-le.";
 "cert.sidestore.missing" = "Impossible d’ouvrir SideStore : il n’est pas sur cet iPhone, ou sa version est trop ancienne.";
 "cert.sidestore.empty" = "SideStore n’a renvoyé aucun certificat. Touchez « Export » dans SideStore et réessayez.";
+"cert.sidestore.noReply" = "SideStore n’a renvoyé aucun certificat. Vous avez peut-être touché Annuler, ou cette version de SideStore est trop ancienne pour partager son certificat avec d’autres apps. Mettez SideStore à jour et réessayez, ou exportez le certificat en fichier .p12 et importez-le.";
+"cert.pickP12" = "Importer un .p12…";
 "cert.status" = "Équipe %1$@ · %2$@";
 "cert.status.otherTeam" = "autre identifiant Apple que S2Arm";
 "cert.status.replaced" = "n’est plus valide";

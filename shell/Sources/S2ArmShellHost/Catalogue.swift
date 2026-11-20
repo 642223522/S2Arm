@@ -82,8 +82,10 @@ public struct Catalogue: Equatable, Sendable {
                 if legacy, !tiles.contains(where: { $0.id == id }),
                    FileManager.default.fileExists(atPath: root.appendingPathComponent(id).appendingPathComponent("资源包").path, isDirectory: &isDir), isDir.boolValue {
                     let pack = root.appendingPathComponent(id).appendingPathComponent("资源包")
-                    tiles.append(GameTile(id: id, title: Catalogue.nacpTitle(pack.appendingPathComponent("ctl/control.nacp")) ?? id, state: .needsLegacyUpdate))
-                    problems.append("程序包清单 \(id) 不在、只有资源包（0.5.x 老款），列为「在电脑上更新」")
+                    let old = Catalogue.legacyPack(pack)
+                    tiles.append(GameTile(id: id, title: Catalogue.nacpTitle(pack.appendingPathComponent("ctl/control.nacp")) ?? id, state: old ? .needsLegacyUpdate : .needsProgram))
+                    problems.append(old ? "程序包清单 \(id) 不在、资源包是 0.5.x 解开的（老款），列为「导入 .s2arm / 电脑上更新一次」"
+                                        : "程序包清单 \(id) 不在、资源包是这一版收的（玩家放的 .img 或电脑先推的资源），列为「还缺 .s2arm」")
                 }
                 continue
             }
@@ -94,6 +96,16 @@ public struct Catalogue: Equatable, Sendable {
             if let i = tiles.firstIndex(where: { $0.id == id }) { tiles[i] = t } else { tiles.append(t) }
             if let b = e.banner, !b.isEmpty { bannerURLs[id] = b.hasPrefix("/") ? URL(fileURLWithPath: b) : base.appendingPathComponent(b) }
         }
+    }
+
+    /// 0.5.x 老款按来源标记认，不按目录形态（有资源包、没程序清单）：0.6 起解开的资源包同写 .applied_by_shell（runtime/src/pack_apply.c），
+    /// 玩家放进「放这里导入」认领的 game.img 写 .imported。两样都没有、又解开过（.applied）的才是 0.5 App 装的；只放了 .img、或电脑先推了资源、
+    /// 程序还没到的，是这一版的款、还缺这款的 .s2arm
+    static func legacyPack(_ pack: URL) -> Bool {
+        let fm = FileManager.default
+        return fm.fileExists(atPath: pack.appendingPathComponent(".applied").path)
+            && !fm.fileExists(atPath: pack.appendingPathComponent(".applied_by_shell").path)
+            && !fm.fileExists(atPath: pack.appendingPathComponent(".imported").path)
     }
 
     /// control.nacp 的标题：16 组语言，每组 0x300 字节、前 0x200 是 UTF-8 名字（同 pack/ns2_dump.py nacp_title）。简中（14）优先，没有取美式英语（0）

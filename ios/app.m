@@ -1398,6 +1398,26 @@ static void s2arm_open(NSURL *url) {
         });
     });
 }
+// 库卡片「导入 .s2arm…」（0.6.0 自签走查第 9、10 条：只放了 .img 的款、0.5 老款，在手机上就能补程序，不只给电脑路线）：
+//   文件选择器任何文件都能选（分享来的 .s2arm 扩展名可能被改），选好交 s2arm_open 导入；选的是别的款照样导（日志记一行）
+#if !TARGET_OS_TV
+@interface S2AS2armPicker : NSObject <UIDocumentPickerDelegate> @property (copy) NSString *gid; @end
+@implementation S2AS2armPicker
+- (void)documentPicker:(UIDocumentPickerViewController *)c didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+    (void)c; NSURL *u = urls.firstObject; if (!u) return;
+    LOG("游戏库：%s 的「导入 .s2arm…」选了 %s", self.gid.UTF8String, u.lastPathComponent.UTF8String);
+    s2arm_open(u);
+}
+@end
+void s2a_shell_pick_s2arm(const char *gid) {   // 主线程（s2a_shell.h）
+    static S2AS2armPicker *delegate; if (!delegate) delegate = [S2AS2armPicker new];
+    delegate.gid = gid ? @(gid) : @"";
+    UIDocumentPickerViewController *p = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeData] asCopy:YES];
+    p.delegate = delegate; UIViewController *top = lib_top();
+    if (!top) { LOG("【红】游戏库：没有窗口，.s2arm 选择器开不出来"); return; }
+    [top presentViewController:p animated:YES completion:nil];
+}
+#endif
 static void widget_open(NSURL *url, void *ctx) {
     if (url.isFileURL && [url.pathExtension.lowercaseString isEqualToString:@"s2arm"]) { s2arm_open(url); return; }
     if (!url || ![url.scheme isEqualToString:@"s2arm"] || ![url.host isEqualToString:@"play"]) return;
