@@ -36,6 +36,7 @@ int nvn_dirty_log_configure(int enabled) { if (enabled) log_attempts++; return 0
 int nvn_plat_flag(const char *name, int dflt) { return !strcmp(name, "nvk_buf_dirtylog") ? (log_flag < 0 ? dflt : log_flag) : dflt; }   // log_flag -1 = 没设，取缺省
 double s2a_direct_vk_display_refresh(void) { return 60; }
 void nvn_unimpl_reset(void) {}
+void nvn_vk_frame_log_dump(void) {}   // nvk_session.c 弱引用：本夹具调用 nvk_session_close，-dead_strip 不再裁掉它，macOS ld64 不收未定义弱引用；本用例不看帧日志
 size_t nvn_unimpl_dump(char *b, size_t n) { if (n) *b=0; return 0; }
 int nvn_unimpl_kinds(void) { return 0; }
 void rp_present_set_surface(nvn_gpu_surface s, int hz) { (void)s; (void)hz; }
