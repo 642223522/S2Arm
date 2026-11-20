@@ -117,7 +117,7 @@ pairs=(
 for p in "${pairs[@]}"; do
     f=${p%%|*}; pat=${p#*|}
     if ! grep -qF "$pat" "$f"; then
-        echo "【红】feedback 读数没有按档分开：$(basename "$f") 缺「$pat」" >&2; failed=1
+        echo "【红】feedback 读数没有按档分开：$(basename "$f") 缺「${pat}」" >&2; failed=1
     fi
 done
 # Negative control disables the whole snapshot path (copy + barriers + descriptor
