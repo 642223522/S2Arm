@@ -488,6 +488,9 @@
   "console.section.phone": "iPhone et app",
   "console.section.sync": "Synchro des jeux",
   "console.section.help": "Aide",
+  "console.section.apps": "Apps autonomes",
+  "console.app.outdated": "Nouvelle version · cliquez sur « Mettre à jour S2Arm sur l'iPhone » pour re-signer",
+  "console.game.standalone": "Installé comme app autonome (voir ci-dessus)",
   "console.button.install": "Installer S2Arm",
   "console.button.update": "Mettre à jour S2Arm",
   "console.button.renew": "Renouveler S2Arm",
@@ -4232,6 +4235,9 @@
   "「{0}」的独立 App 这次没更新：{1}": "L’app autonome de « {0} » n’a pas été mise à jour cette fois : {1}",
   "现在用的证书是分发（发布）证书，缺「调试权限（get-task-allow）」：通用 S2Arm 里的游戏用它签了打不开。在设置里把出法改成「独立 App」（一个 App 一款游戏）就能玩；或改用 Apple ID 登录签名、换成开发证书。": "Le certificat utilisé est un certificat de distribution (publication) sans le droit de débogage (get-task-allow) : les jeux du S2Arm universel signé avec lui ne s’ouvriront pas. Passez le mode d’installation à « app autonome » (une app par jeu) dans les réglages pour jouer, ou signez avec l’identifiant Apple ou un certificat de développement.",
   "你的描述文件是显式 App ID，只有一个包名：每款独立 App 和通用 S2Arm 都只能装成它，装一个会顶掉另一个（存档跟着那个 App 走）。想同时装多款，请让证书发放人给通配（*）的描述文件。": "Votre profil utilise un App ID explicite avec un seul identifiant de bundle : chaque app autonome et le S2Arm universel ne peuvent s’installer que sous celui-ci, et en installer un remplace l’autre (les sauvegardes restent dans cette app). Pour installer plusieurs jeux côte à côte, demandez à la personne qui vous a fourni le certificat un profil générique (*).",
-  "免费 Apple ID 有苹果的限制：同时最多装 3 个自己签的 App（AltStore / SideStore 也算），每 7 天最多注册 10 个 App ID；独立 App 每款占一个。装满了就在 iPhone 上删掉不玩的那个再装。": "Un identifiant Apple gratuit a les limites d’Apple : au plus 3 apps auto-signées installées à la fois (AltStore / SideStore comptent aussi) et au plus 10 App ID enregistrés tous les 7 jours. Chaque app autonome en utilise un. Si vous atteignez la limite, supprimez de l’iPhone une app que vous n’utilisez plus, puis réinstallez."
+  "免费 Apple ID 有苹果的限制：同时最多装 3 个自己签的 App（AltStore / SideStore 也算），每 7 天最多注册 10 个 App ID；独立 App 每款占一个。装满了就在 iPhone 上删掉不玩的那个再装。": "Un identifiant Apple gratuit a les limites d’Apple : au plus 3 apps auto-signées installées à la fois (AltStore / SideStore comptent aussi) et au plus 10 App ID enregistrés tous les 7 jours. Chaque app autonome en utilise un. Si vous atteignez la limite, supprimez de l’iPhone une app que vous n’utilisez plus, puis réinstallez.",
+  "先在 iPhone 上退出这款游戏，再删。": "Quittez d'abord ce jeu sur l'iPhone, puis supprimez-le.",
+  "没能从 iPhone 上卸掉这款的独立 App：确认 iPhone 连着、已解锁，再试一次。": "Impossible de supprimer l'app autonome de ce jeu de l'iPhone. Vérifiez que l'iPhone est connecté et déverrouillé, puis réessayez.",
+  "从 iPhone 上卸掉这款的独立 App": "Suppression de l'app autonome de ce jeu de l'iPhone"
  }
 }

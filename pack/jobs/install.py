@@ -3262,21 +3262,30 @@ def push_selected(c):
     state_path = c.private / PUSH_SELECTED
     with packer_phone_lock(c):
         c.begin("找签名账号与 iPhone", 1, 1)
-        ph = push_phone(c)   # 别的工具装的 S2Arm 推进它自己的包名（结构 4）
+        old = (read(state_path, {}) or {}) if c.r.get("resume") is True else {}
         if c.r.get("resume") is True:
-            old = read(state_path, {}) or {}
-            games = [g for g in old.get("games") or [] if g not in (old.get("done") or [])] if old.get("device") == ph.key else []
+            games = [g for g in old.get("games") or [] if g not in (old.get("done") or [])]
         else:
             games = list(dict.fromkeys(str(g).upper() for g in c.r.get("gameIds") or []))
+        # 所选全是独立 App（0.6.3 起）：只要签名用的手机，不找通用壳——手机上装着几个 S2Arm、没选用哪个，也不挡独立 App；
+        #   有推进通用壳的款才取 push_phone（别的工具装的 S2Arm 推进它自己的包名，结构 4）
+        alone = bool(games) and all(chosen_layout(c, g) == "standalone" for g in games)
+        ph = phone_for(c) if alone else push_phone(c)
+        if c.r.get("resume") is True and old.get("device") != ph.key:
+            games = []
         state = dict(device=ph.key, games=games, done=[], failed={})
         atomic(state_path, state)
-        rows = []
+        rows, signer = [], ph if alone else None   # signer：独立 App 要签名的手机对象（用到才取；别的工具装的 S2Arm 那台 push_phone 不签名）
         for i, g in enumerate(games, 1):
             c.check()
             c.begin("按顺序把所选游戏推到 iPhone", i, len(games), key="pushSelected")
             c.emit("progress", "", done=i - 1, total=len(games), current=g)   # 前端按 current（游戏号）标正在推的那一行（gameId 是作业自带的键）
             try:
-                push_game(c, g, ph, steps=False)
+                if chosen_layout(c, g) == "standalone":   # 这款选的是独立 App（0.6.3 起）：重组重签它自己的 App，不推进通用壳
+                    signer = signer or phone_for(c)
+                    put_app(c, g, signer, steps=False)
+                else:
+                    push_game(c, g, ph, steps=False)
                 state["done"].append(g); state["failed"].pop(g, None)
                 rows.append(dict(gameId=g, ok=True))
             except Cancelled:
@@ -3442,6 +3451,29 @@ def playing_by_heartbeat(client, games, work, now=None):
     return False if got_any or not games else None
 
 
+def _remove_app(c, ph, gid, app):
+    """从手机删一款独立 App（一 App 一游戏）：备份本款存档 → 卸掉这个 App（连它的容器：里面只有这一款）→ 设备记录 apps 去掉这款。
+    通用壳与别的款不碰。手机上这个 App 明确在运行就停下；判不清照常删。手机上已经没有这个 App 也算删好（只对齐记录）"""
+    ap = app_phone(ph, app["bundleId"])
+    try:
+        running = ap.playing([gid]) if hasattr(ap, "playing") else ap.app_running()
+    except Exception:   # noqa: BLE001 —— 判不清照常删
+        running = None
+    if running is True:
+        raise Failure("先在 iPhone 上退出这款游戏，再删。", code="phone_app_running")
+    c.begin("备份这款的存档", 2, 3)
+    backup = ap.backup(gid)
+    c.begin("从 iPhone 上卸掉这款的独立 App", 3, 3)
+    with tempfile.TemporaryDirectory(dir=c.private) as w:
+        rc, out = ap.client(w).call("uninstall", "-")
+    if rc and "ApplicationLookupFailed" not in out and "not installed" not in out.lower():
+        raise Failure("没能从 iPhone 上卸掉这款的独立 App：确认 iPhone 连着、已解锁，再试一次。", code="container_purge_failed", internal=out[-300:])
+    rec = layout.load_device(c, ph.key)
+    layout.save_device(c, ph.key, dict(rec, apps={g: v for g, v in (rec.get("apps") or {}).items() if g != gid}))
+    return dict(games=sorted(rec.get("games") or {}), bundleId=app["bundleId"], removed=gid, saveBackup=str(backup) if backup else "", dataRemoved=True,
+                standalone=True, **ph.info)
+
+
 def phone_kept_pull(c):
     """「手机插着、启动器开着」时启动器隔一阵调一次（phoneKeptPull 作业）：连着的那台手机上，宿主留下的 NRO（#8be819）拉回游戏库。
     → {device, new: 新收的个数, kept: 还没补推进 iPhone 的款, pushed: 这一轮补推了的款, shellUpdate: 壳比本版旧, stale: 新壳认不得、更新后要再推的款,
@@ -3585,6 +3617,9 @@ def _kept_pull_on(c, ph):
         if not free:
             return _kept_pull_none()
         new = ph.pull_kept(games)
+        apps = {g: v["bundleId"] for g, v in (rec.get("apps") or {}).items() if isinstance(v, dict) and v.get("bundleId")}
+        for g, bid in sorted(apps.items()):   # 独立 App 里留下的 NRO 也收回（按它自己的包名）
+            new += app_phone(ph, bid).pull_kept([g])
         pull_shader_counts(c, ph, games)   # 顺手拉回着色器现场翻译计数（给「建议重新出包」角标）
     import rewrite_refresh
     kept = [g for g in games if rewrite_refresh.kept_todo(c, g, layout.ios_kit(c, g))]   # 没补进的款（手动按钮兜底同 phone_updates）
@@ -3609,6 +3644,23 @@ def _kept_pull_on(c, ph):
             except Failure as e:
                 trace(c, f"{g} 收回的 NRO 没补推进 iPhone（下一轮再试）：{e.code} {str(e)[:160]}")  # 非玩家句
         kept = [g for g in kept if g not in pushed]
+    # 独立 App：程序在 App 包里，补进收回的 NRO = 重组重签这个 App（put_app）；这个 App 没在跑才做，正在玩就等下一轮
+    for g, bid in sorted(apps.items()):
+        if not rewrite_refresh.kept_todo(c, g, layout.ios_kit(c, g)):
+            continue
+        ap = app_phone(ph, bid)
+        busy = ap.app_running()
+        if busy is None and hasattr(ap, "playing"):
+            busy = ap.playing([g])
+        if busy is not False:
+            kept.append(g)
+            continue
+        try:
+            put_app(c, g, ph, steps=False)
+            pushed.append(g)
+        except Failure as e:
+            kept.append(g)
+            trace(c, f"{g} 收回的 NRO 没补进独立 App（下一轮再试）：{e.code} {str(e)[:160]}")  # 非玩家句
     return dict(device=ph.key, new=new, kept=kept, pushed=pushed, shellUpdate=shell_update, stale=stale, running=running)
 
 
@@ -3745,6 +3797,9 @@ def _remove_from_phone(c):
     if not ph.bid:
         raise Failure("定不出手机上 S2Arm 的包名（这台电脑没装过、也读不到当前签名账号）：先在这台电脑上「安装 S2Arm」一次再删。", code="job_failed")
     # 真相在手机上（预检清单 #35）：玩家在手机上删了整个 S2Arm（on_phone 为 None）或手机上本来就没有这款 → 不用删，只把设备记录对齐
+    app = (rec.get("apps") or {}).get(gid)
+    if isinstance(app, dict) and app.get("bundleId") and chosen_layout(c, gid) == "standalone":
+        return _remove_app(c, ph, gid, app)
     on_phone = phone_games(c, ph)
     if on_phone is None or gid not in on_phone:
         note(c, f"手机上的 S2Arm 里本来就没有 {gid}，不用删" if on_phone is not None else f"手机上没装这个 S2Arm，{gid} 不在手机上，不用删")

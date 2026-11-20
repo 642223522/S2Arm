@@ -309,6 +309,87 @@ class AppsOnlyPhone(unittest.TestCase):
         # 甲：到期 865000、此刻 303400 → 6.5 天 → 7；乙：免费按 7 天估 2000 + 604800 = 606800 → 3.51 天 → 4
 
 
+class ConsoleActionsPerLayout(unittest.TestCase):
+    """总控台三处按出法分开（0.6.4）：更新所选里选了独立 App 的款重签它自己的 App、其余推进通用壳；从手机删一款独立 App = 备份存档后卸掉这个 App；
+    phoneKeptPull 也收独立 App 里留下的 NRO，没在跑就重签补上（在跑等下一轮）。期望手写：甲 = 独立 App（包名 APP1）、乙 = 通用壳"""
+    def setUp(self):
+        self.t = Path(tempfile.mkdtemp()); self.addCleanup(shutil.rmtree, self.t, True)
+        self.c = ctx(self.t)
+        self.c.catalog = lambda: {"games": [{"id": G1, "name": "甲"}, {"id": G2, "name": "乙"}]}
+        layout.save_device(self.c, "UDID1", dict(shellId="SID2", bundleId=SHELL_BID, games={G2: dict(pack="pb")}, apps={G1: dict(bundleId=APP1, shellId="SID2")}))
+        self.c.r = dict(layout="standalone", gameId=G1); install.layout_set(self.c); self.c.r = {}
+        self.log = []
+        log = self.log
+        class Cl:
+            def __init__(self, bid): self.bid = bid
+            def call(self, *a): log.append(("call", self.bid, a)); return 0, "uninstall 完成"
+        class Ph:
+            key = udid = "UDID1"
+            bid = SHELL_BID
+            info = dict(device="d")
+            def app_running(self): return self.running.get(self.bid, False)
+            def backup(self, g): log.append(("backup", self.bid, g)); return None
+            def pull_kept(self, games): log.append(("pull", self.bid, list(games))); return 1
+            def client(self, w): return Cl(self.bid)
+        self.ph = Ph(); self.ph.running = {}
+
+    def test_push_selected_routes_by_layout(self):
+        import ipa as packer
+        self.c.r = dict(gameIds=[G1, G2])
+        with patch.object(install, "push_phone", lambda c: self.ph), patch.object(install, "phone_for", lambda c: self.ph), \
+                patch.object(install, "put_app", lambda c, g, ph, steps=True: self.log.append(("put_app", g))), \
+                patch.object(install, "push_game", lambda c, g, ph, steps=True: self.log.append(("push_game", g))), \
+                patch.object(packer, "phone_lock", lambda c: contextlib.nullcontext()), patch("core.preempt_jobs", lambda *a, **k: None):
+            out = install.push_selected(self.c)
+        self.assertEqual(self.log, [("put_app", G1), ("push_game", G2)])
+        self.assertEqual(out["done"], 2)
+
+    def test_push_selected_only_standalone_skips_shell_owner(self):
+        # 所选全是独立 App：不找通用壳（手机上装着几个 S2Arm、没选用哪个也不挡）——Duo 真机抓到的：原先开头 push_phone 就报「先选用哪一个」
+        import ipa as packer
+        self.c.r = dict(gameIds=[G1])
+        def owner(c): raise Failure("这台 iPhone 上装着不止一个 S2Arm", code="phone_app_choice_required")
+        with patch.object(install, "push_phone", owner), patch.object(install, "phone_for", lambda c: self.ph), \
+                patch.object(install, "put_app", lambda c, g, ph, steps=True: self.log.append(("put_app", g, ph is self.ph))), \
+                patch.object(packer, "phone_lock", lambda c: contextlib.nullcontext()), patch("core.preempt_jobs", lambda *a, **k: None):
+            out = install.push_selected(self.c)
+        self.assertEqual((self.log, out["done"]), ([("put_app", G1, True)], 1))
+
+    def test_remove_standalone_uninstalls_that_app(self):
+        import ipa as packer
+        self.c.r = dict(gameId=G1)
+        with patch.object(install, "phone_for", lambda c: self.ph), patch.object(install, "phone_bid", lambda ph: SHELL_BID), \
+                patch.object(install, "phone_games", lambda c, ph: self.fail("独立 App 不查通用壳里的款")), \
+                patch.object(packer, "phone_lock", lambda c: contextlib.nullcontext()), patch("core.preempt_jobs", lambda *a, **k: None):
+            out = install.remove_from_phone(self.c)
+        self.assertEqual(self.log, [("backup", APP1, G1), ("call", APP1, ("uninstall", "-"))], "按独立 App 的包名备份、卸掉")
+        rec = layout.load_device(self.c, "UDID1")
+        self.assertEqual((rec["apps"], rec["games"], rec["bundleId"]), ({}, {G2: dict(pack="pb")}, SHELL_BID), "通用壳与乙不碰")
+        self.assertEqual((out["removed"], out["bundleId"], out["standalone"]), (G1, APP1, True))
+        self.ph.running = {APP1: True}
+        layout.save_device(self.c, "UDID1", dict(rec, apps={G1: dict(bundleId=APP1)}))
+        with patch.object(install, "phone_for", lambda c: self.ph), patch.object(install, "phone_bid", lambda ph: SHELL_BID), \
+                patch.object(packer, "phone_lock", lambda c: contextlib.nullcontext()), patch("core.preempt_jobs", lambda *a, **k: None):
+            with self.assertRaises(Failure) as e:
+                install.remove_from_phone(self.c)
+        self.assertEqual(e.exception.code, "phone_app_running")
+
+    def test_kept_pull_covers_apps(self):
+        import ipa as packer
+        import rewrite_refresh
+        with patch.object(rewrite_refresh, "kept_todo", lambda c, g, kit: g == G1), patch.object(layout, "ios_kit", lambda c, g: "/kit"), \
+                patch.object(install, "pull_shader_counts", lambda *a: None), patch.object(packer, "current_shell_id", lambda c: "SID2"), \
+                patch.object(install, "put_app", lambda c, g, ph, steps=True: self.log.append(("put_app", g))), \
+                patch.object(self.c, "idle", lambda k: contextlib.nullcontext(True), create=True):
+            out = install._kept_pull_on(self.c, self.ph)
+            self.assertEqual(self.log[:2], [("pull", SHELL_BID, [G2]), ("pull", APP1, [G1])], "通用壳与独立 App 各按自己的包名收")
+            self.assertEqual((out["new"], out["pushed"], out["kept"]), (2, [G1], []), "独立 App 没在跑：重签补上")
+            self.log.clear(); self.ph.running = {APP1: True}
+            out = install._kept_pull_on(self.c, self.ph)
+        self.assertEqual((out["pushed"], out["kept"]), ([], [G1]), "在跑：等下一轮")
+        self.assertNotIn(("put_app", G1), self.log)
+
+
 class SavesPerApp(unittest.TestCase):
     def setUp(self):
         self.t = Path(tempfile.mkdtemp()); self.addCleanup(shutil.rmtree, self.t, True)

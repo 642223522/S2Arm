@@ -11,6 +11,11 @@
 // 地址窗口占到、只是内存上限不够（没签权限）→ 让玩家自己选：先试着玩，或重装补权限（v0.3.1 装机原则：认得出的风险让玩家确认，不替他拒）
 #define S2A_SELFCHECK_MEM_BODY     "这次安装没带上「提高内存上限」权限，系统给 S2Arm 的内存偏少。可以先点「仍要启动」试着玩，大游戏可能玩到一半被系统结束；想彻底解决，请用 电脑上的 S2Arm 点游戏库第一格「S2Arm」里的「续签 S2Arm」重新装一次，会自动带上它。"
 #define S2A_SELFCHECK_MEM_BODY_EN  "This install is missing the \"Increased Memory Limit\" permission, so iOS gives S2Arm less memory. You can tap \"Start Anyway\" to try it; large games may be closed by iOS mid-play. To fix it for good, click \"Renew S2Arm\" on the S2Arm card first in the library in S2Arm on your computer; the permission will be included automatically."
+// 独立 App（一 App 一游戏，0.6.4）没签「提高内存上限」：没有「续签 S2Arm」那一格，出路是给这款的 App ID 开权限或改用 Apple ID 签名后重推这款
+#define S2A_SELFCHECK_ENT_BODY_APP    "这款游戏要用「提高内存上限」权限，这个 App 签名时没带上。请证书发放人在这款的 App ID 上开启它（通配 * 的描述文件开不了，要给这款单独建 App ID），或在 电脑上的 S2Arm 改用 Apple ID 签名，再对这款点「推到 iPhone」重新装一次。"
+#define S2A_SELFCHECK_ENT_BODY_APP_EN "This game needs the \"Increased Memory Limit\" permission, and this app was signed without it. Ask whoever issued your certificate to turn it on for this game's App ID (a wildcard * profile can't have it, so the game needs its own App ID), or switch to Apple ID signing in S2Arm on your computer, then click \"Push to iPhone\" for this game again."
+#define S2A_SELFCHECK_MEM_BODY_APP    "这次安装没带上「提高内存上限」权限，系统给这款游戏的内存偏少。可以先点「仍要启动」试着玩，大游戏可能玩到一半被系统结束；想彻底解决，请证书发放人在这款的 App ID 上开启它（通配 * 的描述文件开不了，要给这款单独建 App ID），或在 电脑上的 S2Arm 改用 Apple ID 签名，再对这款点「推到 iPhone」重新装一次。"
+#define S2A_SELFCHECK_MEM_BODY_APP_EN "This install is missing the \"Increased Memory Limit\" permission, so iOS gives this game less memory. You can tap \"Start Anyway\" to try it; large games may be closed by iOS mid-play. To fix it for good, ask whoever issued your certificate to turn it on for this game's App ID (a wildcard * profile can't have it, so the game needs its own App ID), or switch to Apple ID signing in S2Arm on your computer, then click \"Push to iPhone\" for this game again."
 #define S2A_SELFCHECK_GO           "仍要启动"
 #define S2A_SELFCHECK_GO_EN        "Start Anyway"
 // 读不到本款要多大地址（包不完整）→ 重装补资源

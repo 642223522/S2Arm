@@ -17,6 +17,11 @@ internal static class PhoneOverviewCases
         check(p.Probed && p.KnownOffline && !o.Phones[1].Probed, "console: online key present and null = probed and offline; absent = not probed");
         check(string.Join(",", p.Games.Select(g => g.GameId)) == "0100A,0100B" && p.Games[1].DataOnComputer == false, "console: ids upper-cased, unknown states dropped");
 
+        // 独立 App（0.6.4，作业 apps）：游戏号转大写、秒转时刻；缺游戏号的丢掉；旧作业层不带 = 空。期望手写
+        var sa = PhoneOverview.Parse(J("""{"phones":[{"device":"D1","apps":[{"gameId":"010026300ba4a000","bundleId":"io.s2arm.games.t.010026300ba4a000","shellCurrent":false,"signedAt":1000,"expiresAtEstimate":865000},{"bundleId":"x"}]},{"device":"D2"}]}"""))!;
+        check(sa.Phones[0].Apps is { Count: 1 } la && la[0] == new PhoneOverview.App("010026300BA4A000", "io.s2arm.games.t.010026300ba4a000", false,
+            DateTimeOffset.FromUnixTimeSeconds(1000), DateTimeOffset.FromUnixTimeSeconds(865000)) && (sa.Phones[1].Apps?.Count ?? 0) == 0, "console: standalone apps parsed");
+
         var now = DateTimeOffset.FromUnixTimeSeconds(2_000_000_000);
         PhoneOverview.Phone Ph(bool installed = true, bool current = true, double? expires = 6 * 86_400 - 60, bool probed = false, string? online = null,
             PhoneOverview.GameState[]? games = null, string device = "D1", DateTimeOffset? seen = null) =>
