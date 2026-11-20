@@ -886,8 +886,10 @@ static NSDictionary *slot_cfg(int slot) {
 }
 
 // 启动器原子写入的统一四键设置。主线程在合成锁内刷新，手柄回调在同一把锁内读取。
-// 所有非 Switch 手柄共用同一排列，不分玩家或品牌；Switch Pro / Joy-Con 保持原生布局。
+// 所有非 Switch 手柄共用同一排列，不分玩家或品牌；Switch Pro / Joy-Con 另存一份（文件里 nintendo 字段），
+//   没选过 = 原生布局（identity），玩家在启动器给它选了 Xbox 布局等才生效（与 iOS s2a_pad_abxy_order 同结果）。
 static int g_face_map = S2A_FACE_IDENTITY;
+static int g_face_map_nintendo = S2A_FACE_IDENTITY;
 static __weak S2AControllerFaceOverlay *g_face_overlay; // owned by the game's content view
 static s2a_face_overlay_hold g_face_overlay_hold;
 static uint64_t g_face_check_at;
@@ -903,7 +905,7 @@ static void pad_face_refresh(BOOL force) {
     BOOL exists = stat(path.fileSystemRepresentation, &info) == 0;
     if (!force && exists == g_face_had_file && (!exists || (info.st_mtimespec.tv_sec == g_face_stamp.tv_sec && info.st_mtimespec.tv_nsec == g_face_stamp.tv_nsec))) return;
     g_face_had_file = exists; if (exists) g_face_stamp = info.st_mtimespec;
-    g_face_map = S2A_FACE_IDENTITY;
+    g_face_map = S2A_FACE_IDENTITY; g_face_map_nintendo = S2A_FACE_IDENTITY;
     if (!exists) return;
     NSError *error = nil;
     NSData *data = [NSData dataWithContentsOfFile:path options:0 error:&error];
@@ -929,7 +931,12 @@ static void pad_face_refresh(BOOL force) {
     if (![value isKindOfClass:NSNumber.class] || [value doubleValue] != [value intValue] || !s2a_face_valid([value intValue])) {
         fprintf(stderr, "[s2a] 【红】手柄四键设置无效；本次按平台默认键位\n"); return;
     }
+    id nintendo = [json[@"schema"] isEqual:@2] ? json[@"nintendo"] : nil;
+    if (nintendo && (![nintendo isKindOfClass:NSNumber.class] || [nintendo doubleValue] != [nintendo intValue] || !s2a_face_valid([nintendo intValue]))) {
+        fprintf(stderr, "[s2a] 【红】Switch 手柄四键设置无效；本次按平台默认键位\n"); return;
+    }
     g_face_map = [value intValue];
+    if (nintendo) g_face_map_nintendo = [nintendo intValue];
 }
 static NSString *controller_face_family(GCController *controller) {
     if (!controller) return @"nintendo"; // 专用通道及 Switch HID 已按任天堂 A/B/X/Y 上报
@@ -942,7 +949,7 @@ static NSString *controller_face_family(GCController *controller) {
 }
 static int controller_face_map(GCController *controller) {
     NSString *family = controller_face_family(controller);
-    if ([family isEqualToString:@"nintendo"]) return S2A_FACE_IDENTITY;
+    if ([family isEqualToString:@"nintendo"]) return g_face_map_nintendo;
     return g_face_map;
 }
 static uint32_t controller_face_bits(GCController *controller) {

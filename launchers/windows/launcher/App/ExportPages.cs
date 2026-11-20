@@ -62,10 +62,8 @@ public sealed partial class EnvironmentWindow
         return true;
     }
 
-    private static string? InstallActionLabel(string action) => action switch
-    {
-        "openExport" => "nav.build", "openImpactor" => "action.open_impactor", "devCertSettings" => "install.mode.go_settings", _ => null,
-    };
+    /// <summary>按钮文案键只认共享体验表 install_landing.actions（结构 9：两端一处给出，不在这里另写一份）</summary>
+    private string? InstallActionLabel(string action) => text.InstallActionLabel(action);
 
     private const string PlatformIos = "ios";
     private const string PlatformTv = "tvos";

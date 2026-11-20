@@ -12,6 +12,7 @@
 #include "haptic_retry.h"
 #include "haptic_safe.h"
 #include "phone_axes.h"
+#include "motion_pick.h"
 int s2a_ios_ble_slot_rumble(int slot, const s2a_pad_vibration raw[2]);   // controller.m：玩家 2–4 是 NS2 Pro 时由它出
 int s2a_ios_ble_slot_motion(int slot, s2a_pad_motion *out);
 #include <math.h>
@@ -208,7 +209,9 @@ __attribute__((visibility("default"), used)) int s2a_pad_read_motion_slot(int sl
     if (slot < 0 || slot >= SLOT_PADS || !atomic_load(&g_active)) return 0;
     if (slot > 0 && s2a_ios_ble_slot_motion(slot, &out[0])) return 1;   // 这个槽是 NS2 Pro（controller.m，#1428）
     pthread_mutex_lock(&g_mu);
-    int known = g_motion_known[slot];
+    // 按新鲜样本算「有」（motion_pick.c s2a_motion_fresh）：手柄出过一帧就停、或给了体感对象却从不出样本，过了 500 ms 就当没有，
+    //   仲裁自动回到手机陀螺仪；旧帧不再喂给游戏
+    int known = s2a_motion_fresh(g_motion_known[slot], g_motion[slot].host_timestamp_us, up_ns() / 1000);
     if (known) out[0] = g_motion[slot];
     pthread_mutex_unlock(&g_mu);
     return known;
