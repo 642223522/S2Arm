@@ -497,6 +497,13 @@ extension GameState {
         case .needsAppUpdate: ShellStrings.text("App update needed")
         case .needsGameUpdate: ShellStrings.text("Update on your computer")
         case .needsLegacyUpdate: ShellStrings.text("Update once on your computer")
+        case .needsCertificate(let need):
+            switch need {
+            case .missing: ShellStrings.text("Needs a signing certificate")
+            case .otherTeam: ShellStrings.text("Certificate is from another Apple ID")
+            case .replaced: ShellStrings.text("Signing certificate has changed")
+            case .oldSignature: ShellStrings.text("Needs signing on this iPhone")
+            }
         case .broken(let reason, _, _): reason.isEmpty ? ShellStrings.text("Unavailable") : reason
         case .installing(let stage):
             switch stage.phase {
@@ -528,7 +535,7 @@ extension GameState {
     var color: Color {
         switch self {
         case .playable: ShellPalette.ready
-        case .needsGameData, .needsAppUpdate, .needsGameUpdate, .needsLegacyUpdate: ShellPalette.attention
+        case .needsGameData, .needsAppUpdate, .needsGameUpdate, .needsLegacyUpdate, .needsCertificate: ShellPalette.attention
         case .broken: ShellPalette.muted
         case .installing(let stage): stage.phase == .interrupted || stage.phase == .failed ? ShellPalette.attention : ShellPalette.muted
         }
@@ -540,6 +547,13 @@ extension GameState {
         case .needsAppUpdate: ShellStrings.text("Install a newer version of this app to play this game.")
         case .needsGameUpdate: ShellStrings.text("This game on your phone doesn't match S2Arm on this phone, so it can't open: it was built for another version, installed from another computer or Apple ID, or didn't finish installing. Connect your phone to your computer and click \"Push to iPhone\" for this game in S2Arm.")
         case .needsLegacyUpdate: ShellStrings.text("This game was installed with an older S2Arm. Its saves and game data are still on this iPhone. In S2Arm on your computer, update your older games once (they're listed right after you update S2Arm, and in the iPhone console) and it's ready to play.")
+        case .needsCertificate(let need):
+            switch need {
+            case .missing: ShellStrings.text("This iPhone signs this game before it opens, and it has no signing certificate yet. Export the certificate from the app you installed S2Arm with (AltStore or SideStore) and import it here. The game is ready as soon as it's in.")
+            case .otherTeam: ShellStrings.text("The signing certificate on this iPhone is from a different Apple ID than the one S2Arm was installed with, so games signed with it won't open. Import the certificate from the app you installed S2Arm with. The other certificate stays as it is.")
+            case .replaced: ShellStrings.text("The certificate S2Arm was installed with has been replaced or revoked, for example when another computer refreshed it, so the one on this iPhone no longer works. Export the current certificate from the app you installed S2Arm with and import it again.")
+            case .oldSignature: ShellStrings.text("This game was signed in a way this iPhone doesn't accept. Import your signing certificate and S2Arm signs it again on this iPhone when you play.")
+            }
         case .broken(_, let detail, _): detail
         case .installing(let stage):
             switch stage.phase {
@@ -556,6 +570,7 @@ extension GameState {
         case .playable: ShellStrings.text("Play")
         case .needsGameData: ShellStrings.text("Choose game data…")
         case .needsAppUpdate, .needsGameUpdate, .needsLegacyUpdate: ShellStrings.text("How to update")
+        case .needsCertificate: ShellStrings.text("Get certificate…")
         case .broken: ShellStrings.text("How to fix")
         case .installing(let stage):
             switch stage.phase {
@@ -570,6 +585,7 @@ extension GameState {
         case .playable: "play.fill"
         case .needsGameData: "folder"
         case .needsAppUpdate, .needsGameUpdate, .needsLegacyUpdate: "arrow.up.circle"
+        case .needsCertificate: "checkmark.seal"
         case .broken: "wrench.and.screwdriver"
         case .installing(let stage):
             switch stage.phase {
@@ -658,6 +674,7 @@ extension GameState {
         case .playable: ShellStrings.text("Play")
         case .needsGameData: ShellStrings.text("Choose")
         case .needsAppUpdate, .needsGameUpdate, .needsLegacyUpdate: ShellStrings.text("How to update")
+        case .needsCertificate: ShellStrings.text("Get certificate")
         case .broken: ShellStrings.text("How to fix")
         case .installing: actionTitle
         }

@@ -35,9 +35,11 @@ int s2a_shell_game_install_state(const char *game_id);
 // 这款程序是按别的宿主约定号出的（runtime s2a_launch_ctx_game_needs_update / 点开被拒 S2A_SELECT_NEEDS_UPDATE）→ 1：库卡片标「需要在电脑上更新」。
 //   实现在宿主 ios/app.m（每款读一次清单后缓存，点开被拒的也记上；库每秒重判只查缓存）；弱缺省 0
 int s2a_shell_game_needs_host_update(const char *game_id);
-// 这款程序包对不上本机这份 App（通用壳：签名 / 库校验不认、或程序库与清单 image_sha256 不符；点开被拒 S2A_SELECT_NEEDS_RESIGN）→ 1：库卡片标「需要在电脑上重装」。
-//   实现在宿主 ios/app.m（点开被拒时记下）；弱缺省 0
-int s2a_shell_game_needs_reinstall(const char *game_id);
+// 这款的签名状态（0.6.0：签名证书是游戏状态的一部分，库列出时就判，不等点开始；判据 ios/sign_state.m s2a_sign_state_at）：
+//   0 可玩 / 1 要手机签、手机上没有签名证书 / 2 手机上只有别的团队（Apple ID）的证书 / 3 装 App 用的证书已换或吊销 / 4 电脑签的签名本机不认、手机上没证书重签 /
+//   5 手机上有能用的证书、重签了仍被拒（只能电脑上对这款重装，库卡片「需要在电脑上更新」）。1–4 库卡片「需要签名证书」、主按钮 s2a_shell_cert_get。
+//   实现在宿主 ios/app.m（点开被拒的记下；证书导入后清掉、库重判）；弱缺省 0
+int s2a_shell_game_sign_state(const char *game_id);
 int s2a_shell_install_game(const char *game_id);
 int s2a_shell_install_progress(const char *game_id, int *done, int *total);
 // 库起解包被拒（s2a_shell_install_game 返回 0）时为什么：1 另一款正在解（同时只解一款）/ 2 正在整理游戏目录（首次清点容器、资源包挪位，ios/app.m img_scan_bg）/ 0 没有在等的事。
@@ -107,6 +109,8 @@ void s2a_shell_report_problem(void);
 const char *s2a_shell_cert_status(void);
 void s2a_shell_cert_p12(void);
 void s2a_shell_cert_sidestore(void);
+// 库卡片「需要签名证书」的主按钮：这台手机装了 SideStore 走 SideStore 取证书，否则开文件选择器选 .p12（宿主 ios/cert_import.m；弱缺省什么也不做）
+void s2a_shell_cert_get(void);
 /// Instant snapshot (0.6.0): 1 = the game has a complete snapshot to go back to (host ios/app.m; the shell's weak stub says 0).
 int s2a_shell_snapshot_available(const char *game_id);
 /// Starts the game back at its saved moment (asks first when the game saved after that moment). The shell's weak stub does nothing.

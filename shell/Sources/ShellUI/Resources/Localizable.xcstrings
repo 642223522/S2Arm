@@ -23472,6 +23472,406 @@
           }
         }
       }
+    },
+    "Needs a signing certificate": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Needs a signing certificate"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Necesita un certificado de firma"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Certificat de signature requis"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "署名証明書が必要"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要签名证书"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要簽名憑證"
+          }
+        }
+      }
+    },
+    "Certificate is from another Apple ID": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Certificate is from another Apple ID"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El certificado es de otro Apple ID"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Certificat d’un autre identifiant Apple"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "証明書が別の Apple ID のもの"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "证书和 S2Arm 不是同一个 Apple ID"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "憑證和 S2Arm 不是同一個 Apple ID"
+          }
+        }
+      }
+    },
+    "Signing certificate has changed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Signing certificate has changed"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El certificado de firma ha cambiado"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le certificat de signature a changé"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "署名証明書が変わりました"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "签名证书已更换"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "簽名憑證已更換"
+          }
+        }
+      }
+    },
+    "Needs signing on this iPhone": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Needs signing on this iPhone"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hay que firmarlo en este iPhone"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "À signer sur cet iPhone"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この iPhone での署名が必要"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要在手机上重新签名"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要在手機上重新簽名"
+          }
+        }
+      }
+    },
+    "This iPhone signs this game before it opens, and it has no signing certificate yet. Export the certificate from the app you installed S2Arm with (AltStore or SideStore) and import it here. The game is ready as soon as it's in.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This iPhone signs this game before it opens, and it has no signing certificate yet. Export the certificate from the app you installed S2Arm with (AltStore or SideStore) and import it here. The game is ready as soon as it's in."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Este iPhone firma el juego antes de abrirlo y todavía no tiene un certificado de firma. Exporta el certificado desde la app con la que instalaste S2Arm (AltStore o SideStore) e impórtalo aquí. El juego estará listo en cuanto lo importes."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cet iPhone signe ce jeu avant de l’ouvrir, et il n’a pas encore de certificat de signature. Exportez le certificat depuis l’app qui a installé S2Arm (AltStore ou SideStore) et importez-le ici. Le jeu est prêt dès qu’il est importé."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このゲームは開く前にこの iPhone で署名されますが、まだ署名証明書がありません。S2Arm をインストールしたアプリ（AltStore または SideStore）で証明書を書き出し、ここで読み込んでください。読み込めばすぐ遊べます。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这款游戏要先在这台 iPhone 上签名才能打开，可手机上还没有签名证书。请在装 S2Arm 的那个工具（AltStore 或 SideStore）里导出证书，再导进来。导好这款就能玩。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "這款遊戲要先在這台 iPhone 上簽名才能開啟，可手機上還沒有簽名憑證。請在安裝 S2Arm 的那個工具（AltStore 或 SideStore）裡匯出憑證，再匯入進來。匯入好這款就能玩。"
+          }
+        }
+      }
+    },
+    "The signing certificate on this iPhone is from a different Apple ID than the one S2Arm was installed with, so games signed with it won't open. Import the certificate from the app you installed S2Arm with. The other certificate stays as it is.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The signing certificate on this iPhone is from a different Apple ID than the one S2Arm was installed with, so games signed with it won't open. Import the certificate from the app you installed S2Arm with. The other certificate stays as it is."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El certificado de firma de este iPhone es de un Apple ID distinto del que usaste para instalar S2Arm, así que los juegos firmados con él no se abren. Importa el certificado de la app con la que instalaste S2Arm. El otro certificado se queda como está."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le certificat de signature de cet iPhone vient d’un autre identifiant Apple que celui qui a installé S2Arm : les jeux signés avec lui ne s’ouvrent pas. Importez le certificat de l’app qui a installé S2Arm. L’autre certificat reste tel quel."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この iPhone の署名証明書は S2Arm をインストールした Apple ID とは別のものなので、それで署名したゲームは開けません。S2Arm をインストールしたアプリの証明書を読み込んでください。もう一方の証明書はそのまま残ります。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这台 iPhone 上的签名证书和装 S2Arm 用的不是同一个 Apple ID，用它签的游戏打不开。请导入装 S2Arm 的那个工具里的证书，原来那张不受影响。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "這台 iPhone 上的簽名憑證和安裝 S2Arm 用的不是同一個 Apple ID，用它簽的遊戲打不開。請匯入安裝 S2Arm 的那個工具裡的憑證，原本那張不受影響。"
+          }
+        }
+      }
+    },
+    "The certificate S2Arm was installed with has been replaced or revoked, for example when another computer refreshed it, so the one on this iPhone no longer works. Export the current certificate from the app you installed S2Arm with and import it again.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The certificate S2Arm was installed with has been replaced or revoked, for example when another computer refreshed it, so the one on this iPhone no longer works. Export the current certificate from the app you installed S2Arm with and import it again."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El certificado con el que se instaló S2Arm se ha sustituido o revocado (por ejemplo, porque otro ordenador lo renovó), así que el de este iPhone ya no sirve. Exporta el certificado actual desde la app con la que instalaste S2Arm e impórtalo de nuevo."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le certificat qui a installé S2Arm a été remplacé ou révoqué (par exemple quand un autre ordinateur l’a actualisé) : celui de cet iPhone ne fonctionne plus. Exportez le certificat actuel depuis l’app qui a installé S2Arm et importez-le à nouveau."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "S2Arm のインストールに使った証明書が置き換えられたか失効しました（別のパソコンで更新した場合など）。この iPhone の証明書はもう使えません。S2Arm をインストールしたアプリで今の証明書を書き出し、もう一度読み込んでください。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "装 S2Arm 用的证书已经换过或被吊销（比如另一台电脑刷新过），手机上这张已经不能用了。请在装 S2Arm 的那个工具里重新导出现在的证书，再导入一次。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安裝 S2Arm 用的憑證已經換過或被撤銷（例如另一台電腦重新整理過），手機上這張已經不能用了。請在安裝 S2Arm 的那個工具裡重新匯出現在的憑證，再匯入一次。"
+          }
+        }
+      }
+    },
+    "This game was signed in a way this iPhone doesn't accept. Import your signing certificate and S2Arm signs it again on this iPhone when you play.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This game was signed in a way this iPhone doesn't accept. Import your signing certificate and S2Arm signs it again on this iPhone when you play."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Este juego se firmó de una forma que este iPhone no acepta. Importa tu certificado de firma y S2Arm lo volverá a firmar en este iPhone cuando juegues."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ce jeu a été signé d’une façon que cet iPhone n’accepte pas. Importez votre certificat de signature : S2Arm le signera à nouveau sur cet iPhone quand vous jouerez."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このゲームの署名はこの iPhone では認められません。署名証明書を読み込めば、プレイ時に S2Arm がこの iPhone で署名し直します。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这款游戏的签名这台 iPhone 不认。导入你的签名证书，开始游戏时 S2Arm 会在手机上重新签好。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "這款遊戲的簽名這台 iPhone 不認。匯入你的簽名憑證，開始遊戲時 S2Arm 會在手機上重新簽好。"
+          }
+        }
+      }
+    },
+    "Get certificate…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Get certificate…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Obtener certificado…"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Obtenir le certificat…"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "証明書を取得…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "获取签名证书…"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取得簽名憑證…"
+          }
+        }
+      }
+    },
+    "Get certificate": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Get certificate"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Obtener certificado"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Obtenir le certificat"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "証明書を取得"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "获取证书"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取得憑證"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

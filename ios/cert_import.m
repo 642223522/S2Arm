@@ -3,7 +3,8 @@
 //   ① 游戏库设置「签名证书」→「导入 .p12…」：文件选择器选 .p12，问一次密码（错了再问）；
 //   ② 游戏库设置「签名证书」→「从 SideStore 获取」：打开 sidestore://certificate，SideStore 问玩家、点 Export 后回调 s2arm://sidestore-cert（ios/cert_callback.m）；
 //   ③ 「放这里导入」文件夹里放 .p12 / .pfx：扫到就问密码，导好删掉这个文件。
-//   证书的团队和这个 App 不同（包里描述文件的团队）：照样存（不拦），如实告诉玩家用它签的游戏系统不认、该怎么办
+//   证书的团队和这个 App 不同（包里描述文件的团队）：照样存（不拦），如实告诉玩家用它签的游戏系统不认、该怎么办；
+//   手机上按证书各存一份，原来能用的那张不被顶掉：现用哪张由 ios/sign_state.m s2a_cert_settle 按 App 团队挑
 #import <UIKit/UIKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import "s2a_l10n.h"
@@ -14,6 +15,8 @@ extern const char *const s2a_img_import_dirs[2];   // pack_apply.c：「放这�
 int s2a_identity_import_p12(const char *home, const void *p12, size_t n, const char *password, const char *source, char *team, size_t team_n, char *why, size_t why_n);   // selfsign.c
 int s2a_prov_signing_ids_self(char *team, size_t team_n, char *appid, size_t appid_n);   // prov_expiry.m
 NSURL *s2a_cert_sidestore_request(void);   // cert_callback.m
+int s2a_cert_settle(const char *home);   // sign_state.m：current.json 指向与 App 同团队、还能用的那张
+int s2a_cert_health(const char *home);   // sign_state.m：0 现用的能用 / 2 是别的团队的 / 3 已不在描述文件里
 int s2a_cert_callback_parse(NSString *url, NSData **p12, NSString **pw);
 
 static UIViewController *top_vc(void) {
@@ -48,6 +51,7 @@ static void import_p12(NSData *p12, NSString *name, NSString *password, const ch
         return;
     }
     if (rc) { LOG("【红】签名证书导入失败（%s）：%s", name.UTF8String, why); say(S2AL(@"cert.failed.title"), S2AL(@"cert.failed.message")); if (done) done(NO); return; }
+    s2a_cert_settle(getenv("HOME"));   // 导的是别的团队的：现用证书挑回原来能用的那张
     NSString *msg = [NSString stringWithFormat:S2AL(@"cert.done.message"), team[0] ? @(team) : @"?"];
     char pteam[64] = "", pappid[512] = "";
     if (team[0] && s2a_prov_signing_ids_self(pteam, sizeof pteam, pappid, sizeof pappid) >= 0 && strcmp(team, pteam)) {   // 团队和装这个 App 的不同：如实说，不拦
@@ -81,6 +85,15 @@ void s2a_shell_cert_p12(void) {   // 游戏库设置「签名证书」→「导�
 #else
 void s2a_shell_cert_p12(void) {}
 #endif
+
+// 库卡片「需要签名证书」的主按钮（s2a_shell.h）：装了 SideStore 就向它要（一步拿到），否则选 .p12（AltStore 等导出的文件）。
+//   canOpenURL 要 Info.plist 声明 LSApplicationQueriesSchemes sidestore（runtime/build.mk），没声明一律答没装
+void s2a_shell_cert_sidestore(void);
+void s2a_shell_cert_get(void) {
+    BOOL ss = [UIApplication.sharedApplication canOpenURL:[NSURL URLWithString:@"sidestore://"]];
+    LOG("签名证书：游戏库卡片「获取签名证书」→ %s", ss ? "SideStore" : "选 .p12");
+    if (ss) s2a_shell_cert_sidestore(); else s2a_shell_cert_p12();
+}
 
 // ---------- ② SideStore ----------
 void s2a_shell_cert_sidestore(void) {   // 游戏库设置「签名证书」→「从 SideStore 获取」
@@ -126,6 +139,8 @@ NSString *s2a_cert_status_text(void) {
     if (![j isKindOfClass:NSDictionary.class] || ![j[@"cert_sha1"] isKindOfClass:NSString.class]) return @"";
     NSString *src = [j[@"source"] isKindOfClass:NSString.class] ? j[@"source"] : @"pc";
     NSString *from = [src isEqualToString:@"sidestore"] ? S2AL(@"cert.source.sidestore") : [src isEqualToString:@"p12"] ? S2AL(@"cert.source.p12") : S2AL(@"cert.source.pc");
-    return [NSString stringWithFormat:S2AL(@"cert.status"), team.length ? team : @"?", from];
+    NSString *line = [NSString stringWithFormat:S2AL(@"cert.status"), team.length ? team : @"?", from];
+    int h = s2a_cert_health(getenv("HOME"));   // 现用的不能签这个 App 的游戏：状态行常驻标出来，不再照样打勾
+    return h == 2 ? [line stringByAppendingFormat:@" · %@", S2AL(@"cert.status.otherTeam")] : h == 3 ? [line stringByAppendingFormat:@" · %@", S2AL(@"cert.status.replaced")] : line;
 }
 const char *s2a_shell_cert_status(void) { static char buf[256]; snprintf(buf, sizeof buf, "%s", s2a_cert_status_text().UTF8String); return buf; }

@@ -330,16 +330,24 @@ static uint8_t *slurp(const char *p, size_t *n) {
 //   确认能配成签名身份（真机 11-17 一台测试 iPhone：分别 SecItemAdd 的私钥与证书配得上）→ 删 incoming/ 三份 → 写不含私钥的
 //   Library/Application Support/S2Arm/identity/current.json（电脑推送时读它判要不要重交）；
 //   证书换了不批量重签：起哪款签哪款（起局时按款重签）。任何一步失败：incoming/ 留着、写 identity/import_error.txt，起局照常
+// 钥匙串按证书各存一份（0.6.0 走查：团队不符的新证书顶掉原来能用的那张，之后导入的游戏全签不了）：标签 = SS_KC_LABEL.<证书 sha1>，
+//   存一张只换掉同一张的旧项，别的证书原样留着；用哪张由 identity/current.json 定（ios/sign_state.m s2a_cert_settle 按 App 团队挑），起局按它的 sha1 取（s2a_identity_keychain）。
+//   0.6.0 测试包存的旧标签（不带 sha1）那一项不动，按 sha1 取时照样认得
 #define SS_KC_LABEL "io.s2arm.selfsign.identity"
-static int kc_store_real(SecKeyRef k, SecCertificateRef c, char *why, size_t why_n) {   // 换掉旧的同标签两项再存；存后按身份取回核配得上
-    CFStringRef label = CFSTR(SS_KC_LABEL);
+static int kc_store_real(SecKeyRef k, SecCertificateRef c, char *why, size_t why_n) {   // 换掉同一张证书的旧项再存；存后按身份取回核配得上
+    char lab[96] = SS_KC_LABEL; CFDataRef cder = SecCertificateCopyData(c);
+    if (cder) { uint8_t h[CC_SHA1_DIGEST_LENGTH]; CC_SHA1(CFDataGetBytePtr(cder), (CC_LONG)CFDataGetLength(cder), h); CFRelease(cder);
+                size_t o = strlen(lab); lab[o++] = '.'; for (int i = 0; i < CC_SHA1_DIGEST_LENGTH; i++, o += 2) snprintf(lab + o, 3, "%02x", h[i]); }
+    CFStringRef label = CFStringCreateWithCString(NULL, lab, kCFStringEncodingUTF8);
     const void *dk[] = {kSecClass, kSecAttrLabel}, *dv1[] = {kSecClassKey, label}, *dv2[] = {kSecClassCertificate, label};
     CFDictionaryRef d1 = CFDictionaryCreate(NULL, dk, dv1, 2, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks), d2 = CFDictionaryCreate(NULL, dk, dv2, 2, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     SecItemDelete(d1); SecItemDelete(d2); CFRelease(d1); CFRelease(d2);
     const void *ak[] = {kSecClass, kSecValueRef, kSecAttrLabel, kSecAttrAccessible};
     const void *av1[] = {kSecClassKey, k, label, kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly}, *av2[] = {kSecClassCertificate, c, label, kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly};
     CFDictionaryRef q1 = CFDictionaryCreate(NULL, ak, av1, 4, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks), q2 = CFDictionaryCreate(NULL, ak, av2, 4, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-    OSStatus s1 = SecItemAdd(q1, NULL), s2 = SecItemAdd(q2, NULL); CFRelease(q1); CFRelease(q2);
+    OSStatus s1 = SecItemAdd(q1, NULL), s2 = SecItemAdd(q2, NULL); CFRelease(q1); CFRelease(q2); CFRelease(label);
+    if (s1 == errSecDuplicateItem) s1 = 0;   // 同一张证书的旧标签项（0.6.0 测试包）还在：钥匙串按内容去重，下面按身份取回核配得上
+    if (s2 == errSecDuplicateItem) s2 = 0;
     if (s1 || s2) { snprintf(why, why_n, "存钥匙串失败（私钥 %d、证书 %d）", (int)s1, (int)s2); return -1; }
     const void *qk[] = {kSecClass, kSecReturnRef, kSecMatchLimit}, *qv[] = {kSecClassIdentity, kCFBooleanTrue, kSecMatchLimitAll};
     CFDictionaryRef q3 = CFDictionaryCreate(NULL, qk, qv, 3, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
@@ -367,7 +375,22 @@ static int write_file(const char *path, const char *text) {
     int ok = fputs(text, f) >= 0; if (fclose(f)) ok = 0; return ok && !rename(tmp, path) ? 0 : -1;
 }
 // 导入成功后写不含私钥的 current.json（电脑推送时读它判要不要重交；起局重签按它认现在这张证书），source = pc（电脑交来）/ p12（手机上直接导入）
+// 同时登记进 identity/certs.tsv（导入成功过的每张证书一行：sha1、团队、来源、时刻；同一张只留最新一行）：current.json 只记现在用哪张，
+//   这张表记手机上有哪几张，导了别的团队的证书后 ios/sign_state.m s2a_cert_settle 按它把 current.json 挑回与 App 同团队的那张
+static void certs_note(const char *cur, const char *team, const char *sha, const char *source) {
+    char tsv[1200]; snprintf(tsv, sizeof tsv, "%s", cur); char *slash = strrchr(tsv, '/'); if (!slash) return; snprintf(slash + 1, sizeof tsv - (size_t)(slash + 1 - tsv), "certs.tsv");
+    size_t n = 0; uint8_t *old = slurp(tsv, &n); size_t cap = n + 256; char *out = malloc(cap); if (!out) { free(old); return; } size_t o = 0;
+    for (char *line = old ? (char *)old : NULL, *end = old ? (char *)old + n : NULL; line && line < end; ) {   // 照抄别的证书那几行
+        char *nl = memchr(line, '\n', (size_t)(end - line)); size_t ln = nl ? (size_t)(nl - line) : (size_t)(end - line);
+        if (ln && !(ln > strlen(sha) && !strncasecmp(line, sha, strlen(sha)) && line[strlen(sha)] == '\t')) { memcpy(out + o, line, ln); o += ln; out[o++] = '\n'; }
+        line += ln + 1;
+    }
+    o += (size_t)snprintf(out + o, cap - o, "%s\t%s\t%s\t%ld\n", sha, team, source, (long)time(NULL)); free(old);
+    char tmp[1300]; snprintf(tmp, sizeof tmp, "%s.tmp", tsv); FILE *f = fopen(tmp, "w"); int ok = f && fwrite(out, 1, o, f) == o; if (f && fclose(f)) ok = 0; free(out);
+    if (!ok || rename(tmp, tsv)) LOG("【黄】签名证书登记表 certs.tsv 写不进（这张证书照样能用；导别的团队的证书后挑不回它）");
+}
 static void current_write(const char *cur, const char *team, const char *sha, const char *source, const char *note) {
+    certs_note(cur, team, sha, source);
     char prev[64] = {0}; { size_t pn = 0; uint8_t *pb = slurp(cur, &pn); char *ps = pb ? realloc(pb, pn + 1) : NULL; if (ps) { ps[pn] = 0; json_str(ps, "cert_sha1", prev, sizeof prev); free(ps); } else free(pb); }
     char cj[300]; snprintf(cj, sizeof cj, "{\"schema\": 1, \"team\": \"%s\", \"cert_sha1\": \"%s\", \"imported\": %ld, \"source\": \"%s\"}\n", team, sha, (long)time(NULL), source);
     if (write_file(cur, cj)) LOG("【黄】签名身份已进钥匙串，但 current.json 写不进（起局重签认不到这张证书；电脑下次推送会重交一次）");
@@ -454,7 +477,7 @@ static int p12_plain(const uint8_t *p, size_t n, const uint8_t **key, size_t *ke
     return *key && *cert ? 0 : -1;
 }
 
-// 玩家在手机上直接导入 .p12（0.6.0：买了开发者证书的玩家不经电脑）：解 p12 → 存钥匙串（同电脑交来的身份，标签 SS_KC_LABEL，换掉旧的）→ 写 current.json（source p12）。
+// 玩家在手机上直接导入 .p12（0.6.0：买了开发者证书的玩家不经电脑）：解 p12 → 存钥匙串（按证书各存一份，不顶掉别的证书）→ 写 current.json（source p12）、登记 certs.tsv。
 //   source 写进 current.json（p12 = 玩家选的 .p12 文件，sidestore = SideStore「导出证书」回调；NULL 按 p12）。团队号取叶证书的 OU（苹果开发证书的 OU 就是团队号）。返回 0 = 导入了（team 带回团队号）；1 = 密码不对（调用方再问一次）；-1 = 失败（why 写原因）。
 //   p12 文件本身由调用方在成功后删（它在「放这里导入」里）
 int s2a_identity_import_p12(const char *home, const void *p12, size_t n, const char *password, const char *source, char *team, size_t team_n, char *why, size_t why_n) {
@@ -508,14 +531,21 @@ CFArrayRef s2a_selfsign_chain_for(SecCertificateRef leaf) {
     }
     return a;
 }
-// 钥匙串里电脑交来的签名身份（s2a_identity_import 存的，标签 SS_KC_LABEL）。0 = 取到（调用方 CFRelease 两样）；-1 = 没有
-int s2a_identity_keychain(SecKeyRef *key, SecCertificateRef *cert) {
-    const void *k[] = {kSecClass, kSecAttrLabel, kSecReturnRef, kSecMatchLimit}, *v[] = {kSecClassIdentity, CFSTR(SS_KC_LABEL), kCFBooleanTrue, kSecMatchLimitOne};
-    CFDictionaryRef q = CFDictionaryCreate(NULL, k, v, 4, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+// 钥匙串里证书 sha1 为 sha 的那个签名身份（电脑交来的、手机上导入的都在，按证书各存一份）。0 = 取到（调用方 CFRelease 两样）；-1 = 没有
+int s2a_identity_keychain(const char *sha, SecKeyRef *key, SecCertificateRef *cert) {
+    if (!sha || !*sha) return -1;
+    const void *k[] = {kSecClass, kSecReturnRef, kSecMatchLimit}, *v[] = {kSecClassIdentity, kCFBooleanTrue, kSecMatchLimitAll};
+    CFDictionaryRef q = CFDictionaryCreate(NULL, k, v, 3, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     CFTypeRef got = NULL; OSStatus st = SecItemCopyMatching(q, &got); CFRelease(q);
-    if (st != errSecSuccess || !got || CFGetTypeID(got) != SecIdentityGetTypeID()) { if (got) CFRelease(got); return -1; }
-    int r = SecIdentityCopyPrivateKey((SecIdentityRef)got, key) || SecIdentityCopyCertificate((SecIdentityRef)got, cert) ? -1 : 0;
-    CFRelease(got); return r;
+    int r = -1;
+    for (CFIndex i = 0; r && st == errSecSuccess && got && CFGetTypeID(got) == CFArrayGetTypeID() && i < CFArrayGetCount(got); i++) {
+        SecIdentityRef id = (SecIdentityRef)CFArrayGetValueAtIndex(got, i); SecCertificateRef c = NULL;
+        if (SecIdentityCopyCertificate(id, &c) || !c) continue;
+        CFDataRef d = SecCertificateCopyData(c); char hs[41] = ""; uint8_t h[CC_SHA1_DIGEST_LENGTH];
+        if (d) { CC_SHA1(CFDataGetBytePtr(d), (CC_LONG)CFDataGetLength(d), h); CFRelease(d); for (int j = 0; j < CC_SHA1_DIGEST_LENGTH; j++) snprintf(hs + 2 * j, 3, "%02x", h[j]); }
+        if (hs[0] && !strcasecmp(hs, sha) && !SecIdentityCopyPrivateKey(id, key)) { *cert = c; r = 0; } else CFRelease(c);
+    }
+    if (got) CFRelease(got); return r;
 }
 
 // 弱链接[host,nvntest]：s2a_prov_app_json_self（ios/prov_expiry.m，同下一行）

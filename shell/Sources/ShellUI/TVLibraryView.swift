@@ -337,6 +337,7 @@ public struct TVLibraryView: View {
         case .needsGameData: actions.onPickGameData(detail.id)
         case .needsAppUpdate: actions.onAppUpdate?()
         case .needsGameUpdate, .needsLegacyUpdate: break   // needsHelp：上面已展开说明
+        case .needsCertificate: actions.onGetSigningCert?()   // 直接导证书（装了 SideStore 向它要，否则选 .p12），导好库自己回「可以玩」
         case .broken: actions.onShowLog?(detail.id)
         case .installing(let stage): if stage.phase == .failed { actions.onPlay(detail.id) }   // 重试解开；传着 / 解着按了不动
         }
