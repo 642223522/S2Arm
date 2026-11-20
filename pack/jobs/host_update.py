@@ -197,9 +197,11 @@ def _online(c, names=None):
     return out
 
 
-def _has_game_img(c, gid):
+def _has_game_data(c, gid):
+    """快判这款的 iPhone 资源包是否仍在库里（不遍历包内文件）。新旧资源包分别以 manifest 与 game.img 为标志。"""
     try:
-        return (Path(layout.ios_pack(c, gid)) / "game.img").is_file()
+        pack = Path(layout.ios_pack(c, gid))
+        return (pack / "manifest.json").is_file() or (pack / "game.img").is_file()
     except (Failure, OSError):
         return False
 
@@ -266,9 +268,9 @@ def phone_overview(c):
         for g in library:
             r = recs.get(g)
             if r is None or not (r.get("program") or r.get("pack")):
-                games.append(dict(gameId=g, state="notPushed", dataOnComputer=_has_game_img(c, g)))
+                games.append(dict(gameId=g, state="notPushed", dataOnComputer=_has_game_data(c, g)))
             elif not r.get("pack"):   # 电脑上还有没有资源本体（只看文件在不在，不打开）：界面分「点推到 iPhone 就行」和「要原件」
-                games.append(dict(gameId=g, state="needsData", dataOnComputer=_has_game_img(c, g)))
+                games.append(dict(gameId=g, state="needsData", dataOnComputer=_has_game_data(c, g)))
             elif not r.get("program"):   # 资源推过、手机上没有这款的程序包（0.5.x 整包 App 装的款：装上通用 App 后程序不在了）→ 点「推到 iPhone」只补程序
                 games.append(dict(gameId=g, state="suggested", reasons=["missing"]))
             else:
