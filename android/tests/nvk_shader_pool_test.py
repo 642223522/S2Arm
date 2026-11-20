@@ -167,7 +167,7 @@ def main():
         cache = (native/'gfx_plat/nvk_shader_fact_cache.h').read_text()
         base.append('-I'+str(native/'gfx_plat'))
         for name, before, after in [
-            ('input', ' || t->is_buffer || ', ' || '),
+            ('input', ' || t->separate || t->is_buffer) return 0;', ' || t->separate) return 0;'),
             ('reflection', 'e->src_kind == NVN_RB_TBUF || ', ''),
         ]:
             assert cache.count(before) == 1, (name, 'mutation anchor')
