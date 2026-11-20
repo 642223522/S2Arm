@@ -5153,6 +5153,29 @@ static void t_present_adpf(void) {
     rp_present_set_surface(NULL, 0);
 }
 
+// 上屏线程 CPU（rp_present_tc_note / _take）：只把同一线程相邻两次上屏配对；第一次没有起点不计；跨线程、时间倒退的记成不计样本；
+// 取走即清零、起点保留；会话 reset 清起点。修前（没有这项）：新层没有任何「墙钟 vs 线程 CPU」读数（#1501 差距 9）。
+static void *tc_other_thread(void *p) { (void)p; rp_present_tc_note(500, 7); return NULL; }
+static void t_present_thread_cpu(void) {
+    uint64_t tc[4];
+    rp_present_reset(); rp_present_tc_take(tc);
+    rp_present_tc_note(100, 10);                                   // 第一次：只记起点
+    rp_present_tc_take(tc); CHECK(tc[2] == 0 && tc[3] == 0 && tc[0] == 0);
+    rp_present_tc_note(300, 60);                                   // 同线程：墙钟 200、CPU 50
+    pthread_t th; pthread_create(&th, NULL, tc_other_thread, NULL); pthread_join(th, NULL);   // 别的线程上屏：跨线程，不计
+    rp_present_tc_note(700, 80);                                   // 起点是别的线程：跨线程，不计
+    rp_present_tc_note(900, 100);                                  // 同线程：墙钟 200、CPU 20
+    rp_present_tc_note(800, 120);                                  // 墙钟倒退：不计
+    rp_present_tc_take(tc);
+    printf("present thread cpu: wall=%llu cpu=%llu n=%llu cross=%llu expected 400/70/2/3\n", (unsigned long long)tc[0], (unsigned long long)tc[1], (unsigned long long)tc[2], (unsigned long long)tc[3]);
+    CHECK(tc[0] == 400 && tc[1] == 70 && tc[2] == 2 && tc[3] == 3);
+    rp_present_tc_take(tc); CHECK(tc[0] == 0 && tc[2] == 0 && tc[3] == 0);   // 取走即清零
+    rp_present_tc_note(1000, 130);                                 // 起点保留：接着上一次（800, 120）算
+    rp_present_tc_take(tc); CHECK(tc[2] == 1 && tc[0] == 200 && tc[1] == 10);
+    rp_present_reset(); rp_present_tc_note(2000, 200);             // 新会话：不与上一局最后一次配对
+    rp_present_tc_take(tc); CHECK(tc[2] == 0 && tc[3] == 0);
+    rp_present_reset();
+}
 static void t_present(void) {   // 上屏：没有窗口按丢帧报；有窗口时取图、按比例贴合、呈现；交换链过期先重建
     g_fl_presents = 0;
     pass_fresh(); rp_present_reset(); g_diag_frames = 0; memset(g_acq_script, 0, sizeof g_acq_script); g_acq_i = g_rebuilds = g_presents = 0;
@@ -6037,7 +6060,9 @@ int main(int argc, char **argv) {
     t_const_sampler_default_sites();
     t_const_sampler_scope();
     t_ubo_texture_unregistered();
+    t_present_thread_cpu();
     t_present(); t_present_adpf();
+    { uint64_t tc[4]; rp_present_tc_take(tc); CHECK(tc[2] + tc[3] >= 1); }   // 真上屏路径接上了：t_present 里多次成功上屏至少配出一个样本
     t_framelog_fence();
     t_view_pin();
     t_view_storage_key();

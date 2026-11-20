@@ -302,6 +302,8 @@ s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_pool_test.py" --compute-warm-
 s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_pool_test.py" --diag-mutants
 # Shutdown admission, bounded waits and active-context retention (including negative controls).
 s2a_gate_step "$PY" "$android_dir/tests/nvk_shutdown_test.py"
+# 上屏线程 CPU（rp_present.c，#1501 差距 9）：同线程配对 / 跨线程与时间倒退不计 / 首次只记起点 / 取走清零 / 会话清起点 / 上屏接线，6 个点变异各撤一处必红（纯宿主 C）
+s2a_gate_step "$PY" "$repo_dir/graphics/nvn/tests/present_tc_mutation_test.py"
 # GS 脏位、阶段绑定、管线和原始图元拒绝的独立回退反证。
 s2a_gate_step "$PY" "$repo_dir/graphics/nvn/tests/gs_replay_mutation_test.py"
 # 写跟踪取范围（find_span）的有序索引（#1133）与池查找的线程内备忘（#974）：索引的排序 / 子树最大值 / 复查代际 / 写者纪律 / 上限与停用 / 备忘的键各处的撤改必红（纯宿主 C 编译）。

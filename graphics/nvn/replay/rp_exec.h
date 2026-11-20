@@ -68,6 +68,8 @@ const p_set_rt *rp_pass_target(void); // 当前目标（没设过 NULL）
 void rp_present_set_surface(nvn_gpu_surface s, int display_hz);   // 平台件：窗口挂上（s 非空）/ 摘下（NULL）
 void rp_present_stats(uint64_t *shown, uint64_t *dropped);
 void rp_present_reset(void);
+void rp_present_tc_note(uint64_t wall_ns, uint64_t cpu_ns);   // 上屏线程 CPU：记一次成功上屏（rp_present.c，宿主单测直接驱动）
+void rp_present_tc_take(uint64_t out[4]);                      // 取走窗口累计：墙钟纳秒、CPU 纳秒、同线程样本、跨线程样本
 
 // ---------- 绘制（rp_draw.c）----------
 // 已正式解码的计数组：显式条数/参数步长，不前瞻命令流。
