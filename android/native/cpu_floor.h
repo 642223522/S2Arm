@@ -20,7 +20,7 @@ void s2a_cpu_floor_set_surface(int present);
 // 停局：线程收掉并等它退出；之后不再起。
 void s2a_cpu_floor_stop(void);
 // 共用前端每帧调一次（graphics/nvn/gfx/nvn/hle_nvn.c，只在 __ANDROID__ 下）：一次原子加 + 一次时钟读取 + 一次直方图原子加。
-// 托底线程据此量实际出图帧率，再与游戏登记的目标周期（s2a_android_present_ns）比；
+// 托底线程据此量实际出图帧率，再与本局最短周期（s2a_android_session_period_ns，不是当前周期）比；
 // 并每 5 秒打一行帧间隔读数（直方图 / p50 / p99 / 慢帧数 / 进程 CPU / 托底线程 CPU），任何模式（含 0）都打。
 void s2a_android_frame_note(void);
 #ifdef S2A_CPU_FLOOR_TEST

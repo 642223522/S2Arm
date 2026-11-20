@@ -1753,6 +1753,9 @@ static void finish_cmd(struct nvn_gpu_cmd_s *c, int executed) {
 //   弱引用：只链后端的 vk 夹具没有帧日志，地址为空就不调。
 void nvn_vk_frame_log_gpu_segment(uint64_t gpu_ns) __attribute__((weak));
 void nvn_vk_frame_log_gpu_frame_end(void) __attribute__((weak));
+// 同一份段读数也交给 ADPF（android/native/adpf_hint.c）：API 35 起随帧上报 GPU 时长。只链后端的 vk 夹具没有它，地址为空就不调
+void s2a_adpf_gpu_segment(uint64_t gpu_ns) __attribute__((weak));
+void s2a_adpf_gpu_frame_end(void) __attribute__((weak));
 static void process_segment(struct nvn_gpu_vk *vk, struct vk_segment *s) {
     int failed = s->failed;
     nvn_gpu_rc code = s->rc;
@@ -1798,6 +1801,7 @@ static void process_segment(struct nvn_gpu_vk *vk, struct vk_segment *s) {
                     if (last_end && b > last_end) gap += b - last_end;
                     last_end = e; n++; sum += d; if (d > mx) mx = d;
                     if (nvn_vk_frame_log_gpu_segment) nvn_vk_frame_log_gpu_segment(d);
+                    if (s2a_adpf_gpu_segment) s2a_adpf_gpu_segment(d);
                     {   // 逐通道：按尺寸归拢（同尺寸的算一类），每 400 段报耗时最多的 6 类
                         static struct { uint32_t key, n, draws, ds, n1; uint64_t ns, ns1; } bk[48]; static int nbk;
                         static uint64_t pts[2 * TS_PASS_MAX];
@@ -1836,6 +1840,7 @@ static void process_segment(struct nvn_gpu_vk *vk, struct vk_segment *s) {
 
     if (s->internal) {   // 呈现段：没有回调、不动时间线
         if (nvn_vk_frame_log_gpu_frame_end) nvn_vk_frame_log_gpu_frame_end();   // 本帧各段都排在上屏段之前完成：在这里结一帧
+        if (s2a_adpf_gpu_frame_end) s2a_adpf_gpu_frame_end();
         pthread_mutex_lock(&g_mu);
         // 栅栏已在本线程上等到（或设备已丢）：这一段对取图信号量的等待从此对主机可见地完成，取图可以复用那把信号量
         if (s->wsi_seq > vk->wsi_done) vk->wsi_done = s->wsi_seq;
