@@ -57,7 +57,7 @@ Además: varios tipos de problemas de sombreadores corregidos de raíz, cargas y
 
 1. Descarga el lanzador para Mac o Windows desde [s2arm.com](https://s2arm.com) y ábrelo.
 2. Importa tus propias claves y juegos; pon el juego base, las actualizaciones y los DLC en una misma carpeta e impórtalos de una vez.
-3. Conecta el iPhone, pulsa «Instalar S2Arm» en la barra del teléfono, inicia sesión y firma con tu Apple ID, y S2Arm queda instalado en el teléfono.
+3. Conecta el iPhone, pulsa «Instalar S2Arm» en la ficha «S2Arm», la primera de la biblioteca del lanzador, inicia sesión y firma con tu Apple ID, y S2Arm queda instalado en el teléfono.
 4. Elige un juego y pulsa «Enviar al iPhone».
 5. Abre S2Arm en el teléfono y elige un juego en la biblioteca.
 
@@ -68,7 +68,7 @@ También puedes jugar directamente en el Mac: elige «Este Mac». Si no conectas
 Los juegos, las partidas guardadas y los datos de juego que ya tienes en el teléfono se quedan. No hace falta volver a exportar ni volver a enviar los datos de juego.
 
 1. En Mac, inicia sesión una vez con tu Apple ID en S2Arm (la 0.5 usaba la cuenta de Xcode; la 0.6.0 inicia sesión directamente en S2Arm. Los jugadores de Windows no necesitan este paso).
-2. Conecta el teléfono y pulsa «Actualizar S2Arm» en la barra del teléfono: primero se hace una copia de las partidas guardadas de cada juego en el ordenador y luego se cambia a la nueva App. Con el mismo Apple ID se instala encima de la anterior.
+2. Conecta el teléfono y pulsa «Actualizar S2Arm» en la ficha «S2Arm», la primera de la biblioteca: primero se hace una copia de las partidas guardadas de cada juego en el ordenador y luego se cambia a la nueva App. Con el mismo Apple ID se instala encima de la anterior.
 3. Al terminar, la misma página indica cuántos juegos antiguos del teléfono necesitan una actualización para poder jugarse; vienen todos marcados, así que pulsa «Actualizar estos N juegos» (o más tarde, marca en el panel los juegos con «Actualización recomendada» y pulsa «Actualizar selección»). Va juego a juego: devuelve las partidas guardadas al ordenador, envía el programa nuevo y solo manda los recursos que han cambiado; cada juego tarda unos 1–2 minutos. En los juegos cuya biblioteca de shaders se hizo con la versión antigua, el ordenador la rehace con la nueva en este paso (los archivos del juego o su versión de Mac tienen que seguir en tu biblioteca); la primera vez tarda de unos minutos a unas decenas de minutos. No hace falta pulsar la optimización de grado S. En un PC con Windows sin las herramientas de desarrollo de Metal, este paso envía la biblioteca antigua y explica por qué; el juego funciona igual, y cuando las instales en «Preparar este PC», vuelve a enviarlo para tener la biblioteca nueva.
 
 Hasta que termines el paso 3, esos juegos aparecen en el teléfono como «Actualízalo una vez en tu ordenador» y no se abren, pero no se han perdido. Los juegos instalados desde otro ordenador aparecen en otra línea de la misma página; actualízalos en ese ordenador. Si borraste el paquete de recursos de iPhone de un juego con «Liberar espacio», vuelve a generar el paquete de iPhone de ese juego.
@@ -93,7 +93,7 @@ Avanzará paso a paso con estos comandos, y verás cada paso en la ventana del l
 /Applications/S2Arm.app/Contents/Resources/s2armctl diag export ~/Desktop/S2Arm-diagnostics.zip   # exporta un paquete de diagnóstico si no consigue arreglarlo
 ```
 
-Lo que solo puedes hacer tú (permisos del sistema, iniciar sesión con tu Apple ID, tocar «Confiar» en el teléfono), la IA se detiene y te lo dice. En Windows, usa `s2armctl.cmd` de la carpeta del lanzador, con los mismos comandos. Windows solo crea paquetes para iPhone / iPad, así que para problemas dentro de un juego exporta el diagnóstico en el teléfono: mantén pulsada la pantalla del juego con cuatro dedos a la vez durante 1.5 segundos y elige «Exportar diagnóstico».
+Lo que solo puedes hacer tú (permisos del sistema, iniciar sesión con tu Apple ID, tocar «Confiar» en el teléfono), la IA se detiene y te lo dice. En Windows, usa `s2armctl.cmd` de la carpeta del lanzador, con los mismos comandos. Windows solo crea paquetes para iPhone / iPad, así que los problemas dentro de un juego se notifican desde el teléfono: toca el botón de informe a la derecha del engranaje, arriba a la izquierda en el juego, y cuenta qué juego, qué hiciste y qué viste. El diagnóstico se envía con el informe.
 
 **¿Algo va mal dentro de un juego** (gráficos, fotogramas por segundo, tirones, cierres)? Envía esto a la IA:
 

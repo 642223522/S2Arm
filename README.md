@@ -57,7 +57,7 @@ Also: several kinds of shader problems fixed at the root, more reliable loading 
 
 1. Download the Mac or Windows launcher from [s2arm.com](https://s2arm.com) and open it.
 2. Import your own keys and games; put the base game, updates and DLC in one folder and import them together.
-3. Connect your iPhone, click Install S2Arm on the phone bar, sign in and sign with your Apple ID, and S2Arm goes onto your phone.
+3. Connect your iPhone, click Install S2Arm on the S2Arm tile, first in the launcher's game library, sign in and sign with your Apple ID, and S2Arm goes onto your phone.
 4. Pick a game and click Push to iPhone.
 5. Open S2Arm on your phone and pick a game in the library.
 
@@ -68,7 +68,7 @@ You can also play on the Mac itself: choose This Mac. Without a cable, export a 
 The games, saves and game data already on your phone all stay. No exporting again, no sending game data again.
 
 1. On a Mac, sign in with your Apple ID once in S2Arm (0.5 used the account signed in to Xcode; 0.6.0 signs in inside S2Arm. Windows players skip this step).
-2. Connect your phone and click Update S2Arm on the phone bar. Your saves are backed up to the computer first, then the new app goes on over the old one (same Apple ID).
+2. Connect your phone and click Update S2Arm on the S2Arm tile, first in the game library. Your saves are backed up to the computer first, then the new app goes on over the old one (same Apple ID).
 3. Right after that, the same page says how many old games on this phone need one update before they play; they are all checked, so click Update these N games (or later, check the games marked Update suggested in the dashboard and click Update selected). One game at a time, it brings the saves back to the computer, pushes the new program and sends only the resources that changed; each game takes about 1–2 minutes. For games whose shader library was built by the old version, the computer rebuilds it with the new one in this step (the game's files or its Mac version must still be in your library); the first time takes from a few minutes to a few tens of minutes. You don't need S-grade optimization for this. On a Windows PC without the Metal developer tools, this step sends the old library and says why; the game still plays, and once you install them under Get this PC ready, push again to get the new library.
 
 Until step 3 is done those games show Update once on your computer on the phone and won't open, but they aren't gone. Games installed from another computer are listed on a separate line on the same page; update them on that computer. If you used Free up space to delete a game's iPhone resource pack, build that game's iPhone package again.
@@ -93,7 +93,7 @@ It moves forward with a few commands, and you can watch every step in the launch
 /Applications/S2Arm.app/Contents/Resources/s2armctl diag export ~/Desktop/S2Arm-diagnostics.zip   # export a diagnostic bundle if it cannot fix a problem
 ```
 
-Anything only you can do (system permission prompts, signing in with your Apple ID, tapping Trust on your phone), the AI stops and asks you to do. On Windows, use `s2armctl.cmd` in the launcher folder with the same commands. Windows builds iPhone / iPad packages only, so for problems inside a game export the diagnostic bundle on the phone: long-press the game screen with four fingers for 1.5 seconds and choose Export diagnostics.
+Anything only you can do (system permission prompts, signing in with your Apple ID, tapping Trust on your phone), the AI stops and asks you to do. On Windows, use `s2armctl.cmd` in the launcher folder with the same commands. Windows builds iPhone / iPad packages only, so report problems inside a game from the phone: tap the report button to the right of the gear at the top left in game and say which game, what you did and what you saw. The diagnostic bundle is uploaded with it.
 
 **Something wrong inside a game** (graphics, frame rate, stutter, crashes)? Send your AI:
 

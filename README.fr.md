@@ -57,7 +57,7 @@ Et aussi : plusieurs types de problèmes de shaders corrigés à la racine, char
 
 1. Téléchargez le lanceur Mac ou Windows sur [s2arm.com](https://s2arm.com) et ouvrez-le.
 2. Importez vos propres clés et vos jeux ; mettez le jeu de base, les mises à jour et les DLC dans un même dossier et importez-les en une fois.
-3. Branchez l'iPhone, cliquez sur « Installer S2Arm » dans la barre du téléphone, connectez-vous et signez avec votre identifiant Apple : S2Arm s'installe sur le téléphone.
+3. Branchez l'iPhone, cliquez sur « Installer S2Arm » dans la vignette « S2Arm », la première de la bibliothèque du lanceur, connectez-vous et signez avec votre identifiant Apple : S2Arm s'installe sur le téléphone.
 4. Choisissez un jeu et cliquez sur « Envoyer sur l'iPhone ».
 5. Ouvrez S2Arm sur le téléphone et choisissez un jeu dans la bibliothèque.
 
@@ -68,7 +68,7 @@ Vous pouvez aussi jouer directement sur le Mac : choisissez « Ce Mac ». Sans b
 Les jeux, sauvegardes et données de jeu déjà présents sur votre téléphone restent tous là. Pas besoin de réexporter ni de renvoyer les données de jeu.
 
 1. Sur Mac, connectez-vous une fois avec votre identifiant Apple dans S2Arm (la 0.5 utilisait le compte connecté dans Xcode ; la 0.6.0 se connecte directement dans S2Arm. Les joueurs Windows n'ont pas cette étape à faire).
-2. Branchez le téléphone et cliquez sur « Mettre à jour S2Arm » dans la barre du téléphone : les sauvegardes de chaque jeu sont d'abord copiées sur l'ordinateur, puis la nouvelle App remplace l'ancienne. Avec le même identifiant Apple, elle s'installe par-dessus.
+2. Branchez le téléphone et cliquez sur « Mettre à jour S2Arm » dans la vignette « S2Arm », la première de la bibliothèque : les sauvegardes de chaque jeu sont d'abord copiées sur l'ordinateur, puis la nouvelle App remplace l'ancienne. Avec le même identifiant Apple, elle s'installe par-dessus.
 3. Juste après, la même page indique combien d'anciens jeux du téléphone doivent être mis à jour une fois pour être jouables ; ils sont tous cochés, cliquez sur « Mettre à jour ces N jeux » (ou plus tard, cochez dans le tableau de bord les jeux marqués « Mise à jour conseillée » et cliquez sur « Mettre à jour la sélection »). Jeu par jeu, les sauvegardes reviennent sur l'ordinateur, le nouveau programme est envoyé et seules les ressources modifiées sont transférées ; chaque jeu prend environ 1 à 2 minutes. Pour les jeux dont la bibliothèque de shaders a été faite par l'ancienne version, l'ordinateur la refait avec la nouvelle à cette étape (les fichiers du jeu ou sa version Mac doivent encore être dans votre bibliothèque) ; la première fois prend de quelques minutes à quelques dizaines de minutes. Inutile de lancer l'optimisation de rang S. Sur un PC Windows sans les outils de développement Metal, cette étape envoie l'ancienne bibliothèque et indique pourquoi ; le jeu fonctionne quand même, et une fois les outils installés dans « Préparer ce PC », renvoyez-le pour avoir la nouvelle bibliothèque.
 
 Tant que l'étape 3 n'est pas faite, ces jeux s'affichent sur le téléphone avec « À mettre à jour une fois sur l'ordinateur » et ne s'ouvrent pas, mais ils ne sont pas perdus. Les jeux installés depuis un autre ordinateur apparaissent sur une ligne à part de la même page ; mettez-les à jour sur cet ordinateur. Si vous avez supprimé le pack de ressources iPhone d'un jeu avec « Libérer de l'espace », refaites le paquet iPhone de ce jeu.
@@ -93,7 +93,7 @@ Il avancera pas à pas avec ces commandes, et vous verrez chaque étape dans la 
 /Applications/S2Arm.app/Contents/Resources/s2armctl diag export ~/Desktop/S2Arm-diagnostics.zip   # exporte un paquet de diagnostic s'il n'arrive pas à corriger
 ```
 
-Pour ce que vous seul pouvez faire (autorisations du système, connexion avec votre identifiant Apple, toucher « Se fier » sur le téléphone), l'IA s'arrête et vous le dit. Sous Windows, utilisez `s2armctl.cmd` dans le dossier du lanceur, avec les mêmes commandes. Windows ne produit que des paquets iPhone / iPad ; pour un problème en jeu, exportez le diagnostic sur le téléphone : appuyez longuement sur l'écran du jeu avec quatre doigts en même temps pendant 1.5 seconde et choisissez « Exporter le diagnostic ».
+Pour ce que vous seul pouvez faire (autorisations du système, connexion avec votre identifiant Apple, toucher « Se fier » sur le téléphone), l'IA s'arrête et vous le dit. Sous Windows, utilisez `s2armctl.cmd` dans le dossier du lanceur, avec les mêmes commandes. Windows ne produit que des paquets iPhone / iPad ; pour un problème en jeu, signalez-le depuis le téléphone : touchez le bouton de signalement à droite de la roue dentée, en haut à gauche en jeu, et indiquez quel jeu, ce que vous avez fait et ce que vous avez vu. Le diagnostic est envoyé avec le signalement.
 
 **Un problème en jeu** (graphismes, fréquence d'images, saccades, plantages) ? Envoyez ceci à l'IA :
 
