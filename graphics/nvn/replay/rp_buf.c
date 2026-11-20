@@ -19,7 +19,7 @@
 #include <stdio.h>
 #include <string.h>
 
-struct gpu_write { uint64_t off, len, id, sub; uint8_t mi, landing; };   // GPU 写进镜像、还没回写到游戏内存的一段；mi = 写进了哪一份镜像；sub = 登记时的提交序号（同段合并按它认「同一次提交」）
+struct gpu_write { uint64_t off, len, id; uint8_t mi, landing; uint64_t sub; };   // GPU 写进镜像、还没回写到游戏内存的一段；mi = 写进了哪一份镜像；已有字段（off / len / id / mi / landing）的含义与顺序不变，sub 是追加在末尾的新字段：登记时的提交序号（同段合并按它认「同一次提交」）
 // 一份镜像。synced[i]：第 i 页上次同步取的脏页代号，0 = 从没同步；sub[i]：那次同步所在的提交序号；
 // checked[i]：第 i 页上次逐页核对时的全局写代号（代号没动 = 那之后游戏没写过任何被跟踪的页，这一页不用再核）。
 // use_sub / use_fence：最近一次用到这份镜像的提交（序号、栅栏值）；prev_fence：再往前一次用到它的提交的栅栏值——
@@ -315,7 +315,7 @@ uint64_t rp_buf_gpu_write_note2(uint64_t addr, uint64_t len, uint64_t *pool_key,
         }
         if (s->ngw == s->cgw) { int nc = s->cgw ? s->cgw * 2 : 8; struct gpu_write *n = realloc(s->gw, (size_t)nc * sizeof *n); if (n) { s->gw = n; s->cgw = nc; } }
         if (s->ngw < s->cgw) { int mi = 0; mirror_pick(s, off, len, &mi);   // 和取这段缓冲时（rp_buf_resolve）挑的是同一份
-            id = ++next_id; s->gw[s->ngw++] = (struct gpu_write){off, len, id, sub, (uint8_t)mi, 0}; *pool_key = (uint64_t)(uintptr_t)mem;
+            id = ++next_id; s->gw[s->ngw++] = (struct gpu_write){.off = off, .len = len, .id = id, .mi = (uint8_t)mi, .landing = 0, .sub = sub}; *pool_key = (uint64_t)(uintptr_t)mem;
             __atomic_add_fetch(&g_gw_live, 1, __ATOMIC_RELEASE); }
     }
     pthread_mutex_unlock(&g_bmu);
