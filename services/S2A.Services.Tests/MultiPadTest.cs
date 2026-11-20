@@ -21,10 +21,10 @@ namespace S2A.Services.Tests
         [SoloTest("--multi-pad")]
         private static int MultiPad()
         {
-            int bad = 0;
+            int bad = 0, rows = 0;
             void Row(string what, string expect, string actual)
             {
-                bool ok = expect == actual; if (!ok) bad++;
+                bool ok = expect == actual; rows++; if (!ok) bad++;
                 Console.WriteLine($"{(ok ? "✓" : "✗")} 多手柄 {what}：{expect} → {actual}");
             }
 
@@ -63,8 +63,34 @@ namespace S2A.Services.Tests
             states = new List<GamepadInput> { new() { PlayerId = PlayerIndex.Player1 }, new() { PlayerId = PlayerIndex.Player2 }, new() { PlayerId = PlayerIndex.Player3 } };
             InputPump.FillPadStates(states, 1, PlayerIndex.Player2, &FakePadRead, 0);
             Row("回到 1 格只剩槽 0", "1", states.Count.ToString());
+            // ⑥ 格数跟在线手柄走（#918：分体横握两人合回一对，原先只增不减）。期望手写：PadsFor(当前, 在线, 最少, 上限)
+            Row("在线 1→2：开到 2", "2", InputPump.PadsFor(1, 2, 1, 8).ToString());
+            Row("在线 2→1：收回 1（分体合回一对）", "1", InputPump.PadsFor(2, 1, 1, 8).ToString());
+            Row("在线 2→1 但游戏要至少 2 人：不缩", "2", InputPump.PadsFor(2, 1, 2, 8).ToString());
+            Row("在线 4→2、最少 1：收回 2", "2", InputPump.PadsFor(4, 2, 1, 8).ToString());
+            Row("在线 0（iOS 壳 / 安卓没有在线数）：不动", "2", InputPump.PadsFor(2, 0, 1, 8).ToString());
+            Row("在线 3、小程序上限 2：开到 2", "2", InputPump.PadsFor(1, 3, 1, 2).ToString());
+            Row("在线不变：不动", "2", InputPump.PadsFor(2, 2, 1, 8).ToString());
 
-            Console.WriteLine($"{(bad == 0 ? "🟢" : "🔴")} 多手柄输入单测：14 项，不符 {bad}");
+            // ⑦ 缩回一格配成什么：照第 0 格实体；游戏不收就一对 ↔ Pro；认不出（键盘）从单只换成一对 / Pro
+            Func<ControllerType, bool> all = t => true;
+            Func<ControllerType, bool> proOnly = t => t == ControllerType.ProController;
+            Func<ControllerType, bool> pairAndSingles = t => t is ControllerType.JoyconPair or ControllerType.JoyconLeft or ControllerType.JoyconRight;
+            Row("合回一对、游戏收一对", "JoyconPair", InputPump.SinglePick(ControllerType.JoyconPair, ControllerType.JoyconRight, all).ToString());
+            Row("合回一对、游戏只收 Pro", "ProController", InputPump.SinglePick(ControllerType.JoyconPair, ControllerType.JoyconRight, proOnly).ToString());
+            Row("Pro 手柄、游戏只收一对和单只", "JoyconPair", InputPump.SinglePick(ControllerType.ProController, ControllerType.JoyconLeft, pairAndSingles).ToString());
+            Row("实体认不出、当前是单只 → 一对", "JoyconPair", InputPump.SinglePick(ControllerType.None, ControllerType.JoyconRight, all).ToString());
+            Row("实体认不出、当前是 Pro → 不变", "ProController", InputPump.SinglePick(ControllerType.None, ControllerType.ProController, all).ToString());
+
+            // ⑧ 多格时每格照实体：一对 / Pro 也照实体（原先只认单只，合成一对的那格仍按单只配）；游戏不收就用调用方给的
+            Row("一格是一对", "JoyconPair", InputPump.SlotPick(ControllerType.JoyconPair, ControllerType.JoyconRight, all).ToString());
+            Row("一格是 Pro", "ProController", InputPump.SlotPick(ControllerType.ProController, ControllerType.JoyconLeft, all).ToString());
+            Row("一格是左只", "JoyconLeft", InputPump.SlotPick(ControllerType.JoyconLeft, ControllerType.JoyconRight, all).ToString());
+            Row("一对但游戏只收 Pro → 用给的", "ProController", InputPump.SlotPick(ControllerType.JoyconPair, ControllerType.ProController, proOnly).ToString());
+            Row("实体认不出 → 用给的", "JoyconRight", InputPump.SlotPick(ControllerType.None, ControllerType.JoyconRight, all).ToString());
+
+
+            Console.WriteLine($"{(bad == 0 ? "🟢" : "🔴")} 多手柄输入单测：{rows} 项，不符 {bad}");
             return bad == 0 ? 0 : 1;
         }
     }

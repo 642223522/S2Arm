@@ -880,7 +880,7 @@ namespace S2A.Services
                 int want = Math.Min(assigned, args.PlayerCountMax > 0 ? args.PlayerCountMax : InputPump.MaxPads);
                 if (want > InputPump.Pads) InputPump.SetPads(Host.Device, want);
             }
-            if (args.PlayerCountMin > InputPump.Pads) InputPump.SetPads(Host.Device, args.PlayerCountMin);
+            InputPump.RequirePads(Host.Device, args.PlayerCountMin);   // 游戏要的最少人数：开到它，之后在线手柄变少也不缩到它下面
             var players = new System.Collections.Generic.List<PlayerIndex>(args.SupportedPlayers);
             PlayerIndex player;
             ControllerType type;
