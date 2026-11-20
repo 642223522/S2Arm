@@ -42,5 +42,18 @@ class ExportSignerMacPlume(unittest.TestCase):
             self.run_signer(True, team=None)
         self.assertEqual(e.exception.code, "apple_not_signed_in")
 
+class ExportSignerWindows(ExportSignerMacPlume):
+    def test_windows_not_signed_in_points_to_impactor_not_xcode(self):
+        # 11-19 维护者在 Windows 上看到「下一步：开启 Xcode……」：码报成了 Mac 的 xcode_account_missing；期望 apple_not_signed_in，下一步是 Impactor 添加账号
+        from errors import recovery
+        self.W.impactor.selected_team = lambda: None
+        with patch.object(install.os, "name", "nt"), patch.object(install, "win_install_mod", lambda c: self.W):
+            with self.assertRaises(Failure) as e:
+                install.export_signer(self.c, "appleId")
+        self.assertEqual(e.exception.code, "apple_not_signed_in")
+        nxt = recovery(e.exception.code, packaged=True, windows=True)
+        self.assertIn("Impactor", nxt); self.assertNotIn("Xcode", nxt)
+
+
 if __name__ == "__main__":
     unittest.main()
