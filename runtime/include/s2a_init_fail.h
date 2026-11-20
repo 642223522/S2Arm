@@ -39,8 +39,8 @@ enum { S2A_INIT_FAIL_EXIT = 1, S2A_INIT_FAIL_PAGE = 2 };
 #define S2A_INIT_FAIL_MSG_HEAP_EN "This game needs more memory. It has been noted, so tap Start again and it will run."
 #define S2A_INIT_FAIL_MSG_EXEC    "系统不允许运行这款游戏的代码：用 LiveContainer 之类的工具装的 S2Arm 会这样。请改用电脑上的 S2Arm，对这款游戏点「推到 iPhone」安装后再打开。"
 #define S2A_INIT_FAIL_MSG_EXEC_EN "The system won't let this game's code run. This happens when S2Arm was installed with a tool such as LiveContainer. Install it from S2Arm on your computer instead (choose \"Push to iPhone\" for this game), then open it again."
-#define S2A_INIT_FAIL_MSG_EXEC_CERT    "这个 S2Arm 是用分发证书签名安装的：系统只允许开发证书签的 App 运行放在 App 外的游戏程序。请在电脑上的 S2Arm 改用 Apple ID 登录（或换开发证书）重新安装 S2Arm。"
-#define S2A_INIT_FAIL_MSG_EXEC_CERT_EN "This S2Arm was signed with a distribution certificate. iOS only lets apps signed with a development certificate run game code kept outside the app. In S2Arm on your computer, sign in with an Apple ID (or use a development certificate) and install S2Arm again."
+#define S2A_INIT_FAIL_MSG_EXEC_CERT    "安装这个 S2Arm 用的证书缺「调试权限（get-task-allow）」，没有它系统不让游戏运行。请找证书发放人要含这项权限的 Apple Development 开发证书和开发描述文件（在电脑上的 S2Arm 导入证书时会列出全部缺项，并给出可直接复制给发放人的话），或在电脑上的 S2Arm 改用 Apple ID 登录后重新安装。"
+#define S2A_INIT_FAIL_MSG_EXEC_CERT_EN "The certificate used to install this S2Arm is missing the debugging entitlement (get-task-allow), and without it iOS won't let games run. Ask whoever issued the certificate for an Apple Development certificate and development provisioning profile that include it (importing the certificate in S2Arm on your computer lists everything that's missing and gives you a message to send them), or sign in with an Apple ID in S2Arm on your computer and install again."
 #define S2A_INIT_FAIL_MSG_DEVICE  "这台设备的内存和地址空间不够运行这款游戏，换一台内存更大的 iPhone / iPad 再试；诊断里有它要多少、这台设备有多少。"
 #define S2A_INIT_FAIL_MSG_DEVICE_EN "This device doesn't have enough memory and address space to run this game. Try an iPhone or iPad with more memory; the diagnostics show how much it needs and how much this device has."
 // 错误码：由失败出口显式指定（host_main.c failed_session 的调用点一处一个），不从摘要文本猜。

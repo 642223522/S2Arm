@@ -43,7 +43,7 @@ static const struct { int code; const char *id, *summary, *msg; } k_want[] = {
     {S2A_INIT_FAIL_E_IMAGE_EXEC, "image_exec_denied", "外置镜像代码段映射被系统拒（errno=EPERM）：签名已注册但不许可执行映射，所见 4 张卡都是 LiveContainer 装法（#63639b）",
      "系统不允许运行这款游戏的代码：用 LiveContainer 之类的工具装的 S2Arm 会这样。请改用电脑上的 S2Arm，对这款游戏点「推到 iPhone」安装后再打开。"},
     {S2A_INIT_FAIL_E_IMAGE_EXEC_CERT, "image_exec_cert", "外置镜像代码段映射被系统拒（errno=EPERM），且本进程签名没有 get-task-allow（分发 / ad hoc / 企业证书签的 App）：iOS 只给带它的进程映射 App 外的代码（#1760 单变量复现）",
-     "这个 S2Arm 是用分发证书签名安装的：系统只允许开发证书签的 App 运行放在 App 外的游戏程序。请在电脑上的 S2Arm 改用 Apple ID 登录（或换开发证书）重新安装 S2Arm。"},
+     "安装这个 S2Arm 用的证书缺「调试权限（get-task-allow）」，没有它系统不让游戏运行。请找证书发放人要含这项权限的 Apple Development 开发证书和开发描述文件（在电脑上的 S2Arm 导入证书时会列出全部缺项，并给出可直接复制给发放人的话），或在电脑上的 S2Arm 改用 Apple ID 登录后重新安装。"},
     {S2A_INIT_FAIL_E_UNKNOWN, "unknown", "未登记的初启失败", "启动过程中出了问题。"},
     {999, "unknown", "未登记的初启失败", "启动过程中出了问题。"},
     {-1, "unknown", "未登记的初启失败", "启动过程中出了问题。"},
