@@ -39,7 +39,7 @@ public sealed partial class EnvironmentWindow
         dropTitle: ConfirmTitle(updateAskCode),
         cancelDrop: () => { updateState = ""; updateOutcome = null; Navigate("library"); },
         switchExport: updateState is "failed" or "invalid" or "interrupted" && lastUpdateMode != "export"
-            ? () => { IosAfterPack = "export"; _ = UpdatePhoneAsync(lastUpdate.AcceptStale, lastUpdate.Repack, lastUpdate.Accept, mode: "export", sgradeUpgrade: lastUpdateSGrade); } : null);
+            ? () => { _ = UpdatePhoneAsync(lastUpdate.AcceptStale, lastUpdate.Repack, lastUpdate.Accept, mode: "export", sgradeUpgrade: lastUpdateSGrade); } : null);
     private string updateDiagnostics = "";
     /// <summary>这一批是「更新并重新出这几款」排的：整批出完（没暂停、没取消）逐款装到 iPhone（BatchFinishedAsync）</summary>
     private bool batchInstallAfter;
@@ -195,7 +195,7 @@ public sealed partial class EnvironmentWindow
     private async Task UpdatePhoneAsync(bool acceptStale, IReadOnlyList<string> repack, IReadOnlySet<string>? accept = null, bool ask = true, string? mode = null, bool sgradeUpgrade = false, string? device = null)
     {
         if (connectedFolder is null || libraryId is null) return;
-        mode ??= IosAfterPack == "export" ? "export" : null;   // 没指定这次怎么走：按出包页「出完之后」玩家选的那条（选了自签 = 不连手机、导出更新后的自签包）
+        // 没指定这次怎么走 = 装到手机（11-19 自签走查结构 8）：出包页「出完之后」只管出包页那一次，不当续签 / 更新的全局开关
         if (QueuePhone(null, () => UpdatePhoneAsync(acceptStale, repack, accept, ask, mode, sgradeUpgrade, device))) return;   // 出包在跑不挡；手机上有作业在跑 → 排队
         accept ??= new HashSet<string>();
         lastUpdate = (acceptStale, repack, accept);   // 失败页「重试」/ 挤掉确认的「仍然继续」按同样的参数再来

@@ -945,7 +945,6 @@ public sealed partial class EnvironmentWindow
     }
 
     /// <summary>玩家选了「出完导出自签 IPA」：自动装到手机（连上就更新、新版首启横幅）一律跳过，玩家自己签名安装</summary>
-    private bool IosAfterPackIsExport => IosAfterPack == "export";
 
     /// <summary>出包页的「开始」：出 iPhone 时按「出完之后」那条路一步走完（装到 iPhone / 导出自签包）</summary>
     private void StartPackBranch(LibraryGame game)

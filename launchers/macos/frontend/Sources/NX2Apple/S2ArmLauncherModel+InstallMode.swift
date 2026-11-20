@@ -37,7 +37,7 @@ extension S2ArmLauncherModel {
 
     /// 装机 / 更新失败的那页上「改为导出自签包」：不连手机也能走完（11-16 维护者：没插手机就卡死是我们自己设的障碍）
     func switchToSelfSign(_ session: JobSession, language: String) {
-        iosAfterPack = "export"
+        // 只管这一次（11-19 自签走查结构 8）：不改出包页「出完之后」的记忆，原先改了就成了隐藏的全局开关——之后续签只导出、不动手机，7 天到点打不开
         if session.kind == .installUpdate, let a = lastUpdateArgs {
             updatePhone(acceptStale: a.acceptStale, repack: a.repack, language: language, accept: a.accept, mode: "export", sgradeUpgrade: a.sgradeUpgrade)
         } else if let id = session.gameID, let game = games.first(where: { $0.id == id }) {
@@ -63,7 +63,7 @@ extension S2ArmLauncherModel {
     func updatePhone(acceptStale: Bool, repack: [String], language: String, device: String? = nil, acceptDropped: Bool = false, accept: Set<String> = [], ask: Bool = true,
                      mode: String? = nil, sgradeUpgrade: Bool = false) {
         let accept = acceptDropped ? accept.union(["acceptDropped"]) : accept
-        let mode = mode ?? (iosAfterPack == "export" ? "export" : nil)   // 没指定这次怎么走：按出包页「出完之后」玩家选的那条（选了自签 = 不连手机、导出更新后的自签包）
+        // 没指定这次怎么走 = 装到手机（11-19 自签走查结构 8）：出包页「出完之后」只管出包页那一次，不当续签 / 更新的全局开关；要导出就由调用方明确传 mode = "export"
         guard !phoneBusy else {   // 出包等主槽作业照跑也能更新（手机槽）；手机槽忙 → 排队
             phoneQueue.append((nil, { [weak self] in self?.updatePhone(acceptStale: acceptStale, repack: repack, language: language, device: device, accept: accept, ask: ask,
                                                                        mode: mode, sgradeUpgrade: sgradeUpgrade) })); return

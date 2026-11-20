@@ -262,7 +262,6 @@ public final class S2ArmLauncherModel: ObservableObject {
         didSet { UserDefaults.standard.set(iosAfterPack, forKey: "S2AIosAfterPack") }
     }
     /// 玩家选了「出完导出自签 IPA」：自动装到手机（连上就更新、新版首启横幅）一律跳过，玩家自己签名安装
-    var selfSignChosen: Bool { iosAfterPack == "export" }
     /// 这次装机会话是导出自签包（进度 / 结局页照导出写；完成后看结局里的导出文件夹）
     @Published var selfSigning = false
     /// 添加游戏 / 放密钥弹窗（ImportSheet）：这两个作业的进度和失败原因都留在弹窗里，不换页。
@@ -547,7 +546,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// keptModulesLoop 的一次（单测直接调）：→ 这次有没有发起「更新 iPhone」
     @discardableResult func keptModulesTick() async -> Bool {
         // 只按真冲突跳过：手机正被装机 / 推包占着（phoneBusy）；出包等别的作业在跑照样收（升级首启迁移几分钟，原先 busy 整轮跳过拖到第 360 秒）
-        if phoneBusy || selfSignChosen { return false }   // 出包页选了「出完之后导出自签」：不走启动器装机，自动装到手机也不做（玩家选择优先）
+        if phoneBusy { return false }   // 出包页选了「出完之后导出自签」：不走启动器装机，自动装到手机也不做（玩家选择优先）
         let r: [String: Any]
         do {
             r = try await provider.client.perform("phoneKeptPull").result
