@@ -166,8 +166,7 @@ int main(int argc, char **argv) { @autoreleasepool {
         CHECK(API(nvnSyncWait)(&s, 0) == NVN_SYNC_WAIT_RESULT_FAILED);   // DOOM Eternal：超时 0 轮询也不回超时（它只在 TIMEOUT 时睡下再查）
         // 原判用时 < 50 ms：负载高时调用本身被抢占就假红。改判「没进入阻塞等待」（计数不涨），睡到超时的旧实现必进阻塞等待
         double ms = (now_ns() - t0) / 1e6; uint64_t blocks = s2a_nvn_syncwait_blocks() - b0; CHECK(blocks == 0);
-        printf("%s：通过（2 秒超时：进入阻塞等待 %llu 次，用时 %.1f ms 仅供参考）
-", phase, (unsigned long long)blocks, ms); } }
+        printf("%s：通过（2 秒超时：进入阻塞等待 %llu 次，用时 %.1f ms 仅供参考）\n", phase, (unsigned long long)blocks, ms); } }
 
     if (want(argc, argv, 5)) { phase = "⑤ nvnInstallGlobalDebugCallback：按名可查、什么都不做";
     {   install_fn install = (install_fn)load("nvnInstallGlobalDebugCallback"); int token = 0;
