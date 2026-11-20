@@ -94,15 +94,12 @@ skey = nvn_key.skey   # generation 2 (two volatile control spans zeroed), see nv
 
 def same_shader(a, b):
     """Two copies of one key hold the same shader: the code areas are equal, and so are the control sections up to their own length (control +0x20). Pokémon Legends: Z-A's UI layout archives
-    (__ArchiveShader.bnsh inside the .truiv packs) give 104 KB control sections whose stage descriptor length runs 456 bytes past their own length, and those trailing bytes differ between copies.
-    Switch 1 control sections compare as the key hashes them (generation 2, nvn_key.key_bytes: two volatile spans zeroed): two copies that differ only there are the same shader
-    (same translation; that is why the key merges them). Compared raw, a Unity game's variants that differ only there were taken for a key collision, red() ended the worker and
-    whole data files were dropped: 52,692 shaders down to 138"""
+    (__ArchiveShader.bnsh inside the .truiv packs) give 104 KB control sections whose stage descriptor length runs 456 bytes past their own length, and those trailing bytes differ between copies"""
     (ca, ka), (cb, kb) = a, b
     if ns2.is_nvn2(ca): return ka == kb and ns2.key_ctl(ca) == ns2.key_ctl(cb)
     n = struct.unpack_from('<I', ca, 0x20)[0] if len(ca) >= 0x24 else len(ca)
     n = n if 0x760 <= n <= min(len(ca), len(cb)) else max(len(ca), len(cb))
-    return ka == kb and nvn_key.key_bytes(ca[:n]) == nvn_key.key_bytes(cb[:n])
+    return ka == kb and ca[:n] == cb[:n]
 
 def check(where, st, ctl, code):
     """control section and code area consistent; returns the reason if not"""

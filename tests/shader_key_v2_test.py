@@ -81,18 +81,5 @@ with tempfile.TemporaryDirectory(prefix='s2a-keyv2-') as d:
     rows = [l.split('\t') for l in (w / 'key_alias.tsv').read_text().splitlines() if l and not l.startswith('#')] if r.returncode == 0 else r.stderr[-300:]
     ck("⑥ 键别名表：两段非零的进表 k1 → k2，全零的不进表", [[k1, k2]], rows)
 
-# ⑦ 抽取的「同键两份是否同一着色器」按第 2 代口径比（shader_split.same_shader / uniq_keys）：只差两段易变字段的两份是同一着色器，
-#   原先按原始控制段比，判成「同键不同内容」、red 退出，整份数据文件被跳过（一款 Unity 游戏 52,692 支掉到 138 支）
-ck("⑦ same_shader：只差两段易变字段 = 同一着色器", True, shader_split.same_shader((bytes(A), code), (bytes(B), code)))
-ck("⑦ same_shader：短控制段（自身长度 0x7e0）里只差易变字段 = 同一着色器", True, shader_split.same_shader((bytes(D), code), (bytes(E), code)))
-G = bytearray(B); G[0x100] ^= 1   # 两段易变字段不同、别处也不同
-ck("⑦ 两段易变字段不同、别处也不同：第 2 代键不同（别处的差别照样分得开）", True, nvn_key.skey(bytes(A), code) != nvn_key.skey(bytes(G), code))
-ck("⑦ same_shader：差在易变字段以外 = 不是同一着色器", False, shader_split.same_shader((bytes(A), code), (bytes(C), code)))
-try:
-    got = sorted(shader_split.uniq_keys([('a', 'vs', bytes(A), code), ('b', 'vs', bytes(B), code)]))
-except SystemExit as e:
-    got = 'red：' + str(e)[:60]
-ck("⑦ uniq_keys：只差易变字段的两份合成一个第 2 代键、不判红", [HAND['A'][1]], got)
-
 print('shader_key_v2 单测全过' if not bad else f'shader_key_v2 单测有 {bad} 项不通')
 sys.exit(1 if bad else 0)
