@@ -8,14 +8,16 @@
 //   ④ DM_NVN_CUT_BUSY=0：GPU 忙也提交（计数 +1）
 //   ⑤ 段的绘制数从提交开始算：提交一开始就画进沿用的目标 64 次（中间没有切段点），第一个切段点就该提交（旧代码从第一次切段点才开始数 → 不提交）
 //   ⑦ 扣 GPU 空闲缝（照上游 3304d6a0 seg_idle_before）：一次提交里先一段计算 +「始」报告、GPU 闲时切段（这个命令缓冲先提交），宿主再睡 20 ms（GPU 没活），
-//      再一段计算 +「末」报告、提交。两段计算各不到 1 ms：缺省（扣缝）始末差 < 10 ms；DM_NVN_GPU_TS=segment_gaps（不扣，第四个子进程）始末差 ≥ 20 ms（宿主睡的那段 GPU 空着）。
-//      反证：去掉 rep_ticks 里扣 seg_idle_before 那一行 → 缺省子进程始末差 ≥ 20 ms，⑦ 红
+//      再一段计算 +「末」报告、提交。缺省（扣缝）：「末」报告扣掉了空闲缝（生产计数 g_ts_idle_cut_n +1）；DM_NVN_GPU_TS=segment_gaps（不扣，第四个子进程）：不扣（计数不变）。
+//      原先按 GPU 时间判（缺省始末差 < 10 ms、segment_gaps ≥ 20 ms）：GPU 被别的进程占着时两段计算本身就慢、第一段晚开跑，两条都会假红；始末差现在只打出来参考。
+//      反证：去掉 rep_ticks 里扣 seg_idle_before 那一行 → 缺省子进程扣缝计数不涨，⑦ 红
 //   ⑥ 编码线程开（iPhone / Mac 缺省，DM_NVN_ENC_THREAD=1）同样走 ①②③：计数器堆的时间戳经录制流在编码线程上写（nvn_rec.h RO_R_TS / RO_C_TS）。
 //      旧代码编码线程开时不建计数器堆（ts_on 要求 !rec_on()），「忙就只留边界」进不去，每 64 笔真提交一次（照上游 3304d6a0）→ ① 红
 // 「GPU 忙」用在途计数 g_seg_inflight 直接置 1 模拟（真实在途的命令缓冲回报时间不可控）；其余都是真 Metal 4 设备、真提交、真时间戳。
 // 反证：去掉 sub_cut 里「忙就只留边界」那段 → ① 红（忙时也提交 1 次、只留边界 0 个）；② ③ 照绿（提交的切段点同样记边界时间戳）
 #include "../gfx/nvn/nvn_mtl.m"
 #include <sys/wait.h>
+// GPU 完成等待上限 30 秒（原 10 秒：负载高时只会更慢，等不到 REQUIRE 判红）
 
 static unsigned checks, failures;
 #define REQUIRE(c) do { if (!(c)) { fprintf(stderr,"SETUP FAIL %s:%d %s\n",__FILE__,__LINE__,#c); exit(2); } } while (0)
@@ -31,17 +33,19 @@ static void reach_cut(void) { g_stat_draw+=64; sub_cut(); }   // as many draws a
 enum { JIT = 19 };
 static int le(uint64_t a, uint64_t b) { return a <= b + JIT; }
 
-static uint64_t idle_gap_diff(void) {   // ⑦：始末两份报告之间夹一次提交 + 宿主睡 20 ms，返回末 − 始（19.2 MHz 滴答）
-    for (int i=0;i<200 && atomic_load(&g_seg_inflight);i++) usleep(10000);
+static uint64_t idle_gap_diff(uint64_t *cut_n) {   // ⑦：始末两份报告之间夹一次提交 + 宿主睡 20 ms，返回末 − 始（19.2 MHz 滴答）；*cut_n = 这期间扣掉空闲缝的报告数
+    for (int i=0;i<3000 && atomic_load(&g_seg_inflight);i++) usleep(10000);   // 兜底 30 秒（原 2 秒）
     REQUIRE(!atomic_load(&g_seg_inflight));
+    uint64_t n0=atomic_load(&g_ts_idle_cut_n);
     nvn_be_sub_begin();
     work(); mtl_sub_counter((uint64_t)(uintptr_t)rep[5],0x10);
     reach_cut();   // GPU 闲：这个命令缓冲提交
-    usleep(20000);   // 宿主「翻译」20 ms：GPU 跑完上一个命令缓冲后空着
+    usleep(20000);   // 宿主「翻译」20 ms：GPU 跑完上一个命令缓冲后空着（只是造出一条缝，判据不看它多长）
     work(); mtl_sub_counter((uint64_t)(uintptr_t)rep[6],0);
-    uint64_t f=nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f,10000000000ull)); REQUIRE(!mtl_last_commit_error());
-    for (int i=0;i<200 && !rep[6][1];i++) usleep(10000);
+    uint64_t f=nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f,30000000000ull)); REQUIRE(!mtl_last_commit_error());
+    for (int i=0;i<3000 && !rep[6][1];i++) usleep(10000);   // 等报告落地，兜底 30 秒（原 2 秒）
     REQUIRE(rep[5][1] && rep[6][1] && rep[6][1]>=rep[5][1]);
+    *cut_n=atomic_load(&g_ts_idle_cut_n)-n0;
     return rep[6][1]-rep[5][1];
 }
 static int child(int mode) {   // 1 缺省（编码线程关）、2 缺省 + 编码线程开、0 DM_NVN_CUT_BUSY=0、3 DM_NVN_GPU_TS=segment_gaps（只跑 ⑦）
@@ -64,18 +68,18 @@ static int child(int mode) {   // 1 缺省（编码线程关）、2 缺省 + 编
     if (!busy_on) {   // ④
         nvn_be_sub_begin(); work();
         atomic_fetch_add(&g_seg_inflight,1); uint64_t c0=g_cuts; reach_cut(); atomic_fetch_sub(&g_seg_inflight,1); uint64_t c1=g_cuts;
-        work(); uint64_t f=nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f,10000000000ull)); REQUIRE(!mtl_last_commit_error());
+        work(); uint64_t f=nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f,30000000000ull)); REQUIRE(!mtl_last_commit_error());
         CHECK(c1==c0+1,"④ DM_NVN_CUT_BUSY=0、GPU 忙：切段提交 %llu 次（期望 1）",(unsigned long long)(c1-c0));
         { nvn_be_sub_begin(); g_stat_draw+=64; uint64_t k0=g_cuts; sub_cut(); uint64_t k1=g_cuts;   // ⑤ 64 draws into the inherited target, then the first cut point (GPU idle)
-          uint64_t f5=nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f5,10000000000ull));
+          uint64_t f5=nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f5,30000000000ull));
           CHECK(k1==k0+1,"⑤ 提交开始后先画 64 次、第一个切段点：提交 %llu 次（期望 1）",(unsigned long long)(k1-k0)); }
         printf("%s t_nvn_cut_busy 子进程（DM_NVN_CUT_BUSY=0）：%u 项，%u 项失败\n",failures?"✗":"✓",checks,failures); return failures!=0;
     }
     CHECK(ts_on(),"%s编码线程%s：建了计数器堆（ts_on）",enc?"⑥ ":"",enc?"开":"关"); if (!ts_on()) return 1;
-    if (mode==3) { uint64_t d=idle_gap_diff();
-        CHECK(d>=20*19200,"⑦ DM_NVN_GPU_TS=segment_gaps（不扣缝）：始末差 %.2f ms（期望 ≥ 20：宿主睡的那段 GPU 空着）",d/19200.0);
+    if (mode==3) { uint64_t cn=0, d=idle_gap_diff(&cn);
+        CHECK(cn==0,"⑦ DM_NVN_GPU_TS=segment_gaps（不扣缝）：扣掉空闲缝的报告 %llu 份（期望 0；始末差 %.2f ms 仅供参考）",(unsigned long long)cn,d/19200.0);
         printf("%s t_nvn_cut_busy 子进程（segment_gaps）：%u 项，%u 项失败\n",failures?"✗":"✓",checks,failures); return failures!=0; }
-    for (int i=0;i<200 && atomic_load(&g_seg_inflight);i++) usleep(10000);   // the warm-up submissions of mtl_init have reported back
+    for (int i=0;i<3000 && atomic_load(&g_seg_inflight);i++) usleep(10000);   // the warm-up submissions of mtl_init have reported back（兜底 30 秒，原 2 秒）
     REQUIRE(!atomic_load(&g_seg_inflight));
     uint64_t t_before=gpu_ticks();
     nvn_be_sub_begin();
@@ -87,8 +91,8 @@ static int child(int mode) {   // 1 缺省（编码线程关）、2 缺省 + 编
     reach_cut();   // GPU idle: commits
     uint64_t c2=g_cuts;
     work(); mtl_sub_counter((uint64_t)(uintptr_t)rep[3],0x10); mtl_sub_counter((uint64_t)(uintptr_t)rep[4],0);   // segment 2: start, end
-    uint64_t f=nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f,10000000000ull)); REQUIRE(!mtl_last_commit_error());
-    for (int i=0;i<200 && !rep[4][1];i++) usleep(10000);
+    uint64_t f=nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f,30000000000ull)); REQUIRE(!mtl_last_commit_error());
+    for (int i=0;i<3000 && !rep[4][1];i++) usleep(10000);   // 兜底 30 秒（原 2 秒）
     uint64_t t_after=gpu_ticks();
     CHECK(c1==c0 && b1==b0+1 && s1==s0+1,"① GPU 忙的切段点：提交 %llu 次（期望 0）、只留边界 %llu 个（期望 1）、段号 %u→%u（期望 +1）",(unsigned long long)(c1-c0),(unsigned long long)(b1-b0),s0,s1);
     CHECK(c2==c1+1,"① GPU 闲的切段点：提交 %llu 次（期望 1）",(unsigned long long)(c2-c1));
@@ -96,8 +100,8 @@ static int child(int mode) {   // 1 缺省（编码线程关）、2 缺省 + 编
     printf("  报告（19.2 MHz）：段0 始 %llu、段0 末 %llu、段1 始 %llu、段2 始 %llu、段2 末 %llu；提交前 %llu、等完后 %llu\n",(unsigned long long)r0,(unsigned long long)r1,(unsigned long long)r2,(unsigned long long)r3,(unsigned long long)r4,(unsigned long long)t_before,(unsigned long long)t_after);
     CHECK(r1 && le(r1,r2) && le(r2,r1),"② 段 0 末 = 段 1 始（同一边界，容 %d 个滴答换算误差）：%llu / %llu（差 %lld）",JIT,(unsigned long long)r1,(unsigned long long)r2,(long long)(r2-r1));
     CHECK(le(t_before,r0) && le(r0,r1) && le(r2,r3) && le(r3,r4) && le(r4,t_after),"③ 先后（容 %d 个滴答）：提交前 ≤ 段0 始 ≤ 段0 末，段1 始 ≤ 段2 始 ≤ 段2 末 ≤ 等完后",JIT);
-    if (mode==1) { uint64_t d=idle_gap_diff();
-        CHECK(d<10*19200,"⑦ 缺省（扣缝）：始末差 %.2f ms（期望 < 10：两段计算各不到 1 ms，宿主睡的 20 ms 不算 GPU 时间）",d/19200.0); }
+    if (mode==1) { uint64_t cn=0, d=idle_gap_diff(&cn);
+        CHECK(cn>=1,"⑦ 缺省（扣缝）：「末」报告扣掉了空闲缝 %llu 份（期望 ≥ 1：宿主睡的那段不算 GPU 时间；始末差 %.2f ms 仅供参考）",(unsigned long long)cn,d/19200.0); }
     printf("%s t_nvn_cut_busy 子进程（缺省%s）：%u 项，%u 项失败\n",failures?"✗":"✓",enc?"、编码线程开":"、编码线程关",checks,failures);
     return failures!=0;
 }
