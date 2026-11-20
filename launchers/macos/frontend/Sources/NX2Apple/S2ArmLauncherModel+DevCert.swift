@@ -16,15 +16,22 @@ extension S2ArmLauncherModel {
         catch { reportFailure("s2arm.fail.devCert", error, passive: true) }
     }
 
-    /// 导入：成功即切到证书签名，回 nil；失败回原因句（弹窗里显示）
-    func importDevCert(p12: String, profile: String, password: String) async -> String? {
+    /// 导入：成功即切到证书签名，回 nil；失败回原因句、失败码和给证书发放人的话（弹窗里显示；码 / 那段话决定同一页给不给出路按钮）
+    func importDevCert(p12: String, profile: String, password: String) async -> (text: String, code: String?, request: String)? {
         do {
             _ = try await provider.devCertImport(p12: p12, profile: profile, password: password, device: selectedDevice?["udid"] as? String)
             await reloadDevCert()
             return nil
         } catch {
-            return error.localizedDescription
+            let facts = (error as? JobFailure)?.outcome.failureDiagnostic?["facts"] as? [String: Any]
+            return (error.localizedDescription, (error as? JobFailure)?.code, facts?["requestText"] as? String ?? "")
         }
+    }
+
+    /// 分发证书描述文件签不了游戏（devcert_distribution）的出路：签名方式切到 Apple ID，并直接打开 Apple ID 登录面板（host：挂在哪一层弹）
+    func switchToAppleIdLogin(host: String) {
+        setSignChoice("apple")
+        openAppleLogin(host: host)
     }
 
     /// 出包页切签名方式：选证书但还没导入 → 先开导入弹窗（导入成功才算切过去）

@@ -1,6 +1,8 @@
 // S2Arm（不是上游文件）：出包页「签名方式」一栏 + 导入开发者证书弹窗（v0.2.4，作业层 pack/jobs/devcert.py）。
 //   一栏：Apple ID 签名 / 我的开发者证书 二选一；选了证书，下面列团队、到期、包名、设备列表核对，问题黄字（不挡）、根本签不了红字。
 //   弹窗：拖进或选 .p12 与 .mobileprovision，输密码，点导入；失败原因留在弹窗里，成了自动关。
+//   描述文件缺权限（分发证书的 devcert_distribution 拒导入；只缺内核两项的 devcert_entitlements 照常导入）：逐条列缺项，同一页直接给
+//   「复制给证书发放人的话」（作业层 requestText）和「改用 Apple ID 登录」（切到 Apple ID 签名并打开登录面板），不让玩家自己去找。
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -18,7 +20,11 @@ struct DevCertRow: View {
     var title: String? = nil
     var appleIdTitle: String? = nil
     var embedded = false
+    /// 「改用 Apple ID 登录」打开的登录面板挂在哪一层（这一栏在设置里）
+    var loginHost = "settings"
     @State private var confirmDelete = false
+    /// 导入弹窗里点了「改用 Apple ID 登录」：等弹窗收起再开登录面板（同一层同一时刻只能弹一个）
+    @State private var loginAfterSheet = false
 
     private var on: Bool { model.devCert?.active == true }
     /// 选了「我自己用 AltStore / SideStore 签」（自签走查结构 6）
@@ -49,7 +55,11 @@ struct DevCertRow: View {
         }
         .onAppear { model.refreshDevCert(); model.refreshInstallMode(silent: true) }
         .onChange(of: model.selectedDevice?["udid"] as? String) { _ in model.refreshDevCert() }
-        .sheet(isPresented: $model.showDevCertImport) { DevCertSheet(model: model).environmentObject(loc) }
+        .sheet(isPresented: $model.showDevCertImport, onDismiss: {
+            if loginAfterSheet { loginAfterSheet = false; model.switchToAppleIdLogin(host: loginHost) }
+        }) {
+            DevCertSheet(model: model, onAppleLogin: { loginAfterSheet = true }).environmentObject(loc)
+        }
         .alert(sx(loc, "deleteConfirm"), isPresented: $confirmDelete) {
             Button(sx(loc, "delete"), role: .destructive) { model.deleteDevCert() }
             Button(sx(loc, "sheet.cancel"), role: .cancel) {}
@@ -68,6 +78,9 @@ struct DevCertRow: View {
             }
             ForEach(c.warnings, id: \.self) { t in
                 Label(loc.backend(t), systemImage: "exclamationmark.triangle").font(LauncherTheme.TypeStyle.caption).foregroundStyle(.yellow).fixedSize(horizontal: false, vertical: true)
+            }
+            if !c.requestText.isEmpty || c.blockingIds.contains("devcert_distribution") {
+                DevCertFixActions(request: c.requestText, idPrefix: "export.sign") { model.switchToAppleIdLogin(host: loginHost) }
             }
             HStack(spacing: 10) {
                 Button(sx(loc, "replace")) { model.showDevCertImport = true }.controllerButtonStyle(LauncherSecondaryButtonStyle())
@@ -98,12 +111,16 @@ struct DevCertRow: View {
 struct DevCertSheet: View {
     @ObservedObject var model: S2ArmLauncherModel
     @EnvironmentObject var loc: Localizer
+    /// 失败是分发证书描述文件时「改用 Apple ID 登录」：告诉外层收起后开登录面板
+    var onAppleLogin: () -> Void = {}
     @Environment(\.dismiss) private var dismiss
     @State private var p12 = ""
     @State private var profile = ""
     @State private var password = ""
     @State private var working = false
     @State private var failure: String?
+    @State private var failureCode: String?
+    @State private var failureRequest = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -119,6 +136,9 @@ struct DevCertSheet: View {
             if let failure {
                 Text(loc.backend(failure)).font(LauncherTheme.TypeStyle.detail).foregroundStyle(LauncherPalette.danger).fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("export.sign.sheet.failure")
+                if failureCode == "devcert_distribution" || !failureRequest.isEmpty {
+                    DevCertFixActions(request: failureRequest, idPrefix: "export.sign.sheet") { password = ""; onAppleLogin(); dismiss() }
+                }
             }
             Spacer(minLength: 0)
             HStack {
@@ -139,11 +159,11 @@ struct DevCertSheet: View {
     }
 
     private func start() {
-        working = true; failure = nil
+        working = true; failure = nil; failureCode = nil; failureRequest = ""
         Task {
             let why = await model.importDevCert(p12: p12, profile: profile, password: password)
             working = false
-            if let why { failure = why } else { password = ""; dismiss() }
+            if let why { failure = why.text; failureCode = why.code; failureRequest = why.request } else { password = ""; dismiss() }
         }
     }
 
@@ -175,5 +195,30 @@ struct DevCertSheet: View {
                 return true
             }
         }
+    }
+}
+
+/// 描述文件缺权限的两条出路（导入失败页、证书详情共用）：复制给证书发放人的话（按界面语言翻好再复制）/ 改用 Apple ID 登录
+struct DevCertFixActions: View {
+    let request: String
+    let idPrefix: String
+    let onAppleLogin: () -> Void
+    @EnvironmentObject var loc: Localizer
+    @State private var copied = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            if !request.isEmpty {
+                Button(sx(loc, copied ? "copied" : "copyRequest")) {
+                    NSPasteboard.general.clearContents(); NSPasteboard.general.setString(loc.backend(request), forType: .string); copied = true
+                }
+                .controllerButtonStyle(LauncherSecondaryButtonStyle())
+                .accessibilityIdentifier(idPrefix + ".copyRequest")
+            }
+            Button(sx(loc, "useAppleId")) { onAppleLogin() }
+                .controllerButtonStyle(LauncherPrimaryButtonStyle())
+                .accessibilityIdentifier(idPrefix + ".useAppleId")
+        }
+        .onChange(of: request) { _ in copied = false }
     }
 }

@@ -6780,6 +6780,10 @@
   "en": "Regenerate the provisioning profile on the developer website with this certificate selected, download it, and import it together with the certificate."
  },
  {
+  "source": "点「改用 Apple ID 登录」用 Apple ID 签名；或点「复制给证书发放人的话」发给对方，换成开发证书和开发描述文件后重新导入。",
+  "en": "Click “Sign In with Apple ID Instead” to sign with your Apple ID, or click “Copy Message for Certificate Issuer” and send it to them, then import the development certificate and profile you get back."
+ },
+ {
   "source": "在出包页「我的开发者证书」里重新导入证书和描述文件，或切回「Apple ID 签名」。",
   "en": "Import the certificate and profile again under “My developer certificate” on the export page, or switch back to “Apple ID signing”."
  },
@@ -6812,16 +6816,44 @@
   "en": "The certificate and profile don't match: this profile doesn't include the certificate, so a signed app won't install. Regenerate a profile that includes this certificate on the developer website."
  },
  {
-  "source": "描述文件没开「{0}」权限：小游戏照常，大游戏可能内存不够闪退。可在开发者网站给这个 App ID 打开后重新下载描述文件。",
-  "en": "The profile doesn't enable “{0}”. Small games work as usual; large games may run out of memory and crash. Enable it for this App ID on the developer website, then download the profile again."
+  "source": "这是分发（发布）证书的描述文件，缺下面的权限，S2Arm 0.6 起用它签出来的 App 每款游戏都打不开：",
+  "en": "This is a distribution (release) certificate profile and it lacks the entitlements below, so since S2Arm 0.6 every game in an app signed with it fails to open:"
  },
  {
-  "source": "提高内存上限",
-  "en": "Increased Memory Limit"
+  "source": "调试权限（get-task-allow）——没有它任何游戏都打不开",
+  "en": "Debugging (get-task-allow) — without it, no game can open"
  },
  {
-  "source": "扩展寻址",
-  "en": "Extended Virtual Addressing"
+  "source": "提高内存上限（com.apple.developer.kernel.increased-memory-limit）——没有它大游戏可能内存不够、起不来",
+  "en": "Increased Memory Limit (com.apple.developer.kernel.increased-memory-limit) — without it, large games may run out of memory and fail to start"
+ },
+ {
+  "source": "扩展寻址（com.apple.developer.kernel.extended-virtual-addressing）——没有它大游戏可能地址不够、起不来",
+  "en": "Extended Virtual Addressing (com.apple.developer.kernel.extended-virtual-addressing) — without it, large games may run out of address space and fail to start"
+ },
+ {
+  "source": "可以改用 Apple ID 登录签名，或复制下面这段话发给证书发放人，换成开发证书和开发描述文件后再导入。",
+  "en": "Sign with your Apple ID instead, or copy the message below and send it to whoever issued the certificate, then import a development certificate and development profile."
+ },
+ {
+  "source": "描述文件缺下面的权限，小游戏照常，大游戏可能起不来：",
+  "en": "The profile lacks the entitlements below. Small games work as usual; large games may fail to start:"
+ },
+ {
+  "source": "可以复制下面这段话发给证书发放人，补开后重新下载描述文件再导入。",
+  "en": "Copy the message below and send it to whoever issued the certificate; once they enable these, download the profile again and import it."
+ },
+ {
+  "source": "没连着 iPhone：复制后把「<你的设备 UDID>」换成你手机的 UDID。",
+  "en": "No iPhone connected: after copying, replace “<your device UDID>” with your iPhone’s UDID."
+ },
+ {
+  "source": "请提供 Apple Development 开发证书（.p12，附密码）和对应的 iOS App Development 开发描述文件。描述文件要求：用显式 App ID（不要通配 *），包含我的设备 UDID：{0}，并开启以下权限：调试权限（get-task-allow）、提高内存上限（com.apple.developer.kernel.increased-memory-limit）、扩展寻址（com.apple.developer.kernel.extended-virtual-addressing）。",
+  "en": "Please provide an Apple Development certificate (.p12, with its password) and a matching iOS App Development provisioning profile. Profile requirements: use an explicit App ID (not a wildcard *), include my device UDID: {0}, and enable these entitlements: Debugging (get-task-allow), Increased Memory Limit (com.apple.developer.kernel.increased-memory-limit), Extended Virtual Addressing (com.apple.developer.kernel.extended-virtual-addressing)."
+ },
+ {
+  "source": "请提供 Apple Development 开发证书（.p12，附密码）和对应的 iOS App Development 开发描述文件。描述文件要求：用显式 App ID（不要通配 *），包含我的设备 UDID：<你的设备 UDID>，并开启以下权限：调试权限（get-task-allow）、提高内存上限（com.apple.developer.kernel.increased-memory-limit）、扩展寻址（com.apple.developer.kernel.extended-virtual-addressing）。",
+  "en": "Please provide an Apple Development certificate (.p12, with its password) and a matching iOS App Development provisioning profile. Profile requirements: use an explicit App ID (not a wildcard *), include my device UDID: <your device UDID>, and enable these entitlements: Debugging (get-task-allow), Increased Memory Limit (com.apple.developer.kernel.increased-memory-limit), Extended Virtual Addressing (com.apple.developer.kernel.extended-virtual-addressing)."
  },
  {
   "source": "提高内存上限、扩展寻址",
