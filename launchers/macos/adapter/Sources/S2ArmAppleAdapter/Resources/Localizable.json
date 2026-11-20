@@ -10574,5 +10574,17 @@
  {
   "source": "选过的那个 S2Arm 已经从这台 iPhone 上删掉或换掉了。",
   "en": "The S2Arm you chose has been removed from or replaced on this iPhone."
+ },
+ {
+  "source": "无法为带空格的构建路径创建无空格别名。",
+  "en": "Couldn't create a space-free alias for the build path that contains spaces."
+ },
+ {
+  "source": "带空格的构建路径没有得到无空格别名。",
+  "en": "The build path that contains spaces didn't get a space-free alias."
+ },
+ {
+  "source": "无法准备构建缓存目录：{0}",
+  "en": "Couldn't prepare the build cache folder: {0}"
  }
 ]
