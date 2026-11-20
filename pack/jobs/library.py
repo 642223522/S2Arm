@@ -1995,7 +1995,6 @@ def catalog(c):
     # 设备记录里装在某台手机上的款：删除确认框据此多写一句「下次往这台手机装游戏时，手机上的这款会打不开」（容器现组时游戏库里没有它就带不进）
     on_phone = {g.upper() for _, r in layout.devices(c) if isinstance(r, dict) for g in (r.get("games") or {})}
     import install
-    sign_mode = install.chosen_sign_mode(c)   # 电脑这边的签名方式（只读两个小文件）：每款的「免费签名快到期」判断共用一次
     import sgrade
     sq = sgrade.queue_status(c)   # S 级升级队列（排队只在作业层一套）：每款 sgradeState / sgradeProgress，顶层 sgradeBatch
     for game in cat["games"]:
@@ -2024,7 +2023,7 @@ def catalog(c):
         game["downstream"] = downstream.describe(c, game)   # 下游深度方案（pack/downstream/schemes.json）：命中时启动器弹确认页
         game["sgrade"] = sgrade_badge(c, game["id"], image)   # 游戏库封面左上角金色 S（v0.4.0）
         game["iphoneRestorable"] = layout.phone_ipa(c, previous=True).is_file()   # 换壳后可装回上一版（install.restore_previous）
-        game["iphoneInstall"] = layout.install_record(c, game["id"], sign_mode)
+        game["iphoneInstall"] = layout.install_record(c, game["id"])
         game["onPhone"] = game["id"].upper() in on_phone
         # F06：按宿主二进制真实能力报，不能一律 True（否则 UI 的「旧引擎缺接口」提示永远不出现）
         game_info = layout.game_info(c, game["id"])
