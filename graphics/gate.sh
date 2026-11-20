@@ -715,7 +715,7 @@ rcof ue_pak_legacy; upk=$?; upkc=$(tail -1 "$LOG/ue_pak_legacy.log")
 # zstd 解压入口（zstd_lib：libzstd 流式接口，玩家 App 的 Python 3.12 没有 compression.zstd）：记 / 不记原长的帧、多帧、前缀、字典，截断与非 zstd 报错
 rcof zstd_lib; r=$?; reg $r "zstd 解压入口：$(tail -1 "$LOG/zstd_lib.log")（退出 ${r}）" "$LOG/zstd_lib.log"
 rcof keyscan; ks=$?; reg $ks "找钥回退扫描并行：$(tail -1 "$LOG/keyscan.log")（退出 ${ks}）" "$LOG/keyscan.log"   # pak_crypto find_key / _scan：1 路与多路都找到、段尾不漏窗、不打印密钥
-# IoStore 容器接入出包链（#247）：合成 .utoc/.ucas 解出全部记录、改前 extract.sh 门禁与改前 ue_pak.py 对纯 .utoc 根抽 0 支、Oodle 块判失败、TOC 3 不猜、加密容器借同包 pak 密钥（无钥判红）
+# IoStore 容器接入出包链（#247）：合成 .utoc/.ucas 解出全部记录、改前 extract.py 门禁与改前 ue_pak.py 对纯 .utoc 根抽 0 支、Oodle 块判失败、TOC 3 不猜、加密容器借同包 pak 密钥（无钥判红）
 rcof ue_iostore; r=$?; reg $r "IoStore 容器接入：$(tail -1 "$LOG/ue_iostore.log")（退出 ${r}）" "$LOG/ue_iostore.log"
 # UE pak 版本 9 冻结索引（11-02 鬼灭之刃 / 轩辕剑柒）：合成内存映像 pak 读名字 / 原文、uepak 与 ue_pak.py 两层、越界 / 缺名 / 加密三种判红、改前实现反证
 rcof ue_pak_frozen; r=$?; reg $r "UE pak 冻结索引：$(tail -1 "$LOG/ue_pak_frozen.log")（退出 ${r}）" "$LOG/ue_pak_frozen.log"
@@ -757,7 +757,7 @@ rcof unity_kw_pairs; r=$?; reg $r "Unity 按 Pass + 关键字配对：$(tail -1 
 rcof mtarc_width; r=$?; reg $r "MT ARC 条目宽度：$(tail -1 "$LOG/mtarc_width.log")（退出 ${r}）" "$LOG/mtarc_width.log"   # shader_split.py mtarc_members（11-02 生化危机6：路径 64 字节）
 rcof nlg4; r=$?; reg $r "NLG 新版档案：$(tail -1 "$LOG/nlg4.log")（退出 ${r}）" "$LOG/nlg4.log"   # shader_split.py nlg4_shaders（11-02 马力欧激战前锋 1.3.2）
 rcof source_path; r=$?; reg $r "来源列路径一律 /：$(tail -1 "$LOG/source_path.log")（退出 ${r}）" "$LOG/source_path.log"   # shader_split.py / nxsh_extract.py 来源串（11-05 Windows 出包机勇者斗恶龙 XI S 来源列反斜杠、分组全落 *_other）
-rcof list_arg; r=$?; reg $r "资源目录列表文件：$(tail -1 "$LOG/list_arg.log")（退出 ${r}）" "$LOG/list_arg.log"   # extract.sh / shader_split.py / nxsh_extract.py 的 @<列表文件>（11-05 Windows 出包机怪猎崛起 273 个追加内容超过 Windows 命令行上限）
+rcof list_arg; r=$?; reg $r "资源目录列表文件：$(tail -1 "$LOG/list_arg.log")（退出 ${r}）" "$LOG/list_arg.log"   # extract.py / shader_split.py / nxsh_extract.py 的 @<列表文件>（11-05 Windows 出包机怪猎崛起 273 个追加内容超过 Windows 命令行上限）
 rcof mtspk; r=$?; reg $r "MT SPK 两种排法：$(tail -1 "$LOG/mtspk.log")（退出 ${r}）" "$LOG/mtspk.log"   # shader_split.py mtspk_shaders（11-02 启示录2：控制段在前）
 rcof ue_oodle_inline; r=$?; reg $r "Unreal 内嵌 Oodle 着色器：$(tail -1 "$LOG/ue_oodle_inline.log")（退出 ${r}）" "$LOG/ue_oodle_inline.log"   # shader_split.py ue_inline_shaders / oodle_frames（11-01 无主之地3）
 rcof split_oodle_default; r=$?; reg $r "直连抽取解码器缺省：$(tail -1 "$LOG/split_oodle_default.log")（退出 ${r}）" "$LOG/split_oodle_default.log"   # shader_split.py oodle_defaults（11-07 勇者斗恶龙 XI S 私有根出包 LZ5 红）
@@ -766,7 +766,7 @@ rcof split_file_skip; r=$?; reg $r "直连抽取按文件降级：$(tail -1 "$LO
 rcof ue3_dnbc; r=$?; reg $r "UE3 包着色器：$(tail -1 "$LOG/ue3_dnbc.log")（退出 ${r}）" "$LOG/ue3_dnbc.log"   # shader_split.py ue3_package / ue3_dnbc_shaders（11-02 BioShock Infinite：LZ4 块里的 DNBC 记录）
 # Unity 无类型树的序列化文件（unityfs.shader_layout，10-29）：按版本生成的 Shader 布局与四份对过真树的金样等价、2017.1–2022.3 合成资源能解、版本错 / 多字节响亮停、计算着色器免树找 kernel、空 / 坏程序块跳过计数
 rcof unity_layouts; r=$?; reg $r "Unity 无树布局：$(tail -1 "$LOG/unity_layouts.log")（退出 ${r}）" "$LOG/unity_layouts.log"
-# 直连库整体替换（direct_lib.sh ⑥）：齐全判定的反例逐条不过、交换后新旧互换
+# 直连库整体替换（direct_lib.py ⑥）：齐全判定的反例逐条不过、交换后新旧互换
 rcof lib_swap; r=$?; reg $r "直连库发布核验：$(tail -1 "$LOG/lib_swap.log")（退出 ${r}）" "$LOG/lib_swap.log"
 # 编译时盘写满整次停、不当成单支编不过（#265，Build.cs Metal.DiskFull；假 xcrun 注入编译器输出）
 rcof metal_nospace; r=$?; reg $r "编译盘写满：$(tail -1 "$LOG/metal_nospace.log")（退出 ${r}）" "$LOG/metal_nospace.log"

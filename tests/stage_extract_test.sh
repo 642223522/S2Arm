@@ -1,5 +1,5 @@
 #!/bin/bash
-# 抽取阶段单测（pack/stage_extract.sh + 真的 graphics/tools/direct/extract.sh、pack/ue_pak.py；两个抽取器换成记账的假脚本，临时产物根，约 3 秒）：bash tests/stage_extract_test.sh
+# 抽取阶段单测（pack/stage_extract.sh + 真的 graphics/tools/direct/extract.py、pack/ue_pak.py；两个抽取器换成记账的假脚本，临时产物根，约 3 秒）：bash tests/stage_extract_test.sh
 # 期望按规则手写：首次 → 提交、extract/ok 与两份抽取在、记键、两个抽取器各跑 1 次且拿到 J 与配置档（DM_GAME）；同键 → 跳过、不再抽；
 #   游戏输入变（romfs 加文件）/ 配置档内容键变 → 键变、重抽；romfs 有 .pak → 先跑 ue_pak（这个 .pak 不是 Unreal pak → 0 个存档），shader_split 拿到 DM_UE_SHADERS；
 #   直连抽取失败 → 照常提交、退出 0、extract/direct_gap.txt 写「直连库失败：<原因>」、打黄（11-05 运行时现编兜底，原先退 3 整款出不了包）；S2Arm 抽取失败 → v0.3.1 起也照常提交、退出 0、只用直连抽取的结果、degrade.extract.tsv 记 s2x_failed（原先退 1 整款停，#711）；日志副本在 .failed/；Vulkan 款 → 跳过、不抽；
@@ -14,8 +14,8 @@ export S2A_NX_UNPACK=$T/nx_unpack-unused
 ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
 mkdir -p $T/repo/pack $T/repo/tools $T/repo/graphics/tools/direct $T/repo/graphics/tools/shbake $T/repo/translator $T/repo/graphics/nvn/games $T/repo/graphics/nvn/tools $T/roots
 cp "$H/pack/resource_input_key.py" $T/repo/pack/; cp "$H/pack/stage_keyfiles.sh" $T/repo/pack/; cp "$H/tools/stage_deps.py" $T/repo/tools/; cp -R "$H/tools/stage_deps_hook" $T/repo/tools/   # 各阶段实际读入进键（pack/stage_keyfiles.sh，10-30）
-cp "$H/pack/roots.sh" "$H/pack/srcs.sh" "$H/pack/stage_extract.sh" "$H/pack/ue_pak.py" "$H/pack/decoder_need.sh" $T/repo/pack/; mkdir -p $T/repo/pack/orch && cp "$H/pack/orch/current.py" $T/repo/pack/orch/; cp "$H/tools/clonedir.py" "$H/tools/host_build.sh" "$H/tools/plock.sh" "$H/tools/flock_hold.py" "$H/tools/machine.sh" "$H/tools/nostall.py" "$H/tools/progress.sh" "$H/tools/nospace.sh" $T/repo/tools/
-cp "$H/graphics/tools/direct/extract.sh" $T/repo/graphics/tools/direct/; cp "$H/graphics/tools/shbake/pak_crypto.py" "$H/graphics/tools/shbake/unreal_pak.py" "$H/graphics/tools/shbake/zstd_lib.py" $T/repo/graphics/tools/shbake/
+cp "$H/pack/roots.sh" "$H/pack/srcs.sh" "$H/pack/stage_extract.sh" "$H/pack/ue_pak.py" "$H/pack/decoder_need.sh" $T/repo/pack/; mkdir -p $T/repo/pack/orch && cp "$H/pack/orch/current.py" $T/repo/pack/orch/; cp "$H/tools/clonedir.py" "$H/tools/host_build.sh" "$H/tools/plock.sh" "$H/tools/flock_hold.py" "$H/tools/machine.sh" "$H/tools/nostall.py" "$H/tools/progress.sh" "$H/tools/progress.py" "$H/tools/nospace.sh" $T/repo/tools/
+cp "$H/graphics/tools/direct/extract.py" $T/repo/graphics/tools/direct/; cp "$H/graphics/tools/shbake/pak_crypto.py" "$H/graphics/tools/shbake/unreal_pak.py" "$H/graphics/tools/shbake/zstd_lib.py" $T/repo/graphics/tools/shbake/
 # romfs_list.py：仓库里唯一的 RomFS 遍历（11-03），被测脚本经它列 RomFS
 cp "$H/graphics/nvn/tools/romfs_list.py" $T/repo/graphics/nvn/tools/
 mkdir -p "$T/repo/tools"; cp "$H/tools/pool_workers.py" "$T/repo/tools/"   # romfs_list / pak_crypto 经它取核数（#1332：核数唯一来源）
@@ -59,7 +59,7 @@ print(json.dumps({"profile": os.path.dirname(__file__) + "/profile/0100", "profi
 EOF
 # 抽取代码键按声明表算（pack/stage_keyfiles.sh + pack/stage_inputs/extract.tsv，10-26 键收窄）：假仓库只列它有的抽取器
 cp "$H/pack/stage_keyfiles.sh" $T/repo/pack/; mkdir -p $T/repo/pack/stage_inputs
-printf '入\t%s\n' pack/stage_extract.sh graphics/tools/direct/extract.sh translator/shader_split.py translator/glslc_offline.py graphics/tools/shbake/nxsh_extract.py > $T/repo/pack/stage_inputs/extract.tsv
+printf '入\t%s\n' pack/stage_extract.sh graphics/tools/direct/extract.py translator/shader_split.py translator/glslc_offline.py graphics/tools/shbake/nxsh_extract.py > $T/repo/pack/stage_inputs/extract.tsv
 # 假 Makefile：stage_extract.sh 在 romfs 有 .pak 或要离线编 GLSLC 时会 make -C "$R" -s host；stub repo 没真工具链，给一个记账的目标
 printf '.PHONY: host\nhost:\n\t@echo host >> $(FAKE_CALLS)\n' > $T/repo/Makefile
 (cd $T/repo && git init -q && git add -A && git -c user.email=t@t -c user.name=t commit -qm x)
@@ -132,17 +132,18 @@ n0=$(n split); o=$(S 2>&1); r=$?
 ck "Vulkan 款 → 跳过、不抽（split $n0 → $(n split) 次）" '[ $r = 0 ] && [ "$(n split)" = "$n0" ] && [[ "$o" == *跳过* ]]'
 # 10-31 Mac 游戏库在 ~/Library/Application Support/ 下：DM_UE_SHADERS=$X/... 没加引号被拆词，env 把「Support/.../ue_shaders」当命令跑，直连抽取全挂
 SP="$T/Application Support"; mkdir -p "$SP/r/romfs" "$SP/r/exefs"; echo r > "$SP/r/romfs/f"; echo main > "$SP/r/exefs/main"
-o=$(bash $T/repo/graphics/tools/direct/extract.sh "$SP/r" "$SP/x" 2>&1); r=$?
+o=$(python3 $T/repo/graphics/tools/direct/extract.py "$SP/r" "$SP/x" 2>&1); r=$?
 ck "产物根 / 输出目录带空格 → 直连抽取照常、shader_split 拿到完整 DM_UE_SHADERS（rc=${r}，$(grep "^split " $T/calls | tail -1 | cut -d" " -f4-)）" '[ $r = 0 ] && [ "$(grep "^split " $T/calls | tail -1 | cut -d" " -f4-)" = "$SP/x/ue_shaders" ]'
 
 # 本轮上下文：运行两份完整阶段；计算入口与克隆交接分开计数，NVN/VK/GL均覆盖。
 cp "$H/pack/stage_direct.sh" $T/repo/pack/; cp "$H"/graphics/tools/direct/{run_knowledge,fout_want,pso_layout,run_pairs,se_want}.py "$H"/graphics/tools/direct/pso_layout.json $T/repo/graphics/tools/direct/   # stage_direct.sh 现出跑局知识快照（审计 #1534 P1-54）
 cp "$H/tools/toolchain.sh" "$H/tools/toolchain.env" $T/repo/tools/
 printf 'def version(): return "fixture1"\n' > $T/repo/translator/dmsh_chain.py
-printf '入\t%s\n' pack/stage_direct.sh graphics/tools/direct/direct_lib.sh > $T/repo/pack/stage_inputs/direct.tsv
-cat > $T/repo/graphics/tools/direct/direct_lib.sh <<'ONCE_LIB'
-mkdir -p "$2/b-fixture"; echo k > "$2/keys.tsv"; echo x > "$2/b-fixture/x.metallib"
-echo '[直连库] fixture'
+printf '入\t%s\n' pack/stage_direct.sh graphics/tools/direct/direct_lib.py > $T/repo/pack/stage_inputs/direct.tsv
+cat > $T/repo/graphics/tools/direct/direct_lib.py <<'ONCE_LIB'
+import os, sys
+os.makedirs(sys.argv[2] + '/b-fixture', exist_ok=True); open(sys.argv[2] + '/keys.tsv', 'w').write('k\n'); open(sys.argv[2] + '/b-fixture/x.metallib', 'w').write('x\n')
+print('[直连库] fixture')
 ONCE_LIB
 mkdir -p "$T/bin"; P253_ORIGINAL_PATH=$PATH; export PATH="$T/bin:$PATH"
 cat > $T/bin/xcrun <<'ONCE_XCRUN'

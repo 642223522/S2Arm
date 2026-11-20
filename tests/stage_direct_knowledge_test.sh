@@ -1,5 +1,5 @@
 #!/bin/bash
-# 跑局知识进阶段键单测（审计 #1534 P1-54：pack/stage_direct.sh 的 know- 键 + pack/stage_direct_seed.sh 轻阶段；假 direct_lib.sh、真 run_knowledge / pso_seed，临时产物根，约 10 秒）
+# 跑局知识进阶段键单测（审计 #1534 P1-54：pack/stage_direct.sh 的 know- 键 + pack/stage_direct_seed.sh 轻阶段；假 direct_lib.py、真 run_knowledge / pso_seed，临时产物根，约 10 秒）
 #   bash tests/stage_direct_knowledge_test.sh
 # 期望按「什么改产物」手写（直连库只用配对 / 片元整数输出变体 / 采样模拟变体三张表；种子表只用 seen 行 + 直连库键），每步与上一步比：
 #   操作                                               直连键   种子键   直连出库调用
@@ -42,11 +42,14 @@ mkdir -p $T/Xcode.app/Contents/Developer; export S2A_DEVELOPER_DIR=$T/Xcode.app/
 printf 'exit 0\n' > $T/repo/pack/stage_direct_profile.sh
 printf 'import json,os\nprint(json.dumps({"profile": os.path.dirname(__file__)+"/profile/0100", "profile_key": "profile1"}))\n' > $T/repo/pack/direct_profile_stage.py
 # 假出库：库键 A B C D；记调用次数；把拿到的跑局知识快照（S2A_RUN_KNOWLEDGE）的配对表留一份看
-cat > $T/repo/graphics/tools/direct/direct_lib.sh <<'EOF'
-O=$2; echo 1 >> "$FAKE_CALLS"; cp "${S2A_RUN_KNOWLEDGE:?没交快照}/pairs.tsv" "$FAKE_CALLS.pairs"
-mkdir -p "$O/b-v1"; echo m > "$O/b-v1/lib.idx"; printf '%s\n' aaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbb cccccccccccccccc dddddddddddddddd > "$O/keys.tsv"; echo '# map' > "$O/shader_map.tsv"
-printf '{"title": "0100AAAA00000000", "pso_seed": "gen"}\n' > "$O/direct_lib.json"
-echo "[直连库] 🟢 0100AAAA00000000 直连库 b-v1：并集 4，出库 4，没出成 0"
+cat > $T/repo/graphics/tools/direct/direct_lib.py <<'EOF'
+import os, shutil, sys
+O = sys.argv[2]; C = os.environ['FAKE_CALLS']; open(C, 'a').write('1\n')
+kn = os.environ.get('S2A_RUN_KNOWLEDGE') or sys.exit('没交快照')
+shutil.copy(kn + '/pairs.tsv', C + '.pairs')
+os.makedirs(O + '/b-v1', exist_ok=True); open(O + '/b-v1/lib.idx', 'w').write('m\n'); open(O + '/keys.tsv', 'w').write(''.join(k * 16 + '\n' for k in 'abcd')); open(O + '/shader_map.tsv', 'w').write('# map\n')
+open(O + '/direct_lib.json', 'w').write('{"title": "0100AAAA00000000", "pso_seed": "gen"}\n')
+print('[直连库] 🟢 0100AAAA00000000 直连库 b-v1：并集 4，出库 4，没出成 0')
 EOF
 (cd $T/repo && git init -q && git add -A && git -c user.email=t@t -c user.name=t commit -qm x)
 # 假仓库不读本机配置（11-09：门禁 / 维护方机器设了 S2A_MACHINE_LOCAL，machine.local 里 S2A_PY=$HOME/…/venv 在 HOME 换成临时目录后指向不存在的 Python，12 例全红）

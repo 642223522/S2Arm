@@ -329,7 +329,7 @@ def _where(error):
 
 
 # 实际阶段或命令确定分类，不从错误 prose 猜编译器/输入的根因（日志里有确凿根因字样的先由 LOG_CAUSES 判，见 classify_failure）。
-# direct（直连库出库，pack/stage_direct.sh → graphics/tools/direct/direct_lib.sh）：内容缺口退 3 走黄、到不了这里；其余非零按 stage_direct.sh 注
+# direct（直连库出库，pack/stage_direct.sh → graphics/tools/direct/direct_lib.py）：内容缺口退 3 走黄、到不了这里；其余非零按 stage_direct.sh 注
 #   是「基础设施出错」——dsh_batch（.NET）翻译 + Metal 编库，归编译失败（恢复口径＝检查 Xcode / Metal 组件 / .NET SDK）。
 STAGE_CODES = {
     "unpack": "content_invalid", "configure": "configuration_failed",
@@ -379,7 +379,7 @@ LOG_CAUSES = (
     (r"WinError 206|filename or extension is too long|文件名或扩展名太长", "windows_path_too_long"),  # 非玩家句
     (r"No space left on device|\bENOSPC\b|\[Errno 28\]|\berrno\s*[=:]?\s*28\b"          # POSIX / Python OSError / .NET IOException（Mac）  # 非玩家句
      r"|There is not enough space on the disk|\bDisk full\b|WinError 112|ERROR_DISK_FULL|0x80070070"   # Windows / .NET
-     r"|STATUS_DISK_FULL|磁盘空间不足|【写满】", "disk_full"),                                       # Windows 退出码注（direct_lib.sh 127）/ 我方字样
+     r"|STATUS_DISK_FULL|磁盘空间不足|【写满】", "disk_full"),                                       # Windows 退出码注（direct_lib.py 127）/ 我方字样
     # 内存用完（#711：Windows 16 GB 抽取按核数开满进程池，Python 子进程 MemoryError）：Python / .NET / Windows 提交上限原样字样
     (r"(?m:^\s*MemoryError\b)|OutOfMemoryException|\[WinError 1455\]|paging file is too small|页面文件太小|Cannot allocate memory|\bENOMEM\b", "out_of_memory"),  # 非玩家句
     # 盘不支持某种文件操作（exFAT 外接盘不支持原子改名 / 克隆 / 硬链接，实测 errno 45）：出包写入的这块盘格式不对，说清换 APFS 盘（11-10 网友：存放位置设到外接盘写入失败）

@@ -460,7 +460,7 @@ class FreeAccountLimits(unittest.TestCase):
 
 class LogCauses(JobCase):
     """11-07 现场（联合开发者 Mac 启动器旷野之息）：直连库出库写盘失败只报「刷新停在 direct 阶段（rc=1）」+ package_failed。
-    日志夹具按真实产出格式手写：refresh.sh 终止红行、pack/stage_direct.sh 转述 direct_lib.sh 的「🔴 出库失败 rc=…（<build.log>）」、.NET 未处理异常。"""
+    日志夹具按真实产出格式手写：refresh.sh 终止红行、pack/stage_direct.sh 转述 direct_lib.py 的「🔴 出库失败 rc=…（<build.log>）」、.NET 未处理异常。"""
     GID = "01007EF00011E000"
     STOP = "【红】01007EF00011E000 刷新停在 direct 阶段（rc=1），现行 = 01007EF00011E000@ex-b3eed688"
 
@@ -557,7 +557,7 @@ class LogCauses(JobCase):
         self.assertEqual(error.code, "metal_unavailable")
 
     def test_chain_mismatch_from_newer_xcode_says_update_s2arm(self):
-        # 11-07 联合开发者现场（beta.4 + Xcode 27.2，metal 32023.922 比锁 32023.921 新）：direct_lib.sh 把编译器提示当链号读，
+        # 11-07 联合开发者现场（beta.4 + Xcode 27.2，metal 32023.922 比锁 32023.921 新）：当时的 direct_lib.sh 把编译器提示当链号读，
         #   报「链号前后不一（c7a4970bffe5 / note:）」→ 刷新停在 direct 阶段。上屏：这版 S2Arm 不认识你的 Xcode；下一步：更新 S2Arm
         from errors import RECOVERY
         error, d = self.mac_refresh(["[直连库] 🔴 链号前后不一（c7a4970bffe5 / note:）", self.STOP])

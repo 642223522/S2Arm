@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # 整份直连出库（C# dsh_batch build，graphics/tools/direct/dsh/batch/Build.cs，11-01 出库链整条挪进 C#）的缓存复用与出库形态单测：python3 t_dmsh_reuse.py，约 1 分钟（首次要编 dsh_batch）
-#   真跑：S2A.Dsh 翻译 + spirv-cross + xcrun metal。链号 / 程序号 / 配置档输入摘要 / 改翻译的配置档行由 dmsh_chain.py --build-env 给（与 direct_lib.sh 同一口径）。
+#   真跑：S2A.Dsh 翻译 + spirv-cross + xcrun metal。链号 / 程序号 / 配置档输入摘要 / 改翻译的配置档行由 dmsh_chain.py --build-env 给（与 direct_lib.py 同一口径）。
 #   夹具现造、不含游戏数据：3 个计算着色器（EXIT + NOP… + BRA 自身），答案表线程组 16 / 32 / 64 各不同。线程组只进反射 json，三支 MSL 相同（计算核的线程组是派发时给的）。
 #   期望按缓存规格写，不跑被测实现推：翻译缓存键 = 记录 + 本键的映射 / 答案行 + 工具指纹（含 --profile-rows）；Metal 缓存键 = 编译约定（分侧）+ 编译器身份 + MSL；
 #   同 MSL 的键共用一份批库；收尾只留本次用到的条目。三支同 MSL → 每侧只编 1 份库；仓里条目 = 3 份翻译 + 每侧 1 份库 + 每侧 1 条批成员索引（Unity.ReuseIndex：三支同 MSL 只有一个代表键，每侧一条「ubu/<侧>/…」）。
@@ -57,7 +57,7 @@ for n, body in (('game.tsv', f'title_id\t{TID}\nprogram_id\t{TID}\nname\tt_dmsh_
                 ('shader_map.tsv.conflicts.tsv', '# none\ndm_ctl_sha16\tchosen_pc\tclass\tcandidates\trecords\n')):
     open(os.path.join(P, n), 'w').write(body)
 
-def build_env():   # → (链号, 程序号, 摘要, profile-rows 文件)：direct_lib.sh 同一口径
+def build_env():   # → (链号, 程序号, 摘要, profile-rows 文件)：direct_lib.py 同一口径
     rows = os.path.join(t, 'rows.tsv')
     r = subprocess.run([sys.executable, os.path.join(TOOLS, 'dmsh_chain.py'), '--build-env', rows], capture_output=True, text=True,
                        env=dict(os.environ, DM_GAMES_DIR=os.path.join(t, 'prof'), DM_GAMES_FIRST='1', DM_GAME=TID))
@@ -109,7 +109,7 @@ import dmsh_chain   # 期望值由本树源码另算（xlate_fp 与 C# 编译期
 XFP, LOCKFP = dmsh_chain.xlate_fp(), dmsh_chain.lock_fp()
 check(sorted((x['key'], x['st']) for x in bj) == [(k, 'ok') for k in sorted(ALL)] and stamp(mac) == stamp(ios) == {'game': TID, 'inputs': inp, 'xfp': XFP, 'lock': LOCKFP},
       f'① _b_build.json {[(x["key"][-1], x["st"]) for x in bj]}、两侧印章 {stamp(mac)}（期望程序号 {TID}、摘要 {inp}、翻译器指纹 {XFP}、锁摘要 {LOCKFP}）')
-# ①′ 出库后核产物出自本树翻译器（direct_lib.sh 调 dmsh_chain.py --check-stamp；11-06 时之笛第 49 版旧程序出库没被发现）：本树出的库通过；
+# ①′ 出库后核产物出自本树翻译器（direct_lib.py 调 dmsh_chain.py --check-stamp；11-06 时之笛第 49 版旧程序出库没被发现）：本树出的库通过；
 #     印章翻译器指纹换一位 / 锁摘要换一位 / 没有这两行（旧程序出的库）→ 各报红；给了不存在的 --lock → 出库退出非 0、报 [RED] --lock
 def chk_stamp(d): return subprocess.run([sys.executable, os.path.join(TOOLS, 'dmsh_chain.py'), '--check-stamp', d], capture_output=True, text=True)
 r0 = chk_stamp(ios)

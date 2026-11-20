@@ -1247,7 +1247,7 @@ if __name__ == '__main__':
         for r in bad[:20]: print(f'【红】Wwise 核查反例：{r[2]} → {r[0]}', file=sys.stderr, flush=True)
     print('统计', dict(stat)); print('阶段记录', len(rows), '唯一键', len(uniq), '按阶段', dict(collections.Counter(v[0] for v in uniq.values())))
     # 读不了的文件跳过、其余照抽（v0.3.1 拿不准不停；原先 10-23 定「漏抽是硬错误」退 1、整款出不了包）：漏的那部分着色器运行时首遇现编，
-    #   按类计数写进 <输出目录>/degrade.tsv（graphics/tools/direct/extract.sh 并进抽取的降级汇总），逐条原因见上方【红】行
+    #   按类计数写进 <输出目录>/degrade.tsv（graphics/tools/direct/extract.py 并进抽取的降级汇总），逐条原因见上方【红】行
     skip = [(k, stat[k]) for k in ('【红】pak 索引加密', '【红】pak 损坏', '【红】pak 条目解码失败', '【红】zlib 块续解失败', '【红】PKZ/DAT 解析失败', '【红】厂商档案读不了', READ_RED) if stat[k]]
     with open(os.path.join(outdir, 'degrade.tsv'), 'w', encoding='utf-8') as f:
         for k, n in skip:

@@ -1293,7 +1293,7 @@ class JobsTests(unittest.TestCase):
 
     def test_direct_check_cli_never_blocks(self):
         # 不许堵门（11-14，诊断 D-QDK9）：开工前空间预估不够只提示、不拦。期望手写：预估不够 → 退 0、打一行【黄】带原句与「照常开编」；
-        #   够 → 退 0、不打字；复核自己抛异常 → 退 2（direct_lib.sh 记黄照编）
+        #   够 → 退 0、不打字；复核自己抛异常 → 退 2（direct_lib.py 记黄照编）
         import space_rule, contextlib, io
         for why, rc, want in (("磁盘空间不足：直连库预计还要 15.0 GB", 0, "【黄】磁盘空间不足：直连库预计还要 15.0 GB：这是预估，照常开编"), (None, 0, "")):
             out = io.StringIO()
@@ -1324,7 +1324,7 @@ class JobsTests(unittest.TestCase):
             sizes[str(root / "aoc")] = 0; sizes[str(cache)] = 0   # 内容 2.9e9 → 小档 5e9
             self.assertIsNone(space_rule.direct_check(root, cache, out, free=lambda v: du(0, 0, int(5e9))))
             self.assertIsNotNone(space_rule.direct_check(root, cache, out, free=lambda v: du(0, 0, int(5e9) - 1)))
-            # 单测注入余量 S2A_DISK_FREE_G（GB）：给了就不看本机实况（直接真跑 direct_lib.sh 的单测靠它，11-09 列车假红）
+            # 单测注入余量 S2A_DISK_FREE_G（GB）：给了就不看本机实况（直接真跑 direct_lib.py 的单测靠它，11-09 列车假红）
             with unittest.mock.patch.dict(os.environ, S2A_DISK_FREE_G="4.9"):
                 self.assertIn("这块盘只剩 4.9 GB", space_rule.direct_check(root, cache, out))
 
