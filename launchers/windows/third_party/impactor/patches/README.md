@@ -62,12 +62,13 @@ MPL-2.0（`../LICENSE-apple-codesign-MPL-2.0.txt`）。
   负对照：`s2k_fo` 分支改回上游算法（原始摘要）时检查红；未知协议具名报错。
 - 没有在 `s2k_fo` 的真账号上实测（要账号本人的密码；也不知道玩家账号 Apple 选的是哪种，上面那行日志就是为此加的）。
 
-## 自编产物（v2.7.3-s2a2，补丁 0001 + 0002）
+## 自编产物（v2.7.3-s2a3，补丁 0001 + 0002 + 0003）
 
 | 平台 | 文件 | SHA-256 | Rust |
 |---|---|---|---|
-| Windows | plumesign-windows-x86_64.exe | 505517573afe9a5d924198fbd0a4397bcc037a250cb36228936a857079ed782b | 1.99.1 |
-| Windows | Impactor-windows-x86_64-portable.exe | f64456928d65f467b94f7ced03bf2e0edcf9fa4bcf57d76c78342e4a2019274d | 1.99.1 |
-| macOS | plumesign-macos-universal | 8d770ff3b6d6c1a8db1c0be28826cff9c6e55b9602a2791649c7c3d3e9f13d38 | 1.94.0 |
+| Windows | plumesign-windows-x86_64.exe | dbfb5603a7f4bd0db87fd8a81bb41d5ca0d883553f6e9a21e19e0661df9a679c | 1.99.1 |
+| Windows | Impactor-windows-x86_64-portable.exe | fb5f89b659436e22ce690f28236d02a2c541de065f609e31baf95c34d9bca419 | 1.99.1 |
+| macOS | plumesign-macos-universal | f3f8be40ebb05abc0e732e09a846bbbcbefaded87f9fd6bfe857adf8d100bcd9 | 1.94.0 |
 
-可重复编译的做法同 s2a1（同一台机器、两个工作目录各编一次，Mac 先清空固定编译目录，11-18 核过逐字节相同）；s2a2 两端各只编了一次，没有重做这项核对。
+可重复编译的做法同 s2a1（同一台机器、两个工作目录各编一次，Mac 先清空固定编译目录，11-18 核过逐字节相同）；s2a3 两端各只编了一次，没有重做这项核对。
+两端编之前补丁检查程序（login_fallback_check、srp_protocol_check、two_factor_check）均全过。
