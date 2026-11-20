@@ -76,10 +76,12 @@ import S2ArmAppleAdapter
         defer { fixture.remove() }
         for language in [Lang.zh, .en] {
             for player in 0..<4 {
-                let (host, window) = try await render(AnyView(InputSettingsSheet(model: fixture.model, gameID: "fixture")), fixture: fixture, language: language)
+                // 拿不到焦点的窗口（同首页搜索用例，UnfocusableWindow）：门禁机上测试进程有时是前台程序，点玩家分段那一下会被当成「激活窗口」吞掉，
+                //   选中态等满 3 秒也不来（11-15 起偶发 16 次，第 102 行取色 0.26）；本机测试进程不是前台、从不红
+                let (host, window) = try await render(AnyView(InputSettingsSheet(model: fixture.model, gameID: "fixture")), fixture: fixture, language: language, keyable: false)
                 let navigation = fixture.navigation
                 navigation.source.controllers = { [] }; navigation.attach(window); navigation.source.stop()
-                window.makeKeyAndOrderFront(nil)
+                window.orderFront(nil)
                 defer { navigation.detach(); window.close() }
                 try await settle(window, navigation, fixture.model.gamepad)
                 let players = navigation.controlTargets(in: window).filter { abs($0.frame.height - 30) < 0.5 }
