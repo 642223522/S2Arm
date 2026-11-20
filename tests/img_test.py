@@ -338,7 +338,7 @@ for keep_image in (True, False):
         W = T / 'work'; R = W / 'roots'; blob = os.urandom(5000)
         for v in ('kuan@v0', 'kuan@v1'): (R / v).mkdir(parents=True)
         (R / 'kuan@v1' / 'romfs.std').write_bytes(blob); os.link(R / 'kuan@v1' / 'romfs.std', R / 'kuan@v0' / 'romfs.std')
-        os.symlink('kuan@v1', R / 'kuan@现行')
+        (R / 'kuan@现行').write_text('kuan@v1\n')   # 现行指针文件
         (W / 'extract').mkdir(); (W / 'extract' / 'romfs.std').write_bytes(blob)
         (T / 'ext').mkdir(); (T / 'ext' / 'romfs.std').write_bytes(blob)
         if not keep_image: (R / 'kuan@v1' / 'romfs').mkdir(); (R / 'kuan@v1' / 'romfs' / 'a').write_bytes(b'a')

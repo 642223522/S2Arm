@@ -22,6 +22,7 @@ ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
 mkdir -p $T/repo/pack/stage_inputs $T/repo/tools $T/repo/graphics/nvn/tools $T/repo/translator $T/repo/graphics/tools/direct $T/repo/graphics/tools/shbake $T/repo/graphics/metal $T/roots $T/bin
 cp "$H/pack/roots.sh" "$H/pack/stage_direct.sh" "$H/pack/stage_direct_seed.sh" "$H/pack/stage_keyfiles.sh" "$H/pack/resource_input_key.py" "$H/pack/ue_pak.py" \
    "$H/pack/ipa_key.sh" "$H/pack/pkg_srcs.py" "$H/pack/pkg_inputs_key.py" $T/repo/pack/
+mkdir -p $T/repo/pack/orch && cp "$H/pack/orch/current.py" $T/repo/pack/orch/   # roots.sh 写现行指针 / 迁移老库（pack/orch/current.py）
 cp "$H/tools/toolchain.sh" "$H/tools/toolchain.env" "$H/tools/machine.sh" "$H/tools/clonedir.py" "$H/tools/plock.sh" "$H/tools/flock_hold.py" "$H/tools/stage_deps.py" $T/repo/tools/; cp -R "$H/tools/stage_deps_hook" $T/repo/tools/
 cp "$H/graphics/nvn/tools/romfs_list.py" "$H/graphics/nvn/tools/gfx_api.py" $T/repo/graphics/nvn/tools/; cp "$H/graphics/tools/shbake/pak_crypto.py" $T/repo/graphics/tools/shbake/
 mkdir -p "$T/repo/tools"; cp "$H/tools/pool_workers.py" "$T/repo/tools/"   # romfs_list / pak_crypto 经它取核数（#1332：核数唯一来源）
@@ -51,7 +52,7 @@ EOF
 # 假仓库不读本机配置（11-09：门禁 / 维护方机器设了 S2A_MACHINE_LOCAL，machine.local 里 S2A_PY=$HOME/…/venv 在 HOME 换成临时目录后指向不存在的 Python，12 例全红）
 export S2A_ROOTS=$T/roots S2A_ROOTS_SHARED=$T/shared FAKE_CALLS=$T/calls S2A_RUN_ROOT=$T/run HOME=$T/home; unset S2A_PSO_SOURCES S2A_MACHINE_LOCAL S2A_PY
 mkdir -p $T/roots/acnh@s0/romfs $T/roots/acnh@s0/exefs $T/home; echo r > $T/roots/acnh@s0/romfs/f; echo main > $T/roots/acnh@s0/exefs/main; echo ksh > $T/roots/acnh@s0/.stage_shaders
-printf 'title_id\t0100aaaa00000000\n' > $T/roots/acnh@s0/unpack.tsv; ln -s acnh@s0 $T/roots/acnh@现行
+printf 'title_id\t0100aaaa00000000\n' > $T/roots/acnh@s0/unpack.tsv; printf '%s\n' acnh@s0 > $T/roots/acnh@现行
 SD=$T/run/s2arm/pso_seed/0100AAAA00000000; mkdir -p $SD
 A=aaaaaaaaaaaaaaaa B=bbbbbbbbbbbbbbbb C=cccccccccccccccc D=dddddddddddddddd
 R() { python3 - "$T/repo/graphics/tools/direct/pso_layout.json" "$@" <<'EOF'   # R <顶点键> <片元键> [画布 0 像素格式] → 一条 R 行（同 t_run_knowledge.py 的造法）
@@ -62,7 +63,7 @@ print('R\t' + b.hex())
 EOF
 }
 R1=$(R $A $B); R2=$(R $A $D); R3=$(R $A $C 13); R4=$(R $B $C)
-cur() { cd -P $T/roots/acnh@现行 && pwd; }
+cur() { cd -P $T/roots/$(cat $T/roots/acnh@现行) && pwd; }
 calls() { wc -l < $T/calls 2> /dev/null | tr -d ' '; }
 rows() { grep -vc '^#' "$(cur)/shaders/direct/pso_manifest.tsv" 2> /dev/null; }
 S() { OD=$(bash $T/repo/pack/stage_direct.sh acnh 2>&1); RD=$?; OS=$(bash $T/repo/pack/stage_direct_seed.sh acnh 2>&1); RS=$?; KD=$(cat "$(cur)/.stage_direct"); KS=$(cat "$(cur)/.stage_direct_seed" 2> /dev/null); }

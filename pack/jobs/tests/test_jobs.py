@@ -407,11 +407,12 @@ class JobsTests(unittest.TestCase):
         game = self.game()
         sib = layout.ios_work(self.c, "0100000000000000") / "roots"; v = sib / "party@pkg-abc"   # iPhone 出包工作目录 build/ios 的现行根
         (v / "romfs").mkdir(parents=True); (v / ".stage_rewrite").write_text("K-rewrite\n"); (v / ".root_src").write_text("abcdef1234567890\n")
-        (sib / "party@现行").symlink_to("party@pkg-abc")
+        (sib / "party@现行").write_text("party@pkg-abc" + '\n')
         mac = layout.build_dir(self.c, "0100000000000000") / "key1/roots"
         self.assertFalse(build.seed_from_sibling(self.c, self.game(tid="0100000000000001"), mac, "0100000000000001"), "别的款的根不算兄弟")
         self.assertTrue(build.seed_from_sibling(self.c, game, mac, "0100000000000000"))
-        cur = (mac / "0100000000000000@现行").resolve()
+        self.assertEqual((mac / "0100000000000000@现行").read_text(), "0100000000000000@sib-pkg-abc\n")   # 现行是指针文件
+        cur = layout.current_root(self.c, mac / "0100000000000000@现行")
         self.assertEqual((cur.name, (cur / ".stage_rewrite").read_text()), ("0100000000000000@sib-pkg-abc", "K-rewrite\n"))
         ev = [e for e in self.events_of("cache") if "复用兄弟平台" in e.get("message", "")]
         self.assertTrue(ev and "提交 abcdef123" in ev[-1]["message"] and "克隆路线：APFS 克隆" in ev[-1]["message"], ev)
@@ -532,10 +533,11 @@ class JobsTests(unittest.TestCase):
         #   只有非现行版本里有、或没有 → 不补
         import unittest.mock as um, main, layout
         games = {"games": [{"id": "A", "packages": [{}]}]}
-        for where, want in (("ios/roots/ta@现行/pkg", True), ("ios/roots/ta@v1/pkg", False), (None, False)):
+        for where, want in (("ta@v2", True), ("ta@v1", False), (None, False)):   # 现行指针 ta@现行 → ta@v2
             with tempfile.TemporaryDirectory() as d:
+                roots = Path(d) / "ios/roots"; (roots / "ta@v1").mkdir(parents=True); (roots / "ta@v2").mkdir(); (roots / "ta@现行").write_text("ta@v2\n")
                 if where:
-                    (Path(d) / where).mkdir(parents=True); (Path(d) / where / "pack.files.verify_warn.txt").write_text("x\n")
+                    (roots / where / "pkg").mkdir(); (roots / where / "pkg" / "pack.files.verify_warn.txt").write_text("x\n")
                 with um.patch.object(self.c, "r", {"gameId": "A"}), um.patch.object(self.c, "catalog", return_value=games), \
                      um.patch.object(layout, "build_dir", return_value=Path(d)), um.patch.object(self.c, "diagnostic", create=True) as diag:
                     main.integrity_note(self.c)
@@ -2122,12 +2124,13 @@ class JobsTests(unittest.TestCase):
         low, run = gid.lower(), self.c.work_root / "run" / "s2arm"
         out = layout.ios_work(self.c, gid)
         keep = [layout.image_ios(self.c, gid) / ".pack" / "manifest.json", out / "logs" / "a.log"]
-        gone = [out / "roots" / f"t{low}@现行" / "x", out / "extract" / "romfs" / "f", run / "cache" / "direct" / gid.upper() / "work" / "cas",
+        gone = [out / "roots" / f"t{low}@v0" / "x", out / "extract" / "romfs" / "f", run / "cache" / "direct" / gid.upper() / "work" / "cas",
                 run / "cache" / "bake" / f"{low}-abc" / "ok", run / "cache" / "aoc" / f"t{low}-k" / "aoc.tsv", run / "cache" / "srcver" / f"t{low}-k" / "r",
                 run / "widen" / f"t{low}_b" / "ui", run / "widen" / "auto" / f"t{low}_b" / "w", self.c.work_root / "cache" / "air" / "ios" / "x.air"]
         other = [run / "cache" / "direct" / "0100AAAAAAAAA000" / "cas", run / "cache" / "bake" / "0100aaaaaaaaa000-abc" / "ok", self.c.work_root / "cache" / "nxaot" / "host.o"]
         for f in keep + gone + other:
             f.parent.mkdir(parents=True, exist_ok=True); f.write_text("x")
+        (out / "roots" / f"t{low}@现行").write_text(f"t{low}@v0\n")   # 现行指针 → t<程序号>@v0
         return keep, gone, other
 
     def test_prune_build_keeps_ipa_pack_logs_and_clears_this_games_intermediates(self):
@@ -2135,11 +2138,11 @@ class JobsTests(unittest.TestCase):
         game = self.game(packages=[self.package()]); self.catalogue([game])
         keep, gone, other = self._build_leftovers(game["id"])
         keep.append(gone.pop())  # shared AIR cache is retained only on automatic success cleanup
-        # 多平台共用阶段：自动清理保留产物根现行版本（链接与它指向的版本），旧版本照删；显式清缓存 / 删除仍整个删（下两条）
+        # 多平台共用阶段：自动清理保留产物根现行版本（指针文件与它指向的版本），旧版本照删；显式清缓存 / 删除仍整个删（下两条）
         roots = layout.ios_work(self.c, game["id"]) / "roots"; low = game["id"].lower()
-        keep.append(gone.pop(0))   # roots/t<程序号>@现行/x
+        keep.append(gone.pop(0))   # roots/t<程序号>@v0/x（现行指针指向的版本）
         new = roots / f"t{low}x@gk-new" / "y"; new.parent.mkdir(); new.write_text("x"); keep.append(new)
-        (roots / f"t{low}x@现行").symlink_to(new.parent.name)   # 现行是链接：它指向的版本保留
+        (roots / f"t{low}x@现行").write_text(new.parent.name + '\n')   # 现行指针：它指向的版本保留
         old = roots / f"t{low}@gk-old" / "z"; old.parent.mkdir(); old.write_text("x"); gone.append(old)
         library.prune_build(self.c, game["id"])
         self.assertEqual([f for f in keep + other if not f.exists()], [])
@@ -2154,13 +2157,13 @@ class JobsTests(unittest.TestCase):
         self.assertTrue(kit.is_file()); self.assertTrue(keep[0].is_file())
 
     def test_prune_build_keeps_windows_work_root(self):
-        # #32：Windows 产物根在 work/ 下。手算期望：现行链接及指向、.romfs_store、direct*、pkg/product/main.npdm 留下；旧版本、其他中间产物、product/pkg（交付件已拷走）删掉；链接只删自身
+        # #32：Windows 产物根在 work/ 下。手算期望：现行指针及指向、.romfs_store、direct*、pkg/product/main.npdm 留下；旧版本、其他中间产物、product/pkg（交付件已拷走）删掉；链接只删自身
         game = self.game(packages=[self.package()]); self.catalogue([game])
         work = layout.ios_work(self.c, game["id"]) / "work"
         def f(rel):
             q = work / rel; q.parent.mkdir(parents=True, exist_ok=True); q.write_text("x"); return q
         keep = [f("roots/k@new/y"), f("roots/.romfs_store/b"), f("direct/lib"), f("direct_p1/lib"), f("pkg/product/main.npdm")]
-        (work / "roots/k@现行").symlink_to("k@new")
+        (work / "roots/k@现行").write_text("k@new" + '\n')
         gone = [f("roots/k@old/z"), f("dcache/a"), f("pkg/tmp/b"), f("pkg/product/pkg/x.ipa")]
         outside = self.c.library / "outside" / "z"; outside.parent.mkdir(parents=True); outside.write_text("x")
         (work / "pkg/link").symlink_to(outside.parent)   # 指向外部的链接：只删链接，指向的文件在
@@ -2169,7 +2172,7 @@ class JobsTests(unittest.TestCase):
             library.prune_build(self.c, game["id"])
         self.assertEqual([q for q in keep if not q.exists()], [])
         self.assertEqual([q for q in gone if q.exists()], [])
-        self.assertTrue((work / "roots/k@现行").is_symlink())
+        self.assertEqual((work / "roots/k@现行").read_text(), "k@new\n")
         self.assertFalse(os.path.lexists(work / "pkg/link"))
         self.assertTrue(outside.exists())
 
@@ -3004,7 +3007,7 @@ class JobsTests(unittest.TestCase):
         atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=gid, name="x", display="", packages=[], hidden=False)]))
         out = layout.ios_work(self.c, gid); root = out / "roots" / "k@pkg"; root.mkdir(parents=True)   # 出包工作目录 build/ios
         (root / "main.npdm").write_bytes(b"n"); (root / "stage.log").write_text("阶段日志")
-        (out / "roots" / "k@现行").symlink_to("k@pkg"); (layout.build_dir(self.c, gid) / "x").mkdir(parents=True)
+        (out / "roots" / "k@现行").write_text("k@pkg" + '\n'); (layout.build_dir(self.c, gid) / "x").mkdir(parents=True)
         (out / "logs").mkdir(); (out / "logs" / "oneclick.log").write_text("出包日志")
         image = layout.image_ios(self.c, gid)   # 上一次成功出包的交付件
         if ipa: (image / ".pack").mkdir(parents=True); (image / ".pack" / "manifest.json").write_text('{"index_sha256": "p"}')
@@ -3247,7 +3250,7 @@ class JobsTests(unittest.TestCase):
             p.write_text("seed-stage fixture only")
         env = self.c.env() | dict(S2A_ROOTS=str(self.root / "roots"), S2A_ROOTS_SHARED=str(self.root / "shared"))
         self.c.run(["bash", ROOT / "pack/seed_root.sh", "unit", "seed", source], env=env)
-        current = (self.root / "roots/unit@现行").resolve()
+        roots = self.root / "roots"; current = roots / (roots / "unit@现行").read_text().strip()   # 现行指针文件 → 版本目录
         self.assertEqual((current / "aoc/1/data").read_text(), "seed-stage fixture only")
         self.assertEqual((current / "aoc.tsv").read_bytes(), (source / "aoc.tsv").read_bytes())
         (current / "aoc/1/data").write_text("changed clone")

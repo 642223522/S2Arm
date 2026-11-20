@@ -25,6 +25,11 @@ spec.loader.exec_module(stage)
 TID = "0100ABCD00000000"
 
 
+def cur_of(roots, game):
+    """产物根里 game 的现行版本目录：<款>@现行 是指针文件，内容 = 版本目录名（pack/orch/current.py）"""
+    return (Path(roots) / (Path(roots) / f"{game}@现行").read_text(encoding="utf-8").strip()).resolve()
+
+
 def lz4_literal(raw):
     """A valid LZ4 block holding raw as one literal run (no matches): the fixture needs no python-lz4, like the tools (graphics/nvn/tools/lz4blk.py)"""
     n = len(raw); out = bytearray([min(n, 15) << 4])
@@ -811,7 +816,7 @@ class Profiles(unittest.TestCase):
         result = subprocess.run(["bash", str(REPO / "pack/seed_root.sh"), "fixture", "seed", str(self.root)],
                                 env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        return (roots / "fixture@现行").resolve(), env
+        return cur_of(roots, "fixture"), env
 
     def test_dual_seed_metadata_reaches_real_configuration_stage(self):
         sidecar = self.root / "direct-profile-input.json"
@@ -829,7 +834,7 @@ class Profiles(unittest.TestCase):
         extraction(seed, title=title)
         (seed / "ctl").mkdir()
         (seed / "ctl/control.nacp").write_bytes(b"synthetic-only")
-        (roots / "fixture@现行").symlink_to(seed.name)
+        (roots / "fixture@现行").write_text(seed.name + '\n')
         env = dict(os.environ, S2A_DISK_FREE_G="999", S2A_ROOTS=str(roots), S2A_ROOTS_SHARED=str(self.base / "shared"),   # 盘判定不看本机实况
                    S2A_ROOTS_PRIV=str(self.base / "private"), S2A_ROOTS_NO_BOOT="1",
                    S2A_PYTHON=sys.executable, S2A_PY=sys.executable,
@@ -846,7 +851,7 @@ class Profiles(unittest.TestCase):
         roots, seed, env = self.versioned()
         p = self.run_stage(env)
         self.assertEqual(p.returncode, 0, p.stderr + p.stdout)
-        current = (roots / "fixture@现行").resolve()
+        current = cur_of(roots, "fixture")
         self.assertNotEqual(current, seed)
         data = json.loads((current / "direct_profile.json").read_text())
         self.assertFalse(Path(data["profile"]).is_absolute())
@@ -857,13 +862,13 @@ class Profiles(unittest.TestCase):
         self.assertFalse(data["runtime_verified"])
         again = self.run_stage(env)
         self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
-        self.assertEqual(current, (roots / "fixture@现行").resolve())
+        self.assertEqual(current, cur_of(roots, "fixture"))
 
     def test_versioned_for_build_keeps_candidate_unverified(self):
         roots, seed, env = self.versioned()
         p = self.run_stage(env, require=True)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        current = (roots / "fixture@现行").resolve()
+        current = cur_of(roots, "fixture")
         self.assertTrue((current / "direct_profile.json").is_file())
         self.assertFalse((current / ".stage_direct").exists())
         self.assertFalse(stage.selected(current)["runtime_verified"])
@@ -873,7 +878,7 @@ class Profiles(unittest.TestCase):
         (seed / "exefs/main").write_bytes(b"NSO0")
         p = self.run_stage(env)
         self.assertNotEqual(p.returncode, 0)
-        self.assertEqual(seed, (roots / "fixture@现行").resolve())
+        self.assertEqual(seed, cur_of(roots, "fixture"))
         self.assertFalse(list(roots.glob("*.tmp")))
         self.assertFalse(list(roots.glob("*@dp-*")))
 
@@ -881,7 +886,7 @@ class Profiles(unittest.TestCase):
         roots, seed, env = self.versioned("01006F8002326000")
         p = self.run_stage(env, require=True)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        self.assertEqual(seed, (roots / "fixture@现行").resolve())
+        self.assertEqual(seed, cur_of(roots, "fixture"))
         self.assertFalse((seed / "direct-profile").exists())
 
     def test_direct_entry_no_shader_container_runtime_only(self):
@@ -901,10 +906,10 @@ class Profiles(unittest.TestCase):
         p = subprocess.run(["bash", str(REPO / "pack/stage_direct.sh"), "fixture"], env=env, capture_output=True, text=True)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertIn("离线 0 支、运行时首遇现编", p.stdout + p.stderr)
-        d = (roots / "fixture@现行").resolve() / "shaders/direct"
+        d = cur_of(roots, "fixture") / "shaders/direct"
         self.assertTrue((d / "runtime_only.txt").is_file())
         self.assertTrue(list(d.glob("b-*/lib.idx")))
-        self.assertTrue(((roots / "fixture@现行").resolve() / ".stage_direct").exists())
+        self.assertTrue((cur_of(roots, "fixture") / ".stage_direct").exists())
 
     def refresh_harness(self):
         # Actual refresh/producer/root transaction; earlier unrelated stages
@@ -916,6 +921,7 @@ class Profiles(unittest.TestCase):
         for filename in ("roots.sh", "direct_profile_stage.py", "stage_keyfiles.sh", "decoder_need.sh"):   # stage_keyfiles：各阶段实际读入进键（10-30）；decoder_need：只剩直连快路后刷新必 source 它（11-08）
             (pack / filename).symlink_to(REPO / "pack" / filename)
         (sandbox / "tools").symlink_to(REPO / "tools")
+        (pack / "orch").symlink_to(REPO / "pack/orch")   # roots.sh 写现行指针（pack/orch/current.py）
         (sandbox / "graphics/nvn/tools").mkdir(parents=True); shutil.copyfile(REPO / "graphics/nvn/tools/gfx_api.py", sandbox / "graphics/nvn/tools/gfx_api.py")   # 出包分流判法
         # romfs_list.py：判法扫 RomFS 经它（仓库里唯一的 RomFS 遍历）
         for _f in ("nso_syms.py", "lz4blk.py", "romfs_list.py"): shutil.copyfile(REPO / "graphics/nvn/tools" / _f, sandbox / "graphics/nvn/tools" / _f)   # 判法读 NSO 导入表要它们
@@ -940,7 +946,7 @@ class Profiles(unittest.TestCase):
         seen = called.read_text().splitlines()
         self.assertEqual(seen[:2], ["romfsidx", "extract"])   # 10-25 抽着色器只做一次：抽取阶段在直连之前
         self.assertEqual(seen[2:], ["direct"])
-        current = (roots / "fixture@现行").resolve()
+        current = cur_of(roots, "fixture")
         self.assertTrue((current / "direct_profile.json").is_file())
         self.assertFalse(stage.selected(current)["runtime_verified"])
 
@@ -948,7 +954,7 @@ class Profiles(unittest.TestCase):
         roots, seed, env = self.versioned()
         result = self.run_stage(env)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        current = (roots / "fixture@现行").resolve()
+        current = cur_of(roots, "fixture")
         first = stage.selected(current)
         p = Path(first["profile"]) / "game.tsv"
         p.write_text(p.read_text() + "\nrender_cond\ton\n")
@@ -959,7 +965,7 @@ class Profiles(unittest.TestCase):
     def test_selected_artifact_cannot_escape_root(self):
         roots, seed, env = self.versioned()
         self.assertEqual(self.run_stage(env).returncode, 0)
-        current = (roots / "fixture@现行").resolve()
+        current = cur_of(roots, "fixture")
         record = current / "direct_profile.json"
         data = json.loads(record.read_text())
         data["profile"] = "../outside"
