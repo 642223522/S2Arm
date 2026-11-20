@@ -24,7 +24,7 @@ TOK = re.compile(r'(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.(?:sh|py|c|h|m|mm|cc|cp
 LOCAL = ('tools/', 'pack/', 'tests/')   # 本线目录：单测覆盖面只在这里面推
 DOC = re.compile(r'^docs/|\.md$|^\.github/ISSUE_TEMPLATE/')   # 与 tools/gate_plan.sh GATE_DOC_RE 同一条
 # 无钩子路径（过渡用）：列在这里的前缀改到了不算表外、不触发钩子全跑，test_wired 也跳过其中单测的接线检查。
-#   11-11 旧安卓三钩子删除时放过 android/；11-20 安卓线新钩子 android/gate.sh（门禁路由：android/，跑 android/test.sh）接上、旧回放层源码已删，清空。
+#   11-11 旧安卓三钩子删除时放过 android/；11-20 新钩子 android/gate.sh（门禁路由：android/，跑 android/test.sh）接上、旧回放层源码已删，清空。
 NOHOOK = ()
 
 # 独立测试的显式覆盖合同（#925）：已有 shell 引用推导不解析 MSBuild 项目，

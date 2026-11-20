@@ -4,7 +4,7 @@
 # 门禁本机：* android/test.sh 要 CMake 3.18+ / NDK 29.0.14206865 / JDK 17 / 固定 venv（Capstone 5.0.7、LZ4 4.4.5）；门禁机没有 CMake
 # 安卓无设备 CPU 测的门禁钩子：整套 android/test.sh（Java 单测 / 原生宿主单测与变异对照 / Python 契约 / 可移植改写准备回归）。
 # 11-11 旧安卓三钩子删除后（017d7695b）android/ 是无钩子路径（tools/gate_route.py NOHOOK），test.sh 没有任何门禁入口在跑；
-# 维护者当时定「安卓线新 android/gate.sh（门禁路由：android/）接上时删掉 NOHOOK」，本钩子即这一步。
+# 维护者当时定「新 android/gate.sh（门禁路由：android/）接上时删掉 NOHOOK」，本钩子即这一步。
 # 不在这里的（各有入口，不重复）：
 #   · 新图形层 NDK 交叉链接：android/native/gfx_plat/gate.sh；
 #   · 安卓 APK 单库链接核对：tests/android_apk_link_test.sh；Linux runtime CTest：android/linux_ctest.sh（要 aarch64 Linux / colima）；
