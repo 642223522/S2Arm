@@ -31,6 +31,8 @@ void nvn_vk_pipe_demand_stop(void);
 int  nvn_vk_pipe_demand_quiescent(void);
 #if defined(S2A_NVN_PIPE_DEMAND_TEST)
 int  nvn_vk_pipe_demand_worker_count(void);
+uint64_t nvn_vk_pipe_demand_test_start_lock_denials(void);
+void nvn_vk_pipe_demand_test_set_on(int on);
 int  nvn_vk_pipe_demand_test_lifecycle_busy(void);
 int  nvn_vk_pipe_demand_test_lock_lifecycle(void);
 void nvn_vk_pipe_demand_test_unlock_lifecycle(void);

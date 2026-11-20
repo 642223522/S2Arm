@@ -8,6 +8,7 @@
 #include <time.h>
 
 #include "nvn_backend.h"
+#include "nvn_plat.h"
 #include "rp_shader.h"
 #include "nvn_vk_pipe_demand.h"
 
@@ -47,6 +48,13 @@ nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *
     return r;
 }
 int nvn_plat_flag(const char *name, int dflt) { if (!strcmp(name, "nvk_pipe_async")) return 1; return dflt; }
+static _Atomic int g_start_denial_logs;
+static char g_last_start_denial[160];
+void nvn_plat_log(int level, const char *cls, const char *text) {
+    if (level != NVN_PLAT_LOG_WARN || !cls || strcmp(cls, "pipe-demand") != 0 || !text) return;
+    snprintf(g_last_start_denial, sizeof g_last_start_denial, "%s", text);
+    atomic_fetch_add_explicit(&g_start_denial_logs, 1, memory_order_release);
+}
 static struct rp_prog g_prog;
 int rp_shader_prog_borrow(const uint8_t identity[32], const struct rp_prog **out) { (void)identity; if (out) *out = &g_prog; return 1; }
 void rp_shader_prog_return(const uint8_t identity[32]) { (void)identity; }
@@ -85,6 +93,13 @@ static int wait_lifecycle_busy(uint32_t ms) {
     } while (mono_ns() < end);
     return nvn_vk_pipe_demand_test_lifecycle_busy();
 }
+struct start_thread_arg { _Atomic int done; };
+static void *start_thread_main(void *opaque) {
+    struct start_thread_arg *arg = opaque;
+    nvn_vk_pipe_demand_start();
+    atomic_store_explicit(&arg->done, 1, memory_order_release);
+    return NULL;
+}
 struct stop_thread_arg { _Atomic int done; uint64_t elapsed_ms; };
 static void *stop_thread_main(void *opaque) {
     struct stop_thread_arg *arg = opaque;
@@ -118,6 +133,36 @@ int main(void) {
     CHECK(demand_events_safe(safe_order, sizeof safe_order / sizeof safe_order[0]), "synthetic normal lifecycle order accepted");
     CHECK(!demand_events_safe(release_while_active, sizeof release_while_active / sizeof release_while_active[0]), "synthetic negative control rejects backend release while worker active");
     CHECK(!demand_events_safe(overlapping_workers, sizeof overlapping_workers / sizeof overlapping_workers[0]), "synthetic negative control rejects overlapping workers");
+    nvn_vk_pipe_demand_test_set_on(0);
+    uint64_t denials_before = nvn_vk_pipe_demand_test_start_lock_denials();
+    int logs_before = atomic_load_explicit(&g_start_denial_logs, memory_order_acquire);
+    nvn_vk_pipe_demand_start();
+    CHECK(nvn_vk_pipe_demand_test_start_lock_denials() == denials_before, "disabled demand start does not count a lock denial");
+    CHECK(atomic_load_explicit(&g_start_denial_logs, memory_order_acquire) == logs_before, "disabled demand start emits no diagnostic");
+    CHECK(nvn_vk_pipe_demand_worker_count() == 0, "disabled demand start creates no worker");
+    nvn_vk_pipe_demand_test_set_on(1);
+    int start_lifecycle_lock = nvn_vk_pipe_demand_test_lock_lifecycle();
+    CHECK(start_lifecycle_lock == 0, "test holds g_stop_mu for denied-start case");
+    if (start_lifecycle_lock == 0) {
+        struct start_thread_arg start_arg = {0};
+        pthread_t start_thread;
+        if (pthread_create(&start_thread, NULL, start_thread_main, &start_arg) == 0) {
+            uint64_t deadline = mono_ns() + 1000000000ull;
+            while (!atomic_load_explicit(&start_arg.done, memory_order_acquire) && mono_ns() < deadline) {
+                struct timespec ts = {0, 1000000L}; nanosleep(&ts, NULL);
+            }
+            CHECK(atomic_load_explicit(&start_arg.done, memory_order_acquire), "enabled start returns while g_stop_mu remains held");
+            CHECK(nvn_vk_pipe_demand_test_start_lock_denials() == denials_before + 1, "denied start increments the monotonic counter once");
+            CHECK(atomic_load_explicit(&g_start_denial_logs, memory_order_acquire) == logs_before + 1, "denied start emits one warning");
+            CHECK(strstr(g_last_start_denial, "g_stop_mu trylock failed rc=") != NULL && strstr(g_last_start_denial, "denials=1") != NULL, "warning names the failed trylock and cumulative count");
+            CHECK(nvn_vk_pipe_demand_worker_count() == 0, "denied start creates no worker");
+            nvn_vk_pipe_demand_test_unlock_lifecycle();
+            pthread_join(start_thread, NULL);
+        } else {
+            CHECK(0, "create enabled start contention thread");
+            nvn_vk_pipe_demand_test_unlock_lifecycle();
+        }
+    }
     memset(&g_prog, 0, sizeof g_prog);
     g_prog.sh[0] = (nvn_gpu_shader)(uintptr_t)0x1;
     g_prog.sh[1] = (nvn_gpu_shader)(uintptr_t)0x2;

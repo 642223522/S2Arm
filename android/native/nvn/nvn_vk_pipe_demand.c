@@ -3,6 +3,7 @@
 
 #include <pthread.h>
 #include <stdatomic.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -43,6 +44,10 @@ static pthread_mutex_t g_stop_mu = PTHREAD_MUTEX_INITIALIZER;
 static int q[DEM_MAX], qh, qn;
 static struct dem_job g_jobs[DEM_MAX];
 static struct nvn_pipe_demand_stats g_st;   // 原子累加
+static _Atomic uint64_t g_start_lock_denials;
+#if defined(S2A_NVN_PIPE_DEMAND_TEST)
+static _Atomic int g_test_on = -1;
+#endif
 // 会话代号：每次 start / stop 加一。迟到的结果不会发布进下一局的待定表。
 static _Atomic uint64_t g_gen;
 static int dem_gen_live(uint64_t gen) { return atomic_load_explicit(&g_gen, memory_order_acquire) == gen; }
@@ -58,6 +63,10 @@ static void dem_publish(uint64_t gen, int h, void *obj, int code, const char *wh
 static int dem_eq(const void *a, const void *b) { return memcmp(a, b, sizeof(struct dem_key)) == 0; }
 
 int nvn_vk_pipe_demand_on(void) {
+#if defined(S2A_NVN_PIPE_DEMAND_TEST)
+    int test_on = atomic_load_explicit(&g_test_on, memory_order_acquire);
+    if (test_on >= 0) return test_on;
+#endif
     static int v = -1;
     if (v < 0) v = nvn_plat_flag("nvk_pipe_async", 0) ? 1 : 0;
     return v;
@@ -132,7 +141,15 @@ static void dem_reap_locked(void) {
 
 void nvn_vk_pipe_demand_start(void) {
     if (!nvn_vk_pipe_demand_on()) return;
-    if (pthread_mutex_trylock(&g_stop_mu) != 0) return;
+    int lock_rc = pthread_mutex_trylock(&g_stop_mu);
+    if (lock_rc != 0) {
+        uint64_t denials = atomic_fetch_add_explicit(&g_start_lock_denials, 1, memory_order_relaxed) + 1;
+        char msg[160];
+        snprintf(msg, sizeof msg, "nvn_vk_pipe_demand_start skipped: g_stop_mu trylock failed rc=%d denials=%llu",
+                 lock_rc, (unsigned long long)denials);
+        nvn_plat_log(NVN_PLAT_LOG_WARN, "pipe-demand", msg);
+        return;
+    }
     pthread_mutex_lock(&g_life_mu);
     dem_reap_locked();
     if (atomic_load_explicit(&g_running, memory_order_acquire)) {
@@ -212,6 +229,14 @@ int nvn_vk_pipe_demand_quiescent(void) {
 #if defined(S2A_NVN_PIPE_DEMAND_TEST)
 int nvn_vk_pipe_demand_worker_count(void) {
     return atomic_load_explicit(&g_workers, memory_order_acquire);
+}
+
+uint64_t nvn_vk_pipe_demand_test_start_lock_denials(void) {
+    return atomic_load_explicit(&g_start_lock_denials, memory_order_acquire);
+}
+
+void nvn_vk_pipe_demand_test_set_on(int on) {
+    atomic_store_explicit(&g_test_on, on ? 1 : 0, memory_order_release);
 }
 
 int nvn_vk_pipe_demand_test_lifecycle_busy(void) {
