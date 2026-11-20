@@ -810,4 +810,13 @@ void rp_pass_reset(void) {
     memset(g_sh, 0, sizeof g_sh);
 }
 int rp_pass_is_open(void) { return P.open; }
+int rp_pass_draws(void) { return P.open ? P.ndraw : 0; }
+// 当前通道能不能在两笔之间切开、下一笔按 LOAD 续开（rp_exec.c pass_split）。存储恒为 STORE、续开时没有清除负载才算；
+// 影子附件、多重采样目标即使正确也不划算，一并不切。
+int rp_pass_split_ok(void) {
+    if (!P.open || park_here() || P.shape_smp > 1) return 0;
+    for (int i = 0; i < 8; i++) if (g_shu[i].base) return 0;
+    if (nvn_plat_flag("nvk_diag_load_dontcare", 0) || nvn_plat_flag("nvk_diag_store_dontcare", 0)) return 0;
+    return 1;
+}
 const p_set_rt *rp_pass_target(void) { return P.has_rt ? &P.rt : NULL; }
