@@ -60,7 +60,12 @@ static void (*g_hw_hook)(void);   // 暂停读上下文用：0x33 放开全局�
 void s2a_host_write_hook(uint64_t a, uint64_t n) { (void)a; (void)n; if (g_hw_hook) g_hw_hook(); }
 // ⑦ 用：空转函数所在的一段地址算「游戏代码」（让 SetThreadActivity 走 Mach 挂起分支）
 static void guest_spin(uint64_t arg);
+// 冻结代放核用例只在苹果正常构建跑：安卓暂停夹具（run_pause_wait_host.py）把 thread.c 拼进同一单元、关掉了苹果段（没有 s2a_snap_freeze / thaw），
+//   那时 native.h 先于本文件定义了 S2A_LOG_OUT_WEAK（本文件正常构建时自己先定义 S2A_LOGCAP_IMPL，不会有它）
+#if defined(__APPLE__) && !defined(S2A_LOG_OUT_WEAK)
+#define T_FZ 1
 static void fz_spin(uint64_t arg);   // 冻结代放核：持核在游戏代码里忙等（module_of 桩认它）
+#endif
 static void preempt_spin(uint64_t arg);   // ⑫ 用：纯自旋客体线程（时钟抢占测）
 static void ss_spin(uint64_t arg);        // ⑮ 用：纯自旋客体线程（调度计数正对照要在游戏代码里暂停它）
 static void ua_spin(uint64_t arg);        // ⑰ 用：纯自旋客体线程（游戏代码里暂停 / 恢复它）
@@ -96,8 +101,10 @@ module_t *module_of(const void *p) {
     if (a >= lo8 && a < lo8 + 0x400) { g_fake_mod.base = (uint8_t *)lo8; g_fake_mod.patch_off = -1; return &g_fake_mod; }
     uint64_t lo9 = (uint64_t)(void *)pm_spin;
     if (a >= lo9 && a < lo9 + 0x400) { g_fake_mod.base = (uint8_t *)lo9; g_fake_mod.patch_off = -1; return &g_fake_mod; }
+#ifdef T_FZ
     uint64_t lo10 = (uint64_t)(void *)fz_spin;
     if (a >= lo10 && a < lo10 + 0x400) { g_fake_mod.base = (uint8_t *)lo10; g_fake_mod.patch_off = -1; return &g_fake_mod; }
+#endif
     uint64_t lo3 = (uint64_t)(void *)ss_spin;
     if (a >= lo3 && a < lo3 + 0x400) { g_fake_mod.base = (uint8_t *)lo3; g_fake_mod.patch_off = -1; return &g_fake_mod; }
     return NULL;
@@ -563,7 +570,7 @@ static int wait_flag(_Atomic int *f, int ms) { for (int i = 0; i < ms && !atomic
 // ---- 冻结代放核（即时存档 s2a_snap_freeze，虚拟核开）：S 持核在游戏代码里忙等（不进门，冻结 0.5 秒后被 Mach 挂住当安全点），
 //   T 与 S 同核、进系统调用后卡在出口取核（in_svc 还是 1、不算安全点）。期望按语义：冻结方代放 S 的核 → T 拿到核、停进出口 → 冻结在时限内判齐；
 //   解冻后 S 先取核再回游戏代码、接着计数；T 最终拿到核走完。修前：S 被挂住仍持核，T 永远到不了安全点，冻结超时（回 -1）
-#if defined(__APPLE__)
+#ifdef T_FZ
 int s2a_snap_freeze(int timeout_ms, int *nthr, int *nst); void s2a_snap_thaw(void);
 static _Atomic int g_fz_ready, g_fz_stop, g_fz_tdone, g_fz_rc = 99; static _Atomic uint64_t g_fz_n;
 // 冻结判安全点要看门帧 +816 的切栈槽（产品门帧 832 字节，单测别处的 31 字寄存器数组读到那里是越界垃圾）：本用例进门一律用整帧、切栈槽置非零
@@ -923,7 +930,7 @@ int main(void) {
       CHECK(!rc && !result, "unbound host thread acquired a guest identity after initialization"); }
     // W 的掩码显式设成 0~2（理想核 0）：S2A_HZ_CORE 开时主线程按 Horizon 只给缺省核（掩码 0x1），后面的用例都按「W 可用 0~2 号核」排的局面，开关两边一致
     { uint64_t m[31] = {g_wtag, 0, 0x7}; svc_thread(0x0F, m); }
-#if defined(__APPLE__)
+#ifdef T_FZ
     {   // 冻结代放核（见 fz_spin 处说明）：虚拟核开（本段 S2A_CORES=1）
         g_case = "冻结代放核";
         void s2a_core_leave(void);
