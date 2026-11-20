@@ -99,17 +99,42 @@ public sealed record PhoneOverview(IReadOnlyList<PhoneOverview.Phone> Phones)
                     }
                 var actions = p.TryGetProperty("actions", out var av) && av.ValueKind == JsonValueKind.Array
                     ? av.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString()!).ToArray() : [];
-                var candidates = new List<Candidate>();
-                if (p.TryGetProperty("candidates", out var cs) && cs.ValueKind == JsonValueKind.Array)
-                    foreach (var c in cs.EnumerateArray())
-                        if (c.ValueKind == JsonValueKind.Object && S(c, "bundleId") is { Length: > 0 } bid)
-                            candidates.Add(new Candidate(bid, S(c, "team") ?? "", B(c, "byThisLauncher"), S(c, "identityTeam") is { Length: > 0 } it ? it : null));
+                var candidates = p.TryGetProperty("candidates", out var cs) ? Candidates(cs) : [];
                 phones.Add(new Phone(device, S(p, "name") ?? "", B(p, "installed"), B(p, "shellCurrent"), D(p, "expiresAtEstimate"),
                     p.TryGetProperty("online", out _), S(p, "online"), D(p, "lastSeen"), S(p, "signMode"), games,
                     S(p, "installedBy") is "launcher" or "external" ? S(p, "installedBy") : null, S(p, "bundleId") ?? "", actions,
                     B(p, "needsChoice"), candidates));
             }
         return new PhoneOverview(phones);
+    }
+
+    /// <summary>作业的候选数组（总览 candidates、推送失败 facts.candidates 同一形状）→ 候选；不是数组 = 空</summary>
+    public static List<Candidate> Candidates(JsonElement cs)
+    {
+        static string? S(JsonElement o, string k) => o.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        var candidates = new List<Candidate>();
+        if (cs.ValueKind == JsonValueKind.Array)
+            foreach (var c in cs.EnumerateArray())
+                if (c.ValueKind == JsonValueKind.Object && S(c, "bundleId") is { Length: > 0 } bid)
+                    candidates.Add(new Candidate(bid, S(c, "team") ?? "", c.TryGetProperty("byThisLauncher", out var b) && b.ValueKind == JsonValueKind.True,
+                        S(c, "identityTeam") is { Length: > 0 } it ? it : null));
+        return candidates;
+    }
+
+    public const string ChoiceRequiredCode = "phone_app_choice_required";
+
+    /// <summary>推送（推单款 install、更新所选 pushSelected）失败「装着不止一个 S2Arm、还没选」时作业诊断带的机读事实 facts {device, candidates}
+    /// （install.owner_for_push；同 Mac PhoneOverview.choiceFacts）：失败页就地列出候选让玩家选，选好自动重推。不是这个码 / 没带候选 → null</summary>
+    public static (string Device, IReadOnlyList<Candidate> Candidates)? ChoiceFacts(JsonElement diagnostics)
+    {
+        if (diagnostics.ValueKind != JsonValueKind.Array) return null;
+        foreach (var d in diagnostics.EnumerateArray())
+            if (d.ValueKind == JsonValueKind.Object && d.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.String && c.GetString() == ChoiceRequiredCode
+                && d.TryGetProperty("facts", out var f) && f.ValueKind == JsonValueKind.Object
+                && f.TryGetProperty("device", out var dv) && dv.ValueKind == JsonValueKind.String && dv.GetString() is { Length: > 0 } device
+                && f.TryGetProperty("candidates", out var cs) && Candidates(cs) is { Count: > 0 } list)
+                return (device, list);
+        return null;
     }
 
     /// <summary>总控台当前这台：选过的那台；没选过 → 连着的那台 → 最近同步过的那台</summary>

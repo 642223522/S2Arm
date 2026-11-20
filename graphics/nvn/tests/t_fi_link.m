@@ -10,12 +10,19 @@
 //      这两遍判成切镜头 0 次。第三遍：前 8 帧同上（右移 32），第 8 帧起换成一张固定的噪点图（与竖条场景毫不相干）：判成切镜头正好 1 次（第 7→8 帧那一对），补成仍是 11
 //      第四遍（11-18）：同第一遍，倒数第二帧的交帧间隔给 1 秒、按规则不补（不补 1、补成 10，那一帧照样编码插值、不上屏，GPU 读数 11 次）；最后一对照样补出中间位置。
 //      原先不补的帧不编码，下一对重置 MetalFX 历史，出的是这一帧原图（中心 464）；只去掉重置、不编码，又偏向前一帧（中心 435、前一帧原位全亮）。
-//      各帧交帧间隔都由单测给定（一个周期），不看墙钟：满载门禁机上墙钟间隔超 1.25 倍周期会判不补，原先时有时无地红
+//      各帧交帧间隔都由单测给定（一个周期），不看墙钟：满载门禁机上墙钟间隔超 1.25 倍周期会判不补，原先时有时无地红。
+//      间隔经生产的时钟缝 FI_NOW_NS（nvn_present_fi.inc）注入：fi_frame 读的就是单测推进的假时钟；原先单测先写 last_in_ns = 墙钟 − 周期，
+//      fi_frame 再读一次墙钟，两次之间被抢占（负载高时）间隔就超过 1.25 倍周期、判不补而假红
+#include <stdint.h>
+static uint64_t fi_test_now(void);
+#define FI_NOW_NS() fi_test_now()
 #ifndef FI_LINK_SOURCE
 #define FI_LINK_SOURCE "../gfx/nvn/nvn_mtl.m"
 #endif
 #include FI_LINK_SOURCE
 
+static _Atomic uint64_t g_fake_ns;   // ⑤ 的假时钟（0 = 用真钟）
+static uint64_t fi_test_now(void) { uint64_t v = atomic_load(&g_fake_ns); return v ? v : now_ns(); }
 static unsigned checks, failures;
 #define CHECK(c, ...) do { checks++; int ok=!!(c); failures+=!ok; printf("%s ",ok?"PASS":"FAIL"); printf(__VA_ARGS__); putchar('\n'); fflush(stdout); } while(0)
 
@@ -65,33 +72,38 @@ int main(void) { @autoreleasepool {
         id<MTLTexture> srcs[2] = {[g_dev newTextureWithDescriptor:td], [g_dev newTextureWithDescriptor:td]}; res_add(srcs[0]); res_add(srcs[1]); res_commit();
         uint32_t *px = malloc((size_t)W * H * 4); int ok_on = fi_wanted();
         uint64_t ticket0 = 1000 + 100 * (uint64_t)run;
-        double sched0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9;   // 按绝对时刻排节拍（第 i 帧在 sched0 + i / 30 秒交）：固定睡 33 ms 会把 fi_frame 自己的时间也算进间隔，超过规则的 1.25 倍周期就判「来晚了不补」
+        // 交帧时刻由假时钟给（第 i 帧 = fake0 + i 个周期；第 3 遍 LATE_AT 那帧多给 1 秒），不再按墙钟排节拍
+        uint64_t fake = now_ns();
         for (int i = 0; i < N; i++) {
             int x = X0 + STEP * i;
             if (i < CUT_AT) { for (int y = 0; y < H; y++) for (int c = 0; c < W; c++) px[y * W + c] = c >= x && c < x + BW ? 0xFFFFFFFFu : 0xFF000000u; }
             else { uint32_t r = 12345; for (int j = 0; j < W * H; j++) { r = r * 1103515245u + 12345u; uint32_t g = r >> 24; px[j] = 0xFF000000u | g << 16 | g << 8 | g; } }   // 固定种子的噪点：每帧一样
             id<MTLTexture> t = srcs[i & 1];
-            {   // 这张源图（两张轮换）上一次被读完才改写，同游戏双缓冲：第 i - 2 帧的票记完成；最多等 2 秒，等不到按失败记、不挂住
+            {   // 这张源图（两张轮换）上一次被读完才改写，同游戏双缓冲：第 i - 2 帧的票记完成；兜底 30 秒（原 2 秒：负载高时 GPU 慢就假红），等不到按失败记、不挂住
                 double tw = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9; int stuck = 0;
                 pthread_mutex_lock(&g_pq_mu);
-                while (i >= 2 && g_pq_done < ticket0 + i - 2) { if (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9 - tw > 2) { stuck = 1; break; }
+                while (i >= 2 && g_pq_done < ticket0 + i - 2) { if (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9 - tw > 30) { stuck = 1; break; }
                     struct timespec ts = {0, 20000000}; pthread_mutex_unlock(&g_pq_mu); nanosleep(&ts, NULL); pthread_mutex_lock(&g_pq_mu); }
                 pthread_mutex_unlock(&g_pq_mu);
-                if (stuck) { CHECK(0, "⑤ 第 %d 遍第 %d 帧：等第 %d 帧的票 2 秒没等到（补帧卡住）", run, i, i - 2); break; }
+                if (stuck) { CHECK(0, "⑤ 第 %d 遍第 %d 帧：等第 %d 帧的票 30 秒没等到（补帧卡住）", run, i, i - 2); break; }
             }
             [t replaceRegion:MTLRegionMake2D(0, 0, W, H) mipmapLevel:0 withBytes:px bytesPerRow:W * 4];
             // 交帧间隔给定值，不看墙钟（满载机器上墙钟间隔会超规则的 1.25 倍周期、判「来晚了不补」，单测时有时无地红；规则本身由 t_nvn_fi_rule 测）：
             //   每帧正好一个周期；第 3 遍第 LATE_AT 帧给 1 秒，按规则不补
-            if (g_fi) ((NvPresentFI *)g_fi)->last_in_ns = now_ns() - (i == LATE_AT ? 1000000000ull : 1000000000ull / 30);
+            if (i) fake += i == LATE_AT ? 1000000000ull : 1000000000ull / 30;
+            atomic_store(&g_fake_ns, fake);
             int r = fi_frame(t, NULL, l, 1.0 / 30, ticket0 + i);
+            atomic_store(&g_fake_ns, 0);
             if (r < 0) break;
-            { double wake = sched0 + (i + 1) / 30.0, nowt = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9; if (wake > nowt) usleep((useconds_t)((wake - nowt) * 1e6)); }
         }
         double t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9;
-        pthread_mutex_lock(&g_pq_mu); while (g_pq_done < ticket0 + N - 1 && clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9 - t0 < 5) { struct timespec ts = {0, 50000000}; pthread_mutex_unlock(&g_pq_mu); nanosleep(&ts, NULL); pthread_mutex_lock(&g_pq_mu); }
+        // 等全部票记完成，兜底 30 秒（原 5 秒）
+        pthread_mutex_lock(&g_pq_mu); while (g_pq_done < ticket0 + N - 1 && clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9 - t0 < 30) { struct timespec ts = {0, 50000000}; pthread_mutex_unlock(&g_pq_mu); nanosleep(&ts, NULL); pthread_mutex_lock(&g_pq_mu); }
         uint64_t done = g_pq_done; pthread_mutex_unlock(&g_pq_mu);
         NvPresentFI *f = g_fi;
-        usleep(100000);   // 插值那一槽的完成回调（切镜头标志、GPU 时间）可能晚于真帧那一槽记票
+        // 插值那一槽的完成回调（切镜头标志、GPU 时间）可能晚于真帧那一槽记票：原先固定睡 100 ms，负载高时回调没到就假红。
+        //   现在等到有 GPU 读数的插值数 = 编码了插值的帧数（补成 + 按规则不补但照样编码的那帧），兜底 30 秒；等不到下面判红
+        for (int w = 0; w < 3000 && f; w++) { pthread_mutex_lock(&g_pq_mu); int all_in = f->gpu_n >= f->made + (run == 3 ? 1u : 0u); pthread_mutex_unlock(&g_pq_mu); if (all_in) break; usleep(10000); }
         pthread_mutex_lock(&g_pq_mu); uint64_t gn = f ? f->gpu_n : 0, cuts = f ? f->cuts : 0; double gsum = f ? f->gpu_sum : 0; pthread_mutex_unlock(&g_pq_mu);
         CHECK(cuts == (run == 2 ? 1u : 0u), "⑤ 第 %d 遍：判成切镜头 %llu 次（期望 %d）", run, (unsigned long long)cuts, run == 2 ? 1 : 0);
         // 补成 + 按规则不补 = N - 1；不补的只有第 3 遍给了 1 秒间隔的那一帧

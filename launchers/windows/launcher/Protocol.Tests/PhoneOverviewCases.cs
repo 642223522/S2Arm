@@ -89,5 +89,13 @@ internal static class PhoneOverviewCases
             "state: needsChoice, no current bundle, only chooseApp");
         check(dc.Count == 2 && (string?)dc[0]["bundleId"] == alt && (bool)dc[1]["byThisLauncher"]! && dc[1]["identityTeam"] is null && (string?)dc[0]["team"] == "TEAMALT", "state: candidates carried");
         check(!(bool)ds[1]["needsChoice"]! && (string?)((Dictionary<string, object?>)ds[1]["installed"]!)["bundleId"] == own, "state: chosen one is installed.bundleId");
+        // 推送失败「装着不止一个、还没选」：诊断 facts {device, candidates}（install.owner_for_push）→ 失败页就地列候选（期望手写）
+        var facts = PhoneOverview.ChoiceFacts(J("""[{"code":"phone_app_choice_required","severity":"error","facts":{"device":"DUO-1","candidates":""" + cands + """}}]"""));
+        check(facts is { } f && f.Device == "DUO-1" && f.Candidates.SequenceEqual([new PhoneOverview.Candidate(alt, "TEAMALT", false, "TEAMALT"), new PhoneOverview.Candidate(own, "TEAMOWN", true, null)]),
+            "choice facts: device and candidates from the push failure");
+        check(PhoneOverview.ChoiceFacts(J("""[{"code":"device_not_ready","severity":"error","facts":{"device":"DUO-1","candidates":""" + cands + """}}]""")) is null
+            && PhoneOverview.ChoiceFacts(J("""[{"code":"phone_app_choice_required","severity":"error"}]""")) is null
+            && PhoneOverview.ChoiceFacts(J("""[{"code":"phone_app_choice_required","facts":{"device":"DUO-1","candidates":[]}}]""")) is null
+            && PhoneOverview.ChoiceFacts(J("{}")) is null, "choice facts: other code / no facts / no candidates / not an array → null");
     }
 }

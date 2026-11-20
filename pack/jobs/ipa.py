@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import zipfile
 from pathlib import Path
@@ -284,8 +285,8 @@ def _build(c):
             if name.startswith('DOTNET_ROOT_'):
                 env.pop(name)
         env.update(S2A_PACK_PLAT="ios", S2A_TARGET="ios", S2A_PY=os.sys.executable)
-        from library import source_file_bytes
-        env["S2A_SOURCE_BYTES"] = str(source_file_bytes(selected_packages(game)))   # 原件文件总字节：随包基础管线上限 = 它的 10%（pack/stage_direct_cpso.sh）
+        for k, v in pso_env(tgt).items():   # 随包管线（计算 / 基础）按目标设备出：不传时 pack/jobs/archs.py 对用户 iPhone 包不猜、管线段整段跳过（0 份）
+            env.setdefault(k, v)
         # 存档游戏身份（和 Mac 存档作业 saves.identity 同一份）：一键出包只在「从原件出包」时自己生成，启动器走 --from-extract 一直缺，
         #   iPhone 包里没有 save-identity.json → 存档管理页报「缺少游戏身份」、iCloud 存档不同步（11-09 真机）。这里按游戏库目录写好交给它
         from saves import identity as save_identity
@@ -431,9 +432,12 @@ def prune_unless_follow_up(c, gid):
     if c.r.get("followUp") is True:
         c.emit(message="这款接着还要出别的平台：先留着解包与中间产物")
         return False
-    from library import prune_build
+    from library import NotManaged, prune_build
     try:
         prune_build(c, gid)
+    except NotManaged as error:   # 不在存放位置里的路径没碰：只记日志，不作为错误码给玩家看（包已出好）
+        print(f"[s2a] 清理中间产物跳过了不在存放位置里的路径：{c.redact(str(error))}", file=sys.stderr)  # 非玩家句
+        return False
     except (Failure, OSError) as error:   # #793 / #796：包已经出好，清中间产物只是收尾——游戏库在删不了文件的地方（Xbox App 管的文件夹）时
         #   原先 PermissionError 一路抛上去，出好的包被判失败；同失败收尾 clean_after_stop：记一条警告，下次空闲再清
         c.diagnostic("清理中间产物没有完成，下次空闲时会再清：" + c.redact(str(error)), code="job_failed", severity="warning")  # 非玩家句
@@ -885,6 +889,22 @@ def oneclick_result(path):
     except OSError:
         return None
     return result
+
+
+def pso_env(tgt):
+    """目标设备 → 出包管线归档的目标对（pack/jobs/archs.py 读 S2A_PSO_ARCHS / S2A_PSO_OS）。认得出 GPU 架构才给；
+    系统大版本只给读得到的正值（0 / 空会出 ios0 归档）。认不出（没目标、前端没带 gpuArch）→ 空，管线段照旧按 archs.py 规则处理"""
+    arch = (tgt or {}).get("gpuArch") or ""
+    if not arch:
+        return {}
+    out = {"S2A_PSO_ARCHS": arch}
+    try:
+        osv = int((tgt or {}).get("os") or 0)
+    except (TypeError, ValueError):
+        osv = 0
+    if osv > 0:
+        out["S2A_PSO_OS"] = str(osv)
+    return out
 
 
 def resolve_target(c):

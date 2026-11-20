@@ -30,6 +30,8 @@
 #include <time.h>
 
 #include "nvn_backend.h"
+#include "../../../graphics/nvn/gfx/tex/nvn_deswizzle.h"
+#include "backend_vulkan_deswizzle_spv.h"
 #include "nvn_unimpl.h"
 #include "nvn_vk_report_ts.h"
 #include "nvn_plat.h"   // 调试开关与一行日志（上屏段的调试色、GPU 时间读数）
@@ -41,6 +43,7 @@
 #include "nvn_vk_pipe_warm.h"     // 预热清单：warm 标记 / 命中计数的口径
 #include "nvn_vk_driver_cache.h"   // 驱动管线缓存的落盘文件层（见「驱动管线缓存」一节）
 #include "nvn_fmt_info.h"
+#include "nvn_vk_border.h"   // 没有 VK_EXT_custom_border_color 时边框色就近取内置三档（纯逻辑，宿主单测）
 #include "nvn_fmt_expand.h"
 #include "vk_device.h"
 #include "spirv_storage.h"   // 顶点阶段的存储写检查（与直连接纳同一份，按 Vulkan 规范的 NonWritable 判）
@@ -48,6 +51,24 @@
 #include "../capprobe/capprobe.h"
 #include "nvn_vk_dq.inc"   // 两级回放：从这里往下 vkCmd* 等名字走它的包装（调试开关 nvk_dq，缺省开）
 S2A_CAPPROBE_RUNTIME_LOST_WEAK_REF;   // 宿主链接单元无 bridge.cpp 时解析为 NULL
+// 宿主后端夹具可能不链回放布局；缺来源时能力关闭并明确报原因。
+// 弱链接[androiddraw]：nvn_deswizzle_geom
+// 弱链接[androiddraw]：nvn_deswizzle
+// 弱链接[androiddraw]：nvn_tex_layout
+// 弱链接[androiddraw]：nvn_tex_level_offset
+// 弱链接[androiddraw]：nvn_tex_level_gobs
+// 弱链接[androiddraw]：nvn_gob_switch2
+extern void nvn_tex_layout(const nvn_texdesc *, nvn_texlayout *) __attribute__((weak));
+extern int nvn_deswizzle_geom(const nvn_texdesc *, unsigned, unsigned, uint32_t *, uint32_t *, uint32_t *, uint64_t *, unsigned *, unsigned *, uint32_t *) __attribute__((weak));
+extern int nvn_deswizzle(const nvn_texdesc *, unsigned, unsigned, const void *, void *, size_t) __attribute__((weak));
+extern uint64_t nvn_tex_level_offset(const nvn_texdesc *, unsigned) __attribute__((weak));
+extern uint32_t nvn_tex_level_gobs(const nvn_texdesc *, unsigned) __attribute__((weak));
+extern int nvn_gob_switch2 __attribute__((weak));
+static struct { VkDescriptorSetLayout dsl; VkPipelineLayout layout; VkShaderModule module; VkPipeline pipe; } g_deswizzle;
+static uint64_t g_deswizzle_count, g_deswizzle_bytes, g_deswizzle_fallbacks;
+static uint64_t g_deswizzle_reasons[5];
+static int deswizzle_open(void);
+static void deswizzle_close(void);
 
 #define VK_SEG_QUEUE_INIT 16
 #define VK_ARENA_MIN (256u * 1024u)
@@ -85,6 +106,7 @@ struct nvn_gpu_tex_s {
     VkImageUsageFlags usage;
     VkImageLayout layout;
     uint32_t w, h, depth, levels, layers, samples, nvn_format, target;
+    nvn_texdesc original_desc;   // 原客体排布（含 packaged 宽对齐），不能从宿主图像反推
     int array_compatible;
     int cube_compatible;   // P0-6：二维数组建图时带了 CUBE_COMPATIBLE（方形、≥6 层、单采样、设备收这个格式 / 用途 / 标志），可以建立方体（数组）视图
     int view_fmt, released, refs, bc_decoded;
@@ -392,6 +414,8 @@ struct nvn_gpu_vk {
 
 static struct nvn_gpu_vk g;
 static _Atomic int g_open;   // 跨线程：close 置 0 后其他线程据此拒收
+static uint64_t g_border_nearest;     // sampler_border_color_nearest 计数（samp_border_nearest_note）
+static int g_border_nearest_said;     // 本局已打过边框色就近那一行：开会话时清零
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 // 诊断读数（nvk_gputime 开着时每 300 次上屏打一行）：每帧新建了多少个驱动对象、写了多少次描述符、开了多少个查询。
 enum { OC_RP, OC_FB, OC_CPOOL, OC_DPOOL, OC_DALLOC, OC_DWRITE, OC_QUERY, OC_VIEW, OC_N };
@@ -1524,6 +1548,7 @@ static void fill_caps(struct nvn_gpu_vk *vk, const nvn_gpu_open_desc *d) {
     // #1199：BC 不再按 textureCompressionBC 一刀切——原生全有或缺的格式能走 compute 解码就算支持。
     if (f.textureCompressionBC || vk->dev->bc_decode_mask) c->caps |= NVN_GPU_CAP_TEX_BC;
     if (f.textureCompressionASTC_LDR) c->caps |= NVN_GPU_CAP_TEX_ASTC;
+    if (g_deswizzle.pipe) c->caps |= NVN_GPU_CAP_GPU_DESWIZZLE;
     c->caps |= NVN_GPU_CAP_BLIT_SCALED;   // vkCmdBlitImage；具体格式对行不行在 nvn_gpu_blit 里逐次按格式特性判
     c->caps |= NVN_GPU_CAP_BLIT_DEPTH_STENCIL; // 辅助绘制拷贝；具体格式仍须有采样与深度模板附件能力
     // 不声明 NVN_GPU_CAP_NO_ATTACH_PASS（11-15 撤回，#697）：零附件通道在 Mali-G710 r32p1 上让一款大作标题页 / 场景整片发红（d1c76bd63 起，
@@ -2227,9 +2252,14 @@ nvn_gpu_rc nvn_gpu_open(const nvn_gpu_open_desc *d, nvn_gpu_err *err) {
         g_cv_ready = 1;
     }
     dset_open();   // 按布局回收的描述符组（#1096）：开关在开会话时读一次
+    g_deswizzle_count = g_deswizzle_bytes = g_deswizzle_fallbacks = 0;
+    memset(g_deswizzle_reasons, 0, sizeof g_deswizzle_reasons);
+    if (nvn_plat_flag("nvk_gpu_deswizzle", 1) && !deswizzle_open())
+        nvn_plat_log(NVN_PLAT_LOG_RED, "gpu", "【红】GPU 解排不可用，本局采用 CPU 解排");
     report_timestamp_open();
     fill_caps(&g, d);
     g_ref_n = g_ref_hit = 0;
+    __atomic_store_n(&g_border_nearest_said, 0, __ATOMIC_RELAXED);   // 边框色就近那一行每局首个打一次
     if (pthread_create(&g.worker, NULL, worker_main, &g) != 0)
         return fail(err, NVN_GPU_E_DEVICE, "worker 线程创建失败");
     g.worker_started = 1;
@@ -2252,6 +2282,23 @@ void nvn_gpu_caps_get(nvn_gpu_caps *out) {
     pthread_mutex_unlock(&g_mu);
 }
 
+// 贴图 → 缓冲回读的格式判断（nvn_gpu_copy_tex_buf 与 nvn_gpu_format_caps 的 NVN_GPU_FMT_READBACK 共用，两边不会不一致）：
+//   readback_refusal：copy_tex_buf 拒收的原因（展开格式 / 替换存储），NULL = 能拷。拒收是粘滞错误，整段提交失败、时间线进失败终态，
+//     所以 ReadTexels 这类旁路读回必须先查 READBACK 位、在开段前挡住。
+//   readback_exact：拷出来就是 NVN 的字节——不拒收，且不是深度模板合一（缓冲 ↔ 贴图一个区域只拷一个面，取深度面）、不是 D24（深度面高 8 位未定义）。
+static const char *readback_refusal(uint32_t nvn_format) {
+    nvn_fmt_info fi;
+    if (nvn_fmt_info_of(nvn_format, &fi) && fi.expand) return "展开格式回读未实现";
+    if (nvn_vk_format_substituted(nvn_format)) return "替换存储格式（D24 换 D32）按字节回读未实现";
+    return NULL;
+}
+static int readback_exact(uint32_t nvn_format) {
+    nvn_fmt_info fi;
+    if (readback_refusal(nvn_format) || !nvn_fmt_info_of(nvn_format, &fi)) return 0;
+    if (fi.depth && fi.stencil) return 0;
+    if (nvn_format == NVN_FORMAT_DEPTH24) return 0;
+    return 1;
+}
 uint32_t nvn_gpu_format_caps(uint32_t nvn_format) {
     if (!g_open) return 0;
     nvn_fmt_info info;
@@ -2276,6 +2323,7 @@ uint32_t nvn_gpu_format_caps(uint32_t nvn_format) {
     if (o & VK_FORMAT_FEATURE_STORAGE_IMAGE_ATOMIC_BIT) out |= NVN_GPU_FMT_ATOMIC;
     if (o & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT) out |= NVN_GPU_FMT_VERTEX;
     if (nvn_vk_format_substituted(nvn_format)) out |= NVN_GPU_FMT_SUBST;   // #398：D24 换 D32 存储
+    if (readback_exact(nvn_format)) out |= NVN_GPU_FMT_READBACK;
     if (expand) {
         out |= NVN_GPU_FMT_SUBST;   // 存储被换成展开目标，逐字节拷贝要核心换算
         VkFormat sf = nvn_vk_format(nvn_format);
@@ -2286,7 +2334,8 @@ uint32_t nvn_gpu_format_caps(uint32_t nvn_format) {
     }
     // 走计算解码的块压缩格式：能力是照「解码后的格式」查的，但它只能被采样——建图入口不收渲染 / 存储用途。
     // 把解码后格式的「可存储」原样报出去，核心会给带 IMAGE 标志的压缩贴图加存储用途，建图就被拒（#697：Mali 上 5 种格式的贴图全建不出来，背景全黑）。
-    if (bcdec) out &= NVN_GPU_FMT_SAMPLE | NVN_GPU_FMT_FILTER;
+    if (bcdec) out &= NVN_GPU_FMT_SAMPLE | NVN_GPU_FMT_FILTER | NVN_GPU_FMT_READBACK;   // 回读照样是原压缩块字节（copy_tex_buf → bc_readback）
+    // 通道映射补分量位置的退回格式：存储字节的分量顺序不是 NVN 的，回读也就不是 NVN 字节（下一行连 READBACK 一起去掉）
     // #975：16 位打包格式走退回格式时，分量位置靠采样视图的通道映射补回；渲染 / 存储 / 顶点取数不经通道映射，不报这些能力。
     { uint8_t map[4]; if (nvn_vk_format_chanmap(nvn_format, map)) out &= NVN_GPU_FMT_SAMPLE | NVN_GPU_FMT_FILTER; }
     return out;
@@ -2428,6 +2477,7 @@ nvn_gpu_rc nvn_gpu_close(uint64_t timeout_ns, nvn_gpu_err *err) {
     texmem_drain(g.d);
     seg_drain();
     if (g.bc) nvn_vk_bcdec_destroy(g.dev, g.bc);
+    deswizzle_close();
     free(g.submitted);
     g.submitted = NULL;
     g.nsub = g.capsub = 0;
@@ -6232,6 +6282,7 @@ nvn_gpu_rc nvn_gpu_tex_create(const nvn_gpu_tex_desc *d, nvn_gpu_tex *out, nvn_g
     t->sample_format = sample_fmt;
     t->bc_decoded = bc_decoded;
     t->aspect = fmt_aspect(fmt);
+    t->original_desc = d->d;
     t->w = d->d.width;
     t->h = d->d.height;
     t->levels = levels;
@@ -6592,6 +6643,18 @@ static int32_t samp_border_int(float f) {
     return out;
 }
 
+// 没有 VK_EXT_custom_border_color 时的就近替代（降级，不是错误）：具名计数 sampler_border_color_nearest 按采样器建成次数计
+//   （进程累计，nvn_gpu_stats 读），每局（开会话起）只打首个一行信息级日志：原色 → 浮点 / 整数各取的内置档。
+static void samp_border_nearest_note(const float b[4], int pf, int pi) {
+    static const char *const name[3] = {"透明黑", "不透明黑", "不透明白"};
+    __atomic_fetch_add(&g_border_nearest, 1, __ATOMIC_RELAXED);
+    if (__atomic_exchange_n(&g_border_nearest_said, 1, __ATOMIC_RELAXED)) return;
+    char line[260];
+    snprintf(line, sizeof line, "sampler_border_color_nearest：设备没有 VK_EXT_custom_border_color，边框色 (%g, %g, %g, %g) → 浮点%s / 整数%s（就近取内置档，绘制照画；本局首个，之后只计数）",
+             b[0], b[1], b[2], b[3], name[pf], name[pi]);
+    nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", line);
+}
+
 static void samp_border_unreserve(const struct nvn_gpu_samp_s *s) {
     if (!s->border_slots) return;
     pthread_mutex_lock(&g_mu);
@@ -6679,21 +6742,22 @@ nvn_gpu_rc nvn_gpu_samp_create(const samp_par *p, nvn_gpu_samp *out, nvn_gpu_err
     }
     // 边框色只在有一向是 CLAMP_TO_BORDER 时用得到；用不到时不建自定义边框色（不要扩展、不占配额），不是三档的取不透明黑（与改前相同）。
     const int preset = samp_border_preset(p->border);
-    const int custom = preset < 0 && (ci.addressModeU == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER ||
-                                      ci.addressModeV == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER ||
-                                      ci.addressModeW == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER);
-    if (custom && !g.dev->custom_border_enabled) {
-        free(s);
-        return fail(err, NVN_GPU_E_UNSUPPORTED, "sampler_border_color_custom：设备没有启用 VK_EXT_custom_border_color（边框色 %g %g %g %g）",
-                    p->border[0], p->border[1], p->border[2], p->border[3]);
-    }
+    const int reach = ci.addressModeU == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER ||
+                      ci.addressModeV == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER ||
+                      ci.addressModeW == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    // 设备没有 VK_EXT_custom_border_color（如 Maleoon 920）：不丢绘制，浮点 / 整数采样器各按 RGBA 距离取最近的内置档（见 nvn_vk_border.h），
+    //   建成后计 sampler_border_color_nearest、每局首个打一行信息级日志（samp_border_nearest_note）。
+    const int approx = preset < 0 && reach && !g.dev->custom_border_enabled;
+    const int custom = preset < 0 && reach && !approx;
+    const int preset_f = approx ? nvk_border_nearest(p->border, 0) : preset < 0 ? 1 : preset;
+    const int preset_i = approx ? nvk_border_nearest(p->border, 1) : preset < 0 ? 1 : preset;
     if (custom && !g.dev->custom_border_without_format) {
         free(s);
         return fail(err, NVN_GPU_E_UNSUPPORTED, "sampler_border_color_custom_format：设备没有 customBorderColorWithoutFormat，建采样器时不知道视图格式");
     }
     static const VkBorderColor fixed[3] = {VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK, VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK, VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE};
     static const VkBorderColor fixed_int[3] = {VK_BORDER_COLOR_INT_TRANSPARENT_BLACK, VK_BORDER_COLOR_INT_OPAQUE_BLACK, VK_BORDER_COLOR_INT_OPAQUE_WHITE};
-    ci.borderColor = custom ? VK_BORDER_COLOR_FLOAT_CUSTOM_EXT : fixed[preset < 0 ? 1 : preset];
+    ci.borderColor = custom ? VK_BORDER_COLOR_FLOAT_CUSTOM_EXT : fixed[preset_f];
     VkSamplerCustomBorderColorCreateInfoEXT cb, cbi;   // 浮点 / 整数两个采样器各一份；format 留 UNDEFINED（上面已要求 WithoutFormat）
     memset(&cb, 0, sizeof cb);
     memset(&cbi, 0, sizeof cbi);
@@ -6736,7 +6800,7 @@ nvn_gpu_rc nvn_gpu_samp_create(const samp_par *p, nvn_gpu_samp *out, nvn_gpu_err
         ii.pNext = NULL;   // 全最近点：归约不起作用，也不要求视图格式有 FILTER_MINMAX
         ii.magFilter = ii.minFilter = VK_FILTER_NEAREST; ii.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
         ii.anisotropyEnable = VK_FALSE; ii.maxAnisotropy = 1.0f;
-        ii.borderColor = custom ? VK_BORDER_COLOR_INT_CUSTOM_EXT : fixed_int[preset < 0 ? 1 : preset];
+        ii.borderColor = custom ? VK_BORDER_COLOR_INT_CUSTOM_EXT : fixed_int[preset_i];
         if (custom) {
             cbi.pNext = ii.pNext == &cb ? cb.pNext : ii.pNext;   // 换掉浮点那份，链上其余结构不动
             ii.pNext = &cbi;
@@ -6752,6 +6816,7 @@ nvn_gpu_rc nvn_gpu_samp_create(const samp_par *p, nvn_gpu_samp *out, nvn_gpu_err
     pthread_mutex_unlock(&g_mu);
     *out = s;
     if (mapping_fallback) nvn_unimpl("gpu", "sampler_reduction_average_no_component_mapping", NULL);
+    if (approx) samp_border_nearest_note(p->border, preset_f, preset_i);
     return rc(NVN_GPU_OK);
 }
 
@@ -6783,7 +6848,7 @@ static VkImageAspectFlags copy_face_aspect(const struct nvn_gpu_tex_s *t) {
 //   COPY_FACE_STENCIL = 只拷模板面，缓冲每纹素 1 字节。
 enum { COPY_FACE_DEFAULT = 0, COPY_FACE_DEPTH_F32 = 1, COPY_FACE_STENCIL = 2 };
 static void copy_buf_tex_impl(nvn_gpu_cmd ch, nvn_gpu_buf bh, uint64_t off, uint64_t row_bytes, uint64_t image_bytes,
-                              nvn_gpu_tex th, uint32_t level, uint32_t layer, const NVNcopyRegion *r, int face) {
+                              nvn_gpu_tex th, uint32_t level, uint32_t layer, const NVNcopyRegion *r, int face, int source_ready) {
     const int depth_f32 = face == COPY_FACE_DEPTH_F32, stencil = face == COPY_FACE_STENCIL;
     { struct nvn_gpu_cmd_s *cc = ch; if (cc && cc->in_pass && rc_is(cc->sticky, NVN_GPU_OK)) { set_sticky(cc, NVN_GPU_E_ORDER, "传输操作在通道内"); return; } }
     struct nvn_gpu_cmd_s *c = ch;
@@ -6837,7 +6902,7 @@ static void copy_buf_tex_impl(nvn_gpu_cmd ch, nvn_gpu_buf bh, uint64_t off, uint
                    (unsigned long long)row_bytes, (unsigned long long)image_bytes, (unsigned long long)off);
         return;
     }
-    full_barrier(c);
+    if (!source_ready) full_barrier(c);
     image_barrier(c, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     VkBufferImageCopy bc;
     memset(&bc, 0, sizeof bc);
@@ -6856,7 +6921,7 @@ static void copy_buf_tex_impl(nvn_gpu_cmd ch, nvn_gpu_buf bh, uint64_t off, uint
 
 void nvn_gpu_copy_buf_tex(nvn_gpu_cmd ch, nvn_gpu_buf bh, uint64_t off, uint64_t row_bytes, uint64_t image_bytes,
                           nvn_gpu_tex th, uint32_t level, uint32_t layer, const NVNcopyRegion *r) {
-    copy_buf_tex_impl(ch, bh, off, row_bytes, image_bytes, th, level, layer, r, COPY_FACE_DEFAULT);
+    copy_buf_tex_impl(ch, bh, off, row_bytes, image_bytes, th, level, layer, r, COPY_FACE_DEFAULT, 0);
 }
 
 void nvn_gpu_copy_tex_buf(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32_t layer, const NVNcopyRegion *r,
@@ -6867,15 +6932,8 @@ void nvn_gpu_copy_tex_buf(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32
     struct nvn_gpu_tex_s *t = th;
     struct nvn_gpu_buf_s *b = bh;
     if (t && t->bc_decoded) { bc_readback(c, t, level, layer, r, b, off, row_bytes, image_bytes); return; }   // 按上传时留下的压缩原字节回读
-    nvn_fmt_info fi;
-    if (t && nvn_fmt_info_of(t->nvn_format, &fi) && fi.expand) {
-        set_sticky(c, NVN_GPU_E_UNSUPPORTED, "展开格式回读未实现（0x%x）", t->nvn_format);
-        return;
-    }
-    if (t && nvn_vk_format_substituted(t->nvn_format)) {
-        set_sticky(c, NVN_GPU_E_UNSUPPORTED, "替换存储格式（D24 换 D32）按字节回读未实现（0x%x）", t->nvn_format);
-        return;
-    }
+    { const char *no = t ? readback_refusal(t->nvn_format) : NULL;   // 与 NVN_GPU_FMT_READBACK 同一个判断
+      if (no) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "%s（0x%x）", no, t->nvn_format); return; } }
     uint32_t bpp = t ? fmt_bpp(t->format) : 0;
     // 块信息（同 copy_buf_tex_impl）：压缩格式一行是一排块（blk_w x blk_h 纹素、blk 字节），区域按纹素给、偏移要落在块边上；
     // 没列进 fmt_bpp 的非压缩格式按 NVN 格式表的每纹素字节数。原先这里对压缩格式一律拒绝（核心把块压缩贴图逐字节拷进影子要用它）。
@@ -7347,7 +7405,7 @@ static void upload_d24s8_stencil(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level,
         const uint8_t *row = src + (uint64_t)y * row_bytes;
         for (uint32_t x = 0; x < ew; x++) dst[(uint64_t)y * ew + x] = row[(uint64_t)x * 4 + 3];
     }
-    copy_buf_tex_impl(ch, sl.buf, sl.off, ew, (uint64_t)ew * eh, th, level, layer, r, COPY_FACE_STENCIL);
+    copy_buf_tex_impl(ch, sl.buf, sl.off, ew, (uint64_t)ew * eh, th, level, layer, r, COPY_FACE_STENCIL, 0);
 }
 
 void nvn_gpu_tex_upload(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32_t layer, const NVNcopyRegion *r,
@@ -7403,7 +7461,7 @@ void nvn_gpu_tex_upload(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32_t
         if (row_bytes & 3) { set_sticky(c, NVN_GPU_E_ARG, "tex_upload D24 行宽未 4 对齐"); return; }
         memcpy(sl.cpu, src, (size_t)image_bytes);
         nvn_vk_depth24_to_f32(sl.cpu, (size_t)image_bytes / 4);
-        copy_buf_tex_impl(ch, sl.buf, sl.off, row_bytes, image_bytes, th, level, layer, r, COPY_FACE_DEPTH_F32);
+        copy_buf_tex_impl(ch, sl.buf, sl.off, row_bytes, image_bytes, th, level, layer, r, COPY_FACE_DEPTH_F32, 0);
         if (t->nvn_format == NVN_FORMAT_DEPTH24_STENCIL8) upload_d24s8_stencil(ch, th, level, layer, r, src, row_bytes, image_bytes, ew, eh);   // 换存储后模板面照样要传
     } else {
         memcpy(sl.cpu, src, (size_t)image_bytes);
@@ -7617,9 +7675,7 @@ void nvn_gpu_timestamp(nvn_gpu_cmd ch, uint32_t slot, uint32_t type) {
 
 void nvn_gpu_label(nvn_gpu_cmd c, const char *text) { (void)c; (void)text; }
 
-void nvn_gpu_tex_upload_blocklinear(nvn_gpu_cmd c, nvn_gpu_tex t, uint32_t l, uint32_t y, const nvn_texlayout *L, const void *src, uint64_t bytes) {
-    (void)t; (void)l; (void)y; (void)L; (void)src; (void)bytes; VK_NOT_YET(c, "nvn_gpu_tex_upload_blocklinear");
-}
+#include "backend_vulkan_deswizzle.inc"
 // 上屏 6 个入口在 backend_vulkan_wsi.inc（文件末尾 include：它要用后面定义的提交与回收函数）
 
 // ---------------------------------------------------------------- 命令
@@ -8066,6 +8122,7 @@ void nvn_gpu_stats(nvn_gpu_stat_fn fn, void *user, int take) {
     fn(user, "shader_missing_vertex_stores", __atomic_load_n(&g_vfeat_missing[0], __ATOMIC_RELAXED));   // 顶点前阶段写存储、设备没启用 vertexPipelineStoresAndAtomics 的着色器数
     fn(user, "shader_missing_clip_distance", __atomic_load_n(&g_vfeat_missing[1], __ATOMIC_RELAXED));
     fn(user, "shader_missing_cull_distance", __atomic_load_n(&g_vfeat_missing[2], __ATOMIC_RELAXED));
+    fn(user, "sampler_border_color_nearest", __atomic_load_n(&g_border_nearest, __ATOMIC_RELAXED));   // 没有自定义边框色扩展、边框色就近取内置档建成的采样器数（进程累计）
 }
 
 // 用例读：视图全局链与帧缓冲缓存的当前账。0 现存视图数；1 旧路径（nvk_ulist=0）摘链累计走过的节点数（缺省路径恒为 0）；

@@ -314,6 +314,37 @@ import S2ArmAppleAdapter
         await m.loadPhoneOverview(probe: true)
         XCTAssertEqual(runner.overviewDevices.last ?? nil, "DUO-1", "现查带上总控台这台")
     }
+
+    func testChoiceFactsParse() {
+        let facts = PhoneOverview.choiceFacts([["code": "phone_app_choice_required", "severity": "error", "facts": ["device": "DUO-1", "candidates": twoCandidates]]])
+        XCTAssertEqual(facts?.device, "DUO-1")
+        XCTAssertEqual(facts?.candidates, [.init(bundleId: alt, team: "TEAMALT", byThisLauncher: false, identityTeam: "TEAMALT"),
+                                           .init(bundleId: launcherBid, team: "TEAMOWN", byThisLauncher: true, identityTeam: nil)])
+        XCTAssertNil(PhoneOverview.choiceFacts([["code": "device_not_ready", "facts": ["device": "DUO-1", "candidates": twoCandidates]]]), "别的码不算")
+        XCTAssertNil(PhoneOverview.choiceFacts([["code": "phone_app_choice_required"]]), "没带事实")
+        XCTAssertNil(PhoneOverview.choiceFacts([["code": "phone_app_choice_required", "facts": ["device": "DUO-1", "candidates": [[String: Any]]()]]]), "没有候选")
+    }
+
+    /// 推送停在「装着不止一个 S2Arm、还没选」：失败页就地列候选（pushChoice），点一个跑 phoneChooseApp，成了自动重推同一台、同样的游戏
+    func testPushSelectedChoiceFailureChooseThenRetries() async throws {
+        let runner = ConsoleRunner(probePhones: [choosePhoneRow])
+        runner.choiceFailures = 1
+        runner.choiceCandidates = twoCandidates
+        let m = try makeModel(runner)
+        m.updateSelected(ids: ["0100B", "0100A"], device: "DUO-1")
+        for _ in 0..<300 where m.pushChoice == nil || m.phoneBusy { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(runner.pushes.count, 1)
+        XCTAssertEqual(m.phoneSession?.failureCode, "phone_app_choice_required")
+        XCTAssertEqual(m.pushChoice?.device, "DUO-1")
+        XCTAssertEqual(m.pushChoice?.candidates.map(\.bundleId), [alt, launcherBid], "候选来自失败事实")
+        m.chooseApp(device: "DUO-1", bundleId: alt)
+        for _ in 0..<300 where runner.pushes.count < 2 { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(runner.chooses.first?["bundleId"] as? String, alt)
+        XCTAssertEqual(runner.pushes.count, 2, "选好自动重推")
+        XCTAssertEqual(runner.pushes.last?["gameIds"] as? [String], ["0100B", "0100A"], "同样的游戏")
+        XCTAssertEqual(runner.pushes.last?["device"] as? String, "DUO-1", "同一台")
+        XCTAssertNil(m.pushChoice, "用掉了")
+    }
 }
 
 /// 假作业进程：记下 install / pushSelected 请求；holdPush 时 pushSelected 挂着直到取消，其余作业照常成功
@@ -330,6 +361,9 @@ private final class ConsoleRunner: JobProcessRunner {
     var overviewProbes: [Bool] = []
     var overviewDevices: [String?] = []
     var chooses: [[String: Any]] = []
+    /// 前几单 pushSelected 按「装着不止一个 S2Arm、还没选」失败（诊断带 facts {device, candidates}，同 install.owner_for_push）
+    var choiceFailures = 0
+    var choiceCandidates: [[String: Any]] = []
     let holdPush: Bool
     /// 给了：phoneOverview 按这份回（介绍卡测试用）；没给：照旧一台 D9
     let probePhones: [[String: Any]]?
@@ -356,6 +390,14 @@ private final class ConsoleRunner: JobProcessRunner {
         operations.append(request["operation"] as? String ?? "")
         if request["operation"] as? String == "pushSelected" {
             pushes.append(request)
+            if choiceFailures > 0 {
+                choiceFailures -= 1
+                let ev: [String: Any] = ["schema": 1, "taskId": taskId, "type": "result", "state": "failed", "result": [:], "message": "这台 iPhone 上装着不止一个 S2Arm",
+                                         "diagnostics": [["code": "phone_app_choice_required", "severity": "error",
+                                                          "facts": ["device": request["device"] as? String ?? "", "candidates": choiceCandidates]]]]
+                DispatchQueue.main.async { onLine(try! JSONSerialization.data(withJSONObject: ev)); onExit(1) }
+                return Handle()
+            }
             if holdPush {   // 挂着直到取消（SIGTERM）：作业层以取消收尾、退出码 130
                 let h = Held()
                 h.onTerminate = { DispatchQueue.main.async {

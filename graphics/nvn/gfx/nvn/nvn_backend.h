@@ -39,7 +39,7 @@
 extern "C" {
 #endif
 
-#define NVN_GPU_CONTRACT_VERSION 15   // 改任何签名或语义 +1；两个后端与核心同批改，t_nvn_backend.c 的签名表同批改
+#define NVN_GPU_CONTRACT_VERSION 17   // 改任何签名或语义 +1；两个后端与核心同批改，t_nvn_backend.c 的签名表同批改
 /* 定稿 #1（调用形式）：链接期直接调用 nvn_gpu_*。每个平台构建只链一个后端，Metal 3 / 4 的选择留在 Metal 后端内部。
    理由：零间接、可内联；同进程 A/B 对照没有真实消费者，不为它新增注册实体（vickwv 同意）。 */
 
@@ -144,6 +144,8 @@ enum {
     NVN_GPU_FMT_STORAGE = 1u << 4, NVN_GPU_FMT_DEPTH = 1u << 5, NVN_GPU_FMT_ATOMIC = 1u << 6, NVN_GPU_FMT_VERTEX = 1u << 7,
     NVN_GPU_FMT_FB_FETCH = 1u << 8,   // 作颜色附件时片元着色器可读本像素（Metal [[color(n)]] / Vulkan rasterization_order_attachment_access 等，按格式开）
     NVN_GPU_FMT_SUBST = 1u << 9,      // 有对应但不是同一种存储（BGRA 换 RGBA、D24 换 D32）：读写语义同，逐字节拷贝要核心换算
+    NVN_GPU_FMT_READBACK = 1u << 10,  // nvn_gpu_copy_tex_buf 拷出来的就是 NVN 的逐字节内容（ReadTexels 读 GPU 内容的前提）。不含：SUBST 的、深度模板合一的
+                                      //   （只拷得出深度面）、D24（深度面高 8 位未定义）。后端 copy_tex_buf 拒收的格式一定没有这一位（两处用同一个判断）
 };
 typedef struct {
     void *host_device;       // 平台层已建好的设备（定稿 A2：后端不另建设备）。Apple：平台给的 MTLDevice 指针；安卓：Prepare 按 profile 建好的设备上下文（含 enabled 记录）
@@ -232,10 +234,12 @@ void nvn_gpu_samp_release(nvn_gpu_samp s);
 void nvn_gpu_tex_upload(nvn_gpu_cmd c, nvn_gpu_tex t, uint32_t level, uint32_t layer, const NVNcopyRegion *r,
                         const void *src, uint64_t row_bytes, uint64_t image_bytes);
 // 块线性原始字节上传，由后端在 GPU 上解排布（要 CAP_GPU_DESWIZZLE）；L 为 NVN 排布（nvn_tex_layout 的结果）。
+// 返回 NVN_GPU_OK：本张贴图已进 GPU（含后端内部 CPU 回退）；非 0：本张贴图没传（布局 / 几何 / 越界校验或暂存分配失败，
+//   后端日志带原因，不粘滞命令缓冲），调用方应照原样走 CPU 上传路径；顺序违规仍粘滞（契约 bug）。
 /* 定稿 #3：Vulkan 首版可只做 CPU 线性上传（不置 CAP_GPU_DESWIZZLE，核心先解再调 nvn_gpu_tex_upload）；Metal 抽离必须保留现有 GPU 解排布路径
    （nvn_deswizzle_gpu.h），不许借抽离退成 CPU 而改变行为或性能（判据：D1 基准的上传时长读数不变）。 */
-void nvn_gpu_tex_upload_blocklinear(nvn_gpu_cmd c, nvn_gpu_tex t, uint32_t level, uint32_t layer, const nvn_texlayout *L,
-                                    const void *src, uint64_t bytes);
+nvn_gpu_rc nvn_gpu_tex_upload_blocklinear(nvn_gpu_cmd c, nvn_gpu_tex t, uint32_t level, uint32_t layer, const nvn_texlayout *L,
+                                          const void *src, uint64_t bytes);
 
 // ---------- 着色器布局（定稿 A1：完整反射过下沿） ----------
 typedef enum { NVN_GPU_SH_VS = 0, NVN_GPU_SH_FS = 1, NVN_GPU_SH_GS = 2, NVN_GPU_SH_TCS = 3, NVN_GPU_SH_TES = 4, NVN_GPU_SH_CS = 5 } nvn_gpu_stage;   // = NVN 阶段号

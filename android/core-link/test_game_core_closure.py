@@ -62,7 +62,7 @@ def main():
         bridge_flags = ['-std=gnu++17', '-DS2A_CS_STATIC=1', '-DVK_USE_PLATFORM_ANDROID_KHR',
                         '-I', temp, '-I', ROOT, '-I', ROOT / 'runtime/src',
                         '-I', ROOT / 'runtime/include', '-I', ANDROID / 'native',
-                        # #868：bridge.cpp 引 nvn/nvn_vk_first_draw.h → direct/vk_device.h、vk_record.h → nvn_obj.h …：正式编译里这些目录由
+                        # #868：bridge.cpp 引 direct/*.h 等（旧层 nvn_vk_first_draw.h 已删，#1501）：正式编译里这些目录由
                         #   直连目标（core-link/NvnDirect.cmake s2a_android_direct_core 的 includes）给，这里照抄同一份
                         '-I', ROOT / 'graphics/nvn/gfx/nvn', '-I', ROOT / 'graphics/nvn/gfx/nvn/include', '-I', ROOT / 'graphics/nvn',
                         '-I', ROOT / 'graphics/nvn/host', '-I', ROOT / 'graphics/nvn/gfx/tex', '-I', ANDROID / 'native/nvn',

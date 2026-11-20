@@ -31,6 +31,10 @@ public sealed partial class EnvironmentWindow
     private string? consoleChoosing;
     private string consoleChooseError = "";
     private bool consoleRechoose;
+    /// <summary>推送失败「装着不止一个 S2Arm、还没选」（phone_app_choice_required，诊断 facts {device, candidates}）：失败的那一页就地列候选，
+    /// 选好（phoneChooseApp 成功）自动重推刚才那一次（同一台、同样的游戏）。installChoice = 推单款那页；consolePushChoice = 总控台「更新所选」</summary>
+    private sealed record PushChoice(string Device, IReadOnlyList<PhoneOverview.Candidate> Candidates, string Message, Func<Task> Retry);
+    private PushChoice? installChoice, consolePushChoice;
     private bool ConsoleUpdating => consoleJob is not null;
     private bool ConsoleSelected => phoneOverview is not null && selectedGame == ConsoleId;
     private PhoneOverview.Phone? ConsolePhone => phoneOverview?.Pick(consoleDevice);
@@ -74,7 +78,7 @@ public sealed partial class EnvironmentWindow
     private async Task PushSelectedAsync(IReadOnlyList<string> order, string device)
     {
         if (QueuePhone(null, () => PushSelectedAsync(order, device))) return;   // 手机上有作业在跑 → 排队
-        var front = BeginJob(JobKind.Phone); consoleJob = front; consoleDone = 0; consoleTotal = order.Count; consolePushing = null;
+        var front = BeginJob(JobKind.Phone); consoleJob = front; consoleDone = 0; consoleTotal = order.Count; consolePushing = null; consolePushChoice = null;
         var state = "running";
         Render();
         try
@@ -88,6 +92,8 @@ public sealed partial class EnvironmentWindow
                 Render();
             }), front.Token, front.Next());
             state = job.Report.State;
+            if (!job.Report.Succeeded && PhoneOverview.ChoiceFacts(job.Report.Diagnostics) is { } choice)
+                consolePushChoice = new PushChoice(choice.Device, choice.Candidates, job.Report.Message, () => PushSelectedAsync(order, device));
         }
         catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
             InvalidOperationException or OperationCanceledException or System.ComponentModel.Win32Exception)
@@ -124,27 +130,35 @@ public sealed partial class EnvironmentWindow
         finally { EndJob(front); DynamicFinished(identityState); Render(); }
     }
 
-    /// <summary>「选用哪个 S2Arm」：作业 phoneChooseApp 核对它确在这台手机上后记进设备记录；成没成都重新现查总览（选的已不在 → 列表跟着变）。同 Mac chooseApp</summary>
+    /// <summary>「选用哪个 S2Arm」：作业 phoneChooseApp 核对它确在这台手机上后记进设备记录；成没成都重新现查总览（选的已不在 → 列表跟着变）。同 Mac chooseApp。
+    /// 选成了、这台手机有推送因「还没选」停着（installChoice / consolePushChoice）：接着重推那一次</summary>
     private async Task ChooseAppAsync(string device, string bundleId)
     {
         if (consoleChoosing is not null) return;
         consoleChoosing = bundleId; consoleChooseError = "";
         Render();
+        var chosen = false;
         try
         {
             var job = await PackJobClient.RunAsync(PackRequest("phoneChooseApp", "", new Dictionary<string, object?> { ["device"] = device, ["bundleId"] = bundleId }), null, CancellationToken.None);
-            if (job.Report.Succeeded) consoleRechoose = false;
+            if (job.Report.Succeeded) { consoleRechoose = false; chosen = true; }
             else consoleChooseError = job.Report.Message.Length > 0 ? job.Report.Message : job.Report.State;
         }
         catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
             InvalidOperationException or System.ComponentModel.Win32Exception)
         { consoleChooseError = error.Message.Length > 0 ? error.Message : error.GetType().Name; }
         finally { consoleChoosing = null; }
+        var retry = new List<Func<Task>>();
+        if (chosen && installChoice?.Device == device) { retry.Add(installChoice.Retry); installChoice = null; }
+        if (chosen && consolePushChoice?.Device == device) { retry.Add(consolePushChoice.Retry); consolePushChoice = null; }
         await RefreshPhoneOverviewAsync(probe: true);
+        foreach (var again in retry) await again();
     }
 
-    /// <summary>① 手机与 App 里的「选用哪个 S2Arm」：按作业给的顺序（包名排序）列出每一个，每个一颗按钮；只写事实（谁装的、证书导没导、团队号），不推荐。选过的再点「换一个」也到这里</summary>
-    private Control ConsoleChooser(PhoneOverview.Phone phone, bool offline)
+    /// <summary>① 手机与 App 里的「选用哪个 S2Arm」：按作业给的顺序（包名排序）列出每一个，每个一颗按钮；只写事实（谁装的、证书导没导、团队号），不推荐。选过的再点「换一个」也到这里。
+    /// 推送失败页（推单款、更新所选）也用它就地列候选
+    /// pick：点了哪个包名怎么办；缺省走总控台按钮（RunConsoleAction，核对总览候选）。推单款失败页传 ChooseAppAsync（候选来自失败事实，不靠总览）</summary>
+    private Control ConsoleChooser(PhoneOverview.Phone phone, bool offline, Action<string>? pick = null)
     {
         var box = new StackPanel { Spacing = 8, Margin = new Thickness(0, 4, 0, 0) };
         box.Children.Add(WrappedMuted(T("console.choose.title"), 12.5));
@@ -156,7 +170,7 @@ public sealed partial class EnvironmentWindow
             var button = new Button { Content = text, IsEnabled = !offline && consoleChoosing is null && !installBusy, Padding = new Thickness(16, 9),
                 Background = Brush.Parse("#29292D"), Foreground = Ink, CornerRadius = new CornerRadius(8) };
             var bid = c.BundleId;
-            button.Click += (_, _) => RunConsoleAction(PhoneOverview.Act.ChooseApp, phone.Device, bundleId: bid);
+            button.Click += (_, _) => { if (pick is not null) pick(bid); else RunConsoleAction(PhoneOverview.Act.ChooseApp, phone.Device, bundleId: bid); };
             Avalonia.Automation.AutomationProperties.SetAutomationId(button, "console.chooseApp." + bid);
             box.Children.Add(button);
         }
@@ -324,7 +338,9 @@ public sealed partial class EnvironmentWindow
         var actions = PhoneOverview.Actions(phone);
         var app = new StackPanel { Spacing = 8 };
         app.Children.Add(Label(ConsoleStatusText() + (phone.SignMode is { } m ? " · " + T("console.sign." + m) : "")));
-        if (phone.NeedsChoice || (consoleRechoose && (phone.Candidates?.Count ?? 0) > 1)) app.Children.Add(ConsoleChooser(phone, offline));
+        var pushChoice = consolePushChoice?.Device == phone.Device ? consolePushChoice : null;   // 「更新所选」因没选停着：候选列在 ② 失败处，这里不重复
+        if (pushChoice is not null) { /* 候选在 ② */ }
+        else if (phone.NeedsChoice || (consoleRechoose && (phone.Candidates?.Count ?? 0) > 1)) app.Children.Add(ConsoleChooser(phone, offline));
         else if ((phone.Candidates?.Count ?? 0) > 1)   // 选过了、装着不止一个：写正在用哪个 + 「换一个」
         {
             var cur = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
@@ -391,6 +407,11 @@ public sealed partial class EnvironmentWindow
             run.Children.Add(Action("console.stop", StopUpdateSelected));
         }
         sync.Children.Add(run);
+        if (pushChoice is not null && !ConsoleUpdating)   // 「更新所选」失败：装着不止一个 S2Arm、还没选 → 就在这里选，选好自动接着推
+        {
+            sync.Children.Add(new TextBlock { Text = B(pushChoice.Message), Foreground = Brush.Parse("#FF9F0A"), FontSize = 12.5, TextWrapping = TextWrapping.Wrap });
+            sync.Children.Add(ConsoleChooser(phone with { NeedsChoice = true, Candidates = pushChoice.Candidates }, offline, bid => _ = ChooseAppAsync(pushChoice.Device, bid)));
+        }
         page.Children.Add(ConsoleSection("console.section.sync", sync));
 
         // ⑥ 帮助：重看第一次的引导、故障报修（同顶栏那颗）

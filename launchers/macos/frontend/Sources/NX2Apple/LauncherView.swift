@@ -86,7 +86,7 @@ struct LauncherView: View {
                 ExportSessionView(model: model, covers: covers, session: session, run: run, install: { installFor = $0 }, freeSpace: { spaceFor = $0 }, uiLanguage: uiLanguage)
             } else if let session = model.session, session.export == nil, !model.sessionHidden, !model.isInline(session) {
                 JobSessionView(model: model, session: session)
-            } else if let phone = model.phoneSession, phone.kind == .installUpdate, !model.phoneHidden {   // 更新 iPhone 上的 S2Arm（手机槽）：主槽没占着整页时整页显示
+            } else if let phone = model.phoneSession, phone.wholePage, !model.phoneHidden {   // 更新 iPhone 上的 S2Arm / 更新所选没走成（手机槽）：主槽没占着整页时整页显示
                 JobSessionView(model: model, session: phone)
             } else if let id = model.exportFor, let game = model.games.first(where: { $0.id == id }) {
                 ExportView(model: model, covers: covers, game: game) { installFor = game.id }
@@ -116,8 +116,13 @@ struct LauncherView: View {
         .launcherDropdownHost()
         .ignoresSafeArea(.container, edges: .top)
         .background {
-            if showingHome { HomeBackdrop(game: homeSelected, covers: covers).ignoresSafeArea() }
-            else { LauncherWindowMaterial().ignoresSafeArea() }
+            if showingHome {
+                HomeBackdrop(game: homeSelected, covers: covers).ignoresSafeArea()
+            } else if let backdropGame {
+                HomeBackdrop(game: backdropGame, covers: covers, frosted: true).ignoresSafeArea()
+            } else {
+                LauncherWindowMaterial().ignoresSafeArea()
+            }
         }
         .background(LauncherWindowChrome())
         .background(LauncherPadHost(navigation: navigation, update: configurePadNavigation))
@@ -292,6 +297,17 @@ struct LauncherView: View {
         text.append(shen)
         return text
     }()
+
+    /// 非首页（出包页、批量出包、游玩/作业进度与结果页）复用当前游戏的高斯模糊背景，保持与首页一致的磨砂质感。
+    private var backdropGame: GameSummary? {
+        let id: String?
+        if model.batchShown { id = model.batchSeed }
+        else if let result = model.viewingResult, result.export != nil { id = result.gameID }
+        else if let session = model.session, !model.sessionHidden, !model.isInline(session) { id = session.gameID }
+        else if let idExport = model.exportFor { id = idExport }
+        else { id = nil }
+        return id.flatMap { gid in model.games.first { $0.id == gid } } ?? homeSelected
+    }
 
     private var topBar: some View {
         topBarRow.onChange(of: model.showInstallFor) { id in if let id { installFor = id; model.showInstallFor = nil } }
@@ -650,7 +666,7 @@ struct LauncherView: View {
                 .accessibilityLabel(loc.t("home.currentTask") + " · " + play.name)
         }
         // 收起的、或被主槽整页（出包进度等）/ 一局的页面压着的「更新 iPhone 上的 S2Arm」：回到它的进度页
-        if let phone = model.phoneSession, phone.kind == .installUpdate,
+        if let phone = model.phoneSession, phone.wholePage,
            model.phoneHidden || model.playVisible || (model.session.map { !model.sessionHidden && ($0.export != nil || !model.isInline($0)) } ?? false) {
             Button { model.phoneHidden = false; model.sessionHidden = true; model.playHidden = true } label: {
                 Label(phone.name, systemImage: "iphone").font(.manrope(12.5, .semibold)).lineLimit(1)

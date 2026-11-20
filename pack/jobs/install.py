@@ -1823,15 +1823,19 @@ def readiness_windows(c, gid):
                 account=(cert or {}).get("teamName") or "", ipaPath=ipa_path, imgPath=phone_img_path(c, gid), shaderCachePath=phone_shader_cache(c, gid), signMode="devcert" if use_cert else "appleId", devcert=cert)
 
 
-def devpush_client(c, udid, bid, work):
-    """s2a-devpush（house_arrest + AFC）：两端都随发版带，devicectl 没有的「删容器里的目录」「整目录拉回」走它"""
+def devpush_client(c, udid, bid, work, device=None):
+    """s2a-devpush（house_arrest + AFC）：两端都随发版带，devicectl 没有的「删容器里的目录」「整目录拉回」走它。
+    device = Mac 上这台的 CoreDevice 标识：写文件时 s2a-devpush 找不到设备（usbmuxd 那一刻列不出、devicectl 连着，#1756）就整份改走 devicectl"""
     sys.path.insert(0, str(c.engine / "tools"))
     import push_pack as P
     prebuilt = c.engine / "Binaries/Prepare/devpush" / P.EXE
     exe = P.devpush_path(str(prebuilt) if prebuilt.is_file() else None, c.env())
     if not exe:
         raise Failure("找不到 s2a-devpush：请重新安装完整的 S2Arm。", code="tool_missing")
-    return P.Devpush(exe, udid, bid, work, c.env())
+    cl = P.Devpush(exe, udid, bid, work, c.env())
+    if device:
+        cl.fallback = lambda src, rel: P.Devicectl(device, bid, work, env=c.env()).put(src, rel)
+    return cl
 
 
 class MacPhone:
@@ -1912,7 +1916,7 @@ class MacPhone:
         return r
 
     def client(self, work):
-        return devpush_client(self.c, self.udid, self.bid, work)
+        return devpush_client(self.c, self.udid, self.bid, work, device=self.dev["id"])   # #1756：usbmuxd 看不到这台时整份改走 devicectl
 
     def purge(self, g):
         with tempfile.TemporaryDirectory(dir=self.c.private) as w:
@@ -2059,6 +2063,9 @@ class WinPhone:
                     raise win_install_failure(e2) from e2
                 why = WIDGET_QUOTA if e.err == "free_appid_limit" else str(first)
                 self.c.diagnostic(f"这次没装小组件：{why}", code="widget_skipped", severity="warning")
+            got = getattr(ns, "signed_expiry", None)
+            if got:   # 签好的包里的真实期限（#1772）：免费 / 付费照它判，不再按账号猜（plumesign 判不了付费，PlumeMacPhone 原先一律记免费、付费账号显示 7 天）
+                self.info.update(expires=got["expires"], free=got["days"] <= 7)
         rec = layout.load_device(self.c, self.key)
         layout.save_device(self.c, self.key, dict(rec, bundleId=self.bid))
 
@@ -2181,7 +2188,7 @@ class PlumeMacPhone(MacPhone):
         acct = plume_account(c, self.W)
         if not acct:
             raise Failure(APPLE_SIGN_IN, code="apple_not_signed_in")
-        # free：plumesign 判不了付费 / 免费，一律按免费记
+        # free：plumesign 登录时判不了付费 / 免费，先按免费记；装好后按签好的包里的真实期限改（WinPhone.install，#1772）
         super().__init__(c, team=dict(id=acct["team"], name=acct["teamName"] or acct["account"], free=True), dev=dev, udid=udid)
 
     install = WinPhone.install                       # plumesign 签名装机（含 9401 旧写法、设备已登记、小组件去掉重来）
@@ -2218,18 +2225,29 @@ def push_phone(c):
     否则同 phone_for。不读电脑的签名方式（sign_mode）：电脑选什么，手机上照样可能是 AltStore 装的"""
     if os.name == "nt":
         ph = WinPhone(c)
-        who, bid = s2arm_owner(c, ph.udid, layout.load_device(c, ph.key))
-        if who == "choose":
-            raise Failure(PHONE_APP_CHOICE, code="phone_app_choice_required")
+        who, bid = owner_for_push(c, ph.udid, ph.key)
         if who == "external":
             ph.bid, ph.external = bid, True
         return ph
     dev = phone(c)
     udid = udid_of(c, dev["id"])
-    who, bid = s2arm_owner(c, udid, layout.load_device(c, udid or dev["id"]))
-    if who == "choose":   # 装着不止一个、玩家还没选：不替玩家挑，总控台列出来让他选（phoneChooseApp）
-        raise Failure(PHONE_APP_CHOICE, code="phone_app_choice_required")
+    who, bid = owner_for_push(c, udid, udid or dev["id"])
     return ExternalPhone(c, bid, dev, udid) if who == "external" else mac_phone(c, dev=dev, udid=udid)
+
+
+def owner_for_push(c, udid, key):
+    """推送前判这台手机用哪个 S2Arm（s2arm_owner）。装着不止一个、玩家还没选（choose）：不替玩家挑——现查的候选记进设备记录 pendingChoice
+    （总览不现查时也按这同一份给 needsChoice / candidates，两处不各判各的），失败带 facts {device, candidates}，失败页就地列出来让玩家选（phoneChooseApp），
+    选好自动重推。判出来不是 choose：清掉过时的 pendingChoice"""
+    rec = layout.load_device(c, key)
+    who, bid = s2arm_owner(c, udid, rec)
+    if who == "choose":
+        cands = s2arm_candidates(c, udid, rec)
+        layout.save_device(c, key, dict(rec, pendingChoice=dict(candidates=cands, at=time.time())))
+        raise Failure(PHONE_APP_CHOICE, code="phone_app_choice_required", facts=dict(device=key, candidates=cands))
+    if who is not None and "pendingChoice" in rec:
+        layout.save_device(c, key, {k: v for k, v in rec.items() if k != "pendingChoice"})
+    return who, bid
 
 
 GID_RE = re.compile(r"[0-9A-F]{16}")
@@ -2809,6 +2827,7 @@ def phone_choose_app(c):
     if not hit:
         raise Failure(PHONE_APP_GONE, code="phone_app_gone")
     rec = layout.load_device(c, udid)
+    rec = {k: v for k, v in rec.items() if k != "pendingChoice"}   # 选好了：推送时记下的「待选」作废
     layout.save_device(c, udid, dict(rec, chosenBundleId=hit))
     return dict(device=udid, bundleId=hit)
 
@@ -3023,6 +3042,11 @@ def push_selected(c):
                 rows.append(dict(gameId=g, ok=False, code="job_failed", message=str(e)[:300]))
             finally:
                 atomic(state_path, state)
+    # 有款没推成：整单按失败报（#1756：原先照报「完成」，两端界面都不看逐款结果，进度条跑完、手机上还是「需要导入」、总控台还是「更新」）。
+    #   原因用第一款失败的原话与错误码（已是给玩家的话）；失败页「重试」再推一轮，推成的那几款程序包已在手机上，按记录跳过
+    if state["failed"]:
+        first = next(r for r in rows if not r["ok"])
+        raise Failure(first["message"], code=first["code"])
     return dict(games=rows, done=len(state["done"]), failed=len(state["failed"]), remaining=len(games) - len(state["done"]))
 
 
@@ -3049,7 +3073,8 @@ def install_shell(c, ph, steps=True):
     ph.install(ipa, [], steps=False)
     forget_other_app(c, ph)
     rec = layout.load_device(c, ph.key)
-    signed = dict(signed=dict(at=time.time(), free=bool(ph.info["free"]), device=ph.info["device"], mode=sign_mode(c))) if "free" in ph.info else {}
+    signed = dict(signed=dict(at=time.time(), free=bool(ph.info["free"]), device=ph.info["device"], mode=sign_mode(c),
+                              **({"expires": ph.info["expires"]} if ph.info.get("expires") else {}))) if "free" in ph.info else {}
     # 换了签名方式后第一次装（Mac 从 Xcode 钥匙串换到 plumesign、证书 ↔ Apple ID）：结果带 signerSwitched，完成页写「这一次要重新装一下」，只这一次
     now = signer_kind(c, ph)
     layout.save_device(c, ph.key, dict(rec, shellId=sid, bundleId=ph.bid or rec.get("bundleId", ""), at=time.time(), signer=now, **signed))

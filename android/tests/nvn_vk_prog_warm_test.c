@@ -1,7 +1,7 @@
 // 程序预热清单的宿主回归（nvn_vk_prog_warm.c）：纯逻辑 + 文件层，无 GPU。
 // 覆盖：首次无文件 / 记录去重与 uses / 有界淘汰最冷（含缺省上限 8192）/ uses 热点排序 / 落盘→读回逐字段一致（含 c1）/
 //       坏文件整份拒绝（magic·版本·条目大小·条数·长度·FNV·截断）/ 本局有效性整份拒绝（profile·ABI·闭包）/
-//       结构坏条目只丢该条 / 落盘没变化不重写 / 统计记账 / reset。
+//       合法条目容量过滤 / 落盘没变化不重写 / 统计记账 / reset。
 // 期望值不来自被测实现：uses 与淘汰结果按测试自己构造的顺序手算，文件长度按格式手算（60 + n*844 + 8）。
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE 1   // mkdtemp / st_mtim 在严格 -std=c11 下也要可见
@@ -373,7 +373,7 @@ int main(void) {
             nvk_prog_warm_reset(); g_last_red[0] = g_last_warn[0] = 0;
             CHECK(load_now() == 0, "manifest from another session (%s) is rejected whole", i == 0 ? "profile" : "ABI");
             struct nvk_prog_warm_stats s; stats_now(&s);
-            CHECK(s.loaded == 0 && s.rejected == 3, "rejected entries are counted (%s), loaded=%llu rejected=%llu",
+            CHECK(s.loaded == 0 && s.rejected == 0, "whole-file mismatch does not change entry counters (%s), loaded=%llu rejected=%llu",
                   i == 0 ? "profile" : "ABI", (unsigned long long)s.loaded, (unsigned long long)s.rejected);
             CHECK(strstr(g_last_warn, i == 0 ? "设备 profile 不同" : "directABI 不同") && !g_last_red[0],
                   "%s mismatch is a yellow line with its own reason: warn=%s red=%s", i == 0 ? "profile" : "ABI", g_last_warn, g_last_red);
@@ -404,7 +404,8 @@ int main(void) {
             nvk_prog_warm_reset(); g_last_red[0] = g_last_warn[0] = 0;
             CHECK(load_now() == 0, "legacy manifest of another closure is rejected");
             struct nvk_prog_warm_stats s; stats_now(&s);
-            CHECK(s.rejected == 3 && strstr(g_last_warn, "翻译器闭包不同") && !strstr(g_last_warn, "设备 profile"),
+            CHECK(s.loaded == 0 && s.rejected == 0, "whole-file closure mismatch does not change entry counters");
+            CHECK(strstr(g_last_warn, "翻译器闭包不同") && !strstr(g_last_warn, "设备 profile") && !g_last_red[0],
                   "closure is reported before profile: %s", g_last_warn);
             snprintf(g_profile, sizeof g_profile, "%s", saved_profile); snprintf(g_closure, sizeof g_closure, "%s", saved_closure);
             unlink(legacy);
@@ -413,26 +414,24 @@ int main(void) {
         CHECK(load_now() == 3, "same session facts accept the manifest again");
     }
 
-    // 7) 结构坏条目只丢该条：阶段掩码 0 / identity 全 0 / c1_ok 越界。
+    // 7) 有效清单的容量过滤才计逐条 rejected。用生产 save 写三条，再用上限 2 加载。
     {
-        nvk_prog_warm_reset();
-        for (int n = 1; n <= 3; n++) { struct nvk_prog_rec r = mkrec(n, 3); nvk_prog_warm_note(&r); }
+        dir_reset();
+        struct nvk_prog_rec hot = mkrec(1, 3), warm = mkrec(2, 3), cold = mkrec(3, 3);
+        hot.uses = 9; warm.uses = 5; cold.uses = 1;
+        nvk_prog_warm_note(&cold); nvk_prog_warm_note(&warm); nvk_prog_warm_note(&hot);
         nvk_prog_warm_save();
-        uint8_t *buf = NULL; size_t blen = 0;
-        CHECK(read_file(file, &buf, &blen) == 0 && blen == 60 + 3 * 844 + 8, "manifest for malformed-entry case");
-        if (buf && blen == 60 + 3 * 844 + 8) {
-            size_t base = 60;
-            uint32_t zero = 0;
-            memcpy(buf + base + 32, &zero, 4);                       // 第 1 条 stage_mask = 0
-            memset(buf + base + 844, 0, 32);                          // 第 2 条 identity 全 0
-            buf[base + 2 * 844 + 60] = 0x08;                          // 第 3 条 c1_ok 有未知位
-            CHECK(write_file(file, buf, blen) == 0, "malformed manifest written");
-            nvk_prog_warm_reset();
-            CHECK(load_now() == 0, "entries with malformed stage mask / identity / c1 bits are dropped");
-            struct nvk_prog_warm_stats s; stats_now(&s);
-            CHECK(s.rejected == 3, "dropped entries counted as rejected, got %llu", (unsigned long long)s.rejected);
-            free(buf);
-        }
+        nvk_prog_warm_reset();
+        g_warm_max = 2;
+        CHECK(load_now() == 2, "valid manifest accepts two entries at the smaller limit");
+        struct nvk_prog_warm_stats s; stats_now(&s);
+        CHECK(s.loaded == 2 && s.rejected == 1, "capacity-dropped entry counts as rejected, loaded=%llu rejected=%llu",
+              (unsigned long long)s.loaded, (unsigned long long)s.rejected);
+        struct nvk_prog_rec got;
+        CHECK(nvk_prog_warm_take(&got) == 1 && rec_is(&got, 1), "capacity keeps hottest entry first");
+        CHECK(nvk_prog_warm_take(&got) == 1 && rec_is(&got, 2), "capacity keeps second-hottest entry");
+        CHECK(!nvk_prog_warm_contains(cold.identity) && nvk_prog_warm_take(&got) == 0, "cold entry excluded from table and plan");
+        g_warm_max = -1;
     }
 
     // 8) 统计记账 + reset。
@@ -456,13 +455,15 @@ int main(void) {
         CHECK(s.built == 0 && s.draw_hits == 0, "reset clears build / draw counters too");
     }
 
-    // 9) 同进程第二局：load 会先清场（不串局），没有文件时不会沿用上一局的条目。
+    // 9) 同局缺文件不清场；同进程第二局由会话 reset 清掉上一局条目。
     {
         dir_reset();
         struct nvk_prog_rec a = mkrec(1, 1);
         nvk_prog_warm_note(&a);
         CHECK(nvk_prog_warm_contains(a.identity), "note is visible in this session");
         unlink(file);
+        CHECK(load_now() == 0 && nvk_prog_warm_contains(a.identity), "same session: missing file preserves current note");
+        nvk_prog_warm_reset();
         CHECK(load_now() == 0, "next session: missing file loads 0");
         CHECK(!nvk_prog_warm_contains(a.identity), "next session: previous session's note is cleared");
     }

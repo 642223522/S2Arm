@@ -78,11 +78,7 @@ public struct PhoneOverview: Equatable {
                 guard let id = g["gameId"] as? String, let s = (g["state"] as? String).flatMap(GameState.init) else { return nil }
                 return Game(gameId: id.uppercased(), state: s, reasons: g["reasons"] as? [String] ?? [], dataOnComputer: g["dataOnComputer"] as? Bool)
             }
-            let candidates: [Candidate] = (p["candidates"] as? [[String: Any]] ?? []).compactMap { c in
-                guard let bid = c["bundleId"] as? String, !bid.isEmpty else { return nil }
-                return Candidate(bundleId: bid, team: c["team"] as? String ?? "", byThisLauncher: c["byThisLauncher"] as? Bool == true,
-                                 identityTeam: (c["identityTeam"] as? String).flatMap { $0.isEmpty ? nil : $0 })
-            }
+            let candidates = Self.candidates(p["candidates"])
             return Phone(device: device, name: p["name"] as? String ?? "", installed: p["installed"] as? Bool == true, shellCurrent: p["shellCurrent"] as? Bool == true,
                          bundleId: p["bundleId"] as? String ?? "", signedAt: date(p["signedAt"]), free: p["free"] as? Bool == true,
                          expiresAtEstimate: date(p["expiresAtEstimate"]), online: online, lastSeen: date(p["lastSeen"]),
@@ -90,5 +86,27 @@ public struct PhoneOverview: Equatable {
                          installedBy: (p["installedBy"] as? String).flatMap(InstalledBy.init), actions: p["actions"] as? [String] ?? [],
                          needsChoice: p["needsChoice"] as? Bool == true, candidates: candidates)
         }
+    }
+
+    /// 作业的候选数组（总览 candidates、推送失败 facts.candidates 同一形状）→ 候选；没有包名的丢掉
+    public static func candidates(_ v: Any?) -> [Candidate] {
+        (v as? [[String: Any]] ?? []).compactMap { c in
+            guard let bid = c["bundleId"] as? String, !bid.isEmpty else { return nil }
+            return Candidate(bundleId: bid, team: c["team"] as? String ?? "", byThisLauncher: c["byThisLauncher"] as? Bool == true,
+                             identityTeam: (c["identityTeam"] as? String).flatMap { $0.isEmpty ? nil : $0 })
+        }
+    }
+
+    public static let choiceRequiredCode = "phone_app_choice_required"
+
+    /// 推送（推单款 install、更新所选 pushSelected）失败「装着不止一个 S2Arm、还没选」时作业诊断带的机读事实 facts {device, candidates}
+    ///   （install.owner_for_push；同 Windows PhoneOverview.ChoiceFacts）：失败页就地列出候选让玩家选，选好自动重推。不是这个码 / 没带候选 → nil
+    public static func choiceFacts(_ diagnostics: [[String: Any]]) -> (device: String, candidates: [Candidate])? {
+        for d in diagnostics where d["code"] as? String == choiceRequiredCode {
+            guard let f = d["facts"] as? [String: Any], let device = f["device"] as? String, !device.isEmpty else { continue }
+            let c = candidates(f["candidates"])
+            if !c.isEmpty { return (device, c) }
+        }
+        return nil
     }
 }

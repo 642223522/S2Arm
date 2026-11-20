@@ -416,11 +416,15 @@ static void fi_job(NvPresentFI *f, CAMetalLayer *layer, id<MTLTexture> src, fi_c
     fi_inflight_add(-1);   // 两张画布都交完（或没取到）：显示链可以挂了
 } }
 // 出图线程：游戏的一帧。返回 1 = 已接手（票由真帧那一槽做完时记完成），-1 = 没接手（调用方照原样出图）
+// 交帧时刻的时钟缝：缺省就是 now_ns()；单测（t_fi_link）在包含本文件前定义 FI_NOW_NS 注入假时钟，交帧间隔由单测给定、不随负载漂（编译期替换，产品行为不变）
+#ifndef FI_NOW_NS
+#define FI_NOW_NS() now_ns()
+#endif
 API_AVAILABLE(macos(26.0), ios(26.0))
 static int fi_frame(id<MTLTexture> src, const int crop[4], CAMetalLayer *layer, double period, uint64_t ticket) {
     NSUInteger cw = crop && (crop[2] || crop[3]) ? (NSUInteger)crop[2] : src.width, ch = crop && (crop[2] || crop[3]) ? (NSUInteger)crop[3] : src.height;
     NvPresentFI *f = fi_get(layer, cw, ch); if (!f) return -1;
-    uint64_t now = now_ns(); double gap = f->last_in_ns ? (now - f->last_in_ns) / 1e9 : 0; f->last_in_ns = now;
+    uint64_t now = FI_NOW_NS(); double gap = f->last_in_ns ? (now - f->last_in_ns) / 1e9 : 0; f->last_in_ns = now;
     int allow = dm_fi_should_interp(period, gap);   // 游戏声明的节拍（period，由交换间隔折成）+ 这一帧是否跑满；60 帧档一律不补
     uint64_t seq = f->n++; BOOL flip = present_ll() != 0;   // the presented window's origin (nvn_mtl.m g_present_ll)
     fi_crop cr = {0}; if (crop) { cr.has = 1; memcpy(cr.c, crop, sizeof cr.c); }

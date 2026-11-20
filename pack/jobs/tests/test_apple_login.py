@@ -41,7 +41,7 @@ FAKE = textwrap.dedent('''\
     if mode == "badpw":
         print("Error: Authentication failed: -20101 Your Apple ID or password was entered incorrectly."); sys.exit(1)
     print("Logging in...")
-    if mode in ("sms", "smsmany"):   # 设备方式、账号有受信任手机号（同版 account.rs tfa_closure 原句）
+    if mode in ("sms", "smsmany", "smsloop"):   # 设备方式、账号有受信任手机号（同版 account.rs tfa_closure 原句）
         print("[INFO plumesign::commands::account] Enter the code sent to your device, or type 'sms' to receive it by text message: ", flush=True)
     else:
         print("[INFO plumesign::commands::account] Enter 2FA code: ", flush=True)
@@ -55,6 +55,14 @@ FAKE = textwrap.dedent('''\
         open(rec + ".stdin", "a").write(code + "\\n")
     if mode == "badcode":
         print("Error: -21669 Incorrect verification code"); sys.exit(1)
+    if mode == "smsloop":   # 上游的循环：码被接受、重登又要短信，永远要下去
+        for _ in range(20):
+            print("[INFO plumesign::commands::account] Enter the code sent via SMS: ", flush=True)
+            code = sys.stdin.readline().strip()
+            if not code: sys.exit(1)
+            open(rec + ".stdin", "a").write(code + "\\n")
+    if mode == "repeat":   # 打了补丁 0002 的 plumesign：重登又要码就自己停
+        print("Error: Authentication SRP error -2: S2A_2FA_REPEAT: Apple accepted the verification code but asked for another one on the next sign-in"); sys.exit(1)
     home = os.path.join(os.environ["XDG_CONFIG_HOME"], "PlumeImpactor"); os.makedirs(home, exist_ok=True)
     user = sys.argv[sys.argv.index("-u") + 1]
     json.dump(dict(selected_account=user, accounts={user: dict(email=user, first_name="Tester", adsid="x", xcode_gs_token="y", team_id=os.environ["FAKE_PLUME_TEAM"])}),
@@ -120,6 +128,25 @@ class AppleLogin(unittest.TestCase):
         self.assertEqual(self.prompts, [(True, False), (False, True)])
         self.assertEqual(Path(str(self.rec) + ".stdin").read_text(), PASSWORD + "\nsms\n654321\n")
         self.assertEqual(self.keys, ["appleLogin", "appleLogin.needCode", "appleLogin", "appleLogin.needCode", "appleLogin"])
+
+    def test_code_accepted_then_asked_again_stops(self):
+        # 兜底：交过一次码后同一次登录又要码 → 不再弹给界面、不再往 plumesign 送码，报定句（玩家「输入验证码后无限循环」）
+        with patch.dict(os.environ, {"FAKE_PLUME_MODE": "smsloop"}):
+            self.answer(["sms", "654321", "111111", "222222"])
+            with self.assertRaises(Failure) as e:
+                apple_login.login(self.c)
+        self.assertEqual((e.exception.code, str(e.exception)), ("login_identity_rejected", apple_login.SAY_2FA_REPEAT))
+        self.assertEqual(self.prompts, [(True, False), (False, True)])   # 只问了改短信 + 一次短信码
+        self.assertEqual(Path(str(self.rec) + ".stdin").read_text(), PASSWORD + "\nsms\n654321\n")
+
+    def test_patched_plumesign_repeat_marker(self):
+        # plumesign 自己停下（补丁 0002 的 S2A_2FA_REPEAT）→ 同一句定句
+        with patch.dict(os.environ, {"FAKE_PLUME_MODE": "repeat"}):
+            self.answer(["123456"])
+            with self.assertRaises(Failure) as e:
+                apple_login.login(self.c)
+        self.assertEqual((e.exception.code, str(e.exception)), ("login_identity_rejected", apple_login.SAY_2FA_REPEAT))
+        self.assertIn("S2A_2FA_REPEAT", e.exception.internal)
 
     def test_sms_many_numbers_fails_readably(self):
         # 受信任手机号不止一个：plumesign 要终端选号、在管道里退出 → 定句失败，不卡住
@@ -232,7 +259,7 @@ class BundlePlumesign(unittest.TestCase):
 
     def test_pinned_mac_hash_is_own_build(self):
         import impactor
-        self.assertEqual(impactor.BUNDLED_MAC, {"plumesign-macos-universal": "d3ca590e1e92a1e7416f1c27c1ec6749c4ad05389c9c8724faaa53bbf63ce511"})
+        self.assertEqual(impactor.BUNDLED_MAC, {"plumesign-macos-universal": "8d770ff3b6d6c1a8db1c0be28826cff9c6e55b9602a2791649c7c3d3e9f13d38"})
 
 
 if __name__ == "__main__":

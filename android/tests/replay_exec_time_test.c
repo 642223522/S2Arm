@@ -104,8 +104,11 @@ void rp_dispatch(nvn_gpu_cmd c, const p_dispatch *dp, const void *rec) { (void)c
 void rp_multi_draw(nvn_gpu_cmd c, const p_multi_draw *m, const void *rec) { (void)c; (void)m; (void)rec; }
 void rp_debug_dump_poll(uint64_t *fence) { (void)fence; }
 uint64_t rp_buf_gpu_write_note(uint64_t addr, uint64_t len, uint64_t *pool_key) { (void)addr; (void)len; if (pool_key) *pool_key = 0; return 0; }
+uint64_t rp_buf_gpu_write_note2(uint64_t addr, uint64_t len, uint64_t *pool_key, int *merged) { (void)addr; (void)len; if (pool_key) *pool_key = 0; if (merged) *merged = 0; return 0; }   // 同段合并的登记入口（rp_post_gpu_write_rows 用）：本测试只测计时，不登记
 void rp_buf_gpu_write_land(uint64_t pool_key, uint64_t id, int ok) { (void)pool_key; (void)id; (void)ok; }
 void rp_buf_frame_flip(void) {}
+void rp_buf_hold_begin(void) {}   // 本测试只测计时：回放窗口（池销毁的镜像缓冲延后放）在 t_nvn_replay / 隔离夹具里测
+void rp_buf_hold_end(void) {}
 
 // 「干活」的三条命令：每执行一条推进虚拟钟 1 毫秒。推进只发生在替身里：
 //   回放实现无论嵌套几层都不许让时间自己走，所以「时间过了多少」就是「干了几件活」。

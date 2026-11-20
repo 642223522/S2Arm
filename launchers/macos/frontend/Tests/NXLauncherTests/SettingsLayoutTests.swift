@@ -289,6 +289,8 @@ import S2ArmAppleAdapter
                     }
                 }
             }
+            navigation.focus("settings.tab.iphone"); navigation.handle(.confirm)
+            try await Task.sleep(for: .milliseconds(80))
             navigation.focus("export.sign.mode")
             for step in 0..<14 {
                 navigation.handle(.scrollDown)
@@ -1258,11 +1260,19 @@ import S2ArmAppleAdapter
                         return stable >= 8
                     }
                 }
+                // 点搜索按钮，按事件等它切换：看「展开的输入框在不在」翻没翻，没翻（负载高时合成点击偶尔被吞，门禁 b0f9f16b3c5e49a2 等满 30 秒假红）
+                //   就重新取位置再点，不靠等时间；最多 5 次，真点不开照样红
                 func toggleSearch() async throws {
-                    try await settleSearch()
-                    let target = try XCTUnwrap(navigation.controlTargets(in: window).first { $0.id == "home.search" })
-                    let rect = window.convertFromScreen(target.frame)
-                    try click(CGPoint(x: rect.midX, y: rect.midY), in: window)
+                    let expanded = { navigation.controlTargets(in: window).contains { $0.id == "home.search.field" } }
+                    let before = expanded()
+                    for _ in 0..<5 {
+                        try await settleSearch()
+                        let target = try XCTUnwrap(navigation.controlTargets(in: window).first { $0.id == "home.search" })
+                        let rect = window.convertFromScreen(target.frame)
+                        try click(CGPoint(x: rect.midX, y: rect.midY), in: window)
+                        for _ in 0..<100 where expanded() == before { try await Task.sleep(for: .milliseconds(20)) }
+                        if expanded() != before { return }
+                    }
                 }
                 let initialWindows = Set(NSApp.windows.filter(\.isVisible).map(\.windowNumber))
                 XCTAssertFalse(navigation.controlTargets(in: window).contains { $0.id == "home.filter" }, "首页不再显示重复的筛选按钮")
@@ -1879,6 +1889,23 @@ import S2ArmAppleAdapter
         model.closeAppleLogin()
     }
 
+    // #1756：「更新所选」没走成时整页显示原因、给「重试」（原先这单的失败页哪里都不显示，玩家只看到进度条跑完）。
+    //   期望（手写）：失败的 pushSelected 整页（wholePage），完成的不整页；整页里有「重试」，点了按上一单那台续推（作业请求带 resume）
+    func testFailedUpdateSelectedShowsWholePageWithRetry() async throws {
+        let fixture = try SettingsFixture()
+        defer { fixture.remove() }
+        var failed = JobSession(kind: .pushSelected, gameID: nil, name: "更新所选", phase: .finished(.failed))
+        failed.message = "资源包写进 iPhone 时中断（连不上 Apple 设备服务）"
+        XCTAssertTrue(failed.wholePage)
+        XCTAssertFalse(JobSession(kind: .pushSelected, gameID: nil, name: "更新所选", phase: .finished(.completed)).wholePage, "推成了不整页")
+        XCTAssertTrue(JobSession(kind: .installUpdate, gameID: nil, name: "更新 S2Arm").wholePage, "更新 S2Arm 照旧整页")
+        fixture.model.lastPushSelectedDevice = "PHONE-1"
+        let (_, window) = try await render(AnyView(JobSessionView(model: fixture.model, session: failed)), fixture: fixture, language: .zh)
+        fixture.navigation.source.controllers = { [] }; fixture.navigation.attach(window)
+        defer { fixture.navigation.detach(); window.close() }
+        XCTAssertTrue(fixture.navigation.controlTargets(in: window).contains { $0.id == "phone.retry" }, "失败页有「重试」")
+    }
+
     func testSettingsPagesHaveRoomForDescriptionAndControls() async throws {
         let fixture = try SettingsFixture()
         defer { fixture.remove() }
@@ -2150,6 +2177,68 @@ import S2ArmAppleAdapter
                 window.close()
             }
         }
+    }
+
+    func testSettingsTabsExposeCategorizedControlsWithinBounds() async throws {
+        let fixture = try SettingsFixture()
+        defer { fixture.remove() }
+        for language in [Lang.zh, .en] {
+            let (host, window) = try await render(AnyView(EnvironmentView(model: fixture.model)), fixture: fixture, language: language)
+            fixture.navigation.source.controllers = { [] }
+            fixture.navigation.attach(window)
+            defer { fixture.navigation.detach(); window.close() }
+            let expected: [(tab: String, controls: [String])] = [
+                ("settings.tab.general", ["settings.language", "settings.library.open", "settings.keys.import"]),
+                ("settings.tab.iphone", ["export.sign.mode", "env.cloud.choose"]),
+                ("settings.tab.environment", ["settings.tab.environment"]),
+                ("settings.tab.updates", ["settings.updates.check", "env.aiControl"]),
+            ]
+            for entry in expected {
+                fixture.navigation.focus(entry.tab); fixture.navigation.handle(.confirm)
+                try await Task.sleep(for: .milliseconds(80))
+                let bounds = window.convertToScreen(host.bounds)
+                for id in entry.controls {
+                    fixture.navigation.focus(id)
+                    try await Task.sleep(for: .milliseconds(50))
+                    let targets = fixture.navigation.controlTargets(in: window)
+                    XCTAssertTrue(targets.contains { $0.id == id }, "\(language.code)/\(entry.tab): 缺少控件 \(id)")
+                }
+                for target in fixture.navigation.controlTargets(in: window) {
+                    XCTAssertTrue(bounds.insetBy(dx: -1, dy: -1).contains(target.frame),
+                                  "\(language.code)/\(entry.tab): 控件越界 \(target.id) \(target.frame) vs \(bounds)")
+                }
+            }
+        }
+    }
+
+    func testSettingsSheetCentersVerticallyInsideParentWindow() async throws {
+        let fixture = try SettingsFixture()
+        defer { fixture.remove() }
+        let host = NSHostingView(rootView: Text("Parent").frame(width: 1120, height: 630)
+            .sheet(isPresented: .constant(true)) {
+                EnvironmentView(model: fixture.model)
+                    .environmentObject(Localizer(.zh))
+            })
+        let parent = NSWindow(contentRect: NSRect(x: 120, y: 120, width: 1120, height: 630),
+                              styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
+                              backing: .buffered, defer: false)
+        parent.isReleasedWhenClosed = false
+        parent.toolbar = NSToolbar(identifier: "settings.center.test")
+        parent.toolbarStyle = .unified
+        parent.contentView = host
+        parent.orderBack(nil)
+        defer { parent.close() }
+        for _ in 0..<40 where parent.attachedSheet == nil { try await Task.sleep(for: .milliseconds(25)) }
+        let sheet = try XCTUnwrap(parent.attachedSheet, "设置页必须作为 sheet 挂到父窗口")
+        for _ in 0..<20 {
+            try await Task.sleep(for: .milliseconds(30))
+            if abs((parent.frame.maxY - sheet.frame.maxY) - (sheet.frame.minY - parent.frame.minY)) <= 2 { break }
+        }
+        let topGap = parent.frame.maxY - sheet.frame.maxY
+        let bottomGap = sheet.frame.minY - parent.frame.minY
+        print("settings-sheet parent=\(parent.frame) sheet=\(sheet.frame) topGap=\(topGap) bottomGap=\(bottomGap)")
+        XCTAssertGreaterThanOrEqual(bottomGap, 60, "设置弹窗底部不能贴着外窗口底边")
+        XCTAssertEqual(topGap, bottomGap, accuracy: 2, "设置弹窗应在外窗口中垂直居中")
     }
 
     private func exportArtworkBounds(_ host: NSView) throws -> CGRect {
