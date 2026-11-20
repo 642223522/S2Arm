@@ -174,7 +174,8 @@ class Gate(unittest.TestCase):
             self.gate(self.ctx(), W)
         self.assertEqual(e.exception.code, "cert_revoke_confirm")
         self.assertIn("第一张「Apple Development: Fake Xcode」（在 Fake-Mac 上创建，2025-03-01 生效），", str(e.exception))
-        self.assertIn("没满就什么都不撤", str(e.exception))
+        self.assertIn("它可能正是 AltStore / SideStore 在用的那张", str(e.exception))   # 11-19：不再说「没满就什么都不撤」（别的工具可能撤）
+        self.assertNotIn("没满就什么都不撤", str(e.exception))
         self.assertEqual(calls, [("plumesign.exe", TEAM)])
 
     def test_ask_without_machine_name(self):

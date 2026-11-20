@@ -13786,37 +13786,37 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Install a game from S2Arm on your computer and it will appear here."
+            "value": "Push a game from S2Arm on your computer, or put its .s2arm and .img into Files → On My iPhone → S2Arm → Import Here, and it will appear here."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Instala un juego desde S2Arm en tu ordenador y aparecerá aquí."
+            "value": "Envía un juego desde S2Arm en tu ordenador, o pon su .s2arm y su .img en Archivos → En mi iPhone → S2Arm → Import Here, y aparecerá aquí."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Installez un jeu depuis S2Arm sur votre ordinateur et il apparaîtra ici."
+            "value": "Envoyez un jeu depuis S2Arm sur votre ordinateur, ou placez son .s2arm et son .img dans Fichiers → Sur mon iPhone → S2Arm → Import Here, et il apparaîtra ici."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "コンピュータ上の S2Arm からゲームをインストールすると、ここに表示されます。"
+            "value": "パソコンの S2Arm からゲームを送るか、.s2arm と .img を「ファイル」→「このiPhone内」→「S2Arm」→「Import Here」に入れると、ここに表示されます。"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "在电脑上的 S2Arm 里把游戏装到这台设备，它就会出现在这里。"
+            "value": "在电脑上的 S2Arm 里把游戏推到这台设备，或者把 .s2arm 和 .img 放进「文件」→「我的 iPhone」→「S2Arm」→「放这里导入」，它就会出现在这里。"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "在電腦上的 S2Arm 裡把遊戲裝到這臺裝置，它就會出現在這裡。"
+            "value": "在電腦上的 S2Arm 裡把遊戲推到這臺裝置，或者把 .s2arm 和 .img 放進「檔案」→「我的 iPhone」→「S2Arm」→「放这里导入」，它就會出現在這裡。"
           }
         }
       }
