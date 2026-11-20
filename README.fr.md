@@ -83,7 +83,7 @@ Les jeux, sauvegardes et données de jeu déjà présents sur votre téléphone 
 
 Tant que l'étape 3 n'est pas faite, ces jeux s'affichent sur le téléphone avec « À mettre à jour une fois sur l'ordinateur » et ne s'ouvrent pas, mais ils ne sont pas perdus. Les jeux installés depuis un autre ordinateur apparaissent sur une ligne à part de la même page ; mettez-les à jour sur cet ordinateur. Si vous avez supprimé le pack de ressources iPhone d'un jeu avec « Libérer de l'espace », refaites le paquet iPhone de ce jeu.
 
-Si vous signez vous-même avec AltStore ou un outil semblable : installez le nouveau S2Arm par-dessus l'ancien, puis importez une fois le .s2arm de chaque jeu.
+Si vous signez vous-même avec AltStore ou un outil semblable : dans la page d’export du lanceur, choisissez « Exporter pour signer soi-même » dans « Après l’export », cliquez sur le bouton de la vignette « S2Arm » (la première de la bibliothèque) pour exporter le nouveau S2Arm.ipa et installez-le par-dessus l’ancien avec AltStore ; exportez votre certificat de signature dans les réglages d’AltStore et importez-le dans S2Arm (roue dentée → Certificat de signature → Importer un .p12…) ; enfin cliquez sur « Exporter pour signer soi-même » pour chaque jeu et placez son .s2arm et son .img dans Import Here.
 
 ## Une IA peut piloter
 

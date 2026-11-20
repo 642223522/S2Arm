@@ -83,7 +83,7 @@ The games, saves and game data already on your phone all stay. No exporting agai
 
 Until step 3 is done those games show Update once on your computer on the phone and won't open, but they aren't gone. Games installed from another computer are listed on a separate line on the same page; update them on that computer. If you used Free up space to delete a game's iPhone resource pack, build that game's iPhone package again.
 
-If you sign the app yourself with AltStore or similar: install the new S2Arm over the old one, then import each game's .s2arm once.
+If you sign the app yourself with AltStore or similar: in the launcher's build page, set After building to Export for self-signing, then click the button on the S2Arm tile (first in the game library) to export the new S2Arm.ipa and install it over the old one with AltStore; export your signing certificate in AltStore settings and import it into S2Arm (gear → Signing certificate → Import .p12…); finally click Export for self-signing on each game and put its .s2arm and .img into Import Here.
 
 ## Let an AI drive
 
