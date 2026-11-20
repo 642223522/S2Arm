@@ -18,5 +18,5 @@ ck() {   # ck <退出码> <名>：失败时打日志末尾
 "${S2A_PY:-python3}" -B ohos/tests/test_rewrite_sp_add.py --out "$T/rewrite_sp_add" > "$T/rewrite_sp_add.log" 2>&1; ck $? rewrite_sp_add
 "${S2A_PY:-python3}" -B ohos/tests/keyboard/run.py --dotnet "$DN" --output "$T/keyboard" > "$T/keyboard.log" 2>&1; ck $? keyboard
 "${S2A_PY:-python3}" -B ohos/tests/audio-session/run.py --dotnet "$DN" --build-root "$T/audio_session" > "$T/audio_session.log" 2>&1; ck $? audio_session
-echo "鸿蒙单测：期望 5/5 通过 → 真结果 $pass/$((pass + fail)) 通过${failed:+（不通：$failed）}"
+echo "鸿蒙单测：期望 5/5 通过 → 真结果 $pass/$((pass + fail)) 通过${failed:+（不通：${failed}）}"
 [ $fail = 0 ]
