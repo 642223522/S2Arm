@@ -11,7 +11,7 @@
 #include <string.h>
 double s2a_prov_hours_left(const char *path, double now_unix);
 int s2a_prov_signing_ids(const char *prov_path, const char *bundle_id, char *team, size_t team_n, char *appid, size_t appid_n);
-int s2a_prov_app_json(const char *prov_path, const char *bundle_id, const char *out_path);
+int s2a_prov_app_json(const char *prov_path, const char *bundle_id, int alt_installer, const char *out_path);
 static int bad;
 static void ck(int ok, const char *what) { printf("%s %s\n", ok ? "  ok" : "  ✗", what); if (!ok) bad++; }
 static NSString *put(NSString *name, NSString *plist) {
@@ -61,18 +61,18 @@ int main(int argc, char **argv) { @autoreleasepool {
             "<key>DeveloperCertificates</key><array><data>%@</data><data>%@</data></array></dict></plist>", [d1 base64EncodedStringWithOptions:0], [d2 base64EncodedStringWithOptions:0]];
         NSString *(^sha1)(NSData *) = ^NSString *(NSData *d) { uint8_t h[20]; CC_SHA1(d.bytes, (CC_LONG)d.length, h); NSMutableString *x = [NSMutableString string]; for (int i = 0; i < 20; i++) [x appendFormat:@"%02x", h[i]]; return x; };
         NSString *out = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"t_prov_app.%d/identity/app.json", getpid()]];
-        int r = s2a_prov_app_json(put(@"t_prov_app.mobileprovision", pl2).UTF8String, "io.s2arm.games.FGHIJ67890", out.fileSystemRepresentation);
+        int r = s2a_prov_app_json(put(@"t_prov_app.mobileprovision", pl2).UTF8String, "io.s2arm.games.FGHIJ67890", 1, out.fileSystemRepresentation);
         NSDictionary *j = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:out] ?: [NSData data] options:0 error:nil];
         NSArray *want = @[sha1(d1), sha1(d2)];
         ck(r == 0 && [j[@"team"] isEqual:@"FGHIJ67890"] && [j[@"bundle_id"] isEqual:@"io.s2arm.games.FGHIJ67890"] && [j[@"app_id"] isEqual:@"FGHIJ67890.io.s2arm.games.FGHIJ67890"]
-           && [j[@"expires"] longLongValue] == 1793336000 && [j[@"cert_sha1"] isEqual:want] && [j[@"schema"] isEqual:@1],
-           [NSString stringWithFormat:@"app.json：团队 FGHIJ67890、包名 / appid 带团队号后缀、到期 1793336000、两张证书 sha1 %@（读到 %d / %@）", want, r, j].UTF8String);
+           && [j[@"expires"] longLongValue] == 1793336000 && [j[@"cert_sha1"] isEqual:want] && [j[@"schema"] isEqual:@1] && [j[@"alt_installer"] isEqual:@YES],
+           [NSString stringWithFormat:@"app.json：团队 FGHIJ67890、包名 / appid 带团队号后缀、到期 1793336000、两张证书 sha1 %@、alt_installer 真（读到 %d / %@）", want, r, j].UTF8String);
         struct stat a, b; stat(out.fileSystemRepresentation, &a); sleep(1);
-        r = s2a_prov_app_json(put(@"t_prov_app.mobileprovision", pl2).UTF8String, "io.s2arm.games.FGHIJ67890", out.fileSystemRepresentation); stat(out.fileSystemRepresentation, &b);
+        r = s2a_prov_app_json(put(@"t_prov_app.mobileprovision", pl2).UTF8String, "io.s2arm.games.FGHIJ67890", 1, out.fileSystemRepresentation); stat(out.fileSystemRepresentation, &b);
         ck(r == 0 && a.st_mtimespec.tv_sec == b.st_mtimespec.tv_sec && a.st_ino == b.st_ino, "app.json 内容没变：不重写（修改时刻、inode 不变）");
-        r = s2a_prov_app_json("/nonexistent/embedded.mobileprovision", "io.example.adhoc", out.fileSystemRepresentation);
+        r = s2a_prov_app_json("/nonexistent/embedded.mobileprovision", "io.example.adhoc", 0, out.fileSystemRepresentation);
         j = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:out] ?: [NSData data] options:0 error:nil];
-        ck(r == 0 && [j[@"team"] isEqual:@""] && [j[@"bundle_id"] isEqual:@"io.example.adhoc"] && [j[@"cert_sha1"] count] == 0, "没有描述文件（ad-hoc 包）：team 空串、cert_sha1 空表、包名照写");
+        ck(r == 0 && [j[@"team"] isEqual:@""] && [j[@"bundle_id"] isEqual:@"io.example.adhoc"] && [j[@"cert_sha1"] count] == 0 && [j[@"alt_installer"] isEqual:@NO], "没有描述文件（ad-hoc 包）：team 空串、cert_sha1 空表、包名照写、alt_installer 假");
         [NSFileManager.defaultManager removeItemAtPath:[[out stringByDeletingLastPathComponent] stringByDeletingLastPathComponent] error:nil];
     }
     if (argc == 3) {
