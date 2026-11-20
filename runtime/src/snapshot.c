@@ -321,6 +321,7 @@ static int dump_mem(FILE *f, uint64_t *raw_out, uint64_t *comp_out, int *nreg) {
         //   驻留也不报换出（换出标志只管匿名内存），原先按「没碰过」跳过，恢复后是全零（11-17 iPhone 一款大游戏恢复后 6 秒崩在分配器读空指针，同款 Mac 没开后备、正常）。
         //   后备文件是稀疏的：从没写过 / 游戏还页打过洞的地方是洞。这段在文件里有数据的页，mincore 没报也照样读（读时系统从文件读回）
         if (gfd >= 0) for (off_t o = (off_t)(lo - base), end = (off_t)(hi - base); o < end; ) {
+            s2a_snap_progress(NULL);   // 看门狗：文件数据区逐块报时刻（同上）
             off_t d = lseek(gfd, o, SEEK_DATA); if (d < 0 || d >= end) break;
             off_t h = lseek(gfd, d, SEEK_HOLE); if (h < 0 || h > end) h = end;
             for (off_t q = d & ~(off_t)(pg - 1); q < h; q += pg) { size_t i = (size_t)((uint64_t)q - (lo - base)) / pg; if (i < np && !(vec[i] & (MINCORE_INCORE | MINCORE_PAGED_OUT))) { vec[i] |= MINCORE_PAGED_OUT; nfile++; } }
@@ -328,6 +329,9 @@ static int dump_mem(FILE *f, uint64_t *raw_out, uint64_t *comp_out, int *nreg) {
         }
         for (size_t i = 0; i < np; i++) {
             uint64_t pa = lo + i * pg;
+            // 看门狗：一段里逐页判零每 4096 页（64 MB）报一次时刻。文件后备下一段可达几十 GB、页要从文件读回，整段扫完超过 10 秒，
+            //   原先只在段与段之间报，被当成卡住放弃（Mac 强制文件后备一款游戏 62 GB 窗口，卡在 dump_mem 本身）
+            if (!(i & 4095)) { s2a_snap_progress(NULL); if (atomic_load(&g_snap_abandoned)) break; }
             if (!(vec[i] & (MINCORE_INCORE | MINCORE_PAGED_OUT))) continue;
             // 游戏已释放、宿主还没清零的页（文件后备懒清零：设成不可访问、内容是作废的旧数据，再放出来时才清零）：语义上是零页，不存——
             //   原先它们按「不可读但有用」临时加读整段存进快照（iPhone 缺省开文件后备，小游戏释放过的堆全进了快照）
