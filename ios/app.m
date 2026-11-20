@@ -1426,7 +1426,7 @@ void s2a_shell_pick_s2arm(const char *gid) {   // 主线程（s2a_shell.h）
     [top presentViewController:p animated:YES completion:nil];
 }
 // 长按卡片「导出这一款…」（0.6.3，GitHub #1793：分发证书玩家换签名重装后不想再从电脑整套重推）：后台生成这款的 <名>.s2arm + <名>.img
-//   （game_export.m，.img 是资源包 game.img 的同卷硬链接，不拷副本），放本款文档根下的临时文件夹 game-exports/<随机名>/，交「文件」App 存走（asCopy）。
+//   （game_export.m，.img 是资源包 game.img——推送装的款是 romfs.img——的同卷硬链接，不拷副本），放本款文档根下的临时文件夹 game-exports/<随机名>/，交「文件」App 存走（asCopy）。
 //   选好或取消都清掉临时件（同 save_transfer.m 存档导出：玩家选的目标正是临时件本身时那个不删）；导不出按码说人话。同时只做一次
 #include "game_export.h"
 @interface S2AGameExporter : NSObject <UIDocumentPickerDelegate> @property (copy) NSString *gid, *dir; @property (copy) NSArray<NSString *> *files; @end

@@ -6,8 +6,8 @@
 enum {
     S2A_GEXP_NO_PROGRAM = -1,   // 没有程序包（program/catalogue.json / 清单的 dir / 版本目录不在：0.5 老款、只放了 .img 的款）
     S2A_GEXP_IN_BUNDLE = -2,    // 资源包在 App 包里（只读，Apple TV 安装包）
-    S2A_GEXP_PARTIAL = -3,      // 资源包只部分可玩（有 .partial）
-    S2A_GEXP_NO_IMG = -4,       // 资源包里没有 game.img（老布局）
+    S2A_GEXP_PARTIAL = -3,      // 资源包只部分可玩（有 .partial；romfs.img 布局缺 index.tsv 列的文件）
+    S2A_GEXP_NO_IMG = -4,       // 资源包里既没有 game.img 也没有 romfs.img（老布局）
     S2A_GEXP_IO = -5,           // 读写失败、路径放不进 ustar 等
 };
 // proc_docs = 进程级 <容器>/Documents；out_dir 必须已存在、和资源包同一个卷（.img 用硬链接）

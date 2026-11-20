@@ -7,6 +7,10 @@
 //   zstd：App 里只链了解压器（runtime/third_party/zstd/zstddeclib.c），这里不引压缩器，按 RFC 8878 直接写原样块（Raw_Block）：
 //     帧头不写内容大小、非单段、窗口 128 KB（= 块上限）、带内容校验（XXH64 种子 0 的低 4 字节，小端）。边读边写，不把整包读进内存，先写 .part 再改名。
 //   <名>.img = 资源包里 game.img 同卷硬链接（几 GB 不拷副本）；硬链接不行再 APFS 克隆，都不行报错。
+//   电脑「推到 iPhone」装的款没有 game.img、是 romfs.img + 散文件（iPhone 实机）：.img = 资源包的 romfs.img（同样硬链接 / 克隆），
+//     pack/ 改按 index.tsv 带它列的除 romfs.img 外全部文件（exefs/ ctl/ systemdata/ shaders/ aoc.tsv romfs.imgmap romfs.s2aidx…）+ index.tsv + manifest.json，
+//     s2arm.json 加 img_kind "romfs"、img_size、img_fp（runtime/src/pack_apply.c s2a_img_fp：头尾各 1 MB 的 XXH64），导入端据此认领（romfs_claim）。
+//     game.img 布局的 s2arm.json 不写这几个字段（老导入端照旧认）。
 //   程序库导出的是手机上已签好的那份（清单 signer 原样带走）：另一个 S2Arm 起局时证书不同，照常重签（ios/program_resign.m）。
 #import <Foundation/Foundation.h>
 #include "game_export.h"
@@ -50,6 +54,7 @@ static void xxh64_update(xxh64_t *s, const uint8_t *p, size_t n) {
     memcpy(s->mem, p, n); s->memn = n;
 }
 uint64_t s2a_xxh64_digest(const void *data, size_t n);   // 单测核规范给的已知值用
+int s2a_img_fp(const char *path, uint64_t size, char out[17]);   // runtime/src/pack_apply.c：romfs 镜像指纹（导入端认领用同一个函数）
 static uint64_t xxh64_digest(const xxh64_t *s) {
     uint64_t h = s->total >= 32 ? rotl(s->v[0], 1) + rotl(s->v[1], 7) + rotl(s->v[2], 12) + rotl(s->v[3], 18) : P5;
     if (s->total >= 32) for (int i = 0; i < 4; i++) h = xmerge(h, s->v[i]);
@@ -175,8 +180,10 @@ static int export_body(gexp_t *x, const char *proc_docs, const char *gid_in, con
     if (![NSFileManager.defaultManager fileExistsAtPath:vdir isDirectory:&isdir] || !isdir) FAIL(S2A_GEXP_NO_PROGRAM, "程序包版本目录 %s 不在", dir.UTF8String);
     struct stat st; char p[2400];
     snprintf(p, sizeof p, "%s/.partial", root); if (!lstat(p, &st)) FAIL(S2A_GEXP_PARTIAL, "这款资源包只部分可玩（有 .partial），补齐后再导出");
-    char gimg[2400]; snprintf(gimg, sizeof gimg, "%s/game.img", root);
-    if (stat(gimg, &st) || !S_ISREG(st.st_mode)) FAIL(S2A_GEXP_NO_IMG, "资源包里没有 game.img（%s）", root);
+    char gimg[2400]; snprintf(gimg, sizeof gimg, "%s/game.img", root); int romfs = 0; uint64_t img_size = 0;
+    if (stat(gimg, &st) || !S_ISREG(st.st_mode)) { snprintf(gimg, sizeof gimg, "%s/romfs.img", root); romfs = 1;   // 推送布局：romfs.img + 散文件
+        if (stat(gimg, &st) || !S_ISREG(st.st_mode)) FAIL(S2A_GEXP_NO_IMG, "资源包里既没有 game.img 也没有 romfs.img（%s）", root);
+        img_size = (uint64_t)st.st_size; }
     // 导出的清单：去掉 dir（导入端在开头插自己的），其余原样
     NSMutableDictionary *mc = [cat mutableCopy];
 #ifdef S2A_UNIT_TEST
@@ -190,9 +197,22 @@ static int export_body(gexp_t *x, const char *proc_docs, const char *gid_in, con
     if (walk(E, vdir.fileSystemRepresentation, "program/", 0)) FAIL(S2A_GEXP_IO, "读程序包版本目录 %s 失败：%s", dir.UTF8String, strerror(errno));
     size_t nprog = E->n;
     static const char *const tree[] = {"shaders", "romfs_overlay"}, *const one[] = {"romfs.s2aidx", "game.imgmap", "index.tsv", "manifest.json"};
+    if (romfs) {   // index.tsv 列的除 romfs.img 外全部文件（机上状态文件、index.applied.tsv 不在表里；保险起见点开头的也不带）+ index.tsv、manifest.json 自己
+        snprintf(p, sizeof p, "%s/index.tsv", root); FILE *f = fopen(p, "r"); if (!f) FAIL(S2A_GEXP_IO, "资源包没有 index.tsv（%s）：%s", root, strerror(errno));
+        char line[4600]; int bad = 0;
+        while (!bad && fgets(line, sizeof line, f)) { char *t = strchr(line, '\t'); if (!t) continue; *t = 0;
+            if (!*line || *line == '.' || strstr(line, "/.") || *line == '/' || !strcmp(line, "romfs.img") || !strcmp(line, "index.tsv") || !strcmp(line, "manifest.json") || !strcmp(line, "index.applied.tsv")) continue;
+            char fp[6800], nm[4700]; snprintf(fp, sizeof fp, "%s/%s", root, line); snprintf(nm, sizeof nm, "pack/%s", line);
+            if (stat(fp, &st) || !S_ISREG(st.st_mode)) bad = 1; else if (ents_add(E, nm, fp, (uint64_t)st.st_size)) bad = 2; }
+        fclose(f);
+        if (bad == 1) FAIL(S2A_GEXP_PARTIAL, "资源包缺 %s（安装没完成），补齐后再导出", line);
+        if (bad == 2) FAIL(S2A_GEXP_IO, "内存不够");
+        for (size_t i = 2; i < sizeof one / sizeof *one; i++) { char nm[64]; snprintf(p, sizeof p, "%s/%s", root, one[i]); snprintf(nm, sizeof nm, "pack/%s", one[i]);
+            if (!stat(p, &st) && S_ISREG(st.st_mode) && ents_add(E, nm, p, (uint64_t)st.st_size)) FAIL(S2A_GEXP_IO, "内存不够"); }
+    } else
     for (size_t i = 0; i < sizeof tree / sizeof *tree; i++) { char pre[64]; snprintf(p, sizeof p, "%s/%s", root, tree[i]); snprintf(pre, sizeof pre, "pack/%s/", tree[i]);
         if (walk(E, p, pre, 1)) FAIL(S2A_GEXP_IO, "读资源包 %s 失败：%s", tree[i], strerror(errno)); }
-    for (size_t i = 0; i < sizeof one / sizeof *one; i++) { char nm[64]; snprintf(p, sizeof p, "%s/%s", root, one[i]); snprintf(nm, sizeof nm, "pack/%s", one[i]);
+    if (!romfs) for (size_t i = 0; i < sizeof one / sizeof *one; i++) { char nm[64]; snprintf(p, sizeof p, "%s/%s", root, one[i]); snprintf(nm, sizeof nm, "pack/%s", one[i]);
         if (!stat(p, &st) && S_ISREG(st.st_mode) && ents_add(E, nm, p, (uint64_t)st.st_size)) FAIL(S2A_GEXP_IO, "内存不够"); }
     qsort(E->v, nprog, sizeof *E->v, ent_cmp); qsort(E->v + nprog, E->n - nprog, sizeof *E->v, ent_cmp);
     uint64_t total = catb.length; for (size_t i = 0; i < E->n; i++) total += E->v[i].size;
@@ -206,6 +226,8 @@ static int export_body(gexp_t *x, const char *proc_docs, const char *gid_in, con
         if (cat[k] && cat[k] != NSNull.null) [head appendFormat:@",\n \"%@\": %@", k, json_value(cat[k])];
     [head appendFormat:@",\n \"pack\": %@,\n \"bytes\": %llu", json_value(pack_sha), (unsigned long long)total];
     if (cat[@"signer"]) [head appendFormat:@",\n \"signer\": %@", json_value(cat[@"signer"])];
+    if (romfs) { char fp[17]; if (s2a_img_fp(gimg, img_size, fp)) FAIL(S2A_GEXP_IO, "读 %s 算指纹失败：%s", gimg, strerror(errno));
+        [head appendFormat:@",\n \"img_kind\": \"romfs\",\n \"img_size\": %llu,\n \"img_fp\": \"%s\"", (unsigned long long)img_size, fp]; }
     [head appendString:@",\n \"exported_by\": \"phone\"\n}"];
     NSData *headb = [head dataUsingEncoding:NSUTF8StringEncoding];
     // 文件名：同电脑端 s2arm_name（游戏名里 \/:*?"<>| 与控制字符换空格、去首尾空格和点；空了用游戏号）
@@ -249,7 +271,7 @@ static int export_body(gexp_t *x, const char *proc_docs, const char *gid_in, con
 #if defined(__APPLE__)
         if (clonefile(gimg, imgp, 0))
 #endif
-        { int e2 = errno; unlink(outp); FAIL(S2A_GEXP_IO, "game.img 放不到导出文件夹（硬链接：%s；克隆：%s）", strerror(e1), strerror(e2)); } }
+        { int e2 = errno; unlink(outp); FAIL(S2A_GEXP_IO, "%s 放不到导出文件夹（硬链接：%s；克隆：%s）", romfs ? "romfs.img" : "game.img", strerror(e1), strerror(e2)); } }
     if (s2arm_out && s2arm_n) snprintf(s2arm_out, s2arm_n, "%s", outp);
     if (img_out && img_n) snprintf(img_out, img_n, "%s", imgp);
     return 0;
