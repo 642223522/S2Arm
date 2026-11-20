@@ -86,7 +86,7 @@ public sealed partial class EnvironmentWindow
         AutomationId(segment, "export.sign.segment");
         Grid.SetColumn(segment, 1); line.Children.Add(segment);
         panel.Children.Add(line);
-        if (external) panel.Children.Add(new TextBlock { Text = S("externalNote"), TextWrapping = TextWrapping.Wrap, Foreground = Muted, FontSize = 12 });
+        if (external) panel.Children.Add(new TextBlock { Text = S("externalNote"), TextWrapping = TextWrapping.Wrap, Foreground = Brush.Parse("#A8A6A1"), FontSize = 12 });
         if (active && !external && st is { } s && s.TryGetProperty("cert", out var c) && c.ValueKind == JsonValueKind.Object)
         {
             var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("120,*"), RowSpacing = 4, Margin = new Thickness(4, 4, 0, 0) };
