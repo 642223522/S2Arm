@@ -81,7 +81,10 @@ static void one_case(const char *dir, SecKeyRef key, CFArrayRef chain, const uin
 
 // ③ 签名身份交接（s2a_identity_import）：钥匙串换成桩（不碰本机钥匙串）。期望按文件与 openssl 算的 sha1：
 //   齐了 → 返回 1、桩被调 1 次、current.json 里是证书 sha1、incoming/ 三份删掉；sha1 对不上 / 私钥坏 → -1、写 import_error.txt、incoming/ 留着、桩不调；没交 → 0
+// ④ 手机上直接导入 .p12：密码错 → 1 / 非 p12 → -1（都不存）；对 → 0、团队号 = 证书 OU、current.json 带 openssl 算的 sha1 与 source p12
+// ⑤ SideStore 导出的不带 MAC 明文 p12（照 PKCS12Builder 拼 / openssl -nomac）：传错密码也导入成功、团队号与 sha1 对；截断 → -1
 int s2a_identity_import(const char *home);
+int s2a_identity_import_p12(const char *home, const void *p12, size_t n, const char *password, char *team, size_t team_n, char *why, size_t why_n);
 void s2a_identity_test_store(int (*f)(SecKeyRef, SecCertificateRef, char *, size_t));
 static int g_store_n;
 static int store_stub(SecKeyRef k, SecCertificateRef c, char *why, size_t n) { (void)why; (void)n; g_store_n += k && c; return 0; }
@@ -103,6 +106,27 @@ static void id_case(const char *dir, const char *tag, const char *sha_in_json, i
         CHECK(rc == want_rc && g_store_n == 0 && exists(idd, "import_error.txt") && exists(inc, "key.der") && exists(inc, "identity.json"),
               "身份交接 %s：返回 %d（期望 %d）、不存钥匙串、写了 import_error.txt、incoming/ 留着", tag, rc, want_rc);
     }
+}
+
+// ⑤ 的样本：照 SideStore 依赖的 CodeSignKit PKCS12Builder.build 逐字段拼（PFX 版本 3、authSafe = [keyBag 的 data ContentInfo, certBag 的 data ContentInfo]、
+//   私钥 = PKCS#8 PrivateKeyInfo 包 PKCS#1、没有 macData、不加密）。DER 长度一律用长格式 0x82 两字节（PKCS12Builder 的 ASN1Helper 同样按需取，解析不该依赖短格式）
+typedef struct { uint8_t *p; size_t n; } db;
+static db tlv(uint8_t tag, db v) { db o; o.n = 4 + v.n; o.p = malloc(o.n); o.p[0] = tag; o.p[1] = 0x82; o.p[2] = (uint8_t)(v.n >> 8); o.p[3] = (uint8_t)v.n; memcpy(o.p + 4, v.p, v.n); free(v.p); return o; }
+static db raw(const void *d, size_t n) { db o = {malloc(n ? n : 1), n}; memcpy(o.p, d, n); return o; }
+static db cat2(db a, db b) { db o = {malloc(a.n + b.n), a.n + b.n}; memcpy(o.p, a.p, a.n); memcpy(o.p + a.n, b.p, b.n); free(a.p); free(b.p); return o; }
+static db oidv(const uint8_t *o, size_t n) { db r = {malloc(n + 2), n + 2}; r.p[0] = 0x06; r.p[1] = (uint8_t)n; memcpy(r.p + 2, o, n); return r; }
+static const uint8_t O_DATA[] = {0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x07,0x01}, O_KEYBAG[] = {0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x0c,0x0a,0x01,0x01},
+    O_CERTBAG[] = {0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x0c,0x0a,0x01,0x03}, O_X509[] = {0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x09,0x16,0x01}, O_RSA[] = {0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x01};
+static db data_ci(db octets) { return tlv(0x30, cat2(oidv(O_DATA, sizeof O_DATA), tlv(0xa0, tlv(0x04, octets)))); }
+static db sidestore_p12(const uint8_t *key1, size_t kn, const uint8_t *cert, size_t cn) {
+    const uint8_t v0[] = {0x02, 0x01, 0x00}, v3[] = {0x02, 0x01, 0x03}, nul[] = {0x05, 0x00};
+    db alg = tlv(0x30, cat2(oidv(O_RSA, sizeof O_RSA), raw(nul, 2)));
+    db pkcs8 = tlv(0x30, cat2(cat2(raw(v0, 3), alg), tlv(0x04, raw(key1, kn))));
+    db keybag = tlv(0x30, cat2(oidv(O_KEYBAG, sizeof O_KEYBAG), tlv(0xa0, pkcs8)));
+    db certval = tlv(0x30, cat2(oidv(O_X509, sizeof O_X509), tlv(0xa0, tlv(0x04, raw(cert, cn)))));
+    db certbag = tlv(0x30, cat2(oidv(O_CERTBAG, sizeof O_CERTBAG), tlv(0xa0, certval)));
+    db authsafe = tlv(0x30, cat2(data_ci(tlv(0x30, keybag)), data_ci(tlv(0x30, certbag))));
+    return tlv(0x30, cat2(raw(v3, 3), data_ci(authsafe)));
 }
 int main(void) {
     char dir[] = "/tmp/t_selfsign.XXXXXX"; if (!mkdtemp(dir)) { puts("【红】建不了临时目录"); return 1; }
@@ -138,6 +162,35 @@ int main(void) {
         id_case(dir, "badkey", sha, 1, -1, sha);
         char home[600]; snprintf(home, sizeof home, "%s/home_none", dir); g_store_n = 0;
         CHECK(s2a_identity_import(home) == 0 && g_store_n == 0, "没交（没有 identity.json）：返回 0、不碰钥匙串");
+        // ④ 手机上直接导入 .p12（s2a_identity_import_p12）：期望团队号 = 生成证书时写的 OU、sha1 = openssl 对证书 DER 算的；密码错 → 1、不存；非 p12 → -1、不存
+        printf("④ 手机上直接导入 .p12\n");
+        char h4[600], cur[800], buf[400] = {0}, team[64], why[256]; snprintf(h4, sizeof h4, "%s/home_p12", dir);
+        snprintf(cur, sizeof cur, "%s/Library/Application Support/S2Arm/identity/current.json", h4);
+        g_store_n = 0; int r1 = pb ? s2a_identity_import_p12(h4, pb, pn, "错的", team, sizeof team, why, sizeof why) : -9;
+        CHECK(r1 == 1 && g_store_n == 0 && access(cur, F_OK) != 0, ".p12 密码不对：返回 %d（期望 1）、不存钥匙串、不写 current.json", r1);
+        const char junk[] = "not a p12 file"; g_store_n = 0; int r2 = s2a_identity_import_p12(h4, junk, sizeof junk, "t", team, sizeof team, why, sizeof why);
+        CHECK(r2 == -1 && g_store_n == 0 && why[0], "不是 p12：返回 %d（期望 -1）、不存、原因「%s」", r2, why);
+        g_store_n = 0; int r3 = pb ? s2a_identity_import_p12(h4, pb, pn, "t", team, sizeof team, why, sizeof why) : -9;
+        { FILE *f = fopen(cur, "rb"); if (f) { size_t k = fread(buf, 1, sizeof buf - 1, f); buf[k] = 0; fclose(f); } }
+        CHECK(r3 == 0 && g_store_n == 1 && !strcmp(team, "ABCDE12345") && strstr(buf, sha) && strstr(buf, "\"team\": \"ABCDE12345\"") && strstr(buf, "\"source\": \"p12\"") && !strstr(buf, "BEGIN"),
+              ".p12 密码对：返回 %d（期望 0）、存钥匙串 %d 次、团队号 %s（期望证书 OU ABCDE12345）、current.json 带 sha1 %s 与 source p12", r3, g_store_n, team, sha);
+        // ⑤ SideStore 导出的明文 p12（没有 MAC、不加密、密码不起作用）：照 PKCS12Builder 拼的样本、openssl -nomac 不加密的样本，各传错密码导入
+        printf("⑤ 不带 MAC 的明文 .p12（SideStore 导出格式）\n");
+        size_t k1n = 0, cdn = 0; char kp[600], cp[600]; snprintf(kp, sizeof kp, "%s/key.der", dir); snprintf(cp, sizeof cp, "%s/cert.der", dir);
+        uint8_t *k1 = slurp(kp, &k1n), *cd = slurp(cp, &cdn);
+        db ss = k1 && cd ? sidestore_p12(k1, k1n, cd, cdn) : (db){NULL, 0};
+        char h5[600], cur5[800]; snprintf(h5, sizeof h5, "%s/home_ss", dir); snprintf(cur5, sizeof cur5, "%s/Library/Application Support/S2Arm/identity/current.json", h5);
+        g_store_n = 0; int r5 = ss.p ? s2a_identity_import_p12(h5, ss.p, ss.n, "对话框里的密码会被忽略", team, sizeof team, why, sizeof why) : -9;
+        memset(buf, 0, sizeof buf); { FILE *f = fopen(cur5, "rb"); if (f) { size_t k = fread(buf, 1, sizeof buf - 1, f); buf[k] = 0; fclose(f); } }
+        CHECK(r5 == 0 && g_store_n == 1 && !strcmp(team, "ABCDE12345") && strstr(buf, sha), "PKCS12Builder 格式样本（%zu 字节）：返回 %d（期望 0）、存钥匙串 %d 次、团队号 %s、current.json 带 sha1 %s（%s）", ss.n, r5, g_store_n, team, sha, why);
+        char cmd5[1200]; snprintf(cmd5, sizeof cmd5, "cd %s && openssl pkcs12 -export -inkey k.pem -in c.pem -out nomac.p12 -nomac -keypbe NONE -certpbe NONE -passout pass: 2>/dev/null", dir);
+        size_t nmn = 0; char nmp[600]; snprintf(nmp, sizeof nmp, "%s/nomac.p12", dir); uint8_t *nm = system(cmd5) == 0 ? slurp(nmp, &nmn) : NULL;
+        g_store_n = 0; int r6 = nm ? s2a_identity_import_p12(h5, nm, nmn, "随便填", team, sizeof team, why, sizeof why) : -9;
+        CHECK(r6 == 0 && g_store_n == 1 && !strcmp(team, "ABCDE12345"), "openssl -nomac 不加密样本（%zu 字节）：返回 %d（期望 0）、存钥匙串 %d 次、团队号 %s（%s）", nmn, r6, g_store_n, team, why);
+        uint8_t bad5[64]; memcpy(bad5, ss.p ? ss.p : (uint8_t *)"x", ss.n < 64 ? ss.n : 64); g_store_n = 0;
+        int r7 = ss.n >= 64 ? s2a_identity_import_p12(h5, bad5, 64, "x", team, sizeof team, why, sizeof why) : -9;
+        CHECK(r7 == -1 && g_store_n == 0, "明文格式截断成 64 字节：返回 %d（期望 -1）、不存", r7);
+        free(k1); free(cd); free(ss.p); free(nm);
         s2a_identity_test_store(NULL);
     }
     char c[600]; snprintf(c, sizeof c, "rm -rf %s", dir); system(c);
