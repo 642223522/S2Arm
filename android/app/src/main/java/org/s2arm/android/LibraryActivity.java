@@ -119,6 +119,9 @@ public final class LibraryActivity extends Activity {
         android.widget.TextView qualityNote = new android.widget.TextView(this);
         qualityNote.setText(R.string.quality_note); qualityNote.setTextColor(0xFFB0B0B0); qualityNote.setTextSize(12);
         more.addView(qualityNote);
+        Button ldnButton = new Button(this); ldnButton.setText(R.string.ldn_settings);
+        ldnButton.setOnClickListener(v -> AndroidLdnSettings.show(this));
+        more.addView(ldnButton);
         // #528 item 15: works without any game; the bundle goes to whatever app the player picks.
         Button exportButton = new Button(this); exportButton.setText(R.string.export_diagnostics);
         exportButton.setOnClickListener(v -> exportDiagnostics(exportButton, false));

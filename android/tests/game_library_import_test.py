@@ -147,7 +147,8 @@ STUBS = {
  mods_title=142, mods_for_game=143, mods_no_game=144, mods_import_zip=145, mods_import_folder=146, mods_none=147, mods_item=148, mods_remove=149,
  mods_working=150, mods_imported=151, mods_failed=152, mods_err_not_archive=153, mods_err_too_many=154, mods_err_too_large=155, mods_err_no_romfs=156,
  mods_err_missing=157, mods_err_name_taken=158, mods_note_other_game=159, mods_note_exefs=160, mods_note_empty=161, mods_note=162,
- stall_off_note=163, stall_reopen=164, stall_reopen_failed=165; } }''',
+ stall_off_note=163, stall_reopen=164, stall_reopen_failed=165, ldn_settings=166; } }''',
+'org/s2arm/android/AndroidLdnSettings.java': '''package org.s2arm.android; final class AndroidLdnSettings { static void show(android.app.Activity a) {throw new AssertionError("LDN settings unexpectedly called");} }''',
 # These unrelated app boundaries must never be called in an import test.
 'org/s2arm/android/DiagnosticExport.java': '''package org.s2arm.android; import android.content.Context; import java.io.IOException; import java.nio.file.Path;
  public class DiagnosticExport { public static Path run(Context context) throws IOException {throw new AssertionError("diagnostic export unexpectedly called");} }''',

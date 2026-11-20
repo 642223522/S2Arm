@@ -2,6 +2,9 @@
 // 覆盖设计文档 §8：C01（32 位填充）、C02/C03（失败终止、失败段不回写）、C04（发布顺序）、
 // C05/C06（录制未提交保活）、C08（cmd_abort）、C23 的粘滞错误部分，以及 close 义务。
 // 期望值全部是 CPU 手算 / 契约条文，不取自被测实现。
+// RTLD_NEXT（dlsym，见下方 vkGetPhysicalDeviceSurfaceCapabilitiesKHR）在 glibc 上是 GNU 扩展，
+// -std=c11 会把它关掉，故在包含任何头文件之前开 _GNU_SOURCE。
+#define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 
 #include <dirent.h>
@@ -5160,7 +5163,7 @@ static void c976m_mirror_clamp(const char *dir) {
 
 // C976b：自定义边框色（#976）。最近点、U 向 CLAMP_TO_BORDER，在 u = -0.5 / 1.5 处读到的必须正好是边框色，u = 0.125 读纹素 0。
 // 不是内置三档的边框色要 VK_EXT_custom_border_color（且 customBorderColorWithoutFormat：建采样器时不知道视图格式）；
-// 缺哪样回哪个具名 UNSUPPORTED、不出句柄。修前一律映成不透明黑 (0,0,0,1)，红在读值上。
+// 没有扩展时按 RGBA 距离就近取内置三档建成（nvn_vk_border.h，不丢绘制）；有扩展缺 WithoutFormat 回具名 UNSUPPORTED、不出句柄。修前一律映成不透明黑 (0,0,0,1)，红在读值上。
 // 整数视图走另一个采样器（int_sampler），边框色按数值取整成 INT_CUSTOM；无符号的大值按位存。
 // 内置三档、没有一向用到边框的采样器不需要扩展、不占配额。配额：sampler 与 int_sampler 各占一个，到上限回具名 UNSUPPORTED，释放后归还。
 // 先跑不绑定的部分（配额计数不受在途命令影响），再跑读值。围栏号 1..6。
@@ -5176,6 +5179,8 @@ static nvn_gpu_samp c976b_samp(const float border[4], uint8_t ws, nvn_gpu_err *e
     return s;
 }
 static int c976b_why(const nvn_gpu_err *e, const char *want) { return !strncmp(e->why, want, strlen(want)); }
+static void c976b_nearest_cb(void *user, const char *name, uint64_t v) { if (!strcmp(name, "sampler_border_color_nearest")) *(uint64_t *)user = v; }
+static uint64_t c976b_nearest(void) { uint64_t v = 0; nvn_gpu_stats(c976b_nearest_cb, &v, 0); return v; }
 static void c976b_border_color(const char *dir) {
     printf("C976b 自定义边框色：设备 custom_border=%d without_format=%d max=%u\n", C976_CB_ENABLED, C976_CB_NOFMT, C976_CB_MAX);
     static const float odd[4] = {0.2f, 0.4f, 0.6f, 0.8f};
@@ -5195,11 +5200,13 @@ static void c976b_border_color(const char *dir) {
               fixed[k][0], fixed[k][1], fixed[k][2], fixed[k][3], r.code, e.why);
         if (s) nvn_gpu_samp_release(s);
     }
-    // 没有扩展
+    // 没有扩展：就近建成，具名计数 sampler_border_color_nearest 按建成次数 +1（上面内置三档、不用边框的不计）
+    const uint64_t nb0 = c976b_nearest();
     s = c976b_samp(odd, NVN_WRAP_MODE_CLAMP_TO_BORDER, &e, &r);
-    CHECK(r.code == NVN_GPU_E_UNSUPPORTED && !s && c976b_why(&e, "sampler_border_color_custom："),
-          "C976b 没有扩展：期望 UNSUPPORTED「sampler_border_color_custom：…」→ rc=%d 句柄=%p why=%s", r.code, (void *)s, e.why);
-    printf("C976b 没有扩展：自定义边框色建采样器 rc=%d（%s）\n", r.code, e.why);
+    CHECK(OK(r) && s, "C976b 没有扩展：期望就近取内置档建成（不丢绘制）→ rc=%d 句柄=%p why=%s", r.code, (void *)s, e.why);
+    CHECK(c976b_nearest() == nb0 + 1, "C976b 没有扩展：sampler_border_color_nearest 期望 +1 → %llu → %llu",
+          (unsigned long long)nb0, (unsigned long long)c976b_nearest());
+    printf("C976b 没有扩展：自定义边框色就近建采样器 rc=%d\n", r.code);
     if (s) nvn_gpu_samp_release(s);
     C976_CB_ENABLED = had; C976_CB_NOFMT = had_nofmt;
     if (!had) { printf("C976b 设备没有 VK_EXT_custom_border_color：其余部分跳过\n"); return; }

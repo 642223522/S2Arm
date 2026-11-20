@@ -25,7 +25,7 @@ extension S2ArmLauncherModel {
         failAction(nil, game: nil)
         let device = appleTVDevice
         start(.installTV, game: game, name: game.name) { [weak self] sink in
-            _ = try await self?.provider.installAppleTV(gameId: game.id, device: device, events: sink)
+            _ = try await self?.provider.installAppleTV(gameId: game.id, device: device, teamId: Self.enteredTeam, events: sink)   // 出包页手填的 Xcode 团队号（AppleTVXcodeTeam）
             self?.loadAppleTVs()
             return nil
         }

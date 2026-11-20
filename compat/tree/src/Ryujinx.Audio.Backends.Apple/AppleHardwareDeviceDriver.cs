@@ -357,13 +357,22 @@ namespace Ryujinx.Audio.Backends.Apple
                 lock (_sessionLock)
                 {
                     if (_disposed) return;
+                    bool paceAlive = false;
                     foreach (AppleHardwareDeviceSession session in _sessions.Keys)
                     {
                         session.Dispose();
+                        paceAlive |= session.S2APaceThreadAlive;
                     }
 
-                    _updateRequiredEvent.Dispose();
-                    _pauseEvent.Dispose();
+                    // S2Arm (11-19): a session whose pace thread is still stuck in a hung game's buffer stays registered after its own
+                    //   Dispose and may Set these events when it comes back; disposing them here made that Set throw ObjectDisposedException
+                    //   on a background thread and abort the process. Keep them then (the GC collects them after the thread leaves).
+                    if (!paceAlive)
+                    {
+                        _updateRequiredEvent.Dispose();
+                        _pauseEvent.Dispose();
+                    }
+
                     _disposed = true;
                 }
             }

@@ -2,7 +2,7 @@
 # 直连着色器库出包（双轨 §12.3，着色器线 10-24）：游戏原始输入 → 两边抽取合并 → 直连离线链出直连库，布局照直连离线链原样。
 # 用法：bash graphics/tools/direct/direct_lib.sh <产物根（含 romfs/ exefs/main）> <输出目录>
 #   输出目录 = <资源包>/shaders/direct：b-<链版本>/lib.idx + lib.NNN.pak（iOS 库容器，lib_pack.py；内含各键 _b.metallib / _b.json / _bf / _bv / _bg*）、shader_map.tsv（并集）、shader_facts.tsv、shader_pairs.tsv、bf_want.tsv、
-#   pso_manifest.tsv（经 pack/stage_direct.sh 时只有配置档维护过的，零配置的由 pack/stage_direct_seed.sh 另写）、c1_full.tsv、cb_extent.tsv、keys.tsv（实际出成的键，一行一个，并集里出库失败的不列）；另出 ps_inputs.tsv（片元键 → 读的 user(locn)，兜底现编补顶点输出用）与 key_map.tsv（S2Arm 键 → 直连键，pack/stage_direct.sh 出 seen 用的客体代码表时换键）与 direct_lib.json（读数）。
+#   pso_manifest.tsv（经 pack/stage_direct.sh 时只有配置档维护过的，零配置的由 pack/stage_direct_seed.sh 另写）、c1_full.tsv、cb_extent.tsv、keys.tsv（实际出成的键，一行一个，并集里出库失败的不列）；另出 ps_inputs.tsv（片元键 → 读的 user(locn)，兜底现编补顶点输出用）与 key_map.tsv（S2Arm 键 → 直连键，pack/stage_direct.sh 出 seen 用的客体代码表时换键）、key_alias.tsv（第 1 代 → 第 2 代着色器键，宿主读档与读本机管线记录时换键）与 direct_lib.json（读数）。
 # 步骤：① 直连抽取 shader_split：在配置档 graphics/nvn/games/<程序号> 的副本里重出包目录与着色器表（原配置档不动）② S2Arm nxsh_extract
 #   ③ merge_extract：S2Arm 独有键补进直连包目录与表 ④ dmsh_build（经 dmsh_par 按键分片成 J 个进程、再经 own_compilers：本机编译器，链版本不变）出 Mac + iOS 库；Mac 那份只留缓存，给 c1_full / cb_extent 用
 #   ⑤ 收表、出 keys.tsv。
@@ -178,7 +178,9 @@ W=$C/work.stage.$$ MS=$C/mac.stage.$$ OS=$OUT.stage.$$; DONE=0
 # 成功：临时目录换进来的是旧版本，删；失败：只删库，work 留着看日志（下次起跑时清）
 trap 'rm -rf "$MS" "$OS"; [ -n "${BTX:-}" ] && rm -rf "$BTX"; [ "$DONE" = 1 ] && rm -rf "$W"' EXIT
 # 输出目录里原有的东西（旧链版本的容器、表）克隆进临时输出目录；逐键产物不跨次保留，每次由 dmsh_build 从内容寻址仓恢复（命中的键只是写回几个文件）
-"$PY" "$R/tools/clonedir.py" "$OUT" "$OS" || { say "🔴 建临时输出目录失败"; exit 1; }
+#   跳过同链号的旧容器 b-${V}：dsh_batch 要全量重打这份容器，克隆进来的旧 lib.idx 会触发 LibPack「已有 lib.idx（打过包了）」拒绝打包
+#   （只在「链号没变、重新出库」时撞：换进位的原子性靠 swap 整目录，旧容器本就要被新容器整份替换）
+"$PY" "$R/tools/clonedir.py" "$OUT" "$OS" "b-$V" || { say "🔴 建临时输出目录失败"; exit 1; }
 mkdir -p "$W/profile/$TID" "$W/pkg" "$MS"
 cp "$PROF/"* "$W/profile/$TID/" || { say "🔴 配置档复制失败"; exit 1; }
 # L3 判定结果表（fps_l3_results.tsv，名单线产出）拷进配置档，随包带给宿主运行时（host_adapt.m fps_l3_override）
@@ -293,6 +295,9 @@ if ls "$ROOT"/rt_shaders/*.code > /dev/null 2>&1; then
   tail -n +$((n0 + 1)) "$W/profile/$TID/shader_map.tsv" | cut -f4 >> "$W/merged/union_keys.tsv"
   say "$(tail -1 "$W/rt_dump.log")"
 fi
+# 包内键别名表（第 1 代 → 第 2 代，translator/nvn_key.py）：表与包都定型（含真机转储）之后出，收表时与 shader_map.tsv 同处随包；宿主读档 / 读本机管线记录时把旧键换成第 2 代
+"$PY" "$R/graphics/tools/direct/merge_extract.py" --alias "$W/merged/pkg" "$W/profile/$TID/shader_map.tsv" "$W/merged/key_alias.tsv" > "$W/alias.log" 2>&1 \
+  || { say "🟡 键别名表没出成，随包空表照常出包（只影响旧版本存档 / 管线记录换键；$(tail -1 "$W/alias.log")；$W/alias.log）"; : > "$W/merged/key_alias.tsv"; }
 # 跑局知识（审计 #1534 P1-54 B1）：只读快照 KN，不读活文件。pack/stage_direct.sh 算键前出好一份、经 S2A_RUN_KNOWLEDGE 交来（键与出库用的是同一份）；
 #   单独调用（单测 / 手工）时这里按同一工具现出。来源 = pso_seed/<程序号>/（或 S2A_PSO_SOURCES），出包不读 ~/Documents/wire（Mac 局收局拷进 pso_seed/，runtime/run_mac.sh），
 #   同一提交、同一份 pso_seed/ 在 Mac 与Windows 出包机出的库相同。四张表的含义见 graphics/tools/direct/run_knowledge.py 头注
@@ -337,7 +342,7 @@ if [ "$VK" = 1 ]; then
   for f in game.tsv fps_l3_results.tsv shader_map.tsv shader_facts.tsv shader_pairs.tsv bf_want.tsv pso_manifest.tsv c1_full.tsv cb_extent.tsv shader_map.tsv.conflicts.tsv; do
     [ -f "$W/profile/$TID/$f" ] && cp "$W/profile/$TID/$f" "$OS/$f"
   done
-  cp "$W/merged/key_map.tsv" "$OS/"
+  cp "$W/merged/key_map.tsv" "$W/merged/key_alias.tsv" "$OS/"
   nu=$(wc -l < "$W/merged/union_keys.tsv" | tr -d ' '); nk=$(wc -l < "$OS/keys.tsv" | tr -d ' ')
   miss=$(comm -23 "$W/merged/union_keys.tsv" "$OS/keys.tsv" | wc -l | tr -d ' ')
   "$PY" - "$OS/direct_lib.json" "$W/merged/merge.json" <<EOF
@@ -427,7 +432,7 @@ L=$OS/b-$V; [ -d "$L" ] || { say "🔴 没出 $L"; exit 1; }
 for f in game.tsv fps_l3_results.tsv shader_map.tsv shader_facts.tsv shader_pairs.tsv bf_want.tsv pso_manifest.tsv c1_full.tsv cb_extent.tsv shader_map.tsv.conflicts.tsv; do
   [ -f "$W/profile/$TID/$f" ] && cp "$W/profile/$TID/$f" "$OS/$f"
 done
-cp "$W/merged/key_map.tsv" "$OS/"
+cp "$W/merged/key_map.tsv" "$W/merged/key_alias.tsv" "$OS/"
 # 管线种子表（配置档没有时，direct_lib.json 记 pso_seed=gen；配置档维护过的记 profile、上面收表时原样带了）：
 #   经 pack/stage_direct.sh 出库（S2A_PSO_SEED_STAGE=1）不在这里生成，归轻阶段 pack/stage_direct_seed.sh（审计 #1534 P1-54 B3：只写这一张表，新跑局只多几行 R 行时不让本阶段整段重跑），
 #   这里只不发布配置档那份只有表头的空表；单独调用（Windows 出包 pack/orch/oneclick_win.py、单测）照旧在这里按快照的 seen.tsv 生成（同一个 pso_seed.py）。

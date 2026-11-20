@@ -43,14 +43,22 @@ class PhoneOverview(unittest.TestCase):
         # 手机 2：旧壳、免费账号、一款没推
         layout.save_device(self.c, "PHONE-2", dict(shellId="SOLD", bundleId="io.example.two", signed=dict(at=T, free=True, device="手机乙"), games={}))
 
-    def overview(self, on=True, probe=False, online=None):
+    def overview(self, on=True, probe=False, online=None, owners=None, names=None, cands=None):
+        """owners：{UDID: (谁装的, 包名)}，连着的手机现查的结果（install.s2arm_owner 的替身；没给的按列不出 (None, None)）；names：现查到的设备名"""
         if probe:
             self.c.r["probe"] = True
-        def no_probe(c):
+        def no_probe(c, names=None):
             raise AssertionError("没带 probe 不查连接")
+        def fake_online(c, out=None):
+            if out is not None:
+                out.update(names or {})
+            return online or {}
+        import install
         with patch.object(rewrite_refresh, "rewriter_id", lambda c: "RIDNOW"), \
                 patch.object(host_update, "engine_compat", lambda c: NOW), patch.object(packer, "current_shell_id", lambda c: "SNOW"), \
-                patch.object(host_update, "_online", (lambda c: online or {}) if probe else no_probe):
+                patch.object(install, "s2arm_owner", lambda c, udid, rec: (owners or {}).get(udid, (None, None))), \
+                patch.object(install, "s2arm_candidates", lambda c, udid, rec: (cands or {}).get(udid, [])), \
+                patch.object(host_update, "_online", fake_online if probe else no_probe):
             return host_update.phone_overview(self.c)
 
     def test_states_per_phone_and_game(self):
@@ -125,6 +133,61 @@ class PhoneOverview(unittest.TestCase):
         layout.save_device(self.c, "P-UNK", dict(games={self.A: dict(pack="P")}))
         got = {p["device"]: p["canSign"] for p in self.overview()["phones"]}
         self.assertEqual(got, {"P-ID": True, "P-NO": False, "P-UNK": None})
+
+    def test_external_phone_from_live_probe(self):
+        """结构 5（11-19 走查）：连着、没有设备记录、装的是 AltStore 装的 S2Arm 的手机也列出来，给它自己的四个按钮、不出「安装 S2Arm」（期望手写）"""
+        self.fixture()
+        alt = "io.s2arm.games.example01"
+        r = self.overview(probe=True, online={"PHONE-1": "usb", "ALT-1": "usb"},
+                          owners={"PHONE-1": ("launcher", "io.example.one"), "ALT-1": ("external", alt)}, names={"ALT-1": "备用手机"})
+        got = {p["device"]: p for p in r["phones"]}
+        a = got["ALT-1"]
+        self.assertEqual((a["installed"], a["installedBy"], a["bundleId"], a["signMode"], a["shellCurrent"], a["name"], a["online"]),
+                         (True, "external", alt, "external", None, "备用手机", "usb"))
+        self.assertEqual(a["actions"], ["exportShellIpa", "pushS2arm", "exportS2arm", "handOverIdentity"])
+        self.assertEqual({g["state"] for g in a["games"]}, {"notPushed"}, "没推过：每款都是没推")
+        p1 = got["PHONE-1"]
+        self.assertEqual((p1["installedBy"], p1["bundleId"], p1["shellCurrent"]), ("launcher", "io.example.one", True))
+        self.assertNotIn("actions", p1, "启动器装的手机照旧由前端按原来的按钮出")
+        self.assertEqual(got["PHONE-2"]["installedBy"], "launcher", "没连着：按设备记录（有壳号 = 启动器装的）")
+
+    def test_external_phone_from_record_without_probe(self):
+        """推过一次（push_game 记下 externalBundleId、没有壳号）后，不查手机也认得出是别的工具装的"""
+        layout.save_device(self.c, "ALT-2", dict(externalBundleId="io.s2arm.games.abc", games={}))
+        layout.save_device(self.c, "NEW-1", dict(games={}))
+        got = {p["device"]: p for p in self.overview()["phones"]}
+        self.assertEqual((got["ALT-2"]["installedBy"], got["ALT-2"]["bundleId"], got["ALT-2"]["actions"][0]), ("external", "io.s2arm.games.abc", "exportShellIpa"))
+        self.assertEqual((got["NEW-1"]["installedBy"], got["NEW-1"]["installed"]), (None, False), "两样都没有：判不出谁装的")
+        self.assertNotIn("actions", got["NEW-1"])
+
+    def test_launcher_app_removed_now_external(self):
+        """启动器装过（有壳号），现查发现手机上只剩 AltStore 装的那份：按现查算别的工具装的"""
+        self.fixture()
+        r = self.overview(probe=True, online={"PHONE-2": "usb"}, owners={"PHONE-2": ("external", "io.s2arm.games.zz")})
+        p2 = next(p for p in r["phones"] if p["device"] == "PHONE-2")
+        self.assertEqual((p2["installedBy"], p2["bundleId"], p2["shellCurrent"]), ("external", "io.s2arm.games.zz", None))
+
+
+
+    def test_choose_lists_candidates(self):
+        """装着不止一个、没选过：needsChoice、候选、只给「选用哪个」，不出安装也不出四个按钮"""
+        cand = [dict(bundleId="io.s2arm.games.a", team="TA", byThisLauncher=False, identityTeam="TA"),
+                dict(bundleId="io.s2arm.games.b", team="TB", byThisLauncher=False, identityTeam=None)]
+        r = self.overview(probe=True, online={"TWO-1": "usb"}, owners={"TWO-1": ("choose", None)}, cands={"TWO-1": cand})
+        p = next(x for x in r["phones"] if x["device"] == "TWO-1")
+        self.assertEqual((p["installed"], p["installedBy"], p["needsChoice"], p["bundleId"], p["actions"], p["candidates"]),
+                         (True, None, True, "", ["chooseApp"], cand))
+
+    def test_chosen_still_lists_candidates(self):
+        """选过了：照常给别的工具装的那四个按钮，候选照样带上（可以换），actions 里不加 chooseApp"""
+        layout.save_device(self.c, "TWO-2", dict(chosenBundleId="io.s2arm.games.a", games={}))
+        cand = [dict(bundleId="io.s2arm.games.a", team="TA", byThisLauncher=False, identityTeam="TA"),
+                dict(bundleId="io.s2arm.games.b", team="TB", byThisLauncher=False, identityTeam=None)]
+        r = self.overview(probe=True, online={"TWO-2": "usb"}, owners={"TWO-2": ("external", "io.s2arm.games.a")}, cands={"TWO-2": cand})
+        p = next(x for x in r["phones"] if x["device"] == "TWO-2")
+        self.assertEqual((p["installedBy"], p["bundleId"], p["actions"], p["candidates"], p.get("needsChoice")),
+                         ("external", "io.s2arm.games.a", ["exportShellIpa", "pushS2arm", "exportS2arm", "handOverIdentity"], cand, None))
+
 
 if __name__ == "__main__":
     unittest.main()

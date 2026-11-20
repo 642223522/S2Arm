@@ -50,7 +50,8 @@ import S2ArmAppleAdapter
                         "悬停进入时必须同步显示提示")
                     let elapsed = ProcessInfo.processInfo.systemUptime - started
                     print("tooltip \(language.code)/\(Int(width))/\(id): \(elapsed * 1000) ms, above=\(above)")
-                    XCTAssertLessThan(elapsed, 0.1)
+                    // 「即时」由上面那句证明：mouseEntered 刚返回就取得到、且可见 = 同步弹出，不靠系统 help 计时器。耗时只打印、不判（11-19：
+                    //   原判 < 0.1 秒，负载高时 0.128 秒假红）
                     XCTAssertTrue(panel.ignoresMouseEvents, "提示不能挡住原按钮的鼠标操作")
                     XCTAssertFalse(panel.canBecomeKey, "提示不能夺走键盘或手柄窗口")
                     let frame = window.convertToScreen(anchor.convert(anchor.bounds, to: nil))
@@ -1223,11 +1224,11 @@ import S2ArmAppleAdapter
     /// 按条件等：满足立刻返回，上限 10 秒。原先 2 秒，门禁机整套并发跑、负载高时搜索胶囊展开 + 拿焦点会超时偶发红
     ///   （11-18 合入后步红在首页搜索用例，单跑必过），条件判定不变，快的时候不多等
     private func waitUntil(_ ready: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
-        for _ in 0..<500 {
+        for _ in 0..<1500 {   // 等界面状态到位，30 秒兜底（11-19：原 10 秒，负载上百时渲染慢于此 → 假红）
             if ready() { return }
             try await Task.sleep(for: .milliseconds(20))
         }
-        XCTAssertTrue(ready(), "界面未在 10 秒内完成状态切换", file: file, line: line)
+        XCTAssertTrue(ready(), "界面未在 30 秒内完成状态切换", file: file, line: line)
     }
 
     func testHomeSearchExpandsInsideTheHomeWindowAndKeepsItsQuery() async throws {
@@ -1837,7 +1838,8 @@ import S2ArmAppleAdapter
         }
     }
 
-    func testInstallRepairActionsShareOneColumnInBothLanguages() async throws {
+    /// 0.6.0 Mac：清单按钮只按作业层给的 action 画（appleId → 「登录 Apple ID」打开 S2Arm 自己的登录面板）；不再有「打开 Xcode」「去设置」两个
+    func testInstallChecklistButtonFollowsItemAction() async throws {
         let fixture = try SettingsFixture()
         defer { fixture.remove() }
         fixture.model.checkInstall("fixture")
@@ -1845,17 +1847,36 @@ import S2ArmAppleAdapter
         XCTAssertNotNil(fixture.model.installReadiness)
         for language in [Lang.zh, .en] {
             let (host, window) = try await render(AnyView(InstallView(model: fixture.model, gameID: "fixture")), fixture: fixture, language: language)
-            defer { window.close() }
+            fixture.navigation.source.controllers = { [] }; fixture.navigation.attach(window)
+            defer { fixture.navigation.detach(); window.close() }
             let targets = fixture.navigation.controlTargets(in: window)
-            let settings = try XCTUnwrap(targets.first { $0.id == "install.goSettings" })
-            let xcode = try XCTUnwrap(targets.first { $0.id == "install.openXcode" })
-            XCTAssertEqual(settings.frame.width, 106, accuracy: 1)
-            XCTAssertEqual(xcode.frame.width, 106, accuracy: 1)
-            XCTAssertEqual(settings.frame.union(xcode.frame).width, 220, accuracy: 1)
-            XCTAssertEqual(settings.frame.midY, xcode.frame.midY, accuracy: 1)
-            XCTAssertTrue(window.convertToScreen(host.bounds).contains(settings.frame.union(xcode.frame)))
+            let login = try XCTUnwrap(targets.first { $0.id == "install.action.appleId" })
+            XCTAssertFalse(targets.contains { $0.id == "install.openXcode" || $0.id == "install.goSettings" })
+            XCTAssertTrue(window.convertToScreen(host.bounds).contains(login.frame))
             try snapshot(host, "install-repair-\(language.code)")
+            fixture.navigation.focus("install.action.appleId"); fixture.navigation.handle(.confirm)
+            try await Task.sleep(for: .milliseconds(100))
+            XCTAssertEqual(fixture.model.appleLoginHost, "install", "点了就从装机窗弹登录面板")
+            fixture.model.closeAppleLogin()
         }
+    }
+
+    // 登录成功页发现登错了号：期望（手写）成功页有「换一个 Apple ID」，点了面板不关（host 仍是 main）、回到输入页（phase = idle，邮箱框出现）
+    func testAppleLoginDonePageCanSwitchToAnotherAccount() async throws {
+        let fixture = try SettingsFixture()
+        defer { fixture.remove() }
+        let model = fixture.model
+        model.openAppleLogin(host: "main")
+        model.appleLoginPhase = .done(AppleAccount(account: "a@example.com", team: "TEAM", teamName: "T"))
+        let (_, window) = try await render(AnyView(AppleLoginSheet(model: model)), fixture: fixture, language: .zh)
+        fixture.navigation.source.controllers = { [] }; fixture.navigation.attach(window)
+        defer { fixture.navigation.detach(); window.close() }
+        XCTAssertTrue(fixture.navigation.controlTargets(in: window).contains { $0.id == "appleLogin.switch" }, "成功页有换号入口")
+        fixture.navigation.focus("appleLogin.switch"); fixture.navigation.handle(.confirm)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(model.appleLoginHost, "main", "面板不关")
+        XCTAssertEqual(model.appleLoginPhase, .idle, "回到输入页")
+        model.closeAppleLogin()
     }
 
     func testSettingsPagesHaveRoomForDescriptionAndControls() async throws {
@@ -1937,7 +1958,7 @@ import S2ArmAppleAdapter
         defer { UserDefaults.standard.set(previous, forKey: S2ArmLauncherModel.teamCodeKey) }
         let fixture = try SettingsFixture()
         defer { fixture.remove() }
-        let page = AnyView(ScrollView { InstallModeCard(model: fixture.model).padding(32) }.launcherSheet())
+        let page = AnyView(ScrollView { AppleTVXcodeTeam(model: fixture.model).padding(32) }.launcherSheet())   // Apple TV 用的 Xcode 团队（出包页 Apple TV 那一行下面）
         let (host, window) = try await render(page, fixture: fixture, language: .zh)
         fixture.navigation.source.controllers = { [] }; fixture.navigation.attach(window)
         defer { fixture.navigation.detach(); window.close() }
@@ -2333,7 +2354,7 @@ private final class SettingsRunner: JobProcessRunner {
         }
         if request["operation"] as? String == "installMode" { result = ["mode": "device"] }
         if request["operation"] as? String == "installCheck" {
-            result = ["ready": true, "items": [["id": "appleId", "title": "Apple ID", "detail": "请在 Xcode 登录 Apple ID", "ok": false]]]
+            result = ["ready": true, "items": [["id": "appleId", "title": "Apple ID", "detail": "还没用 Apple ID 登录", "ok": false, "action": "appleLogin"]]]
         }
         if request["operation"] as? String == "preflight" {
             result = ["checks": preflightChecks]

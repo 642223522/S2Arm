@@ -60,19 +60,55 @@
    },
    "title": {
     "zh-Hans": "装 App 和推游戏分开了",
-    "en": "Installing the app and sending games are now separate"
+    "en": "App and games now install separately"
    },
    "what": {
     "zh-Hans": "以前出包会把游戏和 App 打成一个包；现在 **S2Arm 这个 App 只装一次**，每款游戏单独「**推到 iPhone**」，只推这一款。",
     "en": "Export used to build the game and the app into one package. Now **the S2Arm app is installed once** and each game is sent on its own with **Push to iPhone**."
    },
    "how": {
-    "zh-Hans": "第一次：连上手机，在游戏库第一格的「S2Arm」里点「**安装 S2Arm**」。之后：选一款游戏，点「**推到 iPhone**」。快到 7 天时，同一处的按钮变成「**续签 S2Arm**」，点一下就行，游戏不用重推。",
-    "en": "The first time, connect your phone and click **Install S2Arm** on the S2Arm card at the start of the library. After that, pick a game and click **Push to iPhone**. When the 7 days are nearly up, the same button becomes **Renew S2Arm**; one click, no games to send again."
+    "zh-Hans": "第一次：连上手机，在游戏库第一格「S2Arm」里点「**安装 S2Arm**」。之后选一款点「**推到 iPhone**」。装好后同一处就是「**续签 S2Arm**」，7 天内点一下，游戏不用重推。",
+    "en": "First time: connect your phone and click **Install S2Arm** on the S2Arm card. Then pick a game and click **Push to iPhone**. The same button then reads **Renew S2Arm**; click it within 7 days."
    },
    "where": {
-    "zh-Hans": "装 App、续签、更新：游戏库**第一格的「S2Arm」**。推游戏：每款游戏下面的「**推到 iPhone**」。",
-    "en": "Installing, renewing and updating the app: **the S2Arm card at the start of the library**. Sending a game: **Push to iPhone** under each game."
+    "zh-Hans": "装 App、续签：游戏库**第一格「S2Arm」**。推游戏：每款下面的「**推到 iPhone**」。AltStore / SideStore 装的 S2Arm，这里改给「**推所选到 iPhone**」「**导出 S2Arm.ipa**」等按钮。",
+    "en": "App: **the S2Arm card first in the library**. Games: **Push to iPhone** under each one. AltStore / SideStore installs get **Send selected to iPhone** and **Export S2Arm.ipa** here."
+   }
+  },
+  {
+   "platforms": [
+    "mac",
+    "windows"
+   ],
+   "image": {
+    "zh-Hans": "feature/v060-selfsign.jpg",
+    "en": "feature/v060-selfsign-en.jpg"
+   },
+   "kicker": {
+    "zh-Hans": "自签玩家 · 不用电脑也能导入",
+    "en": "Self-signing · import without a computer"
+   },
+   "title": {
+    "zh-Hans": "用 AltStore / SideStore 的，手机上就能导入游戏",
+    "en": "Self-signing? Import games on your phone"
+   },
+   "what": {
+    "zh-Hans": "把 AltStore / SideStore 的签名证书导进 S2Arm，之后电脑导出的或朋友分享的游戏，放进手机就能玩。**不用电脑登录 Apple ID，也不用新建证书。**",
+    "en": "Bring your AltStore / SideStore certificate into S2Arm, and games from your computer or a friend play right on the phone. **No Apple ID sign-in, no new certificate.**"
+   },
+   "how": {
+    "zh-Hans": "SideStore：S2Arm 齿轮 →「**签名证书**」→「**从 SideStore 获取**」。AltStore：在它的设置里导出签名证书、设密码，再点「**导入 .p12…**」。然后把 .s2arm 和 .img 放进「**放这里导入**」，或在电脑上点「**推所选到 iPhone**」。",
+    "en": "SideStore: gear → **Signing certificate** → **Get from SideStore**. AltStore: export the certificate with a password, then **Import .p12…**. Then drop .s2arm + .img into **Import Here**."
+   },
+   "where": {
+    "zh-Hans": "一个 Apple ID 只在一台电脑的 AltServer 上管理，两台会互相作废证书（AltStore 弹「Multiple AltServers」）。7 天到期前在 AltStore 点「Refresh All」。",
+    "en": "Manage each Apple ID from AltServer on one computer only; two will revoke each other's certificates (AltStore shows \"Multiple AltServers\"). Before the 7 days run out, tap Refresh All in AltStore."
+   },
+   "labels": {
+    "where": {
+     "zh-Hans": "要知道",
+     "en": "Good to know"
+    }
    }
   },
   {
@@ -93,19 +129,19 @@
    },
    "title": {
     "zh-Hans": "老游戏和存档都在，点两下就接上",
-    "en": "Your games and saves stay. Two clicks and you're back"
+    "en": "Your games and saves stay"
    },
    "what": {
     "zh-Hans": "0.6.0 起手机上统一用一个 S2Arm 装所有游戏。你手机上原来的游戏、存档、游戏数据**都会留着**，不用重新出包，也不用重传游戏数据。",
     "en": "From 0.6.0 there is one S2Arm app for all your games. The games, saves and game data already on your phone **all stay**; no exporting again, no sending game data again."
    },
    "how": {
-    "zh-Hans": "① Mac 玩家先在 S2Arm 里**用 Apple ID 登录一次**。② 连上手机，在游戏库第一格的「S2Arm」里点「**更新 S2Arm**」：先把各款存档备份到电脑，再换成新 App。③ 装完同一页列出这台手机上要更新的旧游戏，默认全勾，点「**更新这 N 款**」，每款约 1–2 分钟；旧版做的着色器库电脑会顺带重做，第一次要几分钟到几十分钟。**不用点 S 级优化**。",
-    "en": "① On a Mac, **sign in with your Apple ID once** in S2Arm. ② Connect your phone and click **Update S2Arm** on the S2Arm card at the start of the library: your saves are backed up to the computer first, then the new app goes on. ③ Right after, the same page lists the old games on this phone, all checked: click **Update these N games**, about 1–2 minutes each. Shader libraries built by the old version are rebuilt by the computer too; the first time takes from a few minutes to a few tens of minutes. **No need for S-grade optimization.**"
+    "zh-Hans": "① Mac：设置「签名身份」下点「**登录 Apple ID**」。② 连上手机，在第一格「S2Arm」点「**更新 S2Arm**」，先备份存档再换新 App。③ 同一页列出旧游戏，点「**更新这 N 款**」，每款约 1–2 分钟。不用点 S 级优化。",
+    "en": "① Mac: Settings → Signing identity → **Sign In with Apple ID**. ② Connect the phone, click **Update S2Arm** (saves back up first). ③ Click **Update these N games**, 1–2 min each."
    },
    "where": {
-    "zh-Hans": "第 ③ 步做完之前，这些游戏在手机上显示「**在电脑上更新一次**」，点不进去，但没丢。别的电脑装的另起一行列出，到那台电脑上更新。用 AltStore 等自己签名的：装新 S2Arm 覆盖旧的，再把每款 .s2arm 导入一次。",
-    "en": "Until step ③ is done, those games show **Update once on your computer** on the phone and won't open, but they aren't gone. Games installed from another computer are listed on a separate line; update them on that computer. If you sign the app yourself with AltStore or similar: install the new S2Arm over the old one, then import each game's .s2arm once."
+    "zh-Hans": "第 ③ 步前这些游戏显示「**需要导入一次 .s2arm**」，存档都在。自签玩家：点「安装 S2Arm」，在未登录那页点「**改为导出自签包（不用连手机）**」得到 S2Arm.ipa，用 AltStore 装上。",
+    "en": "Until ③, these games show **Needs its .s2arm once**; saves are safe. Self-signers: Install S2Arm → **Export for self-signing instead (no iPhone needed)** → install S2Arm.ipa with AltStore."
    }
   },
   {
@@ -137,12 +173,12 @@
     "en": "No need to wait for the game's own save point; one tap saves the whole game as it is right now, and you can come back to it."
    },
    "how": {
-    "zh-Hans": "游戏里点右上角的半透明按钮就存；长按它选「**回到上次存下的这一刻**」。下次打开游戏库，最上面的「**从这一刻继续**」点一下直接进。",
-    "en": "In a game, tap the translucent button in the top-right corner to save; press and hold it and choose **Go back to the saved moment**. Next time, **Continue from this moment** at the top of the library takes you straight there."
+    "zh-Hans": "游戏里点右上角的半透明按钮就存；长按它选「**回到上次存下的这一刻**」。下次打开游戏库，点「**从这一刻继续**」里的这款直接进。",
+    "en": "In a game, tap the translucent button in the top-right corner to save; press and hold it and choose **Go back to the saved moment**. Next time, **Continue from this moment** in the library takes you straight there."
    },
    "where": {
-    "zh-Hans": "每款只留最新一份，新存的会盖掉旧的。每份约 0.3～1.2 GB（随游戏不同），占手机空间：长按可以删除，腾出空间；不想用可以在设置里关掉。快照只在存下它的那台设备上可用。",
-    "en": "Each game keeps only the latest one, and a new save replaces the old. Each takes about 0.3–1.2 GB of your phone's storage, depending on the game: press and hold to delete it and free the space, or turn snapshots off in Settings. A snapshot only works on the device that saved it."
+    "zh-Hans": "每款只留最新一份。大小随游戏不同，实测约 0.2–0.5 GB；长按可删，设置里可关。快照只在存下它的那台设备上可用。",
+    "en": "One per game; a new save replaces the old. Size depends on the game, about 0.2–0.5 GB measured. Press and hold to delete, or turn it off in Settings. Works only on the device that saved it."
    }
   },
   {
@@ -160,15 +196,15 @@
    },
    "what": {
     "zh-Hans": "每款游戏的占用分项列出：**着色器与出包缓存、Mac 运行版本、已出好的 iPhone 包**，各占多少一眼看清；存档和日志只显示大小、不会被删。",
-    "en": "Each game's space is broken down: **shaders and build cache, the Mac build, ready iPhone builds**, each with its size. Saves and logs only show their size and are never deleted."
+    "en": "Each game's space is broken down: **Shader and packaging cache, Mac version, Finished iPhone package**, each with its size. Saves and logs only show their size and are never deleted."
    },
    "how": {
     "zh-Hans": "空间不够时，勾上不要的项点「释放」。删了的部分下次需要时会重新准备，手机上已装的游戏不受影响。",
     "en": "When space runs low, check what you don't need and click Free up. Deleted parts are prepared again when needed; games already on your phone keep working."
    },
    "where": {
-    "zh-Hans": "每款游戏的「…」菜单里的「**释放空间**」；旁边的「存储总览」看全部游戏。",
-    "en": "**Free up space** in each game's ••• menu; Storage overview next to it shows every game."
+    "zh-Hans": "每款游戏的「…」菜单里的「**释放空间**」；打开后在顶上切到「**存储总览**」看全部游戏。",
+    "en": "**Free up space** in each game's ••• menu; switch to **Storage overview** at the top to see every game."
    }
   },
   {
@@ -189,8 +225,8 @@
     "en": "Exporting includes **Compile shader library**: the game's shaders are compiled for Apple graphics ahead of time, so they don't have to be compiled while you play and new areas hitch less the first time."
    },
    "how": {
-    "zh-Hans": "什么都不用做，照常出包。大游戏这一步要多花一些时间。",
-    "en": "Nothing to do; export as usual. Big games take a bit longer on this step."
+    "zh-Hans": "什么都不用做，照常出包。iPhone 要连着推过去才带预编管线；导出自签包时这一版仍是首次遇到现编，后续版本改进。",
+    "en": "Nothing to do; export as usual. On iPhone, precompiled pipelines come only when you Push to iPhone with it connected; self-signing exports still compile on first use for now."
    },
    "where": {
     "zh-Hans": "出包进度里的「编译着色器库」。从 0.5 升上来的游戏，点「更新这 N 款」时电脑会按新版重编。",

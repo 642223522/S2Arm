@@ -646,6 +646,15 @@ class WinInstall(unittest.TestCase):
             self.assertIsNone(self.m.readiness_windows(self.c, self.gid)["items"][1]["url"])
 
 
+    def test_readiness_package_button_lands_on_export(self):
+        # 11-19 落点契约（同 Mac）：iPhone 版没做好 → package 项带 openExport（按钮去这款的出包页，原先 Windows 没按钮）；做好了没有动作
+        with patch.object(self.m, "win_install_mod", return_value=FakeW([("U1", "USB", 3)])), \
+                patch.object(self.m, "ios_pack", side_effect=self.m.Failure("没做好")):
+            pkg = self.m.readiness_windows(self.c, self.gid)["items"][0]
+        self.assertEqual((pkg["id"], pkg["ok"], pkg["action"], pkg["url"]), ("package", False, "openExport", None))
+        with patch.object(self.m, "win_install_mod", return_value=FakeW([("U1", "USB", 3)])):
+            self.assertIsNone(self.m.readiness_windows(self.c, self.gid)["items"][0]["action"])
+
     def test_readiness_tells_ipad_from_iphone(self):
         # #487：连着的是 iPad 时入口写「装到 iPad」：清单结果带 deviceKind；设备服务读不出（只在 Wi-Fi 上）为空、界面照旧写 iPhone
         w = FakeW([("U1", "USB", 3)])

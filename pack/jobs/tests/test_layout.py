@@ -397,6 +397,27 @@ class LocationTests(JobCase):
         self.assertEqual((back / "saves" / "s.dat").read_text(), "存档"); self.assertFalse(moved.exists())
         self.assertEqual(layout.find_game(self.fresh(), A), back)
 
+    def test_cross_volume_move_tolerates_appledouble_vanishing(self):
+        """#1720（诊断#5d659a，exFAT 盘）：删旧文件夹时删本体，系统顺带删掉它的 AppleDouble 伴随文件 ._<名>，rmtree 再删 ._<名> 就找不到。
+        期望：照样搬完、旧文件夹删干净、链接改指（修前整个任务报失败、旧夹删一半）；别的删除错误照报。
+        随包运行时是 Python 3.12：它的 rmtree 遇到 FileNotFoundError 就抛（3.13 起自己容忍），负对照要用 3.12 跑才红"""
+        d = layout.game_dir(self.c, A)
+        (d / "a.bin").write_bytes(b"a"); (d / "._a.bin").write_bytes(b"x")
+        real = os.unlink
+        def unlink(path, *a, **k):   # 模拟非 APFS 盘：rmtree 删到 ._<名> 时它已随本体消失（诊断原文就是这里抛 FileNotFoundError）
+            real(path, *a, **k)
+            if Path(str(path)).name.startswith("._"):
+                raise FileNotFoundError(2, "No such file or directory", str(path))
+        with patch.object(layout, "_same_volume", return_value=False), patch("os.unlink", unlink):
+            moved = layout.move_game(self.c, A, self.disk)
+        self.assertEqual((moved / "a.bin").read_bytes(), b"a"); self.assertFalse(d.exists())
+        self.assertEqual(layout.find_game(self.fresh(), A), moved)
+        x = self.c.library / "boom"; x.mkdir(); (x / "f").write_bytes(b"f")
+        def denied(path, *a, **k):
+            raise PermissionError(13, "Permission denied", str(path))
+        with patch("os.unlink", denied), self.assertRaises(PermissionError):
+            layout.remove_tree(x)
+
     def test_cross_volume_move_keeps_links_as_links(self):
         """跨卷移动不把链接展开（Windows junction 同理，Windows 实机另验）：产物根的「现行」这类相对链接原样；指向文件夹内部的绝对链接改指新位置"""
         d = layout.game_dir(self.c, A)

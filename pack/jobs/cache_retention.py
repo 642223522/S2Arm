@@ -60,12 +60,12 @@ def _completed(root, path, suffix):
     if suffix == 'direct':
         # Direct store (C# dsh_batch build Store, graphics/tools/direct/dsh/batch/Build.cs, S2Arm 11-01; direct_lib.sh gives it --cas <title>/store):
         # <title>/store/dshb/<two hex>/<64 hex>.e, one entry per file (a translation or a Metal library), named by the sha256 of its key and filed under
-        # its first two hex digits. Removing one only makes it miss on the next build; <64 hex>.e.tmp<pid>.<thread> is an entry being written, not an entry.
+        # its first two hex digits; <title>/store/cpso/ the same layout for the compute pipeline archives (graphics/tools/direct/cs_pipelines.py). Removing one only makes it miss on the next build; <64 hex>.e.tmp<pid>.<thread> is an entry being written, not an entry.
         # <title>/store/<two hex>.pack(.bad) are shards of the former Python store (dmsh_store.py, 10-31 to 11-01): no reader is left, reclaimable the same way
         if len(parts) < 3 or not re.fullmatch(r'[0-9A-F]{16}', parts[0]) or parts[1] != 'store':
             return False
         if len(parts) == 5:
-            return parts[2] == 'dshb' and bool(re.fullmatch(r'[0-9a-f]{64}\.e', name)) and parts[3] == name[:2]
+            return parts[2] in ('dshb', 'cpso') and bool(re.fullmatch(r'[0-9a-f]{64}\.e', name)) and parts[3] == name[:2]
         return len(parts) == 3 and bool(re.fullmatch(r'[0-9a-f]{2}\.pack(?:\.bad)?', name))
     if not re.fullmatch(r'[0-9a-f]{64}' + re.escape(suffix), name):
         return False

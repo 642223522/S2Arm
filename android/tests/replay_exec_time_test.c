@@ -79,6 +79,7 @@ void nvn_hle_queue_enter(void *q) { (void)q; }
 void nvn_hle_piece_begun(void) {}
 int nvn_cmd_call_resolve(uint64_t h, uint64_t *to) { *to = h; return 0; }   // hle_nvn.c 的 CALL 目标解析（main 的调用目标安全阀）：本用例只量耗时，照原地址执行
 
+const void *rp_draw_stream; uint64_t rp_gpu_wr_gen;   // rp_draw.c 的批量拷接口（本用例不链 rp_draw.c）
 void rp_state_reset(void) {}
 int rp_state_op(uint32_t op, const void *a, uint32_t size) { (void)op; (void)a; (void)size; return 0; }
 void rp_dirty_all(void) {}
@@ -105,6 +106,8 @@ void rp_debug_dump_poll(uint64_t *fence) { (void)fence; }
 uint64_t rp_buf_gpu_write_note(uint64_t addr, uint64_t len, uint64_t *pool_key) { (void)addr; (void)len; if (pool_key) *pool_key = 0; return 0; }
 void rp_buf_gpu_write_land(uint64_t pool_key, uint64_t id, int ok) { (void)pool_key; (void)id; (void)ok; }
 void rp_buf_frame_flip(void) {}
+void rp_buf_hold_begin(void) {}   // 本测试只测计时：回放窗口（池销毁的镜像缓冲延后放）在 t_nvn_replay / 隔离夹具里测
+void rp_buf_hold_end(void) {}
 
 // 「干活」的三条命令：每执行一条推进虚拟钟 1 毫秒。推进只发生在替身里：
 //   回放实现无论嵌套几层都不许让时间自己走，所以「时间过了多少」就是「干了几件活」。

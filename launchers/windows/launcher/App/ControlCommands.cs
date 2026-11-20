@@ -276,6 +276,24 @@ public sealed partial class EnvironmentWindow
             }
             case ("POST", "/install"):
                 return ControlGame(r) is { } installGame ? ControlInstall(installGame, AcceptFlags(r), r.Text("mode") == "export") : NoGame;
+            case ("POST", "/install-action"):   // 同点装机前清单那一项的按钮（11-19 落点契约，同 Mac）：按 id 找当前清单那一项的 action，走同一个 RunInstallAction
+            {
+                if (ControlGame(r) is not { } game) return NoGame;
+                if (readiness is not { } ready || !string.Equals(readinessFor, game.Id, StringComparison.OrdinalIgnoreCase))
+                    return ControlReply.Bad("还没有这款的装机清单：先 POST /installCheck，等 GET /state 的 installReadiness 出来", 409);
+                if (ready.Items.FirstOrDefault(i => i.Id == r.Text("id")) is not { } item) return ControlReply.Bad("清单里没有这一项");
+                if (item.Ok || item.Action is null) return ControlReply.Bad("这一项已经好了，或者没有要点的按钮", 409);
+                return RunInstallAction(item.Action, game) ? ControlReply.Ok() : ControlReply.Bad(installDiagnostics.Length > 0 ? installDiagnostics : "没做成", 500);
+            }
+            case ("POST", "/console-action"):   // 同点总控台这台手机上的按钮（11-19，同 Mac）：只认 GET /state 的 phoneConsole 里这台此刻显示的动作，走界面同一个 RunConsoleAction
+            {
+                if (r.Text("device") is not { Length: > 0 } device) return ControlReply.Bad("缺 device：说明是哪台手机（GET /state 的 phoneConsole）");
+                if (phoneOverview?.Phones.FirstOrDefault(p => p.Device == device) is not { } phone) return ControlReply.Bad("总控台里没有这台手机（先看 GET /state 的 phoneConsole）", 409);
+                var shown = PhoneOverview.Actions(phone);
+                if (r.Text("action") is not { } action || !shown.Contains(action)) return ControlReply.Bad("这台手机的总控台上没有这个按钮（此刻有：" + string.Join(" / ", shown) + "）", 409);
+                if (installBusy) return Busy();
+                return RunConsoleAction(action, device, r.Strings("gameIds"), r.Text("bundleId")) is { } why ? ControlReply.Bad(why, 409) : ControlReply.Ok();
+            }
             case ("POST", "/uninstall"):
             {
                 if (ControlGame(r) is not { } game) return NoGame;
@@ -363,8 +381,10 @@ public sealed partial class EnvironmentWindow
                 libraryFolder = connectedFolder ?? libraryFolder;
                 libraryOperation = RunLibraryAsync("catalog", null);
                 return ControlReply.Ok();
-            case ("POST", "/dismiss"):
-                importError = ""; keysRejected = false; Render();
+            case ("POST", "/dismiss"):   // 关掉提示框：报错条，以及更新弹窗 / 新功能大窗（同玩家点关闭：这一版 / 这一期不再弹）
+                importError = ""; keysRejected = false; presented = null;
+                if (updatePopup is not null) CloseUpdatePopup();
+                Render();
                 return ControlReply.Ok();
             default:
                 return ControlReply.Bad($"不认识 {r.Method} {r.Path}", 404);
@@ -383,9 +403,11 @@ public sealed partial class EnvironmentWindow
         ("POST /ipa {gameId, spaceOverride?}", "打 iPhone 包（出 IPA + 资源包）；spaceOverride = true 同界面「仍然继续」"),
         ("POST /batch {games:[{gameId, platforms:[mac|iphone]}], location?}", "批量出包：一批几款、每款出哪些平台（Windows 只出 iPhone，要了 Mac 记失败「这台电脑出不了这个平台的包」），location = 一批共用的存放位置；一款接一款地出，失败不挡后面、磁盘满暂停；进度看 GET /state 的 batch（summary / items）"),
         ("POST /installCheck {gameId}", "装机前清单：几秒后看 GET /state 的 installReadiness"),
+        ("POST /install-action {gameId, id}", "同点装机前清单那一项的按钮（项的 action：openExport / openImpactor / devCertSettings）；做成后 GET /state 的 presented 是这个 action，已好 / 没按钮回 409"),
         ("POST /install {gameId, acceptDropped?, acceptNoBackup?, acceptStale?}", "用 Impactor 装到 iPhone（不用先 installCheck，缺什么作业报真实原因；Apple ID 由玩家本人在 Impactor 里登录）；可确认的失败码先问玩家、同意了带对应参数再发：container_would_drop → acceptDropped（手机上有别的电脑装的游戏这次带不上）、save_backup_failed → acceptNoBackup（覆盖前没能备份存档）、container_stale → acceptStale（旧资源包要重出）"),
         ("POST /show {page: environment|library|export|install, gameId?}", "打开环境检查 / 回游戏库 / 打开这款的出包页 / 装机页（同点对应按钮）"),
         ("POST /update-phone {ask?, acceptStale?, repack?, acceptDropped?, acceptNoBackup?}", "更新 iPhone 上的 S2Arm（同游戏库右上角按钮；GET /state 的 phoneUpdates 不空才有）：本版壳 + 手机上已有的程序模块，只装 App；有要按新版重新出包的款时没带 acceptStale 回 409 并列出 stale，repack = true 时更新完把它们排进批量出包、出完自动装；作业报可确认的失败码时（同 /install）玩家同意后带对应参数再发"),
+        ("POST /console-action {device, action, gameIds?, bundleId?}", "同点总控台这台手机上的按钮：action 只认 GET /state 的 phoneConsole 里这台此刻显示的（installShell / updateShell / renewShell / exportShellIpa / handOverIdentity / updateSelected / pushS2arm / exportS2arm / chooseApp）；gameIds = 推 / 导出哪几款（不给 = 总控台勾选的）；chooseApp 带 bundleId = 选用 phoneConsole 里这台 candidates 的哪一个（同一台手机装着不止一个 S2Arm 时）；没有这个按钮回 409"),
         ("POST /uninstall {gameId, acceptDropped?}", "从 iPhone 上的 S2Arm 删一款；acceptDropped 同 /install"),
         ("POST /cancel {taskId} | /retry {taskId}", "停掉在跑的作业 / 重试出包、装机任务"),
         ("POST /diagnostics {action:export, path}", "导出诊断包（已脱敏的 zip）"),
@@ -433,7 +455,8 @@ public sealed partial class EnvironmentWindow
             {
                 ["gameId"] = readyFor, ["ready"] = ready.Ready, ["device"] = ready.Device, ["account"] = ready.Account,
                 ["items"] = ready.Items.Select(i => new Dictionary<string, object?>
-                    { ["id"] = i.Id, ["ok"] = i.Ok, ["waiting"] = i.Waiting, ["title"] = i.Title, ["detail"] = i.Detail, ["who"] = i.Who }).ToList()
+                    { ["id"] = i.Id, ["ok"] = i.Ok, ["waiting"] = i.Waiting, ["title"] = i.Title, ["detail"] = i.Detail, ["who"] = i.Who,
+                      ["action"] = i.Action, ["url"] = i.OfficialUrl?.ToString() }).ToList()
             };
         return new()
         {
@@ -447,7 +470,8 @@ public sealed partial class EnvironmentWindow
             ["library"] = connectedFolder, ["games"] = games, ["session"] = session, ["busy"] = ControlBusy,
             ["tasks"] = ControlJournal.Tasks(privateRoot), ["queue"] = exportQueue.Select(q => q.Game.Id).ToList(), ["notice"] = null,
             ["error"] = importError.Length > 0 ? importError : aiControlError.Length > 0 ? aiControlError : null,
-            ["installReadiness"] = install, ["installMode"] = ControlInstallMode(), ["phoneUpdates"] = ControlPhoneUpdates(), ["update"] = UpdateStatus, ["batch"] = ControlBatch(), ["cachedAt"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
+            ["installReadiness"] = install, ["presented"] = presented, ["installMode"] = ControlInstallMode(), ["phoneUpdates"] = ControlPhoneUpdates(),
+            ["phoneConsole"] = phoneOverview?.ConsoleState(),   // 总控台每台手机实际显示的按钮（11-19，同 Mac；与界面同一个来源 PhoneOverview.Actions）；开关关着 = null ["update"] = UpdateStatus, ["batch"] = ControlBatch(), ["cachedAt"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
             ["lastSnapshotPath"] = "", ["windows"] = Array.Empty<object>(),
         };
     }

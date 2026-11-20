@@ -272,8 +272,9 @@
 "about.unknown" = "未知";
 
 /* 宿主其余界面（#316 第二轮）：设置页、提示页 / 加载页、存档管理、手柄连接、诊断、联机、文字输入等 */
-"app.fpsCap.ladder" = "这台设备暂时跑不稳 60 帧，已回到原生帧率；跑稳后会自动再试 60 帧。";
+"app.fpsCap.ladder" = "这一局跑不稳 60 帧，已先回到原生帧率；下次开游戏会重新从 60 帧开始。";
 "app.fpsCap.restored" = "60 帧已恢复。";
+"app.fpsCap.retry" = "再试 60 帧";
 "app.lowRam.title" = "这台设备内存可能不够";
 "app.lowRam.body" = "这款游戏需要的内存比这台设备多。照样可以开始，但可能卡顿，或被系统关掉。";
 "app.gpuStop.body" = "从后台划掉本 App 再打开，一般能接着玩，存档停在游戏上次保存的地方。想让我们查原因，点「故障报修」把诊断发给我们。";
@@ -615,3 +616,23 @@
 "vpad.snap.deleteFailed" = "这次没删干净，稍后再试一次";
 "snap.result.title" = "没能回到那一刻";
 "snap.result.generic" = "回到那一刻没成功，已重新开始游戏，游戏存档没受影响。";
+
+"cert.password.title" = "输入证书密码";
+"cert.password.message" = "「%@」要密码才能导入。";
+"cert.password.wrong" = "密码不对，请再输一次（「%@」）。";
+"cert.import" = "导入";
+"cert.failed.title" = "没能导入证书";
+"cert.failed.message" = "这个文件不是能用的签名证书（.p12）。";
+"cert.done.title" = "签名证书已导入";
+"cert.done.message" = "团队 %@。之后在这台 iPhone 上导入的游戏会用它签好再玩。";
+"cert.teamMismatch" = "注意：这张证书是团队 %1$@ 的，这个 S2Arm 是团队 %2$@ 装的，用它签的游戏系统不认。它已存下，原来能用的证书不受影响。请在装 S2Arm 的那个工具（AltStore 或 SideStore）里导出证书再导入。";
+"cert.sidestore.missing" = "打不开 SideStore：这台 iPhone 上没装 SideStore，或者版本太旧。";
+"cert.sidestore.empty" = "SideStore 没有交回证书，请在 SideStore 里点「Export」后再试。";
+"cert.sidestore.noReply" = "SideStore 没有交回证书：可能点了取消，或者这个 SideStore 版本太旧、还不能把证书交给别的 App。可以更新 SideStore 后再试，或者把证书导出成 .p12 文件再导入。";
+"cert.pickP12" = "导入 .p12…";
+"cert.status" = "团队 %1$@ · %2$@";
+"cert.status.otherTeam" = "和 S2Arm 不是同一个 Apple ID";
+"cert.status.replaced" = "已失效";
+"cert.source.sidestore" = "来自 SideStore";
+"cert.source.p12" = "导入的 .p12";
+"cert.source.pc" = "电脑交来";

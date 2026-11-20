@@ -62,6 +62,8 @@ NSDictionary *s2a_ios_graphics_snapshot(NSUserDefaults *defaults);
 //   返回 -1 = 底座没变，0 / 1 = 要切成掌机 / 主机；*restart = 除底座外还有要重启才生效的画面设置变了
 NSInteger s2a_ios_settings_docked_change(NSDictionary *entry, NSDictionary *now, BOOL *restart);
 void s2a_ios_apply_graphics_settings(NSUserDefaults *defaults);
+// App 级联机偏好；默认不改环境，指定模式只在下次完整启动时读取。
+void s2a_ios_apply_ldn_settings(NSUserDefaults *defaults);
 // 浮层两个开关（S2ADevHUD / MetalHUDForceEnabled）的偏好先落成环境变量：要在 app.m 建视图、hud.m 挂浮层之前调一次，
 // 否则 s2a_hud_on() 会把还没设的 S2A_HUD 缓存成 0（#153）；host_run 里 s2a_ios_apply_graphics_settings 会再调一次兜底。
 // 启动环境显式给的优先；开关语义仍是「下次启动生效」。

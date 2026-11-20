@@ -88,13 +88,13 @@ class AndroidDeliveryTest(unittest.TestCase):
         docker.write_text('#!/bin/sh\nif [ "$1" = image ]; then exit 0; fi\nprintf "%s\\n" "$@" > "$CAPTURE_PATH"\n')
         docker.chmod(0o755)
         env = dict(os.environ, PATH=str(commands) + ':' + os.defpath, CAPTURE_PATH=str(capture),
-                   S2ARM_ANDROID_VK_ENGINE='1', S2ARM_ANDROID_VK_BACKEND='nvn_vk')
+                   S2ARM_ANDROID_VK_ENGINE='1', S2ARM_ANDROID_VK_BACKEND='nvk')
         run = subprocess.run(['bash', str(ROOT / 'android/docker/build.sh'), ':app:assembleDebug'],
                              env=env, capture_output=True, text=True)
         self.assertEqual(run.returncode, 0, run.stderr)
         arguments = capture.read_text().splitlines()
         self.assertIn('S2ARM_ANDROID_VK_ENGINE=1', arguments)
-        self.assertIn('S2ARM_ANDROID_VK_BACKEND=nvn_vk', arguments)
+        self.assertIn('S2ARM_ANDROID_VK_BACKEND=nvk', arguments)
 
     def test_gui_bundled_rewriter_is_derived_from_python_runtime_not_environment(self):
         spec = importlib.util.spec_from_file_location('local_rewriter', ROOT / 'pack/rewriter.py')

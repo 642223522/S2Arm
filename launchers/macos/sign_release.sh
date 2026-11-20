@@ -12,12 +12,15 @@ if [ -n "${S2A_SIGN_KEYCHAIN_PASS_FILE:-}" ]; then security unlock-keychain -p "
 ID=$(security find-identity -v -p codesigning "$KC" | sed -n 's/.*"\(Developer ID Application:.*\)"/\1/p' | head -1)
 [ -n "$ID" ] || { echo "【红】$KC 里没有 Developer ID Application 证书" >&2; exit 2; }
 xattr -cr "$APP"
-# 时间戳服务器偶发不应答：每个对象最多试 3 次，还不行把 codesign 的原话打出来。不并行（多路同时取私钥实测出错）
+# 时间戳服务器偶发不应答：每个对象最多试 6 次，间隔递增 5 / 15 / 30 / 60 / 60 秒（合计约 3 分钟），每次重试打一行；还不行把 codesign 的原话打出来。
+#   原先只试 3 次、隔 2 秒，苹果时间戳服务一小段不应答就判失败（11-19 候选签 Sparkle Installer.xpc 时出过）。不并行（多路同时取私钥实测出错）
 sign() {
-  local i err
-  for i in 1 2 3; do
+  local i err waits=(5 15 30 60 60)
+  for i in 1 2 3 4 5 6; do
     err=$(codesign --force --timestamp --options runtime --entitlements "$ENT" --keychain "$KC" -s "$ID" "$1" 2>&1) && return 0
-    sleep 2
+    [ "$i" = 6 ] && break
+    echo "签名重试：$1 第 ${i} 次没成（$(printf '%s' "$err" | tail -1 | cut -c1-160)），${waits[$((i - 1))]} 秒后再试" >&2
+    sleep "${waits[$((i - 1))]}"
   done
   echo "【红】签名失败：$1：$err" >&2; return 1
 }

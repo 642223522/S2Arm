@@ -2,7 +2,7 @@
 // 每个函数名与离线链同名（Python 原文在 dmsh_build.py / dmsh_geometry.py），改动只在三处，都是运行时没有的东西：
 //   · 不出 .metallib（iOS 上运行时编出的库存不成文件）：MTL.compile 那步不做，<键>_b.metal 由载入端 newLibraryWithSource 编；
 //     随之「带层 / 整数输出入口编不过就去掉重编」的退路（finish 的 MTL.compile 失败分支）也不做——它要编过才知道；
-//   · _bv（影子输入库，DshVin）/ _bf（读帧缓冲版，DshFetch）/ _ft（输出类型变体，DshFt）只写源码 + 元数据（<键>_bv/_bf/_ft.metal + .json，Finish 末尾），不编、_b.json 不带 vin / fetch：
+//   · _bv（影子输入库，DshVin）/ _bp（拉取式顶点输入，DshPull）/ _bf（读帧缓冲版，DshFetch）/ _ft（输出类型变体，DshFt）只写源码 + 元数据（<键>_bv/_bf/_ft.metal + .json，Finish 末尾），不编、_b.json 不带 vin / fetch：
 //     出包时由 Python 编排层编库并写回索引（同离线 vin_finish / fetch_finish / ft_finish）；载入端缺省时各有退路，见 DshCApi.cs 文件头；
 //   · json 的 chain_metal 写本库的编法（载入端不读它），source / pc_paired 取 shader_map.tsv，表里没有这个键时写 "s2a_dsh" / null。
 // 翻译器 dmsh_xlate/Program.cs 原样编进本程序集，进程内用临时目录写 job.json、反射调它的 Main。
@@ -490,6 +490,7 @@ namespace S2A.Dsh
                 foreach (var field in ScaleMetadata(res)) refl[field.Key] = field.Value;
                 SaveJson(Key + "_b.json", refl);
                 if (PackOut && stage == "vs") VinFinish(full);   // 同 dmsh_build.py finish：vin_finish(key, open(msl).read(), refl)，msl 此时 = 写出的 _b.metal（全部入口、压平后）
+                if (PackOut && stage == "vs") PullFinish(full);   // 拉取式顶点输入变体 _bp（DshPull，照上游参考实现（MIT）dmsh_pull：pull_finish 同样从全部入口的源码出）
                 if (PackOut && stage == "ps") { if (!fout) FtFinish(src, refl); BfFinish(src, refl); }   // 同 fetch_finish(key, src, refl)：src = color_round 之后、未接 main0_u（fs_uint 只出 fu，不改 src）
             }
 
@@ -535,6 +536,19 @@ namespace S2A.Dsh
                 }
                 Save(Key + "_bv.metal", v);
                 Save(Key + "_bv.json", Dumps(new PyDict { ["vin"] = new PyDict { ["entry"] = "main0", ["entry_z"] = "main0_z", ["shadow"] = shadows } }));
+            }
+
+            // ---- pull_finish（变体源码部分，DshPull）：有顶点属性输入的顶点着色器出拉取版 <键>_bp；编库与写 refl['pull'] 归编排层（Build.cs PullBuild），json 给它要的 pull / 认不出的原因 ----
+            void PullFinish(string full)
+            {
+                var (v, info) = DshPull.Variant(full);
+                if (v == null)
+                {
+                    if ((string)info != "no stage input") Save(Key + "_bp.json", Dumps(new PyDict { ["pull_fail"] = info }));   // 编排层打 [RED] 行
+                    return;
+                }
+                Save(Key + "_bp.metal", v);
+                Save(Key + "_bp.json", Dumps(new PyDict { ["pull"] = info }));
             }
 
             // ---- ft_finish（拼 MSL 部分，DshFt）：<键>_ft.json = {"want": [[u, s], …]}；拼不出 {"ft_fail": true}；表里有本键但全被过滤 {"ft_covered": true}（编排层计数）----

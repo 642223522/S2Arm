@@ -5192,8 +5192,8 @@
   "en": "A free Apple ID can have at most 3 self-signed apps installed on a device at the same time, and this iPhone is full. Touch and hold a self-signed app you no longer play on the iPhone, remove it, and retry; or use a paid Apple Developer account, which has no such limit."
  },
  {
-  "source": "这是 Apple 对免费 Apple ID 的限制：7 天内最多注册 10 个包名，这个账号已经用满；在手机上删 App 不会退还额度。办法：等几天，最早那批包名注册满 7 天就会恢复；或在 Xcode / Impactor 里换一个 Apple ID 登录后再装；或改用付费 Apple 开发者账号（没有这个限制）。",
-  "en": "This is Apple's limit for free Apple IDs: at most 10 App IDs can be registered in 7 days, and this account has used them all. Removing apps from the iPhone does not give the quota back. Options: wait a few days, as the quota comes back once the earliest App IDs are 7 days old; sign in with a different Apple ID in Xcode or Impactor and install again; or use a paid Apple Developer account, which has no such limit."
+  "source": "这是 Apple 对免费 Apple ID 的限制：7 天内最多注册 10 个包名，这个账号已经用满；在手机上删 App 不会退还额度。办法：等几天，最早那批包名注册满 7 天就会恢复；或换一个 Apple ID 登录后再装（Mac 在 S2Arm 里登录，Windows 在 Impactor 里登录）；或改用付费 Apple 开发者账号（没有这个限制）。",
+  "en": "This is Apple's limit for free Apple IDs: at most 10 App IDs can be registered in 7 days, and this account has used them all. Removing apps from the iPhone does not give the quota back. Options: wait a few days, as the quota comes back once the earliest App IDs are 7 days old; sign in with a different Apple ID and install again (in S2Arm on Mac, in Impactor on Windows); or use a paid Apple Developer account, which has no such limit."
  },
  {
   "source": "让你选的那台 iPhone / iPad 连上这台电脑：插上数据线，或解锁后和电脑连同一个 Wi-Fi；第一次连要在设备上点「信任」，并在「设置 → 隐私与安全性 → 开发者模式」打开开发者模式，然后再试。",
@@ -6240,16 +6240,16 @@
   "en": "No iPhone found: connect the cable, unlock it and tap Trust on the phone."
  },
  {
-  "source": "这台电脑上没有这个 Apple ID 能用的开发证书，要新建一张。如果你的账号证书已满，苹果会撤掉列表里的第一张「{0}」（在 {1} 上创建，{2} 生效），用它签的 App（可能是 Xcode 或 AltStore 装的）会打不开；没满就什么都不撤。",
-  "en": "This computer has no usable development certificate for this Apple ID, so it needs to create one. If your account's certificates are full, Apple will revoke the first one in the list, “{0}” (created on {1}, valid from {2}), and apps signed with it (possibly installed by Xcode or AltStore) will stop opening; if they are not full, nothing is revoked."
+  "source": "这台电脑上没有这个 Apple ID 能用的开发证书，要新建一张。账号证书满了的话，苹果会撤掉列表里的第一张「{0}」（在 {1} 上创建，{2} 生效）。在 AltStore / SideStore 上创建的那张就是它们在用的证书，撤掉后 AltStore / SideStore 和它们装的 App 会打不开。",
+  "en": "This computer has no usable development certificate for this Apple ID, so it needs to create one. If your account's certificates are full, Apple will revoke the first one in the list, “{0}” (created on {1}, valid from {2}). If it was created on AltStore / SideStore, it is the certificate they are using: once it is revoked, AltStore / SideStore and the apps they installed will stop opening."
  },
  {
-  "source": "这台电脑上没有这个 Apple ID 能用的开发证书，要新建一张。如果你的账号证书已满，苹果会撤掉列表里的第一张「{0}」（{1} 生效），用它签的 App（可能是 Xcode 或 AltStore 装的）会打不开；没满就什么都不撤。",
-  "en": "This computer has no usable development certificate for this Apple ID, so it needs to create one. If your account's certificates are full, Apple will revoke the first one in the list, “{0}” (valid from {1}), and apps signed with it (possibly installed by Xcode or AltStore) will stop opening; if they are not full, nothing is revoked."
+  "source": "这台电脑上没有这个 Apple ID 能用的开发证书，要新建一张。账号证书满了的话，苹果会撤掉列表里的第一张「{0}」（{1} 生效）。在 AltStore / SideStore 上创建的那张就是它们在用的证书，撤掉后 AltStore / SideStore 和它们装的 App 会打不开。",
+  "en": "This computer has no usable development certificate for this Apple ID, so it needs to create one. If your account's certificates are full, Apple will revoke the first one in the list, “{0}” (valid from {1}). If it was created on AltStore / SideStore, it is the certificate they are using: once it is revoked, AltStore / SideStore and the apps they installed will stop opening."
  },
  {
-  "source": "点「仍然继续」就照签。想保住那一张，要先删掉一张不用的开发证书：有 Mac 的话，在 Mac 上 Xcode 的「设置 → 账户 → 管理证书」里删，删完回来再装一次。",
-  "en": "Click Continue anyway to sign. To keep that one, first delete a development certificate you no longer use: if you have a Mac, delete it in Xcode on the Mac under Settings → Accounts → Manage Certificates, then come back and install again."
+  "source": "点「仍然继续」会新建证书照签。不想动现有证书的话，点「改用已有证书」，把在 AltStore / SideStore 导出的 .p12 导进来，就不用新建。",
+  "en": "Click Continue anyway to create a new certificate and sign. To keep your current certificates, click Use an existing certificate and import the .p12 you exported from AltStore / SideStore, so nothing new is created."
  },
  {
   "source": "点「仍然继续」照传：手机报的空闲不含系统随时能清掉的空间，实际多半放得下，真写满了会停下并说明还差多少；也可以先在「设置 → 通用 → iPhone 储存空间」腾出空间。",
@@ -10408,10 +10408,6 @@
   "en": "Try these two steps first: 1) Open S2Arm on the iPhone once and wait for the game library to appear; 2) Back on your computer, click “Push to iPhone” for this game again. It picks up from what was already copied, so it won’t start over. If it still can’t write, delete the S2Arm app on your iPhone and install it again: export your saves from the game menu (Manage saves) to a place outside the S2Arm folder, such as iCloud Drive; on the iPhone Home Screen, touch and hold S2Arm and delete the app; in S2Arm on your computer, click Push to iPhone for this game again; once it’s installed, import your saves again in Manage saves. You don’t need to delete the games or S2Arm on your computer."
  },
  {
-  "source": "还没用 Apple ID 登录：在 S2Arm 的「用 Apple ID 签名」里填邮箱和密码登录（你的苹果设备上会弹出验证码），再点一次「推到 iPhone」。密码只用于这次向 Apple 登录，S2Arm 不保存。",
-  "en": "No Apple ID signed in: in S2Arm, open \"Sign with Apple ID\", enter your email and password (a verification code will appear on your Apple devices), then click \"Push to iPhone\" again. The password is only used for this sign-in with Apple; S2Arm doesn't store it."
- },
- {
   "source": "把游戏资源推进 Apple TV（只推变了的文件；第一次大游戏要几分钟）",
   "en": "Sending the game's resources to the Apple TV (only changed files; a large game takes a few minutes the first time)"
  },
@@ -10434,5 +10430,149 @@
  {
   "source": "Intel Mac：给 iPhone 出包可用；在 Mac 上起游戏仍要 Apple 芯片。",
   "en": "Intel Mac: building for iPhone works; playing games on this Mac still needs Apple silicon."
+ },
+ {
+  "source": "没读到登录的 Apple ID，这份游戏包未签名，导入后由手机上的 S2Arm 签名。",
+  "en": "No signed-in Apple ID was found, so this game pack is unsigned. S2Arm on your phone signs it after import."
+ },
+ {
+  "source": "没读到登录的 Apple ID，这份游戏包未签名；手机上的 S2Arm 还没拿到签名身份，导入后签不了。用 AltStore 或 SideStore 装的 S2Arm：在它们的设置里导出签名证书，到手机上 S2Arm 齿轮 →「签名证书」→「导入 .p12…」导入。用启动器装的：在启动器里登录 Apple ID（或选用自己的证书），连上手机推一次游戏，把签名身份交给它。",
+  "en": "No signed-in Apple ID was found, so this game pack is unsigned, and S2Arm on your phone doesn't have a signing identity yet, so it can't sign it after import. If S2Arm was installed with AltStore or SideStore: export the signing certificate in their settings, then in S2Arm on the phone go to gear → Signing certificate → Import .p12…. If it was installed by the launcher: sign in with your Apple ID in the launcher (or choose your own certificate), connect your phone and push a game once to hand the signing identity to it."
+ },
+ {
+  "source": "在启动器里登录装 S2Arm 用的那个 Apple ID（或选用和装 S2Arm 同一团队的证书），再点一次「把签名身份交给手机」。",
+  "en": "In the launcher, sign in with the Apple ID you used to install S2Arm (or choose a certificate from the same team as the one that installed S2Arm), then click “Give the signing identity to the phone” again."
+ },
+ {
+  "source": "手机上的 S2Arm 是用另一个 Apple ID 或证书签的（团队 {0}），和这台电脑上的签名身份（团队 {1}）不是同一个团队，交过去也签不了游戏：请在启动器里登录装 S2Arm 用的那个 Apple ID，或选用同一团队的证书。",
+  "en": "S2Arm on your phone was signed with a different Apple ID or certificate (team {0}), not the same team as the signing identity on this computer (team {1}), so the phone can't sign games with it. Sign in with the Apple ID you used to install S2Arm in the launcher, or choose a certificate from the same team."
+ },
+ {
+  "source": "子程序 %s 的代码补丁暂不支持，没收",
+  "en": "Code patches for subprogram %s aren't supported yet, so they weren't imported"
+ },
+ {
+  "source": "这台电脑上没有这个 Apple ID 能交给手机的签名证书，启动器不会为此新建（账号证书满了时，新建会让苹果撤掉一张，可能正是 AltStore 或 SideStore 在用的那张）。用 AltStore 或 SideStore 装的 S2Arm：在 AltStore 或 SideStore 的设置里导出签名证书，到手机上 S2Arm 的「签名证书」里导入就行。确实想让启动器新建证书，就点「安装 S2Arm」，它会先告诉你可能撤掉哪张证书，再由你决定。",
+  "en": "This computer has no signing certificate for this Apple ID to hand to the phone, and the launcher won't create one for this (if your account's certificates are full, a new one makes Apple revoke one, possibly the one AltStore or SideStore is using). For S2Arm installed with AltStore or SideStore: export the signing certificate in AltStore or SideStore settings and import it under “Signing certificate” in S2Arm on your phone. If you really want the launcher to create a certificate, click “Install S2Arm”; it first tells you which certificate might be revoked and lets you decide."
+ },
+ {
+  "source": "在 AltStore 或 SideStore 的设置里导出签名证书，打开手机上的 S2Arm →「签名证书」→「导入 .p12…」导入；想让启动器新建证书就点「安装 S2Arm」（会先说明会让哪张证书失效）。",
+  "en": "Export the signing certificate in AltStore or SideStore settings, then open S2Arm on your phone → “Signing certificate” → “Import .p12…”. To have the launcher create a certificate, click “Install S2Arm” (it first explains which certificate would stop working)."
+ },
+ {
+  "source": "「{0}」空间不够：这一步还要约 {1} GB，盘上只剩 {2} GB。",
+  "en": "Not enough space on “{0}”: this step needs about {1} GB, but only {2} GB is free."
+ },
+ {
+  "source": "在「{0}」上腾出至少 {3} GB 后重试；游戏原件、存档和上次成功的运行版本别删。",
+  "en": "Free up at least {3} GB on “{0}”, then try again. Don't delete the game files, saves, or the last version that ran successfully."
+ },
+ {
+  "source": "已送到手机，但手机上的 S2Arm 还没有签名证书，这款还开不了：在手机上打开 S2Arm → 齿轮 →「签名证书」，SideStore 装的点「从 SideStore 获取」；AltStore 装的先在 AltStore 设置里导出签名证书，再点「导入 .p12…」。",
+  "en": "Sent to your phone, but S2Arm on your phone has no signing certificate yet, so this game can't start: on your phone, open S2Arm → gear → “Signing certificate”. If SideStore installed it, tap “Get from SideStore”; if AltStore installed it, first export the signing certificate in AltStore's settings, then tap “Import .p12…”."
+ },
+ {
+  "source": "已送到手机，但手机上的 S2Arm 导入的签名证书（团队 {0}）不是给这个 S2Arm 签名的那张（团队 {1}），这款还开不了：在手机上打开 S2Arm → 齿轮 →「签名证书」，SideStore 装的点「从 SideStore 获取」；AltStore 装的先在 AltStore 设置里重新导出签名证书，再点「导入 .p12…」。",
+  "en": "Sent to your phone, but the signing certificate imported into S2Arm on your phone (team {0}) isn't the one this S2Arm was signed with (team {1}), so this game can't start: on your phone, open S2Arm → gear → “Signing certificate”. If SideStore installed it, tap “Get from SideStore”; if AltStore installed it, first export the signing certificate again in AltStore's settings, then tap “Import .p12…”."
+ },
+ {
+  "source": "还没用 Apple ID 登录：点「登录 Apple ID」（装机清单和失败页上都有，也可以在设置 →「签名身份」下面点），在弹出的「用 Apple ID 签名」里填邮箱和密码（你的苹果设备上会弹出验证码），再点一次「推到 iPhone」。密码只用于这次向 Apple 登录，S2Arm 不保存。",
+  "en": "You're not signed in with an Apple ID. Click Sign In with Apple ID (on the install checklist and on the failure page, or under Settings › Signing identity), enter your email and password in Sign with Apple ID (a code appears on your Apple device), then click Push to iPhone again. Your password is used only to sign in to Apple this time; S2Arm doesn't store it."
+ },
+ {
+  "source": "这个 Apple ID 绑了不止一个受信任手机号，S2Arm 选不了发到哪一个：重新登录，改用苹果设备上弹出的验证码。",
+  "en": "This Apple ID has more than one trusted phone number and S2Arm can't choose which one gets the text. Sign in again and use the code that appears on your Apple device instead."
+ },
+ {
+  "source": "Apple TV / 独立 App 方案用的 Xcode 团队",
+  "en": "Xcode team for Apple TV / standalone app schemes"
+ },
+ {
+  "source": "验证码是 6 位数字。",
+  "en": "The code is 6 digits."
+ },
+ {
+  "source": "登录作业还没开始。",
+  "en": "Sign-in hasn't started yet."
+ },
+ {
+  "source": "验证码没能交给登录作业：S2Arm 的数据目录写不进去，检查磁盘空间和权限后再试。",
+  "en": "Couldn't pass the code to sign-in: S2Arm's data folder can't be written. Check disk space and permissions, then try again."
+ },
+ {
+  "source": "套用预设",
+  "en": "Apply preset"
+ },
+ {
+  "source": "动作",
+  "en": "Action"
+ },
+ {
+  "source": "赛车",
+  "en": "Racing"
+ },
+ {
+  "source": "回合制",
+  "en": "Turn-based"
+ },
+ {
+  "source": "WASD 走位、鼠标转视角、左右键分担攻击与闪避，适合动作 / 开放世界",
+  "en": "WASD to move, mouse to look, left/right buttons for attack and dodge. For action / open-world games"
+ },
+ {
+  "source": "WASD 转向与油门刹车、鼠标视角灵敏度调低并关闭回中，适合赛车 / 飞行",
+  "en": "WASD to steer, accelerate and brake; lower mouse look sensitivity with recentering off. For racing / flight games"
+ },
+ {
+  "source": "方向键选单、空格确认、加减键翻页，鼠标不驱动视角，适合回合制 / 战棋",
+  "en": "Arrow keys for menus, Space to confirm, +/- to turn pages; the mouse doesn’t move the camera. For turn-based / tactics games"
+ },
+ {
+  "source": "：这是显卡驱动的管线缓存，不需要",
+  "en": ": this is the graphics driver’s pipeline cache and isn’t needed"
+ },
+ {
+  "source": "：认不出（要 yuzu 系的 *.bin，或含 shared.toc / guest.toc 的 Ryujinx 缓存目录）",
+  "en": ": not recognized (needs a yuzu-style *.bin, or a Ryujinx cache folder containing shared.toc / guest.toc)"
+ },
+ {
+  "source": "：拷贝失败（",
+  "en": ": copy failed ("
+ },
+ {
+  "source": "在 iPhone 总控台里选好这台手机用哪一个 S2Arm（AltStore / SideStore 装的，还是启动器装的），再推游戏；选一次就记住。",
+  "en": "In the iPhone console, choose which S2Arm this phone should use (the one installed with AltStore / SideStore, or the one installed by the launcher), then send the game again. Your choice is remembered."
+ },
+ {
+  "source": "在 iPhone 总控台里重新选一次用哪一个 S2Arm：选过的那个已经不在这台 iPhone 上了。",
+  "en": "Choose again in the iPhone console which S2Arm to use: the one you chose is no longer on this iPhone."
+ },
+ {
+  "source": "这台 iPhone 上装着不止一个 S2Arm：先在 iPhone 总控台选好用哪一个，再推游戏。",
+  "en": "This iPhone has more than one S2Arm installed: first choose which one to use in the iPhone console, then send the game."
+ },
+ {
+  "source": "选的这个 S2Arm 不在这台 iPhone 上了：在总控台重新选一次。",
+  "en": "The S2Arm you chose is no longer on this iPhone: choose again in the console."
+ },
+ {
+  "source": "读不出这台 iPhone 上装了哪些 App：确认 iPhone 连着、已解锁，再试一次。",
+  "en": "Couldn't read which apps are installed on this iPhone: make sure the iPhone is connected and unlocked, then try again."
+ },
+ {
+  "source": "这台 iPhone 上装着不止一个 S2Arm",
+  "en": "More than one S2Arm on this iPhone"
+ },
+ {
+  "source": "同一台手机上装着两个及以上 S2Arm（比如 AltStore 装的一个、启动器装的一个），S2Arm 不替你挑推到哪一个。",
+  "en": "This phone has two or more S2Arm installed (for example one from AltStore and one from the launcher), and S2Arm won't pick one for you."
+ },
+ {
+  "source": "选的 S2Arm 不在手机上了",
+  "en": "The chosen S2Arm is no longer on the phone"
+ },
+ {
+  "source": "选过的那个 S2Arm 已经从这台 iPhone 上删掉或换掉了。",
+  "en": "The S2Arm you chose has been removed from or replaced on this iPhone."
  }
 ]

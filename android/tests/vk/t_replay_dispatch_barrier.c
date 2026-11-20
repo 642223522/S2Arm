@@ -5,7 +5,8 @@
 //   barrier     传输写 → 游戏屏障 → 派发（#978：游戏屏障在派发前交给后端）
 //   none        传输写 → 派发，不发游戏屏障（跟帖：后端在缓冲作目标的传输之后、下一次派发之前自己补一道）
 //   none-nobar  同 none，但用测试钩子关掉后端那道（检测器负控：同步校验必须报写后读冒险）
-//   resync      池不受写跟踪：派发自己的解析在同一段里把池镜像重同步一次（回放层自录的传输写）→ 派发；屏障数含重同步自己开头那道
+//   resync      池不受写跟踪、本段中途回放自己按序改了这几页（rp_write_note，等同 OP_UPDATE_UB）：派发自己的解析在同一段里把池镜像重同步一次
+//               （回放层自录的传输写）→ 派发；屏障数含重同步自己开头那道。不受跟踪的池本段里同步过的页不再「每次使用都重传」，重同步要由写触发
 //   xseg        前一段传输写、提交；下一段派发（段末那道屏障只对主机可见）
 //   dd          传输写 → 派发 → 派发：数后端屏障，前一次派发前 1 道、两次派发之间 0 道（连续派发之间不多插）
 // 游戏屏障的记账（rp_pass_barrier / rp_pass_take_barrier）在这里是同语义的替身：OP_BARRIER → rp_pass.c 的接线在宿主用例 t_dispatch_barrier 里测。
@@ -147,6 +148,7 @@ int main(int argc,char **argv){
  rp_S.ssbo[5][0].addr=(uint64_t)(uintptr_t)guest;rp_S.ssbo[5][0].size=512;
  GPU(nvn_gpu_cmd_begin(NULL,&active,&err));
  nvn_gpu_buf mirror=NULL;uint64_t off=0;REQUIRE(rp_buf_resolve(active,(uint64_t)(uintptr_t)guest,512,&mirror,&off));   // 镜像句柄：派发绑的是同一份（本段第一次同步：直接写进镜像）
+ if(untracked){rp_write_note((uint64_t)(uintptr_t)guest,sizeof init);}   // resync：回放自己按序改了这几页（内容同原值）→ 派发的解析要重同步一次
  p_dispatch dp={0};dp.x=dp.y=dp.z=1;
  if(!untracked){rp_dispatch(active,&dp,NULL);}     // 预派发：吃掉开段那道屏障，只量被测的那一段（它写的后半段读回前会被覆盖）；
                                                    // resync 不预派发：预派发会登记 GPU 写，被测那次重同步就绕开了被读的区间

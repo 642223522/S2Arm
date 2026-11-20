@@ -39,6 +39,16 @@ static int compile_fn(void *ctx, uint64_t session, uint64_t generation, const ch
     *bytes_len = len;
     return 0;
 }
+// 等测试的编译函数真的开始跑（g_concurrent > 0）：用例要的是「请求在途」这个状态，不靠固定睡几十毫秒去赌提交线程已经把它交出去
+//   （负载高的门禁主机上提交线程 30 ms 内可能还没轮到，后面的断言就打在空闲的 worker 上）。上限 5 秒。
+static int wait_compiling(void) {
+    for (int waited = 0; waited < 5000; waited++) {
+        pthread_mutex_lock(&g_fn_mu); int n = g_concurrent; pthread_mutex_unlock(&g_fn_mu);
+        if (n > 0) return 1;
+        usleep(1000);
+    }
+    return 0;
+}
 
 static int g_pause_count, g_resume_count;
 static int pause_cb(void *ctx) { (void)ctx; __atomic_add_fetch(&g_pause_count, 1, __ATOMIC_SEQ_CST); return 0; }
@@ -319,7 +329,7 @@ int main(void) {
     g_pause_count = g_resume_count = 0;
     pthread_t td;
     pthread_create(&td, NULL, run_thread, &d);
-    usleep(50 * 1000);
+    CHECK(wait_compiling(), "the slow request is being compiled before stop");
     s2a_compile_worker_stop();
     pthread_join(td, NULL);
     CHECK(d.rc != 0 && strstr(d.why, "stop"), "stop fails the waiting request accurately");
@@ -381,7 +391,7 @@ int main(void) {
         i.json = "{\"long\":1}"; sha_of("long-request", i.sha); i.deadline = 5000;
         pthread_t ti;
         pthread_create(&ti, NULL, run_thread, &i);
-        usleep(30 * 1000);
+        CHECK(wait_compiling(), "the long request is being compiled before the bounded stop");
         char bwhy[192] = "";
         int brc = s2a_compile_worker_stop_bounded(30, bwhy, sizeof bwhy);
         CHECK(brc == 1, "bounded stop reports a still-running compile instead of joining forever");
@@ -405,7 +415,7 @@ int main(void) {
         j.json = "{\"pump\":1}"; sha_of("pump-request", j.sha); j.deadline = 5000;
         pthread_t tj;
         pthread_create(&tj, NULL, run_thread, &j);
-        usleep(30 * 1000);
+        CHECK(wait_compiling(), "the pumped request is being compiled before pump");
         CHECK(s2a_compile_worker_pump(10) == 1, "pump reports an in-flight demand after one 10 ms slice");
         pthread_join(tj, NULL);
         CHECK(j.rc == 0, "the pumped request still completes");

@@ -36,6 +36,18 @@ extension S2ArmLauncherModel {
         }
     }
 
+    /// 签名方式三选一（自签走查结构 6）：apple = Apple ID（在 S2Arm 里登录）；certificate = 我的证书（没导入先弹导入）；
+    ///   external = 我自己用 AltStore / SideStore 签（S2Arm 不在电脑上签名，导出 .s2arm 不签、手机上用导入的证书签）。作业层 signModeSet 记下，之后导出照这个
+    func setSignChoice(_ choice: String) {
+        if choice == "certificate" && devCert?.imported != true { showDevCertImport = true; return }
+        let mode = choice == "certificate" ? "devCert" : choice == "external" ? "external" : "appleId"
+        Task {
+            do { _ = try await provider.signModeSet(mode) } catch { reportFailure("s2arm.fail.devCertUse", error) }
+            await reloadDevCert()
+            refreshInstallMode()
+        }
+    }
+
     func deleteDevCert() {
         Task {
             do { try await provider.devCertDelete() } catch { reportFailure("s2arm.fail.devCertDelete", error) }

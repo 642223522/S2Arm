@@ -154,10 +154,10 @@ static void pre_done(void *user, const nvn_gpu_done *d) {
 // 于是结束当前通道、录进主段（通道在下一笔绘制时重开）。last_sub：该资源上次同步所在的提交序号，由调用方持有。
 nvn_gpu_cmd rp_xfer_cmd(uint64_t *last_sub) {
     if (!g_cmd) return NULL;
-    if (*last_sub == g_sub_serial) { if (rp_pass_is_open()) pf_add(RP_PERF_P_CUT_XFER, 1); rp_pass_end(g_cmd); return g_cmd; }
+    if (*last_sub == g_sub_serial) { if (rp_pass_is_open()) pf_add(RP_PERF_P_CUT_XFER, 1); rp_pass_end(g_cmd); rp_gpu_wr_gen++; return g_cmd; }
     *last_sub = g_sub_serial;
     if (!g_pre) { nvn_gpu_err err = {0}; nvn_gpu_cmd_desc d = {0, "nvn submit pre"};
-        if (!nvn_gpu_ok(nvn_gpu_cmd_begin(&d, &g_pre, &err))) { g_pre = NULL; rp_pass_end(g_cmd); return g_cmd; } }
+        if (!nvn_gpu_ok(nvn_gpu_cmd_begin(&d, &g_pre, &err))) { g_pre = NULL; rp_pass_end(g_cmd); rp_gpu_wr_gen++; return g_cmd; } }
     return g_pre;
 }
 
@@ -321,6 +321,7 @@ void rp_exec_reset(void) {   // 会话收尾：遮挡计数与条件渲染的账
 }
 
 void nvn_be_sub_begin(void) {
+    rp_buf_hold_begin();   // 回放窗口开：到 nvn_be_sub_commit 收尾之前，别的线程销毁池不当场放镜像缓冲（rp_buf.c）
     g_sub = calloc(1, sizeof *g_sub);
     if (g_sub) g_sub->refs = 1;
     rc_retire(); g_rc_npend = 0; g_rc_skip = 0;
@@ -381,7 +382,13 @@ static void seg_cut(int next_occ) {
     rp_dirty_all();
 }
 
+static uint64_t sub_commit_body(void);
 uint64_t nvn_be_sub_commit(void) {
+    const uint64_t f = sub_commit_body();
+    rp_buf_hold_end();   // 回放窗口关（各条返回路径都经过这里）：窗口里别的线程销毁池延后的镜像缓冲此刻才放，命令已 cmd_ref 的由后端保活
+    return f;
+}
+static uint64_t sub_commit_body(void) {
     struct sub *s = g_sub; g_sub = NULL;
     rp_pass_flush(g_cmd);   // 打开的通道与待折清除不跨提交
     if (!g_cmd) {   // 没有段（开段失败，或中途交段之后开新段失败）：副作用无处挂，按失败丢弃（不写假成功）
@@ -420,6 +427,31 @@ uint64_t nvn_be_sub_commit(void) {
 static int g_lag_budget;
 void rp_sync_lag_present(void) { static int on = -1; if (on < 0) on = nvn_plat_flag("nvk_sync_lag", 0) == 3; if (on) __atomic_store_n(&g_lag_budget, 1, __ATOMIC_RELEASE); }
 uint64_t nvn_be_last_fence(void) { return g_fence; }
+// ---------- 提交之外的旁路段（ReadTexels 读 GPU 内容，rp_entry.c） ----------
+// 开段 / 交段是 [提交] 角色、时间线要严格递增：调用方持提交锁（hle_nvn.c nvn_hle_submit_lock），且不在某次提交的回放里（rp_in_submit）。
+// 栅栏值照常从 g_fence 往后取一格（SUB_STEP），之后的提交接着往后取；不碰遮挡、条件渲染、中途段、回写的账（旁路段没有这些）。
+// 完成回调与 sub_done 同口径推进 g_done_fence。失败（含粘滞错误）照后端口径让时间线进失败终态：调用方必须在开段前挡住不能拷的参数。
+static _Thread_local int g_in_submit;   // 本线程正在 nvn_be_submit 里（持着提交锁）
+int rp_in_submit(void) { return g_in_submit; }
+static void side_done(void *user, const nvn_gpu_done *d) {
+    const uint64_t f = (uint64_t)(uintptr_t)user;
+    if (d->status == NVN_GPU_DONE_FAILED) { red("旁路段失败：%s", d->why ? d->why : "?"); return; }
+    uint64_t done = __atomic_load_n(&g_done_fence, __ATOMIC_RELAXED); if (f > done) __atomic_store_n(&g_done_fence, f, __ATOMIC_RELEASE);
+}
+nvn_gpu_cmd rp_side_begin(const char *label) {
+    if (g_in_submit || g_sub || g_cmd) { nvn_unimpl("be", "side_segment_inside_submit", NULL); return NULL; }
+    nvn_gpu_err err = {0}; nvn_gpu_cmd_desc d = {0, label}; nvn_gpu_cmd c = NULL;
+    if (!nvn_gpu_ok(nvn_gpu_cmd_begin(&d, &c, &err)) || !c) { static int said; if (!said++) red("开旁路段失败（之后同样的失败不再逐条报）：%s", err.why); return NULL; }
+    return c;   // 旁路段只放通道外的拷贝；下一次提交开段时状态照常全重发（nvn_be_sub_begin）
+}
+uint64_t rp_side_commit(nvn_gpu_cmd c) {
+    if (!c) return 0;
+    const uint64_t f = g_fence + SUB_STEP;
+    nvn_gpu_err err = {0};
+    g_fence = f;   // 先推进：提交失败时后端也已按这个值记了失败段，下一次提交必须取更大的值
+    if (!nvn_gpu_ok(nvn_gpu_cmd_commit(c, f, side_done, (void *)(uintptr_t)f, &err))) { red("旁路段提交失败：%s", err.why); return 0; }
+    return f;
+}
 uint64_t rp_sub_fence(void) { return g_fence + SUB_STEP; }   // 正在回放的这次提交最后一段的栅栏值（它中途先交的段取的值都比这个小）
 int rp_fence_done(uint64_t f) { return __atomic_load_n(&g_done_fence, __ATOMIC_ACQUIRE) >= f; }
 // 游戏调 QueueFinish 时要等到哪个栅栏值（前端在提交锁里取值，出了锁再等）。
@@ -697,8 +729,8 @@ static uint64_t exec_list(const uint8_t *p) {
                 break; }
             case OP_RESET_COUNTER: { uint64_t t; memcpy(&t, a, 8); if (t == NVN_COUNTER_TYPE_SAMPLES_PASSED) occ_reset(g_cmd); break; }   // 其余计数器的报告值本来就写 0，复位无事可做
             case OP_RENDER_COND: rc_cond(a); break;
-            case OP_DRAW: { if (g_rc_skip) break; p_draw t; count_feed(&count_group, draw_rec(a, h.size, &t), NULL, p, tm); break; }
-            case OP_DRAW_IDX: { if (g_rc_skip) break; p_draw_idx t; count_feed(&count_group, NULL, draw_idx_rec(a, h.size, &t), p, tm); break; }
+            case OP_DRAW: { if (g_rc_skip) break; p_draw t; rp_draw_stream = p; count_feed(&count_group, draw_rec(a, h.size, &t), NULL, p, tm); rp_draw_stream = NULL; break; }
+            case OP_DRAW_IDX: { if (g_rc_skip) break; p_draw_idx t; rp_draw_stream = p; count_feed(&count_group, NULL, draw_idx_rec(a, h.size, &t), p, tm); rp_draw_stream = NULL; break; }
             case OP_MULTI_DRAW: { if (g_rc_skip) break; p_multi_draw m; if (h.size - 8 < sizeof m) { nvn_unimpl("rec", "multi_draw_short", p); break; } memcpy(&m, a, sizeof m); rp_multi_draw(g_cmd, &m, p); break; }
             case OP_SET_RT: { p_set_rt t; rp_pass_set_rt(g_cmd, set_rt_rec(a, h.size, &t)); sub_split(); break; }
             case OP_CLEAR_COLOR: if (!g_rc_skip) rp_pass_clear_color(g_cmd, a, p); break;
@@ -762,6 +794,7 @@ void nvn_be_exec(const uint8_t *p) { (void)exec_list(p); }
 // 一次 NVN 队列提交（hle_nvn.c nvnQueueSubmitCommands）。跨队列停靠（等别的队列还没回放的信号）未接：见 OP_SIGNAL_EVENT+WAIT。
 void nvn_be_submit(void *q, const uint64_t *h, int n) {
     __atomic_fetch_add(&g_fr_subs, 1, __ATOMIC_RELAXED);   // 帧级账：这一帧提交了几次
+    g_in_submit = 1;
     nvn_hle_queue_enter(q);
     uint64_t t0 = now_ns();
     // 一次提交拆三段记账（SUBMIT_NS 仍是含三段的整段）：开段（cmd_begin + 状态重发） / 主回放循环 / 收尾交后端
@@ -776,4 +809,5 @@ void nvn_be_submit(void *q, const uint64_t *h, int n) {
     uint64_t t3 = now_ns();
     pf_add(RP_PERF_SUB_PRE_NS, t1 - t0); pf_add(RP_PERF_SUB_EXEC_NS, t2 - t1); pf_add(RP_PERF_SUB_POST_NS, t3 - t2);
     pf_add(RP_PERF_SUBMIT_NS, t3 - t0);
+    g_in_submit = 0;
 }

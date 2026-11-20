@@ -1093,8 +1093,18 @@ static thr_t *g_cown[NCORE]; static uint64_t g_cown_t[NCORE]; enum { CW_MAX = 10
 //   按需 0 崩（并发 0）——按维护者口径「全关 0 崩、计数无害即全关」。S2A_CORES=1 全部参与（10-20 起的完整虚拟核），可选「按需」（S2A_CORES=ondemand）——调过 GetCurrentProcessorNumber（0x10）或掩码只含一个核的线程参与核互斥：
 //   Horizon 同核同优先级不互相抢占，游戏据此写「读核号 → 改本核无锁数据」；没读过核号的线程写不出按核数据，自由跑（省掉全员等核 / 交核，直连同包 −1 W 量级）。
 //   按需曾在 Mac 怪猎 3 局都在每帧 700+ 渲染遍后 Metal 驱动中止，渲染器命令缓冲上限（fix/cb-pass-cap）修好后同场景 0 崩
-static int cores_mode(void) { static int v = -1; if (v < 0) { const char *e = getenv("S2A_CORES"); v = e && !strcmp(e, "1") ? 2 : e && !strcmp(e, "ondemand") ? 1 : 0;
-    LOG("虚拟核：%s", v == 2 ? "全部游戏线程参与（S2A_CORES=1）" : v == 1 ? "按需（S2A_CORES=ondemand：读过核号 0x10 或钉单核的线程同核互斥）" : "关（缺省；S2A_CORES=1 全部参与、=ondemand 按需）");
+// 11-19 维护者定：苹果平台缺省改「按需」。Switch 上同一核同一时刻只跑一条线程，游戏据此「读核号 → 改本核数据」不加锁；缺省关时这个前提每局都被打破
+//   （王国之泪 Mac 两局「读过核号的两线程同核同跑」129 / 161 次，按需档 0 次、帧数持平；8 GB Mac 上沿 +0x18 父指针读到正被改写的节点而崩，#9113f9）。
+//   显式设的照旧优先：S2A_CORES=0 关、=1 全部参与、=ondemand 按需。安卓侧缺省不变（另行评估）
+#if defined(__APPLE__)
+enum { CORES_DEFAULT = 1 };
+#else
+enum { CORES_DEFAULT = 0 };
+#endif
+static int cores_mode(void) { static int v = -1; if (v < 0) { const char *e = getenv("S2A_CORES");
+    v = !e || !*e ? CORES_DEFAULT : !strcmp(e, "1") ? 2 : !strcmp(e, "ondemand") ? 1 : 0;
+    LOG("虚拟核：%s%s", v == 2 ? "全部游戏线程参与（S2A_CORES=1）" : v == 1 ? "按需（读过核号 0x10 或钉单核的线程同核互斥）" : "关（游戏线程即宿主线程、不限同核并发）",
+        !e || !*e ? "——缺省；S2A_CORES=0 关、=1 全部参与、=ondemand 按需" : "——S2A_CORES 显式设");
     if (v) preempt_init(); } return v; }
 static int cores_on(void) { return cores_mode() != 0; }
 // 按需参与者：读过核号（0x10），或掩码只含一个核——钉在单核上的线程不用问也知道自己在哪个核，同样能写按核数据
@@ -1704,11 +1714,18 @@ void s2a_core_enter(void) { thr_t *t = thread_current_or_null(); if (t) { core_a
 #else
 #define S2A_ASM_INTERNAL
 #endif
+// 11-19 苹果平台缺省开：虚拟核缺省改按需（cores_mode）后，block_end 当场取核的旧行为在按需档复现了同一类锁环（一款赛车游戏 Mac 6 局 1 局：
+//   nx-82 持 g_rmu 在 up_wait_zero 的 DM_BLOCK_END 里等核 1、nx-86 持核 1 在 nvn_be_reg_tex 里等 g_rmu）。惰性取核是这类环的结构性解，随按需一起成缺省
+#if defined(__APPLE__)
+enum { LAZY_DEFAULT = 1 };
+#else
+enum { LAZY_DEFAULT = 0 };
+#endif
 S2A_ASM_INTERNAL int g_lazy_core = -1;   // -1 未读、0 关（缺省旧行为）、1 开。非 static：entry.S 的钩子先读它，读到 0 就一条 cbz 走开
 static int lazy_core(void) {
     int v = g_lazy_core;
     if (v < 0) { const char *e = getenv("S2A_LAZY_CORE");
-                 v = (e && *e && strcmp(e, "0")) ? 1 : 0;
+                 v = e && *e ? strcmp(e, "0") != 0 : LAZY_DEFAULT;   // 不设取缺省（苹果开，见 LAZY_DEFAULT）
                  g_lazy_core = v; LOG("虚拟核：惰性取核 %s（S2A_LAZY_CORE）", v ? "开" : "关"); }
     return v;
 }
@@ -2217,10 +2234,18 @@ static int snap_state_raw(thr_t *t) {   // 持 G
     if (snap_cs_blocked(t)) return SNAP_T_ENTRY;
     return 0;
 }
+#if defined(__APPLE__)
+// 放开冻结 / 恢复时 Mach 挂住的线程：虚拟核开着且它此刻不持核（冻结方代放过、或恢复局新建的）→ 先挂抢占信号，放开后执行任何游戏指令前进 tramp 取核
+static void snap_run_resume(thr_t *t) {
+    if (core_part(t) && !t->held_core && t->pt) { atomic_store(&t->preempting, 1); pthread_kill(t->pt, S2A_SIG_PREEMPT); }
+    thread_resume(t->mport);
+}
+#endif
 // 解冻（存档进程）：Mach 挂住的线程放开（停在原指令上，接着跑）；门里停着的线程放开冻结标志后各自继续。冻结放弃、存完接着玩都走这里
 void s2a_snap_thaw(void) {
 #if defined(__APPLE__)
-    glock(); for (thr_t *t = g_all; t; t = t->all) if (t->snap_run) { t->snap_run = 0; thread_resume(t->mport); } pthread_mutex_unlock(&G);
+    // 冻结时代放过核的（off_guest 标着）：放开前先挂抢占信号，回游戏代码执行任何指令前先进 tramp 按优先级取核（同 thr_unpause）
+    glock(); for (thr_t *t = g_all; t; t = t->all) if (t->snap_run) { t->snap_run = 0; snap_run_resume(t); } pthread_mutex_unlock(&G);
 #endif
     glock(); atomic_store(&g_frz, 0); atomic_store(&g_snap_frz, 0); pthread_cond_broadcast(&g_pause_cv); pthread_mutex_unlock(&G);
 }
@@ -2241,6 +2266,7 @@ int s2a_snap_freeze(int timeout_ms, int *nthr, int *nst) {
             *nthr = n; pthread_mutex_unlock(&G); return (int)((now_ns() - t0) / 1000); }   // 持 G 判定全员到齐；之后调用方再持 G 抓现场
 #if defined(__APPLE__)
         // 0.5 秒还没到门的：不在系统调用里、停在游戏原代码上（忙等等着别的已冻线程）——Mach 挂住、取完整现场，当作安全点；停在宿主代码 / 补丁岛的放开再等
+        thr_t *rel[64]; int nrel = 0;   // 本轮挂住、持着虚拟核的：解 G 后代放核（持 G 取 g_cmu 与「持 g_cmu 等 G」互等）
         if (now_ns() - t0 > 500000000ull) for (thr_t *t = g_all; t; t = t->all) {
             if (snap_state(t) || t->snap_run || !t->mport || atomic_load(&t->in_svc)) continue;
             if (thread_suspend(t->mport) != KERN_SUCCESS) continue;
@@ -2253,9 +2279,15 @@ int s2a_snap_freeze(int timeout_ms, int *nthr, int *nst) {
                 mc->regs[29] = __darwin_arm_thread_state64_get_fp(st); mc->regs[30] = __darwin_arm_thread_state64_get_lr(st);
                 mc->regs[31] = __darwin_arm_thread_state64_get_sp(st); mc->regs[32] = __darwin_arm_thread_state64_get_pc(st); mc->regs[33] = st.__cpsr;
                 memcpy(mc->neon, &ns.__v, sizeof mc->neon); mc->fpsr = ns.__fpsr; mc->fpcr = ns.__fpcr; t->snap_run = 1;
+                if (t->held_core && nrel < 64) { atomic_store(&t->off_guest, 1); rel[nrel++] = t; }
                 LOG("即时存档：线程 id %llu 停在游戏代码 %#llx（忙等不进门），Mach 挂住取现场", (unsigned long long)t->id, (unsigned long long)mc->regs[32]);
             } else thread_resume(t->mport);
         }
+        pthread_mutex_unlock(&G);
+        // 虚拟核开着（S2A_CORES=1 / 按需）：挂住的忙等线程手里的核由冻结方代放（同游戏 svc 暂停停在游戏代码里的线程，thr_pause）。
+        //   不放的话同核另一条线程若正卡在出口取核（in_svc 还是 1、不算安全点）永远等不到，冻结到超时、这次存档失败
+        for (int i = 0; i < nrel; i++) core_release(rel[i]);
+        glock();
 #endif
         pthread_mutex_unlock(&G);
         if (now_ns() > dl) {   // 没到齐：逐条说清哪条线程、停在哪、为什么不算安全点（定因用）
@@ -2718,7 +2750,8 @@ void s2a_snap_unfreeze(void) {
         arm_neon_state64_t ns; memset(&ns, 0, sizeof ns); memcpy(&ns.__v, r->rneon, sizeof ns.__v); ns.__fpsr = r->rfpsr; ns.__fpcr = r->rfpcr;
         if (thread_set_state(t->mport, ARM_THREAD_STATE64, (thread_state_t)&st, ARM_THREAD_STATE64_COUNT) != KERN_SUCCESS
             || thread_set_state(t->mport, ARM_NEON_STATE64, (thread_state_t)&ns, ARM_NEON_STATE64_COUNT) != KERN_SUCCESS) { LOG("【红】即时存档恢复：线程 id %llu 写不进寄存器现场", (unsigned long long)t->id); nbad++; }
-        t->snap_run = 0; thread_resume(t->mport); nrun++; }
+        if (core_part(t)) atomic_store(&t->off_guest, 1);   // 新进程里它还没持核：同解冻，先挂抢占信号再放开
+        t->snap_run = 0; snap_run_resume(t); nrun++; }
     if (nrun || nbad) LOG("%s即时存档恢复：停在游戏代码里的线程 %d 条按快照现场接着跑（失败 %d）", nbad ? "【红】" : "", nrun, nbad);
 #endif
     glock(); atomic_store(&g_frz, 0); atomic_store(&g_snap_frz, 0); pthread_cond_broadcast(&g_pause_cv); pthread_mutex_unlock(&G); LOG("即时存档恢复：放开冻结，游戏接着跑"); }

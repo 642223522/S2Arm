@@ -284,6 +284,10 @@ def _build(c):
             if name.startswith('DOTNET_ROOT_'):
                 env.pop(name)
         env.update(S2A_PACK_PLAT="ios", S2A_TARGET="ios", S2A_PY=os.sys.executable)
+        for k, v in pso_env(tgt).items():   # 随包管线（计算 / 基础）按目标设备出：不传时 pack/jobs/archs.py 对用户 iPhone 包不猜、管线段整段跳过（0 份）
+            env.setdefault(k, v)
+        from library import source_file_bytes
+        env["S2A_SOURCE_BYTES"] = str(source_file_bytes(selected_packages(game)))   # 原件文件总字节：随包基础管线上限 = 它的 10%（pack/stage_direct_cpso.sh）
         # 存档游戏身份（和 Mac 存档作业 saves.identity 同一份）：一键出包只在「从原件出包」时自己生成，启动器走 --from-extract 一直缺，
         #   iPhone 包里没有 save-identity.json → 存档管理页报「缺少游戏身份」、iCloud 存档不同步（11-09 真机）。这里按游戏库目录写好交给它
         from saves import identity as save_identity
@@ -885,6 +889,22 @@ def oneclick_result(path):
     return result
 
 
+def pso_env(tgt):
+    """目标设备 → 出包管线归档的目标对（pack/jobs/archs.py 读 S2A_PSO_ARCHS / S2A_PSO_OS）。认得出 GPU 架构才给；
+    系统大版本只给读得到的正值（0 / 空会出 ios0 归档）。认不出（没目标、前端没带 gpuArch）→ 空，管线段照旧按 archs.py 规则处理"""
+    arch = (tgt or {}).get("gpuArch") or ""
+    if not arch:
+        return {}
+    out = {"S2A_PSO_ARCHS": arch}
+    try:
+        osv = int((tgt or {}).get("os") or 0)
+    except (TypeError, ValueError):
+        osv = 0
+    if osv > 0:
+        out["S2A_PSO_OS"] = str(osv)
+    return out
+
+
 def resolve_target(c):
     """目标设备（只用来提示地址窗口，一包通用）：请求里给了（前端：连着的设备或玩家选的机型）就用它；没给就认连着的那一台。
     目标有什么问题都不拦出包（预检清单 #39–#42，11-13 维护者：别预先判断拦玩家）：认不出 GPU、SDK 比目标旧、读不出 SDK、
@@ -958,7 +978,7 @@ def _package_failure_phase(reason):
 
 
 def oneclick_failure(events, milestone, log, *, refresh_log=None, refresh_before=None):
-    from errors import classify_failure, player_reason, refresh_stop_phase, tool_reason
+    from errors import classify_failure, player_reason, player_words, refresh_stop_phase, tool_reason
     name = "未记录阶段"  # 非玩家句
     result = None
     try:
@@ -996,6 +1016,8 @@ def oneclick_failure(events, milestone, log, *, refresh_log=None, refresh_before
     # 日志确凿根因（盘满 / 缺 Metal / 缺工具）先于阶段映射；读一键出包输出尾 + 原因里点名的 refresh.log → 其红行点名的子日志（errors.gather_evidence）。
     # 本轮 refresh.log 没更新过（_log_identity 未变）就不读，旧失败不归给新任务。
     fresh_refresh = refresh_log if refresh_log is not None and _log_identity(refresh_log) not in (None, refresh_before) else None
-    code, why = classify_failure(phase, log, (reason,) + ((str(fresh_refresh),) if fresh_refresh else ()))
+    texts = (reason,) + ((str(fresh_refresh),) if fresh_refresh else ())
+    code, why = classify_failure(phase, log, texts)
+    said, advice = player_words(code, log, texts)
     # 上屏只放玩家话术；阶段 / 红行原文 / 归因依据进 internal → 诊断 detail（「复制错误摘要」带走）
-    return Failure(player_reason(code), code=code, internal="一键出包失败（" + name + "）：" + reason + "\n" + why)  # 非玩家句
+    return Failure(said, code=code, advice=advice, internal="一键出包失败（" + name + "）：" + reason + "\n" + why)  # 非玩家句

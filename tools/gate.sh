@@ -513,7 +513,8 @@ show() {   # show <行首> <结果文件（$L 下，不带后缀）> <显示名>
   #   同 75 走「环境未就绪」（没有真红时整份退 75）。列车遇 75 先核干净 main，main 能过而本支超时才算本支的（真卡死照样拦下）。步自己内部 timeout 退 124 仍是红
   # 无进展看门狗判的挂死（步跑在 tools/nostall.py 下，见 job）：与负载无关，记红；墙钟保底 = 本步上限 × GATE_HARD_X，撞保底才是超时未判
   local ns= hard=$4; [ -f "$f.ns" ] && read -r ns hard < "$f.ns"
-  if [ "$rc" = 124 ] && [ -n "$ns" ] && grep -q '【红】无进展看门狗' "$f.log" 2> /dev/null; then echo "${1}🔴 $3 $sec 秒（挂死：连续 ${ns} 秒无进展——日志不长、CPU / 磁盘不涨、没有编译子进程，被停）：$last"; grep -a '无进展看门狗' "$f.log" | head -2 | sed 's/^/    | /'; return 1; fi
+  if [ "$rc" = 124 ] && [ -n "$ns" ] && grep -q '【红】无进展看门狗' "$f.log" 2> /dev/null; then echo "${1}🔴 $3 $sec 秒（挂死：连续 ${ns} 秒无进展——日志不长、CPU / 磁盘不涨、没有编译子进程，被停）：$last"; { grep -a '无进展看门狗' "$f.log" | head -2; grep -a -A8 -E '^✗ 组 [^：]+：被停时还在跑|^被停时没有在跑的组' "$f.log" | head -60; } | sed 's/^/    | /'; return 1; fi
+  #   ↑ 步自己被停时点名的「哪几组还在跑、各跑多久、输出尾巴」（runtime/gate.sh hung_report，11-19）一并摘进来：原先只摘看门狗那两行，点名写了也看不到
   set -- "$1" "$2" "$3" "$hard"
   if [ "$rc" = 124 ] && [ "$sec" -ge $(($4 - 2)) ]; then echo "${1}🟡 $3 $sec 秒（超时未判：跑满 ${4} 秒上限被杀，负载 $(sysctl -n vm.loadavg 2> /dev/null | awk '{print $2}')；不算本支红）：$last"; echo "$3" >> "$L/timeouts"; return 3; fi
   echo "${1}🔴 $3 $sec 秒（rc=$rc$([ "$rc" = 124 ] && { [ "$sec" -ge $(($4 - 2)) ] && echo "，超 ${4} 秒" || echo "，没到 ${4} 秒上限：是这一步自己退出 124（它内部的 timeout 到点）"; })）：$last"; { grep -E '^(不通|✗)' "$f.log" | head -10; grep -a -E '^(FAIL: |ERROR: )|AssertionError|^  File "[^"]+", line [0-9]+|【红】' "$f.log" | head -5; grep -a '^  ┊' "$f.log" | head -400; grep -v '^[[:space:]]*$' "$f.log" | grep -av '^  ┊' | tail -12; } | sed 's/^/    | /'   # 先列「不通 / ✗」行，再列 python 单测的 FAIL / ERROR / 断言 / 出错文件行号与【红】行（各至多 5 行）：单测全文长时末尾看不到是哪条（✗ 是 python 单测与 widen 系列的写法，10-31 widen_auto_pkg 红行被截掉）

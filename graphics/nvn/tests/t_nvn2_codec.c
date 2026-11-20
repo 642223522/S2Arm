@@ -70,7 +70,7 @@ void s2a_video_frame_pts(int64_t pts_ns) { (void)pts_ns; atomic_fetch_add(&g_vfr
 void s2a_event_signal(uint64_t ev) {
     if (ev && atomic_load(&g_hook_ev) == ev && atomic_exchange(&g_hook_ev, 0) == ev) {
         pthread_t th; CHECK(!pthread_create(&th, NULL, g_hook_fn, NULL)); pthread_detach(th);
-        for (int t = 0; t < 300 && !atomic_load(&g_hook_done); t++) usleep(1000);
+        for (int t = 0; t < 300 && !atomic_load(&g_hook_done); t++) usleep(1000);   // 负对照短窗：给另一条线程 300 ms 去抢（修好后它被锁挡住）；负载高时它晚到只会漏检，不会假红
         atomic_store(&g_ev[ev - 1].sig, 1); atomic_store(&g_hook_fired, 1); return;
     }
     atomic_store(&g_ev[ev - 1].sig, 1);
@@ -197,7 +197,7 @@ static uint32_t take(rig *r, const struct codec *c, uint32_t *spev, sync_h *hout
     CHECK(((f_acq)E(c->acq))(&idx, &h, r->obj) == 0 && idx < 2 && h.mode == 1);
     ((f_spr)E(SP_REQUEST))(spev, &h);
     // 槽的 SystemEventType 由 InitializeMultiWaitHolder 交给替身（g_sp_sev）；手动清除，TryWait 不清
-    for (int t = 0; t < 2000 && !g_trywait(g_sp_sev); t++) usleep(1000);
+    for (int t = 0; t < 30000 && !g_trywait(g_sp_sev); t++) usleep(1000);   // 等解码帧的事件，兜底 30 秒（原 2 秒：负载高时解码线程慢就假红）；等不到下一行判红
     CHECK(g_trywait(g_sp_sev) && ((f_gstw)E(GS_TRYWAIT))(&h));
     *hout = h;
     return idx;
@@ -331,16 +331,19 @@ int main(int argc, char **argv) {
         static fake_sev vsev; int e0 = g_nev;
         CHECK(vs && vs(&vsev, NULL) == 0 && vsev.handle == 0x100u + (uint32_t)e0 && vsev.mode == 1);
         atomic_store(&g_ev[e0].sig, 0);
-        struct timespec ts = {0, 100000000}; nanosleep(&ts, NULL);
-        CHECK(atomic_load(&g_ev[e0].sig) == 1);   // 100 ms 内至少被触发过一次
-        // 审计 P1-80：线程随会话走。期望手写：起后活着 1 条；会话代号加一（进程内重启）后 100 ms 内退出（活着 0 条）、放掉自己那份事件引用（2 → 1），
+        struct timespec ts = {0, 100000000};
+        // 原先睡 100 ms 再看「被触发过」：负载高时 vsync 线程 100 ms 内轮不上就假红。改等到被触发（兜底 30 秒）
+        for (int t = 0; t < 30000 && !atomic_load(&g_ev[e0].sig); t++) usleep(1000);
+        CHECK(atomic_load(&g_ev[e0].sig) == 1);   // 被触发过（至少一次）
+        // 审计 P1-80：线程随会话走。期望手写：起后活着 1 条；会话代号加一（进程内重启）后退出（活着 0 条）、放掉自己那份事件引用（2 → 1），
         //   之后不再触发（清掉标志再等 100 ms 仍是 0）。旧实现线程永不退出：活着仍 1 条、引用仍 2、标志又被置 1
         int nvn2_vi_vsync_live(void);
         CHECK(nvn2_vi_vsync_live() == 1);
-        atomic_fetch_add(&g_gen, 1); nanosleep(&ts, NULL);
+        // 原先睡 100 ms 再看线程退出：改等到活着 0 条且放掉引用（兜底 30 秒）；旧实现线程永不退出，30 秒后仍判红
+        atomic_fetch_add(&g_gen, 1); for (int t = 0; t < 30000 && (nvn2_vi_vsync_live() != 0 || g_ev[e0].refs != 1); t++) usleep(1000);
         printf("vsync 线程：会话结束后活着 %d 条（期望 0）、事件引用 %d（期望 1）\n", nvn2_vi_vsync_live(), g_ev[e0].refs);
         CHECK(nvn2_vi_vsync_live() == 0 && g_ev[e0].refs == 1);
-        atomic_store(&g_ev[e0].sig, 0); nanosleep(&ts, NULL); CHECK(atomic_load(&g_ev[e0].sig) == 0);
+        atomic_store(&g_ev[e0].sig, 0); nanosleep(&ts, NULL); CHECK(atomic_load(&g_ev[e0].sig) == 0);   // 负对照短窗：线程已退出，100 ms 内不该再触发（负载高时只会漏检）
     }
     // SDK 20（金刚）的旧版初始化名字：与 SDK 22 新版（带输出模式）接到同一个实现（名字照游戏导入表原样抄，期望不跑被测实现就能写出）
     {
@@ -549,7 +552,7 @@ int main(int argc, char **argv) {
         atomic_store(&g_hook_done, 0); atomic_store(&g_hook_fired, 0); atomic_store(&g_hook_ev, sev);
         uint64_t id = 0;
         CHECK(((f_sub)E(VP9.sub))(&id, r.obj, red_vp9_0, sizeof red_vp9_0, 0, 0) == 0);
-        for (int t = 0; t < 3000 && !(atomic_load(&g_hook_fired) && atomic_load(&g_hook_done)); t++) usleep(1000);
+        for (int t = 0; t < 30000 && !(atomic_load(&g_hook_fired) && atomic_load(&g_hook_done)); t++) usleep(1000);   // 兜底 30 秒（原 3 秒）
         CHECK(atomic_load(&g_hook_fired) && atomic_load(&g_hook_done) && g_race_saw_h1);
         int sig = atomic_load(&g_ev[sev - 1].sig), h2_ok = ((f_gstw)E(GS_TRYWAIT))(&h2);
         printf("读档自中止竞态：解码线程触发与取消 + 请求下一帧交错后，事件 %s、下一帧句柄 %s（期望：事件清着、句柄未达到）\n", sig ? "触发着" : "清着", h2_ok ? "已达到" : "未达到");
