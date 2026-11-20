@@ -109,6 +109,17 @@ static void warm_claim(void);
 static void warm_bump(const char *vk, const char *fk);   // 游戏登记着色器程序时把预热清单里这对着色器的管线提到队头（warm_pick）
 
 static id<MTLDevice> g_dev;
+// 零拷贝缓冲一律从这里建（#1827）：Metal 的 currentAllocatedSize 把每个零拷贝缓冲按全长记一遍，同一段内存包几次记几次（11-20 本机：包 64 MB +64 MB、
+//   再包它的前半 +32 MB）。大池按块现包、加长时新旧块重叠、替下的旧块延后放，同一份游戏内存被成倍记进「GPU 已分配」；而这些缓冲的存储就是游戏内存 / 我们 mmap 的宿主内存，
+//   已在进程实占里。活着的零拷贝缓冲按建时的 allocatedSize 记进 g_nocopy_bytes，缓冲真正放掉时（Metal 调 deallocator）减回；浮层读数 = 设备总量 − 这一项（s2a_gpu_alloc_bytes）
+static _Atomic uint64_t g_nocopy_bytes;
+static id<MTLBuffer> nocopy_buf(void *p, NSUInteger n, void (^dealloc)(void *, NSUInteger)) {
+    __block uint64_t sz = 0;
+    id<MTLBuffer> b = [g_dev newBufferWithBytesNoCopy:p length:n options:MTLResourceStorageModeShared
+                                          deallocator:^(void *q, NSUInteger l) { atomic_fetch_sub(&g_nocopy_bytes, sz); if (dealloc) dealloc(q, l); }];
+    if (b) { sz = (uint64_t)b.allocatedSize; atomic_fetch_add(&g_nocopy_bytes, sz); }
+    return b;
+}
 // Immutable values avoid a per-draw allocation and remain alive through recorded
 // command replay. Fragment slot 27 is the shared GAL half-rounding ABI.
 enum { NVN_HALF_SLOT = 27 };
@@ -1142,12 +1153,12 @@ static void nvn_be_pool_add_body(const void *mem, uint64_t size) {
     // S2A_POOL_NOCOPY_REFUSE（单测 / 复现）：1 = 当作直接建零拷贝失败（走下面的重映射视图），2 = 视图也失败（走不登记）
     if (g_pool_refuse < 0) { const char *e = getenv("S2A_POOL_NOCOPY_REFUSE"); g_pool_refuse = e && *e ? atoi(e) : 0; }
     int refuse = g_pool_refuse;
-    id<MTLBuffer> buf = refuse ? nil : [g_dev newBufferWithBytesNoCopy:(void *)cha length:cl options:MTLResourceStorageModeShared deallocator:unview];
+    id<MTLBuffer> buf = refuse ? nil : nocopy_buf((void *)cha, cl, unview);
     // Pokémon Legends: Z-A: twice on the Mac a small pool's buffer was refused although its pages were one read-write VM region, both times while another heavy job (a shader compile,
     // a second game instance) took the machine's memory; every run on an idle machine created all of them. Wiring the pages may fail under memory pressure: retry for up to about 2 s
     for (int t = 0; !buf && !refuse && t < 12; t++) {
         usleep(10000u << (t < 4 ? t : 4));
-        buf = [g_dev newBufferWithBytesNoCopy:(void *)cha length:cl options:MTLResourceStorageModeShared deallocator:unview];
+        buf = nocopy_buf((void *)cha, cl, unview);
         if (buf) MLOG("【红】 memory pool %p+%#llx: the zero-copy buffer was refused, created at retry %d", mem, (unsigned long long)size, t + 1);
     }
     if (!buf) {   // say what the pages looked like: every VM region over the range, with its protection (an unmapped page in the range is the usual cause)
@@ -1173,8 +1184,7 @@ static void nvn_be_pool_add_body(const void *mem, uint64_t size) {
         kern_return_t kr = vm_remap(mach_task_self(), &v, (vm_size_t)cl, 0, VM_FLAGS_ANYWHERE, mach_task_self(), (vm_address_t)cha, FALSE, &cur, &max, VM_INHERIT_NONE);
         if (kr == KERN_SUCCESS && refuse < 2) {
             void (^orig)(void *, NSUInteger) = unview; uintptr_t ocha = cha; uint64_t ocl = cl;
-            buf = [g_dev newBufferWithBytesNoCopy:(void *)v length:(NSUInteger)cl options:MTLResourceStorageModeShared
-                                      deallocator:^(void *q, NSUInteger n) { vm_deallocate(mach_task_self(), (vm_address_t)q, n); if (orig) orig((void *)ocha, (NSUInteger)ocl); }];
+            buf = nocopy_buf((void *)v, (NSUInteger)cl, ^(void *q, NSUInteger n) { vm_deallocate(mach_task_self(), (vm_address_t)q, n); if (orig) orig((void *)ocha, (NSUInteger)ocl); });
         }
         if (buf) MLOG("【红】 memory pool %p+%#llx: the zero-copy buffer over %#lx..%#lx was refused; made over one remapped view of the same pages at %#lx",
                       mem, (unsigned long long)size, (unsigned long)cha, (unsigned long)(cha + cl), (unsigned long)v);
@@ -1218,7 +1228,7 @@ int nvn_be_pool_alias(uint64_t at, uint64_t len, uint64_t phys) {
 // 虚拟池里跨不同物理内存的一段的副本（hle_nvn.c vsh_*）：宿主内存 host 上的零拷贝缓冲，登记在虚拟池地址 at；缓冲放掉时（延迟释放之后）才 munmap
 static int nvn_be_pool_add_at_body(uint64_t at, uint64_t len, void *host, uint64_t hlen, const void *key) {
     mtl_init(); g_reg_gen++;
-    id<MTLBuffer> buf = [g_dev newBufferWithBytesNoCopy:host length:(NSUInteger)hlen options:MTLResourceStorageModeShared deallocator:^(void *q, NSUInteger n) { munmap(q, n); }];
+    id<MTLBuffer> buf = nocopy_buf(host, (NSUInteger)hlen, ^(void *q, NSUInteger n) { munmap(q, n); });
     if (!buf) { munmap(host, (size_t)hlen); return 0; }
     pthread_mutex_lock(&g_mu);
     if (g_npool == g_cap) { int c = g_cap ? g_cap * 2 : 64; if (!GROW(g_pools, (size_t)c * sizeof *g_pools, "memory pool table")) { pthread_mutex_unlock(&g_mu); return 0; } g_cap = c; }   // buf (unkept) goes now, and munmaps
@@ -1292,7 +1302,7 @@ static int big_new(big_pool *b, uintptr_t lo, uintptr_t hi, uintptr_t end) {   /
     //   整池缓冲在游戏建池时建、那时还没有页被保护，所以原先没撞上；块是 GPU 首次查到才建，常在本次绘制 / 派发刚上传贴图、设了只读之后（t_nvn_texu_pending --collision）。
     //   解保护走跟踪的宿主写前入口：页记为已写，覆盖到的贴图下次用时照常重传、再设只读；之后的只读只改 CPU 页表，不影响已建好的块
     dm_guest_write_prepare((void *)lo, end - lo);
-    id<MTLBuffer> buf = [g_dev newBufferWithBytesNoCopy:(void *)lo length:end - lo options:MTLResourceStorageModeShared deallocator:nil];
+    id<MTLBuffer> buf = nocopy_buf((void *)lo, end - lo, nil);
     if (!buf) { MLOG("【红】 memory pool %p: the zero-copy chunk over %#lx..%#lx was refused", b->mem, (unsigned long)lo, (unsigned long)end); return -1; }
     if (g_npool == g_cap) { int c = g_cap ? g_cap * 2 : 64; if (!GROW(g_pools, (size_t)c * sizeof *g_pools, "memory pool table")) return -1; g_cap = c; }
     g_plast = -1; atomic_fetch_add(&g_pool_gen, 1);
@@ -4589,7 +4599,7 @@ static id<MTLBuffer> up_tex_src(uint64_t addr, uint64_t len, uint64_t *off) {
     if (!in) return nil;
     // the pool's host bytes as its buffer has them (a far-alias pool: its shadow, or the one view of a split shadow, pool_host); the pool's buffer keeps a view alive past this one
     uintptr_t pg = (uintptr_t)getpagesize(), a = (uintptr_t)addr & ~(pg - 1), b = ((uintptr_t)addr + len + pg - 1) & ~(pg - 1), ha = host + (a - base);
-    id<MTLBuffer> buf = [g_dev newBufferWithBytesNoCopy:(void *)ha length:b - a options:MTLResourceStorageModeShared deallocator:nil];
+    id<MTLBuffer> buf = nocopy_buf((void *)ha, b - a, nil);
     if (!buf) return nil;
     res_add(buf); up_keep_add(buf); *off = (uint64_t)addr - a;
     g_up_src_n++; g_up_src_bytes += b - a;
@@ -11530,7 +11540,11 @@ enum { POOL_FRAME_BYTES = 32u << 20, POOL_REQ_BYTES = 128u << 20 };
 static uint64_t g_walk_frame = ~0ull, g_walk_spent, g_walk_req;
 static uint64_t pool_tex_size(const tex_t *t) { return t->L.size ? t->L.size : 1; }
 static uint64_t pool_budget(void) { return g_dev.recommendedMaxWorkingSetSize / 20; }
-uint64_t s2a_gpu_alloc_bytes(void) { return g_dev ? (uint64_t)g_dev.currentAllocatedSize : 0; }   // 浮层「GPU 已分配」（runtime/src/hud.c 弱定义）
+uint64_t s2a_gpu_alloc_bytes(void) {   // 浮层「GPU 已分配」（runtime/src/hud.c 弱定义）：设备总量减去零拷贝缓冲（游戏内存，已在进程实占里；nocopy_buf）
+    if (!g_dev) return 0;
+    uint64_t a = (uint64_t)g_dev.currentAllocatedSize, z = atomic_load(&g_nocopy_bytes);
+    return a > z ? a - z : 0;
+}
 static void pool_walk_frame(void) { uint64_t f = atomic_load(&g_cur_frame); if (f != g_walk_frame) { g_walk_frame = f; g_walk_spent = 0; g_walk_req = 0; } }
 static uint64_t pool_room(void) {   // what may still be made up front this frame
     pool_walk_frame();

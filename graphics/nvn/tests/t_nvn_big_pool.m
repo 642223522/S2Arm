@@ -12,6 +12,9 @@
 //   ⑨ 虚拟池地址别名到块（#1143 nvn_be_pool_alias）：登记 1 条；块被 ③ 加长替换、池注销后这条也没了（旧块缓冲要算进「被放掉的」）
 //   ⑧ DM_NVN_POOL_CHUNKS=0（子进程，对照）：登记即建整池一个缓冲，长 640 MB
 //   ⑪ ⑫ 块范围里有脏页跟踪设成只读的页时建块：GPU 经块读出 CPU 写的数据、写进的数据落到游戏内存（期望 = CPU 写的常量）
+//   ⑬ 浮层「GPU 已分配」不计零拷贝块（#1827，s2a_gpu_alloc_bytes）：② ③ 建块前后，设备总量至少涨 32 + 64 = 96 MB（② 的块被 ③ 替下、仍活着），浮层读数涨不到 1 MB
+//   ⑭ 零拷贝缓冲放掉后减回：单建一个 16 MB 的零拷贝缓冲，记账 +16 MB；放掉后回到建前
+//   反证：s2a_gpu_alloc_bytes 改回只读 currentAllocatedSize → ⑬ 红（涨 96 MB）；nocopy_buf 的 deallocator 不减 → ⑭ 红
 //   反证：去掉 nvn_be_pool_add_body 里登记大池那段 → ① ② ③ ④ 红（整池一个缓冲）；去掉注销时把旧块缓冲算进被放掉的那两行 → ⑨ 注销后 1 条红；去掉 big_new 建块前的 dm_guest_write_prepare → ⑫ 红
 #include "../gfx/nvn/nvn_mtl.m"
 #include <sys/wait.h>
@@ -37,6 +40,7 @@ static int child(int chunks) {
     { pthread_mutex_lock(&g_mu); int nb = g_nbig; pthread_mutex_unlock(&g_mu);
       CHECK(nb==1 && entries_of(mem)==0,"① 640 MB 池登记后：大池记录 %d（期望 1）、缓冲条目 %d（期望 0）",nb,entries_of(mem)); }
     void *bp; uint64_t off, gpu;
+    uint64_t dev0 = (uint64_t)g_dev.currentAllocatedSize, hud0 = s2a_gpu_alloc_bytes();
     REQUIRE(mtl_gpu_addr((uint64_t)(uintptr_t)mem + 100*MB + 16, 64, &bp, &off, &gpu));
     id<MTLBuffer> b1 = (__bridge id<MTLBuffer>)bp;
     CHECK(b1.length==32*MB && off==4*MB+16 && entries_of(mem)==1,"② 查 100 MB+16 起 64 字节：块缓冲 %llu MB（期望 32）、偏移 %#llx（期望 %#llx）、条目 %d（期望 1）",(unsigned long long)(b1.length/MB),(unsigned long long)off,(unsigned long long)(4*MB+16),entries_of(mem));
@@ -45,6 +49,13 @@ static int child(int chunks) {
     REQUIRE(mtl_gpu_addr((uint64_t)(uintptr_t)mem + 100*MB, 40*MB, &bp, &off, &gpu));
     id<MTLBuffer> b2 = (__bridge id<MTLBuffer>)bp; int nold; pthread_mutex_lock(&g_mu); nold = (int)g_big[0].old.count; pthread_mutex_unlock(&g_mu);
     CHECK(b2.length==64*MB && off==4*MB && entries_of(mem)==1 && nold==1,"③ 同步长查 100 MB 起 40 MB：缓冲 %llu MB（期望 64）、偏移 %#llx（期望 %#llx）、条目 %d（期望 1）、旧缓冲 %d（期望 1）",(unsigned long long)(b2.length/MB),(unsigned long long)off,(unsigned long long)(4*MB),entries_of(mem),nold);
+    { uint64_t dd = (uint64_t)g_dev.currentAllocatedSize - dev0, dh = s2a_gpu_alloc_bytes() - hud0;
+      CHECK(dd >= 96*MB && dh < MB,"⑬ ② ③ 建块：设备总量涨 %llu MB（期望 ≥ 96）、浮层 GPU 已分配涨 %llu KB（期望 < 1024，零拷贝块不计）",(unsigned long long)(dd/MB),(unsigned long long)(dh>>10)); }
+    { uint64_t z0 = atomic_load(&g_nocopy_bytes), z1; uint8_t *m16 = NULL; REQUIRE(!posix_memalign((void **)&m16, 16384, 16*MB));
+      @autoreleasepool { id<MTLBuffer> nb = nocopy_buf(m16, 16*MB, nil); REQUIRE(nb); z1 = atomic_load(&g_nocopy_bytes); nb = nil; }
+      uint64_t z2 = atomic_load(&g_nocopy_bytes);
+      CHECK(z1 - z0 == 16*MB && z2 == z0,"⑭ 单建 16 MB 零拷贝缓冲：记账 +%llu MB（期望 16）；放掉后与建前差 %lld 字节（期望 0）",(unsigned long long)((z1-z0)/MB),(long long)(z2-z0));
+      free(m16); }
     uint8_t *small = NULL; REQUIRE(!posix_memalign((void **)&small, 16384, 65536)); nvn_be_pool_add(small, 65536);   // ⑩：块建在它之后、排在末尾
     REQUIRE(mtl_gpu_addr((uint64_t)(uintptr_t)mem + 300*MB, 1, &bp, &off, &gpu));
     id<MTLBuffer> b3 = (__bridge id<MTLBuffer>)bp;
