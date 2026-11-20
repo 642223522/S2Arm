@@ -482,6 +482,14 @@ def job_alive(j):
     if not st or not start.strip() or not isinstance(identity, str) or not identity.strip(): return None
     return start.strip() == identity
 
+def settle(s, limit=20):
+    """任务记录（作业层写盘）先于启动器收尾变成 completed：启动器这时还没收掉这单（busy），收掉后才异步重读游戏库（libraryLoading）。
+    等两样都落下再返回（最多 limit 秒），否则紧接着读到的 ready / needsPreparation 还是出包前那份（11-20 0.6.2 候选验收 ⑤c 读到出包前的
+    「要重新准备」判包过旧）。s 是刚读到的状态：已经空闲就不再多读"""
+    t0 = time.time()
+    while s is not None and (s.get('busy') or s.get('libraryLoading')) and time.time() - t0 < limit:
+        time.sleep(0.5); s = call('GET', '/state', soft=True)
+
 def wait(game, op, limit, before=None):   # before：发命令前已有的任务号，只等之后新起的那个（install 发完立刻等，别拿上一次的结果当这次）
     t0 = time.time(); last = None; tid = None
     before_queue = None; queue_started = None; said_lost = False
@@ -516,6 +524,7 @@ def wait(game, op, limit, before=None):   # before：发命令前已有的任务
             if not ts: print('排队已取消'); sys.exit(1)
         if ts:
             t = max(ts, key=lambda t: t.get('started') or 0); tid = t['id']
+            if t['state'] == 'completed': settle(s)
             last = show_task(t, t0, last)
         elif s['error'] and not queued: print('错误：' + s['error']); sys.exit(1)
         time.sleep(2)
@@ -609,10 +618,8 @@ def wait_op(op, before, limit=1800):
             if t['state'] not in ('running', 'queued', 'cancelling'):
                 print(f'{t["state"]}：{t.get("message") or ""}')
                 if t['state'] != 'completed': errors(); sys.exit(1)
-                # 作业记录写完时启动器还在收尾（刷新游戏库等）：等它空闲再返回，否则紧接着的下一条命令会被 409 挡回来
-                for _ in range(40):
-                    if not call('GET', '/state').get('busy'): break
-                    time.sleep(0.5)
+                # 作业记录写完时启动器还在收尾（刷新游戏库等）：等它空闲、游戏库重读完再返回，否则紧接着的下一条命令会被 409 挡回来、读到旧状态
+                settle(call('GET', '/state'))
                 # 导入完成后游戏库异步刷新：等到游戏出现在列表里（最多 10 秒）再打状态，好拿游戏号
                 for _ in range(20):
                     s = call('GET', '/state')
