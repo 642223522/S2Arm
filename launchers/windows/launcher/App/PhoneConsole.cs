@@ -382,6 +382,29 @@ public sealed partial class EnvironmentWindow
         if (actions.Contains(PhoneOverview.Act.HandOverIdentity)) app.Children.Add(ConsoleIdentity(phone, offline));
         page.Children.Add(ConsoleSection("console.section.phone", app));
 
+        // ①b 独立 App（一 App 一游戏，0.6.4；同 Mac consoleAppsSection）：每款一行——游戏名、包名、签名还剩几天 / 已到期、壳有新版时提示去「更新 iPhone 上的 S2Arm」
+        if (phone.Apps is { Count: > 0 } standalone)
+        {
+            var list = new StackPanel { Spacing = 6 };
+            foreach (var sa in standalone)
+            {
+                var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+                var names = new StackPanel { MinWidth = 180 };
+                names.Children.Add(new TextBlock { Text = GameName(sa.GameId), Foreground = Ink });
+                names.Children.Add(new TextBlock { Text = sa.BundleId, Foreground = Brush.Parse("#8A8A92"), FontSize = 11 });
+                row.Children.Add(names);
+                var expired = sa.ExpiresAtEstimate is { } e0 && e0 <= DateTimeOffset.Now;
+                var days = sa.ExpiresAtEstimate is { } e1 ? (int)Math.Ceiling((e1 - DateTimeOffset.Now).TotalDays) : (int?)null;
+                var text = expired ? T("console.status.expired") : !sa.ShellCurrent ? T("console.app.outdated")
+                    : days is null ? T("console.status.okNoDays") : days <= 2 ? Tf("console.status.expiring", days) : Tf("console.status.ok", days);
+                row.Children.Add(new TextBlock { Text = text, Foreground = Brush.Parse(sa.ShellCurrent && !expired ? "#30D158" : "#FF9F0A"), FontSize = 12.5,
+                    TextWrapping = TextWrapping.Wrap, MaxWidth = 520, VerticalAlignment = VerticalAlignment.Center });
+                Avalonia.Automation.AutomationProperties.SetAutomationId(row, "console.app." + sa.GameId);
+                list.Children.Add(row);
+            }
+            page.Children.Add(ConsoleSection("console.section.apps", list));
+        }
+
         // ② 游戏同步
         var sync = new StackPanel { Spacing = 6 };
         // 0.5 → 0.6 升级后的老款（资源在、程序包不在：suggested + missing）排最上面、醒目标出，直到更新完（同 Mac consoleOrdered）
@@ -398,7 +421,8 @@ public sealed partial class EnvironmentWindow
             row.Children.Add(box);
             var pushing = ConsoleUpdating && string.Equals(consolePushing, game.Id, StringComparison.OrdinalIgnoreCase);
             row.Children.Add(new TextBlock { Text = (pushing ? "⟳ " : "") + game.Name, MinWidth = 180, Foreground = Ink, VerticalAlignment = VerticalAlignment.Center });
-            var (text, color) = Legacy(g) ? (T("console.legacy.badge"), "#FFC857") : g.State switch
+            var asApp = g.State == PhoneOverview.GameState.NotPushed && (phone.Apps ?? []).Any(x => string.Equals(x.GameId, game.Id, StringComparison.OrdinalIgnoreCase));
+            var (text, color) = asApp ? (T("console.game.standalone"), "#C8C8CE") : Legacy(g) ? (T("console.legacy.badge"), "#FFC857") : g.State switch
             {
                 PhoneOverview.GameState.Latest => (T("console.game.latest"), "#30D158"),
                 PhoneOverview.GameState.Suggested => (T("update.hint.badge") + " · " + string.Join(" ", g.Reasons.Select(UpdateReasonKey).OfType<string>().Select(T)), "#FF9F0A"),
