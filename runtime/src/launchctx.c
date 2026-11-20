@@ -456,11 +456,12 @@ const char *s2a_launch_ctx_select(const char *gid) {
         if (k == 1) waive("游戏 %s 的程序按宿主约定号 %d 出，本宿主是 %d：版本不配，可能闪退，在电脑上重新出包 / 装到 iPhone 可解（ios_host_abi_mismatch）", gid, have, S2A_HOST_ABI);
         if (k < 0) waive("游戏 %s 的宿主约定号核不了：%s", gid, w[0] ? w : "App 包目录太长");
     }
+    char rsw[300] = "";   // 重签没成的原因（如证书与 App 不是同一个团队）：签名最后本机不认时并进给玩家的那句
     if (c.from_program) {   // 起局按款重签（0.6.0 通用壳，ios/program_resign.m）：签名身份不是手机上现在这张 / 没签 → 当场用手机上的身份签好，路径改指新版本目录；
         //   做不了照旧用原程序库（原因进日志）。按名取（只链本文件的单测 / 工具没有它）
         int (*rs)(const char *, const char *, const char *, char *, char *, size_t, char *, size_t) =
             (int (*)(const char *, const char *, const char *, char *, char *, size_t, char *, size_t))dlsym(RTLD_DEFAULT, "s2a_program_resign_if_needed");
-        if (rs) { char rw[300]; rs(getenv("HOME"), c.game_data, gid, c.module_dir, c.images, sizeof c.images, rw, sizeof rw); }
+        if (rs) rs(getenv("HOME"), c.game_data, gid, c.module_dir, c.images, sizeof c.images, rsw, sizeof rsw);
     }
     {   // 程序签名（通用壳 11-16）：程序库要能被本机这份 App 注册签名 + 库校验（同团队）——物理上必须，进程只认登记过签名的代码页。
         //   原先这里还给整份程序库算 SHA-256 和清单 image_sha256 比（每次起局读完一两百 MB），核不过也只是黄字照常进，只剩花时间：11-19 维护者定
@@ -472,12 +473,15 @@ const char *s2a_launch_ctx_select(const char *gid) {
             int (*rf)(const char *, const char *, const char *, char *, char *, size_t, char *, size_t) =
                 (int (*)(const char *, const char *, const char *, char *, char *, size_t, char *, size_t))dlsym(RTLD_DEFAULT, "s2a_program_resign_force");
             char rw[300] = "";
-            if (rf && rf(getenv("HOME"), c.game_data, gid, c.module_dir, c.images, sizeof c.images, rw, sizeof rw) == 1) {
+            int fr = rf ? rf(getenv("HOME"), c.game_data, gid, c.module_dir, c.images, sizeof c.images, rw, sizeof rw) : 0;
+            if (fr == -1 && rw[0]) snprintf(rsw, sizeof rsw, "%s", rw);
+            if (fr == 1) {
                 char w0[600]; snprintf(w0, sizeof w0, "%s", w); pk = NULL; rc = open_pk(c.images, &pk, w, sizeof w);
                 LOG("启动上下文：%s 的程序库注册签名失败（%s），已用手机上的签名身份重签 → 再注册%s", gid, w0, rc ? "仍失败" : "成功");
             }
         }
-        if (rc == 3) { snprintf(why, sizeof why, "ios_program_resign：游戏 %s 的程序库签名本机不认（%s）：要在电脑上重新签名这款", gid, w); g_sel_kind = S2A_SELECT_NEEDS_RESIGN; r = why; goto out; }   // 3 = S2A_IMG_ESIGN（runtime/src/imgpack.h）
+        if (rc == 3) { if (rsw[0]) snprintf(why, sizeof why, "ios_program_resign：游戏 %s 的程序库签名本机不认（%s），手机上也重签不了：%s", gid, w, rsw);
+                       else snprintf(why, sizeof why, "ios_program_resign：游戏 %s 的程序库签名本机不认（%s）：要在电脑上重新签名这款", gid, w); g_sel_kind = S2A_SELECT_NEEDS_RESIGN; r = why; goto out; }   // 3 = S2A_IMG_ESIGN（runtime/src/imgpack.h）
         if (rc) { snprintf(why, sizeof why, "游戏 %s 的程序库坏了或不完整（%s）：在电脑上重新把这一款推到 iPhone", gid, w); g_sel_kind = S2A_SELECT_APP_INCOMPLETE; r = why; goto out; }
     }
     // 本款文档根第一次用时还不在（存档 / wire / 加载页标记各自只建最后一级）：逐级建好

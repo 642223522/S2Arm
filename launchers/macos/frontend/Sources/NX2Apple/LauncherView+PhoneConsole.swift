@@ -24,6 +24,8 @@ extension LauncherView {
         case .updating(let done, let total): return sx("console.status.updating", done + 1 > total ? total : done + 1, total)
         case .notConnected(let seen):
             return seen.map { sx("console.status.notConnected", $0.formatted(.relative(presentation: .named))) } ?? sx("console.status.notConnectedNever")
+        case .chooseApp: return sx("console.status.chooseApp")
+        case .externalApp: return sx("console.status.externalApp")
         case .notInstalled: return sx("console.status.notInstalled")
         case .appOutdated: return sx("console.status.appOutdated")
         case .expired: return sx("console.status.expired")
@@ -87,7 +89,7 @@ extension LauncherView {
         VStack(alignment: .leading, spacing: 14) {
             Text(sx("console.status.introduce")).font(.manrope(30, .bold))
             Text(sx("console.intro.body")).font(.manrope(14)).foregroundStyle(.white.opacity(0.8)).fixedSize(horizontal: false, vertical: true).frame(maxWidth: 620, alignment: .leading)
-            Button { model.updatePhone(acceptStale: false, repack: [], language: loc.lang.sharedCode) } label: { Label(sx("console.intro.start"), systemImage: "iphone") }
+            Button { model.consoleIntroStart(language: loc.lang.sharedCode) } label: { Label(sx("console.intro.start"), systemImage: "iphone") }
                 .controllerButtonStyle(ConsolePlayButtonStyle()).controllerID("console.intro.start")
         }.accessibilityIdentifier("console.intro")
     }
@@ -106,7 +108,8 @@ extension LauncherView {
             }
             VStack(alignment: .leading, spacing: 4) {
                 if phones.count > 1 {
-                    Picker("", selection: Binding(get: { phone.device }, set: { model.consoleDevice = $0; model.seedConsoleSelection() })) {
+                    Picker("", selection: Binding(get: { phone.device }, set: {   // 换了一台：现查它装了哪些 S2Arm
+                        model.consoleDevice = $0; model.consoleRechoose = false; model.consoleChooseError = nil; model.seedConsoleSelection(); model.refreshPhoneOverview(probe: true) })) {
                         ForEach(phones, id: \.device) { Text($0.name.isEmpty ? $0.device : $0.name).tag($0.device) }
                     }.labelsHidden().frame(maxWidth: 260).accessibilityIdentifier("console.phonePicker")
                 } else {
@@ -131,17 +134,105 @@ extension LauncherView {
         Text(sx("console.offline", phone.name.isEmpty ? "iPhone" : phone.name)).font(.manrope(12)).foregroundStyle(.orange)
     }
 
-    /// ① 手机与 App：App 状态 + 一个随状态变的按钮（安装 / 续签 / 更新 S2Arm）+ 签名方式
+    /// 按钮文案键（动作名 → 共享文案；动作集合与控制口 phoneConsole 同一个来源 model.consoleActions）
+    private func consoleActionTitle(_ a: S2ArmLauncherModel.ConsoleAction) -> String {
+        switch a {
+        case .installShell: return sx("console.button.install")
+        case .updateShell: return sx("console.button.update")
+        case .renewShell: return sx("console.button.renew")
+        case .exportShellIpa: return sx("console.button.exportShellIpa")
+        case .handOverIdentity: return sx("console.button.identity")
+        case .updateSelected: return sx("console.updateSelected", model.consoleSelection.count)
+        case .pushS2arm: return sx("console.button.pushS2arm", model.consoleSelection.count)
+        case .exportS2arm: return sx("console.button.exportS2arm", model.consoleSelection.count)
+        case .chooseApp: return sx("console.choose.change")
+        }
+    }
+
+    /// ① 手机与 App：App 状态 + 一个随状态变的按钮（启动器装的：安装 / 续签 / 更新 S2Arm；别的工具装的：导出 S2Arm.ipa）+ 签名方式
     private func consolePhoneSection(_ phone: PhoneOverview.Phone, status: S2ArmLauncherModel.ConsoleStatus) -> some View {
-        let key = !phone.installed ? "console.button.install" : !phone.shellCurrent ? "console.button.update" : "console.button.renew"
+        let actions = model.consoleActions(phone)
+        let app = actions.first { [.installShell, .updateShell, .renewShell, .exportShellIpa].contains($0) }
         return consoleSection(sx("console.section.phone")) {
             Text(consoleStatusText(status) + (phone.signMode.map { " · " + sx("console.sign." + $0.rawValue) } ?? "")).font(.manrope(14))
-            HStack(spacing: 12) {
-                Button { model.updatePhone(acceptStale: false, repack: [], language: loc.lang.sharedCode, device: phone.device) } label: { Label(sx(key), systemImage: "iphone.and.arrow.forward") }
-                    .controllerButtonStyle(ConsolePillButtonStyle()).controllerID("console.app").disabled(consoleOffline)
-                if consoleOffline { offlineReason(phone) }
+            if phone.needsChoice || (model.consoleRechoose && phone.candidates.count > 1) {
+                consoleChooser(phone)
+            } else if phone.candidates.count > 1 {   // 选过了、装着不止一个：写正在用哪个 + 「换一个」
+                HStack(spacing: 10) {
+                    Text(sx("console.choose.current", phone.bundleId)).font(.manrope(12)).foregroundStyle(.white.opacity(0.65)).lineLimit(1)
+                    Button(sx("console.choose.change")) { model.consoleChooseError = nil; model.consoleRechoose = true }
+                        .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("console.chooseApp.change")
+                }
             }
+            if phone.installedBy == .external {
+                Text(sx("console.external.note")).font(.manrope(12)).foregroundStyle(.white.opacity(0.65)).fixedSize(horizontal: false, vertical: true)
+            }
+            if let app {
+                HStack(spacing: 12) {
+                    // 导出 S2Arm.ipa 不连手机，没连也能点
+                    Button { model.runConsoleAction(app, device: phone.device, language: loc.lang.sharedCode) } label: {
+                        Label(consoleActionTitle(app), systemImage: app == .exportShellIpa ? "square.and.arrow.up" : "iphone.and.arrow.forward") }
+                        .controllerButtonStyle(ConsolePillButtonStyle()).controllerID("console.app").disabled(consoleOffline && app != .exportShellIpa)
+                    if consoleOffline && app != .exportShellIpa { offlineReason(phone) }
+                }
+            }
+            if actions.contains(.handOverIdentity) { consoleIdentity(phone) }
         }.accessibilityIdentifier("console.section.phone")
+    }
+
+    /// 「选用哪个 S2Arm」：同一台手机上装着不止一个时，按作业给的顺序（包名排序）列出每一个，每个一颗按钮；只写事实（谁装的、证书导没导、团队号），不推荐。
+    ///   点了跑作业 phoneChooseApp，记住后刷新总览；选过的再点「换一个」也到这里
+    @ViewBuilder private func consoleChooser(_ phone: PhoneOverview.Phone) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(sx("console.choose.title")).font(.manrope(12.5)).foregroundStyle(.white.opacity(0.8)).fixedSize(horizontal: false, vertical: true)
+            ForEach(phone.candidates, id: \.bundleId) { c in
+                let label = S2ArmLauncherModel.candidateLabelKeys(c).map { sx($0) }.joined(separator: " · ")
+                Button { model.runConsoleAction(.chooseApp, device: phone.device, bundleId: c.bundleId, language: loc.lang.sharedCode) } label: {
+                    HStack(spacing: 10) {
+                        if model.consoleChoosing == c.bundleId { ProgressView().controlSize(.small) } else { Image(systemName: "app.badge.checkmark") }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(label).font(.manrope(13, .medium))
+                            Text(c.bundleId + (c.team.isEmpty ? "" : " · " + sx("console.choose.team", c.team))).font(.manrope(11)).foregroundStyle(.white.opacity(0.55))
+                        }
+                    }
+                }
+                .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("console.chooseApp." + c.bundleId)
+                .disabled(consoleOffline || model.consoleChoosing != nil || model.phoneBusy)
+                .accessibilityIdentifier("console.chooseApp." + c.bundleId)
+            }
+            if consoleOffline { offlineReason(phone) }
+            if let why = model.consoleChooseError {
+                Text(BackendText.translate(why, language: loc.lang.sharedCode)).font(.manrope(12)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
+            if !phone.needsChoice {
+                Button(sx("console.choose.cancel")) { model.consoleRechoose = false; model.consoleChooseError = nil }
+                    .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("console.chooseApp.cancel")
+            }
+        }.padding(.top, 4).accessibilityIdentifier("console.chooseApp")
+    }
+
+    /// 「把签名身份交给手机」（次要按钮）：AltStore / SideStore / 证书 App 装的 S2Arm 交一次签名身份，以后放进「放这里导入」就能玩。
+    ///   进行中一行状态；成功一句完成提示（交好了 / 已经有了）；失败用手机作业的失败页（原因 + 下一步 + 复制错误摘要）
+    @ViewBuilder private func consoleIdentity(_ phone: PhoneOverview.Phone) -> some View {
+        let running = model.phoneBusy && model.phoneSession?.kind == .phoneIdentity
+        VStack(alignment: .leading, spacing: 6) {
+            Button { model.phoneIdentity(device: phone.device) } label: { Label(sx("console.button.identity"), systemImage: "person.badge.key") }
+                .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("console.identity").disabled(consoleOffline || running)
+            Text(sx("console.identity.note")).font(.manrope(12)).foregroundStyle(.white.opacity(0.65)).fixedSize(horizontal: false, vertical: true)
+            if running {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(sx("phone.status.running.phoneIdentity")).font(.manrope(12.5)).foregroundStyle(.white.opacity(0.8))
+                }
+            } else if let last = model.lastPhoneSession, last.kind == .phoneIdentity {
+                if last.phase == .finished(.completed), let delivered = model.identityDelivered {
+                    Text(sx(delivered ? "console.identity.done" : "console.identity.already")).font(.manrope(13)).foregroundStyle(.green)
+                        .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("console.identity.result")
+                } else if last.phase != .finished(.completed) {
+                    PhoneJobPanel(model: model, session: last, showsOperation: false).padding(.top, 6)
+                }
+            }
+        }.padding(.top, 6).accessibilityIdentifier("console.identity")
     }
 
     /// ② 游戏同步：每款一行写这台手机上的状态，可勾选；「更新所选」一款款推，有总进度、能停
@@ -165,9 +256,14 @@ extension LauncherView {
             }
             HStack(spacing: 12) {
                 if !model.consoleUpdating {
-                    Button { model.updateSelected() } label: { Label(sx("console.updateSelected", model.consoleSelection.count), systemImage: "arrow.down.to.line") }
-                        .controllerButtonStyle(ConsolePlayButtonStyle()).controllerID("console.updateSelected")
-                        .disabled(model.consoleSelection.isEmpty || consoleOffline)
+                    // 启动器装的：更新所选；别的工具装的：推所选到 iPhone + 导出所选 .s2arm（导出不连手机，没连也能点）
+                    ForEach(model.consoleActions(phone).filter { [.updateSelected, .pushS2arm, .exportS2arm].contains($0) }, id: \.self) { a in
+                        let push = a != .exportS2arm
+                        let button = Button { model.runConsoleAction(a, device: phone.device, language: loc.lang.sharedCode) } label: {
+                            Label(consoleActionTitle(a), systemImage: push ? "arrow.down.to.line" : "square.and.arrow.up") }
+                            .controllerID("console." + a.rawValue).disabled(model.consoleSelection.isEmpty || (push && consoleOffline))
+                        if push { button.controllerButtonStyle(ConsolePlayButtonStyle()) } else { button.controllerButtonStyle(LauncherSecondaryButtonStyle()) }
+                    }
                     if consoleOffline { offlineReason(phone) }
                 } else {
                     let p = model.consoleProgress, total = max(p.total, 1)

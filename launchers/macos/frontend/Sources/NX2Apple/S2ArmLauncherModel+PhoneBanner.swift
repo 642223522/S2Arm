@@ -26,7 +26,7 @@ extension S2ArmLauncherModel {
     }
 
     func preparePhoneUpdate() {
-        guard !phoneUpdates.isEmpty, Self.autoUpdatePhoneOn(), !selfSignChosen, phoneBanner == nil, !phonePrepareStarted else { return }   // 选了导出自签：不准备、不出横幅
+        guard !phoneUpdates.isEmpty, Self.autoUpdatePhoneOn(), phoneBanner == nil, !phonePrepareStarted else { return }   // 选了导出自签：不准备、不出横幅
         phonePrepareStarted = true
         // 手动更新（11-16）：首启在电脑侧准备期间不出横幅（「正在更新 iPhone」那句只给玩家点了之后的装机），准备完直接出 ready / onConnect
         Task { [weak self] in

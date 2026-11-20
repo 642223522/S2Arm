@@ -139,11 +139,30 @@ import S2ArmAppleAdapter
             if device == nil, !export { return .bad(Self.deviceRequired) }
             model.install(g, teamId: str("teamId"), device: device, acceptDropped: a["acceptDropped"] as? Bool ?? false,
                           accept: Self.acceptFlags(a).subtracting(["acceptDropped"]), ask: false, export: export); return .ok()
+        case ("POST", "/install-action"):   // 装机前清单一项的动作（同点清单里那一项的按钮）：按当前清单里这一项的 action 走同一个派发
+            guard let g = game() else { return .bad("没有这个 gameId") }
+            guard let id = str("id") else { return .bad("缺 id（清单项 id：package / appleId / connected / trusted / developerMode / devcert …）") }
+            guard model.installGameID == g.id, let r = model.installReadiness else {
+                return ControlReply(code: 409, body: ControlReply.json(["ok": false, "error": "还没有这款的装机清单：先 install-check \(g.id)，等 GET /state 的 installReadiness 出来"]))
+            }
+            guard let item = r.items.first(where: { $0.id == id }) else { return .bad("清单里没有这一项：\(id)") }
+            guard !item.ok, let action = item.action, S2ArmLauncherModel.installActions.contains(action) else {
+                return ControlReply(code: 409, body: ControlReply.json(["ok": false, "error": item.ok ? "这一项已经好了，不用做" : "这一项没有可做的动作（在等前一步，或不用人做）"]))
+            }
+            model.performInstallAction(action, gameId: g.id)
+            return .ok(["action": action])
         case ("POST", "/signingProject"):
             model.openSigningProject(); return .ok()
         case ("POST", "/update-phone"):   // 更新 iPhone 上的 S2Arm（v0.3.0）：同库页右上角按钮；有要重新出包的款没给 acceptStale → 409 列出它们
             if let b = phoneBusy() { return b }
-            guard let u = model.phoneUpdate else { return ControlReply(code: 409, body: ControlReply.json(["ok": false, "error": "按这台电脑的装机记录，手机上的 S2Arm 已是本版"])) }
+            let device = (a["device"] as? String).flatMap { $0.isEmpty ? nil : $0 }   // 同 /install：连着多台时指定哪台
+            guard let u = model.phoneUpdate else {
+                // 这台电脑没有要更新的装机记录：点了 device 就照界面手机条按钮（安装 / 续签）直接装壳——新手机（没有装壳记录）也走这条（0.6.0 冷容器装壳）
+                guard let device else { return ControlReply(code: 409, body: ControlReply.json(["ok": false, "error": "按这台电脑的装机记录，手机上的 S2Arm 已是本版"])) }
+                model.updatePhone(acceptStale: false, repack: [], language: "zh-Hans", device: device,
+                                  acceptDropped: a["acceptDropped"] as? Bool ?? false, accept: Self.acceptFlags(a).subtracting(["acceptDropped", "acceptStale"]), ask: false)
+                return .object(["ok": true, "stale": [[String: Any]]()])
+            }
             let accept = a["acceptStale"] as? Bool ?? false
             let stale = u.stale.map { ["gameId": $0.id, "name": $0.name] }
             if a["ask"] as? Bool == true {   // 同玩家点库页右上角按钮：有要重新出包的款弹三选一（玩家在窗口里选），没有就直接更新
@@ -153,9 +172,22 @@ import S2ArmAppleAdapter
                 return ControlReply(code: 409, body: ControlReply.json(["ok": false, "error": "这几款要按新版重新出包，重新出包前暂时打不开：带 acceptStale 确认（repack 为真时更新完把它们排进批量出包、出完自动装）", "stale": stale]))
             }
             model.updatePhone(acceptStale: accept, repack: a["repack"] as? Bool == true ? u.stale.map(\.id) : [], language: "zh-Hans",
-                              device: (a["device"] as? String).flatMap { $0.isEmpty ? nil : $0 },   // 同 /install：连着多台时指定哪台
+                              device: device,
                               acceptDropped: a["acceptDropped"] as? Bool ?? false, accept: Self.acceptFlags(a).subtracting(["acceptDropped", "acceptStale"]), ask: false)   // 同 /install：会挤掉别的电脑装的款时原样失败，带 acceptDropped 再发
             return .object(["ok": true, "stale": stale])
+        case ("POST", "/phone-identity"):   // 把签名身份交给手机上的 S2Arm（同总控台「把签名身份交给手机」）：别的工具装的 S2Arm 团队对得上也交；force = 交过了也重交
+            if let b = phoneBusy() { return b }
+            guard let device = str("device") else { return .bad(Self.deviceRequired) }
+            model.phoneIdentity(device: device, force: a["force"] as? Bool ?? false); return .ok()
+        case ("POST", "/console-action"):   // 同点总控台这台手机上的按钮（11-19）：只认 GET /state 的 phoneConsole 里这台此刻显示的动作，走界面同一个 runConsoleAction
+            guard let device = str("device") else { return .bad(Self.deviceRequired) }
+            guard let phone = model.phoneOverview?.phones.first(where: { $0.device == device }) else { return .bad("总控台里没有这台手机（先看 GET /state 的 phoneConsole）", code: 409) }
+            guard let action = str("action").flatMap(S2ArmLauncherModel.ConsoleAction.init), model.consoleActions(phone).contains(action) else {
+                return .bad("这台手机的总控台上没有这个按钮（此刻有：\(model.consoleActions(phone).map(\.rawValue).joined(separator: " / "))）", code: 409)
+            }
+            if let b = phoneBusy() { return b }
+            if let why = model.runConsoleAction(action, device: device, ids: a["gameIds"] as? [String], bundleId: str("bundleId"), language: "zh-Hans") { return .bad(why, code: 409) }
+            return .ok()
         case ("POST", "/restore-iphone"):
             guard let g = game() else { return .bad("没有这个 gameId") }
             guard g.iphoneRestorable else { return .bad("没有可以装回的上一版手机 S2Arm") }
@@ -264,6 +296,7 @@ import S2ArmAppleAdapter
         case ("POST", "/environment"):
             model.checkEnvironment(); return .ok()
         case ("POST", "/show"):   // 打开某一页（同玩家点标题栏「环境检查」/ 游戏的「出包」/ 回游戏库）：AI 照手册操作、截图核界面用
+            model.clearPresented()   // 换页：清单动作打开的面板 / 说明收起（presented 清空，同 Windows）
             switch str("page") ?? "" {
             case "environment": model.exportFor = nil; model.showEnvironment = true
             case "export":
@@ -283,8 +316,11 @@ import S2ArmAppleAdapter
             return .ok()
         case ("POST", "/refresh"):
             model.refresh(); return .ok()
-        case ("POST", "/dismiss"):
-            model.dismissErrors(); return .ok()
+        case ("POST", "/dismiss"):   // 关掉提示框：报错，以及更新弹窗 / 新功能大窗（同玩家点关闭：这一版 / 这一期不再弹）
+            model.dismissErrors()
+            model.clearPresented()   // 清单动作打开的登录面板 / 说明也收起（presented 清空，同 Windows）
+            if model.updatePopup != nil { model.closeUpdatePopup() }
+            return .ok()
         case ("POST", "/diagnostics"):
             if let b = busy() { return b }
             switch str("action") {
@@ -326,7 +362,10 @@ import S2ArmAppleAdapter
         ["POST /build {gameId, target, spaceOverride?}", "出包：spaceOverride = true 同界面「仍然继续」，磁盘预检不够也照出；target = ios（iPhone / iPad，缺省）| mac | android | harmony；安卓、鸿蒙回 409「即将上线，敬请期待」"],
         ["POST /customize {gameId, name?, coverPath?}", "改游戏显示名 / 封面（JPG、PNG）；不传的不动，传空字符串恢复默认；下次装到 iPhone 时带上"],
         ["POST /installCheck {gameId}", "装机前清单（只读）：几秒后看 GET /state 的 installReadiness"],
+        ["POST /install-action {gameId, id}", "点装机前清单里一项的按钮（id = 清单项 id）：按这一项的 action 打开对应的面板 / 页面（appleLogin 登录面板、pickDevice 装到哪台、trustHelp / developerModeHelp 说明、openExport 出包页、devCertSettings 设置的证书一栏）；那一项已好或没有动作回 409。打开了什么看 GET /state 的 presented"],
         ["POST /install {gameId, acceptDropped?, acceptNoBackup?, acceptStale?}", "装到 iPhone（不用先 installCheck，缺什么作业报真实原因）；可确认的失败码先问玩家、同意了带对应参数再发：container_would_drop → acceptDropped（手机上有别的电脑装的游戏这次带不上）、save_backup_failed → acceptNoBackup（覆盖前没能备份存档）、container_stale → acceptStale（旧资源包要重出）"],
+        ["POST /phone-identity {device, force?}", "把这台电脑的签名身份交给手机上的 S2Arm（AltStore / SideStore / 证书 App 装的团队对得上也交），以后手机上自己签导入的游戏包；交过了不重交（force = 照样重交）；结果看 GET /state 的 tasks（operation = phoneIdentity）"],
+        ["POST /console-action {device, action, gameIds?, bundleId?}", "同点总控台这台手机上的按钮：action 只认 GET /state 的 phoneConsole 里这台此刻显示的（installShell / updateShell / renewShell / exportShellIpa / handOverIdentity / updateSelected / pushS2arm / exportS2arm / chooseApp）；gameIds = 推 / 导出哪几款（不给 = 总控台勾选的）；chooseApp 带 bundleId = 选用 phoneConsole 里这台 candidates 的哪一个（同一台手机装着不止一个 S2Arm 时）；没有这个按钮回 409"],
         ["POST /uninstall {gameId, acceptDropped?, acceptNoBackup?}", "从 iPhone 上的 S2Arm 删一款（备份存档 → 更新容器 → 删数据；其余游戏不动）；acceptDropped / acceptNoBackup 同 /install"],
         ["POST /mods {gameId, import?:[路径], enable?:{名字: 真/假}, remove?:[名字]}", "资源替换 mod：导入 zip / 文件夹（找 romfs）、开关（关掉下次开始游戏不叠，装到 iPhone 时机上删掉）、删除；都不给只列；回 {mods:[{name, enabled, files, bytes}], imported, notes}"],
         ["POST /delete {gameId}", "删除这款游戏：IPA / 资源包 / 出包中间产物 / 缓存全删；存档与原始游戏文件保留"],
@@ -348,7 +387,7 @@ import S2ArmAppleAdapter
         let keys = m.keysReady
         let rd: Any = m.installReadiness.map { r -> [String: Any] in
             ["gameId": m.installGameID ?? "", "checkedDevice": m.installReadinessDevice ?? "", "ready": r.ready, "device": r.device, "account": r.account, "signing": r.signing,
-             "items": r.items.map { ["id": $0.id, "ok": $0.ok, "waiting": $0.waiting, "title": $0.title, "detail": $0.detail, "who": $0.who] }]
+             "items": r.items.map { i -> [String: Any] in ["id": i.id, "ok": i.ok, "waiting": i.waiting, "title": i.title, "detail": i.detail, "who": i.who, "action": i.action.map { $0 as Any } ?? NSNull(), "url": i.url.map { $0 as Any } ?? NSNull()] }]
         } ?? NSNull()
         func describe(_ s: JobSession) -> [String: Any] {
             let phase: String
@@ -386,8 +425,12 @@ import S2ArmAppleAdapter
             "notice": NSNull(),
             "error": (m.actionError ?? (m.libraryError == LibraryProvider.noLibraryMessage ? nil : m.libraryError) ?? m.environmentError ?? m.installError ?? m.aiControlError).map { $0 as Any } ?? NSNull(),
             "installReadiness": rd,
+            // 当前呈现的弹窗 / 面板（取值同装机清单的 action 名：appleLogin / trustHelp / developerModeHelp / pickDevice / devCertSettings / openExport），没开 = null
+            "presented": m.presented ?? NSNull(),
             "update": m.updateStatus,
             "installMode": ["signMode": m.installMode.signMode, "exportAvailable": m.installMode.exportAvailable],
+            // 总控台每台手机实际显示的按钮（11-19，test.4 真机验收用）：与界面同一个来源 consoleActions；installed.by：启动器装的 s2arm / 别的工具装的 other / 没装或判不出 null。开关关着 = null
+            "phoneConsole": m.phoneOverview.map { Self.phoneConsole($0, model: m) as Any } ?? NSNull(),
             "phoneUpdates": m.phoneUpdates.map { u in ["device": u.device, "games": u.games.map(\.id), "stale": u.stale.map(\.id)] as [String: Any] },
             "batch": m.batchState.map { s -> [String: Any] in ["running": m.batchRunning, "summary": s["summary"] ?? [:], "next": s["next"] ?? NSNull(),
                                                                    "items": ((s["batch"] as? [String: Any])?["items"]) ?? [], "paused": ((s["batch"] as? [String: Any])?["paused"]) ?? NSNull()] } ?? NSNull(),
@@ -397,9 +440,27 @@ import S2ArmAppleAdapter
             // 窗口在屏幕上的位置（左上角原点，单位点），给客户端用系统 screencapture -R 截真画面
             "windows": NSApp.windows.filter(\.isVisible).map { w -> [String: Any] in
                 let top = (NSScreen.screens.first?.frame.maxY ?? 0) - w.frame.maxY
+                // 排查「整窗发灰却看不到面板」用：挂着的 sheet（含不可见、透明、零尺寸的）逐个列出，外观是深色还是浅色
+                let sheets = w.sheets.map { s -> [String: Any] in
+                    ["visible": s.isVisible, "alpha": s.alphaValue, "size": [s.frame.width, s.frame.height], "appearance": s.effectiveAppearance.name.rawValue] }
                 return ["title": w.title, "number": w.windowNumber, "sheet": w.sheetParent != nil, "main": w.isMainWindow,
-                        "rect": [w.frame.minX, top, w.frame.width, w.frame.height]] },
+                        "rect": [w.frame.minX, top, w.frame.width, w.frame.height],
+                        "appearance": w.effectiveAppearance.name.rawValue, "attachedSheets": sheets] },
         ]
+    }
+
+    /// GET /state 的 phoneConsole：[{device, installed: {bundleId, by: s2arm | other | null}, actions: [...], needsChoice, candidates: [{bundleId, team, byThisLauncher, identityTeam}]}]，
+    ///   actions 与界面同一个来源 consoleActions
+    static func phoneConsole(_ o: PhoneOverview, model m: S2ArmLauncherModel) -> [[String: Any]] {
+        o.phones.map { p in
+            let by: Any = p.installedBy.map { $0 == .launcher ? "s2arm" : "other" } ?? NSNull()
+            let bundle: Any = p.bundleId.isEmpty ? NSNull() : p.bundleId
+            // needsChoice：装着不止一个 S2Arm、还没选（此时 bundleId = null）；candidates：装着不止一个时的全部候选（选没选过都带），选中的那个就是 installed.bundleId
+            let candidates = p.candidates.map { c in ["bundleId": c.bundleId, "team": c.team, "byThisLauncher": c.byThisLauncher,
+                                                      "identityTeam": c.identityTeam.map { $0 as Any } ?? NSNull()] as [String: Any] }
+            return ["device": p.device, "installed": ["bundleId": bundle, "by": by] as [String: Any], "actions": m.consoleActions(p).map(\.rawValue),
+                    "needsChoice": p.needsChoice, "candidates": candidates]
+        }
     }
 
     static var screenCaptureAllowed: Bool {
@@ -421,7 +482,27 @@ import S2ArmAppleAdapter
         }
         guard let v = main.contentView?.superview ?? main.contentView, let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) else { return nil }
         v.cacheDisplay(in: v.bounds, to: rep)
-        lastSnapshotPath = "视图层级（不含弹出层、毛玻璃）"
-        return rep.representation(using: .png, properties: [:])
+        // 主窗口开着弹出层（设置、登录面板等 sheet）时，系统会把主窗口压暗：只画主窗口就是一张整体发灰、按钮发暗的图，看着像界面卡了一层蒙层。
+        //   把弹出层按它在主窗口里的位置叠上去，截图与屏幕一致（毛玻璃画不出来，退成不透明底）
+        let sheets = vis.filter { $0 !== main && ($0.sheetParent === main || $0.parent === main) }
+        lastSnapshotPath = sheets.isEmpty ? "视图层级（不含毛玻璃）" : "视图层级（叠了 \(sheets.count) 层弹出层，不含毛玻璃）"
+        return Self.overlay(sheets, on: rep, main: main)?.representation(using: .png, properties: [:]) ?? rep.representation(using: .png, properties: [:])
+    }
+
+    /// 视图层级截图上叠弹出层：各层按窗口坐标换算到主窗口截图里的位置（左下原点、按主图像素比例缩放）
+    static func overlay(_ windows: [NSWindow], on base: NSBitmapImageRep, main: NSWindow) -> NSBitmapImageRep? {
+        guard !windows.isEmpty, let ctx = NSGraphicsContext(bitmapImageRep: base) else { return nil }
+        let scale = CGFloat(base.pixelsWide) / max(main.frame.width, 1)
+        NSGraphicsContext.saveGraphicsState(); defer { NSGraphicsContext.restoreGraphicsState() }
+        NSGraphicsContext.current = ctx
+        for w in windows {
+            guard let v = w.contentView?.superview ?? w.contentView, let r = v.bitmapImageRepForCachingDisplay(in: v.bounds) else { continue }
+            v.cacheDisplay(in: v.bounds, to: r)
+            let at = CGRect(x: (w.frame.minX - main.frame.minX) * scale, y: (w.frame.minY - main.frame.minY) * scale,
+                            width: w.frame.width * scale, height: w.frame.height * scale)
+            NSColor.windowBackgroundColor.setFill(); at.fill()
+            r.draw(in: at, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: false, hints: nil)
+        }
+        return base
     }
 }

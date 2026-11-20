@@ -33,7 +33,7 @@ glslc --target-env=vulkan1.1 "$out/probe.comp" -o "$out/probe.spv"
 compile() {
     cc -std=gnu11 -D_GNU_SOURCE -Wall -Wextra -Wno-unused-function -Wno-unused-parameter -Wno-missing-field-initializers -ffunction-sections -fdata-sections "${args[@]}" "$@" "$repo/android/tests/nvn_vk_dispatch_fq_vvl_test.c" "${sources[@]}" -Wl,--gc-sections -l:libvulkan.so.1 -lpthread -lm -ldl
 }
-export VK_DRIVER_FILES="$icd" VK_LAYER_PATH="$layer" VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation VK_LAYER_VALIDATE_SYNC=1 XDG_CACHE_HOME="$out"
+export VK_DRIVER_FILES="$icd" VK_LAYER_PATH="$layer" VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT XDG_CACHE_HOME="$out"
 compile -o "$out/probe"
 "$out/probe" "$out/probe.spv" >"$out/normal.log" 2>&1 || { cat "$out/normal.log" >&2; exit 1; }
 if grep -qiE 'validation error|VUID-|UNASSIGNED-|SYNC-HAZARD|ERROR.*VALIDATION' "$out/normal.log"; then cat "$out/normal.log" >&2; exit 1; fi

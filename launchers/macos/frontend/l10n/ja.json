@@ -1385,9 +1385,9 @@
   "s2arm.install.account": "署名チーム：%@",
   "s2arm.install.checklist": "インストール前に",
   "s2arm.install.device": "デバイス：%@",
-  "s2arm.install.note": "Xcode で使用している Apple ID で署名し、ケーブル経由でインストールします。無料の Apple ID で署名した App は 7 日で期限切れになるため、その時点で再インストールしてください。",
+  "s2arm.install.note": "S2Arm でサインインした Apple ID で署名し、ケーブル経由でインストールします。無料の Apple ID で署名した App は 7 日で期限切れになるため、その時点で再インストールしてください。",
   "s2arm.install.start": "インストール開始",
-  "s2arm.install.teamManual": "対処方法を確認",
+  "s2arm.install.teamManual": "Apple TV 用の Xcode チーム",
   "s2arm.install.teamManualField": "10 文字の Team ID",
   "s2arm.install.teamManualHelp": "Xcode にサインインしているのにチームが見つからない場合は、Team ID を手動で入力してください（Xcode のアカウントページまたは Apple Developer サイトで確認できます）。また、「IPA を表示」で App を見つけて、Sideloadly または AltStore でインストールし、Finder でリソースパックを App にコピーすることもできます。",
   "s2arm.install.teamManualUse": "このチームでインストール",
@@ -1752,5 +1752,7 @@
   "s2arm.env.xcode.none": "Xcode がまだ見つかりません",
   "s2arm.env.xcode.choose": "Xcode を選択…",
   "s2arm.env.xcode.auto": "自動で探すに戻す",
-  "s2arm.env.xcode.invalid": "完全な Xcode ではありません（Contents/Developer/usr/bin/xcodebuild が必要です）。変更していません。"
+  "s2arm.env.xcode.invalid": "完全な Xcode ではありません（Contents/Developer/usr/bin/xcodebuild が必要です）。変更していません。",
+  "s2arm.env.action.appleLogin": "Apple ID でサインイン",
+  "s2arm.fail.appleAccount": "サインイン中の Apple ID を読み取れません"
 }

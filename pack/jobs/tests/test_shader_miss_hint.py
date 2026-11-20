@@ -20,7 +20,7 @@ import tests.test_jobs as tj  # noqa: E402
 from tests.jobcase import ios_fixture  # noqa: E402
 
 A, B = "0100000000010000", "0100000000020000"
-OK = dict(rewriterId="RID", hostAbi=2, dmshChain="chain1")
+OK = dict(rewriterId="RID", hostAbi=2, dmshChain="chain1", libGen=host_update.LIB_GEN)
 
 
 class ShaderMissHint(unittest.TestCase):
@@ -51,10 +51,21 @@ class ShaderMissHint(unittest.TestCase):
     def test_mac_counter_from_library_temp(self):
         self.fixture()
         mac = layout.image_mac(self.c, B); mac.mkdir(parents=True, exist_ok=True)
-        (mac / "manifest.json").write_text(json.dumps(dict(builtBy=dict(version="0.5.0"))))
+        (mac / "manifest.json").write_text(json.dumps(dict(builtBy=dict(version="0.5.0"), libGen=host_update.LIB_GEN)))
         t = Path(self.c.library) / "temp" / B; t.mkdir(parents=True)
         (t / host_update.SHADER_FALLBACK).write_text(json.dumps(dict(count=5, at=1, app="0.5.0")))
         self.assertEqual(self.run_hints(), {B: ["shaderMiss"]}, "Mac 局现场翻译过、Mac 运行版本是旧版打的 → 标")
+
+    def test_mac_only_game_gets_no_phone_hint(self):
+        """#1712：只在 Mac 出包、从没打过 iPhone 包的款（没有 game.json ios 记录）——「更新这款」是推到 iPhone，不该弹。
+        即使 Mac 运行版本是旧代数、旧版打的、Mac 局现场翻译过，也不标"""
+        self.c.catalog = lambda: {"games": [{"id": A, "name": "甲"}]}
+        mac = layout.image_mac(self.c, A); mac.mkdir(parents=True, exist_ok=True)
+        (mac / "manifest.json").write_text(json.dumps(dict(builtBy=dict(version="0.5.0"), libGen=0)))
+        t = Path(self.c.library) / "temp" / A; t.mkdir(parents=True)
+        (t / host_update.SHADER_FALLBACK).write_text(json.dumps(dict(count=5, at=1, app="0.5.0")))
+        self.assertEqual(layout.program_info(self.c, A), {}, "前提：这款没有 iPhone 程序记录")
+        self.assertEqual(self.run_hints(), {}, "没推过手机的款不弹手机提示")
 
     def test_overview_uses_this_phone_count(self):
         self.fixture()

@@ -401,6 +401,7 @@ public class MainActivity extends Activity
                 int error = NativeBridge.configureDebugEnvironment(entries);
                 if (error != 0) throw new IllegalStateException("Debug environment configuration failed: " + error);
             }
+            AndroidLdnSettings.apply(this, getIntent());
             host = gameMode ? NativeBridge.createGame()
                 : NativeBridge.create(new java.io.File(getFilesDir(), "selftest").getAbsolutePath());
             if (host == 0) throw new IllegalStateException("native host allocation failed");

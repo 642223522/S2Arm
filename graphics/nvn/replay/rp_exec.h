@@ -24,6 +24,7 @@ int rp_buf_resolve_multi(int n, const uint64_t *addr, const uint64_t *len, nvn_g
 // 写入区间日志（rp_draw 的暂存片复用判定用）：记号 + 「记号之后有没有人写过这一段」
 uint64_t rp_write_mark(void);
 int rp_write_touched(uint64_t mark, uint64_t addr, uint64_t len);
+void rp_write_note(uint64_t addr, uint64_t len);   // 记一笔「回放自己在 CPU 上改了游戏内存这一段」：段内切片表按它作废；不受写跟踪的池里对应的镜像页也按它作废（rp_buf.c）
 void rp_buf_stats(uint64_t *bytes, uint64_t *runs);   // 累计同步字节数 / 段数
 int rp_buf_mirrors(void);                             // 现有镜像个数
 // 缓冲类命令（rec = 命令记录地址，只进未接日志）
@@ -68,6 +69,11 @@ void rp_present_reset(void);
 // 已正式解码的计数组：显式条数/参数步长，不前瞻命令流。
 void rp_draw_count_batch(nvn_gpu_cmd, const p_draw *, const p_draw_idx *, const void *, uint32_t, uint64_t);
 void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *rec);   // di 非空 = 带索引
+// 通道级批量拷 base instance（rp_draw.c）：命令循环在把 OP_DRAW / OP_DRAW_IDX 交给 rp_draw 之前把这条记录的头指针放进 rp_draw_stream，
+//   rp_draw 只在 rec == rp_draw_stream 时才从这里往后前瞻（别的调用方传进来的 rec 不一定在命令流里）。
+// rp_gpu_wr_gen：主段里录了写镜像的 GPU 传输就加一（rp_xfer_cmd 落主段、rp_buf 的按 GPU 顺序改写）；前移拷贝读的间接记录可能被它改过，批量表随之作废。
+extern const void *rp_draw_stream;
+extern uint64_t rp_gpu_wr_gen;
 void rp_multi_draw(nvn_gpu_cmd c, const p_multi_draw *m, const void *rec);   // OP_MULTI_DRAW：整段间接计数多绘一次交后端
 void rp_draw_stats(uint64_t *draws, uint64_t *skips);
 // 分时读数：自上次取走以来的累计（纳秒 / 次数），取走即清零
@@ -92,6 +98,7 @@ enum { RP_PERF_SUBMIT_NS, RP_PERF_COMMIT_NS, RP_PERF_SUBS, RP_PERF_WAIT_NS, RP_P
        RP_PERF_BUF_GPU_ORDER_N, RP_PERF_UBO_MIRROR_N,   // 改 / 拷游戏内存的命令因还没落地的 GPU 写改在 GPU 上做的次数；常量缓冲因此直接绑镜像的次数（#1022）
        RP_PERF_UBO_FILL_N, RP_PERF_UBO_FILL_WAIT_N,   // 其中交给后端异步填的次数（nvn_gpu_arena_fill）/ 改游戏内存前因区间重叠等它填完的次数（rp_ub_fill_fence）
        RP_PERF_BUF_FAST_N, RP_PERF_BUF_SLOW_N, RP_PERF_BUF_NOSPAN_N, RP_PERF_BUF_PAGES_N,   // 缓冲解析：快路命中 / 走逐页慢路 / 不受写跟踪 / 慢路里一共查了多少页
+       RP_PERF_BUF_NOSPAN_FRESH_N,   // 其中不受写跟踪的池里、这一段本次提交里都同步过而免传的次数（page_fresh）
        RP_PERF_BUF_LOG_EV, RP_PERF_BUF_LOG_WORDS, RP_PERF_BUF_LOG_REBUILD,   // 脏页追加日志（nvk_buf_dirtylog）：灌进镜像的事件数 / 求交时看的位图字数 / 日志不可用、按逐页代号重建的次数
        RP_PERF_RES_FIND_NS, RP_PERF_RES_FAST_NS, RP_PERF_RES_SLOW_NS, RP_PERF_RES_N,   // 缓冲解析三段耗时：找池与取镜像 / 快路逐页核对 / 慢路同步（开关 nvk_res_tm）
        RP_PERF_RES_LW_NS, RP_PERF_RES_LA_NS,   // 批量解析里：抢锁等待 / 持锁解析（开关 nvk_res_tm）
@@ -103,6 +110,7 @@ enum { RP_PERF_SUBMIT_NS, RP_PERF_COMMIT_NS, RP_PERF_SUBS, RP_PERF_WAIT_NS, RP_P
        RP_PERF_TEX_LOG_N, RP_PERF_TEX_LOG_EV, RP_PERF_TEX_LOG_FALLBACK,   // CPU 贴图内容按脏页日志核对的次数 / 读到的事件数 / 日志不可用、退回整张逐页比的次数
        RP_PERF_TEX_UNARMED,    // CPU 贴图上传时有页加保护没落地（被并发的解保护挡住）：这次上传不算同步，下一次必重传
        RP_PERF_TEX_EPOCH_MISS, RP_PERF_TEX_CHECK_PAGES,   // CPU 贴图内容检查：本可按纪元跳过却没跳成的次数（已传过、没待重传、有跟踪句柄，但全局写代号 / 段号 / 映射代际变了）；逐页比对写代号的页数（每次调 nvn_dirty_since 记整个范围的页数，是上限：遇到脏页会提前停）
+       RP_PERF_BINST_HZ, RP_PERF_BINST_ONE, RP_PERF_BINST_CUT, RP_PERF_BINST_SCAN, RP_PERF_BINST_WASTE,   // 间接绘制 base instance 拷贝：批量前移供上的笔数 / 逐笔拷的笔数 / 其中为它收了开着的通道 / 前移扫描次数 / 前移了没用上的笔数（rp_draw.c 通道级批量拷）
        RP_PERF_TM_FRAMES,      // 分时抽样：窗口里逐步计时过的帧数（#1103）；绘制各步 / 开通道细分 / 贴图解析等锁持锁按它求每帧值
        RP_PERF_N };   // P_CONT：同目标续接命中的 SET_RT 次数；P_CLEARONLY：一笔绘制都没有的通道数；P_PARK：记进挂起表的待折清除条数；BIND_FAST：整组绑定直接沿用没重建；TEX_EPOCH：贴图内容检查按纪元跳过的次数；PC_HIT/MISS：后端开通道缓存命中 / 新建   /* FX_*：做完时要写回游戏内存的提交数，和各类回写的个数（事件 / 计数器报告 / 遮挡事件 / 显卡写缓冲） */   // TEX_UP_*：贴图整张上传的次数与千字节；BUF_SYNC_KB：池镜像同步的千字节   // P_*：通道的构成（见 rp_pass.c rp_pass_end）   // D_*：一笔绘制里各步（见 rp_draw.c）
 void rp_perf_add(int i, uint64_t v);

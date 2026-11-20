@@ -468,6 +468,23 @@ class FlowTests(unittest.TestCase):
         self.assertTrue(it["trusted"]["ok"]); self.assertFalse(it["developerMode"]["ok"]); self.assertFalse(it["developerMode"]["waiting"])
         self.assertIn("开发者模式", it["developerMode"]["detail"])
 
+    def test_readiness_actions(self):
+        """每项没好时带的启动器本地动作（清单按钮、控制口 /install-action 按它派发）：对照表写死；好了 / 等前一步的不带"""
+        want = {"package": "openExport", "appleId": "appleLogin", "connected": "pickDevice", "trusted": "trustHelp",
+                "developerMode": "developerModeHelp", "deviceReady": None}
+        gid = "0100535012974000"; self.c.r.update(gameId=gid)
+        r, it = self._ready([], teams=())   # 没出包、没登录、没连：信任 / 开发者模式在等前一步
+        self.assertEqual({k: it[k]["action"] for k in ("package", "appleId", "connected", "trusted", "developerMode")},
+                         dict(package="openExport", appleId="appleLogin", connected="pickDevice", trusted=None, developerMode=None))
+        r, it = self._ready([self._dev(pairing="unpaired", devmode=None)])
+        self.assertEqual(it["trusted"]["action"], want["trusted"])
+        r, it = self._ready([self._dev(devmode="disabled")])
+        self.assertEqual(it["developerMode"]["action"], want["developerMode"])
+        self.assertIsNone(it["deviceReady"]["action"])
+        self._fixture(gid)
+        r, it = self._ready([self._dev()])
+        self.assertTrue(all(i["action"] is None for i in r["items"]), "都好了：一个动作都不带")
+
     def test_readiness_only_package_blocks(self):
         gid = "0100535012974000"; self._fixture(gid); self.c.r.update(gameId=gid)   # 出好了包，但没登录、没连手机
         r, it = self._ready([], teams=())

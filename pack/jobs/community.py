@@ -153,6 +153,8 @@ def _valid(item, value):
         return isinstance(value, bool)
     if item["type"] == "choice":
         return isinstance(value, str) and value in [o["value"] for o in item.get("options", [])]
+    if item["type"] == "text":
+        return isinstance(value, str)
     return False
 
 
@@ -223,7 +225,7 @@ def mac_settings(c, gid):
     need = {"fps60": ("fps60" in caps, NO_FPS60), "widescreen": (not strong, NO_WIDEN)}
     out = {}
     for key, item in table.items():
-        if "mac" not in item.get("platforms", []) or item["type"] not in ("bool", "choice"):
+        if "mac" not in item.get("platforms", []) or item["type"] not in ("bool", "choice", "text"):
             continue
         # 还没出 Mac 版（读不到能力清单）：各项都能选、先存偏好，出好后生效（v0.3.1「拿不准不停」：有没有 60 帧方案、走不走直连此时还不知道，不先挡）；
         #   清单明说没有 60 帧方案 / 没走直连的，才是物理上用不了
@@ -533,7 +535,7 @@ def save(c):
     shared = load_app(c)
     for key, value in want.items():
         item = table.get(key)
-        if item is None or item.get("scope") not in ("game", "app") or item["type"] not in ("bool", "choice"):
+        if item is None or item.get("scope") not in ("game", "app") or item["type"] not in ("bool", "choice", "text"):
             raise Failure("没有这个启动设置：%s。" % key, code="job_failed")
         target = shared if item["scope"] == "app" else data
         if value is None:
@@ -596,10 +598,22 @@ def save(c):
     return out
 
 
-def launch_env(c, gid):
+def ldn_env(settings, existing=None):
+    """手动中继的整套环境；自动不写变量，显式服务器优先且不混入托管 / 监听。"""
+    if settings.get("ldnMode") != "manual" or "S2A_LDN_SERVER" in (existing or {}):
+        return {}
+    if settings.get("ldnHost") is True:
+        return {"S2A_LDN_SERVER": "127.0.0.1", "S2A_LDN_RELAY": "1", "S2A_LDN_LISTEN": "0.0.0.0"}
+    # 与 iOS 一致：空地址也不回到发现 / 选举，不阻止玩家启动游戏。
+    address = settings.get("ldnAddress", "").strip() or "0.0.0.0"
+    return {"S2A_LDN_SERVER": address, "S2A_LDN_RELAY": "0"}
+
+
+def launch_env(c, gid, existing=None):
     """Mac 启动时的宿主开关：只把玩家选过、且和宿主缺省不同的转成环境变量（与 iPhone 同口径）"""
     env, caps, table = {}, runtime_caps(c, gid), settings_table(c)
     s = chosen(c, gid, table)
+    env.update(ldn_env(s, existing))
     # 60 帧（11-11 维护者：缺省原帧率、玩家手动开，速度已验证正确的款保留默认 60）：只转玩家明确的选择——开 1、关 0；
     #   没选过不写，由宿主按清单原因自己定（runtime/src/caps.c：验证过的款开、其余原帧率）。没选也写 0 会把验证过的款一起关掉
     if s.get("fps60") is True:

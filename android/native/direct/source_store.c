@@ -8,6 +8,7 @@
 #endif
 
 #include "sha256.h"
+#include "../../../graphics/nvn/gfx/nvn/nvn_key.h"   // Switch 1 着色器键的控制段口径（第 2 代置零）
 #include "source_store.h"
 
 struct entry {
@@ -262,12 +263,16 @@ int s2a_source_keep(const uint8_t key[8], uint32_t array_index, const void *code
     }
     uint32_t need = code_bytes + control_bytes + c1_bytes;
 
-    // 完整内容摘要只在捕获时算一次（与前端 keys_hash 同一字节顺序：control‖code，同一 SHA-256）。
+    // 完整内容摘要只在捕获时算一次（与前端 keys_hash 同一字节顺序：control‖code，同一 SHA-256；
+    // 控制段按第 2 代键口径先把两段易变字段置零，nvn_key.h：只差这两段的两份是同一个编译输入）。
     uint8_t sha[32];
     {
+        uint8_t kc[S2A_SOURCE_CONTROL_BYTES];
+        memcpy(kc, control, control_bytes);
+        nvn_key_ctl_zero(kc, control_bytes);
         s2a_sha256 c;
         s2a_sha256_init(&c);
-        s2a_sha256_update(&c, control, control_bytes);
+        s2a_sha256_update(&c, kc, control_bytes);
         s2a_sha256_update(&c, code, code_bytes);
         s2a_sha256_final(&c, sha);
     }

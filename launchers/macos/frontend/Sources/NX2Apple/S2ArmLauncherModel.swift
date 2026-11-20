@@ -67,7 +67,7 @@ enum ExportBlocker: Equatable {
 /// 正在跑 / 刚结束的一个作业（一局、出包、准备运行、装到 iPhone、导入、一键处理环境、换游戏库）。每个作业槽（主槽 / 手机槽 / 游戏槽，见 Slot）同一时刻只有一个。
 struct JobSession: Equatable {
     enum Kind: String, CaseIterable { case play, export, prepare, install, installRemove, installRestore, installUpdate, importGames = "import", downloadMetal, downloadIosPlatform, installDotnet, setupLibrary = "setup",
-                        keys, delete, diagnostics, moveGame, clearCache, installTV = "tvInstall", exportTV = "tvExport", pushSelected }
+                        keys, delete, diagnostics, moveGame, clearCache, installTV = "tvInstall", exportTV = "tvExport", pushSelected, phoneIdentity }
     enum Phase: Equatable { case running, stopping, finished(JobOutcome.State) }
     let kind: Kind
     let gameID: String?
@@ -96,7 +96,7 @@ struct JobSession: Equatable {
     /// 走过的阶段（阶段事件的作业层原句，按出现顺序、不重复）：手机作业进行中页的步骤列表
     var stages: [String] = []
     /// 手机作业（装到手机 / 续签、删除、装回、更新手机上的 S2Arm）：结局页统一用 PhoneJobPanel
-    var isPhoneJob: Bool { [.install, .installRemove, .installRestore, .installUpdate, .pushSelected].contains(kind) }
+    var isPhoneJob: Bool { [.install, .installRemove, .installRestore, .installUpdate, .pushSelected, .phoneIdentity].contains(kind) }
 }
 
 /// 手机作业做完后结局页要说的事实（从作业结果读，不猜）：装到哪台、这次推了多少、哪几款被跳过
@@ -238,7 +238,11 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var consoleDevice: String?            // 总控台在管哪台（多台时顶部切换）；nil = 跟着默认那台
     @Published var consoleSelection: Set<String> = []   // ② 游戏同步里勾上的款（游戏号大写）
     @Published var consolePushing: String?               // 「更新所选」正在推的那款（作业 pushSelected 的 progress 事件 current）
+    @Published var identityDelivered: Bool?              // 「把签名身份交给手机」最近一次成功的结果（作业 phoneIdentity 的 delivered）；nil = 还没成功过 / 又点了一次
     var consoleSeeded: Set<String> = []                  // 上次自动勾过的建议更新款（玩家取消的不重勾）
+    @Published var consoleChoosing: String?              // 「选用哪个 S2Arm」正在记的那个包名（作业 phoneChooseApp 在跑）；nil = 没在选
+    @Published var consoleChooseError: String?           // 上一次选没选成的原因（作业层原句，界面按当前语言翻）；nil = 没出错
+    @Published var consoleRechoose = false               // 选过了、玩家点了「换一个 S2Arm」：重新列出候选
     @Published var dynamicDone = false    // 顶栏动态窗口：手机作业刚做完，闪一下 ✓（2 秒后回普通图标，S2ArmLauncherModel+PhoneConsole）
     @Published var dynamicAlert = false   // 手机作业失败 / 停下：橙色「!」一直留着，直到玩家点开看过
     @Published var phoneUpdates: [PhoneUpdate] = []
@@ -261,7 +265,6 @@ public final class S2ArmLauncherModel: ObservableObject {
         didSet { UserDefaults.standard.set(iosAfterPack, forKey: "S2AIosAfterPack") }
     }
     /// 玩家选了「出完导出自签 IPA」：自动装到手机（连上就更新、新版首启横幅）一律跳过，玩家自己签名安装
-    var selfSignChosen: Bool { iosAfterPack == "export" }
     /// 这次装机会话是导出自签包（进度 / 结局页照导出写；完成后看结局里的导出文件夹）
     @Published var selfSigning = false
     /// 添加游戏 / 放密钥弹窗（ImportSheet）：这两个作业的进度和失败原因都留在弹窗里，不换页。
@@ -374,6 +377,20 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var devCert: DevCertStatus?
     var failingReads: Set<String> = []   // 被动刷新正在连续失败的那几类（reportFailure 只报头一次）
     @Published var showDevCertImport = false
+    /// Apple ID 登录（0.6.0 Mac，S2ArmLauncherModel+AppleLogin.swift）：当前账号、登录面板挂在哪一层（install / settings / main，nil = 没开）与进行到哪
+    @Published var appleAccount: AppleAccount?
+    @Published var appleLoginHost: String?
+    @Published var appleLoginPhase: AppleLoginPhase = .idle
+    /// 为什么开的登录面板：expired = 装机报 Apple ID 登录过期（apple_session_expired），面板说一句「过期了，重新登录」并带上原来的邮箱
+    @Published var appleLoginReason: String?
+    var appleLoginTask: Task<Void, Never>?
+    /// 装机清单派发出的动作（performInstallAction）：在装机窗里弹的说明（trustHelp / developerModeHelp）、「装到哪台」那一行要不要亮出来、
+    ///   设置页要定位到哪一栏（devCertSettings）、要离开装机窗去的地方（装机窗收到后先关自己再去）；开着的装机窗是哪款
+    @Published var installHelp: String?
+    @Published var pickDeviceFocus = false
+    @Published var settingsFocus: String?
+    @Published var installLeave: InstallLeave?
+    var installViewOpen: String?
     @Published private(set) var customizing = false
     /// 非会话作业（换封面 / 改名、释放空间、存档）在等库锁时作业层的原句「在等「…」结束…」（phase=waiting_lock）；拿到锁或做完清空。
     /// 剃刀 M3：原先这几处只转圈，别的任务占着库时最长等 120 秒，玩家不知道在等什么
@@ -532,7 +549,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// keptModulesLoop 的一次（单测直接调）：→ 这次有没有发起「更新 iPhone」
     @discardableResult func keptModulesTick() async -> Bool {
         // 只按真冲突跳过：手机正被装机 / 推包占着（phoneBusy）；出包等别的作业在跑照样收（升级首启迁移几分钟，原先 busy 整轮跳过拖到第 360 秒）
-        if phoneBusy || selfSignChosen { return false }   // 出包页选了「出完之后导出自签」：不走启动器装机，自动装到手机也不做（玩家选择优先）
+        if phoneBusy { return false }   // 出包页选了「出完之后导出自签」：不走启动器装机，自动装到手机也不做（玩家选择优先）
         let r: [String: Any]
         do {
             r = try await provider.client.perform("phoneKeptPull").result
@@ -654,7 +671,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// 作业跑在作业页，没成的原因（如选的还在云盘里）在作业页显示；成了作业页可在访达中显示新游戏库。
     /// 换游戏库时作业层报认得出的风险（v0.3.1：认得出的风险让玩家确认）：问玩家「仍然继续 / 先不」，同意带对应参数重发，参数累积
     ///   library_in_cloud：选的文件夹在云盘同步目录里；library_folder_not_empty：文件夹里已有别的文件、又不是游戏库（S2Arm 只动自己建的文件）
-    static let libraryConfirmCodes = ["library_in_cloud": "acceptCloud", "library_folder_not_empty": "acceptForeign"]
+    static var libraryConfirmCodes: [String: String] { BackendText.confirmFlags }   // 共享体验表 errors 的 accept（11-19 结构 9，同 Windows 读同一处）
     struct LibraryConfirm: Equatable { let url: URL; let move: Bool; let message: String; var code = "library_in_cloud"; var accept: Set<String> = [] }
     @Published var libraryConfirm: LibraryConfirm?
 
@@ -1183,8 +1200,8 @@ public final class S2ArmLauncherModel: ObservableObject {
         var mode: String? = nil; var sgradeUpgrade = false }   // 「S 级优化升级」页发起的：重发时照带装法与升级标记
     /// 作业层可确认继续的停装码 → 玩家点「仍然继续」后重发时带的参数（维护者 11-11 装机原则：认得出的风险让玩家确认，确认了就装）。
     ///   结局页（PhoneJobPanel）按码在页内问「仍然继续 / 先不」，不弹散的对话框；参数累积（先确认挤掉、再撞上备份失败，第二次重发两个都带）
-    static let confirmCodes: [String: String] = ["container_would_drop": "acceptDropped", "save_backup_failed": "acceptNoBackup", "container_stale": "acceptStale",
-                                                   "device_space_low": "acceptLowSpace"]
+    ///   11-19 结构 9：表只在共享体验表 errors 的 accept 一处（Windows 读同一处）；原先这里另写一份，没有 cert_revoke_confirm，「仍然继续」点不了
+    static var confirmCodes: [String: String] { BackendText.confirmFlags }
     struct DropConfirm { let kind: JobSession.Kind; var game: GameSummary? = nil; let message: String; var update: UpdateArgs? = nil
                          var code = "container_would_drop"; var accept: Set<String> = []
                          /// 当初装到哪台：确认后原样带回（不能退回「界面选中的那台」，控制口指定的设备会被换掉）
@@ -1268,6 +1285,16 @@ public final class S2ArmLauncherModel: ObservableObject {
                                           mode: u.mode, sgradeUpgrade: u.sgradeUpgrade); return }
         guard let game = d.game else { return }
         if d.kind == .installRemove { removeFromPhone(game, device: d.device, accept: d.accept) } else { install(game, device: d.device, accept: d.accept, export: d.export) }
+    }
+
+    /// 确认页上与「仍然继续」并列的另一条路（共享体验表 errors 的 alternate；自签走查结构 7：新建证书确认的「改用已有证书」）：码 → (动作, 文案键)
+    static var confirmAlternates: [String: (action: String, labelKey: String)] { BackendText.confirmAlternates }
+
+    /// 确认页点了并列的另一条路：不重发，收起这一单的结局页，按装机前清单动作的同一个派发去落点（devCertSettings = 设置里签名方式那一栏）
+    func takeConfirmAlternate(_ d: DropConfirm) {
+        guard let alt = Self.confirmAlternates[d.code], Self.installActions.contains(alt.action) else { return }
+        dropConfirm = nil; clearInlineFailure(); backFromPhone()
+        performInstallAction(alt.action, gameId: d.game?.id ?? "")
     }
 
     /// 装回上一版手机 S2Arm（只换宿主后新宿主不好用时）。

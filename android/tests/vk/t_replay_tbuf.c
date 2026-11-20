@@ -118,6 +118,7 @@ int main(int argc, char **argv) {
     rp_draw(active_cmd, &draw, NULL, &draw);
     const uint32_t updated[4] = {0x03040506u, 0x0708090au, 0x0b0c0d0eu, 0x0f101112u};
     memcpy(guest + 256, updated, sizeof updated);
+    rp_write_note((uint64_t)(uintptr_t)(guest + 256), sizeof updated);   // 本夹具的池不受写跟踪（nvn_dirty_span 恒空）：同一次提交里第二次解析只认回放自己登记的写（等同按序的 OP_UPDATE_UB），裸写游戏内存不再重读
     rp_draw(active_cmd, &draw, NULL, &draw);
     uint64_t drawn = 0, skipped = 0; rp_draw_stats(&drawn, &skipped);
     CHECK(drawn == 2 && skipped == 0, "two TBUF draws without skips");

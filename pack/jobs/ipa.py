@@ -284,6 +284,8 @@ def _build(c):
             if name.startswith('DOTNET_ROOT_'):
                 env.pop(name)
         env.update(S2A_PACK_PLAT="ios", S2A_TARGET="ios", S2A_PY=os.sys.executable)
+        from library import source_file_bytes
+        env["S2A_SOURCE_BYTES"] = str(source_file_bytes(selected_packages(game)))   # 原件文件总字节：随包基础管线上限 = 它的 10%（pack/stage_direct_cpso.sh）
         # 存档游戏身份（和 Mac 存档作业 saves.identity 同一份）：一键出包只在「从原件出包」时自己生成，启动器走 --from-extract 一直缺，
         #   iPhone 包里没有 save-identity.json → 存档管理页报「缺少游戏身份」、iCloud 存档不同步（11-09 真机）。这里按游戏库目录写好交给它
         from saves import identity as save_identity
@@ -549,7 +551,7 @@ def _swap_pack(c, gid, pack_dir, want):
     compat = host_update.engine_compat(c) or {}
     from rewrite_refresh import rewriter_id   # 这次的改写产物出自哪版改写器：改写器以后修了，更新手机时只核记号不同的款（rewrite_refresh.py）
     from sgrade_bf import BF_GEN   # 这次的直连库出自本引擎翻译器：可读瓦片版代数（S 级升级按它判要不要补 _bf，pack/jobs/sgrade_bf.py）
-    layout.update_info(c, gid, ios=dict(shellId=current_shell_id(c), pack=want, rewriterId=rewriter_id(c), bfGen=BF_GEN, builtBy=host_update.built_by(c), **compat))
+    layout.update_info(c, gid, ios=dict(shellId=current_shell_id(c), pack=want, rewriterId=rewriter_id(c), bfGen=BF_GEN, libGen=host_update.LIB_GEN, builtBy=host_update.built_by(c), **compat))   # libGen：直连库内容代数（host_update.LIB_GEN）
 
 
 def drop_iphone_delivery(c, gid):
@@ -958,7 +960,7 @@ def _package_failure_phase(reason):
 
 
 def oneclick_failure(events, milestone, log, *, refresh_log=None, refresh_before=None):
-    from errors import classify_failure, player_reason, refresh_stop_phase, tool_reason
+    from errors import classify_failure, player_reason, player_words, refresh_stop_phase, tool_reason
     name = "未记录阶段"  # 非玩家句
     result = None
     try:
@@ -996,6 +998,8 @@ def oneclick_failure(events, milestone, log, *, refresh_log=None, refresh_before
     # 日志确凿根因（盘满 / 缺 Metal / 缺工具）先于阶段映射；读一键出包输出尾 + 原因里点名的 refresh.log → 其红行点名的子日志（errors.gather_evidence）。
     # 本轮 refresh.log 没更新过（_log_identity 未变）就不读，旧失败不归给新任务。
     fresh_refresh = refresh_log if refresh_log is not None and _log_identity(refresh_log) not in (None, refresh_before) else None
-    code, why = classify_failure(phase, log, (reason,) + ((str(fresh_refresh),) if fresh_refresh else ()))
+    texts = (reason,) + ((str(fresh_refresh),) if fresh_refresh else ())
+    code, why = classify_failure(phase, log, texts)
+    said, advice = player_words(code, log, texts)
     # 上屏只放玩家话术；阶段 / 红行原文 / 归因依据进 internal → 诊断 detail（「复制错误摘要」带走）
-    return Failure(player_reason(code), code=code, internal="一键出包失败（" + name + "）：" + reason + "\n" + why)  # 非玩家句
+    return Failure(said, code=code, advice=advice, internal="一键出包失败（" + name + "）：" + reason + "\n" + why)  # 非玩家句

@@ -58,6 +58,10 @@ namespace Ryujinx.Audio.Backends.Apple
         // S2Arm (11-02 Pokopia iPhone 杂音): releases each queued buffer when the credit's play head reaches its end, one per buffer
         //   like a Switch (see PlaybackCredit), instead of a whole device pull at each hand-back. Woken by hand-backs and new buffers
         private readonly AutoResetEvent _paceEvent = new(false);
+        private Thread _paceThread;   // S2Arm (11-19): Dispose waits for it to leave; one stuck in a hung game's buffer keeps the driver's shared events alive
+        /// <summary>S2Arm (11-19): the pace thread is still running after Dispose (stuck reading a hung game's buffer). The driver then keeps the
+        /// shared update / pause events instead of disposing them: the thread may still Set them when it comes back.</summary>
+        public bool S2APaceThreadAlive => _paceThread?.IsAlive == true;
         // S2Arm (11-14 iPhone 实机 声音服务卡死): slots the device handed back, one bit each (NumBuffers = 32), set by OutputCallback and
         //   drained by the pace thread (S2ADrainReturned). The AudioQueue callback thread belongs to the audio system: it must never
         //   wait on our locks or read guest memory. It did both (pump lock, then Pump → AudioSampleQueue.Read → ReadSamples from the
@@ -244,7 +248,8 @@ namespace Ryujinx.Audio.Backends.Apple
 
             SetupAudioQueue();
             S2AWatch(this, true);
-            new Thread(PaceLoop) { IsBackground = true, Name = "S2A.AudioPace", Priority = ThreadPriority.Highest }.Start();
+            _paceThread = new Thread(PaceLoop) { IsBackground = true, Name = "S2A.AudioPace", Priority = ThreadPriority.Highest };
+            _paceThread.Start();
         }
 
         // S2Arm: 登记 / 注销看门狗（固定 8 槽，看门狗线程扫数组不分配）
@@ -1297,9 +1302,24 @@ namespace Ryujinx.Audio.Backends.Apple
                     // handle is released. A repeated Dispose cannot free a reused slot. A queue left allocated keeps its handle.
                     if (_gcHandle.IsAllocated && !leaked) _gcHandle.Free();
                     _diag.Dispose();
-                    _driver.Unregister(this);
                     Volatile.Write(ref _disposed, true);
                     _paceEvent.Set();
+                }
+
+                // S2Arm (11-19): wait for the pace thread to leave before returning. The driver disposes its shared update event right after
+                //   disposing the sessions; a pace pass already inside ProcessPlayedSamples would Set the disposed event and the unhandled
+                //   ObjectDisposedException took the process down (services suite under load, exit 134; the same teardown runs on an
+                //   in-process restart). Bounded: a pace thread stuck reading a hung game's buffer is left behind with a red line, and the
+                //   driver sees it through S2APaceThreadAlive and keeps the shared events alive.
+                //   Unregister only once it left: a session still in the driver's table with its pace thread alive keeps the shared events.
+                Thread pace = _paceThread;
+                if (pace != null && pace != Thread.CurrentThread && !pace.Join(1000))
+                {
+                    Console.Error.WriteLine($"[声] 【红】输出 #{_diag.Index}：释放时送数线程 1 秒内没退出（卡在读游戏内存？），先放开");
+                }
+                else
+                {
+                    _driver.Unregister(this);
                 }
             }
         }

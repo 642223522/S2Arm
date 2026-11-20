@@ -272,8 +272,9 @@
 "about.unknown" = "Unknown";
 
 /* 宿主其余界面（#316 第二轮）：设置页、提示页 / 加载页、存档管理、手柄连接、诊断、联机、文字输入等 */
-"app.fpsCap.ladder" = "This device can't hold 60 FPS steadily right now, so the game is back at its native frame rate. It will try 60 FPS again automatically once things are stable.";
+"app.fpsCap.ladder" = "This session can't hold 60 FPS steadily, so the game is back at its native frame rate for now. It starts at 60 FPS again the next time you open the game.";
 "app.fpsCap.restored" = "60 FPS is back.";
+"app.fpsCap.retry" = "Try 60 FPS again";
 "app.lowRam.title" = "This device may not have enough memory";
 "app.lowRam.body" = "This game needs more memory than this device has. It will still start, but it may stutter or be closed by the system.";
 "app.gpuStop.body" = "Swipe this app away in the app switcher and open it again — you can usually keep playing from where the game last saved. To help us find the cause, tap “Report a Problem” to send us diagnostics.";
@@ -615,3 +616,23 @@
 "vpad.snap.deleteFailed" = "Couldn’t delete it completely. Try again in a moment";
 "snap.result.title" = "Couldn’t go back to that moment";
 "snap.result.generic" = "Going back to that moment didn’t work, so the game started again. Your game saves are not affected.";
+
+"cert.password.title" = "Enter the certificate password";
+"cert.password.message" = "“%@” needs its password to import.";
+"cert.password.wrong" = "That password didn’t work. Try again (“%@”).";
+"cert.import" = "Import";
+"cert.failed.title" = "Couldn’t import the certificate";
+"cert.failed.message" = "This file isn’t a signing certificate S2Arm can use (.p12).";
+"cert.done.title" = "Signing certificate imported";
+"cert.done.message" = "Team %@. Games you import on this iPhone will be signed with it before they start.";
+"cert.teamMismatch" = "Note: this certificate belongs to team %1$@, but this S2Arm was installed by team %2$@, so games signed with it won’t open. It has been kept, and the certificate you already had still works. Export the certificate from the app you installed S2Arm with (AltStore or SideStore) and import it.";
+"cert.sidestore.missing" = "Couldn’t open SideStore: it isn’t on this iPhone, or its version is too old.";
+"cert.sidestore.empty" = "SideStore didn’t send a certificate back. Tap “Export” in SideStore and try again.";
+"cert.sidestore.noReply" = "SideStore didn’t send back a certificate. You may have tapped Cancel, or this SideStore is too old to share its certificate with other apps. Update SideStore and try again, or export the certificate as a .p12 file and import it.";
+"cert.pickP12" = "Import .p12…";
+"cert.status" = "Team %1$@ · %2$@";
+"cert.status.otherTeam" = "different Apple ID from S2Arm";
+"cert.status.replaced" = "no longer valid";
+"cert.source.sidestore" = "From SideStore";
+"cert.source.p12" = "Imported .p12";
+"cert.source.pc" = "From your computer";

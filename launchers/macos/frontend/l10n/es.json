@@ -1385,9 +1385,9 @@
   "s2arm.install.account": "Equipo de firma: %@",
   "s2arm.install.checklist": "Antes de instalar",
   "s2arm.install.device": "Dispositivo: %@",
-  "s2arm.install.note": "Se firma con el Apple ID que usas en Xcode y se instala por cable. Las apps firmadas con un Apple ID gratuito caducan a los 7 días; vuelve a instalarla entonces.",
+  "s2arm.install.note": "Se firma con el Apple ID con el que iniciaste sesión en S2Arm y se instala por cable. Las apps firmadas con un Apple ID gratuito caducan a los 7 días; vuelve a instalarla entonces.",
   "s2arm.install.start": "Instalar",
-  "s2arm.install.teamManual": "Cómo solucionarlo",
+  "s2arm.install.teamManual": "Equipo de Xcode para Apple TV",
   "s2arm.install.teamManualField": "Team ID de 10 caracteres",
   "s2arm.install.teamManualHelp": "Si has iniciado sesión en Xcode pero no se encuentra ningún equipo, introduce tu Team ID (visible en la página de cuentas de Xcode o en el sitio de Apple Developer). También puedes usar Mostrar IPA para localizar la app, instalarla con Sideloadly o AltStore, y copiar el paquete de recursos en la app con el Finder.",
   "s2arm.install.teamManualUse": "Instalar con este equipo",
@@ -1752,5 +1752,7 @@
   "s2arm.env.xcode.none": "Aún no se encontró Xcode",
   "s2arm.env.xcode.choose": "Elegir Xcode…",
   "s2arm.env.xcode.auto": "Buscar automáticamente",
-  "s2arm.env.xcode.invalid": "No es un Xcode completo (necesita Contents/Developer/usr/bin/xcodebuild). No se cambió nada."
+  "s2arm.env.xcode.invalid": "No es un Xcode completo (necesita Contents/Developer/usr/bin/xcodebuild). No se cambió nada.",
+  "s2arm.env.action.appleLogin": "Iniciar sesión con Apple ID",
+  "s2arm.fail.appleAccount": "No se pudo leer el Apple ID con sesión iniciada"
 }

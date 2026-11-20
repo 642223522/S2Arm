@@ -419,7 +419,7 @@ def bundle(destination, developer_dir):
 #   （去 .NET 静态扫描点名它）。从仓库删会改直连库的键、所有款重编，拿出包更便宜
 BUILD_ONLY = ("translator/dmsh_xlate_bin/dmsh_xlate",)
 SNAP_KEYS = ("commit", "stageFilesKeys", "scanTree", "romfsIndexOids", "listed")
-SNAP_STAGES = ("extract", "direct", "direct_seed")   # 玩家出包路径上调 stage_files_key 的阶段
+SNAP_STAGES = ("extract", "direct", "direct_seed", "direct_cpso")   # 玩家出包路径上调 stage_files_key 的阶段
 ROMFS_WRITER = ("services/S2A.Services/RomFsIndex.cs", "services/romfs_index", "services/romfs_index.sh", "compat/tree/Directory.Packages.props")
 
 

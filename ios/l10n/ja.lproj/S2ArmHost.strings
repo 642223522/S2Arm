@@ -267,8 +267,9 @@
 "about.mode.direct" = "ダイレクト";
 "about.mode.unrecorded" = "不明（このパッケージにはグラフィックスモードが記録されていません）";
 "about.unknown" = "不明";
-"app.fpsCap.ladder" = "このデバイスは現在 60 FPS を安定して維持できないため、ゲームを元のフレームレートに戻しました。安定したら自動的に 60 FPS を再試行します。";
+"app.fpsCap.ladder" = "このプレイでは 60 FPS を安定して維持できないため、いったん元のフレームレートに戻しました。次にゲームを開くと 60 FPS から始まります。";
 "app.fpsCap.restored" = "60 FPS に戻りました。";
+"app.fpsCap.retry" = "60 FPS を再試行";
 "app.lowRam.title" = "このデバイスはメモリが不足している可能性があります";
 "app.lowRam.body" = "このゲームはデバイスより多くのメモリを必要とします。起動はできますが、動作が重くなるか、システムに強制終了される場合があります。";
 "app.gpuStop.body" = "アプリスイッチャーでこの App を閉じてから開き直せば、たいていゲームが最後に保存したところから続けられます。原因を調べてほしいときは「問題を報告」で診断を送ってください。";
@@ -609,3 +610,23 @@
 "vpad.snap.deleteFailed" = "削除しきれませんでした。少し待ってからもう一度お試しください";
 "snap.result.title" = "その瞬間に戻れませんでした";
 "snap.result.generic" = "その瞬間に戻れなかったため、ゲームを最初から始めました。ゲームのセーブデータには影響しません。";
+
+"cert.password.title" = "証明書のパスワードを入力";
+"cert.password.message" = "「%@」の読み込みにはパスワードが必要です。";
+"cert.password.wrong" = "パスワードが違います。もう一度入力してください（「%@」）。";
+"cert.import" = "読み込む";
+"cert.failed.title" = "証明書を読み込めませんでした";
+"cert.failed.message" = "このファイルは使える署名証明書（.p12）ではありません。";
+"cert.done.title" = "署名証明書を読み込みました";
+"cert.done.message" = "チーム %@。この iPhone で読み込んだゲームは、起動前にこの証明書で署名されます。";
+"cert.teamMismatch" = "注意：この証明書はチーム %1$@ のものですが、この S2Arm はチーム %2$@ でインストールされているため、この証明書で署名したゲームは開けません。証明書は保存され、これまで使えていた証明書はそのまま使えます。S2Arm をインストールしたアプリ（AltStore または SideStore）で証明書を書き出して読み込んでください。";
+"cert.sidestore.missing" = "SideStore を開けません：この iPhone に SideStore がないか、バージョンが古すぎます。";
+"cert.sidestore.empty" = "SideStore から証明書が返ってきませんでした。SideStore で「Export」をタップしてからもう一度お試しください。";
+"cert.sidestore.noReply" = "SideStore から証明書が返ってきませんでした。キャンセルしたか、この SideStore が古くてほかのアプリに証明書を渡せない可能性があります。SideStore をアップデートしてもう一度試すか、証明書を .p12 ファイルとして書き出して読み込んでください。";
+"cert.pickP12" = ".p12 を読み込む…";
+"cert.status" = "チーム %1$@ · %2$@";
+"cert.status.otherTeam" = "S2Arm と別の Apple ID";
+"cert.status.replaced" = "無効になりました";
+"cert.source.sidestore" = "SideStore から";
+"cert.source.p12" = "読み込んだ .p12";
+"cert.source.pc" = "コンピュータから";

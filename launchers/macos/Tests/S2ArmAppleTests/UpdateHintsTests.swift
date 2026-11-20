@@ -43,7 +43,13 @@ import S2ArmAppleAdapter
         XCTAssertEqual(S2ArmLauncherModel.updateReasonKey("rewriter"), "update.hint.reason.rewriter")
         XCTAssertEqual(S2ArmLauncherModel.updateReasonKey("hostAbi"), "update.hint.reason.hostAbi")
         XCTAssertEqual(S2ArmLauncherModel.updateReasonKey("shader"), "update.hint.reason.shader")
+        XCTAssertEqual(S2ArmLauncherModel.updateReasonKey("libGen"), "update.hint.reason.shader", "库缺新代数内容（旧包不带客体输入）：用着色器那条文案")
         XCTAssertNil(S2ArmLauncherModel.updateReasonKey("other"), "不认识的原因不显示")
+        // 11-19 结构 9：原因表、确认码表只读共享体验表一处（原先 Mac 自己一份：缺 shaderMiss、缺 cert_revoke_confirm）
+        XCTAssertEqual(S2ArmLauncherModel.updateReasonKey("shaderMiss"), "update.hint.reason.shader", "只缺着色器的款也要出建议更新提示")
+        XCTAssertEqual(S2ArmLauncherModel.confirmCodes["cert_revoke_confirm"], "acceptCertRevoke", "新建证书确认：「仍然继续」要带得上参数")
+        XCTAssertEqual(S2ArmLauncherModel.confirmCodes["library_in_cloud"], "acceptCloud")
+        XCTAssertNil(S2ArmLauncherModel.confirmCodes["library_bad_format"], "带 accept_ui 的码由专门页面带，不进通用确认")
         for key in ["update.hint.badge", "update.hint.button", "update.hint.tail", "update.hint.reason.rewriter", "update.hint.reason.hostAbi", "update.hint.reason.shader"] {
             for lang in ["zh-Hans", "zh-Hant", "en", "ja", "es", "fr"] {
                 XCTAssertFalse(BackendText.launcherText(key, language: lang).hasPrefix("["), "\(key) 缺 \(lang)")

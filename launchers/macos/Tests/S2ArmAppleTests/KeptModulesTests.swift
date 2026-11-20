@@ -28,9 +28,9 @@ import S2ArmAppleAdapter
         runner.running = false
         let keptAfter = UserDefaults.standard.object(forKey: "S2AIosAfterPack")
         defer { UserDefaults.standard.set(keptAfter, forKey: "S2AIosAfterPack") }
-        model.iosAfterPack = "export"
+        model.iosAfterPack = "export"   // 11-19 自签走查结构 8：出包页「出完之后」只管出包页那一次，不再挡后台收回 NRO；照样只发现、不装机
         let selfSign = await model.keptModulesTick()
-        XCTAssertFalse(selfSign, "出包页选了导出自签：不自动装到手机（玩家选择优先）")
+        XCTAssertFalse(selfSign, "选了导出自签也只发现、不发起装机")
         XCTAssertEqual(runner.updates.count, 0)
         model.iosAfterPack = "install"
         runner.shellUpdate = true

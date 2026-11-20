@@ -1287,6 +1287,10 @@ static void pool_remove_at(int i) {   // 调用方持 g_mu
 // The Legend of Zelda: Breath of the Wild keeps about 1760 memory pools alive and every buffer binding of every draw looks one up; the old full scan took about 4% of the submit thread's samples (mtl_gpu_addr 222 / 6 s). The index is sorted the first time it is used and then follows each registration / removal in place (pidx_added / pidx_removing). Caller holds g_mu
 static int big_new(big_pool *b, uintptr_t lo, uintptr_t hi, uintptr_t end) {   // 调用方持 g_mu：池的 [lo, end) 一块，查找 [lo, hi) 的地址落到它（近区：宿主地址 = 游戏地址）
     uint64_t lim = (uint64_t)g_dev.maxBufferLength & ~(uint64_t)(getpagesize() - 1); if (end - lo > lim) end = lo + lim;
+    // 先解除这段的写保护（脏页跟踪把上传过的贴图存储页设成只读）：零拷贝缓冲建立时范围里只要有只读页，GPU 对整块缓冲的写全部无声丢失（Metal 3 / 4 都是，校验层不报）。
+    //   整池缓冲在游戏建池时建、那时还没有页被保护，所以原先没撞上；块是 GPU 首次查到才建，常在本次绘制 / 派发刚上传贴图、设了只读之后（t_nvn_texu_pending --collision）。
+    //   解保护走跟踪的宿主写前入口：页记为已写，覆盖到的贴图下次用时照常重传、再设只读；之后的只读只改 CPU 页表，不影响已建好的块
+    dm_guest_write_prepare((void *)lo, end - lo);
     id<MTLBuffer> buf = [g_dev newBufferWithBytesNoCopy:(void *)lo length:end - lo options:MTLResourceStorageModeShared deallocator:nil];
     if (!buf) { MLOG("【红】 memory pool %p: the zero-copy chunk over %#lx..%#lx was refused", b->mem, (unsigned long)lo, (unsigned long)end); return -1; }
     if (g_npool == g_cap) { int c = g_cap ? g_cap * 2 : 64; if (!GROW(g_pools, (size_t)c * sizeof *g_pools, "memory pool table")) return -1; g_cap = c; }
@@ -7240,6 +7244,7 @@ static os_unfair_lock g_rmu = OS_UNFAIR_LOCK_INIT;
 // ---------- Shader mapping table: Switch control section hash → PC metallib (produced by dm/gfx/tools/shader_map.py) ----------
 static NSMutableDictionary<NSString *, NSString *> *g_shmap;   // S2Arm: key -> stage name (shader_map.tsv column 3); was declared NSArray *, clang 21 rejects the NSString reads
 static NSString *g_shmap_path, *g_msl_dir;
+static NSDictionary<NSString *, NSString *> *g_shalias;   // 包内键别名表 key_alias.tsv（映射表同处，graphics/tools/direct/merge_extract.py alias）：第 1 代键 → 第 2 代键；随映射表一起加载、之后只读
 static NSString *exe_rel(const char *rel) {
     char buf[4096]; uint32_t n = sizeof buf;
     if (_NSGetExecutablePath(buf, &n)) return nil;
@@ -7263,6 +7268,17 @@ static void shmap_load_once(void) {
         if (!ln.length || [ln hasPrefix:@"#"] || [ln hasPrefix:@"package"]) continue;
         NSArray *c = [ln componentsSeparatedByString:@"\t"];
         if (c.count > 3) g_shmap[c[3]] = c[2];
+    }
+    {   // 键别名表：没有（旧包、零配置）= 空表
+        NSMutableDictionary<NSString *, NSString *> *al = [NSMutableDictionary dictionary];
+        NSString *at = [NSString stringWithContentsOfFile:[path.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"key_alias.tsv"] encoding:NSUTF8StringEncoding error:nil];
+        for (NSString *ln in [at componentsSeparatedByString:@"\n"]) {
+            if (!ln.length || [ln hasPrefix:@"#"]) continue;
+            NSArray<NSString *> *c = [ln componentsSeparatedByString:@"\t"];
+            if (c.count >= 2 && c[0].length == 16 && c[1].length == 16) al[c[0]] = c[1];
+        }
+        g_shalias = al;
+        if (al.count) MLOG("shader key aliases: %lu generation-1 keys map to generation-2 keys (key_alias.tsv)", (unsigned long)al.count);
     }
     g_shmap_path = path;
     const char *m = getenv("DM_MSL_DIR");
@@ -7346,6 +7362,7 @@ static void shmap_load_once(void) {
     id<MTLLibrary> bflib; int bflib_tried; NSMutableDictionary<NSString *, id<MTLFunction>> *bffn;   // bflib: readable-tile version <key>_bf (merge B step 2)
     uint64_t mis[4];   // mis: texture slots 0-255 already reported for a type mismatch (tex_mis_note)
     uint64_t d2d[4];   // texture slots 0-255 whose sampler type the offline translation did not know and took as 2D (library resolution_scale_reasons "unknown_missing_fact:sampler_type:...slot=N"; audit #1534 P1-20 probe)
+    id<MTLLibrary> pull_lib; id<MTLFunction> pfn; int pfn_state, has_pull;   // 拉取式顶点库 <key>_bp（Pull.cs；pull_fn，nvn_hybrid.inc）：pfn_state 0 没试 / 1 载入 / 2 不可用；has_pull：反射里有 pull
     NSString *ventry, *fnpfx; id<MTLFunction> vfn; int vfn_state;   // fnpfx: a batched library's function name prefix s<key>_ (json fn_prefix, dmsh_build.py unity_flush); ventry stays the logical entry name
     uint32_t spill, spill_slot;
     NSString *mslnote, *mslsrc; uint8_t pkg_oldx, rt_tried; } @end   // pkg_oldx: a compute shader of the package's library made by another translator than this build's (cps_retrans); rt_tried: its retranslation was asked for   // spill: a compute shader's shared memory moved to a device buffer, bytes per threadgroup, bound at spill_slot (dmsh_build.py spill_fix; dispatch)   // vertex: the entry point loaded (by the depth mode); vfn: the same entry of the shadow-input library <key>_bv (vin_fn; state 0 untried, 1 loaded, 2 failed)
@@ -7594,6 +7611,13 @@ static lp_pack *lp_pack_get(void) {
         g_libpack_ok = r; lp_over_open(); });
     return g_libpack_ok == 1 ? &g_libpack : NULL;
 }
+// 包里这支着色器的客体输入（容器种类 56，lib_pack.inc lp_guest_get）：宿主 dsh_miss.inc 给库里的着色器现做补齐 / 采样模拟变体、自跑任务阶段时翻基础源码用。
+//   key = 8 字节键（按字节顺序即 16 位十六进制键名），st = dsh_stage 编号。→ 0 取到（*buf 控制段在前、代码区紧随，调用方 free）；1 包里没有（没有容器 = 逐键旧格式也算）；-1 段坏了（已报红）
+int mtl_guest_input(const uint8_t key[8], int st, uint8_t **buf, uint32_t *nctl, uint32_t *ncode) {
+    uint64_t k = 0; for (int i = 0; i < 8; i++) k = k << 8 | key[i];
+    *buf = NULL; *nctl = *ncode = 0;
+    lp_pack *p = lp_pack_get(); return p ? lp_guest_get(p, k, st, buf, nctl, ncode) : 1;
+}
 // 多程序合集（runtime/include/s2a_programs.h）：游戏 ExecuteProgram(n) 切到同包另一支程序走进程内重启，这支程序的着色器库在 <游戏数据>/programs/<n>/shaders/direct。
 //   宿主（host_adapt.m s2a_direct_program_switch）先把 DM_MSL_DIR / DM_NVN_SHMAP 改到那里再调这里：映射表、c1_full、cb_extent 重读，库容器按新目录重开，预热按新表的清单再起。
 //   只在会话之间调（客体线程都已收回、预热 / 预载已停，nvn_session.inc）。已建好的着色器对象按内容键缓存，两支程序同键 = 同一份翻译，不清。
@@ -7606,7 +7630,7 @@ int nvn_be_reload_direct_library(void) {
     lp_pack_get();   // 同理：让库容器的 once 先走过（旧目录），下面按新目录重开
     if (g_libpack.idx) munmap((void *)g_libpack.idx, g_libpack.idx_len);
     memset(&g_libpack, 0, sizeof g_libpack); g_libpack_ok = 0;
-    g_shmap = nil; g_c1_full = nil; g_c1_full_valid = 0; g_cb_ext = nil;
+    g_shmap = nil; g_shalias = nil; g_c1_full = nil; g_c1_full_valid = 0; g_cb_ext = nil;
     g_warm_started = 1;   // 先挡住 shmap_load_once 里的预热：预热要用库容器，等新目录的库容器开好再起
     shmap_load_once();
     if (g_lpover.idx) munmap((void *)g_lpover.idx, g_lpover.idx_len);
@@ -7624,7 +7648,8 @@ static int lp_kind_of(const char *name, int json) {
     if (!strcmp(s, "bv")) return json ? -1 : LP_K_BV;
     if (!strcmp(s, "ft")) return json ? -1 : LP_K_FT;   // a pixel shader's typed-output variants (dmsh_build.py ft_finish)
     if (!strcmp(s, "se")) return json ? -1 : LP_K_SE;   // a shader's sampler-emulation variant (se_packed; 0.6.0: built for every key the translator can rewrite)
-    if (!strcmp(s, "vp")) return json ? -1 : LP_K_VP;   // a vertex shader's padded variant for the union of every pixel shader's user(locn) inputs (vp_pack, Build.cs VpFinish)
+    if (!strcmp(s, "vp")) return json ? -1 : LP_K_VP;
+    if (!strcmp(s, "bp")) return json ? -1 : LP_K_BP;   // 拉取式顶点输入变体（Build.cs PullBuild；pull_fn，nvn_hybrid.inc）   // a vertex shader's padded variant for the union of every pixel shader's user(locn) inputs (vp_pack, Build.cs VpFinish)
     if (!strcmp(s, "bgv")) return json ? LP_K_BGVJSON : LP_K_BGV;
     if (!strcmp(s, "bgc")) return json ? LP_K_BGCJSON : LP_K_BGC;   // passthrough-geometry fast path (nvn_geometry.inc geo_draw)
     if (s[0] == 'b' && s[1] == 'g' && s[2] == 's' && s[3] >= '0' && s[3] <= '9' && !s[4]) return (json ? LP_K_BGSJSON : LP_K_BGS) + (s[3] - '0');
@@ -7728,6 +7753,11 @@ static NSString *msl_note(NSString *pc, NSString *src) {
     return helpers ? [NSString stringWithFormat:@"%@ fallback translation, %ld lines, fnv %016llx, main0 body %ld lines, split into %d helpers%s", pc, lines, (unsigned long long)h, body, helpers, optnone ? ", optnone" : ""]
                    : [NSString stringWithFormat:@"%@ fallback translation, %ld lines, fnv %016llx, main0 body %ld lines, %s%s", pc, lines, (unsigned long long)h, body, v, optnone ? ", optnone" : ""];
 }
+// 顶点着色器反射里的 pull（Build.cs PullBuild 编过 <key>_bp 才写）：{entry "main0", entry_z（有才有）, slot, inputs}；布局块槽要是顶点缓冲第一个槽（Pull.cs SLOT = VB_SLOT(0)），对不上的不用
+static int pull_refl_ok(NSDictionary *j) {
+    NSDictionary *p = [j isKindOfClass:[NSDictionary class]] ? j[@"pull"] : nil;
+    return [p isKindOfClass:[NSDictionary class]] && [p[@"slot"] isKindOfClass:[NSNumber class]] && [p[@"slot"] intValue] == VB_SLOT(0) && [p[@"entry"] isEqual:@"main0"];
+}
 static NvShader *shader_build(NSString *pc, int stage, int layer, int depth_zero) {
     NSError *e = nil; NSString *mnote = nil, *msrc = nil;   // #065090 msl_note
     // S2Arm: a key missing from the library is looked up in DM_MSL_FALLBACK (the on-device fallback translation writes <key>_b.metal + .json there; iOS cannot store a metallib built at runtime)
@@ -7811,6 +7841,7 @@ static NvShader *shader_build(NSString *pc, int stage, int layer, int depth_zero
             NSArray *ent = e[1]; if (ent.count > 32) continue;
             o->geo_tf_stride[b] = [e[0] unsignedIntValue]; o->geo_tf_n[b] = (uint32_t)ent.count;
             for (NSUInteger k = 0; k < ent.count; k++) { o->geo_tf_off[b][k] = [ent[k][0] unsignedIntValue]; o->geo_tf_comp[b][k] = [ent[k][1] unsignedIntValue]; } } }
+    if (stage == 0) o->has_pull = pull_refl_ok(j);   // 混合管线（nvn_hybrid.inc）
     o->fn = [lib newFunctionWithName:fnn(o, entry)]; o->plib = lib; o->stage = stage; o->load_depth_zero = depth_zero; strlcpy(o->key, pc.UTF8String, sizeof o->key); o->ventry = entry;
     if (stage == 5 && tensor_native_json(j)) {
         o->tensor = 3;
@@ -8063,6 +8094,50 @@ static NSString *shmap_rt_get(NSString *k) { pthread_mutex_lock(&g_shmap_rt_mu);
 static NSString *shmap_stage(NSString *k) { NSString *s = g_shmap[k]; return s ? s : shmap_rt_get(k); }
 void mtl_shmap_rt_add(const char *key, const char *stage) { pthread_mutex_lock(&g_shmap_rt_mu); if (!g_shmap_rt) g_shmap_rt = [NSMutableDictionary dictionary]; g_shmap_rt[@(key)] = @(stage); pthread_mutex_unlock(&g_shmap_rt_mu); }
 int mtl_shmap_known(const char *key) { shmap_load(); NSString *k = @(key); return g_shmap[k] != nil || shmap_rt_get(k) != nil || builtin_get(key) != NULL; }
+// 主程序内嵌计算核（nvn_builtin.h）认这个键：只比表，不像 builtin_get 那样建库（游戏线程上也调）
+static int builtin_known(const char *key) {
+    for (unsigned i = 0; i < sizeof k_nvn_builtin_map / sizeof *k_nvn_builtin_map; i++) if (!strcmp(key, k_nvn_builtin_map[i].ctl)) return 1;
+    return 0;
+}
+// 旧包兜底（hle_nvn.c keys_hash，nvn_key.h）：同一份控制段 + 代码的第 2 代键 v2 与第 1 代键 v1 二选一，回 1 = 用 v1。
+//   当前包的着色器表（映射表 + 内嵌计算核）有 v2 → v2；没有 v2、有 v1 → v1（玩家手上按第 1 代出的旧包）；
+//   包表两个都没有：设备兜底目录里有旧版本 App 按 v1 现编、本机还能复用的（dm_shader_reuse，顺带登记进运行时映射）→ v1；都没有 → v2（首遇现编按 v2 存）。
+//   规则只看包表与兜底目录里的第 1 代产物，本局现编只会新增被选中的那个键，所以同一份字节在 SetShaders、首用、首用复核（prog_key_live）时取舍一致。
+//   线程：SetShaders 在游戏线程、首用在提交线程都会调。映射表经 shmap_load 一次性加载（dispatch_once，先到的线程加载、其余等它），之后只读；
+//   换程序（nvn_be_reload_direct_library）只在会话之间换表；运行时映射有锁；内嵌核表是常量
+int nvn_be_shader_key_pick(const uint8_t v2[8], const uint8_t v1[8]) {
+    char a[17], b[17];
+    for (int i = 0; i < 8; i++) { snprintf(a + 2 * i, 3, "%02x", v2[i]); snprintf(b + 2 * i, 3, "%02x", v1[i]); }
+    shmap_load();
+    if (g_shmap[@(a)] != nil || builtin_known(a)) return 0;
+    if (g_shmap[@(b)] != nil || builtin_known(b)) return 1;
+    return shmap_rt_get(@(b)) != nil || dm_shader_reuse(b);
+}
+// 读档 / 读本机管线记录时的键规范化：k = 16 位十六进制键（就地改）。包表（映射表 + 内嵌计算核）没有它、别名表里它的第 2 代在包表里 → 换成第 2 代，回 1；否则不动、回 0。
+//   用处：存档 / 管线记录是更新前按第 1 代键记的，包更新成第 2 代后照原键查不到（hle_nvn.c s2a_hle_pk_load、warm_parse）。调用前映射表须已加载（不在这里 shmap_load：
+//   warm_parse 在 shmap_load_once 里经 warm_start 同步调到，再进 dispatch_once 会死锁）
+static int key_canon16(char k[17]) {
+    if (!g_shalias.count || strlen(k) != 16) return 0;
+    NSString *s = @(k);
+    if (g_shmap[s] != nil || builtin_known(k)) return 0;
+    NSString *v2 = g_shalias[s];
+    if (!v2 || g_shmap[v2] == nil) return 0;
+    memcpy(k, v2.UTF8String, 16); return 1;
+}
+// 库名（<16 位键>_b / _bgv / …，见 warm_stale）的键部分规范化
+static NSString *lib_name_canon(NSString *name) {
+    if (name.length < 16) return name;
+    char k[17]; memcpy(k, name.UTF8String, 16); k[16] = 0;
+    return key_canon16(k) ? [@(k) stringByAppendingString:[name substringFromIndex:16]] : name;
+}
+// hle_nvn.c s2a_hle_pk_load（弱链接）：8 字节键版本，回 1 = 换了
+int nvn_be_shader_key_canon(uint8_t key[8]) {
+    char k[17]; for (int i = 0; i < 8; i++) snprintf(k + 2 * i, 3, "%02x", key[i]);
+    shmap_load();
+    if (!key_canon16(k)) return 0;
+    for (int i = 0; i < 8; i++) { unsigned v; sscanf(k + 2 * i, "%2x", &v); key[i] = (uint8_t)v; }
+    return 1;
+}
 // S2Arm 两段式出包（10-27）：映射表有键不等于库里有这支——热键版包的映射表是全键、库只带热键，缺的那支要照样走首遇现编（dsh_miss.inc），不能让 shader_load 失败去触发直连失败判据。
 // 只查索引不读数据（每次 ProgramSetShaders 都会问）：现编过的 / 内置的 → 有；有库容器 → 容器索引里有没有 <键>_b 的反射；没容器（Mac 开发树）→ <键>_b.json 文件在不在
 int mtl_shlib_has(const char *key) {
@@ -8138,7 +8213,7 @@ static void *prog_get_ptr(const prog_t *cp) {   // Called only on the submit thr
     NvProg *o = [NvProg new];
     for (unsigned i = 0; i < p->nstage; i++) {
         // Key = sha256(first 0x880 bytes of the control section + code area): many of Mario's shaders share a control section but differ in code (dm/gfx/tools/shader_split.py). It was computed at SetShaders (hle_nvn.c): by now the game may have freed the control section
-        uint8_t md[8]; prog_key(p, i, md);
+        uint8_t md[8]; prog_key(p, i, md);   // two volatile control spans are zeroed in the key (nvn_key.h); an old package may get its old key (hle_nvn.c keys_hash)
         { static const uint8_t z[8]; static int nz; if (!memcmp(md, z, 8) && nz++ < 8)   // S2Arm: the state behind a zero key (no control section when the key was taken), for the next diagnosis
             MLOG("【红】 program %p stage %u of %u has no key: control %p, code %#llx, magic %#x, serial %llu", (const void *)p, i, p->nstage, p->sd[i].control, (unsigned long long)p->sd[i].data, p->magic, (unsigned long long)p->serial); }
         NSString *k = [NSString stringWithFormat:@"%02x%02x%02x%02x%02x%02x%02x%02x", md[0], md[1], md[2], md[3], md[4], md[5], md[6], md[7]];
@@ -8706,7 +8781,9 @@ static void *tex_by_id_ptr(int tid) {   // Caller holds g_rmu
     rp->view_pkg = (rp->t.has_layout || tex_cpu_written(rp->t.serial)) && rp->t.mem;
     if (v) {   // The serial table or guest memory has changed: check whether the base texture was re-uploaded and replaced; if so the view is invalidated
         id<MTLTexture> cur = tex_mtl(&rp->t);
-        if (cur == v || v.parentTexture == cur) { rp->view_ser = sg; rp->view_dirty = dg; rp->view_ep = g_pkg_epoch; return (__bridge void *)v; }
+        // cur 为空 = 这个贴图号现在没有贴图（释放了没再建 / 建不出）：缓存的若正是底贴图本身，它也没有 parent，nil == nil 原先照样留着并标为有效，
+        //   池表的快路径（tex_fast_rid）就把一张宿主已放掉、已出驻留集的贴图交给着色器采样 = GPU 缺页（照上游参考实现（MIT）0e4480d2）
+        if (cur && (cur == v || v.parentTexture == cur)) { rp->view_ser = sg; rp->view_dirty = dg; rp->view_ep = g_pkg_epoch; return (__bridge void *)v; }
         defer_obj_unref(v); CFRelease(rp->view); rp->view = NULL; rp->view_rid = 0; v = nil;
     }
     treg_t r = *rp;
@@ -9922,9 +9999,9 @@ static id<MTLFunction> se_build(NvShader *sh, const uint8_t md[8], uint64_t code
     if (!fb || !*fb) { snprintf(why, n, "DM_MSL_FALLBACK is not set"); return nil; }
     if (!dm_shader_se_fresh(sh->key)) {
         char path[1200]; int rc;
-        // 游戏已收回控制段：本机同链源码，或 SetShaders 时的源快照（dm_shader_se_cached；同顶点补齐 vp_build）
+        // 游戏已收回控制段：本机同链源码，或包里的客体输入（库容器种类 56，dm_shader_se_cached；同顶点补齐 vp_build）
         if (!code) { rc = dm_shader_se_cached(md, sh->stage == 5 ? 2 : 1, path, sizeof path);
-            if (rc == 1) { snprintf(why, n, "the game no longer holds its control section, and no snapshot or translation of it is on this device"); return nil; } }
+            if (rc == 1) { snprintf(why, n, "the game no longer holds its control section, and neither the package (guest input, kind 56) nor this device has a translation of it"); return nil; } }
         else rc = dm_shader_se(md, code, ctl, path, sizeof path);
         if (rc) { snprintf(why, n, "%s", rc == 3 ? "main0 samples through no sampler member the variant rewrites" : "the device could not make it"); return nil; }
     }
@@ -10062,9 +10139,9 @@ static id<MTLFunction> vp_fn(NvShader *vs, uint32_t miss) {   // the padded vari
 // Make the variant and load it: S2A.Dsh writes it from the guest code / control (code 0: none to make it from). → the shader's entry point in it, nil with why
 static id<MTLFunction> vp_build(NvShader *vs, const uint8_t md[8], uint64_t code, const void *ctl, uint32_t mask, char *why, size_t n) {
     char path[1200]; int rc;
-    if (!code) {   // the game reused its control section: this device's translation, or the SetShaders / Bind snapshot (dsh_src_hold)
+    if (!code) {   // the game reused its control section: this device's translation, or the package's guest input (container kind 56, dm_shader_vpad_cached)
         rc = dm_shader_vpad_cached(md, vs->mesh_kind == 2 ? 5 : 0, mask, path, sizeof path);
-        if (rc == 1) { snprintf(why, n, "the game no longer holds its control section, and no snapshot or translation of it is on this device"); return nil; }
+        if (rc == 1) { snprintf(why, n, "the game no longer holds its control section, and neither the package (guest input, kind 56) nor this device has a translation of it"); return nil; }
     }
     else rc = dm_shader_vpad(md, code, ctl, mask, path, sizeof path);
     if (rc) { snprintf(why, n, "%s", rc == 3 ? "its translation already writes those outputs (or has no main0_out to add them to)" : "the device could not make it"); return nil; }
@@ -10093,7 +10170,7 @@ static id<MTLFunction> vp_warm(NvShader *vs, uint32_t mask) {
     if (vs->vp_st == SE_READY && (vs->vp_mask & mask) == mask) { id<MTLFunction> f = vs->vp_main; pthread_mutex_unlock(&g_vp_mu); return f; }
     if (vs->vp_st != SE_NONE) { pthread_mutex_unlock(&g_vp_mu); return nil; }   // being made by the draw's vp_ask, failed, or a narrower variant is ready: leave it to the draw
     // only a variant an earlier run already wrote (<key>_vp<mask>.metal; dm_shader_vpad_cached still checks it is this chain's and not older than its source): the prewarm
-    //   does not translate, and with no translation on disk the cached path would report the missing snapshot that only the draw can supply
+    //   does not translate, and with no translation on disk the cached path would translate from the package's guest input here, on the prewarm thread
     const char *fb = getenv("DM_MSL_FALLBACK"); char vp[1200];
     if (!fb || !*fb || snprintf(vp, sizeof vp, "%s/%.16s_vp%x.metal", fb, vs->key, mask) >= (int)sizeof vp || access(vp, R_OK)) { pthread_mutex_unlock(&g_vp_mu); return nil; }
     vs->vp_st = SE_BUSY; pthread_mutex_unlock(&g_vp_mu);
@@ -10308,8 +10385,10 @@ static int pso_pend_find(const pso_key *k) { for (int i = 0; i < PSO_PEND_MAX; i
 static int spec_probe_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("DM_NVN_PSO_SPEC_PROBE"); on = e && *e && strcmp(e, "0") && !g_m3; } return on; }
 // Metal 4 专有名字按棘轮压到最少：描述符变量都用 id、属性走消息，整段在 @available 里（avail / mtl4 两个棘轮，基线说明见 tools/mtl4_baseline.txt）
 static void spec_probe_color(id p, MTLRenderPipelineDescriptor *d, int unspec) API_AVAILABLE(macos(26.0), ios(26.0)) {
+    // unspec：8 个附件全部留空，没绑的也不写 Invalid——基础管线与本笔画布无关（拉取基础管线按 pbase_key 认，键里没有画布），出包离线编的随包基础管线
+    //   （graphics/tools/direct/base_pipelines.py）也是全留空；11-19 本机实测：没绑的写 Invalid 的描述查全留空的归档不中。特化时没绑的才写 Invalid
     for (int i = 0; i < 8; i++) { MTLRenderPipelineColorAttachmentDescriptor *s = d.colorAttachments[i]; MTL4RenderPipelineColorAttachmentDescriptor *c = [[p colorAttachments] objectAtIndexedSubscript:i];
-        if (s.pixelFormat == MTLPixelFormatInvalid) { [c setPixelFormat:MTLPixelFormatInvalid]; continue; }
+        if (!unspec && s.pixelFormat == MTLPixelFormatInvalid) { [c setPixelFormat:MTLPixelFormatInvalid]; continue; }
         [c setPixelFormat:unspec ? MTLPixelFormatUnspecialized : s.pixelFormat]; [c setWriteMask:unspec ? MTLColorWriteMaskUnspecialized : s.writeMask];
         [c setBlendingState:unspec ? MTL4BlendStateUnspecialized : s.blendingEnabled ? MTL4BlendStateEnabled : MTL4BlendStateDisabled];
         MTLBlendFactor u = MTLBlendFactorUnspecialized; MTLBlendOperation uo = MTLBlendOperationUnspecialized;
@@ -10326,20 +10405,30 @@ static id spec_probe_fn(id<MTLLibrary> lib, id<MTLFunction> f) API_AVAILABLE(mac
     id sp = [MTL4SpecializedFunctionDescriptor new]; [sp setFunctionDescriptor:l]; [sp setConstantValues:[MTLFunctionConstantValues new]]; return sp;
 }
 // 完整建用的 Metal 4 描述：照真实描述逐项带过来（单测直接查这里，探针的完整建要和真实那条是同一条管线，计时才可比）
+// Metal 4 渲染描述的唯一建法（探针完整建、混合管线拉取版共用，nvn_hybrid.inc 不直接碰 Metal 4 符号：tools/mtl4_baseline.txt 棘轮）：
+//   照精确描述 d 逐项带过来，顶点 / 片元换成给定的函数描述；vdesc 为 nil 时不带顶点描述（拉取版自己读顶点流）；unspec：颜色状态留空（基础管线）
+static id m4_render_desc(MTLRenderPipelineDescriptor *d, id vfd, id ffd, MTLVertexDescriptor *vdesc, int unspec) API_AVAILABLE(macos(26.0), ios(26.0)) {
+    id p = [MTL4RenderPipelineDescriptor new];
+    [p setVertexFunctionDescriptor:vfd]; [p setFragmentFunctionDescriptor:ffd]; if (vdesc) [p setVertexDescriptor:vdesc];
+    [p setRasterSampleCount:d.rasterSampleCount]; [p setInputPrimitiveTopology:d.inputPrimitiveTopology];
+    [p setAlphaToCoverageState:d.alphaToCoverageEnabled ? MTL4AlphaToCoverageStateEnabled : MTL4AlphaToCoverageStateDisabled];
+    [p setAlphaToOneState:d.alphaToOneEnabled ? MTL4AlphaToOneStateEnabled : MTL4AlphaToOneStateDisabled];
+    spec_probe_color(p, d, unspec); return p;
+}
+// 新建一个 Metal 4 编译器（各用处各持一个：探针串行队列、混合管线后台建）；建不出打红一行，带上用处
+static id m4_compiler(const char *who) API_AVAILABLE(macos(26.0), ios(26.0)) {
+    NSError *e = nil; id c = [g_dev newCompilerWithDescriptor:[MTL4CompilerDescriptor new] error:&e];
+    if (!c) MLOG("【红】 %s: no Metal 4 compiler (%s)", who, e.localizedDescription.UTF8String);
+    return c;
+}
 static id spec_probe_desc(MTLRenderPipelineDescriptor *d, id<MTLLibrary> vl, id<MTLLibrary> fl, NvShader *vs, NvShader *fs) API_AVAILABLE(macos(26.0), ios(26.0)) {
-    id full = [MTL4RenderPipelineDescriptor new];
-    [full setVertexFunctionDescriptor:spec_probe_fn(vl, vs->fn)]; [full setFragmentFunctionDescriptor:spec_probe_fn(fl, fs->fn)]; [full setVertexDescriptor:d.vertexDescriptor];
-    [full setRasterSampleCount:d.rasterSampleCount]; [full setInputPrimitiveTopology:d.inputPrimitiveTopology];
-    [full setAlphaToCoverageState:d.alphaToCoverageEnabled ? MTL4AlphaToCoverageStateEnabled : MTL4AlphaToCoverageStateDisabled];
-    [full setAlphaToOneState:d.alphaToOneEnabled ? MTL4AlphaToOneStateEnabled : MTL4AlphaToOneStateDisabled];
-    spec_probe_color(full, d, 0); return full;
+    return m4_render_desc(d, spec_probe_fn(vl, vs->fn), spec_probe_fn(fl, fs->fn), d.vertexDescriptor, 0);
 }
 static void spec_probe(MTLRenderPipelineDescriptor *d, NvShader *vs, NvShader *fs) {
     if (@available(macOS 26.0, iOS 26.0, *)) {} else return;
     static dispatch_queue_t q; static id comp; static dispatch_once_t once;
     dispatch_once(&once, ^{ q = dispatch_queue_create("dm.nvn.specprobe", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, 0));
-        if (@available(macOS 26.0, iOS 26.0, *)) { NSError *e = nil; comp = [g_dev newCompilerWithDescriptor:[MTL4CompilerDescriptor new] error:&e];
-            if (!comp) MLOG("【红】 two-level build probe: no Metal 4 compiler (%s)", e.localizedDescription.UTF8String); } });
+        if (@available(macOS 26.0, iOS 26.0, *)) comp = m4_compiler("two-level build probe"); });
     dispatch_sync(q, ^{ @autoreleasepool { if (@available(macOS 26.0, iOS 26.0, *)) {
         id<MTLLibrary> vl = vs ? vs->plib : nil, fl = fs ? fs->plib : nil;
         if (!comp || !vl || !fl || d.vertexFunction != vs->fn || d.fragmentFunction != fs->fn || !d.rasterizationEnabled) { g_sp.skipped++; return; }
@@ -10358,6 +10447,7 @@ static void spec_probe(MTLRenderPipelineDescriptor *d, NvShader *vs, NvShader *f
             g_sp.base_ns / 1e6 / n, g_sp.spec_ns / 1e6 / n, g_sp.full_ns / 1e6 / n);
     } } });
 }
+#include "nvn_hybrid.inc"   // 混合管线：拉取式顶点 + 特化（hybrid_get、pull_bind）
 static void pso_pend_kick(const pso_key *k, NvShader *vs, NvShader *fs) {   // Called by the submit thread: kick only if it is neither in the cache nor in the table
     if (hm_get_id(&g_pso, k) || !pso_pair_ok(vs, fs, 0)) return;
     pthread_mutex_lock(&g_pp_mu);
@@ -10558,7 +10648,7 @@ static uint8_t g_pso_color_round;
 #define PSO_WHY(...) snprintf(g_pso_why, sizeof g_pso_why, __VA_ARGS__)
 static void *pso_get_vs_ptr(NvProg *pr, NvShader *vs) {   // borrowed: g_pso holds what it returns
     __unsafe_unretained NvShader *fs = pr->sh[1]; g_pso_why[0] = 0;
-    g_pso_color_round = 0;
+    g_pso_color_round = 0; g_pso_pull = 0;   // g_pso_pull 只在返回拉取管线那一处置 1
     if (!vs) { RED_ONCE(13, "program has no vertex shader (or it is not mapped)"); PSO_WHY("no vertex stage"); return NULL; }
     pso_key k; pso_key_fill(&k, vs, fs, g_pass.cfmt, g_pass.dfmt, g_pass.sfmt, g_pass.samples, g_pso_lmap != NULL);
     if (g_pso_lmap) { memcpy(k.lmap, g_pso_lmap, 8); k.fsfn = (__bridge void *)g_pso_fsfn; }
@@ -10586,6 +10676,10 @@ static void *pso_get_vs_ptr(NvProg *pr, NvShader *vs) {   // borrowed: g_pso hol
     if (!pso_pair_ok(vs, fs, 1)) {
         if (vp_ask(pr->gp, vs, pso_pair_miss(vs, fs))) { PSO_WHY("the vertex stage %s's padded variant is being made", vs->key); return NULL; }   // not failed: the next draw asks again
         hm_put_id(&g_pso_fail, &k, NSNull.null); PSO_WHY("the vertex stage %s does not write a user(locn) the fragment reads", vs->key); return NULL; }
+    // 混合管线（nvn_hybrid.inc）：精确管线后台编着、这一笔用拉取管线先画——比跳过（少画一帧）和当场等都好。拉取基础管线还没建好就照旧往下走（跳过或等）
+    if (!g_pso_lmap && !ms_fn && !g_pso_fsfn && !k.fc && vs == pr->sh[0] && vs->has_pull && hybrid_on()) {
+        if (!pso_pend_state(&k)) pso_pend_kick(&k, vs, fs);
+        if (pso_pend_state(&k) != 2) { __unsafe_unretained id<MTLRenderPipelineState> h = hybrid_get(&k, vs, fs); if (h) { g_pso_pull = 1; PSO_WHY("drawn with the pulling pipeline while its own compiles"); return (__bridge void *)h; } } }
     if (!g_pso_lmap && !ms_fn && !g_pso_fsfn && first_skip_ok(&k, vs, fs)) { PSO_WHY("compiling in the background (first-use skip)"); return NULL; }   // S2Arm first-use skip: no stand-in, the full pipeline compiles in the background (draw counts it)
     id<MTLRenderPipelineState> ps;
     NSError *e = nil; uint64_t bt = bp_now();
@@ -10803,6 +10897,14 @@ void nvn_be_shader_prefetch(const uint8_t md[8]) {
     } });
     os_unfair_lock_unlock(&g_shpre_mu);
 }
+// 管线行里顶点 / 片元库名的键部分规范化（key_canon16）
+static void skey_canon(pso_skey *sk) {
+    char *f[2] = { sk->vs, sk->fs }; size_t n[2] = { sizeof sk->vs, sizeof sk->fs };
+    for (int i = 0; i < 2; i++) {
+        NSString *a = warm_key(f[i], n[i]), *b = lib_name_canon(a);
+        if (b != a && b.length < n[i]) { memset(f[i], 0, n[i]); memcpy(f[i], b.UTF8String, b.length); }
+    }
+}
 // The lists' lines as tasks; *lines: the lines they hold
 static NSArray<WarmTask *> *warm_parse(NSArray<NSString *> *paths, long *lines) {
     NSMutableArray<WarmTask *> *tasks = [NSMutableArray array];
@@ -10826,10 +10928,12 @@ static NSArray<WarmTask *> *warm_parse(NSArray<NSString *> *paths, long *lines) 
                 if (![ml isEqualToString:line]) { if ([seen containsObject:ml]) continue; [seen addObject:ml]; }
             }
             if (([c[0] isEqualToString:@"S"] && c.count >= 3) || ([c[0] isEqualToString:@"C"] && c.count >= 2)) {
-                if (!c[1].length || warm_stale(c[1], stale)) continue;
-                t = [WarmTask new]; t->kind = [c[0] isEqualToString:@"S"] ? 0 : 2; t->key = c[1]; t->stage = t->kind ? 5 : c[2].intValue; t->fc = t->kind ? fc : 0; [tasks addObject:t];
+                NSString *ck = lib_name_canon(c[1]);   // 更新前按第 1 代键记的行（key_alias.tsv）
+                if (!ck.length || warm_stale(ck, stale)) continue;
+                t = [WarmTask new]; t->kind = [c[0] isEqualToString:@"S"] ? 0 : 2; t->key = ck; t->stage = t->kind ? 5 : c[2].intValue; t->fc = t->kind ? fc : 0; [tasks addObject:t];
             } else if ([c[0] isEqualToString:@"R"] && c.count >= 2) {
                 pso_skey sk; if (pso_skey_parse(c[1].UTF8String, &sk)) continue;
+                skey_canon(&sk);
                 if (sk.k.fc & ~se_mask()) {
                     sk.k.fc &= (uint8_t)se_mask(); char hx[sizeof sk * 2 + 1]; pso_skey_hex(&sk, hx);
                     NSString *ml = [@"R\t" stringByAppendingString:@(hx)]; if ([seen containsObject:ml]) continue; [seen addObject:ml];
@@ -10842,6 +10946,7 @@ static NSArray<WarmTask *> *warm_parse(NSArray<NSString *> *paths, long *lines) 
                 t = [WarmTask new]; t->kind = 1; t->vkey = vkey; t->fkey = fkey; t->rs = [NSMutableArray arrayWithObject:[NSData dataWithBytes:&sk length:sizeof sk]]; [tasks addObject:t];
             } else if ([c[0] isEqualToString:@"M"] && c.count >= 4) {   // a task / mesh pipeline (nvn_geometry.inc mtk_record): the mesh shader in the vertex place, then the task shader key ("-": none) and the padded variant's mask
                 pso_skey sk; if (pso_skey_parse(c[1].UTF8String, &sk)) continue;
+                skey_canon(&sk);
                 NSString *mkey = warm_key(sk.vs, sizeof sk.vs), *fkey = warm_key(sk.fs, sizeof sk.fs), *tkey = [c[2] isEqualToString:@"-"] ? @"" : c[2];
                 if (!mkey.length || warm_stale(mkey, stale) || (fkey.length && warm_stale(fkey, stale)) || (tkey.length && warm_stale(tkey, stale))) continue;
                 t = [WarmTask new]; t->kind = 4; t->vkey = mkey; t->fkey = fkey; t->tkey = tkey; t->pad = (uint32_t)strtoul(c[3].UTF8String, NULL, 16);
@@ -11151,6 +11256,8 @@ static void warm_announce(void) {
 }
 static void warm_start(void) {
     if (g_warm_started++) return;
+    // 混合管线的随包首查预热（nvn_hybrid.inc hybrid_pkg_warm）：进程里第一次从 Metal 4 归档查中有一次性初始化，开局在后台付掉，不落在提交线程的第一次首遇上
+    if (@available(macOS 26.0, iOS 26.0, *)) if (hybrid_on()) dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ @autoreleasepool { if (@available(macOS 26.0, iOS 26.0, *)) hybrid_pkg_warm(); } });
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ pso_user_seen_load(); });   // the record's dedupe set, off the submit thread (pso_user_seen_load)
     NSArray<NSString *> *paths = warm_paths(1);
     if (!paths) return;
@@ -16198,7 +16305,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     if (defer_q_draw) defer_replay();
     if (skip_d) { g_stat_ds_omit++; if (mode == 3) g_stat_s_only++; else if (mode == 4) g_stat_d_only++; }
     // The pipeline depends only on (program, render pass targets, blend / color / write mask / multisample state, vertex layout): if these did not change, reuse the previous one
-    static id<MTLRenderPipelineState> cur_ps; static NvProg *cur_pr; static uint64_t cur_ps_pass; static int cur_ps_fc; static uint8_t cur_ps_round;
+    static id<MTLRenderPipelineState> cur_ps; static NvProg *cur_pr; static uint64_t cur_ps_pass; static int cur_ps_fc; static uint8_t cur_ps_round; static int cur_pull;   // cur_pull: cur_ps 是拉取管线（nvn_hybrid.inc）
     if (g_fz.active && !g_defer_replaying) { g_pso_lmap = g_fz.phase == 1 ? g_fz.lmap1 : g_fz.lmap2; g_pso_fsfn = g_fz.phase == 1 ? nil : fz_fn; g_pso_fz = g_fz.phase == 1 ? (pso_fz_desc){0} : g_fz_desc; g_pso_dirty = 1; }
     else if (g_fbt.on && g_enc && !g_defer_replaying) {   // ⑤ 遍内自采样片上读取：本笔用可读瓦片版（输出不搬位置）
         g_pso_lmap = g_fbt.lmap; g_pso_fsfn = g_fbt.fn; memset(&g_pso_fz, 0, sizeof g_pso_fz); g_pso_fz.kind = 1; g_pso_fz.fbmask = g_fbt.fbmask;
@@ -16211,7 +16318,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     if (g_mtk.on) {   // a task / mesh draw (mesh_tasks_draw): its own pipeline kind; the next draw fetches its own again (cur_pr nil)
         g_pso_fc = fc; cur_ps = mtk_pso(pr); cur_ps_round = g_pso_color_round; g_pso_fc = 0; cur_pr = nil;
         if (!cur_ps) { g_mtk.miss = 1; if (g_pso_lmap) { g_pso_lmap = NULL; g_pso_fsfn = nil; memset(&g_pso_fz, 0, sizeof g_pso_fz); g_pso_dirty = 1; } return; } }
-    else if (g_pso_dirty || pr != cur_pr || cur_ps_pass != g_pass.serial || fc != cur_ps_fc) { g_pso_fc = fc; cur_ps = pso_get(pr, nil); cur_ps_round = g_pso_color_round; g_pso_fc = 0; cur_pr = pr; cur_ps_pass = g_pass.serial; cur_ps_fc = fc; g_pso_dirty = !cur_ps; }
+    else if (g_pso_dirty || pr != cur_pr || cur_ps_pass != g_pass.serial || fc != cur_ps_fc) { g_pso_fc = fc; cur_ps = pso_get(pr, nil); cur_ps_round = g_pso_color_round; g_pso_fc = 0; cur_pr = pr; cur_ps_pass = g_pass.serial; cur_ps_fc = fc; cur_pull = g_pso_pull; g_pso_dirty = !cur_ps || cur_pull; }   // 拉取管线只顶一笔：下一笔再取，精确的编好就换上
     g_udc_lmap = g_pso_lmap; g_udc_fsfn = g_pso_fsfn != nil;   // udc_note_draw (below) judges this draw's writes by the map its pipeline used
     if (g_pso_lmap) { g_pso_lmap = NULL; g_pso_fsfn = nil; memset(&g_pso_fz, 0, sizeof g_pso_fz); g_pso_dirty = 1; }   // The next draw fetches again according to its own situation
     __unsafe_unretained id<MTLRenderPipelineState> ps = cur_ps;
@@ -16235,7 +16342,8 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     if (!draw_pass_state(en, pr->sh[1])) return;   // depth-stencil / viewport / scissor / cull / ... (shared with tess_draw ④): 0 = this draw draws nothing
     alpha_ref_bind(en, pr->sh[1]);   // gap family 34
     if (!g_mtk.on) bind_vbufs(en, pr->sh[0]);   // a task / mesh draw fetches no vertices
-    if (pr->sh[0]) vconv_bind(en, pr->sh[0], 0, dw, di);   // integer inputs fed float-type formats or 8 / 16-bit integers of the other sign (see vconv_ncomp, vconv_int)
+    if (cur_pull && !g_mtk.on) { pull_bind(en, pr->sh[0]); g_hy_draws++; }   // 拉取管线自己按布局块读顶点流：不做 CPU 转换（它按格式解码）
+    else if (pr->sh[0]) vconv_bind(en, pr->sh[0], 0, dw, di);   // integer inputs fed float-type formats or 8 / 16-bit integers of the other sign (see vconv_ncomp, vconv_int)
     g_kd_force = kd_draw(pr, dw, di);
     if (pr->sh[0]) encode_args(en, pr->sh[0], 0, 1);
     if (pr->sh[1]) encode_args(en, pr->sh[1], 1, 0);
@@ -17690,6 +17798,7 @@ static void xq_unwind_push(const uint8_t *p);   // nvn_xqueue.inc
 //   再按里到外记各层调用方的续点（同原先递归逐层返回的顺序）。深度不吃宿主栈；真成环（命令内存被改写成调回自己）到 CALL_DEPTH_MAX 层报红跳过这次调用。
 //   g_ret / g_ret_n 照旧：前 16 层返回点给前视扫描读，g_ret_n 是总深度
 #define CALL_DEPTH_MAX 256
+static uint64_t g_call_cycle_n; static int g_call_cycle_depth;   // 调回调用栈上已有列表、被跳过的次数与最近一次的深度（单测 t_nvn_call_depth 读；只在回放线程上改）
 static const uint8_t **g_cstk_ret, **g_cstk_list; static int g_cstk_cap;
 static int call_push(const uint8_t *ret, const uint8_t *list) {
     if (g_ret_n >= g_cstk_cap) { int cap = g_cstk_cap ? g_cstk_cap * 2 : 32; const uint8_t **r = realloc(g_cstk_ret, cap * sizeof *r), **l = r ? realloc(g_cstk_list, cap * sizeof *l) : NULL;
@@ -17744,6 +17853,16 @@ void nvn_be_exec(const uint8_t *p) {
                     if (ck > 0) { static _Atomic uint64_t n; uint64_t k = atomic_fetch_add(&n, 1) + 1;
                         if (k <= 8 || !(k & (k - 1))) MLOG("【黄】 command-list call into an overwritten recording still in quarantine: target %#llx (blocks intact, run as recorded); caller list %p, depth %d, frame %llu (%llu so far)",
                                                            (unsigned long long)t, list, g_ret_n - base, (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)k); }
+                }
+                {   // 调回调用栈上已有的列表（#1728 旷野之息 Mac 卡死）：真机上这等于 GPU 永远转圈，游戏不会这么录；宿主上出现只能是替代执行的旧内容
+                    //   （隔离区里照跑的已覆盖录制、按设备地址跟随到的新录制）接上了已失效的调用关系，如 t → Y → t。原先要嵌到 CALL_DEPTH_MAX 层才停，
+                    //   前 255 层把同一批命令在 GPU 上重复跑完（3 秒判卡住、画面碎开）。第一次进环就不执行这次调用，CALL 之后照常接着跑
+                    const uint8_t *tp = (const uint8_t *)t; int cyc = tp == list;
+                    for (int i = 0; !cyc && i < g_ret_n; i++) cyc = g_cstk_list[i] == tp;
+                    if (cyc) { uint64_t k = ++g_call_cycle_n; g_call_cycle_depth = g_ret_n - base + 1;
+                        if (k <= 8 || !(k & (k - 1))) MLOG("【红】 command-list call back into a list already running on this call stack: target %#llx (caller list %p, depth %d, frame %llu): skipped this call, the commands after it go on (%llu so far)",
+                                                           (unsigned long long)t, list, g_ret_n - base + 1, (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)k);
+                        break; }
                 }
                 if (g_ret_n - base >= CALL_DEPTH_MAX || !call_push(p + h.size, list)) {
                     static int red; if (!red++) MLOG("【红】 command-list call nested %d deep (limit %d, or the return stack could not grow): skipped this call; the commands may call back into themselves (first case)", g_ret_n - base, CALL_DEPTH_MAX);

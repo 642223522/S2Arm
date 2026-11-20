@@ -160,6 +160,8 @@ if [ -z "${S2A_TEST_NO_NATIVE:-}" ]; then
     [ "$(uname -s)" = Linux ] ||
         s2a_gate_note "未测：android_memory / android_plat（mremap）、android_guest_signal（SIGRTMIN）、android_host_android（eventfd）、android_wsi_lease（pthread_condattr_setclock）、android_direct_selection（getrandom）、android_tsd / android_module（/proc/self/maps）需 Linux"
 fi
+s2a_gate_step "$PY" "$android_dir/tests/ldn_settings_test.py"
+s2a_gate_step "$PY" "$android_dir/tests/ldn_dialog_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/debug_environment_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/debug_gate_test.py"
 # 通用层零专用配置（#1357）：native / gfx 源码不得出现具体游戏包名
@@ -340,6 +342,9 @@ s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_pool_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_pool_test.py" --withdraw
 # 几何着色器走出包预编库的负对照（正例在上面无参那一步里单独起进程跑）：撤掉接线各一处，--gs-libpack 必红
 s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_pool_test.py" --gs-libpack-mutants
+# 计算程序预热（清单记账 / 阶段 / 从缓存建 / 开关）与现场编译诊断事件（图形 / 计算）的负对照：各撤一处，对应断言必红
+s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_pool_test.py" --compute-warm-mutants
+s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_pool_test.py" --diag-mutants
 # Shutdown admission, bounded waits and active-context retention (including negative controls).
 s2a_gate_step "$PY" "$android_dir/tests/nvk_shutdown_test.py"
 # GS 脏位、阶段绑定、管线和原始图元拒绝的独立回退反证。

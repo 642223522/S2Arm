@@ -238,9 +238,11 @@ public final class S2ArmEngineProvider: EngineProvider {
     }
 
     /// 装到 Apple TV（tvInstall 作业）：device = 选的那台（设备号 / UDID），nil = 只连着一台时用它。
-    public func installAppleTV(gameId: String, device: String?, events: EventSink = .discard) async throws -> [String: Any] {
+    ///   teamId：出包页「Apple TV 用的 Xcode 团队」里手填的团队号（作业层 tvos.install_tv → install.pick_team(xcode_teams, teamId)）；没填不带
+    public func installAppleTV(gameId: String, device: String?, teamId: String? = nil, events: EventSink = .discard) async throws -> [String: Any] {
         var extra: [String: Any] = ["gameId": gameId]
         if let device { extra["device"] = device }
+        if let teamId, !teamId.isEmpty { extra["teamId"] = teamId }
         return try await client.perform("tvInstall", extra: extra, events: events).result
     }
 
@@ -311,6 +313,12 @@ public final class S2ArmEngineProvider: EngineProvider {
         try await installer.devCertImport(p12: p12, profile: profile, password: password, device: device)
     }
     public func devCertUse(_ active: Bool) async throws { try await installer.devCertUse(active) }
+    public func signModeSet(_ mode: String) async throws -> String { try await installer.signModeSet(mode) }
+    public func appleLogin(account: String, password: String, events: EventSink = .discard) async throws -> AppleAccount {
+        try await installer.appleLogin(account: account, password: password, events: events)
+    }
+    public func appleAccount() async throws -> AppleAccount { try await installer.appleAccount() }
+    public func appleLoginCode(_ code: String, taskId: String) throws { try installer.appleLoginCode(code, taskId: taskId) }
     public func devCertDelete() async throws { try await installer.devCertDelete() }
 
     public func install(gameId: String, teamId: String? = nil, device: String? = nil, acceptDropped: Bool = false, accept: Set<String> = [], mode: String? = nil,
@@ -330,8 +338,11 @@ public final class S2ArmEngineProvider: EngineProvider {
         return try await client.perform("pushSelected", extra: extra, events: events).result
     }
     /// 0.6.0 iPhone 总控台：所有见过的手机与每款在那台上的状态（作业 phoneOverview）；开关关着 → nil。probe：顺带问 USB 上连着谁（要几秒）
-    public func phoneOverview(probe: Bool = false) async throws -> PhoneOverview? {
-        PhoneOverview(result: try await client.perform("phoneOverview", extra: probe ? ["probe": true] : [:]).result)
+    ///   device：总控台当前这台（随现查请求带上）
+    public func phoneOverview(probe: Bool = false, device: String? = nil) async throws -> PhoneOverview? {
+        var extra: [String: Any] = probe ? ["probe": true] : [:]
+        if probe, let device, !device.isEmpty { extra["device"] = device }
+        return PhoneOverview(result: try await client.perform("phoneOverview", extra: extra).result)
     }
     public func updateHints() async throws -> [String: [String]]? {
         let r = try await client.perform("updateHints").result
@@ -346,6 +357,16 @@ public final class S2ArmEngineProvider: EngineProvider {
                             device: String? = nil, events: EventSink = .discard) async throws -> [String: Any] {
         try await installer.updatePhone(acceptStale: acceptStale, acceptDropped: acceptDropped, accept: accept, mode: mode, sgradeUpgrade: sgradeUpgrade, device: device,
                                         widget: settings.homeWidget, cloudSaves: settings.cloudSavesFolder, events: events)
+    }
+
+    /// 同一台手机上装着不止一个 S2Arm 时，玩家选用哪一个（总控台「选用哪个 S2Arm」，作业 phoneChooseApp）：记进设备记录，之后推送 / 总控台都用它
+    public func phoneChooseApp(device: String, bundleId: String) async throws {
+        _ = try await client.perform("phoneChooseApp", extra: ["device": device, "bundleId": bundleId])
+    }
+
+    /// 「把签名身份交给手机」（总控台 ① 手机与 App，作业 phoneIdentity）
+    public func phoneIdentity(device: String? = nil, force: Bool = false, events: EventSink = .discard) async throws -> PhoneIdentityResult {
+        try await installer.phoneIdentity(device: device, force: force, events: events)
     }
 
     public func restorePhone(device: String? = nil, events: EventSink = .discard) async throws {

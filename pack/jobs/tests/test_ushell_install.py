@@ -44,7 +44,7 @@ class RouteTests(JobCase):
         for name in ("push_game",):
             p = mock.patch.object(install, name, lambda c, gid, ph, *a, n=name, **k: self.hits.append(n) or {})
             p.start(); self.addCleanup(p.stop)
-        for p in (mock.patch.object(install, "phone_for", lambda c: self.ph), mock.patch.object(install, "ios_pack", lambda c, g: Path("/p")),
+        for p in (mock.patch.object(install, "phone_for", lambda c: self.ph), mock.patch.object(install, "push_phone", lambda c: self.ph), mock.patch.object(install, "ios_pack", lambda c, g: Path("/p")),
                   mock.patch.object(install, "wants_export", lambda c: False)):
             p.start(); self.addCleanup(p.stop)
 

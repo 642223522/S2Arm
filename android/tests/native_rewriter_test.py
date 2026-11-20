@@ -54,7 +54,13 @@ def run(base):
             raise RuntimeError(f'command {index} failed: {result.stdout}\n{result.stderr}')
         return result
 
-    jdk = Path(os.environ['JAVA_HOME'])
+    # JDK 与安卓整套其余步同一个查找口径（android/tools/jdk17.sh：S2A_JAVAC → JAVA_HOME → java_home -v 17 → Homebrew → 发行版 → 门禁主机副本）；
+    #   原先直接读 JAVA_HOME，门禁主机的步骤环境没设它时崩成 KeyError（11-19 一台门禁主机连红，同 verified_source_test 11-18 那次）
+    found = subprocess.run(['bash', str(ROOT / 'android/tools/jdk17.sh')], capture_output=True, text=True)
+    if found.returncode != 0 or not found.stdout.strip():
+        raise RuntimeError('找不到 JDK 17（android/tools/jdk17.sh 无结果），装好 JDK 17 或设 JAVA_HOME / S2A_JAVAC 后再跑')
+    jdk = Path(found.stdout.strip()).resolve().parent.parent
+    os.environ['JAVA_HOME'] = str(jdk)   # 下面的 CMake（FindJNI 按 JAVA_HOME 找 JNI 头文件）与 javac / java 用同一份 JDK
     version = command([jdk / 'bin/javac', '-version'])
     if '17.' not in version.stdout + version.stderr:
         raise RuntimeError('JDK17 is required')

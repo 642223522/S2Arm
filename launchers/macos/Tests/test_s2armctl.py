@@ -173,7 +173,8 @@ class WaitTests(unittest.TestCase):
                 (["build", "G", "--space-override"], "/build", {"gameId": "G", "target": "ios", "spaceOverride": True}),
                 (["build", "G", "ios"], "/build", {"gameId": "G", "target": "ios"}),
                 (["ipa", "G", "--space-override"], "/ipa", {"gameId": "G", "spaceOverride": True}),
-                (["ipa", "G"], "/ipa", {"gameId": "G"})]:
+                (["ipa", "G"], "/ipa", {"gameId": "G"}),
+                (["selfsign", "G"], "/selfsign", {"gameId": "G"})]:   # 控制口 /selfsign 按 gameId 取这款（S2ArmControl.swift）
             # build 发出前先读一次任务列表（记下已有任务号给 wait 用），数据目录换成临时目录
             with tempfile.TemporaryDirectory() as root, mock.patch.object(ctl, "ROOT", root), \
                     mock.patch.object(ctl, "call", side_effect=lambda m, p, *a, **k: {"tasks": []} if (m, p) == ("GET", "/state") else {"ok": True}) as call, \
@@ -595,9 +596,9 @@ class LaunchArgsTests(unittest.TestCase):
     # 11-02 beta.3 走查：`--control --data-root <目录>` 让 <目录> 落单被 macOS 当成要打开的文件，App 不建窗口。期望：数据目录是一个整体参数，没有落单的路径
     def test_data_root_is_one_token(self):
         args = ctl.launch_args("/A/S2Arm.app", root="/d/数据 目录", custom=True)
-        self.assertEqual(args, ["open", "/A/S2Arm.app", "--args", "--control", "--data-root=/d/数据 目录"])
+        self.assertEqual(args, ["open", "-g", "/A/S2Arm.app", "--args", "--control", "--data-root=/d/数据 目录"])
         self.assertTrue(all(a.startswith("-") for a in args[3:]))
-        self.assertEqual(ctl.launch_args("/A/S2Arm.app", root="/d", custom=False), ["open", "/A/S2Arm.app", "--args", "--control"])
+        self.assertEqual(ctl.launch_args("/A/S2Arm.app", root="/d", custom=False), ["open", "-g", "/A/S2Arm.app", "--args", "--control"])
 
     def test_uninstall_posts_to_uninstall_endpoint(self):
         """uninstall <游戏号> 走 POST /uninstall {gameId}（与 install 对称）"""
@@ -1016,6 +1017,14 @@ class UsageGuardTests(unittest.TestCase):
             ctl.main()
         return call, output.getvalue()
 
+    def test_install_action_posts_game_and_item(self):
+        with mock.patch.object(ctl, "call", return_value={"ok": True, "action": "appleLogin"}) as call, \
+                mock.patch.object(ctl.sys, "argv", ["s2armctl", "install-action", "0100ABCDEF000000", "appleId"]), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            ctl.main()
+        call.assert_called_once_with("POST", "/install-action", {"gameId": "0100ABCDEF000000", "id": "appleId"})
+        self.assertIn("appleLogin", out.getvalue())
+
     def test_subcommand_help_never_reaches_the_app(self):
         for argv in (["install", "--help"], ["install", "-h"], ["wait", "--help"]):
             with self.subTest(argv=argv):
@@ -1027,7 +1036,7 @@ class UsageGuardTests(unittest.TestCase):
         for argv in (["install"], ["wait"], ["build"], ["snapshot"], ["keys"],
                      ["install-check", "--json"], ["ipa", "--space-override"],
                      ["cloud-sync"], ["display", "--docked", "on"], ["library", "--move"], ["restore-iphone"], ["show"],
-                     ["install", "--team", "ABCDE12345"]):
+                     ["install", "--team", "ABCDE12345"], ["install-action"], ["install-action", "0100ABCDEF000000"]):
             with self.subTest(argv=argv):
                 with mock.patch.object(ctl, "call") as call, \
                         mock.patch.object(ctl.sys, "argv", ["s2armctl", *argv]), \

@@ -18,6 +18,7 @@ void s2a_host_shutdown(const char *why) { (void)why; if (guide_preview) exit(0);
 void s2a_clock_catchup(void) {}   // 游戏日历补时（runtime/src/os.c，Mac 唤醒通知调）在这里不测
 void s2a_heartbeat_mac(void) {}   // Mac 心跳（macos/heartbeat_mac.c，前端 10 秒定时器调）在这里不测
 int s2a_playtime_flush(void) { return 0; }   // 游玩时间落盘（runtime/src/playtime.c，同一个 10 秒定时器调）在这里不测
+void s2a_ql_retry60(void) {}   // 档位梯子「再试 60 帧」（runtime/src/qladder_host.c，前端横幅按钮调）在这里不测
 // 即时快照（runtime/src/snapsw.c、snapshot.c）在这里不测：开关关着，菜单不出这两项
 int s2a_snap_logging(void) { return 0; }
 int s2a_snap_dir_for(const char *gid, char *out, size_t n) { (void)gid; (void)out; (void)n; return -1; }
@@ -821,6 +822,18 @@ static void test_shared_face_map(void) {
     [@"{\"schema\":2,\"mapping\":228}" writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
     pad_face_refresh(YES);
     expect(controller_face_map(c) == 0xe4, "restoring defaults takes effect live without restarting the game");
+    expect(controller_face_map(nil) == 0xe4, "a document without a Nintendo entry keeps Switch pads on their labels");
+    // Player picked the Xbox layout for Switch pads: target A/B/X/Y <- source B/A/Y/X (iOS s2a_pad_abxy_order swap) = 1|0<<2|3<<4|2<<6 = 177.
+    [@"{\"schema\":2,\"mapping\":228,\"nintendo\":177}" writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    pad_face_refresh(YES);
+    expect(controller_face_map(nil) == 0xb1, "the player's Nintendo choice reaches the Switch channel");
+    expect(controller_face_map(c) == 0xe4, "the Nintendo choice leaves other controllers on the shared map");
+    expect(mapped_face_buttons(nil, 1u << 1, 0) == 1u, "Xbox layout on a Switch pad: bottom B confirms as A");
+    expect(mapped_face_buttons(nil, 1u << 0, 0) == 2u, "Xbox layout on a Switch pad: right A cancels as B");
+    expect(mapped_face_buttons(nil, 1u << 3, 0) == 4u && mapped_face_buttons(nil, 1u << 2, 0) == 8u, "Xbox layout on a Switch pad swaps X and Y");
+    [@"{\"schema\":2,\"mapping\":177,\"nintendo\":0}" writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    pad_face_refresh(YES);
+    expect(controller_face_map(nil) == 0xe4 && controller_face_map(c) == 0xe4, "an invalid Nintendo entry falls back to platform defaults");
     [NSFileManager.defaultManager removeItemAtPath:file error:nil];
     setenv("S2A_PAD_FACE_FILE", "/nonexistent/s2arm-face.json", 1); pad_face_refresh(YES);
     pad_slot_owner[0] = nil;

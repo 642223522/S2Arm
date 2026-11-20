@@ -886,8 +886,10 @@ static NSDictionary *slot_cfg(int slot) {
 }
 
 // 启动器原子写入的统一四键设置。主线程在合成锁内刷新，手柄回调在同一把锁内读取。
-// 所有非 Switch 手柄共用同一排列，不分玩家或品牌；Switch Pro / Joy-Con 保持原生布局。
+// 所有非 Switch 手柄共用同一排列，不分玩家或品牌；Switch Pro / Joy-Con 另存一份（文件里 nintendo 字段），
+//   没选过 = 原生布局（identity），玩家在启动器给它选了 Xbox 布局等才生效（与 iOS s2a_pad_abxy_order 同结果）。
 static int g_face_map = S2A_FACE_IDENTITY;
+static int g_face_map_nintendo = S2A_FACE_IDENTITY;
 static __weak S2AControllerFaceOverlay *g_face_overlay; // owned by the game's content view
 static s2a_face_overlay_hold g_face_overlay_hold;
 static uint64_t g_face_check_at;
@@ -903,7 +905,7 @@ static void pad_face_refresh(BOOL force) {
     BOOL exists = stat(path.fileSystemRepresentation, &info) == 0;
     if (!force && exists == g_face_had_file && (!exists || (info.st_mtimespec.tv_sec == g_face_stamp.tv_sec && info.st_mtimespec.tv_nsec == g_face_stamp.tv_nsec))) return;
     g_face_had_file = exists; if (exists) g_face_stamp = info.st_mtimespec;
-    g_face_map = S2A_FACE_IDENTITY;
+    g_face_map = S2A_FACE_IDENTITY; g_face_map_nintendo = S2A_FACE_IDENTITY;
     if (!exists) return;
     NSError *error = nil;
     NSData *data = [NSData dataWithContentsOfFile:path options:0 error:&error];
@@ -929,7 +931,12 @@ static void pad_face_refresh(BOOL force) {
     if (![value isKindOfClass:NSNumber.class] || [value doubleValue] != [value intValue] || !s2a_face_valid([value intValue])) {
         fprintf(stderr, "[s2a] 【红】手柄四键设置无效；本次按平台默认键位\n"); return;
     }
+    id nintendo = [json[@"schema"] isEqual:@2] ? json[@"nintendo"] : nil;
+    if (nintendo && (![nintendo isKindOfClass:NSNumber.class] || [nintendo doubleValue] != [nintendo intValue] || !s2a_face_valid([nintendo intValue]))) {
+        fprintf(stderr, "[s2a] 【红】Switch 手柄四键设置无效；本次按平台默认键位\n"); return;
+    }
     g_face_map = [value intValue];
+    if (nintendo) g_face_map_nintendo = [nintendo intValue];
 }
 static NSString *controller_face_family(GCController *controller) {
     if (!controller) return @"nintendo"; // 专用通道及 Switch HID 已按任天堂 A/B/X/Y 上报
@@ -942,7 +949,7 @@ static NSString *controller_face_family(GCController *controller) {
 }
 static int controller_face_map(GCController *controller) {
     NSString *family = controller_face_family(controller);
-    if ([family isEqualToString:@"nintendo"]) return S2A_FACE_IDENTITY;
+    if ([family isEqualToString:@"nintendo"]) return g_face_map_nintendo;
     return g_face_map;
 }
 static uint32_t controller_face_bits(GCController *controller) {
@@ -1857,6 +1864,20 @@ static NSString *lan_warning(void) {
 @property NSRect windowedFrame;   // 进全屏前的窗口位置大小，退全屏时放回
 @end
 static __weak S2AMacDelegate *g_delegate;
+// 档位梯子压回 30 帧 / 放开（runtime/src/qladder_host.c 调，任意线程；runtime/src/fps.c 弱定义）：#1688 原先 Mac 不提示，玩家只看到帧率补丁「全关」、以为 60 帧开关没用。
+//   压回时横幅说清原因、带「再试 60 帧」（s2a_ql_retry60，梯子下一帧回 60 帧档）；横幅被别的提示占着就 5 秒后再试
+void s2a_ql_retry60(void);
+void s2a_ios_fps_capped(int reason) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        S2APromptBanner *b = g_delegate.banner; if (!b) return;
+        if (!b.hidden) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ s2a_ios_fps_capped(reason); }); return; }
+        int zh = s2a_ui_zh();   // 按界面语言取中英文（同本文件菜单的取法）
+        NSString *title = zh ? @S2A_DPROMPT_FPS_CAP_TITLE : @S2A_DPROMPT_FPS_CAP_TITLE_EN;
+        if (reason != 4) { b.onAnswer = nil; [b showTitle:title body:zh ? @S2A_DPROMPT_FPS_CAP_BACK : @S2A_DPROMPT_FPS_CAP_BACK_EN accept:nil decline:nil seconds:6]; return; }
+        b.onAnswer = ^(BOOL accept) { if (accept) { fprintf(stderr, "[s2a] 档位梯子：玩家点了再试 60 帧\n"); s2a_ql_retry60(); } };
+        [b showTitle:title body:zh ? @S2A_DPROMPT_FPS_CAP_BODY : @S2A_DPROMPT_FPS_CAP_BODY_EN accept:zh ? @S2A_DPROMPT_FPS_CAP_RETRY : @S2A_DPROMPT_FPS_CAP_RETRY_EN
+              decline:zh ? @S2A_DPROMPT_OK : @S2A_DPROMPT_OK_EN seconds:15]; });
+}
 @implementation S2AMacDelegate
 - (void)connectNS2:(id)sender {
     self.ns2ReconnectPending = YES;

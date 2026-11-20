@@ -8,7 +8,7 @@ import contextlib
 from copy import deepcopy
 import errno
 import filelock
-from space_rule import pack_direct_bytes, pack_input_bytes, pack_need_bytes, selected_packages   # 出包空间规则的唯一定义（剃刀 H11）
+from space_rule import pack_direct_bytes, pack_input_bytes, pack_need_bytes, selected_packages, source_file_bytes   # 出包空间规则的唯一定义（剃刀 H11）
 import hashlib
 import io
 import json
@@ -2092,6 +2092,17 @@ def catalog(c):
 
 # 这一款在私有目录里按程序号存的出包缓存（直连 / 翻译 / 追加内容 / 原件核对 / 宽屏；都在 S2A_RUN_ROOT = <私有>/run 下，pack/jobs/core.py Context.env）
 # 显式清理/删除含共享编库缓存；Q15 成功后的自动清理仅清本款中间产物，保留可复用编库条目。
+def aoc_cache_dir(c, gid):
+    """本款追加内容（DLC）缓存（pack/stages/aoc.sh 的 S2A_AOC_CACHE，按键存解出的 DLC，大游戏的 DLC RomFS 好几 GB）。
+    同 direct_cache_dir：游戏和工具缓存在同一块盘 → 工具缓存下（同原来）；游戏放外接盘 → 这款游戏文件夹第一层的 aoc-cache/，
+    解包写入跟着游戏落到外接盘，不再把几 GB 写进系统盘、再跨盘拷回游戏（#1725 诊断 D-K82N：游戏库在外接盘，DLC 解到内置盘写满）"""
+    tool = c.work_root / "run" / "s2arm" / "cache" / "aoc"
+    loc = layout.find_game(c, gid)
+    if loc is None or _existing(loc).stat().st_dev == _existing(c.work_root).stat().st_dev:
+        return tool
+    return loc / "aoc-cache"
+
+
 def direct_cache_dir(c, gid):
     """本款直连缓存（graphics/tools/direct/direct_lib.sh 的 S2A_DIRECT_CACHE：内容寻址仓 + 编译中的翻译中间产物，大游戏编译中几十 GB）。
     存放位置与工具缓存在同一块盘：工具缓存下（同原来）；不在同一块盘（游戏放外接盘）：这款游戏文件夹第一层的 direct-cache/，
@@ -2411,9 +2422,7 @@ def save_container_kit(c, gid, root, dest=None):
             if p.is_dir() and (p / "main.npdm").is_file():
                 copy_files(p, temporary / "programs" / p.name)
     loud_if_kit_oversized(c, gid, temporary)
-    if kit.exists():
-        _rm(c, managed, kit)
-    os.replace(temporary, kit)
+    progs._put_dir(c, temporary, kit)   # 旧的先改名挪开、新的改名就位，两次都按 #361 退避重试（Windows 杀软 / 索引开着刚拷完的文件报 WinError 5，#50cb93 三台设备）
     if not dest:
         progs.save_recipe(c, gid)   # 常驻配方（原始程序在常驻里的模块，改写产物不存、现建）
         for legacy, root in ((layout.image_ios(c, gid, create=False) / CONTAINER_KIT, layout.root_of(c, gid)),
