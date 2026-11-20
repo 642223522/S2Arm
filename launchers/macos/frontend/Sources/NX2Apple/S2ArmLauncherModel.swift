@@ -237,6 +237,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var phoneOverview: PhoneOverview?
     @Published var consoleDevice: String?            // 总控台在管哪台（多台时顶部切换）；nil = 跟着默认那台
     @Published var consoleSelection: Set<String> = []   // ② 游戏同步里勾上的款（游戏号大写）
+    var lastPushSelectedDevice: String?                   // 上一单「更新所选」推的那台（失败页「重试」续推它，#1756）
     @Published var consolePushing: String?               // 「更新所选」正在推的那款（作业 pushSelected 的 progress 事件 current）
     @Published var identityDelivered: Bool?              // 「把签名身份交给手机」最近一次成功的结果（作业 phoneIdentity 的 delivered）；nil = 还没成功过 / 又点了一次
     var consoleSeeded: Set<String> = []                  // 上次自动勾过的建议更新款（玩家取消的不重勾）

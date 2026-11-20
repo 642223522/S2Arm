@@ -257,6 +257,10 @@ struct PhoneJobPanel: View {
                     }
                     .controllerButtonStyle(.plain).controllerID("phone.appleLogin").controllerShortcut(.rightTrigger)
                 }
+                if session.kind == .pushSelected {   // 「更新所选」有款没推成（#1756）：续推没推成的那几款
+                    Button { model.retryUpdateSelected() } label: { LauncherHeroActionLabel(title: t("phone.retry"), symbol: "arrow.clockwise") }
+                        .controllerButtonStyle(.plain).disabled(model.phoneBusy).controllerID("phone.retry").controllerShortcut(.rightTrigger)
+                }
                 if session.kind == .installUpdate {
                     Button { model.retryPhoneUpdate() } label: { LauncherHeroActionLabel(title: t("phone.retry"), symbol: "arrow.clockwise") }
                         .controllerButtonStyle(.plain).disabled(model.phoneBusy).controllerID("phone.retry").controllerShortcut(.rightTrigger)
