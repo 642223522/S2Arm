@@ -1238,7 +1238,8 @@ import S2ArmAppleAdapter
         defer { fixture.remove() }
         fixture.runner.catalogGameCount = 21
         fixture.model.refresh()
-        for _ in 0..<100 where fixture.model.games.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        // 游戏库读出来才是首页（有搜索按钮）；原先只等 1 秒，门禁机负载高时还停在欢迎页、找不到 home.search（门禁 06:36 第 1254 行）
+        try await waitUntil { !fixture.model.games.isEmpty }
         let navigation = fixture.model.gamepad
         navigation.source.controllers = { [] }
         for language in [Lang.zh, .en] {
@@ -1262,6 +1263,7 @@ import S2ArmAppleAdapter
                 }
                 // 点搜索按钮，按事件等它切换：看「展开的输入框在不在」翻没翻，没翻（负载高时合成点击偶尔被吞，门禁 b0f9f16b3c5e49a2 等满 30 秒假红）
                 //   就重新取位置再点，不靠等时间；最多 5 次，真点不开照样红
+                //   5 次都没翻就把窗口焦点 / App 前台状态写进失败信息（门禁 06:31 点 5 次没展开，原因待这行读数定）
                 func toggleSearch() async throws {
                     let expanded = { navigation.controlTargets(in: window).contains { $0.id == "home.search.field" } }
                     let before = expanded()
@@ -1273,6 +1275,7 @@ import S2ArmAppleAdapter
                         for _ in 0..<100 where expanded() == before { try await Task.sleep(for: .milliseconds(20)) }
                         if expanded() != before { return }
                     }
+                    XCTFail("点 5 次搜索按钮都没切换：窗口是焦点窗口 \(window.isKeyWindow)，App 在前台 \(NSApp.isActive)")
                 }
                 let initialWindows = Set(NSApp.windows.filter(\.isVisible).map(\.windowNumber))
                 XCTAssertFalse(navigation.controlTargets(in: window).contains { $0.id == "home.filter" }, "首页不再显示重复的筛选按钮")
