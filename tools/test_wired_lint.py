@@ -427,7 +427,11 @@ def _shell_references(p, text, make, cwd):   # make=True：text 是 make 配方�
         # directly; it is not a textual mention or a skipped test.
         if command and command[0] == 's2a_gate_step': command = command[1:]
         if command and command[0] in wrappers: command = command[1 + wrappers[command[0]]:]
-        if command and command[0] == 'timeout' and len(command) > 2 and re.fullmatch(r'[0-9.]+[smhd]?|"?\$\{?[A-Za-z_]\w*\}?"?', command[1]): command = command[2:]   # 秒数也可以是变量（runtime/gate.sh：timeout "$GT" make …）
+        if command and command[0] == 'timeout':   # 秒数也可以是变量（runtime/gate.sh：timeout -k 15 "$GT" make …）；先跳过 timeout 自己的选项（-k / -s 带一个参数、--x=y 与单独开关不带）
+            rest = command[1:]
+            while rest and rest[0].startswith('-'):
+                rest = rest[2:] if rest[0] in ('-k', '-s', '--kill-after', '--signal') else rest[1:]
+            if len(rest) > 1 and re.fullmatch(r'[0-9.]+[smhd]?|"?\$\{?[A-Za-z_]\w*\}?"?', rest[0]): command = rest[1:]
         if command and command[0] == 'env':
             command = command[1:]
             while command and re.match(r'^[A-Za-z_]\w*=', command[0]): command.pop(0)
