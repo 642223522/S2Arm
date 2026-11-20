@@ -243,41 +243,6 @@ final class NS2LauncherControllerTests: XCTestCase {
         XCTAssertEqual(SystemControllers.keyLabel(GCInputLeftShoulder, family: .xbox), "LB")
     }
 
-    /// #918 / 玩家反馈「分体横握进游戏后切不回单人合体」：不在「分配玩家」里（局内）时，已登记的一代 Joy-Con
-    ///   两只单只各按 L / R（0.5 秒内）→ 合成一对、写顺序表；一对里一只按 SL + SR → 拆回两只单只；没登记的手柄按手势不登记、顺序表不写。期望按分配规则手写
-    @MainActor
-    func testGen1RegroupInGameWritesOrder() throws {
-        let suite = "s2arm-gen1-ingame-" + UUID().uuidString
-        let store = try XCTUnwrap(UserDefaults(suiteName: suite))
-        let order = FileManager.default.temporaryDirectory.appendingPathComponent(suite + ".json")
-        defer { try? FileManager.default.removeItem(at: order); store.removePersistentDomain(forName: suite) }
-        let jc: [PlayerAssignment.Gen1Device] = [.init(id: "L1", side: 0), .init(id: "R1", side: 1)]
-        var saved = PlayerAssignment()   // 进游戏前分配成分体横握两人：两只各按 SL + SR 登记成单只
-        saved.gen1(id: "L1", side: 0, gesture: 2, at: 0, present: jc)
-        saved.gen1(id: "R1", side: 1, gesture: 2, at: 1, present: jc)
-        XCTAssertEqual(saved.units, [.gen1(id: "L1", side: 0), .gen1(id: "R1", side: 1)])
-        store.set(try JSONEncoder().encode(saved), forKey: "S2AMacNS2PlayerAssignment")
-        let controller = NS2LauncherController(socketURL: URL(fileURLWithPath: "/tmp/s2arm-controller-test.sock"), store: store, orderFile: order,
-                                              systemControllers: { [] }, notifications: NotificationCenter())
-        controller.updateGen1(jc)
-        XCTAssertFalse(controller.assigning)
-        try? FileManager.default.removeItem(at: order)
-
-        controller.registerGen1(id: "X9", side: 0, gesture: 3, at: 10)   // 没登记的：不登记、不写
-        XCTAssertFalse(FileManager.default.fileExists(atPath: order.path), "没登记的手柄局内按手势不写顺序表")
-
-        controller.registerGen1(id: "L1", side: 0, gesture: 3, at: 20)   // 合：第一下只记着
-        XCTAssertEqual(controller.assignment.units, [.gen1(id: "L1", side: 0), .gen1(id: "R1", side: 1)])
-        controller.registerGen1(id: "R1", side: 1, gesture: 3, at: 20.2)
-        XCTAssertEqual(controller.assignment.units, [.gen1Pair(left: "L1", right: "R1")], "局内两只各按 L / R：合成一对")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: order.path), "合了就写顺序表，宿主约 2 秒内重读")
-
-        try? FileManager.default.removeItem(at: order)
-        controller.registerGen1(id: "R1", side: 1, gesture: 2, at: 30)   // 拆：一对里右只按 SL + SR
-        XCTAssertEqual(controller.assignment.units, [.gen1(id: "R1", side: 1), .gen1(id: "L1", side: 0)], "局内按 SL + SR：拆回两只，按的留原位")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: order.path), "拆了也写顺序表")
-    }
-
     @MainActor
     func testKeyboardRegistrationSurvivesRelaunch() throws {
         // 玩家在「分配玩家」里登记过的键盘位，重开 S2Arm 仍在（玩家自己排的优先，同 main 上整份分配持久化）

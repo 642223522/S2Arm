@@ -746,6 +746,12 @@ class Context:
         with self.guard:
             self.check()
             now = time.monotonic()
+            # 上次前进时刻（#1770 / #1773：玩家分不清「编得慢」和「卡死」）：换了一步，或这一步 / 任一计数器的完成数变了，才算前进；
+            #   心跳、批次活动脉冲（只走时间不走分子）不算。随每条事件与作业记录发出，界面显示「上次前进 N 秒前」
+            if kind in ("stage", "progress"):
+                sig = (self.number, self.stage, done, total, tuple((c.get("name"), c.get("done")) for c in extra.get("counters") or ()))
+                if sig != getattr(self, "_advance_sig", None):
+                    self._advance_sig, self.advanced_at = sig, time.time()
             if kind == "progress" and now - self.last_progress < .2 and done != total:
                 return
             if kind == "progress":
@@ -772,7 +778,8 @@ class Context:
                          stageIndex=self.number, stageCount=self.count, state=state,
                          doneUnits=done, totalUnits=total, done=done, total=total,
                          elapsed=now-self.t0, message=message, milestone=getattr(self, "milestone", None),
-                         stageKey=self.stage_key, keychainPrompt=self.keychain_prompt, **extra)
+                         stageKey=self.stage_key, keychainPrompt=self.keychain_prompt,
+                         advancedAt=getattr(self, "advanced_at", None), **extra)
             if kind == "stage":
                 self.job.update(done=None, total=None, unit=None)
             elif kind == "progress":
@@ -784,7 +791,7 @@ class Context:
                 self.job["space"] = extra.get("space")
             self.job["milestone"] = getattr(self, "milestone", None)
             self.job.update(stage=self.stage, stageIndex=self.number, stageCount=self.count,
-                            elapsed=event["elapsed"], seq=self.seq)
+                            elapsed=event["elapsed"], seq=self.seq, advancedAt=event["advancedAt"])
             if message:
                 self.job["message"] = message
             line = json.dumps(event, ensure_ascii=False)
