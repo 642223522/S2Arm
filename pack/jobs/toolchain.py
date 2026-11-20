@@ -14,11 +14,16 @@ import sys
 from core import Failure, atomic, digest, read, tree_hash
 
 
-def default_app_dirs(volumes="/Volumes"):
-    """找 Xcode 的目录：/Applications、~/Applications，加上每块外接卷的 Applications 与卷根（玩家把 Xcode 装在扩展硬盘上，
-    原先只看前两处，预检一直报「没找到完整的 Xcode」）。/Volumes 里的软链（启动盘指回 /）跳过；同一份从两条路径都看到时由
-    installed_xcodes 按版本 + 构建号去重。与前端 XcodeLocator 同一组目录，两处改一处要同步改另一处"""
-    dirs = ["/Applications", str(Path.home() / "Applications")]
+def default_app_dirs():
+    """找 Xcode 先看的目录：/Applications、~/Applications（xcode-select 指的那份由 installed_xcodes 另加）。与前端 XcodeLocator.searchDirs 同一组，两处改一处要同步改另一处"""
+    return ("/Applications", str(Path.home() / "Applications"))
+
+
+def external_app_dirs(volumes="/Volumes"):
+    """兜底目录：每块外接卷的 Applications 与卷根（玩家把 Xcode 装在扩展硬盘上，只看内置盘时预检一直报「没找到完整的 Xcode」）。
+    /Volumes 里的软链（启动盘指回 /）跳过。只在内置位置一份完整 Xcode 都没有时才列：列外接卷会弹系统隐私窗「想访问可移除卷上的文件」，
+    原先每建一个任务都列一遍，接着外接盘的玩家一开启动器就弹、无人值守时作业挂在 opendir。与前端 XcodeLocator.externalDirs 同一组"""
+    dirs = []
     try:
         vols = sorted(Path(volumes).iterdir())
     except OSError:
@@ -31,14 +36,19 @@ def default_app_dirs(volumes="/Volumes"):
 
 
 def installed_xcodes(apps_dirs=None, select="/usr/bin/xcode-select"):
+    """没给 apps_dirs：先找 xcode-select 指的与内置目录（default_app_dirs），一份都没有才翻外接卷（external_app_dirs）；给了就只看给的。规则见 _scan_xcodes"""
+    if apps_dirs is not None:
+        return _scan_xcodes(apps_dirs, select)
+    return _scan_xcodes(default_app_dirs(), select) or _scan_xcodes(external_app_dirs(), select)
+
+
+def _scan_xcodes(apps_dirs, select):
     """装着的完整 Xcode（com.apple.dt.Xcode 且有 usr/bin/xcodebuild），按（版本号, 构建号）认、去重，版本新的在前：[(版本元组, 版本串, 构建号, Developer 目录)]。
     11-07 gate-host：Xcode-27.1.app 是指向 Xcode-27.app 的软链，而 Xcode-27.app 已被 App Store 原地升到 27.1——按路径名认就成了「27.0 + 27.1 两套」，
     其实是同一份。所以路径名不参与判定：版本读 Contents/Info.plist（CFBundleShortVersionString），构建号读 Contents/version.plist（ProductBuildVersion，
     同 xcodebuild -version 的 Build version，不起进程）；同版本同构建号（软链 / 改名 / 拷贝）只留第一个见到的路径（xcode-select 指的那份排最前）。
     构建号读不到的按实际路径（解软链）去重。门禁 / 工具链列 Xcode 一律走这里（tests/shellui_ios_build_test.sh 等）"""
     import plistlib
-    if apps_dirs is None:
-        apps_dirs = default_app_dirs()
     apps = []
     try:
         sel = subprocess.run([select, "-p"], capture_output=True, text=True, timeout=10).stdout.strip()
