@@ -1861,6 +1861,24 @@ import S2ArmAppleAdapter
         }
     }
 
+    // 登录成功页发现登错了号：期望（手写）成功页有「换一个 Apple ID」，点了面板不关（host 仍是 main）、回到输入页（phase = idle，邮箱框出现）
+    func testAppleLoginDonePageCanSwitchToAnotherAccount() async throws {
+        let fixture = try SettingsFixture()
+        defer { fixture.remove() }
+        let model = fixture.model
+        model.openAppleLogin(host: "main")
+        model.appleLoginPhase = .done(AppleAccount(account: "a@example.com", team: "TEAM", teamName: "T"))
+        let (_, window) = try await render(AnyView(AppleLoginSheet(model: model)), fixture: fixture, language: .zh)
+        fixture.navigation.source.controllers = { [] }; fixture.navigation.attach(window)
+        defer { fixture.navigation.detach(); window.close() }
+        XCTAssertTrue(fixture.navigation.controlTargets(in: window).contains { $0.id == "appleLogin.switch" }, "成功页有换号入口")
+        fixture.navigation.focus("appleLogin.switch"); fixture.navigation.handle(.confirm)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(model.appleLoginHost, "main", "面板不关")
+        XCTAssertEqual(model.appleLoginPhase, .idle, "回到输入页")
+        model.closeAppleLogin()
+    }
+
     func testSettingsPagesHaveRoomForDescriptionAndControls() async throws {
         let fixture = try SettingsFixture()
         defer { fixture.remove() }

@@ -60,6 +60,10 @@ struct AppleLoginSheet: View {
                     Text(lx(loc, "working")).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary)
                 }
                 Spacer()
+                if isDone {   // 登录成功页发现登错了号：就地回到输入页换一个（同设置里「换一个 Apple ID」打开的是同一个面板），不用先关掉再去设置里找
+                    Button(lx(loc, "switch")) { model.switchAppleLogin() }
+                        .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("appleLogin.switch")
+                }
                 Button(lx(loc, isDone ? "close" : "cancel")) { model.closeAppleLogin() }
                     .controllerButtonStyle(LauncherSecondaryButtonStyle()).keyboardShortcut(.cancelAction).controllerShortcut(.back)
                     .controllerID("appleLogin.close")
@@ -76,6 +80,7 @@ struct AppleLoginSheet: View {
         .onChange(of: model.appleAccount) { a in if email.isEmpty, let a, a.signedIn { email = a.account } }   // 重读账号回来晚于面板出现：补上原来的邮箱
         .onChange(of: model.appleLoginPhase) { phase in
             if case .done = phase { password = "" }
+            if phase == .idle { email = ""; password = "" }   // 成功页点了「换一个 Apple ID」：清空重填新账号
             if case .needCode = phase { code = ""; codeError = nil }
         }
         .onDisappear { password = "" }

@@ -136,7 +136,8 @@ def launch_args(app, root=None, custom=None):
     # 数据目录用整体写法 --data-root=<目录>：分开写时 macOS 把落单的 <目录> 当成要打开的文件交给 App，App 就不建窗口（11-02 坑记录）
     root, custom = (ROOT if root is None else root), (CUSTOM_ROOT if custom is None else custom)
     if WINDOWS: return [app, '--control'] + ([f'--data-root={root}'] if custom else [])
-    return ['open', app, '--args', '--control'] + ([f'--data-root={root}'] if custom else [])
+    # open -g：开在后台、不抢焦点（App 是普通 App，open 默认会把它带到前台）
+    return ['open', '-g', app, '--args', '--control'] + ([f'--data-root={root}'] if custom else [])
 
 def start_failure(path, since):
     # App 起不来控制口时把原因写在这里；只认这次启动之后写的
