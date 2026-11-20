@@ -270,7 +270,7 @@ public final class S2ArmShellHostModel {
         #if os(tvOS)
         if (1...5).contains(code) { return .needsGameUpdate }   // Apple TV 上没有导证书的入口（没有文件选择器、不装 SideStore）：照旧回电脑
         #endif
-        switch code {
+        return switch code {   // 显式 return：tvOS 上前面多一条语句，switch 不再是隐式返回的单表达式，成员推不出类型（11-19 tvOS 壳编不过）
         case 1: .needsCertificate(.missing)
         case 2: .needsCertificate(.otherTeam)
         case 3: .needsCertificate(.replaced)
