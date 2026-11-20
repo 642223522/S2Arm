@@ -143,7 +143,7 @@ for stg, total in (('直连库·翻译与收尾', 3), ('直连库·编批库（M
     v = [(int(x[2]), int(x[3])) for x in rows if len(x) == 4 and x[1] == stg]
     check(bool(v) and v[0][0] == 0 and v[-1][0] == v[-1][1] and all(a <= b for (a, _), (b, _) in zip(v, v[1:])) and (total is None or v[-1][1] == total),
           f'① 进度 {stg} 从 0 到完成：{v}')
-check(re.search(r'every key tried 3\): built 0 \(of se_want\.tsv\'s 2 keys 0\), nothing to emulate 3, failed 0', o) is not None and not [n for n in ls(mac) + ls(ios) if '_se.' in n],
+check(re.search(r'every key tried 3\): built 0 \(0 of them in 0 batches, 0 built key by key after their batch failed; of se_want\.tsv\'s 2 keys 0\), nothing to emulate 3, failed 0', o) is not None and not [n for n in ls(mac) + ls(ios) if '_se.' in n],
       '① _se 每个键都试：试 3 个、se_want.tsv 请求 2 个出了 0 个，三支计算核都没有采样 → nothing to emulate 3、不出 _se')
 before = snap(mac, ios); e0 = entries('cas_a')
 # ② 原地再出

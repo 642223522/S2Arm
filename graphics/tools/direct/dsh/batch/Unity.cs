@@ -238,6 +238,11 @@ static class Unity
         return string.Join("\n", hs) + "\n" + body.ToString();
     }
 
+    /// <summary>采样模拟变体（_se）合编一批的源码（Build.SeFinish）：函数前缀 = s<着色器键>_（宿主 nvn_mtl.m se_packed 按键算得出、不用另记）；
+    /// 折行标记核 s2a_se_fold 不叫 main0…、Src 不给它改名，同批几键会重名：先改成 main0_fold，随批成 s<键>_main0_fold</summary>
+    public static string SeSrc(IEnumerable<(string Key, string Msl)> items) =>
+        Src(items.Select(x => (x.Key, x.Msl.Replace("kernel void s2a_se_fold()", "kernel void main0_fold()", StringComparison.Ordinal))), out _);
+
     // ================= 摘要、签名、批名 =================
     /// <summary>unity_flush dg：sha256(MSL 的 UTF-8) 十六进制前 16 位</summary>
     public static string Dg(string msl) => Sha256Hex(msl).Substring(0, 16);
@@ -444,6 +449,13 @@ static class Unity
             try { s = Src(items, out int n); Console.Out.Write("shared " + n + "\n"); }
             catch (ArgumentException e) { Console.Out.Write("ERR\t" + e.Message + "\n"); return 1; }
             File.WriteAllBytes(argv[1], Utf8.GetBytes(s)); return 0;
+        }
+        if (argv.Length >= 4 && argv.Length % 2 == 0 && argv[0] == "se-src")   // 采样模拟变体合编一批的源码（宿主单测 t_nvn_red 包内批库那一路用）
+        {
+            var items = new List<(string, string)>();
+            for (int i = 2; i < argv.Length; i += 2) items.Add((argv[i], Utf8.GetString(File.ReadAllBytes(argv[i + 1]))));
+            try { File.WriteAllBytes(argv[1], Utf8.GetBytes(SeSrc(items))); return 0; }
+            catch (ArgumentException e) { Console.Out.Write("ERR\t" + e.Message + "\n"); return 1; }
         }
         if (argv.Length == 3 && argv[0] == "cut")
         {

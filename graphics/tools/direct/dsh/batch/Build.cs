@@ -796,6 +796,10 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
     // ---------------- 采样模拟变体（缺口族 31，种类 51） ----------------
     //   0.6.0 出包着色器全覆盖（11-17）：原先只预编跑局见过的键（se_want.tsv），没见过的要到设备首遇才现编（编好前这对绘制照旧用 main0、采样走样）。
     //   现在库里每个键都试：FsRd 改不动的（没有要模拟的采样）不出库；se_want.tsv 只用来报覆盖（见过的里有几个出了）
+    //   编法（11-20 出包提速）：先逐键改写（FsRd，只吃 CPU），再按「全局声明相同」切批、每批源码封顶 DMSH_UNITY_BATCH_MB（缺省 0.5 MB，同编批库）合编一份库，
+    //   同批各键的 <键>_se.metallib 指向同一份字节（Side.Alias，容器里只存一次、设备上一段建一个库）；函数改名 s<键>_main0 / s<键>_main0_fold（折行标记核，Unity.Src），
+    //   宿主 se_packed 先找 main0（旧包的逐键库）再找 s<键>_main0。原先逐键各编一次 Metal：#1770 旷野之息 1 万多键冷编 2–7 分钟，
+    //   同类源码合编每键约 60 ms·路、逐键约 156 ms·路（#1723 实测编批库 / _se 两段之比）。一批编不过退回逐键（VarLib），一键不连累一批
     static void SeFinish()
     {
         var f = Table("se_want.tsv");
@@ -803,24 +807,64 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
         Count("se wanted", want.Count);
         var all = Keys.Where(k => MAC.Has(k + "_b.metal")).ToList();
         Count("se tried", all.Count);
-        // 进度：这一段在「编批库」计数满了之后才跑，每个要模拟的键单独编一次 Metal，没计数器时界面停在 100% 像卡住（0.6.0 实测 1 万多键单核十几分钟）
+        // 进度：这一段在「编批库」计数满了之后才跑，没计数器时界面停在 100% 像卡住（0.6.0 实测 1 万多键单核十几分钟）。按键计：改写完一键不计，编完（成或败）才计
         int lanes = LiveLanes("采样模拟变体"); using var wide = Metal.Widen(lanes);
         using var tk = new Ticker("直连库·采样模拟变体", all.Count);
+        var vs = new ConcurrentDictionary<string, string>(StringComparer.Ordinal);
         Parallel.ForEach(InOrder(all), new ParallelOptions { MaxDegreeOfParallelism = lanes * 2 }, k =>
         {
-            try { SeOne(k, want); } finally { tk.Step(); }
+            bool done = true;
+            try
+            {
+                string s0 = MAC.Text(k + "_b.metal"), v;
+                try { v = DshCompiler.FsRd(s0); }
+                catch (Exception e) { Count("se failed"); Say($"[RED] {k}: no sampler-emulation variant (S2A.Dsh FsRd: {e.GetType().Name}: {e.Message.Split('\n')[0]}): the device compiles it at first use"); return; }
+                if (v == s0) { Count("se nothing to emulate"); return; }
+                vs[k] = v; done = false;
+            }
+            finally { if (done) tk.Step(); }
         });
+        long cap = Unity.VinBatchMax(Environment.GetEnvironmentVariable("DMSH_UNITY_BATCH_MB") ?? "0.5");
+        var batches = new List<List<string>>();
+        foreach (var g in all.Where(vs.ContainsKey).GroupBy(k => string.Join("\n", Unity.Sig(vs[k])), StringComparer.Ordinal))
+        {
+            List<string> cur = null; long sz = 0;
+            foreach (var k in g)
+            {
+                if (cur == null || (cap > 0 && sz > 0 && sz + vs[k].Length > cap)) { batches.Add(cur = new()); sz = 0; }
+                cur.Add(k); sz += vs[k].Length;
+            }
+        }
+        Count("se batches", batches.Count);
+        Parallel.ForEach(InOrder(batches), new ParallelOptions { MaxDegreeOfParallelism = lanes * 2 }, ks =>
+        {
+            try
+            {
+                if (ks.Count > 1 && SeBatch(ks)) { foreach (var k in ks) SeOk(k, want); return; }
+                if (ks.Count > 1) Count("se batch fallback keys", ks.Count);
+                foreach (var k in ks)
+                {
+                    var e2 = VarLib(k, "_se", vs[k]);
+                    if (e2 != null) { Count("se failed"); Say($"[RED] {k}: the sampler-emulation variant does not compile ({Trunc(e2, 120)}): the device compiles it at first use"); }
+                    else SeOk(k, want);
+                }
+            }
+            finally { tk.Step(ks.Count); }
+        });
+
+        bool SeBatch(List<string> ks)   // 一批合编：成 → 各键 <键>_se.metallib 指向这份库；编不过 → false（调用方退回逐键）
+        {
+            var src = Unity.SeSrc(ks.Select(k => (k, vs[k])));
+            string name = ks[0] + "_se", lib = name + ".metallib";
+            var sides = new List<(string T, Side Sd)>(); if (!NoMac) sides.Add(("mac", MAC)); if (IosLib) sides.Add(("ios", IOS));
+            try { foreach (var (t, sd) in sides) sd.Put(lib, Metal.Compile(t, src, "se" + Unity.Dg(src))); }
+            catch (Exception e) when (e is CompileError || e is CompileTimeout) { foreach (var (_, sd) in sides) sd.Drop(lib); return false; }
+            foreach (var (_, sd) in sides) foreach (var k in ks.Skip(1)) sd.Alias(lib, k + "_se.metallib");
+            Count("se batched keys", ks.Count);
+            return true;
+        }
     }
-    static void SeOne(string k, HashSet<string> want)
-    {
-        string s0 = MAC.Text(k + "_b.metal"), v;
-        try { v = DshCompiler.FsRd(s0); }
-        catch (Exception e) { Count("se failed"); Say($"[RED] {k}: no sampler-emulation variant (S2A.Dsh FsRd: {e.GetType().Name}: {e.Message.Split('\n')[0]}): the device compiles it at first use"); return; }
-        if (v == s0) { Count("se nothing to emulate"); return; }
-        var e2 = VarLib(k, "_se", v);
-        if (e2 != null) { Count("se failed"); Say($"[RED] {k}: the sampler-emulation variant does not compile ({Trunc(e2, 120)}): the device compiles it at first use"); }
-        else { Count("se built"); if (want.Contains(k)) Count("se wanted built"); }
-    }
+    static void SeOk(string k, HashSet<string> want) { Count("se built"); if (want.Contains(k)) Count("se wanted built"); }
 
     // ---------------- 顶点补齐变体（0.6.0 出包着色器全覆盖，种类 54） ----------------
     //   片元读、顶点不写的 user(locn)：原先出包只按配对表（跑局见过的顶点 × 片元对，vs_pad）补进顶点主翻译，游戏按阶段拼程序，没见过的对到设备首遇才缺，
@@ -871,7 +915,7 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
         Say($"ast mem order kept: {N("astmem kept")} in {N("astmem keys")} keys (counted {N("astmem counted")} keys, uncounted {N("astmem uncounted")})");
         Say($"variant cache{(BfOn ? "" : " (readable-tile _bf off, DMSH_BF unset)")}: generated {N("bf generated")}");
         Say($"typed-output variants (ft_finish, fout_want.tsv {FoutWant.Values.Sum(s => s.Count)} requests): {N("ft entries")} entry points in {N("ft libs")} libraries, {N("ft covered")} covered by main0_u or nothing integer after the colour filter, {N("ft failed")} libraries failed");
-        Say($"sampler-emulation variants (<key>_se, every key tried {N("se tried")}): built {N("se built")} (of se_want.tsv's {N("se wanted")} keys {N("se wanted built")}), nothing to emulate {N("se nothing to emulate")}, failed {N("se failed")}");
+        Say($"sampler-emulation variants (<key>_se, every key tried {N("se tried")}): built {N("se built")} ({N("se batched keys")} of them in {N("se batches")} batches, {N("se batch fallback keys")} built key by key after their batch failed; of se_want.tsv's {N("se wanted")} keys {N("se wanted built")}), nothing to emulate {N("se nothing to emulate")}, failed {N("se failed")}");
         Say($"padded vertex variants (<key>_vp, union of every pixel shader's user(locn) inputs): {N("vp vertex shaders")} vertex shaders, built {N("vp built")} ({N("vp padded outputs")} outputs added), nothing to pad {N("vp nothing to pad")}, failed {N("vp failed")}");
         Say($"pulling libraries (<key>_bp, S2A.Dsh DshPull): {N("pull generated")} generated ({N("pull inputs")} inputs pulled), {N("pull failed")} failed to compile, {N("pull not generated")} not generated");
         Say($"shadow-input libraries (<key>_bv, S2A.Dsh DshVin): {N("vin generated")} generated ({N("vin batches")} batches), {N("vin failed")} failed to compile, {N("vin not generated")} not generated; {N("vin inputs")} integer inputs shadowed, {N("vin float only")} of them with no other-sign shadow (attribute indices ran out)");
