@@ -42,7 +42,11 @@ extension LauncherView {
         let artworkSide = selected ? side * 1.36 : side
         let status = model.consoleStatus()
         return Button {
+            // 鼠标点进总控台也现查一次连着的手机（同键盘 / 手柄把焦点移过来，LauncherView+Home 焦点变化那条；同 Windows library.select）：
+            //   原先只改选中，随后的焦点变化因已选中不再查，鼠标玩家的总控台永远按设备记录显示，装着多个 S2Arm 时也出不来选择
+            let was = model.selectedID
             model.selectedID = S2ArmLauncherModel.consoleID
+            if was != S2ArmLauncherModel.consoleID { model.refreshPhoneOverview(probe: true) }
             navigation.focus("card." + S2ArmLauncherModel.consoleID)
         } label: {
             HomeCardSurface(selected: selected, focused: focused) {
