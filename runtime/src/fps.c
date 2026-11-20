@@ -163,6 +163,10 @@ static void note_orig(fps_w *w, uint32_t old) {
         if (o != w && o->has_orig && o->m == w->m && o->off == w->off && o->deref == w->deref && o->nch == w->nch && !memcmp(o->ch, w->ch, sizeof o->ch)) { w->orig = o->orig; w->has_orig = 1; return; } }
     w->orig = old; w->has_orig = 1;
 }
+// 写入线程转过的整圈数（每圈写完一遍、睡前加一）：单测按「改了之后又转了几圈」等，不按墙钟睡（11-19：负载高时固定睡 250 ms 线程没转到 → 读到旧值、假红）。只读计数，行为不变
+static _Atomic uint64_t g_fps_rounds;
+uint64_t s2a_fps_writer_rounds(void);
+uint64_t s2a_fps_writer_rounds(void) { return atomic_load(&g_fps_rounds); }
 static void *writer(void *a) { s2a_thread_name("s2a-fps-writer");
     (void)a; (void)plat_thread_name("s2a-帧率表");
     // 诊断（S2A_FPS_HOLD_AT=<起秒>-<止秒>，写入线程起来后计秒）：这段时间按档位梯子压回原帧率，验 60 ↔ 原帧率局中双向热切（frames.tsv 看帧间隔）
@@ -194,6 +198,7 @@ static void *writer(void *a) { s2a_thread_name("s2a-fps-writer");
             if (!w->said) { float of; memcpy(&of, &old, 4); w->said = 1; note_orig(w, old); LOG("帧率表：%s+%#llx（%s）原值 %s %g", w->m->name, (unsigned long long)w->off, w->what, w->f32 ? "f32" : "i32",
                                                                         w->f32 ? (double)of : (double)(int32_t)old); }
             if (old != want) plat_guest_store32((uintptr_t)p, want); }
+        atomic_fetch_add(&g_fps_rounds, 1);
         usleep(100000);
     }
     return NULL;
