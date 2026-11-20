@@ -20,6 +20,7 @@
 #include "s2a_pad.h"
 #include "s2a_programs.h"
 #include "s2a_launch_ctx.h"
+#include "dev_serial_lock.h"   // Mac 开发机局串行锁（只在 Mac 分支调用）
 #include "../../graphics/nvn/gfx/nvn/dmsh_chain.h"   // DMSH_CHAIN：直连安全网诊断信息里写翻译链
 #include <unistd.h>
 #include <sys/stat.h>
@@ -540,6 +541,7 @@ int main(int argc, char **argv) {
     s2a_front_run(prewarmed_host_run);
     return 0;
 #else
+    s2a_dev_serial_lock();   // 开发机上几个 Mac 局排队一个一个跑（dev_serial_lock.h；玩家机器不生效）
     return host_run(argc, argv);
 #endif
 }
