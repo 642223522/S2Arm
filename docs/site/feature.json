@@ -60,7 +60,7 @@
    },
    "title": {
     "zh-Hans": "装 App 和推游戏分开了",
-    "en": "Installing the app and sending games are now separate"
+    "en": "App and games now install separately"
    },
    "what": {
     "zh-Hans": "以前出包会把游戏和 App 打成一个包；现在 **S2Arm 这个 App 只装一次**，每款游戏单独「**推到 iPhone**」，只推这一款。",
@@ -90,7 +90,7 @@
    },
    "title": {
     "zh-Hans": "用 AltStore / SideStore 的，手机上就能导入游戏",
-    "en": "Using AltStore / SideStore? Import games right on your phone"
+    "en": "Self-signing? Import games on your phone"
    },
    "what": {
     "zh-Hans": "把 AltStore / SideStore 的签名证书导进 S2Arm，之后电脑导出的或朋友分享的游戏，放进手机就能玩。**不用电脑登录 Apple ID，也不用新建证书。**",
@@ -129,7 +129,7 @@
    },
    "title": {
     "zh-Hans": "老游戏和存档都在，点两下就接上",
-    "en": "Your games and saves stay. Two clicks and you're back"
+    "en": "Your games and saves stay"
    },
    "what": {
     "zh-Hans": "0.6.0 起手机上统一用一个 S2Arm 装所有游戏。你手机上原来的游戏、存档、游戏数据**都会留着**，不用重新出包，也不用重传游戏数据。",
