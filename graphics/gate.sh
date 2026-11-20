@@ -233,6 +233,16 @@ run_vulkan_diag() {
 # 显卡独占锁只罩开真窗口 / 按真实显示时钟判的子项（11-14：原先 tools/gate.sh 给整个钩子套锁，一百多项离屏单测也排同一把，全机一次只能跑一个 graphics 钩子）。
 #   锁 = 全机共用的 Mac 局槽（与 solo、Mac 局同一把）；没给 S2A_PRIVATE_TOOLS（单机 / 本机直跑）照旧不套。用法：gpu_excl <拿齐后时限秒> <命令…>
 gpu_excl() { local lim=$1; shift; [ -n "${S2A_PRIVATE_TOOLS:-}" ] && { bash "$S2A_PRIVATE_TOOLS/mac_slot_frozen.sh" prio "graphics/gate.sh 上屏驻留" "$lim" -- "$@"; return; }; "$@"; }   # 写成 shift 后语句首执行 "$@"：接线扫描按转调函数认，被包的单测仍算接上
+# 离屏起 Metal 的子项取共享显卡锁（11-20 读写锁：一台门禁主机上 present_residency 单格 60 秒偶发，三次都撞上同机不取锁的离屏组——dsh / direct_link / vk / nvn / red
+#   与画面矩阵共用显卡队列和系统里唯一的 Metal 编译服务，矩阵每格启动现编管线被挤住）。共享可多个同时持有；上面 gpu_excl 的独占步在等或在跑时不发新的共享，
+#   独占等现有共享走空再跑（写优先）。按命令路径判：直连单测、graphics/nvn、graphics/metal 下的子项与 Vulkan / 共享 GPU 合同 / 纹理 DMA 取共享；
+#   只编不跑的预编（*_build / *_prebuild / direct_link_dsx）不取。没给 S2A_PRIVATE_TOOLS（单机 / 本机直跑）或仲裁副本没有共享锁时照旧直跑
+gpu_job() { case $1 in *_build|*_prebuild|direct_link_dsx) return 1;; vk|texture_dma_read|shared_gpu_contract) return 0;; esac; shift; local a
+  for a in "$@"; do case $a in graphics/tools/direct/tests/*|graphics/nvn|graphics/nvn/*|graphics/metal|graphics/metal/*|tests/se_want_test.py) return 0;; esac; done; return 1; }
+GPU_SHR_OK=0; [ -n "${S2A_PRIVATE_TOOLS:-}" ] && source "$S2A_PRIVATE_TOOLS/mac_slot_frozen.sh" 2> /dev/null && declare -F gpu_share_acquire > /dev/null && GPU_SHR_OK=1
+# gpu_share <子项键> <命令…>：要共享锁的子项排到锁再跑（同一 shell 里跑，函数子项照常可用），跑完放锁；排队超上限退 75
+gpu_share() { local k=$1 r; shift; { [ "$GPU_SHR_OK" = 1 ] && gpu_job "$k" "$@"; } || { "$@"; return; }
+  gpu_share_acquire "graphics/gate.sh $k" || return; "$@"; r=$?; gpu_share_release; return $r; }
 run_present_residency() {
   local out="build/tests/present-residency" widen_build="build/tests/present-residency/deps"
   local widen_target="$widen_build/tests/nvn/widen/S2Arm.Gfx.Widen.dylib"
@@ -281,19 +291,19 @@ if [ -n "${GATE_ONLY:-}" ]; then
   if has "$GATE_ONLY" shared_gpu_contract; then run_shared_gpu_contract; r=$?; out="${out:+$out / }共享 GPU 合同 $(tail -1 "$LOG/shared_gpu_contract.log")（退出 ${r}）"; [ "$r" = 0 ] || ok=0; fi
   if has "$GATE_ONLY" vulkan_diag; then run_vulkan_diag; r=$?; out="${out:+$out / }Vulkan 诊断默认值 $(tail -1 "$LOG/vulkan_diag.log")（退出 ${r}）"; [ "$r" = 0 ] || ok=0; fi
   if has "$GATE_ONLY" dsh && ! need_dsh; then out="${out:+$out / }直连兜底现编对拍：本批没改到 graphics/tools/direct，不跑"
-  elif has "$GATE_ONLY" dsh; then timeout 300 bash graphics/tools/direct/tests/t_dsh.sh > "$LOG/dsh.log" 2>&1; d=$?; out="${out:+$out / }直连兜底现编对拍 $(tail -1 "$LOG/dsh.log")（退出 ${d}）"; ev $d "$LOG/dsh.log" || ok=0; fi
+  elif has "$GATE_ONLY" dsh; then gpu_share dsh timeout 300 bash graphics/tools/direct/tests/t_dsh.sh > "$LOG/dsh.log" 2>&1; d=$?; out="${out:+$out / }直连兜底现编对拍 $(tail -1 "$LOG/dsh.log")（退出 ${d}）"; ev $d "$LOG/dsh.log" || ok=0; fi
   if has "$GATE_ONLY" gl && ! need_gl; then out="${out:+$out / }OpenGL 前端最小绘制：本批没改到 GL 前端，不跑"
   elif has "$GATE_ONLY" gl; then
-    timeout 120 bash graphics/nvn/tests/gl/t_gl_min.sh > "$LOG/gl.log" 2>&1; g=$?; out="${out:+$out / }OpenGL 前端最小绘制 $(tail -1 "$LOG/gl.log")（退出 ${g}）"; ev $g "$LOG/gl.log" || ok=0
-    timeout 300 bash graphics/nvn/tests/gl/t_gpu_mip.sh > "$LOG/gl_gpu_mip.log" 2>&1; g=$?; out="${out:+$out / }OpenGL 渲染纹理 mip / cube $(tail -1 "$LOG/gl_gpu_mip.log")（退出 ${g}）"; ev $g "$LOG/gl_gpu_mip.log" || ok=0
-    timeout 300 bash graphics/nvn/tests/gl/t_gpu_mrt.sh > "$LOG/gl_gpu_mrt.log" 2>&1; g=$?; out="${out:+$out / }OpenGL MRT $(tail -1 "$LOG/gl_gpu_mrt.log")（退出 ${g}）"; ev $g "$LOG/gl_gpu_mrt.log" || ok=0
-    timeout 300 bash graphics/nvn/tests/gl/t_gpu_depth_stencil.sh > "$LOG/gl_gpu_depth_stencil.log" 2>&1; g=$?; out="${out:+$out / }OpenGL 深度模板 $(tail -1 "$LOG/gl_gpu_depth_stencil.log")（退出 ${g}）"; ev $g "$LOG/gl_gpu_depth_stencil.log" || ok=0
-    timeout 120 bash graphics/nvn/tests/gl/t_gl_api.sh > "$LOG/gl_api.log" 2>&1; g=$?; out="${out:+$out / }OpenGL 接口补齐 $(tail -1 "$LOG/gl_api.log")（退出 ${g}）"; ev $g "$LOG/gl_api.log" || ok=0
-    timeout 60 bash graphics/nvn/tests/gl/t_glsl_es.sh > "$LOG/gl_glsl_es.log" 2>&1; g=$?; out="${out:+$out / }GLSL 改写层 $(tail -1 "$LOG/gl_glsl_es.log")（退出 ${g}）"; ev $g "$LOG/gl_glsl_es.log" || ok=0
-    timeout 300 bash graphics/nvn/tests/gl/t_gl_rt.sh > "$LOG/gl_rt.log" 2>&1; g=$?; out="${out:+$out / }OpenGL 运行时兜底 $(tail -1 "$LOG/gl_rt.log")（退出 ${g}）"; ev $g "$LOG/gl_rt.log" || ok=0
+    gpu_share gl timeout 120 bash graphics/nvn/tests/gl/t_gl_min.sh > "$LOG/gl.log" 2>&1; g=$?; out="${out:+$out / }OpenGL 前端最小绘制 $(tail -1 "$LOG/gl.log")（退出 ${g}）"; ev $g "$LOG/gl.log" || ok=0
+    gpu_share gl timeout 300 bash graphics/nvn/tests/gl/t_gpu_mip.sh > "$LOG/gl_gpu_mip.log" 2>&1; g=$?; out="${out:+$out / }OpenGL 渲染纹理 mip / cube $(tail -1 "$LOG/gl_gpu_mip.log")（退出 ${g}）"; ev $g "$LOG/gl_gpu_mip.log" || ok=0
+    gpu_share gl timeout 300 bash graphics/nvn/tests/gl/t_gpu_mrt.sh > "$LOG/gl_gpu_mrt.log" 2>&1; g=$?; out="${out:+$out / }OpenGL MRT $(tail -1 "$LOG/gl_gpu_mrt.log")（退出 ${g}）"; ev $g "$LOG/gl_gpu_mrt.log" || ok=0
+    gpu_share gl timeout 300 bash graphics/nvn/tests/gl/t_gpu_depth_stencil.sh > "$LOG/gl_gpu_depth_stencil.log" 2>&1; g=$?; out="${out:+$out / }OpenGL 深度模板 $(tail -1 "$LOG/gl_gpu_depth_stencil.log")（退出 ${g}）"; ev $g "$LOG/gl_gpu_depth_stencil.log" || ok=0
+    gpu_share gl timeout 120 bash graphics/nvn/tests/gl/t_gl_api.sh > "$LOG/gl_api.log" 2>&1; g=$?; out="${out:+$out / }OpenGL 接口补齐 $(tail -1 "$LOG/gl_api.log")（退出 ${g}）"; ev $g "$LOG/gl_api.log" || ok=0
+    gpu_share gl timeout 60 bash graphics/nvn/tests/gl/t_glsl_es.sh > "$LOG/gl_glsl_es.log" 2>&1; g=$?; out="${out:+$out / }GLSL 改写层 $(tail -1 "$LOG/gl_glsl_es.log")（退出 ${g}）"; ev $g "$LOG/gl_glsl_es.log" || ok=0
+    gpu_share gl timeout 300 bash graphics/nvn/tests/gl/t_gl_rt.sh > "$LOG/gl_rt.log" 2>&1; g=$?; out="${out:+$out / }OpenGL 运行时兜底 $(tail -1 "$LOG/gl_rt.log")（退出 ${g}）"; ev $g "$LOG/gl_rt.log" || ok=0
   fi
   if has "$GATE_ONLY" vk && ! need_vk; then out="${out:+$out / }Vulkan 层：本批没改到 Vulkan 前端，不跑"
-  elif has "$GATE_ONLY" vk; then run_vk; vi=$?; out="${out:+$out / }$VK_RESULT"; ev $vi || ok=0; fi
+  elif has "$GATE_ONLY" vk; then gpu_share vk run_vk; vi=$?; out="${out:+$out / }$VK_RESULT"; ev $vi || ok=0; fi
   if has "$GATE_ONLY" present_residency && ! need_present_residency; then out="${out:+$out / }上屏驻留集成：本批没改到相关路径，不跑"
   elif has "$GATE_ONLY" present_residency; then run_present_residency; pr=$?; out="${out:+$out / }$PRESENT_RESIDENCY_RESULT"; ev $pr || ok=0; fi
   if has "$GATE_ONLY" shdist && ! need_shdist; then out="${out:+$out / }shbake 分发组：本批没改到 shbake / 远端分发，不跑"
@@ -315,7 +325,7 @@ if [ -z "${S2A_DOTNET_LOCK:-}" ] && [ -f tools/dotnet_lock.c ] && mkdir -p build
 fi
 JOBD=$LOG/jobs; rm -rf "$JOBD"; mkdir -p "$JOBD"; LANES=
 # job <项> <命令…>：先认领（mkdir 原子，已被别的道认领就跳过），输出进 $LOG/<项>.log、退出码原子落 $JOBD/<项>.rc，用时记 $LOG/jobs.tsv（秒数 / 项 / 退出码 / 开跑时刻 / 道）；带 HOOK_REST=1 调的是「其余」子项（见 HOOK_KEYS），GATE_HOOK_ONLY 不点名 rest 时只记一行「不跑」、退出码 0
-job() { mkdir "$JOBD/$1.claim" 2> /dev/null || return 0; local k=$1 s=$SECONDS r; hook_rest_off && { echo "本步只跑点名子项（GATE_HOOK_ONLY=${GATE_HOOK_ONLY:-}），「其余」不在名单，不跑" > "$LOG/$k.log"; echo 0 > "$JOBD/$k.rc.t"; mv "$JOBD/$k.rc.t" "$JOBD/$k.rc"; return 0; }; unset HOOK_REST; shift; "$@" > "$LOG/$k.log" 2>&1 < /dev/null; r=$?; printf '%s\t%s\t%s\t%s\t%s\n' "$((SECONDS - s))" "$k" "$r" "$s" "${LANE:-}" >> "$LOG/jobs.tsv"; echo "$r" > "$JOBD/$k.rc.t"; mv "$JOBD/$k.rc.t" "$JOBD/$k.rc"; }
+job() { mkdir "$JOBD/$1.claim" 2> /dev/null || return 0; local k=$1 s=$SECONDS r; hook_rest_off && { echo "本步只跑点名子项（GATE_HOOK_ONLY=${GATE_HOOK_ONLY:-}），「其余」不在名单，不跑" > "$LOG/$k.log"; echo 0 > "$JOBD/$k.rc.t"; mv "$JOBD/$k.rc.t" "$JOBD/$k.rc"; return 0; }; unset HOOK_REST; shift; gpu_share "$k" "$@" > "$LOG/$k.log" 2>&1 < /dev/null; r=$?; printf '%s\t%s\t%s\t%s\t%s\n' "$((SECONDS - s))" "$k" "$r" "$s" "${LANE:-}" >> "$LOG/jobs.tsv"; echo "$r" > "$JOBD/$k.rc.t"; mv "$JOBD/$k.rc.t" "$JOBD/$k.rc"; }
 lanes_alive() { local p; for p in $LANES; do kill -0 "$p" 2> /dev/null && return 0; done; return 1; }
 # waitfor <项>：道内等别的道的某项跑完（不写退出码）；rcof <项>：主流程取退出码，四道都结束了还没有 = 没排进任何道 → 125 判红
 waitfor() { while [ ! -f "$JOBD/$1.rc" ] && lanes_alive; do sleep 0.2; done; }
