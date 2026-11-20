@@ -761,9 +761,10 @@ def ensure_extract(c, game, packages, env, logs, valid=None):
                 #   Mac 准备（build）在 core.run 里已按 build_tool_failure 归好类、码不是 tool_exit，不走这里。两种作业同一判法：按解包阶段归类
                 if error.code != "tool_exit":
                     raise
-                from errors import cause_facts, classify_failure, player_reason, tool_reason
+                from errors import cause_facts, classify_failure, player_words, tool_reason
                 code, why = classify_failure("unpack", logs / "extract.log")
-                raise Failure(player_reason(code), code=code, internal="解包失败：" + tool_reason(logs / "extract.log") + "\n" + why,  # 非玩家句
+                said, advice = player_words(code, logs / "extract.log")
+                raise Failure(said, code=code, advice=advice, internal="解包失败：" + tool_reason(logs / "extract.log") + "\n" + why,  # 非玩家句
                               facts=cause_facts(code, logs / "extract.log")) from error
         c.emit(
             "message", "解包已完成，正在校验合并结果并写入缓存"

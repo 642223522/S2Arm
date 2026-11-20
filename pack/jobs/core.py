@@ -975,7 +975,7 @@ class Context:
         failure = explain(error, **self.failure_roots())
         code = failure.code
         result = dict(code=code, severity=severity, summary=self.redact(failure),
-                      suggestion=recovery(code, packaged=bool(self.r.get("engineBundle"))), detail="", stage=self.stage,
+                      suggestion=getattr(failure, "advice", None) or recovery(code, packaged=bool(self.r.get("engineBundle"))), detail="", stage=self.stage,
                       component="S2Arm", logPath=str(self.last_log) if self.last_log else None)
         if exit_code is not None:
             result["exitCode"] = exit_code
@@ -996,9 +996,9 @@ class Context:
         result["failureSummary"] = failure_summary(self.stage, rc, [self.redact(line, limit=None) for line in last_output_lines(self.last_log)])
         return result
 
-    def diagnostic(self, message, code="job_failed", severity="error", exit_code=None, internal="", holder=None, facts=None):
+    def diagnostic(self, message, code="job_failed", severity="error", exit_code=None, internal="", holder=None, facts=None, advice=None):
         # holder / facts 原样带进失败结果（原先这里只按原句 + 码 + internal 重建 Failure，library_busy 的占锁者、改写失败的机读事实走真作业路径时都丢了）
-        result = self.describe_failure(Failure(message, code=code, internal=internal, holder=holder, facts=facts), severity, exit_code)
+        result = self.describe_failure(Failure(message, code=code, internal=internal, holder=holder, facts=facts, advice=advice), severity, exit_code)
         self.job["diagnostics"].append(result)
         self.emit("diagnostic", result["summary"], diagnostic=result, error=result,
                   diagnostics=self.job["diagnostics"], logRef=result["logPath"])
@@ -1075,6 +1075,7 @@ class Context:
         if gid and self.operation in ("build", "ipa"):   # 直连缓存跟着游戏的存放位置走（外接盘时落外接盘，library.direct_cache_dir）
             import library
             env["S2A_DIRECT_CACHE"] = str(library.direct_cache_dir(self, gid))
+            env["S2A_AOC_CACHE"] = str(library.aoc_cache_dir(self, gid))   # 追加内容缓存同样跟着游戏走（#1725）
         developer = self.r.get("developerDir") or self.default_developer   # 启动器传的 > 装着的最新 Xcode；都没有就不设
         if developer:
             env.update(DEVELOPER_DIR=developer, S2A_DEVELOPER_DIR=developer)
@@ -1332,7 +1333,7 @@ class Context:
                     if self.operation == "build":
                         from errors import build_tool_failure
                         failure = build_tool_failure(args, getattr(self, "milestone", None), self.last_log)
-                        self.diagnostic(str(failure), failure.code, exit_code=rc, internal=failure.internal, facts=failure.facts)
+                        self.diagnostic(str(failure), failure.code, exit_code=rc, internal=failure.internal, facts=failure.facts, advice=failure.advice)
                         raise failure
                     from errors import tool_reason
                     message = f"{self.stage or '这一步'}失败（退出码 {rc}）：{self.redact(tool_reason(self.last_log), limit=240)}"
