@@ -3,7 +3,7 @@ import AppKit
 @testable import NX2AppleUI
 @testable import S2ArmAppleAdapter
 
-/// 替身作业：catalog 给一款；installCheck 给一份清单（出好了包、没登录 Apple ID、没连手机），每项带作业层 MAC_READY_ACTIONS 的动作
+/// 替身作业：catalog 给一款；installCheck 给一份清单（出好了包、没登录 Apple ID、没连手机），每项带落点表 install_landing 的动作
 private final class ChecklistRunner: JobProcessRunner {
     final class Handle: JobProcessHandle { func terminate() {} }
     func start(executable: URL, arguments: [String], environment: [String: String],
@@ -49,6 +49,10 @@ private final class ChecklistRunner: JobProcessRunner {
             let r = await control.handle(ControlRequest(method: "POST", path: "/install-action", headers: [:], body: body))
             return (r.code, (try? JSONSerialization.jsonObject(with: r.body) as? [String: Any]) ?? [:])
         }
+        // 动作与按钮文案键只读共享规格 install_landing（两端同一处）：Mac 自画的写 null，共享键照表
+        XCTAssertEqual(BackendText.installLandingActions["openExport"], .some("nav.build"))
+        XCTAssertEqual(BackendText.installLandingActions["appleLogin"], .some(nil))
+        XCTAssertEqual(S2ArmLauncherModel.installActions, Set(BackendText.installLandingActions.keys))
         let early = await post(["gameId": gid, "id": "appleId"])
         XCTAssertEqual(early.0, 409, "还没有这款的清单")
         XCTAssertTrue(control.state()["presented"] is NSNull, "什么都没开：null")

@@ -1,5 +1,5 @@
 // S2Arm（不是上游文件）：0.6.0 Mac 的 Apple ID 登录（作业层 pack/jobs/apple_login.py：随包 plumesign 自己登录，不看 Xcode），
-//   与装机前清单的动作派发（作业层 install.MAC_READY_ACTIONS：每项没好时带一个 action，清单按钮、控制口 /install-action 都走 performInstallAction）。
+//   与装机前清单的动作派发（落点表唯一来源：共享规格 install_landing，作业层每项没好时带一个 action，清单按钮、控制口 /install-action 都走 performInstallAction）。
 //   登录面板（AppleLoginViews.swift）只有一个：装机清单、设置「签名身份」、环境检查、欢迎页、装机失败页都打开它。
 //   密码只在面板的输入框里、只经环境变量交给登录那一次作业；验证码 / 改短信经适配层写进作业在等的文件。
 import Foundation
@@ -22,8 +22,8 @@ enum InstallLeave: Equatable {
 }
 
 extension S2ArmLauncherModel {
-    /// 作业层 MAC_READY_ACTIONS 的取值（只认这几个，别的不派发）
-    static let installActions: Set<String> = ["openExport", "appleLogin", "pickDevice", "trustHelp", "developerModeHelp", "devCertSettings"]
+    /// 落点表里的动作（共享规格 install_landing.actions；只认表里的，别的不派发）
+    static var installActions: Set<String> { Set(BackendText.installLandingActions.keys) }
 
     /// 当前呈现的弹窗 / 面板（控制口 GET /state 的 presented，取值同清单动作名）；什么都没开 = nil
     var presented: String? {

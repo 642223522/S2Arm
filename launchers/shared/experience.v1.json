@@ -787,7 +787,7 @@
                 "appleLogin": null, "pickDevice": null, "trustHelp": null, "developerModeHelp": null},
     "items": {
       "mac": {"package": "openExport", "appleId": "appleLogin", "connected": "pickDevice", "trusted": "trustHelp", "developerMode": "developerModeHelp",
-              "devcert": "devCertSettings", "devcertDevice": "@url"},
+              "deviceReady": null, "devcert": "devCertSettings", "devcertDevice": "@url"},
       "windows": {"package": "openExport", "impactor": "openImpactor|@url", "impactor_login": "openImpactor", "connected": null,
                   "devcert": "devCertSettings", "devcertDevice": "@url"}
     }

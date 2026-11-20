@@ -68,11 +68,14 @@ struct InstallView: View {
                         CardGroup(loc.t("s2arm.install.checklist"), footnote: footnote(r)) {
                             ForEach(r.items) { item in
                                 CardRow(loc.backend(item.title), detail: loc.backend(item.detail), dot: dot(item)) {
-                                    // 按钮只按作业层给的动作画（install.MAC_READY_ACTIONS），点了走同一个派发（控制口 /install-action 也走它）；
-                                    //   只是去出包页 / 登录 / 看说明，别的作业在跑也不置灰
+                                    // 按钮只按作业层给的动作 / 官方网页画（落点表 install_landing），点了走同一个派发（控制口 /install-action 也走它）；
+                                    //   只是去出包页 / 登录 / 看说明 / 开网页，别的作业在跑也不置灰
                                     if let action = item.action, S2ArmLauncherModel.installActions.contains(action) {
                                         Button(actionTitle(action)) { model.performInstallAction(action, gameId: gameID) }
                                             .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("install.action." + item.id)
+                                    } else if let url = item.url.flatMap(URL.init(string:)) {
+                                        Button(text("action.open_official")) { NSWorkspace.shared.open(url) }
+                                            .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("install.url." + item.id)
                                     }
                                 }
                                 if item.id != r.items.last?.id { CardDivider() }
@@ -210,12 +213,12 @@ struct InstallView: View {
     private static let deviceRowID = "install.deviceRow"
     /// 说明弹窗对应的清单项（trustHelp → trusted，developerModeHelp → developerMode）
     private var helpItem: InstallItem? { model.installReadiness?.items.first { $0.action != nil && $0.action == model.installHelp } }
+    /// 按钮文案：落点表给了共享文案键的用它（两端同一句）；表里写 null 的是 Mac 自画的这几个
     private func actionTitle(_ action: String) -> String {
+        if let key = BackendText.installLandingActions[action] ?? nil { return text(key) }
         switch action {
-        case "openExport": return loc.t("s2arm.action.ipa")
         case "appleLogin": return text("install.login.open")
         case "pickDevice": return text("install.action.pickDevice")
-        case "devCertSettings": return text("install.mode.go_settings")
         default: return text("install.action.howTo")   // trustHelp / developerModeHelp
         }
     }

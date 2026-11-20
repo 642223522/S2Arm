@@ -387,7 +387,7 @@ import S2ArmAppleAdapter
         let keys = m.keysReady
         let rd: Any = m.installReadiness.map { r -> [String: Any] in
             ["gameId": m.installGameID ?? "", "checkedDevice": m.installReadinessDevice ?? "", "ready": r.ready, "device": r.device, "account": r.account, "signing": r.signing,
-             "items": r.items.map { i -> [String: Any] in ["id": i.id, "ok": i.ok, "waiting": i.waiting, "title": i.title, "detail": i.detail, "who": i.who, "action": i.action.map { $0 as Any } ?? NSNull()] }]
+             "items": r.items.map { i -> [String: Any] in ["id": i.id, "ok": i.ok, "waiting": i.waiting, "title": i.title, "detail": i.detail, "who": i.who, "action": i.action.map { $0 as Any } ?? NSNull(), "url": i.url.map { $0 as Any } ?? NSNull()] }]
         } ?? NSNull()
         func describe(_ s: JobSession) -> [String: Any] {
             let phase: String

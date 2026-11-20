@@ -10,18 +10,21 @@ public struct InstallItem: Identifiable, Equatable {
     public let detail: String
     /// human = 只能玩家本人做；app = 启动器自己能做（如先做 iPhone 版）。
     public let who: String
-    /// 没好时启动器的本地动作（作业层 install.MAC_READY_ACTIONS：openExport / appleLogin / pickDevice / trustHelp / developerModeHelp / devCertSettings）；
+    /// 没好时启动器的本地动作（落点表唯一来源：共享规格 install_landing，BackendText.installLandingActions）；
     ///   好了、等前一步、不用人做的为 nil。清单按钮与控制口 /install-action 都按它派发
     public let action: String?
+    /// 没好时要打开的官方网页（install_landing 里写 @url 的项，如证书设备不在描述文件里 → 苹果开发者网站设备页）
+    public let url: String?
 
-    public init(id: String, ok: Bool, waiting: Bool = false, title: String, detail: String = "", who: String = "human", action: String? = nil) {
-        self.id = id; self.ok = ok; self.waiting = waiting; self.title = title; self.detail = detail; self.who = who; self.action = action
+    public init(id: String, ok: Bool, waiting: Bool = false, title: String, detail: String = "", who: String = "human", action: String? = nil, url: String? = nil) {
+        self.id = id; self.ok = ok; self.waiting = waiting; self.title = title; self.detail = detail; self.who = who; self.action = action; self.url = url
     }
 
     public init?(json i: [String: Any]) {
         guard let id = i["id"] as? String, let title = i["title"] as? String else { return nil }
         self.init(id: id, ok: i["ok"] as? Bool ?? false, waiting: i["waiting"] as? Bool ?? false, title: title,
-                  detail: i["detail"] as? String ?? "", who: i["who"] as? String ?? "human", action: (i["action"] as? String).flatMap { $0.isEmpty ? nil : $0 })
+                  detail: i["detail"] as? String ?? "", who: i["who"] as? String ?? "human", action: (i["action"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+                  url: (i["url"] as? String).flatMap { $0.hasPrefix("https://") ? $0 : nil })
     }
 }
 
