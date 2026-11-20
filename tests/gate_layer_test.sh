@@ -38,9 +38,13 @@ d=$(cd "$H" && python3 tools/gate_decl.py layer | tr '\n' '|')
 ck "⑥ 本仓库合入后声明（${d}）" '[ "$d" = "钩子 graphics/gate.sh	合入后|钩子 launchers/macos/gate.sh	合入后|钩子 tests/visual/gate.sh	合入后|iOS 全量编译	合入后	路由|" ]'
 # ⑦ 显卡独占：单测文件头「# 门禁显卡：独占」→ 经 维护方工具 prio 跑（桩记 prio 名），普通单测不经（11-06 present_settings 被并行窗口抢焦点）
 printf '#!/bin/bash\n# 门禁显卡：独占\necho z >> %s/trace\n' "$T" > tests/z_test.sh
-mkdir -p $T/priv; printf '#!/bin/bash\n[ "$1" = prio ] && echo "prio $2" >> %s/prio; shift 4; exec "$@"\n' "$T" > $T/priv/mac_slot_frozen.sh; chmod +x $T/priv/mac_slot_frozen.sh; export S2A_PRIVATE_TOOLS=$T/priv
+mkdir -p $T/priv; printf '#!/bin/bash\ncase $1 in prio) echo "prio $2" >> %s/prio; shift 4;; share) echo "share $2" >> %s/prio; shift 3;; esac; exec "$@"\n' "$T" "$T" > $T/priv/mac_slot_frozen.sh; chmod +x $T/priv/mac_slot_frozen.sh; export S2A_PRIVATE_TOOLS=$T/priv
 git add -A; git commit -qm 2; : > $T/prio; r=$(g o7); t=$(tr1); pr=$(tr '\n' '|' < $T/prio)
 ck "⑦ 显卡独占单测经 prio 锁跑、普通单测不经（trace ${t}，prio ${pr}，rc=${r}）" '[ $r = 0 ] && [ "$t" = "a b x y z " ] && [ "$pr" = "prio 单测 z_test|" ]'
+# ⑦b 显卡共享（11-20 读写锁）：单测文件头「# 门禁显卡：共享」→ 经 维护方工具 share 跑（桩记 share 名）
+printf '#!/bin/bash\n# 门禁显卡：共享\necho w >> %s/trace\n' "$T" > tests/w_test.sh
+git add -A; git commit -qm 2b; : > $T/prio; r=$(g o7b); t=$(tr1); pr=$(sort $T/prio | tr '\n' '|')
+ck "⑦b 显卡共享单测经 share 跑、独占经 prio、普通不经（trace ${t}，锁 ${pr}，rc=${r}）" '[ $r = 0 ] && [ "$t" = "a b w x y z " ] && [ "$pr" = "prio 单测 z_test|share 单测 w_test|" ]'
 ck "⑧ 本仓库声明显卡独占的单测含 present_settings_test" 'head -6 $H/tests/present_settings_test.sh | grep -q "^# 门禁显卡：独占"'
 # ⑨ 「合入后（路由命中时合入前也跑）」（11-10：安卓支 / ios 头改动合入前不跑对应钩子，一天叠多处 main 红）：钩子 c 这样声明、路由 c/。
 #   期望（按规则手写）：pre + 改动路由到 c → c 跑；pre + 改动没路由到 c → c 不跑；post + 路由到 c → c 跑；
