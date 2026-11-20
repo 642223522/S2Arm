@@ -636,11 +636,27 @@ class LogCauses(JobCase):
         # #1725（诊断 D-K82N）：DLC 解到工具缓存把系统盘写满；失败后临时文件一删，事后量还剩 36 GB，命中行后面还有「刷新停在」→ 原先不采信、落到「没归类」。
         #   tools/clonedir.py 写满当时量的「【写满】」事实行：照报 disk_full，说明带当时的读数（期望手写）
         with um.patch("errors._free_bytes", return_value=36 << 30):
-            error, d = self.mac_refresh(["【写满】/w/tool-cache/run/s2arm/cache/aoc 所在盘剩 0.2 GB，romfs.std 要 6.5 GB",
+            error, d = self.mac_refresh(["【写满】/w/tool-cache/run/s2arm/cache/aoc（盘「Macintosh HD」）所在盘剩 0.2 GB，romfs.std 要 6.5 GB",
                                          "克隆失败：romfs.std：[Errno 28] No space left on device",
                                          "【红】fixture 刷新停在 aoc 阶段（rc=1），现行 = fixture@ex-1"])
         self.assertEqual(error.code, "disk_full")
         self.assertIn("失败当时量", d["detail"]); self.assertIn("romfs.std 要 6.5 GB", d["detail"])
+        # 玩家看到的两句点名哪块盘、差多少：差额 = 6.5 − 0.2 = 6.3 → 向上取整 7 GB（期望手写）
+        self.assertEqual(d["summary"], "「Macintosh HD」空间不够：这一步还要约 6.5 GB，盘上只剩 0.2 GB。")
+        self.assertEqual(d["suggestion"], "在「Macintosh HD」上腾出至少 7 GB 后重试；游戏原件、存档和上次成功的运行版本别删。")
+
+    def test_disk_full_without_measured_note_keeps_general_words(self):
+        # 没有当场读数（只有系统字样、或写满的是目录读不出大小）：照旧笼统两句，不编数字
+        import errors
+        with um.patch("errors._free_bytes", return_value=1 << 20):
+            error, d = self.mac_refresh(["OSError: [Errno 28] No space left on device: '/w/tmp/a.bin'",
+                                         "【写满】/w/x（盘「Macintosh HD」）所在盘剩 0.1 GB",
+                                         "【红】fixture 刷新停在 aoc 阶段（rc=1），现行 = fixture@ex-1"])
+        self.assertEqual(error.code, "disk_full")
+        self.assertEqual(d["summary"], errors.PLAYER_REASON["disk_full"])
+        self.assertEqual(d["suggestion"], errors.RECOVERY["disk_full"])
+        self.assertEqual(errors.player_words("disk_full", None, ["【写满】/v（盘「Ext」）所在盘剩 2.0 GB，romfs.std 要 2.1 GB"])[1],
+                         "在「Ext」上腾出至少 1 GB 后重试；游戏原件、存档和上次成功的运行版本别删。", "差额不足 1 GB 也至少写 1 GB")
 
     def test_final_disk_full_error_is_believed_despite_free_space(self):
         # 诊断 #9ac7f7：让这一步退出的就是盘满那个异常（回溯末行 WinError 112），失败后临时文件已删、事后量还剩 17 GB → 照报 disk_full，

@@ -10462,5 +10462,13 @@
  {
   "source": "在 AltStore 或 SideStore 的设置里导出签名证书，打开手机上的 S2Arm →「签名证书」→「导入 .p12…」导入；想让启动器新建证书就点「安装 S2Arm」（会先说明会让哪张证书失效）。",
   "en": "Export the signing certificate in AltStore or SideStore settings, then open S2Arm on your phone → “Signing certificate” → “Import .p12…”. To have the launcher create a certificate, click “Install S2Arm” (it first explains which certificate would stop working)."
+ },
+ {
+  "source": "「{0}」空间不够：这一步还要约 {1} GB，盘上只剩 {2} GB。",
+  "en": "Not enough space on “{0}”: this step needs about {1} GB, but only {2} GB is free."
+ },
+ {
+  "source": "在「{0}」上腾出至少 {3} GB 后重试；游戏原件、存档和上次成功的运行版本别删。",
+  "en": "Free up at least {3} GB on “{0}”, then try again. Don't delete the game files, saves, or the last version that ran successfully."
  }
 ]

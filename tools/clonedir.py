@@ -287,7 +287,26 @@ def full_note(source, dest_dir):
         return
     # 目录不在这里遍历算总量（仓库只许 romfs_list.py 遍历目录），只报目标盘还剩多少；单个文件（如 romfs.std）带上它的大小
     need = '' if stat.S_ISDIR(st.st_mode) else f'，{os.path.basename(source)} 要 {st.st_size / (1 << 30):.1f} GB'
-    print(f'【写满】{dest_dir} 所在盘剩 {free / (1 << 30):.1f} GB{need}', file=sys.stderr)
+    print(f'【写满】{dest_dir}（盘「{volume_name(dest_dir)}」）所在盘剩 {free / (1 << 30):.1f} GB{need}', file=sys.stderr)
+
+
+def volume_name(path):
+    """玩家认得出的盘名：Windows 盘符（C:）；Mac /Volumes/<卷名> 下取卷名，系统盘问 diskutil 的卷名（读不到写 Macintosh HD）；其余系统给挂载点"""
+    if platform == 'win32':
+        return os.path.splitdrive(os.path.abspath(path))[0] or path
+    parts = os.path.abspath(path).split(os.sep)
+    if platform == 'darwin' and len(parts) > 2 and parts[1] == 'Volumes':
+        return parts[2]
+    if platform == 'darwin':
+        import plistlib, subprocess
+        try:
+            return plistlib.loads(subprocess.run(['diskutil', 'info', '-plist', '/'], capture_output=True, timeout=10).stdout).get('VolumeName') or 'Macintosh HD'
+        except Exception:
+            return 'Macintosh HD'
+    p = os.path.abspath(path)
+    while not os.path.ismount(p):
+        p = os.path.dirname(p)
+    return p
 
 
 def mac_snapshot():

@@ -230,8 +230,9 @@ def recovery(code, *, packaged, windows=None):
 
 class Failure(Exception):
     """message 是上屏的那句；internal 是只进诊断 detail（「复制错误摘要」带走）的内部原文：阶段、rc、构建号、红行。"""
-    def __init__(self, message, *, code="job_failed", internal="", holder=None, facts=None):
+    def __init__(self, message, *, code="job_failed", internal="", holder=None, facts=None, advice=None):
         super().__init__(message)
+        self.advice = advice   # 这一次的「下一步」（带当场读数的，如磁盘满点名哪块盘、差多少）；None = 按码查 RECOVERY
         self.code = code
         self.internal = internal
         self.holder = holder   # library_busy：占着游戏库锁的任务（filelock 旁挂文件里记的那份），其余为 None
@@ -585,6 +586,26 @@ def cause_facts(code, log, texts=()):
     return facts
 
 
+DISK_FULL_REASON = "「{0}」空间不够：这一步还要约 {1} GB，盘上只剩 {2} GB。"
+DISK_FULL_ADVICE = "在「{0}」上腾出至少 {3} GB 后重试；游戏原件、存档和上次成功的运行版本别删。"
+_FULL_NOTE = re.compile(r"【写满】.*?（盘「(?P<vol>[^」]+)」）所在盘剩 (?P<free>[\d.]+) GB，.+? 要 (?P<need>[\d.]+) GB")  # 非玩家句
+
+
+def player_words(code, log=None, texts=()):
+    """上屏的原因与下一步 → (原因, 下一步或 None)。磁盘满且证据里有 tools/clonedir.py 当场量的读数（盘名、这一项要多少、剩多少）：
+    点名哪块盘、差多少（#1725：玩家只看到笼统一句，不知道清哪块盘、清多少）；差额 = 要 − 剩，向上取整到整 GB、最少 1。没有当场读数照旧笼统两句，不编数字"""
+    if code == "disk_full":
+        for _, text in gather_evidence(log, texts):
+            m = _FULL_NOTE.search(text)
+            if m:
+                import math
+                need, free = float(m["need"]), float(m["free"])
+                gap = max(1, math.ceil(need - free))
+                return (DISK_FULL_REASON.format(m["vol"], "%.1f" % need, "%.1f" % free),
+                        DISK_FULL_ADVICE.format(m["vol"], "%.1f" % need, "%.1f" % free, gap))
+    return player_reason(code), None
+
+
 def classify_failure(phase, log, texts=()):
     """Mac 准备（build_tool_failure）与 iPhone 打包（ipa.oneclick_failure，Mac / Windows 同一份）共用：
     日志确凿根因优先，其次阶段映射，判不出 package_failed。返回 (码, 写进 internal 的归因说明)。"""
@@ -664,6 +685,7 @@ def build_tool_failure(args, milestone, log):
     ):  # 读取器现为自包含单文件直执行（原先经 dotnet 跑 dll，executable 是 dotnet）
         phase = "unpack"
     code, why = classify_failure(phase, log)
+    said, advice = player_words(code, log)
     # 上屏只放玩家话术；阶段 / rc / 构建号 / 红行原文进 internal → 诊断 detail（「复制错误摘要」带走）；机读事实进 facts（前端按字段显示）
-    return Failure(player_reason(code), code=code, internal="Mac 准备失败（" + (phase or "未识别阶段") + "）：" + reason + "\n" + why,  # 非玩家句
+    return Failure(said, code=code, advice=advice, internal="Mac 准备失败（" + (phase or "未识别阶段") + "）：" + reason + "\n" + why,  # 非玩家句
                    facts=cause_facts(code, log))
