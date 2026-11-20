@@ -8315,8 +8315,8 @@ static void **g_sbview; static uint64_t *g_sbrid;   // 2 per sampler ID: the sam
 // Memory pool Finalize: for texture IDs whose registered texture lives on this pool, drop the cached MTLTexture (view or base texture). The cache used to be released only when the ID was registered again,
 // so a linear texture built directly on a pool kept the whole pool buffer alive (6 to 17 finalized 16 MB pool buffers stayed alive in Engage's title demo). If the ID is still used, the next lookup rebuilds it on the slow path
 // alt is a view of the base texture (tex_fit), or a 3D texture of its own holding a copy (alt_copy, tex3d_prepare, #674): the copy is in the residency set and leaves it here
-static void treg_drop_alt(treg_t *r) { if (r->alt) { if (r->alt_copy) defer_obj_release((__bridge id)r->alt); else defer_obj_unref((__bridge id)r->alt);
-                                      CFRelease(r->alt); r->alt = r->alt_of = NULL; r->alt_rid = r->alt_made = 0; r->alt_copy = 0; } }
+static void treg_drop_alt(treg_t *r) { if (r->alt) { if (r->alt_copy) defer_obj_release((__bridge id)r->alt); else defer_obj_unref((__bridge id)r->alt); CFRelease(r->alt);
+                                      r->alt = r->alt_of = NULL; r->alt_rid = r->alt_made = 0; r->alt_copy = 0; } }
 static void treg_drop_ar(treg_t *r) { if (r->ar) { defer_obj_unref((__bridge id)r->ar); CFRelease(r->ar); r->ar = r->ar_of = NULL; r->ar_rid = 0; }
                                      if (r->im) { defer_obj_unref((__bridge id)r->im); CFRelease(r->im); r->im = r->im_of = NULL; r->im_rid = 0; } }   // and the image class view (img_fit)
 static void treg_drop_views(treg_t *r) {   // every view the ID caches (view, alt, ar, im): each retains its base texture
@@ -15030,7 +15030,7 @@ static void tex3d_prepare(NvProg *pr) {
     if (!n) return;
     { int pend = g_nlc || R.clear_d || R.clear_s; for (int c = 0; c < 8; c++) pend |= R.clear_c[c]; if (pend) { lc_land(); rp_flush(); memset(g_fb_dirty, 0, sizeof g_fb_dirty); } }   // a clear still waiting has not reached the source (as fb_prepare's copies)
     if (g_enc) rp_end();
-    id<MTL4ComputeCommandEncoder> e = blit();
+    id e = blit();   // 变量用 id（MTL4 棘轮：直连 MTL4 只经包装）
     for (int i = 0; i < n; i++) { id<MTLTexture> t = src[i], base = t.parentTexture ? t.parentTexture : t;
         NSUInteger tl = t.parentTexture ? t.parentRelativeLevel : 0, ts = t.parentTexture ? t.parentRelativeSlice : 0, planes = dst[i].depth;
         for (NSUInteger sl = 0; sl < planes; sl++) enc_b_copy_texture(e, base, ts + sl, tl, MTLOriginMake(0, 0, 0), MTLSizeMake(t.width, t.height, 1), dst[i], 0, 0, MTLOriginMake(0, 0, sl));
