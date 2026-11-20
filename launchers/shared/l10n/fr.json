@@ -1192,7 +1192,16 @@
   "errors.cert_revoke_confirm.title": "Un autre certificat de développement risque d'être révoqué",
   "errors.cert_revoke_confirm.detail": "Si les certificats de votre compte sont au complet, en créer un nouveau fait révoquer par Apple le premier de la liste, et les apps signées avec lui ne s'ouvrent plus ; sinon, rien n'est révoqué.",
   "errors.phone_app_running.title": "S2Arm est en cours d’exécution sur l’iPhone",
-  "errors.phone_app_running.detail": "Si vous changez les sauvegardes pendant que le jeu est ouvert, le jeu les écrase et les abîme."
+  "errors.phone_app_running.detail": "Si vous changez les sauvegardes pendant que le jeu est ouvert, le jeu les écrase et les abîme.",
+  "console.button.identity": "Transmettre l'identité de signature au téléphone",
+  "console.identity.note": "S2Arm installé avec AltStore, SideStore ou une app de certificats : transmettez l'identité de signature une fois, puis il suffit de mettre les paquets de jeu dans « Import Here » pour jouer",
+  "console.identity.done": "L'identité de signature est maintenant dans S2Arm sur votre téléphone : désormais, mettez les fichiers .s2arm et .img dans « Import Here » et ouvrez S2Arm pour jouer.",
+  "console.identity.already": "S2Arm sur votre téléphone a déjà cette identité de signature ; inutile de la transmettre à nouveau.",
+  "phone.title.phoneIdentity": "Transmettre l'identité de signature au téléphone",
+  "phone.status.running.phoneIdentity": "Transmission",
+  "phone.done.phoneIdentity": "Identité de signature transmise à S2Arm sur {0}",
+  "phone.failed.phoneIdentity": "Non transmise",
+  "phone.headline.phoneIdentity": "Transmise"
  },
  "text": {
   "满屏补丁（按屏幕比例自动选）": "Correctif plein écran (choisi selon votre ratio d'écran)",

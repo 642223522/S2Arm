@@ -1192,7 +1192,16 @@
   "errors.cert_revoke_confirm.title": "別の開発用証明書が取り消される可能性があります",
   "errors.cert_revoke_confirm.detail": "アカウントの証明書が上限に達している場合、新しい証明書を作成すると Apple がリストの最初の証明書を取り消し、それで署名した App は開けなくなります。上限に達していなければ何も取り消されません。",
   "errors.phone_app_running.title": "iPhone で S2Arm が実行中です",
-  "errors.phone_app_running.detail": "ゲームを開いたままセーブデータを入れ替えると、ゲームに上書きされて壊れます。"
+  "errors.phone_app_running.detail": "ゲームを開いたままセーブデータを入れ替えると、ゲームに上書きされて壊れます。",
+  "console.button.identity": "署名用 ID を iPhone に渡す",
+  "console.identity.note": "AltStore・SideStore・証明書アプリでインストールした S2Arm：署名用 ID を一度渡せば、あとはゲームパックを「Import Here」に入れるだけで遊べます",
+  "console.identity.done": "iPhone の S2Arm に署名用 ID を渡しました。これからは .s2arm と .img を「Import Here」に入れて S2Arm を開けば遊べます。",
+  "console.identity.already": "iPhone の S2Arm にはすでにこの署名用 ID があります。もう一度渡す必要はありません。",
+  "phone.title.phoneIdentity": "署名用 ID を iPhone に渡す",
+  "phone.status.running.phoneIdentity": "受け渡し中",
+  "phone.done.phoneIdentity": "{0} の S2Arm に署名用 ID を渡しました",
+  "phone.failed.phoneIdentity": "渡せませんでした",
+  "phone.headline.phoneIdentity": "渡しました"
  },
  "text": {
   "满屏补丁（按屏幕比例自动选）": "全画面パッチ（画面比率に応じて自動選択）",

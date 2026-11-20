@@ -1188,7 +1188,16 @@
   "welcome.step.keys.panel": "選擇從你的 Switch 匯出的 prod.keys",
   "welcome.step.keys.done": "金鑰已就緒",
   "welcome.step.games.title": "新增你的遊戲",
-  "welcome.step.games.what": "NSP、XCI、NUP 檔案或解包好的遊戲資料夾都可以。"
+  "welcome.step.games.what": "NSP、XCI、NUP 檔案或解包好的遊戲資料夾都可以。",
+  "console.button.identity": "把簽名身分交給手機",
+  "console.identity.note": "用 AltStore、SideStore 或憑證 App 裝的 S2Arm：交一次簽名身分，以後把遊戲包放進「放這裡匯入」就能玩",
+  "console.identity.done": "已把簽名身分交給手機上的 S2Arm：以後把 .s2arm 和 .img 放進「放這裡匯入」，打開 S2Arm 就能玩。",
+  "console.identity.already": "手機上的 S2Arm 已經有這份簽名身分，不用再交。",
+  "phone.title.phoneIdentity": "把簽名身分交給手機",
+  "phone.status.running.phoneIdentity": "交付中",
+  "phone.done.phoneIdentity": "已把簽名身分交給 {0} 上的 S2Arm",
+  "phone.failed.phoneIdentity": "沒交成",
+  "phone.headline.phoneIdentity": "交好了"
  },
  "text": {
   "直连": "直連",

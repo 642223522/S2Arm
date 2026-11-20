@@ -227,6 +227,14 @@ public final class InstallService {
         return try await client.perform("installUpdate", extra: extra, events: events).result
     }
 
+    /// 把这台电脑的签名身份交给手机上的 S2Arm（phoneIdentity 作业，install.phone_identity）：别的工具（AltStore / SideStore / 证书 App）装的 S2Arm 团队对得上也交。
+    ///   device：交给哪台（不给 = 只连着一台）；force：交过了也重交。交过了且没 force → delivered = false
+    public func phoneIdentity(device: String? = nil, force: Bool = false, events: EventSink = .discard) async throws -> PhoneIdentityResult {
+        var extra: [String: Any] = force ? ["force": true] : [:]
+        if let device, !device.isEmpty { extra["device"] = device }
+        return PhoneIdentityResult(result: try await client.perform("phoneIdentity", extra: extra, events: events).result)
+    }
+
     /// 装回只换宿主前的那一版手机 S2Arm（installRestore 作业，pack/jobs/install.py restore_previous）。
     public func restorePrevious(device: String? = nil, events: EventSink = .discard) async throws {
         _ = try await client.perform("installRestore", extra: device.map { ["device": $0] } ?? [:], events: events)
@@ -241,6 +249,21 @@ public final class InstallService {
         for key in accept { extra[key] = true }
         let r = try await client.perform("installRemove", extra: extra, events: events).result
         return RemoveResult(result: r)
+    }
+}
+
+/// phoneIdentity 作业的结果：delivered = 这次真交了（false = 手机上已有这份）；certSha1 / team = 交的那份身份；source = 身份来源；device / bundleId = 交给的那台、那个 App
+public struct PhoneIdentityResult: Equatable, Sendable {
+    public let delivered: Bool
+    public let certSha1: String
+    public let team: String
+    public let source: String
+    public let device: String
+    public let bundleId: String
+    init(result r: [String: Any]) {
+        delivered = r["delivered"] as? Bool ?? false
+        certSha1 = r["certSha1"] as? String ?? ""; team = r["team"] as? String ?? ""; source = r["source"] as? String ?? ""
+        device = r["device"] as? String ?? ""; bundleId = r["bundleId"] as? String ?? ""
     }
 }
 
