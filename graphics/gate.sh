@@ -240,9 +240,11 @@ gpu_excl() { local lim=$1; shift; [ -n "${S2A_PRIVATE_TOOLS:-}" ] && { bash "$S2
 gpu_job() { case $1 in *_build|*_prebuild|direct_link_dsx) return 1;; vk|texture_dma_read|shared_gpu_contract) return 0;; esac; shift; local a
   for a in "$@"; do case $a in graphics/tools/direct/tests/*|graphics/nvn|graphics/nvn/*|graphics/metal|graphics/metal/*|tests/se_want_test.py) return 0;; esac; done; return 1; }
 GPU_SHR_OK=0; [ -n "${S2A_PRIVATE_TOOLS:-}" ] && source "$S2A_PRIVATE_TOOLS/mac_slot_frozen.sh" 2> /dev/null && declare -F gpu_share_acquire > /dev/null && GPU_SHR_OK=1
-# gpu_share <子项键> <命令…>：要共享锁的子项排到锁再跑（同一 shell 里跑，函数子项照常可用），跑完放锁；排队超上限退 75
-gpu_share() { local k=$1 r; shift; { [ "$GPU_SHR_OK" = 1 ] && gpu_job "$k" "$@"; } || { "$@"; return; }
-  gpu_share_acquire "graphics/gate.sh $k" || return; "$@"; r=$?; gpu_share_release; return $r; }
+# gpu_share_on <子项键> <命令…>：要共享锁的子项排到锁（不要的直接返回 0）；排队超上限退 75。gpu_share_off 放（没拿也可调）
+gpu_share_on() { [ "$GPU_SHR_OK" = 1 ] && gpu_job "$@" || return 0; gpu_share_acquire "graphics/gate.sh $1"; }
+gpu_share_off() { [ "$GPU_SHR_OK" = 1 ] && gpu_share_release; return 0; }
+# gpu_share <子项键> <命令…>：排到锁再在同一 shell 里跑（函数子项照常可用），跑完放锁
+gpu_share() { local r; gpu_share_on "$@" || return; shift; "$@"; r=$?; gpu_share_off; return $r; }
 run_present_residency() {
   local out="build/tests/present-residency" widen_build="build/tests/present-residency/deps"
   local widen_target="$widen_build/tests/nvn/widen/S2Arm.Gfx.Widen.dylib"
@@ -325,7 +327,7 @@ if [ -z "${S2A_DOTNET_LOCK:-}" ] && [ -f tools/dotnet_lock.c ] && mkdir -p build
 fi
 JOBD=$LOG/jobs; rm -rf "$JOBD"; mkdir -p "$JOBD"; LANES=
 # job <项> <命令…>：先认领（mkdir 原子，已被别的道认领就跳过），输出进 $LOG/<项>.log、退出码原子落 $JOBD/<项>.rc，用时记 $LOG/jobs.tsv（秒数 / 项 / 退出码 / 开跑时刻 / 道）；带 HOOK_REST=1 调的是「其余」子项（见 HOOK_KEYS），GATE_HOOK_ONLY 不点名 rest 时只记一行「不跑」、退出码 0
-job() { mkdir "$JOBD/$1.claim" 2> /dev/null || return 0; local k=$1 s=$SECONDS r; hook_rest_off && { echo "本步只跑点名子项（GATE_HOOK_ONLY=${GATE_HOOK_ONLY:-}），「其余」不在名单，不跑" > "$LOG/$k.log"; echo 0 > "$JOBD/$k.rc.t"; mv "$JOBD/$k.rc.t" "$JOBD/$k.rc"; return 0; }; unset HOOK_REST; shift; gpu_share "$k" "$@" > "$LOG/$k.log" 2>&1 < /dev/null; r=$?; printf '%s\t%s\t%s\t%s\t%s\n' "$((SECONDS - s))" "$k" "$r" "$s" "${LANE:-}" >> "$LOG/jobs.tsv"; echo "$r" > "$JOBD/$k.rc.t"; mv "$JOBD/$k.rc.t" "$JOBD/$k.rc"; }
+job() { mkdir "$JOBD/$1.claim" 2> /dev/null || return 0; local k=$1 s=$SECONDS r; hook_rest_off && { echo "本步只跑点名子项（GATE_HOOK_ONLY=${GATE_HOOK_ONLY:-}），「其余」不在名单，不跑" > "$LOG/$k.log"; echo 0 > "$JOBD/$k.rc.t"; mv "$JOBD/$k.rc.t" "$JOBD/$k.rc"; return 0; }; unset HOOK_REST; : > "$LOG/$k.log"; r=75; gpu_share_on "$@" 2>> "$LOG/$k.log" && { shift; "$@" >> "$LOG/$k.log" 2>&1 < /dev/null; r=$?; gpu_share_off; }; printf '%s\t%s\t%s\t%s\t%s\n' "$((SECONDS - s))" "$k" "$r" "$s" "${LANE:-}" >> "$LOG/jobs.tsv"; echo "$r" > "$JOBD/$k.rc.t"; mv "$JOBD/$k.rc.t" "$JOBD/$k.rc"; }
 lanes_alive() { local p; for p in $LANES; do kill -0 "$p" 2> /dev/null && return 0; done; return 1; }
 # waitfor <项>：道内等别的道的某项跑完（不写退出码）；rcof <项>：主流程取退出码，四道都结束了还没有 = 没排进任何道 → 125 判红
 waitfor() { while [ ! -f "$JOBD/$1.rc" ] && lanes_alive; do sleep 0.2; done; }
