@@ -27,6 +27,7 @@ int plat_layout_override(const char *p, uint32_t t, uint64_t r, uint64_t id, uin
 void s2a_vaguard_open(void);
 S2A_TEST_MOD_TABLE(64); int g_nmod;
 void s2a_mem_test_setup(uint64_t, uint64_t, uint64_t, uint64_t, void *, uint64_t);
+int s2a_snap_page_released(uint64_t hp);   // svc_mem.c：即时存档跳过已释放待清零的页
 uint64_t s2a_mem_test_punch_pending(void); void s2a_mem_test_punch_stats(uint64_t *inline_zero, uint64_t *forget);   // #258 懒清零
 void s2a_mem_test_subpage(uint64_t a, int on); void s2a_mem_test_map(uint64_t b, uint64_t n);
 void s2a_mem_test_map_diag_reset(void); void s2a_mem_test_stack(uint64_t base, uint64_t size);
@@ -1066,7 +1067,11 @@ int main(void) {
         // 2) 解除前 4 页、只映射回第 1 页：待清零 3，第 1 页全零可访问，第 0 / 2 页仍不可访问；再全部映射回来 → 待 0
         memset(az, 0xA5, 8 * HP); rc1 = PHYS(0x2D, b, 4 * HP); rc2 = PHYS(0x2C, b + HP, HP);
         uint64_t pend3 = s2a_mem_test_punch_pending(); nz = NZ(az + HP, HP); kp0 = kprot(b); int kp1 = kprot(b + HP), kp2 = kprot(b + 2 * HP);
+        // 即时存档存游戏内存时按这个跳过已释放待清零的页（snapshot.c dump_mem）：第 0 / 2 / 3 页待清零 → 1；第 1 页已映射回来、第 4 页从没解除 → 0
+        int rl0 = s2a_snap_page_released(b), rl1 = s2a_snap_page_released(b + HP), rl2 = s2a_snap_page_released(b + 2 * HP), rl3 = s2a_snap_page_released(b + 3 * HP), rl4 = s2a_snap_page_released(b + 4 * HP);
+        CHECK(rl0 == 1 && rl1 == 0 && rl2 == 1 && rl3 == 1 && rl4 == 0, "#258 存档按页查已释放待清零：第 0/1/2/3/4 页期望 1/0/1/1/0，真结果 %d/%d/%d/%d/%d", rl0, rl1, rl2, rl3, rl4);
         uint64_t rc3 = PHYS(0x2C, b, 8 * HP);
+        CHECK(s2a_snap_page_released(b) == 0 && s2a_snap_page_released(b + 2 * HP) == 0, "#258 全部映射回来后存档查已释放：期望第 0 / 2 页都 0");
         CHECK(!rc1 && !rc2 && !rc3 && pend3 == 3 && nz == 0 && kp0 == 0 && kp2 == 0 && kp1 != 0 && s2a_mem_test_punch_pending() == 0, "#258 中间一页映射回来：待 3、该页全零可访问、两侧仍不可访问，全映射回来后待 0（rc %#llx/%#llx/%#llx 待 %llu 非零 %llu 保护 %d/%d/%d 待 %llu）", (unsigned long long)rc1, (unsigned long long)rc2, (unsigned long long)rc3, (unsigned long long)pend3, (unsigned long long)nz, kp0, kp1, kp2, (unsigned long long)s2a_mem_test_punch_pending());
         // 3) 栈区 MapMemory 拷贝路径（大小不按宿主页对齐）：UnmapMemory 释放的整宿主页记待清零、不可访问；再 MapMemory 到同处先清零再拷 → 待清零撤销、就地清零 +1、内容等于源
         uint64_t S = b + (1ull << 20); s2a_mem_test_stack(S, 4 * HP);
