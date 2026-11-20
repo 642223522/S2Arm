@@ -1387,7 +1387,7 @@
   "s2arm.install.device": "デバイス：%@",
   "s2arm.install.note": "S2Arm でサインインした Apple ID で署名し、ケーブル経由でインストールします。無料の Apple ID で署名した App は 7 日で期限切れになるため、その時点で再インストールしてください。",
   "s2arm.install.start": "インストール開始",
-  "s2arm.install.teamManual": "Apple TV／単独アプリ方式用の Xcode チーム",
+  "s2arm.install.teamManual": "Apple TV 用の Xcode チーム",
   "s2arm.install.teamManualField": "10 文字の Team ID",
   "s2arm.install.teamManualHelp": "Xcode にサインインしているのにチームが見つからない場合は、Team ID を手動で入力してください（Xcode のアカウントページまたは Apple Developer サイトで確認できます）。また、「IPA を表示」で App を見つけて、Sideloadly または AltStore でインストールし、Finder でリソースパックを App にコピーすることもできます。",
   "s2arm.install.teamManualUse": "このチームでインストール",

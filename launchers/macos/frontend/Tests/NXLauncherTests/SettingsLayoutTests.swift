@@ -1939,7 +1939,7 @@ import S2ArmAppleAdapter
         defer { UserDefaults.standard.set(previous, forKey: S2ArmLauncherModel.teamCodeKey) }
         let fixture = try SettingsFixture()
         defer { fixture.remove() }
-        let page = AnyView(ScrollView { InstallModeCard(model: fixture.model).padding(32) }.launcherSheet())
+        let page = AnyView(ScrollView { AppleTVXcodeTeam(model: fixture.model).padding(32) }.launcherSheet())   // Apple TV 用的 Xcode 团队（出包页 Apple TV 那一行下面）
         let (host, window) = try await render(page, fixture: fixture, language: .zh)
         fixture.navigation.source.controllers = { [] }; fixture.navigation.attach(window)
         defer { fixture.navigation.detach(); window.close() }

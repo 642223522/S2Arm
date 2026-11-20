@@ -1388,7 +1388,7 @@
   "s2arm.install.device": "设备：%@",
   "s2arm.install.note": "用你在 S2Arm 里登录的 Apple ID 签名并用数据线安装，免费账号需每 7 天重新安装",
   "s2arm.install.start": "开始装",
-  "s2arm.install.teamManual": "Apple TV / 独立 App 方案用的 Xcode 团队",
+  "s2arm.install.teamManual": "Apple TV 用的 Xcode 团队",
   "s2arm.install.teamManualField": "10 位 Team ID",
   "s2arm.install.teamManualHelp": "已登录但未识别到团队时，可填写 Xcode 账户页或 Apple 开发者网站中的 Team ID",
   "s2arm.install.teamManualUse": "用这个团队装",

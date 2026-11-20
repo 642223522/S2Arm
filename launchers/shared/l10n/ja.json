@@ -1226,7 +1226,8 @@
   "install.login.close": "完了",
   "install.action.pickDevice": "デバイスを選ぶ",
   "install.action.howTo": "やり方",
-  "install.help.ok": "OK"
+  "install.help.ok": "OK",
+  "install.login.expired": "Apple ID のサインインの有効期限が切れました。もう一度サインインしてください。メールアドレスは入力済みです。"
  },
  "text": {
   "满屏补丁（按屏幕比例自动选）": "全画面パッチ（画面比率に応じて自動選択）",

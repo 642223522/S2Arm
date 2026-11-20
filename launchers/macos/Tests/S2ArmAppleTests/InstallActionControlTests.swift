@@ -21,7 +21,7 @@ private final class ChecklistRunner: JobProcessRunner {
         case "catalog": result = ["games": [["id": "0100ABCDEF000000", "name": "Fixture", "ready": true, "missing": []]]]
         case "installCheck": result = ["gameId": "0100ABCDEF000000", "ready": true, "items": [item("package", true, NSNull()), item("appleId", false, "appleLogin"),
                                                                                                item("connected", false, "pickDevice"), item("deviceReady", false, NSNull())]]
-        case "appleAccount": result = ["account": NSNull(), "team": NSNull(), "teamName": "", "enabled": true]
+        case "appleAccount": result = ["account": "player@example.com", "team": "T", "teamName": "Tester", "enabled": true]
         default: result = [:]
         }
         let event: [String: Any] = ["schema": 1, "taskId": taskId, "type": "result", "state": "succeeded", "result": result, "message": ""]
@@ -81,5 +81,17 @@ private final class ChecklistRunner: JobProcessRunner {
         XCTAssertEqual(dismissed.code, 200)
         XCTAssertTrue(control.state()["presented"] is NSNull, "/dismiss 收起清单动作打开的东西（同 Windows）")
         XCTAssertNil(model.appleLoginHost)
+
+        // 装机报登录过期（apple_session_expired）：失败页按钮落到同一个登录面板，带「过期」并重读账号带上原来的邮箱；没登录不带原因
+        XCTAssertEqual(S2ArmLauncherModel.appleLoginCodes["apple_session_expired"], .some("expired"))
+        XCTAssertEqual(S2ArmLauncherModel.appleLoginCodes["apple_not_signed_in"], .some(nil))
+        XCTAssertNil(S2ArmLauncherModel.appleLoginCodes["cert_revoke_confirm"], "别的码不落登录面板")
+        model.openAppleLogin(host: "main", reason: "expired")
+        for _ in 0..<300 where model.appleAccount == nil { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(control.state()["presented"] as? String, "appleLogin")
+        XCTAssertEqual(model.appleLoginReason, "expired")
+        XCTAssertEqual(model.appleAccount?.account, "player@example.com", "面板邮箱框按它带上原来的邮箱")
+        model.closeAppleLogin()
+        XCTAssertNil(model.appleLoginReason)
     }
 }

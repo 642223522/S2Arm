@@ -1519,6 +1519,7 @@
       {"id": "install.login.switch", "zh-Hans": "换一个 Apple ID", "en": "Use Another Apple ID"},
       {"id": "install.login.cancel", "zh-Hans": "取消", "en": "Cancel"},
       {"id": "install.login.close", "zh-Hans": "完成", "en": "Done"},
+      {"id": "install.login.expired", "zh-Hans": "Apple ID 登录已过期：重新登录一次，邮箱已经填好。", "en": "Your Apple ID sign-in has expired. Sign in again; your email is already filled in."},
       {"id": "install.action.pickDevice", "zh-Hans": "选设备", "en": "Choose Device"},
       {"id": "install.action.howTo", "zh-Hans": "怎么做", "en": "How To"},
       {"id": "install.help.ok", "zh-Hans": "好", "en": "OK"},

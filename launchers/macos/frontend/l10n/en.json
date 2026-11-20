@@ -1387,7 +1387,7 @@
   "s2arm.install.device": "Device: %@",
   "s2arm.install.note": "Signed with the Apple ID you signed in to in S2Arm and installed by cable, with reinstalling required every 7 days for free accounts",
   "s2arm.install.start": "Install",
-  "s2arm.install.teamManual": "Xcode team for Apple TV / standalone apps",
+  "s2arm.install.teamManual": "Xcode team for Apple TV",
   "s2arm.install.teamManualField": "10-character Team ID",
   "s2arm.install.teamManualHelp": "If your signed-in team is missing, enter the Team ID from Xcode Accounts or the Apple Developer website",
   "s2arm.install.teamManualUse": "Install with this team",

@@ -1226,7 +1226,8 @@
   "install.login.close": "Terminé",
   "install.action.pickDevice": "Choisir l’appareil",
   "install.action.howTo": "Comment faire",
-  "install.help.ok": "OK"
+  "install.help.ok": "OK",
+  "install.login.expired": "Votre connexion à l’identifiant Apple a expiré. Reconnectez-vous ; votre e-mail est déjà saisi."
  },
  "text": {
   "满屏补丁（按屏幕比例自动选）": "Correctif plein écran (choisi selon votre ratio d'écran)",

@@ -238,9 +238,11 @@ public final class S2ArmEngineProvider: EngineProvider {
     }
 
     /// 装到 Apple TV（tvInstall 作业）：device = 选的那台（设备号 / UDID），nil = 只连着一台时用它。
-    public func installAppleTV(gameId: String, device: String?, events: EventSink = .discard) async throws -> [String: Any] {
+    ///   teamId：出包页「Apple TV 用的 Xcode 团队」里手填的团队号（作业层 tvos.install_tv → install.pick_team(xcode_teams, teamId)）；没填不带
+    public func installAppleTV(gameId: String, device: String?, teamId: String? = nil, events: EventSink = .discard) async throws -> [String: Any] {
         var extra: [String: Any] = ["gameId": gameId]
         if let device { extra["device"] = device }
+        if let teamId, !teamId.isEmpty { extra["teamId"] = teamId }
         return try await client.perform("tvInstall", extra: extra, events: events).result
     }
 

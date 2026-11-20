@@ -1222,7 +1222,8 @@
   "install.login.close": "完成",
   "install.action.pickDevice": "選裝置",
   "install.action.howTo": "怎麼做",
-  "install.help.ok": "好"
+  "install.help.ok": "好",
+  "install.login.expired": "Apple ID 登入已過期：重新登入一次，電子郵件已經填好。"
  },
  "text": {
   "直连": "直連",

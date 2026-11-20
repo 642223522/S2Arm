@@ -1226,7 +1226,8 @@
   "install.login.close": "Listo",
   "install.action.pickDevice": "Elegir dispositivo",
   "install.action.howTo": "Cómo hacerlo",
-  "install.help.ok": "Aceptar"
+  "install.help.ok": "Aceptar",
+  "install.login.expired": "Tu sesión del Apple ID ha caducado. Vuelve a iniciar sesión; tu correo ya está escrito."
  },
  "text": {
   "满屏补丁（按屏幕比例自动选）": "Parche de pantalla completa (elegido según la proporción de tu pantalla)",

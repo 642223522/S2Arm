@@ -29,6 +29,10 @@ struct AppleLoginSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             LauncherSheetHeading(lx(loc, "title"), note: lx(loc, "note"))
+            if model.appleLoginReason == "expired", !isDone {   // 装机报登录过期：说清是过期、邮箱已带上，重新登录一次
+                Label(lx(loc, "expired"), systemImage: "clock.badge.exclamationmark").font(LauncherTheme.TypeStyle.detail)
+                    .foregroundStyle(LauncherPalette.building).fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("appleLogin.expired")
+            }
             if let a = model.appleAccount, a.signedIn, !isDone {
                 Text(appleAccountLine(loc, a)).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary)
                     .accessibilityIdentifier("appleLogin.current")
@@ -69,6 +73,7 @@ struct AppleLoginSheet: View {
         }
         .padding(LauncherTheme.Space.page)
         .onAppear { if email.isEmpty { email = model.appleAccount?.account ?? "" } }
+        .onChange(of: model.appleAccount) { a in if email.isEmpty, let a, a.signedIn { email = a.account } }   // 重读账号回来晚于面板出现：补上原来的邮箱
         .onChange(of: model.appleLoginPhase) { phase in
             if case .done = phase { password = "" }
             if case .needCode = phase { code = ""; codeError = nil }

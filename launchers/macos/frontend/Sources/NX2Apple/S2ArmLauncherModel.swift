@@ -379,6 +379,8 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var appleAccount: AppleAccount?
     @Published var appleLoginHost: String?
     @Published var appleLoginPhase: AppleLoginPhase = .idle
+    /// 为什么开的登录面板：expired = 装机报 Apple ID 登录过期（apple_session_expired），面板说一句「过期了，重新登录」并带上原来的邮箱
+    @Published var appleLoginReason: String?
     var appleLoginTask: Task<Void, Never>?
     /// 装机清单派发出的动作（performInstallAction）：在装机窗里弹的说明（trustHelp / developerModeHelp）、「装到哪台」那一行要不要亮出来、
     ///   设置页要定位到哪一栏（devCertSettings）、要离开装机窗去的地方（装机窗收到后先关自己再去）；开着的装机窗是哪款

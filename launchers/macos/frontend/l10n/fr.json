@@ -1387,7 +1387,7 @@
   "s2arm.install.device": "Appareil : %@",
   "s2arm.install.note": "Signé avec l'Apple ID connecté dans S2Arm et installé par câble. Les apps signées avec un Apple ID gratuit expirent après 7 jours ; réinstallez-les alors.",
   "s2arm.install.start": "Installer",
-  "s2arm.install.teamManual": "Équipe Xcode pour Apple TV / apps autonomes",
+  "s2arm.install.teamManual": "Équipe Xcode pour Apple TV",
   "s2arm.install.teamManualField": "Team ID de 10 caractères",
   "s2arm.install.teamManualHelp": "Si vous êtes connecté à Xcode mais qu'aucune équipe n'est trouvée, entrez votre Team ID (affiché dans la page Comptes de Xcode ou sur le site Apple Developer). Vous pouvez aussi utiliser Afficher l'IPA pour trouver l'app, l'installer avec Sideloadly ou AltStore, et copier le pack de ressources dans l'app avec le Finder.",
   "s2arm.install.teamManualUse": "Installer avec cette équipe",

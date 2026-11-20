@@ -82,17 +82,23 @@ extension S2ArmLauncherModel {
         }
     }
 
-    /// 打开登录面板（host：挂在哪一层弹出——install 装机窗 / settings 设置 / main 主窗口）；上一次的结局清掉，重新填
-    func openAppleLogin(host: String) {
+    /// 打开登录面板（host：挂在哪一层弹出——install 装机窗 / settings 设置 / main 主窗口；reason：expired = 登录过期）；上一次的结局清掉，重新填。
+    ///   顺手重读当前账号：面板邮箱框带上原来的邮箱
+    func openAppleLogin(host: String, reason: String? = nil) {
         if case .needCode = appleLoginPhase {} else if appleLoginPhase != .signingIn { appleLoginPhase = .idle }
+        appleLoginReason = reason
         appleLoginHost = host
+        refreshAppleAccount()
     }
+
+    /// 装机 / 推送失败的码要落到登录面板的（失败页「登录 Apple ID」按钮）：没登录、登录过期
+    static let appleLoginCodes: [String: String?] = ["apple_not_signed_in": nil, "apple_session_expired": "expired"]
 
     /// 关面板：在登录的那一次作业一并停掉（作业层照取消收尾）
     func closeAppleLogin() {
         appleLoginTask?.cancel(); appleLoginTask = nil
         if case .done = appleLoginPhase {} else { appleLoginPhase = .idle }
-        appleLoginHost = nil
+        appleLoginHost = nil; appleLoginReason = nil
     }
 
     /// 登录（「没收到？再发一次」也走这里：先停掉在等验证码的那次，再起一次）
@@ -109,11 +115,13 @@ extension S2ArmLauncherModel {
                 guard let got = try await self?.provider.appleLogin(account: trimmed, password: password, events: sink) else { return }
                 if Task.isCancelled { return }
                 self?.appleAccount = got
+                self?.appleLoginReason = nil
                 self?.appleLoginPhase = .done(got)
                 self?.afterAppleLogin()
             } catch {
                 if Task.isCancelled { return }
                 let suggestion = (error as? JobFailure)?.outcome.failureDiagnostic?["suggestion"] as? String ?? ""
+                if (error as? JobFailure)?.code == "apple_session_expired" { self?.appleLoginReason = "expired" }
                 self?.appleLoginPhase = .failed(message: error.localizedDescription, suggestion: suggestion)
             }
         }
