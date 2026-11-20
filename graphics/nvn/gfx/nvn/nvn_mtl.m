@@ -10111,16 +10111,19 @@ static id<MTLFunction> se_build(NvShader *sh, const uint8_t md[8], uint64_t code
     sh->se_fold = se_lib_fold(lib);
     return f;
 }
-// The variant the package precompiled (library container kind LP_K_SE, <key>_se.metallib, entry main0; the package builds it for the keys whose pipelines a census run recorded
+// The variant the package precompiled (library container kind LP_K_SE, <key>_se.metallib, entry main0, or s<key>_main0 in a batched one; the package builds it for the keys whose pipelines a census run recorded
 //   with the SE_RD bit: pso_user.tsv C lines' fc, R lines' pso_key.fc): loaded at once, so its first draw already runs it. nil: not in the package (made on the device, se_build)
 static id<MTLFunction> se_packed(NvShader *sh) {
     char nm[32]; snprintf(nm, sizeof nm, "%.16s_se", sh->key);
     if (!lp_pack_get()) return nil;
     NSError *e = nil; id<MTLLibrary> lib = lib_from_pack(nm, &e); if (!lib) return nil;
-    id<MTLFunction> f = lib_entry(lib, @"main0");
+    // a batched variant library (11-20: the package compiles the variants in batches, S2A.Dsh Build.SeFinish): its functions are s<key>_main0 / s<key>_main0_fold (the folded-texture marker s2a_se_fold, renamed so a batch has one per key)
+    NSString *pre = [NSString stringWithFormat:@"s%.16s_", sh->key];
+    BOOL batched = [lib.functionNames containsObject:[pre stringByAppendingString:@"main0"]];
+    id<MTLFunction> f = lib_entry(lib, batched ? [pre stringByAppendingString:@"main0"] : @"main0");
     NSUInteger al = f && sh->rf.nb ? [f newArgumentEncoderWithBufferIndex:sh->rf.abi].encodedLength : sh->arg_len;
     if (!f || al != sh->arg_len) { MLOG("【红】 packaged sampler-emulation variant %s %s: made on the device instead", nm, f ? "takes another argument buffer than the library's main0" : "has no main0"); return nil; }
-    sh->se_fold = se_lib_fold(lib);
+    sh->se_fold = batched ? [lib.functionNames containsObject:[pre stringByAppendingString:@"main0_fold"]] : se_lib_fold(lib);
     return f;
 }
 // The variant is there (f) or not (why): published to the draws (se_st), counted, one line (t0: when its first use asked for it; how: 包内 / 后台编 / 同步现编)
@@ -10216,9 +10219,13 @@ static void vp_pack(NvShader *vs) {
     if (tried || st == SE_READY || st == SE_BUSY || !lp_pack_get()) return;
     char nm[32]; snprintf(nm, sizeof nm, "%.16s_vp", vs->key);
     NSError *e = nil; id<MTLLibrary> lib = lib_from_pack(nm, &e); if (!lib) return;
+    // a batched variant library (11-20, Build.cs VarBatches): the shader's functions are s<key>_<entry> and its mask s<key>_main0_vpmask_<hex>
+    NSString *pre = [NSString stringWithFormat:@"s%.16s_", vs->key], *ent = vs->ventry;
+    BOOL batched = [lib.functionNames containsObject:[pre stringByAppendingString:ent]];
+    NSString *mp = batched ? [pre stringByAppendingString:@"main0_vpmask_"] : @"dm_vp_mask_";
     uint32_t mask = 0;
-    for (NSString *n in lib.functionNames) if ([n hasPrefix:@"dm_vp_mask_"]) mask = (uint32_t)strtoul(n.UTF8String + 11, NULL, 16);
-    id<MTLFunction> f = lib_entry(lib, vs->ventry);
+    for (NSString *n in lib.functionNames) if ([n hasPrefix:mp]) mask = (uint32_t)strtoul(n.UTF8String + mp.length, NULL, 16);
+    id<MTLFunction> f = lib_entry(lib, batched ? [pre stringByAppendingString:ent] : ent);
     NSUInteger al = f && vs->rf.nb ? [f newArgumentEncoderWithBufferIndex:vs->rf.abi].encodedLength : vs->arg_len;
     if (!f || !mask || al != vs->arg_len) { MLOG("【红】 packaged padded vertex variant %s %s: made on the device per pair instead", nm, !f ? "has no such entry" : !mask ? "carries no mask" : "takes another argument buffer than the library's entry"); return; }
     pthread_mutex_lock(&g_vp_mu); int took = vs->vp_st != SE_READY; if (took) { vs->vp_main = f; vs->vp_mask = mask; vs->vp_st = SE_READY; } pthread_mutex_unlock(&g_vp_mu);
