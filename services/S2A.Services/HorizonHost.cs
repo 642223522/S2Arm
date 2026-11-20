@@ -417,6 +417,7 @@ namespace S2A.Services
         //   （Closed）不再释放第二遍——第二遍会再 Dispose 同一批服务对象、关已关掉的事件句柄（InvalidHandle；即时存档恢复重放关会话消息后
         //   按日志关句柄时撞到，大乱斗 audren:u）
         private bool _closedByMessage;
+        [ThreadStatic] private static List<int> t_snapOutIds;
 
         public HorizonTarget(string name, ServerManagerBase manager, int token)
         {
@@ -508,7 +509,12 @@ namespace S2A.Services
 
                 try
                 {
-                    Result r = _manager.ProcessRequest(session, message);
+                    // 即时存档：这条请求在域里分出的对象号记进请求日志（恢复重放按原号分配，同 HleTarget 的 SnapLog.OutObjects）
+                    if (SnapSwitch.Save) { (t_snapOutIds ??= new()).Clear(); S2AHorizonHooks.SnapOutIds = t_snapOutIds; }
+                    Result r;
+                    try { r = _manager.ProcessRequest(session, message); }
+                    finally { S2AHorizonHooks.SnapOutIds = null; }
+                    if (SnapSwitch.Save && r.IsSuccess && t_snapOutIds.Count > 0) SnapLog.OutObjects(t_snapOutIds);
                     if (closeMessage) _closedByMessage = true;
 
                     if (r.IsSuccess)

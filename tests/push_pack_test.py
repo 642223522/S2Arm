@@ -1355,6 +1355,17 @@ class AppDirs(unittest.TestCase):
             dev.put(str(src), f"{self.G}/资源包/a"); dev.put(str(src), f"{self.G}/资源包/b")
         self.assertEqual(dev.dp.calls, [("mkdir", f"{self.G}/资源包")])
 
+    def test_tv_put_failure_says_network_not_cable(self):   # #1696 期望（手写）：推进 Apple TV（S2A_PUSH_TV=1）写入中断 → 说 Apple TV、同一网络，不叫插数据线；iPhone 照旧
+        dev = push.Devicectl("D", "B", tempfile.mkdtemp())
+        src = Path(tempfile.mkdtemp()) / "f"; src.write_bytes(b"ok")
+        with mock.patch.object(dev, "dcp", return_value=(1, "")), mock.patch.object(dev, "nospc", return_value=False):
+            with mock.patch.dict(os.environ, {"S2A_PUSH_TV": "1"}), self.assertRaises(push.Fail) as tv:
+                dev.put(str(src), "a")
+            with mock.patch.dict(os.environ, {"S2A_PUSH_TV": ""}), self.assertRaises(push.Fail) as ph:
+                dev.put(str(src), "a")
+        self.assertIn("写进 Apple TV 时中断", str(tv.exception)); self.assertIn("同一个网络", str(tv.exception)); self.assertNotIn("数据线", str(tv.exception))
+        self.assertIn("写进 iPhone 时中断", str(ph.exception)); self.assertIn("数据线插稳", str(ph.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

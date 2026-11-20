@@ -529,10 +529,11 @@ static UILabel *textLabel(UIFontTextStyle style) {
         NSArray *values = option[@"values"];
         NSInteger selected = [values indexOfObject:s2a_ios_graphics_snapshot(s2a_ios_settings_defaults())[option[@"key"]]];
         // 画质提升（11-15 维护者：标准 / 2D 游戏专用 / 锐利放大）：选了锐利放大（MetalFX）才在标题下写一行代价，另两档不写；
-        //   这款没走直连（锐利放大用不了）：锐利放大置灰，标题下写为什么
+        //   这款没走直连（锐利放大用不了）：锐利放大置灰，标题下写为什么。FSR（AMD FSR 1）同样只直连上屏有：一并置灰、补一句；存过 Fsr 又用不了时
+        //   同已存 MetalFX 的做法，照显示（通用路径按双线性 = 标准，services/S2A.Services/GraphicsSettings.cs）
         BOOL blocked = s2a_ios_metalfx_blocked(nil);
-        NSString *note = blocked ? S2AL(@"gfx.filter.metalfx.noDirect") : [values[MAX(selected, 0)] isEqual:@"MetalFX"] ? S2AL(@"gfx.filter.metalfx.note") : nil;
-        return [self dropdown:option[@"title"] note:note labels:option[@"labels"] selected:selected enabled:^BOOL(NSInteger index) { return !(blocked && [values[index] isEqual:@"MetalFX"]); } choose:^(NSInteger index) {
+        NSString *note = blocked ? [NSString stringWithFormat:@"%@ %@", S2AL(@"gfx.filter.metalfx.noDirect"), S2AL(@"gfx.filter.fsr.noDirect")] : [values[MAX(selected, 0)] isEqual:@"MetalFX"] ? S2AL(@"gfx.filter.metalfx.note") : nil;
+        return [self dropdown:option[@"title"] note:note labels:option[@"labels"] selected:selected enabled:^BOOL(NSInteger index) { return !(blocked && ([values[index] isEqual:@"MetalFX"] || [values[index] isEqual:@"Fsr"])); } choose:^(NSInteger index) {
             [s2a_ios_settings_defaults() setObject:values[index] forKey:option[@"key"]]; [weakSelf refresh];
         } identifier:@"settings.filter"];
     }

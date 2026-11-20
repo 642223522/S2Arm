@@ -61,8 +61,14 @@ public sealed partial class EnvironmentWindow
         installFailedTarget = target; updateFailure = "update_install_failed"; updateFailureMessage = why;
     }
 
-    internal static bool VersionAtLeast(string have, string want) =>
-        Version.TryParse(have, out var h) && Version.TryParse(want, out var w) && h >= w;
+    // 按语义版本比（11-19：测试版 0.6.0-test.2 System.Version 解析不了，原先测试版更新后被记成「没装上」）；同 NetSparkle 比更新的口径
+    internal static bool VersionAtLeast(string have, string want)
+    {
+        // SemVerLike 对乱串也解析得出（实测 "abc" ≥ "0.5.8"）：先认格式（同 bundle_win.py 写 version.txt 的形状）
+        static bool Ok(string v) => System.Text.RegularExpressions.Regex.IsMatch(v, @"^\d+(\.\d+){1,3}(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$");
+        try { return Ok(have) && Ok(want) && NetSparkleUpdater.AppCastHandlers.SemVerLike.Parse(have).CompareTo(NetSparkleUpdater.AppCastHandlers.SemVerLike.Parse(want)) >= 0; }
+        catch (Exception error) when (error is FormatException or ArgumentException) { return false; }
+    }
 
     /// <summary>安装程序日志里说明失败的那一行（Inno：Fatal exception / Exception message / Setup is exiting / Aborting）；没有日志或没找到给一句说明（进诊断、不上界面）</summary>
     private string InstallerFailure()
@@ -236,7 +242,14 @@ public sealed partial class EnvironmentWindow
         foreach (var m in messages)
         {
             var row = new StackPanel { Spacing = 6 };
-            if (m.TryGetProperty("kind", out var kind) && kind.GetString() == "update")
+            if (m.TryGetProperty("kind", out var fk) && fk.GetString() == "feature")   // 新功能大窗看过后留在这里：点了再看一遍（11-19 维护者定）
+            {
+                var feature = m.Clone();
+                row.Children.Add(Muted(T("messages.kind.feature"), 12));
+                row.Children.Add(new TextBlock { Text = FeatureText(feature, "badge"), FontSize = 13.5, Foreground = Ink, TextWrapping = TextWrapping.Wrap });
+                row.Children.Add(Action("feature.reopen", () => { messagesOpen = false; updatePopup = feature; featureIndex = 0; Render(); }));
+            }
+            else if (m.TryGetProperty("kind", out var kind) && kind.GetString() == "update")
             {
                 var version = m.GetProperty("version").GetString() ?? "";
                 var installed = m.TryGetProperty("installed", out var i) && i.ValueKind == JsonValueKind.True;
@@ -297,6 +310,9 @@ public sealed partial class EnvironmentWindow
             RelaunchAfterUpdateCommandPrefix = $"cd /d \"{InstallDir}\" && ",
             LogWriter = new UpdateLog(Path.Combine(privateRoot, "logs", "update.log")),
         };
+        // 正式渠道永远不推预发布（11-19）：NetSparkle 不设过滤器时，装 0.5.8 的玩家会被推 appcast 里的 0.6.0-test.1（实测）。
+        //   本机正式版 → 频道表空：预发布条目全滤掉；本机测试版（0.6.0-test.1）→ 只认 test 频道 + 正式版（同 pack/jobs/updater.py newer）
+        updater.AppCastHelper.AppCastFilter = ReleaseChannel.Filter(AppVersion, updater.LogWriter);
         updater.CloseApplicationAsync += () => { ExitForInstaller(); return Task.CompletedTask; };
         updater.DownloadMadeProgress += (_, item, e) => Dispatcher.UIThread.Post(() =>
         { updateProgress = T("update.downloading").Replace("{0}", e.ProgressPercentage.ToString()); RefreshLive(); });

@@ -261,14 +261,16 @@ void nvn_be_read_texels(const tex_t *t, unsigned level, unsigned layer0, const N
     if (__builtin_mul_overflow((uint64_t)lp, (uint64_t)lr, &need) || (is3d && __builtin_mul_overflow(need, (uint64_t)ld, &need)) || need > SIZE_MAX) need = 0;
     uint8_t *lin = need ? malloc((size_t)need) : NULL;
     if (!lin) { nvn_unimpl("limit", "read_texels_alloc", t); return; }
+    uint8_t *part = NULL; const uint8_t *store = rp_tex_src(t, &part);   // 存储伸出内存池时池外按 0，不越界读（rp_res.c）
+    if (!store) { nvn_unimpl("limit", "read_texels_alloc", t); free(lin); return; }
     for (uint64_t z = 0; z < nz; z++) {
         if (!is3d || z == 0) {   // 二维 / 数组：一层一解；三维：一次解整级体积，各片都从这块里取
-            if (nvn_deswizzle(&t->d, level, is3d ? 0 : (unsigned)(layer0 + zoff + z), t->mem, lin, (size_t)lp)) { nvn_unimpl("tex", "deswizzle_failed", t); free(lin); return; }
+            if (nvn_deswizzle(&t->d, level, is3d ? 0 : (unsigned)(layer0 + zoff + z), store, lin, (size_t)lp)) { nvn_unimpl("tex", "deswizzle_failed", t); free(lin); free(part); return; }
         }
         const uint8_t *src = lin + (is3d ? (size_t)((zoff + z) * lp * lr) : 0);
         for (uint64_t y = 0; y < hb; y++) memcpy(dst + (size_t)z * img + (size_t)y * row, src + (y0 + y) * lp + x0, (size_t)wb);
     }
-    free(lin);
+    free(lin); free(part);
 }
 
 // ---------- 程序（描述符池登记、贴图内容归属在 rp_res.c）----------
@@ -276,7 +278,7 @@ void nvn_be_prog_release(prog_t *p) { (void)p; }               // 还没有按�
 void nvn_be_shader_prefetch(const uint8_t key[8]) { (void)key; }   // 预取是提速手段，不影响正确性；着色器链接上后再接
 // 1 = 超过 1,024 条的间接计数多绘整段录一条 OP_MULTI_DRAW（rp_multi_draw 一次交后端）；设备没开 drawIndirectCount 时仍逐条录（rp_draw 报名跳过）
 int nvn_be_multi_draw_range(void) { nvn_gpu_caps caps; nvn_gpu_caps_get(&caps); return (caps.caps & NVN_GPU_CAP_INDIRECT_COUNT) != 0; }
-int nvn_be_buf_extent_consumer(void) { return 1; }             // Vulkan 上 size = 0 的存储绑定要按地址求活缓冲长度：让前端登记
+int nvn_be_buf_extent_consumer(void) { return 0; }             // 新回放按绑定范围和池镜像解析，未查询前端的活缓冲表
 
 // ---------- 全局状态 ----------
 static int g_depth_zero, g_origin_ll = 1; static uint64_t g_frame;

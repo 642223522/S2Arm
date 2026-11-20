@@ -27,7 +27,7 @@ static int fails;
 
 #define TMPL_CAP 320   // main() 里临时目录模板 tmpl 的容量（拼出来超长时 main 直接退出）
 // g_dir 依次放 tmpl、tmpl/bad、tmpl/buffer：按最长的「tmpl + "/buffer"」给够，snprintf 不会截断。
-static char g_dir[TMPL_CAP + sizeof "/buffer" - 1];
+static char g_dir[TMPL_CAP + 32];   // the template plus the longest per-case suffix ("/sepsamp<int>", "/sup<int>"): gcc -Wformat-truncation checks it
 
 static void wr(void *dst, const void *src, size_t n, size_t *at) { memcpy((uint8_t *)dst + *at, src, n); *at += n; }
 static void wr32(void *dst, uint32_t v, size_t *at) { wr(dst, &v, 4, at); }
@@ -144,6 +144,82 @@ static const uint32_t CS_SUP_SPV[] = {
 
 static int has(const uint8_t *j, const char *sub) { return j && strstr((const char *)j, sub) != NULL; }
 
+// 原生几何阶段（DshVk.CompileGeometry 的 _vg<t>.json / _vg<t>.spv，种类 112+t / 120+t）：三角输入（t = 3）。
+//   json：gp_c3 → cbuf reg0 arg0、gp_t_tcb_8 → tex reg0 arg1（采样器半边 arg2 不出行）→ 绑定号 = arg×6+3 = 3 / 9。
+//   .spv（spirv-as 汇编、spirv-val --target-env vulkan1.1 过）：Geometry 入口、Triangles / OutputTriangleStrip，
+//   gp_c3 绑定 3、gp_t_tcb_8 绑定 9（与 json 手算一致）；_viewport 那份多写 BuiltIn ViewportIndex（现编对带几何的程序整支拒）
+static const char *GS_JSON =
+    "{\"key\":\"6060606060606060_vg3\",\"stage\":\"gs\",\"dm_ctl\":\"6060606060606060\",\"gs_input_topology\":3,\"bindings\":["
+    "{\"msl_name\":\"gp_c3\",\"msl_type\":\"constant S2AGsBlock_gp_c3&\",\"arg_id\":0,\"kind\":\"cbuf\",\"reg\":0},"
+    "{\"msl_name\":\"gp_t_tcb_8\",\"msl_type\":\"texture2d<float>\",\"arg_id\":1,\"kind\":\"tex\",\"reg\":0},"
+    "{\"msl_name\":\"gp_t_tcb_8Smplr\",\"msl_type\":\"sampler\",\"arg_id\":2,\"kind\":\"samp_tex\",\"reg\":0}]}";
+// 同一支几何着色器、json 自称点输入（t = 0）却放在三角那一格：记录与自己的图元对不上 → reject
+static const char *GS_WRONGTOPO_JSON =
+    "{\"key\":\"6060606060606060_vg3\",\"stage\":\"gs\",\"dm_ctl\":\"6060606060606060\",\"gs_input_topology\":0,\"bindings\":["
+    "{\"msl_name\":\"gp_c3\",\"kind\":\"cbuf\",\"reg\":0,\"arg_id\":0},"
+    "{\"msl_name\":\"gp_t_tcb_8\",\"kind\":\"tex\",\"reg\":0,\"arg_id\":1}]}";
+static const uint32_t libpack_geom_spv[] = {
+    0x07230203u, 0x00010300u, 0x00070000u, 0x0000001eu, 0x00000000u, 0x00020011u, 0x00000002u, 0x0003000eu,
+    0x00000000u, 0x00000001u, 0x0006000fu, 0x00000003u, 0x00000001u, 0x6e69616du, 0x00000000u, 0x00000002u,
+    0x00030010u, 0x00000001u, 0x00000016u, 0x00040010u, 0x00000001u, 0x00000000u, 0x00000001u, 0x00030010u,
+    0x00000001u, 0x0000001du, 0x00040010u, 0x00000001u, 0x0000001au, 0x00000003u, 0x00040005u, 0x00000003u,
+    0x635f7067u, 0x00000033u, 0x00050005u, 0x00000004u, 0x745f7067u, 0x6263745fu, 0x0000385fu, 0x00030047u,
+    0x00000005u, 0x00000002u, 0x00040047u, 0x00000006u, 0x00000006u, 0x00000010u, 0x00050048u, 0x00000005u,
+    0x00000000u, 0x00000023u, 0x00000000u, 0x00040047u, 0x00000003u, 0x00000022u, 0x00000000u, 0x00040047u,
+    0x00000003u, 0x00000021u, 0x00000003u, 0x00040047u, 0x00000004u, 0x00000022u, 0x00000000u, 0x00040047u,
+    0x00000004u, 0x00000021u, 0x00000009u, 0x00040047u, 0x00000002u, 0x0000000bu, 0x00000000u, 0x00020013u,
+    0x00000007u, 0x00030021u, 0x00000008u, 0x00000007u, 0x00030016u, 0x00000009u, 0x00000020u, 0x00040017u,
+    0x0000000au, 0x00000009u, 0x00000004u, 0x00040017u, 0x0000000bu, 0x00000009u, 0x00000002u, 0x00040015u,
+    0x0000000cu, 0x00000020u, 0x00000000u, 0x0004002bu, 0x0000000cu, 0x0000000du, 0x00000004u, 0x0004001cu,
+    0x00000006u, 0x0000000au, 0x0000000du, 0x0003001eu, 0x00000005u, 0x00000006u, 0x00040020u, 0x0000000eu,
+    0x00000002u, 0x00000005u, 0x0004003bu, 0x0000000eu, 0x00000003u, 0x00000002u, 0x00090019u, 0x0000000fu,
+    0x00000009u, 0x00000001u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000001u, 0x00000000u, 0x0003001bu,
+    0x00000010u, 0x0000000fu, 0x00040020u, 0x00000011u, 0x00000000u, 0x00000010u, 0x0004003bu, 0x00000011u,
+    0x00000004u, 0x00000000u, 0x00040020u, 0x00000012u, 0x00000003u, 0x0000000au, 0x0004003bu, 0x00000012u,
+    0x00000002u, 0x00000003u, 0x00040015u, 0x00000013u, 0x00000020u, 0x00000001u, 0x0004002bu, 0x00000013u,
+    0x00000014u, 0x00000000u, 0x00040020u, 0x00000015u, 0x00000002u, 0x0000000au, 0x0004002bu, 0x00000009u,
+    0x00000016u, 0x00000000u, 0x0005002cu, 0x0000000bu, 0x00000017u, 0x00000016u, 0x00000016u, 0x00050036u,
+    0x00000007u, 0x00000001u, 0x00000000u, 0x00000008u, 0x000200f8u, 0x00000018u, 0x00060041u, 0x00000015u,
+    0x00000019u, 0x00000003u, 0x00000014u, 0x00000014u, 0x0004003du, 0x0000000au, 0x0000001au, 0x00000019u,
+    0x0004003du, 0x00000010u, 0x0000001bu, 0x00000004u, 0x00070058u, 0x0000000au, 0x0000001cu, 0x0000001bu,
+    0x00000017u, 0x00000002u, 0x00000016u, 0x00050081u, 0x0000000au, 0x0000001du, 0x0000001au, 0x0000001cu,
+    0x0003003eu, 0x00000002u, 0x0000001du, 0x000100dau, 0x000100dbu, 0x000100fdu, 0x00010038u,
+};
+static const uint32_t libpack_geom_viewport_spv[] = {
+    0x07230203u, 0x00010300u, 0x00070000u, 0x00000020u, 0x00000000u, 0x00020011u, 0x00000002u, 0x00020011u,
+    0x00000039u, 0x0003000eu, 0x00000000u, 0x00000001u, 0x0007000fu, 0x00000003u, 0x00000001u, 0x6e69616du,
+    0x00000000u, 0x00000002u, 0x00000003u, 0x00030010u, 0x00000001u, 0x00000016u, 0x00040010u, 0x00000001u,
+    0x00000000u, 0x00000001u, 0x00030010u, 0x00000001u, 0x0000001du, 0x00040010u, 0x00000001u, 0x0000001au,
+    0x00000003u, 0x00040005u, 0x00000004u, 0x635f7067u, 0x00000033u, 0x00050005u, 0x00000005u, 0x745f7067u,
+    0x6263745fu, 0x0000385fu, 0x00030047u, 0x00000006u, 0x00000002u, 0x00040047u, 0x00000007u, 0x00000006u,
+    0x00000010u, 0x00050048u, 0x00000006u, 0x00000000u, 0x00000023u, 0x00000000u, 0x00040047u, 0x00000004u,
+    0x00000022u, 0x00000000u, 0x00040047u, 0x00000004u, 0x00000021u, 0x00000003u, 0x00040047u, 0x00000005u,
+    0x00000022u, 0x00000000u, 0x00040047u, 0x00000005u, 0x00000021u, 0x00000009u, 0x00040047u, 0x00000002u,
+    0x0000000bu, 0x00000000u, 0x00040047u, 0x00000003u, 0x0000000bu, 0x0000000au, 0x00020013u, 0x00000008u,
+    0x00030021u, 0x00000009u, 0x00000008u, 0x00030016u, 0x0000000au, 0x00000020u, 0x00040017u, 0x0000000bu,
+    0x0000000au, 0x00000004u, 0x00040017u, 0x0000000cu, 0x0000000au, 0x00000002u, 0x00040015u, 0x0000000du,
+    0x00000020u, 0x00000000u, 0x0004002bu, 0x0000000du, 0x0000000eu, 0x00000004u, 0x0004001cu, 0x00000007u,
+    0x0000000bu, 0x0000000eu, 0x0003001eu, 0x00000006u, 0x00000007u, 0x00040020u, 0x0000000fu, 0x00000002u,
+    0x00000006u, 0x0004003bu, 0x0000000fu, 0x00000004u, 0x00000002u, 0x00090019u, 0x00000010u, 0x0000000au,
+    0x00000001u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000001u, 0x00000000u, 0x0003001bu, 0x00000011u,
+    0x00000010u, 0x00040020u, 0x00000012u, 0x00000000u, 0x00000011u, 0x0004003bu, 0x00000012u, 0x00000005u,
+    0x00000000u, 0x00040020u, 0x00000013u, 0x00000003u, 0x0000000bu, 0x0004003bu, 0x00000013u, 0x00000002u,
+    0x00000003u, 0x00040015u, 0x00000014u, 0x00000020u, 0x00000001u, 0x0004002bu, 0x00000014u, 0x00000015u,
+    0x00000000u, 0x00040020u, 0x00000016u, 0x00000003u, 0x00000014u, 0x0004003bu, 0x00000016u, 0x00000003u,
+    0x00000003u, 0x00040020u, 0x00000017u, 0x00000002u, 0x0000000bu, 0x0004002bu, 0x0000000au, 0x00000018u,
+    0x00000000u, 0x0005002cu, 0x0000000cu, 0x00000019u, 0x00000018u, 0x00000018u, 0x00050036u, 0x00000008u,
+    0x00000001u, 0x00000000u, 0x00000009u, 0x000200f8u, 0x0000001au, 0x00060041u, 0x00000017u, 0x0000001bu,
+    0x00000004u, 0x00000015u, 0x00000015u, 0x0004003du, 0x0000000bu, 0x0000001cu, 0x0000001bu, 0x0004003du,
+    0x00000011u, 0x0000001du, 0x00000005u, 0x00070058u, 0x0000000bu, 0x0000001eu, 0x0000001du, 0x00000019u,
+    0x00000002u, 0x00000018u, 0x00050081u, 0x0000000bu, 0x0000001fu, 0x0000001cu, 0x0000001eu, 0x0003003eu,
+    0x00000002u, 0x0000001fu, 0x0003003eu, 0x00000003u, 0x00000015u, 0x000100dau, 0x000100dbu, 0x000100fdu,
+    0x00010038u,
+};
+
+// 本局 effective profile 的 capabilities 片段（现编 DirectProfile 同字段名）：几何开 / 没开
+static const char *PROFILE_GS_ON = "{\"schema\":\"x\",\"capabilities\":{\"supportsGeometryShader\":true,\"supportsGeometryShaderPassthrough\":false}}";
+static const char *PROFILE_GS_OFF = "{\"schema\":\"x\",\"capabilities\":{\"supportsGeometryShader\":false,\"supportsGeometryShaderPassthrough\":false}}";
+
 // 片元输出映射用例（spirv-as 汇编、spirv-val 过）：FO1 = location 1 vec4 + location 3 vec2 带 Component 1 + FragDepth 内建；
 //   FO2 = location 0 的 vec4[2] 数组输出（读不懂）
 static const uint32_t FO1_SPV[] = {
@@ -235,7 +311,7 @@ int main(void) {
         memcpy(keys[1], kp, 8);
         uint8_t *j = NULL; size_t jl = 0; char w[192] = "";
         uint64_t h0 = s2a_libpack_hits();
-        int rc = s2a_libpack_program_v1(lp, keys, 0x3 /* vs|fs */, 1, "sha256-aaa", "closure-x", &j, &jl, w, sizeof w);
+        int rc = s2a_libpack_program_v1(lp, keys, 0x3 /* vs|fs */, NULL, 1, "sha256-aaa", "closure-x", &j, &jl, w, sizeof w);
         CHECK(rc == 0 && j && jl == strlen((const char *)j), "vs+fs program → HIT, NUL-terminated v1 bytes");
         CHECK(s2a_libpack_hits() == h0 + 1, "hit counter +1");
         CHECK(has(j, "\"schema\":\"s2a-direct-program-v1\""), "v1 schema tag");
@@ -325,7 +401,7 @@ int main(void) {
         const uint8_t kp[8] = { 0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe };
         memcpy(keys[0], kv, 8); memcpy(keys[1], kp, 8);
         CHECK(s2a_libpack_open(&buflp, g_dir) == 1 && buflp, "open buffer pack");
-        int rc = buflp ? s2a_libpack_program_v1(buflp, keys, 3, 1, "h", "c", &j, &jl, w, sizeof w) : -1;
+        int rc = buflp ? s2a_libpack_program_v1(buflp, keys, 3, NULL, 1, "h", "c", &j, &jl, w, sizeof w) : -1;
         CHECK(rc == 0 && j && !has(j, "\"source\":"), "buffer reflection becomes source-free v1 program");
         struct fd_program parsed = {0}; char why[192] = "";
         int parsed_rc = j ? nvn_vk_program_parse_graphics(j, jl, &parsed, why, sizeof why) : -1;
@@ -362,7 +438,7 @@ int main(void) {
         const uint8_t kp[8] = { 0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe };
         memcpy(keys[0], kv, 8); memcpy(keys[1], kp, 8);
         CHECK(s2a_libpack_open(&slp, g_dir) == 1 && slp, "open separate-sampler pack");
-        int rc = slp ? s2a_libpack_program_v1(slp, keys, 3, 1, "h", "c", &j, &jl, w, sizeof w) : -1;
+        int rc = slp ? s2a_libpack_program_v1(slp, keys, 3, NULL, 1, "h", "c", &j, &jl, w, sizeof w) : -1;
         CHECK(rc == 0 && j, "separate-sampler pack yields a v1 program");
         int has90 = j && has(j, "\"kind\":\"texture\",\"stage\":\"fs\",\"set\":0,\"binding\":10,\"slot\":90");
         CHECK(variant ? !has90 : has90, variant ? "sep-tex + samp（分离采样器）→ 不给槽 90" : "sep-tex + samp_tex（同字采样器）→ 槽 90");
@@ -385,17 +461,17 @@ int main(void) {
         uint8_t *j = NULL; size_t jl = 0; char w[192] = "";
         uint64_t m0 = s2a_libpack_misses();
         memcpy(keys[0], kv, 8); keys[1][0] = 0xde; keys[1][1] = 0xad;
-        CHECK(s2a_libpack_program_v1(lp, keys, 0x3, 1, "h", "c", &j, &jl, w, sizeof w) == 1 && !j,
+        CHECK(s2a_libpack_program_v1(lp, keys, 0x3, NULL, 1, "h", "c", &j, &jl, w, sizeof w) == 1 && !j,
               "fs 键缺席 → MISS（半程序不命中）");
         keys[1][0] = 0xaa; keys[1][1] = 0xbb; keys[1][2] = 0xcc; keys[1][3] = 0xdd;
         keys[1][4] = 0xee; keys[1][5] = 0xff; keys[1][6] = 0x00; keys[1][7] = 0x11;
-        CHECK(s2a_libpack_program_v1(lp, keys, 0x3, 1, "h", "c", &j, &jl, w, sizeof w) == 1,
+        CHECK(s2a_libpack_program_v1(lp, keys, 0x3, NULL, 1, "h", "c", &j, &jl, w, sizeof w) == 1,
               "fs 键只有 _b.json 缺 _b.spv → MISS（半程序不命中）");
-        CHECK(s2a_libpack_program_v1(lp, keys, 0x1 /* 只有 vs */, 1, "h", "c", &j, &jl, w, sizeof w) == 1,
+        CHECK(s2a_libpack_program_v1(lp, keys, 0x1 /* 只有 vs */, NULL, 1, "h", "c", &j, &jl, w, sizeof w) == 1,
               "vs-only 形状：v1 接受口径是 vs+fs → MISS 不产半成品");
         memcpy(keys[1], kv, 8);
-        CHECK(s2a_libpack_program_v1(lp, keys, 0x5 /* vs|gs */, 1, "h", "c", &j, &jl, w, sizeof w) == 1,
-              "程序含 gs（vk 库不出、v1 不接受）→ MISS 不冒充命中");
+        CHECK(s2a_libpack_program_v1(lp, keys, 0x5 /* vs|gs */, NULL, 1, "h", "c", &j, &jl, w, sizeof w) == 1,
+              "vs|gs 没有 fs（现编也不接这一形）→ MISS 不冒充命中");
         CHECK(s2a_libpack_misses() == m0 + 4, "miss counter +4");
     }
 
@@ -421,7 +497,7 @@ int main(void) {
         CHECK(mk_pack(r2, 4, p2, n2, 1) == 0, "dm_ctl-mismatch pack written");
         struct s2a_libpack *l2 = NULL;
         CHECK(s2a_libpack_open(&l2, g_dir) == 1, "open mismatch pack");
-        CHECK(s2a_libpack_program_v1(l2, keys, 0x3, 1, "h", "c", &j, &jl, w, sizeof w) == -1 && !j,
+        CHECK(s2a_libpack_program_v1(l2, keys, 0x3, NULL, 1, "h", "c", &j, &jl, w, sizeof w) == -1 && !j,
               "fs 段 dm_ctl 不符 → 程序 REJECT 不采纳");
         s2a_libpack_close(l2);
 
@@ -438,7 +514,7 @@ int main(void) {
         CHECK(mk_pack(r3, 4, p3, n3, 1) == 0, "bad-spv pack written");
         l2 = NULL;
         CHECK(s2a_libpack_open(&l2, g_dir) == 1, "open bad-spv pack");
-        CHECK(s2a_libpack_program_v1(l2, keys, 0x3, 1, "h", "c", &j, &jl, w, sizeof w) == -1,
+        CHECK(s2a_libpack_program_v1(l2, keys, 0x3, NULL, 1, "h", "c", &j, &jl, w, sizeof w) == -1,
               "fs 段 SPIR-V 头坏 → 程序 REJECT");
         s2a_libpack_close(l2);
 
@@ -482,7 +558,7 @@ int main(void) {
                 l2 = NULL;
                 CHECK(s2a_libpack_open(&l2, g_dir) == 1, "open size-abi pack");
                 j = NULL; jl = 0;
-                int rc5 = s2a_libpack_program_v1(l2, keys, 0x3, 1, "h", "c", &j, &jl, w, sizeof w);
+                int rc5 = s2a_libpack_program_v1(l2, keys, 0x3, NULL, 1, "h", "c", &j, &jl, w, sizeof w);
                 if (!want[t]) {
                     CHECK(rc5 == -1 && !j, "resolution_scale_abi 9（不认识）→ REJECT");
                 } else {
@@ -546,7 +622,7 @@ int main(void) {
             struct s2a_libpack *sl = NULL;
             CHECK(s2a_libpack_open(&sl, g_dir) == 1, "open support pack");
             uint8_t *j = NULL; size_t jl = 0; char w[192] = "";
-            int rc = s2a_libpack_program_v1(sl, keys, 0x3, 1, "h", "c", &j, &jl, w, sizeof w);
+            int rc = s2a_libpack_program_v1(sl, keys, 0x3, NULL, 1, "h", "c", &j, &jl, w, sizeof w);
             if (cs[t].want) {
                 CHECK(rc == -1 && !j, cs[t].what);
             } else {
@@ -685,6 +761,115 @@ int main(void) {
         char path[400]; snprintf(path, sizeof path, "%s/cs/lib.idx", tmpl); unlink(path);
         snprintf(path, sizeof path, "%s/cs/lib.000.pak", tmpl); unlink(path);
         snprintf(path, sizeof path, "%s/cs", tmpl); rmdir(path);
+        snprintf(g_dir, sizeof g_dir, "%s", tmpl);
+    }
+
+    // ---- 几何程序（vs+fs+gs，stages 0x7）：原生几何阶段命中 / 没开 geometryShader 照旧 miss / 图元挑份 / 视口号拒 ----
+    {
+        snprintf(g_dir, sizeof g_dir, "%s/gs", tmpl);
+        CHECK(mkdir(g_dir, 0700) == 0, "create geometry pack directory");
+        // 键 6060…：三角那一格（112+3 / 120+3）是好的；键 7070…：同一格的 .spv 写视口号；键 8080…：json 自称点输入
+        struct trec rg[10] = {
+            { .key = 0x0123456789abcdef, .kind = 1,   .len = (uint32_t)strlen(VS_JSON) },
+            { .key = 0x0123456789abcdef, .kind = 52,  .len = sizeof libpack_vert_spv },
+            { .key = 0x1032547698badcfe, .kind = 1,   .len = (uint32_t)strlen(PS_JSON) },
+            { .key = 0x1032547698badcfe, .kind = 52,  .len = sizeof libpack_frag_spv },
+            { .key = 0x6060606060606060, .kind = 115, .len = (uint32_t)strlen(GS_JSON) },
+            { .key = 0x6060606060606060, .kind = 123, .len = sizeof libpack_geom_spv },
+            { .key = 0x7070707070707070, .kind = 115, .len = (uint32_t)strlen(GS_JSON) },
+            { .key = 0x7070707070707070, .kind = 123, .len = sizeof libpack_geom_viewport_spv },
+            { .key = 0x8080808080808080, .kind = 115, .len = (uint32_t)strlen(GS_WRONGTOPO_JSON) },
+            { .key = 0x8080808080808080, .kind = 123, .len = sizeof libpack_geom_spv },
+        };
+        // 7070… / 8080… 的 json 里 dm_ctl 要是自己的键：按键改写 GS_JSON 的那 16 位
+        char gs7[1024], gs8[1024];
+        snprintf(gs7, sizeof gs7, "%s", GS_JSON); snprintf(gs8, sizeof gs8, "%s", GS_WRONGTOPO_JSON);
+        for (char *q = gs7; (q = strstr(q, "6060606060606060")); q += 16) memcpy(q, "7070707070707070", 16);
+        for (char *q = gs8; (q = strstr(q, "6060606060606060")); q += 16) memcpy(q, "8080808080808080", 16);
+        const uint8_t *pg[10] = { (const uint8_t *)VS_JSON, libpack_vert_spv, (const uint8_t *)PS_JSON, libpack_frag_spv,
+                                  (const uint8_t *)GS_JSON, (const uint8_t *)libpack_geom_spv,
+                                  (const uint8_t *)gs7, (const uint8_t *)libpack_geom_viewport_spv,
+                                  (const uint8_t *)gs8, (const uint8_t *)libpack_geom_spv };
+        size_t ng[10] = { strlen(VS_JSON), sizeof libpack_vert_spv, strlen(PS_JSON), sizeof libpack_frag_spv,
+                          strlen(GS_JSON), sizeof libpack_geom_spv, strlen(gs7), sizeof libpack_geom_viewport_spv,
+                          strlen(gs8), sizeof libpack_geom_spv };
+        CHECK(mk_pack(rg, 10, pg, ng, 1) == 0, "geometry pack written");
+        struct s2a_libpack *glp = NULL;
+        CHECK(s2a_libpack_open(&glp, g_dir) == 1 && glp, "open geometry pack");
+        uint8_t keys[6][8] = {{0}};
+        const uint8_t kv[8] = { 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef };
+        const uint8_t kp[8] = { 0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe };
+        memcpy(keys[0], kv, 8); memcpy(keys[1], kp, 8); memset(keys[2], 0x60, 8);   // 紧排：vs / fs / gs（NVN 位序 0 / 1 / 2）
+        const struct s2a_libpack_gfx tri_on = { "Triangles", PROFILE_GS_ON, strlen(PROFILE_GS_ON) };
+        uint8_t *j = NULL; size_t jl = 0; char w[192] = "";
+
+        // 命中：三段齐、gs 绑定号 = arg×6+3、宿主解析出第 2 段（gs）
+        uint64_t h0 = s2a_libpack_hits();
+        int rc = glp ? s2a_libpack_program_v1(glp, keys, 0x7, &tri_on, 1, "h", "c", &j, &jl, w, sizeof w) : -9;
+        CHECK(rc == 0 && j, "vs+fs+gs、三角、geometryShader 开 → HIT");
+        CHECK(s2a_libpack_hits() == h0 + 1, "geometry hit counter +1");
+        CHECK(has(j, "\"stage\":\"vs\"") && has(j, "\"stage\":\"fs\"") && has(j, "\"stage\":\"gs\",\"spirv\":\""), "三段 stage 项齐（vs / fs / gs）");
+        CHECK(has(j, "\"kind\":\"uniform\",\"stage\":\"gs\",\"set\":0,\"binding\":3,\"slot\":3"), "gs cbuf reg0 → uniform binding=0×6+3=3 slot=3");
+        CHECK(has(j, "\"kind\":\"texture\",\"stage\":\"gs\",\"set\":0,\"binding\":9,\"slot\":8"), "gs tex reg0 → texture binding=1×6+3=9 slot=8");
+        CHECK(!has(j, "\"stage\":\"gs\",\"set\":0,\"binding\":4,") && !has(j, "\"stage\":\"gs\",\"set\":0,\"binding\":15,"),
+              "负控：gs 绑定号不是按 ps 的阶段号 4 换算（0×6+4 / 1×6+4 / 采样器半边 2×6+3=15 都不出）");
+        {
+            struct fd_program p; char pw[192] = "";
+            memset(&p, 0, sizeof p);
+            CHECK(j && nvn_vk_program_parse_graphics(j, jl, &p, pw, sizeof pw) == 0, "合成的 vs+fs+gs v1 过 nvn_vk_program_parse_graphics");
+            CHECK(p.stage[0].present && p.stage[1].present && p.stage[2].present && p.stage[2].spirv_bytes == sizeof libpack_geom_spv,
+                  "fd 三段 present，gs 段 = _vg3.spv 原字节长");
+            int g3 = 0, g9 = 0;
+            for (int i = 0; i < p.binding_count; i++) {
+                if (p.bindings[i].binding == 3 && p.bindings[i].stage_idx == 2 && p.bindings[i].kind == 0 && p.bindings[i].slot == 3) g3 = 1;
+                if (p.bindings[i].binding == 9 && p.bindings[i].stage_idx == 2 && p.bindings[i].kind == 2 && p.bindings[i].tex_slot == 0) g9 = 1;
+            }
+            CHECK(g3 && g9, "fd gs 绑定：3 = uniform slot3、9 = texture tex_slot 0，stage_idx = gs");
+            CHECK(p.binding_count == 7 + 2, "vs+fs 的 7 条 + gs 2 条（采样器半边不出行）= 9 条");
+            nvn_vk_program_free(&p);
+        }
+        free(j); j = NULL;
+
+        // 设备没开 geometryShader（profile 同字段 false）：照旧 miss，不合成
+        uint64_t m0 = s2a_libpack_misses();
+        const struct s2a_libpack_gfx tri_off = { "Triangles", PROFILE_GS_OFF, strlen(PROFILE_GS_OFF) };
+        w[0] = 0;
+        CHECK(glp && s2a_libpack_program_v1(glp, keys, 0x7, &tri_off, 1, "h", "c", &j, &jl, w, sizeof w) == 1 && !j
+              && strstr(w, "geometryShader"), "geometryShader 没开 → MISS（原因写明）");
+        CHECK(glp && s2a_libpack_program_v1(glp, keys, 0x7, NULL, 1, "h", "c", &j, &jl, w, sizeof w) == 1 && !j,
+              "没给绘制事实（gfx = NULL）→ 几何程序 MISS");
+        const struct s2a_libpack_gfx noprof = { "Triangles", NULL, 0 };
+        CHECK(glp && s2a_libpack_program_v1(glp, keys, 0x7, &noprof, 1, "h", "c", &j, &jl, w, sizeof w) == 1 && !j,
+              "profile 读不出 → 按没开 MISS");
+        // 图元：线输入没有 _vg1 → miss；邻接离线不出 → miss
+        const struct s2a_libpack_gfx lines = { "Lines", PROFILE_GS_ON, strlen(PROFILE_GS_ON) };
+        const struct s2a_libpack_gfx adj = { "TrianglesAdjacency", PROFILE_GS_ON, strlen(PROFILE_GS_ON) };
+        CHECK(glp && s2a_libpack_program_v1(glp, keys, 0x7, &lines, 1, "h", "c", &j, &jl, w, sizeof w) == 1 && !j,
+              "线输入、库里只有三角那份 → MISS");
+        CHECK(glp && s2a_libpack_program_v1(glp, keys, 0x7, &adj, 1, "h", "c", &j, &jl, w, sizeof w) == 1 && !j,
+              "邻接输入 → MISS（离线不出邻接）");
+        CHECK(s2a_libpack_misses() == m0 + 5, "geometry miss counter +5");
+        CHECK(s2a_libpack_profile_geometry_shader(PROFILE_GS_ON, strlen(PROFILE_GS_ON)) == 1
+              && s2a_libpack_profile_geometry_shader(PROFILE_GS_OFF, strlen(PROFILE_GS_OFF)) == 0
+              && s2a_libpack_profile_geometry_shader("{\"supportsGeometryShader\":true}", strlen("{\"supportsGeometryShader\":true}")) == 0,
+              "profile 判据只认 capabilities.supportsGeometryShader（顶层同名字段不算）");
+
+        // reject：几何段写视口号；json 的输入图元与格子不符
+        uint64_t r0 = s2a_libpack_rejects();
+        memset(keys[2], 0x70, 8); w[0] = 0;
+        CHECK(glp && s2a_libpack_program_v1(glp, keys, 0x7, &tri_on, 1, "h", "c", &j, &jl, w, sizeof w) == -1 && !j
+              && strstr(w, "viewport"), "几何段写 ViewportIndex → REJECT（现编同口径具名拒）");
+        memset(keys[2], 0x80, 8); w[0] = 0;
+        CHECK(glp && s2a_libpack_program_v1(glp, keys, 0x7, &tri_on, 1, "h", "c", &j, &jl, w, sizeof w) == -1 && !j
+              && strstr(w, "gs_input_topology"), "_vg3 里的 json 自称点输入 → REJECT");
+        CHECK(s2a_libpack_rejects() == r0 + 2, "geometry reject counter +2");
+        // vs+fs 程序在同一容器照常命中，不受几何事实影响（gfx 给了也不读）
+        CHECK(glp && s2a_libpack_program_v1(glp, keys, 0x3, &tri_off, 1, "h", "c", &j, &jl, w, sizeof w) == 0 && j && !has(j, "\"stage\":\"gs\""),
+              "同容器 vs+fs 程序照常 HIT、不带 gs 段");
+        free(j);
+        s2a_libpack_close(glp);
+        char path[400]; snprintf(path, sizeof path, "%s/lib.idx", g_dir); unlink(path);
+        snprintf(path, sizeof path, "%s/lib.000.pak", g_dir); unlink(path); rmdir(g_dir);
         snprintf(g_dir, sizeof g_dir, "%s", tmpl);
     }
 

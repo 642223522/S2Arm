@@ -22,7 +22,7 @@ static int snap_dump_tex(FILE *f, uint64_t ser, id<MTLTexture> t, uint64_t *byte
     for (uint32_t q = 0; q < hd.nplane; q++) for (NSUInteger l = 0; l < t.mipmapLevelCount; l++) tot += fr_plane_bytes(&hd.pl[q], MAX(1, t.width >> l), MAX(1, t.height >> l), MAX(1, t.depth >> l)) * hd.layers;
     if (!tot || tot > (256ull << 20)) return 0;
     id<MTLBuffer> b = [g_dev newBufferWithLength:tot options:MTLResourceStorageModeShared]; if (!b || !fr_blit_planes(t, &hd, b, 1)) return 0;
-    hd.bytes = tot; if (!fr_w(f, &hd, sizeof hd) || !fr_w(f, b.contents, tot)) return -1;
+    if (!fr_w_tex(f, &hd, b.contents, tot)) return -1;
     *bytes += tot; return 1;
 }
 static int snap_dump_pkg(const char *path, uint64_t *bytes) {
@@ -62,11 +62,11 @@ static void snap_put_pkg(const char *path, nvn_hmap *addr, int *put, int *miss) 
     pend_t *pv = NULL; int np = 0, cap = 0;
     while (snap_fread(&hd, sizeof hd, 1, f, "mtl.tex_hd")) {
         const tex_t *t = nvn_hm_get(addr, &hd.ser);
-        if (!t || t->serial != hd.ser || !tex_mtl(t)) { fseeko(f, (off_t)hd.bytes, SEEK_CUR); (*miss)++; continue; }
+        if (!t || t->serial != hd.ser || !tex_mtl(t)) { fr_skip_tex(f, &hd); (*miss)++; continue; }
         __unsafe_unretained id o = tex_get(hd.ser); NvPkg *pk = [o isKindOfClass:[NvPkg class]] ? (NvPkg *)o : nil; id<MTLTexture> mt = pk ? pk->tex : nil;
-        if (!mt || mt.width != hd.w || mt.height != hd.h || (uint32_t)mt.pixelFormat != hd.fmt || mt.mipmapLevelCount != hd.levels) { fseeko(f, (off_t)hd.bytes, SEEK_CUR); (*miss)++; continue; }
+        if (!mt || mt.width != hd.w || mt.height != hd.h || (uint32_t)mt.pixelFormat != hd.fmt || mt.mipmapLevelCount != hd.levels) { fr_skip_tex(f, &hd); (*miss)++; continue; }
         id<MTLBuffer> b = [g_dev newBufferWithLength:hd.bytes options:MTLResourceStorageModeShared];
-        if (!b || !fr_r(f, b.contents, hd.bytes)) { (*miss)++; break; }
+        if (!b || !fr_r_tex(f, &hd, b.contents)) { (*miss)++; break; }
         if (np == cap) { cap = cap ? cap * 2 : 256; pv = realloc(pv, sizeof *pv * (size_t)cap); }
         memset(&pv[np], 0, sizeof pv[np]); pv[np].hd = hd; [keep addObject:pk]; [keep addObject:mt]; [keep addObject:b];
         pv[np].pk = pk; pv[np].mt = mt; pv[np].b = b; np++;
@@ -116,7 +116,7 @@ static int snap_mtl_save(FILE *f) {
     pthread_mutex_lock(&g_pool_gpuw_mu); n = g_pool_gpuw.n; ok &= ms_w(f, &n, 4);
     for (uint32_t i = 0; i < g_pool_gpuw.cap; i++) if (g_pool_gpuw.vals[i]) ok &= ms_w(f, g_pool_gpuw.keys + (size_t)i * 8, 8);
     pthread_mutex_unlock(&g_pool_gpuw_mu);
-    pthread_mutex_lock(&g_rmu); ok &= ms_w(f, g_seen_done, sizeof g_seen_done); pthread_mutex_unlock(&g_rmu);
+    os_unfair_lock_lock(&g_rmu); ok &= ms_w(f, g_seen_done, sizeof g_seen_done); os_unfair_lock_unlock(&g_rmu);
     pthread_mutex_lock(&g_mu); n = 0; for (int i = 0; i < g_npool; i++) n += g_pools[i].reg != 0; ok &= ms_w(f, &n, 4);
     for (int i = 0; i < g_npool; i++) if (g_pools[i].reg) { uint64_t lo = g_pools[i].lo; ok &= ms_w(f, &lo, 8); }
     pthread_mutex_unlock(&g_mu);
@@ -156,7 +156,7 @@ static int snap_mtl_restore(FILE *f) {
     pthread_mutex_unlock(&g_pool_gpuw_mu); if (np) atomic_store(&g_pool_gpuw_new, 1);
     if (!ok) return -1;
     // 着色器读过的贴图编号：标成待处理，首次提交（pool_seen_scan）按预算把它们建出来、放进表
-    pthread_mutex_lock(&g_rmu); ok = ms_r(f, g_seen_done, sizeof g_seen_done); memcpy(g_seen_todo, g_seen_done, sizeof g_seen_todo); g_seen_sub = ~0ull; g_seen_dirty = ~0ull; pthread_mutex_unlock(&g_rmu);
+    os_unfair_lock_lock(&g_rmu); ok = ms_r(f, g_seen_done, sizeof g_seen_done); memcpy(g_seen_todo, g_seen_done, sizeof g_seen_todo); g_seen_sub = ~0ull; g_seen_dirty = ~0ull; os_unfair_lock_unlock(&g_rmu);
     uint32_t nseen = 0; for (unsigned i = 0; i < POOL_SEEN_WORDS; i++) nseen += (uint32_t)__builtin_popcount(g_seen_done[i]);
     uint32_t nreg = 0, hit = 0; ok = ok && ms_r(f, &nreg, 4);
     pthread_mutex_lock(&g_mu);
@@ -192,7 +192,7 @@ static int snap_al_dump(FILE *f, id<MTLTexture> t, uint64_t *bytes) {   // 1 存
     for (uint32_t q = 0; q < hd.nplane; q++) for (NSUInteger l = 0; l < t.mipmapLevelCount; l++) tot += fr_plane_bytes(&hd.pl[q], MAX(1, t.width >> l), MAX(1, t.height >> l), MAX(1, t.depth >> l)) * hd.layers;
     if (!tot || tot > (256ull << 20)) return 0;
     id<MTLBuffer> b = [g_dev newBufferWithLength:tot options:MTLResourceStorageModeShared]; if (!b || !fr_blit_planes(t, &hd, b, 1)) return 0;
-    hd.bytes = tot; if (!fr_w(f, &x, sizeof x) || !fr_w(f, &hd, sizeof hd) || !fr_w(f, b.contents, tot)) return -1;
+    if (!fr_w(f, &x, sizeof x) || !fr_w_tex(f, &hd, b.contents, tot)) return -1;
     *bytes += tot; return 1;
 }
 static id<MTLTexture> snap_al_load_x(FILE *f, int res);
@@ -206,7 +206,7 @@ static id<MTLTexture> snap_al_load_x(FILE *f, int res) {   // 读一张：建同
     d.usage = (MTLTextureUsage)x.usage; d.storageMode = (MTLStorageMode)x.smode; MTLTextureSwizzleChannels sw; memcpy(&sw, &x.swz, sizeof sw); d.swizzle = sw;
     id<MTLTexture> t = [g_dev newTextureWithDescriptor:d];
     id<MTLBuffer> b = [g_dev newBufferWithLength:MAX(hd.bytes, 1ull) options:MTLResourceStorageModeShared];
-    if (!b || !fr_r(f, b.contents, hd.bytes)) { errno = EIO; return nil; }
+    if (!b || !fr_r_tex(f, &hd, b.contents)) { errno = EIO; return nil; }
     if (!t) return nil;
     if (res) res_add(t);
     if (!fr_blit_planes(t, &hd, b, 0)) return nil;
@@ -276,7 +276,7 @@ static void snap_ghost_apply(uint64_t ser, id o) {
 }
 static int snap_ghost_pkg(uint64_t ser, id<MTLTexture> src) {
     tex_t t; int found = 0;
-    pthread_mutex_lock(&g_rmu); for (int i = 0; i < g_ntreg; i++) if (g_treg[i].ok && g_treg[i].t.serial == ser) { t = g_treg[i].t; found = 1; break; } pthread_mutex_unlock(&g_rmu);
+    os_unfair_lock_lock(&g_rmu); for (int i = 0; i < g_ntreg; i++) if (g_treg[i].ok && g_treg[i].t.serial == ser) { t = g_treg[i].t; found = 1; break; } os_unfair_lock_unlock(&g_rmu);
     if (!found) { nvn_hm_put(&g_snap_ghost_pend, &ser, (void *)CFBridgingRetain(src)); return 2; }
     if (!tex_mtl(&t)) return 0;
     __unsafe_unretained id o = tex_get(ser); return snap_ghost_put([o isKindOfClass:[NvPkg class]] ? (NvPkg *)o : nil, src);
@@ -330,39 +330,68 @@ void nvn_snap_fps(snap_fp_cb cb) {
     if (gl_snap_fps) gl_snap_fps(cb);   // GL 出图层（egl.m）
     if (vk_snap_fps) vk_snap_fps(cb);   // Vulkan 出图层（vk_snap.inc）
 }
+void s2a_snap_progress(const char *layer) __attribute__((weak));
+#define SNAP_AT(s) do { if (s2a_snap_progress) s2a_snap_progress(s); } while (0)
 int nvn_snap_save(const char *dir) {
     if (!s2a_snap_arena_get) { MLOG("【红】 即时存档：宿主没有命令记录区接口"); return -1; }
     // GL 出图层（外部生产者）：先排空那一层、存它的对象与上下文（gfx/gl egl.m gl_snap_save）；Vulkan 层另做
+    SNAP_AT("图形 GL 出图层");
     if (gl_snap_save && gl_snap_used && gl_snap_used()) { char gp[1200]; snprintf(gp, sizeof gp, "%s/gfx_gl.bin", dir); if (gl_snap_save(gp)) { MLOG("【红】 即时存档：GL 出图层状态没存成"); return -1; } }
+    SNAP_AT("图形 Vulkan 出图层");
     if (vk_snap_save && vk_snap_used && vk_snap_used()) { char vp[1200]; snprintf(vp, sizeof vp, "%s/gfx_vk.bin", dir); if (vk_snap_save(vp)) { MLOG("【红】 即时存档：Vulkan 出图层状态没存成"); return -1; } }
     uint64_t ca = 0, cu = 0, vu = 0; s2a_snap_arena_get(&ca, &cu, &vu);
     if (!ca) { MLOG("【红】 即时存档：命令记录区没开（存档模式要 S2A_CMD_ARENA=1），命令句柄落点不固定，存不了"); return -1; }
-    mtl_present_flush(); mtl_finish_gpu();
+    SNAP_AT("图形 等 GPU 做完"); mtl_present_flush(); mtl_finish_gpu();
     char p[1200]; int ok = 1;
+    SNAP_AT("图形 gfx_state");
     snprintf(p, sizeof p, "%s/gfx_state.bin", dir); ok &= fr_dump_state(p);
+    SNAP_AT("图形 gfx_progkeys");
     { snprintf(p, sizeof p, "%s/gfx_progkeys.bin", dir); FILE *f = fopen(p, "wb"); ok &= f && s2a_hle_pk_save(f) >= 0; if (f) ok &= fclose(f) == 0; }
+    SNAP_AT("图形 gfx_vpool");
     { snprintf(p, sizeof p, "%s/gfx_vpool.bin", dir); FILE *f = fopen(p, "wb"); ok &= f && s2a_hle_vpool_save(f) >= 0; if (f) ok &= fclose(f) == 0; }
     int nseg = 0;
+    SNAP_AT("图形 gfx_shadow");
     { snprintf(p, sizeof p, "%s/gfx_shadow.bin", dir); FILE *f = fopen(p, "wb"); ok &= f != NULL;
       if (f) { nseg = s2a_hle_cmdshadow_list ? s2a_hle_cmdshadow_list(fr_seg_cb, f) : 0; uint32_t e = FR_REC_END; fr_w(f, &e, 4); ok &= fclose(f) == 0; } }
     nvn_snap_live lv = {0x31534E4Eu, 1, 0, 0, 0, 0, 0, nvn_serial_now(), atomic_load(&g_cur_frame), ca, cu, vu};
     pthread_mutex_lock(&g_mu); lv.fence = g_fence; lv.done = g_done; pthread_mutex_unlock(&g_mu);
     pthread_mutex_lock(&g_pq_mu); lv.pq_in = g_pq_in; lv.pq_done = g_pq_done; lv.pq_read = g_pq_read; pthread_mutex_unlock(&g_pq_mu);
+    SNAP_AT("图形 gfx_live");
     { snprintf(p, sizeof p, "%s/gfx_live.bin", dir); FILE *f = fopen(p, "wb"); ok &= f && fr_w(f, &lv, sizeof lv); if (f) ok &= fclose(f) == 0; }
+    SNAP_AT("图形 gfx_hle");
     { snprintf(p, sizeof p, "%s/gfx_hle.bin", dir); FILE *f = fopen(p, "wb"); ok &= f && hle_snap_save(f) == 0; if (f) ok &= fclose(f) == 0; }
+    SNAP_AT("图形 gfx_gs");
     { snprintf(p, sizeof p, "%s/gfx_gs.bin", dir); FILE *f = fopen(p, "wb"); ok &= f && nvn2_snap_gs_save && nvn2_snap_gs_save(f) == 0; if (f) ok &= fclose(f) == 0; }
     // 对象序号 → 游戏里贴图对象地址（只留对象里序号仍是它的，即还活着的）
-    { snprintf(p, sizeof p, "%s/gfx_texaddr.bin", dir); FILE *f = fopen(p, "wb"); uint32_t n = 0, nfree = 0; ok &= f != NULL;
+    SNAP_AT("图形 gfx_texaddr");
+    //   g_smu 下只拷出（序号, 地址）；查可读（每项一次 vm_region 系统调用）、读对象、写文件都在锁外（游戏线程已冻结，对象不会变）——持 g_smu 不做系统调用和 IO。
+    //   不在了的（内存已还 / 序号已换：没 Finalize 就释放）最后持锁从表里删，表只剩活对象
+    { snprintf(p, sizeof p, "%s/gfx_texaddr.bin", dir); FILE *f = fopen(p, "wb"); uint32_t n = 0, nfree = 0, nstale = 0, tot = 0; ok &= f != NULL;
       pthread_mutex_lock(&g_smu);
-      for (uint32_t i = 0; f && i < g_snap_texaddr.cap; i++) if (g_snap_texaddr.vals[i]) { uint64_t ser; memcpy(&ser, g_snap_texaddr.keys + (size_t)i * 8, 8); const tex_t *t = g_snap_texaddr.vals[i];
-          if (!span_readable(t, sizeof *t)) { nfree++; continue; }   // 游戏已把放对象的内存还掉 / 收成不可访问（没 Finalize 就释放：一款大游戏）：对象已不在，不存
-          if (t->serial != ser) continue; uint64_t r[2] = {ser, (uint64_t)(uintptr_t)t}; ok &= fr_w(f, r, sizeof r); n++; }
-      pthread_mutex_unlock(&g_smu); if (f) ok &= fclose(f) == 0; MLOG("即时存档：活着的贴图对象 %u 个（对象内存已不可读、按已释放算 %u 个）", n, nfree); }
+      uint64_t (*ta)[2] = g_snap_texaddr.n ? malloc((size_t)g_snap_texaddr.n * sizeof *ta) : NULL;
+      for (uint32_t i = 0; ta && i < g_snap_texaddr.cap; i++) if (g_snap_texaddr.vals[i]) { memcpy(&ta[tot][0], g_snap_texaddr.keys + (size_t)i * 8, 8); ta[tot][1] = (uint64_t)(uintptr_t)g_snap_texaddr.vals[i]; tot++; }
+      pthread_mutex_unlock(&g_smu);
+      ok &= !g_snap_texaddr.n || ta != NULL;
+      uint32_t ndead = 0;
+      for (uint32_t i = 0; i < tot; i++) {
+          const tex_t *t = (const tex_t *)(uintptr_t)ta[i][1]; int live = span_readable(t, sizeof *t) && t->serial == ta[i][0];
+          if (!live) { if (span_readable(t, sizeof *t)) nstale++; else nfree++; ta[ndead++][0] = ta[i][0]; continue; }   // 游戏已把放对象的内存还掉 / 收成不可访问，或那块已是别的对象：不存
+          uint64_t r[2] = {ta[i][0], ta[i][1]}; if (f) ok &= fr_w(f, r, sizeof r); n++;
+      }
+      if (ndead) { pthread_mutex_lock(&g_smu); for (uint32_t i = 0; i < ndead; i++) nvn_hm_del(&g_snap_texaddr, &ta[i][0]); pthread_mutex_unlock(&g_smu); }
+      free(ta); if (f) ok &= fclose(f) == 0;
+      MLOG("即时存档：活着的贴图对象 %u 个（表里 %u 项；对象内存已不可读 %u 个、已换成别的对象 %u 个，已从表里删）", n, tot, nfree, nstale); }
+    SNAP_AT("图形 gfx_gpu");
     { uint64_t gb = 0; int skipped = 0; snprintf(p, sizeof p, "%s/gfx_gpu.bin", dir); int ng = fr_dump_gpu(p, &gb, &skipped); ok &= ng >= 0; MLOG("即时存档：GPU 私有贴图 %d 张 %.0f MB（不存 %d 张）", ng, gb / 1048576.0, skipped); }
+    SNAP_AT("图形 gfx_plain");
     { uint64_t pb = 0; int sk = 0; snprintf(p, sizeof p, "%s/gfx_plain.bin", dir); int np = snap_dump_plain(p, &pb, &sk); ok &= np >= 0; MLOG("即时存档：只读的显卡私有普通贴图 %d 张 %.0f MB（不存 %d 张）", np, pb / 1048576.0, sk); }
+    SNAP_AT("图形 gfx_pkg");
     { uint64_t pb = 0; snprintf(p, sizeof p, "%s/gfx_pkg.bin", dir); int np = snap_dump_pkg(p, &pb); ok &= np >= 0; MLOG("即时存档：GPU 写过的预排布贴图 %d 张 %.0f MB", np, pb / 1048576.0); }
+    SNAP_AT("图形 gfx_alias");
     { snprintf(p, sizeof p, "%s/gfx_alias.bin", dir); ok &= snap_alias_save(p) == 0; }
+    SNAP_AT("图形 gfx_mtl");
     { snprintf(p, sizeof p, "%s/gfx_mtl.bin", dir); FILE *f = fopen(p, "wb"); ok &= f && snap_mtl_save(f) == 0; if (f) ok &= fclose(f) == 0; }
+    SNAP_AT("图形 gfx_codec");
     { snprintf(p, sizeof p, "%s/gfx_codec.bin", dir); FILE *f = fopen(p, "wb"); int nc = f && nvn2_snap_codec_save ? nvn2_snap_codec_save(f) : 0; ok &= f && nc >= 0; if (f) ok &= fclose(f) == 0; if (nc > 0) MLOG("即时存档：视频解码器 %d 个", nc); }
     MLOG("%s即时存档：图形 栅栏 %llu/%llu、出图序号 %llu、对象序号 %llu、帧 %llu、命令记录宿主块 %d 段（区已用 %llu MB）", ok ? "" : "【红】", (unsigned long long)lv.fence, (unsigned long long)lv.done,
          (unsigned long long)lv.pq_in, (unsigned long long)lv.serial, (unsigned long long)lv.frame, nseg, (unsigned long long)(cu >> 20));
@@ -418,7 +447,7 @@ int nvn_snap_restore(const char *dir) {
         if (f) fclose(f);
         snprintf(p, sizeof p, "%s/gfx_gpu.bin", dir); f = fopen(p, "rb"); uint32_t mg = 0;
         if (f && fr_r(f, &mg, 4) && mg == FR_GPU_MAGIC) { fr_tex_hd hd;
-            while (snap_fread(&hd, sizeof hd, 1, f, "mtl.tex_hd")) { const tex_t *t = nvn_hm_get(&addr, &hd.ser); if (t && t->serial == hd.ser && tex_mtl(t)) made++; fseeko(f, (off_t)hd.bytes, SEEK_CUR); } }
+            while (snap_fread(&hd, sizeof hd, 1, f, "mtl.tex_hd")) { const tex_t *t = nvn_hm_get(&addr, &hd.ser); if (t && t->serial == hd.ser && tex_mtl(t)) made++; fr_skip_tex(f, &hd); } }
         if (f) fclose(f);
         snap_up_sync();
         fr_restore_gpu(p, &put, &miss);
@@ -428,9 +457,9 @@ int nvn_snap_restore(const char *dir) {
             while (pf && snap_fread(&hd, sizeof hd, 1, pf, "mtl.tex_hd")) {
                 const tex_t *tt = nvn_hm_get(&addr, &hd.ser); if (tt && tt->serial == hd.ser && tex_mtl(tt)) qmade++;
                 id o = tex_get(hd.ser); id<MTLTexture> mt = [o conformsToProtocol:@protocol(MTLTexture)] ? o : nil;
-                if (!mt || mt.width != hd.w || mt.height != hd.h || (uint32_t)mt.pixelFormat != hd.fmt || mt.mipmapLevelCount != hd.levels) { fseeko(pf, (off_t)hd.bytes, SEEK_CUR); qm++; continue; }
+                if (!mt || mt.width != hd.w || mt.height != hd.h || (uint32_t)mt.pixelFormat != hd.fmt || mt.mipmapLevelCount != hd.levels) { fr_skip_tex(pf, &hd); qm++; continue; }
                 id<MTLBuffer> b = [g_dev newBufferWithLength:hd.bytes options:MTLResourceStorageModeShared];
-                if (!b || !fr_r(pf, b.contents, hd.bytes)) { qm++; break; }
+                if (!b || !fr_r_tex(pf, &hd, b.contents)) { qm++; break; }
                 snap_up_sync(); if (fr_blit_planes(mt, &hd, b, 0)) qp++; else qm++;
             }
             if (pf) fclose(pf);
@@ -479,6 +508,28 @@ int nvn_snap_redump(const char *dir) {   // 诊断：游戏跑着时重存预排
     }
     MLOG("即时存档诊断：预排布贴图往返自检 一致 %d、不一致 %d、跳过 %d", same, diff, skip);
     return 0;
+}
+// 快照缩略图（游戏库卡片 / 存完提示 / 启动器 / 备份清单用，不读整帧图）：读 src（整帧 PNG），等比放大到盖满 w×h、居中裁掉多出的部分，写 dst（PNG）。0 = 写好了
+int nvn_snap_thumb(const char *src, const char *dst, int w, int h) {
+    int ok = 0;
+    CFURLRef su = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)src, (CFIndex)strlen(src), false);
+    CGImageSourceRef is = su ? CGImageSourceCreateWithURL(su, NULL) : NULL;
+    CGImageRef img = is ? CGImageSourceCreateImageAtIndex(is, 0, NULL) : NULL;
+    CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGContextRef ctx = img ? CGBitmapContextCreate(NULL, (size_t)w, (size_t)h, 8, 0, cs, kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little) : NULL;
+    if (ctx) {
+        double iw = (double)CGImageGetWidth(img), ih = (double)CGImageGetHeight(img), k = fmax(w / iw, h / ih);   // 盖满：取大的比例，多出的一边居中裁掉
+        CGContextSetInterpolationQuality(ctx, kCGInterpolationHigh);
+        CGContextDrawImage(ctx, CGRectMake((w - iw * k) / 2, (h - ih * k) / 2, iw * k, ih * k), img);
+        CGImageRef t = CGBitmapContextCreateImage(ctx);
+        CFURLRef du = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)dst, (CFIndex)strlen(dst), false);
+        CGImageDestinationRef d = du && t ? CGImageDestinationCreateWithURL(du, (__bridge CFStringRef)UTTypePNG.identifier, 1, NULL) : NULL;
+        if (d) { CGImageDestinationAddImage(d, t, NULL); ok = CGImageDestinationFinalize(d); CFRelease(d); }
+        if (du) CFRelease(du); CGImageRelease(t); CGContextRelease(ctx);
+    }
+    CGColorSpaceRelease(cs); CGImageRelease(img); if (is) CFRelease(is); if (su) CFRelease(su);
+    MLOG("%s即时存档：缩略图 %d×%d %s %s", ok ? "" : "【黄】 ", w, h, ok ? "存到" : "没存成", dst);
+    return ok ? 0 : -1;
 }
 // 验证截图：取「下一次出图」的画面。取图钩子只有一个槽，自动玩家截图等也用它，后来的请求会把前面的回调盖掉（11-17：iPhone 上第 5 / 20 秒两张逐字节相同、
 //   Mac 上第 20 秒那张等不到）：3 秒没等到就重新请求，最多 3 次；回调里记下截自第几帧

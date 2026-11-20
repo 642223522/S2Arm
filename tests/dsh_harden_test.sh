@@ -1,5 +1,5 @@
 #!/bin/bash
-# 门禁覆盖：graphics/dsx/gal_spvx.c graphics/dsx/gal_spvx.h graphics/tools/direct/dsh/SpvCross.cs graphics/tools/direct/dsh/Dsh.cs graphics/nvn/gfx/nvn/nvn_refl.m graphics/nvn/gfx/nvn/nvn_refl.h tests/dsh_harden_test.sh
+# 门禁覆盖：graphics/dsx/* graphics/tools/direct/dsh/* graphics/tools/direct/tests/dsh_cmp/* graphics/tools/direct/tests/dshfn.py tests/dsh_harden_test.sh
 # 门禁显卡：独占（建 Metal 设备、在本机 GPU 上真跑；11-11 合入运维线补声明：入队预检据此把它的红记「没判、交列车门禁」，门禁走显卡独占锁）
 # 直连着色器链的越界保护（#1204 T1：S2A.Dsh 交 SPIRV-Cross 前调 NxgalSpvCross.Harden = libdsx nxgal_spv_harden，与通用路径同一份 gal_spvx.m；直连不加循环上限（11-01 维护者定，见 gal_spvx.m spv_harden）；约 20 秒，要 Metal）
 #   一支 GLSL 计算核（存储数组 a 声明 4 个元素，下标 idx 与循环次数 n 都从缓冲读，编译期不知道）：
@@ -15,14 +15,11 @@
 #     spvBufferSizeConstants[P 的 [[id]]] = 16（字节：idx + rt 3 个）
 #   期望（手算）：MSL 有成员 gal_ubo_len 且只读 [4u]（槽，不是绑定号 9）；有 spvBufferSizeConstants[P 的 id]；
 #     加固 o[0] = 0xC7000003（钳到第 4 个 vec4）、o[1] = 0xC1000006（c1 不钳）、o[2] = rt[2] = 0xBBBB0003；反证不加固 o[0] = 0xC7000006、o[2] = 0xBBBB0007
-#   另核：宿主表长 NVN_UBOLEN_N 与 NXGAL_DIRECT_UBOLEN_N 一致；Dsh.cs 反射认 gal_ubo_len / spvBufferSizeConstants；nvn_refl.m 认 ubolen / sbsize；nvn_mtl.m encode_args 填这两种
+#   宿主侧的文本约定（表长一致、反射认 ubolen / sbsize / tblead、encode_args 填表）在 tests/dsh_harden_contract_test.sh：只看源码、几秒跑完，本单测只依赖 libdsx 与翻译器
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d "${TMPDIR:-/tmp}/dsh_harden.XXXXXX"); trap 'rm -rf "$T"' EXIT; bad=0
 command -v glslangValidator > /dev/null || { echo "✗ dsh_harden：没有 glslangValidator"; exit 2; }
 ck() { if [ "$2" = "$3" ]; then echo "✓ $1"; else echo "✗ $1：期望 $2，实际 $3"; bad=1; fi; }
 D=$H/graphics/tools/direct/dsh
-ck "Compile 的 Msl 本地函数先加固" 1 "$(grep -c 'Xc.Msl(NxgalSpvCross.Harden(XIo.ReadAllBytes(spvPath))' "$D/Dsh.cs")"
-ck "曲面 TessMsl 先加固" 1 "$(grep -c 'NxgalSpvCross.TessMsl(NxgalSpvCross.Harden(' "$D/Dsh.cs")"
-ck "翻译指纹输入含 gal_spvx.c（#783 加固代码所在）" 1 "$(grep -c 'DshXfpInput Include="$(Nx)../dsx/gal_spvx.c;' "$D/S2A.Dsh.csproj")"
 cat > "$T/k.comp" <<'EOF'
 #version 450
 layout(local_size_x = 1) in;
@@ -82,11 +79,7 @@ ck "加固：直连不加循环上限，读数据决定的循环照原样跑满 
 ck "反证（不加固）：越界读到相邻哨兵 0xAAAA0006" $((0xAAAA0006)) "$r0"
 ck "反证（不加固）：越界写 + 原子穿进 a[6] = 82" 82 "$r6"
 # ---- 第二支：直连界长表按 NVN 槽 ----
-ck "宿主表长与加固表长一致" "$(sed -n 's/^#define NXGAL_DIRECT_UBOLEN_N \([0-9]*\).*/\1/p' "$H/graphics/dsx/dsx_abi.h")" "$(sed -n 's/^#define NVN_UBOLEN_N \([0-9]*\).*/\1/p' "$H/graphics/nvn/gfx/nvn/nvn_refl.h")"
-ck "Dsh.cs 反射认 gal_ubo_len / spvBufferSizeConstants" 2 "$(grep -c 'nm == "gal_ubo_len") e.Set("kind", "ubolen")\|nm == "spvBufferSizeConstants") e.Set("kind", "sbsize")' "$D/Dsh.cs")"
-ck "nvn_refl.m 认 ubolen / sbsize" 2 "$(grep -c 'isEqualToString:@"ubolen"\]) r->kind = NVN_RB_UBOLEN\|isEqualToString:@"sbsize"\]) r->kind = NVN_RB_SBSZ' "$H/graphics/nvn/gfx/nvn/nvn_refl.m")"
 # 审计 #1646 P1-65 起统一缓冲界长表在参数循环后填（要先知道各槽指针后实际有多少字节），存储缓冲表照旧当场填：三处都在才算接上
-ck "nvn_mtl.m encode_args 填两张表" 3 "$(grep -c 'b->kind == NVN_RB_UBOLEN) { ul_aid = aid\|b->kind == NVN_RB_SBSZ) { slots\[aid\] = len_fill\|slots\[ul_aid\] = len_fill(sh, nvn_stage, NVN_RB_UBOLEN, ubcap)' "$H/graphics/nvn/gfx/nvn/nvn_mtl.m")"
 cat > "$T/u.comp" <<'EOF'
 #version 450
 layout(local_size_x = 1) in;
@@ -155,7 +148,7 @@ ck "反证（不加固）：常量缓冲读到第 7 个 vec4" $((0xC7000006)) "$
 ck "反证（不加固）：运行时数组读到 rt[6]" $((0xBBBB0007)) "$w2"
 # ---- 第三支：#798 纹素缓冲前导（gal_spvx.c spv_tbias）----
 #   一支计算核读纹素缓冲 cp_tb：o[i] = texelFetch(cp_tb, i).x（i < 64），o[64] = textureSize(cp_tb)。
-#   布局（同宿主 nvn_mtl.m tbl_view）：池缓冲里纹素缓冲从字节 8 开始（低于 16 的对齐，前导 2 个 R32F），第 i 个 = 100 + i，前 8 字节是 0xDEAD0000；
+#   布局（同宿主的纹素缓冲前导视图）：池缓冲里纹素缓冲从字节 8 开始（低于 16 的对齐，前导 2 个 R32F），第 i 个 = 100 + i，前 8 字节是 0xDEAD0000；
 #   视图从字节 0 开、宽 64 + 2；前导项 gal_tbl_cp_tb 指向值为 2 的一格。
 #   期望（手算）：加固后 MSL 有成员 gal_tbl_cp_tb；o[i] = 100 + i（全部 64 个）、o[64] = 64；反证（不加固、同一视图）o[0] 读到前 8 字节（不是 100）、o[64] = 66
 cat > "$T/b.comp" <<'GLSL'
@@ -219,6 +212,4 @@ ck "#798 前导：取数下标挪前导，64 个全对（o[i] = 100 + i）" 1 "$
 ck "#798 前导：textureSize 减前导 = 64" 64 "$bw"
 ck "反证（不加固、同一视图）：o[0] 不是 100（读到对齐边界前的字节）" 1 "$([ "$r0b" != 100 ] && echo 1 || echo 0)"
 ck "反证（不加固）：textureSize = 视图宽 66" 66 "$rwb"
-ck "Dsh.cs 反射认 gal_tbl_ 前缀（kind tblead）" 1 "$(grep -c 'StartsWith("gal_tbl_", StringComparison.Ordinal)) e.Set("kind", "tblead")' "$D/Dsh.cs")"
-ck "nvn_refl.m 认 tblead" 1 "$(grep -c 'isEqualToString:@"tblead"\]) {' "$H/graphics/nvn/gfx/nvn/nvn_refl.m")"
 [ $bad = 0 ] && echo "dsh_harden：全过" || echo "dsh_harden：有失败"; exit $bad

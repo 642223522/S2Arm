@@ -273,7 +273,7 @@ def _dpapi(data, protect):
     class Blob(ctypes.Structure):
         _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
     buf = ctypes.create_string_buffer(data, len(data))
-    src, out = Blob(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char))), Blob()
+    src, out = Blob(len(data), ctypes.cast(ctypes.addressof(buf), ctypes.POINTER(ctypes.c_char))), Blob()
     fn = ctypes.windll.crypt32.CryptProtectData if protect else ctypes.windll.crypt32.CryptUnprotectData
     if not fn(ctypes.byref(src), None, None, None, None, 0, ctypes.byref(out)):
         raise OSError(ctypes.GetLastError(), "DPAPI 失败")

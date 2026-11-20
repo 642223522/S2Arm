@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import shutil
 import stat
 import subprocess
@@ -113,26 +114,92 @@ def bundle_tzdata(c, destination, source_root=ROOT):
 # 随 App 分发的预编静态库（11-03 维护者：编解码库等与游戏无关，不在玩家机器上编）：发版机按 services/<库>/build.sh 照常构建（整机缓存命中秒过），
 #   静态库 + 头文件 + 许可原文 + build.txt（构建键、版本、源码与库的 sha256）放进 Binaries/Prepare/libs/<库>/<平台>/；玩家出包时 build.sh 见 S2A_PREBUILT_TOOLS
 #   就核键与 sha256、直接回这份库（services/prebuilt_lib.sh），不构建。opus、C# 库（nxaot）还在玩家机器上现编，另作一单。
-# 追加一个库：在下面的表里加一项（库名 = services/<库名>/build.sh；静态库文件名），它的 build.sh 照 vpx / dav1d 开头那三行接 services/prebuilt_lib.sh
-# S2A_DAV1D=0：本地构建不链 dav1d 软件兜底，出包时也不放预编库（仅适合所有目标机都有 AV1 硬件解码）
-PREBUILT_LIBS = [
-    ("vpx", "libs2a_vpx.a"),
-]
-if os.environ.get("S2A_DAV1D", "1") != "0":
-    PREBUILT_LIBS.append(("dav1d", "libs2a_dav1d.a"))
-PREBUILT_RIDS = ("ios-arm64", "osx-arm64")
+# 追加一个库：在 prebuilt_libs 里加一项（库名 = services/<库名>/build.sh；静态库文件名），它的 build.sh 照 vpx / dav1d 开头那三行接 services/prebuilt_lib.sh
+# 两个解码库都按本机探测放行（缺省 auto）：dav1d（AV1 软解兜底）按 dav1d_wanted（tools/av1hw.sh：VideoToolbox 建得出 AV1 会话 = 有硬解）、
+#   vpx（VP8 / VP9 软解）按 vpx_wanted（tools/vp9hw.sh：注册 supplemental 后建得出 VP9 会话 = 可走系统）——探测过时整条不放：
+#   本机构建不链真身（services/build.mk 同一判据，链的是全失败空垫片 services/vpx/stub.c），出包也不放预编库。出的 App 会装到
+#   没有 AV1 硬解 / 不可走系统 VP9 的机器上时（发版机：M1 / M2、A16 及更早）必设 S2A_DAV1D=1 S2A_VPX=1 再出，
+#   否则那些机器上的内建宿主链接要真身、App 里却没有
+PREBUILT_LIBS = []
 
 
-def bundle_prebuilt_libs(tools, source_root=ROOT, env=None):
+def host_arch():
+    machine = platform.machine()
+    if machine not in ("arm64", "x86_64"):
+        raise RuntimeError(f"Mac 启动器只支持 arm64 / x86_64，本机是 {machine}")
+    return machine
+
+
+def host_rid():
+    return "osx-arm64" if host_arch() == "arm64" else "osx-x64"
+
+
+def host_slice():
+    return "arm64" if host_arch() == "arm64" else "x86_64"
+
+
+def prebuilt_rids():
+    """iOS 壳始终 arm64；Mac 侧预编库跟出包机架构走（Intel 只出包、不起游戏）。"""
+    return ("ios-arm64", host_rid())
+
+
+def _probe_wanted(script, extra_env):
+    env = dict(os.environ)
+    if extra_env:
+        env.update(extra_env)
+    try:
+        p = subprocess.run(["bash", str(ROOT / script), "--want"], capture_output=True, text=True, env=env)
+    except OSError:
+        return True   # 探测失败保守按要算（= 原默认行为）
+    lines = p.stdout.split()
+    return lines[-1] != "0" if lines else True
+
+
+def dav1d_wanted(extra_env=None):
+    """dav1d 软解兜底（AV1）要不要进本机构建 / 随包：S2A_DAV1D=1 / 0 直说，缺省 1；显式 auto = 探测本机
+    AV1 硬解（tools/av1hw.sh --want：VideoToolbox 建得出 AV1 会话 = 有硬解，软解整条不要）。"""
+    env = dict(os.environ)
+    if extra_env:
+        env.update(extra_env)
+    v = env.get("S2A_DAV1D", "1")   # 缺省链：随包的宿主要跑在玩家机上，探测构建机判不了（auto 只显式设）
+    if v in ("0", "1"):
+        return v == "1"
+    return _probe_wanted("tools/av1hw.sh", extra_env)
+
+
+def vpx_wanted(extra_env=None):
+    """真 libvpx（VP8 / VP9 软解）要不要进本机构建 / 随包：S2A_VPX=1 / 0 直说，缺省 1；显式 auto = 探测本机可走
+    系统 VP9（tools/vp9hw.sh --want：注册 supplemental 后建得出 VP9 会话，VP9 走 VideoToolbox、VP8 如实报红）。"""
+    env = dict(os.environ)
+    if extra_env:
+        env.update(extra_env)
+    v = env.get("S2A_VPX", "1")   # 同上
+    if v in ("0", "1"):
+        return v == "1"
+    return _probe_wanted("tools/vp9hw.sh", extra_env)
+
+
+def prebuilt_libs(want_dav1d, want_vpx):
+    """随包预编库清单：dav1d / vpx 各按本机探测 / S2A_DAV1D / S2A_VPX（见 dav1d_wanted / vpx_wanted）"""
+    libs = []
+    if want_vpx:
+        libs.append(("vpx", "libs2a_vpx.a"))
+    if want_dav1d:
+        libs.append(("dav1d", "libs2a_dav1d.a"))
+    return libs
+
+
+def bundle_prebuilt_libs(tools, source_root=ROOT, env=None, developer_dir=None):
     import re
     env = dict(env if env is not None else os.environ)
     env.pop("S2A_PREBUILT_TOOLS", None)
-    for name, lib in PREBUILT_LIBS:
+    extra = {"DEVELOPER_DIR": developer_dir} if developer_dir else None
+    for name, lib in prebuilt_libs(dav1d_wanted(extra), vpx_wanted(extra)):
         script = source_root / "services" / name / "build.sh"
         pin = re.search(r"^VER=([0-9.]+); SHA=([0-9a-f]{64})$", script.read_text(), re.M)
         if not pin:
             raise RuntimeError("%s 的版本 / sha256 钉行认不出" % script)
-        for rid in PREBUILT_RIDS:
+        for rid in prebuilt_rids():
             key = subprocess.check_output(["bash", str(script), rid, "--key"], env=env, text=True).strip()
             built = Path(subprocess.check_output(["bash", str(script), rid], env=env, text=True).strip().splitlines()[-1])
             out = tools / "libs" / name / rid
@@ -175,7 +242,13 @@ def bundle(destination, developer_dir):
     # 发布进 App 的 .NET 程序集不带出包机路径：MSBuild 把环境变量当属性读，PathMap 让编译器把仓库根（含 build/ 下的 obj）写成 /_/（C 侧同理见各 -ffile-prefix-map）
     os.environ["PathMap"] = "%s=/_/" % ROOT
     toolchain.prepare(c)
-    host = compile_host(c, fingerprint, c.env(), c.logs)
+    # Intel Mac 只做出包壳：s2arm-host 是 AArch64 原生执行体（entry.S + 改写后的 ARM64 代码），x86_64 编不出也跑不了游戏。
+    # 出包用的工具另在下面按本机 RID 预编；不塞一个跑不动的宿主进 App，免得玩家误以为能在 Mac 起局。
+    if host_arch() == "arm64":
+        host = compile_host(c, fingerprint, c.env(), c.logs)
+    else:
+        host = None
+        c.emit("message", "Intel Mac：本 App 带出包工具，不带在 Mac 上跑游戏的宿主；给 iPhone 出包不受影响。")
     prepare = c.private / "tools/prepare"
     # 每次从空目录编：dotnet publish -o 不清目标目录，上一次（别的编法）留下的产物会混进来（v0.4.4 第三次候选：上一版编出的 dsh_batch.dSYM
     #   残留，去符号那步拿它当二进制处理报错）。这几样工具每次本来就全量重编，清掉不损失增量
@@ -195,7 +268,7 @@ def bundle(destination, developer_dir):
             "-c",
             "Release",
             "-r",
-            "osx-arm64",
+            host_rid(),
             "-p:PublishAot=true",
             "-p:UseSharedCompilation=false",
             "--nologo",
@@ -212,7 +285,7 @@ def bundle(destination, developer_dir):
             "-c",
             "Release",
             "-r",
-            "osx-arm64",
+            host_rid(),
             "--nologo",
             "-o",
             prepare / "romfs",
@@ -228,7 +301,7 @@ def bundle(destination, developer_dir):
             "-c",
             "Release",
             "-r",
-            "osx-arm64",
+            host_rid(),
             "-p:PublishAot=true",
             "-p:UseSharedCompilation=false",
             "--nologo",
@@ -268,7 +341,8 @@ def bundle(destination, developer_dir):
     # Finish compaction synchronously before hashing/signing. Background Git
     # maintenance would otherwise invalidate the signed resource seal.
     subprocess.run(["git", "-C", str(destination), "-c", "gc.autoDetach=false", "gc", "--prune=now"], env=env, check=True)
-    shutil.copytree(host, destination / "Binaries/S2ArmGame.app")
+    if host:
+        shutil.copytree(host, destination / "Binaries/S2ArmGame.app")
     # 读取器：NativeAOT 单文件（同 toolchain.prepare 的配方），整个 Reader 目录只有这一个可执行文件
     (destination / "Binaries/Reader").mkdir(parents=True)
     shutil.copy2(toolchain.reader(c), destination / "Binaries/Reader/nx_unpack")
@@ -281,7 +355,7 @@ def bundle(destination, developer_dir):
     shutil.copy2(prepare / "gpu_arch", tools / "shbake/gpu_arch")
     (tools / "romfs").mkdir(parents=True)
     shutil.copy2(prepare / "romfs/romfs_index", tools / "romfs/romfs_index")
-    bundle_prebuilt_libs(tools, env=c.env())
+    bundle_prebuilt_libs(tools, env=c.env(), developer_dir=developer_dir)
     (tools / "dsh_batch").mkdir(parents=True)
     shutil.copy2(prepare / "dsh_batch/dsh_batch", tools / "dsh_batch/dsh_batch")
     # 摘要按 App 里这份源码算（dsh_batch.py 同一函数）：玩家那边摘要相同才用内置件，不同（App 装坏了）报重装、不现编
@@ -314,10 +388,16 @@ def bundle(destination, developer_dir):
     # 开发者证书签名工具 rcodesign（apple-codesign 官方发布件，版本 / SHA-256 钉在 pack/jobs/devcert.py，不符拒打；v0.2.4）
     import devcert
     devcert.fetch_rcodesign(tools / "rcodesign", "mac")
-    # 官方只发 universal（arm64 + x86_64，51.8 MB）；本 App 只支持 Apple 芯片，只留 arm64 那一片（各片签名各自独立，抽出来仍有效），约省一半
+    # 官方只发 universal（arm64 + x86_64，51.8 MB）；只留当前出包机那一片（各片签名各自独立，抽出来仍有效）。
+    # Intel 出包机要用 x86_64 那片，不能像 Apple Silicon 那样只留 arm64。
     exe = tools / "rcodesign/rcodesign"
-    subprocess.run(["lipo", str(exe), "-thin", "arm64", "-output", str(exe) + ".arm64"], check=True)
-    os.replace(str(exe) + ".arm64", exe)
+    archs = subprocess.check_output(["lipo", "-archs", str(exe)], text=True).split()
+    if host_slice() not in archs:
+        raise RuntimeError(f"rcodesign 没有 {host_slice()} 分片（实际 {archs}）：这台 Mac 上签不了")
+    if len(archs) > 1:
+        thin = str(exe) + "." + host_slice()
+        subprocess.run(["lipo", str(exe), "-thin", host_slice(), "-output", thin], check=True)
+        os.replace(thin, exe)
     (tools / "gal").mkdir()
     shutil.copy2(ROOT / "build/gal/gal_xc", tools / "gal/gal_xc")
     (tools / "dsx").mkdir()   # 直连翻译库（pack/stage_direct.sh 认 dsx/libdsx.dylib，11-08 从 libnxgal 拆出）
@@ -339,7 +419,7 @@ def bundle(destination, developer_dir):
 #   （去 .NET 静态扫描点名它）。从仓库删会改直连库的键、所有款重编，拿出包更便宜
 BUILD_ONLY = ("translator/dmsh_xlate_bin/dmsh_xlate",)
 SNAP_KEYS = ("commit", "stageFilesKeys", "scanTree", "romfsIndexOids", "listed")
-SNAP_STAGES = ("extract", "direct", "direct_seed")   # 玩家出包路径上调 stage_files_key 的阶段
+SNAP_STAGES = ("extract", "direct", "direct_seed", "direct_cpso")   # 玩家出包路径上调 stage_files_key 的阶段
 ROMFS_WRITER = ("services/S2A.Services/RomFsIndex.cs", "services/romfs_index", "services/romfs_index.sh", "compat/tree/Directory.Packages.props")
 
 

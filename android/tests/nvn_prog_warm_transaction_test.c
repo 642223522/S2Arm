@@ -4,6 +4,7 @@
 #include "nvn_vk_prog_warm.h"
 #include "nvn_plat.h"
 #include "direct/compile_request.h"
+#include "direct/sha256.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,6 +13,7 @@
 #include <unistd.h>
 static char directory[512], file_path[600];
 static const char *profile = "profile-A", *case_name;
+static const char closure[] = "closure-A";
 static int fail_read, read_failures, checks, failures;
 static int reset_during_read, read_resets;
 static struct nvk_prog_rec fresh_session_record;
@@ -22,7 +24,7 @@ int nvn_plat_flag(const char *name,int def) { (void)name;return def; }
 void nvn_plat_log(int level,const char *cls,const char *text) { (void)level;(void)cls;(void)text; }
 int s2a_direct_provider_compile_context(struct s2a_direct_compile_context *out) {
  memset(out,0,sizeof *out);out->session=1;out->generation=1;out->profile_json=profile;
- out->profile_bytes=strlen(profile);out->direct_abi=7;out->translator_closure="closure-A";return 0;
+ out->profile_bytes=strlen(profile);out->direct_abi=7;out->translator_closure=closure;return 0;
 }
 /* Only production TU redirects read. No data bytes are modified by the seam. */
 ssize_t nvk_warm_transaction_test_read(int fd,void *data,size_t size) {
@@ -146,7 +148,11 @@ static void test_reset_during_read(void) {
 int main(void) {
  char tmp[]="/tmp/nvk-warm-transaction.XXXXXX";char *p=mkdtemp(tmp);require(p!=NULL,"temporary directory");
  require(snprintf(directory,sizeof directory,"%s",p)>0,"directory name");
- require(snprintf(file_path,sizeof file_path,"%s/programs-v1.bin",p)>0,"fixture name");
+ s2a_sha256 hash; uint8_t digest[32]; char hex[17];
+ s2a_sha256_init(&hash);s2a_sha256_update(&hash,closure,strlen(closure));s2a_sha256_final(&hash,digest);
+ for(size_t i=0;i<8;i++) snprintf(hex+i*2,3,"%02x",(unsigned)digest[i]);
+ int len=snprintf(file_path,sizeof file_path,"%s/programs-v1-%s.bin",p,hex);
+ require(len>0&&(size_t)len<sizeof file_path,"fixture name");
  for(int mode=0;mode<4;mode++) { test_load(mode); }
  test_reset();test_duplicate(3);test_duplicate(8);test_disk_plan();test_reset_during_read();nvk_prog_warm_reset();
  require(rmdir(directory)==0,"remove owned temporary directory");

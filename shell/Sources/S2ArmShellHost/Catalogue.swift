@@ -55,18 +55,23 @@ public struct Catalogue: Equatable, Sendable {
     }
 
     /// 各款程序包 / 资源包所在的根（同 runtime/include/s2a_docs.h s2a_pack_base_rel：备用位置 Library/S2Arm/games 在就取它，否则 Library/Application Support/S2Arm/games）
+    /// Apple TV：资源包与程序包都在文档根 Library/Caches/S2Arm/games 下（s2a_docs.h：tvOS 的资源包根是 <文档根>/games/<号>/资源包，同 C 侧 s2a_program_games_root）
     public static func defaultProgramRoot() -> URL? {
+        #if os(tvOS)
+        return S2ArmContainer.gamesRoot()
+        #else
         let home = URL(fileURLWithPath: NSHomeDirectory())
         let alt = home.appendingPathComponent("Library/S2Arm/games"), main = home.appendingPathComponent("Library/Application Support/S2Arm/games")
         var isDir: ObjCBool = false
         return FileManager.default.fileExists(atPath: alt.path, isDirectory: &isDir) && isDir.boolValue ? alt : main
+        #endif
     }
 
     /// 0.6.0 通用壳：「推到 iPhone」只推这一款、不重装 App，新推进来的款在 App 包清单里没有条目——按每款程序包清单 <根>/<号>/program/catalogue.json
     /// 列进来（单个对象，字段同 App 包清单条目，另有 dir）。图 / 补丁表都相对版本目录 program/<dir>/（没写 dir = program/）。
     /// 同一个号 App 包清单里也有：以程序包这条为准（换上的是这一版）。游戏号不合规的目录、清单读不了 / 不是这一款的都跳过并记问题
     /// legacy（只装壳的通用 App）：0.5.x 老玩家覆盖装上通用 App 后，老款的资源包还在 <根>/<号>/资源包、App 包里没有它、也还没有程序包——
-    /// 照样列出来，卡片「在电脑上更新」（.needsGameUpdate；电脑总控台「更新所选」补程序包，资源不重推），不让玩家以为游戏丢了。
+    /// 照样列出来，卡片「在电脑上更新一次」（.needsLegacyUpdate：说清是旧版装的、存档都在；电脑总控台「更新所选」补程序包，资源不重推），不让玩家以为游戏丢了。
     /// 名字取资源包自带的 资源包/ctl/control.nacp（同电脑端 install.phone_game_name：简中 14，没有取美式英语 0），读不到用游戏号
     mutating func merge(programs root: URL, legacy: Bool = false) {
         guard let ids = try? FileManager.default.contentsOfDirectory(atPath: root.path) else { return }
@@ -77,8 +82,10 @@ public struct Catalogue: Equatable, Sendable {
                 if legacy, !tiles.contains(where: { $0.id == id }),
                    FileManager.default.fileExists(atPath: root.appendingPathComponent(id).appendingPathComponent("资源包").path, isDirectory: &isDir), isDir.boolValue {
                     let pack = root.appendingPathComponent(id).appendingPathComponent("资源包")
-                    tiles.append(GameTile(id: id, title: Catalogue.nacpTitle(pack.appendingPathComponent("ctl/control.nacp")) ?? id, state: .needsGameUpdate))
-                    problems.append("程序包清单 \(id) 不在、只有资源包（0.5.x 老款），列为「在电脑上更新」")
+                    let old = Catalogue.legacyPack(pack)
+                    tiles.append(GameTile(id: id, title: Catalogue.nacpTitle(pack.appendingPathComponent("ctl/control.nacp")) ?? id, state: old ? .needsLegacyUpdate : .needsProgram))
+                    problems.append(old ? "程序包清单 \(id) 不在、资源包是 0.5.x 解开的（老款），列为「导入 .s2arm / 电脑上更新一次」"
+                                        : "程序包清单 \(id) 不在、资源包是这一版收的（玩家放的 .img 或电脑先推的资源），列为「还缺 .s2arm」")
                 }
                 continue
             }
@@ -89,6 +96,16 @@ public struct Catalogue: Equatable, Sendable {
             if let i = tiles.firstIndex(where: { $0.id == id }) { tiles[i] = t } else { tiles.append(t) }
             if let b = e.banner, !b.isEmpty { bannerURLs[id] = b.hasPrefix("/") ? URL(fileURLWithPath: b) : base.appendingPathComponent(b) }
         }
+    }
+
+    /// 0.5.x 老款按来源标记认，不按目录形态（有资源包、没程序清单）：0.6 起解开的资源包同写 .applied_by_shell（runtime/src/pack_apply.c），
+    /// 玩家放进「放这里导入」认领的 game.img 写 .imported。两样都没有、又解开过（.applied）的才是 0.5 App 装的；只放了 .img、或电脑先推了资源、
+    /// 程序还没到的，是这一版的款、还缺这款的 .s2arm
+    static func legacyPack(_ pack: URL) -> Bool {
+        let fm = FileManager.default
+        return fm.fileExists(atPath: pack.appendingPathComponent(".applied").path)
+            && !fm.fileExists(atPath: pack.appendingPathComponent(".applied_by_shell").path)
+            && !fm.fileExists(atPath: pack.appendingPathComponent(".imported").path)
     }
 
     /// control.nacp 的标题：16 组语言，每组 0x300 字节、前 0x200 是 UTF-8 名字（同 pack/ns2_dump.py nacp_title）。简中（14）优先，没有取美式英语（0）

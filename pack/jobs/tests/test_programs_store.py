@@ -89,6 +89,26 @@ class ProgramStoreTests(unittest.TestCase):
         self.assertEqual(self.names(self.store / "recipe.tar.zst"), ["cpatch.tsv", "cpatch_rows.tsv", "ctl/control.nacp", "main.npdm", "widen_sites.tsv"])
         self.assertFalse((layout.find_game(self.c, GID) / "image/ios/kit").exists())
 
+    def test_kit_rename_busy_on_windows_is_retried(self):
+        # #50cb93（Windows 0.5.0，三台设备）：刚拷完的 kit.partial 被杀软 / 索引开着，os.replace 改名报 WinError 5，整单「清理出包中间产物」失败。
+        #   期望：旧 kit 挪开、新 kit 改名就位都按 #361 退避重试，第二次就成；不留 .partial / .old-*（期望手写）
+        self.export()                                     # 先有一份旧 kit
+        sys.path.append(str(Path(programs.__file__).resolve().parents[2]))
+        from pack.orch import dirrename
+        from types import SimpleNamespace
+        real, calls = Path.rename, []
+        def rename(src, dst):
+            calls.append(src.name)
+            if src.name == "kit.partial" and calls.count("kit.partial") == 1:
+                raise PermissionError(13, "Access is denied")   # 没有 winerror 属性按 5 认（同 dirrename）
+            return real(src, dst)
+        with mock.patch.object(dirrename, "os", SimpleNamespace(name="nt")), mock.patch.object(dirrename, "DIR_RENAME_RETRIES", (0, 0)), \
+             mock.patch.object(Path, "rename", rename):
+            kit = library.save_container_kit(self.c, GID, self.product())
+        self.assertEqual(calls, ["kit", "kit.partial", "kit.partial"])   # 挪开旧的一次；新的第一次被拒、重试成功
+        self.assertTrue((kit / "main.npdm").is_file())
+        self.assertEqual(sorted(p.name for p in kit.parent.iterdir() if p.name.startswith("kit")), ["kit"])
+
     def test_romfs_image_is_not_a_program_part(self):
         # RomFS 直出后产物根顶层多了游戏资源镜像 romfs.std（原先是 romfs/ 目录）：它不进程序缓存，也不进常驻配方
         product = self.product(); (product / "romfs.std").write_bytes(b"R" * 4096)
@@ -119,6 +139,43 @@ class ProgramStoreTests(unittest.TestCase):
         shutil.rmtree(self.cache)
         kit = layout.ios_kit(self.c, GID)
         self.assertEqual((kit / "sgrade_state.json").read_text(), '{"schema": 1}')
+
+    def adopt(self, pid, files=None):
+        """内部测试链 adoptProduct：别处出好的产物根 + 资源包（来源在游戏库外）"""
+        pack = self.root / ("pack-" + pid); pack.mkdir()
+        (pack / "manifest.json").write_text(json.dumps({"index_sha256": pid}) if pid else "{}")
+        for n, v in (files or {}).items():
+            (pack / n).write_text(v)
+        self.c.r = dict(gameId=GID.lower(), productRoot=str(self.product()), packDir=str(pack))
+        with mock.patch.object(ipa, "current_shell_id", lambda c: "S1"), mock.patch.object(sgrade, "write_kit_state", lambda c, gid, kit: None), \
+             mock.patch.object(rewrite_refresh, "rewriter_id", lambda c: "RW"), mock.patch("host_update.engine_compat", lambda c: {}), mock.patch("host_update.built_by", lambda c: "t"):
+            return ipa.adopt_product(self.c), pack
+
+    def test_adopt_product_lands_like_a_fresh_iphone_pack(self):
+        # 期望手写：收完这款在游戏库里「有 iPhone 包」——程序件（main.npdm 等）进程序缓存 kit，资源包原样进 image/ios/.pack，
+        #   game.json 的 ios 记本版壳号与资源包号；来源不动。再收一份新资源包整份换掉，不留 .adopt / .old
+        sgrade.save_program(self.c, GID, self.exefs())
+        r, src = self.adopt("P1", {"index.tsv": "a\t1\t-\n"})
+        self.assertEqual(r["packId"], "P1"); self.assertEqual(r["gameId"], GID)
+        self.assertTrue(layout.has_ios_kit(self.c, GID))
+        self.assertEqual((layout.ios_kit(self.c, GID) / "main.npdm").read_text(), "npdm")
+        pack = layout.ios_pack(self.c, GID)
+        self.assertEqual((pack / "index.tsv").read_text(), "a\t1\t-\n")
+        self.assertTrue((src / "index.tsv").is_file())
+        self.assertEqual({k: layout.game_info(self.c, GID)["ios"][k] for k in ("shellId", "pack")}, {"shellId": "S1", "pack": "P1"})
+        shutil.rmtree(self.root / "product")
+        self.adopt("P2", {"b.bin": "2"})
+        self.assertEqual(sorted(p.name for p in pack.iterdir()), ["b.bin", "manifest.json"])
+        self.assertEqual(layout.game_info(self.c, GID)["ios"]["pack"], "P2")
+        self.assertEqual(sorted(p.name for p in pack.parent.iterdir() if p.name.startswith(".pack")), [".pack"])
+
+    def test_adopt_product_without_pack_id_is_refused_before_touching_library(self):
+        # 期望手写：资源包清单没有 index_sha256 → package_failed，游戏库里不留这款的程序件
+        from core import Failure
+        with self.assertRaises(Failure) as e:
+            self.adopt("")
+        self.assertEqual(e.exception.code, "package_failed")
+        self.assertFalse(layout.has_ios_kit(self.c, GID))
 
     def test_resource_images_stay_out_unknown_small_files_stay_in(self):
         # 期望手写：资源镜像这一小类封闭集合（romfs.std / game.img / *.nsp / *.xci / *.nca，大小写不论）不进程序件也不进配方；

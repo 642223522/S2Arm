@@ -74,7 +74,7 @@ fi
 # --zero-attr-core（#977）：同一套真 rp_draw + 真后端，跑零属性用例 t_replay_zero_attr.c。
 if [ "$mode" = "--indirect-core" ] || [ "$mode" = "--zero-attr-core" ]; then
     if [ "$mode" = "--indirect-core" ]; then
-        core_test=t_replay_indirect; core_shaders=(replay_null_storage.vert replay_front_face.vert solid_green.frag quad.vert quad.frag count_args.comp replay_drv0.vert replay_drv0.frag replay_drv0_args.comp)
+        core_test=t_replay_indirect; core_shaders=(replay_null_storage.vert replay_front_face.vert solid_green.frag quad.vert quad.frag count_args.comp replay_drv0.vert replay_drv0.frag replay_drv0_args.comp replay_binst.vert replay_binst.frag replay_binst_args.comp)
     else
         core_test=t_replay_zero_attr; core_shaders=(zattr.vert quad.frag)
     fi
@@ -251,8 +251,12 @@ if [ "$mode" = "--fsr" ]; then
     exit 0
 fi
 
-mkdir -p "$repo/build/vk-tests"
-export TMPDIR="$repo/build/vk-tests"
+# 临时目录：离线容器里（带 S2A_VULKAN_IMAGE_ID）放容器自己的 /tmp，不放宿主挂进来的 /src（macOS colima 的 virtiofs）。
+# 放 /src 时整套大编译（存储缓冲窗口等夹具十几个源文件、-g）的 cc 临时文件间歇报「cannot open /src/build/vk-tests/cc*.s for writing:
+# Permission denied」（11-19 Mac 构建机上三次，都在同一处），而且走 virtiofs 写也慢；各夹具的产出目录跑完即删，不需要留在仓库里。
+if [ -n "${S2A_VULKAN_IMAGE_ID:-}" ]; then vk_tmp=/tmp/s2a-vk-tests; else vk_tmp="$repo/build/vk-tests"; fi
+mkdir -p "$vk_tmp"
+export TMPDIR="$vk_tmp"
 out=$(mktemp -d "$TMPDIR/s2a-nvn-vk.XXXXXX")
 trap 'rm -rf "$out"' EXIT
 mkdir -p "$out/shaders"
@@ -288,7 +292,7 @@ if [ "$mode" = "--dispatch-barrier" ] || [ "$mode" = "--dispatch-barrier-neg" ] 
         [ -n "${db_log_off:-}" ] && tag="$1-dirtylog-off"   # db_log_off=1：开关 nvk_buf_dirtylog 关那一档（逐页退回路径）
         tag="dq$db_dq-$tag"   # 两级录制 nvk_dq 关 / 开两档都跑（夹具在 fence 之后按真实 vkCmd 快照数屏障，不靠关 DQ）
         set +e
-        VK_DRIVER_FILES="$icd" VK_LAYER_PATH="$layer" VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation VK_LAYER_VALIDATE_SYNC=1 \
+        VK_DRIVER_FILES="$icd" VK_LAYER_PATH="$layer" VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT \
             env S2A_REPLAY_DB_DQ=$db_dq ${db_log_off:+S2A_REPLAY_DIRTYLOG_OFF=1} timeout 120 "$out/dispatch-barrier" "$out/shaders" "$arm" > "$out/db-$tag.log" 2>&1
         rc=$?
         set -e
@@ -506,7 +510,7 @@ export TSAN_OPTIONS="halt_on_error=0 suppressions=$repo/android/tests/vk/tsan.su
 if [ "$mode" != "--tsan" ]; then
     export VK_LAYER_PATH=$layer
     export VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation
-    export VK_LAYER_VALIDATE_SYNC=1   # 同步校验：缺屏障会报 SYNC-HAZARD-*
+    export VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT   # 同步校验：缺屏障会报 SYNC-HAZARD-*
 
 if [ "$mode" = "--cmdpool-only" ] || [ "$mode" = "--cmdpool-neg" ]; then
     bad=0
@@ -837,7 +841,15 @@ if [ "$mode" = "" ]; then bash "$repo/android/tests/vk/run.sh" --tbuf-compiler-c
 if [ "$mode" = "" ]; then bash "$repo/android/tests/vk/run_replay_copy_t2b.sh"; fi
 if [ "$mode" = "" ]; then bash "$repo/android/tests/vk/run_replay_clear_tex.sh"; fi
 if [ "$mode" = "" ]; then bash "$repo/android/tests/vk/run_replay_ssbo_window.sh"; fi
-if [ "$mode" = "" ]; then bash "$repo/android/tests/vk/run_compute_read.sh"; fi
+# 计算读回要求校验层声明 syncval_shader_accesses_heuristic；共享镜像的层（Ubuntu noble 1.3.275）没有，夹具退 75（环境验不了）。
+# 原先在 set -e 下直接调，75 让整个默认档就此退出：其后的主套件（t_backend_vk 三遍、上屏、BC 解码等）在任何门禁机上都没跑过，
+# 每次 10 分钟左右只换来「环境未就绪」。改为记下这一项未证、其余照跑；其余全绿时末尾仍退 75（不把未证的一项判绿），其余有红照常报红。
+compute_read_unready=
+if [ "$mode" = "" ]; then
+    set +e; bash "$repo/android/tests/vk/run_compute_read.sh"; cr_rc=$?; set -e
+    if [ "$cr_rc" -eq 75 ]; then compute_read_unready=1; echo "【未证】计算读回：本机校验层验不了（见上一行），记未证、其余用例照跑"
+    elif [ "$cr_rc" -ne 0 ]; then exit "$cr_rc"; fi
+fi
 
 set +e
 # 整套三遍的超时只用来发现卡死，不量性能：负载高的机器（列车机同时跑多份同类用例，软件渲染）上单遍已接近原先的 180 / 240 秒，
@@ -1030,3 +1042,6 @@ if [ -z "$mode" ]; then
     (unset S2A_TEST_NVK_DQ; bash "$repo/android/tests/vk/run.sh" --present-only)
     S2A_TEST_NVK_DQ=1 bash "$repo/android/tests/vk/run.sh" --present-only
 fi
+
+# 计算读回未证（见上）：其余全部跑完且没有红，整步仍按「环境验不了这一项」退 75
+if [ -n "${compute_read_unready:-}" ]; then echo "【未证】其余用例全绿；计算读回一项待新校验层的环境验证" >&2; exit 75; fi

@@ -22,5 +22,13 @@ namespace Ryujinx.Horizon
         // A session was registered (after accept / CreateSession, and after each processed request); when set, the session
         // is not linked to the manager's wait list (the service thread's loop never serves it)
         public static Action<ServerManagerBase, ServerSession> SessionRegistered;
+
+        // Instant snapshot (same as Ryujinx.HLE S2AHooks.SnapForceDomainIds for HLE domains): requests are processed on the calling
+        // thread, so these are per thread. SnapOutIds collects the domain object ids this request reserved (the log records them);
+        // SnapForceDomainIds, set while a logged request is replayed, makes the domain hand out the ids it gave when it was logged
+        // (objects closed in between are no longer in the log, so allocating in order would hand out smaller ids)
+        [ThreadStatic] public static System.Collections.Generic.List<int> SnapOutIds;
+        [ThreadStatic] public static System.Collections.Generic.Queue<int> SnapForceDomainIds;
+        public static int SnapForceDomainIdMiss;
     }
 }

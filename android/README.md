@@ -34,6 +34,65 @@ Ryujinx game rendering. No game-specific
 addresses, assets, firmware, keys, storage permissions, or network permission
 are included.
 
+## Local wireless (LDN) settings
+
+The release game library settings panel includes **Local wireless (LDN)**.
+Automatic is the default and writes no environment variables, preserving the
+existing LAN behavior. Manual host uses `S2A_LDN_SERVER=127.0.0.1`,
+`S2A_LDN_RELAY=1`, and `S2A_LDN_LISTEN=0.0.0.0`. Manual client uses the entered
+reachable IPv4 as `S2A_LDN_SERVER` and `S2A_LDN_RELAY=0`. Manual mode performs
+no automatic discovery or relay election. The port is fixed at TCP 30456.
+Saving a client requires four dotted ASCII decimal octets (0–255, no leading
+zeroes, hostname, IPv6 or port suffix). Empty/invalid input stays in the dialog
+with a specific field error and does not update preferences. The environment
+policy retains the empty-client `0.0.0.0` fallback only for legacy/Intent input,
+so it cannot silently re-enable discovery.
+
+**Test connection** optionally connects to the entered IPv4 on TCP 30456 on a
+background thread with a 3-second timeout, then closes without sending payload.
+This checks the actual relay port rather than ICMP ping. A successful connection
+only proves that a TCP listener accepted it, not LDN protocol/game compatibility.
+Failure is advisory: saving remains available when the relay/VPN is not up yet.
+The result names its target, is cleared after edits, and cannot update a closed
+dialog or a destroyed Activity.
+
+All players must use the same relay; keep the relay app in the foreground.
+Use reachable public or LAN addresses or an externally configured VPN; the app includes
+no VPN SDK. Hosting listens on all network interfaces, exposing TCP 30456 to
+reachable peers (including other interfaces); use trusted networks only.
+Ensure TCP 30456 can reach the relay. Fully exit the app and reopen
+after changing settings. Returning through the app icon or resuming a running
+game retains its existing process settings.
+
+Preferences persist per app package. `GameActivity.launch` copies them into a
+cold launch Intent so the separate game process receives the library's current
+snapshot without relying on cross-process SharedPreferences cache refresh.
+The production startup applies it through Android `Os.setenv` before Host
+creation, without `DebugEnvironment` or debug build flags. A nonempty existing
+`S2A_LDN_SERVER` preserves all externally supplied LDN environment settings as a
+unit. Direct cold starts without a snapshot read persisted settings.
+
+Once-per-process application matches the supported game lifecycle:
+`MainActivity.stopGame` admits native stop, `bridge.cpp` transfers to shared
+`s2a_host_shutdown`, and `runtime/src/lifecycle.c` terminates with `_exit` (the
+Android watchdog also exits on timeout). The library waits for the old game PID
+to disappear before switching games. Activity recreation/resume is not a new
+configuration window: shared `Host.LdnServer` is cached statically. The Java
+10-second task-finish fallback alone does not prove process death; device
+lifecycle validation remains required.
+
+`python3 android/tests/ldn_settings_test.py` covers policy mapping, external
+precedence, empty-client fallback, strict IPv4 validation, offline injected TCP
+success/failure and port/timeout contracts, release wiring and negative controls.
+`python3 android/tests/ldn_dialog_test.py` compiles the real settings dialog with
+Android stubs and an offline connector: invalid input stays open, failed tests
+allow saving, late callbacks respect dialog/Activity lifetime, and an ignored
+address-error negative control fails. Java policy tests compile the real policy
+with `javac`; Android wiring checks inspect the source. These do not replace APK
+or device validation. Device
+acceptance still needs a Release APK, a full restart, host/client environment
+receipts, and two peers on a reachable relay.
+
 ## FPS overlay
 
 In the game library, **Show FPS (successful frame submissions)** controls the

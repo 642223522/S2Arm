@@ -39,6 +39,7 @@ __attribute__((constructor)) static void cheats_register_host(void) { void (*f)(
 #include "../runtime/include/s2a_home_quit.h"
 #include "../runtime/include/s2a_mac_focus.h"
 #include "../runtime/include/s2a_ui_text.h"
+#include "../runtime/src/native.h"   // G1 日志通道（评审稿 v3 §4 G1 第 3 条）：LOG → s2a_log_line → s2a_log_out(g_s2a_logfd)；同 macos/heartbeat_mac.c 的接法
 // 界面语言（runtime/include/s2a_ui_text.h，#316），盖过 runtime/src 各 .c 返回 1 的弱缺省。Mac 宿主程序不带 .lproj、主 bundle 首选本地化
 //   总是开发区域，判不出玩家语言，所以按系统首选语言以 zh 开头判（目前 Mac 上没有显示路径用到它）
 int s2a_ui_zh(void) { return [NSLocale.preferredLanguages.firstObject hasPrefix:@"zh"]; }
@@ -774,7 +775,7 @@ static void rumble_submit(uint64_t session, const s2a_pad_vibration pair[2]) {
     s2a_pad_vibration left = pair[0], right = pair[1];   // 块里不能捕获数组：拆成两个值
     dispatch_async(g_rumble_q, ^{ s2a_pad_vibration p[2] = {left, right}; rumble_play_on_queue(p); });
 }
-__attribute__((visibility("default"), used)) uint64_t s2a_pad_rumble_session(void) {
+static uint64_t rumble_session(void) {
     if (rumble_off()) return 0;   // 启动设置「手柄震动」关：两路都不震
     if (p1_gen1_rumble(NULL)) return GEN1_P1_SESSION;   // P1 是一代 Joy-Con 单元：走 HID 震动
     uint64_t ns2 = atomic_load(&g_slot0_ns2) ? s2a_mac_ns2_rumble_session() : 0;   // NS2 手柄是玩家 1 且在前台：震动交给它
@@ -782,6 +783,8 @@ __attribute__((visibility("default"), used)) uint64_t s2a_pad_rumble_session(voi
     uint64_t epoch = atomic_load(&g_rumble_epoch);
     return epoch ? (MAC_RUMBLE_BASE | epoch) : 0;
 }
+// 没有能震的那一路也回非 0（只给体感的会话，motion_power.h）：改前回 0，服务层不建反馈对象、六轴从不打开，关了震动体感也跟着没了（#1671）
+__attribute__((visibility("default"), used)) uint64_t s2a_pad_rumble_session(void) { return s2a_mac_feedback_session(rumble_session()); }
 __attribute__((visibility("default"), used)) void s2a_pad_set_rumble_pair(uint64_t session, const s2a_pad_vibration values[2]) {
     if (!values) return;
     pthread_mutex_lock(&g_rumble_mu); g_rumble_pair[0] = values[0]; g_rumble_pair[1] = values[1]; pthread_mutex_unlock(&g_rumble_mu);
@@ -883,8 +886,10 @@ static NSDictionary *slot_cfg(int slot) {
 }
 
 // 启动器原子写入的统一四键设置。主线程在合成锁内刷新，手柄回调在同一把锁内读取。
-// 所有非 Switch 手柄共用同一排列，不分玩家或品牌；Switch Pro / Joy-Con 保持原生布局。
+// 所有非 Switch 手柄共用同一排列，不分玩家或品牌；Switch Pro / Joy-Con 另存一份（文件里 nintendo 字段），
+//   没选过 = 原生布局（identity），玩家在启动器给它选了 Xbox 布局等才生效（与 iOS s2a_pad_abxy_order 同结果）。
 static int g_face_map = S2A_FACE_IDENTITY;
+static int g_face_map_nintendo = S2A_FACE_IDENTITY;
 static __weak S2AControllerFaceOverlay *g_face_overlay; // owned by the game's content view
 static s2a_face_overlay_hold g_face_overlay_hold;
 static uint64_t g_face_check_at;
@@ -900,7 +905,7 @@ static void pad_face_refresh(BOOL force) {
     BOOL exists = stat(path.fileSystemRepresentation, &info) == 0;
     if (!force && exists == g_face_had_file && (!exists || (info.st_mtimespec.tv_sec == g_face_stamp.tv_sec && info.st_mtimespec.tv_nsec == g_face_stamp.tv_nsec))) return;
     g_face_had_file = exists; if (exists) g_face_stamp = info.st_mtimespec;
-    g_face_map = S2A_FACE_IDENTITY;
+    g_face_map = S2A_FACE_IDENTITY; g_face_map_nintendo = S2A_FACE_IDENTITY;
     if (!exists) return;
     NSError *error = nil;
     NSData *data = [NSData dataWithContentsOfFile:path options:0 error:&error];
@@ -926,7 +931,12 @@ static void pad_face_refresh(BOOL force) {
     if (![value isKindOfClass:NSNumber.class] || [value doubleValue] != [value intValue] || !s2a_face_valid([value intValue])) {
         fprintf(stderr, "[s2a] 【红】手柄四键设置无效；本次按平台默认键位\n"); return;
     }
+    id nintendo = [json[@"schema"] isEqual:@2] ? json[@"nintendo"] : nil;
+    if (nintendo && (![nintendo isKindOfClass:NSNumber.class] || [nintendo doubleValue] != [nintendo intValue] || !s2a_face_valid([nintendo intValue]))) {
+        fprintf(stderr, "[s2a] 【红】Switch 手柄四键设置无效；本次按平台默认键位\n"); return;
+    }
     g_face_map = [value intValue];
+    if (nintendo) g_face_map_nintendo = [nintendo intValue];
 }
 static NSString *controller_face_family(GCController *controller) {
     if (!controller) return @"nintendo"; // 专用通道及 Switch HID 已按任天堂 A/B/X/Y 上报
@@ -939,7 +949,7 @@ static NSString *controller_face_family(GCController *controller) {
 }
 static int controller_face_map(GCController *controller) {
     NSString *family = controller_face_family(controller);
-    if ([family isEqualToString:@"nintendo"]) return S2A_FACE_IDENTITY;
+    if ([family isEqualToString:@"nintendo"]) return g_face_map_nintendo;
     return g_face_map;
 }
 static uint32_t controller_face_bits(GCController *controller) {
@@ -1626,25 +1636,38 @@ static void screen_fps_note(NSWindow *w) {
     }
 }
 // PR1 探针（HDR 全链路评审稿 v2 §4 PR1 ③）：窗口所在屏 EDR 能力一次性读数（M0 跑局记录屏幕配置用）；potentialEDR≤1.0 时附 §2.5 能力错配的排查指引一行。
-//   一次性：换屏 / 拨 HDR 开关后的重探重发布是 PR4 的活，这里只记开局所在屏。窗口刚建还没上屏时 w.screen 可能为空，按主屏读
+//   一次性：换屏 / 拨 HDR 开关后的重探重发布是 PR4 的活（下方 hdr_tick / 直连层 s2a_hdr_tick_host——250ms tick + 换屏通知接管）。
+//   窗口刚建还没上屏时 w.screen 可能为空，按主屏读。
+//   G1 日志通道（评审稿 v3 §4 G1 第 3 条）：两行从 fprintf(stderr) 改走 LOG（→ s2a_log_line → s2a_log_out(g_s2a_logfd) = os.c 构造期
+//     dup 的原始 stderr = run_mac.sh 重定向的 host.log；C# 侧 StdErrAdapter 接管 fd 2 后 fprintf(stderr) 会掉进它的管道，不再进原始
+//     stderr）。行文不变：落点前缀仍是「[s2a] 窗口所在屏能力探针」，判读 grep 不受影响。跑局（无头局）宿主不编本文件
+//     （本文件只在 S2A_MAC_FRONTEND=1 的前端构建编进去，launchers/macos/build.mk），无头局的同一行在
+//     graphics/nvn/host_adapt.m headless_edr_note（按主屏读）。
 static void screen_edr_note(NSWindow *w) {
     static int noted; if (noted) return; noted = 1;
     NSScreen *sc = w.screen ?: NSScreen.mainScreen; if (!sc) return;
     NSColorSpace *cs = sc.colorSpace; CFStringRef raw = cs ? CGColorSpaceGetName(cs.CGColorSpace) : NULL;
     char rawname[96] = "-"; if (raw) CFStringGetCString(raw, rawname, sizeof rawname, kCFStringEncodingUTF8);
     double potential = sc.maximumPotentialExtendedDynamicRangeColorComponentValue;
-    fprintf(stderr, "[s2a] 窗口所在屏能力探针：potentialEDR %.3f / currentEDR %.3f / referenceEDR %.3f（倍数），P3 %s（%s），backing %.2f，色彩空间 %s\n",
-            potential, sc.maximumExtendedDynamicRangeColorComponentValue, sc.maximumReferenceExtendedDynamicRangeColorComponentValue,
-            strstr(rawname, "P3") ? "是" : "否", rawname, sc.backingScaleFactor, cs.localizedName.UTF8String ?: "-");
+    LOG("窗口所在屏能力探针：potentialEDR %.3f / currentEDR %.3f / referenceEDR %.3f（倍数），P3 %s（%s），backing %.2f，色彩空间 %s",
+        potential, sc.maximumExtendedDynamicRangeColorComponentValue, sc.maximumReferenceExtendedDynamicRangeColorComponentValue,
+        strstr(rawname, "P3") ? "是" : "否", rawname, sc.backingScaleFactor, cs.localizedName.UTF8String ?: "-");
     if (potential <= 1.0)   // 评审稿 §2.5：判成 SDR 但屏其实支持 HDR 的错配，日志一行人话指引、给下一步
-        fprintf(stderr, "[s2a] 当前屏按 SDR 处理（potentialEDR ≤ 1.0）。若该屏支持 HDR：查①系统设置→显示器→HDR 开关（常见成因）②显示器 OSD 的 HDR/色域档 ③线缆/扩展坞（直连 USB-C DP Alt、HBR2+）④EDID 是否宣告 HDR（本机实测先例：宣告 PQ 而非 HLG）\n");
-    // PR3a 策略抽象（评审稿 v3 §2.2 / §4 PR3a）：同一屏读数发布进 HDR 策略快照——Mac 侧发布点在此（host_adapt.m 的 Mac 分支没有 AppKit：
-    //   无头宿主不链 AppKit），经 dlsym 调直连层 host_adapt.m 的 s2a_hdr_screen_publish（同 s2a_gpu_stuck_resume 先例：按名取，
-    //   不链直连层的构建 / 输入单测里没有它，缺了就不发布、行为照旧；平台壳不直接含图形内部头——分层 R-05）。
-    //   发布只刷环境读数（potential_edr / current_headroom / s1_ready / paper_white），层簿记不回卷；S2ARM_HDR=off（缺省）时
-    //   无视快照恒 S0 直通 ∧ vi 恒 on=0，行为零变化
-    { void (*pub)(double, double) = (void (*)(double, double))dlsym(RTLD_DEFAULT, "s2a_hdr_screen_publish");
-      if (pub) pub(potential, sc.maximumExtendedDynamicRangeColorComponentValue); }
+        LOG("当前屏按 SDR 处理（potentialEDR ≤ 1.0）。若该屏支持 HDR：查①系统设置→显示器→HDR 开关（常见成因）②显示器 OSD 的 HDR/色域档 ③线缆/扩展坞（直连 USB-C DP Alt、HBR2+）④EDID 是否宣告 HDR（本机实测先例：宣告 PQ 而非 HLG）");
+}
+// PR4 层状态机接线（评审稿 v3 §4 PR4 ②④）：主线程 250ms tick（NSRunLoopCommonModes——拖窗 / 开菜单不停）+ 换屏 / 屏参数（HDR 开关 / 分辨率 /
+//   接断屏）通知 → 直连层 host_adapt.m 的 s2a_hdr_tick_host（经 dlsym——同上面探针的按名取法，不链直连层的构建里没有它，缺了就整个无操作、
+//   行为照旧）：重探发布（读数变了才发）+ 首探开机预挂（识别 Switch 2 游戏即进层——赶在首查询前，§4 PR4 ③）+ 层 tick（can 滞回 500ms、进层
+//   即时）+ 层配置应用（进层即 PQ：RGB10A2Unorm + kCGColorSpaceITUR_2100_PQ + wantsExtendedDynamicRangeContent；排空完成切回 S0：BGRA8Unorm +
+//   显式 sRGB tag——从 PQ 层切回的层保留 PQ 色彩空间，必须显式重设，§2.3 注意事项①）。
+//   快照屏消失（w.screen nil）→ 回退主屏读数；都不在 → 读数 0（can=0 持稳后排空切回——不对已消失屏做 present 假设），恢复重探重发布。
+static void hdr_tick(NSWindow *w) {
+    static void (*tick_host)(double, double);
+    static int looked; if (!looked) { looked = 1; tick_host = (void (*)(double, double))dlsym(RTLD_DEFAULT, "s2a_hdr_tick_host"); }
+    if (!tick_host) return;
+    NSScreen *sc = w.screen ?: NSScreen.mainScreen;   // 快照屏 = 窗口所在屏；消失回退主屏（§4 PR4 ④）
+    tick_host(sc ? sc.maximumPotentialExtendedDynamicRangeColorComponentValue : 0.0,
+              sc ? sc.maximumExtendedDynamicRangeColorComponentValue : 0.0);
 }
 @implementation S2AMetalView
 - (BOOL)acceptsFirstResponder { return YES; }
@@ -2111,7 +2134,11 @@ void s2a_front_run(void (*guest_main)(void)) {
         delegate.window = window;
         screen_fps_note(window);
         screen_edr_note(window);   // PR1 探针：窗口所在屏 EDR 能力一次性读数（评审稿 §4 PR1 ③）
-        [NSNotificationCenter.defaultCenter addObserverForName:NSWindowDidChangeScreenNotification object:window queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { screen_fps_note(n.object); }];
+        hdr_tick(window);   // PR4 首探：重探发布 + 开机预挂 + 层配置应用——赶在游戏首查询前（评审稿 §4 PR4 ③，Bananza 首查询即定窗口）
+        NSTimer *hdr_timer = [NSTimer timerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *t) { (void)t; hdr_tick(window); }];
+        [[NSRunLoop mainRunLoop] addTimer:hdr_timer forMode:NSRunLoopCommonModes];   // 拖窗 / 开菜单不停（评审稿 §4 PR4 ②）
+        [NSNotificationCenter.defaultCenter addObserverForName:NSApplicationDidChangeScreenParametersNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { (void)n; hdr_tick(window); }];   // HDR 开关 / 分辨率 / 接断屏；headroom 变化无专用通知——250ms tick 兜底轮询（§4 PR4 ②）
+        [NSNotificationCenter.defaultCenter addObserverForName:NSWindowDidChangeScreenNotification object:window queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { screen_fps_note(n.object); hdr_tick(n.object); }];
         S2APromptBanner *banner = [S2APromptBanner new]; [view addSubview:banner]; delegate.banner = banner;
         [NSLayoutConstraint activateConstraints:@[[banner.topAnchor constraintEqualToAnchor:view.topAnchor constant:16], [banner.centerXAnchor constraintEqualToAnchor:view.centerXAnchor]]];
         front_layer_attach(layer);

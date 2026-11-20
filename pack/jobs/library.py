@@ -8,7 +8,7 @@ import contextlib
 from copy import deepcopy
 import errno
 import filelock
-from space_rule import pack_direct_bytes, pack_input_bytes, pack_need_bytes, selected_packages   # 出包空间规则的唯一定义（剃刀 H11）
+from space_rule import pack_direct_bytes, pack_input_bytes, pack_need_bytes, selected_packages, source_file_bytes   # 出包空间规则的唯一定义（剃刀 H11）
 import hashlib
 import io
 import json
@@ -2092,6 +2092,17 @@ def catalog(c):
 
 # 这一款在私有目录里按程序号存的出包缓存（直连 / 翻译 / 追加内容 / 原件核对 / 宽屏；都在 S2A_RUN_ROOT = <私有>/run 下，pack/jobs/core.py Context.env）
 # 显式清理/删除含共享编库缓存；Q15 成功后的自动清理仅清本款中间产物，保留可复用编库条目。
+def aoc_cache_dir(c, gid):
+    """本款追加内容（DLC）缓存（pack/stages/aoc.sh 的 S2A_AOC_CACHE，按键存解出的 DLC，大游戏的 DLC RomFS 好几 GB）。
+    同 direct_cache_dir：游戏和工具缓存在同一块盘 → 工具缓存下（同原来）；游戏放外接盘 → 这款游戏文件夹第一层的 aoc-cache/，
+    解包写入跟着游戏落到外接盘，不再把几 GB 写进系统盘、再跨盘拷回游戏（#1725 诊断 D-K82N：游戏库在外接盘，DLC 解到内置盘写满）"""
+    tool = c.work_root / "run" / "s2arm" / "cache" / "aoc"
+    loc = layout.find_game(c, gid)
+    if loc is None or _existing(loc).stat().st_dev == _existing(c.work_root).stat().st_dev:
+        return tool
+    return loc / "aoc-cache"
+
+
 def direct_cache_dir(c, gid):
     """本款直连缓存（graphics/tools/direct/direct_lib.sh 的 S2A_DIRECT_CACHE：内容寻址仓 + 编译中的翻译中间产物，大游戏编译中几十 GB）。
     存放位置与工具缓存在同一块盘：工具缓存下（同原来）；不在同一块盘（游戏放外接盘）：这款游戏文件夹第一层的 direct-cache/，
@@ -2411,9 +2422,7 @@ def save_container_kit(c, gid, root, dest=None):
             if p.is_dir() and (p / "main.npdm").is_file():
                 copy_files(p, temporary / "programs" / p.name)
     loud_if_kit_oversized(c, gid, temporary)
-    if kit.exists():
-        _rm(c, managed, kit)
-    os.replace(temporary, kit)
+    progs._put_dir(c, temporary, kit)   # 旧的先改名挪开、新的改名就位，两次都按 #361 退避重试（Windows 杀软 / 索引开着刚拷完的文件报 WinError 5，#50cb93 三台设备）
     if not dest:
         progs.save_recipe(c, gid)   # 常驻配方（原始程序在常驻里的模块，改写产物不存、现建）
         for legacy, root in ((layout.image_ios(c, gid, create=False) / CONTAINER_KIT, layout.root_of(c, gid)),
@@ -2776,6 +2785,7 @@ SPACE_PARTS = (
     ("shaders", "着色器与出包缓存", "下次出包会重新翻译着色器（大游戏要多花较长时间）"),
     ("mac", "Mac 运行版本", "下次在 Mac 上玩之前会重新准备"),
     ("ipa", "已出好的 iPhone 包", "只删资源包：手机上已装的不受影响，以后更新 S2Arm 也照样带上这款；要装到别的手机或重新推资源时再出一次包"),
+    ("selfsign", "自签导出的游戏文件", "「S2Arm 自签导出」文件夹里这款的 .img：手机上已导入的不受影响；要再装到手机时重新「导出自签包」"),
 )
 SPACE_KEPT = ("saves", "logs")
 
@@ -2818,8 +2828,21 @@ def space_parts(c, gid):
         "ipa": ipa,
         "saves": layout.save_entries(gdir) if gdir else [],   # 只报不删（SPACE_KEPT）；存档类唯一来源 layout.save_entries
         "logs": [out / "logs"],
+        "selfsign": selfsign_imgs(c, gid),
     }
     return {k: [p for p in v if p.exists() or p.is_symlink()] for k, v in parts.items()}
+
+
+def selfsign_imgs(c, gid):
+    """「S2Arm 自签导出」文件夹（中 / 英两个定名都看）里这款的 .img（完整的和着色器更新包）：单独写出、不和 games/ 共用磁盘块，
+    每款等于再占一份（#1471）。按文件头里的游戏号认，不按文件名"""
+    import install
+    out = []
+    for name in install.EXPORT_DIRS.values():
+        folder = c.library / name
+        if folder.is_dir():
+            out += [p for p in layout.entries(folder, "*.img") if p.is_file() and install._img_head(p)[0] == gid.upper()]
+    return out
 
 
 def _part_bytes(paths):
@@ -2908,7 +2931,7 @@ def space_survey(c):
     for g in games:
         c.check()
         parts = space_parts(c, g["id"])
-        shown = [(k, t, r) for k, t, r in SPACE_PARTS if k != "legacy" or parts[k]]   # 没有旧版残留就不显示
+        shown = [(k, t, r) for k, t, r in SPACE_PARTS if k not in ("legacy", "selfsign") or parts[k]]   # 没有旧版残留 / 没自签导出过这款就不显示
         combos = freeable({k: parts[k] for k, _, _ in shown})
         # 每行是「只删这一项」腾出的字节；几项共用的克隆块只在都勾上时算进合计（combos），sharedBytes = 全勾比各项单删相加多出的部分
         rows.append(dict(gameId=g["id"], name=game_custom(c, g["id"])["name"] or g.get("name") or g["id"],
@@ -2938,7 +2961,7 @@ def space_free(c):
         freed, done = combos[space_key(want)], []
         for k in [k for k, _, _ in SPACE_PARTS if k in want]:
             for p in parts[k]:
-                root = c.work_root if p.is_relative_to(c.work_root) else layout.root_of(c, gid)
+                root = c.work_root if p.is_relative_to(c.work_root) else c.library if k == "selfsign" else layout.root_of(c, gid)
                 _rm(c, root, p)
             done.append(dict(id=k, bytes=combos[k]))
         sizes.refresh(c, gid)

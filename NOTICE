@@ -52,6 +52,11 @@ SMAA 着色器（graphics/metal/shaders/aa_*.metal）
 Copyright (C) Jorge Jimenez 等，版权与声明全文见 graphics/metal/shaders/AA-LICENSE.txt。
 MIT License.
 
+AMD FidelityFX Super Resolution 1（EASU + RCAS，移植于 graphics/nvn/gfx/nvn/nvn_present_fsr.inc，测试参考 graphics/nvn/tests/fsr1_ref.h）
+Copyright (c) 2021 Advanced Micro Devices, Inc. All rights reserved.
+Copyright (c) 2014 Michal Drobot (for concepts used in "FLOAT APPROXIMATIONS").
+MIT License. 全文：graphics/nvn/third_party/ffx_fsr1/LICENSE.txt；两段声明同时嵌在 nvn_present_fsr.inc 的着色器源码字符串里，随二进制带走。
+
 LumaDock 移植（launchers/macos、pack/jobs 中对应部分）
 Copyright (c) 2026 LumaDock contributors
 Copyright (c) 2026 jhaizhou (derived portions)
@@ -114,3 +119,12 @@ BSD-2-Clause. 许可全文：该目录 LICENSE 与 lib/linkernsbypass/LICENSE。
 经 BananaNative（MIT，Copyright (c) 2026 seedds、Swap2-Native contributors 等，
 https://git.eden-emu.dev/moceure/BananaNative 分支 android 提交 3d43275）vendored；
 src/hook/adreno_binder_compat.c 来自 BananaNative（MIT）。只进安卓 APK，且只在选择外挂驱动时加载。
+
+着色器清单数据（社区补丁统一包里 kind = pso 的 ext_<来源>.tsv：管线预建种子，只有着色器键与管线描述，不含游戏数据；
+由 tools/ext_pso_collect.py 按 tools/ext_pso_sources.tsv 定期从各来源取，每份首行记来源库与提交，出包时按本包直连库的键滤）
+nxnative（https://github.com/seedds/nxnative，dm/games/<程序号>/pso_manifest.tsv）
+Copyright (c) 2026 seedds
+MIT License. 许可全文：graphics/nvn/LICENSE
+MacNativeGames（https://github.com/ly05010419/MacNativeGames，games/<款>/assets/shader_list.tsv）
+Copyright (c) 2026 MacNativeGames contributors
+MIT License. 许可全文：graphics/nvn/third_party/macnativegames/LICENSE

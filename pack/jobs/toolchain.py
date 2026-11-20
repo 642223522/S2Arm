@@ -6,6 +6,7 @@ import json
 import os
 import platform
 import re
+import tempfile
 import threading
 import time
 import subprocess
@@ -13,13 +14,31 @@ import sys
 from core import Failure, atomic, digest, read, tree_hash
 
 
-def installed_xcodes(apps_dirs=("/Applications", str(Path.home() / "Applications")), select="/usr/bin/xcode-select"):
+def default_app_dirs(volumes="/Volumes"):
+    """找 Xcode 的目录：/Applications、~/Applications，加上每块外接卷的 Applications 与卷根（玩家把 Xcode 装在扩展硬盘上，
+    原先只看前两处，预检一直报「没找到完整的 Xcode」）。/Volumes 里的软链（启动盘指回 /）跳过；同一份从两条路径都看到时由
+    installed_xcodes 按版本 + 构建号去重。与前端 XcodeLocator 同一组目录，两处改一处要同步改另一处"""
+    dirs = ["/Applications", str(Path.home() / "Applications")]
+    try:
+        vols = sorted(Path(volumes).iterdir())
+    except OSError:
+        vols = []
+    for v in vols:
+        if v.is_symlink() or not v.is_dir():
+            continue
+        dirs += [str(v / "Applications"), str(v)]
+    return tuple(dirs)
+
+
+def installed_xcodes(apps_dirs=None, select="/usr/bin/xcode-select"):
     """装着的完整 Xcode（com.apple.dt.Xcode 且有 usr/bin/xcodebuild），按（版本号, 构建号）认、去重，版本新的在前：[(版本元组, 版本串, 构建号, Developer 目录)]。
     11-07 gate-host：Xcode-27.1.app 是指向 Xcode-27.app 的软链，而 Xcode-27.app 已被 App Store 原地升到 27.1——按路径名认就成了「27.0 + 27.1 两套」，
     其实是同一份。所以路径名不参与判定：版本读 Contents/Info.plist（CFBundleShortVersionString），构建号读 Contents/version.plist（ProductBuildVersion，
     同 xcodebuild -version 的 Build version，不起进程）；同版本同构建号（软链 / 改名 / 拷贝）只留第一个见到的路径（xcode-select 指的那份排最前）。
     构建号读不到的按实际路径（解软链）去重。门禁 / 工具链列 Xcode 一律走这里（tests/shellui_ios_build_test.sh 等）"""
     import plistlib
+    if apps_dirs is None:
+        apps_dirs = default_app_dirs()
     apps = []
     try:
         sel = subprocess.run([select, "-p"], capture_output=True, text=True, timeout=10).stdout.strip()
@@ -55,7 +74,7 @@ def installed_xcodes(apps_dirs=("/Applications", str(Path.home() / "Applications
     return out
 
 
-def detect_xcode(apps_dirs=("/Applications", str(Path.home() / "Applications")), select="/usr/bin/xcode-select"):
+def detect_xcode(apps_dirs=None, select="/usr/bin/xcode-select"):
     """装着的 Xcode 里版本最新的一个（含 xcode-select 指的那个）的 Contents/Developer；没有返回 None。规则见 installed_xcodes（按版本号 + 构建号认，不按路径名）。
     与前端 Store.detectXcode 同一规则（打 iPhone 包的着色器按目标系统大版本出，老 SDK 出不了新系统的）；两处改一处要同步改另一处。
     tools/toolchain.sh 没指定 Xcode 时也调这里（11-07：壳也要最新 SDK 链接，旧 SDK 的壳在 iOS 新机型上缩小显示），select / apps_dirs 由它传（单测换假的）"""
@@ -300,8 +319,12 @@ def preflight(c):
         add("library_location", "游戏库所在位置", cloud is None or accepted,
             (libloc.CLOUD_ACCEPTED_MESSAGE if accepted else libloc.CLOUD_MESSAGE).format(cloud=cloud) if cloud else "游戏库不在云盘同步目录里。",
             action="library", code="library_in_cloud", group="storage")
-    add("apple_silicon", "Apple Silicon", platform.system() == "Darwin" and platform.machine() == "arm64",
-        "需要 Apple Silicon Mac。", ("prepare", "launch"))
+    if platform.system() == "Darwin" and platform.machine() == "x86_64":
+        # 给 iPhone 出包是 Intel Mac 的正式用法（#152）：Mac 本机起游戏才要 Apple 芯片，别把出包路径整段标红
+        add("apple_silicon", "Apple Silicon", True, "Intel Mac：给 iPhone 出包可用；在 Mac 上起游戏仍要 Apple 芯片。", ("ipa",))
+    else:
+        add("apple_silicon", "Apple Silicon", platform.system() == "Darwin" and platform.machine() == "arm64",
+            "需要 Apple Silicon Mac。", ("prepare", "launch"))
     add("macos", "macOS", platform.system() == "Darwin" and int(platform.mac_ver()[0].split(".")[0] or 0) >= 15,
         "启动器需要 macOS 15 或更新版本。", ("prepare", "launch"))
     add("python", "Python", sys.version_info >= PYTHON_MINIMUM, "需要 Python %s 或更新版本。" % ".".join(map(str, PYTHON_MINIMUM)), ("prepare", "launch"))
@@ -496,6 +519,24 @@ def _wait_runtime_ready(c, allowed, ver, seconds):
     return _runtime_ready(c, allowed, ver)
 
 
+def _iphoneos_sdk_usable(c):
+    """Intel Mac 不跑模拟器：只要 xcrun clang 能用这套 iphoneos SDK 编出 arm64 目标，就能出壳 / 打 IPA。
+    临时文件用完即删，不动仓库，也不下载。"""
+    env = c.env()
+    sdk = subprocess.run(["xcrun", "--sdk", "iphoneos", "--show-sdk-path"], env=env,
+                         capture_output=True, text=True)
+    if sdk.returncode != 0 or not sdk.stdout.strip():
+        return False
+    with tempfile.TemporaryDirectory() as folder:
+        source = Path(folder) / "probe.c"
+        source.write_text("int s2a_probe(void) { return 0; }\n", encoding="utf-8")
+        probe = subprocess.run(["xcrun", "--sdk", "iphoneos", "clang", "-arch", "arm64",
+                                "-isysroot", sdk.stdout.strip(), "-c", str(source),
+                                "-o", str(Path(folder) / "probe.o")],
+                               env=env, capture_output=True, text=True)
+        return probe.returncode == 0
+
+
 def ios_platform(c):
     """选中 Xcode 的 iOS 平台组件装了没有 → (ok, SDK 版本, 详情, 一键处理)；ok=None 表示读不到、不判。
     11-07 定因（本机 Xcode 26.6 编得过、gate-host 同版编不过对照）：Xcode 26 起「iOS 平台」= 与该 Xcode 的 iOS SDK 配套的 iOS 模拟器运行时，首次打开时另下；
@@ -513,6 +554,10 @@ def ios_platform(c):
     have = [f"{v}（{b or '?'}）" for v, b, _ in rows]
     why = (f"SDK {ver}（{build}）可配运行时 {sorted(allowed)}，已装 {have or '无'}" if allowed else  # 非玩家句
            f"SDK {ver}（{build or '?'}）没有配套表，按同版本号比；已装 {have or '无'}")  # 非玩家句
+    # Intel Mac 不出 Mac 局、也不跑 iOS 模拟器：装 8 GB 模拟器运行时对出 iPhone 包没有用处。
+    # 只要本机 SDK 能直接编 arm64 目标就认这套 Xcode 可用（Xcode 26.5 / SDK 26.5 实走）。
+    if platform.system() == "Darwin" and platform.machine() == "x86_64" and _iphoneos_sdk_usable(c):
+        return True, ver, why + "；Intel Mac 用 iphoneos SDK 直接出壳，不要求模拟器运行时", None  # 非玩家句（拼进详情 why）
     ready = [r for r in rows if r[2] and _runtime_matches(ver, allowed, r[0], r[1])]
     pending = [r for r in rows if not r[2] and _runtime_matches(ver, allowed, r[0], r[1])]
     if ready:

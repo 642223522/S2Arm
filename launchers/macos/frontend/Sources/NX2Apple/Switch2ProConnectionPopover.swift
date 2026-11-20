@@ -212,10 +212,12 @@ struct Switch2ProConnectionPopover: View {
                         }
                         .accessibilityIdentifier("controller.players")
                     }
-                    if let pad = controller.assignment.pad(forPlayer: currentPlayer, in: systems.pads),
-                       ControllerFaceFamily(pad.family) != .nintendo {
+                    if let pad = controller.assignment.pad(forPlayer: currentPlayer, in: systems.pads) {
                         ControllerFaceMappingEditor(store: controller.faceMaps, family: ControllerFaceFamily(pad.family), simplifiedChinese: zh)
                             .id(pad.id)
+                    } else if controller.assignment.isNintendo(player: currentPlayer) {
+                        // 专用通道的 Switch 2 Pro / Joy-Con：与系统认的 Switch Pro 共用任天堂那一份
+                        ControllerFaceMappingEditor(store: controller.faceMaps, family: .nintendo, simplifiedChinese: zh)
                     }
                     // 「分配玩家」跟着玩家区块：有键盘以外的输入（或列表已有人）就显示，不要再改回「两只以上手柄才显示」。
                     //   键盘只能在分配画面按任一键加入成 P1–P8（登记过的跨次保留）；以前两只以上才显示时，

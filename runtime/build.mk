@@ -153,6 +153,18 @@ IOS_LD_DET = -Wl,-objc_stubs_small
 S2A_SHELLUI ?= 0
 ifeq ($(S2A_SHELLUI),1)
 SHELLUI_DD = $(abspath $(BUILD))/ios/shellui
+ifeq ($(shell uname -m),x86_64)
+# Intel Mac：xcodebuild 经 SwiftPM 解析本地包会在临时出壳镜像里调 sandbox-exec，沙箱不允许（sandbox_apply: Operation not permitted）。
+# 同一份 SwiftPM 包直接用 swift build --disable-sandbox 编出静态库 + 资源包；-force_load 把五个目标的符号都链进壳（app.m 只弱引用 C 入口）。
+SHELLUI_SWIFT = $(SHELLUI_DD)/swift
+SHELLUI_PRODUCTS = $(SHELLUI_SWIFT)/arm64-apple-ios/release
+IOS_SHELLUI_LINK = -Wl,-force_load,$(SHELLUI_PRODUCTS)/libS2ArmShellHost.a \
+  -L$(shell DEVELOPER_DIR=$(DEVELOPER_DIR) xcrun --sdk $(APPLE_SDK) --find swiftc | sed 's|/bin/swiftc$$||')/lib/swift/$(APPLE_SDK) -L$(IOS_SDK)/usr/lib/swift -framework SwiftUI
+.PHONY: ios-shellui
+ios-shellui:
+	@mkdir -p $(SHELLUI_SWIFT)
+	cd shell && DEVELOPER_DIR=$(DEVELOPER_DIR) swift build --disable-sandbox -Xswiftc -DS2A_UIKIT_VERSION_UNKNOWN --triple arm64-apple-ios$(IPHONEOS_DEPLOYMENT_TARGET) --sdk $(IOS_SDK) -c release --scratch-path $(SHELLUI_SWIFT) > $(SHELLUI_DD)/swift-build.log 2>&1 || { tail -30 $(SHELLUI_DD)/swift-build.log; echo "🔴 游戏库界面（S2A_SHELLUI=1）编不过，日志 $(SHELLUI_DD)/swift-build.log"; exit 1; }
+else
 SHELLUI_PRODUCTS = $(SHELLUI_DD)/Build/Products/Release-$(APPLE_SDK)
 IOS_SHELLUI_LINK = $(addprefix $(SHELLUI_PRODUCTS)/,S2ArmShellHost.o S2ArmShellBridge.o ShellUI.o ShellControllers.o SaveSync.o) \
   -L$(shell DEVELOPER_DIR=$(DEVELOPER_DIR) xcrun --sdk $(APPLE_SDK) --find swiftc | sed 's|/bin/swiftc$$||')/lib/swift/$(APPLE_SDK) -L$(IOS_SDK)/usr/lib/swift -framework SwiftUI
@@ -161,6 +173,7 @@ ios-shellui:
 	@mkdir -p $(SHELLUI_DD)
 	cd shell && DEVELOPER_DIR=$(DEVELOPER_DIR) xcodebuild -quiet -scheme S2ArmShellHost -destination 'generic/platform=$(if $(filter tvos,$(S2A_APPLE_OS)),tvOS,iOS)' -configuration Release \
 	  -derivedDataPath $(SHELLUI_DD) IPHONEOS_DEPLOYMENT_TARGET=$(IPHONEOS_DEPLOYMENT_TARGET) TVOS_DEPLOYMENT_TARGET=$(TVOS_DEPLOYMENT_TARGET) build > $(SHELLUI_DD)/xcodebuild.log 2>&1 || { tail -30 $(SHELLUI_DD)/xcodebuild.log; echo "🔴 游戏库界面（S2A_SHELLUI=1）编不过，日志 $(SHELLUI_DD)/xcodebuild.log"; exit 1; }
+endif
 ios: ios-shellui
 endif
 # 主屏小组件（中号 4×2，11-16 维护者进 0.5.0）：ios/widget/S2ArmWidget.swift + 与游戏库共用的数据格式 shell/Sources/S2ArmShellHost/WidgetFeed.swift，
@@ -206,6 +219,7 @@ ios: ios-ns2pro
 	  -framework UIKit -framework Foundation -framework CoreGraphics $(IOS_SHELLUI_LINK) $(call S2A_WEAK_U,ios) -Wl,-S
 	@rm -rf $(BUILD)/ios/S2Arm.dSYM $(IOS_APP)/S2Arm.dSYM   # 主程序链接带 -Wl,-S（不留调试映射），没有调试符号包可出；函数符号表照留，atos / 宿主 dladdr 照常符号化
 	@[ "$(S2A_SHELLUI)" != 1 ] || cp -R $(SHELLUI_PRODUCTS)/S2ArmShellUI_ShellUI.bundle $(IOS_APP)/   # 游戏库界面资源包（本地化 + 字体）
+	@[ "$(S2A_SHELLUI)" != 1 ] || python3 pack/feature_bundle.py docs/site $(IOS_APP)/Feature   # 新功能介绍（iPhone 两页，和电脑共用 docs/site/feature.json 与图）
 # CADisableMinimumFrameDurationOnPhone（11-13）：iPhone 默认把显示链压在 60 Hz；社区帧率补丁目标高于 60 时出图链要 60–120 Hz（runtime/src/cpatch.c fps_link），
 #   没这一项系统不给。实际帧率仍由出图链按请求定（缺省 60），别的款不受影响
 	@/usr/bin/plutil -create xml1 $(IOS_APP)/Info.plist && for kv in CFBundleIdentifier=$(IOS_BUNDLE) CFBundleExecutable=S2Arm CFBundleName=S2Arm CFBundlePackageType=APPL \
@@ -238,6 +252,7 @@ ios: ios-ns2pro
 	@/usr/bin/plutil -insert NSBluetoothAlwaysUsageDescription -string "Connect a Switch 2 Pro Controller when enabled in Settings." $(IOS_APP)/Info.plist
 	@/usr/bin/plutil -insert UIApplicationSceneManifest -json '{"UIApplicationSupportsMultipleScenes":false,"UISceneConfigurations":{"UIWindowSceneSessionRoleApplication":[{"UISceneConfigurationName":"Default","UISceneDelegateClassName":"S2ASceneDelegate"}]}}' $(IOS_APP)/Info.plist   # iOS 27 场景生命周期（27.1 SDK 强制 UIScene adoption，否则启动即崩）：指向 app.m 的 S2ASceneDelegate
 	@[ "$(S2A_SHELLUI)" != 1 ] || /usr/bin/plutil -insert CFBundleURLTypes -json '[{"CFBundleURLName":"s2arm","CFBundleURLSchemes":["s2arm"]}]' $(IOS_APP)/Info.plist   # 主屏小组件点封面：s2arm://play/<游戏号>（app.m 场景代理交给游戏库「开始」）
+	@[ "$(S2A_SHELLUI)" != 1 ] || /usr/bin/plutil -insert LSApplicationQueriesSchemes -json '["sidestore"]' $(IOS_APP)/Info.plist   # 「获取签名证书」按这台手机装没装 SideStore 选路（ios/cert_import.m canOpenURL；不声明一律答没装）
 	@[ "$(S2A_SHELLUI)" != 1 ] || [ $(S2A_APPLE_OS) = tvos ] || $(MAKE) --no-print-directory ios-widget   # 主屏小组件只给 iPhone / iPad（tvOS 没有第三方主屏小组件；按 iOS 三元组编、tvOS SDK 下编不过）
 	@echo "iOS App：$(IOS_APP)（$$(du -sh $(IOS_APP) | cut -f1)，包名 $(IOS_BUNDLE)，未签名）"
 
@@ -254,25 +269,27 @@ NVN_TEST_HOST_SRCS := $(filter-out runtime/src/host_main.c,$(NATIVE_SRCS)) $(APP
 NVN_TEST_HOST_OBJS := $(addprefix $(NVN_TEST_DIR)/host/,$(addsuffix .o,$(NVN_TEST_HOST_SRCS)))
 NVN_TEST_LIB := $(NVN_TEST_DIR)/nvn/mac/libnvn.a
 NVN_TEST_WIDEN := $(NVN_TEST_DIR)/widen/S2Arm.Gfx.Widen.dylib
+# 宽屏核心 dylib 的 dotnet：不经 tools/gate.sh 的 dotnet 垫片直接 make native-test-*（脚本 / 门禁外的本机跑法）时 dotnet 常不在 PATH——
+#   按仓库惯例解析 ${DOTNET:-~/.dotnet/dotnet}（tools/gate.sh：各步大多按这个口径调，少数直接调 dotnet；直跑 make 就归到这里）。
+#   PATH 上有 dotnet（垫片或系统装）时行为不变
+DOTNET_CMD := $(or $(DOTNET),$(shell command -v dotnet 2>/dev/null),$(HOME)/.dotnet/dotnet)
 # Tests that include nvn_mtl.m use the same generated AA headers as their
 # production library prerequisite, including when BUILD selects another tree.
 $(BUILD)/tests/t_nvn_%: CFLAGS += -I$(abspath $(NVN_TEST_DIR)/nvn/gen)
 # NVN 单测不链原生层 / 渲染器：libnvn 里弱引用的宿主符号在链接行一律放行（新单测照用这个变量，别逐行抄标志——10-25 t_nvn_a / t_nvn_event 两次漏 _s2a_autoplay_on 链接失败）
-# Switch 2 视频解码接管（graphics/nvn/gfx/nvn/nvn2_codec.c，在 libnvn.a 里）用 VideoToolbox / CoreMedia / CoreVideo：系统框架，NVN 单测链 libnvn.a 时一起带上（同 graphics/build.mk HOST_LIBS）
+# Switch 2 视频解码接管（graphics/nvn/gfx/nvn/nvn2_codec.c，在 libnvn.a 里）用 VideoToolbox / CoreMedia / CoreVideo：系统框架，在 nvn2_codec.c 里登记「// 系统库[nvntest]：…」，NVN 单测链 libnvn.a 时由 S2A_WEAK_U 一起带上（同 graphics/build.mk HOST_LIBS）
 # 链宿主目标文件（NVN_TEST_HOST_OBJS）必带的系统框架：手机端自签（runtime/src/selfsign.c）要 Security 与 CoreFoundation（宿主本体的 HOST_LIBS 经 Foundation 转出 CoreFoundation，
 #   不带 Foundation 的单测也要链）；快照存档（runtime/src/snapshot.c）压缩内存块要 libcompression。没带上时这些单测全部链接失败
 #   （_SecPKCS12Import / _CFArrayGetCount / _compression_encode_buffer 等未定义）。宿主对象再加系统依赖就加在这里
 NVN_TEST_HOST_LIBS := -framework Security -framework CoreFoundation -lcompression
-NVN_TEST_WEAK := $(call S2A_WEAK_U,nvntest) -framework VideoToolbox -framework CoreMedia -framework CoreVideo $(NVN_TEST_HOST_LIBS)
+NVN_TEST_WEAK := $(call S2A_WEAK_U,nvntest) $(NVN_TEST_HOST_LIBS)   # 系统框架 / 库在用到它的源文件里登记「// 系统库[nvntest]：…」，S2A_WEAK_U 一起带出
 $(NVN_TEST_DIR)/host/%.o: % runtime/src/native.h $(wildcard runtime/include/*.h) platform/plat.h platform/plat_asm.h graphics/track/s2a_track.h $(BUILD)/.host_cfg
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(NATIVE_INC) -c $< -o $@
 $(NVN_TEST_LIB): $(if $(NVN_TEST_PREBUILT),,FORCE)
 	$(MAKE) -C graphics/nvn mac OUT=$(abspath $(NVN_TEST_DIR)/nvn)
 $(NVN_TEST_WIDEN): $(if $(NVN_TEST_PREBUILT),,FORCE)
-	dotnet publish graphics/widen/S2Arm.Gfx.Widen.csproj -c Release -r osx-arm64 -nodeReuse:false -p:UseSharedCompilation=false \
-	  --artifacts-path $(abspath $(NVN_TEST_DIR)/widen-artifacts) \
-	  -o $(abspath $(NVN_TEST_DIR)/widen) -p:PublishAot=true -p:NativeLib=Shared -p:InvariantGlobalization=true
+	DOTNET="$(DOTNET_CMD)" bash graphics/widen/publish_native.sh $(abspath $(NVN_TEST_DIR)/widen-artifacts) $(abspath $(NVN_TEST_DIR)/widen)
 # runtime/gate.sh 并行跑组前先建一次 NVN 组共用的前置（10-28 门禁提速）；之后各组带 NVN_TEST_PREBUILT=1，上面两个 FORCE 不再生效、不会多组同时重写同一个库
 .PHONY: native-test-prereq
 native-test-prereq: $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)

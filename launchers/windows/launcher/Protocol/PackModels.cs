@@ -174,10 +174,12 @@ public sealed record PackSpace(long? NeedBytes, long? FreeBytes, string Basis)
 }
 
 /// <summary>One line of the pre-install checklist (pack/jobs/install.py readiness). Official URL only from the backend's own field.
-/// Action is a closed set of launcher-local steps (openImpactor: open the Impactor bundled with the launcher); the backend never sends a path.</summary>
+/// Action is a closed set of launcher-local steps and the only source of the item's button (11-19 landing contract, same names as Mac):
+/// openExport (this game's export page), openImpactor (open the Impactor bundled with the launcher), devCertSettings (settings, signing identity).
+/// The backend never sends a path.</summary>
 public sealed record InstallItem(string Id, bool Ok, bool Waiting, string Title, string Detail, string Who, Uri? OfficialUrl, string? Action = null)
 {
-    public static readonly IReadOnlySet<string> Actions = new HashSet<string>(StringComparer.Ordinal) { "openImpactor" };
+    public static readonly IReadOnlySet<string> Actions = new HashSet<string>(StringComparer.Ordinal) { "openExport", "openImpactor", "devCertSettings" };
 }
 
 /// <summary>DeviceKind：连着的设备是 "ipad" / "iphone"，读不出为 ""（#487：入口写「装到 iPad」；后端按 USB 产品号认）。</summary>

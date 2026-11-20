@@ -14,6 +14,7 @@
 #include "../include/s2a_selfcheck_page.h"   // 说明页标题「游戏资源不完整」与自检提示页同一句
 __attribute__((weak)) int s2a_ui_zh(void) { return 1; }   // 界面语言（s2a_ui_text.h）：iOS ios/app.m、Mac macos/front_mac.m 强定义；别的平台 / 只链本文件的单测按中文
 #include <dirent.h>
+#include <pthread.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -472,7 +473,33 @@ unsigned s2a_pack_repair_tree(const char *dir) {
     return g_repair_n;
 }
 static void img_shed(const char *root, const char *logp);   // 截掉导入本体里重复的派生件（定义在着色器更新包那段之后）
+// 同一进程里一次只有一路在解包（11-19 Duo：游戏库 s2a_shell_install_game 与资源导入闸门 gate_thread 各自对同一款起了解包。游戏库那路解完、删了 .incoming，
+//   闸门那路随后打开 1795095613_002.tar 回 errno 2、按失败收场，起局 60 秒没就绪；重跑没撞上就正常）。两路读同一个 .incoming、写同一棵资源包，
+//   还共用本文件的失败现场（g_apply_fail / g_untar_err），并发本身就不对：整段串行。后到的一路等前一路做完再看——待解包、压缩块都没了，
+//   .applied 也已是本份清单的号 → 前一路已经解开，不再重解，直接算成功；否则（前一路失败 / 又推来了新包）照常再解一遍
+static pthread_mutex_t g_apply_mu = PTHREAD_MUTEX_INITIALIZER;
+static int pack_apply_locked(const char *docs);
+static int applied_by_other(const char *docs) {   // 待解包已空、.applied = 清单号 → 1
+    char root[2048], p[2200], want[200], got[200] = ""; s2a_pack_root(root, sizeof root, docs);
+    snprintf(p, sizeof p, "%s/.incoming", root);
+    if (has_zchunks(p)) return 0;
+    DIR *d = opendir(p); if (d) { struct dirent *e; int tar = 0; while (!tar && (e = readdir(d))) { size_t l = strlen(e->d_name); tar = l > 4 && !strcmp(e->d_name + l - 4, ".tar") && strncmp(e->d_name, "._", 2); } closedir(d); if (tar) return 0; }
+    snprintf(p, sizeof p, "%s/manifest.json", root); if (manifest_sha(p, want, sizeof want)) return 0;
+    snprintf(p, sizeof p, "%s/.applied", root); FILE *f = fopen(p, "r"); if (!f) return 0;
+    size_t k = fread(got, 1, sizeof got - 1, f); got[k] = 0; got[strcspn(got, "\r\n")] = 0; fclose(f);
+    return !strcmp(got, want);
+}
 int s2a_pack_apply(const char *docs) {
+    if (pthread_mutex_trylock(&g_apply_mu)) {   // 另一路正在解：等它做完
+        LOG("资源包收推送：另一路正在解开，等它做完");
+        pthread_mutex_lock(&g_apply_mu);
+        if (applied_by_other(docs)) { g_apply_fail[0] = 0; g_apply_code[0] = 0; pthread_mutex_unlock(&g_apply_mu); LOG("资源包收推送：完成（另一路刚解开，不再重解）"); return 0; }
+    }
+    int rc = pack_apply_locked(docs);
+    pthread_mutex_unlock(&g_apply_mu);
+    return rc;
+}
+static int pack_apply_locked(const char *docs) {
     char root[2048], inc[2100], logp[2100]; s2a_pack_root(root, sizeof root, docs); snprintf(inc, sizeof inc, "%s/.incoming", root); snprintf(logp, sizeof logp, "%s/unpack.log", docs);
     if (pack_in_bundle(root, "解开资源包")) return -12;   // 同「目录写不进」的码
     // 多款容器第一次装一款时本款文档根 Documents/games/<游戏号>/ 还不在（资源包在 Library 下）：先建出来，解包日志才写得下。
@@ -534,6 +561,7 @@ int s2a_pack_apply(const char *docs) {
             else { char tp[2100]; snprintf(tp, sizeof tp, "%s/.transfer", root); unlink(tp); } }
         else if (copy_atomic(root, "index.tsv", "index.applied.tsv")) { rc = -4; g_fail_errno = errno; snprintf(what, sizeof what, "存 index.applied.tsv"); }   // 「机上实际有什么」：执行器据它算补推
         else if (write_atomic(root, ".applied", sha)) { rc = -4; g_fail_errno = errno; snprintf(what, sizeof what, "写 .applied"); }
+        else if (write_atomic(root, ".applied_by_shell", sha)) LOG("【黄】资源包来源标记 .applied_by_shell 写不进（游戏库会把还没收到程序的这款当成 0.5 老款）");   // 0.6 起解开的资源包（游戏库据此分清 0.5 老款与还没收到 .s2arm 的新款：shell Catalogue.swift）
         else { char tp[2100], pp[2100]; snprintf(tp, sizeof tp, "%s/.transfer", root); unlink(tp); snprintf(pp, sizeof pp, "%s/.partial", root); unlink(pp); } }   // 解开了：这次推送的传输清单（tools/push_pack.py 写）用完，游戏库不再按它画进度；齐了就撤掉部分可玩标记
     time_t now = time(NULL); char ts[32]; strftime(ts, sizeof ts, "%m-%d %H:%M:%S", localtime(&now));
     FILE *lf = fopen(logp, "a"); int lerr = lf ? 0 : errno;
@@ -1126,6 +1154,27 @@ int s2a_s2arm_import(const char *proc_docs, const char *src, char *gid_out, size
     LOG(".s2arm 导入：%s → 程序 %s（%u 个文件）、资源包派生件 %u 个；game.img 照常放「放这里导入」认领", gid, vdir, nprog, npack);
     return 0;
 }
+// 导入文件夹里认领 / 导入失败过的文件（0.6.0 自签走查 B1）：原先失败的文件原样留着、每次扫描（回前台、文件夹有写入、「重新检查」）都整份重新解压 / 读一遍。
+//   按「路径 + 大小 + 修改时间」记住，没变就跳过；玩家换了文件、或文件还在拷而变大，下次照常再试。进程内表（重开 App 会再试一次、再报一次）。持 s2a_img_scan 的锁用
+static struct { char path[600]; off_t size; long long mtime; } g_scan_failed[32]; static int g_scan_failed_n;
+static long long st_mtime_ns(const struct stat *st) {   // 苹果叫 st_mtimespec，安卓 / Linux 叫 st_mtim（本文件安卓也编）
+#ifdef __APPLE__
+    return (long long)st->st_mtimespec.tv_sec * 1000000000LL + st->st_mtimespec.tv_nsec;
+#else
+    return (long long)st->st_mtim.tv_sec * 1000000000LL + st->st_mtim.tv_nsec;
+#endif
+}
+static int scan_failed_same(const char *p, const struct stat *st) {
+    for (int i = 0; i < g_scan_failed_n; i++)
+        if (!strcmp(g_scan_failed[i].path, p)) return g_scan_failed[i].size == st->st_size && g_scan_failed[i].mtime == st_mtime_ns(st);
+    return 0;
+}
+static void scan_failed_note(const char *p, const struct stat *st) {
+    int i = 0; while (i < g_scan_failed_n && strcmp(g_scan_failed[i].path, p)) i++;
+    if (i == g_scan_failed_n) { if (g_scan_failed_n < 32) g_scan_failed_n++; else i = (int)(st->st_ino % 32); }
+    snprintf(g_scan_failed[i].path, sizeof g_scan_failed[i].path, "%s", p); g_scan_failed[i].size = st->st_size;
+    g_scan_failed[i].mtime = st_mtime_ns(st);
+}
 static int img_scan_dir(const char *proc_docs, const char *dir, int depth, int pass, int *placed) {
     DIR *d = opendir(dir); if (!d) return 0;
     char *names[512]; int nn = 0; struct dirent *e;
@@ -1139,9 +1188,14 @@ static int img_scan_dir(const char *proc_docs, const char *dir, int depth, int p
         char p[2400]; struct stat st; snprintf(p, sizeof p, "%s/%s", dir, names[i]);
         if (!lstat(p, &st)) {
             if (S_ISDIR(st.st_mode) && depth < 2) img_scan_dir(proc_docs, p, depth + 1, pass, placed);
+            else if (S_ISREG(st.st_mode) && scan_failed_same(p, &st)) { /* 上次失败、文件没变：不再整份重解 */ }
             else if (S_ISREG(st.st_mode) && pass == 0 && ends_with(names[i], ".s2arm")) { char g[17]; int r = s2a_s2arm_import(proc_docs, p, g, sizeof g);
-                if (!r) { unlink(p); (*placed)++; } else if (r < 0) snprintf(g_img_code, sizeof g_img_code, "%s", g_s2arm_code); }   // 导好就删（同 IMG 认领后挪走）；失败原样留着、码交给库界面
-            else if (S_ISREG(st.st_mode) && st.st_size >= 4096) { int r = img_place(proc_docs, p, pass); if (!r) (*placed)++; else if (r < 0) { int e = errno;
+                // 导好就删（同 IMG 认领后挪走）；失败原样留着，码与原因都交给库界面（原先只给码、原因空 → 库上不弹，失败没有一点声音）
+                if (!r) { unlink(p); (*placed)++; }
+                else if (r < 0) { snprintf(g_img_code, sizeof g_img_code, "%s", g_s2arm_code); snprintf(g_img_err, sizeof g_img_err, "%s：%s", names[i], g_s2arm_err[0] ? g_s2arm_err : g_s2arm_code);
+                    if (!strstr(g_img_code, "space")) scan_failed_note(p, &st);   // 空间不够：腾出来后同一个文件要能再导，不记
+                    LOG("【红】资源导入（%s）：%s", g_img_code, g_img_err); } }
+            else if (S_ISREG(st.st_mode) && st.st_size >= 4096) { int r = img_place(proc_docs, p, pass); if (!r) (*placed)++; else if (r < 0) { int e = errno; if (r != -13 && e != ENOSPC && e != EDQUOT) scan_failed_note(p, &st);   // 更新包等本体（-13）、空间不够：条件变了同一个文件要再试，不记
                 snprintf(g_img_code, sizeof g_img_code, "%s", r == -13 ? "ios_import_update_no_base" : r == -14 ? "ios_import_update_mismatch" : r == -11 ? "ios_install_img_format" : r == -4 && (e == ENOSPC || e == EDQUOT) ? "ios_install_no_space" : "ios_import_img_failed");
                 LOG("【红】资源导入（%s）：%s", g_img_code, g_img_err); } }
         }

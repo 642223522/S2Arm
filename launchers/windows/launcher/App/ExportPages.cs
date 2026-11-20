@@ -26,17 +26,44 @@ public sealed partial class EnvironmentWindow
     private static string BundledImpactor => Path.Combine(AppContext.BaseDirectory, "ThirdParty", "Impactor", "Impactor-windows-x86_64-portable.exe");
 
     // First Apple ID sign-in happens in Impactor itself (the password never passes through S2Arm); the checklist re-asks every 5 s and ticks when done.
-    private void OpenBundledImpactor()
+    private void OpenBundledImpactor() => TryOpenBundledImpactor();
+
+    private bool TryOpenBundledImpactor()
     {
+        var ok = false;
         try
         {
             using var p = Process.Start(new ProcessStartInfo(BundledImpactor) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(BundledImpactor)! });
-            if (p is null) installDiagnostics = T("process.start_failed");
+            if (p is null) installDiagnostics = T("process.start_failed"); else ok = true;
         }
         catch (Exception error) when (error is IOException or System.ComponentModel.Win32Exception or InvalidOperationException)
         { installDiagnostics = T("process.start_failed") + " " + error.Message; }
         Render();
+        return ok;
     }
+
+    /// <summary>装机前清单当前呈现的落点（11-19 契约，同 Mac state.presented）：清单按钮 / 控制口 /install-action 做成了记 action 名；换页（Navigate）、/dismiss 清空</summary>
+    private string? presented;
+
+    /// <summary>装机前清单按钮的唯一派发（11-19 维护者：test.3 Mac 清单 Apple ID 按钮把人引到环境检查和 Xcode；Windows 同口径核出两处——
+    /// impactor_login 数据说 openImpactor、说明写「点『打开 Impactor』」，按钮却是「去设置」跳设置页；package 没好没有按钮）。
+    /// 项上的 action 是按钮落点的唯一来源；控制口 /install-action 走这同一个函数。→ 做成了没有</summary>
+    private bool RunInstallAction(string action, LibraryGame game)
+    {
+        switch (action)
+        {
+            case "openExport": selectedGame = game.Id; OpenBuild(); break;   // 这款的出包页（同游戏库「出包」）
+            case "openImpactor": if (!TryOpenBundledImpactor()) return false; break;   // 随包 Impactor：Apple ID 在它里面登录
+            case "devCertSettings": Navigate("settings"); break;   // 设置页「装到 iPhone 的方式」：开发者证书在那里导入 / 切换
+            default: return false;
+        }
+        presented = action;   // 换页（OpenBuild / Navigate）先清空，这里再记
+        Render();
+        return true;
+    }
+
+    /// <summary>按钮文案键只认共享体验表 install_landing.actions（结构 9：两端一处给出，不在这里另写一份）</summary>
+    private string? InstallActionLabel(string action) => text.InstallActionLabel(action);
 
     private const string PlatformIos = "ios";
     private const string PlatformTv = "tvos";
@@ -142,7 +169,7 @@ public sealed partial class EnvironmentWindow
         selectedGame = installGameId; readinessFor = null; Navigate("install");
     }
 
-    /// 顶栏胶囊（#308，Mac 同款）：装机在跑 → 「正在装到 iPhone：X · 查看进度」；跑完没回去看 → 「已装到 / 没装完 · 查看」。正看着这款的安装页时不显示
+    /// 顶栏胶囊（#308，Mac 同款）：装机在跑 → 「正在推到 iPhone：X · 查看进度」；跑完没回去看 → 「已装到 / 没装完 · 查看」。正看着这款的安装页时不显示
     private Button? PhonePill()
     {
         if (installGameId is null || (!installBusy && installSeen) || (page == "install" && SelectedGame?.Id == installGameId)) return null;
@@ -286,11 +313,12 @@ public sealed partial class EnvironmentWindow
         Closed += (_, _) => ticker.Stop();
     }
 
-    /// <summary>The build tab opens the progress page while a pack is running or its result is on screen.</summary>
+    /// <summary>打开选中这款的出包页：正在出的 / 刚出完的就是这款 → 进度页；别的款在出时打开这款自己的出包页（点开始会排在后面），
+    ///   不带到正在出的那款的进度页（玩家反馈：A 在出包时点 B 的出包，进的是 A 的页面）</summary>
     private void OpenBuild()
     {
         locationsFor = null;   // 出包页每次打开都重读存放位置（剩余空间是当时的）
-        if (packRunning || (packState == "succeeded" && packGame?.Id == selectedGame)) { Navigate("progress"); return; }
+        if (packGame?.Id == selectedGame && (packRunning || packState == "succeeded")) { Navigate("progress"); return; }
         Navigate("build");
     }
 
@@ -401,10 +429,12 @@ public sealed partial class EnvironmentWindow
         var bar = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), ColumnSpacing = 16 };
         var blocker = ExportBlocker(game);
         var reason = new StackPanel { Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
-        reason.Children.Add(Muted(blocker ?? T("export.hint"), 14));
+        // 别的款正在出：说清点开始会排在它后面、它出完自动开始（同一时刻作业层只出一款：出包占整库的执行锁、吃满内存与 CPU）
+        var behind = blocker is null && (packRunning || batchRunning) && packGame is { } running && running.Id != game.Id ? running : null;
+        reason.Children.Add(Muted(blocker ?? (behind is not null ? T("export.queue.behind").Replace("{0}", behind.Name) : T("export.hint")), 14));
         if (ExportBlockerKind(game) == "keys") reason.Children.Add(Action("nav.library", () => Navigate("library")));
         bar.Children.Add(reason);
-        var start = Primary(T(!exportIos ? "export.start" : IosAfterPack == "export" ? "export.start.selfsign" : "export.start.install"), () => StartPackBranch(game), !ExportStops(game));   // 缺文件 / 缺 keys 只在左边提示，不置灰（作业层核实）
+        var start = Primary(T(behind is not null ? "export.action.queue" : !exportIos ? "export.start" : IosAfterPack == "export" ? "export.start.selfsign" : "export.start.install"), () => StartPackBranch(game), !ExportStops(game));   // 缺文件 / 缺 keys 只在左边提示，不置灰（作业层核实）
         AutomationId(start, "export.start");
         Grid.SetColumn(start, 1); bar.Children.Add(start);
         body.Children.Add(Card(bar, 18));
@@ -713,7 +743,7 @@ public sealed partial class EnvironmentWindow
         "files" => T("library.requirements") + " · " + string.Join(" / ", game.Missing),
         "keys" => T("export.block.keys"),
         "busy" => T("export.block.busy"),
-        "queued" => T("export.status.queued"),
+        "queued" => T("export.queue.waiting").Replace("{0}", packGame?.Name ?? ""),
         _ => null,
     };
 
@@ -1663,13 +1693,14 @@ public sealed partial class EnvironmentWindow
                 official.Click += async (_, _) => await OpenOfficialAsync(url);
                 Grid.SetColumn(official, 2); row.Children.Add(official);
             }
-            else if (!item.Ok && item.Action == "openImpactor")
+            else if (!item.Ok && item.Action is { } act && InstallActionLabel(act) is { } label)
             {
-                // 签名身份（Apple ID 在 Impactor 里登录 / 开发者证书）统一在环境检查「装到 iPhone 的方式」里设（v0.3.0）
-                var open = new Button { Content = T("install.mode.go_settings"), Background = Accent, Foreground = Canvas,
+                // 按钮落点只看项上的 action（11-19 契约）：openImpactor 直接打开随包 Impactor（原先写「去设置」跳设置页，和说明「点『打开 Impactor』」对不上），
+                //   openExport 去这款的出包页（原先 package 没好没有按钮），devCertSettings 去设置页；控制口 /install-action 走同一个 RunInstallAction
+                var open = new Button { Content = T(label), Background = Accent, Foreground = Canvas,
                     Padding = new Thickness(14, 8), CornerRadius = new CornerRadius(8), VerticalAlignment = VerticalAlignment.Center };
-                AutomationId(open, "install.go_settings");
-                open.Click += (_, _) => Navigate("settings");
+                AutomationId(open, "install.action." + act);
+                open.Click += (_, _) => RunInstallAction(act, game);
                 Grid.SetColumn(open, 2); row.Children.Add(open);
             }
             list.Children.Add(row);
@@ -1752,7 +1783,7 @@ public sealed partial class EnvironmentWindow
             switchExport: installState is "failed" or "interrupted" && !installExport && installTrack.Kind == "install" ? () => { IosAfterPack = "export"; ExportSelfSign(game); } : null));
         if (installState is "failed" && installCode is "apple_session_expired" or "apple_not_signed_in")
         {
-            // Apple ID 登录过期（Apple 1100）/ 还没登录：打开 Impactor 让玩家自己重新登录（密码不经手），登录好再点一次「装到 iPhone」
+            // Apple ID 登录过期（Apple 1100）/ 还没登录：打开 Impactor 让玩家自己重新登录（密码不经手），登录好再点一次「推到 iPhone」
             var relogin = Action("install.relogin", OpenBundledImpactor, File.Exists(BundledImpactor) && !installBusy);
             AutomationId(relogin, "install.relogin");
             state.Children.Add(relogin);
@@ -1792,17 +1823,14 @@ public sealed partial class EnvironmentWindow
     /// 维护者 11-11：「玩家都主动点装机了……能认出的问题让用户确认，用户确认可以继续装，认不出的直接装」。
     /// container_would_drop：手机上别的电脑装的游戏这次带不上；save_backup_failed：覆盖前没能备份手机上的存档；container_stale：旧资源包要按新版重出。
     /// </summary>
-    internal static readonly IReadOnlyDictionary<string, string> ConfirmCodes = new Dictionary<string, string>
-    {
-        ["container_would_drop"] = "acceptDropped", ["save_backup_failed"] = "acceptNoBackup", ["container_stale"] = "acceptStale",
-        ["device_space_low"] = "acceptLowSpace", ["cert_revoke_confirm"] = "acceptCertRevoke",
-    };
+    /// 11-19 结构 9：表只在共享体验表 errors 的 accept 一处（Mac 读同一处），不在这里另写——原先两端各写一份，Mac 缺 cert_revoke_confirm。
+    private IReadOnlyDictionary<string, string> ConfirmCodes => text.ConfirmFlags;
 
     /// <summary>可确认的停装码要问的那句标题：文案表有 errors.&lt;码&gt;.title 就用它，没有用通用的 install.drop_title</summary>
     private string ConfirmTitle(string? code) => code is { Length: > 0 } && text.Has("errors." + code + ".title") ? T("errors." + code + ".title") : T("install.drop_title");
 
     /// <summary>控制口请求里带的确认参数（acceptDropped / acceptNoBackup / acceptStale）</summary>
-    private static HashSet<string> AcceptFlags(ControlRequest r) => ConfirmCodes.Values.Where(r.Flag).ToHashSet();
+    private HashSet<string> AcceptFlags(ControlRequest r) => ConfirmCodes.Values.Where(r.Flag).ToHashSet();
 
     /// <summary>accept：玩家已同意的确认参数（ConfirmCodes 的值，逐次累积）。ask = false（控制口）原样失败、不弹确认，由调用方带参数再发。</summary>
     /// <param name="export">游戏库「导出自签包」：不连手机、不签名，出到文件夹（作业层 install 请求带 mode = export，不带设备）</param>
@@ -1825,7 +1853,7 @@ public sealed partial class EnvironmentWindow
             installState = job.Report.State;
             installMessage = job.Report.Succeeded && job.Report.Result.TryGetProperty("device", out var device) && device.ValueKind == JsonValueKind.String
                 ? T("install.device") + " · " + device.GetString() : job.Report.Message;
-            // 资源传完但电脑没拉起 App 解开（作业结果 unpackPending，11-09 #336）：不显示「已装到 iPhone」，显示还差的一步和原因 / 办法
+            // 资源传完但电脑没拉起 App 解开（作业结果 unpackPending，11-09 #336）：不显示「已推到 iPhone」，显示还差的一步和原因 / 办法
             if (job.Report.Succeeded && job.Report.Result.TryGetProperty("unpackPending", out var pending) && pending.ValueKind == JsonValueKind.String)
             { installState = "needsPlayer"; installMessage = pending.GetString() ?? ""; }
             installOpenToFinish = job.Report.Succeeded && job.Report.Result.TryGetProperty("openToFinish", out var open) && open.ValueKind == JsonValueKind.True;
@@ -1946,10 +1974,8 @@ public sealed partial class EnvironmentWindow
 
     /// <summary>换游戏库 setup 撞上认得出的风险 → 问玩家时带的参数（同 Mac S2ArmLauncherModel.libraryConfirmCodes）：
     /// library_in_cloud 选的文件夹在云盘同步目录里；library_folder_not_empty 文件夹里已有别的文件、又不是游戏库（S2Arm 只动自己建的文件）</summary>
-    internal static readonly IReadOnlyDictionary<string, string> LibraryConfirmCodes = new Dictionary<string, string>
-    {
-        ["library_in_cloud"] = "acceptCloud", ["library_folder_not_empty"] = "acceptForeign",
-    };
+    /// 同一张表（共享体验表 errors 的 accept；library_bad_format 带 accept_ui，由选盘页 LibraryDrivePicker 带 acceptFormat，不在这里问）
+    private IReadOnlyDictionary<string, string> LibraryConfirmCodes => text.ConfirmFlags;
 
     /// <summary>setup 没成、失败码是认得出的风险、这一项还没确认过：问「仍然继续 / 先不」；同意就把对应参数加进 accept 返回 true，调用方带着它重发（参数累积）</summary>
     private async Task<bool> ConfirmLibraryAsync(LibraryJobOutput setup, HashSet<string> accept)

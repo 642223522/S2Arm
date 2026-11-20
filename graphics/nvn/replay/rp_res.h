@@ -8,6 +8,9 @@
 
 // 贴图对象 → 后端贴图。首次使用时建；内容来自游戏内存的，在 c 这一段里上传 / 脏了重传。NULL = 取不到（已经 nvn_unimpl 记账）。线程：[提交]。
 nvn_gpu_tex rp_tex_resolve(const tex_t *t, nvn_gpu_cmd c);
+// 宿主整段读贴图存储的入口：整段在它的内存池里 → t->mem；伸出池子（真机：存储偏移 -1）→ 副本，池内照拷、池外按 0，*part 交调用方 free。
+//   NULL = 副本分配失败。线程：任意（不取锁）。
+const uint8_t *rp_tex_src(const tex_t *t, uint8_t **part);
 // 贴图号 → 视图（登记时带视图记录的按它建，否则默认视图）。号没登记 / 池外 → NULL。线程：[提交]。
 // t_out 可为 NULL；非 NULL 时取到登记就在锁内把登记快照拷进调用方的 *t_out，没取到清零（serial 为 0）。
 //   不交出登记表内地址：客体线程登记更大的号会让表扩容换地址（#1581）。
@@ -15,6 +18,9 @@ nvn_gpu_view rp_view_by_id(int id, nvn_gpu_cmd c, tex_t *t_out);
 // 按着色器声明取兼容视图；dtt = NVN 目标 + 1，0 沿用原样。elem 表示句柄数组元素。
 // 返回视图由核心持有；调用方在 pin 窗口内取用并交给后端。t_out 同 rp_view_by_id（调用方持有的快照）。线程：[提交]。
 nvn_gpu_view rp_view_by_id_decl(int id, uint8_t dtt, uint8_t dcls, int elem, nvn_gpu_cmd c, tex_t *t_out);
+// 句柄在游戏常量缓冲里（NVN_RB_TEXU）：号没登记（越过池容量 / 负号 / 池里没登记）按 Ryujinx 的 null 贴图绑声明类型的零贴图，不跳整笔；
+// 其余同 rp_view_by_id_decl（elem = 0）。信息计数 rp_ubo_zero_count（换局清零）。
+nvn_gpu_view rp_view_by_ubo_handle_decl(int id, uint8_t dtt, uint8_t dcls, nvn_gpu_cmd c, tex_t *t_out);
 // 按声明规划同一存储的视图目标；0 原样、1 已改记录、-1 无法桥接。不会创建零贴图。
 static inline int rp_decl_view_target(const tex_t *t, view_t *v, int has_v, uint8_t dtt) {
     if (!dtt) return 0;
@@ -44,6 +50,7 @@ static inline int rp_decl_view_target(const tex_t *t, view_t *v, int has_v, uint
     return 1;
 }
 uint64_t rp_empty_slot_zero_count(void);   // 空贴图槽绑零贴图的次数（#1147；信息计数）
+uint64_t rp_ubo_zero_count(void);          // 常量缓冲句柄指向没登记的号、绑零贴图的次数（#1594 片 4；信息计数，换局清零）
 // 贴图对象 + 视图记录（NULL = 默认视图）→ 视图：渲染目标、拷贝端点用。线程：[提交]。
 nvn_gpu_view rp_view_for(const tex_t *t, const view_t *v, nvn_gpu_cmd c);
 // 当颜色附件取视图。刚建、初始内容该是全零的单级单层颜色图：不在 CPU 上填零，记成「待清零」，
@@ -67,6 +74,11 @@ uint32_t rp_storage_srgb_alias(uint32_t f);
 nvn_gpu_samp rp_samp_by_id(int id);
 // #1072：同上，但贴图 tid 的有效格式不能线性过滤时给同参数的最近点采样器（具名记账）。
 nvn_gpu_samp rp_samp_for_tex(int sid, int tid);
+// 类型 3 句柄（常量采样器；c2 分离表 / 游戏常量缓冲两种形态）的采样器：登记号 sid 没登记 → 同 Ryujinx 的空采样器，绑最近点 / Repeat 的
+// 默认采样器（rp_sampler_for_query）、不跳整笔；其余同 rp_samp_for_tex。登记了但后端建不出 / 默认采样器也建不出 → NULL（调用方具名跳过）。
+// pool_base / pool_n（采样器池起点、容量）只给每局首行日志用。信息计数 rp_const_samp_default_count（换局清零）。线程：[提交]。
+nvn_gpu_samp rp_samp_for_const_handle(int sid, int tid, int pool_base, int pool_n);
+uint64_t rp_const_samp_default_count(void);   // 类型 3 句柄的采样器号没登记、绑默认采样器的次数（#1594 片 6；信息计数，换局清零）
 // 格式能力（nvn_gpu_format_caps）按格式缓存，会话重开时清。
 uint32_t rp_fmt_caps(uint32_t f);
 // 仅供已证明不读取采样器的组合描述符；Vulkan 仍要求描述符里的对象有效。

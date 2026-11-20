@@ -276,11 +276,11 @@
 "app.library.broken.title" = "Les fichiers d'origine du jeu sont incomplets";
 "app.library.cantOpen" = "Ce jeu ne peut pas être ouvert";
 "app.library.cantOpen.message" = "Ce jeu n'a pas pu être préparé pour le démarrage. Fermez l'app depuis le sélecteur d'apps et rouvrez-la ; si le problème persiste, exportez le diagnostic et envoyez-le nous.";
-"app.library.cantOpen.incomplete" = "Ce jeu est incomplet dans S2Arm sur ce téléphone. Dans S2Arm sur votre ordinateur, cliquez à nouveau sur « Installer sur l'iPhone » ; vos sauvegardes sont conservées.";
+"app.library.cantOpen.incomplete" = "Ce jeu est incomplet dans S2Arm sur ce téléphone. Dans S2Arm sur votre ordinateur, cliquez à nouveau sur « Envoyer sur l'iPhone » ; vos sauvegardes sont conservées.";
 "app.library.cantOpen.storage" = "Ce téléphone n'a pas pu créer un dossier pour ce jeu, probablement parce que le stockage est plein. Libérez de l'espace dans Réglages > Général > Stockage iPhone, puis fermez l'app depuis le sélecteur d'apps et rouvrez-la.";
 "app.library.missing.title" = "Les ressources du jeu sont manquantes";
-"app.library.packBroken" = "Seule une partie des ressources de ce jeu a été copiée — la copie a probablement été interrompue. Dans S2Arm sur votre ordinateur, cliquez à nouveau sur « Installer sur l'iPhone » pour ce jeu afin d'ajouter ce qui manque. Une fois terminé, appuyez sur « Vérifier à nouveau ».";
-"app.library.packMissing" = "Les ressources de ce jeu ne sont pas encore sur le téléphone. Dans S2Arm sur votre ordinateur, cliquez sur « Installer sur l'iPhone » pour ce jeu et les ressources seront copiées automatiquement. Vous pouvez aussi cliquer sur « Exporter, signer vous-même » dans S2Arm sur votre ordinateur et placer le fichier .img de ce jeu depuis le dossier « S2Arm Self-Sign Export » dans le dossier « Import Here » de cette app dans l'app Fichiers. Appuyez ensuite sur « Vérifier à nouveau ».";
+"app.library.packBroken" = "Seule une partie des ressources de ce jeu a été copiée — la copie a probablement été interrompue. Dans S2Arm sur votre ordinateur, cliquez à nouveau sur « Envoyer sur l'iPhone » pour ce jeu afin d'ajouter ce qui manque. Une fois terminé, appuyez sur « Vérifier à nouveau ».";
+"app.library.packMissing" = "Les ressources de ce jeu ne sont pas encore sur le téléphone. Dans S2Arm sur votre ordinateur, cliquez sur « Push to iPhone » pour ce jeu et les ressources seront copiées automatiquement. Vous pouvez aussi exporter ce jeu sur votre ordinateur et placer ses deux fichiers du dossier « S2Arm Game Packs », le .s2arm et le .img, dans le dossier « Import Here » de cette app dans l'app Fichiers. Appuyez ensuite sur « Vérifier à nouveau ».";
 "app.library.reopen.message" = "Vous ne pouvez jouer qu'à un seul jeu par ouverture de l'app. Fermez l'app depuis le sélecteur d'apps, rouvrez-la, puis choisissez ce jeu.";
 "app.library.reopen.title" = "Fermez et rouvrez l'app";
 "app.library.stillMissing" = "Vérification effectuée à l'instant — les ressources complètes ne sont toujours pas présentes.\n\n";
@@ -329,7 +329,7 @@
 "img.importFolder" = "Import Here";
 "img.scanFailed.title" = "Impossible d'importer le fichier du jeu";
 "img.noShaders.title" = "Ce fichier de jeu est incomplet";
-"img.noShaders.body" = "« %@ » est incomplet. Remplacez-le par le « <nom du jeu>.img » du dossier « S2Arm Self-Sign Export » sur votre ordinateur, ou connectez votre téléphone et cliquez sur « Send to iPhone » dans S2Arm sur votre ordinateur.";
+"img.noShaders.body" = "« %@ » est incomplet. Placez aussi ici le .s2arm de ce jeu, depuis le dossier « S2Arm Game Packs » de votre ordinateur (il contient les shaders du jeu), ou connectez votre téléphone et cliquez sur « Push to iPhone » dans S2Arm sur votre ordinateur.";
 "img.updateSkipped.title" = "Mise à jour des shaders ignorée";
 "img.updateSkipped.body" = "« %@ » ne correspond pas à la version actuelle de ce jeu ; elle a été ignorée et non appliquée. Le jeu fonctionne normalement. Pour utiliser cette mise à jour, ajoutez avec elle le .img complet du même export sur votre ordinateur.";
 "container.locked.title" = "Certains fichiers de S2Arm sont verrouillés par le système";
@@ -386,6 +386,8 @@
 "gfx.filter.metalfx" = "Agrandissement net (MetalFX)";
 "gfx.filter.metalfx.noDirect" = "Ce jeu n'utilise pas le rendu direct, donc l'agrandissement net (MetalFX) n'est pas disponible.";
 "gfx.filter.metalfx.note" = "L'agrandissement net (MetalFX) ajoute un peu de travail GPU à chaque image : la fréquence d'images et l'autonomie peuvent en être légèrement affectées.";
+"gfx.filter.fsr" = "FSR";
+"gfx.filter.fsr.noDirect" = "FSR n'est pas disponible non plus.";
 "gfx.filter.nearest" = "Pour les jeux 2D";
 "gfx.fpsLimit" = "Limite de fréquence d'images";
 "gfx.fpsLimit.none" = "Illimitée";
@@ -420,8 +422,8 @@
 "notice.batch" = "Lot %d sur %d";
 "notice.cable" = "Câble";
 "notice.imgFile" = "NomDuJeu.img";
-"notice.step.img" = "Ou cliquez sur « Exporter, auto-signature » dans S2Arm sur votre ordinateur, puis placez le fichier .img de ce jeu depuis le dossier « S2Arm Self-Sign Export » dans le dossier « Import Here » de « %@ » dans l'app Fichiers, et rouvrez « %@ ». Il est reconnu automatiquement.";
-"notice.step.auto" = "Dans S2Arm sur votre ordinateur, cliquez sur « Installer sur l'iPhone » pour ce jeu et les ressources sont copiées automatiquement — la méthode la plus simple.";
+"notice.step.img" = "Ou exportez ce jeu sur votre ordinateur, placez ses deux fichiers du dossier « S2Arm Game Packs », le .s2arm et le .img, dans le dossier « Import Here » de « %@ » dans l'app Fichiers, et rouvrez « %@ ». Il est reconnu automatiquement.";
+"notice.step.auto" = "Dans S2Arm sur votre ordinateur, cliquez sur « Envoyer sur l'iPhone » pour ce jeu et les ressources sont copiées automatiquement — la méthode la plus simple.";
 "save.blocked" = "%@\n\nCopiez vos données ailleurs avant de décider : ouvrez l'app Fichiers → « Sur mon iPhone » (« Sur mon iPad » sur iPad) → « %@ », et copiez l'intégralité du dossier « S2A » ailleurs. Les opérations inachevées sont enregistrées dans S2A/save-transfer/save-transactions. Vous pouvez aussi sélectionner cet appareil dans le Finder sur un Mac → « Fichiers », et faire glisser le dossier « S2A » de cette app vers l'extérieur.\n\nUne fois la copie effectuée, vous pouvez repackager et installer pour réessayer, ou appuyer sur « Lancer le jeu quand même… ».";
 "save.busy" = "L'opération de sauvegarde précédente est toujours en cours. Réessayez une fois qu'elle sera terminée.";
 "save.checking" = "Vérification des sauvegardes…";
@@ -607,3 +609,23 @@
 "vpad.snap.deleteFailed" = "Suppression incomplète. Réessayez dans un instant";
 "snap.result.title" = "Impossible de revenir à cet instant";
 "snap.result.generic" = "Le retour à cet instant n’a pas fonctionné, le jeu a donc redémarré. Vos sauvegardes de jeu ne sont pas touchées.";
+
+"cert.password.title" = "Saisissez le mot de passe du certificat";
+"cert.password.message" = "« %@ » a besoin de son mot de passe pour être importé.";
+"cert.password.wrong" = "Mot de passe incorrect. Réessayez (« %@ »).";
+"cert.import" = "Importer";
+"cert.failed.title" = "Impossible d’importer le certificat";
+"cert.failed.message" = "Ce fichier n’est pas un certificat de signature utilisable par S2Arm (.p12).";
+"cert.done.title" = "Certificat de signature importé";
+"cert.done.message" = "Équipe %@. Les jeux importés sur cet iPhone seront signés avec lui avant de démarrer.";
+"cert.teamMismatch" = "Remarque : ce certificat appartient à l’équipe %1$@, mais ce S2Arm a été installé par l’équipe %2$@ : les jeux signés avec lui ne s’ouvriront pas. Il a été conservé et le certificat que vous aviez fonctionne toujours. Exportez le certificat depuis l’app qui a installé S2Arm (AltStore ou SideStore), puis importez-le.";
+"cert.sidestore.missing" = "Impossible d’ouvrir SideStore : il n’est pas sur cet iPhone, ou sa version est trop ancienne.";
+"cert.sidestore.empty" = "SideStore n’a renvoyé aucun certificat. Touchez « Export » dans SideStore et réessayez.";
+"cert.sidestore.noReply" = "SideStore n’a renvoyé aucun certificat. Vous avez peut-être touché Annuler, ou cette version de SideStore est trop ancienne pour partager son certificat avec d’autres apps. Mettez SideStore à jour et réessayez, ou exportez le certificat en fichier .p12 et importez-le.";
+"cert.pickP12" = "Importer un .p12…";
+"cert.status" = "Équipe %1$@ · %2$@";
+"cert.status.otherTeam" = "autre identifiant Apple que S2Arm";
+"cert.status.replaced" = "n’est plus valide";
+"cert.source.sidestore" = "Depuis SideStore";
+"cert.source.p12" = ".p12 importé";
+"cert.source.pc" = "Depuis votre ordinateur";

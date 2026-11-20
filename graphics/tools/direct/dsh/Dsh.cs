@@ -2,7 +2,7 @@
 // 每个函数名与离线链同名（Python 原文在 dmsh_build.py / dmsh_geometry.py），改动只在三处，都是运行时没有的东西：
 //   · 不出 .metallib（iOS 上运行时编出的库存不成文件）：MTL.compile 那步不做，<键>_b.metal 由载入端 newLibraryWithSource 编；
 //     随之「带层 / 整数输出入口编不过就去掉重编」的退路（finish 的 MTL.compile 失败分支）也不做——它要编过才知道；
-//   · _bv（影子输入库，DshVin）/ _bf（读帧缓冲版，DshFetch）/ _ft（输出类型变体，DshFt）只写源码 + 元数据（<键>_bv/_bf/_ft.metal + .json，Finish 末尾），不编、_b.json 不带 vin / fetch：
+//   · _bv（影子输入库，DshVin）/ _bp（拉取式顶点输入，DshPull）/ _bf（读帧缓冲版，DshFetch）/ _ft（输出类型变体，DshFt）只写源码 + 元数据（<键>_bv/_bf/_ft.metal + .json，Finish 末尾），不编、_b.json 不带 vin / fetch：
 //     出包时由 Python 编排层编库并写回索引（同离线 vin_finish / fetch_finish / ft_finish）；载入端缺省时各有退路，见 DshCApi.cs 文件头；
 //   · json 的 chain_metal 写本库的编法（载入端不读它），source / pc_paired 取 shader_map.tsv，表里没有这个键时写 "s2a_dsh" / null。
 // 翻译器 dmsh_xlate/Program.cs 原样编进本程序集，进程内用临时目录写 job.json、反射调它的 Main。
@@ -442,9 +442,10 @@ namespace S2A.Dsh
                     full = VsPush(full);
                 }
                 // 片元：Alpha 测试与多重采样关的可选函数常量（FsAlphaMs，族 34 / 37）进库里的主入口；src 不带它（反射、可读瓦片 _bf、输出类型 _ft 照旧读 src）
-                string srcx = stage == "ps" ? FsAlphaMs(src) : src;
+                string srcx = stage == "ps" ? FsFout(FsAlphaMs(src)) : src;
                 if (stage == "ps") full = srcx;
-                var (fu, uMask) = stage == "ps" ? FsUint(srcx, colorAnalysis) : (null, 0u);
+                bool fout = srcx.Contains(FOUT_MARK, StringComparison.Ordinal);   // 输出类型由常量选（FsFout）：不再另出整数输出入口 main0_u / 输出类型变体 _ft
+                var (fu, uMask) = stage == "ps" && !fout ? FsUint(srcx, colorAnalysis) : (null, 0u);
                 if (fu != null) { plain = srcx; full = fu; }
                 var res = JsonNode.Parse(XIo.ReadAllText(Path.Combine(W, Key + ".res.json"))).AsObject();
                 full = DshFlat.GiantFix(full).Item1;   // 巨型着色器的尾部阶梯压平（同 dmsh_build.py giant_fix）
@@ -489,7 +490,8 @@ namespace S2A.Dsh
                 foreach (var field in ScaleMetadata(res)) refl[field.Key] = field.Value;
                 SaveJson(Key + "_b.json", refl);
                 if (PackOut && stage == "vs") VinFinish(full);   // 同 dmsh_build.py finish：vin_finish(key, open(msl).read(), refl)，msl 此时 = 写出的 _b.metal（全部入口、压平后）
-                if (PackOut && stage == "ps") { FtFinish(src, refl); BfFinish(src, refl); }   // 同 fetch_finish(key, src, refl)：src = color_round 之后、未接 main0_u（fs_uint 只出 fu，不改 src）
+                if (PackOut && stage == "vs") PullFinish(full);   // 拉取式顶点输入变体 _bp（DshPull，照上游参考实现（MIT）dmsh_pull：pull_finish 同样从全部入口的源码出）
+                if (PackOut && stage == "ps") { if (!fout) FtFinish(src, refl); BfFinish(src, refl); }   // 同 fetch_finish(key, src, refl)：src = color_round 之后、未接 main0_u（fs_uint 只出 fu，不改 src）
             }
 
             // ---- 任务 / 网格（上游参考实现（MIT） dmsh_build.py finish 1d4b8e82b，MIT）：计算核 MSL 包成对象 / 网格函数（MeshStage.ToStage）；反射字段按接口约定 6 ----
@@ -534,6 +536,19 @@ namespace S2A.Dsh
                 }
                 Save(Key + "_bv.metal", v);
                 Save(Key + "_bv.json", Dumps(new PyDict { ["vin"] = new PyDict { ["entry"] = "main0", ["entry_z"] = "main0_z", ["shadow"] = shadows } }));
+            }
+
+            // ---- pull_finish（变体源码部分，DshPull）：有顶点属性输入的顶点着色器出拉取版 <键>_bp；编库与写 refl['pull'] 归编排层（Build.cs PullBuild），json 给它要的 pull / 认不出的原因 ----
+            void PullFinish(string full)
+            {
+                var (v, info) = DshPull.Variant(full);
+                if (v == null)
+                {
+                    if ((string)info != "no stage input") Save(Key + "_bp.json", Dumps(new PyDict { ["pull_fail"] = info }));   // 编排层打 [RED] 行
+                    return;
+                }
+                Save(Key + "_bp.metal", v);
+                Save(Key + "_bp.json", Dumps(new PyDict { ["pull"] = info }));
             }
 
             // ---- ft_finish（拼 MSL 部分，DshFt）：<键>_ft.json = {"want": [[u, s], …]}；拼不出 {"ft_fail": true}；表里有本键但全被过滤 {"ft_covered": true}（编排层计数）----
@@ -1361,6 +1376,49 @@ namespace S2A.Dsh
             outp = outp[..sx] + "\n    uint s2a_smask [[sample_mask, function_constant(S2A_MSOFF_ON)]];" + outp[sx..];
             int u2 = outp.IndexOf("using namespace metal;\n", StringComparison.Ordinal) + "using namespace metal;\n".Length;
             return outp[..u2] + "\n" + FC_DECL + "\n" + outp[u2..];
+        }
+
+        // ---- 片元输出类型由函数常量选（#427，11-19）：主入口 main0 再带两个可选常量，宿主建管线时按画布格式特化（nvn_mtl.m fs_atms_fn） ----
+        //   S2A_FU（uint，102）位 n = color(n) 的画布是无符号整数、S2A_FS（uint，103）位 n = 有符号整数；S2A_FS 位 8 = 画布 0 用第二源混合（宿主 PSO_FOUT_DUAL >> 8，同 FsTyped）。
+        //   原先这些靠另外的入口：整数位刚好等于 u_mask 的用 main0_u（FsUint，整份函数体复制一遍），别的掩码靠出包按种子表预编的 _ft，种子表里没有的在设备提交线程上
+        //   从源码现编（#427 空之轨迹 the 1st：G-buffer 三张整数目标、掩码 0xe，一局 7 次各 90–157 ms）。常量版：每个浮点颜色输出旁加同位置的 uint / int 成员（各由一个
+        //   派生常量开关，三者互斥），返回前按位原样取（as_type，同 FsRetyped：硬件往整数画布写的就是输出寄存器的位）；函数体不动、不复制。宿主不给常量 = 全浮点 = 原样。
+        //   声明接在 FC_DECL 那一行末尾（成批合编按整行提到批顶只出一次，Unity.cs UG）；FsAlphaMs 没加声明的（不是片元主入口、早测池读）原样返回，宿主照旧走旧路
+        internal const string FOUT_MARK = "constant uint S2A_FU [[function_constant(102)]];";
+        internal static readonly string FOUT_DECL = " " + FOUT_MARK + " constant uint S2A_FS [[function_constant(103)]]; "
+            + "constant uint S2A_FU_V = is_function_constant_defined(S2A_FU) ? S2A_FU : 0u; constant uint S2A_FS_V = is_function_constant_defined(S2A_FS) ? S2A_FS : 0u; "
+            + "constant bool S2A_DUAL = (S2A_FS_V & 0x100u) != 0u;"
+            + string.Concat(Enumerable.Range(0, 8).Select(n => { string d = n == 1 ? "!S2A_DUAL && " : ""; uint b = 1u << n;   // 双源时输出 1 改去 [[color(0), index(1)]]
+                return $" constant bool S2A_U{n} = {d}(S2A_FU_V & {b}u) != 0u; constant bool S2A_I{n} = {d}!S2A_U{n} && (S2A_FS_V & {b}u) != 0u; constant bool S2A_F{n} = {d}!S2A_U{n} && !S2A_I{n};"; }));
+        internal static string FsFout(string src)
+        {
+            int dl = src.IndexOf("constant int S2A_AT [[function_constant(100)]];", StringComparison.Ordinal);
+            if (dl < 0 || src.Contains(FOUT_MARK, StringComparison.Ordinal)) return src;
+            var sig = Search(@"^(?:\[\[[^\]]*\]\]\s*)*fragment main0_out main0\(.*\)\n\{\n", src, RegexOptions.Multiline);
+            var st = Search(@"\nstruct main0_out\n\{\n(.*?)\n\};", src, RegexOptions.Singleline);
+            if (!sig.Success || !st.Success) return src;
+            int open = sig.Index + sig.Length, close = -1, depth = 1;   // main0 的函数体（同 FsAlphaMs 按花括号配对）
+            for (int i = open; i < src.Length; i++) { if (src[i] == '{') depth++; else if (src[i] == '}' && --depth == 0) { close = i; break; } }
+            if (close < 0) return src;
+            var cols = All(@"^    (float\d?) (\w+) \[\[color\(([0-7])\)\]\];$", st.Groups[1].Value, RegexOptions.Multiline)
+                .Select(m => (Ty: m.Groups[1].Value, Nm: m.Groups[2].Value, N: int.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture))).ToList();
+            var mem = new StringBuilder(); var conv = new StringBuilder();
+            foreach (var (ty, nm, n) in cols)
+            {
+                string uty = ty.Replace("float", "uint"), ity = ty.Replace("float", "int");
+                mem.Append($"\n    {uty} {nm}_s2u [[color({n}), function_constant(S2A_U{n})]];\n    {ity} {nm}_s2i [[color({n}), function_constant(S2A_I{n})]];");
+                conv.Append($"if (S2A_U{n}) out.{nm}_s2u = as_type<{uty}>(out.{nm}); if (S2A_I{n}) out.{nm}_s2i = as_type<{ity}>(out.{nm}); ");
+                if (n == 1) { mem.Append($"\n    {ty} {nm}_s2d [[color(0), index(1), function_constant(S2A_DUAL)]];"); conv.Append($"if (S2A_DUAL) out.{nm}_s2d = out.{nm}; "); }
+            }
+            var c0 = cols.FirstOrDefault(c => c.N == 0);
+            if (c0.Nm != null && !cols.Any(c => c.N == 1))   // 不写输出 1 的：第二源恒 0（同 FsTyped / Ryujinx 开双源时先把输出 1 置 0）
+            { mem.Append($"\n    {c0.Ty} s2a_src1 [[color(0), index(1), function_constant(S2A_DUAL)]];"); conv.Append($"if (S2A_DUAL) out.s2a_src1 = {c0.Ty}(0); "); }
+            var g = st.Groups[1]; int eol = src.IndexOf('\n', dl);
+            if (!(eol < g.Index && g.Index + g.Length < open)) return src;   // 声明行、结构体、main0 依次在前（SPIRV-Cross 的次序）；不是就不动
+            string members = R(@"^    (float\d?) (\w+) \[\[color\(([0-7])\)\]\];$", RegexOptions.Multiline)
+                .Replace(g.Value, m => $"    {m.Groups[1].Value} {m.Groups[2].Value} [[color({m.Groups[3].Value}), function_constant(S2A_F{m.Groups[3].Value})]];") + mem;
+            string body = src[open..close].Replace("return out;", conv + "return out;");
+            return src[..eol] + FOUT_DECL + src[eol..g.Index] + members + src[(g.Index + g.Length)..open] + body + src[close..];
         }
 
         internal static string FsUvx(string src)

@@ -323,7 +323,7 @@ def _win_acl(path, sealed):
         sid = winproc._current_sid()
         ptr = C.c_void_p()
         convert_sid = _api('advapi32', 'ConvertSidToStringSidW', W.BOOL, C.c_void_p, C.POINTER(C.c_void_p))
-        if not convert_sid(C.cast(sid, C.c_void_p), C.byref(ptr)):
+        if not convert_sid(sid, C.byref(ptr)):
             raise C.WinError(C.get_last_error())
         free = _api('kernel32', 'LocalFree', C.c_void_p, C.c_void_p)
         try:

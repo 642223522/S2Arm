@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Device-free CPU tests: C/C++, CMake 3.18+, JDK 17, Android NDK 29.0.14206865,
 # pinned offline rewriter sources and Python Capstone 5.0.7 / LZ4 4.4.5.
+# 本机自测排在门禁后面：不在门禁里跑（没有 GATE2_PAR）就把自己降到 nice 15，子进程继承；门禁步的优先级由门禁自己定
+[ -n "${GATE2_PAR:-}" ] || renice 15 -p $$ > /dev/null 2>&1 || true
 set -euo pipefail
 android_dir=$(cd "$(dirname "$0")" && pwd)
 repo_dir=$(cd "$android_dir/.." && pwd)
@@ -158,6 +160,8 @@ if [ -z "${S2A_TEST_NO_NATIVE:-}" ]; then
     [ "$(uname -s)" = Linux ] ||
         s2a_gate_note "未测：android_memory / android_plat（mremap）、android_guest_signal（SIGRTMIN）、android_host_android（eventfd）、android_wsi_lease（pthread_condattr_setclock）、android_direct_selection（getrandom）、android_tsd / android_module（/proc/self/maps）需 Linux"
 fi
+s2a_gate_step "$PY" "$android_dir/tests/ldn_settings_test.py"
+s2a_gate_step "$PY" "$android_dir/tests/ldn_dialog_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/debug_environment_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/debug_gate_test.py"
 # 通用层零专用配置（#1357）：native / gfx 源码不得出现具体游戏包名
@@ -336,6 +340,11 @@ s2a_gate_step "$PY" "$android_dir/tests/graphics_request_name_test.py"
 # 新回放层：真实图形/计算请求生产入口的贴图池容量、超限与调试读数。
 s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_pool_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_pool_test.py" --withdraw
+# 几何着色器走出包预编库的负对照（正例在上面无参那一步里单独起进程跑）：撤掉接线各一处，--gs-libpack 必红
+s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_pool_test.py" --gs-libpack-mutants
+# 计算程序预热（清单记账 / 阶段 / 从缓存建 / 开关）与现场编译诊断事件（图形 / 计算）的负对照：各撤一处，对应断言必红
+s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_pool_test.py" --compute-warm-mutants
+s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_pool_test.py" --diag-mutants
 # Shutdown admission, bounded waits and active-context retention (including negative controls).
 s2a_gate_step "$PY" "$android_dir/tests/nvk_shutdown_test.py"
 # GS 脏位、阶段绑定、管线和原始图元拒绝的独立回退反证。

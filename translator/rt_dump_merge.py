@@ -11,11 +11,13 @@
 #   表里已有的键不重复追加（抽取已覆盖时只计数）；计算着色器答案表取控制段线程组 / 共享内存（同 shader_split：Switch 2 走 ns2_shaders.compute_facts）。
 #   着色器代码属游戏内容：转储只在本机用、不分发（同 graphics/tools/shbake/shcollect.sh 头注）。
 # 输出一行：转储 <n> 支，新进库 <a> 支（各阶段），已在表里 <s> 支
-import collections, hashlib, json, os, struct, sys
+import collections, json, os, struct, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ns2_shaders as ns2
-# 不 import shader_split：它导入时就要选游戏配置档（DM_GAME），零配置款没有仓库档。下面三样与 shader_split.py 的 ctl_len / skey / check 同一公式；
-#   文件名的键必须等于重算的键，公式一旦与 shader_split 漂移会当场报红，不会静默进错库
+import nvn_key   # Switch 1 键规则（宿主 nvn_key.h 同一口径）：库里一律第 2 代键
+# 不 import shader_split：它导入时就要选游戏配置档（DM_GAME），零配置款没有仓库档。键与 shader_split.py 同取 nvn_key.skey；下面 ctl_len / check 与 shader_split 同一公式；
+#   文件名的键必须等于重算的键，公式一旦与 shader_split 漂移会当场报红，不会静默进错库。
+#   第 1 代键命名的转储（旧版本 App 存的、或宿主对旧包兜底用第 1 代键时存的，hle_nvn.c keys_hash）照收，按第 2 代键进库
 CTL_MAGIC, GFX_MAGIC, CS_MAGIC = bytes.fromhex('34127698'), bytes.fromhex('78563412'), bytes.fromhex('79563412')
 SPH_STAGE = {1: 'vs', 2: 'hs', 3: 'ds', 4: 'gs', 5: 'ps'}   # = shader_split.py SPH_STAGE
 STAGE_NAME = {'vs': 'vertex', 'hs': 'hull', 'ds': 'domain', 'gs': 'geometry', 'ps': 'pixel', 'cs': 'compute', 'ts': 'task', 'ms': 'mesh'}   # = shader_split.py STAGE_NAME
@@ -23,12 +25,7 @@ STAGE_NAME = {'vs': 'vertex', 'hs': 'hull', 'ds': 'domain', 'gs': 'geometry', 'p
 
 def ctl_len(ctl):
     if ns2.is_nvn2(ctl): return ns2.KEY_CTL
-    n = struct.unpack_from('<I', ctl, 0x20)[0]
-    return n if 0x760 <= n < 0x880 else 0x880
-
-
-def skey(ctl, code):
-    return hashlib.sha256((ns2.key_ctl(ctl) if ns2.is_nvn2(ctl) else ctl[:ctl_len(ctl)]) + code).hexdigest()[:16]
+    return nvn_key.ctl_len(ctl)
 
 
 def check(where, st, ctl, code):
@@ -62,8 +59,9 @@ def main():
     def skip(k, why): bad.append(f'{k}：{why}'); print(f'[WARN] 转储 {k}：{why}，跳过这一支', flush=True)
     for k in keys:
         code = open(os.path.join(dump, k + '.code'), 'rb').read(); ctl = open(os.path.join(dump, k + '.ctl'), 'rb').read()
-        kk = skey(ctl, code)
-        if kk != k: skip(k, f'按 shader_split 键算法重算是 {kk}，与文件名不符（转储坏了或键算法变了）'); continue
+        kk = nvn_key.skey(ctl, code)
+        if kk != k and k != nvn_key.skey(ctl, code, gen=1): skip(k, f'按 shader_split 键算法重算是 {kk}，与文件名不符（转储坏了或键算法变了）'); continue
+        k = kk   # 第 1 代键命名的转储按第 2 代键进库
         st = stage_of(ctl, code)
         if st not in STAGE_NAME: skip(k, '认不出阶段'); continue
         why = check(k, st, ctl, code)
@@ -74,7 +72,7 @@ def main():
         if rec.count(b'BTCDBTCD') != 1: skip(k, '记录分隔符出现在记录里，出库会切错'); continue
         if not ns2.is_nvn2(ctl) and rec.find(CTL_MAGIC) != 0x38 + len(code): skip(k, '控制段魔数出现在代码区'); continue
         if os.path.exists(os.path.join(pkg, name)) and not recs[name]: sys.exit(f'【红】包目录里已有 {name}（重复并入？先用抽取阶段重出的包目录）')
-        rows.append((name, len(recs[name]), STAGE_NAME[st], k, f'rt-dump:{k}')); recs[name].append(bytes(rec)); stat[st] += 1
+        rows.append((name, len(recs[name]), STAGE_NAME[st], k, f'rt-dump:{k}')); recs[name].append(bytes(rec)); stat[st] += 1; have.add(k)   # 第 1、2 代两份同内容的转储只进一次
         if st == 'cs':
             (x, y, z), sh = ns2.compute_facts(ctl) if ns2.is_nvn2(ctl) else (struct.unpack_from('<3I', ctl, 0x748), struct.unpack_from('<I', ctl, 0x754)[0])
             if not x * y * z: skip(k, '控制段线程组为 0'); rows.pop(); recs[name].pop(); stat[st] -= 1; continue

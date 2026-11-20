@@ -1,0 +1,75 @@
+diff --git a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
+index 93017a851fa184fe577f4fa2a5b3c74cff449252..1d7b0b956100f45e561f006c2390c75bb7a5bcf6 100644
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
+@@ -346,7 +346,9 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+ 
+         private static OperationResult GenerateClamp(CodeGenContext context, AstOperation operation)
+         {
+-            return GenerateTernary(context, operation, context.Delegates.GlslFClamp, context.Delegates.GlslSClamp);
++            // Maxwell FMNMX returns the operand that is a number when the other is NaN, and saturate turns NaN into 0 (IEEE minNum / maxNum).
++            // GLSL.std.450 FMin / FMax / FClamp leave a NaN operand undefined and Adreno passes the NaN on; the N forms give Maxwell's results.
++            return GenerateTernary(context, operation, context.Delegates.GlslNClamp, context.Delegates.GlslSClamp);
+         }
+ 
+         private static OperationResult GenerateClampU32(CodeGenContext context, AstOperation operation)
+@@ -992,7 +994,9 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+ 
+         private static OperationResult GenerateMaximum(CodeGenContext context, AstOperation operation)
+         {
+-            return GenerateBinary(context, operation, context.Delegates.GlslFMax, context.Delegates.GlslSMax);
++            // Maxwell FMNMX returns the operand that is a number when the other is NaN, and saturate turns NaN into 0 (IEEE minNum / maxNum).
++            // GLSL.std.450 FMin / FMax / FClamp leave a NaN operand undefined and Adreno passes the NaN on; the N forms give Maxwell's results.
++            return GenerateBinary(context, operation, context.Delegates.GlslNMax, context.Delegates.GlslSMax);
+         }
+ 
+         private static OperationResult GenerateMaximumU32(CodeGenContext context, AstOperation operation)
+@@ -1008,7 +1012,9 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+ 
+         private static OperationResult GenerateMinimum(CodeGenContext context, AstOperation operation)
+         {
+-            return GenerateBinary(context, operation, context.Delegates.GlslFMin, context.Delegates.GlslSMin);
++            // Maxwell FMNMX returns the operand that is a number when the other is NaN, and saturate turns NaN into 0 (IEEE minNum / maxNum).
++            // GLSL.std.450 FMin / FMax / FClamp leave a NaN operand undefined and Adreno passes the NaN on; the N forms give Maxwell's results.
++            return GenerateBinary(context, operation, context.Delegates.GlslNMin, context.Delegates.GlslSMin);
+         }
+ 
+         private static OperationResult GenerateMinimumU32(CodeGenContext context, AstOperation operation)
+diff --git a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvDelegates.cs b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvDelegates.cs
+index 3716d76d9a37858550d6c51195fbee5f77f39df1..7e430143b2554ba1eec54920bd6636c80e6684a0 100644
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvDelegates.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvDelegates.cs
+@@ -66,6 +66,8 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+         public readonly FuncBinaryInstruction GlslFMax;
+         public readonly FuncBinaryInstruction GlslSMax;
+         public readonly FuncBinaryInstruction GlslFMin;
++        public readonly FuncBinaryInstruction GlslNMax;
++        public readonly FuncBinaryInstruction GlslNMin;
+         public readonly FuncBinaryInstruction GlslSMin;
+         public readonly FuncBinaryInstruction FMod;
+         public readonly FuncBinaryInstruction FMul;
+@@ -104,6 +106,7 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+         // Ternary
+         public readonly FuncTernaryInstruction GlslFClamp;
+         public readonly FuncTernaryInstruction GlslSClamp;
++        public readonly FuncTernaryInstruction GlslNClamp;
+         public readonly FuncTernaryInstruction GlslFma;
+ 
+         // TernaryS32
+@@ -174,6 +177,8 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+             GlslFMax = context.GlslFMax;
+             GlslSMax = context.GlslSMax;
+             GlslFMin = context.GlslFMin;
++            GlslNMax = context.GlslNMax;
++            GlslNMin = context.GlslNMin;
+             GlslSMin = context.GlslSMin;
+             FMod = context.FMod;
+             FMul = context.FMul;
+@@ -212,6 +217,7 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+             // Ternary
+             GlslFClamp = context.GlslFClamp;
+             GlslSClamp = context.GlslSClamp;
++            GlslNClamp = context.GlslNClamp;
+             GlslFma = context.GlslFma;
+ 
+             // TernaryS32

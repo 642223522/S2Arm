@@ -41,7 +41,7 @@ import S2ArmAppleAdapter
     func testPlayingThenConfirmRestartReallyInstalls() throws {
         let (m, fake, root) = try model()
         defer { try? FileManager.default.removeItem(at: root) }
-        m.session = JobSession(kind: .play, gameID: "0100ABC", name: "Original Game")
+        m.playSession = JobSession(kind: .play, gameID: "0100ABC", name: "Original Game")   // 一局在游戏槽
         XCTAssertTrue(m.busy)
 
         m.restartToUpdate()
@@ -52,7 +52,7 @@ import S2ArmAppleAdapter
 
         m.restartToUpdate(confirmed: true)
         XCTAssertNil(m.updateGate, "选了「仍然重启」确认框收起")
-        XCTAssertEqual(m.session?.phase, .stopping, "先停掉在跑的那局")
+        XCTAssertEqual(m.playSession?.phase, .stopping, "先停掉在跑的那局")
         XCTAssertEqual(fake.installs, 1, "真的交给换版")
     }
 

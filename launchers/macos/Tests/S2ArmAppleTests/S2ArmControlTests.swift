@@ -49,11 +49,41 @@ import AppKit
         XCTAssertNil(model.session, "上面这些一个作业都没起")
     }
 
+    /// 0.6.0 发版闸门：/update-phone 与界面手机条按钮同一条路。新手机（这台电脑没有它的装壳记录，phoneUpdate 为空）带 device → 照样装壳；
+    ///   不带 device → 照旧 409（控制口往设备上装东西要说明装到哪台）
+    func testUpdatePhoneInstallsOnNewPhoneWithDevice() async {
+        XCTAssertNil(model.phoneUpdate)
+        let none = await post("/update-phone")
+        XCTAssertEqual(none.0, 409, "没记录又没说哪台：照旧 409"); XCTAssertNil(model.lastUpdateArgs)
+        let (code, body) = await post("/update-phone", ["device": "NEW-UDID"])
+        XCTAssertEqual(code, 200, "新手机带 device：同界面按钮直接装（修前 409）"); XCTAssertEqual(body["ok"] as? Bool, true)
+        XCTAssertEqual(model.lastUpdateArgs?.device, "NEW-UDID"); XCTAssertEqual(model.lastUpdateArgs?.acceptStale, false)
+    }
+
+    /// 有装机记录（壳比本版旧）：照旧更新记录里那台，不带 device 也行
+    func testUpdatePhoneWithRecordStillUpdates() async {
+        model.phoneUpdates = [PhoneUpdate(catalog: ["device": "OLD-UDID", "name": "甲", "games": [], "stale": []])]
+        let (code, body) = await post("/update-phone")
+        XCTAssertEqual(code, 200); XCTAssertEqual(body["ok"] as? Bool, true)
+        XCTAssertEqual(model.lastUpdateArgs?.device, "OLD-UDID")
+    }
+
+    /// s2armctl dismiss（「关掉提示框」）要关得掉新功能大窗和更新弹窗，同玩家点关闭；修前只清报错、弹窗原样开着
+    func testDismissClosesFeatureSpotlightAndUpdatePopup() async {
+        for popup: [String: Any] in [["kind": "feature", "id": "v0.0.0-probe"], ["kind": "update", "version": "99.0.0"]] {
+            model.updatePopup = popup
+            let code = await post("/dismiss").0
+            XCTAssertEqual(code, 200)
+            XCTAssertNil(model.updatePopup, "dismiss 后 \(popup["kind"] ?? "") 弹窗应关掉")
+        }
+    }
+
     func testHelpListsTheSameCallsS2armctlUses() async {
         let r = await control.handle(ControlRequest(method: "GET", path: "/help", headers: [:], body: [:]))
         let calls = ((try? JSONSerialization.jsonObject(with: r.body) as? [String: Any])?["endpoints"] as? [[String: String]] ?? []).compactMap { $0["call"] }
         for c in ["GET /state", "GET /targets", "POST /keys {path}", "POST /games {paths:[…]}", "POST /build {gameId, target, spaceOverride?}",
-                  "POST /installCheck {gameId}", "POST /install {gameId, acceptDropped?, acceptNoBackup?, acceptStale?}", "POST /delete {gameId}", "POST /launch {gameId}"] {
+                  "POST /installCheck {gameId}", "POST /install {gameId, acceptDropped?, acceptNoBackup?, acceptStale?}", "POST /delete {gameId}", "POST /launch {gameId}",
+                  "POST /phone-identity {device, force?}"] {
             XCTAssertTrue(calls.contains(c), c)
         }
     }

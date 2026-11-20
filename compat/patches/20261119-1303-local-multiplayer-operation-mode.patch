@@ -1,0 +1,44 @@
+diff --git a/src/Ryujinx.HLE/HOS/Horizon.cs b/src/Ryujinx.HLE/HOS/Horizon.cs
+index 3816c3fc3fb78d654a48df69e543df7e27e463d7..879b7e5b1d3e4e1cbbbcf22e2827051b32578fb1 100644
+--- a/src/Ryujinx.HLE/HOS/Horizon.cs
++++ b/src/Ryujinx.HLE/HOS/Horizon.cs
+@@ -326,7 +326,25 @@ namespace Ryujinx.HLE.HOS
+             return ProcessLoaderHelper.LoadKip(KernelContext, new KipExecutable(in kipFile));
+         }
+ 
+-        internal bool DockedOperationMode => Device.Configuration.ForceDockedOperationMode || State.DockedMode;
++        // S2Arm：游戏看到的运行模式（AM GetOperationMode）与性能档 / 显示参数分开。本地多人（宿主实接 ≥ 2 只手柄）时回主机：
++        //   有的游戏两人模式要求「接上底座 / TV 模式」才让进；单人仍按玩家选的档位（掌机档不让游戏按主机选更高的内部分辨率）
++        private bool _s2aLocalMultiplayer;
++        internal bool DockedOperationMode => _s2aLocalMultiplayer || State.DockedMode;
++
++        /// <summary>S2Arm：宿主实接手柄数跨过 2 时调（输入泵每拍报）。游戏看到的运行模式真的变了才发 OperationModeChanged、点亮刷新事件（同真机插拔底座）</summary>
++        public void S2ASetLocalMultiplayer(bool on)
++        {
++            if (on == _s2aLocalMultiplayer) return;
++            bool was = DockedOperationMode;
++            _s2aLocalMultiplayer = on;
++            if (was == DockedOperationMode) return;
++            if (AppletState.OperationModeChangedNotification)
++            {
++                AppletState.Messages.Enqueue(AppletMessage.OperationModeChanged);
++                AppletState.MessageEvent.ReadableEvent.Signal();
++            }
++            AppletState.OperationModeRefreshEvent.ReadableEvent.Signal();
++        }
+ 
+         public void ChangeDockedModeState(bool newState)
+         {
+diff --git a/src/Ryujinx.HLE/HleConfiguration.cs b/src/Ryujinx.HLE/HleConfiguration.cs
+index 338af6d66e87ca816f73829e32e3d6835050179d..ef462da008a32c1b255b3e4a243f512a3ac43a21 100644
+--- a/src/Ryujinx.HLE/HleConfiguration.cs
++++ b/src/Ryujinx.HLE/HleConfiguration.cs
+@@ -98,8 +98,6 @@ namespace Ryujinx.HLE
+         /// </summary>
+         internal readonly bool EnableDockedMode;
+ 
+-        // S2Arm: hosts with local multiplayer available in either profile can keep the AM operation mode docked.
+-        public bool ForceDockedOperationMode { get; init; }
+ 
+         /// <summary>
+         /// Control if the Profiled Translation Cache (PTC) should be used.

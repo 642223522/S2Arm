@@ -154,15 +154,20 @@ class ErrorRecoveryTests(JobCase):
             raise ValueError("synthetic callback failure")
         # Bound the pre-fix failure as well: a swallowed callback exception must
         # not leave the test sleeping indefinitely or leave its child running.
-        timer = threading.Timer(3, self.c.stop)
+        # The judgment is our own output, not wall-clock time (a loaded host stretches any time
+        # bound): the run must end through the callback-failure path, never through this backstop.
+        backstop = threading.Event()
+        def stop_by_backstop():
+            backstop.set()
+            self.c.stop()
+        timer = threading.Timer(20, stop_by_backstop)
         timer.start()
-        start = time.monotonic()
         try:
             with patch("threading.excepthook"), self.assertRaisesRegex(ValueError, "synthetic callback failure"):
                 self.c.run([sys.executable, "-c", "import time; print('fixture', flush=True); time.sleep(30)"], on_line=broken)
         finally:
             timer.cancel()
-        self.assertLess(time.monotonic() - start, 3)
+        self.assertFalse(backstop.is_set(), "the child was stopped by the backstop timer, not by the callback-failure path")
         self.assertTrue(children)
         self.assertTrue(all(child.poll() is not None for child in children))
         self.assertFalse(self.c.children)
@@ -504,11 +509,11 @@ raise SystemExit(main.main())
         self.assert_t75_recovery(self.c.describe_failure(raised.exception), "content_invalid",
                                  "文件是否完整", "重新导入", "保留对应日志")
 
-    def test_t75_architecture_unsupported_recovery(self):
+    def test_t75_intel_mac_can_package_iphone(self):
         row = self.t75_preflight(machine="x86_64")["Apple Silicon"]
-        self.assertFalse(row["ok"])
-        self.assert_t75_recovery(row["diagnostic"], "architecture_unsupported",
-                                 "Apple Silicon Mac", "换用支持的设备", "重试不会")
+        self.assertTrue(row["ok"])
+        self.assertIn("Intel Mac", row["message"])
+        self.assertIn("iPhone", row["message"])
 
     def test_t75_os_unsupported_recovery(self):
         row = self.t75_preflight(version="14.7")["macOS"]

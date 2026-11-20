@@ -75,7 +75,7 @@ def measure(c, gid, games=None, with_categories=True):
 #   cache       缓存：出包工作目录、运行时着色器缓存、这款的直连 / 编译缓存（不含各款共用的）、诊断与收回的程序——删了下次用到时现建
 #   四类共用一份去重状态，量的顺序 resources → programs → playerData → cache：克隆 / 硬链接共享的块记在资源上（玩家看到资源是真大小，缓存只记它独占的）
 CATEGORIES = ("resources", "programs", "playerData", "cache")
-CACHE_NAMES = ("build", "shader-cache", "direct-cache", "seen", "nro_kept", "diagrun", "downstream")   # 这款文件夹里归缓存的各项（出包工作目录不在这款文件夹的由 _build_entries 给出）
+CACHE_NAMES = ("build", "shader-cache", "direct-cache", "aoc-cache", "seen", "nro_kept", "diagrun", "downstream")   # 这款文件夹里归缓存的各项（出包工作目录不在这款文件夹的由 _build_entries 给出）
 
 
 def export_files(c, gid):
@@ -167,7 +167,8 @@ def _shared_paths(c):
         "ipa": [layout.phone_ipa(c), layout.phone_ipa(c, previous=True)],
         # tool-cache 就是现在的工作目录（core.Context.work_root），旧位置（私有目录 / 库内 .s2arm-work 的 cache、run）没迁完时也算；
         #   去掉落在别项里面的，免得同一份量两遍（Windows 实跑：W = L/tool-cache 时总览报成两倍）
-        "toolCache": _outermost([L / "tool-cache", W / "cache", W / "run", P / "cache", P / "run", L / ".s2arm-work" / "cache", L / ".s2arm-work" / "run"]),
+        #   <私有目录>/tools 是「准备引擎工具」按源码身份编出的读取工具（toolchain.reader），同属跨游戏工具缓存；漏算时外接盘 3 款实测总览少 7.9%
+        "toolCache": _outermost([L / "tool-cache", W / "cache", W / "run", P / "cache", P / "run", P / "tools", L / ".s2arm-work" / "cache", L / ".s2arm-work" / "run"]),
         "temp": temps,
         "logs": [L / "logs", P / "logs", P / "jobs"],
     }

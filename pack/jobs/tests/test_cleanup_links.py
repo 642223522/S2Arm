@@ -22,7 +22,7 @@ class CleanupLinkTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix="s2arm synthetic cleanup ")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        self.c = jobcase.fake_context(self.root, library=self.root / "library", work_root=self.root / "work")
+        self.c = jobcase.fake_context(self.root, library=self.root / "library", work_root=self.root / "work", engine=jobcase.ROOT)   # 引擎根取真仓库：存 kit 要按引擎根载入 pack/orch/dirrename.py
         self.gid = "0100000000000000"
         self.c.library.mkdir()
         self.output = layout.ios_work(self.c, self.gid)   # 这款文件夹的出包工作目录 build/ios

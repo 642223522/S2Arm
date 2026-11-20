@@ -43,7 +43,31 @@ int main(void) {
                     expect_never_missing(what, got, ns2, gc, phone);
                     if (!ns2 && !gc && !phone) expect(what, got, S2A_MOTION_NONE);
                 }
+    // ⑥ 手柄体感按新鲜样本判（S2A_MOTION_STALE_MS = 500）：期望按「收到过、且最近一帧不超过 500 ms」手算
+    const uint64_t T = 10000000;   // 任取的「现在」：10 秒（微秒）
+    expect("⑥ 从没收到过样本 → 没有", s2a_motion_fresh(0, 0, T), 0);
+    expect("⑥ 10 ms 前的样本 → 有", s2a_motion_fresh(1, T - 10000, T), 1);
+    expect("⑥ 正好 500 ms 前 → 有（边界含）", s2a_motion_fresh(1, T - 500000, T), 1);
+    expect("⑥ 501 ms 前 → 没有", s2a_motion_fresh(1, T - 501000, T), 0);
+    expect("⑥ 样本时刻晚于现在（读数与写入跨线程）→ 有", s2a_motion_fresh(1, T + 5, T), 1);
+    // ⑦ 玩家反馈的两种无陀螺仪夹持手柄 + 正常有体感手柄，按系统手柄在操作（sel = 2）、手机陀螺仪开着走完整条判定
+    //   a. 系统给了体感对象却从不出样本：ever = 0 → 手机
+    expect("⑦a 有体感对象但从不出样本 → 手机", s2a_motion_pick(2, 0, s2a_motion_fresh(0, 0, T), 1), S2A_MOTION_PHONE);
+    //   b. 刚接上出过一帧（t = 1 秒）就停，现在 10 秒 → 手机
+    expect("⑦b 出过一帧就停 → 手机", s2a_motion_pick(2, 0, s2a_motion_fresh(1, 1000000, T), 1), S2A_MOTION_PHONE);
+    //   c. 手柄真有体感、样本持续到来（8 ms 前一帧）→ 照旧用手柄（11-15 维护者原则不变）
+    expect("⑦c 手柄有体感、样本新鲜 → 手柄", s2a_motion_pick(2, 0, s2a_motion_fresh(1, T - 8000, T), 1), S2A_MOTION_GC);
+    //   d. b 的情形手机陀螺仪也关着 → NONE（不许回落到一帧旧数据）
+    expect("⑦d 出过一帧就停、手机陀螺仪关 → NONE", s2a_motion_pick(2, 0, s2a_motion_fresh(1, 1000000, T), 0), S2A_MOTION_NONE);
+    // ⑧ 提示：有体感对象（capable = 1）却超过 2000 ms 没新鲜样本才算「没体感」；capable = 2 走原提示路径，这里不判
+    expect("⑧ 有体感对象、3 秒没样本 → 提示", s2a_motion_pad_silent(1, T - 3000000, T), 1);
+    expect("⑧ 有体感对象、1 秒没样本（宽限期内）→ 不提示", s2a_motion_pad_silent(1, T - 1000000, T), 0);
+    expect("⑧ 正好 2000 ms → 不提示（边界不含）", s2a_motion_pad_silent(1, T - 2000000, T), 0);
+    expect("⑧ 刚有新鲜样本（last_ok = 现在）→ 不提示", s2a_motion_pad_silent(1, T, T), 0);
+    expect("⑧ 系统不给体感对象（capable = 2）→ 本函数不判", s2a_motion_pad_silent(2, 0, T), 0);
+    expect("⑧ 空槽（capable = 0）→ 不判", s2a_motion_pad_silent(0, 0, T), 0);
     if (bad) { printf("✗ t_motion_pick：%d 处不符\n", bad); return 1; }
-    printf("✓ t_motion_pick：%d 组手算 + 全表 64 组一致性全符（有手柄体感就用手柄、不看触屏；手柄都没样本才用手机；无样本→NONE）\n", 17);
+    printf("✓ t_motion_pick：%d 组手算 + 全表 64 组一致性全符（有手柄体感就用手柄、不看触屏；手柄都没样本才用手机；无样本→NONE；"
+           "手柄样本超过 500 ms 不新鲜就当没有：不出样本 / 出一帧就停的手柄都回到手机）\n", 17 + 15);
     return 0;
 }

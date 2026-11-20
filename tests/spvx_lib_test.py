@@ -16,7 +16,7 @@ def harden(lib, spv):
     p = lib.nxgal_spv_harden(src, len(spv), ctypes.byref(onw))
     if not p:
         return None
-    out = list(ctypes.cast(p, ctypes.POINTER(ctypes.c_uint32))[:onw.value])
+    out = list(ctypes.cast(int(p), ctypes.POINTER(ctypes.c_uint32))[:onw.value])
     lib.nxgal_spv_free(p)
     return out
 

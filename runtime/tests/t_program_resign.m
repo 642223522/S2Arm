@@ -3,6 +3,7 @@
 //   ① 没签名的程序包 → 1：清单 dir 指新目录 v-<sha16>-phone、signer.by=phone / cert_sha1=当前、source_sha256=原 image_sha256；随行目录拷过去；旧版本目录原样
 //   ② 再起一次 → 0（签名身份已是这张）③ 没有 identity/current.json → 0 ④ 清单 team 与当前团队相同、没写 signer（电脑按同团队签好）→ 0
 //   ⑤ 钥匙串里没有身份 → -1，清单不动
+//   ⑥ App 描述文件的团队（侧载工具装的、别的 Apple ID）≠ 手机身份的团队 → -1，不签（清单不动），原因写出两个团队号；⑥b 团队相同 → 照常签（1）
 #import <Foundation/Foundation.h>
 #import <Security/Security.h>
 #include <CommonCrypto/CommonDigest.h>
@@ -13,14 +14,17 @@
 
 int s2a_selfsign_identity(const void *p12, size_t n, const char *password, SecKeyRef *key, CFArrayRef *chain);
 int s2a_program_resign_if_needed(const char *home, const char *game_data, const char *gid, char *module_dir, char *images, size_t n, char *why, size_t why_n);
-void s2a_program_resign_test_identity(int (*f)(SecKeyRef *, SecCertificateRef *));
+void s2a_program_resign_test_identity(int (*f)(const char *, SecKeyRef *, SecCertificateRef *));
+void s2a_program_resign_test_prov(int (*f)(char *, size_t, char *, size_t));
 int s2a_program_resign_force(const char *home, const char *game_data, const char *gid, char *module_dir, char *images, size_t n, char *why, size_t why_n);
 
 static int bad;
 static void ck(int ok, NSString *what) { printf("%s %s\n", ok ? "  通" : "  【红】", what.UTF8String); if (!ok) bad++; }
 static SecKeyRef g_key; static SecCertificateRef g_cert;
-static int id_ok(SecKeyRef *k, SecCertificateRef *c) { *k = (SecKeyRef)CFRetain(g_key); *c = (SecCertificateRef)CFRetain(g_cert); return 0; }
-static int id_none(SecKeyRef *k, SecCertificateRef *c) { (void)k; (void)c; return -1; }
+static int id_ok(const char *sha, SecKeyRef *k, SecCertificateRef *c) { (void)sha; *k = (SecKeyRef)CFRetain(g_key); *c = (SecCertificateRef)CFRetain(g_cert); return 0; }
+static int id_none(const char *sha, SecKeyRef *k, SecCertificateRef *c) { (void)sha; (void)k; (void)c; return -1; }
+static int prov_other(char *t, size_t tn, char *a, size_t an) { snprintf(t, tn, "FGHIJ67890"); snprintf(a, an, "FGHIJ67890.io.s2arm.games.FGHIJ67890"); return 0; }   // AltStore 装的 App：别的团队
+static int prov_same(char *t, size_t tn, char *a, size_t an) { snprintf(t, tn, "ABCDE12345"); snprintf(a, an, "ABCDE12345.io.s2arm.games.ABCDE12345"); return 0; }
 static NSString *sha_file(NSString *p) { NSData *d = [NSData dataWithContentsOfFile:p]; uint8_t h[32]; CC_SHA256(d.bytes, (CC_LONG)d.length, h);
     NSMutableString *s = [NSMutableString string]; for (int i = 0; i < 32; i++) [s appendFormat:@"%02x", h[i]]; return s; }
 static NSString *sha1_file(NSString *p) { NSData *d = [NSData dataWithContentsOfFile:p]; uint8_t h[20]; CC_SHA1(d.bytes, (CC_LONG)d.length, h);
@@ -85,6 +89,14 @@ int main(void) { @autoreleasepool {
     put_json(catp, cat0); s2a_program_resign_test_identity(id_none);
     ARGS(); rc = s2a_program_resign_if_needed(home.fileSystemRepresentation, gd.fileSystemRepresentation, G.UTF8String, md, im, sizeof md, why, sizeof why);
     ck(rc == -1 && [json(catp)[@"dir"] isEqualToString:@"v-0000000000000000-pc"] && strstr(why, "钥匙串"), [NSString stringWithFormat:@"⑤ 钥匙串里没有身份：返回 %d（期望 -1）、清单不动、原因「%@」", rc, @(why)]);
+    s2a_program_resign_test_identity(id_ok); s2a_program_resign_test_prov(prov_other); put_json(catp, cat0);
+    ARGS(); rc = s2a_program_resign_if_needed(home.fileSystemRepresentation, gd.fileSystemRepresentation, G.UTF8String, md, im, sizeof md, why, sizeof why);
+    ck(rc == -1 && [json(catp)[@"dir"] isEqualToString:@"v-0000000000000000-pc"] && strstr(why, "ABCDE12345") && strstr(why, "FGHIJ67890"),
+       [NSString stringWithFormat:@"⑥ App 团队 FGHIJ67890 ≠ 身份团队 ABCDE12345：返回 %d（期望 -1）、清单不动、原因「%@」写出两个团队号", rc, @(why)]);
+    s2a_program_resign_test_prov(prov_same); put_json(catp, cat0);
+    ARGS(); rc = s2a_program_resign_if_needed(home.fileSystemRepresentation, gd.fileSystemRepresentation, G.UTF8String, md, im, sizeof md, why, sizeof why);
+    ck(rc == 1 && [json(catp)[@"signer"][@"team"] isEqual:@"ABCDE12345"], [NSString stringWithFormat:@"⑥b 团队相同：照常重签，返回 %d（期望 1）、signer.team ABCDE12345", rc]);
+    s2a_program_resign_test_prov(NULL);
     [fm removeItemAtPath:dir error:nil];
     return S2A_T_RESULT("t_program_resign", bad);
 } }

@@ -352,15 +352,16 @@ class BudgetTests(unittest.TestCase):
         import os
         base = 'run/s2arm/cache/direct/0100000000000000/store/'
         entry = self.put(base + 'dshb/ab/ab' + '0' * 62 + '.e')
+        cpso = self.put(base + 'cpso/ab/ab' + '3' * 62 + '.e')   # compute pipeline archive cache (graphics/tools/direct/cs_pipelines.py), same layout
         shard = self.put(base + 'cd.pack')
         misfiled = self.put(base + 'dshb/ef/ab' + '1' * 62 + '.e')
         other = self.put(base + 'dshb/ab/ab' + '2' * 62 + '.metallib')
         os.utime(self.private / base, (1, 1))
         newer = self.direct('0100000000000001', key='c', age=-1)   # the newer title holds the single protected slot
         result = self.trim(0, keep_titles=1)
-        self.assertFalse(entry.exists() or shard.exists())
+        self.assertFalse(entry.exists() or shard.exists() or cpso.exists())
         self.assertTrue(misfiled.exists() and other.exists() and newer.exists())
-        self.assertEqual(result['removedEntries'], 2)
+        self.assertEqual(result['removedEntries'], 3)
 
     def test_successful_title_is_hot_even_when_dmsh_did_not_touch_entries(self):
         from cache_retention import trim

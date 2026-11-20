@@ -15,6 +15,7 @@ static NSString *const keys[] = {@"S2AResolutionScale", @"S2AAntiAliasing", @"S2
 static void clear_environment(void) {
     for (size_t i = 0; i < 4; i++) unsetenv(variables[i]);
     unsetenv("S2A_WIDESCREEN"); unsetenv("S2A_FPS60"); unsetenv("S2A_CPATCH_ON"); unsetenv("S2A_DOCKED"); unsetenv("MTL_HUD_ENABLED");
+    unsetenv("S2A_AUDIO_DEVICE"); unsetenv("S2A_AUDIO_VS_SPEAKERS"); unsetenv("S2A_AUDIO_VS_HEADPHONES");   // 输出设备类型 + 两个虚拟环绕开关（#189 后续，5.1 虚拟环绕第二片）
 }
 
 static int reload_checks(BOOL explicit) {
@@ -88,6 +89,40 @@ int main(int argc, char **argv) {
         if (argc == 3 && (!strcmp(argv[2], "--reload-owned") || !strcmp(argv[2], "--reload-explicit")))
             return reload_checks(!strcmp(argv[2], "--reload-explicit"));
         if (argc != 2) return 2;
+        {
+            NSString *suite = [@"local.s2arm.ldn." stringByAppendingString:NSUUID.UUID.UUIDString];
+            NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:suite];
+            const char *ldn[] = {"S2A_LDN_SERVER", "S2A_LDN_RELAY", "S2A_LDN_LISTEN"};
+            for (int i = 0; i < 3; i++) unsetenv(ldn[i]);
+            s2a_ios_apply_ldn_settings(d);
+            check(!getenv(ldn[0]) && !getenv(ldn[1]) && !getenv(ldn[2]), @"联机默认不写环境，保留现有自动发现");
+            [d setObject:@"manual" forKey:@"S2ALdnMode"];
+            [d setBool:YES forKey:@"S2ALdnHost"];
+            s2a_ios_apply_ldn_settings(d);
+            check(getenv(ldn[0]) && !strcmp(getenv(ldn[0]), "127.0.0.1") &&
+                  getenv(ldn[1]) && !strcmp(getenv(ldn[1]), "1") &&
+                  getenv(ldn[2]) && !strcmp(getenv(ldn[2]), "0.0.0.0"), @"本机托管：回环连接，全部网卡监听");
+            for (int i = 0; i < 3; i++) unsetenv(ldn[i]);
+            [d setBool:NO forKey:@"S2ALdnHost"];
+            [d setObject:@" 100.64.0.2 \n" forKey:@"S2ALdnAddress"];
+            s2a_ios_apply_ldn_settings(d);
+            check(getenv(ldn[0]) && !strcmp(getenv(ldn[0]), "100.64.0.2") &&
+                  getenv(ldn[1]) && !strcmp(getenv(ldn[1]), "0") && !getenv(ldn[2]), @"指定IP裁空白且不托管");
+            setenv(ldn[0], "203.0.113.8", 1);
+            s2a_ios_apply_ldn_settings(d);
+            check(!strcmp(getenv(ldn[0]), "203.0.113.8"), @"显式启动服务器优先");
+            for (int i = 0; i < 3; i++) unsetenv(ldn[i]);
+            [d setObject:@"manual" forKey:@"S2ALdnMode"];
+            [d setObject:@"" forKey:@"S2ALdnAddress"];
+            s2a_ios_apply_ldn_settings(d);
+            check(getenv(ldn[0]) && !strcmp(getenv(ldn[0]), "0.0.0.0") &&
+                  getenv(ldn[1]) && !strcmp(getenv(ldn[1]), "0"), @"空地址不自动发现、不托管、不拦起局");
+            for (int i = 0; i < 3; i++) unsetenv(ldn[i]);
+            [d setObject:@"auto" forKey:@"S2ALdnMode"];
+            s2a_ios_apply_ldn_settings(d);
+            check(!getenv(ldn[0]) && !getenv(ldn[1]) && !getenv(ldn[2]), @"切回自动后忽略保存的手动地址");
+            [d removePersistentDomainForName:suite];
+        }
         {   // 开着社区宽屏 / 自适应满屏补丁（11-12）：S2Arm 满屏让开（S2A_WIDESCREEN=0）；只开别类补丁不动；显式给了 S2A_WIDESCREEN 的照它
             NSString *suite = [@"local.s2arm.settings-cpws." stringByAppendingString:NSUUID.UUID.UUIDString];
             NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:suite];
@@ -282,6 +317,43 @@ int main(int argc, char **argv) {
             setenv("S2A_HUD", "0", 1); clear_environment();
             s2a_ios_apply_graphics_settings(a); check(!strcmp(getenv("S2A_HUD"), "0"), @"显式 S2A_HUD=0 优先于开关");
             unsetenv("S2A_HUD"); [a removeObjectForKey:@"S2ADevHUD"];
+        }
+
+        // 输出设备类型 + 两个虚拟环绕开关（#189 后续，5.1 虚拟环绕第二片）：按游戏存的 S2AAudioDevice / S2AAudioVsSpeakers /
+        //   S2AAudioVsHeadphones（游戏库每款设置页经 ios/game_options.m 写）→ S2A_AUDIO_*（compat/tree 的 Apple 后端读）。
+        //   没选过不设（= auto 按设备真实声道判，5.1 直通缺省不变）；开关只转拨过的（开 1 / 关 0，各存各的、只在对应显式
+        //   类型下生效——驱动侧判）；启动环境显式给的优先；非法值不转。起局语义按新进程走，每步先清环境
+        {
+            [a removeObjectForKey:@"S2AAudioDevice"]; [a removeObjectForKey:@"S2AAudioVsSpeakers"]; [a removeObjectForKey:@"S2AAudioVsHeadphones"];
+            clear_environment();
+            s2a_ios_apply_graphics_settings(a);
+            check(getenv("S2A_AUDIO_DEVICE") == NULL && getenv("S2A_AUDIO_VS_SPEAKERS") == NULL && getenv("S2A_AUDIO_VS_HEADPHONES") == NULL,
+                  @"没选过、没拨过：不设任何 S2A_AUDIO_*（= auto 按设备真实声道判，5.1 直通缺省不变）");
+            [a setObject:@"builtin" forKey:@"S2AAudioDevice"];
+            clear_environment();
+            s2a_ios_apply_graphics_settings(a);
+            check(getenv("S2A_AUDIO_DEVICE") && !strcmp(getenv("S2A_AUDIO_DEVICE"), "builtin"), @"选了内置扬声器：S2A_AUDIO_DEVICE=builtin");
+            [a setObject:@"bogus" forKey:@"S2AAudioDevice"];
+            clear_environment();
+            s2a_ios_apply_graphics_settings(a);
+            check(getenv("S2A_AUDIO_DEVICE") == NULL, @"非法值不转（游戏库侧已拒收，这里再拦一道）");
+            [a setObject:@"headphones" forKey:@"S2AAudioDevice"];
+            clear_environment();
+            s2a_ios_apply_graphics_settings(a);
+            check(getenv("S2A_AUDIO_DEVICE") && !strcmp(getenv("S2A_AUDIO_DEVICE"), "headphones"), @"选了耳机：S2A_AUDIO_DEVICE=headphones");
+            setenv("S2A_AUDIO_DEVICE", "external", 1);
+            s2a_ios_apply_graphics_settings(a);
+            check(!strcmp(getenv("S2A_AUDIO_DEVICE"), "external"), @"启动环境显式给的优先于按游戏存的值");
+            [a setBool:YES forKey:@"S2AAudioVsSpeakers"]; [a setBool:NO forKey:@"S2AAudioVsHeadphones"];
+            clear_environment();
+            s2a_ios_apply_graphics_settings(a);
+            check(getenv("S2A_AUDIO_VS_SPEAKERS") && !strcmp(getenv("S2A_AUDIO_VS_SPEAKERS"), "1") &&
+                  getenv("S2A_AUDIO_VS_HEADPHONES") && !strcmp(getenv("S2A_AUDIO_VS_HEADPHONES"), "0"),
+                  @"拨过的开关照拨的值转（开 1 / 关 0，各存各的）");
+            setenv("S2A_AUDIO_VS_HEADPHONES", "1", 1);
+            s2a_ios_apply_graphics_settings(a);
+            check(!strcmp(getenv("S2A_AUDIO_VS_HEADPHONES"), "1"), @"显式 S2A_AUDIO_VS_HEADPHONES=1 优先于按游戏存的值");
+            [a removeObjectForKey:@"S2AAudioDevice"]; [a removeObjectForKey:@"S2AAudioVsSpeakers"]; [a removeObjectForKey:@"S2AAudioVsHeadphones"];
         }
 
         // 缺口扫描族 2：设置页「完成」时掌机 / 主机运行中直接切（返回要切的值，交 s2a_console_mode_set），不算重启项；别的画面设置变了照旧要重启
