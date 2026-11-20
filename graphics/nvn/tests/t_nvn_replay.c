@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <time.h>
 
 static int g_fail, g_checks;
@@ -33,7 +34,8 @@ static int g_arena_detail_lines; static char g_arena_detail[256]; static char g_
 static char g_ps_lines[8][320]; static int g_ps_n;   // 池统计行（cls "poolstats"）收下来给 t_pool_stats 核
 static int g_csd_lines; static char g_csd_line[256];   // 类型 3 句柄的采样器号没登记、绑默认采样器：每局首次的那一行（#1594 片 6）
 static int g_ubo_zero_lines; static char g_ubo_zero_line[256];   // 常量缓冲句柄指向没登记的号、绑零贴图：每局首次的那一行（#1594 片 4）
-void nvn_plat_log(int level, const char *cls, const char *text) { if (level == NVN_PLAT_LOG_INFO && text && strstr(text, "类型 3 句柄的采样器号")) { g_csd_lines++; snprintf(g_csd_line, sizeof g_csd_line, "%s", text); } if (level == NVN_PLAT_LOG_INFO && text && strstr(text, "常量缓冲句柄指向没登记的贴图号")) { g_ubo_zero_lines++; snprintf(g_ubo_zero_line, sizeof g_ubo_zero_line, "%s", text); } if (cls && !strcmp(cls, "poolstats")) { if (g_ps_n < 8) snprintf(g_ps_lines[g_ps_n], 320, "%s", text); g_ps_n++; return; } if(level == NVN_PLAT_LOG_RED && strstr(text,"后续不同原因详情省略（最多8）"))g_arena_truncated_lines++; if (level == NVN_PLAT_LOG_RED && strstr(text,"arena_alloc_failed rc=")) { if(g_arena_detail_lines<32)snprintf(g_arena697_lines[g_arena_detail_lines],256,"%s",text); g_arena_detail_lines++; snprintf(g_arena_detail,sizeof g_arena_detail,"%s",text); } if (level == NVN_PLAT_LOG_RED) { g_red_lines++; snprintf(g_last_red, sizeof g_last_red, "%s", text); } }
+static int g_dl_unread, g_dl_lines;   // 逐笔日志（cls "draw"）：含「读不到」的行数 / 含「存」字段的贴图行数
+void nvn_plat_log(int level, const char *cls, const char *text) { if (cls && text && !strcmp(cls, "draw")) { if (strstr(text, "读不到")) g_dl_unread++; if (strstr(text, " 存")) g_dl_lines++; } if (level == NVN_PLAT_LOG_INFO && text && strstr(text, "类型 3 句柄的采样器号")) { g_csd_lines++; snprintf(g_csd_line, sizeof g_csd_line, "%s", text); } if (level == NVN_PLAT_LOG_INFO && text && strstr(text, "常量缓冲句柄指向没登记的贴图号")) { g_ubo_zero_lines++; snprintf(g_ubo_zero_line, sizeof g_ubo_zero_line, "%s", text); } if (cls && !strcmp(cls, "poolstats")) { if (g_ps_n < 8) snprintf(g_ps_lines[g_ps_n], 320, "%s", text); g_ps_n++; return; } if(level == NVN_PLAT_LOG_RED && strstr(text,"后续不同原因详情省略（最多8）"))g_arena_truncated_lines++; if (level == NVN_PLAT_LOG_RED && strstr(text,"arena_alloc_failed rc=")) { if(g_arena_detail_lines<32)snprintf(g_arena697_lines[g_arena_detail_lines],256,"%s",text); g_arena_detail_lines++; snprintf(g_arena_detail,sizeof g_arena_detail,"%s",text); } if (level == NVN_PLAT_LOG_RED) { g_red_lines++; snprintf(g_last_red, sizeof g_last_red, "%s", text); } }
 static int g_flag_finish_lag;   // 用例设：开关 nvk_finish_lag 的值
 static int g_flag_spill = 1;    // 用例设：开关 nvk_spill（缺省同产品：开）
 static int g_flag_sync_lag;     // 用例设：开关 nvk_sync_lag 的值（产品缺省 1＝允许一格在飞；用例固定 0，测的是「真等」这条契约）
@@ -2760,6 +2762,45 @@ static void t_pass_clear_park_read(void) {   // 被读之前必须落地（正�
     CHECK(g_pd[1].w == 64 && g_pd[1].h == 36 && pd_zero_clear(&g_pd[1]) && g_pd[1].color[0].view != NULL);
     CHECK(p1[RP_PERF_P_PARK] == 1 && p1[RP_PERF_P_CLEARONLY] == 1);
     pass_fresh();
+}
+// 逐笔日志读贴图首 8 字节必须经内核读（rp_draw.c dbg_peek）：采样的贴图在「CPU 不可访问 + 虚拟」池里（真机池标 0x2a1 = 虚拟 | 可压缩 |
+// GPU 缓存 | CPU 不可访问），存储页没有读权限；回放自己不读这种池（cpu_content 见标志就返回 0），日志直接解引用就吃 SIGSEGV
+// （设备读数：开逐笔日志后重场景第一帧崩在这一读，SEGV_ACCERR）。日志该写「读不到」、整笔照画。
+// 贴图 A 先被 GPU 清除，再被下一笔绘制采样。
+static void drawlog_sample_a(uint8_t *amem, int lines) {
+    pass_fresh(); g_flag_clear_park = 1; g_flag_rt_cont = 1; g_resolve_rc = g_cresolve_rc = 0;
+    g_tp.flags = NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS | NVN_MEMORY_POOL_FLAGS_GPU_CACHED | NVN_MEMORY_POOL_FLAGS_COMPRESSIBLE | NVN_MEMORY_POOL_FLAGS_VIRTUAL;
+    int g0 = g_gdraws; g_dl_unread = g_dl_lines = 0;
+    tex_t a = mk_tex(78, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0), b = mk_tex(79, 0x4000, NVN_FORMAT_RGBA8, 64, 36, 1, 0);
+    a.mem = amem;
+    samp_par sp; memset(&sp, 0, sizeof sp); nvn_be_reg_tex(7, &a, NULL); nvn_be_reg_samp(3, &sp);
+    stream s = {0}; q_env(&s);
+    g_fprog.nent[1] = 1; g_fprog.ent[1][0].cls = NVN_GPU_RES_TEX_SAMP; g_fprog.ent[1][0].src_kind = NVN_RB_TEX; g_fprog.ent[1][0].src_reg = 5;
+    g_fprog.dtt[1][0] = NVN_TEXTURE_TARGET_2D + 1;
+    put_set_rt(&s, &a, NULL);
+    p_clear_color *cc = put(&s, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf; cc->rgba[0] = 0.5f;
+    put_set_rt(&s, &b, NULL);
+    p_bind_handles *bh = put(&s, OP_BIND_TEX, sizeof *bh); bh->stage = 1; bh->first = 5; bh->n = 1; bh->h[0] = 7 | 3 << 20;
+    q_draw(&s);
+    end(&s);
+    rp_draw_log_arm(lines);
+    submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+    rp_draw_log_arm(0);
+    CHECK(g_gdraws - g0 == 1 && nvn_unimpl_kinds() == 0);   // 整笔照画
+    pass_fresh();
+}
+static void t_drawlog_unreadable_tex_mem(void) {
+    static uint8_t ok_mem[4096];
+    drawlog_sample_a(ok_mem, 2);
+    CHECK(g_dl_lines >= 1 && g_dl_unread == 0);   // 正对照：读得到的内存照常写首 8 字节，不写「读不到」
+    uint8_t *bad = mmap(NULL, 8192, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(bad != MAP_FAILED);
+    if (bad == MAP_FAILED) return;
+    drawlog_sample_a(bad, 2);
+    CHECK(g_dl_lines >= 1 && g_dl_unread >= 1);   // 无读权限：写「读不到」，没崩
+    drawlog_sample_a(bad, 0);
+    CHECK(g_dl_lines == 0 && g_dl_unread == 0);   // 日志关着：不读、不写
+    munmap(bad, 8192);
 }
 // GS 资源变化必须重新取变体；带 GS 的各种拓扑都照画（三角带按 GL 序展开）。
 static void t_gs_dirty_and_topology(void) {
@@ -5919,6 +5960,7 @@ int main(int argc, char **argv) {
     t_pass_clear_park();
     t_pass_clear_park_tail();
     t_pass_clear_park_read();
+    t_drawlog_unreadable_tex_mem();
     t_fmt_filter_blend();
     t_clear_rect();
     t_report_counter();
