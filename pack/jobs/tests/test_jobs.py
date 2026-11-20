@@ -1472,38 +1472,32 @@ class JobsTests(unittest.TestCase):
             self.assertEqual(toolchain.detect_xcode((str(apps),)), str(apps / "Xcode-27.1.app/Contents/Developer"))
             self.assertIsNone(toolchain.detect_xcode((str(self.root / "none"),)))
 
-    def test_detect_xcode_finds_xcode_on_external_volume(self):
-        # 玩家把 Xcode 装在扩展硬盘上（D-9WFW）：外接卷的 Applications 与卷根都看；/Volumes 里指回 / 的启动盘软链跳过
-        import plistlib, toolchain, unittest.mock as um
-        vols = self.root / "Volumes"
-        def mk(app, version):
-            (app / "Contents/Developer/usr/bin").mkdir(parents=True)
-            (app / "Contents/Info.plist").write_bytes(plistlib.dumps(dict(CFBundleIdentifier="com.apple.dt.Xcode", CFBundleShortVersionString=version)))
-            (app / "Contents/Developer/usr/bin/xcodebuild").write_text("")
-        mk(vols / "Ext SSD" / "Applications" / "Xcode.app", "27.1")
-        mk(vols / "Other" / "Xcode-26.app", "26.6")   # 直接放在卷根
-        boot = self.root / "boot"; (boot / "Applications").mkdir(parents=True)
-        (vols / "Macintosh HD").symlink_to(boot)
-        ext = toolchain.external_app_dirs(str(vols))
-        self.assertEqual(ext, (str(vols / "Ext SSD" / "Applications"), str(vols / "Ext SSD"), str(vols / "Other" / "Applications"), str(vols / "Other")))
-        empty = self.root / "internal-empty"; empty.mkdir()
-        with um.patch.object(toolchain.subprocess, "run", side_effect=OSError), um.patch.object(toolchain, "default_app_dirs", return_value=(str(empty),)), \
-                um.patch.object(toolchain, "external_app_dirs", return_value=ext):
-            # 内置位置一份都没有：兜底翻外接卷，找得到
-            self.assertEqual(toolchain.detect_xcode(), str(vols / "Ext SSD" / "Applications" / "Xcode.app/Contents/Developer"))
-            self.assertEqual([x[1] for x in toolchain.installed_xcodes()], ["27.1", "26.6"])
-
-    def test_detect_xcode_does_not_list_external_volumes_when_internal_has_one(self):
-        # 接着外接盘的玩家一开启动器就弹「想访问可移除卷上的文件」（每建一个任务都列 /Volumes）：内置位置有完整 Xcode 就不碰外接卷；
-        #   期望：用内置那份，external_app_dirs 一次都不调（调了就抛错，等同碰了外接卷）
-        import plistlib, toolchain, unittest.mock as um
-        internal = self.root / "Applications"
-        app = internal / "Xcode.app"; (app / "Contents/Developer/usr/bin").mkdir(parents=True)
-        (app / "Contents/Info.plist").write_bytes(plistlib.dumps(dict(CFBundleIdentifier="com.apple.dt.Xcode", CFBundleShortVersionString="26.6")))
-        (app / "Contents/Developer/usr/bin/xcodebuild").write_text("")
-        with um.patch.object(toolchain.subprocess, "run", side_effect=OSError), um.patch.object(toolchain, "default_app_dirs", return_value=(str(internal),)), \
-                um.patch.object(toolchain, "external_app_dirs", side_effect=AssertionError("碰了外接卷")):
-            self.assertEqual(toolchain.detect_xcode(), str(app / "Contents/Developer"))
+    def test_xcode_search_never_lists_volumes(self):
+        # 接着外接盘的玩家一开启动器就弹「想访问可移除卷上的文件」（6aaab23d4 起自动找 Xcode 每次列 /Volumes）：自动查找只看 /Applications、~/Applications，
+        #   外接盘上的 Xcode 由玩家在设置页自己选。期望手写：目录恰好这两处；建任务 → 用环境 → 自动找 Xcode 全程，任何列目录 / 读目录的调用都不落在 /Volumes 下
+        import toolchain, unittest.mock as um, core
+        self.assertEqual(toolchain.default_app_dirs(), ("/Applications", str(Path.home() / "Applications")))
+        touched = []
+        def guard(real):
+            def f(p=".", *a, **k):
+                if str(p).startswith("/Volumes"):
+                    touched.append(str(p)); raise AssertionError("碰了 /Volumes：" + str(p))
+                return real(p, *a, **k)
+            return f
+        real_iterdir = Path.iterdir
+        def iterdir(self_):
+            if str(self_).startswith("/Volumes"):
+                touched.append(str(self_)); raise AssertionError("碰了 /Volumes：" + str(self_))
+            return real_iterdir(self_)
+        with um.patch.object(core.os, "listdir", guard(os.listdir)), um.patch.object(core.os, "scandir", guard(os.scandir)), \
+                um.patch.object(Path, "iterdir", iterdir):
+            c = Context(dict(self.request)); c.env()
+            toolchain.detect_xcode(); toolchain.installed_xcodes()
+            # 内置位置一份 Xcode 都没有（大多数只推 iPhone 的玩家）：也不去翻外接卷，答「没有」
+            empty = self.root / "no-xcode"; empty.mkdir()
+            with um.patch.object(toolchain, "default_app_dirs", return_value=(str(empty),)), um.patch.object(toolchain.subprocess, "run", side_effect=OSError):
+                self.assertIsNone(toolchain.detect_xcode())
+        self.assertEqual(touched, [])
 
     def test_creating_a_task_does_not_look_for_xcode(self):
         # 建任务不找 Xcode（原先 Context.__init__ 就调 default_developer_dir → 翻目录、找不到内置的还翻外接卷）：第一次要用环境时才找、同一任务只找一次
