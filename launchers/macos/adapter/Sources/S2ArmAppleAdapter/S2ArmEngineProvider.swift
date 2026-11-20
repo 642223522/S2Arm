@@ -311,6 +311,11 @@ public final class S2ArmEngineProvider: EngineProvider {
         try await installer.devCertImport(p12: p12, profile: profile, password: password, device: device)
     }
     public func devCertUse(_ active: Bool) async throws { try await installer.devCertUse(active) }
+    public func appleLogin(account: String, password: String, events: EventSink = .discard) async throws -> AppleAccount {
+        try await installer.appleLogin(account: account, password: password, events: events)
+    }
+    public func appleAccount() async throws -> AppleAccount { try await installer.appleAccount() }
+    public func appleLoginCode(_ code: String, taskId: String) throws { try installer.appleLoginCode(code, taskId: taskId) }
     public func devCertDelete() async throws { try await installer.devCertDelete() }
 
     public func install(gameId: String, teamId: String? = nil, device: String? = nil, acceptDropped: Bool = false, accept: Set<String> = [], mode: String? = nil,

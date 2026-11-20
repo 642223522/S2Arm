@@ -83,7 +83,7 @@ import AppKit
         let calls = ((try? JSONSerialization.jsonObject(with: r.body) as? [String: Any])?["endpoints"] as? [[String: String]] ?? []).compactMap { $0["call"] }
         for c in ["GET /state", "GET /targets", "POST /keys {path}", "POST /games {paths:[…]}", "POST /build {gameId, target, spaceOverride?}",
                   "POST /installCheck {gameId}", "POST /install {gameId, acceptDropped?, acceptNoBackup?, acceptStale?}", "POST /delete {gameId}", "POST /launch {gameId}",
-                  "POST /phone-identity {device, force?}"] {
+                  "POST /phone-identity {device, force?}", "POST /install-action {gameId, id}"] {
             XCTAssertTrue(calls.contains(c), c)
         }
     }
@@ -94,7 +94,7 @@ import AppKit
             .write(to: root.appendingPathComponent("logs/jobs/t1.json"))
         let s = control.state()
         for k in ["selection", "showOnboarding", "onboardingStep", "keyStatus", "hasImportedKeys", "environmentReady", "checkingEnvironment",
-                  "checks", "games", "tasks", "queue", "notice", "error", "installReadiness", "waitingForAccess", "cachedAt", "windows", "overlays"] {
+                  "checks", "games", "tasks", "queue", "notice", "error", "installReadiness", "waitingForAccess", "cachedAt", "windows", "overlays", "presented"] {
             XCTAssertNotNil(s[k], k)
         }
         let t = (s["tasks"] as? [[String: Any]])?.first

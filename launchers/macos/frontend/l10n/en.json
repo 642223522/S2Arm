@@ -1385,9 +1385,9 @@
   "s2arm.install.account": "Signing team: %@",
   "s2arm.install.checklist": "Before installing",
   "s2arm.install.device": "Device: %@",
-  "s2arm.install.note": "Signed with your Xcode account and installed by cable, with reinstalling required every 7 days for free accounts",
+  "s2arm.install.note": "Signed with the Apple ID you signed in to in S2Arm and installed by cable, with reinstalling required every 7 days for free accounts",
   "s2arm.install.start": "Install",
-  "s2arm.install.teamManual": "Set up your Xcode account",
+  "s2arm.install.teamManual": "Xcode team for Apple TV / standalone apps",
   "s2arm.install.teamManualField": "10-character Team ID",
   "s2arm.install.teamManualHelp": "If your signed-in team is missing, enter the Team ID from Xcode Accounts or the Apple Developer website",
   "s2arm.install.teamManualUse": "Install with this team",
@@ -1785,5 +1785,7 @@
   "s2arm.env.xcode.none": "No Xcode found yet",
   "s2arm.env.xcode.choose": "Choose Xcode…",
   "s2arm.env.xcode.auto": "Find automatically",
-  "s2arm.env.xcode.invalid": "That isn't a complete Xcode (it needs Contents/Developer/usr/bin/xcodebuild). Nothing was changed."
+  "s2arm.env.xcode.invalid": "That isn't a complete Xcode (it needs Contents/Developer/usr/bin/xcodebuild). Nothing was changed.",
+  "s2arm.env.action.appleLogin": "Sign In with Apple ID",
+  "s2arm.fail.appleAccount": "Couldn't read the signed-in Apple ID"
 }

@@ -250,6 +250,13 @@ struct PhoneJobPanel: View {
             }
             ReportHint()
             HStack(spacing: 12) {
+                // 还没用 Apple ID 登录（0.6.0 Mac：S2Arm 自己登录）：就在这里登录，登录好再点一次（RECOVERY 的「登录 Apple ID」指的就是它）
+                if session.failureCode == "apple_not_signed_in" {
+                    Button { model.openAppleLogin(host: model.installViewOpen != nil ? "install" : "main") } label: {
+                        LauncherHeroActionLabel(title: t("install.login.open"), symbol: "person.crop.circle")
+                    }
+                    .controllerButtonStyle(.plain).controllerID("phone.appleLogin").controllerShortcut(.rightTrigger)
+                }
                 if session.kind == .installUpdate {
                     Button { model.retryPhoneUpdate() } label: { LauncherHeroActionLabel(title: t("phone.retry"), symbol: "arrow.clockwise") }
                         .controllerButtonStyle(.plain).disabled(model.phoneBusy).controllerID("phone.retry").controllerShortcut(.rightTrigger)

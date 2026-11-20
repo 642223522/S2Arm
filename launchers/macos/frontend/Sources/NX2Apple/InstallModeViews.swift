@@ -1,5 +1,6 @@
 // S2Arm（不是上游文件）：一键装到 iPhone 的签名身份（v0.3.0；11-15 维护者：导出不再是装法，游戏库「导出自签包」按钮常驻，设置里没有切换）。
-//   InstallModeCard：设置里的一张卡——一键装到 iPhone 用谁签名（Xcode 账号 / 我的开发者证书；Xcode 团队号手填与引导项目从装机页挪来）。
+//   InstallModeCard：设置里的一张卡——一键装到 iPhone 用谁签名（Apple ID / 我的开发者证书）。0.6.0 Mac 的 Apple ID 是 S2Arm 自己登录的（AppleIdRow → 登录面板），
+//     不看 Xcode；Xcode 团队号手填与引导项目只给 Apple TV / 独立 App 方案（tvos.install_tv、downstream.install_ios 仍用 Xcode 团队），折叠里写明。
 //   InstallModeLine：出包页一行只读签名身份 + 「更改」（打开设置）。
 //   PhoneUpdateButton：游戏库右上角「更新 iPhone 上的 S2Arm」（壳比本版旧才出现），有要重新出包的款先三选一。
 import AppKit
@@ -28,12 +29,13 @@ struct InstallModeCard: View {
         .accessibilityIdentifier("env.installMode")
     }
 
-    /// 一键装时的签名身份：开发者证书一栏照用出包页原来那套（导入 / 换 / 删、体检）；不用证书时 Xcode 团队号与引导项目在这里
+    /// 一键装时的签名身份：开发者证书一栏照用出包页原来那套（导入 / 换 / 删、体检）；不用证书时登录 Apple ID 在这里
     @ViewBuilder private var identity: some View {
         VStack(alignment: .leading, spacing: LauncherTheme.Space.large) {
-            DevCertRow(model: model, title: ix(loc, "install.mode.identity"), appleIdTitle: ix(loc, "install.mode.identity_xcode"), embedded: true)
+            DevCertRow(model: model, title: ix(loc, "install.mode.identity"), appleIdTitle: ix(loc, "export.sign.appleId"), embedded: true)
             if model.devCert?.active != true {
-                // Xcode 里还没有团队 / 签不成时的解决办法（引导项目 + 手填团队号）：平时收起，签名身份一栏保持紧凑；手填过团队号的展开着
+                AppleIdRow(model: model, host: "settings")
+                // Apple TV / 独立 App 方案用的 Xcode 团队（引导项目 + 手填团队号）：推到 iPhone 用不到，平时收起；手填过团队号的展开着
                 Button { showTeam.toggle() } label: {
                     HStack(spacing: 6) {
                         Text(loc.t("s2arm.install.teamManual")).font(.manrope(12.5, .semibold))
@@ -111,7 +113,7 @@ struct InstallModeLine: View {
     }
 
     private var summary: String {
-        model.signIdentity == "devcert" ? ix(loc, "export.sign.devcert") : ix(loc, "install.mode.identity_xcode")
+        model.signIdentity == "devcert" ? ix(loc, "export.sign.devcert") : ix(loc, "export.sign.appleId")
     }
 }
 

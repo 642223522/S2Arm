@@ -368,8 +368,15 @@ def preflight(c):
             add("ios_platform", "iOS 平台组件", platform_ok, message, ("ipa",), action=platform_action, code="ios_platform_missing")
     if has_xcode:   # 装到 iPhone 要用；不挡打包。团队号真出现才算过（只有账号不够）
         import install as inst
+        # 推到 iPhone（0.6.0 Mac）：Apple ID 是随包 plumesign 自己登录的账号（apple_login / install.mac_plume），不看 Xcode；没登录 → 启动器自己的登录面板。
+        #   用自己的开发者证书（mac_plume 为假）时 iPhone 不用 Apple ID，不出这一项
+        if inst.mac_plume(c):
+            acct = inst.plume_account(c, inst.win_install_mod(c))
+            add("apple_team", "Apple ID 团队", bool(acct), inst.APPLE_SIGN_IN, ("install",), action="appleLogin", code="apple_not_signed_in", group="apple")
+        # Apple TV 装机（tvos.install_tv）与下游独立 App 装机（downstream.install_ios）仍用 Xcode 账号的团队（install.pick_team(xcode_teams)）：
+        #   单列一项、写明给谁用，不挡推到 iPhone（requiredFor 只标 appleTV）
         logged_in, teams = inst.xcode_account(c.env())
-        add("apple_team", "Apple ID 团队", bool(teams), inst.TEAM_PENDING if logged_in else inst.ACCOUNT_NONE, ("install",), action="openXcode",
+        add("xcode_team", "Apple TV / 独立 App 方案用的 Xcode 团队", bool(teams), inst.TEAM_PENDING if logged_in else inst.ACCOUNT_NONE, ("appleTV",), action="openXcode",
             code="xcode_team_pending" if logged_in else "xcode_account_missing", group="apple")
     ok, _ = probe(c, ["xcrun", "--sdk", "macosx", "--show-sdk-path"])
     add("xcode", "Xcode", has_xcode and ok,

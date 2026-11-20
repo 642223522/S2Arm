@@ -293,7 +293,10 @@ struct LauncherView: View {
         return text
     }()
 
-    private var topBar: some View { topBarRow.onChange(of: model.showInstallFor) { id in if let id { installFor = id; model.showInstallFor = nil } } }   // 控制口 /show install（单独一层：挂在 body 长链上编译器类型检查超时）
+    private var topBar: some View {
+        topBarRow.onChange(of: model.showInstallFor) { id in if let id { installFor = id; model.showInstallFor = nil } }
+            .appleLoginSheet(model, host: "main")   // 主窗口上没有别的弹层时（欢迎页、手机总控台的失败页）从这里弹登录面板
+    }   // 控制口 /show install（单独一层：挂在 body 长链上编译器类型检查超时）
 
     private var topBarRow: some View {
         HStack(spacing: 12) {

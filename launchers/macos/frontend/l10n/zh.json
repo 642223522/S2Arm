@@ -1386,9 +1386,9 @@
   "s2arm.install.account": "签名团队：%@",
   "s2arm.install.checklist": "装之前",
   "s2arm.install.device": "设备：%@",
-  "s2arm.install.note": "通过 Xcode 账号签名并用数据线安装，免费账号需每 7 天重新安装",
+  "s2arm.install.note": "用你在 S2Arm 里登录的 Apple ID 签名并用数据线安装，免费账号需每 7 天重新安装",
   "s2arm.install.start": "开始装",
-  "s2arm.install.teamManual": "首次使用 Xcode 账号",
+  "s2arm.install.teamManual": "Apple TV / 独立 App 方案用的 Xcode 团队",
   "s2arm.install.teamManualField": "10 位 Team ID",
   "s2arm.install.teamManualHelp": "已登录但未识别到团队时，可填写 Xcode 账户页或 Apple 开发者网站中的 Team ID",
   "s2arm.install.teamManualUse": "用这个团队装",
@@ -1786,5 +1786,7 @@
   "s2arm.env.xcode.none": "还没找到 Xcode",
   "s2arm.env.xcode.choose": "选择 Xcode…",
   "s2arm.env.xcode.auto": "改回自动查找",
-  "s2arm.env.xcode.invalid": "选的不是完整的 Xcode（要有 Contents/Developer/usr/bin/xcodebuild），没有改动。"
+  "s2arm.env.xcode.invalid": "选的不是完整的 Xcode（要有 Contents/Developer/usr/bin/xcodebuild），没有改动。",
+  "s2arm.env.action.appleLogin": "登录 Apple ID",
+  "s2arm.fail.appleAccount": "读不出登录的 Apple ID"
 }

@@ -139,6 +139,18 @@ import S2ArmAppleAdapter
             if device == nil, !export { return .bad(Self.deviceRequired) }
             model.install(g, teamId: str("teamId"), device: device, acceptDropped: a["acceptDropped"] as? Bool ?? false,
                           accept: Self.acceptFlags(a).subtracting(["acceptDropped"]), ask: false, export: export); return .ok()
+        case ("POST", "/install-action"):   // 装机前清单一项的动作（同点清单里那一项的按钮）：按当前清单里这一项的 action 走同一个派发
+            guard let g = game() else { return .bad("没有这个 gameId") }
+            guard let id = str("id") else { return .bad("缺 id（清单项 id：package / appleId / connected / trusted / developerMode / devcert …）") }
+            guard model.installGameID == g.id, let r = model.installReadiness else {
+                return ControlReply(code: 409, body: ControlReply.json(["ok": false, "error": "还没有这款的装机清单：先 install-check \(g.id)，等 GET /state 的 installReadiness 出来"]))
+            }
+            guard let item = r.items.first(where: { $0.id == id }) else { return .bad("清单里没有这一项：\(id)") }
+            guard !item.ok, let action = item.action, S2ArmLauncherModel.installActions.contains(action) else {
+                return ControlReply(code: 409, body: ControlReply.json(["ok": false, "error": item.ok ? "这一项已经好了，不用做" : "这一项没有可做的动作（在等前一步，或不用人做）"]))
+            }
+            model.performInstallAction(action, gameId: g.id)
+            return .ok(["action": action])
         case ("POST", "/signingProject"):
             model.openSigningProject(); return .ok()
         case ("POST", "/update-phone"):   // 更新 iPhone 上的 S2Arm（v0.3.0）：同库页右上角按钮；有要重新出包的款没给 acceptStale → 409 列出它们
@@ -284,6 +296,7 @@ import S2ArmAppleAdapter
         case ("POST", "/environment"):
             model.checkEnvironment(); return .ok()
         case ("POST", "/show"):   // 打开某一页（同玩家点标题栏「环境检查」/ 游戏的「出包」/ 回游戏库）：AI 照手册操作、截图核界面用
+            model.clearPresented()   // 换页：清单动作打开的面板 / 说明收起（presented 清空，同 Windows）
             switch str("page") ?? "" {
             case "environment": model.exportFor = nil; model.showEnvironment = true
             case "export":
@@ -305,6 +318,7 @@ import S2ArmAppleAdapter
             model.refresh(); return .ok()
         case ("POST", "/dismiss"):   // 关掉提示框：报错，以及更新弹窗 / 新功能大窗（同玩家点关闭：这一版 / 这一期不再弹）
             model.dismissErrors()
+            model.clearPresented()   // 清单动作打开的登录面板 / 说明也收起（presented 清空，同 Windows）
             if model.updatePopup != nil { model.closeUpdatePopup() }
             return .ok()
         case ("POST", "/diagnostics"):
@@ -348,6 +362,7 @@ import S2ArmAppleAdapter
         ["POST /build {gameId, target, spaceOverride?}", "出包：spaceOverride = true 同界面「仍然继续」，磁盘预检不够也照出；target = ios（iPhone / iPad，缺省）| mac | android | harmony；安卓、鸿蒙回 409「即将上线，敬请期待」"],
         ["POST /customize {gameId, name?, coverPath?}", "改游戏显示名 / 封面（JPG、PNG）；不传的不动，传空字符串恢复默认；下次装到 iPhone 时带上"],
         ["POST /installCheck {gameId}", "装机前清单（只读）：几秒后看 GET /state 的 installReadiness"],
+        ["POST /install-action {gameId, id}", "点装机前清单里一项的按钮（id = 清单项 id）：按这一项的 action 打开对应的面板 / 页面（appleLogin 登录面板、pickDevice 装到哪台、trustHelp / developerModeHelp 说明、openExport 出包页、devCertSettings 设置的证书一栏）；那一项已好或没有动作回 409。打开了什么看 GET /state 的 presented"],
         ["POST /install {gameId, acceptDropped?, acceptNoBackup?, acceptStale?}", "装到 iPhone（不用先 installCheck，缺什么作业报真实原因）；可确认的失败码先问玩家、同意了带对应参数再发：container_would_drop → acceptDropped（手机上有别的电脑装的游戏这次带不上）、save_backup_failed → acceptNoBackup（覆盖前没能备份存档）、container_stale → acceptStale（旧资源包要重出）"],
         ["POST /phone-identity {device, force?}", "把这台电脑的签名身份交给手机上的 S2Arm（AltStore / SideStore / 证书 App 装的团队对得上也交），以后手机上自己签导入的游戏包；交过了不重交（force = 照样重交）；结果看 GET /state 的 tasks（operation = phoneIdentity）"],
         ["POST /console-action {device, action, gameIds?}", "同点总控台这台手机上的按钮：action 只认 GET /state 的 phoneConsole 里这台此刻显示的（installShell / updateShell / renewShell / exportShellIpa / handOverIdentity / updateSelected / pushS2arm / exportS2arm）；gameIds = 推 / 导出哪几款（不给 = 总控台勾选的）；没有这个按钮回 409"],
@@ -372,7 +387,7 @@ import S2ArmAppleAdapter
         let keys = m.keysReady
         let rd: Any = m.installReadiness.map { r -> [String: Any] in
             ["gameId": m.installGameID ?? "", "checkedDevice": m.installReadinessDevice ?? "", "ready": r.ready, "device": r.device, "account": r.account, "signing": r.signing,
-             "items": r.items.map { ["id": $0.id, "ok": $0.ok, "waiting": $0.waiting, "title": $0.title, "detail": $0.detail, "who": $0.who] }]
+             "items": r.items.map { i -> [String: Any] in ["id": i.id, "ok": i.ok, "waiting": i.waiting, "title": i.title, "detail": i.detail, "who": i.who, "action": i.action.map { $0 as Any } ?? NSNull()] }]
         } ?? NSNull()
         func describe(_ s: JobSession) -> [String: Any] {
             let phase: String
@@ -410,6 +425,8 @@ import S2ArmAppleAdapter
             "notice": NSNull(),
             "error": (m.actionError ?? (m.libraryError == LibraryProvider.noLibraryMessage ? nil : m.libraryError) ?? m.environmentError ?? m.installError ?? m.aiControlError).map { $0 as Any } ?? NSNull(),
             "installReadiness": rd,
+            // 当前呈现的弹窗 / 面板（取值同装机清单的 action 名：appleLogin / trustHelp / developerModeHelp / pickDevice / devCertSettings / openExport），没开 = null
+            "presented": m.presented ?? NSNull(),
             "update": m.updateStatus,
             "installMode": ["signMode": m.installMode.signMode, "exportAvailable": m.installMode.exportAvailable],
             // 总控台每台手机实际显示的按钮（11-19，test.4 真机验收用）：与界面同一个来源 consoleActions；installed.by：启动器装的 s2arm / 别的工具装的 other / 没装或判不出 null。开关关着 = null

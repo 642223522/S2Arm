@@ -375,6 +375,18 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var devCert: DevCertStatus?
     var failingReads: Set<String> = []   // 被动刷新正在连续失败的那几类（reportFailure 只报头一次）
     @Published var showDevCertImport = false
+    /// Apple ID 登录（0.6.0 Mac，S2ArmLauncherModel+AppleLogin.swift）：当前账号、登录面板挂在哪一层（install / settings / main，nil = 没开）与进行到哪
+    @Published var appleAccount: AppleAccount?
+    @Published var appleLoginHost: String?
+    @Published var appleLoginPhase: AppleLoginPhase = .idle
+    var appleLoginTask: Task<Void, Never>?
+    /// 装机清单派发出的动作（performInstallAction）：在装机窗里弹的说明（trustHelp / developerModeHelp）、「装到哪台」那一行要不要亮出来、
+    ///   设置页要定位到哪一栏（devCertSettings）、要离开装机窗去的地方（装机窗收到后先关自己再去）；开着的装机窗是哪款
+    @Published var installHelp: String?
+    @Published var pickDeviceFocus = false
+    @Published var settingsFocus: String?
+    @Published var installLeave: InstallLeave?
+    var installViewOpen: String?
     @Published private(set) var customizing = false
     /// 非会话作业（换封面 / 改名、释放空间、存档）在等库锁时作业层的原句「在等「…」结束…」（phase=waiting_lock）；拿到锁或做完清空。
     /// 剃刀 M3：原先这几处只转圈，别的任务占着库时最长等 120 秒，玩家不知道在等什么

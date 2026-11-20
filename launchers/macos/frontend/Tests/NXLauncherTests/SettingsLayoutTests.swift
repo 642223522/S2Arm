@@ -1837,7 +1837,8 @@ import S2ArmAppleAdapter
         }
     }
 
-    func testInstallRepairActionsShareOneColumnInBothLanguages() async throws {
+    /// 0.6.0 Mac：清单按钮只按作业层给的 action 画（appleId → 「登录 Apple ID」打开 S2Arm 自己的登录面板）；不再有「打开 Xcode」「去设置」两个
+    func testInstallChecklistButtonFollowsItemAction() async throws {
         let fixture = try SettingsFixture()
         defer { fixture.remove() }
         fixture.model.checkInstall("fixture")
@@ -1845,16 +1846,17 @@ import S2ArmAppleAdapter
         XCTAssertNotNil(fixture.model.installReadiness)
         for language in [Lang.zh, .en] {
             let (host, window) = try await render(AnyView(InstallView(model: fixture.model, gameID: "fixture")), fixture: fixture, language: language)
-            defer { window.close() }
+            fixture.navigation.source.controllers = { [] }; fixture.navigation.attach(window)
+            defer { fixture.navigation.detach(); window.close() }
             let targets = fixture.navigation.controlTargets(in: window)
-            let settings = try XCTUnwrap(targets.first { $0.id == "install.goSettings" })
-            let xcode = try XCTUnwrap(targets.first { $0.id == "install.openXcode" })
-            XCTAssertEqual(settings.frame.width, 106, accuracy: 1)
-            XCTAssertEqual(xcode.frame.width, 106, accuracy: 1)
-            XCTAssertEqual(settings.frame.union(xcode.frame).width, 220, accuracy: 1)
-            XCTAssertEqual(settings.frame.midY, xcode.frame.midY, accuracy: 1)
-            XCTAssertTrue(window.convertToScreen(host.bounds).contains(settings.frame.union(xcode.frame)))
+            let login = try XCTUnwrap(targets.first { $0.id == "install.action.appleId" })
+            XCTAssertFalse(targets.contains { $0.id == "install.openXcode" || $0.id == "install.goSettings" })
+            XCTAssertTrue(window.convertToScreen(host.bounds).contains(login.frame))
             try snapshot(host, "install-repair-\(language.code)")
+            fixture.navigation.focus("install.action.appleId"); fixture.navigation.handle(.confirm)
+            try await Task.sleep(for: .milliseconds(100))
+            XCTAssertEqual(fixture.model.appleLoginHost, "install", "点了就从装机窗弹登录面板")
+            fixture.model.closeAppleLogin()
         }
     }
 
@@ -2333,7 +2335,7 @@ private final class SettingsRunner: JobProcessRunner {
         }
         if request["operation"] as? String == "installMode" { result = ["mode": "device"] }
         if request["operation"] as? String == "installCheck" {
-            result = ["ready": true, "items": [["id": "appleId", "title": "Apple ID", "detail": "请在 Xcode 登录 Apple ID", "ok": false]]]
+            result = ["ready": true, "items": [["id": "appleId", "title": "Apple ID", "detail": "还没用 Apple ID 登录", "ok": false, "action": "appleLogin"]]]
         }
         if request["operation"] as? String == "preflight" {
             result = ["checks": preflightChecks]
