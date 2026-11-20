@@ -3540,6 +3540,40 @@ static void t_sbuf_window(void) {
     CHECK(nvn_unimpl_count("draw", "storage_buffer_unresolved") == 0 && nvn_unimpl_count("draw", "storage_buffer_offset_unaligned") == unaligned0 + 1);
     g_caps_min_ssbo = 0; g_caps_max_ssbo = 0; rp_draw_reset(); pass_fresh();
 }
+// 存储缓冲的长度伸出所在池的池尾（真机：4096 字节的池里偏移 2560 处绑 1872 字节）：窗口夹到池尾照画，具名记账
+//   storage_buffer_past_pool_end_clamped；不是范围上限那一条（storage_buffer_window_clamped 不动）。
+// 负对照：正好绑到池尾的不记账；起点不在任何池里的仍然整笔拒绝（storage_buffer_unresolved），不被这条路接走。
+static void t_sbuf_past_pool_end(void) {
+    pass_fresh(); g_gdraws = g_resolves = g_resolve_rc = 0; g_arena_used = 0; memset(g_nfb, 0, sizeof g_nfb);
+    memset(g_pmem, 0, sizeof g_pmem); nvn_be_pool_add(g_pmem, sizeof g_pmem);
+    const uint64_t base = (uint64_t)(uintptr_t)g_pmem;
+    const uint64_t tail = (NPG - 1) * PG + 2560, rem = PG - 2560;   // 最后一页偏移 2560：到池尾还剩 1536 字节
+    const uint64_t pe0 = nvn_unimpl_count("draw", "storage_buffer_past_pool_end_clamped");
+    const uint64_t cl0 = nvn_unimpl_count("draw", "storage_buffer_window_clamped");
+    const uint64_t un0 = nvn_unimpl_count("draw", "storage_buffer_unresolved");
+    int d0 = g_gdraws;
+    sbuf_case(1, NVN_RB_SBUFP, base + tail, 1872, 0, 0);   // 伸出池尾 336 字节：照画，绑到池尾为止
+    CHECK(g_gdraws == d0 + 1 && g_nfb[1] == 1 && g_fb[1][0].cls == NVN_GPU_RES_SSBO);
+    CHECK(g_fb[1][0].u.b.off == tail && g_fb[1][0].u.b.len == rem);
+    CHECK(nvn_unimpl_count("draw", "storage_buffer_past_pool_end_clamped") == pe0 + 1);
+    CHECK(nvn_unimpl_count("draw", "storage_buffer_window_clamped") == cl0 && nvn_unimpl_count("draw", "storage_buffer_unresolved") == un0);
+    d0 = g_gdraws;
+    sbuf_case(1, NVN_RB_SBUFP, base + tail + 0x40, 1872, 256, 0);   // 不对齐：起点先下取整，再夹到池尾
+    CHECK(g_gdraws == d0 + 1 && g_nfb[1] == 1 && g_fb[1][0].u.b.off == tail && g_fb[1][0].u.b.len == rem);
+    CHECK(nvn_unimpl_count("draw", "storage_buffer_past_pool_end_clamped") == pe0 + 2);
+    d0 = g_gdraws;
+    sbuf_case(1, NVN_RB_SBUFP, base + tail, rem, 0, 0);   // 负对照：正好绑到池尾，原样、不记账
+    CHECK(g_gdraws == d0 + 1 && g_nfb[1] == 1 && g_fb[1][0].u.b.off == tail && g_fb[1][0].u.b.len == rem);
+    CHECK(nvn_unimpl_count("draw", "storage_buffer_past_pool_end_clamped") == pe0 + 2);
+    sbuf_case(5, NVN_RB_SBUFP, base + tail, 1872, 0, 0);   // 计算阶段同一个窗口
+    CHECK(g_ndisp == 1 && g_ncb == 1 && g_cb[0].u.b.off == tail && g_cb[0].u.b.len == rem);
+    CHECK(nvn_unimpl_count("draw", "storage_buffer_past_pool_end_clamped") == pe0 + 3);
+    d0 = g_gdraws;
+    sbuf_case(1, NVN_RB_SBUFP, 0x12340, 32, 0, 0);   // 负对照：起点不在任何池里，没有可夹的池尾，整笔拒绝
+    CHECK(g_gdraws == d0 && nvn_unimpl_count("draw", "storage_buffer_unresolved") == un0 + 1);
+    CHECK(nvn_unimpl_count("draw", "storage_buffer_past_pool_end_clamped") == pe0 + 3 && nvn_unimpl_count("draw", "storage_buffer_window_clamped") == cl0);
+    g_caps_min_ssbo = 0; g_caps_max_ssbo = 0; rp_draw_reset(); pass_fresh();
+}
 static void q_counter(stream *s, uint32_t op, uint64_t type, uint64_t *dst) { uint8_t *r = put(s, op, 16); uint64_t ad = (uint64_t)(uintptr_t)dst; memcpy(r, &type, 8); memcpy(r + 8, &ad, 8); }
 
 static void put_set_rt_v(stream *s, const tex_t *color, const view_t *cv) {   // 一个颜色槽，带视图
@@ -6463,7 +6497,7 @@ int main(int argc, char **argv) {
     t_arena697_detail();
     t_logic_op_accounting();
     t_gs_dirty_and_topology();
-    t_gs_bind(); t_ub_fill_async(); t_storage_null_binding(); t_storage_sync_before_pass(); t_stage_dropped_clears_binds(); t_sbuf_window();
+    t_gs_bind(); t_ub_fill_async(); t_storage_null_binding(); t_storage_sync_before_pass(); t_stage_dropped_clears_binds(); t_sbuf_window(); t_sbuf_past_pool_end();
     t_graphics_high_slots();
     t_tbuf_replay();
     t_decl_sampling();
