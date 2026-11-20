@@ -53,7 +53,7 @@ static int dem_eq(const void *a, const void *b) { return memcmp(a, b, sizeof(str
 
 int nvn_vk_pipe_demand_on(void) {
     static int v = -1;
-    if (v < 0) v = nvn_plat_flag("nvk_pipe_async", 0) ? 1 : 0;
+    if (v < 0) v = nvn_plat_flag("nvk_pipe_async", 1) ? 1 : 0;   // 缺省开（同 iOS）：首遇管线后台建、有界等待，玩家不因同步建管线卡帧
     return v;
 }
 uint32_t nvk_fu_item_ms(void)   { static int v = -2; if (v == -2) v = nvn_plat_flag("fu_item_ms", 2000); return v > 0 ? (uint32_t)v : 0; }
