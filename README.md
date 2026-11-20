@@ -45,9 +45,9 @@ From 0.5.0 to 0.6.0 (how each number is counted is in the table):
 
 | | Number | How it's counted |
 |---|---|---|
-| Fixes merged | **258** | Fix commits merged into main after 0.5.0 |
-| Player reports handled | **194** | Feedback issues closed after 0.5.0 |
-| Community contributions | **94** | Pull requests from players and developers |
+| Fixes merged | **302** | Fix commits merged into main after 0.5.0 |
+| Player reports handled | **151** | Feedback issues closed after 0.5.0 |
+| Community contributions | **116** | Pull requests from players and developers |
 | GPU render time | **−50%** | Deferred-lighting scene, 4.8–5.9 ms → 2.7 ms |
 | Build memory peak | **−35%** | Peak memory while building large games |
 

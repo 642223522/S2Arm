@@ -45,9 +45,9 @@ De la 0.5.0 à la 0.6.0 (la façon de compter chaque chiffre est dans le tableau
 
 | | Chiffre | Comment c'est compté |
 |---|---|---|
-| Corrections intégrées | **258** | Commits de correction intégrés dans main après la 0.5.0 |
-| Retours de joueurs traités | **194** | Issues de retours fermées après la 0.5.0 |
-| Contributions de la communauté | **94** | Pull requests de joueurs et de développeurs |
+| Corrections intégrées | **302** | Commits de correction intégrés dans main après la 0.5.0 |
+| Retours de joueurs traités | **151** | Issues de retours fermées après la 0.5.0 |
+| Contributions de la communauté | **116** | Pull requests de joueurs et de développeurs |
 | Temps de rendu GPU | **−50%** | Scène en éclairage différé, 4.8–5.9 ms → 2.7 ms |
 | Pic de mémoire à l'export | **−35%** | Pic de mémoire lors de l'export de gros jeux |
 
