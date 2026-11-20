@@ -91,6 +91,33 @@ import NXLauncher
         print("popover-cap natural=\(natural) capped=\(capped)")
     }
 
+    func testNintendoControllersGetTheFaceEditor() async throws {
+        _ = NSApplication.shared
+        let pad = PopoverLayoutController("Pro Controller")
+        for channel in [false, true] {
+            let suite = "s2arm-popover-nintendo-" + UUID().uuidString
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+            let order = FileManager.default.temporaryDirectory.appendingPathComponent(suite + ".json")
+            defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: order) }
+            // 专用通道（Switch 2 Pro）：不经系统手柄，玩家位是 whole 单元
+            if channel { defaults.set(Data(#"{"units":[{"whole":{"id":"pro","kind":4}}]}"#.utf8), forKey: "S2AMacNS2PlayerAssignment") }
+            let controller = NS2LauncherController(socketURL: URL(fileURLWithPath: "/tmp/" + suite + ".sock"), store: defaults,
+                orderFile: order, systemControllers: { channel ? [] : [pad] }, notifications: NotificationCenter())
+            let systems = SystemControllers(pads: channel ? [] : [.init(id: ObjectIdentifier(pad), name: "Pro Controller", family: .nintendoPro)])
+            if !channel { controller.updateSystem(systems.presentKeys) }
+            let navigation = LauncherPadNavigation()
+            let host = NSHostingView(rootView: Switch2ProConnectionPopover(controller: controller, systems: systems, lang: "zh")
+                .environment(\.padControls, navigation))
+            let window = NSWindow(contentRect: CGRect(origin: CGPoint(x: 100, y: 100), size: host.fittingSize), styleMask: [.borderless], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false; window.contentView = host; window.orderBack(nil)
+            defer { window.close() }
+            host.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(80))
+            let ids = Set(navigation.controlTargets(in: window).map(\.id))
+            XCTAssertTrue(ids.isSuperset(of: ["controller.face.0", "controller.face.3", "controller.face.xbox", "controller.face.reset"]),
+                          "\(channel ? "专用通道" : "系统认的") 任天堂手柄也要看得到四键布局：\(ids.sorted())")
+        }
+    }
+
     func testLongControllerNamesPreservePanelInsets() async throws {
         _ = NSApplication.shared
         for name in ["DualSense Wireless Controller", "DualSense Edge Wireless Controller — A deliberately long device name"] {
