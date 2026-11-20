@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""存储缓冲槽「没映射」（地址 0 或长度 0，rp_draw.c sb_unmapped，同 Ryujinx BufferCache.TranslateAndCreateMultiBuffers / BufferManager.BindBuffers）的点变异：
+"""存储缓冲槽长度语义（rp_draw.c sb_len / sb_unmapped）的点变异：地址有效、长度 0 按硬件语义绑真实内存（池剩余长度，回写按它登记）；
+没有可绑真实内存（地址 0 / 不在池里）才绑 64 KiB 空缓冲照画；统一缓冲来源（UBOP）不补长度。
 每个变异体在 build/ 下的副本里重编 t_nvn_replay，t_storage_null_binding 必须红在指定的断言上；源码树不动。
 
 用法：python3 storage_unmapped_mutation_test.py
@@ -17,8 +18,12 @@ CC = os.environ.get('CC', 'cc')
 DRAW = 'graphics/nvn/replay/rp_draw.c'
 
 mutations = [
-    ('撤回 Ryujinx 口径（只认地址、长度都为 0）', [('static int sb_unmapped(const p_bind_buf *sb) { return !sb->addr || !sb->size; }',
-                                               'static int sb_unmapped(const p_bind_buf *sb) { return !sb->addr && !sb->size; }')], 'g_gdraws == draws + 1'),
+    ('退回 Ryujinx 口径（地址有效、长度 0 当没映射、绑空缓冲）', [('    if (sb->size || !sbufp) return sb->size;', '    if (sb->size || !sbufp || 1) return sb->size;')],
+     'g_fb[1][0].u.b.off == g[k].want_off && g_fb[1][0].u.b.len == g[k].want_len'),
+    ('统一缓冲来源（UBOP）长度 0 也补池剩余长度', [('    if (sb->size || !sbufp) return sb->size;', '    if (sb->size) return sb->size;')],
+     'nvn_unimpl_count("draw", "storage_buffer_unbound") == ub0 + 1'),
+    ('可写长度 0 的回写仍按槽里的 0 登记', [('rp_post_gpu_write(sb->addr, reach < blen ? reach : blen); }', 'rp_post_gpu_write(sb->addr, reach < sb->size ? reach : sb->size); }')],
+     'g_pmem[4 * PG] == 0x5a'),
     ('统一缓冲当存储（UBOP）也走空缓冲', [('if (sb && e->src_kind == NVN_RB_SBUFP && sb_unmapped(sb)) {', 'if (sb && sb_unmapped(sb)) {')],
      'nvn_unimpl_count("draw", "storage_buffer_unbound") == unbound + 1'),
     ('空缓冲的长度不是 64 KiB', [('o->u.b.off = 0; o->u.b.len = 0x10000; break;', 'o->u.b.off = 0; o->u.b.len = 0x100; break;')], 'g_fb[0][0].u.b.len == 0x10000'),
@@ -66,7 +71,7 @@ def main():
             reds = [l for l in out.splitlines() if '【红】' in l]
             raise SystemExit('%s：红在别处，期望含 %r\n%s' % (name, want, '\n'.join(reds[:6])))
         print('  %s：已拦住（红在「%s」）' % (name, want), flush=True)
-    print('PASS: 存储缓冲槽没映射共 %d 个变异体全部被单测拦住' % len(mutations))
+    print("PASS: 存储缓冲槽长度语义共 %d 个变异体全部被单测拦住" % len(mutations))
 
 
 main()

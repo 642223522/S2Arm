@@ -2853,8 +2853,9 @@ static void t_storage_null_binding(void) {
     p_bind_buf *b = put(&missing, OP_BIND_SSBO, sizeof *b); b->stage = 0; b->index = 0; b->addr = 0x12340; b->size = 32;
     q_draw(&missing); end(&missing); submit1(&missing); fake_complete(NVN_GPU_DONE_OK);
     CHECK(g_gdraws == 2 && nvn_unimpl_count("draw", "storage_buffer_unresolved") == 1);
-    // 地址或长度只空一个的存储缓冲槽 = 没映射（Ryujinx TranslateAndCreateMultiBuffers：gpuVa == 0 || size == 0 → PteUnmapped；BindBuffers 不发这一格）：
+    // 没有可绑真实内存的存储缓冲槽（地址 0；或地址不在任何池里，k = 0 / 3 的 0x12340 不在池里）：
     //   照画，绑同一份 64 KiB 空缓冲、不另建缓冲、不登记回写（k = 3：可写的也一样）。UBO 指针来源（k = 2）没绑仍具名跳过，不被这条路接走。
+    //   地址在池里、长度 0 的槽绑真实内存，在 t_sbuf_window 里测。
     for (int k = 0; k < 4; k++) {
         stream invalid = {0}; q_env(&invalid);
         g_fprog.nent[0] = 1; e = &g_fprog.ent[0][0];
@@ -3023,6 +3024,10 @@ static void t_sbuf_window(void) {
         {PG,            0x3000, 0,   0x1000, PG,     0x1000, 1},   // 超范围上限：夹短、具名、照画
         {PG + 0x40,     0x3000, 256, 0x1000, PG,     0x1000, 1},   // 两样都有
         {PG,            0x1000, 0,   0x1000, PG,     0x1000, 0},   // 负对照：正好等于上限，不记账
+        // 地址有效、长度 0：硬件按地址裸访存（LDG / STG 不拿槽长度判界），绑真实内存，长度 = 所在池剩下的部分（不是空缓冲）
+        {3 * PG,        0,      0,   0,      3 * PG, (NPG - 3) * PG, 0},
+        {3 * PG + 0x40, 0,      256, 0,      3 * PG, (NPG - 3) * PG, 0},   // 不对齐：起点下取整、长度补余数，正好到池尾
+        {PG,            0,      0,   0x1000, PG,     0x1000, 1},           // 池剩余超范围上限：夹短、具名、照画
     };
     uint64_t want_cl = cl0;
     for (unsigned k = 0; k < sizeof g / sizeof g[0]; k++) {
@@ -3036,6 +3041,30 @@ static void t_sbuf_window(void) {
     // 计算阶段：发绑定时自己解析，同一个窗口
     sbuf_case(5, NVN_RB_SBUFP, base + 2 * PG + 0x40, 64, 256, 0);
     CHECK(g_ndisp == 1 && g_ncb == 1 && g_cb[0].u.b.off == 2 * PG && g_cb[0].u.b.len == 0x80);
+    sbuf_case(5, NVN_RB_SBUFP, base + PG, 0, 0, 0);   // 计算阶段同口径：长度 0 绑到池尾
+    CHECK(g_ndisp == 1 && g_ncb == 1 && g_cb[0].u.b.off == PG && g_cb[0].u.b.len == (NPG - 1) * PG);
+    {   // 可写、长度 0：显卡写回按实际绑定长度登记（不是槽里的 0），完成后落回游戏内存
+        static uint8_t mirror[sizeof g_pmem]; memset(mirror, 0, sizeof mirror); memset(g_pmem, 0, sizeof g_pmem);
+        g_caps_min_ssbo = 0; g_caps_max_ssbo = 0; rp_draw_reset(); g_arena_used = 0;
+        g_cresolves = g_cresolve_rc = g_cpipe_gets = g_ndisp = g_cbinds = 0; g_ncb = 0;
+        memset(&g_cprog, 0, sizeof g_cprog); g_cprog.is_compute = 1; g_cprog.sh[0] = &g_fsh[0];
+        g_cprog.nent[0] = 1; g_cprog.ent[0][0].cls = NVN_GPU_RES_SSBO; g_cprog.ent[0][0].src_kind = NVN_RB_SBUFP; g_cprog.ent[0][0].src_reg = 1;
+        g_cprog.ent[0][0].access = NVN_GPU_ACC_R | NVN_GPU_ACC_W;
+        g_buf_cpu_fake = mirror; nvn_be_sub_begin();
+        rp_S.ssbo[5][1].addr = base + 3 * PG; rp_S.ssbo[5][1].size = 0;
+        p_dispatch dp; memset(&dp, 0, sizeof dp); dp.x = dp.y = dp.z = 1;
+        rp_dispatch(&g_fake_cmd, &dp, NULL);
+        CHECK(g_ndisp == 1 && g_ncb == 1 && g_cb[0].u.b.len == (NPG - 3) * PG);
+        memset(mirror + 3 * PG + PG, 0x5a, 16);   // 显卡写在槽起点后一页（槽长度 0 时只有按池剩余登记才够得着）
+        nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK); g_buf_cpu_fake = NULL;
+        CHECK(g_pmem[4 * PG] == 0x5a && g_pmem[4 * PG + 15] == 0x5a);
+        rp_S.ssbo[5][1].addr = 0;
+    }
+    {   // 统一缓冲来源（UBOP）长度 0 不按存储槽补长度：仍算没绑、具名跳过
+        const uint64_t ub0 = nvn_unimpl_count("draw", "storage_buffer_unbound");
+        sbuf_case(5, NVN_RB_UBOP, base + PG, 0, 0, 0);
+        CHECK(g_ndisp == 0 && nvn_unimpl_count("draw", "storage_buffer_unbound") == ub0 + 1);
+    }
     // UBOP 着色器按原基址取数：无法合法移动不对齐的窗口，应具名拒绝，而不是向 Vulkan 交非法偏移。
     const uint64_t unaligned0 = nvn_unimpl_count("draw", "storage_buffer_offset_unaligned");
     sbuf_case(5, NVN_RB_UBOP, base + 2 * PG + 0x40, 64, 256, 0);
