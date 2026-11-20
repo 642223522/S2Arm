@@ -26,10 +26,17 @@ int main(void) {
     char big[512]; memset(big, 'x', sizeof big - 1); big[sizeof big - 1] = 0;
     uint64_t t0 = ms(); char z[65536];
     for (int i = 0; i < 4000; i++) { s2a_log_line("%s", big); while (read(l[0], z, sizeof z) > 0) {} }
-    if (ms() - t0 > 5000) { printf("✗ ② 副本没人读时调用方被卡（%llu ms）\n", (unsigned long long)(ms() - t0)); bad++; }
-    // 读到 1 秒没新数据为止
+    // 「调用方不被卡」由下面的「丢行 ≥ 1、有丢行通知」证明（副本没人读时丢行而不是阻塞；真阻塞的话上面的循环走不完）。耗时只打印，不判（11-19：原 > 5 秒判红，负载高时假红）
+    printf("  ② 4000 行写完 %llu ms（仅供参考）\n", (unsigned long long)(ms() - t0));
+    // 读到「整行 + 丢行通知里的丢行数 = 4000」为止（30 秒兜底），不按「1 秒没新数据」判读完（11-19：负载高时写出线程停顿过 1 秒就截断 → 假红）
     static char all[4 << 20]; size_t n = 0; struct pollfd pf = { c[0], POLLIN, 0 };
-    while (poll(&pf, 1, 1000) > 0) { ssize_t k = read(c[0], all + n, sizeof all - 1 - n); if (k <= 0) break; n += (size_t)k; }
+    for (uint64_t t1 = ms(); ms() - t1 < 30000; ) {
+        if (poll(&pf, 1, 100) > 0) { ssize_t k = read(c[0], all + n, sizeof all - 1 - n); if (k <= 0) break; n += (size_t)k; }
+        all[n] = 0; unsigned long g_ = 0, d_ = 0;   // 只数完整的行
+        for (char *s = all, *e; (e = strchr(s, '\n')); s = e + 1) { unsigned long v; const char *q = strstr(s, "[控制台] 环满丢 ");
+            if (q && q < e && sscanf(q, "[控制台] 环满丢 %lu 行", &v) == 1) d_ += v; else if ((size_t)(e - s) == sizeof big - 1 && s[0] == 'x') g_++; }
+        if (g_ + d_ >= 4000) break;
+    }
     all[n] = 0; unsigned long got = 0, drop = 0, broken = 0, notes = 0;
     for (char *s = all, *e; *s; s = e + 1) {
         if (!(e = strchr(s, '\n'))) { broken++; break; }

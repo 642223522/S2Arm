@@ -543,7 +543,7 @@ int main(void) {
                 }
                 close(qp[1]); close(lp[1]);
                 struct pollfd pf = {qp[0], POLLIN, 0};
-                int queried = held > 0 && poll(&pf, 1, 1200) > 0;
+                int queried = held > 0 && poll(&pf, 1, 30000) > 0;   // 30 秒兜底（原 1.2 秒：负载高时查询线程慢一点就被当成卡在锁上）
                 if (held > 0) { kill(held, SIGKILL); waitpid(held, NULL, 0); }
                 CHECK(held > 0 && !queried, "诊断关闭时 mprotect fatal 持 g_mu 终止，并发查询 1 s 内不得完成");
                 close(qp[0]); close(lp[0]);
