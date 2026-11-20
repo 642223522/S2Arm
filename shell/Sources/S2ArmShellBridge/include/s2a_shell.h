@@ -102,6 +102,11 @@ void s2a_shell_cloud_upload_background(const char *game_id);
 
 // 故障报修（游戏库设置页最下面）：实现在宿主 ios/diag.m（可不填的一句说明 → 打包上传、给短码）；本包弱定义缺省什么也不做
 void s2a_shell_report_problem(void);
+// 签名证书（游戏库设置「签名证书」，0.6.0）：实现在宿主 ios/cert_import.m。status = 现在手机上用来签游戏的证书（团队 · 来源，按界面语言），没有回空串；
+//   p12 = 文件选择器选 .p12、问密码、存钥匙串；sidestore = 打开 SideStore 取它当前的签名证书（回调 s2arm://sidestore-cert）。本包弱定义：status 空串、另两个什么也不做
+const char *s2a_shell_cert_status(void);
+void s2a_shell_cert_p12(void);
+void s2a_shell_cert_sidestore(void);
 /// Instant snapshot (0.6.0): 1 = the game has a complete snapshot to go back to (host ios/app.m; the shell's weak stub says 0).
 int s2a_shell_snapshot_available(const char *game_id);
 /// Starts the game back at its saved moment (asks first when the game saved after that moment). The shell's weak stub does nothing.

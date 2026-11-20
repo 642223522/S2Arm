@@ -75,7 +75,7 @@ fi
 # --zero-attr-core（#977）：同一套真 rp_draw + 真后端，跑零属性用例 t_replay_zero_attr.c。
 if [ "$mode" = "--indirect-core" ] || [ "$mode" = "--zero-attr-core" ]; then
     if [ "$mode" = "--indirect-core" ]; then
-        core_test=t_replay_indirect; core_shaders=(replay_null_storage.vert replay_front_face.vert solid_green.frag quad.vert quad.frag count_args.comp replay_drv0.vert replay_drv0.frag replay_drv0_args.comp)
+        core_test=t_replay_indirect; core_shaders=(replay_null_storage.vert replay_front_face.vert solid_green.frag quad.vert quad.frag count_args.comp replay_drv0.vert replay_drv0.frag replay_drv0_args.comp replay_binst.vert replay_binst.frag replay_binst_args.comp)
     else
         core_test=t_replay_zero_attr; core_shaders=(zattr.vert quad.frag)
     fi
@@ -301,7 +301,7 @@ if [ "$mode" = "--dispatch-barrier" ] || [ "$mode" = "--dispatch-barrier-neg" ] 
         [ -n "${db_log_off:-}" ] && tag="$1-dirtylog-off"   # db_log_off=1：开关 nvk_buf_dirtylog 关那一档（逐页退回路径）
         tag="dq$db_dq-$tag"   # 两级录制 nvk_dq 关 / 开两档都跑（夹具在 fence 之后按真实 vkCmd 快照数屏障，不靠关 DQ）
         set +e
-        VK_DRIVER_FILES="$icd" VK_LAYER_PATH="$layer" VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation VK_LAYER_VALIDATE_SYNC=1 \
+        VK_DRIVER_FILES="$icd" VK_LAYER_PATH="$layer" VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT \
             env S2A_REPLAY_DB_DQ=$db_dq ${db_log_off:+S2A_REPLAY_DIRTYLOG_OFF=1} timeout 120 "$out/dispatch-barrier" "$out/shaders" "$arm" > "$out/db-$tag.log" 2>&1
         rc=$?
         set -e
@@ -520,7 +520,7 @@ export TSAN_OPTIONS="halt_on_error=0 suppressions=$repo/android/tests/vk/tsan.su
 if [ "$mode" != "--tsan" ]; then
     export VK_LAYER_PATH=$layer
     export VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation
-    export VK_LAYER_VALIDATE_SYNC=1   # 同步校验：缺屏障会报 SYNC-HAZARD-*
+    export VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT   # 同步校验：缺屏障会报 SYNC-HAZARD-*
     if [ "$mode" = "--pipe-call-lifetime" ]; then
         S2A_TEST_LOGICOP_ONLY=1 timeout 60 "$out/t_backend_vk" "$out/shaders" --pipe-call-lifetime 2>&1 | tee "$out/pipe-call-lifetime.log"
         exit 0

@@ -1270,6 +1270,11 @@ static void punch_forget_locked(uint64_t lo, uint64_t hi) {
     uint64_t we = L.win_base + L.win_size; if (lo < L.win_base) lo = L.win_base; if (hi > we) hi = we;
     for (uint64_t p = lo; p < hi; p += HPG) { uint8_t *b = punch_at(p); if (!*b) continue; *b = 0; g_punch_pending_n--; g_punch_forget_n++; }
 }
+// 即时存档（snapshot.c dump_mem）：这一宿主页是游戏已释放、还没清零的（懒清零待清零）——语义上是零页，内容是作废的旧数据，不该存进快照。
+//   存档时游戏线程已冻结、不会再有还页 / 放出，这里不取 g_mu
+int s2a_snap_page_released(uint64_t hp) {
+    return g_punch_pend && L.win_size && hp >= L.win_base && hp < L.win_base + L.win_size && *punch_at(hp & ~(uint64_t)(HPG - 1));
+}
 // 收局时（lifecycle.c，_exit 前）打一行读数：取消 / SIGTERM 路径不走会话重置，否则读数永远看不到
 void s2a_punch_summary(void) {
     if (g_unmap_n) LOG("#258 解除物理映射读数：≥1 MB 的解除 %llu 次、持锁共 %llu ms、最长一次 %llu ms", (unsigned long long)g_unmap_n, (unsigned long long)(g_unmap_ns / 1000000), (unsigned long long)(g_unmap_max_ns / 1000000));

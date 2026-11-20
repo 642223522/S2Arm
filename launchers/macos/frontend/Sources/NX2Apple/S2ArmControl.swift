@@ -163,6 +163,10 @@ import S2ArmAppleAdapter
                               device: device,
                               acceptDropped: a["acceptDropped"] as? Bool ?? false, accept: Self.acceptFlags(a).subtracting(["acceptDropped", "acceptStale"]), ask: false)   // 同 /install：会挤掉别的电脑装的款时原样失败，带 acceptDropped 再发
             return .object(["ok": true, "stale": stale])
+        case ("POST", "/phone-identity"):   // 把签名身份交给手机上的 S2Arm（同总控台「把签名身份交给手机」）：别的工具装的 S2Arm 团队对得上也交；force = 交过了也重交
+            if let b = phoneBusy() { return b }
+            guard let device = str("device") else { return .bad(Self.deviceRequired) }
+            model.phoneIdentity(device: device, force: a["force"] as? Bool ?? false); return .ok()
         case ("POST", "/restore-iphone"):
             guard let g = game() else { return .bad("没有这个 gameId") }
             guard g.iphoneRestorable else { return .bad("没有可以装回的上一版手机 S2Arm") }
@@ -336,6 +340,7 @@ import S2ArmAppleAdapter
         ["POST /customize {gameId, name?, coverPath?}", "改游戏显示名 / 封面（JPG、PNG）；不传的不动，传空字符串恢复默认；下次装到 iPhone 时带上"],
         ["POST /installCheck {gameId}", "装机前清单（只读）：几秒后看 GET /state 的 installReadiness"],
         ["POST /install {gameId, acceptDropped?, acceptNoBackup?, acceptStale?}", "装到 iPhone（不用先 installCheck，缺什么作业报真实原因）；可确认的失败码先问玩家、同意了带对应参数再发：container_would_drop → acceptDropped（手机上有别的电脑装的游戏这次带不上）、save_backup_failed → acceptNoBackup（覆盖前没能备份存档）、container_stale → acceptStale（旧资源包要重出）"],
+        ["POST /phone-identity {device, force?}", "把这台电脑的签名身份交给手机上的 S2Arm（AltStore / SideStore / 证书 App 装的团队对得上也交），以后手机上自己签导入的游戏包；交过了不重交（force = 照样重交）；结果看 GET /state 的 tasks（operation = phoneIdentity）"],
         ["POST /uninstall {gameId, acceptDropped?, acceptNoBackup?}", "从 iPhone 上的 S2Arm 删一款（备份存档 → 更新容器 → 删数据；其余游戏不动）；acceptDropped / acceptNoBackup 同 /install"],
         ["POST /mods {gameId, import?:[路径], enable?:{名字: 真/假}, remove?:[名字]}", "资源替换 mod：导入 zip / 文件夹（找 romfs）、开关（关掉下次开始游戏不叠，装到 iPhone 时机上删掉）、删除；都不给只列；回 {mods:[{name, enabled, files, bytes}], imported, notes}"],
         ["POST /delete {gameId}", "删除这款游戏：IPA / 资源包 / 出包中间产物 / 缓存全删；存档与原始游戏文件保留"],

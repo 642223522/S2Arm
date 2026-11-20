@@ -348,6 +348,11 @@ public final class S2ArmEngineProvider: EngineProvider {
                                         widget: settings.homeWidget, cloudSaves: settings.cloudSavesFolder, events: events)
     }
 
+    /// 「把签名身份交给手机」（总控台 ① 手机与 App，作业 phoneIdentity）
+    public func phoneIdentity(device: String? = nil, force: Bool = false, events: EventSink = .discard) async throws -> PhoneIdentityResult {
+        try await installer.phoneIdentity(device: device, force: force, events: events)
+    }
+
     public func restorePhone(device: String? = nil, events: EventSink = .discard) async throws {
         try await installer.restorePrevious(device: device, events: events)
     }

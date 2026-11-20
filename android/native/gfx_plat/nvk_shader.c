@@ -79,7 +79,7 @@ static nvn_hmap g_progs = {.klen = 32};   // 内容身份（SHA-256）→ struct
 // 结果合并（#1355）：比对键（见 alias_key_hash：缓存文件头里的结果摘要 + 负载长度 + 阶段数 + c1）→ struct entry *（只借用；g_progs_mu 下读写；整表随 rp_shader_reset 清）。
 // 同一份编译结果的不同身份共用一个 entry（一份着色器句柄，管线缓存按句柄比，所以管线也合并）。缺省打开；debug.s2a.nvk_alias=0 关闭（只有调试包读，出包版恒走缺省）。
 static nvn_hmap g_res_tab = {.klen = 32};
-static _Atomic uint64_t g_n_alias_fg, g_n_alias_bg, g_n_alias_probe, g_n_alias_nores, g_n_alias_nofile;   // 合并（前台 / 预热带）/ 读头次数 / 头好但没有比对键一致的常驻程序 / 读头失败
+static _Atomic uint64_t g_n_alias_fg, g_n_alias_bg, g_n_alias_probe, g_n_alias_nores, g_n_alias_nofile, g_n_alias_badfile;   // 合并（前台 / 预热带）/ 读头次数 / 头好但没有比对键一致的常驻程序 / 没有缓存文件 / 缓存文件坏
 static int alias_on(void) { static int v = -1; if (v < 0) v = nvn_plat_flag("nvk_alias", 1) ? 1 : 0; return v; }
 // g_progs 与「同身份在途」表共用一把锁：nvn_hm 不是线程安全的，而预热带（[后台]）与提交线程都会查找/发布。
 // 锁只覆盖表结构与 entry 标志；parse、建后端着色器、编译都在锁外（否则预热带持锁建对象会挡住回放线程）。
@@ -287,7 +287,14 @@ static struct entry *alias_try(const uint8_t identity[32], int bg, const struct 
     if (busy) return NULL;
     uint8_t res[32]; uint64_t rlen = 0; char why[96];
     atomic_fetch_add_explicit(&g_n_alias_probe, 1, memory_order_relaxed);
-    if (s2a_program_cache_probe(cdir, identity, res, &rlen, why, sizeof why)) { atomic_fetch_add_explicit(&g_n_alias_nofile, 1, memory_order_relaxed); return NULL; }
+    const int prc = s2a_program_cache_probe(cdir, identity, res, &rlen, why, sizeof why);
+    if (prc > 0) { atomic_fetch_add_explicit(&g_n_alias_nofile, 1, memory_order_relaxed); return NULL; }   // 这个身份没有缓存文件（换翻译器闭包后的第一局几乎全是这种）
+    if (prc < 0) {   // 有文件但头不对（版本 / 内部身份 / 长度）：前几条把原因打出来
+        const uint64_t nb = atomic_fetch_add_explicit(&g_n_alias_badfile, 1, memory_order_relaxed) + 1;
+        if (nb <= 4) { char b[200]; snprintf(b, sizeof b, "结果合并：缓存文件头不对（第 %llu 个，身份 %02x%02x%02x%02x…）：%s", (unsigned long long)nb,
+            identity[0], identity[1], identity[2], identity[3], why); nvn_plat_log(NVN_PLAT_LOG_WARN, "shader", b); }
+        return NULL;
+    }
     uint8_t rk[32];
     alias_key_hash(res, rlen, key, rk);
     struct entry *ret = NULL;
@@ -898,7 +905,18 @@ static struct entry *build(const uint8_t *bytes, size_t len, const struct s2a_so
         }
     }
     e->prog.support_bytes = fp.support_bytes; e->prog.attr_mask = fp.stage[0].attr_mask;
-    for (int st = 0; st < nst && st < RP_PROG_STAGES; st++) if (fp.stage[st].binst_unread) e->prog.binst_unread |= (uint8_t)(1u << st);
+    // 两个读集在同一个结果内，开关只改变消费侧，不改变请求 / 缓存键。旧结果没有静态字段时关档保守未知。
+    int c0_bound = nvn_plat_flag("nvk_c0_bound", 1) != 0;
+    for (int st = 0; st < nst && st < RP_PROG_STAGES; st++)
+        if (nvn_vk_binst_unread(&fp.stage[st], c0_bound)) e->prog.binst_unread |= (uint8_t)(1u << st);
+    { static _Atomic int c0_said;
+      if (nvn_plat_flag("nvk_c0_bound_diag", 0) && atomic_fetch_add(&c0_said, 1) < 40) {
+          char m[160]; snprintf(m, sizeof m, "c0 定界=%d 静态读集存在=%d/%d 动态不读=%d/%d 静态不读=%d/%d 采用掩码=%u",
+              c0_bound, fp.stage[0].binst_static_present, fp.stage[1].binst_static_present,
+              fp.stage[0].binst_unread, fp.stage[1].binst_unread,
+              fp.stage[0].binst_unread_static, fp.stage[1].binst_unread_static, e->prog.binst_unread);
+          nvn_plat_log(NVN_PLAT_LOG_INFO, "shader", m);
+      } }
     e->prog.z_raw = depth_clip_cap() == 1;   // 同 fill_facts：有管线裁剪深度时所有图形程序都不改写 z（预编库的程序另在取用处置 1）
     e->prog.color_out_mask = nst >= 2 && fp.stage[1].present ? fp.stage[1].fragment_output_map : 0xffffffffu;
     { static _Atomic int said; if (nst >= 2 && nvn_plat_flag("nvk_drawlog", 0) && atomic_fetch_add(&said, 1) < 40) { char m[96]; snprintf(m, sizeof m, "片元输出映射 %#x（片元代码 %zu 字节）", (unsigned)e->prog.color_out_mask, fp.stage[1].spirv_bytes); nvn_plat_log(NVN_PLAT_LOG_INFO, "shader", m); } }
@@ -1025,14 +1043,27 @@ static struct work_snap *snap_capture(const struct facts *f, const struct s2a_in
 static pthread_mutex_t g_lp_mu = PTHREAD_MUTEX_INITIALIZER;
 static nvn_hmap g_lp_bad; static int g_lp_bad_init;
 static _Atomic uint64_t g_n_libpack, g_n_libpack_bad;
+// 库状态（「程序累计」行的「库」列）：没查过 / 已打开 / 不在 / 坏。目录不在原先静默返回，读数只剩「命中 0 / 没有 0」，
+// 分不出「资源包没带这一层」和「库里没有这个键」（offline-shader-miss 调查：测试包全是前者）。
+enum { LP_ST_UNSEEN, LP_ST_OPEN, LP_ST_MISSING, LP_ST_BAD };
+static _Atomic int g_lp_state;
+static const char *const k_lp_state[] = {"没查过", "已打开", "不在", "坏"};
 static struct s2a_libpack *libpack_for_locked(const char *root) {
-    static struct s2a_libpack *lp; static char lp_root[1024]; static int lp_red;
+    static struct s2a_libpack *lp; static char lp_root[1024], said_root[1024]; static int lp_red;
     if (!lp || strcmp(lp_root, root)) {
         char dir[1200]; snprintf(dir, sizeof dir, "%s/shaders/direct/b-%s-vk", root, DMSH_CHAIN);
         struct s2a_libpack *np = NULL; int orc = s2a_libpack_open(&np, dir);
-        if (orc == 1) { s2a_libpack_close(lp); lp = np; snprintf(lp_root, sizeof lp_root, "%s", root);
+        if (orc == 1) { s2a_libpack_close(lp); lp = np; snprintf(lp_root, sizeof lp_root, "%s", root); atomic_store(&g_lp_state, LP_ST_OPEN);
             char b[1300]; snprintf(b, sizeof b, "出包预编库已打开：%s", dir); nvn_plat_log(NVN_PLAT_LOG_INFO, "shader", b); }
-        else { lp = NULL; lp_root[0] = 0; if (orc < 0 && !lp_red++) red1("libpack_container_rejected", dir); }
+        else {
+            lp = NULL; lp_root[0] = 0; atomic_store(&g_lp_state, orc < 0 ? LP_ST_BAD : LP_ST_MISSING);
+            if (orc < 0) { if (!lp_red++) red1("libpack_container_rejected", dir); }
+            else if (strcmp(said_root, root)) {   // 不在：每个资源根只说一次（之后每次取程序都还会再试开，不重复打）
+                snprintf(said_root, sizeof said_root, "%s", root);
+                char b[1400]; snprintf(b, sizeof b, "【黄】出包预编库不在：%s（资源包没带这一层：本局出包预编一份都取不到，首遇的程序只能靠跨局缓存或现场编）", dir);
+                nvn_plat_log(NVN_PLAT_LOG_WARN, "shader", b);
+            }
+        }
     }
     return lp;
 }
@@ -1079,21 +1110,29 @@ static void libpack_mark_bad(const uint8_t identity[32]) {
 }
 static void libpack_note_hit(void) { atomic_fetch_add(&g_n_libpack, 1); }
 // 程序累计一行：出包预编 / 离线库 / 跨局缓存 / 现场编 合计第 1 个和每 50 个打一次（每发布一份新程序合计正好加 1）
+static void prog_tally_text(char *b, size_t bn) {
+    int bo = snprintf(b, bn, "程序累计：出包预编（库%s）命中 %llu / 没有 %llu / 坏 %llu / 不可用 %llu、离线库 %llu、跨局缓存 %llu、现场编 %llu、失败 %llu",
+        k_lp_state[atomic_load(&g_lp_state)], (unsigned long long)atomic_load(&g_n_libpack), (unsigned long long)s2a_libpack_misses(), (unsigned long long)s2a_libpack_rejects(),
+        (unsigned long long)atomic_load(&g_n_libpack_bad), (unsigned long long)atomic_load(&g_n_offline), (unsigned long long)atomic_load(&g_n_cache),
+        (unsigned long long)atomic_load(&g_n_compiled), (unsigned long long)atomic_load(&g_n_failed));
+    if (alias_on() && bo > 0 && (size_t)bo < bn) {   // 结果合并读数（开着才出）
+        uint32_t resn = 0;
+        pthread_mutex_lock(&g_progs_mu); resn = g_res_tab.n; pthread_mutex_unlock(&g_progs_mu);
+        snprintf(b + bo, bn - (size_t)bo, "、结果合并 前台 %llu / 预热 %llu（读头 %llu、没有可合并的常驻程序 %llu、没有缓存文件 %llu、缓存文件坏 %llu；常驻比对键 %u 个）",
+            (unsigned long long)atomic_load(&g_n_alias_fg), (unsigned long long)atomic_load(&g_n_alias_bg), (unsigned long long)atomic_load(&g_n_alias_probe),
+            (unsigned long long)atomic_load(&g_n_alias_nores), (unsigned long long)atomic_load(&g_n_alias_nofile), (unsigned long long)atomic_load(&g_n_alias_badfile), (unsigned)resn);
+    }
+}
 static void prog_tally_log(void) {
     uint64_t n = atomic_load(&g_n_libpack) + atomic_load(&g_n_offline) + atomic_load(&g_n_cache) + atomic_load(&g_n_compiled) + atomic_load(&g_n_alias_fg);
     if (n != 1 && (!n || n % 50)) return;
-    char b[420]; int bo = snprintf(b, sizeof b, "程序累计：出包预编 命中 %llu / 没有 %llu / 坏 %llu / 不可用 %llu、离线库 %llu、跨局缓存 %llu、现场编 %llu、失败 %llu",
-        (unsigned long long)atomic_load(&g_n_libpack), (unsigned long long)s2a_libpack_misses(), (unsigned long long)s2a_libpack_rejects(),
-        (unsigned long long)atomic_load(&g_n_libpack_bad), (unsigned long long)atomic_load(&g_n_offline), (unsigned long long)atomic_load(&g_n_cache),
-        (unsigned long long)atomic_load(&g_n_compiled), (unsigned long long)atomic_load(&g_n_failed));
-    if (alias_on() && bo > 0 && (size_t)bo < sizeof b) {   // 结果合并读数（开着才出）
-        uint32_t resn = 0;
-        pthread_mutex_lock(&g_progs_mu); resn = g_res_tab.n; pthread_mutex_unlock(&g_progs_mu);
-        snprintf(b + bo, sizeof b - (size_t)bo, "、结果合并 前台 %llu / 预热 %llu（读头 %llu、没有可合并的常驻程序 %llu、读头失败 %llu；常驻比对键 %u 个）",
-            (unsigned long long)atomic_load(&g_n_alias_fg), (unsigned long long)atomic_load(&g_n_alias_bg), (unsigned long long)atomic_load(&g_n_alias_probe),
-            (unsigned long long)atomic_load(&g_n_alias_nores), (unsigned long long)atomic_load(&g_n_alias_nofile), (unsigned)resn);
-    }
+    char b[640]; prog_tally_text(b, sizeof b);
     nvn_plat_log(NVN_PLAT_LOG_INFO, "shader", b);
+}
+// 测试读数：当下的「程序累计」行（不受每 50 个打一次的节拍限制）；结果合并读头的三个计数（读头 / 没有缓存文件 / 缓存文件坏）
+void nvk_shader_test_tally_line(char *out, size_t n) { if (out && n) prog_tally_text(out, n); }
+void nvk_shader_test_alias_probe(uint64_t out[3]) {
+    out[0] = atomic_load(&g_n_alias_probe); out[1] = atomic_load(&g_n_alias_nofile); out[2] = atomic_load(&g_n_alias_badfile);
 }
 
 // ---- 编译被拒时的上下文日志（#999；只加日志、不改任何行为）----

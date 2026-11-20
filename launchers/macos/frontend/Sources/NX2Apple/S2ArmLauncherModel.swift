@@ -67,7 +67,7 @@ enum ExportBlocker: Equatable {
 /// 正在跑 / 刚结束的一个作业（一局、出包、准备运行、装到 iPhone、导入、一键处理环境、换游戏库）。每个作业槽（主槽 / 手机槽 / 游戏槽，见 Slot）同一时刻只有一个。
 struct JobSession: Equatable {
     enum Kind: String, CaseIterable { case play, export, prepare, install, installRemove, installRestore, installUpdate, importGames = "import", downloadMetal, downloadIosPlatform, installDotnet, setupLibrary = "setup",
-                        keys, delete, diagnostics, moveGame, clearCache, installTV = "tvInstall", exportTV = "tvExport", pushSelected }
+                        keys, delete, diagnostics, moveGame, clearCache, installTV = "tvInstall", exportTV = "tvExport", pushSelected, phoneIdentity }
     enum Phase: Equatable { case running, stopping, finished(JobOutcome.State) }
     let kind: Kind
     let gameID: String?
@@ -96,7 +96,7 @@ struct JobSession: Equatable {
     /// 走过的阶段（阶段事件的作业层原句，按出现顺序、不重复）：手机作业进行中页的步骤列表
     var stages: [String] = []
     /// 手机作业（装到手机 / 续签、删除、装回、更新手机上的 S2Arm）：结局页统一用 PhoneJobPanel
-    var isPhoneJob: Bool { [.install, .installRemove, .installRestore, .installUpdate, .pushSelected].contains(kind) }
+    var isPhoneJob: Bool { [.install, .installRemove, .installRestore, .installUpdate, .pushSelected, .phoneIdentity].contains(kind) }
 }
 
 /// 手机作业做完后结局页要说的事实（从作业结果读，不猜）：装到哪台、这次推了多少、哪几款被跳过
@@ -238,6 +238,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var consoleDevice: String?            // 总控台在管哪台（多台时顶部切换）；nil = 跟着默认那台
     @Published var consoleSelection: Set<String> = []   // ② 游戏同步里勾上的款（游戏号大写）
     @Published var consolePushing: String?               // 「更新所选」正在推的那款（作业 pushSelected 的 progress 事件 current）
+    @Published var identityDelivered: Bool?              // 「把签名身份交给手机」最近一次成功的结果（作业 phoneIdentity 的 delivered）；nil = 还没成功过 / 又点了一次
     var consoleSeeded: Set<String> = []                  // 上次自动勾过的建议更新款（玩家取消的不重勾）
     @Published var dynamicDone = false    // 顶栏动态窗口：手机作业刚做完，闪一下 ✓（2 秒后回普通图标，S2ArmLauncherModel+PhoneConsole）
     @Published var dynamicAlert = false   // 手机作业失败 / 停下：橙色「!」一直留着，直到玩家点开看过
@@ -654,7 +655,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// 作业跑在作业页，没成的原因（如选的还在云盘里）在作业页显示；成了作业页可在访达中显示新游戏库。
     /// 换游戏库时作业层报认得出的风险（v0.3.1：认得出的风险让玩家确认）：问玩家「仍然继续 / 先不」，同意带对应参数重发，参数累积
     ///   library_in_cloud：选的文件夹在云盘同步目录里；library_folder_not_empty：文件夹里已有别的文件、又不是游戏库（S2Arm 只动自己建的文件）
-    static let libraryConfirmCodes = ["library_in_cloud": "acceptCloud", "library_folder_not_empty": "acceptForeign"]
+    static var libraryConfirmCodes: [String: String] { BackendText.confirmFlags }   // 共享体验表 errors 的 accept（11-19 结构 9，同 Windows 读同一处）
     struct LibraryConfirm: Equatable { let url: URL; let move: Bool; let message: String; var code = "library_in_cloud"; var accept: Set<String> = [] }
     @Published var libraryConfirm: LibraryConfirm?
 
@@ -1183,8 +1184,8 @@ public final class S2ArmLauncherModel: ObservableObject {
         var mode: String? = nil; var sgradeUpgrade = false }   // 「S 级优化升级」页发起的：重发时照带装法与升级标记
     /// 作业层可确认继续的停装码 → 玩家点「仍然继续」后重发时带的参数（维护者 11-11 装机原则：认得出的风险让玩家确认，确认了就装）。
     ///   结局页（PhoneJobPanel）按码在页内问「仍然继续 / 先不」，不弹散的对话框；参数累积（先确认挤掉、再撞上备份失败，第二次重发两个都带）
-    static let confirmCodes: [String: String] = ["container_would_drop": "acceptDropped", "save_backup_failed": "acceptNoBackup", "container_stale": "acceptStale",
-                                                   "device_space_low": "acceptLowSpace"]
+    ///   11-19 结构 9：表只在共享体验表 errors 的 accept 一处（Windows 读同一处）；原先这里另写一份，没有 cert_revoke_confirm，「仍然继续」点不了
+    static var confirmCodes: [String: String] { BackendText.confirmFlags }
     struct DropConfirm { let kind: JobSession.Kind; var game: GameSummary? = nil; let message: String; var update: UpdateArgs? = nil
                          var code = "container_would_drop"; var accept: Set<String> = []
                          /// 当初装到哪台：确认后原样带回（不能退回「界面选中的那台」，控制口指定的设备会被换掉）

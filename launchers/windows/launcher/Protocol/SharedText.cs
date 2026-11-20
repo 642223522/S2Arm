@@ -15,19 +15,43 @@ public sealed class SharedText
             root.GetProperty("contract").GetString() != "s2a.experience.v1")
             throw new FormatException("Unsupported shared experience contract.");
         if (root.TryGetProperty("launcher", out var launcher)) ReadLauncher(launcher);
+        // 两端共用的表只在共享体验表一处（11-19 结构 9）：可确认停装码的续跑参数 = errors 各码的 accept（带 accept_ui 的由专门页面带，如选盘页，不进通用确认）；
+        //   「建议更新」原因 → 文案键 = update_reasons
+        if (root.TryGetProperty("update_reasons", out var reasons) && reasons.ValueKind == JsonValueKind.Object)
+            foreach (var r in reasons.EnumerateObject())
+                if (r.Name != "note" && r.Value.ValueKind == JsonValueKind.String) updateReasonKeys[r.Name] = r.Value.GetString()!;
+        // 装机前清单按钮落点的动作表（11-19 落点契约 / 结构 9：唯一来源 install_landing.actions，Mac 读同一处）：动作名 → 按钮文案键
+        if (root.TryGetProperty("install_landing", out var landing) && landing.TryGetProperty("actions", out var acts) && acts.ValueKind == JsonValueKind.Object)
+            foreach (var a in acts.EnumerateObject())
+                if (a.Value.ValueKind == JsonValueKind.String) installActionLabels[a.Name] = a.Value.GetString()!;
         foreach (var item in root.GetProperty("errors").GetProperty("items").EnumerateArray())
         {
             var code = item.GetProperty("code").GetString()!;
+            if (item.TryGetProperty("accept", out var accept) && accept.ValueKind == JsonValueKind.String && !item.TryGetProperty("accept_ui", out _))
+                confirmFlags[code] = accept.GetString()!;
             Flatten(item.GetProperty("title"), "errors." + code + ".title");
             Flatten(item.GetProperty("detail"), "errors." + code + ".detail");
         }
     }
+
+    private readonly Dictionary<string, string> installActionLabels = new(StringComparer.Ordinal);
+
+    /// <summary>清单动作的按钮文案键（install_landing.actions）；表里没有 / 写 null（那一端自画）→ null，不画按钮</summary>
+    public string? InstallActionLabel(string action) => installActionLabels.TryGetValue(action, out var key) ? key : null;
 
     /// <summary>规格里有没有这个键（没有时 Get 返回「[键]」原样，界面不该显示它）。</summary>
     public bool Has(string key) => texts.ContainsKey(key);
 
     /// 报错页统一的「故障报修」指引（11-13）：report.hint 里的 {button} 换成顶栏按钮名 report.button（Mac BackendText.reportHint 同一取法）
     public string ReportHint(string language) => Get("report.hint", language).Replace("{button}", Get("report.button", language));
+
+    private readonly Dictionary<string, string> confirmFlags = new(StringComparer.Ordinal), updateReasonKeys = new(StringComparer.Ordinal);
+
+    /// <summary>可确认停装码 → 玩家点「仍然继续」后重发带的参数（共享体验表 errors 的 accept；装机 / 更新 / 换游戏库共用一张）</summary>
+    public IReadOnlyDictionary<string, string> ConfirmFlags => confirmFlags;
+
+    /// <summary>「建议更新」原因的文案键（共享体验表 update_reasons）；不认识的原因 → null（不显示）</summary>
+    public string? UpdateReasonKey(string reason) => updateReasonKeys.TryGetValue(reason, out var key) ? key : null;
 
     private readonly Dictionary<string, Dictionary<string, string>> overlays = new(StringComparer.Ordinal);
 

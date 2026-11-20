@@ -1065,18 +1065,24 @@ def phone_shader_cache(c, gid):
     return str(d) if d and d.is_dir() else ""
 
 
+APPLE_DEVICES_URL = "https://developer.apple.com/account/resources/devices/list"   # 开发者网站的设备列表（登记设备）
+
+
 def devcert_items(c, item, udid):
     """开发者证书模式的清单项（v0.2.4）：替掉 Apple ID / Impactor 两项。问题只提示、不挡（blocking 只给「没出包」）；
     到期 / 权限这类提醒随结果 devcert.warnings 给启动器画黄字。返回体检结果（读不出 → None）"""
     try:
         got = devcert.summary(c, udid=udid)
     except Failure as e:
-        item("devcert", False, "开发者证书可用", str(e))
+        item("devcert", False, "开发者证书可用", str(e), action="devCertSettings")
         return None
-    item("devcert", not got["blocking"], "开发者证书可用", got["blocking"][0]["text"] if got["blocking"] else "")
+    # 按钮落点（11-19：这两项原先不带 action，真实清单上证书项没按钮；落点契约测试用的 id 又是后端产生不了的，一直绿着）：
+    #   证书本身的问题 → 设置页签名身份（导入 / 换证书）；设备不在描述文件里 → 苹果开发者网站的设备页（登记设备、重新生成描述文件）
+    item("devcert", not got["blocking"], "开发者证书可用", got["blocking"][0]["text"] if got["blocking"] else "", action="devCertSettings")
     if udid and not got["allDevices"]:
         item("devcertDevice", got["deviceListed"], "这台 iPhone 在描述文件的设备列表里",
-             "不在列表里：签出来装不上这台。请在开发者网站登记这台设备并重新生成描述文件，再在出包页重新导入。")
+             "不在列表里：签出来装不上这台。请在开发者网站登记这台设备并重新生成描述文件，再在出包页重新导入。",
+             url=APPLE_DEVICES_URL)
     return got
 
 
@@ -1101,6 +1107,15 @@ def export_sign_mode(c):
     return want if want in SIGN_MODES else chosen_sign_mode(c)
 
 
+EXPORT_UNSIGNED = "没读到登录的 Apple ID，这份游戏包未签名，导入后由手机上的 S2Arm 签名。"
+EXPORT_UNSIGNED_NO_ID = "没读到登录的 Apple ID，这份游戏包未签名；手机上的 S2Arm 还没拿到签名身份，导入后签不了。用 AltStore 或 SideStore 装的 S2Arm：在它们的设置里导出签名证书，到手机上 S2Arm 齿轮 →「签名证书」→「导入 .p12…」导入。用启动器装的：在启动器里登录 Apple ID（或选用自己的证书），连上手机推一次游戏，把签名身份交给它。"
+
+
+def any_phone_identity(c):
+    """这台电脑交过签名身份的手机有没有（设备记录 identity，deliver_identity 写）：导出未签名的 .s2arm 时按它说导入后能不能签"""
+    return any((rec or {}).get("identity") for _, rec in layout.devices(c))
+
+
 def export_signer(c, mode):
     """导出 .s2arm 时签程序包要的 → (团队号, 包名, 签名器, 账号名)，同推到 iPhone 的签法（phone_signing）但不要手机：
     包名就是装 App 的那个 container_bundle_id(团队)；证书用户用证书的团队与描述文件的包名。做不到（没登录、证书缺件）照实报"""
@@ -1117,7 +1132,7 @@ def export_signer(c, mode):
     if not team:
         if os.name != "nt":
             raise Failure(APPLE_SIGN_IN, code="apple_not_signed_in")
-        raise Failure("读不到 Impactor 里登录的 Apple ID：在 Impactor 里登录后再导出，或者这次改成「自己用别的工具签」。", code="xcode_account_missing")
+        raise Failure("读不到 Impactor 里登录的 Apple ID：在 Impactor 里登录后再导出，或者这次改成「自己用别的工具签」。", code="apple_not_signed_in")   # Windows 的下一步（WINDOWS_RECOVERY）：在 Impactor 里添加账号
     import ipa as packer
     exe = W.plumesign_path((W.impactor.bundled(c.r.get("resources")) or {}).get("plumesign"))
     win_cert_gate(c, W, exe)
@@ -1263,10 +1278,18 @@ def export_s2arm(c, gid):
         mode = export_sign_mode(c)
         signed_with = None
         if mode != "external":   # 玩家选了用 Apple ID / 自己的证书签：导出前就签好，手机导入看清单 team 非空不再签（11-17 维护者定）
-            team, bundle, signer, who = export_signer(c, mode)
-            pkg = Path(program_pack.sign(c, gid, team, bundle, signer, pkg=pkg))
-            image = pkg / program_pack.image_name(gid)
-            signed_with = dict(mode=mode, name=who, team=team)
+            try:
+                team, bundle, signer, who = export_signer(c, mode)
+            except Failure as e:
+                # Apple ID 没登录不拦导出（11-19 维护者：导出 / 自签不加拦截）：照样导出未签名的（同「自己用别的工具签」），导入后由手机上的 S2Arm 用电脑交过去的身份签
+                if mode != "appleId" or e.code != "apple_not_signed_in":
+                    raise
+                c.diagnostic(EXPORT_UNSIGNED if any_phone_identity(c) else EXPORT_UNSIGNED_NO_ID, code="apple_not_signed_in", severity="warning", internal=str(e))   # 下一步同没登录：想在电脑上签就去登录
+                team = None
+            if team:
+                pkg = Path(program_pack.sign(c, gid, team, bundle, signer, pkg=pkg))
+                image = pkg / program_pack.image_name(gid)
+                signed_with = dict(mode=mode, name=who, team=team)
         cat = json.loads((pkg / program_pack.CATALOGUE).read_text(encoding="utf-8")) if signed_with else program_pack.catalogue(gid, meta, image, None)
         c.begin("打包 .s2arm", 2, 3)
         files = [("program/" + p.relative_to(pkg).as_posix(), p) for p in sorted(pkg.rglob("*"))
@@ -1385,10 +1408,12 @@ def readiness(c):
         return readiness_windows(c, gid)
     items = []
     ipa_path = ""
-    def item(key, ok, title, detail, who="human", waiting=False, note=""):
+    def item(key, ok, title, detail, who="human", waiting=False, note="", action=None, url=None):
         wait = waiting and not ok
         # 等前一步的不给说明，免得 AI 拿去催玩家；好了的项也不带说明，只有 note（好了但值得知道的，如只靠网络连着）照带
-        items.append(dict(id=key, ok=bool(ok), waiting=wait, blocking=key == "package" and not ok, title=title, detail=note if ok else "" if wait else detail, who=who))
+        # action / url：没好的项的按钮落点（11-19 落点契约，动作名单见 launchers/shared/experience.v1.json installActions；同 readiness_windows）
+        items.append(dict(id=key, ok=bool(ok), waiting=wait, blocking=key == "package" and not ok, title=title, detail=note if ok else "" if wait else detail, who=who,
+                          action=None if ok else action, url=None if ok else url))
     import downstream
     scheme = downstream.requested(c, next((g for g in c.catalog()["games"] if g["id"].upper() == gid.upper()), dict(id=gid)))
     if scheme:   # 下游深度方案出的是独立 App（install → downstream.install_ios）：iPhone 版看它自己的出包记录，不看容器件（原先一律报没做好，实际装得上）
@@ -1758,7 +1783,7 @@ def readiness_windows(c, gid):
         ipa_path = phone_ipa_path(c)
         item("package", True, "这款游戏的 iPhone 版已经做好", "")
     except Failure:
-        item("package", False, "这款游戏的 iPhone 版已经做好", "还没做好：先做 iPhone 版，做好后这里自动打勾。", who="app")
+        item("package", False, "这款游戏的 iPhone 版已经做好", "还没做好：先做 iPhone 版，做好后这里自动打勾。", who="app", action="openExport")   # 按钮落点：这款的出包页（11-19 契约，同 Mac）
     resources = c.r.get("resources")
     use_cert = devcert.active(c)
     st = W.impactor.status(resources=resources)
@@ -1892,10 +1917,8 @@ class MacPhone:
             return purge_game(devpush_client(self.c, self.udid, self.bid, w), g)
 
 
-CERT_REVOKE_ASK = ("这台电脑上没有这个 Apple ID 能用的开发证书，要新建一张。如果你的账号证书已满，苹果会撤掉列表里的第一张「{0}」（在 {1} 上创建，{2} 生效），"
-                   "用它签的 App（可能是 Xcode 或 AltStore 装的）会打不开；没满就什么都不撤。")
-CERT_REVOKE_ASK_NO_MACHINE = ("这台电脑上没有这个 Apple ID 能用的开发证书，要新建一张。如果你的账号证书已满，苹果会撤掉列表里的第一张「{0}」（{1} 生效），"
-                              "用它签的 App（可能是 Xcode 或 AltStore 装的）会打不开；没满就什么都不撤。")   # 苹果列表里这张没记机器名
+CERT_REVOKE_ASK = "这台电脑上没有这个 Apple ID 能用的开发证书，要新建一张。账号证书满了的话，苹果会撤掉列表里的第一张「{0}」（在 {1} 上创建，{2} 生效），它可能正是 AltStore / SideStore 在用的那张；撤掉后 AltStore / SideStore 自己和它们装的 App 都会打不开。"
+CERT_REVOKE_ASK_NO_MACHINE = "这台电脑上没有这个 Apple ID 能用的开发证书，要新建一张。账号证书满了的话，苹果会撤掉列表里的第一张「{0}」（{1} 生效），它可能正是 AltStore / SideStore 在用的那张；撤掉后 AltStore / SideStore 自己和它们装的 App 都会打不开。"   # 苹果列表里这张没记机器名
 
 
 def win_cert_gate(c, W, exe):
@@ -2493,7 +2516,7 @@ def phone_signing(c, ph):
         if not team:
             if os.name != "nt":
                 raise Failure(APPLE_SIGN_IN, code="apple_not_signed_in")
-            raise Failure("读不到 Impactor 里登录的 Apple ID：在 Impactor 里登录后再推到 iPhone。", code="xcode_account_missing")
+            raise Failure("读不到 Impactor 里登录的 Apple ID：在 Impactor 里登录后再推到 iPhone。", code="apple_not_signed_in")   # 原先报 Mac 的 xcode_account_missing，下一步叫 Windows 玩家开 Xcode
         import ipa as packer
         exe = ph.W.plumesign_path((ph.W.impactor.bundled(c.r.get("resources")) or {}).get("plumesign"))
         win_cert_gate(c, ph.W, exe)
@@ -2630,6 +2653,9 @@ def _identity_on_phone(c, ph, sha1):
     return False
 
 
+IDENTITY_NOT_HERE = "这台电脑上没有这个 Apple ID 能交给手机的签名证书，启动器不会为此新建（账号证书满了时，新建会让苹果撤掉一张，可能正是 AltStore 或 SideStore 在用的那张）。用 AltStore 或 SideStore 装的 S2Arm：在 AltStore 或 SideStore 的设置里导出签名证书，到手机上 S2Arm 的「签名证书」里导入就行。确实想让启动器新建证书，就点「安装 S2Arm」，它会先告诉你可能撤掉哪张证书，再由你决定。"
+
+
 def _identity_source(c, ph):
     """这次交给 App 的身份从哪来 → (团队号, 私钥指纹, 取身份的函数, source)；交不了 → None。
     证书签名用户（devcert.active，两端都行）：导入时存的 p12；Windows Apple ID 与 Mac 通用壳 Apple ID（PlumeMacPhone）：plumesign 的 keys/<团队>/key.pem。
@@ -2650,6 +2676,40 @@ def _identity_source(c, ph):
     return team, fp, plume, "appleId"
 
 
+S2ARM_BID_PREFIX = "io.s2arm.games"   # 启动器装的包名前缀；AltStore / SideStore 等会在后面加一段（常见 .<团队号>），前缀不变
+IDENTITY_TEAM_MISMATCH = ("手机上的 S2Arm 是用另一个 Apple ID 或证书签的（团队 {0}），和这台电脑上的签名身份（团队 {1}）不是同一个团队，交过去也签不了游戏："
+                          "请在启动器里登录装 S2Arm 用的那个 Apple ID，或选用同一团队的证书。")
+
+
+def installed_s2arm(c, ph):
+    """手机上装着的 S2Arm（启动器装的、AltStore / SideStore / ESign 等别的工具装的都认）→ [{bundleId, team}]（team 读不到为 None）；
+    按包名前缀 io.s2arm.games 或主程序名（main_executable）认。列不出（工具旧 / 断开）→ None"""
+    with tempfile.TemporaryDirectory(dir=c.private) as w:
+        rows = devpush_client(c, ph.udid, "-", w).apps() if ph.udid else None
+    if rows is None:
+        return None
+    main = main_executable(c)
+    return [dict(bundleId=b, team=t or None) for b, e, t in rows if b.lower().startswith(S2ARM_BID_PREFIX) or e == main]
+
+
+def identity_target(c, ph, team):
+    """交签名身份交给手机上的哪个 S2Arm（11-19 维护者：不管 App 是谁装的，团队号对上就交）→ 包名。
+    启动器自己的包名装着且团队对得上（或读不到团队）优先；否则挑团队相同的那个；都不是这个团队 → identity_team_mismatch（照实说是哪个团队）。
+    列不出已装 App（工具旧 / 断开）→ 照旧用启动器的包名；一个都没装 → shell_install_required"""
+    apps = installed_s2arm(c, ph)
+    if apps is None:
+        return ph.bid
+    if not apps:
+        raise Failure(SHELL_INSTALL_FIRST, code="shell_install_required")
+    ok = [a for a in apps if a["team"] in (team, None)]
+    mine = [a for a in ok if ph.bid and a["bundleId"].lower() == ph.bid.lower()]
+    known = [a for a in ok if a["team"] == team]
+    pick = (mine or known or ok)
+    if not pick:
+        raise Failure(IDENTITY_TEAM_MISMATCH.format("、".join(sorted({a["team"] for a in apps})), team), code="identity_team_mismatch")
+    return pick[0]["bundleId"]
+
+
 def deliver_identity(c, ph, strict=False, force=False):
     """0.6.0 通用壳：把手机自签要的私钥 + 叶证书交给 App（cmdr 方案「私钥怎么交给 App」，11-17 真机验过 DER 两份能配成签名身份）。
     只走本机 USB（s2a-devpush），写进 App 数据容器 IDENTITY_INCOMING：key.der（PKCS#1）、cert.der、最后改名就位的 identity.json（不含私钥）。
@@ -2660,6 +2720,8 @@ def deliver_identity(c, ph, strict=False, force=False):
     try:
         src = _identity_source(c, ph)
         if not src:
+            if strict and hasattr(ph, "W"):   # Apple ID 方式、这台电脑上没有可交的证书：不为此新建（会顶掉玩家 AltStore / SideStore 的证书，11-19 实测），引导手机上导入证书
+                raise Failure(IDENTITY_NOT_HERE, code="identity_unavailable")
             if strict:
                 raise Failure("现在没在用你自己的开发者证书签名，没有要交给 iPhone 的证书：先在设置里导入并选用你的证书。", code="devcert_missing")
             return None
@@ -2711,7 +2773,10 @@ def phone_identity(c):
     with packer_phone_lock(c):   # 装机类作业一次一个（ipa.phone_lock）
         c.begin("把证书交给 iPhone 上的 S2Arm", 1, 1)
         ph = phone_for(c)
-        return dict(deliver_identity(c, ph, strict=True, force=c.r.get("force") is True), device=ph.key)
+        src = _identity_source(c, ph)
+        if src:   # 别的工具装的 S2Arm（包名被改过）也交：按手机上实际装着、团队对得上的那个（identity_target）
+            ph.bid = identity_target(c, ph, src[0])
+        return dict(deliver_identity(c, ph, strict=True, force=c.r.get("force") is True), device=ph.key, bundleId=ph.bid)
 
 
 def push_game(c, gid, ph, steps=True):

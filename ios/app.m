@@ -1172,6 +1172,8 @@ static void library_pack_help_show(NSString *gid, BOOL again, int st);
 // 玩家把 game.img 放进「文件」里 S2Arm 的「放这里导入」文件夹（v0.3.0，自签 / 侧载玩家）：挪进本款资源包根（pack_apply.c s2a_img_scan）。
 //   冷启动挂库、回前台、库里「重新检查」时扫；已选游戏（起局后）不扫。挪好了让库重判
 int s2a_img_scan(const char *proc_docs);   // pack_apply.c
+void s2a_cert_scan_import_dirs(void);   // cert_import.m：「放这里导入」里的 .p12 / .pfx（签名证书，问密码后导入）
+BOOL s2a_cert_handle_url(NSURL *url);   // cert_import.m：SideStore 交回签名证书的回调 s2arm://sidestore-cert
 const char *s2a_img_scan_failure(void); const char *s2a_img_scan_code(void);   // pack_apply.c：最近一次认领失败的原因 / 码（空串 = 没失败）
 const char *s2a_img_scan_noshaders(void);   // pack_apply.c：这次认领里不带着色器库的文件名（空串 = 没有）
 const char *s2a_img_scan_skipped(void);   // pack_apply.c：这次扫描跳过的着色器更新包（和当前游戏版本不配套）文件名（空串 = 没有）
@@ -1274,7 +1276,7 @@ static void img_scan_bg(void) {
             dispatch_async(dispatch_get_main_queue(), ^{ import_watch_start(); }); }   // 导入文件夹这时已建好：开始盯着它
         atomic_store(&g_games_repairing, 0);
         int n = img_scan_now();
-        dispatch_async(dispatch_get_main_queue(), ^{ if (n > 0 && s2a_shell_refresh) s2a_shell_refresh(); if (r) foreign_report(); if (!r || g_foreign_bytes < (2ull << 30)) img_scan_report(); });   // 同一刻只弹一个框：迁移那次先说迁移，认领失败下次回前台重扫再说
+        dispatch_async(dispatch_get_main_queue(), ^{ if (n > 0 && s2a_shell_refresh) s2a_shell_refresh(); if (r) foreign_report(); if (!r || g_foreign_bytes < (2ull << 30)) img_scan_report(); if (!atomic_load(&g_game_picked)) s2a_cert_scan_import_dirs(); });   // 同一刻只弹一个框：迁移那次先说迁移，认领失败下次回前台重扫再说
     });
 }
 static void img_scan_if_library(void) { if (g_lib_window) img_scan_bg(); }
@@ -1389,7 +1391,9 @@ static void widget_open(NSURL *url, void *ctx) {
 }
 @implementation S2ASceneDelegate
 - (void)scene:(UIScene *)scene openURLContexts:(NSSet<UIOpenURLContext *> *)contexts {
-    (void)scene; widget_open(contexts.anyObject.URL, (__bridge void *)self);
+    (void)scene;
+    if (s2a_cert_handle_url(contexts.anyObject.URL)) return;   // SideStore 交回签名证书（0.6.0，cert_import.m）
+    widget_open(contexts.anyObject.URL, (__bridge void *)self);
 }
 // 多款容器：根控制器先是游戏库；壳没链库界面（缺省 make ios）时给提示页，不起游戏
 - (void)showLibrary {
@@ -1446,7 +1450,7 @@ static void widget_open(NSURL *url, void *ctx) {
         { const char *e = getenv("S2A_NO_KEY_WINDOW"); if (e && !strcmp(e, "0")) [self.window makeKeyAndVisible]; else self.window.hidden = NO; }
 #endif
         { NSURL *u = options.URLContexts.anyObject.URL; S2ASceneDelegate *sd = self;   // 冷启动是点主屏小组件来的：库界面挂上后再开（同点「开始」）
-          if (u) dispatch_async(dispatch_get_main_queue(), ^{ widget_open(u, (__bridge void *)sd); }); }
+          if (u) dispatch_async(dispatch_get_main_queue(), ^{ if (!s2a_cert_handle_url(u)) widget_open(u, (__bridge void *)sd); }); }   // SideStore 交回签名证书冷启动拉起：同开着时
         LOG("iOS 壳：窗口已建 %.0fx%.0f（场景，多款容器游戏库）", self.window.bounds.size.width, self.window.bounds.size.height);
         return;
     }

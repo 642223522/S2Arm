@@ -309,6 +309,11 @@ public struct ShellActions {
     public var onClearShellCloud: (() -> Void)?
     /// S2Arm: settings → "Report a problem" (the host packs the logs, uploads them and shows a short code). Nil hides the row.
     public var onReportProblem: (() -> Void)?
+    /// S2Arm: settings → "Signing certificate" (0.6.0): the certificate this iPhone signs imported games with ("" = none yet),
+    /// importing a .p12 (the host picks the file and asks for its password) and getting SideStore's. All nil hides the group.
+    public var signingCertStatus: (() -> String)? = nil
+    public var onImportSigningCert: (() -> Void)? = nil
+    public var onSideStoreSigningCert: (() -> Void)? = nil
     public var onGlobalPadMapChange: ((String, String) -> Void)?
     public var onGlobalPadMapReset: (() -> Void)?
     /// The button test opened (true) or closed: the host sends `PadSnapshot`s only in between.

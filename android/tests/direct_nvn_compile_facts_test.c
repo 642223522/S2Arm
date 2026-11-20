@@ -46,12 +46,20 @@ int s2a_nvn_window_origin_mode = 1;
 static uint64_t g_reggen = 7;
 uint64_t s2a_vk_adapter_registry_generation(void) { return g_reggen; }
 
+// 生产口径的控制段：键第 2 代先把 [0x790,0x798)、[0x7d0,0x7e8) 落在 control_bytes 内的字节按 0 算（graphics/nvn/gfx/nvn/nvn_key.h）；这里按规则另写一遍，不调被测实现
+static const uint8_t *key_control(const void *control, uint32_t control_bytes, uint8_t buf[0x880]) {
+    memcpy(buf, control, control_bytes);
+    for (uint32_t i = 0x790; i < 0x798 && i < control_bytes; i++) buf[i] = 0;
+    for (uint32_t i = 0x7d0; i < 0x7e8 && i < control_bytes; i++) buf[i] = 0;
+    return buf;
+}
 static void make_key(const void *code, uint32_t code_bytes, const void *control, uint32_t control_bytes,
                      uint8_t out[8]) {
     s2a_sha256 c;
     uint8_t md[32];
     s2a_sha256_init(&c);
-    s2a_sha256_update(&c, control, control_bytes);
+    uint8_t kc[0x880];
+    s2a_sha256_update(&c, key_control(control, control_bytes, kc), control_bytes);
     s2a_sha256_update(&c, code, code_bytes);
     s2a_sha256_final(&c, md);
     memcpy(out, md, 8);

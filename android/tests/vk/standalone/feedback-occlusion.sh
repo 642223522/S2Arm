@@ -22,7 +22,7 @@ cc -D_POSIX_C_SOURCE=200809L -std=c11 -O1 -g -Wall -Wextra -Werror -Wno-unused-p
     "${inc[@]}" "${src[@]}" -Wl,--gc-sections -lvulkan -lpthread -lm -o "$out/test"
 export VK_ICD_FILENAMES="$S2A_LAVAPIPE_ICD" VK_LAYER_PATH="$S2A_VK_LAYER_DIR" VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation
 # 同 feedback-core：同步校验 + 着色器访问启发式一起开，只加载 validation 层不够
-export VK_LAYER_VALIDATE_SYNC=1
+export VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT
 cat > "$out/vk_layer_settings.txt" <<'SETTINGS'
 khronos_validation.validate_sync = true
 khronos_validation.syncval_shader_accesses_heuristic = true

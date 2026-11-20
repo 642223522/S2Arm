@@ -615,3 +615,19 @@
 "vpad.snap.deleteFailed" = "这次没删干净，稍后再试一次";
 "snap.result.title" = "没能回到那一刻";
 "snap.result.generic" = "回到那一刻没成功，已重新开始游戏，游戏存档没受影响。";
+
+"cert.password.title" = "输入证书密码";
+"cert.password.message" = "「%@」要密码才能导入。";
+"cert.password.wrong" = "密码不对，请再输一次（「%@」）。";
+"cert.import" = "导入";
+"cert.failed.title" = "没能导入证书";
+"cert.failed.message" = "这个文件不是能用的签名证书（.p12）。";
+"cert.done.title" = "签名证书已导入";
+"cert.done.message" = "团队 %@。之后在这台 iPhone 上导入的游戏会用它签好再玩。";
+"cert.teamMismatch" = "注意：这张证书是团队 %1$@ 的，这个 S2Arm 是团队 %2$@ 装的，用它签的游戏系统不认。请换成安装 S2Arm 时用的那张证书，或者用这张证书重新安装 S2Arm。";
+"cert.sidestore.missing" = "打不开 SideStore：这台 iPhone 上没装 SideStore，或者版本太旧。";
+"cert.sidestore.empty" = "SideStore 没有交回证书，请在 SideStore 里点「Export」后再试。";
+"cert.status" = "团队 %1$@ · %2$@";
+"cert.source.sidestore" = "来自 SideStore";
+"cert.source.p12" = "导入的 .p12";
+"cert.source.pc" = "电脑交来";

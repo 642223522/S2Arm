@@ -84,6 +84,12 @@ def main():
                        "--dismiss-probe", str(Path(temporary) / "out"), "--data-root=" + str(Path(temporary) / "data")], env)
             if "✓ 控制口 dismiss 关弹窗" not in out.stdout:
                 raise RuntimeError("dismiss probe did not report success")
+        # 装机前清单按钮落点（11-19 落点契约，同 Mac：action 唯一来源、POST /install-action、state.presented；UI.Snapshots/InstallActionProbe.cs）
+        with tempfile.TemporaryDirectory(prefix="s2arm-install-action-probe-") as temporary:
+            out = run([dotnet, "run", "--project", str(probe), "--no-build", "--configuration", "Release", "--",
+                       "--install-action-probe", str(Path(temporary) / "out"), "--data-root=" + str(Path(temporary) / "data")], env)
+            if "✓ 装机前清单按钮落点" not in out.stdout:
+                raise RuntimeError("install action probe did not report success")
         if args.negative_controls:
             with tempfile.TemporaryDirectory(prefix="s2arm-ui-negative-") as temporary:
                 target = Path(temporary).resolve()

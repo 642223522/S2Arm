@@ -164,6 +164,9 @@ int main(void) {
 
     nvn_vk_pipe_demand_stop();
     CHECK(nvn_vk_pipe_demand_quiescent(), "completed worker is reaped after stop");
+    struct nvn_pipe_demand_stats settled;
+    nvn_vk_pipe_demand_stats(&settled);
+    CHECK(settled.published >= 2, "published stats retain admitted pipeline results");
     CHECK(nvn_vk_pipe_demand_worker_count() == 0, "completed worker count returns to zero");
 
     nvn_vk_pipe_demand_start();
@@ -188,6 +191,7 @@ int main(void) {
 
     struct nvn_pipe_demand_stats before, after;
     nvn_vk_pipe_demand_stats(&before);
+    CHECK(before.published == 0, "held generation has no published result before stop");
     int lifecycle_lock = nvn_vk_pipe_demand_test_lock_lifecycle();
     CHECK(lifecycle_lock == 0, "test holds lifecycle serialization for busy-stop case");
     uint64_t busy_stop_start = mono_ns();
@@ -242,6 +246,8 @@ int main(void) {
     pthread_mutex_lock(&g_mu); int builds_after_stop = g_build_calls; pthread_mutex_unlock(&g_mu);
     CHECK(builds_after_stop == builds_held, "busy-lifecycle stop discards queued work behind active build");
     CHECK(nvn_vk_pipe_demand_worker_count() == 0, "reaped worker count returns to zero");
+    nvn_vk_pipe_demand_stats(&after);
+    CHECK(after.published == before.published, "stopped generation does not increment published stats");
     CHECK(nvn_vk_pipe_demand_state(&slow, idSlow, &cached) == NVK_DEMAND_NONE, "stopped generation does not publish late result");
     nvn_vk_pipe_demand_stop();
     nvn_vk_pipe_demand_start();

@@ -104,6 +104,19 @@ extension S2ArmLauncherModel {
         }
     }
 
+    /// 「把签名身份交给手机」：作业 phoneIdentity 把这台电脑的签名身份交给总控台这台手机上的 S2Arm（别的工具装的团队对得上也交），
+    ///   以后手机上自己签导入的游戏包。成功记下 delivered（完成提示分「交好了」/「已经有了」）；失败走手机作业的失败页（PhoneJobPanel）
+    func phoneIdentity(device: String? = nil, force: Bool = false) {
+        guard let device = device ?? consolePhone?.device else { return }
+        guard !phoneBusy else { phoneQueue.append((nil, { [weak self] in self?.phoneIdentity(device: device, force: force) })); return }
+        identityDelivered = nil
+        start(JobSession(kind: .phoneIdentity, gameID: nil, name: BackendText.launcherText("phone.title.phoneIdentity", language: dynamicLanguage))) { [weak self] sink in
+            let r = try await self?.provider.phoneIdentity(device: device, force: force, events: sink)
+            self?.identityDelivered = r?.delivered
+            return nil
+        }
+    }
+
     /// 「停下」：取消这一单（作业层推完的留着；没推完的那款下次续推）
     func stopUpdateSelected() { if consoleUpdating { stopPhone() } }
 

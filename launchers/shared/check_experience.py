@@ -45,6 +45,8 @@ LOCALIZABLE = ADAPTER / "Sources" / "S2ArmAppleAdapter" / "Resources" / "Localiz
 REQUIRED_STATES = ["idle", "keys_missing", "importing", "preparing", "ready", "running", "failed", "recovering"]
 REQUIRED_LANGS = ["zh-Hans", "en"]
 ERROR_KEYS = {"code", "title", "detail", "severity", "retryable", "recoverable", "next_action"}
+# 可选：玩家确认后续跑的参数（确认码唯一来源，两端都读这一处）；accept_ui 标由专门页面处理、不进通用确认
+ERROR_OPT_KEYS = {"accept", "accept_ui"}
 # 不是 RECOVERY 的键，但确实是出包链抛出的码（pack/targets/ios/adapter.py），恢复口径在 pack/contracts/README.md
 EXTRA_CODES = {"artifact_invalid"}
 EXTRA_CODE_SOURCES = {"artifact_invalid": "pack/contracts/README.md"}
@@ -177,7 +179,9 @@ def main() -> int:
 
     for e in items:
         code = e["code"]
-        ok(set(e) == ERROR_KEYS, f"error {code}: 字段只能是 {sorted(ERROR_KEYS)}，实际 {sorted(e)}")
+        ok(ERROR_KEYS <= set(e) <= ERROR_KEYS | ERROR_OPT_KEYS, f"error {code}: 字段只能是 {sorted(ERROR_KEYS)} + 可选 {sorted(ERROR_OPT_KEYS)}，实际 {sorted(e)}")
+        ok(e.get("accept") is None or re.fullmatch(r"accept[A-Z][A-Za-z]+", e["accept"]) is not None, f"error {code}: accept 必须是 acceptXxx 参数名")
+        ok("accept_ui" not in e or ("accept" in e and e["accept_ui"] == "drive_picker"), f"error {code}: accept_ui 只认 drive_picker，且要带 accept")
         ok(re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]*", code) is not None, f"错误码格式不对：{code}")
         text_field(e, f"error {code}")
         ok(e.get("severity") in {"info", "warn", "error"}, f"error {code}: severity 不认识")

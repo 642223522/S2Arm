@@ -82,7 +82,8 @@ import AppKit
         let r = await control.handle(ControlRequest(method: "GET", path: "/help", headers: [:], body: [:]))
         let calls = ((try? JSONSerialization.jsonObject(with: r.body) as? [String: Any])?["endpoints"] as? [[String: String]] ?? []).compactMap { $0["call"] }
         for c in ["GET /state", "GET /targets", "POST /keys {path}", "POST /games {paths:[…]}", "POST /build {gameId, target, spaceOverride?}",
-                  "POST /installCheck {gameId}", "POST /install {gameId, acceptDropped?, acceptNoBackup?, acceptStale?}", "POST /delete {gameId}", "POST /launch {gameId}"] {
+                  "POST /installCheck {gameId}", "POST /install {gameId, acceptDropped?, acceptNoBackup?, acceptStale?}", "POST /delete {gameId}", "POST /launch {gameId}",
+                  "POST /phone-identity {device, force?}"] {
             XCTAssertTrue(calls.contains(c), c)
         }
     }

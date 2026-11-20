@@ -84,6 +84,14 @@ static s2a_hp_state g_haptic_retry;   // 只在 g_system_haptics_queue 上访问
 // 下列字段由 g_feedback_mu 保护，提交方只更新固定快照。
 static uint64_t g_system_epoch;
 static BOOL g_system_present, g_system_supported, g_system_selected, g_system_pending, g_system_transition;
+// 系统手柄震动本局判死（system_fail_on_queue 连续失败到 S2A_HP_MAX_FAILS）：g_feedback_mu 下读写，换手柄 / 重新接入清零
+static BOOL g_system_dead;
+// 系统手柄在操作、却震不了（玩家反馈：无马达的夹持手柄，系统也给 haptics 对象，建引擎失败后全程静默）：
+//   系统不给 haptics，或给了但引擎判死；走配件协议的不算（它有自己的马达通道）。这时游戏震动改走手机马达。g_feedback_mu 下调
+static void system_sync_selection(void);   // 判死后 system_fail_on_queue 调它让手机马达接手（定义在下面）
+static BOOL system_mute_locked(void) {
+    return g_system_present && (!g_system_supported || g_system_dead) && !s2a_ea_rumble_active() && s2a_pad_selected_source() == S2A_PAD_SYSTEM;
+}
 static s2a_pad_vibration g_system_pair[2];
 static BOOL g_phone_selected, g_phone_available, g_phone_pending, g_phone_stop;
 static uint64_t g_phone_epoch;
@@ -135,8 +143,12 @@ static void system_fail_on_queue(const char *what, NSError *error) {
             error.localizedDescription.UTF8String ?: "unknown",
             S2A_HP_MAX_FAILS - 1, S2A_HP_BACKOFF_MS(1), S2A_HP_BACKOFF_MS(2));
     }
-    if (died) LOG("【红】系统手柄震动：本设备本局停用（连续 %d 次失败，最后一次 %s/%ld）；换手柄或重新接入会再试一次",
-                  S2A_HP_MAX_FAILS, domain, code);
+    if (died) {
+        LOG("【红】系统手柄震动：本设备本局停用（连续 %d 次失败，最后一次 %s/%ld），改用手机马达；换手柄或重新接入会再试一次",
+            S2A_HP_MAX_FAILS, domain, code);
+        pthread_mutex_lock(&g_feedback_mu); g_system_dead = YES; pthread_mutex_unlock(&g_feedback_mu);
+        system_sync_selection();   // 手机马达这一路接手（下一个震动帧起游戏拿到手机马达的会话）
+    }
 }
 // 1 秒没有新的震动帧就停（游戏不发停止也不会一直震）
 static void system_arm_stop_timer(void) {
@@ -239,7 +251,7 @@ static void system_play_on_queue(s2a_pad_vibration pair[2]) {
 
 static void system_select_device(GCController *device) {
     pthread_mutex_lock(&g_feedback_mu);
-    g_system_present = device != nil; g_system_supported = device.haptics != nil;
+    g_system_present = device != nil; g_system_supported = device.haptics != nil; g_system_dead = NO;
     g_system_selected = NO;
     uint64_t epoch = ++g_system_epoch; g_system_pending = NO; g_system_transition = YES;
     memset(g_system_pair, 0, sizeof g_system_pair);
@@ -252,14 +264,14 @@ static void system_select_device(GCController *device) {
         s2a_pad_wake();
     });
     pthread_mutex_unlock(&g_feedback_mu);
-    if (device) LOG("系统手柄震动：%s", device.haptics ? "支持" : "不支持震动");
+    if (device) LOG("系统手柄震动：%s", device.haptics ? "支持" : "不支持震动，游戏震动改用手机马达");
     s2a_ea_rumble_refresh();   // 换手柄：重判是不是走配件协议的那只
 }
 static void system_sync_selection(void) {
     pthread_mutex_lock(&g_feedback_mu);
     BOOL external = s2a_pad_has_controller();
     BOOL selected = g_system_present && external;
-    BOOL phone = atomic_load(&g_ble_foreground) && !external;
+    BOOL phone = atomic_load(&g_ble_foreground) && (!external || system_mute_locked());   // 手柄震不了：手机马达接手
     BOOL phone_changed = phone != g_phone_selected;
     if (phone != g_phone_selected) {
         g_phone_selected = phone; g_phone_epoch++; g_phone_pending = NO; g_phone_stop = NO;
@@ -294,7 +306,7 @@ static void phone_refresh_availability(void) {
     if (changed) s2a_pad_wake();
 }
 static void phone_submit_locked(const s2a_pad_vibration pair[2], BOOL stop) {
-    if (!g_phone_selected || !g_phone_available || g_system_transition || !atomic_load(&g_ble_foreground) || s2a_pad_has_controller()) return;
+    if (!g_phone_selected || !g_phone_available || g_system_transition || !atomic_load(&g_ble_foreground) || (s2a_pad_has_controller() && !system_mute_locked())) return;
     if (pair) memcpy(g_phone_pair, pair, sizeof g_phone_pair);
     g_phone_stop = stop;
     if (g_phone_pending) return;
@@ -959,10 +971,11 @@ __attribute__((visibility("default"), used)) uint64_t s2a_pad_rumble_session(voi
     pthread_mutex_lock(&g_feedback_mu);
     BOOL external = s2a_pad_has_controller();
     BOOL system = external && g_system_present;
-    uint64_t session = !g_system_transition && system && g_system_selected ? (SYSTEM_SESSION_BASE | g_system_epoch) :
+    BOOL mute = system && system_mute_locked();   // 系统手柄震不了：会话给手机马达
+    uint64_t session = !g_system_transition && system && g_system_selected && !mute ? (SYSTEM_SESSION_BASE | g_system_epoch) :
         (!g_system_transition && !system && external && atomic_load(&g_adapter_enabled) && ble_is_p1() ? atomic_load(&g_feedback_session) : 0);
     BOOL foreground = atomic_load(&g_ble_foreground);
-    BOOL phone = !g_system_transition && g_phone_selected && g_phone_available && foreground && !external;
+    BOOL phone = !g_system_transition && g_phone_selected && g_phone_available && foreground && (!external || mute);
     uint64_t phone_epoch = g_phone_epoch;
     pthread_mutex_unlock(&g_feedback_mu);
     if (session) return session;
@@ -1155,12 +1168,13 @@ __attribute__((visibility("default"), used)) void s2a_pad_set_motion_enabled(int
 int s2a_ios_slot_motion_capable(int slot);   // slot_feedback.m
 // 弱链接[lab]：s2a_dprompt_notice（dprompt.m 提供的提示条；输入工作台不编 dprompt.m，取不到就不提示）
 void s2a_dprompt_notice(NSString *title, NSString *body, double delay, double seconds) __attribute__((weak_import));
-static void motion_notice(int sel, int ns2_known) {
+static void motion_notice(int sel, int ns2_known, int pad_silent) {
     static _Atomic int said_pad, said_off;
     if (!s2a_dprompt_notice || s2a_unattended() || ns2_known) return;   // NS2 Pro 在供体感：不用说
     int phone = s2a_phone_motion_available(), cap = s2a_ios_slot_motion_capable(0);
     int which = 0;   // 1 手柄没体感、改用手机；2 手柄没体感、手机也关；3 没接手柄、手机陀螺仪关
-    if (cap == 2 && !atomic_exchange(&said_pad, 1)) which = phone ? 1 : 2;
+    // cap == 1（系统给了体感对象）但一直收不到新鲜样本（pad_silent，motion_pick.c s2a_motion_pad_silent）：玩家手上同样是没体感的手柄，一样要说
+    if ((cap == 2 || (cap == 1 && pad_silent)) && !atomic_exchange(&said_pad, 1)) which = phone ? 1 : 2;
     else if (cap == 0 && sel == S2A_PAD_TOUCH && !phone && !atomic_exchange(&said_off, 1)) which = 3;
     if (!which) return;
     LOG("六轴：给玩家提示一次（%s）", which == 1 ? "手柄没体感，改用手机陀螺仪" : which == 2 ? "手柄没体感，手机陀螺仪也关着" : "没接手柄，手机陀螺仪关着");
@@ -1198,13 +1212,23 @@ __attribute__((visibility("default"), used)) int s2a_pad_read_motion(s2a_pad_mot
     if (atomic_load(&g_adapter_enabled) && ble_is_p1() && atomic_load(&g_motion_requested)) atomic_load(&g_ns2)->get_motion(&motion);   // NS2 Pro 是玩家 2–4 时它的六轴归那个槽（s2a_ios_ble_slot_motion）
     pthread_mutex_unlock(&g_motion_mu);
     s2a_pad_motion slot[2] = {{0}};
-    int gc_known = s2a_pad_read_motion_slot(0, slot);   // 玩家 1 这只手柄自己的 GCMotion（ios/slot_feedback.m）
+    int gc_known = s2a_pad_read_motion_slot(0, slot);   // 玩家 1 这只手柄自己的 GCMotion（ios/slot_feedback.m），只算新鲜样本
+    // 手柄有体感对象却不出新鲜样本多久了（提示用）：有新鲜样本、换了手柄、或这一路刚开始被调（上一次调用隔了 1 秒以上 = 游戏刚要六轴）都重新起算
+    static uint64_t gc_ok_us, gc_last_call_us; static int gc_prev_cap, gc_silent_logged;
+    int gc_cap = s2a_ios_slot_motion_capable(0);
+    if (gc_known || gc_cap != gc_prev_cap || !gc_last_call_us || now - gc_last_call_us > 1000000) { gc_ok_us = now; gc_silent_logged = 0; }
+    gc_prev_cap = gc_cap; gc_last_call_us = now;
+    int gc_silent = s2a_motion_pad_silent(gc_cap, gc_ok_us, now);
+    if (gc_silent && !gc_silent_logged) {
+        gc_silent_logged = 1;
+        LOG("玩家手柄体感：手柄给了体感对象，但 %d 毫秒没有新样本，当作这只手柄没体感，改用手机陀螺仪（手机陀螺仪开着时）", S2A_MOTION_SILENT_MS);
+    }
     // 手柄都给不出体感（拔了 / 系统不给）就把手机传感器叫起来：它可能刚被「手柄让位省电」关掉，不叫起来手机这一路永远回不来
     if (!gc_known && !motion.known && atomic_load(&g_ble_foreground) && s2a_phone_motion_available()) phone_motion_use(1);
     s2a_pad_motion phone = {0};
     int phone_known = s2a_phone_motion_read(&phone);
 
-    if (settled) motion_notice(sel, motion.known);
+    if (settled) motion_notice(sel, motion.known, gc_silent);
     int target = s2a_motion_pick(sel, motion.known, gc_known, phone_known);
     int cur = g_motion_src;
     int cur_ok = cur == S2A_MOTION_GC ? gc_known : cur == S2A_MOTION_NS2 ? motion.known : cur == S2A_MOTION_PHONE ? phone_known : 0;

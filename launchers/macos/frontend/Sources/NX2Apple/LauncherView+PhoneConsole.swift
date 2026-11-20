@@ -141,7 +141,32 @@ extension LauncherView {
                     .controllerButtonStyle(ConsolePillButtonStyle()).controllerID("console.app").disabled(consoleOffline)
                 if consoleOffline { offlineReason(phone) }
             }
+            consoleIdentity(phone)
         }.accessibilityIdentifier("console.section.phone")
+    }
+
+    /// 「把签名身份交给手机」（次要按钮）：AltStore / SideStore / 证书 App 装的 S2Arm 交一次签名身份，以后放进「放这里导入」就能玩。
+    ///   进行中一行状态；成功一句完成提示（交好了 / 已经有了）；失败用手机作业的失败页（原因 + 下一步 + 复制错误摘要）
+    @ViewBuilder private func consoleIdentity(_ phone: PhoneOverview.Phone) -> some View {
+        let running = model.phoneBusy && model.phoneSession?.kind == .phoneIdentity
+        VStack(alignment: .leading, spacing: 6) {
+            Button { model.phoneIdentity(device: phone.device) } label: { Label(sx("console.button.identity"), systemImage: "person.badge.key") }
+                .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("console.identity").disabled(consoleOffline || running)
+            Text(sx("console.identity.note")).font(.manrope(12)).foregroundStyle(.white.opacity(0.65)).fixedSize(horizontal: false, vertical: true)
+            if running {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(sx("phone.status.running.phoneIdentity")).font(.manrope(12.5)).foregroundStyle(.white.opacity(0.8))
+                }
+            } else if let last = model.lastPhoneSession, last.kind == .phoneIdentity {
+                if last.phase == .finished(.completed), let delivered = model.identityDelivered {
+                    Text(sx(delivered ? "console.identity.done" : "console.identity.already")).font(.manrope(13)).foregroundStyle(.green)
+                        .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("console.identity.result")
+                } else if last.phase != .finished(.completed) {
+                    PhoneJobPanel(model: model, session: last, showsOperation: false).padding(.top, 6)
+                }
+            }
+        }.padding(.top, 6).accessibilityIdentifier("console.identity")
     }
 
     /// ② 游戏同步：每款一行写这台手机上的状态，可勾选；「更新所选」一款款推，有总进度、能停

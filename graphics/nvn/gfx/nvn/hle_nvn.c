@@ -21,6 +21,7 @@
 #include "nvn_dirty.h"
 #include "nvn_program_pins.h"
 #include "nvn2.h"
+#include "nvn_key.h"   // Switch 1 着色器键的控制段口径（第 2 代置零两段易变字段）
 #include "nvn2_cmd.h"   // NVN2 推常量 / DLSS 的记录格式与对象布局
 #include "nvn_hmap.h"   // 虚拟池按池指针查（g_vph）
 #include "nvn_drvscan.h"   // nvn_drv_nvrm_recode：NvColorFormat 换成游戏自带驱动的编码
@@ -1245,11 +1246,19 @@ int s2a_hle_pk_save(FILE *f) {
         if (e) { fwrite(&e->snap, sizeof e->snap, 1, f); fwrite(atomic_load_explicit(&e->ks, memory_order_relaxed), sizeof(prog_keys_t), 1, f); } }
     pthread_mutex_unlock(&g_ps_mu); return (int)n;
 }
+// 读档换键（nvn_mtl.m 实现；安卓与不链 nvn_mtl.m 的单测没有它 = 原样）：存档里的键是存档那时的包的键，包更新成第 2 代后，第 1 代键按包内别名表 key_alias.tsv 换成第 2 代。
+//   只看别名表、不重算：控制段在存档后可能已被游戏复用，按当前字节算出的键不可信。回 1 = 换了
+// 弱链接[nvntest]：nvn_be_shader_key_canon（graphics/nvn/gfx/nvn/nvn_mtl.m；不链它的图形单测按这行放行未定义）
+int nvn_be_shader_key_canon(uint8_t key[8]) __attribute__((weak));
+static void pk_canon(prog_keys_t *k) {
+    if (!nvn_be_shader_key_canon) return;
+    for (int st = 0; st < 6; st++) if (k->ok >> st & 1) nvn_be_shader_key_canon(k->key[st]);
+}
 int s2a_hle_pk_load(FILE *f) {
     uint64_t n = 0, ns = 0; if (fread(&n, 8, 1, f) != 1) return -1;
-    for (uint64_t i = 0; i < n; i++) { pk_rec r; if (fread(&r, sizeof r, 1, f) != 1) return -1; prog_keys_t *k = pk_get((const void *)(uintptr_t)r.p, 1); *k = r.k; }
+    for (uint64_t i = 0; i < n; i++) { pk_rec r; if (fread(&r, sizeof r, 1, f) != 1) return -1; pk_canon(&r.k); prog_keys_t *k = pk_get((const void *)(uintptr_t)r.p, 1); *k = r.k; }
     if (fread(&ns, 8, 1, f) != 1) return -1;   // 11-01 前的录像没有快照表（它的 OP_BIND_PROGRAM 也是旧格式）：重录
-    for (uint64_t i = 0; i < ns; i++) { prog_t snap; prog_keys_t k; if (snap_fread(&snap, sizeof snap, 1, f, "nvn.prog") != 1 || fread(&k, sizeof k, 1, f) != 1) return -1; prog_snap_put(&snap, k.key, k.ok, k.stage); }
+    for (uint64_t i = 0; i < ns; i++) { prog_t snap; prog_keys_t k; if (snap_fread(&snap, sizeof snap, 1, f, "nvn.prog") != 1 || fread(&k, sizeof k, 1, f) != 1) return -1; pk_canon(&k); prog_snap_put(&snap, k.key, k.ok, k.stage); }
     return (int)n;
 }
 static void pk_drop(const void *p) {
@@ -1274,19 +1283,17 @@ extern int s2a_source_has(const uint8_t key[8]) __attribute__((weak));
 extern void s2a_source_drop_pending_stage(uint64_t prog_serial, uint32_t stage) __attribute__((weak));   // 源已存好：释放该阶段的自持控制段
 
 // Control +0x20 是该控制段的自描述长度：>=0x880 用 0x880；SDK 10 的 0x850 段只用它自己的长度。
-static uint32_t prog_control_len(const void *control) {
-    uint32_t own = 0;
-    memcpy(&own, (const uint8_t *)control + 0x20, 4);
-    return (own >= 0x760 && own < 0x880) ? own : 0x880;
-}
+static uint32_t prog_control_len(const void *control) { return nvn_key_ctl_len(control); }   // 与键同一口径（nvn_key.h）
 
 // keys_hash 的“给定字节”版本：同一 control‖code 顺序，供 Bind 时用自持的 control 补算 key。
 static int keys_hash_parts(const void *control, uint32_t nctl, const void *code, uint32_t ncode, uint8_t out[8]) {
     if (!control || !code || !nctl || !ncode) return 0;
-    uint8_t md[CC_SHA256_DIGEST_LENGTH];
+    if (nctl > NVN_KEY_CTL_MAX) return 0;
+    uint8_t md[CC_SHA256_DIGEST_LENGTH], kc[NVN_KEY_CTL_MAX];
+    memcpy(kc, control, nctl); nvn_key_ctl_zero(kc, nctl);   // 第 2 代键（nvn_key.h）；安卓没有旧包，不做第 1 代兜底
     CC_SHA256_CTX hc;
     CC_SHA256_Init(&hc);
-    CC_SHA256_Update(&hc, control, nctl);
+    CC_SHA256_Update(&hc, kc, nctl);
     CC_SHA256_Update(&hc, code, ncode);
     CC_SHA256_Final(md, &hc);
     memcpy(out, md, 8);
@@ -1338,6 +1345,16 @@ static int shader_bytes_readable(uint64_t a, uint64_t n) {
         return 0; }
     return 1;
 }
+// sha256(ctl[0, nctl) ‖ code[0, ncode))[:8]（code 为 NULL 只哈希控制段）
+static void keys_sha(const void *ctl, uint32_t nctl, const void *code, uint32_t ncode, uint8_t out[8]) {
+    uint8_t md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256_CTX hc; CC_SHA256_Init(&hc);
+    CC_SHA256_Update(&hc, ctl, nctl);
+    if (code) CC_SHA256_Update(&hc, code, ncode);
+    CC_SHA256_Final(md, &hc); memcpy(out, md, 8);
+}
+// 旧包兜底的取舍（nvn_mtl.m 实现；安卓与不链 nvn_mtl.m 的单测没有它 = 只用第 2 代键）：v2 / v1 = 同一份字节的第 2 / 1 代键，回 1 = 用 v1
+// 弱链接[nvntest]：nvn_be_shader_key_pick（graphics/nvn/gfx/nvn/nvn_mtl.m；不链它的图形单测按这行放行未定义）
+int nvn_be_shader_key_pick(const uint8_t v2[8], const uint8_t v1[8]) __attribute__((weak));
 // mapped = 1: computed only when the code area is in a registered memory pool (at SetShaders: Mario sets some programs with an unmapped address first and fills it in before the first draw)
 static int keys_hash(const NVNshaderData *sd, int mapped, uint8_t out[8]) {
     uint32_t ncode = 0; void *mb; uint64_t mo;
@@ -1360,12 +1377,17 @@ static int keys_hash(const NVNshaderData *sd, int mapped, uint8_t out[8]) {
     if (code && !shader_bytes_readable(sd->data, ncode)) { static _Atomic int nd; if (atomic_fetch_add(&nd, 1) < 8) LOG("【红】 shader code area %#llx +%#x is not readable (control %p): no key, the stage is reported missing", (unsigned long long)sd->data, ncode, sd->control); return 0; }
     if (mapped && !(code && nvn_be_addr(sd->data, ncode, &mb, &mo))) return 0;
     // Control +0x20 holds the section's own length: sections of at least 0x880 bytes (all of Mario's, Engage's, Dread's and 13 Sentinels') use the first 0x880; SDK 10's 3D World has 0x850-byte ones followed by other data, so only their own length is used (shader_split.py ctl_len)
-    uint32_t nctl = 0x880, own; memcpy(&own, (const uint8_t *)sd->control + 0x20, 4);
-    if (own >= 0x760 && own < 0x880) nctl = own;
-    uint8_t md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256_CTX hc; CC_SHA256_Init(&hc);
-    CC_SHA256_Update(&hc, sd->control, nctl);
-    if (code) CC_SHA256_Update(&hc, (const void *)(uintptr_t)sd->data, ncode);
-    CC_SHA256_Final(md, &hc); memcpy(out, md, 8);
+    //   the rule and the zeroing of two volatile spans: nvn_key.h
+    uint32_t nctl = nvn_key_ctl_len(sd->control);
+    const void *cd = code ? (const void *)(uintptr_t)sd->data : NULL;
+    uint8_t kc[NVN_KEY_CTL_MAX]; memcpy(kc, sd->control, nctl); nvn_key_ctl_zero(kc, nctl);
+    keys_sha(kc, nctl, cd, ncode, out);   // 第 2 代键
+    // 旧包兜底：两段易变字段非零时第 1、2 代键不同；当前包的着色器表没有第 2 代、却有第 1 代（或设备兜底目录里有旧版本按第 1 代现编的），这一阶段就用第 1 代键，
+    //   之后的查库 / 现编 / 首用复核（prog_key_live）都用它。规则只看包表与兜底目录、不随本局现编变，同一份字节每次算出同一个键（nvn_mtl.m nvn_be_shader_key_pick）
+    if (nvn_be_shader_key_pick && !nvn_key_ctl_stable(sd->control, nctl)) {
+        uint8_t v1[8]; keys_sha(sd->control, nctl, cd, ncode, v1);
+        if (nvn_be_shader_key_pick(out, v1)) memcpy(out, v1, 8);
+    }
     return 1;
 }
 // S2Arm #674: the key a Switch 2 stage would have with the code in place at SetShaders, only to start its library loading early. keys_hash leaves NVN2 stages unkeyed there
@@ -4251,6 +4273,13 @@ int nvn_buf_extent(uint64_t cpu_addr, uint64_t *base, uint64_t *size) {
     int hit = nvn_breg_find(&g_breg, cpu_addr, base, size);
     BREG_UNLOCK();
     return hit;
+}
+// 登记表累计走过的 split / merge 步数（nvn_breg.steps）：单测 t_nvn_bufreg_rate.m 按 N / 4N 的步数比判建删复杂度（不用墙钟比，见 nvn_buf_reg.h）
+uint64_t nvn_buf_reg_steps(void) {
+    BREG_LOCK();
+    uint64_t s = g_breg.steps;
+    BREG_UNLOCK();
+    return s;
 }
 
 NVN(nvnBufferBuilderSetDevice, void, NVNbufferBuilder *b, NVNdevice *d) { BB(b)->dev = d; }
