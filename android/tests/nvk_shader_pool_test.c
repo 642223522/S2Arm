@@ -78,7 +78,10 @@ int nvn_plat_flag(const char *name, int dflt) {
     if (fixture_alias_flag >= 0 && !strcmp(name, "nvk_alias")) return fixture_alias_flag;
     return dflt;
 }
+static int lp_missing_lines, lp_open_lines;   // 出包预编库「不在」（黄）/「已打开」两种行各打了几次
 void nvn_plat_log(int level, const char *cls, const char *text) {
+    if (!strcmp(cls, "shader") && strstr(text, "出包预编库不在：")) lp_missing_lines += level == NVN_PLAT_LOG_WARN ? 1 : 1000;   // 不是黄就记成大数（必红）
+    if (level == NVN_PLAT_LOG_INFO && !strcmp(cls, "shader") && strstr(text, "出包预编库已打开：")) lp_open_lines++;
     if (level == NVN_PLAT_LOG_RED && !strcmp(cls, "shader")) snprintf(last_red, sizeof last_red, "%s", text);
     if (level == NVN_PLAT_LOG_INFO && !strcmp(cls, "shader") && strstr(text, "texture_pool_capacity=")) {
         diag_lines++; snprintf(last_diag, sizeof last_diag, "%s", text);
@@ -1335,8 +1338,25 @@ static int gs_libpack_test(void) {
         if (rec[j].key < rec[i].key || (rec[j].key == rec[i].key && rec[j].kind < rec[i].kind)) { __typeof__(rec[0]) t = rec[i]; rec[i] = rec[j]; rec[j] = t; }
     uint64_t keys[8]; uint8_t kinds[8]; const uint8_t *data[8]; size_t lens[8];
     for (int i = 0; i < 8; i++) { keys[i] = rec[i].key; kinds[i] = rec[i].kind; data[i] = rec[i].d; lens[i] = rec[i].n; }
-    CHECK(lp_write(dir, keys, kinds, data, lens, 8) == 0, "libpack GS container written");
+    // 库目录还不在：取程序照常走现编；「出包预编库不在」打一行黄、同一资源根只打一次；程序累计行的库状态 = 不在
     setenv("S2A_SHADER_REVISION_ROOT", root, 1); unsetenv("S2A_DIRECT_CACHE_DIR");
+    {
+        extern void nvk_shader_test_tally_line(char *out, size_t n);
+        char tl[640];
+        nvk_shader_test_tally_line(tl, sizeof tl);
+        CHECK(strstr(tl, "出包预编（库没查过）") != NULL, "libpack tally before any lookup says not looked up: %s", tl);
+        fake_gs_success = 1; lp_missing_lines = lp_open_lines = 0;
+        for (int i = 0; i < 2; i++) {
+            rp_shader_reset(); compiler_calls = 0;
+            struct rp_shader_req q = {0}; q.prim = 4; const struct rp_prog *p = NULL;
+            CHECK(rp_shader_resolve(&q, &p) == 0 && p && compiler_calls == 1, "libpack missing (%d): live compile resolves (calls=%d)", i, compiler_calls);
+        }
+        CHECK(lp_missing_lines == 1, "missing libpack directory is one yellow line per root (got %d)", lp_missing_lines);
+        nvk_shader_test_tally_line(tl, sizeof tl);
+        CHECK(strstr(tl, "出包预编（库不在）") != NULL, "libpack tally says the library is missing: %s", tl);
+        fake_gs_success = 0;
+    }
+    CHECK(lp_write(dir, keys, kinds, data, lens, 8) == 0, "libpack GS container written");
     static const char prof_on[] = "{\"schema\":\"s2a-direct-profile-v1\",\"profileHash\":\"sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"capabilities\":{\"storageBufferOffsetAlignment\":16,\"supportsGeometryShader\":true}}";
     static const char prof_off[] = "{\"schema\":\"s2a-direct-profile-v1\",\"profileHash\":\"sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"capabilities\":{\"storageBufferOffsetAlignment\":16,\"supportsGeometryShader\":false}}";
     snprintf(external_profile, sizeof external_profile, "%s", prof_on);
@@ -1358,6 +1378,23 @@ static int gs_libpack_test(void) {
         } else {
             CHECK(compiler_calls == 1, "libpack GS %s: library misses, live compile runs (calls=%d)", what[c], compiler_calls);
         }
+    }
+    {
+        extern void nvk_shader_test_tally_line(char *out, size_t n);
+        char tl[640]; nvk_shader_test_tally_line(tl, sizeof tl);
+        CHECK(lp_open_lines >= 1 && strstr(tl, "出包预编（库已打开）") != NULL, "libpack tally says opened after the container appears (%d open lines): %s", lp_open_lines, tl);
+        // 另一个资源根里的库是坏的（lib.idx 不是容器）：照旧报红 libpack_container_rejected，库状态 = 坏，不打「不在」
+        char root2[300], d2[700], f2[760];
+        snprintf(root2, sizeof root2, "%s-bad", root); mkdir(root2, 0700);
+        snprintf(d2, sizeof d2, "%s/shaders", root2); mkdir(d2, 0700); snprintf(d2, sizeof d2, "%s/shaders/direct", root2); mkdir(d2, 0700);
+        snprintf(d2, sizeof d2, "%s/shaders/direct/b-%s-vk", root2, DMSH_CHAIN); mkdir(d2, 0700);
+        snprintf(f2, sizeof f2, "%s/lib.idx", d2); { FILE *g = fopen(f2, "wb"); if (g) { fputs("not a libpack index", g); fclose(g); } }
+        setenv("S2A_SHADER_REVISION_ROOT", root2, 1); lp_missing_lines = 0; last_red[0] = 0;
+        rp_shader_reset(); compiler_calls = 0;
+        { struct rp_shader_req q = {0}; q.prim = 4; const struct rp_prog *p = NULL; rp_shader_resolve(&q, &p); }
+        nvk_shader_test_tally_line(tl, sizeof tl);
+        CHECK(strstr(tl, "出包预编（库坏）") != NULL && lp_missing_lines == 0, "broken container: tally says bad, no missing line (%d): %s", lp_missing_lines, tl);
+        unlink(f2); rmdir(d2); snprintf(d2, sizeof d2, "%s/shaders/direct", root2); rmdir(d2); snprintf(d2, sizeof d2, "%s/shaders", root2); rmdir(d2); rmdir(root2);
     }
     fake_gs_success = 0; external_profile[0] = 0; unsetenv("S2A_SHADER_REVISION_ROOT");
     char path[700];
