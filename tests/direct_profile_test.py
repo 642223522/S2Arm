@@ -899,6 +899,10 @@ class Profiles(unittest.TestCase):
         stub.write_text("#!/bin/sh\ncase \" $* \" in *' --show-sdk-version '*) echo 27.0; exit 0;; *' metal --version '*) echo 'Apple metal version 1'; exit 0;; esac\nexit 1\n")
         stub.chmod(0o755)
         env["PATH"] = str(bin_dir) + os.pathsep + env["PATH"]
+        # 调用方给了直连翻译库 → 阶段不现编 libdsx（同 tests/stage_direct_test.sh）：这条路夹具里没有着色器、出的是运行时现编空库，用不到它；
+        #   原先没给，全新工作树（门禁预检每次都是）里阶段先 make 一遍真的 libdsx，单这条用例冷跑 31 秒
+        dsx = self.base / "libdsx-unused.dylib"; dsx.write_bytes(b"")
+        env["DSX_LIB"] = str(dsx)
         p = subprocess.run(["bash", str(REPO / "pack/stage_direct.sh"), "fixture"], env=env, capture_output=True, text=True)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertIn("离线 0 支、运行时首遇现编", p.stdout + p.stderr)
