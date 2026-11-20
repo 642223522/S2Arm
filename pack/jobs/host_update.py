@@ -119,7 +119,8 @@ def shader_hint(c, gid, ios_count=None):
 # 直连库内容代数（同 sgrade_bf.BF_GEN 的做法）：库里多出旧包没有、设备又要用的内容时 +1；出包时记进 game.json ios.libGen / Mac 运行版本 manifest.json libGen。
 #   1 = 库带客体输入（库容器种类 56）：设备上现做补齐 / 采样模拟 / 任务阶段变体从包里取（不再拷源快照）；旧包没有，游戏回收控制段后这些变体做不了（那一对绘制跳过、不崩），
 #   重出这一款就补齐，所以旧代数的款在「建议更新」里列出（原因 libGen，前端用着色器那条文案）
-LIB_GEN = 1
+#   2 = 着色器键第 2 代（graphics/nvn/gfx/nvn/nvn_key.h）+ 包内键别名表 key_alias.tsv：旧包靠宿主先新后旧兜底照常能用，重出后库按新键去重、首用现编与读档换键都对上新键
+LIB_GEN = 2
 
 
 def lib_stale(gen):
