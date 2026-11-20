@@ -168,6 +168,25 @@ struct ShellSettingsView: View {
                                 }
                             }
                         }
+                        // S2Arm: "Signing certificate" (0.6.0): the certificate games imported on this iPhone are signed with — a .p12, or SideStore's own
+                        if let status = actions.signingCertStatus, actions.onImportSigningCert != nil || actions.onSideStoreSigningCert != nil {
+                            let now = status()
+                            SettingsGroup(title: ShellStrings.text("Signing certificate")) {
+                                SourceRow(symbol: now.isEmpty ? "seal" : "checkmark.seal", title: now.isEmpty ? ShellStrings.text("No certificate yet") : now,
+                                          note: ShellStrings.text("Games you import on this iPhone are signed with it. Use the certificate S2Arm was installed with.")) {
+                                    if let side = actions.onSideStoreSigningCert {
+                                        Button(ShellStrings.text("Get from SideStore")) { side() }
+                                            .buttonStyle(ShellButtonStyle(fills: true)).accessibilityIdentifier("shellSettings.cert.sidestore")
+                                            .shellTarget("shs.certSideStore") { side() }
+                                    }
+                                    if let p12 = actions.onImportSigningCert {
+                                        Button(ShellStrings.text("Import .p12…")) { p12() }
+                                            .buttonStyle(ShellButtonStyle(fills: true)).accessibilityIdentifier("shellSettings.cert.p12")
+                                            .shellTarget("shs.certP12") { p12() }
+                                    }
+                                }
+                            }
+                        }
                         // S2Arm: at the bottom, "Report a problem" (the host asks for an optional sentence, then uploads the logs and shows a short code)
                         if let report = actions.onReportProblem {
                             SettingsGroup(title: ShellStrings.text("Report a problem")) {
@@ -204,6 +223,7 @@ struct ShellSettingsView: View {
         }
         .foregroundStyle(.white).preferredColorScheme(.dark)
         .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in revision += 1 }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("S2ASigningCertChanged"))) { _ in revision += 1 }   // 宿主导好证书：状态行重读
     }
 
     /// 声音一组：Apple TV 没有静音开关，tvOS 上只留「与其他 App 混音」

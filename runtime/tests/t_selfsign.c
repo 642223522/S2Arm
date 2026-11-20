@@ -84,7 +84,7 @@ static void one_case(const char *dir, SecKeyRef key, CFArrayRef chain, const uin
 // ④ 手机上直接导入 .p12：密码错 → 1 / 非 p12 → -1（都不存）；对 → 0、团队号 = 证书 OU、current.json 带 openssl 算的 sha1 与 source p12
 // ⑤ SideStore 导出的不带 MAC 明文 p12（照 PKCS12Builder 拼 / openssl -nomac）：传错密码也导入成功、团队号与 sha1 对；截断 → -1
 int s2a_identity_import(const char *home);
-int s2a_identity_import_p12(const char *home, const void *p12, size_t n, const char *password, char *team, size_t team_n, char *why, size_t why_n);
+int s2a_identity_import_p12(const char *home, const void *p12, size_t n, const char *password, const char *source, char *team, size_t team_n, char *why, size_t why_n);
 void s2a_identity_test_store(int (*f)(SecKeyRef, SecCertificateRef, char *, size_t));
 static int g_store_n;
 static int store_stub(SecKeyRef k, SecCertificateRef c, char *why, size_t n) { (void)why; (void)n; g_store_n += k && c; return 0; }
@@ -166,11 +166,11 @@ int main(void) {
         printf("④ 手机上直接导入 .p12\n");
         char h4[600], cur[800], buf[400] = {0}, team[64], why[256]; snprintf(h4, sizeof h4, "%s/home_p12", dir);
         snprintf(cur, sizeof cur, "%s/Library/Application Support/S2Arm/identity/current.json", h4);
-        g_store_n = 0; int r1 = pb ? s2a_identity_import_p12(h4, pb, pn, "错的", team, sizeof team, why, sizeof why) : -9;
+        g_store_n = 0; int r1 = pb ? s2a_identity_import_p12(h4, pb, pn, "错的", NULL, team, sizeof team, why, sizeof why) : -9;
         CHECK(r1 == 1 && g_store_n == 0 && access(cur, F_OK) != 0, ".p12 密码不对：返回 %d（期望 1）、不存钥匙串、不写 current.json", r1);
-        const char junk[] = "not a p12 file"; g_store_n = 0; int r2 = s2a_identity_import_p12(h4, junk, sizeof junk, "t", team, sizeof team, why, sizeof why);
+        const char junk[] = "not a p12 file"; g_store_n = 0; int r2 = s2a_identity_import_p12(h4, junk, sizeof junk, "t", NULL, team, sizeof team, why, sizeof why);
         CHECK(r2 == -1 && g_store_n == 0 && why[0], "不是 p12：返回 %d（期望 -1）、不存、原因「%s」", r2, why);
-        g_store_n = 0; int r3 = pb ? s2a_identity_import_p12(h4, pb, pn, "t", team, sizeof team, why, sizeof why) : -9;
+        g_store_n = 0; int r3 = pb ? s2a_identity_import_p12(h4, pb, pn, "t", NULL, team, sizeof team, why, sizeof why) : -9;
         { FILE *f = fopen(cur, "rb"); if (f) { size_t k = fread(buf, 1, sizeof buf - 1, f); buf[k] = 0; fclose(f); } }
         CHECK(r3 == 0 && g_store_n == 1 && !strcmp(team, "ABCDE12345") && strstr(buf, sha) && strstr(buf, "\"team\": \"ABCDE12345\"") && strstr(buf, "\"source\": \"p12\"") && !strstr(buf, "BEGIN"),
               ".p12 密码对：返回 %d（期望 0）、存钥匙串 %d 次、团队号 %s（期望证书 OU ABCDE12345）、current.json 带 sha1 %s 与 source p12", r3, g_store_n, team, sha);
@@ -180,15 +180,15 @@ int main(void) {
         uint8_t *k1 = slurp(kp, &k1n), *cd = slurp(cp, &cdn);
         db ss = k1 && cd ? sidestore_p12(k1, k1n, cd, cdn) : (db){NULL, 0};
         char h5[600], cur5[800]; snprintf(h5, sizeof h5, "%s/home_ss", dir); snprintf(cur5, sizeof cur5, "%s/Library/Application Support/S2Arm/identity/current.json", h5);
-        g_store_n = 0; int r5 = ss.p ? s2a_identity_import_p12(h5, ss.p, ss.n, "对话框里的密码会被忽略", team, sizeof team, why, sizeof why) : -9;
+        g_store_n = 0; int r5 = ss.p ? s2a_identity_import_p12(h5, ss.p, ss.n, "对话框里的密码会被忽略", "sidestore", team, sizeof team, why, sizeof why) : -9;
         memset(buf, 0, sizeof buf); { FILE *f = fopen(cur5, "rb"); if (f) { size_t k = fread(buf, 1, sizeof buf - 1, f); buf[k] = 0; fclose(f); } }
-        CHECK(r5 == 0 && g_store_n == 1 && !strcmp(team, "ABCDE12345") && strstr(buf, sha), "PKCS12Builder 格式样本（%zu 字节）：返回 %d（期望 0）、存钥匙串 %d 次、团队号 %s、current.json 带 sha1 %s（%s）", ss.n, r5, g_store_n, team, sha, why);
+        CHECK(r5 == 0 && g_store_n == 1 && !strcmp(team, "ABCDE12345") && strstr(buf, sha) && strstr(buf, "\"source\": \"sidestore\""), "PKCS12Builder 格式样本（%zu 字节）：返回 %d（期望 0）、存钥匙串 %d 次、团队号 %s、current.json 带 sha1 %s（%s）", ss.n, r5, g_store_n, team, sha, why);
         char cmd5[1200]; snprintf(cmd5, sizeof cmd5, "cd %s && openssl pkcs12 -export -inkey k.pem -in c.pem -out nomac.p12 -nomac -keypbe NONE -certpbe NONE -passout pass: 2>/dev/null", dir);
         size_t nmn = 0; char nmp[600]; snprintf(nmp, sizeof nmp, "%s/nomac.p12", dir); uint8_t *nm = system(cmd5) == 0 ? slurp(nmp, &nmn) : NULL;
-        g_store_n = 0; int r6 = nm ? s2a_identity_import_p12(h5, nm, nmn, "随便填", team, sizeof team, why, sizeof why) : -9;
+        g_store_n = 0; int r6 = nm ? s2a_identity_import_p12(h5, nm, nmn, "随便填", "sidestore", team, sizeof team, why, sizeof why) : -9;
         CHECK(r6 == 0 && g_store_n == 1 && !strcmp(team, "ABCDE12345"), "openssl -nomac 不加密样本（%zu 字节）：返回 %d（期望 0）、存钥匙串 %d 次、团队号 %s（%s）", nmn, r6, g_store_n, team, why);
         uint8_t bad5[64]; memcpy(bad5, ss.p ? ss.p : (uint8_t *)"x", ss.n < 64 ? ss.n : 64); g_store_n = 0;
-        int r7 = ss.n >= 64 ? s2a_identity_import_p12(h5, bad5, 64, "x", team, sizeof team, why, sizeof why) : -9;
+        int r7 = ss.n >= 64 ? s2a_identity_import_p12(h5, bad5, 64, "x", "sidestore", team, sizeof team, why, sizeof why) : -9;
         CHECK(r7 == -1 && g_store_n == 0, "明文格式截断成 64 字节：返回 %d（期望 -1）、不存", r7);
         free(k1); free(cd); free(ss.p); free(nm);
         s2a_identity_test_store(NULL);

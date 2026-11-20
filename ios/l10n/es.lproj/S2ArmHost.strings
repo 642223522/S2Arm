@@ -609,3 +609,19 @@
 "vpad.snap.deleteFailed" = "No se pudo eliminar del todo. Inténtalo de nuevo en un momento";
 "snap.result.title" = "No se pudo volver a ese momento";
 "snap.result.generic" = "No se pudo volver a ese momento, así que el juego empezó de nuevo. Tus partidas guardadas no se ven afectadas.";
+
+"cert.password.title" = "Introduce la contraseña del certificado";
+"cert.password.message" = "“%@” necesita su contraseña para importarse.";
+"cert.password.wrong" = "La contraseña no es correcta. Inténtalo de nuevo (“%@”).";
+"cert.import" = "Importar";
+"cert.failed.title" = "No se pudo importar el certificado";
+"cert.failed.message" = "Este archivo no es un certificado de firma que S2Arm pueda usar (.p12).";
+"cert.done.title" = "Certificado de firma importado";
+"cert.done.message" = "Equipo %@. Los juegos que importes en este iPhone se firmarán con él antes de empezar.";
+"cert.teamMismatch" = "Atención: este certificado es del equipo %1$@, pero este S2Arm lo instaló el equipo %2$@, así que los juegos firmados con él no se abrirán. Usa el certificado con el que instalaste S2Arm o reinstala S2Arm con este certificado.";
+"cert.sidestore.missing" = "No se pudo abrir SideStore: no está en este iPhone o su versión es demasiado antigua.";
+"cert.sidestore.empty" = "SideStore no devolvió ningún certificado. Toca «Export» en SideStore e inténtalo de nuevo.";
+"cert.status" = "Equipo %1$@ · %2$@";
+"cert.source.sidestore" = "De SideStore";
+"cert.source.p12" = ".p12 importado";
+"cert.source.pc" = "Desde tu ordenador";

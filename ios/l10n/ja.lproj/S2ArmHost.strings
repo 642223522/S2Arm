@@ -609,3 +609,19 @@
 "vpad.snap.deleteFailed" = "削除しきれませんでした。少し待ってからもう一度お試しください";
 "snap.result.title" = "その瞬間に戻れませんでした";
 "snap.result.generic" = "その瞬間に戻れなかったため、ゲームを最初から始めました。ゲームのセーブデータには影響しません。";
+
+"cert.password.title" = "証明書のパスワードを入力";
+"cert.password.message" = "「%@」の読み込みにはパスワードが必要です。";
+"cert.password.wrong" = "パスワードが違います。もう一度入力してください（「%@」）。";
+"cert.import" = "読み込む";
+"cert.failed.title" = "証明書を読み込めませんでした";
+"cert.failed.message" = "このファイルは使える署名証明書（.p12）ではありません。";
+"cert.done.title" = "署名証明書を読み込みました";
+"cert.done.message" = "チーム %@。この iPhone で読み込んだゲームは、起動前にこの証明書で署名されます。";
+"cert.teamMismatch" = "注意：この証明書はチーム %1$@ のものですが、この S2Arm はチーム %2$@ でインストールされています。この証明書で署名したゲームはシステムに拒否されます。S2Arm のインストールに使った証明書を使うか、この証明書で S2Arm を入れ直してください。";
+"cert.sidestore.missing" = "SideStore を開けません：この iPhone に SideStore がないか、バージョンが古すぎます。";
+"cert.sidestore.empty" = "SideStore から証明書が返ってきませんでした。SideStore で「Export」をタップしてからもう一度お試しください。";
+"cert.status" = "チーム %1$@ · %2$@";
+"cert.source.sidestore" = "SideStore から";
+"cert.source.p12" = "読み込んだ .p12";
+"cert.source.pc" = "コンピュータから";

@@ -455,9 +455,9 @@ static int p12_plain(const uint8_t *p, size_t n, const uint8_t **key, size_t *ke
 }
 
 // 玩家在手机上直接导入 .p12（0.6.0：买了开发者证书的玩家不经电脑）：解 p12 → 存钥匙串（同电脑交来的身份，标签 SS_KC_LABEL，换掉旧的）→ 写 current.json（source p12）。
-//   团队号取叶证书的 OU（苹果开发证书的 OU 就是团队号）。返回 0 = 导入了（team 带回团队号）；1 = 密码不对（调用方再问一次）；-1 = 失败（why 写原因）。
+//   source 写进 current.json（p12 = 玩家选的 .p12 文件，sidestore = SideStore「导出证书」回调；NULL 按 p12）。团队号取叶证书的 OU（苹果开发证书的 OU 就是团队号）。返回 0 = 导入了（team 带回团队号）；1 = 密码不对（调用方再问一次）；-1 = 失败（why 写原因）。
 //   p12 文件本身由调用方在成功后删（它在「放这里导入」里）
-int s2a_identity_import_p12(const char *home, const void *p12, size_t n, const char *password, char *team, size_t team_n, char *why, size_t why_n) {
+int s2a_identity_import_p12(const char *home, const void *p12, size_t n, const char *password, const char *source, char *team, size_t team_n, char *why, size_t why_n) {
     if (team && team_n) team[0] = 0;
     if (why && why_n) why[0] = 0;
     if (!home || !p12 || !n) { snprintf(why, why_n, "没有文件内容"); return -1; }
@@ -488,7 +488,8 @@ int s2a_identity_import_p12(const char *home, const void *p12, size_t n, const c
     if (rc) { snprintf(why, why_n, "%s", w[0] ? w : "证书读不了"); LOG("【红】.p12 导入失败：%s", why); return -1; }
     char dir[1024], cur[1200]; snprintf(dir, sizeof dir, "%s/Library/Application Support/S2Arm/identity", home); snprintf(cur, sizeof cur, "%s/current.json", dir);
     for (char *q = dir + 1; *q; q++) if (*q == '/') { *q = 0; mkdir(dir, 0755); *q = '/'; } mkdir(dir, 0755);
-    current_write(cur, t, sha, "p12", "玩家在手机上导入的 .p12");
+    if (!source || !*source) source = "p12";
+    current_write(cur, t, sha, source, !strcmp(source, "sidestore") ? "从 SideStore 取来的证书" : "玩家在手机上导入的 .p12");
     if (team && team_n) snprintf(team, team_n, "%s", t);
     return 0;
 }
