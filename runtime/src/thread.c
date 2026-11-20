@@ -151,9 +151,11 @@ typedef struct thr {
     arm_thread_state64_t pst; arm_neon_state64_t pns;
 #endif   // SetThreadActivity：在系统调用里的在出入口挂起；在游戏代码里的 Mach 挂起
     uint64_t *svc_regs; uint64_t svc_pc;   // 当前系统调用的门帧与原 svc 指令地址
+#if !defined(__APPLE__)   // 读的一端在 android/native/runtime/fault/thread_android.inc（停世界到期的线程明细），苹果不编、不付这份开销
     _Atomic uint64_t sig_pc, sig_lr;   // 诊断：最近一次 SIGURG 落点（宿主区也记）
     _Atomic uint64_t sig_bt[4];          // 诊断：落点往上 4 层帧指针链返回地址（只沿本栈 1 MiB 内的 fp 走）
     _Atomic uint64_t blk_ra;   // 诊断：最外层 DM_BLOCK 的调用点（停世界到期时报出线程在哪段宿主活里）
+#endif
     uint64_t tsd;                      // 本宿主线程 TSD 基址：别的线程据此读本线程的 K18 / KTLS / KTLR 槽
     void *tlr;                         // ThreadLocalRegion（窗口 TLS/IO 区，svc_mem.c 分配）
     const uint32_t *wh; int wn;        // WaitSynchronization 在等的句柄数组与个数（现场导出用）
@@ -1757,7 +1759,11 @@ static void wt_blk_add(uint64_t ra, uint64_t tid, uint64_t ns) {
         if (atomic_load(&g_wt_blk[i].key) == k || atomic_compare_exchange_strong(&g_wt_blk[i].key, &e, k) || e == k) {
             atomic_fetch_add(&g_wt_blk[i].ns, ns); atomic_fetch_add(&g_wt_blk[i].n, 1); return; } }
 }
-__attribute__((noinline)) void s2a_core_block_begin(void) { if (!t_blk++) { { thr_t *bt = thread_current_or_null(); if (bt) atomic_store_explicit(&bt->blk_ra, (uint64_t)__builtin_return_address(0), memory_order_relaxed); } if (wt_on()) { t_wt_blk_t0 = thread_clock(); t_wt_blk_ra = (uint64_t)__builtin_return_address(0); } s2a_core_leave(); } }
+__attribute__((noinline)) void s2a_core_block_begin(void) { if (!t_blk++) {
+#if !defined(__APPLE__)
+    { thr_t *bt = thread_current_or_null(); if (bt) atomic_store_explicit(&bt->blk_ra, (uint64_t)__builtin_return_address(0), memory_order_relaxed); }
+#endif
+    if (wt_on()) { t_wt_blk_t0 = thread_clock(); t_wt_blk_ra = (uint64_t)__builtin_return_address(0); } s2a_core_leave(); } }
 // noinline：__builtin_return_address(0) 要拿到「DM_BLOCK_END 所在函数的返回点」，被内联进来就变成上一层调用点
 __attribute__((noinline)) void s2a_core_block_end(void) {
     if (!(t_blk > 0 && !--t_blk)) return;
