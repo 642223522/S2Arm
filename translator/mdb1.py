@@ -33,8 +33,8 @@ class Archive:
             self.bits = 32
             tree_n, name_n = struct.unpack_from('<2H', hdr, 4)
             data_n = struct.unpack_from('<I', hdr, 8)[0]
-            self.data_start = struct.unpack_from('<I', hdr, 0x10)[0]
-            self.total = struct.unpack_from('<I', hdr, 0x14)[0]
+            self.data_start = struct.unpack_from('<I', hdr, 0x0c)[0]   # 32 位头 0x14：数据区起在 +0x0c、总长 +0x10（同上面的布局说明）
+            self.total = struct.unpack_from('<I', hdr, 0x10)[0]
         self.tree_n, self.name_n, self.data_n = tree_n, name_n, data_n
         esz = 16 if self.bits == 64 else 12
         self.data_base = self.data_start - esz * data_n
