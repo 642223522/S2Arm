@@ -21,7 +21,5 @@ extension S2ArmLauncherModel {
     func updateSuggested(_ game: GameSummary) { install(game) }
 
     /// 原因 → 共享文案键（libGen = 库缺新代数内容，用着色器那条文案）（launchers/shared/experience.v1.json launcher.items，六种语言）；不认识的原因不显示
-    static func updateReasonKey(_ reason: String) -> String? {
-        ["rewriter": "update.hint.reason.rewriter", "hostAbi": "update.hint.reason.hostAbi", "shader": "update.hint.reason.shader", "libGen": "update.hint.reason.shader"][reason]
-    }
+    static func updateReasonKey(_ reason: String) -> String? { BackendText.updateReasonKeys[reason] }   // 共享体验表 update_reasons（11-19 结构 9）
 }
