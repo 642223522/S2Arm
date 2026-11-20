@@ -45,7 +45,7 @@ static _Atomic uint64_t g_gen;
 static int dem_gen_live(uint64_t gen) { return atomic_load_explicit(&g_gen, memory_order_acquire) == gen; }
 static void dem_publish(uint64_t gen, int h, void *obj, int code, const char *why) {
     pthread_mutex_lock(&g_life_mu);   // start 在这把锁下换代 + reset：判代号与发布之间不会插进换代
-    if (dem_gen_live(gen)) nvk_pp_publish(&g_pp, h, obj, code, why);
+    if (dem_gen_live(gen)) { nvk_pp_publish(&g_pp, h, obj, code, why); __atomic_fetch_add(&g_st.published, 1, __ATOMIC_RELAXED); }
     pthread_mutex_unlock(&g_life_mu);
 }
 
@@ -247,6 +247,7 @@ void nvn_vk_pipe_demand_stats(struct nvn_pipe_demand_stats *out) {
     memset(out, 0, sizeof *out);
     out->kicked = __atomic_load_n(&g_st.kicked, __ATOMIC_RELAXED);
     out->dedup = __atomic_load_n(&g_st.dedup, __ATOMIC_RELAXED);
+    out->published = __atomic_load_n(&g_st.published, __ATOMIC_RELAXED);
     out->built = __atomic_load_n(&g_st.built, __ATOMIC_RELAXED);
     out->failed = __atomic_load_n(&g_st.failed, __ATOMIC_RELAXED);
     out->timeouts = __atomic_load_n(&g_st.timeouts, __ATOMIC_RELAXED);
