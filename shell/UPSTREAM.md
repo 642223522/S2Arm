@@ -44,6 +44,10 @@
    | `Sources/ShellUI/ShellSettingsView.swift`、`ShellInputs.swift`、`LibraryView.swift`、`Resources/Localizable.xcstrings` | 设置页加「签名证书」一组（状态行 +「从 SideStore 获取」「导入 .p12…」）；`ShellActions` 加 `signingCertStatus` / `onImportSigningCert` / `onSideStoreSigningCert`；文案 5 条（六种语言） | 0.6.0：买了证书的玩家、SideStore 装的玩家在手机上直接拿签名证书（宿主 `ios/cert_import.m`）；上游没有手机自签 | — |
    门禁：`tests/shellui_ios_build_test.sh` 用门禁机上每个 Xcode 各编一遍 iOS Release（11-07 起）。
 
+### 主页联机设置
+
+- `Sources/ShellUI/ShellSettingsStore.swift`、`ShellSettingsView.swift`、`Resources/Localizable.xcstrings`：新增联机模式、指定 IPv4 与本机中继开关（中英）。App 全局偏好交给 iOS 原生启动层；默认不写联机环境，保留既有自动发现；完整退出重开 App 后生效。
+
 ## catalogue（游戏目录清单 JSON）
 
 字段取上游 `game.manifest.json`（schema 1）的必要子集，同名同义；不认识的键忽略：

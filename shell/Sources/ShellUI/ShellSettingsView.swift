@@ -9,6 +9,9 @@ enum ShellSettingsRows {
     static let silent = "shell.silent"
     static let mix = "shell.mix"
     static let language = "shell.language"
+    static let ldnMode = "shell.ldnMode"
+    static let ldnHost = "shell.ldnHost"
+    static let ldnAddress = "shell.ldnAddress"
     static let touchSize = "shell.touchSize"
     static let touchStick = "shell.touchStick"
     static let targetPrefix = "shs.row."
@@ -22,6 +25,24 @@ enum ShellSettingsRows {
     static func hudRow(_ store: ShellSettingsStore) -> SettingRow {
         SettingRow(id: hud, label: ShellStrings.text("Performance overlay"), note: ShellStrings.text("Shared by all games; you can also switch it in a game any time."),
                    kind: .toggle(on: "1", off: "0"), value: store.performanceHUD ? "1" : "0")
+    }
+
+    static func ldnModeRow(_ store: ShellSettingsStore) -> SettingRow {
+        SettingRow(id: ldnMode, label: ShellStrings.text("Local wireless"),
+                   note: ShellStrings.text("Auto joins local wireless when a game requests it. Manual uses the same relay for every player; host the relay on this device or enter its IPv4 address. Port 30456. Fully quit and reopen the app to apply. IPv6 is not supported."),
+                   kind: .choice([SettingOption("auto", ShellStrings.text("Automatic")), SettingOption("manual", ShellStrings.text("Manual"))]),
+                   value: store.ldnMode)
+    }
+
+    static func ldnHostRow(_ store: ShellSettingsStore) -> SettingRow? {
+        guard store.ldnMode == "manual" else { return nil }
+        return SettingRow(id: ldnHost, label: ShellStrings.text("Host on this device"),
+                          note: ShellStrings.text("Keeps the relay on this device while the app is in the foreground and the network is reachable."),
+                          kind: .toggle(on: "1", off: "0"), value: store.ldnHost ? "1" : "0")
+    }
+
+    static func showsLdnAddress(_ store: ShellSettingsStore) -> Bool {
+        store.ldnMode == "manual" && !store.ldnHost
     }
 
     /// Game sound while the device is in Silent Mode, for every game (the same switch as the system Settings app's S2Arm page).
@@ -73,6 +94,9 @@ enum ShellSettingsRows {
         case hud: store.storePerformanceHUD(value == "1")
         case silent: store.storePlayInSilentMode(value == "1")
         case mix: store.storeMixWithOthers(value == "1")
+        case ldnMode: store.storeLdnMode(value)
+        case ldnHost: store.storeLdnHost(value == "1")
+        case ldnAddress: store.storeLdnAddress(value)
         case glass: store.storeLiquidGlass(value == "1")
         case language: store.storeInterfaceLanguage(value)
         case touchSize: store.storeTouchSize(value)
@@ -93,6 +117,7 @@ struct ShellSettingsView: View {
     @Environment(\.shellFocus) private var focus
     /// Counts the changes in the defaults, so the rows read the store again.
     @State private var revision = 0
+    @FocusState private var editingLdnAddress: Bool
 
     var body: some View {
         let _ = revision
@@ -148,6 +173,46 @@ struct ShellSettingsView: View {
                                 SettingControl(gameID: ShellSettingsRows.gameID, row: row, targetPrefix: ShellSettingsRows.targetPrefix) {
                                     ShellSettingsRows.apply(row.id, value: $0, to: store)
                                 }.equatable()
+                            }
+                        }
+                        SettingsGroup(title: ShellStrings.text("Local wireless")) {
+                            SettingControl(gameID: ShellSettingsRows.gameID, row: ShellSettingsRows.ldnModeRow(store), targetPrefix: ShellSettingsRows.targetPrefix) {
+                                ShellSettingsRows.apply(ShellSettingsRows.ldnMode, value: $0, to: store)
+                            }.equatable()
+                            if let row = ShellSettingsRows.ldnHostRow(store) {
+                                SettingControl(gameID: ShellSettingsRows.gameID, row: row, targetPrefix: ShellSettingsRows.targetPrefix) {
+                                    ShellSettingsRows.apply(row.id, value: $0, to: store)
+                                }.equatable()
+                            }
+                            if ShellSettingsRows.showsLdnAddress(store) {
+                                SourceRow(symbol: "network", title: ShellStrings.text("Relay IPv4 address"),
+                                          note: ShellStrings.text("Enter an IPv4 address reachable by every player. Port 30456.")) {
+                                    HStack {
+                                        TextField("192.168.1.2", text: Binding(
+                                            get: { store.ldnAddress },
+                                            set: { ShellSettingsRows.apply(ShellSettingsRows.ldnAddress, value: $0, to: store); revision += 1 }
+                                        ))
+                                        .textFieldStyle(.plain).shellText(14)
+                                        #if os(iOS)
+                                        .keyboardType(.numbersAndPunctuation)
+                                        .textInputAutocapitalization(.never)
+                                        .autocorrectionDisabled()
+                                        #else
+                                        .autocorrectionDisabled()
+                                        #endif
+                                        .focused($editingLdnAddress)
+                                        .accessibilityIdentifier("shellSettings.ldnAddress")
+                                        Button {
+                                            editingLdnAddress = false
+                                        } label: {
+                                            Image(systemName: "keyboard.chevron.compact.down")
+                                        }
+                                        .buttonStyle(ChipButtonStyle())
+                                        .accessibilityLabel(ShellStrings.text("Done"))
+                                        .shellTarget("shs.ldnAddress.done") { editingLdnAddress = false }
+                                    }
+                                    .shellTarget("shs.ldnAddress") { editingLdnAddress = true }
+                                }
                             }
                         }
                         SettingsGroup(title: ShellStrings.text("Sound")) {
