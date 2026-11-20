@@ -155,6 +155,7 @@ hdr runtime/src/native.h
 hdr runtime/src/reloc_class.h
 hdr runtime/src/ro_find.h
 hdr runtime/src/selfsign_certs.inc
+hdr runtime/src/snapfile.h
 hdr runtime/src/snapfmt.h
 hdr runtime/src/thread_wait_diag.inc
 dyn _S2A_SnapAudioFp
