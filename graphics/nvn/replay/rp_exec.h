@@ -21,6 +21,10 @@ nvn_gpu_buf rp_buf_for_null_storage(void);
 // 取 [addr, addr+len) 在后端的缓冲与偏移；自上次同步后写过的页在 c 这一段的 GPU 顺序里重传。0 = 地址不在任何池里（已记账）。线程：[提交]。
 int rp_buf_resolve(nvn_gpu_cmd c, uint64_t addr, uint64_t len, nvn_gpu_buf *buf, uint64_t *off);
 int rp_buf_resolve_multi(int n, const uint64_t *addr, const uint64_t *len, nvn_gpu_buf *buf, uint64_t *off, unsigned char *ok);   // 一次抢锁解析多段
+// 回放窗口 = 一次提交的回放（nvn_be_sub_begin → nvn_be_sub_commit，开窗口的线程是回放线程）。窗口开着时别的线程销毁池（MapVirtual 改 run、MemoryPoolFinalize），
+// 镜像缓冲不当场放（回放线程手里可能已有 rp_buf_resolve 取到、后端还没 cmd_ref 的句柄），推迟到窗口收尾；窗口外或同线程销毁照旧当场放。
+void rp_buf_hold_begin(void);
+void rp_buf_hold_end(void);
 // 写入区间日志（rp_draw 的暂存片复用判定用）：记号 + 「记号之后有没有人写过这一段」
 uint64_t rp_write_mark(void);
 int rp_write_touched(uint64_t mark, uint64_t addr, uint64_t len);
