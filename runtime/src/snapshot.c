@@ -289,7 +289,8 @@ static uint64_t handout_resolve(const char *id) {
 typedef struct { uint64_t a, n; } span_t;
 static int in_ranges(uint64_t a, const uint64_t *b, const uint64_t *n, int k) { for (int i = 0; i < k; i++) if (a >= b[i] && a < b[i] + n[i]) return 1; return 0; }
 static int page_zero(const uint8_t *p) { const uint64_t *q = (const uint64_t *)p; for (size_t i = 0; i < 0x4000 / 8; i++) if (q[i]) return 0; return 1; }
-static int g_dump_noread; static uint64_t g_dump_noread_b;
+static int g_dump_noread; static uint64_t g_dump_noread_b, g_dump_released;
+int s2a_snap_page_released(uint64_t hp) __attribute__((weak));   // svc_mem.c：游戏已释放、待清零的页（文件后备的懒清零）；不链 svc_mem 的单测没有
 static _Atomic int g_snap_abandoned;   // 看门狗放弃了这次存档（定义在看门狗一节）：游戏已解冻、内存权限已还原，存档线程不能再读游戏内存
 static int dump_mem(FILE *f, uint64_t *raw_out, uint64_t *comp_out, int *nreg) {
     uint64_t base, size; s2a_window_get(&base, &size); const uint64_t pg = 0x4000, CH = 8ull << 20;
@@ -298,7 +299,7 @@ static int dump_mem(FILE *f, uint64_t *raw_out, uint64_t *comp_out, int *nreg) {
     span_t *sp = NULL; int nsp = 0, cap = 0; *nreg = 0;
     int s2a_guest_fd(void); int gfd = s2a_guest_fd(); uint64_t nfile = 0;   // vawin.c：客体内存文件后备的描述符（没开 = -1）
     struct { uint64_t a, n; int prot; } *nr = NULL; int nnr = 0, cnr = 0;   // 临时加了读权限的段（存完原样还原）
-    g_dump_noread = 0; g_dump_noread_b = 0;
+    g_dump_noread = 0; g_dump_noread_b = 0; g_dump_released = 0;
     // 1) 收集要存的连续页段：当前可读、非代码、不在服务层共享内存里、驻留（含换出）、非全零
     for (vm_address_t a = base; a < base + size; ) {   // vm_region_*_64：iOS SDK 不给 mach_vm.h（同 vawin.c / far.c）
         vm_address_t r = a; vm_size_t sz = 0; natural_t depth = 0; vm_region_submap_info_data_64_t info; mach_msg_type_number_t cnt = VM_REGION_SUBMAP_INFO_COUNT_64;
@@ -328,6 +329,9 @@ static int dump_mem(FILE *f, uint64_t *raw_out, uint64_t *comp_out, int *nreg) {
         for (size_t i = 0; i < np; i++) {
             uint64_t pa = lo + i * pg;
             if (!(vec[i] & (MINCORE_INCORE | MINCORE_PAGED_OUT))) continue;
+            // 游戏已释放、宿主还没清零的页（文件后备懒清零：设成不可访问、内容是作废的旧数据，再放出来时才清零）：语义上是零页，不存——
+            //   原先它们按「不可读但有用」临时加读整段存进快照（iPhone 缺省开文件后备，小游戏释放过的堆全进了快照）
+            if (noread && s2a_snap_page_released && s2a_snap_page_released(pa)) { g_dump_released++; continue; }
             if (in_ranges(pa, sb, sn, ns) || page_zero((const uint8_t *)pa)) continue;
             if (nsp && sp[nsp - 1].a + sp[nsp - 1].n == pa && sp[nsp - 1].n < CH) sp[nsp - 1].n += pg;
             else { if (nsp == cap) { cap = cap ? cap * 2 : 4096; sp = realloc(sp, sizeof *sp * (size_t)cap); } sp[nsp++] = (span_t){pa, pg}; }
@@ -356,6 +360,7 @@ static int dump_mem(FILE *f, uint64_t *raw_out, uint64_t *comp_out, int *nreg) {
     for (int i = 0; i < nnr; i++) mprotect((void *)nr[i].a, nr[i].n, (nr[i].prot & VM_PROT_WRITE ? PROT_WRITE : 0) | (nr[i].prot & VM_PROT_EXECUTE ? PROT_EXEC : 0));   // 还原（原先没有读）
     if (gfd >= 0) LOG("即时存档：客体内存文件后备 已写回文件、不在内存里的页 %llu 个按文件数据区补存（%.1f MB）", (unsigned long long)nfile, nfile * (double)pg / 1048576.0);
     if (nnr) LOG("即时存档：不可读的内存段 %d 段 %.1f MB 临时加读存进快照（游戏设的权限，恢复时照权限账收回）", nnr, g_dump_noread_b / 1048576.0);
+    if (g_dump_released) LOG("即时存档：游戏已释放、待清零的页 %llu 个（%.1f MB）不存（语义上是零页）", (unsigned long long)g_dump_released, g_dump_released * (double)pg / 1048576.0);
     free(nr); free(sp); *raw_out = raw; *comp_out = comp; return e ? -1 : 0;
 }
 
