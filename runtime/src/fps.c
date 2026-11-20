@@ -124,7 +124,7 @@ void s2a_fps_slots_note(char *buf, size_t n) {
         int sl = i < g_nsl ? g_sl[i].sl : g_spd_slot; uint32_t v = plat_guest_load32((uintptr_t)key_slot(sl)); float f; memcpy(&f, &v, 4);
         o += (size_t)snprintf(buf + o, n - o, "%s%d=%g (%#x)", o ? ", " : "", sl, (double)f, v); }
 }
-// 档位梯子压回 / 恢复告诉玩家（ios/app.m 横幅「已暂时回到原生帧率」，runtime/src/qladder_host.c 调）。Mac / 单测没有界面
+// 档位梯子压回 / 恢复告诉玩家（runtime/src/qladder_host.c 调；ios/app.m、macos/front_mac.m 横幅，压回时带「再试 60 帧」）。单测没有界面
 __attribute__((weak)) void s2a_ios_fps_capped(int reason) { (void)reason; }
 // 同局 A/B（自动玩家调，任意线程）：phase 1 = 回原帧率（降档原因 3）、2 = 放开（开段）、0 = 照常（测完）。不改用户开关，只在自动化局里用。
 //   没有帧率表的款（出图间隔由引擎推导或 DM_PRESENT_INTERVAL=display 放开）g_ready = 0，只靠降档原因让 hle_nvn.c 退回 / 放开游戏间隔
@@ -146,10 +146,13 @@ void s2a_fps_hold(int hold) {
     if (atomic_exchange(&g_hold, hold ? 1 : 0) != (hold ? 1 : 0)) { if (g_ready) apply(); LOG("帧率表：档位梯子%s", hold ? "压回游戏原帧率" : "放开，回 60 帧"); }
     pthread_mutex_unlock(&g_control_mu);
 }
+// 档位梯子（runtime/src/qladder_host.c）：玩家局中重开 60 帧 = 要 60 帧，梯子回 60 帧档（#1688：原先压着的档不放，开关像没用）。没链梯子的单测用空实现
+__attribute__((weak)) void s2a_ql_retry60(void) {}
 void s2a_fps_set_enabled(int on) {
     pthread_mutex_lock(&g_control_mu);
     on = !!on;
     if (!g_ready || atomic_exchange(&g_on, on) == on) { pthread_mutex_unlock(&g_control_mu); return; }
+    if (on) s2a_ql_retry60();
     apply();
     const char *pi = getenv("DM_PRESENT_INTERVAL"); int itv_off = on && g_present_row && !(pi && !strcmp(pi, "display"));
     LOG("帧率表：60 帧%s（运行中切换）%s%s", on ? "开" : "关，回游戏原生帧率", !on && g_word_rows ? "；【黄】改指令 word 行出包时已打进代码，关时保留" : "",

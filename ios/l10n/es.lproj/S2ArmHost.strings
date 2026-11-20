@@ -267,8 +267,9 @@
 "about.mode.direct" = "Directo";
 "about.mode.unrecorded" = "Desconocido (este paquete no registró un modo gráfico)";
 "about.unknown" = "Desconocido";
-"app.fpsCap.ladder" = "Este dispositivo no puede mantener 60 FPS de forma estable ahora mismo, así que el juego vuelve a su velocidad de fotogramas nativa. Intentará 60 FPS automáticamente de nuevo cuando las cosas estén estables.";
+"app.fpsCap.ladder" = "En esta partida no se pueden mantener 60 FPS de forma estable, así que el juego vuelve por ahora a su velocidad de fotogramas nativa. La próxima vez que abras el juego empezará de nuevo a 60 FPS.";
 "app.fpsCap.restored" = "60 FPS restablecidos.";
+"app.fpsCap.retry" = "Probar 60 FPS de nuevo";
 "app.lowRam.title" = "Es posible que este dispositivo no tenga suficiente memoria";
 "app.lowRam.body" = "Este juego necesita más memoria de la que tiene este dispositivo. Seguirá iniciándose, pero puede ralentizarse o ser cerrado por el sistema.";
 "app.gpuStop.body" = "Cierra esta app desde el selector de apps y vuelve a abrirla; normalmente podrás seguir jugando desde el último guardado del juego. Para ayudarnos a encontrar la causa, toca «Informar de un problema» y envíanos el diagnóstico.";
