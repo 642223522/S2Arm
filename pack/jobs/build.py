@@ -755,27 +755,6 @@ def extract_nup(c, game, packages, extraction, env, logs):
 EXTRACTED_FORMATS = ("dump", "extract", "loose")
 
 
-def _dir_link(source, link):
-    """目录链接：link → source。Windows 上建符号链接要开发者模式或管理员（普通玩家 WinError 1314「客户端没有所需的特权」，
-    v0.4.0 已解包散文件出包在解包一步就失败，诊断#1fad25）：先建目录联接（本机磁盘不要特权），联接不支持的位置（网络盘等）再试符号链接，
-    都不行说清楚。Mac / Linux 照旧符号链接"""
-    if os.name != "nt":
-        os.symlink(source, link)
-        return
-    from pack.orch.winlong import create_junction
-    try:
-        create_junction(str(source), str(link))
-        return
-    except OSError as e:
-        junction_error = e
-    try:
-        os.symlink(source, link, target_is_directory=True)
-    except OSError as e:
-        raise Failure(f"没法把已解包的游戏文件夹接进出包目录：Windows 建不了目录联接（{junction_error.strerror or junction_error}），"
-                      f"也建不了符号链接（{e.strerror or e}）。游戏文件夹在网络盘上时请先拷到本机磁盘，或在 Windows 设置里打开「开发者模式」后重试。",
-                      code="permission_denied") from e
-
-
 def extract_folder(c, game, packages, extraction, env, logs):
     """已解包的游戏文件夹（导入时 library.extract_inspect 记 format）→ 共用解包目录，不要 prod.keys：
     extract 本来就是解包产物，克隆过来；dump（Switch 2 导出）交 pack/ns2_dump.py 整理（同 NUP）；loose（exefs + romfs 平铺）软链成 base/ 再走同一条路。"""
@@ -785,9 +764,9 @@ def extract_folder(c, game, packages, extraction, env, logs):
         c.run([sys.executable, c.engine / "tools/clonedir.py", source, extraction], logs / "extract.log", env)
         return
     with tempfile.TemporaryDirectory(prefix="loose-", dir=c.private) as stage:
-        if fmt == "loose":
-            _dir_link(source, Path(stage) / "base")
-        c.run([sys.executable, "-X", "utf8", c.engine / "pack/ns2_dump.py", stage if fmt == "loose" else source, extraction, "--name", game["name"]],
+        # loose：本体目录直接交 ns2_dump --base，不再链接成 <stage>/base（玩家诊断 #0fd185：安全软件拦重解析点时链接建不了；不拷，零额外空间）
+        c.run([sys.executable, "-X", "utf8", c.engine / "pack/ns2_dump.py", stage if fmt == "loose" else source, extraction, "--name", game["name"],
+               *(["--base", str(source)] if fmt == "loose" else [])],
               logs / "ns2_dump.log", dict(env, S2A_NX_UNPACK=str(reader_program(c))))
 
 

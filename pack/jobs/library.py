@@ -742,10 +742,14 @@ def copy_tree_links(src, dst, check=None):
 
 
 def _retarget_links(root, old, new):
-    """目录搬走后，指向旧位置的绝对链接（Windows 的 junction）改指新位置"""
+    """目录搬走后，指向旧位置的绝对链接（Windows 的 junction）改指新位置。
+    老库的现行链接（<款>@现行）直接换成指针文件（三个平台现行只用指针文件，pack/orch/current.py）。
+    别的链接（版本里 RomFS 指向共享存储）重建不了（玩家诊断 #0fd185：安全软件 / 受控文件夹访问拦重解析点）：不用链接，
+    把它指向的目录整目录挪到链接原处（新位置同卷，改名、不拷），见 _links_to_moves"""
     if not root.is_dir():
         return
     from_text, to_text = os.path.normcase(str(old)), str(new)
+    failed = []
     for d, dirs, files in os.walk(root):
         for name in dirs + files:
             p = Path(d) / name
@@ -755,12 +759,62 @@ def _retarget_links(root, old, new):
             if not os.path.isabs(target) or not os.path.normcase(target).startswith(from_text):
                 continue
             fresh = to_text + target[len(from_text):]
+            if name.endswith(layout.CURRENT):
+                _unlink_link(p)
+                _write_pointer(p, Path(fresh).name)
+                continue
             junction = getattr(os.path, "isjunction", lambda _: False)(p)
             _unlink_link(p)
-            if junction:
-                subprocess.run(["cmd", "/c", "mklink", "/J", str(p), fresh], check=True, capture_output=True)
-            else:
-                os.symlink(fresh, p)
+            try:
+                if junction:
+                    subprocess.run(["cmd", "/c", "mklink", "/J", str(p), fresh], check=True, capture_output=True)
+                else:
+                    os.symlink(fresh, p)
+            except (OSError, subprocess.CalledProcessError) as e:
+                failed.append((p, Path(fresh), e))
+    if failed:
+        _links_to_moves(failed)
+
+
+def _write_pointer(p, name):
+    """现行指针文件（内容 = 版本目录名一行）：同目录临时文件写好再原子改名，读方只看到旧值或新值"""
+    tmp = p.with_name(f".{p.name}.new-{os.getpid()}")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(name + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, p)
+
+
+def _current_name(roots, game):
+    try:
+        return (roots / (game + layout.CURRENT)).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _links_to_moves(failed):
+    """重建不了的链接改成整目录移动（不拷）：链接指向的目录挪到链接原处。同一个目录被几条链接指着（共享存储里一份 RomFS 给现行和上一版共用）
+    只能挪给一条：先给各款现行版本，其余几条只删掉链接、打黄——那几个旧版本没有 RomFS 了、不再可用，下次修剪时走"""
+    def is_current(p):
+        version = p.parent
+        game = version.name.split("@", 1)[0]
+        return _current_name(version.parent, game) == version.name
+    moved = set()
+    for p, target, error in sorted(failed, key=lambda x: (not is_current(x[0]), str(x[0]))):
+        key = os.path.normcase(str(target))
+        if key in moved or not target.is_dir():
+            print(f"【黄】{p} 的链接重建不了（{error!r}），它指向的 {target} {'已挪给现行版本' if key in moved else '不在'}：这一版不再可用，下次修剪时删", file=sys.stderr)   # 非玩家句
+            continue
+        if os.name == "nt":   # 作业主程序在 Windows 上把引擎根放进了 sys.path（main.py），可以取编排层
+            from pack.orch.dirrename import rename_dir   # 杀软 / 索引扫描开着句柄时目录改名报 WinError 5：按 #361 同一套退避重试
+            from pack.orch.roots import _win_acl
+            _win_acl(target, False)   # 共享存储里的身份封存过（拒写），改名前先解封顶层（同 pack/orch/roots.py 收进存储前的做法）
+            rename_dir(target, p)
+        else:
+            os.replace(target, p)
+        moved.add(key)
+        print(f"【黄】{p} 的链接重建不了（{error!r}）：把 {target} 整目录挪到这里（不拷）", file=sys.stderr)   # 非玩家句
 
 
 def _unlink_link(p):
