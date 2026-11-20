@@ -137,6 +137,38 @@ static int catalogue_has(const char *path, const char *gid, char *why, size_t wh
     free(buf);
     return hit;
 }
+// 独立 App（一 App 一游戏，0.6.3，pack/jobs/install.py put_app）：清单里只有一款（各 title_id 值都相同）、且这款的程序库就在 App 包里
+//   （Frameworks/S2AImages-<号>.dylib 是文件、Games/<号>/ 是目录）→ 回 1、gid 写这款；否则 0。通用壳的程序在 App 外，包里没有程序库，不会命中
+int s2a_launch_ctx_single_game(const char *b, char *gid, size_t gid_n) {
+    char p[S2A_LCTX_PATH], one[64] = ""; int bad = 0;
+    if (!b || !*b || !gid || !gid_n || join(p, b, "s2a_catalogue.json")) return 0;
+    FILE *f = fopen(p, "r"); if (!f) return 0;
+    enum { CAP = 4 << 20 }; char *buf = malloc(CAP + 1); size_t n = buf ? fread(buf, 1, CAP + 1, f) : 0; fclose(f);
+    if (!buf || n > CAP) { free(buf); return 0; }
+    buf[n] = 0;
+    for (char *k = buf; !bad && (k = strstr(k, "\"title_id\"")); ) {
+        char *v = k + 10; k = v;
+        while (*v == ' ' || *v == '\t' || *v == '\r' || *v == '\n') v++;
+        if (*v++ != ':') continue;
+        while (*v == ' ' || *v == '\t' || *v == '\r' || *v == '\n') v++;
+        if (*v++ != '"') continue;
+        char *e = v; while (*e && *e != '"' && *e != '\\') e++;
+        size_t l = (size_t)(e - v);
+        if (*e != '"' || !l || l >= sizeof one) { bad = 1; break; }
+        if (!*one) { memcpy(one, v, l); one[l] = 0; }
+        else if (strlen(one) != l || memcmp(one, v, l)) bad = 1;   // 第二款 → 多款容器
+    }
+    free(buf);
+    if (bad || !*one || strchr(one, '/') || *one == '.') return 0;
+    char rel[160];
+    snprintf(rel, sizeof rel, "Frameworks/S2AImages-%s.dylib", one);
+    if (join(p, b, rel) || !is_file(p)) return 0;
+    snprintf(rel, sizeof rel, "Games/%s", one);
+    if (join(p, b, rel) || !is_dir(p)) return 0;
+    if (strlen(one) >= gid_n) return 0;
+    memcpy(gid, one, strlen(one) + 1);
+    return 1;
+}
 // ---------- 宿主约定号核对（11-16）：清单 JSON 里找这款的对象，取 host_abi ----------
 // 跳过一个 JSON 字符串（p 指向开头的引号）→ 结尾引号之后；没闭合 → NULL
 static const char *skip_str(const char *p, const char *e) {

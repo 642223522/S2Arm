@@ -230,6 +230,20 @@ int main(int argc, char **argv) {
     snprintf(p2, sizeof p2, "%s/Frameworks/S2AImages-0100000000000001.dylib", app); write_file(p2, "x");
     snprintf(p2, sizeof p2, "%s/Games/0100000000000005", app); mkdirs(p2);   // 第 5 款：随行目录、镜像包都在，只是 host_abi 对不上（进程级用例核拒载）
     snprintf(p2, sizeof p2, "%s/Frameworks/S2AImages-0100000000000005.dylib", app); write_file(p2, "x");
+    {   // 独立 App（一 App 一游戏）判定：期望值按布局约定手写
+        char g[64] = "", one[1300], op[1400];
+        ck(!s2a_launch_ctx_single_game(app, g, sizeof g), "独立 App 判定：清单里有多款 → 不是");
+        snprintf(one, sizeof one, "%s/Single/S2Arm.app", dir);
+        snprintf(op, sizeof op, "%s/Games/0100ABCD00000001", one); mkdirs(op);
+        snprintf(op, sizeof op, "%s/Frameworks", one); mkdirs(op);
+        snprintf(op, sizeof op, "%s/s2a_catalogue.json", one);
+        write_file(op, "{\"schema\":1,\"shell_id\":\"abc\",\"games\":[{\"title_id\" : \"0100ABCD00000001\",\"name\":\"一\"}]}\n");
+        ck(!s2a_launch_ctx_single_game(one, g, sizeof g), "独立 App 判定：只有一款但程序库不在包里（通用壳布局）→ 不是");
+        snprintf(op, sizeof op, "%s/Frameworks/S2AImages-0100ABCD00000001.dylib", one); write_file(op, "x");
+        ck(s2a_launch_ctx_single_game(one, g, sizeof g) && eq(g, "0100ABCD00000001"), "独立 App 判定：只有一款、程序库和随行目录在包里 → 是，给出游戏号");
+        char sm[4]; ck(!s2a_launch_ctx_single_game(one, sm, sizeof sm), "独立 App 判定：游戏号放不下给的缓冲 → 不是（不截断）");
+        snprintf(op, sizeof op, "%s/ShellOnly/S2Arm.app", dir); ck(!s2a_launch_ctx_single_game(op, g, sizeof g), "独立 App 判定：只装壳（games 空）→ 不是");
+        ck(!s2a_launch_ctx_single_game(NULL, g, sizeof g), "独立 App 判定：包根为空 → 不是"); }
     ck(!s2a_launch_ctx_resolve_game(&c, app, home, "0100000000000001", why, sizeof why), "容器解析：合规的那款成功");
     if (why[0]) printf("  原因：%s\n", why);
     char w[600];
