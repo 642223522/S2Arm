@@ -44,7 +44,7 @@ printf 'CI parity: mesa=%s validation=%s\n' "$mesa" "$vvl"
 [ "$mesa" = 26.0.8-1ubuntu0.3 ] && [ "$vvl" = 1.4.341.0-1 ]
 icd=$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)
 [ -n "$icd" ]
-export VK_DRIVER_FILES="$icd" VK_LAYER_PATH=/usr/share/vulkan/explicit_layer.d VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation VK_LAYER_VALIDATE_SYNC=1 VK_LAYER_SETTINGS_PATH="$out"
+export VK_DRIVER_FILES="$icd" VK_LAYER_PATH=/usr/share/vulkan/explicit_layer.d VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT VK_LAYER_SETTINGS_PATH="$out"
 cat > "$out/vk_layer_settings.txt" <<'SETTINGS'
 khronos_validation.validate_sync = true
 khronos_validation.syncval_shader_accesses_heuristic = true

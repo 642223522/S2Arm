@@ -27,7 +27,7 @@ cc -D_POSIX_C_SOURCE=200809L -std=c11 -O1 -g -Wall -Wextra -Werror -Wno-unused-p
 export VK_ICD_FILENAMES="$S2A_LAVAPIPE_ICD" VK_LAYER_PATH="$S2A_VK_LAYER_DIR" VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation
 # run.sh 在调用此独立入口之后才开同步校验，不能依赖父进程或本地包装器。
 # 同计算写入负控一样同时打开 shader 访问启发式；仅加载 validation 层不够。
-export VK_LAYER_VALIDATE_SYNC=1
+export VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT
 cat > "$out/vk_layer_settings.txt" <<'SETTINGS'
 khronos_validation.validate_sync = true
 khronos_validation.syncval_shader_accesses_heuristic = true
