@@ -44,7 +44,9 @@ judge() {   # judge <键>：按 $OUT 里这一组的结果判，绿 G+1 / 红 R+
   if [ $rc = 124 ]; then why="超时（${GT} 秒）"
   elif [ $rc = 125 ]; then why="没跑（NVN 共用前置构建失败，见上）"
   elif grep -aq '^✗ t_' < <(printf '%s\n' "$o"); then why="判据不符"
-  elif [ $rc != 0 ] && grep -aqE '^[^ ]+:[0-9]+:[0-9]+: (fatal )?error:|^clang: error:|^ld: |^Undefined symbols' < <(printf '%s\n' "$o"); then why="构建失败"
+  # 「ld: warning:」不是构建错误（nvn_texu_pending 每次链接都打 ld: warning: ignoring duplicate libraries）：原先 ^ld: 连它一起认，运行时真失败（rc 非 0、
+  #   没打 ✗ 行）被标成「构建失败」、细节只列报错行，真正的失败输出被藏掉（11-19 守望两次「✗ 组 nvn_texu_pending：构建失败」查不出原因）。先去掉警告行再判
+  elif [ $rc != 0 ] && grep -av '^ld: warning:' < <(printf '%s\n' "$o") | grep -aqE '^[^ ]+:[0-9]+:[0-9]+: (fatal )?error:|^clang: error:|^ld: |^Undefined symbols'; then why="构建失败"
   elif [ $rc != 0 ]; then why="异常退出（rc=${rc}）"
   elif has_file "$k" && ! grep -aq '^✓ t_' < <(printf '%s\n' "$o"); then why="没打结论行（rc=0 但没有「✓ t_」行）"
   fi
@@ -54,7 +56,7 @@ judge() {   # judge <键>：按 $OUT 里这一组的结果判，绿 G+1 / 红 R+
   local d
   case $why in
     判据不符) d=$(grep -aE '^(✗ |FAIL )' < <(printf '%s\n' "$o") | head -20);;   # FAIL：单测自己的判据行（t_dirty_growth / t_nvn_red 这样打，10-30 列车线：原先只认 ✗ 被丢）
-    构建失败) d=$(grep -aE ': (fatal )?error:|^clang: error:|^ld: |^Undefined symbols|^  "_|referenced from|^      [_A-Za-z].* in ' < <(printf '%s\n' "$o") | head -16);;   # 链接红连缺的符号名 / 谁引用一起带（11-05 nvn_rec_cover 偶发「Undefined symbols」只剩一行、定不了因）
+    构建失败) d=$(grep -av '^ld: warning:' < <(printf '%s\n' "$o") | grep -aE ': (fatal )?error:|^clang: error:|^ld: |^Undefined symbols|^  "_|referenced from|^      [_A-Za-z].* in ' | head -16);;   # 链接红连缺的符号名 / 谁引用一起带（11-05 nvn_rec_cover 偶发「Undefined symbols」只剩一行、定不了因）
     *) d=$(tail -10 < <(printf '%s\n' "$o"));;
   esac
   DET="${DET}✗ 组 ${k}：${why}"$'\n'"$d"$'\n'
