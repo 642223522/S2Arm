@@ -1287,6 +1287,10 @@ static void pool_remove_at(int i) {   // 调用方持 g_mu
 // The Legend of Zelda: Breath of the Wild keeps about 1760 memory pools alive and every buffer binding of every draw looks one up; the old full scan took about 4% of the submit thread's samples (mtl_gpu_addr 222 / 6 s). The index is sorted the first time it is used and then follows each registration / removal in place (pidx_added / pidx_removing). Caller holds g_mu
 static int big_new(big_pool *b, uintptr_t lo, uintptr_t hi, uintptr_t end) {   // 调用方持 g_mu：池的 [lo, end) 一块，查找 [lo, hi) 的地址落到它（近区：宿主地址 = 游戏地址）
     uint64_t lim = (uint64_t)g_dev.maxBufferLength & ~(uint64_t)(getpagesize() - 1); if (end - lo > lim) end = lo + lim;
+    // 先解除这段的写保护（脏页跟踪把上传过的贴图存储页设成只读）：零拷贝缓冲建立时范围里只要有只读页，GPU 对整块缓冲的写全部无声丢失（Metal 3 / 4 都是，校验层不报）。
+    //   整池缓冲在游戏建池时建、那时还没有页被保护，所以原先没撞上；块是 GPU 首次查到才建，常在本次绘制 / 派发刚上传贴图、设了只读之后（t_nvn_texu_pending --collision）。
+    //   解保护走跟踪的宿主写前入口：页记为已写，覆盖到的贴图下次用时照常重传、再设只读；之后的只读只改 CPU 页表，不影响已建好的块
+    dm_guest_write_prepare((void *)lo, end - lo);
     id<MTLBuffer> buf = [g_dev newBufferWithBytesNoCopy:(void *)lo length:end - lo options:MTLResourceStorageModeShared deallocator:nil];
     if (!buf) { MLOG("【红】 memory pool %p: the zero-copy chunk over %#lx..%#lx was refused", b->mem, (unsigned long)lo, (unsigned long)end); return -1; }
     if (g_npool == g_cap) { int c = g_cap ? g_cap * 2 : 64; if (!GROW(g_pools, (size_t)c * sizeof *g_pools, "memory pool table")) return -1; g_cap = c; }
