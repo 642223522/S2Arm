@@ -58,5 +58,22 @@ with tempfile.TemporaryDirectory() as t:
     r = run(p('meshpad.tsv'))
     ck(f'M 行：同对有补齐行时不补齐那行丢掉，别的对 / 任务键不同的照收（得 {rows()}）',
        r.returncode == 0 and rows() == [f'M\t{MAB}\t-\t20', f'M\t{MDB}\t{F}_b\t0', f'M\t{MAB}\t{F}_b\t0'])
+# 键换代（11-20）：来源是第 1 代旧键，keys.tsv 同目录的 key_alias.tsv「旧键<TAB>新键」把它们换成本包第 2 代键再按库键滤。期望（按规则手写）：
+#   别名 O1→a、O2→b、O3→c；来源 S O1 / R(O1,O2) / C O3 / R(a,b)（新键直接写的，换算后与第二行重复）/ R(O9,b)（O9 不在别名表）
+#   → S a / R(a,b) / C c，R(O9,b) 不收，读数「旧键经别名换成本包键 3 行，别名表 3 条」；反证：同样来源去掉别名表 → 种子表空
+with tempfile.TemporaryDirectory() as t:
+    p = lambda *a: os.path.join(t, *a)
+    O1, O2, O3, O9 = (f'{i:016x}' for i in (0x1001, 0x1002, 0x1003, 0x1009))
+    open(p('keys.tsv'), 'w').write(''.join(k + '\n' for k in (A, B, C)))
+    open(p('shader_map.tsv'), 'w').write('# map\n')
+    open(p('key_alias.tsv'), 'w').write(f'# old\tnew\n{O1}\t{A}\n{O2}\t{B}\n{O3}\t{C}\n')
+    open(p('old.tsv'), 'w').write(f'S\t{O1}_b\t0\nR\t{rkey(O1, O2)}\nC\t{O3}_b\nR\t{rkey(A, B)}\nR\t{rkey(O9, B)}\n')
+    run = lambda *src: subprocess.run([sys.executable, PS, p('out.tsv'), p('keys.tsv'), p('shader_map.tsv'), '64', *src], capture_output=True, text=True)
+    rows = lambda: [l.rstrip('\n') for l in open(p('out.tsv')) if not l.startswith('#')]
+    r = run(p('old.tsv'))
+    ck(f'旧键经别名换算后命中：S a / R(a,b) / C c、重复去掉、O9 不收（得 {rows()}；{r.stdout.strip()[:120]}）',
+       r.returncode == 0 and rows() == [f'S\t{A}_b\t0', f'R\t{rkey(A, B)}', f'C\t{C}_b'] and '旧键经别名换成本包键 3 行，别名表 3 条' in r.stdout)
+    os.remove(p('key_alias.tsv')); r = run(p('old.tsv'))
+    ck(f'反证：没有别名表 → 旧键一条都对不上，只剩新键写的 R(a,b)（得 {rows()}）', r.returncode == 0 and rows() == [f'R\t{rkey(A, B)}'])
 print(f't_pso_seed：{n} 项，失败 {bad}')
 sys.exit(1 if bad else 0)
