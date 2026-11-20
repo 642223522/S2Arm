@@ -117,9 +117,11 @@ for backend in mtl3 mtl4; do
             /usr/bin/grep -E '^PASS .*coverage|^PASS .*pixel-center|^present settings:' "$runtime/run.log" || true
             if [[ "$ok" == 1 ]]; then printf 'PASS %s\n' "$name"
             else printf 'FAIL %s (exit=%s, log=%s)\n' "$name" "$status" "$runtime/run.log" >&2; bad=$((bad+1))
-                # 这一格日志的末 6 行随红一起打出来（exit=142 = 进程 60 秒闹钟到点被杀：末尾就是卡住前最后一步）。门禁的树会被下一局复用，run.log 留不住；
-                #   行首带「FAIL 尾」：graphics/gate.sh evidence 只摘 FAIL 开头的前 20 行 + 全文末 30 行，夹在中间的格子日志不带这个前缀就摘不到
-                tail -n 6 "$runtime/run.log" 2> /dev/null | sed "s/^/FAIL 尾 ${name}｜/" >&2; fi
+                # 这一格日志的末 6 行随红一起打出来（exit=142 = 进程 60 秒闹钟到点被杀：末尾就是卡住前最后一步）。门禁的树会被下一局复用，run.log 留不住，
+                #   门禁存下的只有红摘要。行首用「✗」：两条路径的摘要都认它——graphics/gate.sh evidence 摘 ^(✗ |不通 |FAIL) 前 20 行，
+                #   作为单测（tests/present_settings_test.sh）时 tools/gate.sh 摘 ^(不通|✗) 前 10 行；「FAIL: 」与【红】那几行名额会被编译命令文本占掉
+                printf '✗ %s（exit=%s）\n' "$name" "$status" >&2
+                tail -n 6 "$runtime/run.log" 2> /dev/null | sed "s/^/✗ 尾 ${name}｜/" >&2; fi
         done
     done
 done
