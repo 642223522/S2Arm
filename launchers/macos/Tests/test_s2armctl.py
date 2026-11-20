@@ -596,9 +596,9 @@ class LaunchArgsTests(unittest.TestCase):
     # 11-02 beta.3 走查：`--control --data-root <目录>` 让 <目录> 落单被 macOS 当成要打开的文件，App 不建窗口。期望：数据目录是一个整体参数，没有落单的路径
     def test_data_root_is_one_token(self):
         args = ctl.launch_args("/A/S2Arm.app", root="/d/数据 目录", custom=True)
-        self.assertEqual(args, ["open", "/A/S2Arm.app", "--args", "--control", "--data-root=/d/数据 目录"])
+        self.assertEqual(args, ["open", "-g", "/A/S2Arm.app", "--args", "--control", "--data-root=/d/数据 目录"])
         self.assertTrue(all(a.startswith("-") for a in args[3:]))
-        self.assertEqual(ctl.launch_args("/A/S2Arm.app", root="/d", custom=False), ["open", "/A/S2Arm.app", "--args", "--control"])
+        self.assertEqual(ctl.launch_args("/A/S2Arm.app", root="/d", custom=False), ["open", "-g", "/A/S2Arm.app", "--args", "--control"])
 
     def test_uninstall_posts_to_uninstall_endpoint(self):
         """uninstall <游戏号> 走 POST /uninstall {gameId}（与 install 对称）"""
