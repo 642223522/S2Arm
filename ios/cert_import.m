@@ -19,13 +19,26 @@ int s2a_cert_settle(const char *home);   // sign_state.m：current.json 指向�
 int s2a_cert_health(const char *home);   // sign_state.m：0 现用的能用 / 2 是别的团队的 / 3 已不在描述文件里
 int s2a_cert_callback_parse(NSString *url, NSData **p12, NSString **pw);
 
+// 弹框挂在哪：前台场景里的主窗口（key window）优先；没有 key window 时取前台场景里第一个显示着、有根控制器的窗口
+//   （真机 11-19 Duo：游戏库开着、「放这里导入」里的证书导入成功，只认 key window 时一个都找不到，「签名证书已导入」和团队不符的说明都没弹）
 static UIViewController *top_vc(void) {
+    UIWindow *pick = nil; NSMutableString *seen = [NSMutableString string];
     for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-        if (![scene isKindOfClass:UIWindowScene.class] || scene.activationState == UISceneActivationStateBackground) continue;
-        for (UIWindow *w in ((UIWindowScene *)scene).windows) if (w.isKeyWindow && w.rootViewController) {
-            UIViewController *c = w.rootViewController; while (c.presentedViewController && !c.presentedViewController.isBeingDismissed) c = c.presentedViewController; return c; }
+        if (![scene isKindOfClass:UIWindowScene.class]) continue;
+        [seen appendFormat:@" scene %ld:", (long)scene.activationState];
+        if (scene.activationState == UISceneActivationStateBackground) continue;
+        for (UIWindow *w in ((UIWindowScene *)scene).windows) {
+            [seen appendFormat:@"[%@ key=%d hidden=%d root=%d]", NSStringFromClass(w.class), w.isKeyWindow, w.hidden, w.rootViewController != nil];
+            if (!w.rootViewController || w.hidden) continue;
+            if (w.isKeyWindow) { pick = w; break; }
+            if (!pick) pick = w;
+        }
+        if (pick.isKeyWindow) break;
     }
-    return nil;
+    if (!pick) { LOG("签名证书：找不到可弹框的窗口（%s）", seen.UTF8String); return nil; }
+    if (!pick.isKeyWindow) LOG("签名证书：没有 key window，弹框挂在前台场景的 %s 上（%s）", NSStringFromClass(pick.class).UTF8String, seen.UTF8String);
+    UIViewController *c = pick.rootViewController; while (c.presentedViewController && !c.presentedViewController.isBeingDismissed) c = c.presentedViewController;
+    return c;
 }
 static void say(NSString *title, NSString *message) {
     UIViewController *vc = top_vc(); if (!vc) { LOG("签名证书：没有可弹框的界面（%s）", title.UTF8String); return; }
