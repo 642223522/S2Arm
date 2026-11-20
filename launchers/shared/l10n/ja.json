@@ -1194,7 +1194,7 @@
   "errors.phone_app_running.title": "iPhone で S2Arm が実行中です",
   "errors.phone_app_running.detail": "ゲームを開いたままセーブデータを入れ替えると、ゲームに上書きされて壊れます。",
   "console.button.identity": "署名用 ID を iPhone に渡す",
-  "console.identity.note": "AltStore・SideStore・証明書アプリでインストールした S2Arm：署名用 ID を一度渡せば、あとはゲームパックを「Import Here」に入れるだけで遊べます",
+  "console.identity.note": "AltStore または SideStore でインストールした S2Arm：それぞれの設定で署名証明書を書き出し、iPhone の S2Arm の「署名証明書」で読み込めば遊べます。ここでは、このコンピュータにある署名用 ID を渡すだけで、新しい証明書は作成しません",
   "console.identity.done": "iPhone の S2Arm に署名用 ID を渡しました。これからは .s2arm と .img を「Import Here」に入れて S2Arm を開けば遊べます。",
   "console.identity.already": "iPhone の S2Arm にはすでにこの署名用 ID があります。もう一度渡す必要はありません。",
   "phone.title.phoneIdentity": "署名用 ID を iPhone に渡す",
@@ -4109,6 +4109,10 @@
   "手机上的 S2Arm 是用另一个 Apple ID 或证书签的（团队 {0}），和这台电脑上的签名身份（团队 {1}）不是同一个团队，交过去也签不了游戏：请在启动器里登录装 S2Arm 用的那个 Apple ID，或选用同一团队的证书。": "iPhone の S2Arm は別の Apple ID または証明書（チーム {0}）で署名されており、このコンピュータの署名用 ID（チーム {1}）とは別のチームのため、渡してもゲームに署名できません。ランチャーで S2Arm のインストールに使った Apple ID にサインインするか、同じチームの証明書を選んでください。",
   "手机上的 S2Arm 不是这个团队签的": "iPhone の S2Arm は別のチームで署名されています",
   "装 S2Arm 用的 Apple ID 或证书，和这台电脑上的不是同一个团队。": "S2Arm のインストールに使った Apple ID または証明書が、このコンピュータのものと別のチームです。",
-  "子程序 %s 的代码补丁暂不支持，没收": "サブプログラム %s のコードパッチはまだ対応していないため、取り込みませんでした"
+  "子程序 %s 的代码补丁暂不支持，没收": "サブプログラム %s のコードパッチはまだ対応していないため、取り込みませんでした",
+  "这台电脑上没有这个 Apple ID 能交给手机的签名证书，启动器不会为此新建（新建会让 AltStore 或 SideStore 正在用的证书失效）。用 AltStore 或 SideStore 装的 S2Arm：在 AltStore 或 SideStore 的设置里导出签名证书，到手机上 S2Arm 的「签名证书」里导入就行。确实想让启动器新建证书，就点「安装 S2Arm」，它会先告诉你会让哪张证书失效，再由你决定。": "このコンピュータには、この Apple ID の iPhone に渡せる署名証明書がありません。ランチャーはこのために新しく作成しません（作成すると AltStore や SideStore が使っている証明書が無効になります）。AltStore または SideStore でインストールした S2Arm の場合：AltStore または SideStore の設定で署名証明書を書き出し、iPhone の S2Arm の「署名証明書」で読み込んでください。どうしてもランチャーで証明書を作成したい場合は「S2Arm をインストール」をクリックしてください。どの証明書が無効になるかを先に伝え、判断はあなたに任せます。",
+  "在 AltStore 或 SideStore 的设置里导出签名证书，打开手机上的 S2Arm →「签名证书」→「导入 .p12…」导入；想让启动器新建证书就点「安装 S2Arm」（会先说明会让哪张证书失效）。": "AltStore または SideStore の設定で署名証明書を書き出し、iPhone の S2Arm →「署名証明書」→「.p12 を読み込む…」で読み込んでください。ランチャーで証明書を作成する場合は「S2Arm をインストール」をクリックします（どの証明書が無効になるかを先に説明します）。",
+  "这台电脑上没有可交的签名证书": "このコンピュータに渡せる署名証明書がありません",
+  "启动器不会为此新建证书，以免让 AltStore 或 SideStore 的证书失效。": "AltStore や SideStore の証明書を無効にしないよう、ランチャーはこのために新しい証明書を作成しません。"
  }
 }

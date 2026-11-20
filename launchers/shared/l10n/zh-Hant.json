@@ -1190,7 +1190,7 @@
   "welcome.step.games.title": "新增你的遊戲",
   "welcome.step.games.what": "NSP、XCI、NUP 檔案或解包好的遊戲資料夾都可以。",
   "console.button.identity": "把簽名身分交給手機",
-  "console.identity.note": "用 AltStore、SideStore 或憑證 App 裝的 S2Arm：交一次簽名身分，以後把遊戲包放進「放這裡匯入」就能玩",
+  "console.identity.note": "用 AltStore 或 SideStore 安裝的 S2Arm：在它們的設定裡匯出簽名憑證，到手機上 S2Arm 的「簽名憑證」裡匯入就能玩；這裡只交這台電腦上已有的簽名身分，不會新建憑證",
   "console.identity.done": "已把簽名身分交給手機上的 S2Arm：以後把 .s2arm 和 .img 放進「放這裡匯入」，打開 S2Arm 就能玩。",
   "console.identity.already": "手機上的 S2Arm 已經有這份簽名身分，不用再交。",
   "phone.title.phoneIdentity": "把簽名身分交給手機",
@@ -4219,6 +4219,10 @@
   "手机上的 S2Arm 是用另一个 Apple ID 或证书签的（团队 {0}），和这台电脑上的签名身份（团队 {1}）不是同一个团队，交过去也签不了游戏：请在启动器里登录装 S2Arm 用的那个 Apple ID，或选用同一团队的证书。": "手機上的 S2Arm 是用另一個 Apple ID 或憑證簽的（團隊 {0}），和這台電腦上的簽名身分（團隊 {1}）不是同一個團隊，交過去也簽不了遊戲：請在啟動器裡登入安裝 S2Arm 用的那個 Apple ID，或選用同一團隊的憑證。",
   "手机上的 S2Arm 不是这个团队签的": "手機上的 S2Arm 不是這個團隊簽的",
   "装 S2Arm 用的 Apple ID 或证书，和这台电脑上的不是同一个团队。": "安裝 S2Arm 用的 Apple ID 或憑證，和這台電腦上的不是同一個團隊。",
-  "子程序 %s 的代码补丁暂不支持，没收": "子程式 %s 的程式碼修補暫不支援，沒收"
+  "子程序 %s 的代码补丁暂不支持，没收": "子程式 %s 的程式碼修補暫不支援，沒收",
+  "这台电脑上没有这个 Apple ID 能交给手机的签名证书，启动器不会为此新建（新建会让 AltStore 或 SideStore 正在用的证书失效）。用 AltStore 或 SideStore 装的 S2Arm：在 AltStore 或 SideStore 的设置里导出签名证书，到手机上 S2Arm 的「签名证书」里导入就行。确实想让启动器新建证书，就点「安装 S2Arm」，它会先告诉你会让哪张证书失效，再由你决定。": "這台電腦上沒有這個 Apple ID 能交給手機的簽名憑證，啟動器不會為此新建（新建會讓 AltStore 或 SideStore 正在用的憑證失效）。用 AltStore 或 SideStore 安裝的 S2Arm：在 AltStore 或 SideStore 的設定裡匯出簽名憑證，到手機上 S2Arm 的「簽名憑證」裡匯入就行。確實想讓啟動器新建憑證，就點「安裝 S2Arm」，它會先告訴你會讓哪張憑證失效，再由你決定。",
+  "在 AltStore 或 SideStore 的设置里导出签名证书，打开手机上的 S2Arm →「签名证书」→「导入 .p12…」导入；想让启动器新建证书就点「安装 S2Arm」（会先说明会让哪张证书失效）。": "在 AltStore 或 SideStore 的設定裡匯出簽名憑證，打開手機上的 S2Arm →「簽名憑證」→「匯入 .p12…」匯入；想讓啟動器新建憑證就點「安裝 S2Arm」（會先說明會讓哪張憑證失效）。",
+  "这台电脑上没有可交的签名证书": "這台電腦上沒有可交的簽名憑證",
+  "启动器不会为此新建证书，以免让 AltStore 或 SideStore 的证书失效。": "啟動器不會為此新建憑證，以免讓 AltStore 或 SideStore 的憑證失效。"
  }
 }

@@ -224,3 +224,22 @@ class DevpushApps(unittest.TestCase):
             self.assertEqual(d.apps(), [("a.b", "A", "T1"), ("io.s2arm.games.t", "S2Arm", "")])
         with patch.object(d, "call", lambda *a: (1, "不认识的操作 apps")):
             self.assertIsNone(d.apps(), "工具太旧：None，调用方照旧用启动器的包名")
+
+
+class FreeAccountGuide(unittest.TestCase):
+    """11-19 实测：AltServer 新建证书会顶掉 AltStore 正在用的那张。交签名身份时这台电脑上没有可交的证书：不新建，引导在 AltStore / SideStore 导出证书、
+    在手机 S2Arm 里导入；只有玩家自己点「安装 S2Arm」才新建（期望手写）"""
+    def test_no_identity_guides_to_export_never_creates(self):
+        c = types.SimpleNamespace(r={}, logs=Path(tempfile.mkdtemp()), private=tempfile.mkdtemp(), task="t1")
+        created = []
+        W = types.SimpleNamespace(impactor=types.SimpleNamespace(selected_team=lambda: TEAM, bundled=lambda r: {}), plumesign_path=lambda given=None: "p",
+                                  key_fingerprint=lambda team: None, plume_identity=lambda *a, **k: created.append(a))
+        ph = types.SimpleNamespace(W=W, key="UDID1", client=lambda w: self.fail("不该碰手机"))
+        with patch.object(install.devcert, "active", lambda c: False):
+            with self.assertRaises(install.Failure) as e:
+                install.deliver_identity(c, ph, strict=True)
+            self.assertIsNone(install.deliver_identity(c, ph), "推游戏顺带交：没有就跳过、不报错")
+        self.assertEqual(e.exception.code, "identity_unavailable")
+        for want in ("导出签名证书", "不会为此新建", "安装 S2Arm"):
+            self.assertIn(want, str(e.exception))
+        self.assertEqual(created, [], "没调过取身份，更没新建")
