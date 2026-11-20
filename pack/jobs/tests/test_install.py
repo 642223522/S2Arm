@@ -309,6 +309,27 @@ class FlowTests(unittest.TestCase):
         with self.assertRaises(Failure) as e: install.install(self.c)
         self.assertEqual(e.exception.code, "job_failed"); self.assertIn("打 iPhone 包", str(e.exception))
 
+    def test_assemble_shell_real(self):
+        """ipa.assemble_shell 不换替身（#1758：tvOS 那份组壳函数在别处都被换成替身，调了已改名的函数没测出来）：只桩子进程，
+        期望（手写）：依次组壳（--shell-only）→ 签名（非 Windows）→ 写 ipa，返回 (dest/S2Arm.ipa, [], 壳号)，S2Arm.app 不留"""
+        import ipa as packer
+        shell = self.c.private / "shell"; shell.mkdir(); (shell / "manifest.json").write_text("{}")
+        runs = []
+        def run(args, log=None, env=None, cwd=None, on_line=None, ok_codes=(0,)):
+            args = [str(a) for a in args]; runs.append(args[5] if len(args) > 5 else "")
+            if len(args) > 5 and args[5] == "container":
+                Path(args[args.index("--out") + 1]).mkdir(parents=True, exist_ok=True)
+            if len(args) > 5 and args[4].endswith("app_bundle.py") and args[5] == "write_ipa":
+                Path(args[7]).write_bytes(b"ipa")
+        dest = self.c.private / "out"
+        with um.patch.object(packer, "built_shell", return_value=(shell, "SID1")), \
+             um.patch.object(packer, "release_version", return_value="9.8.7"), um.patch.object(packer, "display_version", return_value="v9.8.7"), \
+             um.patch.object(self.c, "run", run):
+            got = packer.assemble_shell(self.c, dest=dest)
+        self.assertEqual(got, (dest / "S2Arm.ipa", [], "SID1"))
+        self.assertEqual(runs, ["container", "write_ipa"] if os.name == "nt" else ["container", "sign", "write_ipa"])
+        self.assertTrue((dest / "S2Arm.ipa").is_file()); self.assertFalse((dest / "S2Arm.app").exists())
+
     def test_container_assemble_uses_each_games_kit(self):
         """assemble：每款都从这款文件夹的 image/ios/kit 现组（--game），不带 --base 底包；--host-abi 必传；产物出到游戏库里的临时目录，只留 S2Arm.ipa"""
         import ipa as packer, host_update
