@@ -42,6 +42,28 @@ static NSArray<NSDictionary *> *certs_read(const char *home) {
     [rows sortWithOptions:NSSortStable usingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) { return [a[@"imported"] compare:b[@"imported"]]; }];
     return rows;
 }
+// LiveContainer（#63639b）：S2Arm 当客体跑在 LiveContainer 进程里时，进程的签名身份是 LiveContainer 的——它用自己存的开发证书重签客体 App 包里的
+//   Mach-O，系统只认这张证书签的代码。游戏程序库在 App 包外，LiveContainer 不重签，所以起局重签一律用这张（ios/program_resign.m），游戏库也按「有能用的证书」判。
+//   证书与口令存在 LiveContainer 的共享偏好（LCCertificateData / LCCertificatePassword），经它自己的 +[NSUserDefaults lcSharedDefaults] 读
+//   （客体按共享组名直接读会被它重定向到客体容器，读不到）。只在内存里用，不落盘、不进日志。
+//   1 = 在 LiveContainer 里且有证书（p12 / pw 带回，可传 NULL）；0 = 不在 LiveContainer 里；-1 = 在 LiveContainer 里但它还没导入证书
+static int lc_cert_real(NSData **p12, NSString **pw) {
+    SEL s = NSSelectorFromString(@"lcSharedDefaults");
+    if (!NSClassFromString(@"LCSharedUtils") || ![NSUserDefaults respondsToSelector:s]) return 0;
+    NSUserDefaults *(*get)(id, SEL) = (NSUserDefaults *(*)(id, SEL))[NSUserDefaults methodForSelector:s];
+    NSUserDefaults *d = get(NSUserDefaults.class, s);
+    id c = [d objectForKey:@"LCCertificateData"], w = [d objectForKey:@"LCCertificatePassword"];
+    if (![c isKindOfClass:NSData.class] || ![c length] || ![w isKindOfClass:NSString.class]) return -1;
+    if (p12) *p12 = c;
+    if (pw) *pw = w;
+    return 1;
+}
+static int (*g_lc_cert)(NSData **, NSString **) = lc_cert_real;
+#ifdef S2A_UNIT_TEST
+void s2a_lc_cert_test(int (*f)(NSData **, NSString **)) { g_lc_cert = f ? f : lc_cert_real; }   // 单测换掉「读 LiveContainer 的共享偏好」
+#endif
+int s2a_lc_cert(NSData **p12, NSString **pw) { return g_lc_cert(p12, pw); }
+
 static BOOL usable(NSDictionary *r, app_t app) { return [r[@"team"] isEqualToString:app.team] && (!app.certs.count || [app.certs containsObject:r[@"sha"]]); }
 
 // 挑起局签名用哪张：0 = 有能用的（sha / team 带回最新一张能用的）；1 = 手机上没有证书；2 = 只有别的团队的；3 = 有同团队的但都不在描述文件里（已换 / 吊销）。
@@ -93,7 +115,7 @@ int s2a_sign_state_at(const char *home, const char *catalogue, int rejected) {
         NSString *ssha = str(signer[@"cert_sha1"]).lowercaseString, *steam = str(signer[@"team"]) ?: str(cat[@"team"]);
         BOOL fine = steam && [steam isEqualToString:app.team] && (!ssha || !app.certs.count || [app.certs containsObject:ssha]);
         if (fine && !rejected) return S2A_SIGN_OK;
-        int p = s2a_cert_pick(home, NULL, 0, NULL, 0);
+        int p = s2a_lc_cert(NULL, NULL) > 0 ? 0 : s2a_cert_pick(home, NULL, 0, NULL, 0);   // LiveContainer 里：起局用它的证书重签
         if (p == 0) return rejected ? S2A_SIGN_COMPUTER : S2A_SIGN_OK;   // 起局时用能用的那张重签
         if (p == 1) return rejected && fine ? S2A_SIGN_OLD_FORMAT : S2A_SIGN_NO_CERT;
         return p == 2 ? S2A_SIGN_OTHER_TEAM : S2A_SIGN_REPLACED;
