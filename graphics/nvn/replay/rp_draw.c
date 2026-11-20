@@ -170,7 +170,7 @@ static int rp_fu_storage_write(void) {
     if (rp_S.tf_on) return 1;
     for (int st = 0; st < 6; st++)
         for (int i = 0; i < 16; i++)
-            if (rp_S.ssbo[st][i].size) return 1;
+            if (rp_S.ssbo[st][i].addr) return 1;   // 地址有效、长度 0 的槽也写真实内存（见 sb_len）
     if (g_prog)
         for (int st = 0; st < RP_PROG_STAGES; st++)
             for (uint32_t i = 0; i < g_prog->nent[st]; i++)
@@ -344,9 +344,20 @@ static const nvn_gpu_caps *caps_cached(void) { if (!g_caps_ok) { nvn_gpu_caps_ge
 // 描述符偏移也就满足 minStorageBufferOffsetAlignment。只对 NVN 存储缓冲槽（SBUFP）这么做：编译事实只看这张表；
 // UBOP（计算阶段用户 UBO 槽当存储缓冲）的着色器按基址本身取数，起点不动。
 // 长度再夹到 maxStorageBufferRange（着色器用 OpArrayLength 取实际绑定长度判越界，窗口外按越界处理）。返回 1 = 被夹短。
+// 存储缓冲槽的有效长度。硬件语义：着色器访问存储缓冲编成 LDG / STG，按 64 位客体地址裸访存，不拿槽里的长度做越界检查；
+//   游戏自己判界时读的是常量缓冲里的长度（原样翻译照样生效）。所以「地址有效、长度 0」的槽访问的是真实内存：
+//   长度取这段地址所在池剩下的部分（之后按存储缓冲范围上限夹短）。Ryujinx 把它判成没映射，是建宿主缓冲要一个范围的实现限制，不是硬件行为。
+//   地址 0、或地址不在任何池里：没有可绑的真实内存，返回 0（调用方绑空缓冲照画，见 sb_unmapped）。只对 NVN 存储缓冲槽（SBUFP）这样补；统一缓冲来源（UBOP）长度 0 照旧算没绑。
+static uint64_t sb_len(const p_bind_buf *sb, int sbufp) {
+    if (!sb->addr) return 0;
+    if (sb->size || !sbufp) return sb->size;
+    const uint8_t *pmem = NULL; uint64_t psz = 0;
+    if (!rp_pool_find(sb->addr, 1, &pmem, &psz)) return 0;
+    return psz - (sb->addr - (uint64_t)(uintptr_t)pmem);
+}
 static int sb_window(const p_bind_buf *sb, int align_down, uint64_t *wa, uint64_t *wl) {
     const nvn_gpu_caps *cp = caps_cached();
-    uint64_t a = sb->addr, l = sb->size;
+    uint64_t a = sb->addr, l = sb_len(sb, align_down);   // align_down 各调用处都等于「是 SBUFP」
     if (align_down && cp->min_ssbo_align > 1) { const uint64_t r = a & (uint64_t)(cp->min_ssbo_align - 1); a -= r; l += r; }
     const int clamped = cp->max_ssbo_range && l > cp->max_ssbo_range;
     if (clamped) l = cp->max_ssbo_range;
@@ -603,6 +614,10 @@ static nvn_gpu_buf g_disp_ind; static uint64_t g_disp_ind_off;
 // 本笔绘制在开通道之前解析好的图形阶段存储缓冲（[阶段][布局项]）；只在 rp_draw 里填、在同一笔的发绑定里用
 static nvn_gpu_buf g_sb_buf[RP_PROG_STAGES][RP_PROG_ENT_MAX]; static uint64_t g_sb_off[RP_PROG_STAGES][RP_PROG_ENT_MAX];
 static uint8_t g_sb_ok[RP_PROG_STAGES][RP_PROG_ENT_MAX];
+// 存储缓冲槽「没有可绑的真实内存」：地址 0，或地址不在任何池里（sb_len 返回 0）。绑 64 KiB 空缓冲、这一笔照画（不是整笔跳过）。
+//   「地址有效、长度 0」不在此列：按硬件语义绑到真实内存（见 sb_len）。只管 NVN 存储缓冲槽（SBUFP）；
+//   计算阶段把统一缓冲当存储读（UBOP）的没绑仍具名跳过。
+static int sb_unmapped(const p_bind_buf *sb) { return !sb_len(sb, 1); }
 // Per-draw GPU-populated driver slices. Never retained by the binding cache.
 static nvn_gpu_slice g_ind_drv[RP_PROG_STAGES];
 static uint8_t g_ind_drv_ok[RP_PROG_STAGES];
@@ -868,13 +883,14 @@ static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st
             case NVN_RB_SBUFP: case NVN_RB_UBOP: {   // 存储缓冲：取地址、绑池镜像里的那一段；可写的登记一次 GPU 写（完成后回写游戏内存）。两种来源只差在哪张表给地址：
                 // SBUFP 按 NVN 存储缓冲槽（rp_S.ssbo）；UBOP 按计算阶段的用户 UBO 槽（rp_S.ubo；反射映射 NVK_STORAGE_UBO_PTR），段的范围就是这个 UBO 绑定的地址与大小
                 const p_bind_buf *sb = e->src_reg < 16 ? (e->src_kind == NVN_RB_UBOP ? &rp_S.ubo[st][e->src_reg] : &rp_S.ssbo[st][e->src_reg]) : NULL;
-                if (sb && e->src_kind == NVN_RB_SBUFP && !sb->addr && !sb->size) {
+                if (sb && e->src_kind == NVN_RB_SBUFP && sb_unmapped(sb)) {   // 没有可绑真实内存的存储缓冲槽：绑 64 KiB 空缓冲、照画（见 sb_unmapped）
                     o->u.b.buf = rp_buf_for_null_storage();
                     if (!o->u.b.buf) return skip("storage_buffer_empty_failed", rec);
                     o->u.b.off = 0; o->u.b.len = 0x10000; break;
                 }
-                if (!sb || !sb->addr || !sb->size) return skip("storage_buffer_unbound", rec);
                 const int sbufp = e->src_kind == NVN_RB_SBUFP;
+                if (!sb || !sb_len(sb, sbufp)) return skip("storage_buffer_unbound", rec);
+                const uint64_t blen = sb_len(sb, sbufp);   // 「地址有效、长度 0」的槽是池剩余长度（见 sb_len）
                 uint64_t wa, wl; const int clamped = sb_window(sb, sbufp, &wa, &wl);
                 nvn_gpu_buf gb; uint64_t go;
                 if (st < RP_PROG_STAGES && i < RP_PROG_ENT_MAX && g_sb_ok[st][i]) { gb = g_sb_buf[st][i]; go = g_sb_off[st][i]; }   // 开通道前已按同一窗口同步（见 rp_draw 开头）
@@ -885,7 +901,7 @@ static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st
                 if (clamped) nvn_unimpl("draw", "storage_buffer_window_clamped", rec);   // 超出 maxStorageBufferRange 的部分着色器访问不到：照画，具名记账
                 // 回写只登记游戏绑定的那一段（窗口前补的余数字节不是这个缓冲的，回写会盖掉相邻内容）
                 if (e->access & NVN_GPU_ACC_W) { const uint64_t reach = wa + wl - sb->addr;   // 窗口里属于这个缓冲的长度（余数 < 对齐 ≤ 256，上限 ≥ 128 MiB，不会为负）
-                    rp_post_gpu_write(sb->addr, reach < sb->size ? reach : sb->size); }
+                    rp_post_gpu_write(sb->addr, reach < blen ? reach : blen); }
                 o->u.b.buf = gb; o->u.b.off = go; o->u.b.len = wl; break; }
             case NVN_RB_UBOA: {   // 计算存储缓冲来自「用户 UBO 槽 r 内 src_off 处的 8 字节 guest 裸指针」（map 3，NVK_STORAGE_UBO_ADDRESS）：
                 // 指针字节必须当前：先按写的来源解析那 8 字节（池镜像里 GPU 写过的部分不会被旧 guest 字节盖掉），
@@ -1276,7 +1292,7 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
             const nvn_gpu_layout_ent *e = &g_prog->ent[st][i];
             if (e->src_kind != NVN_RB_SBUFP && e->src_kind != NVN_RB_UBOP) continue;
             const p_bind_buf *sb = e->src_reg < 16 ? (e->src_kind == NVN_RB_UBOP ? &rp_S.ubo[st][e->src_reg] : &rp_S.ssbo[st][e->src_reg]) : NULL;
-            if (!sb || !sb->addr || !sb->size) continue;
+            if (!sb || !sb_len(sb, e->src_kind == NVN_RB_SBUFP)) continue;
             uint64_t wa, wl; (void)sb_window(sb, e->src_kind == NVN_RB_SBUFP, &wa, &wl);   // 与发绑定时同一个窗口（被夹短的记账在发绑定那边）
             if (nb < SB_BATCH) { bs[nb] = st; bi[nb] = (int)i; ba[nb] = wa; bl[nb] = wl; nb++; }
             else if (rp_buf_resolve(c, wa, wl, &g_sb_buf[st][i], &g_sb_off[st][i])) g_sb_ok[st][i] = 1;   // 超出一批的照旧逐段解析
@@ -1512,7 +1528,7 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
             if (e->src_kind == NVN_RB_SBUFP || e->src_kind == NVN_RB_UBOP) {
                 const p_bind_buf *sb = e->src_reg < 16 ? (e->src_kind == NVN_RB_UBOP ? &rp_S.ubo[st][e->src_reg] : &rp_S.ssbo[st][e->src_reg]) : NULL;
                 if (g_sb_ok[st][i] && sb) { uint64_t wa, wl; (void)sb_window(sb, e->src_kind == NVN_RB_SBUFP, &wa, &wl); ACCESS_READ(compute_read_buf(g_sb_buf[st][i], g_sb_off[st][i], wl)); }
-                else if (sb && !sb->addr && !sb->size && e->src_kind == NVN_RB_SBUFP) ACCESS_READ(compute_read_buf(rp_buf_for_null_storage(), 0, 0x10000));
+                else if (sb && sb_unmapped(sb) && e->src_kind == NVN_RB_SBUFP) ACCESS_READ(compute_read_buf(rp_buf_for_null_storage(), 0, 0x10000));
             } else if (e->src_kind == NVN_RB_TEX || e->src_kind == NVN_RB_TEXU || e->src_kind == NVN_RB_TBUF) {
                 if (e->count > 1) { for (uint32_t k = 0; k < e->count && !need; k++) ACCESS_READ(compute_read_view(g_av[st][k])); }
                 else ACCESS_READ(compute_read_view(tv[st][i]));
