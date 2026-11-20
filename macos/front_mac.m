@@ -1871,9 +1871,12 @@ void s2a_ios_fps_capped(int reason) {
     dispatch_async(dispatch_get_main_queue(), ^{
         S2APromptBanner *b = g_delegate.banner; if (!b) return;
         if (!b.hidden) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ s2a_ios_fps_capped(reason); }); return; }
-        if (reason != 4) { b.onAnswer = nil; [b showTitle:@S2A_DPROMPT_FPS_CAP_TITLE body:@S2A_DPROMPT_FPS_CAP_BACK accept:nil decline:nil seconds:6]; return; }
+        int zh = s2a_ui_zh();   // 按界面语言取中英文（同本文件菜单的取法）
+        NSString *title = zh ? @S2A_DPROMPT_FPS_CAP_TITLE : @S2A_DPROMPT_FPS_CAP_TITLE_EN;
+        if (reason != 4) { b.onAnswer = nil; [b showTitle:title body:zh ? @S2A_DPROMPT_FPS_CAP_BACK : @S2A_DPROMPT_FPS_CAP_BACK_EN accept:nil decline:nil seconds:6]; return; }
         b.onAnswer = ^(BOOL accept) { if (accept) { fprintf(stderr, "[s2a] 档位梯子：玩家点了再试 60 帧\n"); s2a_ql_retry60(); } };
-        [b showTitle:@S2A_DPROMPT_FPS_CAP_TITLE body:@S2A_DPROMPT_FPS_CAP_BODY accept:@S2A_DPROMPT_FPS_CAP_RETRY decline:@S2A_DPROMPT_OK seconds:15]; });
+        [b showTitle:title body:zh ? @S2A_DPROMPT_FPS_CAP_BODY : @S2A_DPROMPT_FPS_CAP_BODY_EN accept:zh ? @S2A_DPROMPT_FPS_CAP_RETRY : @S2A_DPROMPT_FPS_CAP_RETRY_EN
+              decline:zh ? @S2A_DPROMPT_OK : @S2A_DPROMPT_OK_EN seconds:15]; });
 }
 @implementation S2AMacDelegate
 - (void)connectNS2:(id)sender {
