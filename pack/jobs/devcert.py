@@ -3,7 +3,7 @@
 维护者定的规则（11-09）：
   ① 导入时解析并上屏：团队名、证书 / 描述文件到期、连着的手机在不在设备列表（企业「所有设备」描述文件没有列表，照实说）、包名、权限够不够；
      问题只提示、不挡出包和装机。只有根本签不了才停：私钥解不开（密码不对 / 文件坏），证书和描述文件不配套。
-     分发描述文件（没有 get-task-allow）照常导入、state 记 distribution（0.6.3 维护者定）：通用壳的游戏程序在 App 外映射，iOS 只对带它的 App 放行；
+     分发描述文件（没有 get-task-allow）照常导入（0.6.3 维护者定；是不是分发按存着的描述文件现算，见 distribution）：通用壳的游戏程序在 App 外映射，iOS 只对带它的 App 放行；
      「独立 App」出法（一 App 一游戏）程序在 App 包里、随安装验签，照样能玩——默认出法据此改成独立 App（install.chosen_layout）。
      缺哪几项权限逐条列「中文名（技术名）——后果」，并给一段可一键复制、直接发给证书发放人的话（requestText）。
   ② 包名取描述文件的；通配（TEAM.*）→ io.s2arm.games.<小写团队号>（同 Apple ID 模式的算法）；权限 = 描述文件允许的 ∩ S2Arm 要的。
@@ -408,6 +408,16 @@ def stored(c):
     return d / "cert.p12", (d / "profile.mobileprovision").read_bytes(), pw
 
 
+def distribution(c):
+    """存着的描述文件缺 get-task-allow（分发 / ad hoc / 企业）：通用壳的游戏程序在 App 外映射会被系统拒（image_exec_cert）。
+    按描述文件现算、不记在 state.json：导入时才记的话，这项判断上线前导入的证书永远认不出来；描述文件没了或读不出 → 不算"""
+    try:
+        allow = parse_profile((folder(c) / "profile.mobileprovision").read_bytes())["Entitlements"]
+    except (OSError, Failure):
+        return False
+    return allow.get("get-task-allow") is not True
+
+
 def _orch(c):
     """pack/orch/install_win.py 里的 DER 小工具（pkcs1_der / cert_modulus_and_start，两端通用的纯 Python）：按请求给的引擎树（c.engine）导入，
     同 install.win_install_mod（App 里作业层和引擎分两处，按本文件位置找不到 pack/orch）；引擎树里没有时（单测的空引擎）才退回本文件所在的源码树"""
@@ -528,7 +538,7 @@ def operation(c):
         (d / "profile.mobileprovision").write_bytes(prof)
         os.chmod(d / "profile.mobileprovision", 0o600)
         atomic(d / "state.json", dict(active=True, certSha1=got["certSha1"], bundleId=got["bundleId"], teamId=got["teamId"], teamName=got["teamName"],
-                                      distribution=got["distribution"], imported=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")))
+                                      imported=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")))
         return dict(got, active=True)
     if action == "use":
         s = state(c)

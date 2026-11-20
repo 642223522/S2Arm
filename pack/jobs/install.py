@@ -1188,8 +1188,8 @@ FREE_APP_LIMIT = "免费 Apple ID 有苹果的限制：同时最多装 3 个自�
 
 
 def distribution_cert(c):
-    """在用的开发者证书是分发 / ad hoc 描述文件（导入时 devcert state 记的 distribution）"""
-    return bool(devcert.active(c) and devcert.state(c).get("distribution"))
+    """在用的开发者证书是分发 / ad hoc 描述文件（按存着的描述文件现算，见 devcert.distribution）"""
+    return devcert.active(c) and devcert.distribution(c)
 
 
 def layout_choice(c):
@@ -2674,7 +2674,7 @@ def phone_signing(c, ph):
     Windows Apple ID / Mac 通用壳 Apple ID（PlumeMacPhone）→ plumesign 当前账号的团队、容器包名；开关关着的 Mac Apple ID → 钥匙串账号的团队、容器包名"""
     import program_pack
     if devcert.active(c):
-        if devcert.state(c).get("distribution"):   # 玩家选了通用壳、证书却是分发的：照推，照实说起局会被系统拒（image_exec_cert）、换独立 App 就能玩
+        if devcert.distribution(c):   # 玩家选了通用壳、证书却是分发的：照推，照实说起局会被系统拒（image_exec_cert）、换独立 App 就能玩
             c.diagnostic(SHELL_DISTRIBUTION, code="image_exec_cert", severity="warning")
         return devcert.team(c)["id"], devcert.state(c)["bundleId"], program_pack.devcert_signer(c)
     if os.name == "nt" or isinstance(ph, PlumeMacPhone):   # Mac 通用壳 Apple ID 同 Windows：plumesign 的账号与私钥（mac_plume）
