@@ -10219,9 +10219,13 @@ static void vp_pack(NvShader *vs) {
     if (tried || st == SE_READY || st == SE_BUSY || !lp_pack_get()) return;
     char nm[32]; snprintf(nm, sizeof nm, "%.16s_vp", vs->key);
     NSError *e = nil; id<MTLLibrary> lib = lib_from_pack(nm, &e); if (!lib) return;
+    // a batched variant library (11-20, Build.cs VarBatches): the shader's functions are s<key>_<entry> and its mask s<key>_main0_vpmask_<hex>
+    NSString *pre = [NSString stringWithFormat:@"s%.16s_", vs->key], *ent = vs->ventry;
+    BOOL batched = [lib.functionNames containsObject:[pre stringByAppendingString:ent]];
+    NSString *mp = batched ? [pre stringByAppendingString:@"main0_vpmask_"] : @"dm_vp_mask_";
     uint32_t mask = 0;
-    for (NSString *n in lib.functionNames) if ([n hasPrefix:@"dm_vp_mask_"]) mask = (uint32_t)strtoul(n.UTF8String + 11, NULL, 16);
-    id<MTLFunction> f = lib_entry(lib, vs->ventry);
+    for (NSString *n in lib.functionNames) if ([n hasPrefix:mp]) mask = (uint32_t)strtoul(n.UTF8String + mp.length, NULL, 16);
+    id<MTLFunction> f = lib_entry(lib, batched ? [pre stringByAppendingString:ent] : ent);
     NSUInteger al = f && vs->rf.nb ? [f newArgumentEncoderWithBufferIndex:vs->rf.abi].encodedLength : vs->arg_len;
     if (!f || !mask || al != vs->arg_len) { MLOG("【红】 packaged padded vertex variant %s %s: made on the device per pair instead", nm, !f ? "has no such entry" : !mask ? "carries no mask" : "takes another argument buffer than the library's entry"); return; }
     pthread_mutex_lock(&g_vp_mu); int took = vs->vp_st != SE_READY; if (took) { vs->vp_main = f; vs->vp_mask = mask; vs->vp_st = SE_READY; } pthread_mutex_unlock(&g_vp_mu);

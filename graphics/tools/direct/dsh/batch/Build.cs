@@ -824,9 +824,17 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
             }
             finally { if (done) tk.Step(); }
         });
+        VarBatches("_se", "se", all, vs, lanes, tk, k => SeOk(k, want),
+            (k, e2) => { Count("se failed"); Say($"[RED] {k}: the sampler-emulation variant does not compile ({Trunc(e2, 120)}): the device compiles it at first use"); });
+    }
+    // 变体按批合编（_se / _vp 共用，11-20 出包提速）：按全局声明相同切批、每批源码封顶 DMSH_UNITY_BATCH_MB（缺省 0.5 MB，同编批库），
+    //   源码出自 Unity.VarSrc（函数前缀 s<着色器键>_），同批各键 <键><sfx>.metallib 指向同一份字节；一批编不过退回逐键（VarLib，入口不改名），单键批照旧逐键。
+    //   计数「<tag> batches / <tag> batched keys / <tag> batch fallback keys」；每批编完（成或败）按键数计进度
+    static void VarBatches(string sfx, string tag, List<string> order, ConcurrentDictionary<string, string> vs, int lanes, Ticker tk, Action<string> ok, Action<string, string> fail)
+    {
         long cap = Unity.VinBatchMax(Environment.GetEnvironmentVariable("DMSH_UNITY_BATCH_MB") ?? "0.5");
         var batches = new List<List<string>>();
-        foreach (var g in all.Where(vs.ContainsKey).GroupBy(k => string.Join("\n", Unity.Sig(vs[k])), StringComparer.Ordinal))
+        foreach (var g in order.Where(vs.ContainsKey).GroupBy(k => string.Join("\n", Unity.Sig(vs[k])), StringComparer.Ordinal))
         {
             List<string> cur = null; long sz = 0;
             foreach (var k in g)
@@ -835,32 +843,27 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
                 cur.Add(k); sz += vs[k].Length;
             }
         }
-        Count("se batches", batches.Count);
+        Count(tag + " batches", batches.Count);
         Parallel.ForEach(InOrder(batches), new ParallelOptions { MaxDegreeOfParallelism = lanes * 2 }, ks =>
         {
             try
             {
-                if (ks.Count > 1 && SeBatch(ks)) { foreach (var k in ks) SeOk(k, want); return; }
-                if (ks.Count > 1) Count("se batch fallback keys", ks.Count);
-                foreach (var k in ks)
-                {
-                    var e2 = VarLib(k, "_se", vs[k]);
-                    if (e2 != null) { Count("se failed"); Say($"[RED] {k}: the sampler-emulation variant does not compile ({Trunc(e2, 120)}): the device compiles it at first use"); }
-                    else SeOk(k, want);
-                }
+                if (ks.Count > 1 && One(ks)) { foreach (var k in ks) ok(k); return; }
+                if (ks.Count > 1) Count(tag + " batch fallback keys", ks.Count);
+                foreach (var k in ks) { var e2 = VarLib(k, sfx, vs[k]); if (e2 != null) fail(k, e2); else ok(k); }
             }
             finally { tk.Step(ks.Count); }
         });
 
-        bool SeBatch(List<string> ks)   // 一批合编：成 → 各键 <键>_se.metallib 指向这份库；编不过 → false（调用方退回逐键）
+        bool One(List<string> ks)   // 一批合编：成 → 各键 <键><sfx>.metallib 指向这份库；编不过 → false（调用方退回逐键）
         {
-            var src = Unity.SeSrc(ks.Select(k => (k, vs[k])));
-            string name = ks[0] + "_se", lib = name + ".metallib";
+            var src = Unity.VarSrc(ks.Select(k => (k, vs[k])));
+            string lib = ks[0] + sfx + ".metallib";
             var sides = new List<(string T, Side Sd)>(); if (!NoMac) sides.Add(("mac", MAC)); if (IosLib) sides.Add(("ios", IOS));
-            try { foreach (var (t, sd) in sides) sd.Put(lib, Metal.Compile(t, src, "se" + Unity.Dg(src))); }
+            try { foreach (var (t, sd) in sides) sd.Put(lib, Metal.Compile(t, src, tag + Unity.Dg(src))); }
             catch (Exception e) when (e is CompileError || e is CompileTimeout) { foreach (var (_, sd) in sides) sd.Drop(lib); return false; }
-            foreach (var (_, sd) in sides) foreach (var k in ks.Skip(1)) sd.Alias(lib, k + "_se.metallib");
-            Count("se batched keys", ks.Count);
+            foreach (var (_, sd) in sides) foreach (var k in ks.Skip(1)) sd.Alias(lib, k + sfx + ".metallib");
+            Count(tag + " batched keys", ks.Count);
             return true;
         }
     }
@@ -885,25 +888,27 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
         Count("vp vertex shaders", vs.Count);
         if (union == 0) return;
         int lanes = LiveLanes("顶点补齐变体"); using var wide = Metal.Widen(lanes);
-        using var tk = new Ticker("直连库·顶点补齐变体", vs.Count);   // 进度：同 SeFinish，逐键编、在编批库之后
+        using var tk = new Ticker("直连库·顶点补齐变体", vs.Count);   // 进度：同 SeFinish，先逐键补齐（只吃 CPU），再按批合编（VarBatches），编完才计
+        var src = new ConcurrentDictionary<string, string>(StringComparer.Ordinal); var masks = new ConcurrentDictionary<string, (uint Got, int N)>(StringComparer.Ordinal);
         Parallel.ForEach(InOrder(vs), new ParallelOptions { MaxDegreeOfParallelism = lanes * 2 }, k =>
         {
-            try { VpOne(k, union, Bits); } finally { tk.Step(); }
+            bool done = true;
+            try
+            {
+                string s0 = MAC.Text(k + "_b.metal");
+                uint have = Bits(DshCompiler.UserLocs(s0, "vs"));
+                uint mask = union & ~have;
+                if (mask == 0) { Count("vp nothing to pad"); return; }
+                var (v, added) = DshCompiler.VsPadMask(s0, mask);
+                if (added.Count == 0) { Count("vp nothing to pad"); return; }
+                uint got = 0; foreach (long l in added) got |= 1u << (int)l;
+                src[k] = v + $"\nvertex float4 dm_vp_mask_{got:x}() {{ return float4(0.0); }}\n";   // 掩码随库带：宿主从函数名读（nvn_mtl.m vp_pack；批库里是 s<键>_main0_vpmask_<十六进制>）
+                masks[k] = (got, added.Count); done = false;
+            }
+            finally { if (done) tk.Step(); }
         });
-    }
-    static void VpOne(string k, uint union, Func<List<object>, uint> Bits)
-    {
-        string s0 = MAC.Text(k + "_b.metal");
-        uint have = Bits(DshCompiler.UserLocs(s0, "vs"));
-        uint mask = union & ~have;
-        if (mask == 0) { Count("vp nothing to pad"); return; }
-        var (v, added) = DshCompiler.VsPadMask(s0, mask);
-        if (added.Count == 0) { Count("vp nothing to pad"); return; }
-        uint got = 0; foreach (long l in added) got |= 1u << (int)l;
-        v += $"\nvertex float4 dm_vp_mask_{got:x}() {{ return float4(0.0); }}\n";   // 掩码随库带：宿主从函数名读（nvn_mtl.m vp_pack）
-        var e = VarLib(k, "_vp", v);
-        if (e != null) { Count("vp failed"); Say($"[RED] {k}: the padded vertex variant (user(locn) mask {got:#x}) does not compile ({Trunc(e, 120)}): the device makes one per pair at first use"); }
-        else { Count("vp built"); Count("vp padded outputs", added.Count); }
+        VarBatches("_vp", "vp", vs, src, lanes, tk, k => { Count("vp built"); Count("vp padded outputs", masks[k].N); },
+            (k, e) => { Count("vp failed"); Say($"[RED] {k}: the padded vertex variant (user(locn) mask {masks[k].Got:#x}) does not compile ({Trunc(e, 120)}): the device makes one per pair at first use"); });
     }
 
     // ---------------- 汇总 ----------------
@@ -916,7 +921,7 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
         Say($"variant cache{(BfOn ? "" : " (readable-tile _bf off, DMSH_BF unset)")}: generated {N("bf generated")}");
         Say($"typed-output variants (ft_finish, fout_want.tsv {FoutWant.Values.Sum(s => s.Count)} requests): {N("ft entries")} entry points in {N("ft libs")} libraries, {N("ft covered")} covered by main0_u or nothing integer after the colour filter, {N("ft failed")} libraries failed");
         Say($"sampler-emulation variants (<key>_se, every key tried {N("se tried")}): built {N("se built")} ({N("se batched keys")} of them in {N("se batches")} batches, {N("se batch fallback keys")} built key by key after their batch failed; of se_want.tsv's {N("se wanted")} keys {N("se wanted built")}), nothing to emulate {N("se nothing to emulate")}, failed {N("se failed")}");
-        Say($"padded vertex variants (<key>_vp, union of every pixel shader's user(locn) inputs): {N("vp vertex shaders")} vertex shaders, built {N("vp built")} ({N("vp padded outputs")} outputs added), nothing to pad {N("vp nothing to pad")}, failed {N("vp failed")}");
+        Say($"padded vertex variants (<key>_vp, union of every pixel shader's user(locn) inputs): {N("vp vertex shaders")} vertex shaders, built {N("vp built")} ({N("vp padded outputs")} outputs added; {N("vp batched keys")} of them in {N("vp batches")} batches, {N("vp batch fallback keys")} built key by key after their batch failed), nothing to pad {N("vp nothing to pad")}, failed {N("vp failed")}");
         Say($"pulling libraries (<key>_bp, S2A.Dsh DshPull): {N("pull generated")} generated ({N("pull inputs")} inputs pulled), {N("pull failed")} failed to compile, {N("pull not generated")} not generated");
         Say($"shadow-input libraries (<key>_bv, S2A.Dsh DshVin): {N("vin generated")} generated ({N("vin batches")} batches), {N("vin failed")} failed to compile, {N("vin not generated")} not generated; {N("vin inputs")} integer inputs shadowed, {N("vin float only")} of them with no other-sign shadow (attribute indices ran out)");
         Say(Metal.Summary());

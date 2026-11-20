@@ -343,10 +343,10 @@ int main(int argc, char **argv) {
         { char cmd[1600]; snprintf(cmd, sizeof cmd, "mkdir -p '%s' && xcrun -sdk macosx metal -fpreserve-invariance '%s' -o '%s/%s_se.metallib' && python3 translator/dsh_batch.py --libpack pack '%s' '%s' %s > /dev/null",
                                    pks, argv[4], pks, FS_KEY, pks, pkd, DMSH_CHAIN);
           fflush(NULL); int rc = system(cmd); REQUIRE(rc == 0); setenv("T_RED_PACK", pkd, 1); }
-        // 包内批库（11-20 出包提速，S2A.Dsh Build.SeFinish）：变体按批合编，源码出自生产 Unity.SeSrc（dsh_batch --unity se-src：函数改名 s<键>_main0、折行标记核 s<键>_main0_fold），
+        // 包内批库（11-20 出包提速，S2A.Dsh Build.SeFinish）：变体按批合编，源码出自生产 Unity.VarSrc（dsh_batch --unity var-src：函数改名 s<键>_main0、折行标记核 s<键>_main0_fold），
         //   本键与另一个键同批、两键的 <键>_se.metallib 是同一份字节；宿主 se_packed 按 s<键>_main0 取，第一笔就 = min 逐位（同包内预编那一路）
         char pbd[400], pbs[400]; snprintf(pbd, sizeof pbd, "%s/pkb/b-%s", tmpl, DMSH_CHAIN); snprintf(pbs, sizeof pbs, "%s/pkb/src", tmpl);
-        { char cmd[2400]; snprintf(cmd, sizeof cmd, "mkdir -p '%s' && python3 translator/dsh_batch.py --unity se-src '%s/batch.metal' %s '%s' ffff00000000000e '%s' && xcrun -sdk macosx metal -fpreserve-invariance '%s/batch.metal' -o '%s/%s_se.metallib' "
+        { char cmd[2400]; snprintf(cmd, sizeof cmd, "mkdir -p '%s' && python3 translator/dsh_batch.py --unity var-src '%s/batch.metal' %s '%s' ffff00000000000e '%s' && xcrun -sdk macosx metal -fpreserve-invariance '%s/batch.metal' -o '%s/%s_se.metallib' "
                                    "&& cp '%s/%s_se.metallib' '%s/ffff00000000000e_se.metallib' && rm '%s/batch.metal' && python3 translator/dsh_batch.py --libpack pack '%s' '%s' %s > /dev/null",
                                    pbs, pbs, FS_KEY, argv[4], argv[4], pbs, pbs, FS_KEY, pbs, FS_KEY, pbs, pbs, pbs, pbd, DMSH_CHAIN);
           fflush(NULL); int rc = system(cmd); REQUIRE(rc == 0); setenv("T_RED_PACK_BATCH", pbd, 1); }
