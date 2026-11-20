@@ -268,6 +268,17 @@ int main(int argc, char **argv) {
         snprintf(q, sizeof q, "%s/Games/0100000000000006", pr); ck(eq(c.module_dir, q) && eq(c.caps_dir, q), "程序包：模块目录 = 能力清单目录 = <程序包>/Games/<gid>");
         snprintf(q, sizeof q, "%s/Documents/games/0100000000000006", home); ck(eq(c.docs, q), "程序包：文档根照旧 $HOME/Documents/games/<gid>");
         ck(!s2a_launch_ctx_resolve_game(&c, app, home, "0100000000000001", why, sizeof why) && c.from_program == 0, "没有程序包的那款：照旧取 App 包内，from_program = 0");
+        {   // 独立 App（0.6.3）：App 包里自带这款的镜像包，沙盒里又留着一份程序包（显式描述文件同包名、通用壳推过）→ 一律取包内，不看程序包
+            char p1[900], q1[1000];
+            snprintf(p1, sizeof p1, "%s/Library/Application Support/S2Arm/games/0100000000000001/program", home);
+            snprintf(q1, sizeof q1, "%s/Games/0100000000000001", p1); mkdirs(q1);
+            snprintf(q1, sizeof q1, "%s/S2AImages-0100000000000001.dylib", p1); write_file(q1, "z");
+            snprintf(q1, sizeof q1, "%s/catalogue.json", p1);
+            write_file(q1, "{\"schema\":1,\"title_id\":\"0100000000000001\",\"host_abi\":1,\"image\":\"S2AImages-0100000000000001.dylib\"}\n");
+            char want[600]; snprintf(want, sizeof want, "%s/Frameworks/S2AImages-0100000000000001.dylib", app);
+            ck(!s2a_launch_ctx_resolve_game(&c, app, home, "0100000000000001", why, sizeof why) && c.from_program == 0 && eq(c.images, want),
+               "包里自带镜像包、沙盒另有程序包：取包内，from_program = 0");
+            snprintf(q1, sizeof q1, "rm -rf '%s'", p1); if (system(q1)) printf("  清不掉 %s\n", p1); }
         // 拒绝：清单不是这一款 / image 带路径 / 镜像包缺 / 随行目录缺
         snprintf(q, sizeof q, "%s/catalogue.json", pr);
         write_file(q, "{\"title_id\":\"0100000000000009\",\"image\":\"S2AImages-0100000000000006.dylib\"}\n");
