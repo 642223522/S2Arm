@@ -68,7 +68,7 @@ __declspec(dllexport) int test_layout(const char*t,size_t n,struct s2a_module_la
         cmd=[str(a.cc),'--target=x86_64-pc-windows-msvc','-nostdlib','-shared','-fuse-ld=lld','-Wl,/noentry','-fno-stack-protector','-fno-builtin','-O1',str(c),'-o',str(dll)]
         r=subprocess.run(cmd,capture_output=True);records.append({'command':cmd,'exitCode':r.returncode,'stdout':r.stdout.decode(errors='replace'),'stderr':r.stderr.decode(errors='replace'),'sourceSha256':hashlib.sha256(path.read_bytes()).hexdigest()})
         (a.out/'commands.json').write_text(json.dumps(records,indent=2),encoding='utf-8');assert r.returncode==0,records[-1]
-        lib=C.CDLL(str(dll));pointers=(C.c_void_p*len(declarations))(*[C.cast(getattr(crt,actual),C.c_void_p).value for _,_,_,actual in declarations]);lib.configure.argtypes=[C.POINTER(C.c_void_p)];lib.configure(pointers);keep.append(lib)
+        lib=C.CDLL(str(dll));pointers=(C.c_void_p*len(declarations))(*[C.c_void_p.from_address(C.addressof(getattr(crt,actual))).value for _,_,_,actual in declarations]);lib.configure.argtypes=[C.POINTER(C.c_void_p)];lib.configure(pointers);keep.append(lib)
         f=lib.test_layout;f.argtypes=[C.c_char_p,C.c_size_t,C.POINTER(Layout),C.c_char_p,C.c_size_t];f.restype=C.c_int
         def run(data):
             error=C.create_string_buffer(512);layout=Layout();rc=f(data,len(data),C.byref(layout),error,len(error));return rc,error.value.decode(errors='replace'),layout
