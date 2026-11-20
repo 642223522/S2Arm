@@ -39,8 +39,15 @@ public sealed partial class EnvironmentWindow
             new HashSet<string>(lastUpdate.Accept) { ConfirmCodes.GetValueOrDefault(updateAskCode, "acceptDropped") }, mode: lastUpdateMode, sgradeUpgrade: lastUpdateSGrade),
         dropTitle: ConfirmTitle(updateAskCode),
         cancelDrop: () => { updateState = ""; updateOutcome = null; Navigate("library"); },
+        alternateDrop: UpdateDropAlternate(),
         switchExport: updateState is "failed" or "invalid" or "interrupted" && lastUpdateMode != "export"
             ? () => { _ = UpdatePhoneAsync(lastUpdate.AcceptStale, lastUpdate.Repack, lastUpdate.Accept, mode: "export", sgradeUpgrade: lastUpdateSGrade); } : null);
+    /// <summary>更新页 drop 态问的码有并列的另一条路（共享体验表 alternate，自签走查结构 7）：按钮文案键 + 点了做什么（不重发，走清单同一个派发）</summary>
+    private (string Label, Action Run)? UpdateDropAlternate()
+    {
+        if (updateState != "drop" || !text.ConfirmAlternates.TryGetValue(updateAskCode, out var alt)) return null;
+        return (alt.Label, () => { updateState = ""; updateOutcome = null; RunInstallAction(alt.Action, null); });
+    }
     private string updateDiagnostics = "";
     /// <summary>这一批是「更新并重新出这几款」排的：整批出完（没暂停、没取消）逐款装到 iPhone（BatchFinishedAsync）</summary>
     private bool batchInstallAfter;

@@ -142,7 +142,8 @@ public sealed partial class EnvironmentWindow
     /// <summary>手机作业卡片。state：running / succeeded / needsPlayer / failed / invalid / interrupted / cancelled / drop（会挤掉别处装的游戏，页内确认）。
     /// retry：失败时的「重试」；confirmDrop / cancelDrop：drop 态的「仍然继续」/「先不」（在这页里问，不弹散的对话框）</summary>
     private Control PhoneJobCard(PhoneJobTrack tr, string state, string message, string diagnostics, string? gameId, IReadOnlyList<string>? notes = null,
-        Action? retry = null, Action? confirmDrop = null, Action? cancelDrop = null, string? dropTitle = null, bool showsOperation = true, Action? switchExport = null)
+        Action? retry = null, Action? confirmDrop = null, Action? cancelDrop = null, string? dropTitle = null, bool showsOperation = true, Action? switchExport = null,
+        (string Label, Action Run)? alternateDrop = null)
     {
         var device = tr.Device.Length > 0 ? tr.Device : T("phone.device.unknown");
         var panel = new StackPanel { Spacing = 22, HorizontalAlignment = HorizontalAlignment.Stretch };   // 撑满卡片、贴左（同别的卡片对齐）：进度条、详细过程不被压窄
@@ -162,7 +163,15 @@ public sealed partial class EnvironmentWindow
             AutomationId(go, "phone.drop.confirm");
             var notNow = Action("phone.drop.cancel", () => cancelDrop?.Invoke(), cancelDrop is not null);
             AutomationId(notNow, "phone.drop.cancel");
-            choose.Children.Add(go); choose.Children.Add(notNow);
+            choose.Children.Add(go);
+            // 这个码有并列的另一条路（共享体验表 alternate，如新建证书确认的「改用已有证书」）：玩家自己选，点了不重发、去那个动作的落点
+            if (alternateDrop is { } other)
+            {
+                var alt = Action(other.Label, other.Run);
+                AutomationId(alt, "phone.drop.alternate");
+                choose.Children.Add(alt);
+            }
+            choose.Children.Add(notNow);
             panel.Children.Add(choose);
             return panel;
         }

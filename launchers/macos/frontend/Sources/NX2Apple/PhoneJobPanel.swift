@@ -288,6 +288,11 @@ struct PhoneJobPanel: View {
             HStack(spacing: 12) {
                 Button { if let d = model.dropConfirm { model.confirmDrop(d) } } label: { LauncherHeroActionLabel(title: t("install.drop_confirm"), symbol: "arrow.right") }
                     .controllerButtonStyle(.plain).controllerID("phone.drop.confirm").controllerShortcut(.rightTrigger)
+                // 这个码有并列的另一条路（共享体验表 alternate，如新建证书确认的「改用已有证书」）：玩家自己选，点了不重发、去那个动作的落点
+                if let d = pendingConfirm, let alt = S2ArmLauncherModel.confirmAlternates[d.code] {
+                    Button(t(alt.labelKey)) { model.takeConfirmAlternate(d) }
+                        .controllerButtonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("phone.drop.alternate")
+                }
                 Button(t("phone.drop.cancel")) { model.dropConfirm = nil; model.backFromPhone() }
                     .controllerButtonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("phone.drop.cancel")
             }

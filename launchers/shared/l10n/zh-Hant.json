@@ -695,6 +695,7 @@
   "install.mode.once_export": "這次改為匯出自簽",
   "install.mode.once_device": "這次改為一鍵裝",
   "install.mode.go_settings": "去設定",
+  "confirm.alternate.useExistingCert": "改用已有憑證（匯入 .p12，不新建）",
   "update.button.device": "更新 iPhone 上的 S2Arm",
   "update.button.export": "匯出新版 S2Arm",
   "update.confirm.title": "更新 iPhone 上的 S2Arm",

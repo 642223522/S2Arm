@@ -680,6 +680,7 @@
   "install.mode.once_export": "今回はエクスポートする",
   "install.mode.once_device": "今回はインストールする",
   "install.mode.go_settings": "設定を開く",
+  "confirm.alternate.useExistingCert": "既存の証明書を使う（.p12 を読み込み、新規作成しない）",
   "update.button.device": "iPhone の S2Arm を更新",
   "update.button.export": "新しい S2Arm をエクスポート",
   "update.confirm.title": "iPhone の S2Arm を更新",

@@ -680,6 +680,7 @@
   "install.mode.once_export": "Exporter cette fois-ci",
   "install.mode.once_device": "Installer cette fois-ci",
   "install.mode.go_settings": "Ouvrir les réglages",
+  "confirm.alternate.useExistingCert": "Utiliser un certificat existant (importer un .p12, sans en créer un)",
   "update.button.device": "Mettre à jour S2Arm sur l'iPhone",
   "update.button.export": "Exporter le nouveau S2Arm",
   "update.confirm.title": "Mettre à jour S2Arm sur l'iPhone",

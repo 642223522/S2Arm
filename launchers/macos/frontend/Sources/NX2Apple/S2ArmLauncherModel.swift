@@ -1284,6 +1284,16 @@ public final class S2ArmLauncherModel: ObservableObject {
         if d.kind == .installRemove { removeFromPhone(game, device: d.device, accept: d.accept) } else { install(game, device: d.device, accept: d.accept, export: d.export) }
     }
 
+    /// 确认页上与「仍然继续」并列的另一条路（共享体验表 errors 的 alternate；自签走查结构 7：新建证书确认的「改用已有证书」）：码 → (动作, 文案键)
+    static var confirmAlternates: [String: (action: String, labelKey: String)] { BackendText.confirmAlternates }
+
+    /// 确认页点了并列的另一条路：不重发，收起这一单的结局页，按装机前清单动作的同一个派发去落点（devCertSettings = 设置里签名方式那一栏）
+    func takeConfirmAlternate(_ d: DropConfirm) {
+        guard let alt = Self.confirmAlternates[d.code], Self.installActions.contains(alt.action) else { return }
+        dropConfirm = nil; clearInlineFailure(); backFromPhone()
+        performInstallAction(alt.action, gameId: d.game?.id ?? "")
+    }
+
     /// 装回上一版手机 S2Arm（只换宿主后新宿主不好用时）。
     func restorePhone(_ game: GameSummary, device: String? = nil) {
         guard !phoneBusy, !mainHolds(game.id) else { phoneQueue.append((game.id, { [weak self] in self?.restorePhone(game, device: device) })); return }

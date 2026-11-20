@@ -39,6 +39,15 @@ class SharedTables(unittest.TestCase):
                 self.assertTrue(re.search(rf'code="{code}"|S2A_PUSH_CODE \(?[^"\n]*{code}', SRC), f"后端源码里没有抛 {code}")
                 self.assertIn(f'"{flag}"', SRC, f"后端源码不读 {flag}")
 
+    def test_cert_revoke_confirm_alternate(self):
+        """新建开发证书确认（自签走查结构 7）：与「仍然继续」（带 acceptCertRevoke 重发）并列的「改用已有证书」——
+        不重发，走清单动作 devCertSettings 的落点（设置里签名方式那一栏）；动作在 install_landing.actions、文案键在 launcher.items"""
+        item = next(i for i in EXP["errors"]["items"] if i["code"] == "cert_revoke_confirm")
+        self.assertEqual(item.get("accept"), "acceptCertRevoke")
+        self.assertEqual(item.get("alternate"), {"action": "devCertSettings", "label": "confirm.alternate.useExistingCert"})
+        self.assertIn("devCertSettings", EXP["install_landing"]["actions"])
+        self.assertIn("confirm.alternate.useExistingCert", {i["id"] for i in EXP["launcher"]["items"]})
+
     def test_backend_accept_flags_registered(self):
         read = set(re.findall(r'c\.r\.get\("(accept[A-Z][A-Za-z]+)"\)', SRC))
         self.assertTrue(read)
