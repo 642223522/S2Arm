@@ -71,7 +71,8 @@ static void run(void) {
         CHECK(nvn_be_last_fence() == 0, "测试期间没有主提交");
         CHECK(mtl_present_count() == 9, "提交九次上屏");
         nvn_be_drain();
-        printf("present residency: %d/%d passed\n", checked - failed, checked); fflush(stdout);
+        printf("present residency: %d/%d passed\n", checked - failed, checked);
+        printf("%s t_present_residency：%d/%d 项通过\n", failed ? "✗" : "✓", checked - failed, checked); fflush(stdout);   // 门禁结论行（t_result_lint）
         exit(failed ? 1 : 0);
     }
 }
