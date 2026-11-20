@@ -116,7 +116,10 @@ for backend in mtl3 mtl4; do
                 /usr/bin/grep -Fv '【红】地址窗口：读不到本款 main.npdm（可执行文件同目录 / 模块目录），不知道要多大，不占窗口'; then ok=0; fi
             /usr/bin/grep -E '^PASS .*coverage|^PASS .*pixel-center|^present settings:' "$runtime/run.log" || true
             if [[ "$ok" == 1 ]]; then printf 'PASS %s\n' "$name"
-            else printf 'FAIL %s (exit=%s, log=%s)\n' "$name" "$status" "$runtime/run.log" >&2; bad=$((bad+1)); fi
+            else printf 'FAIL %s (exit=%s, log=%s)\n' "$name" "$status" "$runtime/run.log" >&2; bad=$((bad+1))
+                # 这一格日志的末 6 行随红一起打出来（exit=142 = 进程 60 秒闹钟到点被杀：末尾就是卡住前最后一步）。门禁的树会被下一局复用，run.log 留不住；
+                #   行首带「FAIL 尾」：graphics/gate.sh evidence 只摘 FAIL 开头的前 20 行 + 全文末 30 行，夹在中间的格子日志不带这个前缀就摘不到
+                tail -n 6 "$runtime/run.log" 2> /dev/null | sed "s/^/FAIL 尾 ${name}｜/" >&2; fi
         done
     done
 done
