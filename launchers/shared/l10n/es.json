@@ -1230,7 +1230,16 @@
   "install.help.ok": "Aceptar",
   "install.login.expired": "Tu sesión del Apple ID ha caducado. Vuelve a iniciar sesión; tu correo ya está escrito.",
   "export.sign.external": "Firmo yo con AltStore / SideStore",
-  "export.sign.externalNote": "S2Arm no firmará en este ordenador. Instala S2Arm.ipa con AltStore o SideStore, exporta el certificado de firma desde sus ajustes e impórtalo en S2Arm en el teléfono. Los paquetes de juego exportados desde aquí van sin firmar y S2Arm en el teléfono los firma con ese certificado."
+  "export.sign.externalNote": "S2Arm no firmará en este ordenador. Instala S2Arm.ipa con AltStore o SideStore, exporta el certificado de firma desde sus ajustes e impórtalo en S2Arm en el teléfono. Los paquetes de juego exportados desde aquí van sin firmar y S2Arm en el teléfono los firma con ese certificado.",
+  "console.status.chooseApp": "Hay más de un S2Arm instalado · elige uno",
+  "console.choose.title": "Este iPhone tiene más de un S2Arm instalado: elige al que enviar los juegos. Tu elección se recordará.",
+  "console.choose.byLauncher": "Instalado por el lanzador de este ordenador",
+  "console.choose.byOther": "Instalado con otra herramienta (AltStore, SideStore, etc.)",
+  "console.choose.certImported": "Certificado de firma importado",
+  "console.choose.team": "Equipo {0}",
+  "console.choose.current": "En uso: {0}",
+  "console.choose.change": "Usar otro S2Arm",
+  "console.choose.cancel": "Mantener el actual"
  },
  "text": {
   "满屏补丁（按屏幕比例自动选）": "Parche de pantalla completa (elegido según la proporción de tu pantalla)",
@@ -4162,6 +4171,15 @@
   "方向键选单、空格确认、加减键翻页，鼠标不驱动视角，适合回合制 / 战棋": "Flechas para los menús, Espacio para confirmar y +/- para pasar de página; el ratón no mueve la cámara. Para juegos por turnos / tácticos",
   "：这是显卡驱动的管线缓存，不需要": ": es la caché de canalizaciones del controlador gráfico y no hace falta",
   "：认不出（要 yuzu 系的 *.bin，或含 shared.toc / guest.toc 的 Ryujinx 缓存目录）": ": no se reconoce (hace falta un *.bin de tipo yuzu o una carpeta de caché de Ryujinx con shared.toc / guest.toc)",
-  "：拷贝失败（": ": no se pudo copiar ("
+  "：拷贝失败（": ": no se pudo copiar (",
+  "在 iPhone 总控台里选好这台手机用哪一个 S2Arm（AltStore / SideStore 装的，还是启动器装的），再推游戏；选一次就记住。": "En la consola del iPhone, elige qué S2Arm usará este teléfono (el instalado con AltStore / SideStore o el instalado por el lanzador) y vuelve a enviar el juego. Tu elección se recordará.",
+  "在 iPhone 总控台里重新选一次用哪一个 S2Arm：选过的那个已经不在这台 iPhone 上了。": "Vuelve a elegir en la consola del iPhone qué S2Arm usar: el que elegiste ya no está en este iPhone.",
+  "这台 iPhone 上装着不止一个 S2Arm：先在 iPhone 总控台选好用哪一个，再推游戏。": "Este iPhone tiene más de un S2Arm instalado: primero elige cuál usar en la consola del iPhone y luego envía el juego.",
+  "选的这个 S2Arm 不在这台 iPhone 上了：在总控台重新选一次。": "El S2Arm que elegiste ya no está en este iPhone: vuelve a elegir en la consola.",
+  "读不出这台 iPhone 上装了哪些 App：确认 iPhone 连着、已解锁，再试一次。": "No se pudo leer qué apps hay instaladas en este iPhone: asegúrate de que el iPhone esté conectado y desbloqueado y vuelve a intentarlo.",
+  "这台 iPhone 上装着不止一个 S2Arm": "Hay más de un S2Arm en este iPhone",
+  "同一台手机上装着两个及以上 S2Arm（比如 AltStore 装的一个、启动器装的一个），S2Arm 不替你挑推到哪一个。": "Este teléfono tiene dos o más S2Arm instalados (por ejemplo, uno de AltStore y otro del lanzador) y S2Arm no elige por ti.",
+  "选的 S2Arm 不在手机上了": "El S2Arm elegido ya no está en el teléfono",
+  "选过的那个 S2Arm 已经从这台 iPhone 上删掉或换掉了。": "El S2Arm que elegiste se eliminó o se reemplazó en este iPhone."
  }
 }

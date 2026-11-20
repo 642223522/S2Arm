@@ -292,7 +292,7 @@ public sealed partial class EnvironmentWindow
                 var shown = PhoneOverview.Actions(phone);
                 if (r.Text("action") is not { } action || !shown.Contains(action)) return ControlReply.Bad("这台手机的总控台上没有这个按钮（此刻有：" + string.Join(" / ", shown) + "）", 409);
                 if (installBusy) return Busy();
-                return RunConsoleAction(action, device, r.Strings("gameIds")) is { } why ? ControlReply.Bad(why, 409) : ControlReply.Ok();
+                return RunConsoleAction(action, device, r.Strings("gameIds"), r.Text("bundleId")) is { } why ? ControlReply.Bad(why, 409) : ControlReply.Ok();
             }
             case ("POST", "/uninstall"):
             {
@@ -407,7 +407,7 @@ public sealed partial class EnvironmentWindow
         ("POST /install {gameId, acceptDropped?, acceptNoBackup?, acceptStale?}", "用 Impactor 装到 iPhone（不用先 installCheck，缺什么作业报真实原因；Apple ID 由玩家本人在 Impactor 里登录）；可确认的失败码先问玩家、同意了带对应参数再发：container_would_drop → acceptDropped（手机上有别的电脑装的游戏这次带不上）、save_backup_failed → acceptNoBackup（覆盖前没能备份存档）、container_stale → acceptStale（旧资源包要重出）"),
         ("POST /show {page: environment|library|export|install, gameId?}", "打开环境检查 / 回游戏库 / 打开这款的出包页 / 装机页（同点对应按钮）"),
         ("POST /update-phone {ask?, acceptStale?, repack?, acceptDropped?, acceptNoBackup?}", "更新 iPhone 上的 S2Arm（同游戏库右上角按钮；GET /state 的 phoneUpdates 不空才有）：本版壳 + 手机上已有的程序模块，只装 App；有要按新版重新出包的款时没带 acceptStale 回 409 并列出 stale，repack = true 时更新完把它们排进批量出包、出完自动装；作业报可确认的失败码时（同 /install）玩家同意后带对应参数再发"),
-        ("POST /console-action {device, action, gameIds?}", "同点总控台这台手机上的按钮：action 只认 GET /state 的 phoneConsole 里这台此刻显示的（installShell / updateShell / renewShell / exportShellIpa / handOverIdentity / updateSelected / pushS2arm / exportS2arm）；gameIds = 推 / 导出哪几款（不给 = 总控台勾选的）；没有这个按钮回 409"),
+        ("POST /console-action {device, action, gameIds?, bundleId?}", "同点总控台这台手机上的按钮：action 只认 GET /state 的 phoneConsole 里这台此刻显示的（installShell / updateShell / renewShell / exportShellIpa / handOverIdentity / updateSelected / pushS2arm / exportS2arm / chooseApp）；gameIds = 推 / 导出哪几款（不给 = 总控台勾选的）；chooseApp 带 bundleId = 选用 phoneConsole 里这台 candidates 的哪一个（同一台手机装着不止一个 S2Arm 时）；没有这个按钮回 409"),
         ("POST /uninstall {gameId, acceptDropped?}", "从 iPhone 上的 S2Arm 删一款；acceptDropped 同 /install"),
         ("POST /cancel {taskId} | /retry {taskId}", "停掉在跑的作业 / 重试出包、装机任务"),
         ("POST /diagnostics {action:export, path}", "导出诊断包（已脱敏的 zip）"),

@@ -1226,7 +1226,16 @@
   "install.help.ok": "好",
   "install.login.expired": "Apple ID 登入已過期：重新登入一次，電子郵件已經填好。",
   "export.sign.external": "我自己用 AltStore / SideStore 簽",
-  "export.sign.externalNote": "S2Arm 不在電腦上簽名。用 AltStore 或 SideStore 安裝 S2Arm.ipa，在它們的設定裡匯出簽名憑證、匯入手機上的 S2Arm；之後從這裡匯出的遊戲包不簽名，由手機上的 S2Arm 用這張憑證簽。"
+  "export.sign.externalNote": "S2Arm 不在電腦上簽名。用 AltStore 或 SideStore 安裝 S2Arm.ipa，在它們的設定裡匯出簽名憑證、匯入手機上的 S2Arm；之後從這裡匯出的遊戲包不簽名，由手機上的 S2Arm 用這張憑證簽。",
+  "console.status.chooseApp": "裝著不只一個 S2Arm · 選用哪一個",
+  "console.choose.title": "這台 iPhone 上裝著不只一個 S2Arm：選一個用來推遊戲，選一次就記住。",
+  "console.choose.byLauncher": "這台電腦的啟動器裝的",
+  "console.choose.byOther": "別的工具裝的（AltStore / SideStore 等）",
+  "console.choose.certImported": "已匯入簽名憑證",
+  "console.choose.team": "團隊 {0}",
+  "console.choose.current": "正在用：{0}",
+  "console.choose.change": "換一個 S2Arm",
+  "console.choose.cancel": "不換了"
  },
  "text": {
   "直连": "直連",
@@ -4271,6 +4280,15 @@
   "方向键选单、空格确认、加减键翻页，鼠标不驱动视角，适合回合制 / 战棋": "方向鍵選單、空白鍵確認、加減鍵翻頁，滑鼠不驅動視角，適合回合制 / 戰棋",
   "：这是显卡驱动的管线缓存，不需要": "：這是顯示卡驅動的管線快取，不需要",
   "：认不出（要 yuzu 系的 *.bin，或含 shared.toc / guest.toc 的 Ryujinx 缓存目录）": "：認不出（要 yuzu 系的 *.bin，或含 shared.toc / guest.toc 的 Ryujinx 快取目錄）",
-  "：拷贝失败（": "：拷貝失敗（"
+  "：拷贝失败（": "：拷貝失敗（",
+  "在 iPhone 总控台里选好这台手机用哪一个 S2Arm（AltStore / SideStore 装的，还是启动器装的），再推游戏；选一次就记住。": "在 iPhone 總控台裡選好這台手機用哪一個 S2Arm（AltStore / SideStore 裝的，還是啟動器裝的），再推遊戲；選一次就記住。",
+  "在 iPhone 总控台里重新选一次用哪一个 S2Arm：选过的那个已经不在这台 iPhone 上了。": "在 iPhone 總控台裡重新選一次用哪一個 S2Arm：選過的那個已經不在這台 iPhone 上了。",
+  "这台 iPhone 上装着不止一个 S2Arm：先在 iPhone 总控台选好用哪一个，再推游戏。": "這台 iPhone 上裝著不只一個 S2Arm：先在 iPhone 總控台選好用哪一個，再推遊戲。",
+  "选的这个 S2Arm 不在这台 iPhone 上了：在总控台重新选一次。": "選的這個 S2Arm 不在這台 iPhone 上了：在總控台重新選一次。",
+  "读不出这台 iPhone 上装了哪些 App：确认 iPhone 连着、已解锁，再试一次。": "讀不出這台 iPhone 上裝了哪些 App：確認 iPhone 連著、已解鎖，再試一次。",
+  "这台 iPhone 上装着不止一个 S2Arm": "這台 iPhone 上裝著不只一個 S2Arm",
+  "同一台手机上装着两个及以上 S2Arm（比如 AltStore 装的一个、启动器装的一个），S2Arm 不替你挑推到哪一个。": "同一台手機上裝著兩個及以上 S2Arm（比如 AltStore 裝的一個、啟動器裝的一個），S2Arm 不替你挑推到哪一個。",
+  "选的 S2Arm 不在手机上了": "選的 S2Arm 不在手機上了",
+  "选过的那个 S2Arm 已经从这台 iPhone 上删掉或换掉了。": "選過的那個 S2Arm 已經從這台 iPhone 上刪掉或換掉了。"
  }
 }

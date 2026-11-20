@@ -240,6 +240,9 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var consolePushing: String?               // 「更新所选」正在推的那款（作业 pushSelected 的 progress 事件 current）
     @Published var identityDelivered: Bool?              // 「把签名身份交给手机」最近一次成功的结果（作业 phoneIdentity 的 delivered）；nil = 还没成功过 / 又点了一次
     var consoleSeeded: Set<String> = []                  // 上次自动勾过的建议更新款（玩家取消的不重勾）
+    @Published var consoleChoosing: String?              // 「选用哪个 S2Arm」正在记的那个包名（作业 phoneChooseApp 在跑）；nil = 没在选
+    @Published var consoleChooseError: String?           // 上一次选没选成的原因（作业层原句，界面按当前语言翻）；nil = 没出错
+    @Published var consoleRechoose = false               // 选过了、玩家点了「换一个 S2Arm」：重新列出候选
     @Published var dynamicDone = false    // 顶栏动态窗口：手机作业刚做完，闪一下 ✓（2 秒后回普通图标，S2ArmLauncherModel+PhoneConsole）
     @Published var dynamicAlert = false   // 手机作业失败 / 停下：橙色「!」一直留着，直到玩家点开看过
     @Published var phoneUpdates: [PhoneUpdate] = []

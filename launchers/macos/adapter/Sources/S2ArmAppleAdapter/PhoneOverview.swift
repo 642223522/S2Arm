@@ -9,6 +9,19 @@ public struct PhoneOverview: Equatable {
     /// 手机上的 S2Arm 是谁装的（作业 installedBy）：启动器装的 / 别的工具（AltStore、SideStore…）装的；nil = 没装或判不出（旧作业不带这个键也是 nil）
     public enum InstalledBy: String { case launcher, external }
     public enum GameState: String { case latest, suggested, notPushed, needsData }
+    /// 同一台手机上装着不止一个 S2Arm 时让玩家选的候选（作业 candidates，install.s2arm_candidates）：byThisLauncher = 这台电脑的启动器装的；
+    ///   identityTeam = 这个 S2Arm 导入的签名证书的团队（没导入为 nil）
+    public struct Candidate: Equatable {
+        public let bundleId: String
+        public let team: String
+        public let byThisLauncher: Bool
+        public let identityTeam: String?
+        public init(bundleId: String, team: String, byThisLauncher: Bool, identityTeam: String?) {
+            self.bundleId = bundleId; self.team = team; self.byThisLauncher = byThisLauncher; self.identityTeam = identityTeam
+        }
+        /// 导入的签名证书团队与 App 团队对得上（界面追加「已导入签名证书」）
+        public var certImported: Bool { identityTeam.map { !$0.isEmpty && $0 == team } ?? false }
+    }
     public struct Game: Equatable {
         public let gameId: String
         public let state: GameState
@@ -37,12 +50,17 @@ public struct PhoneOverview: Equatable {
         public let installedBy: InstalledBy?
         /// 作业给的这台手机的按钮（别的工具装的才有：exportShellIpa / pushS2arm / exportS2arm / handOverIdentity，按此顺序）；没给 = 空
         public let actions: [String]
+        /// 装着不止一个 S2Arm、玩家还没选（作业 needsChoice）：只出「选用哪个 S2Arm」
+        public let needsChoice: Bool
+        /// 装着不止一个时的全部候选（选没选过都带，选过的据此给「换一个」）；只有一个或没探测 = 空
+        public let candidates: [Candidate]
         public init(device: String, name: String, installed: Bool, shellCurrent: Bool, bundleId: String, signedAt: Date?, free: Bool,
                     expiresAtEstimate: Date?, online: String??, lastSeen: Date?, signMode: SignMode?, games: [Game],
-                    installedBy: InstalledBy? = nil, actions: [String] = []) {
+                    installedBy: InstalledBy? = nil, actions: [String] = [], needsChoice: Bool = false, candidates: [Candidate] = []) {
             self.device = device; self.name = name; self.installed = installed; self.shellCurrent = shellCurrent; self.bundleId = bundleId
             self.signedAt = signedAt; self.free = free; self.expiresAtEstimate = expiresAtEstimate; self.online = online; self.lastSeen = lastSeen
             self.signMode = signMode; self.games = games; self.installedBy = installedBy; self.actions = actions
+            self.needsChoice = needsChoice; self.candidates = candidates
         }
     }
     public let phones: [Phone]
@@ -60,11 +78,17 @@ public struct PhoneOverview: Equatable {
                 guard let id = g["gameId"] as? String, let s = (g["state"] as? String).flatMap(GameState.init) else { return nil }
                 return Game(gameId: id.uppercased(), state: s, reasons: g["reasons"] as? [String] ?? [], dataOnComputer: g["dataOnComputer"] as? Bool)
             }
+            let candidates: [Candidate] = (p["candidates"] as? [[String: Any]] ?? []).compactMap { c in
+                guard let bid = c["bundleId"] as? String, !bid.isEmpty else { return nil }
+                return Candidate(bundleId: bid, team: c["team"] as? String ?? "", byThisLauncher: c["byThisLauncher"] as? Bool == true,
+                                 identityTeam: (c["identityTeam"] as? String).flatMap { $0.isEmpty ? nil : $0 })
+            }
             return Phone(device: device, name: p["name"] as? String ?? "", installed: p["installed"] as? Bool == true, shellCurrent: p["shellCurrent"] as? Bool == true,
                          bundleId: p["bundleId"] as? String ?? "", signedAt: date(p["signedAt"]), free: p["free"] as? Bool == true,
                          expiresAtEstimate: date(p["expiresAtEstimate"]), online: online, lastSeen: date(p["lastSeen"]),
                          signMode: (p["signMode"] as? String).flatMap(SignMode.init), games: games,
-                         installedBy: (p["installedBy"] as? String).flatMap(InstalledBy.init), actions: p["actions"] as? [String] ?? [])
+                         installedBy: (p["installedBy"] as? String).flatMap(InstalledBy.init), actions: p["actions"] as? [String] ?? [],
+                         needsChoice: p["needsChoice"] as? Bool == true, candidates: candidates)
         }
     }
 }

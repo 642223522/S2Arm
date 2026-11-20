@@ -44,22 +44,47 @@ class Owner(unittest.TestCase):
         self.assertEqual(owner([(ALT, "S2Arm", "TEAMALT")], launcher), ("external", ALT), "启动器装过、手机上只剩 AltStore 那份")
         self.assertEqual(owner([("io.s2arm.games.team1", "S2Arm", "TEAM1")], dict(bundleId="io.s2arm.games.team1")), ("external", "io.s2arm.games.team1"),
                          "设备记录没有壳号（启动器没装过）：同名包也算别的工具装的")
-        self.assertEqual(owner([("io.s2arm.games.b", "S2Arm", None), ("com.esign.x", "S2Arm", None)], {}), ("external", "com.esign.x"), "多份取包名排序第一个")
+        # 11-20 维护者：装着不止一个时玩家自选、选过就记住，不再按「已导入身份 → 包名排序」替玩家挑
+        two = [("io.s2arm.games.team1", "S2Arm", "TEAM1"), (ALT, "S2Arm", "TEAMALT")]
+        self.assertEqual(owner(two, {}), ("choose", None), "两个、没选过：让玩家选")
+        self.assertEqual(owner(two, dict(launcher, chosenBundleId=ALT)), ("external", ALT), "选过 AltStore 那个")
+        self.assertEqual(owner(two, dict(launcher, chosenBundleId="IO.S2ARM.GAMES.TEAM1")), ("launcher", "io.s2arm.games.team1"), "选过启动器装的那个（包名大小写不敏感）")
+        self.assertEqual(owner(two, dict(chosenBundleId="io.s2arm.games.gone")), ("choose", None), "选过的那个已经不在：重新选")
 
 
-class PickExternal(unittest.TestCase):
-    """维护者评审：别的工具装的 S2Arm 不止一份时，优先已导入签名身份的、其中团队对得上的再优先；都没有才按包名排序第一个"""
-    def pick(self, apps, metas):
-        with patch.object(install, "phone_identity_meta", lambda c, u, b: metas.get(b)), patch.object(install, "trace", lambda *a, **k: None):
-            return install.pick_external(types.SimpleNamespace(), "UDID1", [dict(bundleId=b, team=t) for b, t in apps])
+class ChooseApp(unittest.TestCase):
+    """phoneChooseApp：选的包现在装在手机上才记；s2arm_candidates 标出这台电脑装的那个与各自导入的签名证书团队（期望手写）"""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.store = {"UDID1": dict(shellId="S1", bundleId="io.s2arm.games.team1")}
+        self.rows = [("io.s2arm.games.team1", "S2Arm", "TEAM1"), (ALT, "S2Arm", "TEAMALT")]
 
-    def test_pick(self):
-        apps = [("io.s2arm.games.a", "TA"), ("io.s2arm.games.b", "TB"), ("io.s2arm.games.c", "TC")]
-        self.assertEqual(self.pick(apps, {}), "io.s2arm.games.a", "都没身份：包名排序第一个")
-        self.assertEqual(self.pick(apps, {"io.s2arm.games.c": dict(team="TC")}), "io.s2arm.games.c", "只有一份导入了身份")
-        self.assertEqual(self.pick(apps, {"io.s2arm.games.a": dict(team="XX"), "io.s2arm.games.b": dict(team="TB")}), "io.s2arm.games.b",
-                         "两份有身份：团队对得上的优先")
-        self.assertEqual(self.pick([("io.s2arm.games.z", "TZ")], {}), "io.s2arm.games.z", "只有一份：不读手机文件直接用")
+    def run_with(self, fn, **req):
+        c = types.SimpleNamespace(private=self.tmp.name, r=req)
+        cl = types.SimpleNamespace(apps=lambda: self.rows, get=lambda rel, dst: False)
+        with patch.object(install, "devpush_client", lambda c, udid, bid, w: cl), patch.object(install, "main_executable", lambda c: "S2Arm"), \
+                patch.object(install.layout, "load_device", lambda c, k: dict(self.store.get(k, {}))), \
+                patch.object(install.layout, "save_device", lambda c, k, r: self.store.__setitem__(k, r)), \
+                patch.object(install, "phone_identity_meta", lambda c, u, b: dict(team="TEAMALT") if b == ALT else None):
+            return fn(c)
+
+    def test_choose_saves_and_owner_uses_it(self):
+        out = self.run_with(install.phone_choose_app, device="UDID1", bundleId=ALT.upper())
+        self.assertEqual(out, dict(device="UDID1", bundleId=ALT), "记手机上实际的包名写法")
+        self.assertEqual(self.store["UDID1"]["chosenBundleId"], ALT)
+        self.assertEqual(self.store["UDID1"]["shellId"], "S1", "别的记录原样留着")
+        self.assertEqual(self.run_with(lambda c: install.s2arm_owner(c, "UDID1", self.store["UDID1"])), ("external", ALT))
+
+    def test_choose_missing_app(self):
+        with self.assertRaises(Failure) as e:
+            self.run_with(install.phone_choose_app, device="UDID1", bundleId="io.s2arm.games.gone")
+        self.assertEqual(e.exception.code, "phone_app_gone")
+        self.assertNotIn("chosenBundleId", self.store["UDID1"])
+
+    def test_candidates(self):
+        got = self.run_with(lambda c: install.s2arm_candidates(c, "UDID1", self.store["UDID1"]))
+        self.assertEqual(got, [dict(bundleId=ALT, team="TEAMALT", byThisLauncher=False, identityTeam="TEAMALT"),
+                               dict(bundleId="io.s2arm.games.team1", team="TEAM1", byThisLauncher=True, identityTeam=None)])
 
 
 class PushPhoneMac(unittest.TestCase):
@@ -76,6 +101,11 @@ class PushPhoneMac(unittest.TestCase):
         ph = self.phone(("external", ALT))
         self.assertIsInstance(ph, install.ExternalPhone)
         self.assertEqual((ph.bid, ph.key, ph.external, ph.info["deviceName"]), (ALT, "UDID1", True, "备用手机"))
+
+    def test_choice_required(self):
+        with self.assertRaises(Failure) as e:
+            self.phone(("choose", None))
+        self.assertEqual(e.exception.code, "phone_app_choice_required", "装着不止一个、没选：不替玩家挑、不落回装机")
 
     def test_launcher_goes_old_way(self):
         with self.assertRaises(Failure) as e:

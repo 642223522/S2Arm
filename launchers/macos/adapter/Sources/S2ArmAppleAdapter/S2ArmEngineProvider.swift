@@ -338,8 +338,11 @@ public final class S2ArmEngineProvider: EngineProvider {
         return try await client.perform("pushSelected", extra: extra, events: events).result
     }
     /// 0.6.0 iPhone 总控台：所有见过的手机与每款在那台上的状态（作业 phoneOverview）；开关关着 → nil。probe：顺带问 USB 上连着谁（要几秒）
-    public func phoneOverview(probe: Bool = false) async throws -> PhoneOverview? {
-        PhoneOverview(result: try await client.perform("phoneOverview", extra: probe ? ["probe": true] : [:]).result)
+    ///   device：总控台当前这台（随现查请求带上）
+    public func phoneOverview(probe: Bool = false, device: String? = nil) async throws -> PhoneOverview? {
+        var extra: [String: Any] = probe ? ["probe": true] : [:]
+        if probe, let device, !device.isEmpty { extra["device"] = device }
+        return PhoneOverview(result: try await client.perform("phoneOverview", extra: extra).result)
     }
     public func updateHints() async throws -> [String: [String]]? {
         let r = try await client.perform("updateHints").result
@@ -354,6 +357,11 @@ public final class S2ArmEngineProvider: EngineProvider {
                             device: String? = nil, events: EventSink = .discard) async throws -> [String: Any] {
         try await installer.updatePhone(acceptStale: acceptStale, acceptDropped: acceptDropped, accept: accept, mode: mode, sgradeUpgrade: sgradeUpgrade, device: device,
                                         widget: settings.homeWidget, cloudSaves: settings.cloudSavesFolder, events: events)
+    }
+
+    /// 同一台手机上装着不止一个 S2Arm 时，玩家选用哪一个（总控台「选用哪个 S2Arm」，作业 phoneChooseApp）：记进设备记录，之后推送 / 总控台都用它
+    public func phoneChooseApp(device: String, bundleId: String) async throws {
+        _ = try await client.perform("phoneChooseApp", extra: ["device": device, "bundleId": bundleId])
     }
 
     /// 「把签名身份交给手机」（总控台 ① 手机与 App，作业 phoneIdentity）

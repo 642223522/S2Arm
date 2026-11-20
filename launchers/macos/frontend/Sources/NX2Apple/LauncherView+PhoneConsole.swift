@@ -24,6 +24,7 @@ extension LauncherView {
         case .updating(let done, let total): return sx("console.status.updating", done + 1 > total ? total : done + 1, total)
         case .notConnected(let seen):
             return seen.map { sx("console.status.notConnected", $0.formatted(.relative(presentation: .named))) } ?? sx("console.status.notConnectedNever")
+        case .chooseApp: return sx("console.status.chooseApp")
         case .externalApp: return sx("console.status.externalApp")
         case .notInstalled: return sx("console.status.notInstalled")
         case .appOutdated: return sx("console.status.appOutdated")
@@ -107,7 +108,8 @@ extension LauncherView {
             }
             VStack(alignment: .leading, spacing: 4) {
                 if phones.count > 1 {
-                    Picker("", selection: Binding(get: { phone.device }, set: { model.consoleDevice = $0; model.seedConsoleSelection() })) {
+                    Picker("", selection: Binding(get: { phone.device }, set: {   // 换了一台：现查它装了哪些 S2Arm
+                        model.consoleDevice = $0; model.consoleRechoose = false; model.consoleChooseError = nil; model.seedConsoleSelection(); model.refreshPhoneOverview(probe: true) })) {
                         ForEach(phones, id: \.device) { Text($0.name.isEmpty ? $0.device : $0.name).tag($0.device) }
                     }.labelsHidden().frame(maxWidth: 260).accessibilityIdentifier("console.phonePicker")
                 } else {
@@ -143,6 +145,7 @@ extension LauncherView {
         case .updateSelected: return sx("console.updateSelected", model.consoleSelection.count)
         case .pushS2arm: return sx("console.button.pushS2arm", model.consoleSelection.count)
         case .exportS2arm: return sx("console.button.exportS2arm", model.consoleSelection.count)
+        case .chooseApp: return sx("console.choose.change")
         }
     }
 
@@ -152,6 +155,15 @@ extension LauncherView {
         let app = actions.first { [.installShell, .updateShell, .renewShell, .exportShellIpa].contains($0) }
         return consoleSection(sx("console.section.phone")) {
             Text(consoleStatusText(status) + (phone.signMode.map { " · " + sx("console.sign." + $0.rawValue) } ?? "")).font(.manrope(14))
+            if phone.needsChoice || (model.consoleRechoose && phone.candidates.count > 1) {
+                consoleChooser(phone)
+            } else if phone.candidates.count > 1 {   // 选过了、装着不止一个：写正在用哪个 + 「换一个」
+                HStack(spacing: 10) {
+                    Text(sx("console.choose.current", phone.bundleId)).font(.manrope(12)).foregroundStyle(.white.opacity(0.65)).lineLimit(1)
+                    Button(sx("console.choose.change")) { model.consoleChooseError = nil; model.consoleRechoose = true }
+                        .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("console.chooseApp.change")
+                }
+            }
             if phone.installedBy == .external {
                 Text(sx("console.external.note")).font(.manrope(12)).foregroundStyle(.white.opacity(0.65)).fixedSize(horizontal: false, vertical: true)
             }
@@ -166,6 +178,37 @@ extension LauncherView {
             }
             if actions.contains(.handOverIdentity) { consoleIdentity(phone) }
         }.accessibilityIdentifier("console.section.phone")
+    }
+
+    /// 「选用哪个 S2Arm」：同一台手机上装着不止一个时，按作业给的顺序（包名排序）列出每一个，每个一颗按钮；只写事实（谁装的、证书导没导、团队号），不推荐。
+    ///   点了跑作业 phoneChooseApp，记住后刷新总览；选过的再点「换一个」也到这里
+    @ViewBuilder private func consoleChooser(_ phone: PhoneOverview.Phone) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(sx("console.choose.title")).font(.manrope(12.5)).foregroundStyle(.white.opacity(0.8)).fixedSize(horizontal: false, vertical: true)
+            ForEach(phone.candidates, id: \.bundleId) { c in
+                let label = S2ArmLauncherModel.candidateLabelKeys(c).map { sx($0) }.joined(separator: " · ")
+                Button { model.runConsoleAction(.chooseApp, device: phone.device, bundleId: c.bundleId, language: loc.lang.sharedCode) } label: {
+                    HStack(spacing: 10) {
+                        if model.consoleChoosing == c.bundleId { ProgressView().controlSize(.small) } else { Image(systemName: "app.badge.checkmark") }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(label).font(.manrope(13, .medium))
+                            Text(c.bundleId + (c.team.isEmpty ? "" : " · " + sx("console.choose.team", c.team))).font(.manrope(11)).foregroundStyle(.white.opacity(0.55))
+                        }
+                    }
+                }
+                .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("console.chooseApp." + c.bundleId)
+                .disabled(consoleOffline || model.consoleChoosing != nil || model.phoneBusy)
+                .accessibilityIdentifier("console.chooseApp." + c.bundleId)
+            }
+            if consoleOffline { offlineReason(phone) }
+            if let why = model.consoleChooseError {
+                Text(BackendText.translate(why, language: loc.lang.sharedCode)).font(.manrope(12)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
+            if !phone.needsChoice {
+                Button(sx("console.choose.cancel")) { model.consoleRechoose = false; model.consoleChooseError = nil }
+                    .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("console.chooseApp.cancel")
+            }
+        }.padding(.top, 4).accessibilityIdentifier("console.chooseApp")
     }
 
     /// 「把签名身份交给手机」（次要按钮）：AltStore / SideStore / 证书 App 装的 S2Arm 交一次签名身份，以后放进「放这里导入」就能玩。
