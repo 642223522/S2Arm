@@ -78,8 +78,7 @@
   {
    "platforms": [
     "mac",
-    "windows",
-    "ios"
+    "windows"
    ],
    "image": {
     "zh-Hans": "feature/v060-selfsign.jpg",
