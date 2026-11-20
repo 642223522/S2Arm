@@ -302,6 +302,14 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var autoCheckUpdates: Bool {
         didSet { updateDefaults.set(!autoCheckUpdates, forKey: Self.autoCheckUpdatesOffKey) }
     }
+    /// 免费签名到期提醒（缺省开；维护者 11-20：玩家换成自签或别的方式后提醒挂着取消不了）：游戏库顶部横幅点「×」即关、不再显示，设置里重新打开恢复。
+    ///   关着时横幅、卡片角标、状态行里的「还剩几天 / 已到期」都不出（freeSignDaysLeft）。存的是「关」，同 autoCheckUpdatesOffKey
+    static let freeSignReminderOffKey = "S2AFreeSignReminderOff"
+    @Published var freeSignReminder: Bool {
+        didSet { updateDefaults.set(!freeSignReminder, forKey: Self.freeSignReminderOffKey) }
+    }
+    /// 这款要显示的免费签名剩余天数：提醒关着或不是启动器免费签的那份 → nil
+    func freeSignDaysLeft(_ game: GameSummary, now: Date = Date()) -> Int? { freeSignReminder ? game.iphoneDaysLeft(now: now) : nil }
     /// 自动下载更新（默认关）：仅在「自动检查更新」也开启时生效；开启后后台下载，关闭则由玩家自己选何时下载
     static let autoDownloadUpdatesKey = "S2AAutoDownloadUpdates"
     @Published var autoDownloadUpdates: Bool {
@@ -469,6 +477,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         autoRestartWhenReady = updateDefaults.bool(forKey: Self.autoRestartWhenReadyKey)
         autoCheckUpdates = !updateDefaults.bool(forKey: Self.autoCheckUpdatesOffKey)
         autoDownloadUpdates = updateDefaults.bool(forKey: Self.autoDownloadUpdatesKey)
+        freeSignReminder = !updateDefaults.bool(forKey: Self.freeSignReminderOffKey)
         provider = S2ArmEngineProvider(client: client)
         controller = NS2LauncherController(
             socketURL: provider.client.environment.privateRoot.appendingPathComponent("ns2-relay.sock"), watchGame: true)   // 游戏的手柄设置画面交给面板分配玩家（#520 E）
