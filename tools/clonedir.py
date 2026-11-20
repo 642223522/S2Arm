@@ -277,6 +277,19 @@ def mac_fallback(source_fd, name, target):
         if os.path.isdir(stage): remove_stage(stage)
 
 
+def full_note(source, dest_dir):
+    """写满（ENOSPC）的当时量一次：目标盘还剩多少、这一项要多少，打一行「【写满】」事实（pack/jobs/errors.py 认它定 disk_full——
+    失败后临时文件一删空间就回来，事后再量会误判成「还有空间、不是盘满」，#1725 诊断 D-K82N）。量不出就不打"""
+    try:
+        free = shutil.disk_usage(dest_dir).free
+        st = os.lstat(source)
+    except OSError:
+        return
+    # 目录不在这里遍历算总量（仓库只许 romfs_list.py 遍历目录），只报目标盘还剩多少；单个文件（如 romfs.std）带上它的大小
+    need = '' if stat.S_ISDIR(st.st_mode) else f'，{os.path.basename(source)} 要 {st.st_size / (1 << 30):.1f} GB'
+    print(f'【写满】{dest_dir} 所在盘剩 {free / (1 << 30):.1f} GB{need}', file=sys.stderr)
+
+
 def mac_snapshot():
     os.makedirs(dst, exist_ok=True)
     sweep_stale(dst)
@@ -295,6 +308,7 @@ def mac_snapshot():
                 else: ROUTE['clone'] += 1
                 made.append(target)
             except OSError as exc:
+                if exc.errno == errno.ENOSPC: full_note(os.path.join(src, name), dst)
                 print(f'克隆失败：{name}：{exc}', file=sys.stderr); bad += 1
     finally: os.close(source_fd)
     for root in made:

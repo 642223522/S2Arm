@@ -1075,6 +1075,7 @@ class Context:
         if gid and self.operation in ("build", "ipa"):   # 直连缓存跟着游戏的存放位置走（外接盘时落外接盘，library.direct_cache_dir）
             import library
             env["S2A_DIRECT_CACHE"] = str(library.direct_cache_dir(self, gid))
+            env["S2A_AOC_CACHE"] = str(library.aoc_cache_dir(self, gid))   # 追加内容缓存同样跟着游戏走（#1725）
         developer = self.r.get("developerDir") or self.default_developer   # 启动器传的 > 装着的最新 Xcode；都没有就不设
         if developer:
             env.update(DEVELOPER_DIR=developer, S2A_DEVELOPER_DIR=developer)

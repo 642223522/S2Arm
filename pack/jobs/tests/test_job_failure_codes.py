@@ -632,6 +632,16 @@ class LogCauses(JobCase):
         self.assertIn("候选 disk_full 未采信", d["detail"])
         self.assertIn("40.0 GB", d["detail"])
 
+    def test_measured_disk_full_note_is_believed_despite_free_space(self):
+        # #1725（诊断 D-K82N）：DLC 解到工具缓存把系统盘写满；失败后临时文件一删，事后量还剩 36 GB，命中行后面还有「刷新停在」→ 原先不采信、落到「没归类」。
+        #   tools/clonedir.py 写满当时量的「【写满】」事实行：照报 disk_full，说明带当时的读数（期望手写）
+        with um.patch("errors._free_bytes", return_value=36 << 30):
+            error, d = self.mac_refresh(["【写满】/w/tool-cache/run/s2arm/cache/aoc 所在盘剩 0.2 GB，romfs.std 要 6.5 GB",
+                                         "克隆失败：romfs.std：[Errno 28] No space left on device",
+                                         "【红】fixture 刷新停在 aoc 阶段（rc=1），现行 = fixture@ex-1"])
+        self.assertEqual(error.code, "disk_full")
+        self.assertIn("失败当时量", d["detail"]); self.assertIn("romfs.std 要 6.5 GB", d["detail"])
+
     def test_final_disk_full_error_is_believed_despite_free_space(self):
         # 诊断 #9ac7f7：让这一步退出的就是盘满那个异常（回溯末行 WinError 112），失败后临时文件已删、事后量还剩 17 GB → 照报 disk_full，
         #   说明里写「这一步写满了盘」；旧字样后面还有别的输出的（上一条）仍按 H9 核实
