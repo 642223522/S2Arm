@@ -909,7 +909,7 @@ class JobsTests(unittest.TestCase):
 
     def test_install_dotnet_reports_download_progress(self):
         # 10-24 #152：官方安装脚本下载时零输出、23 分钟看着像卡死。期望：按 --dry-run 给的包地址和 HEAD 大小，下载期间报「已下载 N / 总数」
-        import unittest.mock as um, toolchain, ipa, subprocess as sp, time
+        import unittest.mock as um, toolchain, ipa, subprocess as sp, time, core
         url = "https://builds.dotnet.microsoft.com/dotnet/Sdk/10.0.402/dotnet-sdk-10.0.402-osx-x64.tar.gz"
         def fake_sub(args, *a, **k):
             if "--dry-run" in args:
@@ -927,7 +927,8 @@ class JobsTests(unittest.TestCase):
                 time.sleep(0.15)
         with um.patch.object(toolchain, "DOTNET_PROGRESS_S", 0.05), um.patch.object(toolchain.subprocess, "run", side_effect=fake_sub), \
              um.patch.object(self.c, "run", side_effect=fake_run), um.patch.object(self.c, "emit", side_effect=lambda *a, **k: seen.append(k)), \
-             um.patch.object(ipa, "dotnet_sdk", return_value=(Path("/x"), Path("/x/dotnet"))):
+             um.patch.object(ipa, "dotnet_sdk", return_value=(Path("/x"), Path("/x/dotnet"))), \
+             um.patch.object(core, "default_developer_dir", return_value=None):   # 缺省 Xcode 第一次用环境时才找（会调 xcode-select）：与本用例无关，固定成没有
             toolchain.install_dotnet(self.c)
         progress = [k for k in seen if k.get("unit") == "B"]
         self.assertTrue(progress, "下载期间没有进度")
@@ -1483,12 +1484,35 @@ class JobsTests(unittest.TestCase):
         mk(vols / "Other" / "Xcode-26.app", "26.6")   # 直接放在卷根
         boot = self.root / "boot"; (boot / "Applications").mkdir(parents=True)
         (vols / "Macintosh HD").symlink_to(boot)
-        dirs = toolchain.default_app_dirs(str(vols))
-        self.assertEqual(dirs[2:], (str(vols / "Ext SSD" / "Applications"), str(vols / "Ext SSD"), str(vols / "Other" / "Applications"), str(vols / "Other")))
-        with um.patch.object(toolchain.subprocess, "run", side_effect=OSError):
-            ext = dirs[2:]   # 只看外接卷那几项：本机真 /Applications 里的 Xcode 不进期望
-            self.assertEqual(toolchain.detect_xcode(ext), str(vols / "Ext SSD" / "Applications" / "Xcode.app/Contents/Developer"))
-            self.assertEqual([x[1] for x in toolchain.installed_xcodes(ext)], ["27.1", "26.6"])
+        ext = toolchain.external_app_dirs(str(vols))
+        self.assertEqual(ext, (str(vols / "Ext SSD" / "Applications"), str(vols / "Ext SSD"), str(vols / "Other" / "Applications"), str(vols / "Other")))
+        empty = self.root / "internal-empty"; empty.mkdir()
+        with um.patch.object(toolchain.subprocess, "run", side_effect=OSError), um.patch.object(toolchain, "default_app_dirs", return_value=(str(empty),)), \
+                um.patch.object(toolchain, "external_app_dirs", return_value=ext):
+            # 内置位置一份都没有：兜底翻外接卷，找得到
+            self.assertEqual(toolchain.detect_xcode(), str(vols / "Ext SSD" / "Applications" / "Xcode.app/Contents/Developer"))
+            self.assertEqual([x[1] for x in toolchain.installed_xcodes()], ["27.1", "26.6"])
+
+    def test_detect_xcode_does_not_list_external_volumes_when_internal_has_one(self):
+        # 接着外接盘的玩家一开启动器就弹「想访问可移除卷上的文件」（每建一个任务都列 /Volumes）：内置位置有完整 Xcode 就不碰外接卷；
+        #   期望：用内置那份，external_app_dirs 一次都不调（调了就抛错，等同碰了外接卷）
+        import plistlib, toolchain, unittest.mock as um
+        internal = self.root / "Applications"
+        app = internal / "Xcode.app"; (app / "Contents/Developer/usr/bin").mkdir(parents=True)
+        (app / "Contents/Info.plist").write_bytes(plistlib.dumps(dict(CFBundleIdentifier="com.apple.dt.Xcode", CFBundleShortVersionString="26.6")))
+        (app / "Contents/Developer/usr/bin/xcodebuild").write_text("")
+        with um.patch.object(toolchain.subprocess, "run", side_effect=OSError), um.patch.object(toolchain, "default_app_dirs", return_value=(str(internal),)), \
+                um.patch.object(toolchain, "external_app_dirs", side_effect=AssertionError("碰了外接卷")):
+            self.assertEqual(toolchain.detect_xcode(), str(app / "Contents/Developer"))
+
+    def test_creating_a_task_does_not_look_for_xcode(self):
+        # 建任务不找 Xcode（原先 Context.__init__ 就调 default_developer_dir → 翻目录、找不到内置的还翻外接卷）：第一次要用环境时才找、同一任务只找一次
+        import core, unittest.mock as um
+        with um.patch.object(core, "default_developer_dir", side_effect=AssertionError("建任务就找了 Xcode")):
+            c = Context(dict(self.request))
+        with um.patch.object(core, "default_developer_dir", return_value=None) as found:
+            c.env(); c.env()
+        self.assertEqual(found.call_count, 1)
 
     def test_installed_xcodes_by_version_and_build_not_path(self):
         # 11-07 gate-host 现场：Xcode-27.app 被 App Store 原地升到 27.1（构建号 27A9275），Xcode-27.1.app 是指向它的软链 → 只算一套；
