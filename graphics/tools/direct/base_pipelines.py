@@ -214,6 +214,14 @@ def main():
                     except (ValueError, struct.error, KeyError, UnicodeDecodeError): info[sh] = ({}, None)
             return data, sh, info[sh]
 
+        def fn_id(key, kind, fn):
+            """不调 metallib 先算这个函数的身份串：取得出自己的模块 → 'm' + 函数表 HASH，否则整段 's' + 段 sha256；→ (身份串, 声明常量吗) 或 None。
+            缓存键只用它，所以先查缓存、命中就不必包库（热缓存时整段出包原先每对都先跑两次 xcrun metallib，一款大作这段要四分多钟）"""
+            data, sh, (fns, consts) = seg(key, kind)
+            if fn not in fns or consts is None or fn not in consts: return None
+            h, o, sz = fns[fn]; mod = data[o:o + sz]
+            return ('m' + h if mod and hashlib.sha256(mod).hexdigest() == h else 's' + sh), consts[fn]
+
         def fn_lib(key, kind, fn):
             """这个函数的库：能取出它自己的模块（sha256 = 函数表 HASH）就包成单函数库，否则整段；→ (库路径, 身份串, 声明常量吗, 整段吗) 或 None（库里没有这个函数 / 读不出常量表）"""
             data, sh, (fns, consts) = seg(key, kind)
@@ -234,10 +242,15 @@ def main():
                 if not sp.is_file(): sp.write_bytes(data)
             return sp, 's' + sh, consts[fn], True
 
+        def cached(vid, entry, vc, fid, fname, fc):
+            """一条基础管线的缓存文件（没给 --cache 返回 None）"""
+            if not a.cache: return None
+            ck = hashlib.sha256('\n'.join([FORMAT, vid, entry, str(vc), fid, fname, str(fc), a.plat, str(a.os), ' '.join(archs), ttver]).encode()).hexdigest()
+            return a.cache / ck[:2] / f'{ck}.e'
+
         def build(dst, vl, entry, fl, fname):
             """一条基础管线 → dst（随包那份：iPhone 压过的）；→ 'hit' 缓存命中、'built' 现编，或 (退出码, 谁, 原因)"""
-            ck = hashlib.sha256('\n'.join([FORMAT, vl[1], entry, str(vl[2]), fl[1], fname, str(fl[2]), a.plat, str(a.os), ' '.join(archs), ttver]).encode()).hexdigest()
-            cf = a.cache / ck[:2] / f'{ck}.e' if a.cache else None
+            cf = cached(vl[1], entry, vl[2], fl[1], fname, fl[2])
             if cf and cf.is_file() and cf.stat().st_size:
                 clone(cf, dst); os.utime(cf); return 'hit'
             fds, sps = [], []
@@ -272,6 +285,10 @@ def main():
 
         def one(job):
             v, f, entry, fname = job
+            vi, fi = fn_id(v, K_BP, entry), fn_id(f, K_B, fname)
+            cf = cached(vi[0], entry, vi[1], fi[0], fname, fi[1]) if vi and fi else None
+            if cf and cf.is_file() and cf.stat().st_size:   # 先查缓存：命中就不包单函数库（包不成按整段的，键同样能算出、同样先查）
+                clone(cf, path(job)); os.utime(cf); return 'hit', sum(1 for x in (vi, fi) if x[0][0] == 's')
             vl, fl = fn_lib(v, K_BP, entry), fn_lib(f, K_B, fname)
             whole = sum(1 for x in (vl, fl) if x and x[3])
             if not vl or not fl:

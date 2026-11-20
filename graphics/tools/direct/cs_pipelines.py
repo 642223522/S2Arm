@@ -32,7 +32,7 @@ import sys
 import tempfile
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -225,7 +225,7 @@ def main():
 
         tk = Ticker('直连库·计算管线', len(jobs))
         with ThreadPoolExecutor(max(1, a.j)) as ex:
-            for _ in ex.map(one, jobs): tk.step()
+            for f in as_completed([ex.submit(one, job) for job in jobs]): f.result(); tk.step()   # 按完成先后计：一支编得久，计数不停在它前面
     finally:
         shutil.rmtree(work, ignore_errors=True)
     files = [a.out / f'{ckey(k)}.metalarchive' for k in keys]
