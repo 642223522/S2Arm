@@ -459,7 +459,7 @@ static void *floor_main(void *arg) {
             struct s2a_floor_in in = {
                 .now_ns = now,
                 .frames = atomic_load_explicit(&g_frames, memory_order_relaxed),
-                .period_ns = s2a_android_present_ns(),
+                .period_ns = s2a_android_session_period_ns(),   // 本局最短周期，不是当前周期（system_tuning.h）
                 .mode = read_mode(),
                 .foreground = atomic_load(&g_fg), .surface = atomic_load(&g_surface), .stopped = atomic_load(&g_stop),
                 .thermal = dm_thermal_now(), .low_power = dm_low_power_now(),
