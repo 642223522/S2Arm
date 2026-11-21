@@ -6896,6 +6896,118 @@ static void t_ubo_const_sampler(void) {
     nvn_be_tex_release(&t7); nvn_be_tex_release(&t8); pass_fresh();
 }
 
+// #1594 片 10：计算阶段、贴图字在游戏常量缓冲里的类型 3 句柄（NVN_RB_TEXU + usrc 表项 SAMPI / samp_pool = 1）。合同同 t_ubo_const_sampler（图形阶段）：
+//   贴图字在派发编码这一刻从游戏内存读；采样器号 = 贴图字高 12 位 | 池下标，登记号 = 采样器号 + 池起点，下标 0 是真下标；没登记的号绑默认采样器照派发，
+//   登记了但后端建不出的具名跳过（const_sampler_unresolved）；samp_pool = 0 的 SAMPI 口径不变。差别只有一处：贴图字从计算阶段（5）绑的常量缓冲读，
+//   不是图形阶段绑的那一份。字高 12 位取 9、池下标取 3：或 = 11，与「只取池下标」3、「只取字高位」9 都不同。
+static void t_cs_ubo_const_sampler(void) {
+    pass_fresh(); g_resolve_rc = 0; g_cresolves = g_cresolve_rc = g_cpipe_gets = g_ndisp = g_cbinds = 0; g_ncb = 0; g_cresolve_next = NULL; nvn_unimpl_reset();
+    g_csd_lines = 0; g_csd_line[0] = 0;
+    memset(g_pmem, 0, sizeof g_pmem); nvn_be_pool_add(g_pmem, sizeof g_pmem);
+    const uint64_t base = (uint64_t)(uintptr_t)g_pmem;
+    tex_t t7 = mk_tex(7046, 0x4000, NVN_FORMAT_RGBA8, 4, 4, 1, 0), t8 = mk_tex(7047, 0x8000, NVN_FORMAT_RGBA8, 2, 2, 1, 0);
+    samp_par sp = {0}; nvn_be_reg_tex(7, &t7, NULL); nvn_be_reg_tex(8, &t8, NULL);
+    // 标记 = 采样器的 S 向环绕模式（替身把它原样记在 x 里）；只用替身能原样保留的 1 / 5 / 6 / 7
+    sp.ws = 1; nvn_be_reg_samp(3, &sp);      // 号 3：标记 1（字高位为 0 时要取到的；字高位非 0 时只取池下标的老口径会取到它）
+    sp.ws = 6; nvn_be_reg_samp(0, &sp);      // 号 0：标记 6（真下标）
+    sp.ws = 7; nvn_be_reg_samp(9, &sp);      // 号 9：标记 7（只取字高位会取到它）
+    sp.ws = 5; nvn_be_reg_samp(11, &sp);     // 号 11 = 9 | 3：标记 5（字高位 9 时要取到的）
+    sp.ws = 5; nvn_be_reg_samp(4095, &sp);   // 最大的号：标记 5
+    uint32_t tw = 7 | (uint32_t)9 << 20; memcpy(g_pmem + PG + 0x10, &tw, 4);   // 贴图字：纹理号 7；高 12 位 9 要与立即数相或
+    memset(&g_cprog, 0, sizeof g_cprog); g_cprog.is_compute = 1; g_cprog.sh[0] = &g_fsh[0];
+    g_cprog.nent[0] = 1; nvn_gpu_layout_ent *e = &g_cprog.ent[0][0];
+    e->cls = NVN_GPU_RES_TEX_SAMP; e->src_kind = NVN_RB_TEXU; e->src_reg = 2; e->src_off = 0x10; e->src_reg2 = 0; e->count = 1;
+    g_cprog.nusrc = 1;
+    g_cprog.usrc[0] = (struct rp_usrc){ .tex = { .reg = 2, .off = 0x10 }, .samp_kind = NVN_RB_SAMPI, .samp_reg = 3, .samp_pool = 1 };
+    int d0 = g_ndisp;
+    stream s = {0}; p_bind_buf *ub = put(&s, OP_BIND_UBO, sizeof *ub); ub->stage = 5; ub->index = 2; ub->addr = base + PG; ub->size = 64;
+    put_dispatch1(&s); end(&s); submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_ndisp == d0 + 1 && g_ncb == 1 && g_cb[0].u.ts.view && g_cb[0].u.ts.view->of->d.d.width == 4);   // 贴图 = 游戏常量缓冲里的字 7（4x4 那张）
+    CHECK(g_cb[0].u.ts.samp && g_cb[0].u.ts.samp->x == 5);                                                  // 采样器 = 字高位 9 | 池下标 3 = 11（标记 5），不是 3（标记 1）、9（标记 7）
+    CHECK(nvn_unimpl_kinds() == 0);
+    // 游戏改了常量缓冲里的贴图字（= 8，字高位为 0）：下一次派发读到新的（贴图跟着换，采样器 = 0 | 3 = 池下标 3）
+    tw = 8; memcpy(g_pmem + PG + 0x10, &tw, 4);
+    stream again = {0}; put_dispatch1(&again); end(&again); submit1(&again); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_ndisp == d0 + 2 && g_cb[0].u.ts.view && g_cb[0].u.ts.view->of->d.d.width == 2 && g_cb[0].u.ts.samp && g_cb[0].u.ts.samp->x == 1);
+    // 下标 0 是真下标：不当「没有」（字高位为 0 时，0 | 0 = 号 0）；最大池下标（12 位全 1）
+    g_cprog.usrc[0].samp_reg = 0; rp_dirty_all();
+    stream zero = {0}; put_dispatch1(&zero); end(&zero); submit1(&zero); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_ndisp == d0 + 3 && g_cb[0].u.ts.samp && g_cb[0].u.ts.samp->x == 6);
+    g_cprog.usrc[0].samp_reg = 4095; rp_dirty_all();
+    stream top = {0}; put_dispatch1(&top); end(&top); submit1(&top); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_ndisp == d0 + 4 && g_cb[0].u.ts.samp && g_cb[0].u.ts.samp->x == 5);
+    // 没登记的池下标（片 6 的口径同样用在计算阶段）：绑默认采样器（= rp_sampler_for_query）、整次照派发，不拿别的已登记采样器顶替；
+    //   信息计数 + 1，不记 const_sampler_unresolved、不报红
+    const int red_before = g_red_lines; const uint64_t csd0 = rp_const_samp_default_count();
+    g_cprog.usrc[0].samp_reg = 31; rp_dirty_all();
+    stream missing = {0}; put_dispatch1(&missing); end(&missing); submit1(&missing); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_ndisp == d0 + 5 && g_cb[0].u.ts.view && g_cb[0].u.ts.view->of->d.d.width == 2);   // 贴图字 8（2x2 那张）照常取
+    CHECK(g_cb[0].u.ts.samp && g_cb[0].u.ts.samp == rp_sampler_for_query() && g_cb[0].u.ts.samp != rp_samp_by_id(3) && g_cb[0].u.ts.samp != rp_samp_by_id(11));
+    CHECK(nvn_unimpl_count("draw", "const_sampler_unresolved") == 0 && nvn_unimpl_kinds() == 0 && g_red_lines == red_before && rp_const_samp_default_count() == csd0 + 1);
+    // 当前采样器池起点：登记号 = 采样器号 + 起点（池 1 起点 5：字高位为 0、池下标 3 → 登记号 8；原始号 3 不再是它）
+    rp_S.samp_base = 5; sp.ws = 6; nvn_be_reg_samp(8, &sp);   // 登记号 8：标记 6（原始号 3 是标记 1）
+    g_cprog.usrc[0].samp_reg = 3; rp_dirty_all();
+    stream based = {0}; put_dispatch1(&based); end(&based); submit1(&based); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_ndisp == d0 + 6 && g_cb[0].u.ts.samp && g_cb[0].u.ts.samp->x == 6 && rp_const_samp_default_count() == csd0 + 1);
+    // 对照：samp_pool = 0 的 SAMPI（离线库写法）是登记号原值，不加池起点（加了会取到登记号 8 = 标记 6）
+    g_cprog.usrc[0].samp_pool = 0; g_cprog.usrc[0].samp_reg = 3; rp_dirty_all();
+    stream raw = {0}; put_dispatch1(&raw); end(&raw); submit1(&raw); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_ndisp == d0 + 7 && g_cb[0].u.ts.samp && g_cb[0].u.ts.samp->x == 1);
+    // 对照：samp_pool = 0 且没登记：老口径的具名跳过（sampler_slot_unresolved）——不绑默认采样器（片 6 只管池下标形态）、不记成常量采样器的跳过 / 默认采样器计数
+    g_cprog.usrc[0].samp_reg = 31; rp_dirty_all();
+    stream raw_missing = {0}; put_dispatch1(&raw_missing); end(&raw_missing); submit1(&raw_missing); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_ndisp == d0 + 7 && nvn_unimpl_count("draw", "sampler_slot_unresolved") == 1 && nvn_unimpl_count("draw", "const_sampler_unresolved") == 0 && rp_const_samp_default_count() == csd0 + 1);
+    rp_S.samp_base = 0; g_cprog.usrc[0].samp_pool = 1; g_cprog.usrc[0].samp_reg = 3;
+    // 字高 12 位非零：贴图字写回 7 | 9 << 20，池下标 3 → 号 11（标记 5）；字高 12 位全 1、池下标 0 → 号 4095（整 12 位都取）
+    tw = 7 | (uint32_t)9 << 20; memcpy(g_pmem + PG + 0x10, &tw, 4); rp_dirty_all();
+    stream hi = {0}; put_dispatch1(&hi); end(&hi); submit1(&hi); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_ndisp == d0 + 8 && g_cb[0].u.ts.view && g_cb[0].u.ts.view->of->d.d.width == 4 && g_cb[0].u.ts.samp && g_cb[0].u.ts.samp->x == 5);
+    tw = 7 | (uint32_t)NVN_GPU_SAMP2_ID_MASK << 20; memcpy(g_pmem + PG + 0x10, &tw, 4); g_cprog.usrc[0].samp_reg = 0; rp_dirty_all();
+    stream hif = {0}; put_dispatch1(&hif); end(&hif); submit1(&hif); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_ndisp == d0 + 9 && g_cb[0].u.ts.samp && g_cb[0].u.ts.samp->x == 5);
+    // 登记了、但后端建不出（模拟内存不足）：不是「没登记」，不拿默认采样器顶替，具名跳过（const_sampler_unresolved）、不派发、不记默认采样器计数；
+    //   后端恢复后同一次照派发，取到登记的那个（标记 5）。号 40 是新登记的，还没建过对象
+    sp.ws = 5; nvn_be_reg_samp(40, &sp); g_samp_fail_nearest = 1;
+    tw = 7; memcpy(g_pmem + PG + 0x10, &tw, 4);   // 字高位 0：采样器号 = 池下标 40
+    g_cprog.usrc[0].samp_reg = 40; rp_dirty_all();
+    const uint64_t fail_csd0 = rp_const_samp_default_count();
+    stream failed = {0}; put_dispatch1(&failed); end(&failed); submit1(&failed); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_ndisp == d0 + 9 && nvn_unimpl_count("draw", "const_sampler_unresolved") == 1 && rp_const_samp_default_count() == fail_csd0);
+    g_samp_fail_nearest = 0;
+    stream recovered = {0}; put_dispatch1(&recovered); end(&recovered); submit1(&recovered); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_ndisp == d0 + 10 && g_cb[0].u.ts.samp && g_cb[0].u.ts.samp->x == 5 && g_cb[0].u.ts.samp != rp_sampler_for_query() && rp_const_samp_default_count() == fail_csd0);
+    // 形状不对：数组 / 句柄来源表下标越界 → 具名跳过（uniform_handle_shape），不派发
+    e->count = 2; rp_dirty_all();
+    stream arr = {0}; put_dispatch1(&arr); end(&arr); submit1(&arr); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_ndisp == d0 + 10 && nvn_unimpl_count("draw", "uniform_handle_shape") == 1);
+    e->count = 1; e->src_reg2 = 5; rp_dirty_all();
+    stream oob = {0}; put_dispatch1(&oob); end(&oob); submit1(&oob); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_ndisp == d0 + 10 && nvn_unimpl_count("draw", "uniform_handle_shape") == 2);
+    e->src_reg2 = 0;
+    // 贴图字取计算阶段（5）绑的常量缓冲，不是图形阶段（1）绑的那一份：同一个槽号，图形阶段指向写着 7 的那块（4x4），计算阶段指向写着 8 的另一块（2x2）→ 取 2x2
+    g_cprog.usrc[0].samp_reg = 3; tw = 7; memcpy(g_pmem + PG + 0x10, &tw, 4); tw = 8; memcpy(g_pmem + PG + 0x110, &tw, 4); rp_dirty_all();
+    stream split = {0}; ub = put(&split, OP_BIND_UBO, sizeof *ub); ub->stage = 1; ub->index = 2; ub->addr = base + PG; ub->size = 64;
+    ub = put(&split, OP_BIND_UBO, sizeof *ub); ub->stage = 5; ub->index = 2; ub->addr = base + PG + 0x100; ub->size = 64;
+    put_dispatch1(&split); end(&split); submit1(&split); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_ndisp == d0 + 11 && g_cb[0].u.ts.view && g_cb[0].u.ts.view->of->d.d.width == 2 && g_cb[0].u.ts.samp && g_cb[0].u.ts.samp->x == 1);
+    // 计算阶段这个槽解绑、只剩图形阶段（1）绑着写着 7 的那块：计算读到的是空槽（字 0），不是图形阶段那份的 7——4x4 那张不许被绑上；
+    //   号 0 没登记、着色器又没声明目标（建不出零贴图）→ 具名跳过（texture_slot_unresolved），不派发
+    const int nd_unb = g_ndisp;
+    stream unbind = {0}; ub = put(&unbind, OP_BIND_UBO, sizeof *ub); ub->stage = 5; ub->index = 2; ub->addr = 0; ub->size = 0;
+    put_dispatch1(&unbind); end(&unbind); submit1(&unbind); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_ndisp == nd_unb && nvn_unimpl_count("draw", "texture_slot_unresolved") == 1);
+    // 空槽：计算阶段那块里的字是越池号（20 位全 1），着色器声明了二维浮点 → 没登记的号绑声明类型的 1x1 零贴图、整次照派发，不跳（同图形阶段 t_ubo_texture_unregistered）；
+    //   声明有没有传下去由这一例认出（目标 0 建不出零贴图，就是上面那一例的具名跳过）
+    g_cprog.dtt[0][0] = NVN_TEXTURE_TARGET_2D + 1; g_cprog.dcls[0][0] = 0; nvn_be_set_tex_pool_n(64);
+    tw = 0xFFFFF; memcpy(g_pmem + PG + 0x110, &tw, 4);
+    const uint64_t uz0 = rp_ubo_zero_count();
+    stream zerotex = {0}; ub = put(&zerotex, OP_BIND_UBO, sizeof *ub); ub->stage = 5; ub->index = 2; ub->addr = base + PG + 0x100; ub->size = 64;
+    put_dispatch1(&zerotex); end(&zerotex); submit1(&zerotex); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_ndisp == nd_unb + 1 && g_cb[0].u.ts.view && g_cb[0].u.ts.view->of->d.d.width == 1 && g_cb[0].u.ts.view->of->d.d.format == NVN_FORMAT_RGBA8 && rp_ubo_zero_count() == uz0 + 1);
+    nvn_be_set_tex_pool_n(0);
+    nvn_be_tex_release(&t7); nvn_be_tex_release(&t8); pass_fresh();
+}
+
 // #1594 片 6：类型 3 句柄的采样器号没登记 = Ryujinx 的空采样器（SamplerPool.Get 对 (uint)id >= Items.Length 给 null、池内没写过的号读出全零描述符；
 //   Vulkan 后端把 null 采样器换成最近点 / Repeat 的 dummy 采样器，draw 照常提交）：rp_samp_for_const_handle 给默认采样器（= rp_sampler_for_query：
 //   最近点 / Repeat / 无比较 / 各向异性 1），调用方整笔照画；信息计数 rp_const_samp_default_count + 每局首次一行（带采样器号、登记号、池起点和容量）。
@@ -7473,6 +7585,7 @@ int main(int argc, char **argv) {
     t_const_sampler();
     t_ubo_texture();
     t_ubo_const_sampler();
+    t_cs_ubo_const_sampler();
     t_const_sampler_default();
     t_const_sampler_default_sites();
     t_const_sampler_scope();

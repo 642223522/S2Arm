@@ -244,6 +244,8 @@ static int32_t fake_compile(uint64_t session, uint64_t gen, s2a_direct_bytes req
         const char *code = fake_cs_success == 2 ? S2A_SAMPLER_QUERY_SPV : S2A_SAMPLER_SAMPLE_SPV;
         // 4：整池数组（v2 结果：贴图池 8448 项 + 采样器池 1280 项，#1594 片 8）；5：同样 8448 项但不带 pool 的普通数组（计算侧仍不接，ARRAY_UNSUPPORTED）；
         // 6：带 pool 但池长只有 1（形状不对，整份拒，走 compute_program_parse_failed 而不是 ARRAY_UNSUPPORTED）
+        // 7：贴图字在游戏常量缓冲里的常量采样器（uboSlot 2 / uboOffset 160 / 池下标 260，#1594 片 10）；
+        // 8：同一个计算程序三项（两个 UBO 形态 + 一个 c2 形态 slot 100 / 池下标 259）；9：UBO 形态但没有 constSampler（计算侧不接，整份拒）
         const char *bindings = fake_cs_success == 4 ?
             "[{\"stage\":\"cs\",\"kind\":\"texture\",\"source\":\"texture\",\"set\":2,\"binding\":0,\"count\":8448,\"pool\":\"texture\"},"
             "{\"stage\":\"cs\",\"kind\":\"texture\",\"source\":\"texture\",\"set\":2,\"binding\":1,\"count\":1280,\"pool\":\"sampler\"}]" :
@@ -251,9 +253,17 @@ static int32_t fake_compile(uint64_t session, uint64_t gen, s2a_direct_bytes req
             "[{\"stage\":\"cs\",\"kind\":\"texture\",\"source\":\"texture\",\"set\":2,\"binding\":0,\"slot\":8,\"count\":8448}]" :
             fake_cs_success == 6 ?
             "[{\"stage\":\"cs\",\"kind\":\"texture\",\"source\":\"texture\",\"set\":2,\"binding\":0,\"count\":1,\"pool\":\"texture\"}]" :
+            fake_cs_success == 7 ?
+            "[{\"stage\":\"cs\",\"kind\":\"texture\",\"source\":\"texture\",\"set\":2,\"binding\":0,\"count\":1,\"uboSlot\":2,\"uboOffset\":160,\"constSampler\":260}]" :
+            fake_cs_success == 8 ?
+            "[{\"stage\":\"cs\",\"kind\":\"texture\",\"source\":\"texture\",\"set\":2,\"binding\":0,\"count\":1,\"uboSlot\":2,\"uboOffset\":160,\"constSampler\":260},"
+            "{\"stage\":\"cs\",\"kind\":\"texture\",\"source\":\"texture\",\"set\":2,\"binding\":1,\"count\":1,\"uboSlot\":3,\"uboOffset\":164,\"constSampler\":262},"
+            "{\"stage\":\"cs\",\"kind\":\"texture\",\"source\":\"texture\",\"set\":2,\"binding\":2,\"slot\":100,\"count\":1,\"constSampler\":259}]" :
+            fake_cs_success == 9 ?
+            "[{\"stage\":\"cs\",\"kind\":\"texture\",\"source\":\"texture\",\"set\":2,\"binding\":0,\"count\":1,\"uboSlot\":2,\"uboOffset\":160}]" :
             "[{\"stage\":\"cs\",\"kind\":\"storage\",\"set\":1,\"binding\":0,\"count\":1,\"rw\":true,\"cbSlot\":0,\"cbOffset\":784,\"nvnSlot\":0},"
             "{\"stage\":\"cs\",\"kind\":\"texture\",\"source\":\"texture\",\"set\":2,\"binding\":0,\"slot\":72,\"count\":1}]";
-        const int ver = fake_cs_success >= 4 ? 2 : 1;   // 4..6 是 v2 结果（pool 字段只在 v2 里有合同）
+        const int ver = fake_cs_success >= 4 ? 2 : 1;   // 4..9 是 v2 结果（pool / constSampler 字段只在 v2 里有合同）
         char result[8192];
         int n = snprintf(result, sizeof result, "{\"schema\":\"s2a-direct-program-v%d\",\"content\":{\"contract\":\"s2a-direct-program-content-v%d\",\"kind\":\"compute\",\"hasUnalignedStorageBuffer\":false,\"c0Reads\":[],\"supportReads\":[],\"supportLayout\":{\"requiredSize\":16},\"stages\":[{\"stage\":\"cs\",\"spirv\":\"%s\"}],\"bindings\":%s}}", ver, ver, code, bindings);
         CHECK(n > 0 && (size_t)n < sizeof result, "compute result fixture fits");
@@ -1507,6 +1517,52 @@ static void compute_pool_test(void) {
     fake_cs_success = 0; separate_fixture = 0;
 }
 
+// #1594 片 10：计算阶段、贴图字在游戏常量缓冲里的类型 3 句柄（真解析 + 生产 build_compute / layout_ent / usrc_put）。
+//   期望（手算）：7：一个 UBO 形态的常量采样器（uboSlot 2 = cbuf 5、uboOffset 160、池下标 260）→ 一个布局项：TEXU / 贴图采样 / 数量 1、src_reg = 2、src_off = 160、
+//   src_reg2 = 0（usrc 表下标）、只给计算阶段；程序 usrc 表一项：贴图字 {UBO 2, +160}、采样器 SAMPI + 池下标 260 + samp_pool = 1；着色器装载 1 次，没有解析失败记账。
+//   8：同一个计算程序三项（两个 UBO 形态 + 一个 c2 形态 slot 100 / 池下标 259）→ UBO 两项 src_reg2 = 0 / 1、usrc 两项各取各的（UBO 3 +164 / 池下标 262），
+//   c2 形态仍是 NVN_RB_TEX（贴图槽 133，src_reg2 = 标记位 | 259），不进 usrc 表。
+//   9：UBO 形态但没有 constSampler（组合句柄在游戏 UBO 里，计算侧不接）→ 整份拒，走 compute_program_parse_failed，不装载。
+static void compute_ubo_const_sampler_test(void) {
+    for (int mode = 7; mode <= 9; ++mode) {
+        rp_state_reset(); rp_shader_reset(); nvn_unimpl_reset(); source(); bind_pools(100); separate_fixture = 1; last_red[0] = 0;
+        fake_cs_success = mode; cs_loads = 0;
+        const struct rp_prog *p = NULL;
+        const int rc = rp_shader_resolve_compute(&p);
+        if (mode == 7) {
+            CHECK(rc == 0 && p && p->is_compute && p->nent[0] == 1, "compute UBO constant sampler fixture loads with one layout entry (rc=%d red=%s)", rc, last_red);
+            if (rc == 0 && p && p->nent[0] == 1) {
+                const nvn_gpu_layout_ent *t = &p->ent[0][0];
+                CHECK(t->src_kind == NVN_RB_TEXU && t->cls == NVN_GPU_RES_TEX_SAMP && t->count == 1 && t->src_reg == 2 && t->src_off == 160 && t->src_reg2 == 0 &&
+                      t->set == 2 && t->binding == 0 && t->stages == (1u << NVN_GPU_SH_CS),
+                      "compute UBO constant sampler layout entry: TEXU, UBO 2 + 160, usrc index 0, CS only");
+                CHECK(p->nusrc == 1 && p->usrc[0].tex.reg == 2 && p->usrc[0].tex.off == 160 && !p->usrc[0].tex.sid && !p->usrc[0].tex.pair &&
+                      p->usrc[0].samp_kind == NVN_RB_SAMPI && p->usrc[0].samp_reg == 260 && p->usrc[0].samp_pool == 1,
+                      "compute UBO constant sampler usrc entry: texture word at UBO 2 + 160, immediate pool index 260 (SAMPI, samp_pool 1)");
+            }
+            CHECK(cs_loads == 1 && nvn_unimpl_count("shader", "compute_program_parse_failed") == 0,
+                  "compute UBO constant sampler result loads the shader once (loads=%d red=%s)", cs_loads, last_red);
+        } else if (mode == 8) {
+            CHECK(rc == 0 && p && p->is_compute && p->nent[0] == 3, "compute mixed UBO / c2 constant sampler fixture loads with three layout entries (rc=%d red=%s)", rc, last_red);
+            if (rc == 0 && p && p->nent[0] == 3) {
+                const nvn_gpu_layout_ent *a = &p->ent[0][0], *b = &p->ent[0][1], *c = &p->ent[0][2];
+                CHECK(a->src_kind == NVN_RB_TEXU && a->src_reg == 2 && a->src_off == 160 && a->src_reg2 == 0 &&
+                      b->src_kind == NVN_RB_TEXU && b->src_reg == 3 && b->src_off == 164 && b->src_reg2 == 1,
+                      "two compute UBO constant sampler entries keep their own usrc indexes");
+                CHECK(p->nusrc == 2 && p->usrc[0].tex.reg == 2 && p->usrc[0].tex.off == 160 && p->usrc[0].samp_reg == 260 && p->usrc[0].samp_pool == 1 &&
+                      p->usrc[1].tex.reg == 3 && p->usrc[1].tex.off == 164 && p->usrc[1].samp_reg == 262 && p->usrc[1].samp_pool == 1,
+                      "two compute usrc entries keep their own texture words and pool indexes");
+                CHECK(c->src_kind == NVN_RB_TEX && c->src_reg == 133 && c->src_reg2 == (uint16_t)(NVN_GPU_SAMP2_CONST | 259u),
+                      "the c2 constant sampler entry of the same program stays a plain TEX entry (not in the usrc table)");
+            }
+        } else {
+            CHECK(rc == -1 && !p && cs_loads == 0 && nvn_unimpl_count("shader", "compute_program_parse_failed") == 1,
+                  "compute UBO texture without a constant sampler is a named parse failure (rc=%d loads=%d)", rc, cs_loads);
+        }
+    }
+    fake_cs_success = 0; separate_fixture = 0;
+}
+
 // ---- 新层查出包预编库（LibPack，shaders/direct/b-<DMSH_CHAIN>-vk）的三段程序：vs + fs + gs ----
 // 容器在临时目录里现写（格式同 libpack_vk_test.c / LibPack.cs：头 48 字节 + 分片表 + (键, 种类) 升序记录），走真实 libpack_vk.c。
 // 期望手算：键按 NVN 位序紧排 vs / fs / gs；几何段按输入图元取 _vg<t>（种类 112+t / 120+t）——_vg0 是 24 字节（头 + 1 条 OpNop）、
@@ -1862,6 +1918,7 @@ int main(int argc, char **argv) {
     graphics_reject_context_test();
     query_sampler_test();
     compute_pool_test();
+    compute_ubo_const_sampler_test();
     unsetenv("S2A_SHADER_REVISION_ROOT"); unsetenv("S2A_DIRECT_CACHE_DIR"); rp_state_reset(); source();
     for (int cs = 0; cs < 2; cs++) {
         run_case(cs, 0, 0, "texture_pool_missing");
