@@ -373,8 +373,8 @@ def _pick_device(devices, want, install=False):
     """要装的那台：返回 (设备, 问题)。候选 = devicectl 列出的每台带硬件 UDID 的设备（diag.is_candidate）：
     不按 reality / 配对 / 开发者服务 / 连接方式这些元数据筛（11-13 维护者：「明明插着一台手机就是硬说识别不了」）——
     装得上装不上让 devicectl 装的那一步说了算，真失败报它的原文和下一步。
-    给了 want（玩家选的那台）：列着就用它；没列着但只有一台候选就用那一台（完成页写的是实际装到的那台）；
-    多台候选都对不上 → 列出看得到的让玩家选；一台都没有 → (None, "")，调用方按 USB 现状说。
+    给了 want（玩家选的那台）：列着就用它；没列着 → 列出看得到的让玩家连上那台或改选，**不换成别的**
+    （11-21：原先「只有一台候选就用那一台」，选的 iPhone 没连、插着 iPad 时把这款装进了没打算装的 iPad）；一台都没有 → (None, "")，调用方按 USB 现状说。
     没给 want：只给装机前清单看（polling），有线优先挑出连着的那台供界面显示"""
     from diag import is_candidate
     phones = [d for d in devices if is_candidate(d)]
@@ -384,8 +384,6 @@ def _pick_device(devices, want, install=False):
         chosen = [d for d in phones if named(d)]
         if chosen:
             return chosen[0], ""
-        if len(phones) == 1:
-            return phones[0], ""
         if phones:
             seen = "、".join(f"{device_kind(d)}「{(d.get('deviceProperties', {}).get('name') or '').strip()}」" for d in phones)
             return None, S_PICK_LISTED.replace("{0}", device_hint(want)).replace("{1}", seen)
@@ -1851,8 +1849,9 @@ def win_udids(W):
 
 
 def win_udid(c, W):
-    """要装的那台：请求给的 device（UDID，玩家选的那台）在设备服务里（USB 或同网都算）就用它；没给、或给的那台这次没列出，
-    设备服务里只有一台就用那一台（11-13 维护者：插着一台手机就别说识别不了）；多台对不上才让玩家选。
+    """要装的那台：请求给的 device（UDID，玩家选的那台）在设备服务里（USB 或同网都算）就用它；给了却没列出 → 报那台没连着，**不换成别的**
+    （11-21：原先退到唯一一台，选的 iPhone 没连、插着 iPad 时装进了没打算装的 iPad）；没给 → 设备服务里只有一台就用那一台
+    （11-13 维护者：插着一台手机就别说识别不了），多台让玩家选。
     设备服务列表会瞬时空（插拔 / 同网切数据线），最多读 3 次、间隔 3 秒再判"""
     want = (c.r.get("device") or "").strip()
     udids = []
@@ -1868,7 +1867,7 @@ def win_udid(c, W):
             time.sleep(LINK_RETRY_WAIT)
     if want and want in udids:
         return want
-    if len(udids) == 1:
+    if not want and len(udids) == 1:
         return udids[0]
     if not udids:
         raise Failure("这台电脑的设备服务里没看到 iPhone / iPad：插上数据线并解锁手机，在手机上点「信任」，再试一次。", code="device_not_connected")
@@ -2687,6 +2686,7 @@ def await_import(c, ph, gid, want):
     return None
 
 
+GAME_NOT_ON_DEVICE = "这款没装在这台设备上：「更新这款」只更新原来装过它的设备，这次没有推。"
 SHELL_INSTALL_FIRST = "手机上还没装 S2Arm：先点「安装 S2Arm」，装好后再把这款推到 iPhone。"
 SHELL_UPDATE_FIRST = "手机上的 S2Arm 不是这一版：先点「更新 S2Arm」，再把这款推到 iPhone。"
 
@@ -3119,6 +3119,9 @@ def push_game(c, gid, ph, steps=True):
             raise Failure(SHELL_INSTALL_FIRST, code="shell_install_required")
         if rec["shellId"] != packer.current_shell_id(c):
             raise Failure(SHELL_UPDATE_FIRST, code="shell_update_required")
+    if c.r.get("onlyInstalled") and gid not in (rec.get("games") or {}):
+        # 「更新这款」（请求带 onlyInstalled）：只更新原来装过这款的设备，没装过的一律不推（11-21：更新这款把游戏装进了没打算装的 iPad）
+        raise Failure(GAME_NOT_ON_DEVICE, code="game_not_on_device")
     snapshot_phone_saves(c, ph, [gid])   # 0.6.0：推游戏不再覆盖存档，开头顺手把手机上这款的存档拉回电脑（内容变了才新建、每台每款留 10 份）
     team, bid, signer = (None, ph.bid, None) if ext else phone_signing(c, ph)
     if steps: c.begin("把这款的程序推进 iPhone", 2, 3)

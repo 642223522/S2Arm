@@ -4300,5 +4300,9 @@
   "苹果拒收了这次登录": "Apple a refusé la connexion",
   "登录 Apple ID 时苹果的服务器回了「服务暂不可用」（HTTP 5xx），还没到核对账号密码这一步，不是网络或 Apple ID 的问题。": "Lors de la connexion à votre identifiant Apple, le serveur d’Apple a répondu « service indisponible » (HTTP 5xx) avant de vérifier votre compte. Ce n’est pas un problème de réseau ni d’identifiant Apple.",
   "苹果的登录服务器拒收了这次登录请求（回了「服务暂不可用」，还没到核对账号密码那一步），不是这台电脑的网络、Apple ID 或密码的问题，换网络、换 DNS 也没用。多半是苹果又调整了对第三方签名工具的规则：把 S2Arm 更新到最新版后再登录；最新版仍这样，点「复制错误摘要」发给我们。手机、已装的 App 和存档都没动。": "Le serveur de connexion d’Apple a refusé cette demande de connexion (il a répondu « service indisponible » avant de vérifier votre compte). Ce n’est pas un problème de réseau de cet ordinateur, d’identifiant Apple ou de mot de passe, et changer de réseau ou de DNS n’y changera rien. Apple a très probablement modifié ses règles pour les outils de signature tiers : mettez S2Arm à jour vers la dernière version, puis reconnectez-vous. Si la dernière version affiche toujours ce message, cliquez sur « Copier le résumé de l’erreur » et envoyez-le-nous. Votre téléphone, les apps installées et les sauvegardes n’ont pas été modifiés."
- }
+ },
+  "这款没装在这台设备上：「更新这款」只更新原来装过它的设备，这次没有推。": "Ce jeu n’est pas installé sur cet appareil : « Mettre à jour ce jeu » ne met à jour que les appareils qui l’ont déjà, rien n’a donc été envoyé.",
+  "这款没装在这台设备上": "Ce jeu n’est pas sur cet appareil",
+  "「更新这款」只更新原来装过这款的设备，不会把它装到新的设备上。": "« Mettre à jour ce jeu » ne met à jour que les appareils qui ont déjà ce jeu ; il ne l’installe jamais sur un nouvel appareil.",
+  "要把这款装到这台设备，用「推到 iPhone」（在装机页选好这台）；只想更新原来那台，就连上原来装过这款的那台再点「更新这款」。": "Pour installer ce jeu sur cet appareil, utilisez « Envoyer sur l’iPhone » (choisissez cet appareil sur la page d’installation). Pour ne mettre à jour que l’appareil d’origine, connectez l’appareil qui a déjà ce jeu et cliquez de nouveau sur « Mettre à jour ce jeu »."
 }

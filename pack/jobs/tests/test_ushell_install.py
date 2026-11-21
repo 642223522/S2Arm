@@ -85,6 +85,19 @@ class PushGameTests(JobCase):
         self.assertEqual(e.exception.code, "shell_update_required")
         self.assertEqual((self.ph.calls, self.pushed), ([], []), "不推、不装")
 
+    def test_update_only_pushes_where_installed(self):
+        """「更新这款」（请求 onlyInstalled）：连着一台没装过这款的设备 → 不推、报 game_not_on_device；装过的那台照推（11-21，期望手写）"""
+        layout.save_device(self.c, self.ph.key, dict(shellId="S1", bundleId=self.ph.bid, games={"0100000000020000": dict(pack="Q")}))
+        self.c.r["onlyInstalled"] = True
+        with self.assertRaises(install.Failure) as e:
+            install.push_game(self.c, GID, self.ph, steps=False)
+        self.assertEqual(e.exception.code, "game_not_on_device")
+        self.assertEqual((self.ph.calls, self.pushed), ([], []), "没装过：不推程序、不推资源")
+        layout.save_device(self.c, self.ph.key, dict(shellId="S1", bundleId=self.ph.bid, games={GID: dict(pack="P1")}))
+        install.push_game(self.c, GID, self.ph, steps=False)
+        self.assertEqual(self.ph.calls, [("push", GID)], "装过这款的那台：照常更新")
+        self.c.r.pop("onlyInstalled")
+
     def test_pushes_this_game_only_never_installs(self):
         layout.save_device(self.c, self.ph.key, dict(shellId="S1", bundleId=self.ph.bid, games={"0100000000020000": dict(pack="Q")}))
         r = install.push_game(self.c, GID.lower(), self.ph, steps=False)
