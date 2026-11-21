@@ -308,7 +308,7 @@ namespace S2A.Services
 
         private static unsafe void PersistPlayerToPreferences(string uidHex, string name, string folderName)
         {
-            if (!NativeLibrary.TryGetExport(NativeLibrary.GetMainProgramHandle(), "s2a_local_player_persist", out nint fn))
+            if (!NativeLibrary.TryGetExport(NativeLibrary.GetMainProgramHandle(), "s2a_local_player_persist", out nint fn))   // 平台例外：苹果启动器与宿主通过本机偏好共享玩家列表，只有发布该列表的宿主提供此写回接口。
                 throw new InvalidOperationException("宿主没有本地玩家持久化接口");
             fixed (byte* u = Encoding.UTF8.GetBytes(uidHex + "\0"), n = Encoding.UTF8.GetBytes(name + "\0"), f = Encoding.UTF8.GetBytes(folderName + "\0"))
             {
