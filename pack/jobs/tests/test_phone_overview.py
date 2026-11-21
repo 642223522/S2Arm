@@ -101,6 +101,23 @@ class PhoneOverview(unittest.TestCase):
         on = {p["device"]: p["online"] for p in r["phones"]}
         self.assertEqual(on, {"PHONE-1": "usb", "PHONE-2": None})
 
+    def test_online_lists_only_installable_devices(self):
+        """Mac 现查连着的设备：只收真 iPhone / iPad 这类装得上 S2Arm 的；模拟器（手表 / 手机 / 电视）、Mac、真手表不进总控台。
+        设备字段照 devicectl list devices 的形状手写；期望按 diag.is_candidate 的规则手算"""
+        def dev(udid, platform, reality="physical", name="", transport="wired"):
+            return {"hardwareProperties": {"udid": udid, "platform": platform, "reality": reality},
+                    "connectionProperties": {"tunnelState": "connected", "transportType": transport, "pairingState": "paired"},
+                    "deviceProperties": {"name": name}}
+        devices = [dev("PHONE", "iOS", name="我的 iPhone"), dev("PAD", "iPadOS", transport="localNetwork", name="iPad"),
+                   dev("WATCHSIM", "watchOS", "simulated", "Apple Watch Series 12 (46mm)"), dev("PHONESIM", "iOS", "simulated", "iPhone 17"),
+                   dev("TVSIM", "tvOS", "simulated", "Apple TV"), dev("MAC", "macOS", name="Mac"), dev("WATCH", "watchOS", name="手表")]
+        names = {}
+        with patch.object(host_update.os, "name", "posix"), \
+                patch("diag.devicectl", lambda c, *a, **k: (0, {"result": {"devices": devices}}, "")):
+            got = host_update._online(self.c, names)
+        self.assertEqual(got, {"PHONE": "usb", "PAD": "network"})
+        self.assertEqual(names, {"PHONE": "我的 iPhone", "PAD": "iPad"})
+
     def test_has_game_data_accepts_legacy_img_without_manifest(self):
         pack = layout.image_ios(self.c, self.A) / ".pack"
         pack.mkdir(parents=True)
