@@ -66,22 +66,28 @@ static long clk_tck(void) { return 100; }
 #else
 struct APerformanceHintManager;
 struct APerformanceHintSession;
+struct AWorkDuration;
+struct ASessionCreationConfig;
 static struct APerformanceHintManager *(*get_manager)(void);
 static struct APerformanceHintSession *(*create_session)(struct APerformanceHintManager *, const int32_t *, size_t, int64_t);
 static int (*update_session)(struct APerformanceHintSession *, int64_t);
 static int (*report_session)(struct APerformanceHintSession *, int64_t);
 static void (*close_session)(struct APerformanceHintSession *);
-static int (*set_threads_session)(struct APerformanceHintSession *, const int32_t *, size_t);                 // API 34
-static int (*report2_session)(struct APerformanceHintSession *, void *);                                      // API 35
-static void *(*wd_create)(void);
-static void (*wd_release)(void *);
-static void (*wd_start)(void *, int64_t), (*wd_total)(void *, int64_t), (*wd_cpu)(void *, int64_t), (*wd_gpu)(void *, int64_t);
-static int (*increase_session)(struct APerformanceHintSession *, _Bool, _Bool, const char *);                // API 36
-static void *(*cfg_create)(void);                                                                             // API 36 建会话配置
-static void (*cfg_release)(void *), (*cfg_tids)(void *, const int32_t *, size_t), (*cfg_target)(void *, int64_t), (*cfg_pipeline)(void *, _Bool);
-static int (*create_with_cfg)(struct APerformanceHintManager *, void *, struct APerformanceHintSession **);
+static int (*set_threads_session)(struct APerformanceHintSession *, const pid_t *, size_t);  // API 34
+static int (*report2_session)(struct APerformanceHintSession *, struct AWorkDuration *);  // API 35
+static struct AWorkDuration *(*wd_create)(void);
+static void (*wd_release)(struct AWorkDuration *);
+static void (*wd_start)(struct AWorkDuration *, int64_t), (*wd_total)(struct AWorkDuration *, int64_t),
+            (*wd_cpu)(struct AWorkDuration *, int64_t), (*wd_gpu)(struct AWorkDuration *, int64_t);
+static int (*increase_session)(struct APerformanceHintSession *, _Bool, _Bool, const char *);  // API 36
+static struct ASessionCreationConfig *(*cfg_create)(void);
+static void (*cfg_release)(struct ASessionCreationConfig *),
+            (*cfg_tids)(struct ASessionCreationConfig *, const pid_t *, size_t),
+            (*cfg_target)(struct ASessionCreationConfig *, int64_t),
+            (*cfg_pipeline)(struct ASessionCreationConfig *, _Bool);
+static int (*create_with_cfg)(struct APerformanceHintManager *, struct ASessionCreationConfig *, struct APerformanceHintSession **);
 static int caps;
-static void *work_duration;   // 复用的 AWorkDuration（只在 mu 里用）
+static struct AWorkDuration *work_duration;   // 复用的 AWorkDuration（只在 mu 里用）
 #define ADPF_LOG(...) __android_log_print(ANDROID_LOG_INFO, "S2Arm", __VA_ARGS__)
 // Default on; debug.s2a.adpf=0 switches it off at runtime (polled ~1 Hz).
 static int platform_enabled(void) {
@@ -109,7 +115,7 @@ static void *backend_create_real(const int32_t *tids, size_t n, int64_t target, 
     *pipeline = 0;
     if (!manager) return NULL;
     if (caps & CAP_PIPELINE) {
-        void *c = cfg_create();
+        struct ASessionCreationConfig *c = cfg_create();
         if (c) {
             struct APerformanceHintSession *s = NULL;
             cfg_tids(c, tids, n); cfg_target(c, target); cfg_pipeline(c, 1);
@@ -169,33 +175,51 @@ static int read_tasks(struct s2a_adpf_task *out, int max) {
 }
 // APerformanceHint_* needs API 33+: resolve the symbols lazily so older Android
 // keeps running with the hint silently absent instead of failing to load.
+// APK 门禁以较高 API 真头核对动态函数类型。生产对象仍可按 API 29 编译，
+// 因为 typeof(&symbol) 本身也会触发 availability 检查。
+#define ADPF_LOOKUP(ptr, symbol) ((ptr) = (__typeof__(ptr))dlsym(android_lib, #symbol))
+#ifdef S2A_ADPF_CHECK_SIGNATURES
+#include <android/performance_hint.h>
+#define ADPF_LOAD(ptr, symbol) do { \
+    _Static_assert(__builtin_types_compatible_p(__typeof__(ptr), __typeof__(&symbol)), #symbol " signature"); \
+    ADPF_LOOKUP(ptr, symbol); \
+} while (0)
+#else
+#define ADPF_LOAD ADPF_LOOKUP
+#endif
+#if defined(S2A_ADPF_CHECK_SIGNATURES) && __ANDROID_API__ >= 36
+#define ADPF_LOAD_36 ADPF_LOAD
+#else
+#define ADPF_LOAD_36 ADPF_LOOKUP
+#endif
+
 static int backend_init(void) {
     if (attempted_load) return api_supported;
     attempted_load = 1;
     android_lib = dlopen("libandroid.so", RTLD_NOW | RTLD_LOCAL);
     if (!android_lib) { ADPF_LOG("[s2a-adpf] libandroid.so unavailable; hint disabled"); return 0; }
-    *(void **)(&get_manager) = dlsym(android_lib, "APerformanceHint_getManager");
-    *(void **)(&create_session) = dlsym(android_lib, "APerformanceHint_createSession");
-    *(void **)(&update_session) = dlsym(android_lib, "APerformanceHint_updateTargetWorkDuration");
-    *(void **)(&report_session) = dlsym(android_lib, "APerformanceHint_reportActualWorkDuration");
-    *(void **)(&close_session) = dlsym(android_lib, "APerformanceHint_closeSession");
+    ADPF_LOAD(get_manager, APerformanceHint_getManager);
+    ADPF_LOAD(create_session, APerformanceHint_createSession);
+    ADPF_LOAD(update_session, APerformanceHint_updateTargetWorkDuration);
+    ADPF_LOAD(report_session, APerformanceHint_reportActualWorkDuration);
+    ADPF_LOAD(close_session, APerformanceHint_closeSession);
     api_supported = get_manager && create_session && update_session && report_session && close_session;
     if (!api_supported) { ADPF_LOG("[s2a-adpf] APerformanceHint_* missing (API<33); hint disabled"); return 0; }
-    *(void **)(&set_threads_session) = dlsym(android_lib, "APerformanceHint_setThreads");
-    *(void **)(&report2_session) = dlsym(android_lib, "APerformanceHint_reportActualWorkDuration2");
-    *(void **)(&wd_create) = dlsym(android_lib, "AWorkDuration_create");
-    *(void **)(&wd_start) = dlsym(android_lib, "AWorkDuration_setWorkPeriodStartTimestampNanos");
-    *(void **)(&wd_total) = dlsym(android_lib, "AWorkDuration_setActualTotalDurationNanos");
-    *(void **)(&wd_cpu) = dlsym(android_lib, "AWorkDuration_setActualCpuDurationNanos");
-    *(void **)(&wd_gpu) = dlsym(android_lib, "AWorkDuration_setActualGpuDurationNanos");
-    *(void **)(&increase_session) = dlsym(android_lib, "APerformanceHint_notifyWorkloadIncrease");
-    *(void **)(&cfg_create) = dlsym(android_lib, "ASessionCreationConfig_create");
-    *(void **)(&cfg_release) = dlsym(android_lib, "ASessionCreationConfig_release");
-    *(void **)(&cfg_tids) = dlsym(android_lib, "ASessionCreationConfig_setTids");
-    *(void **)(&cfg_target) = dlsym(android_lib, "ASessionCreationConfig_setTargetWorkDurationNanos");
-    *(void **)(&cfg_pipeline) = dlsym(android_lib, "ASessionCreationConfig_setGraphicsPipeline");
-    *(void **)(&create_with_cfg) = dlsym(android_lib, "APerformanceHint_createSessionUsingConfig");
-    *(void **)(&wd_release) = dlsym(android_lib, "AWorkDuration_release");
+    ADPF_LOAD(set_threads_session, APerformanceHint_setThreads);
+    ADPF_LOAD(report2_session, APerformanceHint_reportActualWorkDuration2);
+    ADPF_LOAD(wd_create, AWorkDuration_create);
+    ADPF_LOAD(wd_start, AWorkDuration_setWorkPeriodStartTimestampNanos);
+    ADPF_LOAD(wd_total, AWorkDuration_setActualTotalDurationNanos);
+    ADPF_LOAD(wd_cpu, AWorkDuration_setActualCpuDurationNanos);
+    ADPF_LOAD(wd_gpu, AWorkDuration_setActualGpuDurationNanos);
+    ADPF_LOAD_36(increase_session, APerformanceHint_notifyWorkloadIncrease);
+    ADPF_LOAD_36(cfg_create, ASessionCreationConfig_create);
+    ADPF_LOAD_36(cfg_release, ASessionCreationConfig_release);
+    ADPF_LOAD_36(cfg_tids, ASessionCreationConfig_setTids);
+    ADPF_LOAD_36(cfg_target, ASessionCreationConfig_setTargetWorkDurationNanos);
+    ADPF_LOAD_36(cfg_pipeline, ASessionCreationConfig_setGraphicsPipeline);
+    ADPF_LOAD_36(create_with_cfg, APerformanceHint_createSessionUsingConfig);
+    ADPF_LOAD(wd_release, AWorkDuration_release);
     caps = (set_threads_session ? CAP_THREADS : 0)
          | (report2_session && wd_create && wd_start && wd_total && wd_cpu && wd_gpu ? CAP_REPORT2 : 0)
          | (increase_session ? CAP_INCREASE : 0)

@@ -3905,6 +3905,11 @@ static int video_cap(void) {
     if (say_busy) LOG("[nvn] 视频按片源帧率出图：在解 ≤ 30 帧视频，但游戏每帧绘制 %.0f（> %d，视频只是画面里的一块），不封顶", dpf, VP_DRAW_MAX);
     return on;
 }
+// 档位梯子压回 30 帧档（runtime/src/fps.c s2a_fps_hold → 降档原因 4，#1766）：出图同放视频一路封顶 30（至少隔 2 拍、显示链接 30 Hz）。
+//   梯子只撤社区帧率补丁；有的补丁改的设定游戏只在起局读一次（一款 Unity 游戏读到 vSyncCount 1、起局设交换间隔 1）：撤了补丁游戏逻辑回到按 30 帧算，
+//   交换间隔却还是 1，出图照 60 → 两倍速。30 帧档就按 30 出图；游戏自己设间隔 2 的款本来就是 30，不变
+static int ladder30(void) { return s2a_fps_cap_reason() == 4; }
+static int cap30(void) { return video_cap() || ladder30(); }   // 先算 video_cap：它顺带记视频开始 / 结束的日志
 static int fps_step_cap(void) {
     if (!dm_fps_state) return 0;
     uint32_t b = __atomic_load_n((uint32_t *)dm_fps_state, __ATOMIC_RELAXED); float t; memcpy(&t, &b, sizeof t);
@@ -3917,7 +3922,7 @@ static nvn_fgpu g_fg;   // the GPU time at kmin and at the current hold (nvn_fst
 static struct { uint64_t f, t; } g_cpath[16];
 static _Atomic int g_fs_k;   // the hold presentation follows (0 = not decided yet)
 // The display link runs at 30 Hz at a 30 cap, except while the game fixes its own step at 1 (BotW's VFR override)
-int nvn_game_fps(void) { int c = fps_step_cap(); if (c) return c == 30 && atomic_load(&g_fs_k) == 1 && fstep_on() ? 60 : c; if (g_hz > 0 && video_cap()) return 30; uint64_t s = atomic_load(&g_itv2_since); return g_hz > 0 && !g_display_mode && s && now_ns() - s >= 1000000000ull ? 30 : 60; }
+int nvn_game_fps(void) { int c = fps_step_cap(); if (c) return c == 30 && atomic_load(&g_fs_k) == 1 && fstep_on() ? 60 : c; if (g_hz > 0 && cap30()) return 30; uint64_t s = atomic_load(&g_itv2_since); return g_hz > 0 && !g_display_mode && s && now_ns() - s >= 1000000000ull ? 30 : 60; }
 static void present_cfg(const win_t *o) {
     if (g_hz >= 0) return;
     // The interval mode comes from the game profile (present_interval, default game): whether frames follow the present interval the game sets depends on whether the game's logic counts frames, which differs per game. Environment variables override it, and can override the fixed 60 Hz.
@@ -3954,7 +3959,7 @@ static int present_itv(const win_t *o) {   // vsyncs per frame that presentation
     int c = fps_step_cap(), k = atomic_load(&g_fs_k);
     if (c) return k && fstep_on() ? k : 60 / c;
     int itv = g_display_mode && !atomic_load(&g_fps_game_itv) ? 1 : game_itv(o);
-    return itv < 2 && g_hz > 0 && video_cap() ? 2 : itv;   // 放 ≤ 30 帧视频：至少隔 2 拍（60 Hz 节拍下 30 帧）
+    return itv < 2 && g_hz > 0 && cap30() ? 2 : itv;   // 放 ≤ 30 帧视频 / 档位梯子 30 帧档：至少隔 2 拍（60 Hz 节拍下 30 帧）
 }
 // 显示链等几个 60 Hz vsync（nvn_be_link_wait_tick 的口径；0 = 一个真实链接拍）：出图节拍被放开到 60 Hz 以上（g_hz，社区帧率补丁经 DM_PRESENT_HZ / nvn_present_hz）时，
 //   游戏间隔按 g_hz 折算，与 present_period 同一口径。原先直接传游戏间隔，链路永远按 60 Hz 等：节拍 120 Hz、间隔 1 仍只出 60 帧（11-13 实机：每 600 拍只交 300 帧，
@@ -3969,7 +3974,7 @@ static int link_vsyncs(const win_t *o) {
 int nvn_present_fps(void) {
     int c = fps_step_cap(), hz = g_hz > 0 ? g_hz : 60;
     if (c) { int k = atomic_load(&g_fs_k); return hz / (k && fstep_on() ? k : 60 / c); }
-    if (g_hz > 0 && video_cap()) { int itv = atomic_load(&g_game_itv); return hz / (itv > 2 && !g_display_mode ? itv : 2); }
+    if (g_hz > 0 && cap30()) { int itv = atomic_load(&g_game_itv); return hz / (itv > 2 && !g_display_mode ? itv : 2); }
     if (g_display_mode && !atomic_load(&g_fps_game_itv)) return hz;
     uint64_t s = atomic_load(&g_itv2_since); int itv = atomic_load(&g_game_itv);
     return s && itv > 1 && now_ns() - s >= 1000000000ull ? hz / itv : hz;

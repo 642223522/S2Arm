@@ -844,8 +844,22 @@ static int prog_layout_same(const struct rp_prog *a, const struct rp_prog *b, in
     }
     return 1;
 }
-// 整池数组：开通道前取好的池快照（rp_pool_table），bind_stage_at 在普通绑定之后逐项 nvn_gpu_pool_bind
-static nvn_gpu_pool_table g_ptd[RP_PROG_STAGES][RP_PROG_ENT_MAX];
+// 整池数组：开通道前取好的池快照（rp_pool_table），bind_stage_at 在普通绑定之后逐项 nvn_gpu_pool_bind。
+//   行 = 图形阶段 0..RP_PROG_STAGES-1，最后一行（RP_PROG_STAGES）是计算阶段（硬件阶段 5，见 pool_row）
+static nvn_gpu_pool_table g_ptd[RP_PROG_STAGES + 1][RP_PROG_ENT_MAX];
+static int pool_row(int st) { return st == 5 ? RP_PROG_STAGES : st >= 0 && st < RP_PROG_STAGES ? st : -1; }
+// 取一项整池数组（NVN_RB_TEXP / SAMPP）的池快照，存进 g_ptd[row][i]；绘制与计算派发共用，行为一致。
+//   count = 池长 + 1（表尾 dummy），池长须与编译时一致；返回 NULL = 取到了，否则是具名跳过的原因
+static const char *pool_table_resolve(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, uint32_t i, int row) {
+    const nvn_gpu_layout_ent *e = &pg->ent[pi][i];
+    const int sp = e->src_kind == NVN_RB_SAMPP;
+    const uint32_t pn = e->count ? (uint32_t)e->count - 1 : 0;
+    if (row < 0 || i >= RP_PROG_ENT_MAX) return "pool_table_unresolved";
+    if (pn != (uint32_t)(sp ? rp_S.samp_pool_n : rp_S.tex_pool_n)) return "pool_length_mismatch";
+    const char *why = NULL;
+    g_ptd[row][i] = rp_pool_table(c, sp, sp ? rp_S.samp_base : rp_S.tex_base, pn, pg->dtt[pi][i], pg->dcls[pi][i], &why);
+    return g_ptd[row][i] ? NULL : why ? why : "pool_table_unresolved";
+}
 static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st, uint32_t base_instance, const nvn_gpu_view *tv, const nvn_gpu_samp *ts, const void *rec);
 static nvn_gpu_slice g_spill; static uint64_t g_spill_len;   // 本次派发的共享内存溢出缓冲（rp_dispatch 分配，绑定时用；0 = 没有）
 static int g_spill_on = -1, g_spill_said;   // 平台开关 nvk_spill（缺省开；关时 spill 程序的派发报名跳过，真机 A/B 用）；会话内前 64 次 spill 派发各记一行
@@ -886,7 +900,8 @@ static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st
         const nvn_gpu_layout_ent *e = &pg->ent[pi][i];
         if (st < RP_PROG_STAGES) g_lb[pi].bof[i] = (uint16_t)n;   // 上一组的布局项 → b[] 起始下标（B1 快路逐项比对贴图视图用）
         if (e->src_kind == NVN_RB_TEXP || e->src_kind == NVN_RB_SAMPP) {   // 池快照不占 b[]：普通绑定发完再 pool_bind（见函数末尾）
-            if (st >= RP_PROG_STAGES || i >= RP_PROG_ENT_MAX || !g_ptd[st][i]) return skip("pool_table_unresolved", rec);
+            const int pr = pool_row(st);
+            if (pr < 0 || i >= RP_PROG_ENT_MAX || !g_ptd[pr][i]) return skip("pool_table_unresolved", rec);
             npool++; continue;
         }
         nvn_gpu_binding *o = &b[n]; memset(o, 0, sizeof *o); o->ent = (uint16_t)i; o->cls = e->cls;
@@ -1095,7 +1110,7 @@ static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st
             const nvn_gpu_layout_ent *e = &pg->ent[pi][i];
             if (e->src_kind != NVN_RB_TEXP && e->src_kind != NVN_RB_SAMPP) continue;
             nvn_gpu_err err = {0};
-            if (!nvn_gpu_ok(nvn_gpu_pool_bind(c, gst, i, g_ptd[st][i], &err))) {
+            if (!nvn_gpu_ok(nvn_gpu_pool_bind(c, gst, i, g_ptd[pool_row(st)][i], &err))) {
                 if (nvn_unimpl("draw", "pool_bind_failed", rec) == 1 && err.why[0]) nvn_plat_log(NVN_PLAT_LOG_RED, "draw", err.why);
                 return 0;
             }
@@ -1442,13 +1457,9 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
             if (g_log_left && tn < sizeof tl - 40) tn += (size_t)snprintf(tl + tn, sizeof tl - tn, " u%d.%u+%#x=#%d/s%d", st, (unsigned)e->src_reg, (unsigned)e->src_off, tid, sid);
             continue;
         }
-        if (e->src_kind == NVN_RB_TEXP || e->src_kind == NVN_RB_SAMPP) {   // 整池数组：池快照（count = 池长 + 1 表尾 dummy；池长须与编译时一致）
-            const int sp = e->src_kind == NVN_RB_SAMPP;
-            const uint32_t pn = e->count ? (uint32_t)e->count - 1 : 0;
-            if (pn != (uint32_t)(sp ? rp_S.samp_pool_n : rp_S.tex_pool_n)) { skip("pool_length_mismatch", rec); goto draw_done; }
-            const char *why = NULL;
-            g_ptd[st][i] = rp_pool_table(c, sp, sp ? rp_S.samp_base : rp_S.tex_base, pn, g_prog->dtt[st][i], g_prog->dcls[st][i], &why);
-            if (!g_ptd[st][i]) { skip(why ? why : "pool_table_unresolved", rec); goto draw_done; }
+        if (e->src_kind == NVN_RB_TEXP || e->src_kind == NVN_RB_SAMPP) {   // 整池数组：池快照（取法见 pool_table_resolve，计算派发共用）
+            const char *why = pool_table_resolve(c, g_prog, st, i, pool_row(st));
+            if (why) { skip(why, rec); goto draw_done; }
             continue;
         }
         if (e->src_kind == NVN_RB_IMG) {   // 图形阶段存储图像：与计算派发同一解析（image_resolve），句柄取这一阶段 BindImage 的槽
@@ -1890,6 +1901,11 @@ void rp_dispatch(nvn_gpu_cmd c, const p_dispatch *dp, const void *rec) {
             const char *why = image_resolve(c, pg, 0, i, 5, &tv[i], &img_snap[i]);
             if (why) { skip(why, rec); goto done; }
             images[i] = &img_snap[i];
+            continue;
+        }
+        if (e->src_kind == NVN_RB_TEXP || e->src_kind == NVN_RB_SAMPP) {   // 整池数组（#1594 片 8）：与绘制同一个取池快照函数，表挂在 g_ptd 的计算阶段那一行
+            const char *why = pool_table_resolve(c, pg, 0, i, pool_row(5));
+            if (why) { skip(why, rec); goto done; }
             continue;
         }
         if (e->src_kind != NVN_RB_TEX) continue;

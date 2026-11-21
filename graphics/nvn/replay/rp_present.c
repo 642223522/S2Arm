@@ -232,6 +232,16 @@ static uint64_t present_impl(const tex_t *t, double period_s, const int crop[4])
     if (fit >= 0) memcpy(d.crop, c, sizeof c);   // 非法裁剪：按整张显示
     double cw = d.crop[2] > 0 ? (double)d.crop[2] : (double)t->d.width, ch = d.crop[3] > 0 ? (double)d.crop[3] : (double)t->d.height;
     pf_vp vp = pf_viewport(dr.w, dr.h, cw, ch);
+    {   // 铺满方式（nvk_present_fill，缺省 0 = 等比加黑边，与改前相同）：1 = 拉伸到整屏（画面与屏的比例差 ≤ 15% 才拉）；
+        //   2 = 等比放大、裁掉多出的边（窄屏裁左右、宽屏裁上下，角上的界面可能被裁；比例差 1%–30% 才裁）。
+        //   这是显示层的选项：游戏自己没有按屏幕比例出图时用，不改游戏的出图尺寸。矩形怎么算见 nvn_present_fit.h pf_fill。
+        static int fill = -1; static unsigned tick;
+        if (fill < 0 || !(++tick & 255)) fill = nvn_plat_flag("nvk_present_fill", 0);   // 每 256 帧重读一次，局中可切
+        if (fill > 0) {
+            const int src[4] = {d.crop[2] > 0 ? d.crop[0] : 0, d.crop[3] > 0 ? d.crop[1] : 0, (int)cw, (int)ch}; int fc[4];
+            if (pf_fill(fill, dr.w, dr.h, src, fc, &vp) == 2) { d.crop[0] = fc[0]; d.crop[1] = fc[1]; d.crop[2] = fc[2]; d.crop[3] = fc[3]; }
+        }
+    }
     d.dst[0] = (int32_t)(vp.x + 0.5); d.dst[1] = (int32_t)(vp.y + 0.5); d.dst[2] = (int32_t)(vp.w + 0.5); d.dst[3] = (int32_t)(vp.h + 0.5);
     if (d.dst[0] + d.dst[2] > (int32_t)dr.w) d.dst[2] = (int32_t)dr.w - d.dst[0];
     if (d.dst[1] + d.dst[3] > (int32_t)dr.h) d.dst[3] = (int32_t)dr.h - d.dst[1];
@@ -295,8 +305,8 @@ static uint64_t present_impl(const tex_t *t, double period_s, const int crop[4])
                 if (pf[RP_PERF_TEX_UNARMED])   // 上传时加保护没落地（下一次必重传）
                     snprintf(b + strlen(b), sizeof b - strlen(b), "；上传时加保护没落地 %llu 次（窗口合计，下一次重传）", (unsigned long long)pf[RP_PERF_TEX_UNARMED]);
                 nvn_plat_log(NVN_PLAT_LOG_INFO, "present", b);
-                snprintf(b, sizeof b, "分时（通道，每帧）：%.1f 个，共 %.1f 百万像素；颜色附件载入 %.1f 个；挂深度模板的 %.1f 个，其中整个通道没用到它的 %.1f 个；只有 0–1 笔绘制的 %.1f 个（挂深度模板 %.1f / 不挂 %.1f，共 %.1f 百万像素；一笔都没画的 %.1f 个）；同目标续接 %.1f 次、挂起清除 %.1f 条、缩小区域 %.1f 个（共 %.1f 百万像素）、影子附件 %.1f 个；开着的通道被结束的原因：换目标 %.1f、通道中途的整屏清除 %.1f、同一提交里第二次同步 %.1f",
-                         (double)pf[RP_PERF_PASSES] / f, (double)pf[RP_PERF_P_KPIX] / 1e3 / f, (double)pf[RP_PERF_P_LOADC] / f, (double)pf[RP_PERF_P_DS] / f, (double)pf[RP_PERF_P_DS_IDLE] / f, (double)pf[RP_PERF_P_ONE] / f, (double)pf[RP_PERF_P_TINY_DS] / f, (double)pf[RP_PERF_P_TINY_NODS] / f, (double)pf[RP_PERF_P_TINY_KPIX] / 1e3 / f, (double)pf[RP_PERF_P_CLEARONLY] / f, (double)pf[RP_PERF_P_CONT] / f, (double)pf[RP_PERF_P_PARK] / f, (double)pf[RP_PERF_P_AREA] / f, (double)pf[RP_PERF_P_AREA_KPIX] / 1e3 / f, (double)pf[RP_PERF_P_SHADOW] / f, (double)pf[RP_PERF_P_CUT_RT] / f, (double)pf[RP_PERF_P_CUT_CLEAR] / f, (double)pf[RP_PERF_P_CUT_XFER] / f);
+                snprintf(b, sizeof b, "分时（通道，每帧）：%.1f 个，共 %.1f 百万像素；颜色附件载入 %.1f 个；挂深度模板的 %.1f 个，其中整个通道没用到它的 %.1f 个；只有 0–1 笔绘制的 %.1f 个（挂深度模板 %.1f / 不挂 %.1f，共 %.1f 百万像素；一笔都没画的 %.1f 个）；同目标续接 %.1f 次、挂起清除 %.1f 条、缩小区域 %.1f 个（共 %.1f 百万像素）、影子附件 %.1f 个；开着的通道被结束的原因：换目标 %.1f、通道中途的整屏清除 %.1f、同一提交里第二次同步 %.1f、超长通道中途先交 %.1f",
+                         (double)pf[RP_PERF_PASSES] / f, (double)pf[RP_PERF_P_KPIX] / 1e3 / f, (double)pf[RP_PERF_P_LOADC] / f, (double)pf[RP_PERF_P_DS] / f, (double)pf[RP_PERF_P_DS_IDLE] / f, (double)pf[RP_PERF_P_ONE] / f, (double)pf[RP_PERF_P_TINY_DS] / f, (double)pf[RP_PERF_P_TINY_NODS] / f, (double)pf[RP_PERF_P_TINY_KPIX] / 1e3 / f, (double)pf[RP_PERF_P_CLEARONLY] / f, (double)pf[RP_PERF_P_CONT] / f, (double)pf[RP_PERF_P_PARK] / f, (double)pf[RP_PERF_P_AREA] / f, (double)pf[RP_PERF_P_AREA_KPIX] / 1e3 / f, (double)pf[RP_PERF_P_SHADOW] / f, (double)pf[RP_PERF_P_CUT_RT] / f, (double)pf[RP_PERF_P_CUT_CLEAR] / f, (double)pf[RP_PERF_P_CUT_XFER] / f, (double)pf[RP_PERF_P_CUT_LONG] / f);
                 nvn_plat_log(NVN_PLAT_LOG_INFO, "present", b);
                 if (pf[RP_PERF_BINST_HZ] || pf[RP_PERF_BINST_ONE] || pf[RP_PERF_BINST_SCAN]) {
                     snprintf(b, sizeof b, "分时（间接绘制 base instance 拷贝，每帧）：批量前移拷贝 %.1f 笔、回退逐笔 %.1f 笔（其中为它收了开着的通道 %.1f 次）、前移扫描 %.1f 次、前移了没用上 %.1f 笔",

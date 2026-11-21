@@ -599,6 +599,7 @@
 
 /* 0.6.0 快照：游戏中菜单 */
 "vpad.snap.save" = "Sauvegarder cet instant";
+"vpad.snap.offAddress" = "Cet appareil n'a pas assez d'espace d'adressage pour ce jeu et les instantanés à la fois : les instantanés sont désactivés pour ce jeu ici. Le jeu fonctionne normalement.";
 "vpad.snap.restore" = "Revenir à l’instant sauvegardé";
 "vpad.snap.saving" = "Sauvegarde de cet instant…";
 "vpad.snap.saved" = "Instant sauvegardé";
@@ -639,3 +640,6 @@
 "cert.source.sidestore" = "Depuis SideStore";
 "cert.source.p12" = ".p12 importé";
 "cert.source.pc" = "Depuis votre ordinateur";
+"addrshort.title" = "Cet appareil n'a pas assez d'espace d'adressage pour ce jeu";
+"addrshort.body" = "Ce jeu a besoin au démarrage d'un très grand bloc d'espace d'adressage, et cet appareil ne peut pas en fournir autant : il peut être très lent ou rester bloqué au début. Vous pouvez toucher « Lancer quand même » pour essayer ; pour jouer normalement, utilisez un appareil avec plus d'espace d'adressage (par exemple un iPhone, un iPad ou un Mac avec plus de mémoire) ou attendez une version ultérieure.";
+"host.startAnyway" = "Lancer quand même";
