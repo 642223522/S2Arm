@@ -558,7 +558,21 @@ NVN(nvnTextureBuilderSetHeight, void, NVNtextureBuilder *b, int v) { TB(b)->d.he
 NVN(nvnTextureBuilderSetDepth, void, NVNtextureBuilder *b, int v) { TB(b)->d.depth = v; }
 NVN(nvnTextureBuilderSetSize1D, void, NVNtextureBuilder *b, int w) { TB(b)->d.width = w; TB(b)->d.height = TB(b)->d.depth = 1; }
 NVN(nvnTextureBuilderSetLevels, void, NVNtextureBuilder *b, int v) { TB(b)->d.levels = v; }
-NVN(nvnTextureBuilderSetFormat, void, NVNtextureBuilder *b, NVNformat f) { TB(b)->d.format = f; }
+// 诊断（#1969 / D-7HMX：一款游戏传进来 0x47a，不在格式表里，那张贴图当了渲染目标、深度附件建不出、3D 主画面黑）：不认的格式记一次是游戏哪里设的（模块 + 偏移）
+//   和这个生成器此刻的描述；格式表认不认按 nvn_tex_layout 的每块字节数（同 GetStorageSize 的判法），前 4 种不同的值各记一次
+NVN(nvnTextureBuilderSetFormat, void, NVNtextureBuilder *b, NVNformat f) {
+    TB(b)->d.format = f;
+    nvn_texdesc d = TB(b)->d; d.width = d.width ? d.width : 1; d.height = d.height ? d.height : 1; d.depth = d.depth ? d.depth : 1; d.levels = d.levels ? d.levels : 1;
+    nvn_texlayout L; nvn_tex_layout(&d, &L);
+    if (L.bpb) return;
+    static uint32_t seen[4]; static int nseen; for (int i = 0; i < nseen; i++) if (seen[i] == (uint32_t)f) return;
+    if (nseen >= 4) return;
+    seen[nseen++] = (uint32_t)f;
+    uint64_t ra = (uint64_t)__builtin_return_address(0); module_t *m = module_of((void *)ra);
+    LOG("【红】 TextureBuilderSetFormat: format %#x is not an NVN format we know; set from %s+%#llx (builder so far: target %d flags %#x %ux%ux%u levels %u samples %d)",
+        (unsigned)f, m ? m->name : "?", m ? (unsigned long long)(ra - (uint64_t)m->base) : (unsigned long long)ra,
+        TB(b)->d.target, TB(b)->d.flags, TB(b)->d.width, TB(b)->d.height, TB(b)->d.depth, TB(b)->d.levels, TB(b)->d.samples);
+}
 NVN(nvnTextureBuilderSetSamples, void, NVNtextureBuilder *b, int s) { TB(b)->d.samples = s; }
 NVN(nvnTextureBuilderSetStride, void, NVNtextureBuilder *b, ptrdiff_t s) { TB(b)->d.stride = (uint32_t)s; }
 NVN(nvnTextureBuilderSetStorage, void, NVNtextureBuilder *b, NVNmemoryPool *p, ptrdiff_t off) { TB(b)->pool = (pool_t *)p; TB(b)->off = off; }
@@ -655,7 +669,8 @@ static void log_layout(const tex_builder_t *b, const nvn_texlayout *L) {
 }
 NVN(nvnTextureBuilderGetStorageSize, size_t, const NVNtextureBuilder *b) {
     nvn_texlayout L; nvn_tex_layout(&((const tex_builder_t *)b)->d, &L);
-    if (!L.bpb) LOG("【红】 TextureBuilderGetStorageSize unknown format %#x", ((const tex_builder_t *)b)->d.format);
+    if (!L.bpb) { const nvn_texdesc *d = &((const tex_builder_t *)b)->d;   // 带上描述：哪种目标、什么标志、多大（#1969：一张不认格式的贴图后来当了深度附件）
+        LOG("【红】 TextureBuilderGetStorageSize unknown format %#x (target %d flags %#x %ux%ux%u levels %u samples %d)", d->format, d->target, d->flags, d->width, d->height, d->depth, d->levels, d->samples); }
     log_layout((const tex_builder_t *)b, &L);
     qlog_tex("size", &((const tex_builder_t *)b)->d, L.size);
     return L.size;
