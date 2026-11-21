@@ -419,6 +419,9 @@ public struct InstallModeInfo: Equatable, Sendable {
     public var distribution: Bool = false
     /// 选独立 App 时按签名方式给的一句提示的码（作业层 install.standalone_hint：appleId / wildcard / external；nil = 不提示）→ 文案 install.layout.hint.<码>
     public var standaloneHint: String? = nil
+    /// 同上、按导出确认页这次选的签名方式各给一个（作业层 install.standalone_hints，键同请求 sign：appleId / devCert / none）：
+    ///   devCert → wildcard（通配描述文件）| explicit（显式 App ID：装一款顶掉前一款）| 读不到为缺；确认页按 ① 当前选的取，不按设置
+    public var standaloneHints: [String: String] = [:]
     /// 按签名带不带调试权限推荐的出法（作业层 install.layout_recommend）：standalone / shell / nil（识别不了）；依据 distribution / devCertDebug / appleId / external / unknown
     public var recommend: String? = nil
     public var recommendWhy: String = "unknown"
@@ -438,6 +441,7 @@ public struct InstallModeInfo: Equatable, Sendable {
         layoutGames = (choice["games"] as? [String: String] ?? [:]).reduce(into: [:]) { $0[$1.key.uppercased()] = $1.value }
         distribution = r["distribution"] as? Bool ?? false
         standaloneHint = r["standaloneHint"] as? String
+        standaloneHints = (r["standaloneHints"] as? [String: Any] ?? [:]).compactMapValues { $0 as? String }
         recommend = r["recommend"] as? String
         recommendWhy = r["recommendWhy"] as? String ?? "unknown"
     }

@@ -4,6 +4,7 @@ import AppKit
 import Foundation
 import Combine
 import LauncherPadBridge
+import NXCore
 import NXModel
 import S2ArmAppleAdapter
 import SaveSync
@@ -1072,9 +1073,13 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     /// 这次实际装上的那台（装机结果的 deviceKind / deviceName）：完成页、顶部胶囊写「已装到 iPad「名字」」，不写死 iPhone
     @Published var installedTo: String = ""
-    nonisolated static func deviceLabel(kind: String, name: String) -> String {
-        let k = kind.isEmpty ? "iPhone / iPad" : kind
-        return name.isEmpty ? k : "\(k)「\(name)」"
+    nonisolated static func deviceLabel(kind: String, name: String, language: String = Lang.initial().sharedCode) -> String {
+        named(kind.isEmpty ? "iPhone / iPad" : kind, name, language: language)
+    }
+    /// 类型 + 设备名，引号按界面语言：中文 / 日文「名字」紧跟类型，其余语言空一格加弯引号 “名字”（同英文文案里设备名的写法）
+    nonisolated static func named(_ kind: String, _ name: String, language: String) -> String {
+        if name.isEmpty { return kind }
+        return ["zh-Hans", "zh-Hant", "zh", "ja"].contains(language) ? "\(kind)「\(name)」" : "\(kind) “\(name)”"
     }
     /// 正在装 / 要装的那台的称呼（进度胶囊用）：选中且连着 → 类型 + 名字；否则「iPhone / iPad」
     var installTargetLabel: String {

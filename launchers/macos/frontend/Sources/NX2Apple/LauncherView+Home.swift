@@ -115,13 +115,8 @@ extension LauncherView {
                     .controllerButtonStyle(ConsolePillButtonStyle()).controllerID("hero.exportSheet")   // 只开确认页：别的作业在跑也能点，开始后排队
                     .launcherTooltip(txt("exportsheet.open.help"), placement: .above).accessibilityLabel(txt("exportsheet.open"))
                 }
-                if game.playable || game.iphoneReady {
-                    Button { model.exportFor = game.id } label: {
-                        fitLabel(loc.t("s2arm.export.action"), "shippingbox")
-                    }
-                    .controllerButtonStyle(ConsolePillButtonStyle()).controllerID("hero.export")
-                    .launcherTooltip(loc.t("s2arm.export.action"), placement: .above).accessibilityLabel(loc.t("s2arm.export.action"))
-                }
+                // 出包页（Mac / Apple TV / 安卓等其它平台）不再并排放在这里：游戏页只有「更新」「导出」两件事（维护者 11-21 定），
+                //   出包从「…」菜单和右键菜单进；还没准备的款主按钮「准备游戏」照旧去出包页
                 // 只留两个人人认得的圆钮（…、♡）；「查看出包结果」「启动设置」收进「…」菜单（11-16 维护者：三条横杠看不出是启动设置，一行三种形状不统一）
                 Button { moreFor = game.id } label: { Image(systemName: "ellipsis") }
                     .controllerButtonStyle(ConsoleIconButtonStyle(size: 52)).controllerID("hero.more")

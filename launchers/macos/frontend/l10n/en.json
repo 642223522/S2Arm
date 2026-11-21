@@ -1298,7 +1298,7 @@
   "s2arm.env.readyMacOne": "Ready to prepare and launch on this Mac; building an iPhone package still needs 1 item below",
   "s2arm.env.recheck": "Check again",
   "s2arm.env.title": "Environment",
-  "s2arm.export.action": "Export",
+  "s2arm.export.action": "Build",
   "s2arm.export.back": "Back to library",
   "s2arm.export.base": "Base %@",
   "s2arm.export.basis": "from the last %d runs on this Mac",

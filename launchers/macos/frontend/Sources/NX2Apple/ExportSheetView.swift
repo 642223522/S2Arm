@@ -43,7 +43,7 @@ struct ExportSheetView: View {
     /// 设备的称呼：类型照实写（iPhone / iPad；读不到写「设备」）+ 名字
     static func deviceLabel(kind: String?, name: String, language: String) -> String {
         let k = kind.flatMap { $0.isEmpty ? nil : $0 } ?? BackendText.launcherText("exportsheet.device.generic", language: language)
-        return name.isEmpty ? k : "\(k)「\(name)」"
+        return S2ArmLauncherModel.named(k, name, language: language)
     }
 
     /// 失败那一行的「去首位 S2Arm 卡」按钮按失败码分：没装 →「先装 S2Arm」，不是本版 →「先更新 S2Arm」；别的码不给
@@ -124,7 +124,7 @@ struct ExportSheetView: View {
                 radio("none", t("exportsheet.sign.none"))
             }
             section(t("exportsheet.layout.title")) {
-                InstallLayoutRow(model: model, gameId: id, refreshOnAppear: false, selection: $layout)
+                InstallLayoutRow(model: model, gameId: id, refreshOnAppear: false, selection: $layout, exportSign: sign)
             }
             section(t("exportsheet.devices.title")) {
                 if model.exportPhones == nil {

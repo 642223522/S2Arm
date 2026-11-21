@@ -91,6 +91,9 @@ extension LauncherView {
             if model.finishedExports[game.id] != nil, !(model.mainBusy && model.session?.gameID == game.id) {   // 这款上次出包 / 装机 / 导出的结果页（原首页圆钮）
                 moreRow(txt("library.hero.results"), "checkmark.seal") { model.viewingResult = model.finishedExports[game.id] }
             }
+            if game.playable || game.iphoneReady {   // 出包页（其它平台 / 重新出包）：首页那颗胶囊收进这里
+                moreRow(loc.t("s2arm.export.action"), "shippingbox") { model.exportFor = game.id }
+            }
             if game.appleTvReady {   // #1429：出好 Apple TV 包的款，游戏库里也有「装到 Apple TV」（原先只在出包页 / 出包结果页，离开就找不到）
                 moreRow(BackendText.launcherText("export.installAppleTV", language: loc.lang.sharedCode), "appletv") { model.installAppleTV(game) }
                     .disabled(model.busy)

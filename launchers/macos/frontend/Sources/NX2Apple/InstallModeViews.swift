@@ -47,6 +47,9 @@ struct InstallLayoutRow: View {
     var refreshOnAppear = true
     /// 导出确认页 ② 出法（0.6.4）：点卡片只改这里，「开始」时才 layoutSet 记下（取消就不改）；nil = 照旧点了就记
     var selection: Binding<String>? = nil
+    /// 导出确认页 ① 当前选的签名方式（appleId / devCert / none）：给了就按它取独立 App 那句提示（InstallModeInfo.standaloneHints），
+    ///   不再用设置里签名方式那句（两句会打架）；设置页不给，照旧按设置
+    var exportSign: String? = nil
     @State private var showWhy = false
 
     static let gold = Color(red: 0.93, green: 0.77, blue: 0.42)
@@ -60,6 +63,14 @@ struct InstallLayoutRow: View {
         if now == "standalone" && hint == "wildcard" { return ("install.layout.hint.wildcard", "yellow") }
         if why == "unknown" { return ("layout.card.unknown", "gray") }
         return nil
+    }
+
+    /// 导出确认页那一行：选独立 App → 按这次的签名方式取作业层给的码（显式 / 通配描述文件黄字，自签、免费 Apple ID 橙字）；
+    ///   选通用 S2Arm → 只留「分发证书选了通用 S2Arm」那句（和签名方式无关的那条照旧）
+    static func exportNote(now: String, sign: String, hints: [String: String], why: String) -> (String, String)? {
+        guard now == "standalone" else { return now == "shell" && why == "distribution" ? ("layout.card.warn.distShell", "orange") : nil }
+        guard let code = hints[sign] else { return nil }
+        return ("install.layout.hint." + code, ["explicit", "wildcard"].contains(code) ? "yellow" : "orange")
     }
 
     var body: some View {
@@ -89,7 +100,8 @@ struct InstallLayoutRow: View {
                 card("shell", name("shell"), "layout.card.shell.body", "layout.card.shell.badge", gold: false, now: now, m: m)
             }
             .fixedSize(horizontal: false, vertical: true)
-            if let (key, tone) = Self.note(now: now, why: m.recommendWhy, hint: m.standaloneHint) {
+            // 导出确认页只按这次的签名方式给（没有就不出），不退回设置那句
+            if let (key, tone) = exportSign.map({ Self.exportNote(now: now, sign: $0, hints: m.standaloneHints, why: m.recommendWhy) }) ?? (exportSign == nil ? Self.note(now: now, why: m.recommendWhy, hint: m.standaloneHint) : nil) {
                 Text(ix(loc, key)).font(LauncherTheme.TypeStyle.caption)
                     .foregroundStyle(tone == "orange" ? Self.orange : tone == "yellow" ? Color.yellow : Color.secondary)
                     .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("install.layout.note")

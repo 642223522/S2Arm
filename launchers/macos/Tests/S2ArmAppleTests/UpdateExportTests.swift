@@ -114,6 +114,25 @@ import XCTest
         XCTAssertEqual(S2ArmLauncherModel.exportDeviceRow(phone("E", installed: false), gameId: "0100A", sign: "devCert", layout: "standalone").note, nil, "独立 App 不需要 S2Arm")
     }
 
+    /// 11-21 玩家反馈「独立 App 装一个顶掉前一款」：确认页 ② 选独立 App 时按 ① 这次选的签名方式给提示（作业 standaloneHints），不按设置。期望手写
+    func testStandaloneHintFollowsExportSign() {
+        let info = InstallModeInfo(result: ["signMode": "appleId", "signChoice": "appleId", "standaloneHint": "appleId",
+                                            "standaloneHints": ["appleId": "appleId", "devCert": "explicit", "none": "external"]])
+        XCTAssertEqual(info.standaloneHints, ["appleId": "appleId", "devCert": "explicit", "none": "external"])
+        let hints = info.standaloneHints
+        let cert = InstallLayoutRow.exportNote(now: "standalone", sign: "devCert", hints: hints, why: "appleId")
+        XCTAssertEqual(cert?.0, "install.layout.hint.explicit", "我的证书 + 显式描述文件 + 独立 App → 装一款顶掉前一款那句（设置里是 Apple ID 也照样）")
+        XCTAssertEqual(cert?.1, "yellow")
+        let apple = InstallLayoutRow.exportNote(now: "standalone", sign: "appleId", hints: hints, why: "appleId")
+        XCTAssertEqual(apple?.0, "install.layout.hint.appleId", "改选 Apple ID → 换成免费 Apple ID 那句")
+        XCTAssertEqual(apple?.1, "orange")
+        XCTAssertEqual(InstallLayoutRow.exportNote(now: "standalone", sign: "none", hints: hints, why: "appleId")?.0, "install.layout.hint.external")
+        XCTAssertNil(InstallLayoutRow.exportNote(now: "shell", sign: "devCert", hints: hints, why: "appleId"), "选通用 S2Arm → 不出")
+        let unread = InstallModeInfo(result: ["standaloneHints": ["appleId": "appleId", "devCert": NSNull(), "none": "external"]])
+        XCTAssertNil(InstallLayoutRow.exportNote(now: "standalone", sign: "devCert", hints: unread.standaloneHints, why: "unknown"), "描述文件读不到（null）→ 不出，也不退回设置那句")
+        XCTAssertFalse(BackendText.launcherText("install.layout.hint.explicit", language: "zh-Hans").hasPrefix("["))
+    }
+
     func testFailedRowShellButtonFollowsCode() {
         XCTAssertEqual(ExportSheetView.shellLinkKey("shell_install_required"), "exportsheet.link.installShell", "没装 →「先装 S2Arm」")
         XCTAssertEqual(ExportSheetView.shellLinkKey("shell_update_required"), "exportsheet.link.updateShell", "不是本版 →「先更新 S2Arm」")
@@ -281,6 +300,18 @@ import XCTest
         model.exportPhones = [phone("P1", name: "我的 iPhone", kind: "iPhone", by: .launcher, state: nil)]
         try shot(ExportSheetView(model: model, request: ExportSheetRequest(gameID: "0100C"), refreshOnAppear: false, sign: "appleId", layout: "shell", picked: []),
                  "2c_导出确认页_没做好iPhone版", width: 820, height: 700)
+    }
+
+    /// 我的证书（显式 App ID 描述文件）+ 独立 App：② 下面黄字「装一款会顶掉前一款」
+    func testStandaloneExplicitProfileHint() throws {
+        model.installMode = InstallModeInfo(result: ["signMode": "devcert", "signChoice": "devCert", "layout": "standalone", "recommend": "standalone", "recommendWhy": "devCertDebug",
+                                                     "standaloneHint": "explicit", "standaloneHints": ["appleId": "appleId", "devCert": "explicit", "none": "external"]])
+        model.devCert = DevCertStatus(imported: true, active: true, cert: nil)
+        model.exportPhones = [phone("P1", name: "我的 iPhone", kind: "iPhone", by: .launcher, state: .latest)]
+        try shot(ExportSheetView(model: model, request: ExportSheetRequest(gameID: "0100A"), refreshOnAppear: false, sign: "devCert", layout: "standalone", picked: []),
+                 "4_导出确认页_我的证书_显式描述文件_独立App提示", width: 820, height: 700)
+        try shot(ExportSheetView(model: model, request: ExportSheetRequest(gameID: "0100A"), refreshOnAppear: false, sign: "appleId", layout: "standalone", picked: []),
+                 "4b_导出确认页_改选AppleID_独立App提示", width: 820, height: 700)
     }
 
     func testPerDeviceResults() throws {
