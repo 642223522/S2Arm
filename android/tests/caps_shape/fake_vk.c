@@ -136,7 +136,7 @@ static void features_chain(void *next, int for_create, const struct cs_shape *s)
         case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES:
             BIT(((VkPhysicalDeviceTimelineSemaphoreFeatures *)b)->timelineSemaphore, s->timelineSemaphore && cs_has_ext(s, "VK_KHR_timeline_semaphore"), "timelineSemaphore"); break;
         case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_EXT:
-            BIT(((VkPhysicalDeviceIndexTypeUint8FeaturesEXT *)b)->indexTypeUint8, s->indexTypeUint8 && cs_has_ext(s, "VK_EXT_index_type_uint8"), "indexTypeUint8"); break;
+            BIT(((VkPhysicalDeviceIndexTypeUint8FeaturesEXT *)b)->indexTypeUint8, s->indexTypeUint8 && cs_any_ext(s, "VK_EXT_index_type_uint8", "VK_KHR_index_type_uint8"), "indexTypeUint8"); break;
         case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_4444_FORMATS_FEATURES_EXT:
             BIT(((VkPhysicalDevice4444FormatsFeaturesEXT *)b)->formatA4B4G4R4, s->formatA4B4G4R4 && cs_has_ext(s, "VK_EXT_4444_formats"), "formatA4B4G4R4");
             BIT(((VkPhysicalDevice4444FormatsFeaturesEXT *)b)->formatA4R4G4B4, 0, "formatA4R4G4B4"); break;
@@ -155,12 +155,12 @@ static void features_chain(void *next, int for_create, const struct cs_shape *s)
             BIT(d->descriptorBindingVariableDescriptorCount, s->diVariableCount && e, "descriptorBindingVariableDescriptorCount");
             BIT(d->descriptorBindingSampledImageUpdateAfterBind, s->diSampledUpdateAfterBind && e, "descriptorBindingSampledImageUpdateAfterBind"); break; }
         case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT: {
-            VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT *v = (void *)b; const int e = cs_has_ext(s, "VK_EXT_vertex_attribute_divisor");
+            VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT *v = (void *)b; const int e = cs_any_ext(s, "VK_EXT_vertex_attribute_divisor", "VK_KHR_vertex_attribute_divisor");
             BIT(v->vertexAttributeInstanceRateDivisor, s->vertexAttributeInstanceRateDivisor && e, "vertexAttributeInstanceRateDivisor");
             BIT(v->vertexAttributeInstanceRateZeroDivisor, 0, "vertexAttributeInstanceRateZeroDivisor"); break; }
         case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT:
             // 档案里的位（真机档：device_caps.c 只在特性也开着时把扩展写进 enabledExtensions，转换时据此记 1）
-            BIT(((VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT *)b)->swapchainMaintenance1, s->swapchainMaintenance1 && cs_has_ext(s, "VK_EXT_swapchain_maintenance1"), "swapchainMaintenance1"); break;
+            BIT(((VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT *)b)->swapchainMaintenance1, s->swapchainMaintenance1 && cs_any_ext(s, "VK_EXT_swapchain_maintenance1", "VK_KHR_swapchain_maintenance1"), "swapchainMaintenance1"); break;
         default: break;   // 别的结构（placed 映射等）：没有读数，保持调用方清零的 0（= 无）
         }
 #undef BIT

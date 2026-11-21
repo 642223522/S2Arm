@@ -215,8 +215,11 @@ def check_variant(name, got_path):
     minor = int(VARIANTS[name].split('.')[1])
     f, fm, pr = got['vulkan']['features'], got['vulkan']['formats'], got['vulkan']['properties']
     if name == 'v-khr-alias':
-        bad = [k for k in ('indexTypeUint8', 'swapchainMaintenance1') if k not in f]
-        bad = ['只列 KHR 别名时没记 ' + k for k in bad] + ['生成的档案不合格：' + b for b in lint.check(got)]
+        # 逐值对照：生成档里这两项必须等于基准档（adreno）的输入值；只查键在不在的话，回填成 0 也会过（#1879 复审）
+        base = load('adreno-8xx-qcom')['vulkan']['features']
+        bad = ['只列 KHR 别名时 %s：输入 %r / 生成 %r' % (k, base.get(k), f.get(k))
+               for k in ('indexTypeUint8', 'swapchainMaintenance1') if k not in base or f.get(k) != base[k]]
+        bad += ['生成的档案不合格：' + b for b in lint.check(got)]
         if bad:
             print('FAIL: [%s] KHR 别名正控：\n  %s' % (name, '\n  '.join(bad))); return 1
         print('PASS: [%s] 只列 KHR 版 index_type_uint8 / swapchain_maintenance1：照样挂结构、记特性，假驱动放行' % name); return 0
