@@ -121,7 +121,20 @@ static int program_resign(const char *home, const char *game_data, const char *g
         const char *steam = pr >= 0 ? pteam : cur_team.UTF8String, *sappid = pr >= 0 ? pappid : NULL;
         NSData *in = [NSData dataWithContentsOfFile:@(images)];
         uint8_t *out = NULL; size_t on = 0; char w[256] = "";
-        int rc = in ? s2a_selfsign_macho(in.bytes, in.length, NULL, steam, sappid, key, chain, &out, &on, w, sizeof w) : -1;
+        NSString *lc_sign_id = nil;
+        if (in_lc || lc_fb) {
+            // LiveContainer 用宿主包名签 Mach-O；客体 mainBundle 已被替换，要取它保留的 lcMainBundle。
+            SEL selector = NSSelectorFromString(@"lcMainBundle");
+            if ([NSUserDefaults respondsToSelector:selector]) {
+                NSBundle *(*get_host_bundle)(id, SEL) = (NSBundle *(*)(id, SEL))[NSUserDefaults methodForSelector:selector];
+                lc_sign_id = get_host_bundle(NSUserDefaults.class, selector).bundleIdentifier;
+            }
+            if (lc_sign_id.length)
+                RLOG("LiveContainer 重签标识：用宿主包名 %s（不添加程序库权限）", lc_sign_id.UTF8String);
+            else
+                RLOG("【黄】LiveContainer 重签标识：取不到宿主包名，沿用程序库原标识");
+        }
+        int rc = in ? s2a_selfsign_macho(in.bytes, in.length, lc_sign_id.length ? lc_sign_id.UTF8String : NULL, steam, sappid, key, chain, &out, &on, w, sizeof w) : -1;
         RELEASE_ID(); if (chain) CFRelease(chain);
         if (!in) FAIL("程序库 %s 读不了", images);
         if (rc) FAIL("签名失败：%s", w);
