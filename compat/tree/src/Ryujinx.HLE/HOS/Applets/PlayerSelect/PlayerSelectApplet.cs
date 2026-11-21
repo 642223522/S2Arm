@@ -68,18 +68,24 @@ namespace Ryujinx.HLE.HOS.Applets
                 var excluded = InvalidUsers(uiSettings);
                 var candidates = accounts.GetAllUsers().Where(u => !excluded.Contains(u.UserId)).ToArray();
                 var preferred = candidates.FirstOrDefault(u => u.UserId == accounts.LastOpenedUser.UserId) ?? candidates.FirstOrDefault();
-                if (mode == UiModeUserCreator || candidates.Length == 0)
+                bool createOnly = mode == UiModeUserCreator || candidates.Length == 0 || accounts.GetUserCount() == 1;
+                var args = new SoftwareKeyboardUIArgs
                 {
-                    string initial = $"Player{accounts.GetUserCount() + 1}";
-                    if (!Ask("新建 S2Arm 玩家", "输入新玩家的名字", initial, create))
-                        Complete(create, initial);
+                    LocalPlayerNames = createOnly ? Array.Empty<string>() : candidates.Select(u => u.Name).ToArray(),
+                    InitialText = $"Player{accounts.GetUserCount() + 1}",
+                    StringLengthMin = 1, StringLengthMax = 32,
+                };
+                UserProfile Resolve(string reply)
+                {
+                    if (reply.StartsWith("new:", StringComparison.Ordinal)) return create(reply[4..]);
+                    return !createOnly && int.TryParse(reply, out int row) && row >= 0 && row < candidates.Length
+                        ? candidates[row] : null;
                 }
-                else if (candidates.Length == 1 || !Ask("选择 S2Arm 玩家",
-                    string.Join("  ", candidates.Select((u, i) => $"{i + 1}. {u.Name}")),
-                    (Array.IndexOf(candidates, preferred) + 1).ToString(),
-                    value => int.TryParse(value, out int n) && n >= 1 && n <= candidates.Length ? candidates[n - 1] : null))
+                if (_system.Device.UIHandler is not Ryujinx.HLE.UI.IAsyncTextInput input ||
+                    input.BeginTextInput(args, (ok, reply) => Complete(Resolve, ok ? reply : null)) == null)
                 {
-                    Complete(_ => preferred, "");
+                    if (createOnly) Complete(create, args.InitialText);
+                    else Complete(_ => preferred, "");
                 }
                 return ResultCode.Success;
             }
@@ -140,17 +146,6 @@ namespace Ryujinx.HLE.HOS.Applets
                 if (!id.IsNull) invalid.Add(id);
             }
             return invalid;
-        }
-
-        private bool Ask(string title, string guide, string initial, Func<string, UserProfile> resolve)
-        {
-            if (_system.Device.UIHandler is not Ryujinx.HLE.UI.IAsyncTextInput input) return false;
-            var args = new SoftwareKeyboardUIArgs
-            {
-                HeaderText = title, SubtitleText = guide, InitialText = initial,
-                StringLengthMin = 1, StringLengthMax = 32,
-            };
-            return input.BeginTextInput(args, (ok, value) => Complete(resolve, ok ? value : null)) != null;
         }
 
         private void Complete(Func<string, UserProfile> resolve, string value)

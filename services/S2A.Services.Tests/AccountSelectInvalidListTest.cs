@@ -84,26 +84,44 @@ namespace S2A.Services.Tests
             Environment.SetEnvironmentVariable("S2A_LOCAL_PLAYERS", roster);
             Environment.SetEnvironmentVariable("S2A_PLAYER_USER", "first");
             LocalPlayer.Select(Host.Device, 1);
+            TextInput.BeginHook = (_, _) => 0; // Headless host.
             var chosen = Psel(current);
             Check("第二位玩家使用启动器已有用户号", second, chosen.Uid.ToString());
-            TextInput.BeginHook = (id, _) => { prompt = id; return 1; };
-            answer = "2";
+            string[] offered = null;
+            TextInput.BeginHook = (id, json) =>
+            {
+                using var request = System.Text.Json.JsonDocument.Parse(json);
+                offered = request.RootElement.GetProperty("localPlayers").EnumerateArray().Select(n => n.GetString()).ToArray();
+                prompt = id;
+                return 1;
+            };
+            answer = "0";
+            Check("唯一可选的已有用户仍在列表中", second, Psel(current).Uid.ToString());
+            Check("列表过滤已在玩的用户", "Two", string.Join(",", offered));
+            answer = "1";
             Check("可手动选择第二个已有用户", second, Psel().Uid.ToString());
             answer = null;
             Check("取消创建得到 NS 的取消结果", "长 0x18、结果 0x27C", Psel(current, chosen.Uid).Result);
-            answer = "Three";
+            Check("无可选用户直接进入创建", "0", offered.Length.ToString());
+            answer = "new:Three";
             string stored = null;
             var store = LocalPlayer.StorePlayer;
             LocalPlayer.StorePlayer = (uid, nickname, folder) => stored = uid;
             try
             {
-                var created = Psel(current, chosen.Uid);
-                Check("可选用户已用完，创建的账号与启动器保存的 UID 一致", "True",
+                var created = Psel(current);
+                Check("列表还有已有用户时可以选择创建，返回持久化的 UID", "True",
                     (!created.Uid.IsNull && created.Uid.ToString() == stored).ToString());
                 string next = roster[..^1] + ",{\"user\":\"" + stored + "\",\"name\":\"Three\",\"folder\":\"SaveData-Three\"}]";
                 Environment.SetEnvironmentVariable("S2A_LOCAL_PLAYERS", next);
                 LocalPlayer.Select(Host.Device, 1);
+                answer = "0";
                 Check("再次起局，按同一排除名单取回原来的 UID", stored, Psel(current, chosen.Uid).Uid.ToString());
+                Environment.SetEnvironmentVariable("S2A_LOCAL_PLAYERS", """[{"user":"first","name":"One","folder":"SaveData"}]""");
+                LocalPlayer.Select(Host.Device, 1);
+                answer = null;
+                Check("只有一个 S2Arm 用户时取消直接新建", "长 0x18、结果 0x27C", Psel().Result);
+                Check("只有一个 S2Arm 用户时跳过选择列表", "0", offered.Length.ToString());
                 Check("多人加入后主用户身份", current.ToString(), users.LastOpenedUser.UserId.ToString());
             }
             finally
