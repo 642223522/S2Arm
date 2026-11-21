@@ -560,11 +560,12 @@ class MultiCert(unittest.TestCase):
 
 class StateUnreadable(unittest.TestCase):
     """D-BW75（Windows 0.6.2，×14）：devcert\\state.json 读时拒绝访问（WinError 5、连属性都取不到），原先抛到 update_phone、整单装机失败。
-    期望手写：读不了 = 当作没启用证书——state() 回 {}、active() False、team() None；作业日志记一行黄字，同一作业只记一次"""
+    期望手写：读不了 = 当作没启用证书——state() 回 {}、active() False、team() None；作业日志记一行黄字、结果页一条黄色诊断，同一作业只各记一次"""
     def test_denied_counts_as_not_active(self):
         import io, contextlib
         t = Path(tempfile.mkdtemp()); self.addCleanup(shutil.rmtree, t, True)
-        c = types.SimpleNamespace(private=t / "private")
+        diags = []
+        c = types.SimpleNamespace(private=t / "private", diagnostic=lambda msg, **k: diags.append((msg, k.get("code"), k.get("severity"))))
         denied = PermissionError(13, "拒绝访问。（属性 取不到 5；权限 取不到 5）")
         err = io.StringIO()
         with patch.object(devcert, "read", side_effect=denied), contextlib.redirect_stderr(err):
@@ -572,6 +573,9 @@ class StateUnreadable(unittest.TestCase):
         self.assertEqual(got, ({}, False, None))
         lines = [l for l in err.getvalue().splitlines() if "开发者证书设置读不了" in l]
         self.assertEqual(len(lines), 1, err.getvalue())
+        # 不悄悄换签法：结果页一条黄字（码 devcert_unreadable、warning），说清这次没读到证书设置、改按 Apple ID 签名
+        self.assertEqual([(d[1], d[2]) for d in diags], [("devcert_unreadable", "warning")])
+        self.assertIn("按 Apple ID 签名", diags[0][0])
 
 
 class PasswordNeverInRequest(unittest.TestCase):
