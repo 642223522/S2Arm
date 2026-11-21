@@ -156,7 +156,8 @@ def convert(stem, phys, dev, fmt_names, fmt_num):
             # vkjson 的格式表只有核心格式；device_caps.c 的 r4g4b4a4 只说「五个必需位齐」，不是三组原始位——不知道，不按规范值补
             formats[name] = None
             continue
-        formats[name] = phys['formats'].get(str(fmt_num[name]), [0, 0, 0])   # vkjson 只列有特性位的格式：没列 = 全 0
+        # vkjson 没列的格式 = 不知道（9000 实测有反例：没列的格式其实支持），写 null，不按「全 0」猜
+        formats[name] = phys['formats'].get(str(fmt_num[name]))
     return {
         # 转换档：读数来自真机（probed），但旧数据缺的项写了 null（partial）
         'provenance': 'probed', 'completeness': 'partial',
@@ -195,8 +196,9 @@ def minimal(a, m, core_names):
     props['maxMemoryAllocationSize'] = min(va['properties']['maxMemoryAllocationSize'], vm['properties']['maxMemoryAllocationSize'])
     props['subgroupSize'] = min(va['properties']['subgroupSize'], vm['properties']['subgroupSize'])
     props['limits'] = {k: tighter(k, la[k], lm[k]) for k in la}
-    formats = {k: [x & y for x, y in zip(va['formats'][k], vm['formats'][k])]
-               for k in va['formats'] if k != A4B4G4R4 and va['formats'][k] is not None and vm['formats'].get(k) is not None}
+    # 保守档按位与；某台未知（null）的格式按「能力未知 = 不支持」当全 0 取与（结果仍是更紧的那一侧）
+    z3 = lambda v: v if v is not None else [0, 0, 0]
+    formats = {k: [x & y for x, y in zip(z3(va['formats'][k]), z3(vm['formats'].get(k)))] for k in va['formats'] if k != A4B4G4R4}
     heaps = lambda v: sum(h['size'] for h in v['memory']['heaps'])
     small = va if heaps(va) <= heaps(vm) else vm
     return {

@@ -114,12 +114,24 @@ def header(out):
     open(out, 'w').write('\n'.join(lines) + '\n')
 
 
+def caps_format_groups():
+    """device_caps.c 每个 formats 键由哪些 VkFormat 决定（读源码里的表，不另抄）。"""
+    src = open(os.path.join(REPO, 'android', 'native', 'direct', 'device_caps.c'), encoding='utf-8').read()
+    key = {'bc123': 'bc123', 'bc45': 'bc45', 'bc67': 'bc67', 'etc2': 'etc2', 'astc': 'astc', 'five_bit': 'fiveBit', 'r4g4b4a4': 'r4g4b4a4'}
+    out = {key[n]: set(re.findall(r'VK_FORMAT_\w+', body)) for n, body in re.findall(r'static const VkFormat k_(\w+)\[\] = \{(.*?)\};', src, re.S)}
+    out['scaledVertex'] = set(re.findall(r'VK_FORMAT_\w+', src[src.index('k_scaled_pairs[]'):src.index('static int scaled_vertex_ok')]))
+    if set(out) != set(key.values()) | {'scaledVertex'} or not all(out.values()):
+        sys.exit('【红】shapes.py：device_caps.c 的格式族表解析不全：%r' % sorted(out))
+    return out
+
+
 def oracle(name, got_path):
     stem = REAL[name]
     want = json.load(open(os.path.join(DEVICES, stem + '.json')))
     got = json.load(open(got_path))
-    # 档案里写 null（来源没读数）的项，假驱动按「能力未知 = 按不支持」回答；真机 caps 里由它决定的项因此不比，点名列出
-    unknown = {('formats', 'r4g4b4a4')} if load(name)['vulkan']['formats'].get('VK_FORMAT_A4B4G4R4_UNORM_PACK16', 0) is None else set()
+    # 档案里写 null（来源没读数）的格式，假驱动按「能力未知 = 按不支持」回答；device_caps.c 里由这些格式决定的格式族因此不比，点名列出
+    null_fmts = {k for k, v in load(name)['vulkan']['formats'].items() if v is None}
+    unknown = {('formats', group) for group, fmts in caps_format_groups().items() if fmts & null_fmts}
     bad = []
     for sect in ('limits', 'features', 'formats', 'memory'):
         for k, v in want[sect].items():
@@ -148,7 +160,7 @@ def leaves(v, path=''):
 
 
 def compare(name, got_path):
-    """生成的档案 vs 档案文件：api / identity / vulkan 三段逐叶子比；文件里写 null 的跳过（来源没读数，假驱动按「无」答）。
+    """生成的档案 vs 档案文件：api / identity / vulkan 三段逐叶子比；文件里写 null 的只核这项生成档里有、不比值（来源没读数，假驱动按「无」答）。
     model / system 是宿主自己的读数（假驱动管不到），不比；两份都要过 lint（各自的 factsDigest 自洽）。"""
     want = load(name)
     got = json.load(open(got_path, encoding='utf-8'))
@@ -159,8 +171,8 @@ def compare(name, got_path):
     g = dict(leaves({k: got.get(k) for k in ('api', 'identity', 'vulkan')}))
     skipped = 0
     for k, v in w.items():
+        if k not in g: bad.append('%s：档案 %r / 生成的没有这项' % (k, v)); continue   # null 也算：值不知道，但这项该现查到
         if v is None: skipped += 1; continue
-        if k not in g: bad.append('%s：档案 %r / 生成的没有这项' % (k, v)); continue
         if g[k] != v: bad.append('%s：档案 %r / 生成 %r' % (k, v, g[k]))
     extra = sorted(k for k in g if k not in w)
     bad += ['%s：生成的多出这项（%r），档案里没有' % (k, g[k]) for k in extra]

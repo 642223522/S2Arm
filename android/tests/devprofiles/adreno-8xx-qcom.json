@@ -1,7 +1,7 @@
 {
  "api": {"kind":"vulkan","version":"1.3.284"},
  "completeness": "partial",
- "factsDigest": "sha256-e9339794433f5718cb84bec12b64502a34775970f41a94aadfca6a47d903f34d",
+ "factsDigest": "sha256-bf9945f34a3da9234ea5e439ee797d89c3d3b509a6098353f6ce9b1beaf4de06",
  "identity": {
   "deviceId": "0x44050001",
   "deviceName": "Adreno (TM) 830",
@@ -325,7 +325,7 @@
    "VK_FORMAT_BC7_SRGB_BLOCK": [128001,128001,0],
    "VK_FORMAT_BC7_UNORM_BLOCK": [128001,128001,8],
    "VK_FORMAT_D16_UNORM": [2147483650,2147612163,0],
-   "VK_FORMAT_D16_UNORM_S8_UINT": [0,0,0],
+   "VK_FORMAT_D16_UNORM_S8_UINT": null,
    "VK_FORMAT_D24_UNORM_S8_UINT": [0,128513,0],
    "VK_FORMAT_D32_SFLOAT": [2147483650,2147612163,0],
    "VK_FORMAT_D32_SFLOAT_S8_UINT": [0,116225,0],
