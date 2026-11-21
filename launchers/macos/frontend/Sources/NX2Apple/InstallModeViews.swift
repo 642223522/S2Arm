@@ -73,7 +73,11 @@ struct InstallLayoutRow: View {
                 Text(ix(loc, "install.layout.distribution")).font(LauncherTheme.TypeStyle.caption)
                     .foregroundStyle(now == "shell" ? Color.yellow : Color.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            if !model.layoutNotice.isEmpty && now == "standalone" {
+            // 选了独立 App：按签名方式给一句前置条件（免费 Apple ID 的 3 个 App / 7 天、通配描述文件、自己签只能导出），只提示不拦（0.6.4）
+            if now == "standalone", let hint = m.standaloneHint {
+                Text(ix(loc, "install.layout.hint." + hint)).font(LauncherTheme.TypeStyle.caption).foregroundStyle(.yellow).fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("install.layout.hint")
+            } else if !model.layoutNotice.isEmpty && now == "standalone" {
                 Text(loc.backend(model.layoutNotice)).font(LauncherTheme.TypeStyle.caption).foregroundStyle(.yellow).fixedSize(horizontal: false, vertical: true)
             }
         }

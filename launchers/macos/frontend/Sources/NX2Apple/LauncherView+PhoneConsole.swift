@@ -198,6 +198,13 @@ extension LauncherView {
                     }.frame(minWidth: 160, alignment: .leading)
                     Text(consoleAppText(app)).font(.manrope(12.5)).foregroundStyle(app.shellCurrent && !consoleAppExpired(app) ? Color.green : Color.orange).lineLimit(2)
                     Spacer(minLength: 0)
+                    // 续签（0.6.4）= 这款再「推到 iPhone」一次：重签重装、资源只推变了的；打开这款的装机页看进度与结局（成功页 A / 失败页）
+                    if let game {
+                        Button(sx("console.app.renew")) { installFor = game.id; model.install(game, device: phone.device) }
+                            .controllerButtonStyle(ConsolePillButtonStyle()).controllerID("console.app.renew." + app.gameId)
+                            .disabled(consoleOffline || model.phonePushing(game.id) || model.phoneQueued(game.id))
+                            .accessibilityIdentifier("console.app.renew." + app.gameId)
+                    }
                 }
                 .accessibilityElement(children: .combine).accessibilityIdentifier("console.app." + app.gameId)
             }
