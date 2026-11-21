@@ -842,6 +842,7 @@
   "install.login.password": "密碼",
   "install.login.signIn": "登入",
   "install.login.working": "正在登入…",
+  "install.login.wait": "蘋果剛拒收過登入，{0} 秒後再連（連著發會被蘋果限制更久）",
   "install.login.code": "輸入 Apple 裝置上彈出的 6 位驗證碼",
   "install.login.codeSms": "輸入簡訊裡的 6 位驗證碼",
   "install.login.confirm": "確認",
@@ -4563,6 +4564,11 @@
   "按黄字里写的补上缺的那一项，再点一次「更新这款」；其余部分这次已经更新好了。": "依黃字說明補上缺的那一項，再按一次「更新這款」；其餘部分這次已經更新好了。",
   "更新这款": "更新這款",
   "更新这款的 iPhone 程序与着色器库": "更新這款的 iPhone 程式與著色器庫",
-  "更新这款的 Mac 着色器库": "更新這款的 Mac 著色器庫"
+  "更新这款的 Mac 着色器库": "更新這款的 Mac 著色器庫",
+  "让 Apple TV 开着、别让它休眠，和这台 Mac 连同一个网络，再点一次「装到 Apple TV」；已经传到电视上的部分不重传，电视上的 App 和存档都保留。": "讓 Apple TV 開著、別讓它休眠，和這台 Mac 連同一個網路，再點一次「裝到 Apple TV」；已經傳到電視上的部分不重傳，電視上的 App 和存檔都保留。",
+  "查看本任务日志里签名那一步的报错；确认 Xcode「设置 → 账户」里登录了你的 Apple ID、能给这台 Apple TV 签名，再试一次。": "查看本任務日誌裡簽名那一步的報錯；確認 Xcode「設定 → 帳號」裡登入了你的 Apple ID、能給這台 Apple TV 簽名，再試一次。",
+  "让 Apple TV 开着、和这台 Mac 连同一个网络，再点一次「装到 Apple TV」；电视上原有的 App 和存档都保留。": "讓 Apple TV 開著、和這台 Mac 連同一個網路，再點一次「裝到 Apple TV」；電視上原有的 App 和存檔都保留。",
+  "让 Apple TV 开着、和这台 Mac 连同一个网络，并在 Xcode「窗口 → 设备与模拟器」里和它配对过一次，再试一次。": "讓 Apple TV 開著、和這台 Mac 連同一個網路，並在 Xcode「視窗 → 裝置與模擬器」裡和它配對過一次，再試一次。",
+  "让 Apple TV 开着、别让它休眠，和这台 Mac 连同一个网络，再点一次「装到 Apple TV」。": "讓 Apple TV 開著、別讓它休眠，和這台 Mac 連同一個網路，再點一次「裝到 Apple TV」。"
  }
 }

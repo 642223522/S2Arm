@@ -1349,6 +1349,7 @@
   "install.login.password": "Mot de passe",
   "install.login.signIn": "Se connecter",
   "install.login.working": "Connexion…",
+  "install.login.wait": "Apple vient de refuser une connexion. Nouvelle tentative dans {0} s (réessayer sans attendre prolonge le blocage d’Apple)",
   "install.login.code": "Saisissez le code à 6 chiffres affiché sur votre appareil Apple",
   "install.login.codeSms": "Saisissez le code à 6 chiffres reçu par SMS",
   "install.login.confirm": "Confirmer",
@@ -4415,6 +4416,11 @@
   "按黄字里写的补上缺的那一项，再点一次「更新这款」；其余部分这次已经更新好了。": "Complétez l’élément manquant indiqué en jaune, puis touchez à nouveau « Mettre à jour ce jeu » ; le reste a déjà été mis à jour.",
   "更新这款": "Mettre à jour ce jeu",
   "更新这款的 iPhone 程序与着色器库": "Mise à jour du programme iPhone et de la bibliothèque de shaders de ce jeu",
-  "更新这款的 Mac 着色器库": "Mise à jour de la bibliothèque de shaders Mac de ce jeu"
+  "更新这款的 Mac 着色器库": "Mise à jour de la bibliothèque de shaders Mac de ce jeu",
+  "让 Apple TV 开着、别让它休眠，和这台 Mac 连同一个网络，再点一次「装到 Apple TV」；已经传到电视上的部分不重传，电视上的 App 和存档都保留。": "Laissez l'Apple TV allumée et hors veille, sur le même réseau que ce Mac, puis cliquez à nouveau sur « Installer sur l'Apple TV » ; ce qui est déjà arrivé sur la TV n'est pas renvoyé, et l'app et les sauvegardes de la TV sont conservées.",
+  "查看本任务日志里签名那一步的报错；确认 Xcode「设置 → 账户」里登录了你的 Apple ID、能给这台 Apple TV 签名，再试一次。": "Consultez l'erreur de l'étape de signature dans le journal de cette tâche ; vérifiez que votre identifiant Apple est connecté dans Xcode › Réglages › Comptes et peut signer pour cette Apple TV, puis réessayez.",
+  "让 Apple TV 开着、和这台 Mac 连同一个网络，再点一次「装到 Apple TV」；电视上原有的 App 和存档都保留。": "Laissez l'Apple TV allumée et sur le même réseau que ce Mac, puis cliquez à nouveau sur « Installer sur l'Apple TV » ; l'app et les sauvegardes déjà présentes sur la TV sont conservées.",
+  "让 Apple TV 开着、和这台 Mac 连同一个网络，并在 Xcode「窗口 → 设备与模拟器」里和它配对过一次，再试一次。": "Laissez l'Apple TV allumée et sur le même réseau que ce Mac, jumelez-la une fois dans Xcode › Fenêtre › Appareils et simulateurs, puis réessayez.",
+  "让 Apple TV 开着、别让它休眠，和这台 Mac 连同一个网络，再点一次「装到 Apple TV」。": "Laissez l'Apple TV allumée et hors veille, sur le même réseau que ce Mac, puis cliquez à nouveau sur « Installer sur l'Apple TV »."
  }
 }

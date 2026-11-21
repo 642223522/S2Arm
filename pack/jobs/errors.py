@@ -233,7 +233,20 @@ WINDOWS_RECOVERY = {
 }
 
 
-def recovery(code, *, packaged, windows=None):
+# Apple TV 作业（tvInstall / tvExport / tvSaveBackup …，作业名以 tv 开头）同一个码的「下一步」：电视没有数据线、没有锁屏、不能用 AltStore 装，
+#   照 iPhone 那句说会叫玩家去解锁手机、插数据线（D-NCDE / D-GZHR / D-3KDG 同批：「给这台 iPhone 签名」「手机没有锁屏」）
+TV_RECOVERY = {
+    "resource_transfer_failed": "让 Apple TV 开着、别让它休眠，和这台 Mac 连同一个网络，再点一次「装到 Apple TV」；已经传到电视上的部分不重传，电视上的 App 和存档都保留。",
+    "signing_failed": "查看本任务日志里签名那一步的报错；确认 Xcode「设置 → 账户」里登录了你的 Apple ID、能给这台 Apple TV 签名，再试一次。",
+    "device_install_failed": "让 Apple TV 开着、和这台 Mac 连同一个网络，再点一次「装到 Apple TV」；电视上原有的 App 和存档都保留。",
+    "device_not_connected": "让 Apple TV 开着、和这台 Mac 连同一个网络，并在 Xcode「窗口 → 设备与模拟器」里和它配对过一次，再试一次。",
+    "device_locked": "让 Apple TV 开着、别让它休眠，和这台 Mac 连同一个网络，再点一次「装到 Apple TV」。",   # 电视没有锁屏；推送层不对电视报这个码，兜底也不说「解锁」
+}
+
+
+def recovery(code, *, packaged, windows=None, tv=False):
+    if tv and code in TV_RECOVERY:
+        return TV_RECOVERY[code]
     if not packaged and code in DEVELOPMENT_RECOVERY:
         return DEVELOPMENT_RECOVERY[code]
     if (os.name == "nt" if windows is None else windows) and code in WINDOWS_RECOVERY:

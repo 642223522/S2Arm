@@ -734,7 +734,7 @@ def push_pack(c, ident, bid, pack, udid=None, docs=None, ctx=None, pack_root=Non
         m = re.search(r"iPhone 写不进资源包：[^\n]*", text)   # tools/push_pack.py probe：推之前写探针失败、手机确实锁着（#333）  # 非玩家句
         if m:
             raise Failure(m.group(0), code="device_locked") from e
-        m = re.search(r"iPhone 写不进资源包（[^\n]*", text)   # probe：写不进但手机没锁 / 判不了 = 连接问题（带原文），不冒充锁屏（11-13）  # 非玩家句
+        m = re.search(r"(?:iPhone|Apple TV) 写不进资源包（[^\n]*", text)   # probe：写不进但手机没锁 / 判不了 = 连接问题（带原文），不冒充锁屏（11-13）  # 非玩家句
         if m:
             raise Failure(m.group(0), code="resource_transfer_failed") from e
         from errors import tool_reason
@@ -1239,6 +1239,13 @@ def distribution_cert(c):
 def layout_choice(c):
     m = read(c.private / LAYOUT_CHOICE, {}) or {}
     return m if isinstance(m, dict) else {}
+
+
+def wants_shell(c):
+    """游戏库里有没有哪款按通用 S2Arm 出（缺省出法或某款单独选的）：有 → 这台手机要有通用 S2Arm"""
+    m = layout_choice(c)
+    games = m.get("games") if isinstance(m.get("games"), dict) else {}
+    return chosen_layout(c) == "shell" or "shell" in games.values()
 
 
 def chosen_layout(c, gid=None):
@@ -2927,8 +2934,9 @@ def installed_s2arm(c, ph):
     return installed_s2arm_on(c, ph.udid, layout.load_device(c, ph.key))
 
 
-# 独立 App 的包名形状（app_bundle_id、devcert.bundle_id 前缀通配那支）：别的电脑装的、这台设备记录里没有的也认得出，不算通用壳
-STANDALONE_BID = re.compile(r"io\.s2arm\.games\.[a-z0-9]+\.[0-9a-f]{16}|.+\.s2arm\.[0-9a-f]{16}")
+# 独立 App 的包名形状（app_bundle_id、devcert.bundle_id 前缀通配那支、导出未签名包的 ipa.standalone_bundle）：别的电脑装的、这台设备记录里没有的也认得出，不算通用壳。
+#   导出包交 AltStore / SideStore 签时它们在包名后再接「.团队号」，带这一段也认
+STANDALONE_BID = re.compile(r"(?:io\.s2arm\.games\.[a-z0-9]+\.[0-9a-f]{16}|.+\.s2arm\.[0-9a-f]{16})(?:\.[a-z0-9]+)?")
 
 
 def standalone_bids(rec):
@@ -3921,7 +3929,9 @@ def _update_phone(c):
             raise Failure(hint, code="device_not_connected") from e
         raise
     rec = layout.load_device(c, ph.key)
-    if rec.get("apps") and not rec.get("shellId"):   # 这台只装了独立 App（分发证书玩家的常态）：不顺手装一个通用壳（占 App 名额，分发证书签的还打不开游戏）
+    if rec.get("apps") and not rec.get("shellId") and not wants_shell(c):
+        # 这台只装了独立 App、游戏库里也没有哪款选通用 S2Arm（分发证书玩家的常态）：「更新」只重签独立 App，不顺手装一个通用壳（占 App 名额，分发证书签的还打不开游戏）。
+        #   有款选了通用 S2Arm 就照装（11-21 D-R23F：只装着独立 App 的手机推通用 S2Arm 的款报「先装 S2Arm」，点「安装 S2Arm」却 0.4 秒「完成」、什么都没装，死循环）
         import ipa as packer
         out = dict(updated=True, bundleId="", games=[], toShell=packer.current_shell_id(c), **ph.info)
     else:

@@ -1168,14 +1168,14 @@ class AssembleTests(unittest.TestCase):
             z.writestr("Payload/S2Arm.app/s2a_catalogue.json", json.dumps({"schema": 1, "shell_id": sid, "games": [{"title_id": g} for g in games]}))
         return path
 
-    def _assemble(self, gid, others=(), failed=(), sid="SID1", runs=None, agreed=None):
+    def _assemble(self, gid, others=(), failed=(), sid="SID1", runs=None, agreed=None, **kw):
         import ipa as packer, host_update
         self.sid = sid
         shell = self.c.private / "shell"; shell.mkdir(exist_ok=True); (shell / "manifest.json").write_text("{}")
         runs = [] if runs is None else runs
         with um.patch.object(packer, "current_shell_id", return_value=sid), um.patch.object(packer, "container_shell", return_value=shell), \
              um.patch.object(host_update, "engine_compat", return_value=dict(self.COMPAT)), um.patch.object(self.c, "run", self._run(runs)):
-            return packer.assemble(self.c, gid, others, failed=failed, agreed=agreed or {})
+            return packer.assemble(self.c, gid, others, failed=failed, agreed=agreed or {}, **kw)
 
     @staticmethod
     def _games_arg(runs):
@@ -1191,6 +1191,18 @@ class AssembleTests(unittest.TestCase):
         self.assertNotIn("--base", cmd)
         self.assertEqual((got, games, sid), ([self.A], [self.A], "SID1"))
         self.assertEqual(install_ipa_games(ipa), ([self.A], "SID1"))
+
+    def test_standalone_bundle_id_per_game(self):
+        """独立 App 组装写进包里的包名每款一个（io.s2arm.games.app.<程序号小写>）：不由启动器签的导出包交侧载工具装，原先各款同为 io.s2arm.games，
+        装一款顶掉前一款；通用壳仍是占位 io.s2arm.games（装机时按团队换）"""
+        self._library((self.A, "甲"), (self.B, "乙")); ios_fixture(self.c, self.A); ios_fixture(self.c, self.B)
+        got = []
+        for gid, alone in ((self.A, True), (self.B, True), (self.A, False)):
+            runs = []
+            self._assemble(gid, runs=runs, standalone=alone)
+            _, cmd = self._games_arg(runs)
+            got.append(cmd[cmd.index("--bundle-id") + 1])
+        self.assertEqual(got, ["io.s2arm.games.app.0100000000010000", "io.s2arm.games.app.0100000000020000", "io.s2arm.games"])
 
     def test_assemble_passes_library_banner(self):
         """横图是游戏库的元数据（导入时抓好放在这款文件夹）：组装命令带 --banner 游戏号=那份；没有横图的款不带"""
