@@ -398,6 +398,7 @@ PLAYER_REASON = {
     "input_missing": "找不到游戏文件：选中的游戏文件已不在原处。",
     "windows_mandatory_aslr": "Windows 的强制 ASLR 开着：出包工具起不了子进程。",
     "app_control_blocked": "被 Windows 拦下：Windows 的应用控制或杀毒软件没让 S2Arm 自带的工具运行。",
+    "win_metal_missing": "缺少Windows版Metal工具：未找到能报告有效版本的官方Windows版Metal编译器。",
 }
 
 
@@ -414,6 +415,10 @@ LOG_CAUSES = (
     #   归 app_control_blocked，玩家拿到「去安全中心 / 杀毒软件放行安装文件夹」那句，而不是笼统的「出包未完成」。编排层子进程里出的错只剩文字，按回溯原文认：
     #   起进程（subprocess _execute_child）被拒，或建目录链接（roots._junction）被拒
     (r"in _execute_child\b[\s\S]{0,400}?\[WinError (?:5|4551|1260|225|226)\]|in _junction\b[\s\S]{0,400}?\[WinError 5\]", "app_control_blocked"),  # 非玩家句
+    # 编着色器库前核工具读不到 Windows 版 metal.exe 的版本（translator/dmsh_chain.py tools_now，D-TYCN）：起进程被拒 → 被 Windows 拦下；
+    #   文件不在 / 起来了没打版本 → 缺少 Windows 版 Metal 工具（去苹果开发者下载页装 / 重装）。原先落笼统的「出包未完成」加一句开发者口吻的 --update-lock 提示
+    (r"metal_(?:macosx|iphoneos): lock .{0,120}? / actual missing \(start blocked", "app_control_blocked"),  # 非玩家句
+    (r"metal_(?:macosx|iphoneos): lock .{0,120}? / actual missing", "win_metal_missing"),  # 非玩家句
     # 解包读原件时路径不在（pack/nx_unpack 打的分类行；诊断#24fb13：原先按阶段落成 content_invalid「文件没下完整」，原件其实是挪走了 / 盘没连上）
     (r"【原因 source_missing】", "input_missing"),  # 非玩家句
     # 随包 bash 起子进程刚建就退（#1762：MSYS 原文「dofork: child -1 - forked process … died unexpectedly, retry 0, exit code 0xC0000142」，连试 6 次）：

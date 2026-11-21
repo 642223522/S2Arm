@@ -10220,6 +10220,10 @@
   "en": "Blocked by Windows: Windows app control or antivirus stopped one of S2Arm's own tools from running."
  },
  {
+  "source": "缺少Windows版Metal工具：未找到能报告有效版本的官方Windows版Metal编译器。",
+  "en": "Windows Metal tools unavailable: No official Windows Metal compiler reporting a valid version was found."
+ },
+ {
   "source": "Windows 的「智能应用控制」",
   "en": "Windows Smart App Control"
  },

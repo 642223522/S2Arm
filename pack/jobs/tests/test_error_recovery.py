@@ -291,6 +291,22 @@ raise SystemExit(main.main())
             self.assertNotEqual(errors.classify_failure("ipa", None, ["light.log：rc=75；【黄】winenv：自动源码改写器固定依赖/CMake 未就绪；不下载"])[0], "app_control_blocked")
         self.assertEqual(errors.missing_prebuilt({}), [])
 
+    def test_windows_metal_version_unreadable(self):
+        # D-TYCN（Windows 0.6.3）：编着色器库前核工具读不到 metal.exe 版本，原先落笼统的 package_failed + 开发者口吻的 --update-lock 提示。
+        #   起进程被拒 → app_control_blocked；文件不在 / 起来没打版本 → win_metal_missing（原文取自诊断与 dmsh_chain.tools_now 的写法）
+        import errors
+        head = "[直连库] 🔴 出库前核工具 / 链号失败：dmsh_chain.py 退出码 1：[RED] translation chain tools do not match the lock file: "
+        lock = "metal_macosx: lock Apple metal version 32023.883 (metalfe-32023.883) / actual "
+        for tail, want in (("missing", "win_metal_missing"),
+                           ("missing (no version output: exit code 0xc0000135)", "win_metal_missing"),
+                           ("missing (start blocked: [WinError 5] 拒绝访问。)", "app_control_blocked")):
+            with self.subTest(tail):
+                code, why = errors.classify_failure("ipa", None, [head + lock + tail])
+                self.assertEqual(code, want, why)
+        self.assertEqual(errors.player_reason("win_metal_missing"), "缺少Windows版Metal工具：未找到能报告有效版本的官方Windows版Metal编译器。")
+        # 反证：版本不同（不是 missing）不归这两个码
+        self.assertNotIn(errors.classify_failure("ipa", None, [head + lock + "Apple metal version 32100.1 (metalfe-32100.1)"])[0], ("win_metal_missing", "app_control_blocked"))
+
     def test_unrecognized_volume_during_classification_does_not_mask_original_error(self):
         lib = self.root / "classify-volume-lib"
         src = self.root / "classify-volume-src"
