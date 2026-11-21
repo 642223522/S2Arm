@@ -108,6 +108,8 @@ def main():
              'in.link_map_diag = 0 && link_map_diag_want();', 'link map diag on: paired request asks for the map'),
             ('link-map-no-print', 'if (in.link_map_diag) link_map_note(', 'if (0 && in.link_map_diag) link_map_note(',
              'link map diag on: one line with program key and both sides'),
+            ('link-map-level-ignored', 'if (level >= 2 && !link_map_interesting(vs, fs, level)) return;',
+             'if (0 && level >= 2 && !link_map_interesting(vs, fs, level)) return;', 'link map diag level 3 skips matching pairs'),
             ('link-map-no-limit', 'memory_order_relaxed) < LINK_MAP_DIAG_MAX;', 'memory_order_relaxed) < 1000;',
              'link map diag stops after 40 pairs and stops asking'),
         ):

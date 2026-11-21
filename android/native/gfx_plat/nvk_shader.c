@@ -976,6 +976,7 @@ __attribute__((weak)) void s2a_direct_diag_compile_end(uint64_t, int);
 // 配对接口表诊断（开关 nvk_link_map_diag，缺省关）：新编出的配对 VS+FS 每对打一行，两侧各自实际发射的
 // 「客体逻辑 location → 宿主 Location」（编译器在结果信封外层 linkMap 里带出，不进 content / 缓存身份），
 // 带程序键（两段 8 字节阶段键）与输入身份前 8 字节；SPIR-V 没有变量名时用它直接核两侧对应关系。只打前 LINK_MAP_DIAG_MAX 对。
+// 档位：1 全打；2 只打任一侧 ≥2 个 varying 或两侧对不上的；3 只打两侧对不上的（标题 / 菜单那些单 varying 程序不再占满名额）。
 #define LINK_MAP_DIAG_MAX 40
 static _Atomic int g_link_map_said;
 static int link_map_diag_want(void) {
@@ -995,11 +996,38 @@ static void link_map_side(struct s2a_jv map, const char *side, char *out, size_t
         o += (size_t)w;
     }
 }
+// 「0>0,3>1」逐项拆开：FS 的每一项（逻辑>宿主）都必须在 VS 里原样出现，否则算对不上；「?」一律算对不上（看不懂就打出来）。
+static int link_map_count(const char *t) { if (!t[0] || !strcmp(t, "-")) return 0; int n = 1; for (; *t; t++) n += *t == ','; return n; }
+static int link_map_mismatch(const char *vs, const char *fs) {
+    if (!strcmp(vs, "?") || !strcmp(fs, "?")) return 1;
+    if (!strcmp(fs, "-")) return 0;
+    const char *p = fs;
+    while (*p) {
+        const char *q = strchr(p, ','); size_t n = q ? (size_t)(q - p) : strlen(p);
+        int found = 0;
+        for (const char *v = vs; *v && !found; ) {
+            const char *w = strchr(v, ','); size_t m = w ? (size_t)(w - v) : strlen(v);
+            if (m == n && !strncmp(v, p, n)) found = 1;
+            v = w ? w + 1 : v + m;
+        }
+        if (!found) return 1;
+        p = q ? q + 1 : p + n;
+    }
+    return 0;
+}
+static int link_map_interesting(const char *vs, const char *fs, int level) {
+    if (link_map_mismatch(vs, fs)) return 1;
+    return level == 2 && (link_map_count(vs) >= 2 || link_map_count(fs) >= 2);
+}
 static void link_map_note(const uint8_t *bytes, size_t len, const char *keys_hex, const uint8_t identity[32]) {
     struct s2a_jv top = {(const char *)bytes, len}, map;
     char vs[256], fs[256], m[640];
     if (s2a_jv_obj_find(top, "linkMap", &map)) { snprintf(vs, sizeof vs, "?"); snprintf(fs, sizeof fs, "?"); }
     else { link_map_side(map, "vs", vs, sizeof vs); link_map_side(map, "fs", fs, sizeof fs); }
+    {   // 档位（nvk_link_map_diag）：1 全打；2 只打「任一侧 ≥2 个 varying 或两侧对不上」；3 只打「两侧对不上」。不合档的不占名额
+        const int level = nvn_plat_flag("nvk_link_map_diag", 0);
+        if (level >= 2 && !link_map_interesting(vs, fs, level)) return;
+    }
     if (atomic_fetch_add_explicit(&g_link_map_said, 1, memory_order_relaxed) >= LINK_MAP_DIAG_MAX) return;
     snprintf(m, sizeof m, "配对接口表 程序键=vs:%.16s fs:%.16s 身份=%02x%02x%02x%02x%02x%02x%02x%02x VS输出(逻辑>宿主)=%s FS输入(逻辑>宿主)=%s",
              keys_hex, keys_hex + 16, identity[0], identity[1], identity[2], identity[3], identity[4], identity[5], identity[6], identity[7], vs, fs);

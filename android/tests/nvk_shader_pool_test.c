@@ -1122,6 +1122,14 @@ static void graphics_reject_context_test(void) {
       CHECK(link_map_lines == 1 && strstr(last_link_map, want) == last_link_map &&
             strstr(last_link_map, " VS输出(逻辑>宿主)=0>0,3>1,7>2 FS输入(逻辑>宿主)=3>1,7>2") && !strstr(last_link_map, "?"),
             "link map diag on: one line with program key and both sides: %s", last_link_map); }
+    // 档位：替身编译器给的表两侧对得上（FS 3>1,7>2 都在 VS 里）、VS 有 3 个 varying →
+    //   3 档（只打对不上的）不打、不占名额；2 档（≥2 个 varying 或对不上）打。手算：3 档后行数不变，2 档后 +1
+    { int before = link_map_lines;
+      link_map_flag = 3; bind_pools(201); (void)rp_shader_resolve(&q, &p);
+      CHECK(link_map_lines == before, "link map diag level 3 skips matching pairs (lines %d -> %d)", before, link_map_lines);
+      link_map_flag = 2; bind_pools(202); (void)rp_shader_resolve(&q, &p);
+      CHECK(link_map_lines == before + 1, "link map diag level 2 prints pairs with >=2 varyings (lines %d -> %d)", before, link_map_lines);
+      link_map_flag = 1; }
     // 上限：同一进程只打前 40 对（换身份重编也不再请求、不再打）
     for (int i = 0; i < 45; i++) { bind_pools(300 + i); (void)rp_shader_resolve(&q, &p); }
     CHECK(link_map_lines == 40 && !strstr(captured, "linkMapDiag"), "link map diag stops after 40 pairs and stops asking (lines=%d)", link_map_lines);
