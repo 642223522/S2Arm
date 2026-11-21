@@ -2693,6 +2693,7 @@
   "资源准备失败。": "Preparación de recursos fallida.",
   "设备安装失败。": "Instalación en el dispositivo fallida.",
   "出包未完成。": "Empaquetado incompleto.",
+  "找不到游戏文件：选中的游戏文件已不在原处。": "Falta el archivo del juego: el archivo seleccionado ya no está donde estaba.",
   "按安装错误检查设备连接与包的有效性；保持手机解锁后重试，保留原 App 和存档。": "Comprueba la conexión del dispositivo y la validez del paquete según el error de instalación. Reintenta con el teléfono desbloqueado; conserva la app original y las partidas guardadas.",
   "解锁手机并检查数据线及剩余空间后重试资源传输；保留已有 App、存档和电脑上的资源包。": "Desbloquea el teléfono y comprueba el cable y el espacio libre, luego reintenta la transferencia de recursos. Conserva la app, las partidas guardadas y el paquete de recursos local.",
   "在 iPhone「设置 → 隐私与安全性 → 开发者模式」按系统提示开启开发者模式，再重新安装。": "Activa el Modo de desarrollador en Ajustes del iPhone → Privacidad y seguridad siguiendo las instrucciones del sistema, luego reintenta la instalación.",
