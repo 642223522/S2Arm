@@ -24,6 +24,12 @@ int main(void) {
     reset(NULL, NULL);  eq("⑦ 没关过：原因 0", 0, s2a_snap_off_reason());
     s2a_snap_disable(S2A_SNAP_OFF_ADDRESS);
     eq("⑦ 关后：不能存", 0, s2a_snap_saving()); eq("⑦ 关后：不记日志", 0, s2a_snap_logging()); eq("⑦ 关后：快照模式关", 0, s2a_snap_mode()); eq("⑦ 关后：原因 1", 1, s2a_snap_off_reason());
+    // ⑧ 选定游戏后放得下又重新打开（s2a_snap_reenable，vawin.c 选定游戏后补放快照区）：按 ⑦ 关的原因重开 → 能存、记日志、原因 0；
+    //   原因码不对（2）不开；玩家自己关着（S2A_SNAP_MODE=0）不开；没关过不开（回 0）
+    eq("⑧ 原因码不对不开", 0, s2a_snap_reenable(2)); eq("⑧ 原因码不对：仍不能存", 0, s2a_snap_saving());
+    eq("⑧ 按原因 1 重开", 1, s2a_snap_reenable(S2A_SNAP_OFF_ADDRESS)); eq("⑧ 重开后：能存", 1, s2a_snap_saving()); eq("⑧ 重开后：记日志", 1, s2a_snap_logging());
+    eq("⑧ 重开后：原因 0", 0, s2a_snap_off_reason()); eq("⑧ 已开着再重开：回 0", 0, s2a_snap_reenable(S2A_SNAP_OFF_ADDRESS));
+    reset("0", NULL); s2a_snap_disable(S2A_SNAP_OFF_ADDRESS); eq("⑧ 玩家关着：不重开", 0, s2a_snap_reenable(S2A_SNAP_OFF_ADDRESS)); eq("⑧ 玩家关着：仍不能存", 0, s2a_snap_saving());
     if (g_fail) printf("✗ t_snapsw：%d 项不符（共 %d 项）\n", g_fail, g_ok + g_fail); else printf("✓ t_snapsw：0 处不符（共 %d 项）\n", g_ok);
     return g_fail ? 1 : 0;
 }
