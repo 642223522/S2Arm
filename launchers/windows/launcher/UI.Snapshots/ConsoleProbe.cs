@@ -16,7 +16,7 @@ using S2Arm.Launcher.Protocol;
 
 static class ConsoleProbe
 {
-    const string Udid = "00008140-001A2B3C4D5E6F70ABCDEF0123456789ABCDEF01";
+    const string Udid = "FIXTURE-PHONE-WITHOUT-A-NAME-XXXXXCDEF01";   // 夹具：40 位、不是真设备号（末 6 位 CDEF01）
 
     public static int Run(string outDir)
     {
