@@ -2645,6 +2645,20 @@ def push_program(cl, gid, pkg, inbox, custom=None, cat=None):
     return dict(sha=cat["image_sha256"], team=cat.get("team"), host_abi=cat["host_abi"], rewriter_id=cat.get("rewriter_id", ""), dir=vdir, look=look_of(custom))
 
 
+def program_on_phone(cl, gid, docs="Documents"):
+    """设备记录说这款程序包推过时，核手机上真在不在（D-TW8E：玩家在 App 里删了这款——程序包和资源一起挪走、账本记 removed——
+    电脑再推只按记录判，程序包没补推，资源推完了还是「还缺 .s2arm」）。在 = 清单 program/catalogue.json 在，或导入文件夹里还有没导走的 <号>.s2arm；
+    读不了（锁屏、断开、工具太旧）→ 按在算，照旧信记录"""
+    head = getattr(cl, "head", None)
+    if head is None:
+        return True
+    got = head(f"{PACK_GAMES}/{gid.upper()}/program/catalogue.json", 0)
+    if got is None or got[0] >= 0:
+        return True
+    pend = head(f"{import_inbox(cl, docs)}/{gid.upper()}.s2arm", 0)
+    return pend is None or pend[0] > 0
+
+
 def push_programs(c, cl, games, rec, team, bundle, signer, docs="Documents"):
     """通用壳装机：每款按设备记录判要不要推（program_pack.need），要推的出包、按这台的团队签、打成 .s2arm 推进 App 的导入文件夹（push_program）。
     rec = 设备记录；docs = 手机上 App 的文档根（导入文件夹在它下面；电视是 Library/Caches/S2Arm）。→ {游戏号: program 记录}（没推的照旧记录原样带回）；推到一半失败照抛，已推好的由调用方记下"""
@@ -2665,6 +2679,8 @@ def push_programs(c, cl, games, rec, team, bundle, signer, docs="Documents"):
         custom = next((v for k, v in looks.items() if k.upper() == g.upper()), None)
         want = dict(cat or json.loads((Path(pkg) / "catalogue.json").read_text(encoding="utf-8")), look=look_of(custom))
         why = program_pack.need(c, g, old, team, want=want)
+        if not why and docs == "Documents" and not program_on_phone(cl, g, docs):
+            why = {"missing"}   # 记录说推过、手机上却没有（玩家在 App 里删过这款，#1942 D-TW8E）：照没推过补推
         if not why:
             out[g] = old
             continue
@@ -3346,6 +3362,22 @@ def push_game(c, gid, ph, steps=True):
 #   资源包照通用壳的位置推（ph.push / push_pack 不改）。设备记录 apps[游戏号] 记独立 App，games[游戏号] 只给通用壳用
 APP_STAGE = "组这款的独立 App"
 APP_BUNDLE_FIXED = "描述文件是显式 App ID，只能用它那一个包名 {0}：每款独立 App 和通用 S2Arm 都装成它，装一个会顶掉另一个。"
+APP_BUNDLE_REPLACE_ASK = "装这款会顶掉手机上的{0}：你的描述文件只允许一个包名（{1}），装上后被顶掉的那个就打不开了。它的存档还留在手机上这个包名的数据里，以后换回来接着能玩。"
+SHELL_NAME = "通用 S2Arm（里面的游戏都要重新推）"
+
+
+def bundle_replace_check(c, ph, gid, bid):
+    """显式描述文件（只允许一个包名）装独立 App：手机上同包名已装着别的款或通用 S2Arm → 先问玩家（#1941：原先装完才黄字说顶掉了，动森已经打不开）。
+    玩家点继续（请求带 acceptBundleReplace）才装；设备记录里没有同包名的别的东西不问"""
+    if c.r.get("acceptBundleReplace") is True:
+        return
+    rec = layout.load_device(c, ph.key)
+    same = lambda b: str(b or "").lower() == bid.lower()
+    names = [app_meta(c, g)[1] for g, v in (rec.get("apps") or {}).items() if g != gid and same((v or {}).get("bundleId"))]
+    if rec.get("shellId") and same(rec.get("bundleId")):
+        names.append(SHELL_NAME)
+    if names:
+        raise Failure(APP_BUNDLE_REPLACE_ASK.format("、".join(f"「{n}」" for n in names), bid), code="app_bundle_replace_confirm")
 SHELL_DISTRIBUTION = "现在用的证书缺「调试权限（get-task-allow）」（分发证书），通用 S2Arm 里的游戏打不开：在设置里把出法改成「独立 App」就能玩。"
 APP_STALE = "「{0}」的独立 App 要按新版重新出包：先给它「打 iPhone 包」，再推到 iPhone。"
 APP_UPDATE_FAILED = "「{0}」的独立 App 这次没更新：{1}"
@@ -3473,6 +3505,8 @@ def put_app(c, gid, ph, steps=True):
     gid = gid.upper()
     pack = ios_pack(c, gid)
     bid, team, fixed = app_bundle(c, ph, gid)
+    if fixed:
+        bundle_replace_check(c, ph, gid, bid)
     ap = app_phone(ph, bid)
     had_save = gid in snapshot_phone_saves(c, ap, [gid])   # 同 push_game：开头把手机上这个 App 里这款的存档拉回电脑（按包名各算各的）
     if steps: c.begin(APP_STAGE, 2, 4)

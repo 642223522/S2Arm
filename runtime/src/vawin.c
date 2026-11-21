@@ -1660,7 +1660,8 @@ void s2a_tail_note(char *o, size_t cap) {
 //   重新打开快照。有远端段的不放：窗口之后是游戏的远端地址，宿主放进去的东西会被游戏的远端访问读写。恢复局不走这里（构造期按快照清单原址占）
 static int g_snap_late;
 #define SNAP_LATE_HOST_MIN (3ull << 30)   // 收尾还给系统的那段里，切走快照区后至少还剩这么多给宿主（Metal 缓冲 / 线程栈）
-void s2a_window_snap_late(int no_far) { g_snap_late = no_far; }
+static int g_trim_far;   // 布局定了、这一款有远端段（别名区伸出窗口）：收尾不还尾部（见 s2a_window_trim）
+void s2a_window_snap_late(int no_far) { g_snap_late = no_far; g_trim_far = !no_far; }   // svc_mem.c layout_prepare 收尾前调：no_far = 没有远端段
 __attribute__((weak)) int s2a_snap_off_reason(void) { return 0; }
 __attribute__((weak)) int s2a_snap_reenable(int why) { (void)why; return 0; }
 // 在 [at, at + avail) 这段（窗口收尾要还给系统的部分，仍是本进程的 PROT_NONE 保留）的开头留快照区；留了返回留的长度
@@ -1683,7 +1684,13 @@ static uint64_t snap_late_take(uint64_t at, uint64_t avail) {
 #endif
 }
 void s2a_window_trim(uint64_t size) {
-    if (!g_ok || size >= g_size) return;
+    if (!g_ok || size >= g_size) { g_trim_far = 0; return; }
+    // 有远端段（别名区伸出窗口，far.c 从窗口末起接管伸出段）：窗口末之后正是远端的游戏地址，还给系统就会被宿主映射占住，远端判「与宿主映射重叠」整段不开，
+    //   伸出窗口的映射全回内存不足（11-21 D-D6ZG：按学到的跨度收到 10240 MB、还给系统 21248 MB，宿主随即在那里映射 68 段，远端没开、花屏）。
+    //   这时只缩窗口大小、尾部照旧是本进程的不可访问保留（远端缺页照常走代执行），不接管尾部分配
+    if (g_trim_far) { g_trim_far = 0;
+        LOG("窗口收到前 %llu MB，尾部 %llu MB 留着不还（这一款有远端段，窗口末之后是远端的游戏地址，还给系统会被宿主映射占住）", (unsigned long long)(size >> 20), (unsigned long long)((g_size - size) >> 20));
+        g_size = size; return; }
     if (tail_on()) {   // 尾部前 TL_TAKE 留着占位时的 PROT_NONE，交给 s2a_tail_map；再往后还系统
         // 只接管 TL_TAKE（10-24 怪猎包 ef1e9bde9 开局即崩 3/3：整段 32 GB 都接管后，Metal 自己建缓冲（不走 s2a_tail_map）只剩低区 ~1 GB，建 4 MB 共享块失败；
         //   九款实测尾部峰值 ≤ 202 MB，2 GB 够用，其余照旧还系统给 Metal）

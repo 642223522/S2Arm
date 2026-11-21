@@ -324,6 +324,14 @@ class PutApp(unittest.TestCase):
         layout.save_device(self.c, "UDID1", dict(shellId="SID2", bundleId="com.acme.one", games={G2: {}}, apps={G3: dict(bundleId="com.acme.one")}))
         self.ph.bid = "com.acme.one"
         with use_devcert(self.c, distribution=True, bundle="com.acme.one", appid=f"{TEAM}.com.acme.one"):
+            # #1941：装前先问——会顶掉 G3 那款和通用 S2Arm；没确认不装、记录不动
+            with self.assertRaises(Failure) as e:
+                self.run_put()
+            self.assertEqual(e.exception.code, "app_bundle_replace_confirm")
+            self.assertIn("通用 S2Arm", str(e.exception)); self.assertIn("com.acme.one", str(e.exception))
+            self.assertEqual(self.calls["snap"], [])
+            self.assertEqual(sorted(layout.load_device(self.c, "UDID1")["apps"]), [G3])
+            self.c.r["acceptBundleReplace"] = True
             out = self.run_put()
         rec = layout.load_device(self.c, "UDID1")
         self.assertEqual((sorted(rec["apps"]), rec["shellId"], rec["games"]), ([G1], "", {}))

@@ -57,7 +57,9 @@ import XCTest
     func testUpdateGameRunsOnComputerOnlyAndClearsHint() async throws {
         let g = try game("0100A")
         model.updateHints = ["0100A": ["shader"]]
-        runner.updateDiagnostics = [["severity": "warning", "code": "update_incomplete", "message": "缺原件，这一项没更新：重新添加这款的游戏文件"]]
+        // 形状照作业层实际输出（c.diagnostic → summary / suggestion / detail，没有 message 字段；#1961 旧假诊断手写 message 致漏读）
+        runner.updateDiagnostics = [["severity": "warning", "code": "update_incomplete", "summary": "缺原件，这一项没更新：重新添加这款的游戏文件",
+                                     "suggestion": "按黄字里写的补上缺的那一项，再点一次「更新这款」；其余部分这次已经更新好了。", "detail": ""]]
         model.updateGame(g)
         XCTAssertEqual(model.gameUpdate(g)?.running, true, "点了当场就是进度态，不二次确认")
         let reqs = await waitRequests("updateGame", count: 1)
@@ -66,7 +68,7 @@ import XCTest
         XCTAssertNil(reqs.first?["device"], "更新只在电脑上做，不带设备")
         for _ in 0..<300 where model.gameUpdate(g)?.running != false { try? await Task.sleep(for: .milliseconds(10)) }
         XCTAssertEqual(model.updateButton(g), .upToDate, "结果 reasons 空：当场变「无需更新」")
-        XCTAssertEqual(model.gameUpdate(g)?.incomplete, ["缺原件，这一项没更新：重新添加这款的游戏文件"], "update_incomplete 列成黄字，不当失败")
+        XCTAssertEqual(model.gameUpdate(g)?.incomplete, ["缺原件，这一项没更新：重新添加这款的游戏文件"], "update_incomplete 的玩家句（summary）列成黄字、不当失败；suggestion 是通用句不拼进来（整句才能按翻译表译）")
         XCTAssertNil(model.gameUpdate(g)?.failure)
         XCTAssertFalse(runner.requests.contains { $0["operation"] as? String == "install" }, "更新不推设备")
         model.updateGame(try game("0100B"))

@@ -3960,6 +3960,26 @@ static uint64_t up_keep_cap(void) { static uint64_t v; if (!v) { const char *e =
 #define UP_KEEP_CAP up_keep_cap()
 static uint64_t g_up_keep_bytes; static uint64_t g_up_cap_flushes;
 static void up_keep_add(id<MTLBuffer> b) { if (!g_up_keep) g_up_keep = [NSMutableArray array]; [g_up_keep addObject:b]; g_up_keep_bytes += b.length; }
+// CPU 上传的暂存（pkg_upload_ 的 CPU 路径）。D-8QFH（0.6.1，iPad，一局 9400 帧、实占 3.8 GB 时）：这里分配返回 nil 没判空，直接进 up_keep_add，
+//   NSMutableArray 收 nil 抛未捕获的 ObjC 异常闪退（日志里没有当时要的字节数）。这里能回收的是在途上传批攥着的暂存：先把本批交出去、等在途的批退役放掉暂存，再分配一次；
+//   仍分配不到才停（同 up_alloc 暂存块分配失败的口径），并写清要了多少、批里攥着多少。调用前已 up_begin，本函数返回时批仍开着
+#ifndef UP_CPU_STAGE_NEW   // 单测替换这一处分配（t_nvn_pkg_unreadable ⑨ 模拟第一次分配不到）
+#define UP_CPU_STAGE_NEW(n) [g_dev newBufferWithLength:(n) options:MTLResourceStorageModeShared]
+#endif
+static uint64_t g_up_stage_retries;
+static void up_begin(void);   // 下面定义
+static id<MTLBuffer> up_cpu_stage(size_t n, const tex_t *t) {
+    id<MTLBuffer> b = UP_CPU_STAGE_NEW(n);
+    if (b) return b;
+    uint64_t held = g_up_keep_bytes;
+    up_flush(); rec_drain(); up_wait_zero(&g_up_pending);   // 同 q_cb：交出本批、交给编码线程、等全部上传批完成（完成回调放掉它们的暂存）
+    up_begin();
+    b = UP_CPU_STAGE_NEW(n); g_up_stage_retries++;
+    if (b) { MLOG("【黄】CPU 上传暂存 %zu 字节第一次分配不到（本批攥着 %llu 字节）：交出在途上传批、等它们放掉暂存后重分配成功（ser=%llu %ux%u format %#x）",
+                  n, (unsigned long long)held, (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format); return b; }
+    MDIE("CPU upload staging of %zu bytes could not be allocated even after the in-flight upload batches retired (held %llu bytes before; ser=%llu %ux%u format %#x levels %u)",
+         n, (unsigned long long)held, (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, t->d.levels);
+}
 
 
 // The upload command buffer was discarded by the system (dropped along during GPU error recovery; the first frame on entering Travincal drops one every run): the objects of this batch of textures are built and the timestamps updated, but the content was never written in,
@@ -4918,7 +4938,7 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
     //   原先只在没有池指针时截短，这种跳过了、块线性拷贝直接从起点读，提交线程 SIGBUS。CPU 拷贝前一律先问可读长度（不看有没有池指针）
     else src = tex_src(t, t->L.size, &part);
     up_begin();
-    id<MTLBuffer> stg = [g_dev newBufferWithLength:total ? total : 16 options:MTLResourceStorageModeShared];
+    id<MTLBuffer> stg = up_cpu_stage(total ? total : 16, t);
     res_add(stg); up_keep_add(stg);
     size_t off = 0;
     int zb = zblock_on() && t->d.format >= 0x79 && t->d.format <= 0x94; if (zb) { g_zb_ser = t->serial; g_zb_n = (int)MIN(d.mipmapLevelCount, 16u); memset(g_zb, 0, sizeof g_zb); memset(g_zb_tot, 0, sizeof g_zb_tot); }
@@ -7703,10 +7723,19 @@ enum { QUAR_MAX = 16 };
 static NSMutableSet<NSString *> *g_quar; static NSMutableArray<NSString *> *g_quar_new; static pthread_mutex_t g_quar_mu = PTHREAD_MUTEX_INITIALIZER; static int g_quar_n;
 static int quar_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_QUARANTINE"); v = !(e && !strcmp(e, "0")); } return v; }
 static NSString *quar_path(void) { NSString *u = pso_user_path(); return u ? [u.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"gpu_quarantine.tsv"] : nil; }
+// File version (11-21, #327): a file written before it blamed the program pairs of every faulted commit, GPU memory exhaustion too — the first out-of-memory commit of
+//   a run pinned the pairs it had just built, and every later run skipped them from the start (a whole scene black from the first controllable frame, the opening
+//   logo half drawn: Trails in the Sky the 1st, iPhone 15 Pro Max). Such a file cannot tell an out-of-memory entry from a real fault, so it is dropped and relearned:
+//   a pair that really faults is pinned again the first time it does
+#define QUAR_HEAD "# gpu_quarantine v2: program pairs whose first commit faulted (not GPU memory exhaustion)"
 static void quar_load(void) {   // caller holds g_quar_mu
     if (g_quar) return;
     g_quar = [NSMutableSet set]; g_quar_new = [NSMutableArray array];
     NSString *p = quar_path(), *t = p ? [NSString stringWithContentsOfFile:p encoding:NSUTF8StringEncoding error:nil] : nil;
+    if (t.length && ![t hasPrefix:@QUAR_HEAD]) {
+        NSUInteger old = 0; for (NSString *l in [t componentsSeparatedByString:@"\n"]) old += l.length && ![l hasPrefix:@"#"];
+        [NSFileManager.defaultManager removeItemAtPath:p error:nil]; t = nil;
+        MLOG("GPU error quarantine: %s was written before out-of-memory faults were told apart (%lu program pairs, possibly pinned by memory exhaustion only): dropped, relearned from now on", p.UTF8String, (unsigned long)old); }
     for (NSString *l in [t componentsSeparatedByString:@"\n"]) if (l.length && ![l hasPrefix:@"#"]) [g_quar addObject:l];
     g_quar_n = (int)g_quar.count;
     if (g_quar_n) MLOG("GPU error quarantine: %d program pairs skipped from the start (%s)", g_quar_n, p.UTF8String);
@@ -7726,14 +7755,23 @@ static NSArray<NSString *> *quar_take(void) {   // submit thread, at commit: thi
     pthread_mutex_lock(&g_quar_mu); quar_load(); NSArray *a = g_quar_new.count ? [g_quar_new copy] : nil; [g_quar_new removeAllObjects]; pthread_mutex_unlock(&g_quar_mu);
     return a;
 }
+// GPU memory exhaustion is no program's fault: whatever the commit built would have faulted the same with any shader (kIOGPUCommandBufferCallbackErrorOutOfMemory,
+//   Metal 3 MTLCommandBufferErrorOutOfMemory; Metal 4 nests the reason in its underlying errors, which the description carries)
+static int quar_blameless(NSError *err) {
+    if (!err) return 0;
+    if ([err.domain isEqualToString:MTLCommandBufferErrorDomain] && err.code == MTLCommandBufferErrorOutOfMemory) return 1;
+    return [err.description containsString:@"OutOfMemory"] || [err.description containsString:@"Insufficient Memory"];
+}
 static void quar_fault(NSArray<NSString *> *sus, NSError *err) {   // completion: a commit faulted
     if (!quar_on()) return;
+    if (quar_blameless(err)) { static int n; if (n++ < 4) MLOG("GPU error quarantine: the commit ran out of GPU memory, no program pair blamed (%lu new in it)", (unsigned long)sus.count); return; }
     if (!sus.count || sus.count > QUAR_MAX) { static int n; if (n++ < 8) MLOG("【红】 GPU error quarantine: the faulted commit first built %lu pipelines, %s (%s)", (unsigned long)sus.count, sus.count ? "too many to pin, nothing skipped" : "none new, nothing skipped", err.localizedDescription.UTF8String); return; }
     pthread_mutex_lock(&g_quar_mu);
     NSMutableArray *add = [NSMutableArray array]; for (NSString *q in sus) if (![g_quar containsObject:q]) { [g_quar addObject:q]; [add addObject:q]; }
     g_quar_n = (int)g_quar.count;
     NSString *p = quar_path();
-    if (add.count && p) { FILE *f = fopen(p.fileSystemRepresentation, "a"); if (f) { for (NSString *q in add) fprintf(f, "%s\n", q.UTF8String); fclose(f); } }
+    if (add.count && p) { int fresh = ![NSFileManager.defaultManager fileExistsAtPath:p];
+        FILE *f = fopen(p.fileSystemRepresentation, "a"); if (f) { if (fresh) fprintf(f, "%s\n", QUAR_HEAD); for (NSString *q in add) fprintf(f, "%s\n", q.UTF8String); fclose(f); } }
     pthread_mutex_unlock(&g_quar_mu);
     for (NSString *q in add) MLOG("【红】 GPU error quarantine: program pair %s skipped from now on (the faulted commit first built its pipeline; %s)", q.UTF8String, p ? "remembered for later runs" : "this run only");
 }
@@ -9887,6 +9925,7 @@ static const prog_t *bind_stages(const prog_t *p, int stages) {
 // replayed after the save can give the slot the saved pointer names to another combination. AI: THE SOMNIUM FILES (Unity 2017.4) binds its vertex and fragment programs apart; the
 // prediction over a 280-draw submission (pso_predict_rest) made more than NCMP combinations, and the draw after it ran Legacy Shaders/VertexLit's shadow vertex shader with
 // PSYNC/BG_AlphaTest's shadow pixel shader, a pipeline Metal refused (the pixel shader reads two outputs that vertex shader does not write). The combination is taken again from S.bst
+static unsigned g_bind_last_mask; static int g_bind_last_null; static uint64_t g_bind_n;   // 最近一次 BindProgram 的阶段掩码 / 绑的是不是空程序、累计绑定次数（提交线程；只进红行）
 static void prog_resolve(void) {
     const prog_t *np = bind_stages(NULL, 0); if (np == S.prog) return;
     S.prog = np; g_pso_dirty = 1;
@@ -13647,6 +13686,7 @@ static int state_op(uint32_t op, const void *a, uint32_t size) {
         // The compute stage has a binding of its own: a compute bind used to replace the one bound program, so a draw after a dispatch found the compute program (or none) and was
         // dropped, and a dispatch after a graphics bind found no compute shader. Hyrule Warriors: Age of Calamity interleaves them; its movie's NV12 → RGB draw was dropped and the intro played black
         case OP_BIND_PROGRAM: { p_bind_program bpt_; const p_bind_program *bp_ = bind_program_rec(a, size, &bpt_); const prog_t *bpp = prog_live(bp_);
+            g_bind_last_mask = bp_->stages; g_bind_last_null = !bpp; g_bind_n++;   // 「绘制前没绑程序」那行红的现场（#1948）
             if ((bp_->stages & 0x20) && bpp != S.cprog) { S.cprog = bpp; args_dirty_all(); }
             if (bp_->stages & 0x1f) { const prog_t *np = bind_stages(bpp, bp_->stages & 0x1f); if (np != S.prog) { S.prog = np; g_pso_dirty = 1; args_dirty_all(); } }
             break; }
@@ -16608,7 +16648,8 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     if (!mdx_on && ((di && di->mdi_cnt && !mdi_live(di->mdi_cnt, di->mdi_i)) || (dw && dw->mdi_cnt && !mdi_live(dw->mdi_cnt, dw->mdi_i)))) return;   // past the multi-draw's count
     if (mdx_on && mdx_next(dw, di)) return;   // the next draw of a masked multi-draw: only the draw is encoded
     g_mdxc.next = NULL;
-    if (!S.prog) { BAD_ERR(); RED_ONCE(18, "no program bound before the draw"); PD("Z %llu draw skipped: no program bound", g_stat_pass + !g_enc); return; }
+    if (!S.prog) { BAD_ERR(); RED_ONCE(18, "no program bound before the draw (stage slots bound, by NVN stage bit: vertex %d fragment %d geometry %d tess-control %d tess-eval / mesh %d, compute %d; last bind stage mask %#x%s, %llu binds so far)",
+        S.bst[0] != NULL, S.bst[1] != NULL, S.bst[2] != NULL, S.bst[3] != NULL, S.bst[4] != NULL, S.cprog != NULL, g_bind_last_mask, g_bind_last_null ? " with no program" : "", (unsigned long long)g_bind_n); PD("Z %llu draw skipped: no program bound", g_stat_pass + !g_enc); return; }
     __unsafe_unretained NvProg *pr = g_geo_program ? g_geo_program : prog_get(S.prog);
     qf_note(pr);   // GPU error attribution: this commit's in-flight programs (qf_put)
     for (int stage = 0; stage < 5; stage++) if (!img_atomic_prepare(pr->sh[stage], stage)) return;
