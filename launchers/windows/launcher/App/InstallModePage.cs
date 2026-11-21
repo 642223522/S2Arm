@@ -23,6 +23,9 @@ public sealed partial class EnvironmentWindow
     private string signChoice = "appleId";   // installMode 作业的 signChoice：appleId / devCert / external
     // 出法（0.6.3，installMode 作业）：layout = 缺省现在按哪种推（shell 通用 S2Arm / standalone 独立 App，一 App 一游戏）；layoutGames = 按款选过的
     private string layout = "shell";
+    /// <summary>installMode 作业读回过出法：没读回（首次渲染、作业失败）时两张卡都不画选中——原先先把缺省「通用 S2Arm」画成选中，
+    ///   读回后才跳到真实那张，读失败就一直显示错的（0.6.2 前端走查）</summary>
+    private bool layoutKnown;
     private Dictionary<string, string> layoutGames = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>出法选「独立 App」时按签名方式给的那句提示的码（installMode / layoutSet 结果 standaloneHint：appleId / wildcard / external；null → ""，不显示）</summary>
     private string standaloneHint = "";
@@ -77,6 +80,7 @@ public sealed partial class EnvironmentWindow
                 exportAvailable = Flag(job.Report.Result, "exportAvailable");
                 signChoice = Str(job.Report.Result, "signChoice") is { Length: > 0 } sc ? sc : "appleId";   // 签名方式三选一（自签走查结构 6）
                 layout = Str(job.Report.Result, "layout") is { Length: > 0 } lo ? lo : "shell";
+                layoutKnown = true;
                 ReadLayoutRecommend(job.Report.Result);
                 layoutGames = new(StringComparer.OrdinalIgnoreCase);
                 if (job.Report.Result.TryGetProperty("layoutChoice", out var lc) && lc.ValueKind == JsonValueKind.Object &&
@@ -169,7 +173,7 @@ public sealed partial class EnvironmentWindow
 
         Control OneCard(string value, string body, string badge, bool gold)
         {
-            var on = now == value;
+            var on = (own is not null || layoutKnown) && now == value;
             var content = new Grid { RowDefinitions = new RowDefinitions("Auto,Auto,Auto,*,Auto"), RowSpacing = 6 };
             // 右上：角标 + 小问号（悬停展开原理说明，点一下也展开 / 收起；两张同一段）
             var top = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), ColumnSpacing = 6 };
@@ -208,7 +212,7 @@ public sealed partial class EnvironmentWindow
                 Background = on ? Brush.Parse("#2A2722") : Surface, BorderBrush = on ? LayoutGold : Brush.Parse("#3A3A3F"), BorderThickness = new Thickness(on ? 2 : 1) };
             AutomationId(card, (gameId is null ? "install.layout." : "install.layout.game.") + value);
             // 点卡片 = 选它（不拦）；已经明确选的就是它时不重发
-            card.Click += (_, _) => { if ((gameId is null ? layout : own) != value) _ = SetLayoutAsync(value, gameId); };
+            card.Click += (_, _) => { if (!layoutKnown || (gameId is null ? layout : own) != value) _ = SetLayoutAsync(value, gameId); };
             return card;
         }
         var standalone = OneCard("standalone", "layout.card.standalone.body", "layout.card.standalone.badge", gold: true);
