@@ -148,6 +148,8 @@ def compare(name, got_path):
     want = load(name)
     got = json.load(open(got_path, encoding='utf-8'))
     bad = ['生成的档案不合格：' + b for b in lint.check(got)]
+    if (got.get('provenance'), got.get('completeness')) != ('probed', 'complete'):
+        bad.append('生成的档案元数据应为 probed + complete，实为 %r + %r' % (got.get('provenance'), got.get('completeness')))
     w = dict(leaves({k: want[k] for k in ('api', 'identity', 'vulkan')}))
     g = dict(leaves({k: got.get(k) for k in ('api', 'identity', 'vulkan')}))
     skipped = 0

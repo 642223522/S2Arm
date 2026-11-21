@@ -58,6 +58,25 @@ MINIMAL_PROPS = {
 }
 MINIMAL_QUEUES = [{'count': 1, 'flags': 0x7, 'timestampValidBits': 0}]   # 只有一个图形 + 计算 + 传输族（vk_device.c 只要 GRAPHICS∧COMPUTE）；规范允许不支持时间戳
 # 限值 / 格式 / 内存：两台真机逐项取更紧（tighter，下同原形态档的保守规则）——比任何一台已知真机都紧，不放宽
+SPEC11 = 'https://registry.khronos.org/vulkan/specs/1.1/html/vkspec.html'
+DERIVED = '派生：android/tests/devprofiles/adreno-8xx-qcom.json 与 mali-g710-r32p1.json 逐项取更紧（make_profiles.py tighter / 按位与 / 取小）'
+# minimal-1.1 是 assembled 档：每个不是「不支持」（0 / null / 空）的值都要有出处（tools/devprofile_lint.py）；上级路径覆盖下级
+MINIMAL_SOURCES = {
+    'api.version': 'android/native/direct/vk_device.c「Vulkan loader below 1.1」：后端最低 Vulkan 1.1（%s）' % SPEC11,
+    'identity': '合成档：身份字段只作标签，推导不读（#1749 §3.2-2）',
+    'vulkan.features': 'android/native/direct/vk_device.c required[] 与 shaderDrawParameters 检查：建设备的硬性要求，其余全 0',
+    'vulkan.properties.deviceType': '合成档：INTEGRATED_GPU，两台真机档都是 1',
+    'vulkan.properties.maxPerSetDescriptors': 'Vulkan 1.1 规范 Required Limits 表（%s#limits-minmax）：maxPerSetDescriptors 最低 1024' % SPEC11,
+    'vulkan.properties.subgroupSupportedStages': 'Vulkan 1.1 规范 Required Limits 表（%s#limits-minmax）：至少含 VK_SHADER_STAGE_COMPUTE_BIT' % SPEC11,
+    'vulkan.properties.subgroupSupportedOperations': 'Vulkan 1.1 规范 Required Limits 表（%s#limits-minmax）：至少含 VK_SUBGROUP_FEATURE_BASIC_BIT' % SPEC11,
+    'vulkan.properties.limits': DERIVED,
+    'vulkan.properties.maxMemoryAllocationSize': DERIVED,
+    'vulkan.properties.subgroupSize': DERIVED,
+    'vulkan.formats': DERIVED,
+    'vulkan.memory': DERIVED,
+    'vulkan.queues': 'Vulkan 1.1 规范 Queue Family Properties（%s#devsandqueues-queueprops）：有图形队列就要有同时支持图形与计算的族；'
+                     'vk_device.c 只要 GRAPHICS∧COMPUTE；timestampValidBits=0 = 不支持时间戳（规范允许）' % SPEC11,
+}
 
 
 def vk_formats():
@@ -134,6 +153,8 @@ def convert(stem, phys, dev, fmt_names, fmt_num):
             continue
         formats[name] = phys['formats'].get(str(fmt_num[name]), [0, 0, 0])   # vkjson 只列有特性位的格式：没列 = 全 0
     return {
+        # 转换档：读数来自真机（probed），但旧数据缺的项写了 null（partial）
+        'provenance': 'probed', 'completeness': 'partial',
         'schema': lint.SCHEMA, 'platform': 'android', 'api': {'kind': 'vulkan', 'version': api_str(ident['apiVersion'])},
         'identity': {'vendorId': '0x%04x' % ident['vendorID'], 'deviceId': '0x%08x' % ident['deviceID'], 'driverId': ident['driverID'],
                      'driverVersion': ident['driverVersion'], 'driverName': ident['driverName'], 'deviceName': ident['deviceName'],
@@ -174,6 +195,8 @@ def minimal(a, m, core_names):
     heaps = lambda v: sum(h['size'] for h in v['memory']['heaps'])
     small = va if heaps(va) <= heaps(vm) else vm
     return {
+        # 手写基线（assembled）；pipelineCacheUUID、model / system 段没有值（partial）
+        'provenance': 'assembled', 'completeness': 'partial', 'sources': dict(MINIMAL_SOURCES),
         'schema': lint.SCHEMA, 'platform': 'android', 'api': {'kind': 'vulkan', 'version': MINIMAL_API},
         'identity': dict(MINIMAL_IDENTITY),
         'model': {'manufacturer': None, 'model': None, 'socModel': None, 'androidRelease': None},

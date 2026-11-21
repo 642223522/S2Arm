@@ -9,7 +9,10 @@
     安装路径 / 游戏与存档信息都没有对应的键，塞进来就红）。叶子值类型逐个核。
   - 限值 / 核心特性 / 扩展特性 / 扩展属性 / 格式的名字表不在这里另抄：从 android/native/direct/dev_facts.c 的表里读（档案的写入方是它）。
   - null = 来源没有这项读数（只在由旧数据转换来的档案里出现；设备上导出的档案只有系统段读不到的项是 null）。
-  - factsDigest = sha256(规范串)，规范串 = 去掉 factsDigest 与 label 后
+  - 元数据（不是事实）：provenance = probed（App 在设备上现查）| assembled（手工按资料拼的）；completeness = complete | partial（有 null / 未知项）。
+    assembled 档案必须带 sources：{字段路径: 出处}（gpuinfo 报告编号 / 规范章节 / 文档链接），凡值不是「不支持」（0 / null / 空）的叶子，
+    它自己或某个上级路径（如 vulkan.properties.limits）在 sources 里要有出处，缺了红；sources 的键必须指向档案里真有的字段。probed 档案不许带 sources。
+  - factsDigest = sha256(规范串)，规范串 = 去掉 factsDigest、label 与元数据 provenance / completeness / sources 后
     json.dumps(sort_keys=True, separators=(',', ':'), ensure_ascii=False)，整值浮点写成整数。dev_facts.c 按同一写法逐字节输出。
 """
 import hashlib, json, os, re, sys
@@ -53,8 +56,25 @@ def _norm(v):
     return v
 
 
+META = ('factsDigest', 'label', 'provenance', 'completeness', 'sources')   # 不进摘要（dev_facts.c 同口径）
+SOURCED = ('api', 'identity', 'model', 'system', 'vulkan', 'probes', 'bench')   # assembled 档案要出处的段（api.kind 除外）
+
+
+def _leaves(v, path):
+    if isinstance(v, dict) and v:
+        for k in v: yield from _leaves(v[k], path + '.' + k)
+    elif isinstance(v, list) and v and any(isinstance(x, (dict, list)) for x in v):
+        for i, x in enumerate(v): yield from _leaves(x, '%s[%d]' % (path, i))
+    else:
+        yield path, v
+
+
+def _unsupported(v):   # 「不支持」：0 / null / 空串 / 空表；有出处要求的是其余的值
+    return v is None or v == 0 or v == '' or v == [] or v == {} or (isinstance(v, list) and all(x == 0 for x in v))
+
+
 def canonical(profile):
-    body = {k: v for k, v in profile.items() if k not in ('factsDigest', 'label')}
+    body = {k: v for k, v in profile.items() if k not in META}
     return json.dumps(_norm(body), sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode('utf-8')
 
 
@@ -107,7 +127,10 @@ class Lint:
         if pattern and not re.fullmatch(pattern, v): self.red(path, '格式不对：%r' % v)
 
     def run(self, p):
-        self.keys(p, '$', ('schema', 'platform', 'api', 'identity', 'model', 'system', 'vulkan', 'factsDigest'), ('label', 'probes', 'bench'))
+        self.keys(p, '$', ('schema', 'platform', 'api', 'identity', 'model', 'system', 'vulkan', 'factsDigest', 'provenance', 'completeness'),
+                  ('label', 'probes', 'bench', 'sources'))
+        self.str_(p.get('provenance'), '$.provenance', null=False, pattern='probed|assembled')
+        self.str_(p.get('completeness'), '$.completeness', null=False, pattern='complete|partial')
         if p.get('schema') != SCHEMA: self.red('$.schema', '应为 %s' % SCHEMA)
         self.str_(p.get('platform'), '$.platform', null=False, pattern='android|ohos')
         if self.keys(p.get('api'), '$.api', ('kind', 'version')):
@@ -146,6 +169,7 @@ class Lint:
         if 'label' in p: self.str_(p['label'], '$.label', null=False, maxlen=200)
         if 'probes' in p: self.probes(p['probes'])
         if 'bench' in p: self.bench(p['bench'])
+        self.sources(p)
         self.str_(p.get('factsDigest'), '$.factsDigest', null=False, pattern='sha256-[0-9a-f]{64}')
         if isinstance(p.get('factsDigest'), str) and not self.bad:
             want = digest(p)
@@ -204,6 +228,25 @@ class Lint:
             if not isinstance(v['timeDomains'], list): self.red('$.vulkan.timeDomains', '应为数组')
             else:
                 for n, x in enumerate(v['timeDomains']): self.int_(x, '$.vulkan.timeDomains[%d]' % n, null=False, lo=0)
+
+    def sources(self, p):
+        prov, src = p.get('provenance'), p.get('sources')
+        if prov == 'probed':
+            if 'sources' in p: self.red('$.sources', 'probed 档案不许带 sources（现查的就是出处）')
+            return
+        if prov != 'assembled': return
+        if not isinstance(src, dict) or not src: self.red('$.sources', 'assembled 档案必须带 sources（字段路径 → 出处）'); return
+        leaves = [(k, v) for sect in SOURCED if sect in p for k, v in _leaves(p[sect], sect) if k != 'api.kind']
+        paths = {k for k, _ in leaves}
+        for k, v in src.items():
+            self.str_(v, '$.sources.' + k, null=False, maxlen=300)
+            if isinstance(v, str) and not v.strip(): self.red('$.sources.' + k, '出处是空的')
+            if not any(x == k or x.startswith(k + '.') or x.startswith(k + '[') for x in paths):
+                self.red('$.sources.' + k, '出处指向档案里没有的字段')
+        for k, v in leaves:
+            if _unsupported(v): continue
+            if not any(k == s or k.startswith(s + '.') or k.startswith(s + '[') for s in src):
+                self.red('$.' + k, '值 %r 不是「不支持」，assembled 档案里缺出处（sources 里写它或上级路径）' % (v,))
 
     # §5.1 的 F1 / F2 段（M0b 起才写；这里先按稿里的形状收紧，免得成为塞任意键的口子）
     def probes(self, pr):

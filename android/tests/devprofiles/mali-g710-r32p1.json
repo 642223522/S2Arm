@@ -1,5 +1,6 @@
 {
  "api": {"kind":"vulkan","version":"1.1.177"},
+ "completeness": "partial",
  "factsDigest": "sha256-48b3982e47c1255c08fea429ced17dfeb25e564c3448c0da4ce6cf7f74b3068c",
  "identity": {
   "deviceId": "0xa8620004",
@@ -12,6 +13,7 @@
  },
  "model": {"androidRelease":null,"manufacturer":null,"model":null,"socModel":null},
  "platform": "android",
+ "provenance": "probed",
  "schema": "s2a-device-profile-v1",
  "system": {
   "adpf": null,

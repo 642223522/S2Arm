@@ -1,5 +1,6 @@
 {
  "api": {"kind":"vulkan","version":"1.1.0"},
+ "completeness": "partial",
  "factsDigest": "sha256-69c64755de0c618eeb16712758073552540357c8bd78cf60838c2a76c5dfc928",
  "identity": {
   "deviceId": "0x00000000",
@@ -12,7 +13,23 @@
  },
  "model": {"androidRelease":null,"manufacturer":null,"model":null,"socModel":null},
  "platform": "android",
+ "provenance": "assembled",
  "schema": "s2a-device-profile-v1",
+ "sources": {
+  "api.version": "android/native/direct/vk_device.c「Vulkan loader below 1.1」：后端最低 Vulkan 1.1（https://registry.khronos.org/vulkan/specs/1.1/html/vkspec.html）",
+  "identity": "合成档：身份字段只作标签，推导不读（#1749 §3.2-2）",
+  "vulkan.features": "android/native/direct/vk_device.c required[] 与 shaderDrawParameters 检查：建设备的硬性要求，其余全 0",
+  "vulkan.formats": "派生：android/tests/devprofiles/adreno-8xx-qcom.json 与 mali-g710-r32p1.json 逐项取更紧（make_profiles.py tighter / 按位与 / 取小）",
+  "vulkan.memory": "派生：android/tests/devprofiles/adreno-8xx-qcom.json 与 mali-g710-r32p1.json 逐项取更紧（make_profiles.py tighter / 按位与 / 取小）",
+  "vulkan.properties.deviceType": "合成档：INTEGRATED_GPU，两台真机档都是 1",
+  "vulkan.properties.limits": "派生：android/tests/devprofiles/adreno-8xx-qcom.json 与 mali-g710-r32p1.json 逐项取更紧（make_profiles.py tighter / 按位与 / 取小）",
+  "vulkan.properties.maxMemoryAllocationSize": "派生：android/tests/devprofiles/adreno-8xx-qcom.json 与 mali-g710-r32p1.json 逐项取更紧（make_profiles.py tighter / 按位与 / 取小）",
+  "vulkan.properties.maxPerSetDescriptors": "Vulkan 1.1 规范 Required Limits 表（https://registry.khronos.org/vulkan/specs/1.1/html/vkspec.html#limits-minmax）：maxPerSetDescriptors 最低 1024",
+  "vulkan.properties.subgroupSize": "派生：android/tests/devprofiles/adreno-8xx-qcom.json 与 mali-g710-r32p1.json 逐项取更紧（make_profiles.py tighter / 按位与 / 取小）",
+  "vulkan.properties.subgroupSupportedOperations": "Vulkan 1.1 规范 Required Limits 表（https://registry.khronos.org/vulkan/specs/1.1/html/vkspec.html#limits-minmax）：至少含 VK_SUBGROUP_FEATURE_BASIC_BIT",
+  "vulkan.properties.subgroupSupportedStages": "Vulkan 1.1 规范 Required Limits 表（https://registry.khronos.org/vulkan/specs/1.1/html/vkspec.html#limits-minmax）：至少含 VK_SHADER_STAGE_COMPUTE_BIT",
+  "vulkan.queues": "Vulkan 1.1 规范 Queue Family Properties（https://registry.khronos.org/vulkan/specs/1.1/html/vkspec.html#devsandqueues-queueprops）：有图形队列就要有同时支持图形与计算的族；vk_device.c 只要 GRAPHICS∧COMPUTE；timestampValidBits=0 = 不支持时间戳（规范允许）"
+ },
  "system": {
   "adpf": null,
   "cpu": {"capacity":null,"maxKHz":null},

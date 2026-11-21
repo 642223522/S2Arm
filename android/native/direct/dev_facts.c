@@ -766,11 +766,15 @@ static void emit_system(struct jw *w, const struct s2a_dev_facts *f) {
     jw_put(w, "}", 1);
 }
 
-// digest_hex 为 NULL：写不带 factsDigest 的规范串（摘要的输入）；否则带上
+// digest_hex 为 NULL：写摘要的输入（不带 factsDigest 与元数据 completeness / provenance）；否则全都带上。
+//   provenance 恒为 probed（本机现查）；completeness：扩展表完整枚举 = complete，枚举失败（扩展、扩展特性、扩展属性全部未知）= partial
 static void emit_profile(struct jw *w, const struct s2a_dev_facts *f, const char *digest_hex) {
     const uint32_t api = f->props.apiVersion;
     jw_f(w, "{\"api\":{\"kind\":\"vulkan\",\"version\":\"%u.%u.%u\"}", VK_API_VERSION_MAJOR(api), VK_API_VERSION_MINOR(api), VK_API_VERSION_PATCH(api));
-    if (digest_hex) { jw_s(w, ",\"factsDigest\":\"sha256-"); jw_s(w, digest_hex); jw_s(w, "\""); }
+    if (digest_hex) {
+        jw_s(w, f->ext_state == 1 ? ",\"completeness\":\"complete\"" : ",\"completeness\":\"partial\"");
+        jw_s(w, ",\"factsDigest\":\"sha256-"); jw_s(w, digest_hex); jw_s(w, "\"");
+    }
     jw_f(w, ",\"identity\":{\"deviceId\":\"0x%08x\",\"deviceName\":", f->props.deviceID);
     jw_str(w, f->props.deviceName);
     jw_s(w, ",\"driverId\":");
@@ -789,6 +793,7 @@ static void emit_profile(struct jw *w, const struct s2a_dev_facts *f, const char
 #else
     jw_s(w, "},\"platform\":\"android\"");
 #endif
+    if (digest_hex) jw_s(w, ",\"provenance\":\"probed\"");
     jw_s(w, ",\"schema\":\"s2a-device-profile-v1\",\"system\":");
     emit_system(w, f);
     jw_s(w, ",\"vulkan\":");

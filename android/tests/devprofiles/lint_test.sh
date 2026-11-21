@@ -23,8 +23,8 @@ echo "PASS: 正例 ${#profiles[@]} 份入库档案过白名单与摘要校验"
 base="$repo/android/tests/devprofiles/mali-g710-r32p1.json"
 export REPO="$repo"
 n=0
-bad() {   # $1 名字 $2 改法（Python：p 是档案对象）$3 是否重算摘要（1 / 0）$4 红因里必须有的字
-  "$PY" - "$base" "$out/bad.json" "$2" "$3" <<'PY'
+bad() {   # $1 名字 $2 改法（Python：p 是档案对象）$3 是否重算摘要（1 / 0）$4 红因里必须有的字 [$5 底档，缺省 mali 那份]
+  "$PY" - "${5:-$base}" "$out/bad.json" "$2" "$3" <<'PY'
 import json, os, sys
 sys.path.insert(0, os.path.join(os.environ['REPO'], 'tools'))
 import devprofile_lint as l
@@ -53,7 +53,21 @@ bad '缺必填键' "del p['identity']['deviceName']" 1 'identity.deviceName：�
 bad '格式名不在事实表里' "p['vulkan']['formats']['VK_FORMAT_R64_SFLOAT'] = [0, 0, 0]" 1 'formats.VK_FORMAT_R64_SFLOAT：白名单外的键'
 bad '厂商号不是 hex 串' "p['identity']['vendorId'] = 5045" 1 'identity.vendorId：应为字符串'
 bad '扩展三态之外的值' "p['vulkan']['extensions']['VK_KHR_swapchain'] = 2" 1 'extensions.VK_KHR_swapchain：取值 2'
-echo "PASS: 反例 $n 种全部按预期变红（其中隐私负对照 6 种）"
+# 元数据 provenance / completeness / sources（不进摘要：改它们不用重算 factsDigest）
+minimal="$repo/android/tests/devprofiles/minimal-1.1.json"
+bad 'assembled 缺非保守字段的出处' "del p['sources']['vulkan.properties.maxPerSetDescriptors']" 0 'maxPerSetDescriptors：值 1024 不是「不支持」' "$minimal"
+bad 'assembled 整段没有 sources' "del p['sources']" 0 'assembled 档案必须带 sources' "$minimal"
+bad 'assembled 出处指向不存在的字段' "p['sources']['vulkan.properties.noSuchLimit'] = 'x'" 0 '出处指向档案里没有的字段' "$minimal"
+bad 'probed 带 sources' "p['sources'] = {'vulkan.formats': 'gpuinfo 报告 1'}" 0 'probed 档案不许带 sources'
+bad 'provenance 非法值' "p['provenance'] = 'guessed'" 0 'provenance：格式不对'
+bad 'completeness 非法值' "p['completeness'] = 'mostly'" 0 'completeness：格式不对'
+bad '缺 provenance' "del p['provenance']" 0 'provenance：缺必填键'
+"$PY" - "$minimal" "$out/meta.json" <<'PY'
+import json, sys; p = json.load(open(sys.argv[1])); p.update(provenance='probed', completeness='complete'); p.pop('sources'); open(sys.argv[2], 'w').write(json.dumps(p))
+PY
+"$PY" "$lint" "$out/meta.json" > /dev/null || { echo "【红】改元数据（provenance / completeness / 去 sources）不该动 factsDigest，lint 却红了"; exit 1; }
+echo "PASS: 元数据不进摘要：改 provenance / completeness、去掉 sources 后不重算 factsDigest 照样过"
+echo "PASS: 反例 $n 种全部按预期变红（其中隐私负对照 6 种、元数据 7 种）"
 
 # 导出工具：诊断包取法
 name=$(basename "$base" .json)
