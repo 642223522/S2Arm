@@ -4280,6 +4280,9 @@
   "没能从 iPhone 上卸掉这款的独立 App：确认 iPhone 连着、已解锁，再试一次。": "No se pudo quitar la app independiente de este juego del iPhone. Comprueba que el iPhone esté conectado y desbloqueado e inténtalo de nuevo.",
   "从 iPhone 上卸掉这款的独立 App": "Quitando la app independiente de este juego del iPhone",
   "这款游戏暂时出不了包": "Este juego aún no se puede empaquetar",
-  "应用不完整，请重新安装 S2Arm。": "La aplicación está incompleta. Reinstala S2Arm."
+  "应用不完整，请重新安装 S2Arm。": "La aplicación está incompleta. Reinstala S2Arm.",
+  "苹果拒收了这次登录": "Apple rechazó el inicio de sesión",
+  "登录 Apple ID 时苹果的服务器回了「服务暂不可用」（HTTP 5xx），还没到核对账号密码这一步，不是网络或 Apple ID 的问题。": "Al iniciar sesión con tu Apple ID, el servidor de Apple respondió «servicio no disponible» (HTTP 5xx) antes de comprobar tu cuenta. No es un problema de tu red ni de tu Apple ID.",
+  "苹果的登录服务器拒收了这次登录请求（回了「服务暂不可用」，还没到核对账号密码那一步），不是这台电脑的网络、Apple ID 或密码的问题，换网络、换 DNS 也没用。多半是苹果又调整了对第三方签名工具的规则：把 S2Arm 更新到最新版后再登录；最新版仍这样，点「复制错误摘要」发给我们。手机、已装的 App 和存档都没动。": "El servidor de inicio de sesión de Apple rechazó esta solicitud (respondió «servicio no disponible» antes de comprobar tu cuenta). No es un problema de la red de este ordenador, de tu Apple ID ni de tu contraseña, y cambiar de red o de DNS no ayudará. Lo más probable es que Apple haya cambiado sus reglas para las herramientas de firma de terceros: actualiza S2Arm a la última versión y vuelve a iniciar sesión. Si la última versión sigue mostrando esto, haz clic en «Copiar resumen del error» y envíanoslo. Tu teléfono, las apps instaladas y las partidas guardadas no se han tocado."
  }
 }
