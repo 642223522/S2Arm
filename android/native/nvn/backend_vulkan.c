@@ -52,8 +52,8 @@
 #include "spirv_workgroup.h" // 最终 SPIR-V 的实际计算工作组尺寸（含 WorkgroupSize 的优先级）
 #include "spirv_compliance.h"   // #1865 统一装载闸：能力 / 扩展 / 存储类字节声明扫描
 #include "../capprobe/capprobe.h"
+#include "direct/sha256.h"
 #include "nvn_vk_dq.inc"   // 两级回放：从这里往下 vkCmd* 等名字走它的包装（调试开关 nvk_dq，缺省开）
-S2A_CAPPROBE_RUNTIME_LOST_WEAK_REF;   // 宿主链接单元无 bridge.cpp 时解析为 NULL
 // 宿主后端夹具可能不链回放布局；缺来源时能力关闭并明确报原因。
 // 弱链接[androiddraw]：nvn_deswizzle_geom
 // 弱链接[androiddraw]：nvn_deswizzle
@@ -160,6 +160,8 @@ struct nvn_gpu_shader_s {
     int missing_storage_format_feature;
     const char *missing_vertex_feature;   // #1072：顶点阶段写存储 / 写裁剪、剔除距离要的特性设备没启用（特性名）；NULL = 不缺
     nvn_gpu_stage stage;
+    uint8_t precompiled;
+    uint8_t stage_key[8], spirv_digest[32];  // 库阶段键与实际交给 Vulkan 的模块摘要
     nvn_gpu_layout_ent *ents;
     VkFormat *tfmt;              // 与 ents 平行：TBUF / IMAGE_TBUF 项的 texel 视图格式（自 blob 反射）；非 texel 项 UNDEFINED
     uint32_t nent;
@@ -190,6 +192,7 @@ struct nvn_gpu_pipe_s {
     uint64_t warm_tag;     // 管线预热清单的标签（槽号 + 槽代号，见 nvn_vk_pipe_warm.h）；0 = 没设过。原子读写，随对象销毁
     struct nvn_gpu_pipe_s *all_next;
     nvn_gpu_shader cshader;
+    uint8_t lib_stages;  // 出包预编阶段掩码
     struct nvn_gpu_pipe_s *cnext;
     struct nvn_gpu_pipe_s *hnext;   // 图形管线的散列桶链（g_pipe_ht）
     uint32_t hash;                  // 建管线时的 pipe_hash(描述)：查表先比它、相同才逐字段比（不碰 key 那一大块内存）；重排桶也用它
@@ -280,8 +283,12 @@ struct feedback_copy {
     struct nvn_gpu_tex_s *snap, *snap_src; // 快照图（本段 REF_TEX 保活到 fence）与它照的源图；同段同源复用，见 feedback_make
 };
 
+enum { LOSS_PROGRAMS_PER_SEGMENT = 16 };
+
 struct nvn_gpu_cmd_s {
     struct vk_segment segment; // reserve before recording: commit cannot lose done to allocation failure
+    const struct nvn_gpu_pipe_s *loss_programs[LOSS_PROGRAMS_PER_SEGMENT], *loss_last_pipe;
+    uint8_t loss_nprograms, loss_programs_truncated;
     VkCommandBuffer cb;
     struct bc_temp *bc_temps;
     struct clr_pipe_temp *clear_pipes;   // 清除缓存满后的段自有管线，完成 / 放弃时回收
@@ -422,6 +429,9 @@ struct nvn_gpu_vk {
     uint64_t *submitted;
     uint32_t nsub, capsub;
     struct vk_segment *qhead, *qtail;
+    struct vk_segment *active_segment;   // g_mu：已出队，worker 尚未处理完 Vulkan 等待
+    _Atomic(struct vk_segment *) submitting;  // 正在向 Vulkan 提交的客体段。入队（g_mu）时清除
+    int loss_reported;                   // g_mu：每个会话首份故障快照
     struct nvn_gpu_buf_s *rhead, *rtail;
     struct nvn_gpu_cmd_s *live;
     struct nvn_gpu_buf_s *bufs;
@@ -1831,6 +1841,8 @@ void nvn_vk_frame_log_gpu_frame_end(void) __attribute__((weak));
 // 同一份段读数也交给 ADPF（android/native/adpf_hint.c）：API 35 起随帧上报 GPU 时长。只链后端的 vk 夹具没有它，地址为空就不调
 void s2a_adpf_gpu_segment(uint64_t gpu_ns) __attribute__((weak));
 void s2a_adpf_gpu_frame_end(void) __attribute__((weak));
+#include "backend_vulkan_device_lost.inc"
+
 static void process_segment(struct nvn_gpu_vk *vk, struct vk_segment *s) {
     int failed = s->failed;
     nvn_gpu_rc code = s->rc;
@@ -1855,17 +1867,21 @@ static void process_segment(struct nvn_gpu_vk *vk, struct vk_segment *s) {
         if (r == VK_SUCCESS && fail_sig && fail_sig == s->signal) r = (VkResult)VK_ERROR_UNKNOWN;
         if (r != VK_SUCCESS) {
             pthread_mutex_lock(&g_mu);
+            vk->active_segment = NULL;
             if (r == VK_ERROR_DEVICE_LOST) { vk->device_lost = 1; fbpool_drain_locked(vk); }
             if (!s->internal && (!vk->failed || s->signal < vk->failed)) vk->failed = s->signal;
             pthread_cond_broadcast(&g_cv);
             pthread_mutex_unlock(&g_mu);
-            // #1456：真实 DEVICE_LOST 回写当前指纹 capprobe 结果（source=runtime-lost，
-            // 只记指纹不记游戏），下次启动直接走规避不再探；JNI 回呼不持 g_mu。
-            if (r == VK_ERROR_DEVICE_LOST && s2a_capprobe_runtime_lost) s2a_capprobe_runtime_lost();
+            if (r == VK_ERROR_DEVICE_LOST) device_loss_report(vk, s, LOSS_OBSERVED);
             failed = 1;
             code = rc(r == VK_ERROR_DEVICE_LOST ? NVN_GPU_E_DEVICE : NVN_GPU_E_FAILED);
             why = r == VK_ERROR_DEVICE_LOST ? "设备丢失" : "等待栅栏失败";
         } else {
+            // 栅栏完成后立即移出嫌疑范围。回调和时间戳读数可以稍后完成。
+            pthread_mutex_lock(&g_mu);
+            vk->active_segment = NULL;
+            int terminal = vk->failed && s->signal >= vk->failed;
+            pthread_mutex_unlock(&g_mu);
             if (s->cmd && s->cmd->tsq && !s->internal) {   // 调试读数：这一段在 GPU 上首尾相隔多久；相邻两段之间 GPU 空了多久
                 static double period; static uint64_t n, sum, mx, last_end, gap, t_first;
                 if (period == 0) { VkPhysicalDeviceProperties pp; vkGetPhysicalDeviceProperties(g.phys, &pp); period = pp.limits.timestampPeriod > 0 ? pp.limits.timestampPeriod : 1; }
@@ -1902,9 +1918,6 @@ static void process_segment(struct nvn_gpu_vk *vk, struct vk_segment *s) {
                 }
             }
             // 前面的段已经把时间线打进失败终态时，本段即使执行完也不许发布成功（A4）。
-            pthread_mutex_lock(&g_mu);
-            int terminal = vk->failed && s->signal >= vk->failed;
-            pthread_mutex_unlock(&g_mu);
             if (terminal) {
                 failed = 1;
                 code = rc(NVN_GPU_E_FAILED);
@@ -1965,6 +1978,7 @@ static void *worker_main(void *arg) {
             vk->qhead = s->next;
             if (!vk->qhead) vk->qtail = NULL;
             vk->busy = 1;
+            if (s->submitted) vk->active_segment = s;
             pthread_mutex_unlock(&g_mu);
             process_segment(vk, s);
             pthread_mutex_lock(&g_mu);
@@ -3584,6 +3598,14 @@ nvn_gpu_rc nvn_gpu_shader_load(const nvn_gpu_shader_src *s, nvn_gpu_shader *out,
             }
         }
         VkResult module_result = vkCreateShaderModule(g.d, &ci, NULL, &sh->mod);
+        if (module_result == VK_SUCCESS && s->precompiled) {
+            sh->precompiled = 1;
+            memcpy(sh->stage_key, s->key, sizeof sh->stage_key);
+            s2a_sha256 hash;
+            s2a_sha256_init(&hash);
+            s2a_sha256_update(&hash, ci.pCode, ci.codeSize);
+            s2a_sha256_final(&hash, sh->spirv_digest);
+        }
         free(array_code);
         if (module_result != VK_SUCCESS) {
             free(sh->tfmt); free(sh->ents); free(sh);
@@ -4378,6 +4400,7 @@ static nvn_gpu_rc pipe_build(const nvn_gpu_pipe_desc *d, struct nvn_gpu_pipe_s *
     for (int st = 0; st < 5; st++) {
         struct nvn_gpu_shader_s *sh = d->st[st].sh;
         if (!sh) continue;
+        if (sh->precompiled) p->lib_stages |= 1u << st;
         p->stage_nent[st] = sh->nent;
         p->stage_push_off[st] = sh->push_off;
         p->stage_push_bytes[st] = sh->push_bytes;
@@ -4685,6 +4708,8 @@ static nvn_gpu_rc cpipe_build(const nvn_gpu_stage_desc *cs, int mode, nvn_gpu_pi
     { const uint64_t dt = now_ns() - pc_t0;
       static int slowc = -1; if (slowc < 0) slowc = nvn_plat_flag("nvk_hitch_log", 0) != 0;
       if (slowc && dt > 3000000ull) { char b[160]; snprintf(b, sizeof b, "计算管线编译 %.1f 毫秒", (double)dt / 1e6); nvn_plat_log(NVN_PLAT_LOG_INFO, "pipe", b); } }
+    p->cshader = sh;   // 两条安装路径都保留实际计算阶段的身份
+    if (sh->precompiled) p->lib_stages = 1u << NVN_GPU_SH_CS;
     p->stage_nent[NVN_GPU_SH_CS] = sh->nent;
     p->stage_push_off[NVN_GPU_SH_CS] = sh->push_off;
     p->stage_push_bytes[NVN_GPU_SH_CS] = sh->push_bytes;
@@ -4762,7 +4787,7 @@ static nvn_gpu_rc cpipe_get_inner(const nvn_gpu_stage_desc *cs, int mode, nvn_gp
     pthread_mutex_lock(&g_mu);
     hit = cpipe_find_locked(cs->sh);
     if (!hit) {
-        hit = fresh; hit->cshader = cs->sh; cs->sh->refs++;
+        hit = fresh; cs->sh->refs++;
         hit->all_next = g.pipes; g.pipes = hit;
         uint32_t b = cpipe_bucket(cs->sh); hit->cnext = g_cpipe_ht[b]; g_cpipe_ht[b] = hit;
         if (t_warm_scope) { hit->warm = 1; __atomic_fetch_add(&g_warm_created, 1, __ATOMIC_RELAXED); }
@@ -6105,7 +6130,9 @@ static inline int diag_draw_mode(void) {
     if (__builtin_expect(g_diag_draw_mode < 0, 0)) g_diag_draw_mode = nvn_plat_flag("nvk_diag_draw_mode", 0);
     return g_diag_draw_mode;
 }
-#define DIAG_DRAW(call) do { const int dm_ = diag_draw_mode(); if (__builtin_expect(dm_ != 1, 1)) { call; if (__builtin_expect(dm_ == 2, 0)) { call; } } } while (0)
+#define DIAG_DRAW(call) do { \
+    if (__builtin_expect(dm != 1, 1)) { call; if (__builtin_expect(dm == 2, 0)) { call; } } \
+} while (0)
 
 void nvn_gpu_draw(nvn_gpu_cmd ch, const nvn_gpu_draw_args *a) {
     draw_tm_init();   // 诊断：这笔绘制各段用时（nvk_gputime 开着才计）
@@ -6222,6 +6249,7 @@ void nvn_gpu_draw(nvn_gpu_cmd ch, const nvn_gpu_draw_args *a) {
     }
     uint32_t inst = a->instances ? a->instances : 1;
     uint32_t draws = a->max_draws ? a->max_draws : 1;
+    const int dm = diag_draw_mode();
     if (a->ibuf) {
         if (a->itype > 2) { set_sticky(c, NVN_GPU_E_ARG, "索引类型 %u 非法", a->itype); return; }
         VkIndexType it = a->itype == 0 ? VK_INDEX_TYPE_UINT8_EXT : a->itype == 1 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
@@ -6297,6 +6325,7 @@ void nvn_gpu_draw(nvn_gpu_cmd ch, const nvn_gpu_draw_args *a) {
     } else {
         DIAG_DRAW(vkCmdDraw(c->cb, a->count, inst, a->first, a->base_instance));
     }
+    if (dm != 1 && (a->ind ? !a->cnt || a->max_draws : a->count)) loss_note_program(c, p);
     if (dtm) { const uint64_t dt3 = now_ns(); __atomic_fetch_add(&g_draw_ns[0], dt1 - dt0, __ATOMIC_RELAXED); __atomic_fetch_add(&g_draw_ns[1], dt2 - dt1, __ATOMIC_RELAXED); __atomic_fetch_add(&g_draw_ns[2], dt3 - dt2, __ATOMIC_RELAXED);
         // 每 5 秒一次：把后端逐笔的三段（描述符 / 状态 / 顶点索引与绘制调用）摊到每笔上打印，
         // 找到后端这笔 5 微秒里到底是谁（真机读数见坑记录续 27）。
@@ -6360,6 +6389,7 @@ void nvn_gpu_dispatch(nvn_gpu_cmd ch, nvn_gpu_pipe ph, uint32_t x, uint32_t y, u
     } else {
         vkCmdDispatch(c->cb, x, y, z);
     }
+    loss_note_program(c, p);
 }
 // ---------------------------------------------------------------- 贴图 / 视图 / 采样器
 
@@ -8219,6 +8249,7 @@ void nvn_gpu_cmd_abort(nvn_gpu_cmd ch) {
 
 static void enqueue_segment(struct nvn_gpu_vk *vk, struct vk_segment *s) {
     pthread_mutex_lock(&g_mu);
+    if (atomic_load(&vk->submitting) == s) atomic_store(&vk->submitting, NULL);
     if (vk->qtail) vk->qtail->next = s;
     else vk->qhead = s;
     vk->qtail = s;
@@ -8371,7 +8402,11 @@ static nvn_gpu_rc commit_impl(nvn_gpu_cmd ch, uint64_t signal, nvn_gpu_done_fn d
             VkCommandBuffer cbs[2];
             si.commandBufferCount = submit_cbs(c, cbs);
             si.pCommandBuffers = cbs;
-            r = si.commandBufferCount ? vkQueueSubmit(g.queue, 1, &si, fence) : VK_ERROR_OUT_OF_HOST_MEMORY;
+            r = VK_ERROR_OUT_OF_HOST_MEMORY;
+            if (si.commandBufferCount) {
+                atomic_store(&g.submitting, s);
+                r = vkQueueSubmit(g.queue, 1, &si, fence);
+            }
             if (r == VK_SUCCESS) {
                 s->fence = fence;
                 s->submitted = 1;
@@ -8381,6 +8416,8 @@ static nvn_gpu_rc commit_impl(nvn_gpu_cmd ch, uint64_t signal, nvn_gpu_done_fn d
                 pthread_mutex_unlock(&g_submit_mu);
                 return rc(NVN_GPU_OK);
             }
+            if (r == VK_ERROR_DEVICE_LOST) device_loss_report(&g, s, LOSS_SUBMIT_UNCERTAIN);
+            atomic_store(&g.submitting, NULL);
             vkDestroyFence(g.d, fence, NULL);
             err = err ? err : &(nvn_gpu_err){0};
             fail(err, NVN_GPU_E_DEVICE, "vkQueueSubmit 失败");
