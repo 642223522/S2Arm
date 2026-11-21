@@ -3756,6 +3756,28 @@ static void dlay_close(void) {
 //   通道录制路径的缓存，跟建管线无关）。以后往这里加共享可写状态必须先加锁或改成构建期私有，不能裸加。
 // 装缓存由 pipe_install_locked 做（g_mu 下双检 + 着色器引用）。
 static const char *pool_pipeline_preflight(const struct nvn_gpu_pipe_s *, const nvn_gpu_pipe_desc *, const struct nvn_gpu_shader_s *);
+// 建管线的 Vulkan 调用失败：VkResult 原名带进 why（回放层按「返回码 + 原文」分类，rp_draw.c rp_pfail_kind），返回码按结果分——
+// 内存类（主存 / 显存 / 池）= NVN_GPU_E_OOM（暂时性，回放层退避重试）；设备丢失 = NVN_GPU_E_DEVICE（终态）；其余用调用方给的确定性码。
+static const char *pipe_vk_res_name(VkResult r) {
+    switch (r) {
+    case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
+    case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+    case VK_ERROR_OUT_OF_POOL_MEMORY: return "VK_ERROR_OUT_OF_POOL_MEMORY";
+    case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
+    case VK_ERROR_INITIALIZATION_FAILED: return "VK_ERROR_INITIALIZATION_FAILED";
+    case VK_ERROR_INVALID_SHADER_NV: return "VK_ERROR_INVALID_SHADER_NV";
+    case VK_ERROR_FEATURE_NOT_PRESENT: return "VK_ERROR_FEATURE_NOT_PRESENT";
+    case VK_ERROR_FORMAT_NOT_SUPPORTED: return "VK_ERROR_FORMAT_NOT_SUPPORTED";
+    case VK_ERROR_UNKNOWN: return "VK_ERROR_UNKNOWN";
+    case VK_PIPELINE_COMPILE_REQUIRED: return "VK_PIPELINE_COMPILE_REQUIRED";
+    default: return "VkResult";
+    }
+}
+static int pipe_vk_res_code(VkResult r, int fixed) {
+    if (r == VK_ERROR_OUT_OF_HOST_MEMORY || r == VK_ERROR_OUT_OF_DEVICE_MEMORY || r == VK_ERROR_OUT_OF_POOL_MEMORY) return NVN_GPU_E_OOM;
+    if (r == VK_ERROR_DEVICE_LOST) return NVN_GPU_E_DEVICE;
+    return fixed;
+}
 static nvn_gpu_rc pipe_build(const nvn_gpu_pipe_desc *d, struct nvn_gpu_pipe_s **out, nvn_gpu_err *err) {
     *out = NULL;
     const nvn_gpu_pipe_desc *requested = d;
@@ -3887,10 +3909,11 @@ static nvn_gpu_rc pipe_build(const nvn_gpu_pipe_desc *d, struct nvn_gpu_pipe_s *
     pli.pSetLayouts = p->nset ? p->dsl : NULL;
     pli.pushConstantRangeCount = npr;
     pli.pPushConstantRanges = npr ? pr : NULL;
-    if (vkCreatePipelineLayout(g.d, &pli, NULL, &p->layout) != VK_SUCCESS) {
-        free(p);
-        return fail(err, NVN_GPU_E_UNSUPPORTED, "vkCreatePipelineLayout 失败");
-    }
+    { const VkResult vr = vkCreatePipelineLayout(g.d, &pli, NULL, &p->layout);
+      if (vr != VK_SUCCESS) {
+          free(p);
+          return fail(err, pipe_vk_res_code(vr, NVN_GPU_E_UNSUPPORTED), "vkCreatePipelineLayout 失败（%s %d）", pipe_vk_res_name(vr), (int)vr);
+      } }
     p->pass = make_pipeline_pass(d);
     if (!p->pass) {
         vkDestroyPipelineLayout(g.d, p->layout, NULL);
@@ -4137,8 +4160,9 @@ static nvn_gpu_rc pipe_build(const nvn_gpu_pipe_desc *d, struct nvn_gpu_pipe_s *
     gp.renderPass = p->pass;
     gp.subpass = 0;
     const uint64_t pl_t0 = now_ns();   // 驱动编译管线是同步的：超过 3 毫秒就打一行（走路/进新场景时会集中出现）
-    if (vkCreateGraphicsPipelines(g.d, g_plc, 1, &gp, NULL, &p->pipe) != VK_SUCCESS) {
-        nvn_gpu_rc bad = fail(err, NVN_GPU_E_COMPILE, "vkCreateGraphicsPipelines 失败");
+    const VkResult gvr = vkCreateGraphicsPipelines(g.d, g_plc, 1, &gp, NULL, &p->pipe);
+    if (gvr != VK_SUCCESS) {
+        nvn_gpu_rc bad = fail(err, pipe_vk_res_code(gvr, NVN_GPU_E_COMPILE), "vkCreateGraphicsPipelines 失败（%s %d）", pipe_vk_res_name(gvr), (int)gvr);
         destroy_pipe_objects(p);
         return bad;
     }
