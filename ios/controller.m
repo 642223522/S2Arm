@@ -664,6 +664,7 @@ static void pad_face_sync(void) {
     atomic_store(&g_shown_external, external || keyboard);
     _connect.hidden = !_adapterEnabled || !_foreground || external;
     _touchEnabled(_foreground && !external && !keyboard);
+    s2a_ios_mouse_sync();   // 虚拟按键回来了：鼠标视角不该再锁着
 }
 - (void)publishSystem:(GCExtendedGamepad *)pad {
     uint32_t buttons, kb_buttons; int32_t axes[4], kb_sticks[4];
@@ -998,7 +999,7 @@ static void log_controllers(int why) {   // why：0 启动时、1 连接通知�
     if (!foreground) { atomic_store(&g_ble_ready, 0); ble_slot_set_locked(-1); }
     pthread_mutex_unlock(&g_feedback_mu);
     s2a_pad_set_active(foreground);
-    if (!foreground) s2a_ios_keyboard_background();   // 外接键盘：按着的键放开，接管保留（同系统手柄，回前台虚拟按键不跳出来）
+    if (!foreground) { s2a_ios_keyboard_background(); s2a_ios_mouse_background(); }   // 外接键盘：按着的键放开，接管保留（同系统手柄，回前台虚拟按键不跳出来）；鼠标释放锁定（同 Mac 失焦）
     else s2a_ios_keyboard_foreground();               // 后台期间键盘拔了：结束接管，虚拟按键回来
     atomic_store(&g_slots_active, foreground);   // 槽 1–3：下面 selectSystem 分槽时按它采样或清零
     s2a_ios_slot_feedback_active(foreground);   // 玩家 2–4 的震动 / 体感：后台不收
@@ -1037,12 +1038,40 @@ static void pad_selection_check(void) {
     int external = shown_external_now();
     if (atomic_load(&g_shown_external) != external) dispatch_async(dispatch_get_main_queue(), ^{ [g_controller updateVisibility]; });
 }
-// 屏幕被碰（含虚拟按键隐藏时碰到游戏画面）：连着实体手柄时改由触屏生效、显示虚拟按键。只观察、不拦截任何触摸
+// 屏幕被碰（含虚拟按键隐藏时碰到游戏画面）：连着实体手柄时改由触屏生效、显示虚拟按键。只观察、不拦截任何触摸。
+//   触控板 / 鼠标点击（UITouchTypeIndirectPointer，#1869 PR 2）：虚拟按键收起时不算碰屏幕（交 mouse.m 的规则：锁定 / 按键 / 当触屏点），
+//   要当触屏点的那一下转给 vpad.m 的触点槽，跟到抬起为止；虚拟按键显示着或仅触屏时照旧当手指
 @interface S2ATouchWatch : UIGestureRecognizer
 @end
-@implementation S2ATouchWatch
+@implementation S2ATouchWatch {
+    NSMutableSet<UITouch *> *_routed;   // 正当触屏点转给 vpad.m 的触控板点击
+}
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    (void)touches; (void)event;
+    BOOL finger = NO;
+    for (UITouch *t in touches) {
+        if (t.type != UITouchTypeIndirectPointer) { finger = YES; continue; }
+#if TARGET_OS_TV
+        int how = s2a_ios_mouse_pointer(0);   // 电视没有触控板指针（tv_host.m 回 0：当手指）
+#else
+        int how = s2a_ios_mouse_pointer((long)event.buttonMask);
+#endif
+        if (how == 0) finger = YES;
+        else if (how == 2) { if (!_routed) _routed = [NSMutableSet set]; [_routed addObject:t]; s2a_vpad_pointer_touch(t, 0); }
+    }
+    if (finger) [self fingerDown];
+    if (!_routed.count) self.state = UIGestureRecognizerStateFailed;
+}
+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    (void)event; for (UITouch *t in touches) if ([_routed containsObject:t]) s2a_vpad_pointer_touch(t, 1);
+}
+- (void)lift:(NSSet<UITouch *> *)touches {
+    for (UITouch *t in touches) if ([_routed containsObject:t]) { s2a_vpad_pointer_touch(t, 2); [_routed removeObject:t]; }
+    if (!_routed.count) self.state = UIGestureRecognizerStateFailed;
+}
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { (void)event; [self lift:touches]; }
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { (void)event; [self lift:touches]; }
+- (void)reset { [super reset]; for (UITouch *t in _routed) s2a_vpad_pointer_touch(t, 2); [_routed removeAllObjects]; }
+- (void)fingerDown {
     [g_controller screenTouched];   // 键盘接管中（按键模式）：虚拟按键显示回来
     if (s2a_pad_prefer_touch()) {
         system_sync_selection();
@@ -1054,7 +1083,6 @@ static void pad_selection_check(void) {
         pthread_mutex_unlock(&g_feedback_mu);
         [g_controller updateVisibility];
     }
-    self.state = UIGestureRecognizerStateFailed;
 }
 @end
 void s2a_controller_attach(UIView *root, void (^touchEnabled)(BOOL)) {
@@ -1065,7 +1093,9 @@ void s2a_controller_attach(UIView *root, void (^touchEnabled)(BOOL)) {
     watch.cancelsTouchesInView = NO; watch.delaysTouchesBegan = NO; watch.delaysTouchesEnded = NO;
     [root addGestureRecognizer:watch];
     s2a_ios_keyboard_attach();   // iPad 外接键盘（keyboard.m）：回调挂到上面的输入队列
+    s2a_ios_mouse_attach(root);  // 触控板 / 鼠标（mouse.m）：同一条输入队列；root 用来请求指针锁定
 }
+int s2a_ios_inputs_hidden(void) { return atomic_load(&g_shown_external) == 1; }
 // 前后台切换会改手柄 / 虚拟手柄的 UIKit 状态（selectSystem → updateVisibility、S2AVPadView setInputEnabled → clearTouches），只许在主线程做。
 //   v0.3.0 起挂起 / 恢复在串行队列 s2a.ios-lifecycle 上跑（app.m s2a_ios_suspend），从那里直接调会在 UIImageView setHidden 处触发 UIKit 主线程断言、
 //   整个 App 被系统中止（11-11 真机：局中一失焦就崩，崩溃报告 EXC_BREAKPOINT，队列 s2a.ios-lifecycle）。不在主线程就排到主队列：

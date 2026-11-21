@@ -653,9 +653,24 @@
 "addrshort.body" = "這款遊戲開局要一大塊連續的位址範圍，這台裝置的系統能給 App 的不夠（和儲存空間無關，清理空間沒有用）：可能會非常卡，或一直停在開頭。可以先點「仍要啟動」試試；想正常玩，請換一台記憶體更大的 iPhone / iPad / Mac（系統能給 App 的位址範圍更大），或等後續版本改進。";
 "host.startAnyway" = "仍要啟動";
 /* iPad 外接键盘改键页（ios/keyboard_settings.m，#1869）：除菜单项 / 标题 / 说明外，文案同 Mac 启动器（launchers/shared input.*） */
-"kbd.menu" = "鍵盤鍵位…";
-"kbd.title" = "鍵盤鍵位";
+"kbd.menu" = "鍵盤與滑鼠…";
+"kbd.title" = "鍵盤與滑鼠";
 "kbd.footer" = "點一個按鍵後按鍵盤上的新鍵，當場生效，只對這款遊戲儲存。沒接鍵盤時可以從「常用鍵」裡選。";
+"kbd.mouse" = "滑鼠";
+"kbd.mouse.note" = "轉動視角時，點一下游戲畫面鎖住滑鼠；鎖住時按 Esc 先鬆開滑鼠，再按一次才算遊戲裡的按鍵。";
+"kbd.mouse.mode" = "移動滑鼠時";
+"kbd.mouse.mode.camera" = "轉動視角";
+"kbd.mouse.mode.off" = "不起作用";
+"kbd.mouse.sensX" = "左右靈敏度";
+"kbd.mouse.sensY" = "上下靈敏度";
+"kbd.mouse.invertX" = "左右反過來";
+"kbd.mouse.invertY" = "上下反過來";
+"kbd.mouse.recenter" = "停手後視角回正";
+"kbd.mouseButton.0" = "左鍵";
+"kbd.mouseButton.1" = "右鍵";
+"kbd.mouseButton.2" = "中鍵";
+"kbd.mouseButton.3" = "側鍵 1";
+"kbd.mouseButton.4" = "側鍵 2";
 "kbd.section.buttons" = "手把按鍵";
 "kbd.section.sticks" = "搖桿";
 "kbd.record" = "請按新鍵，Esc 取消";
