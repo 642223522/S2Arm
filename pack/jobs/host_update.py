@@ -140,17 +140,32 @@ def update_hints(c):
         rid = None   # 取不到改写器指纹：这一项不判（不因此给所有款标「建议更新」）
     games = []
     for g in c.catalog()["games"]:
-        if not layout.program_info(c, g["id"]):
-            continue   # #1712：没打过 iPhone 包（只在 Mac 出包 / 玩）的款不标——「更新这款」就是推到 iPhone，Mac 那份旧不该弹手机提示
-        why = _game_hint(c, g["id"], rid, want)
-        if shader_hint(c, g["id"]):
-            why.append("shaderMiss")
-        mac = layout.image_mac(c, g["id"], create=False) / "manifest.json"
-        if "libGen" not in why and mac.is_file() and lib_stale(read(mac, {}).get("libGen")):
-            why.append("libGen")   # Mac 运行版本的库是旧代数（iPhone 那份在 _game_hint 判）
+        why = game_reasons(c, g["id"], rid, want)
         if why:
             games.append(dict(gameId=g["id"].upper(), reasons=why))
     return dict(games=games)
+
+
+def game_reasons(c, gid, rid=None, want=None):
+    """一款的「建议更新」原因（update_hints 逐款判、updateGame 做完再判一次用同一处）。rid / want 不给就现取。
+    没打过 iPhone 包（只在 Mac 出包 / 玩）的款 → []：#1712，从没做过 iPhone 版的不出更新（11-21 维护者定）"""
+    if not layout.program_info(c, gid):
+        return []
+    if want is None:
+        want = engine_compat(c) or {}
+    if rid is None:
+        import rewrite_refresh
+        try:
+            rid = rewrite_refresh.rewriter_id(c)
+        except (Failure, OSError, subprocess.SubprocessError):
+            rid = None
+    why = _game_hint(c, gid, rid, want)
+    if shader_hint(c, gid):
+        why.append("shaderMiss")
+    mac = layout.image_mac(c, gid, create=False) / "manifest.json"
+    if "libGen" not in why and mac.is_file() and lib_stale(read(mac, {}).get("libGen")):
+        why.append("libGen")   # Mac 运行版本的库是旧代数（iPhone 那份在 _game_hint 判）
+    return why
 
 
 SIGN_LIFETIME = dict(free=7 * 86400, paid=365 * 86400)   # 读不到真实到期时按苹果规则估：免费账号描述文件 7 天、付费 / 证书一年（手机上 App 自己读描述文件给准数）
@@ -173,15 +188,20 @@ def _game_hint(c, gid, rid, want):
     return why
 
 
-def _online(c, names=None):
-    """现在连着的手机 → {UDID: 'usb' | 'network'}；读不到 → {}（probe 时才调，可能要几秒）。names（dict）顺带填 {UDID: 设备名}（Mac 读得到；Windows 给不出）"""
+def _online(c, names=None, kinds=None):
+    """现在连着的手机 → {UDID: 'usb' | 'network'}；读不到 → {}（probe 时才调，可能要几秒）。names（dict）顺带填 {UDID: 设备名}（Mac 读得到；Windows 给不出）；
+    kinds（dict）顺带填 {UDID: 'iPhone' | 'iPad'}（11-21 导出确认页设备行照实写类型：Mac 按 devicectl 的机型 / 平台；Windows 只有插线的认得出 USB 产品号，Wi-Fi 上的不填）"""
     out = {}
     try:
         if os.name == "nt":
             import install
-            for u, kind, _ in install.win_install_mod(c).mux_devices():
+            mod = install.win_install_mod(c)
+            for u, kind, _ in mod.mux_devices():
                 if u:
                     out[u] = "network" if str(kind).lower().startswith("net") else "usb"
+                    k = mod.device_kind(u) if kinds is not None and hasattr(mod, "device_kind") else ""
+                    if k:
+                        kinds[u] = "iPad" if k == "ipad" else "iPhone"
         else:
             from diag import devicectl, is_candidate
             rc, data, _ = devicectl(c, "list", "devices", timeout=30)
@@ -194,6 +214,9 @@ def _online(c, names=None):
                     out[u] = "network" if cp.get("transportType") == "localNetwork" else "usb"
                     if names is not None:
                         names[u] = (d.get("deviceProperties") or {}).get("name") or ""
+                    if kinds is not None:
+                        import install
+                        kinds[u] = install.device_kind(d)
     except (Failure, OSError, ValueError, subprocess.SubprocessError):
         return {}
     return out
@@ -273,7 +296,8 @@ def phone_overview(c):
     library = [g["id"].upper() for g in c.catalog()["games"]]
     hints = {g: _game_hint(c, g, rid, want) for g in library}
     names = {}
-    online = _online(c, names) if c.r.get("probe") is True else None
+    kinds = {}
+    online = _online(c, names, kinds) if c.r.get("probe") is True else None
     rows = [(k, r) for k, r in layout.devices(c) if isinstance(r, dict)]
     if online:   # 结构 5：从「连着的手机上实际装了什么」出发——连着、却没有设备记录的手机（玩家用 AltStore / SideStore 装的 S2Arm）也列出来
         known = {k for k, _ in rows}
@@ -321,7 +345,7 @@ def phone_overview(c):
             ext = rec.get("externalBundleId") if who == "external" else None
         external = who == "external"
         choose = who == "choose"
-        phone = dict(device=key, name=signed.get("device") or names.get(key) or "", installed=who in ("launcher", "external", "choose") if who else bool(rec.get("shellId")),
+        phone = dict(device=key, name=signed.get("device") or names.get(key) or "", **({"kind": kinds[key]} if kinds.get(key) else {}), installed=who in ("launcher", "external", "choose") if who else bool(rec.get("shellId")),
                      installedBy=who if who in ("launcher", "external") else None, bundleId=ext if external else rec.get("bundleId") or "",
                      shellCurrent=None if external else bool(sid) and rec.get("shellId") == sid, signedAt=at, free=free,
                      signMode="external" if external else _sign_mode(c, rec, signed),
@@ -329,6 +353,8 @@ def phone_overview(c):
                      lastSeen=rec.get("at") if isinstance(rec.get("at"), (int, float)) else None, canSign=_can_sign(rec), games=games, apps=_app_rows(rec, sid))
         if external:   # 别的工具装的：给它自己的一套按钮，不出「安装 S2Arm」（会新建证书、顶掉玩家 AltStore 的证书）
             phone["actions"] = list(EXTERNAL_PHONE_ACTIONS)
+            if online and online.get(key) and ext:
+                phone["certImported"] = _cert_imported(c, key, rec, ext)
         if choose:   # 装着不止一个、玩家还没选：只给「选用哪个 S2Arm」，不替玩家挑、不出安装
             phone.update(needsChoice=True, bundleId="", signMode=None, shellCurrent=None, actions=["chooseApp"])
         if cands and len(cands) > 1:
@@ -337,6 +363,18 @@ def phone_overview(c):
             phone["online"] = online.get(key)
         phones.append(phone)
     return dict(phones=phones)
+
+
+def _cert_imported(c, udid, rec, bid):
+    """别的工具装的 S2Arm 导入签名证书了没有（11-21 导出确认页「自签」时设备行：导入了才能直接推，没导入写「先在手机上导入」）。
+    同候选列表的判法（install.s2arm_candidates）：导入的证书团队 = 这个 App 的团队；读不出 App 团队时只看导没导。读不出身份 → False"""
+    import install
+    meta = install.phone_identity_meta(c, udid, bid) or {}
+    team = meta.get("team")
+    if not team:
+        return False
+    app = next((a for a in (install.installed_s2arm_on(c, udid, rec) or []) if a["bundleId"].lower() == bid.lower()), None)
+    return not app or not app.get("team") or app["team"] == team
 
 
 def _app_rows(rec, sid):

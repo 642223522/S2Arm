@@ -129,7 +129,8 @@ class PutApp(unittest.TestCase):
         self.c = ctx(self.t)
         self.pack = self.t / "pack"; self.pack.mkdir()
         (self.pack / "manifest.json").write_text(json.dumps({"index_sha256": "P1"}))
-        self.calls = dict(install=[], push=[], snap=[], assemble=[])
+        self.calls = dict(install=[], push=[], snap=[], assemble=[], put=[])
+        self.others, self.saves = [], {}   # 手机上别的 S2Arm（installed_s2arm）/ 各 App 里有这款存档的：{包名: 备份目录名}
         self.ph = self.phone()
         self.gdir = self.t / "games" / "Game One"; self.gdir.mkdir(parents=True)
 
@@ -142,7 +143,9 @@ class PutApp(unittest.TestCase):
             def __init__(self): self.info = dict(device="d", free=True)
             def pull_kept(self, g): return 0
             def before_push(self, packs): pass
-            def client(self, w): return object()
+            def client(self, w):
+                me = self.bid
+                return types.SimpleNamespace(put=lambda src, rel: calls["put"].append((me, rel, Path(src).read_bytes())), rm=lambda rel: None)
             def install(self, ipa, games, steps=True, bid=None):
                 with zipfile.ZipFile(ipa) as z:
                     calls["install"].append((bid, sorted(z.namelist())))
@@ -166,7 +169,9 @@ class PutApp(unittest.TestCase):
         with patch.object(install, "ios_pack", lambda c, g: self.pack), patch.object(packer, "assemble", assemble), \
                 patch.object(packer, "program_locks", lambda c, g: contextlib.nullcontext()), patch.object(rewrite_refresh, "refresh_ios", lambda c, g: None), \
                 patch.object(sgrade_bf, "rechain_ios", lambda c, g: "skip"), patch.object(install, "push_mods", lambda c, ph, g, m: {"m1": "fp"}), \
-                patch.object(install, "snapshot_phone_saves", lambda c, ph, g: self.calls["snap"].append((ph.bid, ph.standalone, g)) or {}), \
+                patch.object(install, "snapshot_phone_saves", lambda c, ph, g: self.calls["snap"].append((ph.bid, ph.standalone, g)) or
+                             ({g[0]: self.saves[ph.bid]} if ph.bid in self.saves else {})), \
+                patch.object(install, "installed_s2arm", lambda c, ph: [dict(bundleId=b, team=TEAM) for b in self.others]), \
                 patch.object(install, "app_meta", lambda c, g: (self.gdir, "Game One", "1.2.0")):
             return install.put_app(self.c, gid, ph or self.ph, steps=False)
 
@@ -194,6 +199,39 @@ class PutApp(unittest.TestCase):
         self.assertFalse(out["expiresKnown"]); self.assertAlmostEqual(out["expiresAt"] - time.time(), 7 * 86400, delta=60)   # 免费账号没读到真值：按 7 天估
         self.assertEqual(out["signMode"], "appleId"); self.assertEqual(len(out["nextSteps"]), 1, "直装：只给 Apple ID 那段，不给导入那步")
         self.assertIsNone(self.c.app_installed, "推完资源：失败页不说「App 已装上、资源没推完」")
+
+    OLD = "io.s2arm.games.ABCDE12345"   # 0.6.4 前导出的独立 App 经 AltStore / SideStore 签成的包名（装哪款都是它）
+
+    def backup(self, name, data=b"save-1"):
+        d = layout.path(self.c, G1, "save_backup", name); (d / "0/user").mkdir(parents=True)
+        (d / "0/user/slot.bin").write_bytes(data); (d / install.PHONE_SAVE_MARK).write_text("{}")
+        return name
+
+    def test_carries_old_app_save_into_new_app(self):
+        # 新 App 里没有这款的存档、手机上旧包名的 App 里有：复制进新 App（记号文件不复制），那边不动、结果带来源
+        self.others, self.saves = [self.OLD], {self.OLD: self.backup("20261121-010101")}
+        out = self.run_put()
+        self.assertEqual(self.calls["snap"], [(APP1, True, [G1]), (self.OLD, False, [G1])], "先拉新 App、再拉旧 App 的这款存档")
+        self.assertEqual(self.calls["put"], [(APP1, f"Documents/games/{G1}/{install.SAVE_REL}/0/user/slot.bin", b"save-1")])
+        self.assertEqual(out["savesFrom"], self.OLD)
+        self.assertIn("save_carried", [d["code"] for d in self.c.diagnostics])
+
+    def test_no_carry_when_new_app_has_save(self):
+        # 新 App 里已有这款的存档：不碰（不去拉别的 App、不写）
+        self.others, self.saves = [self.OLD], {APP1: self.backup("20261121-020202"), self.OLD: self.backup("20261121-010101")}
+        out = self.run_put()
+        self.assertEqual((self.calls["snap"], self.calls["put"], "savesFrom" in out), ([(APP1, True, [G1])], [], False))
+
+    def test_two_sources_not_chosen_for_player(self):
+        # 旧 App 和通用壳都有这款的存档：不替玩家挑，不写，黄字说清去手机存档里选
+        self.others, self.saves = [self.OLD, SHELL_BID], {self.OLD: self.backup("20261121-010101"), SHELL_BID: self.backup("20261121-030303", b"save-2")}
+        out = self.run_put()
+        self.assertEqual((self.calls["put"], "savesFrom" in out), ([], False))
+        self.assertIn("save_carry_choose", [d["code"] for d in self.c.diagnostics])
+
+    def test_no_other_app_nothing_carried(self):
+        out = self.run_put()
+        self.assertEqual((self.calls["put"], "savesFrom" in out), ([], False))
 
     def test_explicit_profile_replaces_shell_record(self):
         # 显式描述文件：独立 App 只能用它那一个包名 = 通用壳的包名，装上就顶掉了壳——壳号与各款清掉、apps 里同包名的旧款去掉，结果照实说
@@ -243,6 +281,18 @@ class ShellOwner(unittest.TestCase):
             cl = types.SimpleNamespace(apps=lambda: self.ROWS, get=lambda rel, dst: False)
             with patch.object(install, "devpush_client", lambda c, udid, bid, w: cl), patch.object(install, "main_executable", lambda c: "S2Arm"):
                 return install.s2arm_owner(c, "UDID1", rec)
+
+    def test_bid_shape_covers_unsigned_export(self):
+        """导出未签名包的包名（每款 io.s2arm.games.app.<号>）和侧载工具接「.团队号」后的样子都认成独立 App；通用壳的包名（含换过的 .s2）不认"""
+        for b in ("io.s2arm.games.app.0100000000010000", "io.s2arm.games.app.0100000000010000.abcde12345", APP1, "com.x.s2arm.0100000000010000"):
+            self.assertTrue(install.STANDALONE_BID.fullmatch(b), b)
+        for b in (SHELL_BID, SHELL_BID + ".s2", "io.s2arm.games", "io.s2arm.games.abcde12345.mysuffix"):
+            self.assertFalse(install.STANDALONE_BID.fullmatch(b), b)
+
+    def test_sideloaded_new_export_not_counted_as_shell(self):
+        """0.6.4 导出包经 AltStore / SideStore 签成 io.s2arm.games.app.<号>.<团队>，设备记录里没有：按包名形状排除，只剩通用壳、不让玩家选"""
+        with patch.object(self, "ROWS", [(SHELL_BID, "S2Arm", TEAM), (f"io.s2arm.games.app.{G1}.{TEAM}", "S2Arm", TEAM), (APP1, "S2Arm", TEAM)]):
+            self.assertEqual(self.owner(dict(shellId="S1", bundleId=SHELL_BID)), ("launcher", SHELL_BID))
 
     def test_standalone_apps_not_counted(self):
         rec = dict(shellId="S1", bundleId=SHELL_BID)
@@ -317,13 +367,31 @@ class AppsOnlyPhone(unittest.TestCase):
     def test_update_does_not_install_shell(self):
         import ipa as packer
         done = []
-        with patch.object(install, "phone_for", lambda c: self.ph), patch.object(install, "install_shell", lambda c, ph: self.fail("只装了独立 App：不装通用壳")), \
+        with patch.object(install, "distribution_cert", lambda c: True), \
+                patch.object(install, "phone_for", lambda c: self.ph), patch.object(install, "install_shell", lambda c, ph: self.fail("只装了独立 App：不装通用壳")), \
                 patch.object(install, "put_app", lambda c, g, ph, steps=True: done.append(g)), patch.object(packer, "current_shell_id", lambda c: "SID2"), \
                 patch.object(packer, "usable_kit", lambda c, g, sid, failed=(): "/kit"), patch.object(packer, "phone_lock", lambda c: contextlib.nullcontext()), \
                 patch("core.preempt_jobs", lambda *a, **k: None):
             out = install.update_phone(self.c)
         self.assertEqual(done, [G1], "只重签壳号旧的甲")
         self.assertEqual((out["toShell"], out["games"], out["apps"]), ("SID2", [], [dict(gameId=G1, ok=True)]))
+
+    def test_install_shell_when_a_game_uses_shell(self):
+        """11-21 D-R23F：只装着独立 App 的手机，游戏库里有款选了通用 S2Arm（缺省出法是通用 S2Arm，或这一款单独选了）：
+        「安装 S2Arm」要真装（原先 0.4 秒「完成」什么都没装，推这款一直报「先装 S2Arm」）。期望手写：两种情况各装一次壳"""
+        import ipa as packer
+        for label, dist, choice in (("缺省出法是通用 S2Arm", False, None), ("分发证书缺省独立 App、这款单独选了通用 S2Arm", True, {"games": {G2: "shell"}})):
+            with self.subTest(label):
+                shells = []
+                if choice:
+                    (self.c.private / install.LAYOUT_CHOICE).write_text(__import__("json").dumps(choice))
+                with patch.object(install, "distribution_cert", lambda c, d=dist: d), patch.object(install, "phone_for", lambda c: self.ph), \
+                        patch.object(install, "install_shell", lambda c, ph: shells.append(ph.key) or dict(toShell="SID2", games=[])), \
+                        patch.object(install, "update_apps", lambda c, ph, sid: []), patch.object(packer, "phone_lock", lambda c: contextlib.nullcontext()), \
+                        patch.object(packer, "current_shell_id", lambda c: "SID2"), patch("core.preempt_jobs", lambda *a, **k: None):
+                    install.update_phone(self.c)
+                self.assertEqual(shells, ["UDID1"])
+                (self.c.private / install.LAYOUT_CHOICE).unlink(missing_ok=True)
 
     def test_overview_app_rows(self):
         import host_update
