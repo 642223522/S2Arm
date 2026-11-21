@@ -351,11 +351,12 @@ class PutApp(unittest.TestCase):
             self.c.r = dict(gameId=G1); install._install(self.c)
             install.layout_set(jobcase.fake_context(self.t, r=dict(layout="standalone", gameId=G1)))
             install._install(self.c)
-            with patch.object(install, "export_app", lambda c, g: seen.append(("exportApp", g))), patch.object(install, "export_s2arm", lambda c, g: seen.append(("s2arm", g))):
+            with patch.object(install, "export_app", lambda c, g: seen.append(("exportApp", g))), patch.object(install, "export_s2arm", lambda c, g: seen.append(("s2arm", g)) or {}), \
+                    patch.object(install, "ensure_shell_ipa", lambda c: seen.append(("shellIpa",)) or Path("S2Arm.ipa")):
                 self.c.r = dict(gameId=G1, mode="export"); install._install(self.c)   # 独立 App 导出：ipa + .s2arm + README 进游戏文件夹
                 install.layout_set(jobcase.fake_context(self.t, r=dict(layout="shell", gameId=G1)))
-                install._install(self.c)   # 通用壳导出照旧 .s2arm 两件套
-        self.assertEqual(seen, [("shell", G1, "PUSH"), ("app", G1, "PH"), ("exportApp", G1), ("s2arm", G1)])
+                install._install(self.c)   # 通用壳导出：.s2arm 两件套 + 同文件夹本版 S2Arm.ipa（#502），独立 App 导出不放
+        self.assertEqual(seen, [("shell", G1, "PUSH"), ("app", G1, "PH"), ("exportApp", G1), ("shellIpa",), ("s2arm", G1)])
 
 
 class ShellOwner(unittest.TestCase):
