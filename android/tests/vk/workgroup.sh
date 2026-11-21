@@ -26,6 +26,7 @@ compile axis_y 1 129 1
 compile axis_z 1 1 64
 compile spec_boundary 16 8 1 -DSIZE_SPEC=1
 compile spec_product 16 16 1 -DSIZE_SPEC=1
+compile shared8k 1 1 1 -DSHARED_WORDS=2048
 inc=(-I "$repo/build/c883-ndk")
 for d in android/tests/vkhost graphics/nvn graphics/nvn/replay graphics/nvn/gfx/nvn \
          graphics/nvn/gfx/nvn/include android/native android/native/nvn android/native/direct runtime/include; do
@@ -69,16 +70,17 @@ rc=$?
 set -e
 if grep -qE 'Validation Error|VUID-|SYNC-HAZARD-' "$log"; then cat "$log"; exit 1; fi
 if [ "$mode" = --negative ]; then
-    if [ "$rc" != 1 ] || ! grep -q 'workgroup cases=15 failures=9' "$log" ||
-       ! grep -q 'case=product expected=reject:maxComputeWorkGroupInvocations actual_rc=0 modules=1 pipelines=0 bad=1' "$log"; then
+    if [ "$rc" != 1 ] || ! grep -q 'workgroup cases=17 failures=10' "$log" ||
+       ! grep -q 'case=product expected=reject:maxComputeWorkGroupInvocations actual_rc=0 modules=1 pipelines=0 bad=1' "$log" ||
+       ! grep -q 'case=shared_over expected=reject:exceeds maxComputeSharedMemorySize actual_rc=0' "$log"; then
         cat "$log"; echo '【红】workgroup negative control missed' >&2; exit 1
     fi
-    echo 'workgroup negative: PASS (9 invalid shapes reached driver; 6 legal controls passed)'; exit 0
+    echo 'workgroup negative: PASS (10 invalid shapes reached driver; 7 legal controls passed)'; exit 0
 fi
 cat "$log"
 if [ "$rc" -ne 0 ]; then
     echo "【红】compute workgroup checks (rc=$rc)" >&2; exit 1
 fi
-grep -q 'workgroup cases=22 failures=0' "$out/run.log"
-echo '【绿】compute workgroup: 22 cases, real compile/dispatch, validation 0 errors'
+grep -q 'workgroup cases=24 failures=0' "$out/run.log"
+echo '【绿】compute workgroup: 24 cases, real compile/dispatch, validation 0 errors'
 bash "$0" --negative

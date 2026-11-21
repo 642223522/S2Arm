@@ -96,6 +96,12 @@ def main():
                        "--details-probe", str(Path(temporary) / "out"), "--data-root=" + str(Path(temporary) / "data")], env)
             if "✓ 装机卡片详细过程点开后不被进度刷新收起" not in out.stdout:
                 raise RuntimeError("details probe did not report success")
+        # 首位 S2Arm 总控台窄窗 / 英文不被裁、页顶不写长编号（0.6.2 前端走查；UI.Snapshots/ConsoleProbe.cs）
+        with tempfile.TemporaryDirectory(prefix="s2arm-console-probe-") as temporary:
+            out = run([dotnet, "run", "--project", str(probe), "--no-build", "--configuration", "Release", "--",
+                       "--console-probe", str(Path(temporary) / "out"), "--data-root=" + str(Path(temporary) / "data")], env)
+            if "✓ 总控台窄窗 / 英文不裁、页顶不写长编号、出法没读回不先画错" not in out.stdout:
+                raise RuntimeError("console probe did not report success")
         if args.negative_controls:
             with tempfile.TemporaryDirectory(prefix="s2arm-ui-negative-") as temporary:
                 target = Path(temporary).resolve()

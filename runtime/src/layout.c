@@ -110,6 +110,16 @@ int s2a_alias_big_tops_window(uint64_t alias_base, int alias_gb, uint64_t win_en
     return end >= win_end;
 }
 
+// 即时存档命令记录区 + 虚拟池区（共 a 字节）放哪（窗口放不下标准布局时，vawin_reserve）：纯函数（放这里与布局算式同处，单测只链本文件），t_vawin_snaparena 测。
+//   1 = 窗口所在空洞之外（[4 GB, 空洞起点) 里最大一块 out ≥ a）；2 = 窗口下方宿主保留段底部（段长 below，切走 a 后仍 ≥ host_min——
+//   11-20 关快照的那次改动只看窗口外，iOS 27 那一段被共享缓存占满、量出 0，可按应用池留的宿主段有 21 GB，所有游戏的快照都被关了，#1867）；
+//   0 = 都放不下，这一局关快照。宿主段只有 host_min 那么多时不切：Metal 着色器库要从那里放（原先切满 3 GB 首帧前 NSMallocException）
+int s2a_snap_arena_place(uint64_t out, uint64_t below, uint64_t a, uint64_t host_min) {
+    if (out >= a) return 1;
+    if (below >= a + host_min) return 2;
+    return 0;
+}
+
 int s2a_layout_compute(uint32_t as_type, uint64_t sys_resource_size, uint64_t module_span, int alias_gb, uint64_t W, uint64_t S, s2a_layout *o, uint64_t *mod_base, uint64_t *shadow_base) {
     memset(o, 0, sizeof *o); *mod_base = *shadow_base = 0;
     uint64_t top = s2a_as_type_top(as_type);

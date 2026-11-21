@@ -65,7 +65,7 @@ def _classify(text):
     """plumesign 登录输出 → 失败码（impactor.explain 同一份原文对照）"""
     import impactor
     code = impactor.explain(text)
-    return code if code in ("apple_id_wrong", "two_factor_wrong", "signing_server_unreachable", "apple_server_unreachable", "login_identity_rejected") else "job_failed"
+    return code if code in ("apple_id_wrong", "two_factor_wrong", "signing_server_unreachable", "apple_server_unreachable", "apple_login_refused", "login_identity_rejected") else "job_failed"
 
 
 def _account_result(c, W):
