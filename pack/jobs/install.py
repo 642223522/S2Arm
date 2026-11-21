@@ -1179,7 +1179,7 @@ def install_mode_job(c):
     except OSError:
         pass
     return dict(exportAvailable=True, signMode="devcert" if devcert.active(c) else "appleId", signChoice=chosen_sign_mode(c),
-                layout=chosen_layout(c), layoutChoice=layout_choice(c), distribution=distribution_cert(c), standaloneHint=standalone_hint(c),
+                layout=chosen_layout(c), layoutChoice=layout_choice(c), distribution=distribution_cert(c), standaloneHint=standalone_hint(c), standaloneHints=standalone_hints(c),
                 **layout_recommend_fields(c))
 
 
@@ -1204,15 +1204,23 @@ def layout_recommend_fields(c):
     return dict(recommend=rec, recommendWhy=why)
 
 
-def standalone_hint(c):
+def standalone_hint(c, mode=None):
     """出法选「独立 App」时按签名方式给的那一句提示（只提示不拦，0.6.4 维护者定；文案在启动器 install.layout.hint.<码>）→ 码 | None：
-    appleId = 免费 Apple ID 的 3 个 App / 7 天 10 个 App ID / 7 天到期；wildcard = 通配描述文件开不了「提高内存上限」；external = 自己用 AltStore / SideStore 签：只能导出"""
-    mode = chosen_sign_mode(c)
+    appleId = 免费 Apple ID 的 3 个 App / 7 天 10 个 App ID / 7 天到期；wildcard = 通配描述文件开不了「提高内存上限」；
+    explicit = 显式 App ID 的描述文件只允许它那一个包名：每款独立 App 都装成同一个，装一个会顶掉前一款（11-21 玩家反馈，装之前就说，
+    原先只在装完后黄字 app_bundle_fixed）；external = 自己用 AltStore / SideStore 签：只能导出。mode 不给 = 设置里选的签名方式"""
+    mode = mode or chosen_sign_mode(c)
     if mode == "external":
         return "external"
     if mode == "devCert":
-        return "wildcard" if devcert.profile_facts(c).get("wildcard") else None
+        facts = devcert.profile_facts(c)   # 没导入证书 / 读不了 → {}
+        return ("wildcard" if facts.get("wildcard") else "explicit") if facts else None
     return "appleId"
+
+
+def standalone_hints(c):
+    """导出确认页按这次选的签名方式显示那一句（11-21：确认页的签名方式可以和设置不同）→ {appleId, devCert, none: 码 | None}，键同请求 sign"""
+    return dict(appleId=standalone_hint(c, "appleId"), devCert=standalone_hint(c, "devCert"), none=standalone_hint(c, "external"))
 
 
 # 出法（0.6.3 维护者定，玩家两种自由选）：shell = 通用壳（一个 App 装整个游戏库，程序包推进 App 外）；standalone = 独立 App（一 App 一游戏，程序在 App 包里、打开直接进这款）。
@@ -1272,7 +1280,7 @@ def layout_set(c):
     else:
         (c.private / LAYOUT_CHOICE).unlink(missing_ok=True)
     now = chosen_layout(c, gid)
-    return dict(layout=now, default=chosen_layout(c), games=games, distribution=distribution_cert(c), standaloneHint=standalone_hint(c), **layout_recommend_fields(c),
+    return dict(layout=now, default=chosen_layout(c), games=games, distribution=distribution_cert(c), standaloneHint=standalone_hint(c), standaloneHints=standalone_hints(c), **layout_recommend_fields(c),
                 **({"freeLimit": FREE_APP_LIMIT} if now == "standalone" and not devcert.active(c) else {}))
 
 
@@ -2693,7 +2701,6 @@ def await_import(c, ph, gid, want):
     return None
 
 
-GAME_NOT_ON_DEVICE = "这款没装在这台设备上：「更新这款」只更新原来装过它的设备，这次没有推。"
 # 「更新这款」做不齐时照实说（11-21：原先静默跳过，「建议更新」点了还在，玩家不知道为什么）
 UPDATE_SHADER_NOT_REBUILT = "这款的着色器库这次没能重编（电脑上没有这款的游戏文件，或这台电脑没装 Metal 开发工具），「建议更新」会继续显示：补上游戏文件或装好工具后再点「更新这款」。"
 UPDATE_MAC_BUSY = "这款在这台 Mac 上正在运行，Mac 版的着色器库这次没更新：退出游戏后再点一次「更新这款」。"
@@ -2729,7 +2736,8 @@ def phone_signing(c, ph):
     """通用壳：这台手机上程序包按什么签 → (团队号, 包名, 签名器)。同装机签 App 的那一处：开发者证书 → 证书的团队与描述文件的包名；
     Windows Apple ID / Mac 通用壳 Apple ID（PlumeMacPhone）→ plumesign 当前账号的团队、容器包名；开关关着的 Mac Apple ID → 钥匙串账号的团队、容器包名"""
     import program_pack
-    if devcert.active(c):
+    want = c.r.get("sign")   # 导出确认页这次选的签法（appleId / devCert）优先，只管这一次、不改设置（同 export_sign_mode）；没带按设置
+    if want == "devCert" or (want != "appleId" and devcert.active(c)):
         if devcert.distribution(c):   # 玩家选了通用壳、证书却是分发的：照推，照实说起局会被系统拒（image_exec_cert）、换独立 App 就能玩
             c.diagnostic(SHELL_DISTRIBUTION, code="image_exec_cert", severity="warning")
         return devcert.team(c)["id"], devcert.state(c)["bundleId"], program_pack.devcert_signer(c)
@@ -3169,6 +3177,35 @@ def update_mac_lib(c, gid):
         return bool(sgrade_bf.upgrade_mac(c, gid, runtime))
 
 
+def refresh_local(c, gid):
+    """把这款在电脑上的 iPhone 程序与着色器库补到本版（「更新这款」updateGame 与推到设备前共用，调用方拿着这款的程序锁）：
+    着色器链变了只重编这款的着色器库（游戏库里的 game.img / 借 Mac 版），不重出整款；按本版改写器重核程序。
+    做不齐照实给黄字 update_incomplete（11-21：原先静默跳过，「建议更新」点了还在）：没原料重编不了 / 宿主约定号变了要整款重出"""
+    import host_update, sgrade_bf
+    from rewrite_refresh import refresh_ios
+    if (layout.program_info(c, gid) or {}).get("hostAbi", 1) != host_update.HOST_ABI:
+        c.diagnostic(UPDATE_NEEDS_REPACK, code="update_incomplete", severity="warning")   # 约定号变了：换库 / 刷程序消不掉这条原因，照实说
+    if sgrade_bf.rechain_ios(c, gid) == "unavailable":
+        trace(c, f"{gid} 着色器链更新了，这次没重编着色器库（原因见上一行；「建议更新」照旧提示）")  # 非玩家句
+        c.diagnostic(UPDATE_SHADER_NOT_REBUILT, code="update_incomplete", severity="warning")
+    refresh_ios(c, [gid])
+
+
+def update_game(c):
+    """作业 updateGame（11-21 维护者定：游戏页只有「更新」「导出」两件事）：「更新这款」只在电脑上做——重编这款的 iPhone 与 Mac 着色器库、
+    按本版改写器刷新程序，不找设备、不推、不签名、不二次确认。做完再判一次 → {gameId, reasons}：还剩的「建议更新」原因，空 = 已是最新。
+    做不齐（缺原料 / 约定号变了 / Mac 上正在运行）照实给黄字 update_incomplete，作业照常算成功。没做过 iPhone 版 → ios_pack 照实报"""
+    import ipa as packer, host_update
+    gid = (c.r.get("gameId") or "").upper()
+    ios_pack(c, gid)
+    c.begin("更新这款的 iPhone 程序与着色器库", 1, 2)
+    with packer.program_locks(c, [gid]):
+        refresh_local(c, gid)
+    c.begin("更新这款的 Mac 着色器库", 2, 2)
+    update_mac_lib(c, gid)
+    return dict(gameId=gid, reasons=host_update.game_reasons(c, gid))
+
+
 def push_game(c, gid, ph, steps=True):
     """「推到 iPhone」：只推这一款的程序包与资源包，绝不签名装壳（11-17 维护者定：装 App 与推游戏是两个独立作业）。
     手机上没装 S2Arm（这台没有装壳记录）或壳不是本版 → 报「先安装 / 更新 S2Arm」、不推。程序包按设备记录判要不要推（program_pack.need），
@@ -3183,26 +3220,15 @@ def push_game(c, gid, ph, steps=True):
             raise Failure(SHELL_INSTALL_FIRST, code="shell_install_required")
         if rec["shellId"] != packer.current_shell_id(c):
             raise Failure(SHELL_UPDATE_FIRST, code="shell_update_required")
-    if c.r.get("onlyInstalled") and gid not in (rec.get("games") or {}):
-        # 「更新这款」（请求带 onlyInstalled）：只更新原来装过这款的设备，没装过的一律不推（11-21：更新这款把游戏装进了没打算装的 iPad）
-        raise Failure(GAME_NOT_ON_DEVICE, code="game_not_on_device")
     snapshot_phone_saves(c, ph, [gid])   # 0.6.0：推游戏不再覆盖存档，开头顺手把手机上这款的存档拉回电脑（内容变了才新建、每台每款留 10 份）
     team, bid, signer = (None, ph.bid, None) if ext else phone_signing(c, ph)
     if steps: c.begin("把这款的程序推进 iPhone", 2, 3)
     from rewrite_refresh import refresh_ios
     ph.pull_kept([gid])   # 机上留下的 NRO 先收回（#8be819），refresh_ios 补进程序件
-    import host_update
-    if (layout.program_info(c, gid) or {}).get("hostAbi", 1) != host_update.HOST_ABI:
-        c.diagnostic(UPDATE_NEEDS_REPACK, code="update_incomplete", severity="warning")   # 约定号变了：换库 / 刷程序消不掉这条原因，照实说
     with packer.program_locks(c, [gid]):
-        import sgrade_bf   # 着色器链变了：只重编这款的着色器库（游戏库里的 game.img / 借 Mac 版），不重出整款；没原料不挡推送（11-17 维护者定）
-        if sgrade_bf.rechain_ios(c, gid) == "unavailable":
-            trace(c, f"{gid} 着色器链更新了，这次没重编着色器库（原因见上一行；「建议更新」照旧提示）")  # 非玩家句
-            c.diagnostic(UPDATE_SHADER_NOT_REBUILT, code="update_incomplete", severity="warning")
-        refresh_ios(c, [gid])
+        refresh_local(c, gid)
         with tempfile.TemporaryDirectory(dir=c.private) as w:
             progs = push_programs(c, ph.client(w), [gid], rec, team, bid, signer)
-    update_mac_lib(c, gid)   # 「建议更新」里 Mac 那份的原因也在这次消掉（同一款、同一个按钮）
     old = rec.get("games", {}).get(gid) or {}
     rec = layout.load_device(c, ph.key)
     # 别的工具装的：记下包名与时刻（总控台不查手机时也认得出这台是别的工具装的；游戏库的免费签名提醒按时刻判谁在后，layout.launcher_free_in_use）。

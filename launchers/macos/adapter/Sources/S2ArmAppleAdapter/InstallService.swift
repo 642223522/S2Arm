@@ -223,9 +223,12 @@ public final class InstallService {
     /// mode = "export"：游戏库「导出自签包」——不连手机、不签名，出未签名 S2Arm.ipa 和各款 .img 到文件夹（11-15 起导出只看这次请求）
     /// widget = false：玩家在设置里关了「装到 iPhone 时带主屏小组件」，作业层不带小组件扩展（不传 = 带）
     /// cloudSaves：玩家选的云存档文件夹（没开 = nil）。覆盖装前备份手机存档做不成时，作业层看这款在里面有没有快照：有就照装（覆盖装 App 不碰 iCloud 里那份）
+    /// sign：这次怎么签（导出确认页 ① 签名，0.6.4）：appleId / devCert = 已签名（推到设备时也强制用这一种），none = 自签（不签、手机上的 S2Arm 用它导入的证书签）；
+    ///   nil = 按设置里选的（作业层 install.export_sign_mode）。外部工具装的 S2Arm 作业层照旧自动走不签那条路，不论 sign
     public func install(gameId: String, teamId: String? = nil, device: String? = nil, acceptDropped: Bool = false, accept: Set<String> = [], mode: String? = nil,
-                        widget: Bool = true, cloudSaves: String? = nil, events: EventSink = .discard) async throws -> InstallResult {
+                        sign: String? = nil, widget: Bool = true, cloudSaves: String? = nil, events: EventSink = .discard) async throws -> InstallResult {
         var extra: [String: Any] = ["gameId": gameId]
+        if let sign, !sign.isEmpty { extra["sign"] = sign }
         if !widget { extra["widget"] = false }
         if let cloudSaves, !cloudSaves.isEmpty { extra["cloudSavesFolder"] = cloudSaves }
         if let mode { extra["mode"] = mode }
@@ -416,6 +419,9 @@ public struct InstallModeInfo: Equatable, Sendable {
     public var distribution: Bool = false
     /// 选独立 App 时按签名方式给的一句提示的码（作业层 install.standalone_hint：appleId / wildcard / external；nil = 不提示）→ 文案 install.layout.hint.<码>
     public var standaloneHint: String? = nil
+    /// 同上、按导出确认页这次选的签名方式各给一个（作业层 install.standalone_hints，键同请求 sign：appleId / devCert / none）：
+    ///   devCert → wildcard（通配描述文件）| explicit（显式 App ID：装一款顶掉前一款）| 读不到为缺；确认页按 ① 当前选的取，不按设置
+    public var standaloneHints: [String: String] = [:]
     /// 按签名带不带调试权限推荐的出法（作业层 install.layout_recommend）：standalone / shell / nil（识别不了）；依据 distribution / devCertDebug / appleId / external / unknown
     public var recommend: String? = nil
     public var recommendWhy: String = "unknown"
@@ -435,6 +441,7 @@ public struct InstallModeInfo: Equatable, Sendable {
         layoutGames = (choice["games"] as? [String: String] ?? [:]).reduce(into: [:]) { $0[$1.key.uppercased()] = $1.value }
         distribution = r["distribution"] as? Bool ?? false
         standaloneHint = r["standaloneHint"] as? String
+        standaloneHints = (r["standaloneHints"] as? [String: Any] ?? [:]).compactMapValues { $0 as? String }
         recommend = r["recommend"] as? String
         recommendWhy = r["recommendWhy"] as? String ?? "unknown"
     }
