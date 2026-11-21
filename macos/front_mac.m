@@ -2252,3 +2252,9 @@ void s2a_mac_gpu_stuck(const char *why) {
         }
     });
 }
+
+#include "../ios/local_player_prefs.h"
+__attribute__((visibility("default"), used)) int s2a_local_player_persist(const char *uid, const char *name, const char *folder) {
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"org.s2arm.macos.nx2apple"];
+    return s2a_store_local_player(defaults, uid, name, folder);
+}

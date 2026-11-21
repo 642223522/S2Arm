@@ -61,6 +61,28 @@ namespace Ryujinx.HLE.HOS.Applets
 
                 return ResultCode.Success;
             }
+            var create = S2AHooks.CreateLocalPlayer;
+            if (create != null && mode is 0 or UiModeUserCreator)
+            {
+                var accounts = _system.AccountManager;
+                var excluded = InvalidUsers(uiSettings);
+                var candidates = accounts.GetAllUsers().Where(u => !excluded.Contains(u.UserId)).ToArray();
+                var preferred = candidates.FirstOrDefault(u => u.UserId == accounts.LastOpenedUser.UserId) ?? candidates.FirstOrDefault();
+                if (mode == UiModeUserCreator || candidates.Length == 0)
+                {
+                    string initial = $"Player{accounts.GetUserCount() + 1}";
+                    if (!Ask("新建 S2Arm 玩家", "输入新玩家的名字", initial, create))
+                        Complete(create, initial);
+                }
+                else if (candidates.Length == 1 || !Ask("选择 S2Arm 玩家",
+                    string.Join("  ", candidates.Select((u, i) => $"{i + 1}. {u.Name}")),
+                    (Array.IndexOf(candidates, preferred) + 1).ToString(),
+                    value => int.TryParse(value, out int n) && n >= 1 && n <= candidates.Length ? candidates[n - 1] : null))
+                {
+                    Complete(_ => preferred, "");
+                }
+                return ResultCode.Success;
+            }
             if (mode == UiModeUserCreator)
             {
                 UserProfile created = CreatePlayerUser();
@@ -79,13 +101,7 @@ namespace Ryujinx.HLE.HOS.Applets
             // picks or creates another user: answer an existing user not in the list, else create one as UserCreator does.
             if (selected != null && uiSettings != null && uiSettings.Length >= InvalidUidListOffset + InvalidUidListCount * 16)
             {
-                HashSet<UserId> invalid = new();
-                for (int i = 0; i < InvalidUidListCount; i++)
-                {
-                    int at = InvalidUidListOffset + 16 * i;
-                    UserId id = new(uiSettings[at..(at + 16)]);
-                    if (!id.IsNull) invalid.Add(id);
-                }
+                var invalid = InvalidUsers(uiSettings);
                 if (invalid.Contains(selected.UserId))
                 {
                     UserProfile other = _system.AccountManager.GetAllUsers().FirstOrDefault(u => !invalid.Contains(u.UserId)) ?? CreatePlayerUser();
@@ -111,6 +127,47 @@ namespace Ryujinx.HLE.HOS.Applets
             _system.ReturnFocus();
 
             return ResultCode.Success;
+        }
+
+        private static HashSet<UserId> InvalidUsers(byte[] settings)
+        {
+            HashSet<UserId> invalid = new();
+            for (int i = 0; settings != null && i < InvalidUidListCount; i++)
+            {
+                int at = InvalidUidListOffset + i * 16;
+                if (at + 16 > settings.Length) break;
+                UserId id = new(settings[at..(at + 16)]);
+                if (!id.IsNull) invalid.Add(id);
+            }
+            return invalid;
+        }
+
+        private bool Ask(string title, string guide, string initial, Func<string, UserProfile> resolve)
+        {
+            if (_system.Device.UIHandler is not Ryujinx.HLE.UI.IAsyncTextInput input) return false;
+            var args = new SoftwareKeyboardUIArgs
+            {
+                HeaderText = title, SubtitleText = guide, InitialText = initial,
+                StringLengthMin = 1, StringLengthMax = 32,
+            };
+            return input.BeginTextInput(args, (ok, value) => Complete(resolve, ok ? value : null)) != null;
+        }
+
+        private void Complete(Func<string, UserProfile> resolve, string value)
+        {
+            UserProfile user = null;
+            try
+            {
+                if (value != null) user = resolve(value);
+                if (user != null) S2AHooks.UserSelected?.Invoke(user.UserId);
+            }
+            catch (Exception e)
+            {
+                Logger.Error?.Print(LogClass.ServiceAm, $"Local player operation failed: {e.Message}");
+            }
+            _normalSession.Push(user == null ? BuildCancelledResponse() : BuildResponse(user));
+            AppletStateChanged?.Invoke(this, null);
+            _system.ReturnFocus();
         }
 
         // Adds a user the way the console's user creator would, with the default icon and a free PlayerN nickname (the host has
