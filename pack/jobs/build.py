@@ -582,7 +582,10 @@ def compile_host(c, fingerprint, env, log_root):
                  CFBundleExecutable="s2arm-host", CFBundlePackageType="APPL", LSMinimumSystemVersion="15.0",
                  NSBluetoothAlwaysUsageDescription="连接 Switch 2 Pro 手柄，接收按键与体感并发送游戏震动。",  # 非玩家句
                  NSHighResolutionCapable=True, LSSupportsGameMode=False,
-                 LSApplicationCategoryType="public.app-category.games")
+                 LSApplicationCategoryType="public.app-category.games",
+                 # 本地联机·同一 Wi-Fi（ios/ldn_lan.m 编进 Mac 宿主）：系统的「本地网络」授权框读这句；Bonjour 服务名与 iOS App 同一个（runtime/build.mk）
+                 NSLocalNetworkUsageDescription="Local multiplayer: find other devices on the same Wi-Fi and join the same room.",  # 非玩家句
+                 NSBonjourServices=["_s2arm-ldn._tcp"])
     if host_icon:
         plist["CFBundleIconFile"] = HOST_ICON   # Dock / Cmd+Tab 无封面起局时的回退（#994；有封面时 front_mac.m 按 S2A_GAME_COVER 换成游戏封面）
     (app / "Contents/Info.plist").write_bytes(plistlib.dumps(plist))
