@@ -15,6 +15,7 @@
 
 // 触屏虚拟手柄（vpad.m）：电视没有触屏，只用扩展手柄
 void s2a_vpad_attach(UIView *root) { (void)root; }
+int s2a_vpad_touch_only(void) { return -1; }   // 没挂虚拟手柄（controller.m 外接键盘接管判碰屏幕时用）
 
 // 游戏内设置页（app_settings.m）：电视上设置在电脑端改、随包带过去；诊断页里的「设置」入口不出
 @implementation S2ASettingsRuntime   // 宿主照常登记能力（app.m），电视上没有游戏内设置页来用它
