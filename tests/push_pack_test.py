@@ -1225,6 +1225,14 @@ class GameImgZstd(Base):
         push.zstd_plan(self.pk, ["game.img", row[1], "0" * 64], say=self.log.append, comp=comp)
         self.assertEqual(len(calls), 4)
 
+    def test_measure_reports_progress_by_bytes(self):   # #1942：测压缩率块内按读进的字节报进度，不只在每块开头报一次
+        row = ["game.img", str(len(self.local)), sha(self.local)]; seen = []
+        m = mock.patch.object(push, "ZREAD", 4096); m.start(); self.addCleanup(m.stop)
+        push.zstd_plan(self.pk, row, say=self.log.append, stage=lambda name, done, total: seen.append((name, done, total)))
+        total = len(self.local)   # 期望手算：两块 65536 + 100 字节，按 4096 一段读：第 0 块开头 0、16 段各报 4096 的倍数；第 1 块开头 65536、读完报 65636
+        want = [0] + [4096 * i for i in range(1, 17)] + [65536, 65636]
+        self.assertEqual(seen, [(push.STAGE_ZSTD, d, total) for d in want])
+
     def test_stream_frames_decode_and_reads_bounded(self):   # D-DVFJ：每块仍一个 zstd 帧、解开即原样；按 ZREAD 分段读，不整块读进内存；写出的字节数 = 返回值
         try: from compression.zstd import decompress
         except ImportError: from zstandard import decompress
@@ -1243,10 +1251,10 @@ class GameImgZstd(Base):
         self.assertTrue(all(o.getvalue()[:4] == b"\x28\xb5\x2f\xfd" for o in outs))
         self.assertTrue(reads and max(reads) <= 4096, reads)   # 64 KB 的块分 16 段读，100 字节的末块 1 段
 
-    def test_workers_capped_by_available_memory(self):   # 线程数 = min(核数, (可用 ÷ 2 − 160) ÷ 80)，至少 1；读不到内存按核数（期望按公式手算）
-        for avail, ncpu, want in (("200", "16", 1), ("1000", "16", 4), ("4096", "16", 16), ("4096", "8", 8)):
+    def test_workers_fixed_whatever_memory(self):   # #1942：线程数固定 2，与可用内存、核数无关（帧随线程数变，量数和推送要一样长）
+        for avail, ncpu in (("200", "16"), ("4096", "16"), ("4096", "1")):
             with mock.patch.dict(os.environ, {"S2A_MEM_AVAIL_MB": avail, "S2A_NCPU": ncpu}):
-                self.assertEqual(push.zstd_workers(), want, (avail, ncpu))
+                self.assertEqual(push.zstd_workers(), 2, (avail, ncpu))
 
     def test_resume_skips_complete_chunks_and_drops_stale(self):
         first = self.device(); self.push_it(first)
@@ -1256,6 +1264,9 @@ class GameImgZstd(Base):
         self.assertEqual(dev.big, [c1]); self.assertEqual(dev.rms, [stale]); self.assertNotIn(stale, dev.files)
         self.assertEqual(dev.files[c1], first.files[c1])
         self.assertTrue(any("机上已有 1/2 个压缩块" in l for l in self.log), self.log)
+        n1 = len(first.files[c1])   # 机上第 2 块短一个字节：记一行哪块、机上长度、量数长度、重推（期望按构造手写）
+        self.assertTrue(any(f"第 2/2 块机上 {n1 - 1} 字节，量数记的是 {n1} 字节，对不上，这块重推" in l for l in self.log), self.log)
+        self.assertFalse(any("第 1/2 块机上" in l for l in self.log), "长度对的块不记")
 
     def test_progress_counts_raw_bytes(self):
         calls = []; dev = self.device(); self.push_it(dev, progress=lambda *a: calls.append(a))
