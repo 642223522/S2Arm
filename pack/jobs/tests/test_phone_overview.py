@@ -43,15 +43,17 @@ class PhoneOverview(unittest.TestCase):
         # 手机 2：旧壳、免费账号、一款没推
         layout.save_device(self.c, "PHONE-2", dict(shellId="SOLD", bundleId="io.example.two", signed=dict(at=T, free=True, device="手机乙"), games={}))
 
-    def overview(self, on=True, probe=False, online=None, owners=None, names=None, cands=None):
+    def overview(self, on=True, probe=False, online=None, owners=None, names=None, cands=None, kinds=None):
         """owners：{UDID: (谁装的, 包名)}，连着的手机现查的结果（install.s2arm_owner 的替身；没给的按列不出 (None, None)）；names：现查到的设备名"""
         if probe:
             self.c.r["probe"] = True
-        def no_probe(c, names=None):
+        def no_probe(c, names=None, kinds=None):
             raise AssertionError("没带 probe 不查连接")
-        def fake_online(c, out=None):
+        def fake_online(c, out=None, kinds_out=None):
             if out is not None:
                 out.update(names or {})
+            if kinds_out is not None:
+                kinds_out.update(kinds or {})
             return online or {}
         import install
         with patch.object(rewrite_refresh, "rewriter_id", lambda c: "RIDNOW"), \
@@ -117,6 +119,19 @@ class PhoneOverview(unittest.TestCase):
             got = host_update._online(self.c, names)
         self.assertEqual(got, {"PHONE": "usb", "PAD": "network"})
         self.assertEqual(names, {"PHONE": "我的 iPhone", "PAD": "iPad"})
+        kinds = {}
+        with patch.object(host_update.os, "name", "posix"), \
+                patch("diag.devicectl", lambda c, *a, **k: (0, {"result": {"devices": devices}}, "")):
+            host_update._online(self.c, {}, kinds)
+        self.assertEqual(kinds, {"PHONE": "iPhone", "PAD": "iPad"}, "11-21 导出确认页照实写类型：iPadOS 平台的是 iPad")
+
+    def test_probe_reports_kind_only_when_known(self):
+        """现查认得出类型的设备带 kind（iPhone / iPad），认不出的（Windows 只在 Wi-Fi 上）不带、前端写「设备」。期望手写"""
+        r = self.overview(probe=True, online={"PHONE-1": "usb", "PAD-1": "network"}, kinds={"PHONE-1": "iPhone"},
+                          owners={"PHONE-1": ("launcher", "b1"), "PAD-1": ("launcher", "b2")})
+        by = {p["device"]: p for p in r["phones"]}
+        self.assertEqual(by["PHONE-1"].get("kind"), "iPhone")
+        self.assertNotIn("kind", by["PAD-1"])
 
     def test_has_game_data_accepts_legacy_img_without_manifest(self):
         pack = layout.image_ios(self.c, self.A) / ".pack"

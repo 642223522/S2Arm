@@ -10768,22 +10768,6 @@
   "en": "Apple's sign-in server refused this sign-in request (it answered \"service unavailable\" before checking your account). This is not a problem with this computer's network, your Apple ID or your password, and switching networks or DNS will not help. Apple most likely changed its rules for third-party signing tools: update S2Arm to the latest version and sign in again. If the latest version still shows this, click \"Copy error summary\" and send it to us. Your phone, installed apps and saves were not touched."
  },
  {
-  "source": "这款没装在这台设备上：「更新这款」只更新原来装过它的设备，这次没有推。",
-  "en": "This game is not installed on this device: \"Update this game\" only updates devices that already have it, so nothing was sent."
- },
- {
-  "source": "要把这款装到这台设备，用「推到 iPhone」（在装机页选好这台）；只想更新原来那台，就连上原来装过这款的那台再点「更新这款」。",
-  "en": "To install this game on this device, use \"Push to iPhone\" (pick this device on the install page). To update only the original one, connect the device that already has this game and click \"Update this game\" again."
- },
- {
-  "source": "这款没装在这台设备上",
-  "en": "This game is not on this device"
- },
- {
-  "source": "「更新这款」只更新原来装过这款的设备，不会把它装到新的设备上。",
-  "en": "\"Update this game\" only updates devices that already have this game; it never installs it on a new device."
- },
- {
   "source": "这次没能读到开发者证书设置（这台电脑拒绝 S2Arm 读它自己的证书设置文件夹），按 Apple ID 签名。如果你启用过自己的开发者证书，这次没有用它。",
   "en": "Could not read your developer certificate settings this time (this computer denied S2Arm access to its own certificate settings folder), so this was signed with your Apple ID. If you had turned on your own developer certificate, it was not used this time."
  },
@@ -10814,5 +10798,17 @@
  {
   "source": "「更新这款」这次有一部分没做成，原因写在下面；「建议更新」会继续显示，按说明处理后再点一次。",
   "en": "\"Update this game\" could not finish everything this time; the reason is below. \"Update suggested\" will keep showing until you follow it and click again."
+ },
+ {
+  "source": "更新这款",
+  "en": "Update this game"
+ },
+ {
+  "source": "更新这款的 iPhone 程序与着色器库",
+  "en": "Updating this game's iPhone program and shader library"
+ },
+ {
+  "source": "更新这款的 Mac 着色器库",
+  "en": "Updating this game's Mac shader library"
  }
 ]

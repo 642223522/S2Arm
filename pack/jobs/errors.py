@@ -112,7 +112,6 @@ RECOVERY = {
     "signing_failed": "查看本任务日志里签名那一步的报错；确认 Xcode 能用你的账号给这台 iPhone 签名，或改用 AltStore 安装。",
     "device_tunnel_unavailable": "电脑连不上这台 iPhone 的开发者通道（手机通过 Wi-Fi 连着时最常见，不是没解锁）：用数据线把手机直接插到这台电脑（别经过扩展坞或集线器），解锁停在主屏幕，再点一次；还不行就重启一次手机，插上后在手机上重新点「信任」。",
     "device_locked": "解锁这台 iPhone（保持亮屏、停在主屏幕），再点一次「推到 iPhone」；装机过程中别锁屏。",
-    "game_not_on_device": "要把这款装到这台设备，用「推到 iPhone」（在装机页选好这台）；只想更新原来那台，就连上原来装过这款的那台再点「更新这款」。",   # 「更新这款」只推装过这款的设备（install.push_game onlyInstalled，11-21）
     "shell_install_required": "在 S2Arm 里先点「安装 S2Arm」把 App 装到这台 iPhone，再对这款点「推到 iPhone」。",   # 通用壳「推到 iPhone」：手机上还没装壳（install.push_game）
     "phone_app_choice_required": "在 iPhone 总控台里选好这台手机用哪一个 S2Arm（AltStore / SideStore 装的，还是启动器装的），再推游戏；选一次就记住。",   # 同机装着不止一个 S2Arm（install.s2arm_owner choose）
     "phone_app_gone": "在 iPhone 总控台里重新选一次用哪一个 S2Arm：选过的那个已经不在这台 iPhone 上了。",   # phoneChooseApp 选的包不在手机上
