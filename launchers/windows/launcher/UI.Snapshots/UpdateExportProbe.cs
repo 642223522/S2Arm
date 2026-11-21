@@ -10,6 +10,7 @@
 //   ④ 逐台结果（一台成功一台失败，失败那台有「重试」）、更新完成带黄字。调用方核退出码 0 和末行「✓」。
 using System.Reflection;
 using System.Text.Json;
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Headless;
 using Avalonia.Interactivity;
@@ -62,6 +63,8 @@ static class UpdateExportProbe
             Check(fails, "游戏库页没有「推到 iPhone」「导出自签包」",
                 !Ids(w).Any(i => i is "library.hero.install" or "library.hero.selfSign") && !Texts(w).Any(t => t is "推到 iPhone" or "导出自签包"));
             Check(fails, "列表卡片的按钮是「导出…」（3 张卡 + 大卡共 4 颗）", Buttons(w).Count(b => Id(b) == "library.hero.export") == 4);
+            Check(fails, "游戏库页（大卡 + 列表卡）没有「出包」（只在右键菜单）", !Buttons(w).Any(b => Id(b) == "nav.build") && !Texts(w).Contains("出包")
+                && !Buttons(w).Any(b => Text(b) == "出包"));
             var updating = (System.Collections.IDictionary)Get(w, "gameUpdating")!;
             updating[stale.Id] = ((double?)0.42, "重编着色器库");
             var s4 = HeroUpdate(stale, "hero_4_updating.png");
@@ -105,6 +108,16 @@ static class UpdateExportProbe
             Check(fails, "Apple ID 签：本版 S2Arm 那台可勾", Box("OWN-0000000000000000000000000000000AAA111")?.IsEnabled == true);
             Check(fails, "Apple ID 签：没装 S2Arm 那台可勾、写「先装」、给入口", Box("BARE-000000000000000000000000000000BBB222")?.IsEnabled == true
                 && Texts(w).Contains("这台还没装 S2Arm（先装）") && Ids(w).Contains("exportgame.console.BARE-000000000000000000000000000000BBB222"));
+            // 「去 S2Arm 卡」紧跟在那一行的说明后面：和「这台还没装 S2Arm（先装）」在同一个父容器里、在它右边、上下重叠（同一行），且在这台的勾选框下面
+            {
+                var link = Buttons(w).First(b => Id(b) == "exportgame.console.BARE-000000000000000000000000000000BBB222");
+                var note = w.GetVisualDescendants().OfType<TextBlock>().First(t => Id(t) == "exportgame.note.BARE-000000000000000000000000000000BBB222");
+                var lp = link.TranslatePoint(new Avalonia.Point(0, 0), w)!.Value; var np = note.TranslatePoint(new Avalonia.Point(0, 0), w)!.Value;
+                var bp = Box("BARE-000000000000000000000000000000BBB222")!.TranslatePoint(new Avalonia.Point(0, 0), w)!.Value;
+                var gap = lp.X - (np.X + note.Bounds.Width);
+                Check(fails, $"「去 S2Arm 卡」紧跟说明文字（同一行、间距 {gap:F0}px）", ReferenceEquals(link.Parent, note.Parent) && gap is >= 0 and <= 24
+                    && lp.Y < np.Y + note.Bounds.Height && np.Y < lp.Y + link.Bounds.Height && np.Y > bp.Y);
+            }
             Check(fails, "设备行写类型 + 名字 + 这款状态", Texts(w).Contains("iPhone · 我的 iPhone") && Texts(w).Contains("已装旧版这款") && Texts(w).Contains("iPad · BBB222"));
             Check(fails, "没证书时「我的证书」不可选", w.GetVisualDescendants().OfType<RadioButton>().FirstOrDefault(r => Id(r) == "exportgame.sign.devCert")?.IsEnabled == false);
             Check(fails, "做好了 iPhone 版不写「会先做好」", !Ids(w).Contains("exportgame.prepare"));
@@ -116,11 +129,16 @@ static class UpdateExportProbe
             Set(w, "exportSignPick", "none"); Call(w, "Render"); Settle(w);
             Check(fails, "自签：外部 S2Arm 导入了证书 → 可勾、不写先导入", Box("EXT-CERT-0000000000000000000000000CCC333")?.IsEnabled == true);
             Check(fails, "自签：外部 S2Arm 没导入证书 → 可勾、写「先导入」", Box("EXT-NOCERT-00000000000000000000000DDD444")?.IsEnabled == true
-                && Texts(w).Contains("先在手机上 S2Arm 导入签名证书"));
+                && Texts(w).Contains("先在手机上 S2Arm 导入签名证书") && !Ids(w).Contains("exportgame.console.EXT-NOCERT-00000000000000000000000DDD444"));
             Check(fails, "自签：启动器签的那台置灰、写原因", Box("OWN-0000000000000000000000000000000AAA111")?.IsEnabled == false
                 && Texts(w).Any(t => t.StartsWith("这台的 S2Arm 是启动器签的")));
             Check(fails, "自签：没装 S2Arm 那台置灰", Box("BARE-000000000000000000000000000000BBB222")?.IsEnabled == false);
             Check(fails, "类型读不到写「设备」", Texts(w).Contains("设备 · 备用机"));
+            // 自签 + 独立 App：设备一律置灰、写「只能导出到文件夹」
+            Set(w, "exportLayoutPick", "standalone"); Call(w, "Render"); Settle(w);
+            Check(fails, "自签 + 独立 App：设备全灰、写「只能导出到文件夹」", w.GetVisualDescendants().OfType<CheckBox>().Where(c => Id(c)?.StartsWith("exportgame.device.") == true).All(c => !c.IsEnabled)
+                && Texts(w).Count(t => t == "自签的独立 App 只能导出到文件夹") == 4);
+            Set(w, "exportLayoutPick", null);
             Set(w, "phoneOverview", new PhoneOverview([overview.Phones[2], overview.Phones[3], overview.Phones[0]])); Call(w, "Render"); Settle(w);
             Save(w, Path.Combine(outDir, "export_2_selfsign_three_rows.png"));
             Set(w, "phoneOverview", overview);
@@ -169,8 +187,8 @@ static class UpdateExportProbe
             shownRows["BARE-000000000000000000000000000000BBB222"] = ("failed", "手机上还没装 S2Arm：先点「安装 S2Arm」装好 App，再推游戏。", (string?)"shell_install_required");
             runs[stale.Id] = shown;
             Set(w, "selectedGame", stale.Id); Navigate(w, "exportgame"); Settle(w);
-            Check(fails, "逐台结果：成功那台「已导入」、失败那台有原因 + 重试 + 去 S2Arm 卡",
-                Texts(w).Contains("✓ 已导入") && Ids(w).Contains("exportgame.retry.BARE-000000000000000000000000000000BBB222")
+            Check(fails, "逐台结果：成功那台「已装到这台」、失败那台有原因 + 重试 + 去 S2Arm 卡",
+                Texts(w).Contains("✓ 已装到这台") && Ids(w).Contains("exportgame.retry.BARE-000000000000000000000000000000BBB222")
                 && !Ids(w).Contains("exportgame.retry.OWN-0000000000000000000000000000000AAA111") && Texts(w).Contains("去 S2Arm 卡"));
             Save(w, Path.Combine(outDir, "export_4_per_device_results.png"));
             runs.Remove(stale.Id);

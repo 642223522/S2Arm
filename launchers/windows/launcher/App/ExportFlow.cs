@@ -319,20 +319,30 @@ public sealed partial class EnvironmentWindow
             line.Children.Add(new TextBlock { Text = ExportDeviceLabel(r.Kind, r.Name, r.Device), FontSize = 14, Foreground = Ink, Margin = new Thickness(0, 0, 12, 0) });
             line.Children.Add(new TextBlock { Text = T(r.GameKey), FontSize = 13, Foreground = Brush.Parse(r.GameKey == "export.device.game.latest" ? "#30D158" : r.GameKey == "export.device.game.old" ? "#FF9F0A" : "#A0A0A8") });
             text.Children.Add(line);
-            if (r.NoteKey is { } nk)
-                text.Children.Add(new TextBlock { Text = T(nk), FontSize = 12, TextWrapping = TextWrapping.Wrap, Foreground = Brush.Parse(r.Checkable ? "#FFD60A" : "#8A8A92") });
-            var box = new CheckBox { Content = text, IsChecked = on, IsEnabled = r.Checkable, VerticalAlignment = VerticalAlignment.Center };
             var device = r.Device;
+            var box = new CheckBox { Content = text, IsChecked = on, IsEnabled = r.Checkable, VerticalAlignment = VerticalAlignment.Top };
             box.IsCheckedChanged += (_, _) => { if (box.IsChecked == true) exportPicked.Add(device); else exportPicked.Remove(device); Dispatcher.UIThread.Post(Render); };
             AutomationId(box, "exportgame.device." + r.Device);
-            var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), ColumnSpacing = 12 };
+            var row = new StackPanel { Spacing = 2 };
             row.Children.Add(box);
-            if (r.ConsoleLink)
+            if (r.NoteKey is { } nk)
             {
-                var link = Action("export.device.openConsole", () => OpenConsoleFor(device));
-                link.VerticalAlignment = VerticalAlignment.Center;
-                AutomationId(link, "exportgame.console." + r.Device);
-                Grid.SetColumn(link, 1); row.Children.Add(link);
+                // 行内提示在勾选框下面、缩进对齐设备名；「去 S2Arm 卡」紧跟在这句黄字后面（同一行），一看就是这一台的（原先浮在整块右侧、上下居中，看不出属于哪行）。
+                //   按钮不放进勾选框的内容里：点它不会顺手勾上这台
+                var noteRow = new WrapPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(32, 0, 0, 0), Opacity = r.Checkable ? 1 : 0.6 };
+                var noteText = new TextBlock { Text = T(nk), FontSize = 12, TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center,
+                    Foreground = Brush.Parse(r.Checkable ? "#FFD60A" : "#8A8A92"), Margin = new Thickness(0, 0, 10, 0) };
+                AutomationId(noteText, "exportgame.note." + r.Device);
+                noteRow.Children.Add(noteText);
+                if (r.ConsoleLink)
+                {
+                    var link = new Button { Content = T("export.device.openConsole"), FontSize = 12, Padding = new Thickness(10, 3), CornerRadius = new CornerRadius(6),
+                        Background = Brush.Parse("#29292D"), Foreground = Ink, VerticalAlignment = VerticalAlignment.Center };
+                    link.Click += (_, _) => OpenConsoleFor(device);
+                    AutomationId(link, "exportgame.console." + r.Device);
+                    noteRow.Children.Add(link);
+                }
+                row.Children.Add(noteRow);
             }
             devices.Children.Add(row);
         }

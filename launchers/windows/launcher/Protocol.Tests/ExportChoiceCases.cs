@@ -58,11 +58,21 @@ internal static class ExportChoiceCases
         }
         // 自签：设备行三种
         check(R("EXT-CERT", "none") == "on||", "self-sign: external S2Arm with an imported certificate → can tick");
-        check(R("EXT-NOCERT", "none") == "on|export.device.importCert|link", "self-sign: external S2Arm without a certificate → can tick, says import first, gives a way there");
+        check(R("EXT-NOCERT", "none") == "on|export.device.importCert|", "self-sign: external S2Arm without a certificate → can tick, says import it on the device; no S2Arm-card link (that can't help)");
         check(R("EXT-ONE", "none") == "on||", "self-sign: external S2Arm, certificate unknown (single app, no candidates) → can tick, no claim either way");
+        // 作业层给这台的 certImported 优先于候选（只装着一个外部 S2Arm 时作业层也给）
+        check(ExportChoice.Row(P("EXT-ONE") with { CertImported = false }, game, "none", "shell") is { Checkable: true, NoteKey: "export.device.importCert", ConsoleLink: false },
+            "self-sign: phone.certImported false (single external app) → import-first note");
+        check(ExportChoice.Row(P("EXT-NOCERT") with { CertImported = true }, game, "none", "shell").NoteKey is null, "self-sign: phone.certImported true wins over candidates saying not imported");
+        check(PhoneOverview.Parse(J("""{"phones":[{"device":"X","installedBy":"external","certImported":false},{"device":"Y","installedBy":"external","certImported":true},{"device":"Z"}]}"""))!.Phones
+            .Select(p => p.CertImported).SequenceEqual(new bool?[] { false, true, null }), "parse: phone certImported true / false / absent → null");
         check(R("OWN", "none") == "off|export.device.launcherSigned|", "self-sign: launcher-signed S2Arm → greyed with the reason");
         check(R("OWN-OLD", "none") == "off|export.device.launcherSigned|", "self-sign: launcher-signed (old shell) → greyed");
         check(R("BARE", "none") == "off|export.device.noShell.selfSign|", "self-sign: no S2Arm at all → greyed with the reason");
+        // 自签 + 独立 App：设备一律置灰，写「只能导出到文件夹」（独立 App 推到设备要在电脑上签）
+        check(new[] { "EXT-CERT", "EXT-NOCERT", "OWN", "BARE" }.All(id => R(id, "none", "standalone") == "off|export.device.selfSignStandalone|"),
+            "self-sign + standalone app: every device greyed, folder export only");
+        check(R("AWAY", "none", "standalone") == "off|export.device.notConnected|", "self-sign + standalone: an offline device still says not connected");
         // 已签名：都可勾；通用 S2Arm 出法下没装 / 不是本版给提示和入口
         check(R("OWN", "appleId") == "on||", "signed: current launcher S2Arm → can tick");
         check(R("BARE", "appleId") == "on|export.device.noShell|link", "signed: no S2Arm → can tick, install-first note + link");

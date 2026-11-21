@@ -26,7 +26,8 @@ public static class ExportChoice
     };
 
     /// <summary>导出确认页的一行设备。Kind：作业回的类型（iPhone / iPad），读不到为 ""（界面写「设备」，不写死 iPhone）；
-    /// GameKey：这款在这台的状态文案键；Checkable：能不能勾；NoteKey：行内提示（null = 不写）；ConsoleLink：行内给「去 S2Arm 卡」</summary>
+    /// GameKey：这款在这台的状态文案键；Checkable：能不能勾；NoteKey：行内提示（null = 不写）；ConsoleLink：提示后面紧跟「去 S2Arm 卡」
+    /// （只在「这台还没装 S2Arm / 不是本版」时给；「先导入签名证书」是在手机上做的，去 S2Arm 卡帮不上，不给）</summary>
     public sealed record DeviceRow(string Device, string Kind, string Name, string GameKey, bool Checkable, string? NoteKey, bool ConsoleLink);
 
     /// <summary>这台手机上的这款状态：latest = 已是最新，suggested = 已装旧版这款，其余（notPushed / needsData / 找不到）= 没装过这款</summary>
@@ -38,21 +39,23 @@ public static class ExportChoice
             _ => "export.device.game.none",
         };
 
-    /// <summary>别的工具装的 S2Arm 导没导入签名证书：候选里就是它那一个的 CertImported；没有候选（只装着一个时作业层不列）= 不知道（null）</summary>
-    public static bool? CertImported(PhoneOverview.Phone p) =>
-        (p.Candidates ?? []).FirstOrDefault(c => string.Equals(c.BundleId, p.BundleId, StringComparison.OrdinalIgnoreCase)) is { } c ? c.CertImported : null;
+    /// <summary>别的工具装的 S2Arm 导没导入签名证书：先读作业给这台的 certImported；没给再看候选里就是它那一个的 CertImported；都没有 = 不知道（null）</summary>
+    public static bool? CertImported(PhoneOverview.Phone p) => p.CertImported ??
+        ((p.Candidates ?? []).FirstOrDefault(c => string.Equals(c.BundleId, p.BundleId, StringComparison.OrdinalIgnoreCase)) is { } c ? c.CertImported : null);
 
     /// <summary>一台设备在导出确认页上怎么画（契约「③ 导到哪」的可勾规则，自上而下取第一条成立的）：
-    /// 没连着 → 灰；自签 → 别的工具装的 S2Arm 可勾（没导入证书写「先导入」、给入口），没装 / 启动器签的 → 灰并写原因；
+    /// 没连着 → 灰；自签 + 独立 App → 一律灰（只能导出到文件夹）；自签 → 别的工具装的 S2Arm 可勾（没导入证书写「先在手机上导入」），没装 / 启动器签的 → 灰并写原因；
     /// 已签名 → 都可勾，通用 S2Arm 出法下这台没装 / 不是本版写「先装 / 先更新」、给入口（开始后那台单独失败，不挡别的）</summary>
     public static DeviceRow Row(PhoneOverview.Phone p, string gameId, string sign, string layout)
     {
         var game = GameKey(p, gameId);
         DeviceRow R(bool checkable, string? note = null, bool link = false) => new(p.Device, p.Kind, p.Name, game, checkable, note, link);
         if (!p.Probed || p.Online is null) return R(false, "export.device.notConnected");
+        // 自签 + 独立 App：独立 App 推到设备要在电脑上签（作业层 install.put_app），自签推不上去 → 一律置灰，只能导出到文件夹（两端同一规则）
+        if (sign == SelfSign && layout == "standalone") return R(false, "export.device.selfSignStandalone");
         if (sign == SelfSign)
         {
-            if (p.External) return CertImported(p) == false ? R(true, "export.device.importCert", link: true) : R(true);
+            if (p.External) return CertImported(p) == false ? R(true, "export.device.importCert") : R(true);
             if (p.NeedsChoice) return R(true);   // 装着不止一个：开始后那台的结果页就地让玩家选用哪一个（install 失败码 phone_app_choice_required）
             return p.InstalledBy == "launcher" || p.Installed ? R(false, "export.device.launcherSigned") : R(false, "export.device.noShell.selfSign");
         }

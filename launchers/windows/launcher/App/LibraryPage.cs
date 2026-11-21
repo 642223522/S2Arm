@@ -177,12 +177,11 @@ public sealed partial class EnvironmentWindow
         return wordmarkBitmap = Bitmap.DecodeToWidth(stream, 480);
     }
 
-    /// <summary>顶部选中游戏的主操作（有横图的大图叠加、无横图的封面卡片两分支共用）：只有两件事——更新（做过 iPhone 版才有，ExportFlow.cs）+「导出…」，
-    /// 外加给其它平台用的「出包」（0.6.4 改版，维护者 11-21：原先的「推到 iPhone」「导出自签包」「更新这款 = 推」并进导出确认页）。</summary>
+    /// <summary>顶部选中游戏的主操作（有横图的大图叠加、无横图的封面卡片两分支共用）：只有两件事——更新（做过 iPhone 版才有，ExportFlow.cs）+「导出…」
+    /// （0.6.4 改版，维护者 11-21：原先的「推到 iPhone」「导出自签包」「更新这款 = 推」并进导出确认页；出包页只从右键菜单「出包」进，给其它平台用）。</summary>
     private StackPanel HeroActions(LibraryGame hero)
     {
         var heroActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Margin = new Thickness(0, 6, 0, 0) };
-        var heroBusy = BusyFor(hero) || hero.LocationState is "missing" or "offline";
         heroActions.Children.Add(LiveSlot(() => UpdateButton(hero)));   // 更新中只换这一格（进度事件）
         var upgrading = SGradeUpgrading(hero);   // 这款在升 S 级优化：按钮上直接写进度、不可点（11-18 维护者）
         var exportEnabled = !PhoneBlockedFor(hero) && !upgrading && hero.LocationState is not ("missing" or "offline");   // 出包 / 手机作业在跑也能去（导出那一单自己排队）
@@ -195,9 +194,6 @@ public sealed partial class EnvironmentWindow
         export.VerticalAlignment = VerticalAlignment.Center;
         AutomationId(export, "library.hero.export");
         heroActions.Children.Add(export);
-        var build = Action("nav.build", () => { libraryFolder = libraryFolderBox.Text ?? libraryFolder; selectedGame = hero.Id; OpenBuild(); }, !heroBusy);
-        build.VerticalAlignment = VerticalAlignment.Center;
-        heroActions.Children.Add(build);
         return heroActions;
     }
 
