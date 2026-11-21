@@ -602,7 +602,7 @@
 
 /* 0.6.0 快照：游戏中菜单 */
 "vpad.snap.save" = "Guardar este momento";
-"vpad.snap.offAddress" = "Este dispositivo no tiene espacio de direcciones suficiente para este juego y las instantáneas a la vez, así que aquí las instantáneas están desactivadas para este juego. El juego funciona con normalidad.";
+"vpad.snap.offAddress" = "Este juego necesita más rango de direcciones del que este dispositivo da a las apps, así que no caben las instantáneas y están desactivadas para este juego aquí. No tiene nada que ver con el almacenamiento; el juego funciona con normalidad.";
 "vpad.snap.restore" = "Volver al momento guardado";
 "vpad.snap.saving" = "Guardando este momento…";
 "vpad.snap.saved" = "Momento guardado";
@@ -643,6 +643,6 @@
 "cert.source.sidestore" = "De SideStore";
 "cert.source.p12" = ".p12 importado";
 "cert.source.pc" = "Desde tu ordenador";
-"addrshort.title" = "Este dispositivo no tiene espacio de direcciones suficiente para este juego";
-"addrshort.body" = "Este juego necesita al empezar un bloque muy grande de espacio de direcciones y este dispositivo no puede darle tanto: puede ir muy lento o quedarse parado al principio. Puedes tocar «Iniciar de todos modos» para probar; para jugar con normalidad, usa un dispositivo con más espacio de direcciones (por ejemplo, un iPhone, iPad o Mac con más memoria) o espera a una versión posterior.";
+"addrshort.title" = "Este dispositivo no da a las apps suficiente rango de direcciones para este juego";
+"addrshort.body" = "Este juego necesita al empezar un gran rango continuo de direcciones y este dispositivo no da tanto a las apps (no tiene nada que ver con el almacenamiento; liberar espacio no ayuda): puede ir muy lento o quedarse parado al principio. Puedes tocar «Iniciar de todos modos» para probar; para jugar con normalidad, usa un iPhone, iPad o Mac con más memoria (dan a las apps un rango de direcciones mayor) o espera a una versión posterior.";
 "host.startAnyway" = "Iniciar de todos modos";
