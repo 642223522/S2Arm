@@ -5,6 +5,8 @@
 #include <dlfcn.h>
 #include "s2a_init_fail.h"
 #include "native.h"
+#include "s2a_selfcheck_page.h"
+#include "s2a_unattended.h"
 #include "as_type.h"
 #include "s2a_docs.h"
 #include <errno.h>
@@ -503,6 +505,22 @@ static void alias_report_overrun(uint64_t a, uint64_t size) {
     LOG("【红】别名区收小后游戏仍映射到收掉的那段（%#llx +%#llx，报给游戏的别名区到 %#llx）：这局照常走远端，%s", (unsigned long long)a, (unsigned long long)size,
         (unsigned long long)(L.alias_base + g_alias_report), ok ? "已记下本款，下次起局别名区恢复原值" : "记录写不进，下次起局仍会收小");
 }
+// 地址空间不够这款（layout.c s2a_alias_big_tops_window）：静态大区末端顶到窗口末、别名区又伸出窗口 → 游戏其余地址区必落远端，可能非常卡或停在开头。
+//   日志打黄；iOS 人手局弹「仍要启动」页（不拦，点了照常起局）；自动化局不弹；Mac 只打日志（宿主没有确认页通道）
+// 弱链接[host]：s2a_ios_ask_continue_l10n（ios/app.m 提供；Mac 宿主、原生单测没有，取不到就只打日志）
+static void addr_short_note(int alias_gb) {
+    int s2a_alias_big_tops_window(uint64_t, int, uint64_t);
+    uint64_t we = L.win_base + L.win_size;
+    if (L.alias_base + L.alias_size <= we || !s2a_alias_big_tops_window(L.alias_base, alias_gb, we)) return;
+    LOG("【黄】地址空间不够这款：静态大区 %d GB 的末端顶到窗口末（窗口 %llu MB），游戏其余地址区会落在窗口外走远端，可能非常卡或停在开头",
+        alias_gb < 0 ? -alias_gb : alias_gb, (unsigned long long)(L.win_size >> 20));
+#if TARGET_OS_IPHONE
+    if (s2a_unattended()) return;
+    int s2a_ios_ask_continue_l10n(const char *) __attribute__((weak_import));   // ios/app.m：文案按 S2ArmHost.strings 键 addrshort.* 出五语（中英宏 S2A_SELFCHECK_ADDR_* 是实现来源 / 日志用）
+    if (s2a_ios_ask_continue_l10n && s2a_ios_ask_continue_l10n("addrshort"))
+        LOG("地址空间不够这款：玩家点了「仍要启动」，照常起局");
+#endif
+}
 static void layout_prepare(const char *npdm) {
     if (g_lay_ok) return;
     uint32_t t, ms; uint64_t sr, pid, wb, ws;
@@ -562,6 +580,7 @@ static void layout_prepare(const char *npdm) {
     s2a_window_trim(L.win_size);   // 布局之外的窗口尾部交给宿主（vawin.c）
     if (g_shadow_base) s2a_far_set(L.win_base + L.win_size, L.alias_base + L.alias_size, L.heap_base, L.heap_base + L.heap_size);   // 乙：别名区伸出窗口，伸出段走远端影子（far.c）
     g_lay_ok = 1;
+    addr_short_note(alias_gb);
 }
 uint64_t s2a_mem_mod_base(const char *npdm) { layout_prepare(npdm); return g_mod_base; }
 // 36 位老 SDK 兜底点（traps.c，#1503）：老 SDK 写死的两段 = 新 SDK 问 GetInfo 拿到的可随机区 / 栈区，这里给同一组值（同下面 GetInfo 0x0C–0x0F）

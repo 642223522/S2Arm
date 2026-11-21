@@ -6692,10 +6692,6 @@
   "en": "Recording the version now on iPhone"
  },
  {
-  "source": "这款游戏暂不支持：没找到任天堂官方图形接口（NVN / Vulkan / OpenGL），多见于自制或移植的程序。",
-  "en": "This game is not supported yet. No official Nintendo graphics API (NVN / Vulkan / OpenGL) was found; this is common for homebrew or ported programs."
- },
- {
   "source": "这款暂时打不了包，换一款官方游戏试试；如果确定是正版游戏，点「复制错误摘要」发给我们。",
   "en": "This game can't be packaged yet. Try an official game; if you are sure this is a retail game, click \"Copy error summary\" and send it to us."
  },
@@ -10718,5 +10714,33 @@
  {
   "source": "从 iPhone 上卸掉这款的独立 App",
   "en": "Removing this game's standalone app from the iPhone"
+ },
+ {
+  "source": "这款在电脑上的游戏文件夹不在了（被删或挪走），没有装到 iPhone。",
+  "en": "This game’s folder on the computer is gone (deleted or moved); nothing was installed on the iPhone."
+ },
+ {
+  "source": "在启动器里重新添加这款游戏、打一次 iPhone 包，再装到 iPhone 或续签；手机上已装的 App 和存档不受影响。",
+  "en": "Add this game again in the launcher and build the iPhone package once, then install or renew. The app already on the phone and its saves aren’t affected."
+ },
+ {
+  "source": "写进这款的游戏文件夹",
+  "en": "Writing to this game’s folder"
+ },
+ {
+  "source": "应用不完整，请重新安装 S2Arm。",
+  "en": "The app is incomplete. Reinstall S2Arm."
+ },
+ {
+  "source": "不另占空间",
+  "en": "no extra space"
+ },
+ {
+  "source": "这款游戏暂时出不了包：没认出它用的图形接口（NVN / Vulkan / OpenGL）。请把诊断发给我们，我们会核对是不是没认出来。",
+  "en": "This game can't be packed yet: we couldn't identify which graphics API it uses (NVN / Vulkan / OpenGL). Please send us a diagnostic so we can check whether we missed it."
+ },
+ {
+  "source": "想正常玩，请换一台地址空间更大的设备（比如内存更大的 Mac），或等后续版本改进；游戏照常能启动。",
+  "en": "To play normally, use a device with more address space (such as a Mac with more memory), or wait for a later version; the game still starts."
  }
 ]

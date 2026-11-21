@@ -407,6 +407,7 @@
 "notice.cable" = "傳輸線";
 "notice.imgFile" = "遊戲名稱.img";
 "notice.step.img" = "或者在電腦上匯出這款遊戲，把「S2Arm 游戏包」資料夾裡這款的 .s2arm 和 .img 兩個檔案一起放進「檔案」App 裡「%@」的「放这里导入」資料夾，再重新開啟「%@」，它會自動辨識。";
+"notice.step.imgApp" = "或者在電腦上匯出這款遊戲，把電腦上這款遊戲資料夾裡的 .s2arm（有 .img 的話一起）放進「檔案」App 裡「%@」的「放这里导入」資料夾，再點下面的「我已放好，重新檢查」。";
 "notice.step.auto" = "在電腦上的 S2Arm 裡點這款遊戲的「推到 iPhone」，資源會自動複製過來——最省事。";
 "save.blocked" = "%@\n\n先把資料複製出來再決定：開啟「檔案」App →「我的 iPhone」（iPad 為「我的 iPad」）→「%@」，把整個「S2A」資料夾複製到其他地方；未完成的操作記錄在 S2A/save-transfer/save-transactions 裡。也可以用 Mac 的 Finder 選取這台裝置 →「檔案」，把這個 App 底下的「S2A」拖出來。\n\n複製好後，可以重新打包安裝再試，或點「仍要開始遊戲…」。";
 "save.busy" = "上一項存檔操作仍在進行中，請等它完成後再試。";
@@ -604,6 +605,7 @@
 
 /* 0.6.0 快照：游戏中菜单 */
 "vpad.snap.save" = "存下這一刻";
+"vpad.snap.offAddress" = "這台裝置的位址空間不夠同時放下這款遊戲和快照，這款在這台裝置上不能存快照；遊戲照常玩。";
 "vpad.snap.restore" = "回到上次存下的這一刻";
 "vpad.snap.saving" = "正在存下這一刻…";
 "vpad.snap.saved" = "已存下這一刻";
@@ -644,3 +646,6 @@
 "cert.source.sidestore" = "來自 SideStore";
 "cert.source.p12" = "匯入的 .p12";
 "cert.source.pc" = "電腦交來";
+"addrshort.title" = "這台裝置的位址空間不夠這款遊戲";
+"addrshort.body" = "這款遊戲開局要一整塊很大的位址空間，這台裝置給不了這麼多：可能會非常卡，或一直停在開頭。可以先點「仍要啟動」試試；想正常玩，請換一台位址空間更大的裝置（例如記憶體更大的 iPhone / iPad / Mac），或等後續版本改進。";
+"host.startAnyway" = "仍要啟動";

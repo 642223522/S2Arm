@@ -11,6 +11,7 @@
 反证：installed_s2arm_on 不排除 → ④ 判 choose；put_app 写进 games 或改 rec.bundleId → ③ 红；update_apps 一款失败就抛 → ⑤ 红"""
 import contextlib
 import json
+import time
 import plistlib
 import shutil
 import sys
@@ -42,12 +43,12 @@ def ctx(t, **r):
 
 
 def use_devcert(c, distribution, bundle=SHELL_BID, appid=f"{TEAM}.*"):
-    """在用的开发者证书（state.json + 三样文件；密码与描述文件读取替身掉）"""
+    """在用的开发者证书（state.json + 三样文件；密码与描述文件读取替身掉）。distribution = 描述文件 get-task-allow 为假（分发）"""
     d = c.private / "devcert"
     d.mkdir(parents=True, exist_ok=True)
     (d / "cert.p12").write_bytes(b"p12")
-    (d / "state.json").write_text(json.dumps(dict(active=True, certSha1="aa", bundleId=bundle, teamId=TEAM, teamName="T", distribution=distribution)))
-    prof = plistlib.dumps({"ApplicationIdentifierPrefix": [TEAM], "TeamIdentifier": [TEAM], "Entitlements": {"application-identifier": appid}})
+    (d / "state.json").write_text(json.dumps(dict(active=True, certSha1="aa", bundleId=bundle, teamId=TEAM, teamName="T")))   # 同 11-20 前导入的：没有分发标记
+    prof = plistlib.dumps({"ApplicationIdentifierPrefix": [TEAM], "TeamIdentifier": [TEAM], "Entitlements": {"application-identifier": appid, "get-task-allow": not distribution}})
     (d / "profile.mobileprovision").write_bytes(prof)
     return patch.object(devcert, "stored", lambda c_: (d / "cert.p12", prof, "pw"))
 
@@ -128,6 +129,7 @@ class PutApp(unittest.TestCase):
         (self.pack / "manifest.json").write_text(json.dumps({"index_sha256": "P1"}))
         self.calls = dict(install=[], push=[], snap=[], assemble=[])
         self.ph = self.phone()
+        self.gdir = self.t / "games" / "Game One"; self.gdir.mkdir(parents=True)
 
     def phone(self):
         calls = self.calls
@@ -162,7 +164,8 @@ class PutApp(unittest.TestCase):
         with patch.object(install, "ios_pack", lambda c, g: self.pack), patch.object(packer, "assemble", assemble), \
                 patch.object(packer, "program_locks", lambda c, g: contextlib.nullcontext()), patch.object(rewrite_refresh, "refresh_ios", lambda c, g: None), \
                 patch.object(sgrade_bf, "rechain_ios", lambda c, g: "skip"), patch.object(install, "push_mods", lambda c, ph, g, m: {"m1": "fp"}), \
-                patch.object(install, "snapshot_phone_saves", lambda c, ph, g: self.calls["snap"].append((ph.bid, ph.standalone, g)) or {}):
+                patch.object(install, "snapshot_phone_saves", lambda c, ph, g: self.calls["snap"].append((ph.bid, ph.standalone, g)) or {}), \
+                patch.object(install, "app_meta", lambda c, g: (self.gdir, "Game One", "1.2.0")):
             return install.put_app(self.c, gid, ph or self.ph, steps=False)
 
     def test_writes_apps_only(self):
@@ -183,6 +186,12 @@ class PutApp(unittest.TestCase):
         self.assertEqual(self.ph.bid, SHELL_BID, "手机对象的通用壳包名不变")
         self.assertEqual((out["bundleId"], out["layout"], out["games"], out["toShell"]), (APP1, "standalone", [G1], "SID2"))
         self.assertEqual([d["code"] for d in self.c.diagnostics], ["free_app_limit_note"], "免费账号：提示苹果限制，不拦")
+        # 0.6.4：装上的这份进这款的游戏文件夹（<游戏名> v<版本>.ipa）+ 按界面语言的 README；成功页要的到期、主屏名、下一步都带上
+        self.assertEqual(sorted(p.name for p in self.gdir.iterdir()), ["Game One v1.2.0.ipa", "请先读我.txt"])
+        self.assertEqual((out["appName"], out["ipaPath"], out["gameFolder"]), ("Game One", str(self.gdir / "Game One v1.2.0.ipa"), str(self.gdir)))
+        self.assertFalse(out["expiresKnown"]); self.assertAlmostEqual(out["expiresAt"] - time.time(), 7 * 86400, delta=60)   # 免费账号没读到真值：按 7 天估
+        self.assertEqual(out["signMode"], "appleId"); self.assertEqual(len(out["nextSteps"]), 1, "直装：只给 Apple ID 那段，不给导入那步")
+        self.assertIsNone(self.c.app_installed, "推完资源：失败页不说「App 已装上、资源没推完」")
 
     def test_explicit_profile_replaces_shell_record(self):
         # 显式描述文件：独立 App 只能用它那一个包名 = 通用壳的包名，装上就顶掉了壳——壳号与各款清掉、apps 里同包名的旧款去掉，结果照实说
@@ -195,6 +204,17 @@ class PutApp(unittest.TestCase):
         self.assertTrue(out["bundleFixed"])
         self.assertIn("app_bundle_fixed", [d["code"] for d in self.c.diagnostics])
 
+    def test_push_fails_after_app_installed(self):
+        # 资源推到一半失败：App 已经装上，失败结果要能说「App 已装上，资源没推完」（main.app_installed_result）
+        import main
+        def boom(g, pack): raise install.Failure("断了", code="device_transfer_failed")
+        self.ph.push = boom
+        with self.assertRaises(install.Failure):
+            self.run_put()
+        self.c.operation = "install"
+        got = main.app_installed_result(self.c)["appInstalled"]
+        self.assertEqual((got["gameId"], got["bundleId"], got["appName"]), (G1, APP1, "Game One"))
+
     def test_install_routes_by_layout(self):
         import downstream
         seen = []
@@ -205,7 +225,11 @@ class PutApp(unittest.TestCase):
             self.c.r = dict(gameId=G1); install._install(self.c)
             install.layout_set(jobcase.fake_context(self.t, r=dict(layout="standalone", gameId=G1)))
             install._install(self.c)
-        self.assertEqual(seen, [("shell", G1, "PUSH"), ("app", G1, "PH")])
+            with patch.object(install, "export_app", lambda c, g: seen.append(("exportApp", g))), patch.object(install, "export_s2arm", lambda c, g: seen.append(("s2arm", g))):
+                self.c.r = dict(gameId=G1, mode="export"); install._install(self.c)   # 独立 App 导出：ipa + .s2arm + README 进游戏文件夹
+                install.layout_set(jobcase.fake_context(self.t, r=dict(layout="shell", gameId=G1)))
+                install._install(self.c)   # 通用壳导出照旧 .s2arm 两件套
+        self.assertEqual(seen, [("shell", G1, "PUSH"), ("app", G1, "PH"), ("exportApp", G1), ("s2arm", G1)])
 
 
 class ShellOwner(unittest.TestCase):
@@ -462,7 +486,8 @@ class WindowsInstall(unittest.TestCase):
             ph = install.WinPhone(self.c)
             self.assertEqual(ph.install(self.ipa, [], steps=False, bid=APP1), APP1)
         self.assertEqual((signed, ph.bid), ([APP1], SHELL_BID))
-        self.assertTrue((self.t / "lib" / f"S2Arm.{APP1}.signed.ipa").is_file(), "按包名另存，不盖通用壳那份")
+        self.assertTrue(devcert.signed_app_ipa(self.c, APP1).is_file(), "按包名另存在私有目录（之后挪进这款的游戏文件夹），不盖通用壳那份")
+        self.assertFalse((self.t / "lib" / f"S2Arm.{APP1}.signed.ipa").exists(), "游戏库根不留独立 App 的 ipa")
         self.assertFalse((self.t / "lib/S2Arm.signed.ipa").exists())
         self.assertEqual(layout.load_device(self.c, "U1")["bundleId"], "", "设备记录的包名没写")
 

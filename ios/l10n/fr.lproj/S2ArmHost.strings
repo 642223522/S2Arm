@@ -432,6 +432,7 @@
 "notice.cable" = "Câble";
 "notice.imgFile" = "NomDuJeu.img";
 "notice.step.img" = "Ou exportez ce jeu sur votre ordinateur, placez ses deux fichiers du dossier « S2Arm Game Packs », le .s2arm et le .img, dans le dossier « Import Here » de « %@ » dans l'app Fichiers, et rouvrez « %@ ». Il est reconnu automatiquement.";
+"notice.step.imgApp" = "Ou exportez ce jeu sur votre ordinateur et placez le .s2arm du dossier de ce jeu sur l'ordinateur (et le .img, s'il y en a un) dans le dossier « Import Here » de « %@ » dans l'app Fichiers, puis touchez « Je l'ai copié — vérifier à nouveau » ci-dessous.";
 "notice.step.auto" = "Dans S2Arm sur votre ordinateur, cliquez sur « Envoyer sur l'iPhone » pour ce jeu et les ressources sont copiées automatiquement — la méthode la plus simple.";
 "save.blocked" = "%@\n\nCopiez vos données ailleurs avant de décider : ouvrez l'app Fichiers → « Sur mon iPhone » (« Sur mon iPad » sur iPad) → « %@ », et copiez l'intégralité du dossier « S2A » ailleurs. Les opérations inachevées sont enregistrées dans S2A/save-transfer/save-transactions. Vous pouvez aussi sélectionner cet appareil dans le Finder sur un Mac → « Fichiers », et faire glisser le dossier « S2A » de cette app vers l'extérieur.\n\nUne fois la copie effectuée, vous pouvez repackager et installer pour réessayer, ou appuyer sur « Lancer le jeu quand même… ».";
 "save.busy" = "L'opération de sauvegarde précédente est toujours en cours. Réessayez une fois qu'elle sera terminée.";
@@ -598,6 +599,7 @@
 
 /* 0.6.0 快照：游戏中菜单 */
 "vpad.snap.save" = "Sauvegarder cet instant";
+"vpad.snap.offAddress" = "Cet appareil n'a pas assez d'espace d'adressage pour ce jeu et les instantanés à la fois : les instantanés sont désactivés pour ce jeu ici. Le jeu fonctionne normalement.";
 "vpad.snap.restore" = "Revenir à l’instant sauvegardé";
 "vpad.snap.saving" = "Sauvegarde de cet instant…";
 "vpad.snap.saved" = "Instant sauvegardé";
@@ -638,3 +640,6 @@
 "cert.source.sidestore" = "Depuis SideStore";
 "cert.source.p12" = ".p12 importé";
 "cert.source.pc" = "Depuis votre ordinateur";
+"addrshort.title" = "Cet appareil n'a pas assez d'espace d'adressage pour ce jeu";
+"addrshort.body" = "Ce jeu a besoin au démarrage d'un très grand bloc d'espace d'adressage, et cet appareil ne peut pas en fournir autant : il peut être très lent ou rester bloqué au début. Vous pouvez toucher « Lancer quand même » pour essayer ; pour jouer normalement, utilisez un appareil avec plus d'espace d'adressage (par exemple un iPhone, un iPad ou un Mac avec plus de mémoire) ou attendez une version ultérieure.";
+"host.startAnyway" = "Lancer quand même";

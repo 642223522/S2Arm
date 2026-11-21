@@ -1484,6 +1484,12 @@ static void *gate_thread(void *a) { (void)a;
     struct s2a_gate_watch w = {0}; int last = -1, poked = 0;
     for (;;) {
         char why[600]; int act = s2a_import_decide(g_imp_docs, &w, time(NULL), why, sizeof why);
+        // 没资源 / 不完整：先扫一遍「放这里导入」（.s2arm、.img）再判。独立 App（一 App 一游戏）打开就直接起这款，游戏库那边的扫描在选上游戏后就停了（app.m img_scan_now），
+        //   说明页教玩家把文件放进导入文件夹、点「重新检查」——这里不扫就永远等不到（0.6.4 独立 App 只导出那条路）。没变的失败文件 s2a_img_scan 自己跳过，3 秒一轮不重解
+        if (act == S2A_GATE_NONE || act == S2A_GATE_BROKEN) {
+            char proc[1024]; s2a_container_docs(proc, sizeof proc);
+            if (s2a_img_scan(proc) > 0) { LOG("资源导入：从「放这里导入」认出新文件，重新判"); continue; }
+        }
         if (act == S2A_GATE_READY) {
             // 预热路径：宿主线程在 s2a_import_gate 里等 → 收起页面、接着起游戏；老路径（闸门在主线程、UIKit 接管后不返回）没人等 → 请玩家重新打开。
             //   有没有人等在起线程前就定了（s2a_import_gate），不再在这里等 2 秒看宿主线程到没到（iOS 装机剃刀 #34：时间补丁，没赶上就误走「请重新打开」）
