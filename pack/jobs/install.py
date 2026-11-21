@@ -1233,6 +1233,13 @@ def layout_choice(c):
     return m if isinstance(m, dict) else {}
 
 
+def wants_shell(c):
+    """游戏库里有没有哪款按通用 S2Arm 出（缺省出法或某款单独选的）：有 → 这台手机要有通用 S2Arm"""
+    m = layout_choice(c)
+    games = m.get("games") if isinstance(m.get("games"), dict) else {}
+    return chosen_layout(c) == "shell" or "shell" in games.values()
+
+
 def chosen_layout(c, gid=None):
     """这款（gid 为空 = 缺省）按哪种出法推到 iPhone → shell / standalone（见 LAYOUT_CHOICE 上面的说明）"""
     m = layout_choice(c)
@@ -3896,7 +3903,9 @@ def _update_phone(c):
             raise Failure(hint, code="device_not_connected") from e
         raise
     rec = layout.load_device(c, ph.key)
-    if rec.get("apps") and not rec.get("shellId"):   # 这台只装了独立 App（分发证书玩家的常态）：不顺手装一个通用壳（占 App 名额，分发证书签的还打不开游戏）
+    if rec.get("apps") and not rec.get("shellId") and not wants_shell(c):
+        # 这台只装了独立 App、游戏库里也没有哪款选通用 S2Arm（分发证书玩家的常态）：「更新」只重签独立 App，不顺手装一个通用壳（占 App 名额，分发证书签的还打不开游戏）。
+        #   有款选了通用 S2Arm 就照装（11-21 D-R23F：只装着独立 App 的手机推通用 S2Arm 的款报「先装 S2Arm」，点「安装 S2Arm」却 0.4 秒「完成」、什么都没装，死循环）
         import ipa as packer
         out = dict(updated=True, bundleId="", games=[], toShell=packer.current_shell_id(c), **ph.info)
     else:
