@@ -645,3 +645,6 @@
 "cert.source.sidestore" = "来自 SideStore";
 "cert.source.p12" = "导入的 .p12";
 "cert.source.pc" = "电脑交来";
+"addrshort.title" = "这台设备的地址空间不够这款游戏";
+"addrshort.body" = "这款游戏开局要一整块很大的地址空间，这台设备给不了这么多：可能会非常卡，或一直停在开头。可以先点「仍要启动」试试；想正常玩，请换一台地址空间更大的设备（比如内存更大的 iPhone / iPad / Mac），或等后续版本改进。";
+"host.startAnyway" = "仍要启动";

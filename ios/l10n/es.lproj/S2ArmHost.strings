@@ -639,3 +639,6 @@
 "cert.source.sidestore" = "De SideStore";
 "cert.source.p12" = ".p12 importado";
 "cert.source.pc" = "Desde tu ordenador";
+"addrshort.title" = "Este dispositivo no tiene espacio de direcciones suficiente para este juego";
+"addrshort.body" = "Este juego necesita al empezar un bloque muy grande de espacio de direcciones y este dispositivo no puede darle tanto: puede ir muy lento o quedarse parado al principio. Puedes tocar «Iniciar de todos modos» para probar; para jugar con normalidad, usa un dispositivo con más espacio de direcciones (por ejemplo, un iPhone, iPad o Mac con más memoria) o espera a una versión posterior.";
+"host.startAnyway" = "Iniciar de todos modos";

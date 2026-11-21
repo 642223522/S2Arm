@@ -333,6 +333,7 @@ static const char *host_text(const char *s) {
         {S2A_SELFCHECK_DEVICE_TITLE, S2A_SELFCHECK_DEVICE_TITLE_EN}, {S2A_SELFCHECK_DEVICE_BODY, S2A_SELFCHECK_DEVICE_BODY_EN},
         {S2A_SELFCHECK_AS_TITLE, S2A_SELFCHECK_AS_TITLE_EN}, {S2A_SELFCHECK_AS32_BODY, S2A_SELFCHECK_AS32_BODY_EN},
         {S2A_SELFCHECK_MEM_BODY, S2A_SELFCHECK_MEM_BODY_EN}, {S2A_SELFCHECK_GO, S2A_SELFCHECK_GO_EN},
+        {S2A_SELFCHECK_ADDR_TITLE, S2A_SELFCHECK_ADDR_TITLE_EN}, {S2A_SELFCHECK_ADDR_BODY, S2A_SELFCHECK_ADDR_BODY_EN},   // 地址空间不够这款（svc_mem.c addr_short_note）
         {S2A_SELFCHECK_ENT_BODY_APP, S2A_SELFCHECK_ENT_BODY_APP_EN}, {S2A_SELFCHECK_MEM_BODY_APP, S2A_SELFCHECK_MEM_BODY_APP_EN},   // 独立 App 的说法
         {S2A_INIT_FAIL_MSG_SERVICE, S2A_INIT_FAIL_MSG_SERVICE_EN}, {S2A_INIT_FAIL_MSG_RUNTIME, S2A_INIT_FAIL_MSG_RUNTIME_EN},
         {S2A_INIT_FAIL_MSG_GAME, S2A_INIT_FAIL_MSG_GAME_EN}, {S2A_INIT_FAIL_MSG_GENERIC, S2A_INIT_FAIL_MSG_GENERIC_EN},
@@ -381,6 +382,13 @@ int s2a_ios_ask_continue(const char *symbol, const char *title, const char *body
     }); });
     dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
     return 1;
+}
+// 同上，文案按 S2ArmHost.strings 的键取（五语）：<键>.title / <键>.body + host.startAnyway。C 层只认得键名（svc_mem.c 地址空间不够这款，11-20）
+int s2a_ios_ask_continue_l10n(const char *key) {
+    if (!key) return 0;
+    if ([@(key) isEqualToString:@"addrshort"])
+        return s2a_ios_ask_continue("exclamationmark.triangle.fill", S2AL(@"addrshort.title").UTF8String, S2AL(@"addrshort.body").UTF8String, S2AL(@"host.startAnyway").UTF8String);
+    return 0;
 }
 // 老入口（停帧看门 ap_host.c 经 dlsym 调）：第一段当标题、其余当正文
 // 可用空间按「重要用途」口径（含系统随时能清掉的空间，同「设置 → 储存空间」里的「可用」）：statfs 的 f_bavail 不含这部分，常小好几 GB，
