@@ -302,6 +302,8 @@ s2a_gate_step "$PY" "$android_dir/tests/jni_abi_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/dev_runtime_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/direct_batch_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/direct_prepare_test.py"
+# 首局预热随包种子整理（android/tools/vk_warm_seed.py）：校验 / 配对 / 按程序身份滤管线 / 与来源先后无关；宿主读种子的用例在 nvk_warm_modules_test.sh
+s2a_gate_step "$PY" "$android_dir/tests/vk_warm_seed_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/host_link_test.py"   # 宿主单测链接闭包：自动补链 / 弱引用放行 / 无提供方点名红 / 替身优先
 # 新回放层：真实图形/计算请求生产入口的贴图池容量、超限与调试读数。
 s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_pool_test.py"
