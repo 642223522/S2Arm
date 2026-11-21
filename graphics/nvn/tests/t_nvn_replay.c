@@ -47,6 +47,7 @@ static int g_flag_pool_memo = 1;   // 用例设：开关 nvk_pool_memo 的值（
 static int g_flag_land_merge = 1;  // 用例设：开关 nvk_land_merge 的值（缺省同产品：开）；每 256 次登记才重读一次，换值后要用 rp_test_gw_merge_reload() 推一下
 static int g_flag_buf_dirtylog = -1, g_dirtylog_dflt = -1;   // 用例设：开关 nvk_buf_dirtylog（-1 = 没设，取产品写的缺省；--dirtylog-off 整套以 0 跑一遍）。受跟踪的池都有替身日志，见「脏页追加日志替身」
 static int g_flag_vf_key = 1;      // 用例设：开关 nvk_vf_key 的值（缺省同产品：视图表按存储认视图）；每 256 次取视图重读一次，换值后要用 vf_push() 推一下
+static int g_flag_ub_steal = -1;   // 用例设：开关 nvk_ub_fill_steal（-1 = 缺省）；rp_draw 缓存它，换值后要 pass_fresh（会话重开清缓存）
 static int g_flag_split_pass = -1, g_flag_diag_load_dc, g_flag_diag_store_dc;   // 用例设：开关 nvk_split_pass（-1 = 缺省）、诊断开关 nvk_diag_load_dontcare / nvk_diag_store_dontcare
 static int g_flag_pool_stats;   // 用例设：开关 pool_stats（缺省同产品：关）
 static int g_diag_frames;
@@ -65,6 +66,7 @@ int nvn_plat_flag(const char *name, int dflt) {
     if (!strcmp(name, "nvk_rt_cont")) return g_flag_rt_cont;
     if (!strcmp(name, "nvk_clear_park")) return g_flag_clear_park;
     if (!strcmp(name, "nvk_pass_area")) return g_flag_pass_area;
+    if (!strcmp(name, "nvk_ub_fill_steal")) return g_flag_ub_steal < 0 ? dflt : g_flag_ub_steal;
     if (!strcmp(name, "nvk_split_pass")) return g_flag_split_pass < 0 ? dflt : g_flag_split_pass;
     if (!strcmp(name, "nvk_diag_load_dontcare")) return g_flag_diag_load_dc;
     if (!strcmp(name, "nvk_diag_store_dontcare")) return g_flag_diag_store_dc;
@@ -137,19 +139,26 @@ nvn_gpu_rc nvn_gpu_cmd_begin(const nvn_gpu_cmd_desc *d, nvn_gpu_cmd *out, nvn_gp
     if (!c->is_pre) g_occ_slots_decl = d ? d->occlusion_slots : 0;
     return (nvn_gpu_rc){NVN_GPU_OK}; }
 // 暂存填充替身：g_fill_defer = 0 就地拷（缺省）；= 1 挂起不拷，到 fill_wait(票号) / 段提交 / 段放弃时才按交出顺序拷——模仿 Vulkan 后端交录制线程的时序，
-// 让「改游戏内存前没等填完」在单测里看得见（拷出来的是改过之后的内容）
+// 让「改游戏内存前没等填完」在单测里看得见（拷出来的是改过之后的内容）。fill_take(票号) 只拷那一笔（代拷），之后按序轮到它时跳过、不再拷
 enum { FILL_MAX = 64 };
-static int g_fill_defer; static struct { uint8_t *d; const void *s; uint64_t n, t; } g_fill_q[FILL_MAX]; static int g_fill_nq, g_fill_head;
-static uint64_t g_fill_seq, g_fill_done; static int g_fill_waits;   // g_fill_waits：带票号、真去等了还没填完的次数
+static int g_fill_defer; static struct { uint8_t *d; const void *s; uint64_t n, t; int taken; } g_fill_q[FILL_MAX]; static int g_fill_nq, g_fill_head;
+static uint64_t g_fill_seq, g_fill_done; static int g_fill_waits, g_fill_takes;   // g_fill_waits：带票号、真去等了还没填完的次数；g_fill_takes：真代拷了的笔数
 static struct { uint8_t *d; uint64_t t; } g_fill_log[FILL_MAX]; static int g_fill_nlog;   // 交出过的填充（目标、票号），按交出顺序
-static void fill_run_to(uint64_t t) { while (g_fill_head < g_fill_nq && g_fill_q[g_fill_head].t <= t) { memcpy(g_fill_q[g_fill_head].d, g_fill_q[g_fill_head].s, (size_t)g_fill_q[g_fill_head].n); g_fill_done = g_fill_q[g_fill_head].t; g_fill_head++; } }
-static void fill_reset(int defer) { fill_run_to(UINT64_MAX); g_fill_defer = defer; g_fill_nq = g_fill_head = 0; g_fill_waits = 0; g_fill_nlog = 0; }
+static void fill_run_to(uint64_t t) { while (g_fill_head < g_fill_nq && g_fill_q[g_fill_head].t <= t) { if (!g_fill_q[g_fill_head].taken) memcpy(g_fill_q[g_fill_head].d, g_fill_q[g_fill_head].s, (size_t)g_fill_q[g_fill_head].n); g_fill_done = g_fill_q[g_fill_head].t; g_fill_head++; } }
+static void fill_reset(int defer) { fill_run_to(UINT64_MAX); g_fill_defer = defer; g_fill_nq = g_fill_head = 0; g_fill_waits = g_fill_takes = 0; g_fill_nlog = 0; }
 uint64_t nvn_gpu_arena_fill(nvn_gpu_cmd c, const nvn_gpu_slice *sl, const void *src, uint64_t bytes) { (void)c;
     if (!g_fill_defer || g_fill_nq == FILL_MAX) { fill_run_to(UINT64_MAX); memcpy(sl->cpu, src, (size_t)bytes); return 0; }
-    const uint64_t t = ++g_fill_seq; g_fill_q[g_fill_nq].d = sl->cpu; g_fill_q[g_fill_nq].s = src; g_fill_q[g_fill_nq].n = bytes; g_fill_q[g_fill_nq].t = t; g_fill_nq++;
+    const uint64_t t = ++g_fill_seq; g_fill_q[g_fill_nq].d = sl->cpu; g_fill_q[g_fill_nq].s = src; g_fill_q[g_fill_nq].n = bytes; g_fill_q[g_fill_nq].t = t; g_fill_q[g_fill_nq].taken = 0; g_fill_nq++;
     if (g_fill_nlog < FILL_MAX) { g_fill_log[g_fill_nlog].d = sl->cpu; g_fill_log[g_fill_nlog].t = t; g_fill_nlog++; }
     return t; }
 uint64_t nvn_gpu_arena_fill_wait(uint64_t t) { if (t && g_fill_done < t) { g_fill_waits++; fill_run_to(t); } return g_fill_done; }
+int nvn_gpu_arena_fill_take(uint64_t t) {
+    if (!t || g_fill_done >= t) return 0;
+    for (int i = g_fill_head; i < g_fill_nq; i++) if (g_fill_q[i].t == t) {
+        if (g_fill_q[i].taken) return 0;
+        memcpy(g_fill_q[i].d, g_fill_q[i].s, (size_t)g_fill_q[i].n); g_fill_q[i].taken = 1; g_fill_takes++; return 1;
+    }
+    return 0; }
 void nvn_gpu_cmd_abort(nvn_gpu_cmd c) { fill_run_to(UINT64_MAX); c->live = 0; g_aborts++; }
 nvn_gpu_rc nvn_gpu_cmd_commit(nvn_gpu_cmd c, uint64_t signal, nvn_gpu_done_fn done, void *user, nvn_gpu_err *err) {
     (void)err; fill_run_to(UINT64_MAX); c->live = 0; g_commits++; g_last_signal = signal; if (!c->is_pre) { g_main_commits++; if (g_ncd < 16) g_cd[g_ncd++] = g_gdraws; } g_pend[g_npend].fn = done; g_pend[g_npend].user = user; g_pend[g_npend].signal = signal; g_pend[g_npend].nts = c->nts; memcpy(g_pend[g_npend].ts, c->ts, sizeof c->ts); g_npend++; return (nvn_gpu_rc){NVN_GPU_OK}; }
@@ -3375,11 +3384,13 @@ static void t_gs_bind(void) {
     } else CHECK(0);
     g_snap_prog = NULL; pass_fresh();
 }
-// 常量缓冲暂存交后端异步填（rp_draw.c alloc_fill）：替身挂起填充、到等 / 提交才拷。
-// 第一笔绑 A（512 字节，全 0x11）→ OP_UPDATE_UB 改 A 头 8 字节为 0xB2：改之前必须等第一笔的填充，所以第一片拷到的是 0x11；
-// 第二笔绑 A → 片头是 0xB2；再改一段与 A 不相交的内存（池里 A 之后 2 KB）：第二笔的填充还挂着也不用等。期望全靠手算：等的次数恰好 1、两片头字节 0x11 / 0xB2、
-// 提交后挂起的全部拷完、最后一次绑定指向第二片。
-static void t_ub_fill_async(void) {
+// 常量缓冲暂存交后端异步填（rp_draw.c alloc_fill）：替身挂起填充、到等 / 代拷 / 提交才拷。
+// 第一笔绑 A（512 字节，全 0x11）→ OP_UPDATE_UB 改 A 头 8 字节为 0xB2：改之前第一笔的填充必须已做完，所以第一片拷到的是 0x11；
+// 第二笔绑 A → 片头是 0xB2；再改一段与 A 不相交的内存（池里 A 之后 2 KB）：第二笔的填充还挂着也不用管。
+// steal = 0（nvk_ub_fill_steal 关，原做法）：等 1 次、代拷 0 笔；steal = 1（缺省）：等 0 次、代拷恰好 1 笔 512 字节（读数行计数同此）。
+// 期望全靠手算：两片头字节 0x11 / 0xB2、提交后挂起的全部拷完、最后一次绑定指向第二片；改 A 之后第一片仍是 0x11（写前来源 = 暂存，写后来源变了暂存不变）。
+static void ub_fill_async_run(int steal) {
+    g_flag_ub_steal = steal;
     pass_fresh(); g_gdraws = g_resolves = g_resolve_rc = 0; g_arena_used = 0;
     memset(g_bind_calls, 0, sizeof g_bind_calls); memset(g_nfb, 0, sizeof g_nfb);
     memset(g_pmem, 0, sizeof g_pmem); nvn_be_pool_add(g_pmem, sizeof g_pmem);
@@ -3396,18 +3407,60 @@ static void t_ub_fill_async(void) {
     q_draw(&s);
     r = put(&s, OP_UPDATE_UB, 16 + 8); d = a + 2048; memcpy(r, &d, 8); memcpy(r + 8, &n, 8); memset(r + 16, 0xC3, 8);   // 与 A [a, a+512) 不相交
     end(&s);
+    uint64_t pf[RP_PERF_N]; rp_perf_take(pf);
     fill_reset(1); submit1(&s);
-    const int waits = g_fill_waits, nlog = g_fill_nlog, pending = g_fill_nq - g_fill_head;
+    const int waits = g_fill_waits, takes = g_fill_takes, nlog = g_fill_nlog, pending = g_fill_nq - g_fill_head;
     fake_complete(NVN_GPU_DONE_OK); fill_reset(0);
+    rp_perf_take(pf);
     CHECK(g_gdraws == 2 && nlog == 2);
-    CHECK(waits == 1);         // 只有改 A 的那一次要等；改不相交内存那次不等
+    CHECK(waits == (steal ? 0 : 1));    // 只有改 A 的那一次要管；关着是等，开着是代拷、不等
+    CHECK(takes == (steal ? 1 : 0));
+    CHECK(pf[RP_PERF_UBO_FILL_N] == 2 && pf[RP_PERF_UBO_FILL_WAIT_N] == 1);
+    CHECK(pf[RP_PERF_UBO_FILL_STEAL_N] == (steal ? 1u : 0u) && pf[RP_PERF_UBO_FILL_STEAL_B] == (steal ? 512u : 0u) && pf[RP_PERF_UBO_FILL_BUSY_N] == 0);
     CHECK(pending == 0);       // 段提交前全部填完
     if (nlog == 2) {
-        CHECK(g_fill_log[0].d[0] == 0x11 && g_fill_log[0].d[511] == 0x11);   // 第一笔：改之前的内容
+        CHECK(g_fill_log[0].d[0] == 0x11 && g_fill_log[0].d[511] == 0x11);   // 第一笔：改之前的内容（来源此刻已是 0xB2，暂存不跟着变）
+        CHECK(g_pmem[PG] == 0xB2);
         CHECK(g_fill_log[1].d[0] == 0xB2 && g_fill_log[1].d[7] == 0xB2 && g_fill_log[1].d[8] == 0x11);   // 第二笔：改之后
         CHECK(g_nfb[1] == 1 && g_fb[1][0].u.b.len == 512 && g_arena + g_fb[1][0].u.b.off == g_fill_log[1].d);
     }
-    g_snap_prog = NULL; pass_fresh();
+    g_snap_prog = NULL; g_flag_ub_steal = -1; pass_fresh();
+}
+static void t_ub_fill_async(void) { ub_fill_async_run(0); ub_fill_async_run(1); }
+// 代拷要管每一笔相交的，不只最新那笔：三笔挂着的填充 F1 = [A, A+512)、F2 = [A+256, A+768)、F3 = [B, B+512)（B = A + 2 KB，不相交），
+// 然后改 [A+300, A+308)——与 F1、F2 都相交。期望（手算）：代拷恰好 2 笔（F1、F2）共 1024 字节、等 0 次；F1 片第 300 字节、F2 片第 44 字节仍是 0x11
+// （改之前的内容），F3 片是 0x22；改 F3 之外的内存不碰 F3。只代拷最新一笔（F2）的话，F1 到提交才拷，拷到的是 0xB2。
+static void t_ub_fill_steal_all(void) {
+    g_flag_ub_steal = 1;
+    pass_fresh(); g_gdraws = g_resolves = g_resolve_rc = 0; g_arena_used = 0;
+    memset(g_bind_calls, 0, sizeof g_bind_calls); memset(g_nfb, 0, sizeof g_nfb);
+    memset(g_pmem, 0, sizeof g_pmem); nvn_be_pool_add(g_pmem, sizeof g_pmem);
+    const uint64_t base = (uint64_t)(uintptr_t)g_pmem, a = base + PG, b = a + 2048; memset(g_pmem + PG, 0x11, 768); memset(g_pmem + PG + 2048, 0x22, 512);
+    prog_t pg; memset(&pg, 0, sizeof pg); pg.magic = MAGIC('P','R','O','G'); pg.serial = 1994; pg.nstage = 2;
+    g_snap_prog = &pg; g_snap_ok = 3; memset(g_snap_keys, 0, sizeof g_snap_keys); memset(g_snap_stage, 0xff, sizeof g_snap_stage);
+    for (int i = 0; i < 2; i++) { g_snap_stage[i] = (uint8_t)i; g_snap_keys[i][0] = (uint8_t)(i + 0x61); }
+    stream s = {0}; q_env(&s);
+    g_fprog.nent[1] = 1; g_fprog.ent[1][0].cls = NVN_GPU_RES_UBO; g_fprog.ent[1][0].src_kind = NVN_RB_CBUF;
+    p_bind_program_id *id = put(&s, OP_BIND_PROGRAM, sizeof *id); id->prog = &pg; id->serial = pg.serial; id->stages = 0x1f;
+    const uint64_t at[3] = { a, a + 256, b };
+    for (int k = 0; k < 3; k++) { p_bind_buf *ub = put(&s, OP_BIND_UBO, sizeof *ub); ub->stage = 1; ub->index = 0; ub->addr = at[k]; ub->size = 512; q_draw(&s); }
+    uint8_t *r = put(&s, OP_UPDATE_UB, 16 + 8); uint64_t d = a + 300, n = 8; memcpy(r, &d, 8); memcpy(r + 8, &n, 8); memset(r + 16, 0xB2, 8);
+    end(&s);
+    uint64_t pf[RP_PERF_N]; rp_perf_take(pf);
+    fill_reset(1); submit1(&s);
+    const int waits = g_fill_waits, takes = g_fill_takes, nlog = g_fill_nlog;
+    fake_complete(NVN_GPU_DONE_OK); fill_reset(0);
+    rp_perf_take(pf);
+    CHECK(g_gdraws == 3 && nlog == 3);
+    CHECK(takes == 2 && waits == 0);
+    CHECK(pf[RP_PERF_UBO_FILL_STEAL_N] == 2 && pf[RP_PERF_UBO_FILL_STEAL_B] == 1024 && pf[RP_PERF_UBO_FILL_WAIT_N] == 1);
+    if (nlog == 3) {
+        CHECK(g_fill_log[0].d[300] == 0x11 && g_fill_log[0].d[307] == 0x11);   // F1：改之前
+        CHECK(g_fill_log[1].d[44] == 0x11 && g_fill_log[1].d[51] == 0x11);     // F2：改之前
+        CHECK(g_fill_log[2].d[0] == 0x22 && g_fill_log[2].d[511] == 0x22);     // F3
+    }
+    CHECK(g_pmem[PG + 300] == 0xB2);
+    g_snap_prog = NULL; g_flag_ub_steal = -1; pass_fresh();
 }
 // 上一笔的程序有片元阶段并带一条绑定，这一笔换成只有顶点阶段的程序：片元阶段要收到一次零条的绑定（清掉旧的），
 // 否则后端拿旧的片元绑定去配没有片元布局的管线
@@ -6954,7 +7007,7 @@ int main(int argc, char **argv) {
     t_arena697_detail();
     t_logic_op_accounting();
     t_gs_dirty_and_topology();
-    t_gs_bind(); t_ub_fill_async(); t_storage_null_binding(); t_storage_sync_before_pass(); t_stage_dropped_clears_binds(); t_sbuf_window(); t_sbuf_past_pool_end();
+    t_gs_bind(); t_ub_fill_async(); t_ub_fill_steal_all(); t_storage_null_binding(); t_storage_sync_before_pass(); t_stage_dropped_clears_binds(); t_sbuf_window(); t_sbuf_past_pool_end();
     t_graphics_high_slots();
     t_graphics_pool();
     t_tbuf_replay();
