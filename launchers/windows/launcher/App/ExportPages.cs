@@ -28,12 +28,29 @@ public sealed partial class EnvironmentWindow
     // First Apple ID sign-in happens in Impactor itself (the password never passes through S2Arm); the checklist re-asks every 5 s and ticks when done.
     private void OpenBundledImpactor() => TryOpenBundledImpactor();
 
+    /// <summary>Impactor 窗口日志：&lt;私有目录&gt;/logs/impactor-gui.log；超过 1 MB 挪成 impactor-gui.old.log 再开新的（只留两份，有界）</summary>
+    private string ImpactorLog()
+    {
+        var dir = Path.Combine(privateRoot, "logs");
+        var log = Path.Combine(dir, "impactor-gui.log");
+        try
+        {
+            Directory.CreateDirectory(dir);
+            if (new FileInfo(log) is { Exists: true, Length: > 1 << 20 }) File.Move(log, Path.Combine(dir, "impactor-gui.old.log"), overwrite: true);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }   // 挪不动照样追加：日志不挡打开 Impactor
+        return log;
+    }
+
     private bool TryOpenBundledImpactor()
     {
         var ok = false;
         try
         {
-            using var p = Process.Start(new ProcessStartInfo(BundledImpactor) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(BundledImpactor)! });
+            var start = new ProcessStartInfo(BundledImpactor) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(BundledImpactor)! };
+            // 自编 Impactor 补丁 0004：窗口程序没有控制台，日志（登录提交 / 成功 / 失败原因）追加进这个文件，诊断包按 logs/*.log 收（同一套脱敏）
+            start.Environment["S2A_IMPACTOR_LOG"] = ImpactorLog();
+            using var p = Process.Start(start);
             if (p is null) installDiagnostics = T("process.start_failed"); else ok = true;
         }
         catch (Exception error) when (error is IOException or System.ComponentModel.Win32Exception or InvalidOperationException)
