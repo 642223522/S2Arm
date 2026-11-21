@@ -202,6 +202,28 @@ import XCTest
         XCTAssertEqual(again.map { $0["device"] as? String }, ["PHONE-1", "PAD-2", "PAD-2"], "只重试失败的那台")
     }
 
+    /// #1966：导出页某一行停在「装着不止一个 S2Arm、还没选」→ 这一行就地有候选（pushChoice 指向这台），点一个记住后接着推这一台（按行重试，不重推已成功的）
+    func testExportRowChoiceRequiredChoosesInlineAndContinues() async throws {
+        runner.choiceDevice = "PAD-2"
+        let g = try game("0100A")
+        model.startExportSheet(g, sign: "devCert", layout: "standalone",
+                               devices: [.init(key: "PHONE-1", kind: "iPhone", name: "甲"), .init(key: "PAD-2", kind: "iPad", name: "乙")])
+        for _ in 0..<300 where model.exportFlows["0100A"]?.running != false { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(model.exportFlows["0100A"]?.rows.map(\.state), [.done, .failed])
+        XCTAssertEqual(model.exportFlows["0100A"]?.rows.last?.code, "phone_app_choice_required")
+        XCTAssertEqual(model.pushChoice?.device, "PAD-2", "这一行就地列候选")
+        XCTAssertEqual(model.pushChoice?.candidates.map(\.bundleId), ["com.altstore.s2arm.TEAMB", "io.s2arm.games.teama"])
+        let rows = model.exportFlows["0100A"]?.rows ?? []
+        XCTAssertNotNil(model.exportRowChoice(rows[1]), "失败的那一行（PAD-2）就地出候选，不只给「重试」")
+        XCTAssertNil(model.exportRowChoice(rows[0]), "成功的那一行不出")
+        model.chooseApp(device: "PAD-2", bundleId: "com.altstore.s2arm.TEAMB")
+        let again = await waitRequests("install", count: 3)
+        XCTAssertEqual(again.map { $0["device"] as? String }, ["PHONE-1", "PAD-2", "PAD-2"], "选好接着推这一台，不重推已成功的")
+        for _ in 0..<300 where model.exportFlows["0100A"]?.rows.last?.state != .done { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(model.exportFlows["0100A"]?.rows.map(\.state), [.done, .done], "按行重试走完导出流程，这一行变成功")
+        XCTAssertNil(model.pushChoice, "用掉了")
+    }
+
     func testStartWithoutDevicesExportsToFolder() async throws {
         model.startExportSheet(try game("0100A"), sign: "none", layout: "shell", devices: [])
         let r = await waitRequests("install", count: 1).first
@@ -364,6 +386,7 @@ private final class RecordingRunner: JobProcessRunner {
     private let lock = NSLock()
     private var seen: [[String: Any]] = []
     var failDevice: String?
+    var choiceDevice: String?          // install 推到这台时回「装着不止一个 S2Arm、还没选」（直到 phoneChooseApp 选过）
     var updateDiagnostics: [[String: Any]] = []
     var requests: [[String: Any]] { lock.lock(); defer { lock.unlock() }; return seen }
     func start(executable: URL, arguments: [String], environment: [String: String],
@@ -384,6 +407,13 @@ private final class RecordingRunner: JobProcessRunner {
         case "updateGame":
             event["result"] = ["gameId": request["gameId"] ?? "", "reasons": [String]()]
             event["diagnostics"] = updateDiagnostics
+        case "phoneChooseApp":
+            choiceDevice = nil
+        case "install" where request["device"] as? String == choiceDevice && choiceDevice != nil:
+            event["state"] = "failed"; event["message"] = "这台 iPad 上装着不止一个 S2Arm"
+            event["diagnostics"] = [["severity": "error", "code": "phone_app_choice_required", "message": "这台 iPad 上装着不止一个 S2Arm",
+                                     "facts": ["device": choiceDevice!, "candidates": [["bundleId": "com.altstore.s2arm.TEAMB", "team": "TEAMB", "byThisLauncher": false],
+                                                                                    ["bundleId": "io.s2arm.games.teama", "team": "TEAMA", "byThisLauncher": true]]]]]
         case "install" where request["device"] as? String == failDevice && failDevice != nil:
             event["state"] = "failed"; event["message"] = "手机上还没装 S2Arm"
             event["diagnostics"] = [["severity": "error", "code": "shell_install_required", "message": "手机上还没装 S2Arm"]]

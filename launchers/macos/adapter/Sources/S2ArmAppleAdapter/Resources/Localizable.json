@@ -10600,20 +10600,20 @@
   "en": ": copy failed ("
  },
  {
-  "source": "在 iPhone 总控台里选好这台 {0} 用哪一个 S2Arm（AltStore / SideStore 装的，还是启动器装的），再推游戏；选一次就记住。",
-  "en": "In the iPhone console, choose which S2Arm this {0} should use (the one installed with AltStore / SideStore, or the one installed by the launcher), then send the game again. Your choice is remembered."
+  "source": "点游戏库最前面的「S2Arm」，选好这台 {0} 用哪一个 S2Arm（AltStore / SideStore 装的，还是启动器装的），再推游戏；选一次就记住。",
+  "en": "Click “S2Arm” at the top of the game library and choose which S2Arm this {0} should use (the one installed with AltStore / SideStore, or the one installed by the launcher), then send the game again. Your choice is remembered."
  },
  {
-  "source": "在 iPhone 总控台里重新选一次用哪一个 S2Arm：选过的那个已经不在这台 {0} 上了。",
-  "en": "Choose again in the iPhone console which S2Arm to use: the one you chose is no longer on this {0}."
+  "source": "点游戏库最前面的「S2Arm」，重新选一次用哪一个 S2Arm：选过的那个已经不在这台 {0} 上了。",
+  "en": "Click “S2Arm” at the top of the game library and choose again which S2Arm to use: the one you chose is no longer on this {0}."
  },
  {
-  "source": "这台 {0} 上装着不止一个 S2Arm：先在 iPhone 总控台选好用哪一个，再推游戏。",
-  "en": "This {0} has more than one S2Arm installed: first choose which one to use in the iPhone console, then send the game."
+  "source": "这台 {0} 上装着不止一个 S2Arm：先点游戏库最前面的「S2Arm」选好用哪一个，再推游戏。",
+  "en": "This {0} has more than one S2Arm installed: first click “S2Arm” at the top of the game library and choose which one to use, then send the game."
  },
  {
-  "source": "选的这个 S2Arm 不在这台 {0} 上了：在总控台重新选一次。",
-  "en": "The S2Arm you chose is no longer on this {0}: choose again in the console."
+  "source": "选的这个 S2Arm 不在这台 {0} 上了：点游戏库最前面的「S2Arm」重新选一次。",
+  "en": "The S2Arm you chose is no longer on this {0}: click “S2Arm” at the top of the game library and choose again."
  },
  {
   "source": "读不出这台 {0} 上装了哪些 App：确认它连着、已解锁，再试一次。",

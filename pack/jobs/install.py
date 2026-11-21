@@ -3130,8 +3130,8 @@ def s2arm_candidates(c, udid, rec):
     return out
 
 
-PHONE_APP_CHOICE = "这台 {0} 上装着不止一个 S2Arm：先在 iPhone 总控台选好用哪一个，再推游戏。"
-PHONE_APP_GONE = "选的这个 S2Arm 不在这台 {0} 上了：在总控台重新选一次。"
+PHONE_APP_CHOICE = "这台 {0} 上装着不止一个 S2Arm：先点游戏库最前面的「S2Arm」选好用哪一个，再推游戏。"
+PHONE_APP_GONE = "选的这个 S2Arm 不在这台 {0} 上了：点游戏库最前面的「S2Arm」重新选一次。"
 
 
 def phone_choose_app(c):

@@ -127,8 +127,19 @@ class DeviceKindCopy(unittest.TestCase):
         for s in ("这台 iPhone 上装着不止一个 S2Arm", "先在 iPhone 上退出 S2Arm", "没能交给 iPhone 上的 S2Arm", "确认 iPhone 连着、已解锁",
                   "资源包已传到 iPhone，但手机上解开失败"):
             self.assertTrue(DEVICE.search(_strip(s)), s)
-        for s in ("在 {0} 上点「信任」", "先在 iPhone 总控台选好用哪一个", "点「更新 iPhone 上的 S2Arm」", "先点「打 iPhone 包」", "推到 iPhone"):
+        for s in ("在 {0} 上点「信任」", "先点游戏库最前面的「S2Arm」选好用哪一个", "点「更新 iPhone 上的 S2Arm」", "先点「打 iPhone 包」", "推到 iPhone"):
             self.assertFalse(DEVICE.search(_strip(s)), s)
+
+    def test_no_invisible_console_name(self):
+        """#1966：「总控台」是内部叫法，界面上没有这个名字（Mac 是游戏库首位「S2Arm」卡、Windows 是首行「S2Arm」）。
+        玩家句（含独立 App 文件夹 README，那几行带「# 非玩家句」也照样扫）指路时要写界面上看得到的「游戏库最前面的「S2Arm」」。
+        反证：把 install.PHONE_APP_GONE 改回「…在总控台重新选一次」→ 红。"""
+        bad = [f"{name}:{line}: {text[:60]}" for name in FILES for line, text in job_sentences(JOBS / name) if "总控台" in text]
+        tree = ast.parse((JOBS / "app_folder.py").read_text(encoding="utf-8"))
+        bad += [f"app_folder.py:{n.lineno}: {n.value[:60]}" for n in ast.walk(tree)
+                if isinstance(n, ast.Constant) and isinstance(n.value, str) and "总控台" in n.value]
+        bad += [f"experience.v1.json {w}" for w, t in shared_sentences(json.loads(SHARED.read_text(encoding="utf-8"))) if "总控台" in t]
+        self.assertEqual(bad, [], "玩家句写了界面上不存在的「总控台」，改成「游戏库最前面的「S2Arm」」：\n" + "\n".join(bad))
 
     def test_fill_device_kind(self):
         """填法（期望手写）：认出的类型照填；认不出 / 上下文没记 / 记的不是字符串（测试替身）→「iPhone / iPad」；下一步按码取时同样填"""
@@ -141,7 +152,7 @@ class DeviceKindCopy(unittest.TestCase):
         self.assertEqual(errors.device_of(types.SimpleNamespace()), "")
         self.assertEqual(errors.device_of(mock.Mock()), "")
         self.assertEqual(errors.recovery("phone_app_gone", packaged=True, windows=False, device="iPad"),
-                         "在 iPhone 总控台里重新选一次用哪一个 S2Arm：选过的那个已经不在这台 iPad 上了。")
+                         "点游戏库最前面的「S2Arm」，重新选一次用哪一个 S2Arm：选过的那个已经不在这台 iPad 上了。")
         self.assertNotIn("{0}", errors.recovery("usb_slow", packaged=True, windows=False))
 
 

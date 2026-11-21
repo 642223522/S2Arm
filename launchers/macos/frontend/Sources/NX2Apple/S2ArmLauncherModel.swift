@@ -1110,6 +1110,9 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// 选中的设备是 iPad 时，「推到 iPhone」这几处入口文字换成「装到 iPad」（#487）；没连设备照旧写 iPhone
     var installTargetIsPad: Bool { Self.padLike(selectedDevice?["productType"] as? String) }
     /// iPad，以及按 iPad 兼容装的 Apple Vision Pro（机型号 RealityDevice*；理论支持、未真机验证）：入口和文案写 iPad
+    /// 总控台卡片与页顶画的设备轮廓（#1967）：作业认出 iPad 画 iPad，其余（iPhone / 还没连过 / 读不到类型）画 iPhone；两处同一个符号，matchedGeometryEffect 才接得上
+    static func deviceSymbol(_ kind: String?) -> String { kind == "iPad" ? "ipad" : "iphone" }
+
     static func padLike(_ productType: String?) -> Bool {
         guard let t = productType else { return false }
         return t.hasPrefix("iPad") || t.hasPrefix("RealityDevice")

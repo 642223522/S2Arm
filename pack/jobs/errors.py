@@ -114,8 +114,8 @@ RECOVERY = {
     "device_tunnel_unavailable": "电脑连不上这台 {0} 的开发者通道（通过 Wi-Fi 连着时最常见，不是没解锁）：用数据线把它直接插到这台电脑（别经过扩展坞或集线器），解锁停在主屏幕，再点一次；还不行就把它重启一次，插上后在设备上重新点「信任」。",
     "device_locked": "解锁这台设备（保持亮屏、停在主屏幕），再点这台的「重试」；装的过程中别锁屏。",
     "shell_install_required": "先在首位「S2Arm」卡把 App 装到这台设备，装好后点这台的「重试」。",   # 通用壳「推到 iPhone」：手机上还没装壳（install.push_game）
-    "phone_app_choice_required": "在 iPhone 总控台里选好这台 {0} 用哪一个 S2Arm（AltStore / SideStore 装的，还是启动器装的），再推游戏；选一次就记住。",   # 同机装着不止一个 S2Arm（install.s2arm_owner choose）
-    "phone_app_gone": "在 iPhone 总控台里重新选一次用哪一个 S2Arm：选过的那个已经不在这台 {0} 上了。",   # phoneChooseApp 选的包不在手机上
+    "phone_app_choice_required": "点游戏库最前面的「S2Arm」，选好这台 {0} 用哪一个 S2Arm（AltStore / SideStore 装的，还是启动器装的），再推游戏；选一次就记住。",   # 同机装着不止一个 S2Arm（install.s2arm_owner choose）
+    "phone_app_gone": "点游戏库最前面的「S2Arm」，重新选一次用哪一个 S2Arm：选过的那个已经不在这台 {0} 上了。",   # phoneChooseApp 选的包不在手机上
     "shell_update_required": "先在首位「S2Arm」卡把这台上的 App 更新到这一版，再点这台的「重试」。",   # 通用壳「推到 iPhone」：手机上的壳不是本版
     "device_not_visible": "用数据线把这台 {0} 连到这台 Mac，解锁后在设备上点「信任」；打开开发者模式（设置 → 隐私与安全性 → 开发者模式，开了要重启）；等 Xcode 菜单「窗口 → 设备与模拟器」里出现这台，再点一次「推到 iPhone」。",   # pack/ensure_profile.sh：Xcode 看不到这台、账号上也没登记过它（D-44DP 兜底的盲区，11-16）
     "free_app_limit": "免费 Apple ID 在每台设备上最多同时装 3 个自签 App，这台 {0} 已经装满：在设备上长按删掉一个不再玩的自签 App 后重试；或改用付费 Apple 开发者账号（没有这个上限）。",

@@ -186,6 +186,13 @@ extension S2ArmLauncherModel {
         return n
     }
 
+    /// 导出页这一行要不要就地列「选用哪个 S2Arm」的候选（#1966）：这一行停在 phone_app_choice_required、且记下的候选就是这台。
+    ///   选好后 chooseApp 调 install 失败时记下的重推，完成回调仍是这一行的 exportRowEnded，结果照常落回这一行
+    func exportRowChoice(_ row: ExportFlow.Row) -> PushChoice? {
+        guard row.state == .failed, row.code == PhoneOverview.choiceRequiredCode, let c = pushChoice, c.device == row.device else { return nil }
+        return c
+    }
+
     /// 失败的那台单独重试（不重做已成功的、不重做电脑上那一步）；失败码是可确认的（会挤掉别处装的游戏…）就带上确认参数 =「仍然继续」
     func retryExportRow(_ id: String, device: String) {
         guard var flow = exportFlows[id], let i = flow.rows.firstIndex(where: { $0.device == device }), [.failed, .cancelled].contains(flow.rows[i].state) else { return }
