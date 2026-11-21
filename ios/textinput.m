@@ -64,10 +64,10 @@ static void present(S2ATextInput *in, NSDictionary *a) {
     UIViewController *top = top_controller();
     if (!top) { [in finish:0 text:nil]; return; }   // 没有界面可挂：按取消交回（游戏收到取消，不卡）
     BOOL player = a[@"localPlayers"] != nil;
-    NSString *createTitle = s2a_l10n_zh() ? @"创建新用户" : @"Create new user";
+    NSString *createTitle = S2AL(@"textinput.player.create");
     NSArray *names = a[@"localPlayers"];
     if (names.count) {
-        UIAlertController *list = [UIAlertController alertControllerWithTitle:s2a_l10n_zh() ? @"选择 S2Arm 用户" : @"Select S2Arm user"
+        UIAlertController *list = [UIAlertController alertControllerWithTitle:S2AL(@"textinput.player.select")
             message:nil preferredStyle:UIAlertControllerStyleAlert];
         [names enumerateObjectsUsingBlock:^(NSString *name, NSUInteger row, BOOL *stop) {
             [list addAction:[UIAlertAction actionWithTitle:name style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {

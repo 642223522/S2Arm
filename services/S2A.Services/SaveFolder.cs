@@ -319,7 +319,9 @@ namespace S2A.Services
                 Directory.CreateDirectory(next);
                 string acc = Path.Combine(snap, "account"), dev = Path.Combine(snap, "device");
                 if (Directory.Exists(acc)) Directory.Move(acc, Path.Combine(next, "save"));
-                if (Directory.Exists(dev)) Directory.Move(dev, Path.Combine(next, Directory.Exists(acc) || Directory.Exists(Path.Combine(next, "save")) ? "save_device" : "save"));
+                // 设备存档全机共用、不分玩家：只写回第一个玩家的文件夹；副玩家的文件夹只放它自己的用户存档（多一份拷贝下次起局反倒要认）
+                bool secondary = targetUserId is { } t && t != _primaryUser;
+                if (!secondary && Directory.Exists(dev)) Directory.Move(dev, Path.Combine(next, Directory.Exists(acc) || Directory.Exists(Path.Combine(next, "save")) ? "save_device" : "save"));
                 string user = Path.Combine(snap, "user");   // 用户号跟着写回（P1-162），下次起局 / 拷到另一台先套用它
                 if (File.Exists(user)) File.Move(user, Path.Combine(next, "user"));
                 if (Directory.Exists(folder)) Directory.Move(folder, old);

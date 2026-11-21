@@ -220,7 +220,7 @@ namespace Ryujinx.HLE.HOS.Services.Account.Acc
 
         internal int GetUserCount()
         {
-            return GetAllUsers().Count();
+            return _profiles.Count;
         }
 
         internal bool TryGetUser(UserId userId, out UserProfile profile)
@@ -230,9 +230,12 @@ namespace Ryujinx.HLE.HOS.Services.Account.Acc
 
         public IEnumerable<UserProfile> GetAllUsers()
         {
+            // S2Arm local players: the listed players first, in the host's order, then every other user on this device. Ordering only, never
+            // hiding: users created before the list existed (PlayerN from the user creator) and their saves stay visible to the game.
             if (_userOrder.Length == 0) return _profiles.Values;
             return _userOrder.Select(key => _profiles.TryGetValue(key, out var user) ? user : null)
-                .Where(user => user != null);
+                .Where(user => user != null)
+                .Concat(_profiles.Where(p => !_userOrder.Contains(p.Key)).Select(p => p.Value));
         }
 
         public void SetUserOrder(IEnumerable<UserId> orderedUsers)

@@ -61,14 +61,15 @@ namespace Ryujinx.HLE.HOS.Applets
 
                 return ResultCode.Success;
             }
+            // S2Arm local players: with the host's player list and a picker UI, the player picks one of the device's users or names a new one
+            // (saved to the list). With no picker UI (unattended runs) fall through to the console-less answers below, which add nothing to the list.
             var create = S2AHooks.CreateLocalPlayer;
-            if (create != null && mode is 0 or UiModeUserCreator)
+            if (create != null && mode is (0 or UiModeUserCreator) && _system.Device.UIHandler is Ryujinx.HLE.UI.IAsyncTextInput input)
             {
                 var accounts = _system.AccountManager;
                 var excluded = InvalidUsers(uiSettings);
                 var candidates = accounts.GetAllUsers().Where(u => !excluded.Contains(u.UserId)).ToArray();
-                var preferred = candidates.FirstOrDefault(u => u.UserId == accounts.LastOpenedUser.UserId) ?? candidates.FirstOrDefault();
-                bool createOnly = mode == UiModeUserCreator || candidates.Length == 0 || accounts.GetUserCount() == 1;
+                bool createOnly = mode == UiModeUserCreator || candidates.Length == 0;   // as on the console: the list whenever someone is left to pick
                 var args = new SoftwareKeyboardUIArgs
                 {
                     LocalPlayerNames = createOnly ? Array.Empty<string>() : candidates.Select(u => u.Name).ToArray(),
@@ -81,13 +82,11 @@ namespace Ryujinx.HLE.HOS.Applets
                     return !createOnly && int.TryParse(reply, out int row) && row >= 0 && row < candidates.Length
                         ? candidates[row] : null;
                 }
-                if (_system.Device.UIHandler is not Ryujinx.HLE.UI.IAsyncTextInput input ||
-                    input.BeginTextInput(args, (ok, reply) => Complete(Resolve, ok ? reply : null)) == null)
+                // The reply arrives on the UI thread; creating a player mounts its save, so finish off it
+                if (input.BeginTextInput(args, (ok, reply) => System.Threading.Tasks.Task.Run(() => Complete(Resolve, ok ? reply : null))) != null)
                 {
-                    if (createOnly) Complete(create, args.InitialText);
-                    else Complete(_ => preferred, "");
+                    return ResultCode.Success;
                 }
-                return ResultCode.Success;
             }
             if (mode == UiModeUserCreator)
             {

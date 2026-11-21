@@ -23,7 +23,7 @@ namespace S2A.Services
     //                                     不认存档位置里记的用户号（玩家选的是谁就是谁，别人的存档拷进这个玩家的文件夹也读进这个玩家名下）
     //                   不给 / 空          旧行为原样（Mac 启动器、开发起局、单款包没建过玩家）
     //   S2A_PLAYER_NAME = 名字（可空）：写进当前用户的资料（游戏里显示的昵称），截到 32 字节 UTF-8 以内
-    //   S2A_LOCAL_PLAYERS = JSON 数组 [{"user":"first","name":"...","folder":"SaveData"}, ...]：同屏多手柄（如暗黑破坏神3、马里奥派对）2P–4P 加入时，
+    //   S2A_LOCAL_PLAYERS = JSON 数组 [{"user":"first","name":"...","folder":"SaveData"}, ...]：同屏多手柄 2P–4P 加入时，
     //                       选用户小程序按本机玩家列表顺序绑定对应的独立用户与存档目录，不再凭空生成临时 Player2
     //   存档位置「上次读写摘要」与「没读进来的原因」两个文件按玩家分（SaveFolder.StatePath / ProblemPath，第一个玩家仍是原文件名）；
     //   各玩家的 SaveData 文件夹路径由平台给 S2A_SAVE_FOLDER（共享层不判平台）
@@ -209,9 +209,10 @@ namespace S2A.Services
             string candidate = (rawName ?? "").Trim().Normalize(NormalizationForm.FormC);
             if (string.IsNullOrEmpty(candidate))
             {
-                candidate = $"玩家{accounts.GetUserCount() + 1}";
+                candidate = $"Player{accounts.GetUserCount() + 1}";   // 与选人面板的缺省名、小程序的 CreatePlayerUser 同一种写法
             }
 
+            PlayerEntry entry;
             lock (_syncLock)
             {
                 var existingNames = new HashSet<string>(
@@ -249,23 +250,26 @@ namespace S2A.Services
 
                 AccUserId uid = new(uidHex);
                 string trimmedName = TrimName(candidate) ?? candidate;
-                StorePlayer(uidHex, candidate, folderName);
+                // 记进本机玩家列表；记不上（宿主没有写回接口、偏好写失败）这一局照样建、照样玩，只是下次不在列表里
+                try { StorePlayer(uidHex, candidate, folderName); }
+                catch (Exception e) { Console.Error.WriteLine($"【红】S2A 本地玩家：{trimmedName} 没记进本机玩家列表（这一局照常用，下次不在列表里）：{e.Message}"); }
                 EnsureProfile(accounts, uid, trimmedName);
 
-                var entry = new PlayerEntry(uidHex, uid, trimmedName, folderPath, "-" + uidHex);
+                entry = new PlayerEntry(uidHex, uid, trimmedName, folderPath, "-" + uidHex);
                 if (_allPlayers.All(p => p.UserId != uid))
                 {
                     _allPlayers.Add(entry);
                 }
                 _usedInSession.Add(uid);
                 accounts.SetUserOrder(_allPlayers.Select(p => p.UserId));
-
-                Application.EnsureCurrentSaveData(device);
-                SaveFolder.ReadSecondary(device, entry);
-
-                Console.Error.WriteLine($"S2A 本地玩家：游戏内新建 S2Arm 玩家 {uid}（{trimmedName}），存档位置 {folderPath ?? folderName}");
-                return accounts.GetAllUsers().FirstOrDefault(u => u.UserId == uid);
             }
+
+            // 挂存档在锁外：读写盘可能慢，别让同时进来的选人等着
+            Application.EnsureCurrentSaveData(device);
+            SaveFolder.ReadSecondary(device, entry);
+
+            Console.Error.WriteLine($"S2A 本地玩家：游戏内新建 S2Arm 玩家 {entry.UserId}（{entry.Name}），存档位置 {entry.FolderPath ?? "（无）"}");
+            return accounts.GetAllUsers().FirstOrDefault(u => u.UserId == entry.UserId);
         }
 
         private static string ComputePlayerUid(string name)

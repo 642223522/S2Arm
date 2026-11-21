@@ -534,6 +534,8 @@
 "settings.toggle.touchHud" = "触屏诊断信息";
 "settings.widen.blocked" = "本款满屏有已知问题，仍可打开";
 "textinput.header" = "输入";
+"textinput.player.create" = "创建新用户";
+"textinput.player.select" = "选择 S2Arm 用户";
 "textinput.min" = "至少 %ld 个字";
 "textinput.ok" = "确定";
 "textinput.range" = "%ld–%ld 个字";

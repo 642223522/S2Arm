@@ -78,7 +78,9 @@ namespace S2A.Services.Tests
             Check("负对照：名单不含当前用户 → 当前用户", "长 0x18、结果 0x0、当前用户", $"{n2.Result}、{Who(n2.Uid, ("当前用户", current))}");
             Check("负对照不建用户", "+2", $"+{users.GetAllUsers().Count() - before}");
 
-            // The launcher roster is authoritative even when the title already has legacy profiles.
+            // 启动器的玩家名单只定顺序：名单里的人排前面，名单外原有的用户（上面新建的两个 PlayerN）照样给游戏看到，存档不丢
+            string NameOf(UserId id) => users.GetAllUsers().First(u => u.UserId == id).Name;
+            string legacy = NameOf(a.Uid) + "," + NameOf(c.Uid);
             const string second = "123456789abcdef0123456789abcdef0";
             string roster = """[{"user":"first","name":"One","folder":"SaveData"},{"user":"123456789abcdef0123456789abcdef0","name":"Two","folder":"SaveData-Two"}]""";
             Environment.SetEnvironmentVariable("S2A_LOCAL_PLAYERS", roster);
@@ -97,11 +99,11 @@ namespace S2A.Services.Tests
             };
             answer = "0";
             Check("唯一可选的已有用户仍在列表中", second, Psel(current).Uid.ToString());
-            Check("列表过滤已在玩的用户", "Two", string.Join(",", offered));
+            Check("列表过滤已在玩的用户、名单里的排前面、名单外原有用户排后面", "Two," + legacy, string.Join(",", offered));
             answer = "1";
             Check("可手动选择第二个已有用户", second, Psel().Uid.ToString());
             answer = null;
-            Check("取消创建得到 NS 的取消结果", "长 0x18、结果 0x27C", Psel(current, chosen.Uid).Result);
+            Check("取消创建得到 NS 的取消结果", "长 0x18、结果 0x27C", Psel(current, chosen.Uid, a.Uid, c.Uid).Result);
             Check("无可选用户直接进入创建", "0", offered.Length.ToString());
             answer = "new:Three";
             string stored = null;
@@ -119,9 +121,18 @@ namespace S2A.Services.Tests
                 Check("再次起局，按同一排除名单取回原来的 UID", stored, Psel(current, chosen.Uid).Uid.ToString());
                 Environment.SetEnvironmentVariable("S2A_LOCAL_PLAYERS", """[{"user":"first","name":"One","folder":"SaveData"}]""");
                 LocalPlayer.Select(Host.Device, 1);
-                answer = null;
-                Check("只有一个 S2Arm 用户时取消直接新建", "长 0x18、结果 0x27C", Psel().Result);
-                Check("只有一个 S2Arm 用户时跳过选择列表", "0", offered.Length.ToString());
+                answer = "0";
+                Check("名单只剩一个玩家：照样给列表（名单外的用户不藏），选第一行是名单里那个", current.ToString(), Psel().Uid.ToString());
+                Check("名单只剩一个玩家：列表 = 名单里的人 + 名单外原有的全部用户", users.GetAllUsers().Count().ToString(), offered.Length.ToString());
+                Check("名单只剩一个玩家：名单里的人排第一", "One", offered[0]);
+                // 无选人界面（无人值守）：走原来的应答，新建的临时用户不记进本机玩家列表
+                TextInput.BeginHook = (_, _) => 0;
+                stored = null;
+                int had = users.GetAllUsers().Count();
+                var all = users.GetAllUsers().Select(u => u.UserId).ToArray();
+                var headless = Psel(all);
+                Check("无选人界面、人人都在名单里：照旧新建一个用户", $"{had + 1}、账户表里的其他用户", $"{users.GetAllUsers().Count()}、{Who(headless.Uid)}");
+                Check("无选人界面：不写本机玩家列表", "True", (stored == null).ToString());
                 Check("多人加入后主用户身份", current.ToString(), users.LastOpenedUser.UserId.ToString());
             }
             finally
