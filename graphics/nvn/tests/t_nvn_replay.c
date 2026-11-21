@@ -3425,6 +3425,7 @@ static void ub_fill_async_run(int steal) {
     CHECK(waits == (steal ? 0 : 1));    // 只有改 A 的那一次要管；关着是等，开着是代拷、不等
     CHECK(takes == (steal ? 1 : 0));
     CHECK(pf[RP_PERF_UBO_FILL_N] == 2 && pf[RP_PERF_UBO_FILL_WAIT_N] == 1);
+    CHECK(pf[RP_PERF_UBO_STAGED_B] == 1024);   // 两片各 512 字节真落暂存（第二笔前 A 被改过，切片表认不回）；手算 = 2 × 512
     CHECK(pf[RP_PERF_UBO_FILL_STEAL_N] == (steal ? 1u : 0u) && pf[RP_PERF_UBO_FILL_STEAL_B] == (steal ? 512u : 0u) && pf[RP_PERF_UBO_FILL_BUSY_N] == 0);
     CHECK(pending == 0);       // 段提交前全部填完
     if (nlog == 2) {
