@@ -508,6 +508,7 @@ static int slc_get_x(nvn_gpu_cmd c, uint64_t k0, uint64_t k1, const void *src, n
         *sl = g_slc[i].sl; rp_perf_add(RP_PERF_BIND_SLICE_HIT, 1); return 1;
     }
     if (!(stable ? alloc_copy(c, k1 & 0xffffffffu, src, sl) : alloc_fill(c, k1 & 0xffffffffu, src, sl))) return 0;   // 游戏内存里的常量缓冲交后端异步填；程序自带常量段照旧就地拷
+    rp_perf_add(RP_PERF_UBO_STAGED_B, k1 & 0xffffffffu);   // 读数：去重之后真落进暂存区的字节（「常量缓冲暂存 … KB」是去重前的上限）
     g_slc[i].c = c; g_slc[i].seg = sg; g_slc[i].gen = stable ? UINT64_MAX : rp_cpu_write_gen; g_slc[i].k0 = k0; g_slc[i].k1 = k1; g_slc[i].sl = *sl;
     g_slc[i].wmark = (!stable && src) ? rp_write_mark() : 0;
     return 1;

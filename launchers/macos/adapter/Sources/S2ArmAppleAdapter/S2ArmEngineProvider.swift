@@ -309,10 +309,12 @@ public final class S2ArmEngineProvider: EngineProvider {
     public func signingProject() async throws -> String { try await installer.signingProject() }
     public func installReadiness(gameId: String, device: String? = nil) async throws -> InstallReadiness { try await installer.readiness(gameId: gameId, device: device) }
     public func devCertStatus(device: String? = nil) async throws -> DevCertStatus { try await installer.devCertStatus(device: device) }
-    public func devCertImport(p12: String, profile: String, password: String, device: String? = nil) async throws -> DevCertInfo {
-        try await installer.devCertImport(p12: p12, profile: profile, password: password, device: device)
+    public func devCertImport(p12: String, profile: String, password: String, device: String? = nil, add: Bool = false) async throws -> DevCertInfo {
+        try await installer.devCertImport(p12: p12, profile: profile, password: password, device: device, add: add)
     }
     public func devCertUse(_ active: Bool) async throws { try await installer.devCertUse(active) }
+    public func devCertChoose(device: String, cert: String) async throws { try await installer.devCertChoose(device: device, cert: cert) }
+    public func devCertDelete(cert: String? = nil) async throws { try await installer.devCertDelete(cert: cert) }
     public func signModeSet(_ mode: String) async throws -> String { try await installer.signModeSet(mode) }
     public func layoutSet(_ layout: String?, gameId: String? = nil) async throws -> String { try await installer.layoutSet(layout, gameId: gameId) }
     public func appleLogin(account: String, password: String, events: EventSink = .discard) async throws -> AppleAccount {
@@ -320,7 +322,6 @@ public final class S2ArmEngineProvider: EngineProvider {
     }
     public func appleAccount() async throws -> AppleAccount { try await installer.appleAccount() }
     public func appleLoginCode(_ code: String, taskId: String) throws { try installer.appleLoginCode(code, taskId: taskId) }
-    public func devCertDelete() async throws { try await installer.devCertDelete() }
 
     public func install(gameId: String, teamId: String? = nil, device: String? = nil, acceptDropped: Bool = false, accept: Set<String> = [], mode: String? = nil,
                         events: EventSink = .discard) async throws -> InstallResult {

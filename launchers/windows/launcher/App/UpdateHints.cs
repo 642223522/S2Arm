@@ -86,7 +86,9 @@ public sealed partial class EnvironmentWindow
         var tail = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
         tail.Children.Add(new TextBlock { Text = T("update.hint.tail"), Foreground = Brush.Parse("#A0A0A8"), FontSize = 12, TextWrapping = TextWrapping.Wrap, MaxWidth = 560,
             VerticalAlignment = VerticalAlignment.Center });
-        tail.Children.Add(Action("update.hint.button", () => _ = InstallAsync(game)));
+        // 「更新这款」只更新装过这款的设备（11-21）：请求带 onlyInstalled，作业层连着一台没装过的设备时不推、报 game_not_on_device；
+        //   设备照 InstallAsync 缺省取这款自己的装机记录那台（InstallDevice）
+        tail.Children.Add(Action("update.hint.button", () => _ = InstallAsync(game, new HashSet<string> { "onlyInstalled" })));
         box.Children.Add(tail);
         Avalonia.Automation.AutomationProperties.SetAutomationId(box, "update.hint");
         return box;

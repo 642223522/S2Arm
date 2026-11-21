@@ -82,7 +82,8 @@ class UpgradeMac(unittest.TestCase):
             @contextlib.contextmanager
             def lock():
                 locks.append(1); yield True
-            c = types.SimpleNamespace(emit=lambda *a, **k: None, private=t)
+            (t / "engine.json").write_text(json.dumps({"version": "0.6.3"}))   # built_by / built_older 读发版号
+            c = types.SimpleNamespace(emit=lambda *a, **k: None, private=t, engine=t, library=t)
             with patch.object(sgrade_bf, "rebuild", return_value=new):
                 self.assertTrue(sgrade_bf.upgrade_mac(c, "G", rt, lock))
                 m = json.loads((rt / "manifest.json").read_text())
@@ -93,6 +94,27 @@ class UpgradeMac(unittest.TestCase):
                 self.assertEqual(locks, [1], "换库在锁里做一次")
                 self.assertFalse(sgrade_bf.upgrade_mac(c, "G", rt, lock), "代数已是本引擎的：不再重出")
 
+    def test_old_lib_generation_and_shader_miss_rebuild_and_record(self):
+        """11-21：_bf 代数已是本引擎的、但库内容代数（libGen）旧 / 现场漏翻且库是旧版启动器出的（shaderMiss）→ 照样重出，
+        并记本版 libGen 与 builtBy，「建议更新」里 Mac 那份的原因随之消掉（原先只认 bfGen，点了更新永远消不掉）。期望手写"""
+        import host_update
+        for label, extra, miss in (("libGen 旧", {}, 0), ("shaderMiss", {"libGen": host_update.LIB_GEN, "builtBy": {"version": "0.6.0"}}, 3)):
+            with self.subTest(label), tempfile.TemporaryDirectory() as t:
+                t = Path(t); rt = t / "runtime"; (rt / "romfs").mkdir(parents=True); (rt / "shaders/direct").mkdir(parents=True)
+                (rt / "shaders/direct/keys.tsv").write_text("old\n")
+                (rt / "manifest.json").write_text(json.dumps(dict({"files": {"shaders/direct/keys.tsv": [4, ""]}, "bfGen": sgrade_bf.BF_GEN}, **extra)))
+                if miss:
+                    (t / "temp/G").mkdir(parents=True); (t / "temp/G/shader_fallback.json").write_text(json.dumps({"count": miss}))
+                (t / "engine.json").write_text(json.dumps({"version": "0.6.3"}))
+                new = t / "new"; (new / "b-c").mkdir(parents=True); (new / "keys.tsv").write_text("k\n"); (new / "b-c/lib.idx").write_bytes(b"1")
+                c = types.SimpleNamespace(emit=lambda *a, **k: None, private=t, engine=t, library=t)
+                with patch.object(sgrade_bf, "rebuild", return_value=new):
+                    self.assertTrue(sgrade_bf.upgrade_mac(c, "G", rt))
+                    m = json.loads((rt / "manifest.json").read_text())
+                    self.assertEqual((m["libGen"], m["builtBy"]["version"]), (host_update.LIB_GEN, "0.6.3"))
+                    self.assertFalse(sgrade_bf.mac_due(c, "G", m), "更新完：Mac 那份不再要更新")
+                    self.assertFalse(sgrade_bf.upgrade_mac(c, "G", rt), "再点：不再重出")
+
     def test_busy_gives_up_without_touching(self):
         with tempfile.TemporaryDirectory() as t:
             t = Path(t); rt = t / "runtime"; (rt / "romfs").mkdir(parents=True); (rt / "shaders/direct").mkdir(parents=True)
@@ -102,7 +124,8 @@ class UpgradeMac(unittest.TestCase):
             @contextlib.contextmanager
             def busy():
                 yield False
-            c = types.SimpleNamespace(emit=lambda *a, **k: None, private=t)
+            (t / "engine.json").write_text(json.dumps({"version": "0.6.3"}))   # built_by / built_older 读发版号
+            c = types.SimpleNamespace(emit=lambda *a, **k: None, private=t, engine=t, library=t)
             with patch.object(sgrade_bf, "rebuild", return_value=new):
                 self.assertFalse(sgrade_bf.upgrade_mac(c, "G", rt, busy), "玩家正在开局：这次放弃")
             self.assertEqual(((rt / "shaders/direct/keys.tsv").read_text(), (rt / "manifest.json").read_text()), ("old\n", m0), "运行版本与清单一个字节不动、不记代数")
@@ -200,6 +223,33 @@ class RechainIos(unittest.TestCase):
                 patch.object(sgrade_bf.layout, "update_info", lambda c, g, ios: self.info.update(ios=ios)), \
                 patch.object(sgrade_bf, "ios_inputs", inputs), patch.object(sgrade_bf, "rebuild", build):
             return sgrade_bf.rechain_ios(self.c, "0100AAAA00000000"), calls
+
+    def reasons(self, chain, ios_miss=0, cur="9.9.9"):
+        """「建议更新」判据（host_update._game_hint + shader_hint，真实现）对这份记录给出的原因"""
+        import host_update
+        with patch.object(host_update.layout, "program_info", lambda c, g: self.info["ios"]), patch("core.release_version", lambda engine: cur), \
+                patch("host_update.shader_misses", lambda c, g: dict(ios=ios_miss, mac=0)), patch.object(self.c, "engine", None, create=True):
+            why = host_update._game_hint(self.c, "0100AAAA00000000", None, dict(hostAbi=1, dmshChain=chain))
+            if host_update.shader_hint(self.c, "0100AAAA00000000"):
+                why.append("shaderMiss")
+        return why
+
+    def test_update_clears_every_reason_it_handles(self):
+        """11-21：每个原因码「改旧 → 判成要更新」，跑一次更新（rechain_ios）→「刚更新完必须判成无需更新」。判据与更新都是真实现，只桩掉重出。期望手写"""
+        import host_update
+        cases = (("shader", dict(dmshChain="old"), dict(chain="new"), 0),
+                 ("libGen", dict(libGen=None), dict(chain="old"), 0),
+                 ("shaderMiss", dict(builtBy={"version": "0.5.8", "display": "0.5.8"}), dict(chain="old", ios_miss=3), 3))
+        for code, stale, run, miss in cases:
+            with self.subTest(code):
+                self.setUp()
+                self.info["ios"].update(stale)
+                if self.info["ios"].get("libGen", 0) is None:
+                    del self.info["ios"]["libGen"]
+                chain = run["chain"]
+                self.assertEqual(self.reasons(chain, miss), [code], "改旧：判成要更新、原因码对")
+                self.assertEqual(self.run_rechain(**run)[0], "updated")
+                self.assertEqual(self.reasons(chain, miss), [], "刚更新完：必须判成无需更新")
 
     def test_same_chain_skips(self):
         r, calls = self.run_rechain(chain="old")

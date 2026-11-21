@@ -117,7 +117,7 @@ internal static class Program
                 string key = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(
                     rec.Concat(ctl).Concat(System.Text.Encoding.ASCII.GetBytes(ex)).ToArray()))[..16];
                 si++;
-                DshVk.CompileWithSpv(key, ex, rec, ctl, od, xc, tables, work);
+                DshVk.CompileWithSpv(key, ex, rec, ctl, od, xc, tables, imgLoadRaw: false, workRoot: work);   // 出库侧按出包链缺省（最低档案，#1854）
                 exByStage[st] = File.ReadAllBytes(Path.Combine(od, key + "_b.spv"));
             }
         }

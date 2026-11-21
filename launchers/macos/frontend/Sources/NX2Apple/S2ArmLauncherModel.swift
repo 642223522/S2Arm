@@ -403,6 +403,9 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var devCert: DevCertStatus?
     var failingReads: Set<String> = []   // 被动刷新正在连续失败的那几类（reportFailure 只报头一次）
     @Published var showDevCertImport = false
+    /// 几张证书（#487）：这台第一次连上（证书签名、还没给它选过）时问用哪张；本次启动每台只问一次
+    @Published var devCertChoice: DevCertChoice?
+    var devCertAsked: Set<String> = []
     /// Apple ID 登录（0.6.0 Mac，S2ArmLauncherModel+AppleLogin.swift）：当前账号、登录面板挂在哪一层（install / settings / main，nil = 没开）与进行到哪
     @Published var appleAccount: AppleAccount?
     @Published var appleLoginHost: String?
@@ -619,7 +622,7 @@ public final class S2ArmLauncherModel: ObservableObject {
                 self.phoneUpdates = self.provider.library.phoneUpdates
                 self.phoneDevices = self.provider.library.phoneDevices
                 if !self.startupLoopsStarted {
-                    self.startupLoopsStarted = true; self.resumeSGradeWatch(); self.keptModulesLoop(); self.preparePhoneUpdate(); self.appleTVBackupLoop()
+                    self.startupLoopsStarted = true; self.resumeSGradeWatch(); self.keptModulesLoop(); self.devCertWatchLoop(); self.preparePhoneUpdate(); self.appleTVBackupLoop()
                     // 0.6.0（开关后面）：启动器打开时快速比对「建议更新」、读一次总控台（都只读，秒回）。之后只在出包 / 手机作业做完时再读（finish），
                     //   不跟着每次重读游戏库起：出包过程中会重读好几次，每次多起两个作业进程是浪费（ExportStreamTests）
                     self.refreshUpdateHints(); self.refreshPhoneOverview()
@@ -1118,6 +1121,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         deviceProbeError = (probe["connectedError"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         targetModels = probe["models"] as? [[String: Any]] ?? []
         targetOS = probe["osChoices"] as? [Int] ?? []
+        await askDevCertIfNew()
     }
 
     /// 换到第 k 个平台：进度、里程碑从头算（日志接着记）。
