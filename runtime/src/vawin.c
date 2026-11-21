@@ -1485,7 +1485,10 @@ static void cmd_arena_reserve(void) {   // 占窗口那一步在围栏前调；�
     //   即时存档：存档 / 恢复同样要命令记录区（命令句柄落点固定）；两次进程起来区落在同一地址才放得回（图形恢复核基址，不同即拒绝）
     const char *rec = getenv("S2A_FRAME_REC");
     if (!(rec && *rec) && !s2a_snap_mode()) return;
-    uint64_t top = s2a_va_top(), at, sz, fit, fat, lat, vp = 16ull << 30; if (!top) return;
+    // 虚拟池区：帧录按空洞剩余给，最多 16 GB（Mac 回放要把整局的虚拟池放回原地址）；只为即时存档（不录帧）给 2 GB，同放不下标准布局时的两条放法（vawin_reserve）。
+    //   11-21 #f0490a（3 台 iPad、iOS 18、空洞 52224 MB、一款要 32824 MB 的游戏）：存档也按 16 GB 给，命令记录区 + 15 GB 正好占掉窗口上方整段 16 GB 空洞，
+    //   宿主只剩低区约 4 GB，玩到 30–40 秒低区碰底（空洞合计 12 MB），上屏取不到 drawable、统一缓冲环分配失败 abort
+    uint64_t top = s2a_va_top(), at, sz, fit, fat, lat, vp = rec && *rec ? 16ull << 30 : 2ull << 30; if (!top) return;
     pick_hole(top, CMD_ARENA + (1ull << 30), &at, &sz, &fit, &fat, 0, &lat);
     if (!sz) { LOG("【红】命令记录区（iOS 帧录）：没有 %llu MB 的空洞，命令记录块照旧落低区，Mac 回放可能放不回", (unsigned long long)((CMD_ARENA + (1ull << 30)) >> 20)); return; }
     if (sz - CMD_ARENA < vp) vp = (sz - CMD_ARENA) & ~((1ull << 30) - 1);
