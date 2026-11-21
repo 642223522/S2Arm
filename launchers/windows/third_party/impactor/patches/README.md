@@ -48,6 +48,10 @@ MPL-2.0（`../LICENSE-apple-codesign-MPL-2.0.txt`）。
 - 启动器侧（`pack/jobs/apple_login.py`）兜底：同一次登录里交过一次 6 位码后又看到要码提示，或 plumesign 报 `S2A_2FA_REPEAT`，就停下，报 `login_identity_rejected` 和一句说明（`SAY_2FA_REPEAT`）。
 - 没有在真账号上实测（要账号本人的密码和验证码）：判据是上面的检查加上同类工具的实测记录。
 
+- 11-20 起：苹果 GSA 边缘层拒收 `X-Mme-Client-Info` 系统名写成 `macOS;` 的请求，一律回 HTTP 503（约 0.2 秒、在核账号之前；同行 SideStore/SideStore#1745）。
+  本补丁原先按 `<机型> <macOS;版本;版本号>` 拼，随包 plumesign 每台机器登录都 503（玩家「换网络、开热点都不行」）。系统名改成 `Mac OS X;`，
+  机型 / 版本 / 版本号照旧取本机、前后一致不变。实测（不带账号、只改这一段）：`macOS;` → 503，`Mac OS X;` + `com.apple.akd/1.0` → 过边缘层（401 / 404）。
+
 ## 0003-srp-password-protocol-s2k-fo.patch
 
 - 现象：部分玩家确认密码正确（浏览器能登、复制粘贴也一样），S2Arm / Impactor 登录每次都报
@@ -62,13 +66,23 @@ MPL-2.0（`../LICENSE-apple-codesign-MPL-2.0.txt`）。
   负对照：`s2k_fo` 分支改回上游算法（原始摘要）时检查红；未知协议具名报错。
 - 没有在 `s2k_fo` 的真账号上实测（要账号本人的密码；也不知道玩家账号 Apple 选的是哪种，上面那行日志就是为此加的）。
 
-## 自编产物（v2.7.3-s2a3，补丁 0001 + 0002 + 0003）
+## 0004-gui-log-file-and-login-outcome.patch
+
+- 现象：Windows 上 Apple ID 是在 Impactor 窗口里登录的，登录失败的原因只显示在窗口上；窗口程序没有控制台，`env_logger` 写到标准错误的日志也全丢了。
+  玩家报「登录不了」时，诊断包里看不到当时 Impactor 报了什么、试了几次、间隔多久（Mac 端同类问题靠作业日志查出了失败后不到 1 秒就连发重试）。
+- 改法（只改窗口版 `apps/plumeimpactor`，plumesign 不变）：
+  1. `src/main.rs`：环境变量 `S2A_IMPACTOR_LOG` 给了文件路径时，日志追加写进这个文件（带毫秒时间戳；缺省级别：Impactor 自己和 `plume_core` 记 info，其余库只记 warn）；没给时照上游写标准错误。
+  2. `src/screen/windows/login_window.rs`：提交登录记 `S2A_LOGIN_SUBMIT`、成功记 `S2A_LOGIN_OK`、失败记 `S2A_LOGIN_FAILED two_factor=<是否在验证码这步> <原因>`。不记邮箱和密码。
+- S2Arm 启动器打开随包 Impactor 时把 `S2A_IMPACTOR_LOG` 设成 `<私有目录>/logs/impactor-gui.log`（超过 1 MB 先改名为 `.old.log`，只留两份），诊断包照收 `logs/*.log`、同一套脱敏。
+
+## 自编产物（v2.7.3-s2a5，补丁 0001 + 0002 + 0003 + 0004；s2a5 只加 0004，只改窗口版 Impactor）
 
 | 平台 | 文件 | SHA-256 | Rust |
 |---|---|---|---|
-| Windows | plumesign-windows-x86_64.exe | dbfb5603a7f4bd0db87fd8a81bb41d5ca0d883553f6e9a21e19e0661df9a679c | 1.99.1 |
-| Windows | Impactor-windows-x86_64-portable.exe | fb5f89b659436e22ce690f28236d02a2c541de065f609e31baf95c34d9bca419 | 1.99.1 |
-| macOS | plumesign-macos-universal | f3f8be40ebb05abc0e732e09a846bbbcbefaded87f9fd6bfe857adf8d100bcd9 | 1.94.0 |
+| Windows | plumesign-windows-x86_64.exe | cea743fe70f07b672a2be38c5663978055b863fcbd29c75e87e13d367970c8c4 | 1.99.1 |
+| Windows | Impactor-windows-x86_64-portable.exe | 3d503f75d3a5bc63fc4555c92e0e8eacb9e64d776f5c4319d7fd6a988e714922 | 1.99.1 |
+| macOS | plumesign-macos-universal | 6b719c8839e219f9e8c94606330a3a3c54fcf983910f3c9b2ca24d195b1d12cf | 1.94.0 |
 
 可重复编译的做法同 s2a1（同一台机器、两个工作目录各编一次，Mac 先清空固定编译目录，11-18 核过逐字节相同）；s2a3 两端各只编了一次，没有重做这项核对。
+s2a5 只在 Windows 实机重编：0004 不碰 plumesign，Windows plumesign 编出来与 s2a4 逐字节相同（同一 SHA-256），Mac plumesign 沿用 s2a4 的产物。
 两端编之前补丁检查程序（login_fallback_check、srp_protocol_check、two_factor_check）均全过。
