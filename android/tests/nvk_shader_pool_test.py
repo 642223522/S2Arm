@@ -140,7 +140,7 @@ def main():
             ('no-topology', 'const struct s2a_libpack_gfx g = { topology, pc->profile_json, pc->profile_bytes };',
              'const struct s2a_libpack_gfx g = { NULL, pc->profile_json, pc->profile_bytes }; (void)topology;',
              'hit from the library, compiler not called'),
-            ('vs-fs-only', '((stages != 0x3u && stages != 0x7u) || !state_ok)', '(stages != 0x3u || !state_ok)',
+            ('vs-fs-only', '(!ckey && stages != 0x3u && stages != 0x7u)', '(!ckey && stages != 0x3u)',
              'hit from the library, compiler not called'),
         ):
             assert code.count(old) == 1, (name, 'mutation anchor')
