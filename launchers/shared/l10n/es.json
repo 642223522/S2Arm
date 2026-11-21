@@ -499,7 +499,7 @@
   "export.device.selfSignStandalone": "Una app independiente autofirmada solo se puede exportar a una carpeta",
   "welcome.export": "Siguiente: exportar al iPhone / iPad",
   "welcome.win.lead.export": "No es un emulador. S2Arm traduce los juegos a programas nativos para dispositivos Apple y mete toda tu biblioteca en una sola app. Sigue estos tres pasos para exportar al iPhone / iPad",
-  "welcome.win.check.apple_driver": "Falta «Apple Devices»: este PC lo necesita para reconocer un iPhone / iPad. Haz clic en «Abrir página oficial» para instalarlo gratis desde Microsoft Store, ábrelo una vez y luego pulsa «Volver a comprobar».",
+  "welcome.win.check.apple_driver": "Falta «Apple Devices»: este PC lo necesita para reconocer un iPhone / iPad. Haz clic en «Abrir la página oficial» para instalarlo gratis desde Microsoft Store, ábrelo una vez y luego pulsa «Comprobar de nuevo».",
   "console.row.open": "Abrir",
   "export.sign.option.appleId.note": "Se firma con el Apple ID con el que inicias sesión en Impactor (sirve uno gratuito). La primera vez, pulsa «Abrir Impactor» e inicia sesión allí; la contraseña solo se escribe en Impactor.",
   "export.sign.option.devCert.none2": "Aún no has importado un certificado (.p12 y perfil de aprovisionamiento)",
