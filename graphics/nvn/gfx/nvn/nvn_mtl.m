@@ -6354,6 +6354,10 @@ void nvn_be_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
     snprintf(avail, sizeof avail, "%llu MB", (unsigned long long)(os_proc_available_memory() >> 20));
 #endif
     MLOG("memory up to frame %llu: resident %llu MB, GPU allocated %llu MB (counts zero-copy pool buffers at full length), deferred-release queue %lu, residency set %lu, serial objects %u, memory pools %d (resident %d, %llu MB pinned whole by the residency set; peak %d / tracking table capacity %d; freed but alive %lu, %llu MB), shared textures %u, %llu MB (%u of them unreferenced, %llu MB, GPU-written %llu MB, looked up in the last %d submissions %llu MB, display / video %llu MB; textures by serial %llu MB; evicted with pools %llu, on storage takeover %llu, unreferenced released %llu, %llu MB (never GPU-written %llu, storage rewritten since %llu, for the low-region ledger %llu) in total), texture re-uploads %llu in total, per-frame arena blocks created %llu in total (%llu MB; segments cut for scratch %llu, waits for a block %llu), finalized textures still referenced %u (small table, %llu put in total, %llu held to the end of their submission past it, %llu resolved to shared textures without it); headroom to the system memory limit %s", frame, rss_mb, gpu, nd, nr, ns, live, pres, (unsigned long long)(pres_b >> 20), peak, cap, dead_n, dead_mb, ashared, (unsigned long long)(ash_b >> 20), aorph, (unsigned long long)(aorph_b >> 20), (unsigned long long)(aorph_w >> 20), (int)ALIAS_IDLE, (unsigned long long)(aorph_recent >> 20), (unsigned long long)(aorph_dv >> 20), (unsigned long long)(ser_b >> 20), (unsigned long long)g_alias_evicted, (unsigned long long)g_alias_taken, (unsigned long long)(g_alias_orph_cache + g_alias_orph_rw + g_alias_orph_valve), (unsigned long long)((g_alias_orph_cache_b + g_alias_orph_rw_b + g_alias_orph_valve_b) >> 20), (unsigned long long)g_alias_orph_cache, (unsigned long long)g_alias_orph_rw, (unsigned long long)g_alias_orph_valve, (unsigned long long)g_pkg_reuploads, (unsigned long long)g_arena_made, (unsigned long long)(arena_bytes() >> 20), (unsigned long long)g_arena_cuts, (unsigned long long)arena_waits(), nghost, (unsigned long long)ghost_puts, (unsigned long long)ghost_kept, (unsigned long long)ghost_shared, avail);
+    // GPU 工作集：设备建议上限（recommendedMaxWorkingSetSize）与本进程此刻的 GPU 分配量。#1449（0100B8E016F76000，iPhone）报 kIOGPUCommandBufferCallbackErrorOutOfMemory，
+    //   诊断里只有分配量、没有上限，判不了离上限多远
+    {   uint64_t ws = (uint64_t)g_dev.recommendedMaxWorkingSetSize, cur = (uint64_t)g_dev.currentAllocatedSize;
+        MLOG("GPU working set up to frame %llu: allocated %llu MB of the device's recommended maximum %llu MB (%.0f%%)", frame, (unsigned long long)(cur >> 20), (unsigned long long)(ws >> 20), ws ? 100.0 * (double)cur / (double)ws : 0.0); }
     { os_unfair_lock_lock(&g_rh_lk); unsigned rn = g_rh_n; uint64_t rb = g_rh_bytes; os_unfair_lock_unlock(&g_rh_lk);   // 回收贴图堆（rh_*）
       MLOG("recycled texture heaps up to frame %llu: made %llu, reused %llu, trimmed %llu in total; waiting %u, %llu MB%s", frame, (unsigned long long)g_rh_made, (unsigned long long)g_rh_reused, (unsigned long long)g_rh_trimmed, rn, (unsigned long long)(rb >> 20), rh_on() ? "" : " (off)"); }
     {   uint64_t k[8]; nvn_res_by_kind(k);
@@ -8539,7 +8543,7 @@ typedef struct { tex_t t; int ok; view_t v; int has_v; void *view; uint64_t view
                  uint8_t view_tbu;                                          // view is a texture buffer at a pool offset off the linear-texture alignment (the only kind tba_copy copies), read once when it is set
                  void *alt, *alt_of; uint64_t alt_rid, alt_made; uint8_t alt_type, alt_copy;   // alt: compatible view used when the shader's declared type differs from view (tex_fit), alt_of = the view it was built from
                  void *ar, *ar_of; uint64_t ar_rid;                         // ar: the alpha-from-red view for the profile's alpha_from_red shaders (tex_alpha_red), ar_of = the view it was built from
-                 void *im, *im_of; uint64_t im_rid;                         // im: the view an image slot reads in the shader's pixel class (img_fit), im_of = the view it was built from
+                 void *im, *im_of; uint64_t im_rid; uint8_t im_buf;                         // im: the view an image slot reads in the shader's pixel class (img_fit), im_of = the view it was built from; im_buf: im is a texture-buffer view (made over the pool buffer, res_add'ed), set where im is made
                  uint8_t tt1, gone;   // tt1: Metal texture type + 1 a pool walk found here (0 = not looked; pool_gpu skips the ID in tables of another type); gone: its memory pool was finalized (treg_drop_pool_views), until registered again
                  int ser_next, ser_prev;
                  uint64_t used; } treg_t;   // used: g_fence + 1 when a binding last resolved this ID (tex_fast / tex_fast_rid / tex_by_id_ptr); tex_idle_reclaim lets go of the textures idle longest   // the other IDs registered with the same texture serial (g_treg_ser), as ID + 1, 0 = none
@@ -8576,8 +8580,9 @@ static void treg_drop_im(treg_t *r) {
     if (!r->im) return;
     // A texture view retains its base and the base keeps the residency: only my reference goes. A texture-buffer view (img_fit / tex_float_fit on a buffer texture) is its own
     //   resident object over the pool buffer (res_add), retired like tbl_view's: released after the submissions that used it. im_of is an unretained identity, never dereferenced
-    id<MTLTexture> old = (__bridge id<MTLTexture>)r->im;
-    if (old.textureType == MTLTextureTypeTextureBuffer) defer_obj_release(old); else defer_obj_unref(old); CFRelease(r->im); r->im = r->im_of = NULL; r->im_rid = 0;
+    //   Which of the two is noted where im is made (im_buf), not asked of the object here (the caches can hold other objects: tests put plain placeholders there)
+    id old = (__bridge id)r->im;
+    if (r->im_buf) defer_obj_release(old); else defer_obj_unref(old); CFRelease(r->im); r->im = r->im_of = NULL; r->im_rid = 0; r->im_buf = 0;
 }
 static void treg_drop_ar(treg_t *r) { if (r->ar) { defer_obj_unref((__bridge id)r->ar); CFRelease(r->ar); r->ar = r->ar_of = NULL; r->ar_rid = 0; }
                                      treg_drop_im(r); }   // and the image class view (img_fit)
@@ -9329,7 +9334,7 @@ static id<MTLTexture> img_fit(int tid, id<MTLTexture> t, int dpf, uint64_t *rid)
     }
     if (!v) { RED_ONCE(107, "cannot create the image view of class %s (texture ID %d, Metal format %lu)", dpf == NVN_DPF_FLOAT ? "float" : u ? "uint" : "int", tid, (unsigned long)t.pixelFormat); return nil; }
     { static int once; if (cls && !once++) MLOG("image read in another class than its texture: first case texture ID %d Metal format %lu → %lu", tid, (unsigned long)t.pixelFormat, (unsigned long)pf); }
-    r->im = (void *)CFBridgingRetain(v); r->im_of = (__bridge void *)t; r->im_rid = v.gpuResourceID._impl;
+    r->im = (void *)CFBridgingRetain(v); r->im_of = (__bridge void *)t; r->im_rid = v.gpuResourceID._impl; r->im_buf = (uint8_t)is_tbuf;
     *rid = r->im_rid; return v;
 }
 // A 32-bit integer texture in a texture slot the shader declares float (upstream (MIT) f08387336): a shader with no type answer declares float, as only the host knows the texture's format, and
@@ -9358,7 +9363,7 @@ static id<MTLTexture> tex_float_fit(int tid, id<MTLTexture> t, uint64_t *rid) {
     }
     if (!v) { RED_ONCE(103, "cannot create the float view of an integer texture (texture ID %d, Metal format %lu)", tid, (unsigned long)t.pixelFormat); return nil; }
     { static int once; if (!once++) MLOG("integer texture sampled as float: first case texture ID %d Metal format %lu read through format %lu", tid, (unsigned long)t.pixelFormat, (unsigned long)pf); }
-    r->im = (void *)CFBridgingRetain(v); r->im_of = (__bridge void *)t; r->im_rid = v.gpuResourceID._impl;
+    r->im = (void *)CFBridgingRetain(v); r->im_of = (__bridge void *)t; r->im_rid = v.gpuResourceID._impl; r->im_buf = (uint8_t)is_tbuf;
     *rid = r->im_rid; return v;
 }
 // Only bindings with actual native atomic calls lose texture compression. Do
@@ -18239,7 +18244,11 @@ void nvn_be_exec(const uint8_t *p) {
         const void *a = p + 8;
         if (g_unb && !unb_keeps(h.op) && !(h.op == OP_END && g_ret_n)) { g_unb_land++; PD("M %llu held unbind lands before op %u", g_stat_pass, (unsigned)h.op); rp_flush(); }   // see unb_on
         if (g_nlc && !lc_keeps(h.op) && !(h.op == OP_END && g_ret_n)) lc_land();   // see lc_keeps (a sub-list's end returns to its caller)
-        if (g_gr.active && !geo_run_keeps(h.op)) { g_gr_why = GEO_END_OP; g_gr_why_op = (int)h.op; geo_run_flush(); }   // only state settings and draws stay inside a geometry run (nvn_geometry.inc ①)
+        // An occlusion-query report (SAMPLES_PASSED) stays inside the run as well: it encodes nothing, it notes the visibility slots counted so far (vis_snapshot, read once the
+        //   submission completes) and gives the next draw a new slot, which that draw sets on the main pass's encoder in lane 2, in the original order. 0100B8E016F76000 (#1449)
+        //   reports after every one of 530-750 geometry draws a frame: each report ended the run and the main pass, 566-793 passes a frame, 6 fps. Other counters still end it
+        if (g_gr.active && !geo_run_keeps(h.op) && !(h.op == OP_REPORT_COUNTER && h.size >= 16 && *(const uint64_t *)a == NVN_COUNTER_TYPE_SAMPLES_PASSED)) {
+            g_gr_why = GEO_END_OP; g_gr_why_op = (int)h.op; geo_run_flush(); }   // only state settings, draws and occlusion reports stay inside a geometry run (nvn_geometry.inc ①)
         switch (h.op) {
             case OP_END: g_exec_cur = NULL;
                 if (g_ret_n > base) { g_ret_n--; p = g_cstk_ret[g_ret_n]; list = g_cstk_list[g_ret_n]; prev = NULL; continue; }   // 子列表结束：回调用方 CALL 之后

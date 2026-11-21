@@ -10216,6 +10216,10 @@
   "en": "{0} stopped S2Arm's tool \"{1}\" from running."
  },
  {
+  "source": "被 Windows 拦下：Windows 的应用控制或杀毒软件没让 S2Arm 自带的工具运行。",
+  "en": "Blocked by Windows: Windows app control or antivirus stopped one of S2Arm's own tools from running."
+ },
+ {
   "source": "Windows 的「智能应用控制」",
   "en": "Windows Smart App Control"
  },
