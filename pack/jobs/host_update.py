@@ -183,12 +183,14 @@ def _online(c, names=None):
                 if u:
                     out[u] = "network" if str(kind).lower().startswith("net") else "usb"
         else:
-            from diag import devicectl
+            from diag import devicectl, is_candidate
             rc, data, _ = devicectl(c, "list", "devices", timeout=30)
             for d in data.get("result", {}).get("devices", []) if rc == 0 else []:
                 u = (d.get("hardwareProperties") or {}).get("udid")
                 cp = d.get("connectionProperties") or {}
-                if u and cp.get("tunnelState") != "unavailable":
+                # 同出包 / 装机选机（target._keep_device、install._pick_device）：模拟器、Mac、手表、电视装不了 iPhone 版 S2Arm，不进总控台
+                #   （玩家录屏 0.6.2：手机切换里列出「Apple Watch Series 12 (46mm)」——Xcode 手表模拟器的缺省名；每多一台现查还要逐台列已装 App）
+                if u and cp.get("tunnelState") != "unavailable" and is_candidate(d):
                     out[u] = "network" if cp.get("transportType") == "localNetwork" else "usb"
                     if names is not None:
                         names[u] = (d.get("deviceProperties") or {}).get("name") or ""
