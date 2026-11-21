@@ -3572,6 +3572,23 @@ PUSH_SELECTED = "push_selected.json"   # 「更新所选」这一轮的进度（
 PUSH_SELECTED_STOP = ("shell_install_required", "shell_update_required", "device_not_connected", "device_not_ready", "device_required")
 
 
+def ensure_ios_pack(c, gid):
+    """更新所选里这款电脑上没有 iPhone 资源包（D-C444 #1934：存储面板「删 iPhone 包」只删资源包、留程序件，只出 Apple TV 也会撤掉它；
+    总控台照样把这款列进建议更新）：先在电脑上把 iPhone 包出好再推，同出包编排起一步 iPhone 子作业（export_plan._run_step）。
+    原来直接报 pack_missing 让玩家自己去点「打 iPhone 包」。游戏文件夹不在了不出（推的时候照实报 game_folder_missing）；出不成按子作业的原因报"""
+    gid = gid.upper()
+    if layout.state(c, gid)[0] == "missing" or not layout.has_ios_kit(c, gid) or (layout.ios_pack(c, gid) / "manifest.json").is_file():
+        return   # 从没做过 iPhone 版的不在这里出（推的时候照旧报「还没出 iPhone 包」）
+    import export_plan
+    c.emit("message", "这款电脑上没有 iPhone 资源包，先在电脑上做好再推")
+    out = export_plan._run_step(c, f"{c.task}-ios-{gid}"[:80], gid, "iphone", {}, None, followUp=False)
+    if out.get("state") == "cancelled":
+        from core import Cancelled
+        raise Cancelled()
+    if out.get("state") != "completed":
+        raise Failure(out.get("message") or "这款的 iPhone 包没做成。", code=out.get("code") or "job_failed")
+
+
 def push_selected(c):
     """作业 pushSelected（总控台「更新所选」，0.6.0 通用壳）：所选几款按顺序各推一次（同单款「推到 iPhone」：push_game，只做这一款、要改写就前台改写）。
     一款失败记下原因、接着推下一款；换哪款都做不下去（PUSH_SELECTED_STOP）才整轮停。玩家点停 = 取消作业，推完的留着。
@@ -3600,6 +3617,7 @@ def push_selected(c):
             c.begin("按顺序把所选游戏推到 iPhone", i, len(games), key="pushSelected")
             c.emit("progress", "", done=i - 1, total=len(games), current=g)   # 前端按 current（游戏号）标正在推的那一行（gameId 是作业自带的键）
             try:
+                ensure_ios_pack(c, g)
                 if chosen_layout(c, g) == "standalone":   # 这款选的是独立 App（0.6.3 起）：重组重签它自己的 App，不推进通用壳
                     signer = signer or phone_for(c)
                     put_app(c, g, signer, steps=False)
