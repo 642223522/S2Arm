@@ -564,7 +564,11 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
             var at = new Dictionary<string, string>();
             foreach (var (t, sd) in tg)
                 try { sd.Put(name + ".metallib", Metal.Compile(t, src, name, out var mk)); at[t] = mk; }
-                catch (CompileError e) { return $"{t}: {Trunc(e.Message, 160)}"; }
+                catch (CompileError e)
+                {
+                    Say($"[unity] batch {name} ({ks.Count} keys, {src.Length / 1024} KB) {t} {(e is CompileTimeout ? "timed out" : "failed")}, building key by key next: {Trunc(e.Message, 160)}");
+                    return $"{t}: {Trunc(e.Message, 160)}";
+                }
             Unity.ReuseIndex.Record("u", name, at, Metal.IdentHex, ks.Select(k => (Dg(k), Dg(k), Text(k))).ToList());   // 记下这批的成员：下次翻译器改了、这些键 MSL 没变就整批拿来
             return null;
         }
@@ -636,11 +640,16 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
         // 进度按待编源码 MB 计，不按批数：Metal 编译耗时与源码字节成正比（11-04 Spare-host 实测 0.14 → 7.6 → 24.5 秒 / 0.06 → 12 → 39 MB），批又是大的先编，
         //   按批数外推把开头的大批当常态（Pokopia 2,696 批：头 105 批是批数的 4%、字节的 17%，编到这里报「还剩 11 小时」，按字节与实测吞吐折算约 2.2 小时）。拿来的批不编、不计
         int Mb(long n) => (int)Math.Max(1, (n + (1 << 20) - 1) >> 20);
-        var jobs = reuse.Values.Select(h => (Run: (Action)(() => Reused(h, false)), Mb: 0)).Concat(vinReuse.Values.Select(h => (Run: (Action)(() => Reused(h, true)), Mb: 0)))
-            .Concat(units.Select(b => (Run: (Action)(() => OneBatch(b)), Mb: Mb(b.Sum(k => plan.Len[k]))))).Concat(vinPlanOrder.Select(b => (Run: (Action)(() => VinOne(b)), Mb: Mb(b.Sum(k => Unity.PyLen(vinSrc[k])))))).ToList();
+        var jobs = reuse.Values.Select(h => (Run: (Action)(() => Reused(h, false)), Mb: 0, Name: "reused " + h.Name)).Concat(vinReuse.Values.Select(h => (Run: (Action)(() => Reused(h, true)), Mb: 0, Name: "reused vin " + h.Name)))
+            .Concat(units.Select(b => (Run: (Action)(() => OneBatch(b)), Mb: Mb(b.Sum(k => plan.Len[k])), Name: $"u{Dg(b[0])} ({b.Count} keys)"))).Concat(vinPlanOrder.Select(b => (Run: (Action)(() => VinOne(b)), Mb: Mb(b.Sum(k => Unity.PyLen(vinSrc[k]))), Name: $"vin {Dg(b[0])} ({b.Count} keys)"))).ToList();
         int lanes = jobs.Any(j => j.Mb > 0) ? LiveLanes("编批库") : NJ; using var wide = Metal.Widen(lanes, jobs.Any(j => j.Mb > 0) ? "编批库" : null);   // 全拿缓存（没有要编的批）不读内存、不打行；先于 Ticker：活动记录报放宽后的路数
         using var tk = new Ticker("直连库·编批库（MB）", jobs.Sum(j => j.Mb));
-        Parallel.ForEach(InOrder(jobs), new ParallelOptions { MaxDegreeOfParallelism = Pool(lanes) }, j => { j.Run(); tk.Step(j.Mb); });   // 大的先编；拼源码与回填在多出的那些线程里做，Metal 不断粮
+        // 一项编了很久当场记一行（0400A3A01EE4C000 Windows 出包：编批库一小时一批都没编完、被无进展看门狗停掉，日志里一行都没有，定不了是哪批）
+        Parallel.ForEach(InOrder(jobs), new ParallelOptions { MaxDegreeOfParallelism = Pool(lanes) }, j =>
+        {
+            var sw = Stopwatch.StartNew(); j.Run(); tk.Step(j.Mb);
+            if (sw.Elapsed.TotalSeconds >= SlowJobS) Say($"[unity] slow: {j.Name}, {j.Mb} MB, {sw.Elapsed.TotalSeconds:F0} s");
+        });   // 大的先编；拼源码与回填在多出的那些线程里做，Metal 不断粮
         var vinOrder = vinPlanOrder;
         if (!failed.IsEmpty)
         {
@@ -777,6 +786,8 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
         return lanes;
     }
     // 工作线程数：编译路数由 Metal 的闸管，线程按「本单核数 × 2」开（段内放宽后线程够用；拼源码、回填在多出的线程里做，Metal 不断粮）；不比 lanes × 2 少
+    // 编批库里一项超过这么多秒当场记一行（S2A_UNITY_SLOW_S 可改；正常一批零点几秒到几秒）
+    static readonly int SlowJobS = int.TryParse(Environment.GetEnvironmentVariable("S2A_UNITY_SLOW_S"), out var s) && s > 0 ? s : 120;
     static int Pool(int lanes) { int j = int.TryParse(Environment.GetEnvironmentVariable("S2A_JOBS"), out var v) && v > 0 ? v : Environment.ProcessorCount; return Math.Max(lanes, j) * 2; }
     [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
     struct MemStatus { public uint Length, MemoryLoad; public ulong TotalPhys, AvailPhys, TotalPageFile, AvailPageFile, TotalVirtual, AvailVirtual, AvailExtendedVirtual; }

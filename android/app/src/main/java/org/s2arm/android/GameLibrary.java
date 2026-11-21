@@ -142,7 +142,8 @@ final class GameLibrary {
                             try {
                                 BootContract.Current now = BootContract.readCurrent(new File(gamesDir, result.titleId));
                                 Log.i("S2Arm", "Game import receipt: " + result.titleId + " contentRoot=" + now.contentRoot
-                                    + " artifactSha256=" + now.artifactSha256 + " from import/" + source.getName());
+                                    + " artifactSha256=" + now.artifactSha256
+                                    + (result.resourceDelta ? " resourceDelta=1" : "") + " from import/" + source.getName());
                             } catch (BootContract.BadGame | IOException receipt) {
                                 Log.i("S2Arm", "Game import receipt unavailable: " + result.titleId + " from import/" + source.getName());
                             }
@@ -226,7 +227,7 @@ final class GameLibrary {
 
     /** 读共享存储失败、而本 App 确实没有「所有文件访问」时，把这个真原因放进报错（不预先拦：先做，真失败再说为什么）。 */
     private static Throwable inPlaceAccess(Throwable error, boolean inPlace) {
-        if (!inPlace || android.os.Build.VERSION.SDK_INT < 30 || android.os.Environment.isExternalStorageManager()) return error;
+        if (!inPlace || android.os.Environment.isExternalStorageManager()) return error;
         return new IOException("All files access is off for this app: " + error.getMessage(), error);
     }
 
@@ -315,9 +316,11 @@ final class GameLibrary {
 
     // Progress for the panel, every 64 MiB copied.
     private GameInstall.Progress progress() {
-        long[] last = {0};
+        long[] last = {0, 0};
         return (done, total) -> {
             if (done - last[0] > (64L << 20)) { last[0] = done; listener.onStatus(context.getString(R.string.import_progress, done >> 20, total >> 20)); }
+            // 部署工具（deploy_game）按这一行判导入还在推进：进度在涨就继续等，停住才算超时（大包在机上校验 + 复制可远慢于直传）
+            if (done - last[1] > (512L << 20)) { last[1] = done; Log.i("S2Arm", "Game import progress: " + (done >> 20) + " / " + (total >> 20) + " MiB"); }
         };
     }
 

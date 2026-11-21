@@ -60,7 +60,7 @@ def main():
         host_link.run(base + [str(p) for p in src] + [strip, '-lm', '-o', str(exe)], check=True, timeout=60)
         return subprocess.run([str(exe), *args], capture_output=True, text=True, timeout=30, env=env)
 
-    live_modes = ('--live-compile-thread', '--live-compile-pending', '--live-compile-stop', '--live-compile-nowait', '--cs-libpack')
+    live_modes = ('--live-compile-thread', '--live-compile-pending', '--live-compile-stop', '--cs-libpack')
     if len(sys.argv) == 2 and sys.argv[1] in live_modes:
         result = run(sys.argv[1][2:], original, args=(sys.argv[1],))
         sys.stdout.write(result.stdout)
@@ -78,9 +78,6 @@ def main():
              '--live-compile-thread', 'compute first use publishes the real compiled program'),
             ('pending-marked-failed', '        return LIVE_PENDING;', '        return LIVE_ABORT;',
              '--live-compile-pending', 'exhausted safe budget must defer'),
-            ('ignore-nowait', 'nvn_plat_flag("nvk_live_compile_nowait", 0) ? 0 : nvn_plat_flag("fu_frame_ms", 100)',
-             'nvn_plat_flag("fu_frame_ms", 100)', '--live-compile-nowait',
-             'no-wait must bypass the available frame budget while callbacks are gated'),
         ]
         for name, old, new, mode, expected in mutants:
             assert text.count(old) == 1, (name, 'mutation anchor')
@@ -99,8 +96,8 @@ def main():
              '    rec.lp_ok = unaligned ? 0 : 2;\n    (void)rec;', '--compute-warm', 'compute program must be recorded in warm manifest'),
             ('wrong-stage', 'memcpy(rec.identity, p->identity, 32); rec.stage_mask = 32;',
              'memcpy(rec.identity, p->identity, 32); rec.stage_mask = 1;', '--compute-warm', 'persisted compute manifest retains identity'),
-            ('wrong-build', 'struct entry *e = compute ? build_compute(bytes, len, &views[0], rec->identity, rec->keys[0]) : build(bytes, len, views, nst, rec->identity);',
-             'struct entry *e = build(bytes, len, views, nst, rec->identity);', '--compute-warm', 'compute program warm builds from prior cache'),
+            ('wrong-build', 'struct entry *e = compute ? build_compute(bytes, len, &views[0], rec->identity, rec->keys[0], 0) : build(bytes, len, views, nst, rec->identity, 0);',
+             'struct entry *e = build(bytes, len, views, nst, rec->identity, 0);', '--compute-warm', 'compute program warm builds from prior cache'),
             ('flag-ignored', 'if (!nvn_plat_flag("nvk_compute_warm", 0)) return;',
              '(void)nvn_plat_flag("nvk_compute_warm", 0);', '--compute-warm-off', 'compute warm off must not record programs'),
         ]
@@ -171,6 +168,43 @@ def main():
             assert result.returncode != 0 and expected in result.stderr, (name, result.stdout, result.stderr)
             print(f'{name}: expected assertion failure: {expected}', flush=True)
         print('PASS: 1 libpack CS unaligned-gate negative control')
+        return 0
+
+    if sys.argv[1:] == ['--graphics-image-mutants']:
+        # 负对照（#999）：图形阶段存储图像的接线各改坏一处，graphics_image_layout_test 必红。
+        #   解析的几处改的是 nvn_vk_program_result.c（拷贝顶替原文件进链接）；声明那处改的是 nvk_shader.c（测试里的 #include 指到拷贝）
+        test_c = ROOT/'android/tests/graphics_image_layout_test.c'
+        parse_text = (native/'nvn/nvn_vk_program_result.c').read_text(encoding='utf-8')
+        shader_text = original.read_text(encoding='utf-8')
+        gate = ('if (dst->kind == 3 && dst->count == 1 && dst->slot >= 72 && dst->slot < 88 && !(dst->slot & 1))\n'
+                '                dst->tex_slot = (int16_t)((dst->slot - 72) / 2);')
+        decl = 'if (le->src_kind == NVN_RB_IMG) sampled_decl('
+        cases = [
+            ('parse-slot-unset', 'parse', gate, 'if (0)\n                dst->tex_slot = (int16_t)((dst->slot - 72) / 2);', 'maps to image slot 0'),
+            ('parse-slot-formula', 'parse', gate, gate.replace('(dst->slot - 72) / 2', '(dst->slot - 70) / 2'), 'maps to image slot 0'),
+            ('parse-odd-word', 'parse', gate, gate.replace(' && !(dst->slot & 1)', ''), 'odd word 73: tex_slot stays -1'),
+            ('parse-table-widened', 'parse', gate, gate.replace('dst->slot < 88', 'dst->slot < 90'), 'word 88 above the image table: tex_slot stays -1'),
+            ('parse-array-accepted', 'parse', gate, gate.replace(' && dst->count == 1', ''), 'image array at word 72: tex_slot stays -1'),
+            ('build-decl-tbuf-only', 'shader', decl, 'if (le->cls == NVN_GPU_RES_IMAGE_TBUF) sampled_decl(', 'image 0: cls 5 reg 0 target 0 class 0 format 0'),
+        ]
+        for name, which, old, new, expected in cases:
+            text = parse_text if which == 'parse' else shader_text
+            assert text.count(old) == 1, (name, 'mutation anchor')
+            mutated = out/('gfx-image-mutant-' + name + '.c')
+            mutated.write_text(text.replace(old, new), encoding='utf-8')
+            exe = out/('gfx-image-' + name)
+            if which == 'parse':
+                files = [test_c, mutated, *libs]
+            else:
+                fixture = out/('gfx-image-mutant-' + name + '-test.c')
+                fixture.write_text(test_c.read_text(encoding='utf-8').replace('#include "../native/gfx_plat/nvk_shader.c"', '#include "' + str(mutated) + '"')
+                                   .replace('#include "tbuf_spirv_fixtures.h"', '#include "' + str(ROOT/'android/tests/tbuf_spirv_fixtures.h') + '"'), encoding='utf-8')
+                files = [fixture, *libs]
+            host_link.run(base + [str(p) for p in files] + [strip, '-lm', '-o', str(exe)], check=True, timeout=120)
+            result = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30)
+            assert result.returncode != 0 and expected in result.stderr, (name, result.stdout, result.stderr)
+            print(f'{name}: expected assertion failure: {expected}', flush=True)
+        print(f'PASS: {len(cases)} graphics image negative controls')
         return 0
 
     if len(sys.argv) in (3, 4) and sys.argv[1] == '--tbuf-layout':
@@ -413,7 +447,7 @@ def main():
         print(f'PASS: {len(changes)} negative controls')
         return 0
     if sys.argv[1:]:
-        raise ValueError('usage: nvk_shader_pool_test.py [--withdraw | --gs-libpack-mutants | --cs-libpack-mutants | --compute-warm-mutants | --diag-mutants | --live-compile-mutants]'
+        raise ValueError('usage: nvk_shader_pool_test.py [--withdraw | --gs-libpack-mutants | --cs-libpack-mutants | --compute-warm-mutants | --diag-mutants | --live-compile-mutants | --graphics-image-mutants]'
                          '（其余参数是 gs_compiler_chain_test.py / tbuf_compiler_chain_test.py 的子命令）')
     # 存储图像的声明（数值类 + SPIR-V Image Format）落程序记录：生产 sampled_decl，手搭 SPIR-V
     exe = out/'image-decl'
@@ -429,6 +463,13 @@ def main():
     sys.stdout.write(csl.stdout); sys.stderr.write(csl.stderr)
     if csl.returncode:
         return csl.returncode
+    # #999：图形阶段的存储图像：真实结果解析 + 生产 layout_ent + 生产 build（句柄字 → 图像槽 / 声明）；负对照在 --graphics-image-mutants
+    exe = out/'graphics-image-layout'
+    host_link.run(base + [str(ROOT/'android/tests/graphics_image_layout_test.c'), *[str(p) for p in libs]] + [strip, '-lm', '-o', str(exe)], check=True, timeout=120)
+    gil = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30)
+    sys.stdout.write(gil.stdout); sys.stderr.write(gil.stderr)
+    if gil.returncode:
+        return gil.returncode
     diag = run('diag-compile', original, args=('--diag-compile',))
     sys.stdout.write(diag.stdout); sys.stderr.write(diag.stderr)
     if diag.returncode:

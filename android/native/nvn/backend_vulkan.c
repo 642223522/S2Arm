@@ -50,6 +50,7 @@
 #include "vk_device.h"
 #include "spirv_storage.h"   // 顶点阶段的存储写检查（与直连接纳同一份，按 Vulkan 规范的 NonWritable 判）
 #include "spirv_workgroup.h" // 最终 SPIR-V 的实际计算工作组尺寸（含 WorkgroupSize 的优先级）
+#include "spirv_compliance.h"   // #1865 统一装载闸：能力 / 扩展 / 存储类字节声明扫描
 #include "../capprobe/capprobe.h"
 #include "nvn_vk_dq.inc"   // 两级回放：从这里往下 vkCmd* 等名字走它的包装（调试开关 nvk_dq，缺省开）
 S2A_CAPPROBE_RUNTIME_LOST_WEAK_REF;   // 宿主链接单元无 bridge.cpp 时解析为 NULL
@@ -207,10 +208,16 @@ struct nvn_gpu_samp_s {
     struct nvn_gpu_samp_s *all_next;
 };
 
+struct prs_use;     // 整池组回收的本段取用记录（见 backend_vulkan_pool.inc 的 prs_*）
+struct nvn_gpu_cmd_s;
+static void prs_release(struct nvn_gpu_cmd_s *c, int executed);   // 段结束：还原反馈补丁、把回收的整池组放回（finish_cmd 最先一步）
+static void prs_open(void);
+static void prs_close(void);
 // Pool tables are immutable; each slot holds a resource reference, including dummies.
 struct nvn_gpu_pool_table_s {
     uint32_t kind, count;
     int released, refs;
+    uint64_t uid;               // 建表时取的序号（全进程单调增、不复用）：备忘 / 回收的键用它而不是指针——表销毁后地址会被新表复用，按指针会误命中旧组
     void **objects;
     VkDescriptorImageInfo *images;
     // 图像池的「按图索引」（建表时一次建好，表不可变）：同一张 VkImage 的视图（按视图指针去重）串成链。
@@ -338,6 +345,7 @@ struct nvn_gpu_cmd_s {
     uint8_t pool_active;
     nvn_gpu_pool_table pool_binds[6][64];  // 各阶段布局项上的池快照，cmd_ref 保活
     VkDescriptorPool *pool_dpools; uint32_t pool_ndpools, pool_dpool_cap;
+    struct prs_use *prs_use; uint32_t prs_n, prs_cap;   // 本段取过的回收整池组（段完成时还原反馈补丁并放回，见 prs_release）
     VkDescriptorSet desc_sets[4];   // 仅本命令段；旧组仍归本段的池所有，不就地覆盖在途绑定
     VkPipelineLayout desc_layout;
     uint32_t desc_dirty;
@@ -471,8 +479,28 @@ static int desc_memo_flag(void) { return nvn_plat_flag("nvk_desc_memo", 1) != 0;
 // 池快照不可变、本段持引用，指针相同 = 内容相同，所以「同一布局 + 同样的普通写入 + 同样的池快照」的组可以像别的组一样段内复用（键见 pool_set_mask，用法见 bind_descriptor_groups）。
 static int pool_memo_flag(void) { return nvn_plat_flag("nvk_pool_memo", 1) != 0; }
 static int g_pmemo_cur = -1; static uint32_t g_pmemo_k;   // 开关缓存：绑定时每 256 次重读一次（宿主用例经 nvn_gpu_vk_test_pool_memo_refresh 立即作废）
-enum { PN_NEED, PN_HIT, PN_NEW, PN_FB, PN_ELEMS, PN_N };
-static uint64_t g_pool_n[PN_N], g_pool_ns[2];   // 整池组读数：要的组数 / 段内备忘命中 / 新建（建池 + 分组）/ 因反馈拷贝在用而绕开备忘 / 整池写入的描述符项数；新建（建池 + 分组）与整池写入的纳秒（nvk_gputime 开着才计）
+// 整池组回收开关 nvk_pool_rec（缺省开；0 = 关，每笔脏的整池组新建单组专用池、整表写、段完成销毁，A/B 与负对照用）。见 backend_vulkan_pool.inc 的 prs_*。
+static int pool_rec_flag(void) { return nvn_plat_flag("nvk_pool_rec", 1) != 0; }
+static int g_prs_cur = -1;   // 开关缓存：同上
+// 回收总量按字节封顶（维护方在 #1905 定的口径，不按组数）：在用 + 空闲的回收组占用的描述符池，估算字节合计 ≤ 封顶（缺省 384 MB）；
+// 超了先淘汰空闲串里最久没用的组，淘汰完还不够才退回老路径，不拦任何操作。空闲串不再另设「一半」的封顶：一帧里各段完成时，这一帧用到的整池组一起放回空闲串（真机重场景一帧用 170–187
+// 组，估算约 204–224 MB），空闲封顶设成总封顶的一半（192 MB ≈ 160 组）就比一帧的用量还小，每帧放回时超出的 14–30 组被淘汰、下一帧又得新建
+// （取组 + 放回 3.7–10.3 毫秒 / 帧）；总量封顶已经封住了内存。
+// 每个描述符按 PRS_DESC_BYTES 字节估：一款 3D 游戏的整池组（贴图池 8448 项 + 采样器池 1280 项，
+// 共约 9.7 千项）实测每组使进程内存涨约 0.85 MB（回收开 / 关两档 PSS 差 +271 MB，其中图形内存 +219 MB，现存 257 组），0.85 MB ÷ 9.7 千项 ≈ 88 字节 / 项。
+// 这是估算，不是读数：别的驱动 / 别的 GPU 的每项开销会不同，封顶只是防止换一款表更大的游戏时一路涨到被系统杀掉。真机缺省包不能改封顶；调试包用开关 nvk_pool_rec_mb 压低（验淘汰）。
+enum { PRS_DESC_BYTES = 88, PRS_GROUP_MIN_BYTES = 4096, PRS_CAP_MB = 384 };
+static pthread_mutex_t g_prs_mu = PTHREAD_MUTEX_INITIALIZER;   // 保护回收表和下面的计数；回放线程只 trylock，碰上就走老路径
+static uint32_t g_prs_total, g_prs_idle;   // 现存组（在用 + 空闲）/ 其中空闲（持 g_prs_mu）
+static uint64_t g_prs_bytes, g_prs_idle_bytes;   // 现存组 / 其中空闲的估算字节（持 g_prs_mu）
+static uint64_t g_prs_cap = (uint64_t)PRS_CAP_MB << 20, g_prs_idle_cap = (uint64_t)PRS_CAP_MB << 20;   // 总量封顶 / 空闲封顶（字节，持 g_prs_mu；会话开始按 nvk_pool_rec_mb 重置，缺省两者相等：空闲 ≤ 总量，总量封顶封住内存）
+static uint64_t g_prs_seq;   // 放回空闲串的序号发号器（持 g_prs_mu）：越小越久没用，淘汰时全局取最小
+static uint64_t g_prs_evict;   // 按字节封顶淘汰掉的空闲组，会话内累计（原子累加，读数不加锁）
+static uint64_t g_prs_why[4];   // 没走回收的原因累计（原子）：碰锁或内存不够 / 写法不同 / 到上限 / 补丁太多
+static uint64_t g_pool_uid;                         // 池快照序号发号器（持 g_mu）
+enum { PN_NEED, PN_HIT, PN_NEW, PN_FB, PN_ELEMS, PN_RHIT, PN_RMISS, PN_RNEW, PN_RFALL, PN_RPATCH, PN_N };
+// 回收（nvk_pool_rec）读数：PN_RHIT 取到键相同的空闲组（整池免写）/ PN_RMISS 取到键不同的空闲组（整表重写）/ PN_RNEW 向驱动新建 / PN_RFALL 没走回收（退回老路径）/ PN_RPATCH 反馈补丁写入的项数
+static uint64_t g_pool_n[PN_N], g_pool_ns[3];   // 整池组读数：要的组数 / 段内备忘命中 / 新建（建池 + 分组）/ 因反馈拷贝在用而绕开备忘 / 整池写入的描述符项数 / 回收：取到键相同的空闲组 / 取到键不同的 / 向驱动新建 / 没走回收 / 反馈补丁写入项数；新建（建池 + 分组）与整池写入的纳秒（nvk_gputime 开着才计）
 // 诊断累加器（g_desc_* / g_draw_ns）只增不清零：每个读者自带一份「上次读到的值」，读数 = 当前 − 上次。
 // 近 300 帧读数（backend_vulkan_wsi.inc）与每 5 秒的逐笔读数（nvn_gpu_draw 末尾）原先各自对同一批累加器 exchange 清零，
 // 互相取走对方窗口里的一部分，两边读数的每帧值、每笔值都偏小（nvk_gputime 开着时）。
@@ -1725,6 +1753,7 @@ static void finish_cmd(struct nvn_gpu_cmd_s *c, int executed) {
     // 放弃的段（abort / 带粘滞错误不提交）没走过 vkEndCommandBuffer 的清空：两级回放队列里可能还有它的记录（往上传片里填、引用它的暂存缓冲 / 管线），
     // 先整队清空再归还 / 销毁下面这些资源。执行过的段已经过了 GPU 完成，记录早就做完了
     if (!executed) vk_dq_drain();
+    prs_release(c, executed);   // 回收的整池组：先把反馈补丁写回正典再放回（要在下面销毁快照视图、归还表引用之前：补丁的正典内容引用着表里的视图）
     // 布局按段跟踪（c->lay）：段不执行时命令缓冲里什么都没跑，没有要回滚的；t->layout 只做诊断。
     detach_live(c);   // 已提交的 cmd 在 commit 时已摘下，这里兜底
     // 放弃 / 提交前失败的段仍可能有 DQ 待录命令引用快照；先排空录制，再销毁。
@@ -2302,6 +2331,7 @@ nvn_gpu_rc nvn_gpu_open(const nvn_gpu_open_desc *d, nvn_gpu_err *err) {
         g_cv_ready = 1;
     }
     dset_open();   // 按布局回收的描述符组（#1096）：开关在开会话时读一次
+    prs_open();    // 整池组回收（nvk_pool_rec）
     g_deswizzle_count = g_deswizzle_bytes = g_deswizzle_fallbacks = 0;
     memset(g_deswizzle_reasons, 0, sizeof g_deswizzle_reasons);
     if (nvn_plat_flag("nvk_gpu_deswizzle", 1) && !deswizzle_open())
@@ -2469,6 +2499,7 @@ nvn_gpu_rc nvn_gpu_close(uint64_t timeout_ns, nvn_gpu_err *err) {
     clr_close();
     depth_blit_close();
     dset_close();   // 在途段都完成了：增长池整池销毁（组随池一起没了；布局只在会话收尾销毁，下面销毁完管线之后才轮到它，所以回收表不用跟着布局摘表）
+    prs_close();    // 整池组回收的空闲组：连池销毁
     easu_close();
     struct nvn_gpu_pipe_s *p = g.pipes;
     g.pipes = NULL;
@@ -3274,6 +3305,14 @@ static const char *spv_vertex_missing(const void *blob, size_t bytes, nvn_gpu_st
     return NULL;
 }
 
+static uint64_t g_spv_devlimit_reject;                    // 本机上限（features / limits / apiVersion / 启用扩展）拒收计数（读数见 nvn_gpu_stats）
+// 本机上限核对失败的统一出口：计数后按 fail 同法写 why（调用点信息在 fmt 里，owner 设备形态档按行比对）
+static nvn_gpu_rc spv_dev_fail(nvn_gpu_err *e, const char *fmt, ...) {
+    __atomic_fetch_add(&g_spv_devlimit_reject, 1, __ATOMIC_RELAXED);
+    if (e) { va_list ap; va_start(ap, fmt); vsnprintf(e->why, sizeof e->why, fmt, ap); va_end(ap); e->rc = rc(NVN_GPU_E_UNSUPPORTED); }
+    return rc(NVN_GPU_E_UNSUPPORTED);
+}
+
 static nvn_gpu_rc compute_workgroup_check(const nvn_gpu_shader_src *s, nvn_gpu_err *err) {
     const char *entry = s->entry && s->entry[0] ? s->entry : "main";
     // The driver must receive the exact entry whose execution mode we checked.
@@ -3286,16 +3325,18 @@ static nvn_gpu_rc compute_workgroup_check(const nvn_gpu_shader_src *s, nvn_gpu_e
     for (unsigned k = 0; k < 3; k++) {
         if (!local[k]) return fail(err, NVN_GPU_E_UNSUPPORTED, "compute workgroup: LocalSize[%u]=0 (entry=%s)", k, entry);
         if (local[k] > limits->maxComputeWorkGroupSize[k])
-            return fail(err, NVN_GPU_E_UNSUPPORTED, "compute workgroup: LocalSize=%ux%ux%u exceeds maxComputeWorkGroupSize[%u]=%u (entry=%s)",
-                        local[0], local[1], local[2], k, limits->maxComputeWorkGroupSize[k], entry);
+            return spv_dev_fail(err, "spv compliance: 本机 maxComputeWorkGroupSize[%u]=%u：LocalSize=%ux%ux%u（entry=%s 程序键 %02x%02x%02x%02x%02x%02x%02x%02x）",
+                        k, limits->maxComputeWorkGroupSize[k], local[0], local[1], local[2], entry,
+                        s->key[0], s->key[1], s->key[2], s->key[3], s->key[4], s->key[5], s->key[6], s->key[7]);
     }
     uint32_t threads = 1;
     for (unsigned k = 0; k < 3; k++) {
         // Divide before multiplying: even a malformed three-dimensional product
         // cannot wrap around and appear to fit the device's invocation limit.
         if (local[k] > limits->maxComputeWorkGroupInvocations / threads)
-            return fail(err, NVN_GPU_E_UNSUPPORTED, "compute workgroup: LocalSize=%ux%ux%u exceeds maxComputeWorkGroupInvocations=%u (entry=%s)",
-                        local[0], local[1], local[2], limits->maxComputeWorkGroupInvocations, entry);
+            return spv_dev_fail(err, "spv compliance: 本机 maxComputeWorkGroupInvocations=%u：LocalSize=%ux%ux%u（entry=%s 程序键 %02x%02x%02x%02x%02x%02x%02x%02x）",
+                        limits->maxComputeWorkGroupInvocations, local[0], local[1], local[2], entry,
+                        s->key[0], s->key[1], s->key[2], s->key[3], s->key[4], s->key[5], s->key[6], s->key[7]);
         threads *= local[k];
     }
     // Workgroup 共享字节是最后一道保险：出库闸在 libpack_compute_v1 已核，本处同时盖住现编产物与绕过出库闸的路径。
@@ -3303,10 +3344,152 @@ static nvn_gpu_rc compute_workgroup_check(const nvn_gpu_shader_src *s, nvn_gpu_e
     const char *swhy = s2a_spv_workgroup_bytes(s->blob, s->bytes, &shared);
     if (swhy) return fail(err, NVN_GPU_E_UNSUPPORTED, "%s (entry=%s)", swhy, entry);
     if (shared > limits->maxComputeSharedMemorySize)
-        return fail(err, NVN_GPU_E_UNSUPPORTED,
-                    "compute workgroup: shared=%llu exceeds maxComputeSharedMemorySize=%u (entry=%s key=%02x%02x%02x%02x%02x%02x%02x%02x)",
-                    (unsigned long long)shared, limits->maxComputeSharedMemorySize, entry,
+        return spv_dev_fail(err,
+                    "spv compliance: 本机 maxComputeSharedMemorySize=%u：Workgroup 声明 %llu 字节（entry=%s 程序键 %02x%02x%02x%02x%02x%02x%02x%02x）",
+                    limits->maxComputeSharedMemorySize, (unsigned long long)shared, entry,
                     s->key[0], s->key[1], s->key[2], s->key[3], s->key[4], s->key[5], s->key[6], s->key[7]);
+    return rc(NVN_GPU_OK);
+}
+
+// ---------- #1865 统一 SPIR-V 合规核对 ----------
+// 装载期单点：库件 / 现编 / 缓存件全过。每条核对失败打一行（项名、SPIR-V 依据、本机值、程序键）。
+// 「表外声明」（能力表 / 扩展表没映射的）两级处置：precompiled（出包预编 / 离线库件）按拒收——
+// 该件无法自证合法，回退现编重产；现编 / 缓存件具名警告 + 计数、照常派发——
+// 翻译器新增无害声明不该把画面打断（laze #492710 定稿）。
+static uint64_t g_spv_unlisted_cap, g_spv_unlisted_ext;   // 现编件被放行的表外声明计数（读数见 nvn_gpu_stats）
+static int spv_req_have(int req) {
+    const VkPhysicalDeviceFeatures *f = &g.dev->core_features;
+    switch (req) {
+    case SPV_REQ_INT16: return f->shaderInt16;
+    case SPV_REQ_GEOMETRY: return f->geometryShader;
+    case SPV_REQ_TESSELLATION: return f->tessellationShader;
+    case SPV_REQ_TG_POINTSIZE: return f->shaderTessellationAndGeometryPointSize;
+    case SPV_REQ_IMAGE_GATHER_EXT: return f->shaderImageGatherExtended;
+    case SPV_REQ_STORAGE_IMAGE_MS: return f->shaderStorageImageMultisample;
+    case SPV_REQ_STORAGE_IMG_EXT_FMT: return f->shaderStorageImageExtendedFormats;
+    case SPV_REQ_UBO_DYN: return f->shaderUniformBufferArrayDynamicIndexing;
+    case SPV_REQ_SAMPLED_DYN: return f->shaderSampledImageArrayDynamicIndexing;
+    case SPV_REQ_SBO_DYN: return f->shaderStorageBufferArrayDynamicIndexing;
+    case SPV_REQ_IMG_DYN: return f->shaderStorageImageArrayDynamicIndexing;
+    case SPV_REQ_CLIP_DIST: return f->shaderClipDistance;
+    case SPV_REQ_CULL_DIST: return f->shaderCullDistance;
+    case SPV_REQ_CUBE_ARRAY: return f->imageCubeArray;
+    case SPV_REQ_MULTI_VIEWPORT: return f->multiViewport;
+    case SPV_REQ_STORAGE_READ_WOF: return f->shaderStorageImageReadWithoutFormat;
+    case SPV_REQ_STORAGE_WRITE_WOF: return f->shaderStorageImageWriteWithoutFormat;
+    case SPV_REQ_DRAW_PARAMETERS: return g.dev->shader_draw_parameters_enabled;
+    case SPV_REQ_API_1_1: return g.dev->properties.apiVersion >= VK_API_VERSION_1_1;
+    case SPV_REQ_DESCRIPTOR_INDEXING: return g.dev->descriptor_indexing_enabled;
+    case SPV_REQ_FLOAT16: case SPV_REQ_INT64: case SPV_REQ_FLOAT64: case SPV_REQ_INT8:
+    case SPV_REQ_FLOAT_CONTROLS: case SPV_REQ_16BIT_STORAGE: case SPV_REQ_8BIT_STORAGE:
+    case SPV_REQ_SBC_CLASS: case SPV_REQ_POST_DEPTH: case SPV_REQ_MULTIVIEW:
+    case SPV_REQ_STENCIL_EXPORT: case SPV_REQ_SHADING_RATE:
+    case SPV_REQ_VARIABLE_POINTERS: case SPV_REQ_BUFFER_DEVICE_ADDRESS:
+        return 0;   // 设备从未启用对应扩展 / 特性（vk_device.c 的启用清单里没有）
+    default: return 0;
+    }
+}
+static nvn_gpu_rc spv_decl_reject_or_warn(const nvn_gpu_shader_src *s,
+                                          int is_cap, const char *detail, nvn_gpu_err *err) {
+    if (s->precompiled)
+        return fail(err, NVN_GPU_E_UNSUPPORTED,
+                    "spv compliance: unlisted %s %s（库件不能自证合法，退回现编；程序键 %02x%02x%02x%02x%02x%02x%02x%02x）",
+                    is_cap ? "capability" : "extension", detail,
+                    s->key[0], s->key[1], s->key[2], s->key[3], s->key[4], s->key[5], s->key[6], s->key[7]);
+    uint64_t n = __atomic_fetch_add(is_cap ? &g_spv_unlisted_cap : &g_spv_unlisted_ext, 1, __ATOMIC_RELAXED);
+    if (n < 8) {
+        char line[256];
+        snprintf(line, sizeof line, "spv compliance: 现编件声明表外 %s %s，具名计数放行（程序键 %02x%02x%02x%02x%02x%02x%02x%02x）",
+                 is_cap ? "capability" : "extension", detail,
+                 s->key[0], s->key[1], s->key[2], s->key[3], s->key[4], s->key[5], s->key[6], s->key[7]);
+        nvn_plat_log(NVN_PLAT_LOG_WARN, "gpu", line);
+    }
+    return rc(NVN_GPU_OK);
+}
+static nvn_gpu_rc spv_compliance_check(const nvn_gpu_shader_src *s, nvn_gpu_err *err) {
+    struct s2a_spv_decl d;
+    const char *scan = s2a_spv_scan(s->blob, s->bytes, &d);
+    if (scan) return fail(err, NVN_GPU_E_UNSUPPORTED, "%s", scan);
+    // SPIR-V 版本 vs 本机 apiVersion 支持的最高 SPIR-V 环境（1.0→1.0 / 1.1→1.3 / 1.2→1.5 / ≥1.3→1.6）
+    const uint32_t api = g.dev->properties.apiVersion;
+    const uint32_t vmax = api >= VK_API_VERSION_1_3 ? 0x10600u : api >= VK_API_VERSION_1_2 ? 0x10500u :
+                          api >= VK_API_VERSION_1_1 ? 0x10300u : 0x10000u;
+    if (d.version > vmax)
+        return spv_dev_fail(err,
+                    "spv compliance: 本机 SPIR-V 版本上限 %#x（apiVersion %#x）：模块声明 %#x（程序键 %02x%02x%02x%02x%02x%02x%02x%02x）",
+                    vmax, api, d.version,
+                    s->key[0], s->key[1], s->key[2], s->key[3], s->key[4], s->key[5], s->key[6], s->key[7]);
+    for (unsigned i = 0; i < d.n_caps; i++) {
+        int req = s2a_spv_cap_req(d.caps[i]);
+        if (req == SPV_REQ_CORE) continue;
+        if (req == SPV_REQ_UNLISTED) {
+            char detail[40]; snprintf(detail, sizeof detail, "%u", d.caps[i]);
+            nvn_gpu_rc r = spv_decl_reject_or_warn(s, 1, detail, err);
+            if (!nvn_gpu_ok(r)) return r;
+            continue;
+        }
+        if (req == SPV_REQ_CLIP_DIST || req == SPV_REQ_CULL_DIST)
+            continue;   // 这两项由 spv_vertex_missing 按阶段感知延迟打标（CS 不查、非 CS 建管线报红），不在此硬拒
+        if (req == SPV_REQ_STORAGE_READ_WOF || req == SPV_REQ_STORAGE_WRITE_WOF)
+            continue;   // 声明≠使用：无格式存储读写按实际访问延迟打标（missing_storage_format_feature），管线点拒——C60b/C60c 契约
+        if (!spv_req_have(req))
+            return spv_dev_fail(err,
+                        "spv compliance: 本机缺 %s（OpCapability %u 声明；程序键 %02x%02x%02x%02x%02x%02x%02x%02x）",
+                        s2a_spv_req_name(req), d.caps[i],
+                        s->key[0], s->key[1], s->key[2], s->key[3], s->key[4], s->key[5], s->key[6], s->key[7]);
+    }
+    for (unsigned i = 0; i < d.n_ext; i++) {
+        int req = s2a_spv_ext_req(d.exts[i]);
+        if (req == SPV_REQ_CORE) continue;
+        if (req == SPV_REQ_UNLISTED) {
+            nvn_gpu_rc r = spv_decl_reject_or_warn(s, 0, d.exts[i], err);
+            if (!nvn_gpu_ok(r)) return r;
+            continue;
+        }
+        if (!spv_req_have(req))
+            return spv_dev_fail(err,
+                        "spv compliance: 本机缺 %s（OpExtension %s 声明；程序键 %02x%02x%02x%02x%02x%02x%02x%02x）",
+                        s2a_spv_req_name(req), d.exts[i],
+                        s->key[0], s->key[1], s->key[2], s->key[3], s->key[4], s->key[5], s->key[6], s->key[7]);
+    }
+    const VkPhysicalDeviceLimits *limits = &g.dev->properties.limits;
+    if (d.has_push_bytes && d.push_bytes > limits->maxPushConstantsSize)
+        return spv_dev_fail(err,
+                    "spv compliance: 本机 maxPushConstantsSize=%u：PushConstant 声明 %llu 字节（程序键 %02x%02x%02x%02x%02x%02x%02x%02x）",
+                    limits->maxPushConstantsSize, (unsigned long long)d.push_bytes,
+                    s->key[0], s->key[1], s->key[2], s->key[3], s->key[4], s->key[5], s->key[6], s->key[7]);
+    // 本机上限用量：每类描述符计数 vs 每阶段上限（max_stage_res 即 maxPerStageDescriptor* 的 cls 序投影）、
+    //   set 号 vs maxBoundDescriptorSets、push 段总长 vs maxPushConstantsSize（与声明侧取大者判）
+    if (s->layout) {
+        uint32_t cnt[NVN_GPU_RES_N] = {0}; uint8_t maxset = 0;
+        for (uint32_t i = 0; i < s->layout->nent; i++) {
+            const nvn_gpu_layout_ent *e = &s->layout->ent[i];
+            if (e->cls < NVN_GPU_RES_N) cnt[e->cls] += e->count ? e->count : 1;
+            if (e->set > maxset) maxset = e->set;
+        }
+        for (uint32_t cls = 0; cls < NVN_GPU_RES_N; cls++) {
+            uint32_t lim = g.caps.max_stage_res[cls];
+            if (!lim) continue;   // TBUF / IMAGE_TBUF / VA 无对应每阶段描述符上限（行未填 = 0），不在本表核
+            if (cnt[cls] > lim)
+                return spv_dev_fail(err,
+                            "spv compliance: 本机每阶段描述符类 %u 上限 %u：用 %u（程序键 %02x%02x%02x%02x%02x%02x%02x%02x）",
+                            cls, lim, cnt[cls], s->key[0], s->key[1], s->key[2], s->key[3], s->key[4], s->key[5], s->key[6], s->key[7]);
+        }
+        if ((uint32_t)maxset + 1 > g.caps.max_sets)
+            return spv_dev_fail(err,
+                        "spv compliance: 本机 maxBoundDescriptorSets=%u：用到 set %u（程序键 %02x%02x%02x%02x%02x%02x%02x%02x）",
+                        g.caps.max_sets, maxset, s->key[0], s->key[1], s->key[2], s->key[3], s->key[4], s->key[5], s->key[6], s->key[7]);
+        uint64_t push_total = (uint64_t)s->layout->push_off + s->layout->push_bytes;
+        if (push_total > limits->maxPushConstantsSize)
+            return spv_dev_fail(err,
+                        "spv compliance: 本机 maxPushConstantsSize=%u：push 段 %llu 字节（程序键 %02x%02x%02x%02x%02x%02x%02x%02x）",
+                        limits->maxPushConstantsSize, (unsigned long long)push_total,
+                        s->key[0], s->key[1], s->key[2], s->key[3], s->key[4], s->key[5], s->key[6], s->key[7]);
+    }
+    if (s->stage == NVN_GPU_SH_CS) {   // 计算工作组预检：LocalSize / 线程积 / Workgroup 共享字节（直读 SPIR-V）
+        nvn_gpu_rc workgroup = compute_workgroup_check(s, err);
+        if (!nvn_gpu_ok(workgroup)) return workgroup;
+    }
     return rc(NVN_GPU_OK);
 }
 
@@ -3326,13 +3509,11 @@ nvn_gpu_rc nvn_gpu_shader_load(const nvn_gpu_shader_src *s, nvn_gpu_shader *out,
         return fail(err, NVN_GPU_E_UNSUPPORTED, "GS 未启用或探测未通过");
     if (s->kind != NVN_GPU_BLOB_SPIRV) return fail(err, NVN_GPU_E_UNSUPPORTED, "只收 SPIR-V blob（kind=%d）", s->kind);
     if (s->bytes & 3) return fail(err, NVN_GPU_E_ARG, "SPIR-V 字节数不是 4 的倍数");
-    // #1340：shaderInt16 不再是整机门槛。设备没有它时，声明了 OpCapability Int16 的模块不交给驱动（不合法的 SPIR-V），
-    // 按程序报 UNSUPPORTED、why 点名特性；程序层据此记未接清单 shader int16_not_supported。
-    if (!g.dev->core_features.shaderInt16 && s2a_spirv_declares_cap(s->blob, s->bytes, 22) == 1)
-        return fail(err, NVN_GPU_E_UNSUPPORTED, "shaderInt16：设备没有 16 位整数，模块声明了 OpCapability Int16（stage %d）", (int)s->stage);
-    if (s->stage == NVN_GPU_SH_CS) {   // 计算工作组预检：非法尺寸不交给驱动创建模块 / 管线。
-        nvn_gpu_rc workgroup = compute_workgroup_check(s, err);
-        if (!nvn_gpu_ok(workgroup)) return workgroup;
+    // #1865 统一合规核对：能力 / 扩展声明、SPIR-V 版本、push 与描述符用量、计算工作组（含 Workgroup 字节）。
+    //   原 Int16 行内拒与 CS 工作组预检都在表里；缺设备特性的按程序报 UNSUPPORTED、why 点名特性名。
+    {
+        nvn_gpu_rc compliance = spv_compliance_check(s, err);
+        if (!nvn_gpu_ok(compliance)) return compliance;
     }
     struct nvn_gpu_shader_s *sh = calloc(1, sizeof *sh);
     if (!sh) return fail(err, NVN_GPU_E_OOM, "着色器结构分配失败");
@@ -3845,7 +4026,7 @@ static nvn_gpu_rc pipe_build(const nvn_gpu_pipe_desc *d, struct nvn_gpu_pipe_s *
                 if (m[j].set == e->set && m[j].binding == e->binding) break;
             uint32_t stagebit = 1u << st;
             if (j == nm) {
-                if (nm == 64) return fail(err, NVN_GPU_E_UNSUPPORTED, "描述符项超过 64");
+                if (nm == 64) return fail(err, NVN_GPU_E_UNSUPPORTED, "契约：描述符项超过 64");
                 m[nm++] = (struct merged){e->set, e->binding, e->cls, e->count ? e->count : 1, stagebit, -1};
             } else {
                 if (m[j].cls != e->cls || m[j].count != (e->count ? e->count : 1))
@@ -3855,7 +4036,7 @@ static nvn_gpu_rc pipe_build(const nvn_gpu_pipe_desc *d, struct nvn_gpu_pipe_s *
             if (e->set > maxset) maxset = e->set;
         }
     }
-    if (maxset >= 4) return fail(err, NVN_GPU_E_LAYOUT, "set %u 超过四 set 上限", maxset);
+    if (maxset >= 4) return fail(err, NVN_GPU_E_LAYOUT, "契约：set %u 超过四 set 上限", maxset);
 
     struct nvn_gpu_pipe_s *p = calloc(1, sizeof *p);
     if (!p) return fail(err, NVN_GPU_E_OOM, "管线结构分配失败");
@@ -3883,7 +4064,7 @@ static nvn_gpu_rc pipe_build(const nvn_gpu_pipe_desc *d, struct nvn_gpu_pipe_s *
         }
         for (uint32_t i = 0; i < nm; i++) {
             if (m[i].set != set) continue;
-            if (nb == 32) { free(p); return fail(err, NVN_GPU_E_UNSUPPORTED, "单 set 描述符项超过 32"); }
+            if (nb == 32) { free(p); return fail(err, NVN_GPU_E_UNSUPPORTED, "契约：单 set 描述符项超过 32"); }
             memset(&b[nb], 0, sizeof b[nb]);
             b[nb].binding = m[i].binding;
             b[nb].descriptorType = m[i].dbase >= 0 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC : vk_desc_type(m[i].cls);
@@ -3910,11 +4091,11 @@ static nvn_gpu_rc pipe_build(const nvn_gpu_pipe_desc *d, struct nvn_gpu_pipe_s *
         if (!sh || !sh->push_bytes) continue;
         if ((sh->push_off | sh->push_bytes) & 3) {
             free(p);
-            return fail(err, NVN_GPU_E_LAYOUT, "阶段 %d push 范围 [%u,+%u) 未 4 字节对齐", st, sh->push_off, sh->push_bytes);
+            return fail(err, NVN_GPU_E_LAYOUT, "契约：阶段 %d push 范围 [%u,+%u) 未 4 字节对齐", st, sh->push_off, sh->push_bytes);
         }
         if (sh->push_off > g.caps.max_push_bytes || sh->push_bytes > g.caps.max_push_bytes - sh->push_off) {
             free(p);
-            return fail(err, NVN_GPU_E_UNSUPPORTED, "阶段 %d push 范围 [%u,+%u) 超出设备上限 %u",
+            return fail(err, NVN_GPU_E_UNSUPPORTED, "本机：阶段 %d push 范围 [%u,+%u) 超出设备上限 %u",
                         st, sh->push_off, sh->push_bytes, g.caps.max_push_bytes);
         }
         uint32_t k;
@@ -4435,14 +4616,14 @@ static nvn_gpu_rc cpipe_build(const nvn_gpu_stage_desc *cs, int mode, nvn_gpu_pi
         }
         if (sh->ents[i].set > maxset) maxset = sh->ents[i].set;
     }
-    if (sh->nent && maxset >= 4) { destroy_pipe_objects(p); return fail(err, NVN_GPU_E_LAYOUT, "set %u 超过四 set 上限", maxset); }
+    if (sh->nent && maxset >= 4) { destroy_pipe_objects(p); return fail(err, NVN_GPU_E_LAYOUT, "契约：set %u 超过四 set 上限", maxset); }
     p->nset = sh->nent ? maxset + 1 : 0;
     for (uint32_t set = 0; set < p->nset; set++) {
         VkDescriptorSetLayoutBinding b[32];
         uint32_t nb = 0;
         for (uint32_t i = 0; i < sh->nent; i++) {
             if (sh->ents[i].set != set) continue;
-            if (nb == 32) { destroy_pipe_objects(p); return fail(err, NVN_GPU_E_UNSUPPORTED, "单 set 描述符项超过 32"); }
+            if (nb == 32) { destroy_pipe_objects(p); return fail(err, NVN_GPU_E_UNSUPPORTED, "契约：单 set 描述符项超过 32"); }
             memset(&b[nb], 0, sizeof b[nb]);
             b[nb].binding = sh->ents[i].binding;
             b[nb].descriptorType = vk_desc_type(sh->ents[i].cls);
@@ -4465,11 +4646,11 @@ static nvn_gpu_rc cpipe_build(const nvn_gpu_stage_desc *cs, int mode, nvn_gpu_pi
     if (sh->push_bytes) {
         if ((sh->push_off | sh->push_bytes) & 3) {
             destroy_pipe_objects(p);
-            return fail(err, NVN_GPU_E_LAYOUT, "CS push 范围 [%u,+%u) 未 4 字节对齐", sh->push_off, sh->push_bytes);
+            return fail(err, NVN_GPU_E_LAYOUT, "契约：CS push 范围 [%u,+%u) 未 4 字节对齐", sh->push_off, sh->push_bytes);
         }
         if (sh->push_off > g.caps.max_push_bytes || sh->push_bytes > g.caps.max_push_bytes - sh->push_off) {
             destroy_pipe_objects(p);
-            return fail(err, NVN_GPU_E_UNSUPPORTED, "CS push 范围 [%u,+%u) 超出设备上限 %u",
+            return fail(err, NVN_GPU_E_UNSUPPORTED, "本机：CS push 范围 [%u,+%u) 超出设备上限 %u",
                         sh->push_off, sh->push_bytes, g.caps.max_push_bytes);
         }
         cpr = (VkPushConstantRange){VK_SHADER_STAGE_COMPUTE_BIT, sh->push_off, sh->push_bytes};
@@ -5684,9 +5865,18 @@ static int write_binds(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_pipe_s *p, 
     return nw;
 }
 
-static int pool_set_mask(struct nvn_gpu_cmd_s *, const struct nvn_gpu_pipe_s *, int, uint32_t *, uint64_t *);
+// 带整池数组的组的键：各池绑定（绑定号, 池快照序号）的两路无序混合和（进段内备忘 / 回收的键）；own = 这一组里按（阶段, 条目）顺序遇到的第一张池快照（NULL = 这一组没有池绑定）。
+struct pool_set_info { uint64_t k1, k2; nvn_gpu_pool_table own; };
+static int pool_set_mask(struct nvn_gpu_cmd_s *, const struct nvn_gpu_pipe_s *, int, uint32_t *, struct pool_set_info *);
 static int pool_alloc_set(struct nvn_gpu_cmd_s *, const struct nvn_gpu_pipe_s *, uint32_t, VkDescriptorSet *);
-static int pool_write_sets(struct nvn_gpu_cmd_s *, const struct nvn_gpu_pipe_s *, int, uint32_t);
+static int pool_write_sets(struct nvn_gpu_cmd_s *, const struct nvn_gpu_pipe_s *, int, uint32_t, uint32_t);
+// 整池组回收（见 backend_vulkan_pool.inc 的 prs_*）。反馈拷贝在用时，这一笔整池（图像池）里要换成快照的项：
+enum { PRS_PATCH_MAX = 64 };
+struct prs_plan { uint32_t n; struct { uint32_t set, binding, idx; VkImageView view; VkDescriptorImageInfo canon; } e[PRS_PATCH_MAX]; };
+static int prs_plan(struct nvn_gpu_cmd_s *, const struct nvn_gpu_pipe_s *, int, uint32_t, struct prs_plan *);
+static int prs_take(struct nvn_gpu_cmd_s *, const struct nvn_gpu_pipe_s *, uint32_t, uint64_t, const struct pool_set_info *, VkDescriptorSet *, int *, uint32_t *);
+static void prs_mark(struct nvn_gpu_cmd_s *, uint32_t, const struct pool_set_info *);
+static int prs_apply(struct nvn_gpu_cmd_s *, const struct prs_plan *, uint32_t, const uint32_t *);
 static int pool_check_layouts(struct nvn_gpu_cmd_s *, const struct nvn_gpu_pipe_s *, int);
 // 脏组分配新对象，不能更新前一笔已经引用的组；跨阶段共用同一组时写全组。
 static int bind_descriptor_groups(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_pipe_s *p, int compute) {
@@ -5698,8 +5888,8 @@ static int bind_descriptor_groups(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_
     }
     // A descriptor-free pipeline ignores bindings left by the previous pipeline.
     if (!p->nset) return 1;
-    uint32_t pool_mask = 0; uint64_t pool_key[4] = {0, 0, 0, 0};   // 带整池数组的组；每组里「（绑定号, 池快照指针）」的无序和，进备忘的键
-    if (c->pool_active && !pool_set_mask(c, p, compute, &pool_mask, pool_key)) return 0;
+    uint32_t pool_mask = 0; struct pool_set_info pinfo[4] = {{0, 0, NULL}, {0, 0, NULL}, {0, 0, NULL}, {0, 0, NULL}};   // 带整池数组的组；每组里各池绑定（绑定号, 池快照序号）的混合和，进备忘 / 回收的键
+    if (c->pool_active && !pool_set_mask(c, p, compute, &pool_mask, pinfo)) return 0;
     uint32_t dirty = c->desc_dirty & ((1u << p->nset) - 1u);
     // 哪一组都没变、布局和绑定点也没换：命令缓冲里绑着的就是这几组，不用重写也不用重绑。
     // 纹素缓冲的格式核对随管线变（见 write_binds），有这类绑定的管线不走这条近路。
@@ -5723,10 +5913,14 @@ static int bind_descriptor_groups(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_
     // 整池数组组（pool_mask 里的组）：脏的整池组也进备忘（nvk_pool_memo，缺省开，0 = 关）。键 = 布局 + 这一笔写入的普通绑定 + 每个池绑定的（绑定号, 池快照指针）（pool_set_mask）；
     // 池快照建好就不可变、本段持引用到段完成，指针相同 = 整张表的内容相同，所以键相同的组直接用上次写好的那一组，不再建池、不再重写整张表。
     // 反馈拷贝在用时整池里的视图要换成拷贝（pool_write_sets），拷贝随反馈表变、不在键里：这一笔整体走不备忘的老路径。池组不脏时不影响别的组备忘。
-    if (g_pmemo_cur < 0 || !(++g_pmemo_k & 255)) g_pmemo_cur = pool_memo_flag();
+    if (g_pmemo_cur < 0 || !(++g_pmemo_k & 255)) { g_pmemo_cur = pool_memo_flag(); g_prs_cur = pool_rec_flag(); }
     const uint32_t pool_dirty = dirty & pool_mask;
     const int pool_fb = pool_dirty && c->feedback != c->feedback_stop;
     const int memo = memo_cur && dirty && (!pool_dirty || (g_pmemo_cur && !pool_fb));
+    // 整池组回收（nvk_pool_rec，见 backend_vulkan_pool.inc 的 prs_*）：反馈拷贝在用时先算「整池里要换成快照的项」（补丁），太多就这一笔整个走老路径。
+    struct prs_plan plan; plan.n = 0;
+    const int rec = g_prs_cur && pool_dirty && (!pool_fb || prs_plan(c, p, compute, pool_dirty, &plan));
+    uint32_t rec_mask = 0, valid_mask = 0, uidx[4] = {0, 0, 0, 0};   // 回收取到的组 / 其中整池内容已就绪的组 / 它们在本段取用记录里的下标
     if (pool_dirty) {
         const uint64_t np = (uint64_t)__builtin_popcount(pool_dirty);
         __atomic_fetch_add(&g_pool_n[PN_NEED], np, __ATOMIC_RELAXED);
@@ -5751,7 +5945,11 @@ static int bind_descriptor_groups(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_
         const uint64_t ta0 = tm ? now_ns() : 0;
         for (uint32_t set = 0; set < p->nset; set++)
             if (dirty & (1u << set)) {
-                if (pool_mask & (1u << set)) { if (!pool_alloc_set(c, p, set, c->desc_sets + set)) return 0; }
+                if (pool_mask & (1u << set)) {
+                    int v = 0;
+                    if (rec && prs_take(c, p, set, sig[set], pinfo + set, c->desc_sets + set, &v, uidx + set)) { rec_mask |= 1u << set; if (v) valid_mask |= 1u << set; }
+                    else if (!pool_alloc_set(c, p, set, c->desc_sets + set)) return 0;
+                }
                 else if (!alloc_sets(c, p->dsl + set, 1, c->desc_sets + set, pm, set, sig[set])) return 0;
             }
         for (uint32_t i = 0; i < nw; i++) {   // 记号换成真的组（write_binds 只写脏组，记号一定落在 0..3）
@@ -5771,9 +5969,9 @@ static int bind_descriptor_groups(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_
             else if (wr[i].pTexelBufferView) v[2] = (uint64_t)(uintptr_t)*wr[i].pTexelBufferView;
             for (int k = 0; k < 5; k++) { h1[set] = (h1[set] ^ v[k]) * 1099511628211ull; h2[set] = (h2[set] + v[k]) * 0xff51afd7ed558ccdull; h2[set] ^= h2[set] >> 29; }
         }
-        for (uint32_t set = 0; set < 4; set++) if (pool_dirty >> set & 1) {   // 整池组：再把每个池绑定的（绑定号, 池快照指针）混进键
-            h1[set] = (h1[set] ^ pool_key[set]) * 1099511628211ull;
-            h2[set] = (h2[set] + pool_key[set]) * 0xff51afd7ed558ccdull; h2[set] ^= h2[set] >> 29;
+        for (uint32_t set = 0; set < 4; set++) if (pool_dirty >> set & 1) {   // 整池组：再把每个池绑定的（绑定号, 池快照序号）混进键
+            h1[set] = (h1[set] ^ pinfo[set].k1) * 1099511628211ull;
+            h2[set] = (h2[set] + pinfo[set].k2) * 0xff51afd7ed558ccdull; h2[set] ^= h2[set] >> 29;
         }
         if (!c->memo) c->memo = calloc(DESC_MEMO_N, sizeof *c->memo);
         for (uint32_t set = 0; set < p->nset; set++) {
@@ -5785,8 +5983,11 @@ static int bind_descriptor_groups(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_
                 if (m->h1 == h1[set] && m->h2 == h2[set] && m->dsl == p->dsl[set]) { c->desc_sets[set] = m->set; found = 1; break; }
             }
             if (found) { hit |= 1u << set; continue; }
-            if (pool_dirty >> set & 1) { if (!pool_alloc_set(c, p, set, c->desc_sets + set)) return 0; }   // 整池组：单组专用池（和不备忘时同一条路）
-            else if (!alloc_sets(c, p->dsl + set, 1, c->desc_sets + set, pm, set, sig[set])) return 0;
+            if (pool_dirty >> set & 1) {
+                int v = 0;
+                if (rec && prs_take(c, p, set, sig[set], pinfo + set, c->desc_sets + set, &v, uidx + set)) { rec_mask |= 1u << set; if (v) valid_mask |= 1u << set; }   // 回收的整池组
+                else if (!pool_alloc_set(c, p, set, c->desc_sets + set)) return 0;   // 整池组：单组专用池（和不备忘时同一条路）
+            } else if (!alloc_sets(c, p->dsl + set, 1, c->desc_sets + set, pm, set, sig[set])) return 0;
             if (slot && c->memo_n < DESC_MEMO_N * 3 / 4) { slot->h1 = h1[set]; slot->h2 = h2[set]; slot->dsl = p->dsl[set]; slot->set = c->desc_sets[set]; c->memo_n++; }
         }
         uint32_t keep = 0;   // 命中的组不用写：把它们的写入项去掉，其余的换上真的组
@@ -5830,7 +6031,12 @@ static int bind_descriptor_groups(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_
     }
     const uint64_t t2 = tm ? now_ns() : 0;
     if (nw) { OC(OC_DWRITE); vkUpdateDescriptorSets(g.d, nw, wr, 0, NULL); }
-    if ((pool_dirty & ~hit) && !pool_write_sets(c, p, compute, pool_dirty & ~hit)) return 0;   // 命中的整池组已经写好，只写这一笔新建的
+    if (pool_dirty & ~hit) {   // 命中的整池组已经写好，只写这一笔新建的；回收的组里整池内容已就绪的（valid_mask）也不用写
+        const uint32_t full = pool_dirty & ~hit & ~valid_mask;
+        if (full && !pool_write_sets(c, p, compute, full, rec_mask)) return 0;   // 回收的组整表写正典（反馈视图改走补丁），其余照旧
+        for (uint32_t set = 0; set < 4; set++) if ((rec_mask & ~valid_mask) >> set & 1) prs_mark(c, uidx[set], &pinfo[set]);   // 整表写完才记里面写着哪几张表
+        if (rec_mask && plan.n && !prs_apply(c, &plan, rec_mask, uidx)) return 0;   // 反馈快照的补丁
+    }
     const uint64_t t3 = tm ? now_ns() : 0;
     c->desc_dirty = 0; c->dyn_dirty = 0;
     if ((dirty || dynd) && p->nset) {
@@ -8345,6 +8551,9 @@ void nvn_gpu_stats(nvn_gpu_stat_fn fn, void *user, int take) {
     fn(user, "shader_missing_vertex_stores", __atomic_load_n(&g_vfeat_missing[0], __ATOMIC_RELAXED));   // 顶点前阶段写存储、设备没启用 vertexPipelineStoresAndAtomics 的着色器数
     fn(user, "shader_missing_clip_distance", __atomic_load_n(&g_vfeat_missing[1], __ATOMIC_RELAXED));
     fn(user, "shader_missing_cull_distance", __atomic_load_n(&g_vfeat_missing[2], __ATOMIC_RELAXED));
+    fn(user, "spv_unlisted_capability", __atomic_load_n(&g_spv_unlisted_cap, __ATOMIC_RELAXED));   // 现编件声明表外能力、具名计数放行次数（库件同情形按拒收）
+    fn(user, "spv_unlisted_extension", __atomic_load_n(&g_spv_unlisted_ext, __ATOMIC_RELAXED));
+    fn(user, "spv_device_limit_rejected", __atomic_load_n(&g_spv_devlimit_reject, __ATOMIC_RELAXED));   // 本机上限（特性 / 限值 / apiVersion / 启用扩展）核对拒收次数
     fn(user, "sampler_border_color_nearest", __atomic_load_n(&g_border_nearest, __ATOMIC_RELAXED));   // 没有自定义边框色扩展、边框色就近取内置档建成的采样器数（进程累计）
 }
 

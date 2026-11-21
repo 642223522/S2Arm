@@ -663,3 +663,5 @@
 20261121-0733-ios-queue-clock-ahead.patch
 20261122-0009-local-player-account-bridge.patch
 20261122-0130-local-player-picker.patch
+20261121-1035-sfdnsres-socktype-from-hints.patch
+20261121-1216-audio-depth-catch-up.patch

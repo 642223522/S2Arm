@@ -772,7 +772,7 @@ def zstd_compressor():
             def finish(): w.flush(zstandard.FLUSH_FRAME); return sink.take()
             return feed, finish
 
-    def z(path, k, out=None):
+    def z(path, k, out=None, tick=None):   # tick(这块已读进的原始字节)：每读一段报一次（测压缩率按字节报进度，#1942）
         with open(path, "rb") as f:
             f.seek(0, 2); raw = max(0, min(ZCHUNK, f.tell() - k * ZCHUNK)); f.seek(k * ZCHUNK)
             feed, finish = stream(raw); n, left = 0, raw
@@ -781,6 +781,7 @@ def zstd_compressor():
                 if not b: raise OSError(f"{path} 第 {k} 块读到 {raw - left} 字节就到了文件尾（应 {raw}）")
                 left -= len(b); o = feed(b); n += len(o)
                 if out is not None and o: out.write(o)
+                if tick: tick(raw - left)
             o = finish(); n += len(o)
             if out is not None and o: out.write(o)
         return n
@@ -807,7 +808,9 @@ def zstd_plan(pack, row, say=print, stage=None, env=None, comp=None):
         t0, n, sizes = time.time(), (raw + ZCHUNK - 1) // ZCHUNK, []
         for k in range(n):
             if stage: stage(STAGE_ZSTD, k * ZCHUNK, raw)
-            sizes.append(comp(pack / row[0], k))
+            # 块内按读进的字节报进度（#1942：原先只在每块 1 GB 开头报一次，Windows 上一块压十几分钟时界面一直 0%，玩家当成挂住）
+            tick = (lambda d, base=k * ZCHUNK: stage(STAGE_ZSTD, base + d, raw)) if stage else None
+            sizes.append(comp(pack / row[0], k, tick=tick) if tick else comp(pack / row[0], k))
         try:
             tmp = cache.with_name(cache.name + ".tmp")
             tmp.write_text(json.dumps(dict(sha=sha, level=ZLEVEL, chunk=ZCHUNK, fmt=ZFMT, raw=raw, z=sizes)), encoding="utf-8"); os.replace(tmp, cache)
@@ -890,7 +893,10 @@ def _send(dev, pack, work, say=print, progress=None, zp=None):
         todo = []
         for k, x in enumerate(names):   # 续传：机上这块长度 = 这次量出的压缩字节才算传完（长度对、内容不同的块 App 按帧校验判坏、整份重推）
             got = dev.head(f"{inc(dev)}/{x}", 0) if x in seen and hasattr(dev, "head") else None
-            if not (got and got[0] == sizes[k]): todo.append(k)
+            if not (got and got[0] == sizes[k]):
+                todo.append(k)
+                if got and got[0] >= 0:   # 机上有这块、长度对不上：记一行（诊断里能数白重推了多少，#1942 线程数随内存变时会出现）
+                    say(f"  续传 {w[0]}：第 {k + 1}/{n} 块机上 {got[0]} 字节，量数记的是 {sizes[k]} 字节，对不上，这块重推")
         if len(todo) < n:
             say(f"  续传 {w[0]}：机上已有 {n - len(todo)}/{n} 个压缩块，接着推剩下的")
             done += sum(min(ZCHUNK, size - k * ZCHUNK) for k in range(n) if k not in todo)

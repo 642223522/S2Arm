@@ -101,6 +101,9 @@ void s2a_host_shutdown(const char *why) {
       S2A_SHUTDOWN_STAGE("排空已受理Vulkan调用", t0); }
 #endif
     { void s2a_track_stat_log(const char *); s2a_track_stat_log("收局"); }
+#if defined(__APPLE__)
+    { void (*er)(const char *) = (void (*)(const char *))dlsym(RTLD_DEFAULT, "s2a_er_totals_log"); if (er) er("收局"); }   // 宿主代执行全进程累计（crash.c，苹果；只链本文件的单测取不到）
+#endif
     { uint64_t s2a_track_protected_pages(void); LOG("写跟踪累计保护页 %llu 页（直连模式下应为 0：写保护只归直连写跟踪）", (unsigned long long)s2a_track_protected_pages()); }
     { void s2a_direct_res_report(void); s2a_direct_res_report(); }   // 直连模式：资源行（s2a_res_report_register 登记）
     { void s2a_sched_stat_log(const char *); s2a_sched_stat_log("收局"); }   // S2A_CORES 调度计数（虚拟核关时不打）
