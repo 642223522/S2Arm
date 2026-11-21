@@ -193,6 +193,10 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var phoneHidden = false
     /// 一局（launch 作业）单独一个游戏槽（作业层执行锁读写化：起局只拿执行锁共享 + 这款的按款锁，出包拿执行锁共享 + 出包锁 + 这款的按款锁）：
     ///   出包另一款时能开始玩、玩着时能给另一款出包；同一款边玩边出包、全库独占动作（删除 / 清缓存 / 导入 / 搬家…）与一局照旧互斥（canPlay / exportBlocker）
+    /// 这一局已为「地址空间不够这款」弹过提示条（作业层 notice addr_short，宿主那条黄行；每局一次，开局时清）
+    @Published var addrShortNoticed = false
+    /// 这一局的界面语言（共享文案取词用；开局时记下）
+    var playLanguage = "en"
     @Published var playSession: JobSession? {
         didSet { if playSession?.started != oldValue?.started { playHidden = false } }
     }
@@ -1360,6 +1364,7 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     func play(_ game: GameSummary, uiLanguage: String?) {
         guard canPlay(game.id) else { return }
+        playLanguage = uiLanguage ?? "en"; addrShortNoticed = false
         failAction(nil, game: nil)
         // 崩了能恢复（11-13 维护者改定：开局前不问）：上次开着某几条时异常退出，作业层已当场关掉（pack/jobs/cheats.py note_crash）→
         //   这次照常开局，同时弹一条通知说关了什么、想用去设置里再开；读不到记录照常开局
@@ -1810,6 +1815,13 @@ public final class S2ArmLauncherModel: ObservableObject {
                 controllerGameStarted = true
                 controller.gameDidStart()
             }
+        }
+        // 地址空间不够这款（宿主黄行 → 作业层 notice addr_short，pack/jobs/build.py addr_short_watch）：Mac 宿主没有确认页，游戏照常跑，
+        //   这里在游戏窗口之上弹一条不阻塞的提示条（文案同 iPhone 那页），玩家对着卡住的画面能知道是设备地址空间不够。每局一次
+        if session.kind == .play, event.ev == "notice", (event.code ?? event.fields["code"] as? String) == "addr_short", !addrShortNoticed {
+            addrShortNoticed = true
+            AddrShortBanner.show(title: BackendText.launcherText("play.addrShort.title", language: playLanguage),
+                                 body: BackendText.launcherText("play.addrShort.body", language: playLanguage))
         }
         session.progress.ingest(event)
         if !event.message.isEmpty {

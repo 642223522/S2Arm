@@ -488,6 +488,8 @@
   "console.section.phone": "iPhone とアプリ",
   "console.section.sync": "ゲームの同期",
   "console.section.help": "ヘルプ",
+  "play.addrShort.title": "このデバイスはこのゲームに必要なアドレス空間が足りません",
+  "play.addrShort.body": "このゲームは起動時に非常に大きなアドレス空間を一度に必要としますが、このデバイスではそれだけ確保できません。とても重くなったり、最初の画面で止まったままになることがあります。普通に遊ぶには、アドレス空間の大きいデバイス（メモリの多い Mac など）を使うか、今後のバージョンをお待ちください。",
   "console.section.apps": "単独 App",
   "console.app.outdated": "新しいバージョンあり · 「iPhone の S2Arm を更新」で再署名",
   "console.game.standalone": "単独 App として入っています（上を参照）",

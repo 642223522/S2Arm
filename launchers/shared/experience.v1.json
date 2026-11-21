@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "contract": "s2a.experience.v1",
-  "revision": 91,
+  "revision": 92,
   "languages": ["zh-Hans", "en"],
   "source_language": "zh-Hans",
   "note": "四端（Mac / iOS / Android / 鸿蒙）启动器的「一套体验」规格。状态、文案、错误码、任务事件到界面的映射只在这里定义一次；各端只负责画，不另写一套措辞。错误码的「下一步」不在本文件里写第二份：一律指向 pack/jobs/errors.py 的 RECOVERY（口径见 README.md）。口径号 revision 改动规则见 README.md。",
@@ -1332,6 +1332,8 @@
       {"id": "console.section.apps", "zh-Hans": "独立 App", "en": "Standalone apps"},
       {"id": "console.app.outdated", "zh-Hans": "有新版 · 点「更新 iPhone 上的 S2Arm」重签", "en": "New version · click “Update S2Arm on iPhone” to re-sign"},
       {"id": "console.game.standalone", "zh-Hans": "装成了独立 App（见上）", "en": "Installed as a standalone app (see above)"},
+      {"id": "play.addrShort.title", "zh-Hans": "这台设备的地址空间不够这款游戏", "en": "This device doesn't have enough address space for this game"},
+      {"id": "play.addrShort.body", "zh-Hans": "这款游戏开局要一整块很大的地址空间，这台设备给不了这么多：可能会非常卡，或一直停在开头。想正常玩，请换一台地址空间更大的设备（比如内存更大的 Mac），或等后续版本改进。", "en": "This game needs one very large block of address space at startup, and this device can't provide that much: it may run very slowly or stay stuck at the start. To play normally, use a device with more address space (such as a Mac with more memory), or wait for a later version."},
       {"id": "console.section.help", "zh-Hans": "帮助", "en": "Help"},
       {"id": "console.button.install", "zh-Hans": "安装 S2Arm", "en": "Install S2Arm"},
       {"id": "console.button.update", "zh-Hans": "更新 S2Arm", "en": "Update S2Arm"},
