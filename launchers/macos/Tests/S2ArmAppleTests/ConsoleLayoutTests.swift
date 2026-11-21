@@ -75,13 +75,13 @@ extension ConsoleLayoutTests {
         let ids = (0..<4).map { String(format: "%016X", $0) }
         func games(_ s: String) -> [[String: Any]] { ids.map { ["gameId": $0, "state": s, "reasons": s == "suggested" ? ["shader"] : [], "dataOnComputer": true] } }
         let soon = Date().addingTimeInterval(5 * 86400).timeIntervalSince1970
-        let ok: [String: Any] = ["device": "D1", "name": "我的 iPhone 17 Pro Max", "installed": true, "shellCurrent": true, "bundleId": "io.s2arm.games.abcdefghij",
+        let ok: [String: Any] = ["device": "D1", "name": "我的 iPhone 17 Pro Max", "installed": true, "shellCurrent": true, "bundleId": "io.s2arm.games.teamfixa",
                                  "free": true, "expiresAtEstimate": soon, "online": "D1", "signMode": "appleId", "games": games("latest")]
         var external = ok; external["installedBy"] = "external"; external["signMode"] = "external"
         external["actions"] = ["exportShellIpa", "pushS2arm", "exportS2arm", "handOverIdentity"]; external["games"] = games("notPushed")
         var choose = ok; choose["needsChoice"] = true; choose["games"] = games("suggested")
-        choose["candidates"] = [["bundleId": "io.s2arm.games.abcdefghij", "team": "ABCDEFGHIJ", "byThisLauncher": true, "identityTeam": "ABCDEFGHIJ"],
-                                ["bundleId": "com.altstore.s2arm.KLMNOPQRST", "team": "KLMNOPQRST", "byThisLauncher": false]]
+        choose["candidates"] = [["bundleId": "io.s2arm.games.teamfixa", "team": "TEAMFIXA", "byThisLauncher": true, "identityTeam": "TEAMFIXA"],
+                                ["bundleId": "com.altstore.s2arm.TEAMFIXB", "team": "TEAMFIXB", "byThisLauncher": false]]
         var other: [String: Any] = ["device": "00008140-FIXTUREPHONE0000", "name": "", "installed": false, "shellCurrent": false, "bundleId": "",
                                     "free": true, "online": "00008140-FIXTUREPHONE0000", "signMode": "appleId", "games": games("notPushed")]
         other["games"] = games("needsData")
