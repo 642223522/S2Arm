@@ -1441,6 +1441,7 @@ static pthread_mutex_t g_ca_mu = PTHREAD_MUTEX_INITIALIZER;
 // 即时存档开关与快照清单读取的弱缺省（快照关、没有清单）：宿主与 iOS 壳链着 snapsw.c / snapshot.c，用它们的正式定义；
 //   只编 vawin.c 的地址窗口单测（runtime/tests/mk/vawin*.mk、guest_file*.mk、ios_prewarm.mk 共 18 份）不链快照模块，取这里的缺省（同 egl.m s2a_gl_first_use 的写法）
 __attribute__((weak)) int s2a_snap_mode(void) { return 0; }
+__attribute__((weak)) const char *s2a_snap_source(void) { return "未链快照模块"; }   // snapsw.c：开关按什么定的（启动环境 / 玩家设置 / 缺省）
 __attribute__((weak)) void s2a_snap_disable(int why) { (void)why; }   // snapsw.c：这一局关掉即时存档（原因码给菜单写提示）
 __attribute__((weak)) int s2a_snap_restoring(void) { return 0; }
 __attribute__((weak)) int s2a_snap_manifest_win(uint64_t *base, uint64_t *size) { (void)base; (void)size; return -1; }
@@ -1505,7 +1506,7 @@ static void cmd_arena_reserve(void) {   // 占窗口那一步在围栏前调；�
     //   iOS 地址空间小（上限 2^39），虚拟池区按空洞剩余给，最多 16 GB；占不到就照旧不占（块回到 mmap(NULL)，回放可能放不回）
     //   即时存档：存档 / 恢复同样要命令记录区（命令句柄落点固定）；两次进程起来区落在同一地址才放得回（图形恢复核基址，不同即拒绝）
     const char *rec = getenv("S2A_FRAME_REC");
-    { const char *s2a_snap_source(void) __attribute__((weak_import)); LOG("即时存档：开关 %s（依据 %s）", s2a_snap_mode() ? "开" : "关", s2a_snap_source ? s2a_snap_source() : "未链快照模块"); }
+    LOG("即时存档：开关 %s（依据 %s）", s2a_snap_mode() ? "开" : "关", s2a_snap_source());
     if (!(rec && *rec) && !s2a_snap_mode()) return;
     // 虚拟池区：帧录按空洞剩余给，最多 16 GB（Mac 回放要把整局的虚拟池放回原地址）；只为即时存档（不录帧）给 2 GB，同放不下标准布局时的两条放法（vawin_reserve）。
     //   11-21 #f0490a（3 台 iPad、iOS 18、空洞 52224 MB、一款要 32824 MB 的游戏）：存档也按 16 GB 给，命令记录区 + 15 GB 正好占掉窗口上方整段 16 GB 空洞，
