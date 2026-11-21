@@ -7,7 +7,7 @@ import XCTest
 @testable import S2ArmAppleAdapter
 
 /// 独立 App（0.6.4）几页离屏渲染：出法行（单款，选了独立 App 时的提示）、成功页 A（直装）、成功页 B（导出）、失败页（重试）。
-/// 结果字段取一次真实作业的读数（杀戮尖塔：直装到手机、证书签导出、删了游戏文件夹再推）。S2A_STANDALONE_SHOT=<目录> 时存 PNG 看样子；
+/// 结果字段取一次真实作业的读数（杀戮尖塔：直装到手机、证书签导出、删了游戏文件夹再推）。S2A_STANDALONE_SHOT=<目录> 时存 PNG 看样子（不给也照跑：纯离屏、不开窗口，约 1 秒；门禁把「跳过」算红）；
 /// 判据只核画得出、页面上有该有的那几句（按钮 / 标题），排版看存下的图
 @MainActor final class StandaloneScreensTests: XCTestCase {
     let gid = "010026300BA4A000"
@@ -44,10 +44,6 @@ import XCTest
         return s
     }
 
-    override func setUpWithError() throws {
-        // 只在要存图时跑（S2A_STANDALONE_SHOT=<目录>）：离屏起窗口慢，平时门禁不跑
-        try XCTSkipUnless(ProcessInfo.processInfo.environment["S2A_STANDALONE_SHOT"] != nil, "没给 S2A_STANDALONE_SHOT，不出截图")
-    }
 
     /// 出法卡片三种状态（0.6.2）：推荐的被选中 / 不推荐的被选中（橙字）/ 识别不了签名方式（灰字、不挂推荐标）
     func testLayoutCards() throws {

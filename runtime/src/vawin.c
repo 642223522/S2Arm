@@ -1329,6 +1329,10 @@ static void vawin_reserve(void) {
     iphone_va_fence();
 #endif
     BOOT_MARK("进程创建 → 占窗口（dyld 装载 + 构造函数）");
+    // GC 上限按低区最大一块选档（gclimit.c）：窗口占下后低区变小，档位要按占完的样子重选。构造期这次 GC 档位还没选（重选是空操作）；
+    //   多款容器构造期没游戏、起宿主前才补占 / 重占（s2a_window_reserve_late）时，档位已按整块空洞选成总上限档（开局一次保留 10 GB），
+    //   补占后下方只剩 6 GB → .NET 运行时初始化失败（诊断#f1e327 / #7940bc，0.6.0–0.6.1 三台 iPhone）。放宽窗口那处（s2a_window_span_widen）原本就重选
+    { void (*gc)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "s2a_gc_limit_reapply"); if (gc) gc(); }
 }
 
 void s2a_window_reserve(void) {
