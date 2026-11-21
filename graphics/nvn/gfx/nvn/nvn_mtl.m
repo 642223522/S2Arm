@@ -7703,10 +7703,19 @@ enum { QUAR_MAX = 16 };
 static NSMutableSet<NSString *> *g_quar; static NSMutableArray<NSString *> *g_quar_new; static pthread_mutex_t g_quar_mu = PTHREAD_MUTEX_INITIALIZER; static int g_quar_n;
 static int quar_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_QUARANTINE"); v = !(e && !strcmp(e, "0")); } return v; }
 static NSString *quar_path(void) { NSString *u = pso_user_path(); return u ? [u.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"gpu_quarantine.tsv"] : nil; }
+// File version (11-21, #327): a file written before it blamed the program pairs of every faulted commit, GPU memory exhaustion too — the first out-of-memory commit of
+//   a run pinned the pairs it had just built, and every later run skipped them from the start (a whole scene black from the first controllable frame, the opening
+//   logo half drawn: Trails in the Sky the 1st, iPhone 15 Pro Max). Such a file cannot tell an out-of-memory entry from a real fault, so it is dropped and relearned:
+//   a pair that really faults is pinned again the first time it does
+#define QUAR_HEAD "# gpu_quarantine v2: program pairs whose first commit faulted (not GPU memory exhaustion)"
 static void quar_load(void) {   // caller holds g_quar_mu
     if (g_quar) return;
     g_quar = [NSMutableSet set]; g_quar_new = [NSMutableArray array];
     NSString *p = quar_path(), *t = p ? [NSString stringWithContentsOfFile:p encoding:NSUTF8StringEncoding error:nil] : nil;
+    if (t.length && ![t hasPrefix:@QUAR_HEAD]) {
+        NSUInteger old = 0; for (NSString *l in [t componentsSeparatedByString:@"\n"]) old += l.length && ![l hasPrefix:@"#"];
+        [NSFileManager.defaultManager removeItemAtPath:p error:nil]; t = nil;
+        MLOG("GPU error quarantine: %s was written before out-of-memory faults were told apart (%lu program pairs, possibly pinned by memory exhaustion only): dropped, relearned from now on", p.UTF8String, (unsigned long)old); }
     for (NSString *l in [t componentsSeparatedByString:@"\n"]) if (l.length && ![l hasPrefix:@"#"]) [g_quar addObject:l];
     g_quar_n = (int)g_quar.count;
     if (g_quar_n) MLOG("GPU error quarantine: %d program pairs skipped from the start (%s)", g_quar_n, p.UTF8String);
@@ -7726,14 +7735,23 @@ static NSArray<NSString *> *quar_take(void) {   // submit thread, at commit: thi
     pthread_mutex_lock(&g_quar_mu); quar_load(); NSArray *a = g_quar_new.count ? [g_quar_new copy] : nil; [g_quar_new removeAllObjects]; pthread_mutex_unlock(&g_quar_mu);
     return a;
 }
+// GPU memory exhaustion is no program's fault: whatever the commit built would have faulted the same with any shader (kIOGPUCommandBufferCallbackErrorOutOfMemory,
+//   Metal 3 MTLCommandBufferErrorOutOfMemory; Metal 4 nests the reason in its underlying errors, which the description carries)
+static int quar_blameless(NSError *err) {
+    if (!err) return 0;
+    if ([err.domain isEqualToString:MTLCommandBufferErrorDomain] && err.code == MTLCommandBufferErrorOutOfMemory) return 1;
+    return [err.description containsString:@"OutOfMemory"] || [err.description containsString:@"Insufficient Memory"];
+}
 static void quar_fault(NSArray<NSString *> *sus, NSError *err) {   // completion: a commit faulted
     if (!quar_on()) return;
+    if (quar_blameless(err)) { static int n; if (n++ < 4) MLOG("GPU error quarantine: the commit ran out of GPU memory, no program pair blamed (%lu new in it)", (unsigned long)sus.count); return; }
     if (!sus.count || sus.count > QUAR_MAX) { static int n; if (n++ < 8) MLOG("【红】 GPU error quarantine: the faulted commit first built %lu pipelines, %s (%s)", (unsigned long)sus.count, sus.count ? "too many to pin, nothing skipped" : "none new, nothing skipped", err.localizedDescription.UTF8String); return; }
     pthread_mutex_lock(&g_quar_mu);
     NSMutableArray *add = [NSMutableArray array]; for (NSString *q in sus) if (![g_quar containsObject:q]) { [g_quar addObject:q]; [add addObject:q]; }
     g_quar_n = (int)g_quar.count;
     NSString *p = quar_path();
-    if (add.count && p) { FILE *f = fopen(p.fileSystemRepresentation, "a"); if (f) { for (NSString *q in add) fprintf(f, "%s\n", q.UTF8String); fclose(f); } }
+    if (add.count && p) { int fresh = ![NSFileManager.defaultManager fileExistsAtPath:p];
+        FILE *f = fopen(p.fileSystemRepresentation, "a"); if (f) { if (fresh) fprintf(f, "%s\n", QUAR_HEAD); for (NSString *q in add) fprintf(f, "%s\n", q.UTF8String); fclose(f); } }
     pthread_mutex_unlock(&g_quar_mu);
     for (NSString *q in add) MLOG("【红】 GPU error quarantine: program pair %s skipped from now on (the faulted commit first built its pipeline; %s)", q.UTF8String, p ? "remembered for later runs" : "this run only");
 }
