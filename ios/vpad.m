@@ -45,6 +45,7 @@ void S2A_AudioSetVolume(int percent) __attribute__((weak_import));
 #import "play_layout.h"
 #include "s2a_docs.h"   // iOS 进程级容器 Documents（s2a_container_docs）
 #include "s2a_pad.h"
+#include "keyboard.h"   // 外接键盘改键页（齿轮菜单第一层，#1869）
 #include "s2a_direct_prompt.h"   // 触屏提示的文案（与 launchers/shared/experience.v1.json prompts 逐字一致）
 #include <stdatomic.h>
 #include <dlfcn.h>
@@ -583,6 +584,9 @@ static NSString *vp_running_gid(void) { const char *g = getenv("S2A_LAUNCH_GAME_
     UIAction *edit = vp_act(S2AL(@"vpad.edit.title"), @"gamecontroller", NO, ^{ [ws afterMenu:^{ [ws beginEditing]; }]; });
     if (_touchOnly) { edit.attributes = UIMenuElementAttributesDisabled; edit.subtitle = S2AL(@"vpad.menu.editDisabled"); }
     [items addObject:edit];
+    // 外接键盘的改键页（keyboard_settings.m，#1869）：与「编辑虚拟按键」并排放第一层；接着键盘或这款改过键位才列（拔了键盘还能回来看 / 恢复默认）
+    if (s2a_ios_keyboard_connected() || s2a_ios_keyboard_customized())
+        [items addObject:vp_act(S2AL(@"kbd.menu"), @"keyboard", NO, ^{ [ws afterMenu:^{ [ws openKeyboard]; }]; })];
     // 按键布局（选方案：菜单不收，选中的打勾；「编辑虚拟按键」在切到仅触屏后变灰要等下次打开菜单）
     NSMutableArray<UIMenuElement *> *lay = [NSMutableArray array];
     void (^addLayout)(NSString *, NSString *, NSString *) = ^(NSString *lid, NSString *name, NSString *note) {
@@ -1220,6 +1224,18 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
     UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:settings];
     navigation.modalInPresentation = YES;
     [controller presentViewController:navigation animated:YES completion:nil];
+}
+// 外接键盘改键页（keyboard_settings.m，#1869）：同 openLayouts，开着时触屏输入停住
+- (void)openKeyboard {
+    UIViewController *controller = self.window.rootViewController;
+    if (!controller || _settingsOpen) return;
+    controller = s2a_top_presenter(controller);
+    _settingsOpen = YES; [self clearTouches];
+    __weak S2AVPadView *weakSelf = self;
+    [controller presentViewController:s2a_ios_keyboard_settings(^{
+        S2AVPadView *view = weakSelf; if (!view) return;
+        view->_settingsOpen = NO; [view clearTouches]; [view wake];
+    }) animated:YES completion:nil];
 }
 - (void)setSettingsOpen:(BOOL)open {
     _settingsOpen = open; [self clearTouches]; if (!open) [self wake];
