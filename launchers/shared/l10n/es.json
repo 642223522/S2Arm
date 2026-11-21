@@ -1247,6 +1247,7 @@
   "install.login.password": "Contraseña",
   "install.login.signIn": "Iniciar sesión",
   "install.login.working": "Iniciando sesión…",
+  "install.login.wait": "Apple acaba de rechazar un inicio de sesión. Se volverá a intentar en {0} s (reintentar seguido hace que Apple lo bloquee durante más tiempo)",
   "install.login.code": "Escribe el código de 6 dígitos que aparece en tu dispositivo Apple",
   "install.login.codeSms": "Escribe el código de 6 dígitos del SMS",
   "install.login.confirm": "Confirmar",

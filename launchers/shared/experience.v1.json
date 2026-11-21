@@ -1618,6 +1618,7 @@
       {"id": "install.login.password", "zh-Hans": "密码", "en": "Password"},
       {"id": "install.login.signIn", "zh-Hans": "登录", "en": "Sign In"},
       {"id": "install.login.working", "zh-Hans": "正在登录…", "en": "Signing in…"},
+      {"id": "install.login.wait", "zh-Hans": "苹果刚拒收过登录，{0} 秒后再连（连着发会被苹果限制更久）", "en": "Apple just refused a sign-in. Trying again in {0} s (retrying back-to-back makes Apple block it for longer)"},
       {"id": "install.login.code", "zh-Hans": "输入苹果设备上弹出的 6 位验证码", "en": "Enter the 6-digit code shown on your Apple device"},
       {"id": "install.login.codeSms", "zh-Hans": "输入短信里的 6 位验证码", "en": "Enter the 6-digit code from the text message"},
       {"id": "install.login.confirm", "zh-Hans": "确认", "en": "Confirm"},

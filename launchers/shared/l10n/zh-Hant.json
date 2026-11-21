@@ -739,6 +739,7 @@
   "install.login.password": "密碼",
   "install.login.signIn": "登入",
   "install.login.working": "正在登入…",
+  "install.login.wait": "蘋果剛拒收過登入，{0} 秒後再連（連著發會被蘋果限制更久）",
   "install.login.code": "輸入 Apple 裝置上彈出的 6 位驗證碼",
   "install.login.codeSms": "輸入簡訊裡的 6 位驗證碼",
   "install.login.confirm": "確認",

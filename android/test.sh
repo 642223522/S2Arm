@@ -80,6 +80,8 @@ s2a_gate_step bash "$android_dir/tools/nvn_vk_frame_log_test.sh"
 s2a_gate_step bash "$android_dir/tests/nvk_shown_timing_test.sh"
 # 设备 / 实例扩展查询：枚举失败（能力未知、报红）与确实不支持分开；VK_INCOMPLETE 重取。
 s2a_gate_step bash "$android_dir/tests/vk_dev_ext_test.sh"
+# 支持范围下限：GPU 只支持 Vulkan 1.0（物理设备 apiVersion < 1.1）具名拒绝，原因短语与外壳 PlayerError 一致；3 个负对照。
+s2a_gate_step bash "$android_dir/tests/vk_api_floor_test.sh"
 # 整台设备能力形态档（#1749 只看能力）：每份设备档案（tests/devprofiles/*.json：Adreno、Mali、Vulkan 1.1 保守档）下各跑一遍建设备 /
 #   caps JSON / 几何着色器路径 / 数组层夹取缺省 / 设备事实落盘，生成的档案与档案文件逐字段比、再当形态档回读一遍；两台真机档另与
 #   devices/*.json 逐项比；「能力判断改坏」与「设备事实漏记」的负对照必须红在对应档（宿主 cc + 假驱动，约 12 秒）
@@ -319,6 +321,10 @@ s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_pool_test.py" --gs-libpack-mu
 # 计算程序预热（清单记账 / 阶段 / 从缓存建 / 开关）与现场编译诊断事件（图形 / 计算）的负对照：各撤一处，对应断言必红
 s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_pool_test.py" --compute-warm-mutants
 s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_pool_test.py" --diag-mutants
+# Workgroup 共享字节核算的宿主件：OpTypeFloat/Int 词数分校、位宽负控、无共享变量零计数
+s2a_gate_step "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -I "$android_dir/native/direct" -I "$repo_dir/graphics/third_party/spirv_cross" \
+    "$android_dir/tests/t_spv_workgroup_bytes.c" -o "$out/spv-workgroup-bytes-test"
+s2a_gate_step "$out/spv-workgroup-bytes-test"
 # Shutdown admission, bounded waits and active-context retention (including negative controls).
 s2a_gate_step "$PY" "$android_dir/tests/nvk_shutdown_test.py"
 # 上屏线程 CPU（rp_present.c，#1501 差距 9）：同线程配对 / 跨线程与时间倒退不计 / 首次只记起点 / 取走清零 / 会话清起点 / 上屏接线，6 个点变异各撤一处必红（纯宿主 C）

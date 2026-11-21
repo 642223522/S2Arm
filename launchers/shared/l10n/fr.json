@@ -1247,6 +1247,7 @@
   "install.login.password": "Mot de passe",
   "install.login.signIn": "Se connecter",
   "install.login.working": "Connexion…",
+  "install.login.wait": "Apple vient de refuser une connexion. Nouvelle tentative dans {0} s (réessayer sans attendre prolonge le blocage d’Apple)",
   "install.login.code": "Saisissez le code à 6 chiffres affiché sur votre appareil Apple",
   "install.login.codeSms": "Saisissez le code à 6 chiffres reçu par SMS",
   "install.login.confirm": "Confirmer",
