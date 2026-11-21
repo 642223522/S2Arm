@@ -134,7 +134,8 @@ int main(int argc, char **argv) {
       snprintf(b, sizeof b, "%s/b", tmp); ctr(b, tmp);
       ck(s2a_window_span_learned() == 18446744073ull, "⑦ 容器 {B}：读到 Documents/games/B/wire/B/span_peak 里的跨度 18446744073");
       snprintf(b, sizeof b, "%s/ab", tmp); ctr(b, tmp);
-      ck(s2a_window_span_learned() == 32770ull << 20, "⑦ 容器 {A, B}：A 没玩过、没有记录 → 按 A 自己的布局需求 32770 MB 算，与 B 的 18446744073 取大 = 34361835520（原先整容器取 0）");
+      { uint64_t s2a_span_seed(uint64_t); uint64_t sa = s2a_span_seed(strtoull(A, NULL, 16)), want = sa ? (sa > 18446744073ull ? sa : 18446744073ull) : 0;
+        ck(s2a_window_span_learned() == want, "⑦ 容器 {A, B}：A 本机没记录 → 有种子表值就按它与 B 的 18446744073 取大，没有就整容器跨度不知道 = 0（11-21 前拿 A 的布局需求 32770 MB 顶）"); }
       snprintf(f, sizeof f, "%s/Documents/wire", home); mkdir(f, 0755); snprintf(f, sizeof f, "%s/Documents/wire/%s", home, A); mkdir(f, 0755);
       snprintf(f, sizeof f, "%s/Documents/wire/%s/span_peak", home, A); put(f, "2000000000\n", 11);
       ctr(b, tmp);
@@ -189,7 +190,8 @@ int main(int argc, char **argv) {
     // ⑪ 「地址空间不够」弹不弹（#1903：静态认出 63 GB，实际跨度 42–43 GB，窗口 54272 MB，每次都弹）：学到的跨度在窗口内不弹；没学到 / 超出照旧弹
     { int s2a_addr_note_needed(uint64_t, uint64_t);
       ck(s2a_addr_note_needed(43322ull << 20, 54272ull << 20) == 0, "⑪ 学到 43322 MB、窗口 54272 MB：不弹");
-      ck(s2a_addr_note_needed(0, 54272ull << 20) == 1 && s2a_addr_note_needed(60000ull << 20, 54272ull << 20) == 1, "⑪ 没学到 / 学到的超出窗口：照旧弹");
+      ck(s2a_addr_note_needed(0, 54272ull << 20) == 0, "⑪ 跨度不知道（本机没记录、种子表也没有）：不弹（11-21 前弹，错怪设备）");
+      ck(s2a_addr_note_needed(60000ull << 20, 54272ull << 20) == 1, "⑪ 已知跨度 60000 MB 超出窗口 54272 MB：弹");
       ck(s2a_addr_note_needed(54272ull << 20, 54272ull << 20) == 0, "⑪ 学到的正好等于窗口：不弹（碰到的最高地址没出窗口）"); }
     // ⑤ 只读偏移表（iOS 上 s2a_loader_span_images 用它取各款 x1 块长）
     snprintf(b, sizeof b, "%s/img", tmp); mkdir(b, 0755); game(b, 3, 0, 0);

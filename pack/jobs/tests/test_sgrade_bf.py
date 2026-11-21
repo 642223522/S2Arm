@@ -351,6 +351,26 @@ class RechainIos(unittest.TestCase):
         self.assertTrue((self.pack / "shaders/direct/b-old/lib.idx").is_file(), "重编不完整不动旧库")
 
 
+class MacRebuildProgress(unittest.TestCase):
+    """D-QPGF：Mac 重出（STAGES 逐步跑阶段脚本）每步之前报一次「已完成几步 / 共几步」，最后报满。期望按 STAGES 手算：0/5 → 第 1 步 → 1/5 → … → 第 5 步 → 5/5"""
+    def test_reports_step_counts_between_stages(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp); src = t / "src"; src.mkdir(); seq = []
+            done = t / "cur"; lib = done / "shaders/direct/b-new"; lib.mkdir(parents=True); (lib / "lib.idx").write_bytes(b"L"); (done / "shaders/direct/keys.tsv").write_text("k\n")
+            c = types.SimpleNamespace(engine=str(t), logs=str(t / "logs"), task="t", env=lambda: {},
+                                      emit=lambda kind, msg="", **k: seq.append((kind, k.get("done"), k.get("total"))) if kind == "progress" else None,
+                                      run=lambda args, log, env, **k: seq.append(("run", Path(str(args[1])).name)))
+            with patch.object(sgrade_bf, "WIN", False), patch.object(sgrade_bf, "_clone", lambda c, a, b: Path(b).mkdir(parents=True)), \
+                    patch("layout.set_current", lambda *a, **k: None), patch("layout.current_root", lambda c, p: done):
+                sgrade_bf.rebuild(c, "0100aaaa00000000", src, "ios", t / "w")
+            n = len(sgrade_bf.STAGES)
+            want = []
+            for i, (st, _) in enumerate(sgrade_bf.STAGES):
+                want += [("progress", i, n), ("run", f"stage_{st}.sh")]
+            want.append(("progress", n, n))
+            self.assertEqual(seq, want)
+
+
 class WindowsRebuildTests(unittest.TestCase):
     """Windows 重出直连库（_rebuild_win）：另起进程跑 Windows 出包的直连库那一步（oneclick_win.direct），环境用作业层的（c.env）＋ iOS 平台 ＋ 这款的直连缓存。期望按方案手写"""
     def setUp(self):
