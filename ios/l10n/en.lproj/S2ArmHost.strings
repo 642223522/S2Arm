@@ -437,6 +437,7 @@
 "notice.cable" = "Cable";
 "notice.imgFile" = "GameName.img";
 "notice.step.img" = "Or export this game on your computer, put both of its files from the “S2Arm Game Packs” folder, the .s2arm and the .img, in the “Import Here” folder of “%@” in the Files app, and open “%@” again. It’s picked up automatically.";
+"notice.step.imgApp" = "Or export this game on your computer and put the .s2arm from this game’s folder on the computer (and the .img, if there is one) in the “Import Here” folder of “%@” in the Files app, then tap “I’ve copied it — check again” below.";
 "notice.step.auto" = "In S2Arm on your computer, click “Push to iPhone” for this game and the resources are copied over automatically — the easiest way.";
 "save.blocked" = "%@\n\nCopy your data somewhere safe before deciding: open the Files app → “On My iPhone” (“On My iPad” on iPad) → “%@”, and copy the whole “S2A” folder somewhere else. Unfinished operations are recorded in S2A/save-transfer/save-transactions. You can also select this device in Finder on a Mac → “Files”, and drag out the “S2A” folder under this app.\n\nAfter copying, you can repackage and install to try again, or tap “Start game anyway…”.";
 "save.busy" = "The previous save operation is still running. Try again when it finishes.";

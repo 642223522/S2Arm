@@ -1178,7 +1178,18 @@ def install_mode_job(c):
     except OSError:
         pass
     return dict(exportAvailable=True, signMode="devcert" if devcert.active(c) else "appleId", signChoice=chosen_sign_mode(c),
-                layout=chosen_layout(c), layoutChoice=layout_choice(c), distribution=distribution_cert(c))
+                layout=chosen_layout(c), layoutChoice=layout_choice(c), distribution=distribution_cert(c), standaloneHint=standalone_hint(c))
+
+
+def standalone_hint(c):
+    """出法选「独立 App」时按签名方式给的那一句提示（只提示不拦，0.6.4 维护者定；文案在启动器 install.layout.hint.<码>）→ 码 | None：
+    appleId = 免费 Apple ID 的 3 个 App / 7 天 10 个 App ID / 7 天到期；wildcard = 通配描述文件开不了「提高内存上限」；external = 自己用 AltStore / SideStore 签：只能导出"""
+    mode = chosen_sign_mode(c)
+    if mode == "external":
+        return "external"
+    if mode == "devCert":
+        return "wildcard" if devcert.profile_facts(c).get("wildcard") else None
+    return "appleId"
 
 
 # 出法（0.6.3 维护者定，玩家两种自由选）：shell = 通用壳（一个 App 装整个游戏库，程序包推进 App 外）；standalone = 独立 App（一 App 一游戏，程序在 App 包里、打开直接进这款）。
@@ -1231,7 +1242,7 @@ def layout_set(c):
     else:
         (c.private / LAYOUT_CHOICE).unlink(missing_ok=True)
     now = chosen_layout(c, gid)
-    return dict(layout=now, default=chosen_layout(c), games=games, distribution=distribution_cert(c),
+    return dict(layout=now, default=chosen_layout(c), games=games, distribution=distribution_cert(c), standaloneHint=standalone_hint(c),
                 **({"freeLimit": FREE_APP_LIMIT} if now == "standalone" and not devcert.active(c) else {}))
 
 
