@@ -99,7 +99,7 @@ struct InstallLayoutRow: View {
     }
 
     private func card(_ value: String, _ title: String, _ body: String, _ badge: String, gold: Bool, now: String, m: InstallModeInfo) -> some View {
-        let on = now == value
+        let on = (m.loaded || gameId.flatMap { m.layoutGames[$0.uppercased()] } != nil) && now == value   // 没读回不画选中（InstallModeInfo.loaded）
         let recommended = m.recommend == value
         return Button { if !on { model.setLayout(value, gameId: gameId) } } label: {
             VStack(alignment: .leading, spacing: 8) {

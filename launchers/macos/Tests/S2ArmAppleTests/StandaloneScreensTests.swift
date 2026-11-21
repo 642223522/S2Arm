@@ -59,6 +59,10 @@ import XCTest
             let rep = try shot(VStack(alignment: .leading) { InstallLayoutRow(model: m, gameId: gid, refreshOnAppear: false) }, name, height: 300)
             XCTAssertGreaterThan(rep.pixelsWide, 0)
         }
+        // 1d 没读回（启动器刚开 / installMode 作业失败）：两张都不画选中（0.6.2 前端走查：原先先把缺省「通用 S2Arm」画成选中，读失败就一直错）
+        let m = model()
+        XCTAssertFalse(m.installMode.loaded)
+        _ = try shot(VStack(alignment: .leading) { InstallLayoutRow(model: m, gameId: gid, refreshOnAppear: false) }, "1d_出法卡片_没读回", height: 300)
     }
 
     func testSuccessInstalled() throws {

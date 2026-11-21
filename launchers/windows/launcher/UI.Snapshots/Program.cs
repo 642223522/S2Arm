@@ -36,7 +36,9 @@ var dismissProbe = args.Length > 0 && args[0] == "--dismiss-probe";
 var installActionProbe = args.Length > 0 && args[0] == "--install-action-probe";
 // --details-probe <目录>：装机卡片「详细过程」点开后不被进度事件刷新收起（D-237B，DetailsProbe.cs）
 var detailsProbe = args.Length > 0 && args[0] == "--details-probe";
-if (reportProbe || buildRouteProbe || dismissProbe || installActionProbe || detailsProbe) args = args[1..];
+// --console-probe <目录>：首位 S2Arm 总控台窄窗 / 英文不被裁、页顶不写长编号（0.6.2 前端走查，ConsoleProbe.cs）
+var consoleProbe = args.Length > 0 && args[0] == "--console-probe";
+if (reportProbe || buildRouteProbe || dismissProbe || installActionProbe || detailsProbe || consoleProbe) args = args[1..];
 var outDir = args.Length > 0 ? args[0] : Path.Combine(
     Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
     ".s2arm/run/s2arm/cmdr/evidence/launcher/win");
@@ -58,6 +60,7 @@ if (buildRouteProbe) { Environment.Exit(BuildRouteProbe.Run(outDir)); }
 if (dismissProbe) { Environment.Exit(DismissProbe.Run(outDir)); }
 if (installActionProbe) { Environment.Exit(InstallActionProbe.Run(outDir)); }
 if (detailsProbe) { Environment.Exit(DetailsProbe.Run(outDir)); }
+if (consoleProbe) { Environment.Exit(ConsoleProbe.Run(outDir)); }
 
 // ── 统一夹具游戏（不用固定游戏名字符串以外的占位）────────────────────
 static LibraryGame MockGame(bool keysReady = true) => new(
