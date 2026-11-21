@@ -243,6 +243,26 @@ class PutApp(unittest.TestCase):
         self.assertEqual(out["savesFrom"], self.OLD)
         self.assertIn("save_carried", [d["code"] for d in self.c.diagnostics])
 
+    def test_save_id_2_and_second_user_copied_verbatim(self):
+        # 旧 App 里这款的索引指向存档号 2、档案里有两个用户：三处原样复制（索引 / 档案逐字节相同），存档号 2 的目录整个带过去。
+        #   存档号是几、用户是谁都由索引和档案决定，整份原样拷过去新 App 里就一样（多用户 / 存档号非 1 真机未验，这条单测钉住）
+        d = layout.path(self.c, G1, "save_backup", "20261121-030303")
+        for sid, data in (("0000000000000001", b"user-a"), ("0000000000000002", b"user-b")):
+            (d / sid / "0").mkdir(parents=True); (d / sid / "0" / "slot.bin").write_bytes(data)
+        (d / install.PHONE_SAVE_MARK).write_text("{}")
+        index = b"IMKV" + b"\x00" * 8 + b"IMEN-save-2-user-b" + bytes(range(64))
+        profile = b'{"profiles":[{"user_id":"00000000000000010000000000000000"},{"user_id":"8f2e0c3a1b9d4e7f6a5b4c3d2e1f0a9b"}],"last_opened":"8f2e0c3a1b9d4e7f6a5b4c3d2e1f0a9b"}'
+        root = f"Documents/games/{G1}/S2A/ryujinx"
+        self.remote[self.OLD] = {f"{root}/bis/system/save/8000000000000000/0/imkvdb.arc": index, f"{root}/system/Profiles.json": profile}
+        self.others, self.saves = [self.OLD], {self.OLD: "20261121-030303"}
+        out = self.run_put()
+        got = {rel: data for b, rel, data in self.calls["put"] if b == APP1}
+        self.assertEqual(got, {f"{root}/bis/user/save/0000000000000001/0/slot.bin": b"user-a",
+                               f"{root}/bis/user/save/0000000000000002/0/slot.bin": b"user-b",
+                               f"{root}/bis/system/save/8000000000000000/0/imkvdb.arc": index,
+                               f"{root}/system/Profiles.json": profile})
+        self.assertEqual(out["savesFrom"], self.OLD)
+
     def test_old_app_without_index_or_profile_not_copied(self):
         # 旧 App 有存档文件但缺索引 / 用户档案：拷过去游戏认不出，整份不复制（不留半套），黄字说清、旧 App 别删
         for index, profile in ((False, True), (True, False)):
