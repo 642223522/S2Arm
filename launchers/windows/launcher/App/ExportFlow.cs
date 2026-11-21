@@ -107,8 +107,10 @@ public sealed partial class EnvironmentWindow
     /// <summary>按钮下方：上次更新做不齐的黄字（不当失败）、没做成的原因</summary>
     private Control? UpdateOutcomeLines(LibraryGame game)
     {
-        if (GameUpdating(game.Id) || !gameUpdated.TryGetValue(game.Id, out var done) || (done.Ok && done.Warnings.Count == 0)) return null;
+        if (GameUpdating(game.Id) || !gameUpdated.TryGetValue(game.Id, out var done)) return null;
         var box = new StackPanel { Spacing = 4, MaxWidth = 720, HorizontalAlignment = HorizontalAlignment.Left };
+        // 做好了：说清只换了电脑上这份，设备上要换新版走「导出…」（走查：按钮变灰「无需更新」后，玩家以为手机上也更新了）
+        if (done.Ok) box.Children.Add(new TextBlock { Text = "✓ " + T("update.done.next"), Foreground = Brush.Parse("#30D158"), FontSize = 13, TextWrapping = TextWrapping.Wrap });
         if (!done.Ok) box.Children.Add(new TextBlock { Text = "✕ " + B(done.Message), Foreground = Brush.Parse("#FF9F0A"), FontSize = 13, TextWrapping = TextWrapping.Wrap });
         foreach (var w in done.Warnings)
             box.Children.Add(new TextBlock { Text = "⚠ " + B(w), Foreground = Brush.Parse("#FFD60A"), FontSize = 13, TextWrapping = TextWrapping.Wrap });
@@ -279,9 +281,10 @@ public sealed partial class EnvironmentWindow
         return card;
     }
 
-    private RadioButton ExportOption(string group, string textKey, bool on, bool enabled, Action pick, string id)
+    /// <param name="recommended">作业层按签名推荐的那种出法：后面加「· 推荐」（走查：新手看不懂两种出法该选哪个）</param>
+    private RadioButton ExportOption(string group, string textKey, bool on, bool enabled, Action pick, string id, bool recommended = false)
     {
-        var radio = new RadioButton { GroupName = group, Content = new TextBlock { Text = T(textKey), TextWrapping = TextWrapping.Wrap, FontSize = 14 },
+        var radio = new RadioButton { GroupName = group, Content = new TextBlock { Text = T(textKey) + (recommended ? " · " + T("export.layout.recommended") : ""), TextWrapping = TextWrapping.Wrap, FontSize = 14 },
             IsChecked = on, IsEnabled = enabled, Foreground = Ink };
         radio.IsCheckedChanged += (_, _) => { if (radio.IsChecked == true && !on) { pick(); Dispatcher.UIThread.Post(Render); } };
         AutomationId(radio, id);
@@ -295,15 +298,30 @@ public sealed partial class EnvironmentWindow
         // ① 怎么签名：我的证书只在导入过证书时可选
         var signs = new StackPanel { Spacing = 6 };
         signs.Children.Add(ExportOption("exportSign", "export.sign.option.appleId", sign == ExportChoice.AppleId, true, () => exportSignPick = ExportChoice.AppleId, "exportgame.sign.appleId"));
+        if (sign == ExportChoice.AppleId)
+        {   // Apple ID 在随包 Impactor 里登录（密码不经过 S2Arm）：走查里第一次用的人不知道要先登录，装到一半才报「还没登录 Apple ID」
+            var hint = new WrapPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(28, -4, 0, 0) };
+            hint.Children.Add(new TextBlock { Text = T("export.sign.option.appleId.note"), FontSize = 12, Foreground = Brush.Parse("#A8A6A1"), TextWrapping = TextWrapping.Wrap,
+                VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) });
+            hint.Children.Add(InlineButton("action.open_impactor", OpenBundledImpactor, "exportgame.open_impactor", File.Exists(BundledImpactor)));
+            signs.Children.Add(hint);
+        }
         signs.Children.Add(ExportOption("exportSign", "export.sign.option.devCert", sign == ExportChoice.DevCert, CertImported, () => exportSignPick = ExportChoice.DevCert, "exportgame.sign.devCert"));
-        if (!CertImported) signs.Children.Add(new TextBlock { Text = T("export.sign.option.devCert.none"), FontSize = 12, Foreground = Brush.Parse("#8A8A92"), Margin = new Thickness(28, -4, 0, 0), TextWrapping = TextWrapping.Wrap });
+        if (!CertImported)
+        {   // 没导入证书：就地导入（走查：原先只写「去设置里导入」，买了 P12 的人要自己翻设置页）
+            var none = new WrapPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(28, -4, 0, 0) };
+            none.Children.Add(new TextBlock { Text = T("export.sign.option.devCert.none2"), FontSize = 12, Foreground = Brush.Parse("#8A8A92"), TextWrapping = TextWrapping.Wrap,
+                VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) });
+            none.Children.Add(InlineButton("export.sign.option.devCert.import", () => _ = ImportCertForExportAsync(), "exportgame.import_cert"));
+            signs.Children.Add(none);
+        }
         signs.Children.Add(ExportOption("exportSign", "export.sign.option.none", sign == ExportChoice.SelfSign, true, () => exportSignPick = ExportChoice.SelfSign, "exportgame.sign.none"));
         body.Children.Add(ExportStep("export.page.sign", signs, "exportgame.sign"));
 
         // ② 出法：通用 S2Arm 里的一款 / 独立 App；下面一行按签名给的提示（同出法卡片下方那一行，LayoutNote）
         var lays = new StackPanel { Spacing = 6 };
-        lays.Children.Add(ExportOption("exportLayout", "export.layout.option.shell", lay == "shell", true, () => exportLayoutPick = "shell", "exportgame.layout.shell"));
-        lays.Children.Add(ExportOption("exportLayout", "export.layout.option.standalone", lay == "standalone", true, () => exportLayoutPick = "standalone", "exportgame.layout.standalone"));
+        lays.Children.Add(ExportOption("exportLayout", "export.layout.option.shell", lay == "shell", true, () => exportLayoutPick = "shell", "exportgame.layout.shell", layoutRecommend == "shell"));
+        lays.Children.Add(ExportOption("exportLayout", "export.layout.option.standalone", lay == "standalone", true, () => exportLayoutPick = "standalone", "exportgame.layout.standalone", layoutRecommend == "standalone"));
         if (LayoutNote(lay) is { } note) lays.Children.Add(new TextBlock { Text = T(note.Key), TextWrapping = TextWrapping.Wrap, FontSize = 12, Foreground = Brush.Parse(note.Color) });
         body.Children.Add(ExportStep("export.page.layout", lays, "exportgame.layout"));
 
@@ -367,7 +385,8 @@ public sealed partial class EnvironmentWindow
         cancel.VerticalAlignment = VerticalAlignment.Center;
         AutomationId(cancel, "exportgame.cancel");
         Grid.SetColumn(cancel, 1); bar.Children.Add(cancel);
-        var start = Primary(T("export.page.start"), () => _ = StartExportAsync(game),
+        // 按钮写这次会做什么：都不勾 =「导出到文件夹」，勾了 =「装到勾选的 N 台」（走查：只写「开始」，没勾设备的人不确定点了会怎样）
+        var start = Primary(picked == 0 ? T("export.page.start.folder") : T("export.page.start.devices").Replace("{0}", picked.ToString()), () => _ = StartExportAsync(game),
             !PhoneBlockedFor(game) && game.LocationState is not ("missing" or "offline") && !SGradeUpgrading(game));
         AutomationId(start, "exportgame.start");
         Grid.SetColumn(start, 2); bar.Children.Add(start);
@@ -397,7 +416,7 @@ public sealed partial class EnvironmentWindow
         else box.Children.Add(LiveSlot(() => ExportRunRows(game, run)));   // 推的进度事件只刷新这一格
         body.Children.Add(Card(box));
         var buttons = new WrapPanel { Orientation = Orientation.Horizontal };
-        var done = Action("export.run.done", () => Navigate("library"));
+        var done = Action(run.Active ? "export.running.back" : "export.run.done", () => Navigate("library"));   // 还在做时写「回到游戏库，后台继续」，不写「完成」
         done.Margin = new Thickness(0, 0, 12, 0); buttons.Children.Add(done);
         var again = Action("export.run.again", () => OpenExport(game), !run.Active);
         AutomationId(again, "exportgame.again");
@@ -417,7 +436,7 @@ public sealed partial class EnvironmentWindow
             {
                 "waiting" when pushing => ("⟳ " + (installMessage.Length > 0 ? B(installMessage) : T("export.row.running")) + (PhoneProgressText() is { Length: > 0 } pct ? " · " + pct : ""), "#F2F0EB"),
                 "waiting" => (T("export.row.waiting"), "#A0A0A8"),
-                "succeeded" => ("✓ " + T("export.row.done"), "#30D158"),
+                "succeeded" => ("✓ " + T("export.row.done") + (run.Layout == "standalone" ? " · " + T("app.done.open").Replace("{0}", game.Name) : ""), "#30D158"),   // 独立 App：说清去主屏幕点哪个图标
                 "needsPlayer" => (B(message), "#FFD60A"),
                 "cancelled" => (T("phone.cancelled"), "#A0A0A8"),
                 _ => ("✕ " + (message.Length > 0 ? B(message) : T("export.row.failed")), "#FF9F0A"),
@@ -431,6 +450,7 @@ public sealed partial class EnvironmentWindow
             {
                 var acts = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
                 if (code is "shell_install_required" or "shell_update_required") acts.Children.Add(Action("export.device.openConsole", () => OpenConsoleFor(device)));
+                if (code is "apple_not_signed_in" or "apple_session_expired") acts.Children.Add(Action("action.open_impactor", OpenBundledImpactor, File.Exists(BundledImpactor)));   // 登录好点「重试」
                 var retry = Action("phone.retry", () => { RunExportRow(run, game, device, chain: false); Render(); }, !PhonePushing(game.Id) || installDevice != device);
                 AutomationId(retry, "exportgame.retry." + device);
                 acts.Children.Add(retry);
@@ -439,6 +459,24 @@ public sealed partial class EnvironmentWindow
             list.Children.Add(row);
         }
         return list;
+    }
+
+    /// <summary>行内小按钮（跟在一句说明后面）</summary>
+    private Button InlineButton(string key, Action click, string id, bool enabled = true)
+    {
+        var b = new Button { Content = T(key), FontSize = 12, Padding = new Thickness(10, 3), CornerRadius = new CornerRadius(6), IsEnabled = enabled,
+            Background = Brush.Parse("#29292D"), Foreground = Ink, VerticalAlignment = VerticalAlignment.Center };
+        b.Click += (_, _) => click();
+        AutomationId(b, id);
+        return b;
+    }
+
+    /// <summary>导出确认页「导入证书…」：同设置里的导入弹窗；导好了这次就选「我的证书」</summary>
+    private async Task ImportCertForExportAsync()
+    {
+        await ImportDevCertAsync();
+        if (CertImported) exportSignPick = ExportChoice.DevCert;
+        Render();
     }
 
     /// <summary>列表卡片 / 「建议更新」角标点了：选中这款，滚回顶部看大卡（更新按钮在那里）</summary>

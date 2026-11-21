@@ -44,14 +44,37 @@ public sealed partial class EnvironmentWindow
     private string updateAskCode = "";
 
     /// <summary>更新页（page = "phoneupdate"）：结局卡 + 失败重试 + 挤掉确认（页内）</summary>
-    private Control PhoneUpdateCard() => PhoneJobCard(updateTrack, updateState, updateMessage, updateDiagnostics, null,
-        retry: updateState is "failed" or "invalid" or "interrupted" ? () => _ = UpdatePhoneAsync(lastUpdate.AcceptStale, lastUpdate.Repack, lastUpdate.Accept, mode: lastUpdateMode, sgradeUpgrade: lastUpdateSGrade) : null,
+    /// <summary>更新页（page = "phoneupdate"）：结局卡；第一次装 S2Arm 且用 Apple ID 签的，成功时写「先信任再打开」；Apple ID 没登录 / 过期失败时卡下给「打开 Impactor」
+    ///   （走查：失败页的下一步写着去装机页点「打开 Impactor」，改版后这条路上没有装机页，玩家卡住）</summary>
+    private Control PhoneUpdateCard()
+    {
+        var box = new StackPanel { Spacing = 14 };
+        box.Children.Add(PhoneUpdateJobCard());
+        if (updateState is "failed" && updateCode is "apple_not_signed_in" or "apple_session_expired")
+        {
+            var impactor = Action("action.open_impactor", OpenBundledImpactor, File.Exists(BundledImpactor));
+            AutomationId(impactor, "phoneupdate.open_impactor");
+            box.Children.Add(impactor);
+        }
+        return box;
+    }
+
+    /// <summary>更新这一单的失败码（apple_not_signed_in 等：卡下给「打开 Impactor」）</summary>
+    private string? updateCode;
+    /// <summary>这一单是给还没装 S2Arm 的手机第一次装（总控台「安装 S2Arm」/ 介绍卡「连上 iPhone 开始」）</summary>
+    private bool updateFirstInstall;
+
+    private IReadOnlyList<string>? FirstInstallNotes() =>
+        updateFirstInstall && updateState == "succeeded" && signChoice == "appleId" ? [T("install.done.trust")] : null;
+
+    private Control PhoneUpdateJobCard() => PhoneJobCard(updateTrack, updateState, updateMessage, updateDiagnostics, null, FirstInstallNotes(),
+        retry: updateState is "failed" or "invalid" or "interrupted" ? () => _ = UpdatePhoneAsync(lastUpdate.AcceptStale, lastUpdate.Repack, lastUpdate.Accept, mode: lastUpdateMode, sgradeUpgrade: lastUpdateSGrade, firstInstall: updateFirstInstall) : null,
         confirmDrop: () => _ = UpdatePhoneAsync(lastUpdate.AcceptStale, lastUpdate.Repack,
             new HashSet<string>(lastUpdate.Accept) { ConfirmCodes.GetValueOrDefault(updateAskCode, "acceptDropped") }, mode: lastUpdateMode, sgradeUpgrade: lastUpdateSGrade),
         dropTitle: ConfirmTitle(updateAskCode),
         cancelDrop: () => { updateState = ""; updateOutcome = null; Navigate("library"); },
         alternateDrop: UpdateDropAlternate(),
-        switchExport: updateState is "failed" or "invalid" or "interrupted" && lastUpdateMode != "export"
+        switchExport: updateState is "failed" or "invalid" or "interrupted" && lastUpdateMode != "export" && !updateFirstInstall   // 第一次装时不给「改为导出自签包」：新手看不懂，失败原因下面的按钮（打开 Impactor / 重试）才是下一步
             ? () => { _ = UpdatePhoneAsync(lastUpdate.AcceptStale, lastUpdate.Repack, lastUpdate.Accept, mode: "export", sgradeUpgrade: lastUpdateSGrade); } : null);
     /// <summary>更新页 drop 态问的码有并列的另一条路（共享体验表 alternate，自签走查结构 7）：按钮文案键 + 点了做什么（不重发，走清单同一个派发）</summary>
     private (string Label, Action Run)? UpdateDropAlternate()
@@ -334,17 +357,20 @@ public sealed partial class EnvironmentWindow
     /// 控制口发起的不弹、原样失败，由调用方带 acceptDropped 再发（v0.3.0 只换壳验收：原先这条路没接确认，提示「确认继续再点一次」却永远过不去）
     /// mode / sgradeUpgrade：「S 级优化升级」页的两个按钮（SGradeUpgradePage.cs，同 Mac）——mode = device / export 这次按它装（不改设置里的装法），
     /// sgradeUpgrade = 壳已是本版也重组容器、给游戏程序补上 S 级优化（install.update_phone）
-    private async Task UpdatePhoneAsync(bool acceptStale, IReadOnlyList<string> repack, IReadOnlySet<string>? accept = null, bool ask = true, string? mode = null, bool sgradeUpgrade = false, string? device = null)
+    private async Task UpdatePhoneAsync(bool acceptStale, IReadOnlyList<string> repack, IReadOnlySet<string>? accept = null, bool ask = true, string? mode = null, bool sgradeUpgrade = false, string? device = null,
+        bool firstInstall = false)
     {
         if (connectedFolder is null || libraryId is null) return;
         // 没指定这次怎么走 = 装到手机（11-19 自签走查结构 8）：出包页「出完之后」只管出包页那一次，不当续签 / 更新的全局开关
-        if (QueuePhone(null, () => UpdatePhoneAsync(acceptStale, repack, accept, ask, mode, sgradeUpgrade, device))) return;   // 出包在跑不挡；手机上有作业在跑 → 排队
+        if (QueuePhone(null, () => UpdatePhoneAsync(acceptStale, repack, accept, ask, mode, sgradeUpgrade, device, firstInstall))) return;   // 出包在跑不挡；手机上有作业在跑 → 排队
         accept ??= new HashSet<string>();
         lastUpdate = (acceptStale, repack, accept);   // 失败页「重试」/ 挤掉确认的「仍然继续」按同样的参数再来
         lastUpdateMode = mode; lastUpdateSGrade = sgradeUpgrade;
         var front = BeginJob(JobKind.Phone); phoneUpdating = true; updateOutcome = null; updateDiagnostics = ""; updateDone = updateTotal = null;
         updateState = "running";
-        updateTrack.Begin("installUpdate", InstallTargetLabel); updateMessage = "";   // 实际装上的那台作业结束后按结果改（PhoneJobTrack.Finish）
+        updateTrack.Begin("installUpdate", InstallTargetLabel); updateMessage = "";
+        updateFirstInstall = firstInstall && mode != "export"; updateCode = null;
+        if (updateFirstInstall) updateTrack.TextKind = "installShell";   // 实际装上的那台作业结束后按结果改（PhoneJobTrack.Finish）
         updateTrack.Version = UpdateClient.CurrentVersion(InstallDir);
         Navigate("phoneupdate");   // 自己的一页：进行中 → 成功 / 失败（原先只有顶栏一个胶囊，失败原因被截断）
         var succeeded = false;
@@ -371,6 +397,7 @@ public sealed partial class EnvironmentWindow
             updateOutcome = succeeded ? "" : job.Report.Message.Length > 0 ? job.Report.Message : job.Report.State;
             updateMessage = succeeded ? "" : updateOutcome;
             updateDiagnostics = succeeded ? "" : JobDiagnostics(job);
+            updateCode = succeeded ? null : JobCode(job);
         }
         catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
             InvalidOperationException or OperationCanceledException or PlatformNotSupportedException or System.ComponentModel.Win32Exception)

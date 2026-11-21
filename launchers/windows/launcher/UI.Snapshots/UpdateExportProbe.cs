@@ -129,7 +129,7 @@ static class UpdateExportProbe
             Set(w, "exportSignPick", "none"); Call(w, "Render"); Settle(w);
             Check(fails, "自签：外部 S2Arm 导入了证书 → 可勾、不写先导入", Box("EXT-CERT-0000000000000000000000000CCC333")?.IsEnabled == true);
             Check(fails, "自签：外部 S2Arm 没导入证书 → 可勾、写「先导入」", Box("EXT-NOCERT-00000000000000000000000DDD444")?.IsEnabled == true
-                && Texts(w).Contains("先在手机上 S2Arm 导入签名证书") && !Ids(w).Contains("exportgame.console.EXT-NOCERT-00000000000000000000000DDD444"));
+                && Texts(w).Any(t => t.StartsWith("先在手机上打开 S2Arm → 右上角齿轮 →「签名证书」导入")) && !Ids(w).Contains("exportgame.console.EXT-NOCERT-00000000000000000000000DDD444"));
             Check(fails, "自签：启动器签的那台置灰、写原因", Box("OWN-0000000000000000000000000000000AAA111")?.IsEnabled == false
                 && Texts(w).Any(t => t.StartsWith("这台的 S2Arm 是启动器签的")));
             Check(fails, "自签：没装 S2Arm 那台置灰", Box("BARE-000000000000000000000000000000BBB222")?.IsEnabled == false);

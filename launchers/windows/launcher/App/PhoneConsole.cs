@@ -236,7 +236,7 @@ public sealed partial class EnvironmentWindow
     {
         await RefreshPhoneOverviewAsync(probe: true);
         if (ConsolePhone is { InstalledBy: not null } found) { consoleDevice = found.Device; Render(); return; }
-        await UpdatePhoneAsync(false, [], device: ConsolePhone?.Device);
+        await UpdatePhoneAsync(false, [], device: ConsolePhone?.Device, firstInstall: true);
     }
 
     /// <summary>点总控台按钮（界面与控制口 POST /console-action 走这同一个函数；同 Mac runConsoleAction）。ids：推 / 导出哪几款（控制口可给；不给 = 勾选的、按游戏库顺序）。
@@ -247,7 +247,9 @@ public sealed partial class EnvironmentWindow
         var order = ids?.Select(i => i.ToUpperInvariant()).ToList() ?? shown.Where(g => consoleSelection.Contains(g.Id)).Select(g => g.Id.ToUpperInvariant()).ToList();
         switch (action)
         {
-            case PhoneOverview.Act.InstallShell or PhoneOverview.Act.UpdateShell or PhoneOverview.Act.RenewShell:
+            case PhoneOverview.Act.InstallShell:   // 第一次装：结局卡写「安装」，用 Apple ID 签的写清先信任再打开
+                _ = UpdatePhoneAsync(false, [], device: device, firstInstall: true); break;
+            case PhoneOverview.Act.UpdateShell or PhoneOverview.Act.RenewShell:
                 _ = UpdatePhoneAsync(false, [], device: device); break;
             case PhoneOverview.Act.ExportShellIpa:   // 导出通用 S2Arm.ipa（作业 installUpdate + mode export → export_shell_ipa）：不连手机
                 _ = UpdatePhoneAsync(false, [], mode: "export"); break;
@@ -312,7 +314,9 @@ public sealed partial class EnvironmentWindow
         detail.Children.Add(Label(ConsolePhone is { } p && p.Name.Length > 0 ? p.Name : "S2Arm", 18));
         detail.Children.Add(Muted(ConsoleStatusText(), 13));
         Grid.SetColumn(detail, 1); line.Children.Add(detail);
-        var open = Action("library.select", () => { selectedGame = ConsoleId; _ = RefreshPhoneOverviewAsync(probe: true); Render(); });
+        // 按钮写「打开」（走查：原先和游戏共用「选择这款游戏」，这一行是手机不是游戏）
+        var open = Action("console.row.open", () => { selectedGame = ConsoleId; _ = RefreshPhoneOverviewAsync(probe: true); Render(); });
+        AutomationId(open, "library.select");
         open.VerticalAlignment = VerticalAlignment.Center;
         Grid.SetColumn(open, 2); line.Children.Add(open);
         Avalonia.Automation.AutomationProperties.SetAutomationId(line, "card." + ConsoleId);

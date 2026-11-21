@@ -58,7 +58,9 @@ public sealed record PhoneOverview(IReadOnlyList<PhoneOverview.Phone> Phones)
             var given = (p.Actions ?? []).Where(a => Act.All.Contains(a) && !shell.Contains(a)).ToArray();
             return [.. (given.Length > 0 ? given : [Act.ExportShellIpa, Act.PushS2arm, Act.ExportS2arm, Act.HandOverIdentity]), .. change];
         }
-        return [!p.Installed ? Act.InstallShell : !p.ShellCurrent ? Act.UpdateShell : Act.RenewShell, Act.HandOverIdentity, Act.UpdateSelected, .. change];
+        // 还没装 S2Arm 的手机不出「把签名身份交给手机」：手机上没有 S2Arm 可交（走查：新手的总控台在「安装 S2Arm」下面多一颗交身份的按钮和一段 AltStore 说明，看不懂）
+        if (!p.Installed) return [Act.InstallShell, Act.UpdateSelected, .. change];
+        return [!p.ShellCurrent ? Act.UpdateShell : Act.RenewShell, Act.HandOverIdentity, Act.UpdateSelected, .. change];
     }
 
     /// <summary>候选的标签（文案键，按顺序拼；同 Mac candidateLabelKeys）：这台电脑的启动器装的 / 别的工具装的；导入的签名证书团队与 App 团队对得上时追加「已导入签名证书」。

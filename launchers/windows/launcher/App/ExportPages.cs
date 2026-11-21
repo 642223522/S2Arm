@@ -171,7 +171,8 @@ public sealed partial class EnvironmentWindow
     {
         if (installGameId is null) return;
         libraryFolder = libraryFolderBox.Text ?? libraryFolder;
-        selectedGame = installGameId; readinessFor = null; Navigate("install");
+        selectedGame = installGameId; readinessFor = null;
+        Navigate(exportRuns.ContainsKey(installGameId) ? "exportgame" : "install");   // 导出确认页起的那一单：回逐台结果（走查：胶囊点进去是旧的装机页）
     }
 
     /// 顶栏胶囊（#308，Mac 同款）：装机在跑 → 「正在推到 iPhone：X · 查看进度」；跑完没回去看 → 「已装到 / 没装完 · 查看」。正看着这款的安装页时不显示
