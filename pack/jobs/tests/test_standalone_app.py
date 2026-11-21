@@ -131,11 +131,12 @@ class PutApp(unittest.TestCase):
         (self.pack / "manifest.json").write_text(json.dumps({"index_sha256": "P1"}))
         self.calls = dict(install=[], push=[], snap=[], assemble=[], put=[])
         self.others, self.saves = [], {}   # 手机上别的 S2Arm（installed_s2arm）/ 各 App 里有这款存档的：{包名: 备份目录名}
+        self.remote = {}   # 手机上各 App 的文件：{包名: {文档根下的相对路径: 内容}}（get / get_tree 读它）
         self.ph = self.phone()
         self.gdir = self.t / "games" / "Game One"; self.gdir.mkdir(parents=True)
 
     def phone(self):
-        calls = self.calls
+        calls, outer = self.calls, self
         class Ph:   # 方法按 self 取包名（同真的手机类）：put_app 复制出的独立 App 对象推到自己的包名
             key = udid = "UDID1"
             bid, pending = SHELL_BID, None
@@ -145,7 +146,17 @@ class PutApp(unittest.TestCase):
             def before_push(self, packs): pass
             def client(self, w):
                 me = self.bid
-                return types.SimpleNamespace(put=lambda src, rel: calls["put"].append((me, rel, Path(src).read_bytes())), rm=lambda rel: None)
+                files = outer.remote.get(me, {})
+                def get(rel, dst, t=None):
+                    if rel not in files: return False
+                    Path(dst).write_bytes(files[rel]); return True
+                def get_tree(rel, dst):
+                    for k, v in files.items():
+                        if k.startswith(rel + "/"):
+                            f = Path(dst) / k[len(rel) + 1:]; f.parent.mkdir(parents=True, exist_ok=True); f.write_bytes(v)
+                    return True, ""
+                return types.SimpleNamespace(put=lambda src, rel: calls["put"].append((me, rel, Path(src).read_bytes())), rm=lambda rel: None,
+                                             get=get, get_tree=get_tree)
             def install(self, ipa, games, steps=True, bid=None):
                 with zipfile.ZipFile(ipa) as z:
                     calls["install"].append((bid, sorted(z.namelist())))
@@ -207,14 +218,34 @@ class PutApp(unittest.TestCase):
         (d / "0/user/slot.bin").write_bytes(data); (d / install.PHONE_SAVE_MARK).write_text("{}")
         return name
 
+    def old_app_index(self, index=True, profile=True):
+        """旧 App 里这款的存档索引与用户档案（文档根 Documents/games/<号>/S2A/ryujinx/ 下）"""
+        d = f"Documents/games/{G1}/S2A/ryujinx"
+        self.remote[self.OLD] = {**({f"{d}/bis/system/save/8000000000000000/0/imkvdb.arc": b"IMKV-idx"} if index else {}),
+                                 **({f"{d}/system/Profiles.json": b'{"profiles":[]}'} if profile else {})}
+
     def test_carries_old_app_save_into_new_app(self):
-        # 新 App 里没有这款的存档、手机上旧包名的 App 里有：复制进新 App（记号文件不复制），那边不动、结果带来源
+        # 新 App 里没有这款的存档、手机上旧包名的 App 里有：存档文件 + 存档索引 + 用户档案三样一起复制进新 App（记号文件不复制），那边不动、结果带来源
         self.others, self.saves = [self.OLD], {self.OLD: self.backup("20261121-010101")}
+        self.old_app_index()
         out = self.run_put()
         self.assertEqual(self.calls["snap"], [(APP1, True, [G1]), (self.OLD, False, [G1])], "先拉新 App、再拉旧 App 的这款存档")
-        self.assertEqual(self.calls["put"], [(APP1, f"Documents/games/{G1}/{install.SAVE_REL}/0/user/slot.bin", b"save-1")])
+        d = f"Documents/games/{G1}/S2A/ryujinx"
+        self.assertEqual(self.calls["put"], [(APP1, f"{d}/bis/user/save/0/user/slot.bin", b"save-1"),
+                                             (APP1, f"{d}/bis/system/save/8000000000000000/0/imkvdb.arc", b"IMKV-idx"),
+                                             (APP1, f"{d}/system/Profiles.json", b'{"profiles":[]}')])
         self.assertEqual(out["savesFrom"], self.OLD)
         self.assertIn("save_carried", [d["code"] for d in self.c.diagnostics])
+
+    def test_old_app_without_index_or_profile_not_copied(self):
+        # 旧 App 有存档文件但缺索引 / 用户档案：拷过去游戏认不出，整份不复制（不留半套），黄字说清、旧 App 别删
+        for index, profile in ((False, True), (True, False)):
+            self.calls["put"].clear(); self.c.diagnostics.clear()
+            self.others, self.saves = [self.OLD], {self.OLD: self.backup(f"20261121-01010{int(index)}")}
+            self.old_app_index(index=index, profile=profile)
+            out = self.run_put()
+            self.assertEqual((self.calls["put"], "savesFrom" in out), ([], False), (index, profile))
+            self.assertIn("save_carry_incomplete", [d["code"] for d in self.c.diagnostics])
 
     def test_no_carry_when_new_app_has_save(self):
         # 新 App 里已有这款的存档：不碰（不去拉别的 App、不写）

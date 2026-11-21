@@ -903,6 +903,8 @@ def keep_nros(c, gid, names, fetch):
 
 
 SAVE_REL = "S2A/ryujinx/bis/user/save"   # 文档根下的存档目录（Ryujinx 数据根 = <文档根>/S2A/ryujinx）
+SAVE_INDEX_REL = "S2A/ryujinx/bis/system/save"   # 文档根下这款的存档索引（模拟器按「这款 + 用户 → 存档号」找存档；每款各一份，第一次起局时建）
+SAVE_PROFILE_REL = "S2A/ryujinx/system/Profiles.json"   # 文档根下这款的用户档案（同上；索引里的用户号指它）
 SAVE_DIR = "Documents/" + SAVE_REL
 
 
@@ -2881,6 +2883,7 @@ def write_phone_save(c, ph, gid, src, drop=()):
 
 SAVE_CARRIED = "这款的存档从手机上的另一个 S2Arm（{0}）复制进了新装的独立 App；那边的存档没动，在新 App 里确认进度没问题再删旧的。"
 SAVE_CARRY_MANY = "手机上有几个 S2Arm 都存着这款的存档（{0}），没替你挑：在启动器的手机存档里选一份，还原到新装的独立 App。"
+SAVE_CARRY_INCOMPLETE = "手机上的另一个 S2Arm（{0}）里有这款的存档，但缺存档索引或用户档案，没有复制（拷过去游戏也认不出）：先别删那个 App。"
 
 
 def carry_saves(c, ph, ap, gid):
@@ -2888,6 +2891,7 @@ def carry_saves(c, ph, ap, gid):
     0.6.4 前导出的独立 App 包名都是 io.s2arm.games，侧载工具签成 io.s2arm.games.<团队>（装哪款都进同一个 App，各款存档都在它的容器里），
     改成按款的包名后装出来是新 App、新容器，旧存档新 App 看不到；通用壳里玩过的同样搬。只复制不搬走：那边的存档一个字节不动。
     别的 App 先照常拉回电脑留一份（snapshot_phone_saves，记号带它的包名，之后也能在手机存档里手动还原）。
+    复制的是这款数据根下的存档文件 + 存档索引 + 用户档案（缺一样就不复制，save_carry_incomplete）。
     只有一个 App 有这款的存档才复制；几个都有不替玩家挑，说清让玩家自己选一份还原。→ 复制来源的包名 | None"""
     try:
         others = [a["bundleId"] for a in installed_s2arm(c, ph) or [] if a["bundleId"].lower() != ap.bid.lower()]
@@ -2905,7 +2909,22 @@ def carry_saves(c, ph, ap, gid):
     if not found:
         return None
     (b, name), = found.items()
-    write_phone_save(c, ap, gid, layout.path(c, gid, "save_backup", create=False) / name)
+    # 存档文件、存档索引、用户档案三样一起搬（每款的模拟器数据根各自独立，原样拷过去索引里的存档号和用户号都对得上）。
+    #   只拷存档文件不行：新 App 第一次起这款时自己分存档号、建新用户，和拷来的对不上就看不到进度。索引或档案拉不全就整份不搬，不留半套
+    with tempfile.TemporaryDirectory(dir=c.private) as w:
+        w = Path(w)
+        cl = app_phone(ph, b, standalone=False).client(str(w))
+        base = f"{game_docs(gid)}/"
+        ok, out = cl.get_tree(base + SAVE_INDEX_REL, w / "index")
+        if not ok or not any(p.is_file() for p in (w / "index").rglob("*")) or not cl.get(base + SAVE_PROFILE_REL, w / "Profiles.json"):
+            trace(c, f"{gid} 在 {b} 里的存档索引 / 用户档案拉不全，不复制：{(out or '').strip()[-200:]}")  # 非玩家句
+            c.diagnostic(SAVE_CARRY_INCOMPLETE.format(b), code="save_carry_incomplete", severity="warning")
+            return None
+        write_phone_save(c, ap, gid, layout.path(c, gid, "save_backup", create=False) / name)
+        dst = ap.client(str(w))
+        for f in sorted(p for p in (w / "index").rglob("*") if p.is_file()):
+            dst.put(f, base + SAVE_INDEX_REL + "/" + f.relative_to(w / "index").as_posix())
+        dst.put(w / "Profiles.json", base + SAVE_PROFILE_REL)
     c.diagnostic(SAVE_CARRIED.format(b), code="save_carried", severity="warning")
     return b
 
