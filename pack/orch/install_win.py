@@ -73,8 +73,14 @@ def device_kind(udid):
     return "" if not pids else "ipad" if APPLE_PID_IPAD in pids else "iphone"
 
 
+def udid_key(udid):
+    """设备编号的比较写法：去掉短横、统一大写（设备服务的 SerialNumber 与 devicectl 的 udid 来源不同，写法可能差在这两处）"""
+    return str(udid or '').replace('-', '').upper()
+
+
 def device_id(udid, devs):
-    hit = [d for d in devs if d[0] == udid]
+    want = udid_key(udid)
+    hit = [d for d in devs if want and udid_key(d[0]) == want]
     hit.sort(key=lambda d: d[1] != 'USB')   # 同一台既插线又在 Wi-Fi：走 USB
     return hit[0][2] if hit else None
 
@@ -436,7 +442,9 @@ def install_app(a, say=lambda m: print(m, flush=True)):
     try: devs = mux_devices()
     except OSError as e: raise Fail(f'连不上本机苹果设备服务（{e}）：装 iTunes 或「Apple 设备」', 75, 'device_pairing_required')
     dev = device_id(a.udid, devs)
-    if dev is None: raise Fail(f'设备服务里没有 {a.udid}（在列：{", ".join(f"{u}/{c}" for u, c, _ in devs) or "无"}）：插上线并解锁，或打开 Wi-Fi 同步', 75, 'device_pairing_required')
+    # 要装的那台不在设备服务里（D-XHV5：选中的是只在局域网上的 iPad，插着线的是另一台 iPhone）：是「没连上」，不是「要信任电脑」
+    if dev is None: raise Fail(f'设备服务里没有要装的那台 {a.udid or "（没拿到设备编号）"}（在列：{", ".join(f"{u}/{c}" for u, c, _ in devs) or "无"}）：'
+                               '给这台插上数据线并解锁，或在电脑上给它打开「通过 Wi-Fi 显示」', 75, 'device_not_connected')
     log = a.log or os.path.join(os.path.dirname(os.path.abspath(a.ipa)), 'plumesign.log')
     with tempfile.TemporaryDirectory() as t:
         out = Path(t, 'signed.ipa'); say(f'签名 + 装机（设备编号 {dev}）…')
