@@ -4,6 +4,6 @@
 set -u
 R=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)
 O=${T_FOUT_OUT:-$R/build/t_fout}; mkdir -p "$O"
-dotnet build -c Release "$R/graphics/tools/shbake/S2A.ShBake.csproj" --artifacts-path "$O/art" -p:OutDir="$O/bin/" > "$O/build.log" 2>&1 || { echo "编 S2A.ShBake 失败（$O/build.log）"; tail -5 "$O/build.log"; exit 1; }
+bash "$R/tools/cs_cache.sh" "$O/art" "$O/bin" "$R/graphics/tools/shbake/S2A.ShBake.csproj" -- dotnet build -c Release "$R/graphics/tools/shbake/S2A.ShBake.csproj" --artifacts-path "$O/art" -p:OutDir="$O/bin/" > "$O/build.log" 2>&1 || { echo "编 S2A.ShBake 失败（$O/build.log）"; tail -5 "$O/build.log"; exit 1; }
 timeout 300 "$O/bin/S2A.ShBake" selftest-fout ${T_FOUT_BAKE:+"$T_FOUT_BAKE"}; rc=$?
 exit $rc

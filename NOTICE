@@ -52,6 +52,11 @@ SMAA 着色器（graphics/metal/shaders/aa_*.metal）
 Copyright (C) Jorge Jimenez 等，版权与声明全文见 graphics/metal/shaders/AA-LICENSE.txt。
 MIT License.
 
+AMD FidelityFX Super Resolution 1（EASU + RCAS，移植于 graphics/nvn/gfx/nvn/nvn_present_fsr.inc，测试参考 graphics/nvn/tests/fsr1_ref.h）
+Copyright (c) 2021 Advanced Micro Devices, Inc. All rights reserved.
+Copyright (c) 2014 Michal Drobot (for concepts used in "FLOAT APPROXIMATIONS").
+MIT License. 全文：graphics/nvn/third_party/ffx_fsr1/LICENSE.txt；两段声明同时嵌在 nvn_present_fsr.inc 的着色器源码字符串里，随二进制带走。
+
 LumaDock 移植（launchers/macos、pack/jobs 中对应部分）
 Copyright (c) 2026 LumaDock contributors
 Copyright (c) 2026 jhaizhou (derived portions)
@@ -114,3 +119,28 @@ BSD-2-Clause. 许可全文：该目录 LICENSE 与 lib/linkernsbypass/LICENSE。
 经 BananaNative（MIT，Copyright (c) 2026 seedds、Swap2-Native contributors 等，
 https://git.eden-emu.dev/moceure/BananaNative 分支 android 提交 3d43275）vendored；
 src/hook/adreno_binder_compat.c 来自 BananaNative（MIT）。只进安卓 APK，且只在选择外挂驱动时加载。
+
+着色器清单数据（社区补丁统一包里 kind = pso 的 ext_<来源>.tsv：管线预建种子，只有着色器键与管线描述，不含游戏数据；
+由 tools/ext_pso_collect.py 按 tools/ext_pso_sources.tsv 定期从各来源取，每份首行记来源库与提交，出包时按本包直连库的键滤）
+nxnative（https://github.com/seedds/nxnative，dm/games/<程序号>/pso_manifest.tsv）
+Copyright (c) 2026 seedds
+MIT License. 许可全文：graphics/nvn/LICENSE
+MacNativeGames（https://github.com/ly05010419/MacNativeGames，games/<款>/assets/shader_list.tsv 与 games/<款>/runtime/games/<程序号>/pso_manifest.tsv）
+Copyright (c) 2026 MacNativeGames contributors
+MIT License. 许可全文：graphics/nvn/third_party/macnativegames/LICENSE
+hermit（https://github.com/azmasm/hermit，games/<款>/shader_list[-<构建>].tsv）
+Copyright (c) 2026 azmasm (Hermit, formerly switch2mac)
+Copyright (c) 2026 seedds (nxnative, on which this project and hermit-builds are built)
+MIT License. 许可全文：graphics/nvn/third_party/pso_lists/hermit/LICENSE
+AetherNX（https://github.com/iCosiSenpai/AetherNX）
+Copyright (c) 2026 Alessio Cosi (iCosiSenpai) - AetherNX and HorizonNative, https://github.com/iCosiSenpai/AetherNX
+MIT License. 许可全文：graphics/nvn/third_party/pso_lists/aethernx/LICENSE
+ffr-on-mac（https://github.com/DeDao2333/ffr-on-mac）
+Copyright (c) 2026 DeDao2333
+MIT License. 许可全文：graphics/nvn/third_party/pso_lists/ffr-on-mac/LICENSE
+OunceNative（https://github.com/kirakira-dev/OunceNative）
+Copyright (c) 2026 jhaizhou
+MIT License. 许可全文：graphics/nvn/third_party/pso_lists/ouncenative/LICENSE
+以下各仓库是 nxnative 的分叉或派生，许可与版权声明同 nxnative（Copyright (c) 2026 seedds，MIT License，许可全文：graphics/nvn/LICENSE），
+只收它们相对已收来源独有的清单行：
+plumber-racer-2（https://github.com/cheemu21/plumber-racer-2）、nxnative-easy（https://github.com/nalancer08/nxnative-easy）、kartnative（https://github.com/pahorema/kartnative）、nxnative-oot-framegen（https://github.com/pedroohaubert/nxnative-oot-framegen）、Jhoisaac/nxnative（https://github.com/Jhoisaac/nxnative）、no-lag-kart（https://github.com/kingbumi31/no-lag-kart）、UserDerezzed/nxnative（https://github.com/UserDerezzed/nxnative）、nxnative-ultimate（https://github.com/khalilgharbaoui/nxnative-ultimate）、Aeonitis/nxnative（https://github.com/Aeonitis/nxnative）、AmateurWizrd/nxnative（https://github.com/AmateurWizrd/nxnative）、Mighty-Green-Kokiri-Kid（https://github.com/Aznracer/Mighty-Green-Kokiri-Kid）、kid-with-sword-remake（https://github.com/ednofedulo/kid-with-sword-remake）、kid-with-sword-remake（https://github.com/cheemu21/kid-with-sword-remake）、iDams/nxnative（https://github.com/iDams/nxnative）、mizukico/nxnative（https://github.com/mizukico/nxnative）、yubismartlabs/nxnative（https://github.com/yubismartlabs/nxnative）、BorisChubiryaev/nxnative（https://github.com/BorisChubiryaev/nxnative）、forbesfields/nxnative（https://github.com/forbesfields/nxnative）

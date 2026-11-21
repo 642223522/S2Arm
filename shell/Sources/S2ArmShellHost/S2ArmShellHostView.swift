@@ -33,7 +33,7 @@ public struct S2ArmShellHostView: View {
             // 库顶上的提示：这次安装丢了「提高内存上限」权限（可关，只管这次打开；「了解详情」看各装法怎么带上）；删除游戏的进度与结果（点一下收起结果）
             .overlay(alignment: .top) {
                 VStack(spacing: 10) {
-                    if let iml = model.imlNotice, !model.guideOpen {   // 首次引导开着时先不出（引导盖在上面、点不到关闭），引导关了再出
+                    if let iml = model.imlNotice, !model.guideOpen, !model.featureOpen {   // 首次引导 / 新功能介绍开着时先不出（盖在上面、点不到关闭），关了再出
                         IMLNoticeBar(notice: iml, close: { model.closeIMLNotice() }, more: { model.openIMLGuide() })
                             .onAppear { s2a_shell_iml_notice_seen() }   // 真显示出来才记（起局那条不再重复）
                             .transition(.move(edge: .top).combined(with: .opacity))
@@ -56,6 +56,17 @@ public struct S2ArmShellHostView: View {
                 }
             }
             .animation(.smooth(duration: 0.25), value: model.guideOpen)
+        #if !os(tvOS)
+            // 这一版的新功能介绍（iPhone 两页）：排在首次引导之后，同样盖在最上面、手柄能翻页能关；设置里「再看一遍」再开
+            .overlay {
+                if model.featureOpen, let intro = model.featureIntroContent {
+                    FeatureIntroView(intro: intro, index: Binding(get: { model.featurePage }, set: { model.featurePage = $0 }), close: { model.closeFeature() })
+                        .transition(.opacity)
+                }
+            }
+            .animation(.smooth(duration: 0.25), value: model.featureOpen)
+            .onReceive(NotificationCenter.default.publisher(for: .shellOpenFeatureIntro)) { _ in model.openFeature() }
+        #endif
         #if canImport(UIKit) && !os(tvOS)
             // 回前台重判资源包：玩家去「文件」/ 访达拷完资源包回来，不用重开 App
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in model.rescanCatalogue() }
@@ -159,6 +170,22 @@ import UIKit
 
 @MainActor private var g_refreshModel: S2ArmShellHostModel?   // 刷新回调指向的模型（见 s2a_shell_library_vc）
 
+/// 游戏库页的根控制器：关掉 iPhone Duo 的竖栏。系统缺省给竖向状态栏留一整列（iOS 27.1 preferredVerticalBarBehavior = automatic，
+/// 外屏竖着安全区右 84 / 下 34），库页右侧和底部就空成黑边；关掉后状态栏回到顶部横放，整屏归库页。没有竖栏的机型系统不问这个属性
+final class LibraryHostingController<Content: View>: UIHostingController<Content> {
+    #if os(iOS)
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .all }   // 跟随系统：四个方向都给（UIHostingController 在 iPhone 上缺省「除倒置外」），没有倒置方向的机型系统自己不转
+    #endif
+    // 按 SDK 判、不按编译器判：Xcode 27.0 与 27.1 都是 Swift 6.4，但只有 27.1 的 iOS SDK 有 UIVerticalBarBehavior（UIKit 9127.0.85 起）——
+    //   原先 compiler(>=6.4) 在 27.0 上也成立，门禁机每个 Xcode 各编一遍时 27.0 报找不到类型（同 ios/play_layout.h 按 __IPHONE_27_1 判）
+    //   Intel 出壳走 swift build --sdk，UIKit 没有 user version number（Swift 警告 #ModuleVersionMissing），
+    //     canImport(..., _underlyingVersion:) 里的版本会被忽略、在 26.5 SDK 上误成立；那条路径打 -DS2A_UIKIT_VERSION_UNKNOWN 关掉这段覆盖。
+    #if os(iOS) && canImport(UIKit, _underlyingVersion: 9127.0.85) && !S2A_UIKIT_VERSION_UNKNOWN
+    @available(iOS 27.1, *)
+    override var preferredVerticalBarBehavior: UIVerticalBarBehavior { .disabled }
+    #endif
+}
+
 /// app.m 用的 C 入口（声明在 S2ArmShellBridge/include/s2a_shell.h）：返回 +1 的 UIHostingController。
 /// 只在主线程调（头文件约定）；@MainActor 让 Swift 侧按主线程隔离编译。
 @MainActor @_cdecl("s2a_shell_library_vc")
@@ -171,9 +198,9 @@ public func s2a_shell_library_vc(_ cataloguePath: UnsafePointer<CChar>?) -> Unsa
     g_refreshModel = model
     s2a_shell_set_refresh_handler({ ctx in
         guard let ctx else { return }
-        MainActor.assumeIsolated { Unmanaged<S2ArmShellHostModel>.fromOpaque(ctx).takeUnretainedValue().refreshGameData() }
+        MainActor.assumeIsolated { Unmanaged<S2ArmShellHostModel>.fromOpaque(ctx).takeUnretainedValue().rescanCatalogue() }   // 重读清单再重判：导入文件夹里新导入的 .s2arm（App 开着 / 冷启动 / 在「文件」里点开）马上列出，不用切后台再回来（0.6.0 自签走查 B1 / B5）
     }, Unmanaged.passUnretained(model).toOpaque())
-    let vc = UIHostingController(rootView: S2ArmShellHostView(model: model))
+    let vc = LibraryHostingController(rootView: S2ArmShellHostView(model: model))
     return Unmanaged.passRetained(vc as UIViewController).toOpaque()
 }
 #endif

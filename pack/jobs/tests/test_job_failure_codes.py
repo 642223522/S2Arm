@@ -18,7 +18,7 @@ import zipfile
 
 from jobcase import JobCase, JOBS, ROOT, ios_fixture
 from core import Context, Failure, Cancelled, atomic
-from errors import RECOVERY
+from errors import RECOVERY, WINDOWS_RECOVERY
 import build
 import ipa
 import install
@@ -317,37 +317,15 @@ class MacFailures(JobCase):
 
 class InstallFailures(JobCase):
     def test_install_rc_four_causes_and_unknown(self):
-        import diag
-        gid = "0100000000000000"
-        ios_fixture(self.c, gid)   # 出好的 iPhone 版（容器件 + 资源包）：有资源包才装（审计 18:00 P1-58：没有资源包先报 pack_missing、不走到装机）
-        archive = self.root / "test.ipa"
-        with zipfile.ZipFile(archive, "w") as z:
-            z.writestr("Payload/Test.app/Info.plist", plistlib.dumps({"CFBundleIdentifier": "test"}))
-            z.writestr("Payload/Test.app/S2Arm", b"bin")
-        self.c.r.update(gameId=gid)
-        import ipa as packer
-        def fake_assemble(c, g, others=(), failed=(), root=None, dest=None, agreed=()):
-            return archive, [gid], "SID1"
-        def unpack(args, **kw):
-            with zipfile.ZipFile(archive) as z: z.extractall(args[-1])
-            import subprocess
-            return subprocess.CompletedProcess(args, 0, "", "")
+        # 装 App 时设备 / devicectl 拒收的原文 → 错误码（install.classify 的 SIGN_ERRORS 表，装机失败按 device_install_failed 兜底）
         cases = (("The maximum number of apps for free development profiles has been reached", "free_app_limit"),   # 装机时设备拒收 = 同时 3 个自签 App
                  ("Developer Mode is disabled on this device", "developer_mode_required"),
                  ("The pairing record is invalid. Please pair the device again", "device_pairing_required"),
                  ("The provisioning profile has expired", "provisioning_expired"),
                  ("synthetic unknown installation error", "device_install_failed"))
         for raw, code in cases:
-            with self.subTest(code=code), patch.object(install, "xcode_teams", return_value=[dict(id="TESTTEAM", name="Test", free=True)]), \
-                 patch.object(install, "phone", return_value=dict(id="fixture", name="Synthetic")), \
-                 patch.object(install, "udid_of", return_value=""), patch.object(install, "pull_seen"), \
-                 patch.object(install, "backup_saves"), patch.object(packer, "assemble", side_effect=fake_assemble), \
-                 patch.object(self.c, "run"), \
-                 patch.object(install.subprocess, "run", side_effect=unpack), \
-                 patch.object(diag, "devicectl", return_value=(9, {}, raw)):
-                with self.assertRaises(Failure) as got: install.install(self.c)
-                self.assertEqual(got.exception.code, code)
-                self.assertIn(raw, str(got.exception))
+            with self.subTest(code=code):
+                self.assertEqual(install.classify(raw, default="device_install_failed"), code)
 
     def test_resource_transfer_preserves_control_failures(self):
         pack = self.root / "pack"; pack.mkdir(); (pack / "manifest.json").write_text('{"version": 2, "index_sha256": "x"}')
@@ -470,7 +448,10 @@ class FreeAccountLimits(unittest.TestCase):
             with self.subTest(code=code):
                 self.assertTrue(loc.get(RECOVERY[code]) and spec[code]["title"]["en"] and spec[code]["detail"]["en"] and code in guide)
                 self.assertEqual(ctl.AI_NEXT[code][0], "human")
-        self.assertIn("添加账号", RECOVERY["apple_not_signed_in"]); self.assertNotIn("过期", RECOVERY["apple_not_signed_in"])
+        self.assertIn("添加账号", WINDOWS_RECOVERY["apple_not_signed_in"]); self.assertNotIn("过期", WINDOWS_RECOVERY["apple_not_signed_in"])
+        # Mac 通用壳登录框（apple_login）：Mac 不再叫玩家去开 Impactor（期望手写）
+        self.assertNotIn("Impactor", RECOVERY["apple_not_signed_in"]); self.assertIn("S2Arm 不保存", RECOVERY["apple_not_signed_in"])
+        self.assertTrue(loc.get(WINDOWS_RECOVERY["apple_not_signed_in"]))
         self.assertIn("DNS", RECOVERY["apple_server_unreachable"]); self.assertIn("不是 Apple ID", RECOVERY["apple_server_unreachable"])
         for other, code in (("Developer API error 9401: An App ID with Identifier 'x' is not available.", "app_id_taken"),
                             ("-21669 verification code", "two_factor_wrong"), ("-20101 entered incorrectly", "apple_id_wrong")):
@@ -479,7 +460,7 @@ class FreeAccountLimits(unittest.TestCase):
 
 class LogCauses(JobCase):
     """11-07 现场（联合开发者 Mac 启动器旷野之息）：直连库出库写盘失败只报「刷新停在 direct 阶段（rc=1）」+ package_failed。
-    日志夹具按真实产出格式手写：refresh.sh 终止红行、pack/stage_direct.sh 转述 direct_lib.sh 的「🔴 出库失败 rc=…（<build.log>）」、.NET 未处理异常。"""
+    日志夹具按真实产出格式手写：refresh.sh 终止红行、pack/stage_direct.sh 转述 direct_lib.py 的「🔴 出库失败 rc=…（<build.log>）」、.NET 未处理异常。"""
     GID = "01007EF00011E000"
     STOP = "【红】01007EF00011E000 刷新停在 direct 阶段（rc=1），现行 = 01007EF00011E000@ex-b3eed688"
 
@@ -533,7 +514,7 @@ class LogCauses(JobCase):
         error, d = self.mac_refresh(["【黄】直连缺口：配置推导不支持本款：unsupported graphics API: unknown（没有 NVN / Vulkan / OpenGL 任一接口的证据）",
                                      "【红】05F42564C82B0000 直连单轨停在 直连配置推导：直连缺口：配置推导不支持本款（direct_profile rc=3）"])
         self.assertEqual(error.code, "graphics_api_unsupported")
-        self.assertEqual(d["summary"], "这款游戏暂不支持：没找到任天堂官方图形接口（NVN / Vulkan / OpenGL），多见于自制或移植的程序。")
+        self.assertEqual(d["summary"], "这款游戏暂时出不了包：没认出它用的图形接口（NVN / Vulkan / OpenGL）。请把诊断发给我们，我们会核对是不是没认出来。")
         self.assertEqual(d["suggestion"], RECOVERY["graphics_api_unsupported"])
 
     def test_font_copy_denied_says_grant_access(self):
@@ -576,7 +557,7 @@ class LogCauses(JobCase):
         self.assertEqual(error.code, "metal_unavailable")
 
     def test_chain_mismatch_from_newer_xcode_says_update_s2arm(self):
-        # 11-07 联合开发者现场（beta.4 + Xcode 27.2，metal 32023.922 比锁 32023.921 新）：direct_lib.sh 把编译器提示当链号读，
+        # 11-07 联合开发者现场（beta.4 + Xcode 27.2，metal 32023.922 比锁 32023.921 新）：当时的 direct_lib.sh 把编译器提示当链号读，
         #   报「链号前后不一（c7a4970bffe5 / note:）」→ 刷新停在 direct 阶段。上屏：这版 S2Arm 不认识你的 Xcode；下一步：更新 S2Arm
         from errors import RECOVERY
         error, d = self.mac_refresh(["[直连库] 🔴 链号前后不一（c7a4970bffe5 / note:）", self.STOP])
@@ -591,6 +572,26 @@ class LogCauses(JobCase):
         error, d = self.mac_refresh(self.direct_refresh_lines(self.root / "gone/work.stage.1/build.log"))
         self.assertEqual(error.code, "package_failed")
         self.assertIn("复制错误摘要", d["suggestion"])
+
+    def test_unclassified_failure_carries_subcommand_text_into_summary(self):
+        # #1725 / #1730 / #1744（Mac 0.5.8 玩家）：判不出原因落 package_failed，错误摘要只剩「出包未完成。」。直连库子命令以 1 退出、stderr 带特征串：
+        #   direct_lib.py 的 🔴 行带子命令名 / 退出码 / 原文，stage_direct.sh 原样转进刷新红行，后面是刷新终止转述行 → 诊断 detail 有「失败原文：」那一行，
+        #   错误摘要（report.build）里看得到特征串。期望值手写
+        sig = "Unhandled exception. System.AggregateException: SIG_CS_FAIL_9d2e"
+        red = "【红】01007EF00011E000 直连库出库失败（rc=1，[直连库] 🔴 出库失败 rc=1：dsh_batch.py 退出码 1：%s ⏎ at S2A.Dsh.Batch.Build.Run()（/w/build.log））" % sig
+        error, d = self.mac_refresh(["[直连库] 第 3/5 步 翻译 + 编库（8 路）", red, self.STOP])
+        self.assertEqual(error.code, "package_failed")
+        self.assertEqual(str(error), "出包未完成。")   # 上屏那句照旧（11-07：原文不上屏）
+        self.assertIn("失败原文：" + red[:60], d["detail"])
+        self.assertIn("SIG_CS_FAIL_9d2e", d["detail"].split("失败原文：", 1)[1].splitlines()[0])
+        import report
+        private = self.root / "rep"; (private / "jobs").mkdir(parents=True); (private / "keys").mkdir()
+        (private / "jobs" / "t.json").write_text(json.dumps({"id": "t", "operation": "build", "state": "failed", "milestone": "refresh", "message": str(error), "diagnostics": [d]}))
+        (private / "jobs" / "t.request.json").write_text(json.dumps({"operation": "build"}))
+        text = report.build(private, "t")
+        summary = text.split("【游戏】")[0].split("【电脑】")[0]   # 摘要上半（出错段），不算日志末尾
+        self.assertIn("原文：", summary)
+        self.assertIn("SIG_CS_FAIL_9d2e", summary)
 
     def test_cause_beyond_bounded_tail_is_not_read(self):
         # 子日志只读尾 32000 字节：根因行之后再有 40 KB 输出就读不到，按阶段归（射程有界的反证）
@@ -641,6 +642,33 @@ class LogCauses(JobCase):
         error, _ = self.mac_refresh(["pack/stage_x.sh: line 9: spirv-cross: command not found", "【红】fixture 刷新停在 caps 阶段（rc=1），现行 = fixture@ex-1"])
         self.assertEqual(error.code, "tool_missing")
 
+    # #1762（Windows 0.6.0，诊断附件原文）：随包 bash 起子进程连续 0xC0000142，玩家关掉「强制 ASLR」后出包恢复
+    DOFORK = ("15909633 [main] bash 1387 dofork: child -1 - forked process 45140 died unexpectedly, retry 0, exit code 0xC0000142, errno 11",
+              "E:/S2ARM/S2Arm/Engine/graphics/tools/direct/direct_lib.sh: fork: Resource temporarily unavailable",
+              "【红】fixture 刷新停在 direct 阶段（rc=254），现行 = fixture@ex-1")
+
+    def test_dofork_with_mandatory_aslr_on_names_it(self):
+        # 期望手写：注册表核实强制 ASLR 开着 → windows_mandatory_aslr，上屏句与恢复句都点名「强制 ASLR」与关的位置
+        with um.patch("errors._mandatory_aslr_on", return_value="注册表 kernel 开着"):
+            error, d = self.mac_refresh(list(self.DOFORK))
+        self.assertEqual((error.code, d["code"]), ("windows_mandatory_aslr", "windows_mandatory_aslr"))
+        self.assertEqual(d["summary"], "Windows 的强制 ASLR 开着：出包工具起不了子进程。")
+        self.assertIn("漏洞利用保护设置", d["suggestion"])
+
+    def test_dofork_without_mandatory_aslr_is_not_believed(self):
+        # 剃刀 H9 反例：同样的 0xC0000142，但强制 ASLR 没开（别的原因：桌面堆、注入）→ 不点名 ASLR，字样与未采信理由进 detail
+        with um.patch("errors._mandatory_aslr_on", return_value=None):
+            error, d = self.mac_refresh(list(self.DOFORK))
+        self.assertNotEqual(d["code"], "windows_mandatory_aslr")
+        self.assertIn("候选 windows_mandatory_aslr 未采信", d["detail"])
+
+    def test_force_relocate_bits(self):
+        # winnt.h：FORCE_RELOCATE_IMAGES 在位 8–9，1 = 总开、2 = 总关、3 = 总开且要求重定位；第 0 字节（DEP 等）不影响
+        from errors import _force_relocate_on
+        self.assertEqual([_force_relocate_on(bytes([0xFF, b])) for b in (0, 1, 2, 3, 0x11, 0x12)], [False, True, False, True, True, False])
+        self.assertFalse(_force_relocate_on(b"\x01"))
+        self.assertFalse(_force_relocate_on(None))
+
     def test_disk_full_words_with_free_space_are_not_believed(self):
         # 剃刀 H9 反例：日志里有 [Errno 28] 字样（例如前面一次已重试成功的写），但点名的盘还剩 40 GB → 不说盘满，按阶段归；字样与未采信理由进 detail
         #   （坑记录 11-09：Windows rc=127 被一律译成盘满，玩家照提示删了 37 GB）
@@ -650,6 +678,51 @@ class LogCauses(JobCase):
         self.assertEqual(d["code"], "package_failed")
         self.assertIn("候选 disk_full 未采信", d["detail"])
         self.assertIn("40.0 GB", d["detail"])
+
+    def test_measured_disk_full_note_is_believed_despite_free_space(self):
+        # #1725（诊断 D-K82N）：DLC 解到工具缓存把系统盘写满；失败后临时文件一删，事后量还剩 36 GB，命中行后面还有「刷新停在」→ 原先不采信、落到「没归类」。
+        #   tools/clonedir.py 写满当时量的「【写满】」事实行：照报 disk_full，说明带当时的读数（期望手写）
+        with um.patch("errors._free_bytes", return_value=36 << 30):
+            error, d = self.mac_refresh(["【写满】/w/tool-cache/run/s2arm/cache/aoc（盘「Macintosh HD」）所在盘剩 0.2 GB，romfs.std 要 6.5 GB",
+                                         "克隆失败：romfs.std：[Errno 28] No space left on device",
+                                         "【红】fixture 刷新停在 aoc 阶段（rc=1），现行 = fixture@ex-1"])
+        self.assertEqual(error.code, "disk_full")
+        self.assertIn("失败当时量", d["detail"]); self.assertIn("romfs.std 要 6.5 GB", d["detail"])
+        # 玩家看到的两句点名哪块盘、差多少：差额 = 6.5 − 0.2 = 6.3 → 向上取整 7 GB（期望手写）
+        self.assertEqual(d["summary"], "「Macintosh HD」空间不够：这一步还要约 6.5 GB，盘上只剩 0.2 GB。")
+        self.assertEqual(d["suggestion"], "在「Macintosh HD」上腾出至少 7 GB 后重试；游戏原件、存档和上次成功的运行版本别删。")
+
+    def test_disk_full_without_measured_note_keeps_general_words(self):
+        # 没有当场读数（只有系统字样、或写满的是目录读不出大小）：照旧笼统两句，不编数字
+        import errors
+        with um.patch("errors._free_bytes", return_value=1 << 20):
+            error, d = self.mac_refresh(["OSError: [Errno 28] No space left on device: '/w/tmp/a.bin'",
+                                         "【写满】/w/x（盘「Macintosh HD」）所在盘剩 0.1 GB",
+                                         "【红】fixture 刷新停在 aoc 阶段（rc=1），现行 = fixture@ex-1"])
+        self.assertEqual(error.code, "disk_full")
+        self.assertEqual(d["summary"], errors.PLAYER_REASON["disk_full"])
+        self.assertEqual(d["suggestion"], errors.RECOVERY["disk_full"])
+        self.assertEqual(errors.player_words("disk_full", None, ["【写满】/v（盘「Ext」）所在盘剩 2.0 GB，romfs.std 要 2.1 GB"])[1],
+                         "在「Ext」上腾出至少 1 GB 后重试；游戏原件、存档和上次成功的运行版本别删。", "差额不足 1 GB 也至少写 1 GB")
+
+    def test_final_disk_full_error_is_believed_despite_free_space(self):
+        # 诊断 #9ac7f7：让这一步退出的就是盘满那个异常（回溯末行 WinError 112），失败后临时文件已删、事后量还剩 17 GB → 照报 disk_full，
+        #   说明里写「这一步写满了盘」；旧字样后面还有别的输出的（上一条）仍按 H9 核实
+        with um.patch("errors._free_bytes", return_value=17 << 30):
+            error, d = self.mac_refresh(["Traceback (most recent call last):", '  File "deliver_pack.py", line 26, in clone', "    shutil.copy2(src, dst)",
+                                         "OSError: [WinError 112] 磁盘空间不足。"])
+        self.assertEqual(d["code"], "disk_full")
+        self.assertIn("这一步写满了盘", d["detail"])
+
+    def test_disk_full_measures_the_disk_the_failed_write_names(self):
+        # #df9fd6：Windows 交付资源包 shutil.copy2 报 WinError 112，库盘还剩 226.7 GB、写满的是目标盘；winlong 给报错补上源 / 目标之后，
+        #   命中行点名两条路径。期望手写：按点名路径里剩得最少的那块盘核（C: 1.0 GB < 5 GB）→ 采信 disk_full，依据点名 C:
+        free = lambda p: (1 << 30) if str(p).startswith("C:") else int(226.7 * (1 << 30))
+        with um.patch("errors._free_bytes", side_effect=free):
+            error, d = self.mac_refresh(["OSError: [WinError 112] 磁盘空间不足。: 'E:\\lib\\games\\t1\\pack\\a.bin' -> 'C:\\out\\t1资源包\\a.bin'",
+                                         "【红】fixture 刷新停在 sysdata 阶段（rc=1），现行 = fixture@ex-1"])
+        self.assertEqual(error.code, "disk_full")
+        self.assertIn("C:", d["detail"]); self.assertIn("1.0 GB", d["detail"])
 
     def test_command_not_found_for_present_tool_is_not_believed(self):
         # 剃刀 H9 反例：「x: command not found」但 x 现在找得到（可选探测、PATH 一时没带上）→ 不叫玩家去装工具，按阶段归

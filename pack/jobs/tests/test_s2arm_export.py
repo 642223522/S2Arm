@@ -5,6 +5,7 @@
 import hashlib
 import io
 import json
+import os
 import sys
 import tarfile
 import unittest
@@ -44,7 +45,7 @@ class S2armExport(unittest.TestCase):
 
     def export(self, on=True):
         self.c.r.update(gameId=self.A, mode="export")
-        with patch.object(program_pack, "enabled", lambda c: on), patch.object(program_pack, "build", lambda c, g, **k: self.pkg), \
+        with patch.object(program_pack, "build", lambda c, g, **k: self.pkg), \
                 patch.object(rewrite_refresh, "refresh_ios", lambda c, games, **k: []), patch.object(install, "export_sign_mode", lambda c: "external"):
             return install.export_s2arm(self.c, self.A)
 
@@ -77,7 +78,26 @@ class S2armExport(unittest.TestCase):
         self.assertEqual(data[f"program/{program_pack.image_name(self.A)}"], DYLIB)
         self.assertNotIn("pack/game.img", names, "资源本体不进 .s2arm")
         self.assertEqual(json.loads(data["program/catalogue.json"])["team"], None, "程序未签名，留给手机签")
-        self.assertEqual(r["resourcePath"], str(self.pack / "game.img"), "资源本体给原位置，不拷")
+        link = out.with_suffix(".img")
+        self.assertEqual((r["resourcePath"], r["resourceLinked"]), (str(link), True), "资源本体硬链接进游戏包文件夹，和 .s2arm 放一起")
+        self.assertTrue(os.path.samefile(link, self.pack / "game.img"), "同一个文件（不占新空间）")
+        self.assertEqual(os.stat(self.pack / "game.img").st_nlink, 2)
+
+    def test_resource_link_refresh_and_fallback(self):
+        # 同名的是上次链的旧 game.img（后来换过）→ 换成现在这份；建不了硬链接（exFAT：os.link 报 EPERM / ENOTSUP）→ 给原位置、文件夹里不留东西
+        self.fixture()
+        link = Path(self.c.library) / "S2Arm 游戏包" / "测试游戏.img"
+        link.parent.mkdir(parents=True); link.write_bytes(b"old")
+        r = self.export()
+        self.assertTrue(os.path.samefile(link, self.pack / "game.img")); self.assertTrue(r["resourceLinked"])
+        link.unlink()
+        def no_link(a, b):
+            raise OSError(1, "Operation not permitted")
+        with patch.object(install.os, "link", no_link):
+            r = self.export()
+        self.assertEqual((r["resourcePath"], r["resourceLinked"]), (str(self.pack / "game.img"), False))
+        self.assertFalse(link.exists())
+        self.assertEqual([p.name for p in link.parent.iterdir() if p.name.endswith(".link")], [], "临时链接名不留")
 
     def signed_export(self, choice="appleId", once=None):
         # 玩家选了用 Apple ID 签（或这次换成…）：签名器替身在 dylib 尾部加一段（真签名同样只改头尾），期望按加的字节手算
@@ -86,7 +106,7 @@ class S2armExport(unittest.TestCase):
             (Path(self.c.private) / install.SIGN_CHOICE).write_text('{"mode": "external"}')
         def signer(dylib, team, bundle):
             Path(dylib).write_bytes(Path(dylib).read_bytes() + f"|signed {team} {bundle}".encode())
-        with patch.object(program_pack, "enabled", lambda c: True), patch.object(program_pack, "build", lambda c, g, **k: self.pkg), \
+        with patch.object(program_pack, "build", lambda c, g, **k: self.pkg), \
                 patch.object(rewrite_refresh, "refresh_ios", lambda c, games, **k: []), \
                 patch.object(install, "export_signer", lambda c, mode: ("TEAMX", "io.example.app", signer, "测试账号")):
             return install.export_s2arm(self.c, self.A)
@@ -116,6 +136,39 @@ class S2armExport(unittest.TestCase):
         self.assertEqual(install.chosen_sign_mode(self.c), "external", "这次换成不改设置")
         r = self.signed_export(choice="appleId", once="none")
         self.assertEqual(r["signedWith"]["mode"], "none", "选了 Apple ID 这次也能不签")
+
+    def test_apple_id_not_signed_in_still_exports_unsigned(self):
+        # 11-19 维护者：导出不加拦截。Apple ID 方式读不到登录（Windows：Impactor 里没账号）→ 修前「没装上」；期望照样导出未签名的（同不签），
+        #   完成页 signedWith none，诊断一条黄字说导入后由手机签（码 apple_not_signed_in：下一步是去登录）
+        self.fixture()
+        self.c.r.update(gameId=self.A, mode="export")
+        def no_login(c, mode):
+            raise install.Failure("读不到 Impactor 里登录的 Apple ID", code="apple_not_signed_in")
+        with patch.object(program_pack, "build", lambda c, g, **k: self.pkg), \
+                patch.object(rewrite_refresh, "refresh_ios", lambda c, games, **k: []), patch.object(install, "export_signer", no_login):
+            r = install.export_s2arm(self.c, self.A)
+        _, data, _ = self.members(r["s2armPath"])
+        self.assertEqual((json.loads(data["s2arm.json"])["signer"], r["signedWith"]), (None, dict(mode="none", name="", team=None)))
+        self.assertEqual(data[f"program/{program_pack.image_name(self.A)}"], DYLIB, "程序库原样、没签")
+        warn = [d for d in self.c.job["diagnostics"] if d.get("code") == "apple_not_signed_in"]
+        self.assertEqual([d["severity"] for d in warn], ["warning"])
+        self.assertEqual(warn[0]["summary"], install.EXPORT_UNSIGNED_NO_ID, "没有交过身份的手机：如实说导入后签不了、下一步是什么")
+        layout.save_device(self.c, "PHONE1", dict(identity=dict(team="T1", key_fp="f", cert_sha1="s")))
+        self.c.job["diagnostics"].clear()
+        with patch.object(program_pack, "build", lambda c, g, **k: self.pkg), \
+                patch.object(rewrite_refresh, "refresh_ios", lambda c, games, **k: []), patch.object(install, "export_signer", no_login):
+            install.export_s2arm(self.c, self.A)
+        self.assertEqual([d["summary"] for d in self.c.job["diagnostics"] if d.get("code") == "apple_not_signed_in"], [install.EXPORT_UNSIGNED],
+                         "交过身份的手机：未签名，导入后由手机上的 S2Arm 签名")
+        # 别的签不成（证书缺件等）照旧报
+        def broken(c, mode):
+            raise install.Failure("证书缺件", code="devcert_missing")
+        self.c.r.update(sign="devCert")
+        with patch.object(program_pack, "build", lambda c, g, **k: self.pkg), \
+                patch.object(rewrite_refresh, "refresh_ios", lambda c, games, **k: []), patch.object(install, "export_signer", broken):
+            with self.assertRaises(install.Failure) as e:
+                install.export_s2arm(self.c, self.A)
+        self.assertEqual(e.exception.code, "devcert_missing")
 
     def test_sign_mode_set(self):
         from core import Failure
@@ -179,18 +232,15 @@ class S2armExport(unittest.TestCase):
         with self.assertRaises(Failure):
             self.export()
 
-    def test_install_export_routes_by_switch(self):
-        # 导出一款：开关开 → .s2arm；开关关 → 照旧的自签导出（export_phone）
+    def test_install_export_goes_to_s2arm(self):
+        # 导出一款：只有 .s2arm 两件套（0.6.0 起没有旧的自签导出）
         self.fixture()
         self.c.r.update(gameId=self.A, mode="export")
         calls = []
         with patch.object(install, "export_s2arm", lambda c, g: calls.append(("s2arm", g)) or {}), \
-                patch.object(install, "export_phone", lambda c, g=None: calls.append(("phone", g)) or {}), \
                 patch.object(install, "ios_pack", lambda c, g: self.pack), patch("downstream.requested", lambda c, g: None, create=True):
-            for on in (True, False):
-                with patch.object(program_pack, "enabled", lambda c, on=on: on):
-                    install._install(self.c)
-        self.assertEqual(calls, [("s2arm", self.A), ("phone", self.A)])
+            install._install(self.c)
+        self.assertEqual(calls, [("s2arm", self.A)])
 
 
 if __name__ == "__main__":

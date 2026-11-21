@@ -16,7 +16,7 @@ FAULT = Path('android/native/runtime/fault')
 SOURCES = [FAULT/'tests/thread_test.c', FAULT/'tests/thread_guest.S', FAULT/'tests/guest_stack.S',
            FAULT/'fault.c', FAULT/'trampoline.S', Path('android/native/guest_signal.c'),
            Path('android/native/redzone.S'), Path('runtime/src/crash.c'), Path('runtime/src/xstack.c'),
-           FAULT/'elf_host.c']
+           FAULT/'elf_host.c', Path('runtime/src/snapsw.c')]   # snapsw.c：thread.c 调即时存档开关 s2a_snap_*（无平台依赖的真实实现，安卓恒关）
 def valid_output(status, text, expected_exit=0, contains=None):
     """Both streams must already be merged; a PASS cannot cancel any FAIL."""
     return (status==expected_exit and (not contains or contains in text)

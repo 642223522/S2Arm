@@ -1,0 +1,70 @@
+diff --git a/src/Ryujinx.HLE/FileSystem/S2ASaveCommit.cs b/src/Ryujinx.HLE/FileSystem/S2ASaveCommit.cs
+index e199816edea90551f730698a0915a411bde7b3c9..1bd4fe007c75e6de77f107503ae591b51310943f 100644
+--- a/src/Ryujinx.HLE/FileSystem/S2ASaveCommit.cs
++++ b/src/Ryujinx.HLE/FileSystem/S2ASaveCommit.cs
+@@ -149,6 +149,40 @@ namespace Ryujinx.HLE.FileSystem
+         // (= the swap happened), so a later mount never copies the old ExtraData0 over the new extra data.
+         private const string PendingExtra = ".s2a_extra_pending";
+         public const string PreviousDir = ".s2a_prev";   // 上一次提交前的已提交版本（提交换下来的那份）
++        // 护栏标记：最近一次提交被护栏拦下、到现在还没有一次正常提交（界面据此提示「回到上一份存档」）。一行：UTC 时间、第几次提交、哪里对不上。
++        //   拦下时写，之后一次正常提交或回到上一份时删
++        public const string GuardFile = ".s2a_guard";
++
++        private void MarkGuardLocked(string what)
++        {
++            try
++            {
++                WriteFileDurable(System.IO.Path.Combine(_dir, GuardFile + ".tmp"), System.IO.Path.Combine(_dir, GuardFile),
++                    System.Text.Encoding.UTF8.GetBytes($"{DateTimeOffset.UtcNow:O}\t第 {Volatile.Read(ref _commits) + 1} 次提交\t{what}\n"));
++                Txn.SyncDirectory(_dir);
++            }
++            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
++            {
++                Red($"存档事务：{_dir} 护栏标记没写上（{e.Message}）");
++            }
++        }
++
++        private static void ClearGuard(string dir)
++        {
++            string guard = System.IO.Path.Combine(dir, GuardFile);
++
++            try
++            {
++                if (File.Exists(guard))
++                {
++                    File.Delete(guard);
++                }
++            }
++            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
++            {
++                Red($"存档事务：{dir} 护栏标记没删掉（{e.Message}）");
++            }
++        }
+         private const int TokenSize = 16;
+ 
+         private SharedRef<ISaveDataFileSystem> _base;
+@@ -252,6 +286,8 @@ namespace Ryujinx.HLE.FileSystem
+                 {
+                     return Errno("交换后目录项落盘", e);
+                 }
++
++                ClearGuard(dir);   // 回到了上一份：被拦的那次与它无关了
+             }
+ 
+             return null;
+@@ -455,6 +491,7 @@ namespace Ryujinx.HLE.FileSystem
+                     if (attempt == 2)
+                     {
+                         Red($"存档事务：第 {Volatile.Read(ref _commits) + 1} 次提交 {_dir} 时克隆出的新版本和游戏写的不一样（{mismatch}；重做一次仍不对），这次不提交（已提交版本不动）");
++                        MarkGuardLocked(mismatch);
+ 
+                         return ResultFs.UnexpectedInLocalFileSystemE.Log();
+                     }
+@@ -572,6 +609,7 @@ namespace Ryujinx.HLE.FileSystem
+             }
+ 
+             ClearWritesLocked();   // 换上的就是这一版：写入记录随它了结
++            ClearGuard(_dir);      // 正常提交过了：护栏标记了结
+ 
+             if (!durable)
+             {

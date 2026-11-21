@@ -710,12 +710,13 @@ def copy_tree_links(src, dst, check=None):
     src, dst = Path(src), Path(dst)
     isjunction = getattr(os.path, "isjunction", lambda _: False)
     def materialize(a, b):
-        """目标盘建不了链接（exFAT / FAT32，v0.3.1 玩家确认过照用）：把链接指向的目录整份拷过来。产物根的「<款>@现行」拷成真目录，
-        版本名记进 .root_tag（pack/orch/roots.py 实目录模式按它认）"""
+        """目标盘建不了链接（exFAT / FAT32，v0.3.1 玩家确认过照用）：把链接指向的目录整份拷过来。
+        老库产物根的现行链接「<款>@现行」不展开：拷成指针文件（内容 = 指向的版本目录名，pack/orch/current.py；那个版本目录同在这棵树里照拷）"""
         target = Path(os.path.realpath(a))
+        if a.name.endswith(layout.CURRENT):
+            b.write_text(target.name + "\n", encoding="utf-8")
+            return
         copy(target, b)
-        if a.name.endswith("@现行"):  # 非玩家句
-            (b / ".root_tag").write_text(target.name + "\n", encoding="utf-8")
     def copy(a, b):
         if check:
             check()
@@ -741,10 +742,14 @@ def copy_tree_links(src, dst, check=None):
 
 
 def _retarget_links(root, old, new):
-    """目录搬走后，指向旧位置的绝对链接（Windows 的 junction）改指新位置"""
+    """目录搬走后，指向旧位置的绝对链接（Windows 的 junction）改指新位置。
+    老库的现行链接（<款>@现行）直接换成指针文件（三个平台现行只用指针文件，pack/orch/current.py）。
+    别的链接（版本里 RomFS 指向共享存储）重建不了（玩家诊断 #0fd185：安全软件 / 受控文件夹访问拦重解析点）：不用链接，
+    把它指向的目录整目录挪到链接原处（新位置同卷，改名、不拷），见 _links_to_moves"""
     if not root.is_dir():
         return
     from_text, to_text = os.path.normcase(str(old)), str(new)
+    failed = []
     for d, dirs, files in os.walk(root):
         for name in dirs + files:
             p = Path(d) / name
@@ -754,12 +759,62 @@ def _retarget_links(root, old, new):
             if not os.path.isabs(target) or not os.path.normcase(target).startswith(from_text):
                 continue
             fresh = to_text + target[len(from_text):]
+            if name.endswith(layout.CURRENT):
+                _unlink_link(p)
+                _write_pointer(p, Path(fresh).name)
+                continue
             junction = getattr(os.path, "isjunction", lambda _: False)(p)
             _unlink_link(p)
-            if junction:
-                subprocess.run(["cmd", "/c", "mklink", "/J", str(p), fresh], check=True, capture_output=True)
-            else:
-                os.symlink(fresh, p)
+            try:
+                if junction:
+                    subprocess.run(["cmd", "/c", "mklink", "/J", str(p), fresh], check=True, capture_output=True)
+                else:
+                    os.symlink(fresh, p)
+            except (OSError, subprocess.CalledProcessError) as e:
+                failed.append((p, Path(fresh), e))
+    if failed:
+        _links_to_moves(failed)
+
+
+def _write_pointer(p, name):
+    """现行指针文件（内容 = 版本目录名一行）：同目录临时文件写好再原子改名，读方只看到旧值或新值"""
+    tmp = p.with_name(f".{p.name}.new-{os.getpid()}")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(name + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, p)
+
+
+def _current_name(roots, game):
+    try:
+        return (roots / (game + layout.CURRENT)).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _links_to_moves(failed):
+    """重建不了的链接改成整目录移动（不拷）：链接指向的目录挪到链接原处。同一个目录被几条链接指着（共享存储里一份 RomFS 给现行和上一版共用）
+    只能挪给一条：先给各款现行版本，其余几条只删掉链接、打黄——那几个旧版本没有 RomFS 了、不再可用，下次修剪时走"""
+    def is_current(p):
+        version = p.parent
+        game = version.name.split("@", 1)[0]
+        return _current_name(version.parent, game) == version.name
+    moved = set()
+    for p, target, error in sorted(failed, key=lambda x: (not is_current(x[0]), str(x[0]))):
+        key = os.path.normcase(str(target))
+        if key in moved or not target.is_dir():
+            print(f"【黄】{p} 的链接重建不了（{error!r}），它指向的 {target} {'已挪给现行版本' if key in moved else '不在'}：这一版不再可用，下次修剪时删", file=sys.stderr)   # 非玩家句
+            continue
+        if os.name == "nt":   # 作业主程序在 Windows 上把引擎根放进了 sys.path（main.py），可以取编排层
+            from pack.orch.dirrename import rename_dir   # 杀软 / 索引扫描开着句柄时目录改名报 WinError 5：按 #361 同一套退避重试
+            from pack.orch.roots import _win_acl
+            _win_acl(target, False)   # 共享存储里的身份封存过（拒写），改名前先解封顶层（同 pack/orch/roots.py 收进存储前的做法）
+            rename_dir(target, p)
+        else:
+            os.replace(target, p)
+        moved.add(key)
+        print(f"【黄】{p} 的链接重建不了（{error!r}）：把 {target} 整目录挪到这里（不拷）", file=sys.stderr)   # 非玩家句
 
 
 def _unlink_link(p):
@@ -1290,7 +1345,7 @@ class _CloneInfo:
 
 def disk_bytes(roots, device, skip_names=(), skip_under=(), state=None):
     """这些目录在 device 卷上实际分配的字节：按 (卷, inode) 去重（硬链接只算一次；多个根互相包含也只算一次），
-    不跟软链（原件软链、@现行 指向）、不跨到别的卷（私有目录在内置盘时不计入外接盘游戏库的账）。
+    不跟软链（原件软链、RomFS 存储链接）、不跨到别的卷（私有目录在内置盘时不计入外接盘游戏库的账）。
     APFS 克隆（#303）：同一克隆族（_CloneInfo）的共享块只算一次——每份记独占字节，族的共享部分取最大一份加一次；
     取不到克隆信息的文件照 st_blocks 算。skip_names / skip_under 只用于按部分分账。
     state（sizes.measure 分部分量一款时传同一个 {}）：几次调用共用「见过的 inode」与「克隆族已记的共享块」——硬链接、克隆族跨部分也只算一次，
@@ -1994,6 +2049,9 @@ def catalog(c):
     input_supported, input_reason = toolchain.input_interface(c)
     # 设备记录里装在某台手机上的款：删除确认框据此多写一句「下次往这台手机装游戏时，手机上的这款会打不开」（容器现组时游戏库里没有它就带不进）
     on_phone = {g.upper() for _, r in layout.devices(c) if isinstance(r, dict) for g in (r.get("games") or {})}
+    import install
+    import sgrade
+    sq = sgrade.queue_status(c)   # S 级升级队列（排队只在作业层一套）：每款 sgradeState / sgradeProgress，顶层 sgradeBatch
     for game in cat["games"]:
         game["missing"] = requirements(c, game)
         game["requirementDiagnostics"] = [c.describe_failure(error) for error in requirement_errors(c, game)]
@@ -2010,6 +2068,12 @@ def catalog(c):
         game["needsPreparation"] = not game["ready"] or manifest.get("inputIdentity") != input_identity(game)
         game["iphoneReady"] = iphone_ready(c, game["id"])
         game["iphoneExportable"] = game["iphoneReady"] and iphone_img(c, game["id"])   # 「导出自签包」能直接导出（单一 IMG 资源包）；旧格式要先重出
+        import sgrade
+        st = sgrade.upgrade_state(c, game["id"])   # S 级优化单款升级（11-17 起玩家手动点）：在跑 → 界面画进度、禁开始；标记在但作业不在 → 「升级未完成，点 S 级优化继续」
+        game["sgradeUpgrading"], game["sgradeIncomplete"] = st == "upgrading", st == "incomplete"
+        qs = next((x for x in sq["games"] if x["gameId"] == game["id"].upper()), None)   # 升级队列里这款（sgrade.queue_status）：queued / running / done / skipped / incomplete
+        game["sgradeState"] = qs["state"] if qs else ("incomplete" if st == "incomplete" else None)
+        game["sgradeProgress"] = qs["progress"] if qs else None
         game["appleTvReady"] = tvos_ready(c, game["id"])   # Apple TV 版已出好（image/tvos 的容器件 + 资源包，pack/jobs/tvos.py）：出包页给「装到 Apple TV」
         game["downstream"] = downstream.describe(c, game)   # 下游深度方案（pack/downstream/schemes.json）：命中时启动器弹确认页
         game["sgrade"] = sgrade_badge(c, game["id"], image)   # 游戏库封面左上角金色 S（v0.4.0）
@@ -2078,14 +2142,25 @@ def catalog(c):
         phone_updates = []
     # 这台电脑往几台手机装过游戏（设备记录里有款的）：启动器更新弹窗据此把按钮写成「更新启动器和 iPhone App」（11-16 维护者「点一次完成整个流程」）
     phone_devices = sum(1 for _, r in layout.devices(c) if isinstance(r, dict) and r.get("games"))
-    return dict(games=cat["games"], profiles=[], keys=status, jobs=jobs, phoneUpdates=phone_updates, phoneDevices=phone_devices,
+    return dict(games=cat["games"], sgradeBatch=dict((k, sq[k]) for k in ("running", "task", "index", "count")), profiles=[], keys=status, jobs=jobs, phoneUpdates=phone_updates, phoneDevices=phone_devices,
                 engineInfo={"inputConfig": input_supported, "inputConfigReason": input_reason})
 
 
 # 这一款在私有目录里按程序号存的出包缓存（直连 / 翻译 / 追加内容 / 原件核对 / 宽屏；都在 S2A_RUN_ROOT = <私有>/run 下，pack/jobs/core.py Context.env）
 # 显式清理/删除含共享编库缓存；Q15 成功后的自动清理仅清本款中间产物，保留可复用编库条目。
+def aoc_cache_dir(c, gid):
+    """本款追加内容（DLC）缓存（pack/stages/aoc.sh 的 S2A_AOC_CACHE，按键存解出的 DLC，大游戏的 DLC RomFS 好几 GB）。
+    同 direct_cache_dir：游戏和工具缓存在同一块盘 → 工具缓存下（同原来）；游戏放外接盘 → 这款游戏文件夹第一层的 aoc-cache/，
+    解包写入跟着游戏落到外接盘，不再把几 GB 写进系统盘、再跨盘拷回游戏（#1725 诊断 D-K82N：游戏库在外接盘，DLC 解到内置盘写满）"""
+    tool = c.work_root / "run" / "s2arm" / "cache" / "aoc"
+    loc = layout.find_game(c, gid)
+    if loc is None or _existing(loc).stat().st_dev == _existing(c.work_root).stat().st_dev:
+        return tool
+    return loc / "aoc-cache"
+
+
 def direct_cache_dir(c, gid):
-    """本款直连缓存（graphics/tools/direct/direct_lib.sh 的 S2A_DIRECT_CACHE：内容寻址仓 + 编译中的翻译中间产物，大游戏编译中几十 GB）。
+    """本款直连缓存（graphics/tools/direct/direct_lib.py 的 S2A_DIRECT_CACHE：内容寻址仓 + 编译中的翻译中间产物，大游戏编译中几十 GB）。
     存放位置与工具缓存在同一块盘：工具缓存下（同原来）；不在同一块盘（游戏放外接盘）：这款游戏文件夹第一层的 direct-cache/，
     大头写入跟着游戏落到外接盘，系统盘只留固定开销（引擎、宿主）。放在 build/ 外面：出包成功后清 build/ 不带走它，重出包照样复用"""
     tool = c.work_root / "run" / "s2arm" / "cache" / "direct" / gid.upper()
@@ -2093,6 +2168,16 @@ def direct_cache_dir(c, gid):
     if loc is None or _existing(loc).stat().st_dev == _existing(c.work_root).stat().st_dev:
         return tool
     return loc / "direct-cache"
+
+
+def scratch_root(c, gid):
+    """重出着色器库这类前台临时活（sgrade_bf：从 game.img 拷出 RomFS、克隆产物根、重抽重翻，大游戏几十 GB）的临时目录放哪：同 direct_cache_dir 跟着游戏走——
+    和工具缓存同一块盘就放工具缓存 tmp/，游戏在别的盘就放这款文件夹第一层的 .work-tmp/。原先一律放私有目录（Windows 在系统盘），
+    玩家把游戏库设到别的盘、更新几款时系统盘照样被写满（D-NDV5）。目录建好再返回（tempfile 要它在）"""
+    d = direct_cache_dir(c, gid)
+    out = d.parent / ".work-tmp" if d.name == "direct-cache" else c.work_root / "tmp"
+    out.mkdir(parents=True, exist_ok=True)
+    return out
 
 
 def game_caches(c, gid, *, include_compiler=True):
@@ -2117,7 +2202,7 @@ def _direct_base(c, direct):
 def direct_transients(c, direct):
     """Only disposable direct-build work; never remove the store (store/, logs/) or unknown layouts.
     S2Arm 11-01: the direct cache is one content-addressed store, one file per entry (C# dsh_batch build, store/dshb/); the former per-key trees
-    ios/ and mac/ (b-<chain>/, cas/…) and work/ are the old layout, which direct_lib.sh deletes on its next build anyway"""
+    ios/ and mac/ (b-<chain>/, cas/…) and work/ are the old layout, which direct_lib.py deletes on its next build anyway"""
     from cache_retention import _safe_root
     if _safe_root(_direct_base(c, direct), direct) != 'safe':
         return []
@@ -2262,15 +2347,29 @@ def _rmtree(p):
         shutil.rmtree(p, onerror=unlock)
 
 
+NOT_MANAGED = "操作路径不属于托管目录。"
+
+
+class NotManaged(Failure):
+    """要删 / 挪的路径不在这个存放位置里：清理收尾只记日志、不进错误摘要（不是这次失败的原因，原先作为第二个 job_failed 把人带偏）"""
+
+
+def _managed_anchor(root, p):
+    """p 在存放位置 root 里 → (锚, 相对部分)。锚是 p 的某一级上级目录：就是 root，或它的真实路径等于 root 的真实路径
+    （游戏库经符号链接、换了一种写法、在另一块盘上挂出来访问时，原先按字面比判成「不属于托管目录」）。只解析锚这一级，锚以下照原样、不跟随链接
+    （_rm 逐级查目录链接靠它：顺着链接删进 saves/ 不行）。p 就是 root 本身、或哪一级都对不上 → NotManaged"""
+    root, p = Path(os.path.abspath(root)), Path(os.path.abspath(p))
+    real = os.path.realpath(root)
+    for anchor in p.parents:
+        if anchor == root or os.path.realpath(anchor) == real:
+            return anchor, p.relative_to(anchor)
+    raise NotManaged(NOT_MANAGED)
+
+
 def _rm(c, root, p):
     # Check the entry before resolving it: a link into saves/ is not disposable.
-    root, p = Path(os.path.abspath(root)), Path(os.path.abspath(p))
-    try:
-        relative = p.relative_to(root)
-    except ValueError:
-        raise Failure("操作路径不属于托管目录。") from None
-    if not relative.parts:
-        raise Failure("操作路径不属于托管目录。")
+    p = Path(os.path.abspath(p))
+    root, relative = _managed_anchor(root, p)
     parent = root
     for part in relative.parts[:-1]:
         parent = parent / part
@@ -2299,14 +2398,14 @@ def _rm_entry(c, p):
 
 
 def _prune_roots(c, d):
-    """产物根只留现行（*@现行 及其指向）与 RomFS 共享存储，清旧版本 → 清了几项。
+    """产物根只留现行（*@现行 指针文件及其指向的版本目录）与 RomFS 共享存储，清旧版本 → 清了几项。
     RomFS 共享存储：现行指向其中的身份，删了现行就断；没人指向的旧身份由下次提交清（pack/roots.sh root_romfs_sweep）"""
-    links = list(d.glob("*@现行"))  # 非玩家句
-    current = {q.name for q in links}
-    for q in links:
-        if _is_link(q):
-            target = Path(os.readlink(q))
-            current.add(resolve_path(target if target.is_absolute() else q.parent / target).name)
+    pointers = list(d.glob("*" + layout.CURRENT))
+    current = {q.name for q in pointers}
+    for q in pointers:
+        version = layout.current_root(c, q)   # 老库的链接在这里先迁移成指针文件
+        if version is not None:
+            current.add(version.name)
     n = 0
     for q in d.iterdir():
         if q.name not in current and q.name != ".romfs_store":
@@ -2403,9 +2502,7 @@ def save_container_kit(c, gid, root, dest=None):
             if p.is_dir() and (p / "main.npdm").is_file():
                 copy_files(p, temporary / "programs" / p.name)
     loud_if_kit_oversized(c, gid, temporary)
-    if kit.exists():
-        _rm(c, managed, kit)
-    os.replace(temporary, kit)
+    progs._put_dir(c, temporary, kit)   # 旧的先改名挪开、新的改名就位，两次都按 #361 退避重试（Windows 杀软 / 索引开着刚拷完的文件报 WinError 5，#50cb93 三台设备）
     if not dest:
         progs.save_recipe(c, gid)   # 常驻配方（原始程序在常驻里的模块，改写产物不存、现建）
         for legacy, root in ((layout.image_ios(c, gid, create=False) / CONTAINER_KIT, layout.root_of(c, gid)),
@@ -2434,7 +2531,8 @@ def _residue_disposable(c, gid):
 def _keep_stage_logs(c, gid):
     """产物根里的阶段日志要跟着删：先拷进私有日志目录，失败后的诊断包还能带上（只拷文件，单份 8 MB 以内，最多 64 份）。"""
     work = layout.ios_work(c, gid, create=False)
-    roots = [*work.glob("roots/*@现行"), *work.glob("work/pkg/product"), *layout.build_dir(c, gid, create=False).glob("*/roots/*@现行"),  # 非玩家句
+    current = [layout.current_root(c, p) for p in [*work.glob("roots/*" + layout.CURRENT), *layout.build_dir(c, gid, create=False).glob("*/roots/*" + layout.CURRENT)]]
+    roots = [*(r for r in current if r is not None), *work.glob("work/pkg/product"),
              *work.glob("work"),   # Windows 一键出包各步的日志（seed.log 等，pack/orch/oneclick_win.py Run.sh 写在工作目录下）：#754 失败后随 build/ 删掉，诊断包里没有
              # 阶段失败时各阶段把自己的日志拷进产物根旁的 .failed/（如改写 pack/stage_rewrite.sh 的 <款>_<模块>.log）：玩家报出包超时 / 改写失败时要的就是它（#251 诊断包里没有）
              *work.glob("roots/.failed"), *layout.build_dir(c, gid, create=False).glob("*/roots/.failed"),
@@ -2442,7 +2540,7 @@ def _keep_stage_logs(c, gid):
     dest = c.logs / (c.task + "-stages")
     count = 0
     for root in roots:
-        for log in sorted(root.glob("*.log")):
+        for log in sorted(p for p in root.glob("*.log") if not layout.os_junk(p.name)):
             if count >= 64 or not log.is_file() or log.stat().st_size > 8 << 20:
                 continue
             dest.mkdir(parents=True, exist_ok=True)
@@ -2460,6 +2558,8 @@ def clean_after_stop(c):
             if idle and _residue_disposable(c, gid):
                 _keep_stage_logs(c, gid)
                 prune_build(c, gid, record=False)
+    except NotManaged as error:   # 不是这次失败的原因：只记日志，不作为第二个错误码给玩家看
+        print(f"[s2a] 清理中间产物跳过了不在存放位置里的路径：{c.redact(str(error))}", file=sys.stderr)  # 非玩家句
     except (Failure, OSError, ValueError) as error:
         c.diagnostic("清理中间产物没有完成，下次空闲时会再清：" + c.redact(str(error)), code="job_failed", severity="warning")  # 非玩家句
 
@@ -2657,9 +2757,10 @@ TRASH = ".s2a-trash"   # 每个存放位置根下：删除时先把这款整块�
 
 def _to_trash(c, root, item, gid):
     """把 root 下的 item 改名挪进 root/.s2a-trash/<游戏号>-<毫秒>-<原名>（同盘改名）→ 新路径；已经不在了 → None；挪不动（权限 / 只读盘）照实报"""
-    root, item = Path(os.path.abspath(root)), Path(os.path.abspath(item))
-    if root not in item.parents or _is_link(item):   # 不在这个存放位置里的、链接都不碰（同 _rm 的托管目录检查）
-        raise Failure("操作路径不属于托管目录。")
+    item = Path(os.path.abspath(item))
+    root, _ = _managed_anchor(root, item)   # 不在这个存放位置里的、链接都不碰（同 _rm 的托管目录检查）
+    if _is_link(item):
+        raise NotManaged(NOT_MANAGED)
     dest = root / TRASH / f"{gid}-{int(time.time() * 1000)}-{item.name}"
     n = 1
     while os.path.lexists(dest):   # 同一毫秒挪两个同名的（widen/ 与 widen/auto/ 下同名的缓存目录）
@@ -2768,6 +2869,7 @@ SPACE_PARTS = (
     ("shaders", "着色器与出包缓存", "下次出包会重新翻译着色器（大游戏要多花较长时间）"),
     ("mac", "Mac 运行版本", "下次在 Mac 上玩之前会重新准备"),
     ("ipa", "已出好的 iPhone 包", "只删资源包：手机上已装的不受影响，以后更新 S2Arm 也照样带上这款；要装到别的手机或重新推资源时再出一次包"),
+    ("selfsign", "自签导出的游戏文件", "「S2Arm 自签导出」文件夹里这款的 .img：手机上已导入的不受影响；要再装到手机时重新「导出自签包」"),
 )
 SPACE_KEPT = ("saves", "logs")
 
@@ -2810,8 +2912,21 @@ def space_parts(c, gid):
         "ipa": ipa,
         "saves": layout.save_entries(gdir) if gdir else [],   # 只报不删（SPACE_KEPT）；存档类唯一来源 layout.save_entries
         "logs": [out / "logs"],
+        "selfsign": selfsign_imgs(c, gid),
     }
     return {k: [p for p in v if p.exists() or p.is_symlink()] for k, v in parts.items()}
+
+
+def selfsign_imgs(c, gid):
+    """「S2Arm 自签导出」文件夹（中 / 英两个定名都看）里这款的 .img（完整的和着色器更新包）：单独写出、不和 games/ 共用磁盘块，
+    每款等于再占一份（#1471）。按文件头里的游戏号认，不按文件名"""
+    import install
+    out = []
+    for name in install.EXPORT_DIRS.values():
+        folder = c.library / name
+        if folder.is_dir():
+            out += [p for p in layout.entries(folder, "*.img") if p.is_file() and install._img_head(p)[0] == gid.upper()]
+    return out
 
 
 def _part_bytes(paths):
@@ -2900,7 +3015,7 @@ def space_survey(c):
     for g in games:
         c.check()
         parts = space_parts(c, g["id"])
-        shown = [(k, t, r) for k, t, r in SPACE_PARTS if k != "legacy" or parts[k]]   # 没有旧版残留就不显示
+        shown = [(k, t, r) for k, t, r in SPACE_PARTS if k not in ("legacy", "selfsign") or parts[k]]   # 没有旧版残留 / 没自签导出过这款就不显示
         combos = freeable({k: parts[k] for k, _, _ in shown})
         # 每行是「只删这一项」腾出的字节；几项共用的克隆块只在都勾上时算进合计（combos），sharedBytes = 全勾比各项单删相加多出的部分
         rows.append(dict(gameId=g["id"], name=game_custom(c, g["id"])["name"] or g.get("name") or g["id"],
@@ -2930,7 +3045,7 @@ def space_free(c):
         freed, done = combos[space_key(want)], []
         for k in [k for k, _, _ in SPACE_PARTS if k in want]:
             for p in parts[k]:
-                root = c.work_root if p.is_relative_to(c.work_root) else layout.root_of(c, gid)
+                root = c.work_root if p.is_relative_to(c.work_root) else c.library if k == "selfsign" else layout.root_of(c, gid)
                 _rm(c, root, p)
             done.append(dict(id=k, bytes=combos[k]))
         sizes.refresh(c, gid)

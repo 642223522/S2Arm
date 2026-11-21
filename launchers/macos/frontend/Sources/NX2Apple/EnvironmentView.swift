@@ -10,143 +10,80 @@ import NXModel
 import NXLauncher
 import S2ArmAppleAdapter
 
+private enum SettingsTab: String, CaseIterable, Identifiable {
+    case general, iphone, environment, updates
+    var id: String { rawValue }
+
+    var symbol: String {
+        switch self {
+        case .general: return "slider.horizontal.3"
+        case .iphone: return "iphone"
+        case .environment: return "checkmark.shield"
+        case .updates: return "arrow.triangle.2.circlepath"
+        }
+    }
+
+    func title(en: Bool) -> String {
+        switch self {
+        case .general: return en ? "General" : "通用"
+        case .iphone: return en ? "iPhone & Sync" : "iPhone 与同步"
+        case .environment: return en ? "Environment" : "运行环境"
+        case .updates: return en ? "Updates & More" : "更新与高级"
+        }
+    }
+}
+
 struct EnvironmentView: View {
     @ObservedObject var model: S2ArmLauncherModel
     @EnvironmentObject var loc: Localizer
     @Environment(\.dismiss) private var dismiss
     var onOpenSpace: (() -> Void)? = nil
-    @State private var showPassed = false
+    @State private var selectedTab: SettingsTab = .general
+    @State private var hoveredTab: SettingsTab?
+    @State private var showPassed: Bool? = nil
 
+    private static let installModeID = "env.installMode"
     /// 组的顺序同旧启动器 ToolChecks。
     private static let groups = ["system", "apple", "engine", "bundled", "storage"]
 
     var body: some View {
+        let en = loc.lang.sharedCode == "en"
+        let failing = model.checks.filter { !$0.ok }
+        let passed = model.checks.filter(\.ok)
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center, spacing: LauncherTheme.Space.large) {
                 LauncherSheetHeading(s("nav.settings"), subtitle: LauncherCopy.note(summary))
                 if model.checking { ProgressView().controlSize(.small) }
             }
-            .padding(.horizontal, LauncherTheme.Space.page).padding(.top, LauncherTheme.Space.page).padding(.bottom, LauncherTheme.Space.section)
+            .padding(.horizontal, LauncherTheme.Space.page).padding(.top, LauncherTheme.Space.page).padding(.bottom, LauncherTheme.Space.large)
+            tabBar(en: en, failing: failing)
+                .padding(.horizontal, LauncherTheme.Space.page).padding(.bottom, LauncherTheme.Space.large)
             if let error = model.environmentError ?? (model.inlineFailure?.kind == .keys ? model.inlineFailure?.message : nil) {
                 Text(loc.backend(error)).font(LauncherTheme.TypeStyle.caption).foregroundStyle(LauncherPalette.danger)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, LauncherTheme.Space.page).padding(.bottom, LauncherTheme.Space.medium)
             }
+            ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: LauncherTheme.Space.section) {
-                    // 界面语言（原在顶栏，入口整理收进设置）：一键切到另一种，当场生效、记住选择
-                    CardGroup(s("settings.language")) {
-                        // 跟随系统 / 简体中文 / English：选了某种就记住（以后不再跟系统），选「跟随系统」回到按系统首选语言（11-13）
-                        CardRow(s("settings.language"), detail: Lang.saved == nil ? loc.t("settings.language.system") + " · " + loc.lang.name : loc.lang.name) {
-                            LauncherDropdown(options: [("", loc.t("settings.language.system"))] + Lang.all.map { ($0.code, $0.name) },
-                                             selection: Lang.saved?.code ?? "", label: s("settings.language")) { loc.choose($0) }
-                                .controllerID("settings.language")
-                        }
+                    switch selectedTab {
+                    case .general:
+                        generalTabContent
+                    case .iphone:
+                        iphoneTabContent
+                    case .environment:
+                        environmentTabContent(failing: failing, passed: passed)
+                    case .updates:
+                        updatesTabContent
                     }
-                    // 存放位置（社区贡献者补丁 #10）：游戏库、iPhone 包、磁盘空间集中在这一处；单款游戏放在哪看出包页的「存放位置」
-                    CardGroup(s("settings.locations")) {
-                        let library = model.provider.client.environment.library
-                        CardRow(s("settings.locations.library"), detail: loc.t("s2arm.env.library.detail"), detail2: library, stacked: true) {
-                            LauncherRowActions {
-                                Button(s("settings.open")) { NSWorkspace.shared.open(URL(fileURLWithPath: library)) }
-                                    .controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(library.isEmpty)
-                                    .controllerID("settings.library.open")
-                                Button(loc.t("s2arm.env.library.change")) { chooseLibrary() }
-                                    .controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy)
-                                    .controllerID("settings.library.change")
-                            }
-                        }
-                        CardDivider()
-                        let ipa = (library as NSString).appendingPathComponent("S2Arm.ipa")   // 出 iPhone 包时组在游戏库根
-                        let ipaReady = !library.isEmpty && FileManager.default.fileExists(atPath: ipa)
-                        CardRow(s("settings.locations.ipa"), detail: ipaReady ? "" : s("settings.locations.ipa_none"), detail2: ipaReady ? ipa : "") {
-                            if ipaReady { Button(loc.t("s2arm.export.revealIpa")) { model.revealIpa(ipa) }.controllerButtonStyle(LauncherSecondaryButtonStyle()) }
-                        }
-                        CardDivider()
-                        CardRow(s("settings.locations.space")) {
-                            Button(s("storage.open")) {
-                                onOpenSpace?()
-                                model.showEnvironment = false
-                                let target = model.selectedID ?? model.games.first?.id
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { model.spaceRequest = target }
-                            }
-                                .controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(model.games.isEmpty)
-                        }
-                    }
-                    // 密钥：状态 + 导入（同 Windows 设置页；11-14 体验梳理：原先密钥就绪后 Mac 上没有地方换一份）
-                    CardGroup(s("settings.keys")) {
-                        CardRow(s("settings.keys"), detail: model.keysReady == true ? s("welcome.step.keys.done") : s("welcome.step.keys.title")) {
-                            Button(s("library.import_keys")) { chooseKeys() }
-                                .controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy)
-                                .controllerID("settings.keys.import")
-                        }
-                    }
-                    InstallModeCard(model: model)   // 装到 iPhone 的方式（v0.3.0：签名 / 安装入口收在这一处）
-                    // 主屏小组件（11-16）：装到 iPhone / 更新 / 导出时带不带 iPhone 桌面的游戏机小组件；缺省开，关掉后请求里带 widget: false
-                    CardGroup(loc.t("s2arm.env.widget.group")) {
-                        CardRow(loc.t("s2arm.env.widget.title"), detail: model.homeWidgetError.map(loc.backend) ?? loc.t("s2arm.env.widget.detail")) {
-                            Toggle("", isOn: Binding(get: { model.homeWidget }, set: { model.setHomeWidget($0) }))
-                                .toggleStyle(LauncherSwitchStyle()).labelsHidden()
-                                .accessibilityLabel(loc.t("s2arm.env.widget.title"))
-                                .accessibilityIdentifier("env.homeWidget")
-                        }
-                    }
-                    let failing = model.checks.filter { !$0.ok }
-                    ForEach(ordered(failing), id: \.self) { group in
-                        let items = failing.filter { groupOf($0) == group }
-                        CardGroup(groupName(group)) {
-                            ForEach(items) { check in
-                                row(check)
-                                if check.id != items.last?.id { CardDivider() }
-                            }
-                        }
-                    }
-                    // iCloud 存档同步（S2ArmLauncherModel+CloudSaves）：选 iCloud 云盘里的文件夹，iPhone / iPad 上选同一个
-                    CardGroup(loc.t("s2arm.env.cloud.group")) {
-                        CardRow(loc.t("s2arm.env.cloud.title"), detail: loc.t(model.cloudFolder == nil ? "s2arm.env.cloud.off" : "s2arm.env.cloud.on"),
-                                detail2: model.cloudFolder?.path ?? "") {
-                            if model.cloudFolder != nil {
-                                LauncherRowActions {
-                                    Button(loc.t("s2arm.env.cloud.turnOff")) { do { try model.setCloudFolder(nil) } catch { model.reportFailure("s2arm.fail.cloudFolder", error) } }
-                                        .controllerButtonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("env.cloud.off")
-                                    Button(loc.t("s2arm.env.library.change")) { chooseCloudFolder() }
-                                        .controllerButtonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("env.cloud.choose")
-                                }
-                            } else {
-                                Button(loc.t("s2arm.env.cloud.choose")) { chooseCloudFolder() }
-                                    .controllerButtonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("env.cloud.choose")
-                            }
-                        }
-                    }
-                    // 允许 AI 操作 S2Arm（本机控制口，S2ArmControl）：玩家用自己的 AI 照 App 自带的操作手册做导入 → 出包 → 装机（维护者 10-23）
-                    CardGroup(loc.t("s2arm.env.ai.group")) {
-                        CardRow(loc.t("s2arm.env.ai.title"), detail: model.aiControlError.map(loc.backend) ?? loc.t("s2arm.env.ai.detail")) {
-                            Toggle("", isOn: Binding(get: { model.aiControl }, set: { model.setAIControl($0) }))
-                                .toggleStyle(LauncherSwitchStyle()).labelsHidden().disabled(ControlPort.forced)
-                                .accessibilityLabel(loc.t("s2arm.env.ai.title"))
-                                .accessibilityIdentifier("env.aiControl")
-                        }
-                    }
-                    // 软件更新（自动检查 + 自动下载 + 手动检查按钮，与顶栏手动更新入口对照）
-                    updateSettingsCard
-                    let passed = model.checks.filter(\.ok)
-                    if !passed.isEmpty {
-                        CardGroup(loc.t("s2arm.env.passedGroup")) {
-                            CardDisclosure(String(format: loc.t("s2arm.env.passed"), passed.count), isOpen: showPassed) { showPassed.toggle() }
-                            if showPassed {
-                                ForEach(passed) { check in
-                                    CardDivider()
-                                    row(check)
-                                }
-                            }
-                        }
-                    }
-                    // 版本号（三端同号：Windows 启动器、iPhone 上的 S2Arm 显示同一个，装机时写进 iPhone 那份）
-                    Text(verbatim: "S2Arm " + (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "-"))
-                        .font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .center)
-                        .accessibilityIdentifier("env.version")
                 }
+                .id(selectedTab)
                 .padding(.horizontal, LauncherTheme.Space.page).padding(.bottom, LauncherTheme.Space.section)
+            }
+            // 装机清单「去设置」（证书一栏，devCertSettings）点过来：滚到签名身份那张卡、亮边框
+            // 签名身份那张卡在「iPhone」标签：先切过去再滚，停在别的标签时卡片没渲染、滚不到
+            .onAppear { if model.settingsFocus != nil { selectedTab = .iphone; DispatchQueue.main.async { proxy.scrollTo(Self.installModeID, anchor: .top) } } }
+            .onChange(of: model.settingsFocus) { f in if f != nil { selectedTab = .iphone; DispatchQueue.main.async { withAnimation { proxy.scrollTo(Self.installModeID, anchor: .top) } } } }
             }
             LauncherSheetFooter {
                 Text(loc.t("s2arm.env.note")).font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary)
@@ -162,12 +99,211 @@ struct EnvironmentView: View {
         .onChange(of: model.updatePopup != nil) { hasPopup in
             if hasPopup { model.showEnvironment = false }
         }
+        .appleLoginSheet(model, host: "settings")
         .onDisappear {
+            model.settingsFocus = nil
+            if model.appleLoginHost == "settings" { model.closeAppleLogin() }
             if model.inlineFailure?.kind == .keys { model.clearInlineFailure() }
             if model.showKeys { model.showKeys = false }
         }
-        .launcherSheet()
+        .launcherSheet(.settings, height: 580)
         .onExitCommand { dismiss() }
+    }
+
+    private func tabBar(en: Bool, failing: [ToolCheck]) -> some View {
+        HStack(spacing: LauncherTheme.Space.small) {
+            ForEach(SettingsTab.allCases) { tab in
+                let active = selectedTab == tab
+                let hovered = hoveredTab == tab
+                Button { selectedTab = tab } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: tab.symbol).font(.system(size: 12.5, weight: .semibold))
+                        Text(tab.title(en: en)).font(.manrope(13, active ? .bold : .medium)).lineLimit(1).fixedSize()
+                        if tab == .environment, !failing.isEmpty {
+                            Circle()
+                                .fill(model.environmentState == .missing ? LauncherPalette.danger : LauncherPalette.building)
+                                .frame(width: 6, height: 6)
+                        }
+                    }
+                    .foregroundStyle(active ? Color.black : (hovered ? LauncherTheme.Colors.text : LauncherTheme.Colors.secondary))
+                    .padding(.horizontal, 14).frame(height: 32)
+                    .background(active ? LauncherPalette.cream : (hovered ? LauncherTheme.Colors.hover : LauncherTheme.Colors.control), in: Capsule())
+                    .overlay(Capsule().strokeBorder(active ? Color.clear : LauncherTheme.Colors.border, lineWidth: 1))
+                    .contentShape(Capsule())
+                }
+                .controllerButtonStyle(.plain)
+                .controllerRingRadius(.infinity)
+                .controllerID("settings.tab." + tab.rawValue)
+                .accessibilityIdentifier("settings.tab." + tab.rawValue)
+                .accessibilityAddTraits(active ? .isSelected : [])
+                .onHover { hoveredTab = $0 ? tab : (hoveredTab == tab ? nil : hoveredTab) }
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    @ViewBuilder private var generalTabContent: some View {
+        // 界面语言（原在顶栏，入口整理收进设置）：一键切到另一种，当场生效、记住选择
+        CardGroup(s("settings.language")) {
+            // 跟随系统 / 简体中文 / English：选了某种就记住（以后不再跟系统），选「跟随系统」回到按系统首选语言（11-13）
+            CardRow(s("settings.language"), detail: Lang.saved == nil ? loc.t("settings.language.system") + " · " + loc.lang.name : loc.lang.name) {
+                LauncherDropdown(options: [("", loc.t("settings.language.system"))] + Lang.all.map { ($0.code, $0.name) },
+                                 selection: Lang.saved?.code ?? "", label: s("settings.language")) { loc.choose($0) }
+                    .controllerID("settings.language")
+            }
+        }
+        // 存放位置（社区贡献者补丁 #10）：游戏库、iPhone 包、磁盘空间集中在这一处；单款游戏放在哪看出包页的「存放位置」
+        CardGroup(s("settings.locations")) {
+            let library = model.provider.client.environment.library
+            CardRow(s("settings.locations.library"), detail: loc.t("s2arm.env.library.detail"), detail2: library, stacked: true) {
+                LauncherRowActions {
+                    Button(s("settings.open")) { NSWorkspace.shared.open(URL(fileURLWithPath: library)) }
+                        .controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(library.isEmpty)
+                        .controllerID("settings.library.open")
+                    Button(loc.t("s2arm.env.library.change")) { chooseLibrary() }
+                        .controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy)
+                        .controllerID("settings.library.change")
+                }
+            }
+            CardDivider()
+            let ipa = (library as NSString).appendingPathComponent("S2Arm.ipa")   // 出 iPhone 包时组在游戏库根
+            let ipaReady = !library.isEmpty && FileManager.default.fileExists(atPath: ipa)
+            CardRow(s("settings.locations.ipa"), detail: ipaReady ? "" : s("settings.locations.ipa_none"), detail2: ipaReady ? ipa : "") {
+                if ipaReady {
+                    Button(loc.t("s2arm.export.revealIpa")) { model.revealIpa(ipa) }
+                        .controllerButtonStyle(LauncherSecondaryButtonStyle())
+                        .controllerID("settings.ipa.reveal")
+                }
+            }
+            CardDivider()
+            CardRow(s("settings.locations.space")) {
+                Button(s("storage.open")) {
+                    onOpenSpace?()
+                    model.showEnvironment = false
+                    let target = model.selectedID ?? model.games.first?.id
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { model.spaceRequest = target }
+                }
+                    .controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(model.games.isEmpty)
+                    .controllerID("settings.storage.open")
+            }
+        }
+        // 密钥：状态 + 导入（同 Windows 设置页；11-14：原先密钥就绪后 Mac 上没有地方换一份）
+        CardGroup(s("settings.keys")) {
+            CardRow(s("settings.keys"), detail: model.keysReady == true ? s("welcome.step.keys.done") : s("welcome.step.keys.title")) {
+                Button(s("library.import_keys")) { chooseKeys() }
+                    .controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy)
+                    .controllerID("settings.keys.import")
+            }
+        }
+        // 启动游戏时自动全屏（#575）：对所有游戏生效，单款在 env.txt 显式写过 S2A_FULLSCREEN 的照单款
+        CardGroup(loc.t("s2arm.env.fullscreen.group")) {
+            CardRow(loc.t("s2arm.env.fullscreen.title"), detail: model.launchFullscreenError.map(loc.backend) ?? loc.t("s2arm.env.fullscreen.detail")) {
+                Toggle("", isOn: Binding(get: { model.launchFullscreen }, set: { model.setLaunchFullscreen($0) }))
+                    .toggleStyle(LauncherSwitchStyle()).labelsHidden()
+                    .accessibilityLabel(loc.t("s2arm.env.fullscreen.title"))
+                    .controllerID("env.launchFullscreen")
+            }
+        }
+    }
+
+    @ViewBuilder private var iphoneTabContent: some View {
+        InstallModeCard(model: model)   // 装到 iPhone 的方式（v0.3.0：签名 / 安装入口收在这一处）
+            .id(Self.installModeID)
+            .overlay(RoundedRectangle(cornerRadius: LauncherTheme.Metrics.cardRadius).strokeBorder(LauncherPalette.cream, lineWidth: model.settingsFocus == "devCertSettings" ? 1.5 : 0))
+        // 主屏小组件（11-16）：装到 iPhone / 更新 / 导出时带不带 iPhone 桌面的游戏机小组件；缺省开，关掉后请求里带 widget: false
+        CardGroup(loc.t("s2arm.env.widget.group")) {
+            CardRow(loc.t("s2arm.env.widget.title"), detail: model.homeWidgetError.map(loc.backend) ?? loc.t("s2arm.env.widget.detail")) {
+                Toggle("", isOn: Binding(get: { model.homeWidget }, set: { model.setHomeWidget($0) }))
+                    .toggleStyle(LauncherSwitchStyle()).labelsHidden()
+                    .accessibilityLabel(loc.t("s2arm.env.widget.title"))
+                    .controllerID("env.homeWidget")
+            }
+        }
+        // 免费签名到期提醒（11-20，缺省开）：游戏库顶部横幅点「×」即关，在这里重新打开
+        CardGroup(s("settings.freeSignReminder")) {
+            CardRow(s("settings.freeSignReminder"), detail: s("settings.freeSignReminder.detail")) {
+                Toggle("", isOn: $model.freeSignReminder)
+                    .toggleStyle(LauncherSwitchStyle()).labelsHidden()
+                    .accessibilityLabel(s("settings.freeSignReminder"))
+                    .accessibilityIdentifier("settings.freeSignReminder")
+            }
+        }
+        // iCloud 存档同步（S2ArmLauncherModel+CloudSaves）：选 iCloud 云盘里的文件夹，iPhone / iPad 上选同一个
+        CardGroup(loc.t("s2arm.env.cloud.group")) {
+            CardRow(loc.t("s2arm.env.cloud.title"), detail: loc.t(model.cloudFolder == nil ? "s2arm.env.cloud.off" : "s2arm.env.cloud.on"),
+                    detail2: model.cloudFolder?.path ?? "") {
+                if model.cloudFolder != nil {
+                    LauncherRowActions {
+                        Button(loc.t("s2arm.env.cloud.turnOff")) { do { try model.setCloudFolder(nil) } catch { model.reportFailure("s2arm.fail.cloudFolder", error) } }
+                            .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("env.cloud.off")
+                        Button(loc.t("s2arm.env.library.change")) { chooseCloudFolder() }
+                            .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("env.cloud.choose")
+                    }
+                } else {
+                    Button(loc.t("s2arm.env.cloud.choose")) { chooseCloudFolder() }
+                        .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("env.cloud.choose")
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func environmentTabContent(failing: [ToolCheck], passed: [ToolCheck]) -> some View {
+        // Xcode：现在用的是哪一份，可自己选（装在扩展硬盘等自动找不到的位置）；选过的优先用，可改回自动查找
+        CardGroup(loc.t("s2arm.env.xcode.group")) {
+            CardRow(loc.t("s2arm.env.xcode.title"), detail: xcodeDetail) {
+                if model.chosenXcode != nil {
+                    LauncherRowActions {
+                        Button(loc.t("s2arm.env.xcode.auto")) { model.setXcode(nil) }
+                            .controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy || model.checking)
+                            .controllerID("env.xcode.auto")
+                        xcodeChooseButton
+                    }
+                } else {
+                    xcodeChooseButton
+                }
+            }
+        }
+        ForEach(ordered(failing), id: \.self) { group in
+            let items = failing.filter { groupOf($0) == group }
+            CardGroup(groupName(group)) {
+                ForEach(items) { check in
+                    row(check)
+                    if check.id != items.last?.id { CardDivider() }
+                }
+            }
+        }
+        if !passed.isEmpty {
+            let passedOpen = showPassed ?? failing.isEmpty
+            CardGroup(loc.t("s2arm.env.passedGroup")) {
+                CardDisclosure(String(format: loc.t("s2arm.env.passed"), passed.count), isOpen: passedOpen) {
+                    showPassed = !passedOpen
+                }
+                if passedOpen {
+                    ForEach(passed) { check in
+                        CardDivider()
+                        row(check)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var updatesTabContent: some View {
+        // 软件更新（自动检查 + 自动下载 + 手动检查按钮，与顶栏手动更新入口对照）
+        updateSettingsCard
+        // 允许 AI 操作 S2Arm（本机控制口，S2ArmControl）：玩家用自己的 AI 照 App 自带的操作手册做导入 → 出包 → 装机（维护者 10-23）
+        CardGroup(loc.t("s2arm.env.ai.group")) {
+            CardRow(loc.t("s2arm.env.ai.title"), detail: model.aiControlError.map(loc.backend) ?? loc.t("s2arm.env.ai.detail")) {
+                Toggle("", isOn: Binding(get: { model.aiControl }, set: { model.setAIControl($0) }))
+                    .toggleStyle(LauncherSwitchStyle()).labelsHidden().disabled(ControlPort.forced)
+                    .accessibilityLabel(loc.t("s2arm.env.ai.title"))
+                    .controllerID("env.aiControl")
+            }
+        }
+        // 版本号（三端同号：Windows 启动器、iPhone 上的 S2Arm 显示同一个，装机时写进 iPhone 那份）
+        Text(verbatim: "S2Arm " + (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "-"))
+            .font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .center)
+            .accessibilityIdentifier("env.version")
     }
 
     /// 顶部口径要说清是哪一种「齐了」：只差打 iPhone 包的项时不能写「都齐了」（11-08：iOS 平台组件红着、顶部却全绿）。
@@ -218,26 +354,21 @@ struct EnvironmentView: View {
                 return s("update.settings.ready").replacingOccurrences(of: "{0}", with: v)
             }
             if case .working(let id, let percent) = model.updateState {
-                return s(id).replacingOccurrences(of: "{0}", with: "\(percent ?? 0)")
+                if id == "update.downloading", percent == nil { return s("update.menu.downloadingPlain") }
+                return s(id).replacingOccurrences(of: "{0}", with: percent.map(String.init) ?? "")
             }
-            if model.updateCheckFeedback == "checking" {
+            if model.isCheckingForUpdates {
                 return s("update.settings.checking")
             }
             if let v = foundVersion {
                 return s("update.settings.found").replacingOccurrences(of: "{0}", with: v)
             }
-            if model.updateCheckFeedback == "upToDate" {
-                return s("update.settings.upToDate").replacingOccurrences(of: "{0}", with: current)
-            }
-            if model.updateCheckFeedback == "failed" {
-                return s("update.settings.failed")
-            }
             return s("update.settings.current").replacingOccurrences(of: "{0}", with: current)
         }()
         let manualButtonTitle: String = {
-            if model.updateState == .ready { return s("update.settings.btn.now") }
+            if model.updateState == .ready { return s("update.top.restart") }
             if isWorking { return s("update.settings.btn.downloading") }
-            if model.updateCheckFeedback == "checking" { return s("update.settings.btn.checking") }
+            if model.isCheckingForUpdates { return s("update.settings.btn.checking") }
             if foundVersion != nil { return s("update.settings.btn.view") }
             return s("update.settings.btn.check")
         }()
@@ -247,7 +378,7 @@ struct EnvironmentView: View {
                 Toggle("", isOn: $model.autoCheckUpdates)
                     .toggleStyle(LauncherSwitchStyle()).labelsHidden()
                     .accessibilityLabel(s("update.settings.autoCheck"))
-                    .accessibilityIdentifier("settings.updates.autoCheck")
+                    .controllerID("settings.updates.autoCheck")
             }
             CardDivider()
             CardRow(s("update.settings.autoDownload"), detail: s("update.settings.autoDownload.detail")) {
@@ -255,23 +386,50 @@ struct EnvironmentView: View {
                     .toggleStyle(LauncherSwitchStyle()).labelsHidden()
                     .disabled(!model.autoCheckUpdates)
                     .accessibilityLabel(s("update.settings.autoDownload"))
-                    .accessibilityIdentifier("settings.updates.autoDownload")
+                    .controllerID("settings.updates.autoDownload")
             }
             CardDivider()
             CardRow(s("update.settings.manual"), detail: manualDetail) {
                 Button(manualButtonTitle) {
-                    if model.updateState == .ready || model.availableUpdate != nil {
+                    if model.updateState == .ready {
+                        model.showEnvironment = false
+                        model.restartToUpdate()
+                    } else if model.availableUpdate != nil {
                         model.showUpdatePopup()
                         model.showEnvironment = false
                     } else {
-                        model.manualCheckForUpdates()
+                        model.checkForUpdatesManually()
                     }
                 }
                 .controllerButtonStyle(LauncherSecondaryButtonStyle())
-                .disabled(isWorking || model.updateCheckFeedback == "checking")
-                .accessibilityIdentifier("settings.updates.check")
+                .disabled(isWorking || model.isCheckingForUpdates)
+                .controllerID("settings.updates.check")
             }
         }
+    }
+
+    private var xcodeChooseButton: some View {
+        Button(loc.t("s2arm.env.xcode.choose")) { chooseXcode() }
+            .controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy || model.checking)
+            .accessibilityIdentifier("env.xcode.choose")
+    }
+
+    private var xcodeDetail: String {
+        if let error = model.xcodeChooseError { return error.hasPrefix("s2arm.") ? loc.t(error) : loc.backend(error) }
+        let dev = model.activeDeveloperDir
+        let app = dev.hasSuffix("/Contents/Developer") ? String(dev.dropLast("/Contents/Developer".count)) : dev
+        if app.isEmpty { return loc.t("s2arm.env.xcode.none") }
+        return String(format: loc.t(model.chosenXcode != nil ? "s2arm.env.xcode.chosen" : "s2arm.env.xcode.found"), app)
+    }
+
+    private func chooseXcode() {
+        let panel = NSOpenPanel()
+        panel.title = loc.t("s2arm.env.xcode.choose")
+        panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.applicationBundle]
+        panel.directoryURL = URL(fileURLWithPath: "/Volumes", isDirectory: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        model.setXcode(url)
     }
 
     private func chooseLibrary() {
@@ -304,7 +462,8 @@ struct EnvironmentView: View {
         CardRow(loc.backend(check.name), detail: check.ok ? "" : loc.backend(check.message), dot: check.ok ? LauncherPalette.ready : LauncherPalette.danger) {
             if !check.ok, let action = check.action, case let key = "s2arm.env.action." + action, loc.t(key) != key {
                 Button(loc.t(key)) {
-                    if model.provider.environment.repairStep(for: action) == .chooseLibrary { chooseLibrary() } else { model.repair(check) }
+                    if action == "appleLogin" { model.openAppleLogin(host: "settings") }   // 0.6.0 Mac 推到 iPhone 的 Apple ID：S2Arm 自己的登录面板
+                    else if model.provider.environment.repairStep(for: action) == .chooseLibrary { chooseLibrary() } else { model.repair(check) }
                 }
                     .controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy || model.checking)
             }

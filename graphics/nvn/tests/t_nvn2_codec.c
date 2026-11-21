@@ -64,13 +64,13 @@ uint64_t s2a_event_create(uint32_t *hr, uint32_t *hw) { int i = g_nev++; g_ev[i]
 // 读档自中止复现钩子（11-06 时之笛）：对 g_hook_ev 的下一次触发，先让 g_hook_fn 在另一条线程上跑、最多等它 300 ms，再真正置位。
 //   旧实现在锁外触发，另一条线程这时能完成「取消 + 重新请求」，迟到的触发落在新请求上；修好后触发在锁内，另一条线程要等它
 static _Atomic uint64_t g_hook_ev; static void *(*g_hook_fn)(void *); static _Atomic int g_hook_done, g_hook_fired;
-// 出图节奏挂点（hle_nvn.c s2a_video_frame 的替身）：数 Switch 2 解码交出的新帧
+// 出图节奏挂点（hle_nvn.c s2a_video_frame_pts 的替身）：数 Switch 2 解码交出的新帧
 static _Atomic unsigned g_vframes;
-void s2a_video_frame(void) { atomic_fetch_add(&g_vframes, 1); }
+void s2a_video_frame_pts(int64_t pts_ns) { (void)pts_ns; atomic_fetch_add(&g_vframes, 1); }
 void s2a_event_signal(uint64_t ev) {
     if (ev && atomic_load(&g_hook_ev) == ev && atomic_exchange(&g_hook_ev, 0) == ev) {
         pthread_t th; CHECK(!pthread_create(&th, NULL, g_hook_fn, NULL)); pthread_detach(th);
-        for (int t = 0; t < 300 && !atomic_load(&g_hook_done); t++) usleep(1000);
+        for (int t = 0; t < 300 && !atomic_load(&g_hook_done); t++) usleep(1000);   // 负对照短窗：给另一条线程 300 ms 去抢（修好后它被锁挡住）；负载高时它晚到只会漏检，不会假红
         atomic_store(&g_ev[ev - 1].sig, 1); atomic_store(&g_hook_fired, 1); return;
     }
     atomic_store(&g_ev[ev - 1].sig, 1);
@@ -97,9 +97,13 @@ void *guest_sym(const char *n) {
 
 void *s2a_codec_entry(const char *name);
 size_t nvn2_av1c_from_tu(const uint8_t *tu, size_t n, uint8_t *out, size_t cap);
-void *s2a_av1_open(int threads);
-int s2a_av1_decode(void *h, const uint8_t *data, uint32_t len, uint8_t **planes, int32_t *strides, int32_t *info);
-void s2a_av1_close(void *h);
+// dav1d 垫片同 nvn2_codec.c 的弱链接：S2A_DAV1D 探测到本机有 AV1 硬解（tools/av1hw.sh）的单测构建不链 dav1d（nvn2_codec.mk），符号是 NULL——下面的 dav1d 软解小节按符号缺位跳过
+void *s2a_av1_open(int threads) __attribute__((weak));
+int s2a_av1_decode(void *h, const uint8_t *data, uint32_t len, uint8_t **planes, int32_t *strides, int32_t *info) __attribute__((weak));
+void s2a_av1_close(void *h) __attribute__((weak));
+// 真 libvpx 链没链（真身 libs2a_vpx.a 回 1 / 空垫片 services/vpx/stub.c 回 0——本条单测照宿主同一口径链二者之一，见 nvn2_codec.mk）：
+//   垫片时 VP9 系统小节照跑（nvn2_codec.c 见 0 默认走系统）、要真 libvpx 当参考的对拍跳过
+int s2a_vpx_linked(void) __attribute__((weak));
 int nvn2_vp9_vt_probe(void);
 unsigned long long nvn2_vp9_vt_frames(void);
 // 4:2:0 三平面按 ffmpeg framemd5 的字节序（行连续，Y 后 U 后 V；>8 位为 16 位小端）算 MD5，十六进制
@@ -193,7 +197,7 @@ static uint32_t take(rig *r, const struct codec *c, uint32_t *spev, sync_h *hout
     CHECK(((f_acq)E(c->acq))(&idx, &h, r->obj) == 0 && idx < 2 && h.mode == 1);
     ((f_spr)E(SP_REQUEST))(spev, &h);
     // 槽的 SystemEventType 由 InitializeMultiWaitHolder 交给替身（g_sp_sev）；手动清除，TryWait 不清
-    for (int t = 0; t < 2000 && !g_trywait(g_sp_sev); t++) usleep(1000);
+    for (int t = 0; t < 30000 && !g_trywait(g_sp_sev); t++) usleep(1000);   // 等解码帧的事件，兜底 30 秒（原 2 秒：负载高时解码线程慢就假红）；等不到下一行判红
     CHECK(g_trywait(g_sp_sev) && ((f_gstw)E(GS_TRYWAIT))(&h));
     *hout = h;
     return idx;
@@ -327,16 +331,19 @@ int main(int argc, char **argv) {
         static fake_sev vsev; int e0 = g_nev;
         CHECK(vs && vs(&vsev, NULL) == 0 && vsev.handle == 0x100u + (uint32_t)e0 && vsev.mode == 1);
         atomic_store(&g_ev[e0].sig, 0);
-        struct timespec ts = {0, 100000000}; nanosleep(&ts, NULL);
-        CHECK(atomic_load(&g_ev[e0].sig) == 1);   // 100 ms 内至少被触发过一次
-        // 审计 P1-80：线程随会话走。期望手写：起后活着 1 条；会话代号加一（进程内重启）后 100 ms 内退出（活着 0 条）、放掉自己那份事件引用（2 → 1），
+        struct timespec ts = {0, 100000000};
+        // 原先睡 100 ms 再看「被触发过」：负载高时 vsync 线程 100 ms 内轮不上就假红。改等到被触发（兜底 30 秒）
+        for (int t = 0; t < 30000 && !atomic_load(&g_ev[e0].sig); t++) usleep(1000);
+        CHECK(atomic_load(&g_ev[e0].sig) == 1);   // 被触发过（至少一次）
+        // 审计 P1-80：线程随会话走。期望手写：起后活着 1 条；会话代号加一（进程内重启）后退出（活着 0 条）、放掉自己那份事件引用（2 → 1），
         //   之后不再触发（清掉标志再等 100 ms 仍是 0）。旧实现线程永不退出：活着仍 1 条、引用仍 2、标志又被置 1
         int nvn2_vi_vsync_live(void);
         CHECK(nvn2_vi_vsync_live() == 1);
-        atomic_fetch_add(&g_gen, 1); nanosleep(&ts, NULL);
+        // 原先睡 100 ms 再看线程退出：改等到活着 0 条且放掉引用（兜底 30 秒）；旧实现线程永不退出，30 秒后仍判红
+        atomic_fetch_add(&g_gen, 1); for (int t = 0; t < 30000 && (nvn2_vi_vsync_live() != 0 || g_ev[e0].refs != 1); t++) usleep(1000);
         printf("vsync 线程：会话结束后活着 %d 条（期望 0）、事件引用 %d（期望 1）\n", nvn2_vi_vsync_live(), g_ev[e0].refs);
         CHECK(nvn2_vi_vsync_live() == 0 && g_ev[e0].refs == 1);
-        atomic_store(&g_ev[e0].sig, 0); nanosleep(&ts, NULL); CHECK(atomic_load(&g_ev[e0].sig) == 0);
+        atomic_store(&g_ev[e0].sig, 0); nanosleep(&ts, NULL); CHECK(atomic_load(&g_ev[e0].sig) == 0);   // 负对照短窗：线程已退出，100 ms 内不该再触发（负载高时只会漏检）
     }
     // SDK 20（金刚）的旧版初始化名字：与 SDK 22 新版（带输出模式）接到同一个实现（名字照游戏导入表原样抄，期望不跑被测实现就能写出）
     {
@@ -468,7 +475,8 @@ int main(int argc, char **argv) {
     }
 
     // ---------- 合成码流逐帧对拍（与 #313 同一批码流）：libvpx 与系统后端整幅 RGBA MD5 逐帧相同 ----------
-    if (nvn2_vp9_vt_probe()) {
+    //   对拍要真 libvpx 当参考：本机可走系统 VP9、宿主链的是空垫片（S2A_VPX，s2a_vpx_linked() = 0）时整段跳过——系统小节照跑
+    if (nvn2_vp9_vt_probe() && s2a_vpx_linked && s2a_vpx_linked()) {
         const char *streams[] = { "tests/data/vp9_synth/adapt_720.ivf", "tests/data/vp9_synth/fp_ragged.ivf" };
         for (unsigned si = 0; si < sizeof streams / sizeof streams[0]; si++) {
             static char a[64][33], b[64][33];
@@ -480,7 +488,7 @@ int main(int argc, char **argv) {
             b[0][0] ^= 1; CHECK(memcmp(a, b, (size_t)na * 33) != 0); b[0][0] ^= 1;   // 负对照：比的是内容不是指针
             printf("合成码流 %s：libvpx / 系统后端 %d 帧 RGBA MD5 全同\n", streams[si], na);
         }
-    }
+    } else if (nvn2_vp9_vt_probe()) printf("合成码流对拍：宿主没链真 libvpx（本机可走系统 VP9，链空垫片），跳过（系统小节照跑）\n");
 
     // ---------- 11-04 接口面全量：BGRA 读法（SDK 20）、退登记、宿主句柄的阻塞 / 限时等待（gs 与 syncpt 同一实现）----------
     //   期望：红帧 RGBA (254,0,0,255)（上面手算）按 B G R A 存 → (0,0,254,255)；退登记的缓冲不再被 Acquire 给出（环空回 0x1c286f「还没有」），再退回失败，重登记后又给出；
@@ -544,7 +552,7 @@ int main(int argc, char **argv) {
         atomic_store(&g_hook_done, 0); atomic_store(&g_hook_fired, 0); atomic_store(&g_hook_ev, sev);
         uint64_t id = 0;
         CHECK(((f_sub)E(VP9.sub))(&id, r.obj, red_vp9_0, sizeof red_vp9_0, 0, 0) == 0);
-        for (int t = 0; t < 3000 && !(atomic_load(&g_hook_fired) && atomic_load(&g_hook_done)); t++) usleep(1000);
+        for (int t = 0; t < 30000 && !(atomic_load(&g_hook_fired) && atomic_load(&g_hook_done)); t++) usleep(1000);   // 兜底 30 秒（原 3 秒）
         CHECK(atomic_load(&g_hook_fired) && atomic_load(&g_hook_done) && g_race_saw_h1);
         int sig = atomic_load(&g_ev[sev - 1].sig), h2_ok = ((f_gstw)E(GS_TRYWAIT))(&h2);
         printf("读档自中止竞态：解码线程触发与取消 + 请求下一帧交错后，事件 %s、下一帧句柄 %s（期望：事件清着、句柄未达到）\n", sig ? "触发着" : "清着", h2_ok ? "已达到" : "未达到");
@@ -620,8 +628,9 @@ int main(int argc, char **argv) {
         }
     }
 
-    // ---------- dav1d 垫片：逐帧 MD5 对 ffmpeg（libdav1d）参考 ----------
-    {
+    // ---------- dav1d 垫片：逐帧 MD5 对 ffmpeg（libdav1d）参考（没链 dav1d——本机有 AV1 硬解、S2A_DAV1D 探测不链——时这段跳过）----------
+    if (!s2a_av1_open) printf("dav1d：宿主没链 dav1d 垫片（本机走 AV1 硬解路线），软解 MD5 小节跳过\n");
+    else {
         static const char *const want8[6] = { "7c445a3a2221f0a538414ba5fd2f2c41", "c259b2a6a3fe2b087a65f5056fe8f933", "446a8cdca368be75186776b8d24a3382",
                                               "6952b325b88908a2c5791874e0b5bd6f", "89ed6182b091a0c67511110af40fea1f", "88025e2b2d8ababb79a6c030aa34ec3c" };
         static const char *const want10 = "d3f13f6f8df70f77a54df0f91ef79a41";
@@ -646,40 +655,42 @@ int main(int argc, char **argv) {
         h = s2a_av1_open(1); CHECK(s2a_av1_decode(h, junk, sizeof junk, pl, st, info) != 0); s2a_av1_close(h);
     }
 
-    // ---------- AV1 强制软解（S2A_AV1_SOFT=1）走整条接管路径：8 位、10 位红 ----------
-    setenv("S2A_AV1_SOFT", "1", 1);
-    {
-        const uint8_t *const *fr[2] = { (const uint8_t *const[]){ red_av1_0, red_av1_1 }, red10_av1 };
-        const size_t n8[2] = { sizeof red_av1_0, sizeof red_av1_1 };
-        for (int pass = 0; pass < 2; pass++) {
-            rig r; rig_up(&r, &AV1, 64, 64); uint64_t id;
-            for (int i = 0; i < 2; i++) CHECK(((f_sub)E(AV1.sub))(&id, r.obj, fr[pass][i], pass ? red10_av1_n[i] : n8[i], (int64_t)i * 33333000, 0) == 0);
-            sync_h a, b; take(&r, &AV1, &spev, &a); take(&r, &AV1, &spev, &b);
-            uint8_t p[4];
-            for (uint32_t k = 0; k < 2; k++) { px(&r, k, p); printf("AV1 软解 %d 位 第 %u 帧像素 (%u,%u,%u,%u)\n", pass ? 10 : 8, k, p[0], p[1], p[2], p[3]); CHECK(p[0] >= 251 && p[1] <= 3 && p[2] <= 3 && p[3] == 255); }
-            rig_down(&r, &AV1);
+    // ---------- AV1 强制软解（S2A_AV1_SOFT=1）走整条接管路径：8 位、10 位红（没链 dav1d 时两段跳过：强制软解没兜底、垫片也没有）----------
+    if (s2a_av1_open) {
+        setenv("S2A_AV1_SOFT", "1", 1);
+        {
+            const uint8_t *const *fr[2] = { (const uint8_t *const[]){ red_av1_0, red_av1_1 }, red10_av1 };
+            const size_t n8[2] = { sizeof red_av1_0, sizeof red_av1_1 };
+            for (int pass = 0; pass < 2; pass++) {
+                rig r; rig_up(&r, &AV1, 64, 64); uint64_t id;
+                for (int i = 0; i < 2; i++) CHECK(((f_sub)E(AV1.sub))(&id, r.obj, fr[pass][i], pass ? red10_av1_n[i] : n8[i], (int64_t)i * 33333000, 0) == 0);
+                sync_h a, b; take(&r, &AV1, &spev, &a); take(&r, &AV1, &spev, &b);
+                uint8_t p[4];
+                for (uint32_t k = 0; k < 2; k++) { px(&r, k, p); printf("AV1 软解 %d 位 第 %u 帧像素 (%u,%u,%u,%u)\n", pass ? 10 : 8, k, p[0], p[1], p[2], p[3]); CHECK(p[0] >= 251 && p[1] <= 3 && p[2] <= 3 && p[3] == 255); }
+                rig_down(&r, &AV1);
+            }
         }
-    }
-    // 整条路径写出的 RGBA 逐像素对「同一帧的 YUV（经垫片另解一份）+ BT.601 视频范围公式（双精度）」，±1：核 NEON 与逐像素两段转换
-    {
-        void *h = s2a_av1_open(1); uint8_t *pl[3]; int32_t st[3], info[6];
-        CHECK(s2a_av1_decode(h, ts_av1[0], (uint32_t)ts_av1_n[0], pl, st, info) == 0);
-        rig r; rig_up(&r, &AV1, 96, 64); uint64_t id; sync_h a;
-        CHECK(((f_sub)E(AV1.sub))(&id, r.obj, ts_av1[0], ts_av1_n[0], 0, 0) == 0);
-        uint32_t idx = take(&r, &AV1, &spev, &a);
-        static uint8_t got[96 * 64 * 4];
-        CHECK(((f_rgba)E(READ_RGBA))(r.pool[idx], 0, 0, 0, 96, 64, got, 96 * 4, sizeof got) == 0);
-        int bad = 0, maxd = 0;
-        for (int y = 0; y < 64; y++) for (int x = 0; x < 96; x++) {
-            double Y = (pl[0][y * st[0] + x] - 16) * 255.0 / 219.0, U = (pl[1][(y / 2) * st[1] + x / 2] - 128) * 255.0 / 224.0, V = (pl[2][(y / 2) * st[1] + x / 2] - 128) * 255.0 / 224.0;
-            double want[3] = { Y + 1.402 * V, Y - 0.3441 * U - 0.7141 * V, Y + 1.772 * U };
-            for (int c = 0; c < 3; c++) { int w = (int)(want[c] < 0 ? 0 : want[c] > 255 ? 255 : want[c] + 0.5), d = abs(w - got[(y * 96 + x) * 4 + c]); if (d > maxd) maxd = d; bad += d > 1; }
-            bad += got[(y * 96 + x) * 4 + 3] != 255;
+        // 整条路径写出的 RGBA 逐像素对「同一帧的 YUV（经垫片另解一份）+ BT.601 视频范围公式（双精度）」，±1：核 NEON 与逐像素两段转换
+        {
+            void *h = s2a_av1_open(1); uint8_t *pl[3]; int32_t st[3], info[6];
+            CHECK(s2a_av1_decode(h, ts_av1[0], (uint32_t)ts_av1_n[0], pl, st, info) == 0);
+            rig r; rig_up(&r, &AV1, 96, 64); uint64_t id; sync_h a;
+            CHECK(((f_sub)E(AV1.sub))(&id, r.obj, ts_av1[0], ts_av1_n[0], 0, 0) == 0);
+            uint32_t idx = take(&r, &AV1, &spev, &a);
+            static uint8_t got[96 * 64 * 4];
+            CHECK(((f_rgba)E(READ_RGBA))(r.pool[idx], 0, 0, 0, 96, 64, got, 96 * 4, sizeof got) == 0);
+            int bad = 0, maxd = 0;
+            for (int y = 0; y < 64; y++) for (int x = 0; x < 96; x++) {
+                double Y = (pl[0][y * st[0] + x] - 16) * 255.0 / 219.0, U = (pl[1][(y / 2) * st[1] + x / 2] - 128) * 255.0 / 224.0, V = (pl[2][(y / 2) * st[1] + x / 2] - 128) * 255.0 / 224.0;
+                double want[3] = { Y + 1.402 * V, Y - 0.3441 * U - 0.7141 * V, Y + 1.772 * U };
+                for (int c = 0; c < 3; c++) { int w = (int)(want[c] < 0 ? 0 : want[c] > 255 ? 255 : want[c] + 0.5), d = abs(w - got[(y * 96 + x) * 4 + c]); if (d > maxd) maxd = d; bad += d > 1; }
+                bad += got[(y * 96 + x) * 4 + 3] != 255;
+            }
+            printf("AV1 软解整条路径 96x64：逐像素对公式最大差 %d、超 ±1 的 %d 个分量\n", maxd, bad); CHECK(bad == 0);
+            s2a_av1_close(h); rig_down(&r, &AV1);
         }
-        printf("AV1 软解整条路径 96x64：逐像素对公式最大差 %d、超 ±1 的 %d 个分量\n", maxd, bad); CHECK(bad == 0);
-        s2a_av1_close(h); rig_down(&r, &AV1);
-    }
-    unsetenv("S2A_AV1_SOFT");
+        unsetenv("S2A_AV1_SOFT");
+    } else printf("AV1 强制软解 / 整条路径：宿主没链 dav1d 垫片（本机走 AV1 硬解路线），两段跳过\n");
 
     // ---------- AV1（VideoToolbox 硬件解码；没有 AV1 硬件解码的机器上这段跳过并说明）----------
     if (VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1)) {

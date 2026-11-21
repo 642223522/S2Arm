@@ -28,9 +28,9 @@ import S2ArmAppleAdapter
         runner.running = false
         let keptAfter = UserDefaults.standard.object(forKey: "S2AIosAfterPack")
         defer { UserDefaults.standard.set(keptAfter, forKey: "S2AIosAfterPack") }
-        model.iosAfterPack = "export"
+        model.iosAfterPack = "export"   // 11-19 自签走查结构 8：出包页「出完之后」只管出包页那一次，不再挡后台收回 NRO；照样只发现、不装机
         let selfSign = await model.keptModulesTick()
-        XCTAssertFalse(selfSign, "出包页选了导出自签：不自动装到手机（玩家选择优先）")
+        XCTAssertFalse(selfSign, "选了导出自签也只发现、不发起装机")
         XCTAssertEqual(runner.updates.count, 0)
         model.iosAfterPack = "install"
         runner.shellUpdate = true
@@ -189,6 +189,7 @@ private final class KeptRunner: JobProcessRunner {
     func start(executable: URL, arguments: [String], environment: [String: String],
                onLine: @escaping (Data) -> Void, onStderr: @escaping (Data) -> Void,
                onExit: @escaping (Int32) -> Void) throws -> JobProcessHandle {
+        objc_sync_enter(self); defer { objc_sync_exit(self) }   // 作业客户端在并发线程池里同时调 start：替身状态串行改（无锁并发追加数组会 SIGSEGV 带崩整个测试进程）
         var taskId = "", op = ""
         if let last = arguments.last, last.hasSuffix(".json"), let data = try? Data(contentsOf: URL(fileURLWithPath: last)),
            let request = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {

@@ -16,12 +16,14 @@ if !FileManager.default.fileExists(atPath: Context.packageDirectory + "/" + spar
 let package = Package(
     name: "NX2AppleFrontend",
     platforms: [.macOS(.v13)],
-    products: [.library(name: "NX2AppleUI", targets: ["NX2AppleUI"])],
+    products: [.library(name: "NX2AppleUI", targets: ["NX2AppleUI"]),
+               // 测试进程固定界面语言（Tests/TestLanguage/test_language.m）：本包与 launchers/macos 的每个测试目标都依赖它，测试结果不随跑测试那台机器的系统语言变
+               .library(name: "TestLanguage", targets: ["TestLanguage"])],
     dependencies: [.package(path: "../adapter"), .package(path: "../../shared/SaveSync")],
     targets: [
         .target(name: "LauncherPadBridge", path: "Sources/LauncherPadBridge", publicHeadersPath: "include",
                 cSettings: [.headerSearchPath(".")],
-                linkerSettings: [.linkedFramework("AppKit")]),
+                linkerSettings: [.linkedFramework("AppKit"), .linkedFramework("IOKit"), .linkedFramework("GameController")]),
         .target(name: "NXCore", path: "Sources/NXCore"),
         .target(name: "NXModel", dependencies: ["NXCore"], path: "Sources/NXModel"),
         .target(name: "NXLauncher", dependencies: ["NXModel", "NXCore"], path: "Sources/NXLauncher"),
@@ -35,8 +37,9 @@ let package = Package(
         //   build_app.py 把 Sparkle.framework 放进 Contents/Frameworks；S2ArmApple 的 rpath 指到那里（launchers/macos/Package.swift）
         .binaryTarget(name: "Sparkle", path: sparkleZip),
         // 界面语言跟随系统 / 记住选择的单测（tests/launcher_language_test.sh 跑；NXCore 是 package 访问级别，只能在本包里测）
-        .testTarget(name: "NXCoreTests", dependencies: ["NXCore"], path: "Tests/NXCoreTests"),
-        .testTarget(name: "NXLauncherTests", dependencies: ["NXLauncher", "NX2AppleUI"], path: "Tests/NXLauncherTests"),
+        .target(name: "TestLanguage", path: "Tests/TestLanguage"),
+        .testTarget(name: "NXCoreTests", dependencies: ["NXCore", "TestLanguage"], path: "Tests/NXCoreTests"),
+        .testTarget(name: "NXLauncherTests", dependencies: ["NXLauncher", "NX2AppleUI", "TestLanguage"], path: "Tests/NXLauncherTests"),
     ],
     swiftLanguageModes: [.v5]
 )

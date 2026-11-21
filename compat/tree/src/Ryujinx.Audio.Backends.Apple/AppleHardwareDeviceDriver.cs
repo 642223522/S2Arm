@@ -131,80 +131,127 @@ namespace Ryujinx.Audio.Backends.Apple
 
         private static readonly ProbeCallback _probeCallback = static (_, _, _) => { };
 
-        // S2Arm（#189）：试建成功不等于设备真能出 5.1——2 声道内置扬声器上 6 声道队列照样试建成功，后端就上报
-        //   6 声道，渲染器出 6 声道 PCM、运行期队列又没有声明声道布局，系统隐式 6→2 只复制 FL/FR，中置（对白）
-        //   与环绕整段丢失。改为读队列关联设备的真实输出声道数（kAudioQueueDeviceProperty_NumberChannels，
-        //   与 HAL 一致：DisplayPort 显示器 6、内置扬声器 2），不足 6 声道就上报立体声，由游戏 / 渲染器按
-        //   自己的系数下混；真 5.1 设备的运行期 6 声道队列声明布局在会话侧（AppleHardwareDeviceSession.CreateQueue）。
-        //   例外：S2A_AUDIO_OUT=sys / matrix 显式下混时照报 5.1——渲染器的回落下混不归一化（六路全 0.9 折到 2.399、
-        //   3484/4800 采样削波），显式下混让 6 声道混音进会话、由系统 AudioConverter 归一化折叠（不削波）；
-        //   S2A_AUDIO_CH2 / STEREO 仍然优先强制立体声
+        // S2Arm（#189 后续，5.1 虚拟环绕）：上报几声道按用户显式选择的设备类型（S2A_AUDIO_DEVICE）定——
+        //   builtin / headphones（仅显式选择时）：对应 VS 开关开（S2A_AUDIO_VS_SPEAKERS / S2A_AUDIO_VS_HEADPHONES）
+        //     才上报 6——让游戏出 5.1、折叠在会话侧（AUSM 显式输出类型，.auto 在 5.1 路径上三路由实测全退化为
+        //     ExternalSpeakers 普通平移，见 docs/坑记录.md）；VS 关报 2，游戏按 2ch 渲染（TV Sound 2ch 下混）。
+        //     不看物理设备：VS 开时物理设备可以只有 2 声道（真实折叠在会话侧），VS 关时物理 6 声道也按用户选择报 2。
+        //   未显式选择（Auto）与 external：按设备真实输出声道数判（#577 判据——试建成功不等于设备真能出 5.1，
+        //     2 声道内置扬声器上 6 声道队列照样试建成功，读 kAudioQueueDeviceProperty_NumberChannels，与 HAL
+        //     一致：DisplayPort 显示器 6、内置扬声器 2）：≥6 直通、<6 报 2 下混，永不虚拟环绕。未显式选择走这支
+        //     是保住 5.1 设备玩家的缺省直通（评审 11-16：缺省不能把接 HDMI / DisplayPort 5.1 的玩家降成立体声）。
+        //     真 5.1 设备的运行期 6 声道队列声明布局在会话侧（AppleHardwareDeviceSession.CreateQueue）。
+        //   例外：S2A_AUDIO_OUT=sys / matrix 显式下混（内部 A/B）照报 5.1——渲染器的回落下混不归一化（六路全
+        //     0.9 折到 2.399、3484/4800 采样削波），显式下混让 6 声道混音进会话、由系统 AudioConverter 归一化折叠
+        //     （不削波）；S2A_AUDIO_CH2 / STEREO 仍在构造函数里优先强制立体声
         private bool TestSurroundSupport(AppleOutputMode outMode)
         {
+            if (outMode != AppleOutputMode.Native)
+            {
+                Console.Error.WriteLine($"[S2A 声音] S2A_AUDIO_OUT 显式下混（{AppleOutputModeSelector.ModeName(outMode)}）：照报 5.1，6 声道混音进会话、在会话侧折成立体声");
+                return true;
+            }
+
+            AppleAudioDeviceType deviceType = AppleAudioDeviceTypeSelector.FromEnvironment();
+
+            // 只有玩家显式选了 builtin / headphones 才跳过探测、按 VS 开关定上报；未选择 = 按设备自动，external 也按设备判
+            if (deviceType is AppleAudioDeviceType.BuiltInSpeakers or AppleAudioDeviceType.Headphones)
+            {
+                bool vs = AppleAudioDeviceTypeSelector.VirtualSurround(deviceType);
+
+                Console.Error.WriteLine($"[S2A 声音] 设备类型 {AppleAudioDeviceTypeSelector.DeviceName(deviceType)}：虚拟环绕 {(vs ? "开" : "关")} → 上报 {(vs ? "6 声道，5.1 混音进会话、AUSM 折成立体声" : "2 声道，游戏 / 渲染器按自己的系数下混")}");
+
+                return vs;
+            }
+
+            return ProbeRealChannels(deviceType);
+        }
+
+        // 单测钩子（产品路径恒 null，只有 InternalsVisibleTo 的测试程序集碰得到）：探测发生在构造函数里，
+        //   注入只能走静态——测试先设它再构造驱动、测完清回 null。四个读数：6 声道队列试建 rc、设备真实
+        //   声道数、声道读 rc、5.1 布局设置 rc。钉「未选择 = 按设备自动」的缺省语义用（评审 11-16：期望按
+        //   main 的 #577 判据写，不按新代码推）
+        internal static (int QueueRc, uint Channels, int ChannelsRc, int LayoutRc)? S2ATestProbe;
+
+        // 真实声道判据（#577）：Auto（未显式选择）与 external 共用
+        private bool ProbeRealChannels(AppleAudioDeviceType deviceType)
+        {
+            string source = AppleAudioDeviceTypeSelector.DeviceName(deviceType);
+
             try
             {
-                AudioStreamBasicDescription format =
-                    GetAudioFormat(SampleFormat.PcmFloat, Constants.TargetSampleRate, 6);
+                int queueRc;
+                uint deviceChannels;
+                int channelsResult;
+                int layoutResult;
 
-                int result = AudioQueueNewOutput(
-                    ref format,
-                    Marshal.GetFunctionPointerForDelegate(_probeCallback),
-                    nint.Zero,
-                    nint.Zero,
-                    nint.Zero,
-                    0,
-                    out nint testQueue);
-
-                if (result == 0)
+                if (S2ATestProbe is { } injected)
                 {
-                    uint deviceChannels = 0;
-                    uint size = sizeof(uint);
-                    int channelsResult = AudioQueueGetProperty(
-                        testQueue,
-                        kAudioQueueDeviceProperty_NumberChannels,
-                        out deviceChannels,
-                        ref size);
+                    (queueRc, deviceChannels, channelsResult, layoutResult) = injected;
+                }
+                else
+                {
+                    AudioStreamBasicDescription format =
+                        GetAudioFormat(SampleFormat.PcmFloat, Constants.TargetSampleRate, 6);
 
-                    AudioChannelLayout layout = new AudioChannelLayout
+                    queueRc = AudioQueueNewOutput(
+                        ref format,
+                        Marshal.GetFunctionPointerForDelegate(_probeCallback),
+                        nint.Zero,
+                        nint.Zero,
+                        nint.Zero,
+                        0,
+                        out nint testQueue);
+
+                    deviceChannels = 0;
+                    channelsResult = -1;
+                    layoutResult = -1;
+
+                    if (queueRc == 0)
                     {
-                        AudioChannelLayoutTag = kAudioChannelLayoutTag_MPEG_5_1_A,
-                        AudioChannelBitmap = 0,
-                        NumberChannelDescriptions = 0
-                    };
+                        uint size = sizeof(uint);
+                        channelsResult = AudioQueueGetProperty(
+                            testQueue,
+                            kAudioQueueDeviceProperty_NumberChannels,
+                            out deviceChannels,
+                            ref size);
 
-                    int layoutResult = AudioQueueSetProperty(
-                        testQueue,
-                        kAudioQueueProperty_ChannelLayout,
-                        ref layout,
-                        (uint)Marshal.SizeOf<AudioChannelLayout>());
+                        AudioChannelLayout layout = new AudioChannelLayout
+                        {
+                            AudioChannelLayoutTag = kAudioChannelLayoutTag_MPEG_5_1_A,
+                            AudioChannelBitmap = 0,
+                            NumberChannelDescriptions = 0
+                        };
 
-                    AudioQueueDispose(testQueue, true);
+                        layoutResult = AudioQueueSetProperty(
+                            testQueue,
+                            kAudioQueueProperty_ChannelLayout,
+                            ref layout,
+                            (uint)Marshal.SizeOf<AudioChannelLayout>());
 
-                    if (channelsResult != 0)
-                    {
-                        Console.Error.WriteLine($"[S2A 声音] 【红】读输出设备声道数失败：{channelsResult}（按立体声上报）");
-                        return false;
+                        AudioQueueDispose(testQueue, true);
                     }
+                }
 
-                    // S2Arm（#189）：显式下混例外——用户明确要系统 AudioConverter 折成立体声（归一化不削波），
-                    //   照报 5.1 让 6 声道混音进会话，由会话折叠；真 5.1 设备上同样按显式要求折叠（A/B 对拍）
-                    if (outMode != AppleOutputMode.Native)
-                    {
-                        Console.Error.WriteLine($"[S2A 声音] 输出设备 {deviceChannels} 声道：S2A_AUDIO_OUT 显式下混（{AppleOutputModeSelector.ModeName(outMode)}）——照报 5.1，6 声道会话在会话侧折成立体声（5.1 布局设置 rc={layoutResult}，折叠后队列是 2 声道）");
-                        return true;
-                    }
-
-                    if (deviceChannels >= 6 && layoutResult == 0)
-                    {
-                        Console.Error.WriteLine($"[S2A 声音] 输出设备 {deviceChannels} 声道：上报 5.1，运行期 6 声道会话声明 MPEG_5_1_A 布局");
-                        return true;
-                    }
-
-                    Console.Error.WriteLine($"[S2A 声音] 输出设备 {deviceChannels} 声道：上报立体声，由游戏 / 渲染器按自己的系数下混（5.1 布局设置 rc={layoutResult}）");
+                if (queueRc != 0)
+                {
+                    Console.Error.WriteLine($"[S2A 声音] {source}：试建 6 声道队列失败：{queueRc}（按立体声上报）");
                     return false;
                 }
 
-                Console.Error.WriteLine($"[S2A 声音] 试建 6 声道队列失败：{result}（按立体声上报）");
+                if (channelsResult != 0)
+                {
+                    Console.Error.WriteLine($"[S2A 声音] {source}：【红】读输出设备声道数失败：{channelsResult}（按立体声上报）");
+                    return false;
+                }
+
+                if (deviceChannels >= 6 && layoutResult == 0)
+                {
+                    Console.Error.WriteLine($"[S2A 声音] {source}：输出设备 {deviceChannels} 声道：上报 5.1，运行期 6 声道会话声明 MPEG_5_1_A 布局");
+                    return true;
+                }
+
+                Console.Error.WriteLine($"[S2A 声音] {source}：输出设备 {deviceChannels} 声道：上报立体声，由游戏 / 渲染器按自己的系数下混（5.1 布局设置 rc={layoutResult}）");
                 return false;
             }
             catch
@@ -310,13 +357,22 @@ namespace Ryujinx.Audio.Backends.Apple
                 lock (_sessionLock)
                 {
                     if (_disposed) return;
+                    bool paceAlive = false;
                     foreach (AppleHardwareDeviceSession session in _sessions.Keys)
                     {
                         session.Dispose();
+                        paceAlive |= session.S2APaceThreadAlive;
                     }
 
-                    _updateRequiredEvent.Dispose();
-                    _pauseEvent.Dispose();
+                    // S2Arm (11-19): a session whose pace thread is still stuck in a hung game's buffer stays registered after its own
+                    //   Dispose and may Set these events when it comes back; disposing them here made that Set throw ObjectDisposedException
+                    //   on a background thread and abort the process. Keep them then (the GC collects them after the thread leaves).
+                    if (!paceAlive)
+                    {
+                        _updateRequiredEvent.Dispose();
+                        _pauseEvent.Dispose();
+                    }
+
                     _disposed = true;
                 }
             }
@@ -332,5 +388,19 @@ namespace Ryujinx.Audio.Backends.Apple
 
         public bool SupportsChannelCount(uint channelCount)
             => channelCount != 6 || _supportSurroundConfiguration;
+
+        // S2Arm（#189 后续，5.1 虚拟环绕第二片）：游戏看到的 active device 名字按玩家显式选择的设备类型定（VirtualDeviceSessionRegistry）：
+        //   builtin → AudioBuiltInSpeakerOutput、headphones → AudioStereoJackOutput（USB / 蓝牙耳机选 Headphones 也报 StereoJack——
+        //   设备类型语义的简化，不逐设备另报真实接口名）；未显式选择（Auto）与 external 不给名字 → 缺省 AudioTvOutput（缺省路径
+        //   逐字节不变）。声道数不走这里：照旧看 SupportsChannelCount(6)（显式类型 + 虚拟环绕开时报 6，关时报 2）
+        public string? S2AActiveDeviceName()
+        {
+            return AppleAudioDeviceTypeSelector.FromEnvironment() switch
+            {
+                AppleAudioDeviceType.BuiltInSpeakers => "AudioBuiltInSpeakerOutput",
+                AppleAudioDeviceType.Headphones => "AudioStereoJackOutput",
+                _ => null,
+            };
+        }
     }
 }

@@ -47,18 +47,32 @@ CFLAGS  ?= -O2 -g -Wall -Wextra -Wno-unused-parameter
 HOST_SRCS :=
 HOST_LIBS :=
 TEST_TARGETS :=
-# dav1d 是 AV1 软件兜底（只有没有 AV1 硬件解码的目标机才用到）：默认编入；确认所有目标机都有 AV1 硬件解码的本地构建可设 0，
-#   同时跳过 meson / ninja 依赖与 dav1d 静态库（见 services/build.mk、launchers/macos/prepare_build.py）
+# dav1d 是 AV1 软件兜底（只有没有 AV1 硬件解码的机器才用到）：S2A_DAV1D = auto（显式设）= 探测本机（tools/av1hw.sh：VideoToolbox
+#   建得出 AV1 解码会话 = 有硬解 → AV1 走硬解路线，dav1d 静态库 / 预编库 / meson / ninja 依赖整条不进构建，见 services/build.mk、
+#   launchers/macos/prepare_build.py；没有硬解的机器 M1 / M2、A16 及更早与原默认一致，照编照链）；1 = 强制链（出包会落到
+#   没有硬解的机器上时——比如发版机出的 App）；0 = 强制不链。
+# S2A_MAKE_DRY 从 services/build.mk 挪上来：auto 的解析在 include 之前就要用（空跑 make -n 不出编译器真探测，按要链算）
+S2A_MAKE_DRY := $(findstring n,$(firstword -$(MAKEFLAGS)))
+# 缺省 1（链）：构建机出的二进制会分发到别的机器（发版的 Mac 宿主、iOS 库、启动器随包），探测构建机判不了玩家设备；
+#   auto 只在「构建出来只给本机自己跑」时显式设（本地开发省依赖）
 S2A_DAV1D ?= 1
+# 生效值（1 = 链 dav1d），进 HOST_CFG：机器换了 / 探测脚本改得翻转结果时重链。$(shell) 显式带 DEVELOPER_DIR 与 S2A_DAV1D
+#   （make 3.81 的 $(shell) 不继承 export 见上；S2A_DAV1D 不总在环境里，命令行给的值要自己带进子 shell）；探不出来按要链算
+S2A_DAV1D_EFF := $(if $(S2A_MAKE_DRY),1,$(shell DEVELOPER_DIR=$(DEVELOPER_DIR) S2A_DAV1D=$(S2A_DAV1D) bash tools/av1hw.sh --want 2>/dev/null || echo 1))
+# libvpx 同理（VP8 / VP9 软解）：S2A_VPX = auto（显式设）= 探测本机可走系统 VP9（tools/vp9hw.sh：注册 supplemental 后真建一次会话，
+#   与运行时同一条判据 #348）→ VP9 走 VideoToolbox，libvpx 静态库 / 预编库整条不进构建；VP8 无任何系统 / 托管替代（VideoToolbox
+#   不解 VP8），没链 libvpx 的机器上 VP8 初始化报红不出假画面；出包要落到这些内容上时（发版机、iPhone 包）设 S2A_VPX=1
+S2A_VPX ?= 1   # 同上：缺省链，auto 只给本机自用的构建显式设
+S2A_VPX_EFF := $(if $(S2A_MAKE_DRY),1,$(shell DEVELOPER_DIR=$(DEVELOPER_DIR) S2A_VPX=$(S2A_VPX) bash tools/vp9hw.sh --want 2>/dev/null || echo 1))
 .DEFAULT_GOAL := host
 -include $(sort $(wildcard */build.mk))
 
 # 宿主依赖在全部 build.mk 读完之后才写：规则的依赖在读入那一刻展开，写在 runtime/build.mk 里时按字母序排在后面的 services/、tests/ 追加的源文件
 # （自动玩家等）不在依赖里，改了 make host 不重编（10-20 服务接入线实测作废两局暗黑2、原生层一局八方2）。
-# 构建配置戳：S2A_CS / S2A_PGO_GEN / S2A_DAV1D / CC / CFLAGS 变了也要重编（先不带 C# 编、再带 C# 编之类）；内容不变就不改写，不触发重编
-HOST_CFG     := S2A_CS=$(S2A_CS) S2A_PGO_GEN=$(S2A_PGO_GEN) S2A_DAV1D=$(S2A_DAV1D) S2A_MAC_FRONTEND=$(S2A_MAC_FRONTEND) CC=$(CC) CFLAGS=$(CFLAGS)
+# 构建配置戳：S2A_CS / S2A_PGO_GEN / S2A_DAV1D 与 S2A_VPX（生效值）/ CC / CFLAGS 变了也要重编（先不带 C# 编、再带 C# 编之类）；内容不变就不改写，不触发重编
+HOST_CFG     := S2A_CS=$(S2A_CS) S2A_PGO_GEN=$(S2A_PGO_GEN) S2A_DAV1D=$(S2A_DAV1D_EFF) S2A_VPX=$(S2A_VPX_EFF) S2A_MAC_FRONTEND=$(S2A_MAC_FRONTEND) CC=$(CC) CFLAGS=$(CFLAGS)
 HOST_CFG_STAMP := $(BUILD)/.host_cfg
-$(shell mkdir -p $(BUILD); [ "$$(cat $(HOST_CFG_STAMP) 2>/dev/null)" = '$(HOST_CFG)' ] || printf '%s' '$(HOST_CFG)' > $(HOST_CFG_STAMP))
+$(shell mkdir -p "$(BUILD)"; [ "$$(cat "$(HOST_CFG_STAMP)" 2>/dev/null)" = '$(HOST_CFG)' ] || printf '%s' '$(HOST_CFG)' > "$(HOST_CFG_STAMP)")
 $(BUILD)/s2arm-host: $(HOST_SRCS) $(wildcard $(addsuffix *.h,$(sort $(dir $(HOST_SRCS)))) runtime/include/*.h) $(HOST_CFG_STAMP) Makefile $(wildcard */build.mk)
 
 .PHONY: host test clean

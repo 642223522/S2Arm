@@ -155,7 +155,8 @@ def rewrite(exefs, staging):
     if fix_table and fix_table.is_file():
         env['S2A_FIX_TSV'] = str(fix_table)
     env.update(S2A_TARGET='android',
-               S2A_REWRITE_SPIN=os.environ.get('S2A_REWRITE_SPIN', '0'),
+               # 自旋闸缺省开，同 iOS 出包（pack/stage_rewrite.sh）与重改写（pack/jobs/rewrite_refresh.py）；运行时 S2A_SPIN=0 可关
+               S2A_REWRITE_SPIN=os.environ.get('S2A_REWRITE_SPIN', '1'),
                S2A_SDK_ADDR_CUT=os.environ.get('S2A_SDK_ADDR_CUT', '1'))
     command = rewrite_command()
     community = community_patches(exefs)
@@ -383,6 +384,8 @@ def entries_from_root(root, staging, sysdata=None, direct_vulkan=False):
             if os.path.isdir(libs):
                 out += [(f'shaders/direct/{n}', os.path.join(libs, n)) for n in sorted(os.listdir(libs))
                         if n.startswith('b-') and n.endswith('-vk') and os.path.isdir(os.path.join(libs, n))]
+                # 首局预热种子（pack/stage_vk_warm_seed.sh）：宿主首局按 <revision>/shaders/direct/warm-vk/<闭包>-<profile>/ 读（nvn_vk_prog_warm.h「随包种子」）
+                if os.path.isdir(os.path.join(libs, 'warm-vk')): out.append(('shaders/direct/warm-vk', os.path.join(libs, 'warm-vk')))
         else:
             out += [(f'shaders/{n}', os.path.join(shaders, n)) for n in sorted(os.listdir(shaders)) if n != 'work']
     # 社区补丁装载器表（#48 D2）：本次按安卓改写器出的那份已写进 staging（随下面的 modules/ 进包）；产物根里苹果改写阶段留下的 cpatch.tsv 不进安卓包

@@ -10,6 +10,7 @@
 # 只收真跑见过的（11-02 起不再补库里的计算着色器）：库里绝大多数计算着色器根本用不到——怪猎库里 6232 个、9 份真跑记录只用 33–52 个；
 #   全补进来预热要编 6663 条（别款 250–970 条），测试设备1 冷首启首帧等了 64 秒、机子烤到热状态严重。玩家拿到的永远是冷包，我们没跑过的款在玩家手里
 #   正好没有来源，补全照样是几千条。所以没有来源时种子表是空的：首帧不等，用到再编（首遇现编），编过的记进本机 pso_user.tsv 与管线存档，下次起局取。
+#   计算管线的首遇现编另由出包时离线编进随包归档消掉（graphics/tools/direct/cs_pipelines.py、pack/stage_direct_cpso.sh）：那是出包机上编、设备只打开文件，不进本表的预热行。
 import os, sys
 
 HEAD = ('# Prewarm seed list (shipped in the app, next to shader_map.tsv). Rows: S<TAB>shader key<TAB>stage / R<TAB>render pipeline key (pso_skey hex) / C<TAB>compute shader key.\n'
@@ -17,24 +18,52 @@ HEAD = ('# Prewarm seed list (shipped in the app, next to shader_map.tsv). Rows:
 
 def files(srcs):
     for s in srcs:
-        if os.path.isdir(s): yield from (os.path.join(s, f) for f in sorted(os.listdir(s)) if f.endswith('.tsv'))
+        if os.path.isdir(s): yield from (os.path.join(s, f) for f in sorted(os.listdir(s)) if f.endswith('.tsv') and not f.startswith('._'))   # ._：exFAT 上的 AppleDouble 附属文件
         elif os.path.isfile(s): yield s
 
-def main(out, keys_tsv, shmap, skey_bytes, srcs):   # shmap 留在参数里（direct_lib.sh 调用口径不变），不再读
+def main(out, keys_tsv, shmap, skey_bytes, srcs):   # shmap 留在参数里（direct_lib.py 调用口径不变），不再读
     keys = {l.strip() for l in open(keys_tsv) if l.strip()}
     # 只核「键是本包库里的」（前 16 位在 keys.tsv：别的游戏版本的键不进）；库名后缀（_b / 几何模拟的 _bgv、_bg<i> 等）合不合法只由宿主库加载器一处判
     #   （nvn_mtl.m lp_kind_of，预热 warm_stale 用同一个函数），这里不另抄后缀表。11-05 Switch Sports：原先写死只收 _b，菜单转场那批几何管线（R 行顶点键 _bgv、
     #   S 行 _bgv / _bg3）出包时整批滤掉，每局都在提交线程现建
     ok_key = lambda k: len(k) > 17 and k[16] == '_' and k[:16] in keys
+    # 键换代（11-20）：来源行可能是第 1 代键（键 v2 之前的我方真跑 / 众包，外部公开清单一直是第 1 代：sha256(控制段 + 代码)），本包库是第 2 代
+    #   （两段易变控制字段清零后再算，translator/nvn_key.py）。同目录的 key_alias.tsv（直连库阶段按本包抽取出的「旧键<TAB>新键」）先把旧键换成新键再按库键滤；
+    #   只换不在本包库里的旧键（同一个键两代相同时原样）。没有别名表 = 原样。原先不换：Ori 2 云端众包 R 行 3190 条对上 0 条，换后 365 条
+    alias = {}
+    ap = os.path.join(os.path.dirname(keys_tsv), 'key_alias.tsv')
+    for l in open(ap, encoding='utf-8', errors='replace') if os.path.isfile(ap) else ():
+        c = l.rstrip('\n').split('\t')
+        if len(c) >= 2 and not l.startswith('#') and len(c[0]) == 16 and len(c[1]) == 16: alias[c[0].lower()] = c[1].lower()
+    def new_key(k):   # 「<16 位键>_<后缀>」：旧键换新键
+        return alias[k[:16]] + k[16:] if len(k) > 17 and k[16] == '_' and k[:16] not in keys and k[:16] in alias else k
+    def new_skey(h):   # pso_skey 十六进制：开头两段 char vs[24], fs[24] 里的键名原地换（键名等长）
+        b = bytearray(bytes.fromhex(h))
+        for o in (0, 24):
+            name = bytes(b[o:o + 24]).split(b'\0', 1)[0].decode('ascii', 'replace')
+            nk = new_key(name)
+            if nk != name: b[o:o + len(nk)] = nk.encode('ascii')
+        return b.hex()
+    def convert(l, c):   # 一行换代后的样子（格式不对的原样，交给下面判）
+        try:
+            if c[0] in ('S', 'C') and len(c) >= 2: c[1] = new_key(c[1])
+            elif c[0] in ('R', 'M') and len(c) >= 2 and len(c[1]) % 2 == 0 and len(c[1]) >= 96 and all(ch in '0123456789abcdef' for ch in c[1]):
+                c[1] = new_skey(c[1])
+                if c[0] == 'M' and len(c) >= 3 and c[2] != '-': c[2] = new_key(c[2])
+        except (ValueError, UnicodeError): return l, c
+        return '\t'.join(c), c
     def r_keys(h):   # pso_skey 开头两段：char vs[24], fs[24]（以 0 结尾的键名）
         b = bytes.fromhex(h); return [x.split(b'\0', 1)[0].decode('ascii', 'replace') for x in (b[:24], b[24:48])]
-    rows, seen, stat = [], set(), []
+    rows, seen, stat, swapped = [], set(), [], 0
     for f in files(srcs):
         n = kept = 0
         for l in open(f, encoding='utf-8', errors='replace'):
             l = l.rstrip('\n'); c = l.split('\t')
             if not l or l.startswith('#'): continue
             n += 1
+            if alias:
+                l2, c = convert(l, c)
+                if l2 != l: swapped += 1; l = l2
             if c[0] == 'S' and len(c) >= 3: good = ok_key(c[1])
             elif c[0] == 'C' and len(c) >= 2: good = ok_key(c[1])
             elif c[0] == 'R' and len(c) >= 2 and len(c[1]) == 2 * skey_bytes and all(ch in '0123456789abcdef' for ch in c[1]):
@@ -60,7 +89,8 @@ def main(out, keys_tsv, shmap, skey_bytes, srcs):   # shmap 留在参数里（di
     with open(tmp, 'w', encoding='utf-8', newline='\n') as fh: fh.write(HEAD + ''.join(r + '\n' for r in rows))
     os.replace(tmp, out)
     cnt = {k: sum(1 for r in rows if r.startswith(k + '\t')) for k in 'SRCM'}
-    print(f'管线种子表：S {cnt["S"]} / R {cnt["R"]} / C {cnt["C"]} / M {cnt["M"]}（只收真跑见过的；只装库的 S 行 {len(deferred)} 挪到末尾）；来源 {len(stat)} 份：'
+    print(f'管线种子表：S {cnt["S"]} / R {cnt["R"]} / C {cnt["C"]} / M {cnt["M"]}（只收真跑见过的；只装库的 S 行 {len(deferred)} 挪到末尾；'
+          f'旧键经别名换成本包键 {swapped} 行，别名表 {len(alias)} 条）；来源 {len(stat)} 份：'
           + '；'.join(f'{f} {k}/{n} 行可用' for f, n, k in stat) if rows else
           '管线种子表：空（没有真跑来源：首帧不等，用到再编）')
 

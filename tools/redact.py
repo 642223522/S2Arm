@@ -4,7 +4,7 @@ import re
 
 KEY_LINE = re.compile(r'(?im)^(?P<prefix>[ \t]*[A-Za-z0-9_.-]+[ \t]*=[ \t]*)(?P<value>[0-9a-f]{32,})[^\r\n]*(?=\r?$)')
 
-SECRET = re.compile(r'(?i)(?:password|passwd|secret|token|api[_-]?key|authorization|cookie|serial(?:number)?|udid|uuid|imei|device[_-]?id|android[_-]?id|idfa|idfv|mac[_-]?address|uniqueidentifier|identifierforvendor|tester|(?:^|[_-])keys?(?:[_-]|$)|(?:^|[_-])(?:kek|bek|seed|keyblob)(?:[_-]|$)|titlekek|masterkey|headerkey)')
+SECRET = re.compile(r'(?i)(?:password|passwd|secret|token|api[_-]?key|authorization|cookie|serial(?:number)?|udid|uuid|imei|device[_-]?id|android[_-]?id|idfa|idfv|mac[_-]?address|uniqueidentifier|identifierforvendor|tester|(?:^|[_-])keys?(?:[_-]|$)|(?:^|[_-])(?:kek|bek|seed|keyblob)(?:[_-]|$)|titlekek|titlekeys?|masterkey|headerkey)')   # titlekey：截断显示的半个标题密钥也算泄漏，不看值多长（维护者 11-19）
 
 # Scan keys separately so an innocent outer field cannot hide a nested secret assignment.
 # 名字只从一串 [A-Za-z0-9_.-] 的开头试（前面的数字 / 点 / 横线由 [0-9.-]* 吃掉，名字仍从串里第一个字母或下划线起）：原写法从串里每个位置起
@@ -13,10 +13,17 @@ SECRET = re.compile(r'(?i)(?:password|passwd|secret|token|api[_-]?key|authorizat
 ASSIGNMENT_KEY = re.compile(r"""["']?(?<![A-Za-z0-9_.-])[0-9.-]*(?P<name>[A-Za-z_][A-Za-z0-9_.-]*)["']?[^\S\r\n]*[:=][^\S\r\n]*""")
 
 
+# 按确切名字放行（维护者 11-19 定：不放宽上面的密钥名规则）：key=（着色器 / 管线缓存键，代码内容的哈希，nvn_mtl.m「K … key=%s」、
+#   selection.c「direct attempt … key=%.64s」；诊断里原先 17 万行全成 key=[REDACTED]）和 binaryUUID（我们自己二进制的构建号，崩溃符号化要用）。
+#   放行的是名字不是值：真密钥原值照样按值先抹（redact_text 开头），prod.keys / title.keys 整行照样按 KEY_LINE 抹，64 位以上十六进制照样当密钥材料
+ALLOWED_NAMES = frozenset({'key', 'binaryUUID'})
+_BINARY_UUID_BEFORE = re.compile(r'binaryUUID["\']?[^\S\r\n]*[:=][^\S\r\n]*["\']?\Z')
+
+
 def redact_assignments(text):
     pieces, cursor = [], 0
     for match in ASSIGNMENT_KEY.finditer(text):
-        if match.end() <= cursor or not SECRET.search(match['name']):
+        if match.end() <= cursor or match['name'] in ALLOWED_NAMES or not SECRET.search(match['name']):
             continue
         start = match.end()
         q = text[start] if start < len(text) and text[start] in ('"', "'") else ''
@@ -117,12 +124,38 @@ ERRNO_REASONS = ("Operation not permitted", "Permission denied", "No such file o
 _REASON_TAIL = re.compile(r'(?i): (?:(?:clonefile|fclonefileat|copyfile) failed: )?(?:' + '|'.join(map(re.escape, ERRNO_REASONS)) + r')\.?[ \t]*$')
 
 
+# 我方日志在路径后面接着写的读数（诊断#343862：「存档提交 #N：<路径> 克隆 + 原子交换 25.5 ms」整段成了 [PRIVATE_PATH]，存档耗时拿不到）：
+#   行尾「 <中文词 / 符号 / 数字>… <数字> <单位>」留下。尾巴里不许有英文字母（单位除外）和斜杠，带空格的英文目录名照旧算路径。
+#   只用锚在行尾的短正则认读数，前面的词从后往前逐个看（线性；一条大正则在长串上会回溯到平方级以上）
+_MEASURE_END = re.compile(r'(?:[ \t]+|[ \t]*[（(])[0-9][0-9.,]*[ \t]?(?:ms|µs|us|ns|s|秒|毫秒|分钟|KB|MB|GB|TB|KiB|MiB|GiB|B|%|帧|fps|次|项|条|个|块|行|款|份|lines|files)[)）\]]*\.?[ \t]*\Z')
+_MEASURE_WORD = re.compile(r'[^\x00-\x7f\s]+|[+=#×~≈-]|[0-9][0-9.,]*')
+
+
+def _measure_tail_start(text):
+    end = _MEASURE_END.search(text)
+    if not end:
+        return None
+    start = end.start()
+    while True:
+        cut = start
+        while cut > 0 and text[cut - 1] not in ' \t':   # 前一个词
+            cut -= 1
+        word = text[cut:start]
+        gap = cut
+        while gap > 0 and text[gap - 1] in ' \t':
+            gap -= 1
+        if not word or gap == cut or not _MEASURE_WORD.fullmatch(word):
+            return start
+        start = gap
+
+
 def _private_path_keep_reason(match):
     text = match.group(0)
     tail = _REASON_TAIL.search(text)
-    if not tail or tail.start() == 0:
+    at = tail.start() if tail else _measure_tail_start(text)
+    if not at:
         return _private_path(match)
-    return _private_path(re.match(r'.*', text[:tail.start()], re.S)) + text[tail.start():]
+    return _private_path(re.match(r'.*', text[:at], re.S)) + text[at:]
 
 
 def redact_text(text, *, key_values=None, preserve_identity=False) -> str:
@@ -137,11 +170,12 @@ def redact_text(text, *, key_values=None, preserve_identity=False) -> str:
     s = re.sub(r'(?i)(https?://)[^/\s:@]+:[^/\s@]+@', r'\1[REDACTED]@', s)
     s = re.sub(r'(?i)([?&](?:token|key|api_key|secret|password|auth|signature|session|access_token)=)[^&#\s]+', r'\1[REDACTED]', s)
     # [a-z0-9_]*_key 只从一串 [a-z0-9_] 的开头试（同上 ASSIGNMENT_KEY：串中间起能成的，从串头起也成、且更靠左，原本就轮不到它；原写法长串上平方级）
-    s = re.sub(r'(?i)((?:password|passwd|secret|token|api[_-]?key|(?<![a-z0-9_])[a-z0-9_]*_key(?:_[a-z0-9]+)*|titlekek|masterkey|headerkey|cookie|serial(?:number)?|udid|uuid|imei|device[_-]?id|android[_-]?id|idfa|idfv|mac[_-]?address|uniqueidentifier|identifierforvendor)\s*["\x27]?\s*[:=]\s*["\x27]?)[^\s,"\x27;}]+', r'\1[REDACTED]', s)
+    s = re.sub(r'(?i)((?:password|passwd|secret|token|api[_-]?key|(?<![a-z0-9_])[a-z0-9_]*_key(?:_[a-z0-9]+)*|titlekek|masterkey|headerkey|cookie|serial(?:number)?|udid|(?<!(?-i:binary))uuid|imei|device[_-]?id|android[_-]?id|idfa|idfv|mac[_-]?address|uniqueidentifier|identifierforvendor)\s*["\x27]?\s*[:=]\s*["\x27]?)[^\s,"\x27;}]+', r'\1[REDACTED]', s)
     s = redact_identity(s)
     s = re.sub(r'(?:/Volumes/|/private/var/|/var/mobile/|/data/user/|/data/data/|\\\\)[^\r\n\"\x27<>]*', _private_path_keep_reason, s)
     s = re.sub(r'(?:/Users/|/home/|[A-Za-z]:[\\/](?:Users|Documents)[\\/])[^\r\n\"\x27<>]*', _private_path_keep_reason, s)
-    s = re.sub(r'\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b', '[DEVICE_ID]', s)
+    s = re.sub(r'\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b',
+               lambda m: m[0] if _BINARY_UUID_BEFORE.search(s, max(0, m.start() - 40), m.start()) else '[DEVICE_ID]', s)
     if not preserve_identity:
         s = re.sub(r'(?i)\b[0-9a-f]{64,}\b', '[KEY_MATERIAL]', s)
     return ''.join(c if c in '\n\t' or ord(c) >= 32 and ord(c) != 127 else '\ufffd' for c in s)

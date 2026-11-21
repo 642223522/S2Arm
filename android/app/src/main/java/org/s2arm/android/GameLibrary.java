@@ -69,6 +69,11 @@ final class GameLibrary {
         });
     }
 
+    /** 库清单只给日志看：不当状态发给界面，不然收尾这行会盖掉刚报的失败原因 / 「已装好」。 */
+    private void logLibrary() {
+        Log.i("S2Arm", describe());
+    }
+
     private void status(String text) {
         Log.i("S2Arm", text);
         listener.onStatus(text);
@@ -106,8 +111,10 @@ final class GameLibrary {
                     GameSession.InstalledApk apk = installedApk();
                     GameFingerprint.Timing.end(timing, "installed_apk_identity", phase);
                     phase = GameFingerprint.Timing.start(timing);
+                    SaveImport saves = new SaveImport(context.getFilesDir(), Locale.getDefault().toLanguageTag(), NativeBridge::saveTransfer);
                     GameSession session = GameSession.load(spec, context.getFilesDir(), apk,
-                        (context.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0, DebugGate.open(), timing);
+                        (context.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0,
+                        DebugGate.open(), timing, saves::recoverIfNeeded);
                     GameFingerprint.Timing.end(timing, "session_load_total", phase);
                     if (timing != null) for (String line : timing.lines()) Log.d("S2ArmBootTiming", line);
                     Log.i("S2Arm", session.resourceValidation);
@@ -150,7 +157,7 @@ final class GameLibrary {
             } catch (IOException error) {
                 failure("Game import deferred: " + error.getMessage(), R.string.player_err_import, error);
             }
-            status(describe());
+            logLibrary();
         });
     }
 
@@ -175,7 +182,7 @@ final class GameLibrary {
                         + " or its direct subfolders; pick the folder you copied the package into");
             } catch (GamePack.BadPack | IOException | RuntimeException e) {
                 failure("Game in-place registration refused: " + e.getMessage(), R.string.player_err_import, inPlaceAccess(e, true));
-                status(describe());
+                logLibrary();
                 return;
             }
             for (File dir : packages) {
@@ -196,7 +203,7 @@ final class GameLibrary {
                     failure("Game in-place registration of " + dir + " refused: " + e.getMessage(), R.string.player_err_import, inPlaceAccess(e, true));
                 }
             }
-            status(describe());
+            logLibrary();
         });
     }
 
@@ -268,7 +275,7 @@ final class GameLibrary {
             } catch (GamePack.BadPack | IOException | RuntimeException e) {
                 failure("Game import refused: " + e.getMessage(), R.string.player_err_import, e);
             }
-            status(describe());
+            logLibrary();
         });
     }
 

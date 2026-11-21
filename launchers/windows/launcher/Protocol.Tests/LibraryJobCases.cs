@@ -58,6 +58,26 @@ internal static class LibraryJobCases
             catalog.Games[0].Version == "1.2" && !catalog.KeysReady, "handwritten catalog values preserved");
         check(catalog.Games[0].Missing.Single() == "Need base", "backend requirements preserved without UI inference");
         check(catalog.Games[0].Banner == @"D:\lib\banner.jpg", "catalog banner field is read");
+        // 免费签名到期提醒（11-20）：天数按作业层给的 expires 算（期望手写：now = 1000000 秒，到期 1000000 + 2.5 天 → 3 天；已过 → 0）；
+        //   free=false（作业层判出不是启动器免费签的那份）或没给 expires → null，不出提醒
+        const string signed = """
+        {"schema":1,"jobId":"catalog-test","taskId":"catalog-test","seq":1,"type":"result","operation":"catalog","state":"succeeded","message":"操作完成","result":{"games":[{"id":"0100000000000003","name":"Free","display":"","cover":"","hidden":false,"missing":[],"iphoneInstall":{"at":481600,"free":true,"deviceKey":"U1","expires":1216000}},{"id":"0100000000000004","name":"Elsewhere","display":"","cover":"","hidden":false,"missing":[],"iphoneInstall":{"at":481600,"free":false,"deviceKey":"U1"}},{"id":"0100000000000005","name":"Expired","display":"","cover":"","hidden":false,"missing":[],"iphoneInstall":{"at":1,"free":true,"deviceKey":"U1","expires":604801}}],"keys":{"ready":true,"verified":true,"message":""}}}
+        """;
+        var signedGames = LibraryCatalog.Parse(LibraryJobResult.Parse(signed, 0, "catalog-test", "catalog").Result).Games;
+        var at = DateTimeOffset.FromUnixTimeSeconds(1000000);
+        check(signedGames[0].FreeSignDaysLeft(at) == 3 && signedGames[0].IphoneExpires == 1216000, "free sign: days from backend expires");
+        check(signedGames[1].FreeSignDaysLeft(at) is null, "free sign: not the launcher's free copy, no reminder");
+        check(signedGames[2].FreeSignDaysLeft(at) == 0, "free sign: expired reads 0");
+        var prefs = Path.Combine(Path.GetTempPath(), "s2a-remind-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            check(FreeSignReminder.On(prefs), "free sign reminder: on by default");
+            FreeSignReminder.Set(prefs, false);   // 「×」
+            check(!FreeSignReminder.On(prefs), "free sign reminder: dismissed stays off (stored on disk)");
+            FreeSignReminder.Set(prefs, true);   // 设置里重新打开
+            check(FreeSignReminder.On(prefs), "free sign reminder: turned back on");
+        }
+        finally { if (Directory.Exists(prefs)) Directory.Delete(prefs, true); }
         // #1272 下游方案：catalog downstream 原样读出（期望手写）；没有 choice = 没选过（null），"" = 仍用原版；文案按语言挑，没有这门语言退回英文
         var ds = System.Text.Json.JsonDocument.Parse("""
         {"id":"d2r","name":"D2R Port","eligible":false,"reason":{"zh":"只支持 1.0.1","en":"Update 1.0.1 only"},

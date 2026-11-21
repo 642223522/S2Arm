@@ -10,7 +10,9 @@
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); bad=0; trap 'rm -rf "$T"' EXIT
 ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
 PY=${S2A_PYTHON:-python3}
-"$PY" -B -c "
+# S2A_DAV1D=1 S2A_VPX=1：预编库清单显式带上 vpx / dav1d——缺省 auto 会按本机探测（tools/av1hw.sh / tools/vp9hw.sh）跳过其一
+#   （探测过的机器上清单变空、这份机制单测就红了）；清单随探测的选择由 tests/codec_autodetect_test.sh 管，这里只测机制本身
+S2A_DAV1D=1 S2A_VPX=1 "$PY" -B -c "
 import sys; sys.path.insert(0, '$H/launchers/macos'); sys.path.insert(0, '$H/pack/jobs')
 from pathlib import Path
 from bundle_engine import bundle_prebuilt_libs

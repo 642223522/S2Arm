@@ -282,6 +282,21 @@ def pso_dir(c, game):
     return str(d) if d.is_dir() and any(d.glob("*.tsv")) else None
 
 
+def seed_sources(c, game):
+    """交给管线种子阶段的额外来源（S2A_PSO_SOURCES_EXTRA，系统分隔符，graphics/tools/direct/run_knowledge.py 排在本机 pso_seed/ 之后、按这里的先后）：
+    ① 玩家自己 iPhone 上真跑见过的（装机前 install.pull_seen 拉回的 games/<程序号>/seen/*.tsv，同 pso_user.tsv 格式；11-20：原先只给两段式热键用，
+       重新出包时这些管线不进种子，玩过的场景照旧首遇现编）② 云端统一包里这款的管线种子（pso_dir）。都没有 = None"""
+    import layout
+    out = []
+    seen = layout.path(c, game["id"].upper(), "seen", create=False)
+    if seen.is_dir() and any(seen.glob("*.tsv")):
+        out.append(str(seen))
+    cloud = pso_dir(c, game)
+    if cloud:
+        out.append(cloud)
+    return os.pathsep.join(out) or None
+
+
 def prepare(c, game, extraction, env, target="mac"):
     """出包作业在解包之后、改写之前调（build.prepare：Mac / ipa.build：target="ios"）：金手指与补丁都按真构建号查库，结果交改写阶段的环境变量。
     出包页「S 级优化（Beta）」取消勾选（请求 sgrade = false，v0.4.0 维护者：缺省勾上、玩家可取消）= 这次出包不带社区补丁与金手指（原生方案）：
@@ -294,7 +309,7 @@ def prepare(c, game, extraction, env, target="mac"):
         pass
     if off:
         env["S2A_CPATCH"] = "none"; env.pop("S2A_CPATCH_DIRS", None); env.pop("S2A_CHEATS_DIRS", None)
-        seed = pso_dir(c, game)
+        seed = seed_sources(c, game)
         if seed:
             env["S2A_PSO_SOURCES_EXTRA"] = seed
         print("补丁：出包页取消了 S 级优化，这次不带社区补丁与金手指", file=sys.stderr)
@@ -303,10 +318,11 @@ def prepare(c, game, extraction, env, target="mac"):
     try:
         cheats.fetch(c, game)
         d = cheats.cheats_dir(c, game["id"].upper(), create=False)
-        if d.is_dir() and any(f.name not in cheats.SKIP for f in d.glob("*.txt")):
+        import layout
+        if any(f.name not in cheats.SKIP for f in layout.entries(d, "*.txt")):   # 不算 exFAT 的 ._<名>.txt 附属文件
             env["S2A_CHEATS_DIRS"] = str(d)
         dirs = fetch(c, game, os.path.join(str(extraction), "exefs"), target)
-        seed = pso_dir(c, game)
+        seed = seed_sources(c, game)
         if seed:
             env["S2A_PSO_SOURCES_EXTRA"] = seed
     except Exception as e:   # 查库是附加：任何意外都不挡出包

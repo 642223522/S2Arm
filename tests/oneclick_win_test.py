@@ -157,13 +157,12 @@ class MetalPath(unittest.TestCase):
     @unittest.skipIf(os.name == 'nt', '合成 .exe 为 POSIX 脚本；Windows 原生编译未覆盖')
     def test_direct_exports_selected_directory_to_both_tools(self):
         repo = self.root / 'repo'
-        script = repo / 'graphics/tools/direct/direct_lib.sh'
+        script = repo / 'graphics/tools/direct/direct_lib.py'
         script.parent.mkdir(parents=True)
-        script.write_text('''set -eu
-: "${S2A_METAL_BIN:?S2A_METAL_BIN missing from build environment}"
-test "$S2A_METAL_BIN" = "$S2A_EXPECT_METAL_BIN"
-"$S2A_METAL_BIN/metal.exe" --version
-"$S2A_METAL_BIN/metallib.exe" --version
+        script.write_text('''import os, subprocess, sys
+b = os.environ.get('S2A_METAL_BIN') or sys.exit('S2A_METAL_BIN missing from build environment')
+if b != os.environ['S2A_EXPECT_METAL_BIN']: sys.exit('S2A_METAL_BIN differs')
+for t in ('metal', 'metallib'): sys.stdout.flush(); subprocess.run([os.path.join(b, t + '.exe'), '--version'], check=True)
 ''', encoding='utf-8')
         explicit = self.root / '显式安装'
         explicit.mkdir()
@@ -179,7 +178,7 @@ test "$S2A_METAL_BIN" = "$S2A_EXPECT_METAL_BIN"
                 **({'S2A_METAL_BIN': str(explicit)} if source == 'explicit' else {}),
             }), patch.object(oneclick_win, 'R', repo), patch.object(oneclick_win, 'WIN', True), \
                  patch.object(oneclick_win, 'prebuilt', return_value=self.root / 'unused.dll'), \
-                 patch.object(oneclick_win, 'bash_exe', return_value='/bin/sh'):
+                 patch.object(oneclick_win, 'bash_exe', side_effect=AssertionError('直连库那一步不该再找 Git Bash')):
                 run = oneclick_win.Run(self.root / source)
                 try:
                     oneclick_win.direct(run, cur, 'ios', 1)
@@ -192,14 +191,14 @@ test "$S2A_METAL_BIN" = "$S2A_EXPECT_METAL_BIN"
     @unittest.skipIf(os.name == 'nt', 'Mac 子进程环境回归仅在 POSIX 宿主运行')
     def test_mac_does_not_export_windows_directory(self):
         repo = self.root / 'mac-repo'
-        script = repo / 'graphics/tools/direct/direct_lib.sh'
+        script = repo / 'graphics/tools/direct/direct_lib.py'
         script.parent.mkdir(parents=True)
-        script.write_text('test "${S2A_METAL_BIN+set}" != set\n', encoding='utf-8')
+        script.write_text("import os, sys\nsys.exit('S2A_METAL_BIN set' if 'S2A_METAL_BIN' in os.environ else 0)\n", encoding='utf-8')
         cur = self.root / 'cur'
         cur.mkdir()
         with patch.object(oneclick_win, 'R', repo), patch.object(oneclick_win, 'WIN', False), \
              patch.object(oneclick_win, 'prebuilt', return_value=None), \
-             patch.object(oneclick_win, 'bash_exe', return_value='/bin/sh'):
+             patch.object(oneclick_win, 'bash_exe', side_effect=AssertionError('直连库那一步不该再找 Git Bash')):
             run = oneclick_win.Run(self.root / 'mac-out')
             try:
                 oneclick_win.direct(run, cur, 'mac', 1)
@@ -377,7 +376,7 @@ class SeedAoc(unittest.TestCase):   # ④ 播种与轻阶段带 S2A_SEED_AOC=1�
             t = Path(t); run = oneclick_win.Run(t / 'out'); seen = {}
             def sh(args, log, env=None, ok=(0,), cwd=None): seen[log] = ((env or {}).get('S2A_SEED_AOC'), (env or {}).get('S2A_NX_UNPACK')); return 0
             run.sh = sh
-            (t / 'out/roots').mkdir(parents=True); (t / 'ver').mkdir(); os.symlink(t / 'ver', t / 'out/roots/tx@现行')
+            (t / 'out/roots/tx@v1').mkdir(parents=True); (t / 'out/roots/tx@现行').write_text('tx@v1\n')   # 现行指针文件
             tool = t / 'out/bin/nx_unpack_abc/nx_unpack.exe'
             with patch.object(oneclick_win, "nx_unpack", lambda r: tool):
                 oneclick_win.stages(run, 'tx', t / 'x', t / 'src')
@@ -640,6 +639,32 @@ class InstallWin(unittest.TestCase):
             self.ns = old_ns
         self.assertIsInstance(e, install_win.Fail); self.assertEqual(e.err, 'app_id_taken'); self.assertNotIn('push', got)
 
+    def test_9401_on_widget_id_installs_without_the_widget(self):
+        # 11-18 Windows 实机：这个 Apple ID 早先被不带包名签过一次，主包名被拒、扩展却注册成了 io.s2arm.games.<大写团队号>.widget，
+        #   之后小写主包名 + 小写扩展永远在扩展上 9401，旧写法重试又在主包名上 9401。期望（手写）：认出被拒的是 .widget → 去掉 PlugIns/ 用同一个
+        #   小写包名再签一次，装上、照常推资源；两次输出都在日志里。假 plumesign：包里有扩展就在扩展包名上 9401，没有就装好
+        body = ("pkg = a[a.index('--package') + 1]; ident = a[a.index('--custom-identifier') + 1]\n"
+                "has = any('/PlugIns/' in n for n in zipfile.ZipFile(pkg).namelist())\nprint('try', ident, 'widget' if has else 'nowidget')\n"
+                "if has:\n"
+                "    print(\"Error: Developer API error 9401 (HTTP Some(200)): An App ID with Identifier '\" + ident + \".widget' is not available.\"); sys.exit(1)\n"
+                "print('Installation complete!')\nz = zipfile.ZipFile(a[a.index('-o') + 1], 'w')\n"
+                "z.writestr('Payload/S2Arm.app/Info.plist', ('<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>' + ident + '</string></dict></plist>').encode())\nz.close()\n")
+        old_ns = self.ns
+        def ns(d, exe):
+            import zipfile
+            with zipfile.ZipFile(Path(d, 'w.ipa'), 'w') as z:
+                z.writestr('Payload/S2Arm.app/Info.plist', b'x'); z.writestr('Payload/S2Arm.app/PlugIns/S2ArmWidget.appex/Info.plist', b'x')
+            return __import__("argparse").Namespace(**dict(vars(old_ns(d, exe)), ipa=str(Path(d, 'w.ipa')), bundle="io.s2arm.games.abcde12345"))
+        self.ns = ns
+        try:
+            bid, got, log = self.run_fake(body)
+        finally:
+            self.ns = old_ns
+        self.assertEqual(bid, 'io.s2arm.games.abcde12345')
+        self.assertEqual(got['push'][1], 'io.s2arm.games.abcde12345')
+        self.assertIn('try io.s2arm.games.abcde12345 widget', log); self.assertIn('try io.s2arm.games.abcde12345 nowidget', log)
+        self.assertNotIn('ABCDE12345', log)   # 不走旧写法重试
+
     def test_already_registered_device_signs_then_installs(self):
         # #800：Windows 设备号不带横线、苹果存的带横线，plumesign 精确比较认不出已登记的这台 → 再登记被拒 35「already exists on this team」。
         #   期望（手写）：认出这句改成只签名（命令里没有 --register-and-install / --udid）、再 device --install 装签好的包，照常推资源、回包名；
@@ -713,7 +738,7 @@ class InstallWin(unittest.TestCase):
 
 
 class GlslcGate(unittest.TestCase):
-    """要离线编 GLSLC 而 Windows 跑不了：不再退 75，设 S2A_GLSLC_RUNTIME_ONLY 让 extract.sh 跳过（运行时现编）；不需要 / 有宿主时不设（11-08 DQB2）"""
+    """要离线编 GLSLC 而 Windows 跑不了：不再退 75，设 S2A_GLSLC_RUNTIME_ONLY 让 extract.py 跳过（运行时现编）；不需要 / 有宿主时不设（11-08 DQB2）"""
     class Run:
         def step(self, name, f): return f()
     def go(self, why, host=None):

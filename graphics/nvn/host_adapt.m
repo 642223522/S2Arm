@@ -12,6 +12,7 @@
 #include "gfx/nvn/nvn_count.h"
 #include "gfx/nvn/nvn_drvscan.h"      // dm_nvn_driver_api：游戏自带驱动报的 NVN API 版本；dm_nvn_driver_nvrm_rgba8：驱动的 NvColorFormat 编码
 #include "gfx/nvn/nvn2.h"            // Switch 2：NVN2 控制段（dsh_miss.inc 不现编）、dm_nvn2_driver_item
+#include "gfx/nvn/nvn_hdr_policy.h"  // HDR 上屏策略（PR3a）：挂层块查屏、发布 hdr_snapshot 环境读数（nvn2_hdr_* 入口实现在 nvn2.c）
 #include "gfx/nvn/dmsh_chain.h"      // DMSH_CHAIN：外置着色器包要带本链号的库目录才用
 #include "gfx/nvn/shader_overlay.h"  // 着色器包外置：文档目录 gal/<程序号>/shaders
 #include "gfx/nvn/nvn_present_fit.h"   // pf_viewport：出图层在视图里的摆放与出图层内画面的摆放同一条规则（差 < 1% 铺满）
@@ -27,6 +28,9 @@
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <CoreGraphics/CoreGraphics.h>
+#include <time.h>          // PR4 层状态机 tick 的单调时钟（hdr_now_ms，clock_gettime CLOCK_MONOTONIC）
+#include <objc/runtime.h>  // 无头局屏能力探针（headless_edr_note）按名取 NSScreen：objc_getClass / sel_registerName
+#include <objc/message.h>  // objc_msgSend（不链 AppKit、无头探针按名调方法；double 返回 arm64 下同一入口）
 #include <stdatomic.h>
 #include <errno.h>
 int dm_gfx_session_stopping(void);
@@ -161,6 +165,11 @@ static void big_wrap(void) {
 // ---------- 兜底现编（§12.3，着色器线 s2a_dsh_compile）----------
 // ProgramSetShaders 时（控制段只在这次调用里保证有效）键不在映射表、也不是内置核：按代码区头判阶段，同步调 s2a_dsh_compile 把 <键>_b.metal / .json 写进
 // DM_MSL_FALLBACK（Documents/wire/<程序号>/shaders），成功就把「键 → 阶段」补进直连层映射表旁表；建管线时 shader_load 从兜底目录现场建库。只当最后一层保险
+const char *s2a_app_version(void) {   // dsh_miss.inc 着色器覆盖计数的 "app"：iOS 是 App 版本；Mac 宿主是命令行程序，没有 → ""
+    static char v[32]; static dispatch_once_t once;
+    dispatch_once(&once, ^{ NSString *s = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"]; snprintf(v, sizeof v, "%s", s ? s.UTF8String : ""); });
+    return v;
+}
 #include "host/dsh_miss.inc"
 #include "host/dsh_cold.inc"
 
@@ -175,11 +184,44 @@ void s2a_direct_out_size(int *w, int *h) { *w = g_out_w; *h = g_out_h; }
 // 截图走游戏自己的源图（grab_present），都不读图层贴图；只当帧缓冲时驱动可以用更省的存储与压缩，少一次整屏读写（10-26 暗黑2 能耗对照小菠萝）。
 // 要回读图层贴图的诊断才设 DM_NVN_FB_READBACK=1（关掉这项优化）
 static int fb_readback(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_FB_READBACK"); v = e && !strcmp(e, "1"); } return v; }
+// PR3a 策略抽象（评审稿 v3 §2.2 / §4 PR3a）：屏幕读数发布进 HDR 策略快照——iOS 挂层块（下面直连）与 PR4 起的 s2a_hdr_tick_host（Mac / iOS 的
+//   250ms tick 与换屏通知共用）都走这一个入口。发布只刷环境读数（potential_edr / current_headroom / s1_ready / paper_white）——层状态机簿记
+//   归 hdr_layer_tick_* 所有，发布不回卷（nvn2.c 侧合并，重探不打回层状态）；
+//   s1_ready（G1 双面积烟囱，评审稿 §4 G1 第 4 条）按 G1 在档口径判：potentialEDR>1.0（本机 HDR 屏类在档——内建屏大面积 currentEDR 恒 2.0
+//   非污染、U2720QM 开态大面积>1，读数在档；potential≤1.0 的屏恒 0——can 同门，SDR 屏进不了 S1，不虚假宣传）；
+//   paper_white 按 v3 定稿填 100（vi_paper_white 改答是 PR5 的活）；S2A_HDR=off（缺省）时无视快照恒 S0 直通 ∧ vi 恒 on=0，行为零变化。
+//   PR4 起此入口也被 tick 重探路径高频调：potential / s1_ready 变了才打行（净空波动静默发布——不刷屏），首发布必打（G1 屏态每局在档，§4 G1 第 3 条）
+void s2a_hdr_screen_publish(double potential_edr, double current_headroom) {
+    int s1_ready = potential_edr > 1.0;
+    hdr_snapshot hs = { .potential_edr = potential_edr, .current_headroom = current_headroom, .s1_ready = s1_ready, .paper_white = 100 };
+    nvn2_hdr_snapshot_publish(&hs);
+    static double p_log = -1; static int sr_log = -1;
+    if (potential_edr != p_log || s1_ready != sr_log) {
+        p_log = potential_edr; sr_log = s1_ready;
+        int sw = nvn2_hdr_switch();
+        LOG("直连：HDR 策略快照发布：potentialEDR %.3f / currentEDR %.3f / s1_ready %d（G1 大面积烟囱口径）/ 纸白 100（S2A_HDR=%d：%s）", potential_edr, current_headroom, s1_ready, sw,
+            sw == HDR_OFF ? "off，恒 S0 直通" : sw == HDR_AUTO ? "auto，按快照" : "on，强制 HDR 管线（can 不行走 S3 映射）");
+    }
+}
+// ---------- PR4：层配置与层状态机接线（评审稿 v3 §2.3 S0/S1 行 + §4 PR4 ①②③④；实现在本文件 front_metal_layer 之后——apply 要取层）----------
+//   s2a_hdr_layer_apply_to：把快照层态（hdr_layer_config）应用到一块出图层（S1 = RGB10A2Unorm + kCGColorSpaceITUR_2100_PQ + wantsEDR；
+//   S0 = BGRA8Unorm + 显式 sRGB tag——创建点与从 PQ 切回点同一份配置，注意事项①）；s2a_hdr_layer_apply：取当前出图层再应用（tick 路径）。
+//   s2a_hdr_preattach：开机预挂（识别 Switch 2 游戏即进层——s2a_platform_ounce 弱符号方向）；s2a_hdr_tick_host：主线程 250ms tick / 换屏通知
+//   的重探发布 + 层 tick + 层配置应用（front_mac.m 经 dlsym 调——不链直连层的构建里没有它，缺了就退回 PR3a 的一次性行为）。
+static void s2a_hdr_layer_apply_to(CAMetalLayer *l);
+static void s2a_hdr_layer_apply(void);   // 取当前出图层再应用（实现在 front_metal_layer 之后；Mac 取用块先调，前置声明在此）
+static unsigned long long hdr_now_ms(void) {
+    struct timespec ts; if (clock_gettime(CLOCK_MONOTONIC, &ts)) return 0;
+    return (unsigned long long)ts.tv_sec * 1000ull + (unsigned long long)ts.tv_nsec / 1000000ull;   // 合成时钟的事件源（tick / 预挂——纯逻辑侧合成时钟单测在 t_hdr_layer）
+}
 #if TARGET_OS_IPHONE
 UIView *s2a_ios_root_view(void) __attribute__((weak_import));
 // 出图层该挂的视图（ios/extdisplay.m，主线程）：外接显示器接着 = 外接屏窗口的视图，否则根视图。没有这个符号的壳一律根视图
 UIView *s2a_ios_present_view(void) __attribute__((weak_import));
 static UIView *present_view(void) { return s2a_ios_present_view ? s2a_ios_present_view() : s2a_ios_root_view ? s2a_ios_root_view() : nil; }
+int s2a_platform_ounce(void);   // Switch 2 识别接缝（评审稿 §4 PR4 ③）：原生层 svc_mem.c 强定义（NPDM 读数）、nvn2.c 弱缺省 0——PR4 开机预挂按它判
+void s2a_hdr_tick_host(double potential_edr, double current_headroom);   // PR4：本文件尾部实现（front_metal_layer 之后——apply 要取层）
+static void hdr_tick_ios(void);   // iOS 的 250ms tick / 屏接断通知触发：读出图层所在屏 → s2a_hdr_tick_host（实现随 iOS front_metal_layer 之后）
 CGRect s2a_ios_game_area(void) __attribute__((weak_import));
 int s2a_ios_game_top(void) __attribute__((weak_import));
 // 出图层摆放的范围（#300 统一游戏区域）：挂在手机根视图上时取 App 壳给的游戏区域（分屏等），挂在外接屏窗口的视图上或壳没这个符号 / 区域为空时取视图自身
@@ -265,9 +307,26 @@ void s2a_direct_relayout(void) {   // App 壳视图控制器 viewDidLayoutSubvie
         re ? "，宽屏核心下一个渲染遍按新比例出图" : "");
     if (!re && fabs(va / g_out_a - 1) > 0.01) LOG("【黄】直连：可用区域比例 %.3f 与出图比例 %.3f 不同，按实际出图比例居中；固定尺寸的路径须重新启动游戏后应用新比例", va, g_out_a);
 }
+unsigned s2a_session_generation(void) __attribute__((weak));   // runtime/src/session.c：会话代号（同进程「立刻重启」新一局加一）
+static _Atomic unsigned g_layer_gen;   // 出图比例按哪一局算的（会话代号）
+// 同进程新一局重算出图比例（#1169）：游戏内「立刻重启」重读设置后，满屏 / 补丁画幅可能变了，宽屏核心按新屏宽高出图；
+//   出图层却只在进程首次建层时算过一次比例，新画幅被装进上一局的层（iPad 横屏开满屏后重启：1.532 的画面塞进 16:9 层、四边留黑，冷启动才对）。
+//   渲染线程每次取层比一次代号，换局了交主线程重算比例并按同一条重摆路摆层（后台等回前台补，同布局回调）
+static void layer_session_check(void) {
+    if (!g_layer || !s2a_session_generation) return;
+    unsigned g = s2a_session_generation(), o = atomic_load(&g_layer_gen);
+    if (g == o || !atomic_compare_exchange_strong(&g_layer_gen, &o, g)) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        double a0 = g_out_a, a1 = out_aspect(); if (!(a1 > 0) || a1 == a0) return;
+        g_out_a = a1; CGSize d0 = g_layer.drawableSize; s2a_direct_relayout(); CGSize d1 = g_layer.drawableSize;
+        if (d0.width == d1.width && d0.height == d1.height) { g_relayout_due = 1; return; }   // 没摆（在后台）：回前台补（front_metal_layer 登记的通知）
+        LOG("直连：新一局出图比例 %.3f → %.3f，出图层重摆为 %.0fx%.0f 像素", a0, a1, g_layer.drawableSize.width, g_layer.drawableSize.height);
+    });
+}
 void *front_metal_layer(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
+        if (s2a_session_generation) atomic_store(&g_layer_gen, s2a_session_generation());
         if (!s2a_ios_root_view) { LOG("【红】直连：没有 App 壳根视图（s2a_ios_root_view），无出图层"); return; }
         void (^mk)(void) = ^{
             UIView *v = present_view(); if (!v) return;
@@ -284,16 +343,50 @@ void *front_metal_layer(void) {
             //   已经晚了，只有启动前从外面传入才显示。iOS 16 起可按层在运行中打开：开关开着（环境变量来自设置或外面传入都算）就对出图层打开
             { const char *hud = getenv("MTL_HUD_ENABLED");
               if (hud && !strcmp(hud, "1")) { if (@available(iOS 16.0, *)) { l.developerHUDProperties = @{@"mode": @"default"}; LOG("直连：Metal 性能浮层按出图层打开（MTL_HUD_ENABLED=1）"); } } }
+            // PR1 探针（HDR 全链路评审稿 v2）：挂层屏幕 EDR 能力一次性读数（M0 跑局记录屏幕配置用；能力动态重探是 PR4 的活）。EDR headroom iOS 16 起；
+            //   排查指引只写在 Mac 侧（front_mac.m screen_edr_note）——iOS 的设置路径与那行文案不同，这里只报读数
+            { UIScreen *sc = v.window.screen ?: UIScreen.mainScreen;
+              float pe = 0, ce = 0;
+              if (@available(iOS 16.0, *)) { pe = sc.potentialEDRHeadroom; ce = sc.currentEDRHeadroom; }
+              LOG("直连：出图层所在屏 EDR 探针：potentialEDR %.3f / currentEDR %.3f（倍数），色域 %s", pe, ce, sc.traitCollection.displayGamut == UIDisplayGamutP3 ? "P3" : "sRGB");
+              // PR3a 策略抽象（评审稿 v3 §2.2 / §4 PR3a）：同一屏读数发布进 HDR 策略快照——iOS 在此直连发布；PR4 起换屏 / 拨 HDR 开关后的
+              //   重探重发布由 s2a_hdr_tick_host 的 250ms tick 接管（下方 hdr_tick_ios，Mac 侧同一发布在 front_mac.m 的 tick 经它走）
+              s2a_hdr_screen_publish(pe, ce);
+              // PR4 开机预挂（评审稿 §4 PR4 ③）：识别 Switch 2 游戏即进层（赶在首查询前——Bananza 首查询即定窗口，nxnative dm_hdr_boot 形态）；
+              //   层簿记进快照后立即应用 PQ 配置（赶在首 present 前）——这里直调 apply_to(l)（mk 在 front_metal_layer 的 dispatch_once 里，
+              //   不能走会再调 front_metal_layer 的包装，重入死锁）
+              if (s2a_platform_ounce()) nvn2_hdr_preattach(pe > 1.0, hdr_now_ms());
+              s2a_hdr_layer_apply_to(l); }
             if (v != s2a_ios_root_view()) LOG("直连：出图层挂在外接屏（下一行的「根视图」尺寸是外接屏窗口的视图）");
             [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue
                 usingBlock:^(NSNotification *n) { (void)n; if (g_relayout_due) { g_relayout_due = 0; s2a_direct_relayout(); } }];   // 补后台期间欠的重摆
+            // PR4 层状态机接线（评审稿 §4 PR4 ②，iOS 等效通知集）：主线程 250ms tick 加进 NSRunLoopCommonModes（触屏 / 菜单不停）轮询屏读数——
+            //   headroom（currentEDR）无专用通知，轮询即「headroom 变化也 post」的等效；外接屏接断通知 = 屏消失 / 恢复分支的触发器
+            //   （回退主屏 / 置无效 → can=0 持稳后排空切回，恢复重探重发布——不对已消失屏做 present 假设）
+            NSTimer *hdr_t = [NSTimer timerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *t) { (void)t; hdr_tick_ios(); }];
+            [[NSRunLoop mainRunLoop] addTimer:hdr_t forMode:NSRunLoopCommonModes];
+            [NSNotificationCenter.defaultCenter addObserverForName:UIScreenDidConnectNotification object:nil queue:NSOperationQueue.mainQueue
+                usingBlock:^(NSNotification *n) { (void)n; hdr_tick_ios(); }];
+            [NSNotificationCenter.defaultCenter addObserverForName:UIScreenDidDisconnectNotification object:nil queue:NSOperationQueue.mainQueue
+                usingBlock:^(NSNotification *n) { (void)n; hdr_tick_ios(); }];
         };
         if (NSThread.isMainThread) mk(); else dispatch_sync(dispatch_get_main_queue(), mk);
         if (g_layer) LOG("直连：出图层已挂到根视图 %.0fx%.0f 像素（宽高比 %.3f，居中；宽屏第二层%s）", g_layer.drawableSize.width, g_layer.drawableSize.height,
                          g_layer.drawableSize.width / g_layer.drawableSize.height, s2a_widen_game() ? "开" : out_wide() ? "关、直连第三层整套放宽" : out_tall() ? "关、直连第三层上下加高" : "关");
         else LOG("【红】直连：根视图还没建好，没挂上出图层");
     });
+    layer_session_check();
     return (__bridge void *)g_layer;
+}
+// PR4 层状态机的 iOS tick 触发（评审稿 §4 PR4 ②④）：读出图层所在屏的 EDR 读数交 s2a_hdr_tick_host（重探发布 + 层 tick + 层配置应用，实现在文件尾）。
+//   快照屏消失（视图不在窗口上 / 外接屏断开——UIScreenDidDisconnectNotification）→ 回退主屏（同 PR1 探针的兜底口径）；主屏也不在 → 读数 0
+//   （can=0 → 500ms 持稳后排空切回 SDR——不对已消失屏做 present 假设）；恢复后下一 tick 重探重发布（层簿记不回卷，排空语义不受扰动）。
+static void hdr_tick_ios(void) {
+    UIView *v = g_layer ? present_view() : nil;
+    UIScreen *sc = v.window.screen ?: UIScreen.mainScreen;
+    double pe = 0, ce = 0;
+    if (@available(iOS 16.0, *)) { if (sc) { pe = sc.potentialEDRHeadroom; ce = sc.currentEDRHeadroom; } }
+    s2a_hdr_tick_host(pe, ce);
 }
 #else
 // Mac：启动器起的游戏窗口（macos/front_mac.m）有出图层就画上去；无头局（mac_run / 门禁）没有窗口，返回 NULL，直连层按无窗口只计数、照常服务截图
@@ -307,8 +400,114 @@ void *front_metal_layer(void) {
         l.device = MTLCreateSystemDefaultDevice(); l.pixelFormat = MTLPixelFormatBGRA8Unorm; l.framebufferOnly = !fb_readback(); set = l;
         g_out_w = (int)l.drawableSize.width; g_out_h = (int)l.drawableSize.height;
         LOG("直连：出图层取 Mac 游戏窗口的层 %.0fx%.0f 像素", l.drawableSize.width, l.drawableSize.height);
+        s2a_hdr_layer_apply();   // PR4：取用即按快照层态应用配置（§4 PR4 ①——创建点；预挂过的 Switch 2 游戏直接 PQ，否则显式 sRGB tag 的 S0）。
+                                 // set 已先赋值：包装内再调 front_metal_layer 不重入本块。首个取用可能在 present 线程（present_now 首帧）——
+                                 // 与上面同块的 l.device / l.pixelFormat 直设同一口径（先于任何 drawable 的属性配置），applied 态用原子防并发重算
     }
     return (__bridge void *)l;
+}
+#endif
+
+// ---------- PR4：层配置应用与 tick 接线（评审稿 v3 §2.3 S0/S1 行 + 注意事项① + §4 PR4 ①②③④；声明在 s2a_hdr_screen_publish 后）----------
+//   把快照层态（hdr_layer_config：S0 = BGRA8Unorm + 显式 sRGB tag；S1 = RGB10A2Unorm + kCGColorSpaceITUR_2100_PQ + wantsExtendedDynamicRangeContent；
+//   CAEDRMetadata 默认不挂——两态都不写它）应用到一块出图层。注意事项①（层复用路径）：从 PQ 层切回的层保留 PQ 色彩空间——S0 必须显式重设 sRGB tag
+//   （设 NULL 则无色彩匹配、字节直进屏幕原生 primaries，P3 屏过饱和）；创建点（iOS mk() / Mac 取用）与切回点（tick 后）走同一份配置——策略单源。
+//   调用方口径：iOS mk() 主线程、Mac 取用首帧可能 present 线程（先于任何 drawable 的属性直设，同块内 l.device / pixelFormat 先例）；
+//   applied 态原子持有，跨线程并发 apply 最坏重复一次幂等赋值。色彩空间对象进程内各建一次常驻（层属性 retain，量级 = 转换次数）。
+static void s2a_hdr_layer_apply_to(CAMetalLayer *l) {
+    if (!l || nvn2_hdr_switch() == HDR_OFF) return;   // off 缺省不碰出图层（不设色彩空间标签）：层属性与改前逐项相同
+    hdr_snapshot s; nvn2_hdr_snapshot_probe(&s);
+    hdr_layer_cfg c = hdr_layer_config(s.layer_pq);
+    static _Atomic int applied = -1;
+    int was = atomic_exchange(&applied, (int)c.pf);
+    if (was == (int)c.pf) return;
+    static CGColorSpaceRef cs_pq, cs_srgb;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        cs_pq = CGColorSpaceCreateWithName(kCGColorSpaceITUR_2100_PQ);    // BT.2100 PQ（§2.3 S1 行）
+        cs_srgb = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);          // 显式 sRGB tag（§2.3 注意事项①）
+    });
+    if (c.pf == HDR_LPF_PQ10) {
+        l.pixelFormat = MTLPixelFormatRGB10A2Unorm;
+        l.colorspace = cs_pq;
+#if !TARGET_OS_TV
+        l.wantsExtendedDynamicRangeContent = YES;   // tvOS SDK 没有这个属性
+#endif
+        LOG("直连：出图层切 PQ（RGB10A2Unorm + kCGColorSpaceITUR_2100_PQ + wantsExtendedDynamicRangeContent；CAEDRMetadata 默认不挂，PR8+ 实验项）");
+    } else {
+        l.pixelFormat = MTLPixelFormatBGRA8Unorm;
+        l.colorspace = cs_srgb;
+#if !TARGET_OS_TV
+        l.wantsExtendedDynamicRangeContent = NO;
+#endif
+        if (was >= 0) LOG("直连：出图层切回 SDR（BGRA8Unorm + 显式 sRGB tag——从 PQ 层切回的层保留 PQ 色彩空间，必须显式重设，评审稿 §2.3 注意事项①）");
+    }
+}
+#if TARGET_OS_IPHONE
+static void s2a_hdr_layer_apply(void) { s2a_hdr_layer_apply_to(g_layer); }   // 直接用已建的层：不经 front_metal_layer（它带换局重摆检查 layer_session_check，归渲染线程取层时做）
+#else
+static void s2a_hdr_layer_apply(void) { s2a_hdr_layer_apply_to((__bridge CAMetalLayer *)front_metal_layer()); }
+#endif
+// PR4 开机预挂（评审稿 §4 PR4 ③）：识别 Switch 2 游戏即进层（赶在首查询前——Bananza 首查询即定窗口，nxnative dm_hdr_boot 形态）。
+//   识别接缝按 s2a_platform_ounce 弱符号方向（nvn2.c 同款：原生层 svc_mem.c 强定义、单测缺省 0）；进层簿记在 nvn2_hdr_preattach（存储侧，
+//   SDR 屏 / s1_ready 未过 / off / 已在层内各自让位）。层配置的应用由调用方做（iOS mk 直调 apply_to；Mac 首个 tick 的 apply / 直连取用补）。
+void s2a_hdr_preattach(double potential_edr) {
+    if (!s2a_platform_ounce()) return;
+    nvn2_hdr_preattach(potential_edr > 1.0, hdr_now_ms());
+}
+// PR4 层状态机接线（评审稿 §4 PR4 ②④）：主线程 250ms tick（NSRunLoopCommonModes——拖窗 / 开菜单 / 触屏不停）与换屏通知共用的一个入口——
+//   重探发布（读数变了才发，发布不回卷层簿记）+ 首探开机预挂 + 层 tick（can 滞回 500ms、进层即时）+ 层配置应用（进层即 PQ、排空完成切回
+//   S0 + 显式 sRGB tag）。快照屏消失（调用方读数给 0）→ can=0 持稳后排空切回——不对已消失屏做 present 假设；恢复后下一 tick 重探重发布。
+//   headroom 波动不切层（快照环境读数照刷，peak 步进吸收——§2.3 第 5 条）。front_mac.m 经 dlsym 调（不链直连层的构建里没有它，缺了就
+//   退回 PR3a 的一次性行为）；iOS 的 hdr_tick_ios 直调。
+void s2a_hdr_tick_host(double potential_edr, double current_headroom) {
+    static double p_last = -1.0, c_last = -1.0;
+    if (potential_edr != p_last || current_headroom != c_last) {   // 读数变了（换屏 / HDR 开关 / 净空波动 / 屏消失恢复）才重发布
+        p_last = potential_edr; c_last = current_headroom;
+        s2a_hdr_screen_publish(potential_edr, current_headroom);
+    }
+    if (nvn2_hdr_switch() == HDR_OFF) return;   // off 缺省：层状态机不动、不取层（Mac 通用模式的窗口层也不碰）
+    static _Atomic int pre;
+    if (!atomic_exchange(&pre, 1)) s2a_hdr_preattach(potential_edr);   // 首探即预挂（赶在首查询前）；非 Switch 2 / off / SDR 屏在预挂链路里各自让位
+    nvn2_hdr_tick(nvn2_hdr_switch(), potential_edr > 1.0, hdr_now_ms());   // raw can = potentialEDR>1.0（调用方口径）
+    s2a_hdr_layer_apply();
+}
+
+// PR1 探针（HDR 全链路评审稿 v2 §4 PR1 ③）Mac 无头局（mac_run / 门禁跑局，Mac 分支注释：没有前端窗口）补的一条（wave-6 G1 日志通道修复，随 PR4 波次携带）：
+//   窗口版 probe 在 macos/front_mac.m screen_edr_note（窗口所在屏），但那份文件只在 S2A_MAC_FRONTEND=1 的前端构建编进宿主
+//   （launchers/macos/build.mk），跑局的无头构建里没有它——11-19 G1：第四波只把窗口版从 fprintf(stderr) 改走 LOG，
+//   通道对了、代码没编进跑局宿主，host.log 里探针行一行没有。这里在直连开局（direct_paths）按主屏读一次：
+//   一次性、只读不改变判定（PR4 起换屏 / 拨 HDR 开关后的重探重发布由 s2a_hdr_tick_host 的 250ms tick 接管）。启动器起的前端窗口局
+//   （s2a_mac_front_layer 在）让位给 front_mac.m 的窗口版（同一行文）；iOS 在挂层处已打自己的读数行（UIScreen，文案不同），这里不掺和。
+//   G1 日志通道（评审稿 v3 §4 G1 第 3 条）：走 LOG（→ s2a_log_line → s2a_log_out(g_s2a_logfd) = os.c 构造期 dup 的原始
+//   stderr = run_mac.sh 重定向的 host.log；不走 fprintf(stderr)——C# 侧 StdErrAdapter dup2 管道接管 fd 2 后会掉进管道）。
+//   无头宿主不链 AppKit（AppKit 系框架在 S2A_MAC_FRONTEND=1 的块里，launchers/macos/build.mk），屏能力读数只有 AppKit
+//   NSScreen 一家（NSScreen.h），按名字现取：dlopen 一次 + objc 运行时（同上面 Mac 分支 s2a_mac_front_layer 的按名取法）。
+//   取不到（AppKit 拉不起来 / 主屏为空）打红行如实说，不硬凑读数。
+#if !TARGET_OS_IPHONE
+static void headless_edr_note(void) {
+    static int noted; if (noted) return; noted = 1;
+    if (dlsym(RTLD_DEFAULT, "s2a_mac_front_layer")) return;   // 前端窗口局：front_mac.m 窗口版探针已打同一行文，让位
+    void *ak = dlopen("/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit", RTLD_LAZY | RTLD_LOCAL);
+    Class nsc = ak ? objc_getClass("NSScreen") : NULL;   // 无头局没有窗口，按主屏读（同 front_mac.m 窗口还没上屏时的兜底）
+    id sc = nsc ? ((id (*)(Class, SEL))objc_msgSend)((id)nsc, sel_registerName("mainScreen")) : NULL;
+    if (!sc) { LOG("【红】直连：无头局屏能力探针取不到主屏（AppKit %s），屏态这局没在档——换有屏环境重跑", ak ? "在、主屏为空" : "拉不起来"); return; }
+    id cs = ((id (*)(id, SEL))objc_msgSend)(sc, sel_registerName("colorSpace"));
+    CGColorSpaceRef cg = cs ? ((CGColorSpaceRef (*)(id, SEL))objc_msgSend)(cs, sel_registerName("CGColorSpace")) : NULL;
+    CFStringRef raw = cg ? CGColorSpaceGetName(cg) : NULL;
+    char rawname[96] = "-"; if (raw) CFStringGetCString(raw, rawname, sizeof rawname, kCFStringEncodingUTF8);
+    id loc = cs ? ((id (*)(id, SEL))objc_msgSend)(cs, sel_registerName("localizedName")) : NULL;
+    const char *loc8 = loc ? ((const char *(*)(id, SEL))objc_msgSend)(loc, sel_registerName("UTF8String")) : NULL;
+    double potential = ((double (*)(id, SEL))objc_msgSend)(sc, sel_registerName("maximumPotentialExtendedDynamicRangeColorComponentValue"));
+    LOG("窗口所在屏能力探针（无头局无窗口，按主屏读）：potentialEDR %.3f / currentEDR %.3f / referenceEDR %.3f（倍数），P3 %s（%s），backing %.2f，色彩空间 %s",
+        potential,
+        ((double (*)(id, SEL))objc_msgSend)(sc, sel_registerName("maximumExtendedDynamicRangeColorComponentValue")),
+        ((double (*)(id, SEL))objc_msgSend)(sc, sel_registerName("maximumReferenceExtendedDynamicRangeColorComponentValue")),
+        strstr(rawname, "P3") ? "是" : "否", rawname,
+        ((double (*)(id, SEL))objc_msgSend)(sc, sel_registerName("backingScaleFactor")),
+        loc8 ?: "-");
+    if (potential <= 1.0)   // 评审稿 §2.5（同 front_mac.m）：判成 SDR 但屏其实支持 HDR 的错配，日志一行人话指引、给下一步
+        LOG("当前屏按 SDR 处理（potentialEDR ≤ 1.0）。若该屏支持 HDR：查①系统设置→显示器→HDR 开关（常见成因）②显示器 OSD 的 HDR/色域档 ③线缆/扩展坞（直连 USB-C DP Alt、HBR2+）④EDID 是否宣告 HDR（本机实测先例：宣告 PQ 而非 HLG）");
 }
 #endif
 
@@ -319,6 +518,9 @@ void *h_nvnBootstrapLoader(const char *name);   // graphics/nvn/gfx/nvn/hle_nvn.
 static char g_dp_gd[1100]; static int g_dp_from_gd;   // 首局着色器库路径是不是由游戏数据目录推出来的、推的根（多程序合集切换按它换到 programs/<n>）
 static void direct_paths(void) {
     char p[1300]; const char *gd = getenv("S2A_GAME_DATA");
+#if !TARGET_OS_IPHONE
+    headless_edr_note();   // PR1/G1 屏能力探针（见上）：Mac 无头局直连开局按主屏读一行；有前端窗口的启动器局让位给 front_mac.m 窗口版
+#endif
     // 外置着色器包（shader_overlay.h）：没显式给 DM_MSL_DIR / DM_NVN_SHMAP 时，文档目录 gal/<程序号>/shaders/direct 有本链号的库就用它（更新着色器包不必重签），否则照旧包内
     if (!getenv("DM_MSL_DIR") && !getenv("DM_NVN_SHMAP")) {
         char ov[1100]; int r = s2a_shader_overlay_direct(ov, sizeof ov, s2a_npdm_program_id(), DMSH_CHAIN);
@@ -425,12 +627,20 @@ static int32_t a_create_instance(const void *ci, const void *alloc, void *inst) 
     pthread_once(&watch, fail_watch_start);
     return ((create_instance_fn)dm_vk_lookup("vkCreateInstance"))(ci, alloc, inst);
 }
-static void *vk_export(const char *name) {
-    if (!name || strncmp(name, "vk", 2)) return NULL;
+void s2a_snap_handout_id(uint64_t v, const char *id) __attribute__((weak));   // runtime/src/snapshot.c（登记见 hle_nvn.c）
+static void *vk_export_raw(const char *name) {
     if (!strcmp(name, "vkGetInstanceProcAddr") || !strcmp(name, "vkGetDeviceProcAddr")) return sw_xstack_wrap(name, (void *)a_get_proc);
     if (!strcmp(name, "vkCreateInstance")) return sw_xstack_wrap(name, (void *)a_create_instance);
     void *fn = dm_vk_lookup(name);
     return fn && vk_big(name) ? sw_xstack_wrap(name, fn) : fn;
+}
+// 交给游戏的每个 vk* 地址（导入解析与运行中 vkGet*ProcAddr 都走这里）按「vk:export:<名>」登记身份：切栈桩按本进程第几个被套编号，
+//   另一个进程里同一个函数的桩号不同（或还没套过、那个桩号空着），恢复时游戏内存里拿着的旧地址按身份换成本进程的（vk_snap.inc vk_snap_resolve）
+static void *vk_export(const char *name) {
+    if (!name || strncmp(name, "vk", 2)) return NULL;
+    void *p = vk_export_raw(name);
+    if (p && s2a_snap_handout_id) { char id[128]; snprintf(id, sizeof id, "vk:export:%s", name); s2a_snap_handout_id((uint64_t)(uintptr_t)p, id); }
+    return p;
 }
 // 直连模式下装载器解析游戏的 vk* 导入（重定位期）：回实现地址，没有回 NULL（装载器照原路径找，找不到报红）
 void *s2a_vk_entry(const char *name) {
@@ -489,7 +699,12 @@ int s2a_direct_device_ok(void) {
         //   路径没合入时没有 Metal 4 的设备照旧不直连起手，不靠合入顺序（10-25 维护者）
         if (@available(macOS 15.0, iOS 18.0, *)) m3 = mtl_tab_selftest && d && [d supportsFamily:MTLGPUFamilyMetal3];
         ok = m4 || m3;
-        if (!ok) LOG("直连：这台设备既没有 Metal 4 也没有 Metal 3 路径（GPU 不在 Metal 3 家族或系统低于 macOS 15 / iOS 18），本局不直连起手");
+        // 读数逐项写出（红行，诊断定位卡只摘红行）：玩家诊断里两台 A13（苹果文档属 Metal 3 家族）也被判不能直连，手上没有 A13 实机，靠下一份诊断这行定因
+        if (!ok) {
+            NSOperatingSystemVersion v = NSProcessInfo.processInfo.operatingSystemVersion; int f3 = d && [d supportsFamily:MTLGPUFamilyMetal3];
+            LOG("【红】直连：这台设备既没有 Metal 4 也没有 Metal 3 路径，本局不直连起手（读数：设备 %s，系统 %ld.%ld，Metal 4 家族 %d，Metal 3 家族 %d，本构建 Metal 3 路径 %s）",
+                d ? d.name.UTF8String : "无", (long)v.majorVersion, (long)v.minorVersion, m4, f3, mtl_tab_selftest ? "在" : "不在");
+        }
     }
     return ok;
 }

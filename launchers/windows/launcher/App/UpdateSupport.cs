@@ -15,6 +15,23 @@ internal sealed class VersionAccessor(string version) : NetSparkleUpdater.Interf
     public string AssemblyVersion => version;
 }
 
+/// <summary>给 NetSparkle 的频道过滤（11-19）：正式版只收正式版；测试版（X.Y.Z-test.N）收同频道的预发布与正式版</summary>
+internal static class ReleaseChannel
+{
+    /// <summary>版本号的预发布频道名（0.6.0-test.1 → test；正式版 → 空串）</summary>
+    public static string Of(string version)
+    {
+        var dash = version.IndexOf('-');
+        if (dash < 0) return "";
+        var pre = version[(dash + 1)..];
+        var dot = pre.IndexOf('.');
+        return dot < 0 ? pre : pre[..dot];
+    }
+
+    public static NetSparkleUpdater.AppCastHandlers.ChannelAppCastFilter Filter(string version, NetSparkleUpdater.Interfaces.ILogger? log) =>
+        new(log) { ChannelSearchNames = Of(version) is { Length: > 0 } c ? [c] : [], KeepItemsWithNoChannelInfo = true };
+}
+
 /// <summary>NetSparkle 的日志与换版每一步都记进 <私有目录>/logs/update.log（诊断包会收）</summary>
 internal sealed class UpdateLog(string file) : NetSparkleUpdater.LogWriter
 {

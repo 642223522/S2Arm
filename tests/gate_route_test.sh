@@ -34,9 +34,9 @@ o=$(r hooks graphics/metal/x.m); ck "改渲染器 graphics/metal → 画幅回�
 o=$(r hooks services/S2A.Services/A.cs); ck "改服务 → 服务钩子，不跑原生钩子（原生门禁 make host 不带 S2A_CS、不链 C#，99 组 C 单测不碰服务层；10-28 梳理）、不跑 gfx 钩子、不跑画幅回放；iOS 跑（实得：${o}）" '[[ "$o" != *runtime/gate.sh* ]] && [[ "$o" == *services/gate.sh* ]] && [[ "$o" != *tests/visual/gate.sh* ]] && [[ "$o" != *graphics/gate.sh* ]] && [ "$(r ios services/S2A.Services/A.cs)" = "yes " ]'
 o=$(r hooks compat/tree/src/Ryujinx.Graphics.Vulkan/Effects/Textures/SmaaAreaTexture.bin); ck "改 SMAA 查表数据（graphics/nvn 生成 nvn_aa_lut.h、NVN 单测链它）→ 跑原生钩子（实得：${o}）" '[[ "$o" == *runtime/gate.sh* ]]'
 o=$(r hooks compat/tree/src/Ryujinx.HLE/HOS/Services/Hid/IHidServer.cs); ck "改 Ryujinx 服务代码 → 不跑原生钩子、跑服务钩子（实得：${o}）" '[[ "$o" != *runtime/gate.sh* ]] && [[ "$o" == *services/gate.sh* ]]'
-o=$(r hooks android/app/A.java); ck "改安卓外壳 → 只跑安卓新图形层的钩子，旧三钩子 11-11 已删（安卓图形层重搭，新钩子接回；实得：${o}）" '[ "$(echo $o)" = android/native/gfx_plat/gate.sh ]'
-o=$(r hooks runtime/src/svc_mem.c .github/workflows/windows-cleanup.yml); ck "改 runtime/src + 表外路径 → 全跑含安卓新钩子、不含已删的三个旧钩子（实得：${o}）" '[[ "$o" == *runtime/gate.sh* ]] && [[ "$o" == *android/native/gfx_plat/gate.sh* ]] && [[ " $(echo $o) " != *" android/gate.sh "* ]] && [[ "$o" != *android/core-link/* ]] && [[ "$o" != *android/ctest-link/* ]]'
-o=$(r hooks runtime/rewriter/rewriter.c); ck "改改写器（runtime/rewriter/rewriter.c）→ 原生 + gfx 钩子（实得：${o}）" '[ "$(echo $o)" = "graphics/gate.sh runtime/gate.sh" ]'
+o=$(r hooks android/app/A.java); ck "改安卓外壳 → 安卓无设备测钩子 android/gate.sh（11-20 接回）+ 安卓新图形层钩子（实得：${o}）" '[ "$(echo $o)" = "android/gate.sh android/native/gfx_plat/gate.sh" ]'
+o=$(r hooks runtime/src/svc_mem.c .github/workflows/windows-cleanup.yml); ck "改 runtime/src + 表外路径 → 全跑含两个安卓钩子（android/gate.sh 11-20 接回）、不含已删的 core-link / ctest-link 旧钩子（实得：${o}）" '[[ "$o" == *runtime/gate.sh* ]] && [[ "$o" == *android/native/gfx_plat/gate.sh* ]] && [[ " $(echo $o) " == *" android/gate.sh "* ]] && [[ "$o" != *android/core-link/* ]] && [[ "$o" != *android/ctest-link/* ]]'
+o=$(r hooks runtime/rewriter/rewriter.c); ck "改改写器（runtime/rewriter/rewriter.c）→ 原生 + gfx + 鸿蒙钩子（ohos/gate.sh 路由含 runtime/rewriter/：鸿蒙复用同一改写器；实得：${o}）" '[ "$(echo $o)" = "graphics/gate.sh ohos/gate.sh runtime/gate.sh" ]'
 o=$(r hooks weird/x.c); ck "表外代码路径 → 钩子全跑（实得：${o}）" '[ "$(wc -w <<< "$o" | tr -d " ")" = "$(find . -mindepth 2 -maxdepth 4 -name gate.sh -not -path "./tools/*" -not -path "./.git/*" | wc -l | tr -d " ")" ]'
 o=$(r hooks launchers/macos/Sources/S2ArmLauncher/Store.swift); ck "改 Mac 前端 → 仅 Mac 钩子、iOS 不跑" '[ "$o" = "launchers/macos/gate.sh " ] && [ "$(r ios launchers/macos/Sources/S2ArmLauncher/Store.swift)" = "no " ]'
 o=$(r hooks pack/roots.sh); ck "公共 pack 文件保留单测路由、不挂前端钩子" '[ -z "$(echo "$o" | tr -d " ")" ] && [[ "$(r tests pack/roots.sh)" == *tests/pack_test.sh* ]]'
@@ -55,10 +55,10 @@ ck "证据：只改工具 → 单测即可" '[[ "$(r evidence tools/safe_killpg.
 o=$(r owns graphics/gate.sh graphics/nvn/gfx/nvn/nvn_mtl.m runtime/src/gfxmode.c docs/a.md tools/pack_fp.sh); ck "owns graphics/gate.sh：只打 graphics/nvn/… 与 runtime/src/gfxmode.c（实得：${o}）" '[ "$o" = "graphics/nvn/gfx/nvn/nvn_mtl.m runtime/src/gfxmode.c " ]'
 ck "owns：只改 tools/ 与文档 → 空" '[ -z "$(r owns graphics/gate.sh tools/pack_fp.sh docs/a.md | tr -d " ")" ]'
 # 10-27 两例选测缺口：改 pack/jobs/saves.py（tool 档不跑 launchers/macos 钩子）→ 必选 pack_jobs 单测；改 pack/stage_direct.sh（在直连阶段闭包里；11-05 前样例是 runtime/run_mac.sh，出包不再起局后它不在闭包里）→ 必选 stage_keys 单测；
-#   改 tools/safe_killpg.sh 两者都不选；临时克隆里 stage_direct.sh 新调用一个新脚本 tools/zz_probe.py（#550 的 mac_chain_check.py 同型）→ 改它也必选 stage_keys
+#   改不在任何阶段闭包里的工具（tools/redline.py）两者都不选（原样例 tools/safe_killpg.sh 11-19 起被计算管线归档阶段 cs_pipelines.py 调用、进了阶段闭包，选 stage_keys 是对的）；临时克隆里 stage_direct.sh 新调用一个新脚本 tools/zz_probe.py（#550 的 mac_chain_check.py 同型）→ 改它也必选 stage_keys
 o=$(r tests pack/jobs/saves.py); ck "改 pack/jobs/saves.py → 含 pack_jobs 单测（实得：${o}）" '[[ "$o" == *tests/pack_jobs_test.sh* ]]'
 o=$(r tests pack/stage_direct.sh); ck "改 pack/stage_direct.sh → 含 stage_keys 单测" '[[ "$o" == *tests/stage_keys_test.sh* ]]'
-o=$(r tests tools/safe_killpg.sh); ck "改 tools/safe_killpg.sh → 不含 pack_jobs / stage_keys 单测" '[[ "$o" != *pack_jobs_test* ]] && [[ "$o" != *stage_keys_test* ]]'
+o=$(r tests tools/redline.py); ck "改 tools/redline.py（不在阶段闭包）→ 不含 pack_jobs / stage_keys 单测" '[[ "$o" != *pack_jobs_test* ]] && [[ "$o" != *stage_keys_test* ]]'
 T=$(mktemp -d); git clone -q --shared "$H" "$T/c" 2> /dev/null && (cd "$T/c" && git checkout -q "$(git -C "$H" rev-parse HEAD)" 2> /dev/null; cp "$H/tools/gate_route.py" "$H/tests/stage_keys_test.sh" "$H/tests/pack_jobs_test.sh" "$T/c/tools/" 2> /dev/null
   cp "$H/tools/gate_route.py" tools/; cp "$H/tests/stage_keys_test.sh" "$H/tests/pack_jobs_test.sh" tests/; rm -f tools/stage_keys_test.sh tools/pack_jobs_test.sh
   echo 'print(1)' > tools/zz_probe.py; printf '\npython3 "$R/tools/zz_probe.py" > /dev/null\n' >> pack/stage_direct.sh
@@ -69,13 +69,23 @@ rm -rf "$T"
 #   feat/launch-settings 改 front_mac.m 列车没跑、合入后 main 链接红）：期望按 launchers/macos/build.mk 的 HOST_SRCS += macos/front_mac.m 手写
 o=$(r tests macos/front_mac.m); ck "改 macos/front_mac.m（HOST_SRCS 的 Mac 前端源文件）→ 含 present_settings_test（实得：${o}）" '[[ "$o" == *tests/present_settings_test.sh* ]]'
 o=$(r tests runtime/src/input_config.c); ck "改 runtime/src/input_config.c（HOST_SRCS）→ 含 present_settings_test、shared_matrix_test（实得：${o}）" '[[ "$o" == *tests/present_settings_test.sh* ]] && [[ "$o" == *tests/shared_matrix_test.sh* ]]'
-o=$(r tests launchers/macos/build.mk); ck "改 launchers/macos/build.mk（拼 HOST_SRCS 的清单）→ 含 present_settings_test（实得：${o}）" '[[ "$o" == *tests/present_settings_test.sh* ]]'
+# 链接清单（「门禁清单」，11-19）：present_settings_test 只编只链 graphics/nvn/tests/t_present_settings.link.txt 列的宿主源文件，覆盖面按同一份清单算——
+#   清单里的 front_mac.m / input_config.c 照旧选中（上两条）；清单外的宿主文件（host_main.c 从不链进本测）与拼清单的 mk 不再选中；改清单本身两支都选中
+o=$(r tests runtime/src/host_main.c); ck "改 runtime/src/host_main.c（不在链接清单）→ 不含 present_settings_test（实得：${o}）" '[[ "$o" != *tests/present_settings_test.sh* ]]'
+o=$(r tests launchers/macos/build.mk); ck "改 launchers/macos/build.mk → 不含 present_settings_test（实得：${o}）" '[[ "$o" != *tests/present_settings_test.sh* ]]'
+o=$(r tests graphics/nvn/tests/t_present_settings.link.txt); ck "改链接清单 → 含 present_settings_test、present_settings_env_test（实得：${o}）" '[[ "$o" == *tests/present_settings_test.sh* ]] && [[ "$o" == *tests/present_settings_env_test.sh* ]]'
 # 算构建清单不许有副作用（11-09：make 解析就改写 build/.host_cfg，门禁里一算路由 runtime/gate.sh 并行各组同时重编同一批 .o、链接读到空文件）：
 #   在 clone 里放一份已知配置戳、带 S2A_CS=1 环境算一次路由 → 戳内容与修改时间都不变、没起 C# 构建（build/cs 不出现）
+#   11-19：present_settings_test 改读链接清单后仓库里没有单测再展开构建清单，clone 里放一支展开它的探针单测，让路由真去算
 T=$(mktemp -d); git clone -q --shared "$H" "$T/c" 2> /dev/null && cp "$H/tools/gate_route.py" "$T/c/tools/" && mkdir -p "$T/c/build" && printf 'S2A_CS= sentinel' > "$T/c/build/.host_cfg" && touch -t 202601010000 "$T/c/build/.host_cfg"
+cat > "$T/c/tests/zz_hostsrcs_test.sh" << 'PROBE'
+#!/bin/bash
+printf '%s\n' 'x:;@echo $(HOST_SRCS)' | make -s -f Makefile -f - x
+PROBE
+(cd "$T/c" && git add tests/zz_hostsrcs_test.sh && git -c user.email=t@t -c user.name=t commit -qm probe) > /dev/null 2>&1
 m0=$(stat -f %m "$T/c/build/.host_cfg" 2> /dev/null || stat -c %Y "$T/c/build/.host_cfg"); (cd "$T/c" && S2A_CS=1 python3 tools/gate_route.py tests macos/front_mac.m > "$T/o" 2> /dev/null)
 m1=$(stat -f %m "$T/c/build/.host_cfg" 2> /dev/null || stat -c %Y "$T/c/build/.host_cfg")
-ck "算构建清单不碰本树 build/：配置戳内容 / 修改时间不变、不起 C# 构建，路由照常（含 present_settings_test）" '[ "$(cat "$T/c/build/.host_cfg")" = "S2A_CS= sentinel" ] && [ "$m0" = "$m1" ] && [ ! -e "$T/c/build/cs" ] && grep -q present_settings_test "$T/o"'
+ck "算构建清单不碰本树 build/：配置戳内容 / 修改时间不变、不起 C# 构建，路由照常（含展开构建清单的探针单测）" '[ "$(cat "$T/c/build/.host_cfg")" = "S2A_CS= sentinel" ] && [ "$m0" = "$m1" ] && [ ! -e "$T/c/build/cs" ] && grep -q zz_hostsrcs_test "$T/o"'
 rm -rf "$T"
 # 覆盖面缓存（11-14：同内容只算一次，存 git 公共目录 s2a-gate-route/）：同树二次调用与关缓存结果逐字相同、且快；
 #   工作区里一份单测新点名 tools/l10n_merge.py → 下一次路由立刻带上它（指纹含工作区改动，不吃旧缓存）

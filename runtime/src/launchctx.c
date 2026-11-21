@@ -4,7 +4,6 @@
 #include "s2a_launch_ctx.h"
 #include "s2a_docs.h"   // 多款容器每款资源包根（s2a_pack_root）
 #include "s2a_host_abi.h"
-#include <CommonCrypto/CommonDigest.h>   // 程序包 image_sha256 核对（program_sha_check）
 #include <dlfcn.h>                       // s2a_imgpack_open：宿主才链（imgpack.c），单测不链 → 不预注册   // S2A_HOST_ABI：宿主读产物的约定号（选游戏时核）
 #include <errno.h>
 #include <pthread.h>
@@ -138,6 +137,38 @@ static int catalogue_has(const char *path, const char *gid, char *why, size_t wh
     free(buf);
     return hit;
 }
+// 独立 App（一 App 一游戏，0.6.3，pack/jobs/install.py put_app）：清单里只有一款（各 title_id 值都相同）、且这款的程序库就在 App 包里
+//   （Frameworks/S2AImages-<号>.dylib 是文件、Games/<号>/ 是目录）→ 回 1、gid 写这款；否则 0。通用壳的程序在 App 外，包里没有程序库，不会命中
+int s2a_launch_ctx_single_game(const char *b, char *gid, size_t gid_n) {
+    char p[S2A_LCTX_PATH], one[64] = ""; int bad = 0;
+    if (!b || !*b || !gid || !gid_n || join(p, b, "s2a_catalogue.json")) return 0;
+    FILE *f = fopen(p, "r"); if (!f) return 0;
+    enum { CAP = 4 << 20 }; char *buf = malloc(CAP + 1); size_t n = buf ? fread(buf, 1, CAP + 1, f) : 0; fclose(f);
+    if (!buf || n > CAP) { free(buf); return 0; }
+    buf[n] = 0;
+    for (char *k = buf; !bad && (k = strstr(k, "\"title_id\"")); ) {
+        char *v = k + 10; k = v;
+        while (*v == ' ' || *v == '\t' || *v == '\r' || *v == '\n') v++;
+        if (*v++ != ':') continue;
+        while (*v == ' ' || *v == '\t' || *v == '\r' || *v == '\n') v++;
+        if (*v++ != '"') continue;
+        char *e = v; while (*e && *e != '"' && *e != '\\') e++;
+        size_t l = (size_t)(e - v);
+        if (*e != '"' || !l || l >= sizeof one) { bad = 1; break; }
+        if (!*one) { memcpy(one, v, l); one[l] = 0; }
+        else if (strlen(one) != l || memcmp(one, v, l)) bad = 1;   // 第二款 → 多款容器
+    }
+    free(buf);
+    if (bad || !*one || strchr(one, '/') || *one == '.') return 0;
+    char rel[160];
+    snprintf(rel, sizeof rel, "Frameworks/S2AImages-%s.dylib", one);
+    if (join(p, b, rel) || !is_file(p)) return 0;
+    snprintf(rel, sizeof rel, "Games/%s", one);
+    if (join(p, b, rel) || !is_dir(p)) return 0;
+    if (strlen(one) >= gid_n) return 0;
+    memcpy(gid, one, strlen(one) + 1);
+    return 1;
+}
 // ---------- 宿主约定号核对（11-16）：清单 JSON 里找这款的对象，取 host_abi ----------
 // 跳过一个 JSON 字符串（p 指向开头的引号）→ 结尾引号之后；没闭合 → NULL
 static const char *skip_str(const char *p, const char *e) {
@@ -233,23 +264,6 @@ int s2a_program_catalogue_path(char *out, size_t n, const char *game_data) {
     return 0;
 }
 
-// 程序包清单里这款的 image_sha256（64 位十六进制）与程序库整份文件的 SHA-256 比：→ 0 一致或清单没写这一项；1 不一致；-1 读不了（why 写原因）
-static int program_sha_check(const char *game_data, const char *gid, const char *image, char *why, size_t why_n) {
-    char pc[S2A_LCTX_PATH], want[80] = ""; size_t n;
-    if (s2a_program_catalogue_path(pc, sizeof pc, game_data)) { WHY("资源包根太长"); return -1; }
-    char *buf = slurp(pc, &n, why, why_n); if (!buf) return -1;
-    const char *os, *oe; int has = find_obj(buf, n, gid, &os, &oe) && obj_str(os, oe, "image_sha256", want, sizeof want); free(buf);
-    if (!has) return 0;
-    if (strlen(want) != 64) { WHY("程序包清单 image_sha256 不是 64 位十六进制"); return 1; }
-    FILE *f = fopen(image, "rb"); if (!f) { WHY("程序库 %s 打不开（errno %d）", image, errno); return -1; }
-    CC_SHA256_CTX x; CC_SHA256_Init(&x); unsigned char blk[1 << 16]; size_t got;
-    while ((got = fread(blk, 1, sizeof blk, f)) > 0) CC_SHA256_Update(&x, blk, (CC_LONG)got);
-    int err = ferror(f); fclose(f); if (err) { WHY("程序库 %s 读失败", image); return -1; }
-    unsigned char d[CC_SHA256_DIGEST_LENGTH]; CC_SHA256_Final(d, &x); char hex[65];
-    for (int i = 0; i < 32; i++) snprintf(hex + 2 * i, 3, "%02x", d[i]);
-    if (strcasecmp(hex, want)) { WHY("游戏 %s 的程序库和程序包清单不是同一次出的（SHA-256 %.12s…，清单 %.12s…）：要在电脑上重新签名推回去", gid, hex, want); return 1; }
-    return 0;
-}
 // 本款程序包（game_data = 这款资源包根）：清单不在 → 0；在 → 写随行目录 <程序包>/Games/<gid> 与镜像包 <程序包>/<清单 image>、回 1；
 //   清单读不了 / 没这款 / image 不合规 / 缺件 → -1（why 写原因）。module_dir、images 各 S2A_LCTX_PATH 字节
 static int program_paths(const char *game_data, const char *gid, char *module_dir, char *images, char *why, size_t why_n) {
@@ -367,9 +381,12 @@ int s2a_launch_ctx_resolve_game(s2a_launch_ctx *c, const char *b, const char *ho
     if (join(hd, home, S2A_CONTAINER_DOCS_REL) || join(c->docs, hd, rel) || s2a_pack_root(c->game_data, sizeof c->game_data, c->docs) >= (int)sizeof c->game_data) {
         WHY("HOME 太长"); memset(c, 0, sizeof *c); return -1; }
     // 通用壳（11-16）：资源包根旁有程序包 program/catalogue.json → 这款的程序（镜像包 + 随行目录）从程序包取，App 包里没有它也行；
-    //   清单是写入的最后一步（电脑端先写 dylib、Games/，最后改名写清单），清单在 = 程序包写完。没有清单 → 照旧取 App 包内（过渡：程序都挪出 App
-    //   且各台手机推过一次新壳后删掉这一支）
-    int fp = program_paths(c->game_data, gid, c->module_dir, c->images, why, why_n);
+    //   清单是写入的最后一步（电脑端先写 dylib、Games/，最后改名写清单），清单在 = 程序包写完。没有清单 → 取 App 包内。
+    // App 包里自带这款的镜像包（独立 App，一 App 一游戏，0.6.3）→ 一律取包内、不看程序包：分发 / ad hoc 签的 App 只认包内的程序，
+    //   显式描述文件下独立 App 与通用壳同包名、沙盒里可能留着通用壳推过的程序包，取了它就回到包外映射被系统拒。包内这一支是独立 App 的正路，不许删
+    snprintf(rel, sizeof rel, "Frameworks/S2AImages-%s.dylib", gid);
+    int in_app = !join(p, b, rel) && is_file(p);
+    int fp = in_app ? 0 : program_paths(c->game_data, gid, c->module_dir, c->images, why, why_n);
     if (fp < 0) { memset(c, 0, sizeof *c); return -1; }
     if (fp) {
         c->from_program = 1;
@@ -450,13 +467,15 @@ int s2a_launch_ctx_game_needs_update(const char *gid) {
     if (!g_container) return 0;
     s2a_launch_ctx c; char w[600], prog[S2A_LCTX_PATH], app[S2A_LCTX_PATH];
     if (s2a_launch_ctx_resolve_game(&c, g_bundle, getenv("HOME"), gid, w, sizeof w) || join(app, g_bundle, "s2a_catalogue.json")) return 0;
-    return s2a_host_abi_check(s2a_program_catalogue_path(prog, sizeof prog, c.game_data) ? NULL : prog, app, gid, NULL, w, sizeof w) == 1;
+    return s2a_host_abi_check(!c.from_program || s2a_program_catalogue_path(prog, sizeof prog, c.game_data) ? NULL : prog, app, gid, NULL, w, sizeof w) == 1;
 }
 
 static int g_sel_kind;   // 上一次 s2a_launch_ctx_select 被拒的类别（S2A_SELECT_*）：库界面按它给玩家说人话，原文只进日志
 int s2a_launch_ctx_select_kind(void) { return g_sel_kind; }
+static uint64_t lctx_ms(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (uint64_t)ts.tv_sec * 1000ull + (uint64_t)ts.tv_nsec / 1000000ull; }
 const char *s2a_launch_ctx_select(const char *gid) {
     static char why[700];
+    uint64_t t0 = lctx_ms();   // 选游戏耗时（点开始 → 选好），进末尾那行日志（11-19：去掉起局前整份程序库 SHA-256 前后对比用）
     pthread_once(&g_once, decide);
     g_sel_kind = S2A_SELECT_OTHER;
     if (!g_container) return "不是多款容器（包根没有 s2a_catalogue.json，或设了 S2A_LAUNCH_CTX）：启动上下文已在构造期定好，不能再选游戏";
@@ -467,27 +486,38 @@ const char *s2a_launch_ctx_select(const char *gid) {
     if (s2a_launch_ctx_resolve_game(&c, g_bundle, getenv("HOME"), gid, w, sizeof w)) { snprintf(why, sizeof why, "%s", w); g_sel_kind = S2A_SELECT_APP_INCOMPLETE; r = why; goto out; }
     {   // 宿主约定号（s2a_host_abi.h）：产物是按别的约定出的就不载入——不然改写器与运行时对不上，进游戏后静默崩。对不上 → 回游戏库标「要更新」
         char prog[S2A_LCTX_PATH], app[S2A_LCTX_PATH]; int have = 0;
-        int k = join(app, g_bundle, "s2a_catalogue.json") ? -1 : s2a_host_abi_check(s2a_program_catalogue_path(prog, sizeof prog, c.game_data) ? NULL : prog, app, gid, &have, w, sizeof w);
+        int k = join(app, g_bundle, "s2a_catalogue.json") ? -1 : s2a_host_abi_check(!c.from_program || s2a_program_catalogue_path(prog, sizeof prog, c.game_data) ? NULL : prog, app, gid, &have, w, sizeof w);
         // 11-17 维护者：校验不过不再整个拒绝，黄字提示照常进，之后出问题时报错带上这条（waived.c）
         if (k == 1) waive("游戏 %s 的程序按宿主约定号 %d 出，本宿主是 %d：版本不配，可能闪退，在电脑上重新出包 / 装到 iPhone 可解（ios_host_abi_mismatch）", gid, have, S2A_HOST_ABI);
         if (k < 0) waive("游戏 %s 的宿主约定号核不了：%s", gid, w[0] ? w : "App 包目录太长");
     }
+    char rsw[300] = "";   // 重签没成的原因（如证书与 App 不是同一个团队）：签名最后本机不认时并进给玩家的那句
     if (c.from_program) {   // 起局按款重签（0.6.0 通用壳，ios/program_resign.m）：签名身份不是手机上现在这张 / 没签 → 当场用手机上的身份签好，路径改指新版本目录；
         //   做不了照旧用原程序库（原因进日志）。按名取（只链本文件的单测 / 工具没有它）
         int (*rs)(const char *, const char *, const char *, char *, char *, size_t, char *, size_t) =
             (int (*)(const char *, const char *, const char *, char *, char *, size_t, char *, size_t))dlsym(RTLD_DEFAULT, "s2a_program_resign_if_needed");
-        if (rs) { char rw[300]; rs(getenv("HOME"), c.game_data, gid, c.module_dir, c.images, sizeof c.images, rw, sizeof rw); }
+        if (rs) rs(getenv("HOME"), c.game_data, gid, c.module_dir, c.images, sizeof c.images, rsw, sizeof rsw);
     }
-    {   // 程序签名（通用壳 11-16）：程序包里的程序库要和清单 image_sha256 一致（推了一半 / 换了别的版本 = 清单和库不是同一次出的），
-        //   且能被本机这份 App 注册签名 + 库校验（同团队）。对不上 → 回游戏库标「要在电脑上重新签名」，不进宿主（原先进局后 loader.c die「外置镜像包打不开」，
-        //   App 无提示直接退回主屏，11-16 Duo 实测 ad-hoc 程序库 errno=1）。注册在这里先做一次，进局后 s2a_imgpack_open 同一路径回同一个包
-        int ks = c.from_program ? program_sha_check(c.game_data, gid, c.images, w, sizeof w) : 0;
-        if (ks > 0) waive("%s：版本不配，可能闪退，在电脑上重新签名 / 装到 iPhone 可解（ios_program_resign）", w);   // 校验不过照常进（11-17 维护者）；签名系统不认（下面 rc == 3）物理上加载不了，照旧拒
-        if (ks < 0) waive("游戏 %s 的程序包核不了：%s", gid, w);
+    {   // 程序签名（通用壳 11-16）：程序库要能被本机这份 App 注册签名 + 库校验（同团队）——物理上必须，进程只认登记过签名的代码页。
+        //   原先这里还给整份程序库算 SHA-256 和清单 image_sha256 比（每次起局读完一两百 MB），核不过也只是黄字照常进，只剩花时间：11-19 维护者定
+        //   起局前的完整性校验一律去掉，坏了让这一步失败、报清楚原因（文件不完整 / 格式不对 / 签名不认，imgpack.c）。注册在这里先做一次，
+        //   进局后 s2a_imgpack_open 同一路径回同一个包（原先进局后 loader.c die「外置镜像包打不开」，App 无提示退回主屏，11-16 Duo 实测）
         int (*open_pk)(const char *, void **, char *, size_t) = (int (*)(const char *, void **, char *, size_t))dlsym(RTLD_DEFAULT, "s2a_imgpack_open");
         void *pk = NULL; int rc = c.from_program && open_pk ? open_pk(c.images, &pk, w, sizeof w) : 0;   // 只对程序包里的款：App 包里的款（0.6.0 前玩家手上全是这种）照旧进局后由装载器打开，行为同改造前
-        if (rc == 3) { snprintf(why, sizeof why, "ios_program_resign：游戏 %s 的程序库签名本机不认（%s）：要在电脑上重新签名这款", gid, w); g_sel_kind = S2A_SELECT_NEEDS_RESIGN; r = why; goto out; }   // 3 = S2A_IMG_ESIGN（runtime/src/imgpack.h）
-        if (rc) { snprintf(why, sizeof why, "游戏 %s 的程序库打不开（返回 %d）：%s", gid, rc, w); g_sel_kind = S2A_SELECT_APP_INCOMPLETE; r = why; goto out; }
+        if (rc == 3) {   // 注册签名失败（证书和手机身份相同、但签名格式老，如 Windows plumesign 签的程序库）：手机上有身份就当场强制重签一次，签好再注册；还不行才回游戏库
+            int (*rf)(const char *, const char *, const char *, char *, char *, size_t, char *, size_t) =
+                (int (*)(const char *, const char *, const char *, char *, char *, size_t, char *, size_t))dlsym(RTLD_DEFAULT, "s2a_program_resign_force");
+            char rw[300] = "";
+            int fr = rf ? rf(getenv("HOME"), c.game_data, gid, c.module_dir, c.images, sizeof c.images, rw, sizeof rw) : 0;
+            if (fr == -1 && rw[0]) snprintf(rsw, sizeof rsw, "%s", rw);
+            if (fr == 1) {
+                char w0[600]; snprintf(w0, sizeof w0, "%s", w); pk = NULL; rc = open_pk(c.images, &pk, w, sizeof w);
+                LOG("启动上下文：%s 的程序库注册签名失败（%s），已用手机上的签名身份重签 → 再注册%s", gid, w0, rc ? "仍失败" : "成功");
+            }
+        }
+        if (rc == 3) { if (rsw[0]) snprintf(why, sizeof why, "ios_program_resign：游戏 %s 的程序库签名本机不认（%s），手机上也重签不了：%s", gid, w, rsw);
+                       else snprintf(why, sizeof why, "ios_program_resign：游戏 %s 的程序库签名本机不认（%s）：要在电脑上重新签名这款", gid, w); g_sel_kind = S2A_SELECT_NEEDS_RESIGN; r = why; goto out; }   // 3 = S2A_IMG_ESIGN（runtime/src/imgpack.h）
+        if (rc) { snprintf(why, sizeof why, "游戏 %s 的程序库坏了或不完整（%s）：在电脑上重新把这一款推到 iPhone", gid, w); g_sel_kind = S2A_SELECT_APP_INCOMPLETE; r = why; goto out; }
     }
     // 本款文档根第一次用时还不在（存档 / wire / 加载页标记各自只建最后一级）：逐级建好
     for (char *q = c.docs + 1; ; q++) {
@@ -501,7 +531,7 @@ const char *s2a_launch_ctx_select(const char *gid) {
     g_ctx = c;
     if (export_env()) { snprintf(why, sizeof why, "%s", g_err); memset(&g_ctx, 0, sizeof g_ctx); r = why; goto out; }
     g_selected = 1; atomic_store(&g_ok, 1);
-    LOG("启动上下文：多款容器选了游戏 %s，模块 %s，镜像包 %s，资源包 %s，文档 %s", c.game_id, c.module_dir, c.images, c.game_data, c.docs);
+    LOG("启动上下文：多款容器选了游戏 %s（选游戏 %llu ms），模块 %s，镜像包 %s，资源包 %s，文档 %s", c.game_id, (unsigned long long)(lctx_ms() - t0), c.module_dir, c.images, c.game_data, c.docs);
 out:
     pthread_mutex_unlock(&g_sel_mu);
     if (r) LOG("【红】启动上下文：选游戏 %s 被拒：%s", gid ? gid : "", r);

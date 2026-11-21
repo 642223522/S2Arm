@@ -907,7 +907,7 @@ namespace Ryujinx.HLE.HOS.Services.Fs
         {
             byte programIndex = context.RequestData.ReadByte();
 
-            if (context.Device.Processes.GetProcess(_pid).Identity.ProgramIndex != programIndex)
+            if (context.Device.Processes.GetProcess(_pid).Identity.ProgramIndex != programIndex && programIndex != S2AHooks.DataStorageAliasIndex)
             {
                 throw new NotImplementedException($"Accessing storage from other programs is not supported (program index = {programIndex}).");
             }

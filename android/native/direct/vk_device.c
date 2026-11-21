@@ -1,9 +1,14 @@
 #ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L   // clock_gettime / nanosleep（s2a_vk_wait_fences）
 #endif
+#if defined(__OHOS__)
+#define VK_USE_PLATFORM_OHOS 1
+#define S2A_VK_PLATFORM_SURFACE "VK_OHOS_surface"
+#else
 #define VK_USE_PLATFORM_ANDROID_KHR 1
+#define S2A_VK_PLATFORM_SURFACE "VK_KHR_android_surface"
+#endif
 #include "vk_device.h"
-#include "vk_membuf.h"
 #include "gs_path.h"
 #include "../capprobe/capprobe.h"
 
@@ -120,7 +125,7 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
     if (api < VK_API_VERSION_1_1) return fail(why, why_size, "Vulkan loader below 1.1");
 
     const char *wanted[] = {
-        "VK_KHR_get_physical_device_properties2", "VK_KHR_surface", "VK_KHR_android_surface",
+        "VK_KHR_get_physical_device_properties2", "VK_KHR_surface", S2A_VK_PLATFORM_SURFACE,
         "VK_KHR_get_surface_capabilities2", "VK_EXT_surface_maintenance1" };
     const char *enabled[sizeof wanted / sizeof *wanted + 9];
     uint32_t enabled_count = 0;
@@ -135,7 +140,12 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
             if (!dup && has_instance_extension(pe[i])) enabled[enabled_count++] = pe[i];
         }
     }
-    out->has_android_surface = has_instance_extension("VK_KHR_android_surface");
+    int instance_surface_maintenance1 = 0, instance_surface_capabilities2 = 0;
+    for (uint32_t i = 0; i < enabled_count; i++) {
+        if (!strcmp(enabled[i], "VK_EXT_surface_maintenance1")) instance_surface_maintenance1 = 1;
+        if (!strcmp(enabled[i], "VK_KHR_get_surface_capabilities2")) instance_surface_capabilities2 = 1;
+    }
+    out->has_android_surface = has_instance_extension(S2A_VK_PLATFORM_SURFACE);
 
     VkApplicationInfo app = {0};
     app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -238,8 +248,37 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
             return fail(why, why_size, text);
         }
     }
-    VkPhysicalDeviceFeatures enabled_features = features;
-    // 不启用声明外的能力：只开首版执行层实际需要的字段。
+    VkPhysicalDeviceFeatures enabled_features = {0};
+    // #1581 P OOB 审计：顶点窗口和动态 SSBO/UBO 访问尚未证明自限，保留核心 robustness。
+    // 见 rp_draw.c 的顶点绑定、DirectGpuAccessor.QueryHostStorageWindowClamp 和 InstEmitMemory.Ldc。
+    enabled_features.robustBufferAccess = features.robustBufferAccess;
+    enabled_features.fullDrawIndexUint32 = features.fullDrawIndexUint32;
+    enabled_features.imageCubeArray = features.imageCubeArray;
+    enabled_features.independentBlend = features.independentBlend;
+    enabled_features.dualSrcBlend = features.dualSrcBlend;
+    enabled_features.logicOp = features.logicOp;
+    enabled_features.multiDrawIndirect = features.multiDrawIndirect;
+    enabled_features.drawIndirectFirstInstance = features.drawIndirectFirstInstance;
+    enabled_features.depthClamp = features.depthClamp;
+    enabled_features.depthBiasClamp = features.depthBiasClamp;
+    enabled_features.fillModeNonSolid = features.fillModeNonSolid;
+    enabled_features.largePoints = features.largePoints;
+    enabled_features.multiViewport = features.multiViewport;
+    enabled_features.samplerAnisotropy = features.samplerAnisotropy;
+    enabled_features.textureCompressionETC2 = features.textureCompressionETC2;
+    enabled_features.textureCompressionASTC_LDR = features.textureCompressionASTC_LDR;
+    enabled_features.textureCompressionBC = features.textureCompressionBC;
+    enabled_features.occlusionQueryPrecise = features.occlusionQueryPrecise;
+    enabled_features.vertexPipelineStoresAndAtomics = features.vertexPipelineStoresAndAtomics;
+    enabled_features.fragmentStoresAndAtomics = features.fragmentStoresAndAtomics;
+    enabled_features.shaderTessellationAndGeometryPointSize = features.shaderTessellationAndGeometryPointSize;
+    enabled_features.shaderStorageImageMultisample = features.shaderStorageImageMultisample;
+    enabled_features.shaderUniformBufferArrayDynamicIndexing = features.shaderUniformBufferArrayDynamicIndexing;
+    enabled_features.shaderSampledImageArrayDynamicIndexing = features.shaderSampledImageArrayDynamicIndexing;
+    enabled_features.shaderStorageBufferArrayDynamicIndexing = features.shaderStorageBufferArrayDynamicIndexing;
+    enabled_features.shaderStorageImageArrayDynamicIndexing = features.shaderStorageImageArrayDynamicIndexing;
+    enabled_features.shaderResourceMinLod = features.shaderResourceMinLod;
+    enabled_features.variableMultisampleRate = features.variableMultisampleRate;
     enabled_features.shaderFloat64 = VK_FALSE;
     enabled_features.shaderInt64 = VK_FALSE;
     enabled_features.sparseBinding = VK_FALSE;
@@ -319,6 +358,7 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
 
     out->has_swapchain = has_device_extension(out->physical, "VK_KHR_swapchain");
     out->has_swapchain_maintenance1 = has_device_extension(out->physical, "VK_EXT_swapchain_maintenance1");
+    const int has_timeline = has_device_extension(out->physical, "VK_KHR_timeline_semaphore");
     VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT maintenance = {0};
     maintenance.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT;
     VkPhysicalDeviceTimelineSemaphoreFeatures timeline = {0};
@@ -367,7 +407,7 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
     {
         VkPhysicalDeviceFeatures2 query = {0};
         query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-        draw_parameters.pNext = &timeline;
+        draw_parameters.pNext = has_timeline ? (void *)&timeline : (void *)&index_u8;
         timeline.pNext = &index_u8;
         index_u8.pNext = has_4444 ? &f4444 : NULL;
         if (has_dcc) { dcc.pNext = index_u8.pNext; index_u8.pNext = &dcc; }
@@ -391,8 +431,9 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
             out->descriptor_indexing_variable_count = descriptor_supported.descriptorBindingVariableDescriptorCount == VK_TRUE;
             out->descriptor_indexing_sampled_update_after_bind = descriptor_supported.descriptorBindingSampledImageUpdateAfterBind == VK_TRUE;
         }
-        out->swapchain_maintenance1_enabled = out->has_swapchain_maintenance1 && maintenance.swapchainMaintenance1 == VK_TRUE;
-        out->timeline_semaphore_enabled = timeline.timelineSemaphore == VK_TRUE;
+        out->swapchain_maintenance1_enabled = out->has_swapchain_maintenance1 &&
+            instance_surface_maintenance1 && instance_surface_capabilities2 && maintenance.swapchainMaintenance1 == VK_TRUE;
+        out->timeline_semaphore_enabled = has_timeline && timeline.timelineSemaphore == VK_TRUE;
         out->shader_draw_parameters_enabled = draw_parameters.shaderDrawParameters == VK_TRUE;
         out->formats_4444_enabled = has_4444 && f4444.formatA4B4G4R4 == VK_TRUE;
         out->depth_clip_control_enabled = has_dcc && dcc.depthClipControl == VK_TRUE;
@@ -406,17 +447,26 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
         return fail(why, why_size, "required feature missing: shaderDrawParameters");
 
     // 容量 = 所有可选扩展同时启用时的项数（swapchain / maintenance1 / 校准 / index_type_uint8 / display_timing / host import /
-    // AHB + queue_family_foreign / indirect count / 4444 / 实例除数 / 镜像夹取 / 自定义边框色 / 深度裁剪控制 / min-max 归约，校准 KHR / EXT 二选一 = 15；加 descriptor indexing 共 16），留余量。
+    // AHB + queue_family_foreign / indirect count / 4444 / 实例除数 / 镜像夹取 / 自定义边框色 / 深度裁剪控制 / min-max 归约，校准 KHR / EXT 二选一 = 15；加 descriptor indexing / load_store_op_none / timeline 共 18），留余量。
     // 整组齐全才启用：缺任一项时可继续启动，但不承诺 pool/non-uniform 能力。
     // 存储图像非一致索引也必须一起启用：生成器（MarkNonUniform）一开就同时声明采样 + 存储两种能力，
     // 只启用采样会让 SPIR-V 的能力声明与设备不符（C1 的 profile 一致性核对按这条走）。
     const int descriptor_enable = descriptor_query && out->descriptor_indexing_runtime &&
                                   out->descriptor_indexing_partial && out->descriptor_indexing_sampled_nonuniform &&
                                   out->descriptor_indexing_storage_nonuniform;
-    const char *device_ext[20];
+    const char *device_ext[24];
     uint32_t device_ext_count = 0;
+    // apiVersion=1.1，不能拿物理设备支持 1.3 当作应用已启用核心 NONE。
+    // 此扩展没有额外 feature 位；缺失时仍走独立快照，不能用 DONT_CARE 假代 NONE。
+    out->load_store_op_none_enabled = has_device_extension(out->physical, VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME);
+    if (out->load_store_op_none_enabled) device_ext[device_ext_count++] = VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME;
+    S2A_DLOG("[s2a] vk read-only attachment: load_store_op_none=%d\n", out->load_store_op_none_enabled);
     if (out->has_swapchain) device_ext[device_ext_count++] = "VK_KHR_swapchain";
+    // 格式列表（VkImageFormatListCreateInfo）：可改格式的颜色图按列表建，Adreno 才保 UBWC 帧缓冲压缩（backend_vulkan.c tex_fmt_allowed 一节）
+    out->image_format_list_enabled = has_device_extension(out->physical, "VK_KHR_image_format_list");
+    if (out->image_format_list_enabled) device_ext[device_ext_count++] = "VK_KHR_image_format_list";
     if (out->swapchain_maintenance1_enabled) device_ext[device_ext_count++] = "VK_EXT_swapchain_maintenance1";
+    if (has_timeline) device_ext[device_ext_count++] = "VK_KHR_timeline_semaphore";
     // 时间戳换算成游戏时钟要用校准扩展求 GPU 域与 CLOCK_MONOTONIC 的偏移。两种扩展同名同签名，
     // 优先 KHR；都没有时时间戳走“完成点取 guest_tick”的兜底（不是伪造 GPU 时刻）。
     out->calibrated_timestamps = 0;
@@ -582,7 +632,7 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
     device_info.enabledExtensionCount = device_ext_count;
     device_info.ppEnabledExtensionNames = device_ext;
     draw_parameters.shaderDrawParameters = VK_TRUE;
-    draw_parameters.pNext = out->timeline_semaphore_enabled ? (VkBaseInStructure *)&timeline
+    draw_parameters.pNext = has_timeline ? (VkBaseInStructure *)&timeline
                           : out->index_type_uint8_enabled ? (VkBaseInStructure *)&index_u8 : NULL;
     timeline.timelineSemaphore = out->timeline_semaphore_enabled ? VK_TRUE : VK_FALSE;
     timeline.pNext = out->index_type_uint8_enabled ? (VkBaseInStructure *)&index_u8 : NULL;
@@ -656,67 +706,6 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
     pool.queueFamilyIndex = out->queue_family;
     if (vkCreateCommandPool(out->device, &pool, NULL, &out->command_pool) != VK_SUCCESS)
         return fail(why, why_size, "vkCreateCommandPool failed");
-    // 内存后端自检（诊断，debug.s2a.mem_probe=1）：扩展 advertise 不等于能用，逐后端实测一遍
-    // 「CPU 写→GPU 读」「GPU 写→CPU 读」。只在要求时跑，不影响默认路径。符号弱引用，
-    // 让只链 vk_device.c 的宿主探针照旧能链接。
-    if (prop_int("debug.s2a.mem_probe", 0)) {
-        extern int s2a_gpu_mem_probe(struct s2a_vk_device *, struct s2a_gpu_mem_caps *, char *, size_t)
-            __attribute__((weak));
-        extern int s2a_gpu_mem_selftest(struct s2a_vk_device *, int, char *, size_t) __attribute__((weak));
-        if (s2a_gpu_mem_probe && s2a_gpu_mem_selftest) {
-            const struct { int kind; int enabled; const char *name; } try[] = {
-                { S2A_GPU_MEM_HOST_IMPORT, out->external_memory_host_enabled, "host_import" },
-                { S2A_GPU_MEM_AHB, out->ahb_import_enabled, "ahb" },
-                { S2A_GPU_MEM_UPLOAD, 1, "upload" },
-            };
-            struct s2a_gpu_mem_caps caps;
-            char wy[256] = "";
-            if (s2a_gpu_mem_probe(out, &caps, wy, sizeof wy) == 0) {
-                S2A_DLOG( "[s2a] mem caps: host_import=%d align=%llu ahb=%d dmabuf=%d shared_enabled=%d\n",
-                        caps.host_import, (unsigned long long)caps.host_align, caps.ahb, caps.dmabuf,
-                        caps.shared_enabled);
-                extern double s2a_gpu_mem_bench(struct s2a_vk_device *, int, size_t, char *, size_t)
-                    __attribute__((weak));
-                for (unsigned i = 0; i < sizeof try / sizeof try[0]; i++) {
-                    if (!try[i].enabled) {
-                        S2A_DLOG("[s2a] mem selftest %s: skipped (not enabled)\n", try[i].name);
-                        continue;
-                    }
-                    wy[0] = 0;
-                    int rc = s2a_gpu_mem_selftest(out, try[i].kind, wy, sizeof wy);
-                    S2A_DLOG("[s2a] mem selftest %s: rc=%d %s\n", try[i].name, rc, wy);
-                    // 扩展存在、自检通过，还要看“当 guest 内存用”时 CPU 写入带宽：共享映射常不可缓存，
-                    // 写池子会变慢，慢到一定程度就不该换过去。
-                    if (rc == 0 && i < 2) {
-                        extern int s2a_gpu_mem_selftest_alias(struct s2a_vk_device *, char *, size_t)
-                            __attribute__((weak));
-                        if (s2a_gpu_mem_selftest_alias) {
-                            wy[0] = 0;
-                            int arc = s2a_gpu_mem_selftest_alias(out, wy, sizeof wy);
-                            S2A_DLOG("[s2a] mem alias %s: rc=%d %s\n", try[i].name, arc, wy);
-                        }
-                    }
-                    {
-                        extern double s2a_gpu_mem_bench_scatter(struct s2a_vk_device *, int, size_t, char *, size_t)
-                            __attribute__((weak));
-                        if (rc == 0 && s2a_gpu_mem_bench_scatter) {
-                            wy[0] = 0;
-                            double ns = s2a_gpu_mem_bench_scatter(out, try[i].kind, 4u << 20, wy, sizeof wy);
-                            S2A_DLOG("[s2a] mem scatter %s: %.1f ns/写 (%s)\n", try[i].name, ns, wy);
-                        }
-                    }
-                    if (rc == 0 && s2a_gpu_mem_bench) {
-                        wy[0] = 0;
-                        double mbs = s2a_gpu_mem_bench(out, try[i].kind, 32u << 20, wy, sizeof wy);
-                        S2A_DLOG("[s2a] mem bench %s: 32MB cpu-write %.0f MB/s (%s)\n",
-                                 try[i].name, mbs, wy);
-                    }
-                }
-            } else {
-                S2A_DLOG( "[s2a] mem probe failed: %s\n", wy);
-            }
-        }
-    }
     return 0;
 }
 

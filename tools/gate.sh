@@ -55,6 +55,7 @@ apple_step() {
 #   固定解释器 ~/.s2arm/venv 里按 tools/rewriter-requirements.txt 钉了版本、doctor.sh 预检核它）：没给 S2A_PY 且固定解释器在 → 各步统一用它
 [ -z "${S2A_PY:-}" ] && [ -x "$HOME/.s2arm/venv/bin/python3" ] && export S2A_PY=$HOME/.s2arm/venv/bin/python3
 # 单跑钩子的一部分（11-14 新门禁按组拆步）：GATE_HOOK_ONLY / GATE_HOOK_SKIP=<子项键…> → 本机整步跑的钩子带 GATE_ONLY / GATE_SKIP（钩子自己认键，认不得报红）；
+#   GATE_HOOK_ONLY 也原样转给钩子：认它的钩子（graphics/gate.sh 的子项键与它自己的 GATE_ONLY 本机键是两套）按它挑，其余钩子只看 GATE_ONLY；
 #   下文统一 unset GATE_ONLY / GATE_SKIP（远端计划用），这里先记下
 HONLY=${GATE_HOOK_ONLY:-}; HSKIP=${GATE_HOOK_SKIP:-}; unset GATE_HOOK_ONLY GATE_HOOK_SKIP
 TIER=${GATE_TIER:-full}; PLANM=${GATE_PLAN:-}; RER=${GATE_RERUN:-}; NOLQ=${GATE_NO_LOADQ:-}   # 列车起的门禁（下文 unset 前先记下：本机预跑令牌豁免它）
@@ -134,7 +135,17 @@ if [ "$TIER" != doc ] && [ -f "$R/tools/toolchain.env" ]; then
   else source "$R/tools/toolchain.sh" || exit 2; fi
 fi
 # 本机步 / 子项的声明（10-30 维护者批：原 tools/gate_local.tsv 中央表拆回各自文件头「# 门禁本机：…」，tools/gate_decl.py local 收成同格式：步<TAB>键<TAB>原因）
-GLT=; [ -f tools/gate_decl.py ] && GLT=$(python3 tools/gate_decl.py local 2> /dev/null)
+# 点名快路（11-16 门禁刀五：gate2 每一步都经整份 gate.sh，按改动路由规划——route why / tests / ios / hooks 各起一个 Python、本机声明收集再起一个，
+#   负载下单步多出约 2–3 秒，只为最后被 GATE_RERUN 筛剩点名的那几步）：GATE_FAST=1、点名重跑（GATE_RERUN）的步全是「单测 <名>」/ 语法 / 公开仓扫描 /
+#   Ryujinx 补丁核对、本机跑（不派 gate-host、不是远端计划）、不分层、不是清单 / 预算查询时，不做路由规划与本机声明收集，单测清单直接取点名的 tests/<名>.sh；
+#   其余（环境、工具链、令牌、无进展看门狗、超时、日志、「跑了 N 步 / 应跑 N 步」结论行）与现路同一段代码。点名里有钩子 / iOS 编译 / 别的名字 → 照现路全量规划
+FAST=; FTESTS=
+if [ "${GATE_FAST:-}" = 1 ] && [ -n "$RER" ] && [ -z "$PLANM" ] && [ "${GATE_HOST:-local}" = local ] && [ -z "$LAYER" ] && [ -z "${GATE_LIST:-}" ] && [ -z "${GATE_BUDGET_Q:-}" ]; then
+  FAST=1; IFS=$'\t' read -ra _fn <<< "$RER"
+  for _n in ${_fn[@]+"${_fn[@]}"}; do case $_n in "单测 "*) FTESTS="$FTESTS tests/${_n#单测 }.sh";; 语法|公开仓扫描|"Ryujinx 补丁核对") ;; *) FAST=; break;; esac; done
+  [ -n "$FAST" ] || FTESTS=; unset _fn _n
+fi
+GLT=; [ -z "$FAST" ] && [ -f tools/gate_decl.py ] && GLT=$(python3 tools/gate_decl.py local 2> /dev/null)
 STEPS=()   # 名字<TAB>命令
 add() { inlayer "$1" || { OTHER+=("$1"); return 0; }; STEPS+=("$1	$2	${3:-${GATE_HOOK_S:-600}}"); }   # 第 3 列 = 本步墙钟上限（缺省 GATE_HOOK_S）；另一层的步只记名
 # 老的独立假仓库没有扫描器；真实仓库若删掉扫描器，基线仍有它，执行时必须报红。
@@ -147,10 +158,11 @@ if [ "$TIER" != doc ]; then
 # shell 语法用 macOS 自带 /bin/bash 3.2 查全仓库 .sh（10-23 内测朋友：干净 Mac 上 tools/dev_run.sh、tests/gc_test.sh 在 3.2 下语法红——$( ) 里的 case 分支 3.2 解析不了，
 #   我们机器 PATH 上是 Homebrew bash 5 一直绿）；新旧都过才算过，没有 /bin/bash 的机器退回当前 bash
 add 语法 'bad=0; SB=/bin/bash; [ -x "$SB" ] || SB=bash; while IFS= read -r f; do [ -f "$f" ] || continue; "$SB" -n "$f" 2> /dev/null && bash -n "$f" || { echo "语法错 ${f}（$("$SB" -n "$f" 2>&1 | head -1)）"; bad=1; }; done < <(git -c core.quotepath=off ls-files "*.sh" | grep -v "^compat/tree/"); for f in tools/*.py tests/*.py pack/*.py; do [ -f "$f" ] || continue; python3 -m py_compile "$f" || bad=1; done; n=$(ls tools/*.sh tests/*.sh pack/*.sh tools/*.py tests/*.py pack/*.py 2>/dev/null | wc -l | tr -d " "); echo "全部脚本可解析 → $([ $bad = 0 ] && echo 是 || echo 否)（$n 个）"; exit $bad'
-CH=(${GATE_CHANGED:-}); RT=0; [ -f tools/gate_route.py ] && [ ${#CH[@]} -gt 0 ] && RT=1   # 列车单测的假仓库没有路由器：全跑
+CH=(${GATE_CHANGED:-}); RT=0; [ -f tools/gate_route.py ] && [ ${#CH[@]} -gt 0 ] && [ -z "$FAST" ] && RT=1   # 列车单测的假仓库没有路由器：全跑；快路不路由（见上 FAST）
 route() { GATE_TIER=$TIER python3 tools/gate_route.py "$1" ${CH[@]+"${CH[@]}"}; }
 [ $RT = 1 ] && echo "路由：$(route why)"
-if [ $RT = 1 ]; then TESTS=$(route tests) || { echo "🔴 路由器出错"; exit 1; }; else TESTS=$(ls tests/*_test.sh 2> /dev/null); fi
+if [ -n "$FAST" ]; then TESTS=$FTESTS; echo "快路：只排点名的步，不做路由规划"
+elif [ $RT = 1 ]; then TESTS=$(route tests) || { echo "🔴 路由器出错"; exit 1; }; else TESTS=$(ls tests/*_test.sh 2> /dev/null); fi
 # 单测自报上限（10-30 列车线：train_test 本机 562 秒、gate-host 负载下超缺省 600 秒判红）：文件头 5 行内「# 门禁预算：<秒>」→ 本步墙钟上限用它、并计入钩子预算最大值（列车据此放宽整份门禁墙钟）
 TFL=   # 单测步名<TAB>单测文件（缓存算键用）
 for tf in $TESTS; do [ -f "$tf" ] || continue; inlayer "单测 $(basename "$tf" .sh)" || { OTHER+=("单测 $(basename "$tf" .sh)"); continue; }
@@ -160,6 +172,9 @@ for tf in $TESTS; do [ -f "$tf" ] || continue; inlayer "单测 $(basename "$tf" 
   #   11-06 present_settings_test 和同批 gfx 钩子并行，窗口被抢焦点、宿主失焦冻结客机，矩阵 14/18 红，重跑 18/18 绿（冤退两支）
   if head -6 "$tf" | LC_ALL=C grep -q '^# 门禁显卡：独占'; then hl=${tb:-${GATE_HOOK_S:-600}}; pl=$(( hl + ${S2A_GATE_GPU_QUEUE_S:-1800} + 30 )); [ "$pl" -gt "${BMAX:-0}" ] && BMAX=$pl
     add "单测 $(basename "$tf" .sh)" "${S2A_PRIVATE_TOOLS:+bash $S2A_PRIVATE_TOOLS/mac_slot_frozen.sh prio '单测 $(basename "$tf" .sh)' $hl -- }bash $tf" $pl
+  # 离屏起 Metal、不按显示时钟判的单测（文件头 6 行内「# 门禁显卡：共享」）取共享显卡锁（11-20 读写锁）：可多个同跑，独占步在等或在跑时排队；外层上限留排队余量
+  elif head -6 "$tf" | LC_ALL=C grep -q '^# 门禁显卡：共享'; then pl=$(( ${tb:-${GATE_HOOK_S:-600}} + ${S2A_GATE_GPU_QUEUE_S:-1800} + 30 ))
+    add "单测 $(basename "$tf" .sh)" "${S2A_PRIVATE_TOOLS:+bash $S2A_PRIVATE_TOOLS/mac_slot_frozen.sh share '单测 $(basename "$tf" .sh)' -- }bash $tf" $pl
   else add "单测 $(basename "$tf" .sh)" "bash $tf" ${tb:-}; fi; done
 # 各线钩子
 HOOKS=
@@ -170,7 +185,7 @@ if [ "$TIER" = full ]; then
   # iOS 全量编译 + 链接（10-20 维护者：坐标探测的 mach_vm.h 弄坏过 main 的 iOS 出包，门禁只编 Mac 没拦住）；缓存构建目录，热编约 5 秒
   # 源码同步到私有镜像再编（gate_ios.sh），不和钩子的 dotnet 抢 obj / 锁，和钩子并行跑；只在进 App 的源码有改动时跑
   [ -f runtime/build.mk ] && [ -f tools/gate_ios.sh ] && { [ $RT = 0 ] || [ "$(route ios)" = yes ]; } && add "iOS 全量编译" 'bash tools/gate_ios.sh' "${GATE_IOS_S:-3600}"   # 有 iOS 构建入口的仓库才跑（列车单测的假仓库没有）
-  if [ $RT = 1 ]; then HOOKS=$(route hooks); else HOOKS=$(find . -mindepth 2 -maxdepth 4 -name gate.sh -not -path './tools/*' -not -path './.git/*' | sed 's#^\./##' | LC_ALL=C sort); fi
+  if [ -n "$FAST" ]; then HOOKS=; elif [ $RT = 1 ]; then HOOKS=$(route hooks); else HOOKS=$(find . -mindepth 2 -maxdepth 4 -name gate.sh -not -path './tools/*' -not -path './.git/*' | sed 's#^\./##' | LC_ALL=C sort); fi
 fi
   # 钩子自报预算（10-21：宽屏门禁离线着色器库缓存键一变整份重建 912 秒，超固定的 600 秒）：钩子文件里有「# 门禁预算：--budget」这一行才问
   #   （不认 --budget 的钩子会把它当普通参数整份跑完），bash <钩子> --budget 打一个整数秒 → 本步墙钟上限；问不出来用缺省 GATE_HOOK_S
@@ -181,7 +196,8 @@ fi
     # 优先步骤本机独占跑（10-31 维护者：显卡步骤不跟本机重活抢，删掉「等 300 秒到点照跑」）：排队（独占锁 + 等 Mac 局让出，上限 S2A_GATE_GPU_QUEUE_S，缺省 1800 秒）
     #   不占钩子自己的上限——钩子上限交给 维护方工具 在拿齐后才计时；本步外层上限 = 钩子上限 + 排队上限 + 30 秒收尾
     case $hk in graphics/gate.sh|tests/visual/gate.sh) hl=${bl:-${GATE_HOOK_S:-600}}; pl=$(( hl + ${S2A_GATE_GPU_QUEUE_S:-1800} + 30 )); [ "$pl" -gt "${BMAX:-0}" ] && BMAX=$pl
-      add "钩子 $hk" "bash $hk" $pl;; *) add "钩子 $hk" "bash $hk" $bl;; esac; done   # 11-14：不再整钩子套显卡锁——graphics 钩子只在开窗口 / 按显示时钟判的子项上自己拿（graphics/gate.sh gpu_excl），visual 钩子全是离屏对拍、不拿；外层上限仍留排队余量
+      # visual 钩子全是离屏真显卡回放对拍：整钩子取共享显卡锁（11-20 读写锁）；graphics 钩子在自己的子项上分别取共享 / 独占
+      [ "$hk" = tests/visual/gate.sh ] && add "钩子 $hk" "${S2A_PRIVATE_TOOLS:+bash $S2A_PRIVATE_TOOLS/mac_slot_frozen.sh share '钩子 $hk' -- }bash $hk" $pl || add "钩子 $hk" "bash $hk" $pl;; *) add "钩子 $hk" "bash $hk" $bl;; esac; done   # 11-14：不再整钩子套显卡锁——graphics 钩子只在开窗口 / 按显示时钟判的子项上自己拿（graphics/gate.sh gpu_excl），visual 钩子全是离屏对拍、不拿；外层上限仍留排队余量
 fi   # 非 doc 档的语法 / 单测 / 平台钩子
 # 预算查询（列车起门禁前问）：GATE_BUDGET_Q=1 bash tools/gate.sh → 打本次要跑的钩子里自报的最大预算（秒）后退出、什么都不跑
 #   只算钩子自报的预算（没人自报 = 0，列车照缺省上限）；iOS 编译那一步的 3600 秒含排队、不算
@@ -424,7 +440,7 @@ GP=$$; ( while sleep "${GATE_BEAT_S:-300}" > /dev/null 2>&1 < /dev/null; kill -0
 echo $HB > "$L/hb.pid"; [ -f tools/gate_reap.py ] && python3 tools/gate_reap.py $$ "$L" 2> /dev/null   # 收尸进程：本主进程被 KILL 时停掉在跑的步与心跳（见 tools/gate_reap.py）
 # 本机那份：整步本机的 + 拆出来的子项；gate-host 那份一次 维护方工具 跑完（带 @gate 共享数据，结果目录拉回 $L/r），两边同时跑
 for i in $(seq 1 $N); do s=${STEPS[$((i - 1))]}; [ "${WH[$i]}" = 本机 ] && { r1=${s#*	}; c=${r1%	*}
-  case ${s%%	*} in 钩子\ *) [ -n "$HSKIP" ] && c="export GATE_SKIP='$HSKIP'; $c"; [ -n "$HONLY" ] && c="export GATE_ONLY='$HONLY'; $c";; esac
+  case ${s%%	*} in 钩子\ *) [ -n "$HSKIP" ] && c="export GATE_SKIP='$HSKIP'; $c"; [ -n "$HONLY" ] && c="export GATE_ONLY='$HONLY' GATE_HOOK_ONLY='$HONLY'; $c";; esac
   if [ -n "$HONLY$HSKIP" ]; then job "$i" "$c" "${s##*	}"; else job "$i" "$(tcw "$i" "$c")" "${s##*	}"; fi; }; done   # 只跑一部分：不进按步结果缓存（缓存键不含子项键，部分绿会被当整步绿）
 { j=0; for i in ${LPI[@]+"${LPI[@]}"}; do s=${STEPS[$((i - 1))]}; r1=${s#*	}; job "$i.k$j" "export GATE_ONLY='${LPK[$j]}'; ${r1%	*}" "${s##*	}"; j=$((j + 1)); done; }
 [ ${#LJ[@]} -gt 0 ] && detwait
@@ -501,7 +517,8 @@ show() {   # show <行首> <结果文件（$L 下，不带后缀）> <显示名>
   #   同 75 走「环境未就绪」（没有真红时整份退 75）。列车遇 75 先核干净 main，main 能过而本支超时才算本支的（真卡死照样拦下）。步自己内部 timeout 退 124 仍是红
   # 无进展看门狗判的挂死（步跑在 tools/nostall.py 下，见 job）：与负载无关，记红；墙钟保底 = 本步上限 × GATE_HARD_X，撞保底才是超时未判
   local ns= hard=$4; [ -f "$f.ns" ] && read -r ns hard < "$f.ns"
-  if [ "$rc" = 124 ] && [ -n "$ns" ] && grep -q '【红】无进展看门狗' "$f.log" 2> /dev/null; then echo "${1}🔴 $3 $sec 秒（挂死：连续 ${ns} 秒无进展——日志不长、CPU / 磁盘不涨、没有编译子进程，被停）：$last"; grep -a '无进展看门狗' "$f.log" | head -2 | sed 's/^/    | /'; return 1; fi
+  if [ "$rc" = 124 ] && [ -n "$ns" ] && grep -q '【红】无进展看门狗' "$f.log" 2> /dev/null; then echo "${1}🔴 $3 $sec 秒（挂死：连续 ${ns} 秒无进展——日志不长、CPU / 磁盘不涨、没有编译子进程，被停）：$last"; { grep -a '无进展看门狗' "$f.log" | head -2; grep -a -A8 -E '^✗ 组 [^：]+：被停时还在跑|^被停时没有在跑的组' "$f.log" | head -60; } | sed 's/^/    | /'; return 1; fi
+  #   ↑ 步自己被停时点名的「哪几组还在跑、各跑多久、输出尾巴」（runtime/gate.sh hung_report，11-19）一并摘进来：原先只摘看门狗那两行，点名写了也看不到
   set -- "$1" "$2" "$3" "$hard"
   if [ "$rc" = 124 ] && [ "$sec" -ge $(($4 - 2)) ]; then echo "${1}🟡 $3 $sec 秒（超时未判：跑满 ${4} 秒上限被杀，负载 $(sysctl -n vm.loadavg 2> /dev/null | awk '{print $2}')；不算本支红）：$last"; echo "$3" >> "$L/timeouts"; return 3; fi
   echo "${1}🔴 $3 $sec 秒（rc=$rc$([ "$rc" = 124 ] && { [ "$sec" -ge $(($4 - 2)) ] && echo "，超 ${4} 秒" || echo "，没到 ${4} 秒上限：是这一步自己退出 124（它内部的 timeout 到点）"; })）：$last"; { grep -E '^(不通|✗)' "$f.log" | head -10; grep -a -E '^(FAIL: |ERROR: )|AssertionError|^  File "[^"]+", line [0-9]+|【红】' "$f.log" | head -5; grep -a '^  ┊' "$f.log" | head -400; grep -v '^[[:space:]]*$' "$f.log" | grep -av '^  ┊' | tail -12; } | sed 's/^/    | /'   # 先列「不通 / ✗」行，再列 python 单测的 FAIL / ERROR / 断言 / 出错文件行号与【红】行（各至多 5 行）：单测全文长时末尾看不到是哪条（✗ 是 python 单测与 widen 系列的写法，10-31 widen_auto_pkg 红行被截掉）

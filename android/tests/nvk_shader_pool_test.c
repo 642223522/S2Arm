@@ -23,7 +23,11 @@
 #include "direct/jv.h"
 #include "direct/program_cache.h"
 #include "nvn/nvn_vk_prog_warm.h"
+#include "dmsh_chain.h"   // DMSH_CHAIN：出包预编库目录 b-<链>-vk 与容器头的链号
+#include <sys/stat.h>
 #include "tbuf_spirv_fixtures.h"
+#include "gfx_plat/spirv_sampler_use.h"
+#include "sampler_use_fixtures.h"
 
 // 实现在 nvk_shader.c，声明在 nvk_session.h。这里不包 nvk_session.h：nvk_compile_stop_test.py 拿本文件当夹具，
 // 会在同一个翻译单元里把 nvk_session_request_stop 等会话函数定义成 static，包了头就是「static 声明跟在非 static 声明后面」，编不过。
@@ -33,9 +37,17 @@ void nvk_shader_last_test_put(uint64_t key, const struct rp_prog *prog);
 const struct rp_prog *nvk_shader_last_test_find(uint64_t key);
 
 static int checks, failures, compiler_calls, diag_enabled, diag_lines, diag_queries;
+static int trace_on, trace_begin_count, trace_end_count;
+static uint32_t trace_stage; static int trace_submit, trace_warm, trace_success; static uint8_t trace_id[32];
+int s2a_direct_diag_enabled(void) { return trace_on; }
+uint64_t s2a_direct_diag_compile_begin(const uint8_t identity[32], unsigned stages, int submit, int warm) {
+    trace_begin_count++; memcpy(trace_id, identity, 32); trace_stage=stages; trace_submit=submit; trace_warm=warm; return 1;
+}
+void s2a_direct_diag_compile_end(uint64_t token, int success) { if (token) trace_end_count++; trace_success=success; }
 static unsigned fake_array_count;
 static int separate_fixture;
 static int fake_gs_success, fake_gs_result_mode, gs_loads[6], fake_geometry_enabled = 1, fake_depth_clip;
+static size_t gs_blob_bytes[6];   // 每个阶段最后一次装载的 SPIR-V 字节数（出包预编库命中时认出是哪一份）
 static int fake_gs_fact_deps;
 static int fixture_alias_flag = -1;   // 结果合并开关（debug.s2a.nvk_alias）：-1 = 取生产缺省，0 = 关
 static int fake_gs_result_tag;        // 非 0：结果里多带一个无关字段，同一份输入的结果字节（摘要）就不同
@@ -45,7 +57,9 @@ int g_s2a_logfd = 2;
 static const char *fake_compile_error;
 static const char *fake_compile_file;
 static char captured[262144], last_red[512], last_diag[512], last_stats[512], last_reason[512], last_request_reason[512];
+static int ubo_default_lines; static char last_ubo_default_line[512];   // 常量缓冲句柄指向没登记的贴图：每局首次的那一行（片 4）
 static char reason_history[8192];
+static char reject_lines[65536], last_trunc[512];   // #999：编译被拒的上下文日志（程序键 / 图像槽原因）；last_trunc：超预算时「已截断，共 N 条」那一行
 static const char profile[] = "{\"schema\":\"s2a-direct-profile-v1\",\"profileHash\":\"sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"capabilities\":{\"storageBufferOffsetAlignment\":16}}";
 static char external_profile[65536], external_closure[128];
 static char external_profile_hash[80];
@@ -64,7 +78,10 @@ int nvn_plat_flag(const char *name, int dflt) {
     if (fixture_alias_flag >= 0 && !strcmp(name, "nvk_alias")) return fixture_alias_flag;
     return dflt;
 }
+static int lp_missing_lines, lp_open_lines;   // 出包预编库「不在」（黄）/「已打开」两种行各打了几次
 void nvn_plat_log(int level, const char *cls, const char *text) {
+    if (!strcmp(cls, "shader") && strstr(text, "出包预编库不在：")) lp_missing_lines += level == NVN_PLAT_LOG_WARN ? 1 : 1000;   // 不是黄就记成大数（必红）
+    if (level == NVN_PLAT_LOG_INFO && !strcmp(cls, "shader") && strstr(text, "出包预编库已打开：")) lp_open_lines++;
     if (level == NVN_PLAT_LOG_RED && !strcmp(cls, "shader")) snprintf(last_red, sizeof last_red, "%s", text);
     if (level == NVN_PLAT_LOG_INFO && !strcmp(cls, "shader") && strstr(text, "texture_pool_capacity=")) {
         diag_lines++; snprintf(last_diag, sizeof last_diag, "%s", text);
@@ -78,6 +95,15 @@ void nvn_plat_log(int level, const char *cls, const char *text) {
     }
     if (level == NVN_PLAT_LOG_INFO && !strcmp(cls, "shader") && strstr(text, "texture_pool_request_reject"))
         snprintf(last_request_reason, sizeof last_request_reason, "%s", text);
+    if (level == NVN_PLAT_LOG_INFO && !strcmp(cls, "shader") && strstr(text, "常量缓冲句柄指向没登记的贴图")) {
+        ubo_default_lines++; snprintf(last_ubo_default_line, sizeof last_ubo_default_line, "%s", text);
+    }
+    if (level == NVN_PLAT_LOG_INFO && !strcmp(cls, "shader") && (strstr(text, "texture_pool_reject_program") || strstr(text, "image_fact_reject"))) {
+        size_t n = strlen(reject_lines);
+        snprintf(reject_lines + n, sizeof reject_lines - n, "%s\n", text);
+    }
+    if (level == NVN_PLAT_LOG_INFO && !strcmp(cls, "shader") && strstr(text, "texture_pool_reject_lines_truncated"))
+        snprintf(last_trunc, sizeof last_trunc, "%s", text);
 }
 int rp_depth_zero(void) { return fixture_depth_zero; }
 int rp_origin_lower_left(void) { return fixture_origin_lower_left; }
@@ -96,6 +122,8 @@ int rp_tex_snap_by_id(int id, tex_t *t, view_t *v, int *h) {
     if (!separate_fixture || (id != 77 && id != 78 && id != 79 && !(separate_fixture == 2 && id == 0))) return 0;
     memset(t, 0, sizeof *t); memset(v, 0, sizeof *v); t->d.format = NVN_FORMAT_RGBA8; t->d.target = NVN_TEXTURE_TARGET_2D; t->d.depth = 1;
     if (separate_fixture == 3) t->d.target = NVN_TEXTURE_TARGET_BUFFER;
+    if (separate_fixture == 4) t->d.format = NVN_FORMAT_RGBA8_UI2F;   // 登记了，但 UI2F 不出编译事实
+    if (separate_fixture == 5 && id != 77) { t->d.target = NVN_TEXTURE_TARGET_2D_ARRAY; t->d.depth = id == 78 ? 2 : 8; }   // 78 / 79：二维数组贴图，层数 2 / 8（事实里的 array_length）
     *h = id == 77 && separate_fixture != 3; if (*h) { v->set_target = 1; v->target = NVN_TEXTURE_TARGET_RECTANGLE; } return 1;
 }
 // 用户常量缓冲夹具：rp_pool_find 只认这块宿主内存（真实实现在 rp_entry.c，查登记过的池）
@@ -155,6 +183,26 @@ static int32_t fake_compile(uint64_t session, uint64_t gen, s2a_direct_bytes req
         s2a_direct_bytes payload = {bytes, (uint64_t)n};
         int32_t rc = emit(sink, payload); free(bytes); return rc;
     }
+    if (fake_cs_success > 1) {
+        const char *code = fake_cs_success == 2 ? S2A_SAMPLER_QUERY_SPV : S2A_SAMPLER_SAMPLE_SPV;
+        // 4：整池数组（v2 结果：贴图池 8448 项 + 采样器池 1280 项，#1594 片 8）；5：同样 8448 项但不带 pool 的普通数组（计算侧仍不接，ARRAY_UNSUPPORTED）；
+        // 6：带 pool 但池长只有 1（形状不对，整份拒，走 compute_program_parse_failed 而不是 ARRAY_UNSUPPORTED）
+        const char *bindings = fake_cs_success == 4 ?
+            "[{\"stage\":\"cs\",\"kind\":\"texture\",\"source\":\"texture\",\"set\":2,\"binding\":0,\"count\":8448,\"pool\":\"texture\"},"
+            "{\"stage\":\"cs\",\"kind\":\"texture\",\"source\":\"texture\",\"set\":2,\"binding\":1,\"count\":1280,\"pool\":\"sampler\"}]" :
+            fake_cs_success == 5 ?
+            "[{\"stage\":\"cs\",\"kind\":\"texture\",\"source\":\"texture\",\"set\":2,\"binding\":0,\"slot\":8,\"count\":8448}]" :
+            fake_cs_success == 6 ?
+            "[{\"stage\":\"cs\",\"kind\":\"texture\",\"source\":\"texture\",\"set\":2,\"binding\":0,\"count\":1,\"pool\":\"texture\"}]" :
+            "[{\"stage\":\"cs\",\"kind\":\"storage\",\"set\":1,\"binding\":0,\"count\":1,\"rw\":true,\"cbSlot\":0,\"cbOffset\":784,\"nvnSlot\":0},"
+            "{\"stage\":\"cs\",\"kind\":\"texture\",\"source\":\"texture\",\"set\":2,\"binding\":0,\"slot\":72,\"count\":1}]";
+        const int ver = fake_cs_success >= 4 ? 2 : 1;   // 4..6 是 v2 结果（pool 字段只在 v2 里有合同）
+        char result[8192];
+        int n = snprintf(result, sizeof result, "{\"schema\":\"s2a-direct-program-v%d\",\"content\":{\"contract\":\"s2a-direct-program-content-v%d\",\"kind\":\"compute\",\"hasUnalignedStorageBuffer\":false,\"c0Reads\":[],\"supportReads\":[],\"supportLayout\":{\"requiredSize\":16},\"stages\":[{\"stage\":\"cs\",\"spirv\":\"%s\"}],\"bindings\":%s}}", ver, ver, code, bindings);
+        CHECK(n > 0 && (size_t)n < sizeof result, "compute result fixture fits");
+        s2a_direct_bytes payload = {(const uint8_t *)result, (uint64_t)n};
+        return emit(sink, payload);
+    }
     if (fake_gs_success) {
         char result[1536];
         const char *extra = fake_gs_result_mode == 1 ? "" :
@@ -202,7 +250,7 @@ s2a_direct_compile_fn s2a_direct_bound_compile_any(void) { return fake_compile; 
 nvn_gpu_rc nvn_gpu_shader_load(const nvn_gpu_shader_src *s, nvn_gpu_shader *o, nvn_gpu_err *e) {
     (void)e;
     if (fake_gs_success && (unsigned)s->stage < 6) {
-        shader_load_count++; gs_loads[s->stage]++; *o = (nvn_gpu_shader)(uintptr_t)(s->stage + 1); return (nvn_gpu_rc){NVN_GPU_OK};
+        shader_load_count++; gs_loads[s->stage]++; gs_blob_bytes[s->stage] = s->bytes; *o = (nvn_gpu_shader)(uintptr_t)(s->stage + 1); return (nvn_gpu_rc){NVN_GPU_OK};
     }
     if (fake_array_count) { *o = (nvn_gpu_shader)(uintptr_t)1; return (nvn_gpu_rc){NVN_GPU_OK}; }
     if (fake_cs_success && s->stage == NVN_GPU_SH_CS) { cs_loads++; *o = (nvn_gpu_shader)(uintptr_t)7; return (nvn_gpu_rc){NVN_GPU_OK}; }
@@ -254,6 +302,7 @@ static void gs_request_test(void) {
     int rc = rp_shader_resolve(&q, &p);
     CHECK(rc == -1 && p == NULL, "GS compiler boundary deliberately fails closed");
     CHECK(compiler_calls == 1, "GS production request reaches compiler, not stages_0x7_not_vs_fs");
+    if (trace_on) CHECK(trace_begin_count == 1 && trace_end_count == 1 && trace_stage == 7 && trace_submit == 1 && trace_warm == 0 && trace_success == 0, "graphics live compile emits paired event including failure and stage");
     if (!compiler_calls) return;
     struct s2a_jv root = {captured, strlen(captured)}, program, stages, textures, v;
     char schema[48] = {0};
@@ -285,14 +334,16 @@ static void gs_request_test(void) {
     CHECK(gs_loads[NVN_GPU_SH_VS] == 1 && gs_loads[NVN_GPU_SH_FS] == 1 && gs_loads[NVN_GPU_SH_GS] == 1,
           "result loads VS FS and GS with their actual stage IDs");
     int calls = compiler_calls;
+    int trace_before_hit = trace_begin_count;
     CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == calls, "identical GS request hits cache");
+    if (trace_on) CHECK(trace_begin_count == trace_before_hit, "cached graphics resolve does not create compile event");
     memcpy(gs_keys[0], changed, 8);
     CHECK(rp_state_op(OP_BIND_PROGRAM, &bind, sizeof bind + 8), "rebind changed GS source");
     CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == ++calls, "changed GS key recompiles");
     rp_S.tex[2][0] = 99;
     CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == ++calls, "changed GS texture fact recompiles");
     bind_pools(100); CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == ++calls, "GS pool size update recompiles");
-    separate_fixture = 1; bind_separate(2, 0, 1, 77);
+    separate_fixture = 1; fake_reg_changes = 0; bind_separate(2, 0, 1, 77);
     CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == ++calls && fact_matches("gs", 90, "2d", 0), "GS separate texture fact reaches compiler");
     fake_reg_changes = 0; int hashes = gs_sep_hash_calls;
     CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == calls && gs_sep_hash_calls == hashes, "unchanged GS separate facts hit cached signature");
@@ -355,14 +406,17 @@ static void bind_separate(int stage, int first, int count, uint64_t handle) {
 static int count_substr(const char *s, const char *needle) {
     int n = 0; size_t len = strlen(needle); while ((s = strstr(s, needle))) { n++; s += len; } return n;
 }
-static int fact_matches(const char *stage, int handle, const char *sampler, int normalized) {
+static int fact_matches_at(const char *stage, int handle, int cb, const char *sampler, int normalized) {
     char key[96], norm[32], type[96];
-    snprintf(key, sizeof key, "\"stage\":\"%s\",\"handle\":%d,\"cbufSlot\":2", stage, handle);
+    snprintf(key, sizeof key, "\"stage\":\"%s\",\"handle\":%d,\"cbufSlot\":%d", stage, handle, cb);
     snprintf(norm, sizeof norm, "\"normalized\":%s", normalized ? "true" : "false");
     snprintf(type, sizeof type, "\"samplerType\":\"%s\"", sampler);
     const char *p = strstr(captured, key), *end = p ? strchr(p, '}') : NULL;
     const char *n = p ? strstr(p, norm) : NULL, *t = p ? strstr(p, type) : NULL;
     return end && n && n < end && t && t < end;
+}
+static int fact_matches(const char *stage, int handle, const char *sampler, int normalized) {
+    return fact_matches_at(stage, handle, 2, sampler, normalized);
 }
 static void run_case(int compute, int pool, int want_called, const char *expected_account) {
     const struct rp_prog *prog = NULL; struct rp_shader_req q = {0}; q.prim = 4;
@@ -469,6 +523,28 @@ static void compute_fast_path_test(void) {
     bind_separate(5, 100, 1, 0); memset(rp_S.img[5], 0, sizeof rp_S.img[5]); memset(rp_S.ubo[5], 0, sizeof rp_S.ubo[5]); memset(rp_S.ssbo[5], 0, sizeof rp_S.ssbo[5]); memset(rp_S.tex[5], 0, sizeof rp_S.tex[5]);
     rp_shader_reset();
 }
+// 计算阶段组合槽里没登记的号 → 默认事实（#1594 片 4 把三处各写一遍的默认事实收成 texture_facts.c 的一个函数，这里钉住计算这一处）：
+//   池容量 100，号 50 池内没登记 = {1d, 不归一化}，号 0xFFFFF 池外 = {2d, 归一化}；已登记的 78（2D RGBA8）照旧取登记。
+//   槽 3 的事实句柄 = 8 + 2 × 3 = 14（cbufSlot −1，同图形组合槽）。
+static void compute_default_fact_test(void) {
+    const struct rp_prog *a = NULL; uint8_t dig2[32];
+    rp_shader_reset(); s2a_source_clear(); rp_state_reset(); nvn_unimpl_reset(); source(); cs_variant_source(1, dig2);
+    fake_cs_success = 1; separate_fixture = 1; fake_reg_changes = 1; compiler_calls = cs_loads = 0; captured[0] = last_red[0] = 0;
+    bind_pools(100);
+    rp_S.ubo[5][0].addr = 0x1000; rp_S.ubo[5][0].size = 64; rp_S.ssbo[5][0].addr = 0x10000; rp_S.ssbo[5][0].size = 256;
+    rp_S.tex[5][3] = 50;
+    CHECK(rp_shader_resolve_compute(&a) == 0 && a && compiler_calls == 1 && fact_matches_at("cs", 14, -1, "1d", 0),
+          "CS slot naming an in-pool unregistered id carries the default {1d, unnormalized} (calls=%d)", compiler_calls);
+    rp_S.tex[5][3] = 0xFFFFF;
+    CHECK(rp_shader_resolve_compute(&a) == 0 && a && compiler_calls == 2 && fact_matches_at("cs", 14, -1, "2d", 1),
+          "CS slot naming an out-of-pool id carries the default {2d, normalized} (calls=%d)", compiler_calls);
+    rp_S.tex[5][3] = 78;
+    CHECK(rp_shader_resolve_compute(&a) == 0 && a && compiler_calls == 3 && fact_matches_at("cs", 14, -1, "2d", 1) && !fact_matches_at("cs", 14, -1, "1d", 0),
+          "CS slot naming a registered 2D texture takes the registered fact, not the default (calls=%d)", compiler_calls);
+    fake_cs_success = 0; separate_fixture = 0; fake_reg_changes = 1;
+    memset(rp_S.ubo[5], 0, sizeof rp_S.ubo[5]); memset(rp_S.ssbo[5], 0, sizeof rp_S.ssbo[5]); memset(rp_S.tex[5], 0, sizeof rp_S.tex[5]);
+    rp_shader_reset();
+}
 // 图形与计算共用的快表（#1146）：一帧里依次访问落在同一个旧桶（桶号低 9 位相同）的 5 个键。
 // 旧表 512 桶 × 4 路装不下 5 个键，轮转替换遇上周期访问就是每次都落空；4096 桶把它们散开（第 9..11 位不同），
 // 8 轮里只有第一轮冷启动的 5 次落空。同时钉死表的生命周期：会话外没有分配、第一次存项时才分配、会话收尾释放，
@@ -517,9 +593,10 @@ static int emit_real_request(const char *profile_path, const char *closure, cons
     for (unsigned st = 0; st < 3; st++) { gs_stages[st] = (uint8_t)st; memcpy(gs_keys[st], keys[st], 8); }
     gs_keys_ok = 7; p_bind_program_id bind = {&gs_program, gs_program.serial, 0x1f, 0};
     if (!rp_state_op(OP_BIND_PROGRAM, &bind, sizeof bind + 8)) return 1;
-    bind_pools(tbuf == 1 || tbuf == 2 || tbuf == 7 ? 100 : 7);
+    bind_pools(tbuf == 1 || tbuf == 2 || tbuf == 7 || tbuf >= 8 ? 100 : 7);
+    if (tbuf >= 8) { separate_fixture = 1; rp_S.img[1][0] = 78; }
     if (tbuf == 1 || tbuf == 2 || tbuf == 7) { separate_fixture = 3; bind_separate(1, 0, 1, 77); }
-    if (tbuf == 2 || tbuf == 3 || tbuf == 7) { fake_compile_file = output; fake_gs_success = 1; nvn_unimpl_reset(); memset(gs_loads, 0, sizeof gs_loads); }
+    if (tbuf == 2 || tbuf == 3 || tbuf == 7 || tbuf == 9) { fake_compile_file = output; fake_gs_success = 1; nvn_unimpl_reset(); memset(gs_loads, 0, sizeof gs_loads); }
     else capture_output = output;
     if (tbuf == 4) rp_S.tex[0][0] = 99;
     if (tbuf == 6) rp_S.ubo[5][15].size = 16;
@@ -544,6 +621,15 @@ static int emit_real_request(const char *profile_path, const char *closure, cons
               "real compiler active-stage UBO mask remains strict without dependency queries");
         fprintf(stderr, "real compiler dependency reuse: checks=%d failures=%d\n", checks, failures);
         return failures != 0;
+    }
+    if (tbuf == 9) {
+        int found = 0;
+        if (prog) for (uint32_t i = 0; i < prog->nent[1]; i++)
+            if (prog->ent[1][i].src_kind == NVN_RB_TEX && prog->ent[1][i].src_reg == 32 &&
+                prog->ent[1][i].src_reg2 == UINT16_MAX) found++;
+        int accepted = !rc && prog && compiler_calls == 1 && gs_loads[1] == 1 && found == 1;
+        fprintf(stderr, "%s: real c2 word 72 result loads FS with combined slot 32\n", accepted ? "PASS" : "FAIL");
+        return !accepted;
     }
     if (tbuf == 2) {
         int found = 0;
@@ -672,6 +758,77 @@ static void graphics_fact_reuse_test(void) {
     fixture_depth_zero=fixture_origin_lower_left=0;
     fake_gs_success = fake_gs_fact_deps = 0; separate_fixture = 0; fake_reg_changes = 1;
     rp_shader_reset(); rp_state_reset();
+}
+
+// 组合槽里的二维数组贴图：事实的 array_length 是贴图层数（texture_facts.c LAYERS_COUNT），不是「槽是数组」。
+// 编译器没查过的槽换一张层数不同的数组贴图，复用同一份程序、不再编；查过的槽整条事实（含层数）仍在键里，变了照常重编。
+static void graphics_fact_array_length_test(void) {
+    rp_shader_reset(); s2a_source_clear(); rp_state_reset(); nvn_unimpl_reset();
+    uint8_t keys[3][8]; for (unsigned st = 0; st < 3; st++) gs_source(st, 0, keys[st]);
+    memset(&gs_program, 0, sizeof gs_program); gs_program.magic = MAGIC('P','R','O','G');
+    gs_program.serial = 900; gs_program.nstage = 3;
+    memset(gs_stages, 0xff, sizeof gs_stages); memset(gs_keys, 0, sizeof gs_keys);
+    for (unsigned st = 0; st < 3; st++) { gs_stages[st] = (uint8_t)st; memcpy(gs_keys[st], keys[st], 8); }
+    gs_keys_ok = 7; p_bind_program_id bind = {&gs_program, gs_program.serial, 0x1f, 0};
+    CHECK(rp_state_op(OP_BIND_PROGRAM, &bind, sizeof bind + 8), "array length program binds");
+    bind_pools(100); fake_gs_success = fake_gs_fact_deps = 1; separate_fixture = 5; fake_reg_changes = 0;
+    struct rp_shader_req q = {0}; q.prim = 4; const struct rp_prog *p = NULL;
+    rp_S.tex[0][2] = 78;   // 没查过的槽里常驻一张 2 层的数组贴图
+    compiler_calls = 0; CHECK(!rp_shader_resolve(&q, &p) && p && compiler_calls == 1, "array length initial real producer resolves");
+    const struct rp_prog *first = p;
+    rp_S.tex[0][2] = 79;   // 同一槽换成 8 层：身份只差没查过的槽的 array_length
+    CHECK(!rp_shader_resolve(&q, &p) && p == first && compiler_calls == 1, "unqueried 2d-array layer count reuses compiled program");
+    rp_S.tex[1][5] = 78;
+    CHECK(!rp_shader_resolve(&q, &p) && p == first && compiler_calls == 1, "other stage unqueried 2d-array texture reuses program");
+    // 负对照：查过的槽（依赖里的 texture-fact:vs:8:-1）
+    rp_S.tex[0][0] = 78;
+    CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == 2, "queried slot becoming a 2d-array recompiles");
+    rp_S.tex[0][0] = 79;
+    CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == 3, "queried 2d-array layer count stays in the key and recompiles");
+    fake_gs_success = fake_gs_fact_deps = 0; separate_fixture = 0; fake_reg_changes = 1;
+    rp_shader_reset(); rp_state_reset();
+}
+static void graphics_high_slot_test(void) {
+    rp_shader_reset(); s2a_source_clear(); rp_state_reset(); nvn_unimpl_reset();
+    memset(&gs_program, 0, sizeof gs_program); gs_program.magic = MAGIC('P','R','O','G');
+    gs_program.serial = 901; gs_program.nstage = 3;
+    memset(gs_stages, 0xff, sizeof gs_stages); memset(gs_keys, 0, sizeof gs_keys);
+    for (unsigned st = 0; st < 3; st++) { gs_stages[st] = (uint8_t)st; gs_source(st, 0, gs_keys[st]); }
+    gs_keys_ok = 7; p_bind_program_id bind = {&gs_program, gs_program.serial, 0x1f, 0};
+    CHECK(rp_state_op(OP_BIND_PROGRAM, &bind, sizeof bind + 8), "high-slot program binds");
+    bind_pools(100); separate_fixture = 1; fake_gs_success = 1; fake_reg_changes = 0;
+    struct rp_shader_req q = {0}; q.prim = 4; const struct rp_prog *p = NULL;
+    const char *stages[] = {"vs", "fs", "gs"};
+    for (unsigned st = 0; st < 3; st++) for (unsigned slot = 0; slot < 8; slot++) {
+        rp_shader_reset(); memset(rp_S.tex, 0, sizeof rp_S.tex); memset(rp_S.img, 0, sizeof rp_S.img);
+        rp_S.tex[st][32 + slot] = 78; compiler_calls = 0;
+        CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == 1, "high-slot initial request st=%u slot=%u", st, slot);
+        CHECK(fact_matches_at(stages[st], 72 + 2 * slot, -1, "2d", 1), "high-slot texture fact st=%u slot=%u", st, slot);
+        CHECK(!fact_matches_at(stages[(st + 1) % 3], 72 + 2 * slot, -1, "2d", 1), "high-slot fact keeps its stage");
+        CHECK(!fact_matches_at(stages[st], 88, -1, "2d", 1), "high-slot word 88 stays outside the image table");
+        // iOS tex_slot_h: a nonzero image takes precedence over the combined texture.
+        rp_S.img[st][slot] = 77;
+        CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == 2 && fact_matches_at(stages[st], 72 + 2 * slot, -1, "2d", 0),
+              "high-slot image precedence invalidates identity st=%u slot=%u", st, slot);
+        rp_S.tex[st][32 + slot] = 99;
+        CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == 2, "shadowed high-slot texture keeps identity");
+        rp_S.img[st][slot] = 99;
+        CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == 3 && !fact_matches_at(stages[st], 72 + 2 * slot, -1, "2d", 1) &&
+              !fact_matches_at(stages[st], 72 + 2 * slot, -1, "2d", 0), "unregistered high-slot source does not invent a fact");
+    }
+    rp_shader_reset(); memset(rp_S.tex, 0, sizeof rp_S.tex); memset(rp_S.img, 0, sizeof rp_S.img);
+    for (int st = 0; st < 3; st++) {
+        for (int slot = 0; slot < 8; slot++) rp_S.img[st][slot] = 78;
+        bind_separate(st, 0, 128, 78);
+    }
+    compiler_calls = 0;
+    CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == 1, "full high-slot request reaches compiler");
+    for (int st = 0; st < 3; st++) {
+        char needle[64]; snprintf(needle, sizeof needle, "\"stage\":\"%s\",\"handle\":", stages[st]);
+        CHECK(count_substr(captured, needle) == 168 && fact_matches_at(stages[st], 86, -1, "2d", 1) && fact_matches_at(stages[st], 344, 2, "2d", 1),
+              "all 504 graphics facts survive request st=%d", st);
+    }
+    rp_shader_reset(); rp_state_reset(); fake_gs_success = 0; separate_fixture = 0; fake_reg_changes = 1;
 }
 
 // ---------- 结果合并（#1355）：前台路径 ----------
@@ -833,6 +990,135 @@ done:
     rp_shader_reset(); rp_state_reset();
 }
 
+// ---------- 编译被拒时的上下文日志（#999，只加日志）----------
+// 程序键 = 发给编译器的 requestId（各阶段键的十六进制连起来）；image 句柄被拒时，按宿主当时记下的「为什么没出事实」分类计数并打一行。
+static int request_id_in_captured(char *out, size_t n) {
+    const char *p = strstr(captured, "\"requestId\":\"");
+    if (!p) return 0;
+    p += strlen("\"requestId\":\"");
+    const char *e = strchr(p, '"');
+    if (!e || (size_t)(e - p) >= n) return 0;
+    memcpy(out, p, (size_t)(e - p)); out[e - p] = 0;
+    return 1;
+}
+// 与真机日志同形的拒收消息：「<阶段>: texture handle from cbuf slot <槽> is not implemented (handle=<字>, …) [kind=image word=<字> key=…]」
+static const char *img_reject_error_cbuf(const char *stage, unsigned cbuf, unsigned word) {
+    static char b[640];
+    snprintf(b, sizeof b, "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"UNSUPPORTED_PROGRAM\",\"message\":\"%s: texture handle from cbuf slot %u is not implemented"
+             " (handle=%u, arrayLength=1, count=1, request=%064d) [kind=image word=%u key=0123456789abcdef0123456789abcdef]\"}", stage, cbuf, word, 0, word);
+    return b;
+}
+static const char *img_reject_error(const char *stage, unsigned word) { return img_reject_error_cbuf(stage, 2, word); }   // c2：驱动句柄表
+static const char *const img_counters[] = {"image_fact_unbound", "image_fact_no_texture", "image_fact_no_fact", "image_fact_given", "image_fact_word_unexpected",
+                                           "image_fact_cbuf_other"};
+static void reject_log_reset(void) { reject_lines[0] = 0; nvn_unimpl_reset(); compiler_calls = 0; }
+static void graphics_reject_context_test(void) {
+    rp_shader_reset(); s2a_source_clear(); rp_state_reset(); nvn_unimpl_reset();
+    uint8_t keys[2][8]; for (unsigned st = 0; st < 2; st++) gs_source(st, 0, keys[st]);
+    memset(&gs_program, 0, sizeof gs_program); gs_program.magic = MAGIC('P','R','O','G');
+    gs_program.serial = 960; gs_program.nstage = 2;
+    memset(gs_stages, 0xff, sizeof gs_stages); memset(gs_keys, 0, sizeof gs_keys);
+    for (unsigned st = 0; st < 2; st++) { gs_stages[st] = (uint8_t)st; memcpy(gs_keys[st], keys[st], 8); }
+    gs_keys_ok = 3; p_bind_program_id bind = {&gs_program, gs_program.serial, 0x1f, 0};
+    CHECK(rp_state_op(OP_BIND_PROGRAM, &bind, sizeof bind + 8), "reject-context program binds");
+    bind_pools(100); fake_reg_changes = 0;
+    struct rp_shader_req q = {0}; q.prim = 4; const struct rp_prog *p = NULL;
+    // 期望的程序键：两个阶段键的十六进制连起来（与 requestId 同一个字符串）
+    char want_key[40] = ""; { int o = 0; for (unsigned st = 0; st < 2; st++) for (int b = 0; b < 8; b++) o += snprintf(want_key + o, sizeof want_key - (size_t)o, "%02x", keys[st][b]); }
+    struct { const char *label; int st, slot; uint64_t img, tex; int fixture; const char *stage; unsigned word; int want; const char *reason, *at, *tail; } cases[] = {
+        {"slot unbound, pool entry 0 not registered", 1, 1, 0, 0, 1, "fs", 74, 0, "reason=unbound", "stage=fs cbuf=2 slot=1 word=74", "handle=0x0 texture=0"},
+        {"image handle names an unregistered texture", 1, 1, 99, 0, 1, "fs", 74, 1, "reason=no_texture", "stage=fs cbuf=2 slot=1 word=74", "handle=0x63 texture=99"},
+        {"combined handle (no image) names an unregistered texture", 1, 1, 0, 99, 1, "fs", 74, 1, "reason=no_texture", "stage=fs cbuf=2 slot=1 word=74", "handle=0x63 texture=99"},
+        {"registered texture whose format has no fact", 1, 1, 78, 0, 4, "fs", 74, 2, "reason=no_fact", "stage=fs cbuf=2 slot=1 word=74", "handle=0x4e texture=78 format=0x63"},
+        {"registered texture, fact given, compiler still rejects", 1, 1, 78, 0, 1, "fs", 74, 3, "reason=given", "stage=fs cbuf=2 slot=1 word=74", "handle=0x4e texture=78 format="},
+        {"unbound slot but pool entry 0 registered: fact given", 1, 1, 0, 0, 2, "fs", 74, 3, "reason=given", "stage=fs cbuf=2 slot=1 word=74", "handle=0x0 texture=0 format="},
+        {"vertex stage slot 0 (word 72)", 0, 0, 99, 0, 1, "vs", 72, 1, "reason=no_texture", "stage=vs cbuf=2 slot=0 word=72", "handle=0x63 texture=99"},
+        {"highest slot 7 (word 86)", 1, 7, 99, 0, 1, "fs", 86, 1, "reason=no_texture", "stage=fs cbuf=2 slot=7 word=86", "handle=0x63 texture=99"},
+        {"word 88 is outside the image table", 1, 1, 78, 0, 1, "fs", 88, 4, "reason=word_unexpected", "stage=fs cbuf=2 slot=-1 word=88", ""},
+        {"odd word", 1, 1, 78, 0, 1, "fs", 75, 4, "reason=word_unexpected", "stage=fs cbuf=2 slot=-1 word=75", ""},
+        {"message names a stage this program does not have", 1, 1, 78, 0, 1, "gs", 74, 4, "reason=word_unexpected", "stage=gs cbuf=2 slot=1 word=74", ""},
+    };
+    fake_gs_success = 0;
+    for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        const char *L = cases[i].label;
+        rp_shader_reset(); memset(rp_S.tex, 0, sizeof rp_S.tex); memset(rp_S.img, 0, sizeof rp_S.img);
+        rp_S.img[cases[i].st][cases[i].slot] = cases[i].img; rp_S.tex[cases[i].st][32 + cases[i].slot] = cases[i].tex;
+        separate_fixture = cases[i].fixture; fake_compile_error = img_reject_error(cases[i].stage, cases[i].word); reject_log_reset();
+        CHECK(rp_shader_resolve(&q, &p) != 0 && compiler_calls == 1, "%s: the compiler rejection reaches the host once (calls=%d)", L, compiler_calls);
+        for (unsigned k = 0; k < sizeof img_counters / sizeof img_counters[0]; k++)
+            CHECK(nvn_unimpl_count("shader", img_counters[k]) == (k == (unsigned)cases[i].want ? 1u : 0u), "%s: counter %s = %llu", L, img_counters[k],
+                  (unsigned long long)nvn_unimpl_count("shader", img_counters[k]));
+        char rid[64] = "", keyeq[96];
+        CHECK(request_id_in_captured(rid, sizeof rid) && !strcmp(rid, want_key), "%s: requestId is the stage keys in hex (%s vs %s)", L, rid, want_key);
+        snprintf(keyeq, sizeof keyeq, "key=%s", want_key);
+        CHECK(count_substr(reject_lines, "texture_pool_reject_program reason=cbuf_handle_unsupported stages=2") == 1 && count_substr(reject_lines, "image_fact_reject") == 1 &&
+              count_substr(reject_lines, keyeq) == 2, "%s: one program line and one image line, both with the program key: %s", L, reject_lines);
+        CHECK(strstr(reject_lines, cases[i].reason) && strstr(reject_lines, cases[i].at) && strstr(reject_lines, cases[i].tail), "%s: image line says why: %s", L, reject_lines);
+    }
+    // 常量缓冲槽号不是 2：消息里的 word 是那一槽自己的字偏移，不是 c2 图像句柄表（字 72 + 2×槽）的坐标，不能拿它去查「高槽为什么没出事实」。
+    // 这里把 c2 槽 1 摆成「登记了、事实给了、编译器仍拒」（把 word 74 当成 c2 槽 1 去查就会归成 given）：槽号不是 2 必须归 cbuf_other，
+    // 行里带槽号（slot=-1），不带 handle / texture / format（没有可看的 c2 记录）。
+    {
+        struct { const char *label; unsigned cbuf, word; } other[] = {
+            {"user cbuf slot 3, word 74", 3, 74}, {"cbuf slot 0, word 72", 0, 72}, {"cbuf slot 9, word 86", 9, 86}, {"packed slot number (high 16 bits set)", 65538, 74},
+        };
+        for (unsigned i = 0; i < sizeof other / sizeof other[0]; i++) {
+            const char *L = other[i].label;
+            rp_shader_reset(); memset(rp_S.tex, 0, sizeof rp_S.tex); memset(rp_S.img, 0, sizeof rp_S.img);
+            rp_S.img[1][1] = 78; separate_fixture = 1;
+            fake_compile_error = img_reject_error_cbuf("fs", other[i].cbuf, other[i].word); reject_log_reset();
+            CHECK(rp_shader_resolve(&q, &p) != 0 && compiler_calls == 1, "%s: the compiler rejection reaches the host once (calls=%d)", L, compiler_calls);
+            for (unsigned k = 0; k < sizeof img_counters / sizeof img_counters[0]; k++)
+                CHECK(nvn_unimpl_count("shader", img_counters[k]) == (k == 5 ? 1u : 0u), "%s: counter %s = %llu", L, img_counters[k],
+                      (unsigned long long)nvn_unimpl_count("shader", img_counters[k]));
+            char at[128]; snprintf(at, sizeof at, "reason=cbuf_other stage=fs cbuf=%u slot=-1 word=%u key=%s", other[i].cbuf, other[i].word, want_key);
+            CHECK(count_substr(reject_lines, "image_fact_reject") == 1 && strstr(reject_lines, at) && !strstr(reject_lines, "handle=") &&
+                  !strstr(reject_lines, "texture=") && !strstr(reject_lines, "format="),
+                  "%s: the image line names the cbuf slot and reads no c2 record: %s", L, reject_lines);
+        }
+    }
+    // 事实给了 / 格式出不了事实：行里带格式和目标；没登记 / 没绑：不带（没有可看的）
+    rp_shader_reset(); memset(rp_S.tex, 0, sizeof rp_S.tex); memset(rp_S.img, 0, sizeof rp_S.img); rp_S.img[1][1] = 99; separate_fixture = 1;
+    fake_compile_error = img_reject_error("fs", 74); reject_log_reset();
+    CHECK(rp_shader_resolve(&q, &p) != 0 && !strstr(reject_lines, "format="), "an unregistered texture has no format to print: %s", reject_lines);
+    // 反例：拒收不是 image 句柄 → 只有程序键那行，没有 image 行、没有 image 计数
+    rp_shader_reset(); fake_compile_error = "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"UNSUPPORTED_PROGRAM\",\"message\":\"fs: texture handle from cbuf slot 2 is not implemented"
+                                       " (handle=90, arrayLength=1, count=1, request=0) [kind=texture word=90 word2=257 type=3 cbuf=2/0 key=0123456789abcdef0123456789abcdef]\"}";
+    reject_log_reset();
+    CHECK(rp_shader_resolve(&q, &p) != 0 && count_substr(reject_lines, "texture_pool_reject_program reason=cbuf_handle_unsupported") == 1 && !strstr(reject_lines, "image_fact_reject"),
+          "a texture-kind rejection prints only the program line: %s", reject_lines);
+    for (unsigned k = 0; k < sizeof img_counters / sizeof img_counters[0]; k++)
+        CHECK(nvn_unimpl_count("shader", img_counters[k]) == 0, "a texture-kind rejection does not count as %s", img_counters[k]);
+    // 拒收消息里没有程序键的类别（译码器未接的指令）：照样补出程序键，对得上请求
+    rp_shader_reset(); fake_compile_error = "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"TRANSLATION_DIAGNOSTIC\",\"message\":\"Shader instruction Sam is not implemented. (stage fs)\"}";
+    reject_log_reset();
+    { char key2[96]; snprintf(key2, sizeof key2, "reason=TRANSLATION_DIAGNOSTIC stages=2 key=%s", want_key);
+      CHECK(rp_shader_resolve(&q, &p) != 0 && strstr(reject_lines, key2) && !strstr(reject_lines, "image_fact_reject"), "a rejection whose message carries no key still prints the program key: %s", reject_lines); }
+    // 没被拒：不打这两类日志、不记这五个计数
+    fake_compile_error = NULL; fake_gs_success = 1; fake_gs_result_mode = 1; rp_shader_reset(); reject_log_reset();
+    CHECK(!rp_shader_resolve(&q, &p) && p && !reject_lines[0], "an accepted program prints no rejection context: %s", reject_lines);
+    for (unsigned k = 0; k < sizeof img_counters / sizeof img_counters[0]; k++)
+        CHECK(nvn_unimpl_count("shader", img_counters[k]) == 0, "an accepted program does not count as %s", img_counters[k]);
+    // 行数预算：140 个不同程序（换池长度就换身份）连续被拒，两类日志各只打 128 行，计数不设上限；
+    // 超出预算时在拒绝原因读数里补一行「已截断，共 N 条」（诊断开关开着，进程正常收尾的回调才注册，用它触发那一组读数）；换会话预算归位
+    fake_gs_success = 0; fake_gs_result_mode = 0; separate_fixture = 1;
+    rp_shader_reset(); memset(rp_S.tex, 0, sizeof rp_S.tex); memset(rp_S.img, 0, sizeof rp_S.img); reject_log_reset();
+    fake_compile_error = img_reject_error("fs", 74); diag_enabled = 1; last_trunc[0] = 0;
+    for (int i = 0; i < 140; i++) { bind_pools(200 + i); CHECK(rp_shader_resolve(&q, &p) != 0, "budget loop %d is rejected", i); }
+    CHECK(compiler_calls == 140, "140 different programs compile 140 times (calls=%d)", compiler_calls);
+    CHECK(count_substr(reject_lines, "texture_pool_reject_program") == 128 && count_substr(reject_lines, "image_fact_reject") == 128,
+          "each kind of line stops at 128 per session (program=%d image=%d)", count_substr(reject_lines, "texture_pool_reject_program"), count_substr(reject_lines, "image_fact_reject"));
+    CHECK(nvn_unimpl_count("shader", "image_fact_unbound") == 140, "the counter keeps counting past the line budget (count=%llu)", (unsigned long long)nvn_unimpl_count("shader", "image_fact_unbound"));
+    last_trunc[0] = 0; s2a_direct_summary(1);
+    CHECK(strstr(last_trunc, "已截断，共 程序行 140 条（只打了前 128 条）、image 行 140 条（只打了前 128 条）"), "a truncated session says how many rejections there were: %s", last_trunc);
+    diag_enabled = 0;
+    rp_shader_reset(); bind_pools(100); reject_lines[0] = 0; last_trunc[0] = 0;
+    CHECK(rp_shader_resolve(&q, &p) != 0 && count_substr(reject_lines, "texture_pool_reject_program") == 1 && count_substr(reject_lines, "image_fact_reject") == 1 && !last_trunc[0],
+          "a new session gets its line budget back (and no stale truncation notice): %s | %s", reject_lines, last_trunc);
+    fake_compile_error = NULL; separate_fixture = 0; fake_reg_changes = 1;
+    rp_shader_reset(); rp_state_reset();
+}
+
 /* 句柄在游戏用户常量缓冲里的贴图（#999 第 4 片）：编译器按 (fs, 字 92, c3) 报缺事实 → 宿主读 c3 第 92 字 → 贴图号 → 补事实当场重编。 */
 static int ubo_fact_in_request(const char *sampler, int normalized) {
     const char *p = strstr(captured, "\"stage\":\"fs\",\"handle\":92,\"cbufSlot\":3,"), *end = p ? strchr(p, '}') : NULL;
@@ -855,8 +1141,9 @@ static void graphics_ubo_handle_fact_test(void) {
     memset(ubo_mem, 0, sizeof ubo_mem); ubo_mem[92] = 78;   // 池起点 0：句柄低 20 位就是贴图号
     rp_S.ubo[1][0].addr = (uint64_t)(uintptr_t)ubo_mem; rp_S.ubo[1][0].size = sizeof ubo_mem;
     struct rp_shader_req q = {0}; q.prim = 4; const struct rp_prog *p = NULL;
-    compiler_calls = 0; nvn_unimpl_reset();
+    compiler_calls = 0; nvn_unimpl_reset(); reject_lines[0] = 0;
     CHECK(!rp_shader_resolve(&q, &p) && p && compiler_calls == 2, "missing c3 handle fact is learned and compiled in the same draw: calls=%d", compiler_calls);
+    CHECK(!reject_lines[0], "a rejection that only taught a coordinate prints no program-key line (it recompiles at once): %s", reject_lines);
     CHECK(nvn_unimpl_count("shader", "compile_failed") == 0, "a rejection that taught a coordinate is a learning step, not an unimplemented compile_failed (count=%llu)", (unsigned long long)nvn_unimpl_count("shader", "compile_failed"));
     CHECK(ubo_fact_in_request("2d", 1), "retry request carries (fs,92,c3) fact from texture 78");
     const struct rp_prog *first = p;
@@ -874,11 +1161,58 @@ static void graphics_ubo_handle_fact_test(void) {
     // 换局清表：同样的输入要重新学（两次编译）
     rp_shader_reset(); rp_S.ubo[1][0].size = sizeof ubo_mem; ubo_mem[92] = 78; compiler_calls = 0;
     CHECK(!rp_shader_resolve(&q, &p) && p && compiler_calls == 2, "session reset forgets learned coordinates (calls=%d)", compiler_calls);
+    // 片 4（#1594）：句柄字指向没登记的贴图号。Ryujinx GetForBinding / GetTextureDescriptor 取到默认描述符、整笔照画，事实同组合槽
+    //   （默认事实只此一份，texture_facts.c），不再是 ubo_handle_no_texture 红行、不再整笔 program_unresolved。
+    //   池夹具：起点 0、容量 100；夹具只登记 77 / 78 / 79，其余号都是「没登记」。
+    {
+        const struct rp_prog *reg = p;   // 上一步用已登记的 78 编出的那份
+        uint64_t cnt0 = rp_shader_ubo_default_fact_count();
+        nvn_unimpl_reset(); ubo_default_lines = 0; last_ubo_default_line[0] = 0; last_red[0] = 0;
+        CHECK(cnt0 == 0, "换局后默认事实计数清零 (count=%llu)", (unsigned long long)cnt0);
+        ubo_mem[92] = 0xFFFFF;   // 20 位全 1：游戏常拿它当「这一路不用贴图」的哨兵；池容量 100 → 池外
+        int calls0 = compiler_calls;
+        CHECK(!rp_shader_resolve(&q, &p) && p && p != reg && compiler_calls == calls0 + 1, "out-of-pool handle word (0xFFFFF) compiles with the default fact, draw is not left unresolved (calls=%d)", compiler_calls - calls0);
+        CHECK(ubo_fact_in_request("2d", 1), "out-of-pool id carries the combined-slot default {2d, normalized}");
+        CHECK(strstr(captured, "\"format\":\"Unknown\"") != NULL, "default fact format is Unknown");
+        CHECK(nvn_unimpl_count("shader", "ubo_handle_no_texture") == 0 && nvn_unimpl_count("shader", "compile_failed") == 0 && last_red[0] == 0,
+              "out-of-pool handle is not a red line any more (compile_failed=%llu)", (unsigned long long)nvn_unimpl_count("shader", "compile_failed"));
+        CHECK(rp_shader_ubo_default_fact_count() >= 1, "default-fact counter counts it (count=%llu)", (unsigned long long)rp_shader_ubo_default_fact_count());
+        CHECK(ubo_default_lines == 1 && strstr(last_ubo_default_line, "贴图号 1048575") && strstr(last_ubo_default_line, "容量 100") && strstr(last_ubo_default_line, "fs c3 第 92 字"),
+              "first line per session names the id, the pool capacity and the coordinate: %s", last_ubo_default_line);
+        const struct rp_prog *beyond = p;
+        calls0 = compiler_calls;
+        CHECK(!rp_shader_resolve(&q, &p) && p == beyond && compiler_calls == calls0, "same out-of-pool id takes the fast path");
+        ubo_mem[92] = 0xFFFFE;   // 另一个池外号：同一份默认事实 → 同一份程序，不重编
+        CHECK(!rp_shader_resolve(&q, &p) && p == beyond && compiler_calls == calls0, "another out-of-pool id has identical facts: no recompile (calls=%d)", compiler_calls - calls0);
+        ubo_mem[92] = 50;        // 池内、没登记：{1d, 不归一化}，与池外事实不同 → 重编（快路摘要把两种默认事实分开）
+        CHECK(!rp_shader_resolve(&q, &p) && p && p != beyond && p != reg && compiler_calls == calls0 + 1, "in-pool unregistered id has other facts: recompiles (calls=%d)", compiler_calls - calls0);
+        CHECK(ubo_fact_in_request("1d", 0), "in-pool unregistered id carries the combined-slot default {1d, unnormalized}");
+        CHECK(ubo_default_lines == 1, "only the first default fact of the session prints a line (lines=%d)", ubo_default_lines);
+        uint64_t cnt1 = rp_shader_ubo_default_fact_count();
+        ubo_mem[92] = 78;        // 反例：已登记的号不受影响，不记默认事实
+        CHECK(!rp_shader_resolve(&q, &p) && p == reg && compiler_calls == calls0 + 1 && rp_shader_ubo_default_fact_count() == cnt1,
+              "registered id is untouched and not counted (calls=%d)", compiler_calls - calls0);
+        // 反例：读不到句柄字仍是「没有事实」（物理上读不到），不当成默认事实去猜；读得到的池外号之后仍编得出，不被那份失败项挡住
+        rp_S.ubo[1][0].size = 92 * 4; ubo_mem[92] = 0xFFFFF;
+        nvn_unimpl_reset();
+        CHECK(rp_shader_resolve(&q, &p) == -1 && nvn_unimpl_count("shader", "ubo_handle_unreadable") >= 1 && rp_shader_ubo_default_fact_count() == cnt1,
+              "unreadable word is still fact-less and not counted as a default fact");
+        rp_S.ubo[1][0].size = sizeof ubo_mem;
+        CHECK(!rp_shader_resolve(&q, &p) && p == beyond, "readable again with an out-of-pool id: back to the default-fact program, not the stale fact-less failure");
+        // 换局：计数与首行重来
+        rp_shader_reset(); ubo_default_lines = 0; ubo_mem[92] = 0xFFFFF;
+        CHECK(rp_shader_ubo_default_fact_count() == 0, "session reset clears the default-fact counter");
+        CHECK(!rp_shader_resolve(&q, &p) && p && ubo_default_lines == 1 && rp_shader_ubo_default_fact_count() >= 1, "next session prints its own first line (lines=%d)", ubo_default_lines);
+        ubo_mem[92] = 78; rp_shader_reset(); rp_S.ubo[1][0].size = sizeof ubo_mem; compiler_calls = 0;
+    }
     // 反例：c2 / 组合槽坐标的缺事实不进这张表（不当成用户常量缓冲去读）
     rp_shader_reset(); fake_ubo_missing = 0; fake_gs_success = 0; compiler_calls = 0;
     fake_compile_error = "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"MISSING_FACT\",\"message\":\"QuerySamplerType has no source (stage=fs,handle=92,cbufSlot=2)\"}";
-    nvn_unimpl_reset();
+    nvn_unimpl_reset(); reject_lines[0] = 0;
     CHECK(rp_shader_resolve(&q, &p) == -1 && compiler_calls == 1, "c2 missing fact is not retried as a user UBO handle (calls=%d)", compiler_calls);
+    { char rid[64] = "";
+      CHECK(request_id_in_captured(rid, sizeof rid) && count_substr(reject_lines, "texture_pool_reject_program reason=MISSING_FACT.QuerySamplerType") == 1 && strstr(reject_lines, rid),
+            "a rejection nothing can be learned from prints its program key (requestId %s): %s", rid, reject_lines); }
     CHECK(nvn_unimpl_count("shader", "compile_failed") == 1, "a rejection nothing can be learned from is still reported as compile_failed (count=%llu)", (unsigned long long)nvn_unimpl_count("shader", "compile_failed"));
     fake_compile_error = NULL; fake_gs_result_mode = 0; separate_fixture = 0; fake_reg_changes = 1;
     memset(&rp_S.ubo[1][0], 0, sizeof rp_S.ubo[1][0]);
@@ -961,7 +1295,211 @@ static int compute_warm_off_test(void) {
     return failures ? 1 : 0;
 }
 
+static void query_sampler_test(void) {
+    CHECK(s2a_spirv_sampler_unused(sampler_query_spv, sizeof sampler_query_spv, 2, 0), "query descriptor does not use sampler");
+    CHECK(!s2a_spirv_sampler_unused(sampler_sample_spv, sizeof sampler_sample_spv, 2, 0), "actual sampling still needs sampler");
+    CHECK(s2a_spirv_sampler_unused(sampler_mixed_spv, sizeof sampler_mixed_spv, 2, 0) &&
+          !s2a_spirv_sampler_unused(sampler_mixed_spv, sizeof sampler_mixed_spv, 2, 1), "sampler use proof is per binding");
+    CHECK(!s2a_spirv_sampler_unused(sampler_query_spv, sizeof sampler_query_spv, 0, 0) &&
+          !s2a_spirv_sampler_unused(sampler_query_spv, sizeof sampler_query_spv - 1, 2, 0), "unknown descriptor and malformed word stream do not prove sampler unused");
+    for (int query = 0; query < 2; ++query) {
+        rp_state_reset(); rp_shader_reset(); source(); bind_pools(100); separate_fixture = 1;
+        fake_cs_success = query ? 2 : 3;
+        p_bind_handles b = {0}; b.stage = 5; b.n = 1; b.first = 0; b.h[0] = 77;
+        CHECK(rp_state_op(OP_BIND_IMG, &b, sizeof b), "query image handle binding");
+        const struct rp_prog *p = NULL;
+        CHECK(!rp_shader_resolve_compute(&p) && p && p->nent[0] == 2, "sampler proof fixture loads: %s", last_red);
+        if (p) CHECK(p->sampler_unused[0][1] == query, "production compute builder retains sampler use proof: query=%d", query);
+    }
+    fake_cs_success = 0;
+}
+
+// #1594 片 8：计算阶段整池数组的布局与日志键（真解析 + 生产 build_compute / layout_ent）。
+//   期望（手算）：v2 结果里贴图池 count 8448、采样器池 count 1280 → 两个布局项：NVN_RB_TEXP / 贴图 / count 8449（池长 + 表尾 dummy）、
+//   NVN_RB_SAMPP / 采样器 / count 1281，只给计算阶段，着色器装载 1 次，没有任何未接 / 解析失败记账；
+//   同样 8448 项但不带 pool 的普通数组：仍拒（装载 0 次）、记 texture_pool_array_unsupported 一次，原因带 stage / 长度与这份代码的 8 字节程序键
+//   （rp_S.skey[5] 按字节十六进制，同现编日志里的键），多个身份 / 多份代码的同类拒绝才能逐个对上
+static void compute_pool_test(void) {
+    for (int mode = 4; mode <= 6; ++mode) {
+        rp_state_reset(); rp_shader_reset(); nvn_unimpl_reset(); source(); bind_pools(100); separate_fixture = 1; last_red[0] = 0;
+        rp_S.skey[0][0] ^= 0xff;   // source() 把图形 VS 阶段的键也设成同一个值；错开它，日志里取错阶段的键才会被抓到（计算只认 skey[5]）
+        char needle[48];   // 键是 source() 登记的那份快照的哈希前 8 字节（计算阶段键 rp_S.skey[5]，与固定来源一一对应，不能随意改）
+        snprintf(needle, sizeof needle, "程序键 %02x%02x%02x%02x%02x%02x%02x%02x", rp_S.skey[5][0], rp_S.skey[5][1], rp_S.skey[5][2], rp_S.skey[5][3],
+                 rp_S.skey[5][4], rp_S.skey[5][5], rp_S.skey[5][6], rp_S.skey[5][7]);
+        fake_cs_success = mode; cs_loads = 0;
+        const struct rp_prog *p = NULL;
+        const int rc = rp_shader_resolve_compute(&p);
+        if (mode == 4) {
+            CHECK(rc == 0 && p && p->is_compute && p->nent[0] == 2, "compute pool fixture loads with two layout entries (rc=%d red=%s)", rc, last_red);
+            if (rc == 0 && p && p->nent[0] == 2) {
+                const nvn_gpu_layout_ent *t = &p->ent[0][0], *s = &p->ent[0][1];
+                CHECK(t->src_kind == NVN_RB_TEXP && t->cls == NVN_GPU_RES_TEX && t->count == 8449 && t->set == 2 && t->binding == 0 && t->stages == (1u << NVN_GPU_SH_CS),
+                      "compute texture pool entry: TEXP, texture class, 8448 + 1 dummy, CS only");
+                CHECK(s->src_kind == NVN_RB_SAMPP && s->cls == NVN_GPU_RES_SAMP && s->count == 1281 && s->set == 2 && s->binding == 1 && s->stages == (1u << NVN_GPU_SH_CS),
+                      "compute sampler pool entry: SAMPP, sampler class, 1280 + 1 dummy, CS only");
+            }
+            CHECK(cs_loads == 1 && nvn_unimpl_count("shader", "texture_pool_array_unsupported") == 0 && nvn_unimpl_count("shader", "compute_program_parse_failed") == 0,
+                  "compute pool result loads the shader once with no unimplemented accounting (loads=%d red=%s)", cs_loads, last_red);
+        } else if (mode == 5) {
+            CHECK(rc == -1 && !p && cs_loads == 0 && nvn_unimpl_count("shader", "texture_pool_array_unsupported") == 1,
+                  "plain 8448-element compute array is still rejected as array_unsupported (rc=%d loads=%d)", rc, cs_loads);
+            CHECK(strstr(last_red, "stage cs descriptor array length=8448 exceeds 64") && strstr(last_red, needle),
+                  "rejection line carries stage, length and the 8-byte program key (%s): %s", needle, last_red);
+        } else {   // 6：形状不对的池数组走「解析失败」的具名行，原因 + 程序键同样齐全，不记成数组未接
+            CHECK(rc == -1 && !p && cs_loads == 0 && nvn_unimpl_count("shader", "compute_program_parse_failed") == 1 &&
+                  nvn_unimpl_count("shader", "texture_pool_array_unsupported") == 0,
+                  "malformed compute pool array is a named parse failure, not array_unsupported (rc=%d loads=%d)", rc, cs_loads);
+            CHECK(strstr(last_red, "compute pool array length is outside 2..65534") && strstr(last_red, needle),
+                  "parse-failure line carries the shape reason and the 8-byte program key (%s): %s", needle, last_red);
+        }
+    }
+    fake_cs_success = 0; separate_fixture = 0;
+}
+
+// ---- 新层查出包预编库（LibPack，shaders/direct/b-<DMSH_CHAIN>-vk）的三段程序：vs + fs + gs ----
+// 容器在临时目录里现写（格式同 libpack_vk_test.c / LibPack.cs：头 48 字节 + 分片表 + (键, 种类) 升序记录），走真实 libpack_vk.c。
+// 期望手算：键按 NVN 位序紧排 vs / fs / gs；几何段按输入图元取 _vg<t>（种类 112+t / 120+t）——_vg0 是 24 字节（头 + 1 条 OpNop）、
+// _vg3 是 28 字节（头 + 2 条 OpNop），装载到 GS 的字节数就认出是哪一份；_vg1 不放，线输入必 miss。编译器替身此时会成功（fake_gs_success），
+// 所以「命中」的证据是编译器调用数不变，miss 的证据是编译器被调用一次。
+static void lp_put32(uint8_t *p, uint32_t v) { memcpy(p, &v, 4); }
+static void lp_put64(uint8_t *p, uint64_t v) { memcpy(p, &v, 8); }
+static int lp_write(const char *dir, uint64_t key[], const uint8_t kind[], const uint8_t *data[], const size_t len[], int n) {
+    char path[640]; snprintf(path, sizeof path, "%s/lib.000.pak", dir);   // 调用方的 dir 最长 599 字节，加 "/lib.000.pak" 含结尾 0 要 612 字节；600 会被 -Werror=format-truncation 拦在编译（#1701）
+    FILE *f = fopen(path, "wb"); if (!f) return -1;
+    uint64_t off[16], at = 0;
+    for (int i = 0; i < n; i++) { off[i] = at; fwrite(data[i], 1, len[i], f); at += len[i]; }
+    fclose(f);
+    uint8_t idx[48 + 16 + 24 * 16]; memset(idx, 0, sizeof idx);
+    memcpy(idx, "S2ALIB\0\0", 8); lp_put32(idx + 8, 1); lp_put32(idx + 12, (uint32_t)n); lp_put32(idx + 16, 1);
+    memcpy(idx + 24, DMSH_CHAIN, 12); lp_put64(idx + 48, at);
+    for (int i = 0; i < n; i++) {   // 调用方已按 (键, 种类) 升序给
+        uint8_t *r = idx + 64 + 24 * i;
+        lp_put64(r, key[i]); r[8] = kind[i]; r[9] = 0; lp_put32(r + 12, (uint32_t)len[i]); lp_put64(r + 16, off[i]);
+    }
+    snprintf(path, sizeof path, "%s/lib.idx", dir);
+    f = fopen(path, "wb"); if (!f) return -1;
+    fwrite(idx, 1, 64 + 24 * (size_t)n, f); fclose(f);
+    return 0;
+}
+static uint64_t lp_key(const uint8_t k[8]) { uint64_t v = 0; for (int i = 0; i < 8; i++) v = v << 8 | k[i]; return v; }
+static int gs_libpack_test(void) {
+    fake_depth_clip = 1;   // 深度 near=-w 也能用预编库（libpack_state_ok），夹具不带深度零
+    rp_shader_reset(); s2a_source_clear(); rp_state_reset(); nvn_unimpl_reset();
+    uint8_t k[3][8]; for (unsigned st = 0; st < 3; st++) gs_source(st, 0, k[st]);
+    memset(&gs_program, 0, sizeof gs_program); gs_program.magic = MAGIC('P','R','O','G'); gs_program.serial = 101; gs_program.nstage = 3;
+    memset(gs_stages, 0xff, sizeof gs_stages); memset(gs_keys, 0, sizeof gs_keys);
+    for (unsigned i = 0; i < 3; i++) { gs_stages[i] = (uint8_t)i; memcpy(gs_keys[i], k[i], 8); }
+    gs_keys_ok = 7; p_bind_program_id bind = {&gs_program, gs_program.serial, 0x1f, 0};
+    CHECK(rp_state_op(OP_BIND_PROGRAM, &bind, sizeof bind + 8), "libpack GS fixture binds program");
+    CHECK(rp_shader_graphics_stages() == 7, "libpack GS fixture stage mask is 0x7");
+    bind_pools(7);
+    // 容器：<根>/shaders/direct/b-<链>-vk
+    char root[256], dir[600];
+    snprintf(root, sizeof root, "%s/nvk_gs_libpack.XXXXXX", getenv("TMPDIR") && *getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp");
+    if (!mkdtemp(root)) { CHECK(0, "libpack temp root"); return 1; }
+    snprintf(dir, sizeof dir, "%s/shaders", root); mkdir(dir, 0700);
+    snprintf(dir, sizeof dir, "%s/shaders/direct", root); mkdir(dir, 0700);
+    snprintf(dir, sizeof dir, "%s/shaders/direct/b-%s-vk", root, DMSH_CHAIN); mkdir(dir, 0700);
+    static const uint32_t spv0[5] = {0x07230203u, 0x00010300u, 0, 1, 0};
+    static const uint32_t spv_vg0[6] = {0x07230203u, 0x00010300u, 0, 1, 0, 0x00010000u};
+    static const uint32_t spv_vg3[7] = {0x07230203u, 0x00010300u, 0, 1, 0, 0x00010000u, 0x00010000u};
+    char hx[3][17]; for (int st = 0; st < 3; st++) for (int b = 0; b < 8; b++) snprintf(hx[st] + 2 * b, 3, "%02x", k[st][b]);
+    char jvs[160], jfs[160], jg0[200], jg3[200];
+    snprintf(jvs, sizeof jvs, "{\"stage\":\"vs\",\"dm_ctl\":\"%s\",\"bindings\":[]}", hx[0]);
+    snprintf(jfs, sizeof jfs, "{\"stage\":\"ps\",\"dm_ctl\":\"%s\",\"bindings\":[]}", hx[1]);
+    snprintf(jg0, sizeof jg0, "{\"stage\":\"gs\",\"dm_ctl\":\"%s\",\"gs_input_topology\":0,\"bindings\":[]}", hx[2]);
+    snprintf(jg3, sizeof jg3, "{\"stage\":\"gs\",\"dm_ctl\":\"%s\",\"gs_input_topology\":3,\"bindings\":[]}", hx[2]);
+    struct { uint64_t key; uint8_t kind; const uint8_t *d; size_t n; } rec[8] = {
+        {lp_key(k[0]), 1, (const uint8_t *)jvs, strlen(jvs)}, {lp_key(k[0]), 52, (const uint8_t *)spv0, sizeof spv0},
+        {lp_key(k[1]), 1, (const uint8_t *)jfs, strlen(jfs)}, {lp_key(k[1]), 52, (const uint8_t *)spv0, sizeof spv0},
+        {lp_key(k[2]), 112, (const uint8_t *)jg0, strlen(jg0)}, {lp_key(k[2]), 115, (const uint8_t *)jg3, strlen(jg3)},
+        {lp_key(k[2]), 120, (const uint8_t *)spv_vg0, sizeof spv_vg0}, {lp_key(k[2]), 123, (const uint8_t *)spv_vg3, sizeof spv_vg3},
+    };
+    for (int i = 0; i < 8; i++) for (int j = i + 1; j < 8; j++)   // (键, 种类) 升序
+        if (rec[j].key < rec[i].key || (rec[j].key == rec[i].key && rec[j].kind < rec[i].kind)) { __typeof__(rec[0]) t = rec[i]; rec[i] = rec[j]; rec[j] = t; }
+    uint64_t keys[8]; uint8_t kinds[8]; const uint8_t *data[8]; size_t lens[8];
+    for (int i = 0; i < 8; i++) { keys[i] = rec[i].key; kinds[i] = rec[i].kind; data[i] = rec[i].d; lens[i] = rec[i].n; }
+    // 库目录还不在：取程序照常走现编；「出包预编库不在」打一行黄、同一资源根只打一次；程序累计行的库状态 = 不在
+    setenv("S2A_SHADER_REVISION_ROOT", root, 1); unsetenv("S2A_DIRECT_CACHE_DIR");
+    {
+        extern void nvk_shader_test_tally_line(char *out, size_t n);
+        char tl[640];
+        nvk_shader_test_tally_line(tl, sizeof tl);
+        CHECK(strstr(tl, "出包预编（库没查过）") != NULL, "libpack tally before any lookup says not looked up: %s", tl);
+        fake_gs_success = 1; lp_missing_lines = lp_open_lines = 0;
+        for (int i = 0; i < 2; i++) {
+            rp_shader_reset(); compiler_calls = 0;
+            struct rp_shader_req q = {0}; q.prim = 4; const struct rp_prog *p = NULL;
+            CHECK(rp_shader_resolve(&q, &p) == 0 && p && compiler_calls == 1, "libpack missing (%d): live compile resolves (calls=%d)", i, compiler_calls);
+        }
+        CHECK(lp_missing_lines == 1, "missing libpack directory is one yellow line per root (got %d)", lp_missing_lines);
+        nvk_shader_test_tally_line(tl, sizeof tl);
+        CHECK(strstr(tl, "出包预编（库不在）") != NULL, "libpack tally says the library is missing: %s", tl);
+        fake_gs_success = 0;
+    }
+    CHECK(lp_write(dir, keys, kinds, data, lens, 8) == 0, "libpack GS container written");
+    static const char prof_on[] = "{\"schema\":\"s2a-direct-profile-v1\",\"profileHash\":\"sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"capabilities\":{\"storageBufferOffsetAlignment\":16,\"supportsGeometryShader\":true}}";
+    static const char prof_off[] = "{\"schema\":\"s2a-direct-profile-v1\",\"profileHash\":\"sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"capabilities\":{\"storageBufferOffsetAlignment\":16,\"supportsGeometryShader\":false}}";
+    snprintf(external_profile, sizeof external_profile, "%s", prof_on);
+    fake_gs_success = 1;
+    const uint32_t prims[4] = {4, 0, 1, 4};   // 三角列表 / 点 / 线 / 三角列表但 profile 没开几何
+    const char *what[4] = {"triangles", "points", "lines", "triangles, geometryShader off"};
+    for (int c = 0; c < 4; c++) {
+        if (c == 3) snprintf(external_profile, sizeof external_profile, "%s", prof_off);
+        rp_shader_reset(); nvn_unimpl_reset(); compiler_calls = 0; memset(gs_loads, 0, sizeof gs_loads); memset(gs_blob_bytes, 0, sizeof gs_blob_bytes);
+        struct rp_shader_req q = {0}; q.prim = prims[c]; const struct rp_prog *p = NULL;
+        int rc = rp_shader_resolve(&q, &p);
+        CHECK(rc == 0 && p, "libpack GS %s: program resolves", what[c]);
+        CHECK(gs_loads[NVN_GPU_SH_VS] == 1 && gs_loads[NVN_GPU_SH_FS] == 1 && gs_loads[NVN_GPU_SH_GS] == 1, "libpack GS %s: three stages load", what[c]);
+        if (c < 2) {
+            CHECK(compiler_calls == 0, "libpack GS %s: hit from the library, compiler not called (calls=%d)", what[c], compiler_calls);
+            CHECK(gs_blob_bytes[NVN_GPU_SH_VS] == sizeof spv0 && gs_blob_bytes[NVN_GPU_SH_FS] == sizeof spv0, "libpack GS %s: vs / fs are the library's", what[c]);
+            CHECK(gs_blob_bytes[NVN_GPU_SH_GS] == (c == 0 ? sizeof spv_vg3 : sizeof spv_vg0),
+                  "libpack GS %s: GS stage is the _vg%d variant (%zu bytes)", what[c], c == 0 ? 3 : 0, gs_blob_bytes[NVN_GPU_SH_GS]);
+        } else {
+            CHECK(compiler_calls == 1, "libpack GS %s: library misses, live compile runs (calls=%d)", what[c], compiler_calls);
+        }
+    }
+    {
+        extern void nvk_shader_test_tally_line(char *out, size_t n);
+        char tl[640]; nvk_shader_test_tally_line(tl, sizeof tl);
+        CHECK(lp_open_lines >= 1 && strstr(tl, "出包预编（库已打开）") != NULL, "libpack tally says opened after the container appears (%d open lines): %s", lp_open_lines, tl);
+        // 另一个资源根里的库是坏的（lib.idx 不是容器）：照旧报红 libpack_container_rejected，库状态 = 坏，不打「不在」
+        char root2[300], d2[700], f2[760];
+        snprintf(root2, sizeof root2, "%s-bad", root); mkdir(root2, 0700);
+        snprintf(d2, sizeof d2, "%s/shaders", root2); mkdir(d2, 0700); snprintf(d2, sizeof d2, "%s/shaders/direct", root2); mkdir(d2, 0700);
+        snprintf(d2, sizeof d2, "%s/shaders/direct/b-%s-vk", root2, DMSH_CHAIN); mkdir(d2, 0700);
+        snprintf(f2, sizeof f2, "%s/lib.idx", d2); { FILE *g = fopen(f2, "wb"); if (g) { fputs("not a libpack index", g); fclose(g); } }
+        setenv("S2A_SHADER_REVISION_ROOT", root2, 1); lp_missing_lines = 0; last_red[0] = 0;
+        rp_shader_reset(); compiler_calls = 0;
+        { struct rp_shader_req q = {0}; q.prim = 4; const struct rp_prog *p = NULL; rp_shader_resolve(&q, &p); }
+        nvk_shader_test_tally_line(tl, sizeof tl);
+        CHECK(strstr(tl, "出包预编（库坏）") != NULL && lp_missing_lines == 0, "broken container: tally says bad, no missing line (%d): %s", lp_missing_lines, tl);
+        unlink(f2); rmdir(d2); snprintf(d2, sizeof d2, "%s/shaders/direct", root2); rmdir(d2); snprintf(d2, sizeof d2, "%s/shaders", root2); rmdir(d2); rmdir(root2);
+    }
+    fake_gs_success = 0; external_profile[0] = 0; unsetenv("S2A_SHADER_REVISION_ROOT");
+    char path[700];
+    snprintf(path, sizeof path, "%s/lib.idx", dir); unlink(path); snprintf(path, sizeof path, "%s/lib.000.pak", dir); unlink(path);
+    rmdir(dir); snprintf(dir, sizeof dir, "%s/shaders/direct", root); rmdir(dir); snprintf(dir, sizeof dir, "%s/shaders", root); rmdir(dir); rmdir(root);
+    printf("nvk shader pool (libpack GS): %d checks, %d failures\n", checks, failures);
+    return failures ? 1 : 0;
+}
+static int diag_compile_test(void) {
+    trace_on = 1; trace_begin_count = trace_end_count = 0; fake_gs_success = 0;
+    gs_request_test();
+    rp_shader_reset(); s2a_source_clear(); rp_state_reset(); nvn_unimpl_reset(); source(); bind_pools(7);
+    trace_begin_count = trace_end_count = 0; fake_cs_success = 1;
+    const struct rp_prog *p = NULL; CHECK(!rp_shader_resolve_compute(&p) && p, "compute diagnostic fixture compiles");
+    uint8_t zero[32] = {0};
+    CHECK(trace_begin_count == 1 && trace_end_count == 1 && trace_stage == 32 && trace_submit == 1 && trace_warm == 0 && trace_success == 1 && memcmp(trace_id, zero, 32),
+          "compute live compile emits paired event with identity and stage");
+    trace_on = 0; rp_shader_reset();
+    printf("compile diagnostic: %d checks, %d failures\n", checks, failures); return failures ? 1 : 0;
+}
+
 int main(int argc, char **argv) {
+    if (argc == 2 && !strcmp(argv[1], "--diag-compile")) return diag_compile_test();
+    if (argc == 2 && !strcmp(argv[1], "--gs-libpack")) return gs_libpack_test();
     if (argc == 2 && !strcmp(argv[1], "--compute-warm")) return compute_warm_test();
     if (argc == 2 && !strcmp(argv[1], "--compute-warm-off")) return compute_warm_off_test();
     if (argc == 2 && !strcmp(argv[1], "--legacy-bytes")) {
@@ -980,6 +1518,8 @@ int main(int argc, char **argv) {
         for (size_t i = 0; i < n; i++) printf("%02x", bytes[i]);
         putchar('\n'); return 0;
     }
+    if (argc == 6 && (!strcmp(argv[1], "--emit-high-slot") || !strcmp(argv[1], "--execute-high-slot")))
+        return emit_real_request(argv[2], argv[3], argv[4], argv[5], !strcmp(argv[1], "--emit-high-slot") ? 8 : 9);
     if (argc == 6 && !strcmp(argv[1], "--emit-reuse-texture"))
         return emit_real_request(argv[2], argv[3], argv[4], argv[5], 4);
     if (argc == 6 && !strcmp(argv[1], "--emit-reuse-rt"))
@@ -1005,11 +1545,16 @@ int main(int argc, char **argv) {
     }
     if (argc != 1) return 2;
     graphics_fact_reuse_test();
+    graphics_fact_array_length_test();
+    graphics_high_slot_test();
     graphics_active_ubo_test();
     graphics_alias_test(1);
     graphics_alias_fact_test(1);
     graphics_alias_fact_bg_test(1);
     graphics_ubo_handle_fact_test();
+    graphics_reject_context_test();
+    query_sampler_test();
+    compute_pool_test();
     unsetenv("S2A_SHADER_REVISION_ROOT"); unsetenv("S2A_DIRECT_CACHE_DIR"); rp_state_reset(); source();
     for (int cs = 0; cs < 2; cs++) {
         run_case(cs, 0, 0, "texture_pool_missing");
@@ -1069,6 +1614,19 @@ int main(int argc, char **argv) {
           "session stats count unique failed program once: %s", last_stats);
     fake_array_count = 0;
     {
+        // 编译器把被拒消息整条守在 245 个字符以内（DirectShaderCompiler.cs HostMessageMaxChars）：compile_request.c 把整段错误 JSON
+        // 抄进 reason[320]（≤ 319 个字符），信封 {"schema":…,"code":"UNSUPPORTED_PROGRAM","message":"…"} 占 74 个，245 + 74 = 319 正好装下；
+        // 再多一个字符 JSON 被截断、compiler_rejected 解析不出来，整条归成 unclassified。恰好 245 个字符的消息必须仍照常归类
+        char edge[640], edge_msg[300];
+        {
+            size_t n = (size_t)snprintf(edge_msg, sizeof edge_msg,
+                "fs: texture handle from cbuf slot 65538 is not implemented (handle=809517146, arrayLength=1, count=1, request=%064d)"
+                " [kind=texture word=90 word2=257 type=3 cbuf=2/0 key=", 0);
+            memset(edge_msg + n, 'k', 244 - n); edge_msg[244] = ']'; edge_msg[245] = 0;
+            CHECK(strlen(edge_msg) == 245, "boundary message is exactly 245 characters: %zu", strlen(edge_msg));
+            snprintf(edge, sizeof edge, "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"UNSUPPORTED_PROGRAM\",\"message\":\"%s\"}", edge_msg);
+            CHECK(strlen(edge) == 319, "boundary error JSON is exactly 319 characters: %zu", strlen(edge));
+        }
         const char *errors[] = {
             "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"UNSUPPORTED_PROGRAM\",\"message\":\"fs: texture handle from cbuf slot 0 is not implemented\"}",
             "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"UNSUPPORTED_PROGRAM\",\"message\":\"fs: separate sampler slot is not implemented\"}",
@@ -1076,10 +1634,18 @@ int main(int argc, char **argv) {
             "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"MISSING_FACT\",\"message\":\"QueryTextureFormat has no source (stage=fs,handle=3,cbufSlot=-1,format=Unknown)\"}",
             "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"MISSING_FACT\",\"message\":\"QueryTextureCoordNormalized has no source (stage=fs,handle=3,cbufSlot=-1)\"}",
             "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"MISSING_FACT\",\"message\":\"missing fact\"}",
+            // #999：编译器在「texture handle from cbuf slot N」后面补的现场（绑定种类 / 字偏移 / 类型 / 两个常量缓冲号；用户 UBO 那一处另有 handle / 个数 / 数组长度 / 程序键）：归类不变
+            "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"UNSUPPORTED_PROGRAM\",\"message\":\"fs: texture handle from cbuf slot 65538 is not implemented"
+                " (handle=809517146, arrayLength=1, count=1, request=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef)"
+                " [kind=texture word=90 word2=257 type=3 cbuf=2/0]\"}",
+            "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"UNSUPPORTED_PROGRAM\",\"message\":\"fs: texture handle from cbuf slot 4 is not implemented (offset outside 64 KiB)"
+                " [kind=texture handle=-2147483648 word=0 word2=0 type=8 count=1 array=1 key=0123456789abcdef0123456789abcdef0123456789abcdef]\"}",
+            edge,
             "invalid error"};
         const char *reasons[] = {"cbuf_handle_unsupported", "separate_sampler_unsupported",
             "MISSING_FACT.QueryTextureArrayLengthFromBuffer", "MISSING_FACT.QueryTextureFormat",
-            "MISSING_FACT.QueryTextureCoordNormalized", "MISSING_FACT.unclassified", "unclassified"};
+            "MISSING_FACT.QueryTextureCoordNormalized", "MISSING_FACT.unclassified",
+            "cbuf_handle_unsupported", "cbuf_handle_unsupported", "cbuf_handle_unsupported", "unclassified"};
         for (unsigned i = 0; i < sizeof errors / sizeof errors[0]; i++) {
             rp_shader_reset(); nvn_unimpl_reset(); last_stats[0] = last_reason[0] = 0;
             fake_compile_error = errors[i]; bind_pools(524288); compiler_calls = 0;
@@ -1090,6 +1656,14 @@ int main(int argc, char **argv) {
                   "compiler error stays distinct from layout rejection: %s", last_stats);
             CHECK(strstr(last_reason, reasons[i]) && strstr(last_reason, "count=1"),
                   "compiler reason counted accurately: %s", last_reason);
+        }
+        {   // 诊断开关关着（玩家包口径）：拒绝原因照样数、第一次拒绝就打一行（全库普查按款汇总它）；整份程序统计不打
+            const int d0 = diag_enabled; diag_enabled = 0; rp_shader_reset(); nvn_unimpl_reset(); last_reason[0] = last_stats[0] = 0;
+            fake_compile_error = errors[3]; bind_pools(524288); compiler_calls = 0;
+            CHECK(rp_shader_resolve(&q, &p) != 0 && compiler_calls == 1, "player build: compiler rejection still happens once");
+            CHECK(strstr(last_reason, "reason=MISSING_FACT.QueryTextureFormat count=1") && !last_stats[0],
+                  "player build: reject reason counted and logged without the diagnostic switch, program stats stay off: reason=%s stats=%s", last_reason, last_stats);
+            rp_shader_reset(); diag_enabled = d0;
         }
         rp_shader_reset(); nvn_unimpl_reset(); fake_compile_error = errors[2]; bind_pools(101);
         CHECK(rp_shader_resolve(&q, &p) != 0, "first missing fact rejected");
@@ -1148,6 +1722,7 @@ int main(int argc, char **argv) {
     }
     fake_array_count = 0; fake_compile_error = NULL;
     compute_fast_path_test();
+    compute_default_fact_test();
     last_table_test();
     gs_request_test();
     rp_shader_reset(); s2a_source_clear();

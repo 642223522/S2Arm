@@ -1,4 +1,5 @@
 // iOS App 壳：UIKit 占主线程（s2a_front_run 覆盖 host_main.c 的弱缺省）。窗口与根视图在这里建；Metal 层与触屏 / 手柄由帧率能耗线、服务接入线挂到 s2a_ios_root_view()。
+#include "s2a_loadprog.h"   // 前台激活门
 #include <dlfcn.h>
 #import "s2a_l10n.h"
 #import <UIKit/UIKit.h>
@@ -26,7 +27,7 @@ void s2a_brightness_hold_log(void);   // 亮度保持（S2A_BRIGHTNESS）：心�
 #include "s2a_pad.h"
 #include "s2a_boot.h"
 #include "s2a_launch_ctx.h"
-#include <sys/stat.h>   // 程序包清单修改时间（s2a_shell_game_needs_reinstall）
+#include <sys/stat.h>   // 程序包清单修改时间（s2a_shell_game_sign_state）
 #include <sys/mount.h>   // statfs（free_note）
 #include "s2a_docs.h"   // s2a_container_docs：游戏库按款核资源包的进程级 Documents
 #include "s2a_sesdiag.h"   // 会话标记：上一局是不是死在前台（启动前崩溃询问）
@@ -66,11 +67,36 @@ static void s2a_ios_suspend_enqueue(int on, const char *why);
 // 重启完成（runtime/src/session.c s2a_session_on_restart_done，启动时登记一次）：不管设置页 / 游戏 ExecuteProgram / 测试开关谁发起，
 //   新局起来后都在这里放「重启首帧屏障」（s2a_session_guest_start_prepare 立的客体冻结 + GPU hold）。屏障防的是重建期间 App 进了后台、
 //   新局在后台提交 GPU：所以只在 UIKit 确认前台活跃时放；不活跃就留给「回前台 / 获得焦点」那次 s2a_ios_suspend(0) 放
+static void snap_result_check(void);
 static void restart_done(unsigned generation) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ snap_result_check(); });   // 快照恢复中途失败后重新开局：告诉玩家
     dispatch_async(dispatch_get_main_queue(), ^{
         if (UIApplication.sharedApplication.applicationState == UIApplicationStateActive) s2a_ios_suspend_enqueue(0, "重启完成");
         else LOG("iOS 壳：会话 %u 重启完成，App 不在前台活跃，屏障留到回前台放", generation);
     });
+}
+// 快照恢复的结果（引擎每次恢复尝试都重写文档根下 snap_result.tsv：结果 / 分类 / 给玩家 / 时刻，runtime/src/snapshot.c s2a_snap_result_note）：
+//   结果不是「恢复成功」也不是「需要确认」（那一类 vpad / 游戏库已当场问过）就把「给玩家」那句弹出来，弹完删文件不重复弹。
+//   本局文档根找不到（游戏库里，还没起局）就看上一局那款的文档根（S2ALastGameId → <容器>/games/<号>/）
+static void snap_result_check(void) {
+    NSMutableArray<NSString *> *paths = [NSMutableArray array];
+    char p[2048]; if (s2a_docs_path(p, sizeof p, "snap_result.tsv") > 0) [paths addObject:@(p)];
+    NSString *last = [NSUserDefaults.standardUserDefaults stringForKey:@"S2ALastGameId"]; char d[1024];
+    if (last.length && ![last containsString:@"/"] && s2a_container_docs(d, sizeof d) > 0) [paths addObject:[NSString stringWithFormat:@"%s/games/%@/snap_result.tsv", d, last]];
+    for (NSString *f in paths) {
+        NSString *text = [NSString stringWithContentsOfFile:f encoding:NSUTF8StringEncoding error:nil]; if (!text) continue;
+        NSMutableDictionary<NSString *, NSString *> *kv = [NSMutableDictionary dictionary];
+        for (NSString *line in [text componentsSeparatedByString:@"\n"]) { NSArray *c = [line componentsSeparatedByString:@"\t"]; if (c.count >= 2) kv[c[0]] = c[1]; }
+        [NSFileManager.defaultManager removeItemAtPath:f error:nil];
+        NSString *result = kv[@"结果"], *say = kv[@"给玩家"];
+        if (!result.length || [result isEqualToString:@"恢复成功"] || [result isEqualToString:@"需要确认"]) return;
+        LOG("快照：恢复结果「%s」（%s），告诉玩家", result.UTF8String, kv[@"分类"].UTF8String ?: "");
+        UIAlertController *a = [UIAlertController alertControllerWithTitle:S2AL(@"snap.result.title") message:say.length && s2a_l10n_zh() ? say : S2AL(@"snap.result.generic") preferredStyle:UIAlertControllerStyleAlert];
+        [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.ok") style:UIAlertActionStyleDefault handler:nil]];
+        UIView *s2a_ios_root_view(void); UIViewController *top = s2a_ios_root_view().window.rootViewController; while (top.presentedViewController) top = top.presentedViewController;
+        [top presentViewController:a animated:YES completion:nil];
+        return;
+    }
 }
 // 设置页「立刻重启」的请求回调：只回设置页结果；屏障由 restart_done 放（控制线程先调它，两者都派主线程，先放屏障后回设置页）
 static void settings_restart_result(int result, const char *detail, void *context) {
@@ -307,11 +333,16 @@ static const char *host_text(const char *s) {
         {S2A_SELFCHECK_DEVICE_TITLE, S2A_SELFCHECK_DEVICE_TITLE_EN}, {S2A_SELFCHECK_DEVICE_BODY, S2A_SELFCHECK_DEVICE_BODY_EN},
         {S2A_SELFCHECK_AS_TITLE, S2A_SELFCHECK_AS_TITLE_EN}, {S2A_SELFCHECK_AS32_BODY, S2A_SELFCHECK_AS32_BODY_EN},
         {S2A_SELFCHECK_MEM_BODY, S2A_SELFCHECK_MEM_BODY_EN}, {S2A_SELFCHECK_GO, S2A_SELFCHECK_GO_EN},
+        {S2A_SELFCHECK_ADDR_TITLE, S2A_SELFCHECK_ADDR_TITLE_EN}, {S2A_SELFCHECK_ADDR_BODY, S2A_SELFCHECK_ADDR_BODY_EN},   // 地址空间不够这款（svc_mem.c addr_short_note）
+        {S2A_SELFCHECK_ENT_BODY_APP, S2A_SELFCHECK_ENT_BODY_APP_EN}, {S2A_SELFCHECK_MEM_BODY_APP, S2A_SELFCHECK_MEM_BODY_APP_EN},   // 独立 App 的说法
         {S2A_INIT_FAIL_MSG_SERVICE, S2A_INIT_FAIL_MSG_SERVICE_EN}, {S2A_INIT_FAIL_MSG_RUNTIME, S2A_INIT_FAIL_MSG_RUNTIME_EN},
         {S2A_INIT_FAIL_MSG_GAME, S2A_INIT_FAIL_MSG_GAME_EN}, {S2A_INIT_FAIL_MSG_GENERIC, S2A_INIT_FAIL_MSG_GENERIC_EN},
         {S2A_INIT_FAIL_MSG_FILES, S2A_INIT_FAIL_MSG_FILES_EN}, {S2A_INIT_FAIL_NEXT, S2A_INIT_FAIL_NEXT_EN},
         {S2A_INIT_FAIL_MSG_DEVICE, S2A_INIT_FAIL_MSG_DEVICE_EN},   // #446 设备地址空间 / 内存不够
         {S2A_INIT_FAIL_MSG_HEAP, S2A_INIT_FAIL_MSG_HEAP_EN},       // D-NGH9 普通堆不够、已记下，再点一次开始
+        {S2A_INIT_FAIL_MSG_EXEC, S2A_INIT_FAIL_MSG_EXEC_EN},       // 外置镜像不许可执行映射（签名不被认可）
+        {S2A_INIT_FAIL_MSG_EXEC_LC, S2A_INIT_FAIL_MSG_EXEC_LC_EN},   // #63639b LiveContainer 里没取到可用的证书
+        {S2A_INIT_FAIL_MSG_EXEC_CERT, S2A_INIT_FAIL_MSG_EXEC_CERT_EN},   // #1760 分发证书签的 App 没有 get-task-allow
         {S2A_INIT_FAIL_MSG_SHADERS, S2A_INIT_FAIL_MSG_SHADERS_EN},   // direct_lib_missing：电脑装 / 自签导入两条路各说一句
     };
     if (!s || s2a_l10n_zh()) return s;
@@ -351,6 +382,13 @@ int s2a_ios_ask_continue(const char *symbol, const char *title, const char *body
     }); });
     dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
     return 1;
+}
+// 同上，文案按 S2ArmHost.strings 的键取（五语）：<键>.title / <键>.body + host.startAnyway。C 层只认得键名（svc_mem.c 地址空间不够这款，11-20）
+int s2a_ios_ask_continue_l10n(const char *key) {
+    if (!key) return 0;
+    if ([@(key) isEqualToString:@"addrshort"])
+        return s2a_ios_ask_continue("exclamationmark.triangle.fill", S2AL(@"addrshort.title").UTF8String, S2AL(@"addrshort.body").UTF8String, S2AL(@"host.startAnyway").UTF8String);
+    return 0;
 }
 // 老入口（停帧看门 ap_host.c 经 dlsym 调）：第一段当标题、其余当正文
 // 可用空间按「重要用途」口径（含系统随时能清掉的空间，同「设置 → 储存空间」里的「可用」）：statfs 的 f_bavail 不含这部分，常小好几 GB，
@@ -435,7 +473,7 @@ void s2a_ios_hide_notice(void) {
 // Leave UIKit and diagnostic export alive instead of throwing across NativeAOT.
 // 直连安全网提示页（host_main.c 起游戏主线程前、本款直连已连续失败满 3 次时调，宿主线程）：同一套提示页样子（notice.m），一句话 + 「导出诊断包」「仍然启动」。
 //   诊断信息（失败记录）进 host.log、随诊断包带走，不上屏（11-02 维护者：内部词不上屏）。阻塞到玩家点「仍然启动」才返回；宿主在主线程上时也一样等（审计 P2-16），见 s2a_ios_wait_ui_signal
-@interface S2ADguardTarget : NSObject { @public dispatch_semaphore_t go; UIView *page; BOOL pending; } @end
+@interface S2ADguardTarget : NSObject { @public dispatch_semaphore_t go; UIView *page; BOOL pending, device; } @end
 @implementation S2ADguardTarget
 @end
 static S2ADguardTarget *g_dguard_target;
@@ -444,7 +482,9 @@ static void dguard_build(S2ADguardTarget *t) {
     __weak S2ADguardTarget *w = t;
     UIButton *diag = s2a_notice_button(S2APICK(S2A_DGUARD_DIAG), NO, ^(UIButton *b) { (void)b; s2a_diag_report(); });
     UIButton *go = s2a_notice_button(S2APICK(S2A_DGUARD_GO), YES, ^(UIButton *b) { (void)b; S2ADguardTarget *x = w; if (!x) return; [x->page removeFromSuperview]; x->page = nil; dispatch_semaphore_signal(x->go); });
-    UIView *page = s2a_notice_page(g_root.bounds, @"exclamationmark.triangle.fill", S2APICK(S2A_DGUARD_TITLE), S2APICK(S2A_DGUARD_MSG), -1, nil, @[diag, go]);
+    UIView *page = t->device   // 上一局已知不是直连（这台设备给不了这款要的内存）：换说明，「仍然启动」照常
+        ? s2a_notice_page(g_root.bounds, @"memorychip", S2APICK(S2A_DGUARD_DEVICE_TITLE), S2APICK(S2A_DGUARD_DEVICE_MSG), -1, nil, @[diag, go])
+        : s2a_notice_page(g_root.bounds, @"exclamationmark.triangle.fill", S2APICK(S2A_DGUARD_TITLE), S2APICK(S2A_DGUARD_MSG), -1, nil, @[diag, go]);
     t->page = page; [g_root addSubview:page]; [g_root bringSubviewToFront:page];
     LOG("直连安全网：提示页已显示");
 }
@@ -453,8 +493,8 @@ static void dguard_show_pending(void) {
     S2ADguardTarget *t = g_dguard_target;
     if (t && t->pending && g_root) { t->pending = NO; dguard_build(t); }
 }
-void s2a_ios_dguard_prompt(const char *diag) {
-    S2ADguardTarget *t = [S2ADguardTarget new]; t->go = dispatch_semaphore_create(0); g_dguard_target = t;
+void s2a_ios_dguard_prompt(const char *diag, int device) {   // device = 1：上一局已知不是直连（diag 是原因），说这台设备内存不够
+    S2ADguardTarget *t = [S2ADguardTarget new]; t->go = dispatch_semaphore_create(0); t->device = device != 0; g_dguard_target = t;
     LOG("直连安全网：诊断信息（随诊断包带走，不上屏）\n%s", diag);
     // 窗口还没建：记下，建好窗口时补画（dguard_show_pending），调用方照旧等玩家选；不放行（审计 P2-5：原先直接照常起局，玩家不知道在强行再试直连）
     void (^show)(void) = ^{ if (g_root) dguard_build(t); else { t->pending = YES; LOG("直连安全网：窗口还没建，建好窗口再画提示页"); } };
@@ -581,9 +621,13 @@ void s2a_dprompt_notice(NSString *title, NSString *body, double delay, double se
 void s2a_ios_low_ram_notice(void) {
     dispatch_async(dispatch_get_main_queue(), ^{ s2a_dprompt_notice(S2AL(@"app.lowRam.title"), S2AL(@"app.lowRam.body"), 3, 10); });
 }
+//   压回时带「再试 60 帧」按钮（#1688）：点了梯子回 60 帧档（s2a_ql_retry60）；下一局本来就从 60 帧起
+void s2a_dprompt_ask(NSString *title, NSString *body, NSString *accept, NSString *decline, double delay, double seconds, void (^cb)(BOOL));   // dprompt.m
+void s2a_ql_retry60(void);   // runtime/src/qladder_host.c
 void s2a_ios_fps_capped(int reason) {
-    NSString *body = reason == 4 ? S2AL(@"app.fpsCap.ladder") : S2AL(@"app.fpsCap.restored");
-    dispatch_async(dispatch_get_main_queue(), ^{ s2a_dprompt_notice(S2AL(@"cpatch.group.fps"), body, 0, 6); });
+    if (reason != 4) { dispatch_async(dispatch_get_main_queue(), ^{ s2a_dprompt_notice(S2AL(@"cpatch.group.fps"), S2AL(@"app.fpsCap.restored"), 0, 6); }); return; }
+    s2a_dprompt_ask(S2AL(@"cpatch.group.fps"), S2AL(@"app.fpsCap.ladder"), S2AL(@"app.fpsCap.retry"), S2AL(@"common.gotIt"), 0, 15, ^(BOOL accept) {
+        if (accept) { LOG("档位梯子：玩家点了再试 60 帧"); s2a_ql_retry60(); } });
 }
 // 满屏自检自动退回（runtime/src/qprompt_host.c widen_auto_revert，11-06 满屏泛化）：记进本 App 设置（宽屏关 = 下次起局 16:9，设置页可改回），横幅一行告诉玩家
 //   persist（11-06 起）：两次不同启动都触发才记住（runtime/src/widen_remember.c）；只一次的不写设置，下次启动重新试满屏
@@ -689,6 +733,10 @@ static void audio_category_apply(void) {
 }
 - (BOOL)application:(UIApplication *)app didFinishLaunchingWithOptions:(NSDictionary *)opts {
     display_focus_publish(app.applicationState == UIApplicationStateActive);
+    // 壳号进起局日志（冒烟与真机局据此核「跑的是不是本版壳」：机上 App 包的 Info.plist 外部读不到，devicectl 只给版本号）
+    NSDictionary *info = NSBundle.mainBundle.infoDictionary;
+    LOG("iOS 壳：壳号 %s、包号 %s、版本 %s（%s）", [info[@"S2AShellId"] ?: @"无" UTF8String], [info[@"S2ABuildID"] ?: @"无" UTF8String],
+        [info[@"CFBundleShortVersionString"] ?: @"?" UTF8String], [NSBundle.mainBundle.bundleIdentifier ?: @"?" UTF8String]);
     free_note();
     if (!s2a_host_boot_deferred()) [self startMonitoring];
     return YES;
@@ -715,6 +763,7 @@ static void audio_category_apply(void) {
     // 同一浮层下随后起的暗黑3 从没「回前台」过、一直出帧——失焦期间画面照常可提交，冻结只该跟后台走
     // 用通知不用委托方法：场景式 / 旧式生命周期都发这几条
     s2a_session_on_restart_done(restart_done);   // 任何发起方的进程内重启完成都由壳放重启首帧屏障（见 restart_done）
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ snap_result_check(); });   // 兜住「恢复失败、进程直接退出」：下次打开时说
     NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
     [nc addObserverForName:UIApplicationWillResignActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; display_focus_publish(NO); LOG("iOS 壳：失去焦点（仍在前台，游戏照跑）"); }];
     [nc addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; display_focus_publish(NO); s2a_dguard_background(1, now_ns()); { int s2a_playtime_flush(void); s2a_playtime_flush(); } { void s2a_diag_session_fg(int); s2a_diag_session_fg(0); } s2a_ios_suspend_enqueue(1, "进后台"); s2a_guest_run_mark(0); }];   // 直连安全网：后台被杀 / 玩家划掉不算崩
@@ -769,13 +818,14 @@ static void audio_category_apply(void) {
         LOG("[心跳] 帧 %llu，热状态 %ld（0 正常 1 一般 2 严重 3 危急），进程实占 %llu MB，%s，持续执行档 %d（1 = 系统按稳态功率限制本进程，要权限 sustained-execution），低电量模式 %d，低区空洞合计 %llu MB、最大一块 %llu MB，文件句柄 %d / 软上限 %llu%s", (unsigned long long)s2a_ap_frames(), (long)NSProcessInfo.processInfo.thermalState,
             s2a_footprint_mb(), (const char *[]){"前台", "前台失焦", "后台"}[app_state],
             (int)[NSProcessInfo.processInfo hasPerformanceProfile:NSProcessPerformanceProfileSustained], (int)NSProcessInfo.processInfo.lowPowerModeEnabled, (unsigned long long)(lt >> 20), (unsigned long long)(ll >> 20), fn, (unsigned long long)fs, wins);
-        // 本款本机实测峰值（vawin.c s2a_guest_mem_note：只记没开文件后备那几局的进程实占，#783）：下一局起局按它判文件后备开不开
+        // 本局需求（vawin.c s2a_guest_mem_note：匿名局记实占、文件后备局记实占 + 窗口里在内存的客体页）：下一局起局结算进实测记录，按它判文件后备开不开（#1634）
         { void s2a_guest_mem_note(uint64_t footprint); s2a_guest_mem_note((uint64_t)s2a_footprint_mb() << 20); }
         int s2a_disk_io(uint64_t *rd, uint64_t *wr, uint64_t *pageins);   // energy.c（只此一处用，不进 native.h：那是出包抽取阶段的键）
         // 写盘量（11-05 能耗线，客体内存文件后备的代价）：本进程累计与近 10 秒，内存紧张时内核把文件脏页写回闪存的量在这里看
         { static uint64_t last, lr, lp; static int have; uint64_t w, r, p;
           if (!s2a_disk_io(&r, &w, &p)) { LOG("[写盘] 进程累计 %llu MB，近 10 秒 %llu MB（客体内存文件后备 %s）；近 10 秒读盘 %llu MB、缺页读入 %llu 次", (unsigned long long)(w >> 20), (unsigned long long)(have && w >= last ? (w - last) >> 20 : 0), s2a_guest_fd() >= 0 ? "开" : "关",
               (unsigned long long)(have && r >= lr ? (r - lr) >> 20 : 0), (unsigned long long)(have && p >= lp ? p - lp : 0)); last = w; lr = r; lp = p; have = 1; } }
+        { void s2a_guest_backing_log(void); s2a_guest_backing_log(); }   // vawin.c：文件后备开着时报匿名块 / 文件块各多少（溢出模式，没开不打）
         // 客体内存分区账（S2A_MEM_SPLIT=1，缺省关）：心跳每 10 秒一行，另起 100 ms 采样线程抓跳变（mem_split_*）
         if (mem_split_on()) { mem_split_line("内存分区", s2a_footprint_mb(), wr, wo, 0); mem_split_start(); }
         s2a_energy_log();
@@ -805,6 +855,7 @@ static void audio_category_apply(void) {
 @interface S2ASceneDelegate : UIResponder <UIWindowSceneDelegate>
 @property (strong, nonatomic) UIWindow *window;
 @property BOOL managingSaves;
+@property BOOL previousAsked;                       // 本进程已判过「要不要回到上一份存档」（ios/save_transfer.m s2a_ios_previous_save_prompt）
 @property BOOL cloudSynced;                         // 本进程已跑过起局前的 iCloud 存档同步
 @property BOOL cloudSyncing;                        // 同步页正盖着：期间切走再回来不起宿主（11-09 审查：曾在同步页底下直接起局）
 @property(strong) UIViewController *previousRoot;   // 同步页盖住之前的根（游戏界面），同步完换回
@@ -873,6 +924,8 @@ static void top_alert(UIWindow *w, NSString *title, NSString *body) {
 }
 @interface S2ASceneDelegate ()
 - (void)enterGame;
+- (void)bootFromScene;
+- (void)bootFromSceneState;
 @end
 static void library_play_go(const char *gid, S2ASceneDelegate *sd);
 // 崩了能恢复（11-13 维护者改定：补丁 / 金手指是玩家主动开的，开局前不再问；崩了下次进来自动关掉、告诉玩家关了什么，想用去设置里再开）：
@@ -899,6 +952,48 @@ static void crash_auto_off(const char *gid) {
     LOG("崩溃恢复：%s 上一局开着 %s 时死在前台，这一局启动前已关掉（玩家可在设置里再开）", gid, names.UTF8String);
     { void s2a_diag_note_crash_off(NSString *); s2a_diag_note_crash_off(names); }   // 进游戏后诊断询问（diag.m，上次死在前台必问）一并说，不另弹横幅
 }
+// ---------- 0.6.0 快照：游戏库长按卡片「回到上次存下的这一刻」 ----------
+// 有没有：开关关着（起局不带存档开关）一律 0（菜单里就没有这一项）；开着时看这款快照目录里有没有完整清单
+static void *g_snap_play_ctx;
+int s2a_shell_snapshot_available(const char *gid) {
+    int s2a_snap_saving(void), s2a_snap_dir_for(const char *, char *, size_t), s2a_snap_exists(const char *);
+    char d[2048]; return gid && *gid && s2a_snap_saving() && !s2a_snap_dir_for(gid, d, sizeof d) && s2a_snap_exists(d);
+}
+// 游戏库「从这一刻继续」：有完整快照的那款给出快照目录（宿主模型每秒重判时读里面的缩略图和保存时刻）；开关关着 / 没有完整快照回 -1
+int s2a_shell_snapshot_dir(const char *gid, char *out, unsigned long size) {
+    int s2a_snap_saving(void), s2a_snap_dir_for(const char *, char *, size_t), s2a_snap_exists(const char *);
+    char d[2048];
+    if (!gid || !*gid || !out || !s2a_snap_saving() || s2a_snap_dir_for(gid, d, sizeof d) || !s2a_snap_exists(d)) return -1;
+    return snprintf(out, size, "%s", d) < (int)size ? 0 : -1;
+}
+// 游戏库长按「删除这一刻」（玩家已确认）：连同缩略图、清单一起删，空间腾出来（runtime/src/snapdel.c）
+int s2a_shell_delete_snapshot(const char *gid) {
+    int s2a_snap_dir_for(const char *, char *, size_t), s2a_snap_delete(const char *);
+    char d[2048]; if (!gid || !*gid || s2a_snap_dir_for(gid, d, sizeof d)) return -1;
+    int rc = s2a_snap_delete(d);
+    LOG("游戏库：%s 删除存下的这一刻 → %s", gid, rc ? "没删干净" : "已删");
+    return rc;
+}
+static void library_play(const char *gid, void *ctx);
+static void snap_library_go(NSString *gid, NSString *dir, BOOL rollback) {
+    setenv("S2A_SNAP_RESTORE", dir.fileSystemRepresentation, 1);   // 起局（host_run）时读：核对 → 起服务层 → 按快照恢复，不从头起游戏
+    if (rollback) setenv("S2A_SNAP_SAVE_ROLLBACK", "1", 1); else unsetenv("S2A_SNAP_SAVE_ROLLBACK");
+    LOG("游戏库：%s 回到上次存下的这一刻（%s）", gid.UTF8String, rollback ? "玩家确认退回存档" : "存档没变过");
+    library_play(gid.UTF8String, g_snap_play_ctx);
+}
+void s2a_shell_restore_snapshot(const char *gid) {   // 主线程
+    int s2a_snap_dir_for(const char *, char *, size_t), s2a_snap_exists(const char *), s2a_snap_save_changed(const char *);
+    char d[2048]; if (!gid || !*gid || !g_snap_play_ctx || s2a_snap_dir_for(gid, d, sizeof d) || !s2a_snap_exists(d)) return;
+    NSString *g = @(gid), *dir = @(d);
+    // 存快照之后游戏又存过档：回去会把游戏存档退回那一刻——先问（当前存档会先整棵备份）；没变过直接回
+    if (s2a_snap_save_changed(d) != 1) { snap_library_go(g, dir, NO); return; }
+    S2ASceneDelegate *sd = (__bridge S2ASceneDelegate *)g_snap_play_ctx;
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:S2AL(@"vpad.snap.saveChanged.title") message:S2AL(@"vpad.snap.saveChanged.body") preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.cancel") style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:S2AL(@"vpad.snap.saveChanged.go") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *x) { snap_library_go(g, dir, YES); }]];
+    UIViewController *p = sd.window.rootViewController; while (p.presentedViewController) p = p.presentedViewController; [p presentViewController:a animated:YES completion:nil];
+}
+extern NSString *g_s2a_prev_last_game;   // ios/save_transfer.m 定义。多款容器：这次点开始之前上一局是哪款（library_play_go 覆盖 S2ALastGameId 前记下）；单款 App 一直 nil
 static void library_play(const char *gid, void *ctx) {   // 主线程（s2a_shell.h 约定）
     S2ASceneDelegate *sd = (__bridge S2ASceneDelegate *)ctx;
     if (!atomic_load(&g_game_picked)) crash_auto_off(gid);
@@ -906,20 +1001,42 @@ static void library_play(const char *gid, void *ctx) {   // 主线程（s2a_shel
 }
 // 程序约定号对不上本宿主的款（游戏号 → 1 / 0）：s2a_shell_game_needs_host_update 的缓存，点开被拒时也写进来
 static NSMutableDictionary<NSString *, NSNumber *> *g_host_update;
-// 程序包对不上本机这份 App 的款：点开被拒（S2A_SELECT_NEEDS_RESIGN）时记下这款程序包清单的修改时间（纳秒）。电脑端重推时清单最后写，
-//   时间一变就不再标（不用重开 App，库每秒重判即恢复「可玩」）；清单读不到记 -1（同样一变就清）。s2a_shell_game_needs_reinstall 读（主线程，s2a_shell.h）
+// 程序包签名本机不认的款：点开被拒（S2A_SELECT_NEEDS_RESIGN）时记下这款程序包清单的修改时间（纳秒）。程序包换过（电脑重推、手机重签）时间就变，
+//   不再算被拒；手机上导入了签名证书（S2ASigningCertChanged）全部清掉：起局时用新证书重签，不用重开 App。清单读不到记 -1（同样一变就清）
 static NSMutableDictionary<NSString *, NSNumber *> *g_reinstall;
 static long long program_cat_mtime(const char *gid) {
     char root[1024], p[1300]; struct stat st;
     if (s2a_program_games_root(root, sizeof root, getenv("HOME")) || snprintf(p, sizeof p, "%s/%s/program/catalogue.json", root, gid) >= (int)sizeof p || stat(p, &st)) return -1;
     return (long long)st.st_mtimespec.tv_sec * 1000000000LL + st.st_mtimespec.tv_nsec;
 }
-int s2a_shell_game_needs_reinstall(const char *gid) {
-    NSNumber *v = gid && *gid ? g_reinstall[@(gid)] : nil;
-    if (!v) return 0;
-    if (v.longLongValue == program_cat_mtime(gid)) return 1;
-    [g_reinstall removeObjectForKey:@(gid)]; LOG("游戏库：%s 的程序包换过了（电脑端重推），取消「需要在电脑上重装」", gid);
-    return 0;
+// 每款签名状态（s2a_shell.h s2a_shell_game_sign_state；判据 ios/sign_state.m）：库每秒重判，按（程序包清单修改时间、证书代数、被拒没有）缓存，变了才重读那几个小文件。
+//   证书代数：手机上导入了证书（cert_import.m 发 S2ASigningCertChanged）加一，同时清被拒记录、让库立刻重判 → 卡片自己回「可以玩」
+int s2a_sign_state_at(const char *home, const char *catalogue, int rejected);   // ios/sign_state.m
+static NSMutableDictionary<NSString *, NSArray<NSNumber *> *> *g_sign_cache;   // 游戏号 → [清单时间, 证书代数, 被拒, 状态]
+static long g_cert_gen;
+static void sign_watch_certs(void) {
+    static int once; if (once++) return;
+    [NSNotificationCenter.defaultCenter addObserverForName:@"S2ASigningCertChanged" object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *n) {
+        g_cert_gen++; NSUInteger k = g_reinstall.count; [g_reinstall removeAllObjects];
+        LOG("游戏库：签名证书换了，清掉 %lu 款「签名被拒」记录、重判各款签名状态", (unsigned long)k);
+        if (s2a_shell_refresh) s2a_shell_refresh();
+    }];
+}
+int s2a_shell_game_sign_state(const char *gid) {
+    if (!gid || !*gid) return 0;
+    sign_watch_certs();
+    long long mt = program_cat_mtime(gid); NSNumber *rj = g_reinstall[@(gid)];
+    if (rj && rj.longLongValue != mt) { [g_reinstall removeObjectForKey:@(gid)]; rj = nil; LOG("游戏库：%s 的程序包换过了，不再算签名被拒", gid); }
+    if (!g_sign_cache) g_sign_cache = [NSMutableDictionary dictionary];
+    NSArray<NSNumber *> *c = g_sign_cache[@(gid)];
+    if (c && c[0].longLongValue == mt && c[1].longValue == g_cert_gen && c[2].boolValue == (rj != nil)) return c[3].intValue;
+    char root[1024], p[1300]; int st = 0;
+    if (mt >= 0 && !s2a_program_games_root(root, sizeof root, getenv("HOME")) && snprintf(p, sizeof p, "%s/%s/program/catalogue.json", root, gid) < (int)sizeof p)
+        st = s2a_sign_state_at(getenv("HOME"), p, rj != nil);
+    else st = rj ? 5 : 0;
+    if (!c || c[3].intValue != st) LOG("游戏库：%s 签名状态 %d（0 可玩 / 1 没证书 / 2 证书团队不符 / 3 证书已换 / 4 签名格式老 / 5 只能电脑重装）", gid, st);
+    g_sign_cache[@(gid)] = @[@(mt), @(g_cert_gen), @(rj != nil), @(st)];
+    return st;
 }
 static void library_play_go(const char *gid, S2ASceneDelegate *sd) {
     if (atomic_load(&g_game_picked)) {
@@ -930,10 +1047,10 @@ static void library_play_go(const char *gid, S2ASceneDelegate *sd) {
     // why 是 launchctx.c 的内部原因（路径 / errno，已进 host.log「选游戏…被拒」）：屏上按类别说人话 + 下一步，原文只进日志 / 诊断（v0.3.1）
     if (why) {
         int kind = s2a_launch_ctx_select_kind();
-        if (kind == S2A_SELECT_NEEDS_RESIGN) {   // 程序包对不上本机这份 App（通用壳 11-16）：不弹窗，回游戏库标「需要在电脑上重装」（电脑端对这款点「装到 iPhone」重推）
+        if (kind == S2A_SELECT_NEEDS_RESIGN) {   // 签名本机不认（通用壳 11-16）：不弹窗，回游戏库按原因标（s2a_shell_game_sign_state：手机上缺能用的证书 → 「需要签名证书」直接导；有证书仍被拒 → 电脑上重装）
             if (!g_reinstall) g_reinstall = [NSMutableDictionary dictionary];
             g_reinstall[@(gid)] = @(program_cat_mtime(gid));
-            LOG("游戏库：%s 的程序包对不上本机这份 App，卡片标「需要在电脑上重装」", gid);
+            LOG("游戏库：%s 的程序库签名本机不认，记下、库按原因重判（签名状态 %d）", gid, s2a_shell_game_sign_state(gid));
             if (s2a_shell_refresh) s2a_shell_refresh();
             return;
         }
@@ -949,6 +1066,7 @@ static void library_play_go(const char *gid, S2ASceneDelegate *sd) {
         return;
     }
     atomic_store(&g_game_picked, 1);
+    g_s2a_prev_last_game = [NSUserDefaults.standardUserDefaults stringForKey:@"S2ALastGameId"] ?: @"";   // 覆盖前记下上一局是哪款：起局前「回到上一份存档」按它认上一局死的是不是这一款（save_transfer.m）
     [NSUserDefaults.standardUserDefaults setObject:@(gid) forKey:@"S2ALastGameId"];   // 诊断包在库里导出时认这一款（diag.m last_container_game_root）
     s2a_boot_rebase("点 Play（多款容器选了游戏、启动上下文已冻结）");   // 起局计时从这里算，库界面停留不计
     LOG("游戏库：选了 %s，%s", gid, s2a_host_pre_ui_checks());
@@ -1096,12 +1214,17 @@ static void library_pack_help_show(NSString *gid, BOOL again, int st);
 // 玩家把 game.img 放进「文件」里 S2Arm 的「放这里导入」文件夹（v0.3.0，自签 / 侧载玩家）：挪进本款资源包根（pack_apply.c s2a_img_scan）。
 //   冷启动挂库、回前台、库里「重新检查」时扫；已选游戏（起局后）不扫。挪好了让库重判
 int s2a_img_scan(const char *proc_docs);   // pack_apply.c
+void s2a_cert_scan_import_dirs(void);   // cert_import.m：「放这里导入」里的 .p12 / .pfx（签名证书，问密码后导入）
+BOOL s2a_cert_handle_url(NSURL *url);   // cert_import.m：SideStore 交回签名证书的回调 s2arm://sidestore-cert
 const char *s2a_img_scan_failure(void); const char *s2a_img_scan_code(void);   // pack_apply.c：最近一次认领失败的原因 / 码（空串 = 没失败）
 const char *s2a_img_scan_noshaders(void);   // pack_apply.c：这次认领里不带着色器库的文件名（空串 = 没有）
 const char *s2a_img_scan_skipped(void);   // pack_apply.c：这次扫描跳过的着色器更新包（和当前游戏版本不配套）文件名（空串 = 没有）
-static int img_scan_now(void) {   // 后台线程
+static int img_scan_now(void) {   // 后台线程。几个入口（挂库 / 回前台 / 文件夹有写入 / 库里「重新检查」）可能同时进来：一次只扫一个，免得两边去挪同一个文件
+    static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
     if (atomic_load(&g_game_picked)) return 0;
-    char d[1024]; s2a_container_docs(d, sizeof d); int n = s2a_img_scan(d);
+    pthread_mutex_lock(&mu);
+    char d[1024]; s2a_container_docs(d, sizeof d); int n = atomic_load(&g_game_picked) ? 0 : s2a_img_scan(d);
+    pthread_mutex_unlock(&mu);
     if (n > 0) LOG("资源导入：从「文件」里认出并放好 %d 个游戏资源包（game.img）", n);
     return n;
 }
@@ -1168,23 +1291,61 @@ static void pack_layout_prepare(const char *proc_docs) {   // 后台线程
     if (!known) LOG("【红】导入文件夹名「%s」不在认领扫的名单里（pack_apply.c s2a_img_import_dirs），不建", name.UTF8String);
     else if (!exists) [NSFileManager.defaultManager createDirectoryAtPath:[@(proc_docs) stringByAppendingPathComponent:name] withIntermediateDirectories:YES attributes:nil error:nil];
 }
+int s2a_dump_threads(const char *why);   // runtime/src/tdump.c
+static void import_watch_start(void);
+// 扫描走自己的串行队列、按「玩家在等」的档位（USER_INITIATED）：玩家看着游戏库等导入，原先 UTILITY 档在手机忙时排不上（11-17 测试设备：
+//   冷启动后台块打完「容器内属主」一行就再没下文，导入函数没被调用）。启动维护（属主清点 / 补写权限 / 迁移 / 程序包清理）15 秒没做完打一次全线程现场，卡在哪一步直接看得到
+static dispatch_queue_t img_scan_queue(void) {
+    static dispatch_queue_t q; static dispatch_once_t once;
+    dispatch_once(&once, ^{ q = dispatch_queue_create("s2a.img-scan", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, 0)); });
+    return q;
+}
 static void img_scan_bg(void) {
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+    dispatch_async(img_scan_queue(), ^{
         static atomic_int checked; int r = 0;
         if (!atomic_exchange(&checked, 1) && !atomic_load(&g_game_picked)) { char d[1024]; s2a_container_docs(d, sizeof d);
+            static atomic_int maint_done;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                if (!atomic_load(&maint_done)) { LOG("【红】启动维护 15 秒没做完（属主清点 / 补写权限 / 迁移 / 程序包清理），导入在它后面等：打全线程现场"); s2a_dump_threads("启动维护 15 秒没做完"); } });
             char line[1600]; uint64_t fb = 0; if (s2a_foreign_scan(NSHomeDirectory().fileSystemRepresentation, &fb, line, sizeof line)) { LOG("【黄】%s", line); g_foreign_bytes = fb; r = 1; }
             { unsigned fixed = s2a_pack_repair_tree(d);   // 先补 App 自己名下缺写权限的目录 / 文件（D-A76N），电脑端下一次推送就写得进
               NSString *lib = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/S2Arm"]; fixed += s2a_pack_repair_tree(lib.fileSystemRepresentation);
               if (fixed) LOG("启动：%u 个目录 / 文件是 App 自己的但缺写权限，已补回属主读写（D-A76N）", fixed); }
             pack_layout_prepare(d);
             int gc = s2a_program_gc(NSHomeDirectory().fileSystemRepresentation, time(NULL));   // 程序包旧版本目录（电脑端换上新版后留下的、推断了的）：启动时清，一进程一次
-            if (gc) LOG("程序包清理：本次启动清掉 %d 项", gc); }
+            if (gc) LOG("程序包清理：本次启动清掉 %d 项", gc);
+            atomic_store(&maint_done, 1);
+            dispatch_async(dispatch_get_main_queue(), ^{ import_watch_start(); }); }   // 导入文件夹这时已建好：开始盯着它
         atomic_store(&g_games_repairing, 0);
         int n = img_scan_now();
-        dispatch_async(dispatch_get_main_queue(), ^{ if (n > 0 && s2a_shell_refresh) s2a_shell_refresh(); if (r) foreign_report(); if (!r || g_foreign_bytes < (2ull << 30)) img_scan_report(); });   // 同一刻只弹一个框：迁移那次先说迁移，认领失败下次回前台重扫再说
+        dispatch_async(dispatch_get_main_queue(), ^{ if (n > 0 && s2a_shell_refresh) s2a_shell_refresh(); if (r) foreign_report(); if (!r || g_foreign_bytes < (2ull << 30)) img_scan_report(); if (!atomic_load(&g_game_picked)) s2a_cert_scan_import_dirs(); });   // 同一刻只弹一个框：迁移那次先说迁移，认领失败下次回前台重扫再说
     });
 }
 static void img_scan_if_library(void) { if (g_lib_window) img_scan_bg(); }
+// App 开着时玩家往「放这里导入」里放文件也要导入（原先只在冷启动挂库 / 回前台时扫，开着放进去不动）：盯两个导入文件夹和 Documents 本身
+//   （文件夹被删了重建也认）的写入 / 改名 / 新增条目，静下来 1 秒再扫一次；还在拷的大文件由导入那边判「还在拷」、拷完最后一次写入再触发。已选游戏后 img_scan_now 不扫
+static void import_watch_start(void) {   // 主线程
+    static NSMutableDictionary<NSString *, dispatch_source_t> *watch; static dispatch_block_t pending;
+    if (!watch) watch = [NSMutableDictionary new];
+    char d[1024]; s2a_container_docs(d, sizeof d);
+    NSMutableArray<NSString *> *paths = [NSMutableArray arrayWithObject:@(d)];
+    for (int i = 0; i < 2; i++) [paths addObject:[@(d) stringByAppendingPathComponent:@(s2a_img_import_dirs[i])]];
+    for (NSString *p in paths) {
+        if (watch[p]) continue;
+        int fd = open(p.fileSystemRepresentation, O_EVTONLY); if (fd < 0) continue;   // 还没有这个名字的文件夹：Documents 那条源在它建出来时会再进来
+        dispatch_source_t src = dispatch_source_create(DISPATCH_SOURCE_TYPE_VNODE, (uintptr_t)fd,
+            DISPATCH_VNODE_WRITE | DISPATCH_VNODE_EXTEND | DISPATCH_VNODE_LINK | DISPATCH_VNODE_RENAME | DISPATCH_VNODE_DELETE, dispatch_get_main_queue());
+        dispatch_source_set_event_handler(src, ^{
+            unsigned long ev = dispatch_source_get_data(src);
+            if (ev & (DISPATCH_VNODE_DELETE | DISPATCH_VNODE_RENAME)) { dispatch_source_cancel(src); [watch removeObjectForKey:p]; }   // 文件夹本身没了 / 改名：撤掉，下次再挂
+            if (pending) dispatch_block_cancel(pending);
+            pending = dispatch_block_create(0, ^{ pending = nil; import_watch_start(); img_scan_if_library(); });
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), pending);
+        });
+        dispatch_source_set_cancel_handler(src, ^{ close(fd); });
+        watch[p] = src; dispatch_resume(src);
+    }
+}
 static void library_pack_help(NSString *gid, BOOL again) {   // 主线程
     if (atomic_exchange(&g_pack_checking, 1)) { LOG("游戏库：%s 正在核对资源包，这次点击不重复起", gid.UTF8String); return; }
     __block BOOL done = NO; __block UIAlertController *wait = nil;
@@ -1231,8 +1392,9 @@ static void cloud_sync_done(void *ctx) {
     S2ASceneDelegate *sd = (__bridge S2ASceneDelegate *)ctx;
     sd.cloudSyncing = NO;
     if (sd.previousRoot) { sd.window.rootViewController = sd.previousRoot; sd.previousRoot = nil; }
-    // App 正在后台：不起宿主，等系统下次真激活时调 sceneDidBecomeActive
-    if (sd.window.windowScene.activationState == UISceneActivationStateForegroundActive) [sd sceneDidBecomeActive:sd.window.windowScene];
+    // App 正在后台：不起宿主，等系统下次进前台时再起；前台（激活或弹框盖着未激活）就接着起，开跑前由前台激活门等激活
+    UISceneActivationState a = sd.window.windowScene.activationState;
+    if (a == UISceneActivationStateForegroundActive || a == UISceneActivationStateForegroundInactive) [sd bootFromSceneState];
 }
 // 主屏小组件点封面（s2arm://play/<游戏号>，11-16 维护者：小组件进 0.5.0；Info.plist 的 CFBundleURLTypes 见 runtime/build.mk）：
 //   游戏库还开着 → 同玩家点「开始」（library_play：崩溃恢复 → 起局前检查 → 起宿主；资源不在手机上的款照常说明为什么开不了）；
@@ -1256,6 +1418,98 @@ static void s2arm_open(NSURL *url) {
         });
     });
 }
+// 库卡片「导入 .s2arm…」（0.6.0 自签走查第 9、10 条：只放了 .img 的款、0.5 老款，在手机上就能补程序，不只给电脑路线）：
+//   文件选择器任何文件都能选（分享来的 .s2arm 扩展名可能被改），选好交 s2arm_open 导入；选的是别的款照样导（日志记一行）
+#if !TARGET_OS_TV
+@interface S2AS2armPicker : NSObject <UIDocumentPickerDelegate> @property (copy) NSString *gid; @end
+@implementation S2AS2armPicker
+- (void)documentPicker:(UIDocumentPickerViewController *)c didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+    (void)c; NSURL *u = urls.firstObject; if (!u) return;
+    LOG("游戏库：%s 的「导入 .s2arm…」选了 %s", self.gid.UTF8String, u.lastPathComponent.UTF8String);
+    s2arm_open(u);
+}
+@end
+void s2a_shell_pick_s2arm(const char *gid) {   // 主线程（s2a_shell.h）
+    static S2AS2armPicker *delegate; if (!delegate) delegate = [S2AS2armPicker new];
+    delegate.gid = gid ? @(gid) : @"";
+    UIDocumentPickerViewController *p = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeData] asCopy:YES];
+    p.delegate = delegate; UIViewController *top = lib_top();
+    if (!top) { LOG("【红】游戏库：没有窗口，.s2arm 选择器开不出来"); return; }
+    [top presentViewController:p animated:YES completion:nil];
+}
+// 长按卡片「导出这一款…」（0.6.3，GitHub #1793：分发证书玩家换签名重装后不想再从电脑整套重推）：后台生成这款的 <名>.s2arm + <名>.img
+//   （game_export.m，.img 是资源包 game.img——推送装的款是 romfs.img——的同卷硬链接，不拷副本），放本款文档根下的临时文件夹 game-exports/<随机名>/，交「文件」App 存走（asCopy）。
+//   选好或取消都清掉临时件（同 save_transfer.m 存档导出：玩家选的目标正是临时件本身时那个不删）；导不出按码说人话。同时只做一次
+#include "game_export.h"
+@interface S2AGameExporter : NSObject <UIDocumentPickerDelegate> @property (copy) NSString *gid, *dir; @property (copy) NSArray<NSString *> *files; @end
+static S2AGameExporter *g_gexp;
+static void gexp_clear(S2AGameExporter *x, NSArray<NSURL *> *kept) {
+    NSFileManager *fm = NSFileManager.defaultManager; BOOL keep = NO;
+    for (NSString *f in x.files) {
+        NSURL *u = [NSURL fileURLWithPath:f].URLByResolvingSymlinksInPath; BOOL mine = NO;
+        for (NSURL *k in kept) mine |= [k.URLByResolvingSymlinksInPath isEqual:u];
+        if (mine) { keep = YES; continue; }
+        NSError *e = nil;
+        if (![fm removeItemAtPath:f error:&e] && [fm fileExistsAtPath:f]) LOG("【黄】导出这一款：临时件 %s 没删掉：%s", f.UTF8String, e.localizedDescription.UTF8String);
+    }
+    if (!keep && x.dir) [fm removeItemAtPath:x.dir error:nil];
+}
+@implementation S2AGameExporter
+- (void)documentPicker:(UIDocumentPickerViewController *)c didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+    (void)c; LOG("导出这一款：%s 存到了 %s 等 %lu 处", self.gid.UTF8String, urls.firstObject.path.UTF8String, (unsigned long)urls.count);
+    gexp_clear(self, urls); g_gexp = nil;
+}
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)c { (void)c; LOG("导出这一款：%s 玩家取消", self.gid.UTF8String); gexp_clear(self, nil); g_gexp = nil; }
+@end
+static NSString *gexp_text(int r, const char *why) {
+    switch (r) {
+    case S2A_GEXP_NO_PROGRAM: return S2AL(@"gameExport.noProgram");
+    case S2A_GEXP_IN_BUNDLE: return S2AL(@"gameExport.inBundle");
+    case S2A_GEXP_PARTIAL: return S2AL(@"gameExport.partial");
+    case S2A_GEXP_NO_IMG: return S2AL(@"gameExport.noImg");
+    default: return [NSString stringWithFormat:S2AL(@"gameExport.ioFailed"), @(why)];
+    }
+}
+void s2a_shell_export_game(const char *gid_c) {   // 主线程（s2a_shell.h）
+    if (!gid_c || strlen(gid_c) != 16) return;
+    if (g_gexp) { LOG("导出这一款：%s 上一次还没完，这次不接", g_gexp.gid.UTF8String); return; }
+    S2AGameExporter *x = [S2AGameExporter new]; x.gid = @(gid_c); g_gexp = x;
+    char d[1024]; s2a_container_docs(d, sizeof d); NSString *docs = @(d);
+    NSString *root = [docs stringByAppendingPathComponent:[NSString stringWithFormat:@"games/%@/game-exports", x.gid]];
+    [NSFileManager.defaultManager removeItemAtPath:root error:nil];   // 上次导出途中 App 被关留下的
+    x.dir = [root stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
+    // 生成要几秒（程序库 + 着色器库原样写一遍）：0.3 秒还没好才弹「正在生成」，说明写在里面（同 library_pack_help 的「正在检查」）
+    __block BOOL done = NO; __block UIAlertController *wait = nil;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (done) return;
+        UIViewController *top = lib_top(); if (!top) return;
+        wait = [UIAlertController alertControllerWithTitle:S2AL(@"gameExport.preparing") message:S2AL(@"gameExport.hint") preferredStyle:UIAlertControllerStyleAlert];
+        [top presentViewController:wait animated:YES completion:nil];
+    });
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        char s2[2400] = "", im[2400] = "", why[1024] = ""; int r; NSError *e = nil;
+        CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
+        if (![NSFileManager.defaultManager createDirectoryAtPath:x.dir withIntermediateDirectories:YES attributes:nil error:&e]) {
+            r = S2A_GEXP_IO; snprintf(why, sizeof why, "建导出文件夹失败：%s", e.localizedDescription.UTF8String); }
+        else r = s2a_game_export(docs.fileSystemRepresentation, x.gid.UTF8String, x.dir.fileSystemRepresentation, s2, sizeof s2, im, sizeof im, why, sizeof why);
+        LOG("导出这一款：%s %s（%.0f 毫秒）%s", x.gid.UTF8String, r ? "导不出" : "已生成", (CFAbsoluteTimeGetCurrent() - t0) * 1000, r ? why : s2);
+        NSString *s2s = @(s2), *ims = @(im), *text = r ? gexp_text(r, why) : nil;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            done = YES;
+            void (^next)(void) = ^{
+                if (r) { gexp_clear(x, nil); g_gexp = nil; if (g_lib_window) top_alert(g_lib_window, S2AL(@"gameExport.failed.title"), text); return; }
+                x.files = @[s2s, ims];
+                UIViewController *top = lib_top();
+                if (!top) { LOG("【红】导出这一款：没有窗口，「文件」导出页开不出来"); gexp_clear(x, nil); g_gexp = nil; return; }
+                UIDocumentPickerViewController *p = [[UIDocumentPickerViewController alloc] initForExportingURLs:@[[NSURL fileURLWithPath:s2s], [NSURL fileURLWithPath:ims]] asCopy:YES];
+                p.delegate = x;
+                [top presentViewController:p animated:YES completion:nil];
+            };
+            if (wait && wait.presentingViewController) [wait dismissViewControllerAnimated:NO completion:next]; else next();
+        });
+    });
+}
+#endif
 static void widget_open(NSURL *url, void *ctx) {
     if (url.isFileURL && [url.pathExtension.lowercaseString isEqualToString:@"s2arm"]) { s2arm_open(url); return; }
     if (!url || ![url.scheme isEqualToString:@"s2arm"] || ![url.host isEqualToString:@"play"]) return;
@@ -1271,7 +1525,9 @@ static void widget_open(NSURL *url, void *ctx) {
 }
 @implementation S2ASceneDelegate
 - (void)scene:(UIScene *)scene openURLContexts:(NSSet<UIOpenURLContext *> *)contexts {
-    (void)scene; widget_open(contexts.anyObject.URL, (__bridge void *)self);
+    (void)scene;
+    if (s2a_cert_handle_url(contexts.anyObject.URL)) return;   // SideStore 交回签名证书（0.6.0，cert_import.m）
+    widget_open(contexts.anyObject.URL, (__bridge void *)self);
 }
 // 多款容器：根控制器先是游戏库；壳没链库界面（缺省 make ios）时给提示页，不起游戏
 - (void)showLibrary {
@@ -1283,10 +1539,23 @@ static void widget_open(NSURL *url, void *ctx) {
     }
     NSString *cat = [@(s2a_launch_ctx_bundle_dir()) stringByAppendingPathComponent:@"s2a_catalogue.json"];
     s2a_shell_set_play_handler(library_play, (__bridge void *)self);
+    g_snap_play_ctx = (__bridge void *)self;   // 快照：游戏库「回到上次存下的这一刻」走同一条起局路
     g_lib_window = self.window;
     self.window.rootViewController = (__bridge_transfer UIViewController *)s2a_shell_library_vc(cat.fileSystemRepresentation);
+#if !TARGET_OS_TV
+    S2APlayFollowHold(self.window);   // 库页也补倒着拿（同游戏页）
+#endif
     LOG("游戏库：已挂库界面（清单 %s）%s", cat.UTF8String, s2a_process_prewarmed() ? "，预热进程只显示库、不起宿主" : "");
     img_scan_bg();
+    // 独立 App（一 App 一游戏，0.6.3）：包里只有这一款、程序库也在包里 → 点开图标直接进这款，同玩家在库里点开始（崩溃恢复 → 起局前检查 → 起宿主）；
+    //   起不来（被拒）照常留在库界面、按原因标。预热进程只显示库，不起宿主
+    { char gid[64];
+      if (!s2a_process_prewarmed() && s2a_launch_ctx_single_game(s2a_launch_ctx_bundle_dir(), gid, sizeof gid)) {
+          char *g = strdup(gid); S2ASceneDelegate *sd = self;
+          LOG("游戏库：独立 App（只有 %s、程序在包里），直接进这款", gid);
+          dispatch_async(dispatch_get_main_queue(), ^{ library_play(g, (__bridge void *)sd); free(g); });
+          return;
+      } }
     // 测试开关（真机自动化点不到库界面的「开始」，同 diag.m S2A_OPEN_SETTINGS）：S2A_LIBRARY_AUTOPLAY=<程序号> 库界面挂上 2 秒后替玩家点这款的开始，
     //   走的就是玩家点开始那条路（library_play：崩溃恢复 → 起局前检查 → 起宿主），用来在多款容器里验证起局前的处理
     { const char *e = getenv("S2A_LIBRARY_AUTOPLAY");
@@ -1302,7 +1571,7 @@ static void widget_open(NSURL *url, void *ctx) {
     note_build();
     if (g_help_args) help_build(g_help_args[0], g_help_args[1], g_help_args[2]);
     dguard_show_pending();
-    [self sceneDidBecomeActive:self.window.windowScene];
+    [self bootFromSceneState];
 }
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)options {
     (void)session;
@@ -1320,9 +1589,14 @@ static void widget_open(NSURL *url, void *ctx) {
     self.window = [[UIWindow alloc] initWithWindowScene:ws];
     if (s2a_launch_ctx_container() && !atomic_load(&g_game_picked)) {   // 多款容器：先出游戏库，不建游戏界面、不挂加载页
         [self showLibrary];
+#if TARGET_OS_TV
+        // 电视上的焦点 / 遥控器只送给 key window；iOS 那套「窗口只显示、不成为 key」不适用（否则画面可见但遥控器完全进不来）
+        [self.window makeKeyAndVisible];
+#else
         { const char *e = getenv("S2A_NO_KEY_WINDOW"); if (e && !strcmp(e, "0")) [self.window makeKeyAndVisible]; else self.window.hidden = NO; }
+#endif
         { NSURL *u = options.URLContexts.anyObject.URL; S2ASceneDelegate *sd = self;   // 冷启动是点主屏小组件来的：库界面挂上后再开（同点「开始」）
-          if (u) dispatch_async(dispatch_get_main_queue(), ^{ widget_open(u, (__bridge void *)sd); }); }
+          if (u) dispatch_async(dispatch_get_main_queue(), ^{ if (!s2a_cert_handle_url(u)) widget_open(u, (__bridge void *)sd); }); }   // SideStore 交回签名证书冷启动拉起：同开着时
         LOG("iOS 壳：窗口已建 %.0fx%.0f（场景，多款容器游戏库）", self.window.bounds.size.width, self.window.bounds.size.height);
         return;
     }
@@ -1333,7 +1607,11 @@ static void widget_open(NSURL *url, void *ctx) {
     // 窗口只显示、不成为 key 窗口（缺省；S2A_NO_KEY_WINDOW=0 回到 makeKeyAndVisible）。10-26 测试设备2 全量系统日志：游戏模式开局弹游戏浮层，浮层收起后键盘事件转发目标回到
     //   我们 key 窗口所在的场景，UIKit 重建键盘代理、拉起听写（AFDictationConnection）查网络，包名禁网即弹「无线数据」框。触摸按落点分发、手柄走 GameController，都不靠 key 窗口
     //   10-26 测试设备1 同包对位：不成为 key 的两局浮层照出、App 进程听写 / 网络检测 0 行；对照局 3 行
+#if TARGET_OS_TV
+    [self.window makeKeyAndVisible];   // 电视焦点 / 遥控器只送给 key window
+#else
     { const char *e = getenv("S2A_NO_KEY_WINDOW"); if (e && !strcmp(e, "0")) [self.window makeKeyAndVisible]; else { self.window.hidden = NO; LOG("iOS 壳：窗口只显示、不成为 key 窗口"); } }
+#endif
     note_build();
     if (g_help_args) help_build(g_help_args[0], g_help_args[1], g_help_args[2]);
     dguard_show_pending();
@@ -1368,8 +1646,24 @@ static void widget_open(NSURL *url, void *ctx) {
     const s2a_launch_ctx *lc = s2a_launch_ctx_get();
     s2a_shell_cloud_upload_background(lc && lc->game_id[0] ? lc->game_id : "");
 }
+// 场景进前台（还没激活：系统弹框可能盖着）就开始起宿主：加载照做，起游戏主线程前由前台激活门（loadprog.c s2a_load_front_wait）等激活
+- (void)sceneWillEnterForeground:(UIScene *)scene {
+    s2a_load_front_state(((UIWindowScene *)scene).activationState == UISceneActivationStateForegroundActive ? 2 : 1);
+    [self bootFromScene];
+}
 - (void)sceneDidBecomeActive:(UIScene *)scene {
     (void)scene;
+    s2a_load_front_state(2);
+    [self bootFromScene];
+}
+// 起宿主的那条路（游戏库 Play、云同步完、进前台、激活都走这里；领取续体只一次，重复进来是空操作）：门的状态按场景此刻实况设
+- (void)bootFromSceneState {
+    UISceneActivationState a = self.window.windowScene.activationState;
+    if (a == UISceneActivationStateForegroundActive) s2a_load_front_state(2);
+    else if (a == UISceneActivationStateForegroundInactive) s2a_load_front_state(1);
+    [self bootFromScene];
+}
+- (void)bootFromScene {
     if (!s2a_host_boot_pending()) return;
     if (s2a_launch_ctx_container() && !atomic_load(&g_game_picked)) return;   // 多款容器：等游戏库 Play（预热进程同样只显示库）
     if (self.managingSaves || self.cloudSyncing) return;
@@ -1399,6 +1693,13 @@ static void widget_open(NSURL *url, void *ctx) {
             owner.managingSaves = NO; [owner startHost];
         });
         return;
+    }
+    // 上一局死在前台、这款有上一份存档：起宿主前问要不要回到上一份（不拦；玩家选完再起局）
+    if (!self.previousAsked) {
+        self.previousAsked = YES;
+        int s2a_ios_previous_save_prompt(UIViewController *, void (^)(void));
+        __weak S2ASceneDelegate *weakSelf = self;
+        if (s2a_ios_previous_save_prompt(self.window.rootViewController, ^{ [weakSelf startHost]; })) return;
     }
     [self startHost];
 }

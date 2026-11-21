@@ -311,6 +311,28 @@ int main(void) {
                  "⑫ 隔离后同一对网格绘制两笔都跳过（+%llu）、不画（列掩码 %#x）、每笔报红 1 行（全局前 4 笔）、写进隔离表（%s；stderr：%s）",
                  (unsigned long long)(g_mtk_quar_skip - q0), cols, [qf containsString:pair] ? "有" : "无", o.UTF8String);
           unlink([[@(pdir) stringByAppendingPathComponent:@"gpu_quarantine.tsv"] fileSystemRepresentation]); rmdir(pdir); }
+        // ⑬ #1542 宿主自跑网格的间接组数上界（M1 / M2 上任务 / 网格由宿主计算核跑，本机 M5 走驱动，这里直接跑那两个夹紧核，单线程、安全）：
+        //   任务：交换头 h[3] = capT 64，游戏间接组数 {100000, 100000, 1}（垃圾计数）→ 派发用的 h[20..22] 乘积 ≤ 64 且 x = 64（改前直接按 10^10 组派任务核 = 单个命令缓冲无界）；
+        //   正常 {3, 1, 1} → {3, 1, 1} 不改；无任务的网格：h[4] = 容量 64，间接 {1000, 1000, 1} → 网格组 h[8] = 64、h[9] = h[10] = 1、索引数 h[13] = 0、实例数 h[14] = 1、
+        //   原始组数 h[18] = 1000000（下一笔按它放大）、任务数 h[19] = 0
+        { id<MTLComputePipelineState> tc = mxe_pso(MXE_TCLAMP), mo = mxe_pso(MXE_MONLY);
+          id<MTLBuffer> hb = [g_dev newBufferWithLength:4 * MXE_HEAD options:MTLResourceStorageModeShared], ib = [g_dev newBufferWithLength:64 options:MTLResourceStorageModeShared];
+          uint32_t *h = (uint32_t *)hb.contents, *iv = (uint32_t *)ib.contents; id<MTLCommandQueue> q = [g_dev newCommandQueue];
+          void (^run1)(id<MTLComputePipelineState>) = ^(id<MTLComputePipelineState> ps) {
+              id<MTLCommandBuffer> cb = [q commandBuffer]; id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];
+              [e setComputePipelineState:ps]; [e setBuffer:hb offset:0 atIndex:0]; [e setBuffer:ib offset:0 atIndex:1];
+              [e dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)]; [e endEncoding]; [cb commit]; [cb waitUntilCompleted]; };
+          VERIFY(tc && mo, "⑬ 宿主自跑网格的两个夹紧核编得出");
+          if (tc && mo) {
+              memset(h, 0, 4 * MXE_HEAD); h[3] = 64; iv[0] = 100000; iv[1] = 100000; iv[2] = 1; run1(tc);
+              uint64_t prod = (uint64_t)h[20] * h[21] * h[22];
+              VERIFY(h[20] == 64 && prod <= 64, "⑬ 任务间接组数 {100000, 100000, 1}、capT 64 → 派发 {%u, %u, %u}（乘积 %llu ≤ 64、x = 64）", h[20], h[21], h[22], (unsigned long long)prod);
+              memset(h, 0, 4 * MXE_HEAD); h[3] = 64; iv[0] = 3; iv[1] = 1; iv[2] = 1; run1(tc);
+              VERIFY(h[20] == 3 && h[21] == 1 && h[22] == 1, "⑬ 任务间接组数 {3, 1, 1} 不改（实得 {%u, %u, %u}）", h[20], h[21], h[22]);
+              memset(h, 0, 4 * MXE_HEAD); h[4] = 64; h[13] = 99; iv[0] = 1000; iv[1] = 1000; iv[2] = 1; run1(mo);
+              VERIFY(h[8] == 64 && h[9] == 1 && h[10] == 1 && h[13] == 0 && h[14] == 1 && h[18] == 1000000 && h[19] == 0,
+                     "⑬ 无任务网格间接 {1000, 1000, 1}、容量 64 → 组 {%u, %u, %u}、索引数 %u、实例 %u、原始 %u、任务 %u", h[8], h[9], h[10], h[13], h[14], h[18], h[19]);
+          } }
     }
     if (failures) { printf("✗ t_nvn_mesh：%u 项里 %u 项不符\n", checks, failures); return 1; }   // 原生门禁按「✓ t_ / ✗ t_」逐组判
     printf("✓ t_nvn_mesh：%u 项全过（任务 / 网格绘制：约定字段载入、上限报红、无顶点阶段的程序、直接 / 有任务 / GPU 写参数的间接 / 零工作量画出的列与手算一致、缺网格着色器报红、映射表阶段名 task / mesh 载入、无网格管线的 GPU 跳过报红）\n", checks); return 0;

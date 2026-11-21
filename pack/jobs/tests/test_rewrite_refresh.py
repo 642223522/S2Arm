@@ -5,6 +5,7 @@
 import os
 import shutil
 import stat
+import subprocess
 import tempfile
 import types
 import unittest
@@ -16,12 +17,12 @@ import rewrite_refresh as rr
 from core import Failure
 
 
-def fake_rewriter(d, hits):
+def fake_rewriter(d, hits, key="x18_spdyn"):
     """假改写器：<NSO> <输出目录> <模块> [宽屏表] → 写 <模块>.patched.bin（内容 = 模块名 + new），统计行里 x18_spdyn 按 hits 给"""
     p = Path(d) / "fake-rewrite"
     p.write_text("#!/bin/sh\nprintf 'new-%s' \"$3\" > \"$2/$3.patched.bin\"\nprintf 'fx' > \"$2/$3.fixups.tsv\"\n"
                  "case \" " + " ".join(hits) + " \" in *\" $3 \"*) n=38;; *) n=0;; esac\n"
-                 "echo \"$3 {'plain': 1, 'x18_spdyn': $n}\"\n")
+                 "echo \"$3 {'plain': 1, '" + key + "': $n}\"\n")
     p.chmod(p.stat().st_mode | stat.S_IEXEC)
     return str(p)
 
@@ -37,6 +38,20 @@ class RewriteRefreshTests(unittest.TestCase):
         self.sg_calls = []
         self.c = jobcase.fake_context(self.tmp, private=self.tmp, emit=lambda kind, text, **_: self.events.append(text), library=self.tmp / "library", work_root=self.tmp / "work",
                                        catalog=lambda: {"games": [{"id": g} for g in ("0100A", "0100B")]})
+
+    def test_rewriter_bin_decodes_utf8_child_output_explicitly(self):
+        binary = self.tmp / "rewriter"
+        binary.write_text("fixture")
+
+        def run(args, **kwargs):
+            # The Windows child runs with -X utf8, while the host locale may be GBK.
+            # Require a decoder that can read the child's UTF-8 output and diagnostics.
+            self.assertEqual(kwargs.get("encoding"), "utf-8")
+            self.assertEqual(kwargs.get("errors"), "replace")
+            return subprocess.CompletedProcess(args, 0, stdout=f"{binary}\n", stderr="")
+
+        with patch.object(rr.subprocess, "run", side_effect=run):
+            self.assertEqual(rr.rewriter_bin(self.c), str(binary))
 
     def kit(self, gid):
         k = self.tmp / ("kit-" + gid); k.mkdir(exist_ok=True)
@@ -57,9 +72,9 @@ class RewriteRefreshTests(unittest.TestCase):
             return root, list(mods), [root / "cpatch.tsv", root / "cheat-src.a.txt"]
         return run
 
-    def run_refresh(self, games, hits, fail=(), sgrade=None):
+    def run_refresh(self, games, hits, fail=(), sgrade=None, key="x18_spdyn"):
         """sgrade = None：这些款出包时取消了 S 级优化（只按改写器核，原有用例的口径）；给记号串 = 要补 S 级优化、这次的补丁记号"""
-        binary = fake_rewriter(self.tmp, hits)
+        binary = fake_rewriter(self.tmp, hits, key)
         real = rr.rewrite_modules   # 真的那份：桩里只在「这款要失败」时拦，其余照真函数跑假改写器
         cur = {}
         def exefs_of(c, game, work):
@@ -90,6 +105,13 @@ class RewriteRefreshTests(unittest.TestCase):
         self.assertEqual((k / "main.fixups.tsv").read_bytes(), b"fx")
         self.assertEqual((k / "sdk.patched.bin").read_bytes(), b"old-sdk", "没命中的模块一个字节不动")
         self.assertEqual(self.info["0100A"]["ios"], {"shellId": "s1", "pack": "p1", "rewriterId": "rid-new", "mainBid": ""}, "记下改写器指纹，原有字段保留")
+
+    def test_pacga_module_counts_as_affected(self):
+        # 11-17：改写器把 pacga 换成确定性实现；只带 pacga 的模块（统计行 pacga > 0、x18_spdyn 没有）也要换新产物
+        updated, kits = self.run_refresh(["0100A"], hits=["sdk"], key="pacga")
+        self.assertEqual(updated, ["0100A"])
+        self.assertEqual((kits["0100A"] / "sdk.patched.bin").read_bytes(), b"new-sdk")
+        self.assertEqual((kits["0100A"] / "main.patched.bin").read_bytes(), b"old-main")
 
     def test_sgrade_rewrite_needs_no_symlink_privilege(self):
         # #1153：Windows 没开开发者模式建目录软链 WinError 1314，每款都「补丁打入失败」；改写根里的 exefs 要是真目录、内容同原件
@@ -648,3 +670,30 @@ class FpslKeyRealLibrary(unittest.TestCase):
                 n = rr.sgrade_key(c, "0100CCCC00000000", "rid", "")
         self.assertTrue(a.endswith(":fpsl" + fp), a)
         self.assertNotIn(":fpsl", b); self.assertNotIn(":fpsl", n)
+
+
+class OwnFrameTableTest(unittest.TestCase):
+    """11-18 #1607：旧包产物根里带改指令（c 行）的我方帧率表只在内部对照口径 S2A_CAPS_OWN=1 交改写器。期望手写——
+    缺省：rewrite_env 不设 S2A_FPS_TSV（不打改指令，60 帧关着游戏不再被解锁）；S2A_CAPS_OWN=1：设成 kit/fps.tsv；
+    own_table 只认带 c 行的 fps.tsv（只有 w 行的通用表、别的文件名都不算）"""
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp()); self.addCleanup(shutil.rmtree, self.tmp, True)
+        (self.tmp / "fps.tsv").write_text("build 277178b7dba1b6d4\nc main 0x100 word 6b08015f 7100055f   # x\n", encoding="utf-8")
+
+    def env_of(self, extra):
+        c = types.SimpleNamespace(env=lambda: dict(extra), engine=str(self.tmp))
+        return rr.rewrite_env(c, self.tmp, None, "ios")
+
+    def test_default_does_not_bake_own_table(self):
+        self.assertNotIn("S2A_FPS_TSV", self.env_of({}))
+        self.assertNotIn("S2A_FPS_TSV", self.env_of({"S2A_FPS_TSV": "/leftover"}))
+
+    def test_internal_comparison_still_bakes(self):
+        self.assertEqual(self.env_of({"S2A_CAPS_OWN": "1"})["S2A_FPS_TSV"], str(self.tmp / "fps.tsv"))
+
+    def test_own_table_detection(self):
+        self.assertTrue(rr.own_table(self.tmp / "fps.tsv"))
+        w = self.tmp / "w" / "fps.tsv"; w.parent.mkdir(); w.write_text("present display\nw main 0x1000 f32 60\n# c main 不算\n", encoding="utf-8")
+        self.assertFalse(rr.own_table(w))
+        o = self.tmp / "widen_sites.tsv"; o.write_text("c main 0x100\n", encoding="utf-8")
+        self.assertFalse(rr.own_table(o))

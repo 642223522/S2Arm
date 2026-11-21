@@ -2,7 +2,9 @@
 
 装机（作业 tvInstall）：
   ① 设备：devicectl 设备表里 deviceType / platform 是 Apple TV 的（diag.is_tv，不写死型号）；配对靠 Xcode 自己完成（Apple TV 没有数据线，同网配对一次）
-  ② 现组容器：本版 tvOS 预编壳 + 这款和这台电视上已有各款的 tvOS 容器件（每款 image/tvos/kit，同 iPhone 的 image/ios/kit），pack/ship_ext.py container
+  ② 通用壳（0.6.0 起，同 iPhone）：电视上的 S2Arm 只有壳（本版 tvOS 预编壳，pack/ship_ext.py container --shell-only），本版、同包名、签名还新鲜就不重装；
+     各款程序包（image/tvos/kit 出的 tvOS 版，program_pack.sign(platform="tvos")）打成一个 .s2arm，经 devicectl 写进电视上 App 的导入文件夹
+     （install.push_program，同 iPhone；TvClient），App 用导入同一条代码解开到 Library/Caches/S2Arm/games/<号>/program/、换上清单，宿主按清单加载（runtime/src/launchctx.c program_paths）
   ③ 签名：pack/prov 的申请工程改成 tvOS 目标，xcodebuild -allowProvisioningUpdates 让 Xcode 申请 tvOS 开发描述文件（同 TVPort backend.py:1081 自动签名），
      再用 pack/dev_sign.py 签；权限按款（entitlements_for）：「提高内存上限」照带（免费账号在 tvOS 上被系统丢掉，不挡），「扩展虚拟寻址」只给 Switch 2 款（只有付费账号签得了）。包名 io.s2arm.tv.<团队号小写>：和 iPhone 的容器分开（开发描述文件按平台出，同一包名 dev_sign 会挑到 iOS 的那份）
   ④ 覆盖装之前把电视上各款的存档备份到 Mac（同下面的自动备份）；devicectl device install app（TVPort :1368）
@@ -119,7 +121,11 @@ def pick(c, want=""):
         return tvs[0]
     if not tvs:
         raise Failure(S_NO_TV, code="device_not_connected")
-    raise Failure(S_MANY_TV.replace("{0}", "、".join("「" + (tv_name(d) or KIND) + "」" for d in tvs)), code="device_required")
+    from diag import reachable
+    online = [d for d in tvs if reachable(d)]
+    if len(online) == 1:   # 两台已配对、只有一台在线：直接用在线的那台，别让玩家先在一台关机的电视和一台开机的电视里选
+        return online[0]
+    raise Failure(S_MANY_TV.replace("{0}", "、".join("「" + (tv_name(d) or KIND) + "」" for d in (online or tvs))), code="device_required")
 
 
 def devices_job(c):
@@ -216,12 +222,11 @@ def _clone_file(src, dst):
 
 
 def clone_pack(c, src, dst):
-    """iPhone 资源包派生给 Apple TV：0.6.0（通用壳开关开，体系文档 L）game.img 用硬链接引用 iPhone 那份（同一个文件，Windows NTFS 也不再实拷几 GB），
+    """iPhone 资源包派生给 Apple TV（体系文档 L）：game.img 用硬链接引用 iPhone 那份（同一个文件，Windows NTFS 也不再实拷几 GB），
     其余小件照拷（电视这份要改清单、加 astc.pack，都是写新文件替换，不动 game.img）。建不了硬链接（跨盘 / exFAT）→ game.img 照旧拷。
-    开关关：整棵照旧（clone_tree）"""
-    import program_pack
+    game.img 不在或是链接：整棵照旧（clone_tree）"""
     img = Path(src) / "game.img"
-    if not program_pack.enabled(c) or not img.is_file() or img.is_symlink():
+    if not img.is_file() or img.is_symlink():
         return clone_tree(src, dst)
     shutil.copytree(src, dst, ignore=lambda d, names: ["game.img"] if Path(d) == Path(src) else [], copy_function=_clone_file)
     try:
@@ -358,7 +363,7 @@ def assemble(c, gid, others, shell, sid):
         if e.code == "tool_exit" and "地址空间类型不一致" in text:  # 非玩家句
             raise Failure(packer.incompatible_message(text, gid, names), code="container_incompatible") from e
         raise
-    packer.finish_container(c, app, log)
+    packer.sign_container(c, app, log)
     games = [g["title_id"] for g in json.loads((app / "s2a_catalogue.json").read_text(encoding="utf-8"))["games"]]
     try:   # 同 ipa.assemble：程序号和游戏包号对不上时按程序号放、资源取回游戏包号那款（认不出是哪个才停）
         packer.title_mismatch(c, gid, list(others), games)
@@ -405,16 +410,17 @@ def is_switch2(npdm):
     return b[acid + 0x300:acid + 0x304] == b"ACID"
 
 
-def entitlements_for(c, app, dest):
+def entitlements_for(c, app, dest, npdms=None):
     """这个 App 要的权限 → 写到 dest（plist）。底本「提高内存上限」照带（免费账号的描述文件没有这项时 dev_sign 不带、不挡）；
     「扩展虚拟寻址」只在包里有 Switch 2 款时带：Switch 2 客体要约 12.5 GB 地址，tvOS / iOS 不给这项权限就不让占（TVPort build_ipa.sh:206 同判据：
-    超过 6 GB 才带），Switch 1 款不要，免费账号也就签得了。→ (路径, 带没带扩展虚拟寻址)"""
+    超过 6 GB 才带），Switch 1 款不要，免费账号也就签得了。npdms = 要放上电视的各款 main.npdm（通用壳的 App 本身不带游戏，按这些判；
+    缺省看 App 包里的 Games/*/main.npdm，导出单款安装包用）。→ (路径, 带没带扩展虚拟寻址)"""
     import plistlib
     base = c.engine / ENTITLEMENTS
     if not base.is_file():
         raise Failure("这个 S2Arm 安装包不完整（缺 Apple TV 签名权限文件），请重新下载 S2Arm。", code="engine_incomplete", internal=str(base))
     ents = plistlib.loads(base.read_bytes())
-    eva = any(is_switch2(n) for n in Path(app).glob("Games/*/main.npdm"))
+    eva = any(is_switch2(n) for n in (npdms if npdms is not None else Path(app).glob("Games/*/main.npdm")))
     if eva:
         ents[EVA] = True
     Path(dest).write_bytes(plistlib.dumps(ents))
@@ -428,14 +434,14 @@ S_EVA = ("这款是 Switch 2 游戏，要「扩展虚拟寻址」权限才能在
          "在 Xcode 的「设置 → 账户」里登录付费开发者账号（或在团队里选付费团队）再装；Switch 1 游戏用免费 Apple ID 就能装。")
 
 
-def sign(c, app, team, bid, udid, log):
+def sign(c, app, team, bid, udid, log, npdms=None):
     """申请 tvOS 开发描述文件（带这台电视的 UDID：登记设备）→ pack/dev_sign.py 签（S2A_SIGN_PLATFORM=tvos：只挑 tvOS 描述文件）。
     权限按款（entitlements_for）。失败按日志原文归码，同 iPhone 装机；带了扩展虚拟寻址（Switch 2 款）而账号签不了这一项 → tvos_eva_required，照实说"""
     from errors import recovery, tool_reason
     c.begin("申请 Apple TV 开发描述文件（第一次要几十秒）", 3, 6, keychain=True)
     try:
         with tempfile.TemporaryDirectory(dir=c.private) as d:
-            ents, eva = entitlements_for(c, app, Path(d) / "tv.entitlements")
+            ents, eva = entitlements_for(c, app, Path(d) / "tv.entitlements", npdms)
             prov = Path(d) / "prov"
             prov_project(c.engine, prov, bid, team["id"], ents)
             dest = ["-destination", f"platform=tvOS,id={udid}", "-allowProvisioningDeviceRegistration", "-destination-timeout", "120"] if udid else \
@@ -461,7 +467,7 @@ def push(c, dev_id, bid, gid, pack, udid):
     got = []
     def attempt():
         try:
-            got.append(install.push_pack(c, dev_id, bid, pack, udid=udid, docs=tv_docs(gid), pack_root=tv_pack_root(gid)))
+            got.append(install.push_pack(c, dev_id, bid, pack, docs=tv_docs(gid), pack_root=tv_pack_root(gid), tv=True))
             return None
         except Failure as e:
             if e.code in NO_RETRY:   # 空间不够 / 写满：再试也一样，原样报
@@ -480,6 +486,19 @@ NO_RETRY = ("device_space_low", "ios_install_no_space")
 IMG = re.compile(r"(^|.*/)romfs\.img$|game\.img")   # 直接写到最终路径的单文件镜像（同 tools/push_pack.py IMG）
 
 
+def zst_chunks(c, pack):
+    """这份 game.img 这次推送是不是走压缩分块（同 tools/push_pack.py zstd_plan 的判法：index.tsv 有 game.img 那行、推送环境没关压缩、本机有 zstd）
+    → [(资源包根下的块相对路径 .incoming/game.img.<号>.<块>.zst, 压缩字节)]；直推 → None"""
+    sys.path.insert(0, str(Path(c.engine) / "tools"))
+    import push_pack as P
+    row = next((l.split("\t") for l in (Path(pack) / "index.tsv").read_text(encoding="utf-8", errors="replace").splitlines()
+                if l.split("\t")[0] == "game.img" and len(l.split("\t")) >= 3), None) if (Path(pack) / "index.tsv").is_file() else None
+    if not row:
+        return None
+    sizes = P.zstd_plan(Path(pack), row, say=lambda *a, **k: None, env=c.env())
+    return None if sizes is None else [(".incoming/" + P.zname(row[2], k), n) for k, n in enumerate(sizes)]
+
+
 def verify(c, dev_id, bid, gid, pack):
     """推完列电视上这款的资源包根，逐个核对大小（TVPort 推 romfs.img 后核两边大小）：索引、清单、单文件镜像。分批推的小文件在 .incoming 里由 App 打开时解开，不在这里核"""
     from diag import devicectl
@@ -490,11 +509,21 @@ def verify(c, dev_id, bid, gid, pack):
         raise Failure("核对不了 Apple TV 上的资源包（列不出电视上的文件）：" + (err.splitlines()[-1] if err else f"devicectl 退出 {rc}"), code="resource_transfer_failed")  # 非玩家句
     there = {(f.get("relativePath") or f.get("path")): (f.get("metadata") or {}).get("size")
              for f in ((data.get("result") or {}).get("files") or []) if isinstance(f, dict) and not (f.get("resources") or {}).get("isDirectory")}
-    want = ["index.tsv", "manifest.json"] + sorted(p.relative_to(pack).as_posix() for p in pack.rglob("*") if p.is_file() and IMG.search(p.relative_to(pack).as_posix()))
+    want = ["index.tsv", "manifest.json"] + sorted(p.relative_to(pack).as_posix() for p in pack.rglob("*") if p.is_file() and not layout.os_junk(p.name) and IMG.search(p.relative_to(pack).as_posix()))
+    chunks = zst_chunks(c, pack)
     for rel in want:
         local = pack / rel
         if not local.is_file():
             continue
+        if rel == "game.img" and chunks is not None and there.get(rel) != local.stat().st_size:
+            # 压缩分块推的（tools/push_pack.py send_zst）：电视上的 game.img 先被截空，等 App 打开解包（pack_apply.c img_unzst）才拼回原样（#1460：
+            #   原先照最终大小核，推完必报「电视上是 0 字节」、重装也一样）。核每一块：在 .incoming 里且字节对；App 已在解的块解完即删，game.img 已有内容时允许不在
+            bad = [x for x, n in chunks if there.get(x) not in (n, None)]
+            gone = [x for x, n in chunks if there.get(x) is None]
+            if not bad and (not gone or (there.get(rel) or 0) > 0):
+                continue
+            raise Failure(f"资源包没有完整传到 Apple TV：game.img 的压缩块 {len(bad) + len(gone)}/{len(chunks)} 个缺或不完整。"  # 非玩家句
+                          "再点一次「装到 Apple TV」会补传。", code="resource_transfer_failed")
         if there.get(rel) != local.stat().st_size:
             got = there.get(rel)
             raise Failure(f"资源包没有完整传到 Apple TV：{rel} 电视上{'没有' if got is None else f'是 {got} 字节'}，这台 Mac 上是 {local.stat().st_size} 字节。"  # 非玩家句
@@ -667,7 +696,8 @@ def adhoc_entitle(c, app, ents, log):
         c.run(["codesign", "--force", "--sign", "-", "--entitlements", ents, app], log)
     else:
         import devcert
-        c.run([devcert.rcodesign_path(c), "sign", "--entitlements-xml-path", ents, exe], log)
+        eargs, ecwd = devcert.rcodesign_ents(ents)   # Windows 盘符：-e 按第一个冒号拆，只传文件名
+        c.run([devcert.rcodesign_path(c), "sign", *eargs, str(Path(exe).resolve())], log, cwd=ecwd)
 
 
 def write_tv_ipa(c, app, gid, pack, ipa, log):
@@ -727,7 +757,7 @@ def _export_tv(c, gid, pack, shell, sid):
             ctx.write_text("".join(line if l.startswith("game_data\t") else l for l in ctx.read_text(encoding="utf-8").splitlines(keepends=True)),
                            encoding="utf-8", newline="\n")
         if sys.platform == "darwin":
-            packer.sign_container(c, app, log)   # 改了 Info.plist：Mac 重签 ad-hoc（同 finish_container）
+            packer.sign_container(c, app, log)   # 改了 Info.plist：Mac 重签 ad-hoc
         ents, eva = entitlements_for(c, app, out / "tv.entitlements")
         if eva:
             adhoc_entitle(c, app, ents, log)
@@ -754,51 +784,169 @@ def install_app(c, dev_id, app):
         raise Failure("装不上 Apple TV：" + failed[1], code=install.classify(failed[1], default="device_install_failed"))  # 非玩家句
 
 
+SHELL_FRESH = (3 * 86400, 30 * 86400)   # 电视上的壳签名多新就不重签重装：免费账号描述文件 7 天到期，签了不到 3 天才跳过；付费 30 天（同 iPhone install.SAME_APP_FRESH）
+
+
+def shell_fresh(c, rec, bid, sid, eva=False):
+    """电视上已是本版壳、同一个包名、签名离到期还早、请求没要求重装、要「扩展虚拟寻址」时现装的带着 → 不重签重装 App，只推这款"""
+    signed = rec.get("signed") or {}
+    if c.r.get("forceInstall") or rec.get("bundleId") != bid or rec.get("shellId") != sid or not isinstance(signed.get("at"), (int, float)):
+        return False
+    if eva and not rec.get("eva"):
+        return False
+    return time.time() - signed["at"] < SHELL_FRESH[0 if signed.get("free", True) else 1]
+
+
+def assemble_shell(c, shell):
+    """通用壳（11-19 Apple TV 也走它）：只有壳的 tvOS 容器（s2a_catalogue.json 的 games 为空），各款程序包另推进电视 program/。→ (临时目录, S2Arm.app)"""
+    import host_update
+    import ipa as packer
+    icon = c.engine / "launchers/macos/Branding/AppIcon-iOS.png"
+    if not icon.is_file():
+        raise Failure("这个 S2Arm 安装包不完整（缺应用图标），请重新下载 S2Arm。", code="engine_incomplete")
+    out = Path(tempfile.mkdtemp(prefix=".tv-shell-", dir=c.library))
+    app, log = out / "S2Arm.app", c.logs / (c.task + "-container.log")
+    try:
+        c.run([sys.executable, "-X", "utf8", "-B", c.engine / "pack/ship_ext.py", "container", "--shell-only", "--shell", shell, "--out", app,
+               "--bundle-id", packer.CONTAINER_BUNDLE, "--icon", icon, "--sign", "none", "--host-abi", str(host_update.HOST_ABI),
+               "--version", packer.release_version(c.engine), "--display-version", packer.display_version(c.engine)], log, tv_env(c))
+        packer.sign_container(c, app, log)   # 0.6.0 起 ipa.finish_container 已并进 sign_container（68e5887f1），这里漏改：每次装 Apple TV 都 AttributeError（#1758）
+    except BaseException:
+        shutil.rmtree(out, ignore_errors=True)
+        raise
+    return out, app
+
+
+def tv_signer(c):
+    """电视上的程序包签名：钥匙串开发身份（pack/dev_sign.py --dylib，按这个包名的 tvOS 开发描述文件挑身份，同签 App 的那一个）。
+    同一团队才过宿主加载镜像包时的库校验"""
+    def run(dylib, team, bundle):
+        c.run([sys.executable, Path(c.engine) / "pack/dev_sign.py", "--dylib", dylib, bundle, team], c.logs / (c.task + "-program-sign.log"),
+              env=dict(c.env(), S2A_SIGN_PLATFORM=PLATFORM))
+    run.kind = "xcode-tvos"
+    return run
+
+
+class TvClient:
+    """install.push_program 要的设备客户端，走 devicectl（电视没有数据线、没有 AFC）：只用 put（一个 .s2arm 写进电视上 App 的导入文件夹，App 自己导入）"""
+
+    def __init__(self, c, dev_id, bid, work, udid=""):
+        sys.path.insert(0, str(Path(c.engine) / "tools"))
+        import push_pack as P
+        self.P, self.work = P, Path(work)
+        self.dc = P.Devicectl(dev_id, bid, work, udid=udid or None, env=dict(c.env(), S2A_PUSH_TV="1"))   # 中断提示按电视说（#1696）
+
+    def put(self, src, rel):
+        try:
+            self.dc.put(src, rel)
+        except self.P.Fail as e:
+            raise Failure(str(e).replace("iPhone", KIND).replace("手机", "电视"), code="resource_transfer_failed") from e  # 非玩家句（换字；原句是 push_pack 的玩家句）
+
+
+def push_programs(c, dev_id, bid, games, rec, team, udid, work, sid):
+    """各款程序包（tvOS 版，program_pack.sign(platform="tvos")，程序件取 image/tvos/kit）按设备记录判要不要推、要推的打成 .s2arm 推进电视上 App 的导入文件夹
+    （install.push_program，同 iPhone）。→ {游戏号: program 记录}。这款（games[0]）的程序件放不进本版壳 / 出不成照抛；
+    别的款放不进（旧版出的）/ 出不成记黄字、这次不带（它们的资源包与存档还在电视上，重新出 Apple TV 包再装就回来）"""
+    import program_pack
+    import ipa as packer
+    signer, cl = tv_signer(c), TvClient(c, dev_id, bid, work, udid)
+    looks = packer.container_custom(c)
+    out, dropped = {}, []
+    names = {g["id"].upper(): g.get("name") or g["id"] for g in c.catalog()["games"]}
+    for i, g in enumerate(games):
+        old = (rec.get("games", {}).get(g) or {}).get("program")
+        kit = usable_kit(c, g, sid)
+        if kit is None and i == 0:
+            raise Failure("这款的 Apple TV 版不是这一版 S2Arm 出的（或还没出）：先出 Apple TV 包，再装到 Apple TV。", code="container_stale")
+        try:
+            if kit is None:
+                raise Failure("", code="container_stale")
+            pkg = program_pack.sign(c, g, team, bid, signer, platform=PLATFORM, kit=kit)
+        except Failure:
+            if i == 0:
+                raise
+            dropped.append(names.get(g, g))
+            continue
+        custom = next((v for k, v in looks.items() if k.upper() == g.upper()), None)
+        want = dict(json.loads((Path(pkg) / "catalogue.json").read_text(encoding="utf-8")), look=install.look_of(custom))
+        if not program_pack.need(c, g, old, team, want=want):
+            out[g] = old
+            continue
+        out[g] = install.push_program(cl, g, pkg, install.import_inbox(cl, TV_DOCS), custom=custom)   # 一个 .s2arm 进电视上 App 的导入文件夹，App 自己导入（同 iPhone）
+    if dropped:
+        c.diagnostic(S_DROPPED.replace("{0}", "「" + "」「".join(dropped) + "」"), code="container_stale", severity="warning")
+    return out
+
+
 def install_tv(c):
-    """作业 tvInstall：这款放进电视上的 S2Arm（一个 App 装下这台电视上的各款）并推资源包，见本文件开头"""
+    """作业 tvInstall（0.6.0 起 Apple TV 也走通用壳）：电视上的 S2Arm 只装一次壳（本版、同包名、签名还新鲜就不重装），
+    这款的程序包与资源包推进电视；电视上已有的别的款缺程序包 / 程序包旧了一并补推（0.5.x 整包装过的老款、换了壳的）。见本文件开头"""
     import ipa as packer
     gid = (c.r.get("gameId") or "").upper()
     pack = require_pack(c, gid)
     c.begin("找签名账号与 Apple TV", 1, 6)
     team = install.pick_team(install.xcode_teams(c.env()), c.r.get("teamId"))
+    tid = team["id"]
     dev = pick(c, (c.r.get("device") or "").strip())
     key, name, udid = tv_key(dev), tv_name(dev), dev.get("hardwareProperties", {}).get("udid") or ""
-    bid = tv_bundle_id(team["id"])
+    bid = tv_bundle_id(tid)
     rec = load_rec(c, key)
-    c.begin("把这款放进 Apple TV 上的 S2Arm", 2, 6)
     shell, sid = tv_shell(c)
-    out, app, games = assemble(c, gid, rec.get("games") or {}, shell, sid)
-    log = c.logs / (c.task + "-install.log")
-    try:
-        info = app / "Info.plist"
-        import plistlib
-        pl = plistlib.loads(info.read_bytes()); pl["CFBundleIdentifier"] = bid
-        info.write_bytes(plistlib.dumps(pl))
-        sign(c, app, team, bid, udid, log)
-        c.begin("装到 Apple TV", 5, 6)
-        if rec.get("bundleId") == bid:   # 覆盖装前把电视上各款的存档拉回 Mac（装 App 本身不动数据容器，备份是防万一）；备份不了只记黄字、照装
-            for g in sorted(set(rec.get("games") or {}) & set(games)):
-                try:
-                    backup_game(c, dev["identifier"], bid, g)
-                except Failure as e:
-                    c.diagnostic(f"装机前没能备份 Apple TV 上这款的存档（{e}），照常装了；装 App 不会动电视上的存档。", code="save_backup", severity="warning")  # 非玩家句
-        install_app(c, dev["identifier"], app)
-    finally:
-        shutil.rmtree(out, ignore_errors=True)
-    packs = {g: (tv_pack(c, packer.library_id(c, g)) if (tv_pack(c, packer.library_id(c, g)) / "manifest.json").is_file() else None) for g in games}
-    moved = rec.get("bundleId") not in ("", bid)
-    stale = [g for g in games if packs[g] is not None and (moved or g == gid or install.pack_id(packs[g]) != (rec["games"].get(g) or {}).get("pack"))]
-    c.begin("把游戏推进 Apple TV（只推变了的文件；第一次大游戏要几分钟）", 6, 6)
+    moved = rec.get("bundleId") not in (None, "", bid)
+    if moved:   # 换了团队 = 换包名 = 电视上另一个 App：原来那个 App 里的各款这里都没有，按没推过算（原来的 App 和存档留在电视上不动）
+        rec = {k: v for k, v in rec.items() if k != "games"}
+    in_library = {g["id"].upper() for g in c.catalog()["games"] if not g.get("hidden")}
+    games = [gid] + sorted(g for g in (rec.get("games") or {}) if g != gid and g in in_library)
+    kits = {g: usable_kit(c, g, sid) for g in games}
+    if kits[gid] is None:
+        raise Failure("这款的 Apple TV 版不是这一版 S2Arm 出的（或还没出）：先出 Apple TV 包，再装到 Apple TV。", code="container_stale")
+    npdms = [Path(k) / "main.npdm" for k in kits.values() if k is not None]
+    eva = any(is_switch2(n) for n in npdms)
+    installed = False
+    if not shell_fresh(c, rec, bid, sid, eva):
+        c.begin("组 Apple TV 上的 S2Arm（不带游戏）", 2, 6)
+        out, app = assemble_shell(c, shell)
+        log = c.logs / (c.task + "-install.log")
+        try:
+            import plistlib
+            info = app / "Info.plist"
+            pl = plistlib.loads(info.read_bytes()); pl["CFBundleIdentifier"] = bid
+            info.write_bytes(plistlib.dumps(pl))
+            sign(c, app, team, bid, udid, log, npdms)
+            c.begin("装到 Apple TV", 5, 6)
+            if rec.get("bundleId") == bid:   # 覆盖装前把电视上各款的存档拉回 Mac（装 App 本身不动数据容器，备份是防万一）；备份不了只记黄字、照装
+                for g in sorted(rec.get("games") or {}):
+                    try:
+                        backup_game(c, dev["identifier"], bid, g)
+                    except Failure as e:
+                        c.diagnostic(f"装机前没能备份 Apple TV 上这款的存档（{e}），照常装了；装 App 不会动电视上的存档。", code="save_backup", severity="warning")  # 非玩家句
+            install_app(c, dev["identifier"], app)
+        finally:
+            shutil.rmtree(out, ignore_errors=True)
+        installed = True
+        rec = dict(rec, shellId=sid, bundleId=bid, eva=eva, signed=dict(at=time.time(), free=bool(team.get("free")), device=name))
+        save_rec(c, key, dict(rec, at=time.time()))
+    c.begin("把游戏的程序推进 Apple TV", 6, 6)
+    progs = {}
+    with packer.program_locks(c, games), tempfile.TemporaryDirectory(dir=c.private) as w:
+        try:
+            progs = push_programs(c, dev["identifier"], bid, games, rec, tid, udid, w, sid)
+        finally:   # 推到一半失败：已推好的记下，没推的下次照推
+            had = rec.get("games") or {}
+            save_rec(c, key, dict(rec, games={g: dict(had.get(g) or {}, **({"program": progs[g]} if g in progs else {})) for g in set(had) | set(progs)},
+                                  at=time.time()))
+    c.begin("把游戏资源推进 Apple TV（只推变了的文件；第一次大游戏要几分钟）", 6, 6)
+    # 这款照推（push_pack 按内容只补缺的 / 变了的）；别的款资源包号变了（重新出过 Apple TV 包）也补推，同 0.5.x 整包装机
+    stale = [gid] + [g for g in progs if g != gid and (tv_pack(c, g) / "manifest.json").is_file()
+                     and install.pack_id(tv_pack(c, g)) != ((rec.get("games") or {}).get(g) or {}).get("pack")]
     files = size = 0
-    pushed = {g: (rec["games"].get(g) or {}).get("pack", "") for g in games}
-    try:
-        for g in stale:
-            f, n = push(c, dev["identifier"], bid, g, packs[g], udid)
-            verify(c, dev["identifier"], bid, g, packs[g])
-            files += f; size += n
-            pushed[g] = install.pack_id(packs[g])
-    finally:   # 推到一半失败：已推好的记下，没推的下次照推
-        save_rec(c, key, dict(load_rec(c, key), games={g: dict(pack=pushed[g]) for g in games}, shellId=sid, bundleId=bid, at=time.time(),
-                              signed=dict(at=time.time(), free=bool(team.get("free")), device=name)))
+    for g in stale:
+        p = pack if g == gid else tv_pack(c, g)
+        f, n = push(c, dev["identifier"], bid, g, p, udid)
+        verify(c, dev["identifier"], bid, g, p)
+        files += f; size += n
+        rec = load_rec(c, key)
+        save_rec(c, key, dict(rec, games=dict(rec.get("games") or {}, **{g: dict((rec.get("games") or {}).get(g) or {}, pack=install.pack_id(p))}), at=time.time()))
+    games = sorted(g for g in (load_rec(c, key).get("games") or {}) if g in progs)
     return dict(outputPath="", bundleId=bid, games=games, packFiles=files, packBytes=size, device=name, deviceName=name, deviceKind=KIND,
-                team=team.get("name") or "", free=bool(team.get("free")), openToFinish=True)
+                team=team.get("name") or "", free=bool(team.get("free")), installed=installed, openToFinish=True)

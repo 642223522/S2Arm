@@ -52,6 +52,11 @@ REWRITE_OUTPUTS = tuple(('*.code_patch.tsv *.patched.bin *.fixups.tsv *.gates.ts
 
 LAYOUT_ZSTD = '1.5.7'   # 布局阶段要的 zstd 命令行钉版（Mac Homebrew 同版）；pack/orch/oneclick_win.py --check 起单前按它核
 
+def bfttf(folder):
+    """folder 里的共享字体 *.bfttf；「._」开头的是 exFAT 等盘上 macOS 给每个文件配的 AppleDouble 附属文件，不是字体（不然 7 份数成 14 份、拷进包、进字体身份）"""
+    return [p for p in Path(folder).glob('*.bfttf') if not p.name.startswith('._')]
+
+
 def _title_id(directory):
     """目录里 unpack.tsv 记的程序号（大写）；读不出 → ''"""
     return next((line.split('\t', 1)[1].strip().upper() for line in read(Path(directory) / 'unpack.tsv').splitlines() if line.startswith('title_id\t')), '')
@@ -338,6 +343,8 @@ def rewrite_plan(game, current, deps):
                      and len(line.split('\t')) >= 4 and line.split('\t')[0].upper() == pid
                      and line.split('\t')[1].lower() == bid and line.split('\t')[3].lower() == 'apple'), '')   # F7 #1574：苹果路线只取 apple 行
     fps = REPO / f'runtime/fps/{bid[:16]}.tsv'
+    # 我方帧率表（c 行改指令）只在内部对照口径 S2A_CAPS_OWN=1 进包，同 stage_rewrite.sh FT（11-18，#1607：60 帧关着游戏也被解锁）
+    fps = fps if env.get('S2A_CAPS_OWN') == '1' and fps.is_file() else None
     fix = REPO / f'runtime/fix/{bid[:16]}.tsv'   # 游戏缺陷修补表（改写器 fix_rows）：仓库源表，改写器直接读，不进产物根
     dirs, selection, on = community_selection(env, pid, bid)
     if env.get('S2A_COMMUNITY_SELECT'):
@@ -350,7 +357,7 @@ def rewrite_plan(game, current, deps):
         b = (selection + '\n').encode() + (REPO / 'pack/cpatch.py').read_bytes()
         b += b''.join((d / 'INDEX.tsv').read_bytes() for d in dirs if (d / 'INDEX.tsv').is_file())
         b += b''.join(f.name.encode() + b'\n' + f.read_bytes() for d in cheats for f in (sorted(d.glob('*.txt')) if d.is_dir() else [])
-                   if f.is_file() and f.name not in ('enabled.txt', 'status.txt'))   # 开关与状态不进键：玩家开关不重跑改写
+                   if f.is_file() and f.name not in ('enabled.txt', 'status.txt') and not f.name.startswith('._'))   # 开关与状态不进键：玩家开关不重跑改写
         ck = ' cpatch=' + digest(b)
     ad = deps.work / 'addr'
     ad.mkdir()
@@ -379,14 +386,14 @@ def rewrite_plan(game, current, deps):
     else:
         patch = None
     key = digest(f'{key} backend={rk.strip()}{ck}{code}' +
-                 (f' fps={digest(fps.read_bytes())}' if fps.is_file() else '') +
+                 (f' fps={digest(fps.read_bytes())}' if fps else '') +
                  (f' fix={digest(fix.read_bytes())}' if fix.is_file() else '') +
                  (f' verified={digest(verified)}' if verified else ''), 10)
     key = digest(f'{key} inputs={rewrite_inputs(current)}', 10)
     tag = f'rw-{key}' + (f'-{target}' if target != 'apple' else '') + ('-spin' if spin else '')
     deps.record('graphics/nvn/tools/romfs_list.py')
     return dict(key=key, tag=tag, bid=bid, tables=tables, verified=verified,
-                fps=fps if fps.is_file() else None, fix=fix if fix.is_file() else None, patch=patch, addr=addr,
+                fps=fps, fix=fix if fix.is_file() else None, patch=patch, addr=addr,
                 addr_log=ad / 'log', community=bool(ck), dirs=dirs, selection=selection)
 
 
@@ -719,13 +726,14 @@ class Stages:
         deps = Dependencies(stage, current)
         try:
             base, plan = self._caps_plan(current, deps)
-            replay = ('s2a_caps.tsv', 's2a_caps.all.tsv', 'caps.log', '.stage_caps', '.stage_caps.deps')
+            replay = ('s2a_caps.tsv', 's2a_caps.all.tsv', 'caps.log', '.stage_caps', '.stage_caps.deps') + \
+                (('widen_verified.tsv',) if plan else ())   # 安卓标记是本阶段产物：重放到新现行时按它换（同 pack/stage_caps.sh）
             key = base
             if read(current / f'.stage_{stage}') == deps.key(base):
                 return self._result(stage, start, current, key, skipped=True)
             tx = self.roots.begin(game, self.roots.tag(game, stage + '-' + digest(key, 8)), env=deps.env)
             try:
-                self._caps(tx.path, deps)
+                self._caps(tx.path, deps, plan)
                 deps.save(tx.path, base)
                 text(tx.path / f'.stage_{stage}', key + '\n')
                 result = self._result(stage, start, tx.path, key)
@@ -740,10 +748,37 @@ class Stages:
             deps.close()
 
     @staticmethod
+    def _caps_target(deps):
+        """清单 / 失效键 / 验证行按平台分（同 pack/stage_caps.sh TGT）：S2A_PACK_PLAT=android → android，其余 apple"""
+        return 'android' if deps.env.get('S2A_PACK_PLAT', 'ios') == 'android' else 'apple'
+
+    @staticmethod
+    def _caps_android_rewrite(current, pid, deps):
+        """安卓（F7 #1574，同 pack/stage_caps.sh）：改写由 android/tools/make_pack.py 出包时跑、模块不进产物根，没有 .stage_rewrite——
+        键改按「宽屏已验证表的安卓行 + 安卓改写键（改写器源码指纹 + 后端键 + ABI / spin / sdkcut）」；返回 (改写键, 安卓验证行或 '')"""
+        bid = (current / 'exefs/main').read_bytes()[0x40:0x50].hex()
+        table = Path(deps.env.get('S2A_WIDEN_DIR') or REPO / 'graphics/widen/tables') / 'verified.tsv'
+        verified = ''
+        if table.is_file():
+            for line in read(table).splitlines():
+                cols = line.split('\t')
+                if not line.startswith('#') and len(cols) > 3 and cols[0].upper() == pid and cols[1].lower() == bid and cols[3].lower() == 'android':
+                    verified = line
+                    break
+        abi = re.search(r"^REWRITE_ABI = '([^']+)'", read(REPO / 'android/tools/make_pack.py'), re.M)
+        if not abi:
+            raise StageError('取不到安卓改写 ABI（android/tools/make_pack.py REWRITE_ABI）')
+        sd, _ = deps.python('pack/rewriter.py', 'source')
+        rk, _ = deps.python('pack/rewriter.py', 'key')
+        rwk = (f"target=android rewriter={sd.strip()}:{rk.strip()} abi={abi[1]} spin={deps.env.get('S2A_REWRITE_SPIN', '0')}"
+               f" sdkcut={deps.env.get('S2A_SDK_ADDR_CUT', '1')}")
+        if verified:
+            rwk += ' verified=' + hashlib.sha256(verified.encode()).hexdigest()[:16]
+        return rwk, verified
+
+    @staticmethod
     def _caps_plan(current, deps):
-        rewrite = read(current / '.stage_rewrite')
-        if not rewrite:
-            raise StageError('能力清单需要已完成的改写阶段')
+        target = Stages._caps_target(deps)
         pid = '-'
         try:
             npdm = (current / 'exefs/main.npdm').read_bytes()
@@ -752,22 +787,34 @@ class Stages:
                 pid = f'{struct.unpack_from("<Q", npdm, aci + 0x10)[0]:016X}'
         except (OSError, ValueError, struct.error):
             pass  # The bash key also uses '-' when metadata cannot identify a PID.
-        signals, _ = deps.python('tools/caps_policy.py', 'signal-files', '--target', 'apple')
+        verified = None
+        if target == 'android':
+            rewrite, verified = Stages._caps_android_rewrite(current, pid, deps)
+        else:
+            rewrite = read(current / '.stage_rewrite')
+            if not rewrite:
+                raise StageError('能力清单需要已完成的改写阶段')
+        signals, _ = deps.python('tools/caps_policy.py', 'signal-files', '--target', target)
         signals = signals.strip()
         if not signals:
             raise StageError('取不到能力实现文件清单')
         deps.env['S2A_DEPS_KEYED'] = os.pathsep.join(['docs/名单_验证账.tsv', *signals.split(':')])
-        signal_hash, _ = deps.python('tools/caps_policy.py', 'signal-hash', '--target', 'apple')
+        signal_hash, _ = deps.python('tools/caps_policy.py', 'signal-hash', '--target', target)
         # Like grep -i '^<PID>\t': keep exact matching row bytes and order.
         rows = ''.join(line + '\n' for line in read(REPO / 'docs/名单_验证账.tsv').splitlines()
                        if line.split('\t', 1)[0].upper() == pid.upper())
         deps.record('pack/gen_caps.sh')
-        return digest(rows + 'rewrite=' + rewrite + '\n' + signal_hash), None
+        return digest(rows + 'rewrite=' + rewrite + '\n' + signal_hash), verified   # 第二项：安卓 = 验证行（可为 ''），苹果 = None
 
     @staticmethod
-    def _caps(output, deps):
+    def _caps(output, deps, verified=None):
+        target = 'apple' if verified is None else 'android'
+        if target == 'android':   # 克隆根可能带别的平台或已撤销的旧标记：先清，再按当前安卓验证账重建（同 pack/stage_caps.sh）
+            (output / 'widen_verified.tsv').unlink(missing_ok=True)
+            if verified:
+                text(output / 'widen_verified.tsv', verified + '\n')
         lines, _ = deps.python('tools/caps_policy.py', 'decide',
-                               deps.env.get('S2A_CAPS_REPO') or REPO, output, '--both', '--target', 'apple',
+                               deps.env.get('S2A_CAPS_REPO') or REPO, output, '--both', '--target', target,
                                log=output / 'caps.log')
         Stages._light_log(output / 'caps.log')
         rows = [line.split('\t') for line in lines.splitlines()]
@@ -779,7 +826,7 @@ class Stages:
                  '--all-caps 出包：有来源即开、不看强信号')
         for filename, head, row in zip(('s2a_caps.tsv', 's2a_caps.all.tsv'), heads, rows):
             fps, fps_reason, widen, widen_reason, display = row
-            content = ('plat\tapple\n'   # F7 #1574：清单首行标平台，安卓打包只收 plat android 头
+            content = (f'plat\t{target}\n'   # F7 #1574：清单首行标平台，安卓打包只收 plat android 头
                        f'# 包内能力清单（{head}）\n'
                        '# 格式：<能力>\\t<值>\\t# <原因>（1 = 开，0 = 显式关）；优先级：启动环境 > Settings.bundle（用户改过的设置）> 本文件\n'
                        f'widen\t{widen}\t# {widen_reason}\nfps60\t{fps}\t# {fps_reason}\n'
@@ -887,8 +934,10 @@ class Stages:
         #   否则用现行产物根的 romfs：本阶段只写覆盖层，Windows 别的阶段也不改 romfs，它一直联到播种时那份不可变的身份。
         #   解包目录不可靠：从原件解时 romfs 被挪进共享存储、原处链接在播种那一版修剪后悬空；玩家实报还指到过别的款的解包目录，
         #   原先照用，拿别的款的布局文件生成覆盖叠到这一款上（v0.3.0 Windows）
-        source = next((line[4:] for line in read(current / 'seed.txt').splitlines() if line.startswith('src=')), '')
-        original = Path(source) / 'romfs' if source else None
+        seed = read(current / 'seed.txt').splitlines()
+        source = next((line[4:] for line in seed if line.startswith('src=')), '')
+        # 播种把 RomFS 整目录挪进了产物根（refresh.py move_romfs，seed.txt romfs_moved=1）：产物根这份就是原版，解包目录原处没有 RomFS
+        original = current / 'romfs' if 'romfs_moved=1' in seed else Path(source) / 'romfs' if source else None
         theirs, ours = _title_id(Path(source)) if source else '', _title_id(current)
         lister = _own_romfs_list()   # RomFS 在不在、有没有 Layout / UI / Pack：目录或镜像 romfs.std 都认（romfs_list.is_dir）
         if original is None or not lister.is_dir(original) or (theirs and ours and theirs != ours):
@@ -993,9 +1042,9 @@ class Stages:
             selected = Path(os.environ['S2A_FONTS'])
         else:
             selected = next((Path(p) for p in os.environ.get('S2A_APP_FONTS_DIRS', '').split(os.pathsep)
-                             if p and list(Path(p).glob('*.bfttf'))), None)
+                             if p and bfttf(p)), None)
         if selected is not None:
-            if is_link(selected) or not selected.is_dir() or not list(selected.glob('*.bfttf')):
+            if is_link(selected) or not selected.is_dir() or not bfttf(selected):
                 raise StageError('共享字体目录缺失/非法；配置S2A_FONTS', 75)
             return selected   # v0.2.3 清理：玩家选的字体目录只认 *.bfttf，里面别的条目（软链、.DS_Store）不管、不拒
         run_root = Path(os.environ.get('S2A_RUN_ROOT', Path.home() / '.s2arm/run'))
@@ -1004,7 +1053,7 @@ class Stages:
         stamp = hashlib.sha256(generator.read_bytes()).hexdigest()
         def ready():
             return (dest.is_dir() and not is_link(dest)
-                    and read(dest / '.generator.sha256') == stamp and len(list(dest.glob('*.bfttf'))) == 7)
+                    and read(dest / '.generator.sha256') == stamp and len(bfttf(dest)) == 7)
         if ready():
             return dest   # 自家生成的缓存：ready() 已核生成器指纹与 7 份字体，不再递归扫链接（v0.2.3 清理）
         if is_link(dest) or is_link(dest.parent):
@@ -1028,7 +1077,7 @@ class Stages:
                         or ('版本' in message and 'requirements.txt' in message)):
                     raise StageError('开源字体固定依赖/离线数据未就绪；不下载，或配置S2A_FONTS', 75) from error
                 raise
-            if len(list(temp.glob('*.bfttf'))) != 7:
+            if len(bfttf(temp)) != 7:
                 raise StageError('开源字体生成器没有产出7份字体')
             text(temp / '.generator.sha256', stamp + '\n')
             # The shared file lock protects replacement of this exact cache;
@@ -1109,7 +1158,7 @@ class Stages:
                 synth.append(fields[1])
         def font_rows(folder, algorithm):
             return [(p.name, hashlib.new(algorithm, p.read_bytes()).hexdigest())
-                    for p in sorted(folder.glob('*.bfttf'), key=lambda p: os.fsencode(p.name))]
+                    for p in sorted(bfttf(folder), key=lambda p: os.fsencode(p.name))]
         already = (font_rows(fonts, 'sha1') == font_rows(current / 'systemdata/fonts', 'sha1')
                    and zone is not None and zone.name == '010000000000080E' and not stale
                    and not copies and not synth and (read(current / '.stage_sysdata') == key
@@ -1124,7 +1173,7 @@ class Stages:
             target.mkdir(exist_ok=True)
             remove_owned(target / 'fonts')
             (target / 'fonts').mkdir()
-            for source in fonts.glob('*.bfttf'):
+            for source in bfttf(fonts):
                 copy_file(source, target / 'fonts' / source.name)
             zone = self._timezone(tx.path)
             if stale and zone:
@@ -1180,7 +1229,7 @@ class Stages:
                 raise StageError('S2A_NX_UNPACK未就绪', 75)
             return tool
         source = REPO / 'pack/nx_unpack'
-        inputs = [*sorted(source.glob('*.cs')), *sorted(source.glob('*.csproj'))]
+        inputs = [p for p in [*sorted(source.glob('*.cs')), *sorted(source.glob('*.csproj'))] if not p.name.startswith('._')]
         if not inputs:
             raise StageError('缺nx_unpack源码')
         identity = hashlib.sha256(b''.join(p.read_bytes() for p in inputs)).hexdigest()[:12]

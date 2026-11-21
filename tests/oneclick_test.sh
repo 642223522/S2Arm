@@ -5,7 +5,7 @@
 #   ② 两个本体 → 红「本体应恰好 1 款，实际 2 款」；③ 32 位程序 → 红「只跑 AArch64」；④ 没有本体 → 红「实际 0 款」；⑤ 新款没在表里 → 款名 t<程序号小写>
 #   ⑭ 原件挪走、原位置留软链（10-26 维护者把 Downloads 原件挪外置盘）：本体是指向别处文件的软链、两份更新在软链目录里 → 认出结果同 ①（3 个包）；
 #      pack/srcs.sh 的 src_ids 也列出这 3 个，大小取目标的（2048 字节），不是软链本身
-#   ⑥ 自签：现编的小 App + 内嵌库 → 签名里的权限恰好只有提高内存上限、内嵌库也签上、codesign 严格校验过
+#   ⑥ 自签：现编的小 App + 内嵌库 → 签名里的权限恰好只有提高内存上限、内嵌库也签上、codesign 严格校验过；⑥c 孤儿 ._ 附属文件签名前删掉
 #   ⑰ 目标设备架构（10-27 R13 坑 1）：一键出包与启动器打 iPhone 包（pack/jobs/ipa.py → target.py）同口径，按目标设备设 S2A_PSO_ARCHS。
 #      离线夹具：假 CoreDevice（devicectl 列一台 iPhone16,1）+ 假 Xcode 设备特征库（iPhone16,1 → applegpu_g16p，与真库一致）。
 #      期望：没给 --device 认连着那台、--device 指 UDID/设备名都认、显式 S2A_PSO_ARCHS 不覆盖、认不出按缺省并打一行提示
@@ -84,6 +84,11 @@ xcrun clang -dynamiclib -o "$T/B.app/Frameworks/X.framework/X" "$T/l.c" 2> /dev/
 xattr -wx com.apple.FinderInfo 0000000000000000000400000000000000000000000000000000000000000000 "$T/B.app/Frameworks/X.framework/X"
 o=$(bash "$H/pack/oneclick/adhoc_sign.sh" "$T/B.app" "$H/pack/app.entitlements" 2>&1); r=$?
 ck "⑥b 内嵌库带 Finder 信息也签得过（rc=${r}：$(tail -1 <<< "$o")）、内嵌库校验过" '[ $r = 0 ] && codesign -v "$T/B.app/Frameworks/X.framework" 2> /dev/null'
+# ⑥c App 里有孤儿 AppleDouble 附属文件 ._X.framework（exFAT 盘上被当普通文件拷进来的，#1529 玩家原句「自签内嵌库失败：Frameworks/._NS2Pro.framework（Operation not permitted）」）：
+#   签名前删掉，照样签过、App 里一个 ._ 都不剩、严格校验过
+printf '\x00\x05\x16\x07junk' > "$T/B.app/Frameworks/._X.framework"
+o=$(bash "$H/pack/oneclick/adhoc_sign.sh" "$T/B.app" "$H/pack/app.entitlements" 2>&1); r=$?
+ck "⑥c 孤儿 ._X.framework：rc=${r}（$(tail -1 <<< "$o")）、剩 $(find "$T/B.app" -name '._*' | wc -l | tr -d ' ') 个 ._" '[ $r = 0 ] && [ -z "$(find "$T/B.app" -name "._*")" ] && codesign -v --strict "$T/B.app" 2> /dev/null'
 # ⑦ pack/ipa.sh 共享根只出正式包（测试出包线 10-23）：共享根（S2A_ROOTS = S2A_ROOTS_SHARED）上给 S2A_SIGN=adhoc / S2A_BUNDLE_ID / S2A_DISPLAY_SUFFIX 各报红退出，在刷新产物根之前（产物根不动）；
 #   已停用的 S2A_DISPLAY_NAME（11-04：显示名只取游戏自带 nacp 标题，pack/display_name.py）任何根上都报红
 mkdir -p "$T/shr"; for kv in S2A_SIGN=adhoc S2A_BUNDLE_ID=x.y S2A_DISPLAY_SUFFIX=z; do
@@ -121,7 +126,7 @@ ck "⑨ 反证：旧判法在同一夹具上误标「${old}」" '[ "$old" = 有�
 # ⑫ 一键流程 refresh 只跑一次（10-25：外层 refresh 和 ipa.sh 里的 refresh 各算一遍，工具链不一致时直连库整份出两遍）：
 #   oneclick 刷完把现行产物根名交给 ipa.sh（S2A_REFRESHED）。私有临时根故意缺 ctl/control.nacp（真刷新必红「刷不到本树的阶段键」）、
 #   缺改写产物（跳过刷新后在「没有改写产物」停下，不往下编包）。期望：不给 → 照刷；给了且等于现行 → 不刷；给了但现行已变 → 照刷
-mkdir -p $T/rr/acnh@v1/exefs; ln -s acnh@v1 $T/rr/acnh@现行
+mkdir -p $T/rr/acnh@v1/exefs; printf '%s\n' acnh@v1 > $T/rr/acnh@现行
 IP() { env S2A_ROOTS=$T/rr S2A_ROOTS_SHARED=$T/shr2 S2A_PACK_LOCKS=$T/locks2 S2A_PACK_PAUSE=$T/pause S2A_DISK_FREE_G=999 S2A_WIDEN_AUTO_RUN=0 S2A_SIGN=adhoc "$@" bash "$H/pack/ipa.sh" acnh 2>&1; }
 o1=$(IP); o2=$(IP S2A_REFRESHED=acnh@v1); o3=$(IP S2A_REFRESHED=acnh@旧)
 ck "⑫ 不给 S2A_REFRESHED → ipa.sh 照刷新（报刷不到阶段键）" '[[ "$o1" == *刷不到本树的阶段键* ]] && [[ "$o1" != *调用方刚刷过* ]]'

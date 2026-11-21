@@ -31,6 +31,9 @@ static void write_file(const char *p, const char *body) {
 // 宿主的 s2a_imgpack_open（imgpack.c，本单测不链）的桩：launchctx.c 选游戏时按名字 dlsym 它。记调用次数，恒回 3（= S2A_IMG_ESIGN，签名本机不认）——
 //   App 包里的款（没有程序包，0.6.0 前玩家手上全是这种）选游戏时不许调它（行为同改造前：进局后由装载器打开）；改造前的写法对所有款都预开，这一桩会把合规款判成「要重签」
 static int g_imgpack_calls;
+// 黄字记录（waived.c 的 s2a_check_waived，本单测不链）的桩：launchctx.c 的 waive 按名 dlsym 它。记下所有黄字，第 7 款核「不再给程序库整份算 SHA-256」
+static char g_waived[4096];
+__attribute__((visibility("default"), used)) void s2a_check_waived(const char *m) { size_t l = strlen(g_waived); snprintf(g_waived + l, sizeof g_waived - l, "%s\n", m ? m : ""); }
 __attribute__((visibility("default"), used)) int s2a_imgpack_open(const char *path, void **out, char *why, size_t n) { (void)path; (void)out; if (why && n) why[0] = 0; g_imgpack_calls++; return 3; }
 static int g_ctor_ran, g_ctor_container, g_ctor_frozen;
 // 同 vawin.c constructor(101)：构造期第一次取上下文。只在 exec 出来的副本里取（父进程取了会把兼容冻结带进下面 fork 的子进程）
@@ -86,6 +89,9 @@ static int child_waive(const char *gid) {
         CK(s2a_launch_ctx_get() && getenv("S2A_DOCS"), "约定号对不上：照常冻结上下文、写环境");
     } else {
         CK(r && !strstr(r, "不是同一次出的") && strstr(r, "签名本机不认"), "校验值对不上 → 不再按校验值拒；只剩签名不认（物理上加载不了）那一项拒");
+        // 11-19 起局前完整性校验去掉：清单 image_sha256 全 0（一定对不上），旧代码会整份读程序库算 SHA-256、黄字记「不是同一次出的」；现在一个字都不读、不记
+        CK(!strstr(g_waived, "不是同一次出的") && !strstr(g_waived, "SHA-256") && !strstr(g_waived, "程序包核不了"), "选游戏不再给程序库算 SHA-256（没有校验值那条黄字）");
+        if (g_waived[0]) printf("    黄字：%s", g_waived);
         if (r) printf("    原因：%s\n", r);
     }
     return bad;
@@ -224,6 +230,20 @@ int main(int argc, char **argv) {
     snprintf(p2, sizeof p2, "%s/Frameworks/S2AImages-0100000000000001.dylib", app); write_file(p2, "x");
     snprintf(p2, sizeof p2, "%s/Games/0100000000000005", app); mkdirs(p2);   // 第 5 款：随行目录、镜像包都在，只是 host_abi 对不上（进程级用例核拒载）
     snprintf(p2, sizeof p2, "%s/Frameworks/S2AImages-0100000000000005.dylib", app); write_file(p2, "x");
+    {   // 独立 App（一 App 一游戏）判定：期望值按布局约定手写
+        char g[64] = "", one[1300], op[1400];
+        ck(!s2a_launch_ctx_single_game(app, g, sizeof g), "独立 App 判定：清单里有多款 → 不是");
+        snprintf(one, sizeof one, "%s/Single/S2Arm.app", dir);
+        snprintf(op, sizeof op, "%s/Games/0100ABCD00000001", one); mkdirs(op);
+        snprintf(op, sizeof op, "%s/Frameworks", one); mkdirs(op);
+        snprintf(op, sizeof op, "%s/s2a_catalogue.json", one);
+        write_file(op, "{\"schema\":1,\"shell_id\":\"abc\",\"games\":[{\"title_id\" : \"0100ABCD00000001\",\"name\":\"一\"}]}\n");
+        ck(!s2a_launch_ctx_single_game(one, g, sizeof g), "独立 App 判定：只有一款但程序库不在包里（通用壳布局）→ 不是");
+        snprintf(op, sizeof op, "%s/Frameworks/S2AImages-0100ABCD00000001.dylib", one); write_file(op, "x");
+        ck(s2a_launch_ctx_single_game(one, g, sizeof g) && eq(g, "0100ABCD00000001"), "独立 App 判定：只有一款、程序库和随行目录在包里 → 是，给出游戏号");
+        char sm[4]; ck(!s2a_launch_ctx_single_game(one, sm, sizeof sm), "独立 App 判定：游戏号放不下给的缓冲 → 不是（不截断）");
+        snprintf(op, sizeof op, "%s/ShellOnly/S2Arm.app", dir); ck(!s2a_launch_ctx_single_game(op, g, sizeof g), "独立 App 判定：只装壳（games 空）→ 不是");
+        ck(!s2a_launch_ctx_single_game(NULL, g, sizeof g), "独立 App 判定：包根为空 → 不是"); }
     ck(!s2a_launch_ctx_resolve_game(&c, app, home, "0100000000000001", why, sizeof why), "容器解析：合规的那款成功");
     if (why[0]) printf("  原因：%s\n", why);
     char w[600];
@@ -248,6 +268,17 @@ int main(int argc, char **argv) {
         snprintf(q, sizeof q, "%s/Games/0100000000000006", pr); ck(eq(c.module_dir, q) && eq(c.caps_dir, q), "程序包：模块目录 = 能力清单目录 = <程序包>/Games/<gid>");
         snprintf(q, sizeof q, "%s/Documents/games/0100000000000006", home); ck(eq(c.docs, q), "程序包：文档根照旧 $HOME/Documents/games/<gid>");
         ck(!s2a_launch_ctx_resolve_game(&c, app, home, "0100000000000001", why, sizeof why) && c.from_program == 0, "没有程序包的那款：照旧取 App 包内，from_program = 0");
+        {   // 独立 App（0.6.3）：App 包里自带这款的镜像包，沙盒里又留着一份程序包（显式描述文件同包名、通用壳推过）→ 一律取包内，不看程序包
+            char p1[900], q1[1000];
+            snprintf(p1, sizeof p1, "%s/Library/Application Support/S2Arm/games/0100000000000001/program", home);
+            snprintf(q1, sizeof q1, "%s/Games/0100000000000001", p1); mkdirs(q1);
+            snprintf(q1, sizeof q1, "%s/S2AImages-0100000000000001.dylib", p1); write_file(q1, "z");
+            snprintf(q1, sizeof q1, "%s/catalogue.json", p1);
+            write_file(q1, "{\"schema\":1,\"title_id\":\"0100000000000001\",\"host_abi\":1,\"image\":\"S2AImages-0100000000000001.dylib\"}\n");
+            char want[600]; snprintf(want, sizeof want, "%s/Frameworks/S2AImages-0100000000000001.dylib", app);
+            ck(!s2a_launch_ctx_resolve_game(&c, app, home, "0100000000000001", why, sizeof why) && c.from_program == 0 && eq(c.images, want),
+               "包里自带镜像包、沙盒另有程序包：取包内，from_program = 0");
+            snprintf(q1, sizeof q1, "rm -rf '%s'", p1); if (system(q1)) printf("  清不掉 %s\n", p1); }
         // 拒绝：清单不是这一款 / image 带路径 / 镜像包缺 / 随行目录缺
         snprintf(q, sizeof q, "%s/catalogue.json", pr);
         write_file(q, "{\"title_id\":\"0100000000000009\",\"image\":\"S2AImages-0100000000000006.dylib\"}\n");

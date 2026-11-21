@@ -229,6 +229,11 @@ namespace S2A.Services
                         Invoke(ctx, tipc);
                     }
                 }
+
+                if (domain && response.ObjectIds.Count > 0)
+                {
+                    SnapLog.OutObjects(response.ObjectIds);   // 即时存档：这条请求交出的域对象号（恢复重放时按原号分配）
+                }
             }
             catch (ServiceNotImplementedException e)
             {
@@ -251,6 +256,11 @@ namespace S2A.Services
                 Red.Report($"服务命令参数异常 {Target(s, tipc, domain)} 命令 {CommandId(request, s, tipc)}", $"{e.GetType().Name}：{e.Message}\n{e.StackTrace}");
                 WriteError(response, s, tipc, domain, Red.ResultUnknownCommand);
                 return;
+            }
+            finally
+            {
+                // fs 流式读限流：Read 里记下的待睡时长在放开会话锁之后才睡，不挡同会话别的线程；放 finally，异常返回的请求也当场睡掉（compat S2AFsStreamPace）
+                Ryujinx.HLE.HOS.Services.Fs.FileSystemProxy.S2AFsStreamPace.SleepPending();
             }
         }
 

@@ -5,6 +5,7 @@
 import contextlib
 import hashlib
 import json
+import os
 import tempfile
 import types
 import unittest
@@ -15,6 +16,11 @@ import jobcase  # noqa: F401  把 pack/jobs 加进路径（同其他作业层单
 import rewrite_refresh as rr
 import sgrade_bf
 from core import Failure
+
+
+def setUpModule():
+    # 临时目录放哪（library.scratch_root，跟着游戏走）另在 test_space_measured 测；这里的合成作业没有游戏库，临时活放私有目录
+    p = patch.object(sgrade_bf, "_scratch", lambda c, g: c.private); p.start(); unittest.addModuleCleanup(p.stop)
 
 
 class AddToPack(unittest.TestCase):
@@ -158,8 +164,6 @@ class IosInputsImage(unittest.TestCase):
             self.assertTrue(sgrade_bf._has_romfs(root))
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class RechainIos(unittest.TestCase):
@@ -177,16 +181,21 @@ class RechainIos(unittest.TestCase):
         (self.pack / "manifest.json").write_text(json.dumps({"version": 2, "files": 3, "total": 10, "index_sha256": "pid0"}), encoding="utf-8")
         self.new = t / "built/shaders/direct"
         (self.new / "b-new").mkdir(parents=True); (self.new / "b-new/lib.idx").write_bytes(b"NEWLIB"); (self.new / "keys.tsv").write_text("k2\n")
-        self.info = {"ios": {"dmshChain": "old", "pack": "pid0", "bfGen": 0, "shellId": "S"}}
+        import host_update
+        self.info = {"ios": {"dmshChain": "old", "pack": "pid0", "bfGen": 0, "shellId": "S", "libGen": host_update.LIB_GEN}}
         self.c = types.SimpleNamespace(emit=lambda *a, **k: None, private=str(t), logs=str(t), task="t")
 
-    def run_rechain(self, chain="new", src=True, rebuilt=None):
+    BUILT = {"version": "9.9.9", "display": "9.9.9"}   # 本版启动器（桩）：重编后记进 builtBy
+
+    def run_rechain(self, chain="new", src=True, rebuilt=None, ios_miss=0, cur="9.9.9"):
         calls = []
         def inputs(c, gid, work):
             return (Path(work) / "root", "game.img") if src else (None, "none")
         def build(c, gid, s, plat, work):
             calls.append(plat); return rebuilt or self.new
         with patch("host_update.engine_compat", lambda c: dict(hostAbi=1, dmshChain=chain)), \
+                patch("host_update.shader_misses", lambda c, g: dict(ios=ios_miss, mac=0)), patch("host_update.built_by", lambda c: self.BUILT), \
+                patch("core.release_version", lambda engine: cur), patch.object(self.c, "engine", None, create=True), \
                 patch.object(sgrade_bf.layout, "game_info", lambda c, g: self.info), patch.object(sgrade_bf.layout, "ios_pack", lambda c, g: self.pack), \
                 patch.object(sgrade_bf.layout, "update_info", lambda c, g, ios: self.info.update(ios=ios)), \
                 patch.object(sgrade_bf, "ios_inputs", inputs), patch.object(sgrade_bf, "rebuild", build):
@@ -209,8 +218,35 @@ class RechainIos(unittest.TestCase):
         self.assertEqual(ix, "".join(r + "\n" for r in want_rows))
         pid = hashlib.sha256(ix.encode()).hexdigest()
         self.assertEqual(json.loads((self.pack / "manifest.json").read_text(encoding="utf-8"))["index_sha256"], pid)
-        self.assertEqual(self.info["ios"], {"dmshChain": "new", "pack": pid, "bfGen": sgrade_bf.BF_GEN, "shellId": "S"})
+        import host_update
+        self.assertEqual(self.info["ios"], {"dmshChain": "new", "pack": pid, "bfGen": sgrade_bf.BF_GEN, "shellId": "S", "libGen": host_update.LIB_GEN, "builtBy": self.BUILT})
         self.assertFalse((self.pack / "shaders/.direct-old").exists() or (self.pack / "shaders/.direct-new").exists(), "不留临时目录")
+
+    def test_same_chain_old_lib_generation_rebuilds(self):
+        # 期望（手写）：链号相同但记录里没有 libGen（0.5.x 出的库，不带客体输入）→ 照样只重编着色器库、记上当前代数；代数已是当前的 → 跳过（上面那条）
+        import host_update
+        del self.info["ios"]["libGen"]
+        r, calls = self.run_rechain(chain="old")
+        self.assertEqual((r, calls), ("updated", ["ios"]))
+        self.assertEqual((self.info["ios"]["dmshChain"], self.info["ios"]["libGen"]), ("old", host_update.LIB_GEN))
+
+    def test_shader_miss_on_old_build_rebuilds(self):
+        # 期望（手写，#1756）：链号、代数都是当前的，但手机上现场翻译过 3 支包里没有的着色器、库是 0.5.8 出的（本版 9.9.9）
+        #   → 只重编着色器库、记本版 builtBy（「建议更新」的 shaderMiss 随之消掉）；链号不变
+        self.info["ios"]["builtBy"] = {"version": "0.5.8", "display": "0.5.8"}
+        r, calls = self.run_rechain(chain="old", ios_miss=3)
+        self.assertEqual((r, calls), ("updated", ["ios"]))
+        self.assertEqual((self.info["ios"]["dmshChain"], self.info["ios"]["builtBy"]), ("old", self.BUILT))
+
+    def test_shader_miss_on_current_build_skips(self):
+        # 期望手写：现场翻译过、但库已是本版出的（9.9.9）→ 重编也补不上（出包流程的事），不重编
+        self.info["ios"]["builtBy"] = dict(self.BUILT)
+        self.assertEqual(self.run_rechain(chain="old", ios_miss=3), ("skip", []))
+
+    def test_no_miss_old_build_skips(self):
+        # 期望手写：库是旧版出的、但手机上没现场翻译过（0 支）→ 不重编（不因版本旧白跑几十分钟）
+        self.info["ios"]["builtBy"] = {"version": "0.5.8", "display": "0.5.8"}
+        self.assertEqual(self.run_rechain(chain="old", ios_miss=0), ("skip", []))
 
     def test_no_material_unavailable_and_untouched(self):
         before = (self.pack / "index.tsv").read_text(encoding="utf-8")
@@ -219,8 +255,60 @@ class RechainIos(unittest.TestCase):
         self.assertEqual((self.pack / "index.tsv").read_text(encoding="utf-8"), before)
         self.assertEqual(self.info["ios"]["dmshChain"], "old", "没重编就不记新链号（「建议更新」照旧提示）")
 
+    def test_windows_without_metal_unavailable_and_untouched(self):
+        # 期望手写：Windows 没装 Metal 开发工具时重出给 None（同 Windows 出包不带着色器库）→ 'unavailable'、资源包与链号都不动，推送照常（调用方记一行）
+        before = (self.pack / "index.tsv").read_text(encoding="utf-8")
+        with patch.object(sgrade_bf, "rebuild", lambda *a: None), patch("host_update.engine_compat", lambda c: dict(hostAbi=1, dmshChain="new")), \
+                patch.object(sgrade_bf.layout, "game_info", lambda c, g: self.info), patch.object(sgrade_bf.layout, "ios_pack", lambda c, g: self.pack), \
+                patch.object(sgrade_bf, "ios_inputs", lambda c, g, w: (Path(w) / "root", "game.img")):
+            r = sgrade_bf.rechain_ios(self.c, "0100AAAA00000000")
+        self.assertEqual(r, "unavailable")
+        self.assertEqual((self.pack / "index.tsv").read_text(encoding="utf-8"), before)
+        self.assertEqual(self.info["ios"]["dmshChain"], "old")
+
     def test_incomplete_rebuild_raises_and_keeps_old(self):
         bad = Path(self.tmp.name) / "bad/shaders/direct"; bad.mkdir(parents=True)
         with self.assertRaises(Failure):
             self.run_rechain(rebuilt=bad)
         self.assertTrue((self.pack / "shaders/direct/b-old/lib.idx").is_file(), "重编不完整不动旧库")
+
+
+class WindowsRebuildTests(unittest.TestCase):
+    """Windows 重出直连库（_rebuild_win）：另起进程跑 Windows 出包的直连库那一步（oneclick_win.direct），环境用作业层的（c.env）＋ iOS 平台 ＋ 这款的直连缓存。期望按方案手写"""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        t = Path(self.tmp.name)
+        self.root = t / "src"; (self.root / "exefs").mkdir(parents=True)
+        (self.root / "shaders/direct/b-old").mkdir(parents=True); (self.root / "extract").mkdir()   # 旧库与旧抽取：重出前要清掉
+        self.seen = {}; self.metal = True
+        def run(args, log, env, cwd=None, **k):
+            root, work, tid = Path(args[-3]), Path(args[-2]), args[-1]
+            self.seen.update(code=args[4], root=root, tid=tid, env=env, cwd=cwd, stale=[p for p in ("shaders/direct", "extract") if (root / p).exists()])
+            out = work / "direct"
+            if self.metal:
+                (out / "b-new").mkdir(parents=True); (out / "b-new/lib.idx").write_bytes(b"L"); (out / "keys.tsv").write_text("k\n")
+            (work / "direct_result.txt").write_text(str(out) if self.metal else "", encoding="utf-8")
+        self.c = types.SimpleNamespace(engine=str(t / "eng"), logs=str(t / "logs"), task="t", env=lambda: {"S2A_PREBUILT_TOOLS": "pre"}, run=run)
+
+    def rebuild(self):
+        with patch.object(sgrade_bf, "WIN", True), patch.object(sgrade_bf, "_win_profile", lambda c, root: self.seen.setdefault("profile", Path(root))), \
+                patch("library.direct_cache_dir", lambda c, g: Path(self.tmp.name) / "dcache" / g):
+            return sgrade_bf.rebuild(self.c, "0100aaaa00000000", self.root, "ios", Path(self.tmp.name) / "w")
+
+    def test_runs_windows_direct_step_in_job_env(self):
+        out = self.rebuild()
+        self.assertEqual(sgrade_bf.lib_dir(out).name, "b-new")
+        self.assertIn("ow.direct(", self.seen["code"])
+        self.assertEqual((self.seen["root"], self.seen["tid"], self.seen["cwd"]), (self.root, "0100AAAA00000000", self.c.engine))
+        self.assertEqual(self.seen["profile"], self.root, "先补配置档")
+        self.assertEqual(self.seen["stale"], [], "旧库 / 旧抽取不带进重出")
+        env = self.seen["env"]
+        self.assertEqual((env["S2A_PREBUILT_TOOLS"], env["S2A_PACK_PLAT"], env["S2A_DIRECT_CACHE"]),
+                         ("pre", "ios", str(Path(self.tmp.name) / "dcache" / "0100aaaa00000000")), "作业层环境（随包预编件）＋ iOS ＋ 这款出包时的直连缓存")
+
+    def test_no_metal_gives_none(self):
+        self.metal = False
+        self.assertIsNone(self.rebuild())
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,7 +1,6 @@
 #include <cstdlib>
 #include <fcntl.h>
 #include <unistd.h>
-#include "nvn/nvn_vk_first_draw.h"
 #include <unwind.h>
 #include <dlfcn.h>
 #include <sys/system_properties.h>
@@ -43,6 +42,7 @@ Java_org_s2arm_android_NativeBridge_configureDebugEnvironment(JNIEnv *env, jclas
 #include "guest_signal.h"
 #include "host_android.h"
 #include "input.h"
+#include "phone_feedback.h"
 #include "memory.h"
 #include "module.h"
 #include "selftest.h"
@@ -155,21 +155,6 @@ Java_org_s2arm_android_NativeBridge_gamePresentCount(JNIEnv *, jclass) {
 #else
     return -1;
 #endif
-}
-
-// B3：直连交换链按渲染目标尺寸出图时的缓冲尺寸；只在游戏运行时（mtl_vk_adapter）里存在。
-extern "C" int s2a_vk_adapter_buffer_geometry(uint32_t *, uint32_t *) __attribute__((weak));
-
-extern "C" JNIEXPORT jint JNICALL
-Java_org_s2arm_android_NativeBridge_bufferGeometry(JNIEnv *env, jclass, jintArray out) {
-    int on = 0;
-    uint32_t w = 0, h = 0;
-    if (s2a_vk_adapter_buffer_geometry) on = s2a_vk_adapter_buffer_geometry(&w, &h);
-    if (out && env->GetArrayLength(out) >= 2) {
-        jint dims[2] = {(jint)w, (jint)h};
-        env->SetIntArrayRegion(out, 0, 2, dims);
-    }
-    return on;
 }
 
 #ifndef S2A_ANDROID_GAME_RUNTIME
@@ -469,6 +454,7 @@ Java_org_s2arm_android_NativeBridge_createGame(JNIEnv *, jclass) {
     if (g_game_host) return 0;   // 一个进程只能创建一次真实 guest / GPU 组合。
     try {
         s2a_android_input_reset();
+        s2a_android_session_period_reset();   // 本局最短周期从这一局重新记
         g_game_host = new AndroidHost(nullptr, true);
         return reinterpret_cast<jlong>(g_game_host);
     } catch (const std::exception &error) {
@@ -1007,13 +993,6 @@ Java_org_s2arm_android_NativeBridge_configureReadonlyRangeCheck(JNIEnv *, jclass
 #endif
 }
 
-extern "C" JNIEXPORT void JNICALL
-Java_org_s2arm_android_NativeBridge_setDrawLog(JNIEnv *, jclass, jint draw_log) {
-    // 生产通道：intent extra s2arm.draw_log → 原生 draw_log 覆盖（-1 不动）。属性通道
-    // debug.s2a.draw_log 在 user 版设备上 untrusted_app 读不到，此通道不依赖它。
-    s2a_fd_set_draw_log((int)draw_log);
-}
-
 extern "C" JNIEXPORT jint JNICALL
 Java_org_s2arm_android_NativeBridge_startGame(JNIEnv *env, jclass, jlong handle, jobject assets, jstring asset_root,
         jobjectArray names, jobjectArray images, jobjectArray fixups, jobjectArray gates, jobjectArray widen,
@@ -1231,6 +1210,7 @@ Java_org_s2arm_android_NativeBridge_stopGame(JNIEnv *env, jclass, jlong handle, 
     s2a_capacity_stop();
     s2a_adpf_stop();
     s2a_cpu_floor_stop();
+    s2a_android_session_period_reset();
     host->stop_reason = jstring_or(env, why, "game stop requested");
     host->stop_normal.store(normal == JNI_TRUE);
     // 后台冻着的客机先放开（同 Mac display_focus_publish_ex(NO, NO) 的「收尾只报不冻」）：
@@ -1343,6 +1323,7 @@ Java_org_s2arm_android_NativeBridge_setForeground(JNIEnv *, jclass, jlong handle
     s2a_capacity_foreground(foreground != JNI_FALSE);
     s2a_adpf_set_foreground(foreground != JNI_FALSE);
     s2a_cpu_floor_set_foreground(foreground != JNI_FALSE);
+    s2a_android_phone_feedback_foreground(foreground != JNI_FALSE);   // 退后台关手机传感器、停马达
     // 退后台停显示节拍源（直连 vsync 拍；前台回时由 acquire 路径按需懒重启）
     if (!foreground && s2a_android_link_stop) s2a_android_link_stop();
     host->window.set_foreground(foreground);
@@ -1547,7 +1528,6 @@ static void s2a_log_exit(const char *why, int code) {
         if (len > (int)sizeof buf - 1) len = (int)sizeof buf - 1;   // dladdr 的模块/符号名可能很长
         if (len > 0) (void)!write(fd, buf, (size_t)len);
     }
-    nvn_vk_callring_dump(fd);   // 最近的关键 Vulkan 调用（debug.s2a.callring=1 时才有内容）
     close(fd);
 }
 static void s2a_exit_probe(void) { s2a_log_exit("atexit", 0); }

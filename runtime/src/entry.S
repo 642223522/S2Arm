@@ -59,8 +59,12 @@ PLAT_ASM_SYM(xs_entry):
     PLAT_ASM_ADRP(x10, PLAT_ASM_SYM(g_xs_off))
     PLAT_ASM_LDR(x10, x10, PLAT_ASM_SYM(g_xs_off))
     cbz x10, 1f                          // 偏移未就绪：直接跳
+#if defined(__OHOS__)
+    PLAT_TSD_BASE_PAIR(x11, x12)
+#else
     PLAT_TSD_BASE(x11)
     PLAT_TSD_BASE_SECOND(x11)
+#endif
     and x11, x11, #~7
     ldr x12, [x11, x10]                  // 本线程槽（偏移是字节，不再移位）
     cbz x12, 1f                          // 没登记：直接跳
@@ -136,8 +140,13 @@ PLAT_ASM_SYM(sw_gate):
     PLAT_ASM_ADRP(x16, PLAT_ASM_SYM(g_xs_off))
     PLAT_ASM_LDR(x16, x16, PLAT_ASM_SYM(g_xs_off))
     cbz x16, 4f                          // 偏移未就绪：不切栈
+#if defined(__OHOS__)
+    PLAT_TSD_BASE_PAIR(x17, x15)
+    mov x15, sp                          // recover the live guest stack value
+#else
     PLAT_TSD_BASE(x17)
     PLAT_TSD_BASE_SECOND(x17)
+#endif
     and x17, x17, #~7
     ldr x16, [x17, x16]                  // 槽（偏移是字节，不再移位）
     cbz x16, 4f
@@ -208,6 +217,8 @@ PLAT_ASM_SYM(sw_gate):
     mov x0, x30              // 返回点 = 门标识
     mov x1, sp               // regs
     bl PLAT_ASM_SYM(gate_dispatch)
+    .globl PLAT_ASM_SYM(sw_gate_ret)
+PLAT_ASM_SYM(sw_gate_ret):              // 即时存档续跑（sw_snap_resume）从这里接上门的返回段
     ldr x9, [sp, #784]
     msr fpcr, x9
     ldr x9, [sp, #776]
@@ -306,6 +317,13 @@ PLAT_ASM_SYM(sw_touch_tramp):
 PLAT_ASM_SYM(sw_touch_brk):
     brk #0x7a5
 #endif
-#if defined(__ANDROID__)
+// 即时存档续跑：x0 = 本线程宿主栈上已填好的 832 字节门帧（同 sw_gate 的布局），切到它、走门的返回段回到游戏代码
+    .globl PLAT_ASM_SYM(sw_snap_resume)
+    .p2align 2
+PLAT_ASM_SYM(sw_snap_resume):
+    mov sp, x0
+    b PLAT_ASM_SYM(sw_gate_ret)
+
+#if defined(__ANDROID__) || defined(__OHOS__)
     .section .note.GNU-stack,"",%progbits
 #endif

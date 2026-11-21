@@ -23,6 +23,7 @@
 // 读盘 / 现场编；读数见 docs/坑记录.md「预热清单上限 4096 → 8192」一条。
 #include "nvn_vk_prog_warm.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -30,14 +31,17 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <time.h>
 #include <unistd.h>
 
 #include "nvn_plat.h"
 #include "direct/compile_request.h"
 #include "direct/sha256.h"
 
-#define NVK_PROG_WARM_FILE "programs-v1.bin"
+#define NVK_PROG_WARM_FILE "programs-v1.bin"   // 旧名（一款一份）：只读作过渡，落盘后删
+// 按翻译器闭包分文件：programs-v1-<闭包 SHA-256 前 8 字节 hex>.bin。A/B 两臂 closure 不同时各用各的，交替跑不再互相覆盖；
+// 同目录最多留 NVK_PROG_WARM_KEEP 份（本局这份 + 最近改过的另一份），多的落盘时删（offline-shader-miss 调查：ABAB 每局都冷启动）。
+#define NVK_PROG_WARM_PREFIX "programs-v1-"
+#define NVK_PROG_WARM_KEEP 2
 #define NVK_PROG_WARM_MAGIC 0x31575053u     // "SPW1" little-endian：S P W 1
 #define NVK_PROG_WARM_VERSION 1u
 #define NVK_PROG_WARM_HDR_FIELDS 60u        // magic4 版本4 条目大小4 条数4 profile32 ABI4 闭包摘要8
@@ -49,7 +53,7 @@
 
 struct slot {
     struct nvk_prog_rec rec;
-    uint64_t last_use_ms;
+    uint64_t last_use_rank;
 };
 
 static struct {
@@ -67,17 +71,17 @@ static struct {
     uint8_t profile_sha[32];
     int32_t direct_abi;
     uint8_t closure_sha[32];
-    uint64_t max_ts;
+    uint64_t max_rank;
+    uint64_t reset_seq;           // 只由会话 reset 推进；锁外读盘不能跨会话提交
+    // 随包种子（首局预热，nvn_vk_prog_warm.h「随包种子」）：-1 = 本局还没定（load 没走到能定的那一步）；
+    // 0 = 本局没用随包种子（有本机清单 / 包里没带 / 坏了）；1 = 用了，seed_dir 是那一对种子所在目录（管线种子同目录）
+    int seed_state;
+    char seed_dir[NVK_PROG_WARM_MAX_PATH];
     struct nvk_prog_warm_stats st;
-} g = { .mu = PTHREAD_MUTEX_INITIALIZER, .limit = NVK_PROG_WARM_DEFAULT_MAX };
+} g = { .mu = PTHREAD_MUTEX_INITIALIZER, .limit = NVK_PROG_WARM_DEFAULT_MAX, .seed_state = -1 };
 // 落盘串行：预热线程的 30 秒定期写与收尾写不并发（否则两个临时文件抢同一个 rename 目标）。
 static pthread_mutex_t g_save_mu = PTHREAD_MUTEX_INITIALIZER;
 
-static uint64_t warm_now_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    return (uint64_t)ts.tv_sec * 1000ull + (uint64_t)ts.tv_nsec / 1000000ull;
-}
 static void warm_sha256(const void *p, size_t n, uint8_t out[32]) {
     s2a_sha256 c; s2a_sha256_init(&c); s2a_sha256_update(&c, p, n); s2a_sha256_final(&c, out);
 }
@@ -106,14 +110,16 @@ static int rec_well_formed(const struct nvk_prog_rec *r) {
 }
 static void stats_reset(void) { memset(&g.st, 0, sizeof g.st); }
 static void reset_locked(void) {
+    g.reset_seq++;
     free(g.v); g.v = NULL;
     free(g.plan); g.plan = NULL;
     g.n = g.cap = 0;
     g.plan_n = g.plan_i = 0;
     g.limit = 0;   // 下一局（或下一个 load）按当时的 flag 重读上限
-    g.dirty = 0; g.have_facts = 0; g.max_ts = 0;
+    g.dirty = 0; g.have_facts = 0; g.max_rank = 0;
     memset(g.profile_sha, 0, sizeof g.profile_sha); memset(g.closure_sha, 0, sizeof g.closure_sha);
     g.direct_abi = 0;
+    g.seed_state = -1; g.seed_dir[0] = 0;
     stats_reset();
 }
 static int ensure_cap_locked(uint32_t need) {
@@ -136,11 +142,72 @@ static int fetch_facts(uint8_t profile_sha[32], uint8_t closure_sha[32], int32_t
     *abi = pc.direct_abi;
     return 0;
 }
+// 本局清单路径（按闭包摘要命名）。0 = 好；-1 = 路径过长
+static int warm_path(char *out, size_t n, const char *dir, const uint8_t closure_sha[32]) {
+    char hx[17]; for (int i = 0; i < 8; i++) snprintf(hx + 2 * i, 3, "%02x", closure_sha[i]);
+    return snprintf(out, n, "%s/" NVK_PROG_WARM_PREFIX "%s.bin", dir, hx) >= (int)n ? -1 : 0;
+}
+// 随包种子目录：<安装 revision 根>/shaders/direct/warm-vk/<闭包摘要前 8 字节 hex>-<profile 摘要前 8 字节 hex>
+//   （revision 根与出包预编库同一个来源：环境变量 S2A_SHADER_REVISION_ROOT，nvk_shader.c libpack_fetch）。目录名带闭包与 profile：
+//   一份种子只给记下它的那一类设备 + 那一版翻译器用（文件头还会再整份核一遍）；管线种子没有自己的有效性头，靠同目录配对。
+//   0 = 拼好；-1 = 没有 revision 根 / 路径过长（= 没有随包种子）
+static int seed_dir_of(char *out, size_t n, const uint8_t closure_sha[32], const uint8_t profile_sha[32]) {
+    const char *root = getenv("S2A_SHADER_REVISION_ROOT");
+    if (!root || !root[0]) return -1;
+    char c[17], p[17];
+    for (int i = 0; i < 8; i++) { snprintf(c + 2 * i, 3, "%02x", closure_sha[i]); snprintf(p + 2 * i, 3, "%02x", profile_sha[i]); }
+    return snprintf(out, n, "%s/shaders/direct/warm-vk/%s-%s", root, c, p) >= (int)n ? -1 : 0;
+}
+static int warm_name_is_ours(const char *name) {   // programs-v1-<16 位小写 hex>.bin
+    const size_t pl = sizeof NVK_PROG_WARM_PREFIX - 1;
+    if (strncmp(name, NVK_PROG_WARM_PREFIX, pl) || strlen(name) != pl + 16 + 4 || strcmp(name + pl + 16, ".bin")) return 0;
+    for (size_t i = pl; i < pl + 16; i++) if (!((name[i] >= '0' && name[i] <= '9') || (name[i] >= 'a' && name[i] <= 'f'))) return 0;
+    return 1;
+}
+// 落盘后修剪：本局这份留着；别的闭包的清单按修改时间只留最新的 KEEP-1 份；旧名文件删掉（它的内容已并进本局这份或已作废）。
+static void warm_prune(const char *dir, const char *keep_path) {
+    const char *keep = strrchr(keep_path, '/'); keep = keep ? keep + 1 : keep_path;
+    DIR *d = opendir(dir); if (!d) return;
+    char names[32][64]; time_t mt[32]; int n = 0; struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (!warm_name_is_ours(e->d_name) || !strcmp(e->d_name, keep) || n >= 32) continue;
+        char pth[NVK_PROG_WARM_MAX_PATH]; struct stat st;
+        if (snprintf(pth, sizeof pth, "%s/%s", dir, e->d_name) >= (int)sizeof pth || stat(pth, &st)) continue;
+        memcpy(names[n], e->d_name, sizeof NVK_PROG_WARM_PREFIX - 1 + 16 + 4 + 1); mt[n] = st.st_mtime; n++;   // 名字长度已由 warm_name_is_ours 定死（32 + NUL）
+    }
+    closedir(d);
+    for (int k = 0; k < NVK_PROG_WARM_KEEP - 1 && k < n; k++) {   // 最新的几份挪到前面（n 很小，选择排序）
+        int best = k; for (int i = k + 1; i < n; i++) if (mt[i] > mt[best]) best = i;
+        if (best != k) { char t[64]; memcpy(t, names[k], 64); memcpy(names[k], names[best], 64); memcpy(names[best], t, 64); time_t tm = mt[k]; mt[k] = mt[best]; mt[best] = tm; }
+    }
+    for (int i = NVK_PROG_WARM_KEEP - 1; i < n; i++) { char pth[NVK_PROG_WARM_MAX_PATH]; if (snprintf(pth, sizeof pth, "%s/%s", dir, names[i]) < (int)sizeof pth) unlink(pth); }
+    { char pth[NVK_PROG_WARM_MAX_PATH]; if (snprintf(pth, sizeof pth, "%s/%s", dir, NVK_PROG_WARM_FILE) < (int)sizeof pth) unlink(pth); }
+}
 static uint32_t warm_limit(void) {
     int v = nvn_plat_flag("nvk_warm_max", NVK_PROG_WARM_DEFAULT_MAX);
     if (v < 1) return 1;
     if ((unsigned)v > NVK_PROG_WARM_ABS_MAX) return NVK_PROG_WARM_ABS_MAX;
     return (uint32_t)v;
+}
+static int rank_ref_cmp(const void *pa, const void *pb) {
+    const struct slot *a = *(struct slot * const *)pa;
+    const struct slot *b = *(struct slot * const *)pb;
+    return (a->last_use_rank > b->last_use_rank) - (a->last_use_rank < b->last_use_rank);
+}
+// Rebase only the ranks, keeping slot order and preserving equal ranks. Old v1
+// wall-clock values are ordered, not interpreted as time. `refs` has n slots.
+static uint64_t rebase_ranks(struct slot *v, uint32_t n, struct slot **refs, uint64_t start) {
+    if (!n) return start;
+    for (uint32_t i = 0; i < n; i++) refs[i] = &v[i];
+    qsort(refs, n, sizeof *refs, rank_ref_cmp);
+    uint64_t prev = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        uint64_t old = refs[i]->last_use_rank;
+        if (i == 0 || old != prev) start++;
+        refs[i]->last_use_rank = start;
+        prev = old;
+    }
+    return start;
 }
 // uses 降序；同 uses 用 last_use 降序（谁最近用过谁先）；再同按 identity 升序，保证同一份清单两次落盘逐字节一致。
 // 落盘排序只排一份下标表，不动 g.v：本局实时表可能正被 note / 淘汰改（虽然都在锁里，就地 qsort 会让
@@ -149,13 +216,13 @@ static const struct slot *g_cmp_base;
 static int slot_cmp_idx(const void *pa, const void *pb) {
     const struct slot *a = &g_cmp_base[*(const uint32_t *)pa], *b = &g_cmp_base[*(const uint32_t *)pb];
     if (a->rec.uses != b->rec.uses) return a->rec.uses < b->rec.uses ? 1 : -1;
-    if (a->last_use_ms != b->last_use_ms) return a->last_use_ms < b->last_use_ms ? 1 : -1;
+    if (a->last_use_rank != b->last_use_rank) return a->last_use_rank < b->last_use_rank ? 1 : -1;
     return memcmp(a->rec.identity, b->rec.identity, 32);
 }
 static int slot_cmp(const void *pa, const void *pb) {
     const struct slot *a = (const struct slot *)pa, *b = (const struct slot *)pb;
     if (a->rec.uses != b->rec.uses) return a->rec.uses < b->rec.uses ? 1 : -1;
-    if (a->last_use_ms != b->last_use_ms) return a->last_use_ms < b->last_use_ms ? 1 : -1;
+    if (a->last_use_rank != b->last_use_rank) return a->last_use_rank < b->last_use_rank ? 1 : -1;
     return memcmp(a->rec.identity, b->rec.identity, 32);
 }
 static int find_locked(const uint8_t identity[32], uint32_t *at) {
@@ -197,6 +264,9 @@ static uint64_t get_u64(const uint8_t *p) {
 }
 
 int nvk_prog_warm_load(void) {
+    pthread_mutex_lock(&g.mu);
+    uint64_t reset_seq = g.reset_seq;
+    pthread_mutex_unlock(&g.mu);
     // 本局有效性事实：拿不到（provider 还没激活）就返回 -1 让调度器重试，不拿“没有清单”糊弄过去。
     const char *dir = nvn_plat_dir(NVN_PLAT_DIR_CACHE);
     if (!dir || !dir[0]) return -1;
@@ -206,17 +276,43 @@ int nvk_prog_warm_load(void) {
     const int32_t pc_abi = direct_abi;
 
     char path[NVK_PROG_WARM_MAX_PATH];
-    if (snprintf(path, sizeof path, "%s/%s", dir, NVK_PROG_WARM_FILE) >= (int)sizeof path) return 0;
+    if (warm_path(path, sizeof path, dir, closure_sha)) {   // 路径过长：本局没有清单，种子也不用（定下来，管线那边不用再等）
+        pthread_mutex_lock(&g.mu); if (g.reset_seq == reset_seq) g.seed_state = 0; pthread_mutex_unlock(&g.mu);
+        return 0;
+    }
     uint8_t *buf = NULL; size_t len = 0;
-    if (read_file(path, &buf, &len)) {
-        int e = errno;
+    int rf = read_file(path, &buf, &len), e = rf ? errno : 0;
+    if (rf && e == ENOENT) {   // 本闭包还没有清单：读旧名那份（升级后第一局；闭包对得上才收，见下面的有效性检查）
+        char legacy[NVK_PROG_WARM_MAX_PATH];
+        if (snprintf(legacy, sizeof legacy, "%s/%s", dir, NVK_PROG_WARM_FILE) < (int)sizeof legacy) { rf = read_file(legacy, &buf, &len); e = rf ? errno : 0; }
+    }
+    // 首局（本机这一版翻译器连旧名清单都没有）：读随包种子。有本机清单一律用本机的，种子不读。
+    // 种子是锦上添花：不在 / 读不动 / 坏 / 不属于本局，都只打一行、按「本局没有清单」走，不拦起局。
+    int from_seed = 0;
+    char seed_dir[NVK_PROG_WARM_MAX_PATH] = "", seed_file[NVK_PROG_WARM_MAX_PATH] = "";
+    if (rf && e == ENOENT && !seed_dir_of(seed_dir, sizeof seed_dir, closure_sha, profile_sha)) {
+        const char *nm = strrchr(path, '/');
+        if (snprintf(seed_file, sizeof seed_file, "%s/%s", seed_dir, nm ? nm + 1 : path) < (int)sizeof seed_file) {
+            uint8_t *sb = NULL; size_t sl = 0;
+            int sr = read_file(seed_file, &sb, &sl), se = sr ? errno : 0;
+            if (!sr) { buf = sb; len = sl; rf = 0; e = 0; from_seed = 1; }
+            else if (se != ENOENT) {
+                char m[200]; snprintf(m, sizeof m, "【黄】程序清单随包种子读不动（%d），本局不用种子", se);
+                nvn_plat_log(NVN_PLAT_LOG_WARN, "warm", m);
+            }
+        }
+    }
+    if (rf) {
         pthread_mutex_lock(&g.mu);
-        reset_locked();
-        g.have_facts = 1; memcpy(g.profile_sha, profile_sha, 32); g.direct_abi = pc_abi; memcpy(g.closure_sha, closure_sha, 32);
-        g.limit = warm_limit();
+        if (g.reset_seq == reset_seq && !g.have_facts) {
+            g.have_facts = 1; memcpy(g.profile_sha, profile_sha, 32); g.direct_abi = pc_abi; memcpy(g.closure_sha, closure_sha, 32);
+        }
+        if (g.reset_seq == reset_seq) g.seed_state = 0;
         pthread_mutex_unlock(&g.mu);
         if (e == ENOENT) {
-            nvn_plat_log(NVN_PLAT_LOG_INFO, "warm", "程序清单：目录里还没有 programs-v1.bin（本局从零记录）");
+            const char *nm = strrchr(path, '/');
+            char m[200]; snprintf(m, sizeof m, "程序清单：目录里还没有这一版翻译器的清单 %.48s（保留本局记录）", nm ? nm + 1 : path);
+            nvn_plat_log(NVN_PLAT_LOG_INFO, "warm", m);
             return 0;
         }
         { char m[192]; snprintf(m, sizeof m, "【红】程序清单读取失败（%d），整份拒绝", e); nvn_plat_log(NVN_PLAT_LOG_RED, "warm", m); }
@@ -237,28 +333,44 @@ int nvk_prog_warm_load(void) {
         else if (get_u64(buf + len - NVK_PROG_WARM_SUM) != fnv1a64(buf, len - NVK_PROG_WARM_SUM)) bad = "FNV 校验不符";
     }
     const uint8_t *hdr_profile = buf + 16, *hdr_closure = buf + 52;
+    int mismatch = 0;   // 1 = 文件本身好、只是不属于本局（换版本 / 换设备是正常情形，打黄不打红）
     int32_t hdr_abi = (int32_t)get_u32(buf + 48);
     if (!bad) {
         // 本局有效性：另一台设备 / 另一版翻译器的清单整份不要（预热上去也只会编出对不上的东西）。
-        if (memcmp(hdr_profile, profile_sha, 32)) bad = "profile 摘要不符（换设备/驱动）";
-        else if (hdr_abi != pc_abi) bad = "directABI 不符（换翻译器版本）";
-        else if (memcmp(hdr_closure, closure_sha, 8)) bad = "translator closure 摘要不符（换翻译器闭包）";
+        // 先比闭包、再比接口版本、最后比 profile：profile 原文里就有 translatorClosure，先比 profile 的话
+        // 「只换了 APK」也会被报成「换设备 / 驱动」（offline-shader-miss 调查：12 次整份拒绝全是换 APK）。
+        if (memcmp(hdr_closure, closure_sha, 8)) { bad = "翻译器闭包不同（换了 APK / 编译器版本，清单是另一版翻译器记的）"; mismatch = 1; }
+        else if (hdr_abi != pc_abi) { bad = "directABI 不同（换了直连接口版本）"; mismatch = 1; }
+        else if (memcmp(hdr_profile, profile_sha, 32)) { bad = "设备 profile 不同（同一版翻译器；设备能力 / 驱动 / 画质开关变了）"; mismatch = 1; }
     }
     pthread_mutex_lock(&g.mu);
-    reset_locked();
-    g.have_facts = 1; memcpy(g.profile_sha, profile_sha, 32); g.direct_abi = pc_abi; memcpy(g.closure_sha, closure_sha, 32);
-    g.limit = warm_limit();
+    if (g.reset_seq != reset_seq || (g.have_facts &&
+        (memcmp(g.profile_sha, profile_sha, 32) || g.direct_abi != pc_abi ||
+         memcmp(g.closure_sha, closure_sha, 32)))) {
+        pthread_mutex_unlock(&g.mu); free(buf); return 0;
+    }
+    if (!g.have_facts) {
+        g.have_facts = 1; memcpy(g.profile_sha, profile_sha, 32); g.direct_abi = pc_abi; memcpy(g.closure_sha, closure_sha, 32);
+    }
+    g.seed_state = 0;   // 走到这里本局就定了：下面只有「种子整份收下」才改成 1
     if (bad) {
-        g.st.rejected = count;
         pthread_mutex_unlock(&g.mu);
         free(buf);
-        { char m[224]; snprintf(m, sizeof m, "【红】程序清单整份拒绝：%s（%u 条）", bad, (unsigned)count); nvn_plat_log(NVN_PLAT_LOG_RED, "warm", m); }
+        if (from_seed) {   // 随包种子坏 / 不属于本局：锦上添花，打黄一行、不用，不算本机清单坏
+            char m[288]; snprintf(m, sizeof m, "【黄】程序清单随包种子不用：%s（%u 条）；本局按没有清单走，首遇照常准备", bad, (unsigned)count);
+            nvn_plat_log(NVN_PLAT_LOG_WARN, "warm", m);
+            return 0;
+        }
+        { char m[288]; snprintf(m, sizeof m, "%s程序清单整份拒绝：%s（%u 条）", mismatch ? "【黄】" : "【红】", bad, (unsigned)count);
+          nvn_plat_log(mismatch ? NVN_PLAT_LOG_WARN : NVN_PLAT_LOG_RED, "warm", m); }
         return 0;
     }
     // 逐条：结构合法性；本局上限内按 uses 热点保留。超过本局上限的（上次上限更大）按 rejected 记。
     uint32_t usable = 0, filtered = 0;
-    uint32_t keep_cap = count < g.limit ? count : g.limit;
-    if (keep_cap && ensure_cap_locked(keep_cap)) { pthread_mutex_unlock(&g.mu); free(buf); return 0; }
+    uint32_t limit = warm_limit();
+    uint32_t keep_cap = count < limit ? count : limit;
+    struct slot *disk = keep_cap ? (struct slot *)malloc((size_t)keep_cap * sizeof *disk) : NULL;
+    if (keep_cap && !disk) { pthread_mutex_unlock(&g.mu); free(buf); return 0; }
     for (uint32_t i = 0; i < count; i++) {
         const uint8_t *e = buf + NVK_PROG_WARM_HDR_FIELDS + (size_t)i * NVK_PROG_WARM_ENTRY;
         struct slot s;
@@ -270,33 +382,65 @@ int nvk_prog_warm_load(void) {
         s.rec.lp_ok = e[61];   // 2 = 按含「存储缓冲不对齐」的规则判可用；旧清单里的 1 当不可用
         memcpy(s.rec.c1, e + 64, sizeof s.rec.c1);
         s.rec.uses = get_u32(e + 60 + 4 + 768);
-        s.last_use_ms = get_u64(e + 60 + 4 + 768 + 4);
+        s.last_use_rank = get_u64(e + 60 + 4 + 768 + 4);
         if (!rec_well_formed(&s.rec)) { filtered++; continue; }
         if (usable == keep_cap) { filtered++; continue; }   // 本局上限比文件小：更冷的丢掉
-        if (usable < keep_cap) g.v[usable] = s;
-        if (s.last_use_ms > g.max_ts) g.max_ts = s.last_use_ms;
+        if (usable < keep_cap) disk[usable] = s;
         usable++;
     }
-    g.n = usable;
-    qsort(g.v, g.n, sizeof g.v[0], slot_cmp);
-    // 冻结本局预热集：拿文件顺序（热点降序）的一份值拷贝。之后 g.v 怎么 note / 淘汰 / 重排都影响不到它。
-    free(g.plan); g.plan = NULL; g.plan_n = g.plan_i = 0;
-    if (g.n) {
-        g.plan = (struct nvk_prog_rec *)malloc((size_t)g.n * sizeof *g.plan);
-        if (g.plan) { int cs = nvn_plat_flag("nvk_compute_warm", 0); for (uint32_t i = 0; i < g.n; i++) if (cs || g.v[i].rec.stage_mask != 32u) g.plan[g.plan_n++] = g.v[i].rec; }
-        else nvn_plat_log(NVN_PLAT_LOG_RED, "warm", "【红】程序清单：本局预热集快照分配失败（本局不预热，清单照常记录）");
+    if (usable) qsort(disk, usable, sizeof *disk, slot_cmp);
+    // 事务提交：当前局记录优先，磁盘按热点填空位。重合身份保留当前元数据，
+    // uses 取较大值，不把可能已保存过的同一段历史再相加。
+    uint32_t cap = g.n + usable;
+    if (cap > limit) cap = limit;
+    if (cap < g.n) cap = g.n;
+    struct slot *merged = cap ? (struct slot *)malloc((size_t)cap * sizeof *merged) : NULL;
+    struct nvk_prog_rec *plan = usable ? (struct nvk_prog_rec *)malloc((size_t)usable * sizeof *plan) : NULL;
+    struct slot **refs = cap ? (struct slot **)malloc((size_t)cap * sizeof *refs) : NULL;
+    if ((cap && (!merged || !refs)) || (usable && !plan)) {
+        free(merged); free(plan); free(disk); free(refs);
+        pthread_mutex_unlock(&g.mu); free(buf); return 0;
     }
-    g.st.loaded = g.n;
+    uint32_t n = g.n, plan_n = 0, loaded = 0;
+    if (n) memcpy(merged, g.v, (size_t)n * sizeof *merged);
+    int cs = nvn_plat_flag("nvk_compute_warm", 0);
+    for (uint32_t i = 0; i < usable; i++) {
+        uint32_t at;
+        // writer 的磁盘条目身份唯一；只需与 load 前的本局记录查重，
+        // 不再扫描刚合入的磁盘项，空本局的常见启动路径保持线性。
+        if (!find_locked(disk[i].rec.identity, &at)) {
+            if (n >= limit) { filtered++; continue; }
+            at = n;
+            merged[n++] = disk[i];
+        } else if (merged[at].rec.uses < disk[i].rec.uses) {
+            merged[at].rec.uses = disk[i].rec.uses;
+        }
+        // 冻结集仅来自本次接纳的磁盘条目，不把本局新 note 送去额外编译。
+        if (cs || merged[at].rec.stage_mask != 32u) plan[plan_n++] = merged[at].rec;
+        loaded++;
+    }
+    // Loaded history and pre-load live notes are distinct domains. Normalize
+    // each in order, placing live notes after disk without affecting the plan.
+    uint64_t max_rank = n > g.n ? rebase_ranks(merged + g.n, n - g.n, refs, 0) : 0;
+    max_rank = rebase_ranks(merged, g.n, refs, max_rank);
+    free(refs);
+    free(disk);
+    free(g.v); g.v = merged; g.n = n; g.cap = cap;
+    free(g.plan); g.plan = plan; g.plan_n = plan_n; g.plan_i = 0;
+    g.limit = limit; g.max_rank = max_rank;
+    g.st.loaded = loaded;
     g.st.rejected = filtered;
-    g.dirty = 0;
+    if (from_seed) { g.seed_state = 1; snprintf(g.seed_dir, sizeof g.seed_dir, "%s", seed_dir); }
+    // recorded / dirty / 构建与命中统计属于本局，不因读取成功或失败清零。
     pthread_mutex_unlock(&g.mu);
     free(buf);
     {
         char m[224];
-        snprintf(m, sizeof m, "程序清单：可用 %u 条（上限 %u，过滤 %u 条），热点优先", (unsigned)g.st.loaded, (unsigned)g.limit, (unsigned)filtered);
+        snprintf(m, sizeof m, "程序清单%s：可用 %u 条（上限 %u，过滤 %u 条），热点优先", from_seed ? "（随包种子，本机还没有清单）" : "",
+                 (unsigned)loaded, (unsigned)limit, (unsigned)filtered);
         nvn_plat_log(NVN_PLAT_LOG_INFO, "warm", m);
     }
-    return (int)g.st.loaded;
+    return (int)loaded;
 }
 
 // 只走开局冻结的快照：与 note / 淘汰 / 落盘排序完全解耦（快照不可变，所以这里不需要持锁读内容，
@@ -317,6 +461,14 @@ int nvk_prog_warm_pending(void) {
     return (int)pending;
 }
 
+int nvk_prog_warm_seed_dir(char *out, size_t n) {
+    pthread_mutex_lock(&g.mu);
+    int s = g.seed_state;
+    if (out && n) { if (s == 1) snprintf(out, n, "%s", g.seed_dir); else out[0] = 0; }
+    pthread_mutex_unlock(&g.mu);
+    return s;
+}
+
 int nvk_prog_warm_contains(const uint8_t identity[32]) {
     if (!identity) return 0;
     pthread_mutex_lock(&g.mu);
@@ -331,14 +483,18 @@ void nvk_prog_warm_note(const struct nvk_prog_rec *rec) {
     pthread_mutex_lock(&g.mu);
     if (!g.cap && ensure_cap_locked(64)) { pthread_mutex_unlock(&g.mu); return; }
     if (!g.limit) g.limit = warm_limit();
-    uint64_t ts = warm_now_ms();
-    if (ts <= g.max_ts) ts = g.max_ts + 1;   // 时钟回拨/同一毫秒：保持文件内单调，跨会话排序才有意义
-    g.max_ts = ts;
+    if (g.max_rank == UINT64_MAX) {
+        struct slot **refs = g.n ? (struct slot **)malloc((size_t)g.n * sizeof *refs) : NULL;
+        if (g.n && !refs) { pthread_mutex_unlock(&g.mu); return; }
+        g.max_rank = rebase_ranks(g.v, g.n, refs, 0);
+        free(refs);
+    }
+    uint64_t rank = ++g.max_rank;
     uint32_t at = 0;
     if (find_locked(rec->identity, &at)) {
         struct slot *s = &g.v[at];
         if (s->rec.uses != 0xFFFFFFFFu) s->rec.uses++;
-        s->last_use_ms = ts;
+        s->last_use_rank = rank;
         s->rec.stage_mask = rec->stage_mask; s->rec.lp_ok = rec->lp_ok;   // 同身份即同状态：旧清单读来的 0 在这里刷新
         memcpy(s->rec.keys, rec->keys, sizeof s->rec.keys);
         // c1 只在这次快照确实带回来时才覆盖（真实 resolve 有视图；清单加载来的记录没有新视图）。
@@ -359,10 +515,10 @@ void nvk_prog_warm_note(const struct nvk_prog_rec *rec) {
         uint32_t cold = 0;
         for (uint32_t i = 1; i < g.n; i++) {
             if (g.v[i].rec.uses < g.v[cold].rec.uses ||
-                (g.v[i].rec.uses == g.v[cold].rec.uses && g.v[i].last_use_ms < g.v[cold].last_use_ms))
+                (g.v[i].rec.uses == g.v[cold].rec.uses && g.v[i].last_use_rank < g.v[cold].last_use_rank))
                 cold = i;
         }
-        g.v[cold] = (struct slot){ .rec = *rec, .last_use_ms = ts };
+        g.v[cold] = (struct slot){ .rec = *rec, .last_use_rank = rank };
         g.v[cold].rec.uses = rec->uses ? rec->uses : 1;
         g.st.recorded++;
         g.dirty = 1;
@@ -370,7 +526,7 @@ void nvk_prog_warm_note(const struct nvk_prog_rec *rec) {
         return;
     }
     if (ensure_cap_locked(g.n + 1)) { pthread_mutex_unlock(&g.mu); return; }
-    g.v[g.n] = (struct slot){ .rec = *rec, .last_use_ms = ts };
+    g.v[g.n] = (struct slot){ .rec = *rec, .last_use_rank = rank };
     if (!g.v[g.n].rec.uses) g.v[g.n].rec.uses = 1;
     g.n++;
     g.st.recorded++;
@@ -456,7 +612,7 @@ void nvk_prog_warm_save(void) {
         if (!g.have_facts || !g.dirty || !g.n) { pthread_mutex_unlock(&g.mu); pthread_mutex_unlock(&g_save_mu); return; }
         const char *d = nvn_plat_dir(NVN_PLAT_DIR_CACHE);
         if (!d || !d[0] || snprintf(dir, sizeof dir, "%s", d) >= (int)sizeof dir ||
-            snprintf(path, sizeof path, "%s/%s", dir, NVK_PROG_WARM_FILE) >= (int)sizeof path) {
+            warm_path(path, sizeof path, dir, g.closure_sha)) {
             pthread_mutex_unlock(&g.mu);
             pthread_mutex_unlock(&g_save_mu);
             return;
@@ -493,7 +649,7 @@ void nvk_prog_warm_save(void) {
             put_u8(&p, s->rec.c1_ok); put_u8(&p, s->rec.lp_ok); p += 2;   // 保留
             memcpy(p, s->rec.c1, sizeof s->rec.c1); p += sizeof s->rec.c1;
             put_u32(&p, s->rec.uses);
-            put_u64(&p, s->last_use_ms);
+            put_u64(&p, s->last_use_rank);
         }
         free(idx);
         put_u64(&p, fnv1a64(buf, len - NVK_PROG_WARM_SUM));
@@ -502,6 +658,7 @@ void nvk_prog_warm_save(void) {
     }
     int rc = write_atomic(dir, path, buf, len);
     free(buf);
+    if (!rc) warm_prune(dir, path);
     pthread_mutex_unlock(&g_save_mu);
     if (rc) {
         pthread_mutex_lock(&g.mu);

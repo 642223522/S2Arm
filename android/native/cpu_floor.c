@@ -15,6 +15,7 @@
 #endif
 #include "cpu_floor.h"
 #include "cpu_floor_policy.h"
+#include "adpf_hint.h"
 #include "power_state.h"
 #include "system_tuning.h"
 #include <errno.h>
@@ -41,6 +42,7 @@ extern void s2a_cpu_floor_test_spin(int kind);                 // 一片满载�
 extern int s2a_cpu_floor_test_evtstrm(void);                   // 1 = 有事件流（WFE 可用）
 extern uint64_t s2a_cpu_floor_test_cpu_ns(int thread);         // 进程（0）/ 托底线程自己（1）的累计 CPU 时间
 extern void s2a_cpu_floor_test_log(const char *text);
+extern int s2a_cpu_floor_test_gpu_turbo(int on);             // GPU 锁频设定：0 = 成功，否则 errno
 #define FLOOR_PROP_MAX 92
 static int gate_open(void) { return s2a_cpu_floor_test_gate(); }
 static int raw_prop_get(const char *name, char *out) {
@@ -294,6 +296,7 @@ static const char *why_text(int why) {
     case S2A_FLOOR_WHY_IDLE: return "没在出图";
     case S2A_FLOOR_WHY_CAP_DROP: return "系统在压上限";
     case S2A_FLOOR_WHY_NO_GAIN: return "没有收益";
+    case S2A_FLOOR_WHY_ADPF: return "ADPF 已接受帧耗时";
     default: return "-";
     }
 }
@@ -379,6 +382,54 @@ static void log_window(const struct stat_win *s) {
     floor_log(text);
 }
 
+// ---- GPU 锁频（同一张判定表的第二个实例）----
+// 手机 GPU 的调频器同样按利用率定频：一帧做完就空闲的游戏，GPU 频率被压到「刚好做完这一帧」，于是跑不到 60 帧时也上不去
+//   （外部参考 nx2android perf_android.c DM_GPU_TURBO，MIT：Adreno 830 上调频器给 222–443 MHz，关卡里 300 帧掉 31–115 帧，
+//   最高频下掉 3–5 帧）。做法：KGSL 设备属性 PWRCTRL 置 0 = 关掉功耗控制，GPU 跑最高频（热限仍生效）；置 1 = 交还调频器。
+// 判定与 CPU 托底同一张表（cpu_floor_policy.h），输入换成 GPU：频率 = /sys/class/kgsl/kgsl-3d0/gpuclk 逐拍采样的均值，
+//   上限 = max_gpuclk（热 / 功耗限频时它会降，表里「上限在掉」自检照用）。帧率慢 3 个窗口且 GPU 均频没贴着上限才开；
+//   保持、翻倍、没有收益暂缓、上限被压本局不再出手、前后台 / 显示面 / 停局即松，全部沿用。
+// 属性是设备级、进程退出也不会自己复原：退后台 / 丢显示面由判定表的门松开，停局在线程退出前交还。
+// 没有 KGSL（Mali、Xclipse）或 ioctl 被拒：记一行、本局不再试。调试属性 debug.s2a.gputurbo（0 / 1 / auto），门同 cpufloor。
+#ifdef S2A_CPU_FLOOR_TEST
+static int gpu_turbo_set(int on) { return s2a_cpu_floor_test_gpu_turbo(on); }
+#else
+#include <sys/ioctl.h>
+static int gpu_turbo_set(int on) {
+    struct { unsigned type; void *value; size_t size; } prop;
+    uint32_t enable = on ? 0u : 1u;   // KGSL_PROP_PWRCTRL（0xE）：0 = 关功耗控制（最高频）
+    prop.type = 0xE; prop.value = &enable; prop.size = sizeof enable;
+    int fd = open("/dev/kgsl-3d0", O_RDWR | O_CLOEXEC);
+    if (fd < 0) return errno ? errno : -1;
+    int r = ioctl(fd, _IOW(0x09, 0x32, prop), &prop);   // IOCTL_KGSL_SETPROPERTY
+    int e = r ? (errno ? errno : -1) : 0;
+    close(fd);
+    return e;
+}
+#endif
+static int read_gpu_mode(void) {
+    char v[FLOOR_PROP_MAX] = {0};
+    if (prop_get("debug.s2a.gputurbo", v) <= 0) return S2A_FLOOR_AUTO;
+    if (!strcmp(v, "0") || !strcmp(v, "off")) return S2A_FLOOR_OFF;
+    if (!strcmp(v, "1") || !strcmp(v, "on") || !strcmp(v, "always")) return S2A_FLOOR_ALWAYS;
+    return S2A_FLOOR_AUTO;
+}
+struct gq_src { uint64_t work, time, last_ns; uint32_t cur_khz, max_khz; };
+static uint32_t sysfs_hz_khz(const char *path) {
+    char b[32] = {0};
+    if (sysfs_read(path, b, sizeof b) <= 0) return 0;
+    unsigned long long hz = strtoull(b, NULL, 10);
+    return hz >= 1000 && hz / 1000 <= UINT32_MAX ? (uint32_t)(hz / 1000) : 0;
+}
+static void gq_poll(struct gq_src *g, uint64_t now) {
+    uint32_t cur = sysfs_hz_khz("/sys/class/kgsl/kgsl-3d0/gpuclk"), max = sysfs_hz_khz("/sys/class/kgsl/kgsl-3d0/max_gpuclk");
+    if (cur) {
+        if (g->cur_khz && g->last_ns && now > g->last_ns) { uint64_t dt = (now - g->last_ns) / 1000; g->work += (uint64_t)g->cur_khz * dt; g->time += dt; }
+        g->cur_khz = cur; g->last_ns = now;
+    }
+    if (max) g->max_khz = max;
+}
+
 static void *floor_main(void *arg) {
     (void)arg;
     unsigned cap[64] = {0};
@@ -393,6 +444,9 @@ static void *floor_main(void *arg) {
         floor_log(text);
     }
     struct s2a_floor_state st; s2a_floor_reset_all(&st);
+    struct s2a_floor_state gst; s2a_floor_reset_all(&gst);   // GPU 锁频那一份判定状态
+    struct gq_src gq; memset(&gq, 0, sizeof gq);
+    int gactive = 0, gdead = 0;
     int active = 0, kind = S2A_CPU_FLOOR_DEFAULT_SPIN, kick = atomic_load(&g_kick);
     uint64_t next_tick = 0, active_since = 0, block_log_ns = 0;
     uint64_t next_stat = 0, stat_ns = 0, stat_proc = 0, stat_thread = 0, stat_fw = 0, stat_ft = 0;   // 5 秒读数窗口：起点、起点处的进程 / 线程 CPU 与频率累计
@@ -405,7 +459,7 @@ static void *floor_main(void *arg) {
             struct s2a_floor_in in = {
                 .now_ns = now,
                 .frames = atomic_load_explicit(&g_frames, memory_order_relaxed),
-                .period_ns = s2a_android_present_ns(),
+                .period_ns = s2a_android_session_period_ns(),   // 本局最短周期，不是当前周期（system_tuning.h）
                 .mode = read_mode(),
                 .foreground = atomic_load(&g_fg), .surface = atomic_load(&g_surface), .stopped = atomic_load(&g_stop),
                 .thermal = dm_thermal_now(), .low_power = dm_low_power_now(),
@@ -415,7 +469,27 @@ static void *floor_main(void *arg) {
             };
             memcpy(in.max_khz, fq.max_khz, sizeof in.max_khz);
             const int was = active;
-            active = s2a_floor_step(&st, &in);
+            active = s2a_floor_cpu_step(&st, &in, s2a_adpf_session_active());
+            {   // GPU 锁频：同一份帧率 / 生命周期输入，频率与上限换成 GPU
+                gq_poll(&gq, now);
+                struct s2a_floor_in gin = in;
+                gin.mode = gdead ? S2A_FLOOR_OFF : read_gpu_mode();
+                gin.fq_work = gq.work; gin.fq_time = gq.time;
+                memset(gin.max_khz, 0, sizeof gin.max_khz);
+                gin.ncaps = gq.max_khz ? 1 : 0; gin.max_khz[0] = gq.max_khz;
+                const int gw = s2a_floor_step(&gst, &gin);
+                if (gw != gactive) {
+                    const int e = gpu_turbo_set(gw);
+                    char text[240];
+                    if (e && gw) { gdead = 1; snprintf(text, sizeof text, "GPU 锁频设不上（errno %d：没有 KGSL 或被拒），本局不再试", e); }
+                    else if (e) snprintf(text, sizeof text, "GPU 锁频交还失败（errno %d）", e);
+                    else if (gw) snprintf(text, sizeof text, "GPU 锁频开 mode=%s GPU 近 %d s 均频 / 上限 = %s%d%%%s", mode_name(gin.mode), S2A_FLOOR_ENTER_WINDOWS,
+                                          gst.ceil_permille >= 0 ? "" : "（读不到）", gst.ceil_permille >= 0 ? gst.ceil_permille / 10 : 0, "");
+                    else snprintf(text, sizeof text, "GPU 锁频关 原因=%s%s", why_text(gst.why), gst.latched ? "，本局不再出手" : "");
+                    floor_log(text);
+                    if (!e) gactive = gw; else if (!gw) gactive = 0;
+                }
+            }
             next_tick = now + S2A_FLOOR_TICK_NS;
             if (active != was) {
                 char text[360];
@@ -456,6 +530,9 @@ static void *floor_main(void *arg) {
                          (unsigned long long)((st.nogain_until_ns > now ? st.nogain_until_ns - now : 0) / 1000000000ull));
                 floor_log(text);
                 block_log_ns = now;
+            } else if (st.block == S2A_FLOOR_BLOCK_ADPF && (!block_log_ns || now - block_log_ns >= 30000000000ull)) {
+                floor_log("CPU 托底暂停，ADPF 已接受帧耗时");
+                block_log_ns = now;
             }
             if (!next_stat) {   // 第一次：开读数窗口，丢掉之前攒下的间隔
                 unsigned h0[S2A_FLOOR_NBUCKET]; drain_hist(h0);
@@ -481,10 +558,11 @@ static void *floor_main(void *arg) {
 #endif
             atomic_fetch_add_explicit(&g_ticks, 1, memory_order_release);   // 一个周期的全部事做完才计数（测试靠它同步）
         }
-        if (active) { burn_slice(kind); continue; }
+        if (active && !s2a_adpf_session_active()) { burn_slice(kind); continue; }
         uint64_t t = now_ns();
         wait_for(next_tick > t ? next_tick - t : 0);
     }
+    if (gactive) (void)gpu_turbo_set(0);   // 停局：设备级属性在进程外也留着，退出前交还调频器
     atomic_store(&g_active, 0);
     return NULL;
 }
@@ -543,6 +621,8 @@ void s2a_cpu_floor_stop(void) {
 #ifdef S2A_CPU_FLOOR_TEST
 uint64_t s2a_cpu_floor_test_ticks(void) { return atomic_load(&g_ticks); }
 uint64_t s2a_cpu_floor_test_last_tick_ns(void) { return atomic_load(&g_last_tick_ns); }
+// 测试推进了模拟时钟：叫醒在 wait_for 里等的托底线程，不用等真实的等待上限过去
+void s2a_cpu_floor_test_kick(void) { pthread_mutex_lock(&mu); pthread_cond_broadcast(&cv); pthread_mutex_unlock(&mu); }
 int s2a_cpu_floor_test_active(void) { return atomic_load(&g_active); }
 void s2a_cpu_floor_test_reset(void) {
     pthread_mutex_lock(&mu);

@@ -3,6 +3,9 @@
 //   ① 没签名的程序包 → 1：清单 dir 指新目录 v-<sha16>-phone、signer.by=phone / cert_sha1=当前、source_sha256=原 image_sha256；随行目录拷过去；旧版本目录原样
 //   ② 再起一次 → 0（签名身份已是这张）③ 没有 identity/current.json → 0 ④ 清单 team 与当前团队相同、没写 signer（电脑按同团队签好）→ 0
 //   ⑤ 钥匙串里没有身份 → -1，清单不动
+//   ⑦ 在 LiveContainer 里（#63639b，s2a_lc_cert 换成桩交测试 p12）：不要 current.json、不看本包描述文件（给的是别的团队），用 LiveContainer 的证书重签：
+//     signer.cert_sha1 = 测试证书 DER 的 SHA-1、team = 证书主体 OU、via = livecontainer、codesign 读到测试身份；⑦b 再起 → 0；⑦c LiveContainer 没导入证书 → -1、清单不动、原因提 LiveContainer
+//   ⑥ App 描述文件的团队（侧载工具装的、别的 Apple ID）≠ 手机身份的团队 → -1，不签（清单不动），原因写出两个团队号；⑥b 团队相同 → 照常签（1）
 #import <Foundation/Foundation.h>
 #import <Security/Security.h>
 #include <CommonCrypto/CommonDigest.h>
@@ -13,13 +16,21 @@
 
 int s2a_selfsign_identity(const void *p12, size_t n, const char *password, SecKeyRef *key, CFArrayRef *chain);
 int s2a_program_resign_if_needed(const char *home, const char *game_data, const char *gid, char *module_dir, char *images, size_t n, char *why, size_t why_n);
-void s2a_program_resign_test_identity(int (*f)(SecKeyRef *, SecCertificateRef *));
+void s2a_program_resign_test_identity(int (*f)(const char *, SecKeyRef *, SecCertificateRef *));
+void s2a_program_resign_test_prov(int (*f)(char *, size_t, char *, size_t));
+void s2a_lc_cert_test(int (*f)(NSData **, NSString **));
+int s2a_program_resign_force(const char *home, const char *game_data, const char *gid, char *module_dir, char *images, size_t n, char *why, size_t why_n);
 
 static int bad;
 static void ck(int ok, NSString *what) { printf("%s %s\n", ok ? "  通" : "  【红】", what.UTF8String); if (!ok) bad++; }
 static SecKeyRef g_key; static SecCertificateRef g_cert;
-static int id_ok(SecKeyRef *k, SecCertificateRef *c) { *k = (SecKeyRef)CFRetain(g_key); *c = (SecCertificateRef)CFRetain(g_cert); return 0; }
-static int id_none(SecKeyRef *k, SecCertificateRef *c) { (void)k; (void)c; return -1; }
+static int id_ok(const char *sha, SecKeyRef *k, SecCertificateRef *c) { (void)sha; *k = (SecKeyRef)CFRetain(g_key); *c = (SecCertificateRef)CFRetain(g_cert); return 0; }
+static int id_none(const char *sha, SecKeyRef *k, SecCertificateRef *c) { (void)sha; (void)k; (void)c; return -1; }
+static int prov_other(char *t, size_t tn, char *a, size_t an) { snprintf(t, tn, "FGHIJ67890"); snprintf(a, an, "FGHIJ67890.io.s2arm.games.FGHIJ67890"); return 0; }   // AltStore 装的 App：别的团队
+static int prov_same(char *t, size_t tn, char *a, size_t an) { snprintf(t, tn, "ABCDE12345"); snprintf(a, an, "ABCDE12345.io.s2arm.games.ABCDE12345"); return 0; }
+static NSData *g_p12;
+static int lc_ok(NSData **p, NSString **w) { if (p) *p = g_p12; if (w) *w = @"t"; return 1; }
+static int lc_nocert(NSData **p, NSString **w) { (void)p; (void)w; return -1; }
 static NSString *sha_file(NSString *p) { NSData *d = [NSData dataWithContentsOfFile:p]; uint8_t h[32]; CC_SHA256(d.bytes, (CC_LONG)d.length, h);
     NSMutableString *s = [NSMutableString string]; for (int i = 0; i < 32; i++) [s appendFormat:@"%02x", h[i]]; return s; }
 static NSString *sha1_file(NSString *p) { NSData *d = [NSData dataWithContentsOfFile:p]; uint8_t h[20]; CC_SHA1(d.bytes, (CC_LONG)d.length, h);
@@ -32,6 +43,8 @@ static NSString *sh(NSString *cmd) { NSTask *t = [NSTask new]; t.launchPath = @"
 int main(void) { @autoreleasepool {
     NSString *dir = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"t_program_resign.%d", getpid()]];
     NSFileManager *fm = NSFileManager.defaultManager; [fm removeItemAtPath:dir error:nil]; [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    // openssl 用测试自带的最小配置：不依赖本机 openssl.cnf（一台门禁机的 Homebrew openssl 缺配置文件，req 直接失败、整组红）
+    { NSString *cnf = [dir stringByAppendingPathComponent:@"openssl.cnf"]; [@"[req]\ndistinguished_name = dn\n[dn]\n" writeToFile:cnf atomically:YES encoding:NSUTF8StringEncoding error:nil]; setenv("OPENSSL_CONF", cnf.fileSystemRepresentation, 1); }
     NSString *G = @"0100ABCDE0000000", *home = [dir stringByAppendingPathComponent:@"home"];
     NSString *gd = [home stringByAppendingPathComponent:[NSString stringWithFormat:@"Library/Application Support/S2Arm/games/%@/资源包", G]];
     NSString *prog = [[gd stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"program"], *v0 = [prog stringByAppendingPathComponent:@"v-0000000000000000-pc"];
@@ -67,6 +80,11 @@ int main(void) { @autoreleasepool {
     ck([sha_file([v0 stringByAppendingPathComponent:img]) isEqualToString:src_sha], @"① 旧版本目录原样（这局可能还开着）");
     rc = s2a_program_resign_if_needed(home.fileSystemRepresentation, gd.fileSystemRepresentation, G.UTF8String, md, im, sizeof md, why, sizeof why);
     ck(rc == 0 && [json(catp)[@"dir"] isEqualToString:newdir], [NSString stringWithFormat:@"② 再起一次：返回 %d（期望 0），清单不变", rc]);
+    // ②b 注册签名失败时强制重签（证书与手机身份相同、签名格式老）：不看「已是这张」照样重签，出新版本目录（签名时间不同 → 内容不同），随行目录跟过去
+    sleep(1); rc = s2a_program_resign_force(home.fileSystemRepresentation, gd.fileSystemRepresentation, G.UTF8String, md, im, sizeof md, why, sizeof why);
+    { NSString *d2 = json(catp)[@"dir"];
+      ck(rc == 1 && d2 && ![d2 isEqualToString:newdir] && [fm fileExistsAtPath:[[prog stringByAppendingPathComponent:d2] stringByAppendingPathComponent:[NSString stringWithFormat:@"Games/%@/x.txt", G]]],
+         [NSString stringWithFormat:@"②b 强制重签：返回 %d（期望 1）、新目录 %@（不同于 %@）、随行目录在", rc, d2, newdir]); }
     put_json(catp, cat0); [fm removeItemAtPath:[idir stringByAppendingPathComponent:@"current.json"] error:nil];
     ARGS(); rc = s2a_program_resign_if_needed(home.fileSystemRepresentation, gd.fileSystemRepresentation, G.UTF8String, md, im, sizeof md, why, sizeof why);
     ck(rc == 0 && [json(catp)[@"dir"] isEqualToString:@"v-0000000000000000-pc"], [NSString stringWithFormat:@"③ 没有 current.json：返回 %d（期望 0），清单不动", rc]);
@@ -77,6 +95,30 @@ int main(void) { @autoreleasepool {
     put_json(catp, cat0); s2a_program_resign_test_identity(id_none);
     ARGS(); rc = s2a_program_resign_if_needed(home.fileSystemRepresentation, gd.fileSystemRepresentation, G.UTF8String, md, im, sizeof md, why, sizeof why);
     ck(rc == -1 && [json(catp)[@"dir"] isEqualToString:@"v-0000000000000000-pc"] && strstr(why, "钥匙串"), [NSString stringWithFormat:@"⑤ 钥匙串里没有身份：返回 %d（期望 -1）、清单不动、原因「%@」", rc, @(why)]);
+    s2a_program_resign_test_identity(id_ok); s2a_program_resign_test_prov(prov_other); put_json(catp, cat0);
+    ARGS(); rc = s2a_program_resign_if_needed(home.fileSystemRepresentation, gd.fileSystemRepresentation, G.UTF8String, md, im, sizeof md, why, sizeof why);
+    ck(rc == -1 && [json(catp)[@"dir"] isEqualToString:@"v-0000000000000000-pc"] && strstr(why, "ABCDE12345") && strstr(why, "FGHIJ67890"),
+       [NSString stringWithFormat:@"⑥ App 团队 FGHIJ67890 ≠ 身份团队 ABCDE12345：返回 %d（期望 -1）、清单不动、原因「%@」写出两个团队号", rc, @(why)]);
+    s2a_program_resign_test_prov(prov_same); put_json(catp, cat0);
+    ARGS(); rc = s2a_program_resign_if_needed(home.fileSystemRepresentation, gd.fileSystemRepresentation, G.UTF8String, md, im, sizeof md, why, sizeof why);
+    ck(rc == 1 && [json(catp)[@"signer"][@"team"] isEqual:@"ABCDE12345"], [NSString stringWithFormat:@"⑥b 团队相同：照常重签，返回 %d（期望 1）、signer.team ABCDE12345", rc]);
+    // ⑦ LiveContainer 里
+    g_p12 = p12; s2a_lc_cert_test(lc_ok); s2a_program_resign_test_identity(id_none); s2a_program_resign_test_prov(prov_other);
+    [fm removeItemAtPath:[idir stringByAppendingPathComponent:@"current.json"] error:nil]; put_json(catp, cat0);
+    ARGS(); rc = s2a_program_resign_if_needed(home.fileSystemRepresentation, gd.fileSystemRepresentation, G.UTF8String, md, im, sizeof md, why, sizeof why);
+    { NSDictionary *c7 = json(catp); NSString *v7 = [prog stringByAppendingPathComponent:c7[@"dir"] ?: @"?"];
+      NSString *a7 = sh([NSString stringWithFormat:@"codesign -dvvv '%@/%@' 2>&1", v7, img]);
+      ck(rc == 1 && [c7[@"signer"][@"cert_sha1"] isEqual:cur_sha] && [c7[@"signer"][@"team"] isEqual:@"ABCDE12345"] && [c7[@"signer"][@"via"] isEqual:@"livecontainer"],
+         [NSString stringWithFormat:@"⑦ LiveContainer 里：返回 %d（期望 1）、signer %@（期望 cert_sha1 %@、team ABCDE12345、via livecontainer）", rc, c7[@"signer"], cur_sha]);
+      ck([a7 containsString:@"Authority=t_program_resign"] && [a7 containsString:@"TeamIdentifier=ABCDE12345"], @"⑦ 新程序库是 LiveContainer 交的证书签的、团队号 ABCDE12345（codesign 读）"); }
+    rc = s2a_program_resign_if_needed(home.fileSystemRepresentation, gd.fileSystemRepresentation, G.UTF8String, md, im, sizeof md, why, sizeof why);
+    ck(rc == 0, [NSString stringWithFormat:@"⑦b 再起一次：返回 %d（期望 0）", rc]);
+    s2a_lc_cert_test(lc_nocert); put_json(catp, cat0);
+    ARGS(); rc = s2a_program_resign_if_needed(home.fileSystemRepresentation, gd.fileSystemRepresentation, G.UTF8String, md, im, sizeof md, why, sizeof why);
+    ck(rc == -1 && [json(catp)[@"dir"] isEqualToString:@"v-0000000000000000-pc"] && strstr(why, "LiveContainer"),
+       [NSString stringWithFormat:@"⑦c LiveContainer 没导入证书：返回 %d（期望 -1）、清单不动、原因「%@」", rc, @(why)]);
+    s2a_lc_cert_test(NULL); s2a_program_resign_test_identity(id_ok);
+    s2a_program_resign_test_prov(NULL);
     [fm removeItemAtPath:dir error:nil];
     return S2A_T_RESULT("t_program_resign", bad);
 } }

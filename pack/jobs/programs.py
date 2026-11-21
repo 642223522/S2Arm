@@ -86,6 +86,23 @@ def _compress(data, checksum=False):
         return zstandard.ZstdCompressor(level=LEVEL, threads=-1, write_checksum=checksum).compress(data)
 
 
+@contextlib.contextmanager
+def zstd_writer(path, checksum=False):
+    """流式写一个 zstd 帧到 path（同 _compress 的级别、线程与内容校验；大文件不整份进内存，如推送用的 .s2arm）→ 可写的文件对象"""
+    try:
+        from compression import zstd   # Python 3.14
+    except ImportError:
+        zstd = None
+    if zstd is not None:
+        with zstd.ZstdFile(path, "w", options={zstd.CompressionParameter.compression_level: LEVEL, zstd.CompressionParameter.nb_workers: os.cpu_count() or 1,
+                                               zstd.CompressionParameter.checksum_flag: 1 if checksum else 0}) as f:
+            yield f
+        return
+    import zstandard   # 随包 Python 3.12（pack/jobs/toolchain.py 核过有它）
+    with open(path, "wb") as raw, zstandard.ZstdCompressor(level=LEVEL, threads=-1, write_checksum=checksum).stream_writer(raw, closefd=False) as f:
+        yield f
+
+
 def _decompress(data):
     try:
         from compression import zstd
@@ -187,7 +204,7 @@ def exefs_dir(c, gid):
 
 def recipe_files(kit, modules):
     drop = {f"{m}.{o}" for m in modules for o in OUTPUTS}
-    return [p for p in Path(kit).rglob("*") if p.is_file() and not (p.parent == Path(kit) and p.name in drop) and p.suffix != ".log"]
+    return [p for p in Path(kit).rglob("*") if p.is_file() and not (p.parent == Path(kit) and p.name in drop) and p.suffix != ".log" and not layout.os_junk(p.name)]
 
 
 def save_recipe(c, gid, full=False):
@@ -303,7 +320,7 @@ def _rebuilds_same(c, gid, kit):
             return False
         if built is None:
             return False
-        files = lambda d: {p.relative_to(d).as_posix() for p in Path(d).rglob("*") if p.is_file() and p.suffix != ".log"}
+        files = lambda d: {p.relative_to(d).as_posix() for p in Path(d).rglob("*") if p.is_file() and p.suffix != ".log" and not layout.os_junk(p.name)}
         a, b = files(keep), files(built)
         return a == b and all((keep / f).read_bytes() == (built / f).read_bytes() for f in a)
     finally:

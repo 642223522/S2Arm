@@ -265,10 +265,13 @@ public sealed partial class EnvironmentWindow : Window
         rightBar.Children.Add(MessagesButton());   // 消息：公告和更新说明（旧的只在这里）
 
         // 游戏库：任何页面都能回去；出包还在跑就留在后台
+        // 0.6.0 动态窗口（开关后面）：有和 App 相关的作业时显示进度一行字、做完 ✓、失败「!」，这时点它到总控台（PhoneConsole.cs）
+        var dynamicText = DynamicLibraryText();
         var libraryBtn = new Button
         {
-            Content = T("nav.library"), Padding = new Thickness(14, 8), CornerRadius = new CornerRadius(8),
-            Background = page == "library" ? Accent : Brush.Parse("#29292D"), Foreground = page == "library" ? Canvas : Ink
+            Content = dynamicText ?? T("nav.library"), Padding = new Thickness(14, 8), CornerRadius = new CornerRadius(8),
+            Background = page == "library" ? Accent : Brush.Parse("#29292D"),
+            Foreground = dynamicAlert && dynamicText is not null ? Brush.Parse("#FF9F0A") : page == "library" ? Canvas : Ink
         };
         Avalonia.Automation.AutomationProperties.SetAutomationId(libraryBtn, "top.library");
         libraryBtn.Click += (_, _) =>
@@ -277,6 +280,7 @@ public sealed partial class EnvironmentWindow : Window
             welcomeGameId = null;   // 点「游戏库」就是要看游戏库：欢迎页记的那一款不再把它盖住（社区贡献者补丁 #1）
             welcomeHome = false;
             if (!libraryBusy) importDialog = null;   // 添加游戏弹窗开着也能直接从导航离开（同上 #3；正在导入时不关）
+            if (dynamicText is not null) { OpenConsoleFromTopBar(); return; }
             Navigate("library");
         };
         rightBar.Children.Add(libraryBtn);
@@ -445,7 +449,7 @@ public sealed partial class EnvironmentWindow : Window
         if (libraryFailure.Length > 0)
             locations.Children.Add(new Border { Background = Brush.Parse("#2A1F14"), CornerRadius = new CornerRadius(12), Padding = new Thickness(16, 12),
                 Child = new TextBlock { Text = libraryFailure, FontSize = 13, Foreground = Ink, TextWrapping = TextWrapping.Wrap } });
-        // 出 iPhone 包成功后组在游戏库根（pack/jobs/ipa.py refresh_library_ipa）
+        // 「安装 S2Arm」装壳后放在游戏库根的通用 S2Arm.ipa（pack/jobs/install.py install_shell → ipa.commit_phone_ipa）
         var ipa = connectedFolder is null ? null : Path.Combine(connectedFolder, "S2Arm.ipa");
         var ipaReady = ipa is not null && File.Exists(ipa);
         locations.Children.Add(SettingRow(T("settings.locations.ipa"), ipaReady ? null : T("settings.locations.ipa_none"),
@@ -460,6 +464,18 @@ public sealed partial class EnvironmentWindow : Window
                 Action("library.import_keys", () => BeginPicker(ChooseKeysAsync), !libraryBusy))));
 
         body.Children.Add(InstallModeCard());   // 装到 iPhone 的方式（v0.3.0，InstallModePage.cs）
+
+        var remindRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };   // 免费签名到期提醒（11-20，缺省开）：游戏库状态行「×」关掉后在这里重新打开
+        var remindText = new StackPanel { Spacing = 4 };
+        remindText.Children.Add(Label(T("settings.freeSignReminder"), 16));
+        remindText.Children.Add(Label(freeSignReminderError.Length > 0 ? freeSignReminderError : T("settings.freeSignReminder.detail")));
+        remindRow.Children.Add(remindText);
+        var remindOn = FreeSignReminder.On(privateRoot);
+        var remindToggle = new ToggleSwitch { IsChecked = remindOn, OnContent = "", OffContent = "", VerticalAlignment = VerticalAlignment.Center };
+        Avalonia.Automation.AutomationProperties.SetAutomationId(remindToggle, "settings.freeSignReminder");
+        remindToggle.IsCheckedChanged += (_, _) => { if (remindToggle.IsChecked != remindOn) SetFreeSignReminder(remindToggle.IsChecked == true); };
+        Grid.SetColumn(remindToggle, 1); remindRow.Children.Add(remindToggle);
+        body.Children.Add(Card(remindRow));
 
         var widgetRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };   // 主屏小组件（11-16，缺省开）
         var widgetText = new StackPanel { Spacing = 4 };

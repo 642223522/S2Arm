@@ -23,7 +23,11 @@ static void one(int register_builder, int *before, int *during) {
         if (register_builder) f->builder = pthread_self();
         os_unfair_lock_lock(&g_shader_lock); if (!g_shader_flights) g_shader_flights = [NSMutableDictionary dictionary]; g_shader_flights[@"t"] = f; os_unfair_lock_unlock(&g_shader_lock);
         b0 = curpri(); dispatch_semaphore_signal(ready);
-        dispatch_semaphore_wait(go, DISPATCH_TIME_FOREVER); usleep(100000);   // 等待者已在 flight_wait_locked 里
+        dispatch_semaphore_wait(go, DISPATCH_TIME_FOREVER);
+        // 等到等待者真进了 flight_wait_locked 再读：生产函数先借优先级（override）、再解 g_shader_lock，故拿得到锁 = 借这一步已做完（或 ② 根本没借）。
+        //   原先固定睡 100 ms 当「已进去」，负载高时等待者还没跑到 → ① 读到后台档、假红（11-19 门禁）。按事件等，外面 alarm(30) 兜底
+        while (!os_unfair_lock_trylock(&g_shader_lock)) usleep(1000);
+        os_unfair_lock_unlock(&g_shader_lock);
         b1 = curpri();
         os_unfair_lock_lock(&g_shader_lock); [g_shader_flights removeObjectForKey:@"t"]; dispatch_group_leave(f->done); os_unfair_lock_unlock(&g_shader_lock);
     });

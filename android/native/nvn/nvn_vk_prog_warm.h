@@ -30,8 +30,8 @@ extern "C" {
 //     开局预热时游戏还没 ProgramSetShaders（source_store 是空的），拿不到 views；而 rp_draw.c 对带 C1
 //     绑定的程序在 c1_ok 位不齐时直接跳过绘制（"c1_segment_not_captured"），所以预热产品必须与真实
 //     解析的产品逐位一致——照抄当时的 c1，不重新解释控制段。
-//   · uses：本机真实使用次数（note 命中同一身份时 +1）。清单落盘按 uses 降序、同 uses 按最后一次使用
-//     时间降序，预热带照这个顺序做：热点先准备好（真机 45 秒里出现了 4430 个不同身份，全量全量预热
+//   · uses：本机真实使用次数（note 命中同一身份时 +1）。清单落盘按 uses 降序、同 uses 按使用顺序
+//     从新到旧，预热带照这个顺序做：热点先准备好（真机 45 秒里出现了 4430 个不同身份，全量预热
 //     不现实，热点优先才让常见路线先安全）。
 struct nvk_prog_rec {
     uint8_t identity[32];
@@ -45,8 +45,22 @@ struct nvk_prog_rec {
 
 // 读清单并用本局有效性过滤：profile_sha / direct_abi / translator closure 摘要必须与当前一致。
 // 不检查 source_store（开局它本来就是空的——c1 已经随记录落盘，预热不依赖游戏先装载源）。
-// 返回可用条数；<0 = 关闭或读失败（已记日志）。只由预热线程调用一次。
+// 返回本次接纳的磁盘条数；<0 = 目录/provider 未就绪。只由预热线程调用一次。
+// 缺失、读失败、整份拒绝均保留本局记录/冻结集/统计；跨 reset 的读取不提交。
+// 成功时当前记录优先，磁盘按热点填余位；重合身份保留当前元数据，uses 取 max，
+// 不累加可能重叠的历史。本局新 note 不加入冻结预热集，磁盘重合项用合并后的记录。
+// v1 的 64 位最近使用字段继续兼容旧时间戳，仅保留相对顺序。当前局的 note 比载入历史更新。
 int nvk_prog_warm_load(void);
+
+// 随包种子（首局预热）：本机这一版翻译器还没有清单（本闭包那份与旧名那份都不在）时，load 改读包里带的同名种子
+//   <S2A_SHADER_REVISION_ROOT>/shaders/direct/warm-vk/<闭包摘要前 8 字节 hex>-<profile 摘要前 8 字节 hex>/programs-v1-<闭包摘要 hex>.bin。
+//   种子就是一台同类设备真跑落下的本清单（同一格式、同一份整份校验与本局有效性检查），出包时由
+//   graphics/tools/direct/vk_warm_seed.py 收进包；跑局知识里的苹果管线键换不出这里的身份（身份含设备 profile、纹理与绘制事实，
+//   c1 是现场捕获的），所以种子只能来自安卓真机。有本机清单一律不读种子；种子不在 / 坏 / 不属于本局只打一行，本局按没有清单走。
+//   收下种子后本局落盘照常写本机路径：第二局起读本机清单，不再读种子。
+// 本局随包种子的状态（管线清单据此决定读不读同目录的管线种子）：
+//   -1 = 本局还没定（load 还没走到能定的那一步，调用方稍后再问）；0 = 本局没用随包种子；1 = 用了，out 写入种子目录。
+int nvk_prog_warm_seed_dir(char *out, size_t n);
 
 // 预热带游标：1 = 取到一条（游标推进）；0 = 没有更多。
 int nvk_prog_warm_take(struct nvk_prog_rec *out);
@@ -71,8 +85,8 @@ void nvk_prog_warm_save(void);
 int nvk_shader_warm_quiesce(uint32_t budget_ms);
 
 struct nvk_prog_warm_stats {
-    uint64_t loaded;      // 读清单时可用的条数（未按本局有效性过滤前的可用条数）
-    uint64_t rejected;    // 读清单时因本局有效性被过滤的条数
+    uint64_t loaded;      // 最近成功 load 接纳的磁盘条数（含与本局记录重合项）
+    uint64_t rejected;    // 最近成功 load 逐条过滤/容量排除的条数；整份失败不改统计
     uint64_t recorded;    // 本局 note 收下的条数
     uint64_t built;       // 预热带发布成功的条数
     uint64_t failed;      // 预热带失败的条数
@@ -100,7 +114,7 @@ void nvk_prog_warm_stat_draw_hit(void);
 void nvk_prog_warm_stat_draw_miss(void);
 
 // 清掉本局清单状态（已载入条目、游标、本局记录与统计）。rp_shader_reset 调用；盘上文件不动。
-// 同进程再开一局时 load() 也会先做同样的清场，所以不调也不会串局。
+// 同进程换游戏或再开一局必须调用；load() 不清场，只合并当前局。
 void nvk_prog_warm_reset(void);
 
 

@@ -10,6 +10,7 @@ import builtins
 import io
 import ntpath
 import os
+import stat
 import struct
 
 LIMIT = 240   # 留出目录内再拼文件名的余量；系统上限 260
@@ -74,13 +75,30 @@ def _wrap_scandir(module):
     module.scandir = scandir
 
 
+def _name_paths(error, paths):
+    """系统调用报错没带路径时，补上这次调用的路径参数（调用方给的写法，不是补了长路径前缀的那份）。
+    #df9fd6：_winapi.CopyFile2（shutil.copy2 的 Windows 路径）报 WinError 112「磁盘空间不足」不带文件名，失败归因只能去量日志所在的盘
+    （库盘还剩 226.7 GB）、不采信盘满，玩家看到「未归类」；补上源 / 目标之后，归因按点名的路径量到真正写满的那块盘"""
+    if error.filename is not None:
+        return
+    names = [os.fspath(p) for p in paths if isinstance(p, (str, bytes, os.PathLike))]
+    if names:
+        error.filename = names[0]
+        if len(names) > 1:
+            error.filename2 = names[1]
+
+
 def _wrap(module, name, count):
     original = getattr(module, name, None)
     if original is None:
         return
     def wrapper(*args, **kwargs):
         converted = [long_path(a) if i < count else a for i, a in enumerate(args)]
-        return original(*converted, **kwargs)
+        try:
+            return original(*converted, **kwargs)
+        except OSError as e:
+            _name_paths(e, args[:count])
+            raise
     wrapper.__name__ = name
     wrapper.__doc__ = original.__doc__
     setattr(module, name, wrapper)
@@ -107,12 +125,78 @@ def to_short(path, table):
     return path
 
 
+def _strict_short_root_fallback(path, table):
+    """Return an existing path through an app-owned short-root junction, else None.
+
+    Strict ``realpath`` normally requires a final path from the volume driver. Some mounted
+    volumes reject that query with ERROR_UNRECOGNIZED_VOLUME even though stat/listing work. Only
+    trust the lexical short path when it is rooted at one of our recorded junctions, that root is
+    still a reparse point, every remaining component exists and is not another reparse point,
+    and the final target can be stat'ed. This retains strict existence and containment semantics.
+    """
+    try:
+        path = os.fspath(path)
+    except TypeError:
+        return None
+    if not isinstance(path, str):
+        return None
+    bare = path[4:] if path.startswith("\\\\?\\") and not path.startswith("\\\\?\\UNC\\") else path
+    absolute = ntpath.abspath(bare)
+    folded = ntpath.normcase(absolute)
+    for _, _, short in table:
+        alias = ntpath.abspath(short).rstrip("\\")
+        key = ntpath.normcase(alias)
+        if folded != key and not folded.startswith(key + "\\"):
+            continue
+        try:
+            info = os.lstat(alias)
+        except OSError:
+            return None
+        reparse = getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if not reparse:
+            return None
+        isjunction = getattr(os.path, "isjunction", None)
+        try:
+            if isjunction is None or not isjunction(alias):
+                return None
+        except OSError:
+            return None
+        current = alias
+        suffix = absolute[len(alias):].lstrip("\\")
+        for part in suffix.split("\\") if suffix else ():
+            current = ntpath.join(current, part)
+            try:
+                info = os.lstat(current)
+            except FileNotFoundError:
+                raise
+            except OSError:
+                return None
+            reparse = getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            if reparse:
+                return None
+        os.stat(absolute)  # strict resolve must still reject a missing / unreadable final target
+        return absolute
+    return None
+
+
 def _wrap_realpath():
     """工作区走短根（pack/orch/shortroot.py）时，realpath / Path.resolve 把目录联接展开成长路径后再换回短路径，否则和短路径比 relative_to 会失败（同 #138）"""
     original = ntpath.realpath
 
     def realpath(path, **kwargs):
-        result = original(path, **kwargs)
+        try:
+            result = original(path, **kwargs)
+        except OSError as error:
+            # 不严格模式（缺省）下 Python 只吞几种「解析不了」的错误码（ntpath._getfinalpathname_nonstrict 的 allowed_winerror），
+            #   有的盘的驱动（内存盘 / 虚拟盘 / 网盘挂载）取最终路径回 WinError 6「控制代码无效」，整个出包停在轻阶段（#1582 D-AHTT，4 次）。
+            #   非严格按文档语义退回规整后的绝对路径；严格模式仅对已登记且仍有效的任务短 junction 处理 WinError 1005
+            if kwargs.get("strict"):
+                if getattr(error, "winerror", None) == 1005:
+                    fallback = _strict_short_root_fallback(path, parse_table(os.environ.get("S2A_SHORT_ROOTS")))
+                    if fallback is not None:
+                        return fallback
+                raise
+            result = ntpath.abspath(path)
         text = os.environ.get("S2A_SHORT_ROOTS")
         if not text or not isinstance(result, str):
             return result

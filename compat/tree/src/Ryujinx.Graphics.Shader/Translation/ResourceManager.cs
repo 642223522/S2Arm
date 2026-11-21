@@ -68,8 +68,8 @@ namespace Ryujinx.Graphics.Shader.Translation
             _stage = stage;
             _stagePrefix = GetShaderStagePrefix(stage);
 
-            // Constant buffer banks 0-17 (Maxwell's), and 24: NVN2's push constants (c[24])
-            _cbSlotToBindingMap = new SetBindingPair[25];
+            // Constant buffer banks 0-17 (Maxwell's), and 24-31: NVN2's push constant slots (c[24 + k]; S2Arm: compute push block 1 is slot 1 = c[25], InstEmitAmpere AMapC0)
+            _cbSlotToBindingMap = new SetBindingPair[32];
             // Storage buffers the global-to-storage pass found: the stage's storage buffer table and, for compute, its uniform buffer address table (NVN 16 + 16 slots)
             _sbSlotToBindingMap = new SetBindingPair[32];
             _cbSlotToBindingMap.AsSpan().Fill(new(-1, -1));
@@ -455,6 +455,12 @@ namespace Ryujinx.Graphics.Shader.Translation
             if (!isImage && (type & SamplerType.Mask) == SamplerType.TextureBuffer)
             {
                 sampledType = _gpuAccessor.QueryTextureFormat(handle, cbufSlot).GetComponentType();
+            }
+            else if (!isImage && type != SamplerType.None && arrayLength == 1)
+            {
+                // S2A: sampled images require the bound view's numeric type (VUID-07753).
+                // An array shares one declaration across its descriptors and cannot use one element's format.
+                sampledType = _gpuAccessor.QueryS2ASampledTextureFormat(handle, cbufSlot).GetComponentType();
             }
 
             // S2A：存储 texel buffer 的 Image Format 与数值型分开（VUID-08737）：宿主支持无格式读

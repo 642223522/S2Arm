@@ -28,6 +28,9 @@ int s2a_ios_save_management_requested(void) { return 0; }
 UIViewController *s2a_ios_save_manager(void (^start_game)(void)) { (void)start_game; return nil; }
 void s2a_ios_save_present(UIViewController *presenter) { (void)presenter; }
 void s2a_ios_test_save_op(void) {}   // 测试开关 S2A_TEST_SAVE_OP（save_transfer.m）：电视上没有存档导入导出
+// 「回到上一份存档」（save_transfer.m）：app.m 起宿主前问；电视上没有存档管理页，不问、照常起（返回 0 = 没弹，调用方接着 startHost）
+NSString *g_s2a_prev_last_game;
+int s2a_ios_previous_save_prompt(UIViewController *presenter, void (^go)(void)) { (void)presenter; (void)go; return 0; }
 
 // 外接屏场景配件（extdisplay.m）：电视本身就是那块屏
 id s2a_ios_ext_register(UIViewController *vc) { (void)vc; return nil; }

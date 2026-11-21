@@ -28,10 +28,49 @@ struct nvn_gpu_surface_s {
     uint32_t held_sem;
     uint64_t presents;
     struct wsi_timing timing;
-    VkSurfaceTransformFlagBitsKHR built_transform;   // 建这一代交换链时表面的方向与尺寸：判「次优」是不是真的变了（见 wsi_suboptimal_stale）
-    VkExtent2D built_cur;
+    uint64_t fbp_t0, fbp_last[3]; uint32_t fbp_frames;   // 反馈快照池 5 秒读数（wsi_fbpool_report）：窗口起点、上次读到的累计值、窗口内帧数
+    VkSurfaceTransformFlagBitsKHR built_transform;   // 建链时表面方向；有效尺寸在 extent（见 wsi_suboptimal_stale）
     uint32_t subopt_n;
 };
+
+// 反馈快照池读数（缺省常开、只计数）：跟「分时（实际上屏）」同一个 5 秒节拍，紧挨着打一行，正式包 logcat 也能直接看到每帧新建几张快照图。
+//   新建 = 每帧还在 vkAllocateMemory 建整图的快照数（池子起作用后稳态应接近 0）；命中 = 从池里取；淘汰 = 超上限销毁。只由上屏线程调用。
+static void wsi_fbpool_report(struct nvn_gpu_surface_s *s, uint64_t now) {
+    s->fbp_frames++;
+    if (!s->fbp_t0) { s->fbp_t0 = now; uint64_t st[5]; nvn_vk_fbpool_stat(st); memcpy(s->fbp_last, st, sizeof s->fbp_last); s->fbp_frames = 0; return; }
+    if (now < s->fbp_t0 || now - s->fbp_t0 < 5000000000ull) return;
+    uint64_t st[5]; nvn_vk_fbpool_stat(st);
+    const double fr = s->fbp_frames ? (double)s->fbp_frames : 1.0;
+    char b[256];
+    snprintf(b, sizeof b, "反馈快照池（每帧，近 %u 帧）：新建 %.2f 张、池命中 %.2f 张、淘汰 %.2f 张；池里现有 %llu 张 %llu MB（上限 %llu MB）",
+             s->fbp_frames, (double)(st[0] - s->fbp_last[0]) / fr, (double)(st[1] - s->fbp_last[1]) / fr, (double)(st[2] - s->fbp_last[2]) / fr,
+             (unsigned long long)st[3], (unsigned long long)(st[4] >> 20), (unsigned long long)(g_fbpool_cap >> 20));
+    nvn_plat_log(NVN_PLAT_LOG_INFO, "present", b);
+    memcpy(s->fbp_last, st, sizeof s->fbp_last); s->fbp_t0 = now; s->fbp_frames = 0;
+}
+
+// 建链与次优检查必须用同一套几何：UINT32_MAX 是「由窗口定尺寸」，不能拿哨兵值判 resize。
+// 固定 currentExtent 是 consumer 的首选尺寸；Android 的窗口查询可能已是 buffer geometry，不能反过来覆盖它。
+static nvn_gpu_rc wsi_geometry(struct nvn_gpu_surface_s *s, const VkSurfaceCapabilitiesKHR *caps, VkExtent2D *out, nvn_gpu_err *err) {
+    if (!(caps->supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR))
+        return fail(err, NVN_GPU_E_UNSUPPORTED, "surface 不支持 identity preTransform，内容预旋转未实现");
+    // 已接着的窗口暂时没有绘制面积，不等于 surface 已丢失；保留代际，尺寸恢复后还可 rebuild。
+    int unavailable = s->gen ? NVN_GPU_E_OUTDATED : NVN_GPU_E_REVOKED;
+    VkExtent2D ext = caps->currentExtent;
+    if (ext.width == UINT32_MAX && ext.height == UINT32_MAX) {
+        if (!nvn_plat_window_size(s->native, &ext.width, &ext.height) || !ext.width || !ext.height)
+            return fail(err, unavailable, "窗口没有尺寸");
+    }
+    // 0 不是未定义尺寸，也不是无限上限（与 maxImageCount 的 0 不同）。最小化的 surface 可以报 max=(0,0)。
+    if (!ext.width || !ext.height || !caps->maxImageExtent.width || !caps->maxImageExtent.height)
+        return fail(err, unavailable, "表面没有可建交换链的非零尺寸");
+    if (ext.width < caps->minImageExtent.width) ext.width = caps->minImageExtent.width;
+    if (ext.height < caps->minImageExtent.height) ext.height = caps->minImageExtent.height;
+    if (ext.width > caps->maxImageExtent.width) ext.width = caps->maxImageExtent.width;
+    if (ext.height > caps->maxImageExtent.height) ext.height = caps->maxImageExtent.height;
+    *out = ext;
+    return rc(NVN_GPU_OK);
+}
 
 // 取图 / 呈现回「次优」（VK_SUBOPTIMAL_KHR）时要不要重建交换链。
 // 安卓上交换链按不旋转建（preTransform = IDENTITY，由系统的显示引擎去转），横屏时表面的当前方向是转过的，于是**每一次**呈现都回「次优」。
@@ -42,7 +81,9 @@ static int wsi_suboptimal_stale(struct nvn_gpu_surface_s *s) {
     if (s->subopt_n++ % 30) return 0;
     VkSurfaceCapabilitiesKHR caps;
     if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g.phys, s->surface, &caps) != VK_SUCCESS) return 1;
-    return caps.currentTransform != s->built_transform || caps.currentExtent.width != s->built_cur.width || caps.currentExtent.height != s->built_cur.height;
+    VkExtent2D ext;
+    if (!nvn_gpu_ok(wsi_geometry(s, &caps, &ext, NULL))) return 1;
+    return caps.currentTransform != s->built_transform || ext.width != s->extent.width || ext.height != s->extent.height;
 }
 static struct nvn_gpu_surface_s *g_surface;    // 一个后端同时只接一个面
 
@@ -140,16 +181,9 @@ static nvn_gpu_rc wsi_build(struct nvn_gpu_surface_s *s, nvn_gpu_err *err) {
     VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(g.phys, pick.format, &fp);
     if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT) || !(caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT))
         return fail(err, NVN_GPU_E_UNSUPPORTED, "交换链格式 %d 不能当拷贝目标", (int)pick.format);
-    VkExtent2D ext = caps.currentExtent;
-    if (ext.width == 0xffffffffu || !ext.width || !ext.height) {   // 表面不报尺寸：问平台要窗口尺寸
-        uint32_t w = 0, h = 0;
-        if (!nvn_plat_window_size(s->native, &w, &h) || !w || !h) return fail(err, NVN_GPU_E_REVOKED, "窗口没有尺寸");
-        ext.width = w; ext.height = h;
-    }
-    if (ext.width < caps.minImageExtent.width) ext.width = caps.minImageExtent.width;
-    if (ext.height < caps.minImageExtent.height) ext.height = caps.minImageExtent.height;
-    if (caps.maxImageExtent.width && ext.width > caps.maxImageExtent.width) ext.width = caps.maxImageExtent.width;
-    if (caps.maxImageExtent.height && ext.height > caps.maxImageExtent.height) ext.height = caps.maxImageExtent.height;
+    VkExtent2D ext;
+    nvn_gpu_rc geometry = wsi_geometry(s, &caps, &ext, err);
+    if (!nvn_gpu_ok(geometry)) return geometry;
     uint32_t n = caps.minImageCount == UINT32_MAX ? UINT32_MAX : caps.minImageCount + 1; if (n < 3) n = 3;
     { int extra = nvn_plat_flag("nvk_swap_extra", 0); if (extra > 0 && extra <= 4 && n <= UINT32_MAX - (uint32_t)extra) n += (uint32_t)extra;   // 诊断：多要几张窗口图，看取图的等待是不是交换链反压
       if (caps.maxImageCount && n > caps.maxImageCount) n = caps.maxImageCount;
@@ -161,7 +195,7 @@ static nvn_gpu_rc wsi_build(struct nvn_gpu_surface_s *s, nvn_gpu_err *err) {
     ci.imageExtent = ext; ci.imageArrayLayers = 1; ci.imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     ci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     // 预旋转固定用恒等：把当前旋转当预旋转又不转内容，合成器会再转一次（安卓真机实测过的坑）
-    ci.preTransform = (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR : caps.currentTransform;
+    ci.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
     ci.compositeAlpha = (caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR) ? VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR
                       : (caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR) ? VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR
                       : (VkCompositeAlphaFlagBitsKHR)(caps.supportedCompositeAlpha & (~caps.supportedCompositeAlpha + 1));
@@ -199,7 +233,7 @@ static nvn_gpu_rc wsi_build(struct nvn_gpu_surface_s *s, nvn_gpu_err *err) {
     for (uint32_t i = 0; i < ni + 1; i++) if (!s->acquire[i] && vkCreateSemaphore(g.d, &si, NULL, &s->acquire[i]) != VK_SUCCESS) { wsi_destroy_swapchain(s); return fail(err, NVN_GPU_E_OOM, "信号量创建失败"); }
     for (uint32_t i = 0; i < ni; i++) if (!s->rendered[i] && vkCreateSemaphore(g.d, &si, NULL, &s->rendered[i]) != VK_SUCCESS) { wsi_destroy_swapchain(s); return fail(err, NVN_GPU_E_OOM, "信号量创建失败"); }
     s->held = -1; s->outdated = 0; s->acquire_next = 0;
-    s->built_transform = caps.currentTransform; s->built_cur = caps.currentExtent; s->subopt_n = 0;
+    s->built_transform = caps.currentTransform; s->subopt_n = 0;
     wsi_timing_init(&s->timing, g.d, nvn_plat_flag("display_timing", 0) == 1, g.dev->has_display_timing);
     return rc(NVN_GPU_OK);
 }
@@ -383,9 +417,12 @@ static int wsi_compose_blit(struct nvn_gpu_cmd_s *c, struct nvn_gpu_surface_s *s
 }
 
 // 可选的上屏 EASU 放大：直接画进交换链图（它本来就带 COLOR_ATTACHMENT 用法）。
-// 返回 1 = 已录制；0 = 不适用（调用方回落 wsi_compose_blit；此处已下发的 UNDEFINED 屏障对后者无害）。
+// 返回 1 = 已录制；-1 = 自然跳过、未录制；0 = 尝试失败（沿用原诊断与 blit 回退）。
 static int wsi_compose_easu(struct nvn_gpu_cmd_s *c, struct nvn_gpu_surface_s *s, uint32_t idx,
                             const nvn_gpu_present_desc *d, int encode) {
+    struct easu_rects rect;
+    int fit = easu_rects_prepare(d->src, s->extent, d->crop, d->dst, &rect);
+    if (fit == EASU_RECT_SKIP) return -1;
     // 整张图先清黑：渲染通道的 CLEAR 只作用于渲染区，dst 之外的边框得自己清（与 blit 路径同一个黑）。
     wsi_swap_barrier(c->cb, s->images[idx], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                      VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
@@ -396,12 +433,24 @@ static int wsi_compose_easu(struct nvn_gpu_cmd_s *c, struct nvn_gpu_surface_s *s
     wsi_swap_barrier(c->cb, s->images[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                      VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                      VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
-    if (!easu_compose(c, s->images[idx], s->extent, 0, s->format, d->src, d->crop, d->dst, d->flip_y, s->gen, encode))
+    if (fit != EASU_RECT_ATTEMPT ||
+        !easu_compose(c, s->images[idx], s->extent, 0, s->format, d->src, &rect, d->flip_y, s->gen, encode))
         return 0;
     wsi_swap_barrier(c->cb, s->images[idx], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, 0, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                      VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
     return 1;
+}
+
+// 保留真实尝试失败的诊断；自然跳过不刷日志，也不跳过 blit 自己的清场/颜色处理。
+static int wsi_compose_selected(struct nvn_gpu_cmd_s *c, struct nvn_gpu_surface_s *s, uint32_t idx,
+                                struct nvn_gpu_tex_s *st, const nvn_gpu_present_desc *d,
+                                const VkFormatProperties *fp, int encode, VkImage target,
+                                int elig, int *upscaled) {
+    int result = elig ? wsi_compose_easu(c, s, idx, d, encode) : -1;
+    if (result == 0) nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", "上屏放大：这次不适用，回落缩放拷贝");
+    *upscaled = result > 0;
+    return *upscaled ? 1 : wsi_compose_blit(c, s, idx, st, d, fp, encode, target);
 }
 
 nvn_gpu_rc nvn_gpu_present(nvn_gpu_surface s, const nvn_gpu_drawable *dr, const nvn_gpu_present_desc *d, uint64_t ticket,
@@ -416,6 +465,20 @@ nvn_gpu_rc nvn_gpu_present(nvn_gpu_surface s, const nvn_gpu_drawable *dr, const 
         char b[400]; snprintf(b, sizeof b, "对象读数（每帧，近 300 帧）：新建渲染通道 %.1f、帧缓冲 %.1f、命令池 %.1f、描述符池 %.1f；分配描述符集 %.1f 次、写描述符 %.1f 次；遮挡查询 %.1f 个；新建视图 %.1f 个；取窗口图 %.1f 毫秒",
             v[OC_RP] / 300.0, v[OC_FB] / 300.0, v[OC_CPOOL] / 300.0, v[OC_DPOOL] / 300.0, v[OC_DALLOC] / 300.0, v[OC_DWRITE] / 300.0, v[OC_QUERY] / 300.0, v[OC_VIEW] / 300.0, (double)__atomic_exchange_n(&g_acq_ns, 0, __ATOMIC_RELAXED) / 300.0 / 1e6);
         nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", b);
+        { static uint64_t last_feedback[4], last_snap[2];
+          uint64_t ro = diag_delta(&g_feedback_stats[0], &last_feedback[0]);
+          uint64_t cp = diag_delta(&g_feedback_stats[1], &last_feedback[1]);
+          uint64_t split = diag_delta(&g_feedback_stats[2], &last_feedback[2]);
+          uint64_t snew = diag_delta(&g_feedback_snap[0], &last_snap[0]);
+          uint64_t sreuse = diag_delta(&g_feedback_snap[1], &last_snap[1]);
+          snprintf(b, sizeof b, "只读反馈（每帧，近 300 帧，录制计数）：只读采样 %.2f 笔、快照拷贝 %.2f 次、重开 %.2f 次、快照图新建 %.2f / 复用 %.2f；nvk_fb_read=%d none_ext=%d",
+              ro / 300.0, cp / 300.0, split / 300.0, snew / 300.0, sreuse / 300.0, nvn_plat_flag("nvk_fb_read", 0), g.dev->load_store_op_none_enabled);
+          nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", b);
+          uint64_t pskip = diag_delta(&g_feedback_stats[3], &last_feedback[3]);
+          snprintf(b, sizeof b, "整池数组读数（每帧，近 300 帧，录制计数）：整池数组与写着的附件重叠而免拷 %.2f 笔；nvk_pool_fb=%d",
+              pskip / 300.0, nvn_plat_flag("nvk_pool_fb", 0));
+          nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", b);
+        }
         // 留存读数（#1118）：视图表按存储认视图后，存储在共用表里留着时名下的视图与帧缓冲也留着；看它们在一局里是否有界（取这一刻的现存数，不是窗口平均）
         snprintf(b, sizeof b, "留存读数（取这一刻）：现存后端视图 %llu 个、帧缓冲缓存 %llu / %u 项", (unsigned long long)nvn_vk_dbg_view_stat(0), (unsigned long long)nvn_vk_dbg_view_stat(2), (unsigned)PC_FB_N);
         nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", b);
@@ -424,7 +487,7 @@ nvn_gpu_rc nvn_gpu_present(nvn_gpu_surface s, const nvn_gpu_drawable *dr, const 
           for (int i = 0; i < OP_N; i++) { c[i] = __atomic_exchange_n(&g_dq_cnt[i], 0, __ATOMIC_RELAXED); tot += c[i]; idx[i] = i; }
           for (int i = 1; i < OP_N; i++) { int k = idx[i], j = i - 1; while (j >= 0 && c[idx[j]] < c[k]) { idx[j + 1] = idx[j]; j--; } idx[j + 1] = k; }
           size_t o = (size_t)snprintf(b, sizeof b, "驱动调用（每帧，近 300 帧）：共 %.0f 次", tot / 300.0);
-          for (int i = 0; i < 10 && i < OP_N && c[idx[i]] && o < sizeof b - 48; i++) if (idx[i] != OP_WRAP) o += (size_t)snprintf(b + o, sizeof b - o, "；%s %.1f", g_dq_names[idx[i]] + 5, c[idx[i]] / 300.0);   // + 5：去掉 vkCmd
+          for (int i = 0; i < 10 && i < OP_N && c[idx[i]] && o < sizeof b - 48; i++) if (idx[i] != OP_WRAP) o += (size_t)snprintf(b + o, sizeof b - o, "；%s %.1f", g_dq_names[idx[i]] + (strncmp(g_dq_names[idx[i]], "vkCmd", 5) ? 0 : 5), c[idx[i]] / 300.0);   // 去掉 vkCmd 前缀（暂存填充 fill 没有）
           nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", b); }
         if (g_dq_ring && DQ_ON()) {   // 两级回放开着才有这一行：录制线程怎么等活、生产者叫了几次、清空等了多久（nvk_dq_spin / nvk_dq_poll_us / nvk_dq_wake_kb 的 A/B 读数）
           uint64_t s[DQS_N]; for (int i = 0; i < DQS_N; i++) s[i] = __atomic_exchange_n(&g_dq_st[i], 0, __ATOMIC_RELAXED);
@@ -511,17 +574,16 @@ nvn_gpu_rc nvn_gpu_present(nvn_gpu_surface s, const nvn_gpu_drawable *dr, const 
     struct nvn_gpu_cmd_s *c = ch;
     // 上屏 EASU 放大：玩家选「高画质」时开（S2A_HIGH_QUALITY=1，宿主创建前由外壳设，缺省更省电 = 关）；
     //   调试构建里 debug.s2a.nvk_upscale 设了就以它为准（A/B 用），发布包 nvn_plat_flag 恒取缺省 -1 → 按玩家选项
-    int upscaled = 0;
+    int upscaled = 0, elig = 0;
     { static int hq = -1; if (hq < 0) { const char *e = getenv("S2A_HIGH_QUALITY"); hq = e && e[0] == '1'; }
       int up = nvn_plat_flag("nvk_upscale", -1); if (up < 0) up = hq;
-      int elig = up ? easu_eligible(st, s->format) : 0;
+      elig = up ? easu_eligible(st, s->format) : 0;
       { static int seen = -1; int now = up * 2 + elig;   // 只在「开关 × 适用」变化时记一行
         if (now != seen) { seen = now; char b[160];
           snprintf(b, sizeof b, "上屏放大读数：开关=%d 适用=%d（源格式=%d 交换链=%d）", up, elig, (int)st->format, (int)s->format);
           nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", b); } }
-      if (elig) { upscaled = wsi_compose_easu(c, s, idx, d, encode);
-        if (!upscaled) nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", "上屏放大：这次不适用，回落缩放拷贝"); } }
-    int ok = upscaled ? 1 : wsi_compose_blit(c, s, idx, st, d, &fp, encode, target);
+    }
+    int ok = wsi_compose_selected(c, s, idx, st, d, &fp, encode, target, elig, &upscaled);
     // 内部段：摘出活动表，自己提交（等取图信号量、发呈现信号量），交给完成线程只做回收
     pthread_mutex_lock(&g_mu);
     { struct nvn_gpu_cmd_s **pp = &g.live; while (*pp && *pp != c) pp = &(*pp)->live_next; if (*pp) *pp = c->live_next; }
@@ -573,6 +635,7 @@ nvn_gpu_rc nvn_gpu_present(nvn_gpu_surface s, const nvn_gpu_drawable *dr, const 
         wsi_timing_poll(&s->timing, g.d, s->swapchain);
         tnow = now_ns();
         wsi_timing_report(&s->timing, tnow);
+        wsi_fbpool_report(s, tnow);
         // 每上屏一帧调一次共用 ap_host 的上屏出口（游玩时间、直连安全网帧证据、停帧看门、HUD 与帧计数；同 iOS dm_guest_frame_tick、
         //   旧层 mtl_vk_shim.c mtl_present 的口径）。新旧两层不会编进同一个包（LinkSources.cmake 两张清单互斥），一帧只调一次；
         //   ap_host.c 只在游戏目标里，独立直连探针 / vk 宿主用例没链就跳过

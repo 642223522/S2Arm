@@ -20,8 +20,8 @@ import S2ArmAppleAdapter
         return (m, root)
     }
 
-    func testReasonsPerGameWhenSwitchOn() async throws {
-        let (m, root) = try model(["enabled": true, "games": [["gameId": "0100abc", "reasons": ["shader", "hostAbi"]], ["gameId": "0100DEF", "reasons": [String]()]]])
+    func testReasonsPerGame() async throws {
+        let (m, root) = try model(["games": [["gameId": "0100abc", "reasons": ["shader", "hostAbi"]], ["gameId": "0100DEF", "reasons": [String]()]]])
         defer { try? FileManager.default.removeItem(at: root) }
         m.refreshUpdateHints()
         for _ in 0..<300 where m.updateHints.isEmpty { try? await Task.sleep(for: .milliseconds(10)) }
@@ -30,20 +30,26 @@ import S2ArmAppleAdapter
         XCTAssertEqual(m.updateReasons(GameSummary(id: "0100XYZ", name: "C")), [], "不在表里的款没有提示")
     }
 
-    func testNothingWhenSwitchOff() async throws {
-        let (m, root) = try model(["enabled": false, "games": [["gameId": "0100ABC", "reasons": ["shader"]]]])
+    func testNothingWhenResultHasNoGames() async throws {
+        let (m, root) = try model([:])
         defer { try? FileManager.default.removeItem(at: root) }
-        m.updateHints = ["0100ABC": ["rewriter"]]   // 上一次的值：关着读一次要清掉
+        m.updateHints = ["0100ABC": ["rewriter"]]   // 上一次的值：读到不带 games 的结果要清掉
         m.refreshUpdateHints()
         for _ in 0..<300 where !m.updateHints.isEmpty { try? await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertEqual(m.updateHints, [:], "开关关着什么都不出")
+        XCTAssertEqual(m.updateHints, [:], "结果里没有 games 什么都不出")
     }
 
     func testReasonKeysHaveSharedText() {
         XCTAssertEqual(S2ArmLauncherModel.updateReasonKey("rewriter"), "update.hint.reason.rewriter")
         XCTAssertEqual(S2ArmLauncherModel.updateReasonKey("hostAbi"), "update.hint.reason.hostAbi")
         XCTAssertEqual(S2ArmLauncherModel.updateReasonKey("shader"), "update.hint.reason.shader")
+        XCTAssertEqual(S2ArmLauncherModel.updateReasonKey("libGen"), "update.hint.reason.shader", "库缺新代数内容（旧包不带客体输入）：用着色器那条文案")
         XCTAssertNil(S2ArmLauncherModel.updateReasonKey("other"), "不认识的原因不显示")
+        // 11-19 结构 9：原因表、确认码表只读共享体验表一处（原先 Mac 自己一份：缺 shaderMiss、缺 cert_revoke_confirm）
+        XCTAssertEqual(S2ArmLauncherModel.updateReasonKey("shaderMiss"), "update.hint.reason.shader", "只缺着色器的款也要出建议更新提示")
+        XCTAssertEqual(S2ArmLauncherModel.confirmCodes["cert_revoke_confirm"], "acceptCertRevoke", "新建证书确认：「仍然继续」要带得上参数")
+        XCTAssertEqual(S2ArmLauncherModel.confirmCodes["library_in_cloud"], "acceptCloud")
+        XCTAssertNil(S2ArmLauncherModel.confirmCodes["library_bad_format"], "带 accept_ui 的码由专门页面带，不进通用确认")
         for key in ["update.hint.badge", "update.hint.button", "update.hint.tail", "update.hint.reason.rewriter", "update.hint.reason.hostAbi", "update.hint.reason.shader"] {
             for lang in ["zh-Hans", "zh-Hant", "en", "ja", "es", "fr"] {
                 XCTAssertFalse(BackendText.launcherText(key, language: lang).hasPrefix("["), "\(key) 缺 \(lang)")
@@ -61,6 +67,7 @@ private final class HintsRunner: JobProcessRunner {
     func start(executable: URL, arguments: [String], environment: [String: String],
                onLine: @escaping (Data) -> Void, onStderr: @escaping (Data) -> Void,
                onExit: @escaping (Int32) -> Void) throws -> JobProcessHandle {
+        objc_sync_enter(self); defer { objc_sync_exit(self) }   // 作业客户端在并发线程池里同时调 start：替身状态串行改（无锁并发追加数组会 SIGSEGV 带崩整个测试进程）
         var taskId = ""; var request: [String: Any] = [:]
         if let last = arguments.last, last.hasSuffix(".json"), let data = try? Data(contentsOf: URL(fileURLWithPath: last)),
            let r = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] { request = r; taskId = r["taskId"] as? String ?? "" }

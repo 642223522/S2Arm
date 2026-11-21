@@ -1,8 +1,11 @@
 #!/bin/bash
-# pack/refresh.sh 单测（各阶段换成桩，只验编排；约 10 秒）：bash tests/refresh_test.sh
+# pack/refresh.sh 单测（各阶段换成桩，只验编排）：bash tests/refresh_test.sh
+# 用时（11-19 实测，负载约 40）：约 27 秒，满载门禁约 110 秒。全测跑 39 次真编排（每种情形一次，就是本测要验的东西），每次约 0.7 秒：
+#   refresh.sh 自身约 0.4 秒（每次约 170 个小外部命令：ps / basename / awk / find…，负载下每个几毫秒，没有单个大头），
+#   阶段桩约 0.2 秒，真依赖判据的 python（解码器款 / GLSLC 款 / 核数）约 0.14 秒。再快只能拆成几份并行跑，不能删情形
 # 期望（10-25 维护者「一次出完整包」，按编排规则手写）：
 #   ① 只有直连（10-30 直连单轨；11-07 拆兼容模式、精简档与只服务通用模式的着色器阶段 / 客体代码表）：出直连库，不再跑 shaders / direct_gk；
-#     管线种子表 direct_seed（审计 #1534 P1-54）在直连库之后、只跑一次
+#     管线种子表 direct_seed（审计 #1534 P1-54）在直连库之后、只跑一次；计算管线归档 direct_cpso 在种子表之后、只跑一次、路数同直连库
 #   ② 直连库阶段退 0 却没出库（没有 shaders/direct/keys.tsv）→ 报红「直连单轨停在 直连库」、退出 1、不跑种子表（不退成通用包）
 #   ②b 抽取缺口出的运行时现编空库（keys.tsv 空、有 runtime_only.txt，11-05 维护者：直连库编不出也照出包）→ 照常退 0
 #   ④ 直连库段内容缺口（退 3）→ 报红「直连单轨停在 直连库：直连缺口：<类别>」、退出 1、不跑种子表；直连库段基础设施出错（退 1）→ 报红、退出 1、不跑种子表
@@ -11,23 +14,23 @@
 #   ⑩ 开工判一次盘：可用 10 G < 要的 40 G → 退出 1、红行写清要多少 / 剩多少、一个阶段都不跑；可用 50 G ≥ 40 G → 照常刷
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); bad=0; trap 'rm -rf "$T"' EXIT
 ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
-mkdir -p $T/repo/pack $T/roots/acnh@v1/ctl; cp "$H/pack/refresh.sh" "$H/pack/roots.sh" $T/repo/pack/; mkdir -p $T/repo/tools; cp "$H/tools/toolchain.sh" "$H/tools/toolchain.env" "$H/tools/cores.sh" "$H/tools/progress.sh" "$H/tools/plock.sh" "$H/tools/flock_hold.py" "$H/tools/mem_admit.sh" "$H/tools/mem_peak.tsv" "$H/tools/mem_peak_sample.py" $T/repo/tools/; export S2A_MEM_DIR=$T/mem; export S2A_DISK_FREE_G=999 S2A_REFRESH_LOCKS=$T/locks S2A_RUN_ROOT=$T/run; touch $T/roots/acnh@v1/ctl/control.nacp; ln -s acnh@v1 $T/roots/acnh@现行
+mkdir -p $T/repo/pack $T/roots/acnh@v1/ctl; cp "$H/pack/refresh.sh" "$H/pack/roots.sh" $T/repo/pack/; mkdir -p $T/repo/pack/orch && cp "$H/pack/orch/current.py" $T/repo/pack/orch/; mkdir -p $T/repo/tools; cp "$H/tools/toolchain.sh" "$H/tools/toolchain.env" "$H/tools/cores.sh" "$H/tools/progress.sh" "$H/tools/plock.sh" "$H/tools/flock_hold.py" "$H/tools/mem_admit.sh" "$H/tools/mem_peak.tsv" "$H/tools/mem_peak_sample.py" $T/repo/tools/; export S2A_MEM_DIR=$T/mem; export S2A_DISK_FREE_G=999 S2A_REFRESH_LOCKS=$T/locks S2A_RUN_ROOT=$T/run; touch $T/roots/acnh@v1/ctl/control.nacp; printf '%s\n' acnh@v1 > $T/roots/acnh@现行
 mkdir -p $T/repo/translator; printf 'import os\nprint(os.environ.get("FAKE_GLSLC", "no"))\n' > $T/repo/translator/glslc_offline.py   # 运行时 GLSLC 款判据桩（⑬c）
 cp "$H/pack/decoder_need.sh" $T/repo/pack/; mkdir -p $T/repo/graphics/nvn/tools; cp "$H/graphics/nvn/tools/romfs_list.py" $T/repo/graphics/nvn/tools/   # 解码器款判据（⑬e）：真判据读假根 RomFS
 mkdir -p "$T/repo/tools"; cp "$H/tools/pool_workers.py" "$T/repo/tools/"   # romfs_list / pak_crypto 经它取核数（#1332：核数唯一来源）
 printf '#!/bin/bash\necho "原件核对桩 rc=${FAKE_SRCVER_RC:-0}"; exit ${FAKE_SRCVER_RC:-0}\n' > $T/repo/pack/srcver.sh   # 原件版本核对桩（pack/srcver.sh 自己的单测见 tests/srcver_test.sh）
 # 桩：记「阶段 起/止 时刻 开关」；stage_direct 按 FAKE_NODIRECT 决定出不出 keys.tsv；FAKE_FAIL=<阶段> 让那段退出 1（基础设施出错）；
 #   FAKE_GAP=<阶段> 让那段打「【黄】直连缺口：桩缺口 3 支」退出 3（内容缺口）；FAKE_DFAIL=<阶段> 让那段打「【红】直连库失败：…」退出 3（抽取：只有直连用的那两份抽不出）
-for s in rewrite sysdata uilayout aoc caps romfsidx direct_profile extract direct_seed direct; do
+for s in rewrite sysdata uilayout aoc caps romfsidx vk_warm_seed direct_profile extract direct_seed direct_cpso direct; do
   cat > $T/repo/pack/stage_$s.sh <<EOF
 #!/bin/bash
-echo "$s 起 \$(python3 -c 'import time;print(time.time())') \${S2A_SHADER_NO_PSO:-0}\${S2A_SHADER_NO_DL:-0} J=\${J:-无} DD=\${DEVELOPER_DIR:-无} LZ=\${S2A_SHADER_LAZY:-0} BK=\${S2A_CPU_BAKE:-无}" >> $T/log
-[ "$s" = direct ] && sleep \${FAKE_DIRECT_SLEEP:-1}
+echo "$s 起 \$(date +%s.%N) \${S2A_SHADER_NO_PSO:-0}\${S2A_SHADER_NO_DL:-0} J=\${J:-无} DD=\${DEVELOPER_DIR:-无} LZ=\${S2A_SHADER_LAZY:-0} BK=\${S2A_CPU_BAKE:-无}" >> $T/log
+[ "$s" = direct ] && sleep \${FAKE_DIRECT_SLEEP:-0}   # 缺省不睡：二十多次编排每次睡 1 秒是本单测的大头；要量用时的那一次显式给（①）
 [ "$s" = rewrite ] && sleep \${FAKE_RW_SLEEP:-0}
 # FAKE_RW_UNTIL=<阶段>：改写等那个阶段在日志里记下「起」才结束（最多 30 秒）——按事件判并行，不靠墙钟窗口（⑬a：满载时直连库可能晚于固定的 2 秒才起）
 if [ "$s" = rewrite ] && [ -n "\${FAKE_RW_UNTIL:-}" ]; then for i in \$(seq 600); do grep -q "^\$FAKE_RW_UNTIL 起 " $T/log && break; sleep 0.05; done; fi
-if [ "$s" = direct ]; then d=\$(cd -P $T/roots/acnh@现行 && pwd)/shaders/direct; rm -rf "\$d"; if [ -n "\${FAKE_RTONLY:-}" ]; then mkdir -p "\$d" && : > "\$d/keys.tsv" && echo 缺口 > "\$d/runtime_only.txt"; elif [ -n "\${FAKE_VKHDR:-}" ]; then mkdir -p "\$d/vk" && : > "\$d/keys.tsv" && printf "# key\tfile\n" > "\$d/vk/vk_shaders.tsv"; else [ -n "\${FAKE_NODIRECT:-}" ] || { mkdir -p "\$d" && echo k > "\$d/keys.tsv"; }; fi; fi
-echo "$s 止 \$(python3 -c 'import time;print(time.time())')" >> $T/log
+if [ "$s" = direct ]; then d=\$(cd -P $T/roots/\$(cat $T/roots/acnh@现行) && pwd)/shaders/direct; rm -rf "\$d"; if [ -n "\${FAKE_RTONLY:-}" ]; then mkdir -p "\$d" && : > "\$d/keys.tsv" && echo 缺口 > "\$d/runtime_only.txt"; elif [ -n "\${FAKE_VKHDR:-}" ]; then mkdir -p "\$d/vk" && : > "\$d/keys.tsv" && printf "# key\tfile\n" > "\$d/vk/vk_shaders.tsv"; else [ -n "\${FAKE_NODIRECT:-}" ] || { mkdir -p "\$d" && echo k > "\$d/keys.tsv"; }; fi; fi
+echo "$s 止 \$(date +%s.%N)" >> $T/log
 [ "\${FAKE_FAIL:-}" = "$s" ] && { echo "🔴 $s 桩失败"; exit 1; }
 [ "\${FAKE_GAP:-}" = "$s" ] && { echo "【黄】acnh 直连缺口：桩缺口 3 支"; exit 3; }
 [ "\${FAKE_DFAIL:-}" = "$s" ] && { echo "【红】acnh 直连库失败：直连抽取失败（桩：Unity 无类型树）"; exit 3; }
@@ -37,9 +40,9 @@ done
 R() { rm -f $T/log; S2A_REFRESH_LOCKS=$T/locks S2A_ROOTS=$T/roots S2A_ROOTS_SHARED=$T/roots bash $T/repo/pack/refresh.sh acnh 2>&1; }
 # macOS 自带 awk（version 20200816，UTF-8 locale）字符串比较有坑：$2 == "起" 连 "止" 都判相等——起 / 止一律先按字节 grep 出再交 awk
 t() { grep " $2 " $T/log | awk -v s="$1" '$1 == s { print $3; exit }'; }
-o=$(R); r=$?
+o=$(FAKE_DIRECT_SLEEP=1 R); r=$?   # ① 要判「直连 ≥1 秒」：只这一次让直连库桩睡 1 秒
 ck "① 只有直连：rc=${r}；不跑通用着色器阶段 / 客体代码表" '[ $r = 0 ] && ! grep -q "^shaders \|^direct_gk " $T/log && grep -q "^direct 起" $T/log'
-tl=$(grep '^⏱' <<< "$o"); miss=$(for s in rewrite sysdata uilayout aoc direct_profile romfsidx extract direct direct_seed; do [[ "$tl" == *"$s "[0-9]* ]] || printf '%s ' $s; done)
+tl=$(grep '^⏱' <<< "$o"); miss=$(for s in rewrite sysdata uilayout aoc direct_profile romfsidx extract direct direct_seed direct_cpso; do [[ "$tl" == *"$s "[0-9]* ]] || printf '%s ' $s; done)
 # 直连段只判「≥1 秒」（桩睡 1 秒 = 计时确实记上了）：不卡上界——10-26 #477 自检 gate-host 并行负载高时 direct 量到 3 秒判红，那是机器忙，不是计时错
 ck "① 退出时一行分阶段用时，各段都在（缺：${miss:-无}）、直连 ≥1 秒（桩睡 1 秒）：${tl}" '[ "$(grep -c "^⏱" <<< "$o")" = 1 ] && [ -z "$miss" ] && [[ "$tl" =~ \ direct\ [1-9][0-9]*\  ]] && [[ "$tl" == *"刷新共 "* ]]'
 jj() { grep ' 起 ' $T/log | awk -v s="$1" '$1 == s { sub("J=", "", $5); print $5; exit }'; }
@@ -51,10 +54,11 @@ o=$(S2A_DIRECT_J=7 S2A_CPU_BAKE=3 R); r=$?
 ck "① S2A_DIRECT_J=7、S2A_CPU_BAKE=3 → 直连 J=$(jj direct)、S2A_CPU_BAKE=$(bk direct)（期望 7 / 3）" '[ $r = 0 ] && [ "$(jj direct)" = 7 ] && [ "$(bk direct)" = 3 ]'
 # 阶段进度（10-25 维护者「能看到进度么」）：给 S2A_PROGRESS → 每完成一段追加一行「刷新各阶段 已完成 总数」
 o=$(S2A_PROGRESS=$T/prog R); r=$?; pg=$(cut -f3,4 $T/prog | tr '\t\n' '/ '); rm -f $T/prog
-#   11-06 依赖重排（快路）：追加内容 ‖ 界面布局 2 → 配置推导 + 抽取 4 → 直连库 5 → 种子表 6 → 汇合旁路（改写 / 系统数据 / 能力表 / RomFS 索引）10
-ck "① 阶段进度：${pg}" '[ $r = 0 ] && [ "$pg" = "2/10 4/10 5/10 6/10 10/10 " ]'
+#   11-06 依赖重排（快路）：追加内容 ‖ 界面布局 2 → 配置推导 + 抽取 4 → 直连库 5 → 种子表 6 → 计算管线归档 7 → 汇合旁路（改写 / 系统数据 / 能力表 / RomFS 索引）11
+ck "① 阶段进度：${pg}" '[ $r = 0 ] && [ "$pg" = "2/11 4/11 5/11 6/11 7/11 11/11 " ]'
 o=$(R); r=$?
 ck "① 管线种子表 direct_seed（审计 #1534 P1-54 B3）在直连库出完之后才跑、只跑一次" 'python3 -c "import sys; a,d=map(float,sys.argv[1:]); sys.exit(0 if a >= d else 1)" $(t direct_seed 起) $(t direct 止) && [ "$(grep -c "^direct_seed 起" $T/log)" = 1 ]'
+ck "① 计算管线归档 direct_cpso 在种子表出完之后才跑、只跑一次、路数同直连库（J=$(jj direct_cpso) / $(jj direct)）" 'python3 -c "import sys; a,d=map(float,sys.argv[1:]); sys.exit(0 if a >= d else 1)" $(t direct_cpso 起) $(t direct_seed 止) && [ "$(grep -c "^direct_cpso 起" $T/log)" = 1 ] && [ "$(jj direct_cpso)" = "$(jj direct)" ]'
 o=$(FAKE_NODIRECT=1 R); r=$?
 ck "② 直连库退 0 却没出库：rc=${r}（期望 1）、报红「直连单轨停在 直连库」、不跑种子表（不退成通用）" '[ $r = 1 ] && [[ "$o" == *"【红】acnh 直连单轨停在 直连库：直连库阶段退 0 但产物根里没有 shaders/direct/keys.tsv"* ]] && ! grep -q "^direct_seed" $T/log'
 o=$(FAKE_RTONLY=1 R); r=$?
@@ -100,16 +104,16 @@ EOF
 }
 ATE false
 o=$(rm -f $T/android-prog; S2A_PACK_PLAT=android S2A_PROGRESS=$T/android-prog R); r=$?; ran=$(grep ' 起 ' $T/log | cut -d' ' -f1 | LC_ALL=C sort | tr '\n' ' '); pg=$(cut -f3,4 $T/android-prog 2> /dev/null | tr '\t\n' '/ ')
-ck "⑫ Android enabled=false：跑系统数据 / 追加内容 / 能力清单 / 索引，抽取与直连库 skipped、不跑，rc=${r}，阶段 ${ran}，进度 ${pg}" \
-  '[ $r = 0 ] && [ "$ran" = "aoc caps romfsidx sysdata " ] && [ "$pg" = "2/6 3/6 4/6 5/6 6/6 " ] && grep -q "^extract skipped（安卓运行时未读 LibPack，#1434 接上后恢复）$" <<< "$o" && grep -q "^direct skipped（安卓运行时未读 LibPack，#1434 接上后恢复）$" <<< "$o" && ! grep -q "^extract " $T/log && ! grep -q "^direct " $T/log'
+ck "⑫ Android enabled=false：跑系统数据 / 追加内容 / 能力清单 / 索引 / 首局预热种子，抽取与直连库 skipped、不跑，rc=${r}，阶段 ${ran}，进度 ${pg}" \
+  '[ $r = 0 ] && [ "$ran" = "aoc caps romfsidx sysdata vk_warm_seed " ] && [ "$pg" = "2/6 3/6 4/6 5/6 6/6 " ] && grep -q "^extract skipped（安卓运行时未读 LibPack，#1434 接上后恢复）$" <<< "$o" && grep -q "^direct skipped（安卓运行时未读 LibPack，#1434 接上后恢复）$" <<< "$o" && ! grep -q "^extract " $T/log && ! grep -q "^direct " $T/log'
 ck "⑫ Android enabled=false：末行带 skipped 黄项（一键出包的 result warnings 从这行取，rc=${r}）" \
   'grep -q "^🟢 acnh Android 共享资源已刷新：.*；🟡 1 项：离线 Vulkan 直连库 skipped（安卓运行时未读 LibPack，#1434 接上后恢复）$" <<< "$o"'
 ck "⑫ Android enabled=false：⏱ 分阶段用时里 extract / direct 记 0 秒" '[[ "$(grep "^⏱" <<< "$o")" =~ extract\ 0\ .*direct\ 0 ]]'
 ATE true
 o=$(rm -f $T/android-prog; S2A_PACK_PLAT=android S2A_PROGRESS=$T/android-prog R); r=$?; ran=$(grep ' 起 ' $T/log | cut -d' ' -f1 | LC_ALL=C sort | tr '\n' ' '); pg=$(cut -f3,4 $T/android-prog 2> /dev/null | tr '\t\n' '/ ')
-ck "⑪ Android enabled=true：系统数据、追加内容、能力清单、索引、抽取、直连库，rc=${r}，阶段 ${ran}，进度 ${pg}" '[ $r = 0 ] && [ "$ran" = "aoc caps direct extract romfsidx sysdata " ] && [ "$pg" = "2/6 3/6 4/6 5/6 6/6 " ]'
+ck "⑪ Android enabled=true：系统数据、追加内容、能力清单、索引、首局预热种子、抽取、直连库，rc=${r}，阶段 ${ran}，进度 ${pg}" '[ $r = 0 ] && [ "$ran" = "aoc caps direct extract romfsidx sysdata vk_warm_seed " ] && [ "$pg" = "2/6 3/6 4/6 5/6 6/6 " ]'
 ck "⑪ Android 抽取在 RomFS 索引之后、直连库在抽取之后，各跑一次" 'python3 -c "import sys; e,i,d,x=map(float,sys.argv[1:]); sys.exit(0 if e >= i and d >= x else 1)" $(t extract 起) $(t romfsidx 止) $(t direct 起) $(t extract 止) && [ "$(grep -c "^extract 起" $T/log)" = 1 ] && [ "$(grep -c "^direct 起" $T/log)" = 1 ]'
-for stage in sysdata aoc caps romfsidx; do
+for stage in sysdata aoc caps romfsidx vk_warm_seed; do
   o=$(S2A_PACK_PLAT=android FAKE_FAIL=$stage R); r=$?
   ck "⑪ Android ${stage} 失败即红" '[ $r = 1 ] && [[ "$o" == *"刷新停在 $stage 阶段"* ]]'
 done
@@ -137,18 +141,18 @@ o=$(FAKE_GLSLC=yes FAKE_FAIL=rewrite R); r=$?
 ck "⑬d GLSLC 款改写红 → 退 1、抽取与直连库都没跑（rc=${r}）" '[ $r = 1 ] && ! grep -q "^extract 起\|^direct 起" $T/log'
 # ⑬e 要游戏自带解码器的款（11-07 DOOM Eternal：RomFS 有 id Tech .resources，抽取在 Mac 宿主工具模式里跑游戏的 Oodle，要改写后的模块）：
 #   RomFS 放一个 .resources → 改写睡 2 秒时抽取在改写结束之后才开工；改写红 → 退 1、抽取与直连库都没跑。判据是真的 pack/decoder_need.sh + romfs_list.py
-mkdir -p "$(cd -P $T/roots/acnh@现行 && pwd)/romfs/base" && : > "$(cd -P $T/roots/acnh@现行 && pwd)/romfs/base/gameresources.resources"
+mkdir -p "$(cd -P $T/roots/$(cat $T/roots/acnh@现行) && pwd)/romfs/base" && : > "$(cd -P $T/roots/$(cat $T/roots/acnh@现行) && pwd)/romfs/base/gameresources.resources"
 o=$(FAKE_RW_SLEEP=2 R); r=$?
 ck "⑬e 解码器款（.resources）：抽取等改写结束才开工（rc=${r}）" '[ $r = 0 ] && ! lt $(t extract 起) $(t rewrite 止)'
-mkdir -p "$(cd -P $T/roots/acnh@现行 && pwd)/romfs/base" && : > "$(cd -P $T/roots/acnh@现行 && pwd)/romfs/base/gameresources.resources"
+mkdir -p "$(cd -P $T/roots/$(cat $T/roots/acnh@现行) && pwd)/romfs/base" && : > "$(cd -P $T/roots/$(cat $T/roots/acnh@现行) && pwd)/romfs/base/gameresources.resources"
 o=$(FAKE_FAIL=rewrite R); r=$?
 ck "⑬e 解码器款改写红 → 退 1、抽取与直连库都没跑（rc=${r}）" '[ $r = 1 ] && ! grep -q "^extract 起\|^direct 起" $T/log'
-rm -f "$(cd -P $T/roots/acnh@现行 && pwd)/romfs/base/gameresources.resources"
+rm -f "$(cd -P $T/roots/$(cat $T/roots/acnh@现行) && pwd)/romfs/base/gameresources.resources"
 # ⑬f Trinity 包（#470 0100F43008C44000：arc/data.trpfs，Oodle）同样是解码器款：抽取等改写结束才开工（原先不在名单里，抽取抢在改写前、离线 0 支）
-mkdir -p "$(cd -P $T/roots/acnh@现行 && pwd)/romfs/arc" && : > "$(cd -P $T/roots/acnh@现行 && pwd)/romfs/arc/data.trpfs"
+mkdir -p "$(cd -P $T/roots/$(cat $T/roots/acnh@现行) && pwd)/romfs/arc" && : > "$(cd -P $T/roots/$(cat $T/roots/acnh@现行) && pwd)/romfs/arc/data.trpfs"
 o=$(FAKE_RW_SLEEP=2 R); r=$?
 ck "⑬f 解码器款（.trpfs）：抽取等改写结束才开工（rc=${r}）" '[ $r = 0 ] && ! lt $(t extract 起) $(t rewrite 止)'
-rm -f "$(cd -P $T/roots/acnh@现行 && pwd)/romfs/arc/data.trpfs"
+rm -f "$(cd -P $T/roots/$(cat $T/roots/acnh@现行) && pwd)/romfs/arc/data.trpfs"
 o=$(FAKE_FAIL=rewrite R); r=$?
 ck "⑬b 改写红 → rc=${r}（期望 1）、红行点名 rewrite、不跑能力表" '[ $r = 1 ] && grep -q "刷新停在 rewrite 阶段" <<< "$o" && [ -z "$(t caps 起)" ]'
 o=$(FAKE_FAIL=romfsidx R); r=$?
@@ -156,6 +160,6 @@ ck "⑬c 旁路 RomFS 索引红 → rc=${r}（期望 1）、红行点名 romfsid
 # ⑭ 早装信号（11-06 出包与装机重叠）：设 S2A_EARLY_READY → 旁路 RomFS 索引后写出现行版本名，写出时刻早于直连库结束（这条用例桩直连库睡 3 秒）；不设 → 不写
 rm -f $T/early; o=$(S2A_EARLY_READY=$T/early FAKE_DIRECT_SLEEP=3 R); r=$?   # 直连库桩睡 3 秒：旁路要起几个进程，余量拉开免得机器忙时赛跑
 em=$(python3 -c 'import os,sys; print(os.path.getmtime(sys.argv[1]))' $T/early 2> /dev/null)
-ck "⑭ 早装信号：rc=${r}、写了现行名「$(cat $T/early 2> /dev/null)」、写出 ${em} 早于直连库结束 $(t direct 止)" '[ $r = 0 ] && [ "$(cat $T/early)" = "$(basename "$(cd -P $T/roots/acnh@现行 && pwd)")" ] && lt "$em" $(t direct 止)'
+ck "⑭ 早装信号：rc=${r}、写了现行名「$(cat $T/early 2> /dev/null)」、写出 ${em} 早于直连库结束 $(t direct 止)" '[ $r = 0 ] && [ "$(cat $T/early)" = "$(basename "$(cd -P $T/roots/$(cat $T/roots/acnh@现行) && pwd)")" ] && lt "$em" $(t direct 止)'
 rm -f $T/early; o=$(R); ck "⑭ 不设 S2A_EARLY_READY 不写" '[ ! -e $T/early ] && ! ls $T/early.tmp > /dev/null 2>&1'
 [ $bad = 0 ] && echo "refresh 单测全过" || { echo "refresh 单测有不通"; exit 1; }

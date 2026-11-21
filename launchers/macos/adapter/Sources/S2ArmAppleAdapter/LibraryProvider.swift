@@ -82,6 +82,9 @@ public struct GameSummary: Identifiable, Equatable {
     public let iphoneFree: Bool
     /// 上次装的那台设备（设备记录键，UDID）：「续签」装回当初那台，不换别的（pack/jobs/layout.py install_record 的 deviceKey）
     public var iphoneInstallDevice: String? = nil
+    /// 免费签名的到期时刻（秒；pack/jobs/layout.py install_record 的 expires：签好的包里的真值，读不到时作业层按 7 天估）。
+    ///   作业层只在那台手机现在用的就是启动器免费签的那份时给（换成别的工具装 / 换签名方式后不给，提醒随之消失）
+    public var iphoneExpires: Double? = nil
     /// Apple TV 版已出好（catalog appleTvReady：image/tvos 的容器件 + 资源包都在）：出包页给「装到 Apple TV」
     public var appleTvReady = false
     /// 「导出自签包」能直接导出：iPhone 包就绪且是单一 IMG 资源包（catalog iphoneExportable）；不能就先重出 iPhone 包再导出
@@ -90,6 +93,14 @@ public struct GameSummary: Identifiable, Equatable {
     public var onPhone: Bool = false
     /// 游戏库封面左上角的金色 S（v0.4.0，pack/jobs/library.py sgrade_badge）：这款有 S 级优化（已打进补丁，或补丁库里有、下次起局 / 更新 iPhone 补上）
     public var sgrade: Bool = false
+    /// S 级优化升级没做完（catalog sgradeIncomplete：上次单款升级中途退出了启动器、标记还在）：这款显示「升级未完成，点 S 级优化继续」
+    public var sgradeIncomplete: Bool = false
+    /// S 级优化升级正在跑（catalog sgradeUpgrading：标记在且起升级的进程还活着，比如另一个启动器窗口起的）：同样画升级中、开始按钮不可点
+    public var sgradeUpgrading: Bool = false
+    /// S 级优化升级队列里这款的状态（catalog sgradeState：queued / running / done / skipped / incomplete，不在队里为 nil；作业层一份队列两端共用）
+    public var sgradeState: String? = nil
+    /// 在升的进度 0–1（catalog sgradeProgress；不在升为 nil）
+    public var sgradeProgress: Double? = nil
     /// 在这台 Mac 上的游玩时间（catalog 的 playtime）；没玩过为 nil
     public var playtime: GamePlaytime? = nil
     /// 下游深度方案（pack/jobs/downstream.py describe）：这款有下游项目的专门移植时，导出 iPhone 前问玩家一次用哪套
@@ -127,10 +138,15 @@ public struct GameSummary: Identifiable, Equatable {
                   hostUpdate: g["hostUpdate"] as? String ?? "none", location: GameLocation(catalog: g["location"] as? [String: Any] ?? [:]), iphoneRestorable: g["iphoneRestorable"] as? Bool ?? false,
                   sizes: GameSizes(catalog: g["sizes"] as? [String: Any] ?? [:]))
         self.iphoneInstallDevice = (g["iphoneInstall"] as? [String: Any])?["deviceKey"] as? String
+        self.iphoneExpires = ((g["iphoneInstall"] as? [String: Any])?["expires"] as? NSNumber)?.doubleValue
         self.iphoneExportable = g["iphoneExportable"] as? Bool ?? false
         self.appleTvReady = g["appleTvReady"] as? Bool ?? false
         self.onPhone = g["onPhone"] as? Bool ?? false
         self.sgrade = g["sgrade"] as? Bool ?? false
+        self.sgradeIncomplete = g["sgradeIncomplete"] as? Bool ?? false
+        self.sgradeUpgrading = g["sgradeUpgrading"] as? Bool ?? false
+        self.sgradeState = g["sgradeState"] as? String
+        self.sgradeProgress = (g["sgradeProgress"] as? NSNumber)?.doubleValue
         self.playtime = GamePlaytime(catalog: g["playtime"] as? [String: Any])
         self.banner = (g["banner"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         self.downstream = (g["downstream"] as? [String: Any]).flatMap(DownstreamOffer.init(catalog:))
@@ -151,10 +167,10 @@ public struct GameSummary: Identifiable, Equatable {
         Dictionary(grouping: packages, by: \.sha256).values.compactMap(\.first).reduce(0) { $0 + $1.size }
     }
 
-    /// 免费签名还剩几天（到期 = 0）；付费账号或没装过为 nil。
+    /// 免费签名还剩几天（到期 = 0）；不是启动器免费签的那份（付费 / 证书 / 别的工具装的）或没装过为 nil。到期时刻用作业层给的 expires，不在这里再估
     public func iphoneDaysLeft(now: Date = Date()) -> Int? {
-        guard iphoneFree, let at = iphoneInstalledAt else { return nil }
-        return max(0, Int(((at + 7 * 86400 - now.timeIntervalSince1970) / 86400).rounded(.up)))
+        guard iphoneFree, let end = iphoneExpires else { return nil }
+        return max(0, Int(((end - now.timeIntervalSince1970) / 86400).rounded(.up)))
     }
 
     /// 出包要不要 prod.keys：只有加密原件（NSP / XCI）要，解包好的游戏和 NUP 不要。
@@ -174,12 +190,15 @@ public final class LibraryProvider {
     private var keys: Bool?
     private var updates: [PhoneUpdate] = []
     private var devices = 0
+    private var sgradeBatchValue: SGradeBatch?
     /// 上次读游戏库时 prod.keys 齐没齐（catalog 的 keys.ready）；还没读过为 nil。
     public var keysReady: Bool? { lock.withLock { keys } }
     /// 上次读游戏库时，壳比本版旧的手机（catalog 的 phoneUpdates，只按本机设备记录判）：游戏库右上角「更新 iPhone 上的 S2Arm」
     public var phoneUpdates: [PhoneUpdate] { lock.withLock { updates } }
     /// 上次读游戏库时，这台电脑往几台手机装过游戏（catalog 的 phoneDevices）：启动器更新弹窗据此写「更新启动器和 iPhone App」
     public var phoneDevices: Int { lock.withLock { devices } }
+    /// 上次读游戏库时 S 级优化升级队列的批次（catalog 顶层 sgradeBatch）；没有为 nil
+    public var sgradeBatch: SGradeBatch? { lock.withLock { sgradeBatchValue } }
 
     public init(client: JobClient) { self.client = client }
 
@@ -187,7 +206,8 @@ public final class LibraryProvider {
         let ready = (result["keys"] as? [String: Any])?["ready"] as? Bool
         let phones = (result["phoneUpdates"] as? [[String: Any]] ?? []).map(PhoneUpdate.init(catalog:))
         let count = (result["phoneDevices"] as? NSNumber)?.intValue ?? 0
-        lock.withLock { keys = ready; updates = phones; devices = count }
+        let batch = (result["sgradeBatch"] as? [String: Any]).map(SGradeBatch.init(catalog:))
+        lock.withLock { keys = ready; updates = phones; devices = count; sgradeBatchValue = batch }
     }
 
     private var snapshotFile: URL { client.environment.privateRoot.appendingPathComponent("library-snapshot.json") }
@@ -392,5 +412,18 @@ public struct PhoneUpdate: Equatable, Sendable {
             (u[k] as? [[String: Any]] ?? []).compactMap { g in (g["gameId"] as? String).map { GameRef(id: $0, name: g["name"] as? String ?? $0) } }
         }
         device = u["device"] as? String ?? ""; name = u["name"] as? String ?? ""; games = refs("games"); stale = refs("stale")
+    }
+}
+
+/// S 级优化升级队列的批次（catalog 顶层 sgradeBatch / 作业 sgradeUpgradeStatus）：running 在跑、index 第几款（没在升时 = 已结束的款数）、count 共几款
+public struct SGradeBatch: Equatable, Sendable {
+    public var running: Bool
+    public var index: Int
+    public var count: Int
+    public init(running: Bool, index: Int, count: Int) { self.running = running; self.index = index; self.count = count }
+    public init(catalog d: [String: Any]) {
+        running = d["running"] as? Bool ?? false
+        index = (d["index"] as? NSNumber)?.intValue ?? 0
+        count = (d["count"] as? NSNumber)?.intValue ?? 0
     }
 }

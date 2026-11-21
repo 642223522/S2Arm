@@ -10,9 +10,13 @@
 #import <IOKit/IOCFPlugIn.h>
 #import <IOKit/usb/IOUSBLib.h>
 #import <GameController/GameController.h>
+#define S2A_XBOX_GIP_IOKIT 1
 #include "hid_pad.h"
+#include "xbox_gip_relay.h"
 #include <pthread.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 enum { B_EAST = 1u << 0, B_SOUTH = 1u << 1, B_NORTH = 1u << 2, B_WEST = 1u << 3, B_LSTICK = 1u << 4, B_RSTICK = 1u << 5,
@@ -77,78 +81,13 @@ int s2a_pro_parse(const uint8_t *r, size_t n, s2a_pro_cal *l, s2a_pro_cal *rc, u
 }
 uint8_t s2a_pro_player_lights(int slot) { return slot < 0 ? 0x1 : slot >= 3 ? 0xF : (uint8_t)((1u << (slot + 1)) - 1); }
 
-// ---- Xbox 有线手柄 GIP 协议（#1406）----
-int s2a_is_xbox_gip(int vid, int pid) {
-    if (vid != 0x045E) return 0;
-    switch (pid) {
-        case 0x02D1: // Xbox One
-        case 0x02DD: // Xbox One (2015)
-        case 0x02E3: // Xbox One Elite
-        case 0x02EA: // Xbox One S
-        case 0x0B00: // Xbox Elite Series 2
-        case 0x0B0A: // Xbox Adaptive
-        case 0x0B12: // Xbox Series X|S
-            return 1;
-        default:
-            return 0;
-    }
-}
-
-int s2a_gip_ack(const uint8_t *r, size_t n, uint8_t ack[13]) {
-    if (!r || n < 3 || !(r[1] & 0x10)) return 0;
-    ack[0] = 0x01;
-    ack[1] = 0x20;
-    ack[2] = r[2];
-    ack[3] = 0x09;
-    ack[4] = 0x00;
-    ack[5] = r[0];
-    ack[6] = 0x20;
-    ack[7] = (uint8_t)(n >= 4 ? r[3] : 0);
-    ack[8] = 0x00;
-    ack[9] = 0x00;
-    ack[10] = 0x00;
-    ack[11] = 0x00;
-    ack[12] = 0x00;
-    return 13;
-}
-
-int s2a_gip_parse(const uint8_t *r, size_t n, uint32_t *buttons, int16_t ax[4]) {
-    if (!r || n < 14 || r[0] != 0x20) return 0;
-    uint16_t xb = (uint16_t)(r[4] | (r[5] << 8));
-    uint16_t lt = (uint16_t)(r[6] | (r[7] << 8));
-    uint16_t rt = (uint16_t)(r[8] | (r[9] << 8));
-    int16_t lx = (int16_t)(r[10] | (r[11] << 8));
-    int16_t ly = (int16_t)(r[12] | (r[13] << 8));
-    int16_t rx = (n >= 16) ? (int16_t)(r[14] | (r[15] << 8)) : 0;
-    int16_t ry = (n >= 18) ? (int16_t)(r[16] | (r[17] << 8)) : 0;
-
-    uint32_t b = 0;
-    if (xb & 0x0010) b |= B_EAST;
-    if (xb & 0x0020) b |= B_SOUTH;
-    if (xb & 0x0040) b |= B_NORTH;
-    if (xb & 0x0080) b |= B_WEST;
-    if (xb & 0x0100) b |= B_UP;
-    if (xb & 0x0200) b |= B_DOWN;
-    if (xb & 0x0400) b |= B_LEFT;
-    if (xb & 0x0800) b |= B_RIGHT;
-    if (xb & 0x1000) b |= B_L;
-    if (xb & 0x2000) b |= B_R;
-    if (xb & 0x4000) b |= B_LSTICK;
-    if (xb & 0x8000) b |= B_RSTICK;
-    if (xb & 0x0004) b |= B_PLUS;
-    if (xb & 0x0008) b |= B_MINUS;
-    if (lt > 200) b |= B_ZL;
-    if (rt > 200) b |= B_ZR;
-
-    if (buttons) *buttons = b;
-    if (ax) {
-        ax[0] = lx; ax[1] = ly; ax[2] = rx; ax[3] = ry;
-    }
-    return 1;
-}
+// ---- Xbox 有线手柄 GIP 协议（#1406，实现收敛在 xbox_gip_relay.h 与启动器中继共用）----
+int s2a_is_xbox_gip(int vid, int pid) { return s2a_xbox_gip_is_device(vid, pid); }
+int s2a_gip_ack(const uint8_t *r, size_t n, uint8_t ack[13]) { return s2a_xbox_gip_build_ack(r, n, ack); }
+int s2a_gip_parse(const uint8_t *r, size_t n, uint32_t *buttons, int16_t ax[4]) { return s2a_xbox_gip_parse_report(r, n, buttons, ax); }
 
 typedef struct { IOHIDDeviceRef dev; uint32_t buttons, hat; int16_t ax[4]; char name[96];
-    int pro, vid, gc_hint, joined, is_xbox; uint64_t entry, attach_us; s2a_hidg g;   // pro：走 Switch Pro 协议那一支；g：通用手柄的状态（hid_generic.h）；joined：通用手柄按过键；is_xbox：走 Xbox GIP 协议
+    int pro, vid, gc_hint, joined, is_xbox, xbox_relay; uint8_t relay_slot; uint64_t entry, attach_us; s2a_hidg g;   // pro：走 Switch Pro 协议那一支；g：通用手柄的状态（hid_generic.h）；joined：通用手柄按过键；is_xbox：走 Xbox GIP 协议；xbox_relay：由 S2Arm 启动器中继
     int full; uint8_t cnt, rep[64]; s2a_pro_cal cl, cr;
     s2a_pad_motion motion; uint64_t motion_us; int imu_said; uint32_t logged; } hp_dev;   // motion：0x30 报告里的最后一组 IMU（motion_us = 收到时刻，0 = 没有）   // full：已收到 0x30 报告（之后不再用 HID 元素那一路）；cnt：子命令包序号
 static hp_dev g_dev[S2A_HID_PAD_MAX];
@@ -268,7 +207,7 @@ static void attach(void *ctx, IOReturn r, void *sender, IOHIDDeviceRef dev) {
     pthread_mutex_lock(&g_mu);
     hp_dev *d = NULL;
     for (int i = 0; i < S2A_HID_PAD_MAX; i++) if (g_dev[i].dev && (g_dev[i].dev == dev || (entry && g_dev[i].entry == entry))) { pthread_mutex_unlock(&g_mu); return; }
-    for (int i = 0; i < S2A_HID_PAD_MAX && !d; i++) if (!g_dev[i].dev) d = &g_dev[i];
+    for (int i = 0; i < S2A_HID_PAD_MAX && !d; i++) if (!g_dev[i].dev && !g_dev[i].is_xbox) d = &g_dev[i];
     if (!d) { pthread_mutex_unlock(&g_mu); fprintf(stderr, "[输入] 兜底手柄：已满 %d 只，%s 不接\n", S2A_HID_PAD_MAX, name); return; }
     memset(d, 0, sizeof *d); d->dev = dev; snprintf(d->name, sizeof d->name, "%s", name);
     d->pro = pro; d->vid = vid; d->gc_hint = gc_hint; d->entry = entry; d->attach_us = hp_now_us();
@@ -310,22 +249,7 @@ static void detach(void *ctx, IOReturn r, void *sender, IOHIDDeviceRef dev) {
 }
 
 int s2a_usb_has_hid_child(io_service_t dev) {
-    if (!dev) return 0;
-    io_iterator_t iter = 0;
-    kern_return_t kr = IORegistryEntryCreateIterator(dev, kIOServicePlane, kIORegistryIterateRecursively, &iter);
-    if (kr != KERN_SUCCESS || !iter) return 0;
-    io_registry_entry_t child = 0;
-    int has_hid = 0;
-    while ((child = IOIteratorNext(iter)) != 0) {
-        if (IOObjectConformsTo(child, "IOHIDInterface") || IOObjectConformsTo(child, "IOHIDDevice")) {
-            has_hid = 1;
-            IOObjectRelease(child);
-            break;
-        }
-        IOObjectRelease(child);
-    }
-    IOObjectRelease(iter);
-    return has_hid;
+    return s2a_xbox_usb_has_hid_child(dev);
 }
 
 static int s2a_xbox_is_gc_listed(void) {
@@ -375,19 +299,40 @@ static void *s2a_xbox_gip_thread(void *arg) {
     }
 
     int opened = 0;
-    for (int retry = 0; retry < 6 && !opened; retry++) {
+    int logged_busy = 0;
+    char last_owner[128] = "";
+    while (d->is_xbox && !opened) {
+        if (s2a_usb_has_hid_child(dev) || s2a_xbox_is_gc_listed()) {
+            fprintf(stderr, "[输入] 兜底手柄 %s：系统已识别该手柄（HID / GameController），不进行 Seize 抢占\n", d->name);
+            break;
+        }
         kr = (*devIntf)->USBDeviceOpenSeize(devIntf);
         if (kr != kIOReturnSuccess) kr = (*devIntf)->USBDeviceOpen(devIntf);
-        if (kr == kIOReturnSuccess) opened = 1;
-        else if (kr == kIOReturnExclusiveAccess) {
-            if (retry == 0) fprintf(stderr, "[输入] 兜底手柄 %s：USB 接口被外部进程占用，等待释放...\n", d->name);
-            usleep(500000);
+        if (kr == kIOReturnSuccess) {
+            opened = 1;
+            break;
+        }
+        if (kr == kIOReturnExclusiveAccess) {
+            char owner[128] = "";
+            s2a_xbox_usb_exclusive_owner(dev, owner, sizeof(owner));
+            if (!logged_busy || strcmp(owner, last_owner) != 0) {
+                if (owner[0]) fprintf(stderr, "[输入] 兜底手柄 %s：USB 接口正被 %s 占用，等待释放（关闭该进程后自动接管）...\n", d->name, owner);
+                else fprintf(stderr, "[输入] 兜底手柄 %s：USB 接口被外部进程占用，等待释放...\n", d->name);
+                snprintf(last_owner, sizeof(last_owner), "%s", owner);
+                logged_busy = 1;
+            }
+            uint64_t check_entry = 0;
+            if (IORegistryEntryGetRegistryEntryID(dev, &check_entry) != KERN_SUCCESS) {
+                kr = kIOReturnNoDevice;
+                break;
+            }
+            usleep(1000000);
         } else {
             break;
         }
     }
     if (!opened) {
-        fprintf(stderr, "[输入] 兜底手柄 %s：打开 USB 设备失败 0x%08x\n", d->name, kr);
+        if (kr != kIOReturnSuccess) fprintf(stderr, "[输入] 兜底手柄 %s：打开 USB 设备失败 0x%08x\n", d->name, kr);
         (*devIntf)->Release(devIntf);
         goto cleanup_slot;
     }
@@ -459,11 +404,16 @@ static void *s2a_xbox_gip_thread(void *arg) {
         goto cleanup_slot;
     }
 
+    uint8_t gip_seq = 0;
     if (outPipe > 0) {
-        static const uint8_t init_power[] = { 0x05, 0x20, 0x00, 0x01, 0x00 };
-        static const uint8_t init_wake[]  = { 0x05, 0x20, 0x00, 0x0f, 0x06 };
-        (*intf)->WritePipe(intf, outPipe, (void *)init_power, sizeof(init_power));
-        (*intf)->WritePipe(intf, outPipe, (void *)init_wake, sizeof(init_wake));
+        uint8_t init_power[5], init_wake[5];
+        s2a_xbox_gip_build_power(s2a_xbox_gip_next_seq(&gip_seq), init_power);
+        s2a_xbox_gip_build_wake(s2a_xbox_gip_next_seq(&gip_seq), init_wake);
+        IOReturn w1 = (*intf)->WritePipe(intf, outPipe, init_power, sizeof(init_power));
+        IOReturn w2 = (*intf)->WritePipe(intf, outPipe, init_wake, sizeof(init_wake));
+        if (w1 != kIOReturnSuccess || w2 != kIOReturnSuccess) {
+            fprintf(stderr, "[输入] 兜底手柄 %s：GIP 唤醒写包异常（power=0x%08x wake=0x%08x）\n", d->name, w1, w2);
+        }
     }
 
     fprintf(stderr, "[输入] 兜底手柄 %s（厂商 / 产品号 0x%04x / 0x%04x）：有线 Xbox 手柄接上，GIP 唤醒成功，直读按键与摇杆\n",
@@ -471,15 +421,45 @@ static void *s2a_xbox_gip_thread(void *arg) {
 
     uint8_t report[64];
     UInt32 size = sizeof(report);
+    uint32_t recoverable_errs = 0;
     while (d->is_xbox) {
         size = sizeof(report);
         kr = (*intf)->ReadPipe(intf, inPipe > 0 ? inPipe : 1, report, &size);
-        if (kr != kIOReturnSuccess) break;
+        int action = s2a_xbox_gip_classify_io_error((uint32_t)kr, &recoverable_errs, 5);
+        if (action == S2A_XBOX_GIP_IO_FATAL) {
+            fprintf(stderr, "[输入] 兜底手柄 %s：USB ReadPipe 结束 0x%08x\n", d->name, kr);
+            break;
+        }
+        if (action == S2A_XBOX_GIP_IO_RECOVER) {
+            fprintf(stderr, "[输入] 兜底手柄 %s：USB ReadPipe 可恢复错误 0x%08x（第 %u 次），清理 stall 并重发 GIP 唤醒\n",
+                    d->name, kr, recoverable_errs);
+            (*intf)->ClearPipeStall(intf, inPipe > 0 ? inPipe : 1);
+            if (outPipe > 0) {
+                uint8_t init_power[5], init_wake[5];
+                s2a_xbox_gip_build_power(s2a_xbox_gip_next_seq(&gip_seq), init_power);
+                s2a_xbox_gip_build_wake(s2a_xbox_gip_next_seq(&gip_seq), init_wake);
+                (*intf)->WritePipe(intf, outPipe, init_power, sizeof(init_power));
+                (*intf)->WritePipe(intf, outPipe, init_wake, sizeof(init_wake));
+            }
+            continue;
+        }
 
         uint8_t ack[13];
         int ack_len = s2a_gip_ack(report, size, ack);
         if (ack_len > 0 && outPipe > 0) {
-            (*intf)->WritePipe(intf, outPipe, ack, ack_len);
+            IOReturn wkr = (*intf)->WritePipe(intf, outPipe, ack, ack_len);
+            if (wkr == kIOUSBPipeStalled) {
+                (*intf)->ClearPipeStall(intf, outPipe);
+                (*intf)->WritePipe(intf, outPipe, ack, ack_len);
+            }
+        }
+        if (s2a_xbox_gip_is_announce(report, size) && outPipe > 0) {
+            fprintf(stderr, "[输入] 兜底手柄 %s：收到手柄重通告 0x02，重新发送 GIP 唤醒包\n", d->name);
+            uint8_t init_power[5], init_wake[5];
+            s2a_xbox_gip_build_power(s2a_xbox_gip_next_seq(&gip_seq), init_power);
+            s2a_xbox_gip_build_wake(s2a_xbox_gip_next_seq(&gip_seq), init_wake);
+            (*intf)->WritePipe(intf, outPipe, init_power, sizeof(init_power));
+            (*intf)->WritePipe(intf, outPipe, init_wake, sizeof(init_wake));
         }
 
         uint32_t bt = 0;
@@ -591,6 +571,115 @@ static void s2a_xbox_device_matched(void *refcon, io_iterator_t iterator) {
     }
 }
 
+int s2a_mac_hid_pad_apply_xbox_relay(const void *raw, size_t len) {
+    if (!raw || len != sizeof(s2a_xbox_gip_relay_packet)) return 0;
+    s2a_xbox_gip_relay_packet pkt;
+    memcpy(&pkt, raw, sizeof(pkt));
+    if (!s2a_xbox_gip_relay_packet_valid(&pkt)) return 0;
+
+    pthread_mutex_lock(&g_mu);
+    hp_dev *d = NULL;
+    for (int i = 0; i < S2A_HID_PAD_MAX; i++) {
+        if (g_dev[i].is_xbox && g_dev[i].xbox_relay && g_dev[i].relay_slot == pkt.slot) {
+            d = &g_dev[i];
+            break;
+        }
+    }
+    if (!(pkt.flags & S2A_XBOX_GIP_FLAG_CONNECTED)) {
+        if (d) {
+            fprintf(stderr, "[输入] 兜底手柄：断开 %s（启动器中继）\n", d->name);
+            memset(d, 0, sizeof(*d));
+        }
+        pthread_mutex_unlock(&g_mu);
+        return 1;
+    }
+    if (!d) {
+        for (int i = 0; i < S2A_HID_PAD_MAX; i++) {
+            if (!g_dev[i].dev && !g_dev[i].is_xbox) { d = &g_dev[i]; break; }
+        }
+        if (!d) {
+            pthread_mutex_unlock(&g_mu);
+            return 0;
+        }
+        memset(d, 0, sizeof(*d));
+        d->is_xbox = 1;
+        d->xbox_relay = 1;
+        d->relay_slot = pkt.slot;
+        d->pro = 1;
+        d->vid = (int)pkt.vid;
+        d->attach_us = hp_now_us();
+        d->joined = 0;
+        char safe_name[sizeof(d->name)];
+        memcpy(safe_name, pkt.name, sizeof(safe_name));
+        safe_name[sizeof(safe_name) - 1] = '\0';
+        snprintf(d->name, sizeof(d->name), "%s", safe_name[0] ? safe_name : "Xbox Controller");
+        fprintf(stderr, "[输入] 兜底手柄 %s（厂商 / 产品号 0x%04x / 0x%04x）：已通过启动器中继接上有线 Xbox 手柄\n",
+                d->name, pkt.vid, pkt.pid);
+    }
+    d->buttons = pkt.buttons;
+    memcpy(d->ax, pkt.ax, sizeof(d->ax));
+    if (!d->joined && pkt.buttons != 0) {
+        d->joined = 1;
+        fprintf(stderr, "[输入] 兜底手柄 %s：收到第一个非零按键，加入玩家\n", d->name);
+    }
+    pthread_mutex_unlock(&g_mu);
+    return 1;
+}
+
+void s2a_mac_hid_pad_clear_xbox_relay(void) {
+    pthread_mutex_lock(&g_mu);
+    for (int i = 0; i < S2A_HID_PAD_MAX; i++) {
+        if (g_dev[i].is_xbox && g_dev[i].xbox_relay) {
+            memset(&g_dev[i], 0, sizeof(g_dev[i]));
+        }
+    }
+    pthread_mutex_unlock(&g_mu);
+}
+
+int s2a_mac_hid_pad_read_xbox_relay_fd(int fd) {
+    if (fd < 0) return -1;
+    s2a_xbox_gip_relay_packet pkt;
+    while (s2a_xbox_gip_read_exact(fd, &pkt, sizeof(pkt)) == 0) {
+        if (!s2a_mac_hid_pad_apply_xbox_relay(&pkt, sizeof(pkt))) break;
+    }
+    s2a_mac_hid_pad_clear_xbox_relay();
+    return 0;
+}
+
+static void *s2a_xbox_relay_client_thread(void *arg) {
+    char *path = (char *)arg;
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    if (!path || strlen(path) >= sizeof(addr.sun_path)) {
+        free(path);
+        return NULL;
+    }
+    strlcpy(addr.sun_path, path, sizeof(addr.sun_path));
+    free(path);
+
+    int logged_connect = 0;
+    for (;;) {
+        int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (fd < 0) { usleep(500000); continue; }
+        int one = 1;
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+        if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+            if (!logged_connect) {
+                fprintf(stderr, "[输入] 兜底手柄：已连上 S2Arm 启动器 Xbox GIP 中继通道\n");
+                logged_connect = 1;
+            }
+            s2a_mac_hid_pad_read_xbox_relay_fd(fd);
+            close(fd);
+            usleep(200000);
+        } else {
+            close(fd);
+            usleep(500000);
+        }
+    }
+    return NULL;
+}
+
 void s2a_mac_hid_pad_start(void) {
     static int started; if (started) return; started = 1;
     const char *lg = getenv("S2A_HID_LOG"); if (!lg) lg = getenv("DM_HID_LOG"); g_hid_log = lg && atoi(lg);
@@ -605,7 +694,20 @@ void s2a_mac_hid_pad_start(void) {
     IOReturn r = IOHIDManagerOpen(m, kIOHIDOptionsTypeNone);
     if (r != kIOReturnSuccess) fprintf(stderr, "[输入] 兜底手柄：打开 HID 监听失败 0x%x（GameController 认得的手柄不受影响）\n", r);
 
-    // Xbox 有线手柄 GIP 兜底（#1406）：macOS 系统 HID 与 GameController 不认非标准 USB GIP 手柄，通过 IOKit 认领 Interface 0 唤醒并直读
+    // Xbox 有线手柄 GIP 兜底（#1406）：
+    //   若启动器已提供中继通道（S2A_XBOX_GIP_SOCKET），说明常驻 S2Arm.app 独占持有 USB 设备，宿主直接连中继收按键 / 摇杆，
+    //   避免切游戏释放 USB 时被后台浏览器（Chromium XboxDataFetcherMac）抢占；否则回退为宿主直接通过 IOKit 打开 USB。
+    const char *xbox_relay = getenv("S2A_XBOX_GIP_SOCKET");
+    if (xbox_relay && xbox_relay[0]) {
+        char *dup = strdup(xbox_relay);
+        if (dup) {
+            pthread_t th;
+            if (pthread_create(&th, NULL, s2a_xbox_relay_client_thread, dup) == 0) pthread_detach(th);
+            else free(dup);
+        }
+        return;
+    }
+
     static IONotificationPortRef g_gip_notify_port;
     static io_iterator_t g_gip_matched_iter;
     g_gip_notify_port = IONotificationPortCreate(kIOMainPortDefault);

@@ -20,6 +20,8 @@ STUBS = {
 'android/net/Credentials.java': '''package android.net; public class Credentials { public int getUid() { return 0; } }''',
 'android/net/Uri.java': '''package android.net; public class Uri implements android.os.Parcelable { public static Uri parse(String s){return new Uri();} }''',
 'android/os/Build.java': '''package android.os; public class Build { public static class VERSION { public static int SDK_INT=34; } }''',
+'android/os/Process.java': '''package android.os; public class Process {
+ public static int myPid() {throw new AssertionError("save import unexpectedly called");} }''',
 'android/os/Environment.java': '''package android.os; public class Environment { public static boolean allFiles=true;
  public static boolean isExternalStorageManager(){return allFiles;} public static java.io.File getExternalStorageDirectory(){return new java.io.File("/storage/emulated/0");} }''',
 'android/Manifest.java': '''package android; public class Manifest { public static class permission { public static final String READ_EXTERNAL_STORAGE="android.permission.READ_EXTERNAL_STORAGE"; } }''',
@@ -40,6 +42,7 @@ STUBS = {
  public class Context { public static String packageName="fixture"; public static int flags; public final File root; public Context(File root){this.root=root;}
  public File getExternalFilesDir(String s){return new File(root,"external");} public File getFilesDir(){return new File(root,"internal");}
  public Context getApplicationContext(){return this;} public File getCacheDir(){return new File(root,"cache");}
+ public File getCodeCacheDir(){return new File(root,"code-cache");}
  public ContentResolver getContentResolver(){return new ContentResolver();} public PackageManager getPackageManager(){return new PackageManager();}
  public String getPackageName(){return packageName;} public ApplicationInfo getApplicationInfo(){ApplicationInfo a=new ApplicationInfo();a.flags=flags;return a;}
  public static final int MODE_PRIVATE=0; private static final java.util.Map<String,SharedPreferences> prefs=new java.util.HashMap<>();
@@ -57,7 +60,7 @@ STUBS = {
   };}
  } }''',
 'android/content/pm/ApplicationInfo.java': '''package android.content.pm; public class ApplicationInfo {
- public static final int FLAG_DEBUGGABLE=2; public int flags; public String sourceDir="fixture"; public String[] splitSourceDirs; }''',
+ public static final int FLAG_DEBUGGABLE=2; public int flags; public String sourceDir="fixture", nativeLibraryDir=""; public String[] splitSourceDirs; }''',
 'android/content/pm/PackageManager.java': '''package android.content.pm; public class PackageManager {
  public static final int GET_SIGNING_CERTIFICATES=1, PERMISSION_GRANTED=0; public PackageInfo getPackageInfo(String n,int f) throws NameNotFoundException {return new PackageInfo();}
  public static class NameNotFoundException extends Exception {} }''',
@@ -72,7 +75,7 @@ STUBS = {
  public static Uri buildDocumentUriUsingTree(Uri u,String s){return u;}
  public static final String EXTRA_INITIAL_URI="android.provider.extra.INITIAL_URI";
  public static class Document { public static final String COLUMN_DOCUMENT_ID="id", COLUMN_DISPLAY_NAME="name", COLUMN_MIME_TYPE="type", MIME_TYPE_DIR="dir"; } }''',
-'android/util/Log.java': '''package android.util; public class Log { public static final int DEBUG=3; public static int d(String a,String b){return 0;} public static boolean isLoggable(String a,int b){return false;} public static final java.util.List<String> messages=new java.util.concurrent.CopyOnWriteArrayList<>(); public static int i(String a,String b){messages.add(b);return 0;} public static int w(String a,String b,Throwable t){return 0;} public static int e(String a,String b){messages.add(b);return 0;} }''',
+'android/util/Log.java': '''package android.util; public class Log { public static final int DEBUG=3; public static int d(String a,String b){return 0;} public static boolean isLoggable(String a,int b){return false;} public static final java.util.List<String> messages=new java.util.concurrent.CopyOnWriteArrayList<>(); public static final java.util.concurrent.BlockingQueue<String> queue=new java.util.concurrent.LinkedBlockingQueue<>(); public static int i(String a,String b){messages.add(b);queue.add(b);return 0;} public static int w(String a,String b,Throwable t){return 0;} public static int e(String a,String b){messages.add(b);queue.add(b);return 0;} }''',
 'android/util/DisplayMetrics.java': '''package android.util; public class DisplayMetrics { public float density=1; }''',
 'android/content/res/Resources.java': '''package android.content.res; public class Resources { public android.util.DisplayMetrics getDisplayMetrics(){return new android.util.DisplayMetrics();} }''',
 'android/os/Bundle.java': '''package android.os; public class Bundle { public String getString(String k){return null;} public void putString(String k,String v){} }''',
@@ -94,7 +97,7 @@ STUBS = {
  public Object layoutParams; public void setLayoutParams(Object p){layoutParams=p;} }''',
 'android/widget/TextView.java': '''package android.widget; import android.view.View; import android.content.Context; import java.util.concurrent.*;
  public class TextView extends View { public static final BlockingQueue<String> messages=new LinkedBlockingQueue<>();
- public TextView(Context c){} public void setText(String s){messages.add(s);} public void setText(int i){} public void setTextSize(float f){} public void setTextColor(int c){} }''',
+ public volatile String text; public int textId; public TextView(Context c){} public void setText(String s){text=s;messages.add(s);} public void setText(int i){textId=i;} public void setTextSize(float f){} public void setTextColor(int c){} }''',
 'android/widget/Button.java': '''package android.widget; import android.content.Context; import android.view.View;
  public class Button extends TextView { public Button(Context c){super(c);} public void setOnClickListener(View.OnClickListener l){} }''',
 'android/widget/CompoundButton.java': '''package android.widget; import android.content.Context;
@@ -128,15 +131,21 @@ STUBS = {
  public Activity(){super(testRoot);} public void onCreate(Bundle b){} protected void onResume(){} protected void onNewIntent(Intent i){}
  protected void onActivityResult(int a,int b,Intent i){} protected void onSaveInstanceState(Bundle b){} protected void onDestroy(){} public Intent getIntent(){return intent;} public void setIntent(Intent i){intent=i;}
  public Resources getResources(){return new Resources();} public void setContentView(View v){} public void startActivityForResult(Intent i,int n){}
- public void startActivity(Intent i){} public void runOnUiThread(Runnable r){r.run();} public boolean isDestroyed(){return false;}
+ public void startActivity(Intent i){} public void runOnUiThread(Runnable r){r.run();} public boolean isDestroyed(){return false;} public boolean isFinishing(){return false;}
  public int checkSelfPermission(String p){return 0;} public void requestPermissions(String[] p,int r){} public void onRequestPermissionsResult(int r,String[] p,int[] g){} }''',
 'android/os/Looper.java': '''package android.os; public class Looper { public static Looper getMainLooper(){return new Looper();} }''',
 'android/os/Handler.java': '''package android.os; public class Handler { public Handler(Looper l){} public boolean postDelayed(Runnable r,long ms){return true;} }''',
-'android/content/DialogInterface.java': '''package android.content; public interface DialogInterface { interface OnClickListener { void onClick(DialogInterface d,int which); } }''',
+'android/content/DialogInterface.java': '''package android.content; public interface DialogInterface {
+ interface OnClickListener { void onClick(DialogInterface d,int which); }
+ interface OnDismissListener { void onDismiss(DialogInterface d); } }''',
 'android/app/AlertDialog.java': '''package android.app; import android.content.*;
- public class AlertDialog { public static class Builder { public Builder(Context c){}
+ public class AlertDialog {
+ public void setOnDismissListener(DialogInterface.OnDismissListener listener){throw new AssertionError("save dialog unexpectedly called");}
+ public void show(){throw new AssertionError("save dialog unexpectedly called");}
+ public static class Builder { public Builder(Context c){}
   public Builder setTitle(int id){return this;} public Builder setMessage(CharSequence m){return this;}
   public Builder setPositiveButton(int id,DialogInterface.OnClickListener l){return this;} public Builder setNegativeButton(int id,DialogInterface.OnClickListener l){return this;}
+  public AlertDialog create(){throw new AssertionError("save dialog unexpectedly called");}
   public AlertDialog show(){return new AlertDialog();} } }''',
 'org/s2arm/android/R.java': '''package org.s2arm.android; public class R { public static class string { public static final int import_game=1, fps_overlay_show=2, export_diagnostics=3, export_diagnostics_running=4, export_diagnostics_failed=5, export_diagnostics_done=6,
  library_game_starting=7, library_current_game=8, library_switch_title=9, library_switch_message=10, library_switch_confirm=11, library_switch_waiting=12, library_switch_timeout=13, library_launch_failed=14, library_switch_cancel=15, player_err_fmt=100, player_err_import=101, player_err_start=102, player_err_no_space=103, player_err_no_space_next=104, player_err_apk=105, player_err_apk_next=106, player_err_access=107, player_err_access_next=108, player_err_pack=109, player_err_pack_next=110, player_err_other=111, player_err_other_next=112, library_title=113, library_more=114, import_progress=115,
@@ -147,7 +156,16 @@ STUBS = {
  mods_title=142, mods_for_game=143, mods_no_game=144, mods_import_zip=145, mods_import_folder=146, mods_none=147, mods_item=148, mods_remove=149,
  mods_working=150, mods_imported=151, mods_failed=152, mods_err_not_archive=153, mods_err_too_many=154, mods_err_too_large=155, mods_err_no_romfs=156,
  mods_err_missing=157, mods_err_name_taken=158, mods_note_other_game=159, mods_note_exefs=160, mods_note_empty=161, mods_note=162,
- stall_off_note=163, stall_reopen=164, stall_reopen_failed=165; } }''',
+ stall_off_note=163, stall_reopen=164, stall_reopen_failed=165, ldn_settings=166,
+ import_save=167, import_save_select_game=168, import_save_reading=169, import_save_summary=170,
+ import_save_confirm_title=171, import_save_confirm=172, import_save_access_failed=173, import_save_failed=174, import_save_done=175; } }''',
+'org/s2arm/android/NativeBridge.java': '''package org.s2arm.android; final class NativeBridge {
+ static RuntimeLibrary loaded(){throw new AssertionError("save import unexpectedly called");}
+ static void load(RuntimeLibrary runtime,String apk,String[] splits,String nativeDir) throws RuntimeLibrary.Rejected {
+  throw new AssertionError("save import unexpectedly called");}
+ static byte[] saveTransfer(byte[] request){throw new AssertionError("save service unexpectedly called");}
+ }''',
+'org/s2arm/android/AndroidLdnSettings.java': '''package org.s2arm.android; final class AndroidLdnSettings { static void show(android.app.Activity a) {throw new AssertionError("LDN settings unexpectedly called");} }''',
 # These unrelated app boundaries must never be called in an import test.
 'org/s2arm/android/DiagnosticExport.java': '''package org.s2arm.android; import android.content.Context; import java.io.IOException; import java.nio.file.Path;
  public class DiagnosticExport { public static Path run(Context context) throws IOException {throw new AssertionError("diagnostic export unexpectedly called");} }''',
@@ -179,8 +197,11 @@ import java.io.*; import java.nio.file.*; import java.lang.reflect.*; import jav
 public class ImportProbe {
  static int checks; static boolean refused; static String refusal;
  static void done(BlockingQueue<String> q) throws Exception { refused=false; refusal=null; long end=System.nanoTime()+TimeUnit.SECONDS.toNanos(4);
-  while(System.nanoTime()<end){String s=q.poll(1,TimeUnit.SECONDS); if(s!=null && s.startsWith("PLAYER_ERR [E101")){refused=true;refusal=s;} if(s!=null && s.startsWith("Games:"))return;}
+  // 收尾信号是库清单那行「Games: …」，它只进日志（不当状态发给界面）；界面队列只看拒绝原因，它先于收尾发出，收尾后再排空一遍
+  while(System.nanoTime()<end){String s=q.poll(50,TimeUnit.MILLISECONDS); note(s); if(s!=null && s.startsWith("Games:") && q==android.util.Log.queue)return;
+   String l=q==android.util.Log.queue?null:android.util.Log.queue.poll(); if(l!=null && l.startsWith("Games:")){for(String r;(r=q.poll())!=null;)note(r);return;}}
   throw new AssertionError("import did not finish"); }
+ static void note(String s){if(s!=null && s.startsWith("PLAYER_ERR [E101")){refused=true;refusal=s;}}
  static void demand(boolean yes,String message){checks++;if(!yes)throw new AssertionError(message);}
  static void stage(Path p) throws Exception {Files.createDirectories(p.getParent()); Method m=GameInstallTest.class.getDeclaredMethod("pack",String.class);m.setAccessible(true);Files.move(((File)m.invoke(null,p.toString())).toPath(),p);}
  static boolean retained(Path p){return Files.exists(p.resolve("manifest.json"));}
@@ -250,11 +271,21 @@ public class ImportProbe {
    android.widget.CheckBox fps=(android.widget.CheckBox)fpsField.get(activity);
    demand(fps.isChecked(),"saved FPS preference did not populate checkbox");
    fps.setChecked(false); demand(!prefs.getBoolean("fps",true),"checkbox change did not publish FPS preference");
-   prefs.edit().putBoolean("fps",true).apply(); activity.onResume();done(android.widget.TextView.messages);
+   prefs.edit().putBoolean("fps",true).apply(); android.util.Log.queue.clear(); activity.onResume();done(android.util.Log.queue);
    demand(fps.isChecked(),"activity resume did not reread FPS preference");
    demand(!Files.exists(target),"activity did not import absolute target");demand(retained(pending),"activity consumed unrelated input");
    demand(intent.getStringExtra(LibraryActivity.EXTRA_IMPORT_STAGING)==null,"activity did not consume intent extra");
-   activity.onResume();done(android.widget.TextView.messages);demand(retained(pending),"repeated activity resume consumed input");
+   android.util.Log.queue.clear(); activity.onResume();done(android.util.Log.queue);demand(retained(pending),"repeated activity resume consumed input");
+   // 被拒的导入：拒绝原因留在状态行上，随后的「Games: …」库清单不能把它盖掉藏起；下次回到页面再收起。
+   java.lang.reflect.Field statusField=LibraryActivity.class.getDeclaredField("status");statusField.setAccessible(true);
+   android.widget.TextView status=(android.widget.TextView)statusField.get(activity);
+   Path refusedTarget=activityRoot.resolve("external/import/nest/target");stage(refusedTarget);   // 不是导入目录的直接子项：拒绝
+   activity.setIntent(new android.content.Intent().putExtra(LibraryActivity.EXTRA_IMPORT_STAGING,refusedTarget.toString()));
+   android.util.Log.queue.clear(); activity.onResume();done(android.util.Log.queue);
+   demand(status.text!=null&&status.text.startsWith("PLAYER_ERR"),"import refusal replaced on the status line: "+status.text);
+   demand(status.getVisibility()==android.view.View.VISIBLE,"import refusal hidden on the status line");
+   android.util.Log.queue.clear(); activity.onResume();done(android.util.Log.queue);
+   demand(status.getVisibility()==android.view.View.GONE,"stale status line not cleared on the next resume");
    } finally {activity.onDestroy();}
    Path failedReceiptRoot=root.resolve("receipt-failure"),receiptTarget=failedReceiptRoot.resolve("external/import/selected");stage(receiptTarget);
    BlockingQueue<String> receiptQueue=new LinkedBlockingQueue<>();
@@ -375,7 +406,7 @@ public class W2ImportProbe {
 '''
 
 class GameLibraryImportTest(unittest.TestCase):
-    def run_contract(self, automatic_scan=False, missing_receipt=False, missing_fingerprint=False, w2=False, bypass_admission=False, preferences_not_published=False):
+    def run_contract(self, automatic_scan=False, missing_receipt=False, missing_fingerprint=False, w2=False, bypass_admission=False, preferences_not_published=False, library_as_status=False):
         with tempfile.TemporaryDirectory(prefix='s2a-library-import-') as temporary:
             base = Path(temporary)
             sources = []
@@ -406,6 +437,13 @@ class GameLibraryImportTest(unittest.TestCase):
                 end = text.index('                        }\n                        @Override public void refused', start)
                 library = base / 'GameLibrary.java'
                 library.write_text(text[:start] + text[end:], encoding='utf-8')
+            if library_as_status:
+                # Effective negative control: send the library listing to the screen again (pre-fix behaviour).
+                text = GAME_LIBRARY.read_text(encoding='utf-8')
+                original = 'Log.i("S2Arm", describe());'
+                self.assertEqual(text.count(original), 1)
+                library = base / 'GameLibrary.java'
+                library.write_text(text.replace(original, 'status(describe());'), encoding='utf-8')
             if missing_fingerprint:
                 install = JAVA / 'org/s2arm/android/GameInstall.java'
                 text = install.read_text(encoding='utf-8')
@@ -450,7 +488,12 @@ class GameLibraryImportTest(unittest.TestCase):
     def test_only_explicit_absolute_target_is_consumed(self):
         result = self.run_contract()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn('PASS actual GameLibrary, LibraryActivity and GameInstall: 46 checks', result.stdout)
+        self.assertIn('PASS actual GameLibrary, LibraryActivity and GameInstall: 49 checks', result.stdout)
+
+    def test_library_listing_as_status_negative_control(self):
+        result = self.run_contract(library_as_status=True)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('import refusal replaced on the status line', result.stderr)
 
     def test_missing_fingerprint_negative_control(self):
         result = self.run_contract(missing_fingerprint=True)

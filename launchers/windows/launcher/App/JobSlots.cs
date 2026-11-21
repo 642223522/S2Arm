@@ -47,7 +47,6 @@ public partial class EnvironmentWindow
         // 有排着的出包、这个作业又可能是挡着它的那个（如出包收尾的刷新游戏库）：排到这次收尾之后再看能不能接着出（ExportPages.PumpExportQueue）
         if (exportQueue.Count > 0) Avalonia.Threading.Dispatcher.UIThread.Post(PumpExportQueue);
         if (phoneQueue.Count > 0) Avalonia.Threading.Dispatcher.UIThread.Post(PumpPhoneQueue);   // 手机槽空了 / 出包那款出完：接上排着的手机作业
-        else if (consoleBatch.Count > 0) Avalonia.Threading.Dispatcher.UIThread.Post(ConsoleBatchStep);   // 总控台「更新所选」这一轮推完就收尾（PhoneConsole.cs）
     }
 
     /// <summary>手机作业排队（11-16 维护者「出包的时候没办法同时安装其他游戏到 iPhone 上，这个控制纯属多余」；同 Mac phoneQueue）：
@@ -57,6 +56,8 @@ public partial class EnvironmentWindow
     /// <summary>这款正在出包（出包会换它的程序件）：对它的手机作业等出完</summary>
     private bool PackHolds(string? gameId) => gameId is not null && packRunning && packGame?.Id == gameId;
     private bool PhoneQueued(string? gameId) => phoneQueue.Any(q => q.GameId == gameId);
+    /// <summary>手机上正在推这一款（装机作业在跑、装的就是它）</summary>
+    private bool PhonePushing(string? gameId) => installBusy && gameId is not null && string.Equals(installGameId, gameId, StringComparison.OrdinalIgnoreCase);
     /// <summary>手机作业要不要先排队：要排就排上并重画，返回 true</summary>
     private bool QueuePhone(string? gameId, Func<Task> run)
     {

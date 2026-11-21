@@ -61,6 +61,18 @@ class DisplayVersion(unittest.TestCase):
             Path(d, "untracked.txt").write_text("u")   # 未跟踪文件不算改动
             self.assertEqual(display_version(d), "v0.3.0")
 
+    def test_test_build_tag_is_marked(self):
+        """11-19 0.6.0 测试包：HEAD 落在 v0.3.1-test.2 上 → 「v0.3.1-test.2」、发版号数字段 0.3.1；
+        测试版 tag 之后的开发提交不把发版号抬到 0.3.1（仍按最大正式 tag v0.3.0）"""
+        with tempfile.TemporaryDirectory() as d:
+            self.repo_on_tag(d)
+            Path(d, "a.txt").write_text("2"); self.git(d, "commit", "-qam", "y"); self.git(d, "tag", "v0.3.1-test.2")
+            self.assertEqual(display_version(d), "v0.3.1-test.2")
+            self.assertEqual(release_version(d), "0.3.1")
+            Path(d, "a.txt").write_text("3"); self.git(d, "commit", "-qam", "z")
+            self.assertEqual(release_version(d), "0.3.0")
+            self.assertEqual(display_version(d), "v0.3.0-dev+" + self.git(d, "rev-parse", "--short=7", "HEAD")[:7])
+
     def test_on_tag_with_changes_is_dev(self):
         with tempfile.TemporaryDirectory() as d:
             self.repo_on_tag(d)

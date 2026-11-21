@@ -2,6 +2,7 @@
 //   剩不到 48 小时在画面顶部提示一次（横幅在 dprompt.m）。读不到（Xcode 以外的签法没嵌描述文件、ad-hoc 包、Mac）就不提示。
 //   只用 Foundation，单测 runtime/tests/t_prov_expiry.m 在 Mac 上跑
 #import <Foundation/Foundation.h>
+#include <CommonCrypto/CommonDigest.h>
 #include <math.h>
 
 // 描述文件是 CMS 签名包着的一段 XML plist：取 <?xml … </plist> 那段解析。返回 ExpirationDate 距 now 的小时数（已过期为负），读不到返回 NAN
@@ -45,6 +46,47 @@ int s2a_prov_signing_ids_self(char *team, size_t team_n, char *appid, size_t app
     @autoreleasepool {
         NSString *p = [NSBundle.mainBundle pathForResource:@"embedded" ofType:@"mobileprovision"];
         return s2a_prov_signing_ids(p.UTF8String, NSBundle.mainBundle.bundleIdentifier.UTF8String, team, team_n, appid, appid_n);
+    }
+}
+
+// 本 App 的签名身份写给电脑读（0.6.0 通用壳，AltStore / SideStore 装的 App 也走手机自签）：Library/Application Support/S2Arm/identity/app.json =
+//   {schema, bundle_id, team, app_id, expires（unix 秒）, cert_sha1: [描述文件 DeveloperCertificates 各张 DER 的 sha1], alt_installer}，不含私钥。
+//   alt_installer：本 App 的 Info.plist 有 ALTDeviceID / ALTServerID（AltStore 重签时写；SideStore 是它的分支，同样会写，两者分不出），电脑据此推荐「在 SideStore 里导出证书」。
+//   侧载工具重签时会改包名、换团队（玩家在那边登录的 Apple ID）：电脑交身份 / 推游戏前读它，团队和启动器登录的不同就先告诉玩家，不推一份手机不认的。
+//   读不到描述文件（ad-hoc / TrollStore 包）写 team 空串。内容没变不重写。返回 0 = 写了或没变；-1 = 写不进
+int s2a_prov_app_json(const char *prov_path, const char *bundle_id, int alt_installer, const char *out_path) {
+    @autoreleasepool {
+        if (!out_path) return -1;
+        NSDictionary *pl = prov_read(prov_path);
+        char team[64] = "", appid[512] = ""; s2a_prov_signing_ids(prov_path, bundle_id, team, sizeof team, appid, sizeof appid);
+        NSMutableArray *shas = [NSMutableArray array];
+        id certs = pl[@"DeveloperCertificates"];
+        for (id c in [certs isKindOfClass:NSArray.class] ? certs : @[]) {
+            if (![c isKindOfClass:NSData.class]) continue;
+            uint8_t h[CC_SHA1_DIGEST_LENGTH]; CC_SHA1([c bytes], (CC_LONG)[c length], h);
+            NSMutableString *x = [NSMutableString string]; for (int i = 0; i < CC_SHA1_DIGEST_LENGTH; i++) [x appendFormat:@"%02x", h[i]];
+            [shas addObject:x];
+        }
+        id e = pl[@"ExpirationDate"];
+        NSDictionary *o = @{@"schema": @1, @"bundle_id": @(bundle_id ? bundle_id : ""), @"team": @(team), @"app_id": @(appid),
+                            @"expires": [e isKindOfClass:NSDate.class] ? @((long long)((NSDate *)e).timeIntervalSince1970) : @0, @"cert_sha1": shas,
+                            @"alt_installer": @(alt_installer != 0)};
+        NSData *d = [NSJSONSerialization dataWithJSONObject:o options:NSJSONWritingSortedKeys error:nil]; if (!d) return -1;
+        NSString *p = @(out_path);
+        if ([[NSData dataWithContentsOfFile:p] isEqualToData:d]) return 0;
+        [NSFileManager.defaultManager createDirectoryAtPath:p.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
+        NSString *t = [p stringByAppendingString:@".tmp"];
+        if (![d writeToFile:t atomically:NO] || rename(t.fileSystemRepresentation, p.fileSystemRepresentation)) return -1;
+        return 0;
+    }
+}
+int s2a_prov_app_json_self(const char *home) {
+    @autoreleasepool {
+        if (!home) return -1;
+        NSString *p = [NSBundle.mainBundle pathForResource:@"embedded" ofType:@"mobileprovision"];
+        NSString *out = [@(home) stringByAppendingPathComponent:@"Library/Application Support/S2Arm/identity/app.json"];
+        NSDictionary *info = NSBundle.mainBundle.infoDictionary; int alt = info[@"ALTDeviceID"] != nil || info[@"ALTServerID"] != nil;
+        return s2a_prov_app_json(p.UTF8String, NSBundle.mainBundle.bundleIdentifier.UTF8String, alt, out.fileSystemRepresentation);
     }
 }
 

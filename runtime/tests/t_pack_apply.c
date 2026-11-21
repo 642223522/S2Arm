@@ -170,6 +170,7 @@ static void zst_cases(const char *T) {
 //   ① 导好：程序进 program/v-<image_sha256 前 16 位>-s2arm/、清单补上 dir 换上、派生件进 资源包/、临时 tar 不留；游戏号按大写
 //   ② 帧没到尾（拷了一半）→ 1、什么都不写 ③ 第一个条目不是 s2arm.json → -2 / ios_install_manifest_bad ④ 条目路径带 .. → -2、清单不换
 //   ⑤ 放进「放这里导入」：扫描导入、导好删掉原文件
+//   ⑥ 导入文件夹里的坏 .s2arm：扫描报失败（码 ios_install_manifest_bad、原因带文件名，库界面才弹得出来）、文件留着；没改再扫 → 跳过、不报；改了再扫 → 重试、再报
 int s2a_s2arm_import(const char *proc_docs, const char *src, char *gid_out, size_t gid_n); const char *s2a_s2arm_import_code(void);
 static void s2arm_pack(const char *T, const char *out, const char *first, const char *bad_name) {
     char tp[1024]; snprintf(tp, sizeof tp, "%s/s2arm.tar", T); FILE *f = fopen(tp, "wb"); CHECK(f != NULL, "造 .s2arm tar 失败"); if (!f) return;
@@ -216,6 +217,40 @@ static void s2arm_cases(const char *T) {
     snprintf(src, sizeof src, "%s/放这里导入/d.s2arm", docs); s2arm_pack(T, src, "s2arm.json", NULL);
     s2a_img_scan(docs);
     CHECK(stat(src, &st) != 0 && stat(p, &st) == 0, "⑤ 导入文件夹里的 .s2arm：导好、原文件删掉");
+    // ⑥ 坏 .s2arm 放进导入文件夹
+    snprintf(src, sizeof src, "%s/放这里导入/bad.s2arm", docs); s2arm_pack(T, src, "readme.txt", NULL);
+    s2a_img_scan(docs);
+    CHECK(!strcmp(s2a_img_scan_code(), "ios_install_manifest_bad") && strstr(s2a_img_scan_failure(), "bad.s2arm") && stat(src, &st) == 0,
+          "⑥ 坏 .s2arm：码「%s」（期望 ios_install_manifest_bad）、原因「%s」带文件名、文件留着", s2a_img_scan_code(), s2a_img_scan_failure());
+    s2a_img_scan(docs);
+    CHECK(!s2a_img_scan_code()[0] && !s2a_img_scan_failure()[0] && stat(src, &st) == 0, "⑥ 没改再扫：跳过（码「%s」、原因「%s」都应为空），文件还在", s2a_img_scan_code(), s2a_img_scan_failure());
+    { FILE *f = fopen(src, "ab"); if (f) { fputc(0, f); fclose(f); } }
+    s2a_img_scan(docs);
+    CHECK(s2a_img_scan_code()[0] && strstr(s2a_img_scan_failure(), "bad.s2arm"), "⑥ 改了再扫：重试、再报（码「%s」）", s2a_img_scan_code());
+    unlink(src);
+}
+// 两路同时解同一款（11-19 Duo：游戏库与资源导入闸门各起一路，后一路打开已被前一路解完删掉的 tar 回 errno 2、按失败收场）。
+//   A 解完第 1 个包时（进度回调）起 B，A 再停 300 毫秒：串行时 B 等 A 做完、见待解包已空且 .applied = 清单号 → 直接成功；
+//   旧实现里 B 在这 300 毫秒里解掉第 2、3 个包并删掉，A 醒来打开第 2 个包回 errno 2 → A 失败
+#include <pthread.h>
+static char g_race_docs[600]; static pthread_t g_race_b; static int g_race_brc = -100, g_race_started; static pthread_t g_race_a;
+static void *race_b(void *a) { (void)a; g_race_brc = s2a_pack_apply(g_race_docs); return NULL; }
+static void race_prog(int d, int t) { (void)t; if (pthread_equal(pthread_self(), g_race_a) && d == 1 && !g_race_started) { g_race_started = 1; pthread_create(&g_race_b, NULL, race_b, NULL); usleep(300000); } }
+static void race_case(const char *T) {
+    char c[4096]; snprintf(g_race_docs, sizeof g_race_docs, "%s/race", T);
+    snprintf(c, sizeof c, "cd %s && mkdir -p rsrc/exefs race/资源包/.incoming && printf npdm > rsrc/exefs/main.npdm && printf a > rsrc/a.txt && printf bb > rsrc/b.txt && printf ccc > rsrc/c.txt && "
+        "cd rsrc && COPYFILE_DISABLE=1 tar " TAR_OPTIONS " -cf ../race/资源包/.incoming/9_000.tar exefs a.txt && "
+        "COPYFILE_DISABLE=1 tar " TAR_OPTIONS " -cf ../race/资源包/.incoming/9_001.tar b.txt && COPYFILE_DISABLE=1 tar " TAR_OPTIONS " -cf ../race/资源包/.incoming/9_002.tar c.txt && cd .. && "
+        "printf '{\"version\":2,\"index_sha256\":\"race01\"}' > race/资源包/manifest.json && printf 'a.txt\\t1\\tx\\nb.txt\\t2\\tx\\nc.txt\\t3\\tx\\n" NPDM_ROW "' > race/资源包/index.tsv", T);
+    CHECK(sh(c) == 0, "两路并发：造包失败");
+    g_race_a = pthread_self(); s2a_pack_apply_progress = race_prog; int ra = s2a_pack_apply(g_race_docs);
+    if (g_race_started) pthread_join(g_race_b, NULL);
+    s2a_pack_apply_progress = NULL;
+    CHECK(g_race_started, "两路并发：B 没起来（进度回调没到第 1 个包）");
+    CHECK(ra == 0, "两路并发：A 应成功（实际 %d：%s）", ra, s2a_pack_apply_failure());
+    CHECK(g_race_brc == 0, "两路并发：B 应成功（实际 %d：%s）", g_race_brc, s2a_pack_apply_failure());
+    snprintf(c, sizeof c, "cd %s/race/资源包 && test \"$(cat a.txt b.txt c.txt)\" = abbccc && grep -qx race01 .applied && test -z \"$(ls .incoming)\"", T);
+    CHECK(sh(c) == 0, "两路并发：三个文件都在、.applied = race01、待解包已空");
 }
 int main(void) {
     char T[] = "/tmp/s2a_t_pack_XXXXXX"; if (!mkdtemp(T)) return 1;
@@ -259,6 +294,7 @@ int main(void) {
     struct stat st; snprintf(d, sizeof d, "%s/docs/资源包/空.txt", T); CHECK(!stat(d, &st) && st.st_size == 0, "空文件没解出来");
     snprintf(d, sizeof d, "%s/docs/资源包/.incoming/1_000.tar", T); CHECK(stat(d, &st) != 0, "解完的 tar 没删");
     snprintf(c, sizeof c, "grep -qx deadbeef01 %s/docs/资源包/.applied", T); CHECK(sh(c) == 0, ".applied 不对");
+    snprintf(c, sizeof c, "grep -qx deadbeef01 %s/docs/资源包/.applied_by_shell", T); CHECK(sh(c) == 0, ".applied_by_shell（0.6 起解开的来源标记，游戏库据此不当 0.5 老款）没写或不对");
     // 4 个文件 = 文件.bin、a.txt、exefs/main.npdm（1_000.tar）+ 空.txt（1_001.tar）；目录不计
     snprintf(c, sizeof c, "grep -q '解开 2 个包 4 个文件' %s/docs/unpack.log && ! grep -q '返回 -' %s/docs/unpack.log", T, T); CHECK(sh(c) == 0, "unpack.log 行不对");
     snprintf(c, sizeof c, "test $(grep -c '进度：解开 1_00' %s/docs/unpack.log) = 2 && grep -q '清掉不在 index.tsv 里的旧文件 1 个' %s/docs/unpack.log", T, T); CHECK(sh(c) == 0, "进度行（每个 tar 一行）或清旧文件行不对");
@@ -697,6 +733,18 @@ int main(void) {
         snprintf(c, sizeof c, "grep -q 'shaders/a.metallib' '%s/games/0100ABCD00000007/资源包/index.tsv'", D5);
         CHECK(sh(c) == 0, "⑭b 机上已有的着色器库行保留在 index.tsv");
         { const char *s2a_img_scan_noshaders(void); CHECK(!strcmp(s2a_img_scan_noshaders(), "game.img"), "⑭b 不带着色器的文件名给界面 = game.img（实际「%s」）", s2a_img_scan_noshaders()); } }
+      // ⑭s 同一个导入文件夹里有同款的 .s2arm（派生件 index.tsv 带着色器库行）和不带 shaders/ 的 .img（导出两件套）：先导 .s2arm、再认领 IMG，
+      //   着色器库行留在 index.tsv，不记「没有着色器库」。期望手写：认领 2 个、日志里 0 行「没有着色器库」、界面文件名为空、index.tsv 有 shaders/a 行。
+//   文件名取 Game.*：APFS 上 readdir 先列 Game.img（实测；Slay.* 先列 .s2arm），不按次序处理时这一例会红
+      if (zstd_pick()) { char Ds[1300], lg[1400]; snprintf(Ds, sizeof Ds, "%s/s2hs/Documents", T); snprintf(lg, sizeof lg, "%s/scans.log", T);
+        snprintf(c, sizeof c, "mkdir -p '%s/放这里导入' && python3 '%s/pack/img.py' build - '%s/src/others.tsv' '%s/放这里导入/Game.img' --gid 0100abcde0000000 --pack-id imgs01 > /dev/null", Ds, R, D, Ds);
+        CHECK(sh(c) == 0, "⑭s 造不带 shaders/ 的 IMG");
+        char sp2[1500]; snprintf(sp2, sizeof sp2, "%s/放这里导入/Game.s2arm", Ds); s2arm_pack(T, sp2, "s2arm.json", NULL);
+        int lfd = open(lg, O_WRONLY | O_CREAT | O_TRUNC, 0644), keep = g_s2a_logfd; g_s2a_logfd = lfd;
+        int placed = s2a_img_scan(Ds); g_s2a_logfd = keep; close(lfd);
+        snprintf(c, sizeof c, "test \"$(grep -c '没有着色器库' '%s')\" = 0 && grep -q '^shaders/a' '%s/../Library/Application Support/S2Arm/games/0100ABCDE0000000/资源包/index.tsv'", lg, Ds);
+        const char *s2a_img_scan_noshaders(void);
+        CHECK(placed == 2 && sh(c) == 0 && !*s2a_img_scan_noshaders(), "⑭s .s2arm + .img 同文件夹：认领 %d 个（期望 2）、不报没有着色器库、index.tsv 留着色器行（界面文件名「%s」）", placed, s2a_img_scan_noshaders()); }
       // ⑭i 0.6.0 截掉导入本体里重复的派生件：导出格式的 .img（pack/img.py export：电脑资源包的 game.img + 尾部追加 shaders/、game.imgmap 进目录表）导入并解开后，
       //   派生件解成文件、本体尾部那份截掉。期望手写：解开成功；本体比导入时小；本体目录表里没有 shaders/ 与 game.imgmap、其余条目与原资源包 game.img 的完全一样；
       //   头里整长 = 文件长；index.tsv 有 shaders/a.metallib 行、game.img 那行长度 = 文件长；解出的 game.imgmap 头里记的整长 = 本体文件长；再应用一次仍成功、本体不变
@@ -711,12 +759,6 @@ int main(void) {
         struct stat ei; char ef[1500]; snprintf(ef, sizeof ef, "%s/放这里导入/导出.img", Di); long long big = stat(ef, &ei) ? -1 : (long long)ei.st_size;
         CHECK(s2a_img_scan(Di) == 1, "⑭i 认领");
         char gi[1500]; snprintf(gi, sizeof gi, "%s/games/0100ABCD0000000C", Di);
-        extern int g_s2a_v060;
-        g_s2a_v060 = 0;   // 开关关着（0.6.0 之前的缺省）：解开照旧，本体一个字节不动
-        CHECK(s2a_pack_apply(gi) == 0, "⑭i 开关关：解开（%s）", s2a_pack_apply_failure());
-        { struct stat s0; char gimg[1600]; snprintf(gimg, sizeof gimg, "%s/资源包/game.img", gi);
-          CHECK(!stat(gimg, &s0) && (long long)s0.st_size == big, "⑭i 开关关：本体长度不变（%lld，导入时 %lld）", (long long)s0.st_size, big); }
-        g_s2a_v060 = 1;   // 开关开（0.6.0）：下面核截掉
         CHECK(s2a_pack_apply(gi) == 0, "⑭i 解开（%s）", s2a_pack_apply_failure());
         snprintf(c, sizeof c, "set -e; g='%s/资源包'; s=$(stat -f %%z \"$g/game.img\"); test \"$s\" -lt %lld"
                  " && python3 '%s/pack/img.py' ls \"$g/game.img\" | sort | cmp -s - '%s/orig.ls'"
@@ -729,8 +771,7 @@ int main(void) {
         snprintf(c, sizeof c, "shasum '%s/资源包/game.img' > '%s/after1.sha'", gi, Di); sh(c);
         CHECK(s2a_pack_apply(gi) == 0, "⑭i 再应用一次仍成功");
         snprintf(c, sizeof c, "shasum '%s/资源包/game.img' | cmp -s - '%s/after1.sha'", gi, Di);
-        CHECK(sh(c) == 0, "⑭i 再应用一次本体不变");
-        g_s2a_v060 = 0; }
+        CHECK(sh(c) == 0, "⑭i 再应用一次本体不变"); }
       // 格式号 9（更新版 S2Arm 做的；2 是着色器更新包，见 ⑭c）：不认、原样留着，给码 ios_install_img_format
       char D4[1300], f4[1400]; snprintf(D4, sizeof D4, "%s/img_docs4", T); mkdir(D4, 0755); snprintf(f4, sizeof f4, "%s/Import Here", D4); mkdir(f4, 0755);
       snprintf(f4, sizeof f4, "%s/Import Here/新格式.img", D4);   // 英文界面建的导入文件夹名也认
@@ -1054,5 +1095,6 @@ int main(void) {
       snprintf(c, sizeof c, "%s/不存在", T); CHECK(s2a_pack_repair_tree(c) == 0, "启动补权限：目录不存在 → 0");
       snprintf(c, sizeof c, "chmod -R u+w '%s' 2>/dev/null; rm -rf '%s'", L, L); sh(c); }
 zst_cases(T);
+race_case(T);
 printf("%s t_pack_apply：%d 处不符\n", bad ? "✗" : "✓", bad); return bad != 0;
 }

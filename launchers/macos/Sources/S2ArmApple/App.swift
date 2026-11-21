@@ -61,30 +61,35 @@ enum AppSetup {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         BackendText.preload()   // 文案资源启动时一次读完：Sparkle「更新并重启」换盘上 .app 时不再去读（0.5.1 退出崩溃）
-        // --control（S2ARM_CONTROL=1）= AI / 测试驱动的实例：按后台辅助应用起——不进 Dock、不抢焦点（窗口照建：s2armctl snapshot 截它）。
+        // --control（S2ARM_CONTROL=1）= AI / 测试驱动的实例：照常是普通 App，只是不抢焦点（不调 activate）。
+        //   原来按后台辅助应用（.accessory）起：这种 App 永远不算活跃，窗口背景的毛玻璃在屏幕上整片变成浅灰、按钮发暗，
+        //   人看着像界面卡了一层蒙层（自签走查 11-19）；AI 起的窗口本来就是给人看的，要和玩家自己打开的一样。
         //   S2ARM_CONTROL=1 写进本进程环境，作业层据此让测试起局的 s2arm-host 静默崩溃（pack/jobs/core.py env）
         let args = CommandLine.arguments
         if args.contains("--control") || ProcessInfo.processInfo.environment["S2ARM_CONTROL"] == "1" {
             setenv("S2ARM_CONTROL", "1", 1)
-            NSApp.setActivationPolicy(.accessory)
+            NSApp.setActivationPolicy(.regular)
             return
         }
         // swift run 起的是裸可执行文件：要成为前台普通 App 才有 Dock 图标和菜单
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
     }
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 }
 
 @main
 struct S2ArmAppleApp: App {
+    @Environment(\.openWindow) private var openWindow
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    @StateObject private var model = S2ArmLauncherModel(client: JobClient(environment: AppSetup.environment()))
+    // 用 @State 只保住同一个 model，不订阅它的变更：@StateObject 会让整个 App body（含应用菜单）在每次进度变化时重建，
+    //   展开着的子菜单会被关掉；窗口里的视图和更新菜单各自观察自己要的部分
+    @State private var model = S2ArmLauncherModel(client: JobClient(environment: AppSetup.environment()))
 
     init() { BackendText.preload() }
 
     var body: some Scene {
-        WindowGroup(Brand.name) {
+        WindowGroup(Brand.name, id: "launcher") {
             S2ArmAppleRootView(model: model, brand: Brand.name)
         }
         .windowStyle(.hiddenTitleBar)
@@ -101,7 +106,19 @@ struct S2ArmAppleApp: App {
                         .credits: NSAttributedString(string: Brand.credits),
                     ])
                 }
+                Divider()
+                S2ArmUpdateMenu(model: model, activateWindow: activateLauncherWindow)
             }
+        }
+    }
+
+    private func activateLauncherWindow() {
+        NSApp.activate()
+        if let window = NSApp.windows.first(where: { $0.title == Brand.name && ($0.isVisible || $0.isMiniaturized) }) {
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            openWindow(id: "launcher")
         }
     }
 }

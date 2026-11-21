@@ -1,7 +1,9 @@
 """装到 Apple TV / 电视存档自动备份 / 从电视拉诊断（pack/jobs/tvos.py、diag.py，11-15 tvOS 版）。devicectl 全部打桩（组里没有 Apple TV），
 期望值按 TVPort 的规则与本文件里写明的输入手算，不跑被测实现推。"""
 import json
-import os, plistlib, shutil, sys, unittest
+import os
+import sys
+import os, plistlib, shlex, shutil, sys, unittest
 import unittest.mock as um
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -61,6 +63,9 @@ class DevicesTest(TvCase):
             tvos.pick(self.c)
         self.assertEqual(e.exception.code, "device_required")
         self.assertIn("「客厅」、「卧室」", str(e.exception))
+        offline = json.loads(json.dumps(other)); offline["connectionProperties"] = {"pairingState": "paired"}
+        with self.listed([TV, offline]):   # 只有一台在线：自动选它
+            self.assertEqual(tvos.pick(self.c)["identifier"], "TV-ID")
         with self.listed([TV, other]):
             self.assertEqual(tvos.pick(self.c, "卧室")["identifier"], "TV2")
             self.assertEqual(tvos.pick(self.c, "TV-UDID")["identifier"], "TV-ID")
@@ -78,8 +83,9 @@ class InstallTest(TvCase):
             (image / ".pack/index.tsv").write_text("x"); (image / ".pack/game.img").write_bytes(b"i" * size)
         self.calls = []
 
-    def run_install(self, install_replies, pack_sizes=None, rec=None):
-        """install_replies：每次 devicectl device install app 的 (退出码, 原文)；pack_sizes：电视上资源包根列出的 {文件: 大小}（缺省 = 和 Mac 上一样）"""
+    def run_install(self, install_replies, pack_sizes=None, rec=None, switch2=()):
+        """install_replies：每次 devicectl device install app 的 (退出码, 原文)；pack_sizes：电视上资源包根列出的 {文件: 大小}（缺省 = 和 Mac 上一样）；
+        switch2：哪几款当 Switch 2（要扩展虚拟寻址）"""
         replies = list(install_replies)
         def devicectl(c, *a, timeout=0):
             if a[:3] == ("device", "install", "app"):
@@ -96,42 +102,85 @@ class InstallTest(TvCase):
                     return 0, {"result": {"files": [dict(relativePath=k, metadata=dict(size=v)) for k, v in sizes.items()]}}, ""
                 return 1, ACTION_ERROR, "no such app"
             raise AssertionError(a)
-        def assemble(c, gid, others, shell, sid):
-            out = self.root / "asm"; app = out / "S2Arm.app"; app.mkdir(parents=True)
+        def assemble_shell(c, shell):
+            out = self.root / "asm"; app = out / "S2Arm.app"; app.mkdir(parents=True, exist_ok=True)
             (app / "Info.plist").write_bytes(plistlib.dumps(dict(CFBundleIdentifier="io.s2arm.games")))
-            self.calls.append(("assemble", gid, tuple(sorted(others))))
-            return out, app, sorted({gid, *others})
-        def sign(c, app, team, bid, udid, log):
+            self.calls.append(("assemble",))
+            return out, app
+        def sign(c, app, team, bid, udid, log, npdms=None):
             self.calls.append(("sign", plistlib.loads((Path(app) / "Info.plist").read_bytes())["CFBundleIdentifier"], udid))
-        def push_pack(c, ident, bid, pack, udid=None, docs=None, ctx=None, pack_root=None):
-            self.calls.append(("push", ident, bid, docs, pack_root, udid))
+        def push_programs(c, dev_id, bid, games, rec, team, udid, work, sid):
+            self.calls.append(("program", tuple(games)))
+            return {g: dict(sha="s-" + g) for g in games}
+        def usable_kit(c, gid, sid):
+            k = layout.path(self.c, gid, "image", "tvos", "kit", create=False)
+            return k if (k / "main.npdm").is_file() else None
+        def push_pack(c, ident, bid, pack, udid=None, docs=None, ctx=None, pack_root=None, tv=False):
+            self.calls.append(("push", ident, bid, docs, pack_root, udid, tv))
             return 1, 7
         if rec:
             tvos.save_rec(self.c, "TV-UDID", rec)
         self.c.r["gameId"] = G
-        with self.listed([PHONE, TV]), um.patch.object(diag, "devicectl", devicectl), um.patch.object(tvos, "assemble", assemble), \
+        with self.listed([PHONE, TV]), um.patch.object(diag, "devicectl", devicectl), um.patch.object(tvos, "assemble_shell", assemble_shell), \
              um.patch.object(tvos, "sign", sign), um.patch.object(tvos, "tv_shell", return_value=(self.root, "SID")), \
+             um.patch.object(tvos, "push_programs", push_programs), um.patch.object(tvos, "usable_kit", usable_kit), \
+             um.patch.object(tvos, "is_switch2", lambda n: any(Path(n).parent == usable_kit(self.c, g, "SID") for g in switch2)), \
              um.patch.object(install, "push_pack", push_pack), um.patch.object(install, "xcode_teams", return_value=[TEAM]):
             return tvos.install_tv(self.c)
 
     def test_command_sequence_with_transient_retry(self):
-        # 期望（手写）：签名用包名 io.s2arm.tv.abcde12345 + 电视 UDID → 装 App 第一次 3002（临时）再试成 → 推本款资源包到
-        #   Library/Caches/S2Arm/games/<款>/资源包（文档根 …/games/<款>）→ 列电视上的资源包根核大小；电视记录记下这款与包名
+        # 期望（手写）：组只有壳的 App → 签名用包名 io.s2arm.tv.abcde12345 + 电视 UDID → 装 App 第一次 3002（临时）再试成 → 推这款程序包 →
+        #   推本款资源包（不带 UDID、标电视：#1696 不走数据线流式）到 Library/Caches/S2Arm/games/<款>/资源包（文档根 …/games/<款>）→ 列电视上的资源包根核大小；电视记录记下壳号、包名、这款的程序与资源包号
         r = self.run_install([(1, "ERROR: The operation couldn't be completed. (com.apple.dt.CoreDeviceError error 3002.)"), (0, "")])
         docs = f"Library/Caches/S2Arm/games/{G}"
-        self.assertEqual(self.calls, [("assemble", G, ()), ("sign", "io.s2arm.tv.abcde12345", "TV-UDID"), ("install", "TV-ID"), ("install", "TV-ID"),
-                                      ("push", "TV-ID", "io.s2arm.tv.abcde12345", docs, docs + "/资源包", "TV-UDID"), ("list", docs + "/资源包")])
-        self.assertEqual((r["deviceKind"], r["deviceName"], r["games"], r["packFiles"]), ("Apple TV", "客厅", [G], 1))
+        self.assertEqual(self.calls, [("assemble",), ("sign", "io.s2arm.tv.abcde12345", "TV-UDID"), ("install", "TV-ID"), ("install", "TV-ID"), ("program", (G,)),
+                                      ("push", "TV-ID", "io.s2arm.tv.abcde12345", docs, docs + "/资源包", None, True), ("list", docs + "/资源包")])
+        self.assertEqual((r["deviceKind"], r["deviceName"], r["games"], r["packFiles"], r["installed"]), ("Apple TV", "客厅", [G], 1, True))
         rec = tvos.load_rec(self.c, "TV-UDID")
-        self.assertEqual((rec["bundleId"], rec["games"], rec["shellId"]), ("io.s2arm.tv.abcde12345", {G: dict(pack="pack-" + G)}, "SID"))
+        self.assertEqual((rec["bundleId"], rec["games"], rec["shellId"], rec["eva"]),
+                         ("io.s2arm.tv.abcde12345", {G: dict(program=dict(sha="s-" + G), pack="pack-" + G)}, "SID", False))
         self.assertEqual(layout.devices(self.c), [])   # 电视记录不进 iPhone 的 devices/（「更新 iPhone 上的 S2Arm」不该列电视）
 
     def test_second_game_backs_up_and_pushes_only_changed(self):
-        # 电视上已有 H（包号没变）：H 一起组进容器、装前先备份存档（这里电视上没有存档 = 列表 ActionError），只推这款 G
+        # 电视上已有 H（0.5.x 整包装的：没记壳号，包号没变）：重装只有壳的 App、装前先备份存档（这里电视上没有存档 = 列表 ActionError），
+        #   程序包这款和 H 都推（H 原先在 App 里，换成只有壳后要补），资源包只推这款 G
         self.run_install([(0, "")], rec=dict(bundleId="io.s2arm.tv.abcde12345", games={H: dict(pack="pack-" + H)}))
-        self.assertEqual(self.calls[0], ("assemble", G, (H,)))
+        self.assertEqual(self.calls[0], ("assemble",))
         self.assertIn(("list", f"Library/Caches/S2Arm/games/{H}/{install.SAVE_REL}"), self.calls)
+        self.assertIn(("program", (G, H)), self.calls)
         self.assertEqual([c[3] for c in self.calls if c[0] == "push"], [f"Library/Caches/S2Arm/games/{G}"])
+
+    def test_fresh_shell_not_reinstalled(self):
+        # 期望（手写）：电视上已是本版壳（SID）、同包名、免费账号签了 1 小时 → 不组不签不装，只推程序包与资源包；H 资源包号变了也补推
+        fresh = dict(bundleId="io.s2arm.tv.abcde12345", shellId="SID", signed=dict(at=tvos.time.time() - 3600, free=True),
+                     games={H: dict(pack="old-" + H, program=dict(sha="s-" + H))})
+        r = self.run_install([], rec=fresh)
+        self.assertEqual([c[0] for c in self.calls if c[0] in ("assemble", "sign", "install")], [])
+        self.assertEqual([c[3] for c in self.calls if c[0] == "push"], [f"Library/Caches/S2Arm/games/{G}", f"Library/Caches/S2Arm/games/{H}"])
+        self.assertFalse(r["installed"])
+        self.assertEqual(tvos.load_rec(self.c, "TV-UDID")["games"][H]["pack"], "pack-" + H)
+        # 签了 4 天（免费账号 3 天线）→ 重装；请求要求重装 → 重装
+        for rec, force in ((dict(fresh, signed=dict(at=tvos.time.time() - 4 * 86400, free=True)), False), (fresh, True)):
+            self.calls.clear(); self.c.r["forceInstall"] = force
+            self.run_install([(0, "")], rec=rec)
+            self.assertIn(("assemble",), self.calls)
+        self.c.r.pop("forceInstall")
+
+    def test_switch2_needs_eva_shell(self):
+        # 期望（手写）：现装的壳没带扩展虚拟寻址（eva 没记），这次要放的 G 是 Switch 2 → 壳新鲜也重签重装，记 eva=True；再装一次就不重装
+        fresh = dict(bundleId="io.s2arm.tv.abcde12345", shellId="SID", signed=dict(at=tvos.time.time() - 3600, free=False))
+        self.run_install([(0, "")], rec=fresh, switch2=(G,))
+        self.assertIn(("assemble",), self.calls)
+        self.assertTrue(tvos.load_rec(self.c, "TV-UDID")["eva"])
+        self.calls.clear()
+        self.run_install([], switch2=(G,))
+        self.assertNotIn(("assemble",), self.calls)
+
+    def test_other_team_forgets_games(self):
+        # 期望（手写）：记录里是别的团队的包名 → 新 App，记录里的 H 不算在电视上（不补推它的程序包），只推 G
+        self.run_install([(0, "")], rec=dict(bundleId="io.s2arm.tv.zzzzz99999", shellId="SID", games={H: dict(pack="pack-" + H)}))
+        self.assertIn(("program", (G,)), self.calls)
+        self.assertEqual(sorted(tvos.load_rec(self.c, "TV-UDID")["games"]), [G])
 
     def test_non_transient_install_error_stops_at_once(self):
         with self.assertRaises(Failure) as e:
@@ -152,7 +201,27 @@ class InstallTest(TvCase):
             self.run_install([(0, "")], pack_sizes={"index.tsv": 1, "manifest.json": len(json.dumps(dict(format="img", index_sha256="pack-" + G))), "game.img": 3})
         self.assertEqual(e.exception.code, "resource_transfer_failed")
         self.assertIn("game.img", str(e.exception))
-        self.assertEqual(tvos.load_rec(self.c, "TV-UDID")["games"], {G: dict(pack="")})
+        self.assertEqual(tvos.load_rec(self.c, "TV-UDID")["games"], {G: dict(program=dict(sha="s-" + G))})
+
+    def test_zst_chunks_verified_not_final_size(self):
+        # #1460：game.img 走压缩分块推（电视上旧 game.img 先截空，App 打开才拼回）：推完照最终大小核必报 0 字节。期望（手写）：
+        #   块都在且字节对 → 过；缺一块 → resource_transfer_failed；App 已在解（game.img 有内容、已解完的块删了）→ 过
+        pack = layout.path(self.c, G, "image", "tvos", ".pack")
+        sha = "ab" * 32
+        (pack / "index.tsv").write_text(f"game.img\t7\t{sha}\n")
+        man = len((pack / "manifest.json").read_bytes())
+        names = [f".incoming/game.img.{sha[:16]}.{k:04d}.zst" for k in range(2)]
+        base = {"index.tsv": len((pack / "index.tsv").read_bytes()), "manifest.json": man}
+        sys.path.insert(0, str(tvos.Path(tvos.__file__).resolve().parents[2] / "tools"))
+        import push_pack as P
+        with um.patch.object(P, "zstd_plan", lambda pk, row, say=None, env=None, **k: [3, 2] if row[0] == "game.img" else None):
+            self.run_install([(0, "")], pack_sizes=dict(base, **{"game.img": 0, names[0]: 3, names[1]: 2}))
+            with self.assertRaises(Failure) as e:
+                self.run_install([(0, "")], pack_sizes=dict(base, **{"game.img": 0, names[0]: 3}))
+            self.assertEqual(e.exception.code, "resource_transfer_failed")
+            self.run_install([(0, "")], pack_sizes=dict(base, **{"game.img": 4, names[1]: 2}))
+            with self.assertRaises(Failure):
+                self.run_install([(0, "")], pack_sizes=dict(base, **{"game.img": 0, names[0]: 1, names[1]: 2}))   # 块字节不对
 
     def test_not_built_for_tv(self):
         shutil.rmtree(layout.path(self.c, G, "image", "tvos"))
@@ -162,6 +231,97 @@ class InstallTest(TvCase):
         self.assertEqual(e.exception.code, "job_failed")
         self.assertFalse(tvos.tv_ready(self.c, G))
         self.assertTrue(tvos.tv_ready(self.c, H))
+
+
+class AssembleShellTest(TvCase):
+    def test_real_assemble_shell_signs_container(self):
+        # 不桩 assemble_shell 本身（别处的装机测试都桩了它，#1758 的 AttributeError 因此漏过）：只桩子进程与签名，
+        # 期望（手写）：组壳子进程按 tvOS 环境跑一次，接着对同一个 S2Arm.app 调 ipa.sign_container 一次，返回 (临时目录, 临时目录/S2Arm.app)
+        import ipa
+        self.assertTrue((self.c.engine / "launchers/macos/Branding/AppIcon-iOS.png").is_file())   # 用仓库里的真图标，不写引擎目录
+        runs, signed = [], []
+        with um.patch.object(self.c, "run", lambda cmd, log, env=None: runs.append(env.get("S2A_APPLE_OS"))), \
+             um.patch.object(ipa, "sign_container", lambda c, app, log: signed.append(app)), \
+             um.patch.object(ipa, "release_version", lambda e: "1"), um.patch.object(ipa, "display_version", lambda e: "0.6.0"):
+            out, app = tvos.assemble_shell(self.c, self.c.library / "shell")
+        self.addCleanup(shutil.rmtree, out, True)
+        self.assertEqual((runs, signed, app), (["tvos"], [out / "S2Arm.app"], out / "S2Arm.app"))
+
+
+class AssembleRealTest(TvCase):
+    def test_real_assemble_signs_and_lists_games(self):
+        # tvos.assemble 不换替身（#1758 同类：组装函数在装机测试里都被换掉，内部调了不存在的函数测不出）：只桩子进程、容器件查找、签名。
+        # 期望（手写）：组一次容器（带这款与 H 的 --game、tvOS 环境），对同一个 S2Arm.app 签一次，返回 (临时目录, S2Arm.app, [G, H])
+        import ipa
+        kits = {G: self.c.private / "kG", H: self.c.private / "kH"}
+        runs, signed = [], []
+        def run(cmd, log, env=None):
+            cmd = [str(x) for x in cmd]; runs.append((env.get("S2A_APPLE_OS"), [cmd[i + 1] for i, x in enumerate(cmd) if x == "--game"]))
+            app = Path(cmd[cmd.index("--out") + 1]); app.mkdir(parents=True)
+            (app / "s2a_catalogue.json").write_text(json.dumps({"games": [{"title_id": G}, {"title_id": H}]}), encoding="utf-8")
+        with um.patch.object(self.c, "run", run), um.patch.object(tvos, "usable_kit", lambda c, g, sid: kits.get(g)), \
+             um.patch.object(ipa, "sign_container", lambda c, app, log: signed.append(app)), \
+             um.patch.object(ipa, "release_version", lambda e: "1"), um.patch.object(ipa, "display_version", lambda e: "0.6.0"):
+            out, app, games = tvos.assemble(self.c, G, [H], self.c.private / "shell", "SID")
+        self.addCleanup(shutil.rmtree, out, True)
+        self.assertEqual((runs, signed, app, games), ([("tvos", [str(kits[G]), str(kits[H])])], [out / "S2Arm.app"], out / "S2Arm.app", [G, H]))
+
+
+class TvProgramPushTest(TvCase):
+    def test_push_programs_drops_unusable_other_game(self):
+        # 期望（手写）：G 的程序件能用 → 签 tvOS 版、打成 .s2arm 推进电视上 App 的导入文件夹 Library/Caches/S2Arm/Import Here；
+        #   H 放不进本版壳 → 不推、记一条 container_stale 黄字点名「乙」；G 放不进 → 整个停
+        import program_pack
+        kit = layout.path(self.c, G, "image", "tvos", "kit"); kit.mkdir(parents=True); (kit / "main.npdm").write_bytes(b"META")
+        pushed = []
+        def sign(c, g, team, bid, signer, platform="ios", kit=None, pkg=None):
+            self.assertEqual((platform, signer.kind), ("tvos", "xcode-tvos"))
+            d = self.root / ("pkg-" + g); d.mkdir(exist_ok=True); (d / "catalogue.json").write_text(json.dumps(dict(image_sha256="x", team=team, host_abi=1)))
+            return d
+        def push_program(cl, g, pkg, inbox, custom=None):
+            pushed.append((g, inbox)); return dict(sha="x")
+        with um.patch.object(program_pack, "sign", sign), um.patch.object(install, "push_program", push_program), \
+             um.patch.object(tvos, "usable_kit", lambda c, g, sid: kit if g == G else None), um.patch.object(tvos, "TvClient", lambda *a, **k: None):
+            out = tvos.push_programs(self.c, "TV-ID", "io.b", [G, H], {}, "T", "U", self.root, "SID")
+            self.assertEqual(out, {G: dict(sha="x")})
+            self.assertEqual(pushed, [(G, "Library/Caches/S2Arm/Import Here")])
+            said = [l for l in self.output.getvalue().splitlines() if l.startswith("{") and '"diagnostic"' in l]
+            self.assertTrue(any("container_stale" in l and "「乙」" in json.loads(l).get("message", "") for l in said), said)
+            with self.assertRaises(Failure) as e:
+                tvos.push_programs(self.c, "TV-ID", "io.b", [H], {}, "T", "U", self.root, "SID")
+            self.assertEqual(e.exception.code, "container_stale")
+
+
+class TvPushEnvTest(TvCase):
+    def test_tv_push_no_udid_and_tv_flag(self):
+        # #1696 期望（手写）：tv=True → 推包工具环境带 S2A_PUSH_TV=1、不带 S2A_PUSH_UDID（不走数据线流式）；iPhone（给 udid）照旧带 UDID、不带电视标记
+        seen = []
+        def run(args, log, env=None, on_line=None, **k):
+            seen.append({k2: env.get(k2) for k2 in ("S2A_PUSH_TV", "S2A_PUSH_UDID")})
+        with um.patch.object(self.c, "run", run):
+            install.push_pack(self.c, "TV-ID", "io.b", self.root, udid="TV-UDID", tv=True)
+            install.push_pack(self.c, "PH", "io.b", self.root, udid="PH-UDID")
+        self.assertEqual(seen, [{"S2A_PUSH_TV": "1", "S2A_PUSH_UDID": None}, {"S2A_PUSH_TV": None, "S2A_PUSH_UDID": "PH-UDID"}])
+
+
+class TvOnlyDropsIphoneTest(TvCase):
+    def test_drop_iphone_delivery_keeps_tv_and_data(self):
+        # #1459（期望手写）：只出 Apple TV、出包前没有 iPhone 包 → 派生完撤掉 image/ios 与 game.json 的 ios，游戏库不再判 iPhone 就绪；
+        #   电视资源包的 game.img（硬链接）内容还在，game.json 里别的字段（tvos 记录）不动
+        import ipa as packer
+        import library
+        ios = layout.image_ios(self.c, G) / layout.IOS_PACK; ios.mkdir(parents=True)
+        (ios / "manifest.json").write_text("{}"); (ios / "game.img").write_bytes(b"IMG-BYTES")
+        tv = layout.path(self.c, G, "image", "tvos") / ".pack"; tv.mkdir(parents=True)
+        os.link(ios / "game.img", tv / "game.img")
+        layout.update_info(self.c, G, ios=dict(pack="p1"), tvos=dict(pack="p1"))
+        with um.patch.object(layout, "has_ios_kit", return_value=True):
+            self.assertTrue(library.iphone_ready(self.c, G))
+            packer.drop_iphone_delivery(self.c, G)
+            self.assertFalse(library.iphone_ready(self.c, G))
+        info = layout.game_info(self.c, G)
+        self.assertNotIn("ios", info); self.assertEqual(info.get("tvos"), dict(pack="p1"))
+        self.assertEqual((tv / "game.img").read_bytes(), b"IMG-BYTES")
 
 
 class ProvProjectTest(unittest.TestCase):
@@ -484,31 +644,6 @@ class DeriveTest(TvCase):
         self.assertFalse([r for r in runs if "shell_build.sh" in " ".join(r)])
         info = layout.game_info(self.c, G)["tvos"]
         self.assertEqual((info["shellId"], info["pack"], info["astc"]), ("sid1", m["index_sha256"], True))
-
-    def test_derive_on_windows_copies_without_cp_and_uses_given_shell(self):
-        """Windows（没有 cp）：kit / 资源包整份拷贝，不调 cp；启动器给了 tvShellDir 就不现出壳"""
-        img = self.make_ios()
-        ex = self.root / "extract"; (ex / "romfs").mkdir(parents=True)
-        runs = []
-        def run(argv, log, env=None, **k):
-            runs.append([str(a) for a in argv])
-            if "astc_pack.py" in str(argv[4]): Path(argv[7]).write_bytes(b"ASTC" * 4)
-        real = tvos.subprocess.run
-        def no_cp(argv, *a, **k):
-            if argv and argv[0] == "cp": raise AssertionError("Windows 上不该调 cp")
-            return real(argv, *a, **k)
-        given = self.root / "Shell-tvOS"; given.mkdir(); (given / "manifest.json").write_text("{}")
-        self.c.r["tvShellDir"] = str(given)
-        with um.patch.object(tvos.sys, "platform", "win32"), um.patch.object(tvos.subprocess, "run", side_effect=no_cp), \
-             um.patch.object(self.c, "run", side_effect=run), um.patch.object(tvos, "tv_shell_id", return_value="sid1"), \
-             um.patch.object(self.c, "env", return_value={"S2A_RUN_ROOT": str(self.root / "run")}):
-            tvos.derive(self.c, G, ex)
-        tv = layout.path(self.c, G, "image", "tvos", create=False)
-        self.assertEqual((tv / "kit/main.npdm").read_bytes(), b"npdm")
-        self.assertEqual((tv / ".pack/game.img").read_bytes(), b"IMG")
-        (tv / ".pack/game.img").write_bytes(b"CHANGED")   # 整份拷贝：改 tvOS 这份不动 iPhone 那份
-        self.assertEqual((img / ".pack/game.img").read_bytes(), b"IMG")
-        self.assertFalse([r for r in runs if "shell_build.sh" in " ".join(r)])
 
     def test_derive_060_links_game_img_on_windows(self):
         """0.6.0（通用壳开关开，体系文档 L）：Windows 上 tvOS 资源包的 game.img 是 iPhone 那份的硬链接（同一个文件，不再实拷），

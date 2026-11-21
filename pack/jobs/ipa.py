@@ -14,10 +14,11 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import zipfile
 from pathlib import Path
-from core import Failure, contained, display_version, read, release_version, resolve_path
+from core import Failure, atomic, contained, display_version, read, release_version, resolve_path
 import layout
 
 
@@ -204,8 +205,9 @@ def win_oneclick(c, oneclick, extraction, fonts, out, events, log, env, line, so
 
 
 def build(c):
-    # 与 Mac prepare、显式清缓存 / 删除共用执行锁，清理不与同库编库重叠。
-    with c.lock("execution"):
+    # 与 Mac prepare 共用出包锁（一次只出一个），执行锁拿共享：清缓存 / 删除等全库独占动作不与出包重叠，别的游戏照样能玩（build.produce_locks）
+    from build import produce_locks
+    with produce_locks(c):
         return _build(c)
 
 
@@ -276,13 +278,15 @@ def _build(c):
         except OSError as e:
             c.emit("message", f"【黄】原始程序没存下（以后升级要回原件）：{e}")
         kuan = oneclick_kuan(c, gid)
-        if os.name != "nt" and not (out / "roots" / (kuan + "@现行")).exists():   # Windows 机上没有 Mac 包可克隆  # 非玩家句
+        if os.name != "nt" and layout.current_root(c, out / "roots" / (kuan + layout.CURRENT)) is None:   # Windows 机上没有 Mac 包可克隆
             seed_from_sibling(c, game, out / "roots", kuan)
         # 出 iPhone 包：平台换成 iOS；.NET 只在源码树现编 C#（壳 / iOS 库）时用已确认的外部 SDK（发版应用全用随包预编，运行不要 .NET）
         for name in tuple(env):
             if name.startswith('DOTNET_ROOT_'):
                 env.pop(name)
         env.update(S2A_PACK_PLAT="ios", S2A_TARGET="ios", S2A_PY=os.sys.executable)
+        for k, v in pso_env(tgt).items():   # 随包管线（计算 / 基础）按目标设备出：不传时 pack/jobs/archs.py 对用户 iPhone 包不猜、管线段整段跳过（0 份）
+            env.setdefault(k, v)
         # 存档游戏身份（和 Mac 存档作业 saves.identity 同一份）：一键出包只在「从原件出包」时自己生成，启动器走 --from-extract 一直缺，
         #   iPhone 包里没有 save-identity.json → 存档管理页报「缺少游戏身份」、iCloud 存档不同步（11-09 真机）。这里按游戏库目录写好交给它
         from saves import identity as save_identity
@@ -302,8 +306,10 @@ def _build(c):
                 PATH=os.pathsep.join(dict.fromkeys([str(exe.parent), str(home), env["PATH"]])),
             )
         state = {}
-        # 出包与装机重叠（installAfter，pack/jobs/early.py）：开工前认账号与设备，旁路完成就先装 App、先推大头资源，与直连库编译并行
-        if c.r.get("installAfter") and os.name != "nt":   # Windows：出完再装（install.install 的 Windows 分支），不做出包期间早装
+        # 出包与装机重叠（installAfter，pack/jobs/early.py）：开工前认账号与设备，旁路完成且手机上已是本版通用壳就先推大头资源，与直连库编译并行
+        # Windows：出完再推，不做出包期间早推；Mac Apple ID（plumesign，install.mac_plume）目前同样出完再推（早推只在证书用户上真机验过）
+        import install as _inst
+        if c.r.get("installAfter") and os.name != "nt" and not _inst.mac_plume(c):
             from early import EarlyInstall
             early = EarlyInstall(c, gid, env, out).start()
 
@@ -368,18 +374,22 @@ def _build(c):
         from build import warn_offline_empty, collect_degrade
         warn_offline_empty(c, root)   # 离线 0 支（#470）：照常交付，完成页带黄字
         notes = collect_degrade(c, root)   # 降级继续的玩家提示：随结果交给完成卡（v0.3.1）；清理会删产物根，先读
-    # 早装先收尾再清理：清理会删它正在读的 roots/<款>@现行 与 .early（审计 P1-146：直连命中缓存时出包比早装推得快）
+    # 早装先收尾再清理：清理会删它正在读的现行产物根（roots/<款>@现行 指向的版本）与 .early（审计 P1-146：直连命中缓存时出包比早装推得快）
     pre = early.finish() if early else None
     # Q15：成功清一次性中间产物，编库缓存跨次保留并按预算裁剪；失败留现场。
     c.begin("清理出包中间产物")
     pack_dir = out / (ipa.stem + "资源包")   # 同 pack/oneclick/oneclick.sh 的交付布局
     patches.record(c, gid, "ios", product_root(c, gid))   # 补丁打入结果（打上 / 没打上，完成页列；deliver 之前产物根还在，11-14）
+    from library import iphone_ready
+    had_iphone = iphone_ready(c, gid)   # 出包前这款就有能装的 iPhone 包（只出 Apple TV 时据此决定派生完要不要撤掉顺带出的 iPhone 交付件，#1459）
     deliver(c, gid, product_root(c, gid), pack_dir, ipa)
     finish_kit_state(c, gid)
     tv_out = None
     if c.r.get("platform") == "tvos":   # Apple TV（11-15）：同一份改写产物派生（pack/jobs/tvos.py derive），要在清解包目录之前（ASTC 预转读 romfs）
         import tvos
         tvos.derive(c, gid, extraction)
+        if not had_iphone:
+            drop_iphone_delivery(c, gid)
         if c.r.get("tvExport"):   # Windows（export_plan 带）：接着导出 Apple TV 安装包，完成卡给 .ipa 的位置
             tv_out = tvos.export_tv(c)
     prune_unless_follow_up(c, gid)
@@ -408,14 +418,10 @@ def _build(c):
     if early:   # 打完放进容器装到这台：早装推过的不再推，push_pack 按机上已解开的清单只补差量（着色器库 + 变了的小文件）
         import install as inst
         c.begin("装到 iPhone 并补推资源包（出包期间已先推 %d 个文件）" % pre.get("files", 0))
-        import program_pack
-        ph = inst.MacPhone(c, early.team, early.dev, early.udid)
-        done = (inst.push_game if program_pack.enabled(c) else inst.put_game)(c, gid, ph, steps=False)   # 通用壳（缺省关）：只推这一款，不装壳
+        ph = inst.mac_phone(c, early.team, early.dev, early.udid)
+        done = inst.push_game(c, gid, ph, steps=False)   # 只推这一款，不装壳
         shutil.rmtree(early.dir, ignore_errors=True)
         result.update(done, outputPath=str(image), packFiles=done["packFiles"] + pre.get("files", 0), packBytes=done["packBytes"] + pre.get("bytes", 0), earlyPack=pre)
-    lib_ipa = refresh_library_ipa(c)
-    if lib_ipa:   # 完成页的「显示 .ipa」（两端都读结果里的 ipa）：指向刚组好的库根 S2Arm.ipa
-        result.update(ipa=str(lib_ipa), ipaBytes=lib_ipa.stat().st_size)
     import sizes
     sizes.refresh(c, gid)   # 每款各部分大小写回 game.json（游戏库只读不量）
     return result
@@ -426,33 +432,17 @@ def prune_unless_follow_up(c, gid):
     if c.r.get("followUp") is True:
         c.emit(message="这款接着还要出别的平台：先留着解包与中间产物")
         return False
-    from library import prune_build
+    from library import NotManaged, prune_build
     try:
         prune_build(c, gid)
+    except NotManaged as error:   # 不在存放位置里的路径没碰：只记日志，不作为错误码给玩家看（包已出好）
+        print(f"[s2a] 清理中间产物跳过了不在存放位置里的路径：{c.redact(str(error))}", file=sys.stderr)  # 非玩家句
+        return False
     except (Failure, OSError) as error:   # #793 / #796：包已经出好，清中间产物只是收尾——游戏库在删不了文件的地方（Xbox App 管的文件夹）时
         #   原先 PermissionError 一路抛上去，出好的包被判失败；同失败收尾 clean_after_stop：记一条警告，下次空闲再清
         c.diagnostic("清理中间产物没有完成，下次空闲时会再清：" + c.redact(str(error)), code="job_failed", severity="warning")  # 非玩家句
         return False
     return True
-
-
-def refresh_library_ipa(c):
-    """出 iPhone 包成功就把默认位置根 S2Arm.ipa 换成含游戏库里本版能用的全部各款的容器（#360）：原先它只在「装到 iPhone」成功后才更新，
-    只出包、自己用 SideStore / LiveContainer 侧载的玩家拿到的是旧包（或 0.1.x 迁移留下的单款包），出包完成页的「显示 .ipa」也不出现。
-    组装同装机（assemble，Mac ad-hoc / Windows 不签，侧载工具重签）、放置同装机（commit_phone_ipa：换了壳把旧的留作上一版）。
-    组装失败只警告：这款的 iPhone 版已经出好，不因为别的款连带判出包失败。→ 库根 S2Arm.ipa 路径 | None（没组）"""
-    sid = current_shell_id(c)
-    ready = [g["id"].upper() for g in c.catalog()["games"] if usable_kit(c, g["id"].upper(), sid)]
-    if not ready:
-        return None
-    c.begin("组装可直接侧载的 S2Arm.ipa（含 %d 款）" % len(ready))
-    try:
-        ipa, _, _ = assemble(c, None, ready)
-        commit_phone_ipa(c, ipa, sid)
-    except (Failure, OSError) as e:   # 组装出错（盘满、权限、容器件坏）都只警告
-        c.diagnostic("游戏库根目录的 S2Arm.ipa 这次没更新（" + str(e) + "）：这款的 iPhone 版已出好，「装到 iPhone」时会照常组装。", code="job_failed", severity="warning")  # 非玩家句
-        return None
-    return layout.phone_ipa(c)
 
 
 # 出包与装机并行（11-16 维护者「出包时也能装别的游戏到 iPhone」）：两把库锁，全局取锁顺序 = 手机锁 → 各款程序锁（按游戏号排序），不会成环。
@@ -513,6 +503,38 @@ def deliver(c, gid, root, pack_dir, ipa):
     Path(ipa).unlink(missing_ok=True)
 
 
+def adopt_product(c):
+    """作业 adoptProduct（内部真机测试链）：别处已出好的 iPhone 产物收进本游戏库，等同这款刚「打 iPhone 包」完，之后「安装 / 更新 S2Arm」「推到 iPhone」照常走。
+    请求：gameId；productRoot = 产物根（顶层程序件、ctl/control.nacp、programs/<n>/，同 save_container_kit 读的那些；不需要 RomFS）；
+    packDir = 资源包（manifest.json 带 index_sha256）。资源包原样收、不转 game.img（文件形态手机照读，pack_apply.c img_toc 没有 game.img 走文件；
+    转 IMG 要产物根里的完整 RomFS）。拷进游戏库，不动来源。→ {gameId, kit, pack, packId}"""
+    from library import save_container_kit, _rm
+    gid = str(c.r.get("gameId") or "").upper()
+    root, src = Path(c.r.get("productRoot") or ""), Path(c.r.get("packDir") or "")
+    want = read(src / "manifest.json", {}).get("index_sha256")
+    if not want:
+        raise Failure(f"资源包缺清单或清单没有 index_sha256（{src}）。", code="package_failed")  # 非玩家句
+    c.begin("收程序件", 1, 2)  # 非玩家句
+    with program_locks(c, [gid]):
+        kit = save_container_kit(c, gid, root)
+    if kit is None:
+        raise Failure(f"产物根里没有 main.npdm（{root}）。", code="package_failed")  # 非玩家句
+    c.begin("收资源包", 2, 2)  # 非玩家句
+    image = layout.image_ios(c, gid)
+    image.mkdir(parents=True, exist_ok=True)
+    tmp = image / (layout.IOS_PACK + ".adopt")
+    if tmp.exists():
+        _rm(c, layout.root_of(c, gid), tmp)
+    # 逐个文件克隆进这款文件夹（core.clone：同一 APFS 卷 clonefile 不另占盘，跨卷 / Windows 退回普通复制），再同卷换（_swap_pack 用 os.replace）。
+    #   原先整份 copytree：测试链每台设备每款都多一整份资源包（11-19 一款大型开放世界游戏一份 17 GB，把内置盘写满）
+    from core import clone
+    shutil.copytree(src, tmp, copy_function=lambda s, d: clone(s, d))
+    with program_locks(c, [gid]):
+        _swap_pack(c, gid, tmp, want)
+    finish_kit_state(c, gid)
+    return dict(gameId=gid, kit=str(layout.ios_kit(c, gid)), pack=str(layout.ios_pack(c, gid)), packId=want)
+
+
 def _swap_pack(c, gid, pack_dir, want):
     import host_update
     from library import _rm
@@ -533,7 +555,22 @@ def _swap_pack(c, gid, pack_dir, want):
     compat = host_update.engine_compat(c) or {}
     from rewrite_refresh import rewriter_id   # 这次的改写产物出自哪版改写器：改写器以后修了，更新手机时只核记号不同的款（rewrite_refresh.py）
     from sgrade_bf import BF_GEN   # 这次的直连库出自本引擎翻译器：可读瓦片版代数（S 级升级按它判要不要补 _bf，pack/jobs/sgrade_bf.py）
-    layout.update_info(c, gid, ios=dict(shellId=current_shell_id(c), pack=want, rewriterId=rewriter_id(c), bfGen=BF_GEN, **compat))
+    layout.update_info(c, gid, ios=dict(shellId=current_shell_id(c), pack=want, rewriterId=rewriter_id(c), bfGen=BF_GEN, libGen=host_update.LIB_GEN, builtBy=host_update.built_by(c), **compat))   # libGen：直连库内容代数（host_update.LIB_GEN）
+
+
+def drop_iphone_delivery(c, gid):
+    """只出 Apple TV（#1459）：电视包是从 iPhone 那份派生的，派生完把这次顺带交付的 iPhone 资源包与 game.json 的 ios 记录撤掉，
+    游戏库不再显示「可装到 iPhone」。只在出包前这款没有 iPhone 包时调（原来就有的不动）。电视资源包里的 game.img 是硬链接、
+    Mac 运行版本合并到这份 game.img 也是硬链接（onerom），删掉 iPhone 这个名字不丢数据；程序件（常驻 .programs）电视照样要用，不动"""
+    from library import _rm
+    image = layout.image_ios(c, gid, create=False)
+    if image.is_dir():
+        _rm(c, layout.root_of(c, gid), image)
+    d = layout.game_dir(c, gid)
+    info = read(d / layout.GAME_JSON, {})
+    if "ios" in info:
+        info.pop("ios")
+        atomic(d / layout.GAME_JSON, info)
 
 
 CONSUME_MARK = ".img_consume_inflight"   # 出包工作目录里：写 IMG 正在边写边删产物根 RomFS（#746），写成功才删
@@ -558,7 +595,7 @@ def drop_half_consumed(c, gid):
 
 def to_img(c, gid, root, pack_dir):
     """资源包就地转单一 IMG 形态（v0.3.0，pack/img.py convert）：游戏原始资源进 game.img（之后字节不变），着色器库 / 覆盖层照旧按文件。
-    多程序合集这一版照旧旧形态。转失败 = 出包失败（不交一半）"""
+    多程序合集的 programs/ 一并进 IMG（#1545）。转失败 = 出包失败（不交一半）"""
     c.begin("把游戏资源写成单一 IMG（game.img）")
     log = c.logs / "img.log"
     # 边写边删解包出来的 RomFS（#746）：出包收尾本来就清掉整个出包工作目录（prune_unless_follow_up），提前到写 IMG 时，峰值少一整份游戏大小。
@@ -577,8 +614,17 @@ def to_img(c, gid, root, pack_dir):
             clear_build(c, gid)
         if not isinstance(e, Failure):
             raise
-        from errors import tool_reason
-        raise Failure("写单一 IMG（game.img）失败：" + (tool_reason(log) or str(e)), code="package_failed") from e  # 非玩家句
+        from errors import cause_facts, classify_failure, player_words, tool_reason
+        reason = "写单一 IMG（game.img）失败：" + (tool_reason(log) or str(e))  # 非玩家句
+        # 日志确凿根因（盘满等，errors.LOG_CAUSES）照归：原先一律 package_failed，玩家看到的是英文原句「[Errno 28] No space left on device」
+        code, why = classify_failure("img", log, (reason,))
+        if code == "package_failed" and re.search(r"\[Errno 13\]|\bPermissionError\b|\[WinError (?:5|32|33)\]", reason):
+            # 写的都是游戏库里这款的文件（game.img、RomFS 镜像）：被拒 = 别的程序拿着 / 文件夹被保护（D-X5JB），归 permission_denied（Windows 有自己的下一步）
+            code, why = "permission_denied", why + "；按原文「拒绝访问」归 permission_denied"  # 非玩家句
+        if code == "package_failed":
+            raise Failure(reason, code=code, internal=why) from e
+        said, advice = player_words(code, log, (reason,))
+        raise Failure(said, code=code, advice=advice, internal=reason + "\n" + why, facts=cause_facts(code, log)) from e
     mark.unlink(missing_ok=True)
 
 
@@ -587,6 +633,16 @@ def current_shell_id(c):
     if r.returncode or not r.stdout.strip():
         raise Failure("算不出本引擎的壳编号：" + ((r.stderr or "").strip().splitlines() or ["?"])[-1], code="tool_missing")  # 非玩家句
     return r.stdout.strip()
+
+
+def built_shell(c):
+    """这次组容器实际用的预编壳 → (壳目录, 壳号)。壳号读这份壳 manifest 的 details.shellId（组进 ipa 的就是它），读不到才退回本树壳号：
+    开发请求给了 shellDir（或发版应用里的 Shell/ 与引擎不同版）时两者会不同——回报 / 设备记录 / 兼容判断都按实际组进去的那份，
+    不按树算（11-17：toShell 一直报树的壳号，手机上装的却是请求给的旧壳，排查方向错了约 5 小时）"""
+    sid = current_shell_id(c)
+    shell = Path(container_shell(c, sid))
+    got = ((read(shell / "manifest.json", {}) or {}).get("details") or {}).get("shellId")
+    return shell, (got or sid)
 
 
 def container_shell(c, sid):
@@ -603,8 +659,8 @@ def product_root(c, gid):
     """这款的现行产物根（打包流程的工作目录）；不存在 → None"""
     from build import oneclick_kuan
     out = layout.ios_work(c, gid, create=False)
-    r = out / "work/pkg/product" if os.name == "nt" else out / "roots" / (oneclick_kuan(c, gid) + "@现行")   # Windows：win_oneclick 的工作根（现行各项联接 + 直连库，oneclick_win.product）  # 非玩家句
-    return resolve_path(r) if (r / "main.npdm").is_file() else None
+    r = out / "work/pkg/product" if os.name == "nt" else layout.current_root(c, out / "roots" / (oneclick_kuan(c, gid) + layout.CURRENT))   # Windows：win_oneclick 的工作根（现行各项联接 + 直连库，oneclick_win.product）
+    return resolve_path(r) if r is not None and (r / "main.npdm").is_file() else None
 
 
 def usable_kit(c, gid, sid, failed=()):
@@ -622,45 +678,6 @@ def usable_kit(c, gid, sid, failed=()):
     return resolve_path(kit) if want and have == want and sid not in failed else None
 
 
-CONTAINER_DIGEST_KEY = "S2AContainerDigest"   # Info.plist：这份容器 App 的内容摘要（#845 装机跳过签名安装：install.same_app 经 s2a-devpush app-attr 读手机上的同一个键）
-
-
-def stamp_container(app):
-    """容器 App 的内容摘要写进它的 Info.plist（键 S2AContainerDigest）并返回。摘要按路径 + 内容算全部文件，不算签名（_CodeSignature/、embedded.mobileprovision：
-    装机时按玩家团队 / 证书重签，Windows 由 plumesign 签）与 Info.plist 里的这个键本身。同样的壳、各款程序、显示名封面、版本组出的摘要相同：
-    手机上 App 的这个键等于这次的，就是同一个 App，装机可以只推资源（install.same_app）。写入后组装时的临时签名失效，装机前必然重签"""
-    import hashlib, plistlib
-    app = Path(app); h = hashlib.sha256()
-    if not (app / "Info.plist").is_file():   # 没有 Info.plist（只有组装替身会这样）：不写摘要 → 装机永远照常签名安装
-        return ""
-    for p in sorted(app.rglob("*")):
-        rel = p.relative_to(app).as_posix()
-        if rel.startswith("_CodeSignature/") or rel == "embedded.mobileprovision" or p.is_dir() and not p.is_symlink():
-            continue
-        if p.is_symlink():
-            h.update(b"L" + rel.encode() + b"\0" + os.readlink(p).encode() + b"\0"); continue
-        data = p.read_bytes()
-        if rel == "Info.plist":
-            info = plistlib.loads(data); info.pop(CONTAINER_DIGEST_KEY, None); data = plistlib.dumps(info, sort_keys=True)
-        h.update(b"F" + rel.encode() + b"\0" + hashlib.sha256(data).digest())
-    digest = h.hexdigest()[:24]
-    raw = (app / "Info.plist").read_bytes(); fmt = plistlib.FMT_BINARY if raw.startswith(b"bplist") else plistlib.FMT_XML
-    info = plistlib.loads(raw); info[CONTAINER_DIGEST_KEY] = digest
-    (app / "Info.plist").write_bytes(plistlib.dumps(info, fmt=fmt))
-    return digest
-
-
-def ipa_digest(ipa):
-    """装机产物里容器 App 的内容摘要（stamp_container 写的 Info.plist 键）；读不了 / 没有 → """""
-    import plistlib
-    try:
-        with zipfile.ZipFile(ipa) as z:
-            name = next(n for n in z.namelist() if re.fullmatch(r"Payload/[^/]+\.app/Info\.plist", n))
-            return str(plistlib.loads(z.read(name)).get(CONTAINER_DIGEST_KEY) or "")
-    except (OSError, StopIteration, ValueError, KeyError, zipfile.BadZipFile, plistlib.InvalidFileException):
-        return ""
-
-
 def write_container_ipa(c, app, ipa, log):
     c.run([os.sys.executable, "-X", "utf8", "-B", c.engine / "pack/app_bundle.py", "write_ipa", app, ipa], log, c.env())
 
@@ -675,15 +692,6 @@ def container_custom(c):
         cover = custom["cover"] or (original if original.is_file() else None)
         out[game["id"]] = dict(custom=bool(custom["name"] or custom["cover"]), name=custom["name"] or game.get("name") or "", cover=str(cover) if cover else "")
     return out
-
-
-def kit_astype(c, gid):
-    """这款 iPhone 版 kit 的 main.npdm 地址空间类型（头 +0x0C 位 1–3，同 pack/ship_ext.py npdm_ident / runtime/src/vawin.c astype_of）；读不到回 None"""
-    try:
-        b = (layout.ios_kit(c, gid) / "main.npdm").read_bytes()
-    except OSError:
-        return None
-    return (b[0x0C] >> 1) & 7 if len(b) > 0x0C and b[:4] == b"META" else None
 
 
 def incompatible_message(text, gid, names):
@@ -707,15 +715,16 @@ def incompatible_message(text, gid, names):
     return "这款和手机上已有的游戏地址空间类型不同，放不进同一个 App。"
 
 
-def assemble(c, gid, others=(), *, failed=(), root=None, dest=None, agreed=None):
+def assemble(c, gid, others=(), *, failed=(), root=None, dest=None, agreed=None, standalone=False):
     """现组容器（一个 App 装多款）：本版 iPhone 壳 + 这款和 others（这台手机上已有的各款）的容器件（pack/ship_ext.py container），出 S2Arm.app + S2Arm.ipa 到 dest
     （缺省游戏库同盘临时目录，由调用方装上后再放到默认位置根）。不再在上一次的底包上加款：底包和各款镜像会不一致，且换壳时要整包重出。
     gid 为 None：只组 others（从手机删一款）。哪款放不进本壳（不是本壳出的、新宿主也不认得）就报 container_stale 点名，不装半套；
     游戏库里已删的款不再带（手机上的存档还在）。root / dest：出包重叠早装用（旁路刚完成的产物根，出到临时目录）。
     agreed：设备记录 staleAgreed（#479，{壳号: [游戏号]}）——这台手机在本版壳上同意过「这次不带」的；带不进的都在里面就不再问，照不带它们装。换了壳号重新问
-    → (ipa, 全部款, 壳号)。Windows 不签（--sign none，交给 plumesign）；Mac 自签，装机时再按玩家团队重签"""
+    → (ipa, 全部款, 壳号)。Windows 不签（--sign none，交给 plumesign）；Mac 自签，装机时再按玩家团队重签。
+    standalone：独立 App（install.put_app，只这一款）——主屏名取游戏自带标题、图标取这款的（ship_ext container --standalone）"""
     import host_update
-    sid = current_shell_id(c)
+    shell, sid = built_shell(c)
     roots = {}
     if gid:
         gid = gid.upper()
@@ -756,7 +765,6 @@ def assemble(c, gid, others=(), *, failed=(), root=None, dest=None, agreed=None)
         c.diagnostic("「" + "」「".join(deleted) + "」已从游戏库删除，新版 S2Arm 里不再包含它们；手机上的存档还在。", code="job_failed", severity="warning")  # 非玩家句
     if not roots:
         raise Failure("手机上的 S2Arm 里没有别的游戏了。", code="job_failed")
-    shell = container_shell(c, sid)
     icon = c.engine / "launchers/macos/Branding/AppIcon-iOS.png"   # iPhone 用鲜艳版玻璃 S（11-13 维护者：Mac 不动，只换 iOS）；宿主永远用 S2Arm 自己的图标，不退回某款游戏的（游戏图标只进 Games/<游戏号>/）
     if not icon.is_file():
         raise Failure("这个 S2Arm 安装包不完整（缺应用图标），请重新下载 S2Arm。", code="engine_incomplete")
@@ -775,13 +783,13 @@ def assemble(c, gid, others=(), *, failed=(), root=None, dest=None, agreed=None)
         c.run([os.sys.executable, "-X", "utf8", "-B", c.engine / "pack/ship_ext.py", "container", "--shell", shell, "--out", app, "--bundle-id", CONTAINER_BUNDLE,
                "--icon", icon, "--sign", "none", "--custom", out / "custom.json", "--host-abi", str(host_update.HOST_ABI),
                "--version", release_version(c.engine), "--display-version", display_version(c.engine),
-               *[x for r in roots.values() for x in ("--game", r)], *banner_args], log, c.env())
+               *[x for r in roots.values() for x in ("--game", r)], *banner_args, *(["--standalone"] if standalone else [])], log, c.env())
     except Failure as e:
         text = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""
         if e.code == "tool_exit" and "地址空间类型不一致" in text:  # 非玩家句
             raise Failure(incompatible_message(text, gid, names), code="container_incompatible") from e
         raise
-    finish_container(c, app, log)
+    sign_container(c, app, log)
     write_container_ipa(c, app, ipa, log)
     trace(c, "组容器结束")
     games = [g["title_id"] for g in json.loads((app / "s2a_catalogue.json").read_text(encoding="utf-8"))["games"]]
@@ -812,11 +820,10 @@ def library_id(c, g):
 
 
 def assemble_shell(c, *, dest=None):
-    """通用壳（pack/jobs/program_pack.enabled，0.6.0）：只有壳的容器——本版 iPhone 壳，s2a_catalogue.json 的 games 为空，不带任何一款（各款程序包由
+    """通用壳：只有壳的容器——本版 iPhone 壳，s2a_catalogue.json 的 games 为空，不带任何一款（各款程序包由
     「推到 iPhone」另推进手机 program/，install.push_game）。出 S2Arm.app + S2Arm.ipa 到 dest（缺省游戏库同盘临时目录）。→ (ipa, [], 壳号)；签名同 assemble"""
     import host_update
-    sid = current_shell_id(c)
-    shell = container_shell(c, sid)
+    shell, sid = built_shell(c)
     icon = c.engine / "launchers/macos/Branding/AppIcon-iOS.png"
     if not icon.is_file():
         raise Failure("这个 S2Arm 安装包不完整（缺应用图标），请重新下载 S2Arm。", code="engine_incomplete")
@@ -828,7 +835,7 @@ def assemble_shell(c, *, dest=None):
     c.run([os.sys.executable, "-X", "utf8", "-B", c.engine / "pack/ship_ext.py", "container", "--shell-only", "--shell", shell, "--out", app,
            "--bundle-id", CONTAINER_BUNDLE, "--icon", icon, "--sign", "none", "--host-abi", str(host_update.HOST_ABI),
            "--version", release_version(c.engine), "--display-version", display_version(c.engine)], log, c.env())
-    finish_container(c, app, log)
+    sign_container(c, app, log)
     write_container_ipa(c, app, ipa, log)
     shutil.rmtree(app, ignore_errors=True)
     return ipa, [], sid
@@ -845,15 +852,6 @@ def ipa_games(ipa):
         return [], ""
 
 
-def finish_container(c, app, log):
-    """组好 / 改过的容器 App 收尾：先写内容摘要（#845，装机据此判手机上的 App 是不是同一个：install.same_app），再签名。
-    签名放在写摘要之后（v0.3.6 候选 ⑥：先签再改 Info.plist，codesign --verify 判「plist or signature have been modified」）；
-    Mac ad-hoc，Windows 不签（侧载工具重签），同原口径。assemble 与 drop_from_ipa 都经这里：摘掉一款后内容变了，摘要必须重算，
-    否则 Info.plist 里还是整套的旧值，之后再装回整套时 same_app 误判相同、跳过重装，摘掉的那款回不到手机上"""
-    stamp_container(app)
-    sign_container(c, app, log)
-
-
 def sign_container(c, app, log):
     if os.name != "nt":
         c.run([os.sys.executable, "-X", "utf8", "-B", c.engine / "pack/ship_ext.py", "sign", "--app", app, "--sign", "adhoc", "--bundle-id", CONTAINER_BUNDLE], log, c.env())
@@ -865,12 +863,12 @@ def drop_from_ipa(c, ipa, gid):
     log = c.logs / (c.task + "-container.log")
     r = subprocess.run(["/usr/bin/ditto", "-x", "-k", str(ipa), str(tmp / "x")] if os.name != "nt" else
                        [os.sys.executable, "-c", "import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])", str(ipa), str(tmp / "x")], capture_output=True, text=True)
-    base = next((tmp / "x" / "Payload").glob("*.app"), None)
+    base = next((p for p in (tmp / "x" / "Payload").glob("*.app") if p.is_dir()), None)
     if r.returncode or base is None:
         shutil.rmtree(tmp, ignore_errors=True)
         raise Failure("手机上的 S2Arm 在游戏库里的那份读不了：先给手机上的游戏各「打 iPhone 包」一次，再删。", code="container_stale")
     c.run([os.sys.executable, "-X", "utf8", "-B", c.engine / "pack/ship_ext.py", "container-drop", "--base", base, "--game", gid, "--out", tmp / "S2Arm.app"], log, c.env())
-    finish_container(c, tmp / "S2Arm.app", log)
+    sign_container(c, tmp / "S2Arm.app", log)
     write_container_ipa(c, tmp / "S2Arm.app", tmp / "S2Arm.ipa", log)
     cat = json.loads((tmp / "S2Arm.app/s2a_catalogue.json").read_text(encoding="utf-8"))
     return tmp / "S2Arm.ipa", [g["title_id"] for g in cat["games"]], cat.get("shell_id") or ""
@@ -901,6 +899,22 @@ def oneclick_result(path):
     except OSError:
         return None
     return result
+
+
+def pso_env(tgt):
+    """目标设备 → 出包管线归档的目标对（pack/jobs/archs.py 读 S2A_PSO_ARCHS / S2A_PSO_OS）。认得出 GPU 架构才给；
+    系统大版本只给读得到的正值（0 / 空会出 ios0 归档）。认不出（没目标、前端没带 gpuArch）→ 空，管线段照旧按 archs.py 规则处理"""
+    arch = (tgt or {}).get("gpuArch") or ""
+    if not arch:
+        return {}
+    out = {"S2A_PSO_ARCHS": arch}
+    try:
+        osv = int((tgt or {}).get("os") or 0)
+    except (TypeError, ValueError):
+        osv = 0
+    if osv > 0:
+        out["S2A_PSO_OS"] = str(osv)
+    return out
 
 
 def resolve_target(c):
@@ -976,7 +990,7 @@ def _package_failure_phase(reason):
 
 
 def oneclick_failure(events, milestone, log, *, refresh_log=None, refresh_before=None):
-    from errors import classify_failure, player_reason, refresh_stop_phase, tool_reason
+    from errors import cause_line, classify_failure, player_reason, player_words, refresh_stop_phase, tool_reason
     name = "未记录阶段"  # 非玩家句
     result = None
     try:
@@ -1014,6 +1028,10 @@ def oneclick_failure(events, milestone, log, *, refresh_log=None, refresh_before
     # 日志确凿根因（盘满 / 缺 Metal / 缺工具）先于阶段映射；读一键出包输出尾 + 原因里点名的 refresh.log → 其红行点名的子日志（errors.gather_evidence）。
     # 本轮 refresh.log 没更新过（_log_identity 未变）就不读，旧失败不归给新任务。
     fresh_refresh = refresh_log if refresh_log is not None and _log_identity(refresh_log) not in (None, refresh_before) else None
-    code, why = classify_failure(phase, log, (reason,) + ((str(fresh_refresh),) if fresh_refresh else ()))
+    texts = (reason,) + ((str(fresh_refresh),) if fresh_refresh else ())
+    code, why = classify_failure(phase, log, texts)
+    said, advice = player_words(code, log, texts)
+    cause = cause_line(fresh_refresh) if fresh_refresh else None   # 刷新里失败阶段自己的红行（带子命令原文），错误摘要按「失败原文：」取（report.build）
+    more = "\n失败原文：" + cause if cause and cause not in reason else ""  # 非玩家句
     # 上屏只放玩家话术；阶段 / 红行原文 / 归因依据进 internal → 诊断 detail（「复制错误摘要」带走）
-    return Failure(player_reason(code), code=code, internal="一键出包失败（" + name + "）：" + reason + "\n" + why)  # 非玩家句
+    return Failure(said, code=code, advice=advice, internal="一键出包失败（" + name + "）：" + reason + more + "\n" + why)  # 非玩家句

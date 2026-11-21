@@ -7,12 +7,7 @@ function(s2a_android_direct_core target)
     s2a_android_direct_sources(direct_sources)
     target_sources(${target} PRIVATE ${direct_sources})
     set_source_files_properties(
-        native/nvn/nvn_vk_swapchain.c native/nvn/nvn_vk_session.c native/nvn/nvn_vk_pipeline.c
-        native/nvn/nvn_vk_texcache.c native/nvn/nvn_vk_bcdec.c native/nvn/nvn_vk_sampler_cache.c native/nvn/nvn_vk_sampler.c
-        native/nvn/nvn_vk_format.c native/nvn/nvn_vk_mrt.c native/nvn/nvn_vk_program.c native/nvn/nvn_vk_draw.c
-        native/nvn/nvn_vk_compile_facts.c native/nvn/nvn_vk_pipe_recipe.c native/nvn/nvn_vk_driver_cache.c
-        native/nvn/nvn_vk_pipe_manifest.c
-        native/nvn/nvn_vk_first_draw.c native/nvn/nvn_vk_draw_diag.c native/nvn/nvn_vk_pcprof.c native/nvn/nvn_vk_query.c native/direct/vk_clear.c
+        native/nvn/nvn_vk_bcdec.c native/nvn/nvn_vk_format.c native/nvn/nvn_vk_driver_cache.c
         PROPERTIES COMPILE_FLAGS "-Wno-missing-field-initializers")
     set_source_files_properties(../graphics/nvn/gfx/nvn/nvn_tex.c ../graphics/nvn/gfx/tex/nvn_deswizzle.c
         ../graphics/nvn/gfx/nvn/nvn_dirty.c PROPERTIES COMPILE_OPTIONS "-Wno-error")

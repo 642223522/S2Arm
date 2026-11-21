@@ -14,9 +14,9 @@ Switch 2 游戏现在拿到手的形态是主机上导出的松散目录（11-04
              没有 = 差量，本体叠更新（更新覆盖），打黄字说明
              镜像形态（缺省，S2A_ROMFS_IMAGE=0 回 romfs/ 散文件）：不出 romfs/ 散文件，选出的文件交 nx_unpack --romfs-image 直接建 romfs.std（标准 RomFS）；
              版本目录里是 romfs.nupmap（镜像形态的 pack/ns2_nup.py 展开）时，数据直接从 NUP 容器读
-    aoc/<序号>/ + aoc.tsv   序号 = DLC 标题号 − 程序号 − 0x1000（同 nx_unpack）
+    aoc/<序号>/ + aoc.tsv   序号 = DLC 标题号 − 应用号（程序号去掉末位）− 0x1000（同 nx_unpack）
     ctl/control.nacp       导出带了控制分区（版本目录里 romfs 之外的 control.nacp）就用原件 + icon.jpg；没带才合成（README.synth 标明非原件，
-                           标题取目录名、不是游戏自带信息）：16 语言标题、启动要账号、存档属主 = 程序号、账号存档 128 MB / 日志 64 MB；游戏代码挂临时存储 / 本机存档 / 缓存存储的（按 nn::fs 导入名判）另声明对应大小（save_kinds）
+                           标题取目录名、不是游戏自带信息）：16 语言标题、启动要账号、应用号（0x3038）与存档属主 = 程序号、账号存档 128 MB / 日志 64 MB；游戏代码挂临时存储 / 本机存档 / 缓存存储的（按 nn::fs 导入名判）另声明对应大小（save_kinds）
                            （字段与取值同 11-03 火纹合成件，那份在 Mac / 测试设备2 实玩过）
     unpack.tsv             title_id / name / name_zh / display_version / update / base / builds / aoc
 程序号从 base/exefs/main.npdm 的 ACI0 读，不看目录名。文件一律 APFS 克隆（不占新空间），跨卷才真拷。
@@ -25,7 +25,7 @@ Switch 2 游戏现在拿到手的形态是主机上导出的松散目录（11-04
 
 用法：
     ns2_dump.py --detect <目录>                 是导出目录就打印程序号、退出 0；不是退出 1
-    ns2_dump.py <导出目录> <输出解包目录> [--name <款名>]
+    ns2_dump.py <导出目录> <输出解包目录> [--name <款名>] [--base <本体目录>]   本体在别处（散文件解包目录）：<导出目录> 可以是空目录
 """
 import ctypes
 import hashlib
@@ -222,6 +222,7 @@ def synth_nacp(tid, name, saves=()):
     #   不按资源目录猜语言：各款语言资源的组织方式不同，没有通用判据
     struct.pack_into('<I', n, 0x302C, 1)
     n[0x3060:0x3061] = b'?'                         # DisplayVersion 未知
+    struct.pack_into('<Q', n, 0x3038, tid)          # PresenceGroupId = 程序号（常规 NACP 的应用号；安卓出包 / 装机 / 启动都按 0x3038 认游戏，留 0 则出包末步停在「has no application id」）
     struct.pack_into('<Q', n, 0x3078, tid)          # SaveDataOwnerId = 程序号（错了开存档 2002-6400，11-03 火纹）
     struct.pack_into('<q', n, 0x3080, 0x08000000)   # UserAccountSaveDataSize 128 MB
     struct.pack_into('<q', n, 0x3088, 0x04000000)   # UserAccountSaveDataJournalSize 64 MB
@@ -233,12 +234,13 @@ def synth_nacp(tid, name, saves=()):
 def fill_fixed(nacp, tid, saves=()):
     """原件的固定段（0x3000 起：启动账号、语言位、存档归属号与各存档尺寸）全零时补上存档字段 → (新内容, 是否补了)。
     某款 Switch 2 游戏的更新包元数据里带的控制数据只有标题和发行商、0x3000 往后全 0：原样用时宿主不建账号存档，游戏开存档 2002-1002 自己中止、起局黑屏。
-    补法同 synth_nacp 的存档部分（启动账号 Required、归属号 = 程序号、账号存档 128 / 64 MB、游戏代码挂的其余存档类别）；
+    补法同 synth_nacp 的存档部分（启动账号 Required、应用号与归属号 = 程序号、账号存档 128 / 64 MB、游戏代码挂的其余存档类别）；
     语言位保持 0：Switch 2 游戏支持表未知时服务层按宿主语言（#465），不写死英语。固定段不是全零（真原件）一字不动"""
     if len(nacp) < NACP_SIZE or any(nacp[0x3000:NACP_SIZE]):
         return nacp, False
     n = bytearray(nacp)
     n[0x3025] = 1
+    struct.pack_into('<Q', n, 0x3038, tid)   # 应用号（同 synth_nacp 的说明）
     struct.pack_into('<Q', n, 0x3078, tid)
     struct.pack_into('<q', n, 0x3080, 0x08000000)
     struct.pack_into('<q', n, 0x3088, 0x04000000)
@@ -285,12 +287,14 @@ def write_image(rom, out):
             else:
                 n = os.path.getsize(a)
                 f.write(f'{r}\t{n}\t{os.path.abspath(a)}\t0\t{n}\tfile\t-\n')
+    # 标准输出（进度行、黄字）透传进出包日志，只收标准错误做报红原因（#1612：原先整段收住，玩家日志在这一步一行没有，4 小时分不清在跑还是卡住）
+    sys.stdout.flush()
     try:
-        r = subprocess.run([nxu, '--romfs-image', lst, out], capture_output=True, text=True)
+        r = subprocess.run([nxu, '--romfs-image', lst, out], stderr=subprocess.PIPE, text=True)
     finally:
         os.unlink(lst)
     if r.returncode:
-        red(f'建 romfs.std 失败（nx_unpack 退出 {r.returncode}）：{(r.stderr or r.stdout).strip()[-300:]}')
+        red(f'建 romfs.std 失败（nx_unpack 退出 {r.returncode}）：{(r.stderr or "").strip()[-300:]}')
 
 
 def same_file(rb, ru, limit=64):
@@ -340,9 +344,12 @@ def nacp_title(n, lang):   # ApplicationTitle[lang] 的名字（0x200 字节 UTF
     return t or None
 
 
-def src_key(dump):
+def src_key(dump, base=None):
     h = hashlib.sha256()
-    for rel, a in sorted(walk(dump).items()):
+    files = dict(walk(dump))
+    if base:   # 本体在别处（--base，散文件解包目录不链接进来）：按 base/<相对路径> 计入，同链接进来时一样
+        files.update({os.path.join('base', rel): a for rel, a in walk(base).items()})
+    for rel, a in sorted(files.items()):
         st = os.stat(a)
         h.update(f'{rel}\t{st.st_size}\t{st.st_mtime_ns}\n'.encode())   # 纳秒（审计 P1-54：秒级键同一秒内换同大小的文件认不出）
     h.update(hashlib.sha256(open(os.path.abspath(__file__), 'rb').read()).digest())
@@ -354,8 +361,8 @@ def src_key(dump):
     return h.hexdigest()[:16]
 
 
-def convert(dump, out, name=None):
-    base = os.path.join(dump, 'base')
+def convert(dump, out, name=None, base=None):
+    base = base or os.path.join(dump, 'base')
     try:
         tid = read_tid(os.path.join(base, 'exefs', 'main.npdm'))
     except (OSError, ValueError, struct.error) as e:
@@ -364,7 +371,7 @@ def convert(dump, out, name=None):
     upd = os.path.join(dump, 'updates', ups[-1]) if ups else None
     if len(ups) > 1:
         print(f'🟡 有 {len(ups)} 个更新（{", ".join(ups)}），取最新 {ups[-1]}')
-    key = src_key(dump)
+    key = src_key(dump, base if base != os.path.join(dump, 'base') else None)
     kf = os.path.join(out, '.ns2_dump_key')
     if os.path.isfile(kf) and open(kf).read().strip() == key:
         print(f'🟢 导出目录没变（键 {key}），复用 {out}')
@@ -421,7 +428,7 @@ def convert(dump, out, name=None):
             atid = int(d, 16)
         except ValueError:
             continue
-        idx = atid - tid - 0x1000
+        idx = atid - (tid & ~0xF) - 0x1000   # 按应用号（程序号去掉末位）：单独导出的程序 n（#1567）的 DLC 也是应用号 + 0x1000 + 序号
         if not 0 < idx < 0x1000:
             print(f'🟡 DLC {d} 不属于程序号 {tid:016x}，跳过')
             continue
@@ -479,7 +486,11 @@ def main(a):
             return 1
         print(f'{read_tid(os.path.join(d, "base", "exefs", "main.npdm")):016X}\t{d}')
         return 0
-    name = None
+    name = base = None
+    if '--base' in a:   # 本体目录（exefs/ + romfs/）在别处：作业层导入的散文件解包目录直接交进来，不再链接成 <导出目录>/base（玩家诊断 #0fd185：链接可能建不了）
+        i = a.index('--base')
+        base = os.path.abspath(a[i + 1])
+        a = a[:i] + a[i + 2:]
     if '--name' in a:
         i = a.index('--name')
         name = a[i + 1]
@@ -487,6 +498,12 @@ def main(a):
     if len(a) != 2:
         print(__doc__.split('用法：')[1], file=sys.stderr)
         return 2
+    if base:
+        if not os.path.isfile(os.path.join(base, 'exefs', 'main.npdm')):
+            red(f'{base} 不是本体目录（要有 exefs/main.npdm）')
+        if not os.path.isdir(a[0]):
+            red(f'{a[0]} 不是目录')
+        return convert(os.path.abspath(a[0]), os.path.abspath(a[1]), name, base)
     d = find_dump(a[0]) if os.path.isdir(a[0]) else None
     if not d:
         red(f'{a[0]} 不是 Switch 2 导出目录（要有 base/exefs/main.npdm）')

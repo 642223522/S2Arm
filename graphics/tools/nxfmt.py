@@ -202,15 +202,17 @@ def yaz0_decompress(data):
     if lib is None:
         return yaz0_decompress_py(data)
     raw = bytes(data)
+    # 指针用 addressof 取、不用 ctypes.cast：cast 的结果在 _objects 里挂着源缓冲区与自己，成引用环，缓冲区要等循环垃圾回收才放；
+    #   回收按新建容器对象数触发、不看字节数，抽取进程连解几百个 Yaz0 文件时压缩数据与解压结果全挂着（11-18 一款大型开放世界游戏单进程常驻涨到 600+ MB）
     src = ctypes.create_string_buffer(raw)
-    n = lib.yaz0_decompress(ctypes.cast(src, ctypes.c_void_p), len(raw), None, 0)
+    n = lib.yaz0_decompress(ctypes.c_void_p(ctypes.addressof(src)), len(raw), None, 0)
     if n < 0:
         raise ValueError('Yaz0 解码失败')
     if n == 0:
         return b''
     dst = ctypes.create_string_buffer(n)
-    got = lib.yaz0_decompress(ctypes.cast(src, ctypes.c_void_p), len(raw),
-                              ctypes.cast(dst, ctypes.c_void_p), n)
+    got = lib.yaz0_decompress(ctypes.c_void_p(ctypes.addressof(src)), len(raw),
+                              ctypes.c_void_p(ctypes.addressof(dst)), n)
     if got != n:
         raise ValueError('Yaz0 解码失败')
     return dst.raw

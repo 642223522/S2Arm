@@ -1,6 +1,6 @@
 #!/bin/bash
-# 门禁覆盖：graphics/tools/direct/direct_lib.sh tests/direct_lib_android_test.sh
-# 直连库出包脚本的安卓目标单测（graphics/tools/direct/direct_lib.sh，S2A_DIRECT_TARGETS=android，#783；假仓库 + 桩，约 3 秒）：bash tests/direct_lib_android_test.sh
+# 门禁覆盖：graphics/tools/direct/direct_lib.py tests/direct_lib_android_test.sh
+# 直连库出包脚本的安卓目标单测（graphics/tools/direct/direct_lib.py，S2A_DIRECT_TARGETS=android，#783；假仓库 + 桩，约 3 秒）：bash tests/direct_lib_android_test.sh
 #   脚本原样拷进假仓库；抽取合并、配对表、出库工具 dsh_vklib 换成桩（桩记下调用与参数）。Metal 那几步（fout_want.py / se_want.py / dsh_batch.py / spvc_inproc.py / pso_seed.py）
 #   假仓库里不放：安卓分支调到它们就找不到、报红。期望按 #783 直连线 / 出包线的答复手写：
 #   ① 出成：<输出>/b-<链>-vk/ 里是库容器（lib.idx + lib.000.pak，桩代写），没有逐键散文件、没有 Metal 的 b-<链>/；keys.tsv 只列 vk_build.tsv 里 ok 的键、排好序；
@@ -14,7 +14,7 @@
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); bad=0; trap 'rm -rf "$T"' EXIT
 ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
 P=$T/repo; mkdir -p $P/graphics/tools/direct/vklib $P/graphics/nvn/tools $P/graphics/nvn/games $P/translator $P/pack $P/tools
-cp "$H/graphics/tools/direct/direct_lib.sh" $P/graphics/tools/direct/; mkdir -p $P/pack/jobs && cp "$H/pack/jobs/space_rule.py" "$H/pack/jobs/library.py" $P/pack/jobs/; cp "$H/pack/srcs.sh" $P/pack/; cp "$H/tools/progress.sh" "$H/tools/clonedir.py" "$H/tools/nostall.py" $P/tools/
+cp "$H/graphics/tools/direct/direct_lib.py" $P/graphics/tools/direct/; mkdir -p $P/pack/jobs && cp "$H/pack/jobs/space_rule.py" "$H/pack/jobs/library.py" $P/pack/jobs/; cp "$H/tools/progress.py" "$H/tools/pool_workers.py" "$H/tools/clonedir.py" "$H/tools/nostall.py" $P/tools/
 export FAKE_CALLS=$T/calls
 cat > $P/graphics/nvn/tools/gfx_api.py <<'EOF'
 import os
@@ -26,8 +26,9 @@ print(os.path.join(os.environ['FAKE_PROF'], sys.argv[2]))
 EOF
 : > $P/graphics/nvn/games/zero_skip.tsv
 printf 'def version(): return "v1"\n' > $P/translator/dmsh_chain.py
-cat > $P/graphics/tools/direct/extract.sh <<'EOF'
-echo extract >> "$FAKE_CALLS.extract"; exit 1
+cat > $P/graphics/tools/direct/extract.py <<'EOF'
+import os
+open(os.environ['FAKE_CALLS'] + '.extract', 'a').write('extract\n'); raise SystemExit(1)
 EOF
 cat > $P/graphics/tools/direct/merge_extract.py <<'EOF'
 import os, shutil, sys
@@ -39,7 +40,7 @@ open(os.path.join(out, 'key_map.tsv'), 'w').write('s2a0000000000001\taaaaaaaaaaa
 open(os.path.join(out, 'merge.json'), 'w').write('{}')
 EOF
 printf 'print("配对表桩")\n' > $P/graphics/tools/direct/run_pairs.py
-# 跑局知识快照桩（审计 #1534 P1-54：direct_lib.sh 单独调用时现出一份，四张表；真工具的规则在 graphics/tools/direct/tests/t_run_knowledge.py 核）
+# 跑局知识快照桩（审计 #1534 P1-54：direct_lib.py 单独调用时现出一份，四张表；真工具的规则在 graphics/tools/direct/tests/t_run_knowledge.py 核）
 cat > $P/graphics/tools/direct/run_knowledge.py <<'EOF'
 import os, sys
 os.makedirs(sys.argv[1], exist_ok=True)
@@ -59,7 +60,7 @@ for k, st, s, why in rows:
         open(os.path.join(o, k + '_b.spv'), 'wb').write(b'\x03\x02\x23\x07'); open(os.path.join(o, k + '_b.json'), 'w').write('{}')
 open(os.path.join(o, 'vk_build.tsv'), 'w').write(''.join('\t'.join(r) + '\n' for r in rows))
 if os.environ.get('FAKE_VK_FAILED'):
-    print('[RED] Vulkan 翻译失败 1 键', file=sys.stderr); sys.exit(1)
+    print('[RED] Vulkan 翻译失败 1 键（其余照常出库，这几键运行时现编）', file=sys.stderr)   # 真工具同口径：失败键不拒绝整库
 for n in ('lib.idx', 'lib.000.pak', 'run' + os.environ.get('FAKE_RUN', '1')): open(os.path.join(lib, n), 'w').write(n)
 print('dsh_vklib (vkfp 00000000000000aa): 4 keys, ok 2, skipped 2, failed 0')
 EOF
@@ -72,7 +73,7 @@ echo 'title	桩' > $T/prof/0100ABCD00000000/game.tsv
 export S2A_DISK_FREE_G=999   # 出库开工前的空间复核（pack/jobs/space_rule.py）按注入余量判，单测结果不随本机磁盘余量变（11-09 门禁机余量紧时假红）
 export FAKE_PROF=$T/prof S2A_PYTHON=python3 S2A_DIRECT_CACHE=$T/cache S2A_CPU_LEDGER=0 S2A_PSO_SOURCES=$T/nopso J=2 DSX_LIB=$T/libdsx.so
 O=$T/out
-D() { S2A_DIRECT_TARGETS=android S2A_DIRECT_PUBLISH=${PUB:-android} bash $P/graphics/tools/direct/direct_lib.sh $G $O 2>&1; }
+D() { S2A_DIRECT_TARGETS=android S2A_DIRECT_PUBLISH=${PUB:-android} python3 $P/graphics/tools/direct/direct_lib.py $G $O 2>&1; }
 n() { wc -l < "$1" 2> /dev/null | tr -d ' ' || echo 0; }
 snap() { (cd $O 2> /dev/null && find . -type f | LC_ALL=C sort | xargs -r cat | cksum); }
 o=$(D); r=$?; V=$O/b-v1-vk
@@ -89,8 +90,9 @@ s0=$(snap); nv=$(n $T/calls.vk); mv $G/extract/ok $T/ok; o=$(D); r=$?; mv $T/ok 
 ck "③ 没有抽取阶段的 extract/（rc=${r}）：退 3、🟡 这里不另抽、不调抽取 / 出库、输出目录不动" '[ $r = 3 ] && [[ "$o" == *"🟡 直连缺口：产物根里没有抽取阶段的 extract/"* ]] && [[ "$o" == *"这里不另抽着色器"* ]] && [ ! -e $T/calls.extract ] && [ "$(n $T/calls.vk)" = "$nv" ] && [ "$(snap)" = "$s0" ]'
 for api in vulkan gl; do o=$(FAKE_API=$api D); r=$?
   ck "④ ${api} 款（rc=${r}）：退 0、不出库、不调出库工具" '[ $r = 0 ] && [[ "$o" == *"安卓运行时自己编，不出直连库"* ]] && [ "$(n $T/calls.vk)" = "$nv" ] && [ "$(snap)" = "$s0" ]'; done
-o=$(FAKE_VK_FAILED=1 D); r=$?
-ck "⑤ 逐键翻译失败（rc=${r}）：退 1、🔴、旧输出目录不动" '[ $r = 1 ] && [[ "$o" == *"🔴 安卓 Vulkan 库出库失败 rc=1"* ]] && [ "$(snap)" = "$s0" ] && [ -z "$(ls -d $O.stage.* 2> /dev/null)" ]'
+o=$(FAKE_VK_FAILED=1 FAKE_RUN=3 D); r=$?; l=$(echo "$o" | tail -1)
+ck "⑤ 个别键翻译失败（rc=${r}）：退 0、照常发布成功的键、末行 🟡 带 failed 1 支、keys.tsv 不列失败的键（${l:0:90}）" '[ $r = 0 ] && [ -f $V/run3 ] && [[ "$l" == *"🟡 直连缺口（部分出库）："* ]] && [[ "$l" == *"failed 1 支"* ]] && [ "$(tr "\n" " " < $O/keys.tsv)" = "aaaaaaaaaaaaaaaa cccccccccccccccc " ] && [ -z "$(ls -d $O.stage.* 2> /dev/null)" ]'
+s0=$(snap)
 o=$(FAKE_VK_RC=1 D); r=$?
 ck "⑤ 出库工具失败（rc=${r}）：退 1、🔴、输出目录不动" '[ $r = 1 ] && [[ "$o" == *"🔴 安卓 Vulkan 库出库失败 rc=1"* ]] && [ "$(snap)" = "$s0" ] && [ -z "$(ls -d $O.stage.* 2> /dev/null)" ]'
 nv=$(n $T/calls.vk); o=$(PUB=ios D); r=$?

@@ -3,7 +3,8 @@
 #   bash tools/mem_admit.sh <类别> <款/键> [--cores N] -- <命令…>      （source 后也可直接调函数 mem_admit，参数同）
 #   本机起 dsh / Metal 重活一律经它（AGENTS.md）；仓库内 dsh_batch build 在 translator/dsh_batch.py 里自动包上（谁起的都过同一本账，核数 = -j）
 #   bash tools/mem_admit.sh --status                        看账：谁占着、峰值表
-# 规则：本类别 / 本款的峰值（查表）+ 账内所有活着的预留 ≤ 物理内存 × S2A_MEM_PCT（缺省 70）%，且本作业核数 + 账内核数 ≤ 物理核数（hw.physicalcpu；S2A_MEM_CORES_MAX 可改），两样都够才放行；
+# 规则：本类别 / 本款的峰值（查表）+ 账内所有活着的预留 ≤ 物理内存 × S2A_MEM_PCT（缺省 70）%，本款峰值 + 账内各单还没用到的预留 ≤ 此刻可用内存（_ma_avail10，认 S2A_MEM_AVAIL_MB），
+#   且本作业核数 + 账内核数 ≤ 物理核数（hw.physicalcpu；S2A_MEM_CORES_MAX 可改），三样都够才放行；
 #   核数 = --cores，缺省取调用方的 J / S2A_CPU_BAKE（tools/cores.sh 的分核口径），都没有记 0。11-04 维护者：准入只按内存放开后本机 CPU 打满（idle 0.2%、负载 41–45），每款都变慢。
 #   上限取全部物理核、不扣普查跑局道的余量：各作业的 J 在入口已按「别人实际在用的核」扣过（tools/cores.sh），再扣一次会重复。不够就排队，
 #   打一行【排队】写明等谁、差多少 GB（同写 admit.log）。队首放不下时后面放得下的可插空先走；前面有票排满 S2A_MEM_STARVE_S（缺省 900）秒、且它在本机当前「空闲 + 可回收」
@@ -44,6 +45,8 @@ _ma_wait_note() { [ -n "$MA_WAITF" ] || return 0; printf '%s\t%s\n' "$MA_ME" "$1
 _ma_wait_clear() { [ -n "$MA_WAITF" ] && [ -f "$MA_WAITF" ] && [ "$(cut -f1 "$MA_WAITF" 2> /dev/null)" = "${MA_ME:-}" ] && rm -f "$MA_WAITF"; return 0; }
 # shellcheck source=plock.sh
 source "$MA_ROOT/tools/plock.sh"
+# shellcheck source=cores.sh
+source "$MA_ROOT/tools/cores.sh"   # s2a_avail_mb（此刻可用内存，认 S2A_MEM_AVAIL_MB）、s2a_direct_mb（直连库编译内存模型）：与出包分核同一份口径
 
 _ma_say() { echo "$*" >&2; echo "$(date '+%m-%d %H:%M:%S') $*" >> "$MA_LOG" 2> /dev/null; return 0; }
 _ma_t10() { awk -v x="$1" 'BEGIN{printf "%d", int(x*10+0.99)}'; }   # GB → 十分之一 GB（向上取整）：bash 3.2 没浮点，账内全用整数
@@ -78,6 +81,9 @@ _ma_need() {   # 类别 键 → 「十分之一GB 来源」（实 / 估 / 生键
     c=$MA_CORES; [ "$c" -ge 1 ] || c=1; [ "$c" -le "$MA_NCORES" ] || c=$MA_NCORES
     p10=$((MA_TOTAL10 * c / MA_NCORES)); [ "$p10" -le $((MA_TOTAL10 / 2)) ] || p10=$((MA_TOTAL10 / 2))
     v="$(_ma_gb "$p10") 生键·核数比例（${c}/${MA_NCORES} 核 × 上限 $(_ma_gb "$MA_TOTAL10") GB，封顶一半）"
+    # 直连库（dsh）按实测模型：dsh 主进程 + 1 个 metal 最大峰值 + (J − 1) × metal p90（tools/cores.sh s2a_direct_mb，S2A_DIRECT_J 就是按它反推的）。
+    #   原先估值表 dsh * 7.8（52 款大机器多路实测最大 5.2 × 1.5）对 8 GB 机器 1–2 路的直连库一律预留 7.8 GB，超过上限只能独占跑（实际约 1.2 GB）
+    [ "$1" = dsh ] && { p10=$(( ($(s2a_direct_mb "$c") * 10 + 1023) / 1024 )); v="$(_ma_gb "$p10") 生键·直连库实测模型（${c} 路：主进程 + metal 峰值 + $((c - 1)) × metal p90）"; }
     n=$(S2A_MEM_CLASS_MIN_N=1 _ma_cmax "$MA_TAB" "$1")
     [ -n "$n" ] && [ "$(_ma_t10 "${n%% *}")" -gt "$p10" ] && { v="${n%% *} 生键·同类实测最大×${S2A_MEM_CLASS_X:-1.5}（样本不足 ${S2A_MEM_CLASS_MIN_N:-10}，大于核数比例 $(_ma_gb "$p10") GB）"; p10=$(_ma_t10 "${n%% *}"); }
     # 类别下限（审计 #1534 P1-113）：仓库估值表里「<类别><TAB>*」一行 = 这一类在已量过的机器上的实测上界（不是缺省值），只在这一档取大，
@@ -90,13 +96,23 @@ _ma_need() {   # 类别 键 → 「十分之一GB 来源」（实 / 估 / 生键
 }
 _ma_phys10() { awk -v b="$(_ma_physbytes)" 'BEGIN{printf "%d", b/1073741824*10}'; }
 # 本机当前「空闲 + 可回收」内存（十分之一 GB）：vm_stat 的 free + inactive + speculative 页（macOS 不换页即可收回的部分）；Linux 取 MemAvailable。
-#   S2A_MEM_AVAIL_GB 可直接给（单测）。读不到时回物理内存（等同旧行为：防饿死不看实机内存）
+#   S2A_MEM_AVAIL_GB 可直接给（单测）；其余取 tools/cores.sh s2a_avail_mb（S2A_MEM_AVAIL_MB 覆盖 > vm_stat 空闲 + 非活跃 + 预读 + 可清除 > MemAvailable），
+#   与出包分核（本单内存预算 = 可用 ÷ 2）同一个读数：原先这里自己读 vm_stat、不认 S2A_MEM_AVAIL_MB，8 GB 机器模拟可用 4096 MB 时准入仍按物理内存放。读不到时回物理内存
 _ma_avail10() {
   [ -n "${S2A_MEM_AVAIL_GB:-}" ] && { _ma_t10 "$S2A_MEM_AVAIL_GB"; return; }
-  local v
-  v=$(vm_stat 2> /dev/null | awk '/page size of/{for (i=1;i<=NF;i++) if ($i=="of") ps=$(i+1)} /^Pages (free|inactive|speculative):/{gsub(/\./,"",$NF); n+=$NF} END{if (ps>0 && n>0) printf "%d", n*ps/1073741824*10}')
-  [ -n "$v" ] || v=$(awk '/^MemAvailable:/{printf "%d", $2/1048576*10}' /proc/meminfo 2> /dev/null)
-  echo "${v:-$(_ma_phys10)}"
+  local v; v=$(s2a_avail_mb)
+  if [ "$v" -gt 0 ] 2> /dev/null; then echo $(( (v * 10 + 1023) / 1024 )); else _ma_phys10; fi
+}
+# 账内各单「预留了还没用到」的合计（十分之一 GB）：每单 max(0, 预留 − 至今实测峰值 pk.<pid>)。此刻可用内存里已扣掉它们用到的部分，没用到的还会再要，
+#   新单要的 + 这个合计 ≤ 此刻可用才放（只按预留记账会把别人的程序 / 玩家正开着的 App 占的内存当成空的；只看可用又会把刚放行、还没涨上去的单当成空的）
+_ma_unreal10() {
+  local f p r k s=0
+  for f in "$MA_DIR"/use.*; do [ -e "$f" ] || continue
+    p=$(cut -f1 "$f" 2> /dev/null); r=$(cut -f2 "$f" 2> /dev/null); case $p$r in ''|*[!0-9]*) continue;; esac
+    k=$(cat "$MA_DIR/pk.$p" 2> /dev/null); case $k in ''|*[!0-9]*) k=0;; esac
+    k=$(( (k * 10 + 1048575) / 1048576 )); [ "$r" -gt "$k" ] && s=$((s + r - k))
+  done
+  echo "$s"
 }
 _ma_reap() {   # 清死账 / 死排队票（持有者进程不在了）
   local f p
@@ -137,11 +153,16 @@ _ma_try() {
     MA_WHY="前面 $(awk -F'\t' '{printf "%s/%s(pid %s)", $3, $4, $1}' "$old" 2> /dev/null) 已排满 ${S2A_MEM_STARVE_S:-900} 秒、本机空闲 + 可回收放得进，给它预留、不插空（账内已占 $(_ma_gb "$used") GB / 上限 $(_ma_gb "$MA_TOTAL10") GB）"
     return 2
   fi
-  usedc=$(_ma_usedc)
-  if { [ $((used + MA_NEED10)) -le "$MA_TOTAL10" ] && [ $((usedc + MA_CORES)) -le "$MA_NCORES" ]; } || { [ "$used" -eq 0 ] && [ "$usedc" -eq 0 ] && [ "$head" = "$MA_TK" ]; }; then
+  usedc=$(_ma_usedc); [ -n "$av" ] || av=$(_ma_avail10); local un; un=$(_ma_unreal10)
+  # 三样都够才放：账内预留 + 本单 ≤ 上限（物理内存 × S2A_MEM_PCT）、本单 + 账内没用到的预留 ≤ 此刻可用内存、核数够。账空且排在队首照旧放行（不堵门：账外的程序占着也只能等它自己让）
+  if { [ $((used + MA_NEED10)) -le "$MA_TOTAL10" ] && [ $((MA_NEED10 + un)) -le "$av" ] && [ $((usedc + MA_CORES)) -le "$MA_NCORES" ]; } || { [ "$used" -eq 0 ] && [ "$usedc" -eq 0 ] && [ "$head" = "$MA_TK" ]; }; then
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$MA_ME" "$MA_NEED10" "$MA_CLS" "$MA_KEY" "$(date +%s)" "$MA_CORES" > "$MA_USE"
     rm -f "$MA_TK"; MA_USED10=$used; MA_USEDC=$usedc
     return 0
+  fi
+  if [ $((used + MA_NEED10)) -le "$MA_TOTAL10" ] && [ $((MA_NEED10 + un)) -gt "$av" ]; then
+    MA_WHY="需 $(_ma_gb "$MA_NEED10") GB（${MA_SRC}），账内各单还没用到的预留 $(_ma_gb "$un") GB，本机此刻可用 $(_ma_gb "$av") GB，差 $(_ma_gb $((MA_NEED10 + un - av))) GB；等：$(_ma_list use)"
+    return 1
   fi
   if [ $((used + MA_NEED10)) -le "$MA_TOTAL10" ]; then
     MA_WHY="需 ${MA_CORES} 核，账内已占 ${usedc} 核 / 上限 ${MA_NCORES} 核（物理核数），差 $((usedc + MA_CORES - MA_NCORES)) 核；内存够（需 $(_ma_gb "$MA_NEED10") GB，已占 $(_ma_gb "$used") GB / 上限 $(_ma_gb "$MA_TOTAL10") GB）；等：$(_ma_list use)"

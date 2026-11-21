@@ -8,12 +8,17 @@
 void mtl_init(void);
 void nvn_be_vbuf_stats(uint64_t *resolve, uint64_t *reuse, uint64_t *set, uint64_t *skip);
 void nvn_be_set_depth_zero(int on);          // NVN depth mode: 1 = near is 0 (D3D / Metal), 0 = near is -w (GL, NVN's default); picks the vertex shaders' entry point (see shader_load in nvn_mtl.m)
-void nvn_be_set_origin_lower_left(int on);   // NVN window origin: 1 = lower left (GL, NVN's default), 0 = upper left (D3D / Metal); see nvn_mtl.m
+void nvn_be_set_origin_lower_left(int on);
+void nvn_be_set_present_lower_left(int on);   // the presented window's origin at WindowInitialize (hle_nvn.c win_t.present_ll): 1 = its image is stored bottom-up, flipped at present   // NVN window origin: 1 = lower left (GL, NVN's default), 0 = upper left (D3D / Metal); see nvn_mtl.m
 void bf_want_note(const char *key);
 
 // Memory pool: [mem, mem+size) is expanded outward to page boundaries to build a zero-copy buffer; look up the buffer and offset by GPU address (= CPU address)
 void nvn_be_pool_add(const void *mem, uint64_t size);
 void nvn_be_pool_del(const void *mem);
+// 虚拟池（hle_nvn.c，苹果宿主）：[at, at+len) 是虚拟池地址（不是宿主内存）。alias：登记成物理内存 phys 所在那条池的别名（同一个 Metal 缓冲、同一批字节，不另占内存）；
+//   phys 不整段落在一条已登记的池里 → 0。add_at：一段宿主内存 host（页对齐，hlen 字节）登记在 at，缓冲释放时 munmap 它（失败时当场 munmap）；key 是注销用的键（nvn_be_pool_del）。都按 key 注销
+int nvn_be_pool_alias(uint64_t at, uint64_t len, uint64_t phys);
+int nvn_be_pool_add_at(uint64_t at, uint64_t len, void *host, uint64_t hlen, const void *key);
 void nvn_be_pool_addressed(const void *mem, uint64_t size);   // the game holds a GPU address in this pool range, so raw global memory may reach it (nvn_mtl.m gmem_map)
 // memory pool Finalize: evict the textures built on this pool (pool object address) from the storage-sharing table
 void nvn_be_alias_drop_pool(const void *pool);
@@ -62,6 +67,7 @@ void nvn_be_drain(void);                                // Wait for all commands
 void nvn_be_xv_window_tex(uint64_t serial);   // Register a window (swapchain) texture: the cross-submit validity ledger never collects it
 // External producers (the Vulkan layer, dm/gfx/vk): the shared Metal device; a serial for one of their textures; present it once their event reaches ev_val (ticket for nvn_be_present_wait)
 void *mtl_device(void);
+void *mtl_nocopy_buf(void *p, uint64_t n);   // 零拷贝 MTLBuffer（+1 引用，调用方 __bridge_transfer 接）：与本层同一记账入口 nocopy_buf，浮层「GPU 已分配」不重复计入（#1827）；nil = 建不出
 uint64_t mtl_ext_tex(void *tex);
 uint64_t mtl_present_ext(uint64_t serial, double period, void *ev, uint64_t ev_val, const int crop[4]);   // crop: x, y, w, h of the texture to show (NULL = all of it)
 void mtl_fit_pillar(int kind);   // 满屏判据免判种类（同 g_fit_pillar：1 = 核心说这帧是 16:9 原比例页；2 = 上屏贴图两侧是放宽内容；5 = 原比例回退）：GL / Vulkan 前端上屏前按宽屏核心结论设

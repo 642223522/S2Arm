@@ -173,7 +173,8 @@ class WaitTests(unittest.TestCase):
                 (["build", "G", "--space-override"], "/build", {"gameId": "G", "target": "ios", "spaceOverride": True}),
                 (["build", "G", "ios"], "/build", {"gameId": "G", "target": "ios"}),
                 (["ipa", "G", "--space-override"], "/ipa", {"gameId": "G", "spaceOverride": True}),
-                (["ipa", "G"], "/ipa", {"gameId": "G"})]:
+                (["ipa", "G"], "/ipa", {"gameId": "G"}),
+                (["selfsign", "G"], "/selfsign", {"gameId": "G"})]:   # 控制口 /selfsign 按 gameId 取这款（S2ArmControl.swift）
             # build 发出前先读一次任务列表（记下已有任务号给 wait 用），数据目录换成临时目录
             with tempfile.TemporaryDirectory() as root, mock.patch.object(ctl, "ROOT", root), \
                     mock.patch.object(ctl, "call", side_effect=lambda m, p, *a, **k: {"tasks": []} if (m, p) == ("GET", "/state") else {"ok": True}) as call, \
@@ -305,6 +306,21 @@ class WaitTests(unittest.TestCase):
         self.assertEqual((code, calls), (0, 3))
         self.assertIn("queued", output)
         self.assertIn("running", output)
+
+    def test_completed_waits_for_launcher_to_finish_and_reload_library(self):
+        # 11-20 0.6.2 候选验收 ⑤c：任务记录先写成 completed，启动器还在收尾（busy）、随后异步重读游戏库（libraryLoading）；
+        #   wait 原先当场返回，紧接着读到的还是出包前「要重新准备」。期望：完成那次 + 收尾中 + 重读中 + 空闲 = 4 次读状态才退 0
+        done = task("new", "completed", 3)
+        states = [dict(state(done), busy=True), dict(state(done), busy=False, libraryLoading=True),
+                  dict(state(done), libraryLoading=True), dict(state(done), busy=False, libraryLoading=False)]
+        self.assertEqual(self.run_wait(states)[:2], (0, 4))
+        # 已经空闲（旧版启动器没有 libraryLoading 字段也算）：不多读，1 次
+        self.assertEqual(self.run_wait([state(done)])[:2], (0, 1))
+
+    def test_completed_settle_is_bounded(self):
+        # 启动器一直忙（另一单在跑）：最多等 20 秒就照常返回，不卡住；每 0.5 秒读一次 → 首次 + 40 次
+        done = task("new", "completed", 3)
+        self.assertEqual(self.run_wait([dict(state(done), busy=True)] * 50, limit=100)[:2], (0, 41))
 
     def test_new_failure_overrides_old_success(self):
         old = task("old", "completed", 1)
@@ -595,9 +611,9 @@ class LaunchArgsTests(unittest.TestCase):
     # 11-02 beta.3 走查：`--control --data-root <目录>` 让 <目录> 落单被 macOS 当成要打开的文件，App 不建窗口。期望：数据目录是一个整体参数，没有落单的路径
     def test_data_root_is_one_token(self):
         args = ctl.launch_args("/A/S2Arm.app", root="/d/数据 目录", custom=True)
-        self.assertEqual(args, ["open", "/A/S2Arm.app", "--args", "--control", "--data-root=/d/数据 目录"])
+        self.assertEqual(args, ["open", "-g", "/A/S2Arm.app", "--args", "--control", "--data-root=/d/数据 目录"])
         self.assertTrue(all(a.startswith("-") for a in args[3:]))
-        self.assertEqual(ctl.launch_args("/A/S2Arm.app", root="/d", custom=False), ["open", "/A/S2Arm.app", "--args", "--control"])
+        self.assertEqual(ctl.launch_args("/A/S2Arm.app", root="/d", custom=False), ["open", "-g", "/A/S2Arm.app", "--args", "--control"])
 
     def test_uninstall_posts_to_uninstall_endpoint(self):
         """uninstall <游戏号> 走 POST /uninstall {gameId}（与 install 对称）"""
@@ -1016,6 +1032,14 @@ class UsageGuardTests(unittest.TestCase):
             ctl.main()
         return call, output.getvalue()
 
+    def test_install_action_posts_game_and_item(self):
+        with mock.patch.object(ctl, "call", return_value={"ok": True, "action": "appleLogin"}) as call, \
+                mock.patch.object(ctl.sys, "argv", ["s2armctl", "install-action", "0100ABCDEF000000", "appleId"]), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            ctl.main()
+        call.assert_called_once_with("POST", "/install-action", {"gameId": "0100ABCDEF000000", "id": "appleId"})
+        self.assertIn("appleLogin", out.getvalue())
+
     def test_subcommand_help_never_reaches_the_app(self):
         for argv in (["install", "--help"], ["install", "-h"], ["wait", "--help"]):
             with self.subTest(argv=argv):
@@ -1027,7 +1051,7 @@ class UsageGuardTests(unittest.TestCase):
         for argv in (["install"], ["wait"], ["build"], ["snapshot"], ["keys"],
                      ["install-check", "--json"], ["ipa", "--space-override"],
                      ["cloud-sync"], ["display", "--docked", "on"], ["library", "--move"], ["restore-iphone"], ["show"],
-                     ["install", "--team", "ABCDE12345"]):
+                     ["install", "--team", "ABCDE12345"], ["install-action"], ["install-action", "0100ABCDEF000000"]):
             with self.subTest(argv=argv):
                 with mock.patch.object(ctl, "call") as call, \
                         mock.patch.object(ctl.sys, "argv", ["s2armctl", *argv]), \

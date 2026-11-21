@@ -63,14 +63,18 @@ extension LauncherView {
         }
     }
 
-    /// 免费签名快到期 / 已到期的提醒（只提最急的一款）。
+    /// 免费签名快到期 / 已到期的提醒（只提最急的一款）。「×」= 不再提醒（关掉设置里的「免费签名到期提醒」，重新打开恢复）
     @ViewBuilder var renewBanner: some View {
-        if let game = model.games.filter({ ($0.iphoneDaysLeft() ?? 9) <= 1 }).min(by: { ($0.iphoneDaysLeft() ?? 9) < ($1.iphoneDaysLeft() ?? 9) }), let days = game.iphoneDaysLeft() {
+        if let game = model.games.filter({ (model.freeSignDaysLeft($0) ?? 9) <= 1 }).min(by: { (model.freeSignDaysLeft($0) ?? 9) < (model.freeSignDaysLeft($1) ?? 9) }), let days = model.freeSignDaysLeft(game) {
             HStack(spacing: 12) {
                 Image(systemName: "clock.badge.exclamationmark").foregroundStyle(LauncherPalette.building)
                 Text((days == 0 ? txt("library.banner.expired") : txt("library.banner.renew")).replacingOccurrences(of: "{0}", with: game.name).replacingOccurrences(of: "{1}", with: "\(days)")).font(.manrope(13.5, .semibold))
                 Spacer(minLength: 12)
                 Button(txt("library.hero.renew")) { model.targetInstalledDevice(of: game); installFor = game.id }.controllerButtonStyle(LauncherSecondaryButtonStyle())
+                Button { model.freeSignReminder = false } label: { Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).frame(width: 22, height: 22).contentShape(Rectangle()) }
+                    .controllerButtonStyle(.plain).foregroundStyle(.secondary)
+                    .launcherTooltip(txt("library.banner.dismiss"), placement: .above)
+                    .accessibilityLabel(txt("library.banner.dismiss")).accessibilityIdentifier("library.renew.dismiss")
             }
             .padding(.horizontal, LauncherTheme.Metrics.libraryInset).padding(.vertical, 10).background(LauncherPalette.building.opacity(0.10))
         }
@@ -146,9 +150,8 @@ extension LauncherView {
 
     /// 卡片和大图上的状态：两端都算（原作者只看 Mac 版）。
     func statusLine(_ game: GameSummary) -> (text: String, color: Color) {
-        if model.mainBusy && model.session?.gameID == game.id {
-            return (loc.t(model.session?.kind == .play ? "s2arm.library.running" : "s2arm.job.running"), LauncherPalette.building)
-        }
+        if model.playHolds(game.id) { return (loc.t("s2arm.library.running"), LauncherPalette.building) }   // 「运行中」按游戏槽判
+        if model.mainBusy && model.session?.gameID == game.id { return (loc.t("s2arm.job.running"), LauncherPalette.building) }
         if model.exportQueue.contains(where: { $0.game.id == game.id }) { return (txt("export.status.queued"), LauncherPalette.building) }
         // 存放位置（游戏库结构 v3）：移动硬盘没插 → 灰色「未连接」，插回来自动恢复；文件夹没了 → 红字，点卡片重新指定或移除
         // 未连接给具体路径（同出包页下拉框）：卷名会重名（内置盘一律「系统盘」），看不出是哪个位置没连上
@@ -160,7 +163,7 @@ extension LauncherView {
         var parts: [String] = []
         var expired = false
         if game.iphoneInstalledAt != nil {
-            if let days = game.iphoneDaysLeft() {
+            if let days = model.freeSignDaysLeft(game) {
                 expired = days == 0
                 parts.append(expired ? txt("library.status.expired") : txt("library.status.installed").replacingOccurrences(of: "{0}", with: "\(days)"))
             } else { parts.append(txt("library.status.installedPaid")) }
@@ -209,6 +212,14 @@ extension LauncherView {
         if game.integritySkipped {
             Label(loc.backend(LauncherView.integritySkippedNote), systemImage: "exclamationmark.triangle.fill")
                 .font(.manrope(12, .medium)).foregroundStyle(.yellow).fixedSize(horizontal: false, vertical: true)
+        }
+        // S 级优化升级没做完（上次中途退出了启动器）：一行说明，点了打开「S 级优化升级」页接着升（11-18 维护者）
+        if game.sgradeIncomplete && !model.sgradeUpgrading(game.id) {
+            Button { model.sgradeUpgradeOpen = true } label: {
+                Label(txt("sgrade.upgrade.incomplete"), systemImage: "exclamationmark.arrow.circlepath")
+                    .font(.manrope(12, .medium)).foregroundStyle(SGradeCardView.gold).fixedSize(horizontal: false, vertical: true)
+            }
+            .buttonStyle(.plain).accessibilityIdentifier("sgrade.incomplete." + game.id)
         }
         updateHintLines(game)
         }

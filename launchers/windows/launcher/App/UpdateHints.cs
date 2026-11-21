@@ -15,15 +15,25 @@ namespace S2Arm.Launcher;
 public sealed partial class EnvironmentWindow
 {
     private Dictionary<string, string[]> updateHints = new(StringComparer.OrdinalIgnoreCase);
-    private LibraryCatalog? updateHintsFor;
+    private string? updateHintsFor;   // 已比过的游戏库号
 
-    /// <summary>游戏库页渲染时：这份游戏列表还没比过就比一次（载入 / 导入 / 推完重读都会换新列表）</summary>
+    /// <summary>游戏库页渲染时：这个游戏库打开后还没比过就比一次（同 Mac 只在启动器打开时读）。之后只在出包 / 手机作业做完时再读
+    /// （AfterArtifactJob），不跟着每次重读游戏库起：出包过程中会重读好几次，每次多起两个作业进程是浪费</summary>
     private void EnsureUpdateHints()
     {
-        if (catalog is null || ReferenceEquals(updateHintsFor, catalog)) return;
-        updateHintsFor = catalog;
+        if (catalog is null || libraryId is null || updateHintsFor == libraryId) return;
+        updateHintsFor = libraryId;
         _ = RefreshUpdateHintsAsync();
         _ = RefreshPhoneOverviewAsync();   // 总控台（PhoneConsole.cs）：只读设备记录，秒回；选中首位卡时再探 USB
+    }
+
+    /// <summary>出包 / 手机作业（出包、装机、删除、装回、更新 S2Arm）做完：game.json 的产物记录和设备记录才会变，
+    /// 建议更新和总控台再读一次（开关关着不读）</summary>
+    private void AfterArtifactJob()
+    {
+        if (phoneOverview is null) return;
+        _ = RefreshUpdateHintsAsync();
+        _ = RefreshPhoneOverviewAsync();
     }
 
     private async Task RefreshUpdateHintsAsync()
@@ -32,8 +42,7 @@ public sealed partial class EnvironmentWindow
         try
         {
             var job = await PackJobClient.RunAsync(PackRequest("updateHints", ""), null, CancellationToken.None);
-            if (job.Report.Succeeded && job.Report.Result.TryGetProperty("enabled", out var on) && on.ValueKind == System.Text.Json.JsonValueKind.True
-                && job.Report.Result.TryGetProperty("games", out var games) && games.ValueKind == System.Text.Json.JsonValueKind.Array)
+            if (job.Report.Succeeded && job.Report.Result.TryGetProperty("games", out var games) && games.ValueKind == System.Text.Json.JsonValueKind.Array)
                 foreach (var g in games.EnumerateArray())
                 {
                     if (!g.TryGetProperty("gameId", out var id) || id.GetString() is not { Length: > 0 } gid || !g.TryGetProperty("reasons", out var rs)
@@ -49,10 +58,8 @@ public sealed partial class EnvironmentWindow
         Render();
     }
 
-    internal static string? UpdateReasonKey(string reason) => reason switch
-    {
-        "rewriter" => "update.hint.reason.rewriter", "hostAbi" => "update.hint.reason.hostAbi", "shader" => "update.hint.reason.shader", _ => null,
-    };
+    /// <summary>原因 → 文案键：只认共享体验表 update_reasons（11-19 结构 9，Mac 读同一处；原先这里另写一份，缺 libGen / shaderMiss）</summary>
+    private string? UpdateReasonKey(string reason) => text.UpdateReasonKey(reason);
 
     private string[] UpdateReasons(LibraryGame game) => updateHints.TryGetValue(game.Id, out var why) ? why : [];
 

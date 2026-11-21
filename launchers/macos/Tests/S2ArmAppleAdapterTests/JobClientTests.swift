@@ -131,6 +131,12 @@ final class JobClientTests: XCTestCase {
             XCTAssertEqual(($0 as? JobClientError)?.message, "应用内置 Python 缺失，请重新安装完整应用。")
             XCTAssertEqual(($0 as? JobClientError)?.code, JobClientError.bundleIncomplete)   // 界面据此给「下载完整安装包」按钮
         }
+        // 玩家装的 App 缺作业入口：同样说包不完整、给重装，不说「选源码目录」（那是开发用源码树的话）
+        let noJobs = try Sandbox(bundledPython: true, jobs: false, engine: true); defer { noJobs.remove() }
+        XCTAssertThrowsError(try client(noJobs, FakeRunner()).jobEntry()) {
+            XCTAssertEqual(($0 as? JobClientError)?.message, "应用不完整，请重新安装 S2Arm。")
+            XCTAssertEqual(($0 as? JobClientError)?.code, JobClientError.bundleIncomplete)
+        }
         // 源码树：设置里指定的 Python；入口退到 <engineDir>/pack/jobs/main.py
         let dev = try Sandbox(bundledPython: false, jobs: false); defer { dev.remove() }
         var env = dev.environment()
@@ -218,6 +224,7 @@ final class JobClientTests: XCTestCase {
             }
             func start(executable: URL, arguments: [String], environment: [String: String], automatic: Bool,
                        onLine: @escaping (Data) -> Void, onStderr: @escaping (Data) -> Void, onExit: @escaping (Int32) -> Void) throws -> JobProcessHandle {
+                objc_sync_enter(self); defer { objc_sync_exit(self) }   // 作业客户端在并发线程池里同时调 start：替身状态串行改（无锁并发追加数组会 SIGSEGV 带崩整个测试进程）
                 seen.append(automatic); return H()
             }
         }
@@ -225,8 +232,8 @@ final class JobClientTests: XCTestCase {
         let spy = Spy()
         let client = JobClient(environment: box.environment(), runner: spy)
         for op in ["installUpdatePrepare", "sgradeMac", "install", "build"] { _ = try client.start(operation: op) }
-        XCTAssertEqual(spy.seen, [true, true, false, false])
-        XCTAssertEqual(JobTrigger.automaticOperations, ["installUpdatePrepare", "sgradeMac"])
+        XCTAssertEqual(spy.seen, [true, false, false, false])   // sgradeMac 11-17 起玩家点了才做（S 级优化改手动），不算自动作业
+        XCTAssertEqual(JobTrigger.automaticOperations, ["installUpdatePrepare"])
     }
 
     /// 真进程：行都到了才报退出（快结束的作业最后一条结果不能被退出抢先）。

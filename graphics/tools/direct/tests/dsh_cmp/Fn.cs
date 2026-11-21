@@ -37,6 +37,7 @@ static class Fn
                     "mesh_memory" => MeshStage.Memory(MeshStage.Info(H(0), H(1))) is var (ml, msz) ? new List<object> { ml.Select(v => (object)(long)v).ToList(), (long)msz } : null,
                     "mesh_to_stage" => MeshStage.ToStage(S(0), MeshStage.Info(H(1), H(2))),
                     "mesh_own_shared" => MeshStage.OwnShared(H(0)),
+                    "mesh_guard_loops" => MeshStage.GuardLoops(S(0)),
                     "raster_facts" => DshCompiler.RasterFacts(S(0), S(1)),
                     "int_inputs" => DshCompiler.IntInputs(S(0)),
                     "vs_init" => DshCompiler.VsInit(S(0)),
@@ -52,6 +53,7 @@ static class Fn
                     "roll_vb_copy" => DshCompiler.RollVbCopy(S(0)),
                     "geo_tf" => DshCompiler.GeoTf("k", a[0].AsArray(), a[1].AsObject()),
                     "vin_variant" => DshVin.Variant(S(0)) is var (vb, vm2) ? new List<object> { vb, vm2 } : null,
+                    "vs_pull" => DshPull.Variant(S(0)) is var (pb, pm) ? new List<object> { pb, pm } : null,   // 拉取式顶点输入变体 _bp → [MSL 或 null, {entry, entry_z, slot, inputs} 或原因串]（t_vs_pull.py）
                     "fetch_variant" => DshFetch.Variant(S(0), a[1].AsArray(), (bool)a[2]) is var (fb, fm) ? new List<object> { fb, fm } : null,
                     "ft_masks" => DshFt.Masks((PyDict)Py.FromJson(a[0]), Pairs(a[1])).Select(m => (object)new List<object> { m.U, m.S }).ToList(),
                     "ft_msl" => DshFt.Msl(S(0), Pairs(a[1])),
@@ -61,6 +63,7 @@ static class Fn
                     "vs_layer_entry" => DshCompiler.VsLayerEntry(S(0)) is var (f, l) ? new List<object> { f, l } : null,
                     "vs_push" => DshCompiler.VsPush(S(0)),
                     "fs_alpha_ms" => DshCompiler.FsAlphaMs(S(0)),
+                    "fs_fout" => DshCompiler.FsFout(S(0)),
                     "fs_uvx" => DshCompiler.FsUvx(S(0)),
                     "fs_lb" => DshCompiler.FsLb(S(0)),
                     "fs_rd" => DshCompiler.FsRd(S(0)),
@@ -79,6 +82,8 @@ static class Fn
                     "job_ds_tess_mode" => ((Func<object>)(() => { string w = Path.Combine(Path.GetTempPath(), "dshfn_job_" + Guid.NewGuid().ToString("N")[..8]); Directory.CreateDirectory(w);
                         try { var (j, _) = new DshCompiler.Ctx { Key = "k", Out = w, W = w, T = DshTables.Empty() }.JobFor("ds", H(0), H(1)); return (long)j["tess_mode"]; }
                         finally { Directory.Delete(w, true); } }))(),
+                    // 外壳要出的各域（DshCompiler.Ctx.TessDomains）：参数 [阶段, 模式字, {域: 扫到的模式字}]，返回 [[域, 模式字, 是否扫到], …]
+                    "tess_domains" => DshCompiler.Ctx.TessDomains(S(0), (long)a[1], a[2].AsObject().ToDictionary(kv => int.Parse(kv.Key), kv => (uint)(long)kv.Value)).Select(x => (object)new List<object> { (long)x.Dom, (long)x.Mode, x.Seen }).ToList(),
                     "vertex_ab" => DshCompiler.Ctx.VertexAb("k", H(0), H(1)) is { } ab ? new List<object> { Convert.ToHexStringLower(ab.Item1), Convert.ToHexStringLower(ab.Item2) } : null,
                     "geo_records" => DshCompiler.GeoRecords((uint)a[0], a[1].AsObject()) is var (gv, gi) ? new List<object> { (long)gv, (long)gi } : null,
                     "spv_single_lane" => SpvFile(tmp, H(0), p => DshCompiler.SpvSingleLane(p)),
@@ -102,6 +107,8 @@ static class Fn
                     // tests/ampere_isa（Switch 2 Ampere 指令单测）：一支合成的 NVN2 着色器照出包（DshCompiler.Compile）出一遍。参数 [阶段, 代码区十六进制, 控制段十六进制, 答案 JSON 或 null]；
                     //   返回 [_b.metal 原文, _b.json 原文]，翻不过返回 ["fail", 状态, 原因]（负对照要看到原因原文）
                     "ampere_compile" => AmpereCompile(tmp, S(0), H(1), H(2), a[3] == null ? null : S(3), nx),
+                    // 同上、按出包开（PackOut）：另回拉取式顶点输入变体 [_b.metal, _bp.metal 或 null, _bp.json 或 null]（t_vs_pull.py：Dsh.cs 出包那条路真接上了 DshPull）
+                    "ampere_compile_pack" => AmpereCompilePack(tmp, S(0), H(1), H(2), nx),
                     _ => throw new ArgumentException("不认识的函数 " + fn),
                 };
                 res.Add(new PyDict { ["ok"] = v });
@@ -122,6 +129,22 @@ static class Fn
         try { DshCompiler.Compile(key, stage, code, ctl, o, nx ?? new CliSpvCross(), t, t); }
         catch (DshError de) { return new List<object> { "fail", de.Status, de.Detail }; }
         return new List<object> { File.ReadAllText(Path.Combine(o, key + "_b.metal")), File.ReadAllText(Path.Combine(o, key + "_b.json")) };
+    }
+
+    static List<object> AmpereCompilePack(string tmp, string stage, byte[] code, byte[] ctl, ISpvCross nx)
+    {
+        const string key = "a5a5a5a5a5a5a5a5";
+        string t = Path.Combine(tmp, "ampp_" + Guid.NewGuid().ToString("N")[..8]), o = Path.Combine(t, "out"); Directory.CreateDirectory(o);
+        File.WriteAllText(Path.Combine(t, "shader_facts.tsv"), ""); File.WriteAllText(Path.Combine(t, "shader_pairs.tsv"), "");
+        bool was = DshCompiler.PackOut; DshCompiler.PackOut = true;
+        try
+        {
+            try { DshCompiler.Compile(key, stage, code, ctl, o, nx ?? new CliSpvCross(), t, t); }
+            catch (DshError de) { return new List<object> { "fail", de.Status, de.Detail }; }
+            return new List<object> { R("_b.metal"), R("_bp.metal"), R("_bp.json") };
+        }
+        finally { DshCompiler.PackOut = was; }
+        string R(string n) => DshCompiler.PackFiles != null && DshCompiler.PackFiles.TryGetValue(key + n, out var x) ? x : null;   // 出包时产物进 PackFiles（BuildXlate.cs 同样从它取）
     }
 
     static List<(long U, long S)> Pairs(JsonNode n) => n.AsArray().Select(p => ((long)p[0], (long)p[1])).ToList();   // [[无符号, 有符号], …]

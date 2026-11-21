@@ -70,18 +70,25 @@ extension S2ArmLauncherModel {
         return nil
     }
 
-    /// 导入：成功即切到证书签名，回 nil；失败回原因句（弹窗里显示）。
+    /// 导入：成功即切到证书签名，回 nil；失败回原因句、失败码和给证书发放人的话（弹窗里显示；码 / 那段话决定同一页给不给出路按钮）。
     ///   add = true：加一张，只有选证书窗给 device（顺手给那台选它）——出包页「再导入一张」不带设备，不改任何一台的选择；
     ///   false = 旧义「换一个」：顶掉选中那台在用的
-    func importDevCert(p12: String, profile: String, password: String, add: Bool = false, device: String? = nil) async -> String? {
+    func importDevCert(p12: String, profile: String, password: String, add: Bool = false, device: String? = nil) async -> (text: String, code: String?, request: String)? {
         do {
             _ = try await provider.devCertImport(p12: p12, profile: profile, password: password, device: add ? device : (device ?? selectedDevice?["udid"] as? String), add: add)
             if add, device != nil { devCertChoice = nil }
             await reloadDevCert()
             return nil
         } catch {
-            return error.localizedDescription
+            let facts = (error as? JobFailure)?.outcome.failureDiagnostic?["facts"] as? [String: Any]
+            return (error.localizedDescription, (error as? JobFailure)?.code, facts?["requestText"] as? String ?? "")
         }
+    }
+
+    /// 分发证书描述文件签不了游戏（devcert_distribution）的出路：签名方式切到 Apple ID，并直接打开 Apple ID 登录面板（host：挂在哪一层弹）
+    func switchToAppleIdLogin(host: String) {
+        setSignChoice("apple")
+        openAppleLogin(host: host)
     }
 
     /// 出包页切签名方式：选证书但还没导入 → 先开导入弹窗（导入成功才算切过去）
@@ -90,6 +97,18 @@ extension S2ArmLauncherModel {
         Task {
             do { try await provider.devCertUse(on) } catch { reportFailure("s2arm.fail.devCertUse", error) }
             await reloadDevCert()
+        }
+    }
+
+    /// 签名方式三选一（自签走查结构 6）：apple = Apple ID（在 S2Arm 里登录）；certificate = 我的证书（没导入先弹导入）；
+    ///   external = 我自己用 AltStore / SideStore 签（S2Arm 不在电脑上签名，导出 .s2arm 不签、手机上用导入的证书签）。作业层 signModeSet 记下，之后导出照这个
+    func setSignChoice(_ choice: String) {
+        if choice == "certificate" && devCert?.imported != true { showDevCertImport = true; return }
+        let mode = choice == "certificate" ? "devCert" : choice == "external" ? "external" : "appleId"
+        Task {
+            do { _ = try await provider.signModeSet(mode) } catch { reportFailure("s2arm.fail.devCertUse", error) }
+            await reloadDevCert()
+            refreshInstallMode()
         }
     }
 

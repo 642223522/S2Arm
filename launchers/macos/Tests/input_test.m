@@ -7,6 +7,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 #include "../../../macos/ns2_relay.h"
+#include "../../../macos/xbox_gip_relay.h"
 #include "../../../ios/input_config.h"
 #import "../../../macos/front_mac.m"
 #import "../../../macos/input_guide.m"
@@ -17,6 +18,15 @@ void s2a_host_shutdown(const char *why) { (void)why; if (guide_preview) exit(0);
 void s2a_clock_catchup(void) {}   // 游戏日历补时（runtime/src/os.c，Mac 唤醒通知调）在这里不测
 void s2a_heartbeat_mac(void) {}   // Mac 心跳（macos/heartbeat_mac.c，前端 10 秒定时器调）在这里不测
 int s2a_playtime_flush(void) { return 0; }   // 游玩时间落盘（runtime/src/playtime.c，同一个 10 秒定时器调）在这里不测
+void s2a_ql_retry60(void) {}   // 档位梯子「再试 60 帧」（runtime/src/qladder_host.c，前端横幅按钮调）在这里不测
+// 即时快照（runtime/src/snapsw.c、snapshot.c）在这里不测：开关关着，菜单不出这两项
+int s2a_snap_logging(void) { return 0; }
+int s2a_snap_dir_for(const char *gid, char *out, size_t n) { (void)gid; (void)out; (void)n; return -1; }
+int s2a_snap_exists(const char *dir) { (void)dir; return 0; }
+int s2a_snap_save_changed(const char *dir) { (void)dir; return -1; }
+int s2a_snap_request_save(const char *dir) { (void)dir; return -1; }
+void s2a_snap_on_done(void (*cb)(int, const char *)) { (void)cb; }
+int s2a_host_restart(void (*done)(int, const char *, void *), void *ctx) { (void)done; (void)ctx; return -1; }   // 进程内重启（runtime/src/session.c）在这里不测
 uint64_t now_ns(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }   // 宿主单调时钟（runtime/src/os.c）：前台焦点计时用（#965 起 front_mac.m 引用），给真时钟
 // 生命周期桩（接口 v2.15，缺口扫描族 1）：记下前端报的焦点 / 睡眠、客机冻结与时钟原因 3 的开关次数
 static int stub_focus = 1, stub_suspend, stub_sleep, stub_freeze_on, stub_freeze_off, stub_clock3_on, stub_clock3_off;
@@ -812,6 +822,18 @@ static void test_shared_face_map(void) {
     [@"{\"schema\":2,\"mapping\":228}" writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
     pad_face_refresh(YES);
     expect(controller_face_map(c) == 0xe4, "restoring defaults takes effect live without restarting the game");
+    expect(controller_face_map(nil) == 0xe4, "a document without a Nintendo entry keeps Switch pads on their labels");
+    // Player picked the Xbox layout for Switch pads: target A/B/X/Y <- source B/A/Y/X (iOS s2a_pad_abxy_order swap) = 1|0<<2|3<<4|2<<6 = 177.
+    [@"{\"schema\":2,\"mapping\":228,\"nintendo\":177}" writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    pad_face_refresh(YES);
+    expect(controller_face_map(nil) == 0xb1, "the player's Nintendo choice reaches the Switch channel");
+    expect(controller_face_map(c) == 0xe4, "the Nintendo choice leaves other controllers on the shared map");
+    expect(mapped_face_buttons(nil, 1u << 1, 0) == 1u, "Xbox layout on a Switch pad: bottom B confirms as A");
+    expect(mapped_face_buttons(nil, 1u << 0, 0) == 2u, "Xbox layout on a Switch pad: right A cancels as B");
+    expect(mapped_face_buttons(nil, 1u << 3, 0) == 4u && mapped_face_buttons(nil, 1u << 2, 0) == 8u, "Xbox layout on a Switch pad swaps X and Y");
+    [@"{\"schema\":2,\"mapping\":177,\"nintendo\":0}" writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    pad_face_refresh(YES);
+    expect(controller_face_map(nil) == 0xe4 && controller_face_map(c) == 0xe4, "an invalid Nintendo entry falls back to platform defaults");
     [NSFileManager.defaultManager removeItemAtPath:file error:nil];
     setenv("S2A_PAD_FACE_FILE", "/nonexistent/s2arm-face.json", 1); pad_face_refresh(YES);
     pad_slot_owner[0] = nil;
@@ -1334,6 +1356,93 @@ int main(int argc, const char **argv) {
         expect(gip_ax[0] == 16384 && gip_ax[1] == -16384 && gip_ax[2] == 0 && gip_ax[3] == 0, "Xbox GIP parse axes: lx, ly, rx, ry");
         uint8_t invalid_gip[18]; memcpy(invalid_gip, gip_rep, sizeof invalid_gip); invalid_gip[0] = 0x07;
         expect(s2a_gip_parse(invalid_gip, sizeof invalid_gip, &gip_bt, gip_ax) == 0, "Xbox GIP parse: non-0x20 report returns 0");
+
+        // Xbox GIP 启动器中继协议与宿主接收端验证（不碰物理 USB）
+        s2a_mac_hid_pad_clear_xbox_relay();
+        s2a_xbox_gip_relay_packet rp;
+        memset(&rp, 0, sizeof rp);
+        rp.magic = S2A_XBOX_GIP_RELAY_MAGIC;
+        rp.version = S2A_XBOX_GIP_RELAY_VERSION;
+        rp.flags = S2A_XBOX_GIP_FLAG_CONNECTED;
+        rp.slot = 0;
+        rp.vid = 0x045E;
+        rp.pid = 0x02D1;
+        strlcpy(rp.name, "Xbox Relay Test", sizeof rp.name);
+        expect(s2a_xbox_gip_relay_packet_valid(&rp) == 1, "Xbox GIP relay: valid packet");
+        rp.magic = 0;
+        expect(s2a_xbox_gip_relay_packet_valid(&rp) == 0 && s2a_mac_hid_pad_apply_xbox_relay(&rp, sizeof rp) == 0, "Xbox GIP relay: bad magic rejected");
+        rp.magic = S2A_XBOX_GIP_RELAY_MAGIC;
+        rp.slot = S2A_XBOX_GIP_RELAY_MAX;
+        expect(s2a_xbox_gip_relay_packet_valid(&rp) == 0 && s2a_mac_hid_pad_apply_xbox_relay(&rp, sizeof rp) == 0, "Xbox GIP relay: out-of-range slot rejected");
+        rp.slot = 0;
+
+        // 刚连上未按键（buttons == 0）保持 joined=0，不占玩家位
+        expect(s2a_mac_hid_pad_apply_xbox_relay(&rp, sizeof rp) == 1, "Xbox GIP relay: apply idle connected packet");
+        s2a_hid_pad hp_out[S2A_HID_PAD_MAX];
+        int hp_n = s2a_mac_hid_pad_read(hp_out);
+        int found_relay = 0;
+        for (int i = 0; i < hp_n; i++) if (!strcmp(hp_out[i].name, "Xbox Relay Test")) found_relay = 1;
+        expect(!found_relay, "Xbox GIP relay: idle controller does not join before first button press");
+
+        // 按下 A 键并推摇杆 → 立即加入玩家位并读到按键 / 摇杆
+        rp.buttons = (1u << 0) | (1u << 6);
+        rp.ax[0] = 12345; rp.ax[1] = -23456; rp.ax[2] = 1000; rp.ax[3] = -1000;
+        expect(s2a_mac_hid_pad_apply_xbox_relay(&rp, sizeof rp) == 1, "Xbox GIP relay: apply active button packet");
+        hp_n = s2a_mac_hid_pad_read(hp_out);
+        found_relay = 0;
+        for (int i = 0; i < hp_n; i++) {
+            if (!strcmp(hp_out[i].name, "Xbox Relay Test")) {
+                found_relay = 1;
+                expect(hp_out[i].buttons == ((1u << 0) | (1u << 6)) && hp_out[i].lx == 12345 && hp_out[i].ly == -23456 && hp_out[i].vid == 0x045E,
+                       "Xbox GIP relay: read returns relayed buttons, sticks and vid");
+            }
+        }
+        expect(found_relay == 1, "Xbox GIP relay: joined controller listed in hid_pad_read");
+
+        // 模拟两局游戏依次通过 socketpair 读取并在断开时自动清槽
+        s2a_mac_hid_pad_clear_xbox_relay();
+        for (int session = 0; session < 2; session++) {
+            int sp[2] = {-1, -1};
+            expect(socketpair(AF_UNIX, SOCK_STREAM, 0, sp) == 0, "Xbox GIP relay: socketpair");
+            rp.flags = S2A_XBOX_GIP_FLAG_CONNECTED;
+            rp.buttons = (session == 0) ? (1u << 0) : (1u << 1);
+            rp.ax[0] = (int16_t)(session == 0 ? 5000 : -5000);
+            expect(s2a_xbox_gip_write_all(sp[0], &rp, sizeof rp) == 0, "Xbox GIP relay: write packet to game fd");
+            close(sp[0]);
+            expect(s2a_mac_hid_pad_read_xbox_relay_fd(sp[1]) == 0, "Xbox GIP relay: read_fd drains and clears on EOF");
+            close(sp[1]);
+            hp_n = s2a_mac_hid_pad_read(hp_out);
+            found_relay = 0;
+            for (int i = 0; i < hp_n; i++) if (!strcmp(hp_out[i].name, "Xbox Relay Test")) found_relay = 1;
+            expect(!found_relay, "Xbox GIP relay: EOF clears relay slot cleanly");
+        }
+
+        // Xbox GIP 异常自愈与重唤醒纯函数验证（重通告 0x02、递增 seq、IO 错误分类、空闲保活节流）
+        const uint8_t ann_pkt[4] = {0x02, 0x20, 0x01, 0x1c};
+        expect(s2a_xbox_gip_is_announce(ann_pkt, sizeof ann_pkt) == 1, "Xbox GIP: 0x02 packet recognized as announce");
+        expect(s2a_xbox_gip_is_announce(gip_rep, sizeof gip_rep) == 0, "Xbox GIP: 0x20 input report is not announce");
+        expect(s2a_xbox_gip_is_announce(ann_pkt, 3) == 0, "Xbox GIP: truncated 0x02 packet rejected");
+
+        uint8_t seq = 254;
+        expect(s2a_xbox_gip_next_seq(&seq) == 255 && seq == 255, "Xbox GIP seq: 254 -> 255");
+        expect(s2a_xbox_gip_next_seq(&seq) == 1 && seq == 1, "Xbox GIP seq: 255 wraps to 1 (skips 0)");
+        uint8_t pwr[5] = {0}, wak[5] = {0};
+        s2a_xbox_gip_build_power(7, pwr);
+        s2a_xbox_gip_build_wake(8, wak);
+        expect(pwr[0] == 0x05 && pwr[1] == 0x20 && pwr[2] == 7 && pwr[3] == 0x01 && pwr[4] == 0x00, "Xbox GIP build_power packet");
+        expect(wak[0] == 0x05 && wak[1] == 0x20 && wak[2] == 8 && wak[3] == 0x0f && wak[4] == 0x06, "Xbox GIP build_wake packet");
+
+        uint32_t rec_errs = 0;
+        expect(s2a_xbox_gip_classify_io_error(0xe000404fu, &rec_errs, 2) == S2A_XBOX_GIP_IO_RECOVER && rec_errs == 1, "Xbox GIP IO: 1st pipe stall recoverable");
+        expect(s2a_xbox_gip_classify_io_error(0xe00002edu, &rec_errs, 2) == S2A_XBOX_GIP_IO_RECOVER && rec_errs == 2, "Xbox GIP IO: 2nd overrun recoverable");
+        expect(s2a_xbox_gip_classify_io_error(0xe0004051u, &rec_errs, 2) == S2A_XBOX_GIP_IO_FATAL && rec_errs == 3, "Xbox GIP IO: exceeding max_recoverable turns fatal");
+        expect(s2a_xbox_gip_classify_io_error(0, &rec_errs, 2) == S2A_XBOX_GIP_IO_OK && rec_errs == 0, "Xbox GIP IO: success resets recoverable error count");
+        expect(s2a_xbox_gip_classify_io_error(0xe00002c0u, &rec_errs, 2) == S2A_XBOX_GIP_IO_FATAL, "Xbox GIP IO: kIOReturnNoDevice is immediately fatal");
+
+        expect(s2a_xbox_gip_idle_should_rewake(5000, 1000, 1000, 10000, 10000) == 0, "Xbox GIP idle: below threshold does not rewake");
+        expect(s2a_xbox_gip_idle_should_rewake(11000, 1000, 0, 10000, 10000) == 1, "Xbox GIP idle: past threshold triggers rewake");
+        expect(s2a_xbox_gip_idle_should_rewake(15000, 1000, 11000, 10000, 10000) == 0, "Xbox GIP idle: throttled within rewake_interval");
+        expect(s2a_xbox_gip_idle_should_rewake(21000, 1000, 11000, 10000, 10000) == 1, "Xbox GIP idle: triggers again after rewake_interval");
     }
     char relayPath[96];
     snprintf(relayPath, sizeof relayPath, "/tmp/s2arm-motion-%d.sock", getpid());

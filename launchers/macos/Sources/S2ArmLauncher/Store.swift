@@ -51,7 +51,7 @@ final class WorkerOutput: @unchecked Sendable {
     // 常驻提示（10-26 维护者定）：notice 等于 stickyNotice 时不自动消失（出完 iPhone 包那条要带「查看装机步骤」），其余提示照旧 6 秒消失
     @Published var stickyNotice: String?
     @Published var showInstallGuide = false
-    // 装机前清单（InstallGuideView）：查哪款、查回来的结果、玩家是否点过「装到 iPhone」（齐了自动开装）、在跑的那次查是什么时候起的
+    // 装机前清单（InstallGuideView）：查哪款、查回来的结果、玩家是否点过「推到 iPhone」（齐了自动开装）、在跑的那次查是什么时候起的
     @Published var installGuideGame: String?
     @Published var installReadiness: InstallReadiness?
     @Published var installWhenReady = false
@@ -121,8 +121,8 @@ final class WorkerOutput: @unchecked Sendable {
     /// 出完 iPhone 包的提示：装机主路是否已验证与装机步骤页同一个开关（审计 P2-7）。一包即完整（维护者 10-27 否两段式：玩家装上就玩、不回连 Mac）
     static func ipaDoneNotice() -> String {
         let install = InstallGuideView.xcodeInstallVerified
-            ? "用数据线连上 iPhone，在打包任务页点「装到 iPhone」就能装上（也可以按装机步骤改用 AltStore）。"
-            : "可以用数据线连上 iPhone，在打包任务页点「装到 iPhone」（这条路还在真机验证，装不上请按装机步骤改用 AltStore）。"
+            ? "用数据线连上 iPhone，在打包任务页点「推到 iPhone」就能装上（也可以按装机步骤改用 AltStore）。"
+            : "可以用数据线连上 iPhone，在打包任务页点「推到 iPhone」（这条路还在真机验证，装不上请按装机步骤改用 AltStore）。"
         return "iPhone 包已出好。" + install
     }
     /// 出 iPhone 包要不要让位：执行位或队列只被自动 Mac 准备占着才让；有玩家自己点的任务在跑 / 排队就不让（照旧提示互斥）
@@ -217,7 +217,7 @@ final class WorkerOutput: @unchecked Sendable {
     }
     func recoverTasks() {
         let paths = (try? FileManager.default.contentsOfDirectory(at:jobsRoot,includingPropertiesForKeys:nil)) ?? []
-        for path in paths where path.pathExtension == "json" {
+        for path in paths where path.pathExtension == "json" && !path.lastPathComponent.hasPrefix("._") {   // ._：exFAT 上 macOS 配的 AppleDouble 附属文件
             guard let data = try? Data(contentsOf:path), var obj = (try? JSONSerialization.jsonObject(with:data)) as? [String:Any], let state = obj["state"] as? String else { continue }
             // 作业进程还活着（上次启动器卡死 / 被关，作业是独立进程照跑）：接管，按作业记录接着显示进度，不改成「中断」（10-26 Spare-host 内存吃紧启动器失联）
             if ["running","cancelling"].contains(state), let pid = obj["pid"] as? Int, Self.jobAlive(pid, start:obj["pidStart"] as? String),
@@ -855,7 +855,7 @@ final class WorkerOutput: @unchecked Sendable {
         }
     }
     enum RetryRoute: Equatable { case saveManager, launch, ipa, install, build }
-    /// 重试接着做失败的那一步（审计 P1-1）：「装到 iPhone」失败只重签重装（包已出好），不落回「准备」从头编译
+    /// 重试接着做失败的那一步（审计 P1-1）：「推到 iPhone」失败只重签重装（包已出好），不落回「准备」从头编译
     static func retryRoute(_ task: TaskRecord) -> RetryRoute {
         switch task.operation {
         case "saveBackup", "saveInspect", "saveRestore": return .saveManager
@@ -972,8 +972,8 @@ final class WorkerOutput: @unchecked Sendable {
         selection = "tasks"
         executionTask = worker("install",extra:["gameId":game.id].merging(downstreamScheme(game).map { ["scheme":$0] } ?? [:]) { a, _ in a }) { r in
             let device = (r["device"] as? String).map { "「\($0)」" } ?? ""   // 设备名夹在句中：按片段先翻译再拼（提示显示时 L() 整句查不到）
-            // 资源传完但没拉起 App 解开（作业结果 unpackPending，11-09 #336）：不说「已装到 iPhone」，说还差的一步和原因 / 办法（后端原话）
-            let done = (r["unpackPending"] as? String) ?? L("已装到 iPhone") + device + Store.packPushedClause(r["packFiles"] as? Int) + L("。打开游戏：第一次会先导入游戏资源（几分钟），保持在前台、别锁屏，导入完会自动进入游戏。免费 Apple ID 签的 App 7 天过期，到时连上再点一次「装到 iPhone」。")
+            // 资源传完但没拉起 App 解开（作业结果 unpackPending，11-09 #336）：不说「已推到 iPhone」，说还差的一步和原因 / 办法（后端原话）
+            let done = (r["unpackPending"] as? String) ?? L("已推到 iPhone") + device + Store.packPushedClause(r["packFiles"] as? Int) + L("。打开游戏：第一次会先导入游戏资源（几分钟），保持在前台、别锁屏，导入完会自动进入游戏。免费 Apple ID 签的 App 7 天过期，到时连上手机点游戏库第一格「S2Arm」里的「续签 S2Arm」。")
             self.stickyNotice = done; self.notice = done
         }
     }

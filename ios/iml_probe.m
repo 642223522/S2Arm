@@ -35,6 +35,11 @@ static int proc_ent_has(const char *key) {
 // 这次安装的进程有没有「提高内存上限」权限：1 带、0 不带（丢了）、-1 读不到；-2 = 还没读。首启复核读一次记下，诊断询问（diag.m）复用，没读过就现读
 static int g_iml_ent = -2;
 static int iml_ent(void) {
+#if TARGET_OS_TV
+    // tvOS 没有这项权限（Xcode 能力表 Increased Memory Limit 只列 iOS / visionOS）：不适用，按「读不到」不判，
+    //   库顶提示条、游戏里提示条、诊断询问都不出（#1456：电视上提示「重新签名带上权限」是一条做不到的路）
+    g_iml_ent = -1;
+#endif
     if (g_iml_ent == -2) { int e = proc_ent_has(IML_KEY); g_iml_ent = e >= 0 ? e : s2a_ent_has(&_mh_execute_header, IML_KEY); }
     return g_iml_ent;
 }
@@ -83,6 +88,9 @@ void s2a_iml_probe_check(void) {
     @autoreleasepool {
         int ent = proc_ent_has(IML_KEY), from_proc = ent >= 0;
         if (!from_proc) ent = s2a_ent_has(&_mh_execute_header, IML_KEY);   // 进程权限读不到才退回读主程序签名
+#if TARGET_OS_TV
+        ent = -1;   // tvOS 没有这项权限：不判、不提示（同 iml_ent）
+#endif
         g_iml_ent = ent;
         uint64_t need = 0, fit = 0, top = s2a_va_top(); s2a_window_need(&need, &fit);
         int jumbo = s2a_va_jumbo(top);
@@ -95,7 +103,7 @@ void s2a_iml_probe_check(void) {
                 jumbo == 0 ? "【黄】带权限却只拿到小地址档，与 R02 不符" : "");
         else
             LOG("【红】[IML] 首启复核：这台机上装的包签名丢了「提高内存上限」权限（%s）；%s，上限 %.1f GB、最大一块 %.1f GB。"
-                "游戏继续运行，超出窗口走远端翻译；请在电脑上的 S2Arm 点「装到 iPhone」重装，或用 Xcode / AltStore Classic 2.2 或更新版重签后重装（或 GetMoreRam 给 App ID 补权限后重装）",
+                "游戏继续运行，超出窗口走远端翻译；请在电脑上的 S2Arm 点游戏库第一格「S2Arm」里的「续签 S2Arm」重装，或用 Xcode / AltStore Classic 2.2 或更新版重签后重装（或 GetMoreRam 给 App ID 补权限后重装）",
                 IML_KEY, va, top / GIB, fit / GIB);
         // 玩家也要知道（审计 P2-3：原先只写日志）：不挡操作（dprompt.m 顶部提示条，起局 3 秒后）。单款壳没有游戏库，每次打开都在游戏里提示（11-16 维护者：别永久静默）；
         //   到点再定：这次已有别处说过（库顶提示条 / 自检提示页 / 诊断询问）或诊断询问还要问，就不弹

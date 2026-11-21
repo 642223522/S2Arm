@@ -87,7 +87,7 @@ def bundle(target):
     copy_exe(stage / "dsh_batch", tools / "dsh_batch", "dsh_batch.exe")
     import dsh_batch
     stamp(tools / "dsh_batch", dsh_batch.src_digest(os.path.join(dsh_batch.DSH, "batch", "dsh_batch.csproj")))
-    # 同一份源码的翻译器指纹（同 Mac bundle_engine.py）：玩家机没有 .NET、展不开 DshXfpInput 清单，direct_lib.sh 出库后核库印章取这份当「本树」值
+    # 同一份源码的翻译器指纹（同 Mac bundle_engine.py）：玩家机没有 .NET、展不开 DshXfpInput 清单，direct_lib.py 出库后核库印章取这份当「本树」值
     #   （dmsh_chain.tree_xfp ← dsh_batch.prebuilt_xfp，摘要相同才认）。与预编件自报的编译期 Xfp 不同 = 预编件没按这份源码编，当场停
     import dmsh_chain
     xfp = dmsh_chain.xlate_fp()
@@ -110,6 +110,11 @@ def bundle(target):
         env=dict(os.environ, RUSTFLAGS=(os.environ.get("RUSTFLAGS", "") + " -C target-feature=+crt-static").strip()))
     (tools / "devpush").mkdir()
     shutil.copy2(ROOT / "build/devpush-static/release/s2a-devpush.exe", tools / "devpush/s2a-devpush.exe")
+    # 电脑侧签程序库（pack/selfsign，同 Mac；静态 C 运行库同 devpush）
+    run(["cargo", "build", "--release", "--locked", "--manifest-path", ROOT / "pack/selfsign/Cargo.toml", "--target-dir", ROOT / "build/selfsign-static"], "selfsign.log",
+        env=dict(os.environ, RUSTFLAGS=(os.environ.get("RUSTFLAGS", "") + " -C target-feature=+crt-static").strip()))
+    (tools / "selfsign").mkdir()
+    shutil.copy2(ROOT / "build/selfsign-static/release/s2a-selfsign.exe", tools / "selfsign/s2a-selfsign.exe")
 
     # 开发者证书签名工具 rcodesign（apple-codesign 官方发布件，版本 / SHA-256 钉在 pack/jobs/devcert.py，不符拒打；v0.2.4）
     import devcert

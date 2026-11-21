@@ -37,7 +37,14 @@ void s2a_log_out(int fd, const char *p, size_t n) {
 // ---- 桩 ----
 pthread_key_t g_key18, g_keytls, g_keytlr, g_keygate;
 void sw_gate(void) {}
-void s2a_crash_thread_init(void) {}
+// 同生产（crash.c）：每条游戏线程装一块备用信号栈，抢占信号（SA_ONSTACK）的信号帧落在它上面、不压游戏栈。
+//   原先是空桩：信号帧直接压在游戏栈 sp 以下（Darwin 先跳过 128 字节红区），⑲b 量到的是这个与生产不同的差，量不到 tramp 自己踩没踩
+void s2a_crash_thread_init(void) {
+    static __thread int done; if (done) return;
+    stack_t cur; if (!sigaltstack(NULL, &cur) && !(cur.ss_flags & SS_DISABLE)) { done = 1; return; }   // 已有一块（如 ASan 自己装的）：留着，换掉的话它退线程时 munmap 我们的内存会失败
+    stack_t ss = {.ss_sp = malloc(64u << 10), .ss_size = 64u << 10, .ss_flags = 0};
+    if (ss.ss_sp && !sigaltstack(&ss, NULL)) done = 1;
+}
 static uint8_t g_tlr_pool[16][0x200]; static int g_ntlr;
 void *s2a_tlr_alloc(void) { return g_tlr_pool[g_ntlr++ & 15]; }
 void s2a_tlr_free(void *p) { (void)p; }
@@ -60,11 +67,18 @@ static void (*g_hw_hook)(void);   // 暂停读上下文用：0x33 放开全局�
 void s2a_host_write_hook(uint64_t a, uint64_t n) { (void)a; (void)n; if (g_hw_hook) g_hw_hook(); }
 // ⑦ 用：空转函数所在的一段地址算「游戏代码」（让 SetThreadActivity 走 Mach 挂起分支）
 static void guest_spin(uint64_t arg);
+// 冻结代放核用例只在苹果正常构建跑：安卓暂停夹具（run_pause_wait_host.py）把 thread.c 拼进同一单元、关掉了苹果段（没有 s2a_snap_freeze / thaw），
+//   那时 native.h 先于本文件定义了 S2A_LOG_OUT_WEAK（本文件正常构建时自己先定义 S2A_LOGCAP_IMPL，不会有它）
+#if defined(__APPLE__) && !defined(S2A_LOG_OUT_WEAK)
+#define T_FZ 1
+static void fz_spin(uint64_t arg);   // 冻结代放核：持核在游戏代码里忙等（module_of 桩认它）
+#endif
 static void preempt_spin(uint64_t arg);   // ⑫ 用：纯自旋客体线程（时钟抢占测）
 static void ss_spin(uint64_t arg);        // ⑮ 用：纯自旋客体线程（调度计数正对照要在游戏代码里暂停它）
 static void ua_spin(uint64_t arg);        // ⑰ 用：纯自旋客体线程（游戏代码里暂停 / 恢复它）
 static void rp_spin(uint64_t arg);        // ⑱ 用：被连续抢占两次的纯自旋低优先级线程
 static void rz_spin(uint64_t arg);        // ⑲ 用：用 sp 下方（红区）存临时值的纯自旋线程（同改写器补丁区桩），被反复抢占
+static void bz_spin(uint64_t arg);        // ⑲b 用：sp 下方 4 KB 都是活数据（游戏收回 sp 后还用的变长数组，#515），被反复抢占
 static void start_probe(uint64_t arg);    // ⑯ 用：入口算游戏代码（sw_is_host_code 桩对它回 0），进门第一件事读持核
 static void mg_spin(uint64_t arg);        // ⑳ 用：高优先级、掩码 0x7 的纯自旋持核者（巫师3 现场 id 126 / 117）
 static void hz_spin(uint64_t arg);        // Horizon 时间片轮转用：优先级 59 的纯自旋持核者
@@ -84,6 +98,8 @@ module_t *module_of(const void *p) {
     if (a >= lo && a < lo + 0x400) { g_fake_mod.base = (uint8_t *)lo; g_fake_mod.patch_off = -1; return &g_fake_mod; }
     if (a >= lo2 && a < lo2 + 0x400) { g_fake_mod.base = (uint8_t *)lo2; g_fake_mod.patch_off = -1; return &g_fake_mod; }
     uint64_t lo6 = (uint64_t)(void *)rz_spin;
+    uint64_t lobz = (uint64_t)(void *)bz_spin;
+    if (a >= lobz && a < lobz + 0x400) { g_fake_mod.base = (uint8_t *)lobz; g_fake_mod.patch_off = -1; return &g_fake_mod; }
     if (a >= lo6 && a < lo6 + 0x400) { g_fake_mod.base = (uint8_t *)lo6; g_fake_mod.patch_off = -1; return &g_fake_mod; }
     uint64_t lo5 = (uint64_t)(void *)rp_spin;
     if (a >= lo5 && a < lo5 + 0x400) { g_fake_mod.base = (uint8_t *)lo5; g_fake_mod.patch_off = -1; return &g_fake_mod; }
@@ -95,6 +111,10 @@ module_t *module_of(const void *p) {
     if (a >= lo8 && a < lo8 + 0x400) { g_fake_mod.base = (uint8_t *)lo8; g_fake_mod.patch_off = -1; return &g_fake_mod; }
     uint64_t lo9 = (uint64_t)(void *)pm_spin;
     if (a >= lo9 && a < lo9 + 0x400) { g_fake_mod.base = (uint8_t *)lo9; g_fake_mod.patch_off = -1; return &g_fake_mod; }
+#ifdef T_FZ
+    uint64_t lo10 = (uint64_t)(void *)fz_spin;
+    if (a >= lo10 && a < lo10 + 0x400) { g_fake_mod.base = (uint8_t *)lo10; g_fake_mod.patch_off = -1; return &g_fake_mod; }
+#endif
     uint64_t lo3 = (uint64_t)(void *)ss_spin;
     if (a >= lo3 && a < lo3 + 0x400) { g_fake_mod.base = (uint8_t *)lo3; g_fake_mod.patch_off = -1; return &g_fake_mod; }
     return NULL;
@@ -219,10 +239,10 @@ static void arb64_case(void) {
     // ④ 64 位值相等 → 挂起；SignalToAddress 类型 0 唤醒后返回 0
     atomic_store(&g_aw64, 0x123456789ull); atomic_store(&g_aw64_rc, 1);
     spawn(addr_waiter64, 0, NULL);
-    uint64_t t0 = now_ns(); while (s2a_test_waiters(3, (uint64_t)&g_aw64) < 1 && now_ns() - t0 < 2000000000ull) sched_yield();
+    uint64_t t0 = now_ns(); while (s2a_test_waiters(3, (uint64_t)&g_aw64) < 1 && now_ns() - t0 < 30000000000ull) sched_yield();
     int nw = s2a_test_waiters(3, (uint64_t)&g_aw64);
     uint64_t s_[31] = {(uint64_t)&g_aw64, 0, 0, 1}; svc_thread(0x35, s_);
-    t0 = now_ns(); while (atomic_load(&g_aw64_rc) == 1 && now_ns() - t0 < 2000000000ull) sched_yield();
+    t0 = now_ns(); while (atomic_load(&g_aw64_rc) == 1 && now_ns() - t0 < 30000000000ull) sched_yield();
     CHECK(nw == 1 && s_[0] == 0 && atomic_load(&g_aw64_rc) == 0, "WaitIfEqual64 相等则挂起、被类型 0 唤醒：挂起 %d 个（期望 1）、发信号回 %#llx、等待方回 %#llx（期望 0）", nw, (unsigned long long)s_[0], (unsigned long long)atomic_load(&g_aw64_rc));
 }
 static void arb_case(int nw, int cnt, int32_t want, int want_woken) {
@@ -472,6 +492,31 @@ static __attribute__((noinline)) void rz_spin(uint64_t arg) { (void)arg;
     atomic_store(&g_rz_bad, bad); atomic_store(&g_rz_loops, n);
     uint64_t e[31] = {0}; svc_thread(0x0A, e);
 }
+// ---- ⑲b 抢占不碰被抢线程 sp 下方的大块活数据（#515：游戏开变长数组后 mov sp, x29 收回 sp，之后照读写 sp 以下的数组；旧 tramp 跑在游戏栈上、
+//      只从原 sp 让 256 字节，数组超出的部分被 tramp 的栈帧盖掉 → 野指针段错误）。L 在汇编里把 [sp-4096, sp) 512 个 8 字节全写成标记、空转、逐个读回比，
+//      H 反复同核抢占 L。期望 = 标记一个都没坏（标记是写进去的常数，与被测实现无关） ----
+static _Atomic int g_bz_ready, g_bz_stop, g_bz_hdone; static _Atomic uint64_t g_bz_bad, g_bz_loops;
+static __attribute__((noinline)) void bz_spin(uint64_t arg) { (void)arg;
+    uint64_t r[31] = {0}; svc_thread(0x25, r);
+    atomic_store(&g_bz_ready, 1);
+    uint64_t bad = 0, n = 0;
+    while (!atomic_load(&g_bz_stop)) {
+        uint64_t miss;
+        __asm__ volatile("movz x9, #0x5a5a\n movk x9, #0xa5a5, lsl #16\n movk x9, #0x4321, lsl #32\n"
+                         "sub x11, sp, #4096\n mov x10, #512\n 1: str x9, [x11], #8\n subs x10, x10, #1\n b.ne 1b\n"
+                         "mov x10, #4000\n 2: subs x10, x10, #1\n b.ne 2b\n"
+                         "sub x11, sp, #4096\n mov x10, #512\n mov %0, #0\n 3: ldr x12, [x11], #8\n cmp x12, x9\n cinc %0, %0, ne\n subs x10, x10, #1\n b.ne 3b"
+                         : "=&r"(miss) :: "x9", "x10", "x11", "x12", "cc", "memory");
+        bad += miss; n++;
+    }
+    atomic_store(&g_bz_bad, bad); atomic_store(&g_bz_loops, n);
+    uint64_t e[31] = {0}; svc_thread(0x0A, e);
+}
+static void bz_hi(uint64_t arg) { (void)arg;
+    uint64_t r[31] = {0}; svc_thread(0x25, r);   // 高优先级等核 0：靠抢占 L
+    atomic_fetch_add(&g_bz_hdone, 1);
+    uint64_t e[31] = {0}; svc_thread(0x0A, e);
+}
 static void rz_hi(uint64_t arg) { (void)arg;
     uint64_t r[31] = {0}; svc_thread(0x25, r);   // 高优先级等核 0：靠抢占 L
     atomic_fetch_add(&g_rz_hdone, 1);
@@ -556,7 +601,28 @@ __attribute__((noinline)) static void hz_spin(uint64_t arg) { (void)arg;
     while (!atomic_load(&g_hz_stop)) __asm__ volatile("" ::: "memory");
     uint64_t e[31] = {0}; svc_thread(0x0A, e); }
 static void hz_taker(uint64_t arg) { (void)arg; uint64_t r[31] = {0}; svc_thread(0x25, r); atomic_store(&g_hz_done, 1); uint64_t e[31] = {0}; svc_thread(0x0A, e); }
+// 等标志：调用处的 ms 只当「等不到判红」的兜底。11-19：原先 2～3 秒的上限在负载高时（线程起来 / 拿核晚）先到，假红；
+//   等「会发生」的事一律给 WAIT_LONG（30 秒）——正常时一置位就返回、不多花时间；等「不该发生」的负对照照旧用短窗（只会假绿不会假红）
+#define WAIT_LONG 30000
 static int wait_flag(_Atomic int *f, int ms) { for (int i = 0; i < ms && !atomic_load(f); i++) usleep(1000); return atomic_load(f); }
+// ---- 冻结代放核（即时存档 s2a_snap_freeze，虚拟核开）：S 持核在游戏代码里忙等（不进门，冻结 0.5 秒后被 Mach 挂住当安全点），
+//   T 与 S 同核、进系统调用后卡在出口取核（in_svc 还是 1、不算安全点）。期望按语义：冻结方代放 S 的核 → T 拿到核、停进出口 → 冻结在时限内判齐；
+//   解冻后 S 先取核再回游戏代码、接着计数；T 最终拿到核走完。修前：S 被挂住仍持核，T 永远到不了安全点，冻结超时（回 -1）
+#ifdef T_FZ
+int s2a_snap_freeze(int timeout_ms, int *nthr, int *nst); void s2a_snap_thaw(void);
+static _Atomic int g_fz_ready, g_fz_stop, g_fz_tdone, g_fz_rc = 99; static _Atomic uint64_t g_fz_n;
+// 冻结判安全点要看门帧 +816 的切栈槽（产品门帧 832 字节，单测别处的 31 字寄存器数组读到那里是越界垃圾）：本用例进门一律用整帧、切栈槽置非零
+#define FZ_FRAME(v) uint64_t v[104] = {0}; v[102] = 1
+static __attribute__((noinline)) void fz_spin(uint64_t arg) {
+    (void)arg; FZ_FRAME(r); svc_thread(0x25, r);   // 进一次门：出口取到 0 号核
+    atomic_store(&g_fz_ready, 1);
+    while (!atomic_load(&g_fz_stop)) atomic_fetch_add(&g_fz_n, 1);   // 持核、纯游戏代码忙等
+    FZ_FRAME(e); svc_thread(0x0A, e);
+}
+static void fz_taker(uint64_t arg) { (void)arg; FZ_FRAME(r); svc_thread(0x25, r); atomic_store(&g_fz_tdone, 1); FZ_FRAME(e); svc_thread(0x0A, e); }
+static void *fz_freezer(void *a) {   // 宿主线程发起冻结（同产品：存档线程不是游戏线程）
+    (void)a; int n = 0, nst[8] = {0}; int rc = s2a_snap_freeze(30000, &n, nst); atomic_store(&g_fz_rc, rc); if (rc >= 0) s2a_snap_thaw(); return NULL; }   // 冻结时限只当兜底（原 3 秒：负载高时同核线程到安全点慢 → 假红）
+#endif
 // ---- ⑩ yield 同优先级轮转：A/B 同优先级、同一单核（掩码 0x1）；A 持核空转，B 等核；A SleepThread(0) 让核 → 同优先级的 B 拿到核（Switch yield 轮转）。
 //      旧代码（yield 后立即重取、同优先级不让）B 拿不到 → 反证不过 ----
 static _Atomic int g_y_aready, g_y_bgo, g_y_bdone, g_y_bheld = -9, g_y_stop;
@@ -615,7 +681,7 @@ static void preempt_profile(void) {
         uint64_t s0 = 0, r0 = 0; s2a_test_preempt_diag(0, &s0, &r0, 0, 0);   // 本轮起点 SIGURG 发 / 达（算本轮增量）
         uint32_t lh = 0, hh = 0;
         spawn_prio(preempt_spin, 48, &lh); s2a_core_leave();   // W 让核（和 ⑫ 用例一致；否则 svc 入口 W 占核 0、L/H 上不来）
-        if (!wait_flag(&g_pe_lready, 2000)) {
+        if (!wait_flag(&g_pe_lready, WAIT_LONG)) {
             fail++; printf("  ⑫诊断[it=%d]：L 没上核（lready 超时）、L 持核 %d\n", it, s2a_test_held_core(lh));
             atomic_store(&g_pe_stop, 1); usleep(3000);
             { uint64_t c[31] = {lh}; svc_thread(0x16, c); }   // 关句柄回收线程对象（否则累积到 EVMAP 4096 限）
@@ -623,7 +689,7 @@ static void preempt_profile(void) {
         }
         uint64_t t0 = now_ns();
         spawn_prio(preempt_hi, 40, &hh); s2a_core_leave();
-        if (!wait_flag(&g_pe_hdone, 3000)) {
+        if (!wait_flag(&g_pe_hdone, WAIT_LONG)) {
             fail++;
             uint64_t wd = 0, s1 = 0, r1 = 0, lpc = 0; int lg = 0; s2a_test_preempt_diag(&wd, &s1, &r1, &lpc, &lg);
             printf("  ⑫诊断[it=%d]：本轮 SIGURG 发 %llu 达 %llu（本轮抢占%s发生）、watchdog 最后扫距今 %.1f ms、L 持核 %d、H 持核 %d、最后目标 PC %#llx 客体区 %d\n",
@@ -676,6 +742,20 @@ static void lt_waiter(uint64_t arg) { (void)arg;
     atomic_store(&g_lt_b, atomic_fetch_add(&g_lt_seq, 1) + 1);
     uint64_t y[31] = {0}; svc_thread(0x0B, y);   // 再进系统调用：唤醒方的「等它跑到下一次系统调用」在这里满足
     uint64_t e[31] = {0}; svc_thread(0x0A, e); }
+// ③b（#1520 D-BJZ6）：等待中途游戏关掉被等的事件读端句柄。Horizon 等的是对象：事件还被写端持着，从写端触发照样唤醒（甲）；不触发就按超时返回（乙），都不回句柄无效
+static uint32_t g_cw_h; static _Atomic int g_cw_done; static uint64_t g_cw_r0, g_cw_r1;
+static void cw_waiter(uint64_t arg) { uint32_t hs[1] = {g_cw_h}; uint64_t r[31] = {0, (uint64_t)hs, 1, arg}; svc_thread(0x18, r);
+    g_cw_r0 = r[0]; g_cw_r1 = r[1]; atomic_store(&g_cw_done, 1); uint64_t e[31] = {0}; svc_thread(0x0A, e); }
+static void cw_case(int signal_after, uint64_t timeout_ns, uint64_t want) {
+    uint64_t ev[31] = {0}; svc_thread(0x45, ev); uint32_t hw = (uint32_t)ev[1]; g_cw_h = (uint32_t)ev[2]; atomic_store(&g_cw_done, 0);
+    uint64_t r[31] = {0, (uint64_t)cw_waiter, timeout_ns, 0, 44, 0}; svc_thread(0x08, r); uint64_t s_[31] = {r[1]}; svc_thread(0x09, s_);
+    while (!s2a_test_blocked(r[1])) usleep(100);   // 真进了 0x18
+    uint64_t cl[31] = {g_cw_h}; svc_thread(0x16, cl);   // 游戏关掉被等的读端
+    if (signal_after) { uint64_t sg[31] = {hw}; svc_thread(0x11, sg); }
+    while (!atomic_load(&g_cw_done)) usleep(1000);
+    CHECK(g_cw_r0 == want && (want || g_cw_r1 == 0), "③b 等待中关读端%s：期望 %#llx → %#llx（下标 %llu；0xe401 = 句柄无效，旧实现醒来按句柄重查）",
+          signal_after ? "、再从写端触发" : "、不触发", (unsigned long long)want, (unsigned long long)g_cw_r0, (unsigned long long)g_cw_r1);
+    uint64_t cw[31] = {hw}; svc_thread(0x16, cw); }
 static volatile long g_lc[4]; static _Atomic int g_lc_done;
 static void lc_worker(uint64_t arg) { (void)arg;
     for (int round = 0; round < 5; round++) {
@@ -710,12 +790,18 @@ static _Atomic int g_q_ready, g_q_stop;
 static void q_free(uint64_t arg) { (void)arg; atomic_store(&g_q_ready, 1); while (!atomic_load(&g_q_stop)) {} uint64_t e[31] = {0}; svc_thread(0x0A, e); }
 static int lite_case(int mode) {   // 子进程里跑；mode 1 按需（缺省）/ 0 关；返回失败数
     bad = 0;   // fork 时继承了父进程的计数
-    if (mode == 2) setenv("S2A_CORES", "1", 1); else if (mode == 1) setenv("S2A_CORES", "ondemand", 1); else unsetenv("S2A_CORES");   // 0 / 3：缺省（关）
+    // 0 / 3 测「关」档语义：显式 S2A_CORES=0（11-19 起苹果平台不设时缺省是按需，靠缺省会测成按需）
+    if (mode == 2) setenv("S2A_CORES", "1", 1); else if (mode == 1) setenv("S2A_CORES", "ondemand", 1); else if (mode == 4) unsetenv("S2A_CORES"); else setenv("S2A_CORES", "0", 1);   // 4：不设 = 缺省（苹果按需、其它关）
     if (mode == 3) setenv("S2A_PEER_YIELD", "0", 1);   // 3：反证——唤醒让先也关
     setenv("S2A_SAMECORE_DIAG", "1", 1);
     s2a_thread_main_init();
-    const char *mn = mode == 2 ? "全部参与" : mode == 1 ? "按需" : mode == 0 ? "缺省（关）" : "关 + 不让先";
-    int excl = mode == 1 || mode == 2, peer = mode != 3;
+    #if defined(__APPLE__)
+    const int dflt_excl = 1;   // 11-19 维护者定：苹果平台缺省按需（同核互斥）
+#else
+    const int dflt_excl = 0;
+#endif
+    const char *mn = mode == 4 ? "不设（缺省）" : mode == 2 ? "全部参与" : mode == 1 ? "按需" : mode == 0 ? "关（S2A_CORES=0）" : "关 + 不让先";
+    int excl = mode == 1 || mode == 2 || (mode == 4 && dflt_excl), peer = mode != 3;
     s2a_test_mono_set(0);   // 钉钟：唤醒让先的 5 ms 安全阀不触发、让步退避不睡（本子进程只判序号 / 互斥语义）
     // ㉓
     { uint64_t ev[31] = {0}; svc_thread(0x45, ev); uint32_t hw = (uint32_t)ev[1]; g_lt_evr = (uint32_t)ev[2];
@@ -798,6 +884,7 @@ void s2a_guest_freeze(int on);
 uint32_t s2a_thread_current(void);
 int s2a_test_off_guest(uint32_t h);
 int s2a_test_unpaired(void);
+int s2a_test_core_lendable(uint32_t h); void s2a_test_soft_counts(uint64_t *keeps, uint64_t *steals); extern int g_vcore_soft;
 static _Atomic int g_lz_end_core = -9, g_lz_end_off = -9, g_lz_ret_core = -9, g_lz_ret_off = -9;
 static _Atomic int g_lz_ready, g_lz_go, g_lz_done;
 static _Atomic int g_lz2_in[3] = {-9, -9, -9}, g_lz2_out = -9, g_lz2_ready, g_lz2_go, g_lz2_done;
@@ -806,7 +893,7 @@ static _Atomic int g_lz_h_ok, g_lz_h_done;
 static void lz_worker(uint64_t arg) { (void)arg;    // ㉗：一次宿主阻塞 → 回客体
     uint64_t r[31] = {0}; svc_thread(0x25, r);                 // 一次系统调用：返回游戏前取到本核（0 号）
     s2a_core_block_begin(); s2a_core_block_end();              // 宿主阻塞：只放核；惰性化后不在这里取回
-    atomic_store(&g_lz_end_core, s2a_test_held_core(S2A_H_CUR_THREAD));
+    atomic_store(&g_lz_end_core, s2a_test_core_lendable(S2A_H_CUR_THREAD) == 1 ? -1 : s2a_test_held_core(S2A_H_CUR_THREAD));   // 可借（不持 / 持着可借）记 -1
     atomic_store(&g_lz_end_off, s2a_test_off_guest(S2A_H_CUR_THREAD));
     atomic_store(&g_lz_ready, 1);
     while (!atomic_load(&g_lz_go)) usleep(1000);
@@ -820,11 +907,11 @@ static void lz_nested(uint64_t arg) { (void)arg;    // ㉘：外层宿主调用�
     uint64_t r[31] = {0}; svc_thread(0x25, r);
     s2a_core_block_begin();                                    // 外层：调用点还持着宿主锁（本例用「还没配平」代表）
     s2a_guest_return();                                        // 没配平就回客体？不许取核、打红早报（本例随后立刻配平，所以这条线程不会真被饿死）
-    atomic_store(&g_lz2_in[0], s2a_test_held_core(S2A_H_CUR_THREAD));
+    atomic_store(&g_lz2_in[0], s2a_test_core_lendable(S2A_H_CUR_THREAD) == 1 ? -1 : s2a_test_held_core(S2A_H_CUR_THREAD));
     s2a_core_block_begin(); s2a_core_block_end();              // 内层：只减到 1
-    atomic_store(&g_lz2_in[1], s2a_test_held_core(S2A_H_CUR_THREAD));
+    atomic_store(&g_lz2_in[1], s2a_test_core_lendable(S2A_H_CUR_THREAD) == 1 ? -1 : s2a_test_held_core(S2A_H_CUR_THREAD));
     s2a_core_block_end();                                      // 最外层结束：仍不取核（要等回客体）
-    atomic_store(&g_lz2_in[2], s2a_test_held_core(S2A_H_CUR_THREAD));
+    atomic_store(&g_lz2_in[2], s2a_test_core_lendable(S2A_H_CUR_THREAD) == 1 ? -1 : s2a_test_held_core(S2A_H_CUR_THREAD));
     atomic_store(&g_lz2_ready, 1);
     while (!atomic_load(&g_lz2_go)) usleep(1000);
     s2a_guest_return();
@@ -851,7 +938,40 @@ static void lz_freeze_worker(uint64_t arg) { (void)arg;    // ㉚：冻结期间
     atomic_store(&g_lz3_done, 1);
     uint64_t e[31] = {0}; svc_thread(0x0A, e);
 }
+// ---- ㉛ 宿主侧可借（S2A_VCORE_SOFT，#1842）：进宿主没人等核时不放核、只置可借，回客体一次 CAS 拿回；有人等核就被取走。期望按构造手算：
+//   ① 单线程（独占核 0）进出宿主 N 次：每次回客体都拿回原核 → 免锁计数恰涨 N、被取走 0；
+//   ② 两条线程掩码都只含核 0，各做 N 次「回客体 → 非原子读改写共享计数 → 进宿主」：同核同一时刻只有一条在跑客体代码 → 计数恰为 2N（丢一次就是互斥破了）；
+//      两条争一个核 → 被取走 > 0；③ 计时 A/B（只报数）：同一循环 S2A_VCORE_SOFT 关（每次放核取核都进 g_cmu）与开各跑一遍
+enum { SC_N = 200000 };
+#include <sys/resource.h>
+static uint64_t cpu_ns(void) { struct rusage u; getrusage(RUSAGE_SELF, &u); return (uint64_t)(u.ru_utime.tv_sec + u.ru_stime.tv_sec) * 1000000000ull + (uint64_t)(u.ru_utime.tv_usec + u.ru_stime.tv_usec) * 1000ull; }
+static long g_sc_cnt; static _Atomic int g_sc_done, g_sc_go;   // spawn_mask 不带参数：圈数用常量 SC_N
+static void sc_loop(uint64_t arg) {
+    uint64_t r[31] = {0}; svc_thread(0x25, r);   // 系统调用出口取到核 0
+    while (!atomic_load(&g_sc_go)) usleep(100);
+    s2a_core_block_begin(); s2a_core_block_end();
+    (void)arg;
+    for (int i = 0; i < SC_N; i++) {
+        s2a_guest_return();                                  // 回客体：持核
+        long v = g_sc_cnt; __asm__ volatile("" ::: "memory"); g_sc_cnt = v + 1;   // 客体代码：同核互斥才不丢
+        s2a_core_block_begin(); s2a_core_block_end();        // 进宿主（直连调用）
+    }
+    s2a_guest_return();
+    atomic_fetch_add(&g_sc_done, 1);
+    uint64_t e[31] = {0}; svc_thread(0x0A, e);
+}
+// ---- ㉜ 调度诊断玩家局缺省关（#1842）：判定纯函数 显式 > 开发设施 > 关；关着时有人等核、看门狗醒着也不采样、不做持核长跑探测（不挂起线程）；
+//      开着照旧采样。A 持核 0 纯自旋、B 同核等核（同 ⑮ 的搭法），期望按构造：关 300 ms 采样 +0、长跑读数全不变；开后采样 ≥ 5 次 ----
+static _Atomic int g_sd_ready, g_sd_stop;
+static __attribute__((noinline)) void sd_spin(uint64_t arg) {
+    uint64_t r[31] = {0}; svc_thread(0x25, r);
+    if (!arg) atomic_store(&g_sd_ready, 1);
+    while (!atomic_load(&g_sd_stop)) __asm__ volatile("" ::: "memory");
+    uint64_t e[31] = {0}; svc_thread(0x0A, e);
+}
+int s2a_sched_diag_decide(const char *env, int dev); extern int g_sched_diag; void s2a_test_hostcore(uint64_t *, uint64_t *, uint64_t *, uint64_t *, uint64_t *, uint64_t *);
 int main(void) {
+    setenv("S2A_SCHED_DIAG", "1", 1);   // 调度计数 / 宿主侧持核长跑的用例（⑮ 等）要它：玩家局缺省关（#1842），本单测显式开；缺省关的行为由 ㉜ 单独测
     if (getenv("S2A_TEST_FOREIGN_TSD")) return foreign_tsd_before_init();
     // Isolate the deliberately occupied host key from the normal guest setup.
     { fflush(stdout); pid_t pid = fork();
@@ -860,10 +980,10 @@ int main(void) {
                         "uninitialized guest TSD treated an unrelated host key as a guest owner"); }
     pthread_key_create(&g_key18, NULL); pthread_key_create(&g_keytls, NULL); pthread_key_create(&g_keytlr, NULL); pthread_key_create(&g_keygate, NULL);
     signal(SIGALRM, timeout_kill); alarm(TIMEOUT_S);
-    for (int mode = 3; mode >= 0; mode--) {   // ㉓㉔㉕㉖：关 + 不让先（反证）/ 全部参与（S2A_CORES=1）/ 按需（=ondemand）/ 缺省（关、让先开）各一个子进程（cores_mode 进程内只读一次，必须在下面设 S2A_CORES=1 之前分出去）
+    for (int mode = 4; mode >= 0; mode--) {   // 4：不设 S2A_CORES（缺省档，苹果应同按需）   // ㉓㉔㉕㉖：关 + 不让先（反证）/ 全部参与（S2A_CORES=1）/ 按需（=ondemand）/ 缺省（关、让先开）各一个子进程（cores_mode 进程内只读一次，必须在下面设 S2A_CORES=1 之前分出去）
         fflush(stdout); pid_t pid = fork();
         if (!pid) { g_case = "㉓㉔㉕㉖"; int rc_ = lite_case(mode); fflush(stdout); _exit(rc_ ? 1 : 0); }
-        int st = 0; waitpid(pid, &st, 0); CHECK(WIFEXITED(st) && WEXITSTATUS(st) == 0, "㉓㉔㉕ 子进程（模式 %d：3 关+不让先 / 2 全部参与 / 1 按需 / 0 缺省）失败或异常退出（状态 %#x）", mode, st);
+        int st = 0; waitpid(pid, &st, 0); CHECK(WIFEXITED(st) && WEXITSTATUS(st) == 0, "㉓㉔㉕ 子进程（模式 %d：4 不设（缺省）/ 3 关+不让先 / 2 全部参与 / 1 按需 / 0 关）失败或异常退出（状态 %#x）", mode, st);
     }
     // 虚拟核开着跑全部用例（⑦⑧⑨ 只在开时有核锁可测；缺省关时它们空过、判据绿着失效）：S2A_CORES 缺省开前后都要在核锁下成立
     setenv("S2A_CORES", "1", 1);
@@ -882,6 +1002,26 @@ int main(void) {
       CHECK(!rc && !result, "unbound host thread acquired a guest identity after initialization"); }
     // W 的掩码显式设成 0~2（理想核 0）：S2A_HZ_CORE 开时主线程按 Horizon 只给缺省核（掩码 0x1），后面的用例都按「W 可用 0~2 号核」排的局面，开关两边一致
     { uint64_t m[31] = {g_wtag, 0, 0x7}; svc_thread(0x0F, m); }
+#ifdef T_FZ
+    {   // 冻结代放核（见 fz_spin 处说明）：虚拟核开（本段 S2A_CORES=1）
+        g_case = "冻结代放核";
+        void s2a_core_leave(void);
+        spawn(fz_spin, 0, NULL); s2a_core_leave();
+        CHECK(wait_flag(&g_fz_ready, WAIT_LONG), "冻结代放核：忙等线程没起来");
+        spawn(fz_taker, 0, NULL); s2a_core_leave(); usleep(300000);
+        CHECK(!atomic_load(&g_fz_tdone), "冻结代放核：前提不成立——同核线程没被挡在出口（忙等线程没持核）");
+        pthread_t fz; pthread_create(&fz, NULL, fz_freezer, NULL);
+        FZ_FRAME(sl); sl[0] = 4000000000ull; svc_thread(0x0B, sl);   // W 睡在门里（安全点），等冻结 / 解冻走完
+        pthread_join(fz, NULL);
+        int rc = atomic_load(&g_fz_rc);
+        CHECK(rc >= 0, "冻结代放核：冻结 30 秒没判齐（rc %d）——挂住的忙等线程仍持核，同核等核线程到不了安全点", rc);
+        uint64_t n1 = atomic_load(&g_fz_n), n2 = n1;   // 等计数涨（原先睡 200 ms 再比：负载高时忙等线程还没被调度到 → 假红）
+        for (int k = 0; k < WAIT_LONG && n2 == n1; k++) { usleep(1000); n2 = atomic_load(&g_fz_n); }
+        CHECK(n2 > n1, "冻结代放核：解冻后忙等线程没接着跑（计数 %llu → %llu）", (unsigned long long)n1, (unsigned long long)n2);
+        atomic_store(&g_fz_stop, 1);
+        CHECK(wait_flag(&g_fz_tdone, WAIT_LONG), "冻结代放核：同核等核线程解冻后 30 秒没拿到核走完");
+    }
+#endif
     {   // 理想核 -1 / -3（照 Ryujinx KThread.SetCoreAndAffinityMask；Blade II 起局：设（-1, 0x2）后把读回值原样设给新线程，原先 -1 记成 0 → 读回（0, 0x2）→ InvalidCombination、Break）
         g_case = "理想核 -1 / -3";
         uint64_t a[31] = {0, (uint64_t)reader, 0, 0, 44, 0}; svc_thread(0x08, a);
@@ -954,7 +1094,7 @@ int main(void) {
     svc_thread(0x18, w); CHECK(w[0] == 0xEA01, "未触发、超时 0：期望 0xEA01 → %#llx", w[0]);
     s2a_event_signal(ev);
     uint64_t w2[31] = {0, (uint64_t)hs, 1, 1000000000ull}; uint64_t t0 = now_ns(); svc_thread(0x18, w2);
-    CHECK(w2[0] == 0 && w2[1] == 0 && now_ns() - t0 < 100000000ull, "已触发：期望立即返回 0 下标 0 → %#llx 下标 %llu，%.1f ms", w2[0], w2[1], (now_ns() - t0) / 1e6);
+    CHECK(w2[0] == 0 && w2[1] == 0, "已触发：期望不挂起、回 0 下标 0（挂起的话没人再触发、只会超时回 0xEA01）→ %#llx 下标 %llu，%.1f ms", w2[0], w2[1], (now_ns() - t0) / 1e6);
     uint32_t hd = s2a_event_dup_read(ev); uint64_t cl[31] = {hr}; svc_thread(0x16, cl);
     uint32_t hs2[1] = {hd}; uint64_t w3[31] = {0, (uint64_t)hs2, 1, 0}; svc_thread(0x18, w3);
     CHECK(w3[0] == 0, "复制的读端在原读端关后仍可等：%#llx", w3[0]);
@@ -963,6 +1103,8 @@ int main(void) {
       s2a_event_signal(cc); s2a_event_release(cc); }
     CHECK(s2a_handle_get(S2A_H_CUR_THREAD, &k, &ck) && ck == g_wtag, "当前线程伪句柄 cookie 仍为句柄（伪句柄约定不变）");
 
+    g_case = "③b 等待中关句柄";
+    cw_case(1, 5000000000ull, 0); cw_case(0, 300000000ull, 0xEA01);
     // ④
     g_case = "④ SignalToAddress 类型 2";
     arb64_case(); arb_case(0, 0, 11, 0); arb_case(2, 0, 8, 2); arb_case(2, -1, 8, 2); arb_case(1, 1, 9, 1); arb_case(2, 2, 9, 2); arb_case(3, 2, 10, 2); arb_case(2, 1, 10, 1);
@@ -982,7 +1124,7 @@ int main(void) {
         g_case = "㉙ 停帧现场的同步调用";
         void s2a_core_leave(void);
         spawn(sv_spinner, 0, NULL); s2a_core_leave();   // 同 ⑦：主线程放核，空转线程拿核跑；导出现场是宿主侧、不用核
-        int ok = wait_flag(&g_sv_done, 5000);
+        int ok = wait_flag(&g_sv_done, WAIT_LONG);
         g_capn = 0; g_cap[0] = 0; atomic_store(&g_cap_on, 1); void s2a_thread_dump(void); s2a_thread_dump(); atomic_store(&g_cap_on, 0);
         char want[160]; snprintf(want, sizeof want, "svc 0x35 参数 %#llx 0 0x7 0x1，地址处值 调前 0x7 调后 0x7，返回 0", (unsigned long long)(uintptr_t)&g_sv);
         int hits = 0; for (const char *q = g_cap; (q = strstr(q, want)); q++) hits++;
@@ -990,7 +1132,7 @@ int main(void) {
         // 同一份现场：在跑线程还要打通用寄存器（x0–x28 共 8 行）。反证：去掉寄存器那段 → 0 行
         int regl = 0; for (const char *q = g_cap; (q = strstr(q, "寄存器 x28 ")); q++) regl++;
         CHECK(regl >= 1, "㉙ 停帧现场没打在跑线程的通用寄存器（寄存器 x28 行 %d 个）", regl);
-        atomic_store(&g_sv_go, 1); wait_flag(&g_sv_exit, 5000);   // 空转线程退出、放核后主线程再往下
+        atomic_store(&g_sv_go, 1); wait_flag(&g_sv_exit, WAIT_LONG);   // 空转线程退出、放核后主线程再往下
     }
     {   // ㉛ 停帧现场：等条件的线程打锁 / 键周围原样内存（从锁地址按 16 对齐往前 16 字节起 48 字节）。期望手写：
         //   等待中锁字已放（0）、键置 1，其余 10 个字是预先写的样式；导出现场应有一行「键周围内存 <结构首址>：」接这 12 个字。
@@ -1006,18 +1148,18 @@ int main(void) {
         char want[200]; snprintf(want, sizeof want, "键周围内存 %#llx：11111111 22222222 33333333 44444444 | 0badf00d 00000000 00000001 cafe0001 | 55555555 66666666 77777777 88888888",
                                  (unsigned long long)(uintptr_t)&g_kw[0]);
         CHECK(blocked && strstr(g_cap, want), "㉛ 停帧现场没打出等条件线程的键周围内存（期望含「%s」；等待者挂上 %d），截到：%s", want, blocked, g_cap);
-        uint64_t sg[31] = {(uint64_t)(uintptr_t)&g_kw[6], 1}; svc_thread(0x1D, sg); wait_flag(&g_kw_done, 5000);   // 放它走：拿回锁、退出
+        uint64_t sg[31] = {(uint64_t)(uintptr_t)&g_kw[6], 1}; svc_thread(0x1D, sg); wait_flag(&g_kw_done, WAIT_LONG);   // 放它走：拿回锁、退出
     }
 
     {   // ⑦
         g_case = "⑦ 暂停空转线程放核";
         void s2a_core_leave(void);
         uint32_t hs; spawn(guest_spin, 0, &hs); s2a_core_leave();
-        CHECK(wait_flag(&g_spin_ready, 2000), "⑦ 空转线程没起来");
+        CHECK(wait_flag(&g_spin_ready, WAIT_LONG), "⑦ 空转线程没起来");
         uint64_t pr[31] = {hs, 1}; svc_thread(0x32, pr); s2a_core_leave();
         CHECK(pr[0] == 0, "⑦ 暂停在游戏代码里空转的线程：rc %#llx", pr[0]);
         spawn(core_taker, 0, NULL); s2a_core_leave();
-        CHECK(wait_flag(&g_t_done, 2000), "⑦ 同核线程 2 秒拿不到核（被暂停的线程仍持核）");
+        CHECK(wait_flag(&g_t_done, WAIT_LONG), "⑦ 同核线程 30 秒拿不到核（被暂停的线程仍持核）");
 #if defined(__APPLE__)
         // 暂停读上下文（审计 P2-15）：0x33 放开全局锁、写出参之前另一条线程恢复目标（thr_unpause 持锁清 pmach 再 thread_resume）。
         //   期望按语义定：返回的是暂停期间拍下的那份——rc 0、pc 落在 guest_spin 的「游戏代码」段 [guest_spin, +0x400)（module_of 桩同口径）
@@ -1041,7 +1183,7 @@ int main(void) {
         extern void (*s2a_test_thr_freed)(void *); extern void (*s2a_test_after_lookup)(void *);
         atomic_store(&g_np_go, 0); atomic_store(&g_np_in_pause, 0); atomic_store(&g_np_free_in, 0); atomic_store(&g_np_free_after, 0); g_np_t = NULL;
         uint32_t hn; spawn(np_host_spin, 0, &hn); void s2a_core_leave(void); s2a_core_leave();
-        CHECK(wait_flag(&g_np_ready, 2000), "暂停中不释放：目标线程没起来");
+        CHECK(wait_flag(&g_np_ready, WAIT_LONG), "暂停中不释放：目标线程没起来");
         g_np_h = hn; s2a_test_thr_freed = np_freed; s2a_test_after_lookup = np_iter;
         uint64_t pr[31] = {hn, 1}; svc_thread(0x32, pr); s2a_core_leave();
         s2a_test_after_lookup = NULL;
@@ -1056,13 +1198,13 @@ int main(void) {
         g_case = "P1-49 ① C# 系统调用里被暂停";
         void s2a_core_leave(void);
         uint32_t h; spawn(pz_cs_target, 0, &h); s2a_core_leave();
-        CHECK(wait_flag(&g_pz_in, 2000), "P1-49 ① 目标没进 C# 系统调用");
+        CHECK(wait_flag(&g_pz_in, WAIT_LONG), "P1-49 ① 目标没进 C# 系统调用");
         uint64_t pr[31] = {h, 1}; svc_thread(0x32, pr); s2a_core_leave();
         atomic_store(&g_pz_go, 1);
         for (int i = 0; i < 2000 && !s2a_test_parked(h) && !atomic_load(&g_pz_after); i++) usleep(1000);
         int parked = s2a_test_parked(h), after = atomic_load(&g_pz_after);
         uint64_t ur[31] = {h, 0}; svc_thread(0x32, ur); s2a_core_leave();
-        int after2 = wait_flag(&g_pz_after, 2000);
+        int after2 = wait_flag(&g_pz_after, WAIT_LONG);
         CHECK(pr[0] == 0 && parked && !after && ur[0] == 0 && after2,
               "P1-49 ① 期望 暂停 rc 0、出 C# 后停在出口（自己停进 pause_park 1、越过出口 0）、恢复 rc 0、恢复后越过出口 1 → 实 %#llx、%d、%d、%#llx、%d",
               (unsigned long long)pr[0], parked, after, (unsigned long long)ur[0], after2);
@@ -1073,14 +1215,14 @@ int main(void) {
         atomic_store(&g_pz_in, 0); atomic_store(&g_pz_go, 0); atomic_store(&g_pz_after, 0); atomic_store(&g_pz_h, 0);
         s2a_test_svc_leave = pz_leave_hook;
         uint32_t h; spawn(pz_svc_target, 0, &h); s2a_core_leave(); atomic_store(&g_pz_h, h);
-        CHECK(wait_flag(&g_pz_in, 2000), "P1-49 ② 目标没走到 svc_exit 的清 in_svc 之前");
+        CHECK(wait_flag(&g_pz_in, WAIT_LONG), "P1-49 ② 目标没走到 svc_exit 的清 in_svc 之前");
         uint64_t pr[31] = {h, 1}; svc_thread(0x32, pr); s2a_core_leave();
         atomic_store(&g_pz_go, 1);
         for (int i = 0; i < 2000 && !s2a_test_parked(h) && !atomic_load(&g_pz_after); i++) usleep(1000);
         int parked = s2a_test_parked(h), after = atomic_load(&g_pz_after);
         s2a_test_svc_leave = NULL;
         uint64_t ur[31] = {h, 0}; svc_thread(0x32, ur); s2a_core_leave();
-        int after2 = wait_flag(&g_pz_after, 2000);
+        int after2 = wait_flag(&g_pz_after, WAIT_LONG);
         CHECK(pr[0] == 0 && parked && !after && ur[0] == 0 && after2,
               "P1-49 ② 期望 暂停 rc 0、停在出口（停进 pause_park 1、回到游戏代码 0）、恢复 rc 0、恢复后回到游戏代码 1 → 实 %#llx、%d、%d、%#llx、%d",
               (unsigned long long)pr[0], parked, after, (unsigned long long)ur[0], after2);
@@ -1089,7 +1231,7 @@ int main(void) {
         g_case = "P1-49 ③ Mach 挂住后、发布前被恢复";
         extern void (*s2a_test_pause_suspended)(void *); void s2a_core_leave(void);
         spawn(pm_spin, 0, &g_pm_h); s2a_core_leave();
-        CHECK(wait_flag(&g_pm_ready, 2000), "P1-49 ③ 空转线程没起来");
+        CHECK(wait_flag(&g_pm_ready, WAIT_LONG), "P1-49 ③ 空转线程没起来");
         s2a_test_pause_suspended = pm_hook;
         uint64_t pr[31] = {g_pm_h, 1}; svc_thread(0x32, pr); s2a_core_leave();
         s2a_test_pause_suspended = NULL;
@@ -1106,9 +1248,9 @@ int main(void) {
         g_case = "㉑ 直连阻塞放核";
         void s2a_core_leave(void);
         spawn(bk_waiter, 0, NULL); s2a_core_leave();
-        CHECK(wait_flag(&g_bk_in, 2000), "㉑ 阻塞线程没起来");
+        CHECK(wait_flag(&g_bk_in, WAIT_LONG), "㉑ 阻塞线程没起来");
         spawn(bk_signaler, 0, NULL); s2a_core_leave();
-        CHECK(wait_flag(&g_bk_done, 2500), "㉑ A 在 s2a_core_block_begin / end 之间阻塞时，同核 B 2.5 秒拿不到核（阻塞不放核）");
+        CHECK(wait_flag(&g_bk_done, WAIT_LONG), "㉑ A 在 s2a_core_block_begin / end 之间阻塞时，同核 B 2.5 秒拿不到核（阻塞不放核）");
     }
     {   // ㉗ 惰性取核（重定）：block_end 之后仍不持核且 off_guest=1，回客体代码那一刻才取核
         g_case = "㉗ 惰性取核：block_end 后不持核、回客体后持核";
@@ -1118,21 +1260,21 @@ int main(void) {
         { uint32_t h0; atomic_store(&g_lz_end_core, -9); atomic_store(&g_lz_end_off, -9);
           atomic_store(&g_lz_ready, 0); atomic_store(&g_lz_go, 0); atomic_store(&g_lz_done, 0);
           spawn(lz_worker, 0, &h0); s2a_core_leave();
-          CHECK(wait_flag(&g_lz_ready, 2000), "㉗ 负对照线程没起来");
+          CHECK(wait_flag(&g_lz_ready, WAIT_LONG), "㉗ 负对照线程没起来");
           CHECK(atomic_load(&g_lz_end_core) >= 0 && atomic_load(&g_lz_end_off) == 0,
                 "㉗ 负对照（开关关）：block_end 里就应已取核、off_guest 0 → %d、%d", atomic_load(&g_lz_end_core), atomic_load(&g_lz_end_off));
-          atomic_store(&g_lz_go, 1); CHECK(wait_flag(&g_lz_done, 2000), "㉗ 负对照线程没走完"); }
+          atomic_store(&g_lz_go, 1); CHECK(wait_flag(&g_lz_done, WAIT_LONG), "㉗ 负对照线程没走完"); }
         atomic_store(&g_lz_end_core, -9); atomic_store(&g_lz_end_off, -9); atomic_store(&g_lz_ret_core, -9); atomic_store(&g_lz_ret_off, -9);
         atomic_store(&g_lz_ready, 0); atomic_store(&g_lz_go, 0); atomic_store(&g_lz_done, 0);
         g_lazy_core = 1;
         uint32_t hl; spawn(lz_worker, 0, &hl); s2a_core_leave();
-        CHECK(wait_flag(&g_lz_ready, 2000), "㉗ 阻塞线程没起来");
-        { int hc = s2a_test_held_core(hl), og = s2a_test_off_guest(hl);
-          CHECK(hc == -1 && og == 1, "㉗ block_end 之后（还没回客体）应不持核、off_guest=1：期望持核 -1、off_guest 1 → %d、%d", hc, og); }
+        CHECK(wait_flag(&g_lz_ready, WAIT_LONG), "㉗ 阻塞线程没起来");
+        { int lend = s2a_test_core_lendable(hl), og = s2a_test_off_guest(hl);   // 宿主侧可借（S2A_VCORE_SOFT）：持着但等核者能直接取走，与不持核同样不构成「持宿主锁等核」的环
+          CHECK(lend == 1 && og == 1, "㉗ block_end 之后（还没回客体）核应可借（不持 / 持着可借）、off_guest=1：期望 1、1 → %d、%d", lend, og); }
         CHECK(atomic_load(&g_lz_end_core) == -1 && atomic_load(&g_lz_end_off) == 1, "㉗ （线程内自读）期望持核 -1、off_guest 1 → %d、%d",
               atomic_load(&g_lz_end_core), atomic_load(&g_lz_end_off));
         atomic_store(&g_lz_go, 1);
-        CHECK(wait_flag(&g_lz_done, 2000), "㉗ 线程没走完");
+        CHECK(wait_flag(&g_lz_done, WAIT_LONG), "㉗ 线程没走完");
         CHECK(atomic_load(&g_lz_ret_core) >= 0 && atomic_load(&g_lz_ret_core) <= 2 && atomic_load(&g_lz_ret_off) == 0,
               "㉗ 回到客体代码后必须持核：期望持核 0~2、off_guest 0 → %d、%d", atomic_load(&g_lz_ret_core), atomic_load(&g_lz_ret_off));
     }
@@ -1141,14 +1283,14 @@ int main(void) {
         void s2a_core_leave(void);
         int u0 = s2a_test_unpaired();
         uint32_t hn; spawn(lz_nested, 0, &hn); s2a_core_leave();
-        CHECK(wait_flag(&g_lz2_ready, 2000), "㉘ 嵌套线程没起来");
+        CHECK(wait_flag(&g_lz2_ready, WAIT_LONG), "㉘ 嵌套线程没起来");
         // 未配对时那次 s2a_guest_return() 走的是「不取核 + 打红」分支：判据是计数涨 1（日志只在前 8 次打，别靠看日志）
         CHECK(s2a_test_unpaired() - u0 == 1, "㉘ 外层未配平时回客体：应打红 1 次（不取核）→ %d 次", s2a_test_unpaired() - u0);
         CHECK(atomic_load(&g_lz2_in[0]) == -1 && atomic_load(&g_lz2_in[1]) == -1 && atomic_load(&g_lz2_in[2]) == -1,
               "㉘ 外层未配平 / 内层 end 后 / 最外层 end 后都应不持核：期望 -1 -1 -1 → %d %d %d",
               atomic_load(&g_lz2_in[0]), atomic_load(&g_lz2_in[1]), atomic_load(&g_lz2_in[2]));
         atomic_store(&g_lz2_go, 1);
-        CHECK(wait_flag(&g_lz2_done, 2000), "㉘ 嵌套线程没走完");
+        CHECK(wait_flag(&g_lz2_done, WAIT_LONG), "㉘ 嵌套线程没走完");
         CHECK(atomic_load(&g_lz2_out) >= 0 && atomic_load(&g_lz2_out) <= 2, "㉘ 最外层宿主调用返回客体代码后应持核：→ %d", atomic_load(&g_lz2_out));
     }
     {   // ㉙ 无槽的纯宿主线程调钩子 = 空操作。出图 / 计数 / 音频 / dm-encode / nvn-present 这几处宿主回调走 xs_stubs 的 1: br x16 尾跳
@@ -1156,7 +1298,7 @@ int main(void) {
         g_case = "㉙ 惰性取核：纯宿主线程空操作";
         pthread_t th; int cr = pthread_create(&th, NULL, lz_host_thread, NULL);
         CHECK(cr == 0, "㉙ 建宿主线程失败 rc=%d", cr);
-        CHECK(wait_flag(&g_lz_h_done, 2000), "㉙ 纯宿主线程调 s2a_guest_return() 没返回（应立刻返回）");
+        CHECK(wait_flag(&g_lz_h_done, WAIT_LONG), "㉙ 纯宿主线程调 s2a_guest_return() 没返回（应立刻返回）");
         if (!cr) pthread_join(th, NULL);
         CHECK(atomic_load(&g_lz_h_ok) == 1, "㉙ 纯宿主线程调钩子后不该有线程身份：ok %d", atomic_load(&g_lz_h_ok));
     }
@@ -1164,25 +1306,85 @@ int main(void) {
         g_case = "㉚ 惰性取核：冻结期间不取核";
         void s2a_core_leave(void); void s2a_guest_freeze(int on);
         uint32_t hz; spawn(lz_freeze_worker, 0, &hz); s2a_core_leave();
-        CHECK(wait_flag(&g_lz3_ready, 2000), "㉚ 冻结线程没起来");
+        CHECK(wait_flag(&g_lz3_ready, WAIT_LONG), "㉚ 冻结线程没起来");
         s2a_guest_freeze(1);
         atomic_store(&g_lz3_go, 1);
-        CHECK(wait_flag(&g_lz3_hook, 2000), "㉚ 线程没走到回客体钩子");
+        CHECK(wait_flag(&g_lz3_hook, WAIT_LONG), "㉚ 线程没走到回客体钩子");
         usleep(150000);
         { int hc = s2a_test_held_core(hz);
           CHECK(!atomic_load(&g_lz3_done) && hc == -1 && atomic_load(&g_lz3_core) == -9,
                 "㉚ 冻结期间回客体：应 park 住不取核 → 完成 %d、持核 %d、钩子后持核 %d",
                 atomic_load(&g_lz3_done), hc, atomic_load(&g_lz3_core)); }
         s2a_guest_freeze(0);
-        CHECK(wait_flag(&g_lz3_done, 3000), "㉚ 解冻后线程没走完");
+        CHECK(wait_flag(&g_lz3_done, WAIT_LONG), "㉚ 解冻后线程没走完");
         CHECK(atomic_load(&g_lz3_core) >= 0 && atomic_load(&g_lz3_core) <= 2, "㉚ 解冻后应取到核：→ %d", atomic_load(&g_lz3_core));
         g_lazy_core = 0;   // 收尾恢复旧行为（后面的用例不依赖惰性；本条用例之后也没有 block_* 调用者）
+    }
+    {   // ㉜ 调度诊断玩家局缺省关（见 sd_spin 处说明）
+        g_case = "㉜ 调度诊断缺省关";
+        CHECK(s2a_sched_diag_decide(NULL, 0) == 0 && s2a_sched_diag_decide("", 0) == 0, "㉜ 不设、开发设施关 → 关");
+        CHECK(s2a_sched_diag_decide(NULL, 1) == 1, "㉜ 不设、开发设施开 → 开");
+        CHECK(s2a_sched_diag_decide("1", 0) == 1 && s2a_sched_diag_decide("0", 1) == 0, "㉜ 显式最优先：=1 开、=0 关");
+        void s2a_core_leave(void);
+        int saved = g_sched_diag; g_sched_diag = 0;
+        atomic_store(&g_sd_ready, 0); atomic_store(&g_sd_stop, 0);
+        spawn(sd_spin, 0, NULL); s2a_core_leave();
+        CHECK(wait_flag(&g_sd_ready, WAIT_LONG), "㉜ A 没起来");
+        spawn(sd_spin, 1, NULL); s2a_core_leave();   // B 同核等核：看门狗醒着（有等核者）
+        usleep(50000);
+        uint64_t n0 = sched_samples(), h0[6], h1[6]; s2a_test_hostcore(&h0[0], &h0[1], &h0[2], &h0[3], &h0[4], &h0[5]);
+        usleep(300000);
+        uint64_t n1 = sched_samples(); s2a_test_hostcore(&h1[0], &h1[1], &h1[2], &h1[3], &h1[4], &h1[5]);
+        int same = 1; for (int i = 0; i < 6; i++) same &= h0[i] == h1[i];
+        CHECK(n1 == n0 && same, "㉜ 关：有人等核 300 ms，采样应 +0、持核长跑读数不变 → 采样 +%llu、长跑%s", (unsigned long long)(n1 - n0), same ? "不变" : "变了");
+        g_sched_diag = 1;
+        uint64_t n2 = n1; for (int k = 0; k < WAIT_LONG && n2 - n1 < 5; k++) { usleep(1000); n2 = sched_samples(); }
+        CHECK(n2 - n1 >= 5, "㉜ 开：采样应恢复（≥ 5 次）→ +%llu", (unsigned long long)(n2 - n1));
+        atomic_store(&g_sd_stop, 1); usleep(20000);
+        g_sched_diag = saved;
+    }
+    {   // ㉛ 宿主侧可借（见 sc_loop 处说明）
+        g_case = "㉛ 宿主侧可借：免锁拿回 / 被取走 / 同核互斥";
+        void s2a_core_leave(void);
+        g_lazy_core = 1; uint64_t k0, s0, k1, s1, k2, s2;
+        double ns_off = 0, ns_on = 0;
+        for (int pass = 0; pass < 2; pass++) {   // 0：关（每次进 g_cmu）、1：开；单线程，同一循环
+            g_vcore_soft = pass; g_sc_cnt = 0; atomic_store(&g_sc_done, 0); atomic_store(&g_sc_go, 0);
+            spawn_mask(sc_loop, 1); s2a_core_leave();
+            usleep(20000); s2a_test_soft_counts(&k0, &s0);   // 计数窗从「工作线程已取到核、等开跑」起：不含主线程放核 / 工作线程首次取核
+            uint64_t t0 = now_ns(); atomic_store(&g_sc_go, 1);
+            CHECK(wait_flag(&g_sc_done, WAIT_LONG), "㉛ 单线程循环没走完（%s）", pass ? "开" : "关");
+            double ns = (double)(now_ns() - t0) / SC_N; if (pass) ns_on = ns; else ns_off = ns;
+            s2a_test_soft_counts(&k1, &s1);
+            if (pass) CHECK(k1 - k0 == SC_N + 1 && s1 - s0 == 0 && g_sc_cnt == SC_N, "㉛① 开、独占核 0：免锁拿回应恰 %d、被取走 0、计数 %d → %llu、%llu、%ld", SC_N + 1, SC_N, (unsigned long long)(k1 - k0), (unsigned long long)(s1 - s0), g_sc_cnt);
+            else CHECK(k1 - k0 == 0, "㉛① 关：不该有免锁拿回 → %llu", (unsigned long long)(k1 - k0));
+        }
+        printf("  ㉛③ 进出宿主一次（含回客体）：关 %.0f ns、开 %.0f ns（单线程、只报数）\n", ns_off, ns_on);
+        for (int pass = 0; pass < 2; pass++) {   // ㉛④（只报数）：4 条线程各占一个核（掩码 1 / 2 / 4 / 8）同时进出宿主——放核取核都抢同一把 g_cmu、放核还广播
+            g_vcore_soft = pass; g_sc_cnt = 0; atomic_store(&g_sc_done, 0); atomic_store(&g_sc_go, 0);
+            for (int c = 0; c < 4; c++) { spawn_mask(sc_loop, 1u << c); s2a_core_leave(); }
+            usleep(50000); uint64_t t0 = now_ns(), c0 = cpu_ns(); atomic_store(&g_sc_go, 1);
+            { uint64_t w = now_ns(); while (atomic_load(&g_sc_done) < 4 && now_ns() - w < 60000000000ull) usleep(500); }
+            printf("  ㉛④ 4 线程各占一核同时进出宿主 %d 次：%s 墙钟 %.1f ms、进程 CPU %.1f ms（每次 %.0f ns CPU）\n", SC_N, pass ? "开" : "关",
+                   (now_ns() - t0) / 1e6, (cpu_ns() - c0) / 1e6, (double)(cpu_ns() - c0) / (4.0 * SC_N));
+        }
+        g_vcore_soft = 1; g_sc_cnt = 0; atomic_store(&g_sc_done, 0); atomic_store(&g_sc_go, 0);
+        spawn_mask(sc_loop, 1); s2a_core_leave(); spawn_mask(sc_loop, 1); s2a_core_leave();
+        usleep(20000); s2a_test_soft_counts(&k1, &s1); atomic_store(&g_sc_go, 1);
+        { uint64_t t0 = now_ns(); while (atomic_load(&g_sc_done) < 2 && now_ns() - t0 < 60000000000ull) usleep(1000); }
+        s2a_test_soft_counts(&k2, &s2);
+        CHECK(atomic_load(&g_sc_done) == 2, "㉛② 两条同核线程没走完（%d / 2）", atomic_load(&g_sc_done));
+        CHECK(g_sc_cnt == 2L * SC_N, "㉛② 同核互斥：共享计数应恰 %d → %ld（少了 = 两条同时在跑客体代码）", 2 * SC_N, g_sc_cnt);
+        CHECK(s2 - s1 > 0, "㉛② 两条争核 0：应有被取走 → 免锁 %llu、取走 %llu", (unsigned long long)(k2 - k1), (unsigned long long)(s2 - s1));
+        printf("  ㉛② 两线程同核：免锁拿回 %llu 次、被取走 %llu 次\n", (unsigned long long)(k2 - k1), (unsigned long long)(s2 - s1));
+        g_lazy_core = 0;
     }
     {   // ㉒ 没人等核时看门狗不轮询（10-24 测试设备2：常年 0.5 ms 轮询每秒 2000 次唤醒，直连整机多 1.16 W）：200 ms 里主动扫描 ≤ 2 次；旧代码约 400 次（反证）
         g_case = "㉒ 看门狗空闲不轮询";
         uint64_t s2a_test_wd_scans(void); void s2a_core_leave(void);
-        s2a_core_leave(); usleep(50000);   // 本线程放核、前面用例的线程都已退出：没有等核者
-        uint64_t a = s2a_test_wd_scans(); usleep(200000); uint64_t b = s2a_test_wd_scans();
+        s2a_core_leave();   // 本线程放核；前面用例的线程退完就没有等核者（原先只睡 50 ms 就当退完了，负载高时还有等核者、看门狗在扫 → 假红）
+        uint64_t a = 0, b = 99;   // 反复取 200 ms 窗，直到某窗扫描 ≤ 2 次（负载高只会让一窗里扫得更少）；150 窗（约 30 秒）都在扫 = 真在空转轮询
+        for (int k = 0; k < 150 && b - a > 2; k++) { a = s2a_test_wd_scans(); usleep(200000); b = s2a_test_wd_scans(); }
         CHECK(b - a <= 2, "㉒ 没人等核的 200 ms 里看门狗扫了 %llu 次（期望 ≤ 2）", (unsigned long long)(b - a));
     }
     {   // ㉗ 路径二：宿主区与 svc 往复 → svc_exit 消费 preempt_req（放核后按优先级重取）
@@ -1194,12 +1396,12 @@ int main(void) {
             atomic_store(&g_hp_ready, 0); atomic_store(&g_hp_stop, 0); atomic_store(&g_hp_done, 0);
             atomic_store(&g_hp_acore, -9); atomic_store(&g_hp_wcore, -9);
             uint32_t ha = spawn_core_mask(hp_host_loop, 0, 48, 1, 0x2); s2a_core_leave(); s2a_core_leave();
-            CHECK(wait_flag(&g_hp_ready, 2000) && atomic_load(&g_hp_acore) == 1,
+            CHECK(wait_flag(&g_hp_ready, WAIT_LONG) && atomic_load(&g_hp_acore) == 1,
                   "㉗ A（prio 48、掩码 0x2）应持 1 号核：起床 %d、持核 %d", wait_flag(&g_hp_ready, 0), atomic_load(&g_hp_acore));
             uint32_t hb = spawn_core_mask(hp_waiter, 0, 44, 1, 0x2); s2a_core_leave(); s2a_core_leave();
-            int got = wait_flag(&g_hp_done, 500);
+            int got = wait_flag(&g_hp_done, neg ? 500 : WAIT_LONG);   // 正向等它拿到核（30 秒兜底）；负对照 500 ms 里仍拿不到即可
             CHECK(neg ? !got : got,
-                  "㉗%s A 在宿主区与 svc 之间往复时，同核高优先级 B 500 ms %s（持核 %d；关掉 svc_exit 的 preempt_req 消费后应一直被挡）",
+                  "㉗%s A 在宿主区与 svc 之间往复时，同核高优先级 B %s（持核 %d；关掉 svc_exit 的 preempt_req 消费后应一直被挡）",
                   neg ? "（负对照）" : "", got ? "拿到核" : "拿不到核", atomic_load(&g_hp_wcore));
             atomic_store(&g_hp_stop, 1); usleep(20000);
             uint64_t c[31] = {0}; c[0] = ha; svc_thread(0x16, c); c[0] = hb; svc_thread(0x16, c);
@@ -1215,15 +1417,15 @@ int main(void) {
             atomic_store(&g_hp_ready, 0); atomic_store(&g_hp_stop, 0); atomic_store(&g_hp_done, 0);
             atomic_store(&g_hp_acore, -9); atomic_store(&g_hp_wcore, -9);
             uint32_t ha = spawn_core_mask(hp_host_hold, 0, 48, 1, 0x2); s2a_core_leave(); s2a_core_leave();
-            CHECK(wait_flag(&g_hp_ready, 2000) && atomic_load(&g_hp_acore) == 1,
+            CHECK(wait_flag(&g_hp_ready, WAIT_LONG) && atomic_load(&g_hp_acore) == 1,
                   "㉗ A（prio 48、掩码 0x2）应持 1 号核：起床 %d、持核 %d", wait_flag(&g_hp_ready, 0), atomic_load(&g_hp_acore));
             uint32_t hb = spawn_core_mask(hp_waiter, 0, 44, 1, 0x2); s2a_core_leave(); s2a_core_leave();
-            int got = wait_flag(&g_hp_done, 500);
+            int got = wait_flag(&g_hp_done, neg ? 500 : WAIT_LONG);   // 正向等它拿到核（30 秒兜底）；负对照 500 ms 里仍拿不到即可
             CHECK(neg ? !got : got,
-                  "㉗%s A 卡在宿主区不返回时，同核高优先级 B 500 ms %s（持核 %d；关掉 on_preempt 的当场放核后应一直被挡）",
+                  "㉗%s A 卡在宿主区不返回时，同核高优先级 B %s（持核 %d；关掉 on_preempt 的当场放核后应一直被挡）",
                   neg ? "（负对照）" : "", got ? "拿到核" : "拿不到核", atomic_load(&g_hp_wcore));
             atomic_store(&g_hp_stop, 1);
-            wait_flag(&g_hp_done, 1000); usleep(20000);
+            wait_flag(&g_hp_done, WAIT_LONG); usleep(20000);
             uint64_t c[31] = {0}; c[0] = ha; svc_thread(0x16, c); c[0] = hb; svc_thread(0x16, c);
         }
         s2a_test_preempt_host_release(1);
@@ -1232,21 +1434,21 @@ int main(void) {
         g_case = "⑧ 同掩码换核";
         void s2a_core_leave(void);
         spawn_core_mask(mask_spin, 0, 44, 0, 0x7); s2a_core_leave();
-        CHECK(wait_flag(&g_m_ready, 2000), "⑧ 空转线程没起来");
+        CHECK(wait_flag(&g_m_ready, WAIT_LONG), "⑧ 空转线程没起来");
         spawn_core_mask(mask_taker, 0, 44, 0, 0x7); s2a_core_leave();
-        CHECK(wait_flag(&g_m_done, 2000), "⑧ 同掩码（0~2）线程 2 秒拿不到别的核（全挤在理想核上）");
+        CHECK(wait_flag(&g_m_done, WAIT_LONG), "⑧ 同掩码（0~2）线程 30 秒拿不到别的核（全挤在理想核上）");
         atomic_store(&g_m_stop, 1);
     }
     {   // ⑨
         g_case = "⑨ 迁移";
         void s2a_core_leave(void);
         uint32_t ha9 = spawn_core_mask(mig_spin, 0, 44, 0, 0x7); s2a_core_leave();   // 掩码 0~2 显式设（不靠 -2 的语义）
-        CHECK(wait_flag(&g_g_ready, 2000), "⑨ 空转线程 A 没起来");
+        CHECK(wait_flag(&g_g_ready, WAIT_LONG), "⑨ 空转线程 A 没起来");
         int x = atomic_load(&g_g_acore);
         CHECK(x >= 0 && x <= 2, "⑨ A（掩码 0~2）应持 0~2 号核 → %d", x);
         if (x >= 0) {
             spawn_core(mig_taker, x); s2a_core_leave();
-            CHECK(wait_flag(&g_g_done, 2000), "⑨ 掩码只含 %d 号核的线程 B 2 秒拿不到核（A 占着空转、别的核空着却没把 A 挪走）", x);
+            CHECK(wait_flag(&g_g_done, WAIT_LONG), "⑨ 掩码只含 %d 号核的线程 B 30 秒拿不到核（A 占着空转、别的核空着却没把 A 挪走）", x);
             int ab = s2a_test_held_core(ha9);
             CHECK(atomic_load(&g_g_bcore) == x && ab >= 0 && ab <= 2 && ab != x, "⑨ 迁移后：期望 B 持 %d 号核、A 持 0~2 中别的核 → B %d、A %d", x, atomic_load(&g_g_bcore), ab);
         }
@@ -1256,9 +1458,9 @@ int main(void) {
         g_case = "⑩ yield 同优先级轮转";
         void s2a_core_leave(void);
         spawn_mask(yld_a, 0x1); s2a_core_leave();
-        CHECK(wait_flag(&g_y_aready, 2000), "⑩ A 没取到核");
+        CHECK(wait_flag(&g_y_aready, WAIT_LONG), "⑩ A 没取到核");
         spawn_mask(yld_b, 0x1); s2a_core_leave();
-        CHECK(wait_flag(&g_y_bdone, 2000) && atomic_load(&g_y_bheld) == 0,
+        CHECK(wait_flag(&g_y_bdone, WAIT_LONG) && atomic_load(&g_y_bheld) == 0,
             "⑩ A yield 后同优先级 B 没在有界时间拿到核（旧版 yield 立即拿回）→ B done %d 持核 %d", atomic_load(&g_y_bdone), atomic_load(&g_y_bheld));
         atomic_store(&g_y_stop, 1);
     }
@@ -1274,13 +1476,13 @@ int main(void) {
         void s2a_test_preempt_diag(uint64_t *, uint64_t *, uint64_t *, uint64_t *, int *);
         uint32_t pe_lh = 0, pe_hh = 0;
         spawn_prio(preempt_spin, 48, &pe_lh); s2a_core_leave();            // L 低优先级（prio 数值大）
-        CHECK(wait_flag(&g_pe_lready, 2000) && atomic_load(&g_pe_lcore) == 0, "⑫ L 没取到核 0 纯自旋");
+        CHECK(wait_flag(&g_pe_lready, WAIT_LONG) && atomic_load(&g_pe_lcore) == 0, "⑫ L 没取到核 0 纯自旋");
         uint64_t pe_s0 = 0, pe_r0 = 0; s2a_test_preempt_diag(0, &pe_s0, &pe_r0, 0, 0);   // 起点 SIGURG 发 / 达（失败时算本例增量）
         spawn_prio(preempt_hi, 40, &pe_hh); s2a_core_leave();              // H 高优先级（prio 数值小）同核 0 等核
         // 门禁只判「抢占最终发生、不死锁」：抢占延迟受系统负载影响（gate-host 超载 / 整机卡时 CPU 看门狗被挤、可能很慢），
         // 用「X ms 内抢占」这类时间阈值在超载 gate-host 上必然 flaky（和 t_det 计时判一个毛病）。给 10 秒宽超时——正常抢占亚毫秒级，
         // 10 秒只为抓「永不抢占」的真死锁、并给超载余量；抢占延迟快慢交 S2A_PREEMPT_PROFILE=N 报数、不在门禁判红。
-        uint64_t pe_t0 = now_ns(); int pe_ok = wait_flag(&g_pe_hdone, 10000);
+        uint64_t pe_t0 = now_ns(); int pe_ok = wait_flag(&g_pe_hdone, WAIT_LONG);
         printf("  ⑫ 抢占延迟 %.1f ms（仅报数、不判红；延迟分布见 S2A_PREEMPT_PROFILE=N build/tests/t_thread）\n", (double)(now_ns() - pe_t0) / 1e6);
         if (!(pe_ok && atomic_load(&g_pe_hcore) == 0)) {
             // 失败现场（真门禁偶发才走到；profile 5000 次压不出）：看门狗没扫 / 信号发了没达 / 达了但 PC 不在客体区，三者一眼分开
@@ -1298,7 +1500,7 @@ int main(void) {
         g_case = "⑬ 宿主持锁不死锁";
         void s2a_core_leave(void);
         spawn_prio(hostlock_worker, 44, NULL); s2a_core_leave();
-        CHECK(wait_flag(&g_hl_done, 3000), "⑬ 持宿主锁的线程被抢占信号轰炸后没在有界时间完成（疑死锁：on_preempt 宿主区碰了锁）");
+        CHECK(wait_flag(&g_hl_done, WAIT_LONG), "⑬ 持宿主锁的线程被抢占信号轰炸后没在有界时间完成（疑死锁：on_preempt 宿主区碰了锁）");
         atomic_store(&g_hl_stop, 1);
     }
     {   // ⑭ 空闲核迁移（纯函数）：H 高优先级持核 0、掩码 0/1，L 只能核 0，核 1 空 → Horizon：H 迁到核 1 照跑，L 上核 0
@@ -1314,16 +1516,19 @@ int main(void) {
         void s2a_test_samecore(uint64_t *, uint64_t *, uint64_t *); uint64_t sn0, sa0, sb0, sn1, sa1, sb1, sn2, sa2, sb2;
         usleep(20000); s2a_test_sched_stat(&n0, &pk, &m0, &c0, &p0); s2a_test_samecore(&sn0, &sa0, &sb0);
         uint32_t ha; spawn(ss_spin, 0, &ha); s2a_core_leave();
-        CHECK(wait_flag(&g_ss_ready[0], 2000), "⑮ A 没起来");
+        CHECK(wait_flag(&g_ss_ready[0], WAIT_LONG), "⑮ A 没起来");
         spawn(ss_spin, 1, NULL); s2a_core_leave();   // B 同优先级同核：A 纯自旋不让核，B 等核（同优先级不抢占）
-        usleep(100000); s2a_test_sched_stat(&n1, &pk, &m1, &c1, &p1); s2a_test_samecore(&sn1, &sa1, &sb1);
+        // 等两路采样各满 10 次再读（原先睡 100 ms 当「够 10 次」，负载高时采样线程没跑够 → 假红）
+        for (int k = 0; k < WAIT_LONG; k++) { s2a_test_sched_stat(&n1, &pk, &m1, &c1, &p1); s2a_test_samecore(&sn1, &sa1, &sb1); if (n1 - n0 >= 10 && sn1 - sn0 >= 10) break; usleep(1000); }
         CHECK(sn1 - sn0 >= 10 && sa1 == sa0 && sb1 == sb0, "⑮ 同核并发诊断干净段（开虚拟核）：采样 %llu 次、甲 +%llu、乙 +%llu（应 ≥10 / 0 / 0）",
             (unsigned long long)(sn1 - sn0), (unsigned long long)(sa1 - sa0), (unsigned long long)(sb1 - sb0));
         CHECK(n1 - n0 >= 10 && m1 == m0 && c1 == c0 && p1 == p0, "⑮ 干净段：采样 %llu 次、同核≥2 +%llu、不持核在跑 +%llu、同核同优先级 +%llu（应 ≥10 / 0 / 0 / 0）",
             (unsigned long long)(n1 - n0), (unsigned long long)(m1 - m0), (unsigned long long)(c1 - c0), (unsigned long long)(p1 - p0));
         void s2a_test_steal_core(uint32_t); s2a_test_steal_core(ha);   // 收走 A 的核：A 不持核接着自旋 → B 上核
-        CHECK(wait_flag(&g_ss_ready[1], 2000), "⑮ 收走 A 的核后 B 没拿到核");
-        usleep(100000); s2a_test_sched_stat(&n2, &pk, &m2, &c2, &p2); s2a_test_samecore(&sn2, &sa2, &sb2);
+        CHECK(wait_flag(&g_ss_ready[1], WAIT_LONG), "⑮ 收走 A 的核后 B 没拿到核");
+        // 正对照：等各项计数都涨过再读（原先睡 100 ms）
+        for (int k = 0; k < WAIT_LONG; k++) { s2a_test_sched_stat(&n2, &pk, &m2, &c2, &p2); s2a_test_samecore(&sn2, &sa2, &sb2);
+            if (sa2 > sa1 && sb2 > sb1 && m2 > m1 && c2 > c1 && p2 > p1 && pk >= 2) break; usleep(1000); }
         CHECK(sa2 > sa1 && sb2 > sb1, "⑮ 同核并发诊断正对照（A、B 同在核 0 掩码 0x1，收走 A 的核后两条同时在跑）没计到：甲 +%llu、乙 +%llu",
             (unsigned long long)(sa2 - sa1), (unsigned long long)(sb2 - sb1));
         CHECK(m2 > m1 && c2 > c1 && p2 > p1 && pk >= 2, "⑮ 正对照（收走核后不持核在跑）没被计到：同核≥2 +%llu、不持核在跑 +%llu、同核同优先级 +%llu、峰值 %d",
@@ -1342,12 +1547,12 @@ int main(void) {
         s2a_test_hostcore(&s0, &h0, &o0, &sh0, &mx0, &ps0);
         atomic_store(&g_hc_stop, 0); atomic_store(&g_hc_left, 0);
         spawn(hc_host_spin, 0, NULL); s2a_core_leave();
-        CHECK(wait_flag(&g_hc_ready, 2000), "㉑ 宿主侧持核线程没起来");
+        CHECK(wait_flag(&g_hc_ready, WAIT_LONG), "㉑ 宿主侧持核线程没起来");
         wait_samples(6, 120000000ull);   // 持核期间采样器至少采 6 次（原 usleep 120 ms 假定按时采到）
         atomic_store(&g_hc_stop, 1);
         // 设了停止不等于线程已停：负载高时持核线程几个采样周期都分不到 CPU、看不到停止，仍在持核，「再采两次」就落空，
         //   这段拖到负对照窗口里才结算、两条一起红（11-01 22:1x 负载 40–47，main 上同样复现）。先等它确认已放核，再数采样
-        CHECK(wait_flag(&g_hc_left, 10000), "㉑ 宿主侧持核线程 10 秒没放核");
+        CHECK(wait_flag(&g_hc_left, WAIT_LONG), "㉑ 宿主侧持核线程 10 秒没放核");
         wait_samples(2, 0);              // 放核后再采两次：这段在下一次采样时结算
         s2a_test_hostcore(&s1, &h1, &o1, &sh1, &mx1, &ps1);
         // 判这一段本身的长度（最近结算段），不看最长值的增量：最长是累计的，前序用例已有更长段时增量恒为 0，结果随用例顺序与负载变（10-31 #1196 n06ody 查明）
@@ -1357,7 +1562,7 @@ int main(void) {
         {   // 负对照：同样持核、同样不在系统调用，但 PC 在游戏代码里（ss_spin）→ 不算宿主侧长跑
             atomic_store(&g_ss_stop, 0);
             spawn(ss_spin, 0, NULL); s2a_core_leave();
-            CHECK(wait_flag(&g_ss_ready[0], 2000), "㉑ 负对照线程没起来");
+            CHECK(wait_flag(&g_ss_ready[0], WAIT_LONG), "㉑ 负对照线程没起来");
             wait_samples(6, 120000000ull);   // 负对照窗口里采样器也要真采过，否则「没计到」不能说明判对了
             atomic_store(&g_ss_stop, 1);
             wait_samples(2, 0);
@@ -1372,17 +1577,17 @@ int main(void) {
         g_case = "⑯ 新线程进门持核";
         void s2a_core_leave(void);
         spawn(start_probe, 0, NULL); s2a_core_leave();
-        CHECK(wait_flag(&g_sp_done, 2000) && atomic_load(&g_sp_core) == 0, "⑯ 新线程进游戏代码时不持核（入口第一条读持核 %d，应 0；done %d）", atomic_load(&g_sp_core), atomic_load(&g_sp_done));
+        CHECK(wait_flag(&g_sp_done, WAIT_LONG) && atomic_load(&g_sp_core) == 0, "⑯ 新线程进游戏代码时不持核（入口第一条读持核 %d，应 0；done %d）", atomic_load(&g_sp_core), atomic_load(&g_sp_done));
     }
     {   // ⑰
         g_case = "⑰ 恢复后先取核";
         void s2a_core_leave(void); void s2a_test_sched_stat(uint64_t *, int *, uint64_t *, uint64_t *, uint64_t *);
         uint64_t c0, c1; uint32_t ha;
         spawn(ua_spin, 0, &ha); s2a_core_leave();
-        CHECK(wait_flag(&g_ua_ready[0], 2000), "⑰ A 没起来");
+        CHECK(wait_flag(&g_ua_ready[0], WAIT_LONG), "⑰ A 没起来");
         spawn(ua_spin, 1, NULL); s2a_core_leave();   // B 同优先级同核等核
         uint64_t pr[31] = {ha, 1}; svc_thread(0x32, pr); s2a_core_leave();   // 暂停 A（暂停方代放核）→ B 上核
-        CHECK(pr[0] == 0 && wait_flag(&g_ua_ready[1], 2000), "⑰ 暂停 A 后 B 没拿到核（rc %#llx）", pr[0]);
+        CHECK(pr[0] == 0 && wait_flag(&g_ua_ready[1], WAIT_LONG), "⑰ 暂停 A 后 B 没拿到核（rc %#llx）", pr[0]);
         // 同步判定（10-23 改：原「恢复后 100 ms 内全局采样计数不涨」依赖看门狗采样时机，还会把别的线程 / 恢复窗口算进来，门禁负载下偶发红）：
         //   按采样器同一判定式直接问 A——恢复调用一返回问一次（恢复窗口），A 进入等核后再问一次（稳态）；两次都不能是「在跑却不持核」。
         //   旧代码（恢复后不挂抢占信号）A 恢复即不持核在跑，两次都是 1；恢复窗口未标宿主侧的版本第一次可能是 1
@@ -1399,12 +1604,12 @@ int main(void) {
         g_case = "⑱ 同一线程连续两次被抢占";
         void s2a_core_leave(void);
         spawn_prio_arg(rp_spin, 0, 48); s2a_core_leave();
-        CHECK(wait_flag(&g_rp_ready, 2000), "⑱ L 没起来");
+        CHECK(wait_flag(&g_rp_ready, WAIT_LONG), "⑱ L 没起来");
         spawn_prio_arg(rp_hi, 0, 40); s2a_core_leave();
-        int h1 = wait_flag(&g_rp_hdone[0], 3000);
+        int h1 = wait_flag(&g_rp_hdone[0], WAIT_LONG);
         usleep(20000);   // H1 退出放核，L 回核接着自旋
         spawn_prio_arg(rp_hi, 1, 40); s2a_core_leave();
-        int h2 = wait_flag(&g_rp_hdone[1], 3000);
+        int h2 = wait_flag(&g_rp_hdone[1], WAIT_LONG);
         CHECK(h1 && h2, "⑱ 第一次抢占 %s、第二次抢占 %s（期望都成功；第二次失败 = 被抢过一次的线程之后收不到抢占信号）", h1 ? "成功" : "失败", h2 ? "成功" : "失败");
         atomic_store(&g_rp_stop, 1);
     }
@@ -1412,7 +1617,7 @@ int main(void) {
         g_case = "⑲ 抢占不碰被抢线程 sp 下方";
         void s2a_core_leave(void);
         spawn_prio_arg(rz_spin, 0, 48); s2a_core_leave();
-        CHECK(wait_flag(&g_rz_ready, 2000), "⑲ L 没起来");
+        CHECK(wait_flag(&g_rz_ready, WAIT_LONG), "⑲ L 没起来");
         int got = 0;
         for (int i = 0; i < 40; i++) { int want = i + 1; spawn_prio_arg(rz_hi, 0, 40); s2a_core_leave();
             for (int k = 0; k < 3000 && atomic_load(&g_rz_hdone) < want; k++) usleep(1000);
@@ -1421,18 +1626,31 @@ int main(void) {
         for (int k = 0; k < 2000 && !atomic_load(&g_rz_loops); k++) usleep(1000);
         CHECK(got == 40 && atomic_load(&g_rz_bad) == 0, "⑲ 抢占 %d / 40 次成功；sp 下方标记被改 %llu 次（应 0，共转 %llu 圈）", got, (unsigned long long)atomic_load(&g_rz_bad), (unsigned long long)atomic_load(&g_rz_loops));
     }
+    {   // ⑲b
+        g_case = "⑲b 抢占不碰被抢线程 sp 下方 4 KB";
+        void s2a_core_leave(void);
+        spawn_prio_arg(bz_spin, 0, 48); s2a_core_leave();
+        CHECK(wait_flag(&g_bz_ready, WAIT_LONG), "⑲b L 没起来");
+        int got = 0;
+        for (int i = 0; i < 40; i++) { int want = i + 1; spawn_prio_arg(bz_hi, 0, 40); s2a_core_leave();
+            for (int k = 0; k < 3000 && atomic_load(&g_bz_hdone) < want; k++) usleep(1000);
+            if (atomic_load(&g_bz_hdone) >= want) got++; usleep(2000); }
+        atomic_store(&g_bz_stop, 1);
+        for (int k = 0; k < 2000 && !atomic_load(&g_bz_loops); k++) usleep(1000);
+        CHECK(got == 40 && atomic_load(&g_bz_bad) == 0, "⑲b 抢占 %d / 40 次成功；sp 下方 4 KB 标记被改 %llu 个（应 0，共转 %llu 圈）", got, (unsigned long long)atomic_load(&g_bz_bad), (unsigned long long)atomic_load(&g_bz_loops));
+    }
     {   // ⑳
         g_case = "⑳ 空闲核迁移不看优先级";
         void s2a_core_leave(void);
         spawn_core_mask(mg_spin, 0, 32, 1, 0x7); s2a_core_leave();
-        CHECK(wait_flag(&g_mg_hready, 2000), "⑳ H 没起来");
+        CHECK(wait_flag(&g_mg_hready, WAIT_LONG), "⑳ H 没起来");
         spawn_core_mask(mg_lo, 0, 44, 1, 0x2); s2a_core_leave();
         spawn_core_mask(mg_lo, 1, 44, 1, 0x2); s2a_core_leave();
-        for (int k = 0; k < 2000 && atomic_load(&g_mg_wdone) < 2; k++) usleep(1000);
+        for (int k = 0; k < WAIT_LONG && atomic_load(&g_mg_wdone) < 2; k++) usleep(1000);
         int ok = atomic_load(&g_mg_wdone) == 2;
-        CHECK(ok && atomic_load(&g_mg_wcore[0]) == 1 && atomic_load(&g_mg_wcore[1]) == 1, "⑳ W1 / W2（优先级 44、只能 1 号核）应都在 2 秒内拿到 1 号核：拿到 %d 个，持核 %d / %d（旧规则：H 优先级 32 持 1 号核自旋、0/2 号核空，W 永远等）", atomic_load(&g_mg_wdone), atomic_load(&g_mg_wcore[0]), atomic_load(&g_mg_wcore[1]));
+        CHECK(ok && atomic_load(&g_mg_wcore[0]) == 1 && atomic_load(&g_mg_wcore[1]) == 1, "⑳ W1 / W2（优先级 44、只能 1 号核）应都拿到 1 号核：拿到 %d 个，持核 %d / %d（旧规则：H 优先级 32 持 1 号核自旋、0/2 号核空，W 永远等）", atomic_load(&g_mg_wdone), atomic_load(&g_mg_wcore[0]), atomic_load(&g_mg_wcore[1]));
         atomic_store(&g_mg_stop, 1);
-        for (int k = 0; k < 2000 && atomic_load(&g_mg_hcore_after) == -9; k++) usleep(1000);
+        for (int k = 0; k < WAIT_LONG && atomic_load(&g_mg_hcore_after) == -9; k++) usleep(1000);
         int hc = atomic_load(&g_mg_hcore_after);
         CHECK(!ok || hc == 0 || hc == 2, "⑳ H 应被迁到空闲的 0 或 2 号核继续跑，实持核 %d", hc);
     }
@@ -1443,21 +1661,21 @@ int main(void) {
         uint64_t r[31] = {BOGUS, (uint64_t)&g_bl_lock, g_wtag}; svc_thread(0x1A, r);
         CHECK(r[0] == 0xE401, "ArbitrateLock 持有者句柄无效：应回 InvalidHandle 0xE401，实 %#llx", (unsigned long long)r[0]);
         spawn(bl_cv, 0, &g_bl_h);
-        uint64_t t0 = now_ns(); while (s2a_test_waiters(2, (uint64_t)&g_bl_key) < 1 && now_ns() - t0 < 2000000000ull) usleep(1000);
+        uint64_t t0 = now_ns(); while (s2a_test_waiters(2, (uint64_t)&g_bl_key) < 1 && now_ns() - t0 < 30000000000ull) usleep(1000);
         atomic_store(&g_bl_lock, BOGUS);   // 等待者已放锁、挂上条件变量；把锁字改成无效持有者
         uint64_t sg[31] = {(uint64_t)&g_bl_key, 1}; svc_thread(0x1D, sg);
-        CHECK(wait_flag(&g_bl_done, 2000) && atomic_load(&g_bl_rc) == 0xE401, "条件变量唤醒后锁字持有者无效：等待者应以 0xE401 醒来（%s，rc %#llx）",
-              atomic_load(&g_bl_done) ? "醒了" : "2 秒没醒", (unsigned long long)atomic_load(&g_bl_rc));
+        CHECK(wait_flag(&g_bl_done, WAIT_LONG) && atomic_load(&g_bl_rc) == 0xE401, "条件变量唤醒后锁字持有者无效：等待者应以 0xE401 醒来（%s，rc %#llx）",
+              atomic_load(&g_bl_done) ? "醒了" : "30 秒没醒", (unsigned long long)atomic_load(&g_bl_rc));
     }
     {
         g_case = "ArbitrateLock 快路径";
-        atomic_store(&g_fp_lock, 0); spawn(fp_arb, 0, &g_fp_h); wait_flag(&g_fp_ready, 2000); usleep(20000);
+        atomic_store(&g_fp_lock, 0); spawn(fp_arb, 0, &g_fp_h); wait_flag(&g_fp_ready, WAIT_LONG); usleep(20000);
         s2a_test_glock_hold(1); atomic_store(&g_fp_go, 1);
-        int done = wait_flag(&g_fp_done, 1000);
+        int done = wait_flag(&g_fp_done, WAIT_LONG);   // 持着 G 等：快路径不拿 G 就一定回得来；拿 G 就回不来，30 秒兜底判红（原 1 秒是墙钟）
         s2a_test_glock_hold(0);
-        if (!done) wait_flag(&g_fp_done, 2000);   // 反证路径：放了 G 它才回来，等它收尾
-        CHECK(done && atomic_load(&g_fp_rc) == 0, "锁字对不上时 ArbitrateLock 应不拿全局锁、1 秒内回 0（%s，rc %#llx）",
-              done ? "回来了" : "持 G 期间 1 秒没回（卡在全局锁上）", (unsigned long long)atomic_load(&g_fp_rc));
+        if (!done) wait_flag(&g_fp_done, WAIT_LONG);   // 反证路径：放了 G 它才回来，等它收尾
+        CHECK(done && atomic_load(&g_fp_rc) == 0, "锁字对不上时 ArbitrateLock 应不拿全局锁、持 G 期间照样回 0（%s，rc %#llx）",
+              done ? "回来了" : "持 G 期间 30 秒没回（卡在全局锁上）", (unsigned long long)atomic_load(&g_fp_rc));
     }
     if (getenv("S2A_SCHED_HZ") || getenv("S2A_HZ_CORE")) {   // Horizon 核号 -2 / 时间片轮转（只在 S2A_HZ_CORE 开时跑；期望照 Ryujinx KThread.Initialize / KScheduler.RotateScheduledQueue）
         g_case = "Horizon 核号 -2 / 时间片轮转";
@@ -1468,10 +1686,10 @@ int main(void) {
         { uint64_t c[31] = {ra[1]}; svc_thread(0x16, c); }   // 没启动，关掉
         atomic_store(&g_hz_stop, 0);
         spawn_core_mask(hz_spin, 0, 59, 0, 0x1); s2a_core_leave();
-        CHECK(wait_flag(&g_hz_ready, 2000), "时间片轮转：空转线程没起来");
+        CHECK(wait_flag(&g_hz_ready, WAIT_LONG), "时间片轮转：空转线程没起来");
         uint64_t t0 = now_ns();
         spawn_core_mask(hz_taker, 0, 59, 0, 0x1); s2a_core_leave();
-        int ok = wait_flag(&g_hz_done, 2000); uint64_t ms = (now_ns() - t0) / 1000000;
+        int ok = wait_flag(&g_hz_done, WAIT_LONG); uint64_t ms = (now_ns() - t0) / 1000000;
         CHECK(ok && ms <= 200, "时间片轮转：同核同优先级 59 的等核者应在 200 ms 内拿到核（10 ms 一轮）：%s，%llu ms", ok ? "拿到" : "没拿到", (unsigned long long)ms);
         atomic_store(&g_hz_stop, 1);
     }
@@ -1587,10 +1805,10 @@ int main(void) {
         void s2a_core_leave(void);
         int m0 = atomic_load(&g_tm_map);
         spawn(hs_exit, 0, NULL); s2a_core_leave();
-        CHECK(wait_flag(&g_hs_done[0], 2000), "宿主栈回收：第一条线程没跑到退出前");
+        CHECK(wait_flag(&g_hs_done[0], WAIT_LONG), "宿主栈回收：第一条线程没跑到退出前");
         usleep(20000); int u1 = atomic_load(&g_tm_unmap);
         spawn(hs_exit, 1, NULL); s2a_core_leave();
-        CHECK(wait_flag(&g_hs_done[1], 2000), "宿主栈回收：第二条线程没跑到退出前");
+        CHECK(wait_flag(&g_hs_done[1], WAIT_LONG), "宿主栈回收：第二条线程没跑到退出前");
         int m2 = atomic_load(&g_tm_map), u2 = atomic_load(&g_tm_unmap);
         CHECK(m2 - m0 == 2 && u2 - u1 >= 1, "宿主栈回收：建两条线程应映射 2 次栈（得 %d），建第二条时应至少还 1 次（第一条已退出；得 %d）", m2 - m0, u2 - u1);
         printf("  宿主栈回收：映射 %d 次，建第二条时还 %d 次\n", m2 - m0, u2 - u1);

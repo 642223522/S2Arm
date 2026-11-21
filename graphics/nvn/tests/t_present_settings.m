@@ -1,5 +1,6 @@
 // #604: GPU-rendered stimuli through the real direct presenter. The drawable
 // observer forwards to CAMetalLayer unchanged; it never supplies a replacement.
+#include <sched.h>
 #import <AppKit/AppKit.h>
 #import <Metal/Metal.h>
 #import <QuartzCore/QuartzCore.h>
@@ -19,6 +20,7 @@ void *front_metal_layer(void);
 void nvn_be_set_origin_lower_left(int on);
 double nvn_be_presented_time(uint64_t ticket);
 void mtl_grab_next_present(void (^cb)(const uint8_t *, size_t, size_t, size_t));
+int mtl_grab_inflight(void);
 
 static int checked, failed, shown;
 static id<MTLDevice> device;
@@ -101,7 +103,8 @@ static BOOL presentationConsistent(const PresentObservation *o, double productio
 
 static BOOL checkPresentation(NSString *name, uint64_t sequence, uint64_t ticket, id<CAMetalDrawable> drawable) {
     PresentObservation o;
-    double production, end=CACurrentMediaTime()+3;
+    // 等平台呈现回调，兜底 30 秒（原 3 秒：负载高时系统回调晚到就判不一致假红）；回调一到就退出循环
+    double production, end=CACurrentMediaTime()+30;
     for (;;) {
         double sample=drawable ? drawable.presentedTime : -1;
         pthread_mutex_lock(&drawableMutex);
@@ -203,9 +206,15 @@ static void noteWindow(NSString *phase, uint64_t ticket, id<CAMetalDrawable> dra
     });
 }
 
+// 滤镜 Fsr（AMD FSR 1）的格：截图 / 抓图口径不带 FSR（同选 Bilinear），所以画布与抓图本来就不同。capture 在这些格返回抓图（后面按「没过滤镜」写的判据
+//   全部照核抓图 = 抓图口径不变），画布另存 fsrDrawable、与抓图不同的像素数累进 fsrChanged，由 run 里 Fsr 那段判；逐像素对错在 native-test-present_fsr（不开窗口）
+static NSData *fsrDrawable; static int fsrChanged;
 static NSData *capture(id<MTLTexture> source, const int crop[4], BOOL flip, int width, int height, NSString *name) {
     dispatch_sync(dispatch_get_main_queue(), ^{ layer.drawableSize = CGSizeMake(width, height); [CATransaction flush]; });
     noteWindow([name stringByAppendingString:@"-before"], 0, nil);
+    // 上一次抓图的完成回调先唤醒我们、再清「抓图进行中」：清之前再上屏，这一帧不抓（请求留给下一次上屏），而本测一次只上屏一帧 → 干等到超时。
+    //   等它清零再登记（同 t_nvn_m3 / t_nvn_present_init / t_nvn_rscale；11-20 门禁主机负载 68 时 mtl3 两格卡到 60 秒闹钟就是这个）
+    while (mtl_grab_inflight()) sched_yield();
     nvn_be_set_origin_lower_left(flip);
     pthread_mutex_lock(&drawableMutex); observedDrawable = nil; uint64_t before = drawableCount; pthread_mutex_unlock(&drawableMutex);
     dispatch_semaphore_t captured = dispatch_semaphore_create(0);
@@ -219,7 +228,7 @@ static NSData *capture(id<MTLTexture> source, const int crop[4], BOOL flip, int 
     uint64_t serial = mtl_ext_tex((__bridge void *)source);
     uint64_t ticket = mtl_present_ext(serial, 0, (__bridge void *)producerEvent, producerValue, crop);
     lastTicket = ticket;
-    BOOL got = dispatch_semaphore_wait(captured, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) == 0;
+    BOOL got = dispatch_semaphore_wait(captured, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC)) == 0;   // 兜底 30 秒（原 5 秒）
     CHECK(got && grab && grabWidth == (size_t)width && grabHeight == (size_t)height,
         "%s production grab %zux%zu", name.UTF8String, grabWidth, grabHeight);
     if (!got || !grab || grabWidth != (size_t)width || grabHeight != (size_t)height) exit(1);
@@ -234,11 +243,14 @@ static NSData *capture(id<MTLTexture> source, const int crop[4], BOOL flip, int 
     if (!drawable || after != before + 1) exit(1);
     NSData *actual = readTexture(drawable.texture);
     int maximum, different = pixelDifference(actual, grab, 1, &maximum);
-    CHECK(different == 0, "%s actual drawable vs production grab: different=%d max=%d", name.UTF8String, different, maximum);
+    BOOL fsr = !strcmp(getenv("S2A_SCALING_FILTER") ?: "", "Fsr");
+    if (fsr) { fsrDrawable = actual; fsrChanged += different; }
+    else CHECK(different == 0, "%s actual drawable vs production grab: different=%d max=%d", name.UTF8String, different, maximum);
     shown += checkPresentation(name,after,ticket,drawable);
     noteWindow([name stringByAppendingString:@"-after"], ticket, drawable);
     saveImage(actual, width, height, name);
     saveImage(grab, width, height, [name stringByAppendingString:@"-grab"]);
+    if (fsr) return grab;
     return actual;
 }
 
@@ -315,15 +327,21 @@ static void asynchronousBatch(void) {
             dispatch_semaphore_signal(copied);
         }
     });
+    // 原先 300 ms 定时器置位生产者事件、判六帧入队在它之前返回：负载高时入队慢过 300 ms 就假红。
+    //   现在生产者事件由测试在入队返回之后手动置位（放行线程等「入队已返回」信号；兜底 30 秒照放——入队若错误地等生产者事件，
+    //   要到兜底才返回，此时事件已置位，判红）
     CFTimeInterval begin=CACurrentMediaTime();
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,300*NSEC_PER_MSEC),
-        dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{ producerEvent.signaledValue=delayedValue; });
+    dispatch_semaphore_t enqueued=dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
+        dispatch_semaphore_wait(enqueued,dispatch_time(DISPATCH_TIME_NOW,30*NSEC_PER_SEC)); producerEvent.signaledValue=delayedValue; });
     for(int i=0;i<ASYNC_FRAMES;i++) tickets[i]=mtl_present_ext(serials[i],0,(__bridge void *)producerEvent,delayedValue,NULL);
+    BOOL beforeEvent=producerEvent.signaledValue<delayedValue;
+    dispatch_semaphore_signal(enqueued);
     CHECK(tickets[0]==firstTicket && tickets[ASYNC_FRAMES-1]==firstTicket+ASYNC_FRAMES-1,
         "async batch enqueued six consecutive tickets %llu..%llu",tickets[0],tickets[ASYNC_FRAMES-1]);
-    CHECK(producerEvent.signaledValue<delayedValue,"async six-frame enqueue returned before the real 300 ms producer event (%.3f ms)",(CACurrentMediaTime()-begin)*1000);
+    CHECK(beforeEvent,"async six-frame enqueue returned before the producer event was signaled (%.3f ms)",(CACurrentMediaTime()-begin)*1000);
     nvn_be_drain();
-    BOOL complete=dispatch_semaphore_wait(copied,dispatch_time(DISPATCH_TIME_NOW,5*NSEC_PER_SEC))==0;
+    BOOL complete=dispatch_semaphore_wait(copied,dispatch_time(DISPATCH_TIME_NOW,30*NSEC_PER_SEC))==0;   // 兜底 30 秒（原 5 秒）
     CHECK(complete && pixels.count==ASYNC_FRAMES,"async true completion/drain and real drawable readback: %lu/6",(unsigned long)pixels.count);
     int actualShown=0;
     for(int i=0;i<ASYNC_FRAMES && complete && i<(int)pixels.count;i++) {
@@ -411,6 +429,21 @@ static void run(void) {
             different = pixelDifference(scaled,expected,1,&maximum);
             CHECK(different==0, "%s matches independent pixel-center scale: different=%d max=%d",filter,different,maximum);
         }
+        if (!strcmp(filter, "Fsr")) {
+            // FSR 1 的画布（上面 scaled 是抓图，已按双线性参考核过）：离边 > 4 个源像素的平坦区保持源值（± 2：RCAS 的近似倒数让纯白落到 254）、不透明；
+            //   边附近区别于双线性；整格里画布确实与抓图不同（FSR 真的上了屏）。EASU / RCAS 逐像素对 CPU 参考在 native-test-present_fsr
+            const uint8_t *q = fsrDrawable.bytes; int flatBad = 0, flatN = 0;
+            for (int y=0; y<2*h; y++) for (int x=0; x<2*w; x++) {
+                double sx = (x+0.5)/2, sy = (y+0.5)/2;
+                if (fabs(sx-0.27*sy-8.31) <= 4) continue;
+                int want = sx > 0.27*sy+8.31 ? 255 : 0, i = 4*(y*2*w+x); flatN++;
+                for (int c=0; c<3; c++) flatBad += abs(q[i+c]-want) > 2;
+                flatBad += q[i+3] != 255;
+            }
+            CHECK(fsrDrawable.length == (NSUInteger)(2*w*2*h*4) && flatN > 0 && flatBad == 0, "Fsr drawable keeps flat regions far from the edge: %d bad of %d", flatBad, flatN);
+            different = pixelDifference(fsrDrawable,referenceScale(native,w,h,2*w,2*h,NO),1,&maximum);
+            CHECK(different > 0 && fsrChanged > 0, "Fsr drawable differs from bilinear near the edge: different=%d max=%d; drawable vs grab so far: %d pixels", different, maximum, fsrChanged);
+        }
 
         id<MTLTexture> plane = renderPattern(64,36,1,0,0,64,36,0);
         id<MTLTexture> srgb = [plane newTextureViewWithPixelFormat:MTLPixelFormatBGRA8Unorm_sRGB];
@@ -457,13 +490,31 @@ static void run(void) {
 // NSWindowOcclusionStateVisible 位（与焦点无关——无人值守跑门禁必中）。此时
 // 「真 drawable 到达可见显示」本就不成立，格记「未证」退 77 而非红。
 // S2A_PS_ENV 是测试缝：sleep=模拟屏睡（早探针、不建窗口），offspace=模拟窗口
-// 不在活动 Space（走 500ms 晚探针），awake=钉醒（配 S2A_PS_WINDOW 验红路仍通）。
+// 不在活动 Space（走 500ms 起的轮询探针），awake=钉醒（配 S2A_PS_WINDOW 验红路仍通）。
 static int displayEnvUnproven(void) {
     const char *sim = getenv("S2A_PS_ENV");
     if (sim) return !strcmp(sim, "sleep");
     uint32_t count = 0;
     CGGetActiveDisplayList(0, NULL, &count);
     return count == 0 || CGDisplayIsAsleep(CGMainDisplayID());
+}
+
+static void awaitWindow(int left) {   // 主队列上：每 50 ms 看一次持有生产图层的窗口，left 次后仍不可见判红
+    NSWindow *window=nil;
+    for(NSWindow *candidate in NSApp.windows) if(candidate.contentView.layer==layer) { window=candidate; break; }
+    const char *sim=getenv("S2A_PS_ENV");
+    BOOL offSpace = sim ? !strcmp(sim,"offspace") : (window && ![window isOnActiveSpace]);
+    if(displayEnvUnproven() || offSpace) {
+        printf("未证：宿主显示休眠或窗口不在活动 Space\n"); exit(77);
+    }
+    BOOL visible=window && (window.occlusionState & NSWindowOcclusionStateVisible);
+    const char *simw=getenv("S2A_PS_WINDOW");      // 测试缝：occluded=钉真不可见，验原检查红路仍通（不等，当场判）
+    BOOL pinned=simw && !strcmp(simw,"occluded");
+    if(pinned) visible=NO;
+    if(!(window && visible) && !pinned && left>0) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW,50*NSEC_PER_MSEC),dispatch_get_main_queue(), ^{ awaitWindow(left-1); }); return; }
+    CHECK(window && visible,"production window is visible");
+    if(!window || !visible) exit(1);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{ run(); });
 }
 
 int main(int argc, const char **argv) {
@@ -487,21 +538,8 @@ int main(int argc, const char **argv) {
         if(!observer || !originalNextDrawable || !class_addMethod(observer,@selector(nextDrawable),(IMP)observeDrawable,"@@:")) exit(1);
         objc_registerClassPair(observer); object_setClass(layer,observer);
         [CATransaction flush];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,500*NSEC_PER_MSEC),dispatch_get_main_queue(), ^{
-            NSWindow *window=nil;
-            for(NSWindow *candidate in NSApp.windows) if(candidate.contentView.layer==layer) { window=candidate; break; }
-            const char *sim=getenv("S2A_PS_ENV");
-            BOOL offSpace = sim ? !strcmp(sim,"offspace") : (window && ![window isOnActiveSpace]);
-            if(displayEnvUnproven() || offSpace) {
-                printf("未证：宿主显示休眠或窗口不在活动 Space\n"); exit(77);
-            }
-            BOOL visible=window && (window.occlusionState & NSWindowOcclusionStateVisible);
-            const char *simw=getenv("S2A_PS_WINDOW");      // 测试缝：occluded=钉真不可见，验原检查红路仍通
-            if(simw && !strcmp(simw,"occluded")) visible=NO;
-            CHECK(window && visible,"production window is visible");
-            if(!window || !visible) exit(1);
-            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{ run(); });
-        });
+        // 原先 500 ms 后只看一次窗口可见：负载高时窗口还没上屏就判红。现在 500 ms 起每 50 ms 看一次，等到可见为止（兜底 30 秒，等不到判红）
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,500*NSEC_PER_MSEC),dispatch_get_main_queue(), ^{ awaitWindow(600); });
     });
     s2a_front_run(NULL); return 1;
 }

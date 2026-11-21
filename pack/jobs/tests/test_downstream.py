@@ -276,10 +276,10 @@ class WinContext:
     def begin(self, name, i, n): self.steps.append((i, n, name))
     def emit(self, kind, m): self.messages.append(m)
 
-    def run(self, cmd, log, env=None):
-        self.runs.append([str(x) for x in cmd])
+    def run(self, cmd, log, env=None, cwd=None):
+        self.runs.append([str(x) for x in cmd]); self.cwds = getattr(self, "cwds", []) + [cwd]
         if "-e" in self.runs[-1]:
-            self.ents = plistlib.loads(Path(self.runs[-1][self.runs[-1].index("-e") + 1]).read_bytes())
+            self.ents = plistlib.loads((Path(cwd or ".") / self.runs[-1][self.runs[-1].index("-e") + 1]).read_bytes())
 
 
 class FakeWin:
@@ -342,6 +342,11 @@ class WinInstallTest(unittest.TestCase):
         self.assertEqual(self.c.ents, {IML: True})
         self.assertEqual(self.c.runs[0][:3], ["rcodesign.exe", "sign", "-e"])
         self.assertTrue(self.c.runs[0][-1].endswith("Demo.app"))
+        # D-J7CH：rcodesign 的 -e 是「作用范围:值」、按第一个冒号拆，Windows 盘符路径会把权限挂到「C」上（os error 3）
+        #   → 只传不含冒号的文件名、在权限文件所在目录里跑；被签的 .app 传绝对路径（运行目录换了也找得到）
+        e = self.c.runs[0][self.c.runs[0].index("-e") + 1]
+        self.assertNotIn(":", e); self.assertEqual(e, "downstream.entitlements")
+        self.assertIsNotNone(self.c.cwds[0]); self.assertTrue(Path(self.c.runs[0][-1]).is_absolute())
         self.assertIn("Payload/Demo.app/Demo", W.names)   # 交给 plumesign 的是重新打好的 .ipa
         self.assertEqual((W.ns.udid, W.ns.plumesign), ("UDID1", "plumesign.exe"))
         self.assertEqual((W.pushed["udid"], W.pushed["bid"], W.pushed["pack"]), ("UDID1", "io.s2arm.ds.demo.abcde12345", self.rec["pack"]))
@@ -405,6 +410,36 @@ class HostTest(unittest.TestCase):
         # 下游 v2.3.3 起做包不再要 C 编译器 / .NET / spirv-cross（壳里自带预编件，#1272），Windows 也能出：登记表放开
         real = ds.load()
         self.assertEqual(ds.hosts(real["d2r-mobile"]), ["mac", "windows"])
+
+
+class DownstreamInput(unittest.TestCase):
+    """#1570：共用解包只有 RomFS 镜像 romfs.std 时，交给下游做包工具的目录要有逐文件的 romfs/。期望手写：
+    ① 只有 romfs.std → 工具拿到 work/downstream-input：exefs、ctl 里的文件是解包目录对应文件的硬链接（同 inode），romfs/ 下每个文件与镜像里逐字节相同，镜像不放进去；
+    ② 解包目录本来就有 romfs/ 真目录 → 原样交解包目录、不展开；③ 两种都没有 → 原样交（缺什么由工具自己报）"""
+    def setUp(self):
+        from test_onerom import std_romfs
+        self.d = Path(tempfile.mkdtemp()); self.addCleanup(lambda: __import__("shutil").rmtree(self.d, ignore_errors=True))
+        self.ex = self.d / "extract"; (self.ex / "exefs").mkdir(parents=True); (self.ex / "ctl").mkdir()
+        (self.ex / "exefs/main").write_bytes(b"MAIN")
+        self.files = {"build_manifest.psv": b"psv" * 1000, "a.bin": bytes(range(256)) * 300, "empty": b""}
+        self.std = std_romfs(self.files)
+        c = unittest.mock.Mock(); c.engine = str(JOBS.parents[1]); self.c = c
+
+    def test_image_is_expanded(self):
+        (self.ex / "romfs.std").write_bytes(self.std)
+        got, expanded = ds._downstream_input(self.c, self.ex, self.d / "work")
+        self.assertEqual((got, expanded), (self.d / "work/downstream-input", self.d / "work/downstream-input/romfs"))
+        self.assertEqual(sorted(p.name for p in got.iterdir()), ["ctl", "exefs", "romfs"])
+        self.assertEqual(((got / "exefs/main").read_bytes(), (got / "exefs/main").stat().st_ino), (b"MAIN", (self.ex / "exefs/main").stat().st_ino))
+        self.assertEqual({p.name: p.read_bytes() for p in (got / "romfs").iterdir()}, self.files)
+
+    def test_real_romfs_dir_passes_through(self):
+        (self.ex / "romfs").mkdir(); (self.ex / "romfs/x").write_bytes(b"x")
+        self.assertEqual(ds._downstream_input(self.c, self.ex, self.d / "work"), (self.ex, None))
+        self.assertFalse((self.d / "work").exists())
+
+    def test_no_romfs_passes_through(self):
+        self.assertEqual(ds._downstream_input(self.c, self.ex, self.d / "work"), (self.ex, None))
 
 
 if __name__ == "__main__":

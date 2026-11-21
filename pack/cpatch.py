@@ -41,6 +41,13 @@ def bid_match(ours, patch):
     return len(p) >= 16 and ours.startswith(p)
 
 
+def visible(text):
+    """去掉 Unicode 格式字符（Cf：零宽空格、BOM、方向控制符 U+202A–202E 等）：从网页 / 聊天复制补丁时常夹进来，看不见，
+    却让十六进制地址解析失败——#1775 风花雪月金手指「00000AFCC4\u202c」int(…, 16) 抛 ValueError，整次出包停在改写。补丁里没有合法的 Cf 字符"""
+    import unicodedata
+    return ''.join(ch for ch in text if unicodedata.category(ch) != 'Cf')
+
+
 def parse_pchtxt(text):
     """→ (首个构建号, [{bid, name, enabled, writes, bad}])；每段按自身 bid 匹配。切块即结束上一段，不要求额外 @stop。
     语义同 IPSwitch 规范与 Ryujinx IPSwitchPatcher（11-02 根修，docs/研究/情报/20261028_60帧补丁与宽屏补丁规律.md 2.3 三处出入）：
@@ -49,7 +56,7 @@ def parse_pchtxt(text):
       空行：结束当前段（同 Ryujinx；之后的字节行没有段，不收）。
     """
     blocks, lines, have_bid = [], [], False
-    for line in text.splitlines():
+    for line in visible(text).splitlines():
         if line.strip().split()[:1] == ['@stop']: break
         if line.strip().startswith('@nsobid'):
             if have_bid: blocks.append('\n'.join(lines)); lines = []
@@ -60,13 +67,17 @@ def parse_pchtxt(text):
     for block in blocks:
         m = re.search(r'@nsobid-([0-9A-Fa-f]+)', block)
         bid = m.group(1).upper() if m else ''
-        cur, name, shift = None, '', 0
+        cur, name, shift, prev_c = None, '', 0, False
         for line in block.splitlines():
             s = line.strip()
-            if not s: cur = None; continue
+            if not s: cur = None; prev_c = False; continue
             if s.startswith('//') or s.startswith('#'):
-                if s.startswith('//') or s.startswith('#'): name = s.lstrip('/#').strip()
-                continue
+                # 段名 = 段前紧挨着的那几行注释，连在一起（#1493：作者写「// 10320x4320 Docked」「// Use Extended Memory Layout」两行，
+                #   原先只取最后一行，玩家看到的名字成了「Use Extended Memory Layout」、分辨率丢了）；隔了空行或别的行就重新算
+                t = s.lstrip('/#').strip()
+                name = (f'{name} · {t}' if name and t else name or t) if prev_c else t
+                prev_c = True; continue
+            prev_c = False
             if s.startswith('@'):
                 w = s.split()[0]
                 if w in ('@enabled', '@disabled'): cur = {'bid': bid, 'name': name, 'enabled': w == '@enabled', 'writes': [], 'bad': ''}; secs.append(cur)
@@ -146,7 +157,7 @@ def scan(index_dirs, exefs, log=None):
     """→ [{module, cat, name, writes, license, path, base}]：程序号（前 13 位，含更新 / 追加内容的号）与模块构建号都对上的补丁段（只收开着的段、没有看不懂的行）。
     只比构建号会串款：sdk 等公共模块各游戏同一份二进制、构建号相同（10-27 暗黑3 的 sdk 匹配上古惑狼 / 奥日的帧率补丁）"""
     pid = program_id(os.path.join(exefs, 'main.npdm'))[:13]
-    mods = {f: module_bid(os.path.join(exefs, f)) for f in sorted(os.listdir(exefs)) if f not in ('rtld',) and not f.endswith('.npdm') and os.path.isfile(os.path.join(exefs, f))}
+    mods = {f: module_bid(os.path.join(exefs, f)) for f in sorted(os.listdir(exefs)) if f not in ('rtld',) and not f.endswith('.npdm') and not f.startswith('._') and os.path.isfile(os.path.join(exefs, f))}
     foreign = []   # 版本对不上的宽屏补丁段（跨版本移植的原料，见函数尾）
     out, skipped, taken = [], {}, {}   # taken：跨目录按编号去重（第二轮合集原样含第一轮文件，两轮同时在盘上时同一份补丁只收一次，否则写入翻倍）；编号 → 选份依据（重复出现时补全判不了的项）
     for base in index_dirs:
@@ -942,6 +953,7 @@ def _reg_writes(op):
 
 def parse_cheats(text):
     """→ (文件头里的 BID 或 '', [{name, master, writes:[(偏移, 字节)] 或 None（有不能编进包的行）}])"""
+    text = visible(text)
     m = re.search(r'BID\s*=\s*([0-9A-Fa-f]{16,64})', text.split('\n', 1)[0])
     bid, out, cur, written = (m.group(1).upper() if m else ''), [], None, set()   # written：整份文件里有指令写的寄存器
     for line in text.splitlines():
@@ -957,9 +969,11 @@ def parse_cheats(text):
             if not re.fullmatch(r'[0-9A-Fa-f]{8}', w[0]): written |= set(range(16))
             elif w[0][0] != '0': written |= _reg_writes(w[0])
             continue
-        if c.group(3) != '0': cur.setdefault('regs', set()).add(int(c.group(3), 16))
-        width = int(c.group(1)); off = int(c.group(4) + w[1], 16)
-        val = int(''.join(w[2:]), 16)
+        try:
+            regs = int(c.group(3), 16); width = int(c.group(1)); off = int(c.group(4) + w[1], 16); val = int(''.join(w[2:]), 16)
+        except ValueError:   # 这一行地址 / 数值看不懂：这一条交运行时（不编进包），别的条目照收，不让整次出包失败
+            cur['other'] = True; continue
+        if regs: cur.setdefault('regs', set()).add(regs)
         if val >> (8 * width): cur['other'] = True; continue
         cur['writes'].append((off, val.to_bytes(width, 'little')))
     return bid, [dict(e, writes=None if e['other'] or (e.get('regs', set()) & written) else e['writes']) for e in out if e['writes'] or e['other']]
@@ -972,7 +986,10 @@ def module_layout(path):
     text_end, ro, data = segs[0][0] + len(segs[0][1]), segs[1][0], segs[2][0]
     ln = data + len(segs[2][1]) + struct.unpack_from('<I', hdr, 0x3c)[0]
     bias = (0x4000 - (data & 0x3fff)) & 0x3fff if data < ((text_end + 0x3fff) & ~0x3fff) else 0
-    return text_end, ro, ln, min((ln + 0x3fff) & ~0x3fff, ((ln + bias + 0x3fff) & ~0x3fff) - bias)
+    return text_end, ro, ln, min((ln + KEY_TAIL_MIN + 0x3fff) & ~0x3fff, ((ln + bias + KEY_TAIL_MIN + 0x3fff) & ~0x3fff) - bias)
+
+
+KEY_TAIL_MIN = 0x1000   # 映像结尾到键页至少留的可写空余（同 runtime/rewriter/rewriter.c KEY_TAIL_MIN；#1628 结尾压 16 KB 边界时原先为 0）
 
 
 MIRROR_FPSL = 0x400   # 映像结尾可写空余的分区：前 0x400 字节给金手指空洞开关表，之后给 FPSLocker 变量（各管各的，不重叠）

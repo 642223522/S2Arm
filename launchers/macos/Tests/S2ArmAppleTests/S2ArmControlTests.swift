@@ -49,11 +49,52 @@ import AppKit
         XCTAssertNil(model.session, "上面这些一个作业都没起")
     }
 
+    /// 0.6.0 发版闸门：/update-phone 与界面手机条按钮同一条路。新手机（这台电脑没有它的装壳记录，phoneUpdate 为空）带 device → 照样装壳；
+    ///   不带 device → 照旧 409（控制口往设备上装东西要说明装到哪台）
+    func testUpdatePhoneInstallsOnNewPhoneWithDevice() async {
+        XCTAssertNil(model.phoneUpdate)
+        let none = await post("/update-phone")
+        XCTAssertEqual(none.0, 409, "没记录又没说哪台：照旧 409"); XCTAssertNil(model.lastUpdateArgs)
+        let (code, body) = await post("/update-phone", ["device": "NEW-UDID"])
+        XCTAssertEqual(code, 200, "新手机带 device：同界面按钮直接装（修前 409）"); XCTAssertEqual(body["ok"] as? Bool, true)
+        XCTAssertEqual(model.lastUpdateArgs?.device, "NEW-UDID"); XCTAssertEqual(model.lastUpdateArgs?.acceptStale, false)
+    }
+
+    /// 有装机记录（壳比本版旧）：照旧更新记录里那台，不带 device 也行
+    func testUpdatePhoneWithRecordStillUpdates() async {
+        model.phoneUpdates = [PhoneUpdate(catalog: ["device": "OLD-UDID", "name": "甲", "games": [], "stale": []])]
+        let (code, body) = await post("/update-phone")
+        XCTAssertEqual(code, 200); XCTAssertEqual(body["ok"] as? Bool, true)
+        XCTAssertEqual(model.lastUpdateArgs?.device, "OLD-UDID")
+    }
+
+    /// 11-19 自签走查结构 8：出包页「出完之后」只管出包页那一次。选了导出时，续签 / 更新 S2Arm 没指定就照样装到手机（原先沿用记忆只导出、不动手机，7 天到点打不开）
+    func testRenewIgnoresExportPageChoice() async {
+        let before = UserDefaults.standard.object(forKey: "S2AIosAfterPack")
+        defer { UserDefaults.standard.set(before, forKey: "S2AIosAfterPack") }
+        model.iosAfterPack = "export"
+        model.updatePhone(acceptStale: false, repack: [], language: "zh-Hans", device: "PHONE1", ask: false)
+        XCTAssertNotNil(model.lastUpdateArgs)
+        XCTAssertNil(model.lastUpdateArgs?.mode, "没指定 = 装到手机")
+        XCTAssertEqual(model.lastUpdateArgs?.device, "PHONE1")
+    }
+
+    /// s2armctl dismiss（「关掉提示框」）要关得掉新功能大窗和更新弹窗，同玩家点关闭；修前只清报错、弹窗原样开着
+    func testDismissClosesFeatureSpotlightAndUpdatePopup() async {
+        for popup: [String: Any] in [["kind": "feature", "id": "v0.0.0-probe"], ["kind": "update", "version": "99.0.0"]] {
+            model.updatePopup = popup
+            let code = await post("/dismiss").0
+            XCTAssertEqual(code, 200)
+            XCTAssertNil(model.updatePopup, "dismiss 后 \(popup["kind"] ?? "") 弹窗应关掉")
+        }
+    }
+
     func testHelpListsTheSameCallsS2armctlUses() async {
         let r = await control.handle(ControlRequest(method: "GET", path: "/help", headers: [:], body: [:]))
         let calls = ((try? JSONSerialization.jsonObject(with: r.body) as? [String: Any])?["endpoints"] as? [[String: String]] ?? []).compactMap { $0["call"] }
         for c in ["GET /state", "GET /targets", "POST /keys {path}", "POST /games {paths:[…]}", "POST /build {gameId, target, spaceOverride?}",
-                  "POST /installCheck {gameId}", "POST /install {gameId, acceptDropped?, acceptNoBackup?, acceptStale?}", "POST /delete {gameId}", "POST /launch {gameId}"] {
+                  "POST /installCheck {gameId}", "POST /install {gameId, acceptDropped?, acceptNoBackup?, acceptStale?}", "POST /delete {gameId}", "POST /launch {gameId}",
+                  "POST /phone-identity {device, force?}", "POST /install-action {gameId, id}"] {
             XCTAssertTrue(calls.contains(c), c)
         }
     }
@@ -64,7 +105,7 @@ import AppKit
             .write(to: root.appendingPathComponent("logs/jobs/t1.json"))
         let s = control.state()
         for k in ["selection", "showOnboarding", "onboardingStep", "keyStatus", "hasImportedKeys", "environmentReady", "checkingEnvironment",
-                  "checks", "games", "tasks", "queue", "notice", "error", "installReadiness", "waitingForAccess", "cachedAt", "windows", "overlays"] {
+                  "checks", "games", "tasks", "queue", "notice", "error", "installReadiness", "waitingForAccess", "cachedAt", "windows", "overlays", "presented"] {
             XCTAssertNotNil(s[k], k)
         }
         let t = (s["tasks"] as? [[String: Any]])?.first

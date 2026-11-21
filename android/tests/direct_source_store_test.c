@@ -19,13 +19,21 @@ void s2a_source_log_line(const char *line) { (void)line; g_source_log_lines++; }
 static int fails;
 #define CHECK(cond, what) do { if (!(cond)) { printf("FAIL: %s\n", what); fails++; } } while (0)
 
+// 生产口径的控制段：键第 2 代先把 [0x790,0x798)、[0x7d0,0x7e8) 落在 control_bytes 内的字节按 0 算（graphics/nvn/gfx/nvn/nvn_key.h）；这里按规则另写一遍，不调被测实现
+static const uint8_t *key_control(const void *control, uint32_t control_bytes, uint8_t buf[0x880]) {
+    memcpy(buf, control, control_bytes);
+    for (uint32_t i = 0x790; i < 0x798 && i < control_bytes; i++) buf[i] = 0;
+    for (uint32_t i = 0x7d0; i < 0x7e8 && i < control_bytes; i++) buf[i] = 0;
+    return buf;
+}
 // 生产口径的短 key：SHA-256(control‖code) 的前 8 字节（与前端 keys_hash 同一字节顺序）。
 static void make_key(const void *code, uint32_t code_bytes, const void *control, uint32_t control_bytes,
                      uint8_t out[8]) {
     s2a_sha256 c;
     uint8_t md[32];
     s2a_sha256_init(&c);
-    s2a_sha256_update(&c, control, control_bytes);
+    uint8_t kc[0x880];
+    s2a_sha256_update(&c, key_control(control, control_bytes, kc), control_bytes);
     s2a_sha256_update(&c, code, code_bytes);
     s2a_sha256_final(&c, md);
     memcpy(out, md, 8);
@@ -35,7 +43,8 @@ static void make_digest(const void *code, uint32_t code_bytes, const void *contr
                         uint8_t out[32]) {
     s2a_sha256 c;
     s2a_sha256_init(&c);
-    s2a_sha256_update(&c, control, control_bytes);
+    uint8_t kc[0x880];
+    s2a_sha256_update(&c, key_control(control, control_bytes, kc), control_bytes);
     s2a_sha256_update(&c, code, code_bytes);
     s2a_sha256_final(&c, out);
 }
@@ -378,6 +387,7 @@ int main(void) {
         s2a_source_pin_stats(&ps);
         CHECK(ps.pinned_entries == 1 && ps.pins == 1, "exactly the program-pinned source is reported pinned");
         CHECK(ps.evict_skipped > 0, "eviction skipped the pinned entry");
+        CHECK(ps.keep_over_budget == 0, "evictable entries exist: the soft budget holds, nothing is let through over it");
         CHECK(s2a_source_identity(key_pin2, (uint8_t[32]){0}, NULL, NULL) == 0,
               "a program-pinned source survives byte-budget eviction");
         // 模拟 program 销毁/换 SetShaders：解 pin 后该条目回到可淘汰集合。
@@ -447,6 +457,59 @@ int main(void) {
         CHECK(ps.pins == 0 && ps.pinned_entries == 0, "all program pins released");
     }
 
+    // ---- 字节预算只约束可淘汰的条目（#1622）：活 program 把软预算占满后，新来的源仍收，直到字节安全阀 ----
+    //      原先 keep 在「可淘汰的没有了」时直接失败：一款游戏进标题 3D 时 5,711 个活程序恰好占满 64 MiB，
+    //      之后注册的 123 个程序存不进去（每笔用到它们的绘制都报 source_snapshot_missing）。
+    {
+        s2a_source_clear();
+        enum { OV_MAX = (int)(S2A_SOURCE_HARD_BYTES / (200u * 1024u)) + 16 };
+        static uint8_t ov_ctl[OV_MAX][S2A_SOURCE_CONTROL_BYTES];
+        static uint8_t ov_key[OV_MAX][8];
+        static struct s2a_source_pin_ref ov_ref[OV_MAX];
+        struct s2a_source_pin_stats ps0, ps;
+        s2a_source_pin_stats(&ps0);
+        uint32_t en = 0, by = 0, dr0 = 0, dr = 0;
+        s2a_source_stats(&en, &by, &dr0);
+        int logs0 = g_source_log_lines, logs_mid = -1, stored = 0, first_over = -1;
+        for (; stored < OV_MAX; stored++) {   // 每条 256 KiB code：存一条、立刻 pin 一条（同 nvnProgramSetShaders 存源即 pin）
+            memset(ov_ctl[stored], (uint8_t)(0x40 + stored), S2A_SOURCE_CONTROL_BYTES);
+            uint32_t uniq = (uint32_t)stored;
+            memcpy(ov_ctl[stored] + 0x10, &uniq, 4);   // 每条内容不同，不被同内容复用
+            memcpy(ov_ctl[stored] + 0x700, &c1_begin, 4);
+            memcpy(ov_ctl[stored] + 0x704, &c1_end, 4);
+            make_key(big, sizeof big, ov_ctl[stored], S2A_SOURCE_CONTROL_BYTES, ov_key[stored]);
+            if (s2a_source_keep(ov_key[stored], 1, big, sizeof big, ov_ctl[stored], S2A_SOURCE_CONTROL_BYTES) != 0) break;
+            if (s2a_source_pin_key(ov_key[stored], &ov_ref[stored]) != 0) break;
+            s2a_source_stats(&en, &by, &dr);
+            if (first_over < 0 && by > S2A_SOURCE_MAX_BYTES) first_over = stored;
+            if (first_over >= 0 && stored == first_over + 4) logs_mid = g_source_log_lines;   // 越过软预算后又收了几条，仍未到安全阀
+        }
+        s2a_source_stats(&en, &by, &dr);
+        s2a_source_pin_stats(&ps);
+        CHECK(logs_mid == logs0 + 1, "crossing the soft budget is logged exactly once, not per keep");
+        CHECK(first_over > 0 && stored > first_over + 4, "program-pinned sources keep being accepted past the soft byte budget");
+        CHECK(by > S2A_SOURCE_MAX_BYTES && by <= S2A_SOURCE_HARD_BYTES, "total bytes sit between the soft budget and the hard cap");
+        CHECK(stored < OV_MAX, "the hard byte cap stops the fill once pinned bytes reach it");
+        CHECK(ps.keep_fail_bytes == ps0.keep_fail_bytes + 1, "the one keep refused at the hard cap is counted as a byte failure");
+        CHECK(ps.keep_over_budget > ps0.keep_over_budget && g_source_log_lines > logs0, "going past the soft budget is counted and logged");
+        CHECK(dr == dr0, "nothing was evicted: every entry is held by a live program");
+        CHECK(s2a_source_identity(ov_key[0], (uint8_t[32]){0}, NULL, NULL) == 0 &&
+              s2a_source_identity(ov_key[stored - 1], (uint8_t[32]){0}, NULL, NULL) == 0,
+              "the first and the last pinned sources are both resolvable");
+        // 程序都销毁了：它们的源回到可淘汰集合，下一次 keep 把总量压回软预算以内。
+        for (int i = 0; i < stored; i++) s2a_source_unpin_ref(&ov_ref[i]);
+        uint8_t nk[8], nctl[S2A_SOURCE_CONTROL_BYTES];
+        memset(nctl, 0x7c, sizeof nctl);
+        memcpy(nctl + 0x700, &c1_begin, 4);
+        memcpy(nctl + 0x704, &c1_end, 4);
+        make_key(code_a, CODE_BYTES, nctl, S2A_SOURCE_CONTROL_BYTES, nk);
+        CHECK(s2a_source_keep(nk, 0, code_a, CODE_BYTES, nctl, S2A_SOURCE_CONTROL_BYTES) == 0,
+              "after the programs are gone a new source is stored");
+        s2a_source_stats(&en, &by, &dr);
+        CHECK(by <= S2A_SOURCE_MAX_BYTES && dr > dr0, "once nothing is pinned the store is evicted back under the soft budget");
+        s2a_source_clear();
+    }
+
     // 短 control（+0x20 自描述）：0x850 合法，0x700 不完整。
     static uint8_t short_ctl[0x850];
     memset(short_ctl, 0x11, sizeof short_ctl);
@@ -465,18 +528,70 @@ int main(void) {
     CHECK(s2a_source_keep(key_short_bad, 0, code_a, CODE_BYTES, short_ctl, 0x700) != 0,
           "too-short control is rejected");
 
-    // pending control：SetShaders 自持，Bind 取回同一份；有界淘汰。
+    // pending control：SetShaders 自持，Bind 取回同一份；存到程序 Finalize（drop_pending）为止，不按条数挤掉（#1622）。
     const uint8_t *pc = NULL;
     uint32_t pn = 0;
+    uint32_t n0 = s2a_source_pending_count();
     CHECK(s2a_source_hold_pending(4242, 1, ctl_a, S2A_SOURCE_CONTROL_BYTES) == 0, "hold pending control");
     CHECK(s2a_source_pending_control(4242, 1, &pc, &pn) == 1 && pn == S2A_SOURCE_CONTROL_BYTES &&
           !memcmp(pc, ctl_a, pn), "pending control returns the same bytes");
     CHECK(s2a_source_pending_control(4242, 0, &pc, &pn) == 0, "pending control is per stage");
-    for (int i = 0; i < (int)S2A_SOURCE_PENDING + 4; i++)
+    // 一次注册 3000 个程序 × 2 阶段（旧实现 256 格环：最早的 4242 和 1000..2743 早被挤掉）→ 全部还在
+    for (int i = 0; i < 3000; i++) {
         s2a_source_hold_pending((uint64_t)(1000 + i), 0, ctl_a, S2A_SOURCE_CONTROL_BYTES);
-    CHECK(s2a_source_pending_control(4242, 1, &pc, &pn) == 0, "pending table is bounded (oldest dropped)");
-    s2a_source_drop_pending(1000 + (uint64_t)S2A_SOURCE_PENDING + 3);
-    CHECK(s2a_source_pending_control(1000 + (uint64_t)S2A_SOURCE_PENDING + 3, 0, &pc, &pn) == 0, "drop pending");
+        s2a_source_hold_pending((uint64_t)(1000 + i), 4, ctl_b, S2A_SOURCE_CONTROL_BYTES);
+    }
+    CHECK(s2a_source_pending_control(4242, 1, &pc, &pn) == 1 && !memcmp(pc, ctl_a, pn), "earliest pending survives 6000 later holds");
+    CHECK(s2a_source_pending_control(1000, 4, &pc, &pn) == 1 && !memcmp(pc, ctl_b, pn), "first of the burst still retrievable per stage");
+    CHECK(s2a_source_pending_count() == n0 + 1 + 6000, "pending count = live program stages");
+    // 同程序同阶段重设：换内容、不增条数
+    CHECK(s2a_source_hold_pending(1000, 0, ctl_b, S2A_SOURCE_CONTROL_BYTES) == 0 && s2a_source_pending_control(1000, 0, &pc, &pn) == 1 &&
+          !memcmp(pc, ctl_b, pn) && s2a_source_pending_count() == n0 + 1 + 6000, "re-hold replaces in place");
+    // Finalize：该程序全部阶段一起释放，别的程序不受影响
+    s2a_source_drop_pending(1000);
+    CHECK(s2a_source_pending_control(1000, 0, &pc, &pn) == 0 && s2a_source_pending_control(1000, 4, &pc, &pn) == 0, "drop pending frees all stages");
+    CHECK(s2a_source_pending_control(1001, 4, &pc, &pn) == 1 && s2a_source_pending_count() == n0 + 1 + 5998, "drop pending leaves other programs");
+    for (int i = 1; i < 3000; i++) s2a_source_drop_pending((uint64_t)(1000 + i));
+    s2a_source_drop_pending(4242);
+    CHECK(s2a_source_pending_count() == n0, "all pending released after finalize");
+
+    // 源已存进源快照的阶段：释放它的自持控制段，同程序的其他阶段不受影响（反复重设同一程序对象不再累积到安全阀）
+    {
+        uint32_t m0 = s2a_source_pending_count();
+        CHECK(s2a_source_hold_pending(7777, 0, ctl_a, S2A_SOURCE_CONTROL_BYTES) == 0 &&
+              s2a_source_hold_pending(7777, 4, ctl_b, S2A_SOURCE_CONTROL_BYTES) == 0, "hold two stages");
+        s2a_source_drop_pending_stage(7777, 0);
+        CHECK(s2a_source_pending_control(7777, 0, &pc, &pn) == 0, "kept stage control released");
+        CHECK(s2a_source_pending_control(7777, 4, &pc, &pn) == 1 && !memcmp(pc, ctl_b, pn), "other stage of the same program stays");
+        CHECK(s2a_source_pending_count() == m0 + 1, "count drops by one");
+        s2a_source_drop_pending_stage(7777, 0);   // 重复释放无副作用
+        s2a_source_drop_pending_stage(7777, 9);   // 越界阶段忽略
+        CHECK(s2a_source_pending_count() == m0 + 1, "repeat / out-of-range drop is a no-op");
+        s2a_source_drop_pending(7777);
+        CHECK(s2a_source_pending_count() == m0, "finalize releases the rest");
+    }
+
+    // 键第 2 代（nvn_key.h）：内容摘要按「两段易变字段置零」的控制段算。期望值由 Python hashlib 按规则手算：
+    //   控制段 0x880 字节 ctl[i] = (i*7+3) & 0xff、+0x20 = 0x880、+0x704 = 0x40；代码 0x40 字节 code[i] = (i*13+5) & 0xff、前 4 字节 78 56 34 12
+    //   第 2 代 sha256 = e0d0ef6990987e99758d5ed2782b06f462ea133d633ee9cd30825916a90b9ec5，第 1 代键（不置零）= 404d87c7549fd09c
+    //   反证：source_store.c 不置零 → 第 2 代键被拒、第 1 代键被收（下两项红）
+    {
+        static uint8_t kv_ctl[0x880], kv_ctl2[0x880], kv_code[0x40];
+        for (unsigned i = 0; i < sizeof kv_ctl; i++) kv_ctl[i] = (uint8_t)(i * 7 + 3);
+        for (unsigned i = 0; i < sizeof kv_code; i++) kv_code[i] = (uint8_t)(i * 13 + 5);
+        memcpy(kv_code, "\x78\x56\x34\x12", 4);
+        uint32_t own = 0x880, nc = 0x40; memcpy(kv_ctl + 0x20, &own, 4); memcpy(kv_ctl + 0x704, &nc, 4);
+        memcpy(kv_ctl2, kv_ctl, sizeof kv_ctl); kv_ctl2[0x793] ^= 0x5a; kv_ctl2[0x7e7] ^= 0xa5;   // 只差两段
+        static const uint8_t v2[8] = {0xe0, 0xd0, 0xef, 0x69, 0x90, 0x98, 0x7e, 0x99}, v1[8] = {0x40, 0x4d, 0x87, 0xc7, 0x54, 0x9f, 0xd0, 0x9c};
+        static const uint8_t sha_v2[32] = {0xe0, 0xd0, 0xef, 0x69, 0x90, 0x98, 0x7e, 0x99, 0x75, 0x8d, 0x5e, 0xd2, 0x78, 0x2b, 0x06, 0xf4,
+                                           0x62, 0xea, 0x13, 0x3d, 0x63, 0x3e, 0xe9, 0xcd, 0x30, 0x82, 0x59, 0x16, 0xa9, 0x0b, 0x9e, 0xc5};
+        CHECK(s2a_source_keep(v1, 0, kv_code, sizeof kv_code, kv_ctl, sizeof kv_ctl) != 0, "key v2: generation-1 key rejected");
+        CHECK(s2a_source_keep(v2, 0, kv_code, sizeof kv_code, kv_ctl, sizeof kv_ctl) == 0, "key v2: generation-2 key kept");
+        uint8_t sha[32]; uint32_t cb = 0, ctlb = 0;
+        CHECK(s2a_source_identity(v2, sha, &cb, &ctlb) == 0 && !memcmp(sha, sha_v2, 32), "key v2: content digest = hand-computed zeroed digest");
+        CHECK(s2a_source_keep(v2, 0, kv_code, sizeof kv_code, kv_ctl2, sizeof kv_ctl2) == 0 && s2a_source_identity_ok_for_test(v2),
+              "key v2: a control differing only in the volatile spans is the same source (not ambiguous)");
+    }
 
     if (fails) { printf("direct source store test: %d FAILED\n", fails); return 1; }
     printf("direct source store test: ok\n");

@@ -5,7 +5,7 @@
 typedef struct { unsigned alias_gb, version, unbounded; uint64_t heap_size; } s2a_layout_requirements;
 #define S2A_WINDOW_BUDGET (72ull << 30)
 #define S2A_UNBOUNDED_WINDOW_BUDGET (72ull << 30)
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(__OHOS__)
 _Static_assert(S2A_UNBOUNDED_WINDOW_BUDGET == S2A_WIN_SIZE, "Android 窗口与不定预算必须一致");
 #endif
 // 固定部分 = TLS/保护页 2 MiB + 栈区 2 GiB + 共享映射余量 96 MiB。
@@ -162,10 +162,13 @@ int s2a_android_layout_compute(uint32_t as_type, uint64_t sys_resource_size, con
 #endif
     } else {
         // 非VAMM沿用39位布局；实际物理分配仍由SVC的应用池限制。
+        // 堆区 6 GiB；应用池比它大（Switch 2 的 9 GiB）时放大到池（GiB 对齐）、别名区顺延，同 runtime/src/layout.c heapmode：
+        //   不放大则 SetHeapSize 给不满池（Switch 2 一款开局要 9579790336 字节，堆区只有 6 GiB → 0xD001，起局即崩）。3 + 9 + 8 = 20 GiB，32 GiB 跨度内放得下
+        uint64_t pool = (S2A_APP_POOL + GB - 1) & ~(GB - 1), heap = pool > 6 * GB ? pool : 6 * GB;
         o->tlsio_base = W;              o->tlsio_size = GB;
         o->stack_base = W + GB;         o->stack_size = 2 * GB;
-        o->heap_base = W + 3 * GB;      o->heap_size = 6 * GB;
-        o->alias_base = W + 9 * GB;     o->alias_size = 8 * GB;
+        o->heap_base = W + 3 * GB;      o->heap_size = heap;
+        o->alias_base = W + 3 * GB + heap; o->alias_size = 8 * GB;
         o->aslr_base = W;               o->aslr_size = need;
     }
     return 0;

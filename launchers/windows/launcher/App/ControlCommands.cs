@@ -35,6 +35,16 @@ public sealed partial class EnvironmentWindow
         Render();
     }
 
+    // 「免费签名到期提醒」（11-20，缺省开；存法见 Protocol/FreeSignReminder.cs）：游戏库状态行「×」与设置页开关共用
+    private string freeSignReminderError = "";
+    private void SetFreeSignReminder(bool on)
+    {
+        freeSignReminderError = "";
+        try { FreeSignReminder.Set(privateRoot, on); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { freeSignReminderError = error.Message; }
+        Render();
+    }
+
     /// <summary>崩溃日志用（LauncherCrash）：同 ResolvePrivateRoot，算不出（参数坏了）退回系统临时目录。</summary>
     internal static string PrivateRootForLogs()
     {
@@ -101,6 +111,12 @@ public sealed partial class EnvironmentWindow
         r.Text("gameId") is { } id ? catalog?.Games.FirstOrDefault(g => !g.Hidden && g.Id.Equals(id, StringComparison.OrdinalIgnoreCase)) : null;
     private static readonly ControlReply NoGame = ControlReply.Bad("没有这个 gameId");
 
+    /// <summary>游戏库没连上时回给 AI 的话：第一次建库在等玩家选盘（LibraryDrivePicker 选盘模式）就说清楚，让 AI 先问玩家放哪块盘再 POST /library</summary>
+    private string LibraryNotReady() =>
+        importError.Length > 0 ? importError
+        : libraryFailCode == LibraryChooseDrive ? "游戏库还没建：第一次建库要先选放哪块盘（界面上列出了各盘剩余空间）。先问玩家放哪块盘，再 POST /library {path}"
+        : "游戏库没建好";
+
     private async Task<bool> ControlConnected()
     {
         if (connectedFolder is null || libraryId is null)
@@ -122,7 +138,7 @@ public sealed partial class EnvironmentWindow
     /// <param name="export">mode = export（同游戏库「导出自签包」）：不连手机、出到文件夹</param>
     private ControlReply ControlInstall(LibraryGame game, IReadOnlySet<string> accept, bool export = false)
     {
-        // 同游戏库「装到 iPhone」按钮（PhoneBlockedFor）：出包在跑照样能装，手机上装机在跑 / 这款正在出包由 InstallAsync 排队（11-16 维护者）
+        // 同游戏库「推到 iPhone」按钮（PhoneBlockedFor）：出包在跑照样能装，手机上装机在跑 / 这款正在出包由 InstallAsync 排队（11-16 维护者）
         if (PhoneBlockedFor(game)) return Busy();
         selectedGame = game.Id;
         _ = InstallAsync(game, accept, ask: false, export: export);
@@ -155,7 +171,7 @@ public sealed partial class EnvironmentWindow
             {
                 if (r.Text("path") is not { Length: > 0 } path) return ControlReply.Bad("缺 path");
                 if (ControlBusy) return Busy();
-                if (!await ControlConnected()) return ControlReply.Bad(importError.Length > 0 ? importError : "游戏库没建好", 409);
+                if (!await ControlConnected()) return ControlReply.Bad(LibraryNotReady(), 409);
                 importDialog = new ImportDialogState(ImportKind.Keys);
                 _ = RunImportKeysAsync(path);
                 return ControlReply.Ok();
@@ -164,7 +180,7 @@ public sealed partial class EnvironmentWindow
             {
                 if (r.Strings("paths") is not { Length: > 0 } selected) return ControlReply.Bad("缺 paths");
                 if (ControlBusy) return Busy();
-                if (!await ControlConnected()) return ControlReply.Bad(importError.Length > 0 ? importError : "游戏库没建好", 409);
+                if (!await ControlConnected()) return ControlReply.Bad(LibraryNotReady(), 409);
                 importDialog = new ImportDialogState(ImportKind.Games);
                 _ = RunImportGamesAsync(selected);
                 return ControlReply.Ok();
@@ -202,7 +218,13 @@ public sealed partial class EnvironmentWindow
                 {
                     case "ios" or "iphone" or "ipad": return ControlGame(r) is { } buildGame ? ControlExport(buildGame, r.Flag("spaceOverride")) : NoGame;
                     case "mac" or "macos": return MacOnly("Mac 版导出");
-                    case "android" or "harmony" or "ohos": return ControlReply.Json(new Dictionary<string, object?> { ["error"] = "即将上线，敬请期待", ["comingSoon"] = true }, 409);
+                    case "android":   // 开关后（作业层 androidDevices 回报，缺省关 → 照旧 409）：serial = 出好装到哪台（s2armctl build <gid> android --serial）
+                        if (!androidEnabled) await LoadAndroidPhonesAsync();
+                        if (!androidEnabled) return ControlReply.Json(new Dictionary<string, object?> { ["error"] = "即将上线，敬请期待", ["comingSoon"] = true }, 409);
+                        if (ControlGame(r) is not { } androidGame) return NoGame;
+                        exportIos = false; exportTv = false; exportAndroid = true; androidPhoneChoice = r.Text("serial") ?? "";
+                        return ControlExport(androidGame, r.Flag("spaceOverride"));
+                    case "harmony" or "ohos": return ControlReply.Json(new Dictionary<string, object?> { ["error"] = "即将上线，敬请期待", ["comingSoon"] = true }, 409);
                     default: return ControlReply.Bad("target 只认 ios / android / harmony");
                 }
             case ("POST", "/prepare"): return MacOnly("Mac 编译");
@@ -250,7 +272,7 @@ public sealed partial class EnvironmentWindow
                 if (r.Text("action") == "pull") return ControlReply.Bad("Windows 版不能拉回 iPhone 诊断：装机日志用 s2armctl logs 读", 409);
                 if (r.Text("action") != "export" || r.Text("path") is not { Length: > 0 } output) return ControlReply.Bad("action 要 export，并带 path");
                 if (ControlBusy) return Busy();
-                if (!await ControlConnected()) return ControlReply.Bad(importError.Length > 0 ? importError : "游戏库没建好", 409);
+                if (!await ControlConnected()) return ControlReply.Bad(LibraryNotReady(), 409);
                 var job = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder!, libraryId, "diagnostics", [output], CancellationToken.None);
                 return job.Report.Succeeded ? ControlReply.Ok() : ControlReply.Bad(job.Report.Message, 500);
             }
@@ -264,6 +286,24 @@ public sealed partial class EnvironmentWindow
             }
             case ("POST", "/install"):
                 return ControlGame(r) is { } installGame ? ControlInstall(installGame, AcceptFlags(r), r.Text("mode") == "export") : NoGame;
+            case ("POST", "/install-action"):   // 同点装机前清单那一项的按钮（11-19 落点契约，同 Mac）：按 id 找当前清单那一项的 action，走同一个 RunInstallAction
+            {
+                if (ControlGame(r) is not { } game) return NoGame;
+                if (readiness is not { } ready || !string.Equals(readinessFor, game.Id, StringComparison.OrdinalIgnoreCase))
+                    return ControlReply.Bad("还没有这款的装机清单：先 POST /installCheck，等 GET /state 的 installReadiness 出来", 409);
+                if (ready.Items.FirstOrDefault(i => i.Id == r.Text("id")) is not { } item) return ControlReply.Bad("清单里没有这一项");
+                if (item.Ok || item.Action is null) return ControlReply.Bad("这一项已经好了，或者没有要点的按钮", 409);
+                return RunInstallAction(item.Action, game) ? ControlReply.Ok() : ControlReply.Bad(installDiagnostics.Length > 0 ? installDiagnostics : "没做成", 500);
+            }
+            case ("POST", "/console-action"):   // 同点总控台这台手机上的按钮（11-19，同 Mac）：只认 GET /state 的 phoneConsole 里这台此刻显示的动作，走界面同一个 RunConsoleAction
+            {
+                if (r.Text("device") is not { Length: > 0 } device) return ControlReply.Bad("缺 device：说明是哪台手机（GET /state 的 phoneConsole）");
+                if (phoneOverview?.Phones.FirstOrDefault(p => p.Device == device) is not { } phone) return ControlReply.Bad("总控台里没有这台手机（先看 GET /state 的 phoneConsole）", 409);
+                var shown = PhoneOverview.Actions(phone);
+                if (r.Text("action") is not { } action || !shown.Contains(action)) return ControlReply.Bad("这台手机的总控台上没有这个按钮（此刻有：" + string.Join(" / ", shown) + "）", 409);
+                if (installBusy) return Busy();
+                return RunConsoleAction(action, device, r.Strings("gameIds"), r.Text("bundleId")) is { } why ? ControlReply.Bad(why, 409) : ControlReply.Ok();
+            }
             case ("POST", "/uninstall"):
             {
                 if (ControlGame(r) is not { } game) return NoGame;
@@ -312,7 +352,7 @@ public sealed partial class EnvironmentWindow
                     case "restart":
                         if (updateReady is null && availableUpdate is null) return ControlReply.Bad("没有新版", 409);   // 还没下好：同玩家点「现在更新」，先下、下完接着装
                         if (ControlBusy) return Busy();
-                        Dispatcher.UIThread.Post(RestartToUpdate, DispatcherPriority.Background);   // 先把回复发出去，再退出
+                        Dispatcher.UIThread.Post(() => RestartToUpdate(), DispatcherPriority.Background);   // 先把回复发出去，再退出
                         return ControlReply.Ok();
                     case "retry":
                         _ = DownloadUpdateAsync();
@@ -351,8 +391,10 @@ public sealed partial class EnvironmentWindow
                 libraryFolder = connectedFolder ?? libraryFolder;
                 libraryOperation = RunLibraryAsync("catalog", null);
                 return ControlReply.Ok();
-            case ("POST", "/dismiss"):
-                importError = ""; keysRejected = false; Render();
+            case ("POST", "/dismiss"):   // 关掉提示框：报错条，以及更新弹窗 / 新功能大窗（同玩家点关闭：这一版 / 这一期不再弹）
+                importError = ""; keysRejected = false; presented = null;
+                if (updatePopup is not null) CloseUpdatePopup();
+                Render();
                 return ControlReply.Ok();
             default:
                 return ControlReply.Bad($"不认识 {r.Method} {r.Path}", 404);
@@ -366,14 +408,16 @@ public sealed partial class EnvironmentWindow
         ("POST /mods {gameId, import?:[路径], enable?:{名字: 真/假}, remove?:[名字]}", "资源替换 mod（同游戏库「Mod…」页）：导入 zip / 文件夹、开关、删除；都不给只列；下次装到 iPhone 时推过去"),
         ("POST /keys {path}", "导入 prod.keys"),
         ("POST /games {paths:[…]}", "放入游戏（NSP / XCI 文件、游戏文件夹或解包好的游戏文件夹）"),
-        ("POST /build {gameId, target, spaceOverride?}", "出包：spaceOverride = true 同界面「仍然继续」；target = ios（iPhone / iPad，缺省）；android / harmony 回 409「即将上线」"),
+        ("POST /build {gameId, target, spaceOverride?, serial?}", "出包：spaceOverride = true 同界面「仍然继续」；target = ios（iPhone / iPad，缺省）；android 在开关后（S2A_ANDROID_EXPORT=1，缺省关回 409），serial = 出好装到那台手机；harmony 回 409「即将上线」"),
         ("POST /customize {gameId, name?, coverPath?}", "改游戏显示名 / 封面（JPG、PNG）；不传的不动，传空字符串恢复默认；下次装到 iPhone 时带上"),
         ("POST /ipa {gameId, spaceOverride?}", "打 iPhone 包（出 IPA + 资源包）；spaceOverride = true 同界面「仍然继续」"),
         ("POST /batch {games:[{gameId, platforms:[mac|iphone]}], location?}", "批量出包：一批几款、每款出哪些平台（Windows 只出 iPhone，要了 Mac 记失败「这台电脑出不了这个平台的包」），location = 一批共用的存放位置；一款接一款地出，失败不挡后面、磁盘满暂停；进度看 GET /state 的 batch（summary / items）"),
         ("POST /installCheck {gameId}", "装机前清单：几秒后看 GET /state 的 installReadiness"),
+        ("POST /install-action {gameId, id}", "同点装机前清单那一项的按钮（项的 action：openExport / openImpactor / devCertSettings）；做成后 GET /state 的 presented 是这个 action，已好 / 没按钮回 409"),
         ("POST /install {gameId, acceptDropped?, acceptNoBackup?, acceptStale?}", "用 Impactor 装到 iPhone（不用先 installCheck，缺什么作业报真实原因；Apple ID 由玩家本人在 Impactor 里登录）；可确认的失败码先问玩家、同意了带对应参数再发：container_would_drop → acceptDropped（手机上有别的电脑装的游戏这次带不上）、save_backup_failed → acceptNoBackup（覆盖前没能备份存档）、container_stale → acceptStale（旧资源包要重出）"),
         ("POST /show {page: environment|library|export|install, gameId?}", "打开环境检查 / 回游戏库 / 打开这款的出包页 / 装机页（同点对应按钮）"),
         ("POST /update-phone {ask?, acceptStale?, repack?, acceptDropped?, acceptNoBackup?}", "更新 iPhone 上的 S2Arm（同游戏库右上角按钮；GET /state 的 phoneUpdates 不空才有）：本版壳 + 手机上已有的程序模块，只装 App；有要按新版重新出包的款时没带 acceptStale 回 409 并列出 stale，repack = true 时更新完把它们排进批量出包、出完自动装；作业报可确认的失败码时（同 /install）玩家同意后带对应参数再发"),
+        ("POST /console-action {device, action, gameIds?, bundleId?}", "同点总控台这台手机上的按钮：action 只认 GET /state 的 phoneConsole 里这台此刻显示的（installShell / updateShell / renewShell / exportShellIpa / handOverIdentity / updateSelected / pushS2arm / exportS2arm / chooseApp）；gameIds = 推 / 导出哪几款（不给 = 总控台勾选的）；chooseApp 带 bundleId = 选用 phoneConsole 里这台 candidates 的哪一个（同一台手机装着不止一个 S2Arm 时）；没有这个按钮回 409"),
         ("POST /uninstall {gameId, acceptDropped?}", "从 iPhone 上的 S2Arm 删一款；acceptDropped 同 /install"),
         ("POST /cancel {taskId} | /retry {taskId}", "停掉在跑的作业 / 重试出包、装机任务"),
         ("POST /diagnostics {action:export, path}", "导出诊断包（已脱敏的 zip）"),
@@ -421,7 +465,8 @@ public sealed partial class EnvironmentWindow
             {
                 ["gameId"] = readyFor, ["ready"] = ready.Ready, ["device"] = ready.Device, ["account"] = ready.Account,
                 ["items"] = ready.Items.Select(i => new Dictionary<string, object?>
-                    { ["id"] = i.Id, ["ok"] = i.Ok, ["waiting"] = i.Waiting, ["title"] = i.Title, ["detail"] = i.Detail, ["who"] = i.Who }).ToList()
+                    { ["id"] = i.Id, ["ok"] = i.Ok, ["waiting"] = i.Waiting, ["title"] = i.Title, ["detail"] = i.Detail, ["who"] = i.Who,
+                      ["action"] = i.Action, ["url"] = i.OfficialUrl?.ToString() }).ToList()
             };
         return new()
         {
@@ -435,7 +480,8 @@ public sealed partial class EnvironmentWindow
             ["library"] = connectedFolder, ["games"] = games, ["session"] = session, ["busy"] = ControlBusy,
             ["tasks"] = ControlJournal.Tasks(privateRoot), ["queue"] = exportQueue.Select(q => q.Game.Id).ToList(), ["notice"] = null,
             ["error"] = importError.Length > 0 ? importError : aiControlError.Length > 0 ? aiControlError : null,
-            ["installReadiness"] = install, ["installMode"] = ControlInstallMode(), ["phoneUpdates"] = ControlPhoneUpdates(), ["update"] = UpdateStatus, ["batch"] = ControlBatch(), ["cachedAt"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
+            ["installReadiness"] = install, ["presented"] = presented, ["installMode"] = ControlInstallMode(), ["phoneUpdates"] = ControlPhoneUpdates(),
+            ["phoneConsole"] = phoneOverview?.ConsoleState(),   // 总控台每台手机实际显示的按钮（11-19，同 Mac；与界面同一个来源 PhoneOverview.Actions）；开关关着 = null ["update"] = UpdateStatus, ["batch"] = ControlBatch(), ["cachedAt"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
             ["lastSnapshotPath"] = "", ["windows"] = Array.Empty<object>(),
         };
     }

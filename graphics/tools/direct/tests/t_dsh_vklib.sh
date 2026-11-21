@@ -1,7 +1,7 @@
 #!/bin/bash
 # 出包 Vulkan 产物独立入口 dsh_vklib 单测（#783，graphics/tools/direct/vklib/VkLib.cs；Linux 约 2 分钟，含现编 SPIRV-Cross）：bash graphics/tools/direct/tests/t_dsh_vklib.sh
 #   原创合成着色器（VS / PS / CS，同 dsh_vk 的夹具）打成假着色器包 + 配置档，整批走 VkLib.Build，核 ① vk_build.tsv 逐键状态 ② 输出只有 _b.json / _b.spv
-#   ③ 每个 _b.spv 与直接调 DshVk.CompileWithSpv 的逐字节相同 ④ spirv-val ⑤ 返回值与 vk_build.tsv 一致；gs 键 skipped、记录越界 failed（见 dsh_vklib/Program.cs 文件头）。
+#   ③ 每个 _b.spv 与直接调 DshVk.CompileWithSpv 的逐字节相同 ④ spirv-val ⑤ 返回值与 vk_build.tsv 一致；真几何键出 _vg0/1/3、几何包里的顶点代码 skipped、记录越界 failed（见 dsh_vklib/Program.cs 文件头）。
 #   Vulkan 侧指纹（vklib/VkFp.targets，#783 直连线 11-02 答 a、#1419 审 1）：⑥ 编进工具的源码部分 VkFp.V = VkFpPrint；⑦ 拷到别的目录不变，DshVk.cs / VkLib.cs / VkFp.targets /
 #   工程文件 / 与 dsh_batch 共用的 PkgRead.cs 与 LibPack.cs / libdsx 的 gal_spill.c / 链锁 dmsh_chain.lock / SPIRV-Cross 源码任一份改一字节、vklib/ 里新加源码都变，往 bin/ obj/ 和点文件里加东西不变；
 #   ⑨ 完整指纹 VkLib.Fp = 公式（源码部分，S2A.Dsh 翻译器指纹 Xfp），只改翻译器本体（dsh/Dsh.cs，FILES 与 DshXfpInput 里都有）→ Xfp 变、VkLib.Fp 变；

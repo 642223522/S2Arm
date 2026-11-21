@@ -73,8 +73,14 @@ public sealed record LibraryGame(string Id, string Name, string Version, string 
     IReadOnlyList<string> Missing, bool IphoneReady = false, double? IphoneInstalledAt = null,
     bool IphoneFree = false, IReadOnlyList<GamePackage>? Packages = null, bool CustomName = false, bool CustomCover = false,
     GameLocation? Location = null, bool IphoneRestorable = false, GameSizes? Sizes = null, bool NeedsKeys = false, string IphoneInstallDevice = "",
-    bool OnPhone = false, string Banner = "", bool SGrade = false, bool IphoneExportable = false, DownstreamOffer? Downstream = null)   // SGrade：已打上 S 级优化（catalog sgrade，pack/jobs/library.py sgrade_badge）→ 封面左上角金色 S（同 Mac）
+    bool OnPhone = false, string Banner = "", bool SGrade = false, bool IphoneExportable = false, DownstreamOffer? Downstream = null,
+    bool SGradeUpgrading = false, bool SGradeIncomplete = false, string? SGradeState = null, double? SGradeProgress = null, double? IphoneExpires = null)   // S 级优化单款升级正在跑 / 上次中途退出没做完（catalog sgradeUpgrading / sgradeIncomplete，11-18）   // SGrade：已打上 S 级优化（catalog sgrade，pack/jobs/library.py sgrade_badge）→ 封面左上角金色 S（同 Mac）
 {
+    /// <summary>免费签名还剩几天（到期 = 0）：只在作业层判出「那台手机现在用的就是启动器免费签的那份」（free）且给了到期时刻 expires 时有，
+    /// expires 是签好的包里的真值、读不到时作业层按 7 天估（pack/jobs/layout.py install_record），这里不再自己加天数；其余为 null。同 Mac GameSummary.iphoneDaysLeft</summary>
+    public int? FreeSignDaysLeft(DateTimeOffset now) =>
+        IphoneFree && IphoneExpires is { } end ? Math.Max(0, (int)Math.Ceiling((end - now.ToUnixTimeMilliseconds() / 1000.0) / 86400.0)) : null;
+
     /// <summary>Storage state (library layout v3): ok / offline / missing / none; older catalogues without the field read as none.</summary>
     public string LocationState => Location?.State ?? "none";
 
@@ -186,6 +192,8 @@ public sealed record LibraryCatalog(IReadOnlyList<LibraryGame> Games, bool KeysR
     public IReadOnlyList<PhoneUpdate> PhoneUpdates { get; init; } = [];
     /// <summary>这台电脑往几台手机装过游戏（catalog phoneDevices）：更新弹窗据此写「更新启动器和 iPhone App」；旧后端没有时为 0。</summary>
     public int PhoneDevices { get; init; }
+    /// <summary>S 级优化升级队列这一批（catalog 顶层 sgradeBatch：running / index 第几款 / count 共几款）；没有为 null。</summary>
+    public SGradeBatch? SGradeBatch { get; init; }
 
     public static LibraryCatalog Parse(JsonElement result)
     {
@@ -217,13 +225,15 @@ public sealed record LibraryCatalog(IReadOnlyList<LibraryGame> Games, bool KeysR
                         var skipped = p.TryGetProperty("integritySkipped", out var isk) && isk.ValueKind == JsonValueKind.Array && isk.GetArrayLength() > 0;
                         packages.Add(new(ptype, titleId, version, display, size, format, sha, content, skipped));
                     }
-                // iphoneInstall: { at, free, deviceKey } — matches the Mac adapter's LibraryProvider；deviceKey = 当初装的那台（续签装回它，不换别的）
-                double? iphoneAt = null; var iphoneFree = false; var iphoneDevice = "";
+                // iphoneInstall: { at, free, deviceKey, expires } — matches the Mac adapter's LibraryProvider；deviceKey = 当初装的那台（续签装回它，不换别的）；
+                //   expires = 免费签名到期时刻（只在 free 时有）
+                double? iphoneAt = null, iphoneExpires = null; var iphoneFree = false; var iphoneDevice = "";
                 if (game.TryGetProperty("iphoneInstall", out var inst) && inst.ValueKind == JsonValueKind.Object)
                 {
                     if (inst.TryGetProperty("at", out var at) && at.ValueKind == JsonValueKind.Number) iphoneAt = at.GetDouble();
                     if (inst.TryGetProperty("free", out var fr) && fr.GetBoolean()) iphoneFree = true;
                     if (inst.TryGetProperty("deviceKey", out var dk) && dk.ValueKind == JsonValueKind.String) iphoneDevice = dk.GetString() ?? "";
+                    if (inst.TryGetProperty("expires", out var ex) && ex.ValueKind == JsonValueKind.Number) iphoneExpires = ex.GetDouble();
                 }
                 var iphoneReady = game.TryGetProperty("iphoneReady", out var ir) && ir.GetBoolean();
                 games.Add(new(id, LibraryJobResult.Text(game, "name"),
@@ -239,14 +249,19 @@ public sealed record LibraryCatalog(IReadOnlyList<LibraryGame> Games, bool KeysR
                     game.TryGetProperty("banner", out var banner) && banner.ValueKind == JsonValueKind.String ? banner.GetString() ?? "" : "",   // 设备记录里装在手机上：删除确认多写一句
                     game.TryGetProperty("sgrade", out var sgr) && sgr.ValueKind == JsonValueKind.True,
                     game.TryGetProperty("iphoneExportable", out var iex) && iex.ValueKind == JsonValueKind.True,
-                    game.TryGetProperty("downstream", out var ds) ? DownstreamOffer.Parse(ds) : null));
+                    game.TryGetProperty("downstream", out var ds) ? DownstreamOffer.Parse(ds) : null,
+                    game.TryGetProperty("sgradeUpgrading", out var sgu) && sgu.ValueKind == JsonValueKind.True,
+                    game.TryGetProperty("sgradeIncomplete", out var sgi) && sgi.ValueKind == JsonValueKind.True,
+                    game.TryGetProperty("sgradeState", out var sgs) && sgs.ValueKind == JsonValueKind.String ? sgs.GetString() : null,
+                    game.TryGetProperty("sgradeProgress", out var sgp) && sgp.ValueKind == JsonValueKind.Number ? sgp.GetDouble() : null, iphoneExpires));
             }
             var keys = result.GetProperty("keys");
             return new(games.AsReadOnly(), keys.GetProperty("ready").GetBoolean(),
                 LibraryJobResult.Text(keys, "message", true))
             {
                 PhoneUpdates = PhoneUpdate.ParseList(result),
-                PhoneDevices = result.TryGetProperty("phoneDevices", out var pd) && pd.ValueKind == JsonValueKind.Number && pd.TryGetInt32(out var n) ? n : 0
+                PhoneDevices = result.TryGetProperty("phoneDevices", out var pd) && pd.ValueKind == JsonValueKind.Number && pd.TryGetInt32(out var n) ? n : 0,
+                SGradeBatch = result.TryGetProperty("sgradeBatch", out var sb) && sb.ValueKind == JsonValueKind.Object ? Protocol.SGradeBatch.Parse(sb) : null
             };
         }
         catch (Exception error) when (error is InvalidOperationException or KeyNotFoundException)
@@ -384,5 +399,30 @@ public sealed record LibraryConnection(string Folder, string Id)
         }
         catch (Exception error) when (error is InvalidOperationException or KeyNotFoundException or ArgumentException)
         { throw new LibraryProtocolException("Invalid library connection result.", error); }
+    }
+}
+
+/// <summary>S 级优化升级队列的批次（catalog 顶层 sgradeBatch / 作业 sgradeUpgradeStatus）：running 在跑、index 第几款（没在升时 = 已结束的款数）、count 共几款。</summary>
+public sealed record SGradeBatch(bool Running, int Index, int Count)
+{
+    public static SGradeBatch Parse(JsonElement e) => new(
+        e.TryGetProperty("running", out var r) && r.ValueKind == JsonValueKind.True,
+        e.TryGetProperty("index", out var i) && i.ValueKind == JsonValueKind.Number ? i.GetInt32() : 0,
+        e.TryGetProperty("count", out var c) && c.ValueKind == JsonValueKind.Number ? c.GetInt32() : 0);
+}
+
+/// <summary>S 级升级这款在升时的进度（同 Mac SGradeLive）。玩家报修 D-QNA9（Mac 实机，Windows 同写法）：段内各计数器的 done / total 与队列轮询的粗进度互相盖，进度条来回跳。
+/// 事件只认作业层的整款进度 sgradeProgress（pack/jobs/sgrade.py _GameProgress，0–1、只增不减），普通 progress 的 done / total 是段内计数器、不认；
+/// 同一款 running 期间事件与轮询取较大值，只增不减；之前不在升（做完 / 排队）就从新读数起。</summary>
+public static class SGradeLiveProgress
+{
+    public static double? FromEvent(JsonElement e) =>
+        e.ValueKind == JsonValueKind.Object && e.TryGetProperty("sgradeProgress", out var p) && p.ValueKind == JsonValueKind.Number ? p.GetDouble() : null;
+
+    public static double? Running(double? next, string? oldState, double? oldProgress)
+    {
+        var prev = oldState == "running" ? oldProgress : null;
+        double? v = next is { } a ? (prev is { } b ? Math.Max(a, b) : a) : prev;
+        return v is { } x ? Math.Clamp(x, 0, 1) : null;
     }
 }

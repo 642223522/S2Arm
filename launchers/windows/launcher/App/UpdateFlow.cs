@@ -61,8 +61,14 @@ public sealed partial class EnvironmentWindow
         installFailedTarget = target; updateFailure = "update_install_failed"; updateFailureMessage = why;
     }
 
-    internal static bool VersionAtLeast(string have, string want) =>
-        Version.TryParse(have, out var h) && Version.TryParse(want, out var w) && h >= w;
+    // 按语义版本比（11-19：测试版 0.6.0-test.2 System.Version 解析不了，原先测试版更新后被记成「没装上」）；同 NetSparkle 比更新的口径
+    internal static bool VersionAtLeast(string have, string want)
+    {
+        // SemVerLike 对乱串也解析得出（实测 "abc" ≥ "0.5.8"）：先认格式（同 bundle_win.py 写 version.txt 的形状）
+        static bool Ok(string v) => System.Text.RegularExpressions.Regex.IsMatch(v, @"^\d+(\.\d+){1,3}(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$");
+        try { return Ok(have) && Ok(want) && NetSparkleUpdater.AppCastHandlers.SemVerLike.Parse(have).CompareTo(NetSparkleUpdater.AppCastHandlers.SemVerLike.Parse(want)) >= 0; }
+        catch (Exception error) when (error is FormatException or ArgumentException) { return false; }
+    }
 
     /// <summary>安装程序日志里说明失败的那一行（Inno：Fatal exception / Exception message / Setup is exiting / Aborting）；没有日志或没找到给一句说明（进诊断、不上界面）</summary>
     private string InstallerFailure()
@@ -195,9 +201,18 @@ public sealed partial class EnvironmentWindow
             if (updateProgress.Length > 0) panel.Children.Add(Muted(T("update.popup.downloading"), 12.5));
             if (updateGate.Length > 0)
             {
-                var gate = new StackPanel { Spacing = 4 };
-                gate.Children.Add(Label(T(updateGate), 14));
-                gate.Children.Add(Muted(T(updateGate + ".body"), 13));
+                // 点了「现在更新并重启」但有任务在跑：说清会打断什么，玩家选「仍然重启」照样换（11-18 维护者：认得出的风险让玩家确认后继续），默认焦点在「取消」
+                var gate = new StackPanel { Spacing = 8 };
+                gate.Children.Add(Label(T("update.gate.confirm.title"), 14));
+                gate.Children.Add(Muted(RestartImpactText(), 13));
+                var choose = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 10, HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right };
+                var cancel = Action("update.gate.confirm.cancel", () => { updateGate = ""; Render(); });
+                AutomationId(cancel, "update.gate.cancel"); cancel.IsDefault = true;
+                var restart = Action("update.gate.confirm.restart", () => RestartToUpdate(confirmed: true));
+                AutomationId(restart, "update.gate.restart");
+                choose.Children.Add(cancel); choose.Children.Add(restart);
+                gate.Children.Add(choose);
+                cancel.AttachedToVisualTree += (_, _) => cancel.Focus();
                 var box = new Border { Child = gate, Padding = new Thickness(14), CornerRadius = new CornerRadius(12), Background = new SolidColorBrush(Color.Parse("#FFC857"), 0.14) };
                 AutomationId(box, "update.gate");
                 panel.Children.Add(box);
@@ -210,7 +225,7 @@ public sealed partial class EnvironmentWindow
         {
             buttons.Children.Add(Action("update.popup.later", CloseUpdatePopup));
             // 装过 iPhone、自动更新开着：写「更新启动器和 iPhone App」，新版启动后自动把 iPhone App 也更新（PhoneAutoUpdate.cs）；自动化 id 照旧
-            var now = Action("update.popup.now", RestartToUpdate, updateReady is not null || availableUpdate is not null);   // 没下也能点：点了才下、下完接着装；手动更新（11-16）：启动器升级不再顺带装手机，按钮不再写「和 iPhone App」
+            var now = Action("update.popup.now", () => RestartToUpdate(), updateReady is not null || availableUpdate is not null);   // 没下也能点：点了才下、下完接着装；手动更新（11-16）：启动器升级不再顺带装手机，按钮不再写「和 iPhone App」
             Avalonia.Automation.AutomationProperties.SetAutomationId(now, "update.popup.now");
             buttons.Children.Add(now);
         }
@@ -227,7 +242,14 @@ public sealed partial class EnvironmentWindow
         foreach (var m in messages)
         {
             var row = new StackPanel { Spacing = 6 };
-            if (m.TryGetProperty("kind", out var kind) && kind.GetString() == "update")
+            if (m.TryGetProperty("kind", out var fk) && fk.GetString() == "feature")   // 新功能大窗看过后留在这里：点了再看一遍（11-19 维护者定）
+            {
+                var feature = m.Clone();
+                row.Children.Add(Muted(T("messages.kind.feature"), 12));
+                row.Children.Add(new TextBlock { Text = FeatureText(feature, "badge"), FontSize = 13.5, Foreground = Ink, TextWrapping = TextWrapping.Wrap });
+                row.Children.Add(Action("feature.reopen", () => { messagesOpen = false; updatePopup = feature; featureIndex = 0; Render(); }));
+            }
+            else if (m.TryGetProperty("kind", out var kind) && kind.GetString() == "update")
             {
                 var version = m.GetProperty("version").GetString() ?? "";
                 var installed = m.TryGetProperty("installed", out var i) && i.ValueKind == JsonValueKind.True;
@@ -288,6 +310,9 @@ public sealed partial class EnvironmentWindow
             RelaunchAfterUpdateCommandPrefix = $"cd /d \"{InstallDir}\" && ",
             LogWriter = new UpdateLog(Path.Combine(privateRoot, "logs", "update.log")),
         };
+        // 正式渠道永远不推预发布（11-19）：NetSparkle 不设过滤器时，装 0.5.8 的玩家会被推 appcast 里的 0.6.0-test.1（实测）。
+        //   本机正式版 → 频道表空：预发布条目全滤掉；本机测试版（0.6.0-test.1）→ 只认 test 频道 + 正式版（同 pack/jobs/updater.py newer）
+        updater.AppCastHelper.AppCastFilter = ReleaseChannel.Filter(AppVersion, updater.LogWriter);
         updater.CloseApplicationAsync += () => { ExitForInstaller(); return Task.CompletedTask; };
         updater.DownloadMadeProgress += (_, item, e) => Dispatcher.UIThread.Post(() =>
         { updateProgress = T("update.downloading").Replace("{0}", e.ProgressPercentage.ToString()); RefreshLive(); });
@@ -340,10 +365,22 @@ public sealed partial class EnvironmentWindow
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
     }
 
-    private void RestartToUpdate()
+    /// <summary>重启以更新会中断哪些任务、重启后能不能接着做（出包被打断可以接着做：已做完的阶段与缓存保留；同 Mac updateRestartImpactText）</summary>
+    private string RestartImpactText() =>
+        string.Join("\n", jobs.Select(j => (j.Kind, j.GameId)).Distinct().Select(j =>
+        {
+            var name = T("update.gate.task." + j.Kind.ToString().ToLowerInvariant());
+            var game = j.GameId is { } id ? catalog?.Games.FirstOrDefault(g => g.Id == id)?.Name : null;
+            if (!string.IsNullOrEmpty(game)) name += " · " + game;
+            return T(j.Kind == JobKind.Pack ? "update.gate.confirm.taskResume" : "update.gate.confirm.taskRestart").Replace("{0}", name);
+        }));
+
+    private void RestartToUpdate(bool confirmed = false)
     {
-        // 草图④：有任务在跑先拦下说明，弹窗不关
-        if (UpdateBlocked) { updateGate = "update.gate.busy"; if (updatePopup is null) ShowUpdatePopup(); Render(); return; }
+        // 有任务在跑：先说清会打断什么，玩家点「仍然重启」照样换（不再只能等）；确认后先取消在跑的任务再换版
+        if (UpdateBlocked && !confirmed) { updateGate = "update.gate.confirm"; if (updatePopup is null) ShowUpdatePopup(); Render(); return; }
+        updateGate = "";
+        if (UpdateBlocked) foreach (var job in jobs.ToList()) job.Cancellation.Cancel();
         if (updateReady is null && availableUpdate is not null) { installWhenReady = true; _ = DownloadUpdateAsync(); return; }   // 玩家点了才下：下完在 DownloadFinished 里接着装
         if (updateReady is not { } ready || sparkle is null) return;
         installWhenReady = false;

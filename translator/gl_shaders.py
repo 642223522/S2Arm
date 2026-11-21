@@ -23,8 +23,9 @@
 #   no source at all (GameMaker puts its GLSL together at run time): only the table header, no library; the host translates what it meets at run time (gl_prog.m)
 # Table rows: key <TAB> stage (vert / frag) <TAB> fields, space-separated (a key can have a row per stage):
 #   a:<name>=<slot>:<type>                       a vertex input, [[attribute(slot)]]
-#   u:<name>=<offset>:<type>:<count>:<stride>    a member of the default uniform block (count 0 = not an array); a struct member (not an array of structs) is
-#                                                spread into its members as GL names them, <name>.<member>, offset from the block's start
+#   u:<name>=<offset>:<type>:<count>:<stride>    a member of the default uniform block (count 0 = not an array); a struct member is spread into its
+#                                                members as GL names them, <name>.<member>, offset from the block's start; a one-dimensional sized
+#                                                array of structs is spread per element, <name>[i].<member>, at offset + i × array stride
 #   b:<slot>:<size>                              the default uniform block: its buffer slot and size in bytes
 #   t:<name>=<slot>:<type>[:<count>]             a combined sampler: texture and sampler slot; an array of count (> 1) takes slots slot … slot + count − 1 (ABI 2)
 #   o:<name>=<location>                          a fragment output, [[color(location)]]
@@ -281,6 +282,11 @@ def translate(src, stage, key, tmp):
                 #   展开的成员排在原位、按声明序（graphics/nvn/gfx/gl/gl_xlate.c 同口径）
                 if member["type"] in reflection.get("types", {}) and not dimensions:
                     members[0:0] = [(sub, name + ".", base + member["offset"]) for sub in reflection["types"][member["type"]]["members"]]
+                    continue
+                # 一维、定长的结构体数组逐元素展开成「名字[i].成员」，第 i 个元素偏移 = 数组偏移 + i × 数组步长（gl_xlate.c 同口径）
+                if member["type"] in reflection.get("types", {}) and len(dimensions) == 1 and dimensions[0] and member.get("array_stride"):
+                    members[0:0] = [(sub, f"{name}[{i}].", base + member["offset"] + i * member["array_stride"])
+                                    for i in range(dimensions[0]) for sub in reflection["types"][member["type"]]["members"]]
                     continue
                 ty = glsl_type(member["type"], reflection)
                 if ty not in VEC_TYPES or len(dimensions) > 1 or any(not n for n in dimensions):
@@ -539,7 +545,7 @@ def main():
                     clear_products(destinations)
                     print(f"GLSL 汇总：成功 0、失败 {len(failed)}、跳过 {skipped}")
                     return 1
-                # 一支都没译成（v0.3.1 拿不准不停；#702 原先整款停）：同离线一支没有，只出表头、全部运行时首遇现编；失败数留在汇总行，direct_lib.sh 记降级
+                # 一支都没译成（v0.3.1 拿不准不停；#702 原先整款停）：同离线一支没有，只出表头、全部运行时首遇现编；失败数留在汇总行，direct_lib.py 记降级
                 write_empty(destinations)
                 print(f"【黄】GLSL 离线一支没译成（{len(failed)} 支失败，见上方 [RED]），只出表头、运行时首遇现编", file=sys.stderr)
                 print(f"GLSL 汇总：成功 0、失败 {len(failed)}、跳过 {skipped}")

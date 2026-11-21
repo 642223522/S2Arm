@@ -23,7 +23,7 @@ struct InstallView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
-                // 导出自签包时标题照导出写，不写「装到 iPhone」。
+                // 导出自签包时标题照导出写，不写「推到 iPhone」。
                 LauncherSheetHeading(exportJob != nil ? text("library.hero.selfSign") : loc.t(model.installKey("s2arm.install.title")), subtitle: game?.name ?? "")
                 if model.installChecking { ProgressView().controlSize(.small) }
             }
@@ -46,11 +46,12 @@ struct InstallView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     // 手机作业三态统一（PhoneJobPanel）：钥匙串提示只在后端标了 keychainPrompt 的阶段挂（#266），在组件里
                     ScrollView { PhoneJobPanel(model: model, session: job).frame(maxWidth: .infinity, alignment: .leading) }
-                    // 装机在后台照跑：关掉弹层回游戏库，顶部胶囊「正在装到 iPhone · 查看进度」能回来（#308，Mac 与 Windows 同一套）
+                    // 装机在后台照跑：关掉弹层回游戏库，顶部胶囊「正在推到 iPhone · 查看进度」能回来（#308，Mac 与 Windows 同一套）
                     HStack { Spacer(); Button(text("install.background")) { dismiss() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("install.background").controllerShortcut(.back) }
                 }
                 .padding(.horizontal, LauncherTheme.Space.page).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
+            ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     // 上一次手机作业没成：同一个结局组件（原因 + 下一步 + 复制错误摘要 + 详细过程），下面照旧是清单，改好了直接再点
@@ -58,30 +59,25 @@ struct InstallView: View {
                        let last = model.lastPhoneSession, last.kind == failed.kind {
                         PhoneJobPanel(model: model, session: last)
                     }
-                    // 装到哪台：和出包页同一行；选过的那台不在线时如实说、让玩家改选（清单只看这台、每次现查）
-                    TargetDeviceRow(model: model).onChange(of: model.installDeviceID) { _ in model.checkInstall(gameID) }
+                    // 装到哪台：和出包页同一行；选过的那台不在线时如实说、让玩家改选（清单只看这台、每次现查）。清单「选设备」点过来时亮边框
+                    TargetDeviceRow(model: model).onChange(of: model.installDeviceID) { _ in model.pickDeviceFocus = false; model.checkInstall(gameID) }
+                        .padding(model.pickDeviceFocus ? 8 : 0)
+                        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(LauncherPalette.cream, lineWidth: model.pickDeviceFocus ? 1.5 : 0))
+                        .id(Self.deviceRowID)
+                    // 这款推成通用 S2Arm 里的一款还是独立 App（0.6.3）：缺省跟随设置，单款可改
+                    if let game { InstallLayoutRow(model: model, gameId: game.id) }
                     if let r = model.installReadiness {
                         CardGroup(loc.t("s2arm.install.checklist"), footnote: footnote(r)) {
                             ForEach(r.items) { item in
                                 CardRow(loc.backend(item.title), detail: loc.backend(item.detail), dot: dot(item)) {
-                                    if !item.ok, item.id == "package", let game {
-                                        Button(loc.t("s2arm.action.ipa")) { dismiss(); model.exportFor = game.id }
-                                            .controllerButtonStyle(LauncherSecondaryButtonStyle())   // 只是去出包页：出包在跑那边会排队，不置灰
-                                    }
-                                    if !item.ok, item.id == "appleId" {
-                                        // 团队号手填 / 引导项目收进环境检查「装到 iPhone 的方式」（v0.3.0）：这里只给一个去设置
-                                        LauncherRowActions {
-                                            Button(BackendText.launcherText("install.mode.go_settings", language: loc.lang.sharedCode)) {
-                                                onOpenSettings?()
-                                                dismiss()
-                                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { model.showEnvironment = true }
-                                            }
-                                            .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("install.goSettings")
-                                            Button(text("install.apple.open")) {
-                                                if case .open(let url) = model.provider.environment.repairStep(for: "openXcode") { NSWorkspace.shared.open(url) }
-                                            }
-                                            .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("install.openXcode")
-                                        }
+                                    // 按钮只按作业层给的动作 / 官方网页画（落点表 install_landing），点了走同一个派发（控制口 /install-action 也走它）；
+                                    //   只是去出包页 / 登录 / 看说明 / 开网页，别的作业在跑也不置灰
+                                    if let action = item.action, S2ArmLauncherModel.installActions.contains(action) {
+                                        Button(actionTitle(action)) { model.performInstallAction(action, gameId: gameID) }
+                                            .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("install.action." + item.id)
+                                    } else if let url = item.url.flatMap(URL.init(string:)) {
+                                        Button(text("action.open_official")) { NSWorkspace.shared.open(url) }
+                                            .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("install.url." + item.id)
                                     }
                                 }
                                 if item.id != r.items.last?.id { CardDivider() }
@@ -118,6 +114,9 @@ struct InstallView: View {
                 }
                 .padding(.horizontal, LauncherTheme.Space.page).padding(.bottom, LauncherTheme.Space.section)
             }
+            .onChange(of: model.pickDeviceFocus) { on in if on { withAnimation { proxy.scrollTo(Self.deviceRowID, anchor: .top) } } }
+            .onAppear { if model.pickDeviceFocus { proxy.scrollTo(Self.deviceRowID, anchor: .top) } }
+            }
             // 认得出的风险（会挤掉别处装的游戏 / 存档没能备份……）在结局页里问（PhoneJobPanel），不弹框
             }
             Divider().opacity(0.3)
@@ -148,7 +147,7 @@ struct InstallView: View {
                         .controllerButtonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("install.revealIpa").controllerShortcut(.secondary)
                 }
                 Button(loc.t("launch.done")) { dismiss() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerShortcut(.rightTrigger, .back, focused: true)
-                Button(loc.t("s2arm.install.start")) {
+                Button(queued ? text("install.start.queued") : loc.t("s2arm.install.start")) {
                     if let game { model.clearInlineFailure(); model.install(game) }
                 }
                 .controllerButtonStyle(LauncherPrimaryButtonStyle()).keyboardShortcut(.defaultAction).controllerShortcut(.rightTrigger)
@@ -173,7 +172,27 @@ struct InstallView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             if installJob == nil, model.installDone != gameID { model.checkInstall(gameID) }
         }
-        .onAppear { if model.phoneResult?.gameID == gameID { model.phoneResult = nil } }   // 回来看过结果，顶部胶囊收起
+        .onAppear {
+            if model.phoneResult?.gameID == gameID { model.phoneResult = nil }   // 回来看过结果，顶部胶囊收起
+            model.installViewOpen = gameID
+        }
+        .onDisappear {
+            if model.installViewOpen == gameID { model.installViewOpen = nil }
+            model.installHelp = nil; model.pickDeviceFocus = false
+            if model.appleLoginHost == "install" { model.closeAppleLogin() }
+        }
+        // 清单动作要离开装机窗（去出包页 / 去设置的证书一栏）：先关自己，再去；去设置的关掉后回到这里（同原先「去设置」）
+        .onChange(of: model.installLeave) { leave in
+            guard let leave else { return }
+            if case .settings = leave { onOpenSettings?() }
+            dismiss()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { model.applyInstallLeave(leave) }
+        }
+        // 信任 / 开发者模式怎么做：说明就是清单这一项的那句（作业层 S_TRUST / S_DEV_MODE）
+        .alert(helpItem.map { loc.backend($0.title) } ?? "", isPresented: Binding(get: { model.installHelp != nil }, set: { if !$0 { model.installHelp = nil } })) {
+            Button(text("install.help.ok")) { model.installHelp = nil }.keyboardShortcut(.defaultAction)
+        } message: { Text(helpItem.map { loc.backend($0.detail) } ?? "") }
+        .appleLoginSheet(model, host: "install")
         .launcherSheet()
         .font(LauncherTheme.TypeStyle.detail)
         .preferredColorScheme(.dark)
@@ -193,6 +212,18 @@ struct InstallView: View {
         return s
     }
     private var queued: Bool { model.phoneQueued(gameID) }
+    private static let deviceRowID = "install.deviceRow"
+    /// 说明弹窗对应的清单项（trustHelp → trusted，developerModeHelp → developerMode）
+    private var helpItem: InstallItem? { model.installReadiness?.items.first { $0.action != nil && $0.action == model.installHelp } }
+    /// 按钮文案：落点表给了共享文案键的用它（两端同一句）；表里写 null 的是 Mac 自画的这几个
+    private func actionTitle(_ action: String) -> String {
+        if let key = BackendText.installLandingActions[action] ?? nil { return text(key) }
+        switch action {
+        case "appleLogin": return text("install.login.open")
+        case "pickDevice": return text("install.action.pickDevice")
+        default: return text("install.action.howTo")   // trustHelp / developerModeHelp
+        }
+    }
     private func text(_ id: String) -> String { BackendText.launcherText(id, language: loc.lang.sharedCode) }
 
     @ViewBuilder private var doneContent: some View {

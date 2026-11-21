@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import re
 import shutil
 import signal
@@ -421,7 +422,7 @@ def _release_tag_numbers(engine):
     exact = numbers(git("describe", "--tags", "--exact-match", "HEAD"))
     if exact:
         return exact
-    found = [n for n in (numbers(t) for t in git("tag", "-l", "v[0-9]*").split()) if n]
+    found = [n for n in (numbers(t) for t in git("tag", "-l", "v[0-9]*").split() if "-test" not in t) if n]   # 测试版 tag（v0.6.0-test.1）不算发版号：正式 0.6.0 发布前开发版仍显示 0.5.x（11-19）
     return max(found, key=lambda n: tuple(int(x) for x in n.split(".")), default="")
 
 
@@ -455,6 +456,9 @@ def display_version(engine):
     tag = git("describe", "--tags", "--exact-match", "HEAD") or ""
     if not dirty and re.fullmatch(r"v?" + re.escape(short), tag):
         return f"v{short}"
+    pre = re.fullmatch(r"v?" + re.escape(short) + r"-([0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)", tag) if not dirty else None
+    if pre:   # 测试版 tag（11-19：0.6.0 测试包 v0.6.0-test.1）：界面显示带 test 的完整版本号，同 Mac build_app.py
+        return f"v{short}-{pre[1]}"   # 版本字里的 test 字样就是测试版标记（版本字中英文界面共用，不夹中文）
     return f"v{short}-dev+{commit[:7]}"
 
 
@@ -578,11 +582,11 @@ def record_sources(sources):
 PROBES = ("catalog", "installCheck", "targetDevice", "locations", "patchMatch")
 JOURNAL_PROGRESS_S = 5.0   # 进度事件最多隔这么久重写一次任务记录（剃刀 H5：原先每条事件都原子重写 + fsync）；阶段、诊断、终态每次都写并 fsync
 LOCK_WAIT_S = 30   # 短作业排队等游戏库锁的上限（秒）：出包这类长任务占着时，过了上限就如实报「在等谁」，不无限挂着
-OPERATION_NAMES = {"build": "出包", "ipa": "打 iPhone 包", "import": "导入游戏", "install": "装到 iPhone", "installUpdate": "更新 iPhone 上的 S2Arm", "installUpdatePrepare": "准备更新 iPhone 上的 S2Arm",
+OPERATION_NAMES = {"build": "出包", "ipa": "打 iPhone 包", "import": "导入游戏", "install": "推到 iPhone", "installUpdate": "更新 iPhone 上的 S2Arm", "installUpdatePrepare": "准备更新 iPhone 上的 S2Arm",
                    "installRemove": "从 iPhone 删除", "installRestore": "恢复 iPhone 上的上一版", "catalog": "刷新游戏库", "customize": "改游戏名或封面",
                    "remove": "移出游戏库", "delete": "删除游戏", "clean": "清理空间", "spaceFree": "释放空间", "launch": "开始游戏",
                    "moveGame": "移动游戏", "relinkGame": "重新关联原件", "forgetGame": "忘掉游戏", "setup": "设置游戏库", "keys": "导入密钥",
-                   "saveBackup": "备份存档", "saveRestore": "恢复存档", "saveInspect": "查看存档", "saveStatus": "读存档状态",
+                   "saveBackup": "备份存档", "saveRestore": "恢复存档", "saveInspect": "查看存档", "saveStatus": "读存档状态", "savePrevious": "查上一份存档", "saveRestorePrevious": "回到上一份存档",
                    "communitySave": "保存补丁设置", "diagnostics": "导出诊断", "sgradeScan": "查找可升级 S 级优化的游戏", "sgradeMac": "给 Mac 游戏补上 S 级优化", "sgradeReenable": "重新打开 S 级优化"}
 
 
@@ -595,6 +599,16 @@ def describe_holder(info):
 
 
 class Context:
+    _default_developer = ()   # 未查
+
+    @property
+    def default_developer(self):
+        """没传 Xcode 时的缺省（default_developer_dir）：第一次要用时才找、本任务全程共用。原先建任务时就找，
+        不用 Xcode 的任务（导入、推到 iPhone、环境检查等）也去翻目录，找不到内置的还会翻外接卷、弹系统隐私窗"""
+        if self._default_developer == ():
+            self._default_developer = None if self.r.get("developerDir") else default_developer_dir()
+        return self._default_developer
+
     def __init__(self, request):
         # 空间预检没过、玩家点「仍然继续」重交的出包任务（library.check_pack_space）：只认布尔值、只给 Mac 打包 / 打 iPhone 包
         if "spaceOverride" in request and (not isinstance(request["spaceOverride"], bool) or request.get("operation") not in ("build", "ipa")):
@@ -603,7 +617,6 @@ class Context:
         if "followUp" in request and (not isinstance(request["followUp"], bool) or request.get("operation") != "ipa"):
             raise Failure("followUp 仅支持打 iPhone 包（ipa）任务的布尔值。")
         self.r = request
-        self.default_developer = None if request.get("developerDir") else default_developer_dir()   # 没传 Xcode 时的缺省：建任务时取一次装着的最新 Xcode，全程共用
         self.task = request.get("jobId") or request.get("taskId") or str(uuid.uuid4())
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", self.task):
             raise Failure("无效的任务标识。")
@@ -693,10 +706,11 @@ class Context:
                     host=socket.gethostname(), startedAt=round(time.time(), 3))
 
     @contextlib.contextmanager
-    def lock(self, name="catalog", wait=None, root=None):
+    def lock(self, name="catalog", wait=None, root=None, shared=False):
         """游戏库锁（启动器剃刀 H1 / H2：库内只有这一种等待语义）：拿不到就排队，最多等 wait 秒（缺省 lock_wait / LOCK_WAIT_S），期间发进度「在等『X』结束」
         （phase=waiting_lock、holder=占锁任务）；到上限报 code=library_busy、原句「另一个任务正在使用游戏库」，失败事件带 holder，占锁者也进 internal。
-        root 给了是另一个库（整库搬家的旧位置），不核本任务的库标识。拿到后在旁挂文件记下本任务。报错原句不改：旧前端按它做本地化匹配"""
+        root 给了是另一个库（整库搬家的旧位置），不核本任务的库标识。拿到后在旁挂文件记下本任务。报错原句不改：旧前端按它做本地化匹配。
+        shared = True：共享模式（filelock 读写锁的「读」）——执行锁上起局与出包拿共享（各自再拿这一款的锁），清理 / 删除 / 搬家等全库动作拿独占"""
         self.check()
         if root is None:
             self.require_library()
@@ -707,7 +721,7 @@ class Context:
             except Exception:   # 进度发不出去（作业已在收尾 / 测试里的裸上下文）不影响排队
                 pass
         try:
-            with filelock.held(Path(root or self.library) / ("." + name + ".lock"), wait_s=wait, holder=self.lock_holder(), on_wait=waiting):
+            with filelock.held(Path(root or self.library) / ("." + name + ".lock"), wait_s=wait, holder=self.lock_holder(), on_wait=waiting, shared=shared):
                 yield
         except filelock.Busy as busy:
             detail = f"等了 {wait:g} 秒，游戏库{name}锁仍被占：{describe_holder(busy.holder)}（{json.dumps(busy.holder, ensure_ascii=False)}）"  # 非玩家句
@@ -741,6 +755,12 @@ class Context:
         with self.guard:
             self.check()
             now = time.monotonic()
+            # 上次前进时刻（#1770 / #1773：玩家分不清「编得慢」和「卡死」）：换了一步，或这一步 / 任一计数器的完成数变了，才算前进；
+            #   心跳、批次活动脉冲（只走时间不走分子）不算。随每条事件与作业记录发出，界面显示「上次前进 N 秒前」
+            if kind in ("stage", "progress"):
+                sig = (self.number, self.stage, done, total, tuple((c.get("name"), c.get("done")) for c in extra.get("counters") or ()))
+                if sig != getattr(self, "_advance_sig", None):
+                    self._advance_sig, self.advanced_at = sig, time.time()
             if kind == "progress" and now - self.last_progress < .2 and done != total:
                 return
             if kind == "progress":
@@ -767,7 +787,8 @@ class Context:
                          stageIndex=self.number, stageCount=self.count, state=state,
                          doneUnits=done, totalUnits=total, done=done, total=total,
                          elapsed=now-self.t0, message=message, milestone=getattr(self, "milestone", None),
-                         stageKey=self.stage_key, keychainPrompt=self.keychain_prompt, **extra)
+                         stageKey=self.stage_key, keychainPrompt=self.keychain_prompt,
+                         advancedAt=getattr(self, "advanced_at", None), **extra)
             if kind == "stage":
                 self.job.update(done=None, total=None, unit=None)
             elif kind == "progress":
@@ -779,7 +800,7 @@ class Context:
                 self.job["space"] = extra.get("space")
             self.job["milestone"] = getattr(self, "milestone", None)
             self.job.update(stage=self.stage, stageIndex=self.number, stageCount=self.count,
-                            elapsed=event["elapsed"], seq=self.seq)
+                            elapsed=event["elapsed"], seq=self.seq, advancedAt=event["advancedAt"])
             if message:
                 self.job["message"] = message
             line = json.dumps(event, ensure_ascii=False)
@@ -970,7 +991,7 @@ class Context:
         failure = explain(error, **self.failure_roots())
         code = failure.code
         result = dict(code=code, severity=severity, summary=self.redact(failure),
-                      suggestion=recovery(code, packaged=bool(self.r.get("engineBundle"))), detail="", stage=self.stage,
+                      suggestion=getattr(failure, "advice", None) or recovery(code, packaged=bool(self.r.get("engineBundle"))), detail="", stage=self.stage,
                       component="S2Arm", logPath=str(self.last_log) if self.last_log else None)
         if exit_code is not None:
             result["exitCode"] = exit_code
@@ -991,9 +1012,9 @@ class Context:
         result["failureSummary"] = failure_summary(self.stage, rc, [self.redact(line, limit=None) for line in last_output_lines(self.last_log)])
         return result
 
-    def diagnostic(self, message, code="job_failed", severity="error", exit_code=None, internal="", holder=None, facts=None):
+    def diagnostic(self, message, code="job_failed", severity="error", exit_code=None, internal="", holder=None, facts=None, advice=None):
         # holder / facts 原样带进失败结果（原先这里只按原句 + 码 + internal 重建 Failure，library_busy 的占锁者、改写失败的机读事实走真作业路径时都丢了）
-        result = self.describe_failure(Failure(message, code=code, internal=internal, holder=holder, facts=facts), severity, exit_code)
+        result = self.describe_failure(Failure(message, code=code, internal=internal, holder=holder, facts=facts, advice=advice), severity, exit_code)
         self.job["diagnostics"].append(result)
         self.emit("diagnostic", result["summary"], diagnostic=result, error=result,
                   diagnostics=self.job["diagnostics"], logRef=result["logPath"])
@@ -1070,6 +1091,7 @@ class Context:
         if gid and self.operation in ("build", "ipa"):   # 直连缓存跟着游戏的存放位置走（外接盘时落外接盘，library.direct_cache_dir）
             import library
             env["S2A_DIRECT_CACHE"] = str(library.direct_cache_dir(self, gid))
+            env["S2A_AOC_CACHE"] = str(library.aoc_cache_dir(self, gid))   # 追加内容缓存同样跟着游戏走（#1725）
         developer = self.r.get("developerDir") or self.default_developer   # 启动器传的 > 装着的最新 Xcode；都没有就不设
         if developer:
             env.update(DEVELOPER_DIR=developer, S2A_DEVELOPER_DIR=developer)
@@ -1096,6 +1118,9 @@ class Context:
                    S2A_MACHINE_NO_LOCAL="1", S2A_CPU_LEDGER="0",
                    # 玩家导入的客体着色器缓存（启动器社区资源面板拷进 <数据目录>/着色器缓存/<程序号>/，出包时自动并入；着色器线 docs/客体着色器缓存导入.md）
                    S2A_USER_SHCACHE=str(self.private / "着色器缓存"))
+        import upgrade_budget
+        if getattr(self, "operation", None) in upgrade_budget.OPERATIONS:   # S 级升级：按此刻核数 / 可用内存 / 有没有游戏在跑定路数，不吃满玩家的机器
+            env.update(upgrade_budget.env(self))
         # 作业临时目录（游戏库结构 v3，出包修复线约定）：这款所在存放位置的 temp/<任务号>，与游戏数据同卷；作业结束由 main.run_request 删
         gid = self.r.get("gameId")
         if gid and self.r.get("library") and (self.library / ".s2arm-library.json").is_file():
@@ -1140,7 +1165,8 @@ class Context:
             from embedded import artifact
             # 只有源码树（没有 engine.json，artifact 回 None）才没有内置宿主、按需现编；发版清单里缺它或校验不符，artifact 抛「请重新安装完整应用」照常抛出
             #   （审计 P2-196：原先 except Exception 一律吞掉、改去现场编，红字指向「编译 Mac 宿主失败」，玩家按缺 SDK 去排查）
-            bundled_host = artifact(self, "S2ArmGame.app")
+            # Intel 出包 App 按设计不带 Mac 宿主（游戏是 AArch64 原生执行）：清单没列这项是合法出包形态，optional 返回 None；列了但缺文件照旧报错。
+            bundled_host = artifact(self, "S2ArmGame.app", optional=platform.machine() == "x86_64")
             if bundled_host:
                 if not ((bundled_host / "Contents/MacOS/s2arm-host").is_file() and (bundled_host / "Contents/MacOS/libs2a_vaguard.dylib").is_file()):
                     raise Failure("应用内置引擎产物缺失，请重新安装完整应用。")
@@ -1323,7 +1349,7 @@ class Context:
                     if self.operation == "build":
                         from errors import build_tool_failure
                         failure = build_tool_failure(args, getattr(self, "milestone", None), self.last_log)
-                        self.diagnostic(str(failure), failure.code, exit_code=rc, internal=failure.internal, facts=failure.facts)
+                        self.diagnostic(str(failure), failure.code, exit_code=rc, internal=failure.internal, facts=failure.facts, advice=failure.advice)
                         raise failure
                     from errors import tool_reason
                     message = f"{self.stage or '这一步'}失败（退出码 {rc}）：{self.redact(tool_reason(self.last_log), limit=240)}"
