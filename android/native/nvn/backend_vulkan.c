@@ -809,11 +809,15 @@ static void seg_give_desc(VkDescriptorPool p) {
 // · 遮挡查询池：槽数相同的再用；开段时照旧整池重置。
 // 暂存缓冲这张表只留标准大小（VK_ARENA_MIN）的块。真机取样（一款 3D 游戏的世界场景，Adreno 840 调试包，开 nvk_flt 的诊断包）：
 // 每帧用 24 个标准大小的块，表里却长期占着 28 个非标准大小的块（加载阶段留下的，之后再没有谁要同样的大小，每帧放回的非标准块 0 个），
-// 32 个位置只剩 4 个留给标准块：每帧 11.8 次没命中新建（vkAllocateMemory + 映射）、11.8 次表满销毁（vkFreeMemory）。
+// 当时表只有 32 个位置，只剩 4 个留给标准块：每帧 11.8 次没命中新建（vkAllocateMemory + 映射）、11.8 次表满销毁（vkFreeMemory）。
 // 非标准大小的块不进表、照旧销毁；诊断开关 nvk_stg_std=0 退回旧行为（开会话时读一次，同一局里对照要重开会话），缺省开。
-enum { SEGPOOL_STG_N = 32, SEGPOOL_Q_N = 16 };
-static struct nvn_gpu_buf_s *g_seg_stg[SEGPOOL_STG_N]; static uint32_t g_seg_nstg;
+// 池镜像同步的暂存（nvn_gpu_buf_write）另有一条账，见 stg_chunk 一节：一笔写按标准块大小切开，切出来的标准块都走这张表回收，
+// 表容量放大到 SEGPOOL_STG_BIG_N 个位置（原先 32 个）。
+enum { SEGPOOL_STG_BIG_N = 256, SEGPOOL_Q_N = 16 };
+static struct nvn_gpu_buf_s *g_seg_stg[SEGPOOL_STG_BIG_N]; static uint32_t g_seg_nstg;
 static int g_seg_stg_std = 1;   // 只留标准大小（开会话时读 nvk_stg_std；持 g_seg_mu 读写）
+// 暂存写读数（开会话清零，原子累加）：0 写缓冲笔数；1 写入字节；2 拷贝命令条数；3 一笔超过一个标准块的笔数；4 新建暂存块个数；5 新建暂存块字节
+static uint64_t g_stg_wr[6];
 static uint64_t g_seg_stg_hit, g_seg_stg_miss, g_seg_stg_kept, g_seg_stg_rej, g_seg_stg_full;   // 取用命中 / 没命中；放回留下 / 因非标准大小没留 / 因表满没留（持 g_seg_mu 读写；会话读数，不随 take 清零）
 static struct { VkQueryPool q; uint32_t n; } g_seg_q[SEGPOOL_Q_N]; static uint32_t g_seg_nq;
 static struct nvn_gpu_buf_s *seg_take_stg(uint64_t bytes) {
@@ -830,7 +834,7 @@ static int seg_give_stg(struct nvn_gpu_buf_s *b) {   // 1 = 留下了；0 = 没�
     pthread_mutex_lock(&g_seg_mu);
     if (g_seg_closed) { /* 会话收尾已清过表：直接销毁 */ }
     else if (g_seg_stg_std && b->bytes != VK_ARENA_MIN) g_seg_stg_rej++;
-    else if (g_seg_nstg >= SEGPOOL_STG_N) g_seg_stg_full++;
+    else if (g_seg_nstg >= SEGPOOL_STG_BIG_N) g_seg_stg_full++;
     else { g_seg_stg[g_seg_nstg++] = b; g_seg_stg_kept++; kept = 1; }
     pthread_mutex_unlock(&g_seg_mu);
     return kept;
@@ -2359,6 +2363,7 @@ nvn_gpu_rc nvn_gpu_open(const nvn_gpu_open_desc *d, nvn_gpu_err *err) {
     g.worker_started = 1;
     pthread_mutex_lock(&g_seg_mu); g_seg_closed = 0;
     g_seg_stg_std = nvn_plat_flag("nvk_stg_std", 1) != 0; g_seg_stg_hit = g_seg_stg_miss = g_seg_stg_kept = g_seg_stg_rej = g_seg_stg_full = 0;
+    for (int i = 0; i < 6; i++) __atomic_store_n(&g_stg_wr[i], 0, __ATOMIC_RELAXED);
     pthread_mutex_unlock(&g_seg_mu);
     plc_open(d->cache_dir);   // 缓存是加速不是前提：里面任何一步失败都落到「不带缓存」，不让 open 失败
     g_open = 1;
@@ -2784,7 +2789,10 @@ static struct nvn_gpu_buf_s *new_staging(struct nvn_gpu_cmd_s *c, uint64_t cap) 
     nvn_gpu_err e;
     nvn_gpu_buf b = seg_reuse_on() ? seg_take_stg(cap) : NULL;
     static int cached_on = -1; if (cached_on < 0) cached_on = nvn_plat_flag("nvk_stage_cached", 1) != 0;
-    if (!b && !rc_is(buf_create_impl(cap, NVN_GPU_MEM_SHARED, NULL, cached_on, &b, &e), NVN_GPU_OK)) return NULL;
+    if (!b) {
+        if (!rc_is(buf_create_impl(cap, NVN_GPU_MEM_SHARED, NULL, cached_on, &b, &e), NVN_GPU_OK)) return NULL;
+        __atomic_add_fetch(&g_stg_wr[4], 1, __ATOMIC_RELAXED); __atomic_add_fetch(&g_stg_wr[5], cap, __ATOMIC_RELAXED);   // 新建的暂存块（表里没取到）
+    }
     if (c->nstaging == c->scap) {
         uint32_t n = c->scap ? c->scap * 2 : 4;
         struct vk_staging *p = realloc(c->staging, (size_t)n * sizeof *p);
@@ -2862,6 +2870,21 @@ static int buf_range(const struct nvn_gpu_buf_s *b, uint64_t off, uint64_t bytes
     return b && off <= b->bytes && bytes <= b->bytes - off;
 }
 
+// ---- stg_chunk：暂存写按标准块切开
+// 池镜像同步（graphics/nvn/replay/rp_buf.c sync_write）在镜像正被显卡用着时，把游戏内存里的脏页一段一段交给 nvn_gpu_buf_write：
+// 一笔 = 一段连续脏页，短的几 KB、长的几 MB。arena_alloc 为超过当前块余量的一笔新建一个 max(bytes + 4, 256 KB) 的块，
+// 大于 256 KB 的块不是标准大小，回收表不收（nvk_stg_std），段完成就销毁；下一次又是一块新映射的内存，memcpy 每 4 KB 缺一页。
+// 真机（Adreno 8 系，一款 3D 游戏的世界场景，R29 调试包，缺省开关）：每帧池镜像同步约 90 MB，其中约 34 MB 走暂存；主线程每秒约 20.8 万次缺页
+// （96.6% 落在 memmove、93.7% 经 nvn_gpu_buf_write），内核态占该线程 CPU 21%、解析慢路尾约 12 毫秒 / 帧。
+// 切法：一笔超过一个标准块就按 STG_CHUNK 切；当前块还剩 4 KB 以上先用满它。每一块都是标准大小，走回收表（SEGPOOL_STG_BIG_N 个位置）。
+// STG_CHUNK = 标准块 - 4：arena_alloc 要 bytes + align（align 取 4）字节的块，整块用满时恰好等于 VK_ARENA_MIN，新建出来的就是标准块。
+#define STG_CHUNK ((uint64_t)VK_ARENA_MIN - 4u)
+static uint64_t arena_room(const struct nvn_gpu_cmd_s *c, uint32_t align) {   // 当前 arena 块在对齐之后还剩多少字节（没有块 = 0）
+    if (!c->arena) return 0;
+    const uint64_t off = (c->arena_used + align - 1) & ~(uint64_t)(align - 1);
+    return off < c->arena_cap ? c->arena_cap - off : 0;
+}
+
 void nvn_gpu_buf_write(nvn_gpu_cmd ch, nvn_gpu_buf bh, uint64_t off, const void *src, uint64_t bytes) {
     { struct nvn_gpu_cmd_s *cc = ch; if (cc && cc->in_pass && rc_is(cc->sticky, NVN_GPU_OK)) { set_sticky(cc, NVN_GPU_E_ORDER, "传输操作在通道内"); return; } }
     if (!ch) return;
@@ -2872,16 +2895,29 @@ void nvn_gpu_buf_write(nvn_gpu_cmd ch, nvn_gpu_buf bh, uint64_t off, const void 
     if (!buf_range(b, off, bytes)) { set_sticky(c, NVN_GPU_E_ARG, "buf_write 越界 off=%llu bytes=%llu size=%llu",
                                                    (unsigned long long)off, (unsigned long long)bytes, (unsigned long long)b->bytes); return; }
     if (bytes == 0) return;
-    nvn_gpu_slice sl;
-    nvn_gpu_err e;
-    if (!rc_is(nvn_gpu_arena_alloc(ch, bytes, 4, &sl, &e), NVN_GPU_OK)) {
-        set_sticky(c, e.rc.code, "buf_write 暂存：%s", e.why);
-        return;
+    // 暂存按标准块切开（见 stg_chunk 一节）：一笔写要的暂存超过一个标准块时，整块新建的非标准大小块回收表不收，每次都是新的
+    // 一段映射内存，memcpy 逐页缺页；切成标准块之后走回收表，页一直是驻留的。
+    __atomic_add_fetch(&g_stg_wr[0], 1, __ATOMIC_RELAXED); __atomic_add_fetch(&g_stg_wr[1], bytes, __ATOMIC_RELAXED);
+    if (bytes > STG_CHUNK) __atomic_add_fetch(&g_stg_wr[3], 1, __ATOMIC_RELAXED);
+    full_barrier(c);   // 一笔写只在第一条拷贝之前来一次：各条拷贝的目标段互不相交，彼此之间没有先后依赖
+    for (uint64_t done = 0; done < bytes;) {
+        uint64_t n = bytes - done;
+        if (n > STG_CHUNK) {
+            const uint64_t room = arena_room(c, 4);   // 当前块还剩 4 KB 以上先把它用满，不够就开新的标准块
+            n = (room >= 4096 && room < STG_CHUNK) ? room : STG_CHUNK;
+        }
+        nvn_gpu_slice sl;
+        nvn_gpu_err e;
+        if (!rc_is(nvn_gpu_arena_alloc(ch, n, 4, &sl, &e), NVN_GPU_OK)) {
+            set_sticky(c, e.rc.code, "buf_write 暂存：%s", e.why);
+            return;
+        }
+        memcpy(sl.cpu, (const uint8_t *)src + done, (size_t)n);
+        VkBufferCopy bc = {sl.off, off + done, n};
+        vkCmdCopyBuffer(c->cb, sl.buf->buffer, b->buffer, 1, &bc);
+        __atomic_add_fetch(&g_stg_wr[2], 1, __ATOMIC_RELAXED);
+        done += n;
     }
-    memcpy(sl.cpu, src, (size_t)bytes);
-    full_barrier(c);
-    VkBufferCopy bc = {sl.off, off, bytes};
-    vkCmdCopyBuffer(c->cb, sl.buf->buffer, b->buffer, 1, &bc);
     c->xfer_dirty = 1;   // 缓冲作目标的传输：下一次计算派发前要补全屏障（见 nvn_gpu_dispatch）
     cmd_ref(c, b, REF_BUF);
     pthread_mutex_lock(&g_mu);
@@ -8585,6 +8621,13 @@ void nvn_gpu_stats(nvn_gpu_stat_fn fn, void *user, int take) {
     fn(user, "stg_pool_kept", sk);       // 放回时留进表里的次数
     fn(user, "stg_pool_rejected", sr);   // 放回时因为不是标准大小（nvk_stg_std）没留、照旧销毁的次数
     fn(user, "stg_pool_full", sf);       // 放回时因为表满没留、照旧销毁的次数
+    // 暂存写读数（开会话起累计；stg_chunk 一节）
+    fn(user, "stg_write_n", __atomic_load_n(&g_stg_wr[0], __ATOMIC_RELAXED));         // nvn_gpu_buf_write 的笔数
+    fn(user, "stg_write_bytes", __atomic_load_n(&g_stg_wr[1], __ATOMIC_RELAXED));     // 其中写入的字节
+    fn(user, "stg_write_copies", __atomic_load_n(&g_stg_wr[2], __ATOMIC_RELAXED));    // 录出的暂存到缓冲拷贝命令条数（分块开着时一笔可以是多条）
+    fn(user, "stg_write_big", __atomic_load_n(&g_stg_wr[3], __ATOMIC_RELAXED));       // 一笔超过一个标准块的笔数
+    fn(user, "stg_new_blocks", __atomic_load_n(&g_stg_wr[4], __ATOMIC_RELAXED));      // 回收表里没取到、向驱动新建的暂存块个数（含所有 arena_alloc 来源）
+    fn(user, "stg_new_bytes", __atomic_load_n(&g_stg_wr[5], __ATOMIC_RELAXED));       // 这些新建块的字节
     fn(user, "shader_missing_vertex_stores", __atomic_load_n(&g_vfeat_missing[0], __ATOMIC_RELAXED));   // 顶点前阶段写存储、设备没启用 vertexPipelineStoresAndAtomics 的着色器数
     fn(user, "shader_missing_clip_distance", __atomic_load_n(&g_vfeat_missing[1], __ATOMIC_RELAXED));
     fn(user, "shader_missing_cull_distance", __atomic_load_n(&g_vfeat_missing[2], __ATOMIC_RELAXED));
