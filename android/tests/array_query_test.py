@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 S2Arm contributors
+# 门禁间接：android/tests/vk/standalone/array-query.sh 调它（vk 车道 run.sh 默认档按 standalone/*.sh 逐个跑）
 """Static validation of array-coordinate lowering; NOT a GPU gate.
 
 Requires a C compiler and glslc/spirv-val (PATH, or the explicit options below).
