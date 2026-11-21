@@ -92,6 +92,20 @@ internal static class ExportChoiceCases
         check(Q(ExportChoice.InstallRequests("none", [])) == "mode=export,sign=none", "start: nothing ticked → one export-to-folder install with the sign");
         check(Q(ExportChoice.InstallRequests("devCert", [])) == "mode=export,sign=devCert", "start: nothing ticked, signed → export with that sign");
 
+        // 选「独立 App」时的提示：作业 standaloneHints 按这次签名方式取码（显式 App ID 的描述文件装一款顶掉前一款，玩家反馈）
+        var hints = ExportChoice.StandaloneHints(J("""{"layout":"shell","standaloneHint":"wildcard","standaloneHints":{"appleId":"appleId","devCert":"explicit","none":"external","bogus":"x"}}"""));
+        check(hints.Count == 3 && hints["devCert"] == "explicit", "standalone hints: three sign keys parsed, unknown key dropped");
+        check(ExportChoice.StandaloneHints(J("""{"standaloneHints":{"appleId":"appleId","devCert":null,"none":"external"}}""")).ContainsKey("devCert") == false,
+            "standalone hints: devCert null (ordinary development profile) → no hint");
+        check(ExportChoice.StandaloneHints(J("""{"standaloneHint":"wildcard"}""")).Count == 0, "standalone hints: absent → empty");
+        check(ExportChoice.StandaloneNote(hints, "devCert", "standalone") == ("install.layout.hint.explicit", "#FFD60A"), "note: certificate + standalone + explicit profile → yellow explicit");
+        check(ExportChoice.StandaloneNote(hints, "appleId", "standalone") == ("install.layout.hint.appleId", "#FF9F0A"), "note: Apple ID + standalone → orange free-account limits");
+        check(ExportChoice.StandaloneNote(hints, "none", "standalone") == ("install.layout.hint.external", "#FF9F0A"), "note: self-sign + standalone → orange external");
+        check(ExportChoice.StandaloneNote(ExportChoice.StandaloneHints(J("""{"standaloneHints":{"devCert":"wildcard"}}""")), "devCert", "standalone") == ("install.layout.hint.wildcard", "#FFD60A"),
+            "note: wildcard profile → yellow wildcard");
+        check(ExportChoice.StandaloneNote(hints, "devCert", "shell") is null, "note: universal S2Arm chosen → no line");
+        check(ExportChoice.StandaloneNote(new Dictionary<string, string>(), "devCert", "standalone") is null, "note: no hint for this sign → no line");
+
         // 要不要先在电脑上做好 iPhone 版
         check(ExportChoice.NeedsPack(false, false, 2) && ExportChoice.NeedsPack(false, false, 0), "prepare: no iPhone version → prepare first");
         check(!ExportChoice.NeedsPack(true, false, 1), "prepare: iPhone version (old format) pushing to a device → no repack");

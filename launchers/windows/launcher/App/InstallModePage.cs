@@ -153,8 +153,12 @@ public sealed partial class EnvironmentWindow
 
     private static readonly IBrush LayoutGold = Brush.Parse("#E8C65A");
 
+    /// <summary>选「独立 App」时按签名方式给的提示码（作业 standaloneHints，导出确认页按这次选的签名取）</summary>
+    private IReadOnlyDictionary<string, string> standaloneHints = new Dictionary<string, string>();
+
     private void ReadLayoutRecommend(JsonElement result)
     {
+        standaloneHints = ExportChoice.StandaloneHints(result);
         standaloneHint = Str(result, "standaloneHint");
         layoutRecommend = Str(result, "recommend");
         layoutRecommendWhy = Str(result, "recommendWhy");

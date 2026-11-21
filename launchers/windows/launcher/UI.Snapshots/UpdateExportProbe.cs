@@ -142,6 +142,23 @@ static class UpdateExportProbe
             Set(w, "phoneOverview", new PhoneOverview([overview.Phones[2], overview.Phones[3], overview.Phones[0]])); Call(w, "Render"); Settle(w);
             Save(w, Path.Combine(outDir, "export_2_selfsign_three_rows.png"));
             Set(w, "phoneOverview", overview);
+            // 选「独立 App」时按这次的签名方式出提示（作业 standaloneHints）；切签名 / 切出法跟着变，通用 S2Arm 不出
+            Set(w, "standaloneHints", (IReadOnlyDictionary<string, string>)new Dictionary<string, string> { ["appleId"] = "appleId", ["devCert"] = "explicit", ["none"] = "external" });
+            Set(w, "devCert", (JsonElement?)JsonDocument.Parse("""{"imported":true,"active":true,"cert":null}""").RootElement.Clone());
+            string? Note() => w.GetVisualDescendants().OfType<TextBlock>().FirstOrDefault(t => Id(t) == "exportgame.layout.note")?.Text;
+            Set(w, "exportSignPick", "appleId"); Set(w, "exportLayoutPick", "shell"); Call(w, "Render"); Settle(w);
+            Check(fails, "出法选通用 S2Arm：没有提示行", Note() is null);
+            Set(w, "exportLayoutPick", "standalone"); Call(w, "Render"); Settle(w);
+            Check(fails, "独立 App + Apple ID：免费账号那句", Note()?.StartsWith("免费 Apple ID") == true);
+            Set(w, "exportSignPick", "none"); Call(w, "Render"); Settle(w);
+            Check(fails, "独立 App + 自签：AltStore / SideStore 那句", Note()?.StartsWith("你选的是自己用 AltStore / SideStore 签") == true);
+            Set(w, "exportSignPick", "devCert"); Call(w, "Render"); Settle(w);
+            Check(fails, "独立 App + 我的证书（显式 App ID）：装一款顶掉前一款", Note()?.StartsWith("你的描述文件是显式 App ID") == true);
+            Set(w, "phoneOverview", new PhoneOverview(overview.Phones.Take(1).ToList())); Call(w, "Render"); Settle(w);
+            Save(w, Path.Combine(outDir, "export_5_standalone_explicit_profile.png"));
+            Set(w, "phoneOverview", overview);
+            Set(w, "exportSignPick", null); Set(w, "exportLayoutPick", null);
+            Set(w, "devCert", (JsonElement?)JsonDocument.Parse("""{"imported":false,"active":false,"cert":null}""").RootElement.Clone());
             // 没做好 iPhone 版
             OpenExport(fresh);
             Check(fails, "没做好 iPhone 版：写「会先在电脑上做好」", Ids(w).Contains("exportgame.prepare") && Texts(w).Contains("这款还没做好 iPhone 版：开始后会先在电脑上做好"));

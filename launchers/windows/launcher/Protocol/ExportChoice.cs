@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 S2Arm contributors
+using System.Text.Json;
+
 namespace S2Arm.Launcher.Protocol;
 
 /// <summary>
@@ -71,6 +73,24 @@ public static class ExportChoice
         devices.Count == 0
             ? [new() { ["mode"] = "export", ["sign"] = sign }]
             : devices.Select(d => new Dictionary<string, object?> { ["device"] = d, ["sign"] = sign }).ToList();
+
+    /// <summary>作业 installMode / layoutSet 结果的 standaloneHints：{appleId, devCert, none} → 选「独立 App」时按这次签名方式给的提示码
+    /// （appleId → "appleId"；devCert → "wildcard" | "explicit" | null；none → "external"）。只留值是非空字符串的；旧作业层没有这个字段 = 空</summary>
+    public static IReadOnlyDictionary<string, string> StandaloneHints(JsonElement result)
+    {
+        var hints = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (result.ValueKind == JsonValueKind.Object && result.TryGetProperty("standaloneHints", out var h) && h.ValueKind == JsonValueKind.Object)
+            foreach (var p in h.EnumerateObject())
+                if (p.Name is AppleId or DevCert or SelfSign && p.Value.ValueKind == JsonValueKind.String && p.Value.GetString() is { Length: > 0 } code)
+                    hints[p.Name] = code;
+        return hints;
+    }
+
+    /// <summary>导出确认页 ② 出法下面那一行：只在选了独立 App 时出，按 ① 当前的签名方式取提示码 → (文案键 install.layout.hint.&lt;码&gt;, 颜色)；
+    /// 显式 App ID / 通配描述文件黄色，免费 Apple ID 与自签（AltStore / SideStore）橙色；没有提示 → null（玩家反馈「独立 App 装一个就覆盖前一款」：要在选的时候就说）</summary>
+    public static (string Key, string Color)? StandaloneNote(IReadOnlyDictionary<string, string> hints, string sign, string layout) =>
+        layout != "standalone" || !hints.TryGetValue(sign, out var code) ? null
+        : ("install.layout.hint." + code, code is "explicit" or "wildcard" ? "#FFD60A" : "#FF9F0A");
 
     /// <summary>开始前要不要先在电脑上做好 iPhone 版：没做过；或导出到文件夹而包还不是能直接导出的新格式（单一 IMG）</summary>
     public static bool NeedsPack(bool iphoneReady, bool iphoneExportable, int devices) => !iphoneReady || (devices == 0 && !iphoneExportable);

@@ -322,7 +322,15 @@ public sealed partial class EnvironmentWindow
         var lays = new StackPanel { Spacing = 6 };
         lays.Children.Add(ExportOption("exportLayout", "export.layout.option.shell", lay == "shell", true, () => exportLayoutPick = "shell", "exportgame.layout.shell", layoutRecommend == "shell"));
         lays.Children.Add(ExportOption("exportLayout", "export.layout.option.standalone", lay == "standalone", true, () => exportLayoutPick = "standalone", "exportgame.layout.standalone", layoutRecommend == "standalone"));
-        if (LayoutNote(lay) is { } note) lays.Children.Add(new TextBlock { Text = T(note.Key), TextWrapping = TextWrapping.Wrap, FontSize = 12, Foreground = Brush.Parse(note.Color) });
+        // 选了独立 App：按 ① 这次选的签名方式给提示（作业 standaloneHints；显式 App ID 的描述文件只允许一个包名，装一款会顶掉前一款）；选通用 S2Arm 不出
+        //   通用 S2Arm 只留一种：用分发证书签通用 S2Arm（游戏打不开），照设置页出法卡同一句
+        var shellWarn = lay == "shell" && sign == ExportChoice.DevCert && layoutRecommendWhy == "distribution" ? ("layout.card.warn.distShell", "#FF9F0A") : ((string, string)?)null;
+        if ((ExportChoice.StandaloneNote(standaloneHints, sign, lay) ?? shellWarn) is { } note)
+        {
+            var line = new TextBlock { Text = T(note.Key), TextWrapping = TextWrapping.Wrap, FontSize = 12, Foreground = Brush.Parse(note.Color) };
+            AutomationId(line, "exportgame.layout.note");
+            lays.Children.Add(line);
+        }
         body.Children.Add(ExportStep("export.page.layout", lays, "exportgame.layout"));
 
         // ③ 导到哪：每台一行「类型 · 名字　这款状态」，可勾规则见 ExportChoice.Row；默认都不勾
