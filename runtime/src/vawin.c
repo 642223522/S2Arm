@@ -329,7 +329,18 @@ static int span_path(char *out, size_t n, uint64_t pid) {   // pid = 0：按局�
     if (!mem_peak_path(out, n)) return 0;
     char *sl = strrchr(out, '/'); if (!sl) return 0; snprintf(sl + 1, n - (size_t)(sl + 1 - out), "span_peak"); return 1;
 }
-uint64_t s2a_window_span_seen(uint64_t pid) { char p[1024]; return pid && span_path(p, sizeof p, pid) ? read_u64(p) : 0; }
+// 各款实测最高地址的种子表（tools/span_seed.py 从诊断报告生成，随宿主下发）：本机还没玩过 / 没记下的款，第一局就按别人设备上碰到过的最高值判
+//   （窗口给多大、快照区放不放得下、弹不弹「地址空间不够」）。只收放不下标准布局的局，每款取最大值、样本 ≥ 2
+static const struct { uint64_t pid; uint32_t mb, n; } g_span_seed[] = {
+#include "span_seed.inc"
+};
+uint64_t s2a_span_seed(uint64_t pid) {
+    size_t a = 0, b = sizeof g_span_seed / sizeof g_span_seed[0];
+    while (a < b) { size_t m = (a + b) / 2; if (g_span_seed[m].pid < pid) a = m + 1; else b = m; }
+    return a < sizeof g_span_seed / sizeof g_span_seed[0] && g_span_seed[a].pid == pid ? (uint64_t)g_span_seed[a].mb << 20 : 0;
+}
+// 本款已知的最高跨度：本机记录与种子表取大（本机短局记下的只是下界，别人设备上碰到过更高的照收，宁可保守）；0 = 都没有
+uint64_t s2a_window_span_seen(uint64_t pid) { char p[1024]; uint64_t r = pid && span_path(p, sizeof p, pid) ? read_u64(p) : 0, s = pid ? s2a_span_seed(pid) : 0; return r > s ? r : s; }
 static uint64_t g_span_learned;   // 本款（多款容器 = 各款最大，有一款没记录就 0）学到的跨度
 uint64_t s2a_window_span_learned(void) { return g_span_learned; }   // 单测 t_vawin_container 读
 // 自愈：窗口按学到的跨度收窄后布局仍放不下（svc_mem.c 起局判「连模块段、栈、堆前段都放不下」那一刻）——这份记录不可信，删掉，下一局退回缺省给法
@@ -952,6 +963,7 @@ int s2a_process_prewarmed(void) {
 #define TL_TAKE (2ull << 30)   // 窗口尾部统一分配接管这么多（见 s2a_window_trim）
 #define TL_SMALL (256ull << 20)
 #define MIN_WIN (2ull << 30)
+#define SNAP_SPAN_MARGIN (2ull << 30)   // 快照区让窗口时，已知最高跨度之上至少还留这么多窗口（游戏后面还可能碰得更高）
 #define HOST_BELOW (3ull << 30)   // 放不下标准布局时窗口下方留给宿主的地址（11-06：1 GB → 3 GB。iOS 上宿主可用地址 = 低区约 1.8 GB + 这一段；时之笛 Switch 2 版宿主峰值 1.7–2.1 GB，1 GB 时低区碰底在上屏路径崩。时之笛游戏最高只碰到窗口 +17.6 GB、异度3 碰到 +60.6 GB，3 GB 两者都装得下；≥3712 MB 会让 GC 上限改选分堆档吃掉收益）   // 窗口最少要这么多（模块 + 栈 + 堆前段放得下与否由布局判，layout.c）   // 窗口顶到空洞末尾时只接管这么多（九款尾部峰值 ≤ 202 MB，见 s2a_window_trim）
 // 放不下标准布局时窗口下方留给宿主多少（#783，纯函数，t_vawin_learned 测）：没学到跨度（learned = 0）→ HOST_BELOW；学到了 → 窗口只给
 //   learned × 1.25 + 2 GiB（1 GiB 向上取整，游戏后面还会碰得更高、留余量），这块空洞里其余都给宿主，至少 HOST_BELOW。
@@ -1137,7 +1149,7 @@ uint64_t s2a_window_container_need(const char *bundle, const char *home) {
     int (*span)(const char *, char *, size_t) = (int (*)(const char *, char *, size_t))dlsym(RTLD_DEFAULT, "s2a_loader_span_images");
     uint64_t (*poolf)(void) = (uint64_t (*)(void))dlsym(RTLD_DEFAULT, "s2a_app_pool");
     void (*pools)(uint64_t) = (void (*)(uint64_t))dlsym(RTLD_DEFAULT, "s2a_app_pool_set");
-    uint64_t pool0 = poolf ? poolf() : 0, top = 0, span_max = 0; int n = 0, ast = -1, ok = 1; char first[256] = "";
+    uint64_t pool0 = poolf ? poolf() : 0, top = 0, span_max = 0; int n = 0, ast = -1, ok = 1, span_unknown = 0; char first[256] = "";
     for (int gi = 0; ok && gi < nid; gi++) {
         const char *gid = ids[gi];
         char dir[1400], img[1400], why[400] = "";
@@ -1166,12 +1178,12 @@ uint64_t s2a_window_container_need(const char *bundle, const char *home) {
         // 学到的跨度在这款自己的文档根下（选了游戏后 S2A_DOCS = Documents/games/<游戏号>，心跳 span_note 写在那里）；构造期还没选游戏、S2A_DOCS 没设，
         //   原先按 Documents/wire/... 读，永远读不到：多款容器从来学不到跨度，窗口下方一直只留 3 GB（11-13 0400486024DEC000 三台设备开局约 2–4 分钟宿主地址耗尽崩溃）。
         //   这款文档根下没有时再看旧位置（单款包时代留下的记录）
-        { uint64_t pid = strtoull(gid, NULL, 16), sl = 0; char sp[1400];
+        { uint64_t pid = strtoull(gid, NULL, 16), sl = 0, sg = 0; char sp[1400];
           if (pid) { s2a_docs_path(sp, sizeof sp, "games/%s/wire/%016llX/span_peak", gid, (unsigned long long)pid); sl = read_u64(sp); }
-          if (!sl) sl = s2a_window_span_seen(pid);
-          // 这款还没玩过、没有记录：它的跨度不会超过它自己的布局需求 ni，按 ni 算（原先整容器取 0，一款没玩过就把别款也打回 3 GB）。
-          //   ni 比空洞还大的（乙布局款）照旧落到 s2a_window_host_below 的 HOST_BELOW
-          if (!sl) sl = ni;
+          sg = s2a_window_span_seen(pid); if (sg > sl) sl = sg;   // 旧位置的记录、种子表取大
+          // 这款本机没记录、种子表也没有：跨度不知道。不再拿整份标准布局 ni 顶（必然不小于空洞、被当成「学到的跨度不对」作废，日志还说成旧版记错）：
+          //   记一笔「不知道」，整容器按不知道处理（窗口不按跨度收、快照区照放、不弹「地址空间不够」）
+          if (!sl) { span_unknown = 1; LOG("地址窗口：多款容器 %s 本机没记下跨度、种子表也没有：这款跨度不知道，按需起局、边玩边学", gid); }
           if (sl > span_max) span_max = sl; }
         if (ni > top) top = ni;
         n++;
@@ -1180,7 +1192,7 @@ uint64_t s2a_window_container_need(const char *bundle, const char *home) {
     if (ok && !n) LOG("地址窗口：多款容器 %s 下没有游戏（程序包里也没有）——还没导入，构造期按占位占窗口", gd);
     g_ctr_astype = ast;
     if (!ok || !n) return 0;
-    g_span_learned = span_max;
+    g_span_learned = span_unknown ? 0 : span_max;
     g_npdm[0] = 0;
     LOG("地址窗口：多款容器 %d 款取最大 %llu MB（地址空间类型 %d）", n, (unsigned long long)(top >> 20), ast);
     return top;
@@ -1298,8 +1310,9 @@ static void vawin_reserve(void) {
     int s2a_snap_manifest_win(uint64_t *base, uint64_t *size); uint64_t sw_b = 0, sw_s = 0;
     int snap_win = s2a_snap_restoring() && !s2a_snap_manifest_win(&sw_b, &sw_s);
     if (snap_win && g_span_learned) { LOG("即时存档恢复：不用本机学到的跨度 %llu MB，窗口按快照原样占", (unsigned long long)(g_span_learned >> 20)); g_span_learned = 0; }
+    uint64_t span_known = g_span_learned;   // 本款已知的最高跨度（本机记录 / 种子表，0 = 不知道）：快照区放不放得下按它判（下面）
     if (g_span_learned && !s2a_window_span_rec_ok(g_span_learned, g_fit)) {
-        LOG("【黄】地址窗口：本机学到的跨度 %llu MB 不小于这块空洞 %llu MB（旧版把窗口外的远端映射也算进去了），当作没学到、这一局重新学", (unsigned long long)(g_span_learned >> 20), (unsigned long long)(g_fit >> 20));
+        LOG("【黄】地址窗口：本款已知碰到过的最高跨度 %llu MB（本机记录或种子表）不小于这块空洞 %llu MB：窗口不按跨度收，照缺省给", (unsigned long long)(g_span_learned >> 20), (unsigned long long)(g_fit >> 20));
         g_span_learned = 0; }
     if (!sz && g_fit >= MIN_WIN + HOST_BELOW) {
         uint64_t pool = s2a_window_container_pool();   // 多款容器在构造期逐款读过 NPDM；单款 0 = 不知道，照旧 3 GiB
@@ -1307,21 +1320,27 @@ static void vawin_reserve(void) {
         if (pool && below != HOST_BELOW) LOG("地址窗口：按本款应用池 %llu MB 定宿主保留 %llu MB（固定 %llu MB 时窗口放不下 SDK 开局要的堆）",
             (unsigned long long)(pool >> 20), (unsigned long long)(below >> 20), (unsigned long long)(HOST_BELOW >> 20));
 #if !TARGET_OS_OSX
-        // 即时存档：命令记录区 1 GB + 虚拟池区 2 GB。窗口本来就放不下标准布局，不再从窗口里让（11-20 维护者定：原先让出 3 GB，一款大游戏的 iPhone 窗口
-        //   59392 MB 比游戏真用到的少 0.9 GB，落远端每秒几十万次代执行、停在第 0 帧，比没有快照更糟）。先放窗口所在空洞之外（[4 GB, 空洞起点) 里整块 ≥3 GB 的空洞顶端，
-        //   低区其余照旧留给宿主）；放不下就这一局关掉快照、记原因（菜单里写给玩家），不拦起局。恢复局不在这里定：按快照清单原址占（cmd_arena_at_snapshot）
+        // 即时存档：命令记录区 1 GB + 虚拟池区 2 GB。先放窗口所在空洞之外（[4 GB, 空洞起点) 里整块 ≥3 GB 的空洞顶端）；再放窗口下方宿主保留段底部。
+        //   宿主段不够时按游戏实际要多少判（s2a_snap_arena_place2）：本款已知的最高跨度（本机记录 / 种子表）加余量放得进「空洞 − 宿主 3 GB − 快照 3 GB」，
+        //   或跨度还不知道（第一局、按需起局边玩边学）→ 宿主段加长到 6 GB、窗口让出 3 GB，快照区放宿主段底部；已知跨度放不进 = 这台设备的地址空间
+        //   真不够同时放下这款与快照，这一局关快照、记原因（菜单里写给玩家），不拦起局。11-21 前只看宿主段本来够不够大：没学到跨度时宿主段恒为 3 GB，
+        //   iOS 上带提高内存上限权限的设备几乎都关了快照（诊断 55 份里 38 份）；11-20 那次让窗口的回归（一款大游戏窗口比它真用到的少 0.9 GB，
+        //   落远端每秒几十万次代执行）是这里的「已知跨度放不进」，种子表里有它就照关。恢复局不在这里定：按快照清单原址占（cmd_arena_at_snapshot）
         { const char *rec = getenv("S2A_FRAME_REC"); uint64_t A = (1ull << 30) + (2ull << 30);
           if (!(rec && *rec) && s2a_snap_mode() && !s2a_snap_restoring()) {
               uint64_t oa = 0, os = 0, of = 0, ofa = 0, ol = 0;
               pick_hole_in(0x100000000ull, fat, A, &oa, &os, &of, &ofa, 0, &ol);
-              int where = s2a_snap_arena_place(os, below, A, HOST_BELOW);
+              uint64_t below0 = below; int where = s2a_snap_arena_place2(os, g_fit, &below, A, HOST_BELOW, span_known, SNAP_SPAN_MARGIN);
+              if (where == 2 && below != below0) LOG("即时存档：宿主保留段 %llu MB 加长到 %llu MB 放命令记录区与虚拟池区，窗口少 %llu MB（本款已知最高跨度 %llu MB，0 = 还不知道、按需起局）",
+                  (unsigned long long)(below0 >> 20), (unsigned long long)(below >> 20), (unsigned long long)((below - below0) >> 20), (unsigned long long)(span_known >> 20));
               if (where == 1) { g_snap_out = oa + os - A;
                   LOG("即时存档：窗口放不下标准布局，命令记录区与虚拟池区不从窗口里让，放窗口外 %#llx +%llu MB", (unsigned long long)g_snap_out, (unsigned long long)(A >> 20)); }
               else if (where == 2) { g_snap_below = A;   // 宿主保留段底部切 3 GB（cmd_arena_reserve 就地占），窗口与宿主段长度都不变
                   LOG("即时存档：窗口放不下标准布局，窗口外没有整块 %llu MB 的空洞（最大 %llu MB）；窗口下方宿主保留段 %llu MB 够大，命令记录区与虚拟池区放在它底部，宿主还剩 %llu MB",
                       (unsigned long long)(A >> 20), (unsigned long long)(of >> 20), (unsigned long long)(below >> 20), (unsigned long long)((below - A) >> 20)); }
               else { s2a_snap_disable(S2A_SNAP_OFF_ADDRESS);
-                  LOG("【黄】即时存档：这台设备的地址空间放不下这款游戏的标准布局，窗口外也没有整块 %llu MB 的空洞（最大 %llu MB）——这一局不开快照，游戏照常玩（不再从窗口里让 3 GB）",
+                  LOG("【黄】即时存档：本款已知最高跨度 %llu MB 加余量 %llu MB 放不进空洞 %llu MB 减去宿主与快照区的 %llu MB，窗口外也没有整块 %llu MB 的空洞（最大 %llu MB）——这台设备的地址空间不够同时放下这款与快照，这一局不开快照，游戏照常玩",
+                      (unsigned long long)(span_known >> 20), (unsigned long long)(SNAP_SPAN_MARGIN >> 20), (unsigned long long)(g_fit >> 20), (unsigned long long)((A + HOST_BELOW) >> 20),
                       (unsigned long long)(A >> 20), (unsigned long long)(of >> 20)); } } }
 #endif
         at = fat + below; want = g_fit - below; g_keep_lo = fat;
