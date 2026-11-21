@@ -608,7 +608,7 @@
 
 /* 0.6.0 快照：游戏中菜单 */
 "vpad.snap.save" = "Save this moment";
-"vpad.snap.offAddress" = "This game needs more address range than this device gives apps, so there's no room for snapshots and they're off for this game on this device. This has nothing to do with storage space; the game plays as usual.";
+"vpad.snap.offAddress" = "This game needs more address range than the system on this device can give apps, so there's no room for snapshots and they're off for this game on this device. This has nothing to do with storage space; the game plays as usual.";
 "vpad.snap.restore" = "Go back to the saved moment";
 "vpad.snap.saving" = "Saving this moment…";
 "vpad.snap.saved" = "Moment saved";
@@ -649,6 +649,6 @@
 "cert.source.sidestore" = "From SideStore";
 "cert.source.p12" = "Imported .p12";
 "cert.source.pc" = "From your computer";
-"addrshort.title" = "This device doesn't give apps enough address range for this game";
-"addrshort.body" = "This game needs one large continuous address range at startup, and this device doesn't give apps enough (this has nothing to do with storage space; freeing up storage won't help): it may run very slowly or stay stuck at the start. You can tap \"Start Anyway\" to try; to play normally, use an iPhone, iPad or Mac with more memory (they give apps a larger address range), or wait for a later version.";
+"addrshort.title" = "The system on this device can't give apps enough address range for this game";
+"addrshort.body" = "This game needs one large continuous address range at startup, and the system on this device can't give apps enough (this has nothing to do with storage space; freeing up storage won't help): it may run very slowly or stay stuck at the start. You can tap \"Start Anyway\" to try; to play normally, use an iPhone, iPad or Mac with more memory (their systems can give apps a larger address range), or wait for a later version.";
 "host.startAnyway" = "Start Anyway";
