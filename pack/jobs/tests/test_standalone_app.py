@@ -317,13 +317,31 @@ class AppsOnlyPhone(unittest.TestCase):
     def test_update_does_not_install_shell(self):
         import ipa as packer
         done = []
-        with patch.object(install, "phone_for", lambda c: self.ph), patch.object(install, "install_shell", lambda c, ph: self.fail("只装了独立 App：不装通用壳")), \
+        with patch.object(install, "distribution_cert", lambda c: True), \
+                patch.object(install, "phone_for", lambda c: self.ph), patch.object(install, "install_shell", lambda c, ph: self.fail("只装了独立 App：不装通用壳")), \
                 patch.object(install, "put_app", lambda c, g, ph, steps=True: done.append(g)), patch.object(packer, "current_shell_id", lambda c: "SID2"), \
                 patch.object(packer, "usable_kit", lambda c, g, sid, failed=(): "/kit"), patch.object(packer, "phone_lock", lambda c: contextlib.nullcontext()), \
                 patch("core.preempt_jobs", lambda *a, **k: None):
             out = install.update_phone(self.c)
         self.assertEqual(done, [G1], "只重签壳号旧的甲")
         self.assertEqual((out["toShell"], out["games"], out["apps"]), ("SID2", [], [dict(gameId=G1, ok=True)]))
+
+    def test_install_shell_when_a_game_uses_shell(self):
+        """11-21 D-R23F：只装着独立 App 的手机，游戏库里有款选了通用 S2Arm（缺省出法是通用 S2Arm，或这一款单独选了）：
+        「安装 S2Arm」要真装（原先 0.4 秒「完成」什么都没装，推这款一直报「先装 S2Arm」）。期望手写：两种情况各装一次壳"""
+        import ipa as packer
+        for label, dist, choice in (("缺省出法是通用 S2Arm", False, None), ("分发证书缺省独立 App、这款单独选了通用 S2Arm", True, {"games": {G2: "shell"}})):
+            with self.subTest(label):
+                shells = []
+                if choice:
+                    (self.c.private / install.LAYOUT_CHOICE).write_text(__import__("json").dumps(choice))
+                with patch.object(install, "distribution_cert", lambda c, d=dist: d), patch.object(install, "phone_for", lambda c: self.ph), \
+                        patch.object(install, "install_shell", lambda c, ph: shells.append(ph.key) or dict(toShell="SID2", games=[])), \
+                        patch.object(install, "update_apps", lambda c, ph, sid: []), patch.object(packer, "phone_lock", lambda c: contextlib.nullcontext()), \
+                        patch.object(packer, "current_shell_id", lambda c: "SID2"), patch("core.preempt_jobs", lambda *a, **k: None):
+                    install.update_phone(self.c)
+                self.assertEqual(shells, ["UDID1"])
+                (self.c.private / install.LAYOUT_CHOICE).unlink(missing_ok=True)
 
     def test_overview_app_rows(self):
         import host_update
