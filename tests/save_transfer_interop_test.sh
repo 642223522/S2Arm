@@ -1,8 +1,8 @@
 #!/bin/bash
 # 门禁覆盖：services/S2A.Services/SaveTransfer*.cs tests/save_transfer/ pack/jobs/saves.py pack/jobs/core.py pack/jobs/library.py pack/jobs/main.py
-# 门禁预算：120
+# 门禁预算：240
 # JIT 验证 Python 与托管存档互操作，NativeAOT 验证关闭反射序列化后的正式包预检路径。
-# 同一 Apple Silicon 宿主两轮完整运行 67 / 81 秒，含两次独立构建和真实 LibHac 合成档。
+# 同一 Apple Silicon 宿主两轮完整运行 67 / 81 秒，含两次独立构建和真实 LibHac 合成档；门禁两台历史 63～104 秒，上限取约 2.3 倍防负载下超时误红。
 # Real LibHac creates/commits public repository files; no game, keys or player saves.
 set -euo pipefail
 cd "$(dirname "$0")/.."
