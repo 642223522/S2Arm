@@ -53,9 +53,9 @@ fi
 neg() {   # $1 名字，$2 期望命中的断言
     build "$out/rp_draw_$1.c" "neg-$1"; run "neg-$1"
     if [ "$rc" -eq 0 ] || ! grep -q "$2" "$out/neg-$1.log" || grep -qE 'Validation Error|VUID-' "$out/neg-$1.log"; then
-        tail -n 20 "$out/neg-$1.log"; echo "【红】负控 $1 未命中「$2」（rc=$rc）" >&2; exit 1
+        tail -n 20 "$out/neg-$1.log"; echo "【红】负控 $1 未命中「$2」（rc=${rc}）" >&2; exit 1
     fi
-    echo "负控 $1：rc=$rc，命中「$2」"
+    echo "负控 $1：rc=${rc}，命中「$2」"
 }
 mutate route 'if (e->src_kind == NVN_RB_IMG && e->cls == NVN_GPU_RES_IMAGE_TBUF) {   // 计算 imageBuffer' 'if (0) {   // 计算 imageBuffer'
 neg route 'image_tbuf_rmw.comp @256: dispatch skipped'
