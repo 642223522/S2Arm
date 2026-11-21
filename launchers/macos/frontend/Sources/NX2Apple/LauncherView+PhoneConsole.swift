@@ -22,8 +22,9 @@ extension LauncherView {
         switch s {
         case .introduce: return sx("console.status.introduce")
         case .updating(let done, let total): return sx("console.status.updating", done + 1 > total ? total : done + 1, total)
-        case .notConnected(let seen):
-            return seen.map { sx("console.status.notConnected", $0.formatted(.relative(presentation: .named))) } ?? sx("console.status.notConnectedNever")
+        case .notConnected(let seen):   // 写这台的类型（#1962：iPad 不写 iPhone），读不到写「iPhone / iPad」
+            let kind = BackendText.deviceKind(model.consolePhone?.kind)
+            return seen.map { sx("console.status.notConnected", $0.formatted(.relative(presentation: .named)), kind) } ?? sx("console.status.notConnectedNever", kind)
         case .chooseApp: return sx("console.status.chooseApp")
         case .externalApp: return sx("console.status.externalApp")
         case .notInstalled: return sx("console.status.notInstalled")
@@ -141,7 +142,7 @@ extension LauncherView {
 
     private var consoleOffline: Bool { if case .some(.none) = model.consolePhone?.online { return true }; return false }
     private func offlineReason(_ phone: PhoneOverview.Phone) -> some View {
-        Text(sx("console.offline", phone.name.isEmpty ? "iPhone" : phone.name)).font(.manrope(12)).foregroundStyle(.orange)
+        Text(sx("console.offline", phone.name.isEmpty ? BackendText.deviceKind(phone.kind) : phone.name, BackendText.deviceKind(phone.kind))).font(.manrope(12)).foregroundStyle(.orange)
     }
 
     /// 按钮文案键（动作名 → 共享文案；动作集合与控制口 phoneConsole 同一个来源 model.consoleActions）
@@ -229,7 +230,7 @@ extension LauncherView {
     ///   点了跑作业 phoneChooseApp，记住后刷新总览；选过的再点「换一个」也到这里
     @ViewBuilder private func consoleChooser(_ phone: PhoneOverview.Phone) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(sx("console.choose.title")).font(.manrope(12.5)).foregroundStyle(.white.opacity(0.8)).fixedSize(horizontal: false, vertical: true)
+            Text(sx("console.choose.title", BackendText.deviceKind(phone.kind))).font(.manrope(12.5)).foregroundStyle(.white.opacity(0.8)).fixedSize(horizontal: false, vertical: true)
             ForEach(phone.candidates, id: \.bundleId) { c in
                 let label = S2ArmLauncherModel.candidateLabelKeys(c).map { sx($0) }.joined(separator: " · ")
                 Button { model.runConsoleAction(.chooseApp, device: phone.device, bundleId: c.bundleId, language: loc.lang.sharedCode) } label: {

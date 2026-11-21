@@ -347,7 +347,7 @@ struct ExportSheetView: View {
     private func stepText(_ s: ExportFlow.Step) -> String {
         switch s {
         case .backend(let line): return loc.backend(line)
-        case .key(let key, let arg): return t(key).replacingOccurrences(of: "{0}", with: arg)
+        case .key(let key, let arg, let more): return t(key).replacingOccurrences(of: "{0}", with: arg).replacingOccurrences(of: "{1}", with: more)
         }
     }
 

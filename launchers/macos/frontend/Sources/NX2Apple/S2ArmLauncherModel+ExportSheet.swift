@@ -58,7 +58,8 @@ struct ExportFlow: Equatable {
         var id: String { device }
     }
     /// 一句手机上的下一步：作业层原句（界面经 loc.backend 翻）或共享文案键 + 参数
-    enum Step: Equatable { case backend(String), key(String, String) }
+    /// key(文案键, {0}, {1})：{1} 只有指代这一台的句子用（设备类型，#1962），不用的留空
+    enum Step: Equatable { case backend(String), key(String, String, String = "") }
     let gameID: String
     let sign: String?
     var rows: [Row]
@@ -179,7 +180,7 @@ extension S2ArmLauncherModel {
         if let app = phoneOutcome?.app, !app.exported { n.append(.key("exportsheet.phone.openApp", app.name)) }
         else if installOpenToFinish { n.append(.key("install.done.open", "")) }
         else { n.append(.key("exportsheet.phone.openShell", "")) }
-        if !installTrustName.isEmpty { n.append(.key("install.done.trustNamed", installTrustName)) }
+        if !installTrustName.isEmpty { n.append(.key("install.done.trustNamed", installTrustName, BackendText.deviceKind(installTrustKind))) }
         else if sign == "appleId" { n.append(.key("install.done.trust", "")) }
         if sign == "appleId", games.first(where: { $0.id == gameID })?.iphoneFree == true { n.append(.key("install.done.free", "")) }
         return n
