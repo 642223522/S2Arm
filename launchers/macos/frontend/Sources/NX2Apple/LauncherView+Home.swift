@@ -113,7 +113,7 @@ extension LauncherView {
                         fitLabel(txt("exportsheet.open"), "square.and.arrow.up")
                     }
                     .controllerButtonStyle(ConsolePillButtonStyle()).controllerID("hero.exportSheet")   // 只开确认页：别的作业在跑也能点，开始后排队
-                    .launcherTooltip(txt("exportsheet.open"), placement: .above).accessibilityLabel(txt("exportsheet.open"))
+                    .launcherTooltip(txt("exportsheet.open.help"), placement: .above).accessibilityLabel(txt("exportsheet.open"))
                 }
                 if game.playable || game.iphoneReady {
                     Button { model.exportFor = game.id } label: {
@@ -381,8 +381,11 @@ extension LauncherView {
         if game.iphoneReady { return txt(Self.renews(game) ? "library.hero.renew" : "exportsheet.open") }
         return loc.t("home.prepare")
     }
-    /// 主按钮的手柄 id：能玩 → 开始游戏；做过 iPhone 版 → 导出（续签）；都没有 → 准备（出包页）
-    static func homePrimaryID(_ game: GameSummary) -> String { game.playable ? "hero.play" : game.iphoneReady ? "hero.exportSheet" : "hero.export" }
+    /// 主按钮的手柄 id：能玩 → 开始游戏；做过 iPhone 版 → 导出（免费账号装过的是续签）；都没有 → 准备（出包页）。
+    ///   续签单独一个 id：主按钮是「续签」时旁边照样给「导出…」（续签只预勾原来那台，要装到另一台的玩家得有导出入口）
+    static func homePrimaryID(_ game: GameSummary) -> String {
+        game.playable ? "hero.play" : !game.iphoneReady ? "hero.export" : renews(game) ? "hero.renew" : "hero.exportSheet"
+    }
     /// 免费账号装过的款：主按钮写「续签」
     static func renews(_ game: GameSummary) -> Bool { game.iphoneInstalledAt != nil && game.iphoneFree }
     /// 续签：打开导出确认页、预勾这款当初装的那台（唯一的预勾例外：续签就是重新签给原来那台；那台没连着时那一行置灰，不替玩家换）

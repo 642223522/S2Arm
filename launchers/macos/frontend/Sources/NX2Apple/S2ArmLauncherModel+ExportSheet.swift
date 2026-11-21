@@ -34,8 +34,8 @@ struct ExportDeviceRow: Equatable, Identifiable {
     let selectable: Bool
     let note: Note?
     var id: String { device }
-    /// 说明旁边给不给入口（打开首位 S2Arm 卡、切到这台）
-    var hasLink: Bool { selectable && [.needCert, .noShell, .shellOld].contains(note) }
+    /// 说明旁边给不给入口（打开首位 S2Arm 卡、切到这台装 / 更新 S2Arm）。没导入证书不给：那一步在手机上做，说明句里写全了
+    var hasLink: Bool { selectable && [.noShell, .shellOld].contains(note) }
 }
 
 /// 这款这次导出的进度（导出确认页「开始」之后那一页）：rows 空 = 导出到文件夹（看手机槽那一单），否则逐台一行
@@ -51,11 +51,17 @@ struct ExportFlow: Equatable {
         var code: String?
         /// 失败页点过「仍然继续」后重试带上的确认参数（同装机：container_would_drop → acceptDropped …）
         var accept: Set<String> = []
+        /// 装好后在手机上还要做的几步（作业结果当场读：独立 App 的 nextSteps，或「打开 S2Arm 会自动装完」/ 信任开发者 / 免费 7 天）
+        var next: [ExportFlow.Step] = []
         var id: String { device }
     }
+    /// 一句手机上的下一步：作业层原句（界面经 loc.backend 翻）或共享文案键 + 参数
+    enum Step: Equatable { case backend(String), key(String, String) }
     let gameID: String
     let sign: String?
     var rows: [Row]
+    /// 开始的时刻：出包完成页据此认出「这一单是那次出包接着做的」
+    var started = Date()
     var folder: Bool { rows.isEmpty }
     var running: Bool { rows.contains { $0.state == .running || $0.state == .queued } }
 }
@@ -154,9 +160,24 @@ extension S2ArmLauncherModel {
             }
         } else {
             flow.rows[i].state = .done
+            flow.rows[i].next = phoneNextSteps(sign: flow.sign, gameID: id)
         }
         exportFlows[id] = flow
         pumpExportFlow(id)
+    }
+
+    /// 这一台刚装好后，玩家在手机上还要做什么（install 作业结果在 done 回调前已写进 phoneOutcome / installOpenToFinish / installTrustName）
+    func phoneNextSteps(sign: String?, gameID: String) -> [ExportFlow.Step] {
+        var n: [ExportFlow.Step] = []
+        // 打开哪个 App：独立 App = 主屏上这款自己的图标；通用 S2Arm = 打开 S2Arm（只传到了手机的，打开后自动装完）。
+        //   不用独立 App 结果里的 nextSteps：那是导出 / README 用的整段说明（讲怎么装 ipa），装好以后读着会让人以为还要再装一遍
+        if let app = phoneOutcome?.app, !app.exported { n.append(.key("exportsheet.phone.openApp", app.name)) }
+        else if installOpenToFinish { n.append(.key("install.done.open", "")) }
+        else { n.append(.key("exportsheet.phone.openShell", "")) }
+        if !installTrustName.isEmpty { n.append(.key("install.done.trustNamed", installTrustName)) }
+        else if sign == "appleId" { n.append(.key("install.done.trust", "")) }
+        if sign == "appleId", games.first(where: { $0.id == gameID })?.iphoneFree == true { n.append(.key("install.done.free", "")) }
+        return n
     }
 
     /// 失败的那台单独重试（不重做已成功的、不重做电脑上那一步）；失败码是可确认的（会挤掉别处装的游戏…）就带上确认参数 =「仍然继续」

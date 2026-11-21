@@ -357,7 +357,9 @@ struct HeroUpdateLines: View {
         let run = model.gameUpdate(game)
         let incomplete = run.map { $0.running ? [] : $0.incomplete } ?? []
         let failure = run.flatMap { $0.running ? nil : $0.failure }
-        if game.iphoneReady, !reasons.isEmpty || !incomplete.isEmpty || failure != nil {
+        // 更新只改电脑上这份：这款装到过设备的，做完说一句手机上那份要再导一次（不然玩家以为手机上已经是新的）
+        let sendAgain = run.map { !$0.running && $0.failure == nil } == true && game.iphoneInstalledAt != nil
+        if game.iphoneReady, !reasons.isEmpty || !incomplete.isEmpty || failure != nil || sendAgain {
             VStack(alignment: .leading, spacing: 3) {
                 ForEach(reasons, id: \.self) { key in
                     Label(txt(key), systemImage: "arrow.triangle.2.circlepath")
@@ -366,6 +368,10 @@ struct HeroUpdateLines: View {
                 ForEach(incomplete, id: \.self) { line in
                     Label(loc.backend(line), systemImage: "exclamationmark.triangle.fill")
                         .font(.manrope(12, .medium)).foregroundStyle(.yellow).fixedSize(horizontal: false, vertical: true)
+                }
+                if sendAgain {
+                    Label(txt("update.hint.sendAgain"), systemImage: "iphone.and.arrow.forward")
+                        .font(.manrope(12, .medium)).foregroundStyle(.white.opacity(0.85)).fixedSize(horizontal: false, vertical: true)
                 }
                 if let failure {
                     Text(txt("update.hint.failed").replacingOccurrences(of: "{0}", with: loc.backend(failure)))

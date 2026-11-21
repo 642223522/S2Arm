@@ -21,6 +21,7 @@ struct ExportSheetView: View {
     @State private var picked: Set<String>
     @State private var seeded: Bool
     @State private var started = false
+    @State private var importCert = false
 
     init(model: S2ArmLauncherModel, request: ExportSheetRequest, refreshOnAppear: Bool = true, sign: String? = nil, layout: String? = nil, picked: Set<String>? = nil) {
         self.model = model; self.request = request; self.refreshOnAppear = refreshOnAppear
@@ -33,7 +34,10 @@ struct ExportSheetView: View {
     private var id: String { request.gameID }
     private var game: GameSummary? { model.games.first { $0.id == id } }
     private var flow: ExportFlow? { model.exportFlows[id] }
-    private var showsResults: Bool { started || request.results || flow?.running == true }
+    private var showsResults: Bool {
+        started || request.results || flow?.running == true || (flow?.folder == true && model.phoneBusy && model.phoneSession?.gameID == id)
+            || model.exportAfterPack[id] != nil   // 先出 iPhone 版、出完接着做：这一单已开始，看结果（还没轮到写「已排队」）
+    }
     private func t(_ key: String) -> String { BackendText.launcherText(key, language: loc.lang.sharedCode) }
 
     /// 设备的称呼：类型照实写（iPhone / iPad；读不到写「设备」）+ 名字
@@ -78,6 +82,9 @@ struct ExportSheetView: View {
         }
         .onChange(of: model.installMode) { _ in seed() }
         .onExitCommand { dismiss() }
+        .appleLoginSheet(model, host: "exportSheet")   // ① 选了 Apple ID 还没登录：就地登录，不离开这页
+        .sheet(isPresented: $importCert) { DevCertSheet(model: model).environmentObject(loc) }   // ① 选我的证书还没导入：就地导入
+        .onChange(of: importCert) { open in if !open { model.refreshDevCert() } }
         .launcherSheet()
         .font(LauncherTheme.TypeStyle.detail)
         .preferredColorScheme(.dark)
@@ -99,8 +106,21 @@ struct ExportSheetView: View {
             section(t("exportsheet.sign.title")) {
                 let account = model.appleAccount?.account ?? ""
                 radio("appleId", account.isEmpty ? t("exportsheet.sign.appleId") : t("exportsheet.sign.appleIdAccount").replacingOccurrences(of: "{0}", with: account))
-                radio("devCert", t("exportsheet.sign.devCert"), note: model.devCert?.imported == true ? nil : t("exportsheet.sign.devCertMissing"),
-                      enabled: model.devCert?.imported == true)
+                if sign == "appleId", account.isEmpty {   // 没登录：装到设备会失败（apple_not_signed_in）。就地给登录，不等开始后才报
+                    HStack(spacing: 10) {
+                        Text(t("exportsheet.sign.notSignedIn")).font(LauncherTheme.TypeStyle.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                        Button(t("exportsheet.sign.login")) { model.openAppleLogin(host: "exportSheet") }.buttonStyle(.link).font(LauncherTheme.TypeStyle.caption)
+                            .accessibilityIdentifier("exportsheet.sign.login")
+                    }.padding(.leading, 25)
+                }
+                HStack(spacing: 10) {
+                    radio("devCert", t("exportsheet.sign.devCert"), note: model.devCert?.imported == true ? nil : t("exportsheet.sign.devCertMissing"),
+                          enabled: model.devCert?.imported == true)
+                    if model.devCert?.imported != true {   // 买了证书还没导入：就地导入，导好这一项就能选
+                        Button(t("exportsheet.sign.importCert")) { importCert = true }.buttonStyle(.link).font(LauncherTheme.TypeStyle.caption)
+                            .accessibilityIdentifier("exportsheet.sign.importCert")
+                    }
+                }
                 radio("none", t("exportsheet.sign.none"))
             }
             section(t("exportsheet.layout.title")) {
@@ -157,14 +177,14 @@ struct ExportSheetView: View {
         case .offline: return t("exportsheet.note.offline")
         case .needCert: return t("exportsheet.note.needCert")
         case .launcherSigned: return t("exportsheet.note.launcherSigned")
-        case .noShell: return t("exportsheet.note.noShell")
+        case .noShell: return t(sign == "none" ? "exportsheet.note.noShellSelfSign" : "exportsheet.note.noShell")
         case .shellOld: return t("exportsheet.note.shellOld")
         case .standaloneSelfSign: return t("exportsheet.note.standaloneSelfSign")
         }
     }
 
     private func linkTitle(_ n: ExportDeviceRow.Note?) -> String {
-        n == .needCert ? t("exportsheet.link.cert") : n == .shellOld ? t("exportsheet.link.updateShell") : t("exportsheet.link.installShell")
+        n == .shellOld ? t("exportsheet.link.updateShell") : t("exportsheet.link.installShell")
     }
 
     /// 去首位 S2Arm 卡（总控台）管这台：装 / 更新 S2Arm、别的工具装的 S2Arm 怎么导入证书都在那里
@@ -250,7 +270,15 @@ struct ExportSheetView: View {
                 case .running:
                     Text(live.map { $0.stage.isEmpty ? t("exportsheet.row.running") : loc.backend($0.stage) } ?? t("exportsheet.row.running"))
                         .font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary)
-                case .done: Text(t("exportsheet.row.installed")).font(LauncherTheme.TypeStyle.caption).foregroundStyle(LauncherPalette.ready)
+                case .done:
+                    Text(t("exportsheet.row.installed")).font(LauncherTheme.TypeStyle.caption).foregroundStyle(LauncherPalette.ready)
+                    if !row.next.isEmpty {   // 装好后手机上还要做的几步（打开 S2Arm / 信任开发者 / 7 天到期）：没这几句玩家会以为点开就能玩
+                        Text(t("exportsheet.phone.next")).font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary).padding(.top, 4)
+                        ForEach(Array(row.next.enumerated()), id: \.offset) { _, step in
+                            Label(stepText(step), systemImage: "iphone").font(LauncherTheme.TypeStyle.caption).foregroundStyle(.primary.opacity(0.85))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
                 case .cancelled: Text(t("exportsheet.row.cancelled")).font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary)
                 case .failed:
                     Text(loc.backend(row.message)).font(LauncherTheme.TypeStyle.caption).foregroundStyle(LauncherPalette.danger).fixedSize(horizontal: false, vertical: true)
@@ -283,7 +311,7 @@ struct ExportSheetView: View {
             if showsResults {
                 if flow?.running == true || (flow?.folder == true && model.phoneBusy && model.phoneSession?.gameID == id) {
                     Button(t("install.background")) { dismiss() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerShortcut(.back)
-                    Button(loc.t("s2arm.job.cancel")) { model.stopPhone() }.controllerButtonStyle(LauncherSecondaryButtonStyle())
+                    Button(t("exportsheet.stop")) { model.stopPhone() }.controllerButtonStyle(LauncherSecondaryButtonStyle())
                         .disabled(!(model.phoneBusy && model.phoneSession?.gameID == id))
                 } else {
                     Button(t("install.close")) { dismiss() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).keyboardShortcut(.defaultAction)
@@ -292,11 +320,23 @@ struct ExportSheetView: View {
             } else {
                 Button(t("exportsheet.cancel")) { dismiss() }.controllerButtonStyle(LauncherSecondaryButtonStyle())
                     .keyboardShortcut(.cancelAction).controllerShortcut(.back).accessibilityIdentifier("exportsheet.cancel")
-                Button(t("exportsheet.start")) { start() }
+                Button(startTitle) { start() }
                     .controllerButtonStyle(LauncherPrimaryButtonStyle()).keyboardShortcut(.defaultAction).controllerShortcut(.rightTrigger)
                     .disabled(game == nil).accessibilityIdentifier("exportsheet.start")
             }
         }
+    }
+
+    private func stepText(_ s: ExportFlow.Step) -> String {
+        switch s {
+        case .backend(let line): return loc.backend(line)
+        case .key(let key, let arg): return t(key).replacingOccurrences(of: "{0}", with: arg)
+        }
+    }
+
+    /// 开始按钮写清这次去哪：都不勾 =「导出到文件夹」，勾了 =「装到 N 台设备」
+    var startTitle: String {
+        chosen.isEmpty ? t("exportsheet.start.folder") : t("exportsheet.start.devices").replacingOccurrences(of: "{0}", with: "\(chosen.count)")
     }
 
     private func start() {

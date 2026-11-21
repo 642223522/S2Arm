@@ -91,7 +91,7 @@ import XCTest
         XCTAssertEqual(withCert.game, .latest)
         let noCert = row(phone("B", by: .external, cert: false, state: .suggested))
         XCTAssertTrue(noCert.selectable); XCTAssertEqual(noCert.note, .needCert, "外部 S2Arm 没导入证书：可勾，写「先导入签名证书」")
-        XCTAssertTrue(noCert.hasLink, "给入口")
+        XCTAssertFalse(noCert.hasLink, "导入证书在手机上做：说明句写全步骤，不给跳到电脑别处的入口")
         XCTAssertEqual(noCert.game, .old)
         let launcher = row(phone("C", by: .launcher))
         XCTAssertFalse(launcher.selectable); XCTAssertEqual(launcher.note, .launcherSigned, "启动器签的 S2Arm：置灰写原因")

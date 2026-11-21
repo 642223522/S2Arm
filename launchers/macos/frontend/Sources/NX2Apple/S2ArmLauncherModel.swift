@@ -253,6 +253,8 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var exportFlows: [String: ExportFlow] = [:]
     /// 导出确认页的设备列表（phoneOverview probe 现查）；nil = 还在查
     @Published var exportPhones: [PhoneOverview.Phone]?
+    /// 这一单「更新 iPhone 上的 S2Arm」其实是第一次装（那台原来没有 S2Arm）：结局页写「安装」并给下一步
+    @Published var shellFirstInstall = false
     /// iPhone 总控台（0.6.0 通用壳开关后面，S2ArmLauncherModel+PhoneConsole.swift）：nil = 开关关着，首页不出首位卡
     @Published var phoneOverview: PhoneOverview?
     @Published var consoleDevice: String?            // 总控台在管哪台（多台时顶部切换）；nil = 跟着默认那台
