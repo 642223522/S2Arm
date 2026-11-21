@@ -502,7 +502,7 @@ static int alias_full_seen(uint64_t pid) { char p[1024]; FILE *f = alias_full_pa
 // 收小后游戏照旧映射到收掉的那段（它没按报的大小来，比如写死了 64 GiB）：这一局照常服务（那段在 L.alias_size 内，伸出窗口的走远端，同收小前），
 //   报一次红并记下本款，下次起局恢复原值——宁慢不写错
 // 收小后 SDK 申请地址区失败（gate.c 地址区返回门调，rc = AllocateAddressRegion 的返回值）：本局报给游戏的别名区收小过才管。当场记下本款（同上 alias_full，下一局恢复原值）、
-//   打一行红（开局 / 局中分开写，诊断里能统计）。本局不救：游戏接下来会把 0 当地址用（11-21 D-97S7：收到 11 GB、开局即失败、随后段错误）
+//   打一行红（开局 / 局中分开写，诊断里能统计），并让下次启动问发诊断。本局不救：游戏接下来会把 0 当地址用（11-21 D-97S7：收到 11 GB、开局即失败、随后段错误）
 void s2a_alias_alloc_failed(uint32_t rc) {
     if (!g_alias_report || g_alias_report >= L.alias_size) return;
     static _Atomic int said; if (atomic_exchange(&said, 1)) return;
@@ -511,6 +511,8 @@ void s2a_alias_alloc_failed(uint32_t rc) {
     uint64_t (*pc)(void) = (uint64_t (*)(void))dlsym(RTLD_DEFAULT, "mtl_present_count"); uint64_t frames = pc ? pc() : 0;   // 直连图形层；单测 / 安卓没有 = 按开局算
     LOG("【红】收小后%s申请地址区失败：报给游戏的别名区 %llu MB（内部 %llu MB），SDK AllocateAddressRegion 回 %#x（已出 %llu 帧）；%s", frames ? "局中" : "开局",
         (unsigned long long)(g_alias_report >> 20), (unsigned long long)(L.alias_size >> 20), rc, (unsigned long long)frames, ok ? "已记下本款，下一局别名区恢复原值" : "记录写不进，下一局仍会收小");
+    // 每一次都要能从玩家诊断里统计到：会话标记改成「游戏中止」，下次启动问发诊断（sesdiag.c，同 Break 收局那条）；本局接下来多半段错误，标记不删
+    { void (*ab)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "s2a_sesmark_abort_home"); if (ab) ab(); }
 }
 static void alias_report_overrun(uint64_t a, uint64_t size) {
     static _Atomic int said; if (atomic_exchange(&said, 1)) return;
