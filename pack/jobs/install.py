@@ -1079,7 +1079,11 @@ APPLE_DEVICES_URL = "https://developer.apple.com/account/resources/devices/list"
 
 def devcert_items(c, item, udid):
     """开发者证书模式的清单项（v0.2.4）：替掉 Apple ID / Impactor 两项。问题只提示、不挡（blocking 只给「没出包」）；
-    到期 / 权限这类提醒随结果 devcert.warnings 给启动器画黄字。返回体检结果（读不出 → None）"""
+    到期 / 权限这类提醒随结果 devcert.warnings 给启动器画黄字。返回体检结果（读不出 → None）。
+    几张证书、这台还没选（#487）：只报「先给这台选一张」，不拿缺省那张的设备列表说事"""
+    if udid and devcert.resolve(c, udid) is None:
+        item("devcert", False, "开发者证书可用", devcert.CHOOSE)
+        return None
     try:
         got = devcert.summary(c, udid=udid)
     except Failure as e:
@@ -1159,13 +1163,12 @@ def sign_mode_set(c):
     if mode not in SIGN_MODES:
         raise Failure("签名方式只能是 Apple ID、自己的证书或自己用别的工具签。", code="job_failed")  # 非玩家句（只有启动器传错参数才会到）
     if mode == "devCert":
-        devcert.stored(c)
+        devcert.ready(c)   # 几张证书时不按设备挑（设置里没有设备）：有一张、不缺件就行
     if mode == "external":
         atomic(c.private / SIGN_CHOICE, dict(mode="external"))
     else:
         (c.private / SIGN_CHOICE).unlink(missing_ok=True)
-        if devcert.state(c).get("certSha1") and devcert.active(c) != (mode == "devCert"):
-            atomic(devcert.folder(c) / "state.json", dict(devcert.state(c), active=mode == "devCert"))
+        devcert.set_active(c, mode == "devCert")   # 经证书库改（在锁里，根下旧版那份跟着写）
     return dict(signMode=chosen_sign_mode(c))
 
 
@@ -1949,9 +1952,10 @@ class MacPhone:
 
     def __init__(self, c, team=None, dev=None, udid=None, bid=None):
         self.c = c
-        self.team = team or devcert.team(c)   # PlumeMacPhone 传 plumesign 账号的团队；直接构造 MacPhone 的只有证书用户（mac_phone）
         self.dev = dev or phone(c)
         self.udid = udid if udid is not None else udid_of(c, self.dev["id"])
+        devcert.bind(c, self.udid)   # 几张证书时按这台挑（#487）：先认设备再读证书团队 / 包名
+        self.team = team or devcert.team(c)   # PlumeMacPhone 传 plumesign 账号的团队；直接构造 MacPhone 的只有证书用户（mac_phone）
         # 证书模式：描述文件定的包名（和 Apple ID 模式是两个 App）；ExternalPhone 直接给手机上装着的那个
         self.bid = bid or (devcert.state(c)["bundleId"] if devcert.active(c) else container_bundle_id(self.team["id"], c))
         self.key = self.udid or self.dev["id"]   # devices/<设备>.json 的键
@@ -1996,6 +2000,7 @@ class MacPhone:
             return bid
         try:
             sign_and_install(self.c, ipa, self.team, self.dev, self.udid, self.bid, games, steps=steps)
+            devcert.remember(self.c)
         except Failure as e:
             # 包名被别处占用（玩家先自签装过 S2Arm）：自动换一个包名再签一次、记下，之后都用它；换过的也被占才照报 app_id_taken
             if e.code != "app_id_taken" or devcert.active(self.c) or self.bid.endswith(ALT_BUNDLE_SUFFIX):
@@ -2084,6 +2089,7 @@ class WinPhone:
         self.c, self.W = c, win_install_mod(c)
         self.udid = win_udid(c, self.W)
         self.key = self.udid
+        devcert.bind(c, self.udid)   # 几张证书时按这台挑（#487）
         self.bid = devcert.state(c)["bundleId"] if devcert.active(c) else layout.load_device(c, self.key).get("bundleId") or None
         self.devpush = c.engine / "Binaries/Prepare/devpush/s2a-devpush.exe"
         # Windows 设备服务给不出设备名，类型按 USB 产品号认（同装机前清单 deviceKind）；认不出写空，前端写「iPhone / iPad」
@@ -2221,6 +2227,7 @@ class WinPhone:
         if want:
             return bid
         self.bid = bid
+        devcert.remember(c)
         rec = layout.load_device(c, self.key)
         layout.save_device(c, self.key, dict(rec, bundleId=bid))
         return bid
@@ -2883,7 +2890,7 @@ def _identity_source(c, ph):
     开关关着的 Mac Apple ID 借 Xcode 钥匙串，交不了"""
     if devcert.active(c):
         team = devcert.team(c)["id"]
-        fp = hashlib.sha256((devcert.folder(c) / "cert.p12").read_bytes()).hexdigest()[:16]   # 同 devcert.identity 的 key_fp
+        fp = hashlib.sha256(devcert.stored(c)[0].read_bytes()).hexdigest()[:16]   # 同 devcert.identity 的 key_fp；多张证书时是这台绑定的那张（#487）
         return team, fp, lambda: devcert.identity(c), "devCert"
     if not hasattr(ph, "W"):   # 带 W 的只有 plumesign 签的手机对象（WinPhone、PlumeMacPhone）
         return None

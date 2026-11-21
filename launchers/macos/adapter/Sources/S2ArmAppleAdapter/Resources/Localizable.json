@@ -5180,10 +5180,6 @@
   "en": "A free Apple ID can have at most 3 self-signed apps installed on a device at the same time, and this iPhone is full. Touch and hold a self-signed app you no longer play on the iPhone, remove it, and retry; or use a paid Apple Developer account, which has no such limit."
  },
  {
-  "source": "这是 Apple 对免费 Apple ID 的限制：7 天内最多注册 10 个包名，这个账号已经用满；在手机上删 App 不会退还额度。办法：等几天，最早那批包名注册满 7 天就会恢复；或换一个 Apple ID 登录后再装（Mac 在 S2Arm 里登录，Windows 在 Impactor 里登录）；或改用付费 Apple 开发者账号（没有这个限制）。",
-  "en": "This is Apple's limit for free Apple IDs: at most 10 App IDs can be registered in 7 days, and this account has used them all. Removing apps from the iPhone does not give the quota back. Options: wait a few days, as the quota comes back once the earliest App IDs are 7 days old; sign in with a different Apple ID and install again (in S2Arm on Mac, in Impactor on Windows); or use a paid Apple Developer account, which has no such limit."
- },
- {
   "source": "让你选的那台 iPhone / iPad 连上这台电脑：插上数据线，或解锁后和电脑连同一个 Wi-Fi；第一次连要在设备上点「信任」，并在「设置 → 隐私与安全性 → 开发者模式」打开开发者模式，然后再试。",
   "en": "Connect the iPhone or iPad you chose to this computer: plug in a cable, or unlock it on the same Wi-Fi. The first time, tap Trust on the device and enable Developer Mode under Settings → Privacy & Security, then retry."
  },
@@ -5924,16 +5920,8 @@
   "en": "The environment check failed. Follow the diagnostics to check tool installation and permissions, resolve the problem, then click Recheck."
  },
  {
-  "source": "先装 Impactor：在 S2Arm 里点「打开官方页面」打开官方发布页（https://github.com/claration/impactor/releases/tag/v2.7.3），下载免安装版放到桌面，再点「重新检查」。",
-  "en": "Install Impactor first: click Open the official page in S2Arm to open the official release page (https://github.com/claration/impactor/releases/tag/v2.7.3), save the portable build to the desktop, then click Recheck."
- },
- {
   "source": "S2Arm Windows 版自带的签名工具 Impactor 不在了（安装包不完整）：重新下载并完整解压 S2Arm Windows 版，用里面的 S2Arm.exe 打开后再试。",
   "en": "The Impactor signing tool that ships with S2Arm for Windows is missing (incomplete package): download S2Arm for Windows again, extract it fully, and open the S2Arm.exe inside."
- },
- {
-  "source": "换成实测过的 Impactor 2.7.3（官方发布页 https://github.com/claration/impactor/releases/tag/v2.7.3）；别的版本可能丢掉「提高内存上限」权限，大游戏会闪退。",
-  "en": "Switch to the tested Impactor 2.7.3 (official release page https://github.com/claration/impactor/releases/tag/v2.7.3); other versions may drop the increased-memory-limit entitlement and large games may crash."
  },
  {
   "source": "Apple ID 或密码不对：把输入法切到英文后重新登录（全角字符会被判错）；密码只发给 Apple。",
@@ -6226,18 +6214,6 @@
  {
   "source": "没找到 iPhone：插上数据线并解锁，在手机上点「信任」。",
   "en": "No iPhone found: connect the cable, unlock it and tap Trust on the phone."
- },
- {
-  "source": "这台电脑上没有这个 Apple ID 能用的开发证书，要新建一张。账号证书满了的话，苹果会撤掉列表里的第一张「{0}」（在 {1} 上创建，{2} 生效）。在 AltStore / SideStore 上创建的那张就是它们在用的证书，撤掉后 AltStore / SideStore 和它们装的 App 会打不开。",
-  "en": "This computer has no usable development certificate for this Apple ID, so it needs to create one. If your account's certificates are full, Apple will revoke the first one in the list, “{0}” (created on {1}, valid from {2}). If it was created on AltStore / SideStore, it is the certificate they are using: once it is revoked, AltStore / SideStore and the apps they installed will stop opening."
- },
- {
-  "source": "这台电脑上没有这个 Apple ID 能用的开发证书，要新建一张。账号证书满了的话，苹果会撤掉列表里的第一张「{0}」（{1} 生效）。在 AltStore / SideStore 上创建的那张就是它们在用的证书，撤掉后 AltStore / SideStore 和它们装的 App 会打不开。",
-  "en": "This computer has no usable development certificate for this Apple ID, so it needs to create one. If your account's certificates are full, Apple will revoke the first one in the list, “{0}” (valid from {1}). If it was created on AltStore / SideStore, it is the certificate they are using: once it is revoked, AltStore / SideStore and the apps they installed will stop opening."
- },
- {
-  "source": "点「仍然继续」会新建证书照签。不想动现有证书的话，点「改用已有证书」，把在 AltStore / SideStore 导出的 .p12 导进来，就不用新建。",
-  "en": "Click Continue anyway to create a new certificate and sign. To keep your current certificates, click Use an existing certificate and import the .p12 you exported from AltStore / SideStore, so nothing new is created."
  },
  {
   "source": "点「仍然继续」照传：手机报的空闲不含系统随时能清掉的空间，实际多半放得下，真写满了会停下并说明还差多少；也可以先在「设置 → 通用 → iPhone 储存空间」腾出空间。",
@@ -6806,46 +6782,6 @@
  {
   "source": "证书和描述文件不配套：这份描述文件里没有这张证书，签出来装不上。请在开发者网站重新生成包含这张证书的描述文件。",
   "en": "The certificate and profile don't match: this profile doesn't include the certificate, so a signed app won't install. Regenerate a profile that includes this certificate on the developer website."
- },
- {
-  "source": "这是分发（发布）证书的描述文件，缺下面的权限，S2Arm 0.6 起用它签出来的 App 每款游戏都打不开：",
-  "en": "This is a distribution (release) certificate profile and it lacks the entitlements below, so since S2Arm 0.6 every game in an app signed with it fails to open:"
- },
- {
-  "source": "调试权限（get-task-allow）——没有它任何游戏都打不开",
-  "en": "Debugging (get-task-allow) — without it, no game can open"
- },
- {
-  "source": "提高内存上限（com.apple.developer.kernel.increased-memory-limit）——没有它大游戏可能内存不够、起不来",
-  "en": "Increased Memory Limit (com.apple.developer.kernel.increased-memory-limit) — without it, large games may run out of memory and fail to start"
- },
- {
-  "source": "扩展寻址（com.apple.developer.kernel.extended-virtual-addressing）——没有它大游戏可能地址不够、起不来",
-  "en": "Extended Virtual Addressing (com.apple.developer.kernel.extended-virtual-addressing) — without it, large games may run out of address space and fail to start"
- },
- {
-  "source": "可以改用 Apple ID 登录签名，或复制下面这段话发给证书发放人，换成开发证书和开发描述文件后再导入。",
-  "en": "Sign with your Apple ID instead, or copy the message below and send it to whoever issued the certificate, then import a development certificate and development profile."
- },
- {
-  "source": "描述文件缺下面的权限，小游戏照常，大游戏可能起不来：",
-  "en": "The profile lacks the entitlements below. Small games work as usual; large games may fail to start:"
- },
- {
-  "source": "可以复制下面这段话发给证书发放人，补开后重新下载描述文件再导入。",
-  "en": "Copy the message below and send it to whoever issued the certificate; once they enable these, download the profile again and import it."
- },
- {
-  "source": "没连着 iPhone：复制后把「<你的设备 UDID>」换成你手机的 UDID。",
-  "en": "No iPhone connected: after copying, replace “<your device UDID>” with your iPhone’s UDID."
- },
- {
-  "source": "请提供 Apple Development 开发证书（.p12，附密码）和对应的 iOS App Development 开发描述文件。描述文件要求：用显式 App ID（不要通配 *），包含我的设备 UDID：{0}，并开启以下权限：调试权限（get-task-allow）、提高内存上限（com.apple.developer.kernel.increased-memory-limit）、扩展寻址（com.apple.developer.kernel.extended-virtual-addressing）。",
-  "en": "Please provide an Apple Development certificate (.p12, with its password) and a matching iOS App Development provisioning profile. Profile requirements: use an explicit App ID (not a wildcard *), include my device UDID: {0}, and enable these entitlements: Debugging (get-task-allow), Increased Memory Limit (com.apple.developer.kernel.increased-memory-limit), Extended Virtual Addressing (com.apple.developer.kernel.extended-virtual-addressing)."
- },
- {
-  "source": "请提供 Apple Development 开发证书（.p12，附密码）和对应的 iOS App Development 开发描述文件。描述文件要求：用显式 App ID（不要通配 *），包含我的设备 UDID：<你的设备 UDID>，并开启以下权限：调试权限（get-task-allow）、提高内存上限（com.apple.developer.kernel.increased-memory-limit）、扩展寻址（com.apple.developer.kernel.extended-virtual-addressing）。",
-  "en": "Please provide an Apple Development certificate (.p12, with its password) and a matching iOS App Development provisioning profile. Profile requirements: use an explicit App ID (not a wildcard *), include my device UDID: <your device UDID>, and enable these entitlements: Debugging (get-task-allow), Increased Memory Limit (com.apple.developer.kernel.increased-memory-limit), Extended Virtual Addressing (com.apple.developer.kernel.extended-virtual-addressing)."
  },
  {
   "source": "提高内存上限、扩展寻址",
@@ -9900,6 +9836,26 @@
   "en": "The game still installs and plays normally; this game's program files just picked up a large file that does not belong there, which takes extra disk space and makes installs push more data. Please export a diagnostic report and send it to us."
  },
  {
+  "source": "有几张开发者证书，这台设备还没选用哪一张：在启动器里给这台选一张证书再装。",
+  "en": "Several developer certificates are saved and none is chosen for this device yet. Choose one for it in the launcher, then install again."
+ },
+ {
+  "source": "在出包页「我的开发者证书」里给这台设备选一张证书，再点「重试」。",
+  "en": "On the export page, under “My developer certificate”, choose a certificate for this device, then click “Retry”."
+ },
+ {
+  "source": "没有这张证书。",
+  "en": "That certificate isn't saved on this computer."
+ },
+ {
+  "source": "这台设备还没选证书",
+  "en": "Choose a certificate for this device"
+ },
+ {
+  "source": "存着几张开发者证书，不知道这台用哪一张。",
+  "en": "Several developer certificates are saved, and none is chosen for this device."
+ },
+ {
   "source": "Switch 2 游戏在 Apple TV 上要「扩展虚拟寻址」权限，只有付费 Apple 开发者账号签得了：在 Xcode「设置 → 账户」登录付费开发者账号或选付费团队，再装到 Apple TV（Switch 1 游戏用免费 Apple ID 就能装）。",
   "en": "Switch 2 games need the Extended Virtual Addressing capability on Apple TV, which only a paid Apple Developer account can sign: sign in to a paid developer account (or pick a paid team) in Xcode's Settings → Accounts, then install on Apple TV again (Switch 1 games install with a free Apple ID)."
  },
@@ -10114,6 +10070,70 @@
  {
   "source": "程序文件 {0} 的 {1} 段解不开：这个程序文件坏了或被改过，请重新导出（最好导成 NSP / XCI）。",
   "en": "The {1} segment of program file {0} can't be decompressed: this program file is damaged or has been modified. Export it again (preferably as an NSP / XCI)."
+ },
+ {
+  "source": "这是 Apple 对免费 Apple ID 的限制：7 天内最多注册 10 个包名，这个账号已经用满；在手机上删 App 不会退还额度。办法：等几天，最早那批包名注册满 7 天就会恢复；或换一个 Apple ID 登录后再装（Mac 在 S2Arm 里登录，Windows 在 Impactor 里登录）；或改用付费 Apple 开发者账号（没有这个限制）。",
+  "en": "This is Apple's limit for free Apple IDs: at most 10 App IDs can be registered in 7 days, and this account has used them all. Removing apps from the iPhone does not give the quota back. Options: wait a few days, as the quota comes back once the earliest App IDs are 7 days old; sign in with a different Apple ID and install again (in S2Arm on Mac, in Impactor on Windows); or use a paid Apple Developer account, which has no such limit."
+ },
+ {
+  "source": "先装 Impactor：在 S2Arm 里点「打开官方页面」打开官方发布页（https://github.com/claration/impactor/releases/tag/v2.7.3），下载免安装版放到桌面，再点「重新检查」。",
+  "en": "Install Impactor first: click Open the official page in S2Arm to open the official release page (https://github.com/claration/impactor/releases/tag/v2.7.3), save the portable build to the desktop, then click Recheck."
+ },
+ {
+  "source": "换成实测过的 Impactor 2.7.3（官方发布页 https://github.com/claration/impactor/releases/tag/v2.7.3）；别的版本可能丢掉「提高内存上限」权限，大游戏会闪退。",
+  "en": "Switch to the tested Impactor 2.7.3 (official release page https://github.com/claration/impactor/releases/tag/v2.7.3); other versions may drop the increased-memory-limit entitlement and large games may crash."
+ },
+ {
+  "source": "这台电脑上没有这个 Apple ID 能用的开发证书，要新建一张。账号证书满了的话，苹果会撤掉列表里的第一张「{0}」（在 {1} 上创建，{2} 生效）。在 AltStore / SideStore 上创建的那张就是它们在用的证书，撤掉后 AltStore / SideStore 和它们装的 App 会打不开。",
+  "en": "This computer has no usable development certificate for this Apple ID, so it needs to create one. If your account's certificates are full, Apple will revoke the first one in the list, “{0}” (created on {1}, valid from {2}). If it was created on AltStore / SideStore, it is the certificate they are using: once it is revoked, AltStore / SideStore and the apps they installed will stop opening."
+ },
+ {
+  "source": "这台电脑上没有这个 Apple ID 能用的开发证书，要新建一张。账号证书满了的话，苹果会撤掉列表里的第一张「{0}」（{1} 生效）。在 AltStore / SideStore 上创建的那张就是它们在用的证书，撤掉后 AltStore / SideStore 和它们装的 App 会打不开。",
+  "en": "This computer has no usable development certificate for this Apple ID, so it needs to create one. If your account's certificates are full, Apple will revoke the first one in the list, “{0}” (valid from {1}). If it was created on AltStore / SideStore, it is the certificate they are using: once it is revoked, AltStore / SideStore and the apps they installed will stop opening."
+ },
+ {
+  "source": "点「仍然继续」会新建证书照签。不想动现有证书的话，点「改用已有证书」，把在 AltStore / SideStore 导出的 .p12 导进来，就不用新建。",
+  "en": "Click Continue anyway to create a new certificate and sign. To keep your current certificates, click Use an existing certificate and import the .p12 you exported from AltStore / SideStore, so nothing new is created."
+ },
+ {
+  "source": "这是分发（发布）证书的描述文件，缺下面的权限，S2Arm 0.6 起用它签出来的 App 每款游戏都打不开：",
+  "en": "This is a distribution (release) certificate profile and it lacks the entitlements below, so since S2Arm 0.6 every game in an app signed with it fails to open:"
+ },
+ {
+  "source": "调试权限（get-task-allow）——没有它任何游戏都打不开",
+  "en": "Debugging (get-task-allow) — without it, no game can open"
+ },
+ {
+  "source": "提高内存上限（com.apple.developer.kernel.increased-memory-limit）——没有它大游戏可能内存不够、起不来",
+  "en": "Increased Memory Limit (com.apple.developer.kernel.increased-memory-limit) — without it, large games may run out of memory and fail to start"
+ },
+ {
+  "source": "扩展寻址（com.apple.developer.kernel.extended-virtual-addressing）——没有它大游戏可能地址不够、起不来",
+  "en": "Extended Virtual Addressing (com.apple.developer.kernel.extended-virtual-addressing) — without it, large games may run out of address space and fail to start"
+ },
+ {
+  "source": "可以改用 Apple ID 登录签名，或复制下面这段话发给证书发放人，换成开发证书和开发描述文件后再导入。",
+  "en": "Sign with your Apple ID instead, or copy the message below and send it to whoever issued the certificate, then import a development certificate and development profile."
+ },
+ {
+  "source": "描述文件缺下面的权限，小游戏照常，大游戏可能起不来：",
+  "en": "The profile lacks the entitlements below. Small games work as usual; large games may fail to start:"
+ },
+ {
+  "source": "可以复制下面这段话发给证书发放人，补开后重新下载描述文件再导入。",
+  "en": "Copy the message below and send it to whoever issued the certificate; once they enable these, download the profile again and import it."
+ },
+ {
+  "source": "没连着 iPhone：复制后把「<你的设备 UDID>」换成你手机的 UDID。",
+  "en": "No iPhone connected: after copying, replace “<your device UDID>” with your iPhone’s UDID."
+ },
+ {
+  "source": "请提供 Apple Development 开发证书（.p12，附密码）和对应的 iOS App Development 开发描述文件。描述文件要求：用显式 App ID（不要通配 *），包含我的设备 UDID：{0}，并开启以下权限：调试权限（get-task-allow）、提高内存上限（com.apple.developer.kernel.increased-memory-limit）、扩展寻址（com.apple.developer.kernel.extended-virtual-addressing）。",
+  "en": "Please provide an Apple Development certificate (.p12, with its password) and a matching iOS App Development provisioning profile. Profile requirements: use an explicit App ID (not a wildcard *), include my device UDID: {0}, and enable these entitlements: Debugging (get-task-allow), Increased Memory Limit (com.apple.developer.kernel.increased-memory-limit), Extended Virtual Addressing (com.apple.developer.kernel.extended-virtual-addressing)."
+ },
+ {
+  "source": "请提供 Apple Development 开发证书（.p12，附密码）和对应的 iOS App Development 开发描述文件。描述文件要求：用显式 App ID（不要通配 *），包含我的设备 UDID：<你的设备 UDID>，并开启以下权限：调试权限（get-task-allow）、提高内存上限（com.apple.developer.kernel.increased-memory-limit）、扩展寻址（com.apple.developer.kernel.extended-virtual-addressing）。",
+  "en": "Please provide an Apple Development certificate (.p12, with its password) and a matching iOS App Development provisioning profile. Profile requirements: use an explicit App ID (not a wildcard *), include my device UDID: <your device UDID>, and enable these entitlements: Debugging (get-task-allow), Increased Memory Limit (com.apple.developer.kernel.increased-memory-limit), Extended Virtual Addressing (com.apple.developer.kernel.extended-virtual-addressing)."
  },
  {
   "source": "证书里的私钥读不出来，没能交给 iPhone 上的 S2Arm：在设置里重新导入一次证书。",
@@ -10742,5 +10762,9 @@
  {
   "source": "想正常玩，请换一台地址空间更大的设备（比如内存更大的 Mac），或等后续版本改进；游戏照常能启动。",
   "en": "To play normally, use a device with more address space (such as a Mac with more memory), or wait for a later version; the game still starts."
+ },
+ {
+  "source": "苹果的登录服务器拒收了这次登录请求（回了「服务暂不可用」，还没到核对账号密码那一步），不是这台电脑的网络、Apple ID 或密码的问题，换网络、换 DNS 也没用。多半是苹果又调整了对第三方签名工具的规则：把 S2Arm 更新到最新版后再登录；最新版仍这样，点「复制错误摘要」发给我们。手机、已装的 App 和存档都没动。",
+  "en": "Apple's sign-in server refused this sign-in request (it answered \"service unavailable\" before checking your account). This is not a problem with this computer's network, your Apple ID or your password, and switching networks or DNS will not help. Apple most likely changed its rules for third-party signing tools: update S2Arm to the latest version and sign in again. If the latest version still shows this, click \"Copy error summary\" and send it to us. Your phone, installed apps and saves were not touched."
  }
 ]

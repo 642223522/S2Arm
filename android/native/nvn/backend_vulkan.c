@@ -8,6 +8,8 @@
 //   · 发布顺序：GPU 完成 → done（核心回写）→ release 语义推进已完成值；fence_wait 以 acquire 语义读。
 // 本段不做：贴图 / 视图 / 采样器 / 着色器 / 管线 / 通道 / 上屏（清屏、三角形、深度用例随后接，届时按同一契约补）。
 //
+// 诊断开关：nvk_diag_draw_mode（见 nvn_gpu_draw 上方），只包 vkCmdDraw* 八处，缺省 0 时行为不变。
+//
 // 线程模型：[提交] 线程录制并提交；后端自己的 worker 线程等栅栏、调 done / retired（[回调]）。
 // 对象状态（refs / released）都由 g_mu 保护；回调一律在锁外调用。
 //
@@ -115,6 +117,10 @@ struct nvn_gpu_tex_s {
     VkBuffer bc_sbuf; VkDeviceMemory bc_smem;   // bc_decoded 贴图的压缩原数据影子（GPU 缓冲，按级、按层 / 3D 切片、行紧排；见 bc_shadow_layout）
     uint8_t fb_sample;   // 同一通道里既当附件又被采样过（反馈环）：这张图以后当附件一律 GENERAL（见「图像布局」）
     uint16_t swz;   // 存储自带的通道映射（tex_builder_t.swz 打包法，0 = 恒等）：视图没自己设映射时用它
+    // 反馈快照图（feedback_make 建的私有图）跨段复用（见 backend_vulkan_feedback.inc 的快照池）：
+    //   fb_snap = 是快照图、fbk 是建它时的整份建图请求（池的形状键）；fb_ready = 用它的段已执行完（栅栏到），图已离开 UNDEFINED、GPU 不再碰它。
+    uint8_t fb_snap, fb_ready;
+    struct fb_key { uint32_t target, nvn_format, w, h, depth, levels, samples, usage; } fbk;
     struct nvn_gpu_tex_s *all_next;
 };
 
@@ -479,6 +485,14 @@ static uint64_t now_ns(void);
 static int g_draw_tm; static uint64_t g_draw_ns[3];   // 绘制入口分段计时：描述符 / 状态 / 顶点索引与绘制调用
 static uint64_t g_feedback_stats[4]; // nvk_gputime：只读采样 draw / 快照 vkCmdCopyImage / 反馈重开次数 / 整池数组与写着的附件重叠而免拷的 draw 数，只增不清零
 static uint64_t g_feedback_snap[2];  // nvk_gputime：反馈快照图 新建 / 同段同源复用 次数，只增不清零
+// 反馈快照池（跨段复用快照图，见 backend_vulkan_feedback.inc）：放在 g_mu 下。数组按放回先后排，[0] 最久没用。
+//   上限按字节（开关 nvk_feedback_pool_mb，缺省 256，0 = 关、回到每段新建），会话打开时读一次。
+enum { FBPOOL_N = 256 };
+static struct nvn_gpu_tex_s *g_fbpool[FBPOOL_N];
+static uint32_t g_fbpool_n;
+static uint64_t g_fbpool_bytes, g_fbpool_cap;
+static uint64_t g_fbpool_cnt[3];   // 缺省常开、只计数（只增不清零）：快照图 新建 / 池命中 / 淘汰
+void nvn_vk_fbpool_stat(uint64_t out[5]);   // 读数出口（backend_vulkan_feedback.inc）：新建 / 命中 / 淘汰 / 池里张数 / 池里字节
 static uint64_t g_draw_log_ns = 5000000000ull;         // 逐笔读数（nvn_gpu_draw 末尾）的周期，缺省 5 秒；测试钩子 nvn_gpu_vk_test_diag_timing 可缩短
 static void draw_tm_init(void) { if (!g_draw_tm) g_draw_tm = nvn_plat_flag("nvk_gputime", 0) != 0; }   // 与 GPU 时间戳同一个开关
 // 回放线程取 g_mu（nvk_gputime 开着才计）：先 trylock，没拿到的记「真等了几次、等了多久」。持 g_mu 的别的线程（游戏工作线程销毁视图、
@@ -1279,6 +1293,8 @@ static void cmd_ref_at(struct nvn_gpu_cmd_s *c, void *obj, int type, const char 
     }
 }
 
+static int fbpool_put_locked(struct nvn_gpu_vk *vk, struct nvn_gpu_tex_s *t);   // backend_vulkan_feedback.inc
+static void fbpool_drain_locked(struct nvn_gpu_vk *vk);
 // 调用方持 g_mu。
 static void unref_locked(struct nvn_gpu_vk *vk, void *obj, int type) {
     if (!obj) return;
@@ -1291,7 +1307,7 @@ static void unref_locked(struct nvn_gpu_vk *vk, void *obj, int type) {
     if (type == REF_TEX) {
         struct nvn_gpu_tex_s *t = obj;
         if (t->refs > 0) t->refs--;
-        if (t->released && t->refs == 0) destroy_tex_locked(vk, t);
+        if (t->released && t->refs == 0 && !fbpool_put_locked(vk, t)) destroy_tex_locked(vk, t);
         return;
     }
     if (type == REF_VIEW) {
@@ -1707,6 +1723,9 @@ static void finish_cmd(struct nvn_gpu_cmd_s *c, int executed) {
     while (c->feedback) { // 必须先销毁快照视图，再归还下面持有的图像引用
         struct feedback_copy *f = c->feedback; c->feedback = f->next;
         if (f->view) vkDestroyImageView(g.d, f->view, NULL);
+        // 段执行完（executed = 1 只在栅栏等到之后由完成线程传进来）：快照图已转出 UNDEFINED、GPU 不再用它，下面归还最后一份引用时可以放回快照池。
+        // 段没执行：新建的图可能还是 UNDEFINED，不进池（fb_ready 保持 0，照旧销毁）。快照图同一时刻只属于一段，这一位只由持有它的段写。
+        if (executed && f->snap) f->snap->fb_ready = 1;
         free(f);
     }
     pthread_mutex_lock(&g_mu);
@@ -1798,7 +1817,7 @@ static void process_segment(struct nvn_gpu_vk *vk, struct vk_segment *s) {
         if (r == VK_SUCCESS && fail_sig && fail_sig == s->signal) r = (VkResult)VK_ERROR_UNKNOWN;
         if (r != VK_SUCCESS) {
             pthread_mutex_lock(&g_mu);
-            if (r == VK_ERROR_DEVICE_LOST) vk->device_lost = 1;
+            if (r == VK_ERROR_DEVICE_LOST) { vk->device_lost = 1; fbpool_drain_locked(vk); }
             if (!s->internal && (!vk->failed || s->signal < vk->failed)) vk->failed = s->signal;
             pthread_cond_broadcast(&g_cv);
             pthread_mutex_unlock(&g_mu);
@@ -2237,6 +2256,7 @@ nvn_gpu_rc nvn_gpu_open(const nvn_gpu_open_desc *d, nvn_gpu_err *err) {
 
     memset(&g, 0, sizeof g);
     g.dev = dev;
+    { int mb = nvn_plat_flag("nvk_feedback_pool_mb", 256); g_fbpool_cap = mb > 0 ? (uint64_t)mb << 20 : 0; }   // 反馈快照池上限（0 = 关）
     g.vbuf_batch = nvn_plat_flag("nvk_replay_cpu_cuts", 1) != 0;
     {   // 诊断（nvk_mem_types，缺省 0）：打印显存类型表，判「有没有 HOST_CACHED 的可见类型」——
         // CPU 写映射内存与显卡抢带宽的那条路（见坑记录续 21）要不要改走 cached 暂存，取决于这张表。
@@ -2484,6 +2504,7 @@ nvn_gpu_rc nvn_gpu_close(uint64_t timeout_ns, nvn_gpu_err *err) {
     }
     struct nvn_gpu_tex_s *tx = g.texs;
     g.texs = NULL;
+    g_fbpool_n = 0; g_fbpool_bytes = 0;   // 池里的快照图都还挂在 g.texs 上，随下面一起销毁
     free(g_newimg); g_newimg = NULL; g_newimg_n = g_newimg_cap = 0;
     while (tx) {
         struct nvn_gpu_tex_s *tn = tx->all_next;
@@ -3253,6 +3274,15 @@ static nvn_gpu_rc compute_workgroup_check(const nvn_gpu_shader_src *s, nvn_gpu_e
                         local[0], local[1], local[2], limits->maxComputeWorkGroupInvocations, entry);
         threads *= local[k];
     }
+    // Workgroup 共享字节是最后一道保险：出库闸在 libpack_compute_v1 已核，本处同时盖住现编产物与绕过出库闸的路径。
+    uint64_t shared = 0;
+    const char *swhy = s2a_spv_workgroup_bytes(s->blob, s->bytes, &shared);
+    if (swhy) return fail(err, NVN_GPU_E_UNSUPPORTED, "%s (entry=%s)", swhy, entry);
+    if (shared > limits->maxComputeSharedMemorySize)
+        return fail(err, NVN_GPU_E_UNSUPPORTED,
+                    "compute workgroup: shared=%llu exceeds maxComputeSharedMemorySize=%u (entry=%s key=%02x%02x%02x%02x%02x%02x%02x%02x)",
+                    (unsigned long long)shared, limits->maxComputeSharedMemorySize, entry,
+                    s->key[0], s->key[1], s->key[2], s->key[3], s->key[4], s->key[5], s->key[6], s->key[7]);
     return rc(NVN_GPU_OK);
 }
 
@@ -5794,6 +5824,17 @@ static int prepare_bind_layouts(struct nvn_gpu_cmd_s *c, int compute) {
     return rc_is(c->sticky, NVN_GPU_OK);
 }
 
+// 只用于诊断（debug.s2a.nvk_diag_draw_mode，缺省 0，玩家包恒为 0）：分清一帧慢在回放这一侧还是 GPU 这一侧。
+//   1 = 状态、绑定、描述符照做，只是不发绘制调用（量回放一侧的帧率上限）；
+//   2 = 每笔绘制调用发两遍（GPU 光栅量约翻倍，回放一侧几乎不变）。
+// 两档画面都必然不对，不要用来判断画面；开关只在第一笔绘制时读一次，之后是缓存值。
+static int g_diag_draw_mode = -1;
+static inline int diag_draw_mode(void) {
+    if (__builtin_expect(g_diag_draw_mode < 0, 0)) g_diag_draw_mode = nvn_plat_flag("nvk_diag_draw_mode", 0);
+    return g_diag_draw_mode;
+}
+#define DIAG_DRAW(call) do { const int dm_ = diag_draw_mode(); if (__builtin_expect(dm_ != 1, 1)) { call; if (__builtin_expect(dm_ == 2, 0)) { call; } } } while (0)
+
 void nvn_gpu_draw(nvn_gpu_cmd ch, const nvn_gpu_draw_args *a) {
     draw_tm_init();   // 诊断：这笔绘制各段用时（nvk_gputime 开着才计）
     const int dtm = g_draw_tm; const uint64_t dt0 = dtm ? now_ns() : 0;
@@ -5959,30 +6000,30 @@ void nvn_gpu_draw(nvn_gpu_cmd ch, const nvn_gpu_draw_args *a) {
             if (a->cnt && !rc_is(c->sticky, NVN_GPU_OK)) return;
             uint32_t stride = a->stride ? a->stride : (uint32_t)sizeof(VkDrawIndexedIndirectCommand);
             if (a->cnt) {
-                vkCmdDrawIndexedIndirectCount(c->cb, a->ind->buffer, a->ind_off, a->cnt->buffer, a->cnt_off, a->max_draws, stride);
+                DIAG_DRAW(vkCmdDrawIndexedIndirectCount(c->cb, a->ind->buffer, a->ind_off, a->cnt->buffer, a->cnt_off, a->max_draws, stride));
             } else if (draws > 1) {
                 for (uint32_t i = 0; i < draws; i++)
-                    vkCmdDrawIndexedIndirect(c->cb, a->ind->buffer, a->ind_off + (uint64_t)i * stride, 1, stride);
+                    DIAG_DRAW(vkCmdDrawIndexedIndirect(c->cb, a->ind->buffer, a->ind_off + (uint64_t)i * stride, 1, stride));
             } else {
-                vkCmdDrawIndexedIndirect(c->cb, a->ind->buffer, a->ind_off, 1, stride);
+                DIAG_DRAW(vkCmdDrawIndexedIndirect(c->cb, a->ind->buffer, a->ind_off, 1, stride));
             }
         } else {
-            vkCmdDrawIndexed(c->cb, a->count, inst, first, a->base_vertex, a->base_instance);
+            DIAG_DRAW(vkCmdDrawIndexed(c->cb, a->count, inst, first, a->base_vertex, a->base_instance));
         }
     } else if (a->ind) {
         cmd_ref(c, a->ind, REF_BUF);
         if (a->cnt && !rc_is(c->sticky, NVN_GPU_OK)) return;
         uint32_t stride = a->stride ? a->stride : (uint32_t)sizeof(VkDrawIndirectCommand);
         if (a->cnt) {
-            vkCmdDrawIndirectCount(c->cb, a->ind->buffer, a->ind_off, a->cnt->buffer, a->cnt_off, a->max_draws, stride);
+            DIAG_DRAW(vkCmdDrawIndirectCount(c->cb, a->ind->buffer, a->ind_off, a->cnt->buffer, a->cnt_off, a->max_draws, stride));
         } else if (draws > 1) {
             for (uint32_t i = 0; i < draws; i++)
-                vkCmdDrawIndirect(c->cb, a->ind->buffer, a->ind_off + (uint64_t)i * stride, 1, stride);
+                DIAG_DRAW(vkCmdDrawIndirect(c->cb, a->ind->buffer, a->ind_off + (uint64_t)i * stride, 1, stride));
         } else {
-            vkCmdDrawIndirect(c->cb, a->ind->buffer, a->ind_off, 1, stride);
+            DIAG_DRAW(vkCmdDrawIndirect(c->cb, a->ind->buffer, a->ind_off, 1, stride));
         }
     } else {
-        vkCmdDraw(c->cb, a->count, inst, a->first, a->base_instance);
+        DIAG_DRAW(vkCmdDraw(c->cb, a->count, inst, a->first, a->base_instance));
     }
     if (dtm) { const uint64_t dt3 = now_ns(); __atomic_fetch_add(&g_draw_ns[0], dt1 - dt0, __ATOMIC_RELAXED); __atomic_fetch_add(&g_draw_ns[1], dt2 - dt1, __ATOMIC_RELAXED); __atomic_fetch_add(&g_draw_ns[2], dt3 - dt2, __ATOMIC_RELAXED);
         // 每 5 秒一次：把后端逐笔的三段（描述符 / 状态 / 顶点索引与绘制调用）摊到每笔上打印，
