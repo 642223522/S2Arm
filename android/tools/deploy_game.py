@@ -112,7 +112,7 @@ def resource_delta(resources, artifact, previous, resident):
             or old['apk']['signingCertSha256'] != artifact['apk']['signingCertSha256']):
         raise ValueError('旧资源与驻留回执不符，或没有可做差分的私有旧修订')
     old_rows = game_apk.direct_library.rows_map(game_apk.direct_library.read_index(previous / 'index.tsv'))
-    changed = []
+    changed, resources_real = [], Path(resources).resolve()
     rows = game_apk.direct_library.read_index(resources / 'index.tsv')
     for name, size, sha in rows:
         if name == RESOURCE_DELTA:
@@ -120,7 +120,8 @@ def resource_delta(resources, artifact, previous, resident):
         if old_rows.get(name) == (size, sha):
             continue
         path = resources / name
-        if (not path.is_file() or path.resolve() != path.absolute()
+        # 资源目录内的任一级都不许是链接；目录本身的上级有链接（macOS 的 /var → /private/var）不算
+        if (not path.is_file() or path.resolve() != resources_real / name
                 or path.stat().st_size != size or digest(path) != sha):
             raise ValueError(f'差分文件与目标索引不符：{name}')
         changed.append(name)

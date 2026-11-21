@@ -386,6 +386,13 @@ class DeployTest(unittest.TestCase):
             deploy_game.deploy_resources(self.apk, new, adb, self.root, start=False, delta_from=old,
                                          resident_receipt=dict(resident, artifactSha256='0' * 64))
         data = new / 'romfs/data'
+        outside = self.root / 'outside-data'
+        outside.write_bytes(data.read_bytes())
+        data.unlink()
+        data.symlink_to(outside)   # 字节对、但是指向资源目录外的链接：照样拒
+        with self.assertRaisesRegex(ValueError, '差分文件与目标索引不符：romfs/data'):
+            deploy_game.deploy_resources(self.apk, new, adb, self.root, start=False,
+                                         resident_receipt=resident, delta_from=old)
         data.unlink()
         data.write_bytes(b'x' * len(b'changed resource'))
         with self.assertRaisesRegex(ValueError, '差分文件与目标索引不符：romfs/data'):
