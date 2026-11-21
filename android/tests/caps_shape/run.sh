@@ -5,7 +5,7 @@
 #   档的定义与来源见 shapes.py 文件头；假驱动 fake_vk.c 按 S2A_CAPS_SHAPE 选档回答，生产代码原样编进来。
 #   每档：建设备 + 能力断言（vk_device_shape_test.c）；两台真机档再把本构建打出的 caps 和 devices/*.json 逐项比（shapes.py oracle）。
 #   负对照：把能力判断改坏（只改临时副本），对应档必须红在预期原因上；漏抓就整步红。
-# 新测试接入：在下面 SHAPE_TESTS 加一行「名字 命令…」，命令里用 $S2A_CAPS_SHAPE / $S2A_CAPS_SHAPE_OUT，退出码非 0 = 该档红。
+# 新测试接入：在下面 SHAPE_TESTS 加一行「名字 命令…」，命令里用 ${S2A_CAPS_SHAPE} / ${S2A_CAPS_SHAPE_OUT}，退出码非 0 = 该档红。
 # 宿主 cc 即可，不要 NDK / 设备 / Vulkan 库；本机约 5 秒。
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/../../.." && pwd)
@@ -58,7 +58,7 @@ for shape in $shapes; do
   done
 done
 [ $rc = 0 ] || { echo "【红】整台设备能力形态档：有档红（上面 FAIL 行）"; exit 1; }
-echo "PASS: 形态档 $(echo $shapes | wc -w | tr -d ' ') 档 × ${#SHAPE_TESTS[@]} 项 = $n 次全绿（$shapes）"
+echo "PASS: 形态档 $(echo $shapes | wc -w | tr -d ' ') 档 × ${#SHAPE_TESTS[@]} 项 = $n 次全绿（${shapes}）"
 
 # 负对照：$1 名字 $2 改哪份副本 $3 原文 $4 改成 $5 必须红的档（空格分隔） $6 红因里必须有的字
 neg_n=0
