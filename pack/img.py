@@ -147,12 +147,19 @@ def copy_std(std, part, at, progress, consume):
         if consume and os.stat(real).st_nlink == 1:
             os.chmod(real, os.stat(real).st_mode | stat.S_IWUSR)
             with open(real, 'r+b') as r:
-                end = size
+                end = size; shrink = True
                 while end:
                     start = max(0, end - (1 << 22)); r.seek(start); b = r.read(end - start)
                     if len(b) != end - start: raise Red(f'RomFS 镜像 {std} 读不满（偏移 {start}）')
                     w.seek(at + start); w.write(b); w.flush()
-                    r.truncate(start); end = start; done += len(b); progress(done)
+                    if shrink:
+                        # 截短被系统拒（D-X5JB：Windows 上别的程序——杀毒软件、索引——正拿着镜像时报 [Errno 13]，原先整单失败）：
+                        #   边写边腾只为省峰值，不是必需；后面照常拷完，镜像收尾照删，只是这一段时间多占一份
+                        try: r.truncate(start)
+                        except PermissionError as e:
+                            shrink = False
+                            print(f'🟡 截短 RomFS 镜像被系统拒（{e}，多半是杀毒软件或索引正拿着它）：剩下的 {start / 1e9:.1f} GB 不再边写边腾，照常拷完', flush=True)
+                    end = start; done += len(b); progress(done)
         else:
             with open(real, 'rb') as r:
                 w.seek(at)
@@ -570,6 +577,10 @@ def main(argv=None):
             print(header(a.img))
             for e in entries(a.img): print(*e, sep='\t')
     except (Red, OSError) as e:
+        if isinstance(e, OSError):   # 系统调用报错不带是哪一步（D-X5JB 只剩「[Errno 13] Permission denied」）：出错的那一行先打出来进 img.log，红行照旧
+            import traceback
+            f = traceback.extract_tb(e.__traceback__)[-1]
+            print(f'出错位置：{os.path.basename(f.filename)}:{f.lineno} {f.name}：{f.line}', flush=True)
         print(f'【红】{e}'); return 1
     except Exception as e:   # 意料之外的错也打一行红（带类型）：作业层摘失败原因只认红行 / 末行（#711：原先只剩调用栈，摘要里成了别的日志行）
         print(f'【红】写 IMG 时出了没料到的错：{type(e).__name__}: {e}', flush=True); raise
