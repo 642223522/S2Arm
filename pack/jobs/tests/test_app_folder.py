@@ -126,6 +126,17 @@ class Hints(unittest.TestCase):
             with patch.object(install, "chosen_sign_mode", lambda c, m=mode: m), patch.object(devcert, "profile_facts", lambda c, f=facts: f):
                 self.assertEqual(install.standalone_hint(c), want, mode)
 
+    def test_layout_recommend_by_debug_permission(self):
+        # #1760：不带调试权限（分发 / 企业证书）推荐独立 App；开发证书、Apple ID、自签推荐通用 S2Arm；都没有 = 识别不了
+        import devcert
+        c = object()
+        cases = (("external", False, None, ("shell", "external")), ("devCert", True, None, ("standalone", "distribution")),
+                 ("devCert", False, None, ("shell", "devCertDebug")), ("appleId", False, {"account": "a"}, ("shell", "appleId")), ("appleId", False, None, (None, "unknown")))
+        for mode, dist, acct, want in cases:
+            with patch.object(install, "chosen_sign_mode", lambda c, m=mode: m), patch.object(install, "distribution_cert", lambda c, d=dist: d), \
+                    patch.object(install, "win_install_mod", lambda c: None), patch.object(install, "plume_account", lambda c, W, a=acct: a):
+                self.assertEqual(install.layout_recommend(c), want, (mode, dist, acct))
+
     def test_missing_game_folder_says_so(self):
         import layout
         with tempfile.TemporaryDirectory() as d:
