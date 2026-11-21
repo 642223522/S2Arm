@@ -1247,6 +1247,7 @@
   "install.login.password": "パスワード",
   "install.login.signIn": "サインイン",
   "install.login.working": "サインイン中…",
+  "install.login.wait": "Apple がサインインを拒否したばかりです。{0} 秒後にもう一度接続します（続けて送ると Apple の制限がさらに長くなります）",
   "install.login.code": "Apple デバイスに表示された 6 桁の確認コードを入力",
   "install.login.codeSms": "SMS に届いた 6 桁の確認コードを入力",
   "install.login.confirm": "確認",
