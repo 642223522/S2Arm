@@ -10790,5 +10790,29 @@
  {
   "source": "要用自己的开发者证书：检查杀毒软件或 Windows 安全中心的「受控文件夹访问」有没有拦 S2Arm（把 S2Arm 加进允许的应用），然后在设置里重新导入证书。没启用过开发者证书可以不管这条。",
   "en": "To use your own developer certificate: check whether antivirus software or Controlled folder access in Windows Security is blocking S2Arm (add S2Arm to the allowed apps), then import the certificate again in Settings. If you never turned on a developer certificate, you can ignore this."
+ },
+ {
+  "source": "这款的着色器库这次没能重编（电脑上没有这款的游戏文件，或这台电脑没装 Metal 开发工具），「建议更新」会继续显示：补上游戏文件或装好工具后再点「更新这款」。",
+  "en": "This game's shader library could not be rebuilt this time (this computer does not have the game files, or the Metal developer tools are not installed), so \"Update suggested\" will keep showing. Add the game files or install the tools, then click \"Update this game\" again."
+ },
+ {
+  "source": "这款在这台 Mac 上正在运行，Mac 版的着色器库这次没更新：退出游戏后再点一次「更新这款」。",
+  "en": "This game is running on this Mac, so the Mac version's shader library was not updated this time. Quit the game and click \"Update this game\" again."
+ },
+ {
+  "source": "这款要整款重新出包才能更新完（运行环境的约定变了，只换着色器库不够）：在出包页对这款重新出包。",
+  "en": "This game needs a full rebuild to finish updating (the runtime contract changed; replacing the shader library is not enough). Rebuild this game on the build page."
+ },
+ {
+  "source": "按黄字里写的补上缺的那一项，再点一次「更新这款」；其余部分这次已经更新好了。",
+  "en": "Finish the missing item described in yellow, then click \"Update this game\" again; everything else was already updated this time."
+ },
+ {
+  "source": "这款有一项没更新完",
+  "en": "Part of this update was not completed"
+ },
+ {
+  "source": "「更新这款」这次有一部分没做成，原因写在下面；「建议更新」会继续显示，按说明处理后再点一次。",
+  "en": "\"Update this game\" could not finish everything this time; the reason is below. \"Update suggested\" will keep showing until you follow it and click again."
  }
 ]

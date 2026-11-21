@@ -98,6 +98,21 @@ class PushGameTests(JobCase):
         self.assertEqual(self.ph.calls, [("push", GID)], "装过这款的那台：照常更新")
         self.c.r.pop("onlyInstalled")
 
+    def test_update_incomplete_is_said_not_silent(self):
+        """11-21：「更新这款」做不齐时照实给黄字（update_incomplete），不静默：没原料重编不了着色器库 / 宿主约定号变了要整款重出。期望手写"""
+        import sgrade_bf, host_update
+        layout.save_device(self.c, self.ph.key, dict(shellId="S1", bundleId=self.ph.bid, games={GID: dict(pack="P1")}))
+        for label, rechain, abi, want in (("没原料", "unavailable", host_update.HOST_ABI, [install.UPDATE_SHADER_NOT_REBUILT]),
+                                          ("约定号变了", "skip", host_update.HOST_ABI + 1, [install.UPDATE_NEEDS_REPACK]),
+                                          ("都齐", "updated", host_update.HOST_ABI, [])):
+            with self.subTest(label), mock.patch.object(sgrade_bf, "rechain_ios", lambda c, g, r=rechain: r), \
+                    mock.patch.object(layout, "program_info", lambda c, g, a=abi: dict(hostAbi=a)), \
+                    mock.patch.object(install, "update_mac_lib", lambda c, g: False):
+                self.c.job["diagnostics"] = []
+                install.push_game(self.c, GID, self.ph, steps=False)
+                got = [d for d in self.c.job["diagnostics"] if d.get("code") == "update_incomplete"]
+                self.assertEqual([d.get("message") or d.get("summary") for d in got], want)
+
     def test_pushes_this_game_only_never_installs(self):
         layout.save_device(self.c, self.ph.key, dict(shellId="S1", bundleId=self.ph.bid, games={"0100000000020000": dict(pack="Q")}))
         r = install.push_game(self.c, GID.lower(), self.ph, steps=False)

@@ -4307,6 +4307,12 @@
   "这款没装在这台设备上：「更新这款」只更新原来装过它的设备，这次没有推。": "Este juego no está instalado en este dispositivo: «Actualizar este juego» solo actualiza los dispositivos que ya lo tienen, así que no se envió nada.",
   "这款没装在这台设备上": "Este juego no está en este dispositivo",
   "「更新这款」只更新原来装过这款的设备，不会把它装到新的设备上。": "«Actualizar este juego» solo actualiza los dispositivos que ya tienen este juego; nunca lo instala en un dispositivo nuevo.",
-  "要把这款装到这台设备，用「推到 iPhone」（在装机页选好这台）；只想更新原来那台，就连上原来装过这款的那台再点「更新这款」。": "Para instalar este juego en este dispositivo, usa «Enviar al iPhone» (elige este dispositivo en la página de instalación). Para actualizar solo el original, conecta el dispositivo que ya tiene este juego y vuelve a pulsar «Actualizar este juego»."
+  "要把这款装到这台设备，用「推到 iPhone」（在装机页选好这台）；只想更新原来那台，就连上原来装过这款的那台再点「更新这款」。": "Para instalar este juego en este dispositivo, usa «Enviar al iPhone» (elige este dispositivo en la página de instalación). Para actualizar solo el original, conecta el dispositivo que ya tiene este juego y vuelve a pulsar «Actualizar este juego».",
+  "这款的着色器库这次没能重编（电脑上没有这款的游戏文件，或这台电脑没装 Metal 开发工具），「建议更新」会继续显示：补上游戏文件或装好工具后再点「更新这款」。": "Esta vez no se pudo recompilar la biblioteca de shaders de este juego (este ordenador no tiene los archivos del juego o no tiene instaladas las herramientas de desarrollo de Metal), así que «Actualización sugerida» seguirá apareciendo. Añade los archivos del juego o instala las herramientas y vuelve a pulsar «Actualizar este juego».",
+  "这款在这台 Mac 上正在运行，Mac 版的着色器库这次没更新：退出游戏后再点一次「更新这款」。": "Este juego se está ejecutando en este Mac, así que esta vez no se actualizó la biblioteca de shaders de la versión para Mac. Cierra el juego y vuelve a pulsar «Actualizar este juego».",
+  "这款要整款重新出包才能更新完（运行环境的约定变了，只换着色器库不够）：在出包页对这款重新出包。": "Este juego necesita volver a empaquetarse por completo para terminar de actualizarse (cambió el contrato del entorno de ejecución; no basta con sustituir la biblioteca de shaders). Vuelve a empaquetarlo en la página de empaquetado.",
+  "这款有一项没更新完": "Una parte de la actualización no se completó",
+  "「更新这款」这次有一部分没做成，原因写在下面；「建议更新」会继续显示，按说明处理后再点一次。": "«Actualizar este juego» no pudo completarlo todo esta vez; el motivo está abajo. «Actualización sugerida» seguirá apareciendo hasta que lo resuelvas y vuelvas a pulsar.",
+  "按黄字里写的补上缺的那一项，再点一次「更新这款」；其余部分这次已经更新好了。": "Completa lo que falta según el aviso amarillo y vuelve a pulsar «Actualizar este juego»; el resto ya se actualizó esta vez."
  }
 }

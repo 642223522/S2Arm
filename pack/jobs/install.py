@@ -2687,6 +2687,10 @@ def await_import(c, ph, gid, want):
 
 
 GAME_NOT_ON_DEVICE = "这款没装在这台设备上：「更新这款」只更新原来装过它的设备，这次没有推。"
+# 「更新这款」做不齐时照实说（11-21：原先静默跳过，「建议更新」点了还在，玩家不知道为什么）
+UPDATE_SHADER_NOT_REBUILT = "这款的着色器库这次没能重编（电脑上没有这款的游戏文件，或这台电脑没装 Metal 开发工具），「建议更新」会继续显示：补上游戏文件或装好工具后再点「更新这款」。"
+UPDATE_MAC_BUSY = "这款在这台 Mac 上正在运行，Mac 版的着色器库这次没更新：退出游戏后再点一次「更新这款」。"
+UPDATE_NEEDS_REPACK = "这款要整款重新出包才能更新完（运行环境的约定变了，只换着色器库不够）：在出包页对这款重新出包。"
 SHELL_INSTALL_FIRST = "手机上还没装 S2Arm：先点「安装 S2Arm」，装好后再把这款推到 iPhone。"
 SHELL_UPDATE_FIRST = "手机上的 S2Arm 不是这一版：先点「更新 S2Arm」，再把这款推到 iPhone。"
 
@@ -3105,6 +3109,22 @@ def phone_identity(c):
         return dict(deliver_identity(c, ph, strict=True, force=c.r.get("force") is True), device=ph.key, bundleId=ph.bid)
 
 
+def update_mac_lib(c, gid):
+    """「更新这款」顺带把这台 Mac 上这款的运行版本直连库补到本版（11-21：Mac 那份库代数旧时「建议更新」原因 libGen 点了永远消不掉）。
+    同 S 级升级的 bf 步（sgrade_bf.upgrade_mac，判据 mac_due），在这款的锁里做；这款正在运行 → 不做、黄字说明。不是 Mac / 没有 Mac 运行版本 → 不做"""
+    if sys.platform != "darwin":
+        return False
+    runtime = layout.image_mac(c, gid, create=False)
+    import sgrade, sgrade_bf
+    if not (runtime / "manifest.json").is_file() or not sgrade_bf.mac_due(c, gid, read(runtime / "manifest.json", {})):
+        return False
+    with c.idle(sgrade.game_lock(gid)) as free:
+        if not free:
+            c.diagnostic(UPDATE_MAC_BUSY, code="update_incomplete", severity="warning")
+            return False
+        return bool(sgrade_bf.upgrade_mac(c, gid, runtime))
+
+
 def push_game(c, gid, ph, steps=True):
     """「推到 iPhone」：只推这一款的程序包与资源包，绝不签名装壳（11-17 维护者定：装 App 与推游戏是两个独立作业）。
     手机上没装 S2Arm（这台没有装壳记录）或壳不是本版 → 报「先安装 / 更新 S2Arm」、不推。程序包按设备记录判要不要推（program_pack.need），
@@ -3127,13 +3147,18 @@ def push_game(c, gid, ph, steps=True):
     if steps: c.begin("把这款的程序推进 iPhone", 2, 3)
     from rewrite_refresh import refresh_ios
     ph.pull_kept([gid])   # 机上留下的 NRO 先收回（#8be819），refresh_ios 补进程序件
+    import host_update
+    if (layout.program_info(c, gid) or {}).get("hostAbi", 1) != host_update.HOST_ABI:
+        c.diagnostic(UPDATE_NEEDS_REPACK, code="update_incomplete", severity="warning")   # 约定号变了：换库 / 刷程序消不掉这条原因，照实说
     with packer.program_locks(c, [gid]):
         import sgrade_bf   # 着色器链变了：只重编这款的着色器库（游戏库里的 game.img / 借 Mac 版），不重出整款；没原料不挡推送（11-17 维护者定）
         if sgrade_bf.rechain_ios(c, gid) == "unavailable":
             trace(c, f"{gid} 着色器链更新了，这次没重编着色器库（原因见上一行；「建议更新」照旧提示）")  # 非玩家句
+            c.diagnostic(UPDATE_SHADER_NOT_REBUILT, code="update_incomplete", severity="warning")
         refresh_ios(c, [gid])
         with tempfile.TemporaryDirectory(dir=c.private) as w:
             progs = push_programs(c, ph.client(w), [gid], rec, team, bid, signer)
+    update_mac_lib(c, gid)   # 「建议更新」里 Mac 那份的原因也在这次消掉（同一款、同一个按钮）
     old = rec.get("games", {}).get(gid) or {}
     rec = layout.load_device(c, ph.key)
     # 别的工具装的：记下包名与时刻（总控台不查手机时也认得出这台是别的工具装的；游戏库的免费签名提醒按时刻判谁在后，layout.launcher_free_in_use）。
