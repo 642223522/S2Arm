@@ -54,6 +54,18 @@ TARGETS = (
     ('mali-g925-d9400p', 45836, '天玑 9400+'),                   # vivo V2458A
     ('mali-g1ultra-d9500', 52556, '天玑 9500'),                  # OPPO PLG110
     ('mali-g2ultra-d9600pro', 52183, '天玑 9600 Pro'),           # OPPO PMX110
+    # 猎户座
+    ('mali-g78-e2100', 40572, 'Exynos 2100'),                    # SM-G998B（Galaxy S21 Ultra），最新报告是 Android 15
+    ('xclipse-920-e2200', 45599, 'Exynos 2200（Xclipse 一代）'),
+    ('xclipse-940-e2400', 52490, 'Exynos 2400'),                 # SM-S926B（Galaxy S24+）
+    ('xclipse-950-e2500', 43405, 'Exynos 2500'),                 # SM-F766B（Galaxy Z Flip7）
+    ('xclipse-960-e2600', 52499, 'Exynos 2600'),                 # SM-S942B
+    # Google Tensor（G5 起换成 Imagination PowerVR；G6 的 PowerVR C-Series 在 gpuinfo 上没有报告）
+    ('mali-g78-tg1', 53386, 'Tensor G1'),                        # Pixel 6
+    ('mali-g710-tg2', 47341, 'Tensor G2'),                       # Pixel 7
+    ('mali-g715-tg3', 47617, 'Tensor G3'),                       # Pixel 8
+    ('mali-g715-tg4', 51222, 'Tensor G4'),                       # Pixel 9
+    ('powervr-dxt-tg5', 51806, 'Tensor G5'),                     # Pixel 10
 )
 
 
