@@ -267,6 +267,30 @@ raise SystemExit(main.main())
         other = '  File "x.py", line 3, in replace\n  PermissionError: [WinError 5] 拒绝访问。: \'D:\\a\' -> \'D:\\b\''
         self.assertNotEqual(errors.classify_failure("ipa", None, [other])[0], "app_control_blocked")
 
+    def test_missing_prebuilt_tool_is_app_control(self):
+        # D-VPXS / #1912（Windows 0.6.3）：随包 rewriter\\s2a-rewrite.exe 不在了（旁边的 .source 还在），改写阶段退回现编、报「CMake 未就绪」；
+        #   失败归因时对随包清单 prepare.json：缺的、被清空的列出来，归 app_control_blocked。期望按构造手写：清单 3 个文件，删 1 个、清空 1 个
+        import errors
+        tools = self.root / "Prepare"; (tools / "rewriter").mkdir(parents=True); (tools / "codecs").mkdir()
+        (tools / "rewriter" / "s2a-rewrite.exe.source").write_text("x" * 65)
+        (tools / "codecs" / "yaz0enc-1.exe").write_bytes(b"")          # 清单记 4 字节，盘上被清空
+        (tools / "codecs" / "libyaz0dec.dll").write_bytes(b"abcd")
+        (tools / "prepare.json").write_text(json.dumps({"schema": 1, "source": "x", "files": {
+            "rewriter\\s2a-rewrite.exe": [1547776, "0" * 64], "rewriter\\s2a-rewrite.exe.source": [65, "0" * 64],
+            "codecs/yaz0enc-1.exe": [4, "0" * 64], "codecs/libyaz0dec.dll": [4, "0" * 64]}}))
+        env = {"S2A_PREBUILT_TOOLS": str(tools)}
+        self.assertEqual(sorted(errors.missing_prebuilt(env)), ["codecs/yaz0enc-1.exe", "rewriter\\s2a-rewrite.exe"])
+        with patch.dict(os.environ, env):
+            code, why = errors.classify_failure("ipa", None, ["light.log：rc=75；【黄】winenv：自动源码改写器固定依赖/CMake 未就绪；不下载"])
+        self.assertEqual(code, "app_control_blocked", why)
+        self.assertIn("s2a-rewrite.exe", why); self.assertIn("2 个", why)
+        # 反证：清单里的都在、大小对 → 不归它（照旧按阶段）；没给 S2A_PREBUILT_TOOLS（Mac / 源码树）→ 不查
+        (tools / "codecs" / "yaz0enc-1.exe").write_bytes(b"abcd"); (tools / "rewriter" / "s2a-rewrite.exe").write_bytes(b"\0" * 1547776)
+        self.assertEqual(errors.missing_prebuilt(env), [])
+        with patch.dict(os.environ, env):
+            self.assertNotEqual(errors.classify_failure("ipa", None, ["light.log：rc=75；【黄】winenv：自动源码改写器固定依赖/CMake 未就绪；不下载"])[0], "app_control_blocked")
+        self.assertEqual(errors.missing_prebuilt({}), [])
+
     def test_unrecognized_volume_during_classification_does_not_mask_original_error(self):
         lib = self.root / "classify-volume-lib"
         src = self.root / "classify-volume-src"

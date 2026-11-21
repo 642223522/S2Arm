@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import errno
+import json
 import os
 import re
 from pathlib import Path
@@ -681,11 +682,38 @@ def player_words(code, log=None, texts=()):
     return player_reason(code), None
 
 
+def missing_prebuilt(env=None):
+    """随包预编件清单（S2A_PREBUILT_TOOLS/prepare.json，launchers/windows/bundle_prepare_win.py：逐文件大小 + sha256）里列着、盘上却没有或大小不对的文件
+    → 相对路径列表；没有清单 / 读不了 → []。只在失败归因时查（启动前不做文件校验）。D-VPXS / #1912（Windows 0.6.3）：随包的 rewriter\\s2a-rewrite.exe
+    不在了，改写阶段退回现编、报「CMake 未就绪」；同一台机器上另一个随包工具起进程被拒（D-GVDA）——杀毒软件隔离 / 清空了随包工具"""
+    tools = (env or os.environ).get("S2A_PREBUILT_TOOLS")
+    if not tools:
+        return []
+    root = Path(tools)
+    try:
+        files = json.loads((root / "prepare.json").read_text(encoding="utf-8"))["files"]
+        items = list(files.items())
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return []
+    gone = []
+    for rel, entry in items:
+        path = root / str(rel).replace("\\", "/")
+        try:
+            if not path.is_file() or (isinstance(entry, list) and entry and path.stat().st_size != entry[0]):
+                gone.append(str(rel))
+        except OSError:
+            gone.append(str(rel))
+    return gone
+
+
 def classify_failure(phase, log, texts=()):
     """Mac 准备（build_tool_failure）与 iPhone 打包（ipa.oneclick_failure，Mac / Windows 同一份）共用：
     日志确凿根因优先，其次阶段映射，判不出 package_failed。返回 (码, 写进 internal 的归因说明)。"""
     chunks = gather_evidence(log, texts)
     read = "；".join("%s（尾 %d 字节）" % (label, len(text.encode("utf-8"))) for label, text in chunks if label != "原因") or "无日志"  # 非玩家句
+    gone = missing_prebuilt()
+    if gone:   # 随包工具不见了：后面各阶段的报错（退回现编缺编译器、起不来）都是它的连带，先认它
+        return "app_control_blocked", "归因 app_control_blocked：随包预编件缺 / 大小不对 %d 个（%s），多半被杀毒软件隔离；读过 %s" % (len(gone), "、".join(gone[:6]), read)  # 非玩家句
     hit = log_cause(chunks, log)
     if hit[0]:
         code, label, line, why = hit
