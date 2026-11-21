@@ -144,7 +144,7 @@ if(ANDROID)
             set_source_files_properties(native/nvn/nvn_drvinfo_android.c PROPERTIES COMPILE_OPTIONS "-Wno-error")
         endif()
         # Bionic exposes process_vm_readv (used by crash.c's safe frame read)
-        # only with GNU feature declarations; Android minSdk 29 exceeds API 23.
+        # only with GNU feature declarations.
         set_property(SOURCE "${S2A_ANDROID_RUNTIME_ROOT}/runtime/src/crash.c" APPEND PROPERTY COMPILE_DEFINITIONS _GNU_SOURCE)
         # thread.c 用到 pthread_getname_np（bionic 在 _GNU_SOURCE 下才声明），与 crash.c 同一处理。
         set_property(SOURCE "${S2A_ANDROID_RUNTIME_ROOT}/runtime/src/thread.c" APPEND PROPERTY COMPILE_DEFINITIONS _GNU_SOURCE)

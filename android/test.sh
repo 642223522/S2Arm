@@ -562,7 +562,7 @@ s2a_gate_step python3 "$android_dir/core-link/link_symbols.py"
 s2a_gate_step "$PY" "$android_dir/core-link/tests/t_link_symbols.py"
 # Cross-compile and partially link the real game loader/provider with the pinned NDK.
 s2a_gate_step "$PY" "$android_dir/core-link/test_game_core_closure.py"
-# #1309：fault 的 10 个真实 Bionic API29 对象只编不链（crash.c/thread.c 按生产 CMake 带 _GNU_SOURCE）；固定 NDK，不上设备。
+# #1309：fault 的 10 个真实 Bionic API34 对象只编不链（crash.c/thread.c 按生产 CMake 带 _GNU_SOURCE）；固定 NDK，不上设备。
 s2a_gate_step "$PY" "$android_dir/native/runtime/fault/tests/run_objects.py" --out "$out/fault-owner-objects"
 # 真实 NDK 共享链接 / 符号可见性回归（#1309）：entry.S 惰性取核钩子引用的
 # g_lazy_core / s2a_guest_return 由测试夹具补齐，生产新增外部符号时这里同步跟平。
