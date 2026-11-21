@@ -6,6 +6,12 @@
 每款取所有读数的最大值（别人设备上的极端值照收，宁可保守），读数少于 --min-samples 的款不收。
 
 用法：tools/span_seed.py <报告目录> [--out runtime/src/span_seed.inc] [--min-samples 2] [--tsv 清单.tsv]
+
+发版：切候选前在有诊断报告库的那台机器上跑一次（报告目录 = 诊断收取的 reports/），生成的 span_seed.inc 有变化就提交进 main 再切。
+  span_seed.inc 在壳输入表里（runtime/src），表一变壳号就变，随启动器带的壳下发；不重出游戏包。
+用途（runtime/src/vawin.c s2a_span_seed / s2a_window_span_seen，取本机记录与种子表的较大值）：
+  ① 窗口放不下标准布局时快照区放不放得下：空洞 ≥ 已知最高跨度 + 2 GB 余量 + 6 GB（宿主 3 GB + 快照区 3 GB）才放，不知道也放；
+  ② 「地址空间不够」提示只在已知最高跨度大于窗口时弹；③ 窗口按跨度收窄（× 1.25 + 2 GB）。
 """
 import argparse
 import os
