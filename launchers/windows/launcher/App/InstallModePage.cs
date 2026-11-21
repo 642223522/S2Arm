@@ -27,6 +27,8 @@ public sealed partial class EnvironmentWindow
     private Dictionary<string, string> layoutGames = new(StringComparer.OrdinalIgnoreCase);
     private bool layoutDistribution;
     private string layoutNotice = "";
+    /// <summary>出法选「独立 App」时按签名方式给的那句提示的码（installMode / layoutSet 结果 standaloneHint：appleId / wildcard / external；null → ""，不显示）</summary>
+    private string standaloneHint = "";
     // 更新作业：正在跑 / 计数；结果没看过时顶栏留一个可点掉的提示（"" = 成功，否则失败原因）
     private bool phoneUpdating;
     private long? updateDone, updateTotal;
@@ -76,6 +78,7 @@ public sealed partial class EnvironmentWindow
                 signChoice = Str(job.Report.Result, "signChoice") is { Length: > 0 } sc ? sc : "appleId";   // 签名方式三选一（自签走查结构 6）
                 layout = Str(job.Report.Result, "layout") is { Length: > 0 } lo ? lo : "shell";
                 layoutDistribution = Flag(job.Report.Result, "distribution");
+                standaloneHint = Str(job.Report.Result, "standaloneHint");
                 layoutGames = new(StringComparer.OrdinalIgnoreCase);
                 if (job.Report.Result.TryGetProperty("layoutChoice", out var lc) && lc.ValueKind == JsonValueKind.Object &&
                     lc.TryGetProperty("games", out var lg) && lg.ValueKind == JsonValueKind.Object)
@@ -161,6 +164,22 @@ public sealed partial class EnvironmentWindow
         return panel;
     }
 
+    /// <summary>出包页 / 单款装机页：这款的出法行；这款实际按独立 App 出时下面接 install.layout.hint.&lt;standaloneHint&gt; 那句（只提示不拦；码为空不显示）</summary>
+    private Control LayoutWithHint(string gameId)
+    {
+        EnsureInstallMode();
+        var panel = new StackPanel { Spacing = 8 };
+        panel.Children.Add(LayoutRow(gameId));
+        var now = layoutGames.GetValueOrDefault(gameId) ?? layout;
+        if (now == "standalone" && standaloneHint is "appleId" or "wildcard" or "external")
+        {
+            var hint = new TextBlock { Text = T("install.layout.hint." + standaloneHint), TextWrapping = TextWrapping.Wrap, FontSize = 12, Foreground = Brush.Parse("#E8C65A") };
+            AutomationId(hint, "install.layout.hint");
+            panel.Children.Add(hint);
+        }
+        return panel;
+    }
+
     /// <summary>作业 layoutSet：layout = shell / standalone / null（撤掉选择）；gameId 给了只管这一款。下次推到 iPhone 时作业层按它分流，这里不装任何东西</summary>
     private async Task SetLayoutAsync(string? value, string? gameId)
     {
@@ -171,6 +190,7 @@ public sealed partial class EnvironmentWindow
         {
             var job = await PackJobClient.RunAsync(PackRequest("layoutSet", "", args), null, CancellationToken.None);
             layoutNotice = job.Report.Succeeded ? Str(job.Report.Result, "freeLimit") : "";
+            if (job.Report.Succeeded) standaloneHint = Str(job.Report.Result, "standaloneHint");
         }
         catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
             InvalidOperationException or System.ComponentModel.Win32Exception) { }

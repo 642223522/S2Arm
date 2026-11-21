@@ -563,8 +563,9 @@ def operation(c):
 
 def export_ipa(c, payload, bid=None):
     """签好的 App 另存一份 IPA 到游戏库根 S2Arm.signed.ipa（玩家要自己留存 / 换别的工具装时用；装机照常走数据线直装）。不压缩：几十 MB，存一份一两秒。
-    bid（独立 App）：按包名另起文件 S2Arm.<包名>.signed.ipa，不盖通用壳那份"""
-    out = c.library / (f"S2Arm.{bid}.signed.ipa" if bid else "S2Arm.signed.ipa")
+    bid（独立 App）：写进私有目录 standalone/<包名>.signed.ipa（signed_app_ipa），由 install.put_app / export_app 挪进这款的游戏文件夹（app_folder.py），游戏库根不留东西"""
+    out = signed_app_ipa(c, bid) if bid else c.library / "S2Arm.signed.ipa"
+    out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(out.name + ".tmp")
     with zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED) as z:
         for p in sorted(Path(payload).rglob("*")):
@@ -572,6 +573,24 @@ def export_ipa(c, payload, bid=None):
                 z.write(p, Path("Payload") / p.relative_to(payload))
     os.replace(tmp, out)
     return out
+
+
+def signed_app_ipa(c, bid):
+    """独立 App 用证书签好的 ipa 的中转位置（私有目录，挪进游戏文件夹后删）"""
+    return c.private / "standalone" / f"{bid}.signed.ipa"
+
+
+def profile_facts(c):
+    """在用的描述文件：{wildcard（通配 *，开不了「提高内存上限」等按能力开的权限）, expires（到期时刻，秒；读不到 None）}；读不了 → {}"""
+    try:
+        prof = parse_profile((folder(c) / "profile.mobileprovision").read_bytes())
+    except (OSError, Failure):
+        return {}
+    _, wild = bundle_id(prof)
+    end = prof.get("ExpirationDate")
+    if isinstance(end, datetime.datetime) and not end.tzinfo:
+        end = end.replace(tzinfo=datetime.timezone.utc)
+    return dict(wildcard=bool(wild), expires=end.timestamp() if isinstance(end, datetime.datetime) else None)
 
 
 def sign_app(c, app, log, bid=None):

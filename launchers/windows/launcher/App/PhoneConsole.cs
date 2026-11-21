@@ -399,6 +399,13 @@ public sealed partial class EnvironmentWindow
                     : days is null ? T("console.status.okNoDays") : days <= 2 ? Tf("console.status.expiring", days) : Tf("console.status.ok", days);
                 row.Children.Add(new TextBlock { Text = text, Foreground = Brush.Parse(sa.ShellCurrent && !expired ? "#30D158" : "#FF9F0A"), FontSize = 12.5,
                     TextWrapping = TextWrapping.Wrap, MaxWidth = 520, VerticalAlignment = VerticalAlignment.Center });
+                // 续签：等同这款的单款「推到 iPhone」，装到这台（InstallAsync 带设备号）；游戏库里没有这款（删了）或这台不在线时置灰
+                var owned = catalog?.Games.FirstOrDefault(g => string.Equals(g.Id, sa.GameId, StringComparison.OrdinalIgnoreCase));
+                var renew = Action("console.app.renew", () => { if (owned is not null) RenewApp(owned, phone.Device); },
+                    owned is not null && !offline && !PhonePushing(owned.Id) && !PhoneQueued(owned.Id));
+                renew.VerticalAlignment = VerticalAlignment.Center;
+                Avalonia.Automation.AutomationProperties.SetAutomationId(renew, "console.app.renew." + sa.GameId);
+                row.Children.Add(renew);
                 Avalonia.Automation.AutomationProperties.SetAutomationId(row, "console.app." + sa.GameId);
                 list.Children.Add(row);
             }
@@ -484,6 +491,14 @@ public sealed partial class EnvironmentWindow
         page.Children.Add(ConsoleSection("console.section.help", help));
         Avalonia.Automation.AutomationProperties.SetAutomationId(page, "console.panel");
         return Card(page, 24);
+    }
+
+    /// <summary>总控台独立 App 一行的「续签」：走单款装机（InstallAsync），装到总控台这台；去这款的装机页看进度与结局（同游戏库「导出自签包」的落点）</summary>
+    private void RenewApp(LibraryGame game, string device)
+    {
+        selectedGame = game.Id;
+        _ = InstallAsync(game, device: device);
+        Navigate("install");
     }
 
     // ---- 顶栏动态窗口（同 Mac S2ArmLauncherModel+PhoneConsole「顶栏动态窗口」）：有和 App 相关的作业时「游戏库」那颗显示进度，做完闪 ✓，失败 / 停下留「!」直到点开 ----

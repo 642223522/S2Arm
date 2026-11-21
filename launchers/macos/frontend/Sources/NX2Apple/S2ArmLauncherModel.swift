@@ -126,6 +126,8 @@ struct PhoneOutcome: Equatable {
     var legacyElsewhere: [String] = []
     /// 老款所在那台的设备记录键（作业结果 legacyDevice）：「更新这 N 款」推到它
     var legacyDevice = ""
+    /// 独立 App（0.6.4）：成功页 A（直装）/ B（导出，app.exported）按它画；通用壳为 nil
+    var app: StandaloneApp? = nil
 }
 
 /// 0.5.x 整包装上的老款（作业层 install.legacy_games）
@@ -335,6 +337,10 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published private(set) var inlineFailure: (kind: JobSession.Kind, message: String, suggestion: String)?
     /// 最近一次手机作业的结局事实（PhoneJobPanel 成功页用）；每个手机作业开工时清空
     @Published var phoneOutcome: PhoneOutcome?
+    /// 独立 App 装上了、资源没推完就失败（作业失败结果 appInstalled）：失败页的特例标题与说明
+    @Published var phoneAppPartial: StandaloneApp?
+    /// 单款装机 / 导出失败页的「重试」：上一次 install(...) 原样再来
+    var lastInstallRetry: (() -> Void)?
     /// 最近一次结束的手机作业（装机页的结局区读它：作业结束后 session 可能已被别的作业替换）
     @Published private(set) var lastPhoneSession: JobSession?
     /// 欢迎页上排着队的一键下载（作业同一时刻只有一个）。
@@ -1278,10 +1284,16 @@ public final class S2ArmLauncherModel: ObservableObject {
         installedTo = ""
         phoneOutcome = nil
         selfSigning = export
+        // 失败页「重试」：同样的参数原样再来一次（0.6.4：单款装机 / 导出失败原先只有「改为导出」）
+        lastInstallRetry = { [weak self] in self?.install(game, teamId: teamId, device: device, accept: accept, ask: ask, export: export) }
+        phoneAppPartial = nil
         start(.install, game: game, name: game.name) { [weak self] sink in
             do {
                 let r = try await self?.provider.install(gameId: game.id, teamId: teamId, device: device, accept: accept, mode: export ? "export" : nil, events: sink)
-                if let r, !r.exportFolder.isEmpty {   // 导出模式：没装手机，打开放好的文件夹
+                if let r, let app = r.app {   // 独立 App（0.6.4）：成功页 A / B 自己有「在访达中显示」，不自动弹访达
+                    self?.phoneOutcome = PhoneOutcome(device: Self.deviceLabel(kind: r.deviceKind, name: r.deviceName), packFiles: r.packFiles, packBytes: r.packBytes, app: app)
+                    if !app.exported { self?.installedTo = Self.deviceLabel(kind: r.deviceKind, name: r.deviceName) }
+                } else if let r, !r.exportFolder.isEmpty {   // 导出模式：没装手机，打开放好的文件夹
                     self?.phoneOutcome = PhoneOutcome(skipped: r.skipped, exportFolder: r.exportFolder, exportGames: r.exportGames, exportBytes: r.exportBytes,
                                                      exportFresh: r.exportFresh, exportReused: r.exportReused, exportUnwritten: r.exportUnwritten)
                     NSWorkspace.shared.open(URL(fileURLWithPath: r.exportFolder))
@@ -1299,6 +1311,8 @@ public final class S2ArmLauncherModel: ObservableObject {
             }
             catch let f as JobFailure {   // 装着不止一个 S2Arm、还没选：失败页就地列候选，选好重推这一款（同样的参数）
                 self?.notePushChoice(f) { [weak self] in self?.install(game, teamId: teamId, device: device, accept: accept, ask: ask, export: export) }
+                // 独立 App 装上了、资源没推完（作业失败结果 appInstalled）：失败页写「App 已装上，资源没推完」，重试只推剩下的
+                self?.phoneAppPartial = (f.outcome.result["appInstalled"] as? [String: Any]).map { StandaloneApp($0) }
                 throw f
             }
             return nil
