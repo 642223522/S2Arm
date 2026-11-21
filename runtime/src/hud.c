@@ -22,8 +22,8 @@
 #include <os/proc.h>
 #endif
 
-// GPU 已分配（Metal 设备 currentAllocatedSize，直连层 graphics/nvn nvn_mtl.m 强定义）：和进程实占是两本账——内存池的零拷贝缓冲、贴图都记在这里，
-//   没有直连层 / 设备还没建 = 0（浮层就只写进程实占）
+// GPU 已分配（直连层 graphics/nvn nvn_mtl.m 强定义）：Metal 设备 currentAllocatedSize 减去零拷贝缓冲——贴图、我们自己分配的缓冲记在这里；
+//   内存池的零拷贝缓冲就是游戏内存（已在进程实占里），Metal 按每个缓冲全长、重叠的块重复记，不算进来（#1827）。没有直连层 / 设备还没建 = 0（浮层就只写进程实占）
 __attribute__((weak)) uint64_t s2a_gpu_alloc_bytes(void) { return 0; }
 // 上屏时间戳环在 ap_host.c（逐帧路径只依赖它自己；只链 ap_host 的单测不用带上本文件）：写方只有上屏线程，界面线程按序号读，读到被覆盖的就停
 enum { HR = 2048 };
@@ -146,6 +146,50 @@ static void sys_power(char *o, size_t n) {
     else if (ct > c0) { snprintf(shown, sizeof shown, "%.2f W", (double)(ld - l0) / (double)(ct - c0) / 1000.0); l0 = ld; c0 = ct; }
     snprintf(o, n, "%s", shown);
 }
+
+#if defined(__APPLE__) && !TARGET_OS_IPHONE
+// 插没插电（gfxmode.c 直连音频调度缺省按电源档分的强定义，11-14 卡顿诊断）：AppleSmartBattery 的 ExternalConnected。
+//   与 sys_power 各持一份按名取（那边整机瓦数要遥测三键；这边只要外接电源一位，读不到时两边要给不同方向的兜底：浮层显示「取不到」，
+//   这里没电池服务（桌面机）算非电池回实时，读得出但键坏按电池回 interactive 保 10-24 起的现状），互不影响
+int s2a_mac_on_battery(void) {
+    typedef unsigned int io_obj;
+    static struct {
+        io_obj (*get_svc)(unsigned int, CFDictionaryRef); CFMutableDictionaryRef (*match)(const char *);
+        CFTypeRef (*prop)(io_obj, CFStringRef, CFAllocatorRef, uint32_t); CFStringRef (*str)(CFAllocatorRef, const char *, CFStringEncoding);
+        CFTypeID (*type)(CFTypeRef), (*bool_t)(void), (*num_t)(void);
+        Boolean (*bl)(CFBooleanRef); Boolean (*num)(CFNumberRef, CFNumberType, void *); void (*rel)(CFTypeRef);
+    } f;
+    static io_obj svc; static int tried;
+    if (!tried) {
+        tried = 1;
+        void *io = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY), *cf = dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", RTLD_LAZY);
+        if (io && cf) {
+            f.get_svc = (io_obj (*)(unsigned int, CFDictionaryRef))dlsym(io, "IOServiceGetMatchingService");
+            f.match = (CFMutableDictionaryRef (*)(const char *))dlsym(io, "IOServiceMatching");
+            f.prop = (CFTypeRef (*)(io_obj, CFStringRef, CFAllocatorRef, uint32_t))dlsym(io, "IORegistryEntryCreateCFProperty");
+            f.str = (CFStringRef (*)(CFAllocatorRef, const char *, CFStringEncoding))dlsym(cf, "CFStringCreateWithCString");
+            f.type = (CFTypeID (*)(CFTypeRef))dlsym(cf, "CFGetTypeID"); f.bool_t = (CFTypeID (*)(void))dlsym(cf, "CFBooleanGetTypeID");
+            f.num_t = (CFTypeID (*)(void))dlsym(cf, "CFNumberGetTypeID");
+            f.bl = (Boolean (*)(CFBooleanRef))dlsym(cf, "CFBooleanGetValue"); f.num = (Boolean (*)(CFNumberRef, CFNumberType, void *))dlsym(cf, "CFNumberGetValue");
+            f.rel = (void (*)(CFTypeRef))dlsym(cf, "CFRelease");
+        }
+        if (f.get_svc && f.match && f.prop && f.str && f.type && f.bool_t && f.num_t && f.bl && f.num && f.rel)
+            svc = f.get_svc(0, f.match("AppleSmartBattery"));
+    }
+    if (!f.get_svc || !svc) return 0;   // 框架取不到 / 没电池服务（桌面机）：不算电池
+    CFStringRef k = f.str(NULL, "ExternalConnected", kCFStringEncodingUTF8);
+    CFTypeRef d = k ? f.prop(svc, k, NULL, 0) : NULL;
+    if (k) f.rel(k);
+    int on_battery = 1;   // 键读不出：按电池（interactive，10-24 起的现状），宁可保守
+    if (d) {
+        int64_t v = 1;
+        if (f.type(d) == f.bool_t()) on_battery = !f.bl((CFBooleanRef)d);
+        else if (f.type(d) == f.num_t() && f.num((CFNumberRef)d, kCFNumberSInt64Type, &v)) on_battery = !v;
+        f.rel(d);
+    }
+    return on_battery;
+}
+#endif
 
 // 能耗：本进程 CPU 能耗 + GPU 忙时间（s2a_energy_snap 差分；GPU 没有瓦数，读不到时写明）+ 整机功率（电池遥测）+ 系统发热档 + 电量与变化速率
 static void line_energy(char *o, size_t n, const s2a_hud_host *h) {

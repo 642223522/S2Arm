@@ -4,15 +4,69 @@
 #pragma once
 #include "nvn_obj.h"
 #include "nvn_backend.h"
+#include <string.h>
 
 // 贴图对象 → 后端贴图。首次使用时建；内容来自游戏内存的，在 c 这一段里上传 / 脏了重传。NULL = 取不到（已经 nvn_unimpl 记账）。线程：[提交]。
 nvn_gpu_tex rp_tex_resolve(const tex_t *t, nvn_gpu_cmd c);
-// 贴图号 → 视图（登记时带视图记录的按它建，否则默认视图）。t_out 可为 NULL。号没登记 / 池外 → NULL。线程：[提交]。
-nvn_gpu_view rp_view_by_id(int id, nvn_gpu_cmd c, const tex_t **t_out);
+// 宿主整段读贴图存储的入口：整段在它的内存池里 → t->mem；伸出池子（真机：存储偏移 -1）→ 副本，池内照拷、池外按 0，*part 交调用方 free。
+//   NULL = 副本分配失败。线程：任意（不取锁）。
+const uint8_t *rp_tex_src(const tex_t *t, uint8_t **part);
+// 贴图号 → 视图（登记时带视图记录的按它建，否则默认视图）。号没登记 / 池外 → NULL。线程：[提交]。
+// t_out 可为 NULL；非 NULL 时取到登记就在锁内把登记快照拷进调用方的 *t_out，没取到清零（serial 为 0）。
+//   不交出登记表内地址：客体线程登记更大的号会让表扩容换地址（#1581）。
+nvn_gpu_view rp_view_by_id(int id, nvn_gpu_cmd c, tex_t *t_out);
 // 按着色器声明取兼容视图；dtt = NVN 目标 + 1，0 沿用原样。elem 表示句柄数组元素。
-// 返回视图由核心持有；调用方在 pin 窗口内取用并交给后端。线程：[提交]。
-nvn_gpu_view rp_view_by_id_decl(int id, uint8_t dtt, uint8_t dcls, int elem, nvn_gpu_cmd c, const tex_t **t_out);
+// 返回视图由核心持有；调用方在 pin 窗口内取用并交给后端。t_out 同 rp_view_by_id（调用方持有的快照）。线程：[提交]。
+nvn_gpu_view rp_view_by_id_decl(int id, uint8_t dtt, uint8_t dcls, int elem, nvn_gpu_cmd c, tex_t *t_out);
+// 句柄在游戏常量缓冲里（NVN_RB_TEXU）：号没登记（越过池容量 / 负号 / 池里没登记）按 Ryujinx 的 null 贴图绑声明类型的零贴图，不跳整笔；
+// 其余同 rp_view_by_id_decl（elem = 0）。信息计数 rp_ubo_zero_count（换局清零）。
+nvn_gpu_view rp_view_by_ubo_handle_decl(int id, uint8_t dtt, uint8_t dcls, nvn_gpu_cmd c, tex_t *t_out);
+// 一维 / 一维数组折成二维 / 二维数组（同 iOS nvn_mtl.m tex_desc_fit，#1810）：后端建不出目标 0 / 3，翻译后的着色器也一律按二维采样
+// （Sample1DAs2D）。NVN 描述里一维数组的层数放在 height，折后放进 depth、高 1；一维的高、深都是 1。后端建图、零贴图、声明与实际目标的比较都先过这一步；
+// 登记快照 t->d 与客体布局 t->L 保持原样（解交织按客体的形状）。
+static inline int rp_fold_1d_target(int target) {
+    return target == NVN_TEXTURE_TARGET_1D ? NVN_TEXTURE_TARGET_2D :
+           target == NVN_TEXTURE_TARGET_1D_ARRAY ? NVN_TEXTURE_TARGET_2D_ARRAY : target;
+}
+static inline void rp_fold_1d_desc(nvn_texdesc *d) {
+    if (d->target == NVN_TEXTURE_TARGET_1D) { d->target = NVN_TEXTURE_TARGET_2D; d->height = 1; d->depth = 1; }
+    else if (d->target == NVN_TEXTURE_TARGET_1D_ARRAY) { d->depth = d->height ? d->height : 1; d->height = 1; d->target = NVN_TEXTURE_TARGET_2D_ARRAY; }
+}
+// 贴图自身的层数（不含视图记录）：立方体 6，二维数组 / 立方体数组取 depth，一维数组取 height，其余 1。
+static inline uint32_t rp_tex_layer_count(const tex_t *t) {
+    return t->d.target == NVN_TEXTURE_TARGET_CUBEMAP ? 6 :
+        t->d.target == NVN_TEXTURE_TARGET_2D_ARRAY || t->d.target == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY ? t->d.depth :
+        t->d.target == NVN_TEXTURE_TARGET_1D_ARRAY ? t->d.height : 1;
+}
+// 按声明规划同一存储的视图目标；0 原样、1 已改记录、-1 无法桥接。不会创建零贴图。
+static inline int rp_decl_view_target(const tex_t *t, view_t *v, int has_v, uint8_t dtt) {
+    if (!dtt) return 0;
+    int want = rp_fold_1d_target(dtt - 1), have = rp_fold_1d_target(has_v && v->set_target ? v->target : t->d.target);
+    if (want == have) return 0;
+    uint32_t layers = rp_tex_layer_count(t);
+    if (has_v && v->set_layers) layers = v->nlayers ? v->nlayers : (layers > v->min_layer ? layers - v->min_layer : 1);
+    uint32_t n = 0;
+    int layered = have == NVN_TEXTURE_TARGET_2D || have == NVN_TEXTURE_TARGET_2D_ARRAY ||
+        have == NVN_TEXTURE_TARGET_CUBEMAP || have == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY;
+    if (layered) {
+        if (want == NVN_TEXTURE_TARGET_2D) n = 1;
+        else if (want == NVN_TEXTURE_TARGET_2D_ARRAY) n = layers;
+        else if (want == NVN_TEXTURE_TARGET_CUBEMAP && layers >= 6) n = 6;
+        else if (want == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY && layers >= 6) n = layers / 6 * 6;
+    }
+    if ((want == NVN_TEXTURE_TARGET_2D_MULTISAMPLE && have == NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY) ||
+        (want == NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY && have == NVN_TEXTURE_TARGET_2D_MULTISAMPLE)) n = 1;
+    if (!n || n > UINT16_MAX) return -1;
+    int cube = want == NVN_TEXTURE_TARGET_CUBEMAP || want == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY;
+    int cube_compat_array = t->d.target == NVN_TEXTURE_TARGET_2D_ARRAY && t->d.width == t->d.height && t->d.samples <= 1 && t->d.depth >= 6;
+    if (cube && t->d.target != NVN_TEXTURE_TARGET_CUBEMAP && t->d.target != NVN_TEXTURE_TARGET_CUBEMAP_ARRAY && !cube_compat_array) return -1;
+    if (!has_v) memset(v, 0, sizeof *v);
+    v->set_target = 1; v->target = (uint8_t)want;
+    v->set_layers = 1; v->nlayers = (uint16_t)n;
+    return 1;
+}
 uint64_t rp_empty_slot_zero_count(void);   // 空贴图槽绑零贴图的次数（#1147；信息计数）
+uint64_t rp_ubo_zero_count(void);          // 常量缓冲句柄指向没登记的号、绑零贴图的次数（#1594 片 4；信息计数，换局清零）
 // 贴图对象 + 视图记录（NULL = 默认视图）→ 视图：渲染目标、拷贝端点用。线程：[提交]。
 nvn_gpu_view rp_view_for(const tex_t *t, const view_t *v, nvn_gpu_cmd c);
 // 当颜色附件取视图。刚建、初始内容该是全零的单级单层颜色图：不在 CPU 上填零，记成「待清零」，
@@ -29,8 +83,24 @@ void rp_view_pin_begin(void);
 void rp_view_pin_end(void);
 // 贴图号 → 登记时的贴图 / 视图快照（不建图）。1 = 这个号登记过。
 int rp_tex_snap_by_id(int id, tex_t *t, view_t *v, int *has_v);
+// 存储图像的 sRGB 别名：后端置了 NVN_GPU_CAP_STORAGE_SRGB_ALIAS、格式 f 本身不能当存储、同位宽 UNORM 能，返回那个 UNORM 格式；否则 0。
+//   NVN 的图像存储按原始字节写，不做 sRGB 编码，所以按 UNORM 视图写进 sRGB 贴图是同一份字节。
+uint32_t rp_storage_srgb_alias(uint32_t f);
 // 采样器号 → 后端采样器（首次取用时建）。没登记 → NULL。线程：[提交]。
 nvn_gpu_samp rp_samp_by_id(int id);
+// #1072：同上，但贴图 tid 的有效格式不能线性过滤时给同参数的最近点采样器（具名记账）。
+nvn_gpu_samp rp_samp_for_tex(int sid, int tid);
+// 类型 3 句柄（常量采样器；c2 分离表 / 游戏常量缓冲两种形态）的采样器：登记号 sid 没登记 → 同 Ryujinx 的空采样器，绑最近点 / Repeat 的
+// 默认采样器（rp_sampler_for_query）、不跳整笔；其余同 rp_samp_for_tex。登记了但后端建不出 / 默认采样器也建不出 → NULL（调用方具名跳过）。
+// pool_base / pool_n（采样器池起点、容量）只给每局首行日志用。信息计数 rp_const_samp_default_count（换局清零）。线程：[提交]。
+nvn_gpu_samp rp_samp_for_const_handle(int sid, int tid, int pool_base, int pool_n);
+uint64_t rp_const_samp_default_count(void);   // 类型 3 句柄的采样器号没登记、绑默认采样器的次数（#1594 片 6；信息计数，换局清零）
+// 格式能力（nvn_gpu_format_caps）按格式缓存，会话重开时清。
+uint32_t rp_fmt_caps(uint32_t f);
+// 仅供已证明不读取采样器的组合描述符；Vulkan 仍要求描述符里的对象有效。
+nvn_gpu_samp rp_sampler_for_query(void);
+// 整池数组（NVN_RB_TEXP / SAMPP）的池快照：按键缓存、登记纪元变了才重建；NULL = 建不出，*why 是具名跳过的原因。线程：[提交]，开通道前
+nvn_gpu_pool_table rp_pool_table(nvn_gpu_cmd c, int samp, int base, uint32_t n, uint8_t dtt, uint8_t dcls, const char **why);
 // 这张贴图的内容从此以 GPU 为准（当了渲染目标 / 被拷贝写 / 被着色器写）：不再从游戏内存重传。
 void rp_tex_mark_gpu_written(const tex_t *t);
 // 只读查询：这个序号被前端标过「CPU 写过」（nvn_be_tex_cpu_written：WriteTexels、刷新范围盖到、导出等）。同步读回判内容在不在游戏内存里用。线程：任意。

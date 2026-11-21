@@ -2,7 +2,7 @@
 
 宿主放 <库>/hosts/mac/<可执行文件摘要前 12 位>/S2ArmGame.app，每款镜像 games/<英文名>/image/mac 不含宿主；game.json 的 hostMac 记这款在用的宿主。
 升级 S2Arm 后，新宿主认得旧镜像就直接换用，不用重新准备。判据两项，都对上才换：
-  hostAbi    —— 宿主读每款产物的约定号，就是下面的 HOST_ABI。改了宿主读产物的方式（改写器与运行时的约定：跳板 / 虚拟寄存器槽 / 门控表，
+  hostAbi    —— 宿主读每款产物的约定号，就是下面的 HOST_ABI（从 runtime/include/s2a_host_abi.h 读，宿主编的是同一个数）。改了宿主读产物的方式（改写器与运行时的约定：跳板 / 虚拟寄存器槽 / 门控表，
                 *.fixups / *.sites / *.gates / addr_need.tsv 等表的格式，镜像目录布局）就把它加 1；只修宿主自身的 bug 不动它。
   dmshChain  —— 直连着色器库版本 V（graphics/nvn/gfx/nvn/dmsh_chain.h 的 DMSH_CHAIN，宿主只读 shaders/direct/b-<V>/），从引擎源码机械读出。
 镜像的 manifest.json 记准备时的这两项；本字段之前（v0.1.0 起的公开版）出的镜像 hostAbi 按 1，dmshChain 按目录里实有的 b-<V> 认。
@@ -11,18 +11,32 @@
 不兼容时照用原来的宿主，catalog 报 hostUpdate = "incompatible"，游戏库提示重新准备。
 """
 from __future__ import annotations
+import json
 import os
 import re
 import shutil
 import stat
 import subprocess
+import time
+import math
 import sys
 from pathlib import Path
 
 import layout
 from core import Failure, contained, digest, read
 
-HOST_ABI = 1
+def _host_abi():
+    """宿主读产物的约定号：从 runtime/include/s2a_host_abi.h 机械读（与宿主编进去的是同一个数，不两处各写一份）"""
+    here = Path(__file__).resolve()
+    # Mac 应用里作业层在 Contents/Resources/Jobs，头文件随包放同目录（launchers/macos/jobs_bundle.py EXTRA）；源码树 / Windows 引擎快照里在 runtime/include
+    head = here.parent / "s2a_host_abi.h"
+    if not head.is_file():
+        head = here.parents[2] / "runtime/include/s2a_host_abi.h"
+    text = head.read_text(encoding="utf-8")
+    return int(re.search(r"^#define S2A_HOST_ABI (\d+)$", text, re.M).group(1))
+
+
+HOST_ABI = _host_abi()
 TRIAL_OK_SECONDS = 60
 APP = "S2ArmGame.app"
 EXE = APP + "/Contents/MacOS/s2arm-host"
@@ -39,6 +53,305 @@ def engine_compat(c):
         return None
     m = re.search(r'^#define DMSH_CHAIN "([0-9a-f]+)"', text, re.M)
     return dict(hostAbi=HOST_ABI, dmshChain=m.group(1)) if m else None
+
+
+HINT_REASONS = ("rewriter", "hostAbi", "shader")   # 改写器更新 / 宿主约定号变了 / 着色器链（直连库）更新
+
+
+SHADER_FALLBACK = "shader_fallback.json"   # 宿主写的「包里没有、现场首次翻译」的着色器支数（{count, at, app}，只加不减；iOS 在 Documents/games/<号>/，Mac 在游戏库 temp/<号>/）
+
+
+def built_by(c):
+    """出包时记下是哪一版启动器打的（game.json ios / Mac 运行版本清单的 builtBy）：着色器覆盖度判「这包比当前 App 旧」用"""
+    from core import release_version, display_version
+    return dict(version=release_version(c.engine), display=display_version(c.engine))
+
+
+def _vtuple(v):
+    try:
+        return tuple(int(x) for x in str(v).split("."))
+    except ValueError:
+        return None
+
+
+def built_older(c, built):
+    """这份包是不是比当前启动器早的版本打的：没记 builtBy（这条判据之前出的包）→ 是；当前版本号读不出 → 判不了，按否（不因此标角标）"""
+    from core import release_version
+    cur = _vtuple(release_version(c.engine))
+    if not cur:
+        return False
+    got = _vtuple((built or {}).get("version")) if built else None
+    return got is None or got < cur
+
+
+def shader_misses(c, gid):
+    """这款在各处现场翻译过多少支包里没有的着色器 → {ios: 各台手机里最大的, mac: Mac 局的}（读设备记录与游戏库 temp/<号>/，不读手机）"""
+    gid = gid.upper()
+    ios = 0
+    for _, rec in layout.devices(c):
+        if isinstance(rec, dict):
+            ios = max(ios, int(((rec.get("shaderFallback") or {}).get(gid) or {}).get("count") or 0))
+    try:
+        mac = int((json.loads((Path(c.library) / "temp" / gid / SHADER_FALLBACK).read_text(encoding="utf-8")) or {}).get("count") or 0)
+    except (OSError, ValueError, AttributeError, TypeError):
+        mac = 0
+    return dict(ios=ios, mac=mac)
+
+
+def _mac_built(c, gid):
+    try:
+        return (json.loads((layout.image_mac(c, gid, create=False) / "manifest.json").read_text(encoding="utf-8")) or {}).get("builtBy")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def shader_hint(c, gid, ios_count=None):
+    """着色器覆盖度（11-17 维护者定的判据，设备实测不按版本猜）：现场翻译过包里没有的着色器（count > 0）且这份包比当前启动器旧 → 重新出包能补上，
+    给 shaderMiss；count > 0 但包已是当前版本打的 → 重出也没用（是出包流程漏了，另由出包流程补），不标。ios_count 给了就只看这一台"""
+    got = shader_misses(c, gid)
+    n_ios = got["ios"] if ios_count is None else ios_count
+    ios = layout.program_info(c, gid) or {}
+    if n_ios > 0 and ios and built_older(c, ios.get("builtBy")):
+        return True
+    return ios_count is None and got["mac"] > 0 and built_older(c, _mac_built(c, gid))
+
+
+# 直连库内容代数（同 sgrade_bf.BF_GEN 的做法）：库里多出旧包没有、设备又要用的内容时 +1；出包时记进 game.json ios.libGen / Mac 运行版本 manifest.json libGen。
+#   1 = 库带客体输入（库容器种类 56）：设备上现做补齐 / 采样模拟 / 任务阶段变体从包里取（不再拷源快照）；旧包没有，游戏回收控制段后这些变体做不了（那一对绘制跳过、不崩），
+#   重出这一款就补齐，所以旧代数的款在「建议更新」里列出（原因 libGen，前端用着色器那条文案）
+#   2 = 着色器键第 2 代（graphics/nvn/gfx/nvn/nvn_key.h）+ 包内键别名表 key_alias.tsv：旧包靠宿主先新后旧兜底照常能用，重出后库按新键去重、首用现编与读档换键都对上新键
+LIB_GEN = 2
+
+
+def lib_stale(gen):
+    return int(gen or 0) < LIB_GEN
+
+
+def update_hints(c):
+    """0.6.0 通用壳（开关后面）：启动器新版本打开时的快速比对（《文件与程序管理体系》⑦ ③，11-17 维护者定）。每款只读程序兼容记录
+    （game.json 的 ios，没有读专用文件夹那份，layout.program_info，几 KB），比对改写器指纹 / 宿主约定号 / 着色器链与本版启动器的值；
+    对不上的款给出「建议更新」与原因，玩家点了才做。不读游戏大文件（game.img、资源包、程序件）、不排后台重活、不改任何东西。
+    没打过 iPhone 包的款没有记录，不标。开关关着 → {enabled: False, games: []}"""
+    want = engine_compat(c) or {}
+    import rewrite_refresh
+    try:
+        rid = rewrite_refresh.rewriter_id(c)
+    except (Failure, OSError, subprocess.SubprocessError):
+        rid = None   # 取不到改写器指纹：这一项不判（不因此给所有款标「建议更新」）
+    games = []
+    for g in c.catalog()["games"]:
+        if not layout.program_info(c, g["id"]):
+            continue   # #1712：没打过 iPhone 包（只在 Mac 出包 / 玩）的款不标——「更新这款」就是推到 iPhone，Mac 那份旧不该弹手机提示
+        why = _game_hint(c, g["id"], rid, want)
+        if shader_hint(c, g["id"]):
+            why.append("shaderMiss")
+        mac = layout.image_mac(c, g["id"], create=False) / "manifest.json"
+        if "libGen" not in why and mac.is_file() and lib_stale(read(mac, {}).get("libGen")):
+            why.append("libGen")   # Mac 运行版本的库是旧代数（iPhone 那份在 _game_hint 判）
+        if why:
+            games.append(dict(gameId=g["id"].upper(), reasons=why))
+    return dict(games=games)
+
+
+SIGN_LIFETIME = dict(free=7 * 86400, paid=365 * 86400)   # 读不到真实到期时按苹果规则估：免费账号描述文件 7 天、付费 / 证书一年（手机上 App 自己读描述文件给准数）
+
+
+def _game_hint(c, gid, rid, want):
+    """一款的程序兼容记录对本版启动器的原因（同 update_hints）"""
+    ios = layout.program_info(c, gid)
+    if not ios:
+        return []
+    why = []
+    if rid and ios.get("rewriterId") != rid:
+        why.append("rewriter")
+    if want and ios.get("hostAbi", 1) != want["hostAbi"]:
+        why.append("hostAbi")
+    if want and ios.get("dmshChain", LEGACY_CHAIN) != want["dmshChain"]:
+        why.append("shader")
+    if lib_stale(ios.get("libGen")):
+        why.append("libGen")
+    return why
+
+
+def _online(c, names=None):
+    """现在连着的手机 → {UDID: 'usb' | 'network'}；读不到 → {}（probe 时才调，可能要几秒）。names（dict）顺带填 {UDID: 设备名}（Mac 读得到；Windows 给不出）"""
+    out = {}
+    try:
+        if os.name == "nt":
+            import install
+            for u, kind, _ in install.win_install_mod(c).mux_devices():
+                if u:
+                    out[u] = "network" if str(kind).lower().startswith("net") else "usb"
+        else:
+            from diag import devicectl
+            rc, data, _ = devicectl(c, "list", "devices", timeout=30)
+            for d in data.get("result", {}).get("devices", []) if rc == 0 else []:
+                u = (d.get("hardwareProperties") or {}).get("udid")
+                cp = d.get("connectionProperties") or {}
+                if u and cp.get("tunnelState") != "unavailable":
+                    out[u] = "network" if cp.get("transportType") == "localNetwork" else "usb"
+                    if names is not None:
+                        names[u] = (d.get("deviceProperties") or {}).get("name") or ""
+    except (Failure, OSError, ValueError, subprocess.SubprocessError):
+        return {}
+    return out
+
+
+def _has_game_data(c, gid):
+    """快判这款的 iPhone 资源包是否仍在库里（不遍历包内文件）。新旧资源包分别以 manifest 与 game.img 为标志。"""
+    try:
+        pack = Path(layout.ios_pack(c, gid))
+        return (pack / "manifest.json").is_file() or (pack / "game.img").is_file()
+    except (Failure, OSError):
+        return False
+
+
+def _sign_mode(c, rec, signed):
+    """这台的 S2Arm 是怎么签的：appleId | devCert（我们签的，记在 signed.mode）| external（推过游戏、却没有我们的签名记录 = 玩家用别的工具装的）| None（判不出）。
+    signed.mode 之前的旧记录（只有 free）：按这台电脑现在的签名方式算（证书模式是玩家在设置里选的，平时不换）"""
+    if signed:
+        mode = signed.get("mode")
+        if mode in ("appleId", "devCert"):
+            return mode
+        import devcert
+        return "devCert" if devcert.active(c) else "appleId"
+    return "external" if rec.get("games") or rec.get("shellId") else None
+
+
+def _can_sign(rec):
+    """这台手机上的 S2Arm 有没有能自己签程序的身份（完成页「未签名导出」要不要补「导入后要回电脑更新」）：
+    设备记录里有交过的身份（install.deliver_identity 写的 identity：Windows Apple ID 的私钥或证书用户的证书）→ True；
+    我们装过 App（有壳号）却没交过 → False（换了团队 = 换包名，install.forget_other_app 会把旧身份一并清掉，同样落到 False）；没有这台的记录 → None"""
+    if (rec.get("identity") or {}).get("cert_sha1"):
+        return True
+    return False if rec.get("shellId") else None
+
+
+# 别的工具（AltStore / SideStore …）装的 S2Arm 那台手机在总控台的按钮（11-19 维护者定的动作名）：
+#   exportShellIpa = 导出通用 S2Arm.ipa（玩家拿去自己签、覆盖装新版）；pushS2arm = 把游戏推进它的「放这里导入」（推到 iPhone，未签名、手机签）；
+#   exportS2arm = 导出 .s2arm；handOverIdentity = 把签名身份交给手机（作业 phoneIdentity，按团队对得上的那个包名）。没有「安装 S2Arm」
+EXTERNAL_PHONE_ACTIONS = ("exportShellIpa", "pushS2arm", "exportS2arm", "handOverIdentity")
+
+
+def _pending_choice(rec):
+    """设备记录里推送时记下的「待选」候选（install.owner_for_push 写 pendingChoice）；选过、且选的那个还在候选里 → 不算待选。没有 → None"""
+    cands = (rec.get("pendingChoice") or {}).get("candidates") if isinstance(rec.get("pendingChoice"), dict) else None
+    if not isinstance(cands, list) or not cands:
+        return None
+    chosen = (rec.get("chosenBundleId") or "").lower()
+    return None if chosen and any(str(x.get("bundleId", "")).lower() == chosen for x in cands if isinstance(x, dict)) else cands
+
+
+def _refresh_pending_choice(c, key, rec, who, cands):
+    """现查过：按现查结果刷新（还要选 → 换成这次的候选）或清掉（不用选了）设备记录里的 pendingChoice；列不出（who 为 None）不动"""
+    if who == "choose":
+        if (rec.get("pendingChoice") or {}).get("candidates") != cands:
+            layout.save_device(c, key, dict(rec, pendingChoice=dict(candidates=cands, at=time.time())))
+    elif who is not None and "pendingChoice" in rec:
+        layout.save_device(c, key, {k: v for k, v in rec.items() if k != "pendingChoice"})
+
+
+def phone_overview(c):
+    """0.6.0 通用壳（开关后面）：「iPhone 总控台」的只读总览。每台见过的手机（设备记录）：名字、App 装没装、壳是不是本版、签名时刻 /
+    免费账号与否 / 按苹果规则估的到期时刻 / 上次连上（lastSeen = 设备记录最后一次写入：装 App、推游戏时连着才会写）；每款状态 latest（最新）|
+    suggested（建议更新，附 reasons，同 update_hints）| notPushed（游戏库里有、这台没推过）| needsData（程序推过、资源没推）；notPushed / needsData 带 dataOnComputer =
+    游戏库里还有没有 game.img；signMode 见 _sign_mode。缺省只读记录（几 KB，秒回）；请求带 probe: true 才查现在连着的手机（可能要几秒），
+    结果里 online = 'usb' | 'network' | None（没查时没有这个键）。不排后台活；只在现查时刷新 / 清掉设备记录的 pendingChoice（推送记下的待选）。开关关着 → {enabled: False, phones: []}"""
+    import ipa as packer
+    import rewrite_refresh
+    want = engine_compat(c) or {}
+    try:
+        rid = rewrite_refresh.rewriter_id(c)
+    except (Failure, OSError, subprocess.SubprocessError):
+        rid = None
+    try:
+        sid = packer.current_shell_id(c)
+    except (Failure, OSError, subprocess.SubprocessError):
+        sid = None
+    library = [g["id"].upper() for g in c.catalog()["games"]]
+    hints = {g: _game_hint(c, g, rid, want) for g in library}
+    names = {}
+    online = _online(c, names) if c.r.get("probe") is True else None
+    rows = [(k, r) for k, r in layout.devices(c) if isinstance(r, dict)]
+    if online:   # 结构 5：从「连着的手机上实际装了什么」出发——连着、却没有设备记录的手机（玩家用 AltStore / SideStore 装的 S2Arm）也列出来
+        known = {k for k, _ in rows}
+        rows += [(u, {}) for u in online if u not in known]
+    phones = []
+    for key, rec in rows:
+        signed = rec.get("signed") or {}
+        at = signed.get("at") if isinstance(signed.get("at"), (int, float)) else None
+        free = bool(signed.get("free", True))
+        # 到期：装机时从签好的包里读到的真实值（signed.expires，#1772）；没有（旧记录、Xcode 钥匙串签的）才按苹果规则估
+        known = isinstance(signed.get("expires"), (int, float))
+        until = signed["expires"] if known else (at + SIGN_LIFETIME["free" if free else "paid"]) if at else None
+        recs = {str(g).upper(): v for g, v in (rec.get("games") or {}).items() if isinstance(v, dict)}
+        games = []
+        for g in library:
+            r = recs.get(g)
+            if r is None or not (r.get("program") or r.get("pack")):
+                games.append(dict(gameId=g, state="notPushed", dataOnComputer=_has_game_data(c, g)))
+            elif not r.get("pack"):   # 电脑上还有没有资源本体（只看文件在不在，不打开）：界面分「点推到 iPhone 就行」和「要原件」
+                games.append(dict(gameId=g, state="needsData", dataOnComputer=_has_game_data(c, g)))
+            elif not r.get("program"):   # 资源推过、手机上没有这款的程序包（0.5.x 整包 App 装的款：装上通用 App 后程序不在了）→ 点「推到 iPhone」只补程序
+                games.append(dict(gameId=g, state="suggested", reasons=["missing"]))
+            else:
+                why = list(hints[g])
+                prog = r.get("program") or {}
+                if want and prog and prog.get("host_abi", want["hostAbi"]) != want["hostAbi"] and "hostAbi" not in why:
+                    why.append("hostAbi")
+                if rid and prog and prog.get("rewriter_id") not in (None, rid) and "rewriter" not in why:
+                    why.append("rewriter")
+                if shader_hint(c, g, ios_count=int(((rec.get("shaderFallback") or {}).get(g) or {}).get("count") or 0)) and "shaderMiss" not in why:
+                    why.append("shaderMiss")   # 这台手机上现场翻译过包里没有的着色器、包又比当前启动器旧：重新出包能补上
+                games.append(dict(gameId=g, state="suggested", reasons=why) if why else dict(gameId=g, state="latest"))
+        # 谁装的 S2Arm：连着就现查（install.s2arm_owner），列不出 / 没连着就按设备记录（启动器装过 = 有壳号；别的工具装的 = 推过时记下的 externalBundleId）
+        who, ext, cands = (None, None, None)
+        if online and online.get(key):
+            import install
+            who, ext = install.s2arm_owner(c, key, rec)
+            if who == "choose" or rec.get("chosenBundleId"):   # 装着不止一个：列候选让玩家选（选过的也带上，可以换）
+                cands = install.s2arm_candidates(c, key, rec)
+            _refresh_pending_choice(c, key, rec, who, cands)
+        if who is None and _pending_choice(rec):   # 没现查：推送时判出「要选」记下的那份（install.owner_for_push），与推送同一份结果
+            who, cands = "choose", _pending_choice(rec)
+        if who is None:
+            who = "launcher" if rec.get("shellId") else "external" if rec.get("externalBundleId") else None
+            ext = rec.get("externalBundleId") if who == "external" else None
+        external = who == "external"
+        choose = who == "choose"
+        phone = dict(device=key, name=signed.get("device") or names.get(key) or "", installed=who in ("launcher", "external", "choose") if who else bool(rec.get("shellId")),
+                     installedBy=who if who in ("launcher", "external") else None, bundleId=ext if external else rec.get("bundleId") or "",
+                     shellCurrent=None if external else bool(sid) and rec.get("shellId") == sid, signedAt=at, free=free,
+                     signMode="external" if external else _sign_mode(c, rec, signed),
+                     expiresAtEstimate=until, remainingDays=max(0, math.ceil((until - time.time()) / 86400)) if until else None, expiresKnown=known,
+                     lastSeen=rec.get("at") if isinstance(rec.get("at"), (int, float)) else None, canSign=_can_sign(rec), games=games, apps=_app_rows(rec, sid))
+        if external:   # 别的工具装的：给它自己的一套按钮，不出「安装 S2Arm」（会新建证书、顶掉玩家 AltStore 的证书）
+            phone["actions"] = list(EXTERNAL_PHONE_ACTIONS)
+        if choose:   # 装着不止一个、玩家还没选：只给「选用哪个 S2Arm」，不替玩家挑、不出安装
+            phone.update(needsChoice=True, bundleId="", signMode=None, shellCurrent=None, actions=["chooseApp"])
+        if cands and len(cands) > 1:
+            phone["candidates"] = cands   # 前端据此列候选（要选时）或给「换一个」入口（选过了）；不往 actions 里加，启动器装的手机按钮照旧由前端算
+        if online is not None:
+            phone["online"] = online.get(key)
+        phones.append(phone)
+    return dict(phones=phones)
+
+
+def _app_rows(rec, sid):
+    """这台手机上的独立 App（设备记录 apps，一 App 一游戏，0.6.3）→ [{gameId, bundleId, shellCurrent, signedAt, free, expiresAtEstimate, remainingDays, expiresKnown}]，
+    按游戏号排；到期口径同通用壳那行（签好的包里读到的真实值优先，没有按苹果规则估）"""
+    rows = []
+    for g, v in sorted((rec.get("apps") or {}).items()):
+        if not isinstance(v, dict):
+            continue
+        signed = v.get("signed") or {}
+        at = signed.get("at") if isinstance(signed.get("at"), (int, float)) else None
+        free = bool(signed.get("free", True))
+        known = isinstance(signed.get("expires"), (int, float))
+        until = signed["expires"] if known else (at + SIGN_LIFETIME["free" if free else "paid"]) if at else None
+        rows.append(dict(gameId=str(g).upper(), bundleId=v.get("bundleId") or "", shellCurrent=bool(sid) and v.get("shellId") == sid, signedAt=at, free=free,
+                         expiresAtEstimate=until, remainingDays=max(0, math.ceil((until - time.time()) / 86400)) if until else None, expiresKnown=known))
+    return rows
 
 
 def compatible(c, entry):
@@ -78,7 +391,7 @@ def forget_registrations(lsregister=None, wait=False, app=None):
     import hashlib
     import tempfile
     lock = Path(tempfile.gettempdir()) / f"s2a-lsregister-forget-{hashlib.sha1(lsregister.encode()).hexdigest()[:12]}.lock"
-    fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o666)
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -97,10 +410,11 @@ def host_exe(c, sha):
     return contained(c.library, layout.hosts_mac(c) / sha / EXE)
 
 
-def install_host(c, app):
-    """把一份 S2ArmGame.app 放进 hosts/mac/<摘要>（已有就不动）→ 摘要"""
+def install_host(c, app, sha=None):
+    """把一份 S2ArmGame.app 放进 hosts/mac/<摘要>（已有就不动）→ 摘要。sha：调用方已知的摘要前 12 位（内置宿主取 engine.json 清单里的，
+    起局不再每次现算 49 MB 的 SHA-256，11-19）；不给才现算"""
     from build import clone_tree
-    sha = digest(Path(app) / "Contents/MacOS/s2arm-host")[:12]
+    sha = sha or digest(Path(app) / "Contents/MacOS/s2arm-host")[:12]
     dest = layout.hosts_mac(c) / sha
     if not _same_files(Path(app), dest / APP):   # 已有的一份被外部改过（#304 同类：Info.plist 大小变了）也重放，不只看可执行文件在不在
         temporary = dest.with_name(sha + ".partial")
@@ -156,7 +470,7 @@ def choose(c, gid, image, manifest):
     current = info.get("hostMac")
     if status(c, gid, image, manifest) in ("swap", "current"):   # current 也过一遍：hosts/mac 那份被外部改过就从内置宿主重放（#304），没变是几十次 lstat
         from embedded import artifact
-        sha = install_host(c, artifact(c, APP))
+        sha = install_host(c, artifact(c, APP), bundled_sha(c))
         return sha, sha != current
     if not current or not host_exe(c, current).is_file():
         raise Failure("这款游戏的 Mac 宿主不在了，请重新准备这款游戏。", code="runtime_invalid")

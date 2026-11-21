@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -46,6 +47,30 @@ int main(void) {
     // ③ 再取一次：键已算过，不再登记（目录文件数不变）
     int before = count_files(dir); uint8_t key2[8]; prog_key(&prog.p, 0, key2);
     CHECK(!memcmp(key, key2, 8) && count_files(dir) == before, "③ 第二次取键应与第一次相同且不再登记（文件 %d → %d）", before, count_files(dir));
+
+    // ④ 11-16 D-XDQS：代码区地址是空缓冲地址加偏移（0x100），原先首用取键时宿主直接读 0x100 段错误。期望：不崩、键全零（上层按「不在着色器表」报）、不登记
+    {
+        union { NVNprogram p; char raw[256]; } bad_prog; memset(&bad_prog, 0, sizeof bad_prog);
+        NVNshaderData bsd = { (NVNbufferAddress)0x100, ctl };
+        CHECK(set(&bad_prog.p, 1, &bsd), "④ SetShaders 返回失败");
+        int before4 = count_files(dir); uint8_t key4[8];
+        static const uint8_t z8[8]; prog_key(&bad_prog.p, 0, key4);
+        CHECK(!memcmp(key4, z8, 8) && count_files(dir) == before4, "④ 代码区 0x100：键应全零（不出键）、不登记（文件 %d → %d）", before4, count_files(dir));
+    }
+
+    // ⑤ 11-17 #713 D-ZBQS：代码区是一页 PROT_NONE（游戏窗口里游戏没映射的地址，不在任何虚拟池），原先「不在虚拟池 = 可读」、首用取键时 CC_SHA256 读它 SIGBUS。
+    //   期望：不崩、键全零、不登记。改前：本进程在这里崩（单测直接死，判红）
+    {
+        void *hole = mmap(NULL, 0x10000, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+        CHECK(hole != MAP_FAILED, "⑤ 占不可访问页失败");
+        union { NVNprogram p; char raw[256]; } hp; memset(&hp, 0, sizeof hp);
+        NVNshaderData hsd = { (NVNbufferAddress)(uintptr_t)hole, ctl };
+        CHECK(set(&hp.p, 1, &hsd), "⑤ SetShaders 返回失败");
+        int before5 = count_files(dir); uint8_t key5[8] = {1}; static const uint8_t z8b[8];
+        prog_key(&hp.p, 0, key5);
+        CHECK(!memcmp(key5, z8b, 8) && count_files(dir) == before5, "⑤ 代码区是不可访问页：键应全零（不出键）、不登记（文件 %d → %d）", before5, count_files(dir));
+        munmap(hole, 0x10000);
+    }
 
     char cmd[600]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", dir); system(cmd);
     printf("%s t_nvn_late_key：SetShaders 时代码区不在内存池的着色器，首用取键时交给首遇现编登记 → %s\n", bad ? "✗" : "✓", bad ? "有不符合项" : "通过");

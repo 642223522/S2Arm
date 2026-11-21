@@ -4,13 +4,20 @@
 #include "native.h"
 #include <stdatomic.h>
 #include <dlfcn.h>
-#ifdef __ANDROID__
+#if defined(__OHOS__)
+#include <errno.h>
+#include <sys/syscall.h>
+#endif
+#if (defined(__ANDROID__) || defined(__OHOS__))
 #include "../../android/native/runtime/vm/writers.h"
 #endif
 #include <pthread.h>
 #include <stdlib.h>
 // 弱缺省定义：真定义在 crash.c（同一个程序里强定义盖过它）；只链 gate.c 的单测没有 crash.c，用这份返回 0
 __attribute__((weak)) uint64_t s2a_sp_unaligned_count(void) { return 0; }
+__attribute__((weak)) uint64_t s2a_stale_perm_count(void) { return 0; }
+// 同理：真定义在 thread.c（即时存档记「C# 回复已写好」）；只链 gate.c 的单测用这份空实现
+__attribute__((weak)) void s2a_svc_cs_returned(void) {}
 
 enum { G_SVC, G_CNTPCT, G_CNTVCT, G_WIDE, G_SPIN, G_AREGION };
 typedef struct { uint64_t ret; int kind, arg; uint64_t orig; } gate_t;
@@ -20,6 +27,25 @@ typedef struct { uint64_t ret; int kind, arg; uint64_t orig; } gate_t;
 typedef struct gtab { struct gtab *older; unsigned bits; gate_t e[]; } gtab_t;
 static _Atomic(gtab_t *) g_tab;
 static int g_ngate;
+#if defined(__OHOS__)
+static int g_fpcr_probe;
+static _Thread_local unsigned t_fpcr_probed;
+static _Atomic unsigned g_fpcr_probe_threads;
+// Normal host context, never a signal handler. entry.S saves FPSR at byte 776
+// and FPCR at byte 784; inspect those guest values, not the host's live mode.
+static void gate_fpcr_probe(uint64_t ret, const uint64_t *regs) {
+    if (t_fpcr_probed) return;
+    t_fpcr_probed = 1;
+    unsigned n = atomic_fetch_add_explicit(&g_fpcr_probe_threads, 1, memory_order_relaxed);
+    if (n >= 32) return;
+    int saved_errno = errno;
+    long tid = syscall(SYS_gettid);
+    LOG("OHOS guest-gate-fpcr seq=%u tid=%ld ret=%#llx fpcr=%#llx fpsr=%#llx",
+        n + 1, tid, (unsigned long long)ret,
+        (unsigned long long)regs[98], (unsigned long long)regs[97]);
+    errno = saved_errno;
+}
+#endif
 static pthread_mutex_t g_reg_mu = PTHREAD_MUTEX_INITIALIZER;
 static inline unsigned gate_h(uint64_t a, unsigned bits) { return (unsigned)(((a >> 2) * 0x9E3779B97F4A7C15ull) >> (64 - bits)); }
 static gtab_t *gtab_new(unsigned bits) {
@@ -34,7 +60,27 @@ static int gtab_put(gtab_t *t, gate_t g) {
     return 0;
 }
 
+// 即时存档（跨版本 B 档）：门的身份 = (原指令地址, 门类型)。存档时按返回点查身份，恢复时按身份在本版门表里找新返回点（维护者：
+//   同一份改写产物里 (原地址, 类型) 唯一；跨版本找不到就归 C 档拒绝，不猜最近的门）
+int s2a_gate_identity(uint64_t ret, uint64_t *orig, int *kind) {
+    gtab_t *t = atomic_load_explicit(&g_tab, memory_order_acquire); if (!t) return -1;
+    for (unsigned i = 0; i < (1u << t->bits); i++) if (t->e[i].ret == ret) { *orig = t->e[i].orig; *kind = t->e[i].kind; return 0; }
+    return -1;
+}
+uint64_t s2a_gate_by_identity(uint64_t orig, int kind) {
+    gtab_t *t = atomic_load_explicit(&g_tab, memory_order_acquire); if (!t) return 0;
+    for (unsigned i = 0; i < (1u << t->bits); i++) if (t->e[i].ret && t->e[i].orig == orig && t->e[i].kind == kind) return t->e[i].ret;
+    return 0;
+}
 void gate_register(uint64_t ret_abs, const char *kind, int arg, uint64_t orig) {
+#if defined(__OHOS__)
+    // Loader registration precedes guest threads and follows debug-env loading.
+    // Cache once here so the default gate hot path never calls getenv or TLS.
+    if (!g_ngate) {
+        const char *probe = getenv("DEBUG_S2A_FPCR_PROBE");
+        g_fpcr_probe = probe && probe[0] == '1' && !probe[1];
+    }
+#endif
     int k = !strcmp(kind, "svc") ? G_SVC : !strcmp(kind, "cntpct") ? G_CNTPCT : !strcmp(kind, "cntvct") ? G_CNTVCT : !strcmp(kind, "wide") ? G_WIDE : !strcmp(kind, "spin") ? G_SPIN : !strcmp(kind, "aregion") ? G_AREGION : -1;
     if (k < 0) die("不认识的门类 %s（改写器与原生层版本不符）", kind);
     pthread_mutex_lock(&g_reg_mu);
@@ -108,6 +154,9 @@ void s2a_svc_red_summary(void) {   // 退出时一行，健康表读：空 = 报
     // 栈指针未对齐的读写替游戏做了几条（crash.c / emul_sp.c s2a_emul_sp_unaligned；Switch 不查 SP 对齐、苹果查）：有才报
     { uint64_t n = s2a_sp_unaligned_count();
       if (n) LOG("栈指针未对齐：替游戏模拟了 %llu 条读写（Switch 不查栈对齐，苹果查）", (unsigned long long)n); }
+    // 过期权限缺页重执行了几次（crash.c stale_perm_retry：缺页时页还不可写、处理时已被别的线程放开）：有才报
+    { uint64_t n = s2a_stale_perm_count();
+      if (n) LOG("过期权限缺页：重执行 %llu 次（缺页没人认领、内核里这页已有要的权限）", (unsigned long long)n); }
 }
 
 int svc_thread(int num, uint64_t *regs);                    // thread.c：线程 / 同步，1 = 已处理
@@ -198,7 +247,7 @@ void s2a_svc_count_report(const char *when) {
 static _Thread_local int t_in_cs;   // 本线程正在 C# 里（收局可能就是从一次 C# 调用里发起的，如 am 退出：不等自己）
 // 停住前先放开虚拟核（S2A_CORES）：否则停住的持核线程永不放核，从 C# 回来等这个核的线程跟着卡死（10-23 真机 S2A_CORES=1 局 3/5 收局报「还有 1 个系统调用在 C# 里没回」）
 static void park_forever(void) {
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) || defined(__OHOS__)
     // Terminal park owns no VM/GPU lock and will never access guest memory again.
     void s2a_android_guest_park_forever(void) __attribute__((noreturn));
     s2a_android_guest_park_forever();
@@ -209,12 +258,12 @@ static void park_forever(void) {
     for (;;) { s2a_svc_ctx_done(); usleep(1000); }
 #endif
 }
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(__OHOS__)
 int s2a_svc_stopping(void) { return atomic_load_explicit(&g_park, memory_order_acquire); }
 #endif
 int s2a_svc_park_all(int wait_ms) {
     atomic_fetch_or(&g_park, 1);
-#ifdef __ANDROID__
+#if (defined(__ANDROID__) || defined(__OHOS__))
     s2a_android_guest_writers_notify_stop();
 #endif
     for (int i = 0; i < wait_ms && atomic_load(&g_cs_inflight) > t_in_cs; i++) usleep(1000);
@@ -227,7 +276,7 @@ static uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig) {
     t_svc_n++; t_svc_last = num;
     if ((unsigned)num < 0x80) atomic_fetch_add_explicit(&g_svc_cnt[num], 1, memory_order_relaxed);
     if (svc_thread(num, regs)) return regs[0];
-#ifdef __ANDROID__
+#if (defined(__ANDROID__) || defined(__OHOS__))
     s2a_android_memory_svc_enter(num, regs);
     if (svc_mem(num, regs, orig)) return regs[0];
     s2a_android_memory_svc_unhandled();
@@ -264,6 +313,7 @@ static uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig) {
         void s2a_core_leave(void), s2a_core_enter(void); int ipc = num == 0x21 || num == 0x22 || num == 0x23;
         if (ipc) s2a_core_leave();   // IPC 阻塞在服务线程上：放开虚拟核（S2A_CORES，thread.c）
         t_in_cs = 1; int done = g_cs.svc(&c) == S2A_SVC_HANDLED;
+        { void s2a_svc_cs_returned(void); s2a_svc_cs_returned(); }   // 回复已写好：先记一笔（即时存档核对「判齐后完成了没有」，thread.c）
         t_in_cs = 0; atomic_fetch_sub(&g_cs_inflight, 1);   // 进 / 出配对：与上面的 fetch_add 一一对应（10-20 曾被下一行注释吞掉，收局在途计数只增不减）
         // 重取核放在出账之后：在途只记「人在 C# 里」，等核不算；已在收局就不再取核、直接停住（取核可能永远等不到）
         if (ipc) { if (atomic_load(&g_park)) park_forever(); s2a_core_enter(); }
@@ -285,11 +335,14 @@ uint64_t gate_dispatch(uint64_t ret_addr, uint64_t *regs) {
     for (unsigned m = (1u << t->bits) - 1, i = gate_h(ret_addr, t->bits);; i = (i + 1) & m) {
         const gate_t *g = &t->e[i];
         if (g->ret == ret_addr) {
+#if defined(__OHOS__)
+            if (g_fpcr_probe) gate_fpcr_probe(ret_addr, regs);
+#endif
             if (g->kind == G_SVC) {   // 确定性档：系统调用持串行锁执行（阻塞处在 thread.c 放开），回参记录 / 比对（IPC 带回包）
                 uint64_t r = svc_dispatch(g->arg, regs, g->orig);
                 void s2a_det_svc_done(int, uint64_t *, void *); extern int g_det;
                 if (g_det >= 2) { void *s2a_thread_tlr(void); s2a_det_svc_done(g->arg, regs, g->arg == 0x21 ? s2a_thread_tlr() : NULL); }
-#ifdef __ANDROID__
+#if (defined(__ANDROID__) || defined(__OHOS__))
                 if (s2a_svc_stopping()) park_forever();
                 s2a_android_memory_svc_finish();
                 if (s2a_svc_stopping()) park_forever(); // finish可能等待epoch/虚拟核；停机在等待期间也不能回guest。

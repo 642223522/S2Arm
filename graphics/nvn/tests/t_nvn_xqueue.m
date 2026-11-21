@@ -17,6 +17,8 @@ __attribute__((weak)) int dm_shader_vpad_cached_mesh(const uint8_t key[8], uint3
     return -1;
 }
 #include "../gfx/nvn/nvn_mtl.m"
+// 池注销按回放顺序（nvn_mtl.m pool_reap）：nvn_be_pool_del 只打标记，再回放完一次提交才真正下表；本用例测的是真正下表之后，这里直接走过两次提交再收割
+static void reap(void) { pthread_mutex_lock(&g_mu); g_sub_serial += 2; pool_reap(0, 0); pthread_mutex_unlock(&g_mu); }
 static unsigned checks, failures;
 #define REQUIRE(c) do { if (!(c)) { fprintf(stderr, "FAIL setup %s:%d: %s\n", __FILE__, __LINE__, #c); exit(1); } } while (0)
 #define VERIFY(c, ...) do { checks++; int ok_ = !!(c); if (!ok_) failures++; printf("%s ", ok_ ? "PASS" : "FAIL"); printf(__VA_ARGS__); putchar('\n'); fflush(stdout); } while (0)
@@ -107,7 +109,7 @@ int main(void) { @autoreleasepool {
     uint8_t *vp = NULL; REQUIRE(!posix_memalign((void **)&vp, 65536, 65536)); memset(vp, 0x5a, 65536); nvn_be_pool_add(vp, 65536);
     state_reset(); S.vbuf[5] = (NVNbufferRange){(uint64_t)(uintptr_t)(vp + 4096), 34720};
     NSUInteger deferred0 = g_deferred.count;
-    void *saved = xq_state_save(); nvn_be_pool_del(vp); state_reset(); xq_state_load(saved);
+    void *saved = xq_state_save(); nvn_be_pool_del(vp); reap(); state_reset(); xq_state_load(saved);
     void *mb = NULL; uint64_t mo = 0, gpu = 0, avail = 0;
     int held = gpu_addr_want(S.vbuf[5].address, 1, S.vbuf[5].size, &mb, &mo, &gpu, &avail);
     VERIFY(held && mb && mo == 4096 && avail >= S.vbuf[5].size,

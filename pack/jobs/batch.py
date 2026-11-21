@@ -33,7 +33,7 @@ import filelock  # noqa: E402
 
 # 同一款先出 Mac、再出 iPhone：解包只做一次靠这个顺序——iPhone 出包收尾（成功或失败）会清掉这款的解包和中间产物（library.prune_build），
 #   Mac 打包成功不清；iPhone 在前时第二个平台只能重新解包（端到端实测：20675 个解包文件全部重写）。iPhone 还能从 Mac 的产物根接着做（build.seed_from_sibling）
-PLATFORMS = ("mac", "iphone")
+PLATFORMS = ("mac", "iphone", "appletv", "android")   # 安卓排最后（开关后，android_export.enabled；不清 / 不复用苹果平台的解包）   # Apple TV 排在 iPhone 后：iPhone 带 followUp 不清解包，接着出 tvOS 版（export_plan）
 STATES = ("pending", "running", "completed", "failed", "cancelled")
 PAUSE_CODES = ("disk_full",)   # 失败了就暂停整批的错误码（pack/jobs/errors.py）
 

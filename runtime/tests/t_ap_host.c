@@ -3,7 +3,7 @@
 // ② 写跟踪计数：自动玩家打「S2A 标记 MARK」时跟一行计数快照；收局行给 MARK 后增量每秒（桩计数 MARK 时缺页 100、收局时 100 + 增量），
 //    别的日志行不触发。期望值按桩手算：增量缺页 5000、mprotect 8000，除以 MARK 到收局的实耗秒数。
 // ③ 同局交替开关（alt.c）从 MARK 起算：MARK 行调 s2a_alt_mark 1 次，别的行 0 次。
-// ④ 出图停住看门（S2A_STALL_DUMP_S=1，桩线程表计次）：停 1.6 秒 → 打 1 次；继续停 → 不重打；上屏一帧后再停 → 2 次；
+// ④ 出图停住看门（S2A_STALL_DUMP_S=1，桩线程表计次；按看门自己走的格数等、不按墙钟）：停 7 格 → 打 1 次；继续停 → 不重打；上屏一帧后再停 → 2 次；
 //    冻结中停 → 不打；解冻后停 → 3 次；再上屏再停 → 仍 3 次（每局至多 3 次）。
 // ⑤ 标称帧率（s2a_nominal_fps_set → s2a_ap_nominal_fps）：没报过 = 0；报 0 / 负数不收仍 0、不打日志；报 60 → 60 并打一行「标称帧率：60 帧/秒」；
 //    再报 60 → 不重打；报 30 → 30 并打一行带「运行中变了」；报 -5 不收仍 30。期望按函数约定手写（读 fps 与日志行）。
@@ -54,6 +54,13 @@ int s2a_focus_suspend(void) { return atomic_load(&g_focus_suspend); }
 int s2a_host_sleeping(void) { return atomic_load(&g_host_sleeping); }
 static _Atomic int g_nhost;
 int s2a_dump_threads(const char *why) { (void)why; g_nhost++; return 0; }   // 桩：宿主线程栈
+// 等看门线程在「现在」之后再走满 k 格（s2a_ap_stall_ticks 圈首计）：按看门自己的格数同步，不按墙钟睡（11-19：负载高时固定睡 1.6 秒格数不够，
+//   ④ ⑦ 份数对不上、测的是机器负载）。期望格数按看门规则手算：看到帧变 1 格 + 停满 lim=4 格打现场 → 取 7 格。60 秒兜底只防线程没起来，到了判红
+static int wait_ticks(int k) {
+    uint64_t s2a_ap_stall_ticks(void); uint64_t t0 = s2a_ap_stall_ticks();
+    for (int i = 0; i < 6000; i++) { if (s2a_ap_stall_ticks() >= t0 + (uint64_t)k + 1) return 1; usleep(10000); }
+    printf("✗ 看门线程 60 秒没走满 %d 格（线程没起来 / 卡住）\n", k); return 0;
+}
 static int capture(void (*fn)(void), char *out, size_t n) {
     int pfd[2]; if (pipe(pfd)) return 0;
     int keep = g_s2a_logfd; g_s2a_logfd = pfd[1]; fn(); g_s2a_logfd = keep; close(pfd[1]);
@@ -79,17 +86,17 @@ int main(void) {
     if (atomic_load(&g_s2a_hud_fn) != 1 || stamp < before || stamp > after) {
         printf("✗ HUD 帧时间戳未使用宿主单调纳秒钟\n"); bad++;
     }
-    {   // ⑧ 开发设施开关（11-07 质量线，cmdr/壳内开发设施盘点.md）：玩家口径（s2a_dev_on = 0）首帧上屏后不起停住看门线程，停 1.6 秒 → 现场 0 份；
-        //    开发包（= 1）同样条件 → 1 份（同 ④ 第一步）。看门只在首帧上屏起一次（静态标记），所以各在一个 fork 出的子进程里从零开始；份数经管道带回
+    {   // ⑧ 停住现场（11-17 起归诊断读数）：玩家口径（s2a_dev_on = 0）与开发包（= 1）一样，首帧上屏后起停住看门，停 1.6 秒 → 现场 1 份；
+        //    （11-07 原为玩家口径 0 份）（同 ④ 第一步）。看门只在首帧上屏起一次（静态标记），所以各在一个 fork 出的子进程里从零开始；份数经管道带回
         for (int dev = 0; dev <= 1; dev++) {
             int pfd[2]; if (pipe(pfd)) { printf("✗ ⑧ pipe\n"); bad++; break; }
             pid_t pid = fork();
-            if (pid == 0) { close(pfd[0]); atomic_store(&g_dev, dev); setenv("S2A_STALL_DUMP_S", "1", 1); s2a_frame_presented(); usleep(1600000);
+            if (pid == 0) { close(pfd[0]); atomic_store(&g_dev, dev); setenv("S2A_STALL_DUMP_S", "1", 1); s2a_frame_presented(); wait_ticks(7);
                             char b = (char)atomic_load(&g_ndump); ssize_t w = write(pfd[1], &b, 1); (void)w; _exit(0); }
             close(pfd[1]); char b = -1; ssize_t r = read(pfd[0], &b, 1); close(pfd[0]); int st; waitpid(pid, &st, 0);
-            int want = dev ? 1 : 0;
+            int want = 1;   // 11-17 拆开：停住现场归「诊断读数」，玩家口径也打（只进日志、一局至多 3 次），不再看开发设施开关
             if (r != 1 || b != want) { printf("✗ ⑧ 开发设施 %s：停住现场 %d 份（期望 %d）\n", dev ? "开（开发包）" : "关（玩家口径）", (int)b, want); bad++; }
-            else printf("✓ ⑧ 开发设施 %s：停住看门%s，停 1.6 秒现场 %d 份\n", dev ? "开（开发包）" : "关（玩家口径）", dev ? "全套" : "只救场、不打现场", (int)b);
+            else printf("✓ ⑧ 开发设施 %s：停住看门全套（诊断读数，不看开发设施开关），停 1.6 秒现场 %d 份\n", dev ? "开（开发包）" : "关（玩家口径）", (int)b);
         }
     }
     {   // ⑧c 审计 P1-191：停帧救场是给玩家的，看门线程的模式与开发设施分开（s2a_ap_stall_mode）。期望按规则手写：
@@ -99,9 +106,9 @@ int main(void) {
         if (m1 != 2 || m0 != 1 || mz != 1) { printf("✗ ⑧c 看门模式 开发包 %d（期望 2）/ 玩家包 %d（期望 1）/ 现场关 %d（期望 1）\n", m1, m0, mz); bad++; }
         else printf("✓ ⑧c 看门模式：开发包全套、玩家包只救场、现场关也只救场\n");
     }
-    {   // ⑧b 判定矩阵（native.h s2a_dev_decide）：环境变量 > Info.plist > 缺省开；期望按约定手写
+    {   // ⑧b 判定矩阵（native.h s2a_dev_decide）：环境变量 > Info.plist > 缺省关；期望按约定手写
         struct { const char *env; int has, on, want; const char *what; } dm[] = {
-            {NULL, 0, 1, 1, "都没有 → 开（开发包缺省）"}, {NULL, 1, 0, 0, "plist 0 → 关（玩家包）"}, {NULL, 1, 1, 1, "plist 1 → 开"},
+            {NULL, 0, 1, 0, "都没有 → 关（11-17 缺省关：漏写的出包路径也不漏开）"}, {NULL, 1, 0, 0, "plist 0 → 关（玩家包）"}, {NULL, 1, 1, 1, "plist 1 → 开"},
             {"1", 1, 0, 1, "环境变量 1 盖过 plist 0 → 开（排查玩家问题）"}, {"0", 0, 1, 0, "环境变量 0 → 关"}, {"", 1, 0, 0, "空环境变量不算 → 按 plist 0 关"} };
         for (unsigned i = 0; i < sizeof dm / sizeof *dm; i++) {
             int got = s2a_dev_decide(dm[i].env, dm[i].has, dm[i].on);
@@ -119,7 +126,7 @@ int main(void) {
                 setenv("S2A_STALL_DUMP_S", "1", 1); setenv("S2A_STALL_EXIT_S", "3", 1); setenv("S2A_STALL_NOTICE_S", "1", 1);
                 s2a_ap_set_exit_hook(hook_exit); s2a_ap_set_notice_hook(hook_notice);
                 s2a_frame_presented();     // 首帧：看门线程在这里起
-                usleep(5000000);           // lim=4 tick(1 s) 打现场；退出 lim+12=16 tick(4 s)，提示 16-4=12 tick(3 s) → 5 秒足够
+                wait_ticks(24);            // lim=4 格打现场；退出 lim+12=16 格，提示 16-4=12 格 → 走满 24 格还没退 = 到点没退
                 _exit(77);                 // 能走到这里 = 到点没退
             }
             close(pid > 0 ? pfd[1] : pfd[0]);
@@ -142,7 +149,7 @@ int main(void) {
                 close(pfd[0]); g_rep_fd = pfd[1];
                 setenv("S2A_STALL_DUMP_S", "1", 1); unsetenv("S2A_STALL_EXIT_S"); setenv("S2A_STALL_NOTICE_IDLE_S", "1", 1);
                 s2a_ap_set_exit_hook(hook_exit); s2a_ap_set_notice_hook(hook_notice);
-                s2a_frame_presented(); usleep(2500000); s2a_frame_presented(); usleep(600000);
+                s2a_frame_presented(); wait_ticks(10); s2a_frame_presented(); wait_ticks(3);   // 停 10 格（够 4 格提示）→ 出一帧 → 再 3 格看到帧变收掉
                 char b[3] = { 0, (char)atomic_load(&g_nnotice), (char)atomic_load(&g_nclear) };   // 0 = 没走退出（走了钩子会写 86）
                 ssize_t w = write(g_rep_fd, b, 3); (void)w; _exit(0);
             }
@@ -167,9 +174,9 @@ int main(void) {
                 close(pfd[0]); g_s2a_logfd = pfd[1];
                 setenv("S2A_STALL_DUMP_S", "1", 1);
                 atomic_store(&g_host_focused, 0); atomic_store(&g_focus_suspend, 1); atomic_store(&g_host_sleeping, 0); atomic_store(&g_fz, 0);
-                s2a_frame_presented(); usleep(1600000);   // lim=4 格（1 秒）打第 1 份现场
+                s2a_frame_presented(); wait_ticks(7);   // lim=4 格打第 1 份现场
                 atomic_store(&g_host_focused, 1);
-                s2a_frame_presented(); usleep(1600000);   // 一帧后重新武装，改桩后再打第 2 份
+                s2a_frame_presented(); wait_ticks(7);   // 一帧后重新武装，改桩后再打第 2 份
                 _exit(0);
             }
             close(pid > 0 ? pfd[1] : pfd[0]);
@@ -205,7 +212,7 @@ int main(void) {
         {"停 1.6 秒 → 打 1 次", 1, NULL, 0}, {"继续停 → 不重打", 1, NULL, 0}, {"上屏一帧后再停 → 2 次", 2, s2a_frame_presented, 0},
         {"冻结中停 → 不打", 2, s2a_frame_presented, 1}, {"解冻后停 → 3 次", 3, NULL, 0}, {"再上屏再停 → 仍 3 次（至多 3 次）", 3, s2a_frame_presented, 0} };
     for (unsigned i = 0; i < sizeof st / sizeof *st; i++) {
-        g_fz = st[i].fz; if (st[i].act) st[i].act(); usleep(1600000);
+        g_fz = st[i].fz; if (st[i].act) st[i].act(); bad += !wait_ticks(7);
         if (g_ndump != st[i].want) { printf("✗ ④ 停住看门 %s：打了 %d 次\n", st[i].what, (int)g_ndump); bad++; } else printf("✓ ④ 停住看门 %s\n", st[i].what);
     }
     {   // ⑥ 降级退出判定（S2A_STALL_EXIT_S，缺省关）：只打表，不起线程

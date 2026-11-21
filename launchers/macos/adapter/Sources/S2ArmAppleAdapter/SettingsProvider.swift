@@ -52,6 +52,12 @@ public final class SettingsProvider {
     private var ai: Bool
     /// iCloud 存档同步的云盘文件夹（玩家在环境页选的；iPhone 上选同一个）。没选 = 不同步
     private var cloud: String?
+    /// 「装到 iPhone 时带主屏小组件」（11-16，缺省开；玩家关掉才记 homeWidget: false）：装机 / 更新 / 导出请求里关掉时带 widget: false
+    private var widget: Bool
+    /// 玩家在环境页自己选的 Xcode.app（D-9WFW：装在扩展硬盘等自动找不到的位置）。没选 = 自动找（XcodeLocator.detect）
+    private var xcode: String?
+    /// 「启动游戏时自动全屏」（#575，缺省关；打开才记 launchFullscreen: true）：起局请求里带 launchFullscreen，作业层给宿主全局缺省，单款显式设过的照单款
+    private var fullscreen: Bool
 
     public init(client: JobClient, store: URL? = nil) {
         self.client = client
@@ -61,6 +67,9 @@ public final class SettingsProvider {
         picks = Self.object(self.store)?["exportLocationByGame"] as? [String: String] ?? [:]
         ai = Self.object(self.store)?["aiControl"] as? Bool ?? false
         cloud = Self.object(self.store)?["cloudSavesFolder"] as? String
+        widget = Self.object(self.store)?["homeWidget"] as? Bool ?? true
+        xcode = Self.object(self.store)?["xcodeApp"] as? String
+        fullscreen = Self.object(self.store)?["launchFullscreen"] as? Bool ?? false
     }
 
     private static func object(_ url: URL) -> [String: Any]? {
@@ -77,6 +86,27 @@ public final class SettingsProvider {
     public func setAIControl(_ on: Bool) throws {
         let before = lock.withLock { () -> Bool in let b = ai; ai = on; return b }
         do { try write() } catch { lock.withLock { ai = before }; throw JobClientError("「允许 AI 操作」的开关没能写进磁盘（\(error.localizedDescription)）。") }
+    }
+
+    public var homeWidget: Bool { lock.withLock { widget } }
+
+    public func setHomeWidget(_ on: Bool) throws {
+        let before = lock.withLock { () -> Bool in let b = widget; widget = on; return b }
+        do { try write() } catch { lock.withLock { widget = before }; throw JobClientError("「装到 iPhone 时带主屏小组件」的开关没能写进磁盘（\(error.localizedDescription)）。") }
+    }
+
+    public var xcodeApp: String? { lock.withLock { xcode } }
+
+    public func setXcodeApp(_ path: String?) throws {
+        let before = lock.withLock { () -> String? in let b = xcode; xcode = path; return b }
+        do { try write() } catch { lock.withLock { xcode = before }; throw JobClientError("选的 Xcode 没能写进磁盘（\(error.localizedDescription)）。") }
+    }
+
+    public var launchFullscreen: Bool { lock.withLock { fullscreen } }
+
+    public func setLaunchFullscreen(_ on: Bool) throws {
+        let before = lock.withLock { () -> Bool in let b = fullscreen; fullscreen = on; return b }
+        do { try write() } catch { lock.withLock { fullscreen = before }; throw JobClientError("「启动游戏时自动全屏」的开关没能写进磁盘（\(error.localizedDescription)）。") }
     }
 
     public var cloudSavesFolder: String? { lock.withLock { cloud } }
@@ -111,7 +141,7 @@ public final class SettingsProvider {
 
     private func write() throws {
         let dir = store.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         var file: [String: Any] = ["schema": 1]
         if let saved = lock.withLock({ targets }) { file["exportTargets"] = saved }
         if let saved = lock.withLock({ location }) { file["exportLocation"] = saved }
@@ -119,8 +149,10 @@ public final class SettingsProvider {
         if !byGame.isEmpty { file["exportLocationByGame"] = byGame }
         if lock.withLock({ ai }) { file["aiControl"] = true }
         if let folder = lock.withLock({ cloud }) { file["cloudSavesFolder"] = folder }
+        if !lock.withLock({ widget }) { file["homeWidget"] = false }
+        if let app = lock.withLock({ xcode }) { file["xcodeApp"] = app }
+        if lock.withLock({ fullscreen }) { file["launchFullscreen"] = true }
         let data = try JSONSerialization.data(withJSONObject: file, options: [.sortedKeys])
         try data.write(to: store, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: store.path)
     }
 }

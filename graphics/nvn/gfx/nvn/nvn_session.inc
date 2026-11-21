@@ -94,10 +94,16 @@ int nvn_be_shutdown_session(void) {
     // texture/program owners, then no-copy memory-pool buffers.
     for (int i = 0; i < g_ntreg; i++) {
         treg_t *t = &g_treg[i];
-        if (t->view) CFRelease(t->view); if (t->alt) CFRelease(t->alt);
+        if (t->view) CFRelease(t->view);
+        if (t->alt) { if (t->alt_copy) res_remove((__bridge id)t->alt); CFRelease(t->alt); }   // alt_copy: a 3D copy of its own (tex3d_prepare, #674), in the residency set
         if (t->ar) CFRelease(t->ar); if (t->im) CFRelease(t->im);
     }
     free(g_treg); g_treg = NULL; g_ntreg = g_tpool_n = 0;
+    // 「贴图序号 → 登记号」随登记表一起清：留着的话指向已释放的旧表（平时新一局序号一路往上不会撞；按快照恢复会把序号拨回快照时的值，撞上旧表项、链表越界写崩）
+    nvn_hm_clear(&g_treg_ser, NULL);
+    // 同理按贴图序号 / 上一局游戏内存建的：未压缩贴图 → 池、即时存档的贴图地址表与待写回表（新一局的池、贴图对象都是新的）
+    pthread_mutex_lock(&g_cpu_tex_mu); nvn_hm_clear(&g_cpu_unc, NULL); pthread_mutex_unlock(&g_cpu_tex_mu);
+    nvn_hm_clear(&g_snap_texaddr, NULL); nvn_hm_clear(&g_snap_ghost_pend, hm_rel);
     for (int i = 0; i < g_nsreg; i++) if (g_sview[i]) CFRelease(g_sview[i]);
     free(g_sreg); free(g_sreg_ok); free(g_sview); free(g_srid);
     g_sreg = NULL; g_sreg_ok = NULL; g_sview = NULL; g_srid = NULL; g_nsreg = 0;
@@ -197,7 +203,7 @@ int nvn_be_shutdown_session(void) {
     os_unfair_lock_unlock(&g_shader_lock);
     NSMutableSet<NSString *> *cached_prefetch = [NSMutableSet set];
     int depth_zero = atomic_load(&g_depth_zero);
-    pthread_mutex_lock(&g_rmu);
+    os_unfair_lock_lock(&g_rmu);
     for (NvShader *sh in shaders.allValues) {
         sh->wsh = 0; sh->s_rec = 0;
         if (sh->size_abi) { sh->ab_buf = nil; sh->ab_gpu = sh->ab_size_sub = 0; }
@@ -210,7 +216,7 @@ int nvn_be_shutdown_session(void) {
         if (st >= 0 && st != 2 && shaders[shader_identity(key, st, 0, depth_zero)] == sh)
             [cached_prefetch addObject:hash];
     }
-    pthread_mutex_unlock(&g_rmu);
+    os_unfair_lock_unlock(&g_rmu);
     os_unfair_lock_lock(&g_shpre_mu);
     // Previously skipped cold keys may now be available. Already cached
     // libraries need no second background load just because a run restarted.

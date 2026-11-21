@@ -66,17 +66,26 @@ nvn_gpu_rc nvn_gpu_cmd_commit(nvn_gpu_cmd c, uint64_t signal, nvn_gpu_done_fn do
 }
 nvn_gpu_rc nvn_gpu_fence_wait(uint64_t v, uint64_t timeout_ns, nvn_gpu_err *err) { (void)v; (void)timeout_ns; (void)err; return ok_rc(); }
 void nvn_gpu_occlusion(nvn_gpu_cmd c, int32_t slot) { (void)c; (void)slot; }
+// 本用例不发 ReportCounter；无时间戳能力，误走采样 / 换钟路径必须报红。
+void nvn_gpu_caps_get(nvn_gpu_caps *out) { memset(out, 0, sizeof *out); }
+void nvn_gpu_timestamp(nvn_gpu_cmd c, uint32_t slot, uint32_t type) {
+    (void)c; (void)slot; (void)type; CHECK(0);
+}
 
 int s2a_nvn_render_cond(void) { return 0; }
 uint64_t s2a_guest_tick(void) { return 0; }
+int s2a_guest_tick_from_host_ns(uint64_t ns, uint64_t *out) { (void)ns; (void)out; CHECK(0); return 0; }
 void nvn_hle_queue_enter(void *q) { (void)q; }
 void nvn_hle_piece_begun(void) {}
 int nvn_cmd_call_resolve(uint64_t h, uint64_t *to) { *to = h; return 0; }   // hle_nvn.c 的 CALL 目标解析（main 的调用目标安全阀）：本用例只量耗时，照原地址执行
 
+const void *rp_draw_stream; uint64_t rp_gpu_wr_gen;   // rp_draw.c 的批量拷接口（本用例不链 rp_draw.c）
 void rp_state_reset(void) {}
 int rp_state_op(uint32_t op, const void *a, uint32_t size) { (void)op; (void)a; (void)size; return 0; }
 void rp_dirty_all(void) {}
 int rp_pass_is_open(void) { return 0; }
+int rp_pass_draws(void) { return 0; }
+int rp_pass_split_ok(void) { return 0; }
 void rp_pass_end(nvn_gpu_cmd c) { (void)c; }
 void rp_pass_flush(nvn_gpu_cmd c) { (void)c; }
 void rp_pass_barrier(uint32_t bits) { (void)bits; }
@@ -88,14 +97,20 @@ void rp_op_copy_t2t(nvn_gpu_cmd c, const p_copy_t2t *o, const void *rec) { (void
 void rp_op_clear_tex(nvn_gpu_cmd c, const p_clear_tex *o, const void *rec) { (void)c; (void)o; (void)rec; }
 void rp_op_copy_b2b(const void *a, const void *rec) { (void)a; (void)rec; }
 void rp_op_clear_buf(const p_clear_buf *cb, const void *rec) { (void)cb; (void)rec; }
+int rp_op_update_ub_gpu(nvn_gpu_cmd c, const void *a, const void *rec) { (void)c; (void)a; (void)rec; return 0; }   // 没有还没落地的 GPU 写：照旧走 CPU 版（计时口径不变）
+int rp_op_copy_b2b_gpu(nvn_gpu_cmd c, const void *a, const void *rec) { (void)c; (void)a; (void)rec; return 0; }
+int rp_op_clear_buf_gpu(nvn_gpu_cmd c, const p_clear_buf *cb, const void *rec) { (void)c; (void)cb; (void)rec; return 0; }
 void rp_draw_stats(uint64_t *draws, uint64_t *skips) { if (draws) *draws = 0; if (skips) *skips = 0; }
 void rp_dispatch(nvn_gpu_cmd c, const p_dispatch *dp, const void *rec) { (void)c; (void)dp; (void)rec; }
 // OP_MULTI_DRAW（main 新增的整段间接计数多绘）在 rp_draw.c：本测试不测它，给个空实现闭合链接。
 void rp_multi_draw(nvn_gpu_cmd c, const p_multi_draw *m, const void *rec) { (void)c; (void)m; (void)rec; }
 void rp_debug_dump_poll(uint64_t *fence) { (void)fence; }
 uint64_t rp_buf_gpu_write_note(uint64_t addr, uint64_t len, uint64_t *pool_key) { (void)addr; (void)len; if (pool_key) *pool_key = 0; return 0; }
+uint64_t rp_buf_gpu_write_note2(uint64_t addr, uint64_t len, uint64_t *pool_key, int *merged) { (void)addr; (void)len; if (pool_key) *pool_key = 0; if (merged) *merged = 0; return 0; }   // 同段合并的登记入口（rp_post_gpu_write_rows 用）：本测试只测计时，不登记
 void rp_buf_gpu_write_land(uint64_t pool_key, uint64_t id, int ok) { (void)pool_key; (void)id; (void)ok; }
 void rp_buf_frame_flip(void) {}
+void rp_buf_hold_begin(void) {}   // 本测试只测计时：回放窗口（池销毁的镜像缓冲延后放）在 t_nvn_replay / 隔离夹具里测
+void rp_buf_hold_end(void) {}
 
 // 「干活」的三条命令：每执行一条推进虚拟钟 1 毫秒。推进只发生在替身里：
 //   回放实现无论嵌套几层都不许让时间自己走，所以「时间过了多少」就是「干了几件活」。

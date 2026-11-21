@@ -28,6 +28,13 @@ namespace S2A.DirectCompiler
         // 编译结束后按反射到的 TextureDescriptor.HandleIndex 回填；-1 表示还没定。
         public int Slot;
         public int SamplerSlot = -1;
+        // #1594：类型 3 句柄（贴图字在 c2 分离贴图表，采样器号是着色器里的立即数）的采样器池下标 0..4095，-1 = 没有。
+        // 下标 0 是真下标，所以「有没有」只看 >= 0；与 SamplerSlot（采样器也在 c2 表里）互斥。
+        public int ConstSampler = -1;
+        // 整池数组（追不到槽的句柄，翻译器 BindlessElimination 回退：贴图按整个贴图池、采样器按整个采样器池建数组，下标是句柄的 20 / 12 位编号）：
+        //   "texture" / "sampler"，null = 不是。宿主按 NVN 池建快照、布局来源 NVN_RB_TEXP / NVN_RB_SAMPP 绑整表（nvn_backend.h nvn_gpu_pool_*），此时 Slot = -1
+        public string Pool;
+        public int SpillBytesPerGroup;   // kind == "spill"：每个线程组的字节数
         // Storage address provenance, resolved from ShaderProgram.Info.SBuffers.
         // Translator guestIndex is deliberately NOT a runtime NVN slot.
         // 贴图也用 UboSlot / UboOffset：句柄在游戏 UBO 里时的来源（NVN UBO 号、句柄字的字节偏移），此时 Slot = -1。
@@ -45,6 +52,8 @@ namespace S2A.DirectCompiler
         private int _uniforms, _storage, _textures, _images;
         public readonly int ReservedConstantBuffers;
         public readonly List<DirectBinding> Bindings = new();
+        // 请求里的 requestId 原样（宿主：各阶段 8 字节程序键的十六进制连写）。只在被拒的错误消息里标出是哪个程序，不参与任何判断；缺省 null（离线 / 用例）。
+        public string RequestKey;
 
         public DirectAllocator(DirectProfile profile)
         {
@@ -79,6 +88,15 @@ namespace S2A.DirectCompiler
             Count(stage, "storage", _profile.Caps.MaximumStorageBuffersPerStage);
             int binding = _storage++;
             Bindings.Add(new DirectBinding(stage, "storage", "guestSSBO[" + guestIndex + "]", 1, binding, 1));
+            return new SetBindingPair(1, binding);
+        }
+
+        // 共享内存溢出缓冲（DirectSharedSpill）：与存储缓冲同一组、同一计数，种类单列 spill，没有客体来源。
+        public SetBindingPair Spill(string stage, int bytesPerGroup)
+        {
+            Count(stage, "storage", _profile.Caps.MaximumStorageBuffersPerStage);
+            int binding = _storage++;
+            Bindings.Add(new DirectBinding(stage, "spill", "sharedMemorySpill", 1, binding, 1) { SpillBytesPerGroup = bytesPerGroup });
             return new SetBindingPair(1, binding);
         }
 
@@ -220,7 +238,6 @@ namespace S2A.DirectCompiler
         public bool QueryBindlessPhiSeeThrough() => Record("QueryBindlessPhiSeeThrough", "", true, "translator:phi-see-through (same as dmsh_xlate)");
         // 0 = 回退数组一律按池长（上游原样）：安卓宿主 textureArrayLength / samplerArrayLength 就是真实描述符池容量（vk_record.c OP_SET_TEX_POOL），
         //   贴图缓冲 / 图像也按池编号取；没有 nvn_mtl.m TEXD 那种按槽绑的约定，答 32 会把编号 ≥ 32 的贴图缓冲 / 图像夹到第 31 项读错图
-        public int QueryBindlessSlotArrayLength() => Record("QueryBindlessSlotArrayLength", "", 0, "direct-v1:pool-length (no per-slot texture-buffer/image binding)");
         public bool QueryS2ARuntimeState() => Record("QueryS2ARuntimeState", "", false, "direct-v1:host does not fill s2a_flags / s2a_point");
         public void RecordTexelFetch1D(int handle) => Record("RecordTexelFetch1D", "handle=" + handle, "recorded", "direct-v1:no-tbuf-as-2d host contract");
         public bool QueryHostStorageWindowClamp() => Record("QueryHostStorageWindowClamp", "", false, "direct-v1:no-storage-window-instrumentation");
@@ -249,6 +266,9 @@ namespace S2A.DirectCompiler
         public bool QueryHostSupportsGeometryShader() => Record("QueryHostSupportsGeometryShader", "", _profile.Caps.SupportsGeometryShader, ProfileSource);
         public bool QueryHostSupportsGeometryShaderPassthrough() => Record("QueryHostSupportsGeometryShaderPassthrough", "", _profile.Caps.SupportsGeometryShaderPassthrough, ProfileSource);
         public bool QueryHostSupportsImageLoadFormatted() => Record("QueryHostSupportsImageLoadFormatted", "", _profile.Caps.SupportsImageLoadFormatted, ProfileSource);
+        // 按位读（SULD.D）的非缓冲图像也声明无格式：回放按着色器的数值类绑同字节数的视图（rp_draw.c image_view_format），
+        //   只在设备报了 shaderStorageImageReadWithoutFormat（profile supportsImageLoadFormatted）时打开；不支持时声明具体格式，回放按声明格式能建就建、建不了报名跳过
+        public bool QueryHostSupportsImageLoadFormattedRaw() => Record("QueryHostSupportsImageLoadFormattedRaw", "", _profile.Caps.SupportsImageLoadFormatted, ProfileSource);
         // 11-05 #1485（45bed0f5e）给 IGpuAccessor 加了这一问、接口缺省 true，直连 profile 没有对应能力（DirectDeviceCaps 未采 shaderStorageImageWriteWithoutFormat、
         //   profile JSON 严格键里也没有），合入后安卓直连实际按 true 翻译。这里显式写出同一值、记明来源，行为与合入后一致；接设备能力由 #1485 作者另做
         public bool QueryHostSupportsImageStoreFormatted() => Record("QueryHostSupportsImageStoreFormatted", "", true, "direct-v1:image-store-formatted 未接设备能力（与 #1485 合入时接口缺省一致）");
@@ -296,8 +316,64 @@ namespace S2A.DirectCompiler
             {
                 if (TrySeparateC2(handle, cbufSlot, out int texWord, out _))
                     fact = FindTexture(texWord, 2);
+                else if (TrySeparateConstC2(handle, cbufSlot, out int constTexWord, out _))
+                    fact = FindTexture(constTexWord, HandleTableCbuf);
+                else if (TrySeparateConstUbo(handle, cbufSlot, out int uboWord, out int uboCbuf, out _))
+                    fact = FindTexture(uboWord, uboCbuf);
             }
-            return fact ?? throw Missing(method, $"stage={_stage.Stage},handle={handle},cbufSlot={cbufSlot}");
+            if (fact != null) return fact;
+            // #1594 片 3：类型 3 句柄、贴图字在游戏 UBO 里，缺的是拆开后的精确事实（字, 贴图所在 cbuf）时，MISSING_FACT 里写拆开的坐标，
+            //   不写打包坐标：宿主（nvk_shader.c ubo_need_learn）只学「cbuf 3..18、字 < 0x4000」的坐标，打包过的（字高位带类型、cbuf 带高 16 位）它一个也不认，
+            //   写了就永远学不到、这份着色器每次现编都 MISSING_FACT。拆开后和普通 UBO 句柄（类型 0）是同一种坐标、同一条学习路径。
+            //   事实在却不能取（纹素缓冲 / 分离事实）、或形态不是这一种：仍写打包坐标，宿主不学，原样如实报缺。
+            if (TryUnpackConstUbo(handle, cbufSlot, out int missWord, out int missCbuf, out _) && FindTexture(missWord, missCbuf) == null)
+                throw Missing(method, $"stage={_stage.Stage},handle={missWord},cbufSlot={missCbuf}");
+            throw Missing(method, $"stage={_stage.Stage},handle={handle},cbufSlot={cbufSlot}");
+        }
+
+        // #1594：类型 3 句柄（TextureHandleType.SeparateConstantSamplerHandle）= c2 分离贴图表里的贴图字 | 立即数采样器号 << 20。
+        //   翻译器给 PackOffsets(贴图字, 采样器号, 3)、PackSlots(贴图所在 cbuf, 0)：第二个偏移是采样器池下标（立即数），不是常量缓冲字，
+        //   第二个 cbuf 号没有意义（真机读到的恒为 0），所以只看贴图那一半：贴图在 c2、字在分离贴图表（90..344 偶）、有同字的 c2 分离事实。
+        //   同字事实是纹素缓冲（isBuffer）的不取——立即数采样器对纹素缓冲没意义，仍按缺事实拒；采样器号只交给调用方，不参与取事实。
+        public bool TrySeparateConstC2(int handle, int cbufSlot, out int texWord, out int samplerIndex)
+        {
+            texWord = samplerIndex = -1;
+            (int word, int sampler, TextureHandleType type) = TextureHandle.UnpackOffsets(handle);
+            if (type != TextureHandleType.SeparateConstantSamplerHandle || cbufSlot < 0 ||
+                TextureHandle.UnpackSlots(cbufSlot, -1).Item1 != HandleTableCbuf || !IsSeparateTextureWord(word))
+                return false;
+            DirectTextureFact fact = FindTexture(word, HandleTableCbuf);
+            if (fact == null || !fact.Separate || fact.IsBuffer) return false;
+            texWord = word; samplerIndex = sampler;
+            return true;
+        }
+
+        // #1594 片 3：类型 3 句柄的贴图字在游戏自己的 UBO（c3..c18）里。翻译器同样给 PackOffsets(贴图字, 采样器号, 3)、PackSlots(贴图所在 cbuf, 0)；
+        //   拆出 (字, 贴图所在 cbuf, 立即数采样器池下标)。只看形态：类型 3、贴图 cbuf 在 3..18；不看事实。
+        //   字只有 14 位（0..16383 = 字节 0..65532），不会超出宿主学得到的 64 KiB 范围，所以不另查。贴图 cbuf 是 c2 的另一种（片 1 / 片 2），不在这里。
+        private static bool TryUnpackConstUbo(int handle, int cbufSlot, out int word, out int texCbuf, out int samplerIndex)
+        {
+            word = texCbuf = samplerIndex = -1;
+            if (cbufSlot < 0) return false;
+            (int w, int sampler, TextureHandleType type) = TextureHandle.UnpackOffsets(handle);
+            if (type != TextureHandleType.SeparateConstantSamplerHandle) return false;
+            int cbuf = TextureHandle.UnpackSlots(cbufSlot, -1).Item1;
+            if (cbuf < DirectShaderCompiler.UserUboFirstCbuf || cbuf > DirectShaderCompiler.UserUboLastCbuf) return false;
+            word = w; texCbuf = cbuf; samplerIndex = sampler;
+            return true;
+        }
+
+        // 取这个句柄的事实：就是宿主按坐标 (字, 贴图所在 cbuf) 给的精确事实（和普通 UBO 句柄同一份：贴图是谁只看那个字的低 20 位，
+        //   立即数采样器不改变它）。不借 c2 的分离事实、不借组合槽事实、不借别的 cbuf 的事实；采样器号只交给调用方，不参与取事实。
+        //   事实是纹素缓冲（立即数采样器对纹素缓冲没意义）或分离事实（宿主对 UBO 坐标从不给）的不取，仍按缺事实拒。
+        public bool TrySeparateConstUbo(int handle, int cbufSlot, out int texWord, out int texCbuf, out int samplerIndex)
+        {
+            texWord = texCbuf = samplerIndex = -1;
+            if (!TryUnpackConstUbo(handle, cbufSlot, out int word, out int cbuf, out int sampler)) return false;
+            DirectTextureFact fact = FindTexture(word, cbuf);
+            if (fact == null || fact.Separate || fact.IsBuffer) return false;
+            texWord = word; texCbuf = cbuf; samplerIndex = sampler;
+            return true;
         }
 
         // The packed operands can occur in either order; require one from each c2 table
@@ -324,6 +400,9 @@ namespace S2A.DirectCompiler
         // 反射到 cbuf 句柄时能否当作同一个组合槽：只认经 c2 句柄表读的、且有同句柄直接事实
         public bool HasDirectTextureFact(int handle, int cbufSlot) => cbufSlot == HandleTableCbuf &&
             _program.Textures.Any(t => t.Stage == _stage.Stage && t.Handle == handle && t.CbufSlot == -1);
+        // 是否有这个 c2 字本身的精确事实（运行时句柄从驱动句柄表读；类型 / 格式由翻译期的同字事实给出）
+        public bool HasTextureFact(int handle, int cbufSlot) =>
+            _program.Textures.Any(t => t.Stage == _stage.Stage && t.Handle == handle && t.CbufSlot == cbufSlot);
 
         public SamplerType QuerySamplerType(int handle, int cbufSlot = -1) =>
             Record("QuerySamplerType", $"handle={handle},cbufSlot={cbufSlot}",
@@ -344,6 +423,13 @@ namespace S2A.DirectCompiler
             if (f == TextureFormat.Unknown) throw Missing("QueryTextureFormat", $"stage={_stage.Stage},handle={handle},cbufSlot={cbufSlot},format=Unknown");
             return Record("QueryTextureFormat", $"handle={handle},cbufSlot={cbufSlot}", f, "texture-fact:" + _stage.Stage + ":" + handle + ":" + cbufSlot);
         }
+        public TextureFormat QueryS2ASampledTextureFormat(int handle, int cbufSlot = -1) =>
+            Record("QueryS2ASampledTextureFormat", $"handle={handle},cbufSlot={cbufSlot}",
+                NeedTexture("QueryS2ASampledTextureFormat", handle, cbufSlot).Format,
+                "texture-fact:" + _stage.Stage + ":" + handle + ":" + cbufSlot);
+        // 请求里的池长（整池数组的长度据此判定，见 DirectShaderCompiler.ResolvePoolSlots）
+        public int TexturePoolLength => _program.TextureArrayLength;
+        public int SamplerPoolLength => _program.SamplerArrayLength;
         public int QueryTextureArrayLengthFromPool() =>
             Record("QueryTextureArrayLengthFromPool", "stage=" + _stage.Stage, _program.TextureArrayLength, "texture-pool-capacity");
         public int QuerySamplerArrayLengthFromPool() =>

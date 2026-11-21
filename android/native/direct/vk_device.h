@@ -46,17 +46,29 @@ struct s2a_vk_device {
     int shader_draw_parameters_enabled;
     // VK_KHR_sampler_mirror_clamp_to_edge 已启用：采样器可用 MIRROR_CLAMP_TO_EDGE（实例按 1.1 建，用不到 1.2 核心里的同名特性）。
     int sampler_mirror_clamp_enabled;
+    // Vulkan 1.1 下显式启用 EXT；只读附件用 STORE_OP_NONE 避免隐式写。
+    int load_store_op_none_enabled;
+    int image_format_list_enabled;   // 启用了 VK_KHR_image_format_list（应用 apiVersion 1.1，1.2 核心的格式列表结构要靠这条扩展；保 Adreno UBWC 用）
     // VK_EXT_custom_border_color 已启用且 customBorderColors 特性开着：CLAMP_TO_BORDER 的采样器可用任意边框色（#976）。
     // custom_border_without_format：customBorderColorWithoutFormat 也开着，建采样器时可以不给视图格式。
     // custom_border_max：maxCustomBorderColorSamplers，同时存活的自定义边框色 VkSampler 个数上限。
     int custom_border_enabled;
     int custom_border_without_format;
     uint32_t custom_border_max;
+    // #976：VK_EXT_sampler_filter_minmax 已启用（采样器 min / max 归约）；minmax_image_mapping = filterMinmaxImageComponentMapping
+    // （0 时仅 R 分量有定义，未证明分量使用前拒绝归约）。
+    int sampler_minmax_enabled;
+    int minmax_image_mapping;
     // 0 = 没有校准扩展；1 = VK_KHR_calibrated_timestamps；2 = VK_EXT_calibrated_timestamps。
     // GPU 时间戳换算到游戏时钟需要用它求 GPU 域与 CLOCK_MONOTONIC 的偏移。
     int calibrated_timestamps;
     VkPhysicalDeviceFeatures core_features;
     uint32_t device_extension_count;
+    // descriptor indexing 仅建可选设备能力；编译器的 non-uniform profile 仍独立关闭。
+    // ext_state: -1 枚举失败（未知），0 未列出，1 列出。后续位为物理设备支持，不等于启用。
+    int descriptor_indexing_ext_state, descriptor_indexing_enabled;
+    int descriptor_indexing_runtime, descriptor_indexing_partial, descriptor_indexing_sampled_nonuniform;
+    int descriptor_indexing_storage_nonuniform, descriptor_indexing_variable_count, descriptor_indexing_sampled_update_after_bind;
     // #1199：逐格式 BC 能力位（bit i 对应 NVN 格式 0x41+i）。
     // native=optimal-tiling 有 SAMPLED_IMAGE；decode=要走 compute 解码（native 补集，force 时全 1）。
     uint32_t bc_native_mask;

@@ -101,8 +101,10 @@ enum LauncherPadSpatial {
     }
     private func registeredControls(in window: NSWindow) -> [PadControl] {
         let registered = controls.values.filter { $0.view.window === window && !$0.view.isHiddenOrHasHiddenAncestor }
+        // 展开的下拉最优先；其次是面板里的浮层（scope "layer"，例如手柄面板的四键布局）：开着时方向键只在浮层里走，不落到底下的面板
         let modal = registered.filter { $0.scope == "dropdown" && controlTarget($0) != nil }
-        return (modal.isEmpty ? Array(registered) : modal).filter { $0.enabled && !$0.shortcutOnly }
+        let layer = registered.filter { $0.scope == "layer" && controlTarget($0) != nil }
+        return (!modal.isEmpty ? modal : !layer.isEmpty ? layer : Array(registered)).filter { $0.enabled && !$0.shortcutOnly }
     }
     private func controlTarget(_ control: PadControl, includeOffscreen: Bool = false) -> LauncherPadTarget? {
         let full = Self.screenFrame(control.view), clip = Self.clippingFrame(control.view)
@@ -234,10 +236,13 @@ enum LauncherPadSpatial {
             })
         }
     }
-    func detach() {
+    /// teardown：SwiftUI 正在拆这棵视图（dismantleNSView，NSHostingView.deinit 里）。这时不写 presentation 的发布属性——
+    ///   拆图期间发布变更会撞上 SwiftUI 自己的独占访问，fatalError 关窗闪退（#1516，0.5.3–0.5.5）。拆完 presentation 随视图释放，
+    ///   重新接上窗口时 source.updatePresentation 照实写；窗口关闭通知那条路（图还在）照旧清
+    func detach(teardown: Bool = false) {
         source.stop(); clearRings(); keyboard?.close(apply: false); keyboard = nil
         nativeButtons.restore(); source.refresh = {}; source.updatePresentation = { _, _ in }
-        presentation.connected = false; presentation.symbols = [:]
+        if !teardown { presentation.connected = false; presentation.symbols = [:] }
         for monitor in monitors { NSEvent.removeMonitor(monitor) }; monitors.removeAll()
         for observer in notifications { NotificationCenter.default.removeObserver(observer) }; notifications.removeAll()
         for overlay in overlays.values { overlay.removeFromSuperview() }; overlays.removeAll()
@@ -386,6 +391,8 @@ enum LauncherPadSpatial {
                 if !S2ALauncherAX.pick(selected.element) { sendKey(36, "\r", in: currentWindow) }
             }
         case .back:
+            // B 只关最里面那一层：开着的下拉选单先关（选单没有自己的「返回」钮，落到窗口取消会把整个面板关掉）
+            if hasDropdown { NotificationCenter.default.post(name: .launcherDropdownClose, object: currentWindow); break }
             if !S2ALauncherAX.cancel(currentWindow) { sendKey(53, "\u{1b}", in: currentWindow) }
         case .left, .right, .up, .down:
             let step = action == .left ? -1 : 1
@@ -544,5 +551,5 @@ struct LauncherPadHost: NSViewRepresentable {
     }
     func makeNSView(context: Context) -> Host { let host = Host(); host.navigation = navigation; return host }
     func updateNSView(_ view: Host, context: Context) { update(); if let window = view.window { navigation.attach(window) } }
-    static func dismantleNSView(_ view: Host, coordinator: ()) { if view.navigation?.window === view.lastWindow { view.navigation?.detach() } }
+    static func dismantleNSView(_ view: Host, coordinator: ()) { if view.navigation?.window === view.lastWindow { view.navigation?.detach(teardown: true) } }
 }

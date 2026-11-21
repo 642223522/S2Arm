@@ -87,8 +87,9 @@ static void run(NvShader *cs, uint8_t *io_cpu) {
     S.cprog = &pg; args_dirty_all();
     S.ssbo[5][0] = (p_bind_buf){.addr = (uint64_t)(uintptr_t)io_cpu, .size = N * sizeof(io_t) + (N + 2) * 4};
     p_dispatch d = {.x = 1, .y = 1, .z = 1}; dispatch(&d);
-    uint64_t f = nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f, 10000000000ull)); REQUIRE(!mtl_last_commit_error());
-    for (int t = 0; t < 1000; t++) { pthread_mutex_lock(&g_mu); uint64_t d = g_done; pthread_mutex_unlock(&g_mu); if (d >= f) break; usleep(1000); }   // 完成回调推进 g_done
+    // GPU 完成等待上限 30 秒（原 10 秒）；完成回调推进 g_done 等到为止，兜底 30 秒（原 1 秒：负载高时回调晚跑，后面读到旧状态假红）
+    uint64_t f = nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f, 30000000000ull)); REQUIRE(!mtl_last_commit_error());
+    for (int t = 0; t < 30000; t++) { pthread_mutex_lock(&g_mu); uint64_t d = g_done; pthread_mutex_unlock(&g_mu); if (d >= f) break; usleep(1000); }   // 完成回调推进 g_done
 }
 static pool_ent *pool_of(const uint8_t *mem) { pthread_mutex_lock(&g_mu); int i = pool_find((uint64_t)(uintptr_t)mem, 1); pthread_mutex_unlock(&g_mu); REQUIRE(i >= 0); return &g_pools[i]; }
 static int in_res(id<MTLBuffer> b) { pthread_mutex_lock(&g_res_mu); int r = [g_res_objects containsObject:b]; pthread_mutex_unlock(&g_res_mu); return r; }

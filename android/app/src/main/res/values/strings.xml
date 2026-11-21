@@ -7,6 +7,15 @@
     <string name="native_unavailable">The native host could not start. See the S2Arm log for details.</string>
     <string name="capability_status" translatable="false">%1$s\n%2$s</string>
     <string name="import_game">Import game package…</string>
+    <string name="import_save">Import save backup…</string>
+    <string name="import_save_select_game">Select a game before importing its save.</string>
+    <string name="import_save_reading">Checking the save backup…</string>
+    <string name="import_save_summary">Restore %2$d files (%3$d bytes) for %1$s. Any existing save will be backed up first.</string>
+    <string name="import_save_confirm_title">Restore save backup?</string>
+    <string name="import_save_confirm">Restore</string>
+    <string name="import_save_access_failed">Close the game if it is running and check that the backup is readable.</string>
+    <string name="import_save_failed">Save import failed (%1$s). %2$s</string>
+    <string name="import_save_done">Save restored (%1$d files). Open the game to continue.</string>
     <string name="in_place_game">Use a game folder in place…</string>
     <string name="in_place_access_title">All files access needed</string>
     <string name="in_place_access_text">Using a game in place reads its files straight from your phone\'s storage instead of copying them into the app, which saves as much space as the game takes. In the system settings that open next, turn on \"Allow access to manage all files\" for this app, then come back and tap \"Use a game folder in place…\" again to pick the game folder.</string>
@@ -17,6 +26,22 @@
     <string name="player_err_in_place">The game files used in place were moved, deleted or changed.</string>
     <string name="player_err_in_place_next">Put the game folder back as it was (or copy it from your computer again), then tap \"Use a game folder in place…\" in the library to register it again.</string>
     <string name="import_progress">Importing game: %1$d / %2$d MiB</string>
+    <string name="ldn_settings">Local wireless (LDN)…</string>
+    <string name="ldn_auto">Automatic (existing LAN behavior)</string>
+    <string name="ldn_host">Manual: host relay on this device</string>
+    <string name="ldn_client">Manual: connect to relay</string>
+    <string name="ldn_address">Relay reachable IPv4 (client only)</string>
+    <string name="ldn_save">Save</string>
+    <string name="ldn_select_mode">Choose a connection mode.</string>
+    <string name="ldn_address_empty">Enter the relay IPv4 address, for example 100.64.1.8.</string>
+    <string name="ldn_address_invalid">“%1$s” is not an IPv4 address. Enter four numbers from 0 to 255 separated by dots, without a port.</string>
+    <string name="ldn_test">Test connection</string>
+    <string name="ldn_test_client">Choose Connect to relay and enter its IPv4 address first.</string>
+    <string name="ldn_testing">Testing %1$s:30456…</string>
+    <string name="ldn_test_ok">%1$s:30456 accepted a TCP connection. This does not verify the relay protocol or game compatibility.</string>
+    <string name="ldn_test_failed">Could not connect to %1$s:30456 within 3 seconds, or the connection was refused. Start the relay game, keep it in the foreground, and check the VPN/network and firewall. You can still save and try later.</string>
+    <string name="ldn_saved">Saved. Fully exit the app and reopen to apply.</string>
+    <string name="ldn_help">All players must use the same relay. Keep the relay app in the foreground. Use a reachable public, LAN or externally configured VPN IPv4; no VPN is included. Fixed TCP port 30456 must be reachable. Hosting listens on all network interfaces and opens port 30456 to reachable peers; use trusted networks only. Manual mode does not discover or elect a relay. Fully exit the app and reopen after changes; returning to a running game keeps its previous settings.</string>
     <string name="fps_overlay_show">Show FPS (successful frame submissions)</string>
     <string name="quality_high">High quality</string>
     <string name="quality_saver">Battery saver</string>
@@ -42,6 +67,17 @@
     <string name="last_session_dismiss">Not now</string>
     <string name="console_mode_handheld">Console mode: handheld (tap for docked)</string>
     <string name="console_mode_docked">Console mode: docked (tap for handheld)</string>
+    <string name="phone_gyro_on">Phone gyro: on (tap to turn off)</string>
+    <string name="phone_gyro_off">Phone gyro: off (tap to turn on)</string>
+    <string name="phone_rumble_on">Phone rumble: on (tap to turn off)</string>
+    <string name="phone_rumble_off">Phone rumble: off (tap to turn on)</string>
+    <string name="pad_rumble_on">Controller rumble: on (tap to turn off)</string>
+    <string name="pad_rumble_off">Controller rumble: off (tap to turn on)</string>
+    <string name="pad_face_item">Controller button layout: %1$s</string>
+    <string name="pad_face_title">Controller button layout</string>
+    <string name="pad_face_auto">Automatic (follow the button labels)</string>
+    <string name="pad_face_switch">Switch layout (right button confirms)</string>
+    <string name="pad_face_xbox">Xbox layout (bottom button confirms)</string>
     <string name="console_mode_switched">Console mode switched.</string>
     <string name="console_mode_saved">Console mode saved. It applies the next time the game starts.</string>
 
@@ -102,6 +138,12 @@
     <string name="library_playtime_today">today</string>
     <string name="library_playtime_yesterday">yesterday</string>
     <string name="library_playtime_days_ago">{0} days ago</string>
+    <!-- Stall watch (runtime/src/ap_host.c) notices in the game; stall_wait is verbatim S2A_UI_STALL_WAIT_EN (runtime/include/s2a_ui_text.h) -->
+    <string name="stall_patch_off">The picture barely moved for about %1$d seconds, so this game\'s frame-rate patch was turned off. It stays off when you start this game again; you can turn it back on from the settings panel at the top right of the library.</string>
+    <string name="stall_wait">The game picture is stuck\n\nIt may still be loading, so you can wait a little longer. If nothing changes, swipe this app away in the app switcher and open it again.</string>
+    <string name="stall_off_note">This game\'s frame-rate patch was turned off automatically because the picture froze. Turning it back on takes effect the next time you start the game.</string>
+    <string name="stall_reopen">Turn frame-rate patch back on</string>
+    <string name="stall_reopen_failed">Could not turn the frame-rate patch back on: %1$s</string>
     <string name="mods_title">Mods (asset replacement)</string>
     <string name="mods_for_game">For: %1$s</string>
     <string name="mods_no_game">Install a game first: mods are kept per game.</string>

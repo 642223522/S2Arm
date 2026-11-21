@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 S2Arm contributors
+using System.Text.Json;
 using S2Arm.Launcher.Protocol;
 
 internal static class LibraryJobCases
@@ -27,6 +28,18 @@ internal static class LibraryJobCases
         check(WithBanner(Path.Combine(english, "cover.jpg"), english).BannerFile() is null, "banner: only banner.jpg counts");
         check(WithBanner(Path.Combine(byId, "banner.jpg"), english).BannerFile() is null, "banner: another game's folder is refused");
 
+        // 失败码取让作业停下的那条（0.5.4 玩家卡在「更新 iPhone 上的 S2Arm」：补着色器的警告在前、停装码 save_backup_failed 在后，
+        //   原先取第一条，认不出可确认的停装、不问「仍然继续」）。期望手写：最后一条 error 级；没有 error 取最后一条；空 / 非数组为 null
+        static JsonElement Diags(string json) => JsonDocument.Parse(json).RootElement.Clone();
+        check(LibraryJobResult.FailureCodeOf(Diags("""[{"code":"disk_full","severity":"warning"},{"code":"save_backup_failed","severity":"error"}]""")) == "save_backup_failed",
+              "failure code: the stopping error after an earlier warning");
+        check(LibraryJobResult.FailureCodeOf(Diags("""[{"code":"a","severity":"error"},{"code":"w","severity":"warning"},{"code":"b","severity":"error"}]""")) == "b",
+              "failure code: the last error wins");
+        check(LibraryJobResult.FailureCodeOf(Diags("""[{"code":"w1","severity":"warning"},{"code":"w2"}]""")) == "w2", "failure code: no error falls back to the last code");
+        check(LibraryJobResult.FailureCodeOf(Diags("[]")) is null && LibraryJobResult.FailureCodeOf(Diags("{}")) is null, "failure code: empty or non-array is null");
+        check(new LibraryJobResult("failed", "", Diags("{}"), Diags("""[{"code":"runtime_invalid","severity":"warning"},{"code":"save_backup_failed","severity":"error"}]""")).FailureCode == "save_backup_failed",
+              "failure code: job result exposes the same rule");
+
         // 导入失败的去向：只有读取器确认通用密钥版本不足（keys_outdated）才引导换密钥；
         // 无法读取、缺票据、内容截断都不是换 prod.keys 能解决的。
         check(ImportFailureRoute.For("keys_missing", false) == ImportFailureRoute.ImportKeys, "missing prod.keys asks to import keys");
@@ -45,6 +58,26 @@ internal static class LibraryJobCases
             catalog.Games[0].Version == "1.2" && !catalog.KeysReady, "handwritten catalog values preserved");
         check(catalog.Games[0].Missing.Single() == "Need base", "backend requirements preserved without UI inference");
         check(catalog.Games[0].Banner == @"D:\lib\banner.jpg", "catalog banner field is read");
+        // 免费签名到期提醒（11-20）：天数按作业层给的 expires 算（期望手写：now = 1000000 秒，到期 1000000 + 2.5 天 → 3 天；已过 → 0）；
+        //   free=false（作业层判出不是启动器免费签的那份）或没给 expires → null，不出提醒
+        const string signed = """
+        {"schema":1,"jobId":"catalog-test","taskId":"catalog-test","seq":1,"type":"result","operation":"catalog","state":"succeeded","message":"操作完成","result":{"games":[{"id":"0100000000000003","name":"Free","display":"","cover":"","hidden":false,"missing":[],"iphoneInstall":{"at":481600,"free":true,"deviceKey":"U1","expires":1216000}},{"id":"0100000000000004","name":"Elsewhere","display":"","cover":"","hidden":false,"missing":[],"iphoneInstall":{"at":481600,"free":false,"deviceKey":"U1"}},{"id":"0100000000000005","name":"Expired","display":"","cover":"","hidden":false,"missing":[],"iphoneInstall":{"at":1,"free":true,"deviceKey":"U1","expires":604801}}],"keys":{"ready":true,"verified":true,"message":""}}}
+        """;
+        var signedGames = LibraryCatalog.Parse(LibraryJobResult.Parse(signed, 0, "catalog-test", "catalog").Result).Games;
+        var at = DateTimeOffset.FromUnixTimeSeconds(1000000);
+        check(signedGames[0].FreeSignDaysLeft(at) == 3 && signedGames[0].IphoneExpires == 1216000, "free sign: days from backend expires");
+        check(signedGames[1].FreeSignDaysLeft(at) is null, "free sign: not the launcher's free copy, no reminder");
+        check(signedGames[2].FreeSignDaysLeft(at) == 0, "free sign: expired reads 0");
+        var prefs = Path.Combine(Path.GetTempPath(), "s2a-remind-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            check(FreeSignReminder.On(prefs), "free sign reminder: on by default");
+            FreeSignReminder.Set(prefs, false);   // 「×」
+            check(!FreeSignReminder.On(prefs), "free sign reminder: dismissed stays off (stored on disk)");
+            FreeSignReminder.Set(prefs, true);   // 设置里重新打开
+            check(FreeSignReminder.On(prefs), "free sign reminder: turned back on");
+        }
+        finally { if (Directory.Exists(prefs)) Directory.Delete(prefs, true); }
         // #1272 下游方案：catalog downstream 原样读出（期望手写）；没有 choice = 没选过（null），"" = 仍用原版；文案按语言挑，没有这门语言退回英文
         var ds = System.Text.Json.JsonDocument.Parse("""
         {"id":"d2r","name":"D2R Port","eligible":false,"reason":{"zh":"只支持 1.0.1","en":"Update 1.0.1 only"},
@@ -88,6 +121,7 @@ internal static class LibraryJobCases
         check(empty.Games.Count == 0 && !empty.KeysReady, "recorded real empty Windows catalogue has no games or keys");
         check(empty.KeysMessage == "尚未导入 prod.keys", "recorded backend key status stays verbatim");
         check(empty.PhoneUpdates.Count == 0, "catalog: no phoneUpdates field reads as an empty list");
+        check(empty.PhoneDevices == 0, "catalog: no phoneDevices field reads as 0");
         // 壳比本版旧的手机（pack/jobs/install.py phone_updates 的形状）：一台两款、其中一款要重新出包；不是数组 / 没有 device 的项不算
         const string updates = """
         {"games":[],"keys":{"ready":true,"message":""},"phoneUpdates":[
@@ -107,6 +141,20 @@ internal static class LibraryJobCases
             check(g[0].NeedsKeys && !g[1].NeedsKeys, "catalog: needsKeys comes from the backend field, not from package formats");
             check(g[0].OnPhone && !g[1].OnPhone, "catalog: onPhone (recorded on a phone; delete confirm warns it stops opening there) read from the backend field");
         }
+        // 11-17：导入时数据校验不过照常导入（packages[].integritySkipped 非空数组）→ 这款标「数据校验不过」；空数组 / 没有这个字段都不标（同 Mac ExportFlowTests）
+        const string skipped = """
+        {"games":[{"id":"0100A","name":"A","display":"","cover":"","hidden":false,"missing":[],"packages":[{"type":"base","titleId":"0100A","version":0,"display":"","size":1,"format":"nsp"},{"type":"update","titleId":"0100A","version":1,"display":"","size":1,"format":"nsp","integritySkipped":[{"stage":"import","contents":["x"],"place":"romfs"}]}]},
+                  {"id":"0100B","name":"B","display":"","cover":"","hidden":false,"missing":[],"packages":[{"type":"base","titleId":"0100B","version":0,"display":"","size":1,"format":"nsp","integritySkipped":[]}]}],
+         "keys":{"ready":false,"message":""}}
+        """;
+        using (var document = System.Text.Json.JsonDocument.Parse(skipped))
+        {
+            var g = LibraryCatalog.Parse(document.RootElement).Games;
+            check(!g[0].Packages![0].IntegritySkipped && g[0].Packages![1].IntegritySkipped && g[0].IntegritySkipped, "catalog: a package with integritySkipped marks the game");
+            check(!g[1].IntegritySkipped, "catalog: an empty integritySkipped list does not mark the game");
+        }
+        using (var document = System.Text.Json.JsonDocument.Parse(updates.Replace("\"phoneUpdates\":[", "\"phoneDevices\":2,\"phoneUpdates\":[")))
+            check(LibraryCatalog.Parse(document.RootElement).PhoneDevices == 2, "catalog: phoneDevices (phones this PC installed to; update popup says launcher and iPhone app) read");
         using (var document = System.Text.Json.JsonDocument.Parse(updates))
         {
             var u = LibraryCatalog.Parse(document.RootElement).PhoneUpdates;
@@ -191,6 +239,15 @@ internal static class LibraryJobCases
             var games = LibraryCatalog.Parse(document.RootElement).Games;
             check(games[0].Sizes == new GameSizes(0, 6000000000, 3, 4, 5, true), "catalog: sizes read, iPhone size beyond Int32 kept");
             check(games[1].Sizes is null, "catalog: no sizes field reads as null (not counted)");
+        }
+        // 0.6.0 四类（pack/jobs/sizes.py categories，通用壳开关开着才带）：按键读、缺的类记 0；不带 → null（界面照旧五项）
+        using (var cat = JsonDocument.Parse("{\"imageMac\":0,\"imageIos\":1,\"saves\":2,\"cache\":3,\"sources\":4,\"measured\":true,"
+                                            + "\"categories\":{\"resources\":7000000000,\"programs\":20,\"playerData\":30}}"))
+        {
+            var g = GameSizes.Parse(cat.RootElement);
+            check(g.Categories is { } c && c["resources"] == 7000000000 && c["programs"] == 20 && c["playerData"] == 30 && c["cache"] == 0
+                  && string.Join(",", GameSizes.CategoryOrder) == "resources,programs,playerData,cache", "sizes: 0.6.0 categories read in order, missing one is 0, beyond Int32 kept");
+            check(GameSizes.Parse(JsonDocument.Parse("{\"measured\":true}").RootElement).Categories is null, "sizes: no categories reads as null (old five parts)");
         }
         const string overview = """
         {"locations":[{"id":"a","path":"D:\\S2Arm","volume":"Data","connected":true,"default":true,"totalBytes":9000000000,"freeBytes":4000000000,"usedBytes":3000000000},

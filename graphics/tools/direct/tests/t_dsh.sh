@@ -10,7 +10,7 @@
 #   ⑧ 宽屏外推尾段（t_push.py）：vs_push 插的那段在 GPU 上逐例跑，期望按规格手算，带反证
 #   ⑫ 片元早期深度照实传（t_early_z.py）：控制段 +0x718 位 0 → [[early_fragment_tests]]，期望脚本自己读包里的控制段字节，带反证
 #   ⑩ 宽屏 16:9 采样换算（t_uvx.py）：fs_uvx 的改写与插进去的 s2a_uv 在 GPU 上逐例跑，期望按回放层取值手算，带反证
-#   ⑨ 缓存命中路径的可读瓦片变体（10-26）：带整数输出入口（main0_u）又有 _bf 的片元键，空缓存新编一遍、拿它的缓存再出一遍（走缓存命中），两遍都出 _bf 且逐字节相同
+#   ⑨ 缓存命中路径的可读瓦片变体（10-26）：可出整数输出（整数输出入口 main0_u，或 11-19 起主入口带输出类型常量 S2A_FU）又有 _bf 的片元键，空缓存新编一遍、拿它的缓存再出一遍（走缓存命中），两遍都出 _bf 且逐字节相同
 #      （旧代码缓存命中时把带 main0_u 的整份 _b.metal 交给变体生成，变体编不过、悄悄没有 _bf：暗黑3 3f4319a0c8392329）
 # 考卷（10-25 起）：门禁自己出，生产出库碰不到。输入 = 冻结的动森包目录 + 表（DSH_INPUTS，缺省 ~/.s2arm/run/s2arm/gate_data/dsh/01006F8002326000，只读，
 #   bash t_dsh.sh freeze <直连出库 work 目录：出库时设 S2A_DIRECT_KEEP=1，留在 cache/direct/<程序号>/keep/work> 才会写；inputs.sha 核内容，对不上 = 红）；答案 = 被测这棵树的离线链
@@ -60,8 +60,8 @@ DB=(); while IFS= read -r l; do DB+=("$l"); done < <(cd "$R/translator" && pytho
 SPVC=$(cd "$R/translator" && python3 -c 'import spvc_inproc; print(spvc_inproc.lib_path())') && [ -f "$SPVC" ] || { echo "S2A.Dsh 对拍：取不到 libspvc_cli → 红"; exit 1; }
 # 命令行后端（dsh_cmp --backend cli，CliSpvCross）缺省跑 PATH 上的 spirv-cross（Homebrew 上游版）；离线考卷用仓库内置源码（graphics/third_party/spirv_cross，
 #   辅助函数 optnone 已改 inline），两边源码不同，①② 必然逐字不一致（11-15：上游「[[clang::optnone]] T spvFMul」对内置「inline T spvFMul」，182/300、21/40）。
-#   钉到同一份内置源码编出的命令行程序，两边才比的是翻译器而不是 SPIRV-Cross 版本
-SPIRV_CROSS=$(cd "$R/translator" && python3 -c 'import spvc_inproc; print(spvc_inproc.cli_path())') && [ -x "$SPIRV_CROSS" ] || { echo "S2A.Dsh 对拍：取不到内置 spirv-cross 命令行 → 红"; exit 1; }
+#   钉到同一份内置源码编出的命令行程序，两边才比的是翻译器而不是 SPIRV-Cross 版本（随包命令行版是换回上游原文的那份，这里要 upstream=False）
+SPIRV_CROSS=$(cd "$R/translator" && python3 -c 'import spvc_inproc; print(spvc_inproc.cli_path(upstream=False))') && [ -x "$SPIRV_CROSS" ] || { echo "S2A.Dsh 对拍：取不到内置 spirv-cross 命令行 → 红"; exit 1; }
 export SPIRV_CROSS
 exam() {
   local K=$1 D=$2 M=$3 C=$4; shift 4; mkdir -p "$D/prof/$TID" || return 1
@@ -144,7 +144,8 @@ python3 "$H/t_early_z.py" "$H/dsh_cmp/bin/Release/net10.0/dsh_cmp.dll" "$R/build
 ck "⑫ $(tail -1 "$T/12.log")" '[ $r12 = 0 ]' "⑫早期深度$(tail -1 "$T/12.log" | grep -o '位 1 [0-9]* 支、位 0 [0-9]* 支')"
 # ⑨ 期望 = 新编路径（空缓存）出的 _bf（_bf 缺省不出，这里 --bf）；被测 = 同一批键拿那份缓存再出（缓存命中路径）
 python3 -c "import glob,json,os,sys
-ks=[os.path.basename(j)[:16] for j in sorted(glob.glob(sys.argv[1]+'/*_b.json')) if (lambda d: d.get('stage')=='ps' and d.get('entry_u'))(json.load(open(j))) and os.path.exists(j[:-7]+'_bf.metallib')]
+fc=lambda j: os.path.exists(j[:-5]+'.metal') and 'S2A_FU [[function_constant(102)]]' in open(j[:-5]+'.metal').read()
+ks=[os.path.basename(j)[:16] for j in sorted(glob.glob(sys.argv[1]+'/*_b.json')) if (lambda d: d.get('stage')=='ps' and (d.get('entry_u') or fc(j)))(json.load(open(j))) and os.path.exists(j[:-7]+'_bf.metallib')]
 open(sys.argv[2],'w').write(' '.join(ks[::max(1,len(ks)//4)][:4]))" "$REF" "$T/uk.txt"; nu=$(wc -w < "$T/uk.txt" | tr -d ' ')
 tr ' ' '\n' < "$T/uk.txt" > "$T/uk.lst"
 for x in x1 x2; do TO=300 exam "$T/uk.lst" "$T/$x" "$T/$x" "$T/x1/cas" -j "${S2A_CPU_GATE:-4}" > "$T/9$x.log" 2>&1; done
@@ -152,7 +153,7 @@ b9=$(python3 -c "import filecmp,glob,os,sys
 ks=open(sys.argv[1]).read().split(); a=glob.glob(sys.argv[2]+'/mac/b-*'); b=glob.glob(sys.argv[3]+'/mac/b-*')
 ok=sum(1 for k in ks if a and b and all(os.path.exists(os.path.join(d[0],k+'_bf.metallib')) for d in (a,b)) and filecmp.cmp(os.path.join(a[0],k+'_bf.metallib'),os.path.join(b[0],k+'_bf.metallib'),shallow=False))
 print(ok)" "$T/uk.txt" "$T/x1" "$T/x2")
-ck "⑨ 缓存命中路径的可读瓦片变体：带 main0_u 的 ${nu} 个片元键，新编与缓存命中两遍都出 _bf 且逐字节相同 ${b9}/${nu}（$(grep -m1 'shader cache' "$T/9x2.log")）" '[ "$nu" -gt 0 ] && [ "$b9" = "$nu" ] && grep -q "shader cache: hit $nu, rebuilt 0" "$T/9x2.log"' "⑨缓存命中变体${b9}/${nu}"
+ck "⑨ 缓存命中路径的可读瓦片变体：可出整数输出的 ${nu} 个片元键，新编与缓存命中两遍都出 _bf 且逐字节相同 ${b9}/${nu}（$(grep -m1 'shader cache' "$T/9x2.log")）" '[ "$nu" -gt 0 ] && [ "$b9" = "$nu" ] && grep -q "shader cache: hit $nu, rebuilt 0" "$T/9x2.log"' "⑨缓存命中变体${b9}/${nu}"
 python3 "$H/t_color_round_fetch.py" "$R/build/dsx/libdsx.dylib" > "$T/11.log" 2>&1; r11=$?
 ck "⑪ half 出口与可读附件变体：$(tail -1 "$T/11.log")" '[ $r11 = 0 ]' "⑪half与fetch"
 [ $bad = 0 ] || for f in "$T"/[1-8].log; do grep -m3 '例 \|✗' "$f"; done

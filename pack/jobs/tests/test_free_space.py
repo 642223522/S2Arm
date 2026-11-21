@@ -202,7 +202,7 @@ class LibraryGate(JobCase):
                 library.require_fat32_fits(self.c, game(50 << 30), "D:\\库")
 
     def test_copy_tree_links_materializes_when_target_has_no_links(self):
-        # 搬库 / 移动游戏到建不了链接的盘：链接指向的目录整份拷过来；产物根的 <款>@现行 拷成真目录、版本名记进 .root_tag（roots 实目录模式按它认）
+        # 搬库 / 移动游戏到建不了链接的盘：链接指向的目录整份拷过来；老库产物根的现行链接 <款>@现行 不展开，拷成指针文件（内容 = 版本目录名）
         src = self.root / "src"; (src / "roots" / "款@v1").mkdir(parents=True); (src / "roots" / "款@v1" / "f").write_bytes(b"v1")
         os.symlink("款@v1", src / "roots" / "款@现行")
         dst = self.root / "dst"
@@ -214,8 +214,8 @@ class LibraryGate(JobCase):
         with patch.object(library.os, "symlink", no_dir_links):
             library.copy_tree_links(src, dst)
         live = dst / "roots" / "款@现行"
-        self.assertFalse(live.is_symlink()); self.assertEqual((live / "f").read_bytes(), b"v1")
-        self.assertEqual((live / ".root_tag").read_text(encoding="utf-8").strip(), "款@v1")
+        self.assertFalse(live.is_symlink()); self.assertEqual(live.read_text(encoding="utf-8"), "款@v1\n")
+        self.assertEqual((dst / "roots" / "款@v1" / "f").read_bytes(), b"v1")
 
     def test_require_apfs_windows_wants_ntfs(self):
         with as_windows(library):
@@ -269,7 +269,7 @@ class FreeSpace(JobCase):
             "saves": [write(layout.path(self.c, GID, "saves") / "slot0.bin", 1 * MIB)],
             "logs": [write(ios / "logs" / "build.log", 1 * MIB)],   # 在 build/ 里，但不算「旧版残留」，只报不删
         }
-        self.mib = {"legacy": 4, "shaders": 3, "mac": 1, "ipa": 1, "saves": 1, "logs": 1}
+        self.mib = {"legacy": 4, "shaders": 3, "mac": 1, "ipa": 1, "saves": 1, "logs": 1, "selfsign": 0}   # 这套夹具没导出过自签包
         self.shared = [write(W / "cache" / "air" / "shared.bin", 1 * MIB)]   # 各款共用的编库缓存：不归任何一款
         self.other = [write(layout.build_dir(self.c, OTHER) / "x.bin", 1 * MIB), write(layout.image_ios(self.c, OTHER) / "pack" / "o.bin", 1 * MIB)]
 
@@ -300,6 +300,25 @@ class FreeSpace(JobCase):
         self.assert_mib(sum(p["bytes"] for p in other["parts"] if p["id"] == "ipa"), 1)
         with self.assertRaises(Failure):
             library.space_survey(self.context("spaceSurvey", gameId="0100000000000FFF"))
+
+    def test_selfsign_export_img_is_listed_and_freed_per_game(self):
+        # #1471：「S2Arm 自签导出」里每款一份完整 .img（不和 games/ 共用块），按文件头游戏号归到这款；只删这款的，别款的留着
+        def img(path, gid, size):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            head = b"S2AIMG01" + (1).to_bytes(4, "little") + b"\0" * 4 + gid.upper().encode("ascii")
+            with open(path, "wb") as f:
+                f.write(head + b"\1" * (size - len(head)))
+            return path
+        mine = img(self.c.library / "S2Arm 自签导出" / "游戏A.img", GID, 2 * MIB)
+        other = img(self.c.library / "S2Arm Self-Sign Export" / "Game B.img", OTHER, 1 * MIB)
+        g = library.space_survey(self.context("spaceSurvey", gameId=GID))["games"][0]
+        self.assertEqual([p["id"] for p in g["parts"]], ["legacy", "shaders", "mac", "ipa", "selfsign"])
+        self.assert_mib(next(p["bytes"] for p in g["parts"] if p["id"] == "selfsign"), 2)
+        out = library.space_free(self.context("spaceFree", gameId=GID, library=str(self.c.library), parts=["selfsign"]))
+        self.assertEqual([p["id"] for p in out["parts"]], ["selfsign"])
+        self.assertFalse(mine.exists())
+        self.assertTrue(other.exists())
+        self.assertNotIn("selfsign", [p["id"] for p in library.space_survey(self.context("spaceSurvey", gameId=GID))["games"][0]["parts"]])
 
     def test_free_deletes_only_chosen_parts(self):
         out = library.space_free(self.context("spaceFree", gameId=GID, library=str(self.c.library), parts=["ipa", "shaders"]))

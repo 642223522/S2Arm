@@ -20,6 +20,8 @@ struct PhoneJobPanel: View {
     /// 外层已用大标题写明是什么操作（导出自签包弹层）时不再画这一行，免得「导出自签包」下面又一行「导出，自己签名安装」
     var showsOperation = true
     @State private var showDetails = false
+    /// 「更新这 N 款」里玩家取消勾的老款（缺省全勾）
+    @State private var legacyOff: Set<String> = []
 
     private var language: String { loc.lang.sharedCode }
     /// 共用体验表的文案；查不到（不该发生，单测守着）退回 fallback，不把键名上屏
@@ -49,6 +51,7 @@ struct PhoneJobPanel: View {
             switch session.phase {
             case .running, .stopping: running
             case .finished(.failed) where pendingConfirm != nil: dropAsk
+            case .finished(.completed) where session.kind == .install && model.phoneOutcome?.app != nil: appDone(model.phoneOutcome!.app!)
             case .finished(.completed) where exporting: exported
             case .finished(.completed): success
             case .finished(.cancelled): headline(seal: AnyView(StatusSeal(symbol: "xmark", color: LauncherPalette.unbuilt)), title: t("phone.cancelled", "已取消"), subtitle: "")
@@ -154,8 +157,33 @@ struct PhoneJobPanel: View {
                 }
             }
             if let o { SGradeResultView(results: o.sgrade, text: { t($0) }) }   // 补进 S 级优化的各款：打上 / 没打上（11-14）
+            if session.kind == .installUpdate, let o, !(o.legacy.isEmpty && o.legacyElsewhere.isEmpty) { legacySection(o) }
         }
         .accessibilityIdentifier("phone.done")
+    }
+
+    // ---- 0.5.x 老款：装好 App 的同一页接着列出、默认全勾，点「更新这 N 款」按「更新所选」逐款推（排队、有进度、可停）；别处装的只写一行 ----
+    private func legacySection(_ o: PhoneOutcome) -> some View {
+        let picked = o.legacy.filter { !legacyOff.contains($0.id) }
+        return VStack(alignment: .leading, spacing: 12) {
+            if !o.legacy.isEmpty {
+                Text(t("phone.legacy.title").replacingOccurrences(of: "{0}", with: "\(o.legacy.count)")).font(.manrope(20, .heavy)).foregroundStyle(LauncherPalette.building)
+                Text(t("phone.legacy.note")).font(.manrope(14)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                ForEach(o.legacy) { g in
+                    Toggle(isOn: Binding(get: { !legacyOff.contains(g.id) }, set: { on in if on { legacyOff.remove(g.id) } else { legacyOff.insert(g.id) } })) {
+                        Text(g.name).font(.manrope(15))
+                    }.toggleStyle(.checkbox).controllerID("phone.legacy." + g.id)
+                }
+                Button { model.updateSelected(ids: picked.map(\.id), device: o.legacyDevice.isEmpty ? nil : o.legacyDevice) } label: {
+                    LauncherHeroActionLabel(title: t("phone.legacy.button").replacingOccurrences(of: "{0}", with: "\(picked.count)"), symbol: "arrow.up.circle")
+                }.controllerButtonStyle(.plain).disabled(picked.isEmpty || model.phoneBusy).controllerID("phone.legacy.update").controllerShortcut(.rightTrigger)
+            }
+            if !o.legacyElsewhere.isEmpty {
+                Text(t("phone.legacy.elsewhere").replacingOccurrences(of: "{0}", with: "\(o.legacyElsewhere.count)").replacingOccurrences(of: "{1}", with: o.legacyElsewhere.joined(separator: "、")))
+                    .font(.manrope(14)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .accessibilityIdentifier("phone.legacy")
     }
 
     // ---- 导出好了：放进哪个文件夹、几款、多大，怎么装一句话，打开文件夹（作业完成时已自动打开一次）----
@@ -204,47 +232,176 @@ struct PhoneJobPanel: View {
                     Text(line).font(.manrope(14)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             }
-            // 推到手机（11-13）：推进去了说一句；没推成写作业给的原因（缺线 / 没信任 / 没装 S2Arm…）+「推到手机」重试
-            if !o.pushed.isEmpty {
-                Label(t("phone.export.pushed").replacingOccurrences(of: "{0}", with: o.pushed.joined(separator: "、")), systemImage: "checkmark.circle")
-                    .font(.manrope(14)).fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("phone.export.pushed")
-            } else {
-                Text(o.pushNote.isEmpty ? t("phone.export.push_hint") : loc.backend(o.pushNote))
-                    .font(.manrope(14)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("phone.export.pushNote")
-            }
             HStack(spacing: 12) {
                 Button { NSWorkspace.shared.open(URL(fileURLWithPath: o.exportFolder)) } label: { LauncherHeroActionLabel(title: t("phone.export.open"), symbol: "folder") }
                     .controllerButtonStyle(.plain).accessibilityIdentifier("phone.export.open")
-                if o.pushed.isEmpty {
-                    Button { model.pushExportToPhone(gameID: session.gameID) } label: {
-                        LauncherHeroActionLabel(title: model.exportPushing ? t("phone.export.pushing") : t("phone.export.push"), symbol: "iphone.and.arrow.forward")
-                    }
-                    .controllerButtonStyle(.plain).disabled(model.exportPushing).controllerID("phone.export.push").controllerShortcut(.rightTrigger)
-                }
             }
             SGradeResultView(results: o.sgrade, text: { t($0) })   // 补进 S 级优化的各款：打上 / 没打上（11-14）
         }
         .accessibilityIdentifier("phone.done")
     }
 
+    // ---- 独立 App（0.6.4）：A = 直接装到手机（装到哪台、手机上叫什么、哪天到期）；B = 只导出 ipa（文件夹、文件、签名、按签名方式的下一步）----
+    //   两页都有「在访达中显示」（选中 ipa）；关闭在外层（装机页「关闭」）。各条分叉各自走到这里，不靠说明句指路（修流程不加提示）
+    private func appDone(_ a: StandaloneApp) -> some View {
+        let o = model.phoneOutcome ?? PhoneOutcome()
+        let size = { (b: Int64?) in b.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "" }
+        var stats: [(String, String)] = []
+        var lines: [String] = []
+        if !a.exported {
+            stats.append((t("app.done.name"), a.name))
+            if let end = a.expiresAt {
+                let days = max(0, Int(ceil(end.timeIntervalSinceNow / 86400)))
+                let day = end.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted).locale(Locale(identifier: language)))
+                stats.append((t("app.done.expires"), t(a.expiresKnown ? "app.done.expiresValue" : "app.done.expiresEstimate")
+                    .replacingOccurrences(of: "{0}", with: day).replacingOccurrences(of: "{1}", with: "\(days)")))
+            }
+            stats.append((t("app.done.data"), (o.packBytes ?? 0) == 0 ? t("app.done.pushedNone")
+                : t("app.done.pushed").replacingOccurrences(of: "{0}", with: "\(o.packFiles ?? 0)").replacingOccurrences(of: "{1}", with: size(o.packBytes))))
+            lines.append(t("app.done.open").replacingOccurrences(of: "{0}", with: a.name))
+            lines += notes   // 第一次装要信任开发者、免费 Apple ID 的限制（装机页给的）
+        } else {
+            lines.append(a.signedCert.isEmpty ? t("app.export.unsigned") : t("app.export.signedCert").replacingOccurrences(of: "{0}", with: a.signedCert))
+        }
+        let files: [(String, String)] = a.exported
+            ? [((a.ipaPath as NSString).lastPathComponent, size(a.ipaBytes)), ((a.s2armPath as NSString).lastPathComponent, size(a.s2armBytes))]
+                + (a.resourceLinked && !a.resourcePath.isEmpty ? [((a.resourcePath as NSString).lastPathComponent,
+                    [size(a.resourceBytes), t("app.export.noExtraSpace")].filter { !$0.isEmpty }.joined(separator: " · "))] : [])
+            : []
+        return VStack(alignment: .leading, spacing: 22) {
+            // 大标题用短句（装机窗只有 600 宽）：装到哪台 / 哪款游戏放副标题，各项事实逐行「名称 + 值」，长值换行不截断
+            headline(seal: AnyView(SuccessSeal()), title: t(a.exported ? "phone.headline.export" : "phone.headline.install"),
+                     subtitle: a.exported ? t("app.export.title").replacingOccurrences(of: "{0}", with: a.name) : t("phone.done.install").replacingOccurrences(of: "{0}", with: device))
+            if a.exported {
+                Button { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: a.ipaPath)]) } label: {
+                    Text(t("app.export.folder").replacingOccurrences(of: "{0}", with: (a.gameFolder as NSString).abbreviatingWithTildeInPath))
+                        .font(.manrope(14)).foregroundStyle(.secondary).underline().fixedSize(horizontal: false, vertical: true).multilineTextAlignment(.leading)
+                }
+                .buttonStyle(.plain).help(a.gameFolder).accessibilityIdentifier("app.export.folder")
+            }
+            ForEach(Array(stats.enumerated()), id: \.offset) { _, s in PhoneJobFact(label: s.0, text: s.1) }
+            if !files.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(t("app.export.files")).font(.manrope(14, .semibold)).foregroundStyle(.secondary)
+                    ForEach(Array(files.enumerated()), id: \.offset) { _, f in
+                        HStack(spacing: 10) {
+                            Image(systemName: "doc").foregroundStyle(.secondary)
+                            Text(f.0).font(.manrope(15, .medium)).lineLimit(1).truncationMode(.middle)
+                            if !f.1.isEmpty { Text(f.1).font(.manrope(13)).foregroundStyle(.secondary).monospacedDigit() }
+                        }
+                    }
+                    if a.exported, !a.resourceLinked, !a.resourcePath.isEmpty {
+                        Text(t("app.export.imgElsewhere").replacingOccurrences(of: "{0}", with: a.resourcePath)).font(.manrope(13)).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                    }
+                }
+                .accessibilityIdentifier("app.export.files")
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                    Text(line).font(.manrope(14)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            if a.exported, !a.nextSteps.isEmpty {   // 下一步：只给这次签名方式那一段（作业层 app_folder.next_steps，按界面语言写好）
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(t("phone.next")).font(.manrope(15, .bold))
+                    ForEach(Array(a.nextSteps.enumerated()), id: \.offset) { k, step in
+                        HStack(alignment: .top, spacing: 10) {
+                            Text("\(k + 1)").font(.manrope(13, .bold)).frame(width: 20, height: 20).background(LauncherPalette.ready.opacity(0.25), in: Circle())
+                            Text(step).font(.manrope(14)).fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    if !a.readmePath.isEmpty {
+                        Text(t("app.export.readme").replacingOccurrences(of: "{0}", with: (a.readmePath as NSString).lastPathComponent)).font(.manrope(13)).foregroundStyle(.secondary)
+                    }
+                }
+                .accessibilityIdentifier("app.export.next")
+            }
+            HStack(spacing: 12) {
+                Button { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: a.ipaPath)]) } label: { LauncherHeroActionLabel(title: t("app.done.reveal"), symbol: "folder") }
+                    .controllerButtonStyle(.plain).disabled(a.ipaPath.isEmpty).controllerID("app.reveal").accessibilityIdentifier("app.reveal")
+                if a.exported, !a.readmePath.isEmpty {
+                    Button { NSWorkspace.shared.open(URL(fileURLWithPath: a.readmePath)) } label: { LauncherHeroActionLabel(title: t("app.export.openReadme"), symbol: "doc.text") }
+                        .controllerButtonStyle(.plain).controllerID("app.readme").accessibilityIdentifier("app.readme")
+                }
+            }
+            SGradeResultView(results: o.sgrade, text: { t($0) })
+        }
+        .accessibilityIdentifier(a.exported ? "app.exported" : "app.installed")
+    }
+
     // ---- 失败：红色标记、大字、原因、下一步、复制错误摘要 ----
+    /// 独立 App 已装上、资源没推完（作业失败结果 appInstalled）
+    private var partial: Bool { session.kind == .install && model.phoneAppPartial != nil }
+
     private var failure: some View {
         VStack(alignment: .leading, spacing: 24) {
             headline(seal: AnyView(StatusSeal(symbol: "exclamationmark", color: LauncherPalette.danger)),
-                     title: exporting ? t("phone.failed.export") : t("phone.failed." + session.kind.rawValue, t("phone.failed.install")), subtitle: loc.backend(session.message))
-            if !session.suggestion.isEmpty {
+                     title: partial ? t("app.failed.partial") : exporting ? t("phone.failed.export") : t("phone.failed." + session.kind.rawValue, t("phone.failed.install")),
+                     subtitle: loc.backend(session.message))
+            if partial {   // 独立 App 装上了、资源没推完：重试只推剩下的（推送只推变了的文件）
+                PhoneJobFact(label: t("phone.next"), text: t("app.failed.partialNext"))
+            } else if !session.suggestion.isEmpty {
                 PhoneJobFact(label: t("phone.next"), text: loc.backend(session.suggestion))
+            }
+            if let choice = model.pushChoice, session.failureCode == PhoneOverview.choiceRequiredCode, session.kind == .install || session.kind == .pushSelected {
+                chooser(choice)
             }
             ReportHint()
             HStack(spacing: 12) {
+                // 还没用 Apple ID 登录 / 登录过期（0.6.0 Mac：S2Arm 自己登录）：就在这里登录，登录好再点一次（RECOVERY 的「登录 Apple ID」指的就是它）
+                if let code = session.failureCode, let reason = S2ArmLauncherModel.appleLoginCodes[code] {
+                    Button { model.openAppleLogin(host: model.installViewOpen != nil ? "install" : "main", reason: reason) } label: {
+                        LauncherHeroActionLabel(title: t("install.login.open"), symbol: "person.crop.circle")
+                    }
+                    .controllerButtonStyle(.plain).controllerID("phone.appleLogin").controllerShortcut(.rightTrigger)
+                }
+                if session.kind == .pushSelected {   // 「更新所选」有款没推成（#1756）：续推没推成的那几款
+                    Button { model.retryUpdateSelected() } label: { LauncherHeroActionLabel(title: t("phone.retry"), symbol: "arrow.clockwise") }
+                        .controllerButtonStyle(.plain).disabled(model.phoneBusy).controllerID("phone.retry").controllerShortcut(.rightTrigger)
+                }
+                if session.kind == .install, let retry = model.lastInstallRetry {   // 单款推到 iPhone / 导出没走成：同样的参数再来一次（0.6.4）
+                    Button { retry() } label: { LauncherHeroActionLabel(title: t("phone.retry"), symbol: "arrow.clockwise") }
+                        .controllerButtonStyle(.plain).disabled(model.phoneBusy).controllerID("phone.retry").controllerShortcut(.rightTrigger)
+                }
                 if session.kind == .installUpdate {
                     Button { model.retryPhoneUpdate() } label: { LauncherHeroActionLabel(title: t("phone.retry"), symbol: "arrow.clockwise") }
                         .controllerButtonStyle(.plain).disabled(model.phoneBusy).controllerID("phone.retry").controllerShortcut(.rightTrigger)
+                }
+                // 装到 iPhone / 更新没走成（没连手机、签不上…）：换另一条路——导出自签包，不连手机也能一步走完
+                if !exporting, session.kind == .install || session.kind == .installUpdate {
+                    Button { model.switchToSelfSign(session, language: language) } label: { LauncherHeroActionLabel(title: t("phone.switch_export"), symbol: "square.and.arrow.up") }
+                        .controllerButtonStyle(.plain).disabled(model.phoneBusy).controllerID("phone.switchExport")
                 }
                 CopyReportButton(model: model, gameID: session.gameID, operations: [session.kind.rawValue], fallback: session.message)
             }
         }
         .accessibilityIdentifier("phone.failed")
+    }
+
+    /// 推送停在「装着不止一个 S2Arm、还没选」：就在失败页列出候选（同总控台「选用哪个 S2Arm」：只写事实、不推荐），点一个记住并自动重推刚才那一次
+    private func chooser(_ choice: S2ArmLauncherModel.PushChoice) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(t("console.choose.title")).font(.manrope(13)).foregroundStyle(.white.opacity(0.8)).fixedSize(horizontal: false, vertical: true)
+            ForEach(choice.candidates, id: \.bundleId) { c in
+                Button { model.chooseApp(device: choice.device, bundleId: c.bundleId) } label: {
+                    HStack(spacing: 10) {
+                        if model.consoleChoosing == c.bundleId { ProgressView().controlSize(.small) } else { Image(systemName: "app.badge.checkmark") }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(S2ArmLauncherModel.candidateLabelKeys(c).map { t($0) }.joined(separator: " · ")).font(.manrope(13, .medium))
+                            Text(c.bundleId + (c.team.isEmpty ? "" : " · " + t("console.choose.team").replacingOccurrences(of: "{0}", with: c.team)))
+                                .font(.manrope(11)).foregroundStyle(.white.opacity(0.55))
+                        }
+                    }
+                }
+                .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("phone.chooseApp." + c.bundleId)
+                .disabled(model.consoleChoosing != nil || model.phoneBusy)
+                .accessibilityIdentifier("phone.chooseApp." + c.bundleId)
+            }
+            if let why = model.consoleChooseError {
+                Text(loc.backend(why)).font(.manrope(12)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
+        }.accessibilityIdentifier("phone.chooseApp")
     }
 
     /// 这次失败是作业层可确认继续的停装（会挤掉别处装的游戏 / 存档没能备份 / 都要按新版重出……，S2ArmLauncherModel.confirmCodes），且待确认的就是这一单
@@ -263,6 +420,11 @@ struct PhoneJobPanel: View {
             HStack(spacing: 12) {
                 Button { if let d = model.dropConfirm { model.confirmDrop(d) } } label: { LauncherHeroActionLabel(title: t("install.drop_confirm"), symbol: "arrow.right") }
                     .controllerButtonStyle(.plain).controllerID("phone.drop.confirm").controllerShortcut(.rightTrigger)
+                // 这个码有并列的另一条路（共享体验表 alternate，如新建证书确认的「改用已有证书」）：玩家自己选，点了不重发、去那个动作的落点
+                if let d = pendingConfirm, let alt = S2ArmLauncherModel.confirmAlternates[d.code] {
+                    Button(t(alt.labelKey)) { model.takeConfirmAlternate(d) }
+                        .controllerButtonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("phone.drop.alternate")
+                }
                 Button(t("phone.drop.cancel")) { model.dropConfirm = nil; model.backFromPhone() }
                     .controllerButtonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("phone.drop.cancel")
             }

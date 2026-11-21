@@ -394,6 +394,29 @@ int main(void) {
                slot_of[3] == 3 && slot_of[4] == -1);   // 第 5 只丢弃
         assert(s2a_slot_plan(none, five, 0, 4, slot_of) == 1);   // 没有手柄：1 格（触屏 / 键盘）
     }
+    // #1428：iPhone 上 NS2 Pro（BLE）和系统手柄一起分槽（ios/controller.m 给 NS2 Pro 一个固定身份 N），期望按「先连先占、不重排、断开留空」手算
+    {
+        static const char X, Y, N;
+        int slot_of[3];
+        const void *empty[4] = {0};
+        const void *x[1] = {&X};
+        assert(s2a_slot_plan(empty, x, 1, 4, slot_of) == 1 && slot_of[0] == 0);   // 魔派先连：玩家 1
+        const void *p1[4] = {&X};
+        const void *xn[2] = {&X, &N};
+        assert(s2a_slot_plan(p1, xn, 2, 4, slot_of) == 2 && slot_of[0] == 0 && slot_of[1] == 1);   // NS2 Pro 后连：玩家 2（原先不分槽，没输入）
+        const void *n_first[4] = {&N};
+        assert(s2a_slot_plan(n_first, xn, 2, 4, slot_of) == 2 && slot_of[1] == 0 && slot_of[0] == 1);   // NS2 Pro 先连：仍是玩家 1，魔派顺延玩家 2
+        const void *p2[4] = {&X, &N};
+        const void *n_only[1] = {&N};
+        assert(s2a_slot_plan(p2, n_only, 1, 4, slot_of) == 2 && slot_of[0] == 1);   // 魔派断开：NS2 Pro 留玩家 2、不顶上来，玩家 1 空着
+        const void *p3[4] = {NULL, &N};
+        const void *ny[2] = {&N, &Y};
+        assert(s2a_slot_plan(p3, ny, 2, 4, slot_of) == 2 && slot_of[0] == 1 && slot_of[1] == 0);   // 新来的系统手柄占空出的玩家 1
+        const void *x_only[1] = {&X};
+        assert(s2a_slot_plan(p2, x_only, 1, 4, slot_of) == 1 && slot_of[0] == 0);   // NS2 Pro 断开：魔派留玩家 1，玩家 2 空着（最高占到槽 0 → 1 格）
+        const void *p4[4] = {&X, NULL};
+        assert(s2a_slot_plan(p4, xn, 2, 4, slot_of) == 2 && slot_of[0] == 0 && slot_of[1] == 1);   // NS2 Pro 重连：回空着的玩家 2
+    }
 
     const int iterations = 1000000;
     struct timespec start, end; int32_t axes[4];

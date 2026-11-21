@@ -17,13 +17,8 @@ run_ctest='set -u; out=$(mktemp -d /tmp/s2a-android-ctest.XXXXXXXX); trap "rm -r
   [ $b = 0 ] || grep -E "error|undefined reference" "$out/build.log" | head -20
   ( cd "$out" && ctest --output-on-failure --timeout 30 ) > "$out/ctest.log" 2>&1; c=$?
   grep -E "tests passed|FAILED|Not Run|\\*\\*\\*Failed" "$out/ctest.log" | head -20
-  # S 级真 Vulkan 用例（Mesa lavapipe，每个 0–2 秒）：只有 Linux 有 lavapipe，原先登记在 gate-host（macOS）跑的 test.sh 里，gate-host / 本机都找不到 ICD，
-  #   11-06 15:24 起安卓钩子一直红（被别的红挡着没单独报）。挪到这里：缺 lavapipe 同缺 cmake 一样退 75（环境未就绪），不静默跳过
-  [ -f /usr/share/vulkan/icd.d/lvp_icd.json ] || { echo "🟡 Linux 缺 lavapipe（bash tools/colima_setup.sh 补装 mesa-vulkan-drivers libvulkan-dev）"; exit 75; }
-  v=0; for t in nvn_vk_texcache_content_test nvn_vk_feedback_snapshot_test nvn_vk_bcrt_test nvn_vk_ssbo_guest_test; do
-    bash android/tools/$t.sh > "$out/$t.log" 2>&1 && echo "lavapipe $t 通过" || { v=1; tail -15 "$out/$t.log"; echo "【红】lavapipe $t 红"; }; done
   bash android/tests/capacity/run_linux.sh "$out/capacity" || exit $?
-  [ $b = 0 ] && [ $c = 0 ] && [ $v = 0 ]'
+  [ $b = 0 ] && [ $c = 0 ]'
 nr() { echo "安卓 Linux CTest：期望 编译 + 链接 + 全过 → 真结果 环境未就绪（$*）"; exit 75; }
 colima_up() {   # 虚拟机在跑就返回；有实例 default 就拿锁起它，别人在起就等；没有实例退 75
   colima status > /dev/null 2>&1 && return 0

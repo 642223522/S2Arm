@@ -194,8 +194,8 @@ _DICTS = {}
 def zs_dicts(src, tmp):
     """原版 romfs 有 Pack/ZsDic.pack.zs（SARC，成员是 zstd 字典：魔数 37 A4 30 EC + 4 字节字典号）→ 写到 tmp，返回 {字典号: 路径}；没有就空。"""
     p = os.path.join(src, 'Pack', 'ZsDic.pack.zs')
-    if not os.path.isfile(p): return {}
-    b = subprocess.run(['zstd', '-dcq', p], capture_output=True, check=True).stdout
+    if not romfs_list.is_file(p): return {}
+    b = _unzstd(p, [])
     if b[:4] != b'SARC': return {}
     doff, = struct.unpack_from('<I', b, 0xC); hs, = struct.unpack_from('<H', b, 4); nn, = struct.unpack_from('<H', b, hs + 6); out = {}
     for i in range(nn):
@@ -209,15 +209,20 @@ def zs_dict_id(head):
     fhd = head[4]; n = (0, 1, 2, 4)[fhd & 3]; o = 5 if fhd & 0x20 else 6
     return int.from_bytes(head[o:o + n], 'little') if n else 0
 
+def _unzstd(p, dz):
+    """zstd -dcq 解出 p：盘上有这个文件就按路径交（同原先），RomFS 不落散文件、只在镜像里时从镜像读出经标准输入交"""
+    if os.path.isfile(p): return subprocess.run(['zstd', '-dcq', *dz, p], capture_output=True, check=True).stdout
+    return subprocess.run(['zstd', '-dcq', *dz], input=romfs_list.read_file(p), capture_output=True, check=True).stdout
+
 def load(p):
     """按魔数认：zstd（带字典的按帧头字典号取字典）/ Yaz0 / 裸 SARC；别的返回 None。"""
-    with open(p, 'rb') as f: head = f.read(18)
+    with romfs_list.open_file(p) as f: head = f.read(18)
     if head[:4] == b'\x28\xb5\x2f\xfd':
         did = zs_dict_id(head); dz = ['-D', _DICTS[did]] if did else []   # 字典号不在字典表里 → KeyError，记报错
-        return bytearray(subprocess.run(['zstd', '-dcq', *dz, p], capture_output=True, check=True).stdout), 'zstd', did
+        return bytearray(_unzstd(p, dz)), 'zstd', did
     head = head[:4]
-    if head == b'Yaz0': b = open(p, 'rb').read(); return yaz0_dec(b), 'yaz0', b[:16]
-    if head == b'SARC': return bytearray(open(p, 'rb').read()), 'raw', None
+    if head == b'Yaz0': b = romfs_list.read_file(p); return yaz0_dec(b), 'yaz0', b[:16]
+    if head == b'SARC': return bytearray(romfs_list.read_file(p)), 'raw', None
     return None
 
 def save(q, raw, kind, hdr):
@@ -251,13 +256,13 @@ def main():
     todo = []
     for sub in subs:
         root = os.path.join(src, sub)
-        if not os.path.isdir(root): continue
+        if not romfs_list.is_dir(root): continue
         for dp, _, fns in romfs_list.walk(root):
             todo += [(os.path.join(dp, fn), os.path.relpath(os.path.join(dp, fn), src)) for fn in sorted(fns)]
     # 逐包互不相干（各自解压、解析、写各自的覆盖文件）：按包多进程并行，结果按原顺序收（日志行序、计数与串行逐字节相同）。
     #   11-03 Switch 2 出包线：火纹 4,593 个包单线程 Spare-host 174 秒。J = 本阶段分到的路数（缺省本机核数）；字典表经 initializer 交给子进程（spawn 不继承全局）
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', 'tools')); from pool_workers import process_pool_size
-    jobs = process_pool_size(int(os.environ.get('J') or os.cpu_count() or 1))   # Windows 进程池至多 61 路（#1332）
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', 'tools')); from pool_workers import process_pool_size, env_jobs
+    jobs = process_pool_size(env_jobs('J'))   # Windows 进程池至多 61 路（#1332）
     with cf.ProcessPoolExecutor(jobs, initializer=_set_dicts, initargs=(dict(_DICTS),)) as ex:
         for got, nf, c, lines, err in ex.map(_one, [(p, rel, dst, W) for p, rel in todo], chunksize=16):
             files += got; flyt[0] += nf; changed += c; errs += err; log += lines

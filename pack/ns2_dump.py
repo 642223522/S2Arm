@@ -12,11 +12,11 @@ Switch 2 游戏现在拿到手的形态是主机上导出的松散目录（11-04
              解成段不压缩的 NSO（S2A_NX_UNPACK = nx_unpack 程序，一键出包会给；没给就报红）
     romfs/   最新更新的 romfs 里有与本体逐字节相同的文件 = 全量（导出工具挂的是打过补丁的文件系统），只用它；
              没有 = 差量，本体叠更新（更新覆盖），打黄字说明
-             镜像形态（S2A_ROMFS_IMAGE=1）：不出 romfs/ 散文件，选出的文件交 nx_unpack --romfs-image 直接建 romfs.std（标准 RomFS）；
+             镜像形态（缺省，S2A_ROMFS_IMAGE=0 回 romfs/ 散文件）：不出 romfs/ 散文件，选出的文件交 nx_unpack --romfs-image 直接建 romfs.std（标准 RomFS）；
              版本目录里是 romfs.nupmap（镜像形态的 pack/ns2_nup.py 展开）时，数据直接从 NUP 容器读
-    aoc/<序号>/ + aoc.tsv   序号 = DLC 标题号 − 程序号 − 0x1000（同 nx_unpack）
+    aoc/<序号>/ + aoc.tsv   序号 = DLC 标题号 − 应用号（程序号去掉末位）− 0x1000（同 nx_unpack）
     ctl/control.nacp       导出带了控制分区（版本目录里 romfs 之外的 control.nacp）就用原件 + icon.jpg；没带才合成（README.synth 标明非原件，
-                           标题取目录名、不是游戏自带信息）：16 语言标题、启动要账号、存档属主 = 程序号、账号存档 128 MB / 日志 64 MB；游戏代码挂临时存储 / 本机存档 / 缓存存储的（按 nn::fs 导入名判）另声明对应大小（save_kinds）
+                           标题取目录名、不是游戏自带信息）：16 语言标题、启动要账号、应用号（0x3038）与存档属主 = 程序号、账号存档 128 MB / 日志 64 MB；游戏代码挂临时存储 / 本机存档 / 缓存存储的（按 nn::fs 导入名判）另声明对应大小（save_kinds）
                            （字段与取值同 11-03 火纹合成件，那份在 Mac / 测试设备2 实玩过）
     unpack.tsv             title_id / name / name_zh / display_version / update / base / builds / aoc
 程序号从 base/exefs/main.npdm 的 ACI0 读，不看目录名。文件一律 APFS 克隆（不占新空间），跨卷才真拷。
@@ -25,7 +25,7 @@ Switch 2 游戏现在拿到手的形态是主机上导出的松散目录（11-04
 
 用法：
     ns2_dump.py --detect <目录>                 是导出目录就打印程序号、退出 0；不是退出 1
-    ns2_dump.py <导出目录> <输出解包目录> [--name <款名>]
+    ns2_dump.py <导出目录> <输出解包目录> [--name <款名>] [--base <本体目录>]   本体在别处（散文件解包目录）：<导出目录> 可以是空目录
 """
 import ctypes
 import hashlib
@@ -110,6 +110,8 @@ def normalize_exefs(exsrc, dst, tid, nxu=None):
             if fl & ~0xFF:
                 raise ValueError(f'{src}：NSO 标志 0x{fl:x} 有不认识的位 0x{fl & ~0xFF:x}，压缩方式不明不收')
             builds.append(f'{rel}:{hdr[0x40:0x50].hex()}')
+            if not fl & 0x80:   # 解不开在这里就点名报（不等到后面找符号名时抛 Python 栈，#1522）；哈希对不上记黄照常用
+                nso_segments(src, lambda n, s: print(f'🟡 程序文件 {n} 的 {s} 段数据和文件头记录的哈希对不上（多半是打过补丁 / mod，或个别块损坏），照常用'))
             if fl & 0x80:
                 nxu = nxu or os.environ.get('S2A_NX_UNPACK')
                 if not nxu or not os.path.isfile(nxu):
@@ -142,22 +144,61 @@ SAVE_KINDS = (   # （nn::fs 修饰名片段，[(nacp 偏移, 值)…]，说明�
 )
 
 
-def nso_image(path):
-    """NSO 三段解开后拼起来（只为找符号名，不按内存布局摆）。段压缩（标志 0–2 位）是 LZ4 块；ZBIC 已在上面交 nx_unpack 解成不压缩"""
+NSO_SEGS = ('text', 'rodata', 'data')
+DAMAGED = '这个程序文件坏了或被改过，请重新导出（最好导成 NSP / XCI）'
+
+
+def nso_segments(path, mismatch=None):
+    """NSO 三段解开（段压缩：标志 0–2 位，LZ4 块）；标志 3–5 位要求核段哈希（头 0xA0 起每段 SHA-256，按解开后的内容）就核。
+    → [(段名, 字节)…]。物理上解不开 → NsoDamaged（点名文件、哪一段）。
+    哈希对不上但解得开不拒（维护者 11-17：校验不过不拒收——可能是玩家打过补丁 / mod 的程序，照样能玩）：交 mismatch(文件名, 段名) 记一笔，内容照常用。
+    ZBIC（0x80）不在这里解（交 nx_unpack）"""
     d = open(path, 'rb').read()
-    if d[:4] != b'NSO0' or len(d) < 0x100:
-        return d
     fl = struct.unpack_from('<I', d, 0x0C)[0]
     out = []
-    for i in range(3):
+    for i, seg in enumerate(NSO_SEGS):
         fo, _, size = struct.unpack_from('<III', d, 0x10 + i * 16)
         csz = struct.unpack_from('<I', d, 0x60 + i * 4)[0]
         raw = d[fo:fo + (csz if fl & (1 << i) else size)]
         if fl & (1 << i) and raw:
             import lz4.block   # 出包 Python 依赖（launchers/macos/requirements-runtime.txt）
-            raw = lz4.block.decompress(raw, uncompressed_size=size)
-        out.append(raw)
-    return b''.join(out)
+            try:
+                raw = lz4.block.decompress(raw, uncompressed_size=size)
+            except lz4.block.LZ4BlockError:
+                raise NsoDamaged(os.path.basename(path), seg) from None
+        if fl & (8 << i) and mismatch and hashlib.sha256(raw).digest() != d[0xA0 + i * 32:0xC0 + i * 32]:
+            mismatch(os.path.basename(path), seg)
+        out.append((seg, raw))
+    return out
+
+
+class NsoDamaged(ValueError):
+    def __init__(self, name, seg):
+        self.name, self.seg = name, seg
+        super().__init__(f'程序文件 {name} 的 {seg} 段解不开：{DAMAGED}')
+
+
+def nso_image(path):
+    """NSO 三段解开后拼起来（只为找符号名，不按内存布局摆）。ZBIC 已在上面交 nx_unpack 解成不压缩"""
+    with open(path, 'rb') as f:
+        if f.read(4) != b'NSO0' or os.path.getsize(path) < 0x100:
+            return open(path, 'rb').read()
+    return b''.join(raw for _, raw in nso_segments(path))
+
+
+def check_exefs(exefs):
+    """导入 / 整理时先把 exefs 里每个 NSO 试解一遍（散文件没有整包校验，坏了要到出包才发现，#1522）：解不开抛 NsoDamaged；
+    → 段哈希对不上的 [(文件名, 段名)…]（照常收，调用方记黄）。ZBIC（标志 0x80）交 nx_unpack 解时自己会报，这里跳过"""
+    off = []
+    for f in sorted(os.listdir(exefs)):
+        p = os.path.join(exefs, f)
+        if not os.path.isfile(p) or os.path.getsize(p) < 0x100:
+            continue
+        with open(p, 'rb') as h:
+            hdr = h.read(0x10)
+        if hdr[:4] == b'NSO0' and not struct.unpack_from('<I', hdr, 0x0C)[0] & 0x80:
+            nso_segments(p, lambda n, s: off.append((n, s)))
+    return off
 
 
 def save_kinds(exefs):
@@ -181,6 +222,7 @@ def synth_nacp(tid, name, saves=()):
     #   不按资源目录猜语言：各款语言资源的组织方式不同，没有通用判据
     struct.pack_into('<I', n, 0x302C, 1)
     n[0x3060:0x3061] = b'?'                         # DisplayVersion 未知
+    struct.pack_into('<Q', n, 0x3038, tid)          # PresenceGroupId = 程序号（常规 NACP 的应用号；安卓出包 / 装机 / 启动都按 0x3038 认游戏，留 0 则出包末步停在「has no application id」）
     struct.pack_into('<Q', n, 0x3078, tid)          # SaveDataOwnerId = 程序号（错了开存档 2002-6400，11-03 火纹）
     struct.pack_into('<q', n, 0x3080, 0x08000000)   # UserAccountSaveDataSize 128 MB
     struct.pack_into('<q', n, 0x3088, 0x04000000)   # UserAccountSaveDataJournalSize 64 MB
@@ -192,12 +234,13 @@ def synth_nacp(tid, name, saves=()):
 def fill_fixed(nacp, tid, saves=()):
     """原件的固定段（0x3000 起：启动账号、语言位、存档归属号与各存档尺寸）全零时补上存档字段 → (新内容, 是否补了)。
     某款 Switch 2 游戏的更新包元数据里带的控制数据只有标题和发行商、0x3000 往后全 0：原样用时宿主不建账号存档，游戏开存档 2002-1002 自己中止、起局黑屏。
-    补法同 synth_nacp 的存档部分（启动账号 Required、归属号 = 程序号、账号存档 128 / 64 MB、游戏代码挂的其余存档类别）；
+    补法同 synth_nacp 的存档部分（启动账号 Required、应用号与归属号 = 程序号、账号存档 128 / 64 MB、游戏代码挂的其余存档类别）；
     语言位保持 0：Switch 2 游戏支持表未知时服务层按宿主语言（#465），不写死英语。固定段不是全零（真原件）一字不动"""
     if len(nacp) < NACP_SIZE or any(nacp[0x3000:NACP_SIZE]):
         return nacp, False
     n = bytearray(nacp)
     n[0x3025] = 1
+    struct.pack_into('<Q', n, 0x3038, tid)   # 应用号（同 synth_nacp 的说明）
     struct.pack_into('<Q', n, 0x3078, tid)
     struct.pack_into('<q', n, 0x3080, 0x08000000)
     struct.pack_into('<q', n, 0x3088, 0x04000000)
@@ -206,8 +249,8 @@ def fill_fixed(nacp, tid, saves=()):
     return bytes(n), True
 
 
-def image_mode():   # 镜像形态开关（同 nx_unpack / ns2_nup）：romfs 不落散文件、直接出 romfs.std；读取方全迁完之前只给对照 / 测试开
-    return os.environ.get('S2A_ROMFS_IMAGE') == '1'
+def image_mode():   # 镜像形态开关（同 nx_unpack / ns2_nup）：romfs 不落散文件、直接出 romfs.std；缺省开，S2A_ROMFS_IMAGE=0 回旧路径
+    return os.environ.get('S2A_ROMFS_IMAGE') != '0'
 
 
 def romfs_of(verdir):
@@ -232,7 +275,7 @@ def write_image(rom, out):
     """镜像形态：rom（相对路径 → 来源）交 nx_unpack --romfs-image 建 out（标准 RomFS，与先克隆成 romfs/ 再 services/romfs_index.sh --std 逐字节相同）"""
     nxu = os.environ.get('S2A_NX_UNPACK')
     if not nxu or not os.path.isfile(nxu):
-        red('镜像形态（S2A_ROMFS_IMAGE=1）由 nx_unpack 建 romfs.std：设 S2A_NX_UNPACK=<nx_unpack 程序>（一键出包会给）')
+        red('镜像形态（缺省，S2A_ROMFS_IMAGE=0 关）由 nx_unpack 建 romfs.std：设 S2A_NX_UNPACK=<nx_unpack 程序>（一键出包会给）')
     lst = out + '.list'
     with open(lst, 'w', encoding='utf-8', newline='\n') as f:
         for rel, a in rom.items():
@@ -244,12 +287,14 @@ def write_image(rom, out):
             else:
                 n = os.path.getsize(a)
                 f.write(f'{r}\t{n}\t{os.path.abspath(a)}\t0\t{n}\tfile\t-\n')
+    # 标准输出（进度行、黄字）透传进出包日志，只收标准错误做报红原因（#1612：原先整段收住，玩家日志在这一步一行没有，4 小时分不清在跑还是卡住）
+    sys.stdout.flush()
     try:
-        r = subprocess.run([nxu, '--romfs-image', lst, out], capture_output=True, text=True)
+        r = subprocess.run([nxu, '--romfs-image', lst, out], stderr=subprocess.PIPE, text=True)
     finally:
         os.unlink(lst)
     if r.returncode:
-        red(f'建 romfs.std 失败（nx_unpack 退出 {r.returncode}）：{(r.stderr or r.stdout).strip()[-300:]}')
+        red(f'建 romfs.std 失败（nx_unpack 退出 {r.returncode}）：{(r.stderr or "").strip()[-300:]}')
 
 
 def same_file(rb, ru, limit=64):
@@ -299,9 +344,12 @@ def nacp_title(n, lang):   # ApplicationTitle[lang] 的名字（0x200 字节 UTF
     return t or None
 
 
-def src_key(dump):
+def src_key(dump, base=None):
     h = hashlib.sha256()
-    for rel, a in sorted(walk(dump).items()):
+    files = dict(walk(dump))
+    if base:   # 本体在别处（--base，散文件解包目录不链接进来）：按 base/<相对路径> 计入，同链接进来时一样
+        files.update({os.path.join('base', rel): a for rel, a in walk(base).items()})
+    for rel, a in sorted(files.items()):
         st = os.stat(a)
         h.update(f'{rel}\t{st.st_size}\t{st.st_mtime_ns}\n'.encode())   # 纳秒（审计 P1-54：秒级键同一秒内换同大小的文件认不出）
     h.update(hashlib.sha256(open(os.path.abspath(__file__), 'rb').read()).digest())
@@ -313,8 +361,8 @@ def src_key(dump):
     return h.hexdigest()[:16]
 
 
-def convert(dump, out, name=None):
-    base = os.path.join(dump, 'base')
+def convert(dump, out, name=None, base=None):
+    base = base or os.path.join(dump, 'base')
     try:
         tid = read_tid(os.path.join(base, 'exefs', 'main.npdm'))
     except (OSError, ValueError, struct.error) as e:
@@ -323,7 +371,7 @@ def convert(dump, out, name=None):
     upd = os.path.join(dump, 'updates', ups[-1]) if ups else None
     if len(ups) > 1:
         print(f'🟡 有 {len(ups)} 个更新（{", ".join(ups)}），取最新 {ups[-1]}')
-    key = src_key(dump)
+    key = src_key(dump, base if base != os.path.join(dump, 'base') else None)
     kf = os.path.join(out, '.ns2_dump_key')
     if os.path.isfile(kf) and open(kf).read().strip() == key:
         print(f'🟢 导出目录没变（键 {key}），复用 {out}')
@@ -337,6 +385,7 @@ def convert(dump, out, name=None):
     try:
         builds = normalize_exefs(exsrc, os.path.join(tmp, 'exefs'), tid)
     except (OSError, ValueError, RuntimeError, struct.error) as e:
+        shutil.rmtree(tmp, ignore_errors=True)   # 程序文件坏了等：不留半成品
         red(str(e))
 
     # romfs
@@ -366,7 +415,7 @@ def convert(dump, out, name=None):
     if image_mode():
         write_image(rom, os.path.join(tmp, 'romfs.std'))
     elif any(isinstance(a, tuple) for a in rom.values()):
-        red('这份 NUP 是按镜像形态展开的（只有 romfs.nupmap），整理也要镜像形态：设 S2A_ROMFS_IMAGE=1')
+        red('这份 NUP 是按镜像形态展开的（只有 romfs.nupmap），整理也要镜像形态：别设 S2A_ROMFS_IMAGE=0')
     else:
         for rel, a in rom.items():
             clone(a, os.path.join(tmp, 'romfs', rel))
@@ -379,7 +428,7 @@ def convert(dump, out, name=None):
             atid = int(d, 16)
         except ValueError:
             continue
-        idx = atid - tid - 0x1000
+        idx = atid - (tid & ~0xF) - 0x1000   # 按应用号（程序号去掉末位）：单独导出的程序 n（#1567）的 DLC 也是应用号 + 0x1000 + 序号
         if not 0 < idx < 0x1000:
             print(f'🟡 DLC {d} 不属于程序号 {tid:016x}，跳过')
             continue
@@ -437,7 +486,11 @@ def main(a):
             return 1
         print(f'{read_tid(os.path.join(d, "base", "exefs", "main.npdm")):016X}\t{d}')
         return 0
-    name = None
+    name = base = None
+    if '--base' in a:   # 本体目录（exefs/ + romfs/）在别处：作业层导入的散文件解包目录直接交进来，不再链接成 <导出目录>/base（玩家诊断 #0fd185：链接可能建不了）
+        i = a.index('--base')
+        base = os.path.abspath(a[i + 1])
+        a = a[:i] + a[i + 2:]
     if '--name' in a:
         i = a.index('--name')
         name = a[i + 1]
@@ -445,6 +498,12 @@ def main(a):
     if len(a) != 2:
         print(__doc__.split('用法：')[1], file=sys.stderr)
         return 2
+    if base:
+        if not os.path.isfile(os.path.join(base, 'exefs', 'main.npdm')):
+            red(f'{base} 不是本体目录（要有 exefs/main.npdm）')
+        if not os.path.isdir(a[0]):
+            red(f'{a[0]} 不是目录')
+        return convert(os.path.abspath(a[0]), os.path.abspath(a[1]), name, base)
     d = find_dump(a[0]) if os.path.isdir(a[0]) else None
     if not d:
         red(f'{a[0]} 不是 Switch 2 导出目录（要有 base/exefs/main.npdm）')

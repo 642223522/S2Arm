@@ -8,9 +8,8 @@
 //   s2a-devpush - - tar-ok-local <本地文件>                       同上，本地文件
 //   s2a-devpush <udid> - install <ipa>               装已签名的 ipa（AFC 传到 PublicStaging + installation_proxy；测试台经转发的设备服务装机用，玩家装机走 Impactor）
 //   s2a-devpush <udid> <包名> uninstall -               卸 App（连容器）：免费账号一台手机最多 3 个 App，测试台腾位用
-//   s2a-devpush <udid> <包名> app-attr <键>              已装 App 的 Info.plist 一个键（installation_proxy）：打值；没装打 S2A_APP_MISSING；没有这个键打「-」
 //   s2a-devpush - - devices                              连着的设备（USB 在前）：每行一个 UDID
-//   s2a-devpush <udid> - find-s2arm                      手机上装着的 S2Arm（Info.plist 有 S2AContainerDigest）：每行「包名<TAB>版本<TAB>显示名」；没有不打印
+//   s2a-devpush <udid> - apps                          手机上装的用户 App：每行「包名<TAB>可执行文件名<TAB>团队号」（认别的工具装的 S2Arm）
 //   S2A_DEVPUSH_DOCUMENTS=1：进不了整个容器（不是开发签名）时退到只进 Documents（要 App 开了文件共享），自签导出「推到手机」用
 //   s2a-devpush <udid> <包名> launch [变量=值…]     起 App（先结束在跑的同包进程），带环境变量；打印 pid。Windows 测试台起局 / 只解包用（Mac 用 devicectl）：
 //     经 lockdown 的 CoreDeviceProxy 建用户态隧道（不要管理员、不装驱动）→ RSD → CoreDevice app_service（同 Xcode / devicectl 的起 App 服务；iOS 17+，要开发者模式与已挂开发者镜像）
@@ -266,7 +265,12 @@ async fn run(a: &[String]) -> Result<(), String> {
         for d in list { if !seen.contains(&d.udid) { println!("{}", d.udid); seen.push(d.udid); } }
         return Ok(());
     }
-    let dev = mux.get_device(udid).await.map_err(|e| format!("找不到设备 {udid}：{e}"))?;
+    // 同一台手机 usbmuxd 常同时列 USB 与 Wi-Fi 两条（同一 UDID）：idevice 的 get_device 取第一条，排到 Wi-Fi 那条就走无线，
+    //   推送从百来 MB/s 掉到个位数（11-17 Duo 实测：同时刻同一文件 devicectl 205 MiB/s、本工具 8.2 MiB/s）。同 devices 一样 USB 优先
+    let mut found = mux.get_devices().await.map_err(|e| format!("找不到设备 {udid}：{e}"))?;
+    found.retain(|d| d.udid == *udid);
+    found.sort_by_key(|d| !matches!(d.connection_type, idevice::usbmuxd::Connection::Usb));
+    let dev = found.into_iter().next().ok_or_else(|| format!("找不到设备 {udid}：{}", idevice::IdeviceError::DeviceNotFound))?;
     let provider = dev.to_provider(addr, "s2a-devpush");
     if op == "launch" {
         // CoreDevice app_service：idevice（钉的提交）自带的 launch_application 请求缺新系统要的字段（iOS 27 实测依次报缺 standardIOIdentifiers、
@@ -293,35 +297,25 @@ async fn run(a: &[String]) -> Result<(), String> {
         println!("launch {bundle} pid {}", pid.map(|p| p.to_string()).unwrap_or_else(|| "?".into()));
         return Ok(());
     }
+    if op == "apps" {   // 手机上装的用户 App：每行「包名<TAB>可执行文件名<TAB>团队号」（团队号取签名权限 com.apple.developer.team-identifier，没有留空）。
+        //   交签名身份前认手机上的 S2Arm 用：AltStore / SideStore / ESign 装的会改包名，不能只按启动器自己的包名找
+        let mut ip = idevice::installation_proxy::InstallationProxyClient::connect(&provider).await.map_err(|e| format!("installation_proxy 连不上：{e}"))?;
+        let apps = ip.get_apps(Some("User"), None).await.map_err(|e| format!("列不出手机上的 App：{e}"))?;
+        let mut rows: Vec<String> = apps.iter().map(|(id, v)| {
+            let d = v.as_dictionary();
+            let exe = d.and_then(|d| d.get("CFBundleExecutable")).and_then(|x| x.as_string()).unwrap_or("");
+            let team = d.and_then(|d| d.get("Entitlements")).and_then(|e| e.as_dictionary())
+                .and_then(|e| e.get("com.apple.developer.team-identifier")).and_then(|t| t.as_string()).unwrap_or("");
+            format!("{id}\t{exe}\t{team}")
+        }).collect();
+        rows.sort();
+        for r in rows { println!("{r}"); }
+        return Ok(());
+    }
     if op == "uninstall" {   // 卸 App（连容器一起删）：免费开发者账号一台手机最多 3 个 App，测试台腾位用
         let mut ip = idevice::installation_proxy::InstallationProxyClient::connect(&provider).await.map_err(|e| format!("installation_proxy 连不上：{e}"))?;
         ip.uninstall(bundle.clone(), None).await.map_err(|e| format!("卸 {bundle} 失败：{e}"))?;
         println!("uninstall {bundle} 完成");
-        return Ok(());
-    }
-    if op == "app-attr" {   // 已装 App 的 Info.plist 一个键（installation_proxy 查，不进容器）：打印值；没装打 S2A_APP_MISSING；没有这个键 / 不是字符串打「-」。
-        //   作业层装机判「手机上的 App 就是这次组出的」用（键 S2AContainerDigest，pack/jobs/ipa.py 组容器时写；install.py same_app）
-        let key = a.get(4).ok_or("app-attr 缺键名")?;
-        let mut ip = idevice::installation_proxy::InstallationProxyClient::connect(&provider).await.map_err(|e| format!("installation_proxy 连不上：{e}"))?;
-        let apps = ip.get_apps(Some("Any"), Some(vec![bundle.clone()])).await.map_err(|e| format!("查 {bundle} 失败：{e}"))?;
-        match apps.get(bundle.as_str()) {
-            None => println!("S2A_APP_MISSING"),
-            Some(v) => println!("{}", v.as_dictionary().and_then(|d| d.get(key.as_str())).and_then(|x| x.as_string()).unwrap_or("-")),
-        }
-        return Ok(());
-    }
-    if op == "find-s2arm" {   // 手机上装着的 S2Arm（自签玩家用自己的工具签，包名由签名工具定，电脑事先不知道）：Info.plist 里有 S2AContainerDigest
-        //   （pack/jobs/ipa.py 组容器时写）的 App 逐行打印「包名<TAB>版本<TAB>显示名」；一个都没有就不打印（退出码仍 0）。包名参数不用，给「-」
-        let mut ip = idevice::installation_proxy::InstallationProxyClient::connect(&provider).await.map_err(|e| format!("installation_proxy 连不上：{e}"))?;
-        let apps = ip.get_apps(Some("User"), None).await.map_err(|e| format!("列 App 失败：{e}"))?;
-        let mut found: Vec<String> = apps.iter().filter_map(|(id, v)| {
-            let d = v.as_dictionary()?;
-            d.get("S2AContainerDigest")?;
-            let s = |k: &str| d.get(k).and_then(|x| x.as_string()).unwrap_or("-").replace(['\t', '\n'], " ");
-            Some(format!("{id}\t{}\t{}", s("CFBundleShortVersionString"), s("CFBundleDisplayName")))
-        }).collect();
-        found.sort();
-        for l in found { println!("{l}"); }
         return Ok(());
     }
     if op == "install" {
@@ -429,10 +423,49 @@ async fn run(a: &[String]) -> Result<(), String> {
             }
             println!("get-tree {n} 个文件 ← {root}");
         }
+        "du" => {   // 量占用（0.6.0 总控台「手机上每款占多少」）：du <目录> [<目录> …] 每个目录一行「du <字节> <文件数> <目录>」，目录不在 → 字节 -1；只读文件信息、不读内容
+            for root in a[4..].iter().map(|r| r.trim_start_matches('/').to_string()) {
+                if afc.get_file_info(root.clone()).await.is_err() { println!("du -1 0 {root}"); continue; }
+                let (mut stack, mut bytes, mut files) = (vec![root.clone()], 0u64, 0u64);
+                while let Some(dir) = stack.pop() {
+                    let names = afc.list_dir(dir.clone()).await.map_err(|e| format!("列 {dir} 失败：{e}"))?;
+                    for name in names.into_iter().filter(|x| x != "." && x != "..") {
+                        let path = format!("{dir}/{name}");
+                        let info = afc.get_file_info(path.clone()).await.map_err(|e| format!("读 {path} 失败：{e}"))?;
+                        if info.st_ifmt == "S_IFDIR" { stack.push(path); } else { bytes += info.size as u64; files += 1; }
+                    }
+                    ALIVE.store(now_ms(), Ordering::Relaxed);   // 文件多：每列完一个目录算一次进展
+                }
+                println!("du {bytes} {files} {root}");
+            }
+        }
+        "mkdir" => {   // 以 App 身份逐级建目录并核实末级可写（a48655：devicectl 代建的父目录在 iOS 26.x 上归 root，App / AFC 都写不进）。
+            //   建不了某一级、或末级建不出探针子目录 → 打「S2A_DIR_UNWRITABLE <写不进的那一级>」、退 1（调用方据此把那一级改名挪开再建）
+            let remote = a[4].trim_start_matches('/').trim_end_matches('/').to_string();
+            let mut cur = String::new();
+            for p in remote.split('/') {
+                if p.is_empty() { continue; }
+                let parent = cur.clone();
+                cur = if cur.is_empty() { p.to_string() } else { format!("{cur}/{p}") };
+                if afc.get_file_info(cur.clone()).await.is_ok() { continue; }
+                if let Err(e) = afc.mk_dir(cur.clone()).await { println!("S2A_DIR_UNWRITABLE {parent}"); return Err(format!("建不了 {cur}：{e}")); }
+            }
+            let probe = format!("{remote}/.s2a_wprobe");
+            match afc.mk_dir(probe.clone()).await {
+                Ok(_) => { let _ = afc.remove(probe).await; }
+                Err(e) => { println!("S2A_DIR_UNWRITABLE {remote}"); return Err(format!("{remote} 写不进：{e}")); }
+            }
+            println!("mkdir {remote}");
+        }
         "rm" => {   // 删一个文件或整目录（多款容器删一款）：已不在算成功
             let remote = a[4].trim_start_matches('/').to_string();
             if afc.get_file_info(remote.clone()).await.is_ok() { afc.remove_all(remote.clone()).await.map_err(|e| format!("删 {remote} 失败：{e}"))?; }
             println!("rm {remote}");
+        }
+        "mv" => {   // 容器内改名（通用壳程序包，11-16：catalogue.json 先写临时名、写完改名就位，手机上看不到写了一半的清单）；目标在就覆盖
+            let (from, to) = (a[4].trim_start_matches('/').to_string(), a.get(5).map(|s| s.trim_start_matches('/').to_string()).ok_or("mv 要 <源> <目标> 两个远端路径")?);
+            afc.rename(from.clone(), to.clone()).await.map_err(|e| format!("改名 {from} → {to} 失败：{e}"))?;
+            println!("mv {from} → {to}");
         }
         "free" => {   // 手机可写字节（推包前核空间）；调用约定与其它操作同，第 5 个参数占位
             let i = afc.get_device_info().await.map_err(|e| e.to_string())?; println!("{}", i.free_bytes);
@@ -456,6 +489,6 @@ async fn main() {
     let a: Vec<String> = std::env::args().collect();
     // launch 可以不带环境变量（多款容器推完拉起到游戏库，tools/push_pack.py Devpush.launch({})）：原先一律要 ≥ 5 个参数，这种调用只打用法、退 2，
     //   Windows 上「分开的文件」资源包推完永远拉不起 App（11-11 Windows 实机实测）
-    if a.len() < 5 && !(a.len() == 4 && (a[3] == "launch" || a[3] == "find-s2arm" || a[3] == "devices")) { eprintln!("用法：s2a-devpush <udid> <包名> put <本地> <远端> | put-at <本地> <远端> <偏移> | head <远端> <字节数> <本地> | get <远端> <本地> | ls <目录>"); std::process::exit(2); }
+    if a.len() < 5 && !(a.len() == 4 && (a[3] == "launch" || a[3] == "devices" || a[3] == "apps")) { eprintln!("用法：s2a-devpush <udid> <包名> put <本地> <远端> | put-at <本地> <远端> <偏移> | head <远端> <字节数> <本地> | get <远端> <本地> | ls <目录> | du <目录>… | mv <远端> <远端> | mkdir <远端目录> ；s2a-devpush <udid> - apps | devices | launch"); std::process::exit(2); }
     if let Err(e) = run(&a).await { eprintln!("{e}"); std::process::exit(1); }
 }

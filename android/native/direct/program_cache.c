@@ -239,6 +239,41 @@ int s2a_program_cache_load(const char *dir, const uint8_t identity[32],
     return 0;
 }
 
+int s2a_program_cache_probe(const char *dir, const uint8_t identity[32],
+                            uint8_t result_sha[32], uint64_t *len, char *why, size_t why_size) {
+    if (result_sha) memset(result_sha, 0, 32);
+    if (len) *len = 0;
+    if (!dir || !*dir || !identity || !result_sha || !len) { setwhy(why, why_size, "参数缺失"); return -1; }
+    char path[PCACHE_PATH];
+    if (entry_path(dir, identity, path, sizeof path)) { setwhy(why, why_size, "缓存路径过长"); return -1; }
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        if (errno == ENOENT) { setwhy(why, why_size, "未命中"); return 1; }   // 没有这个身份的文件：与「文件坏」分开返回（调用方分开计数）
+        setwhy(why, why_size, "打开失败：%s", strerror(errno)); return -1;
+    }
+    struct stat st;
+    uint8_t head[PCACHE_HEADER];
+    if (fstat(fd, &st) != 0 || st.st_size < (off_t)PCACHE_HEADER) { close(fd); setwhy(why, why_size, "文件短于头部"); return -1; }
+    const ssize_t r = read(fd, head, sizeof head);
+    close(fd);
+    if (r != (ssize_t)sizeof head) { setwhy(why, why_size, "头部读不全"); return -1; }
+    if (memcmp(head, PCACHE_MAGIC, 8) != 0) { setwhy(why, why_size, "magic 不符（不是本缓存格式）"); return -1; }
+    if (get_u32(head + 8) != PCACHE_VERSION || get_u32(head + 12) != PCACHE_HEADER) {
+        setwhy(why, why_size, "格式版本不符（写入方 version=%u header=%u）", get_u32(head + 8), get_u32(head + 12));
+        return -1;
+    }
+    if (memcmp(head + 16, identity, 32) != 0) { setwhy(why, why_size, "内部身份与查询身份不符"); return -1; }
+    const uint64_t n = get_u64(head + 80);
+    if (n == 0 || n > PCACHE_MAX_PAYLOAD) { setwhy(why, why_size, "负载长度越界：%llu", (unsigned long long)n); return -1; }
+    if ((uint64_t)st.st_size != (uint64_t)PCACHE_HEADER + n) {
+        setwhy(why, why_size, "文件长度 %lld 与头部声明 %llu 不符（截断？）", (long long)st.st_size, (unsigned long long)(PCACHE_HEADER + n));
+        return -1;
+    }
+    memcpy(result_sha, head + 48, 32);
+    *len = n;
+    return 0;
+}
+
 int s2a_program_cache_store(const char *dir, const uint8_t identity[32],
                             const uint8_t *bytes, size_t len, char *why, size_t why_size) {
     if (!dir || !*dir || !identity || !bytes || !len) { setwhy(why, why_size, "参数缺失"); return -1; }

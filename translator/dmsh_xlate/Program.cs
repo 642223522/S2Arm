@@ -8,7 +8,8 @@
 //   Job: [{ "key", "stage": "vs|ps|cs", "code": machine code file (graphics = 0x50-byte SPH + instructions, compute = instructions),
 //           "arch": "sm86" for Ampere code (NVN2, Switch 2: a 0x80-byte SPH and 128-bit instructions; absent = Maxwell), "nvn2_cs": NVN2 compute's c[0] layout (see Dsh.cs JobFor),
 //           "tex": { "slot": "2d|2darray|cube|cubearray|3d|buffer|1d|1darray|2dms|2dmsarray", ... }, "img": { "slot": { "type", "fmt" } },
-//           "attr": { "location": "float|sint|uint" }, "fout": { "target": "float|sint|uint" }, "local": [x, y, z] }]
+//           "attr": { "location": "float|sint|uint" }, "fout": { "target": "float|sint|uint" }, "local": [x, y, z],
+//           "gs_input_topology": a native (not compute-emulated) geometry shader's input primitive, InputTopology number (absent = triangles) }]
 //   Output: <key>.spv and <key>.res.json (offsets of storage buffer slots in c0, etc.; decoding texture handle → slot number is done in the script that builds the metallib;
 //           "fetch1d": the texture slots read by 1D integer fetches translated as wrapped 2D reads, see RecordTexelFetch1D; "fetch1d_exact": Ampere's form of them, rows sized by the host to the element count)
 using Ryujinx.Common.Memory;
@@ -75,11 +76,10 @@ static class SwshXlate
         public ReadOnlySpan<ulong> GetCode(ulong address, int minimumSize) => address >= (ulong)_code.Length ? default : MemoryMarshal.Cast<byte, ulong>(new ReadOnlySpan<byte>(_code)[(int)address..]);
         // 追不到槽的句柄（Ryujinx 回退 <阶段>_<t|s>_cb0_40000000）：采样贴图按整段编号读池（纹理号 20 位、采样器号 12 位，同上游参考实现（MIT）Program.cs），
         //   S2A.Dsh PoolArrays 把这两个数组改成指向宿主池表的指针（nvn_mtl.m pool_gpu）。原先写死 32：下标夹到 31、宿主第 k 项绑第 k 个贴图槽，
-        //   句柄指的贴图编号 ≥ 32 时读到别的贴图（时之笛 4,454 支、阴影深度比较）。贴图缓冲与图像仍按槽绑 32 项（QueryBindlessSlotArrayLength、nvn_mtl.m TEXD）
+        //   句柄指的贴图编号 ≥ 32 时读到别的贴图（时之笛 4,454 支、阴影深度比较）。贴图缓冲与图像同样按整段编号（宿主按元素类型分表）
         public int QuerySamplerArrayLengthFromPool() => 1 << 12;
         public int QueryTextureArrayLengthFromBuffer(int slot) => 32;
         public int QueryTextureArrayLengthFromPool() => 1 << 20;
-        public int QueryBindlessSlotArrayLength() => 32;
 
         string Get(string table, int slot) => _job[table] is JsonObject t && t[slot.ToString()] is JsonNode n ? (n is JsonObject o ? (string)o["type"] : (string)n) : null;
         // A handle's texture or image slot, numbered as dmsh_build.py decode_tex numbers the reflection's (so an answer table row names the slot the reflection shows): the handle ORs two
@@ -162,7 +162,9 @@ static class SwshXlate
             if (_job["fout"] is JsonObject f) foreach (var kv in f) fout[int.Parse(kv.Key)] = Attr((string)kv.Value);
             // tess_mode：曲面模式（3D 寄存器 TessMode 的打包值，NVN 控制段 +0x744，同 graphics/tools/shbake TessModeOf）：位 0–1 域、4–5 分区、8 顺时针；hull / domain 阶段由 dmsh_build.py 给，其余缺省三角 / 等距
             uint tm = _job["tess_mode"] is JsonNode tmn ? (uint)tmn : 1u;   // 缺省 1 = 三角、等距、逆时针（与原先写死的相同）
-            return new GpuGraphicsState(_job["early_z"] is JsonNode ez && (bool)ez /* 片元早期深度：控制段 +0x718 位 0（Dsh JobFor） */, _job["geometry_topology"] is JsonNode gt ? (InputTopology)(int)gt : InputTopology.Triangles, (tm & 0x100) != 0, (TessPatchType)(tm & 3), (TessSpacing)((tm >> 4) & 3),
+            // gs_input_topology：原生几何阶段（不转计算，安卓离线 Vulkan 库导出）的输入图元，按 InputTopology 编号；几何着色器的 SPIR-V 随它变（输入图元执行模式、输入数组长）
+            return new GpuGraphicsState(_job["early_z"] is JsonNode ez && (bool)ez /* 片元早期深度：控制段 +0x718 位 0（Dsh JobFor） */,
+                _job["geometry_topology"] is JsonNode gt ? (InputTopology)(int)gt : _job["gs_input_topology"] is JsonNode it ? (InputTopology)(int)it : InputTopology.Triangles, (tm & 0x100) != 0, (TessPatchType)(tm & 3), (TessSpacing)((tm >> 4) & 3),
                 false, false, false, false /* depth not rewritten: dmsh_build.py adds the GL entry point (see the file header) */, false, 1f, AlphaTestOp.Always, 0f, attr, false, fout, false,
                 false /* no Y flip */, true /* origin upper-left */, false);
         }

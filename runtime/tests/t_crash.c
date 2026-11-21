@@ -18,7 +18,8 @@ int s2a_track_emul_ok(uint64_t a, uint64_t n) { (void)a; (void)n; return 0; }
 int s2a_track_store_ok(uint64_t a, uint64_t n) { (void)a; (void)n; return 0; }
 // ④ 崩溃路径上会调到的（认领 / 完整报告）：空桩。不配桩时 dyld 在信号处理里懒绑定会死锁
 int s2a_far_fault(void *c, uint64_t a, int w) { (void)c; (void)a; (void)w; return 0; }
-int s2a_direct_fault(void *a, int w, void *c) { (void)a; (void)w; (void)c; return 0; }
+static void (*g_df_side)(void *);   // ⑩：钩子里先做一件事（模拟「别的线程刚把这页放开」），照旧不认领
+int s2a_direct_fault(void *a, int w, void *c) { (void)w; (void)c; if (g_df_side) g_df_side(a); return 0; }
 int s2a_track_fault(void *a, int w) { (void)a; (void)w; return 0; }
 int s2a_det_watch_fault(uint64_t a, uint64_t b, uint64_t c, uint64_t d) { (void)a; (void)b; (void)c; (void)d; return 0; }
 void s2a_touch_thread_init(void) {} void s2a_alias_thread_init(void) {}
@@ -46,6 +47,7 @@ static int frames_logged(uint64_t fp, char *out, size_t cap) {
     return c;
 }
 static void *ww_hammer(void *p) { volatile uint64_t *c = p; for (int i = 0; i < 100000; i++) { uint64_t v = *c; *c = v + 1; } return NULL; }   // ⑧：本线程那格反复读改写
+static void df_release(void *a) { mprotect((void *)((uintptr_t)a & ~(uintptr_t)0x3fff), 0x4000, PROT_READ | PROT_WRITE); }
 int main(void) {
     char log[4096];
     static uint64_t st[64] __attribute__((aligned(16)));   // 手搭帧：每帧 {上一帧 fp, 返回地址}，地址递增（同真栈：调用者帧在高处）
@@ -152,9 +154,10 @@ int main(void) {
       pid_t c = fork();
       if (c == 0) {
           g_s2a_logfd = fd; setenv("S2A_WRITE_WATCH", env, 1); s2a_crash_install();
-          usleep(50000); pg[9] = 0x1111;
-          usleep(20000); pg[0x40] = 0x2222;
-          usleep(20000); pg[8] = 0x3333;
+          int s2a_ww_armed(int);   // 每次写之前等后台把页重新设只读（按事件，30 秒兜底），不睡固定时长
+          for (int i = 0; i < 30000 && s2a_ww_armed(0) != 1; i++) usleep(1000); pg[9] = 0x1111;
+          for (int i = 0; i < 30000 && s2a_ww_armed(0) != 1; i++) usleep(1000); pg[0x40] = 0x2222;
+          for (int i = 0; i < 30000 && s2a_ww_armed(0) != 1; i++) usleep(1000); pg[8] = 0x3333;
           usleep(20000); _exit(pg[9] == 0x1111 && pg[0x40] == 0x2222 && pg[8] == 0x3333 ? 0 : 3);
       }
       int ws = 0; waitpid(c, &ws, 0);
@@ -192,6 +195,15 @@ int main(void) {
       char wp[300], got[16] = {0}; snprintf(wp, sizeof wp, "%s/crash_where", dir);
       FILE *f = fopen(wp, "r"); if (f) { if (!fgets(got, sizeof got, f)) got[0] = 0; fclose(f); unlink(wp); } rmdir(dir);
       eq("⑨ 宿主代码里崩：crash_where = host", 1, !strcmp(got, "host\n")); }
+    // ⑩ 过期权限缺页（SIGBUS 写权限族 D-EKTW / D-ATFZ / D-QM9S / D-2V3R）：子进程往只读页写；缺页钩子里先把这页放成可写、照旧不认领
+    //   （= 处理晚了一步，别的线程已把页放开、摘了登记）。期望按构造写死：重执行后写成功、子进程核对写进的值后退 0。改前：钩子没认领 → 崩
+    { char path[] = "/tmp/t_crash_stale_XXXXXX"; int fd = mkstemp(path);
+      volatile uint8_t *ro = mmap(NULL, 0x4000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0); ro[0] = 1; mprotect((void *)ro, 0x4000, PROT_READ);   // 先写一次装进页表，再设只读：之后的写是权限错（ESR DFSC 0x0F，同真机现场）
+      pid_t c = fork();
+      if (c == 0) { g_s2a_logfd = fd; s2a_crash_install(); g_df_side = df_release; ro[0x20] = 0x5a; _exit(ro[0x20] == 0x5a ? 0 : 3); }
+      int ws = 0; waitpid(c, &ws, 0); close(fd); unlink(path);
+      eq("⑩ 页已被放开、钩子没认领：重执行后写成功（子进程退 0）", 1, WIFEXITED(ws) && WEXITSTATUS(ws) == 0);
+      munmap((void *)ro, 0x4000); }
     if (bad) { printf("✗ t_crash：%d/%d 项不符\n", bad, n); return 1; }
     printf("✓ t_crash：%d 项崩溃现场全符（回溯好链、坏指针不二次缺页、未映射起点、两段式第一段先落盘、两线程同时崩两份现场都在、调用点反查导入名）\n", n);
     return 0;

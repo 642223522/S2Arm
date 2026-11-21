@@ -22,6 +22,7 @@
 #include <dlfcn.h>
 #include "gal_pstat.h"
 #import <QuartzCore/CAMetalLayer.h>
+#import <QuartzCore/CATransaction.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <string.h>
@@ -233,9 +234,7 @@ int gal_present_drain(int timeout_ms) { uint64_t v = g_pdone_n; return !g_pdone 
 static void slot_unpresent(int s) { pthread_mutex_lock(&g_mu); g_slot[s].presenting--; pthread_cond_broadcast(&g_cv); pthread_mutex_unlock(&g_mu); }
 
 #if TARGET_OS_IPHONE
-id<CAMetalDrawable> s2a_ios_reflection_drawable(CAMetalLayer *game) __attribute__((weak_import));   // ios/play_reflection.m：上下分屏下区倒影（App 壳才有）
 #endif
-static CALayer *g_mirror_resident;   // 出图线程独占：倒影层的驻留集已加进出图队列
 static CAMetalLayer *g_applied; static int g_applied_vsync = -1; static CGSize g_applied_size;   // 出图线程独占
 static int present_prep(CAMetalLayer *layer, int s, int vsync, int rw, int rh) {
     CAMetalLayer *applied = g_applied; int applied_vsync = g_applied_vsync; CGSize applied_size = g_applied_size;
@@ -250,7 +249,18 @@ static int present_prep(CAMetalLayer *layer, int s, int vsync, int rw, int rh) {
 #else
     (void)vsync; (void)applied_vsync;
 #endif
-    if (rw > 0 && rh > 0 && (applied_size.width != rw || applied_size.height != rh)) { layer.drawableSize = CGSizeMake(rw, rh); applied_size = CGSizeMake(rw, rh); }
+    if (rw > 0 && rh > 0 && (applied_size.width != rw || applied_size.height != rh)) {
+        applied_size = CGSizeMake(rw, rh);
+#if TARGET_OS_IPHONE
+        // iOS：图层属性只在主线程改。出图线程直接设 drawableSize 会在本线程开隐式 CATransaction，提交时连带布局 UIKit 视图——
+        //   iPadOS 27 判「后台线程改布局引擎」抛 NSInternalInconsistencyException 退出（D-HHEG，第一次出图碰上主线程有待布局时）。
+        //   交主线程异步设（不等它：主线程可能正等出图），这期间的几帧按旧可画尺寸出（上屏按画布实际尺寸算区域，见 present_one）
+        CAMetalLayer *L = layer; CGSize sz = applied_size;
+        dispatch_async(dispatch_get_main_queue(), ^{ [CATransaction begin]; [CATransaction setDisableActions:YES]; L.drawableSize = sz; [CATransaction commit]; });
+#else
+        layer.drawableSize = applied_size;
+#endif
+    }
     g_applied = applied; g_applied_vsync = applied_vsync; g_applied_size = applied_size;
     return 1;
 }
@@ -281,23 +291,9 @@ static void present_one(CAMetalLayer *layer, id<CAMetalDrawable> dr, int s, pslo
     id<MTL4RenderCommandEncoder> e = [cb renderCommandEncoderWithDescriptor:pr_pass(dt, r)];
     pr_encode(e, g_pt, pso, sl.aa ? sl.post : sl.tex, r, filter);
     [e endEncoding];
-    // 上下分屏下区倒影：同一张画面在同一个命令缓冲里再画进倒影层的小画布（不分屏 / 后台时取到 nil）
-#if TARGET_OS_IPHONE
-    id<CAMetalDrawable> mdr = s2a_ios_reflection_drawable ? s2a_ios_reflection_drawable(layer) : nil;
-#else
-    id<CAMetalDrawable> mdr = nil;
-#endif
-    if (mdr) {
-        id<MTLTexture> mt = mdr.texture; irect mr = dst_rect((int)mt.width, (int)mt.height, sl.stretched, sl.ax, sl.ay);
-        if (g_mirror_resident != mdr.layer) { [g_pq addResidencySet:mdr.layer.residencySet]; g_mirror_resident = mdr.layer; }
-        e = [cb renderCommandEncoderWithDescriptor:pr_pass(mt, mr)];   // 复用上面的编码器变量
-        pr_encode(e, g_pt, pso, sl.aa ? sl.post : sl.tex, mr, filter);
-        [e endEncoding];
-    }
     [cb endCommandBuffer];
     if (gpuwait) [g_pq waitForEvent:g_pev value:sl.fence];   // 旧做法（A/B）：定格那次提交做完再读，在 GPU 上等
     [g_pq waitForDrawable:dr];
-    if (mdr) [g_pq waitForDrawable:mdr];
     MTL4CommitOptions *o = [MTL4CommitOptions new];
     [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) {
         if (f.error) gal_gpu_error_exit("上屏", f.error);
@@ -307,7 +303,6 @@ static void present_one(CAMetalLayer *layer, id<CAMetalDrawable> dr, int s, pslo
     [g_pq commit:bufs count:1 options:o];
     uint64_t t_c = trace ? clock_gettime_nsec_np(CLOCK_UPTIME_RAW) : 0;
     [g_pq signalDrawable:dr];
-    if (mdr) { [g_pq signalDrawable:mdr]; [mdr present]; }
     uint64_t v = ++g_pdone_n; [g_pq signalEvent:g_pdone value:v]; g_palloc_fence[a] = v;
     [dr addPresentedHandler:^(id<MTLDrawable> d) {   // 画面真正上屏的时刻（显示节拍）：frames.tsv 的 disp_us 用；presentedTime 为 0 = 没上屏（被丢）
         CFTimeInterval t = d.presentedTime;

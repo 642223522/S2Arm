@@ -24,6 +24,11 @@ int main(void) {
     CHECK(h == 41 * GB && h + 16395 * MB <= 64 * GB, "② 学到 16395 MB、空洞 64 GiB：宿主 41 GiB（实得 %llu MB），宿主 + 跨度不超空洞", (unsigned long long)(h / MB));
     CHECK(s2a_window_host_below(64 * GB, 70 * GB) == 3 * GB, "③ 学到的跨度比空洞还大：宿主至少 3 GiB");
     CHECK(s2a_window_host_below(64 * GB, 100 * MB) == 61 * GB, "④ 学到 100 MB：窗口 3 GiB、宿主 61 GiB");
+    // 按学到的跨度该给的窗口（s2a_window_for_span，多款容器选定游戏后收窗口用，#55248c）。期望手算：跨度 × 1.25 + 2 GiB、1 GiB 向上取整、至少 2 GiB
+    CHECK(s2a_window_for_span(0) == 0, "④b 没学到：0 = 不限");
+    CHECK(s2a_window_for_span(13670 * MB) == 19 * GB, "④c 马车世界学到 13670 MB：13670×1.25+2048 = 19135.5 MB → 19 GiB");
+    CHECK(s2a_window_for_span(100 * MB) == 3 * GB, "④d 学到 100 MB：125+2048 = 2173 MB → 3 GiB（同 ④ 的窗口）");
+    CHECK(s2a_window_for_span(1) == 3 * GB, "④e 学到 1 字节：2 GiB 多一点 → 3 GiB（取整后不低于 2 GiB）");
     char p[] = "/tmp/s2a_span_peak_XXXXXX"; int fd = mkstemp(p); dprintf(fd, "17191403520\n"); close(fd);
     setenv("S2A_WIN_SPAN_PEAK", p, 1);
     CHECK(s2a_window_span_seen(0x0400486024DEC000ull) == 17191403520ull, "⑤ 记录文件有值：读出 17191403520");
@@ -64,6 +69,15 @@ int main(void) {
         extern int s2a_window_span_rec_ok(uint64_t, uint64_t);
         CHECK(!s2a_window_span_rec_ok(73086 * MB, 49152 * MB) && !s2a_window_span_rec_ok(76030 * MB, 65536 * MB), "⑩ 记录 ≥ 空洞：不算数");
         CHECK(s2a_window_span_rec_ok(16408 * MB, 49152 * MB) && !s2a_window_span_rec_ok(0, 49152 * MB) && s2a_window_span_rec_ok(73086 * MB, 0), "⑩ 空洞内的算数、0 不算、空洞未知不判"); }
+    {   // ⑪ 小内存 iPad（4 GB 机，2^39 以下 6 GB 空洞）：按游戏应用池给窗口，宿主至少 2 GiB。期望手算，不拿实现输出当期望：
+        //    Switch 1 池 3285 MB + 堆起点约 380 MB → 窗口 4 GiB、宿主 2 GiB；64 GB 空洞仍留 3 GiB；已学到更大跨度不被池压小
+        extern uint64_t s2a_window_host_below_for_pool(uint64_t, uint64_t, uint64_t);
+        CHECK(s2a_window_host_below_for_pool(6 * GB, 0, 3285 * MB) == 2 * GB, "⑪ 6 GB 空洞 + 3285 MB 池：宿主 2 GiB（窗口 4 GiB）");
+        CHECK(s2a_window_host_below_for_pool(64 * GB, 0, 3285 * MB) == 3 * GB, "⑫ 64 GB 空洞：宿主照旧 3 GiB");
+        CHECK(s2a_window_host_below_for_pool(4 * GB, 0, 3285 * MB) == 2 * GB, "⑬ 4 GB 空洞：宿主不低于 2 GiB，放不下如实失败");
+        CHECK(s2a_window_host_below_for_pool(6 * GB, 0, 9 * GB) == 2 * GB, "⑭ Switch 2 池 9 GiB 也压到下限，仍放不下由失败页说清");
+        CHECK(s2a_window_host_below_for_pool(64 * GB, 16395 * MB, 3285 * MB) == 41 * GB, "⑮ 学到更大跨度时不被池需求反向压小");
+        CHECK(s2a_window_host_below_for_pool(6 * GB, 0, 0) == 3 * GB, "⑯ 不知道池时照旧 3 GiB"); }
     printf("%s t_vawin_learned：%d 处不符\n", bad ? "✗" : "✓", bad);
     return bad ? 1 : 0;
 }

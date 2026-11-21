@@ -23,6 +23,7 @@ public enum BackendText {
 
     /// 资源包：.app 里只认 Contents/Resources 下那份（缺了明说，不退回源码路径）；swift run / swift test 用 SwiftPM 的 Bundle.module。
     public static func resourceBundle() throws -> Bundle {
+        resourceReadsLock.lock(); resourceReads += 1; resourceReadsLock.unlock()
         if Bundle.main.bundleURL.pathExtension == "app" {
             guard let resources = Bundle.main.resourceURL,
                   let packaged = Bundle(url: resources.appendingPathComponent(bundleName)) else {
@@ -68,6 +69,19 @@ public enum BackendText {
         return o
     }
 
+    /// 启动时把对照表、界面文案和所有叠加语言一次读进内存。之后显示文字不再碰盘：
+    ///   App 开着时包被挪走 / 删掉（拖进「应用程序」、更新换包的空档），首次显示某句报错才去读文件会读不到而停
+    ///   （0.5.1 欢迎页崩溃）。资源真缺仍在这里当场停，装包错误照旧不放过
+    public static func preload() {
+        _ = entries; _ = english; _ = chinese; _ = forward; _ = reverse; _ = launcherItems; _ = installLandingActions
+        let resources = (try? resourceBundle().resourceURL) ?? nil
+        let names = resources.flatMap { try? FileManager.default.contentsOfDirectory(atPath: $0.path) } ?? []
+        for name in names where name.hasPrefix("l10n.") && name.hasSuffix(".json") {
+            _ = overlay(String(name.dropFirst("l10n.".count).dropLast(".json".count)))
+        }
+        for language in ["zh-Hans", "en"] { _ = overlay(language) }   // 简中 / 英文没有叠加文件：也先查一次、记空，之后不再去读资源包（同 510a74d1d 那份）
+    }
+
     /// 这门语言还没翻的回落：繁中回落简中（中文读者看简中比英文顺），其余回落英文（11-14 i18n）
     static func fallback(_ language: String) -> String { language == "zh-Hant" ? "zh-Hans" : "en" }
 
@@ -76,6 +90,15 @@ public enum BackendText {
         guard let item = launcherItems[id] else { return "[\(id)]" }
         return overlay(language).launcher[id] ?? item[language] ?? item[fallback(language)] ?? item["en"] ?? "[\(id)]"
     }
+
+    /// 装机前清单按钮落点的动作表（共享规格 install_landing.actions，Windows SharedText.InstallActionLabel 同一处）：动作名 → 按钮文案键；
+    ///   值为 nil = 表里写 null（这一端自画文案）。不在表里的动作不画按钮、不派发（两端不另写一份动作表）
+    public static let installLandingActions: [String: String?] = {
+        guard let data = try? Data(contentsOf: experienceURL()),
+              let spec = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let actions = (spec["install_landing"] as? [String: Any])?["actions"] as? [String: Any] else { return [:] }
+        return actions.mapValues { $0 as? String }
+    }()
 
     /// 报错页统一的一句「故障报修」指引（11-13）：文字只在共享规格 report.hint 一处，{button} 换成顶栏按钮名 report.button（Windows SharedText.ReportHint 同一取法）
     public static func reportHint(language: String) -> String {
@@ -96,6 +119,41 @@ public enum BackendText {
     public static func errorTitle(_ code: String, language: String) -> String? {
         errorTitles[code]?[language]
     }
+
+    /// 两端共用的表只在共享体验表一处（11-19 结构 9：Mac / Windows 原先各写一份，Mac 缺 cert_revoke_confirm、两端缺 shaderMiss）：
+    /// 可确认停装码 → 玩家点「仍然继续」后重发带的参数 = errors 各码的 accept（带 accept_ui 的由专门页面带，不进通用确认）
+    public static let confirmFlags: [String: String] = {
+        guard let data = try? Data(contentsOf: experienceURL()),
+              let spec = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let errors = spec["errors"] as? [String: Any],
+              let items = errors["items"] as? [[String: Any]] else { return [:] }
+        return Dictionary(items.compactMap { item in
+            guard let code = item["code"] as? String, let accept = item["accept"] as? String, item["accept_ui"] == nil else { return nil }
+            return (code, accept)
+        }, uniquingKeysWith: { first, _ in first })
+    }()
+
+    /// 确认页上与「仍然继续」并列的另一条路 = errors 各码的 alternate（自签走查结构 7：新建证书确认可「改用已有证书」）：
+    ///   码 → (action：装机前清单动作表 install_landing.actions 里的动作名，点了走同一个派发、不重发；labelKey：按钮文案键)
+    public static let confirmAlternates: [String: (action: String, labelKey: String)] = {
+        guard let data = try? Data(contentsOf: experienceURL()),
+              let spec = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let errors = spec["errors"] as? [String: Any],
+              let items = errors["items"] as? [[String: Any]] else { return [:] }
+        return Dictionary(items.compactMap { item in
+            guard let code = item["code"] as? String, let alt = item["alternate"] as? [String: Any],
+                  let action = alt["action"] as? String, let label = alt["label"] as? String else { return nil }
+            return (code, (action: action, labelKey: label))
+        }, uniquingKeysWith: { first, _ in first })
+    }()
+
+    /// 「建议更新」原因 → 共享文案键 = update_reasons（不认识的原因不显示）
+    public static let updateReasonKeys: [String: String] = {
+        guard let data = try? Data(contentsOf: experienceURL()),
+              let spec = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let reasons = spec["update_reasons"] as? [String: Any] else { return [:] }
+        return reasons.compactMapValues { $0 as? String }.filter { $0.key != "note" }
+    }()
 
     /// 共享规格里要进翻译表的那些中英文（同旧启动器 SharedExperience.translations 的取法）：
     /// running / failed 两个状态名、作业结局（成功 / 取消）、出包画面模式标签、阶段名。
@@ -120,7 +178,11 @@ public enum BackendText {
         return entries
     }
 
-    /// 对照表 + 共享规格。读一次；资源缺了或坏了是装包错误，直接停（同旧启动器）。
+    /// 读资源包的次数（单测核：preload 之后再翻译 / 取界面文案一次都不读盘）
+    private static let resourceReadsLock = NSLock()
+    nonisolated(unsafe) static var resourceReads = 0
+
+    /// 对照表 + 共享规格。读一次（App 启动时 preload 读）；资源缺了或坏了是装包错误，直接停（同旧启动器）。
     public static let entries: [Entry] = {
         do {
             let bundle = try resourceBundle()

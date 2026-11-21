@@ -1,6 +1,6 @@
 // S2Arm（不是上游文件）：游戏库还是空的时候的欢迎页，同时就是环境检查（11-08 维护者：不做卡片引导，玩家照着做就行）。
-// 准备这台 Mac → 添加游戏 → 放入密钥（只有 NSP / XCI 要；解包好的游戏导入后直接进游戏库，不经过这步）。
-// 任何时候只有一个主按钮，落在当前该做的那件事上；做完的步骤收成一行。下载进度就在对应工具那一行。
+// 准备这台 Mac → 添加游戏 → 放入密钥（只有 NSP / XCI 要）；首次导入后可一键出包，已有游戏时随时回库。
+// 当前步骤提供唯一主操作；已有游戏时可从底部次按钮回库。下载进度和操作就在对应工具的说明下方。
 // 工具来自 preflight 作业（model.checks），只列要玩家动手的；文案在共享规格 launcher.items（welcome.*）。
 // 回到 App 自动重查；还没装 Xcode 时每 5 秒看一眼，装好了 Metal / iOS 组件那两行自动亮起，玩家不用点「重新检查」。
 import AppKit
@@ -31,8 +31,9 @@ struct WelcomeView: View {
 
     private var macReady: Bool { model.environmentState == .ready || model.environmentState == .readyMac }
     private var keysReady: Bool { model.keysReady == true && !model.keysRejected }
-    private var gamesChosen: Bool { !model.pendingImport.isEmpty || model.welcomeGame != nil }
-    private var keysSettled: Bool { keysReady || model.welcomeGame != nil }
+    private var chosenGame: GameSummary? { model.welcomeGame }
+    private var gamesChosen: Bool { !model.pendingImport.isEmpty || chosenGame != nil }
+    private var keysSettled: Bool { keysReady || chosenGame != nil }
     private var current: Step { !macReady ? .mac : !gamesChosen ? .games : .keys }
     private func isDone(_ s: Step) -> Bool {
         switch s { case .mac: return macReady; case .games: return gamesChosen; case .keys: return keysSettled }
@@ -46,7 +47,8 @@ struct WelcomeView: View {
         let hasXcode = xcode?.ok == true || firstLaunch
         let xcodeState: Tool.State = firstLaunch ? .needs(metal!) : (xcode.map { $0.ok ? .ok : .needs($0) } ?? .waiting)
         let metalState: Tool.State = !hasXcode || firstLaunch ? .waiting : (metal.map { $0.ok ? .ok : .needs($0) } ?? .waiting)
-        let appleState: Tool.State = !hasXcode || firstLaunch ? .waiting : (check("apple_team").map { $0.ok ? .ok : .needs($0) } ?? .waiting)
+        // 用自己的开发者证书时作业层不出 apple_team（推到 iPhone 不用 Apple ID）：查过了却没有这一项 = 不用做
+        let appleState: Tool.State = !hasXcode || firstLaunch ? .waiting : (check("apple_team").map { $0.ok ? .ok : .needs($0) } ?? (model.checks.isEmpty ? .waiting : .ok))
         let iosState: Tool.State = !hasXcode || firstLaunch ? .waiting : (ios.map { $0.ok ? .ok : .needs($0) } ?? .waiting)
         return [
             Tool(id: "xcode", symbol: "hammer", name: w("tool.xcode.name"), what: w(firstLaunch ? "tool.xcode.open" : "tool.xcode.what"),
@@ -69,29 +71,29 @@ struct WelcomeView: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            intro.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            GeometryReader { column in ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    step(.mac, title: macReady ? w("step.mac.done") : w("step.mac.title"), last: false) { macContent }
-                    step(.games, title: gamesChosen ? w("step.games.done") : w("step.games.title"), last: false) { gamesContent }
-                    step(.keys, title: keysReady ? w("step.keys.done") : model.welcomeGame != nil ? w("step.keys.notNeeded") : w("step.keys.title"), last: true) { keysContent }
-                    if let error = model.actionError(for: nil) ?? model.environmentError ?? visibleLibraryError {
-                        Text(loc.backend(error)).font(.manrope(12.5)).foregroundStyle(LauncherPalette.danger)
-                            .fixedSize(horizontal: false, vertical: true).padding(.leading, 46).padding(.top, 14)
+        GeometryReader { geometry in
+            if geometry.size.width >= 1000 {
+                HStack(spacing: 0) {
+                    ScrollView {
+                        intro(rightAligned: true)
+                            .frame(maxWidth: .infinity, minHeight: geometry.size.height, alignment: .trailing)
                     }
-                    // 一键出包放在三步清单正下方（11-14 体验梳理：原先浮在窗口右下角、离清单很远；Windows 上一轮已同样挪到清单下）
-                    if macReady, model.welcomeGame != nil {
-                        Button { model.oneClickExport() } label: { LauncherHeroActionLabel(title: w("oneclick"), symbol: "shippingbox.fill") }
-                            .controllerButtonStyle(.plain).controllerID("welcome.oneclick").keyboardShortcut(.defaultAction).controllerShortcut(.rightTrigger).disabled(model.busy)
-                            .padding(.leading, 46).padding(.top, 26)
-                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    ScrollView {
+                        checklist
+                            .padding(.vertical, 44).padding(.trailing, 48)
+                            .frame(maxWidth: .infinity, minHeight: geometry.size.height, alignment: .leading)
                     }
+                    .frame(width: min(560, geometry.size.width * 0.46))
                 }
-                .padding(.vertical, 44).padding(.trailing, 48)
-                .frame(maxWidth: .infinity, minHeight: column.size.height, alignment: .leading)   // 内容短时和左栏一样垂直居中，长了再滚动
-            } }
-            .frame(width: 560)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        intro()
+                        checklist.padding(.horizontal, 48).padding(.bottom, 44)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
         }
         .animation(.spring(response: 0.5, dampingFraction: 0.75), value: model.welcomeGame?.id)
         .background(alignment: .bottomLeading) {
@@ -118,22 +120,44 @@ struct WelcomeView: View {
         model.libraryError == LibraryProvider.noLibraryMessage ? nil : model.libraryError
     }
 
+    private var checklist: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            step(.mac, title: macReady ? w("step.mac.done") : w("step.mac.title"), last: false) { macContent }
+            step(.games, title: gamesChosen ? w("step.games.done") : w("step.games.title"), last: false) { gamesContent }
+            step(.keys, title: keysReady ? w("step.keys.done") : chosenGame != nil ? w("step.keys.notNeeded") : w("step.keys.title"), last: true) { keysContent }
+            if let error = model.actionError(for: nil) ?? model.environmentError ?? visibleLibraryError {
+                Text(loc.backend(error)).font(.manrope(12.5)).foregroundStyle(LauncherPalette.danger)
+                    .fixedSize(horizontal: false, vertical: true).padding(.leading, 46).padding(.top, 14)
+            }
+            if macReady, model.welcomeGame != nil {
+                Button(w("oneclick")) { model.oneClickExport() }
+                    .controllerButtonStyle(LauncherPrimaryButtonStyle()).controllerID("welcome.oneclick")
+                    .keyboardShortcut(.defaultAction).controllerShortcut(.rightTrigger).disabled(model.busy)
+                    .padding(.leading, 46).padding(.top, 24)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+            Button(loc.t("library.enter")) { model.goToLibrary() }
+                .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("welcome.library")
+                .disabled(model.games.isEmpty)
+                .padding(.leading, 46).padding(.top, macReady && model.welcomeGame != nil ? 12 : 24)
+        }
+    }
+
     // ---- 左：这是什么 ----
 
-    private var intro: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Spacer(minLength: 24)
+    private func intro(rightAligned: Bool = false) -> some View {
+        VStack(alignment: rightAligned ? .trailing : .leading, spacing: 0) {
             journey.padding(.bottom, 34)
-            LauncherHeadingLine {
-                Text(w("title")).font(.manrope(44, .heavy)).tracking(-1.4).help(w("title"))
-            } subtitle: {
-                Text(w("lead")).font(.manrope(16)).foregroundStyle(.secondary).help(w("lead"))
-            }
-            Text(w("soon")).font(.manrope(14, .semibold)).foregroundStyle(LauncherPalette.cream.opacity(0.75))
-                .padding(.top, 14)
-            Spacer(minLength: 24)
-            Text(loc.t("library.localNote")).font(.manrope(12)).foregroundStyle(.secondary)
+            Text(w("title")).font(.manrope(44, .heavy)).tracking(-1.4)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(w("lead")).font(.manrope(16)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true).padding(.top, 18)
+            Text(w("soon") + " · " + loc.t("library.localNote"))
+                .font(.manrope(13, .semibold)).foregroundStyle(LauncherPalette.cream.opacity(0.75))
+                .fixedSize(horizontal: false, vertical: true).padding(.top, 24)
         }
+        .multilineTextAlignment(rightAligned ? .trailing : .leading)
+        .frame(maxWidth: .infinity, alignment: rightAligned ? .trailing : .leading)
         .padding(48)
     }
 
@@ -171,7 +195,7 @@ struct WelcomeView: View {
             }
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 10) {
-                    Text(title).font(.manrope(active ? 22 : 18, .bold)).tracking(-0.4)
+                    Text(title).font(.manrope(22, .bold)).tracking(-0.4)
                         .foregroundStyle(active || done ? Color.primary : Color.secondary)
                     if s == .mac && model.checking { ProgressView().controlSize(.small) }
                 }
@@ -206,58 +230,54 @@ struct WelcomeView: View {
     }
 
     @ViewBuilder private func toolRow(_ tool: Tool) -> some View {
-        HStack(alignment: tool.isOK ? .center : .top, spacing: 12) {
+        HStack(alignment: .top, spacing: 12) {
             Image(systemName: tool.symbol).font(.system(size: 18, weight: .light)).foregroundStyle(LauncherPalette.cream)
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 3) {
                 Text(tool.name).font(.manrope(14.5, .bold))
                 if !tool.isOK {
                     Text(tool.what).font(.manrope(13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    if !tool.meta.isEmpty { Text(tool.meta).font(.manrope(12)).foregroundStyle(Color.white.opacity(0.58)) }
-                    if tool.id == "apple", case .needs(let c) = tool.state { appleGuide(pending: c.code == "xcode_team_pending") }
+                    if !tool.meta.isEmpty {
+                        Text(tool.meta).font(.manrope(12)).foregroundStyle(Color.white.opacity(0.58))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     if let job = downloading(tool) { InlineProgress(session: job).padding(.top, 8) }
                     if let failed = failure(of: tool) {
                         Text(loc.backend(failed)).font(.manrope(12.5)).foregroundStyle(LauncherPalette.danger).fixedSize(horizontal: false, vertical: true).padding(.top, 4)
                         ReportHint()
                     }
+                    toolAction(tool).padding(.top, 10)
                 }
             }
-            Spacer(minLength: 12)
-            switch tool.state {
-            case .ok: Image(systemName: "checkmark").font(.system(size: 12, weight: .bold)).foregroundStyle(LauncherPalette.ready)
-            case .waiting: Text(w("tool.waiting")).font(.manrope(12)).foregroundStyle(Color.white.opacity(0.58)).fixedSize()
-            case .needs(let c):
-                if downloading(tool) != nil {
-                    Button(w("tool.cancel")) { model.stop() }.controllerButtonStyle(LauncherSecondaryButtonStyle())
-                        .disabled(model.session?.phase == .stopping)
-                } else if tool.id == "apple" {
-                    VStack(alignment: .trailing, spacing: 8) {
-                        repairButton(c, primary: false)
-                        Button(loc.t("s2arm.env.recheck")) { model.checkEnvironment() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(model.checking)
-                    }
-                } else if model.repairQueue.contains(c) {
-                    Text(w("tool.queued")).font(.manrope(12.5, .semibold)).foregroundStyle(.secondary).fixedSize()
-                } else {
-                    repairButton(c, primary: tool.id == primaryToolID)
-                }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if tool.isOK {
+                Image(systemName: "checkmark").font(.system(size: 12, weight: .bold)).foregroundStyle(LauncherPalette.ready)
             }
         }
         .padding(.vertical, 12)
     }
 
-    /// 登录 Apple ID 的分步指引（判据是团队号出现，所以最后一步是等团队列表）。
-    private func appleGuide(pending: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if pending { Text(w("tool.apple.pending")).font(.manrope(12.5, .semibold)).foregroundStyle(LauncherPalette.building).fixedSize(horizontal: false, vertical: true) }
-            ForEach(1...4, id: \.self) { n in
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text("\(n)").font(.manrope(12, .bold)).monospacedDigit().foregroundStyle(LauncherPalette.cream).frame(width: 12)
-                    Text(w("tool.apple.step\(n)")).font(.manrope(12.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+    @ViewBuilder private func toolAction(_ tool: Tool) -> some View {
+        switch tool.state {
+        case .ok: EmptyView()
+        case .waiting: Text(w("tool.waiting")).font(.manrope(12)).foregroundStyle(Color.white.opacity(0.58))
+        case .needs(let c):
+            if downloading(tool) != nil {
+                Button(w("tool.cancel")) { model.stop() }.controllerButtonStyle(LauncherSecondaryButtonStyle())
+                    .disabled(model.session?.phase == .stopping)
+            } else if tool.id == "apple" {
+                VStack(alignment: .leading, spacing: 8) {
+                    // 0.6.0 Mac 推到 iPhone 的 Apple ID 在 S2Arm 里登录（作业层 apple_team 只给 appleLogin）：直接开登录面板，不讲 Xcode 步骤
+                    Button(BackendText.launcherText("install.login.open", language: language)) { model.openAppleLogin(host: "main") }
+                        .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("welcome.appleLogin")
+                    Button(loc.t("s2arm.env.recheck")) { model.checkEnvironment() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(model.checking)
                 }
+            } else if model.repairQueue.contains(c) {
+                Text(w("tool.queued")).font(.manrope(12.5, .semibold)).foregroundStyle(.secondary)
+            } else {
+                repairButton(c, primary: tool.id == primaryToolID)
             }
-            Text(w("tool.apple.note")).font(.manrope(12)).foregroundStyle(Color.white.opacity(0.58)).fixedSize(horizontal: false, vertical: true)
         }
-        .padding(.top, 6)
     }
 
     private func downloading(_ tool: Tool) -> JobSession? {
@@ -295,7 +315,7 @@ struct WelcomeView: View {
     }
 
     @ViewBuilder private var gamesContent: some View {
-        if let game = model.welcomeGame {
+        if let game = chosenGame {
             Text(game.name + (game.display.isEmpty ? "" : " · " + game.display)).font(.manrope(14)).foregroundStyle(.secondary).lineLimit(1)
         } else if gamesChosen {
             let urls = model.pendingImport

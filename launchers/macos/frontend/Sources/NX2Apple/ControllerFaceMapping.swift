@@ -51,14 +51,25 @@ struct ControllerFaceMapping: Equatable {
     static func switchPosition(for family: ControllerFaceFamily) -> Self {
         family == .nintendo ? .identity : Self(code: 0xb1)!
     }
+    /// Nintendo pads report A/B/X/Y by label (east/south/north/west); the Xbox
+    /// layout puts confirm on the bottom button, as iOS s2a_pad_abxy_order does.
+    static func xboxPosition(for family: ControllerFaceFamily) -> Self {
+        family == .nintendo ? Self(code: 0xb1)! : .identity
+    }
     func symbols(for family: ControllerFaceFamily) -> [PadShortcut: String] {
         var symbols = Dictionary(uniqueKeysWithValues: zip([PadShortcut.primary, .back, .secondary, .tertiary], 0..<4).map {
             ($0.0, family.symbol(source: source(for: $0.1)))
         })
         switch family {
-        case .playstation: symbols[.rightTrigger] = "r2.rectangle.roundedtop"
-        case .nintendo: symbols[.rightTrigger] = "zr.rectangle.roundedtop"
-        case .xbox, .other: symbols[.rightTrigger] = "rt.rectangle.roundedtop"
+        case .playstation:
+            symbols[.leftTrigger] = "l2.rectangle.roundedtop"
+            symbols[.rightTrigger] = "r2.rectangle.roundedtop"
+        case .nintendo:
+            symbols[.leftTrigger] = "zl.rectangle.roundedtop"
+            symbols[.rightTrigger] = "zr.rectangle.roundedtop"
+        case .xbox, .other:
+            symbols[.leftTrigger] = "lt.rectangle.roundedtop"
+            symbols[.rightTrigger] = "rt.rectangle.roundedtop"
         }
         return symbols
     }
@@ -67,14 +78,17 @@ struct ControllerFaceMapping: Equatable {
 /// This file is also read live by the game host. Publish only after its atomic
 /// write succeeds, so the launcher cannot advertise a mapping the game cannot read.
 @MainActor final class ControllerFaceMapStore: ObservableObject {
-    // Schema 2 stores one permutation shared by every non-Nintendo controller.
+    // Schema 2 stores one permutation shared by every non-Nintendo controller,
+    // plus an optional Nintendo permutation (absent = native label layout).
     struct Document: Codable {
         var schema = 2
         var mapping: Int32? = nil
+        var nintendo: Int32? = nil
         var profiles: [String: Int32]? = nil // schema 1, read only
     }
     let fileURL: URL
     @Published private(set) var sharedMapping: ControllerFaceMapping = .identity
+    @Published private(set) var nintendoMapping: ControllerFaceMapping = .identity
     @Published private(set) var problem: String?
 
     init(fileURL: URL) {
@@ -83,6 +97,7 @@ struct ControllerFaceMapping: Equatable {
         do {
             let document = try JSONDecoder().decode(Document.self, from: Data(contentsOf: fileURL))
             let code: Int32
+            var nintendo = ControllerFaceMapping.identity
             switch document.schema {
             case 1:
                 guard let profiles = document.profiles, profiles.values.allSatisfy({ ControllerFaceMapping(code: $0) != nil }) else {
@@ -94,25 +109,29 @@ struct ControllerFaceMapping: Equatable {
             case 2:
                 guard let mapping = document.mapping else { throw CocoaError(.fileReadCorruptFile) }
                 code = mapping
+                if let value = document.nintendo {
+                    guard let map = ControllerFaceMapping(code: value) else { throw CocoaError(.fileReadCorruptFile) }
+                    nintendo = map
+                }
             default: throw CocoaError(.fileReadCorruptFile)
             }
             guard let mapping = ControllerFaceMapping(code: code) else {
                 throw CocoaError(.fileReadCorruptFile)
             }
-            sharedMapping = mapping
+            sharedMapping = mapping; nintendoMapping = nintendo
         } catch { problem = error.localizedDescription }
     }
     func mapping(for family: ControllerFaceFamily) -> ControllerFaceMapping {
-        family == .nintendo ? .identity : sharedMapping
+        family == .nintendo ? nintendoMapping : sharedMapping
     }
     func set(_ mapping: ControllerFaceMapping?, for family: ControllerFaceFamily) {
-        guard family != .nintendo else { return }
         let next = mapping ?? .identity
+        let shared = family == .nintendo ? sharedMapping : next, nintendo = family == .nintendo ? next : nintendoMapping
         do {
-            let data = try JSONEncoder().encode(Document(mapping: next.code))
+            let data = try JSONEncoder().encode(Document(mapping: shared.code, nintendo: nintendo == .identity ? nil : nintendo.code))
             try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             try data.write(to: fileURL, options: .atomic)
-            sharedMapping = next; problem = nil
+            sharedMapping = shared; nintendoMapping = nintendo; problem = nil
             if fileURL == PlayerAssignment.orderFileURL.deletingPathExtension().appendingPathExtension("face.json") {
                 DistributedNotificationCenter.default().postNotificationName(.init("org.s2arm.controller-face-map.changed"), object: nil,
                     userInfo: nil, deliverImmediately: true)
@@ -140,8 +159,9 @@ extension PlayerAssignment {
         let matches = pads.filter { $0.name == name }
         return matches.indices.contains(index) ? matches[index] : nil
     }
-    var primaryIsNintendo: Bool {
-        guard let unit = units.first else { return false }
-        switch unit { case .pair, .single, .whole, .gen1, .gen1Pair: return true; default: return false }
+    var primaryIsNintendo: Bool { isNintendo(player: 0) }
+    func isNintendo(player: Int) -> Bool {
+        guard units.indices.contains(player) else { return false }
+        switch units[player] { case .pair, .single, .whole, .gen1, .gen1Pair: return true; default: return false }
     }
 }

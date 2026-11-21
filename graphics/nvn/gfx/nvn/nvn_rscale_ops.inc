@@ -24,15 +24,16 @@ static void rs_why_note(rs_why_t *tb, const char *why) { pthread_mutex_lock(&g_r
 static int g_rs_fail_test;   // 单测开关（t_nvn_rscale 第 22 组）：非 0 = 新存储当作建不出
 static void rs_rescale_failed(id<MTLTexture> base, NvRsInfo *i) {
     pthread_mutex_lock(&g_rs_why_mu); g_rs_fail++; pthread_mutex_unlock(&g_rs_why_mu);   // 计数与 rs_report_line 的快照同一把锁
-    if (!(i && i->state == RS_SCALED)) rs_set_info(base, RS_BLACK, 0, 0);
+    if (!(i && i->state == RS_SCALED)) rs_set_info(base, RS_BLACK, 0, 0, 1.0);
     else i->fails++;   // 满 RS_FAIL_MAX 次不再试（rs_stuck）
 }
-static id<MTLTexture> rs_rescale(id<MTLTexture> base, int to_scaled, const char *why) {
-    NvRsInfo *i = rs_info(base);
+// s = 新存储 ÷ 画布（1 = 退回原尺寸）。rs_rescale 的 to_scaled 取这份画布的缩放比例（rs_want），退回取 1；超上限缩建的附件定了一遍的比例时 rs_rts 直接给 s
+static id<MTLTexture> rs_rescale_to(id<MTLTexture> base, double s, const char *why) {
+    NvRsInfo *i = rs_info(base); int to_scaled = s != 1.0;
     NSUInteger cw = i && i->state == RS_SCALED ? i->cw : base.width, ch = i && i->state == RS_SCALED ? i->ch : base.height;
-    NSUInteger w = to_scaled ? rs_up(cw, g_rs) : cw, h = to_scaled ? rs_up(ch, g_rs) : ch;
+    NSUInteger w = to_scaled ? rs_up(cw, s) : cw, h = to_scaled ? rs_up(ch, s) : ch;
     if (!to_scaled && rs_stuck(base)) return nil;   // 退回失败满 RS_FAIL_MAX 次：不再建新存储
-    if (w == base.width && h == base.height) { rs_set_info(base, to_scaled ? RS_SCALED : RS_BLACK, cw, ch); return base; }
+    if (w == base.width && h == base.height) { rs_set_info(base, to_scaled ? RS_SCALED : RS_BLACK, cw, ch, s); return base; }
     MTLTextureDescriptor *d = [MTLTextureDescriptor new];
     d.textureType = base.textureType; d.pixelFormat = base.pixelFormat; d.width = w; d.height = h; d.depth = base.depth;
     d.arrayLength = base.arrayLength; d.mipmapLevelCount = base.mipmapLevelCount; d.sampleCount = base.sampleCount;
@@ -40,8 +41,9 @@ static id<MTLTexture> rs_rescale(id<MTLTexture> base, int to_scaled, const char 
     // 新存储一定当渲染目标用（缩放拷贝画进去、之后游戏在上面画）：旧存储没有渲染目标用途时补上（打包贴图建时不带，copy_t2t_draw 见目标没有这一用途就画不了，
     //   11-09 #312 暗黑地牢2：1280x720 RG11B10Float 颜色目标「缩放拷贝画不了，不缩」，同遍深度却缩了）
     d.usage = base.usage | (mtl_fmt_block(base.pixelFormat) ? 0 : MTLTextureUsageRenderTarget);
-    if (to_scaled && g_rs > 1.0 && (w > rs_tex_max() || h > rs_tex_max())) {
-        RED_ONCE(189, "内部分辨率：%lux%lu 格式 %lu 的存储放大到 %lux%lu 超过贴图上限 %lu，不放大", (unsigned long)base.width, (unsigned long)base.height, (unsigned long)base.pixelFormat, (unsigned long)w, (unsigned long)h, (unsigned long)rs_tex_max());
+    if ((s > 1.0 && (w > rs_tex_max() || h > rs_tex_max())) || w > rs_dev_max() || h > rs_dev_max()) {   // 放大超上限；或超上限缩建的存储要退回原尺寸（画布本身超上限）：都建不出（Metal 断言退出）
+        RED_ONCE(189, "内部分辨率：%lux%lu 格式 %lu 的存储换成 %lux%lu 超过贴图上限 %lu，不换（%s）", (unsigned long)base.width, (unsigned long)base.height, (unsigned long)base.pixelFormat, (unsigned long)w, (unsigned long)h, (unsigned long)(s > 1.0 ? rs_tex_max() : rs_dev_max()),
+                 to_scaled ? "放大" : "超上限缩建的存储退不回原尺寸");
         rs_rescale_failed(base, i); return nil; }
     id<MTLTexture> n = g_rs_fail_test ? nil : [g_dev newTextureWithDescriptor:d];   // 单测开关
     if (!n) { RED_ONCE(114, "内部分辨率：%lux%lu 格式 %lu 的存储换成 %lux%lu 失败（建不出），不缩", (unsigned long)base.width, (unsigned long)base.height, (unsigned long)base.pixelFormat, (unsigned long)w, (unsigned long)h);
@@ -54,15 +56,20 @@ static id<MTLTexture> rs_rescale(id<MTLTexture> base, int to_scaled, const char 
             RED_ONCE(115, "内部分辨率：%lux%lu 格式 %lu 的缩放拷贝画不了，不缩（首例）", (unsigned long)base.width, (unsigned long)base.height, (unsigned long)base.pixelFormat);
             defer_obj_release(n); rs_rescale_failed(base, i); return nil; }   // 同上
     }
-    rs_set_info(n, to_scaled ? RS_SCALED : RS_BLACK, cw, ch);
+    rs_set_info(n, to_scaled ? RS_SCALED : RS_BLACK, cw, ch, s);
     tex_swap_storage(base, n);
     pthread_mutex_lock(&g_rs_why_mu);   // 覆盖面读数：份数与原因在同一把锁里一起加（rs_report_line 取快照用同一把）
     uint64_t k = to_scaled ? g_rs_up++ : g_rs_down++;
     if (!to_scaled) rs_why_put(g_rs_back_why, why);
     pthread_mutex_unlock(&g_rs_why_mu);
     if (k < 12 || !(k & (k - 1))) MLOG("内部分辨率：存储 %lux%lu 格式 %lu %s %lux%lu（第 %llu 份%s%s）", (unsigned long)base.width, (unsigned long)base.height, (unsigned long)base.pixelFormat,
-                                       !to_scaled ? "退回原尺寸" : g_rs > 1.0 ? "放大到" : "缩到", (unsigned long)w, (unsigned long)h, (unsigned long long)k + 1, why ? "；" : "", why ? why : "");
+                                        !to_scaled ? "退回原尺寸" : s > 1.0 ? "放大到" : "缩到", (unsigned long)w, (unsigned long)h, (unsigned long long)k + 1, why ? "；" : "", why ? why : "");
     return n;
+}
+static id<MTLTexture> rs_rescale(id<MTLTexture> base, int to_scaled, const char *why) {
+    if (!to_scaled) return rs_rescale_to(base, 1.0, why);
+    NvRsInfo *i = rs_info(base); NSUInteger cw = i && i->state == RS_SCALED ? i->cw : base.width, ch = i && i->state == RS_SCALED ? i->ch : base.height;
+    return rs_rescale_to(base, rs_want(cw, ch), why);
 }
 
 // 待退回队列：绑定时发现缩放图被不支持缩放的地方读写，下一个安全点（开遍前 rs_rts / 派发前 rs_pre_compute）换回原尺寸。根存储去重
@@ -92,29 +99,48 @@ static void rs_note_skip(const tex_t *t, const char *why) {
     rs_why_note(g_rs_skip_why, why);   // 覆盖面读数（下面的日志只打前 16 条）
     static int n; if (n++ < 16) MLOG("内部分辨率：渲染目标 ser=%llu %ux%u 格式 %#x 标志 %#x 不缩（%s）", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, t->d.flags, why ? why : "?");
 }
+static double rs_fit_tex(const tex_t *t);   // nvn_mtl.m（超上限缩建的比例）
 static void rs_rts(void) {
-    if (!rs_on()) return;
+    if (!rs_on()) {   // 还没有缩放存储：本遍附件里有要超上限缩建、还没建的（第一次开遍时才建），照样往下走，同遍附件跟它的比例
+        int any = 0; for (int i = 0; i < R.rt.n && i < 8 && !any; i++) any = R.rt.color[i] && rs_fit_tex(R.rt.color[i]) != 1.0;
+        if (!any && !(R.rt.depth && rs_fit_tex(R.rt.depth) != 1.0)) return;
+    }
     rs_flush();
     const tex_t *ts[9]; int n = 0, block = 0;
     for (int i = 0; i < R.rt.n && i < 8; i++) if (R.rt.color[i]) ts[n++] = R.rt.color[i];
     if (R.rt.depth) ts[n++] = R.rt.depth;
+    // 本遍有超上限缩建的附件（rs_pinned：退不回原尺寸）：它的比例就是本遍的比例，别的附件不论可不可缩、拉没拉黑都换到这个比例
+    //   （同一遍附件存储比例必须一致，视口 / 裁剪按一个比例换算）。几份超上限的比例不同时取最小的，另几份也换过去
+    { double pin = 0;
+      for (int k = 0; k < n; k++) { id<MTLTexture> b = tex_mtl(ts[k]); if (b && rs_pinned(b)) { double s = rs_of(b); pin = pin > 0 ? MIN(pin, s) : s; } }
+      if (pin > 0) {
+          for (int k = 0; k < n; k++) {
+              id<MTLTexture> b = tex_mtl(ts[k]);
+              if (!b || (rs_state(b) == RS_SCALED && rs_of(b) == pin)) continue;
+              if (!rs_rescale_to(b, pin, "同一遍有超贴图上限缩建的附件"))
+                  RED_ONCE(111, "内部分辨率：渲染目标 ser=%llu %ux%u 格式 %#x 换不到同遍超上限附件的比例 %.4f：本遍附件尺寸不一，这一遍画面会错位", (unsigned long long)ts[k]->serial, ts[k]->d.width, ts[k]->d.height, ts[k]->d.format, pin);
+          }
+          return;
+      }
+    }
+    if (!rs_scaling()) return;   // 只有超上限缩建、没设定比例：别的遍不定比例
     for (int k = 0; k < n; k++) {
         id<MTLTexture> b = tex_mtl(ts[k]); int st = rs_state(b);
         if (!b) continue;
         if (st == RS_BLACK) block = 1;
-        else if (st == RS_NONE) { const char *why = NULL; if (!rs_eligible(ts[k], b, &why)) { rs_set_info(b, RS_BLACK, 0, 0); rs_note_skip(ts[k], why); block = 1; } }
+        else if (st == RS_NONE) { const char *why = NULL; if (!rs_eligible(ts[k], b, &why)) { rs_set_info(b, RS_BLACK, 0, 0, 1.0); rs_note_skip(ts[k], why); block = 1; } }
     }
     for (int k = 0; k < n; k++) {
         id<MTLTexture> b = tex_mtl(ts[k]); int st = rs_state(b);
         if (!b) continue;
-        if (block) { if (st == RS_SCALED) rs_rescale(b, 0, "同一遍有不缩的附件"); else if (st == RS_NONE) { rs_set_info(b, RS_BLACK, 0, 0); rs_why_note(g_rs_skip_why, "同一遍有不缩的附件"); } }   // 覆盖面读数（自己可缩、被同遍附件带成不缩的也计）
+        if (block) { if (st == RS_SCALED) rs_rescale(b, 0, "同一遍有不缩的附件"); else if (st == RS_NONE) { rs_set_info(b, RS_BLACK, 0, 0, 1.0); rs_why_note(g_rs_skip_why, "同一遍有不缩的附件"); } }   // 覆盖面读数（自己可缩、被同遍附件带成不缩的也计）
         else if (st == RS_NONE && !rs_rescale(b, 1, NULL)) block = 1;   // 换存储失败（rs_rescale 已把它记成不缩）
     }
     // 同一遍里有附件没缩成：已缩的附件退回原尺寸，同一遍的附件尺寸必须一致（11-09 #312：颜色目标缩放拷贝失败、深度照样缩到一半，同遍尺寸不一，iPhone 上闪粉色块）
     if (block) for (int k = 0; k < n; k++) {
         id<MTLTexture> b = tex_mtl(ts[k]); int st = rs_state(b);
         if (!b) continue;
-        if (st == RS_SCALED) rs_rescale(b, 0, "同一遍有附件没缩成"); else if (st == RS_NONE) { rs_set_info(b, RS_BLACK, 0, 0); rs_why_note(g_rs_skip_why, "同一遍有附件没缩成"); }   // 覆盖面读数
+        if (st == RS_SCALED) rs_rescale(b, 0, "同一遍有附件没缩成"); else if (st == RS_NONE) { rs_set_info(b, RS_BLACK, 0, 0, 1.0); rs_why_note(g_rs_skip_why, "同一遍有附件没缩成"); }   // 覆盖面读数
     }
 }
 
@@ -151,7 +177,7 @@ static uint64_t rs_support(const NvShader *fs) { return rs_support_cpu(fs, NULL)
 //   只把带可压缩标志的（渲染目标候选）计进「不缩」读数。调用方持 g_rmu
 static void rs_image_first(int tid, id<MTLTexture> t) {
     if (g_treg[tid].t.d.flags & NVN_TEXTURE_FLAGS_COMPRESSIBLE) rs_why_note(g_rs_skip_why, "先当存储图像用");
-    rs_set_info(t, RS_BLACK, 0, 0);
+    rs_set_info(t, RS_BLACK, 0, 0, 1.0);
 }
 // 绑定时：这张图在这里读写不支持缩放（顶点 / 计算等非片元阶段、不精确的片元着色器、句柄数组、存储图像槽）→ 记进待退回（只对已缩的起作用）
 static inline void rs_bind_check(id<MTLTexture> t, const NvShader *sh, int nvn_stage, int kind) {
@@ -165,7 +191,7 @@ static inline void rs_bind_check(id<MTLTexture> t, const NvShader *sh, int nvn_s
 static void rs_pre_compute(NvShader *sh) {
     if (!rs_on() || !sh) return;
     __strong id<MTLTexture> q[32]; int n = 0;
-    pthread_mutex_lock(&g_rmu);
+    os_unfair_lock_lock(&g_rmu);
     for (int i = 0; i < sh->rf.nb && n < 32; i++) {
         const nvn_rbind *b = &sh->rf.b[i]; int reg = b->reg, tid = 0;
         if (b->kind == NVN_RB_TEX) tid = (int)(tex_slot_h(S.tex[5], S.img[5], reg) & 0xfffff);
@@ -176,7 +202,7 @@ static void rs_pre_compute(NvShader *sh) {
         id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
         if (t && rs_state(t) == RS_SCALED) q[n++] = rs_root(t);
     }
-    pthread_mutex_unlock(&g_rmu);
+    os_unfair_lock_unlock(&g_rmu);
     for (int k = 0; k < n; k++) if (rs_state(q[k]) == RS_SCALED) rs_rescale(q[k], 0, "计算派发读写");
     rs_flush();
 }
@@ -219,11 +245,11 @@ static void rs_pre_images(const NvShader *cs) {
     for (int it = 0; it < RS_PRE_MAX; it++) {
         (void)rs_bad_dropped();
         int stuck = 0;
-        pthread_mutex_lock(&g_rmu); int any = rs_image_slots(cs, 5, NULL, &stuck); pthread_mutex_unlock(&g_rmu);
+        os_unfair_lock_lock(&g_rmu); int any = rs_image_slots(cs, 5, NULL, &stuck); os_unfair_lock_unlock(&g_rmu);
         if (!any) { if (stuck) RS_RED_IMG("派发"); return; }
         rp_end(); rs_flush();
         if (!rs_bad_dropped()) {   // 队列清完了：槽里还有缩放图 = 退回失败（rs_rescale 失败时存储仍是缩放尺寸），报红
-            pthread_mutex_lock(&g_rmu); int left = rs_image_scaled(cs, 5); pthread_mutex_unlock(&g_rmu);
+            os_unfair_lock_lock(&g_rmu); int left = rs_image_scaled(cs, 5); os_unfair_lock_unlock(&g_rmu);
             if (left || stuck) RS_RED_IMG("派发");
             return; }
     }
@@ -240,18 +266,18 @@ static void rs_pre_draw(const NvProg *pr) {
     for (int it = 0; it < RS_PRE_MAX; it++) {
         int any = 0, fs_write = 0, stuck = 0;
         (void)rs_bad_dropped();
-        pthread_mutex_lock(&g_rmu);
+        os_unfair_lock_lock(&g_rmu);
         for (int st = 0; st < 5; st++) if (pr->sh[st]) any |= rs_image_slots(pr->sh[st], st, st == 1 ? &fs_write : NULL, &stuck);
-        pthread_mutex_unlock(&g_rmu);
+        os_unfair_lock_unlock(&g_rmu);
         if (fs_write && R.has_rt) for (int i = 0; i < 9; i++) {
             const tex_t *a = i < 8 ? (i < R.rt.n ? R.rt.color[i] : NULL) : R.rt.depth; id<MTLTexture> b = a ? tex_mtl(a) : nil; int state = rs_state(b);
             if (state == RS_SCALED) { rs_bad(b, "同一遍有片元阶段写存储图像"); any = 1; }
-            else if (b && state == RS_NONE) { rs_set_info(b, RS_BLACK, 0, 0); rs_why_note(g_rs_skip_why, "同一遍有片元阶段写存储图像"); }
+            else if (b && state == RS_NONE) { rs_set_info(b, RS_BLACK, 0, 0, 1.0); rs_why_note(g_rs_skip_why, "同一遍有片元阶段写存储图像"); }
         }
         if (!any) { if (stuck) RS_RED_IMG("绘制"); return; }
         rp_end(); rs_flush();
         if (!rs_bad_dropped()) {   // 同 rs_pre_images
-            int left = 0; pthread_mutex_lock(&g_rmu); for (int st = 0; st < 5 && !left; st++) if (pr->sh[st]) left = rs_image_scaled(pr->sh[st], st); pthread_mutex_unlock(&g_rmu);
+            int left = 0; os_unfair_lock_lock(&g_rmu); for (int st = 0; st < 5 && !left; st++) if (pr->sh[st]) left = rs_image_scaled(pr->sh[st], st); os_unfair_lock_unlock(&g_rmu);
             if (left || stuck) RS_RED_IMG("绘制");
             return; }
     }

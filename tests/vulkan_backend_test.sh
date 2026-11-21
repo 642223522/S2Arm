@@ -6,23 +6,27 @@
 #   超时计数不锁结果、段溢出显式失败、消费线程 Peek 留队、FlushTo 有界、Flush(true) 不持锁等超时。
 #   另跑 stop_after_acquire.py --mode all（15 个 Present/Poll/租约相位）：真实 NativeLease ABI 消费方 + 受控
 #   Vulkan 边界；含 #1228 回归守卫 revoke-early / revoke-early-prior（acquire 与提交之间撤销）。缺任一 PASS 即红。
-#   依赖须预先准备；本入口清空包源、13 个工程合编进本树 build/vulkan_backend_test（跨次增量），不联网下载。
+#   依赖须预先准备；本入口清空包源、13 个工程编进本树 build/vulkan_backend_test（其中 9 个经树外按内容缓存 tools/cs_cache.sh），不联网下载。
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 DN=${DOTNET:-$HOME/.dotnet/dotnet}; [ -x "$DN" ] || DN=$(command -v dotnet)
 bad=0; n=0
-# 构建输出放本树固定目录 build/vulkan_backend_test（被忽略、跨次保留，按 MSBuild 增量编；11-14 门禁提速）：原先放本次临时目录，
-#   每次都从零编——Control.Tests 引用 S2A.Services，连带整套 Ryujinx（HLE / ARMeilleure / Gpu …）冷编一遍，实测整步 178 秒里这一个工程占 109 秒。
-#   目录只归本单测用（不碰各工程自己的 obj/bin、不和别的步共用），包源配置也放这里且内容固定（放临时目录时路径每次变，还原也次次重做）。
+# 构建输出放本树固定目录 build/vulkan_backend_test（被忽略；目录只归本单测用，不碰各工程自己的 obj/bin、不和别的步共用，包源配置也放这里且内容固定）。
+#   开发机上跨次保留、按 MSBuild 增量编；门禁每步前 git clean -fdx，这个目录每次都是空的、跨次增量不成立，所以 9 个工程改走树外缓存（见下）。
+#   Control.Tests 引用 S2A.Services，连带整套 Ryujinx（HLE / ARMeilleure / Gpu …）冷编一遍，实测整步 178 秒里这一个工程占 109 秒。
 # 13 个工程在同一次 MSBuild 里编完：原先每个工程各起一次 dotnet run——各自起 MSBuild、评估、还原、按引用链检查一遍，共用的引用被 13 次分别核对；
 #   现在一份解决方案文件列全 13 个工程，每个被引用的工程只编一次（MSBuild 自己排图，不会两边写同一份输出），随后逐个工程串行跑
 #   （参数、退出码判定与原先相同；工程之间不并行，Control.Tests 内部分进程见下）。
 #   合编不过：固定目录里可能留着上一次的旧程序，不许拿它们跑出「通」——改回原先的逐个 dotnet run（串行各自现编、各自报自己的错）
+# 分两批编进同一个产物目录：前 9 个工程经 tools/cs_cache.sh（键 = 闭包源码在 HEAD 的内容 + 命令参数 + SDK 版本 …，命中就克隆上次的产物、不调 dotnet；
+#   闭包有未提交改动 / 产物目录事先非空就照常现编），后 4 个直接编——它们构建时 Exec 调外部编译器（spirv-as / cc）或读闭包外的头文件
+#   （CodecTests 汇编 .spvasm、Control.Tests 与 WsiTests 编 android/native 头 + .c 夹具、Runtime.Tests 编 asset_fixture.c），这些输入不在缓存键里。
+#   缓存那批必须先编：它只在产物目录事先为空时才收进缓存，命中时会整个替换产物目录。
 ART=$H/build/vulkan_backend_test; mkdir -p "$ART"
 NC='<configuration><packageSources><clear /></packageSources></configuration>'
 [ "$(cat "$ART/NuGet.Config" 2> /dev/null)" = "$NC" ] || printf '%s\n' "$NC" > "$ART/NuGet.Config"   # 内容不变就不重写（不动时间戳）
 P=(-c Release --artifacts-path "$ART/artifacts" -p:GeneratePackageOnBuild=false -p:CreateHardLinksForCopyFilesToOutputDirectoryIfPossible=true
    -p:CreateHardLinksForCopyLocalIfPossible=true -p:NuGetAudit=false -p:RestoreConfigFile="$ART/NuGet.Config")
-PROJ=(
+PROJ_C=(   # 经缓存
   "$H/graphics/vulkan/cache/tests/renderer/RendererProfile.Tests.csproj"
   "$H/graphics/vulkan/core/cache-tests/CacheAdmission.Tests.csproj"
   "$H/graphics/vulkan/core/fence-tests/Fence.Results.Tests.csproj"
@@ -31,15 +35,20 @@ PROJ=(
   "$H/graphics/vulkan/runtime/counter-tests/CounterLifetime.csproj"
   "$H/graphics/vulkan/runtime/query-semantics-tests/QuerySemantics.csproj"
   "$H/graphics/vulkan/runtime/readback-registration-tests/Host.csproj"
+  "$H/graphics/vulkan/runtime/varying-tests/Varying.Tests.csproj"
+)
+PROJ_X=(   # 构建时 Exec 读键外输入，直接编
   "$H/graphics/vulkan/cache/tests/CodecTests.csproj"
   "$H/graphics/vulkan/runtime/control-tests/Control.Tests.csproj"
-  "$H/graphics/vulkan/runtime/varying-tests/Varying.Tests.csproj"
   "$H/graphics/vulkan/runtime/tests/Runtime.Tests.csproj"
   "$H/graphics/vulkan/wsi/tests/WsiTests.csproj"
 )
-{ echo '<Solution>'; for p in "${PROJ[@]}"; do echo "  <Project Path=\"$p\" />"; done; echo '</Solution>'; } > "$T/vulkan_backend.slnx"
+PROJ=("${PROJ_C[@]}" "${PROJ_X[@]}")
+sln() { echo '<Solution>'; for p in "$@"; do echo "  <Project Path=\"$p\" />"; done; echo '</Solution>'; }
+sln "${PROJ_C[@]}" > "$T/vulkan_backend_cached.slnx"; sln "${PROJ_X[@]}" > "$T/vulkan_backend_exec.slnx"
 built=1
-o=$(MSBUILDDISABLENODEREUSE=1 timeout 600 "$DN" build "$T/vulkan_backend.slnx" "${P[@]}" -nologo -v q 2>&1 < /dev/null) || {
+o=$(MSBUILDDISABLENODEREUSE=1 timeout 600 bash "$H/tools/cs_cache.sh" "$ART/artifacts" "${PROJ_C[@]}" -- "$DN" build "$T/vulkan_backend_cached.slnx" "${P[@]}" -nologo -v q 2>&1 < /dev/null) \
+  && o=$(MSBUILDDISABLENODEREUSE=1 timeout 600 "$DN" build "$T/vulkan_backend_exec.slnx" "${P[@]}" -nologo -v q 2>&1 < /dev/null) || {
   echo "不通 13 个工程合编（rc=$?）：$(grep -E ' error ' <<< "$o" | sort -u | head -3 | tr '\n' ' ' | cut -c1-400)"; bad=1; built=; }
 # 合编过了就直接用 dotnet 起编好的程序（与 dotnet run --no-build 起的是同一个程序、同样的工作目录与参数；省掉每个工程再起一次 MSBuild 评估，一个约 2–3 秒）
 exe() { local d c; d=$ART/artifacts/bin/$(basename "$1" .csproj)/release; c=("$d"/*.runtimeconfig.json)

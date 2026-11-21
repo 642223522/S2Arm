@@ -108,12 +108,11 @@ namespace Ryujinx.HLE.HOS.SystemState
                 return;
             }
 
+            // S2Arm：应用程序的焦点变化只发 FocusStateChanged，游戏再读 GetCurrentFocusState；ChangeIntoForeground / ChangeIntoBackground
+            //   是 am 发给非应用程序小程序的（Eden lifecycle_manager.cpp PopMessageInOrderOfPriority：m_is_application 才走 FocusStateChanged 分支）。
+            //   原 Ryujinx 回前台另入队 ChangeIntoForeground，起局只调一次不显形；宿主焦点接线后每次回前台都发，
+            //   诊断 D-AXDF：Mac 上 5 局停帧 4 局紧跟焦点变化消息，客机线程全部睡在条件变量上不再醒
             Messages.Enqueue(AppletMessage.FocusStateChanged);
-
-            if (isFocused)
-            {
-                Messages.Enqueue(AppletMessage.ChangeIntoForeground);
-            }
 
             MessageEvent.ReadableEvent.Signal();
         }

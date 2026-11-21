@@ -86,8 +86,8 @@ public static class PackJobClient
     {
         // The developer certificate and the install mode belong to this computer, installUpdate to the phone (install.update_phone): no game.
         // export 的游戏在计划里（plan.items，ExportStream），信封上不带
-        var perGame = request.Operation is not ("devCert" or "installMode" or "installUpdate" or "export" or "sgradeScan");
-        if (perGame && string.IsNullOrWhiteSpace(request.GameId)) throw new ArgumentException("A game is required.", nameof(request));
+        // 要不要游戏号由作业层自己判（自己人之间不设允许清单，#1149）：有就带，没有就不带；要游戏的作业缺了由作业层报「请求里没有游戏号」。
+        //   原先这里按名单要求带游戏号，名单漏登的 phoneKeptPull / installUpdatePrepare 在这一步抛异常、被循环吞掉，Windows 上自动更新一次都没发出去（0.5.0 候选验收）
         var payload = new Dictionary<string, object?>
         {
             ["schema"] = 1, ["jobId"] = jobId, ["operation"] = request.Operation,
@@ -96,15 +96,20 @@ public static class PackJobClient
             // The job stops itself when this launcher process is gone (main.py supervise).
             ["parentPid"] = Environment.ProcessId
         };
-        if (perGame) payload["gameId"] = request.GameId;
+        if (!string.IsNullOrWhiteSpace(request.GameId)) payload["gameId"] = request.GameId;
+        // 随包壳目录、Apple TV 壳、随包资源：所有作业一律带（同 Mac JobClient 每个请求都带 resources）。
+        //   原先按作业名点名带，新加的 pushSelected（「更新这 N 款 / 更新所选」）漏了：ipa.bundled_shell 回落到私有目录下不存在的 Shell，
+        //   0.5 升上来的 Windows 玩家每款约 1.5 秒报 tool_missing「应用自带的预编壳缺失」（#1756，v0.6.1 热修）。作业要不要用由作业层自己判
         // The bundled iPhone shell is a launcher path setting (Settings → Shell); ipa.bundled_shell reads shellDir.
-        // export 的每一步子作业沿用这份请求（pack/jobs/export_plan.py），iPhone 那步要的壳与随包资源一并带上
-        if (request.Operation is "ipa" or "install" or "installUpdate" or "export") payload["shellDir"] = Path.GetFullPath(request.Paths.Shell);
+        payload["shellDir"] = Path.GetFullPath(request.Paths.Shell);
+        // Apple TV 预编壳（启动器目录 Shell-tvOS，安装包带了才有）：tvos.tv_shell / derive 读 tvShellDir，Windows 不能现出壳
+        var tvShell = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(request.Paths.Shell)) ?? "", "Shell-tvOS");
+        if (Directory.Exists(tvShell)) payload["tvShellDir"] = tvShell;
         // Bundled resources next to S2Arm.exe (bundle_win.py layout): sgradeScan reads CommunityPatches/patches-v3.tar (v2 on older installs);
         // ipa reads the shared fonts from resources/Fonts (core.fonts_dir; without it
         // "shared fonts missing", tianyan 11-07); installCheck / install use the Impactor + plumesign shipped in resources/ThirdParty/Impactor
         // (pack/jobs/impactor.py bundled, 11-07 维护者: no download detour for players).
-        if (request.Operation is "ipa" or "export" or "installCheck" or "install" or "installRemove" or "installRestore" or "installMode" or "installUpdate" or "sgradeScan") payload["resources"] = Path.GetFullPath(AppContext.BaseDirectory);
+        payload["resources"] = Path.GetFullPath(AppContext.BaseDirectory);
         foreach (var (key, value) in request.Extra ?? new Dictionary<string, object?>())
         {
             if (payload.ContainsKey(key)) throw new ArgumentException("Extra field overrides the request envelope: " + key);

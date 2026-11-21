@@ -10,7 +10,11 @@
 #include "native.h"
 #include "s2a_pad.h"
 #include "haptic_retry.h"
+#include "haptic_safe.h"
 #include "phone_axes.h"
+#include "motion_pick.h"
+int s2a_ios_ble_slot_rumble(int slot, const s2a_pad_vibration raw[2]);   // controller.m：玩家 2–4 是 NS2 Pro 时由它出
+int s2a_ios_ble_slot_motion(int slot, s2a_pad_motion *out);
 #include <math.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -61,13 +65,13 @@ static NSMapTable<GCController *, S2ASlotRumbler *> *g_rumblers;   // 手柄断�
 
 static void rumbler_stop(S2ASlotRumbler *r) {
     if (!r) return;
-    for (int k = 0; k < 2; k++) { if (r->player[k] && r->playing[k]) [r->player[k] stopAtTime:CHHapticTimeImmediate error:nil]; r->playing[k] = NO; }
+    for (int k = 0; k < 2; k++) { if (r->player[k] && r->playing[k]) s2a_hp_stop(r->player[k]); r->playing[k] = NO; }
     if (r->timer) dispatch_source_set_timer(r->timer, DISPATCH_TIME_FOREVER, DISPATCH_TIME_FOREVER, 0);
 }
 static void rumbler_reset(S2ASlotRumbler *r) {
     if (!r) return;
     rumbler_stop(r);
-    for (int k = 0; k < 2; k++) { [r->engine[k] stopWithCompletionHandler:nil]; r->player[k] = nil; r->engine[k] = nil; }
+    for (int k = 0; k < 2; k++) { s2a_hp_engine_stop(r->engine[k]); r->player[k] = nil; r->engine[k] = nil; }
 }
 static void rumbler_fail(S2ASlotRumbler *r, const char *what, NSError *error) {
     BOOL died = s2a_hp_on_fail(&r->retry, up_ns());
@@ -110,13 +114,13 @@ static BOOL rumbler_channel(S2ASlotRumbler *r, int k, GCHapticsLocality locality
         if (!r->player[k]) { rumbler_fail(r, "创建播放器失败", error); return NO; }
     }
     uint64_t now = up_ns();
-    if (r->playing[k] && !r->loops[k] && now - r->startedNs[k] > SLOT_RESTART_NS) { [r->player[k] stopAtTime:CHHapticTimeImmediate error:nil]; r->playing[k] = NO; }
-    if (!r->playing[k] && ![r->player[k] startAtTime:CHHapticTimeImmediate error:&error]) { rumbler_fail(r, "播放失败", error); return NO; }
+    if (r->playing[k] && !r->loops[k] && now - r->startedNs[k] > SLOT_RESTART_NS) { s2a_hp_stop(r->player[k]); r->playing[k] = NO; }
+    if (!r->playing[k] && !s2a_hp_start(r->player[k], &error)) { rumbler_fail(r, "播放失败", error); return NO; }
     if (!r->playing[k]) r->startedNs[k] = now;
     r->playing[k] = YES;
-    if (![r->player[k] sendParameters:@[
+    if (!s2a_hp_send(r->player[k], @[
         [[CHHapticDynamicParameter alloc] initWithParameterID:CHHapticDynamicParameterIDHapticIntensityControl value:amplitude relativeTime:0],
-        [[CHHapticDynamicParameter alloc] initWithParameterID:CHHapticDynamicParameterIDHapticSharpnessControl value:sharp - 0.5f relativeTime:0]] atTime:CHHapticTimeImmediate error:&error]) {
+        [[CHHapticDynamicParameter alloc] initWithParameterID:CHHapticDynamicParameterIDHapticSharpnessControl value:sharp - 0.5f relativeTime:0]], &error)) {
         rumbler_fail(r, "更新强度失败", error); return NO;
     }
     return YES;
@@ -153,6 +157,7 @@ static void rumbler_play(S2ASlotRumbler *r, const s2a_pad_vibration pair[2]) {
 // 服务层按玩家交来的震动（P1 以外，槽 1–3）：values[0] 左、values[1] 右（原始振幅）
 __attribute__((visibility("default"), used)) void s2a_pad_set_rumble_slot(int slot, const s2a_pad_vibration values[2]) {
     if (!values || slot <= 0 || slot >= SLOT_PADS || !atomic_load(&g_active)) return;
+    if (s2a_ios_ble_slot_rumble(slot, values)) return;   // 这个槽是 NS2 Pro（controller.m，#1428）
     float gain = s2a_ios_rumble_gain();
     if (!(gain > 0)) return;
     pthread_mutex_lock(&g_mu);
@@ -202,8 +207,11 @@ __attribute__((visibility("default"), used)) int s2a_pad_read_motion_slot(int sl
     if (!out) return 0;
     out[0] = out[1] = (s2a_pad_motion){0};
     if (slot < 0 || slot >= SLOT_PADS || !atomic_load(&g_active)) return 0;
+    if (slot > 0 && s2a_ios_ble_slot_motion(slot, &out[0])) return 1;   // 这个槽是 NS2 Pro（controller.m，#1428）
     pthread_mutex_lock(&g_mu);
-    int known = g_motion_known[slot];
+    // 按新鲜样本算「有」（motion_pick.c s2a_motion_fresh）：手柄出过一帧就停、或给了体感对象却从不出样本，过了 500 ms 就当没有，
+    //   仲裁自动回到手机陀螺仪；旧帧不再喂给游戏
+    int known = s2a_motion_fresh(g_motion_known[slot], g_motion[slot].host_timestamp_us, up_ns() / 1000);
     if (known) out[0] = g_motion[slot];
     pthread_mutex_unlock(&g_mu);
     return known;

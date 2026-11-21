@@ -2,14 +2,17 @@
 """Windows 启动器发版组装（同 Mac launchers/macos/bundle_engine.py + build_app 的资源段）：产出解压即用的完整目录，玩家机不装任何开发工具。
 在 Windows 出包机上（要 .NET SDK / clang / cmake / cargo 等，见 bundle_prepare_win.py）：
   python -X utf8 launchers/windows/bundle_win.py <目标> --shell <预编壳目录> --tzdata <时区目录> --fonts <字体目录>
+  发版提速（11-19）：先不给 --shell 组装（不等 Mac 出壳），壳到了再 bundle_win.py <目标> --place-shell --shell <壳> [--tv-shell <tvOS 壳>]
 产物（<目标> 不许已存在）：
   Engine/           引擎快照（同 Mac：按 bundle_engine.INPUTS 挑仓库文件）+ Binaries/Prepare（bundle_prepare_win 预编件 + Tzdata）+ engine.json
                     （逐文件大小 + sha256、源码指纹、壳编号、出包要的 git 值；作业层 embedded.install 校验后克隆进私有目录）。
                     打包时建的单提交 Git 库只用来算 git 值（bundle_engine.seal_snapshot），算完删掉、不随包
   Runtime/          随包运行时（bundle_runtime_win.py：Python 嵌入版、bash、zstd、许可；不带 .NET）
   Shell/            预编壳（壳编号须等于 engine.json 的 shellId）
+  Shell-tvOS/       Apple TV 预编壳（--tv-shell 给了才有；壳编号须等于本引擎的 tvOS 壳编号；Mac 上 S2A_APPLE_OS=tvos pack/shell_build.sh 出）。
+                    没带的这一版 Windows 出不了 Apple TV 包（启动器导出页不显示 Apple TV）
   Fonts/            开源共享字体 7 份 .bfttf
-  ThirdParty/Impactor/  官方原版 Impactor + plumesign（v2.7.2，不改不重签，SHA-256 钉在 pack/jobs/impactor.py BUNDLED，不符拒打）+ 许可（MIT、内嵌 apple-codesign 的 MPL-2.0）+ 来源说明
+  ThirdParty/Impactor/  官方原版 Impactor + plumesign（v2.7.3，不改不重签，SHA-256 钉在 pack/jobs/impactor.py BUNDLED，不符拒打）+ 许可（MIT、内嵌 apple-codesign 的 MPL-2.0）+ 来源说明
 启动器作业请求：resources=<目标>、engineBundle=engineDir=<目标>\\Engine（同 Mac Store.swift）。
 预编壳、时区、字体三样目前只在 Mac 上产出（pack/shell_build.sh、services/systemdata/make_tzdata.sh --bundle-to、pack/fonts/make_open_fonts.py），作为输入给进来，这里只核对后收入。
 """
@@ -32,7 +35,7 @@ import bundle_runtime_win   # noqa: E402
 sys.path.insert(0, str(ROOT / "pack/jobs"))
 import impactor   # noqa: E402  随包 Impactor 的版本 / 文件名 / 哈希只此一份（作业层按同一份找）
 
-IMPACTOR_LICENSES = ROOT / "launchers/windows/third_party/impactor"   # v2.7.2 标签下的 LICENSE 与 3rdparty/apple-codesign-0.29.0/LICENSE 原文
+IMPACTOR_LICENSES = ROOT / "launchers/windows/third_party/impactor"   # v2.7.3 标签下的 LICENSE 与 3rdparty/apple-codesign-0.29.0/LICENSE 原文；patches/ 是自编补丁
 
 
 def say(m): print(m, flush=True)
@@ -72,38 +75,36 @@ def sha256(path):
 
 
 def impactor_cache():
-    return Path(os.environ.get("S2A_IMPACTOR_CACHE") or Path(os.environ.get("S2A_RUN_ROOT") or Path.home() / ".s2arm/run") / "s2arm/cache/impactor" / ("v" + impactor.TESTED))
+    return Path(os.environ.get("S2A_IMPACTOR_CACHE") or Path(os.environ.get("S2A_RUN_ROOT") or Path.home() / ".s2arm/run")
+                / "s2arm/cache/impactor" / f"v{impactor.TESTED}-{impactor.OWN_BUILD}")
+
+
+IMPACTOR_PATCHES = IMPACTOR_LICENSES / "patches"
 
 
 def bundle_impactor(dest, cache=None, fetch=None):
-    """官方原版 Impactor + plumesign 随启动器下发（11-07 维护者：玩家不再跳转下载）：缓存里有就用（离线构建），没有从官方发布页下；
-    逐个核 SHA-256 = impactor.BUNDLED，不符报红拒打（不改、不重签、不换版本）；附许可原文与来源说明"""
-    cache = Path(cache or impactor_cache()); cache.mkdir(parents=True, exist_ok=True); dest = Path(dest); dest.mkdir(parents=True)
-    if fetch is None:
-        import urllib.request
-        fetch = lambda url, to: urllib.request.urlretrieve(url, to)   # noqa: E731
+    """自编的 Impactor + plumesign 随启动器下发（11-07 维护者：玩家不再跳转下载；11-18 起自编，见 pack/jobs/impactor.py OWN_BUILD）：
+    缓存（impactor_cache()）有就用，没有从固定来源 impactor.OWN_RELEASE（我们公开仓的 Release）下到缓存；逐个核 SHA-256 = impactor.BUNDLED，
+    不符报红拒打（impactor.own_artifact）。不去官方发布页下（官方原版没有补丁）。附许可原文、补丁与来源说明"""
+    cache = Path(cache or impactor_cache()); dest = Path(dest); dest.mkdir(parents=True)
     lines = []
     for name, want in impactor.BUNDLED.items():
-        src = cache / name
-        if not src.is_file():
-            say(f"[组装] 下载 {name}（官方发布页 v{impactor.TESTED}）"); tmp = src.with_suffix(".part")
-            try:
-                fetch(impactor.DOWNLOAD + name, tmp)
-            except OSError as e:   # 11-07 Windows 出包机直连 github.com 被重置：Windows 出包机多半下不了，先在能连 GitHub 的机器（Mac 构建机）下好、核过哈希放进缓存
-                raise SystemExit(f"【红】取不到 {impactor.DOWNLOAD + name}（{e}）：在能连 GitHub 的机器上下好放进 {cache}（或用 S2A_IMPACTOR_CACHE 指过去）再打")
-            tmp.replace(src)
-        got = sha256(src)
-        if got != want:
-            raise SystemExit(f"【红】{src} 的 SHA-256 是 {got}，钉的是 {want}（{impactor.RELEASE_PAGE}）：不是官方 v{impactor.TESTED} 原版，拒打")
+        try:
+            src = Path(impactor.own_artifact(name, want, cache, fetch))
+        except impactor.OwnBuildError as e:
+            raise SystemExit(f"【红】{e}")
         shutil.copy2(src, dest / name); lines.append(f"{name}\t{src.stat().st_size} 字节\tSHA-256 {want}")
     for f in sorted(IMPACTOR_LICENSES.glob("LICENSE-*.txt")): shutil.copy2(f, dest / f.name)
+    patches = sorted(IMPACTOR_PATCHES.glob("*.patch"))
+    for f in patches: shutil.copy2(f, dest / f.name)
     (dest / "README-来源与许可.txt").write_text("\r\n".join([
-        f"Impactor v{impactor.TESTED}（第三方开源工具，作者 Samara M / claration，MIT 许可：LICENSE-Impactor-MIT.txt）",
-        "S2Arm 原样随附官方发布文件，未修改、未重新签名，用于把出好的 iPhone 包签名并装到你的 iPhone；Apple ID 密码只在 Impactor 里输入、只发给 Apple。",
-        f"来源：{impactor.RELEASE_PAGE}", *lines,
-        "其中内嵌的 apple-codesign 0.29.0 以 MPL-2.0 发布（LICENSE-apple-codesign-MPL-2.0.txt），源码：",
-        f"  https://github.com/claration/impactor/tree/v{impactor.TESTED}/3rdparty/apple-codesign-0.29.0",
-        f"Impactor 完整源码：https://github.com/claration/impactor/tree/v{impactor.TESTED}", ""]), encoding="utf-8")
+        f"Impactor v{impactor.TESTED}（第三方开源工具，作者 Samara M / claration，MIT 许可：LICENSE-Impactor-MIT.txt）的修改版，用于把出好的 iPhone 包签名并装到你的 iPhone；",
+        "Apple ID 密码只在 Impactor 里输入、只发给 Apple。",
+        f"S2Arm 基于上游 v{impactor.TESTED} 源码打上以下补丁后自行编译（随附补丁原文）：" + "、".join(f.name for f in patches),
+        "  改动只有一处：默认 anisette 服务器被 Apple 以 SRP -23782（要求 macOS 10.13 以上）拒绝登录时，换用备用服务器重试并记住。",
+        f"上游源码：{impactor.SOURCE_TREE}", *lines,
+        "其中内嵌的 apple-codesign 0.29.0（未修改）以 MPL-2.0 发布（LICENSE-apple-codesign-MPL-2.0.txt），源码：",
+        f"  {impactor.SOURCE_TREE}/3rdparty/apple-codesign-0.29.0", ""]), encoding="utf-8")
 
 
 def smoke_reader(runtime, engine):
@@ -123,11 +124,43 @@ def smoke_reader(runtime, engine):
     say(f"  读取器 {Path(exe).name} 起得来（只用随包运行时）")
 
 
-def bundle(target, shell, tzdata, fonts):
+def check_shells(shell, tv_shell=None):
+    """壳编号须等于本引擎按提交算的壳号（engine.json 的 shellId 同源）"""
+    sys.path.insert(0, str(ROOT)); from pack.shell import manifest as shell_manifest
+    shell, want = Path(shell), shell_manifest.current_id()
+    if not (shell / "manifest.json").is_file() or shell_id(shell) != want:
+        raise SystemExit(f"【红】预编壳 {shell} 不是本引擎的壳 {want}（Mac 上 pack/shell_build.sh 按同一提交出）")
+    if tv_shell:
+        tv_shell, want_tv = Path(tv_shell), shell_manifest.current_id("tvos")
+        if not (tv_shell / "manifest.json").is_file() or shell_id(tv_shell) != want_tv:
+            raise SystemExit(f"【红】Apple TV 预编壳 {tv_shell} 不是本引擎的 tvOS 壳 {want_tv}（Mac 上 S2A_APPLE_OS=tvos pack/shell_build.sh 按同一提交出）")
+
+
+def copy_shells(target, shell, tv_shell=None):
+    shutil.copytree(shell, Path(target) / "Shell")
+    if tv_shell:
+        shutil.copytree(tv_shell, Path(target) / "Shell-tvOS")
+    else:
+        say("[组装] 🟡 没给 --tv-shell：本版不带 Apple TV 预编壳，Windows 出不了 Apple TV 包")
+
+
+def place_shell(target, shell, tv_shell=None):
+    """先组装（不带 --shell）的目录补放壳（11-19 发版提速）：核壳号后放进 Shell/、Shell-tvOS/；已有壳不覆盖"""
+    target = Path(target).resolve()
+    if not (target / "Engine/engine.json").is_file():
+        raise SystemExit(f"【红】{target} 不是组装好的 Windows 启动器目录（没有 Engine/engine.json）")
+    if (target / "Shell").exists():
+        raise SystemExit(f"【红】{target} 已有 Shell/：不覆盖")
+    check_shells(shell, tv_shell)
+    copy_shells(target, shell, tv_shell)
+    say(f"🟢 壳已放进 {target}")
+
+
+def bundle(target, shell, tzdata, fonts, tv_shell=None):
     target = Path(target).resolve()
     if target.exists():
         raise SystemExit(f"【红】{target} 已存在：换个空目标，不混旧件")
-    shell, tzdata, fonts = Path(shell), Path(tzdata), Path(fonts)
+    shell, tzdata, fonts = (Path(shell) if shell else None), Path(tzdata), Path(fonts)
     if not (tzdata / "output").is_dir() or not any((tzdata / "output").iterdir()):
         raise SystemExit(f"【红】时区目录 {tzdata} 要有非空 output/（Mac 上 services/systemdata/make_tzdata.sh --bundle-to 出）")
     bft = sorted(fonts.glob("*.bfttf"))
@@ -135,18 +168,22 @@ def bundle(target, shell, tzdata, fonts):
         raise SystemExit(f"【红】字体目录 {fonts} 要有 7 份 .bfttf（现 {len(bft)} 份；Mac 上 pack/fonts/make_open_fonts.py 出）")
     sys.path.insert(0, str(ROOT)); from pack.shell import manifest as shell_manifest
     want = shell_manifest.current_id()
-    if not (shell / "manifest.json").is_file() or shell_id(shell) != want:
-        raise SystemExit(f"【红】预编壳 {shell} 不是本引擎的壳 {want}（Mac 上 pack/shell_build.sh 按同一提交出）")
+    if shell is not None:
+        check_shells(shell, tv_shell)
     engine = target / "Engine"
     fingerprint = bundle_engine.source_fingerprint(ROOT)
     say(f"[组装] 引擎快照：{snapshot(engine)} 个文件")
     say("[组装] 预编件"); bundle_prepare_win.bundle(engine)
+    if bundle_engine.bundle_android_engine(engine): say("[组装] 安卓预编引擎 APK → Engine/Binaries/Android/engine（安卓出包在开关后）")
     shutil.copytree(tzdata, engine / "Binaries/Prepare/Tzdata")
     identity = bundle_engine.seal_snapshot(engine, fingerprint)
     say(f"[组装] engine.json：{identity[:16]}（壳 {want}）")
     say("[组装] 随包运行时"); bundle_runtime_win.main([str(target)])
     say("[组装] 自检：只用随包运行时起读取器"); smoke_reader(target / "Runtime", engine)
-    shutil.copytree(shell, target / "Shell")
+    if shell is not None:
+        copy_shells(target, shell, tv_shell)
+    else:
+        say("[组装] 壳先不放（--shell 没给）：组装完再用 --place-shell 放（发版时 Windows 不必等 Mac 出壳）")
     (target / "Fonts").mkdir()
     for f in bft:
         shutil.copy2(f, target / "Fonts" / f.name)
@@ -157,9 +194,9 @@ def bundle(target, shell, tzdata, fonts):
     say("[组装] 社区补丁快照：" + ("已放进 CommunityPatches" if not why else f"🟡 {why}，本版启动器不带本地补丁库"))
     # 覆盖更新读这个版本号：最近的发版 tag（同 Mac build_app 的 CFBundleShortVersionString）
     tag = subprocess.check_output(["git", "-C", str(ROOT), "describe", "--tags", "--abbrev=0"], text=True).strip()
-    match = re.fullmatch(r"v?(\d+\.\d+\.\d+)", tag)
+    match = re.fullmatch(r"v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?)", tag)   # 测试版 v0.6.0-test.1 原样写（更新器按语义版本比：测试版 < 同号正式版，11-19）
     if not match:
-        raise SystemExit(f"【红】最近的 tag {tag} 不是 vX.Y.Z，发版前要先打 tag")
+        raise SystemExit(f"【红】最近的 tag {tag} 不是 vX.Y.Z（或测试版 vX.Y.Z-test.N），发版前要先打 tag")
     (target / "version.txt").write_text(match[1] + "\n", encoding="ascii")
     # 给玩家的 AI 用：控制客户端、手册（同 Mac build_app）；用随包 Python 跑，玩家不用另装
     shutil.copy2(ROOT / "launchers/macos/s2armctl.py", target / "s2armctl.py")
@@ -173,9 +210,17 @@ def bundle(target, shell, tzdata, fonts):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("target"); ap.add_argument("--shell", required=True); ap.add_argument("--tzdata", required=True); ap.add_argument("--fonts", required=True)
+    ap.add_argument("target"); ap.add_argument("--shell"); ap.add_argument("--tzdata"); ap.add_argument("--fonts")
+    ap.add_argument("--place-shell", action="store_true", help="只往已组装的目录里放壳（要 --shell，可带 --tv-shell）")
+    ap.add_argument("--tv-shell", help="Apple TV 预编壳目录（可选；不给 = 这版 Windows 出不了 Apple TV 包）")
     a = ap.parse_args(argv)
-    bundle(a.target, a.shell, a.tzdata, a.fonts)
+    if a.place_shell:
+        if not a.shell:
+            ap.error("--place-shell 要 --shell")
+        return place_shell(a.target, a.shell, a.tv_shell)
+    if not a.tzdata or not a.fonts:
+        ap.error("组装要 --tzdata 与 --fonts（--shell 可后放）")
+    bundle(a.target, a.shell, a.tzdata, a.fonts, a.tv_shell)
 
 
 if __name__ == "__main__":

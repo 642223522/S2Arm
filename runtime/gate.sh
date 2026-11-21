@@ -8,6 +8,8 @@
 #   且 make 遇第一处错就停、后面的组全没跑。现在每组一个 make（超时 GT 秒），没出结论的组也算红并点名原因：
 #   构建失败（编译 / 链接报错）、超时、判据不符（有「✗ t_」行）、异常退出（rc 非 0、没有判据行）、没打结论行（rc=0 但没有「✓ t_」行）、没有构建目标（有单测文件、build.mk 没登记）。
 #   有单测文件的组要 rc=0 且有「✓ t_」行、没有「✗ t_」行；build.mk 里没有单测文件的目标（ns2pro、touch_compat，打自己的通过行）只要 rc=0。
+# 本机自测排在门禁后面：不在门禁里跑（没有 GATE2_PAR）就把自己降到 nice 15，子进程继承；门禁步的优先级由门禁自己定
+[ -n "${GATE2_PAR:-}" ] || renice 15 -p $$ > /dev/null 2>&1 || true
 set -u
 GT=300
 has_file() { [ -f "runtime/tests/t_$1.c" ] || [ -f "runtime/tests/t_$1.m" ] || [ -f "graphics/nvn/tests/t_$1.c" ] || [ -f "graphics/nvn/tests/t_$1.m" ]; }
@@ -19,10 +21,19 @@ G=0; R=0; WHY=; DET=; TM=
 # 组并行（10-28 质量线门禁提速：100 组逐个跑本机 212 秒、gate-host 276 秒，单组最慢 13 秒，瓶颈是串行）：每组一个 make 进后台，同时至多 NATIVE_GATE_J 组
 #   （缺省核数一半），各组输出进临时目录，跑完按原顺序判。NVN 组共用的前置（宿主对象 / libnvn / 宽屏核心）先由 native-test-prereq 建一次，
 #   各组带 NVN_TEST_PREBUILT=1 不再各自 FORCE 重入（并行时会同时写同一个库）。对负载 / 计时敏感、偶发过的组（SER）放最后串行跑
-SER=" thread thread_plat svc_mem vawin vawin_ios26 nvn_bufreg_rate "   # nvn_bufreg_rate：耗时比判据，并行组抢核会抖
+SER=" thread thread_plat svc_mem vawin vawin_ios26 "   # 11-19：nvn_bufreg_rate 改判登记表步数比、不再比墙钟，不怕抢核，移出串行组
 J=${NATIVE_GATE_J:-$(( $(sysctl -n hw.ncpu 2> /dev/null || nproc 2> /dev/null || echo 4) / 2 ))}; [ "$J" -ge 1 ] 2> /dev/null || J=1
 OUT=$(mktemp -d "${TMPDIR:-/tmp}/s2a_native_gate_XXXXXX"); trap 'rm -rf "$OUT"' EXIT
-TF=${BUILD:-build}/.native_gate_times; mkdir -p "${TF%/*}" 2> /dev/null || TF=   # 各组上次耗时（派发排序用，见 run_groups）
+# 整步被外面停掉（门禁无进展看门狗、步时限发 TERM）时先说清还有哪几组在跑、各跑了多久、输出尾巴，再退：原先 EXIT 只删临时目录，
+#   11-19 两轮「挂死：连续 300 秒无进展」的红里看不出是哪一组挂住（每组本有 GT 秒时限，看门狗先到说明那组的进程收不掉）
+hung_report() {
+  local f k n=0
+  for f in "$OUT"/*.start; do [ -e "$f" ] || continue; k=${f##*/}; k=${k%.start}; [ -f "$OUT/$k.rc" ] && continue
+    n=$((n + 1)); echo "✗ 组 ${k}：被停时还在跑（已 $(( $(date +%s) - $(cat "$f") )) 秒），输出尾部："; tail -8 "$OUT/$k.out" 2> /dev/null | sed 's/^/    /'; done
+  [ $n = 0 ] && echo "被停时没有在跑的组（停在组外：前置构建 / 判定 / 记耗时）"
+}
+trap 'echo "原生层单测钩子被停（信号）：$(date +%T)"; hung_report; exit 143' TERM INT
+TF=${S2A_NATIVE_GATE_TIMES:-${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/cache/native_gate_times}; mkdir -p "${TF%/*}" 2> /dev/null || TF=   # 各组上次耗时（派发排序用，见 run_groups）。放树外：门禁每步 git clean -fdx，放 build/ 下永远读不到、「慢组先派」退回按名字排；只影响派发顺序，不影响判红绿；写法是临时文件 + 原子 mv，多树并发写安全
 # 编译缓存（tools/cc_cache.sh）：门禁入口（tools/gate.sh）已开就不动；单独跑本钩子时这里开。一步编链的单测也经它逐源缓存（tools/ccshim/shim split_link）
 [ -n "${S2A_CCACHE_BIN:-}" ] || { [ -f tools/cc_cache.sh ] && { source tools/cc_cache.sh; s2a_ccache_on "$PWD"; }; }
 # 工具链目录解析一次传给每组的 make（11-14 门禁提速：没设时顶层 Makefile 每次解析都起 bash 跑 tools/toolchain.sh，350 组各一次）。
@@ -32,7 +43,9 @@ MP=; [ -n "${GATE_ONLY:-}" ] || MP=$(make -pn 2> /dev/null)
 [ -n "${S2A_DEVELOPER_DIR:-}${DEVELOPER_DIR:-}" ] || [ -z "$MP" ] || { d=$(sed -n 's/^DEVELOPER_DIR := //p' <<< "$MP" | head -1); [ -n "$d" ] && export DEVELOPER_DIR=$d; }
 exec_group() {   # exec_group <键>：跑一组，输出 / 退出码 / 秒数写进 $OUT
   local k=$1 t0=$SECONDS rc
-  NVN_TEST_PREBUILT=${NVN_TEST_PREBUILT:-} timeout "$GT" make -s "native-test-$k" > "$OUT/$k.out" 2>&1; rc=$?
+  date +%s > "$OUT/$k.start"
+  # -k 15：到时限先 TERM、15 秒后还没退就 KILL（单测进程收不掉时不拖到门禁看门狗把整步停了）
+  NVN_TEST_PREBUILT=${NVN_TEST_PREBUILT:-} timeout -k 15 "$GT" make -s "native-test-$k" > "$OUT/$k.out" 2>&1; rc=$?
   echo "$rc $((SECONDS - t0))" > "$OUT/$k.rc"
 }
 judge() {   # judge <键>：按 $OUT 里这一组的结果判，绿 G+1 / 红 R+1 并记原因与细节
@@ -40,9 +53,12 @@ judge() {   # judge <键>：按 $OUT 里这一组的结果判，绿 G+1 / 红 R+
   o=$(cat "$OUT/$k.out" 2> /dev/null); read -r rc sec < "$OUT/$k.rc" 2> /dev/null || { rc=1; sec=0; o="（没有结果：这一组没跑起来）"; }
   TM="${TM}${sec} ${k}"$'\n'   # 每组墙钟（10-28 梳理：原先只判红绿、不知道慢在哪组）
   if [ $rc = 124 ]; then why="超时（${GT} 秒）"
+  elif [ $rc = 137 ]; then why="超时（${GT} 秒，TERM 后 15 秒仍不退、补了 KILL）"
   elif [ $rc = 125 ]; then why="没跑（NVN 共用前置构建失败，见上）"
   elif grep -aq '^✗ t_' < <(printf '%s\n' "$o"); then why="判据不符"
-  elif [ $rc != 0 ] && grep -aqE '^[^ ]+:[0-9]+:[0-9]+: (fatal )?error:|^clang: error:|^ld: |^Undefined symbols' < <(printf '%s\n' "$o"); then why="构建失败"
+  # 「ld: warning:」不是构建错误（nvn_texu_pending 每次链接都打 ld: warning: ignoring duplicate libraries）：原先 ^ld: 连它一起认，运行时真失败（rc 非 0、
+  #   没打 ✗ 行）被标成「构建失败」、细节只列报错行，真正的失败输出被藏掉（11-19 守望两次「✗ 组 nvn_texu_pending：构建失败」查不出原因）。先去掉警告行再判
+  elif [ $rc != 0 ] && grep -av '^ld: warning:' < <(printf '%s\n' "$o") | grep -aqE '^[^ ]+:[0-9]+:[0-9]+: (fatal )?error:|^clang: error:|^ld: |^Undefined symbols'; then why="构建失败"
   elif [ $rc != 0 ]; then why="异常退出（rc=${rc}）"
   elif has_file "$k" && ! grep -aq '^✓ t_' < <(printf '%s\n' "$o"); then why="没打结论行（rc=0 但没有「✓ t_」行）"
   fi
@@ -52,7 +68,7 @@ judge() {   # judge <键>：按 $OUT 里这一组的结果判，绿 G+1 / 红 R+
   local d
   case $why in
     判据不符) d=$(grep -aE '^(✗ |FAIL )' < <(printf '%s\n' "$o") | head -20);;   # FAIL：单测自己的判据行（t_dirty_growth / t_nvn_red 这样打，10-30 列车线：原先只认 ✗ 被丢）
-    构建失败) d=$(grep -aE ': (fatal )?error:|^clang: error:|^ld: |^Undefined symbols|^  "_|referenced from|^      [_A-Za-z].* in ' < <(printf '%s\n' "$o") | head -16);;   # 链接红连缺的符号名 / 谁引用一起带（11-05 nvn_rec_cover 偶发「Undefined symbols」只剩一行、定不了因）
+    构建失败) d=$(grep -av '^ld: warning:' < <(printf '%s\n' "$o") | grep -aE ': (fatal )?error:|^clang: error:|^ld: |^Undefined symbols|^  "_|referenced from|^      [_A-Za-z].* in ' | head -16);;   # 链接红连缺的符号名 / 谁引用一起带（11-05 nvn_rec_cover 偶发「Undefined symbols」只剩一行、定不了因）
     *) d=$(tail -10 < <(printf '%s\n' "$o"));;
   esac
   DET="${DET}✗ 组 ${k}：${why}"$'\n'"$d"$'\n'

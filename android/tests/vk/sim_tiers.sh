@@ -21,12 +21,14 @@ tiers_json="$repo/android/tests/vk/profiles/s2a_sim_tiers.json"
 profiles_sha=b502e9b0d7508e06e6300af272548cf0ee32f380
 profiles_url=https://github.com/KhronosGroup/Vulkan-Profiles.git
 
-all=(no_bc no_d24 no_vertex_stores no_clip_distance no_dual_src_blend no_calibrated_timestamps no_mirror_clamp no_exact16 no_depth_clamp no_vertex_divisor no_custom_border)
+all=(no_bc no_d24 no_vertex_stores no_clip_distance no_int16 no_dual_src_blend no_calibrated_timestamps no_mirror_clamp no_exact16 no_depth_clamp no_vertex_divisor no_custom_border no_minmax ssbo_align_256 no_fmt_filter_blend)
 want=("$@"); [ ${#want[@]} -gt 0 ] || want=("${all[@]}")
 for t in "${want[@]}"; do
     case " ${all[*]} " in *" $t "*) ;; *) echo "未知档：${t}（可用：${all[*]}）" >&2; exit 64 ;; esac
 done
 run_baseline=1
+# 一轮十几次 run.sh 共用一份 TBUF 编译链产物（第一次缺了就出，之后复用；run.sh 只在这个变量下复用）
+export S2A_TBUF_REUSE=1
 if [ -n "${S2A_SIM_SHARD:-}" ]; then
     shard_k=${S2A_SIM_SHARD%/*}; shard_n=${S2A_SIM_SHARD#*/}
     if ! [[ "$shard_k" =~ ^[0-9]+$ && "$shard_n" =~ ^[1-9][0-9]*$ ]] || [ "$shard_k" -ge "$shard_n" ]; then
@@ -97,8 +99,24 @@ red() { echo "【红】$1：$2" >&2; fails=$((fails + 1)); }
 has() { grep -qF -- "$2" "$1"; }
 
 # $1 档名（空 = 基线，不挂层）$2 日志；其余参数是额外环境变量
+# 失败时打什么：CI 日志只留这里打的。run.sh 一次跑好几遍整套（缺省 / 两级回放开 / 备忘关…），出错的用例行（FAIL 文件:行）
+# 往往在日志中段，末尾 40 行只剩汇总「红（N 处不符）」看不出是哪条（11-17 run 44072797348）。先打全日志里的 FAIL / 【红】行
+# （带日志行号，最多 40 条），再打末尾 40 行。
+show_fail() {
+    # FAIL 行单独先打：绿的整套本来就有十来条预期的【红】（驱动缺特性的具名跳过），混在一起取前 40 条会把真正的 FAIL 挤掉。
+    echo "  日志：${1}；FAIL 行（行号:内容，最多 40 条）：" >&2
+    local hits; hits=$(grep -nE '^FAIL ' "$1" || true)
+    if [ -n "$hits" ]; then printf '%s\n' "$hits" | head -40 >&2; else echo "    （没有 FAIL 行）" >&2; fi
+    echo "  【红】行（最多 40 条）：" >&2
+    hits=$(grep -n '【红】' "$1" || true)
+    if [ -n "$hits" ]; then printf '%s\n' "$hits" | head -40 >&2; else echo "    （没有【红】行）" >&2; fi
+    echo "  末尾 40 行：" >&2
+    tail -40 "$1" >&2
+}
 run_tier() {
     local tier=$1 log=$2; shift 2
+    local capabilities=SIMULATE_FEATURES_BIT,SIMULATE_FORMATS_BIT
+    [ "$tier" != ssbo_align_256 ] || capabilities+=,SIMULATE_PROPERTIES_BIT
     set +e
     if [ -z "$tier" ]; then
         (cd "$repo" && env "$@" bash android/tests/vk/run.sh) >"$log" 2>&1
@@ -106,7 +124,7 @@ run_tier() {
         (cd "$repo" && env S2A_VK_PROFILE_LAYER_DIR="$layer_dir" \
             VK_KHRONOS_PROFILES_PROFILE_DIRS="$prof_dir" \
             VK_KHRONOS_PROFILES_PROFILE_NAME="VP_S2A_SIM_$tier" \
-            VK_KHRONOS_PROFILES_SIMULATE_CAPABILITIES=SIMULATE_FEATURES_BIT,SIMULATE_FORMATS_BIT \
+            VK_KHRONOS_PROFILES_SIMULATE_CAPABILITIES="$capabilities" \
             VK_KHRONOS_PROFILES_DEBUG_REPORTS=DEBUG_REPORT_ERROR_BIT \
             "$@" bash android/tests/vk/run.sh) >"$log" 2>&1
     fi
@@ -123,6 +141,11 @@ run_tier() {
 check_tier() {
     local tier=$1 log="$out/$1.log" rc=0
     case "$tier" in
+        ssbo_align_256)
+            run_tier ssbo_align_256 "$log" || rc=$?
+            [ "$rc" -eq 0 ] || red ssbo_align_256 "run.sh rc=${rc}，期望回放与校验层通过"
+            has "$log" "minStorageBufferOffsetAlignment=256 " || red ssbo_align_256 "没有观察到模拟对齐 256"
+            has "$log" "PASS replay storage buffer window: align 256," || red ssbo_align_256 "256 对齐回放像素 / 范围检查未通过" ;;
         no_bc)
             run_tier no_bc "$log" || rc=$?
             [ "$rc" -eq 0 ] || red no_bc "run.sh rc=${rc}，期望契约绿"
@@ -143,6 +166,11 @@ check_tier() {
             has "$log" "shaderClipDistance=0 shaderCullDistance=0" || red no_clip_distance "层没藏住 shaderClipDistance / shaderCullDistance"
             has "$log" "【红】设备没启用 shaderClipDistance" || red no_clip_distance "没看到写裁剪距离按特性点名报红（#1072）"
             has "$log" "C1072a 缺特性时 UNSUPPORTED 并点名特性" || red no_clip_distance "C1072a 没跑完" ;;
+        no_int16)
+            run_tier no_int16 "$log" || rc=$?
+            [ "$rc" -eq 0 ] || red no_int16 "run.sh rc=${rc}，期望没有 shaderInt16 也建得了设备、契约绿、0 条 validation（#1340）"
+            has "$log" "C1340 16 位整数按程序要求：设备 shaderInt16=0" || red no_int16 "层没藏住 shaderInt16"
+            has "$log" "C1340 缺 shaderInt16 时声明 Int16 的模块具名拒收，不声明的照常建" || red no_int16 "C1340 没跑完" ;;
         no_dual_src_blend)
             run_tier no_dual_src_blend "$log" || rc=$?
             [ "$rc" -eq 0 ] || red no_dual_src_blend "run.sh rc=$rc"
@@ -175,6 +203,15 @@ check_tier() {
             [ "$rc" -eq 0 ] || red no_custom_border "run.sh rc=${rc}，期望契约绿"
             has "$log" "C976b 自定义边框色：设备 custom_border=0" || red no_custom_border "层没去掉 VK_EXT_custom_border_color"
             has "$log" "C976b 没有扩展：自定义边框色建采样器 rc=-1002（sampler_border_color_custom：" || red no_custom_border "缺扩展时自定义边框色没回 UNSUPPORTED（#976：不静默换成不透明黑）" ;;
+        no_minmax)
+            run_tier no_minmax "$log" VK_KHRONOS_PROFILES_EXCLUDE_DEVICE_EXTENSIONS=VK_EXT_sampler_filter_minmax || rc=$?
+            [ "$rc" -eq 0 ] || red no_minmax "run.sh rc=$rc"
+            has "$log" "vk sampler minmax: enabled=0" || red no_minmax "层没去掉 VK_EXT_sampler_filter_minmax"
+            has "$log" "C976r 没有扩展：min 归约建采样器 rc=-1002（sampler_reduction_min：" || red no_minmax "C976r 没在缺扩展的设备上具名报 UNSUPPORTED" ;;
+        no_fmt_filter_blend)
+            run_tier no_fmt_filter_blend "$log" || rc=$?
+            [ "$rc" -eq 0 ] || red no_fmt_filter_blend "run.sh rc=$rc"
+            has "$log" "sim fmt caps: RGBA16 filter=0 R32F blend=0" || red no_fmt_filter_blend "后端没如实报 RGBA16 不能过滤 / R32F 不能混合（核心据此退最近点 / 关混合）" ;;
         no_depth_clamp)
             run_tier no_depth_clamp "$log" || rc=$?
             [ "$rc" -ne 0 ] || red no_depth_clamp "负对照竟然绿了：缺硬门槛 depthClamp 应建设备失败"
@@ -182,7 +219,7 @@ check_tier() {
         *) echo "未知档：${tier}（可用：${all[*]}）" >&2; exit 64 ;;
     esac
     local t=$((SECONDS - start))
-    if [ "$fails" -eq "$before" ]; then echo "【绿】${tier}（${t}s）"; else echo "  日志：${log}（失败时末尾 40 行如下）" >&2; tail -40 "$log" >&2; fi
+    if [ "$fails" -eq "$before" ]; then echo "【绿】${tier}（${t}s）"; else show_fail "$log"; fi
 }
 
 
@@ -192,7 +229,7 @@ if [ "$run_baseline" -eq 1 ]; then
     if [ "$rc" -eq 2 ] && grep -q "找不到" "$out/baseline.log"; then
         cat "$out/baseline.log" >&2; env_missing "run.sh 找不到依赖（见上）"
     fi
-    if [ "$rc" -ne 0 ]; then red 基线 "run.sh rc=$rc"; tail -40 "$out/baseline.log" >&2; else echo "【绿】基线（不挂层，$((SECONDS - start))s）"; fi
+    if [ "$rc" -ne 0 ]; then red 基线 "run.sh rc=$rc"; show_fail "$out/baseline.log"; else echo "【绿】基线（不挂层，$((SECONDS - start))s）"; fi
 fi
 
 for tier in ${want[@]+"${want[@]}"}; do

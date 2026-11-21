@@ -1,3 +1,4 @@
+#if !os(tvOS)   // tvOS 不编本文件：iOS 库界面与自绘焦点引擎（电视用系统焦点）（电视版库界面见 TVLibraryView.swift，UPSTREAM.md「我方改动」）
 // S2Arm modification: present a dedicated sorting list and guard background library input while it is open.
 import SwiftUI
 
@@ -75,6 +76,8 @@ public struct LibraryView: View {
     @State private var edgeDrag: CGFloat = 0
     @State private var libraryPosition = ScrollPosition()
     @State private var gameOrderOpen = false
+    /// The game whose "Add to Home Screen…" guide is open
+    @State private var addToHomeID: String?
     @State private var layout: ShellLayout = .column
     @State private var returnFocus: String?
     /// The device that sent the last input, for the glyphs.
@@ -338,6 +341,11 @@ public struct LibraryView: View {
         .environment(\.shellShowHelp, { game in openHelp(game.id) })
         .environment(\.shellAskDelete, actions.onDeleteGame == nil ? nil : { game in openDelete(game.id) })
         .environment(\.shellManageSaves, guardedActions.onManageSaves)
+        .environment(\.shellExportGame, guardedActions.onExportGame)
+        .environment(\.shellAddToHome, guardedActions.onAddToHome == nil ? nil : { id in addToHomeID = id })
+        .environment(\.shellSnapshot, { () -> (available: (String) -> Bool, restore: (String) -> Void, delete: ((String) -> Void)?)? in
+            guard let has = actions.snapshotAvailable, let go = guardedActions.onRestoreSnapshot else { return nil }
+            return (available: has, restore: go, delete: guardedActions.onDeleteSnapshot) }())
         .environment(\.shellOpenGameOrder, actions.onReorderGames == nil ? nil : {
             guard libraryPressAllowed, noteTouch() else { return }
             gameOrderOpen = true
@@ -353,6 +361,15 @@ public struct LibraryView: View {
                 .preferredColorScheme(.dark)
         }
         #endif
+        .sheet(isPresented: Binding(get: { addToHomeID != nil }, set: { if !$0 { addToHomeID = nil } })) {
+            if let id = addToHomeID {
+                AddToHomeGuideView(name: games.first { $0.id == id }?.game.title ?? "", go: {
+                    addToHomeID = nil
+                    guardedActions.onAddToHome?(id)
+                }, close: { addToHomeID = nil })
+                .preferredColorScheme(.dark)
+            }
+        }
         .environment(\.shellFocus, focus)
         .environment(\.shellInputDevice, device)
         .foregroundStyle(.white)
@@ -407,12 +424,23 @@ public struct LibraryView: View {
     @ViewBuilder private func library(_ selected: GameDetail, layout: ShellLayout, size: CGSize, insets: EdgeInsets,
                                       chipsInSideBar: Bool, settingsInSideBar: Bool) -> some View {
         if layout.isCoverFlow {
-            CoverFlowView(games: games, selected: selected, controllers: controllers.count, showsHints: !touchMode, screenInsets: insets,
-                          chipsInSideBar: chipsInSideBar, settingsInSideBar: settingsInSideBar,
-                          select: select, primary: primary, openSettings: openSettings, openControllers: openControllers,
-                          openShellSettings: openShellSettings)
-                .equatable()
-                .transition(.opacity)
+            // 0.6.0 快照：有存下的时刻时，左侧一栏「从这一刻继续」（横屏缺的是高度，不在顶上加横条压缩大卡），封面墙在剩下的宽度里居中；没有就和原来一样整屏
+            HStack(spacing: 0) {
+                if !SavedMomentStrip.saved(games).isEmpty, case .coverFlow(let regular) = layout {
+                    // 竖栏标题和封面墙顶栏「你的游戏」同一条线：同样从顶栏的上边距起、标题行和顶栏一样高、竖直居中（CoverFlowView.barTop / barHeight）
+                    SavedMomentStrip(games: games, axis: .vertical, short: size.height < 520)
+                        .frame(width: SavedMomentStrip.columnWidth(size.width, regular: regular))
+                        .padding(.top, CoverFlowView.barTop(short: size.height < 520)).padding(.bottom, 8).padding(.leading, max(16, insets.leading))
+                        .frame(maxHeight: .infinity, alignment: .top)
+                        .overlay(alignment: .trailing) { Rectangle().fill(ShellPalette.hairline).frame(width: 1).padding(.vertical, 18) }
+                }
+                CoverFlowView(games: games, selected: selected, controllers: controllers.count, showsHints: !touchMode, screenInsets: insets,
+                              chipsInSideBar: chipsInSideBar, settingsInSideBar: settingsInSideBar,
+                              select: select, primary: primary, openSettings: openSettings, openControllers: openControllers,
+                              openShellSettings: openShellSettings)
+                    .equatable()
+            }
+            .transition(.opacity)
         } else {
             PortraitLibrary(games: games, selected: selected, wide: layout == .grid, size: size, topInset: insets.top, bottomInset: insets.bottom,
                             chipsInSideBar: chipsInSideBar, settingsInSideBar: settingsInSideBar,
@@ -510,10 +538,17 @@ public struct LibraryView: View {
         a.onClearShellData = o.onClearShellData.map { act in { if !echo() { act() } } }
         a.onClearShellCloud = o.onClearShellCloud.map { act in { if !echo() { act() } } }
         a.onReportProblem = o.onReportProblem.map { act in { if !echo() { act() } } }
+        a.signingCertStatus = o.signingCertStatus
+        a.onImportSigningCert = o.onImportSigningCert.map { act in { if !echo() { act() } } }
+        a.onSideStoreSigningCert = o.onSideStoreSigningCert.map { act in { if !echo() { act() } } }
         a.onGlobalPadMapChange = o.onGlobalPadMapChange.map { act in { if !echo() { act($0, $1) } } }
         a.onGlobalPadMapReset = o.onGlobalPadMapReset.map { act in { if !echo() { act() } } }
         a.onDeleteGame = o.onDeleteGame.map { act in { if !echo() { act($0, $1) } } }
         a.onManageSaves = o.onManageSaves.map { act in { if !echo() { act($0) } } }
+        a.onExportGame = o.onExportGame.map { act in { if !echo() { act($0) } } }
+        a.onAddToHome = o.onAddToHome.map { act in { if !echo() { act($0) } } }
+        a.onRestoreSnapshot = o.onRestoreSnapshot.map { act in { if !echo() { act($0) } } }
+        a.onDeleteSnapshot = o.onDeleteSnapshot.map { act in { if !echo() { act($0) } } }
         return a
     }
     /// An action that did not come from a controller or key came from touch: hints and focus ring step back. False when
@@ -538,6 +573,9 @@ public struct LibraryView: View {
         case .playable: actions.onPlay(detail.id)
         case .needsGameData: actions.onPickGameData(detail.id)
         case .needsAppUpdate: actions.onAppUpdate?()
+        case .needsGameUpdate: break   // needsHelp：上面已展开说明
+        case .needsLegacyUpdate, .needsProgram: actions.onImportProgram?(detail.id)   // 选这款的 .s2arm 导入（电脑「更新一次」是第二条路，写在说明里）
+        case .needsCertificate: actions.onGetSigningCert?()   // 直接导证书（装了 SideStore 向它要，否则选 .p12），导好库自己回「可以玩」
         case .broken: actions.onShowLog?(detail.id)
         case .installing(let stage): if stage.phase == .failed { actions.onPlay(detail.id) }   // 重试解开；传着 / 解着按了不动
         }
@@ -874,3 +912,4 @@ private struct CoverThumbnail: View {
         .accessibilityHidden(true)
     }
 }
+#endif   // !os(tvOS)

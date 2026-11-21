@@ -72,6 +72,30 @@ def main():
                        "--report-probe", str(Path(temporary) / "out"), "--data-root=" + str(Path(temporary) / "data")], env)
             if "✓ 各页顶栏故障报修键" not in out.stdout:
                 raise RuntimeError("report probe did not report success")
+        # 出包页打开哪一款（玩家反馈：A 在出包时点 B 的出包进的是 A 的页面；UI.Snapshots/BuildRouteProbe.cs）
+        with tempfile.TemporaryDirectory(prefix="s2arm-build-route-probe-") as temporary:
+            out = run([dotnet, "run", "--project", str(probe), "--no-build", "--configuration", "Release", "--",
+                       "--build-route-probe", str(Path(temporary) / "out"), "--data-root=" + str(Path(temporary) / "data")], env)
+            if "✓ 出包页打开哪一款" not in out.stdout:
+                raise RuntimeError("build route probe did not report success")
+        # 控制口 /dismiss（s2armctl dismiss）关得掉新功能大窗 / 更新弹窗（UI.Snapshots/DismissProbe.cs）
+        with tempfile.TemporaryDirectory(prefix="s2arm-dismiss-probe-") as temporary:
+            out = run([dotnet, "run", "--project", str(probe), "--no-build", "--configuration", "Release", "--",
+                       "--dismiss-probe", str(Path(temporary) / "out"), "--data-root=" + str(Path(temporary) / "data")], env)
+            if "✓ 控制口 dismiss 关弹窗" not in out.stdout:
+                raise RuntimeError("dismiss probe did not report success")
+        # 装机前清单按钮落点（11-19 落点契约，同 Mac：action 唯一来源、POST /install-action、state.presented；UI.Snapshots/InstallActionProbe.cs）
+        with tempfile.TemporaryDirectory(prefix="s2arm-install-action-probe-") as temporary:
+            out = run([dotnet, "run", "--project", str(probe), "--no-build", "--configuration", "Release", "--",
+                       "--install-action-probe", str(Path(temporary) / "out"), "--data-root=" + str(Path(temporary) / "data")], env)
+            if "✓ 装机前清单按钮落点" not in out.stdout:
+                raise RuntimeError("install action probe did not report success")
+        # 装机卡片「详细过程」点开后不被进度事件刷新收起（D-237B；UI.Snapshots/DetailsProbe.cs）
+        with tempfile.TemporaryDirectory(prefix="s2arm-details-probe-") as temporary:
+            out = run([dotnet, "run", "--project", str(probe), "--no-build", "--configuration", "Release", "--",
+                       "--details-probe", str(Path(temporary) / "out"), "--data-root=" + str(Path(temporary) / "data")], env)
+            if "✓ 装机卡片详细过程点开后不被进度刷新收起" not in out.stdout:
+                raise RuntimeError("details probe did not report success")
         if args.negative_controls:
             with tempfile.TemporaryDirectory(prefix="s2arm-ui-negative-") as temporary:
                 target = Path(temporary).resolve()

@@ -39,10 +39,12 @@ __attribute__((constructor)) static void cheats_register_host(void) { void (*f)(
 #include "../runtime/include/s2a_home_quit.h"
 #include "../runtime/include/s2a_mac_focus.h"
 #include "../runtime/include/s2a_ui_text.h"
+#include "../runtime/src/native.h"   // G1 日志通道（评审稿 v3 §4 G1 第 3 条）：LOG → s2a_log_line → s2a_log_out(g_s2a_logfd)；同 macos/heartbeat_mac.c 的接法
 // 界面语言（runtime/include/s2a_ui_text.h，#316），盖过 runtime/src 各 .c 返回 1 的弱缺省。Mac 宿主程序不带 .lproj、主 bundle 首选本地化
 //   总是开发区域，判不出玩家语言，所以按系统首选语言以 zh 开头判（目前 Mac 上没有显示路径用到它）
 int s2a_ui_zh(void) { return [NSLocale.preferredLanguages.firstObject hasPrefix:@"zh"]; }
 #include "../ios/haptic_retry.h"
+#include "../ios/haptic_safe.h"
 int s2a_screen_fit(int pw, int ph);   // runtime/src/widen.c：按窗口像素跟屏
 
 void s2a_host_shutdown(const char *why);
@@ -165,6 +167,7 @@ static NSDictionary *input_config_dictionary(const s2a_input_config *c) {
         @"mouseOptions": @{@"mode": c->mouse_camera ? @"camera" : @"off", @"sensitivityX": @(c->sensitivity_x), @"sensitivityY": @(c->sensitivity_y),
             @"invertX": @((BOOL)c->invert_x), @"invertY": @((BOOL)c->invert_y), @"recenter": @((BOOL)c->recenter)}};
 }
+static char g_input_bad[96];   // 玩家 1 的键位映射读不懂时的原因（s2a_front_run 记下，窗口提示条起来后显示一次再清空）
 static NSDictionary *default_config(void) { s2a_input_config c; s2a_input_config_default(&c); return input_config_dictionary(&c); }
 static int mac_input_config_read(const char *path, s2a_input_config *out) {
     if (!out) return S2A_INPUT_CONFIG_JSON;
@@ -335,7 +338,14 @@ static _Atomic int touch_declared = -1;   // 游戏声明的触屏模式（Touch
 // 单只 Joy-Con（#520 A）：InputPump 按符号查这两个（services/S2A.Services/InputPump.cs FollowJoyconStyle）——
 //   s2a_vpad_joycon_style：连着的单只 Joy-Con 对应的样式（Ryujinx ControllerType：JoyconLeft / JoyconRight；不是单只为 0），
 //     游戏收这个样式就改成它；s2a_vpad_set_style：每次改配告诉宿主这一格现在的样式，宿主据此定原始方向还是转横握
-__attribute__((visibility("default"), used)) int s2a_vpad_joycon_style(void) { return s2a_mac_ns2_single_style(s2a_mac_ns2_kind()); }
+//   一代单只 Joy-Con 按设备当玩家 1 时同样报它那一侧（改前只认 Joy-Con 2：一代左只一直扮横握 Pro，要 Joy-Con(L) 的画面按什么都没反应）
+int s2a_vpad_slot_style(int slot);
+__attribute__((visibility("default"), used)) int s2a_vpad_joycon_style(void) {
+    int s = s2a_mac_ns2_single_style(s2a_mac_ns2_kind());
+    if (s) return s;
+    s = s2a_vpad_slot_style(0);
+    return s == 1 << 3 || s == 1 << 4 ? s : 0;   // 只要单只左 / 右只；一对 / Pro 不在这里改
+}
 __attribute__((visibility("default"), used)) void s2a_vpad_set_style(int style) { s2a_mac_ns2_set_game_style(style); }
 // 每一格的样式（服务层 InputPump.ReportStyle，#520）：sample_input 照槽位转给占那一格的 NS2 玩家，玩家 2 起的单只 Joy-Con 也照它那一格定原始方向 / 横握（8 = S2A_MAX_PADS，那个宏在后面才定义）
 static _Atomic int g_slot_style[8];
@@ -510,14 +520,7 @@ static void sample_motion(GCExtendedGamepad *pad) {
     GCMotion *m = atomic_load(&g_motion_wanted) && !ns2 ? pad.controller.motion : nil;
     set_motion_source(m);
     s2a_pad_motion sample = {0};
-    int known = m.hasRotationRate && m.hasGravityAndUserAcceleration;
-    if (known) {
-        double gravity[3] = {m.gravity.x, m.gravity.y, m.gravity.z}, user[3] = {m.userAcceleration.x, m.userAcceleration.y, m.userAcceleration.z};
-        double rotation[3] = {m.rotationRate.x, m.rotationRate.y, m.rotationRate.z};
-        float acceleration[3], gyro[3];
-        s2a_gc_motion_axes(gravity, user, rotation, acceleration, gyro);
-        sample = (s2a_pad_motion){clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000, acceleration[0], acceleration[1], acceleration[2], gyro[0], gyro[1], gyro[2]};
-    }
+    int known = s2a_gc_motion_sample(m, &sample);
     pthread_mutex_lock(&g_motion_mu);
     g_motion = sample; g_motion_known = known;
     pthread_mutex_unlock(&g_motion_mu);
@@ -544,13 +547,13 @@ __attribute__((visibility("default"), used)) int s2a_pad_read_motion(s2a_pad_mot
     int known = g_motion_switched ? 0 : g_motion_known;
     *out = g_motion; g_motion_switched = 0;
     pthread_mutex_unlock(&g_motion_mu);
-    if (known) return 1;
-    // GameController 无六轴时回退 Joy-Con HID（优先右、否则左）
+    if (known == 2) return 1;
+    // GameController 没有校准六轴时先回退 Joy-Con / Pro HID（优先右、否则左），HID 没数据再用只有总加速度的那份（DualSense）
     s2a_pad_motion l = {0}, r = {0};
     int mask = s2a_joycon_imu_read(&l, &r);
     if (mask & 2) { *out = r; return 1; }
     if (mask & 1) { *out = l; return 1; }
-    return 0;
+    return known != 0;
 }
 // 左右 Joy-Con 各一路；只有 GCMotion 时退回单源写在 out[0]
 __attribute__((visibility("default"), used)) int s2a_pad_read_motion_pair(s2a_pad_motion out[2]) {
@@ -632,13 +635,13 @@ static float rumble_scale(void) {
 static BOOL rumble_off(void) { const char *e = getenv("S2A_RUMBLE"); return e && !strcmp(e, "0"); }
 static void rumbler_stop(S2ARumbler *r) {
     if (!r) return;
-    for (int k = 0; k < 2; k++) { if (r->player[k] && r->playing[k]) [r->player[k] stopAtTime:CHHapticTimeImmediate error:nil]; r->playing[k] = NO; }
+    for (int k = 0; k < 2; k++) { if (r->player[k] && r->playing[k]) s2a_hp_stop(r->player[k]); r->playing[k] = NO; }
     if (r->timer) dispatch_source_set_timer(r->timer, DISPATCH_TIME_FOREVER, DISPATCH_TIME_FOREVER, 0);
 }
 static void rumbler_reset(S2ARumbler *r) {
     if (!r) return;
     rumbler_stop(r);
-    for (int k = 0; k < 2; k++) { [r->engine[k] stopWithCompletionHandler:nil]; r->player[k] = nil; r->engine[k] = nil; }
+    for (int k = 0; k < 2; k++) { s2a_hp_engine_stop(r->engine[k]); r->player[k] = nil; r->engine[k] = nil; }
 }
 static void rumbler_fail(S2ARumbler *r, const char *what, NSError *error) {
     BOOL died = s2a_hp_on_fail(&r->retry, clock_gettime_nsec_np(CLOCK_UPTIME_RAW));
@@ -696,14 +699,14 @@ static BOOL rumbler_channel(S2ARumbler *r, int k, GCHapticsLocality locality, fl
     }
     uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     if (r->playing[k] && !r->loops[k] && now - r->startedNs[k] > MAC_RUMBLE_RESTART_NS) {   // 普通播放器：事件 30 秒，连着震到 20 秒就重起一轮
-        [r->player[k] stopAtTime:CHHapticTimeImmediate error:nil]; r->playing[k] = NO;
+        s2a_hp_stop(r->player[k]); r->playing[k] = NO;
     }
-    if (!r->playing[k] && ![r->player[k] startAtTime:CHHapticTimeImmediate error:&error]) { rumbler_fail(r, "播放失败", error); return NO; }
+    if (!r->playing[k] && !s2a_hp_start(r->player[k], &error)) { rumbler_fail(r, "播放失败", error); return NO; }
     if (!r->playing[k]) r->startedNs[k] = now;
     r->playing[k] = YES;
-    if (![r->player[k] sendParameters:@[
+    if (!s2a_hp_send(r->player[k], @[
         [[CHHapticDynamicParameter alloc] initWithParameterID:CHHapticDynamicParameterIDHapticIntensityControl value:amplitude relativeTime:0],
-        [[CHHapticDynamicParameter alloc] initWithParameterID:CHHapticDynamicParameterIDHapticSharpnessControl value:sharp - 0.5f relativeTime:0]] atTime:CHHapticTimeImmediate error:&error]) {
+        [[CHHapticDynamicParameter alloc] initWithParameterID:CHHapticDynamicParameterIDHapticSharpnessControl value:sharp - 0.5f relativeTime:0]], &error)) {
         rumbler_fail(r, "更新强度失败", error); return NO;
     }
     return YES;
@@ -772,7 +775,7 @@ static void rumble_submit(uint64_t session, const s2a_pad_vibration pair[2]) {
     s2a_pad_vibration left = pair[0], right = pair[1];   // 块里不能捕获数组：拆成两个值
     dispatch_async(g_rumble_q, ^{ s2a_pad_vibration p[2] = {left, right}; rumble_play_on_queue(p); });
 }
-__attribute__((visibility("default"), used)) uint64_t s2a_pad_rumble_session(void) {
+static uint64_t rumble_session(void) {
     if (rumble_off()) return 0;   // 启动设置「手柄震动」关：两路都不震
     if (p1_gen1_rumble(NULL)) return GEN1_P1_SESSION;   // P1 是一代 Joy-Con 单元：走 HID 震动
     uint64_t ns2 = atomic_load(&g_slot0_ns2) ? s2a_mac_ns2_rumble_session() : 0;   // NS2 手柄是玩家 1 且在前台：震动交给它
@@ -780,6 +783,8 @@ __attribute__((visibility("default"), used)) uint64_t s2a_pad_rumble_session(voi
     uint64_t epoch = atomic_load(&g_rumble_epoch);
     return epoch ? (MAC_RUMBLE_BASE | epoch) : 0;
 }
+// 没有能震的那一路也回非 0（只给体感的会话，motion_power.h）：改前回 0，服务层不建反馈对象、六轴从不打开，关了震动体感也跟着没了（#1671）
+__attribute__((visibility("default"), used)) uint64_t s2a_pad_rumble_session(void) { return s2a_mac_feedback_session(rumble_session()); }
 __attribute__((visibility("default"), used)) void s2a_pad_set_rumble_pair(uint64_t session, const s2a_pad_vibration values[2]) {
     if (!values) return;
     pthread_mutex_lock(&g_rumble_mu); g_rumble_pair[0] = values[0]; g_rumble_pair[1] = values[1]; pthread_mutex_unlock(&g_rumble_mu);
@@ -881,8 +886,10 @@ static NSDictionary *slot_cfg(int slot) {
 }
 
 // 启动器原子写入的统一四键设置。主线程在合成锁内刷新，手柄回调在同一把锁内读取。
-// 所有非 Switch 手柄共用同一排列，不分玩家或品牌；Switch Pro / Joy-Con 保持原生布局。
+// 所有非 Switch 手柄共用同一排列，不分玩家或品牌；Switch Pro / Joy-Con 另存一份（文件里 nintendo 字段），
+//   没选过 = 原生布局（identity），玩家在启动器给它选了 Xbox 布局等才生效（与 iOS s2a_pad_abxy_order 同结果）。
 static int g_face_map = S2A_FACE_IDENTITY;
+static int g_face_map_nintendo = S2A_FACE_IDENTITY;
 static __weak S2AControllerFaceOverlay *g_face_overlay; // owned by the game's content view
 static s2a_face_overlay_hold g_face_overlay_hold;
 static uint64_t g_face_check_at;
@@ -898,7 +905,7 @@ static void pad_face_refresh(BOOL force) {
     BOOL exists = stat(path.fileSystemRepresentation, &info) == 0;
     if (!force && exists == g_face_had_file && (!exists || (info.st_mtimespec.tv_sec == g_face_stamp.tv_sec && info.st_mtimespec.tv_nsec == g_face_stamp.tv_nsec))) return;
     g_face_had_file = exists; if (exists) g_face_stamp = info.st_mtimespec;
-    g_face_map = S2A_FACE_IDENTITY;
+    g_face_map = S2A_FACE_IDENTITY; g_face_map_nintendo = S2A_FACE_IDENTITY;
     if (!exists) return;
     NSError *error = nil;
     NSData *data = [NSData dataWithContentsOfFile:path options:0 error:&error];
@@ -924,7 +931,12 @@ static void pad_face_refresh(BOOL force) {
     if (![value isKindOfClass:NSNumber.class] || [value doubleValue] != [value intValue] || !s2a_face_valid([value intValue])) {
         fprintf(stderr, "[s2a] 【红】手柄四键设置无效；本次按平台默认键位\n"); return;
     }
+    id nintendo = [json[@"schema"] isEqual:@2] ? json[@"nintendo"] : nil;
+    if (nintendo && (![nintendo isKindOfClass:NSNumber.class] || [nintendo doubleValue] != [nintendo intValue] || !s2a_face_valid([nintendo intValue]))) {
+        fprintf(stderr, "[s2a] 【红】Switch 手柄四键设置无效；本次按平台默认键位\n"); return;
+    }
     g_face_map = [value intValue];
+    if (nintendo) g_face_map_nintendo = [nintendo intValue];
 }
 static NSString *controller_face_family(GCController *controller) {
     if (!controller) return @"nintendo"; // 专用通道及 Switch HID 已按任天堂 A/B/X/Y 上报
@@ -937,7 +949,7 @@ static NSString *controller_face_family(GCController *controller) {
 }
 static int controller_face_map(GCController *controller) {
     NSString *family = controller_face_family(controller);
-    if ([family isEqualToString:@"nintendo"]) return S2A_FACE_IDENTITY;
+    if ([family isEqualToString:@"nintendo"]) return g_face_map_nintendo;
     return g_face_map;
 }
 static uint32_t controller_face_bits(GCController *controller) {
@@ -1087,15 +1099,8 @@ static void sample_slot_motion(GCController *const owner_before[S2A_MAX_PADS]) {
     for (int s = 1; s < S2A_MAX_PADS; s++) {
         GCMotion *m = want ? pad_owner[s].motion : nil;
         s2a_motion_power_select(&g_slot_motion_source[s], m, g_motion_source);
-        BOOL known = m.hasRotationRate && m.hasGravityAndUserAcceleration;
         s2a_pad_motion sample = {0};
-        if (known) {
-            double gravity[3] = {m.gravity.x, m.gravity.y, m.gravity.z}, user[3] = {m.userAcceleration.x, m.userAcceleration.y, m.userAcceleration.z};
-            double rotation[3] = {m.rotationRate.x, m.rotationRate.y, m.rotationRate.z};
-            float acceleration[3], gyro[3];
-            s2a_gc_motion_axes(gravity, user, rotation, acceleration, gyro);
-            sample = (s2a_pad_motion){clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000, acceleration[0], acceleration[1], acceleration[2], gyro[0], gyro[1], gyro[2]};
-        }
+        BOOL known = s2a_gc_motion_sample(m, &sample);
         pthread_mutex_lock(&g_motion_mu);
         g_slot_motion[s] = sample; g_slot_motion_known[s] = known;
         pthread_mutex_unlock(&g_motion_mu);
@@ -1365,14 +1370,14 @@ static void sample_input(void) {
         if (n >= S2A_LIVE_MAX) break;
         live_ids[n] = (__bridge const void *)c; live_pads[n] = p; live_ctrls[n] = c; live_ble[n] = -1; n++;
     }
-    // 兜底手柄（macos/hid_pad.m，#934）：GameController 认不出的 Switch 样式 HID 手柄，排在系统手柄后面；系统已枚举到同名手柄就跳过（不变成两个玩家）。
-    //   分配玩家里同系统手柄（按名字 + 第几只认）
+    // 兜底手柄（macos/hid_pad.m，#934）：GameController 认不出的 HID 手柄，排在系统手柄后面；占不占位按 s2a_hidg_route（hid_generic.h）：
+    //   系统已枚举到同名手柄就让位（不变成两个玩家，后被认出也照判）；通用手柄另让原生厂商、系统说认得的先等 2 秒。分配玩家里同系统手柄（按名字 + 第几只认）
     static s2a_hid_pad hid[S2A_HID_PAD_MAX];
     int nh = s2a_mac_hid_pad_read(hid);
     for (int h = 0; h < nh && n < S2A_LIVE_MAX; h++) {
         BOOL seen = NO;
         for (GCController *c in GCController.controllers) if ([c.vendorName isEqualToString:@(hid[h].name)]) { seen = YES; break; }
-        if (seen) continue;
+        if (s2a_hidg_route(hid[h].pro, hid[h].vid, hid[h].gc_hint, seen, hid[h].age_us) != S2A_HIDG_TAKE) continue;
         live_ids[n] = hid[h].id; live_pads[n] = nil; live_ctrls[n] = nil; live_ble[n] = -1; live_hid[n] = &hid[h]; n++;
     }
     // 分配玩家：照顺序表排（表里的在前、没列的照原顺序接着），分配时没登记的系统手柄不进槽位；表一换就清槽位表重排
@@ -1382,6 +1387,8 @@ static void sample_input(void) {
     if (kbd_own && n < S2A_LIVE_MAX) { live_ids[n] = &kbd_slot_id; live_pads[n] = nil; live_ctrls[n] = nil; live_ble[n] = S2A_PAD_ORDER_KEYBOARD; n++; }
     atomic_store(&kbd_buttons_snap, kbd_own ? 0 : kbd_buttons);   // 手柄快速路径合槽 0 时读这份：键盘有自己的槽就不合
     if (kbd_own) for (int i = 0; i < 4; i++) atomic_store(&kbd_sticks_snap[i], 0);
+    int live_rank[S2A_LIVE_MAX];   // 顺序表里排第几（没登记 = S2A_PAD_ORDER_UNLISTED）：下面 s2a_slot_pin 照它把登记过的钉在自己那格
+    for (int j = 0; j < S2A_LIVE_MAX; j++) live_rank[j] = S2A_PAD_ORDER_UNLISTED;
     if (g_order_loaded) {
         int rank[S2A_LIVE_MAX], m = 0; NSMutableDictionary<NSString *, NSNumber *> *seen = [NSMutableDictionary new];
         for (int j = 0; j < n; j++) {
@@ -1396,7 +1403,7 @@ static void sample_input(void) {
         for (int k = 0; k < n; k++) {
             int j = order_idx[k];
             if (rank[j] == S2A_PAD_ORDER_DROPPED) continue;   // 分配时没登记：同原机断开（系统手柄 S2Arm 断不了蓝牙，游戏不读它）
-            ids[m] = live_ids[j]; pads[m] = live_pads[j]; ctrls[m] = live_ctrls[j]; bles[m] = live_ble[j]; keys2[m] = live_key[j]; hids[m] = live_hid[j]; m++;
+            ids[m] = live_ids[j]; pads[m] = live_pads[j]; ctrls[m] = live_ctrls[j]; bles[m] = live_ble[j]; keys2[m] = live_key[j]; hids[m] = live_hid[j]; live_rank[m] = rank[j]; m++;
         }
         for (int k = 0; k < m; k++) { live_ids[k] = ids[k]; live_pads[k] = pads[k]; live_ctrls[k] = ctrls[k]; live_ble[k] = bles[k]; live_key[k] = keys2[k]; live_hid[k] = hids[k]; }
         for (int k = m; k < n; k++) live_ctrls[k] = nil;
@@ -1410,6 +1417,9 @@ static void sample_input(void) {
     }
     logged_mix = mix;
     int slot_of[S2A_LIVE_MAX];
+    // 面板里登记成第几位就是游戏里的第几位（#1264：中途连上 DualSense、面板 P1 是它，宿主却照「已在玩的留原位」把玩家 1 留给原手柄，
+    //   原手柄关掉后 DualSense 还在二号位，单人游戏读不到）；没登记的手柄照旧留原槽
+    if (g_order_loaded) s2a_slot_pin(pad_id, live_ids, live_rank, n, S2A_MAX_PADS);
     int live = s2a_slot_plan(pad_id, live_ids, n, S2A_MAX_PADS, slot_of);
     // 断开清槽：整表重建，只有本轮还在的才写回（强引用随之释放，不会留悬空指针）
     GCController *owner_before[S2A_MAX_PADS];
@@ -1625,6 +1635,40 @@ static void screen_fps_note(NSWindow *w) {
         s2a_cpatch_screen_changed();   // 帧率补丁自动档按新屏幕重挑（起局选档时还没窗口，按 60 算过）
     }
 }
+// PR1 探针（HDR 全链路评审稿 v2 §4 PR1 ③）：窗口所在屏 EDR 能力一次性读数（M0 跑局记录屏幕配置用）；potentialEDR≤1.0 时附 §2.5 能力错配的排查指引一行。
+//   一次性：换屏 / 拨 HDR 开关后的重探重发布是 PR4 的活（下方 hdr_tick / 直连层 s2a_hdr_tick_host——250ms tick + 换屏通知接管）。
+//   窗口刚建还没上屏时 w.screen 可能为空，按主屏读。
+//   G1 日志通道（评审稿 v3 §4 G1 第 3 条）：两行从 fprintf(stderr) 改走 LOG（→ s2a_log_line → s2a_log_out(g_s2a_logfd) = os.c 构造期
+//     dup 的原始 stderr = run_mac.sh 重定向的 host.log；C# 侧 StdErrAdapter 接管 fd 2 后 fprintf(stderr) 会掉进它的管道，不再进原始
+//     stderr）。行文不变：落点前缀仍是「[s2a] 窗口所在屏能力探针」，判读 grep 不受影响。跑局（无头局）宿主不编本文件
+//     （本文件只在 S2A_MAC_FRONTEND=1 的前端构建编进去，launchers/macos/build.mk），无头局的同一行在
+//     graphics/nvn/host_adapt.m headless_edr_note（按主屏读）。
+static void screen_edr_note(NSWindow *w) {
+    static int noted; if (noted) return; noted = 1;
+    NSScreen *sc = w.screen ?: NSScreen.mainScreen; if (!sc) return;
+    NSColorSpace *cs = sc.colorSpace; CFStringRef raw = cs ? CGColorSpaceGetName(cs.CGColorSpace) : NULL;
+    char rawname[96] = "-"; if (raw) CFStringGetCString(raw, rawname, sizeof rawname, kCFStringEncodingUTF8);
+    double potential = sc.maximumPotentialExtendedDynamicRangeColorComponentValue;
+    LOG("窗口所在屏能力探针：potentialEDR %.3f / currentEDR %.3f / referenceEDR %.3f（倍数），P3 %s（%s），backing %.2f，色彩空间 %s",
+        potential, sc.maximumExtendedDynamicRangeColorComponentValue, sc.maximumReferenceExtendedDynamicRangeColorComponentValue,
+        strstr(rawname, "P3") ? "是" : "否", rawname, sc.backingScaleFactor, cs.localizedName.UTF8String ?: "-");
+    if (potential <= 1.0)   // 评审稿 §2.5：判成 SDR 但屏其实支持 HDR 的错配，日志一行人话指引、给下一步
+        LOG("当前屏按 SDR 处理（potentialEDR ≤ 1.0）。若该屏支持 HDR：查①系统设置→显示器→HDR 开关（常见成因）②显示器 OSD 的 HDR/色域档 ③线缆/扩展坞（直连 USB-C DP Alt、HBR2+）④EDID 是否宣告 HDR（本机实测先例：宣告 PQ 而非 HLG）");
+}
+// PR4 层状态机接线（评审稿 v3 §4 PR4 ②④）：主线程 250ms tick（NSRunLoopCommonModes——拖窗 / 开菜单不停）+ 换屏 / 屏参数（HDR 开关 / 分辨率 /
+//   接断屏）通知 → 直连层 host_adapt.m 的 s2a_hdr_tick_host（经 dlsym——同上面探针的按名取法，不链直连层的构建里没有它，缺了就整个无操作、
+//   行为照旧）：重探发布（读数变了才发）+ 首探开机预挂（识别 Switch 2 游戏即进层——赶在首查询前，§4 PR4 ③）+ 层 tick（can 滞回 500ms、进层
+//   即时）+ 层配置应用（进层即 PQ：RGB10A2Unorm + kCGColorSpaceITUR_2100_PQ + wantsExtendedDynamicRangeContent；排空完成切回 S0：BGRA8Unorm +
+//   显式 sRGB tag——从 PQ 层切回的层保留 PQ 色彩空间，必须显式重设，§2.3 注意事项①）。
+//   快照屏消失（w.screen nil）→ 回退主屏读数；都不在 → 读数 0（can=0 持稳后排空切回——不对已消失屏做 present 假设），恢复重探重发布。
+static void hdr_tick(NSWindow *w) {
+    static void (*tick_host)(double, double);
+    static int looked; if (!looked) { looked = 1; tick_host = (void (*)(double, double))dlsym(RTLD_DEFAULT, "s2a_hdr_tick_host"); }
+    if (!tick_host) return;
+    NSScreen *sc = w.screen ?: NSScreen.mainScreen;   // 快照屏 = 窗口所在屏；消失回退主屏（§4 PR4 ④）
+    tick_host(sc ? sc.maximumPotentialExtendedDynamicRangeColorComponentValue : 0.0,
+              sc ? sc.maximumExtendedDynamicRangeColorComponentValue : 0.0);
+}
 @implementation S2AMetalView
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)acceptsFirstMouse:(NSEvent *)event { (void)event; return YES; }
@@ -1820,6 +1864,20 @@ static NSString *lan_warning(void) {
 @property NSRect windowedFrame;   // 进全屏前的窗口位置大小，退全屏时放回
 @end
 static __weak S2AMacDelegate *g_delegate;
+// 档位梯子压回 30 帧 / 放开（runtime/src/qladder_host.c 调，任意线程；runtime/src/fps.c 弱定义）：#1688 原先 Mac 不提示，玩家只看到帧率补丁「全关」、以为 60 帧开关没用。
+//   压回时横幅说清原因、带「再试 60 帧」（s2a_ql_retry60，梯子下一帧回 60 帧档）；横幅被别的提示占着就 5 秒后再试
+void s2a_ql_retry60(void);
+void s2a_ios_fps_capped(int reason) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        S2APromptBanner *b = g_delegate.banner; if (!b) return;
+        if (!b.hidden) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ s2a_ios_fps_capped(reason); }); return; }
+        int zh = s2a_ui_zh();   // 按界面语言取中英文（同本文件菜单的取法）
+        NSString *title = zh ? @S2A_DPROMPT_FPS_CAP_TITLE : @S2A_DPROMPT_FPS_CAP_TITLE_EN;
+        if (reason != 4) { b.onAnswer = nil; [b showTitle:title body:zh ? @S2A_DPROMPT_FPS_CAP_BACK : @S2A_DPROMPT_FPS_CAP_BACK_EN accept:nil decline:nil seconds:6]; return; }
+        b.onAnswer = ^(BOOL accept) { if (accept) { fprintf(stderr, "[s2a] 档位梯子：玩家点了再试 60 帧\n"); s2a_ql_retry60(); } };
+        [b showTitle:title body:zh ? @S2A_DPROMPT_FPS_CAP_BODY : @S2A_DPROMPT_FPS_CAP_BODY_EN accept:zh ? @S2A_DPROMPT_FPS_CAP_RETRY : @S2A_DPROMPT_FPS_CAP_RETRY_EN
+              decline:zh ? @S2A_DPROMPT_OK : @S2A_DPROMPT_OK_EN seconds:15]; });
+}
 @implementation S2AMacDelegate
 - (void)connectNS2:(id)sender {
     self.ns2ReconnectPending = YES;
@@ -1877,6 +1935,10 @@ static __weak S2AMacDelegate *g_delegate;
     self.controllerStatus.title = [NSString stringWithFormat:@"%s：%@", s2a_mac_ns2_kind_name(s2a_mac_ns2_kind()), state];
     // 存档不能原子提交（审计 P2-13；判定与 iOS 共用 runtime/src/direct_prompt.c s2a_save_atomic_poll）：非 0 提示一次
     if (s2a_save_atomic_poll()) [self.banner showTitle:@S2A_DPROMPT_SAVE_ATOMIC_TITLE body:@S2A_DPROMPT_SAVE_ATOMIC_MAC accept:nil decline:nil seconds:15];
+    if (g_input_bad[0] && self.banner.hidden) {
+        [self.banner showTitle:@S2A_DPROMPT_INPUT_BAD_TITLE body:[NSString stringWithFormat:@S2A_DPROMPT_INPUT_BAD_MAC, g_input_bad] accept:nil decline:nil seconds:15];
+        g_input_bad[0] = 0;
+    }
     // 横幅正显示别的提醒时先不查，等它收起再提示，免得互相盖掉
     NSString *lan = self.banner.hidden ? lan_warning() : nil;
     if (lan) [self.banner showTitle:@"本地联机" body:lan accept:nil decline:nil seconds:15];
@@ -1896,6 +1958,43 @@ static __weak S2AMacDelegate *g_delegate;
     [self shutdown];
 }
 - (BOOL)windowShouldClose:(NSWindow *)sender { (void)sender; [self shutdown]; return NO; }
+// ---------- 0.6.0 快照：菜单栏「存下这一刻」⌘S / 「回到上次存下的这一刻」（起局带了存档开关才有） ----------
+static __weak S2AMacDelegate *g_snap_mac;
+- (void)snapNote:(NSString *)text {   // 轻提示：窗口副标题 2 秒，不弹框、不挡操作
+    NSWindow *w = self.window; if (!w) return; w.subtitle = text;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ if ([w.subtitle isEqualToString:text]) w.subtitle = @""; });
+}
+static void snap_mac_done(int ok, const char *dir) { (void)dir; dispatch_async(dispatch_get_main_queue(), ^{ [g_snap_mac snapNote:ok ? (s2a_ui_zh() ? @"已存下这一刻" : @"Moment saved") : (s2a_ui_zh() ? @"这次没存成，稍后再试一次" : @"Couldn’t save this time")]; }); }
+- (void)snapSave:(id)sender {
+    (void)sender; char d[2048]; int s2a_snap_dir_for(const char *, char *, size_t), s2a_snap_request_save(const char *); void s2a_snap_on_done(void (*)(int, const char *));
+    if (s2a_snap_dir_for(NULL, d, sizeof d)) return;
+    g_snap_mac = self; s2a_snap_on_done(snap_mac_done);
+    int rc = s2a_snap_request_save(d);
+    [self snapNote:rc == 0 ? (s2a_ui_zh() ? @"正在存下这一刻…" : @"Saving this moment…") : rc == -2 ? (s2a_ui_zh() ? @"还在存上一次，稍等" : @"Still saving the last one") : (s2a_ui_zh() ? @"这次没存成，稍后再试一次" : @"Couldn’t save this time")];
+}
+static void snap_mac_restart(int result, const char *detail, void *ctx) {
+    (void)ctx; if (!result) return; NSString *why = detail ? @(detail) : @"";
+    dispatch_async(dispatch_get_main_queue(), ^{ [g_snap_mac snapNote:[(s2a_ui_zh() ? @"这次回不去：" : @"Couldn’t go back: ") stringByAppendingString:why]]; });
+}
+- (void)snapRestoreNow:(NSString *)dir rollback:(BOOL)rollback {
+    setenv("S2A_SNAP_RESTORE", dir.fileSystemRepresentation, 1);
+    if (rollback) setenv("S2A_SNAP_SAVE_ROLLBACK", "1", 1); else unsetenv("S2A_SNAP_SAVE_ROLLBACK");
+    g_snap_mac = self; int s2a_host_restart(void (*)(int, const char *, void *), void *);   // 进程内重启（runtime/include/s2a_session.h）
+    int rc = s2a_host_restart(snap_mac_restart, NULL);
+    if (rc) { unsetenv("S2A_SNAP_RESTORE"); unsetenv("S2A_SNAP_SAVE_ROLLBACK"); [self snapNote:s2a_ui_zh() ? @"这次回不去，稍后再试" : @"Couldn’t go back right now"]; }
+}
+- (void)snapRestore:(id)sender {
+    (void)sender; char d[2048]; int s2a_snap_dir_for(const char *, char *, size_t), s2a_snap_exists(const char *), s2a_snap_save_changed(const char *);
+    if (s2a_snap_dir_for(NULL, d, sizeof d) || !s2a_snap_exists(d)) { [self snapNote:s2a_ui_zh() ? @"还没有存下的那一刻" : @"No saved moment yet"]; return; }
+    NSString *dir = @(d);
+    if (s2a_snap_save_changed(d) != 1) { [self snapRestoreNow:dir rollback:NO]; return; }
+    // 存快照之后游戏又存过档：回去会把游戏存档退回那一刻——先问（当前存档会先整棵备份）
+    NSAlert *a = [NSAlert new]; a.messageText = s2a_ui_zh() ? @"回到存下的那一刻？" : @"Go back to the saved moment?";
+    a.informativeText = s2a_ui_zh() ? @"存下那一刻之后游戏又存过档。回去会把游戏存档也退回那一刻；现在的存档会先备份。" : @"The game saved after that moment. Going back also takes the game’s save back to that moment; your current save is backed up first.";
+    [a addButtonWithTitle:s2a_ui_zh() ? @"回去" : @"Go back"]; [a addButtonWithTitle:s2a_ui_zh() ? @"取消" : @"Cancel"];
+    __weak S2AMacDelegate *ws = self;
+    [a beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse r) { if (r == NSAlertFirstButtonReturn) [ws snapRestoreNow:dir rollback:YES]; }];
+}
 - (void)toggleFullScreenItem:(id)sender { (void)sender; fullscreen_toggle(self.window); }
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
     if (item.action == @selector(toggleFullScreenItem:))
@@ -1961,7 +2060,11 @@ void s2a_front_run(void (*guest_main)(void)) {
         keys = [NSMutableSet set]; mouse = [NSMutableSet set];
         s2a_input_config decoded;
         int inputError = mac_input_config_read(getenv("S2A_INPUT_CONFIG"), &decoded);
-        if (inputError) { fprintf(stderr, "[s2a] 【红】Mac 输入配置损坏，拒绝启动（%d: %s）\n", inputError, s2a_input_config_error_message(inputError)); exit(2); }
+        if (inputError) {   // 11-17 维护者：校验不过不再拒启。默认键位照常起，游戏窗口的提示条点名原因（窗口建好后由状态刷新显示）
+            fprintf(stderr, "[s2a] 【黄】Mac 输入配置读不懂（%d: %s），这局用默认键位照常启动\n", inputError, s2a_input_config_error_message(inputError));
+            s2a_input_config_default(&decoded);
+            snprintf(g_input_bad, sizeof g_input_bad, "%s", s2a_input_config_error_message(inputError));
+        }
         config = input_config_dictionary(&decoded);
         // 玩家 2–4 自己的键位映射（启动器按玩家保存：起局时给了 S2A_INPUT_CONFIG_P2..P4 才有，见 slot_cfg）。
         //   可选映射读不懂只记一笔、照玩家 1 的键位，不像玩家 1 那份直接拒启——不该挡开局
@@ -1980,6 +2083,21 @@ void s2a_front_run(void (*guest_main)(void)) {
         NSApplication *app = NSApplication.sharedApplication;
         [app setActivationPolicy:NSApplicationActivationPolicyRegular];
         S2AMacDelegate *delegate = [S2AMacDelegate new]; app.delegate = delegate; g_delegate = delegate;
+        // Dock / Cmd+Tab 图标（#994）：启动器起局带 S2A_GAME_COVER（游戏库列表同一张封面，pack/jobs/build.py runtime_env）就换成它；
+        //   横图取中央方形（同游戏库卡片裁法）。没带（无封面）/ 读不出：保持宿主包默认图标（compile_host 编进 Resources/S2ArmGame.icns）
+        { const char *cover = getenv("S2A_GAME_COVER");
+          if (cover && cover[0]) {
+              NSImage *loaded = [[NSImage alloc] initWithContentsOfFile:[NSString stringWithUTF8String:cover]];
+              CGImageRef raw = loaded ? [loaded CGImageForProposedRect:NULL context:NULL hints:nil] : NULL;
+              if (raw) {
+                  size_t w = CGImageGetWidth(raw), h = CGImageGetHeight(raw);
+                  CGImageRef square = raw;   // 方形封面原样用；横图 / 竖图取中央方形
+                  if (w != h) { size_t side = MIN(w, h); square = CGImageCreateWithImageInRect(raw, CGRectMake((w - side) / 2, (h - side) / 2, side, side)); }
+                  NSImage *icon = [[NSImage alloc] initWithCGImage:square size:NSMakeSize(CGImageGetWidth(square), CGImageGetHeight(square))];
+                  if (square != raw) CGImageRelease(square);
+                  app.applicationIconImage = icon;
+              } else fprintf(stderr, "[s2a] 【黄】游戏封面读不出来（%s），Dock 图标用宿主包默认\n", cover);
+          } }
         // 心跳（#1050）：每 10 秒一行实占 / 出帧 / 读写盘 / 缺页读入（macos/heartbeat_mac.c s2a_heartbeat_mac；只此一处用，不进 native.h），后台串行队列上打，不占主线程
         { void s2a_heartbeat_mac(void); int s2a_playtime_flush(void); static dispatch_source_t hb; dispatch_queue_t q = dispatch_queue_create("s2a.heartbeat", DISPATCH_QUEUE_SERIAL);
           hb = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, q);
@@ -1996,6 +2114,13 @@ void s2a_front_run(void (*guest_main)(void)) {
             NSMenuItem *sw = [application addItemWithTitle:s2a_ui_zh() ? @S2A_DPROMPT_SWITCH_GAME_TITLE : @S2A_DPROMPT_SWITCH_GAME_TITLE_EN action:@selector(switchGame:) keyEquivalent:@""];
             sw.target = delegate;
         }
+        { int s2a_snap_logging(void);   // 0.6.0 快照：起局带了存档开关才有这两项
+          if (s2a_snap_logging()) {
+              [application addItem:NSMenuItem.separatorItem];
+              [application addItemWithTitle:s2a_ui_zh() ? @"存下这一刻" : @"Save This Moment" action:@selector(snapSave:) keyEquivalent:@"s"].target = delegate;
+              [application addItemWithTitle:s2a_ui_zh() ? @"回到上次存下的这一刻" : @"Go Back to the Saved Moment" action:@selector(snapRestore:) keyEquivalent:@""].target = delegate;
+              [application addItem:NSMenuItem.separatorItem];
+          } }
         [application addItemWithTitle:@"Quit S2Arm Game" action:@selector(terminate:) keyEquivalent:@"q"];
         root.submenu = application;
         NSMenuItem *inputRoot = [NSMenuItem new]; NSMenu *inputMenu = [[NSMenu alloc] initWithTitle:@"输入"];
@@ -2037,7 +2162,12 @@ void s2a_front_run(void (*guest_main)(void)) {
         }];
         delegate.window = window;
         screen_fps_note(window);
-        [NSNotificationCenter.defaultCenter addObserverForName:NSWindowDidChangeScreenNotification object:window queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { screen_fps_note(n.object); }];
+        screen_edr_note(window);   // PR1 探针：窗口所在屏 EDR 能力一次性读数（评审稿 §4 PR1 ③）
+        hdr_tick(window);   // PR4 首探：重探发布 + 开机预挂 + 层配置应用——赶在游戏首查询前（评审稿 §4 PR4 ③，Bananza 首查询即定窗口）
+        NSTimer *hdr_timer = [NSTimer timerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *t) { (void)t; hdr_tick(window); }];
+        [[NSRunLoop mainRunLoop] addTimer:hdr_timer forMode:NSRunLoopCommonModes];   // 拖窗 / 开菜单不停（评审稿 §4 PR4 ②）
+        [NSNotificationCenter.defaultCenter addObserverForName:NSApplicationDidChangeScreenParametersNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { (void)n; hdr_tick(window); }];   // HDR 开关 / 分辨率 / 接断屏；headroom 变化无专用通知——250ms tick 兜底轮询（§4 PR4 ②）
+        [NSNotificationCenter.defaultCenter addObserverForName:NSWindowDidChangeScreenNotification object:window queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { screen_fps_note(n.object); hdr_tick(n.object); }];
         S2APromptBanner *banner = [S2APromptBanner new]; [view addSubview:banner]; delegate.banner = banner;
         [NSLayoutConstraint activateConstraints:@[[banner.topAnchor constraintEqualToAnchor:view.topAnchor constant:16], [banner.centerXAnchor constraintEqualToAnchor:view.centerXAnchor]]];
         front_layer_attach(layer);
@@ -2068,8 +2198,11 @@ void s2a_front_run(void (*guest_main)(void)) {
             tick(); [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) { (void)t; tick(); }];
         }
         [view setNeedsLayout:YES]; [window center]; [window makeKeyAndOrderFront:nil]; [window makeFirstResponder:view];
-        // 启动即全屏（#575，S2A_FULLSCREEN=1）：窗口出来后走系统原生全屏，同菜单「进入全屏幕」，退出后回到窗口
-        { const char *fs = getenv("S2A_FULLSCREEN"); if (fs && !strcmp(fs, "1")) { fprintf(stderr, "[s2a] 启动即全屏（S2A_FULLSCREEN=1）\n"); dispatch_async(dispatch_get_main_queue(), ^{ if (!window_fullscreen(window)) window_fullscreen_toggle(window); }); } }
+        // 启动即全屏（#575，S2A_FULLSCREEN=1）：窗口出来后走系统原生全屏，同菜单「进入全屏幕」，退出后回到窗口。
+        //   S2A_FULLSCREEN_DEFAULT 是启动器设置里「启动游戏时自动全屏」的全局缺省：这款显式给了 S2A_FULLSCREEN（含 =0）就照这款的，没给才用全局的
+        { const char *fs = getenv("S2A_FULLSCREEN"); const char *from = "S2A_FULLSCREEN";
+          if (!fs) { fs = getenv("S2A_FULLSCREEN_DEFAULT"); from = "启动器设置"; }
+          if (fs && !strcmp(fs, "1")) { fprintf(stderr, "[s2a] 启动即全屏（来源 %s）\n", from); dispatch_async(dispatch_get_main_queue(), ^{ if (!window_fullscreen(window)) window_fullscreen_toggle(window); }); } }
         [app activateIgnoringOtherApps:YES]; focused = YES; input_mute_refresh();
         s2a_pad_set_active(1);
         install_pad_handlers();
@@ -2112,6 +2245,9 @@ void s2a_mac_gpu_stuck(const char *why) {
             fprintf(stderr, "[s2a] GPU 卡住暂停：玩家选继续玩，游戏线程解冻\n");
         } else {
             fprintf(stderr, "[s2a] GPU 卡住暂停：玩家选退出，收尾\n");
+            // 收局退出码 86（同 GPU 挂死安全停，runtime/src/lifecycle.c）：游戏是卡住后被停下的、不是玩完了，启动器按它说「游戏卡住了，已经安全停下」而不是「操作完成」（#1378）
+            //   按名取（同 host_adapt.m）：输入单测只链本文件、不链 lifecycle.c，取不到就照旧
+            void (*code)(int) = (void (*)(int))dlsym(RTLD_DEFAULT, "s2a_host_exit_code"); if (code) code(86);
             dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ s2a_host_shutdown("GPU 卡住，玩家选退出"); });
         }
     });

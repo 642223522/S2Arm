@@ -35,19 +35,23 @@ USAGE = """s2armctl —— 让 AI 助手操作 S2Arm（每条命令 = 玩家点�
   prepare <游戏号>                   Mac 编译（排队）
   ipa <游戏号> [--space-override]    打 iPhone 包（出 IPA + 资源包）；--space-override 同界面「仍然继续」，磁盘预检不够也照出（先征得玩家同意）
   selfsign <游戏号>                  导出自签包（同游戏库按钮）：能直接导出的直接导出；没出过 / 旧格式的先打 iPhone 包再导出
-  build <游戏号> [ios|mac|android|harmony] [--space-override]   出包，按目标：ios = iPhone / iPad（缺省）、mac = Mac；安卓、鸿蒙即将上线
+  build <游戏号> [ios|mac|android|harmony] [--space-override] [--serial <安卓序列号>]   出包，按目标：ios = iPhone / iPad（缺省）、mac = Mac；
+      android 在开关后（S2A_ANDROID_EXPORT=1，缺省关回「即将上线」），--serial 出好接着装到那台手机，不给就只出 APK 不装；鸿蒙即将上线
   batch <游戏号>[:mac,iphone] … [--location 文件夹]
                                     批量出包：几款一起，每款可指定平台（缺省 iphone；同一款先 Mac 后 iPhone，解包只做一次）、一批共用一个存放位置；
                                     一款接一款地出，失败不挡后面、磁盘满暂停；等到出完，打印每款结果和汇总，有失败退出码 1
-  install-check <游戏号> [--device UDID或设备名] [--json]    装到 iPhone 前的清单（--device：查哪一台，同 install --device；s2armctl targets 列设备号）：iPhone 版做好没有、Xcode 登录 Apple ID、连上、信任、开发者模式；没好的写谁做什么
+  install-check <游戏号> [--device UDID或设备名] [--json]    装到 iPhone 前的清单（--device：查哪一台，同 install --device；s2armctl targets 列设备号）：iPhone 版做好没有、在 S2Arm 里登录 Apple ID、连上、信任、开发者模式；没好的写谁做什么
+  install-action <游戏号> <项 id>    点清单里这一项的按钮（先 install-check）：appleId 打开登录面板（邮箱、密码、验证码只能玩家本人填）、connected 亮出装到哪台、
+                                    trusted / developerMode 弹说明、package 去出包页、devcert 打开设置的证书一栏；打开了什么看 state --json 的 presented
   restore-iphone <游戏号>             手机上的 S2Arm 换了新版运行层后不好用：装回上一版（state 里 iphoneRestorable 为真才有）
   show environment|library|export|install [游戏号]   打开环境检查 / 回游戏库 / 打开这款的出包页 / 装机窗（进度与完成页）（同点对应按钮）
   update-phone [--ask | --accept-stale [--repack]] [--device UDID或设备名] [--accept-dropped] [--accept-no-backup]   更新 iPhone 上的 S2Arm（state 里 phoneUpdates 不空才有）：本版壳 + 已有程序模块，只装 App、不重推资源；
                                     有要按新版重新出包的款时不带 --accept-stale 退 1 并列出它们；--repack 更新完把它们排进批量出包、出完自动装
+  phone-identity --device UDID或设备名 [--force]   把签名身份交给手机上的 S2Arm（AltStore / SideStore / 证书 App 装的团队对得上也交），等到交完：成功退 0，失败打错误码与建议、退 1；交过了不重交，--force 照样重交
   customize <游戏号> [--name 名字] [--cover 图片] [--reset-name] [--reset-cover]   改显示名 / 封面（JPG、PNG），下次装到 iPhone 时带上
   delete <游戏号>                    删除这款游戏（IPA / 资源包 / 中间产物 / 缓存；存档与原始游戏文件保留），等删完再返回
   wait <游戏号> [--op build|ipa] [--timeout 秒]
-                                    等该游戏的任务结束：build = Mac 编译（缺省），ipa = iPhone 包；逐段打印进度，失败退出码 1
+                                    等该游戏的任务结束：build = Mac 编译（缺省），ipa = iPhone 包；逐段打印进度，失败退出码 1；接在 build 后面时只等这次 build 起的那个（不拿库里以前的结果）
   targets [--models|--json]         打 iPhone 包的目标设备：当前目标、连着的设备（含设备名）、可选系统；--models 列可选机型
   target probe | target <机型号> <系统大版本>   重新检测连着的设备 / 没连时选机型
   update [restart|retry]            新版后台下载的状态；restart = 重启并换上已下载好的新版，retry = 重试下载（出包中不能重启）
@@ -132,7 +136,8 @@ def launch_args(app, root=None, custom=None):
     # 数据目录用整体写法 --data-root=<目录>：分开写时 macOS 把落单的 <目录> 当成要打开的文件交给 App，App 就不建窗口（11-02 坑记录）
     root, custom = (ROOT if root is None else root), (CUSTOM_ROOT if custom is None else custom)
     if WINDOWS: return [app, '--control'] + ([f'--data-root={root}'] if custom else [])
-    return ['open', app, '--args', '--control'] + ([f'--data-root={root}'] if custom else [])
+    # open -g：开在后台、不抢焦点（App 是普通 App，open 默认会把它带到前台）
+    return ['open', '-g', app, '--args', '--control'] + ([f'--data-root={root}'] if custom else [])
 
 def start_failure(path, since):
     # App 起不来控制口时把原因写在这里；只认这次启动之后写的
@@ -221,12 +226,17 @@ AI_NEXT = {
     'devcert_password': ('human', '开发者证书密码不对或 .p12 坏了：请玩家在出包页重新导入并输入密码（密码只能玩家本人输，AI 不代做）'),
     'devcert_invalid': ('human', '选的不是 .p12 / .mobileprovision：请玩家在出包页重新选对文件导入'),
     'devcert_mismatch': ('human', '证书和描述文件不配套：请玩家在开发者网站重新生成含这张证书的描述文件，再在出包页重新导入'),
+    'devcert_distribution': ('human', '导入的是分发（发布）证书的描述文件：照常导入，推到 iPhone 的方式选「独立 App」（layoutSet 作业，layout=standalone）就能用它玩；通用 S2Arm 里用它签的游戏打不开——要用通用 S2Arm，请玩家在启动器里点「改用 Apple ID 登录」（要输密码，AI 不代做），或点「复制给证书发放人的话」发给证书发放人，换成开发证书和开发描述文件后重新导入'),
     'devcert_missing': ('human', '开发者证书不完整：请玩家在出包页重新导入，或切回 Apple ID 签名后 s2armctl install <游戏号>'),
+    'identity_unavailable': ('human', '这台电脑上没有可交的签名证书：请玩家在 AltStore / SideStore 设置里导出签名证书、在手机 S2Arm「签名证书」里导入；不要为此新建证书'),
+    'identity_team_mismatch': ('human', '手机上的 S2Arm 是另一个团队签的：请玩家在启动器里登录装 S2Arm 用的那个 Apple ID（要输密码，AI 不代做）或选用同一团队的证书，再交一次签名身份'),
     'devcert_keychain': ('human', '证书密码存不进钥匙串：请玩家解锁登录钥匙串、允许 S2Arm 访问后在出包页重新导入'),
     'app_other_signer': ('human', '手机上已有用别的签名装的 S2Arm（包名相同）：请玩家二选一——继续用原签名工具更新它，或在 iPhone 上删掉它（先导出存档），然后 s2armctl install <游戏号>'),
     'bundle_id_switched': ('auto', '（警告）原包名被别的签名占用，已自动换新包名装好；告诉玩家手机上可能有两个 S2Arm，旧的不需要可删（先导出存档）'),
     'signing_server_unreachable': ('human', '这台电脑连不上 Impactor 签名要用的服务器 mac-ani.jkcoxson.com（DNS / 连接失败，已自动重试一次）：请玩家检查网络、换 DNS 或开关代理（AI 不改玩家网络设置），然后 s2armctl install <游戏号>'),
     'apple_session_expired': ('human', 'Apple ID 登录过期（Apple 1100）：请玩家在 Impactor「设置」里移除账号、再添加账号重新登录（要输密码，AI 不代做），然后 s2armctl install <游戏号>'),
+    'apple_not_signed_in': ('human', 'S2Arm 里还没用 Apple ID 登录：请玩家在 S2Arm「用 Apple ID 签名」里填邮箱、密码和手机上的验证码登录（要输密码，AI 不代做），然后 s2armctl install <游戏号>'),
+    'apple_server_unreachable': ('human', '这台电脑连不上苹果服务器（*.apple.com，DNS / 连接失败）：不是 Apple ID 的问题；请玩家检查网络、换 DNS 或开关代理（AI 不改玩家网络设置），然后 s2armctl install <游戏号>'),
     'app_id_taken': ('human', '包名在苹果那边已被占用（Apple 错误 9401）：请玩家确认 Impactor / Xcode 里登录的是当初装 S2Arm 的 Apple ID（要输密码，AI 不代做），或付费账号到 developer.apple.com 删掉 io.s2arm.games 开头的旧包名，然后 s2armctl install <游戏号>'),
     'signing_failed': ('ai', 's2armctl logs <任务号> 看签名哪一步报错；偶发的 s2armctl retry <任务号> 一次，再不行请玩家改用 AltStore（装机步骤页第二部分）'),
     'stage_timeout': ('ai', 's2armctl logs <任务号> 看卡在哪；s2armctl retry <任务号> 重试一次，还超时就 s2armctl diag export <输出.zip> 交给玩家反馈'),
@@ -348,16 +358,16 @@ def next_step(s, gid=None, target='ios'):
         return dict(step='出包', who='ai', do=f's2armctl build {g["id"]} ios，然后 s2armctl wait {g["id"]} --op ipa --timeout 7200', why='还没出 iPhone 版（大游戏第一次要几十分钟到一个多小时，请玩家插上电源、别让%s睡眠）' % ('电脑' if s.get('platform') == 'windows' else ' Mac '), **extra)
     if s.get('platform') == 'windows':
         if [t for t in mine if t['operation'] == 'install' and t['state'] == 'completed']:
-            return dict(step='打开游戏', who='human', do='已装到 iPhone：请玩家打开这款游戏，第一次会先导入游戏资源（几分钟），保持前台别锁屏', why='装机完成，剩下只有玩家本人在手机上打开', ipa=ipa, **extra)
+            return dict(step='打开游戏', who='human', do='已推到 iPhone：请玩家打开这款游戏，第一次会先导入游戏资源（几分钟），保持前台别锁屏', why='装机完成，剩下只有玩家本人在手机上打开', ipa=ipa, **extra)
         return dict(step='装机', who='ai', do=f's2armctl install-check {g["id"]}，没打勾的项按它说的请玩家做（Apple ID 只能玩家本人在 Impactor 里登录）；然后 s2armctl install {g["id"]}（等到装完；失败会打错误码和建议、退 1）',
                     why='iPhone 包已出好：用玩家在 Impactor 登录的 Apple ID 签名，数据线装上并拷资源包', ipa=ipa, **extra)
     # 装机主路（10-26 维护者 定）：用玩家在 Xcode 登录的 Apple ID 签名、数据线装、自动拷资源包；Xcode 没登录 / 没连设备由 install 报错码，再按 AI_NEXT 处理
     done = [t for t in mine if t['operation'] == 'install' and t['state'] == 'completed' and (t.get('ended') or 0) >= max((x.get('ended') or 0) for x in mine if x['operation'] == 'ipa' and x['state'] == 'completed')]
     if done:
-        return dict(step='打开游戏', who='human', do=f'已装到 iPhone{("「" + done[-1]["device"] + "」") if done[-1].get("device") else ""}、资源包已拷好并核对：请玩家打开这款游戏，第一次会先导入游戏资源（几分钟），保持前台别锁屏，导入完会自动进入游戏。免费 Apple ID 签的 App 7 天过期，到时连上再 s2armctl install {g["id"]}',
+        return dict(step='打开游戏', who='human', do=f'已推到 iPhone{("「" + done[-1]["device"] + "」") if done[-1].get("device") else ""}、资源包已拷好并核对：请玩家打开这款游戏，第一次会先导入游戏资源（几分钟），保持前台别锁屏，导入完会自动进入游戏。免费 Apple ID 签的 App 7 天过期，到时连上再 s2armctl install {g["id"]}',
                     why='装机完成，剩下只有玩家本人在手机上打开', ipa=ipa, **extra)
-    return dict(step='装机', who='ai', do=f's2armctl install-check {g["id"]}，没打勾的项按它说的请玩家做；然后 s2armctl install {g["id"]}（等到装完；失败会打错误码和建议、退 1）',
-                why='iPhone 包已出好：用玩家在 Xcode 登录的 Apple ID 签名，数据线装上并拷资源包。玩家不想登录 Xcode 就改用 AltStore（装机步骤页第二部分）', ipa=ipa, **extra)
+    return dict(step='装机', who='ai', do=f's2armctl install-check {g["id"]}，没打勾的项按它说的请玩家做（Apple ID 没登录：s2armctl install-action {g["id"]} appleId 打开登录面板，请玩家本人填）；然后 s2armctl install {g["id"]}（等到装完；失败会打错误码和建议、退 1）',
+                why='iPhone 包已出好：用玩家在 S2Arm 里登录的 Apple ID 签名，数据线装上并拷资源包。玩家不想登录就改用「导出自签包」', ipa=ipa, **extra)
 
 def show_next(gid, as_json, target='ios'):
     n = next_step(call('GET', '/state'), gid, target)
@@ -472,6 +482,14 @@ def job_alive(j):
     if not st or not start.strip() or not isinstance(identity, str) or not identity.strip(): return None
     return start.strip() == identity
 
+def settle(s, limit=20):
+    """任务记录（作业层写盘）先于启动器收尾变成 completed：启动器这时还没收掉这单（busy），收掉后才异步重读游戏库（libraryLoading）。
+    等两样都落下再返回（最多 limit 秒），否则紧接着读到的 ready / needsPreparation 还是出包前那份（11-20 0.6.2 候选验收 ⑤c 读到出包前的
+    「要重新准备」判包过旧）。s 是刚读到的状态：已经空闲就不再多读"""
+    t0 = time.time()
+    while s is not None and (s.get('busy') or s.get('libraryLoading')) and time.time() - t0 < limit:
+        time.sleep(0.5); s = call('GET', '/state', soft=True)
+
 def wait(game, op, limit, before=None):   # before：发命令前已有的任务号，只等之后新起的那个（install 发完立刻等，别拿上一次的结果当这次）
     t0 = time.time(); last = None; tid = None
     before_queue = None; queue_started = None; said_lost = False
@@ -506,10 +524,30 @@ def wait(game, op, limit, before=None):   # before：发命令前已有的任务
             if not ts: print('排队已取消'); sys.exit(1)
         if ts:
             t = max(ts, key=lambda t: t.get('started') or 0); tid = t['id']
+            if t['state'] == 'completed': settle(s)
             last = show_task(t, t0, last)
         elif s['error'] and not queued: print('错误：' + s['error']); sys.exit(1)
         time.sleep(2)
     sys.exit(f'{limit} 秒内没结束（任务 {tid}）')
+
+# build → wait 是两条命令（两个进程）：build 发出前把这款已有的同类任务号记到数据目录，wait 读走后只等之后新起的那个。
+#   原先 wait 不知道发命令前有哪些任务，升级后库里留着老版已完成的出包任务，build 后 wait 立刻拿到它退 0、等于没等（11-16 合入运维 0.5.0 候选升级验收被骗出假绿）
+def build_op(target): return 'build' if target == 'mac' else 'android' if target == 'android' else 'ipa'
+def pending_path(game, op): return os.path.join(ROOT, 'ctl-pending', f'{game}.{op}.json')
+def remember_before(game, op):
+    before = [t['id'] for t in call('GET', '/state')['tasks'] if t.get('gameId') == game and t['operation'] == op]
+    p = pending_path(game, op); os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p + '.tmp', 'w', encoding='utf-8') as f: json.dump({'before': before, 'at': time.time()}, f)
+    os.replace(p + '.tmp', p)
+def take_before(game, op):
+    """build 记下的任务号（读一次就删：下一次 build 另记）；没有记录（如游戏里点的出包）→ None，照旧取最新一个"""
+    p = pending_path(game, op)
+    try:
+        with open(p, encoding='utf-8') as f: before = set(json.load(f)['before'])
+    except (OSError, ValueError, KeyError, TypeError): return None
+    try: os.remove(p)
+    except OSError: pass
+    return before
 
 def show_task(t, t0, last):
     """打一行进度（状态 / 里程碑 / 每 5% 变一次才打）；终态打各里程碑用时后按结果退出。返回新的 last"""
@@ -580,10 +618,8 @@ def wait_op(op, before, limit=1800):
             if t['state'] not in ('running', 'queued', 'cancelling'):
                 print(f'{t["state"]}：{t.get("message") or ""}')
                 if t['state'] != 'completed': errors(); sys.exit(1)
-                # 作业记录写完时启动器还在收尾（刷新游戏库等）：等它空闲再返回，否则紧接着的下一条命令会被 409 挡回来
-                for _ in range(40):
-                    if not call('GET', '/state').get('busy'): break
-                    time.sleep(0.5)
+                # 作业记录写完时启动器还在收尾（刷新游戏库等）：等它空闲、游戏库重读完再返回，否则紧接着的下一条命令会被 409 挡回来、读到旧状态
+                settle(call('GET', '/state'))
                 # 导入完成后游戏库异步刷新：等到游戏出现在列表里（最多 10 秒）再打状态，好拿游戏号
                 for _ in range(20):
                     s = call('GET', '/state')
@@ -642,8 +678,8 @@ def diag_body(rest, now=None):
     return {'action': 'export', 'path': path}
 
 # 至少需要一个位置参数的命令：以前缺参数直接 IndexError，或把后面的选项当成游戏号发给控制口。
-NEEDS_ARG = {'install', 'uninstall', 'launch', 'cancel', 'retry', 'delete', 'customize', 'ipa', 'prepare',
-             'build', 'wait', 'install-check', 'logs', 'device', 'push-pack', 'snapshot', 'select',
+NEEDS_ARG = {'install', 'uninstall', 'launch', 'cancel', 'retry', 'delete', 'customize', 'ipa', 'prepare', 'selfsign',
+             'build', 'wait', 'install-check', 'install-action', 'logs', 'device', 'push-pack', 'snapshot', 'select',
              'onboarding', 'target', 'keys', 'games',
              'cloud-sync', 'display', 'library', 'restore-iphone', 'show', 'mods'}   # 合入时补：这几条同样直接取 rest[0]
 
@@ -743,10 +779,16 @@ def main():
         call('POST', '/library', {'path': os.path.abspath(os.path.expanduser(rest[0])), 'move': '--move' in rest}); wait_op('setup', before); return
     if cmd == 'errors': errors(rest[0] if rest else None); return
     if cmd == 'install-check': install_check(rest[0], '--json' in rest, device=rest[rest.index('--device') + 1] if '--device' in rest else None); return
+    if cmd == 'install-action':   # 点清单一项的按钮：控制口按这一项的 action 派发；已好 / 没动作回 409（call 打原因退 1）
+        if len(rest) < 2 or rest[1].startswith('-'): print(USAGE); sys.exit(2)
+        r = call('POST', '/install-action', {'gameId': rest[0], 'id': rest[1]})
+        print(json.dumps(r, ensure_ascii=False)); return
     if cmd == 'build':
-        args = [a for a in rest if a != '--space-override']
+        serial = rest[rest.index('--serial') + 1] if '--serial' in rest else None   # 安卓：出好装到这台手机（adb 序列号）
+        args = [a for i, a in enumerate(rest) if a not in ('--space-override', '--serial') and (i == 0 or rest[i - 1] != '--serial')]
         target = args[1] if len(args) > 1 else 'ios'
-        print(json.dumps(call('POST', '/build', {'gameId': args[0], 'target': target, **space_flag(rest)}), ensure_ascii=False)); return
+        remember_before(args[0], build_op(target))
+        print(json.dumps(call('POST', '/build', {'gameId': args[0], 'target': target, **space_flag(rest), **({'serial': serial} if serial else {})}), ensure_ascii=False)); return
     if cmd == 'diag':
         body = diag_body(rest)
         if body is None: print('用法：s2armctl diag [export [输出.zip]] | diag pull', file=sys.stderr); sys.exit(2)
@@ -794,13 +836,19 @@ def main():
         r = call('POST', '/update-phone', body); print(json.dumps(r, ensure_ascii=False), flush=True)   # 409（已是本版 / 有要重出的款没确认）在 call 里带原因退非 0
         if r.get('asked'): print('窗口里弹了三选一，等玩家选'); return   # --ask：同点按钮，有要重出的款时由玩家在窗口里选
         wait_op('installUpdate', before, 3600); return
+    if cmd == 'phone-identity':
+        before = {t['id'] for t in call('GET', '/state')['tasks'] if t['operation'] == 'phoneIdentity'}
+        body = {**({'device': rest[rest.index('--device') + 1]} if '--device' in rest else {}), **({'force': True} if '--force' in rest else {})}
+        print(json.dumps(call('POST', '/phone-identity', body), ensure_ascii=False), flush=True)   # 缺 device / 手机上有作业在跑：call 带原因退非 0
+        wait_op('phoneIdentity', before, 600); return
     if cmd == 'wait':
         op = rest[rest.index('--op') + 1] if '--op' in rest else 'build'
         lim = float(rest[rest.index('--timeout') + 1]) if '--timeout' in rest else 14400
-        wait(rest[0], op, lim); return
+        wait(rest[0], op, lim, take_before(rest[0], op)); return
     simple = {
               'fonts': ('/fonts', lambda r: {'path': os.path.abspath(r[0]) if r and r[0] else ''}),
-              'prepare': ('/prepare', lambda r: {'gameId': r[0], **space_flag(r)}), 'ipa': ('/ipa', lambda r: {'gameId': r[0], **space_flag(r)}), 'install': ('/install', lambda r: simple_body('install', r)), 'uninstall': ('/uninstall', lambda r: {'gameId': r[0], **accept_flags(r)}), 'restore-iphone': ('/restore-iphone', lambda r: {'gameId': r[0]}), 'launch': ('/launch', lambda r: {'gameId': r[0]}),
+              'prepare': ('/prepare', lambda r: {'gameId': r[0], **space_flag(r)}), 'selfsign': ('/selfsign', lambda r: {'gameId': r[0]}),   # 帮助里一直列着、表里漏了：落到兜底发 {args}，App 回「没有这个 gameId」
+              'ipa': ('/ipa', lambda r: {'gameId': r[0], **space_flag(r)}), 'install': ('/install', lambda r: simple_body('install', r)), 'uninstall': ('/uninstall', lambda r: {'gameId': r[0], **accept_flags(r)}), 'restore-iphone': ('/restore-iphone', lambda r: {'gameId': r[0]}), 'launch': ('/launch', lambda r: {'gameId': r[0]}),
               'cancel': ('/cancel', lambda r: {'taskId': r[0]}), 'retry': ('/retry', lambda r: {'taskId': r[0]}),
               'select': ('/select', lambda r: {'selection': r[0], **({'gameId': r[1]} if len(r) > 1 else {})}),
               'onboarding': ('/onboarding', lambda r: {'action': r[0], **({'step': int(r[1])} if len(r) > 1 else {})}),

@@ -1,7 +1,7 @@
 #!/bin/bash
 # 门禁覆盖：*.sh *.py Makefile *.mk
-# 单测接线扫描（tools/test_wired_lint.py，约 1 秒）：bash tests/test_wired_test.sh
-# 期望：① 本仓库全部接线或在白名单 → 退出 0；② 本仓库换成空白名单 → 退出 1 且点名仍需私有数据 / 参数的三支手动单测；
+# 单测接线扫描（tools/test_wired_lint.py，全仓一遍约 25 秒）：bash tests/test_wired_test.sh
+# 期望：① 本仓库全部接线或在白名单 → 退出 0；② 本仓库换成空白名单（同一次扫描出的第二份结论）→ 退出 1 且点名仍需私有数据 / 参数的三支手动单测；
 #   ③ 临时仓库：门禁调到的、经已接线脚本再调的、Python import 的、Makefile 配方里调的都算接上；只在注释里提到的、谁都没调的报出；
 #   白名单没写原因、白名单写了不存在 / 其实已接上的单测只提示，没写原因的报一条；不合格的白名单行不豁免（没写原因的那支照报没接线）
 #   ⑤ 文字提及、非执行选项、heredoc、同名不同目录都不算接线；真调用正控仍判接上；解析失败点名文件和原因。
@@ -16,10 +16,10 @@ fixture_lint() {
     git -C "$root" add -A || return
     python3 "$lint" "$root"
 }
-o=$(cd "$H" && python3 tools/test_wired_lint.py 2>&1); r=$?
+o=$(cd "$H" && S2A_WIRED_EMPTY_OUT=$T/empty.out python3 tools/test_wired_lint.py 2>&1); r=$?   # 同一次扫描顺带出空白名单那份结论（②用，不整仓重扫）
 ck "① 本仓库：全部接线或在白名单（$(echo "$o" | tail -1 | cut -c1-120)）" '[ $r = 0 ]'
 [ $r = 0 ] || echo "$o" | head -10
-: > "$T/empty.tsv"; o=$(cd "$H" && S2A_WIRED_OK=$T/empty.tsv python3 tools/test_wired_lint.py 2>&1); r=$?
+o=$(sed '$d' "$T/empty.out"); r=$(tail -1 "$T/empty.out" | sed 's/^退出码 //')
 ck "② 空白名单：退出 1（rc=${r}）" '[ $r = 1 ]'
 # 拼扩展名：现有扫描器会把断言里的完整文件名误当调用（#484 另行修复）。
 for stem in t_pkz_real t_smbw_bnsh t_fout_rule; do
@@ -47,6 +47,25 @@ o3=$(fixture_lint $R/tools/test_wired_lint.py $R 2>&1)
 ck "③b 子目录没人调的 key_orphan_test.sh 报没接线" 'grep -q "tests/visual/key_orphan_test.sh 没有门禁脚本调它" <<< "$o3"'
 ck "③b 顶层自动入口 tests/top_auto_test.sh 不报" '! grep -q "top_auto_test.sh" <<< "$o3"'
 rm -f $R/tests/visual/key_orphan_test.sh $R/tests/top_auto_test.sh
+# ③c 间接调用（文件头「门禁间接：<调用方> <说明>」，11-20 android/gate.sh 接回）：调用方按通配逐个跑、静态引用追不到。
+#   调用方已接线 → 算接上，并接着追它调的脚本；调用方没接线 → 照报；没写说明 / 调用方不存在 → 声明不对报红
+mkdir -p $R/graphics/x/tests/standalone
+printf 'for f in graphics/x/tests/standalone/*.sh; do bash "$f"; done\n' > $R/graphics/x/tests/run_all.sh
+printf 'bash graphics/x/tests/run_all.sh\n' >> $R/graphics/gate.sh
+printf '# 门禁间接：graphics/x/tests/run_all.sh 默认档按通配逐个跑\npython3 graphics/x/tests/t_behind.py\n' > $R/graphics/x/tests/standalone/glob_a_test.sh
+echo 'print(1)' > $R/graphics/x/tests/t_behind.py
+printf 'echo nobody\n' > $R/graphics/x/tests/unwired_runner.sh
+printf '# 门禁间接：graphics/x/tests/unwired_runner.sh 按通配跑\necho b\n' > $R/graphics/x/tests/standalone/glob_b_test.sh
+printf '# 门禁间接：graphics/x/tests/run_all.sh\necho c\n' > $R/graphics/x/tests/standalone/glob_c_test.sh
+printf '# 门禁间接：graphics/x/tests/no_such.sh 按通配跑\necho d\n' > $R/graphics/x/tests/standalone/glob_d_test.sh
+o4=$(fixture_lint $R/tools/test_wired_lint.py $R 2>&1)
+ck "③c 调用方已接线：glob_a_test.sh 算接上" '! grep -q "glob_a_test.sh 没有门禁脚本调它" <<< "$o4"'
+ck "③c 间接单测再调的 t_behind.py 也算接上" '! grep -q "t_behind.py 没有门禁脚本调它" <<< "$o4"'
+ck "③c 调用方没接线：glob_b_test.sh 照报" 'grep -q "glob_b_test.sh 没有门禁脚本调它" <<< "$o4"'
+ck "③c 没写说明：glob_c_test.sh 声明报红" 'grep -q "门禁间接」 graphics/x/tests/standalone/glob_c_test.sh 没写说明" <<< "$o4"'
+ck "③c 调用方不存在：glob_d_test.sh 声明报红" 'grep -q "glob_d_test.sh 的调用方 graphics/x/tests/no_such.sh 不是仓库里的文件" <<< "$o4"'
+rm -rf $R/graphics/x/tests/standalone $R/graphics/x/tests/run_all.sh $R/graphics/x/tests/t_behind.py $R/graphics/x/tests/unwired_runner.sh
+sed -i.bak '/run_all.sh/d' $R/graphics/gate.sh && rm -f $R/graphics/gate.sh.bak
 
 # ⑤ 独立反例：字面期望不从扫描器结果生成，不执行任何合成测试文件。
 Q=$T/mentions; mkdir -p "$Q/graphics/a/tests"
@@ -265,7 +284,7 @@ for t in t_wrap t_say; do echo 'print(1)' > $M/plat/tests/$t.py; done
 printf -- '-include $(sort $(wildcard */build.mk))\n' > $M/Makefile
 printf 'gated:\n\tpython3 graphics/tests/t_gated.py\nnotgated:\n\tpython3 graphics/tests/t_notgated.py\nagg: sub-a\nsub-a:\n\tpython3 graphics/tests/t_pre.py\nsub-b:\n\t$(MAKE) -C graphics/m inner\nnative-test-x:\n\tpython3 graphics/tests/t_pat.py\ndry:\n\tpython3 graphics/tests/t_dry.py\nTEST_TARGETS += notgated\n' > $M/graphics/build.mk
 printf 'inner:\n\tpython3 ../tests/t_inner.py\n' > $M/graphics/m/Makefile
-printf 'make -s gated\ntimeout "$GT" make -s agg sub-b\nfor k in x; do make -s "native-test-$k"; done\nmake -n dry\n' > $M/graphics/gate.sh
+printf 'make -s gated\ntimeout -k 15 "$GT" make -s agg sub-b\nfor k in x; do make -s "native-test-$k"; done\nmake -n dry\n' > $M/graphics/gate.sh
 echo '<Project><PropertyGroup><OutputType>Exe</OutputType></PropertyGroup></Project>' > $M/plat/Py.Tests/Py.Tests.csproj; cp $M/plat/Py.Tests/Py.Tests.csproj $M/plat/Lone.Tests/Lone.Tests.csproj
 printf 'from pathlib import Path\nhere = Path(__file__).resolve().parent\ncmd = ["dotnet", "build", str(here / "Py.Tests/Py.Tests.csproj")]\n' > $M/plat/run_py.py
 printf 'from pathlib import Path\nprint("Lone.Tests.csproj")\n' > $M/plat/mention.py

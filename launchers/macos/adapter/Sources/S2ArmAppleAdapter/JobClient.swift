@@ -68,7 +68,6 @@ public struct JobEnvironment: Equatable {
         do {
             try FileManager.default.createDirectory(at: privateRoot, withIntermediateDirectories: true)
             try JSONSerialization.data(withJSONObject: p, options: [.sortedKeys]).write(to: file, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
         } catch {
             throw JobClientError("游戏库已建好，但设置没能写进磁盘（\(error.localizedDescription)）：请检查磁盘空间和权限后再换一次。")
         }
@@ -123,6 +122,15 @@ public struct JobOutcome {
     public let diagnostics: [[String: Any]]
     /// 作业进程的标准错误（中断时给诊断用）。
     public let stderr: String
+
+    /// 让这次作业停下的那条诊断：作业层把终态错误追加在诊断列表最后（pack/jobs/core.py report_failure），
+    ///   前面可能有中途记的警告（磁盘快满、补着色器没补上……）。取最后一条 error 级的，没有就取最后一条。
+    ///   原先取第一条：更新 iPhone 时先记了一条补着色器失败的警告，停装码 save_backup_failed 排在后面，结局页认不出、不出「仍然继续」。
+    public var failureDiagnostic: [String: Any]? { Self.failureDiagnostic(diagnostics) }
+    public var failureCode: String? { failureDiagnostic?["code"] as? String }
+    public static func failureDiagnostic(_ diagnostics: [[String: Any]]) -> [String: Any]? {
+        diagnostics.last(where: { $0["severity"] as? String == "error" }) ?? diagnostics.last
+    }
 
     public static let interruptedMessage = "工作进程已退出。可重试并验证完成阶段。"
 }
@@ -182,6 +190,8 @@ public final class JobClient {
     public func jobEntry() throws -> URL {
         let bundled = environment.resources.appendingPathComponent("Jobs/main.py")
         if fileManager.fileExists(atPath: bundled.path) { return bundled }
+        // 玩家装的 App（带引擎包）缺作业入口 = 包不完整，照实说重装；源码树（开发）才说选源码目录
+        if environment.engineBundle != nil { throw JobClientError("应用不完整，请重新安装 S2Arm。", code: JobClientError.bundleIncomplete) }
         let checkout = URL(fileURLWithPath: environment.engineDir ?? "").appendingPathComponent("pack/jobs/main.py")
         guard fileManager.fileExists(atPath: checkout.path) else { throw JobClientError("请选择包含 pack/jobs 的 S2Arm 源码目录。") }
         return checkout
@@ -199,7 +209,9 @@ public final class JobClient {
             "devHud": env.devHud, "metalHud": env.metalHud, "buildId": env.buildId,
             "parentPid": Int(pid),
         ]
-        if let lang = env.uiLanguage, ["zh-Hans", "en"].contains(lang) { req["uiLanguage"] = lang }   // extra 带了（起局）照 extra
+        // 界面语言照原样带、由作业层认（install.py：中文界面用中文定名，其余英文；build.py：六门之外不设）。原先只带 zh-Hans / en，
+        //   法 / 日 / 西 / 繁中界面整个不带，作业层回落成中文：自签导出文件夹与说明成了中文（#502，11-16 维护者）
+        if let lang = env.uiLanguage, !lang.isEmpty { req["uiLanguage"] = lang }   // extra 带了（起局）照 extra
         extra.forEach { req[$0] = $1 }
         if let bundle = env.engineBundle { req["engineBundle"] = bundle.path; req["engineDir"] = bundle.path }
         // 环境准备不依赖游戏库：旧游戏库所在盘没插着时也要能跑
@@ -250,9 +262,17 @@ public final class JobClient {
 
     /// 打开时要给玩家看什么（pack/jobs/updater.py inbox，两端共用「永远只给最新一期」）：
     ///   {popup?: {kind: update|afterUpdate, version, notes?}, banner?: 公告, messages: [...], unread, update: 查版本结果}；起不来返回 nil，不打扰玩家
-    public func inbox(current: String) async -> [String: Any]? {
-        let result = await runUpdater(["inbox", "--private-root", environment.privateRoot.path, "--platform", "mac", "--current", current])
+    public func inbox(current: String, noticesOnly: Bool = false) async -> [String: Any]? {
+        var command = ["inbox", "--private-root", environment.privateRoot.path, "--platform", "mac", "--current", current]
+        if noticesOnly { command.append("--notices-only") }
+        let result = await runUpdater(command)
         return result?["messages"] is [Any] ? result : nil
+    }
+
+    public func check(current: String, fresh: Bool) async -> [String: Any]? {
+        var command = ["check", "--platform", "mac", "--current", current]
+        if fresh { command.append("--fresh") }
+        return await runUpdater(command)
     }
 
     /// 玩家关掉了：update = 「有新版」那版（以后再说），after = 「这版更新了什么」那版，notice = 看过的最新一条公告号，feature = 看过的新功能大窗期号
@@ -301,11 +321,10 @@ public final class JobClient {
         let dir = environment.privateRoot.appendingPathComponent("requests")
         let file = dir.appendingPathComponent(id + ".json")
         do {
-            try fileManager.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            // 系统缺省权限（~/Library 本来就只归当前用户；11-16 维护者：不再自设权限）
+            try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
             let data = try JSONSerialization.data(withJSONObject: request(id: id, operation: operation, extra: extra))
             try data.write(to: file, options: .atomic)
-            // 作业层只认本人所有、0600 的请求（winproc.request_is_private）
-            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
         } catch {
             throw JobClientError("无法写入任务请求：\(error.localizedDescription)")
         }
@@ -317,6 +336,7 @@ public final class JobClient {
             process = try runner.start(
                 executable: python, arguments: ["-B", "-I", entry.path, "run", "--request", file.path],
                 environment: processEnvironment().merging(secrets) { _, s in s },
+                automatic: JobTrigger.automaticOperations.contains(operation),
                 onLine: { line in
                     guard let object = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] else { return }
                     guard let event = JobEvent(json: object) else {

@@ -3,9 +3,12 @@
 // 出包页「签名方式」一栏 + 导入开发者证书弹窗（v0.2.4，作业层 pack/jobs/devcert.py；同 Mac DevCertViews.swift）。
 //   Apple ID 签名 / 我的开发者证书 二选一；选了证书列团队、到期、包名、设备列表，问题黄字（不挡）、根本签不了红字。
 //   密码只经环境变量交给导入那一次作业（PackJobClient.Request.Secrets），不写进请求文件；后端用 DPAPI 加密存在本机。
+//   描述文件缺权限（分发证书的 devcert_distribution 拒导入；只缺内核两项的 devcert_entitlements 照常导入）：逐条列缺项，同一页直接给
+//   「复制给证书发放人的话」（作业层 requestText）和「改用 Apple ID 登录」（切到 Apple ID 签名并打开随包 Impactor 登录），不让玩家自己去找。
 using System.Text.Json;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input.Platform;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
@@ -75,15 +78,19 @@ public sealed partial class EnvironmentWindow
             b.Click += (_, _) => handler();
             return b;
         }
-        var apple = Mode("appleId", !active, () => _ = SetDevCertAsync(false), appleIdTitle);
-        var mine = Mode("devcert", active, () => { if (imported) _ = SetDevCertAsync(true); else _ = ImportDevCertAsync(); });
+        // 签名方式三选一（自签走查结构 6）：Apple ID / 我的证书 / 我自己用 AltStore / SideStore 签（作业 signModeSet 记下，之后导出照这个）
+        var external = signChoice == "external";
+        var apple = Mode("appleId", !active && !external, () => _ = SetSignChoiceAsync("appleId"), appleIdTitle);
+        var mine = Mode("devcert", active && !external, () => { if (imported) _ = SetSignChoiceAsync("devCert"); else _ = ImportDevCertAsync(); });
+        var other = Mode("external", external, () => _ = SetSignChoiceAsync("external"));
         var segment = new Border { Background = Brush.Parse("#29292D"), CornerRadius = new CornerRadius(9), Padding = new Thickness(3),
             VerticalAlignment = VerticalAlignment.Center,
-            Child = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2, Children = { apple, mine } } };
+            Child = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2, Children = { apple, mine, other } } };
         AutomationId(segment, "export.sign.segment");
         Grid.SetColumn(segment, 1); line.Children.Add(segment);
         panel.Children.Add(line);
-        if (active && st is { } s && s.TryGetProperty("cert", out var c) && c.ValueKind == JsonValueKind.Object)
+        if (external) panel.Children.Add(new TextBlock { Text = S("externalNote"), TextWrapping = TextWrapping.Wrap, Foreground = Brush.Parse("#A8A6A1"), FontSize = 12 });
+        if (active && !external && st is { } s && s.TryGetProperty("cert", out var c) && c.ValueKind == JsonValueKind.Object)
         {
             var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("120,*"), RowSpacing = 4, Margin = new Thickness(4, 4, 0, 0) };
             var rows = new List<(string, string)>
@@ -107,6 +114,8 @@ public sealed partial class EnvironmentWindow
                     foreach (var w in items.EnumerateArray())
                         panel.Children.Add(new TextBlock { Text = (list == "blocking" ? "✕ " : "⚠ ") + B(Str(w, "text")), FontSize = 12.5,
                             TextWrapping = TextWrapping.Wrap, Foreground = Brush.Parse(color) });
+            // 分发 / ad hoc 描述文件：照常导入、独立 App 能用，通用 S2Arm 那条出路（改用 Apple ID / 复制给发放人）照给
+            if (Str(c, "requestText").Length > 0 || Flag(c, "distribution")) panel.Children.Add(FixActions(Str(c, "requestText"), "export.sign", null));
             var actions = new WrapPanel { Orientation = Orientation.Horizontal };
             var replace = new Button { Content = S("replace"), Padding = new Thickness(14, 8), CornerRadius = new CornerRadius(8),
                 Background = Brush.Parse("#29292D"), Foreground = Ink, Margin = new Thickness(0, 0, 10, 0) };
@@ -121,6 +130,57 @@ public sealed partial class EnvironmentWindow
         }
         panel.Children.Add(Muted(S("switchNote"), 12.5));
         return card ? Card(panel, 14) : panel;
+    }
+
+    /// <summary>描述文件缺权限的两条出路（导入失败页、证书详情共用，同 Mac DevCertFixActions）：
+    /// 「复制给证书发放人的话」（作业层 requestText 按界面语言翻好再复制，空 = 不给）/「改用 Apple ID 登录」（切到 Apple ID 签名并打开随包 Impactor 登录；dialog 非空 = 从导入弹窗点的，先关弹窗）</summary>
+    private WrapPanel FixActions(string request, string idPrefix, Window? dialog)
+    {
+        var row = new WrapPanel { Orientation = Orientation.Horizontal };
+        if (request.Length > 0)
+        {
+            var copy = new Button { Content = S("copyRequest"), Padding = new Thickness(14, 8), CornerRadius = new CornerRadius(8),
+                Background = Brush.Parse("#29292D"), Foreground = Ink, Margin = new Thickness(0, 0, 10, 0) };
+            AutomationId(copy, idPrefix + ".copyRequest");
+            copy.Click += async (_, _) =>
+            {
+                if (TopLevel.GetTopLevel(copy)?.Clipboard is { } clipboard) { await clipboard.SetTextAsync(B(request)); copy.Content = S("copied"); }
+            };
+            row.Children.Add(copy);
+        }
+        var apple = new Button { Content = S("useAppleId"), Padding = new Thickness(14, 8), CornerRadius = new CornerRadius(8), Background = Accent, Foreground = Canvas };
+        AutomationId(apple, idPrefix + ".useAppleId");
+        apple.Click += async (_, _) =>
+        {
+            dialog?.Close();
+            await SetSignChoiceAsync("appleId");
+            TryOpenBundledImpactor();
+        };
+        row.Children.Add(apple);
+        return row;
+    }
+
+    /// <summary>失败那条诊断（最后一条 error 级，同 LibraryJobResult.FailureCodeOf）里机读事实 facts 的一个字符串字段；没有回空</summary>
+    private static string FailureFact(JsonElement diagnostics, string key)
+    {
+        if (diagnostics.ValueKind != JsonValueKind.Array) return "";
+        var value = "";
+        foreach (var d in diagnostics.EnumerateArray())
+            if (d.ValueKind == JsonValueKind.Object && d.TryGetProperty("severity", out var sv) && sv.ValueKind == JsonValueKind.String && sv.GetString() == "error")
+                value = d.TryGetProperty("facts", out var f) && f.ValueKind == JsonValueKind.Object ? Str(f, key) : "";
+        return value;
+    }
+
+    private async Task SetSignChoiceAsync(string mode)
+    {
+        try
+        {
+            var job = await PackJobClient.RunAsync(PackRequest("signModeSet", "", new Dictionary<string, object?> { ["mode"] = mode }), null, CancellationToken.None);
+            if (job.Report.Succeeded && job.Report.Result.TryGetProperty("signMode", out var m) && m.ValueKind == JsonValueKind.String) signChoice = m.GetString() ?? mode;
+        }
+        catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
+            InvalidOperationException or System.ComponentModel.Win32Exception) { }
+        await RefreshDevCertAsync();
     }
 
     private async Task SetDevCertAsync(bool on)
@@ -202,6 +262,8 @@ public sealed partial class EnvironmentWindow
         var failure = new TextBlock { FontSize = 12.5, TextWrapping = TextWrapping.Wrap, Foreground = Brush.Parse("#E5675F"), IsVisible = false };
         AutomationId(failure, "export.sign.sheet.failure");
         body.Children.Add(failure);
+        var fix = new ContentControl { IsVisible = false };   // 导入被拒且缺权限：复制给证书发放人的话 / 改用 Apple ID 登录
+        body.Children.Add(fix);
         var working = Muted(S("sheet.working"), 12.5); working.IsVisible = false;
         var buttons = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto") };
         buttons.Children.Add(working);
@@ -211,13 +273,15 @@ public sealed partial class EnvironmentWindow
         go = DialogButton(S("sheet.import"), true, async () =>
         {
             if (p12.Length == 0 || profile.Length == 0) return;
-            go!.IsEnabled = false; working.IsVisible = true; failure.IsVisible = false;
+            go!.IsEnabled = false; working.IsVisible = true; failure.IsVisible = false; fix.IsVisible = false;
             var r = await DevCertJobAsync(new() { ["action"] = "import", ["p12Path"] = p12, ["profilePath"] = profile },
                 new Dictionary<string, string> { ["S2A_DEVCERT_PASSWORD"] = password.Text ?? "" });
             working.IsVisible = false; go.IsEnabled = true;
             if (r is { Succeeded: true }) { password.Text = ""; dialog.Close(); return; }
             failure.Text = r?.Message is { Length: > 0 } m ? m : T("export.sign.sheet.title");
             failure.IsVisible = true;
+            var request = r is null ? "" : FailureFact(r.Diagnostics, "requestText");
+            if (r?.FailureCode == "devcert_distribution" || request.Length > 0) { fix.Content = FixActions(request, "export.sign.sheet", dialog); fix.IsVisible = true; }
         });
         AutomationId(go, "export.sign.sheet.import");
         Grid.SetColumn(go, 2); buttons.Children.Add(go);

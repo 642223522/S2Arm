@@ -2,7 +2,9 @@
 //   ① 对拍：小地址空间里随机登记 / 同起点改长度 / 注销（含注销不存在的起点、起点 0、长度 0），区间大量重叠；每轮对全部候选地址查询，
 //      与朴素模型（线性数组：所有包含该地址的活项里取起点最大的）逐个比。期望只由模型的数组扫描得出，不跑被测实现。
 //   ② 定点用例：嵌套 / 首尾边界 / 终点饱和 / 改长度后旧范围不再命中。
-//   性能（增长率）回归在 t_nvn_bufreg_rate.m：经 hle_nvn.c 公开入口量 N / 4N 耗时比，不设绝对耗时上限。
+//   ③ 步数判据的负对照：增长率回归（t_nvn_bufreg_rate.m）按 N / 4N 的登记表步数比判（≤ 8 = 近线性）。这里同样的建删顺序（先建 n 个、按建的顺序全删）：
+//      正常随机优先级 → 比值 ≤ 8；优先级全设成 0（xorshift 从 0 出发一直是 0）→ 树退化成链、按建的顺序删每次走到链底 → 平方级，比值 > 8。
+//      期望由复杂度推出（对数级约 4.6、平方级约 16），证明「数步数」分得开两种实现。
 #include "../gfx/nvn/nvn_buf_reg.h"
 #include <stdio.h>
 
@@ -73,9 +75,25 @@ static void fixed(void) {
     nvn_breg_free(&t);
 }
 
+static uint64_t churn(uint32_t seed, int n) {   // 先建 n 个、按建的顺序全删 → 走过的步数
+    nvn_breg t; nvn_breg_init(&t); t.rng = seed;
+    for (int i = 0; i < n; i++) nvn_breg_put(&t, 256u * (uint64_t)(i + 1), 256);
+    for (int i = 0; i < n; i++) nvn_breg_del(&t, 256u * (uint64_t)(i + 1));
+    uint64_t s = t.steps; nvn_breg_free(&t); return s;
+}
+
+static void steps_judge(void) {
+    enum { SN = 2000 };
+    double good = (double)churn(0x9e3779b9u, 4 * SN) / (double)churn(0x9e3779b9u, SN);
+    double chain = (double)churn(0, 4 * SN) / (double)churn(0, SN);
+    printf("  ③ 步数比 N=%d → 4N：正常优先级 %.2f（应 ≤ 8），优先级全 0 退化成链 %.2f（应 > 8）\n", SN, good, chain);
+    CHECK(good <= 8.0, "③ 正常树堆的建删步数比 %.2f > 8", good);
+    CHECK(chain > 8.0, "③ 退化成链的建删步数比 %.2f ≤ 8：步数判据分不出线性级（判据失效）", chain);
+}
+
 int main(void) {
-    fixed(); fuzz();
+    fixed(); fuzz(); steps_judge();
     if (fails) { printf("✗ t_buf_reg：%d 处不符\n", fails); return 1; }
-    printf("✓ t_buf_reg：定点用例与 300 轮随机对拍全符\n");
+    printf("✓ t_buf_reg：定点用例与 300 轮随机对拍全符；步数判据分得开对数级与线性级\n");
     return 0;
 }

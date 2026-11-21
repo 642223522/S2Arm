@@ -36,7 +36,8 @@ for rel in "${front_srcs[@]}"; do
     xcrun --sdk macosx clang "${common[@]}" -fobjc-arc -c "$root/$rel" -o "$object" >> "$out/host-build.log" 2>&1
     objects+=("$object")
 done
-weak_output=$(printf '%s\n' 'fps-limit-weak:;@echo $(NVN_TEST_WEAK)' | make -s -f "$root/runtime/build.mk" -f - fps-limit-weak)
+# 原生层链接库同生产（runtime/build.mk 的 HOST_LIBS：Foundation、Security 等）：本脚本整目录编 runtime/src，手写框架表会漏新依赖（11-17 selfsign.c 加 Security 后这里链接红）
+weak_output=$(printf '%s\n' 'fps-limit-weak:;@echo $(NVN_TEST_WEAK) $(HOST_LIBS)' | make -s -f "$root/runtime/build.mk" -f - fps-limit-weak)
 read -r -a weak_flags <<< "$weak_output"
 xcrun --sdk macosx clang "${common[@]}" -std=gnu11 -fobjc-arc \
     -I"$root/graphics/nvn/gfx/nvn" -I"$root/graphics/nvn/gfx/nvn/include" -I"$root/graphics/nvn/host" \
@@ -141,6 +142,10 @@ run_case() {
     else
         printf 'FAIL %s (exit=%s, log=%s)\n' "$name" "$status" "$out/$name.log" >&2; bad=$((bad + 1))
         if [[ "$status" == 2 ]]; then incomplete=$((incomplete + 1)); fi
+        # 门禁的树会被下一局复用，格子日志留不住、只剩红摘要：把这一格判红的那几行和末 4 行随红打出来。
+        #   行首用「✗」：graphics/gate.sh evidence 摘 ^(✗ |不通 |FAIL) 前 20 行（同 t_present_settings.sh）
+        { /usr/bin/grep -aE '^(FAIL |UNTESTED)|command buffer.*error|GPU Address Fault|Page ?Fault|FATAL|failed assertion|Metal Validation Error' "$out/$name.log" | head -n 6
+          tail -n 4 "$out/$name.log"; } 2> /dev/null | cut -c1-200 | sed "s/^/✗ 尾 ${name}｜/" >&2
     fi
     /usr/bin/grep -E '实际窗口屏幕|实际显示链接计数频率|真实时钟|实际显示周期|NVN present 只入队|HUD有效目标|HUD慢帧|UNTESTED|fps limit:' "$out/$name.log" || true
 }

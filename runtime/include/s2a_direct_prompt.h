@@ -14,6 +14,11 @@ extern "C" {
 #define S2A_DPROMPT_SAVE_ATOMIC_MAC_EN "This disk can't save safely: move the game library to this Mac's disk. Force-quitting while saving may leave a half-written save."
 #define S2A_DPROMPT_SAVE_ATOMIC_IOS   "当前存储不能安全保存：保存过程中强退，可能留下写了一半的存档。请等游戏存完再退出。"
 #define S2A_DPROMPT_SAVE_ATOMIC_IOS_EN "This storage can't save safely: force-quitting while saving may leave a half-written save. Wait for the game to finish saving before you quit."
+// 键位映射读不懂（11-17 维护者：校验不过不再拒启）：这局用默认键位照常开始，提示条点名原因（%s = runtime/src/input_config.c 的英文原因）
+#define S2A_DPROMPT_INPUT_BAD_TITLE    "键位设置没读懂"
+#define S2A_DPROMPT_INPUT_BAD_TITLE_EN "Couldn't read the button settings"
+#define S2A_DPROMPT_INPUT_BAD_MAC      "这局先用默认键位照常开始（%s）。回到 S2Arm 的按键设置里重新保存一次就能恢复。"
+#define S2A_DPROMPT_INPUT_BAD_MAC_EN   "This game starts with the default buttons (%s). Save your button settings again in S2Arm to restore them."
 // 触屏提示（ios/vpad.m，11-04 维护者：脑锻炼标题页只认触屏；11-09 维护者 删掉屏幕上方的「键 / 触」切换钮，切换在齿轮菜单「按键布局」）：首次提示条带「切到触屏」一点就切
 #define S2A_DPROMPT_VPAD_TOUCH_TITLE   "这款游戏能用触屏"
 #define S2A_DPROMPT_VPAD_TOUCH_TITLE_EN "This game supports touch"
@@ -38,6 +43,15 @@ extern "C" {
 #define S2A_DPROMPT_SWITCH_GAME_BODY_EN "Save in the game first. When you confirm, this game ends and S2Arm closes; open S2Arm again to return to the game library and pick another game. Quitting waits for the game to finish writing its save; progress you haven't saved in the game will be lost."
 #define S2A_DPROMPT_SWITCH_GAME_ACCEPT "已存档，切换"
 #define S2A_DPROMPT_SWITCH_GAME_ACCEPT_EN "Saved, switch"
+// 档位梯子压回 30 帧（#1688，macos/front_mac.m s2a_ios_fps_capped；iOS 用 ios/l10n 的 app.fpsCap.*）：说清这一局为什么回原帧率，给「再试 60 帧」
+#define S2A_DPROMPT_FPS_CAP_TITLE   "60 帧"
+#define S2A_DPROMPT_FPS_CAP_TITLE_EN "60 FPS"
+#define S2A_DPROMPT_FPS_CAP_BODY    "这一局跑不稳 60 帧，已先回到原生帧率；下次开游戏会重新从 60 帧开始。"
+#define S2A_DPROMPT_FPS_CAP_BODY_EN "This session can't hold 60 FPS steadily, so the game is back at its native frame rate for now. It starts at 60 FPS again the next time you open the game."
+#define S2A_DPROMPT_FPS_CAP_RETRY   "再试 60 帧"
+#define S2A_DPROMPT_FPS_CAP_RETRY_EN "Try 60 FPS again"
+#define S2A_DPROMPT_FPS_CAP_BACK    "60 帧已恢复。"
+#define S2A_DPROMPT_FPS_CAP_BACK_EN "60 FPS is back."
 // 实体手柄退出游戏（#276，macos/front_mac.m；按住 Home 2 秒或「+」「-」同按 2 秒弹出，按 A 退出、按 B 回到游戏）
 #define S2A_DPROMPT_HOME_QUIT_TITLE   "退出游戏？"
 #define S2A_DPROMPT_HOME_QUIT_TITLE_EN "Quit game?"

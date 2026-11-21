@@ -25,14 +25,29 @@ struct Switch2ProConnectionPopover: View {
     @ObservedObject var systems: SystemControllers
     let lang: String   // 界面语言代码（Lang.code）
     var onClose: () -> Void = {}   // 手柄 B 关面板（顶栏传进来）
+    /// 面板最高多高（#1400：接上 PS5 等蓝牙手柄后内容变多，面板比屏幕可用高度还高，顶部被裁、又滚不动）。
+    ///   缺省 = 当前屏幕可用高度减去顶栏与弹窗边距；内容超出就在面板里纵向滚动。单测可以传小值模拟矮屏
+    var maxHeight: CGFloat? = nil
+    @State private var contentHeight: CGFloat = 0
+    private var heightLimit: CGFloat { maxHeight ?? max(320, (NSScreen.main?.visibleFrame.height ?? 800) - 96) }
 
     private func t(_ key: String) -> String { NS2LauncherController.text("s2arm.controller." + key, lang) }
     @Environment(\.padControls) private var padControls   // 界面导航（分配中把手柄按键送进来）
     @State private var keyMonitor: Any?   // 分配中收键盘按键（键盘登记成一位玩家）
     @State private var showSettings = false   // 齿轮选单
     @State private var pressKeyMonitor: Any?   // 认手柄：键盘按键让键盘那一位亮一下（不吞键）
-    @State private var selectedPlayer = 0   // 玩家列表选中的一位（下面给非任天堂手柄的按键对应编辑）
+    @State private var selectedPlayer = 0   // 玩家列表选中的一位（四键子页面照这一位的手柄画键帽）
+    @State private var showFaceMap = false   // 四键布局浮层（同齿轮选单，画在面板里，不改面板高度）
+    @State private var faceMapHeight: CGFloat = 0
     private var zh: Bool { lang.hasPrefix("zh") }
+    private var faceMapTitle: String { t("faceMap.title") }
+    /// 浮层编辑哪一份、画哪种键帽：选中玩家的手柄 → 专用通道的任天堂手柄 → 第一只蓝牙手柄 → 其他手柄（不挡：没手柄也能先设好）
+    private var faceMapFamily: ControllerFaceFamily {
+        if let pad = controller.assignment.pad(forPlayer: currentPlayer, in: systems.pads) { return ControllerFaceFamily(pad.family) }
+        if controller.assignment.isNintendo(player: currentPlayer) { return .nintendo }
+        if let pad = systems.pads.first { return ControllerFaceFamily(pad.family) }
+        return controller.allDevices.isEmpty ? .other : .nintendo
+    }
     private var currentPlayer: Int { controller.assignment.units.indices.contains(selectedPlayer) ? selectedPlayer : 0 }
 
     private func unitGlyph(_ unit: PlayerAssignment.Unit) -> ControllerIcon.Glyph {
@@ -44,6 +59,12 @@ struct Switch2ProConnectionPopover: View {
         case let .gen1(_, side): return side == 0 ? .gen1LeftSideways : .gen1RightSideways
         case .gen1Pair: return .gen1Pair
         }
+    }
+    /// 这一位能不能改四键布局：键盘没有四键，其余手柄（含任天堂与各类蓝牙手柄）都可以；
+    ///   任天堂手柄使用独立的 `nintendo` 映射，不与非任天堂手柄共用
+    private func faceMappable(_ unit: PlayerAssignment.Unit) -> Bool {
+        if case .keyboard = unit { return false }
+        return true
     }
     private func unitName(_ unit: PlayerAssignment.Unit) -> String {
         switch unit {
@@ -63,13 +84,29 @@ struct Switch2ProConnectionPopover: View {
     }
 
     /// 「玩家」列表 = 现在的分配（接上手柄自动排进来；PlayerAssignment.reconcile），最多 8 位
-    private var playerRows: [(glyph: ControllerIcon.Glyph, name: String)] {
-        controller.assignment.units.map { (unitGlyph($0), unitName($0)) }
+    @ObservedObject private var colorSim = ControllerColorSimulator.shared   // 模拟彩色手柄（本地 / 自测构建的 App 菜单），接在真的后面
+    private var playerRows: [(glyph: ControllerIcon.Glyph, name: String, colors: ControllerColors)] {
+        controller.assignment.units.map { (unitGlyph($0), unitName($0), unitColors($0)) }
+    }
+    /// 这一位的手柄颜色（图示动态上色）：一代 Joy-Con 用读到的出厂颜色；其余（含第三方、还没读到）用缺省色
+    private func unitColors(_ unit: PlayerAssignment.Unit) -> ControllerColors {
+        switch unit {
+        case let .gen1(id, side): return side == 0 ? ControllerColors(left: systems.gen1Colors[id]) : ControllerColors(right: systems.gen1Colors[id])
+        case let .gen1Pair(l, r): return ControllerColors(left: systems.gen1Colors[l], right: systems.gen1Colors[r])
+        // Joy-Con 2 的颜色还没从手柄读（出厂资料区的位置待真机确认）：现在只有模拟手柄有
+        case let .pair(l, r): return ControllerColors(left: colorSim.ns2Tint(l), right: colorSim.ns2Tint(r))
+        case let .single(id, kind): return kind == 2 ? ControllerColors(left: colorSim.ns2Tint(id)) : ControllerColors(right: colorSim.ns2Tint(id))
+        case let .system(name, index):   // 系统合成的一代 Joy-Con：模拟的那几套有颜色
+            let same = systems.pads.filter { $0.name == name }
+            return same.indices.contains(index) ? colorSim.systemColors(same[index].id) ?? .none : .none
+        default: return .none
+        }
     }
 
     // 照 #520 UI 稿：区块由上到下 Switch 2 → 蓝牙 → 玩家，每块一个小标头，细线分隔（间距一律 4 的倍数）
     var body: some View {
         let status = controller.status
+        ScrollView(.vertical, showsIndicators: contentHeight > heightLimit) {
         VStack(alignment: .leading, spacing: 16) {
             // 分配中只放分配块（#520 讨论：省面板高度）；Switch 2 手柄那块、蓝牙手柄那块完成 / 取消后再出来
             if !controller.assigning {
@@ -107,12 +144,12 @@ struct Switch2ProConnectionPopover: View {
             }
 
             // 蓝牙区块（#520 UI 稿 system.html）：系统蓝牙手柄——图、标题（一只写系统给的名字，太长一行截断、悬停看全名；多只写数量）、状态、「打开蓝牙设置」
-            //   HID 兜底手柄（#1151：GameController 认不出、游戏里按 HID 直读的「… Pro Controller」）一并列在这一块，按 Pro 样式手柄算
+            //   HID 兜底手柄（#1151：GameController 认不出、游戏里按 HID 直读的）一并列在这一块：「… Pro Controller」按 Pro 样式手柄算，别的通用手柄按其他手柄算
             //   没有任何蓝牙手柄时也显示（同 Switch 2 区块）：虚线图、「游戏手柄 / Game controller」（同 macOS 的叫法，不列品牌）、未连接，按钮照样能去系统蓝牙设置配对
             do {
                 let fallback = systems.fallback
                 let names = systems.pads.map(\.name) + fallback
-                let families = systems.pads.map(\.family) + fallback.map { _ in SystemControllers.Family.nintendoPro }
+                let families = systems.pads.map(\.family) + fallback.map { HIDFallbackPads.isPro($0) ? SystemControllers.Family.nintendoPro : .other }
                 let title = names.isEmpty ? t("gameController")
                     : names.count == 1 ? names[0] : t("bluetoothCount").replacingOccurrences(of: "{0}", with: "\(names.count)")
                 let glyph: ControllerIcon.Glyph = names.isEmpty ? .unknown
@@ -133,6 +170,7 @@ struct Switch2ProConnectionPopover: View {
                     // 第三方手柄（八位堂、盖世小鸡等 Xbox 外形）切到 Switch 模式才有体感（11-16，同 iPhone 齿轮菜单「手柄与体感」）
                     Text(t("thirdPartyMotion")).font(.manrope(12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("controller.system.motionHint")
+                    // 四键布局的按钮挪到玩家那一行最右边（11-20：Switch 2 也能自定按键，每位玩家各开各的）
                     Button(t("openBluetooth")) { SystemControllers.openBluetoothSettings() }
                         .controllerButtonStyle(LauncherSecondaryButtonStyle(fill: true))
                         .controllerID("controller.system.settings")
@@ -153,7 +191,7 @@ struct Switch2ProConnectionPopover: View {
                         let units = controller.assignment.units
                         // 至少 4 行（同稿），登记到第 4 位起每多一位再露一行「等待中」，最多 8 行（同原机最多 8 位）
                         ForEach(0..<min(PlayerAssignment.maxPlayers, max(4, units.count + 1)), id: \.self) { i in
-                            if i < units.count { PlayerRow(number: i + 1, glyph: unitGlyph(units[i]), name: unitName(units[i]), flashing: controller.flashingPlayers.contains(i), clearLabel: t("clear")) { controller.removePlayer(at: i) } }
+                            if i < units.count { PlayerRow(number: i + 1, glyph: unitGlyph(units[i]), colors: unitColors(units[i]), name: unitName(units[i]), flashing: controller.flashingPlayers.contains(i), clearLabel: t("clear")) { controller.removePlayer(at: i) } }
                             else { WaitingRow(number: i + 1, label: t("waiting")) }
                         }
                     }
@@ -191,9 +229,14 @@ struct Switch2ProConnectionPopover: View {
                         VStack(spacing: 8) {
                             ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
                                 // 点一行选中这一位（框线变奶油色）；按键时名字亮绿 + 按键小框照旧。平时不给 ×，分配中才有
+                                //   最右边一颗四键布局钮（键盘那一位没有）：盖在行上、不包进行的按钮里，点它不会先选中整行；
+                                //   任天堂手柄（Switch 2 / Switch Pro / Joy-Con）使用独立的四键配置，不与其他手柄共用
+                                let faceMappable = controller.assignment.units.indices.contains(index) && faceMappable(controller.assignment.units[index])
+                                ZStack(alignment: .trailing) {
                                 Button { selectedPlayer = index } label: {
-                                    PlayerRow(number: index + 1, glyph: row.glyph, name: row.name, selected: currentPlayer == index,
-                                              flashing: controller.flashingPlayers.contains(index), showKey: true, key: controller.flashingKeys[index])
+                                    PlayerRow(number: index + 1, glyph: row.glyph, colors: row.colors, name: row.name, selected: currentPlayer == index,
+                                              flashing: controller.flashingPlayers.contains(index), showKey: true, key: controller.flashingKeys[index],
+                                              reserve: faceMappable ? 32 : 0)
                                 }
                                 .controllerButtonStyle(.plain)
                                 .controllerID("controller.player.\(index)")
@@ -202,14 +245,21 @@ struct Switch2ProConnectionPopover: View {
                                 .controllerPreferredFocus(index == 0)
                                 .accessibilityLabel("P\(index + 1) \(row.name)")
                                 .accessibilityAddTraits(currentPlayer == index ? .isSelected : [])
+                                if faceMappable {
+                                    Button { selectedPlayer = index; setFaceMap(!(showFaceMap && currentPlayer == index)) } label: {
+                                        Image(systemName: "circle.grid.cross").font(.system(size: 13, weight: .semibold))
+                                    }
+                                    .controllerButtonStyle(RowIconButtonStyle())
+                                    .help(faceMapTitle)
+                                    .accessibilityLabel("P\(index + 1) \(faceMapTitle)")
+                                    .controllerID("controller.player.\(index).faceMap")
+                                    .anchorPreference(key: FaceMapAnchorKey.self, value: .bounds) { index == currentPlayer ? $0 : nil }
+                                    .padding(.trailing, 8)
+                                }
+                                }
                             }
                         }
                         .accessibilityIdentifier("controller.players")
-                    }
-                    if let pad = controller.assignment.pad(forPlayer: currentPlayer, in: systems.pads),
-                       ControllerFaceFamily(pad.family) != .nintendo {
-                        ControllerFaceMappingEditor(store: controller.faceMaps, family: ControllerFaceFamily(pad.family), simplifiedChinese: zh)
-                            .id(pad.id)
                     }
                     // 「分配玩家」跟着玩家区块：有键盘以外的输入（或列表已有人）就显示，不要再改回「两只以上手柄才显示」。
                     //   键盘只能在分配画面按任一键加入成 P1–P8（登记过的跨次保留）；以前两只以上才显示时，
@@ -223,10 +273,16 @@ struct Switch2ProConnectionPopover: View {
             }
         }
         .padding(20)
+        .background(GeometryReader { g in Color.clear.preference(key: PanelContentHeightKey.self, value: g.size.height) })
+        }
+        // 内容多高面板就多高，封顶 heightLimit；超出部分在面板里滚动（量到之前先按内容自然高度排，不压成一条）
+        .frame(height: contentHeight > 0 ? min(contentHeight, heightLimit) : nil)
+        .onPreferenceChange(PanelContentHeightKey.self) { contentHeight = $0 }
         // 手柄 B：面板自己接住，不落到系统「取消」/ Esc（没人接时 macOS 会「叮」一声）。
         //   分配中 = 取消分配（同「取消」钮）；齿轮选单开着只关选单；其他时候关面板。一直挂着（用 if 切换会让整个面板换身份、状态重设）
         .controllerBackAction("controller.panel.back") {
-            if controller.assigning { controller.cancelAssign() } else if showSettings { setSettings(false) } else { onClose() }
+            if controller.assigning { controller.cancelAssign() } else if showSettings { setSettings(false) }
+            else if showFaceMap { setFaceMap(false) } else { onClose() }
         }
         .onAppear { controller.panelDidOpen(); startPressWatch() }   // 已被拒 / 这次没选就关了授权框：面板直接显示「允许蓝牙」
         .onDisappear { stopPressWatch(); controller.panelDidClose() }
@@ -246,10 +302,39 @@ struct Switch2ProConnectionPopover: View {
                 }
             }
         }
+        // 四键布局：同齿轮选单的浮层，不另开弹窗、不改面板高度。方钮下方放得下就放下方，放不下贴着面板底边往上收
+        .overlayPreferenceValue(FaceMapAnchorKey.self) { anchor in
+            GeometryReader { g in
+                if showFaceMap, let anchor {
+                    let button = g[anchor]
+                    let below = button.maxY + 8
+                    let y = below + faceMapHeight + 10 <= g.size.height ? below : max(10, g.size.height - faceMapHeight - 10)
+                    ZStack(alignment: .topLeading) {
+                        Color.black.opacity(0.001).contentShape(Rectangle()).onTapGesture { setFaceMap(false) }
+                            .accessibilityHidden(true)
+                        // 改了立刻生效（11-20：不要取消 / 确认，手柄操作才不会断一下）；B 由面板的返回键关浮层
+                        ControllerFaceMappingEditor(store: controller.faceMaps, family: faceMapFamily, lang: lang)
+                            .id(faceMapFamily)
+                            .padding(20)   // 同面板内边距
+                            .frame(width: Switch2SettingsMenu.width)
+                            .launcherDropdownSurface()
+                            .controllerScope("layer")   // 手柄方向键只在浮层里走（B 照样由面板接住、关浮层）
+                            .onExitCommand { setFaceMap(false) }   // 键盘 Esc；手柄 B 由面板的 PanelBack 处理
+                            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { faceMapHeight = $0 }
+                            .offset(x: (g.size.width - Switch2SettingsMenu.width) / 2, y: y)
+                    }
+                }
+            }
+        }
         .background(.regularMaterial)
         .launcherDropdownHost()
         .preferredColorScheme(.dark)
     }
+}
+
+private struct FaceMapAnchorKey: PreferenceKey {
+    static var defaultValue: Anchor<CGRect>?
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) { value = value ?? nextValue() }
 }
 
 private struct GearAnchorKey: PreferenceKey {
@@ -263,6 +348,13 @@ extension Switch2ProConnectionPopover {
         showSettings = open
         let navigation = padControls as? LauncherPadNavigation
         DispatchQueue.main.async { navigation?.focus(open ? "controller.settings.autoConnect" : "controller.settings") }
+    }
+    /// 开 / 关四键浮层：开时手柄焦点进「四键布局」选单，关时回四键方钮
+    func setFaceMap(_ open: Bool) {
+        showFaceMap = open
+        let navigation = padControls as? LauncherPadNavigation
+        let back = "controller.player.\(currentPlayer).faceMap"
+        DispatchQueue.main.async { navigation?.focus(open ? "controller.face.layout" : back) }
     }
 }
 
@@ -342,6 +434,11 @@ extension Switch2ProConnectionPopover {
 }
 
 // 稿里的 .sec：上面一条细线、内容间距 12
+private struct PanelContentHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
 private struct PanelSection<Content: View>: View {
     @ViewBuilder let content: Content
     var body: some View {
@@ -424,6 +521,22 @@ private struct PanelSquareButtonStyle: ButtonStyle, PadRingShaped {
     }
 }
 
+// 玩家行最右边的小方钮（四键布局）：28 见方，同主题控件底 / 边框 / 圆角
+private struct RowIconButtonStyle: ButtonStyle, PadRingShaped {
+    var padRingRadius: CGFloat { 8 }
+    @State private var hovered = false
+    func makeBody(configuration: Configuration) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
+        return configuration.label
+            .frame(width: 28, height: 28)
+            .background(configuration.isPressed ? LauncherTheme.Colors.pressed : hovered ? LauncherTheme.Colors.hover : LauncherTheme.Colors.control, in: shape)
+            .overlay(shape.strokeBorder(LauncherTheme.Colors.border))
+            .foregroundStyle(Color.white.opacity(0.92))
+            .contentShape(shape)
+            .onHover { hovered = $0 }
+    }
+}
+
 // 稿里的 .howto：深底小格，上面一行粗体、下面按键说明
 private struct HowToTile: View {
     let title: String
@@ -484,6 +597,7 @@ func playerLights(_ number: Int) -> [Bool] {
 private struct PlayerRow: View {
     let number: Int
     let glyph: ControllerIcon.Glyph
+    var colors: ControllerColors = .none
     let name: String
     var selected = false   // 平时列表里点选的那一位：框线奶油色
     var flashing = false   // 这只手柄刚按了键：名字亮一下（玩家灯同色，比边框明显）
@@ -491,6 +605,7 @@ private struct PlayerRow: View {
     var key: String?       // 亮着时按的是哪个键
     var clearLabel = ""
     var onClear: (() -> Void)?
+    var reserve: CGFloat = 0   // 最右边留给盖在行上的小钮（四键布局）
 
     private static let ledOn = Color(red: 0x7b / 255, green: 0xe0 / 255, blue: 0x1e / 255)
     private static let ledOff = Color(red: 0x5a / 255, green: 0x57 / 255, blue: 0x53 / 255)
@@ -503,7 +618,7 @@ private struct PlayerRow: View {
                     RoundedRectangle(cornerRadius: 2, style: .continuous).fill(playerLights(number)[i] ? Self.ledOn : Self.ledOff).frame(width: 8, height: 8)
                 }
             }
-            ControllerIcon(glyph: glyph).frame(width: 40, height: 28)
+            ControllerIcon(glyph: glyph, colors: colors).frame(width: 40, height: 28)
             Text(name).font(.manrope(13, .semibold)).lineLimit(1).truncationMode(.tail).help(name)   // 列表里的名称太长照截断（悬停看全名）
                 .foregroundStyle(flashing ? Self.ledOn : Color.primary)
                 .animation(.easeOut(duration: flashing ? 0.05 : 0.35), value: flashing)
@@ -533,6 +648,7 @@ private struct PlayerRow: View {
                 .help(clearLabel)
                 .accessibilityLabel(clearLabel)
             }
+            if reserve > 0 { Color.clear.frame(width: reserve - 4, height: 1).accessibilityHidden(true) }
         }
         .padding(.vertical, 8)
         .padding(.horizontal, 12)

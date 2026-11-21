@@ -16,7 +16,7 @@ fi
 source "$H/roots.sh"
 source "$H/stage_keyfiles.sh"; stage_deps_on || exit 1; SELF=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
 CUR=$(root_cur "$G")
-[ -n "$CUR" ] && [ -d "$CUR/exefs" ] && [ -d "$CUR/romfs" ] || { echo "【红】${G} 缺现行 exefs/romfs"; exit 1; }
+[ -n "$CUR" ] && [ -d "$CUR/exefs" ] && { [ -d "$CUR/romfs" ] || [ -f "$CUR/romfs.std" ]; } || { echo "【红】${G} 缺现行 exefs/romfs"; exit 1; }   # RomFS 是目录或镜像 romfs.std 都行（graphics/nvn/tools/romfs_list.py image_of）
 # Vulkan 款（graphics/nvn/tools/gfx_api.py 判，出包分流唯一判法）：直连走 Vulkan 层，着色器是 SPIR-V，用不到 NVN 每款配置档（shader_groups 等），不准备、不校验
 VPY=${S2A_PYTHON:-${S2A_PY:-$(bash "$H/../tools/machine.sh" get S2A_PY 2> /dev/null)}}; VPY=${VPY:-python3}
 API=$("$VPY" "$H/../graphics/nvn/tools/gfx_api.py" "$CUR/exefs") || { echo "【红】${G} 判图形接口失败（graphics/nvn/tools/gfx_api.py）：${API#*	}"; exit 1; }
@@ -52,7 +52,7 @@ PY
 else
   echo "🟢 ${G} 配置选择：${SOURCE}（未改变配置）"
 fi
-# The direct line approved direct_lib.sh's DM_GAMES_DIR consumer in PR220.
+# The direct line approved direct_lib.py's DM_GAMES_DIR consumer in PR220.
 # This checks build input only; runtime loading remains the direct line's work.
 CUR=$(root_cur "$G")
 "$PY" "$H/direct_profile_stage.py" "$CUR" --selected > /dev/null || exit $?

@@ -81,6 +81,18 @@ class AndroidDeliveryTest(unittest.TestCase):
         self.assertEqual(child(mod.build_environment(dirty)), baseline)
         self.assertNotEqual(child(dirty), baseline)  # removing the whitelist is a real red control
 
+    def test_release_keystore_override_reaches_host_builder(self):
+        keystore = str(self.base / 'custom signing' / 'release.p12')
+        base = {'HOME': str(self.base), 'PATH': os.defpath}
+        env = mod.build_environment(dict(base, S2ARM_ANDROID_RELEASE_KEYSTORE=keystore,
+                                         S2ARM_ANDROID_RELEASE_PASSWORD='must not reach the child'))
+        source = ('import os; '
+                  'print(os.environ.get("S2ARM_ANDROID_RELEASE_KEYSTORE", "")); '
+                  'assert "S2ARM_ANDROID_RELEASE_PASSWORD" not in os.environ')
+        self.assertEqual(subprocess.check_output([sys.executable, '-I', '-c', source], env=env, text=True),
+                         keystore + '\n')
+        self.assertNotIn('S2ARM_ANDROID_RELEASE_KEYSTORE', mod.build_environment(base))
+
     def test_docker_builder_forwards_direct_backend_to_container(self):
         commands = self.base / 'bin'; commands.mkdir()
         capture = self.base / 'docker-args'
@@ -88,13 +100,13 @@ class AndroidDeliveryTest(unittest.TestCase):
         docker.write_text('#!/bin/sh\nif [ "$1" = image ]; then exit 0; fi\nprintf "%s\\n" "$@" > "$CAPTURE_PATH"\n')
         docker.chmod(0o755)
         env = dict(os.environ, PATH=str(commands) + ':' + os.defpath, CAPTURE_PATH=str(capture),
-                   S2ARM_ANDROID_VK_ENGINE='1', S2ARM_ANDROID_VK_BACKEND='nvn_vk')
+                   S2ARM_ANDROID_VK_ENGINE='1', S2ARM_ANDROID_VK_BACKEND='nvk')
         run = subprocess.run(['bash', str(ROOT / 'android/docker/build.sh'), ':app:assembleDebug'],
                              env=env, capture_output=True, text=True)
         self.assertEqual(run.returncode, 0, run.stderr)
         arguments = capture.read_text().splitlines()
         self.assertIn('S2ARM_ANDROID_VK_ENGINE=1', arguments)
-        self.assertIn('S2ARM_ANDROID_VK_BACKEND=nvn_vk', arguments)
+        self.assertIn('S2ARM_ANDROID_VK_BACKEND=nvk', arguments)
 
     def test_gui_bundled_rewriter_is_derived_from_python_runtime_not_environment(self):
         spec = importlib.util.spec_from_file_location('local_rewriter', ROOT / 'pack/rewriter.py')
@@ -545,21 +557,26 @@ class AndroidDeliveryTest(unittest.TestCase):
         self.assertTrue(any(name.startswith('shaders/') for name, _ in entries))
         self.assertTrue((second_stage / 'widen_enable.handheld.tsv').is_file())
 
-    def test_selected_library_files_are_checked_before_copy(self):
+    def test_selected_library_files_are_linked_not_copied(self):
         from types import SimpleNamespace
         sys.path.insert(0, str(ROOT / 'pack/jobs'))
         from core import Failure
-        from pack.targets.android.adapter import copy_selected
+        from pack.targets.android.adapter import selected_sources
         library = self.base / 'library'; library.mkdir()
-        source = library / 'game.nsp'; source.write_bytes(b'fixture source')
-        stage = self.base / 'input'; stage.mkdir()
+        legacy = library / 'game.nsp'; legacy.write_bytes(b'fixture source')   # 0.1.0-beta.3 及以前：复制进游戏库、记相对路径
+        outside = self.base / 'originals'; outside.mkdir()
+        original = outside / 'base.xci'; original.write_bytes(b'outside source')   # 现行：导入时记原件绝对路径，原件原地只读（可在库外）
+        stage = self.base / 'input'
         context = SimpleNamespace(library=library, check=lambda: None, progress=lambda *_: None)
-        identity = hashlib.sha256(source.read_bytes()).hexdigest()
-        copy_selected(context, [dict(path='game.nsp', sha256=identity)], stage)
-        self.assertEqual((stage / 'game.nsp').read_bytes(), b'fixture source')
-        source.write_bytes(b'changed')
-        with self.assertRaises(Failure):
-            copy_selected(context, [dict(path='game.nsp', sha256=identity)], stage)
+        packages = [dict(path='game.nsp', sha256='a' * 64), dict(path=str(original), sha256='b' * 64),
+                    dict(path=str(original), sha256='b' * 64)]   # 整合版一个 xci 列两次：只进一份
+        self.assertEqual(selected_sources(context, packages, stage), [str(stage)])
+        linked = sorted(p.name for p in stage.iterdir())
+        self.assertEqual(linked, ['a' * 64 + '.nsp', 'b' * 64 + '.xci'])
+        self.assertEqual((stage / ('b' * 64 + '.xci')).read_bytes(), b'outside source')   # 软链到原件，不复制
+        self.assertTrue((stage / ('b' * 64 + '.xci')).is_symlink())
+        with self.assertRaises(Failure):   # 相对路径越出游戏库照旧拒绝（library.source_path → contained）
+            selected_sources(context, [dict(path='../escape.nsp', sha256='c' * 64)], self.base / 'input2')
 
     def test_ios_entry_does_not_require_android_target_files(self):
         isolated = self.base / 'apple-engine' / 'pack'
@@ -568,6 +585,9 @@ class AndroidDeliveryTest(unittest.TestCase):
         shutil.copytree(ROOT / 'pack/contracts', isolated / 'contracts', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
         (isolated / 'targets').mkdir()
         shutil.copytree(ROOT / 'pack/targets/ios', isolated / 'targets/ios', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+        # 宿主约定号头文件是苹果引擎的一部分（pack/jobs/host_update.py 导入时读它；Mac 应用随作业层放进 Jobs，引擎快照在 runtime/include）
+        (self.base / 'apple-engine/runtime/include').mkdir(parents=True)
+        shutil.copy2(ROOT / 'runtime/include/s2a_host_abi.h', self.base / 'apple-engine/runtime/include/s2a_host_abi.h')
         result = subprocess.run([sys.executable, '-I', '-S', str(isolated / 'jobs/target_main.py'), '--help'],
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -718,8 +738,7 @@ class AndroidDeliveryTest(unittest.TestCase):
                 mod.build_backend(env)
             with patch.object(mod.shutil, 'which', return_value='/bin/docker'), \
                  patch.object(mod.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1)):
-                with self.assertRaises(ValueError):
-                    mod.build_backend(env)
+                self.assertEqual(mod.build_backend(env), 'docker')   # 不预检 daemon：真跑 docker 时失败报真原因
             with patch.object(mod.shutil, 'which', return_value='/bin/docker'), \
                  patch.object(mod.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)):
                 self.assertEqual(mod.build_backend(env), 'docker')

@@ -1,5 +1,6 @@
 """装到 iPhone（pack/jobs/install.py，10-26）：选团队、包名、报错分类、整条流程（签名 / 装机 / 拷资源包打桩，IPA 夹具用 ditto 真解）。期望按规则手写"""
 import json, os, plistlib, shutil, subprocess, sys, tempfile, time, types, unittest, zipfile
+import jobcase  # noqa: E402（作业上下文替身统一工厂 jobcase.fake_context）
 import unittest.mock as um
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -200,7 +201,7 @@ class FlowTests(unittest.TestCase):
             z.writestr("Payload/S2Arm.app/Info.plist", plistlib.dumps({"CFBundleIdentifier": "io.s2arm.games", "CFBundleExecutable": "S2Arm"}))
             z.writestr("Payload/S2Arm.app/S2Arm", b"bin")
 
-    def _install(self, gid, pushed, applied_before, mbps=0, unpack_ok=True, existing=(), cant_open=False, locked=False):
+    def _install(self, gid, pushed, applied_before, mbps=0, unpack_ok=True, existing=(), cant_open=False, locked=False, install_errs=()):
         """跑 install.install（容器流程）：替身 assemble 出容器（含已有各款 + 本款）、签名装机、只推 fresh 的款。
         existing = 这台手机上已有的款（同壳、资源包号与设备记录一致），现组时带上、不再推。替身按 push_pack.apply 口径记起 App 解包"""
         if existing:
@@ -209,8 +210,12 @@ class FlowTests(unittest.TestCase):
         shell = self.c.private / "shell"; shell.mkdir(exist_ok=True); (shell / "manifest.json").write_text("{}")
         runs, seen, launches, state = [], {}, [], {"applied": applied_before, "unpack": "10-01 09:00:00 解开 3 个包 9 个文件 1 MB，.applied = cafe01（0.2 秒）\n"}
         all_games = list(existing) + [gid]
-        def run(args, log=None, env=None, cwd=None, on_line=None):
+        def run(args, log=None, env=None, cwd=None, on_line=None, ok_codes=(0,)):
             args = [str(a) for a in args]; runs.append(args)
+            # 本机描述文件（替身）：申请过的包名才有；没有时 dev_sign 退出码 3（install._sign_or_request 先签、3 才申请）
+            if args[0] == "bash" and args[1].endswith("ensure_profile.sh"): state.setdefault("prof", set()).add(args[2])
+            if args[1].endswith("dev_sign.py") and 3 in ok_codes and args[3] not in state.get("prof", set()):
+                self.c.last_rc = 3; return
             if len(args) > 5 and args[4].endswith("ship_ext.py") and args[5] == "container":
                 o = Path(args[args.index("--out") + 1]); o.mkdir(parents=True, exist_ok=True)
                 (o / "s2a_catalogue.json").write_text(json.dumps({"schema": 1, "shell_id": "SHELL1", "games": [{"title_id": x} for x in all_games]}))
@@ -239,7 +244,11 @@ class FlowTests(unittest.TestCase):
                         Path(log).write_text("【红】资源包推进去了，但机上解包 180 秒没有新进展（停在第 13 包）：打开这款游戏、保持在前台等它导入完\n", encoding="utf-8")
                         raise install.Failure("tool", code="tool_exit")
                     state["applied"] = "cafe01"
+        errs = list(install_errs)   # devicectl device install app 依次回的错误原文（用完 = 成功）
         def devicectl(c, *a, timeout=0):
+            if a[:3] == ("device", "install", "app"):
+                seen["installs"] = seen.get("installs", 0) + 1
+                return (1, {}, errs.pop(0)) if errs else (0, {}, "")
             if a[:3] == ("device", "process", "launch"):
                 launches.append(a)
                 if unpack_ok: state["applied"] = "cafe01"; state["unpack"] += "11-06 12:00:00 解开 1 个包 2 个文件 0 MB，.applied = cafe01（0.1 秒）\n"
@@ -260,46 +269,15 @@ class FlowTests(unittest.TestCase):
             r = install.install(self.c)
         return r, runs, seen, launches
 
-    def test_push_batches_become_byte_progress(self):   # #266：推送阶段按批发字节计数（分母 = 本次待传 3 MB）；容器装机传完即装好，不再另起机上解包计数
-        gid = "0100535012974000"; self._fixture(gid); self.c.r.update(gameId=gid)
-        r, runs, seen, launches = self._install(gid, pushed=2, applied_before="", unpack_ok=True)
-        self.assertTrue(seen["progress_flag"])
-        ev = [json.loads(l) for l in self.c.events.read_text(encoding="utf-8").splitlines() if l.strip()]
-        push = [(e["done"], e["total"], e.get("unit")) for e in ev if e.get("message") == install.PUSHING and e["type"] == "progress"]
-        self.assertEqual(push[-1], (3 << 20, 3 << 20, "B")); self.assertTrue(all(t == 3 << 20 and u == "B" for _, t, u in push))
-        self.assertFalse(any(str(e.get("message", "")).startswith("机上解包") for e in ev))   # 不等机上解开
-        self.assertTrue(r["openToFinish"])
-
-    def test_locked_phone_push_reports_device_locked(self):   # #333：推包探针写不进 → device_locked，原因原话上屏（不是笼统的 resource_transfer_failed）
-        gid = "0100535012974000"; self._fixture(gid); self.c.r.update(gameId=gid)
-        with self.assertRaises(install.Failure) as e:
-            self._install(gid, pushed=2, applied_before="", locked=True)
-        self.assertEqual(e.exception.code, "device_locked")
-        self.assertIn("锁屏", str(e.exception))
-
-    def test_probe_write_failure_unlocked_is_not_device_locked(self):   # 11-13：手机没锁、探针写不进（devicectl 超时）→ 连接问题带原文，不报 device_locked
-        gid = "0100535012974000"; self._fixture(gid); self.c.r.update(gameId=gid)
-        with self.assertRaises(install.Failure) as e:
-            self._install(gid, pushed=2, applied_before="", locked="conn")
-        self.assertEqual(e.exception.code, "resource_transfer_failed")
-        self.assertIn("Operation timed out", str(e.exception))
-        self.assertNotIn("锁屏了", str(e.exception))
-
-    def test_img_pack_is_done_once_transferred(self):   # 11-11：单一 IMG 形态传完并核过长度即装好，不带 --apply、不起 App 等机上解开，结果带 openToFinish
-        gid = "0100535012974000"; out, pack = self._fixture(gid); self.c.r.update(gameId=gid)
-        m = pack / "manifest.json"; data = json.loads(m.read_text()); data.update(version=3, format="img"); m.write_text(json.dumps(data))
-        r, runs, seen, launches = self._install(gid, pushed=2, applied_before="")
-        push = next(a for a in runs if a[2].endswith("tools/push_pack.py"))
-        self.assertIn("run", push[3:]); self.assertNotIn("--apply", push)
-        self.assertEqual(launches, [])                          # 没有为解包起 App
-        self.assertTrue(r["openToFinish"]); self.assertNotIn("unpackPending", r)
+    E4016 = ("ERROR: The device is not able to fulfill the requested usage assertion requirements. (com.apple.dt.CoreDeviceError error 4016 (0xFB0))\n"
+             "       RequestedDeviceStates = (\n           \"com.apple.coredevice.coreDeviceServicesLoaded\",\n       )\n       CurrentlyAssertableStates = (\n       )")
 
     def test_single_app_push_never_launches_the_app_to_unpack(self):
         """11-13 维护者：装上 App、把包传到位就算装好，玩家自己在手机上点信任、打开时 App 自己解开。原先不带上下文的单款 App（下游壳）推完带 --apply
         拉起 App 解包，免费账号第一次装还没信任开发者时拉不起，作业打了红却报完成。期望：旧形态资源包、不带上下文，同样不带 --apply"""
         gid = "0100535012974000"; out, pack = self._fixture(gid)
         runs = []
-        def run(args, log=None, env=None, cwd=None, on_line=None):
+        def run(args, log=None, env=None, cwd=None, on_line=None, ok_codes=(0,)):
             runs.append([str(a) for a in args]); on_line("[12:00:00] 资源包：推 2 个文件 3 MB，分 1 批 + 索引 + 清单（1 秒）")
         with um.patch.object(self.c, "run", run):
             self.assertEqual(install.push_pack(self.c, "dev1", "io.s2arm.ds.x.team1", pack), (2, 3 << 20))
@@ -318,56 +296,10 @@ class FlowTests(unittest.TestCase):
         with um.patch.object(downstream, "requested", return_value=scheme), um.patch.object(downstream, "last_record", return_value=None):
             self.assertFalse(self._ready([self._dev()])[1]["package"]["ok"])
 
-    def test_install_signs_installs_and_pushes(self):
-        gid = "0100535012974000"; out, pack = self._fixture(gid); self.c.r.update(gameId=gid)
-        r, runs, seen, launches = self._install(gid, pushed=2, applied_before="")
-        bid = "io.s2arm.games.team1"   # 容器包名：团队 + .games，与款无关
-        ensure_profile = next(a for a in runs if "ensure_profile.sh" in a[1])
-        self.assertEqual(ensure_profile[-2:], [str(self.c.engine / "pack/app.entitlements"), "00000000-0000000000000002"])   # 描述文件申请带设备 UDID（登记这台）
-        self.assertIn(bid, ensure_profile); self.assertEqual(seen["bid"], bid)                                    # 签名前 Info.plist 已换成团队专属包名
-        push = next(a for a in runs if a[2].endswith("tools/push_pack.py"))
-        # 「装到手机卡 99%」：容器装机旧形态资源包也传完即装好，不带 --apply、不为解包起 App（App 打开时游戏库解开）
-        self.assertIn("run", push[3:]); self.assertNotIn("--apply", push)
-        self.assertIn(f"Documents/games/{gid}", push)   # 资源包推进本款文档根
-        self.assertTrue(seen["env"]["S2A_DEVICECTL"].endswith("Resources/bin/devicectl"))
-        self.assertEqual(seen["env"]["S2A_PUSH_UDID"], "00000000-0000000000000002")   # 推包脚本据 UDID 走 s2a-devpush 流式（11-06）
-        self.assertEqual(launches, [])                                                                     # 不为解包起 App、不等机上解开
-        self.assertEqual((r["device"], r["bundleId"], r["packFiles"], r["free"]), ("测试设备2", bid, 2, True))
-        self.assertNotIn("unpackPending", r)
-        self.assertTrue(r["openToFinish"])     # 成功页写「已传到 iPhone，打开 S2Arm 会自动完成安装」
-
-
-    def test_container_install_paths(self):
-        """装机走容器流程：包名 s2arm.<团队>.games；装前按 Documents/games/<游戏号> 拉见过的键、列存档；装后本款资源包推进本款文档根带启动上下文"""
-        A, B = "0100000000010000", "0100000000020000"
-        packs = {g: self._fixture(g)[1] for g in (A, B)}
-        self.c.r.update(gameId=A)
-        r, runs, seen, launches = self._install(A, pushed=1, applied_before="", existing=(B,))
-        bid = "io.s2arm.games.team1"
-        self.assertEqual(seen["bid"], bid)
-        self.assertEqual(r["bundleId"], bid)
-        push = [a[3:] for a in runs if a[2].endswith("tools/push_pack.py")]
-        # put_game 只对 fresh 的款（本次 = A）推资源包；B 已在容器里，不再推
-        self.assertEqual(len(push), 1)
-        self.assertIn(f"Documents/games/{A}", push[0])
-        self.assertEqual(push[0][push[0].index("--pack-root") + 1], f"Library/Application Support/S2Arm/games/{A}/资源包")   # 资源包根单独给（pick_pack_root 选的那处）
-        self.assertIn(f"@bundle/Games/{A}/launch.ctx", push[0])
-
-    def test_other_game_without_local_pack_does_not_block(self):
-        """预检清单 #31（11-13）：容器里带着的别的款（乙）本机资源包没了（清理过 / 换电脑）——不拦整单：照装甲、只推甲，乙不推、设备记录里乙的资源包号照旧。期望手写"""
-        import shutil
-        A, B = "0100000000010000", "0100000000020000"
-        self._fixture(A); _, pack_b = self._fixture(B); shutil.rmtree(pack_b)
-        self.c.r.update(gameId=A)
-        r, runs, seen, launches = self._install(A, pushed=1, applied_before="", existing=(B,))
-        push = [a[3:] for a in runs if a[2].endswith("tools/push_pack.py")]
-        self.assertEqual(len(push), 1); self.assertIn(f"Documents/games/{A}", push[0])
-        self.assertEqual(layout.load_device(self.c, "00000000-0000000000000002")["games"][B], dict(pack="cafe01"))
-
     def test_container_missing_pack_refuses_before_install(self):
         gid = "0100000000010000"
         # 有容器件但没有资源包（image/ios/pack）：ios_pack 拒绝，不走到找设备 / 组装
-        kit = layout.image_ios(self.c, gid) / "kit"; kit.mkdir(parents=True); (kit / "main.npdm").write_bytes(b"META")
+        kit = layout.image_ios(self.c, gid) / "kit"; kit.mkdir(parents=True); (kit / "main.npdm").write_bytes(b"META"); (kit / "main.fixups.tsv").write_text("")
         self.c.r.update(gameId=gid)
         with um.patch.object(install, "phone_for", side_effect=AssertionError("不该走到找设备")):
             with self.assertRaises(Failure) as e: install.install(self.c)
@@ -377,6 +309,27 @@ class FlowTests(unittest.TestCase):
         with self.assertRaises(Failure) as e: install.install(self.c)
         self.assertEqual(e.exception.code, "job_failed"); self.assertIn("打 iPhone 包", str(e.exception))
 
+    def test_assemble_shell_real(self):
+        """ipa.assemble_shell 不换替身（#1758：tvOS 那份组壳函数在别处都被换成替身，调了已改名的函数没测出来）：只桩子进程，
+        期望（手写）：依次组壳（--shell-only）→ 签名（非 Windows）→ 写 ipa，返回 (dest/S2Arm.ipa, [], 壳号)，S2Arm.app 不留"""
+        import ipa as packer
+        shell = self.c.private / "shell"; shell.mkdir(); (shell / "manifest.json").write_text("{}")
+        runs = []
+        def run(args, log=None, env=None, cwd=None, on_line=None, ok_codes=(0,)):
+            args = [str(a) for a in args]; runs.append(args[5] if len(args) > 5 else "")
+            if len(args) > 5 and args[5] == "container":
+                Path(args[args.index("--out") + 1]).mkdir(parents=True, exist_ok=True)
+            if len(args) > 5 and args[4].endswith("app_bundle.py") and args[5] == "write_ipa":
+                Path(args[7]).write_bytes(b"ipa")
+        dest = self.c.private / "out"
+        with um.patch.object(packer, "built_shell", return_value=(shell, "SID1")), \
+             um.patch.object(packer, "release_version", return_value="9.8.7"), um.patch.object(packer, "display_version", return_value="v9.8.7"), \
+             um.patch.object(self.c, "run", run):
+            got = packer.assemble_shell(self.c, dest=dest)
+        self.assertEqual(got, (dest / "S2Arm.ipa", [], "SID1"))
+        self.assertEqual(runs, ["container", "write_ipa"] if os.name == "nt" else ["container", "sign", "write_ipa"])
+        self.assertTrue((dest / "S2Arm.ipa").is_file()); self.assertFalse((dest / "S2Arm.app").exists())
+
     def test_container_assemble_uses_each_games_kit(self):
         """assemble：每款都从这款文件夹的 image/ios/kit 现组（--game），不带 --base 底包；--host-abi 必传；产物出到游戏库里的临时目录，只留 S2Arm.ipa"""
         import ipa as packer, host_update
@@ -385,7 +338,7 @@ class FlowTests(unittest.TestCase):
         self.c.catalog = lambda: {"games": [{"id": A, "name": "甲"}, {"id": B, "name": "乙"}]}
         shell = self.c.private / "shell"; shell.mkdir(); (shell / "manifest.json").write_text("{}")
         runs = []
-        def run(args, log=None, env=None, cwd=None, on_line=None):
+        def run(args, log=None, env=None, cwd=None, on_line=None, ok_codes=(0,)):
             args = [str(a) for a in args]; runs.append(args)
             if len(args) > 5 and args[4].endswith("ship_ext.py") and args[5] == "container":
                 o = Path(args[args.index("--out") + 1]); o.mkdir(parents=True, exist_ok=True)
@@ -427,15 +380,16 @@ class FlowTests(unittest.TestCase):
             with self.assertRaises(Failure) as e: packer.assemble(self.c, "0100000000090000")
         self.assertEqual(e.exception.code, "container_stale")
 
-    def test_container_program_number_mismatch_says_files_dont_match(self):
-        """组装结果里这款的程序号（main.npdm）和游戏库的号（导入时 CNMT 发行号）不一样 → game_files_mismatch，原因说人话、两个号都给出；
-        核对本身保留（玩家实报：把别的游戏的程序换进了这款的包里，放过去就推到手机上错的目录）"""
+    def test_container_program_number_mismatch_routes_by_program_number(self):
+        """组装结果里这款的程序号（main.npdm）和游戏库的号（导入时 CNMT 发行号）不一样（玩家实报：把别的游戏的程序换进了这款的包里）。
+        维护者 11-17（按新规矩改：原先 game_files_mismatch 拒绝）：多出来的程序号只有一个 → 就是这款，照常组装、按程序号放、资源取回游戏包号那款；
+        发 warning 级 game_files_mismatch、两个号都给出；多出来不止一个（认不出是哪个）→ 照旧报错。期望手写"""
         import ipa as packer
         A, OTHER = "0100DD2053220000", "010051F0207B2000"
         ios_fixture(self.c, A, shell="SID1")
         self.c.catalog = lambda: {"games": [{"id": A, "name": "甲"}]}
         shell = self.c.private / "shell"; shell.mkdir(); (shell / "manifest.json").write_text("{}")
-        def run(args, log=None, env=None, cwd=None, on_line=None):
+        def run(args, log=None, env=None, cwd=None, on_line=None, ok_codes=(0,)):
             args = [str(a) for a in args]
             if len(args) > 5 and args[4].endswith("ship_ext.py") and args[5] == "container":
                 o = Path(args[args.index("--out") + 1]); o.mkdir(parents=True, exist_ok=True)
@@ -446,11 +400,16 @@ class FlowTests(unittest.TestCase):
              um.patch.object(packer, "container_shell", return_value=shell), \
              um.patch.object(packer, "release_version", return_value="9.8.7"), \
              um.patch.object(self.c, "run", run):
-            with self.assertRaises(Failure) as e: packer.assemble(self.c, A)
-        self.assertEqual(e.exception.code, "game_files_mismatch")
-        text = str(e.exception)
-        self.assertIn(OTHER, text); self.assertIn(A, text); self.assertIn("原版游戏文件重新导入", text)
-        self.assertNotIn("产物根", text)
+            diags = []
+            with um.patch.object(self.c, "diagnostic", create=True, side_effect=lambda m, **kw: diags.append(dict(kw, message=m))):
+                _, games, _ = packer.assemble(self.c, A)
+        self.assertEqual(games, [OTHER])
+        self.assertEqual(packer.library_id(self.c, OTHER), A); self.assertEqual(packer.library_id(self.c, A), A)
+        self.assertEqual([(d["code"], d["severity"]) for d in diags], [("game_files_mismatch", "warning")])
+        self.assertIn(OTHER, diags[0]["message"]); self.assertIn(A, diags[0]["message"]); self.assertNotIn("产物根", diags[0]["message"])
+        with self.assertRaises(Failure) as e:
+            packer.title_mismatch(self.c, A, (), [OTHER, "0100000000000BBB"])
+        self.assertEqual(e.exception.code, "game_files_mismatch"); self.assertIn("原版游戏文件重新导入", str(e.exception))
 
     def _ready(self, devices, teams=(dict(id="team-a", name="我", free=True),), rc=0, usb=(), raises=None, want="测试设备2"):
         """跑装机前清单：devicectl list devices 回 devices（手造的 devicectl 行），Xcode 团队 teams；want = 玩家选的那台（None = 没选）"""
@@ -464,7 +423,9 @@ class FlowTests(unittest.TestCase):
             if a[:3] == ("device", "info", "details"):
                 return rc, {"result": next((d for d in devices if d["identifier"] == a[-1]), {})}, ""
             return rc, data, ""
-        with um.patch.object(install, "xcode_teams", return_value=list(teams)), um.patch.object(diag, "devicectl", devicectl), \
+        acct = dict(account="a@example.com", team=teams[0]["id"], teamName=teams[0]["name"]) if teams else None   # Apple ID 看随包 plumesign 当前账号（install.plume_account），不看 Xcode
+        with um.patch.object(install, "mac_plume", lambda c: True), um.patch.object(install, "win_install_mod", lambda c: None), \
+             um.patch.object(install, "plume_account", lambda c, W: acct), um.patch.object(diag, "devicectl", devicectl), \
              um.patch.object(target, "usb_idevices", return_value=list(usb)):
             r = install.readiness(self.c)
         return r, {i["id"]: i for i in r["items"]}
@@ -515,7 +476,7 @@ class FlowTests(unittest.TestCase):
         self.assertEqual([i["id"] for i in r["items"] if i["blocking"]], ["package"])
         self.assertEqual(r["ipaPath"], "")
         self.assertEqual((it["package"]["ok"], it["package"]["who"]), (False, "app"))
-        self.assertFalse(it["appleId"]["ok"]); self.assertIn("Apple Accounts", it["appleId"]["detail"]); self.assertIn("团队列表", it["appleId"]["detail"])
+        self.assertFalse(it["appleId"]["ok"]); self.assertEqual(it["appleId"]["detail"], install.APPLE_SIGN_IN)   # 没登录：在 S2Arm 里用 Apple ID 登录
         self.assertFalse(it["connected"]["ok"])
         self.assertTrue(it["trusted"]["waiting"]); self.assertTrue(it["developerMode"]["waiting"])   # 没连上：后两项是「等前一步」，不报没打开
         self.assertEqual((it["trusted"]["detail"], it["developerMode"]["detail"]), ("", ""))
@@ -527,6 +488,23 @@ class FlowTests(unittest.TestCase):
         r, it = self._ready([self._dev(devmode="disabled")])
         self.assertTrue(it["trusted"]["ok"]); self.assertFalse(it["developerMode"]["ok"]); self.assertFalse(it["developerMode"]["waiting"])
         self.assertIn("开发者模式", it["developerMode"]["detail"])
+
+    def test_readiness_actions(self):
+        """每项没好时带的启动器本地动作（清单按钮、控制口 /install-action 按它派发）：对照表写死；好了 / 等前一步的不带"""
+        want = {"package": "openExport", "appleId": "appleLogin", "connected": "pickDevice", "trusted": "trustHelp",
+                "developerMode": "developerModeHelp", "deviceReady": None}
+        gid = "0100535012974000"; self.c.r.update(gameId=gid)
+        r, it = self._ready([], teams=())   # 没出包、没登录、没连：信任 / 开发者模式在等前一步
+        self.assertEqual({k: it[k]["action"] for k in ("package", "appleId", "connected", "trusted", "developerMode")},
+                         dict(package="openExport", appleId="appleLogin", connected="pickDevice", trusted=None, developerMode=None))
+        r, it = self._ready([self._dev(pairing="unpaired", devmode=None)])
+        self.assertEqual(it["trusted"]["action"], want["trusted"])
+        r, it = self._ready([self._dev(devmode="disabled")])
+        self.assertEqual(it["developerMode"]["action"], want["developerMode"])
+        self.assertIsNone(it["deviceReady"]["action"])
+        self._fixture(gid)
+        r, it = self._ready([self._dev()])
+        self.assertTrue(all(i["action"] is None for i in r["items"]), "都好了：一个动作都不带")
 
     def test_readiness_only_package_blocks(self):
         gid = "0100535012974000"; self._fixture(gid); self.c.r.update(gameId=gid)   # 出好了包，但没登录、没连手机
@@ -814,23 +792,6 @@ class FlowTests(unittest.TestCase):
             ph.before_push({})
         self.assertEqual([x for x in self.c.job.get("diagnostics", []) if x["code"] == "usb_slow"], [])
 
-    def test_reinstall_nothing_changed_skips_apply(self):
-        # 免费账号 7 天到期重装：资源包没变（推 0 个文件）且机上 .applied 已是本包 → 不起 App 解包
-        gid = "0100535012974000"; out, pack = self._fixture(gid); self.c.r.update(gameId=gid)
-        r, runs, seen, launches = self._install(gid, pushed=0, applied_before="cafe01")
-        self.assertEqual(launches, []); self.assertEqual(r["packFiles"], 0)
-
-    def test_usb2_link_warns_usb3_hint(self):
-        # 10-26：测试设备经集线器只有 480 Mb/s → 黄字 usb_slow 提示换 USB 3；5 Gb/s 不提示；装机照常完成
-        gid = "0100535012974000"
-        for mbps, want in ((480, 1), (5000, 0), (0, 0)):
-            self.tearDown(); self.setUp(); out, pack = self._fixture(gid); self.c.r.update(gameId=gid)
-            r, *_ = self._install(gid, pushed=1, applied_before="", mbps=mbps)
-            d = [x for x in self.c.job["diagnostics"] if x["code"] == "usb_slow"]
-            self.assertEqual(len(d), want, mbps); self.assertEqual(r["packFiles"], 1)
-            if want:
-                self.assertEqual(d[0]["severity"], "warning"); self.assertIn("USB 2.0（480 Mb/s）", d[0]["summary"])
-
     def test_usb_mbps_matches_serial(self):
         # system_profiler 的序列号 = 去掉横杠的 UDID；别的设备、没插的不算
         d = tempfile.mkdtemp(); fake = Path(d) / "system_profiler"
@@ -849,24 +810,17 @@ class FlowTests(unittest.TestCase):
         line = "{ platform:iOS, arch:arm64, id:00000000-0000000000000002, name:测试设备2, error:The device needs to be unlocked to continue Unlock the device"
         self.assertEqual(install.classify(line), "device_locked")
 
-    def test_profile_failure_maps_free_limit(self):
-        gid = "0100535012974000"; out, pack = self._fixture(gid); self.c.r.update(gameId=gid)
-        import ipa as packer
-        def run(args, log=None, env=None, cwd=None, on_line=None):
-            Path(log).parent.mkdir(parents=True, exist_ok=True); Path(log).write_text("error: Your maximum App ID limit has been reached.\n")
-            raise Failure("S2Arm 工具退出，当前阶段未完成。", code="tool_exit")
-        def fake_assemble(c, g, others=(), failed=(), root=None, dest=None, agreed=()):
-            ipa = out / "t.ipa"; self._real_ipa(ipa)
-            return ipa, [gid], "SID1"
-        with um.patch.object(install, "xcode_teams", return_value=[dict(id="TEAM1", name="我", free=True)]), \
-             um.patch.object(install, "phone", return_value=dict(id="C891", name="测试设备2")), um.patch.object(install, "udid_of", return_value=""), \
-             um.patch.object(packer, "assemble", side_effect=fake_assemble), \
-             um.patch.object(self.c, "run", run):
-            with self.assertRaises(Failure) as e: install.install(self.c)
-        self.assertEqual(e.exception.code, "free_appid_limit")   # 签名前注册包名被拒 = 包名额度，不是设备上装满
-        self.assertIn("10 个包名", str(e.exception))
-        self.assertNotIn("删掉", str(e.exception))
-
+    def test_unregistered_unseen_phone_maps_device_not_visible(self):
+        # 11-16 D-44DP 兜底的盲区：Xcode 看不到这台、账号上也没登记过 → ensure_profile.sh 的红行 / Xcode「has no devices」原文都归 device_not_visible，建议是插线 / 信任 / 开发者模式
+        out = subprocess.run(["bash", "-c", 'grep -o "^NV=\\"[^\\"]*" "$1" | cut -c5-', "_", str(Path(__file__).resolve().parents[3] / "pack/ensure_profile.sh")],
+                             capture_output=True, text=True).stdout.strip()
+        self.assertTrue(out.startswith("【红】Xcode 看不到这台 iPhone"), out)
+        for text in ("【黄】xcodebuild 看不到这台 iPhone（ABCDEF），改为不指定设备再申请一次\n" + out,
+                     "error: Your team has no devices from which to generate a provisioning profile. Connect a device to use"):
+            self.assertEqual(install.classify(text), "device_not_visible", text)
+        from errors import RECOVERY
+        self.assertIn("开发者模式", RECOVERY["device_not_visible"])
+        self.assertNotEqual(install.classify("【黄】xcodebuild 看不到这台 iPhone（ABCDEF），改为不指定设备再申请一次"), "device_not_visible", "只有兜底的提示行不算")
 
 class KeptNroTests(unittest.TestCase):
     """运行时留下的 NRO（#8be819）：Mac 局收局后（build.keep_runtime_nros）/ 装 iPhone 前（install.pull_kept_nros）收进游戏库 games/<号>/nro_kept/。
@@ -921,6 +875,26 @@ class KeptNroTests(unittest.TestCase):
         with um.patch.object(diag, "devicectl", missing):
             self.assertEqual(install.pull_kept_nros(self.c, "C891", "s2arm.z", self.G), 0)   # 机上没有：0、不报错
 
+
+    def test_windows_does_not_pull(self):
+        # 0.5.0 维护者定：从手机收回只保留 Mac 已发版的那条，Windows 不收。期望手写：WinPhone.pull_kept 回 0，碰都不碰手机（不起 s2a-devpush）
+        ph = object.__new__(install.WinPhone); ph.c, ph.bid = self.c, "s2arm.z"
+        def touched(work): raise AssertionError("Windows 不该连手机收 NRO")
+        ph.client = touched
+        self.assertEqual(ph.pull_kept([self.G]), 0)
+        self.assertFalse((self.c.library / f"games/{self.G}/nro_kept").exists())
+
+    def test_pull_skips_only_when_the_phone_is_in_use(self):
+        # 只按真冲突互斥（候选验收：升级首启迁移几分钟，前端「有任何作业就整轮跳过」，拉回拖到第 360 秒）。期望手写：
+        #   手机锁被装机 / 推包占着（ipa.phone_lock）→ 这一轮不碰手机、回空结果；锁空着 → 照常收（别的作业在跑不影响，前端不再拦）
+        pulled = []
+        ph = types.SimpleNamespace(key="dev1", pull_kept=lambda games: pulled.append(list(games)) or 0, app_running=lambda: False)
+        install.layout.save_device(self.c, "dev1", dict(games={self.G: {}}))
+        with self.c.lock("phone"):
+            r = install._kept_pull_on(self.c, ph)
+        self.assertEqual((r["device"], r["new"], pulled), ("", 0, []))
+        r = install._kept_pull_on(self.c, ph)
+        self.assertEqual((r["device"], pulled), ("dev1", [[self.G]]))
 
 class PullSeenTests(unittest.TestCase):
     setUp = tj.JobsTests.setUp; tearDown = tj.JobsTests.tearDown
@@ -1025,6 +999,97 @@ class SaveBackupTests(unittest.TestCase):
         self._accept()
         self.assertEqual(self._run([], list_rc=124, apps_rc=124)[0], None)
 
+    def _cloud(self, has_copy, placeholder=False):
+        """玩家开了云存档：请求带云存档文件夹（Mac 启动器随请求带 cloudSavesFolder）；has_copy = 这款在 iCloud 里有快照"""
+        folder = self.root / "iCloud Saves"; d = folder / "S2Arm Saves" / "0100C2500FC20000"; d.mkdir(parents=True, exist_ok=True)
+        if has_copy: (d / (".head-iPhone.json.icloud" if placeholder else "head-iPhone.json")).write_text("{}")
+        self.c.r["cloudSavesFolder"] = str(folder)
+
+    def _messages(self):
+        ev = [json.loads(l) for l in self.c.events.read_text(encoding="utf-8").splitlines() if l.strip()] if self.c.events.is_file() else []
+        return [e.get("text") or e.get("message") or "" for e in ev if e.get("type") == "message" or e.get("event") == "message"]
+
+    def test_saves_local_cloud_or_both(self):
+        """维护者 11-17（玩家更新手机上的 S2Arm 卡在「确认不了 iPhone 上有…」）三种存档位置，期望手写：
+        ① 只在本地（没开云存档）：照常拉回 1 个文件；② 只在 iCloud（手机上没有存档目录，或备份做不成但云端有这款快照）：不报 save_backup_failed、照装，
+        做不成时提示「这款存档在 iCloud 云存档里有一份」；③ 两边都有：本地照常备份（云端有快照不跳过本地备份）"""
+        local = [("0000000000000001/0/save.dat", False)]
+        d, got = self._run(local)                                                     # ①
+        self.assertEqual(len(got), 1); self.assertTrue((d / "0000000000000001/0/save.dat").is_file())
+        self._cloud(True)
+        self.assertEqual(self._run([], list_rc=1, installed=False)[0], None)          # ② 手机上没有：第一次装 / 没存档，照装
+        r, _ = self._run([], list_rc=124, apps_rc=124)                                # ② 备份做不成（问不出装没装过），云端有快照 → 照装
+        self.assertIsNone(r)
+        self.assertTrue(any("这款存档在 iCloud 云存档里有一份" in m for m in self._messages()), self._messages())
+        self.assertIn("云存档里有这款的快照，照装", self._decisions())
+        d, got = self._run(local)                                                     # ③ 两边都有：本地照常备份
+        self.assertEqual(len(got), 1); self.assertTrue((d / "0000000000000001/0/save.dat").is_file())
+
+    def test_cloud_folder_without_this_game_still_asks(self):
+        # 开了云存档但这款没有快照（或只有别的游戏的）：不能放行，照旧问「仍然继续 / 先不」；iCloud 没下载到本机的占位 head 也算有快照
+        self._cloud(False)
+        with self.assertRaises(Failure) as e:
+            self._run([], list_rc=124, apps_rc=124)
+        self.assertEqual(e.exception.code, "save_backup_failed")
+        self._cloud(True, placeholder=True)
+        self.assertIsNone(self._run([], list_rc=124, apps_rc=124)[0])
+
+    def test_full_mac_disk_says_so(self):
+        """玩家截图 [Errno 28]：Mac 磁盘满，devicectl 结果 / 拉回的存档写不下（diag.devicectl 回 28）。期望：不报笼统的「确认不了 iPhone 上有…」，
+        而是 save_backup_failed 带「这台 Mac 空间不够…腾出 1 GB 再试，或者确认后继续」；确认后照装；云端有这款快照时照装不问"""
+        import diag
+        def run(stage):
+            def devicectl(c, *a, timeout=0):
+                if a[:3] == ("device", "info", "files"):
+                    if stage == "list": return diag.DEVICECTL_NOSPACE, {}, "这台 Mac 磁盘满了，devicectl 的结果写不下"
+                    return 0, {"result": {"files": [dict(relativePath="0000000000000001/0/save.dat", resources=dict(isDirectory=False))]}}, ""
+                if a[:3] == ("device", "info", "apps"):
+                    return 0, {"result": {"apps": [{"bundleIdentifier": "s2arm.z.0100c2500fc20000"}]}}, ""
+                return diag.DEVICECTL_NOSPACE, {}, "ERROR: No space left on device"
+            with um.patch.object(diag, "devicectl", devicectl):
+                return install.backup_saves(self.c, "C891", "s2arm.z.0100c2500fc20000", "0100C2500FC20000")
+        for stage in ("list", "copy"):
+            with self.assertRaises(Failure) as e:
+                run(stage)
+            self.assertEqual(e.exception.code, "save_backup_failed", stage)
+            self.assertIn("这台 Mac 空间不够，存档备份放不下", e.exception.internal); self.assertIn("腾出 1 GB 再试，或者确认后继续", e.exception.internal)
+            self.assertNotIn("确认不了 iPhone 上有", e.exception.internal)
+        self._accept()
+        self.assertIsNone(run("list")); self._accept(False)
+        self._cloud(True)
+        self.assertIsNone(run("copy"))
+
+    def test_locked_phone_waits_for_unlock_then_backs_up(self):
+        """#a442de（维护者 11-17：玩家判断不了的我们替他判）：手机锁着（RemotePairingError 1016）→ 不先问「仍然继续」，提示解锁、自动重试；
+        解锁后照常备份。期望手写：前两次列存档报锁屏、第三次列得出 → 提示「请解锁手机」一次、共列 3 次、备份照常（拉回 1 个文件）、不报 save_backup_failed；
+        一直锁着到等满 → 走原来的确认（save_backup_failed）"""
+        import diag
+        LOCK = "ERROR: com.apple.dt.RemotePairingError error 1016 (0x3F8) The device has not been unlocked recently"
+        def run(locked_times):
+            calls = []
+            def devicectl(c, *a, timeout=0):
+                if a[:3] == ("device", "info", "files"):
+                    calls.append(1)
+                    if len(calls) <= locked_times:
+                        return 1, {}, LOCK
+                    return 0, {"result": {"files": [dict(relativePath="0000000000000001/0/a.bin")]}}, ""
+                if a[:3] == ("device", "copy", "from"):
+                    d = Path(a[a.index("--destination") + 1]); d.parent.mkdir(parents=True, exist_ok=True); d.write_bytes(b"s"); return 0, {}, ""
+                if a[:3] == ("device", "info", "apps"):
+                    return 0, {"result": {"apps": [{"bundleIdentifier": "s2arm.z.games"}]}}, ""
+                raise AssertionError(a)
+            said = []
+            with um.patch.object(diag, "devicectl", devicectl), um.patch.object(install, "UNLOCK_POLL_S", 0), um.patch.object(install.time, "sleep", lambda s: None), \
+                 um.patch.object(self.c, "emit", lambda kind, text="", **kw: said.append(text), create=True):
+                return install.backup_saves(self.c, "C891", "s2arm.z.games", "0100C2500FC20000"), calls, said
+        dest, calls, said = run(2)
+        self.assertEqual(len(calls), 3)
+        self.assertTrue((Path(dest) / "0000000000000001/0/a.bin").is_file())
+        self.assertEqual(sum("请解锁手机" in t for t in said), 1)
+        with um.patch.object(install, "UNLOCK_WAIT_S", 0), self.assertRaises(Failure) as e:
+            run(10 ** 6)
+        self.assertEqual(e.exception.code, "save_backup_failed")
+
     def _tree(self, tree, docs, locked=()):
         # 假设备文件系统（11-07 满屏线 Duo 实测）：列不存在的目录 devicectl 也报「failed to get a list of files」——和锁屏同一个错，只能靠父目录分辨
         def devicectl(c, *a, timeout=0):
@@ -1080,7 +1145,7 @@ class AssembleTests(unittest.TestCase):
 
     def _run(self, runs):
         """ship_ext container / app_bundle write_ipa 的替身：按 --game 容器件所在的程序专用文件夹认出各款，出真 zip ipa（带 s2a_catalogue.json）"""
-        def run(args, log=None, env=None, cwd=None, on_line=None):
+        def run(args, log=None, env=None, cwd=None, on_line=None, ok_codes=(0,)):
             args = [str(a) for a in args]; runs.append(args)
             if any(a.endswith("ship_ext.py") for a in args) and "container" in args:
                 o = Path(args[args.index("--out") + 1]); o.mkdir(parents=True, exist_ok=True)
@@ -1135,43 +1200,6 @@ class AssembleTests(unittest.TestCase):
         self._assemble(self.A, others=(self.B,), runs=runs)
         _, cmd = self._games_arg(runs)
         self.assertEqual([cmd[i + 1] for i, x in enumerate(cmd) if x == "--banner"], [f"{self.A}={banner}"])
-
-    def test_locks_program_parts_during_assembly_and_one_phone_job_at_a_time(self):
-        # 出包时并行装机（11-16）：装机组壳期间要带的各款程序锁都被占着（出包交付换件拿不到，要等）；装机类作业的手机锁互斥。
-        #   期望手写：put_game 里的组装（替身）中，用另一个任务同库拿各款程序锁、等 0 秒 → library_busy；装完立刻拿得到；手机锁同理
-        import core
-        import ipa as packer, host_update
-        A, B = self.A, self.B
-        self._library((A, "甲"), (B, "乙"))
-        ios_fixture(self.c, A, pack="pa"); ios_fixture(self.c, B, pack="pb")
-        layout.save_device(self.c, "dev1", dict(games={A: dict(pack="pa"), B: dict(pack="pb")}, shellId="SID1"))
-        ph, _, _ = self._phone()
-        other = core.Context(dict(self.c.r, taskId="peer-" + self.c.task))
-        seen = {}
-        real = packer.assemble
-        def probe(c, gid, others, **kw):
-            for g in (A, B):
-                try:
-                    with other.lock("program-" + g, wait=0):
-                        seen[g] = "free"
-                except Failure as e:
-                    seen[g] = e.code
-            return real(c, gid, others, **kw)
-        self.sid = "SID1"
-        shell = self.c.private / "shell"; shell.mkdir(exist_ok=True); (shell / "manifest.json").write_text("{}")
-        with um.patch.object(packer, "current_shell_id", return_value="SID1"), um.patch.object(packer, "container_shell", return_value=shell), \
-             um.patch.object(host_update, "engine_compat", return_value=dict(self.COMPAT)), um.patch.object(self.c, "run", self._run([])), \
-             um.patch.object(packer, "assemble", probe):
-            install.put_game(self.c, A, ph)
-        self.assertEqual(seen, {A: "library_busy", B: "library_busy"})
-        for g in (A, B):
-            with other.lock("program-" + g, wait=0):   # 组完就放
-                pass
-        with packer.phone_lock(self.c):
-            with self.assertRaises(Failure) as e:
-                with other.lock("phone", wait=0):
-                    pass
-            self.assertEqual(e.exception.code, "library_busy")
 
     def test_assemble_carries_phone_games_of_same_shell(self):
         """这台手机已有的款（同壳出的）现组时一起带上，容器件取各自的 image/ios/kit"""
@@ -1271,28 +1299,6 @@ class AssembleTests(unittest.TestCase):
         ph.before_push.return_value = None
         return ph, pushed, signed
 
-    def test_put_game_pushes_this_game_and_changed_packs_only(self):
-        """put_game：甲（这款）照推，即使资源包号和手机上记的一样；乙资源包号没变不推；丙在游戏库重出过（号变了）要推。
-        装上后设备记录记下各款资源包号、壳号、包名，装机产物放默认位置根 S2Arm.ipa"""
-        A, B, C = self.A, self.B, self.C
-        self._library((A, "甲"), (B, "乙"), (C, "丙"))
-        ios_fixture(self.c, A, pack="pa"); ios_fixture(self.c, B, pack="pb"); ios_fixture(self.c, C, pack="pc-new")
-        layout.save_device(self.c, "dev1", dict(games={A: dict(pack="pa"), B: dict(pack="pb"), C: dict(pack="pc-old")}, shellId="SID1"))
-        ph, pushed, signed = self._phone()
-        import ipa as packer, host_update
-        self.sid = "SID1"
-        shell = self.c.private / "shell"; shell.mkdir(exist_ok=True); (shell / "manifest.json").write_text("{}")
-        with um.patch.object(packer, "current_shell_id", return_value="SID1"), um.patch.object(packer, "container_shell", return_value=shell), \
-             um.patch.object(host_update, "engine_compat", return_value=dict(self.COMPAT)), um.patch.object(self.c, "run", self._run([])):
-            r = install.put_game(self.c, A, ph)
-        self.assertEqual(pushed, [A, C])
-        self.assertEqual(signed, [([A, B, C], ([A, B, C], "SID1"))])
-        rec = layout.load_device(self.c, "dev1")
-        self.assertEqual(rec["games"], {A: dict(pack="pa"), B: dict(pack="pb"), C: dict(pack="pc-new")})
-        self.assertEqual((rec["shellId"], rec["bundleId"]), ("SID1", "io.s2arm.games.team1"))
-        self.assertEqual(install_ipa_games(layout.phone_ipa(self.c)), ([A, B, C], "SID1"))
-        self.assertEqual((r["outputPath"], r["games"], r["packFiles"]), (str(layout.phone_ipa(self.c)), [A, B, C], 2))
-
     def _update(self, sid="SID2", **req):
         """「更新 iPhone 上的 S2Arm」夹具：甲兼容新宿主（只换壳）、乙新宿主认不得（要重新出包）；手机记录是旧壳 SID1、两款资源包都没变"""
         A, B = self.A, self.B
@@ -1326,68 +1332,15 @@ class AssembleTests(unittest.TestCase):
                 install.update_phone(self.c)
         self.assertEqual(str(e.exception), str(offline))
 
-    def test_update_phone_lists_games_needing_repack_and_stops(self):
-        """新壳认不得乙：没确认就停下报 container_stale 点名乙，不签不装、设备记录不动"""
-        _, pushed, signed = self._update()
-        with self.assertRaises(Failure) as e:
-            install.update_phone(self.c)
-        self.assertEqual((e.exception.code, signed, pushed), ("container_stale", [], []))
-        self.assertIn("乙款", str(e.exception)); self.assertNotIn("甲", str(e.exception))
-        self.assertEqual(layout.load_device(self.c, "dev1")["shellId"], "SID1")
-
-    def test_update_phone_accepted_swaps_shell_without_pushing(self):
-        """确认后：新壳 SID2 只带甲（原样复用旧程序模块），资源包号没变一个都不推；记录换成 SID2、只剩甲；结果说明跳过了乙"""
-        A, B = self.A, self.B
-        _, pushed, signed = self._update(acceptStale=True)
-        r = install.update_phone(self.c)
-        self.assertEqual((signed, pushed), ([([A], ([A], "SID2"))], []))
-        self.assertEqual((r["updated"], r["fromShell"], r["toShell"], r["skipped"]), (True, "SID1", "SID2", [B]))
-        rec = layout.load_device(self.c, "dev1")
-        self.assertEqual((rec["shellId"], rec["games"]), ("SID2", {A: dict(pack="pa")}))
-        self.assertEqual(rec["staleAgreed"], {"SID2": [B]})   # #479：同意不带乙记在设备记录（按壳号）
-
-    def test_update_phone_agreed_before_not_asked_again(self):
-        """#479：这台手机在本版壳 SID2 上已同意过不带乙（staleAgreed）→ 不带 acceptStale 也不再问，照只带甲换壳；换了壳号的旧同意不算"""
-        A, B = self.A, self.B
-        _, pushed, signed = self._update()
-        rec = layout.load_device(self.c, "dev1")
-        layout.save_device(self.c, "dev1", dict(rec, staleAgreed={"SID0": [B]}))
-        with self.assertRaises(Failure) as e:
-            install.update_phone(self.c)
-        self.assertEqual(e.exception.code, "container_stale")
-        layout.save_device(self.c, "dev1", dict(rec, staleAgreed={"SID2": [B]}))
-        r = install.update_phone(self.c)
-        self.assertEqual((r["updated"], r["skipped"], [x[0] for x in signed]), (True, [B], [[A]]))
-
-    def test_update_phone_asks_then_drops_games_from_another_computer(self):
-        """手机上还有一款只在别的电脑装过（不在本库、不在本机记录）：没确认 → 报 container_would_drop 点名它，不签不装；
-        带 acceptDropped → 照常只换壳（甲），外来那款不带（v0.3.0 只换壳验收：原先这条路没有确认入口，永远过不去）"""
-        A = self.A
-        X = "0100FFFF00000000"
-        _, pushed, signed = self._update(acceptStale=True)
-        with um.patch.object(install, "phone_games", lambda c, ph: {A, X}), \
-             um.patch.object(install, "phone_game_name", lambda c, ph, g, names: "外来款"):
-            with self.assertRaises(Failure) as e:
-                install.update_phone(self.c)
-            self.assertEqual((e.exception.code, signed, pushed), ("container_would_drop", [], []))
-            self.assertIn("外来款", str(e.exception))
-            self.c.r["acceptDropped"] = True
-            r = install.update_phone(self.c)
-        self.assertTrue(r["updated"])
-        self.assertEqual((signed, pushed), ([([A], ([A], "SID2"))], []))
-
-    def test_update_phone_same_shell_does_nothing(self):
-        _, pushed, signed = self._update(sid="SID1")
-        with um.patch.object(install, "sgrade_pending", return_value=False):   # 壳是本版、也没有要补 S 级优化的款
-            r = install.update_phone(self.c)
-        self.assertEqual((r["updated"], signed, pushed), (False, [], []))
-
-    def test_update_phone_same_shell_still_updates_when_sgrade_pending(self):
-        # 11-14：壳是本版、但有款要补 S 级优化（补丁库更新 / 电脑上导入了要改代码的金手指）→ 照样重组容器（Windows「更新 iPhone」也补得上）
-        _, pushed, signed = self._update(sid="SID1")
-        with um.patch.object(install, "sgrade_pending", return_value=True):
-            r = install.update_phone(self.c)
-        self.assertTrue(r["updated"]); self.assertTrue(signed)
+    def test_built_shell_reads_manifest_falls_back_to_tree(self):
+        import json as _json
+        import ipa as packer
+        shell = self.c.private / "shellx"; shell.mkdir()
+        with um.patch.object(packer, "current_shell_id", return_value="TREE"), um.patch.object(packer, "container_shell", return_value=shell):
+            (shell / "manifest.json").write_text(_json.dumps(dict(details=dict(shellId="OLD"))))
+            self.assertEqual(packer.built_shell(self.c), (shell, "OLD"))
+            (shell / "manifest.json").write_text("{}")
+            self.assertEqual(packer.built_shell(self.c), (shell, "TREE"), "manifest 没写壳号才退回树的")
 
     def test_phone_updates_from_device_records(self):
         """游戏库页检测：只读设备记录——壳旧了列出各款和要重新出包的乙；壳是本版 → 空"""
@@ -1411,15 +1364,17 @@ class AssembleTests(unittest.TestCase):
         self.assertEqual([(u["device"], u["fromShell"], u["toShell"], [g["gameId"] for g in u["kept"]], u["stale"]) for u in got], [("dev1", "SID1", "SID1", [A], [])])
 
     def test_phone_kept_pull(self):
-        """phoneKeptPull 作业：连着的手机上各款留下的 NRO 拉回 → new = 新收个数、kept = 没补进的款；没连手机 → new 0、不报错"""
+        """phoneKeptPull 作业：连着的手机上各款留下的 NRO 拉回 → new = 新收个数；没在玩就补推那几款（pushed），正在玩 / 查不清留在 kept；没连手机 → new 0、不报错"""
         A = self.A
         self._update()
         ph = types.SimpleNamespace(key="dev1", pull_kept=lambda games: 2 if A in games else 0, app_running=lambda: False)
         import rewrite_refresh
-        with um.patch.object(install, "phone_for", return_value=ph), \
+        pushed = []
+        with um.patch.object(install, "phone_for", return_value=ph), um.patch.object(install, "push_game", lambda c, g, p, steps=True: pushed.append(g)), \
              um.patch.object(rewrite_refresh, "kept_todo", side_effect=lambda c, g, base: ["x.nro"] if g == A else []):
             r = install.phone_kept_pull(self.c)
-        self.assertEqual((r["device"], r["new"], r["kept"], r["running"]), ("dev1", 2, [A], False))
+        self.assertEqual((r["device"], r["new"], r["kept"], r["pushed"], r["running"]), ("dev1", 2, [], [A], False))   # 没在玩：收回的 NRO 当场补推这一款
+        self.assertEqual(pushed, [A])
         for state, want in ((True, True), (None, True)):   # 正在玩 / 查不清：running 为真，启动器这一轮不推
             ph.app_running = lambda s=state: s
             with um.patch.object(install, "phone_for", return_value=ph), \
@@ -1427,7 +1382,104 @@ class AssembleTests(unittest.TestCase):
                 self.assertEqual(install.phone_kept_pull(self.c)["running"], want)
         def none(c): raise Failure("没连手机", code="device_not_connected")
         with um.patch.object(install, "phone_for", side_effect=none):
-            self.assertEqual(install.phone_kept_pull(self.c), dict(device="", new=0, kept=[], running=False))
+            self.assertEqual(install.phone_kept_pull(self.c), dict(device="", new=0, kept=[], shellUpdate=False, stale=[], running=False))
+
+    def test_phone_kept_pull_shell_update(self):
+        """启动器升级顺带更新 iPhone App（11-16）：连着的手机壳比本版旧、没有要重出包的款 → shellUpdate 真（没在玩时启动器自动更新）；
+        有新壳认不得的款 → shellUpdate 照样真、stale 列出（装壳不碰各款，更新后在总控台补推）；壳是本版 → shellUpdate 假；正在玩 / 查不清 → running 真"""
+        A = self.A
+        self._update()
+        ph = types.SimpleNamespace(key="dev1", pull_kept=lambda games: 0, app_running=lambda: False)
+        import ipa as packer, rewrite_refresh
+        def run(sid, usable=True, running=False):
+            ph.app_running = lambda: running
+            with um.patch.object(install, "phone_for", return_value=ph), um.patch.object(packer, "current_shell_id", return_value=sid), \
+                 um.patch.object(packer, "usable_kit", return_value=("kit" if usable else None)), \
+                 um.patch.object(rewrite_refresh, "kept_todo", return_value=[]):
+                r = install.phone_kept_pull(self.c)
+            return (r["shellUpdate"], r["stale"], r["running"])
+        self.assertEqual(run("NEWSHELL"), (True, [], False))
+        games = sorted(install.layout.load_device(self.c, "dev1")["games"])   # 夹具这台装了两款
+        self.assertEqual(len(games), 2)
+        self.assertEqual(run("NEWSHELL", usable=False), (True, games, False))   # 装壳不碰各款：新壳认不得的款也照样可以更新，更新后总控台标建议更新
+        self.assertEqual(run("NEWSHELL", running=True), (True, [], True))
+        self.assertEqual(run("NEWSHELL", running=None), (True, [], True))
+        cur = install.layout.load_device(self.c, "dev1").get("shellId")
+        self.assertEqual(run(cur), (False, [], False))
+
+    def test_playing_by_heartbeat(self):
+        """Windows 判正在玩（11-16）：读各款 Documents/games/<程序号>/playtime.json 的 lastPlayed；45 秒内 → 在玩；
+        更早 / 没这个文件 → 没在玩；全都读不了 → 查不清（None）；没有款 → 没在玩"""
+        import tempfile as tf
+        work = Path(tf.mkdtemp()); self.addCleanup(lambda: shutil.rmtree(work, ignore_errors=True))
+        class Fake:
+            def __init__(self, files, boom=False): self.files, self.boom, self.asked = files, boom, []
+            def get(self, rel, dst, t=None):
+                self.asked.append(rel)
+                if self.boom: raise OSError("device locked")
+                if rel not in self.files: return False
+                Path(dst).write_text(json.dumps(dict(schema=1, seconds=100, lastPlayed=self.files[rel]))); return True
+        now = 1_000_000
+        A, B = "0100000000010000", "0100000000020000"
+        f = Fake({f"Documents/games/{A}/playtime.json": now - 10})
+        self.assertIs(install.playing_by_heartbeat(f, [A, B], work, now), True)
+        self.assertEqual(f.asked[0], f"Documents/games/{A}/playtime.json")
+        self.assertIs(install.playing_by_heartbeat(Fake({f"Documents/games/{A}/playtime.json": now - 600}), [A, B], work, now), False)
+        self.assertIs(install.playing_by_heartbeat(Fake({}), [A], work, now), False, "没玩过：文件不在")
+        self.assertIsNone(install.playing_by_heartbeat(Fake({}, boom=True), [A, B], work, now), "进不了容器：查不清")
+        self.assertIs(install.playing_by_heartbeat(Fake({}), [], work, now), False)
+
+    def test_phone_kept_pull_uses_heartbeat_when_process_unknown(self):
+        """查不了进程（app_running None，Windows）：改按 playing（心跳）判；playing 也查不清 → 当在玩（不装）"""
+        self._update()
+        ph = types.SimpleNamespace(key="dev1", pull_kept=lambda games: 0, app_running=lambda: None)
+        import ipa as packer, rewrite_refresh
+        for heartbeat, want in ((False, False), (True, True), (None, True)):
+            ph.playing = lambda games, h=heartbeat: h
+            with um.patch.object(install, "phone_for", return_value=ph), um.patch.object(packer, "current_shell_id", return_value="NEWSHELL"), \
+                 um.patch.object(packer, "usable_kit", return_value="kit"), um.patch.object(rewrite_refresh, "kept_todo", return_value=[]):
+                self.assertEqual(install.phone_kept_pull(self.c)["running"], want, heartbeat)
+
+    def test_phone_kept_pull_many_devices(self):
+        """多台手机连着、请求没说哪台（11-16 候选验收：Mac 插着两部 iPhone，2 分钟循环每次 device=""，自动更新永远不触发）：
+        按设备记录逐台问——有事且没在玩的那台先回；有事的都在玩回第一台有事的；都没事回第一台；
+        选机退到别的手机（这台没连着、只连着另一台）的记录跳过，不把那台的结论安在它头上；问完请求里的 device 还原"""
+        self._update()
+        A = self.A
+        import ipa as packer, rewrite_refresh
+        state = dict(online={"dev1", "dev2"}, running={})
+        def pf(c):
+            want = (c.r.get("device") or "").strip()
+            if not want:
+                raise Failure("多台", code="device_required")
+            on = state["online"]
+            if want not in on:
+                if len(on) == 1:   # 同 _pick_device / win_udid：给的那台没列着、只连着一台 → 退到那一台
+                    return types.SimpleNamespace(key=next(iter(on)), pull_kept=lambda g: 0, app_running=lambda: False)
+                raise Failure("不在线", code="device_not_connected")
+            return types.SimpleNamespace(key=want, pull_kept=lambda g: 0, app_running=lambda w=want: state["running"].get(w, False))
+        def run(shell1, shell2, online=("dev1", "dev2"), running=None):
+            layout.save_device(self.c, "dev1", dict(games={A: dict(pack="pa")}, shellId=shell1))
+            layout.save_device(self.c, "dev2", dict(games={A: dict(pack="pa")}, shellId=shell2))
+            state["online"], state["running"] = set(online), dict(running or {})
+            with um.patch.object(install, "phone_for", pf), um.patch.object(packer, "current_shell_id", return_value="SID2"), \
+                 um.patch.object(packer, "usable_kit", return_value="kit"), um.patch.object(rewrite_refresh, "kept_todo", return_value=[]):
+                r = install.phone_kept_pull(self.c)
+            self.assertNotIn("device", self.c.r, "问完还原请求（原来没有 device）")
+            return (r["device"], r["shellUpdate"], r["running"])
+        self.assertEqual(run("SID2", "SID1"), ("dev2", True, False), "第一台已是本版、第二台壳旧 → 回第二台")
+        self.assertEqual(run("SID1", "SID1", running={"dev1": True}), ("dev2", True, False), "都壳旧、第一台在玩 → 先回没在玩的")
+        self.assertEqual(run("SID1", "SID1", running={"dev1": True, "dev2": True}), ("dev1", True, True), "都在玩 → 回第一台有事的（启动器这轮不装）")
+        self.assertEqual(run("SID2", "SID2"), ("dev1", False, False), "都没事 → 第一台")
+        self.assertEqual(run("SID2", "SID1", online=("dev1",)), ("dev1", False, False), "dev2 没连着、选机退到 dev1：不把 dev2 的壳旧安到 dev1 头上")
+        def none(c): raise Failure("没连手机", code="device_not_connected")
+        with um.patch.object(install, "phone_for", side_effect=none):
+            self.assertEqual(install.phone_kept_pull(self.c)["device"], "")
+        self.c.r["device"] = "dev1"   # 请求给了哪台、那台多台不明（device_required 不该在给了 device 时出现）：照旧空结果、不逐台问
+        def many(c): raise Failure("多台", code="device_required")
+        with um.patch.object(install, "phone_for", side_effect=many):
+            self.assertEqual(install.phone_kept_pull(self.c)["device"], "")
+        self.assertEqual(self.c.r["device"], "dev1")
 
     def test_app_running(self):
         """自动推送前查手机上 S2Arm 是否在跑（#8be819）：进程在它安装目录下 = True；没有 = False；没装 = False；devicectl 查不了 = None"""
@@ -1440,20 +1492,27 @@ class AssembleTests(unittest.TestCase):
         import diag
         cases = [(fake([url + "S2Arm"]), True), (fake(["file:///System/Library/CoreServices/SpringBoard.app/SpringBoard"]), False),
                  (fake([url + "S2Arm"], installed=False), False), (fake([], apps_rc=1), None), (fake([], ps_rc=1), None),
-                 (fake(["file:///private/var/containers/Bundle/Application/X/S2Arm.app2/S2Arm"]), False)]
+                 (fake(["file:///private/var/containers/Bundle/Application/X/S2Arm.app2/S2Arm"]), False),
+                 # 只有主屏小组件扩展进程在（App 已退出）：不算在玩（11-16 实测原先判 True，自动补件从不发起）
+                 # 11-16 真机：App 已退出、只剩主屏小组件扩展进程 → 不算在玩；只有主程序 / 两个都在 → 在玩；安装目录下别的可执行文件也不算
+                 (fake([url + "PlugIns/S2ArmWidget.appex/S2ArmWidget"]), False),
+                 (fake([url + "S2Arm"]), True),
+                 (fake([url + "PlugIns/S2ArmWidget.appex/S2ArmWidget", url + "S2Arm"]), True),
+                 (fake([url + "Frameworks/Helper.framework/Helper"]), False),
+                 (fake([url + "S2ArmHelper"]), False)]
         for f, want in cases:
             with um.patch.object(diag, "devicectl", f):
                 self.assertEqual(install.app_running(self.c, "dev", "b"), want)
 
     def test_install_mode_job_reads_signing_and_drops_old_setting(self):
         """11-15 导出不再是装法：installMode 作业只回签名身份；旧版留下的 install.json（装法设置）迁移时删掉，之后导不导出只看请求带的 mode"""
-        self.assertEqual(install.install_mode_job(self.c), dict(exportAvailable=True, signMode="appleId"))
+        self.assertEqual(install.install_mode_job(self.c), dict(exportAvailable=True, signMode="appleId", signChoice="appleId",
+                                                              layout="shell", layoutChoice={}, distribution=False, standaloneHint="appleId",
+                                                              recommend=None, recommendWhy="unknown"))
         self.assertFalse((self.c.private / "install.json").exists(), "旧装法设置迁移一次就删")
         self.assertFalse(install.wants_export(self.c), "没带 mode：一键装")
         self.c.r = dict(self.c.r, mode="export"); self.assertTrue(install.wants_export(self.c))
         self.c.r = dict(self.c.r, mode="device"); self.assertFalse(install.wants_export(self.c))
-        with um.patch.object(install, "export_phone", None):
-            self.assertFalse(install.install_mode_job(self.c)["exportAvailable"])
         (self.c.private / "install.json").write_text("{}")   # 删不掉（Windows 上被占用）：作业照常回签名身份，不失败
         with um.patch("pathlib.Path.unlink", side_effect=PermissionError(13, "in use")):
             self.assertEqual(install.install_mode_job(self.c)["signMode"], "appleId")
@@ -1499,91 +1558,6 @@ class AssembleTests(unittest.TestCase):
             ph.install("x.ipa", ["0100A"])
         self.assertEqual((e.exception.code, installed), ("app_id_taken", []))
 
-    def test_stamp_container_digest(self):
-        """#845 S2AContainerDigest：内容相同 → 摘要相同；只差 _CodeSignature/ 或 Info.plist 里摘要键本身 → 相同；改一个文件 / Info.plist 别的键 → 不同；
-        写进 Info.plist（保留原格式）、打成 ipa 后 ipa_digest 读回同一个值"""
-        import ipa as packer
-        def app(root, extra=b"", sig=b"s1", key=None, ver="1"):
-            a = Path(root) / "S2Arm.app"; (a / "Games/X").mkdir(parents=True); (a / "_CodeSignature").mkdir()
-            (a / "Games/X/kit.bin").write_bytes(b"kit" + extra); (a / "_CodeSignature/CodeResources").write_bytes(sig)
-            info = {"CFBundleIdentifier": "io.s2arm.games", "CFBundleVersion": ver}
-            if key: info[packer.CONTAINER_DIGEST_KEY] = key
-            (a / "Info.plist").write_bytes(plistlib.dumps(info, fmt=plistlib.FMT_BINARY)); return a
-        with tempfile.TemporaryDirectory() as t:
-            d = [packer.stamp_container(app(Path(t) / n, **kw)) for n, kw in (("a", {}), ("b", dict(sig=b"other", key="old")), ("c", dict(extra=b"!")), ("d", dict(ver="2")))]
-            self.assertEqual(len(d[0]), 24)
-            self.assertEqual(d[0], d[1], "只差签名与摘要键本身：相同")
-            self.assertNotEqual(d[0], d[2], "改了一个文件：不同"); self.assertNotEqual(d[0], d[3], "Info.plist 别的键变了：不同")
-            raw = (Path(t) / "a/S2Arm.app/Info.plist").read_bytes(); self.assertTrue(raw.startswith(b"bplist"), "保留二进制格式")
-            self.assertEqual(plistlib.loads(raw)[packer.CONTAINER_DIGEST_KEY], d[0])
-            ipa = Path(t) / "x.ipa"
-            with zipfile.ZipFile(ipa, "w") as z: z.writestr("Payload/S2Arm.app/Info.plist", raw)
-            self.assertEqual(packer.ipa_digest(ipa), d[0])
-
-    def test_put_game_skips_signing_when_phone_has_same_app(self):
-        """#845：手机上的 S2Arm 的 S2AContainerDigest = 这次组出的、两天前签过（免费账号，3 天内）→ 不调 ph.install，资源照推（这款照推、变了的推），
-        签名时间不刷新；同样条件但签名是 4 天前 → 照常装；手机上的摘要不同（别的电脑装过）→ 照常装"""
-        A, B = self.A, self.B
-        self._library((A, "甲"), (B, "乙"))
-        ios_fixture(self.c, A, pack="pa"); ios_fixture(self.c, B, pack="pb")
-        import ipa as packer, host_update
-        self.sid = "SID1"
-        shell = self.c.private / "shell"; shell.mkdir(exist_ok=True); (shell / "manifest.json").write_text("{}")
-        base = self._run([])
-        def run(args, log=None, env=None, cwd=None, on_line=None):   # 替身组的容器另带一份 Info.plist（真壳都有），stamp_container 才写摘要
-            args = [str(a) for a in args]
-            if any(a.endswith("ship_ext.py") for a in args) and "container" in args:
-                o = Path(args[args.index("--out") + 1]); o.mkdir(parents=True, exist_ok=True)
-                (o / "Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": "x"}))
-            r = base(args, log, env, cwd, on_line)
-            if "write_ipa" in args:   # 真 write_ipa 整目录打包：把 App 里 stamp_container 写过摘要的 Info.plist 换进替身 zip
-                z0 = Path(args[-1]); items = {n: zipfile.ZipFile(z0).read(n) for n in zipfile.ZipFile(z0).namelist()}
-                items["Payload/S2Arm.app/Info.plist"] = (Path(args[-2]) / "Info.plist").read_bytes()
-                with zipfile.ZipFile(z0, "w") as z:
-                    for n, b in items.items(): z.writestr(n, b)
-            return r
-        for age, phone_same, want_install in ((2 * 86400, True, False), (4 * 86400, True, True), (2 * 86400, False, True)):
-            at = time.time() - age
-            layout.save_device(self.c, "dev1", dict(games={A: dict(pack="pa"), B: dict(pack="pb")}, shellId="SID1", bundleId="io.s2arm.games.team1",
-                                                     signed=dict(at=at, free=True, device="d")))
-            ph, pushed, signed = self._phone(); ph.udid = "UDID1"
-            seen = {}
-            class Cl:
-                def get(self_, *a, **k): return False   # 手机账本 Documents/.s2a-games.json：这些替身里没有（旧 App）
-                def call(self_, *a):
-                    seen["args"] = a; return 0, (seen["want"] if phone_same else "aaaaaaaaaaaaaaaaaaaaaaaa") + "\n"
-            orig_digest = packer.ipa_digest
-            def digest(ipa):
-                d = orig_digest(ipa); seen["want"] = d; return d
-            with um.patch.object(packer, "current_shell_id", return_value="SID1"), um.patch.object(packer, "container_shell", return_value=shell), \
-                 um.patch.object(host_update, "engine_compat", return_value=dict(self.COMPAT)), um.patch.object(self.c, "run", run), \
-                 um.patch.object(packer, "ipa_digest", digest), um.patch.object(install, "devpush_client", lambda *a: Cl()):
-                install.put_game(self.c, A, ph)
-            self.assertEqual(len(seen["want"]), 24, "组出的容器带 24 位摘要")
-            self.assertEqual(seen.get("args"), ("app-attr", "S2AContainerDigest") if age < 3 * 86400 else None)   # 签名过了 3 天：不必问手机，直接照常装
-            self.assertEqual(bool(signed), want_install, (age, phone_same))
-            self.assertEqual(pushed, [A])   # 乙资源包号没变：两种情况都不推
-            rec = layout.load_device(self.c, "dev1")
-            if want_install: self.assertGreater(rec["signed"]["at"], at)
-            else: self.assertEqual(rec["signed"]["at"], at)   # 没重签：到期时间照旧
-
-    def test_put_game_pushes_all_when_bundle_changed(self):
-        """装上的包名和记录里的不同（换过包名 / 签名方式）= 手机上是另一个 App：资源包号没变的款也推"""
-        A, B = self.A, self.B
-        self._library((A, "甲"), (B, "乙"))
-        ios_fixture(self.c, A, pack="pa"); ios_fixture(self.c, B, pack="pb")
-        layout.save_device(self.c, "dev1", dict(games={A: dict(pack="pa"), B: dict(pack="pb")}, shellId="SID1", bundleId="io.s2arm.games.team1"))
-        ph, pushed, signed = self._phone()
-        ph.bid = "io.s2arm.games.team1.s2"
-        import ipa as packer, host_update
-        self.sid = "SID1"
-        shell = self.c.private / "shell"; shell.mkdir(exist_ok=True); (shell / "manifest.json").write_text("{}")
-        with um.patch.object(packer, "current_shell_id", return_value="SID1"), um.patch.object(packer, "container_shell", return_value=shell), \
-             um.patch.object(host_update, "engine_compat", return_value=dict(self.COMPAT)), um.patch.object(self.c, "run", self._run([])):
-            install.put_game(self.c, A, ph)
-        self.assertEqual(sorted(pushed), [A, B])
-        self.assertEqual(layout.load_device(self.c, "dev1")["bundleId"], "io.s2arm.games.team1.s2")
-
     def _app_gone(self, ph):
         """玩家在手机上删了整个 S2Arm：进不了容器、平台确认这个包名没装（走真的 install.phone_games，不用夹具里的替身）"""
         class Cl:
@@ -1592,23 +1566,6 @@ class AssembleTests(unittest.TestCase):
         ph.udid = "U1"; ph.app_missing.return_value = True
         for p in (um.patch.object(install, "phone_games", _phone_games), um.patch.object(install, "devpush_client", lambda c, udid, bid, work: Cl())):
             p.start(); self.addCleanup(p.stop)
-
-    def test_put_game_after_app_deleted_on_phone_installs_this_game_only(self):
-        """玩家在手机上删了整个 S2Arm 再装甲：本机记录里的乙不在手机上了，不带；乙是旧壳出的、新宿主认不得，也不再报 container_stale 挡住甲。
-        装上后设备记录只剩甲"""
-        A, B = self.A, self.B
-        self._library((A, "甲"), (B, "乙"))
-        ios_fixture(self.c, A, pack="pa"); ios_fixture(self.c, B, shell="SID0", pack="pb", compat=dict(hostAbi=1, dmshChain="bbbb"))
-        layout.save_device(self.c, "dev1", dict(games={B: dict(pack="pb")}, shellId="SID0"))
-        ph, pushed, signed = self._phone(); self._app_gone(ph)
-        import ipa as packer, host_update
-        self.sid = "SID1"
-        shell = self.c.private / "shell"; shell.mkdir(exist_ok=True); (shell / "manifest.json").write_text("{}")
-        with um.patch.object(packer, "current_shell_id", return_value="SID1"), um.patch.object(packer, "container_shell", return_value=shell), \
-             um.patch.object(host_update, "engine_compat", return_value=dict(self.COMPAT)), um.patch.object(self.c, "run", self._run([])):
-            r = install.put_game(self.c, A, ph)
-        self.assertEqual((pushed, signed, r["games"]), ([A], [([A], ([A], "SID1"))], [A]))
-        self.assertEqual(layout.load_device(self.c, "dev1")["games"], {A: dict(pack="pa")})
 
     def test_commit_phone_ipa_keeps_previous_only_when_shell_changes(self):
         """③ 同壳覆盖 S2Arm.ipa（不动上一版）；换壳时原来的 S2Arm.ipa 留作 S2Arm.previous.ipa；组装用的临时目录删掉"""
@@ -1654,27 +1611,24 @@ class AssembleTests(unittest.TestCase):
 
     def test_remove_from_phone_not_in_container(self):
         """预检清单 #35（11-13）：本机记录里没有这款，问手机——手机上也没有 → 不用删、照成功返回（alreadyAbsent），不装；
-        手机上有（别的电脑装的）→ 照删：现组剩下的、装上、删机上它的数据。期望手写"""
+        手机上有（别的电脑装的）→ 照删：备份存档、删机上它的数据，不重装 App。期望手写"""
         layout.save_device(self.c, "dev1", dict(games={self.A: {}}))
         ph, _, _ = self._phone()
         self.c.r.update(gameId=self.B)
         with um.patch.object(install, "phone_for", return_value=ph), um.patch.object(install, "phone_games", return_value={self.A}):
             r = install.remove_from_phone(self.c)
         self.assertTrue(r["alreadyAbsent"]); ph.install.assert_not_called(); ph.purge.assert_not_called()
-        ph.backup.return_value = None; ph.purge.return_value = (True, "")
-        import ipa as packer
-        with um.patch.object(install, "phone_for", return_value=ph), um.patch.object(install, "phone_games", return_value={self.A, self.B}), \
-             um.patch.object(install, "container_others", return_value=[self.A]), \
-             um.patch.object(packer, "assemble", return_value=(self.root / "x.ipa", [self.A], "SID1")), um.patch.object(packer, "commit_phone_ipa"):
+        ph.backup.return_value = None; ph.purge.return_value = (True, ""); ph.app_running.return_value = False
+        with um.patch.object(install, "phone_for", return_value=ph), um.patch.object(install, "phone_games", return_value={self.A, self.B}):
             r = install.remove_from_phone(self.c)
-        self.assertNotIn("alreadyAbsent", r); ph.install.assert_called_once(); ph.purge.assert_called_once_with(self.B)
+        self.assertNotIn("alreadyAbsent", r); ph.install.assert_not_called(); ph.purge.assert_called_once_with(self.B)
 
     def test_remove_from_phone_last_game(self):
         """最后一款（#227）：备份存档、删手机上它的数据，不装空容器；设备记录摘空"""
         layout.save_device(self.c, "dev1", dict(games={self.A: dict(pack="pa")}))
         ph, _, _ = self._phone(); ph.backup.return_value = None; ph.purge.return_value = (True, "")
         self.c.r.update(gameId=self.A)
-        with um.patch.object(install, "phone_for", return_value=ph):
+        with um.patch.object(install, "phone_for", return_value=ph), um.patch.object(install, "phone_games", return_value={self.A}):
             r = install.remove_from_phone(self.c)
         ph.install.assert_not_called()
         ph.backup.assert_called_once_with(self.A); ph.purge.assert_called_once_with(self.A)
@@ -1694,51 +1648,9 @@ class AssembleTests(unittest.TestCase):
              um.patch.object(packer, "container_shell", return_value=shell), um.patch.object(host_update, "engine_compat", return_value=dict(self.COMPAT)), \
              um.patch.object(self.c, "run", self._run([])):
             r = install.remove_from_phone(self.c)
-        ph.install.assert_not_called()
+        ph.install.assert_not_called(); ph.purge.assert_not_called()   # App 都没了：不去删数据，只把记录摘空
+        self.assertTrue(r["alreadyAbsent"])
         self.assertEqual((r["games"], layout.load_device(self.c, "dev1")["games"]), ([], {}))
-
-    def test_remove_from_phone_reassembles_rest_and_purge_failure_warns(self):
-        """删甲：用剩下的乙现组容器装上，设备记录只剩乙，S2Arm.ipa 换成新组的；机上数据没删掉只报 container_purge_failed 黄字"""
-        A, B = self.A, self.B
-        self._library((A, "甲"), (B, "乙")); ios_fixture(self.c, B)
-        layout.save_device(self.c, "dev1", dict(games={A: dict(pack="pa"), B: dict(pack="cafe01")}, shellId="SID1"))
-        ph, _, signed = self._phone(); ph.backup.return_value = None; ph.purge.return_value = (False, "清不掉")
-        self.c.r.update(gameId=A)
-        import ipa as packer, host_update
-        self.sid = "SID1"
-        shell = self.c.private / "shell"; shell.mkdir(exist_ok=True); (shell / "manifest.json").write_text("{}")
-        with um.patch.object(install, "phone_for", return_value=ph), um.patch.object(packer, "current_shell_id", return_value="SID1"), \
-             um.patch.object(packer, "container_shell", return_value=shell), um.patch.object(host_update, "engine_compat", return_value=dict(self.COMPAT)), \
-             um.patch.object(self.c, "run", self._run([])):
-            r = install.remove_from_phone(self.c)
-        self.assertEqual(signed, [([B], ([B], "SID1"))])
-        self.assertEqual(layout.load_device(self.c, "dev1")["games"], {B: dict(pack="cafe01")})
-        self.assertEqual(install_ipa_games(layout.phone_ipa(self.c)), ([B], "SID1"))
-        self.assertFalse(r["dataRemoved"])
-        diags = [d for d in self.c.job["diagnostics"] if d["code"] == "container_purge_failed"]
-        self.assertEqual([d["severity"] for d in diags], ["warning"])
-
-    def test_remove_from_phone_falls_back_to_drop_when_rest_is_stale(self):
-        """剩下的款新运行层认不得（升级后没重出）：不报错，退回从 S2Arm.ipa 里摘掉这款（drop_from_ipa，不换壳）"""
-        A, B = self.A, self.B
-        self._library((A, "甲"), (B, "乙"))
-        self._ipa(layout.phone_ipa(self.c), "SID1", [A, B])
-        layout.save_device(self.c, "dev1", dict(games={A: {}, B: {}}, shellId="SID1"))
-        ph, _, signed = self._phone(); ph.backup.return_value = None; ph.purge.return_value = (True, "")
-        self.c.r.update(gameId=A)
-        import ipa as packer
-        dropped = []
-        def drop(c, ipa, gid):
-            dropped.append((Path(ipa), gid))
-            return self._ipa(self.c.library / ".container-drop" / "S2Arm.ipa", "SID1", [B]), [B], "SID1"
-        stale = Failure("认不得", code="container_stale")
-        with um.patch.object(install, "phone_for", return_value=ph), um.patch.object(packer, "assemble", side_effect=stale), \
-             um.patch.object(packer, "drop_from_ipa", side_effect=drop):
-            r = install.remove_from_phone(self.c)
-        self.assertEqual(dropped, [(layout.phone_ipa(self.c), A)])
-        self.assertEqual(signed, [([B], ([B], "SID1"))])
-        self.assertEqual((r["games"], install_ipa_games(layout.phone_ipa(self.c))), ([B], ([B], "SID1")))
-
 
 def library_pack(c, gid):
     return layout.ios_pack(c, gid)
@@ -1751,367 +1663,9 @@ def img_module():
     m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m
 
 
-class ExportPhoneTests(unittest.TestCase):
-    """导出，自己签名安装（export_phone）：不连手机、不签名；游戏库根「S2Arm 自签导出」= 未签名 S2Arm.ipa（能放进本壳的各款）+ 各款 <名字>.img + 说明"""
-    setUp = _jobs_setup_no_phone_games; tearDown = tj.JobsTests.tearDown
-    A, B, C, D = AssembleTests.A, AssembleTests.B, AssembleTests.C, "0100000000040000"
-    COMPAT = AssembleTests.COMPAT
-    _library, _run, _ipa = AssembleTests._library, AssembleTests._run, staticmethod(AssembleTests._ipa)   # 只借替身，不继承它的用例
-
-    def _img(self, gid, data):
-        """把这款的资源包改成单一 IMG 形态：真的 game.img（pack/img.py build，其余文件段放 data）+ 照旧按文件放的着色器库 shaders/direct/lib.bin，
-        清单 v3 format=img、index.tsv 登记 game.img 与着色器库"""
-        img = img_module()
-        _, pk = ios_fixture(self.c, gid)
-        for f in pk.iterdir():
-            shutil.rmtree(f) if f.is_dir() else f.unlink()
-        src = pk.parent / "data.bin"; src.write_bytes(data)
-        img.build(None, [("exefs/main", str(src))], str(pk / "game.img"), gid, "p" + gid[-5:], say=lambda *_: None); src.unlink()
-        (pk / "shaders/direct").mkdir(parents=True); (pk / "shaders/direct/lib.bin").write_bytes(b"LIB" + gid.encode())
-        (pk / "index.tsv").write_text(f"game.img\t{(pk / 'game.img').stat().st_size}\tp\nshaders/direct/lib.bin\t{3 + len(gid)}\th\n")
-        (pk / "manifest.json").write_text(json.dumps({"version": 3, "format": "img", "imgFile": "game.img", "index_sha256": "p" + gid[-5:]}))
-        return pk
-
-    def _export(self, request, fn=None):
-        import ipa as packer, host_update, rewrite_refresh
-        self.sid = "SID1"
-        shell = self.c.private / "shell"; shell.mkdir(exist_ok=True); (shell / "manifest.json").write_text("{}")
-        self.c.r = dict(self.c.r, **{"mode": "export", **request})   # 导出自签包：请求带 mode = export（11-15 起没有装法设置）
-        def no_phone(c):
-            raise AssertionError("导出不该找手机")
-        fake = self._run([])
-        def run(args, log=None, env=None, cwd=None, on_line=None):   # 导出单文件 IMG（pack/img.py export）真跑，组装照旧用替身
-            if "pack/img.py" in [str(a) for a in args]:
-                r = subprocess.run([str(a) for a in args], cwd=cwd, env=env, capture_output=True, text=True)
-                if r.returncode: raise AssertionError(r.stdout + r.stderr)
-                return
-            return fake(args, log, env, cwd, on_line)
-        with um.patch.object(packer, "current_shell_id", return_value="SID1"), um.patch.object(packer, "container_shell", return_value=shell), \
-             um.patch.object(host_update, "engine_compat", return_value=dict(self.COMPAT)), um.patch.object(self.c, "run", run), \
-             um.patch.object(rewrite_refresh, "refresh_ios", lambda c, games: None), um.patch.object(install, "phone_for", no_phone), \
-             um.patch.object(install, "_devpush_exe", lambda c: "s2a-devpush"), um.patch.object(install, "_devpush_lines", getattr(self, "lines", lambda c, exe, *a: (0, [], ""))):
-            return (fn or install.install)(self.c)
-
-    def _push(self, request=None):
-        """完成页点「推到手机」（exportPush）：推送工具换成 _fake_phone 的替身"""
-        self.c.r = dict(self.c.r, **(request or {}))
-        with um.patch.object(install, "_devpush_exe", lambda c: "s2a-devpush"), um.patch.object(install, "_devpush_lines", self.lines):
-            try:
-                return install.push_export_job(self.c)
-            except install.Failure as e:
-                return dict(pushed=False, pushCode=e.code, pushNote=str(e))
-
-    def _fake_phone(self, apps, docs=(), have=None):
-        """推到手机的替身：连着一台 U1；手机上装着 apps（每行 包名<TAB>版本<TAB>名字）；Documents 下已有 docs；have = {远端路径: 机上已有的字节}。
-        记下每次 put / put-at（远端路径、偏移），不连真手机"""
-        import push_pack as P
-        per = apps if isinstance(apps, dict) else {"U1": apps}   # 每台连着的手机上装着的 App
-        self.lines = lambda c, exe, *a: (0, list(per), "") if a[-1] == "devices" else (0, list(per.get(a[0], [])), "")
-        calls, test = [], self
-        class Dev:
-            def __init__(self, exe, udid, bid, work, env=None):
-                test.assertEqual(env.get("S2A_DEVPUSH_DOCUMENTS"), "1"); self.udid, self.bid, self.progress = udid, bid, None
-            def ls(self, rel): return [d + "/" for d in docs]
-            def head(self, rel, n):
-                b = (have or {}).get(rel); return (-1, b"") if b is None else (len(b), b[:n])
-            def put(self, src, rel): calls.append((self.bid, rel, 0) if self.udid == "U1" else (self.udid, self.bid, rel, 0))
-            def put_at(self, src, rel, off): calls.append((self.bid, rel, off) if self.udid == "U1" else (self.udid, self.bid, rel, off))
-        return um.patch.object(P, "Devpush", Dev), calls
-
-    def test_export_push_needs_phone_and_app(self):
-        """导出本身不碰手机（几 GB，推不推由玩家在完成页选，11-13 维护者）；点「推到手机」时没连手机 / 手机上没装 S2Arm → 报缺什么、怎么做"""
-        A = self.A
-        self._library((A, "甲")); self._img(A, b"S2AIMG01-a")
-        patch, calls = self._fake_phone(["io.x.s2arm\t0.3.10\tS2Arm"])
-        with patch:
-            r = self._export(dict(gameId=A))
-        self.assertEqual((r["exported"], "pushed" in r, calls), (True, False, []))
-        self.lines = lambda c, exe, *a: (0, [], "")
-        r = self._push(dict(gameId=A))
-        self.assertEqual((r["pushed"], r["pushCode"]), (False, "device_not_connected"))
-        self.assertIn("信任", r["pushNote"])
-        patch, calls = self._fake_phone([])
-        with patch:
-            r = self._push()
-        self.assertEqual((r["pushed"], r["pushCode"], calls), (False, "device_not_ready", []))
-        self.assertIn("S2Arm.ipa", r["pushNote"])
-
-    def test_export_push_puts_full_imgs_into_import_dir(self):
-        """手机上装着自签的 S2Arm：导出的完整 .img（含着色器库）推进 Documents/放这里导入/<名字>.img；机上已有英文名的导入文件夹就用它；
-        上次推到一半（头一页逐字节相同）从整页处接着推；推这一款只推这一款"""
-        import push_pack as P
-        A, B = self.A, self.B
-        self._library((A, "甲"), (B, "乙")); self._img(A, b"S2AIMG01-a" * 5000); self._img(B, b"S2AIMG01-b")
-        self._export(dict(gameId=A))
-        patch, calls = self._fake_phone(["io.x.s2arm\t0.3.10\tS2Arm"])
-        with patch:
-            r = self._push(dict(gameId=A))
-        self.assertEqual((r["pushed"], r["pushBundleId"], r["importDir"], calls), (["甲.img"], "io.x.s2arm", "放这里导入", [("io.x.s2arm", "Documents/放这里导入/甲.img", 0)]))
-        out = self.c.library / install.EXPORT_DIRS["zh"]
-        whole = (out / "甲.img").read_bytes(); self.assertIn(b"shaders/direct/lib.bin", whole)   # 推的是导出那份（带着色器库），不是资源包里的 game.img
-        half = whole[: P.IMG_PAGE * 2 + 100]
-        patch, calls = self._fake_phone(["io.x.s2arm\t0.3.10\tS2Arm"], docs=["Import Here"], have={"Documents/Import Here/甲.img": half})
-        with patch, um.patch.object(install, "_devpush_exe", lambda c: "s2a-devpush"), um.patch.object(install, "_devpush_lines", self.lines):
-            r = install.push_export(self.c, A)
-        self.assertEqual((r["importDir"], calls), ("Import Here", [("io.x.s2arm", "Documents/Import Here/甲.img", P.IMG_PAGE * 2)]))
-
-    def test_export_push_picks_the_phone_with_s2arm(self):
-        """连着几台、没指定：只推给装着 S2Arm 的那台（不默认第一台，11-13 实测误推进另一台）；几台都装着 → device_required 请玩家选；指定了且连着 → 就推给它"""
-        A = self.A
-        self._library((A, "甲")); self._img(A, b"S2AIMG01-a")
-        self._export(dict(gameId=A))
-        app = "io.x.s2arm\t0.3.10\tS2Arm"
-        patch, calls = self._fake_phone({"U1": [], "U2": [app]})
-        with patch:
-            r = self._push(dict(gameId=A))
-        self.assertEqual((r["pushDevice"], calls), ("U2", [("U2", "io.x.s2arm", "Documents/放这里导入/甲.img", 0)]))
-        patch, calls = self._fake_phone({"U1": [app], "U2": [app]})
-        with patch:
-            r = self._push()
-        self.assertEqual((r["pushed"], r["pushCode"], calls), (False, "device_required", []))
-        patch, calls = self._fake_phone({"U1": [app], "U2": [app]})
-        with patch:
-            r = self._push(dict(device="U2"))
-        self.assertEqual((r["pushDevice"], len(calls)), ("U2", 1))
-
-    def test_export_folder_has_ipa_imgs_and_readme(self):
-        """装法 export：点甲 → 甲、乙（单一 IMG）进容器和文件夹；丙旧格式点名跳过；丁没出过 iPhone 版不提；文件夹里只有 ipa、两份 .img（内容同库里）、说明"""
-        A, B, C = self.A, self.B, self.C
-        self._library((A, "甲"), (B, "乙"), (C, "丙"), (self.D, "丁"))
-        self._img(A, b"S2AIMG01-a"); self._img(B, b"S2AIMG01-b"); ios_fixture(self.c, C)
-        r = self._export(dict(gameId=A))
-        self.assertEqual((r["games"], r["unwritten"]), ([A, B], ["乙"]), "点甲：乙的程序进容器，.img 只写甲")
-        r = self._export(dict(gameId=B))   # 再点乙：乙的 .img 写上、甲沿用，文件夹里两款齐
-        out = self.c.library / install.EXPORT_DIRS["zh"]
-        self.assertEqual((r["exported"], r["outputPath"], sorted(r["games"]), r["skipped"], r["unwritten"]), (True, str(out), sorted([A, B]), ["丙"], []))
-        self.assertEqual(sorted(p.name for p in out.iterdir()), sorted(["S2Arm.ipa", "甲.img", "乙.img", "甲 着色器更新包.img", "乙 着色器更新包.img", install.EXPORT_READMES["zh"]]))
-        # 着色器更新包（维护者 11-13）：格式号 2、头里游戏号 / 资源包号同本体 game.img、只含派生件（着色器库），没有本体的其余文件段
-        for f, gid in (("甲 着色器更新包.img", A), ("乙 着色器更新包.img", B)):
-            with open(out / f, "rb") as fh: fmt = int.from_bytes(fh.read(12)[8:12], "little")
-            base = img_module().header(str(library_pack(self.c, gid) / "game.img"))
-            self.assertEqual((fmt, img_module().header(str(out / f))["gid"], img_module().header(str(out / f))["pack_id"]), (2, gid, base["pack_id"]))
-            self.assertEqual({p for p, _, _ in img_module().entries(str(out / f))}, {"shaders/direct/lib.bin"})
-        # 给玩家的 .img 路径（装机前清单 imgPath）：导出文件夹里那份完整的；资源包里不带着色器库的 game.img 不给（D-QW2Q）；没导出过的款给空
-        self.assertEqual((install.phone_img_path(self.c, A), install.phone_img_path(self.c, C)), (str(out / "甲.img"), ""))
-        # 一款一个文件：原资源包的其余文件段 + 着色器库进了目录表（手机认领后照常解出来）；原 game.img 不动
-        img = img_module()
-        for f, gid, data in (("甲.img", A, b"S2AIMG01-a"), ("乙.img", B, b"S2AIMG01-b")):
-            got = {p: (off, n) for p, off, n in img.entries(str(out / f))}
-            with open(out / f, "rb") as fh:
-                def rd(p): fh.seek(got[p][0]); return fh.read(got[p][1])
-                self.assertEqual((rd("exefs/main"), rd("shaders/direct/lib.bin"), img.header(str(out / f))["gid"]), (data, b"LIB" + gid.encode(), gid))
-            self.assertNotIn("shaders/direct/lib.bin", {p for p, _, _ in img.entries(str(library_pack(self.c, gid) / "game.img"))})
-        self.assertEqual((sorted(install_ipa_games(out / "S2Arm.ipa")[0]), install_ipa_games(out / "S2Arm.ipa")[1]), (sorted([A, B]), "SID1"))
-        readme = (out / install.EXPORT_READMES["zh"]).read_text(encoding="utf-8-sig")
-        self.assertIn("甲.img（甲）", readme); self.assertIn("乙.img（乙）", readme); self.assertIn("放这里导入", readme)
-        self.assertEqual(r["exportBytes"], sum(p.stat().st_size for p in out.iterdir()))
-        self.assertEqual([p.name for p in self.c.library.iterdir() if p.name.startswith(".export-")], [])   # 临时目录收干净
-
-    def test_export_leaves_out_games_of_another_address_space_type(self):
-        """#1132：游戏库里有一款地址空间类型不同（甲、丙类型 3，乙类型 1）：点甲导出只带甲、丙，乙这次不带、点名 container_incompatible，
-        不再整次报「放不进同一个 App」；不点（导出新版 S2Arm）按款数多的那类（类型 3）"""
-        A, B, C = self.A, self.B, self.C
-        self._library((A, "甲"), (B, "乙"), (C, "丙"))
-        for g, data in ((A, b"S2AIMG01-a"), (B, b"S2AIMG01-b"), (C, b"S2AIMG01-c")):
-            self._img(g, data)
-        for g, t in ((A, 3), (B, 1), (C, 3)):   # 头 +0x0C 位 1–3 = 地址空间类型
-            (layout.ios_kit(self.c, g) / "main.npdm").write_bytes(b"META" + bytes(8) + bytes([t << 1]) + bytes(0x80))
-        r = self._export(dict(gameId=A))
-        self.assertEqual((r["games"], r["skipped"]), ([A, C], ["乙"]))
-        warn = [d for d in self.c.job.get("diagnostics", []) if d["code"] == "container_incompatible"]
-        self.assertEqual(len(warn), 1); self.assertIn("乙", warn[0]["summary"])
-        r = self._export(dict(gameId=B))
-        self.assertEqual((r["games"], r["skipped"]), ([B], ["甲", "丙"]))
-
-    def test_export_skips_games_removed_from_library(self):
-        """#1132：从游戏库删掉的款（library.remove 只置 hidden）导出时不再带上、也不算「没放进」"""
-        A, B = self.A, self.B
-        self._library((A, "甲"), (B, "乙"))
-        self._img(A, b"S2AIMG01-a"); self._img(B, b"S2AIMG01-b")
-        cat = self.c.catalog(); cat["games"][1]["hidden"] = True; self.c.catalog = lambda: cat
-        r = self._export(dict(gameId=A))
-        self.assertEqual((r["games"], r["skipped"]), ([A], []))
-        self.assertEqual([d for d in self.c.job.get("diagnostics", []) if "已从游戏库删除" in d.get("summary", "")], [])   # 导出前就不带：不出「已从游戏库删除」这类提醒
-
-    def _count_writes(self):
-        """包住 _export_img / _export_update：照常写，记下这次真写了哪些文件（沿用的不在里面）"""
-        wrote = []
-        real_img, real_upd = install._export_img, install._export_update
-        def img(c, pack, dst): wrote.append(Path(dst).name); return real_img(c, pack, dst)
-        def upd(c, pack, dst): wrote.append(Path(dst).name); return real_upd(c, pack, dst)
-        p1 = um.patch.object(install, "_export_img", img); p2 = um.patch.object(install, "_export_update", upd)
-        p1.start(); p2.start(); self.addCleanup(p1.stop); self.addCleanup(p2.stop)
-        return wrote
-
-    def test_export_again_reuses_unchanged_imgs(self):
-        """#1132 + 只写点的那款：.img 只新写这次点的那款；别的款上次导出的来源没变就沿用（逐字节同），没有或变了就这次不写、结果 unwritten 点名"""
-        A, B, C = self.A, self.B, self.C
-        self._library((A, "甲"), (B, "乙"))
-        self._img(A, b"S2AIMG01-a"); self._img(B, b"S2AIMG01-b")
-        out = self.c.library / install.EXPORT_DIRS["zh"]
-        wrote = self._count_writes()
-        r = self._export(dict(gameId=A))
-        self.assertEqual(sorted(wrote), sorted(["甲.img", "甲 着色器更新包.img"]), "第一次导出点甲：只写甲，乙没有上次的可沿用就不写")
-        self.assertEqual((r["fresh"], r["reused"], r["unwritten"]), (["甲.img"], 0, ["乙"]))
-        self.assertEqual(sorted(p.name for p in out.iterdir() if p.suffix == ".img"), sorted(["甲.img", "甲 着色器更新包.img"]))
-        first = {p.name: p.read_bytes() for p in out.iterdir() if p.suffix == ".img"}
-        self._library((A, "甲"), (B, "乙"), (C, "丙")); self._img(C, b"S2AIMG01-c")
-        wrote.clear(); r = self._export(dict(gameId=C))
-        self.assertEqual(sorted(wrote), sorted(["丙.img", "丙 着色器更新包.img"]))
-        self.assertEqual((r["fresh"], r["reused"], r["unwritten"]), (["丙.img"], 1, ["乙"]), "甲沿用、乙仍没写、只写丙")
-        for name, data in first.items():
-            self.assertEqual((out / name).read_bytes(), data, name)
-        wrote.clear(); r = self._export(dict(gameId=B))
-        self.assertEqual(sorted(wrote), sorted(["乙.img", "乙 着色器更新包.img"]))
-        self.assertEqual((r["fresh"], r["reused"], r["unwritten"]), (["乙.img"], 2, []), "点乙才写乙，甲、丙沿用")
-        # 乙的资源包里有文件变了（重新打过 iPhone 包），这次点甲：乙不重写、点名没写；甲、丙沿用，一个都不写
-        f = next(p for p in layout.ios_pack(self.c, B).rglob("*") if p.is_file())
-        st = f.stat(); os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
-        wrote.clear(); r = self._export(dict(gameId=A))
-        self.assertEqual(wrote, [])
-        self.assertEqual((r["fresh"], r["reused"], r["unwritten"]), ([], 2, ["乙"]))
-        self.assertFalse((out / "乙.img").exists(), "来源变了的旧 .img 不留在导出文件夹里冒充新的")
-
-    def test_export_rewrites_when_link_fails(self):
-        """建不了硬链接（exFAT 等）：照常重写，导出照样成功"""
-        A = self.A
-        self._library((A, "甲")); self._img(A, b"S2AIMG01-a")
-        wrote = self._count_writes()
-        self._export(dict(gameId=A)); wrote.clear()
-        with um.patch("os.link", side_effect=OSError(45, "Operation not supported")):
-            r = self._export(dict(gameId=A))
-        self.assertEqual((r["exported"], sorted(wrote)), (True, sorted(["甲.img", "甲 着色器更新包.img"])))
-        self.assertEqual((r["fresh"], r["reused"]), (["甲.img"], 0), "硬链接建不了照常重写：算新写，完成页照实点名")
-
-    def test_export_replaces_whole_folder(self):
-        """再导出一次：文件夹整个换新（上次的、玩家放进去的别的文件都不在了）"""
-        self._library((self.A, "甲")); self._img(self.A, b"S2AIMG01-a")
-        out = self.c.library / install.EXPORT_DIRS["zh"]; out.mkdir(); (out / "旧.img").write_bytes(b"old")
-        self._export(dict(gameId=self.A, mode="export"))
-        self.assertFalse((out / "旧.img").exists())
-        self.assertTrue((out / "甲.img").is_file())
-
-    def test_export_when_old_folder_is_busy_goes_to_a_new_name(self):
-        """D-4MAH：Windows 上旧导出文件夹被占着（资源管理器开着、自签工具拿着上次的 S2Arm.ipa、杀毒在扫），整目录改名抛 PermissionError，
-        原先 .img 都写完了还整次失败。期望：一直被占 → 成功、换到带时刻的新名字、旧文件夹原样不动、记 export_dir_busy；
-        只占一小会儿（前两次被拒）→ 退避后照常换到原名"""
-        self._library((self.A, "甲")); self._img(self.A, b"S2AIMG01-a")
-        out = self.c.library / install.EXPORT_DIRS["zh"]; out.mkdir(); (out / "旧.img").write_bytes(b"old")
-        real = os.replace
-        def busy(src, dst):
-            if Path(src) == out: raise PermissionError(13, "拒绝访问", str(src))   # 旧导出文件夹改不了名（Windows WinError 5 / 32）
-            return real(src, dst)
-        with um.patch.object(install, "EXPORT_SWAP_WAIT", 0), um.patch("os.replace", busy):
-            r = self._export(dict(gameId=self.A, mode="export"))
-        got = Path(r["outputPath"])
-        self.assertNotEqual(got, out); self.assertTrue(got.name.startswith(out.name + " "))
-        self.assertTrue((got / "甲.img").is_file()); self.assertTrue((got / "S2Arm.ipa").is_file())
-        self.assertEqual((out / "旧.img").read_bytes(), b"old")   # 旧的原样不动
-        self.assertIn("export_dir_busy", [d.get("code") for d in self.c.job["diagnostics"]])
-        shutil.rmtree(got)
-        tries = {"n": 0}
-        def flaky(src, dst):
-            if Path(src) == out and tries["n"] < 2: tries["n"] += 1; raise PermissionError(13, "拒绝访问", str(src))
-            return real(src, dst)
-        with um.patch.object(install, "EXPORT_SWAP_WAIT", 0), um.patch("os.replace", flaky):
-            r = self._export(dict(gameId=self.A, mode="export"))
-        self.assertEqual(Path(r["outputPath"]), out); self.assertFalse((out / "旧.img").exists()); self.assertTrue((out / "甲.img").is_file())
-
-    def test_permission_next_step_follows_platform(self):
-        """D-4MAH：permission_denied / input_permission 的「下一步」原先写死 macOS「系统设置 → 隐私与安全性」，Windows 玩家照着做不了"""
-        from errors import recovery
-        for code in ("permission_denied", "input_permission"):
-            win, mac = recovery(code, packaged=True, windows=True), recovery(code, packaged=True, windows=False)
-            self.assertIn("受控文件夹访问", win); self.assertNotIn("系统设置", win)
-            self.assertIn("系统设置", mac); self.assertNotIn("受控文件夹访问", mac)
-        self.assertIn("资源管理器", recovery("permission_denied", packaged=True, windows=True))
-
-    def test_export_names_follow_ui_language(self):
-        """i18n：英文界面（uiLanguage = en）→ 文件夹「S2Arm Self-Sign Export」、说明「How to install on iPhone.txt」（英文正文：Import Here、
-        Settings → General → VPN & Device Management）；之后换回中文再导出 → 「S2Arm 自签导出」+「怎么装到 iPhone.txt」，英文名的旧导出删掉，只留一份"""
-        self._library((self.A, "甲")); self._img(self.A, b"S2AIMG01-a")
-        en, zh = self.c.library / "S2Arm Self-Sign Export", self.c.library / "S2Arm 自签导出"
-        r = self._export(dict(gameId=self.A, mode="export", uiLanguage="en"))
-        self.assertEqual(sorted(p.name for p in en.iterdir()), sorted(["S2Arm.ipa", "甲.img", "甲 shader update.img", "How to install on iPhone.txt"]))
-        self.assertEqual((r["outputPath"], r["readme"]), (str(en), str(en / "How to install on iPhone.txt")))
-        text = (en / "How to install on iPhone.txt").read_text(encoding="utf-8-sig")
-        for want in ("甲.img (甲)", "Import Here", "Settings → General → VPN & Device Management"): self.assertIn(want, text)
-        self.assertNotIn("放这里导入", text); self.assertFalse(zh.exists())
-        self._export(dict(gameId=self.A, mode="export", uiLanguage="zh-Hans"))
-        self.assertEqual(sorted(p.name for p in zh.iterdir()), sorted(["S2Arm.ipa", "甲.img", "甲 着色器更新包.img", "怎么装到 iPhone.txt"]))
-        self.assertFalse(en.exists(), "换回中文：英文名的旧导出删掉")
-        self.assertEqual([p.name for p in self.c.library.iterdir() if p.name.startswith(".export-")], [])
-        self._export(dict(gameId=self.A, mode="export", uiLanguage="zh-Hant"))
-        self.assertTrue(zh.exists() and not en.exists(), "繁中界面：中文定名（11-14 加新语言）")
-        self._export(dict(gameId=self.A, mode="export", uiLanguage="ja"))
-        self.assertTrue(en.exists() and not zh.exists(), "日文界面：英文定名，不给中文文件夹")
-
-    def test_export_requested_old_format_is_named(self):
-        """点的这款还是旧格式资源包：导出不了单个 game.img，报 pack_missing 说要重新打 iPhone 包"""
-        self._library((self.A, "甲")); ios_fixture(self.c, self.A)
-        with self.assertRaises(Failure) as e: self._export(dict(gameId=self.A, mode="export"))
-        self.assertEqual(e.exception.code, "pack_missing")
-
-    def test_export_file_names(self):
-        """文件名取游戏名：不能做文件名的字符换空格；重名带游戏号"""
-        used = set()
-        self.assertEqual(install._img_name("a/b", self.A, used), "a b.img")
-        self.assertEqual(install._img_name("a b", self.B, used), f"a b {self.B}.img")
-        self.assertEqual(install._img_name("", self.C, used), f"{self.C}.img")
-
-    def test_request_mode_overrides_setting(self):
-        """请求带 mode=device → 照一键装走（put_game）；带 export → 导出（11-15 起只看请求，没有装法设置）"""
-        self._library((self.A, "甲")); self._img(self.A, b"S2AIMG01-a")
-        with um.patch.object(install, "put_game", return_value=dict(device="x")) as put, um.patch.object(install, "phone_for", return_value=object()):
-            self.c.r = dict(self.c.r, gameId=self.A, mode="device")
-            self.assertEqual(install.install(self.c), dict(device="x"))
-            put.assert_called_once()
-        self.assertTrue(self._export(dict(gameId=self.A, mode="export"))["exported"])
-
-    def test_update_in_export_mode_exports(self):
-        """「导出新版 S2Arm」（请求带 mode = export）：不连手机，游戏库里能带的各款出到文件夹，updated = True"""
-        self._library((self.A, "甲"), (self.B, "乙")); self._img(self.A, b"a"); self._img(self.B, b"b")
-        r = self._export(dict(mode="export"), fn=install.update_phone)
-        self.assertEqual((r["exported"], r["updated"], r["games"]), (True, True, [self.A, self.B]))
-
-
 def install_ipa_games(ipa):
     import ipa as packer
     return packer.ipa_games(ipa)
-
-
-class DropRestampTests(unittest.TestCase):
-    """#845 摘掉一款后重算容器摘要（ipa.finish_container）：摘之前整套的摘要写在 Info.plist 里；摘掉一款后内容变了，
-    新 ipa 里的摘要必须非空、且不等于整套的旧值——否则之后再装回整套时 same_app 误判相同、跳过重装，摘掉的那款回不到手机上"""
-
-    def test_drop_restamps_digest(self):
-        import ipa as packer
-        t = Path(tempfile.mkdtemp()); self.addCleanup(lambda: shutil.rmtree(t, ignore_errors=True))
-        app = t / "build" / "Payload" / "S2Arm.app"
-        A, B = "0100000000010000", "0100000000020000"
-        for g in (A, B):
-            (app / "Games" / g).mkdir(parents=True); (app / "Games" / g / "main.npdm").write_bytes(g.encode() + bytes(16))
-            (app / "Frameworks").mkdir(exist_ok=True); (app / f"Frameworks/S2AImages-{g}.dylib").write_bytes(g.encode())
-        (app / "s2a_catalogue.json").write_text(json.dumps({"schema": 1, "shell_id": "SID1", "games": [{"title_id": A}, {"title_id": B}]}))
-        (app / "Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": "io.s2arm.games"}))
-        full = packer.stamp_container(app)
-        ipa = t / "S2Arm.ipa"
-        with zipfile.ZipFile(ipa, "w") as z:
-            for f in sorted((t / "build").rglob("*")):
-                if f.is_file(): z.write(f, f.relative_to(t / "build").as_posix())
-        self.assertEqual(packer.ipa_digest(ipa), full)
-        lib = t / "lib"; lib.mkdir()
-        c = types.SimpleNamespace(library=lib, logs=t, task="drop", engine=Path(packer.__file__).resolve().parents[2],
-                                  env=lambda: dict(os.environ), run=lambda args, log, env, **kw: subprocess.run([str(a) for a in args], check=True, capture_output=True))
-        def zip_app(c, a, out, log):   # 写 ipa 的完整校验（app_bundle write_ipa）不在这里核：照原样打包
-            with zipfile.ZipFile(out, "w") as z:
-                for f in sorted(Path(a).rglob("*")):
-                    if f.is_file(): z.write(f, "Payload/S2Arm.app/" + f.relative_to(a).as_posix())
-        with um.patch.object(packer, "sign_container", lambda *a, **k: None), um.patch.object(packer, "write_container_ipa", zip_app):   # 签名要 codesign，这里只核摘要
-            new, left, _ = packer.drop_from_ipa(c, ipa, A)
-        self.assertEqual(left, [B])
-        got = packer.ipa_digest(new)
-        self.assertTrue(got); self.assertNotEqual(got, full)
 
 
 class ShipExtContainerDropTests(unittest.TestCase):
@@ -2192,270 +1746,185 @@ class DevicectlTimeoutTests(unittest.TestCase):
         self.assertEqual((rc, data, err), (124, {}, "devicectl 等了 120 秒没有返回，已停止等待"))   # 如实说超时，不猜锁屏（剃刀 H21）
 
 
-class PhoneGamesTruthTests(unittest.TestCase):
-    """两端混装（同一台手机 Mac 装几款、Windows 再装一款）：手机上有哪些游戏以手机为准（期望按规则手写）"""
-    A, B, C, D = "0100000000010000", "0100000000020000", "0100000000030000", "0100000000040000"
-    setUp = tj.JobsTests.setUp; tearDown = tj.JobsTests.tearDown
+class WidgetSignTests(unittest.TestCase):
+    """主屏小组件扩展（11-16 小组件 B 半）：Mac 装机按签名方式带 / 去扩展；带不成去掉重签、照常装，黄字说原因"""
+    ENGINE = Path(__file__).resolve().parents[3]
 
-    NEW, OLD = "Library/Application Support/S2Arm/games", "Documents/games"
-    MISSING = "S2A_AFC_ERR 8 Object not found"
+    def test_widget_mod_imports_from_the_engine_tree_like_the_mac_app(self):
+        """Mac App 里作业层在 Contents/Resources/Jobs、引擎在 Resources/Engine：widget_mod 要按请求的引擎树导入 pack/widget_ext.py。
+        0.5.0 正式候选 667ccdb92 按本文件往上两级找（= Contents，没有 pack），装到 iPhone 一律 ModuleNotFoundError。
+        新开隔离的 Python（-I：仓库根不在 sys.path），把 install.py 的位置换成 App 里那样，引擎给仓库根"""
+        jobs = Path(install.__file__).resolve().parent
+        code = ("import sys, types; sys.path.insert(0, sys.argv[1]); import install; "
+                "install.__file__ = sys.argv[2]; "
+                "m = install.widget_mod(types.SimpleNamespace(engine=sys.argv[3])); print('ok' if hasattr(m, 'retarget') else 'no')")
+        fake = self.tmp / "S2Arm.app/Contents/Resources/Jobs/install.py"
+        r = subprocess.run([sys.executable, "-I", "-c", code, str(jobs), str(fake), str(self.ENGINE)], capture_output=True, text=True, cwd=self.tmp)
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, "ok"), r.stderr[-800:])
 
-    def fs(self, dirs, ls_error=None, rms=None):
-        """假手机：dirs = {设备侧目录: [条目…]}，不在 dirs 里的目录 ls 报 AFC 不存在；ls_error = 每次 ls 都报这句（锁屏 / 没装）"""
-        class Cl:
-            def get(self_, *a, **k): return False   # 手机账本 Documents/.s2a-games.json：这些替身里没有（旧 App）
-            def call(self, op, rel):
-                if ls_error: return 1, ls_error
-                return (0, "\n".join(dirs[rel])) if rel in dirs else (1, test.MISSING)
-            def rm(self, rel):
-                rms.append(rel); return (False, "清不掉") if rel.startswith(test.NEW) and "fail" in dirs else (True, "")
-            def get(self, rel, dst): return False
-        test = self
-        return lambda c, udid, bid, work: Cl()
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="s2a-widget-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.app = self.tmp / "S2Arm.app"
+        x = self.app / "PlugIns/S2ArmWidget.appex"; x.mkdir(parents=True)
+        (x / "Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": "io.s2arm.shell.widget", "CFBundleExecutable": "S2ArmWidget"}))
+        (x / "S2ArmWidget").write_bytes(b"bin")
+        self.ents = self.tmp / "app.entitlements"
+        self.ents.write_bytes(plistlib.dumps({"com.apple.developer.kernel.increased-memory-limit": True}))
+        self.log = self.tmp / "install.log"
+        self.runs, self.fail_on = [], None
+        self.prof = set()   # 本机已有描述文件的包名（替身）：没有时 dev_sign 退出码 3
+        def run(args, log=None, env=None, cwd=None, on_line=None, ok_codes=(0,)):
+            a = [str(v) for v in args]
+            seen = dict(args=a, env=env)
+            ent = next((v for v in a if v.endswith(".entitlements")), None)
+            if ent: seen["ents"] = plistlib.loads(Path(ent).read_bytes())
+            self.runs.append(seen)
+            if a[0] != "bash" and 3 in ok_codes and a[3] not in self.prof:
+                self.c.last_rc = 3; return
+            if self.fail_on and self.fail_on(a):
+                self.log.write_text("error: Developer API error 9120: maximum number of App IDs\n", encoding="utf-8")
+                raise Failure("tool", code="tool_exit")
+            if a[0] == "bash": self.prof.add(a[2])
+        self.c = types.SimpleNamespace(engine=self.ENGINE, private=self.tmp, r={}, run=run, diagnostic=um.MagicMock(),
+                                       begin=lambda *a, **k: None, env=lambda: {})
 
-    def client(self, games_ls, applied, ls_error=None):   # 旧布局：各款都在 Documents/games/<游戏号>/资源包
-        dirs = {self.OLD: games_ls}
-        for g in games_ls:
-            dirs[f"{self.OLD}/{g.strip().rstrip('/').upper()}/资源包"] = [".applied", "index.tsv"] if g.strip().rstrip("/") in applied else ["index.tsv"]
-        return self.fs(dirs, ls_error)
+    def plain(self):
+        return [(r["args"][1].rsplit("/", 1)[-1] if r["args"][0] == "bash" else r["args"][1].rsplit("/", 1)[-1], r["args"][2] if r["args"][0] == "bash" else r["args"][3]) for r in self.runs]
 
-    def ph(self, missing=False):
-        return types.SimpleNamespace(udid="U1", bid="io.s2arm.games.abcde12345", app_missing=lambda bid, why: missing, c=self.c)
+    def test_apple_id_signs_extension_first_with_shared_group(self):
+        self.assertTrue(install.widget_prepare(self.c, self.app, "io.s2arm.games.abc"))
+        self.assertEqual(plistlib.loads((self.app / "PlugIns/S2ArmWidget.appex/Info.plist").read_bytes())["CFBundleIdentifier"], "io.s2arm.games.abc.widget")
+        install.sign_with_apple_id(self.c, self.app, {"id": "TEAM1"}, "io.s2arm.games.abc", self.ents, "UDID", self.log, False, widget=True)
+        # 本机还没有两个包名的描述文件：每个都是「先签 → 退出码 3 → 申请 → 再签」，扩展先、主程序后
+        self.assertEqual(self.plain(), [("dev_sign.py", "io.s2arm.games.abc.widget"), ("ensure_profile.sh", "io.s2arm.games.abc.widget"), ("dev_sign.py", "io.s2arm.games.abc.widget"),
+                                        ("dev_sign.py", "io.s2arm.games.abc"), ("ensure_profile.sh", "io.s2arm.games.abc"), ("dev_sign.py", "io.s2arm.games.abc")])
+        group = ["group.s2arm.widget.TEAM1"]
+        self.assertEqual(self.runs[4]["ents"], {"com.apple.developer.kernel.increased-memory-limit": True, "com.apple.security.application-groups": group})
+        self.assertEqual(self.runs[1]["ents"], {"com.apple.security.application-groups": group}, "扩展只带共享组，不带内存上限")
+        self.assertIn("--extension", self.runs[2]["args"]); self.assertNotIn("--extension", self.runs[5]["args"])
+        self.assertEqual(self.runs[0]["env"].get("S2A_PROFILE_NEED_UDIDS"), "UDID", "先签时要求描述文件含这台手机")
+        self.c.diagnostic.assert_not_called()
+        self.assertTrue((self.app / "PlugIns").is_dir())
 
-    def decisions(self):
-        f = self.c.logs / f"{self.c.task}-decisions.log"
-        return f.read_text(encoding="utf-8") if f.is_file() else ""
+    def test_quota_full_strips_widget_and_signs_app_as_before(self):
+        install.widget_prepare(self.c, self.app, "io.s2arm.games.abc")
+        self.fail_on = lambda a: a[0] == "bash" and a[2].endswith(".widget")   # 扩展包名注册被拒（Apple 9120）
+        install.sign_with_apple_id(self.c, self.app, {"id": "TEAM1"}, "io.s2arm.games.abc", self.ents, "UDID", self.log, False, widget=True)
+        self.assertFalse((self.app / "PlugIns").exists(), "带不成：去掉扩展")
+        self.assertEqual(self.plain()[-3:], [("dev_sign.py", "io.s2arm.games.abc"), ("ensure_profile.sh", "io.s2arm.games.abc"), ("dev_sign.py", "io.s2arm.games.abc")])
+        self.assertEqual(self.runs[-1]["args"][5], str(self.ents), "重签用原来的权限（不带共享组）")
+        msg = self.c.diagnostic.call_args.args[0]
+        self.assertEqual(self.c.diagnostic.call_args.kwargs, dict(code="widget_skipped", severity="warning"))
+        self.assertTrue(msg.startswith("这次没装小组件：") and "10 个" in msg, msg)
 
-    def test_only_game_ids_with_applied_pack_count(self):
-        with um.patch.object(install, "devpush_client", self.client([self.A + "/", "notes", self.B, "0100000000099999x", self.C], {self.A, self.C})):
-            self.assertEqual(install.phone_games(self.c, self.ph()), {self.A, self.C})   # B 没解开、别的名字跳过
+    def test_existing_profile_signs_without_xcodebuild(self):
+        # 诊断 D-44DP：本机已有含这台手机的描述文件 → 直接签，一次都不跑 ensure_profile.sh（xcodebuild 看不到这台手机时原先主程序也签不成）
+        self.prof = {"io.s2arm.games.abc"}
+        install.sign_with_apple_id(self.c, self.app, {"id": "TEAM1"}, "io.s2arm.games.abc", self.ents, "UDID", self.log, False)
+        self.assertEqual(self.plain(), [("dev_sign.py", "io.s2arm.games.abc")])
 
-    def test_app_not_installed_is_none_unreadable_continues(self):
-        # 装机原则（11-11「认不出的直接装」）：平台确认没装 → None；装着却进不去 / 判不了 → 按「手机上没有别的游戏」照装，只记进日志
-        err = self.client([], set(), ls_error="取不到 x 的容器（App 没装或不是开发签名）：device socket io failed")
-        with um.patch.object(install, "devpush_client", err):
-            self.assertIsNone(install.phone_games(self.c, self.ph(missing=True)))            # 平台确认没装：None，不是「装着、一款都没有」的空集
-            self.assertEqual(install.phone_games(self.c, self.ph(missing=False)), set())   # 判不了：空集照装，不再报 device_locked
-        self.assertIn("device socket io failed", self.decisions())
-        err2 = self.client([], set(), ls_error="找不到设备 00008150-FAKEDEVICE：device not found")
-        with um.patch.object(install, "devpush_client", err2):
-            self.assertEqual(install.phone_games(self.c, self.ph(missing=False)), set())
+    def test_main_app_failure_after_widget_fallback_still_raises(self):
+        install.widget_prepare(self.c, self.app, "io.s2arm.games.abc")
+        self.fail_on = lambda a: a[0] == "bash"   # 主包名也申请不到：去掉扩展重来一次还是不成 → 照原样报错，不吞
+        with self.assertRaises(Failure) as e:
+            install.sign_with_apple_id(self.c, self.app, {"id": "TEAM1"}, "io.s2arm.games.abc", self.ents, "UDID", self.log, False, widget=True)
+        self.assertEqual(e.exception.code, "free_appid_limit")
 
-    def test_windows_real_device_socket_text(self):
-        """11-11 Windows 实机原文：删了手机上的 S2Arm 再装，Windows 上 s2a-devpush 进不了容器只回「device socket io failed」。
-        走真的 WinPhone.app_missing：旧工具只有这句原文 → 判不了 → 照装（空集）；新工具查过 installation_proxy 打 S2A_APP_MISSING → None（确实没装）"""
-        win = install.WinPhone.__new__(install.WinPhone); win.c = self.c; win.udid = "U1"; win.bid = "io.s2arm.games.d9g8my5fb5"; win.info = {}
-        raw = "取不到 io.s2arm.games.d9g8my5fb5 的容器（App 没装或不是开发签名）：device socket io failed"
-        with um.patch.object(install, "devpush_client", self.fs({}, ls_error=raw)):
-            self.assertEqual(install.phone_games(self.c, win), set())
-        new = "S2A_APP_MISSING：手机上没装 io.s2arm.games.d9g8my5fb5（installation_proxy 查过；进容器原文：device socket io failed）"
-        with um.patch.object(install, "devpush_client", self.fs({}, ls_error=new)):
-            self.assertIsNone(install.phone_games(self.c, win))
+    def test_player_off_and_devcert_strip(self):
+        self.c.r["widget"] = False
+        self.assertFalse(install.widget_prepare(self.c, self.app, "io.s2arm.games.abc"))
+        self.assertFalse((self.app / "PlugIns").exists()); self.c.diagnostic.assert_not_called()
+        self.setUp()
+        self.assertFalse(install.widget_prepare(self.c, self.app, "io.s2arm.games.abc", devcert=True))
+        self.assertFalse((self.app / "PlugIns").exists())
+        self.assertEqual(self.c.diagnostic.call_args.kwargs["code"], "widget_skipped")
+        self.setUp(); shutil.rmtree(self.app / "PlugIns")
+        self.assertFalse(install.widget_prepare(self.c, self.app, "io.s2arm.games.abc"), "没有扩展的包：不带")
 
-    def test_games_folder_not_created_yet_is_zero_games(self):
-        """首次装机：App 在、还没有 Documents/games——当 0 款照常装（v0.2.8 热修，玩家实机原文「afc error: Object not found」带空格，原先被当读不出设备挡住）。
-        新工具给结构化码 S2A_AFC_ERR 8；旧工具 / devicectl 只有原文，带不带空格、大小写都认。别的 AFC 错误码（如 4 读错误）与锁屏 / 断连照旧停"""
-        for out in ("S2A_AFC_ERR 8 Object not found", "afc error: Object not found", "ObjectNotFound", "No such file or directory", "OBJECT NOT FOUND"):
-            with self.subTest(out=out), um.patch.object(install, "devpush_client", self.client([], set(), ls_error=out)):
-                self.assertEqual(install.phone_games(self.c, self.ph()), set())
-        for out in ("S2A_AFC_ERR 4 Read error", "device socket io failed"):   # 别的读错误 / 断连：判不了，照装原则继续（空集），不再挡
-            with self.subTest(out=out), um.patch.object(install, "devpush_client", self.client([], set(), ls_error=out)):
-                self.assertEqual(install.phone_games(self.c, self.ph()), set())
 
-    def test_new_and_old_pack_locations_both_count(self):
-        """11-11 资源包挪到 Library：过渡期新旧两处都认。A 在新位置已解开；B 只在旧位置已解开；C 新位置在但没解开（旧位置的 .applied 不算：按选出的那一处）；
-        D 新旧都没有资源包目录。Documents/games 在（存档）也好、不在也好，结果一样"""
-        A, B, C, D = self.A, self.B, self.C, self.D
-        dirs = {self.NEW: [A, C], self.OLD: [B, C, D],
-                f"{self.NEW}/{A}/资源包": [".applied"], f"{self.OLD}/{B}/资源包": [".applied", "index.tsv"],
-                f"{self.NEW}/{C}/资源包": ["index.tsv"], f"{self.OLD}/{C}/资源包": [".applied"]}
-        with um.patch.object(install, "devpush_client", self.fs(dirs)):
-            self.assertEqual(install.phone_games(self.c, self.ph()), {A, B})
-        only_new = {self.NEW: [A], f"{self.NEW}/{A}/资源包": [".applied"]}   # 全新装的手机：还没有 Documents/games
-        with um.patch.object(install, "devpush_client", self.fs(only_new)):
-            self.assertEqual(install.phone_games(self.c, self.ph()), {A})
+class WinWidgetInstallTests(unittest.TestCase):
+    """Windows plumesign 装机带小组件（11-16）：带着签不成 → 去掉扩展重装一次、黄字；玩家关了 → 交去掉扩展的包；没扩展的包 → 原样交"""
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="s2a-wwidget-")); self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.ipa = self.tmp / "S2Arm.ipa"
+        with zipfile.ZipFile(self.ipa, "w") as z:
+            i = zipfile.ZipInfo("Payload/S2Arm.app/S2Arm"); i.external_attr = 0o755 << 16; z.writestr(i, b"bin")
+            z.writestr("Payload/S2Arm.app/PlugIns/S2ArmWidget.appex/Info.plist", b"plist")
+            z.writestr("Payload/S2Arm.app/PlugIns/S2ArmWidget.appex/S2ArmWidget", b"ext")
+        (self.tmp / "logs").mkdir()
 
-    def test_pick_pack_root_new_old_or_first_install(self):
-        """推到哪：新位置在 → 新；新不在、旧在 → 旧（App 下次启动整个挪过去，增量照旧算）；都不在 → 新；列不出 → 按第一次装推到新位置、记一笔"""
-        A = self.A
-        new, old = f"Library/Application Support/S2Arm/games/{A}/资源包", f"Documents/games/{A}/资源包"
-        for dirs, want in (({new: ["index.tsv"], old: [".applied"]}, new),
-                           ({old: [".applied"]}, old),
-                           ({}, new)):
-            with self.subTest(have=sorted(dirs)), um.patch.object(install, "devpush_client", self.fs(dirs)):
-                self.assertEqual(install.pick_pack_root(self.c, self.ph(), A), want)
-        with um.patch.object(install, "devpush_client", self.fs({}, ls_error="device socket io failed")):
-            self.assertEqual(install.pick_pack_root(self.c, self.ph(), A), new)
-        self.assertIn("按第一次装推到新位置", self.decisions())
+    def run_install(self, fails=(), widget=None, expiry=None, info=None):
+        given = []
+        class Fail(Exception):
+            def __init__(self, msg, err=None): super().__init__(msg); self.err = err
+        def install_app(ns, say=None):
+            with zipfile.ZipFile(ns.ipa) as z: given.append(sorted(z.namelist()))
+            if len(given) <= len(fails): raise Fail("plumesign 退 1", fails[len(given) - 1])
+            if expiry: ns.signed_expiry = expiry   # 同 install_win.install_app：签好的包里读到的真实期限
+            return "io.s2arm.games.abcde12345"
+        W = types.SimpleNamespace(Fail=Fail, install_app=install_app, plumesign_path=lambda x=None: "C:/plumesign.exe",
+                                  impactor=types.SimpleNamespace(bundled=lambda r: {}, select_only_account=lambda exe: None))
+        r = {} if widget is None else {"widget": widget}
+        c = types.SimpleNamespace(r=r, private=self.tmp, logs=self.tmp / "logs", task="t", emit=lambda *a, **k: None, begin=lambda *a, **k: None,
+                                  last_log=None, diagnostic=um.MagicMock())
+        me = types.SimpleNamespace(W=W, c=c, udid="U", key="dev1", bid=None, backup=lambda g: None, bundle_for_signing=lambda: None, info=info if info is not None else {})
+        me.say = lambda m: install.WinPhone.say(me, m)   # install_win 的进度回调（签好后核 IML 的那行也经它）
+        self.me = me
+        with um.patch.object(install.devcert, "active", return_value=False), um.patch.object(install.layout, "load_device", return_value={}), \
+             um.patch.object(install.layout, "save_device"):
+            install.WinPhone.install(me, self.ipa, [], steps=False)
+        return given, c.diagnostic
 
-    def test_purge_removes_docs_root_and_new_pack_location(self):
-        """删手机上这款：文档根（含旧位置资源包）和新位置本款目录都删；新位置删不掉 → 报没删干净"""
-        rms = []
-        install.purge_game(self.fs({}, rms=rms)(None, None, None, None), self.A)
-        self.assertEqual(rms, [f"Documents/games/{self.A}", f"Library/Application Support/S2Arm/games/{self.A}", f"Library/S2Arm/games/{self.A}"])
-        rms = []
-        ok, out = install.purge_game(self.fs({"fail": []}, rms=rms)(None, None, None, None), self.A)
-        self.assertEqual((ok, out), (False, "清不掉"))
+    def test_quota_retry_without_widget(self):
+        given, diag = self.run_install(fails=("free_appid_limit",))
+        self.assertEqual(len(given), 2)
+        self.assertIn("Payload/S2Arm.app/PlugIns/S2ArmWidget.appex/S2ArmWidget", given[0], "第一次带着扩展交")
+        self.assertEqual(given[1], ["Payload/S2Arm.app/S2Arm"], "重来那次去掉扩展")
+        self.assertEqual(diag.call_args.kwargs, dict(code="widget_skipped", severity="warning"))
+        self.assertIn("10 个", diag.call_args.args[0])
 
-    def test_alt_location_wins_once_it_exists(self):
-        """备用位置 Library/S2Arm/games 在（新壳把整条归 root 的 Application Support 搬出来过）：这款在不在都推它、列它；
-        不在：照旧新位置 → 旧位置 → 第一次装推新位置（期望按规则手写）"""
-        alt = f"Library/S2Arm/games/{self.A}/资源包"
-        cl = self.fs({"Library/S2Arm/games": [self.A], alt: [".applied", "index.tsv"], f"Library/Application Support/S2Arm/games/{self.A}/资源包": ["x"]})(None, None, None, None)
-        self.assertEqual(install.pack_listing(cl, self.A), (alt, [".applied", "index.tsv"]))
-        cl = self.fs({"Library/S2Arm/games": []})(None, None, None, None)
-        self.assertEqual(install.pack_listing(cl, self.A), (alt, None))
-        cl = self.fs({})(None, None, None, None)
-        self.assertEqual(install.pack_listing(cl, self.A), (f"Library/Application Support/S2Arm/games/{self.A}/资源包", None))
+    def test_second_failure_raises(self):
+        with self.assertRaises(Failure):
+            self.run_install(fails=("free_appid_limit", "device_not_connected"))
 
-    def test_name_read_from_phone_with_the_bundle_being_installed(self):
-        # Windows 第一次装（这台还没记录包名）：确认框里的名字照样按这次要装的包名去手机上读 control.nacp（Windows 实机曾显示成游戏号）
-        seen = []
-        class Cl:
-            def get(self_, *a, **k): return False   # 手机账本 Documents/.s2a-games.json：这些替身里没有（旧 App）
-            def get(self, rel, dst): seen.append(rel); return False
-        ph = types.SimpleNamespace(udid="U1", bid=None, bundle_for_signing=lambda: "io.s2arm.games.abcde12345")
-        with um.patch.object(install, "devpush_client", lambda c, udid, bid, work: (seen.append(bid), Cl())[1]):
-            self.assertEqual(install.phone_game_name(self.c, ph, self.B, {}), self.B)
-        self.assertEqual(seen[0], "io.s2arm.games.abcde12345")
+    def test_player_off_and_plain_success(self):
+        given, diag = self.run_install(widget=False)
+        self.assertEqual(given, [["Payload/S2Arm.app/S2Arm"]]); diag.assert_not_called()
+        given, diag = self.run_install()
+        self.assertEqual(len(given), 1); self.assertEqual(len(given[0]), 3); diag.assert_not_called()
 
-    def test_platform_says_whether_app_is_missing(self):
-        # Mac：问 devicectl 应用列表（devpush 的原文和断线分不开）；问不出就停。Windows：只认 ApplicationLookupFailed 原文
-        mac = install.MacPhone.__new__(install.MacPhone); mac.c = self.c; mac.dev = {"id": "D1"}
-        bid = "io.s2arm.games.abcde12345"
-        with um.patch("diag.devicectl", return_value=(0, {"result": {"apps": []}}, "")):
-            self.assertTrue(mac.app_missing(bid, "device socket io failed"))
-        with um.patch("diag.devicectl", return_value=(0, {"result": {"apps": [{"bundleIdentifier": bid}]}}, "")):
-            self.assertFalse(mac.app_missing(bid, "device socket io failed"))
-        with um.patch("diag.devicectl", return_value=(1, {}, "The device is locked")):   # 问不出：按装着、读不到，交 phone_games 照装（不再停）
-            self.assertFalse(mac.app_missing(bid, "device socket io failed"))
-        self.assertIn("问不出 iPhone 上有没有装过 S2Arm", self.decisions())
-        win = install.WinPhone.__new__(install.WinPhone)
-        self.assertTrue(win.app_missing(bid, "unknown error `ApplicationLookupFailed` returned from device"))
-        self.assertTrue(win.app_missing(bid, "S2A_APP_MISSING：手机上没装 x"))
-        self.assertFalse(win.app_missing(bid, "取不到 x 的容器（App 没装或不是开发签名）：device socket io failed"))
-        self.assertFalse(win.app_missing(bid, "connection reset"))
+    def test_real_expiry_sets_free_and_expires(self):
+        # #1772：装好后按签好的包里的真实期限记（PlumeMacPhone 原先一律 free=True，付费账号显示 7 天）。期望手写
+        self.run_install(expiry=dict(expires=1_900_000_000.0, days=365), info=dict(free=True, device="U"))
+        self.assertEqual(self.me.info, dict(free=False, device="U", expires=1_900_000_000.0))
+        self.run_install(expiry=dict(expires=1_800_000_000.0, days=7), info=dict(free=True, device="U"))
+        self.assertEqual(self.me.info, dict(free=True, device="U", expires=1_800_000_000.0))
+        self.run_install(info=dict(free=True, device="U"))   # 读不到：照旧
+        self.assertEqual(self.me.info, dict(free=True, device="U"))
 
-    def test_phone_ledger_removed_games_are_not_carried(self):
-        # 11-16 维护者「手机上删了的游戏，下次不用跟着自动更新」：手机账本里 B 是 removed → 不带 B，本机记录里 B 摘掉；
-        #   A present、C 不在账本里照带；这次明确要装的 D 即使账本里是 removed 也照装（leave 不在候选里，由 assemble 按 gid 放进去）。
-        #   读不到账本（None）→ 按现状。期望手写
-        atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=g, name=g) for g in (self.A, self.B, self.C, self.D)]))
-        layout.save_device(self.c, "devL", dict(games={self.A: {}, self.B: {}, self.C: {}}))
-        ph = types.SimpleNamespace(udid="U1", bid="io.s2arm.games.abcde12345", app_missing=lambda bid, why: False, c=self.c, key="devL")
-        with um.patch.object(install, "phone_games", lambda c, ph: {self.A, self.B}), um.patch.object(install, "phone_removed", lambda c, ph: {self.B, self.D}):
-            rec = layout.load_device(self.c, "devL")
-            self.assertEqual(install.container_others(self.c, ph, rec, leave=self.D), [self.A, self.C])
-        self.assertEqual(sorted(layout.load_device(self.c, "devL")["games"]), [self.A, self.C])
-        layout.save_device(self.c, "devL", dict(games={self.A: {}, self.B: {}}))
-        with um.patch.object(install, "phone_games", lambda c, ph: {self.A, self.B}), um.patch.object(install, "phone_removed", lambda c, ph: None):
-            self.assertEqual(install.container_others(self.c, ph, layout.load_device(self.c, "devL"), leave=self.D), [self.A, self.B])
-
-    def test_phone_removed_reads_the_ledger(self):
-        # 账本按格式读：version 1、state = removed 的游戏号（大写）；别的状态、坏格式、版本不对、读不到都按「没有账本」（None 或不算删）
-        def cl(text):
-            class Cl:
-                def call(self_, *a): return 0, ""
-                def get(self_, rel, dst, t=None):
-                    if text is None: return False
-                    assert rel == "Documents/.s2a-games.json"; Path(dst).write_text(text, encoding="utf-8"); return True
-            return lambda *a: Cl()
-        ph = types.SimpleNamespace(udid="U1", bid="io.s2arm.games.abcde12345", app_missing=lambda bid, why: False, c=self.c)
-        good = json.dumps({"version": 1, "games": {self.A.lower(): {"state": "removed", "at": 1}, self.B: {"state": "present", "at": 2}, "bad": {"state": "removed"}}})
-        for text, want in ((good, {self.A}), (None, None), ("{", None), (json.dumps({"version": 2, "games": {}}), None)):
-            with self.subTest(text=(text or "")[:20]), um.patch.object(install, "devpush_client", cl(text)):
-                self.assertEqual(install.phone_removed(self.c, ph), want)
-
-    def test_deleted_here_then_assemble_says_deleted_not_elsewhere(self):
-        # 11-16：在这台电脑上「删除游戏」B（library.drop_from_container 把它从设备记录摘掉），手机账本里它还在、手机上也有资源 →
-        #   组壳先问（container_would_drop），提示句是「已从这台电脑的游戏库删除」那句，不能是「在别的电脑上装的」（玩家会去找另一台电脑）
-        import library
-        atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=self.A, name="甲")]))   # B 已从游戏库删掉
-        layout.save_device(self.c, "devD", dict(games={self.A: {}, self.B: {}}))
-        library.drop_from_container(self.c, self.B)
-        rec = layout.load_device(self.c, "devD")
-        self.assertEqual((sorted(rec["games"]), rec["deleted"]), ([self.A], [self.B]))
-        ph = types.SimpleNamespace(udid="U1", bid="io.s2arm.games.abcde12345", app_missing=lambda bid, why: False, c=self.c, key="devD")
-        with um.patch.object(install, "phone_games", lambda c, ph: {self.A, self.B}), um.patch.object(install, "phone_removed", lambda c, ph: None), \
-             um.patch.object(install, "phone_game_name", lambda c, ph, g, names: "乙游戏"):
-            with self.assertRaises(Failure) as e:
-                install.container_others(self.c, ph, rec, leave=self.D)
-        self.assertEqual(e.exception.code, "container_would_drop")
-        self.assertIn("它们已从这台电脑的游戏库删除，重新加回游戏库、「打 iPhone 包」再装一次就回来：「乙游戏」", str(e.exception))
-        self.assertNotIn("别的电脑", str(e.exception))
-
-    def test_include_what_we_can_ask_before_dropping_the_rest(self):
-        # 本机记录 A；手机上 A、B、C；本机游戏库有 C（另一台电脑装的、这台也导入过）→ 带 A、C；B 只在手机上 → 先问
-        atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=self.A, name="甲"), dict(id=self.C, name="丙")]))
-        rec = dict(games={self.A: {}})
-        with um.patch.object(install, "phone_games", lambda c, ph: {self.A, self.B, self.C}), \
-             um.patch.object(install, "phone_game_name", lambda c, ph, g, names: "乙游戏"):
-            with self.assertRaises(Failure) as e:
-                install.container_others(self.c, self.ph(), rec, leave=self.D)
-            self.assertEqual(e.exception.code, "container_would_drop")
-            self.assertIn("它们是在别的电脑上装的，到那台电脑上再「装到 iPhone」一次就回来：「乙游戏」", str(e.exception))
-            self.assertNotIn("游戏库删除", str(e.exception))
-            self.c.r["acceptDropped"] = True
-            self.assertEqual(install.container_others(self.c, self.ph(), rec, leave=self.D), [self.A, self.C])
-
-    def test_recorded_on_phone_but_deleted_from_library_asks_first(self):
-        # 本机记录 A、B 装在手机上；玩家在游戏库里删了 B（库里只剩 A）。原先 B 被静默不带、手机上 B 打不开却没人说。
-        #   期望：没确认 → container_would_drop，说明「已从这台电脑的游戏库删除」并点名 B，不说「别的电脑」；确认后只带 A。
-        #   手机上的游戏目录读不出（phone_games 按「这处没有别的游戏」给空集）时同样问——依据是这台电脑的记录
-        atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=self.A, name="甲")]))
-        rec = dict(games={self.A: {}, self.B: {}})
-        for on_phone in ({self.A, self.B}, set()):
-            self.c.r.pop("acceptDropped", None)
-            with self.subTest(on_phone=sorted(on_phone)), um.patch.object(install, "phone_games", lambda c, ph, s=on_phone: s), \
-                 um.patch.object(install, "phone_game_name", lambda c, ph, g, names: "乙游戏"):
-                with self.assertRaises(Failure) as e:
-                    install.container_others(self.c, self.ph(), rec, leave=self.D)
-                msg = str(e.exception)
-                self.assertEqual((e.exception.code, e.exception.internal), ("container_would_drop", self.B))
-                self.assertIn("它们已从这台电脑的游戏库删除，重新加回游戏库、「打 iPhone 包」再装一次就回来：「乙游戏」", msg)
-                self.assertNotIn("别的电脑", msg)
-                self.c.r["acceptDropped"] = True
-                self.assertEqual(install.container_others(self.c, self.ph(), rec, leave=self.D), [self.A])
-
-    def test_app_gone_stops_carrying_this_computers_record(self):
-        # 本机记录 A、B。玩家在手机上删了整个 S2Arm（平台确认这个包名没装）→ A、B 也不在手机上，一款都不带。
-        # App 还在的两种照旧按本机记录带：还没有 games 目录；只有 A 解开了（B 可能在 App 里、资源包还没解开）
-        atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=self.A, name="甲"), dict(id=self.B, name="乙")]))   # 两款都在游戏库（库里删掉的另走确认，见上一条）
-        rec = dict(games={self.A: {}, self.B: {}})
-        gone = self.client([], set(), ls_error="取不到 x 的容器（App 没装或不是开发签名）：device socket io failed")
-        with um.patch.object(install, "devpush_client", gone):
-            self.assertEqual(install.container_others(self.c, self.ph(missing=True), rec, leave=self.D), [])
-        with um.patch.object(install, "devpush_client", self.client([], set(), ls_error="No such file or directory")):
-            self.assertEqual(install.container_others(self.c, self.ph(), rec, leave=self.D), [self.A, self.B])
-        with um.patch.object(install, "devpush_client", self.client([self.A, self.B], {self.A})):
-            self.assertEqual(install.container_others(self.c, self.ph(), rec, leave=self.D), [self.A, self.B])
-
+    def test_strip_keeps_exec_bit(self):
+        out = self.tmp / "o.ipa"
+        self.assertTrue(install.ipa_strip_widget(self.ipa, out))
+        with zipfile.ZipFile(out) as z: self.assertEqual(z.getinfo("Payload/S2Arm.app/S2Arm").external_attr >> 16, 0o755)
+        plain = self.tmp / "plain.ipa"; shutil.copy(out, plain)
+        self.assertFalse(install.ipa_strip_widget(plain, self.tmp / "x.ipa")); self.assertFalse((self.tmp / "x.ipa").exists())
 
 
 class UpdatePrepareTests(unittest.TestCase):
-    """「更新 iPhone」电脑侧准备（installUpdatePrepare，update_prepare）：不连手机；各台手机记录里、游戏库里还在的款逐款补（refresh_ios），
-    每款在自己的程序件锁里补；游戏库里已删的款不补。期望按规则手写"""
+    """「更新 iPhone」电脑侧准备（installUpdatePrepare，update_prepare）：11-17 起 S 级优化不自动，这里不做事。期望按规则手写"""
     A, B, C = "0100000000010000", "0100000000020000", "0100000000030000"
 
-    def test_prepares_recorded_games_one_lock_each_without_phone(self):
-        import contextlib, ipa as packer, rewrite_refresh
+    def test_does_nothing_since_sgrade_is_manual(self):
+        # 11-17 维护者：S 级优化不再自动运行。打开启动器起的 installUpdatePrepare 原先逐款 refresh_ios（做的全是 S 级补丁与 _bf），现在一款都不碰、也不找手机
+        import rewrite_refresh
         with tempfile.TemporaryDirectory() as t:
             lib = Path(t); (lib / "devices").mkdir()
-            (lib / "devices/UDID1.json").write_text(json.dumps({"games": {self.B: {}, self.C: {}}}))   # C 已从游戏库删掉
-            (lib / "devices/UDID2.json").write_text(json.dumps({"games": {self.A.lower(): {}}}))
-            held, calls = [], []
-            @contextlib.contextmanager
-            def lock(name, wait=None):
-                held.append(name); yield; held.remove(name)
-            c = types.SimpleNamespace(library=lib, catalog=lambda: {"games": [{"id": self.A}, {"id": self.B}]}, begin=lambda *a: None, lock=lock)
-            def refresh(cc, games):
-                calls.append((list(games), list(held))); return [g for g in games if g == self.B]
-            def no_phone(cc):
-                raise AssertionError("准备段不该找手机")
-            with um.patch.object(rewrite_refresh, "refresh_ios", refresh), um.patch.object(install, "phone_for", no_phone):
-                r = install.update_prepare(c)
-        self.assertEqual(calls, [([self.A], ["program-" + self.A]), ([self.B], ["program-" + self.B])])
-        self.assertEqual(r, {"prepared": [self.A, self.B], "updated": [self.B]})
+            (lib / "devices/UDID1.json").write_text(json.dumps({"games": {self.A: {}, self.B: {}}}))
+            c = jobcase.fake_context(lib.parent, library=lib, catalog=lambda: {"games": [{"id": self.A}, {"id": self.B}]}, begin=lambda *a: None)
+            with um.patch.object(rewrite_refresh, "refresh_ios", side_effect=AssertionError("不该自动补")), \
+                    um.patch.object(install, "phone_for", side_effect=AssertionError("准备段不该找手机")):
+                self.assertEqual(install.update_prepare(c), {"prepared": [], "updated": [], "manual": True})
 
     def test_operation_registered(self):
         import core

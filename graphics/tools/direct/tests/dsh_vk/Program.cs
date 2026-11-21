@@ -5,11 +5,16 @@
 //      本文件自己解析 SPIR-V，不用 BindToArgIds），//      组合纹理变量对的是 texture 成员，不是 …Smplr；
 //   ③ 每个 _b.spv 过 spirv-val --target-env vulkan1.1。
 //   反证：④ 翻译器原样的 .spv（未改写）在本夹具上至少一个资源对不上 arg_id，判据不会绿着失效；
-//   ⑤ json 里删掉一个 .spv 有的成员 → BindToArgIds 报红，不静默；⑥ json 里改一个 arg_id → 改写结果跟着变，对原 json 判不一致；
+//   ⑤ json 里删掉一个 .spv 有的成员 → BindToArgIds 报红，不静默（⑪ 字面量撞上变量 id 不算引用）；⑥ json 里改一个 arg_id → 改写结果跟着变，对原 json 判不一致；
 //   ⑦ 把 json 里没有的 support_buffer 经 OpCopyObject 在函数体里取用一次 → 判为「用到了却没有成员」报红，不挪到空号。
 //   ⑧ vs 与 ps 合在一个管线布局里不撞号：两阶段 arg_id 0 / 1 的绑定号手算为 vs 0 / 6、ps 4 / 10，两阶段全部绑定号互不相同（安卓 backend_vulkan.c 按 (set, binding) 合并）；
 //   ⑨ 出包模式（DshCompiler.PackOut）：输出目录不建、json 取自 PackFiles、_b.spv 进 DshVk.PackSpv，且与落盘那份逐字节相同；
-//   ⑩ gs / hs / ds 调 CompileWithSpv 报 DshError（不出 .spv）。
+//   ⑩ gs / hs / ds 调 CompileWithSpv 报 DshError（不出 .spv）；
+//   ⑫ 几何着色器走 DshVk.CompileGeometry（原生几何阶段，安卓离线库收几何）：手写 GS（读 c3、采样纹理槽 0、读输入位置、写位置与通用输出 0、发射一个顶点），
+//      出点 / 线 / 三角三份 _vg<t>.json + _vg<t>.spv 恰好 6 个文件；每份 json stage = gs、dm_ctl = 键、gs_input_topology = t，
+//      反射里有 cbuf reg 0 与 tex reg 0（手算：LDC c3 → 用户常量槽 0；TEXS 句柄字 8 → 纹理槽 0）；.spv 入口是 Geometry、输入图元执行模式随 t
+//      （InputPoints 19 / InputLines 20 / Triangles 22），每个资源变量 (set, binding) = (0, arg_id × 6 + 3)、spirv-val 过；
+//      反证：同一份按阶段号 4 判必不一致（判据不会绿着失效）；直通型几何头（字 0 位 24）GeometrySkip 给原因、CompileGeometry 报 DshError。
 // 夹具：控制段 0x880 字节全零（c1 / VertexA/B / 变换反馈都空），+0x10 放阶段号只为键不同；代码区 = 0x30 前缀 + SPH（计算着色器 = 0x12345679 头 + 0x100 起指令），
 //   编码按 compat/tree/src/Ryujinx.Graphics.Shader/Decoders/InstTable.cs / InstDecoders.cs；答案表 / 配对表为空表（全部按缺省答）。没有游戏内容。
 // libdsx（--dsx，必给）：Finish 对片元调 NxgalSpvCross.ColorRound，Compile 对所有阶段交 SPIRV-Cross 前先调 NxgalSpvCross.Harden（main de14970a6，#1204 T1），
@@ -51,6 +56,27 @@ static class Program
         BitConverter.TryWriteBytes(h.AsSpan(0x30), word0);
         if (omapByte >= 0) h[0x30 + 72] = (byte)omapByte;
         return h;
+    }
+
+    // ⑫ 几何：ALD / AST / OUT 编码按 InstTable.cs（ALD 1110111111011…、AST 1110111111110…、OUT(R) 1111101111100…）与 InstDecoders.cs 字段
+    //   （ALD/AST：Rd/数据 0–7、Ra 8–15、谓词 16–18、Imm11 属性字节地址 20–30、顶点 Rb/Rc 39–46、AlSize 47–48；OUT：OutType 39–40，1 = EMIT、2 = CUT）
+    static ulong Ald(int rd, int attr, int alSize) => (0b1110111111011UL << 51) | ((ulong)alSize << 47) | (255UL << 39) | ((ulong)attr << 20) | (7UL << 16) | (255UL << 8) | (ulong)rd;
+    static ulong Ast(int rs, int attr, int alSize) => (0b1110111111110UL << 51) | ((ulong)alSize << 47) | (255UL << 39) | ((ulong)attr << 20) | (7UL << 16) | (255UL << 8) | (ulong)rs;
+    static ulong Out(int type) => (0b1111101111100UL << 51) | ((ulong)type << 39) | (255UL << 20) | (7UL << 16) | (255UL << 8) | 255UL;
+    static (byte[] Code, byte[] Ctl) GeometryFixture(bool passthrough)
+    {
+        var h = Sph(1u | (3u << 5) | (4u << 10) | (passthrough ? 1u << 24 : 0u), -1);
+        BitConverter.TryWriteBytes(h.AsSpan(0x30 + 8), 1u << 24);   // 字 2：每输入图元 1 个调用
+        BitConverter.TryWriteBytes(h.AsSpan(0x30 + 12), 7u << 24);  // 字 3：输出拓扑 7 = 三角带
+        BitConverter.TryWriteBytes(h.AsSpan(0x30 + 16), 3u);        // 字 4：最多输出 3 个顶点
+        var code = Bundles(h, new[] {
+            Ald(0, 0x70, 3),                                                // R0–R3 = 输入顶点 0 的位置
+            Mov32i(6, 0x3f000000), Mov32i(7, 0x3f000000), Texs2D(5, 6, 7, 8), // R5 = 纹理槽 0 采样
+            Ldc(4, 3, 0, 4),                                                // R4 = c3[0]
+            Ast(0, 0x70, 3), Ast(4, 0x80, 0), Ast(5, 0x84, 0),              // 位置 + 通用输出 0 的 x / y
+            Out(1), Out(2), EXIT });
+        var ctl = new byte[0x880]; ctl[0x10] = 4;
+        return (code, ctl);
     }
 
     static (string Stage, byte[] Code, byte[] Ctl)[] Fixtures()
@@ -129,6 +155,28 @@ static class Program
         return b;
     }
 
+    // ⑪ 用：往第一个函数体插一条 OpExtInst，它的指令号（字面量）恰好等于 varName 变量的 id——变量并没被引用，只是数值撞上
+    static byte[] InjectExtInstLiteral(byte[] spv, string varName)
+    {
+        var w = new uint[spv.Length / 4]; Buffer.BlockCopy(spv, 0, w, 0, w.Length * 4);
+        var names = new Dictionary<uint, string>(); var vars = new HashSet<uint>(); int label = -1; bool inFn = false; uint ext = 0;
+        for (int i = 5; i < w.Length;)
+        {
+            int n = (int)(w[i] >> 16), op = (int)(w[i] & 0xffff);
+            if (op == 5) { var bytes = new List<byte>(); for (int k = i + 2; k < i + n; k++) bytes.AddRange(BitConverter.GetBytes(w[k])); int z = bytes.IndexOf(0); names[w[i + 1]] = System.Text.Encoding.UTF8.GetString(bytes.Take(z < 0 ? bytes.Count : z).ToArray()); }
+            if (op == 11 && ext == 0) ext = w[i + 1];   // OpExtInstImport
+            if (op == 59 && n >= 4) vars.Add(w[i + 2]);
+            if (op == 54) inFn = true;
+            if (op == 248 && inFn && label < 0) label = i + n;
+            i += n;
+        }
+        uint vid = names.First(kv => kv.Value == varName && vars.Contains(kv.Key)).Key, id = w[3];
+        var list = w.ToList(); list[3] = id + 1;
+        list.InsertRange(label, new[] { (6u << 16) | 12, 1u, id, ext == 0 ? 1u : ext, vid, 1u });   // 类型 / 操作数随便给：这里只看 BindToArgIds 怎么解析
+        var b = new byte[list.Count * 4]; Buffer.BlockCopy(list.ToArray(), 0, b, 0, b.Length);
+        return b;
+    }
+
     static int bad;
     static void Check(string what, bool ok, string detail = "")
     {
@@ -199,6 +247,9 @@ static class Program
                 string why7 = null;
                 try { DshVk.BindToArgIds(InjectCopy(raw, "support_buffer"), bindings, "ps"); } catch (DshError e) { why7 = e.Detail; }
                 Check("⑦ json 里没有的 support_buffer 经 OpCopyObject 取用 → 报「用到了却没有成员」", why7 != null && why7.Contains("support_buffer") && why7.Contains("用到"), why7 ?? "没有报错（被挪到空号）");
+                string why11 = null;
+                try { DshVk.BindToArgIds(InjectExtInstLiteral(raw, "support_buffer"), bindings, "ps"); } catch (DshError e) { why11 = e.Detail; }
+                Check("⑪ 函数体里 OpExtInst 的指令号字面量恰好等于 support_buffer 的 id（没被引用）→ 不报红、照旧挪到空号", why11 == null, why11 ?? "");
             }
         }
         Check($"④ 翻译器原样的 .spv 对不上 arg_id 的资源数 > 0（{rawDiff} 个）", rawDiff > 0);
@@ -238,6 +289,53 @@ static class Program
             catch (DshError) { refused.Add(st); }
         }
         Check($"⑩ gs / hs / ds 调 CompileWithSpv 报 DshError（{string.Join(" ", refused)}）", refused.Count == 3);
+
+        // ⑫ 原生几何阶段：CompileGeometry 出点 / 线 / 三角三份
+        var (gcode, gctl) = GeometryFixture(false);
+        string gkey = Convert.ToHexStringLower(SHA256.HashData(gctl.AsSpan(0, 0x880)))[..16];
+        Dictionary<string, byte[]> gfiles = null; string gwhy = "";
+        try { gfiles = DshVk.CompileGeometry(gkey, gcode, gctl, xc, tables, root); }
+        catch (Exception e) { gwhy = e is DshError de ? de.Status + ": " + de.Detail : e.GetType().Name + ": " + e.Message; }
+        var gwant = new[] { 0, 1, 3 }.SelectMany(t => new[] { $"{gkey}_vg{t}.json", $"{gkey}_vg{t}.spv" }).OrderBy(n => n, StringComparer.Ordinal).ToList();
+        Check($"⑫ CompileGeometry 出 6 个文件（_vg0 / _vg1 / _vg3 各 json + spv）", gfiles != null && gfiles.Keys.OrderBy(n => n, StringComparer.Ordinal).SequenceEqual(gwant),
+            gfiles == null ? gwhy : string.Join(",", gfiles.Keys));
+        var modeOf = new Dictionary<int, uint> { [0] = 19, [1] = 20, [3] = 22 };   // InputPoints / InputLines / Triangles
+        foreach (int t in new[] { 0, 1, 3 })
+        {
+            if (gfiles == null || !gfiles.ContainsKey($"{gkey}_vg{t}.json")) break;
+            var gj = JsonNode.Parse(gfiles[$"{gkey}_vg{t}.json"]).AsObject();
+            var gb = gj["bindings"].AsArray();
+            byte[] gspv = gfiles[$"{gkey}_vg{t}.spv"];
+            var w = new uint[gspv.Length / 4]; Buffer.BlockCopy(gspv, 0, w, 0, w.Length * 4);
+            uint model = uint.MaxValue; var modes = new List<uint>();
+            for (int i = 5; i < w.Length;)
+            {
+                int n = (int)(w[i] >> 16), op = (int)(w[i] & 0xffff);
+                if (n == 0) break;
+                if (op == 15 && n >= 2) model = w[i + 1];             // OpEntryPoint：执行模型
+                if (op == 16 && n >= 3) modes.Add(w[i + 2]);          // OpExecutionMode：模式
+                i += n;
+            }
+            bool cb = gb.OfType<JsonObject>().Any(o => (string)o["kind"] == "cbuf" && (long?)o["reg"] == 0);
+            bool tx = gb.OfType<JsonObject>().Any(o => (string)o["kind"] == "tex" && (long?)o["reg"] == 0);
+            Check($"⑫ _vg{t}.json：stage gs、dm_ctl = 键、gs_input_topology = {t}、反射有 cbuf reg 0 与 tex reg 0",
+                (string)gj["stage"] == "gs" && (string)gj["dm_ctl"] == gkey && (long?)gj["gs_input_topology"] == t && cb && tx, gj.ToJsonString());
+            Check($"⑫ _vg{t}.spv：入口执行模型 Geometry（3）、输入图元模式 {modeOf[t]}", model == 3 && modes.Contains(modeOf[t]) && modes.Count(m => m is 19 or 20 or 21 or 22 or 23) == 1,
+                $"model {model} modes {string.Join(",", modes)}");
+            var gres = Resources(gspv);
+            var gmm = Mismatch(gres, gb, 3);
+            Check($"⑫ _vg{t}.spv 每个资源变量 (set, binding) = (0, arg_id × 6 + 3)：{string.Join(" ", gres.Select(r => r.Key + "=" + r.Value.Binding))}", gres.Count >= 2 && gmm.Count == 0, string.Join("；", gmm));
+            Check($"⑫ 反证：_vg{t}.spv 按阶段号 4 判必不一致", Mismatch(gres, gb, 4).Count > 0);
+            string gp = Path.Combine(root, $"gs_vg{t}.spv"); File.WriteAllBytes(gp, gspv);
+            var vp = Process.Start(new ProcessStartInfo(val) { ArgumentList = { "--target-env", "vulkan1.1", gp }, RedirectStandardError = true, RedirectStandardOutput = true });
+            string verr = vp.StandardError.ReadToEnd() + vp.StandardOutput.ReadToEnd(); vp.WaitForExit();
+            Check($"⑫ _vg{t}.spv spirv-val --target-env vulkan1.1", vp.ExitCode == 0, verr.Trim());
+        }
+        var (pcode2, pctl2) = GeometryFixture(true);
+        string pwhy = null;
+        try { DshVk.CompileGeometry("pt" + gkey[2..], pcode2, pctl2, xc, tables, root); } catch (DshError e) { pwhy = e.Detail; }
+        Check("⑫ 直通型几何头：GeometrySkip 给原因、CompileGeometry 报 DshError（离线不出，设备现编）",
+            DshVk.GeometrySkip(pcode2, pctl2) is string sk && sk.Contains("passthrough") && pwhy != null && pwhy.Contains("passthrough") && DshVk.GeometrySkip(gcode, gctl) == null, pwhy ?? "没有报错");
         Console.WriteLine(bad == 0 ? "dsh_vk: 全过" : "dsh_vk: 有不通");
         return bad;
     }

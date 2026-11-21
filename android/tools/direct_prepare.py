@@ -30,6 +30,8 @@ import sys
 import tempfile
 
 import direct_library
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'translator'))
+import nvn_key  # Switch 1 shader key rule (same as the host's nvn_key.h)
 
 LIMIT = 64 << 20
 TOTAL_LIMIT = 256 << 20
@@ -114,10 +116,8 @@ def records(raw):
 
 def extraction_key(code, control):
     # Existing extract/merge index rule ONLY; not runtime canonical identity.
-    size = struct.unpack_from('<I', control, 0x20)[0]
-    size = size if 0x760 <= size < 0x880 else 0x880
-    require(len(control) >= size, 'control shorter than extraction key range')
-    return hashlib.sha256(control[:size] + code).hexdigest()[:16]
+    require(len(control) >= nvn_key.ctl_len(control), 'control shorter than extraction key range')
+    return nvn_key.skey(control, code)
 
 
 def unique_object(pairs):
@@ -260,7 +260,7 @@ def candidate_identity(raw, encoder):
     # Uncaptured tails are excluded from runtime source identity. Reject them
     # here rather than assigning the same identity to different compiler inputs.
     require(len(control) == own, 'candidate identity requires exact captured control length')
-    source_sha = hashlib.sha256(control + code).hexdigest()
+    source_sha = hashlib.sha256(nvn_key.key_bytes(control) + code).hexdigest()  # = source_store.c content digest (volatile spans zeroed)
     profile_bytes = json.dumps(request['profile'], ensure_ascii=False, separators=(',', ':')).encode()
     gfx = dict.fromkeys(GRAPHICS_INTS, 0)
     gfx.update(topology=None, alpha_test_compare=None, tess_mode=0, point_size=0,

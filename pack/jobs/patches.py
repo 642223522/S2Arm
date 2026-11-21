@@ -282,6 +282,21 @@ def pso_dir(c, game):
     return str(d) if d.is_dir() and any(d.glob("*.tsv")) else None
 
 
+def seed_sources(c, game):
+    """交给管线种子阶段的额外来源（S2A_PSO_SOURCES_EXTRA，系统分隔符，graphics/tools/direct/run_knowledge.py 排在本机 pso_seed/ 之后、按这里的先后）：
+    ① 玩家自己 iPhone 上真跑见过的（装机前 install.pull_seen 拉回的 games/<程序号>/seen/*.tsv，同 pso_user.tsv 格式；11-20：原先只给两段式热键用，
+       重新出包时这些管线不进种子，玩过的场景照旧首遇现编）② 云端统一包里这款的管线种子（pso_dir）。都没有 = None"""
+    import layout
+    out = []
+    seen = layout.path(c, game["id"].upper(), "seen", create=False)
+    if seen.is_dir() and any(seen.glob("*.tsv")):
+        out.append(str(seen))
+    cloud = pso_dir(c, game)
+    if cloud:
+        out.append(cloud)
+    return os.pathsep.join(out) or None
+
+
 def prepare(c, game, extraction, env, target="mac"):
     """出包作业在解包之后、改写之前调（build.prepare：Mac / ipa.build：target="ios"）：金手指与补丁都按真构建号查库，结果交改写阶段的环境变量。
     出包页「S 级优化（Beta）」取消勾选（请求 sgrade = false，v0.4.0 维护者：缺省勾上、玩家可取消）= 这次出包不带社区补丁与金手指（原生方案）：
@@ -294,7 +309,7 @@ def prepare(c, game, extraction, env, target="mac"):
         pass
     if off:
         env["S2A_CPATCH"] = "none"; env.pop("S2A_CPATCH_DIRS", None); env.pop("S2A_CHEATS_DIRS", None)
-        seed = pso_dir(c, game)
+        seed = seed_sources(c, game)
         if seed:
             env["S2A_PSO_SOURCES_EXTRA"] = seed
         print("补丁：出包页取消了 S 级优化，这次不带社区补丁与金手指", file=sys.stderr)
@@ -303,10 +318,11 @@ def prepare(c, game, extraction, env, target="mac"):
     try:
         cheats.fetch(c, game)
         d = cheats.cheats_dir(c, game["id"].upper(), create=False)
-        if d.is_dir() and any(f.name not in cheats.SKIP for f in d.glob("*.txt")):
+        import layout
+        if any(f.name not in cheats.SKIP for f in layout.entries(d, "*.txt")):   # 不算 exFAT 的 ._<名>.txt 附属文件
             env["S2A_CHEATS_DIRS"] = str(d)
         dirs = fetch(c, game, os.path.join(str(extraction), "exefs"), target)
-        seed = pso_dir(c, game)
+        seed = seed_sources(c, game)
         if seed:
             env["S2A_PSO_SOURCES_EXTRA"] = seed
     except Exception as e:   # 查库是附加：任何意外都不挡出包
@@ -320,6 +336,7 @@ def prepare(c, game, extraction, env, target="mac"):
 #   读产物根里编译器自己的记录（pack/cpatch.py plan / prune）：cpatch.tsv = 最终打进去的；cpatch_plan.log 的「收 / 不收 / 移植不了」行与
 #   cpatch_excluded.tsv（改写器缺口剔掉的）= 没打上的及原因。原因翻成玩家看得懂的话；本来就不该打的（版本不对、同画幅已收另一份、本款有我方帧率表）不算失败、不列
 _WHY = (   # (原因里出现的字样, 给玩家的话)；None = 不算失败
+    (("没写构建号",), "result.why.nobid"),  # 非玩家句（#1321：金手指文件没写构建号，出包核不了版本、不编进包；要告诉玩家，pack/cpatch.py scan_cheats）
     (("FPSLocker 配置不支持",), "result.why.unsupported"),  # 非玩家句（pack/cpatch.py：FPSLocker 配置里有 S2Arm 还不支持的写法，#934）
     (("mod 构建号对不上",), "result.why.version"),  # 非玩家句（玩家自己导入的 mod 是别的版本的：要告诉玩家，pack/cpatch.py scan mod_miss）
     (("版本不对", "同画幅", "我方帧率表"), None),  # 非玩家句

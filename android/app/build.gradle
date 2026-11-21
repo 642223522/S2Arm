@@ -212,7 +212,7 @@ android {
         // One app per game, keyed by the stable title id (an application id segment starts with a letter).
         applicationId gameDir ? "org.s2arm.game.t${game.titleId.toLowerCase()}" : 'org.s2arm.android'
         manifestPlaceholders = [appLabel: gameDir ? '@string/game_name' : '@string/app_name',
-                                appIcon: gameDir ? '@drawable/ic_launcher' : '@drawable/ic_s2arm',
+                                appIcon: gameDir ? (game.launcherIcon == 'game' ? '@mipmap/game_icon' : '@drawable/ic_launcher') : '@drawable/ic_s2arm',
                                 screenOrientation: gameDir ? 'sensorLandscape' : 'unspecified']
         testInstrumentationRunner project.findProperty('s2arm.testRunner') ?: 'org.s2arm.android.GamepadMappingInstrumentation'
         // Same switch as the native S2A_ANDROID_EXPERIMENTAL_TOUCH below: the touch menu offers passthrough only when built in.
@@ -237,10 +237,10 @@ android {
             // 编解码静态库（android/codecs/build.sh 产出）；game 模式的链接必需
             arguments "-DS2A_ANDROID_CODEC_LIBS=${System.getenv('S2ARM_ANDROID_CODEC_LIBS') ?: ''}"
             arguments "-DS2A_ANDROID_EXPERIMENTAL_TOUCH=${project.findProperty('s2arm.experimentalTouch') == 'true' ? 'ON' : 'OFF'}"
-            // 共享 NVN 前端 + 生产 direct provider + nvn_vk 后端的编译门（默认关闭；直连包用
-            // S2ARM_ANDROID_VK_ENGINE=1 打开）。名字是历史遗留，旧 d2r 引擎已删除。
-            arguments "-DS2A_ANDROID_VK_ENGINE=${System.getenv('S2ARM_ANDROID_VK_ENGINE') == '1' ? 'ON' : 'OFF'}"
-            // 前端 mtl_* 的后端只剩 nvn_vk（S2Arm 自己的 Vulkan 后端 + mtl_vk_shim.c）
+            // 共享 NVN 前端 + 生产 direct provider + 新回放层（nvk）的编译门：缺省开（旧回放层与只有它能链的
+            //   「引擎关」构建已删除，#1501）。名字是历史遗留；S2ARM_ANDROID_VK_ENGINE=0 会在 CMake 配置时报错，不静默降级。
+            arguments "-DS2A_ANDROID_VK_ENGINE=${System.getenv('S2ARM_ANDROID_VK_ENGINE') == '0' ? 'OFF' : 'ON'}"
+            // 后端只有新回放层 nvk（传别的值 CMake 报错）
             arguments "-DS2ARM_ANDROID_VK_BACKEND=${System.getenv('S2ARM_ANDROID_VK_BACKEND') ?: 'nvk'}"
         } }
     }

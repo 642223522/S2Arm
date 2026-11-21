@@ -13,17 +13,17 @@ endif()
 # 共享 NVN 前端 + 生产 direct provider + S2Arm 自己 Vulkan 后端的编译门。选项名沿用历史
 # S2A_ANDROID_VK_ENGINE（外部脚本与文档都用 S2ARM_ANDROID_VK_ENGINE=1 打开）：名字里的 engine
 # 指已删除的 d2r NVN->Vulkan 回放引擎副本，现在这里只编自有后端。
-# 默认关闭，只有显式开启时才进包（体积 + 编译时间都明显增加）。
-option(S2A_ANDROID_VK_ENGINE "Build the shared NVN frontend + direct provider + nvn_vk backend into the APK" OFF)
-# 前端 mtl_* 的后端实现只剩 nvn_vk（nvn_vk_* + mtl_vk_adapter + mtl_vk_shim.c）。旧值 engine
-# 已删除；传旧值直接报错，不静默回退到别的后端。
-# nvk = 新回放层（docs/设计_Vulkan回放层重搭.md）：回放核心 graphics/nvn/replay + nvn_gpu_* Vulkan 后端 + native/gfx_plat 平台件。
-# 这个取值下构建里不含旧回放与绘制源（mtl_vk_shim / mtl_vk_adapter / vk_record / nvn_vk_first_draw / nvn_vk_texcache …）。
-# 新层达标后删除 nvn_vk 取值与旧源，这个选项又回到只有一个取值。
-set(S2ARM_ANDROID_VK_BACKEND "nvk" CACHE STRING "NVN backend behind the shared frontend: nvk (new replay layer, default) | nvn_vk (old layer, diagnosis only)")
-set_property(CACHE S2ARM_ANDROID_VK_BACKEND PROPERTY STRINGS nvn_vk nvk)
-if(NOT S2ARM_ANDROID_VK_BACKEND MATCHES "^(nvn_vk|nvk)$")
-    message(FATAL_ERROR "S2ARM_ANDROID_VK_BACKEND=${S2ARM_ANDROID_VK_BACKEND}: the old 'engine' backend (d2r Vulkan replay engine) was deleted; use nvn_vk or nvk")
+# 旧回放层（nvn_vk：mtl_vk_shim / mtl_vk_adapter / nvn_vk_* / vk_record …）与只有它能链的「引擎关」直连清单已删除
+# （#1501 owner 11-20 定删）。直连核心现在只有新回放层（nvk = graphics/nvn/replay + nvn_gpu_* Vulkan 后端 + native/gfx_plat 平台件），
+# 它要共享 NVN 前端才链得上，所以引擎缺省开；显式关、或传旧后端名，配置时报错，不静默编一个没有直连核心的库。
+option(S2A_ANDROID_VK_ENGINE "Build the shared NVN frontend + direct provider + nvk replay layer into the APK (required)" ON)
+if(ANDROID AND NOT S2A_ANDROID_VK_ENGINE)
+    message(FATAL_ERROR "S2A_ANDROID_VK_ENGINE=OFF: engine-off builds were removed with the old replay layer (#1501); the nvk direct core needs the shared NVN frontend. Configure with S2A_ANDROID_VK_ENGINE=ON")
+endif()
+set(S2ARM_ANDROID_VK_BACKEND "nvk" CACHE STRING "NVN backend behind the shared frontend: nvk (new replay layer; the only one)")
+set_property(CACHE S2ARM_ANDROID_VK_BACKEND PROPERTY STRINGS nvk)
+if(NOT S2ARM_ANDROID_VK_BACKEND STREQUAL "nvk")
+    message(FATAL_ERROR "S2ARM_ANDROID_VK_BACKEND=${S2ARM_ANDROID_VK_BACKEND}: the old replay layer (nvn_vk) and the d2r 'engine' backend were deleted (#1501); use nvk")
 endif()
 set(S2A_ANDROID_VAMM_LAYOUT "alias" CACHE STRING "Guest virtual memory layout: alias or balanced")
 set_property(CACHE S2A_ANDROID_VAMM_LAYOUT PROPERTY STRINGS alias balanced)
@@ -67,8 +67,6 @@ if(ANDROID)
     include(core-link/NvnDirect.cmake)
     s2a_android_direct_core(s2arm_android)
     if(S2A_ANDROID_VK_ENGINE)
-        # 一次只编一种后端：nvn_vk = S2Arm 自己的 Vulkan 后端（nvn_vk_* + mtl_vk_adapter +
-        # mtl_vk_shim）。旧 d2r 引擎分支随目录删除，不再有第二种后端。
         # NVN 名字表从 names.txt 生成（与 nvn_count.h 的 NVN_NFUNC 同源），不手抄。
         set(s2a_nvn_names "${CMAKE_CURRENT_SOURCE_DIR}/../graphics/nvn/gfx/nvn/names.txt")
         add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/nvn_names_android.c"
@@ -91,25 +89,12 @@ if(ANDROID)
             native/nvn/shader_survey.c)
         # 共享前端同样不跟本仓 -Werror（格式化串/聚合初始化在 Android 上按 64 位 long 处理）。
         set_source_files_properties(${s2a_frontend_c} PROPERTIES COMPILE_OPTIONS "-Wno-error")
-        if(S2ARM_ANDROID_VK_BACKEND STREQUAL "nvk")
-            # 新回放层直接实现 nvn_be_*：没有名字转接头，没有 shim。回放核心与后端源在 LinkSources.cmake 的 nvk 清单里。
-            target_sources(s2arm_android PRIVATE ${s2a_frontend_c}
-                native/gfx_plat/provider_nvk.c native/direct/profile_compose.c)
-            target_compile_definitions(s2arm_android PRIVATE S2A_ANDROID_VK_BACKEND_NVK=1)
-        else()
-            # 共享前端的后端入口名是 main 的 nvn_be_*；本线 Android 后端仍以 mtl_* 实现。
-            # 本兼容头把标识符在编译期对齐（同一批函数、同一套签名），不改任何一方的函数体。
-            target_compile_options(s2arm_android PRIVATE
-                "$<$<COMPILE_LANGUAGE:C,CXX>:-include${CMAKE_CURRENT_SOURCE_DIR}/native/nvn/nvn_be_compat.h>")
-            target_sources(s2arm_android PRIVATE ${s2a_frontend_c} native/nvn/nvn_be_android.c
-                native/nvn/mtl_vk_shim.c
-                # 帧时统计与 longframe 归因：Vulkan 侧模块，shim 只交本帧量到的数。
-                native/nvn/nvn_vk_frame_stats.c
-                # D 接口（批次 1）：提交完成事实/令牌持有（纯状态机，不碰 Vulkan；消费者在批次 2/3 接入）。
-                native/nvn/nvn_vk_completion.c
-                native/direct/provider_vk.c native/direct/profile_compose.c)
-        endif()
-        # S2A_ANDROID_VK_BACKEND_NVN_VK 是历史名，代码里的含义是「不是已删除的旧引擎」（vk_device.c 的必需特性表），两个取值都定义。
+        # 新回放层直接实现 nvn_be_*：没有名字转接头，没有 shim。回放核心与后端源在 LinkSources.cmake 的 nvk 清单里。
+        target_sources(s2arm_android PRIVATE ${s2a_frontend_c}
+            native/gfx_plat/provider_nvk.c native/direct/profile_compose.c
+            native/nvn/guest_window_crop.c native/nvn/guest_window_crop.S)
+        target_compile_definitions(s2arm_android PRIVATE S2A_ANDROID_VK_BACKEND_NVK=1)
+        # S2A_ANDROID_VK_BACKEND_NVN_VK 是历史名，代码里的含义是「不是已删除的 d2r 旧引擎」（vk_device.c 的必需特性表），照旧定义。
         target_compile_definitions(s2arm_android PRIVATE S2A_ANDROID_VK_ENGINE=1 S2A_ANDROID_VK_BACKEND_NVN_VK=1)
     endif()
     # The JNI ABI this library is built against (native/jni_abi.py over the Java native declarations), a
@@ -142,21 +127,8 @@ if(ANDROID)
             if(NOT _codec_cache)
                 set(_codec_cache "$ENV{HOME}/.cache/s2arm-build")
             endif()
-            file(GLOB _avc "${_codec_cache}/codecs/*/libs2a_avc.a")
-            file(GLOB _opus "${_codec_cache}/codecs/*/s2a-*/libs2a_opus.a")
-            file(GLOB _vpx "${_codec_cache}/codecs/*/s2a-*/libs2a_vpx.a")
-            if(_avc AND _opus AND _vpx)
-                list(SORT _avc)
-                list(SORT _opus)
-                list(SORT _vpx)
-                list(GET _avc -1 _avc)
-                list(GET _opus -1 _opus)
-                list(GET _vpx -1 _vpx)
-                set(S2A_ANDROID_CODEC_LIBS "${_avc};${_opus};${_vpx}")
-                message(STATUS "Android game mode: codec archives auto-detected: ${S2A_ANDROID_CODEC_LIBS}")
-            else()
-                message(WARNING "Android game mode: no codec archives found under ${_codec_cache}/codecs; run android/codecs/build.sh or pass -DS2A_ANDROID_CODEC_LIBS=\"a;b;c\" (link will fail with undefined avc/opus/vpx symbols)")
-            endif()
+            include(core-link/CodecArchives.cmake)
+            s2a_android_codec_archives(S2A_ANDROID_CODEC_LIBS "${_codec_cache}")
         endif()
         foreach(codec_lib IN LISTS S2A_ANDROID_CODEC_LIBS)
             if(NOT EXISTS "${codec_lib}")
@@ -310,6 +282,11 @@ else()
     target_compile_options(dguard_android_test PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(dguard_android_test PRIVATE pthread)
     add_test(NAME android_dguard_android COMMAND dguard_android_test)
+    # 停帧救场「这款下次也关」：起局读 S2A_DOCS/cpatch_stall_off → S2A_FPS60=0（docs_android.c s2a_android_stall_off_apply）
+    add_executable(stall_off_test tests/stall_off_test.c native/docs_android.c)
+    target_include_directories(stall_off_test PRIVATE native)
+    target_compile_options(stall_off_test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME android_stall_off COMMAND stall_off_test)
     find_package(Threads REQUIRED)
     # Linux errno/fd/filesystem contracts; reached by linux_ctest.sh, including
     # Darwin's Linux VM route. These are not Android device durability evidence.
@@ -344,6 +321,9 @@ else()
         endif()
         separate_arguments(s2a_weak_u UNIX_COMMAND "${s2a_weak_u_out}")
     endif()
+    add_test(NAME android_codec_archives
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/core-link/test_codec_archives.py"
+            --cmake "${CMAKE_COMMAND}")
     add_test(NAME android_static_link_inputs
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/core-link/test_static_link_inputs.py"
             --cmake "${CMAKE_COMMAND}")
@@ -376,6 +356,12 @@ else()
     target_compile_options(input_test PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(input_test PRIVATE Threads::Threads)
     add_test(NAME android_input COMMAND input_test)
+    # 手机当掌机的六轴 / 震动（#528 第 10 项）：方向 → 坐标基、加速度口径、震动振幅与租约节奏，配共用 phone_axes.c 真跑
+    add_executable(phone_feedback_test tests/phone_feedback_test.c ../runtime/src/phone_axes.c ../runtime/src/motion_pick.c)
+    target_include_directories(phone_feedback_test PRIVATE native ../runtime/include)
+    target_compile_options(phone_feedback_test PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(phone_feedback_test PRIVATE m)
+    add_test(NAME android_phone_feedback COMMAND phone_feedback_test)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_executable(tsd_test tests/tsd_test.c native/tsd.c)
         target_include_directories(tsd_test PRIVATE native)
@@ -542,7 +528,7 @@ else()
     target_compile_options(aaudio_format_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
     add_test(NAME android_aaudio_format COMMAND aaudio_format_test)
     # ADPF's Android API/clock/thread IDs are the only fake boundary.
-    add_executable(adpf_hint_test tests/adpf_hint_test.c native/adpf_hint.c)
+    add_executable(adpf_hint_test tests/adpf_hint_test.c native/adpf_hint.c native/system_tuning.c)
     target_include_directories(adpf_hint_test PRIVATE native)
     target_compile_definitions(adpf_hint_test PRIVATE S2A_ADPF_TEST)
     target_compile_options(adpf_hint_test PRIVATE -Wall -Wextra -Werror)
@@ -568,8 +554,6 @@ else()
         target_link_libraries(wsi_lease_test PRIVATE Threads::Threads)
         add_test(NAME android_wsi_lease COMMAND wsi_lease_test)
     endif()
-    add_test(NAME android_direct_touch_generation
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/direct_touch_generation_test.py")
     # C0：direct ABI 布局/校验/NVN 风格调用。ARM64 真机探针由 tools/direct_abi_check.sh
     # 用同一份源编译；这里只证明主机 LP64 与头文件一致，不能代替 ARM64。
     add_executable(direct_abi_test tests/direct_abi_test.c native/direct/s2a_direct_abi.c)
@@ -656,24 +640,12 @@ else()
     add_executable(direct_source_store_test tests/direct_source_store_test.c
         native/direct/source_store.c native/direct/sha256.c)
     target_include_directories(direct_source_store_test PRIVATE native ../runtime/include)
-    # 宿主夹具用小的 pinned 额外槽位跑“全 pin 后 keep 失败”，生产默认 16384。
-    target_compile_definitions(direct_source_store_test PRIVATE S2A_SOURCE_MAX_PINNED=64)
+    # 宿主夹具用小的 pinned 额外槽位跑“全 pin 后 keep 失败”，生产默认 16384；
+    # 字节安全阀用 96 MiB 跑“活 program 占满软预算后仍收、到安全阀才失败”，生产默认 512 MiB（宿主夹具不必真填 512 MiB）。
+    target_compile_definitions(direct_source_store_test PRIVATE S2A_SOURCE_MAX_PINNED=64 S2A_SOURCE_HARD_BYTES=100663296u)
     target_compile_options(direct_source_store_test PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(direct_source_store_test PRIVATE Threads::Threads)
     add_test(NAME android_direct_source_store COMMAND direct_source_store_test)
-    # F4.3/P1：生产接缝回归——Draw 快照 → 编译事实/规范身份/P1 备忘键必须覆盖同一组事实。
-    # 头文件经 vk_record.h 引 Vulkan 类型，但只用枚举；tests/vkhost 提供宿主侧 vulkan.h 入口。
-    add_executable(direct_nvn_compile_facts_test tests/direct_nvn_compile_facts_test.c
-        native/nvn/nvn_vk_compile_facts.c native/nvn/nvn_vk_format.c native/nvn/nvn_vk_mrt.c
-        native/direct/input_identity.c native/direct/texture_facts.c
-        native/direct/source_store.c native/direct/sha256.c)
-    target_include_directories(direct_nvn_compile_facts_test PRIVATE native native/direct native/nvn
-        tests/vkhost ../graphics/nvn/gfx/nvn ../graphics/nvn/gfx/nvn/include
-        ../graphics/nvn/third_party/vulkan-headers/include)
-    target_compile_options(direct_nvn_compile_facts_test PRIVATE -Wall -Wextra -Werror -Wno-missing-field-initializers)
-    target_link_libraries(direct_nvn_compile_facts_test PRIVATE Threads::Threads)
-    target_link_options(direct_nvn_compile_facts_test PRIVATE ${s2a_weak_u})
-    add_test(NAME android_direct_nvn_compile_facts COMMAND direct_nvn_compile_facts_test)
     # #1403：图形 storage buffer 的编译结果 provenance（nvnSlot / uboSlot / uboPtr / rw）
     # 与负控；原样链接生产 parser，不另写模型。
     # compute storage 地址来源解析（NVN / UBO_PTR / UBO_ADDRESS + 来源反例 + supportReads/c0Reads null）
@@ -693,41 +665,6 @@ else()
     target_include_directories(direct_vk_identity_test PRIVATE native native/direct)
     target_compile_options(direct_vk_identity_test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME android_direct_vk_identity COMMAND direct_vk_identity_test)
-    # #968：真实 first_draw 附件拒绝路径不清理未创建 trace 资源。
-    # 夹具依赖 Linux POSIX/ELF；Mac 由 linux_ctest.sh 经 colima 跑，不伪装 Darwin 通过。
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        # Compile during the build phase, not inside linux_ctest.sh's 30-second test budget.
-        add_custom_target(direct_nvn_trace_init_test ALL
-            COMMAND "${CMAKE_COMMAND}" -E env
-                "CC=${CMAKE_C_COMPILER}"
-                "S2A_TRACE_TEST_BUILD=${CMAKE_CURRENT_BINARY_DIR}/trace_init"
-                bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/trace_init_test.sh" --build-only
-            VERBATIM)
-        add_test(NAME android_direct_nvn_trace_init
-            COMMAND "${CMAKE_COMMAND}" -E env
-                "CC=${CMAKE_C_COMPILER}"
-                "S2A_TRACE_TEST_BUILD=${CMAKE_CURRENT_BINARY_DIR}/trace_init"
-                bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/trace_init_test.sh" --run-only)
-    endif()
-    # §8.5.11：管线对象缓存的完整规范配方 + 碰撞反例（hash 相同也必须逐字节相等）。
-    add_executable(direct_nvn_pipe_recipe_test tests/direct_nvn_pipe_recipe_test.c
-        native/nvn/nvn_vk_pipe_recipe.c)
-    target_include_directories(direct_nvn_pipe_recipe_test PRIVATE native native/direct native/nvn
-        tests/vkhost ../graphics/nvn/gfx/nvn ../graphics/nvn/gfx/nvn/include
-        ../graphics/nvn/third_party/vulkan-headers/include)
-    target_compile_options(direct_nvn_pipe_recipe_test PRIVATE -Wall -Wextra -Werror -Wno-missing-field-initializers)
-    add_test(NAME android_direct_nvn_pipe_recipe COMMAND direct_nvn_pipe_recipe_test)
-    # #1382：直连 MRT 的槽位计划（2/3/4 槽、空槽 VK_ATTACHMENT_UNUSED、混合格式、depth-only、
-    # 重复槽/尺寸不一致/不可作颜色附件的格式准确报红）与逐槽颜色混合状态。
-    # 负控：测试内嵌“旧实现只接槽 0”的规则复刻，同一批正例在旧规则下必须全部报红。
-    add_executable(direct_nvn_mrt_test tests/direct_nvn_mrt_test.c
-        native/nvn/nvn_vk_mrt.c native/nvn/nvn_vk_format.c)
-    target_include_directories(direct_nvn_mrt_test PRIVATE native native/direct native/nvn
-        tests/vkhost ../graphics/nvn/gfx/nvn ../graphics/nvn/gfx/nvn/include
-        ../graphics/nvn/third_party/vulkan-headers/include)
-    target_compile_options(direct_nvn_mrt_test PRIVATE -Wall -Wextra -Werror -Wno-missing-field-initializers)
-    target_link_options(direct_nvn_mrt_test PRIVATE ${s2a_weak_u})
-    add_test(NAME android_direct_nvn_mrt COMMAND direct_nvn_mrt_test)
     # §8.5.11：驱动管线缓存落盘/恢复的文件层（UUID/版本隔离、损坏拒绝、原子覆盖）。
     add_executable(direct_nvn_driver_cache_test tests/direct_nvn_driver_cache_test.c
         native/nvn/nvn_vk_driver_cache.c native/direct/sha256.c)
@@ -740,26 +677,6 @@ else()
         ../graphics/nvn/gfx/nvn/include)
     target_compile_options(direct_texture_facts_test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME android_direct_texture_facts COMMAND direct_texture_facts_test)
-    # Bind*Deferred 句柄记录的回放解析（bh_fresh 语义）：重基、基址尾校验、读失败准确报红。
-    add_executable(direct_bind_defer_test tests/direct_bind_defer_test.c native/direct/bind_defer.c)
-    target_include_directories(direct_bind_defer_test PRIVATE native ../runtime/include
-        ../graphics/nvn/gfx/nvn ../graphics/nvn/gfx/nvn/include)
-    target_compile_options(direct_bind_defer_test PRIVATE -Wall -Wextra -Werror)
-    add_test(NAME android_direct_bind_defer COMMAND direct_bind_defer_test)
-    # OP_COPY_T2T 的回放计划（flags/视图/区域 → copy 或 blit）：8E Wonder 在 READY+73.8s
-    # 撞上 op=35 unsupported；全部组合只按计划器语义过/拒，不兜底。
-    add_executable(direct_t2t_plan_test tests/direct_t2t_plan_test.c native/direct/t2t_plan.c)
-    target_include_directories(direct_t2t_plan_test PRIVATE native ../runtime/include
-        ../graphics/nvn/gfx/nvn ../graphics/nvn/gfx/nvn/include)
-    target_compile_options(direct_t2t_plan_test PRIVATE -Wall -Wextra -Werror)
-    add_test(NAME android_direct_t2t_plan COMMAND direct_t2t_plan_test)
-    # op31 独立复制计划合同；尚未接 record，四类变异在 test.sh 的 Python 入口跑。
-    add_executable(buffer_texture_plan_test tests/buffer_texture_plan_test.c
-        native/direct/buffer_texture_plan.c native/nvn/nvn_vk_format.c)
-    target_include_directories(buffer_texture_plan_test PRIVATE native native/nvn tests/vkhost
-        ../graphics/nvn/gfx/nvn ../graphics/nvn/third_party/vulkan-headers/include)
-    target_compile_options(buffer_texture_plan_test PRIVATE -Wall -Wextra -Werror)
-    add_test(NAME android_buffer_texture_plan COMMAND buffer_texture_plan_test)
     # 游戏 sdk 模块里的 SDK 主版本 / 自带驱动 NVN API 版本在安卓上的强定义（与苹果共用 nvn_drvinfo.inc）。
     add_executable(nvn_drvinfo_android_test tests/nvn_drvinfo_android_test.c native/nvn/nvn_drvinfo_android.c)
     target_include_directories(nvn_drvinfo_android_test PRIVATE .. ../runtime/include)
@@ -772,6 +689,13 @@ else()
     target_link_libraries(direct_compile_worker_test PRIVATE Threads::Threads)
     target_link_options(direct_compile_worker_test PRIVATE ${s2a_weak_u})
     add_test(NAME android_direct_compile_worker COMMAND direct_compile_worker_test)
+    # 真实 worker + 受控线程调度：同 SHA 重新附着和旧等待者跨重启。
+    add_executable(direct_compile_worker_race_test tests/direct_compile_worker_race_test.c)
+    target_include_directories(direct_compile_worker_race_test PRIVATE native ../runtime/include)
+    target_compile_options(direct_compile_worker_race_test PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(direct_compile_worker_race_test PRIVATE Threads::Threads)
+    target_link_options(direct_compile_worker_race_test PRIVATE ${s2a_weak_u})
+    add_test(NAME android_direct_compile_worker_race COMMAND direct_compile_worker_race_test)
     add_executable(nvn_first_use_test tests/nvn_first_use_test.c ../graphics/nvn/gfx/nvn/nvn_first_use.c)
     target_include_directories(nvn_first_use_test PRIVATE ../graphics/nvn/gfx/nvn)
     target_compile_options(nvn_first_use_test PRIVATE -Wall -Wextra -Werror)
@@ -795,22 +719,6 @@ else()
     target_include_directories(nvn_vk_lifecycle_test PRIVATE native/nvn)
     target_compile_options(nvn_vk_lifecycle_test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME android_nvn_vk_lifecycle COMMAND nvn_vk_lifecycle_test)
-    # 真实呈现退休路径的宿主回归：fake Vulkan 驱动生产 nvn_vk_swapchain.c。
-    # 覆盖 present fence 与渲染 fence 分离、无后续帧 Stop 保留、present/渲染失败保留、
-    # acquire 超时跳过、无 maintenance1 时的同图像再 acquire 证明（#426）；旋转/换代判定在 nvn_vk_lifecycle_test。
-    # 真机驱动行为仍需设备验证。
-    add_executable(nvn_vk_swapchain_host_test tests/nvn_vk_swapchain_host_test.c
-        native/nvn/nvn_vk_swapchain.c native/nvn/nvn_vk_surface.c native/game_touch.c
-        native/nvn/nvn_vk_display_timing.c)
-    target_include_directories(nvn_vk_swapchain_host_test PRIVATE
-        native native/nvn native/direct ../runtime/include tests/hostvk tests/vkhost
-        ../graphics/nvn/third_party/vulkan-headers/include
-        ../graphics/nvn/gfx/nvn ../graphics/nvn/gfx/nvn/include ../graphics/nvn
-        ../graphics/nvn/host ../graphics/nvn/gfx/tex native/nvn/compat ../runtime/src)
-    target_link_libraries(nvn_vk_swapchain_host_test PRIVATE pthread)
-    target_compile_definitions(nvn_vk_swapchain_host_test PRIVATE VK_USE_PLATFORM_ANDROID_KHR=1)
-    target_compile_options(nvn_vk_swapchain_host_test PRIVATE -Wall -Wextra -Werror -Wno-missing-field-initializers)
-    add_test(NAME android_nvn_vk_swapchain_host COMMAND nvn_vk_swapchain_host_test)
     # AMediaCodec 解码边界（#44 第二刀）：假 codec 状态机喂编排出图，
     # 验证开关门 / NV12 解交织 / 平面拷贝 / 裁剪 / 有界等待 / 失败粘性。
     add_executable(mc_host_test tests/mc_host_test.c codecs/s2a_mc.c)
@@ -818,19 +726,6 @@ else()
     target_compile_definitions(mc_host_test PRIVATE S2A_MC_TESTING=1)
     target_compile_options(mc_host_test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME android_mc_host COMMAND mc_host_test)
-    # B2：display_timing 计量的宿主回归（扩展替身：支持/不支持/乱序回报/丢帧 UNKNOWN）。
-    add_executable(nvn_vk_dt_test tests/nvn_vk_dt_test.c native/nvn/nvn_vk_display_timing.c)
-    target_include_directories(nvn_vk_dt_test PRIVATE
-        native/nvn tests/vkhost ../graphics/nvn/third_party/vulkan-headers/include)
-    target_compile_definitions(nvn_vk_dt_test PRIVATE S2A_DT_TEST)
-    target_compile_options(nvn_vk_dt_test PRIVATE -Wall -Wextra -Werror)
-    add_test(NAME android_nvn_vk_dt COMMAND nvn_vk_dt_test)
-    # F4.4：执行包 owner 控制（单包/挂起/恢复/Stop/换代/协议错误）。纯状态机，生产 adapter 共用。
-    add_executable(nvn_vk_exec_owner_test tests/nvn_vk_exec_owner_test.c native/nvn/nvn_vk_exec_owner.c)
-    target_include_directories(nvn_vk_exec_owner_test PRIVATE native/nvn)
-    target_compile_options(nvn_vk_exec_owner_test PRIVATE -Wall -Wextra -Werror)
-    target_link_libraries(nvn_vk_exec_owner_test PRIVATE Threads::Threads)
-    add_test(NAME android_nvn_vk_exec_owner COMMAND nvn_vk_exec_owner_test)
     # NVNtextureView → Vulkan 子资源视图的纯决策（无 Vulkan 调用）：
     # 3D depth slice 附件 2D 视图、array/cube 单层视图、越界仍准确拒绝。
     add_executable(nvn_vk_texview_plan_test tests/nvn_vk_texview_plan_test.c)
@@ -839,18 +734,6 @@ else()
         tests/vkhost ../graphics/nvn/third_party/vulkan-headers/include)
     target_compile_options(nvn_vk_texview_plan_test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME android_nvn_vk_texview_plan COMMAND nvn_vk_texview_plan_test)
-    # F4.4：driver pipeline worker（worker 创建、owner take、配方去重、设备代际、有界 Stop、cache 锁）。
-    # fake Vulkan 直接驱动生产实现；热路径接线不在宿主覆盖范围，见报告。
-    add_executable(nvn_vk_pipe_worker_test tests/nvn_vk_pipe_worker_test.c
-        native/nvn/nvn_vk_pipe_worker.c native/nvn/nvn_vk_pipe_recipe.c)
-    target_include_directories(nvn_vk_pipe_worker_test PRIVATE
-        native native/direct native/nvn tests/vkhost
-        ../graphics/nvn/third_party/vulkan-headers/include
-        ../graphics/nvn/gfx/nvn ../graphics/nvn/gfx/nvn/include)
-    target_compile_definitions(nvn_vk_pipe_worker_test PRIVATE _GNU_SOURCE)
-    target_compile_options(nvn_vk_pipe_worker_test PRIVATE -Wall -Wextra -Werror -Wno-missing-field-initializers)
-    target_link_libraries(nvn_vk_pipe_worker_test PRIVATE Threads::Threads)
-    add_test(NAME android_nvn_vk_pipe_worker COMMAND nvn_vk_pipe_worker_test)
     # #784 D2–D7 回放核心夹具（宿主，无 GPU）：.in/.exp 样例解析、格式往返、
     # 字节级比对器（自比绿 / 翻一字节报位 / 截断报错）。D2–D7 后端拿它当契约回放。
     add_executable(replay_fixture_test tests/replay_fixture/t_rfx.c tests/replay_fixture/rfx.c)

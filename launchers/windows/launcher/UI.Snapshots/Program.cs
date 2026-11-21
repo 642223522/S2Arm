@@ -8,10 +8,12 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Headless;
+using Avalonia.Media.Imaging;
 using Avalonia.Skia;
 using Avalonia.Themes.Fluent;
 using Avalonia.Styling;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using S2Arm.Launcher;
 using S2Arm.Launcher.Protocol;
 
@@ -26,11 +28,22 @@ var settingsProbe = args.Length > 0 && args[0] == "--settings-probe";
 if (settingsProbe) args = args[1..];
 // --report-probe <目录>：各页 / 各引导状态下顶栏最右都有「故障报修」键（11-13，ReportProbe.cs），每页存帧图
 var reportProbe = args.Length > 0 && args[0] == "--report-probe";
-if (reportProbe) args = args[1..];
+// --build-route-probe <目录>：A 在出包时打开 B 的出包页，停在 B 自己的页、说清排在 A 后面（玩家反馈，BuildRouteProbe.cs）
+var buildRouteProbe = args.Length > 0 && args[0] == "--build-route-probe";
+// --dismiss-probe <目录>：控制口 /dismiss（s2armctl dismiss）关得掉新功能大窗 / 更新弹窗（DismissProbe.cs）
+var dismissProbe = args.Length > 0 && args[0] == "--dismiss-probe";
+// --install-action-probe <目录>：装机前清单按钮落点（11-19 落点契约：action 唯一来源、/install-action、presented；InstallActionProbe.cs）
+var installActionProbe = args.Length > 0 && args[0] == "--install-action-probe";
+// --details-probe <目录>：装机卡片「详细过程」点开后不被进度事件刷新收起（D-237B，DetailsProbe.cs）
+var detailsProbe = args.Length > 0 && args[0] == "--details-probe";
+if (reportProbe || buildRouteProbe || dismissProbe || installActionProbe || detailsProbe) args = args[1..];
 var outDir = args.Length > 0 ? args[0] : Path.Combine(
     Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
     ".s2arm/run/s2arm/cmdr/evidence/launcher/win");
 Directory.CreateDirectory(outDir);
+
+// 顶部选中游戏三按钮断言（v0.4.5 修）：有横图 / 无横图两个分支里都要找得到「推到 iPhone」与「导出自签包」；不通过时末尾退出 1
+var heroActionFailures = new List<string>();
 
 AppBuilder.Configure<SnapshotApp>()
     .UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false })
@@ -41,12 +54,17 @@ if (scrollProbe) { Environment.Exit(ScrollProbe.Run(outDir)); }
 if (flickerProbe) { Environment.Exit(FlickerProbe.Run(outDir)); }
 if (settingsProbe) { Environment.Exit(SettingsProbe.Run(outDir)); }
 if (reportProbe) { Environment.Exit(ReportProbe.Run(outDir)); }
+if (buildRouteProbe) { Environment.Exit(BuildRouteProbe.Run(outDir)); }
+if (dismissProbe) { Environment.Exit(DismissProbe.Run(outDir)); }
+if (installActionProbe) { Environment.Exit(InstallActionProbe.Run(outDir)); }
+if (detailsProbe) { Environment.Exit(DetailsProbe.Run(outDir)); }
 
 // ── 统一夹具游戏（不用固定游戏名字符串以外的占位）────────────────────
 static LibraryGame MockGame(bool keysReady = true) => new(
     "0100B040192FA000", "Fire Emblem: Fortune's Weave", "v1.0.1",
     "", false, [], keysReady, keysReady ? DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 86400.0 : null,
-    true, [new("base", "0100B040192FA000", 917504, "v1.0.1", 31_000_000_000L, "")]);
+    true, [new("base", "0100B040192FA000", 917504, "v1.0.1", 31_000_000_000L, "")],
+    IphoneExpires: keysReady ? DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 6 * 86400.0 : null);   // 作业层给的免费签名到期（1 天前装、按 7 天估）
 
 static LibraryCatalog MockCatalog(bool keysReady = true)
 {
@@ -127,6 +145,17 @@ for (var i = 0; i < featureNode["pages"]!.AsArray().Count; i++)
     SaveW($"08_feature_zh_{at + 1}", w => { SetW(w, "updatePopup", (JsonElement?)featurePopup); SetW(w, "featureIndex", at); });
 }
 SaveW("09_feature_en_1", w => { SetW(w, "language", "en"); SetW(w, "featureIndex", 0); });
+// 「现在更新并重启」时有任务在跑（11-18 维护者：认得出的风险说清后让玩家选「仍然重启 / 取消」，不再只能等）：出包在跑 → 确认块写清会中断哪个任务、重启后能接着做
+var gateUpdate = JsonDocument.Parse("{\"version\":\"9.9.9\",\"notes\":null}").RootElement.Clone();
+var gateJob = welcome.GetType().GetMethod("BeginJob", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(welcome, [Enum.Parse(welcome.GetType().GetNestedType("JobKind", BindingFlags.NonPublic)!, "Pack"), MockGame().Id]);
+SaveW("09b_update_restart_confirm_zh", w => {
+    SetW(w, "catalog", MockCatalog()); SetW(w, "availableUpdate", (JsonElement?)gateUpdate); SetW(w, "featureIndex", 0);
+    SetW(w, "updatePopup", (JsonElement?)JsonDocument.Parse("{\"kind\":\"update\",\"version\":\"9.9.9\",\"notes\":null}").RootElement.Clone());
+    SetW(w, "updateGate", "update.gate.confirm"); SetW(w, "language", "zh-Hans");
+});
+SaveW("09c_update_restart_confirm_en", w => { SetW(w, "language", "en"); });
+welcome.GetType().GetMethod("EndJob", BindingFlags.Instance | BindingFlags.NonPublic)?.Invoke(welcome, [gateJob]);
+SetW(welcome, "updateGate", ""); SetW(welcome, "availableUpdate", null);
 SetW(welcome, "updatePopup", null); SetW(welcome, "language", "zh-Hans");
 
 welcome.Close();
@@ -202,6 +231,36 @@ SaveP("win_05_export_failed", () => Navigate(pack, "progress"));
 
 InjectMockGame(pack, ready: true);
 SaveP("win_06_library_iphone_ready", () => Navigate(pack, "library"));   // 大卡：装到 iPhone + 导出自签包 + 出包
+CheckHeroActions(pack, "无横图的选中游戏", heroActionFailures);
+// 顶部大图带操作按钮（v0.4.5 修）：有横图的选中游戏顶部也常驻「装到 iPhone / 导出自签包 / 出包」三个按钮。
+//   横图是代码里合成的纯色渐变图（仓库里不放商店图）；夹具游戏名用通用占位，不用真游戏名
+{
+    const string syntheticBannerPngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAUAAAAC0CAIAAABqhmJGAAAC0ElEQVR42u3TWU4UAQAA0T6CO4ODgIDIIruKqIiKuCtu9z+Lc4X+mlTykneCSmrYfPoPiBokAAMDcxn45C8QZWAoD/zo5C8QZWBoD/wHiDIwpAc+/gNEGRjaA/8GogwM5YE3jn8DUQaG9MBHv4AoA4OBAQMDYwe+BqIMDOWB1w+vgSgDQ3vgn0CUgcHAgIGBkQMf/ACiDAzlgdcOfgBRBob2wN+BKANDeuD970CUgaE98DcgysBQHvjh/jcgysCQHnjvKxBlYDAwYGBg7MBfgCgDQ3ng1SdfgCgDQ3vgz0CUgcHAgIGBkQPvfgKiDAzlgVd2PwFRBob2wB+BKANDeuCdj0CUgaE98BUQZWAwMDCXgZd3roCoYXn7CoiaDfwBiDIwGBgwMDB24EsgaljeugSihgdbl0CUgaE98HsgysBgYGA+Az9+D0TNBn4HRBkYygMvPX4HRBkY2gO/BaKGpc23QJSBwcDAnAa+AKIMDOWBp5sXQNQwfXQBRM0GfgNEGRgMDBgYGDvwORA1TDfOgajh/sY5EGVgaA/8GogyMBgYmM/A66+BqNnAr4AoA0N54MX1V0CUgaE98EsgalhcewlEGRgMDMxp4DMgysBQHniydgZEDZOHZ0DUbOAXQJSBwcCAgYGxA58CUcNk9RSIGhZWT4EoA4OBgTkN/ByIMjCkB155DkQZGNoDPwOiDAzlge+tPAOiDAzpgZefAlEGBgMDBgbGDnwCRBkYygPffXACRBkY2gMfA1EGBgMDBgZGDrx0BEQZGMoD31k6AqIMDO2BD4EoA0N64OkhEGVgaA98AEQZGMoD354eAFEGhvTA9/eBKAODgQEDA2MH3gOiDAzlgW8t7gFRBob2wE+AKAODgQEDAyMHnuwCUQaG8sA3J7tAlIGhPfAOEGVgSA+8sANEGRjaA28DUQaG8sA3FraBKANDeuB7W0CUgcHAwDz8B+xdxHNM+cLrAAAAAElFTkSuQmCC";
+    var bannerLib = Path.Combine(Path.GetTempPath(), "s2a-snap-" + Guid.NewGuid().ToString("N"), "S2Arm");
+    var bannerFolder = Path.Combine(bannerLib, "games", "Sample Game");
+    Directory.CreateDirectory(bannerFolder);
+    File.WriteAllBytes(Path.Combine(bannerFolder, "banner.jpg"), Convert.FromBase64String(syntheticBannerPngBase64));
+    var bannerGame = MockGame(true) with { Id = "0100F00100000000", Name = "示例游戏", Banner = Path.Combine(bannerFolder, "banner.jpg"),
+        Location = new GameLocation("ok", bannerLib, bannerFolder, "", true) };
+    SetW(pack, "catalog", new LibraryCatalog([bannerGame], true, "密钥已就绪"));
+    SetW(pack, "selectedGame", bannerGame.Id);
+    SetW(pack, "connectedFolder", bannerLib);
+    SetW(pack, "libraryId", "mock-lib-id");
+    SetW(pack, "librarySummary", "library.completed");
+    SaveP("win_06d_library_hero_banner_actions", () => Navigate(pack, "library"));
+    CheckHeroActions(pack, "有横图的选中游戏", heroActionFailures, expectBanner: true);
+    InjectMockGame(pack, ready: true);   // 恢复后续场景用的无横图夹具
+}
+// 导入时数据校验不过、照常导入的款（11-17）：封面右下角黄色「!」，悬停 / 选中时说明；夹具用通用占位名
+{
+    var plain = MockGame(true) with { Id = "0100F00200000000", Name = "示例游戏 A" };
+    var skipped = MockGame(true) with { Id = "0100F00300000000", Name = "示例游戏 B",
+        Packages = [new("base", "0100F00300000000", 0, "v1.0.0", 1L, "", IntegritySkipped: true)] };
+    SetW(pack, "catalog", new LibraryCatalog([plain, skipped], true, "密钥已就绪"));
+    SetW(pack, "selectedGame", skipped.Id);
+    SaveP("win_06e_library_integrity_skipped", () => Navigate(pack, "library"));
+    InjectMockGame(pack, ready: true);
+}
 // 导出自签包的进度 / 完成（11-15：装机页只画结局卡，不画装机说明、清单、开始装机 / 删除）
 {
     var g = MockGame(true);
@@ -243,7 +302,7 @@ PhoneTrackEvents(
     """{"type":"stage","stage":"找签名账号与 iPhone","message":"找签名账号与 iPhone","stageIndex":1,"stageCount":6,"overall":0.0}""",
     """{"type":"stage","stage":"把这款放进手机上的 S2Arm","message":"把这款放进手机上的 S2Arm","stageIndex":2,"stageCount":6,"overall":0.17}""",
     """{"type":"stage","stage":"用你的 Apple ID 签名","message":"用你的 Apple ID 签名","stageIndex":4,"stageCount":6,"overall":0.5}""",
-    """{"type":"stage","stage":"装到 iPhone","message":"装到 iPhone","stageIndex":5,"stageCount":6,"overall":0.62}""");
+    """{"type":"stage","stage":"推到 iPhone","message":"推到 iPhone","stageIndex":5,"stageCount":6,"overall":0.62}""");
 SetW(pack, "updateState", "running");
 SaveP("win_20_phone_update_running", () => Navigate(pack, "phoneupdate"));
 TrackField("Started", DateTime.UtcNow.AddSeconds(-47)); TrackField("Ended", (DateTime?)DateTime.UtcNow);
@@ -263,7 +322,7 @@ TrackField("Suggestion", "在 Impactor 里重新登录你的 Apple ID，再点�
 SetW(pack, "updateMessage", "签名没成功：Impactor 里的 Apple ID 登录已过期。");
 SetW(pack, "updateState", "failed");
 SaveP("win_22_phone_update_failed", () => Navigate(pack, "phoneupdate"));
-SetW(pack, "updateMessage", "这次会让手机上的 1 款游戏暂时不能玩：示例游戏。它们不是在这台电脑上装的，存档和资源包都还在手机上，到原来那台电脑上再点一次「装到 iPhone」就能回来。");
+SetW(pack, "updateMessage", "这次会让手机上的 1 款游戏暂时不能玩：示例游戏。它们不是在这台电脑上装的，存档和资源包都还在手机上，到原来那台电脑上再点一次「推到 iPhone」就能回来。");
 SetW(pack, "updateState", "drop");
 SaveP("win_23_phone_update_drop", () => Navigate(pack, "phoneupdate"));
 
@@ -302,10 +361,12 @@ SetW(pack, "devCert", JsonDocument.Parse("{\"imported\":false,\"active\":false,\
 SaveP("win_10_export_sign_appleid", () => Navigate(pack, "build"));
 SetW(pack, "devCert", JsonDocument.Parse("""
 {"imported":true,"active":true,"cert":{"blocking":[],"warnings":[
- {"id":"devcert_entitlements","text":"描述文件没开「扩展寻址」权限：小游戏照常，大游戏可能内存不够闪退。可在开发者网站给这个 App ID 打开后重新下载描述文件。"},
+ {"id":"devcert_entitlements","text":"描述文件缺下面的权限，小游戏照常，大游戏可能起不来：\n扩展寻址（com.apple.developer.kernel.extended-virtual-addressing）——没有它大游戏可能地址不够、起不来\n可以复制下面这段话发给证书发放人，补开后重新下载描述文件再导入。\n没连着 iPhone：复制后把「<你的设备 UDID>」换成你手机的 UDID。"},
  {"id":"devcert_expiring","text":"证书将于 2026-11-30 到期（还剩 20 天）：到期后 App 打不开，记得提前换新。"}],
  "teamName":"S2Arm Test Co","teamId":"ABCDE12345","certExpires":"2026-11-30","profileExpires":"2027-05-29",
- "bundleId":"io.s2arm.games.abcde12345","wildcard":true,"allDevices":false,"deviceCount":1,"deviceListed":null}}
+ "bundleId":"io.s2arm.games.abcde12345","wildcard":true,"allDevices":false,"deviceCount":1,"deviceListed":null,
+ "missingEntitlements":["com.apple.developer.kernel.extended-virtual-addressing"],
+ "requestText":"请提供 Apple Development 开发证书（.p12，附密码）和对应的 iOS App Development 开发描述文件。描述文件要求：用显式 App ID（不要通配 *），包含我的设备 UDID：<你的设备 UDID>，并开启以下权限：调试权限（get-task-allow）、提高内存上限（com.apple.developer.kernel.increased-memory-limit）、扩展寻址（com.apple.developer.kernel.extended-virtual-addressing）。"}}
 """).RootElement.Clone());
 SaveP("win_11_export_sign_devcert", () => Navigate(pack, "build"));
 
@@ -374,6 +435,31 @@ SetW(pack, "drivesOverride", (object?)new List<(string Root, string Format, long
 SetW(pack, "importDialog", new ImportDialogState(ImportKind.Games));   // 连不上库时游戏库页是欢迎页，原因显示在「添加游戏」弹窗里
 SetW(pack, "importError", "游戏库没连上（E:\\S2Arm Library）：这个盘是 EXFAT，可以用，但按现有 2 款游戏算，出包会多占约 61 GB；放在 NTFS 格式的盘上更省空间。");
 SaveP("win_24_library_bad_format_drives", () => Navigate(pack, "library"));
+// 第一次建库、本机不止一块盘：添加游戏弹窗先问放哪块盘（LibraryDrivePicker 选盘模式），各盘剩余空间、系统盘标出来，没有「重试」只有「换一个文件夹」
+SetW(pack, "librarySummary", ""); SetW(pack, "libraryDiagnostics", ""); SetW(pack, "importError", "");
+SetW(pack, "libraryFailCode", "library_choose_drive"); SetW(pack, "libraryFailFolder", @"C:\Users\player\S2Arm"); SetW(pack, "systemDriveOverride", "C:\\");
+SetW(pack, "importDialog", new ImportDialogState(ImportKind.Games));
+foreach (var (lang, name) in new[] { ("zh-Hans", "win_24b_library_choose_drive"), ("en", "win_24c_library_choose_drive_en") })
+{
+    SetW(pack, "language", lang);
+    SaveP(name, () => Navigate(pack, "library"));
+}
+SetW(pack, "language", "zh-Hans"); SetW(pack, "systemDriveOverride", null);
+// 数据目录写不进去、本人权限也补不回（11-16 拆自设权限之后的兜底）：不再甩英文异常原文，说哪个文件夹写不进去、可能原因、怎么办；
+//   走真代码路径（WelcomePage.NoWrite + LibraryFailed）。Windows 实机异常原文带文件名（request-….json），NoWrite 取它的上级目录；
+//   快照在非 Windows 上渲染时 Path.GetDirectoryName 不认反斜杠，所以这里直接给目录形式的原文，画面与 Windows 上取完上级目录一致
+SetW(pack, "libraryFailCode", null); SetW(pack, "drivesOverride", null);
+foreach (var (lang, name) in new[] { ("zh-Hans", "win_25_library_no_write"), ("en", "win_25b_library_no_write_en") })
+{
+    var bf = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+    SetW(pack, "language", lang);
+    var denied = new UnauthorizedAccessException(@"Access to the path 'D:\S2Arm Data\S2Arm\WindowsLauncher' is denied.");
+    var reason = (string)pack.GetType().GetMethod("NoWrite", bf)!.Invoke(pack, [denied, @"D:\S2Arm Data\S2Arm\WindowsLauncher"])!;
+    SetW(pack, "importDialog", new ImportDialogState(ImportKind.Games));
+    SetW(pack, "importError", (string)pack.GetType().GetMethod("LibraryFailed", bf)!.Invoke(pack, [@"D:\S2Arm Data\DefaultLibrary", reason])!);
+    SaveP(name, () => Navigate(pack, "library"));
+}
+SetW(pack, "language", "zh-Hans");
 SetW(pack, "importDialog", null); SetW(pack, "importError", "");
 SetW(pack, "libraryFailCode", null); SetW(pack, "drivesOverride", null);
 SetW(pack, "catalog", new LibraryCatalog([atDefault, elsewhere], true, "密钥已就绪")); SetW(pack, "connectedFolder", tidyLib); SetW(pack, "libraryId", "mock-lib-id");
@@ -414,10 +500,21 @@ SetW(pack, "cheatsList", (JsonElement?)SG("""
 """));
 SaveP("sgrade_05_cheats_page", () => { SetW(pack, "page", "library"); InvokeW(pack, "Render"); });
 SetW(pack, "cheatsFor", null); SetW(pack, "cheatsList", null);
+// #1430：出包页 S 级卡「导入 Mod…」进 Mod 页（原先只在游戏库页画、从出包页点没反应）；「返回」回出包页
+InjectMockGame(pack, ready: true);
+SaveP("win_26_export_mods_page", () => { Navigate(pack, "build"); SetW(pack, "modsFor", MockGame(true));
+    SetW(pack, "modsList", (JsonElement?)SG("""[{"name":"高清材质包","bytes":1073741824,"files":120,"enabled":true}]""")); InvokeW(pack, "Render"); });
+SaveP("win_26b_export_mods_back", () => { SetW(pack, "modsFor", null); SetW(pack, "modsList", null); InvokeW(pack, "Render"); });
 pack.Height = 900;
 
 pack.Close();
 Dispatcher.UIThread.RunJobs();
+if (heroActionFailures.Count > 0)
+{
+    foreach (var failure in heroActionFailures) Console.Error.WriteLine("  FAIL hero actions: " + failure);
+    Console.WriteLine("✗ 顶部选中游戏三按钮断言：不通过 " + heroActionFailures.Count);
+    Environment.Exit(1);
+}
 Console.WriteLine("done.");
 
 // ── 辅助函数 ─────────────────────────────────────────────────────────────
@@ -445,6 +542,26 @@ static void CallW(object target, string method, params object?[] methodArgs)
 
 static void Navigate(EnvironmentWindow w, string pg)
     => w.GetType().GetMethod("Navigate", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(w, [pg]);
+
+// 顶部选中游戏三按钮断言：当前渲染的游戏库页里，顶部「推到 iPhone」与「导出自签包」都要找得到；
+//   夹具只有一款游戏：列表行自带一个「推到 iPhone」（Action 共用 library.hero.install 键），所以顶部按钮在时装到 iPhone 应出现 2 次、导出自签包 1 次（只数出现次数会把行按钮也算进来，数 1 次不够）。
+//   有横图时还要确认真画了横图（而不是横图解码失败悄悄退回封面卡片）——HeroBanner 用 DecodeToWidth(…, 1600)，横图宽应为 1600
+static void CheckHeroActions(EnvironmentWindow window, string label, List<string> failures, bool expectBanner = false)
+{
+    var images = window.GetVisualDescendants().OfType<Image>().ToList();
+    var ids = window.GetVisualDescendants().OfType<Button>()
+        .Select(b => Avalonia.Automation.AutomationProperties.GetAutomationId(b)).ToList();
+    var installCount = ids.Count(id => id == "library.hero.install");
+    var selfSignCount = ids.Count(id => id == "library.hero.selfSign");
+    if (installCount < 2) failures.Add($"{label}：顶部「推到 iPhone」缺失（library.hero.install 出现 {installCount} 次，含列表行应为 2 次）");
+    if (selfSignCount < 1) failures.Add($"{label}：找不到 library.hero.selfSign");
+    if (expectBanner)
+    {
+        var widths = images.Select(i => i.Source is Bitmap b ? b.PixelSize.Width : -1).ToList();
+        if (!widths.Contains(1600))
+            failures.Add($"{label}：没画出横图（当前图宽：{string.Join(",", widths)}；横图 DecodeToWidth(…, 1600) 应为 1600）");
+    }
+}
 
 static void InjectMockGame(EnvironmentWindow w, bool ready)
 {

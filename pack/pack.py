@@ -16,7 +16,7 @@ SHA-256 记在 <输出包目录>.state.tsv（路径、字节数、源 mtime 纳�
 --check：清单最新则退出 0，否则 1（不改任何文件）。"""
 import ctypes, hashlib, json, multiprocessing as mp, os, shutil, sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'tools'))
-from pool_workers import process_pool_size   # 进程池路数（Windows 至多 61，#1332）
+from pool_workers import process_pool_size, env_jobs   # 进程池路数（Windows 至多 61，#1332）
 from progress import Ticker   # 出包进度（S2A_PROGRESS，tools/progress.sh）：克隆 + 算 SHA 两段按文件数记
 from refs_clone import clone_file as refs_clone   # Windows ReFS / 开发驱动器块克隆（#1100）
 import sha256_fast   # 文件 SHA：Windows 走 CNG（hashlib 在玩家 Python 上没用 SHA 指令，Windows 出包机单核 0.37 → 1.46 GB/s）
@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 import romfs_list   # 源目录遍历一律经它（tools/romfs_walk_lint.py）；目录不在、旁边有 <目录>.std 时从标准 RomFS 镜像列
 COPIED = [0]   # Windows 上没克隆成、退回整份拷贝的文件数（收尾打一行黄）
 LINKED = [0]   # Windows 上没克隆成、改用同卷硬链接的文件数
-NJ = int(os.environ.get('J') or os.environ.get('S2A_JOBS') or os.cpu_count() or 1)   # 并行路数（tools/cores.sh S2A_JOBS）
+NJ = env_jobs('J', 'S2A_JOBS')   # 并行路数（tools/cores.sh S2A_JOBS）
 if sys.platform == 'darwin':
     libc = ctypes.CDLL('libc.dylib', use_errno=True); libc.clonefile.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32]
 def copy_sha(src, dst):   # 整份拷贝、边拷边算 SHA-256（11-06 出包速度线：拷完再回头读一遍源算 SHA，0100F2C0115B6000 16 GB 多读一遍）→ SHA
@@ -173,11 +173,13 @@ def main():
         method = 'fork' if 'fork' in mp.get_all_start_methods() else 'spawn'
         with mp.get_context(method).Pool(process_pool_size(NJ)) as pool:   # 只算新克隆 / 变了的文件
             need = [(rel, p) for rel, p in todo if rel not in csha]; ps = [p for _, p in need]   # 判沿用时已经算过 SHA 的不再算
-            hs = [h for part in pool.imap(sha_block, [ps[i:i + 64] for i in range(0, len(ps), 64)]) for h in part]
+            hs = []
+            for part in pool.imap(sha_block, [ps[i:i + 64] for i in range(0, len(ps), 64)]):   # 每块 64 个算完就计（11-20 010015100B514000：原先整份算完才计一次，进度停 53 秒）
+                hs += part; tk.step(len(part))
             for (rel, _), h in zip(need, hs): shas[rel] = h
             for rel, _ in todo:
                 if rel in csha: shas[rel] = csha[rel]
-            tk.step(len(todo))
+            tk.step(len(todo) - len(need))
     keep = {rel for rel, *_ in files if rel not in held} | set(stds) | {'manifest.json', 'index.tsv'}   # 上一版有、这一版没有的文件删掉（镜像形态：散文件删掉、留 <前缀>.std）
     for d, ds, fs in os.walk(out, topdown=False):
         for f in fs:

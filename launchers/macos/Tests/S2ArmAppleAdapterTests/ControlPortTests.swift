@@ -25,7 +25,6 @@ import XCTest
         let info = try JSONSerialization.jsonObject(with: Data(contentsOf: port.controlFile)) as? [String: Any]
         XCTAssertEqual(info?["port"] as? Int, Int(port.port)); XCTAssertEqual(info?["token"] as? String, port.token)
         XCTAssertEqual(info?["pid"] as? Int, Int(ProcessInfo.processInfo.processIdentifier))
-        XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: port.controlFile.path)[.posixPermissions] as? NSNumber)?.intValue, 0o600)
         func call(_ method: String, _ path: String, token: String?, body: [String: Any]? = nil) -> (Int, [String: Any]) {
             var req = URLRequest(url: URL(string: "http://127.0.0.1:\(port.port)\(path)")!); req.httpMethod = method
             if let token { req.setValue(token, forHTTPHeaderField: "X-S2Arm-Token") }

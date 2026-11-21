@@ -102,7 +102,7 @@ typedef struct { uint32_t magic; volatile uint32_t *val; const pool_t *pool; int
 typedef struct { NVNdevice *dev; void *native; int32_t ntex, interval; NVNtexture *tex[4]; int32_t nactive; } win_builder_t;
 FITS(win_builder_t, NVNwindowBuilder);
 // avail[i]: time at which swapchain image i can be acquired again (ns, monotonic clock) = its display time + one present period; pace: target time of this window's present pacer
-typedef struct { uint32_t magic; void *native; int32_t ntex, interval, next, nactive, crop[4]; NVNtexture *tex[4]; uint64_t presents, avail[4], pace, ticket[4]; int32_t shown, nat; } win_t;   // ticket[i]: ticket of the most recent present of image i; shown: image of the most recent present + 1 (0 = none yet; on the device it stays on screen until the next present flips, so it is not returned)；nat：原生窗口交换间隔同步开着（hle_nvn.c nat_itv）
+typedef struct { uint32_t magic; void *native; int32_t ntex, interval, next, nactive, crop[4]; NVNtexture *tex[4]; uint64_t presents, avail[4], pace, ticket[4]; int32_t shown, nat, present_ll; } win_t;   // ticket[i]: ticket of the most recent present of image i; shown: image of the most recent present + 1 (0 = none yet; on the device it stays on screen until the next present flips, so it is not returned)；nat：原生窗口交换间隔同步开着（hle_nvn.c nat_itv）
 FITS(win_t, NVNwindow);
 
 // Command buffer: records are written into host blocks of each recording (hle_nvn.c, command buffer), handle = first record; a device cursor walks the command memory the game gives
@@ -223,6 +223,7 @@ typedef struct { const prog_t *prog; int32_t stages; uint8_t kok; uint8_t keys[6
 typedef struct { const prog_t *prog; uint64_t serial; int32_t stages, pad; } p_bind_program_id;
 // 宿主按序号的程序快照表（hle_nvn.c）：返回的快照指针长期有效；没有该序号返回空。安卓直连核心可能不带 hle_nvn.c 链接，故弱引用
 const prog_t *nvn_prog_snap_get(uint64_t serial, uint8_t keys[6][8], uint8_t *ok, uint8_t stage[6]) __attribute__((weak));
+uint64_t nvn_prog_set_ns(uint64_t serial) __attribute__((weak));   // 首遇等待诊断（#1001，hle_nvn.c）：这个序号 SetShaders 的时刻（now_ns）；没开 DM_NVN_FU_SETAT / 没记到 = 0
 // 还原完整记录：prog / stages 取自记录，snap / keys / kok / stage_of 按序号查表；表里没有（或载荷长度不对）时快照只带序号、键全缺、阶段 0xff
 static inline const p_bind_program *bind_program_rec(const void *a, uint32_t size, p_bind_program *t) {
     memset(t, 0, sizeof *t); memset(t->stage_of, 0xff, sizeof t->stage_of);
@@ -314,6 +315,7 @@ void mtl_sub_fill(uint64_t dst, uint64_t n, uint32_t value);   // in-order buffe
 void nvn_be_exec_rest(const uint64_t *handles, int n);   // Tells which handles in this submission still follow the current handle (used by the pass lookahead across handles)
 // Present: draw the swapchain texture to the front-end CAMetalLayer (only counts when there is no window)
 void nvn_be_present_prepare(const tex_t *t);   // Under the front end's submit lock: initialize a texture first used by present before handing it to the present thread
+void nvn_be_present_target(int interval, uint64_t set_ns);   // Before each present: the present interval the game asks for right now and when it set it (now_ns); logging only (per-target segments in the 5-second timing lines), never changes pacing
 uint64_t nvn_be_present(const tex_t *t, double period_s, const int crop[4]);   // Enqueue a present and return the ticket immediately; period_s: minimum time this image is displayed (= present period, 0 = unlimited)
 void nvn_be_present_wait(uint64_t ticket);                    // Wait until the present with this ticket has been processed (blit committed to the GPU queue)
 void mtl_present_flush(void);                              // Wait until all enqueued presents have been processed
@@ -362,7 +364,8 @@ void nvn_be_unreg_tex_range(int base, int n);   // 贴图池销毁时清它那�
 // textures written by WriteTexels (recorded by serial): the replay layer treats them like packaged textures, uploaded from guest memory and re-uploaded on dirty pages
 void nvn_be_tex_cpu_written(const tex_t *t);
 int nvn_be_tex_gpu_owned(uint64_t serial);                                  // its host texture is a render target or shader-writable: GPU content, never re-uploaded from guest memory
-// A program's per-stage shader key (hle_nvn.c): the first 8 bytes of sha256(first 0x880 bytes of the control section (its own length when shorter) + code area). Computed at SetShaders (NVN lets the caller free the control section once it returns, and Unity does);
+// A program's per-stage shader key (hle_nvn.c): the first 8 bytes of sha256(first 0x880 bytes of the control section (its own length when shorter; two volatile spans zeroed, nvn_key.h) + code area);
+//   an old package keyed without the zeroing gets its old key (keys_hash). Computed at SetShaders (NVN lets the caller free the control section once it returns, and Unity does);
 // a stage whose code area was not yet in any memory pool then is computed the first time it is asked for. Returns 0 = no such stage
 int prog_key(const prog_t *p, unsigned stage, uint8_t key[8]);
 void nvn_be_reg_samp(int id, const samp_par *p);

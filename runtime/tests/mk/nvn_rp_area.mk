@@ -12,5 +12,6 @@ $(BUILD)/tests/t_nvn_rp_area: graphics/nvn/tests/t_nvn_rp_area.m $(NVN_MTL_DEPS)
 .PHONY: native-test-nvn_rp_area
 native-test-nvn_rp_area: $(BUILD)/tests/t_nvn_rp_area
 	$(BUILD)/tests/t_nvn_rp_area
+	$(BUILD)/tests/t_nvn_rp_area up
 TEST_TARGETS += native-test-nvn_rp_area
 endif

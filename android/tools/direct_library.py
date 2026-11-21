@@ -109,6 +109,10 @@ GRAPHICS_SCHEMA = 's2a-graphics-v1'
 CAPTURE_SCHEMA = 's2a-direct-capture-v1'
 LIBRARY_SCHEMA = 's2a-direct-library-v1'
 REQUEST_SCHEMA = 's2a-direct-compile-v1'
+# v2 request: graphics only, program.stages is the five NVN slots [vs, fs, gs, tcs, tes] with null for an
+# unbound slot (DirectShaderCompiler.GraphicsRequestSchemaV2 / DirectProgram.Parse); it adds vs+gs+fs.
+REQUEST_SCHEMA_V2 = 's2a-direct-compile-v2'
+V2_SLOTS = ('vs', 'fs', 'gs', 'tcs', 'tes')
 RESULT_SCHEMA = 's2a-direct-program-v1'
 CONTENT_CONTRACT = 's2a-direct-program-content-v1'
 RUNTIME_COMPILER_ABI = 's2a-direct-compile-v1'
@@ -141,6 +145,8 @@ SPIRV_MAGIC = b'\x03\x02\x23\x07'
 # Same stage names as the compiler's serialization; the first product only compiles these.
 GRAPHICS_STAGES = ('vs', 'fs')
 COMPUTE_STAGES = ('cs',)
+# Native geometry (v2 request only): the compiler writes the stages in pipeline order vs, gs, fs.
+GEOMETRY_STAGES = ('vs', 'gs', 'fs')
 
 REQUEST_KEYS = frozenset(('request', 'schema', 'session', 'generation', 'requestId',
                           'directABI', 'translatorClosure', 'runtimeCompilerABI',
@@ -687,8 +693,10 @@ def validate_request(raw, what):
                 'runtimeCompilerABI', 'sourceParserVersion', 'profile', 'program'):
         if key not in doc:
             _fail(f'{what}: missing {key!r}')
-    if _string(doc['schema'], f'{what}.schema') != REQUEST_SCHEMA:
-        _fail(f'{what}.schema is not {REQUEST_SCHEMA}')
+    schema = _string(doc['schema'], f'{what}.schema')
+    if schema not in (REQUEST_SCHEMA, REQUEST_SCHEMA_V2):
+        _fail(f'{what}.schema is not {REQUEST_SCHEMA} or {REQUEST_SCHEMA_V2}')
+    v2 = schema == REQUEST_SCHEMA_V2
     # 可选调试开关：native 过了调试门且 debug.s2a.kind_check=0 时才带 false；缺省表示校验开着。
     if 'kindCheck' in doc and not isinstance(doc['kindCheck'], bool):
         _fail(f'{what}.kindCheck is not a boolean')
@@ -722,15 +730,21 @@ def validate_request(raw, what):
     stages = _array(program.get('stages'), f'{what}.program.stages')
     if not stages:
         _fail(f'{what}.program.stages is empty')
+    if v2 and (kind != 'graphics' or len(stages) != len(V2_SLOTS)):
+        _fail(f'{what}.program.stages: a v2 request is graphics with five NVN slots')
     names = []
     constant_buffer_use = {}
     sources = {}
     for index, stage in enumerate(stages):
         where = f'{what}.program.stages[{index}]'
+        if v2 and stage is None:
+            continue
         stage = _object(stage, where)
         name = _string(stage.get('stage'), f'{where}.stage')
-        if name not in GRAPHICS_STAGES + COMPUTE_STAGES:
-            _fail(f'{where}.stage {name!r} is not one of vs/fs/cs')
+        if name not in GRAPHICS_STAGES + COMPUTE_STAGES + (('gs',) if v2 else ()):
+            _fail(f'{where}.stage {name!r} is not one of vs/fs/cs' + ('/gs' if v2 else ''))
+        if v2 and name != V2_SLOTS[index]:
+            _fail(f'{where}.stage {name!r} does not match its NVN slot {V2_SLOTS[index]!r}')
         if name in names:
             _fail(f'{what}: duplicate stage {name!r}')
         names.append(name)
@@ -751,8 +765,9 @@ def validate_request(raw, what):
         constant_buffer_use[name] = _integer(stage.get('constantBufferUse', 0),
                                              f'{where}.constantBufferUse', 0, 0xFFFFFFFF)
     expected = GRAPHICS_STAGES if kind == 'graphics' else COMPUTE_STAGES
-    if set(names) != set(expected):
-        _fail(f'{what}: program.stages {sorted(names)} is not {list(expected)} for kind={kind}')
+    if set(names) != set(expected) and not (v2 and set(names) == set(GEOMETRY_STAGES)):
+        _fail(f'{what}: program.stages {sorted(names)} is not {list(expected)}'
+              + (f' or {list(GEOMETRY_STAGES)}' if v2 else '') + f' for kind={kind}')
     if REQUEST_ID.fullmatch(request_id) and len(request_id) != 16 * len(names):
         _fail(f'{what}: requestId is not {len(names)} concatenated 8-byte stage keys')
 
@@ -834,8 +849,9 @@ def validate_result(raw, what, request=None, descriptor=None, expected_profile=N
         }
         constant_buffer_use[name] = _integer(stage.get('constantBufferUse', 0),
                                              f'{where}.constantBufferUse', 0, 0xFFFFFFFF)
-    if tuple(names) != expected:
-        _fail(f'{what}: content.stages is {names}, expected {list(expected)} for kind={kind}')
+    if tuple(names) != expected and not (kind == 'graphics' and tuple(names) == GEOMETRY_STAGES):
+        _fail(f'{what}: content.stages is {names}, expected {list(expected)}'
+              + (f' or {list(GEOMETRY_STAGES)}' if kind == 'graphics' else '') + f' for kind={kind}')
     support = _object(content.get('supportLayout'), f'{what}.content.supportLayout')
     support_hash = _content_root(support.get('hash'), f'{what}.content.supportLayout.hash')
     bindings = _array(content.get('bindings'), f'{what}.content.bindings')
@@ -849,6 +865,28 @@ def validate_result(raw, what, request=None, descriptor=None, expected_profile=N
             texword = _integer(binding.get('slot'), f'{where}.slot', 90, 345)
             if texword % 2 or binding.get('count') != 1:
                 _fail(f'{where}: invalid separate texture slot or array')
+        if 'constSampler' in binding:
+            # #1594：类型 3 句柄——采样器池下标（0..4095，0 是真下标）是着色器里的立即数。贴图字的来源二选一：
+            #   * c2 分离贴图表：槽 90..345 偶数；
+            #   * 游戏 UBO（片 3）：平铺的 uboSlot 0..15 + uboOffset（4 的倍数、0..65535），没有 slot。
+            #   与宿主解析（nvn_vk_program_result.c）同一份合同：v2、单个贴图；与 samp_slot / uboHandle / sampler 对象互斥
+            #   （c2 形态还与 uboSlot 互斥）；计算阶段（片 7）只收 c2 形态，游戏 UBO 形态计算侧不接，计算结果也不收。
+            from_ubo = 'uboSlot' in binding
+            if (schema == RESULT_SCHEMA or binding.get('kind') != 'texture'
+                    or 'samp_slot' in binding or 'uboHandle' in binding or 'sampler' in binding
+                    or (from_ubo and ('slot' in binding or kind == 'compute'))):
+                _fail(f'{where}: constant sampler source requires a v2 texture with one texture-word source '
+                      '(slot; or, in graphics results only, uboSlot without slot) and no samp_slot / uboHandle / sampler')
+            _integer(binding['constSampler'], f'{where}.constSampler', 0, 4095)
+            if from_ubo:
+                _integer(binding['uboSlot'], f'{where}.uboSlot', 0, 15)
+                offset = _integer(binding.get('uboOffset'), f'{where}.uboOffset', 0, 0xFFFF)
+                if offset % 4 or binding.get('count') != 1:
+                    _fail(f'{where}: invalid constant sampler uboOffset or array')
+            else:
+                texword = _integer(binding.get('slot'), f'{where}.slot', 90, 345)
+                if texword % 2 or binding.get('count') != 1:
+                    _fail(f'{where}: invalid constant sampler texture slot or array')
     _array(content.get('dependencies'), f'{what}.content.dependencies')
 
     if descriptor is not None:
@@ -863,6 +901,8 @@ def validate_result(raw, what, request=None, descriptor=None, expected_profile=N
             _fail(f'{what}: content identity does not match the request profile')
         if kind != request['_kind']:
             _fail(f'{what}: content.kind {kind} does not match request kind {request["_kind"]}')
+        if set(names) != set(request['_stages']):
+            _fail(f'{what}: content.stages {names} are not the request stages {request["_stages"]}')
         if support_hash != request['_supportHash']:
             _fail(f'{what}: supportLayout.hash does not match the request profile')
         for name in request['_stages']:

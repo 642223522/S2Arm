@@ -115,6 +115,48 @@ class BuildTests(JobCase):
                 sealed.chmod(0o755)
         self.assertEqual(sorted(p.name for p in root.iterdir()), ["romfs"])
 
+    def test_launch_env_carries_cover_for_dock_icon(self):
+        # #994：起局把游戏库列表同一张封面文件交给宿主（S2A_GAME_COVER；封面三级取法在 library.catalog：玩家换的 → 游戏自带 → 商店横图），
+        #   宿主起 App 后把 Dock / Cmd+Tab 图标换成它（macos/front_mac.m）。没有封面 / 文件不在了就不带，宿主用包内默认图标
+        import build
+        cover = self.root / "cover.jpg"
+        cover.write_bytes(b"cover fixture")
+        for provided, expect in ((str(cover), str(cover)), ("", None), (str(self.root / "none.jpg"), None)):
+            with self.subTest(cover=provided):
+                game = dict(id="0100000000000000", name="Test title", cover=provided)
+                env = build.runtime_env(self.c, game, self.root / "runtime")
+                self.assertEqual(env.get("S2A_GAME_COVER"), expect)
+
+    def test_host_bundle_default_icon_written_from_branding(self):
+        # #994：宿主包编进默认图标（与启动器 App 同一原图、同一配方 launchers/macos/make_icns.sh），
+        #   没有游戏封面时 Dock / Cmd+Tab 回退到它；更早的引擎快照没有配方 / 原图 → 不写、返回 False，照旧不挡编宿主
+        import build
+        app = self.root / "S2ArmGame.app"
+        self.assertTrue(build.write_host_icon(self.c, app, self.root / "icon.log"))
+        icon = app / "Contents/Resources" / build.HOST_ICON
+        self.assertTrue(icon.is_file())
+        self.assertEqual(icon.read_bytes()[:4], b"icns")
+        with patch.object(self.c, "engine", self.root / "old-engine"):
+            self.assertFalse(build.write_host_icon(self.c, app, self.root / "icon.log"))
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HeapLearned(unittest.TestCase):
+    """D-NGH9：Mac 局非零退出时，这一局（起局时刻之后）运行时写过 <文档根>/wire/<程序号>/heap_need → 按「需要更多内存、已记下」报（game_heap_learned）。期望手写"""
+    def test_heap_learned_now(self):
+        import build, os, tempfile, time
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as t:
+            p = Path(t) / "wire" / "0100ABCD00000000" / "heap_need"
+            env = {"S2A_DOCS": t}
+            self.assertFalse(build.heap_learned_now(env, "0100abcd00000000", time.time()), "没有记录")
+            p.parent.mkdir(parents=True); p.write_text("3292528640\n")
+            now = time.time()
+            os.utime(p, (now, now))
+            self.assertTrue(build.heap_learned_now(env, "0100abcd00000000", now - 5), "这一局写的")
+            os.utime(p, (now - 3600, now - 3600))
+            self.assertFalse(build.heap_learned_now(env, "0100abcd00000000", now - 5), "上一局留下的旧记录不算")
+            self.assertFalse(build.heap_learned_now({}, "0100abcd00000000", 0), "没有文档根")

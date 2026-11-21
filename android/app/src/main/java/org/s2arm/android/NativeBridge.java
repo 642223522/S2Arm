@@ -117,8 +117,6 @@ final class NativeBridge {
     static boolean verifyGameBytes(String path, java.nio.ByteBuffer bytes) { return GameSession.verifyNativeBytes(path, bytes); }
     static int gameFileAdmission(String path) { return GameSession.nativeFileAdmission(path); }
 
-    /** intent extra s2arm.draw_log=1|0 → 原生 draw_log 覆盖；-1 不动（按属性）。 */
-    static native void setDrawLog(int value);
     static native int startGame(long host, android.content.res.AssetManager assets, String assetRoot,
                                String[] names, String[] images, String[] fixups, String[] gates, String[] widen,
                                String npdm, String gameDataDir, String stateDir, long programId,
@@ -129,11 +127,6 @@ final class NativeBridge {
     static native String describe(long host);
     /** Actual game queue-present count; -1 for the diagnostic renderer. */
     static native long gamePresentCount();
-    /**
-     * B3 buffer_geometry: 交换链已按游戏输出尺寸出图时返回 1 并把输出尺寸写进 out[0]/out[1]
-     * （游戏像素）；否则返回 0、out 写 {0,0}。MainActivity 用它把 SurfaceView 布成同比例居中。
-     */
-    static native int bufferGeometry(int[] out);
     /**
      * Registers the process's HostApi (runtime/include/s2a_hostapi.h) with the session's frozen
      * BootSpec user values; once per process (later calls keep the first values). Returns what the
@@ -212,6 +205,23 @@ final class NativeBridge {
     /** Debug: the render thread waits this long before its teardown (destroy). */
     static native void setStopStall(long host, int ms);
     static native void input(int buttons, int lx, int ly, int rx, int ry);
+    /**
+     * Phone six-axis / rumble settings (native/phone_feedback.c, PhoneFeedback): package for the sensor
+     * manager, the two in-game menu switches, whether the device has a vibrator, and whether a physical
+     * gamepad is attached (the phone motor stays quiet then, as on iOS). Main thread; repeatable.
+     */
+    static native void configurePhoneFeedback(String packageName, boolean gyro, boolean rumble, boolean hasVibrator,
+                                              boolean gamepad);
+    /** Display.getRotation() of the default display, for the phone six-axis axes. Any thread. */
+    static native void setDisplayRotation(int rotation);
+    /**
+     * Player 1's physical controller (native/phone_feedback.c, PadFeedback): whether its motor rumbles (it has one
+     * and controller rumble is on), its USB vendor id (picks the sensor axis convention), whether it has six-axis
+     * sensors, and whether this is a different controller than last time. Main thread; repeatable.
+     */
+    static native void configurePadFeedback(boolean rumble, int vendorId, boolean motion, boolean changed);
+    /** One controller sensor event as Android reports it (gyro: rad/s, else accelerometer m/s²). Sensor thread. */
+    static native void padSensor(boolean gyro, float x, float y, float z);
     /** Maps each rewritten module in an installed game's modules/ (load check; nothing runs). Any thread. */
     /** Native -> Java: the guest's software keyboard request (blocked guest thread). */
     static String requestText(String title, String initial, int maxChars) {
@@ -221,6 +231,8 @@ final class NativeBridge {
     static void dguardPrompt(byte[] diag) {
         MainActivity.dguardPrompt(diag == null ? "" : new String(diag, java.nio.charset.StandardCharsets.UTF_8));
     }
+    /** 停帧看门的屏上提示（native bridge.cpp stall_notice 在看门线程上调）：种类见 StallNotice，seconds 是横幅显示秒数。 */
+    static void stallNotice(int kind, int seconds) { MainActivity.stallNotice(kind, seconds); }
     /** 直连安全网：onTrimMemory/onLowMemory 前台内存告警，记一次失败证据（未武装时空转）。 */
     static native void memoryWarning();
     /** #48 P8：热状态（PowerManager.THERMAL_STATUS_*，读不到 -1）与省电模式，进共用 dm_thermal_now / dm_low_power_now。 */
@@ -242,7 +254,7 @@ final class NativeBridge {
     static native String checkAssetModulePaths(android.content.res.AssetManager assets, String assetRoot, String[] images);
     /** Startup-only save transport. Both arrays contain standard UTF-8 JSON, not JNI
      * modified UTF-8. The shared service serializes with Host.Boot and rejects a
-     * running host. No UI is wired yet; callers must verify the selected runtime
+     * running host. Callers must verify the selected runtime
      * via load() before calling, and inspect the shared JSON error response.
      * Diagnostic/non-service builds throw UnsupportedOperationException.
      */

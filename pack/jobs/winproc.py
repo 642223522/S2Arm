@@ -203,6 +203,10 @@ class _Job:
             raise OSError('job membership exceeds safety bound')
 
 
+# Windows 应用控制拦下要起的程序：4551 应用程序控制策略（智能应用控制 / WDAC）、1260 组策略（软件限制 / AppLocker）、225 / 226 杀毒软件判有毒
+APP_CONTROL_BLOCKED = (4551, 1260, 225, 226)
+
+
 def popen(args, **kwargs):
     """Create suspended, attach private job, then run. No breakaway window."""
     # Windows CreateProcess does not use env['PATH'] to locate its image.
@@ -223,19 +227,29 @@ def popen(args, **kwargs):
             _jobs[process.pid] = job
         _resume_initial_thread(process)
         return process
-    except BaseException:
-        if process is not None:
-            # This is the exact Popen-owned child, even if assignment failed.
-            with contextlib.suppress(OSError):
-                process.kill()
-                process.wait(timeout=5)
-            for stream in (process.stdin, process.stdout, process.stderr):
-                if stream is not None:
-                    stream.close()
-            with _jobs_lock:
-                _jobs.pop(process.pid, None)
-        job.close()
+    except OSError as error:
+        # 应用控制拦下（APP_CONTROL_BLOCKED，#0745b9）：CreateProcess 的报错不带文件名，补上被拦的那个工具，errors.explain 据此说清是哪个
+        if process is None and getattr(error, 'winerror', None) in APP_CONTROL_BLOCKED and not error.filename:
+            error.filename = str(kwargs.get('executable') or args[0])
+        _popen_cleanup(job, process)
         raise
+    except BaseException:
+        _popen_cleanup(job, process)
+        raise
+
+
+def _popen_cleanup(job, process):
+    if process is not None:
+        # This is the exact Popen-owned child, even if assignment failed.
+        with contextlib.suppress(OSError):
+            process.kill()
+            process.wait(timeout=5)
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+        with _jobs_lock:
+            _jobs.pop(process.pid, None)
+    job.close()
 
 
 def progress(process):
@@ -385,14 +399,6 @@ def _current_sid():
         _close(token)
 
 
-def request_is_private(path):
-    """Mac / Linux：请求文件属主是本用户且只有本用户可读写（0600）。
-    Windows 不在这里再核（11-11 装机链路审查）：启动器建请求文件时已带只给本人的权限（PrivateJobRequest.cs），这层是重复的；
-    它遇到不认识的权限条目类型就判「不私有」，作业抛一句英文退出、没有错误码，比它防的「同机别的用户读到请求里的路径」更伤"""
-    path = Path(path)
-    return not (path.stat().st_mode & 0o077 or path.stat().st_uid != os.getuid())
-
-
 class _UnicodeString(C.Structure):
     _fields_ = [('length', W.WORD), ('maximum', W.WORD), ('buffer', W.LPWSTR)]
 
@@ -474,7 +480,7 @@ def _relative(parent, name, directory=None, delete=False):
         raise ValueError('relative access requires one plain component')
     text = C.create_unicode_buffer(name)
     encoded = name.encode('utf-16-le')
-    string = _UnicodeString(len(encoded), len(encoded) + 2, C.cast(text, W.LPWSTR))
+    string = _UnicodeString(len(encoded), len(encoded) + 2, C.cast(C.addressof(text), W.LPWSTR))
     attributes = _ObjectAttributes(C.sizeof(_ObjectAttributes), parent.handle, C.pointer(string), 0x40, None, None)
     handle, status = W.HANDLE(), _IOStatus()
     access = 0x100081 | (0x10000 if delete else 0)  # SYNCHRONIZE, READ_DATA, READ_ATTRIBUTES, DELETE
@@ -593,8 +599,42 @@ def _open_shared(path, access, flags=0x80):
     handle = _api('kernel32', 'CreateFileW', W.HANDLE, W.LPCWSTR, W.DWORD, W.DWORD, C.c_void_p, W.DWORD, W.DWORD, W.HANDLE)(
         win_path(os.path.abspath(path)), access, _SHARE_ALL, None, _OPEN_EXISTING, flags, None)
     if handle == C.c_void_p(-1).value:
-        raise C.WinError(C.get_last_error())
+        code = C.get_last_error()
+        error = C.WinError(code)
+        error.filename = str(path)
+        if code == 5:   # 拒绝访问：原因看不见（#3c209a 只有 devcert\state.json 一份读不了、定不了因）——把这份文件的属性与权限描述带进报错，随诊断回来
+            error.strerror = f"{error.strerror}（{access_facts(path)}）"
+        raise error
     return handle
+
+
+def access_facts(path):
+    """一份文件的属性与安全描述（SDDL：属主、权限表）→ 一行文字，进拒绝访问的报错；取不到的项写原因，不再抛"""
+    out = []
+    try:
+        attrs = _api('kernel32', 'GetFileAttributesW', W.DWORD, W.LPCWSTR)(win_path(os.path.abspath(path)))
+        out.append("属性 " + ("取不到 %d" % C.get_last_error() if attrs == 0xFFFFFFFF else hex(attrs)))   # 0x10 目录、0x1 只读、0x400 重解析点  # 非玩家句
+    except OSError as e:
+        out.append(f"属性 {e}")  # 非玩家句
+    try:
+        sd = C.c_void_p()
+        # OWNER | GROUP | DACL = 1 | 2 | 4；SE_FILE_OBJECT = 1
+        rc = _api('advapi32', 'GetNamedSecurityInfoW', W.DWORD, W.LPCWSTR, C.c_int, W.DWORD, C.c_void_p, C.c_void_p, C.c_void_p, C.c_void_p, C.POINTER(C.c_void_p))(
+            win_path(os.path.abspath(path)), 1, 7, None, None, None, None, C.byref(sd))
+        if rc:
+            out.append(f"权限 取不到 {rc}")  # 非玩家句
+        else:
+            text = C.c_wchar_p()
+            try:
+                if _api('advapi32', 'ConvertSecurityDescriptorToStringSecurityDescriptorW', W.BOOL, C.c_void_p, W.DWORD, W.DWORD,
+                        C.POINTER(C.c_wchar_p), C.c_void_p)(sd, 1, 7, C.byref(text), None):
+                    out.append("权限 " + text.value)  # 非玩家句
+                    _api('kernel32', 'LocalFree', C.c_void_p, C.c_void_p)(C.c_void_p.from_buffer(text))
+            finally:
+                _api('kernel32', 'LocalFree', C.c_void_p, C.c_void_p)(sd)
+    except OSError as e:
+        out.append(f"权限 {e}")  # 非玩家句
+    return "；".join(out)
 
 
 def read_shared(path):

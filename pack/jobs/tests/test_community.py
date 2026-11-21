@@ -19,6 +19,7 @@ REPO = Path(__file__).resolve().parents[3]
 class Ctx:
     def __init__(self, root):
         self.library, self.engine, self.private, self.r = root / "lib", root / "engine", root / "priv", {"gameId": GID}
+        self.work_root = root / "work"   # 程序缓存 cache/programs（pack/jobs/programs.py）
         table = self.engine / community.SETTINGS_TABLE   # 定义表用仓库里的真表
         table.parent.mkdir(parents=True, exist_ok=True); shutil.copyfile(REPO / community.SETTINGS_TABLE, table)
     def begin(self, *a): pass
@@ -26,6 +27,57 @@ class Ctx:
 
 def write(path, text):
     path.parent.mkdir(parents=True, exist_ok=True); path.write_text(text, encoding="utf-8")
+
+
+class LdnEnvTests(unittest.TestCase):
+    def test_default_and_explicit_auto_preserve_legacy_environment(self):
+        self.assertEqual(community.ldn_env({}), {})
+        self.assertEqual(community.ldn_env({"ldnMode": "auto", "ldnHost": True}), {})
+
+    def test_manual_host_and_client(self):
+        self.assertEqual(community.ldn_env({"ldnMode": "manual", "ldnHost": True}),
+                         {"S2A_LDN_SERVER": "127.0.0.1", "S2A_LDN_RELAY": "1", "S2A_LDN_LISTEN": "0.0.0.0"})
+        self.assertEqual(community.ldn_env({"ldnMode": "manual", "ldnAddress": " 192.168.1.21 "}),
+                         {"S2A_LDN_SERVER": "192.168.1.21", "S2A_LDN_RELAY": "0"})
+        self.assertEqual(community.ldn_env({"ldnMode": "manual", "ldnAddress": ""}),
+                         {"S2A_LDN_SERVER": "0.0.0.0", "S2A_LDN_RELAY": "0"})
+
+    def test_switch_mode_only_enables_ldn_mitm(self):
+        # 「与 Switch 联机」只开 ldn_mitm，不混入中继变量；其余模式不开它（缺省不变）
+        self.assertEqual(community.ldn_env({"ldnMode": "switch", "ldnHost": True, "ldnAddress": "192.168.1.21"}), {"S2A_LDN_MITM": "1"})
+        for s in ({}, {"ldnMode": "auto"}, {"ldnMode": "manual", "ldnHost": True}):
+            self.assertNotIn("S2A_LDN_MITM", community.ldn_env(s))
+
+    def test_shared_settings_save_and_launch_wiring(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        table = {it["id"]: it for it in json.loads((REPO / community.SETTINGS_TABLE).read_text(encoding="utf-8"))["items"]}
+        game, shared = {"schema": 1, "settings": {}, "patches": {}}, {"schema": 1, "settings": {}}
+        context = SimpleNamespace(r={"gameId": GID, "settings": {"ldnMode": "manual", "ldnHost": False, "ldnAddress": "192.168.1.21"}})
+        writes = {}
+        with patch.object(community, "settings_table", return_value=table), \
+             patch.object(community, "game_of", return_value={"id": GID}), \
+             patch.object(community, "load_launch", return_value=game), \
+             patch.object(community, "load_app", return_value=shared), \
+             patch.object(community, "launch_path", return_value="game"), \
+             patch.object(community, "app_path", return_value="app"), \
+             patch.object(community, "atomic", side_effect=lambda path, data: writes.update({path: data})), \
+             patch.object(community, "describe_game", return_value={}), \
+             patch.object(community, "runtime_caps", return_value={}), \
+             patch.object(community, "runtime_caps_rows", return_value={}), \
+             patch.object(community, "game_languages", return_value=[]), \
+             patch.object(community, "adaptive_patches", return_value=([], False)), \
+             patch.object(community, "packed_patches", return_value=[]):
+            community.save(context)
+            self.assertEqual(writes["game"]["settings"], {})
+            self.assertEqual(writes["app"]["settings"], context.r["settings"])
+            self.assertEqual(community.mac_settings(context, GID)["ldnAddress"]["value"], "192.168.1.21")
+            self.assertEqual(community.launch_env(context, GID), {"S2A_LDN_SERVER": "192.168.1.21", "S2A_LDN_RELAY": "0"})
+            self.assertEqual(community.launch_env(context, GID, {"S2A_LDN_SERVER": "10.0.0.5"}), {})
+
+    def test_explicit_server_wins_as_a_whole(self):
+        for server in ("10.0.0.5", ""):
+            self.assertEqual(community.ldn_env({"ldnMode": "manual", "ldnHost": True}, {"S2A_LDN_SERVER": server}), {})
 
 
 class CommunityTests(unittest.TestCase):
@@ -44,6 +96,13 @@ class CommunityTests(unittest.TestCase):
               f"Spl\t{GID}\t1.1.1\t\tpchtxt\t60\tfpsrepo\tyes\tabc\nSpl\t{GID}\t4.1.0\t\tpchtxt\t30\tother30\tyes\tdef\n")
         write(cd / "uw/full/y/INDEX.tsv", "game\ttitle_id\tversion\tbuild_id\taspect\tkind\tui_fix\tsource\tin_pack\tsha256\n"
               f"Spl\t{GID}\t4.1.0\t\t21:9\tpchtxt\tyes\tuwrepo\tyes\t111\n")
+
+    def test_snapshot_switch_env(self):
+        # 即时快照（0.6.0，全部游戏共用，宿主苹果端缺省开）：没选过 / 选开 → 不写（宿主缺省开）；选关 → S2A_SNAP_MODE=0。存数据目录 game-settings.json
+        self.assertNotIn("S2A_SNAP_MODE", community.launch_env(self.c, GID))
+        for on, want in ((True, None), (False, "0")):
+            write(self.c.private / "game-settings.json", json.dumps({"schema": 1, "settings": {"snapshot": on}}))
+            self.assertEqual(community.launch_env(self.c, GID).get("S2A_SNAP_MODE"), want, f"snapshot={on}")
 
     def test_defaults_and_sources(self):
         r = community.listing(self.c)
@@ -110,6 +169,27 @@ class CommunityTests(unittest.TestCase):
         self.c.r = {"gameId": GID, "graphics": {"nope": True}}
         with self.assertRaises(Failure): community.save(self.c)
 
+    def test_ldn_manual_settings(self):
+        def ldn():
+            return {k: v for k, v in community.launch_env(self.c, GID).items() if k.startswith("S2A_LDN_")}
+        self.assertEqual(ldn(), {})
+        self.c.r.update(settings={"ldnMode": "manual", "ldnHost": True, "ldnAddress": "192.168.1.20"})
+        community.save(self.c)
+        self.assertEqual(ldn(), {"S2A_LDN_SERVER": "127.0.0.1", "S2A_LDN_RELAY": "1", "S2A_LDN_LISTEN": "0.0.0.0"})
+        self.assertNotIn("ldnMode", community.load_launch(self.c, GID)["settings"])
+        self.assertEqual(community.mac_settings(self.c, GID)["ldnAddress"]["value"], "192.168.1.20")
+        self.c.r.update(settings={"ldnHost": False, "ldnAddress": " 192.168.1.21 "})
+        community.save(self.c)
+        self.assertEqual(ldn(), {"S2A_LDN_SERVER": "192.168.1.21", "S2A_LDN_RELAY": "0"})
+        # 未填写不能回到发现 / 选举；保留游戏启动，把连接失败交给宿主。
+        self.c.r.update(settings={"ldnAddress": ""}); community.save(self.c)
+        self.assertEqual(ldn(), {"S2A_LDN_SERVER": "0.0.0.0", "S2A_LDN_RELAY": "0"})
+        self.c.r.update(settings={"ldnMode": "auto"}); community.save(self.c)
+        self.assertEqual(ldn(), {})
+        for change in ({"ldnMode": "other"}, {"ldnHost": "true"}, {"ldnAddress": 123}):
+            self.c.r.update(settings=change)
+            with self.assertRaises(Failure): community.save(self.c)
+
     def test_game_language(self):
         # 游戏语言（启动设置页）：跟随系统不设变量（宿主读系统首选语言）；选了哪种就把宿主枚举名交给 S2A_SYSTEM_LANGUAGE；不在表里的值拒收
         self.c.r.update(settings={"language": "system"}); community.save(self.c)
@@ -128,6 +208,34 @@ class CommunityTests(unittest.TestCase):
         self.c.r = {"gameId": GID, "settings": {"audioLatency": "standard"}}; community.save(self.c)
         self.assertNotIn("S2A_AUDIO_BUFFER_FRAMES", community.launch_env(self.c, GID))
         self.c.r = {"gameId": GID, "settings": {"audioLatency": "16"}}
+        with self.assertRaises(Failure): community.save(self.c)
+
+    def test_audio_device_ios_same_as_table(self):
+        # 输出设备类型（定义表 audioDevice）与 iOS 同一组值同序：ios/settings.m 起局只转 builtin / headphones / external
+        #   （"auto" = 没选过不设）、ios/game_options.m 选项块认同一组、shell S2ArmGameSettings 的多选四项同值同序、
+        #   C# 选择器认得表里每个值；iOS 平台在表里声明了
+        item = next(i for i in json.loads((REPO / community.SETTINGS_TABLE).read_text(encoding="utf-8"))["items"] if i["id"] == "audioDevice")
+        values = [o["value"] for o in item["options"]]
+        self.assertEqual(values, ["auto", "builtin", "headphones", "external"])
+        self.assertIn("ios", item["platforms"])
+        accept = '[@[@"builtin", @"headphones", @"external"] containsObject:'
+        for path in ("ios/settings.m", "ios/game_options.m"):
+            self.assertIn(accept, (REPO / path).read_text(encoding="utf-8"))   # 两处接受的显式类型同一组
+        shell = (REPO / "shell/Sources/S2ArmShellHost/S2ArmGameSettings.swift").read_text(encoding="utf-8")
+        self.assertIn('["auto", "builtin", "headphones", "external"]', shell)   # shell 多选与表同值同序
+        csharp = (REPO / "compat/tree/src/Ryujinx.Audio.Backends.Apple/AppleAudioDeviceType.cs").read_text(encoding="utf-8")
+        self.assertEqual([v for v in values if f'"{v}"' not in csharp], [])   # C# 选择器认得表里每个值
+    def test_resolution_scale_and_fps_limit(self):
+        # 渲染分辨率 / 帧率上限（11-17，Mac 补上 iPhone 已有的两项）：缺省 1× / 不限不设变量；0.5× → S2A_RES_SCALE=0.5，30 帧 → S2A_FPS=30；表外取值拒收
+        env = community.launch_env(self.c, GID)
+        self.assertNotIn("S2A_RES_SCALE", env); self.assertNotIn("S2A_FPS", env)
+        self.c.r = {"gameId": GID, "settings": {"resolutionScale": "0.5", "fpsLimit": "30"}}; community.save(self.c)
+        env = community.launch_env(self.c, GID)
+        self.assertEqual((env["S2A_RES_SCALE"], env["S2A_FPS"]), ("0.5", "30"))
+        self.c.r = {"gameId": GID, "settings": {"resolutionScale": "1", "fpsLimit": "0"}}; community.save(self.c)
+        env = community.launch_env(self.c, GID)
+        self.assertNotIn("S2A_RES_SCALE", env); self.assertNotIn("S2A_FPS", env)
+        self.c.r = {"gameId": GID, "settings": {"resolutionScale": "3"}}
         with self.assertRaises(Failure): community.save(self.c)
     def test_game_language_only_supported(self):
         # 11-14 维护者「按你的建议加上」：只列这款 control.nacp 支持的语言；系统语言不支持时在设置里写明起局用哪种（不弹窗）。期望按 NACP 位序手算
@@ -238,7 +346,7 @@ class MacDisplayTests(unittest.TestCase):
         self.assertEqual((m["widescreen"]["available"], m["widescreen"]["value"]), (True, False))   # 清单 widen 0「缺省关」：没选过显示关、可以开
         self.assertEqual((m["quality"]["available"], m["quality"]["value"], m["quality"].get("blocked")), (True, "Bilinear", None))   # 画质提升缺省标准，三档都能选
         self.assertEqual((m["docked"]["value"], m["rumble"]["value"], m["rumbleLevel"]["value"], m["motion"]["value"], m["hud"]["value"]),
-                         ("docked", True, "2", True, False))   # 定义表缺省：Mac 主机模式、震动开标准档、体感开、浮层关
+                         ("handheld", True, "2", True, False))   # 定义表缺省：掌机模式（11-17 起同 iPhone）、震动开标准档、体感开、浮层关
         self.assertEqual(community.launch_env(self.c, GID), {})
 
     def test_fps60_default_follows_the_verified_reason_like_the_host(self):
@@ -262,10 +370,45 @@ class MacDisplayTests(unittest.TestCase):
         (layout.image_mac(self.c, GID) / "s2a_caps.tsv").unlink()   # 还没出 Mac 版（读不到清单）：照旧都列、先存偏好
         self.assertEqual((self.mac()["fps60"].get("hidden"), self.mac()["widescreen"].get("hidden")), (None, None))
 
+    def test_audio_device_and_virtual_surround(self):
+        # 输出设备类型 + 两个虚拟环绕开关（#189 后续，5.1 虚拟环绕第二片，与 iPhone ios/settings.m 同口径）：没选过不设任何变量
+        #   （= auto 按设备真实声道判，5.1 直通缺省不变）；显式选了类型设 S2A_AUDIO_DEVICE、拨过的开关设 1 / 0（各存各的，
+        #   只在对应显式类型下生效——驱动侧判）；表外取值拒收。Mac 启动页两个开关只在对应类型下可用、值照旧显示
+        env = community.launch_env(self.c, GID)
+        self.assertNotIn("S2A_AUDIO_DEVICE", env); self.assertNotIn("S2A_AUDIO_VS_SPEAKERS", env); self.assertNotIn("S2A_AUDIO_VS_HEADPHONES", env)
+        for device in ("builtin", "headphones", "external"):
+            self.c.r = {"gameId": GID, "settings": {"audioDevice": device}}; community.save(self.c)
+            self.assertEqual(community.launch_env(self.c, GID).get("S2A_AUDIO_DEVICE"), device)
+        self.c.r = {"gameId": GID, "settings": {"audioDevice": "auto"}}; community.save(self.c)
+        self.assertNotIn("S2A_AUDIO_DEVICE", community.launch_env(self.c, GID))   # 「自动」：起局与没选过一致
+        self.c.r = {"gameId": GID, "settings": {"audioDevice": "soundbar"}}
+        with self.assertRaises(Failure): community.save(self.c)
+        self.c.r = {"gameId": GID, "settings": {"vsSpeakers": True, "vsHeadphones": False}}; community.save(self.c)
+        env = community.launch_env(self.c, GID)
+        self.assertEqual((env.get("S2A_AUDIO_VS_SPEAKERS"), env.get("S2A_AUDIO_VS_HEADPHONES")), ("1", "0"))
+        self.assertNotIn("S2A_AUDIO_DEVICE", env)   # 只拨开关不算选了类型：设备仍按真实声道判（驱动侧 VS 只在显式类型生效）
+        # Mac 启动页：没选类型 = 两个开关都置灰（值照旧显示，拨过的各存各的）；选了耳机只放开耳机开关
+        m = self.mac()
+        self.assertEqual((m["vsSpeakers"]["available"], m["vsHeadphones"]["available"]), (False, False))
+        self.assertEqual((m["vsSpeakers"]["value"], m["vsHeadphones"]["value"]), (True, False))
+        self.assertEqual(m["vsSpeakers"]["reason"], community.NO_VS_SPEAKERS)
+        self.c.r = {"gameId": GID, "settings": {"audioDevice": "headphones"}}; community.save(self.c)
+        m = self.mac()
+        self.assertEqual((m["vsSpeakers"]["available"], m["vsHeadphones"]["available"]), (False, True))
+        self.assertEqual(m["vsHeadphones"]["reason"], "")
+        self.c.r = {"gameId": GID, "settings": {"audioDevice": "builtin"}}; community.save(self.c)
+        m = self.mac()
+        self.assertEqual((m["vsSpeakers"]["available"], m["vsHeadphones"]["available"]), (True, False))
+        self.assertEqual(m["audioDevice"]["available"], True)   # 设备类型本身不受开关影响，随时可选
+        self.c.r = {"gameId": GID, "settings": {"audioDevice": "external", "vsSpeakers": True, "vsHeadphones": False}}; community.save(self.c)
+        m = self.mac()
+        self.assertEqual((m["vsSpeakers"]["available"], m["vsHeadphones"]["available"]), (False, False))
+        self.assertEqual((m["vsSpeakers"]["value"], m["vsHeadphones"]["value"]), (True, False))   # 拨过的值照显示（切换类型各自恢复）
+
     def test_every_mac_item_of_the_table_is_on_the_page(self):
         # 定义表里 platforms 含 mac 的 bool / choice 项 = quality（11-15 取代 enhance）fps60 widescreen docked rumble rumbleLevel motion hud（11-13 widenForce 并进 widescreen）
         self.caps()
-        self.assertEqual(sorted(self.mac()), sorted(["quality", "fps60", "fpsPick", "widescreen", "docked", "language", "rumble", "rumbleLevel", "motion", "padFace", "hud", "pauseUnfocused", "audioLatency", "diagRun"]))
+        self.assertEqual(sorted(self.mac()), sorted(["quality", "fps60", "fpsPick", "resolutionScale", "fpsLimit", "widescreen", "docked", "language", "rumble", "rumbleLevel", "motion", "motionInvertY", "motionInvertX", "ldnMode", "ldnHost", "ldnAddress", "padFace", "hud", "snapshot", "pauseUnfocused", "audioLatency", "audioDevice", "vsSpeakers", "vsHeadphones", "diagRun"]))
 
     def test_fps_pick_level(self):
         # 帧率档位（11-13）：包里帧率补丁（编号 fps:）目标帧率两档以上才出；选具体档 → S2A_FPS_PICK=档，选自动（"0"）不写；表外取值拒收
@@ -294,7 +437,7 @@ class MacDisplayTests(unittest.TestCase):
         m = self.mac()
         self.assertEqual(m["fps60"]["reason"], community.NO_FPS60)
         # 画质提升：没走直连只是锐利放大用不了——这一行照样能选标准 / 2D，锐利放大置灰、写原因
-        self.assertEqual((m["quality"]["available"], m["quality"]["blocked"], m["quality"]["reason"]), (True, ["MetalFX"], community.NO_DIRECT))
+        self.assertEqual((m["quality"]["available"], m["quality"]["blocked"], m["quality"]["reason"]), (True, ["MetalFX", "Fsr"], community.NO_DIRECT))
         self.assertTrue(m["widescreen"]["available"])   # 「缺省关」不是强信号：照样能开
         self.caps("widen\t0\t# 强信号：宽屏画面坏\ndirect\t1\n")
         self.assertEqual((self.mac()["widescreen"]["available"], self.mac()["widescreen"]["reason"]), (False, community.NO_WIDEN))
@@ -316,7 +459,12 @@ class MacDisplayTests(unittest.TestCase):
         self.assertEqual(community.launch_env(self.c, GID), {})   # 没走直连：锐利放大不生效
         self.save(quality="Nearest")
         self.assertEqual(community.launch_env(self.c, GID), {"S2A_SCALING_FILTER": "Nearest"})   # 2D 不要直连
-        self.c.r = {"gameId": GID, "settings": {"quality": "Fsr"}}
+        # Fsr（FSR 1）是表里的第四档：走直连才设，没走直连不设（同锐利放大）
+        self.save(quality="Fsr")
+        self.assertEqual(community.launch_env(self.c, GID), {})
+        self.caps("fps60\t1\ndirect\t1\n")
+        self.assertEqual(community.launch_env(self.c, GID), {"S2A_SCALING_FILTER": "Fsr"})
+        self.c.r = {"gameId": GID, "settings": {"quality": "Lanczos"}}   # 表外值
         with self.assertRaises(Failure): community.save(self.c)
 
     def test_old_enhance_switch_becomes_sharp_upscaling(self):
@@ -416,11 +564,30 @@ class MacDisplayTests(unittest.TestCase):
         self.assertEqual(self.launch_file()["settings"], {"quality": "MetalFX"})
         self.assertEqual(community.launch_env(self.c, GID), {"S2A_SCALING_FILTER": "MetalFX"})
 
+    def test_chosen_docked_survives_the_handheld_default(self):
+        # 11-17 缺省改掌机：玩家在这款设置里选过主机的，launch.json 里存着 docked，起局照旧主机（build.launch 在缺省之后合并 launch_env）；没选过的不写，走缺省
+        self.caps()
+        self.assertNotIn("S2A_DOCKED", community.launch_env(self.c, GID))
+        self.save(docked="docked")
+        self.assertEqual(community.launch_env(self.c, GID)["S2A_DOCKED"], "1")
+        self.assertEqual(self.mac()["docked"]["value"], "docked")
+
     def test_controls_and_mode_reach_the_host(self):
         # 掌机 → S2A_DOCKED=0；浮层开 → S2A_HUD=1；震动关 → S2A_RUMBLE=0；强度「强」(4) → 倍率 1.8；体感关 → S2A_MOTION=0
         self.caps()
         self.save(docked="handheld", hud=True, rumble=False, rumbleLevel="4", motion=False)
         self.assertEqual(community.launch_env(self.c, GID), {"S2A_DOCKED": "0", "S2A_HUD": "1", "S2A_RUMBLE": "0", "S2A_RUMBLE_SCALE": "1.8", "S2A_MOTION": "0"})
+
+    def test_motion_invert_reaches_the_host(self):
+        # #1551：体感上下 / 左右反过来，开着才写 S2A_MOTION_INVERT_Y / _X=1；缺省（没选过）与关都不写
+        self.caps()
+        self.assertNotIn("S2A_MOTION_INVERT_Y", community.launch_env(self.c, GID))
+        self.save(motionInvertY=True)
+        env = community.launch_env(self.c, GID)
+        self.assertEqual((env.get("S2A_MOTION_INVERT_Y"), env.get("S2A_MOTION_INVERT_X")), ("1", None))
+        self.save(motionInvertY=False, motionInvertX=True)
+        env = community.launch_env(self.c, GID)
+        self.assertEqual((env.get("S2A_MOTION_INVERT_Y"), env.get("S2A_MOTION_INVERT_X")), (None, "1"))
 
     def test_max_blast_rumble_level(self):
         # 「震爆我」(5) → 倍率 5.0；iOS ios/controller.m 的六档倍率表与定义表一致

@@ -11,7 +11,7 @@ using Path = System.IO.Path;
 
 namespace S2A.Services
 {
-    // 资源替换类 mod：玩家把 mod 放进 <本款文档根>/mods/<任意名>/romfs/**，起局时叠到本体 RomFS 上。
+    // 资源替换类 mod：<本款文档根>/mods/<任意名>/romfs/** 叠主程序，romfs.<完整程序号>/** 只叠对应程序。
     //   多个 mod 按文件夹名升序（序号序）叠，后者覆盖前者；能替换原有文件（大小可以不同）、新增原包没有的文件和目录。
     //   本体 RomFS 已是「本体 + 更新」合并后的那份（出包时 pack/nx_unpack 合好），三种形态（单一 IMG、目录 + 预建索引、单文件镜像）和没有索引的现建一视同仁：
     //   这里只认 Application.Register 交给 fs 的那个 IStorage，经 LibHac 读出它的文件表，再按同一个 RomFsBuilder 建新布局
@@ -21,7 +21,7 @@ namespace S2A.Services
     //   内存：叠加时要把原包几十万个路径过一遍 LibHac 的建表器，瞬时占用随文件数涨（合成 27 万文件、Mac M5 Pro：带 mod 起局峰值比不带多约 161 MB，见 docs/坑记录.md「资源替换类 mod」）；
     //   分段放掉中间数据、段间回收，返回前做一次压缩回收把瞬时占用还给系统。
     //   空目录：LibHac RomFsBuilder 只收文件，mod 里的空目录加不进去；原 RomFS 本来也由它按文件建（RomFsIndex.Write、RomFsFromDirectory），没有空目录可丢。
-    //   不处理：mod 里 romfs/ 以外的东西（exefs/ 代码补丁、cheats/ 金手指等，各记一行黄）；符号链接（不跟随，记黄）；DLC（aoc）的 RomFS；多程序合集序号 ≥ 1 的子程序。
+    //   不处理：mod 里非 RomFS 的东西（exefs/ 代码补丁、cheats/ 金手指等，各记一行黄）；符号链接（不跟随，记黄）；DLC（aoc）的 RomFS。
     //   游戏运行中 mod 文件被删 / 改：读到时回失败码、报红（不抛异常穿出服务边界）；改 mod 要先结束游戏。
     public static class RomFsMods
     {
@@ -35,15 +35,15 @@ namespace S2A.Services
             string own = Environment.GetEnvironmentVariable("S2A_MODS_DIR");   // 起局方直接给 mod 目录（Mac 作业层 = 这款游戏文件夹的 mods/，pack/jobs/build.py；启动器「游戏设置 → Mod」导入到那里）
             if (!string.IsNullOrEmpty(own)) return own;
             string docs = Environment.GetEnvironmentVariable("S2A_DOCS");
-            if (string.IsNullOrEmpty(docs) && OperatingSystem.IsIOS()) docs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);   // 平台例外：没给 S2A_DOCS 时只有 iOS 的 App 容器 Documents 可当 mod 目录的根；Mac 上同一个调用是用户文稿夹，不许碰，所以只能按平台分
+            if (string.IsNullOrEmpty(docs) && (OperatingSystem.IsIOS() || OperatingSystem.IsTvOS())) docs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);   // 平台例外：没给 S2A_DOCS 时只有 iOS 的 App 容器 Documents 可当 mod 目录的根；Mac 上同一个调用是用户文稿夹，不许碰，所以只能按平台分
             return string.IsNullOrEmpty(docs) ? null : Path.Combine(docs, DirName);
         }
 
         // 起局接线（Application.Register 交给 fs 之前；单一 IMG、单文件镜像、目录三处，各有经 Register 的用例：RomFsModsRegisterTest.cs）
-        public static IStorage ApplyAtLaunch(IStorage baseStorage, int programIndex)
+        public static IStorage ApplyAtLaunch(IStorage baseStorage, int programIndex, ulong programId)
         {
             string dir = ModsDir();
-            return dir == null ? baseStorage : Apply(baseStorage, dir, programIndex);
+            return dir == null ? baseStorage : Apply(baseStorage, dir, programIndex, programId);
         }
 
         // 宿主路径 → 相对 romfs/ 的 RomFS 路径（/ 分隔）；只把本平台的分隔符换成 /，Unix 上文件名里的 \ 原样留着（下面按坏名字拒）
@@ -77,7 +77,7 @@ namespace S2A.Services
             public readonly long Length = length;
         }
 
-        public static IStorage Apply(IStorage baseStorage, string modsDir, int programIndex = 0)
+        public static IStorage Apply(IStorage baseStorage, string modsDir, int programIndex = 0, ulong programId = 0)
         {
             if (baseStorage == null || string.IsNullOrEmpty(modsDir)) return baseStorage;
             List<string> mods = new();
@@ -108,12 +108,6 @@ namespace S2A.Services
             if (mods.Count == 0) return baseStorage;
             mods.Sort((a, b) => string.CompareOrdinal(Path.GetFileName(a), Path.GetFileName(b)));
 
-            if (programIndex != 0)
-            {
-                Log($"【黄】S2A mod：多程序合集序号 {programIndex} 不叠 mod（只叠主程序，序号 0），mods/ 里的 {mods.Count} 个文件夹这局不用");
-                return baseStorage;
-            }
-
             long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
             Dictionary<string, ModFile> files = new(StringComparer.Ordinal);   // RomFS 相对路径（/ 分隔、无前导 /）→ 最后一个给出它的 mod 文件
             List<string> order = new();   // 生效顺序（有 romfs 文件的 mod，序号序）
@@ -125,8 +119,9 @@ namespace S2A.Services
                 Log($"【红】S2A mod：{mod}/romfs/{rel} 没叠上：{why}");
             }
 
+            string targetedDir = programId == 0 ? null : $"romfs.{programId:X16}";
             foreach (string mod in mods)
-                if (Collect(mod, files, Fail)) order.Add(Path.GetFileName(mod));
+                if (Collect(mod, programIndex == 0, targetedDir, files, Fail)) order.Add(Path.GetFileName(mod));
 
             if (files.Count == 0)
             {
@@ -288,7 +283,7 @@ namespace S2A.Services
         }
 
         // 列一个 mod：romfs/ 以外的条目记黄；romfs/ 下逐目录列（哪个子目录列不出只报那一个），符号链接不跟随（记黄）。回这个 mod 有没有给出文件
-        private static bool Collect(string mod, Dictionary<string, ModFile> files, Action<string, string, string> fail)
+        private static bool Collect(string mod, bool mainProgram, string targetedDir, Dictionary<string, ModFile> files, Action<string, string, string> fail)
         {
             string name = Path.GetFileName(mod), romfs = null;
             List<Entry> entries;
@@ -312,9 +307,15 @@ namespace S2A.Services
 
                 if (dir && en.Equals("romfs", StringComparison.OrdinalIgnoreCase))
                 {
-                    romfs = entry.FullName;
+                    if (mainProgram && romfs == null) romfs = entry.FullName;
                     continue;
                 }
+                if (dir && en.StartsWith("romfs.", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (en.Equals(targetedDir, StringComparison.OrdinalIgnoreCase)) romfs = entry.FullName;
+                    continue;
+                }
+                if (!mainProgram) continue;
 
                 string why = en.ToLowerInvariant() switch
                 {
@@ -439,7 +440,7 @@ namespace S2A.Services
         {
             bool ascii = true;
             foreach (char c in s) if (c > 0x7F) { ascii = false; break; }
-            if (ascii || !(OperatingSystem.IsIOS() || OperatingSystem.IsMacOS())) return s;   // 平台例外：下面直接调 CoreFoundation 做 NFC（服务层 string.Normalize 不干活），这个库只有苹果平台有；别的平台按原样比
+            if (ascii || !((OperatingSystem.IsIOS() || OperatingSystem.IsTvOS()) || OperatingSystem.IsMacOS())) return s;   // 平台例外：下面直接调 CoreFoundation 做 NFC（服务层 string.Normalize 不干活），这个库只有苹果平台有；别的平台按原样比
 
             try
             {

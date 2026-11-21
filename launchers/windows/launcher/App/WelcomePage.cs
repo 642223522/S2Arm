@@ -216,10 +216,18 @@ public sealed partial class EnvironmentWindow
     }
 
     // 默认库：%USERPROFILE%\S2Arm（LibraryPaths.DefaultLibrary；玩家选过就用选的），如果还没连接就先 setup。
+    //   第一次建库且有不止一块盘时先问放哪块盘（NeedsLibraryDrive）。
     private void EnsureLibrary(Action next)
     {
         if (connectedFolder is not null && libraryId is not null) { next(); Render(); return; }
         var defaultLib = SavedLibrary();
+        // 第一次建库、这台电脑不止一块能放库的盘：先让玩家选盘（LibraryDrivePicker 选盘模式），不再不问就放进系统盘的用户目录
+        if (NeedsLibraryDrive(defaultLib))
+        {
+            libraryFailCode = LibraryChooseDrive; libraryFailMoveFrom = null; libraryFailFolder = defaultLib; libraryFolder = defaultLib;
+            Render();
+            return;
+        }
         // 玩家没选过位置：缺省位置被别的文件占着（多半是把 S2Arm 解压到了 %USERPROFILE%\S2Arm）时由作业层 setup 换到旁边（freeDefault，规则在
         //   pack/jobs/library.py setup，剃刀 W19），连上后记住实际位置。原先 setup 拒收后整个添加游戏卡死（v0.2.8 热修，「一直提示还有任务在进行」）
         freeDefault = !File.Exists(LibraryPreference);
@@ -268,6 +276,8 @@ public sealed partial class EnvironmentWindow
         catch (LibraryProtocolException error)
         { librarySummary = "library.invalid_result"; libraryDiagnostics += "\n" + error.Message; importError = libraryFailure = LibraryFailed(folder, error.Message); }
         catch (OperationCanceledException) { librarySummary = "library.interrupted"; }
+        catch (UnauthorizedAccessException error)   // 写不进去：不甩英文原文，说清是哪个文件夹、怎么办（原文进诊断）
+        { librarySummary = "library.failed"; libraryDiagnostics += "\n" + error.Message; importError = libraryFailure = LibraryFailed(folder, NoWrite(error, folder)); }
         catch (Exception error)   // 玩家输入驱动的连接 / 创建：任何异常都报出来、不逃出去（玩家反馈：点「连接或创建游戏库」闪退）
         { librarySummary = "library.failed"; libraryDiagnostics += "\n" + error.Message; importError = libraryFailure = LibraryFailed(folder, error.Message); }
         finally { EndJob(front); Render(); }
@@ -387,6 +397,16 @@ public sealed partial class EnvironmentWindow
         panel.Children.Add(pcButtons);
         panel.Children.Add(ReportHintText());
         return panel;
+    }
+
+    /// <summary>「写不进去」的平实说明：异常原文里带被拒的路径就点名它所在的文件夹，取不到用给定的位置（11-16：原先直接显示
+    /// 「Access to the path '…request-….json' is denied.」）</summary>
+    private string NoWrite(UnauthorizedAccessException error, string fallback)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(error.Message, "'([^']+)'");
+        var where = m.Success ? m.Groups[1].Value : fallback;
+        if (Path.HasExtension(where)) where = Path.GetDirectoryName(where) ?? where;
+        return T("library.no_write").Replace("{0}", where);
     }
 
     private string LibraryFailed(string folder, string reason) =>

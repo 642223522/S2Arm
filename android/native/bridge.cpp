@@ -1,7 +1,6 @@
 #include <cstdlib>
 #include <fcntl.h>
 #include <unistd.h>
-#include "nvn/nvn_vk_first_draw.h"
 #include <unwind.h>
 #include <dlfcn.h>
 #include <sys/system_properties.h>
@@ -43,6 +42,7 @@ Java_org_s2arm_android_NativeBridge_configureDebugEnvironment(JNIEnv *env, jclas
 #include "guest_signal.h"
 #include "host_android.h"
 #include "input.h"
+#include "phone_feedback.h"
 #include "memory.h"
 #include "module.h"
 #include "selftest.h"
@@ -155,21 +155,6 @@ Java_org_s2arm_android_NativeBridge_gamePresentCount(JNIEnv *, jclass) {
 #else
     return -1;
 #endif
-}
-
-// B3：直连交换链按渲染目标尺寸出图时的缓冲尺寸；只在游戏运行时（mtl_vk_adapter）里存在。
-extern "C" int s2a_vk_adapter_buffer_geometry(uint32_t *, uint32_t *) __attribute__((weak));
-
-extern "C" JNIEXPORT jint JNICALL
-Java_org_s2arm_android_NativeBridge_bufferGeometry(JNIEnv *env, jclass, jintArray out) {
-    int on = 0;
-    uint32_t w = 0, h = 0;
-    if (s2a_vk_adapter_buffer_geometry) on = s2a_vk_adapter_buffer_geometry(&w, &h);
-    if (out && env->GetArrayLength(out) >= 2) {
-        jint dims[2] = {(jint)w, (jint)h};
-        env->SetIntArrayRegion(out, 0, 2, dims);
-    }
-    return on;
 }
 
 #ifndef S2A_ANDROID_GAME_RUNTIME
@@ -469,6 +454,7 @@ Java_org_s2arm_android_NativeBridge_createGame(JNIEnv *, jclass) {
     if (g_game_host) return 0;   // 一个进程只能创建一次真实 guest / GPU 组合。
     try {
         s2a_android_input_reset();
+        s2a_android_session_period_reset();   // 本局最短周期从这一局重新记
         g_game_host = new AndroidHost(nullptr, true);
         return reinterpret_cast<jlong>(g_game_host);
     } catch (const std::exception &error) {
@@ -1007,13 +993,6 @@ Java_org_s2arm_android_NativeBridge_configureReadonlyRangeCheck(JNIEnv *, jclass
 #endif
 }
 
-extern "C" JNIEXPORT void JNICALL
-Java_org_s2arm_android_NativeBridge_setDrawLog(JNIEnv *, jclass, jint draw_log) {
-    // 生产通道：intent extra s2arm.draw_log → 原生 draw_log 覆盖（-1 不动）。属性通道
-    // debug.s2a.draw_log 在 user 版设备上 untrusted_app 读不到，此通道不依赖它。
-    s2a_fd_set_draw_log((int)draw_log);
-}
-
 extern "C" JNIEXPORT jint JNICALL
 Java_org_s2arm_android_NativeBridge_startGame(JNIEnv *env, jclass, jlong handle, jobject assets, jstring asset_root,
         jobjectArray names, jobjectArray images, jobjectArray fixups, jobjectArray gates, jobjectArray widen,
@@ -1231,6 +1210,7 @@ Java_org_s2arm_android_NativeBridge_stopGame(JNIEnv *env, jclass, jlong handle, 
     s2a_capacity_stop();
     s2a_adpf_stop();
     s2a_cpu_floor_stop();
+    s2a_android_session_period_reset();
     host->stop_reason = jstring_or(env, why, "game stop requested");
     host->stop_normal.store(normal == JNI_TRUE);
     // 后台冻着的客机先放开（同 Mac display_focus_publish_ex(NO, NO) 的「收尾只报不冻」）：
@@ -1343,6 +1323,7 @@ Java_org_s2arm_android_NativeBridge_setForeground(JNIEnv *, jclass, jlong handle
     s2a_capacity_foreground(foreground != JNI_FALSE);
     s2a_adpf_set_foreground(foreground != JNI_FALSE);
     s2a_cpu_floor_set_foreground(foreground != JNI_FALSE);
+    s2a_android_phone_feedback_foreground(foreground != JNI_FALSE);   // 退后台关手机传感器、停马达
     // 退后台停显示节拍源（直连 vsync 拍；前台回时由 acquire 路径按需懒重启）
     if (!foreground && s2a_android_link_stop) s2a_android_link_stop();
     host->window.set_foreground(foreground);
@@ -1430,6 +1411,29 @@ extern "C" void s2a_android_dguard_prompt(const char *diag) {
     if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
     if (attached) vm->DetachCurrentThread();
 }
+// 停帧看门的屏上提示（runtime/src/ap_host.c stall_watch 按名字 dlsym 这三个，取不到就只打日志）：安卓用和 iOS 同名的出口接上，
+//   共用看门不改。三个调用方各只有一种用途——横幅 = 停帧救场关了帧率补丁（定时收）、消息 = 「可能还在加载」（帧又走了用清除收），
+//   所以这里只把「哪一种」交给 Java，文案由 Java 按界面语言取 strings.xml（看门传来的是 s2a_ui_text.h 的中文缺省，提到 iOS 的设置入口）。
+//   在看门线程上被调：挂上 JVM、调 NativeBridge.stallNotice(种类, 秒)，Java 侧派回主线程，不阻塞。
+static void stall_notice(int kind, int seconds) {
+    JavaVM *vm = g_vm;
+    JNIEnv *env = nullptr;
+    bool attached = false;
+    if (!vm || !g_bridge) { __android_log_print(ANDROID_LOG_ERROR, "S2Arm", "stall notice %d dropped: no bridge", kind); return; }
+    if (vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6) != JNI_OK) {
+        if (vm->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
+        attached = true;
+    }
+    jmethodID method = env->GetStaticMethodID(g_bridge, "stallNotice", "(II)V");
+    if (method) env->CallStaticVoidMethod(g_bridge, method, static_cast<jint>(kind), static_cast<jint>(seconds));
+    else __android_log_print(ANDROID_LOG_ERROR, "S2Arm", "stall notice: NativeBridge.stallNotice missing");
+    if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
+    if (attached) vm->DetachCurrentThread();
+}
+// 种类与 StallNotice.java 同值。横幅的秒数是显示多久（看门给 8）；文案里的「约 30 秒」是看门判停帧的窗口（ap_host.c 的 30 秒环、s2a_ap_crawl_due）
+extern "C" void s2a_ios_banner(const char *text, double seconds) { (void)text; stall_notice(1, seconds > 0 ? static_cast<int>(seconds + 0.5) : 8); }
+extern "C" void s2a_ios_show_message(const char *text) { (void)text; stall_notice(2, 0); }
+extern "C" void s2a_ios_clear_message(const char *text) { (void)text; stall_notice(0, 0); }
 // 接口 v2.15（#1228）：运行中切掌机 / 主机走宿主 display->set_console_mode（其内部转
 //   s2a_console_mode_set，服务层再转 ChangeDockedModeState）。与 os.c 其它符号同一强引用
 //   （能链接通过就说明 os.c 在）；仅会话运行中由 Java 调来。
@@ -1524,7 +1528,6 @@ static void s2a_log_exit(const char *why, int code) {
         if (len > (int)sizeof buf - 1) len = (int)sizeof buf - 1;   // dladdr 的模块/符号名可能很长
         if (len > 0) (void)!write(fd, buf, (size_t)len);
     }
-    nvn_vk_callring_dump(fd);   // 最近的关键 Vulkan 调用（debug.s2a.callring=1 时才有内容）
     close(fd);
 }
 static void s2a_exit_probe(void) { s2a_log_exit("atexit", 0); }

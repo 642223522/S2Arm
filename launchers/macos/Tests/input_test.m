@@ -7,6 +7,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 #include "../../../macos/ns2_relay.h"
+#include "../../../macos/xbox_gip_relay.h"
 #include "../../../ios/input_config.h"
 #import "../../../macos/front_mac.m"
 #import "../../../macos/input_guide.m"
@@ -17,6 +18,15 @@ void s2a_host_shutdown(const char *why) { (void)why; if (guide_preview) exit(0);
 void s2a_clock_catchup(void) {}   // 游戏日历补时（runtime/src/os.c，Mac 唤醒通知调）在这里不测
 void s2a_heartbeat_mac(void) {}   // Mac 心跳（macos/heartbeat_mac.c，前端 10 秒定时器调）在这里不测
 int s2a_playtime_flush(void) { return 0; }   // 游玩时间落盘（runtime/src/playtime.c，同一个 10 秒定时器调）在这里不测
+void s2a_ql_retry60(void) {}   // 档位梯子「再试 60 帧」（runtime/src/qladder_host.c，前端横幅按钮调）在这里不测
+// 即时快照（runtime/src/snapsw.c、snapshot.c）在这里不测：开关关着，菜单不出这两项
+int s2a_snap_logging(void) { return 0; }
+int s2a_snap_dir_for(const char *gid, char *out, size_t n) { (void)gid; (void)out; (void)n; return -1; }
+int s2a_snap_exists(const char *dir) { (void)dir; return 0; }
+int s2a_snap_save_changed(const char *dir) { (void)dir; return -1; }
+int s2a_snap_request_save(const char *dir) { (void)dir; return -1; }
+void s2a_snap_on_done(void (*cb)(int, const char *)) { (void)cb; }
+int s2a_host_restart(void (*done)(int, const char *, void *), void *ctx) { (void)done; (void)ctx; return -1; }   // 进程内重启（runtime/src/session.c）在这里不测
 uint64_t now_ns(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }   // 宿主单调时钟（runtime/src/os.c）：前台焦点计时用（#965 起 front_mac.m 引用），给真时钟
 // 生命周期桩（接口 v2.15，缺口扫描族 1）：记下前端报的焦点 / 睡眠、客机冻结与时钟原因 3 的开关次数
 static int stub_focus = 1, stub_suspend, stub_sleep, stub_freeze_on, stub_freeze_off, stub_clock3_on, stub_clock3_off;
@@ -518,6 +528,8 @@ static void test_capture_key_order(void) {
 static FakeController *fake_controller(FakePad *pad) { FakeController *c = [FakeController new]; c.extendedGamepad = pad; pad.controller = c; return c; }
 @interface FakeProSensor : NSObject
 @property BOOL sensorsRequireManualActivation, hasRotationRate, hasGravityAndUserAcceleration, sensorsActive;
+@property GCRotationRate rotationRate;
+@property GCAcceleration gravity, userAcceleration, acceleration;
 @end
 @implementation FakeProSensor
 @end
@@ -527,13 +539,13 @@ static void test_pro_sensor_control(void) {
     atomic_store(&g_motion_wanted, 1);
     sample_motion((GCExtendedGamepad *)pad);
     expect(m.sensorsActive, "Pro public sensor control is requested even without separated gravity / usable calibrated samples");
-    expect(!g_motion_known, "uncalibrated Pro data still uses the existing raw sample path, not fabricated GC values");
+    expect(g_motion_known == 1, "rotation without separated gravity gives an acceleration-only sample (DualSense), ranked below the Pro raw HID path in s2a_pad_read_motion");
     atomic_store(&g_motion_wanted, 0); sample_motion(nil);
     expect(!m.sensorsActive, "motion disable releases public Pro sensor request");
     sample_motion(nil);
     GCController *old = pad_owner[1]; pad_owner[1] = (GCController *)c;
     atomic_store(&g_motion_wanted, 1); sample_slot_motion(NULL);
-    expect(m.sensorsActive && !g_slot_motion_known[1], "P2 sensor control also stays independent of calibrated sample availability");
+    expect(m.sensorsActive && g_slot_motion_known[1] == 1, "P2 sensor control stays independent of calibrated samples; an acceleration-only sample still reaches P2 (DualSense)");
     atomic_store(&g_motion_wanted, 0); sample_slot_motion(NULL);
     expect(!m.sensorsActive, "P2 motion disable releases its public request");
     pad_owner[1] = old;
@@ -683,6 +695,33 @@ static void test_pad_slots(void) {
     expect(s2a_slot_plan(owners, live, 0, 4, slot_of) == 1, "no pads: back to one slot for keyboard and mouse");
 }
 
+// #1264（D-7VG4 现场）：兜底手柄 a（PowerA，顺序表认不到它）先占槽 0；游戏中途连上 DualSense b 进槽 1；面板把 b 登记成 P1（顺序表 rank 0）。
+//   期望手算：钉住后 b 在槽 0、a 被挤到槽 1；再关掉 a，b 仍在槽 0（单人游戏读玩家 1 就是它）。没登记的手柄不受钉住影响、照旧留原槽
+static void test_pad_slot_pin(void) {
+    int ids[3] = {1, 2, 3};
+    const void *a = &ids[0], *b = &ids[1], *c = &ids[2];
+    const void *owners[4] = {a, b, NULL, NULL};
+    int slot_of[3];
+    const void *ab[2] = {a, b}; int rank_ab[2] = {S2A_PAD_ORDER_UNLISTED, 0};
+    s2a_slot_pin(owners, ab, rank_ab, 2, 4);
+    expect(s2a_slot_plan(owners, ab, 2, 4, slot_of) == 2 && slot_of[1] == 0 && slot_of[0] == 1,
+        "a pad the panel lists as P1 takes slot 0; the unlisted one moves to slot 1");
+    apply_slots(owners, ab, slot_of, 2, 4);
+    const void *only_b[1] = {b}; int rank_b[1] = {0};
+    s2a_slot_pin(owners, only_b, rank_b, 1, 4);
+    expect(s2a_slot_plan(owners, only_b, 1, 4, slot_of) == 1 && slot_of[0] == 0, "turning the old pad off leaves the listed P1 in slot 0");
+    // 没登记的两只（a 槽 1、c 槽 2）+ 登记 P1 的 b 已在槽 0：钉住什么都不动
+    const void *owners2[4] = {b, a, c, NULL};
+    const void *bac[3] = {b, a, c}; int rank_bac[3] = {0, S2A_PAD_ORDER_UNLISTED, S2A_PAD_ORDER_UNLISTED};
+    s2a_slot_pin(owners2, bac, rank_bac, 3, 4);
+    expect(owners2[0] == b && owners2[1] == a && owners2[2] == c && owners2[3] == NULL, "pinning leaves pads already in place and unlisted pads alone");
+    // 登记成 P2（rank 1）、P1 不在：钉在槽 1，不提前到槽 0（同原机：玩家号不跳）
+    const void *owners3[4] = {NULL, NULL, NULL, NULL};
+    const void *only_c[1] = {c}; int rank_c[1] = {1};
+    s2a_slot_pin(owners3, only_c, rank_c, 1, 4);
+    expect(s2a_slot_plan(owners3, only_c, 1, 4, slot_of) == 2 && slot_of[0] == 1, "a listed P2 stays in slot 1 when P1 is absent");
+}
+
 // 只有通用物理描述的手柄（没有扩展手柄档）：按标准键名从 physicalInputProfile 读、回调装在 valueDidChangeHandler 上。
 //   用系统自带的虚拟简易手柄（controllerWithMicroGamepad：只有 A / X / Menu / 方向键）当这种手柄。期望手算：
 //   它的类别是「Siri Remote」，认不出类型按缺省「自动」照字母（pad.c s2a_pad_abxy_order）：系统 A = Switch A，默认配置第 0 位（1）；
@@ -783,6 +822,18 @@ static void test_shared_face_map(void) {
     [@"{\"schema\":2,\"mapping\":228}" writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
     pad_face_refresh(YES);
     expect(controller_face_map(c) == 0xe4, "restoring defaults takes effect live without restarting the game");
+    expect(controller_face_map(nil) == 0xe4, "a document without a Nintendo entry keeps Switch pads on their labels");
+    // Player picked the Xbox layout for Switch pads: target A/B/X/Y <- source B/A/Y/X (iOS s2a_pad_abxy_order swap) = 1|0<<2|3<<4|2<<6 = 177.
+    [@"{\"schema\":2,\"mapping\":228,\"nintendo\":177}" writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    pad_face_refresh(YES);
+    expect(controller_face_map(nil) == 0xb1, "the player's Nintendo choice reaches the Switch channel");
+    expect(controller_face_map(c) == 0xe4, "the Nintendo choice leaves other controllers on the shared map");
+    expect(mapped_face_buttons(nil, 1u << 1, 0) == 1u, "Xbox layout on a Switch pad: bottom B confirms as A");
+    expect(mapped_face_buttons(nil, 1u << 0, 0) == 2u, "Xbox layout on a Switch pad: right A cancels as B");
+    expect(mapped_face_buttons(nil, 1u << 3, 0) == 4u && mapped_face_buttons(nil, 1u << 2, 0) == 8u, "Xbox layout on a Switch pad swaps X and Y");
+    [@"{\"schema\":2,\"mapping\":177,\"nintendo\":0}" writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    pad_face_refresh(YES);
+    expect(controller_face_map(nil) == 0xe4 && controller_face_map(c) == 0xe4, "an invalid Nintendo entry falls back to platform defaults");
     [NSFileManager.defaultManager removeItemAtPath:file error:nil];
     setenv("S2A_PAD_FACE_FILE", "/nonexistent/s2arm-face.json", 1); pad_face_refresh(YES);
     pad_slot_owner[0] = nil;
@@ -1205,7 +1256,10 @@ static void test_shared_input_config(void) {
     const s2a_input_config *active = s2a_ios_input_config_current();
     CONFIG_EXPECT(active && active->keyboard[0].code == 49 && active->axes[0].source == 3, "iOS published table is the parsed custom mapping");
     CONFIG_EXPECT([[@"{" dataUsingEncoding:NSUTF8StringEncoding] writeToFile:path atomically:YES], "replace own fixture with invalid JSON");
-    CONFIG_EXPECT(s2a_ios_input_config_load() == S2A_INPUT_CONFIG_JSON && !s2a_ios_input_config_current(), "failed iOS startup load cannot expose previous mapping");
+    // 11-17 维护者：读不懂不再拒启——仍回错误码（调用方黄字说明），这局换成默认键位，不沿用上一份映射
+    { s2a_input_config fallback; s2a_input_config_default(&fallback);
+      const s2a_input_config *now = (s2a_ios_input_config_load() == S2A_INPUT_CONFIG_JSON) ? s2a_ios_input_config_current() : NULL;
+      CONFIG_EXPECT(now && !memcmp(now, &fallback, sizeof fallback), "failed iOS startup load falls back to the default mapping, not the previous one"); }
     if (savedDocs) setenv("S2A_DOCS",savedDocs.UTF8String,1); else unsetenv("S2A_DOCS");
     if (savedPath) setenv("S2A_INPUT_CONFIG",savedPath.UTF8String,1); else unsetenv("S2A_INPUT_CONFIG");
     CONFIG_EXPECT([NSFileManager.defaultManager removeItemAtPath:directory error:NULL], "remove only synthetic fixture directory created by this test");
@@ -1235,9 +1289,11 @@ int main(int argc, const char **argv) {
     expect(s2a_hid_pad_hat_bits(0, 0, 7) == (1u << 13) && s2a_hid_pad_hat_bits(3, 0, 7) == ((1u << 15) | (1u << 14)) &&
            s2a_hid_pad_hat_bits(8, 0, 7) == 0 && s2a_hid_pad_hat_bits(1, 1, 8) == (1u << 13), "HID pad hat switch to d-pad bits");
     // 轴：0..65535 中点约 0；Y 反向（HID 向下为正）
-    // 接不接（#934 11-15）：名字带 Pro Controller 就接，任天堂原厂 0x057e 也接（macOS 27 上原厂一代 Pro 手柄系统认不出）；别的手柄名不接
-    expect(s2a_hid_pad_wants("Pro Controller", 0x057e) && s2a_hid_pad_wants("PowerA Wireless Pro Controller", 0) &&
-           !s2a_hid_pad_wants("Xbox Wireless Controller", 0x045e) && !s2a_hid_pad_wants(NULL, 0), "HID pad fallback takes Pro Controllers, Nintendo's own too");
+    // 走不走 Switch Pro 协议那一支（#934 11-15）：名字带 Pro Controller 就走，任天堂原厂 0x057e 也走（macOS 27 上原厂一代 Pro 手柄系统认不出）；
+    //   别的手柄名走通用那一支（hid_generic.h，runtime/tests/t_hid_generic.c）；原厂一代 Pro 系统没列出时照旧占位、不等
+    expect(s2a_hidg_is_pro("Pro Controller") && s2a_hidg_is_pro("PowerA Wireless Pro Controller") &&
+           !s2a_hidg_is_pro("Xbox Wireless Controller") && !s2a_hidg_is_pro(NULL), "HID pad Pro protocol branch by name");
+    expect(s2a_hidg_route(1, 0x057e, 1, 0, 0) == S2A_HIDG_TAKE, "HID pad fallback takes Nintendo's own Pro Controller at once");
     expect(s2a_hid_pad_axis(0, 0, 65535, 0) == -32767 && s2a_hid_pad_axis(65535, 0, 65535, 0) == 32767 &&
            s2a_hid_pad_axis(0, 0, 65535, 1) == 32767 && abs(s2a_hid_pad_axis(32768, 0, 65535, 0)) <= 1, "HID pad axis normalisation");
     {   // Switch Pro 协议（#934 11-15：PowerA 简易模式量程不对、摇杆慢五六倍；改发子命令切 0x30 完整报告）。期望全部手算：
@@ -1259,7 +1315,134 @@ int main(int argc, const char **argv) {
                ax[0] == 32767 && ax[1] == 0 && ax[2] == -32767 && ax[3] == 32767, "Pro 0x30 report: buttons and sticks");
         uint8_t simple[12]; memcpy(simple, rep, sizeof simple); simple[0] = 0x3F;
         expect(s2a_pro_parse(simple, sizeof simple, &d, &d, &bt, ax) == 0, "Pro parser leaves the simple HID report (0x3F) to the element path");
+        //   读不到出厂校准（#1264 PowerA）：缺省行程 1003、随读数放大。期望手算：+500 → 500 / 1003 × 32767 = 16334.6 → 16334；
+        //   推到 +1200（超过 1003）→ 行程放大到 1200、满量程 32767；之后 +600 → 600 / 1200 × 32767 = 16383.5 → 16383；
+        //   负向没动过：-700 → -700 / 1003 × 32767 = -22868.3 → -22868（行程两向分开记）
+        s2a_pro_cal g; s2a_pro_cal_default(&g);
+        int16_t g1 = s2a_pro_axis_grow(2548, g.cx, &g.xmax, &g.xmin), g2 = s2a_pro_axis_grow(3248, g.cx, &g.xmax, &g.xmin);
+        int16_t g3 = s2a_pro_axis_grow(2648, g.cx, &g.xmax, &g.xmin), g4 = s2a_pro_axis_grow(1348, g.cx, &g.xmax, &g.xmin);
+        expect(g1 == 16334 && g2 == 32767 && g.xmax == 1200 && g3 == 16383 && g4 == -22868 && g.xmin == 1003,
+               "Pro stick without factory calibration: range starts at 1003 and grows to the farthest reading");
         expect(s2a_pro_player_lights(0) == 0x1 && s2a_pro_player_lights(1) == 0x3 && s2a_pro_player_lights(3) == 0xF, "Pro player lights: first n lit for player n");
+        // Xbox 有线手柄 GIP 协议纯函数验证（#1406）
+        expect(s2a_is_xbox_gip(0x045E, 0x02D1) == 1, "Xbox GIP: 0x045E:0x02D1 (Xbox One)");
+        expect(s2a_is_xbox_gip(0x045E, 0x0B12) == 1, "Xbox GIP: 0x045E:0x0B12 (Xbox Series)");
+        expect(s2a_is_xbox_gip(0x045E, 0x028E) == 0, "Xbox GIP: 0x045E:0x028E (Xbox 360 XUSB, 非 GIP) 返回 0");
+        expect(s2a_usb_has_hid_child(0) == 0, "USB has HID child: 空句柄返回 0");
+        expect(s2a_is_xbox_gip(0x045E, 0x9999) == 0, "Xbox GIP: 非 Xbox 手柄 PID 返回 0");
+        expect(s2a_is_xbox_gip(0x054C, 0x0CE6) == 0, "Xbox GIP: 非微软 VID 返回 0");
+
+        uint8_t ack_pkt[13];
+        const uint8_t req_ack[4] = {0x02, 0x10, 0x05, 0x01};
+        expect(s2a_gip_ack(req_ack, sizeof req_ack, ack_pkt) == 13 &&
+               ack_pkt[0] == 0x01 && ack_pkt[1] == 0x20 && ack_pkt[2] == 0x05 && ack_pkt[5] == 0x02,
+               "Xbox GIP ACK: 置有 ACK 标志时正确生成 13 字节应答包");
+        const uint8_t no_ack[4] = {0x20, 0x00, 0x05, 0x01};
+        expect(s2a_gip_ack(no_ack, sizeof no_ack, ack_pkt) == 0, "Xbox GIP ACK: 无 ACK 标志返回 0");
+
+        const uint8_t gip_rep[18] = {
+            0x20, 0x00, 0x01, 0x0E,
+            0x14, 0x10,             // buttons: Xbox A (0x0010), Menu (+, 0x0004), LB (0x1000)
+            0x00, 0x01,             // LT: 256 (> 200 -> ZL)
+            0x00, 0x00,             // RT: 0
+            0x00, 0x40,             // lx: 16384
+            0x00, 0xC0,             // ly: -16384
+            0x00, 0x00,             // rx: 0
+            0x00, 0x00              // ry: 0
+        };
+        uint32_t gip_bt = 0; int16_t gip_ax[4] = {0};
+        expect(s2a_gip_parse(gip_rep, sizeof gip_rep, &gip_bt, gip_ax) == 1, "Xbox GIP parse: valid 0x20 report");
+        expect(gip_bt == ((1u << 0) | (1u << 10) | (1u << 6) | (1u << 8)), "Xbox GIP parse buttons: A, +, L, ZL");
+        expect(gip_ax[0] == 16384 && gip_ax[1] == -16384 && gip_ax[2] == 0 && gip_ax[3] == 0, "Xbox GIP parse axes: lx, ly, rx, ry");
+        uint8_t invalid_gip[18]; memcpy(invalid_gip, gip_rep, sizeof invalid_gip); invalid_gip[0] = 0x07;
+        expect(s2a_gip_parse(invalid_gip, sizeof invalid_gip, &gip_bt, gip_ax) == 0, "Xbox GIP parse: non-0x20 report returns 0");
+
+        // Xbox GIP 启动器中继协议与宿主接收端验证（不碰物理 USB）
+        s2a_mac_hid_pad_clear_xbox_relay();
+        s2a_xbox_gip_relay_packet rp;
+        memset(&rp, 0, sizeof rp);
+        rp.magic = S2A_XBOX_GIP_RELAY_MAGIC;
+        rp.version = S2A_XBOX_GIP_RELAY_VERSION;
+        rp.flags = S2A_XBOX_GIP_FLAG_CONNECTED;
+        rp.slot = 0;
+        rp.vid = 0x045E;
+        rp.pid = 0x02D1;
+        strlcpy(rp.name, "Xbox Relay Test", sizeof rp.name);
+        expect(s2a_xbox_gip_relay_packet_valid(&rp) == 1, "Xbox GIP relay: valid packet");
+        rp.magic = 0;
+        expect(s2a_xbox_gip_relay_packet_valid(&rp) == 0 && s2a_mac_hid_pad_apply_xbox_relay(&rp, sizeof rp) == 0, "Xbox GIP relay: bad magic rejected");
+        rp.magic = S2A_XBOX_GIP_RELAY_MAGIC;
+        rp.slot = S2A_XBOX_GIP_RELAY_MAX;
+        expect(s2a_xbox_gip_relay_packet_valid(&rp) == 0 && s2a_mac_hid_pad_apply_xbox_relay(&rp, sizeof rp) == 0, "Xbox GIP relay: out-of-range slot rejected");
+        rp.slot = 0;
+
+        // 刚连上未按键（buttons == 0）保持 joined=0，不占玩家位
+        expect(s2a_mac_hid_pad_apply_xbox_relay(&rp, sizeof rp) == 1, "Xbox GIP relay: apply idle connected packet");
+        s2a_hid_pad hp_out[S2A_HID_PAD_MAX];
+        int hp_n = s2a_mac_hid_pad_read(hp_out);
+        int found_relay = 0;
+        for (int i = 0; i < hp_n; i++) if (!strcmp(hp_out[i].name, "Xbox Relay Test")) found_relay = 1;
+        expect(!found_relay, "Xbox GIP relay: idle controller does not join before first button press");
+
+        // 按下 A 键并推摇杆 → 立即加入玩家位并读到按键 / 摇杆
+        rp.buttons = (1u << 0) | (1u << 6);
+        rp.ax[0] = 12345; rp.ax[1] = -23456; rp.ax[2] = 1000; rp.ax[3] = -1000;
+        expect(s2a_mac_hid_pad_apply_xbox_relay(&rp, sizeof rp) == 1, "Xbox GIP relay: apply active button packet");
+        hp_n = s2a_mac_hid_pad_read(hp_out);
+        found_relay = 0;
+        for (int i = 0; i < hp_n; i++) {
+            if (!strcmp(hp_out[i].name, "Xbox Relay Test")) {
+                found_relay = 1;
+                expect(hp_out[i].buttons == ((1u << 0) | (1u << 6)) && hp_out[i].lx == 12345 && hp_out[i].ly == -23456 && hp_out[i].vid == 0x045E,
+                       "Xbox GIP relay: read returns relayed buttons, sticks and vid");
+            }
+        }
+        expect(found_relay == 1, "Xbox GIP relay: joined controller listed in hid_pad_read");
+
+        // 模拟两局游戏依次通过 socketpair 读取并在断开时自动清槽
+        s2a_mac_hid_pad_clear_xbox_relay();
+        for (int session = 0; session < 2; session++) {
+            int sp[2] = {-1, -1};
+            expect(socketpair(AF_UNIX, SOCK_STREAM, 0, sp) == 0, "Xbox GIP relay: socketpair");
+            rp.flags = S2A_XBOX_GIP_FLAG_CONNECTED;
+            rp.buttons = (session == 0) ? (1u << 0) : (1u << 1);
+            rp.ax[0] = (int16_t)(session == 0 ? 5000 : -5000);
+            expect(s2a_xbox_gip_write_all(sp[0], &rp, sizeof rp) == 0, "Xbox GIP relay: write packet to game fd");
+            close(sp[0]);
+            expect(s2a_mac_hid_pad_read_xbox_relay_fd(sp[1]) == 0, "Xbox GIP relay: read_fd drains and clears on EOF");
+            close(sp[1]);
+            hp_n = s2a_mac_hid_pad_read(hp_out);
+            found_relay = 0;
+            for (int i = 0; i < hp_n; i++) if (!strcmp(hp_out[i].name, "Xbox Relay Test")) found_relay = 1;
+            expect(!found_relay, "Xbox GIP relay: EOF clears relay slot cleanly");
+        }
+
+        // Xbox GIP 异常自愈与重唤醒纯函数验证（重通告 0x02、递增 seq、IO 错误分类、空闲保活节流）
+        const uint8_t ann_pkt[4] = {0x02, 0x20, 0x01, 0x1c};
+        expect(s2a_xbox_gip_is_announce(ann_pkt, sizeof ann_pkt) == 1, "Xbox GIP: 0x02 packet recognized as announce");
+        expect(s2a_xbox_gip_is_announce(gip_rep, sizeof gip_rep) == 0, "Xbox GIP: 0x20 input report is not announce");
+        expect(s2a_xbox_gip_is_announce(ann_pkt, 3) == 0, "Xbox GIP: truncated 0x02 packet rejected");
+
+        uint8_t seq = 254;
+        expect(s2a_xbox_gip_next_seq(&seq) == 255 && seq == 255, "Xbox GIP seq: 254 -> 255");
+        expect(s2a_xbox_gip_next_seq(&seq) == 1 && seq == 1, "Xbox GIP seq: 255 wraps to 1 (skips 0)");
+        uint8_t pwr[5] = {0}, wak[5] = {0};
+        s2a_xbox_gip_build_power(7, pwr);
+        s2a_xbox_gip_build_wake(8, wak);
+        expect(pwr[0] == 0x05 && pwr[1] == 0x20 && pwr[2] == 7 && pwr[3] == 0x01 && pwr[4] == 0x00, "Xbox GIP build_power packet");
+        expect(wak[0] == 0x05 && wak[1] == 0x20 && wak[2] == 8 && wak[3] == 0x0f && wak[4] == 0x06, "Xbox GIP build_wake packet");
+
+        uint32_t rec_errs = 0;
+        expect(s2a_xbox_gip_classify_io_error(0xe000404fu, &rec_errs, 2) == S2A_XBOX_GIP_IO_RECOVER && rec_errs == 1, "Xbox GIP IO: 1st pipe stall recoverable");
+        expect(s2a_xbox_gip_classify_io_error(0xe00002edu, &rec_errs, 2) == S2A_XBOX_GIP_IO_RECOVER && rec_errs == 2, "Xbox GIP IO: 2nd overrun recoverable");
+        expect(s2a_xbox_gip_classify_io_error(0xe0004051u, &rec_errs, 2) == S2A_XBOX_GIP_IO_FATAL && rec_errs == 3, "Xbox GIP IO: exceeding max_recoverable turns fatal");
+        expect(s2a_xbox_gip_classify_io_error(0, &rec_errs, 2) == S2A_XBOX_GIP_IO_OK && rec_errs == 0, "Xbox GIP IO: success resets recoverable error count");
+        expect(s2a_xbox_gip_classify_io_error(0xe00002c0u, &rec_errs, 2) == S2A_XBOX_GIP_IO_FATAL, "Xbox GIP IO: kIOReturnNoDevice is immediately fatal");
+
+        expect(s2a_xbox_gip_idle_should_rewake(5000, 1000, 1000, 10000, 10000) == 0, "Xbox GIP idle: below threshold does not rewake");
+        expect(s2a_xbox_gip_idle_should_rewake(11000, 1000, 0, 10000, 10000) == 1, "Xbox GIP idle: past threshold triggers rewake");
+        expect(s2a_xbox_gip_idle_should_rewake(15000, 1000, 11000, 10000, 10000) == 0, "Xbox GIP idle: throttled within rewake_interval");
+        expect(s2a_xbox_gip_idle_should_rewake(21000, 1000, 11000, 10000, 10000) == 1, "Xbox GIP idle: triggers again after rewake_interval");
     }
     char relayPath[96];
     snprintf(relayPath, sizeof relayPath, "/tmp/s2arm-motion-%d.sock", getpid());
@@ -1474,6 +1657,7 @@ int main(int argc, const char **argv) {
         test_active_pad();
         test_pro_sensor_control();
         test_pad_slots();
+    test_pad_slot_pin();
         // 同一个真实前端实现：通用 attach 先发布层，detach 先通知再清层；
         // 直连只发布/清层，不通知尚未初始化且不应初始化的通用 NxGal。
         CAMetalLayer *front = [CAMetalLayer layer];

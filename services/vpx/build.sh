@@ -12,7 +12,7 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 PATCH=$ROOT/services/vpx/patches/0001-s2a-vp9-nvdec-hook.patch; VARIANT=${S2A_VPX_VARIANT:-ship}
 case $VARIANT in ship|nopatch) ;; *) echo "🔴 vpx：不认识的 S2A_VPX_VARIANT=${VARIANT}（ship / nopatch）" >&2; exit 1 ;; esac
 source "$ROOT/android/tools/fetch_source.sh"   # 源码包按 sha256 进本机共享缓存（S2A_BUILD_CACHE/sources），命中不联网；下载按进展判挂死
-TCE=$ROOT/tools/toolchain.env; MMAC=$(sed -n 's/^MACOSX_DEPLOYMENT_TARGET=//p' "$TCE"); MIOS=$(sed -n 's/^IPHONEOS_DEPLOYMENT_TARGET=//p' "$TCE")   # 产物下限只取统一工具链那两行
+TCE=$ROOT/tools/toolchain.env; MMAC=$(sed -n 's/^MACOSX_DEPLOYMENT_TARGET=//p' "$TCE"); MIOS=$(sed -n 's/^IPHONEOS_DEPLOYMENT_TARGET=//p' "$TCE"); MTVOS=$(sed -n 's/^TVOS_DEPLOYMENT_TARGET=//p' "$TCE")   # 产物下限只取统一工具链那两行
 [ -n "$MMAC" ] && [ -n "$MIOS" ] || { echo "🔴 $(basename "$(dirname "$0")")：$TCE 里没有部署目标" >&2; exit 1; }
 # 构建键：版本 + 本脚本与系统下限 + 垫片，只按内容算、不含路径（发版机与玩家机引擎路径不同；缓存目录、预编库都按它认）；--key 只打印它（发版打包 bundle_engine.py 记进 build.txt）
 H1=$( { cat "$0"; echo "$MMAC $MIOS $VARIANT"; [ "$VARIANT" = nopatch ] || cat "$PATCH"; } | shasum -a 256 | cut -c1-12); K=$(cat "$ROOT/services/vpx/s2a_vp8.c" "$ROOT/services/vpx/s2a_vp9.c" "$0" | shasum -a 256 | cut -c1-12); KEY=$VER-$H1-$K
@@ -28,6 +28,7 @@ case $RID in
   osx-arm64) TARGET=arm64-darwin20-gcc; MIN=-mmacosx-version-min=$MMAC; SDK=macosx ;;
   osx-x64) TARGET=generic-gnu; ARCH=x86_64; MIN=-mmacosx-version-min=$MMAC; SDK=macosx ;;
   ios-arm64) TARGET=arm64-darwin-gcc; MIN=-miphoneos-version-min=$MIOS; SDK=iphoneos ;;
+  tvos-arm64) TARGET=arm64-darwin20-gcc; MIN=-mtvos-version-min=$MTVOS; SDK=appletvos ;;   # Apple TV（11-15）：不用 arm64-darwin-gcc（它硬加 -miphoneos-version-min，与 tvOS 下限冲突）；darwin20 只加 -arch，SDK 由下面的 xcrun --sdk 给
   *) echo "🔴 vpx：不认识的平台 $RID" >&2; exit 1 ;;
 esac
 # 本机缓存跟编译器走（审计 #1534 P1-107）：构建键不含编译器（发版机与玩家机的预编库按它认，不能带本机版本），本机缓存目录名另带 clang 版本行的哈希，toolchain.txt 记原文备查
@@ -47,6 +48,13 @@ if [ ! -s "$OUT/libvpx.a" ]; then
   ( cd "$WN/obj" &&
     # Intel 只用于出包机上的服务测试；通用 C 后端不要求额外安装汇编器。
     if [ "$RID" = osx-x64 ]; then export CC="xcrun --sdk macosx clang -arch x86_64" CXX="xcrun --sdk macosx clang++ -arch x86_64"; fi
+    # Apple TV：darwin20 目标按 Mac 处理、不给 sysroot，编译器要显式指到 tvOS SDK（否则 g++ 落到 macOS SDK，报 incompatible-sysroot）
+    #   配置脚本对 darwin2x 目标还会自己 xcrun --sdk macosx --show-sdk-path 再加 -isysroot：PATH 前放一个 xcrun 垫片，只把这一问答成 tvOS SDK，其余原样交系统 xcrun
+    if [ "$RID" = tvos-arm64 ]; then
+      export CC="xcrun --sdk appletvos clang" CXX="xcrun --sdk appletvos clang++" LD="xcrun --sdk appletvos clang $MIN"
+      unset MACOSX_DEPLOYMENT_TARGET   # 出壳走 tools/toolchain.sh 时导出了它：配置脚本的链接检查用 gcc 会按 macOS 目标链、和 tvOS 目标文件冲突
+      mkdir -p "$W/shim" && printf '#!/bin/sh\n[ "$*" = "--sdk macosx --show-sdk-path" ] && exec /usr/bin/xcrun --sdk appletvos --show-sdk-path\nexec /usr/bin/xcrun "$@"\n' > "$W/shim/xcrun" && chmod +x "$W/shim/xcrun" && export PATH="$W/shim:$PATH"
+    fi
     CFLAGS="$MIN -ffile-prefix-map=$WN/src=libvpx" CXXFLAGS="$MIN -ffile-prefix-map=$WN/src=libvpx" "$WN/src/configure" --target=$TARGET \
       --disable-vp8-encoder --enable-vp8-decoder --disable-vp9-encoder --enable-vp9-decoder --disable-examples --disable-tools --disable-docs \
       --disable-unit-tests --disable-webm-io --disable-libyuv --enable-pic --enable-static --disable-shared --size-limit=8192x8192 \

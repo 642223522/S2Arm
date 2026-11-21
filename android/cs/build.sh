@@ -90,6 +90,29 @@ grep -q '^Pkg.Revision = '$S2A_ANDROID_NDK'$' "$ndk/source.properties" \
     || { echo "【红】NDK $ndk 不是固定修订 ${S2A_ANDROID_NDK}（source.properties）" >&2; exit 1; }
 ndk_bin=$(s2a_ndk_host_bin "$ndk") || { echo "【红】NDK $ndk 没有本宿主可用的 prebuilt bin" >&2; exit 1; }
 export PATH=$ndk_bin${DOTNET_ROOT:+:$DOTNET_ROOT}:$PATH
+# 静态模式产物缓存（门禁提速，11-16）：两次 dotnet publish + libunwind 改名只取决于 C# 编译闭包与固定工具，
+#   按内容算键（cs/static_cache.py），命中就放回 static/、jniLibs/、运行时许可证，跳过从零编（约 164 秒）；
+#   codecs 照常现追加（它有自己的内容缓存）。键算不出就冷编；S2A_CS_STATIC_CACHE=0 强制冷编。
+codecs_link() {
+    bash "$cs_dir/../codecs/build.sh" >> "$out/static/link.txt"
+    codec_count=$(grep -c 'libs2a_\(opus\|vpx\|avc\)\.a$' "$out/static/link.txt")
+    [ "$codec_count" = 3 ] || { echo "Expected three codec archives, got $codec_count" >&2; exit 1; }
+    echo "codecs: $codec_count archives linked"
+    echo "NativeAOT services (static): $out/static/libs2a_cs.a"
+}
+cs_key=
+if [ "${S2ARM_ANDROID_CS_SERVICES:-0}" = static ] && [ "${S2A_CS_STATIC_CACHE:-1}" != 0 ]; then
+    cs_key=$(python3 "$cs_dir/static_cache.py" key --repo "$repo_dir" --extra "sdk=$sdk_version" --extra "rid=$sdk_rid" \
+        --extra "ndk=$S2A_ANDROID_NDK" --extra "pathmap=/_/s2a") || cs_key=
+    if [ -n "$cs_key" ]; then
+        rm -rf "$out/jniLibs" "$out/assets"
+        if python3 "$cs_dir/static_cache.py" restore --out "$out" --cache "$cache/cs-static" --key "$cs_key"; then
+            echo "NativeAOT services (static): 缓存命中 ${cs_key}，跳过 dotnet publish"
+            codecs_link
+            exit 0
+        fi
+    fi
+fi
 "$dotnet" publish "$cs_dir/probe/S2A.Android.Probe.csproj" -c Release -r linux-bionic-arm64 \
     -p:PathMap="$pathmap" \
     -p:BaseOutputPath="$out/probe/bin/" -p:BaseIntermediateOutputPath="$out/probe/obj/" \
@@ -116,23 +139,32 @@ echo "NativeAOT probe: $out/jniLibs/arm64-v8a/libs2a_cs_probe.so"
 #   S2ARM_ANDROID_CS_SERVICES=static  a static library + build/android-cs/static/link.txt that
 #                                     CMake links into libs2arm_android.so (one library, as on iOS)
 # A process holds one NativeAOT runtime, so the static mode packages no other .NET library.
+publish_services() {
+    local log="$out/services-publish.log"
+    # Roslyn reports a source path with line/column. NativeAOT may only report a method name.
+    local warning='warning IL(2[0-9]{3}|3050):'
+    local source='[/\\]S2A\.Services[/\\]SaveTransfer[^/\\:]*\.cs(\([0-9,]+\))?:'
+    "$dotnet" publish "$cs_dir/aot/S2A.Android.Aot.csproj" -c Release -r linux-bionic-arm64 \
+        -p:S2AAndroidHost=true -p:PathMap="$pathmap" -v quiet -nologo "$@" 2>&1 | tee "$log" || return
+    if grep -E "$source .*$warning|$warning S2A\.Services\.SaveTransfer[.+]" "$log"; then
+        echo "【红】存档服务 NativeAOT 裁剪或动态代码告警，拒绝发布" >&2
+        return 1
+    elif [ "$?" -ne 1 ]; then
+        return 1
+    fi
+}
 rm -rf "$out/jniLibs/arm64-v8a/libs2a_cs.so" "$out/static"
 case ${S2ARM_ANDROID_CS_SERVICES:-0} in
 0) ;;
 1)
-    "$dotnet" publish "$cs_dir/aot/S2A.Android.Aot.csproj" -c Release -r linux-bionic-arm64 \
-        -p:S2AAndroidHost=true -p:PathMap="$pathmap" \
-        -o "$out/aot/publish" -v quiet -nologo
+    publish_services -o "$out/aot/publish"
     python3 "$cs_dir/nuget_verify.py" --assets "$cs_dir/aot/obj/project.assets.json"
     cp "$out/aot/publish/libs2a_cs.so" "$out/jniLibs/arm64-v8a/"
     echo "NativeAOT services: $out/jniLibs/arm64-v8a/libs2a_cs.so" ;;
 static)
     mkdir -p "$out/static"
-    "$dotnet" publish "$cs_dir/aot/S2A.Android.Aot.csproj" -c Release -r linux-bionic-arm64 \
-        -p:S2AAndroidHost=true -p:PathMap="$pathmap" \
-        -p:NativeLib=Static -p:S2ALinkInputs="$out/static/link.txt" \
-        -p:CppLibCreator="$ndk_bin/llvm-ar" \
-        -o "$out/static/publish" -v quiet -nologo || { echo "dotnet publish (static) failed" >&2; exit 1; }
+    publish_services -p:NativeLib=Static -p:S2ALinkInputs="$out/static/link.txt" \
+        -p:CppLibCreator="$ndk_bin/llvm-ar" -o "$out/static/publish" || { echo "dotnet publish (static) failed" >&2; exit 1; }
     python3 "$cs_dir/nuget_verify.py" --assets "$cs_dir/aot/obj/project.assets.json" || exit 1
     [ -s "$out/static/publish/libs2a_cs.a" ] || { echo "dotnet publish produced no/empty libs2a_cs.a" >&2; exit 1; }
     # CppLibCreator 必须指 NDK llvm-ar：macOS 上落到 BSD ar 会把 ELF 成员静默丢掉、产出空归档。
@@ -160,11 +192,12 @@ static)
     done < "$out/static/link.txt" > "$out/static/link.private.txt"
     mv "$out/static/link.private.txt" "$out/static/link.txt"
     echo "runtime libunwind: $(wc -l < "$unw_syms") symbols made private"
+    # 冷编产物进缓存（存不进只告警：下次照常冷编，不影响本次）
+    if [ -n "$cs_key" ]; then
+        python3 "$cs_dir/static_cache.py" save --out "$out" --cache "$cache/cs-static" --key "$cs_key" \
+            || echo "[s2a] C# 静态库缓存存不进（下次冷编）" >&2
+    fi
     # Opus / VP8 decoding (DirectPInvoke s2a_opus / s2a_vpx); also copies their licenses into assets.
-    bash "$cs_dir/../codecs/build.sh" >> "$out/static/link.txt"
-    codec_count=$(grep -c 'libs2a_\(opus\|vpx\|avc\)\.a$' "$out/static/link.txt")
-    [ "$codec_count" = 3 ] || { echo "Expected three codec archives, got $codec_count" >&2; exit 1; }
-    echo "codecs: $codec_count archives linked"
-    echo "NativeAOT services (static): $out/static/libs2a_cs.a" ;;
+    codecs_link ;;
 *) echo "S2ARM_ANDROID_CS_SERVICES must be 0, 1 or static" >&2; exit 1 ;;
 esac

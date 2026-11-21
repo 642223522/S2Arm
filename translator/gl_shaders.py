@@ -23,14 +23,16 @@
 #   no source at all (GameMaker puts its GLSL together at run time): only the table header, no library; the host translates what it meets at run time (gl_prog.m)
 # Table rows: key <TAB> stage (vert / frag) <TAB> fields, space-separated (a key can have a row per stage):
 #   a:<name>=<slot>:<type>                       a vertex input, [[attribute(slot)]]
-#   u:<name>=<offset>:<type>:<count>:<stride>    a member of the default uniform block (count 0 = not an array); a struct member (not an array of structs) is
-#                                                spread into its members as GL names them, <name>.<member>, offset from the block's start
+#   u:<name>=<offset>:<type>:<count>:<stride>    a member of the default uniform block (count 0 = not an array); a struct member is spread into its
+#                                                members as GL names them, <name>.<member>, offset from the block's start; a one-dimensional sized
+#                                                array of structs is spread per element, <name>[i].<member>, at offset + i × array stride
 #   b:<slot>:<size>                              the default uniform block: its buffer slot and size in bytes
 #   t:<name>=<slot>:<type>[:<count>]             a combined sampler: texture and sampler slot; an array of count (> 1) takes slots slot … slot + count − 1 (ABI 2)
 #   o:<name>=<location>                          a fragment output, [[color(location)]]
 #   D                                            the fragment shader writes gl_FragDepth (Metal needs a depth attachment for it; the GL layer attaches a scratch one when the target has none)
 # <TAB> where it came from
 # Usage: gl_shaders.py <input path>... <out dir> [--ios <dir>]   (input paths: the RomFS, the main NSO, capture folders)
+import os as _pw_os, sys as _pw_sys; _pw_sys.path.append(_pw_os.path.join(_pw_os.path.dirname(_pw_os.path.abspath(__file__)), '..', 'tools')); from pool_workers import cores  # noqa: E402  核数 / 进程池路数唯一来源（tools/pool_workers.py，#1332）
 import argparse
 import concurrent.futures as cf
 import hashlib
@@ -95,14 +97,14 @@ def rel(p, r):   # 表里来源列一律 / 分隔（Windows 出包机上 relpath
 def sources(roots):
     """(source bytes, stage or None, where) for every shader in the input paths"""
     for r in roots:
-        if os.path.isfile(r):
+        if os.path.isfile(r):   # 单个文件（exefs/main）照旧；RomFS 目录或镜像 romfs.std 走下面 romfs_list
             with open(r, 'rb') as f: head = f.read(4)
             if head == b'NSO0':
                 for k, s in enumerate(nso_strings(r)): yield s, None, f'{os.path.basename(r)}#{k}'
             elif stage_of(r) or any_stage(r):
                 yield text_of(open(r, 'rb').read()), stage_of(r), os.path.basename(r)
             continue
-        if not os.path.isdir(r):
+        if not romfs_list.is_dir(r):   # 同 os.path.isdir；RomFS 不落散文件时 romfs/ 不在、旁边有 romfs.std 也算
             raise ValueError(f'输入路径不存在：{r}')
         for d, _, fs in romfs_list.walk(r):
             for fn in sorted(fs):
@@ -110,7 +112,7 @@ def sources(roots):
                 if fn.endswith('.mvgl'):
                     try: a = mvgl.Archive(p)
                     except ValueError:
-                        with open(p, 'rb') as probe:
+                        with romfs_list.open_file(p) as probe:
                             if probe.read(4) == b'AFS2': continue
                         raise
                     for nm in sorted(a.files):
@@ -124,7 +126,7 @@ def sources(roots):
                         st = 'vert' if nm.endswith('_v.shader') else 'frag' if nm.endswith('_f.shader') else None
                         yield text_of(b.read(nm)), st, f'/{rel(p, r)}:{nm}'
                 elif stage_of(fn) or any_stage(fn):
-                    yield text_of(open(p, 'rb').read()), stage_of(fn), '/' + rel(p, r)
+                    yield text_of(romfs_list.read_file(p)), stage_of(fn), '/' + rel(p, r)
 
 # GLSL 改写层（graphics/nvn/gfx/gl/gl_glsl_es.c）：离线链与宿主运行时兜底共用一份 C 实现；这里每个进程编一次它的命令行入口（S2A_GLSL_ES_MAIN），逐支调用
 ES_SRC = Path(__file__).resolve().parents[1] / "graphics/nvn/gfx/gl" / "gl_glsl_es.c"
@@ -281,6 +283,11 @@ def translate(src, stage, key, tmp):
                 if member["type"] in reflection.get("types", {}) and not dimensions:
                     members[0:0] = [(sub, name + ".", base + member["offset"]) for sub in reflection["types"][member["type"]]["members"]]
                     continue
+                # 一维、定长的结构体数组逐元素展开成「名字[i].成员」，第 i 个元素偏移 = 数组偏移 + i × 数组步长（gl_xlate.c 同口径）
+                if member["type"] in reflection.get("types", {}) and len(dimensions) == 1 and dimensions[0] and member.get("array_stride"):
+                    members[0:0] = [(sub, f"{name}[{i}].", base + member["offset"] + i * member["array_stride"])
+                                    for i in range(dimensions[0]) for sub in reflection["types"][member["type"]]["members"]]
+                    continue
                 ty = glsl_type(member["type"], reflection)
                 if ty not in VEC_TYPES or len(dimensions) > 1 or any(not n for n in dimensions):
                     unsupported.append(f"普通 uniform {name}：类型 / 数组尚未接入运行时")
@@ -432,7 +439,7 @@ def main():
         help="只验证阶段组件，不出运行时 GL 表；允许计算 / UBO / SSBO",
     )
     parser.add_argument(
-        "-j", "--jobs", type=int, default=os.cpu_count() or 1, help="并行翻译与 Metal 编译数量"
+        "-j", "--jobs", type=int, default=cores(), help="并行翻译与 Metal 编译数量"
     )
     args = parser.parse_args()
     if len(args.paths) < 2 or args.jobs < 1:
@@ -538,7 +545,7 @@ def main():
                     clear_products(destinations)
                     print(f"GLSL 汇总：成功 0、失败 {len(failed)}、跳过 {skipped}")
                     return 1
-                # 一支都没译成（v0.3.1 拿不准不停；#702 原先整款停）：同离线一支没有，只出表头、全部运行时首遇现编；失败数留在汇总行，direct_lib.sh 记降级
+                # 一支都没译成（v0.3.1 拿不准不停；#702 原先整款停）：同离线一支没有，只出表头、全部运行时首遇现编；失败数留在汇总行，direct_lib.py 记降级
                 write_empty(destinations)
                 print(f"【黄】GLSL 离线一支没译成（{len(failed)} 支失败，见上方 [RED]），只出表头、运行时首遇现编", file=sys.stderr)
                 print(f"GLSL 汇总：成功 0、失败 {len(failed)}、跳过 {skipped}")

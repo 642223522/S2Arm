@@ -1,6 +1,6 @@
 // 管线预热清单的宿主单测：链生产 nvk_vk_pipe_warm.c，假程序来源 + 假 nvn_gpu_pipe_get。
 // 覆盖：逐字段往返（每个字段改一点都必须往返后不等）、同配方去重与 uses、散列撞但字节不同必须不命中、
-// 上限与淘汰、跨会话落盘/读回（顺序 = uses 降序）、坏文件整份拒绝、stats 转发。
+// 上限与淘汰（含缺省上限 8192 与硬顶）、跨会话落盘/读回（顺序 = uses 降序）、坏文件整份拒绝、stats 转发。
 //
 // 跨会话的部分用「同一个二进制换参数再跑一次」实现（模块是进程单例，load 只读一次）：
 //   父进程建临时目录、按顺序子进程跑各模式；缓存目录经环境变量交给子进程。
@@ -12,6 +12,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 
 #include "nvn_vk_pipe_warm.h"
@@ -25,14 +26,74 @@ static int g_pipe_fail;
 static uint64_t g_fake_hits = 12345;
 
 int nvn_plat_flag(const char *name, int dflt) {
+    if (!strcmp(name, "nvk_compute_warm")) return getenv("S2A_COMPUTE_WARM") ? atoi(getenv("S2A_COMPUTE_WARM")) : dflt;
     if (!strcmp(name, "nvk_warm_max")) { const char *e = getenv("S2A_PW_MAX"); return e && *e ? atoi(e) : dflt; }
+    if (!strcmp(name, "nvk_pw_diag")) { const char *e = getenv("S2A_PW_DIAG"); return e && *e ? atoi(e) : dflt; }   // #1372：诊断开关，缺省 0
     return dflt;
 }
-void nvn_plat_log(int level, const char *cls, const char *text) { (void)level; (void)cls; (void)text; }
+// 日志替身：把诊断行（pipe 类、带「预热清单诊断」）存下来给用例看，其余丢弃。
+// 「不在清单锁里打日志」的探针（#1372 评审）：g_probe_lock 开着时，每条诊断行出来时另起一个线程去拿清单锁
+// （nvk_pipe_warm_diag_stats 会进 g.mu），最多等 300 毫秒——拿不到，说明这条日志是持着清单锁打的。
+// 探针线程用完即走（detached），完成标志放在静态数组里、每次探针一格：持锁打日志的变异体会让它晚于本函数返回才完成，
+// 标志不能放在本函数的栈上。
+#define NLOG 256
+static char g_logs[NLOG][1024];
+static int g_nlogs;
+static pthread_mutex_t g_log_mu = PTHREAD_MUTEX_INITIALIZER;
+static int g_probe_lock;               // 1 = 开探针
+static int g_probe_n, g_probe_blocked; // 探针跑了几次 / 其中几次拿不到锁
+static int g_probe_done[NLOG];
+static void *probe_thread(void *p) {
+    struct nvk_pipe_warm_diag t;
+    nvk_pipe_warm_diag_stats(&t);
+    __atomic_store_n((int *)p, 1, __ATOMIC_RELEASE);
+    return NULL;
+}
+void nvn_plat_log(int level, const char *cls, const char *text) {
+    (void)level;
+    if (!(cls && text && !strcmp(cls, "pipe") && strstr(text, "预热清单诊断"))) return;
+    pthread_mutex_lock(&g_log_mu);
+    if (g_nlogs < NLOG) snprintf(g_logs[g_nlogs++], sizeof g_logs[0], "%s", text);
+    pthread_mutex_unlock(&g_log_mu);
+    if (g_probe_lock && g_probe_n < NLOG) {
+        int *done = &g_probe_done[g_probe_n];
+        pthread_t th;
+        pthread_attr_t at;
+        pthread_attr_init(&at);
+        pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+        if (pthread_create(&th, &at, probe_thread, done) == 0) {
+            g_probe_n++;
+            for (int i = 0; i < 300 && !__atomic_load_n(done, __ATOMIC_ACQUIRE); i++) usleep(1000);
+            if (!__atomic_load_n(done, __ATOMIC_ACQUIRE)) g_probe_blocked++;
+        }
+        pthread_attr_destroy(&at);
+    }
+}
 const char *nvk_session_cache_dir(void) { return getenv("S2A_PW_DIR"); }
+// 程序清单的随包种子（nvn_vk_prog_warm.c；本单测只链管线模块）：本局没用种子 = 管线也不读种子（种子用例在 nvn_vk_warm_seed_test.c）
+int nvk_prog_warm_seed_dir(char *out, size_t n) { if (out && n) out[0] = 0; return 0; }
+int nvk_prog_warm_contains(const uint8_t identity[32]) { (void)identity; return 0; }
 void nvn_gpu_pipe_warm_scope(int on) { (void)on; }
 uint64_t nvn_gpu_pipe_warm_hits(void) { return g_fake_hits; }
 uint64_t nvn_gpu_pipe_warm_created(void) { return 0; }
+// 假后端的管线标签（真后端把标签存在管线对象上，对象销毁时一起没；这里按指针查一张小表）
+#define FAKE_NP_MAX 64
+static struct { nvn_gpu_pipe p; uint64_t tag; } g_np_tag[FAKE_NP_MAX];
+uint64_t nvn_gpu_pipe_warm_tag(nvn_gpu_pipe p) {
+    for (int i = 0; i < FAKE_NP_MAX; i++) if (g_np_tag[i].p == p) return g_np_tag[i].tag;
+    return 0;
+}
+void nvn_gpu_pipe_warm_tag_set(nvn_gpu_pipe p, uint64_t tag) {
+    int free_i = -1;
+    for (int i = 0; i < FAKE_NP_MAX; i++) {
+        if (g_np_tag[i].p == p) { g_np_tag[i].tag = tag; return; }
+        if (!g_np_tag[i].p && free_i < 0) free_i = i;
+    }
+    if (free_i >= 0) { g_np_tag[free_i].p = p; g_np_tag[free_i].tag = tag; }
+}
+static void fake_np_forget(nvn_gpu_pipe p) {   // 模拟「这条管线对象没了、同一个地址又建了一条新的」：标签清零
+    for (int i = 0; i < FAKE_NP_MAX; i++) if (g_np_tag[i].p == p) { g_np_tag[i].p = NULL; g_np_tag[i].tag = 0; }
+}
 
 int rp_shader_prog_identity(const struct rp_prog *p, uint8_t out[32]) {
     if (!p) return 0;
@@ -66,6 +127,16 @@ nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *
     g_last_desc = *d;
     if (g_pipe_fail) return (nvn_gpu_rc){NVN_GPU_E_COMPILE};
     *out = (nvn_gpu_pipe)(uintptr_t)0x9001;
+    return (nvn_gpu_rc){NVN_GPU_OK};
+}
+
+static int g_compute_pipe_calls;
+static nvn_gpu_shader g_compute_pipe_shader;
+nvn_gpu_rc nvn_gpu_cpipe_get(const nvn_gpu_stage_desc *cs, int mode, nvn_gpu_pipe *out, nvn_gpu_err *err) {
+    (void)mode; (void)err;
+    if (!cs || !cs->sh || !out) return (nvn_gpu_rc){NVN_GPU_E_ARG};
+    g_compute_pipe_calls++; g_compute_pipe_shader = cs->sh;
+    *out = (nvn_gpu_pipe)(uintptr_t)0x9002;
     return (nvn_gpu_rc){NVN_GPU_OK};
 }
 
@@ -302,6 +373,36 @@ static int mode_dedup(void) {
     return g_fail;
 }
 
+// 计算管线使用同一清单的去重、跨会话排序及借用合同；重建时必须走计算入口。
+static int mode_compute(void) {
+    setenv("S2A_COMPUTE_WARM", "1", 1);
+    prog_setup(0x31); g_prog.is_compute = 1; g_prog.sh[1] = NULL;
+    nvn_gpu_pipe_desc d; memset(&d, 0, sizeof d); d.st[0].sh = g_prog.sh[0];
+    CHECK(nvk_pipe_warm_note_prog(&d, &g_prog, NULL), "compute first note");
+    CHECK(nvk_pipe_warm_note_prog(&d, &g_prog, NULL), "compute second note");
+    nvk_pipe_warm_save();
+    CHECK(nvk_pipe_warm_load() == 1, "compute dedup and persist one recipe");
+    struct nvk_pipe_rec rec; memset(&rec, 0, sizeof rec);
+    CHECK(nvk_pipe_warm_take(&rec) == 1 && rec.uses == 2, "compute take preserves uses");
+    CHECK(nvk_pipe_warm_build(&rec) == 0, "compute prewarm succeeds");
+    CHECK(g_compute_pipe_calls == 1 && g_compute_pipe_shader == g_prog.sh[0] && g_pipe_get_calls == 0,
+          "compute recipe must build a compute pipeline with its borrowed CS");
+    g_prog.is_compute = 0;
+    CHECK(nvk_pipe_warm_build(&rec) == -1 && g_compute_pipe_calls == 1, "compute recipe rejects a graphics program");
+    g_prog.is_compute = 1;
+    rec.desc[1] = 1;
+    CHECK(nvk_pipe_warm_build(&rec) == -1 && g_compute_pipe_calls == 1, "compute recipe rejects malformed bytes");
+    CHECK(g_borrow_n == 0, "compute borrow returned");
+    return g_fail;
+}
+
+static int mode_compute_off(void) {
+    setenv("S2A_COMPUTE_WARM", "0", 1);
+    CHECK(nvk_pipe_warm_load() == 1, "compute off keeps existing manifest");
+    CHECK(nvk_pipe_warm_pending() == 0, "compute off must not schedule saved compute pipe");
+    return g_fail;
+}
+
 // ---- 模式：散列相同、配方不同必须留两条 ----
 // 64 位散列构造不出真碰撞，用模块的用例钩子把散列固定成常数：这时「散列相同的两条不同配方」
 // 就是每个配方都同散列。判据若只比散列，B 会被并进 A（pending 1）；判据是整份字节，则两条都在。
@@ -367,6 +468,53 @@ static int mode_cap(void) {
     CHECK(found_cold == 0, "the coldest recipe (uses 2, oldest) must be evicted");
     return g_fail;
 }
+
+// ---- 模式：缺省上限（#1325）----
+// 没设 nvk_warm_max 时清单留 8192 条（= 硬顶）；设成比硬顶还大的数（hardcap 模式，S2A_PW_MAX=100000）也只留 8192。
+// 期望手算：热 100 条各记 3 次（uses 3），冷 8900 条各记 1 次（uses 1）。前 8192 条进表后表满（100 热 + 冷序号 100..8191），
+// 之后每进一条冷的就挤掉冷里最老的一条：8192..8999 共 808 条进来，挤掉冷序号 100..907；
+// 留下 100 热 + 冷序号 908..8999（8092 条）= 8192 条。序号藏在第 2 条流的 stride 里（每个序号一份不同的配方）。
+// 变异体：缺省回到 4096 → 读回 4096 条，红。
+static int mode_defcap_impl(void) {
+    enum { HOT = 100, TOTAL = 9000, KEEP = 8192, BASE = 1000 };
+    uint8_t id[32];
+    ident_fill(id, 0x66);
+    prog_setup(0x66);
+    nvn_gpu_pipe_desc d;
+    base_desc(&d);
+    for (uint32_t i = 0; i < TOTAL; i++) {
+        d.stream[1].stride = BASE + i;
+        for (int k = 0; k < (i < HOT ? 3 : 1); k++) nvk_pipe_warm_note(&d, id);
+    }
+    nvk_pipe_warm_save();
+    CHECK(nvk_pipe_warm_load() == KEEP, "default cap: save+load must bring back exactly %d recipes", KEEP);
+    CHECK(nvk_pipe_warm_pending() == KEEP, "default cap: %d recipes pending", KEEP);
+    static unsigned char seen[TOTAL];
+    memset(seen, 0, sizeof seen);
+    int dup = 0, bad = 0, taken = 0, hot_first = 1;
+    struct nvk_pipe_rec rec;
+    while (nvk_pipe_warm_take(&rec)) {
+        if (nvk_pipe_warm_build(&rec) != 0) { bad++; continue; }
+        uint32_t idx = g_last_desc.stream[1].stride - BASE;
+        if (idx >= TOTAL) { bad++; continue; }
+        if (seen[idx]) dup++;
+        seen[idx] = 1;
+        if (taken < HOT && idx >= HOT) hot_first = 0;   // uses 降序：前 100 条必须是热的
+        taken++;
+    }
+    CHECK(bad == 0 && dup == 0 && taken == KEEP, "default cap: %d distinct recipes handed out (bad %d, dup %d, taken %d)", KEEP, bad, dup, taken);
+    int hot_ok = 1, evicted_ok = 1, kept_ok = 1;
+    for (uint32_t i = 0; i < HOT; i++) if (!seen[i]) hot_ok = 0;
+    for (uint32_t i = HOT; i <= 907; i++) if (seen[i]) evicted_ok = 0;
+    for (uint32_t i = 908; i < TOTAL; i++) if (!seen[i]) kept_ok = 0;
+    CHECK(hot_ok, "default cap: all 100 hot recipes (uses 3) survive");
+    CHECK(evicted_ok, "default cap: the 808 oldest cold recipes (100..907) are the ones evicted");
+    CHECK(kept_ok, "default cap: the newest 8092 cold recipes (908..8999) are kept");
+    CHECK(hot_first, "default cap: hot recipes are handed out first (uses desc)");
+    return g_fail;
+}
+static int mode_defcap(void) { unsetenv("S2A_PW_MAX"); return mode_defcap_impl(); }
+static int mode_hardcap(void) { setenv("S2A_PW_MAX", "100000", 1); return mode_defcap_impl(); }
 
 // ---- 模式：落盘 / 读回 ----
 static int file_path(char *out, size_t n) {
@@ -554,7 +702,530 @@ static int mode_frozen(void) {
     return g_fail;
 }
 
-static const char *k_modes[] = {"fields", "dedup", "collide", "cap", "frozen", "lease", "save", "load", "save_race"};
+// ---- 模式：管线标签路径与完整路径出同一份清单 ----
+// 同一串「换管线」序列：一遍走完整路径（nvk_pipe_warm_note，改前的行为），一遍走带管线标签的 nvk_pipe_warm_note_prog；
+// 两遍各在自己的进程里跑（模块是进程单例）、各自落盘，父进程逐字节比两份清单文件（条数、各条 uses、顺序都在文件里）。
+// 带标签的一遍另外核对：标签命中次数恰是模型算出来的次数——说明快路径真走了，而不是每次都退回完整路径。
+// variant 0 = 容量够（不淘汰）；variant 1 = 上限 6 条、20 种配方：槽不断被淘汰重用，旧标签只能靠槽代号作废。
+enum { TAG_STEPS = 6000, TAG_NP_BASE = 0x7000 };
+static nvn_gpu_pipe tag_np(int r) { return (nvn_gpu_pipe)(uintptr_t)(TAG_NP_BASE + 16 * r); }
+static void tag_recipe(nvn_gpu_pipe_desc *d, int r) {   // 配方 r：prim / stride / 颜色格式各不同
+    base_desc(d);
+    d->prim = 1u + (uint32_t)(r % 7);
+    d->stream[0].stride = 16u + 4u * (uint32_t)(r / 7);
+    d->cfmt[0] = 0x23u + (uint32_t)(r % 3);
+}
+
+// variant 2 = 上限 3 条的手排序列：淘汰先看 uses、同 uses 看最近序号，所以标签快路径刷新最近序号这件事
+// 只有「uses 相同、最近序号不同」的局面下才看得出来。0/1/2 先各入一次，再按 2、1、0 的顺序各命中一次
+// （三条 uses 都是 2，最近序号 2 最旧）；这时进来第四份配方 3，被淘汰的必须是 2。快路径若不刷新最近序号，
+// 被淘汰的会变成 0，清单文件就和完整路径的不一样。
+static void tag_note(int use_tag, int r) {
+    nvn_gpu_pipe_desc d;
+    tag_recipe(&d, r);
+    prog_setup((uint8_t)(0x30 + (r & 1)));
+    if (use_tag) CHECK(nvk_pipe_warm_note_prog(&d, &g_prog, tag_np(r)) == 1, "tag: note_prog must accept recipe %d", r);
+    else nvk_pipe_warm_note(&d, g_prog.identity);
+}
+static int mode_tag_recency(int use_tag) {
+    static const int seq[] = {0, 1, 2, 2, 1, 0, 3, 3, 2, 2, 0, 1, 1, 3, 0};
+    for (unsigned i = 0; i < sizeof seq / sizeof seq[0]; i++) tag_note(use_tag, seq[i]);
+    nvk_pipe_warm_save();
+    struct nvk_pipe_warm_stats st;
+    nvk_pipe_warm_stats(&st);
+    if (use_tag) CHECK(st.tag_hits >= 3, "tag: the hand-written sequence must use the tag path (tag_hits=%llu)", (unsigned long long)st.tag_hits);
+    else CHECK(st.tag_hits == 0, "tag: the plain path must never use a tag, tag_hits=%llu", (unsigned long long)st.tag_hits);
+    return g_fail;
+}
+
+static int mode_tag(int use_tag, int variant) {
+    if (variant == 2) return mode_tag_recency(use_tag);
+    const int nrec = variant ? 20 : 24;
+    uint32_t x = 20260116u;
+    int has_tag[24] = {0};          // 模型：这条 np 现在有没有有效标签（只在不淘汰的 variant 0 里用）
+    uint64_t model_hits = 0;
+    int seen_recipe[24] = {0}, distinct = 0;
+    for (int step = 0; step < TAG_STEPS; step++) {
+        x = x * 1103515245u + 12345u;
+        const uint32_t k = (x >> 16) & 0xffu;
+        const int r = k < 128 ? (int)(k % 4u) : (int)(k % (uint32_t)nrec);   // 4 个热配方 + 其余偶尔换到
+        if (step % 311 == 310) {                                           // 偶尔一条 np 换新（标签清零）
+            const int c = (step / 311) % nrec;
+            fake_np_forget(tag_np(c));
+            has_tag[c] = 0;
+        }
+        nvn_gpu_pipe_desc d;
+        tag_recipe(&d, r);
+        prog_setup((uint8_t)(0x30 + (r & 1)));                              // 奇偶配方用两个不同的程序身份
+        if (!seen_recipe[r]) { seen_recipe[r] = 1; distinct++; }
+        if (use_tag) {
+            CHECK(nvk_pipe_warm_note_prog(&d, &g_prog, tag_np(r)) == 1, "tag: note_prog must accept the recipe");
+            if (variant == 0) { if (has_tag[r]) model_hits++; has_tag[r] = 1; }
+        } else {
+            nvk_pipe_warm_note(&d, g_prog.identity);
+        }
+    }
+    nvk_pipe_warm_save();
+    struct nvk_pipe_warm_stats st;
+    nvk_pipe_warm_stats(&st);
+    if (use_tag) {
+        if (variant == 0) {
+            CHECK(st.tag_hits == model_hits, "tag: tag_hits %llu, the model says %llu", (unsigned long long)st.tag_hits, (unsigned long long)model_hits);
+            CHECK(st.recorded == (uint64_t)distinct, "tag: recorded %llu, distinct recipes %d", (unsigned long long)st.recorded, distinct);
+        } else {
+            CHECK(st.tag_hits > 0 && st.tag_hits < TAG_STEPS, "tag: some but not all steps hit the tag under eviction (hits=%llu)", (unsigned long long)st.tag_hits);
+        }
+    } else {
+        CHECK(st.tag_hits == 0, "tag: the plain path must never use a tag, tag_hits=%llu", (unsigned long long)st.tag_hits);
+    }
+    return g_fail;
+}
+
+static int read_all(const char *path, unsigned char **out, long *n) {
+    *out = NULL; *n = 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    unsigned char *b = malloc((size_t)(sz > 0 ? sz : 1));
+    if (!b || (sz > 0 && fread(b, 1, (size_t)sz, f) != (size_t)sz)) { free(b); fclose(f); return -1; }
+    fclose(f);
+    *out = b; *n = sz;
+    return 0;
+}
+
+// ---- 模式：重载之后旧标签必须作废 ----
+// 开局的第一次 load 会把槽里的内容整份换成文件里的那份（同一进程里先 note、后 load）：
+//   槽 0（文件里有）：槽号原样对得上，只有槽代号能认出「这已经不是当初那一份了」；
+//   槽 1（文件里没有）：载入后槽空着，槽代号没动，只有「槽还占着」这一条能拦住旧标签——
+//     放过去的话这份配方就从清单里丢了（旧路径会把它重新记进来）。
+// 落盘的 uses 也要对：配方 0 = 3（载入）+ 1（完整路径）+ 1（标签）= 5；配方 1 = 1（重新记入）+ 1（标签）= 2。
+static int mode_tag_reload(void) {
+    nvn_gpu_pipe_desc a, b;
+    tag_recipe(&a, 0);
+    tag_recipe(&b, 1);
+    prog_setup(0x30);
+    const nvn_gpu_pipe np0 = tag_np(0), np1 = tag_np(1);
+    struct nvk_pipe_warm_stats st;
+    for (int i = 0; i < 3; i++) CHECK(nvk_pipe_warm_note_prog(&a, &g_prog, np0) == 1, "reload: note a %d", i);
+    nvk_pipe_warm_save();                                                    // 文件里只有配方 0（uses 3）
+    for (int i = 0; i < 2; i++) CHECK(nvk_pipe_warm_note_prog(&b, &g_prog, np1) == 1, "reload: note b %d", i);
+    nvk_pipe_warm_stats(&st);
+    CHECK(st.recorded == 2 && st.tag_hits == 3, "reload: 2 records and 3 tag hits before the load (recorded=%llu hits=%llu)", (unsigned long long)st.recorded, (unsigned long long)st.tag_hits);
+    CHECK(nvk_pipe_warm_load() == 1, "reload: the one recipe in the file is loaded back");
+    const uint64_t old_tag0 = nvn_gpu_pipe_warm_tag(np0), old_tag1 = nvn_gpu_pipe_warm_tag(np1);
+    CHECK(nvk_pipe_warm_note_prog(&a, &g_prog, np0) == 1, "reload: note a after the load");
+    nvk_pipe_warm_stats(&st);
+    CHECK(st.tag_hits == 3, "reload: a tag whose slot was refilled must not hit (tag_hits=%llu, want 3)", (unsigned long long)st.tag_hits);
+    CHECK(nvn_gpu_pipe_warm_tag(np0) != old_tag0, "reload: the full path must write a new tag back (a)");
+    CHECK(nvk_pipe_warm_note_prog(&a, &g_prog, np0) == 1, "reload: note a again");
+    nvk_pipe_warm_stats(&st);
+    CHECK(st.tag_hits == 4, "reload: the rewritten tag hits (tag_hits=%llu, want 4)", (unsigned long long)st.tag_hits);
+    CHECK(nvk_pipe_warm_note_prog(&b, &g_prog, np1) == 1, "reload: note b after the load");
+    nvk_pipe_warm_stats(&st);
+    CHECK(st.tag_hits == 4 && st.recorded == 3, "reload: a tag whose slot is empty must not hit, the recipe is recorded again (hits=%llu recorded=%llu, want 4/3)", (unsigned long long)st.tag_hits, (unsigned long long)st.recorded);
+    CHECK(nvn_gpu_pipe_warm_tag(np1) != old_tag1, "reload: the full path must write a new tag back (b)");
+    CHECK(nvk_pipe_warm_note_prog(&b, &g_prog, np1) == 1, "reload: note b again");
+    nvk_pipe_warm_stats(&st);
+    CHECK(st.tag_hits == 5, "reload: the rewritten tag of b hits (tag_hits=%llu, want 5)", (unsigned long long)st.tag_hits);
+    nvk_pipe_warm_save();
+    char path[600];
+    if (file_path(path, sizeof path)) return 2;
+    unsigned char *buf; long n;
+    const long rec = 32 + NVK_PW_DESC_BYTES + 4;
+    if (read_all(path, &buf, &n) != 0 || n != 32 + 2 * rec) { CHECK(0, "reload: manifest file missing or wrong size (%ld)", n); free(buf); return g_fail ? g_fail : 1; }
+    for (int k = 0; k < 2; k++) {   // 按 uses 降序：配方 0（5）在前，配方 1（2）在后
+        const unsigned char *u = buf + 32 + k * rec + 32 + NVK_PW_DESC_BYTES;
+        const uint32_t uses = (uint32_t)u[0] | (uint32_t)u[1] << 8 | (uint32_t)u[2] << 16 | (uint32_t)u[3] << 24;
+        CHECK(uses == (k == 0 ? 5u : 2u), "reload: persisted uses of record %d is %u, want %u", k, uses, k == 0 ? 5u : 2u);
+    }
+    free(buf);
+    return g_fail;
+}
+
+// ---- 模式：同一条 np 换了程序身份，必须走完整路径 ----
+// 标签快路径的前提是「一局内 np 与（配方 + 程序身份）一一对应」，今天靠后端缓存键里的着色器句柄指针保证。
+// 将来如果有人让句柄按内容合并，同一条 np 就可能带着另一份程序身份回来：这时标签不能算命中，
+// 必须按新身份走完整路径入清单；否则 uses 会记到别的程序头上，落盘的预热清单就错了。
+static int mode_tag_prog(void) {
+    nvn_gpu_pipe_desc a;
+    tag_recipe(&a, 0);
+    const nvn_gpu_pipe np = tag_np(0);
+    struct nvk_pipe_warm_stats st;
+    prog_setup(0x30);                                    // 程序 A
+    CHECK(nvk_pipe_warm_note_prog(&a, &g_prog, np) == 1, "prog: A first");
+    CHECK(nvk_pipe_warm_note_prog(&a, &g_prog, np) == 1, "prog: A again");
+    nvk_pipe_warm_stats(&st);
+    CHECK(st.recorded == 1 && st.tag_hits == 1, "prog: A = 1 record + 1 tag hit (recorded=%llu hits=%llu)", (unsigned long long)st.recorded, (unsigned long long)st.tag_hits);
+    const uint64_t tag_a = nvn_gpu_pipe_warm_tag(np);
+    prog_setup(0x31);                                    // 同一条 np，程序 B（身份不同）
+    CHECK(nvk_pipe_warm_note_prog(&a, &g_prog, np) == 1, "prog: B on the same np");
+    nvk_pipe_warm_stats(&st);
+    CHECK(st.tag_hits == 1, "prog: the tag of A must not hit for B (tag_hits=%llu, want 1)", (unsigned long long)st.tag_hits);
+    CHECK(st.recorded == 2, "prog: B must be recorded through the full path (recorded=%llu, want 2)", (unsigned long long)st.recorded);
+    CHECK(nvn_gpu_pipe_warm_tag(np) != tag_a, "prog: the full path must write B's tag back");
+    CHECK(nvk_pipe_warm_note_prog(&a, &g_prog, np) == 1, "prog: B again");
+    nvk_pipe_warm_stats(&st);
+    CHECK(st.tag_hits == 2, "prog: B's tag hits (tag_hits=%llu, want 2)", (unsigned long long)st.tag_hits);
+    prog_setup(0x30);                                    // 回到 A：B 的标签同样不能算 A 的命中
+    CHECK(nvk_pipe_warm_note_prog(&a, &g_prog, np) == 1, "prog: back to A");
+    nvk_pipe_warm_stats(&st);
+    CHECK(st.tag_hits == 2 && st.recorded == 2, "prog: back to A goes the full path and merges into A's entry (hits=%llu recorded=%llu, want 2/2)", (unsigned long long)st.tag_hits, (unsigned long long)st.recorded);
+    nvk_pipe_warm_save();
+    char path[600];
+    if (file_path(path, sizeof path)) return 2;
+    unsigned char *buf; long n;
+    if (read_all(path, &buf, &n) != 0 || n != 32 + 2 * (32 + NVK_PW_DESC_BYTES + 4)) { CHECK(0, "prog: manifest file missing or wrong size (%ld)", n); free(buf); return g_fail ? g_fail : 1; }
+    // 清单按 uses 降序：A = 1（完整）+ 1（标签）+ 1（回头走完整路径）= 3，B = 1 + 1 = 2
+    const long rec = 32 + NVK_PW_DESC_BYTES + 4;
+    for (int k = 0; k < 2; k++) {
+        const unsigned char *r = buf + 32 + k * rec;
+        const unsigned char *u = r + 32 + NVK_PW_DESC_BYTES;
+        const uint32_t uses = (uint32_t)u[0] | (uint32_t)u[1] << 8 | (uint32_t)u[2] << 16 | (uint32_t)u[3] << 24;
+        CHECK(r[0] == (k == 0 ? 0x30 : 0x31) && uses == (k == 0 ? 3u : 2u),
+              "prog: record %d is program %02x with uses %u, want %02x / %u", k, r[0], uses, k == 0 ? 0x30 : 0x31, k == 0 ? 3u : 2u);
+    }
+    free(buf);
+    return g_fail;
+}
+
+// ---- 模式：两条不同的 np 带同一份（配方 + 程序身份） ----
+// 同一份程序重新装载一次（新句柄）就是新的 np；对清单它们是同一条记录。第二条 np 第一次走完整路径、并进
+// 已有条目（紧挨着的走备忘；隔了几份别的配方的走桶链），拿到同一个槽的标签，之后各走各的标签。
+// 这两条完整路径都必须把标签写回：漏写的话那条 np 永远退回完整路径，快路径就白做了。
+static int mode_tag_twin(void) {
+    nvn_gpu_pipe_desc a;
+    tag_recipe(&a, 0);
+    prog_setup(0x30);
+    struct nvk_pipe_warm_stats st;
+    const nvn_gpu_pipe x = tag_np(0), y = tag_np(8), z = tag_np(9);
+    CHECK(nvk_pipe_warm_note_prog(&a, &g_prog, x) == 1, "twin: x first");
+    CHECK(nvk_pipe_warm_note_prog(&a, &g_prog, x) == 1, "twin: x again");
+    CHECK(nvk_pipe_warm_note_prog(&a, &g_prog, y) == 1, "twin: y first (memo)");
+    nvk_pipe_warm_stats(&st);
+    CHECK(st.recorded == 1 && st.tag_hits == 1, "twin: y's first note merges into the entry through the full path (recorded=%llu hits=%llu, want 1/1)", (unsigned long long)st.recorded, (unsigned long long)st.tag_hits);
+    CHECK(nvn_gpu_pipe_warm_tag(y) == nvn_gpu_pipe_warm_tag(x), "twin: both np's carry the tag of the same slot");
+    CHECK(nvk_pipe_warm_note_prog(&a, &g_prog, y) == 1, "twin: y again");
+    CHECK(nvk_pipe_warm_note_prog(&a, &g_prog, x) == 1, "twin: x again 2");
+    nvk_pipe_warm_stats(&st);
+    CHECK(st.tag_hits == 3, "twin: y and x both hit their tags (tag_hits=%llu, want 3)", (unsigned long long)st.tag_hits);
+    for (int r = 1; r <= 4; r++) {   // 4 份别的配方把 a 挤出最近 4 条备忘
+        nvn_gpu_pipe_desc o;
+        tag_recipe(&o, r);
+        CHECK(nvk_pipe_warm_note_prog(&o, &g_prog, tag_np(r)) == 1, "twin: other recipe %d", r);
+    }
+    CHECK(nvk_pipe_warm_note_prog(&a, &g_prog, z) == 1, "twin: z first (bucket chain)");
+    nvk_pipe_warm_stats(&st);
+    CHECK(st.recorded == 5 && st.tag_hits == 3, "twin: z's first note merges through the bucket chain (recorded=%llu hits=%llu, want 5/3)", (unsigned long long)st.recorded, (unsigned long long)st.tag_hits);
+    CHECK(nvn_gpu_pipe_warm_tag(z) == nvn_gpu_pipe_warm_tag(x), "twin: z carries the tag of the same slot");
+    CHECK(nvk_pipe_warm_note_prog(&a, &g_prog, z) == 1, "twin: z again");
+    nvk_pipe_warm_stats(&st);
+    CHECK(st.tag_hits == 4, "twin: z hits its tag (tag_hits=%llu, want 4)", (unsigned long long)st.tag_hits);
+    nvk_pipe_warm_save();
+    char path[600];
+    if (file_path(path, sizeof path)) return 2;
+    unsigned char *buf; long n;
+    const long rec = 32 + NVK_PW_DESC_BYTES + 4;
+    if (read_all(path, &buf, &n) != 0 || n != 32 + 5 * rec) { CHECK(0, "twin: manifest file missing or wrong size (%ld)", n); free(buf); return g_fail ? g_fail : 1; }
+    const unsigned char *u = buf + 32 + 32 + NVK_PW_DESC_BYTES;   // 第一条 = uses 最大的 a：x、x、y、y、x、z、z = 7
+    const uint32_t uses = (uint32_t)u[0] | (uint32_t)u[1] << 8 | (uint32_t)u[2] << 16 | (uint32_t)u[3] << 24;
+    CHECK(uses == 7, "twin: persisted uses of the shared entry is %u, want 7", uses);
+    free(buf);
+    return g_fail;
+}
+
+// ---- 模式：清单颠簸 / 逐帧变化量诊断（#1372）----
+// 计数与日志只读、不改清单。期望全部按规则手算，不拿被测实现推。开关缺省 0（玩家包恒如此）；
+// 用例在模式内置环境变量（模块第一次 note 才读开关 / 上限）。窗口行靠 nvk_pipe_warm_diag_flush 立刻出，不等 5 秒。
+static int log_count(const char *needle) {
+    int n = 0;
+    for (int i = 0; i < g_nlogs; i++) if (strstr(g_logs[i], needle)) n++;
+    return n;
+}
+static int log_has(const char *needle) { return log_count(needle) > 0; }
+#define CHECK_LOG(needle) CHECK(log_has(needle), "diag log must contain: %s", needle)
+#define U64(x) ((unsigned long long)(x))
+
+// 序列 S（清单上限 4；E1..E4 的 prim = 6..9，A / B / C 的 prim = 20 / 21 / 22，其余字节全同、程序身份同）：
+//   E1..E4 各记 3 次填满（uses 都是 3，E1 最久）；然后 A、B、C 轮流记 3 轮；再记一次还在表里的 E2；最后把第 1 轮被挤掉的 E1 记回来。
+// 手算（淘汰目标 = uses 最小、同 uses 取最久没用的）：
+//   第 1 轮：A 挤掉 E1（4 条 uses 都是 3，E1 最久）；B 挤掉 A（uses 1 最小）；C 挤掉 B。表 = {C, E2, E3, E4}。
+//   第 2、3 轮：A 挤掉 C、B 挤掉 A、C 挤掉 B；A / B / C 每次都是「被淘汰过又插回来」。
+//   E2 还在表里（uses 3 → 4）；E1 在第 1 轮被挤掉过：这次记回来是新记，挤掉 C（uses 1 最小），算「被淘汰过又插回来」——
+//   这一条专防「只记新配方被挤掉时的散列、不记被挤掉那条自己的散列」：E1 是填表时进的，不是靠挤掉别人进来的。
+// note 共 12 + 9 + 1 + 1 = 23 次；memo 命中 8（E1..E4 各 2 次重复）；桶链命中 1（E2：memo 里只剩 C 的槽）；
+// 新记 4 + 9 + 1 = 14；其中表满后淘汰 9 + 1 = 10；此前没见过 4 + 3 = 7（E1..E4、第 1 轮的 A / B / C）；
+// 被淘汰过又插回 6 + 1 = 7（第 2、3 轮的 6 次 + E1）；淘汰扫描 14 次（每次新记一遍，含填表时找空位）。
+static void seq_mixed(const uint8_t id[32]) {
+    nvn_gpu_pipe_desc e[4], r[3];
+    for (int i = 0; i < 4; i++) { base_desc(&e[i]); e[i].prim = 6 + (uint32_t)i; }
+    for (int i = 0; i < 3; i++) { base_desc(&r[i]); r[i].prim = 20 + (uint32_t)i; }
+    for (int i = 0; i < 4; i++) for (int k = 0; k < 3; k++) nvk_pipe_warm_note(&e[i], id);
+    for (int round = 0; round < 3; round++) for (int i = 0; i < 3; i++) nvk_pipe_warm_note(&r[i], id);
+    nvk_pipe_warm_note(&e[1], id);
+    nvk_pipe_warm_note(&e[0], id);
+}
+
+// (a) 颠簸：小清单里三条配方轮流进出。
+static int mode_diag_thrash(void) {
+    setenv("S2A_PW_MAX", "4", 1);
+    setenv("S2A_PW_DIAG", "1", 1);
+    g_probe_lock = 1;
+    uint8_t id[32];
+    ident_fill(id, 0x81);
+    prog_setup(0x81);
+    seq_mixed(id);
+    struct nvk_pipe_warm_diag d;
+    nvk_pipe_warm_diag_stats(&d);
+    CHECK(d.on == 1, "diag must be on when nvk_pw_diag=1");
+    CHECK(d.calls == 23 && d.memo_hits == 8 && d.chain_hits == 1,
+          "note/memo/chain want 23/8/1, got %llu/%llu/%llu", U64(d.calls), U64(d.memo_hits), U64(d.chain_hits));
+    CHECK(d.news == 14 && d.evicts == 10, "new/evict want 14/10, got %llu/%llu", U64(d.news), U64(d.evicts));
+    CHECK(d.fresh == 7 && d.reins == 7, "never-seen/reinserted want 7/7, got %llu/%llu", U64(d.fresh), U64(d.reins));
+    CHECK(d.scans == 14, "victim scans want 14, got %llu", U64(d.scans));
+    CHECK(d.ev_clears == 0, "no eviction-set clear expected, got %llu", U64(d.ev_clears));
+    CHECK(d.samples_fresh == 1 && d.samples_reins == 1, "one sample per class per window, got %llu/%llu",
+          U64(d.samples_fresh), U64(d.samples_reins));
+    struct nvk_pipe_warm_stats st;
+    nvk_pipe_warm_stats(&st);
+    CHECK(st.recorded == d.news, "diag news must equal stats.recorded (%llu vs %llu)", U64(d.news), U64(st.recorded));
+    CHECK(g_nlogs == 3, "before the flush: the switch-on line and the two sample lines only (no window line yet), got %d", g_nlogs);
+    nvk_pipe_warm_diag_flush();
+    CHECK_LOG("秒：note 23 次（memo 8 / 链 1 / 新记 14）");
+    CHECK_LOG("新记里 此前没见过 7、被淘汰过又插回 7");
+    CHECK_LOG("满后淘汰 10 次");
+    CHECK_LOG("淘汰扫描 14 次");
+    CHECK_LOG("淘汰集合清空 0 次（累计 0）");
+    CHECK_LOG("条数 4 / 容量 4");
+    // 样本：第一条「此前没见过」是 E2（清单里只有 E1，只差 prim 的低字节 06→07）；
+    // 第一条「被淘汰过又插回」是第 2 轮的 A（表 = {C, E2, E3, E4}，都只差 prim，取最前的 C：16→14）。
+    CHECK_LOG("样本（此前没见过，第 1 条）：最近条目程序身份相同，配方差 1 字节：prim@53 06→07");
+    CHECK_LOG("样本（被淘汰过又插回来，第 1 条）：最近条目程序身份相同，配方差 1 字节：prim@53 16→14");
+    // 样本行带抽样耗时：持锁只拷快照，整表比对在锁外
+    CHECK_LOG("快照拷贝 ");
+    CHECK_LOG(" 微秒（持锁）、比对 ");
+    // 锁外：开机行、两条样本、窗口行——每一条出来时清单锁都得是空的
+    CHECK(g_probe_n == g_nlogs && g_probe_n == 4, "lock probe must run once per diag line (probe %d, lines %d, want 4)", g_probe_n, g_nlogs);
+    CHECK(g_probe_blocked == 0, "%d diag line(s) were logged while holding the list lock", g_probe_blocked);
+    return g_fail;
+}
+
+// (b) 逐帧变化量：同一条管线每帧只有第 3 条流的 stride 在变。四个窗口各一条样本（用 flush 切窗口）：
+//   窗口 1：A、B（B 与 A 只差 prim：04→07）；
+//   窗口 2：V0 = A 的配方但 stride[2] = 100，程序身份是另一个（id2）→ 最近条目是 A，身份不同（记 1000 分），差 stride 低字节 00→64；
+//   窗口 3：同一份 V0，程序身份与 A 相同（id1）→ 最近条目必须是 A（身份相同优先；若只比字节，会选字节全同的 id2 那条，差 0 字节），差 00→64；
+//   窗口 4：39 帧，每帧 A、B（memo 命中）+ 一条 stride = 100 + k 的新配方 → 样本是第 1 帧的 V1（stride 101）：最近 A（A 在 V0 之前，同分取前），差 00→65。
+// 手算：note 2 + 1 + 1 + 39 × 3 = 121 次；memo 命中 39 × 2 = 78；链 0；新记 2 + 1 + 1 + 39 = 43，全是此前没见过；没有淘汰（上限 8192）；
+// 扫描 43 次；样本此前没见过 4 条、插回 0 条。
+static int mode_diag_vary(void) {
+    setenv("S2A_PW_DIAG", "1", 1);
+    unsetenv("S2A_PW_MAX");
+    g_probe_lock = 1;
+    uint8_t id1[32], id2[32];
+    ident_fill(id1, 0x91);
+    ident_fill(id2, 0x92);
+    prog_setup(0x91);
+    nvn_gpu_pipe_desc a, b, v;
+    base_desc(&a);
+    b = a; b.prim = 7;
+    nvk_pipe_warm_note(&a, id1);
+    nvk_pipe_warm_note(&b, id1);
+    nvk_pipe_warm_diag_flush();
+    v = a; v.stream[2].stride = 100;
+    nvk_pipe_warm_note(&v, id2);
+    nvk_pipe_warm_diag_flush();
+    nvk_pipe_warm_note(&v, id1);
+    nvk_pipe_warm_diag_flush();
+    for (int k = 1; k < 40; k++) {
+        nvk_pipe_warm_note(&a, id1);
+        nvk_pipe_warm_note(&b, id1);
+        v.stream[2].stride = (uint32_t)(100 + k);
+        nvk_pipe_warm_note(&v, id1);
+    }
+    struct nvk_pipe_warm_diag d;
+    nvk_pipe_warm_diag_stats(&d);
+    CHECK(d.calls == 121 && d.memo_hits == 78 && d.chain_hits == 0,
+          "note/memo/chain want 121/78/0, got %llu/%llu/%llu", U64(d.calls), U64(d.memo_hits), U64(d.chain_hits));
+    CHECK(d.news == 43 && d.fresh == 43 && d.reins == 0 && d.evicts == 0,
+          "new/fresh/reins/evict want 43/43/0/0, got %llu/%llu/%llu/%llu", U64(d.news), U64(d.fresh), U64(d.reins), U64(d.evicts));
+    CHECK(d.scans == 43, "victim scans want 43, got %llu", U64(d.scans));
+    CHECK(d.samples_fresh == 4 && d.samples_reins == 0, "samples want 4/0, got %llu/%llu", U64(d.samples_fresh), U64(d.samples_reins));
+    CHECK_LOG("样本（此前没见过，第 1 条）：最近条目程序身份相同，配方差 1 字节：prim@53 04→07");
+    CHECK_LOG("样本（此前没见过，第 2 条）：最近条目程序身份不同，配方差 1 字节：stream[2].stride@224 00→64");
+    CHECK_LOG("样本（此前没见过，第 3 条）：最近条目程序身份相同，配方差 1 字节：stream[2].stride@224 00→64");
+    CHECK_LOG("样本（此前没见过，第 4 条）：最近条目程序身份相同，配方差 1 字节：stream[2].stride@224 00→65");
+    // 开机行 1 + 窗口行 3（三次 flush）+ 样本行 4 = 8 条，每条出来时清单锁都得是空的
+    CHECK(g_probe_n == g_nlogs && g_probe_n == 8, "lock probe must run once per diag line (probe %d, lines %d, want 8)", g_probe_n, g_nlogs);
+    CHECK(g_probe_blocked == 0, "%d diag line(s) were logged while holding the list lock", g_probe_blocked);
+    return g_fail;
+}
+
+// 负对照 1：没有颠簸、没有淘汰——50 条不同的配方各记 2 次，上限 8192。「被淘汰过又插回」「淘汰」必须是 0。
+static int mode_diag_calm(void) {
+    setenv("S2A_PW_DIAG", "1", 1);
+    unsetenv("S2A_PW_MAX");
+    uint8_t id[32];
+    ident_fill(id, 0xa1);
+    prog_setup(0xa1);
+    nvn_gpu_pipe_desc d;
+    base_desc(&d);
+    for (int i = 0; i < 50; i++) {
+        d.stream[1].stride = (uint32_t)(500 + i);
+        nvk_pipe_warm_note(&d, id);
+        nvk_pipe_warm_note(&d, id);
+    }
+    struct nvk_pipe_warm_diag s;
+    nvk_pipe_warm_diag_stats(&s);
+    CHECK(s.calls == 100 && s.memo_hits == 50 && s.chain_hits == 0, "note/memo/chain want 100/50/0, got %llu/%llu/%llu",
+          U64(s.calls), U64(s.memo_hits), U64(s.chain_hits));
+    CHECK(s.news == 50 && s.fresh == 50 && s.reins == 0 && s.evicts == 0, "new/fresh/reins/evict want 50/50/0/0, got %llu/%llu/%llu/%llu",
+          U64(s.news), U64(s.fresh), U64(s.reins), U64(s.evicts));
+    return g_fail;
+}
+
+// 负对照 2：有淘汰、没有颠簸——4 条的清单里依次进 10 条各不相同的配方，没有任何一条回来过。
+// 「淘汰」= 10 − 4 = 6，「被淘汰过又插回」必须是 0（只数淘汰的实现会把它记成 6）。
+static int mode_diag_evict(void) {
+    setenv("S2A_PW_MAX", "4", 1);
+    setenv("S2A_PW_DIAG", "1", 1);
+    uint8_t id[32];
+    ident_fill(id, 0xb1);
+    prog_setup(0xb1);
+    nvn_gpu_pipe_desc d;
+    base_desc(&d);
+    for (int i = 0; i < 10; i++) {
+        d.stream[1].stride = (uint32_t)(700 + i);
+        nvk_pipe_warm_note(&d, id);
+    }
+    struct nvk_pipe_warm_diag s;
+    nvk_pipe_warm_diag_stats(&s);
+    CHECK(s.calls == 10 && s.news == 10 && s.evicts == 6, "note/new/evict want 10/10/6, got %llu/%llu/%llu", U64(s.calls), U64(s.news), U64(s.evicts));
+    CHECK(s.fresh == 10 && s.reins == 0, "never-seen/reinserted want 10/0, got %llu/%llu", U64(s.fresh), U64(s.reins));
+    CHECK(s.scans == 10, "victim scans want 10, got %llu", U64(s.scans));
+    return g_fail;
+}
+
+// 淘汰集合清空（#1372 评审：读到「此前没见过」偏高时，要分得清是真新、还是集合被清过）：上限 4，10 万条各不相同的配方依次进（各 1 次）。
+// 手算：第 k 次淘汰（k = 1..99,996）挤掉第 k−1 条配方（从 0 数；条 0..3 填表，条 4 挤掉条 0）。淘汰集合 2^17 项，装到 3/4 = 98,304 项时清空：
+//   第 98,305 次淘汰（挤掉条 98,304）之前集合里已有 98,304 项 → 清空一次，条 98,304 起重新记；99,996 次淘汰里只清空这一次。
+//   再记条 0（清空前被挤掉的，记录已丢）→ 只能算「此前没见过」（漏数，窗口行的「清空次数」就是用来标这种情形的）；
+//   再记条 99,990（清空之后才被挤掉的，记录还在）→ 算「被淘汰过又插回来」。
+// 合计：note 100,002；新记 100,002；淘汰 99,998；此前没见过 100,001；插回 1；清空 1 次。
+static int mode_diag_clear(void) {
+    setenv("S2A_PW_MAX", "4", 1);
+    setenv("S2A_PW_DIAG", "1", 1);
+    uint8_t id[32];
+    ident_fill(id, 0xc1);
+    prog_setup(0xc1);
+    nvn_gpu_pipe_desc d;
+    base_desc(&d);
+    for (uint32_t i = 0; i < 100000; i++) {
+        d.stream[1].stride = 1000 + i;
+        nvk_pipe_warm_note(&d, id);
+    }
+    struct nvk_pipe_warm_diag s;
+    nvk_pipe_warm_diag_stats(&s);
+    CHECK(s.news == 100000 && s.evicts == 99996 && s.fresh == 100000 && s.reins == 0,
+          "after 100000 distinct recipes: new/evict/fresh/reins want 100000/99996/100000/0, got %llu/%llu/%llu/%llu",
+          U64(s.news), U64(s.evicts), U64(s.fresh), U64(s.reins));
+    CHECK(s.ev_clears == 1, "the eviction set must have been cleared exactly once, got %llu", U64(s.ev_clears));
+    d.stream[1].stride = 1000;   // 条 0：清空前被挤掉的
+    nvk_pipe_warm_note(&d, id);
+    nvk_pipe_warm_diag_stats(&s);
+    CHECK(s.fresh == 100001 && s.reins == 0,
+          "recipe evicted before the clear must count as never-seen (record lost): fresh/reins want 100001/0, got %llu/%llu",
+          U64(s.fresh), U64(s.reins));
+    d.stream[1].stride = 1000 + 99990;   // 条 99,990：清空后才被挤掉的
+    nvk_pipe_warm_note(&d, id);
+    nvk_pipe_warm_diag_stats(&s);
+    CHECK(s.calls == 100002 && s.news == 100002 && s.evicts == 99998 && s.fresh == 100001 && s.reins == 1 && s.ev_clears == 1,
+          "calls/new/evict/fresh/reins/clears want 100002/100002/99998/100001/1/1, got %llu/%llu/%llu/%llu/%llu/%llu",
+          U64(s.calls), U64(s.news), U64(s.evicts), U64(s.fresh), U64(s.reins), U64(s.ev_clears));
+    nvk_pipe_warm_diag_flush();
+    CHECK_LOG("（累计 1）；条数 4 / 容量 4");   // 不管 5 秒窗口在中途滚没滚，最后一行的累计清空次数都是 1
+    return g_fail;
+}
+
+// 并发：4 个线程各记 20000 次，配方在 2048 条里轮转，上限 64，诊断开（抽样的快照 / 比对 / 日志都在锁外，这里跑真并发）。
+// 不依赖调度的守恒式：每次 note 恰好是 memo 命中 / 链命中 / 新记 三者之一；新记 = 此前没见过 + 插回；
+// 新记先填满 64 个空位、其余每条淘汰一条（淘汰 = 新记 − 64）；recorded 与 news 同口径；
+// 样本每类 ≤ 24，且样本行数 = 样本计数（抢到名额的样本，解锁后一定打出一行）。
+struct mt_arg { int t; const uint8_t *id; };
+static void *mt_worker(void *p) {
+    const struct mt_arg *a = p;
+    nvn_gpu_pipe_desc d;
+    base_desc(&d);
+    for (int k = 0; k < 20000; k++) {
+        d.stream[1].stride = 3000 + (uint32_t)((a->t * 7919 + k * 13) % 2048);
+        nvk_pipe_warm_note(&d, a->id);
+    }
+    return NULL;
+}
+static int mode_diag_mt(void) {
+    setenv("S2A_PW_MAX", "64", 1);
+    setenv("S2A_PW_DIAG", "1", 1);
+    uint8_t id[32];
+    ident_fill(id, 0xd1);
+    prog_setup(0xd1);
+    pthread_t th[4];
+    struct mt_arg arg[4];
+    for (int t = 0; t < 4; t++) {
+        arg[t].t = t;
+        arg[t].id = id;
+        CHECK(pthread_create(&th[t], NULL, mt_worker, &arg[t]) == 0, "create worker thread %d", t);
+    }
+    for (int t = 0; t < 4; t++) pthread_join(th[t], NULL);
+    struct nvk_pipe_warm_diag d;
+    nvk_pipe_warm_diag_stats(&d);
+    struct nvk_pipe_warm_stats st;
+    nvk_pipe_warm_stats(&st);
+    CHECK(d.calls == 80000, "calls want 80000, got %llu", U64(d.calls));
+    CHECK(d.memo_hits + d.chain_hits + d.news == d.calls, "every note is a memo hit, a chain hit or a new record: %llu+%llu+%llu vs %llu",
+          U64(d.memo_hits), U64(d.chain_hits), U64(d.news), U64(d.calls));
+    CHECK(d.fresh + d.reins == d.news, "new = never-seen + reinserted: %llu+%llu vs %llu", U64(d.fresh), U64(d.reins), U64(d.news));
+    CHECK(d.news >= 64 && d.evicts == d.news - 64, "evictions = new − 64: new %llu evict %llu", U64(d.news), U64(d.evicts));
+    CHECK(st.recorded == d.news, "recorded must equal diag news: %llu vs %llu", U64(st.recorded), U64(d.news));
+    CHECK(d.scans == d.news, "one victim scan per new record: %llu vs %llu", U64(d.scans), U64(d.news));
+    CHECK(d.samples_fresh >= 1 && d.samples_fresh <= 24 && d.samples_reins <= 24, "samples per class within 1..24 / 0..24, got %llu/%llu",
+          U64(d.samples_fresh), U64(d.samples_reins));
+    CHECK(log_count("样本（") == (int)(d.samples_fresh + d.samples_reins), "every claimed sample must print one line: %d lines vs %llu counted",
+          log_count("样本（"), U64(d.samples_fresh + d.samples_reins));
+    return g_fail;
+}
+
+// 「不改行为」：同一串 note（序列 S）在诊断开 / 关两个进程里各跑一遍并落盘，父进程比两份文件逐字节相同（见 diag_equiv）。
+// 子进程里：关着时诊断读数全 0、一行诊断日志都不出；开着时读数按上面的手算。
+static int mode_diag_save(void) {
+    setenv("S2A_PW_MAX", "4", 1);
+    const char *e = getenv("S2A_PW_DIAG");
+    const int want_on = e && *e && atoi(e) != 0;
+    uint8_t id[32];
+    ident_fill(id, 0x81);
+    prog_setup(0x81);
+    seq_mixed(id);
+    struct nvk_pipe_warm_diag d;
+    nvk_pipe_warm_diag_stats(&d);
+    if (want_on) {
+        CHECK(d.on == 1 && d.news == 14 && d.reins == 7 && d.evicts == 10, "diag on: on/new/reins/evict want 1/14/7/10, got %d/%llu/%llu/%llu",
+              d.on, U64(d.news), U64(d.reins), U64(d.evicts));
+    } else {
+        CHECK(d.on == 0 && d.calls == 0 && d.memo_hits == 0 && d.chain_hits == 0 && d.news == 0 && d.evicts == 0 && d.fresh == 0 &&
+              d.reins == 0 && d.scans == 0 && d.scan_ns == 0 && d.samples_fresh == 0 && d.samples_reins == 0,
+              "diag off (default): every counter must stay 0");
+        nvk_pipe_warm_diag_flush();
+        CHECK(g_nlogs == 0, "diag off: no diag log line at all, got %d", g_nlogs);
+    }
+    struct nvk_pipe_warm_stats st;
+    nvk_pipe_warm_stats(&st);
+    CHECK(st.recorded == 14, "recorded must be 14 with the diag on or off, got %llu", U64(st.recorded));
+    nvk_pipe_warm_save();
+    return g_fail;
+}
+
+static const char *k_modes[] = {"compute", "compute_off", "fields", "dedup", "collide", "cap", "defcap", "hardcap", "frozen", "lease", "save", "load", "save_race",
+                                "tag_reload", "tag_prog", "tag_twin",
+                                "diag_thrash", "diag_vary", "diag_calm", "diag_evict", "diag_clear", "diag_mt"};
 static const char *k_bad[] = {"magic", "fmt", "descver", "entry", "count", "sum", "trunc", "payload"};
 
 static int run_child(const char *self, const char *a, const char *b) {
@@ -570,14 +1241,58 @@ static int run_child(const char *self, const char *a, const char *b) {
     return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
+// 诊断「不改行为」：序列 S 在诊断关（缺省）/ 开两个进程里各跑一遍并落盘，两份清单文件必须逐字节相同
+// （同一串 note → 同样的槽位、同样的 uses / 淘汰顺序 → 同样的落盘字节）。返回 0 = 通过。
+static int diag_equiv(const char *self, const char *base) {
+    char dir[2][600], file[2][700];
+    // 「关」= 开关属性根本不设（玩家包永远是这个状态，走代码里的缺省值）：这样把缺省值写反（缺省 1）的实现，关这一遍会被开关带着开起来而变红。
+    const char *flag[2] = {NULL, "1"};
+    int fail = 0;
+    for (int i = 0; i < 2; i++) {
+        snprintf(dir[i], sizeof dir[i], "%s/diag-%s", base, i ? "on" : "off");
+        mkdir(dir[i], 0700);
+        snprintf(file[i], sizeof file[i], "%.500s/pipes-v1-%d.bin", dir[i], NVK_PW_DESC_BYTES);
+        unlink(file[i]);
+        setenv("S2A_PW_DIR", dir[i], 1);
+        if (flag[i]) setenv("S2A_PW_DIAG", flag[i], 1); else unsetenv("S2A_PW_DIAG");
+        int rc = run_child(self, "diag_save", NULL);
+        if (rc != 0) { fprintf(stderr, "FAIL diag_save child (diag=%s) rc=%d\n", flag[i] ? flag[i] : "unset(default)", rc); fail = 1; }
+    }
+    unsetenv("S2A_PW_DIAG");
+    setenv("S2A_PW_DIR", base, 1);
+    unsigned char *a = NULL, *b = NULL;
+    long na = 0, nb = 0;
+    if (read_all(file[0], &a, &na) || read_all(file[1], &b, &nb)) {
+        fprintf(stderr, "FAIL diag equivalence: a saved manifest is missing\n");
+        fail = 1;
+    } else if (na != nb || memcmp(a, b, (size_t)na) != 0) {
+        fprintf(stderr, "FAIL diag equivalence: saved manifests differ (diag off %ld bytes vs diag on %ld bytes)\n", na, nb);
+        fail = 1;
+    } else if (na != 32 + 4 * (32 + NVK_PW_DESC_BYTES + 4)) {
+        fprintf(stderr, "FAIL diag equivalence: manifest must hold the 4 surviving recipes, got %ld bytes\n", na);
+        fail = 1;
+    }
+    free(a);
+    free(b);
+    for (int i = 0; i < 2; i++) { unlink(file[i]); rmdir(dir[i]); }
+    return fail;
+}
+
 int main(int argc, char **argv) {
     if (argc >= 3 && !strcmp(argv[1], "badfile")) return mode_badfile(argv[2]) ? 1 : 0;
+    if (argc >= 3 && (!strcmp(argv[1], "tag_old") || !strcmp(argv[1], "tag_new"))) return mode_tag(!strcmp(argv[1], "tag_new"), atoi(argv[2])) ? 1 : 0;
     if (argc >= 2) {
         const char *m = argv[1];
-        int (*fn)(void) = !strcmp(m, "fields") ? mode_fields : !strcmp(m, "dedup") ? mode_dedup :
+        int (*fn)(void) = !strcmp(m, "compute") ? mode_compute : !strcmp(m, "compute_off") ? mode_compute_off : !strcmp(m, "fields") ? mode_fields : !strcmp(m, "dedup") ? mode_dedup :
                           !strcmp(m, "collide") ? mode_collide : !strcmp(m, "cap") ? mode_cap :
+                          !strcmp(m, "defcap") ? mode_defcap : !strcmp(m, "hardcap") ? mode_hardcap :
                           !strcmp(m, "frozen") ? mode_frozen : !strcmp(m, "lease") ? mode_lease :
-                          !strcmp(m, "save_race") ? mode_save_race :
+                          !strcmp(m, "save_race") ? mode_save_race : !strcmp(m, "tag_reload") ? mode_tag_reload :
+                          !strcmp(m, "tag_prog") ? mode_tag_prog : !strcmp(m, "tag_twin") ? mode_tag_twin :
+                          !strcmp(m, "diag_thrash") ? mode_diag_thrash : !strcmp(m, "diag_vary") ? mode_diag_vary :
+                          !strcmp(m, "diag_calm") ? mode_diag_calm : !strcmp(m, "diag_evict") ? mode_diag_evict :
+                          !strcmp(m, "diag_clear") ? mode_diag_clear : !strcmp(m, "diag_mt") ? mode_diag_mt :
+                          !strcmp(m, "diag_save") ? mode_diag_save :
                           !strcmp(m, "save") ? mode_save : !strcmp(m, "load") ? mode_load : NULL;
         if (!fn) { fprintf(stderr, "unknown mode %s\n", m); return 2; }
         return fn() ? 1 : 0;
@@ -602,6 +1317,38 @@ int main(int argc, char **argv) {
         printf("bad/%-8s %s\n", k_bad[i], rc == 0 ? "ok" : "FAIL");
         if (rc != 0) fail = 1;
     }
-    printf("%s\n", fail ? "FAIL" : "PASS 主机管道：逐字段往返 / 去重 uses / 散列碰撞不去重 / 上限淘汰 / 跨会话清单 / 坏文件整份拒绝 / 本局预热集冻结 / 程序借用不泄漏 / 并发保存不损坏");
+    // 管线标签路径与完整路径：同一串换管线序列各跑一遍（各用自己的目录），清单文件必须逐字节相同
+    char base[512];
+    snprintf(base, sizeof base, "%s", getenv("S2A_PW_DIR"));   // 上面没给目录时是父进程自己建的临时目录（dir 还是空的）
+    static const char *k_tag_name[] = {"keep", "evict", "recency"};
+    for (int variant = 0; variant < 3; variant++) {
+        char da[600], db[600], fa[700], fb[700], vs[8];
+        snprintf(da, sizeof da, "%s/tag%d-plain", base, variant);
+        snprintf(db, sizeof db, "%s/tag%d-tagged", base, variant);
+        snprintf(vs, sizeof vs, "%d", variant);
+        (void)mkdir(da, 0700); (void)mkdir(db, 0700);
+        if (variant) setenv("S2A_PW_MAX", variant == 1 ? "6" : "3", 1);
+        setenv("S2A_PW_DIR", da, 1);
+        int r1 = run_child(argv[0], "tag_old", vs);
+        setenv("S2A_PW_DIR", db, 1);
+        int r2 = run_child(argv[0], "tag_new", vs);
+        unsetenv("S2A_PW_MAX");
+        setenv("S2A_PW_DIR", base, 1);
+        snprintf(fa, sizeof fa, "%s/pipes-v1-%d.bin", da, NVK_PW_DESC_BYTES);
+        snprintf(fb, sizeof fb, "%s/pipes-v1-%d.bin", db, NVK_PW_DESC_BYTES);
+        unsigned char *ba = NULL, *bb = NULL; long na = 0, nb = 0;
+        int same = read_all(fa, &ba, &na) == 0 && read_all(fb, &bb, &nb) == 0 && na > 32 && na == nb && memcmp(ba, bb, (size_t)na) == 0;
+        printf("tag/%-7s 完整路径=%d 带标签=%d 清单 %ld 字节 %s\n", k_tag_name[variant], r1, r2, na, same ? "逐字节相同" : "不同");
+        if (r1 != 0 || r2 != 0 || !same) fail = 1;
+        free(ba); free(bb);
+    }
+    {   // 诊断开 / 关两遍同一串 note，落盘逐字节相同（诊断不改行为）；放在坏文件段之后：它们共用的清单文件已经用完
+        // 传上面拷下来的 base，不要传 getenv 返回的指针：diag_equiv 里 setenv 会改写 S2A_PW_DIR，macOS 的 setenv 会释放这个变量
+        // 之前由 setenv 分配的旧值（走到这里时它已被上面的 setenv 重设过，不管父进程给没给目录），指针会悬空；glibc 不释放，所以 Linux 上看不出来。
+        int rc = diag_equiv(argv[0], base);
+        printf("%-8s %s\n", "diag_eq", rc == 0 ? "ok" : "FAIL");
+        if (rc != 0) fail = 1;
+    }
+    printf("%s\n", fail ? "FAIL" : "PASS 主机管道：逐字段往返 / 去重 uses / 散列碰撞不去重 / 上限淘汰（含缺省 8192 与硬顶）/ 跨会话清单 / 坏文件整份拒绝 / 本局预热集冻结 / 程序借用不泄漏 / 并发保存不损坏 / 管线标签路径与完整路径清单逐字节相同（含淘汰、最近序号、重载、换程序身份）/ 颠簸与逐帧变化量诊断计数（含负对照、淘汰集合清空、并发守恒、日志与比对在清单锁外、缺省关且开关不改落盘）");
     return fail;
 }

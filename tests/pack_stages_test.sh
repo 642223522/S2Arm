@@ -44,10 +44,12 @@ cp "$H/pack/stage_keyfiles.sh" $R/pack/; cp "$H/tools/stage_deps.py" $R/tools/; 
 cp "$H/pack/roots.sh" "$H/pack/srcs.sh" "$H/pack/stage_sysdata.sh" "$H/pack/stage_romfsidx.sh" \
    "$H/pack/stage_nacp.sh" "$H/pack/stage_aoc.sh" "$H/pack/direct_profile_input.py" \
    "$H/pack/sysdata_need.py" "$H/pack/sysdata_synth.py" "$H/pack/sysdata_mii.py" $R/pack/
+mkdir -p "$R/pack/orch" && cp "$H/pack/orch/current.py" "$R/pack/orch/"   # roots.sh 写现行指针 / 迁移老库（pack/orch/current.py）
 cp -R "$H/pack/stages" $R/pack/
 cp "$H/tools/clonedir.py" "$H/tools/safe_killpg.sh" "$H/tools/plock.sh" "$H/tools/flock_hold.py" $R/tools/   # roots.sh 提交锁用 tools/plock.sh（审计 P1-27）
 # romfs_list.py：仓库里唯一的 RomFS 遍历（11-03），被测脚本经它列 RomFS
 cp "$H/graphics/tools/timeout_snap.sh" $R/graphics/tools/; cp "$H/graphics/nvn/tools/gfx_api.py" "$H/graphics/nvn/tools/romfs_list.py" $R/graphics/nvn/tools/
+mkdir -p "$R/tools"; cp "$H/tools/pool_workers.py" "$R/tools/"   # romfs_list / pak_crypto 经它取核数（#1332：核数唯一来源）
 printf 'import sys\nprint("nvn\\tfake")\n' > $R/graphics/nvn/tools/gfx_api.py
 printf '#!/bin/bash\nshift 2\nexec "$@"\n' > $R/graphics/tools/timeout_snap.sh
 chmod +x $R/graphics/tools/timeout_snap.sh
@@ -101,7 +103,8 @@ printf 'fake-dll\n' > $R/fake/nx_unpack.dll   # 追加内容阶段的键里含 n
 cat > $R/services/romfs_index.sh <<'EOF'
 #!/bin/bash
 ROOT=$1; [ "${FAKE_RX_FAIL:-0}" = 1 ] && { echo "假索引失败" >&2; exit 1; }
-{ echo "S2ARM-ROXIDX1"; (cd "$ROOT/romfs" && find . -type f -print | LC_ALL=C sort); } > "$ROOT/romfs.s2aidx"
+# 带 --list（出包期）：索引 = 清单原文（字节数 + 路径，真索引器只认这两样）；不带：目录里的文件名
+{ echo "S2ARM-ROXIDX1"; if [ "${2:-}" = --list ]; then LC_ALL=C sort "$3"; else (cd "$ROOT/romfs" && find . -type f -print | LC_ALL=C sort); fi; } > "$ROOT/romfs.s2aidx"
 EOF
 chmod +x $R/services/romfs_index.sh
 printf 'k\n' > $T/keys
@@ -117,20 +120,20 @@ touch -t 202601010101 $T/src/*.nsp
 
 mkroot() {   # mkroot <款> <exefs/main 内容> <romfs 文件内容>
   local d=$T/roots/$1@s0; mkdir -p "$d/exefs" "$d/romfs"; printf '%s\n' "$2" > "$d/exefs/main"; printf '%s\n' "$3" > "$d/romfs/f"
-  ln -s "$1@s0" "$T/roots/$1@现行"
+  printf '%s\n' "$1@s0" > "$T/roots/$1@现行"
 }
 mksys() {   # mksys <款>：带程序号 / 构建号 / 时区的产物根（系统数据阶段要）
   local d=$T/roots/$1@s0; mkdir -p "$d/exefs" "$d/systemdata/010000000000080E"
   printf 'title_id\t0100AAAA00000000\ndisplay_version\t9.9\n' > "$d/unpack.tsv"
   python3 -c "import sys;open(sys.argv[1],'wb').write(b'\0'*0x40+bytes.fromhex('11223344')+b'\0'*44)" "$d/exefs/main"
-  echo tz > "$d/systemdata/010000000000080E/binaryList.txt"; ln -s "$1@s0" "$T/roots/$1@现行"
+  echo tz > "$d/systemdata/010000000000080E/binaryList.txt"; printf '%s\n' "$1@s0" > "$T/roots/$1@现行"
 }
 mknacp() {   # mknacp <款>：只有 exefs/main（0x40 处是构建号 11223344），没有 ctl/control.nacp
   local d=$T/roots/$1@s0; mkdir -p "$d/exefs"
   python3 -c "import sys;open(sys.argv[1],'wb').write(b'\0'*0x40+bytes.fromhex('11223344')+b'\0'*44)" "$d/exefs/main"
-  ln -s "$1@s0" "$T/roots/$1@现行"
+  printf '%s\n' "$1@s0" > "$T/roots/$1@现行"
 }
-cur() { cd -P "$T/roots/$1@现行" && pwd; }
+cur() { cd -P "$T/roots/$(cat "$T/roots/$1@现行")" && pwd; }
 
 # ── A. 选包 / 解包 ────────────────────────────────────────────────────────────
 sec_unpack() {
@@ -277,12 +280,18 @@ sec_romfsidx() {
   printf 'c\n' > $T/roots/r4@s0/romfs/c.txt   # r4 比 r1 多一个文件：键必须变
   mkroot r6 same r1; mkdir -p $T/roots/r6@s0/romfs/data; printf 'e\n' > $T/roots/r6@s0/romfs/e.txt
   b6=$(basename "$(cur r6)")
+  # 界面布局覆盖层（pack/stage_uilayout.sh 写 ui_overlay/romfs/）：r7 旧形态就地改了 data/b.bin，r8 RomFS 原版 + 覆盖层里同一份改过的 b.bin → 读到的一样，索引与键都要一样；
+  #   r9 覆盖层有 RomFS 没有的文件 → 报红（覆盖层只许替换）
+  for g in r7 r8 r9; do mkroot $g same r1; mkdir -p $T/roots/$g@s0/romfs/data; printf 'b\n' > $T/roots/$g@s0/romfs/data/b.bin; done
+  printf 'wide-b\n' > $T/roots/r7@s0/romfs/data/b.bin
+  mkdir -p $T/roots/r8@s0/ui_overlay/romfs/data $T/roots/r9@s0/ui_overlay/romfs/data; printf 'wide-b\n' > $T/roots/r8@s0/ui_overlay/romfs/data/b.bin; printf 'x\n' > $T/roots/r9@s0/ui_overlay/romfs/data/new.bin
   # 五个款互不依赖，一轮全跑（r1 的「换环境变量 → 跳过」要等 r1 提交完，放第二轮）
   ( bash $R/pack/stage_romfsidx.sh r1 > $T/r1.out 2>&1; echo $? > $T/r1.rc ) &
   ( bash $R/pack/stages/romfsidx.sh r2 > $T/r2.out 2>&1; echo $? > $T/r2.rc ) &
   ( bash $R/pack/stages/romfsidx.sh r4 > $T/r4.out 2>&1; echo $? > $T/r4.rc ) &
   ( bash $R/pack/stages/romfsidx.sh r5 > $T/r5.out 2>&1; echo $? > $T/r5.rc ) &
   ( FAKE_RX_FAIL=1 bash $R/pack/stages/romfsidx.sh r6 > $T/r6.out 2>&1; echo $? > $T/r6.rc ) &
+  for g in r7 r8 r9; do ( bash $R/pack/stages/romfsidx.sh $g > $T/$g.out 2>&1; echo $? > $T/$g.rc ) & done
   wait
   r1c=$(cat $T/r1.rc); r2c=$(cat $T/r2.rc)
   ck "RomFS 索引① 旧 / 共享入口都成功（rc=${r1c}/${r2c}）" '[ $r1c = 0 ] && [ $r2c = 0 ] && [ -s "$(cur r1)/romfs.s2aidx" ]'
@@ -296,6 +305,10 @@ sec_romfsidx() {
   ck "RomFS 索引④ 没有 romfs/ → 退出非 0、现行不动（rc=${r5c}）" '[ $r5c != 0 ] && [ "$(basename "$(cur r5)")" = r5@s0 ] && [[ "$o" == *【红】* ]]'
   ck "RomFS 索引④ 生成失败 → 退出非 0、现行不动、不留 .tmp（rc=${r}）" '[ $r != 0 ] && [ "$(basename "$(cur r6)")" = "$b6" ] && [ -z "$(ls -d $T/roots/r6@*.tmp 2> /dev/null)" ] && [[ "$o6" == *【红】* ]]'
   ck "RomFS 索引① 产物相对路径不含目标名" 'no_target_path "$(cur r1)"'
+  ck "RomFS 索引⑤ 覆盖层形态与就地改形态读到的一样 → 索引逐字节同、键同（rc=$(cat $T/r7.rc)/$(cat $T/r8.rc)，键 $(cat "$(cur r8)/.stage_romfsidx" 2> /dev/null)）" \
+     '[ "$(cat $T/r7.rc)" = 0 ] && [ "$(cat $T/r8.rc)" = 0 ] && cmp -s "$(cur r7)/romfs.s2aidx" "$(cur r8)/romfs.s2aidx" && [ "$(cat "$(cur r7)/.stage_romfsidx")" = "$(cat "$(cur r8)/.stage_romfsidx")" ] && grep -q "^7	data/b.bin" "$(cur r8)/romfs.s2aidx"'
+  ck "RomFS 索引⑤ 有覆盖层 → 键与没覆盖层的不同（$(cat "$(cur r8)/.stage_romfsidx" 2> /dev/null) / $(cat "$(cur r9)/.stage_romfsidx" 2> /dev/null)）" '[ "$(cat "$(cur r8)/.stage_romfsidx")" != "$(cat "$(cur r1)/.stage_romfsidx")" ]'
+  ck "RomFS 索引⑤ 覆盖层有 RomFS 没有的文件 → 报红、退出非 0、现行不动（rc=$(cat $T/r9.rc)）" '[ "$(cat $T/r9.rc)" != 0 ] && [ "$(basename "$(cur r9)")" = r9@s0 ] && [[ "$(cat $T/r9.out)" == *只许替换* ]]'
 }
 
 # ── E. 元数据（nacp）──────────────────────────────────────────────────────────
@@ -305,7 +318,7 @@ sec_nacp() {
   mknacp p1; mknacp p2; mknacp p4; mknacp p5; mknacp p7; mknacp p8; mknacp p9
   mkdir -p $T/noxxd && printf '#!/bin/sh\nexit 127\n' > $T/noxxd/xxd && chmod +x $T/noxxd/xxd   # P2-278：玩家机没装 xxd
   head -c 66 "$(cur p9)/exefs/main" > $T/p9main && mv $T/p9main "$(cur p9)/exefs/main"          # 构建号只有 2 字节
-  mkdir -p $T/roots/p6@s0 && ln -s p6@s0 $T/roots/p6@现行   # p6 没有 exefs/main
+  mkdir -p $T/roots/p6@s0 && printf '%s\n' p6@s0 > $T/roots/p6@现行   # p6 没有 exefs/main
   # p1 旧入口 / p2 共享入口（同款不同名、同一份输入）→ 产物与标签必须一致
   ( $E bash $R/pack/stage_nacp.sh p1 $T/src/base.nsp > $T/p1.out 2>&1; echo $? > $T/p1.rc ) &
   ( $E bash $R/pack/stages/nacp.sh p2 $T/src/base.nsp > $T/p2.out 2>&1; echo $? > $T/p2.rc ) &
@@ -344,7 +357,7 @@ sec_nacp() {
 sec_aoc() {
   local r1 r2 k1 r3 o3 r4 r5 o5 r6 r7 o7 r8 b1 r9 o9 r10 o10
   mksys a1; mksys a2; mksys a3; mksys a4; mksys a5; mksys a7
-  mkdir -p $T/roots/a6@s0 && ln -s a6@s0 $T/roots/a6@现行   # a6 没有 exefs/main
+  mkdir -p $T/roots/a6@s0 && printf '%s\n' a6@s0 > $T/roots/a6@现行   # a6 没有 exefs/main
   mkdir -p $T/games $T/nogames
   for f in base dlc other; do printf '%s' "$f" > $T/games/$f.nsp; done
   touch -t 202601010101 $T/games/*.nsp

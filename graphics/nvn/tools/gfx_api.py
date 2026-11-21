@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# 游戏用哪种图形接口画主画面（出包分流的唯一判法：graphics/tools/direct/direct_lib.sh 调；接口说明 docs/研究/GL前端接口.md 第 1 节）。
+# 游戏用哪种图形接口画主画面（出包分流的唯一判法：graphics/tools/direct/direct_lib.py 调；接口说明 docs/研究/GL前端接口.md 第 1 节）。
 # 看 exefs/main（静态，零配置；只有「按名取 Vulkan」的候选才另读 ExeFS 其它模块的导出表）：
 #   Vulkan：不导入 nvnBootstrapLoader，且下面两种形态之一（判法在 vulkan_why，profile_guess.py shader_sources 也调它，单一来源）：
 #     静态：main 导入 vk*（哈迪斯：vk* 100 个、NVN 0）；
@@ -47,7 +47,11 @@ def features(exefs, romfs=None):
     f = {'egl_window': 'eglCreateWindowSurface' in imp, 'egl_ctx': 'eglCreateContext' in imp and 'eglMakeCurrent' in imp, 'gl_source': 'glShaderSource' in imp or b'glShaderSource\0' in img,
          'egl_proc': 'eglGetProcAddress' in imp, 'gl_driver': None,
          'glsl_main': len(re.findall(rb'#version[ \t]+\d+', img)), 'glsl_romfs': 0,
-         'nvn': 'nvnBootstrapLoader' in imp, 'vk': vk_imports(imp), 'vk_lookup': None}
+         'nvn': 'nvnBootstrapLoader' in imp, 'vk': vk_imports(imp), 'vk_lookup': None,
+         # 判不出时写进依据（11-20 D-Z6WZ：一款 Switch 2 第一方游戏判成 unknown，没原件，日志里得有能定因的读数）：main 导入总数、
+         #   是否导入按名查找（nn::ro::LookupSymbol）、映像里有没有 nvnBootstrapLoader 名字串、导入里带 nvn 的名字、ExeFS 模块
+         'evidence': dict(imports=len(imp), ro_lookup=RO_LOOKUP in imp, nvn_name=b'nvnBootstrapLoader\0' in img,
+                          nvn_like=sorted(n for n in imp if 'nvn' in n.lower())[:6], mods=sorted(os.listdir(exefs)))}
     if not f['vk'] and not f['nvn']: f['vk_lookup'] = vk_lookup(imp, VK_NAME in img, lambda: exefs_defs(exefs))   # main 静态判不出才看按名取
     if f['egl_window'] and not f['nvn'] and (f['gl_source'] or f['egl_proc']):   # GL 驱动在别的模块的候选才读其它模块（subsdk 解压几十 MB）
         f['gl_driver'] = gl_driver(exefs_syms(exefs))
@@ -60,21 +64,22 @@ def features(exefs, romfs=None):
 GLSL_VERSION = re.compile(rb'#version[ \t]+\d+')
 
 def romfs_glsl(romfs):
-    """romfs 明文里有没有 GLSL 源码（#version 开头的串）→ 1 / 0，碰到第一个就停。打不开的文件跳过（同原先）。
+    """romfs 明文里有没有 GLSL 源码（#version 开头的串）→ 1 / 0，碰到第一个就停。打不开的文件跳过、没碰到 GLSL 时打一行红（个数 + 前几个路径，标准错误）。
     逐文件 mmap 后搜，不整文件 read()（审计 #1534 P1-97）：RomFS 里几 GB 的资源文件整份读进内存，内存不够时抛的是 MemoryError、不是 OSError，
     冒出进程，判图形接口失败、刷新停在 direct；mmap 由页缓存按需换入、可回收，Python 堆不随文件大小涨，匹配语义与整串搜相同（不切块，不漏跨块的串）。
     空文件不映射（mmap 不收 0 长度，里面也不会有 #version）"""
-    import mmap
     # romfs_list：仓库里唯一的 RomFS 遍历（walk 同 os.walk）
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import romfs_list
+    unread = []   # 读不了的文件：没碰到 GLSL 时计红（个数 + 前几个路径）——它们里面有没有 GLSL 判不了，GL 类别 / 另带 GL 会漏判（原先静默跳过）
     for d, _, fs in romfs_list.walk(romfs):
         for n in fs:
-            try:
-                with open(os.path.join(d, n), 'rb') as h:
-                    if os.fstat(h.fileno()).st_size == 0: continue
-                    with mmap.mmap(h.fileno(), 0, access=mmap.ACCESS_READ) as m:
-                        if GLSL_VERSION.search(m): return 1
-            except OSError: pass
+            p = os.path.join(d, n)
+            try:   # 按路径读经 romfs_list（romfs/ 不在、只有 romfs.std 时从镜像读；目录形态同 open + mmap）
+                if romfs_list.file_size(p) == 0: continue
+                with romfs_list.map_file(p) as m:
+                    if GLSL_VERSION.search(m): return 1
+            except OSError as e: unread.append(f'{os.path.relpath(p, romfs)}（{type(e).__name__}：{e}）')
+    if unread: print(f'【红】判 GLSL：romfs 里 {len(unread)} 个文件读不了（前 {min(3, len(unread))} 个：{"；".join(unread[:3])}），其余没有 #version；读不了的这些里有没有 GLSL 判不了', file=sys.stderr, flush=True)
     return 0
 
 RO_LOOKUP = '_ZN2nn2ro12LookupSymbolEPmPKc'   # nn::ro::LookupSymbol(uintptr_t *out, const char *name)：在已装模块里按名查（Horizon rtld 的自动装载链）
@@ -94,7 +99,7 @@ def exefs_syms(exefs):   # 惰性给出 ExeFS 里 main 以外每个 NSO 模块�
 NVMM_MARK = 'NvMMBufMgrInit'   # NVIDIA 多媒体框架（视频解码 / 播放）的导出：这类模块自己导入 nvnBootstrapLoader 承载视频画面，不是主画面的 NVN 渲染器
 RO_LOAD = {'_ZN2nn2ro10LoadModuleEPNS0_6ModuleEPKvPvmi', '_ZN2nn2ro10LoadModuleEPNS0_6ModuleEPKvPvmib'}   # nn::ro::LoadModule 两版签名（loader.c ro_local_init 同一对）
 
-def romfs_nros(romfs):   # 惰性给出 romfs 里每个 NRO 的 (romfs 相对路径, 导入符号集)：任意深度、不分大小写（与出包 runtime/rewriter/nro_to_nso.py 同口径），读坏的跳过
+def romfs_nros(romfs):   # 惰性给出 romfs 里每个 NRO 的 (romfs 相对路径, 导入符号集)：任意深度、不分大小写（与出包 runtime/rewriter/nro_to_nso.py 同口径），解析不了的跳过、读不了的计红（标准错误）
     # romfs_list：仓库里唯一的 RomFS 遍历（walk 同 os.walk）
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import nso_syms, romfs_list
     for d, _, fs in sorted(romfs_list.walk(romfs)):
@@ -102,10 +107,12 @@ def romfs_nros(romfs):   # 惰性给出 romfs 里每个 NRO 的 (romfs 相对路
             if not n.lower().endswith('.nro'): continue
             p = os.path.join(d, n)
             try:
-                with open(p, 'rb') as h: img = h.read()
+                img = romfs_list.read_file(p)   # romfs/ 不在、只有 romfs.std 时从镜像读
                 if img[0x10:0x14] != b'NRO0': continue
                 yield os.path.relpath(p, romfs), {s for s, df, _ in nso_syms.dynsyms(img) if not df}   # NRO 映像不压缩，文件偏移即模块内偏移
-            except (OSError, ValueError, KeyError, IndexError, struct.error): continue
+            except OSError as e:   # 读不了（不同于下面读到了但解析不了的坏 NRO）：计红，它导不导入 nvnBootstrapLoader 判不了
+                print(f'【红】判 NVN 模块：romfs NRO 读不了：{os.path.relpath(p, romfs)}（{type(e).__name__}：{e}）', file=sys.stderr, flush=True); continue
+            except (ValueError, KeyError, IndexError, struct.error): continue
 
 def nvn_module(modules, nros):
     """main 判不出接口时 NVN 渲染器在哪：modules = (模块名, 导出集, 导入集)（ExeFS 里 main 以外）；nros = 惰性给出 romfs NRO 的 (路径, 导入集)，
@@ -169,7 +176,10 @@ def classify(f):
         w = f['nvn_module']
         return 'nvn', (f'main 不导入 nvnBootstrapLoader，NVN 渲染器是 {w}（导入 nvnBootstrapLoader；' +
                        ('装载器起局重定位它）' if w.startswith('exefs/') else 'main 经 nn::ro::LoadModule 装它，NRO 的导入经 rtld LookupGlobalAuto 解析）'))
-    return 'unknown', '没有 NVN / Vulkan / OpenGL 任一接口的证据'
+    e = f.get('evidence')
+    tail = ('；依据：main 导入 %d 个、按名查找（nn::ro::LookupSymbol）%s、映像里 nvnBootstrapLoader 名字串%s、带 nvn 的导入 %s、ExeFS 模块 %s' %
+            (e['imports'], '有' if e['ro_lookup'] else '无', '有' if e['nvn_name'] else '无', '、'.join(e['nvn_like']) or '无', ' '.join(e['mods']))) if e else ''
+    return 'unknown', '没有 NVN / Vulkan / OpenGL 任一接口的证据' + tail
 
 def gl_also(f):
     """f：features() 的结果 → (0 / 1, 依据)：判成 nvn 的款是否另带 GL（模块头注释「NVN 款另带 GL」三条）"""

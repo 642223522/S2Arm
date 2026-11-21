@@ -4,7 +4,10 @@
 // 清单每行 TAB 分隔 7 列：相对路径（/ 分隔）、字节数、来源文件、来源偏移、来源长度、编码（file 整个文件 | raw 原样一段 | zstd 单帧 zstd 一段）、SHA-256（十六进制，或 - 不核）。
 // 布局与 RomfsExtraction.ExtractImage、services/romfs_index.sh --std 是同一个 LibHac RomFsBuilder（相对路径 Ordinal 排序加文件、跳过宿主垃圾名），
 //   所以与「先展开成 romfs/ 再建镜像」逐字节相同。头与四张表从 RomFsBuilder 取；文件数据按文件分给各线程，各自顺序写进自己的位置（zstd 只能顺序解）；
-//   每个文件核长度，带 SHA-256 的再核哈希，对不上整份作废（先写暂存，成功才改名）。
+//   每个文件核长度（对不上整份作废，先写暂存、成功才改名）；带 SHA-256 的再核哈希，对不上只打黄照常写（维护者 11-17）。
+// 进度（#1612：Switch 2 大款这一步读写二十多 GB、几分钟到几十分钟，原先一行不打，玩家机上 4 小时只见心跳、分不清在跑还是卡住）：
+//   每秒往出包进度协议 S2A_PROGRESS 追加一行「时刻<TAB>解包·资源镜像（MB）<TAB>已写<TAB>总数」（同 tools/progress.py，调用方没给就不写，作业层据此发界面进度），
+//   每 15 秒往标准输出打一行（pack/ns2_dump.py 透传进出包日志）。
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
@@ -13,6 +16,7 @@ using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using LibHac.Fs;
 using LibHac.Fs.Fsa;
@@ -23,6 +27,26 @@ using Path = System.IO.Path;
 
 static class RomfsImageList {
     sealed record Src(string Rel, long Size, string From, long Off, long Len, string Codec, byte[] Sha);
+
+    static long s_doneBytes; static int s_doneFiles;   // 各线程写完一块累加（Interlocked），进度计时器读
+
+    sealed class Progress : IDisposable {
+        readonly long totalMb; readonly int files; readonly string path = Environment.GetEnvironmentVariable("S2A_PROGRESS");
+        readonly System.Diagnostics.Stopwatch clock = System.Diagnostics.Stopwatch.StartNew(); readonly System.Threading.Timer timer; long lastSay;
+        public Progress(long totalBytes, int files) {
+            totalMb = Math.Max(1, (totalBytes + (1 << 20) - 1) >> 20); this.files = files; s_doneBytes = 0; s_doneFiles = 0;
+            Tick(); timer = new System.Threading.Timer(_ => Tick(), null, 1000, 1000);
+        }
+        void Tick(bool last = false) {
+            long mb = Math.Min(totalMb, Interlocked.Read(ref s_doneBytes) >> 20); if (last) mb = totalMb;
+            if (path != null) {
+                try { File.AppendAllText(path, $"{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}\t解包·资源镜像（MB）\t{mb}\t{totalMb}\n"); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            }
+            long s = clock.ElapsedMilliseconds / 1000;
+            if (!last && s >= lastSay + 15) { lastSay = s; Console.WriteLine($"   资源镜像：已写 {mb:N0} / {totalMb:N0} MB（{Volatile.Read(ref s_doneFiles):N0} / {files:N0} 个文件），{s} 秒"); }
+        }
+        public void Dispose() { timer.Dispose(); Tick(last: true); }
+    }
 
     internal static (int Files, long Bytes) Write(string listPath, string destination, int parallelism = 0) {
         if (Directory.Exists(destination) || File.Exists(destination)) throw new IOException("RomFS 镜像输出已存在（不覆盖）");
@@ -64,8 +88,9 @@ static class RomfsImageList {
                 RandomAccess.Write(handle, head, 0);
                 RandomAccess.Write(handle, meta, tables);
                 var order = Enumerable.Range(0, files.Count).OrderByDescending(i => files[i].Size).ToArray();   // 大文件先开，尾部不剩一个大文件单线程拖着
-                Parallel.ForEach(order, new ParallelOptions { MaxDegreeOfParallelism = parallelism <= 0 ? Environment.ProcessorCount : parallelism },
-                    i => Copy(files[i], handle, at[i]));
+                using (new Progress(files.Sum(s => s.Size), files.Count))
+                    Parallel.ForEach(order, new ParallelOptions { MaxDegreeOfParallelism = parallelism <= 0 ? Environment.ProcessorCount : parallelism },
+                        i => { Copy(files[i], handle, at[i]); Interlocked.Increment(ref s_doneFiles); });
             }
             File.Move(stage, destination);
         } finally {
@@ -80,7 +105,7 @@ static class RomfsImageList {
         byte[] buf = new byte[4 << 20]; long n = 0;
         void Put(int got) {
             if (n + got > s.Size) throw new InvalidDataException($"RomFS 文件 {s.Rel} 比清单里的 {s.Size} 字节长（来源 {s.From}）");
-            hash?.AppendData(buf, 0, got); RandomAccess.Write(dst, buf.AsSpan(0, got), at + n); n += got;
+            hash?.AppendData(buf, 0, got); RandomAccess.Write(dst, buf.AsSpan(0, got), at + n); n += got; Interlocked.Add(ref s_doneBytes, got);
         }
         using (Stream src = Open(s)) {
             for (int got; (got = src.Read(buf, 0, buf.Length)) > 0;) Put(got);
@@ -101,7 +126,11 @@ static class RomfsImageList {
 
     static void Check(Src s, long n, byte[] got) {
         if (n != s.Size) throw new InvalidDataException($"RomFS 文件 {s.Rel} 读出 {n} 字节，清单里是 {s.Size}（来源 {s.From}）");
-        if (s.Sha != null && !got.AsSpan().SequenceEqual(s.Sha)) throw new InvalidDataException($"RomFS 文件 {s.Rel} 的 SHA-256 对不上（来源 {s.From} 损坏？）");
+        // SHA-256 对不上不再整份作废（维护者 11-17：「校验不过就整个拒绝」一律撤掉，D-RE44）：打黄 + 【校验跳过】机读行，照常写进镜像；长度不符仍报（布局按长度排定，物理上放不进）
+        if (s.Sha != null && !got.AsSpan().SequenceEqual(s.Sha)) {
+            Console.WriteLine($"🟡 RomFS 文件 {s.Rel} 的 SHA-256 和清单对不上（来源 {Path.GetFileName(s.From)}，疑改版 / 整合版或损坏），照常写进镜像");
+            P.SkipLine("资源镜像 RomFS", "", $"文件 {s.Rel}");
+        }
     }
 
     // 只给 RomFsBuilder 定长度、排布局；数据由 Copy 直接写，不经它读

@@ -15,9 +15,11 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import re
 import shutil
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -25,7 +27,7 @@ import threading
 import time
 import uuid
 from progress_activity import BatchActivity
-from errors import Failure, explain, failure_summary, last_output_lines, recovery
+from errors import Failure, explain, failure_summary, last_output_lines, recovery, library_lock_failure
 
 
 def default_developer_dir():
@@ -270,7 +272,7 @@ def atomic(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
     try:
-        with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as f:   # 一律 UTF-8（#514：不靠 UTF-8 模式）
+        with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666), "w", encoding="utf-8") as f:   # 一律 UTF-8（#514：不靠 UTF-8 模式）；权限用系统缺省（11-16 不再自设）
             json.dump(value, f, ensure_ascii=False, indent=2)
             f.flush()
             os.fsync(f.fileno())
@@ -420,7 +422,7 @@ def _release_tag_numbers(engine):
     exact = numbers(git("describe", "--tags", "--exact-match", "HEAD"))
     if exact:
         return exact
-    found = [n for n in (numbers(t) for t in git("tag", "-l", "v[0-9]*").split()) if n]
+    found = [n for n in (numbers(t) for t in git("tag", "-l", "v[0-9]*").split() if "-test" not in t) if n]   # 测试版 tag（v0.6.0-test.1）不算发版号：正式 0.6.0 发布前开发版仍显示 0.5.x（11-19）
     return max(found, key=lambda n: tuple(int(x) for x in n.split(".")), default="")
 
 
@@ -454,6 +456,9 @@ def display_version(engine):
     tag = git("describe", "--tags", "--exact-match", "HEAD") or ""
     if not dirty and re.fullmatch(r"v?" + re.escape(short), tag):
         return f"v{short}"
+    pre = re.fullmatch(r"v?" + re.escape(short) + r"-([0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)", tag) if not dirty else None
+    if pre:   # 测试版 tag（11-19：0.6.0 测试包 v0.6.0-test.1）：界面显示带 test 的完整版本号，同 Mac build_app.py
+        return f"v{short}-{pre[1]}"   # 版本字里的 test 字样就是测试版标记（版本字中英文界面共用，不夹中文）
     return f"v{short}-dev+{commit[:7]}"
 
 
@@ -577,11 +582,11 @@ def record_sources(sources):
 PROBES = ("catalog", "installCheck", "targetDevice", "locations", "patchMatch")
 JOURNAL_PROGRESS_S = 5.0   # 进度事件最多隔这么久重写一次任务记录（剃刀 H5：原先每条事件都原子重写 + fsync）；阶段、诊断、终态每次都写并 fsync
 LOCK_WAIT_S = 30   # 短作业排队等游戏库锁的上限（秒）：出包这类长任务占着时，过了上限就如实报「在等谁」，不无限挂着
-OPERATION_NAMES = {"build": "出包", "ipa": "打 iPhone 包", "import": "导入游戏", "install": "装到 iPhone", "installUpdate": "更新 iPhone 上的 S2Arm", "installUpdatePrepare": "准备更新 iPhone 上的 S2Arm",
+OPERATION_NAMES = {"build": "出包", "ipa": "打 iPhone 包", "import": "导入游戏", "install": "推到 iPhone", "installUpdate": "更新 iPhone 上的 S2Arm", "installUpdatePrepare": "准备更新 iPhone 上的 S2Arm",
                    "installRemove": "从 iPhone 删除", "installRestore": "恢复 iPhone 上的上一版", "catalog": "刷新游戏库", "customize": "改游戏名或封面",
                    "remove": "移出游戏库", "delete": "删除游戏", "clean": "清理空间", "spaceFree": "释放空间", "launch": "开始游戏",
                    "moveGame": "移动游戏", "relinkGame": "重新关联原件", "forgetGame": "忘掉游戏", "setup": "设置游戏库", "keys": "导入密钥",
-                   "saveBackup": "备份存档", "saveRestore": "恢复存档", "saveInspect": "查看存档", "saveStatus": "读存档状态",
+                   "saveBackup": "备份存档", "saveRestore": "恢复存档", "saveInspect": "查看存档", "saveStatus": "读存档状态", "savePrevious": "查上一份存档", "saveRestorePrevious": "回到上一份存档",
                    "communitySave": "保存补丁设置", "diagnostics": "导出诊断", "sgradeScan": "查找可升级 S 级优化的游戏", "sgradeMac": "给 Mac 游戏补上 S 级优化", "sgradeReenable": "重新打开 S 级优化"}
 
 
@@ -594,6 +599,16 @@ def describe_holder(info):
 
 
 class Context:
+    _default_developer = ()   # 未查
+
+    @property
+    def default_developer(self):
+        """没传 Xcode 时的缺省（default_developer_dir）：第一次要用时才找、本任务全程共用。原先建任务时就找，
+        不用 Xcode 的任务（导入、推到 iPhone、环境检查等）也去翻目录，找不到内置的还会翻外接卷、弹系统隐私窗"""
+        if self._default_developer == ():
+            self._default_developer = None if self.r.get("developerDir") else default_developer_dir()
+        return self._default_developer
+
     def __init__(self, request):
         # 空间预检没过、玩家点「仍然继续」重交的出包任务（library.check_pack_space）：只认布尔值、只给 Mac 打包 / 打 iPhone 包
         if "spaceOverride" in request and (not isinstance(request["spaceOverride"], bool) or request.get("operation") not in ("build", "ipa")):
@@ -602,14 +617,12 @@ class Context:
         if "followUp" in request and (not isinstance(request["followUp"], bool) or request.get("operation") != "ipa"):
             raise Failure("followUp 仅支持打 iPhone 包（ipa）任务的布尔值。")
         self.r = request
-        self.default_developer = None if request.get("developerDir") else default_developer_dir()   # 没传 Xcode 时的缺省：建任务时取一次装着的最新 Xcode，全程共用
         self.task = request.get("jobId") or request.get("taskId") or str(uuid.uuid4())
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", self.task):
             raise Failure("无效的任务标识。")
         self.operation = request["operation"]
         self.private = Path(request["privateRoot"]).expanduser().resolve()
-        self.private.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(self.private, 0o700)
+        self.private.mkdir(parents=True, exist_ok=True)   # 系统缺省权限（~/Library、%LOCALAPPDATA% 本来就只归当前用户；11-16 不再自设）
         self.engine = Path(request.get("engineDir") or ".").expanduser().resolve()
         self.library = resolve_library_path(request.get("library") or self.private / "unconfigured")
         import layout
@@ -631,7 +644,6 @@ class Context:
         self.last_journal = 0.0
         self.jobpath = self.logs / "jobs" / (self.task + ".json")
         self.events = self.logs / "jobs" / (self.task + ".events.jsonl")
-        self.events_private = False
         self.requestpath = self.logs / "jobs" / (self.task + ".request.json")
         layout.follow_task(self)   # 索引表第一项核成默认库位置；同一任务上次跑在库建好之前（记录在私有目录）：先把它的记录搬过来，续跑的次数、阶段接得上
         if not self.recorded:
@@ -639,10 +651,9 @@ class Context:
                             state="running", started=time.time(), diagnostics=[], pid=os.getpid(), attemptNo=1)
             return
         # Keep the request next to the journal so `resume` can run the same task again after a kill without the caller having to keep the
-        # request file around (J10). 0600 like the request itself: it holds player paths, never keys.
+        # request file around (J10).
         if not self.requestpath.exists():
             atomic(self.requestpath, request)
-            os.chmod(self.requestpath, 0o600)
         # The journal of a previous run of this same task: an attempt that never wrote a terminal state (killed, power loss, frontend gone) is the
         # only thing that can tell a restart apart from a first run, so keep what it reached instead of overwriting it silently (J10 / #186).
         previous = read(self.jobpath) or {}
@@ -677,18 +688,29 @@ class Context:
             parts = self.library.parts
             if len(parts) > 2 and parts[1] == "Volumes" and not Path("/", "Volumes", parts[2]).exists():
                 raise Failure(f"游戏库所在的磁盘「{parts[2]}」没连上：插上这块盘后再试一次。")
+            if marker.get("id"):
+                # 这个位置是一个游戏库，只是不是启动器记着的那个（从备份恢复 / 别处拷来 / 重装启动器后记录丢了）：说清是哪个、有几款，
+                #   玩家确认就改用它（前端重走选库、记下它的库号），不直接拒、也不悄悄改用（11-17 维护者）
+                try:
+                    count = sum(1 for g in json.loads((self.library / "catalog.json").read_text(encoding="utf-8")).get("games", []) if not g.get("hidden"))
+                except (OSError, ValueError, AttributeError):
+                    count = 0
+                raise Failure(f"「{self.library.name}」（{self.library}）里是另一个游戏库，有 {count} 款游戏，不是 S2Arm 上次记下的那个。点「仍然继续」就改用它；不是你要的，就到设置里重新选游戏库。",
+                              code="library_id_mismatch", facts={"libraryId": marker["id"]})
             raise Failure("游戏库未连接或标识不符，请重新选择游戏库。")
 
     def lock_holder(self):
         """写进锁旁挂文件的「我是谁」：别的任务据此说清在等谁"""
         return dict(taskId=getattr(self, "task", None), operation=getattr(self, "operation", None),
-                    gameId=(getattr(self, "r", None) or {}).get("gameId"), pid=os.getpid(), startedAt=round(time.time(), 3))
+                    gameId=(getattr(self, "r", None) or {}).get("gameId"), pid=os.getpid(),
+                    host=socket.gethostname(), startedAt=round(time.time(), 3))
 
     @contextlib.contextmanager
-    def lock(self, name="catalog", wait=None, root=None):
+    def lock(self, name="catalog", wait=None, root=None, shared=False):
         """游戏库锁（启动器剃刀 H1 / H2：库内只有这一种等待语义）：拿不到就排队，最多等 wait 秒（缺省 lock_wait / LOCK_WAIT_S），期间发进度「在等『X』结束」
         （phase=waiting_lock、holder=占锁任务）；到上限报 code=library_busy、原句「另一个任务正在使用游戏库」，失败事件带 holder，占锁者也进 internal。
-        root 给了是另一个库（整库搬家的旧位置），不核本任务的库标识。拿到后在旁挂文件记下本任务。报错原句不改：旧前端按它做本地化匹配"""
+        root 给了是另一个库（整库搬家的旧位置），不核本任务的库标识。拿到后在旁挂文件记下本任务。报错原句不改：旧前端按它做本地化匹配。
+        shared = True：共享模式（filelock 读写锁的「读」）——执行锁上起局与出包拿共享（各自再拿这一款的锁），清理 / 删除 / 搬家等全库动作拿独占"""
         self.check()
         if root is None:
             self.require_library()
@@ -699,11 +721,11 @@ class Context:
             except Exception:   # 进度发不出去（作业已在收尾 / 测试里的裸上下文）不影响排队
                 pass
         try:
-            with filelock.held(Path(root or self.library) / ("." + name + ".lock"), wait_s=wait, holder=self.lock_holder(), on_wait=waiting):
+            with filelock.held(Path(root or self.library) / ("." + name + ".lock"), wait_s=wait, holder=self.lock_holder(), on_wait=waiting, shared=shared):
                 yield
         except filelock.Busy as busy:
-            raise Failure("另一个任务正在使用游戏库，请稍后重试。", code="library_busy", holder=busy.holder,
-                          internal=f"等了 {wait:g} 秒，游戏库{name}锁仍被占：{describe_holder(busy.holder)}（{json.dumps(busy.holder, ensure_ascii=False)}）") from None  # 非玩家句
+            detail = f"等了 {wait:g} 秒，游戏库{name}锁仍被占：{describe_holder(busy.holder)}（{json.dumps(busy.holder, ensure_ascii=False)}）"  # 非玩家句
+            raise library_lock_failure(busy.holder, "另一个任务正在使用游戏库，请稍后重试。", detail) from None  # 非玩家句
 
     @contextlib.contextmanager
     def idle(self, name="execution"):
@@ -722,6 +744,8 @@ class Context:
         return read(self.library / "catalog.json", {"schema": 1, "games": []})
 
     def game(self):
+        if not self.r.get("gameId"):   # 要游戏的作业请求里没带游戏号：前端不再按名单拦（自己人之间不设允许清单），这里说清
+            raise Failure("请求里没有游戏号：这项任务要指定是哪款游戏。")   # 非玩家句
         game = next((g for g in self.catalog()["games"] if g["id"] == self.r.get("gameId")), None)
         if not game:
             raise Failure("游戏未登记在当前游戏库中。")
@@ -731,6 +755,12 @@ class Context:
         with self.guard:
             self.check()
             now = time.monotonic()
+            # 上次前进时刻（#1770 / #1773：玩家分不清「编得慢」和「卡死」）：换了一步，或这一步 / 任一计数器的完成数变了，才算前进；
+            #   心跳、批次活动脉冲（只走时间不走分子）不算。随每条事件与作业记录发出，界面显示「上次前进 N 秒前」
+            if kind in ("stage", "progress"):
+                sig = (self.number, self.stage, done, total, tuple((c.get("name"), c.get("done")) for c in extra.get("counters") or ()))
+                if sig != getattr(self, "_advance_sig", None):
+                    self._advance_sig, self.advanced_at = sig, time.time()
             if kind == "progress" and now - self.last_progress < .2 and done != total:
                 return
             if kind == "progress":
@@ -757,7 +787,8 @@ class Context:
                          stageIndex=self.number, stageCount=self.count, state=state,
                          doneUnits=done, totalUnits=total, done=done, total=total,
                          elapsed=now-self.t0, message=message, milestone=getattr(self, "milestone", None),
-                         stageKey=self.stage_key, keychainPrompt=self.keychain_prompt, **extra)
+                         stageKey=self.stage_key, keychainPrompt=self.keychain_prompt,
+                         advancedAt=getattr(self, "advanced_at", None), **extra)
             if kind == "stage":
                 self.job.update(done=None, total=None, unit=None)
             elif kind == "progress":
@@ -769,7 +800,7 @@ class Context:
                 self.job["space"] = extra.get("space")
             self.job["milestone"] = getattr(self, "milestone", None)
             self.job.update(stage=self.stage, stageIndex=self.number, stageCount=self.count,
-                            elapsed=event["elapsed"], seq=self.seq)
+                            elapsed=event["elapsed"], seq=self.seq, advancedAt=event["advancedAt"])
             if message:
                 self.job["message"] = message
             line = json.dumps(event, ensure_ascii=False)
@@ -781,16 +812,11 @@ class Context:
                     if durable or now - self.last_journal >= JOURNAL_PROGRESS_S:
                         atomic(self.jobpath, self.job)
                         self.last_journal = now
-                    # 0o600 在创建时给（O_CREAT 的 mode），不再每条事件 chmod：Windows 上那是一次额外的按路径改属性，
-                    #   撞上占用同样报「拒绝访问」、整局判 journal_write_failed（#561）；旧版留下的宽权限文件本进程第一次写时收紧一次
-                    with os.fdopen(os.open(self.events, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o600), "a", encoding="utf-8") as f:
+                    with os.fdopen(os.open(self.events, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o666), "a", encoding="utf-8") as f:
                         f.write(line + "\n")
                         if durable:
                             f.flush()
                             os.fsync(f.fileno())   # a killed worker must not take its own last stage line with it (J10 journal)
-                    if not self.events_private:
-                        os.chmod(self.events, 0o600)
-                        self.events_private = True
             except OSError as error:
                 # A full or failing disk used to let the job finish "successfully" with its record missing: whoever looks for it later finds
                 # nothing, or finds it stuck at an old stage. Say so and fail the job instead (J10).
@@ -965,7 +991,7 @@ class Context:
         failure = explain(error, **self.failure_roots())
         code = failure.code
         result = dict(code=code, severity=severity, summary=self.redact(failure),
-                      suggestion=recovery(code, packaged=bool(self.r.get("engineBundle"))), detail="", stage=self.stage,
+                      suggestion=getattr(failure, "advice", None) or recovery(code, packaged=bool(self.r.get("engineBundle"))), detail="", stage=self.stage,
                       component="S2Arm", logPath=str(self.last_log) if self.last_log else None)
         if exit_code is not None:
             result["exitCode"] = exit_code
@@ -986,9 +1012,9 @@ class Context:
         result["failureSummary"] = failure_summary(self.stage, rc, [self.redact(line, limit=None) for line in last_output_lines(self.last_log)])
         return result
 
-    def diagnostic(self, message, code="job_failed", severity="error", exit_code=None, internal="", holder=None, facts=None):
+    def diagnostic(self, message, code="job_failed", severity="error", exit_code=None, internal="", holder=None, facts=None, advice=None):
         # holder / facts 原样带进失败结果（原先这里只按原句 + 码 + internal 重建 Failure，library_busy 的占锁者、改写失败的机读事实走真作业路径时都丢了）
-        result = self.describe_failure(Failure(message, code=code, internal=internal, holder=holder, facts=facts), severity, exit_code)
+        result = self.describe_failure(Failure(message, code=code, internal=internal, holder=holder, facts=facts, advice=advice), severity, exit_code)
         self.job["diagnostics"].append(result)
         self.emit("diagnostic", result["summary"], diagnostic=result, error=result,
                   diagnostics=self.job["diagnostics"], logRef=result["logPath"])
@@ -1002,7 +1028,6 @@ class Context:
         target = self.logs / f"{self.task}-rewrite-gaps.log"
         try:
             write_rewrite_digest(Path(match.group(1)), target)
-            target.chmod(0o600)
         except OSError:
             pass
 
@@ -1013,7 +1038,6 @@ class Context:
             self.last_log = self.logs / (self.task + "-failure.log")
             self.last_log.parent.mkdir(parents=True, exist_ok=True)
             self.last_log.write_text(self.redact(failure) + "\n" + (self.redact(failure.internal) + "\n" if getattr(failure, "internal", "") else ""))
-            self.last_log.chmod(0o600)
         records = self.job["diagnostics"]
         previous = records[-1] if records else None
         if (previous and previous["severity"] == "error" and previous["code"] == failure.code
@@ -1067,6 +1091,7 @@ class Context:
         if gid and self.operation in ("build", "ipa"):   # 直连缓存跟着游戏的存放位置走（外接盘时落外接盘，library.direct_cache_dir）
             import library
             env["S2A_DIRECT_CACHE"] = str(library.direct_cache_dir(self, gid))
+            env["S2A_AOC_CACHE"] = str(library.aoc_cache_dir(self, gid))   # 追加内容缓存同样跟着游戏走（#1725）
         developer = self.r.get("developerDir") or self.default_developer   # 启动器传的 > 装着的最新 Xcode；都没有就不设
         if developer:
             env.update(DEVELOPER_DIR=developer, S2A_DEVELOPER_DIR=developer)
@@ -1093,6 +1118,9 @@ class Context:
                    S2A_MACHINE_NO_LOCAL="1", S2A_CPU_LEDGER="0",
                    # 玩家导入的客体着色器缓存（启动器社区资源面板拷进 <数据目录>/着色器缓存/<程序号>/，出包时自动并入；着色器线 docs/客体着色器缓存导入.md）
                    S2A_USER_SHCACHE=str(self.private / "着色器缓存"))
+        import upgrade_budget
+        if getattr(self, "operation", None) in upgrade_budget.OPERATIONS:   # S 级升级：按此刻核数 / 可用内存 / 有没有游戏在跑定路数，不吃满玩家的机器
+            env.update(upgrade_budget.env(self))
         # 作业临时目录（游戏库结构 v3，出包修复线约定）：这款所在存放位置的 temp/<任务号>，与游戏数据同卷；作业结束由 main.run_request 删
         gid = self.r.get("gameId")
         if gid and self.r.get("library") and (self.library / ".s2arm-library.json").is_file():
@@ -1137,7 +1165,8 @@ class Context:
             from embedded import artifact
             # 只有源码树（没有 engine.json，artifact 回 None）才没有内置宿主、按需现编；发版清单里缺它或校验不符，artifact 抛「请重新安装完整应用」照常抛出
             #   （审计 P2-196：原先 except Exception 一律吞掉、改去现场编，红字指向「编译 Mac 宿主失败」，玩家按缺 SDK 去排查）
-            bundled_host = artifact(self, "S2ArmGame.app")
+            # Intel 出包 App 按设计不带 Mac 宿主（游戏是 AArch64 原生执行）：清单没列这项是合法出包形态，optional 返回 None；列了但缺文件照旧报错。
+            bundled_host = artifact(self, "S2ArmGame.app", optional=platform.machine() == "x86_64")
             if bundled_host:
                 if not ((bundled_host / "Contents/MacOS/s2arm-host").is_file() and (bundled_host / "Contents/MacOS/libs2a_vaguard.dylib").is_file()):
                     raise Failure("应用内置引擎产物缺失，请重新安装完整应用。")
@@ -1320,7 +1349,7 @@ class Context:
                     if self.operation == "build":
                         from errors import build_tool_failure
                         failure = build_tool_failure(args, getattr(self, "milestone", None), self.last_log)
-                        self.diagnostic(str(failure), failure.code, exit_code=rc, internal=failure.internal, facts=failure.facts)
+                        self.diagnostic(str(failure), failure.code, exit_code=rc, internal=failure.internal, facts=failure.facts, advice=failure.advice)
                         raise failure
                     from errors import tool_reason
                     message = f"{self.stage or '这一步'}失败（退出码 {rc}）：{self.redact(tool_reason(self.last_log), limit=240)}"
@@ -1424,7 +1453,7 @@ def pid_start(pid):
 WIN_RUNTIME_PATH = ["python", r"python\Scripts", r"git\usr\bin", "zstd"]   # 同 bundle_runtime_win.env_cmd 的 PATH（tests 核两处一致）
 
 
-def win_metal_dir(environ):
+def win_metal_dir(environ):   # 应用布局：只在 Windows 上调（env() 里 os.name == "nt" 那支），Windows 的作业层就在引擎快照的 pack/jobs 里，__file__ 往上两级是引擎根
     """Windows 出包用的 Metal 工具目录：在作业进程（还带着玩家的 S2A_METAL_BIN 与 s2arm_env.cmd 存下的 S2A_USER_PATH）按 oneclick_win.metal_exe
     选一次，显式交给子进程——env() 剥掉 S2A_*、PATH 换成只含随包工具，子进程自己选只会落到官方默认目录（11-09 Windows 出包机实测 #137：
     S2A_METAL_BIN 指自定义目录 / 只设 PATH / 指不存在的目录，三种都悄悄用了 C:\\Program Files 那份）。显式配置无效时原样传下去，由出包预检报缺"""
@@ -1682,6 +1711,66 @@ def reap_session(sid, grace=2.0):
         time.sleep(.1)
     send(signal.SIGKILL)
     return [name for _, name in first]
+
+
+def trace(c, text):
+    """作业过程记一行进本任务日志 <任务>-decisions.log（同 install.note，进诊断包）：等锁、各款改写、组容器的起止（11-17 #1450）"""
+    line = time.strftime("%H:%M:%S ") + text
+    try:
+        c.logs.mkdir(parents=True, exist_ok=True)
+        with open(c.logs / f"{c.task}-decisions.log", "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except (OSError, AttributeError, TypeError):
+        pass
+    print("[s2a] " + text, file=sys.stderr, flush=True)  # 非玩家句
+
+
+PREEMPT_WAIT_S = 120   # 前台作业等被取消的后台自动作业退出（放锁）的上限：它在收尾（停掉子进程、写终态）通常几秒
+
+
+def preempt_jobs(c, operations, wait=PREEMPT_WAIT_S, say=None):
+    """前台作业让路的反面（11-17 #1450）：取消正在跑的这几类后台自动作业（main.AUTO_HEAVY：installUpdatePrepare / sgradeMac），等它们真退出、放了锁
+    再往下走。后台按设计降到最低优先级（nice 19 + 后台档），前台若排在它拿着的程序锁后面，就是前台等一个故意让着前台的作业（优先级倒置）：
+    0.5.2 实例里「更新 iPhone」等「准备更新」改写阿尔宙斯，10 分钟没等到、玩家取消、下次从头来。取消走玩家在界面上点取消同一条路（cancel：
+    核过 pid 仍是那个作业才发 SIGTERM），被取消的作业照常收尾；它做到一半的活由前台按正常优先级重做（各步按记号判做没做完，见 rewrite_refresh）。
+    → 取消了的任务号。say(句子)：记进本任务日志（等多久、取消了谁）"""
+    import layout
+    say = say or (lambda text: None)
+    hits = []
+    for d in _job_dirs(c.private):
+        if not d.is_dir():
+            continue
+        for path in layout.entries(d, "*.json"):
+            if path.name.endswith(".request.json"):
+                continue
+            record, reason = _scan_job_record(path)
+            if reason or not isinstance(record, dict) or record.get("id") == c.task or record.get("operation") not in operations:
+                continue
+            if record.get("state") in TERMINAL_STATES or record.get("ended") or not pid_alive(record.get("pid")):
+                continue
+            hits.append(record)
+    done = []
+    for r in hits:
+        try:
+            got = cancel(c.private, r["id"])
+        except Failure as e:   # pid 已复用 / 不是本用户的：不碰，照常往下（最坏退回原来的排队）
+            say(f"没取消后台任务 {r.get('operation')}（{r['id']}）：{e}")  # 非玩家句
+            continue
+        if got.get("cancelled"):
+            done.append(r)
+            say(f"前台要用手机和程序：取消正在跑的后台任务 {r.get('operation')}（{r['id']}，进程 {got.get('pid')}）")  # 非玩家句
+    end = time.monotonic() + wait
+    left = list(done)
+    while left and time.monotonic() < end:
+        c.check()
+        left = [r for r in left if pid_alive(r.get("pid")) and (not r.get("pidStart") or pid_start(r["pid"]) == r["pidStart"])]
+        if left:
+            time.sleep(0.2)
+    if left:
+        say("后台任务 " + "、".join(str(r["id"]) for r in left) + f" 取消后 {wait:g} 秒还没退出：照常排队等锁")  # 非玩家句
+    elif done:
+        say("后台任务已退出、锁已放")  # 非玩家句
+    return [r["id"] for r in done]
 
 
 def cancel(private, task, sig="TERM"):

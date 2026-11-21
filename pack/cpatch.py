@@ -19,7 +19,7 @@ cpatch.tsv：编号 / 模块 / 位 / 类别 / 段名 / 许可 / 来源 / 数据�
 pchtxt：@nsobid-<构建号>；行首偏移是含 0x100 文件头的偏移，@flag offset_shift <整数> 从该行起加位移（常见 0x100 即行首就是映像偏移）；@enabled / @disabled 开一段、空行收段、@stop 整个文件到此为止；
   只收字节行（偏移 + 十六进制），字符串行 / 模板占位（{hex1}）/ 其他写法的段整段不收。IPS / IPS32：文件名是构建号，偏移含 0x100 文件头"""
 import bisect, csv, glob, hashlib, math, os, re, shutil, struct, subprocess, sys, tempfile
-import os as _os, sys as _sys; _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '../tools')); from nso_plain import plain as _nso_plain   # ZBIC（NSO 标志 0x80）先经 nx_unpack 规整成不压缩段，不各写一份解码（tools/nso_plain.py）
+import os as _os, sys as _sys; _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '../tools')); from nso_plain import plain as _nso_plain; from patch_index import upres as _upres, UPRES_HEIGHTS as _UPRES_H   # ZBIC（NSO 标志 0x80）先经 nx_unpack 规整成不压缩段，不各写一份解码（tools/nso_plain.py）
 
 HDR = 0x100   # NSO 文件头：IPS 与不带 offset_shift 的 pchtxt 偏移都含它
 
@@ -41,6 +41,13 @@ def bid_match(ours, patch):
     return len(p) >= 16 and ours.startswith(p)
 
 
+def visible(text):
+    """去掉 Unicode 格式字符（Cf：零宽空格、BOM、方向控制符 U+202A–202E 等）：从网页 / 聊天复制补丁时常夹进来，看不见，
+    却让十六进制地址解析失败——#1775 风花雪月金手指「00000AFCC4\u202c」int(…, 16) 抛 ValueError，整次出包停在改写。补丁里没有合法的 Cf 字符"""
+    import unicodedata
+    return ''.join(ch for ch in text if unicodedata.category(ch) != 'Cf')
+
+
 def parse_pchtxt(text):
     """→ (首个构建号, [{bid, name, enabled, writes, bad}])；每段按自身 bid 匹配。切块即结束上一段，不要求额外 @stop。
     语义同 IPSwitch 规范与 Ryujinx IPSwitchPatcher（11-02 根修，docs/研究/情报/20261028_60帧补丁与宽屏补丁规律.md 2.3 三处出入）：
@@ -49,7 +56,7 @@ def parse_pchtxt(text):
       空行：结束当前段（同 Ryujinx；之后的字节行没有段，不收）。
     """
     blocks, lines, have_bid = [], [], False
-    for line in text.splitlines():
+    for line in visible(text).splitlines():
         if line.strip().split()[:1] == ['@stop']: break
         if line.strip().startswith('@nsobid'):
             if have_bid: blocks.append('\n'.join(lines)); lines = []
@@ -60,13 +67,17 @@ def parse_pchtxt(text):
     for block in blocks:
         m = re.search(r'@nsobid-([0-9A-Fa-f]+)', block)
         bid = m.group(1).upper() if m else ''
-        cur, name, shift = None, '', 0
+        cur, name, shift, prev_c = None, '', 0, False
         for line in block.splitlines():
             s = line.strip()
-            if not s: cur = None; continue
+            if not s: cur = None; prev_c = False; continue
             if s.startswith('//') or s.startswith('#'):
-                if s.startswith('//') or s.startswith('#'): name = s.lstrip('/#').strip()
-                continue
+                # 段名 = 段前紧挨着的那几行注释，连在一起（#1493：作者写「// 10320x4320 Docked」「// Use Extended Memory Layout」两行，
+                #   原先只取最后一行，玩家看到的名字成了「Use Extended Memory Layout」、分辨率丢了）；隔了空行或别的行就重新算
+                t = s.lstrip('/#').strip()
+                name = (f'{name} · {t}' if name and t else name or t) if prev_c else t
+                prev_c = True; continue
+            prev_c = False
             if s.startswith('@'):
                 w = s.split()[0]
                 if w in ('@enabled', '@disabled'): cur = {'bid': bid, 'name': name, 'enabled': w == '@enabled', 'writes': [], 'bad': ''}; secs.append(cur)
@@ -146,7 +157,7 @@ def scan(index_dirs, exefs, log=None):
     """→ [{module, cat, name, writes, license, path, base}]：程序号（前 13 位，含更新 / 追加内容的号）与模块构建号都对上的补丁段（只收开着的段、没有看不懂的行）。
     只比构建号会串款：sdk 等公共模块各游戏同一份二进制、构建号相同（10-27 暗黑3 的 sdk 匹配上古惑狼 / 奥日的帧率补丁）"""
     pid = program_id(os.path.join(exefs, 'main.npdm'))[:13]
-    mods = {f: module_bid(os.path.join(exefs, f)) for f in sorted(os.listdir(exefs)) if f not in ('rtld',) and not f.endswith('.npdm') and os.path.isfile(os.path.join(exefs, f))}
+    mods = {f: module_bid(os.path.join(exefs, f)) for f in sorted(os.listdir(exefs)) if f not in ('rtld',) and not f.endswith('.npdm') and not f.startswith('._') and os.path.isfile(os.path.join(exefs, f))}
     foreign = []   # 版本对不上的宽屏补丁段（跨版本移植的原料，见函数尾）
     out, skipped, taken = [], {}, {}   # taken：跨目录按编号去重（第二轮合集原样含第一轮文件，两轮同时在盘上时同一份补丁只收一次，否则写入翻倍）；编号 → 选份依据（重复出现时补全判不了的项）
     for base in index_dirs:
@@ -224,7 +235,8 @@ def scan(index_dirs, exefs, log=None):
                 if not ms: mod_miss([bid]); continue
                 w = parse_ips(open(full, 'rb').read())
                 if w is None: skipped['IPS 格式不对'] = skipped.get('IPS 格式不对', 0) + 1; continue
-                if w: out.append({'module': ms[0], 'cat': cat, 'name': os.path.basename(os.path.dirname(path)), 'writes': w, 'license': r.get('license') or '', 'path': path, 'base': base, 'id': uid, 'meta': meta})
+                if w: out.append({'module': ms[0], 'cat': cat, 'name': os.path.basename(os.path.dirname(path)), 'writes': w, 'license': r.get('license') or '', 'path': path, 'base': base, 'id': uid, 'meta': meta,
+                                  'origin': r.get('origin') or path})   # 上游原路径：fps_group 按它分组（审计 P1-193 余项：IPS 这一支原先不带，退回缓存路径 files/<哈希>/…，同包 main / sdk 拆成两组）
     for k, v in sorted(skipped.items()): print(f'跳过 {v} 段：{k}', file=sys.stderr)
     # 跨版本移植（11-13 维护者：画幅补丁扩大泛化性，帧率 / 金手指不做）：主程序没有任何版本对得上的宽屏补丁时，同款别的版本的宽屏补丁逐段
     #   按「这一处原来是什么」移植到这份主程序（port_writes），移植成的照常进自适应合成。移植不了的（画幅值在新版里找不到）不收
@@ -941,6 +953,7 @@ def _reg_writes(op):
 
 def parse_cheats(text):
     """→ (文件头里的 BID 或 '', [{name, master, writes:[(偏移, 字节)] 或 None（有不能编进包的行）}])"""
+    text = visible(text)
     m = re.search(r'BID\s*=\s*([0-9A-Fa-f]{16,64})', text.split('\n', 1)[0])
     bid, out, cur, written = (m.group(1).upper() if m else ''), [], None, set()   # written：整份文件里有指令写的寄存器
     for line in text.splitlines():
@@ -956,9 +969,11 @@ def parse_cheats(text):
             if not re.fullmatch(r'[0-9A-Fa-f]{8}', w[0]): written |= set(range(16))
             elif w[0][0] != '0': written |= _reg_writes(w[0])
             continue
-        if c.group(3) != '0': cur.setdefault('regs', set()).add(int(c.group(3), 16))
-        width = int(c.group(1)); off = int(c.group(4) + w[1], 16)
-        val = int(''.join(w[2:]), 16)
+        try:
+            regs = int(c.group(3), 16); width = int(c.group(1)); off = int(c.group(4) + w[1], 16); val = int(''.join(w[2:]), 16)
+        except ValueError:   # 这一行地址 / 数值看不懂：这一条交运行时（不编进包），别的条目照收，不让整次出包失败
+            cur['other'] = True; continue
+        if regs: cur.setdefault('regs', set()).add(regs)
         if val >> (8 * width): cur['other'] = True; continue
         cur['writes'].append((off, val.to_bytes(width, 'little')))
     return bid, [dict(e, writes=None if e['other'] or (e.get('regs', set()) & written) else e['writes']) for e in out if e['writes'] or e['other']]
@@ -971,7 +986,10 @@ def module_layout(path):
     text_end, ro, data = segs[0][0] + len(segs[0][1]), segs[1][0], segs[2][0]
     ln = data + len(segs[2][1]) + struct.unpack_from('<I', hdr, 0x3c)[0]
     bias = (0x4000 - (data & 0x3fff)) & 0x3fff if data < ((text_end + 0x3fff) & ~0x3fff) else 0
-    return text_end, ro, ln, min((ln + 0x3fff) & ~0x3fff, ((ln + bias + 0x3fff) & ~0x3fff) - bias)
+    return text_end, ro, ln, min((ln + KEY_TAIL_MIN + 0x3fff) & ~0x3fff, ((ln + bias + KEY_TAIL_MIN + 0x3fff) & ~0x3fff) - bias)
+
+
+KEY_TAIL_MIN = 0x1000   # 映像结尾到键页至少留的可写空余（同 runtime/rewriter/rewriter.c KEY_TAIL_MIN；#1628 结尾压 16 KB 边界时原先为 0）
 
 
 MIRROR_FPSL = 0x400   # 映像结尾可写空余的分区：前 0x400 字节给金手指空洞开关表，之后给 FPSLocker 变量（各管各的，不重叠）
@@ -1056,13 +1074,16 @@ def scan_cheats(dirs, exefs, log, ship=None):
             if not f.lower().endswith('.txt') or f in ('enabled.txt', 'status.txt'): continue
             fp = os.path.join(d, f)
             try: raw = open(fp, 'rb').read()
-            except OSError: continue
+            except OSError as e:   # 读不了：整份不收、写原因（结果页逐份列出，同「没写构建号」）；原先静默跳过，金手指悄悄少一份
+                log.append(f'不收\tcheat:{f[:40]}\tmain\t{f[:40]}\t读不了：{type(e).__name__}：{" ".join(str(e).split())[:200]}'); continue
             if len(raw) > 4 << 20: log.append(f'不收\tcheat\tmain\t{f[:40]}\t文件超过 4 MB'); continue
             fbid, entries = parse_cheats(raw.decode('utf-8', 'replace'))
             stem = os.path.splitext(f)[0]
             want = fbid or (stem if re.fullmatch(r'[0-9A-Fa-f]{16}', stem) else '')
-            if not want or not bid_match(bid, want):
-                log.append(f'不收\tcheat\tmain\t{f[:40]}\t版本不对：金手指是 {want or "（没写构建号）"}，这份游戏的主程序是 {bid[:16]}'); continue
+            if not want:   # #1321：文件名不是 16 位构建号、首行也没有 BID=：核不了版本，不编进包（写错版本的内存会坏存档）；单独写原因，结果页逐份列出（原先混在「版本不对」里被当成库里别的版本静默略过）
+                log.append(f'不收\tcheat:{f[:40]}\tmain\t{f[:40]}\t没写构建号：文件名不是 16 位构建号、首行也没有 BID=，核不了版本'); continue
+            if not bid_match(bid, want):
+                log.append(f'不收\tcheat\tmain\t{f[:40]}\t版本不对：金手指是 {want}，这份游戏的主程序是 {bid[:16]}'); continue
             if ship is not None and f not in {n for n, _ in ship}: ship.append((f, raw))
             sha = hashlib.sha256(raw).hexdigest()[:16]; picked = []
             for i, e in enumerate(entries):
@@ -1187,6 +1208,61 @@ def _dec_raw(word, addr):
         t = ins.operands[-1].imm
     kind = 'b' if m == 'b' else 'call' if m == 'bl' else 'cond' if t is not None else 'end' if m in ('ret', 'br', 'brk', 'hlt') or m.startswith(('ret', 'bra', 'eret')) else 'seq'
     return rd, wr, kind, t
+
+
+def res_rewrite(im, words, wh):
+    """满屏补丁写的渲染分辨率（_upres 认出的 movz 宽 wh[0] / 高 wh[1]）就地改成原生：高 = 原版这条指令本来的高（360–1080 的 movz，掌机 720 / 底座 1080 按款就对了），
+    取不到用 PHONE_H；宽 = 高 × 补丁原来的宽高比、取偶。补丁里写分辨率的 movz 只许这一对值（可以出现在多处），还有别的「高 > 1080 + 宽」组合（派生尺寸 / 另一档）
+    → 认不全，不改、返回 None。→ (新宽, 新高)"""
+    mz = lambda x: (x & 0x7F800000) == 0x52800000 and not (x >> 21) & 3
+    W, H = wh; cur = {o: int.from_bytes(bytes(nb), 'little') for o, nb in words.items()}
+    imms = {(x >> 5) & 0xFFFF for x in cur.values() if mz(x)}
+    if imms & _UPRES_H != {H}: return None   # 高 > 1080 的只许这一个（两档 / 派生尺寸 → 认不全）
+    hs = [o for o, x in cur.items() if mz(x) and (x >> 5) & 0xFFFF == H]; ws = [o for o, x in cur.items() if mz(x) and (x >> 5) & 0xFFFF == W]
+    if not hs or not ws: return None
+    nat = {(int.from_bytes(im[o:o + 4], 'little') >> 5) & 0xFFFF for o in hs if mz(int.from_bytes(im[o:o + 4], 'little'))}
+    nat = {h for h in nat if 360 <= h <= 1080}
+    H2 = nat.pop() if len(nat) == 1 else PHONE_H
+    W2 = max(2, int(round(H2 * W / H / 2)) * 2)
+    for o in hs: words[o] = bytearray(((cur[o] & ~(0xFFFF << 5)) | (H2 << 5)).to_bytes(4, 'little'))
+    for o in ws: words[o] = bytearray(((cur[o] & ~(0xFFFF << 5)) | (W2 << 5)).to_bytes(4, 'little'))
+    return W2, H2
+
+
+def nop_stale(im, text_end, words, limit=64):
+    """补丁把原版指令改成 nop 后，那条指令原本要写的寄存器在后面（顺序往下、到下次写入前，同一基本块内）被读，而且这个寄存器此前最近一次是被
+    函数调用改写的（调用把 x0–x18 改成被调用方留下的值）→ (改动点, 读的点, 寄存器)；没有 → None。
+    残值来自游戏自己的普通指令（前面 ldr / mov 写的）时真机和我们一样、是补丁作者有意利用的（「关动态分辨率」nop 掉 bl 后接着读前面 ldr 出的 x0），不挡；
+    来自调用时取决于被调用方内部，我们的实现和真机不一定一样——11-16 帖子 3 台 / 4 次 Mac 崩：画质补丁 nop 掉取名字地址的 adrp/add，x8 是前面 bl 留下的值，
+    被当名字指针读 0x8。被删的是 bl：返回值 x0 也算它写的。往下走到跳转 / 调用以外的块尾、往回走到块尾就停，判不了的不挡（宁可少挡）。
+    读写判定用 _dec（按操作数位置自己判，判不准按既读又写）"""
+    word = lambda a: int.from_bytes(bytes(words[a]), 'little') if a in words else int.from_bytes(im[a:a + 4], 'little')
+    def by_call(r, w0):
+        a = w0 - 4
+        while a >= 0 and a > w0 - 4 * limit:
+            _, wr, kind, _ = _dec(word(a), a)
+            if kind == 'call': return r <= 18
+            if r in wr: return False
+            if kind in ('b', 'end'): return False
+            a -= 4
+        return False
+    for w0 in sorted(words):
+        orig = int.from_bytes(im[w0:w0 + 4], 'little')
+        if word(w0) != 0xD503201F or orig == 0xD503201F or w0 + 4 > text_end: continue
+        _, wr0, kind0, _ = _dec(orig, w0)
+        live = {r for r in wr0 if r != _FLAGS and r != 30} | ({0} if kind0 == 'call' else set())
+        a = w0 + 4
+        while live and a + 4 <= text_end and a < w0 + 4 + 4 * limit:
+            rd, wr, kind, _ = _dec(word(a), a)
+            hit = live & (set(range(8)) if kind == 'call' else rd)
+            for r in sorted(hit):
+                if by_call(r, w0): return w0, a, _rname(r)
+            live -= hit
+            if kind == 'call': live -= set(range(19)); a += 4; continue
+            live -= wr
+            if kind != 'seq': break
+            a += 4
+    return None
 
 
 def _branch_pairs(text):
@@ -1602,6 +1678,14 @@ def plan(root, default_on, index_dirs):
         if not why and uid.startswith('widescreen:'):
             r = phone_res(words, wkinds(mod))
             if r: log.append(f'改值\t{uid}\t{mod}\t渲染尺寸按手机口径：{r}')
+        if not why and uid.startswith(('widescreen:', 'wsauto:')) and (wh := _upres([int.from_bytes(bytes(nb), 'little') for nb in words.values()])):   # tools/patch_index.py upres
+            # 改内部渲染分辨率的满屏补丁（#b824d1 / D-Q3QJ：渲染目标放大、游戏堆放不下会崩 / 画坏）：分辨率改回原生高、宽按原比例等比缩（11-16 维护者「让补丁按咱们的需求正确生效，而不是直接拒掉」）；
+            #   画幅照补丁（定画幅变体）或照自适应模板。认不全（不止一对分辨率）才不收
+            done = res_rewrite(im, words, wh)
+            if done: log.append(f'改分辨率\t{uid}\t{mod}\t{u["name"][:40]}\t{wh[0]}x{wh[1]} → {done[0]}x{done[1]}（原生高、按原比例）')
+            else: why = f'改了内部渲染分辨率（{wh[0]}x{wh[1]}），而且不止一对分辨率常数、改写不全，不进满屏：渲染目标放大、游戏堆放不下会崩（#b824d1 / D-Q3QJ）'
+        if not why and not cheat and (st := nop_stale(im, text_end, words)):   # 见 nop_stale；金手指另有规则
+            why = f'把 {mod}+{st[0]:#x} 改成空指令后，它原本要写的 {st[2]} 在 {mod}+{st[1]:#x} 被读：读到的是残值，可能被当指针读而崩'
         if not why and any(fill(im, o) for o, k in marks.items() if k == 'kv'): why = f'取值点 {mod}+{min(o for o, k in marks.items() if k == "kv" and fill(im, o)):#x} 落在填充区（填充区常写，没有原路可分）'
         if not why:
             for o, n, k in adata:

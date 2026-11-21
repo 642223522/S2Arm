@@ -18,8 +18,11 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 extern char **environ;
-uint64_t s2a_window_container_need(const char *bundle);   // vawin.c
+uint64_t s2a_window_container_need(const char *bundle, const char *home);   // vawin.c
+static char g_home[1300];   // 传给被测函数的 HOME（程序包根在它下面）：缺省是临时目录里的空家目录，不碰本机真实的 ~/Library
 static int bad;
+static int g_gc_reapply;   // GC 档位重选（gclimit.c）的桩：vawin.c 按名取（dlsym），这里计每次占下窗口后调了几次
+__attribute__((visibility("default"), used)) void s2a_gc_limit_reapply(void) { g_gc_reapply++; }
 static void ck(int ok, const char *what) { printf("%s %s\n", ok ? "✓" : "✗", what); if (!ok) bad++; }
 static void put(const char *path, const void *b, size_t n) { FILE *f = fopen(path, "wb"); if (!f) { perror(path); exit(1); } fwrite(b, 1, n, f); fclose(f); }
 // 一款：<dir>/main.npdm（类型 / 系统资源 / 是否 Switch 2）+ main 模块（fixups 表头 + patched.bin 0xD000 字节）
@@ -46,7 +49,7 @@ static char g_log[16384];
 static uint64_t ctr(const char *b, const char *tmp) {   // 调被测函数，期间 stderr（LOG）进文件，读回 g_log
     char lp[1200]; snprintf(lp, sizeof lp, "%s/ctr.log", tmp);
     fflush(stderr); int keep = dup(2), fd = open(lp, O_WRONLY | O_CREAT | O_TRUNC, 0644); dup2(fd, 2); close(fd);
-    uint64_t r = s2a_window_container_need(b);
+    uint64_t r = s2a_window_container_need(b, g_home);
     fflush(stderr); dup2(keep, 2); close(keep);
     FILE *f = fopen(lp, "r"); size_t k = f ? fread(g_log, 1, sizeof g_log - 1, f) : 0; if (f) fclose(f); g_log[k] = 0;
     return r >> 20;
@@ -64,6 +67,7 @@ static unsigned long long single(const char *self, const char *dir) {   // 子�
 }
 // ⑥ 解包专用局（S2A_PACK_APPLY_ONLY=1）构造期不占窗口（解包局用不到客体内存；11-07「匿名窗口拖慢解包」的归因已证否，见 vawin.c）：子进程带 / 不带这个变量各起一次，
 //   读 s2a_window_ok 与窗口长度。期望：带 → 0 / 0；不带（对照）→ 窗口照占（1、长度 > 0）
+static int g_child_gc;   // 子进程里 GC 档位重选被调的次数
 static int winok(const char *self, const char *dir, int apply_only, unsigned long long *size_mb) {
     char out[1200]; snprintf(out, sizeof out, "%s/winok.txt", dir);
     posix_spawn_file_actions_t fa; posix_spawn_file_actions_init(&fa);
@@ -73,15 +77,16 @@ static int winok(const char *self, const char *dir, int apply_only, unsigned lon
     char *av[] = {(char *)self, (char *)dir, "winok", NULL}; pid_t p; int st = -1;
     if (posix_spawn(&p, self, &fa, NULL, av, environ) || waitpid(p, &st, 0) != p) st = -1;
     posix_spawn_file_actions_destroy(&fa); unsetenv("S2A_PACK_APPLY_ONLY");
-    FILE *f = fopen(out, "r"); int ok = -1; *size_mb = 0; if (!f || fscanf(f, "%d %llu", &ok, size_mb) != 2) ok = -1; if (f) fclose(f);
+    FILE *f = fopen(out, "r"); int ok = -1; *size_mb = 0; g_child_gc = -1; if (!f || fscanf(f, "%d %llu %d", &ok, size_mb, &g_child_gc) != 3) ok = -1; if (f) fclose(f);
     return ok;
 }
 int main(int argc, char **argv) {
-    if (argc == 3 && !strcmp(argv[2], "winok")) { uint64_t base, size; s2a_window_get(&base, &size); printf("%d %llu\n", s2a_window_ok(), (unsigned long long)(size >> 20)); return 0; }
+    if (argc == 3 && !strcmp(argv[2], "winok")) { uint64_t base, size; s2a_window_get(&base, &size); printf("%d %llu %d\n", s2a_window_ok(), (unsigned long long)(size >> 20), g_gc_reapply); return 0; }
     if (argc == 3 && !strcmp(argv[2], "child")) { uint64_t nd, fit; s2a_window_need(&nd, &fit); printf("%llu\n", (unsigned long long)(nd >> 20)); return 0; }
     unsetenv("S2A_WIN_NEED_MB"); unsetenv("S2A_VAWIN_NORESERVE"); unsetenv("S2A_VA_CAP_MB"); unsetenv("S2A_VA_IOS26");
     char tmp[] = "/tmp/t_vawin_container.XXXXXX"; if (!mkdtemp(tmp)) { printf("✗ mkdtemp\n"); return 1; }
     char b[1200], p[1300];
+    snprintf(g_home, sizeof g_home, "%s/nohome", tmp); mkdir(g_home, 0755);
     const char *A = "0100000000010000", *B = "0100000000020000", *C = "0100000000030000", *D = "0100000000040000";
     // ① 单款
     snprintf(b, sizeof b, "%s/s", tmp); bundle(b, (const char *[]){A, B}, (const int[]){0, 1}, 2);
@@ -93,7 +98,11 @@ int main(int argc, char **argv) {
     { unsigned long long sz_on = 0, sz_off = 0; snprintf(p, sizeof p, "%s/Games/%s", b, A);
       int on = winok(argv[0], p, 1, &sz_on), off = winok(argv[0], p, 0, &sz_off);
       printf("  解包专用局 窗口 %d / %llu MB；对照 %d / %llu MB\n", on, sz_on, off, sz_off);
-      ck(on == 0 && sz_on == 0 && off == 1 && sz_off > 0, "⑥ 解包专用局（S2A_PACK_APPLY_ONLY=1）构造期不占窗口；不带时照占（对照）"); }
+      int gc_off = g_child_gc;
+      ck(on == 0 && sz_on == 0 && off == 1 && sz_off > 0, "⑥ 解包专用局（S2A_PACK_APPLY_ONLY=1）构造期不占窗口；不带时照占（对照）");
+      // ⑨ 占下窗口后按占完的低区重选 GC 档位（诊断#f1e327：多款容器起宿主前补占窗口，档位仍是按整块空洞选的 10 GB 总上限档，.NET 初始化失败）：
+      //   补占 / 重占（s2a_window_reserve_late）与构造期走同一个占窗口函数，这里核那个函数占成功后调了 1 次重选
+      ck(gc_off == 1, "⑨ 占下窗口后调一次 GC 档位重选（补占 / 重占走同一处）"); }
     // ②
     uint64_t pool0 = s2a_app_pool(), r;
     snprintf(b, sizeof b, "%s/ab", tmp); bundle(b, (const char *[]){A, B}, (const int[]){0, 1}, 2);
@@ -117,7 +126,7 @@ int main(int argc, char **argv) {
     // ⑦ 学到的跨度在各款自己的文档根下（选游戏后 S2A_DOCS = Documents/games/<游戏号>，心跳写在那里）：构造期（S2A_DOCS 没设）要能读到。
     //   11-13 0400486024DEC000：原先按 Documents/wire/... 读、永远读不到，多款容器窗口下方一直只留 3 GB。期望按写进去的值手写
     { uint64_t s2a_window_span_learned(void); char home[1300], f[1500], *oh = getenv("HOME") ? strdup(getenv("HOME")) : NULL; unsetenv("S2A_DOCS");
-      snprintf(home, sizeof home, "%s/home", tmp); mkdir(home, 0755); setenv("HOME", home, 1);
+      snprintf(home, sizeof home, "%s/home", tmp); mkdir(home, 0755); setenv("HOME", home, 1); snprintf(g_home, sizeof g_home, "%s", home);
       snprintf(f, sizeof f, "%s/Documents", home); mkdir(f, 0755); snprintf(f, sizeof f, "%s/Documents/games", home); mkdir(f, 0755);
       snprintf(f, sizeof f, "%s/Documents/games/%s", home, B); mkdir(f, 0755); snprintf(f, sizeof f, "%s/Documents/games/%s/wire", home, B); mkdir(f, 0755);
       snprintf(f, sizeof f, "%s/Documents/games/%s/wire/%s", home, B, B); mkdir(f, 0755);
@@ -130,11 +139,43 @@ int main(int argc, char **argv) {
       snprintf(f, sizeof f, "%s/Documents/wire/%s/span_peak", home, A); put(f, "2000000000\n", 11);
       ctr(b, tmp);
       ck(s2a_window_span_learned() == 18446744073ull, "⑦ A 只有旧位置（单款包时代）的记录 2000000000 也认（不再按需求 32770 MB 算）：{A, B} 取最大 18446744073");
-      if (oh) { setenv("HOME", oh, 1); free(oh); } }
+      if (oh) { setenv("HOME", oh, 1); free(oh); } snprintf(g_home, sizeof g_home, "%s/nohome", tmp); }
+    // ⑧ 通用壳：程序只在程序包里（<家目录>/Library/Application Support/S2Arm/games/<号>/program/：catalogue.json + Games/<号>/ + 镜像包），App 包里没有这款。
+    //   构造期要把它算进来，且同一款两边都有时取程序包那份（与起局 s2a_launch_ctx_resolve_game 同一取法）。期望按 ① 的手算：D 75876、B 69944、A 32770
+    { char h8[1300], pg[1600], f[1800]; snprintf(h8, sizeof h8, "%s/h8", tmp); mkdir(h8, 0755);
+      snprintf(f, sizeof f, "%s/Documents", h8); mkdir(f, 0755);
+      const char *segs[] = {"Library", "Library/Application Support", "Library/Application Support/S2Arm", "Library/Application Support/S2Arm/games"};
+      for (int i = 0; i < 4; i++) { snprintf(f, sizeof f, "%s/%s", h8, segs[i]); mkdir(f, 0755); }
+      const char *pg_ids[2] = {D, B}; const int pg_kind[2] = {3, 0};   // 程序包：D（Switch 2 型）、B（但按 A 型出：验「两边都有取程序包」）
+      for (int i = 0; i < 2; i++) {
+          snprintf(pg, sizeof pg, "%s/Library/Application Support/S2Arm/games/%s", h8, pg_ids[i]); mkdir(pg, 0755);
+          snprintf(pg, sizeof pg, "%s/Library/Application Support/S2Arm/games/%s/program", h8, pg_ids[i]); mkdir(pg, 0755);
+          snprintf(f, sizeof f, "%s/Games", pg); mkdir(f, 0755);
+          snprintf(f, sizeof f, "%s/Games/%s", pg, pg_ids[i]);
+          if (pg_kind[i] == 3) game(f, 3, 0x1000, 1); else game(f, 3, 0, 0);
+          snprintf(f, sizeof f, "%s/S2AImages-%s.dylib", pg, pg_ids[i]); put(f, "x", 1);
+          char cj[400]; snprintf(cj, sizeof cj, "{\"title_id\":\"%s\",\"host_abi\":1,\"image\":\"S2AImages-%s.dylib\"}\n", pg_ids[i], pg_ids[i]);
+          snprintf(f, sizeof f, "%s/catalogue.json", pg); put(f, cj, strlen(cj)); }
+      snprintf(g_home, sizeof g_home, "%s", h8);
+      snprintf(b, sizeof b, "%s/a", tmp); r = ctr(b, tmp);   // App 包只有 A；程序包有 D、B(A 型)
+      printf("  容器 App{A} + 程序包{D, B} %llu MB\n", (unsigned long long)r);
+      ck(r == 75876 && strstr(g_log, "3 款取最大 75876 MB") && strstr(g_log, D), "⑧ 只在程序包里的款构造期也算：App{A} + 程序包{D, B} → 3 款取最大 75876 MB");
+      snprintf(b, sizeof b, "%s/b", tmp); r = ctr(b, tmp);   // App 包 B（69944）+ 程序包 B（按 A 型 32770）+ 程序包 D
+      ck(r == 75876 && strstr(g_log, "2 款取最大"), "⑧ 同一款 App 包和程序包都有只算一次（{B, D} 2 款）");
+      { char gb[1600]; snprintf(gb, sizeof gb, "%s/Library/Application Support/S2Arm/games/%s/program/catalogue.json", h8, D); unlink(gb); }   // 去掉 D 的程序包 → 只剩 B
+      r = ctr(b, tmp); char want[200]; snprintf(want, sizeof want, "多款容器 %s 要 32770 MB", B);
+      ck(r == 32770 && strstr(g_log, want), "⑧ 两边都有时取程序包那份：App 包里 B 是 69944 MB 型，程序包里 B 是 32770 MB 型 → 32770");
+      snprintf(b, sizeof b, "%s/nogames", tmp); mkdir(b, 0755); r = ctr(b, tmp);
+      ck(r == 32770 && !strstr(g_log, "读不了"), "⑧ App 包里没有 Games/ 目录（程序全挪出 App）也不报红，按程序包里的 B 算 32770 MB");
+      snprintf(g_home, sizeof g_home, "%s/nohome", tmp); }
     snprintf(b, sizeof b, "%s/empty", tmp); bundle(b, NULL, NULL, 0);
     ck(ctr(b, tmp) == 0 && strstr(g_log, "下没有游戏"), "④ 空 Games/：0、红行「下没有游戏」");
     snprintf(b, sizeof b, "%s/miss", tmp); bundle(b, (const char *[]){A, B}, (const int[]){0, 4}, 2);
-    ck(ctr(b, tmp) == 0 && strstr(g_log, "读不到 main.npdm"), "④ 某款缺 main.npdm：0、红行「读不到 main.npdm」");
+    // 通用壳（11-17）：程序没推到这台的款（App 包里没有 main.npdm、也没有程序包）构造期跳过、不拖累别的款：{A, B 缺 main.npdm} → 按 A 32770 MB；
+    //   全部款都没程序 → 0、红行「下没有游戏」。改前：整个容器 0、红行「读不到 main.npdm」
+    ck(ctr(b, tmp) == 32770 && strstr(g_log, "程序不在这台") && strstr(g_log, "1 款取最大 32770 MB"), "④ 某款缺 main.npdm（程序没推到）：跳过它，按其余款 32770 MB，黄行「程序不在这台」");
+    snprintf(b, sizeof b, "%s/missall", tmp); bundle(b, (const char *[]){B}, (const int[]){4}, 1);
+    ck(ctr(b, tmp) == 0 && strstr(g_log, "下没有游戏"), "④ 唯一一款也缺 main.npdm：0、红行「下没有游戏」");
     // ⑤ 只读偏移表（iOS 上 s2a_loader_span_images 用它取各款 x1 块长）
     snprintf(b, sizeof b, "%s/img", tmp); mkdir(b, 0755); game(b, 3, 0, 0);
     snprintf(p, sizeof p, "python3 ios/embed.py '%s' '%s/S2AImages.dylib' main >/dev/null", b, b);

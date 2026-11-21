@@ -15,6 +15,15 @@ namespace S2A.Services
     {
         // 苹果侧手柄 / 触屏输入源（苹果侧接）：填按键位（HidNpadButton 位序）与左右摇杆
         public static delegate*<ref GamepadInput, void> InputHook;
+        // 平台登记的手柄反馈入口（震动 / 六轴，runtime/include/s2a_pad.h 同名函数的地址，ControllerFeedback 用）：
+        //   安卓宿主库以 RTLD_LOCAL 载入，主程序句柄查不到它的导出（docs/架构_多终端.md：按名查导出的几处接核心时改成函数指针），
+        //   由平台装配在起服务前登记（android/core-runtime/AndroidGameRuntime.cs）；没登记的（iOS / Mac）全为 0，照旧按名查主程序导出
+        [StructLayout(LayoutKind.Sequential)]
+        public struct HostFeedback
+        {
+            public nint RumbleSession, SetRumblePair, StopRumble, SetMotionEnabled, ReadMotion;
+        }
+        public static HostFeedback Feedback;
         // Optional platform touch consumer, on this same HID owner thread.
         // Absent on Apple and other hosts; no second sampler or HID writer.
         public static Action<Switch> TouchHook;
@@ -349,7 +358,9 @@ namespace S2A.Services
             }
 
             // 主 App 的纯 C 查询不加载可选 BLE 模块；只有真实 READY 会话才创建反馈对象。
-            if (NativeLibrary.TryGetExport(NativeLibrary.GetMainProgramHandle(), "s2a_pad_rumble_session", out nint session))
+            if (Feedback.RumbleSession != 0)
+                _rumbleSession = (delegate* unmanaged<ulong>)Feedback.RumbleSession;   // 平台登记（安卓）
+            else if (NativeLibrary.TryGetExport(FeedbackProgram, "s2a_pad_rumble_session", out nint session))
                 _rumbleSession = (delegate* unmanaged<ulong>)session;
             // Mac 宿主只导出六轴、没有震动会话：反馈对象照建，只走六轴
             else _motionOnly = ControllerFeedback.MotionExport(out _);
@@ -472,6 +483,9 @@ namespace S2A.Services
         // 11-04 维护者定：宿主前端的 s2a_vpad_touch_configured（iOS ios/touch_config.m、Mac macos/front_mac.m）。游戏调了 SetTouchScreenConfiguration
         //   （Ryujinx 补丁 hid-touch-config-mode 记进 Hid.Touchscreen.ConfiguredMode，-1 = 没调过）后每次 HID 提交递一次模式：
         //   壳返回 0 = 还没出首帧，下次再递；返回 1 = 收下了（壳自动切仅触屏，玩家手动选过的不切），清空、之后不再递。只在 HID 线程上读写
+        // 震动导出所在的库：鸿蒙引擎是宿主 dlopen 进来的 .so，导出不在主程序里，由平台在起局时登记这个句柄；为 0 时按主程序查。
+        public static nint FeedbackLibraryHandle;
+        internal static nint FeedbackProgram => FeedbackLibraryHandle != 0 ? FeedbackLibraryHandle : NativeLibrary.GetMainProgramHandle();
         internal static delegate* unmanaged<int, int> VPadTouchConfigured;
         internal static void OfferTouchConfigured(int mode)
         {
@@ -809,6 +823,7 @@ namespace S2A.Services
                 // 本地多手柄：Mac 前端报告接了几只手柄就开到几格（最多 MaxPads），接上第二只手柄即成为玩家 2
                 int livePads = _vpadPadCount != null ? _vpadPadCount() : 0;
                 if (livePads > _pads && livePads <= MaxPads) SetPads(device, livePads);
+                device.System.S2ASetLocalMultiplayer(livePads >= 2);   // 实接 ≥ 2 只：游戏看到主机运行模式（两人模式要求 TV 模式的游戏）；变化时同真机插拔底座发通知
                 if (Environment.TickCount64 >= nextFollow) { FollowNow(device); nextFollow = Environment.TickCount64 + 250; }
 
                 GamepadInput input = new() { PlayerId = _player };
@@ -820,7 +835,7 @@ namespace S2A.Services
                 if (eventInput)
                 {
                     _padReadEx(&snapshot);
-                    if (OperatingSystem.IsIOS() && !_externalController && snapshot.Source is 1 or 2)
+                    if ((OperatingSystem.IsIOS() || OperatingSystem.IsTvOS()) && !_externalController && snapshot.Source is 1 or 2)   // 平台例外：tvOS 同 iOS 走触屏 / 手柄来源判断（Apple TV 一期，遥控器按触屏来源上报）
                     {
                         // 只在首次真实 BLE / 系统手柄出现时改配；断线或后台的触屏快照不撤销偏好。
                         _externalController = true;

@@ -165,6 +165,9 @@ if got:
 cap = library.DIAGNOSTIC_LOG_LIMIT + library.DIAGNOSTIC_LOG_BEATS + library.DIAGNOSTIC_LOG_SCENE + 4096
 ck("③ 电脑端单份日志上限留够余量、截后成品不会超收件单个成员上限", cap + library.DIAGNOSTIC_LOG_LIMIT // 4 <= contract["limits"]["member_bytes"],
    f"日志上限 {library.DIAGNOSTIC_LOG_LIMIT} + 中间段 {cap - library.DIAGNOSTIC_LOG_LIMIT} + 余量 {library.DIAGNOSTIC_LOG_LIMIT // 4} 对 member_bytes {contract['limits']['member_bytes']}")
+# 电脑端整包预算与收件整包上限的关系（期望手写：预算 + 1 MB 的 manifest / zip 目录余量 ≤ zip_bytes；预算放得太宽，整包又会被拒）
+ck("③b 电脑端诊断包整包预算留出 manifest 余量后不超收件整包上限", library.DIAGNOSTIC_ZIP_BUDGET + (1 << 20) <= contract["limits"]["zip_bytes"],
+   f"预算 {library.DIAGNOSTIC_ZIP_BUDGET} + 余量 {1 << 20} 对 zip_bytes {contract['limits']['zip_bytes']}")
 
 # ④ 安卓：DiagnosticBundlePolicy.validate 的允许名单（还没有上传端，不打包）：字面量全名 + 归档日志正则的两个样例，逐个过契约
 src = (H / "android/app/src/main/java/org/s2arm/android/DiagnosticBundlePolicy.java").read_text(encoding="utf-8")

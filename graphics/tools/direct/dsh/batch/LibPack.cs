@@ -19,7 +19,11 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
-static class LibPack
+/// <summary>按名取字节的表里，哪些名字其实是同一份字节（同一存储位置）：PackFiles 同一份只读一次、只算一次摘要。
+/// 出库侧（Side）的影子输入库 _bv 是整批共用一份批库字节、按键各挂一个名字；不认的话每个键都把整批读一遍、算一遍 SHA-256（#1331）</summary>
+interface ISharedBytes { string Ident(string name); }
+
+static partial class LibPack
 {
     /// <summary>Python 那边 sys.exit(文本) 的情形（ps_inputs.write 报红）</summary>
     public sealed class Exit : Exception { public Exit(string m) : base(m) { } }
@@ -111,7 +115,7 @@ static class LibPack
     // ---------------- lib_swap.py ----------------
     static readonly Regex KEY = new(@"\A([0-9a-f]{16})_b\.(metal|metallib|json)$", RegexOptions.CultureInvariant);
     /// <summary>lib_swap.LIBFILE：发布那一侧里属于库容器的文件（键文件 + 批库 u&lt;16 位&gt;.metallib）；含直通几何快路的 _bgs&lt;i&gt; / _bgc（11-06 漏收：Build.cs 编了、PackFiles 认了，发布这道过滤没收，金刚 kong_pt 包种类 64–97 为 0）</summary>
-    static readonly Regex LIBFILE = new(@"\A(?:[0-9a-f]{16}_(?:b\.metallib|b\.json|bf\.metallib|bv\.metallib|ft\.metallib|se\.metallib|b_t[0-2]\.metallib|bg\d+\.(?:metallib|json)|bgv\.(?:metallib|json)|bgs\d+\.(?:metallib|json)|bgc\.(?:metallib|json))|u[0-9a-f]{16}\.metallib)$", RegexOptions.CultureInvariant);
+    static readonly Regex LIBFILE = new(@"\A(?:[0-9a-f]{16}_(?:b\.metallib|b\.json|bf\.metallib|bv\.metallib|ft\.metallib|se\.metallib|vp\.metallib|bp\.metallib|b_t[0-2]\.metallib|bg\d+\.(?:metallib|json)|bgv\.(?:metallib|json)|bgs\d+\.(?:metallib|json)|bgc\.(?:metallib|json))|u[0-9a-f]{16}\.metallib)$", RegexOptions.CultureInvariant);
     public static bool IsLibFile(string name) => LIBFILE.IsMatch(name);
     public static readonly IReadOnlyDictionary<string, string> Sdk = new Dictionary<string, string> { ["ios"] = "iphoneos", ["mac"] = "macosx" };
 
@@ -219,19 +223,22 @@ static class LibPack
     // ---------------- lib_pack.py ----------------
     const int VER = 1, ALIGN = 16; const long SHARD_MAX = 64L << 20;   // 分片上限 64 MB（运行时按需映射，iOS 虚拟地址紧）
     static readonly byte[] MAGIC = Encoding.ASCII.GetBytes("S2ALIB\0\0");
-    static readonly Regex NAME = new(@"\A([0-9a-f]{16})_(b\.metallib|b\.json|b\.spv|bf\.metallib|bv\.metallib|ft\.metallib|se\.metallib|b_t([0-2])\.metallib|bg(\d+)\.(metallib|json)|bgv\.(metallib|json)|bgs(\d+)\.(metallib|json)|bgc\.(metallib|json))$", RegexOptions.CultureInvariant);
+    static readonly Regex NAME = new(@"\A([0-9a-f]{16})_(b\.metallib|b\.json|b\.spv|bf\.metallib|bv\.metallib|ft\.metallib|se\.metallib|vp\.metallib|bp\.metallib|b_t([0-2])\.metallib|bg(\d+)\.(metallib|json)|bgv\.(metallib|json)|bgs(\d+)\.(metallib|json)|bgc\.(metallib|json)|vg([0-4])\.(json|spv))$", RegexOptions.CultureInvariant);
     static readonly Regex VKFP = new(@"\A[0-9a-f]{16}\z", RegexOptions.CultureInvariant);
     const int K_SPV = 52;   // Vulkan 库的 _b.spv（#783）；0–51 是 Metal 的种类
+    const int K_VGJSON = 112, K_VGSPV = 120;   // Vulkan 库的原生几何阶段：_vg<t>.json 112+t / _vg<t>.spv 120+t（t = 输入图元 InputTopology 编号 0–4，安卓 Vulkan 导出的原生几何阶段）
+    static bool VkKind(int k) => k == 1 || k == K_SPV || (k >= K_VGJSON && k < K_VGJSON + 5) || (k >= K_VGSPV && k < K_VGSPV + 5);
     static readonly Regex CHAIN = new(@"\A[0-9a-z]{1,12}\z", RegexOptions.CultureInvariant);
     static readonly Regex KEYFILE = new(@"\A[0-9a-f]{16}_", RegexOptions.CultureInvariant);
     static readonly Regex BATCH = new(@"\Au[0-9a-f]{16}\z", RegexOptions.CultureInvariant);
 
-    /// <summary>种类号（lib_pack.kind）：0 _b.metallib 1 _b.json 2 _bf 3 _bv 4+d _b_t&lt;d&gt; 16+i _bg&lt;i&gt;.metallib 32+i _bg&lt;i&gt;.json 48/49 _bgv 50 _ft 51 _se 52 _b.spv（Vulkan 库）
-    /// 64+i _bgs&lt;i&gt;.metallib 80+i _bgs&lt;i&gt;.json 96/97 _bgc（直通几何快路：只算副作用的几何核、读抓顶点的主遍顶点变体）；i &gt; 15 → null</summary>
+    /// <summary>种类号（lib_pack.kind）：0 _b.metallib 1 _b.json 2 _bf 3 _bv 4+d _b_t&lt;d&gt; 16+i _bg&lt;i&gt;.metallib 32+i _bg&lt;i&gt;.json 48/49 _bgv 50 _ft 51 _se 52 _b.spv（Vulkan 库）54 _vp（顶点着色器的并集补齐变体）55 _bp（拉取式顶点输入变体）
+    /// 64+i _bgs&lt;i&gt;.metallib 80+i _bgs&lt;i&gt;.json 96/97 _bgc（直通几何快路：只算副作用的几何核、读抓顶点的主遍顶点变体）；i &gt; 15 → null
+    /// 112+t _vg&lt;t&gt;.json 120+t _vg&lt;t&gt;.spv（Vulkan 库的原生几何阶段，t = 输入图元 0–4）</summary>
     static int? Kind(Match m)
     {
         string s = m.Groups[2].Value;
-        switch (s) { case "b.metallib": return 0; case "b.json": return 1; case "bf.metallib": return 2; case "bv.metallib": return 3; case "ft.metallib": return 50; case "se.metallib": return 51; case "b.spv": return K_SPV; }
+        switch (s) { case "b.metallib": return 0; case "b.json": return 1; case "bf.metallib": return 2; case "bv.metallib": return 3; case "ft.metallib": return 50; case "se.metallib": return 51; case "vp.metallib": return 54; case "bp.metallib": return 55; case "b.spv": return K_SPV; }
         if (m.Groups[3].Success) return 4 + (m.Groups[3].Value[0] - '0');
         if (m.Groups[4].Success)
         {
@@ -244,6 +251,7 @@ static class LibPack
             return i > 15 ? null : (m.Groups[8].Value == "metallib" ? 64 : 80) + (int)i;
         }
         if (m.Groups[9].Success) return m.Groups[9].Value == "metallib" ? 96 : 97;
+        if (m.Groups[10].Success) return (m.Groups[11].Value == "json" ? K_VGJSON : K_VGSPV) + (m.Groups[10].Value[0] - '0');
         return m.Groups[6].Value == "metallib" ? 48 : 49;
     }
 
@@ -253,7 +261,10 @@ static class LibPack
     /// vkfp（#783 合入线 11-03 答 ①）：给了 = Vulkan 库，16 位小写十六进制的 Vulkan 侧指纹按 u64 写进头部 36–43（44–47 仍为 0），只收 _b.json / _b.spv；
     ///   不给 = Metal 库，头部 36–47 全 0、不收 _b.spv（与改前逐字节相同）
     /// </summary>
-    public static (List<string> Bad, string Line) PackFiles(IEnumerable<string> names, Func<string, byte[]> get, string d, string chain, string vkfp = null)
+    /// ident（可无）：名字 → 它那份字节的存储身份（同身份 = 同一份字节，见 ISharedBytes）；同身份的第二个起不再读、不再算摘要，直接指向第一个落的段。
+    ///   产物与不给 ident 逐字节相同（原先同字节的段也只存一次，只是每个都读一遍、算一遍才认出来）
+    /// guest（可无，只收 Metal 库）：客体输入块（GuestBlocks），每个键一条种类 56 记录、同块的键指向同一段
+    public static (List<string> Bad, string Line) PackFiles(IEnumerable<string> names, Func<string, byte[]> get, string d, string chain, string vkfp = null, Func<string, string> ident = null, Guest guest = null)
     {
         if (!CHAIN.IsMatch(chain)) return (new() { $"链版本 {chain} 不对（至多 12 位）" }, "");
         if (vkfp != null && !VKFP.IsMatch(vkfp)) return (new() { $"Vulkan 侧指纹 {vkfp} 不对（16 位小写十六进制）" }, "");
@@ -272,8 +283,16 @@ static class LibPack
             else if (KEYFILE.IsMatch(n)) bad.Add($"认不出的键文件：{n}");   // 不认识的按键文件不能悄悄留在包外
         }
         if (bad.Count > 0) return (bad, "");
-        if (vkfp == null && ents.Any(e => e.K == K_SPV)) return (new() { $"有 _b.spv（Vulkan 库的种类）却没给 Vulkan 侧指纹" }, "");
-        if (vkfp != null && ents.Any(e => e.K != K_SPV && e.K != 1)) return (new() { $"给了 Vulkan 侧指纹却混进了 Metal 段（如 {ents.First(e => e.K != K_SPV && e.K != 1).N}；Vulkan 库只收 _b.json / _b.spv）" }, "");
+        if (guest != null && vkfp != null) return (new() { "Vulkan 库不带客体输入（种类 56 只给 Metal 库）" }, "");
+        if (guest != null)   // 名字以 \0 起头（文件名里不会有）：取段 / 存储身份都按块号，同块的第二个键起不读、不算摘要（ident 分支）
+        {
+            foreach (var (key, blk) in guest.Keys) ents.Add((key, K_GUEST, "\0gi" + blk));
+            Func<string, byte[]> get0 = get; Func<string, string> ident0 = ident;
+            get = n => n[0] == '\0' ? guest.Blocks[int.Parse(n[3..])] : get0(n);
+            ident = n => n[0] == '\0' ? n : ident0?.Invoke(n);
+        }
+        if (vkfp == null && ents.Any(e => e.K != 1 && VkKind(e.K))) return (new() { $"有 {ents.First(e => e.K != 1 && VkKind(e.K)).N}（Vulkan 库的种类）却没给 Vulkan 侧指纹" }, "");
+        if (vkfp != null && ents.Any(e => !VkKind(e.K))) return (new() { $"给了 Vulkan 侧指纹却混进了 Metal 段（如 {ents.First(e => !VkKind(e.K)).N}；Vulkan 库只收 _b.json / _b.spv / _vg<t>.json / _vg<t>.spv）" }, "");
         if (ents.Count == 0) return (new() { $"{d} 一个键文件都没有" }, "");
         // A network's layers must all execute, or all use the old stand-in. Per-key opt-in would
         // mix newly translated missing keys with old packaged scalar layers and read unwritten buffers.
@@ -326,6 +345,7 @@ static class LibPack
         var recs = new List<(ulong Key, int K, int S, uint Len, ulong Off)>(); var shards = new List<string>();
         var digest = new Dictionary<(ulong, int), string>(); var libDigest = new Dictionary<string, string>();
         var same = new Dictionary<string, (int S, long Off, long Len)>(); var put = new Dictionary<string, (int S, long Off, long Len)>();
+        var byId = new Dictionary<string, (int S, long Off, long Len, string H)>(StringComparer.Ordinal);   // 存储身份 → 已落的段与摘要（ident）
         FileStream cur = null; int sh = -1, dup = 0; bool ok = false; string idxTmp = Path.Combine(d, "lib.idx.tmp");
         var sizes = new List<long>(); byte[] idx = null;
         try
@@ -335,6 +355,9 @@ static class LibPack
                 src.TryGetValue(n, out var sn);
                 if (sn != null && put.TryGetValue(sn, out var p0))   // 同一批库已写过：指向那一段
                 { recs.Add((key, k, p0.S, (uint)p0.Len, (ulong)p0.Off)); digest[(key, k)] = libDigest[sn]; continue; }
+                var id = sn == null ? ident?.Invoke(n) : null;
+                if (id != null && byId.TryGetValue(id, out var i0))   // 同一份字节已落过（批共用的 _bv）：不读、不算，指向那一段；同下面字节相同的段，计进「只存一次」
+                { recs.Add((key, k, i0.S, (uint)i0.Len, (ulong)i0.Off)); digest[(key, k)] = i0.H; if (k != K_GUEST) dup++; continue; }   // 客体输入同块的键本来就共用一段，不计「字节相同」
                 var b = get(sn ?? n);
                 if (b == null) return (new() { $"取不到 {sn ?? n}" }, "");
                 string h = Convert.ToHexString(SHA256.HashData(b));
@@ -342,6 +365,7 @@ static class LibPack
                 {
                     recs.Add((key, k, s0.S, (uint)s0.Len, (ulong)s0.Off)); digest[(key, k)] = h; dup++;
                     if (sn != null) { put[sn] = s0; libDigest[sn] = h; }
+                    if (id != null) byId[id] = (s0.S, s0.Off, s0.Len, h);
                     continue;
                 }
                 if (cur == null || (cur.Position != 0 && cur.Position + b.Length > SHARD_MAX))
@@ -353,6 +377,7 @@ static class LibPack
                 long off = cur.Position;
                 recs.Add((key, k, sh, (uint)b.Length, (ulong)off)); digest[(key, k)] = h; same[h] = (sh, off, b.Length);
                 if (sn != null) { put[sn] = (sh, off, b.Length); libDigest[sn] = h; }
+                if (id != null) byId[id] = (sh, off, b.Length, h);
                 cur.Write(b);
             }
             sizes.Add(cur.Position); cur.Dispose(); cur = null;
@@ -394,10 +419,62 @@ static class LibPack
         foreach (var p in shards) File.Move(p, p[..^4], true);
         File.Move(idxTmp, Path.Combine(d, "lib.idx"), true);
         int nk = ents.Select(e => e.Key).Distinct().Count();
-        return (new(), $"[直连库] 打包：{nk} 键 {recs.Count} 段（其中 {src.Count} 个键的 _b 库来自 {put.Count} 个批库；另有 {dup} 段与已存的段字节相同、只存一次）→ {shards.Count} 个分片 {Fmt(sizes.Sum(), 1048576, 1)} MB + lib.idx {Fmt(idx.Length, 1024, 0)} KB（回读逐段相符）");
+        string gl = guest == null ? "" : $"；客体输入 {guest.Keys.Count} 键 {guest.Blocks.Count} 块（原样 {Fmt(guest.Raw, 1048576, 1)} MB → {Fmt(guest.Packed, 1048576, 1)} MB）";
+        return (new(), $"[直连库] 打包：{nk} 键 {recs.Count} 段（其中 {src.Count} 个键的 _b 库来自 {put.Count} 个批库；另有 {dup} 段与已存的段字节相同、只存一次）→ {shards.Count} 个分片 {Fmt(sizes.Sum(), 1048576, 1)} MB + lib.idx {Fmt(idx.Length, 1024, 0)} KB（回读逐段相符）{gl}");
     }
     static void W32(Span<byte> w, int o, uint v) => System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(w[o..], v);
     static void W64(Span<byte> w, int o, ulong v) => System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(w[o..], v);
+
+    // ---------------- 客体输入（种类 56，宿主 graphics/nvn/lib_pack.inc lp_guest_get） ----------------
+    //   出包时交给翻译器的那份输入（包记录切出的控制段 + 代码区，PkgRead.Split）随库带：设备上要给库里的着色器现做补齐 / 采样模拟变体、宿主自跑任务阶段时，
+    //   要先在本机翻一份基础源码，原先靠 SetShaders 时拷下的快照（游戏之后会回收控制段），快照表有上限、满了之后的键变体做不出、绘制跳过。
+    //   带的阶段（宿主 dsh_miss.inc 里只有这三处要客体输入）：顶点 / 网格（补齐变体 dm_shader_vpad_cached）、片元 / 计算（采样模拟变体 dm_shader_se_cached）、
+    //   任务 / 网格（宿主自跑任务阶段 dm_shader_base_cached）。外壳 / 域 / 几何没有设备侧变体，不带。
+    //   段格式：u32 解压后长度、u32 0、zlib（RFC 1950）流；解出的块：u32 条数 n（1–16）、u8 阶段（dsh_stage 编号：0 顶点 1 片元 2 计算 4 任务 5 网格）、u8 版本 1、u16 0，
+    //   n × 24 字节 {u64 键; u32 块内偏移; u32 控制段长; u32 代码长; u32 0}（按键升序），之后是各条的控制段紧接代码区。同阶段按键排好每 16 条一块
+    //   （逐条压太大：Ori 2 原样 313 MB → 逐条 111 MB、16 条一块 66.6 MB）；lib.idx 每个键一条种类 56 记录，同块的键指向同一段
+    internal const int K_GUEST = 56, GUEST_PER_BLOCK = 16;
+    /// <summary>包名前两字 → 块里的阶段号（宿主 dsh_stage 的编号）；不在表里的阶段不带</summary>
+    public static readonly IReadOnlyDictionary<string, byte> GuestStage = new Dictionary<string, byte> { ["vs"] = 0, ["ps"] = 1, ["cs"] = 2, ["ts"] = 4, ["ms"] = 5 };
+    public sealed class Guest
+    {
+        public readonly List<(ulong Key, int Block)> Keys = new(); public readonly List<byte[]> Blocks = new(); public long Raw;
+        public long Packed => Blocks.Sum(b => (long)b.Length);
+    }
+    /// <summary>客体输入 → 压好的块。items：(键, 阶段号, 取 (控制段, 代码区))，取在并发的工作线程里按块调（不先把全部输入读进内存）。同一个键给两次抛 ArgumentException</summary>
+    public static Guest GuestBlocks(IEnumerable<(ulong Key, byte Stage, Func<(byte[] Ctl, byte[] Code)> Load)> items)
+    {
+        var all = items.ToList(); var g = new Guest();
+        if (all.Select(x => x.Key).Distinct().Count() != all.Count) throw new ArgumentException("客体输入里同一个键出现两次");
+        var chunks = new List<(byte St, List<(ulong Key, byte Stage, Func<(byte[] Ctl, byte[] Code)> Load)> L)>();
+        foreach (var grp in all.GroupBy(x => x.Stage).OrderBy(x => x.Key))
+        {
+            var l = grp.OrderBy(x => x.Key).ToList();
+            for (int i = 0; i < l.Count; i += GUEST_PER_BLOCK) chunks.Add((grp.Key, l.GetRange(i, Math.Min(GUEST_PER_BLOCK, l.Count - i))));
+        }
+        var blocks = new byte[chunks.Count][]; var raw = new long[chunks.Count];
+        System.Threading.Tasks.Parallel.For(0, chunks.Count, i => (blocks[i], raw[i]) = GuestBlock(chunks[i].St, chunks[i].L.Select(x => (x.Key, x.Load())).ToList()));
+        for (int i = 0; i < chunks.Count; i++) { g.Blocks.Add(blocks[i]); g.Raw += raw[i]; foreach (var x in chunks[i].L) g.Keys.Add((x.Key, i)); }
+        return g;
+    }
+    static (byte[] Seg, long Raw) GuestBlock(byte st, List<(ulong Key, (byte[] Ctl, byte[] Code) In)> l)
+    {
+        int head = 8 + 24 * l.Count; long n = head + l.Sum(x => (long)x.In.Ctl.Length + x.In.Code.Length);
+        if (n > int.MaxValue) throw new ArgumentException($"客体输入一块 {n} 字节，超出一段的上限");
+        var b = new byte[n]; var w = b.AsSpan();
+        W32(w, 0, (uint)l.Count); w[4] = st; w[5] = 1;
+        int at = head;
+        for (int i = 0; i < l.Count; i++)
+        {
+            var (key, (ctl, code)) = l[i]; int o = 8 + 24 * i;
+            W64(w, o, key); W32(w, o + 8, (uint)at); W32(w, o + 12, (uint)ctl.Length); W32(w, o + 16, (uint)code.Length);
+            ctl.CopyTo(w[at..]); at += ctl.Length; code.CopyTo(w[at..]); at += code.Length;
+        }
+        var ms = new MemoryStream(); ms.Write(new byte[8]);
+        using (var z = new System.IO.Compression.ZLibStream(ms, System.IO.Compression.CompressionLevel.Optimal, true)) z.Write(b);
+        var seg = ms.ToArray(); W32(seg, 0, (uint)b.Length);
+        return (seg, b.Length);
+    }
 
     // ---------------- ps_inputs.py ----------------
     const string PS_HEAD = "# 片元键\t它读的 user(locn) 位置（逗号分隔，可空）\n";
@@ -432,7 +509,8 @@ static class LibPack
     /// 与 Python 唯一的有意不同：publish = ios 而 ios 为 null 时 Python 在 _pub.names() 上 AttributeError 崩掉，这里照常返回红行
     /// </summary>
     /// sourcesDone：ps_inputs 表写完（Mac 侧源码 *.metal 最后一次被读）、打容器之前调，整份出库借它放掉源码那份（v0.2.4 出包空间），所以 ps_inputs 在打容器之前做
-    public static string Publish(IReadOnlyDictionary<string, byte[]> mac, IReadOnlyDictionary<string, byte[]> ios, bool noMac, string publish, string iosOut, string chain, TextWriter log, Action sourcesDone = null)
+    /// guest：客体输入块（种类 56，GuestBlocks），随发布侧容器一起打（可无）
+    public static string Publish(IReadOnlyDictionary<string, byte[]> mac, IReadOnlyDictionary<string, byte[]> ios, bool noMac, string publish, string iosOut, string chain, TextWriter log, Action sourcesDone = null, Guest guest = null)
     {
         var noLib = NoLibKeys(publish == "mac" ? mac : ios ?? mac);
         var bad = CheckNames(mac.Keys, ios?.Keys, noMac, log, noLib);
@@ -449,7 +527,7 @@ static class LibPack
         try { nps = PsInputsWrite(items, Path.Combine(top, "ps_inputs.tsv")); } catch (Exit e) { return e.Message; }
         sourcesDone?.Invoke();
         string line;
-        (bad, line) = PackFiles(pub.Keys.Where(IsLibFile).ToList(), n => pub.TryGetValue(n, out var b) ? b : null, iosOut, chain);
+        (bad, line) = PackFiles(pub.Keys.Where(IsLibFile).ToList(), n => pub.TryGetValue(n, out var b) ? b : null, iosOut, chain, ident: pub is ISharedBytes sb ? sb.Ident : null, guest: guest);
         if (bad.Count > 0) return string.Join("\n", bad.Take(20).Select(b => $"[RED] {b}"));
         log.WriteLine(line);
         log.WriteLine($"ps_inputs.tsv: {nps} pixel shaders");
@@ -471,6 +549,7 @@ static class LibPack
     //   dsh_batch --libpack pack <输入目录> <输出目录> <链号> [<Vulkan 侧指纹>]：只打容器（PackFiles，不核两侧齐全、不核 -sdk、不出 ps_inputs / keys.tsv）：输入目录里的文件全部交给 PackFiles；
     //     给了指纹 = Vulkan 库（#783，t_lib_pack_vk.py）
     //     （认不出的按键文件照样报红），lib.NNN.pak + lib.idx 写进输出目录（不在就建）；汇总行进标准输出，报红进标准错误、退出 1。单测造容器用（t_lib_pack.py、graphics/nvn/tests/t_nvn_red.m）
+    //     输入目录下有 guest/ 子目录时，其中 <键>.<阶段号>.ctl / .code 成对作客体输入（种类 56，GuestBlocks）一起打进去（t_lib_guest.py）
     // ---------------- 覆盖层（S 级升级给老包补可读瓦片版，宿主 lib_pack.inc lp_pick 读 <库目录>/bf/）----------------
     /// <summary>读一份容器（lib.idx + lib.NNN.pak）：(键, 种类) → 段字节（按需读）</summary>
     sealed class Packed
@@ -558,11 +637,21 @@ static class LibPack
             var so2 = Console.OpenStandardOutput(); var sb2 = Utf8Out.GetBytes(ol + "\n"); so2.Write(sb2); so2.Flush();
             return 0;
         }
+        if (argv.Length == 2 && argv[0] == "ident-test") return IdentTest(argv[1]);   // 单测：PackFiles 的 ident 分支（#1331，t_lib_pack_ident.py）
         if ((argv.Length == 4 || argv.Length == 5) && argv[0] == "pack")
         {
             var names = Directory.EnumerateFiles(argv[1]).Select(Path.GetFileName).ToList();
             Directory.CreateDirectory(argv[2]);
-            var (pb, pl) = PackFiles(names, n => File.Exists(Path.Combine(argv[1], n)) ? File.ReadAllBytes(Path.Combine(argv[1], n)) : null, argv[2], argv[3], argv.Length == 5 ? argv[4] : null);
+            // <输入目录>/guest/<16 位十六进制键>.<阶段号>.ctl + .code：客体输入（种类 56，t_lib_guest.py 造容器用）
+            string gd = Path.Combine(argv[1], "guest"); Guest guest = null; List<string> pb = null; string pl = "";
+            try
+            {
+                if (Directory.Exists(gd))
+                    guest = GuestBlocks(Directory.EnumerateFiles(gd, "*.ctl").Select(f => Path.GetFileName(f).Split('.')).Select(c =>
+                        (Convert.ToUInt64(c[0], 16), byte.Parse(c[1]), (Func<(byte[], byte[])>)(() => (File.ReadAllBytes(Path.Combine(gd, $"{c[0]}.{c[1]}.ctl")), File.ReadAllBytes(Path.Combine(gd, $"{c[0]}.{c[1]}.code")))))));
+            }
+            catch (Exception x) when (x is ArgumentException || x is AggregateException || x is IOException) { pb = new() { $"客体输入：{x.GetBaseException().Message}" }; }
+            if (pb == null) (pb, pl) = PackFiles(names, n => File.Exists(Path.Combine(argv[1], n)) ? File.ReadAllBytes(Path.Combine(argv[1], n)) : null, argv[2], argv[3], argv.Length == 5 ? argv[4] : null, guest: guest);
             if (pb.Count > 0) { var pe = Console.OpenStandardError(); var pbs = Utf8Out.GetBytes(string.Join("\n", pb.Select(b => $"[RED] {b}")) + "\n"); pe.Write(pbs); pe.Flush(); return 1; }
             var so = Console.OpenStandardOutput(); var sb = Utf8Out.GetBytes(pl + "\n"); so.Write(sb); so.Flush();
             return 0;
@@ -583,4 +672,55 @@ static class LibPack
         var e = Console.OpenStandardError(); var eb = Utf8Out.GetBytes(err + "\n"); e.Write(eb); e.Flush();
         return 1;
     }
+
+    /// <summary>单测（#1331）：PackFiles 给 ident 时，同身份的第二个起不读、不算摘要，产物与 ident=null 逐字节相同。
+    /// 两组输入：① 手给 ident（三名同身份 A、一名字节相同但身份 B、一名别的字节 C）；② 真 Side（同一数组 Put 两名 + Alias 一名、等值新数组一名、别的字节一名），身份来自 Side.Ident。
+    /// 每组各打两次（ident=null / 给 ident）进 &lt;tmp&gt; 下的两个目录，期望（不调被测实现就能算出）：
+    ///   两目录文件清单与每个文件字节相同、汇总行相同；给 ident 时同身份那份 get 合计 1 次，其余每名 1 次；ident=null 时每名各 1 次（判据有分辨力）</summary>
+    static int IdentTest(string tmp)
+    {
+        int fails = 0;
+        void Check(bool ok, string msg) { Console.Out.WriteLine((ok ? "  ✓ " : "  ✗ ") + msg); Console.Out.Flush(); if (!ok) fails++; }
+        string[] keys = { "0000000000000001", "0000000000000002", "0000000000000003", "0000000000000004", "0000000000000005" };
+        string[] names = keys.Select(k => k + "_bv.metallib").ToArray();
+        var x = new byte[200_000]; new Random(1331).NextBytes(x);
+        var y = new byte[70_000]; new Random(1332).NextBytes(y);
+
+        (Dictionary<string, byte[]> Files, string Line, Dictionary<string, int> Gets) Run(string dir, Func<string, byte[]> get, Func<string, string> ident)
+        {
+            Directory.CreateDirectory(dir);
+            var gets = new Dictionary<string, int>();
+            var (bad, line) = PackFiles(names, n => { gets[n] = gets.GetValueOrDefault(n) + 1; return get(n); }, dir, "0a7dae3c1e7b", null, ident);
+            if (bad.Count > 0) Console.Out.WriteLine("  [RED] " + string.Join(" / ", bad));
+            var files = Directory.EnumerateFiles(dir).ToDictionary(Path.GetFileName, File.ReadAllBytes);
+            return (files, line, gets);
+        }
+        bool SameFiles(Dictionary<string, byte[]> a, Dictionary<string, byte[]> b) =>
+            a.Count > 0 && a.Keys.OrderBy(k => k, StringComparer.Ordinal).SequenceEqual(b.Keys.OrderBy(k => k, StringComparer.Ordinal)) && a.All(kv => b[kv.Key].AsSpan().SequenceEqual(kv.Value));
+        string Counts(Dictionary<string, int> g) => string.Join(" ", names.Select(n => $"{n[15]}:{g.GetValueOrDefault(n)}"));
+        void Case(string label, Func<string, byte[]> get, Func<string, string> ident, string[] groupA)
+        {
+            var plain = Run(Path.Combine(tmp, label + "-null"), get, null);
+            var withId = Run(Path.Combine(tmp, label + "-ident"), get, ident);
+            Check(SameFiles(plain.Files, withId.Files), $"{label}：给 ident 与 ident=null 的产物逐字节相同（{string.Join(",", plain.Files.Keys.OrderBy(k => k, StringComparer.Ordinal))}）");
+            Check(plain.Line == withId.Line && plain.Line.Length > 0, $"{label}：汇总行相同（{withId.Line}）");
+            Check(names.All(n => plain.Gets.GetValueOrDefault(n) == 1), $"{label}：ident=null 每名各读 1 次（{Counts(plain.Gets)}）");
+            Check(groupA.Sum(n => withId.Gets.GetValueOrDefault(n)) == 1, $"{label}：同身份 {groupA.Length} 名合计读 1 次（{Counts(withId.Gets)}）");
+            Check(names.Except(groupA).All(n => withId.Gets.GetValueOrDefault(n) == 1), $"{label}：其余每名各读 1 次（字节相同但身份不同的照旧读、靠摘要只存一次）");
+        }
+
+        // ① 手给 ident
+        var bytes = new Dictionary<string, byte[]> { [names[0]] = x, [names[1]] = x, [names[2]] = x, [names[3]] = x.ToArray(), [names[4]] = y };
+        var ids = new Dictionary<string, string> { [names[0]] = "A", [names[1]] = "A", [names[2]] = "A", [names[3]] = "B", [names[4]] = "C" };
+        Case("stub", n => bytes.TryGetValue(n, out var b) ? b.ToArray() : null, n => ids.GetValueOrDefault(n), names[..3]);
+
+        // ② 真 Side：在 Build.cs（SideIdentCases）。出包 Vulkan 独立入口工程只编本文件、不编 Build.cs，那边这一段由编译器略去（分部方法没有实现）
+        SideIdentCases(tmp, names, x, y, Check, Case);
+
+        Console.Out.WriteLine(fails == 0 ? "ident-test: ok" : $"ident-test: {fails} 处不符");
+        return fails == 0 ? 0 : 1;
+    }
+
+    /// <summary>IdentTest 第 ② 组（真 Side 的 Ident），实现在 Build.cs（Side 定义在那里）；只编 LibPack.cs 的工程里没有实现，调用整句略去</summary>
+    static partial void SideIdentCases(string tmp, string[] names, byte[] x, byte[] y, Action<bool, string> check, Action<string, Func<string, byte[]>, Func<string, string>, string[]> @case);
 }

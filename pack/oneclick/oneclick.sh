@@ -17,8 +17,8 @@
 #   ios（缺省）：iPhone / iPad 同一个 IPA，平台段 = ipa.sh；
 #   mac：只出 Mac 能跑的私有产物根（刷新按 S2A_PACK_PLAT=macos，直连库出 Mac 侧；不起宽屏自动出表），跳过 ④ 出包（iOS 编译 / 签名 / 资源包）与 ⑤ 交付；
 #     最后一行打出产物根，Mac 局 S2A_IN=<它>（原 --mac 并进来，不另留入口）；
-#   android / ohos：开发中，出不了能玩的包——开跑前就报红、退出 3，不白跑公共阶段（安卓现有入口 android 只出诊断 APK、运行时还跑不了完整游戏；
-#     鸿蒙只有原生层目标文件 runtime/ohos，没有 HAP 打包）。不认得的目标 → 报红、退出 2
+#   android：出单游戏 APK + 资源包（pack/targets/android/package.py；S2A_ANDROID_ENGINE 给了预编引擎目录就组装、不跑 Gradle），--install-serial 接着装机；
+#   ohos：开发中，开跑前就报红、退出 3（鸿蒙只有原生层目标文件 runtime/ohos，没有 HAP 打包）。不认得的目标 → 报红、退出 2
 # --device <UDID|设备名>（ios 目标，10-27 R13）：着色器的管线归档与函数体动态库按「目标 GPU 架构 × 系统大版本」出，对不上的设备整份不命中。
 #   出包缺省按三种模式（pack/jobs/archs.py）：1. 显式 S2A_PSO_ARCHS > 2. S2A_PSO_ARCHS_ALL=1 全机型 > 3. 我方真机集合（pack/our_devices.tsv）。
 #   本参数只在目标设备架构**不在**我方集合内时才 export 单架构（在集合内不动，保住 Duo 覆盖与阶段键）；
@@ -247,7 +247,7 @@ if [ -n "$FX" ]; then
   #   目录取盘点身份（graphics/nvn/tools/romfs_list.py：相对路径 + 大小 + 修改时间纳秒，只 lstat、不读内容，27 万文件也只是盘点一遍），没有的记「-」
   KA=$(cd "$FX" && "$PY" -c 'import os, sys; sys.path.insert(0, sys.argv[1]); import romfs_list
 for d in sys.argv[2:]:
-    i = romfs_list.scan(d).identity if os.path.isdir(d) else "-"
+    i = romfs_list.scan(d).identity if romfs_list.is_dir(d) else "-"   # is_dir：romfs/ 不在、只有镜像 romfs.std 时盘点镜像（身份随镜像换而换）
     if i is None: sys.exit(1)
     print(d, i)' "$P/../graphics/nvn/tools" romfs aoc && { [ ! -f aoc.tsv ] || shasum -a 256 < aoc.tsv; }) || die "盘点不了 $FX 的 romfs/ 或 aoc/"
   K=$( { cat "$FX/unpack.tsv"; echo "$KM"; echo "$KA"; } | shasum -a 256 | cut -c1-16); X=$FX
@@ -314,6 +314,7 @@ if [ "$TGT" = android ]; then
   [ -f "$APK" ] && [ -f "$RES/manifest.json" ] && [ -f "$ART" ] || die "Android 交付不完整"
   if [ -n "$INSTALL_SERIAL" ]; then
     lap 安装与导入
+    t "   装到手机 ${INSTALL_SERIAL}：手机上弹出安装确认（如「未经安全检测」）时，勾选并点「继续安装」；同款旧包签名不同时要先在手机上卸载"
     "$PY" "$P/../android/tools/deploy_game.py" --apk "$APK" --resources "$RES" --serial "$INSTALL_SERIAL" --no-start > "$OUT/logs/android-install.log" 2>&1 || die "设备安装或导入失败（$OUT/logs/android-install.log）：$(tail -1 "$OUT/logs/android-install.log" | cut -c1-300)"
   fi
   lap; t "🟢 完成：$APK + $RES + $ART$(root_aoc_note "$(root_cur "$G")")${AW:+；$AW}"

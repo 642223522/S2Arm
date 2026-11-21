@@ -94,6 +94,11 @@ int main(void) {
     { uint64_t g = G + 0x240; uint32_t st; *(uint64_t *)(h0 + 0x240) = 1; *(uint64_t *)(h0 + 0x248) = 2;
       __asm__ volatile("1: ldxp x8, x9, [%1]\n add x8, x8, #10\n add x9, x9, #20\n stxp %w0, x8, x9, [%1]\n cbnz %w0, 1b" : "=&r"(st) : "r"(g) : "x8", "x9", "memory");
       EQ("独占对 前半 1 → 11", 11, *(uint64_t *)(h0 + 0x240)); EQ("独占对 后半 2 → 22", 22, *(uint64_t *)(h0 + 0x248)); }
+    // 写独占对的第二个寄存器是 xzr（stlxp w8, x21, xzr, [x28]：一款游戏在远端清一个 16 字节槽的后半，玩家诊断三份因此 SIGSEGV）：前半写值、后半写 0
+    { uint64_t g = G + 0x250; uint32_t st; *(uint64_t *)(h0 + 0x250) = 5; *(uint64_t *)(h0 + 0x258) = 6;
+      g_refused = 0;   // 不认这一形的旧代码会拒绝代执行：跳回这里报红，不在独占循环里重试挂死
+      if (!sigsetjmp(g_jb, 1)) __asm__ volatile("1: ldaxp x8, x9, [%1]\n add x8, x8, #1\n stlxp %w0, x8, xzr, [%1]\n cbnz %w0, 1b" : "=&r"(st) : "r"(g) : "x8", "x9", "memory");
+      EQ("写独占对带 xzr：不拒绝", 0, g_refused); EQ("写独占对带 xzr 前半 5 → 6", 6, *(uint64_t *)(h0 + 0x250)); EQ("写独占对带 xzr 后半写成 0", 0, *(uint64_t *)(h0 + 0x258)); }
     // SDK 内存函数族（s2a_far_bind）：G 起两块已分（[G, +32K) 与 [G+2M−16K, G+2M+16K)，两块影子不相邻）
     { void *(*mc)(void *, const void *, size_t) = (void *)s2a_far_bind("memcpy", 1), *(*ms)(void *, int, size_t) = (void *)s2a_far_bind("memset", 1),
            *(*mm)(void *, const void *, size_t) = (void *)s2a_far_bind("memmove", 1);
@@ -224,18 +229,49 @@ int main(void) {
         //   再碰 5 次远端（5 次读，各缺页一次），等 2.2 秒；截到的日志里恰有一行，缺页 5、代执行 5
         setenv("S2A_FAR_LINEAR", "1", 1); s2a_far_set(G, G + SPAN, (uint64_t)shadow, (uint64_t)shadow + SH);
         EQ("逐秒账：给页", 0, s2a_far_map(G, 0x4000));
-        usleep(1200000);
+        // 按结算进度等，不按墙钟对齐秒边界：先等前面的缺页都记完账再截日志，读完 5 次再等这 5 次记完账（30 秒兜底）
+        uint64_t s2a_far_tick_seen(void), s2a_far_faults_total(void);
+        for (int i = 0; i < 3000 && s2a_far_tick_seen() != s2a_far_faults_total(); i++) usleep(10000);
         char tp[] = "/tmp/t_far_tick.XXXXXX"; int tf = mkstemp(tp), save = dup(g_s2a_logfd);
         dup2(tf, g_s2a_logfd);
+        uint64_t f0 = s2a_far_faults_total();
         for (int i = 0; i < 5; i++) (void)*(volatile uint8_t *)(uintptr_t)(G + 0x100 + (uint64_t)i);
-        usleep(2200000);
+        for (int i = 0; i < 3000 && s2a_far_tick_seen() < f0 + 5; i++) usleep(10000);
+        { uint64_t s2a_far_tick_n(void), n0 = s2a_far_tick_n(); for (int i = 0; i < 3000 && s2a_far_tick_n() < n0 + 2; i++) usleep(10000); }   // 再醒两次：窗口里必有没碰远端的一秒，验「不出行」
         dup2(save, g_s2a_logfd); close(save);
         char buf[4096] = {0}; lseek(tf, 0, SEEK_SET); ssize_t rn = read(tf, buf, sizeof buf - 1); close(tf); unlink(tp); (void)rn;
-        int lines = 0; for (const char *q = buf; (q = strstr(q, "远端每秒")); q++) lines++;
-        EQ("逐秒账：恰一行", 1, lines);
-        EQ("逐秒账：缺页 5、代执行 5", 1, strstr(buf, "缺页 5、代执行 5、") != NULL);
-        if (lines != 1 || !strstr(buf, "缺页 5、代执行 5、")) printf("  截到：%s\n", buf);
+        // 判各行合计（5 次读可能跨两秒记成两行，那是对的）：至少一行、缺页合计 5、代执行合计 5
+        int lines = 0, zero = 0; unsigned long long sf = 0, se = 0;
+        for (const char *q = buf; (q = strstr(q, "远端每秒")); q++) { unsigned long long sec_, a_, b_; const char *r = strstr(q, "秒：缺页 ");
+            if (r && sscanf(r, "秒：缺页 %llu、代执行 %llu", &a_, &b_) == 2) { sf += a_; se += b_; zero += a_ == 0; } (void)sec_; lines++; }
+        EQ("逐秒账：至少一行", 1, lines >= 1);
+        EQ("逐秒账：缺页合计 5、代执行合计 5", 1, sf == 5 && se == 5);
+        EQ("逐秒账：没碰远端的秒不出行（每行缺页 ≥ 1）", 0, zero);
+        if (lines < 1 || sf != 5 || se != 5) printf("  截到（%d 行、缺页 %llu、代执行 %llu）：%s\n", lines, sf, se, buf);
         EQ("逐秒账退休", 0, s2a_far_session_reset()); }
+    {   // 即时存档：远端按游戏地址存 / 取。存完复位、换一块影子区重开（模拟新进程 / 新版本里影子落在别处），取回后经游戏地址读内容与权限
+        int s2a_snap_far_save(FILE *), s2a_snap_far_load(FILE *);
+        setenv("S2A_FAR_LINEAR", "0", 1);
+        uint8_t *s1raw = mmap(NULL, SH + 2 * MB, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0), *s1 = (uint8_t *)(((uint64_t)s1raw + 2 * MB - 1) & ~(2 * MB - 1));
+        s2a_far_set(G, G + SPAN, (uint64_t)s1, (uint64_t)s1 + SH);
+        EQ("快照：给页 G+16K", 0, s2a_far_map(G + 0x4000, 0x4000)); EQ("快照：给页 G+4M+32K", 0, s2a_far_map(G + 4 * MB + 0x8000, 0x4000)); EQ("快照：给页 G+6M", 0, s2a_far_map(G + 6 * MB, 0x4000));
+        uint8_t *a1 = s2a_far_g2h(G + 0x4000), *b1 = s2a_far_g2h(G + 4 * MB + 0x8000), *c1 = s2a_far_g2h(G + 6 * MB);
+        for (int i = 0; i < 0x4000; i++) { a1[i] = (uint8_t)(i * 7 + 1); b1[i] = (uint8_t)(i * 13 + 5); c1[i] = (uint8_t)(i ^ 0x5a); }
+        mprotect(c1, 0x4000, PROT_READ);   // 游戏那页是只读的
+        FILE *sf = tmpfile(); EQ("快照：存", 0, s2a_snap_far_save(sf));
+        EQ("快照：复位", 0, s2a_far_session_reset());
+        uint8_t *s2raw = mmap(NULL, SH + 4 * MB, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0), *s2 = (uint8_t *)(((uint64_t)s2raw + 4 * MB - 1) & ~(2 * MB - 1));
+        s2a_far_set(G, G + SPAN, (uint64_t)s2, (uint64_t)s2 + SH);
+        rewind(sf); EQ("快照：取", 0, s2a_snap_far_load(sf)); fclose(sf);
+        uint8_t *a2 = s2a_far_g2h(G + 0x4000), *b2 = s2a_far_g2h(G + 4 * MB + 0x8000), *c2 = s2a_far_g2h(G + 6 * MB);
+        EQ("快照：取回后影子在新影子区里（不是原宿主地址）", 1, a2 && (uint64_t)a2 >= (uint64_t)s2 && (uint64_t)a2 < (uint64_t)s2 + SH);
+        int okA = 1, okB = 1, okC = 1; for (int i = 0; i < 0x4000; i++) { okA &= a2 && a2[i] == (uint8_t)(i * 7 + 1); okB &= b2 && b2[i] == (uint8_t)(i * 13 + 5); okC &= c2 && c2[i] == (uint8_t)(i ^ 0x5a); }
+        EQ("快照：G+16K 内容逐字节一致", 1, okA); EQ("快照：G+4M+32K 内容逐字节一致", 1, okB); EQ("快照：G+6M 内容逐字节一致", 1, okC);
+        { vm_address_t ra = (vm_address_t)(uintptr_t)c2; vm_size_t rs = 0; vm_region_basic_info_data_64_t bi; mach_msg_type_number_t ct = VM_REGION_BASIC_INFO_COUNT_64; mach_port_t ob;
+          int ro = c2 && vm_region_64(mach_task_self(), &ra, &rs, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&bi, &ct, &ob) == KERN_SUCCESS && (bi.protection & VM_PROT_READ) && !(bi.protection & VM_PROT_WRITE);
+          EQ("快照：只读页取回后仍只读", 1, ro); }
+        EQ("快照：没给过的页（G+8M）取回后仍没分块", 0, (uint64_t)(uintptr_t)s2a_far_g2h(G + 8 * MB));
+        EQ("快照：收尾复位", 0, s2a_far_session_reset()); }
     printf("%s t_far：%d / %d 项通过\n", bad ? "✗" : "✓", cnt - bad, cnt);
     return bad != 0;
 }

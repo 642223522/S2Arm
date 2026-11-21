@@ -8,7 +8,7 @@ from pathlib import Path
 import os
 import shutil
 import uuid
-from core import PROBES, Failure, atomic, contained, read
+from core import Failure, atomic, contained, read
 
 
 def install(c):
@@ -23,25 +23,42 @@ def install(c):
     root = engines_root(c)
     destination = contained(root, root / identity)
     _adopt_private_copy(c, root, identity)
-    # 已装的副本每次用前按大小快速复核（#304：玩家机上已装副本里宿主的 Info.plist 被外部改过，0.1.7 只看安装标记、之后每次出包都报 runtime_invalid、
-    #   重新打包也好不了）；对不上就挪开、从 App 包重解。逐文件 lstat，约 8500 个文件几十毫秒；摘要级核对仍在用到具体产物时（artifact）。
-    #   完好的副本直接用、不拿锁；要挪开 / 重解时拿跨进程锁（_install_lock），拿到后重读标记、再核一次（别的作业可能刚装好）才动手——
-    #   v0.2.0 前回归：启动时 preflight 与 setup 同时初始化同一份副本，一个读到另一个装到一半 / 正被收走的副本，误判「被改过」、挪走对方的
-    if getattr(c, "operation", None) in PROBES and read(destination / ".installed.json", {}).get("schema") == 2:   # 非作业的调用方（tools 里的假上下文）没有 operation：按非探测、照常复核
-        c.engine = destination   # 只读探测（剃刀 H4）：装过就直接用，不逐文件复核、不清旧副本；出包 / 起局这类真用引擎产物的作业照旧每次复核（#304）
-        return
-    if not _ready(c, destination, manifest):
+    # 装好的副本直接用，不在每个作业开头逐文件复核（11-19 维护者：「每次启动都很慢……这种校验是不是自己给自己挖的坑」：原先每个作业——
+    #   包括每次点开始——都对约 7600 个文件逐个 lstat，玩家机上冷缓存 / Windows 杀毒逐个扫要几秒）。只在没装过 / 没装完（无安装标记）时
+    #   持锁从 App 包解一次；引擎号随每版变，更新 S2Arm 自然解新的一份。副本里个别文件被外部改了（#304 宿主 Info.plist）：
+    #   真用到那件产物时 artifact 只核它自己的文件、当场重解；别的文件坏了由用到它的那一步照实报
+    if not _ready(destination):
         with _install_lock(root):
-            if not _ready(c, destination, manifest):
+            if not _ready(destination):
                 _reinstall(c, source, manifest, root, destination, identity)
     c.engine = destination
     _retain(c, root, identity)
     c.require_source()
 
 
-def _ready(c, destination, manifest):
-    """有安装标记且清单里的文件都在、大小对"""
-    return read(destination / ".installed.json", {}).get("schema") == 2 and _intact(c, destination, manifest, full=False)
+def _ready(destination):
+    """副本装好了：看安装标记，不逐文件复核"""
+    return read(destination / ".installed.json", {}).get("schema") == 2
+
+
+def _skip(files, mark):
+    """清单去掉安装标记里 bundleMismatch 记的文件（App 包里本来就对不上、装时已提示照常继续的）；没记就原样"""
+    accepted = set(mark.get("bundleMismatch") or [])
+    return {k: v for k, v in (files or {}).items() if k not in accepted} if accepted and isinstance(files, dict) else files
+
+
+def _bundle_mismatch(c, source, files):
+    """App 包里和清单对不上（缺失 / 不是普通文件 / 大小不同）的文件名，逐个核（只在整份校验没过时走这里）"""
+    from build import validate_files
+    bad = []
+    for name, expected in (files or {}).items():
+        try:
+            validate_files(c, source, {name: expected})
+        except Failure as e:
+            if e.code != "runtime_invalid":
+                raise
+            bad.append(name)
+    return bad
 
 
 @contextlib.contextmanager
@@ -59,20 +76,27 @@ def _install_lock(root, timeout=1800):
 
 
 def _reinstall(c, source, manifest, root, destination, identity):
-    """持 _install_lock 调：坏副本（或没装完的）挪开，从 App 包解一份新的。App 包本身的文件不对 → engine_incomplete（只能重装 App）"""
+    """持 _install_lock 调：坏副本（或没装完的）挪开，从 App 包解一份新的。
+    App 包本身的文件和清单对不上（11-17 维护者：校验不过不整个拒绝，提示后照常继续）：黄字提示是哪几个、建议重装 S2Arm，照样解出来用；
+    对不上的文件名记进安装标记 bundleMismatch，之后复核跳过它们（不然每次用都判「被改过」、反复重解）。真用到时缺东西由那一步照实报"""
     from build import clone_tree, validate_files
     if destination.exists():
         _set_aside(c, root, destination, "已装的内置引擎文件被改过" if read(destination / ".installed.json", {}).get("schema") == 2 else "上次没装完的内置引擎")  # 非玩家句
     c.begin("初始化内置 S2Arm 引擎")
+    mismatch = []
     try:
         validate_files(c, source, manifest.get("files"))
     except Failure as e:
-        raise Failure("S2Arm 应用里的内置引擎文件不完整（" + str(e).rsplit("：", 1)[-1] + "），请重新安装完整的 S2Arm。", code="engine_incomplete") from e  # 非玩家句
+        if e.code != "runtime_invalid":
+            raise
+        mismatch = _bundle_mismatch(c, source, manifest.get("files"))
+        note = f"S2Arm 应用里的内置引擎有 {len(mismatch)} 个文件和清单对不上（如 {'、'.join(mismatch[:3])}），照常继续；后面出包或开游戏要是出错，重新安装完整的 S2Arm 一般就好。"  # 非玩家句
+        c.diagnostic(note, "engine_incomplete", severity="warning", internal="；".join(mismatch[:50]))
     temporary = destination.with_name(identity + "." + uuid.uuid4().hex + ".partial")
     temporary.mkdir(parents=True)
     try:
         clone_tree(c, source, temporary)   # v0.2.3 清理：不再对刚拷出的副本再核一遍——源刚核过，clone_tree 拷错会自己报
-        atomic(temporary / ".installed.json", dict(schema=2, id=identity))
+        atomic(temporary / ".installed.json", dict(schema=2, id=identity, **({"bundleMismatch": mismatch} if mismatch else {})))
         c.check()
         os.rename(temporary, destination)
     finally:
@@ -168,7 +192,8 @@ def _set_aside(c, root, destination, why):
     shutil.rmtree(broken, ignore_errors=True)
 
 
-def artifact(c, name):
+def artifact(c, name, optional=False):
+    """取内置产物目录。optional=True：清单压根没列这项（如 Intel 出包 App 没有 Mac 宿主）返回 None；列了但文件缺失/被改仍报错。"""
     if c.r.get("engineBundle") and not (c.engine / "engine.json").is_file():
         # 发版应用里本作业在用的引擎副本不在了（被别的作业收走 / 重解中）：重新定位一次（install 持锁装好或找到现成的），不当成「没有内置产物」
         c.emit("message", "内置引擎副本不在原处，重新定位")
@@ -179,8 +204,11 @@ def artifact(c, name):
     prefix = "Binaries/" + name
     files = {p: v for p, v in manifest.get("files", {}).items() if p.startswith(prefix + "/")}
     if not files:
+        if optional and c.r.get("engineBundle"):
+            return None
         raise Failure("应用内置引擎产物缺失，请重新安装完整应用。")
-    if not _intact(c, c.engine, manifest, files):
+    files = _skip(files, read(c.engine / ".installed.json", {}))   # App 包里本来就对不上、装时已提示过的不再核（_reinstall）
+    if files and not _intact(c, c.engine, manifest, files):
         if not c.r.get("engineBundle"):   # 源码树开发：没有 App 包可重解，照原样报
             from build import validate_files
             validate_files(c, c.engine, files)
@@ -193,5 +221,7 @@ def artifact(c, name):
                 c.emit("message", "内置引擎里的 " + name + " 被改过")  # 非玩家句
                 _reinstall(c, source, bundle, c.engine.parent, c.engine, bundle.get("id", c.engine.name))
         from build import validate_files
-        validate_files(c, c.engine, files)
+        left = _skip(files, read(c.engine / ".installed.json", {}))
+        if left:
+            validate_files(c, c.engine, left)
     return c.engine / prefix

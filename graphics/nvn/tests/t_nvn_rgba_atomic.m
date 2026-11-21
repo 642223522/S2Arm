@@ -8,6 +8,7 @@
 //   ④ 底层 R32 存储在驻留集里；RGBA8 视图退休（贴图对象 Finalize 后共享表仍持有它；它所在的池销毁、共享表放掉它）→ 围栏后底层存储随之出驻留集
 // 负对照（11-05 手工做过，写在报告里）：去掉 img_atomic_prepare 里的 RGBA8 升级那段 → ① 返回 0、② ③ 红
 #include "../gfx/nvn/nvn_mtl.m"
+// GPU 完成等待上限 30 秒（原 10 秒：负载高时只会更慢，等不到 REQUIRE 判红）
 
 static unsigned checks, fails;
 #define REQUIRE(x) do { if (!(x)) { fprintf(stderr, "FAIL setup %s:%d %s\n", __FILE__, __LINE__, #x); exit(2); } } while (0)
@@ -24,7 +25,7 @@ int main(void) { @autoreleasepool {
     tex_t t; memset(&t, 0, sizeof t); t.magic = MAGIC('T', 'E', 'X', 0); t.serial = nvn_new_serial(); t.pool = &pool; t.off = 65536; t.mem = mem + t.off;
     t.d = (nvn_texdesc){.target = NVN_TEXTURE_TARGET_2D, .format = NVN_FORMAT_RGBA8, .flags = NVN_TEXTURE_FLAGS_COMPRESSIBLE, .width = 4, .height = 4, .depth = 1, .levels = 1};
     nvn_tex_layout(&t.d, &t.L); nvn_be_tex_init(&t); nvn_be_reg_tex(TID, &t, NULL);
-    nvn_be_sub_begin(); id<MTLTexture> orig = tex_mtl(&t); uint64_t f = nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f, 10000000000ull));
+    nvn_be_sub_begin(); id<MTLTexture> orig = tex_mtl(&t); uint64_t f = nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f, 30000000000ull));
     REQUIRE(orig && orig.pixelFormat == MTLPixelFormatRGBA8Unorm && orig.storageMode == MTLStorageModePrivate);
     id<MTLCommandQueue> q = [g_dev newCommandQueue]; REQUIRE(q);
     {   // 测试自己填初值（不经被测实现）：每个纹素 0x01020304
@@ -39,11 +40,11 @@ int main(void) { @autoreleasepool {
     S.img[5][0] = TID;   // compute stage image slot 0
     nvn_be_sub_begin();
     int ok = img_atomic_prepare(sh, 5);
-    pthread_mutex_lock(&g_rmu);   // the image slot as encode_args resolves it (NVN_RB_IMG: tex_fast_rid, then img_fit for an image read in another class)
+    os_unfair_lock_lock(&g_rmu);   // the image slot as encode_args resolves it (NVN_RB_IMG: tex_fast_rid, then img_fit for an image read in another class)
     void *tv = NULL; tex_fast_rid(TID, &tv); id<MTLTexture> slot = (__bridge id<MTLTexture>)tv; uint64_t rid = 0;
     id<MTLTexture> img = slot && mtl_pf_dpf(slot.pixelFormat) != NVN_DPF_UINT ? img_fit(TID, slot, NVN_DPF_UINT, &rid) : slot;
-    pthread_mutex_unlock(&g_rmu);
-    f = nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f, 10000000000ull)); REQUIRE(!mtl_last_commit_error());
+    os_unfair_lock_unlock(&g_rmu);
+    f = nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f, 30000000000ull)); REQUIRE(!mtl_last_commit_error());
     VERIFY(ok == 1, "① img_atomic_prepare 放行：返回 %d（期望 1）", ok);
     id<MTLTexture> rgba = tex_mtl(&t), root = root_of(rgba);
     VERIFY(rgba.pixelFormat == MTLPixelFormatRGBA8Unorm && root.pixelFormat == MTLPixelFormatR32Uint && tex_atomic_usage(root),
@@ -66,8 +67,8 @@ int main(void) { @autoreleasepool {
     } else VERIFY(0, "③ 没有 R32 图像可派发（见 ②）");
     VERIFY(resident(root), "④ 底层 R32 存储在驻留集里：%d", resident(root));
     {   // ④ 贴图对象 Finalize（共享表仍持有，照旧驻留）、再销毁它所在的池（共享表放掉它）：围栏后底层存储出驻留集
-        nvn_be_sub_begin(); nvn_be_tex_release(&t); nvn_be_alias_drop_pool(&pool); f = nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f, 10000000000ull));
-        int gone = 0; for (int k = 0; k < 200 && !gone; k++) { usleep(10000); defer_drain(); gone = !resident(root); }
+        nvn_be_sub_begin(); nvn_be_tex_release(&t); nvn_be_alias_drop_pool(&pool); f = nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f, 30000000000ull));
+        int gone = 0; for (int k = 0; k < 3000 && !gone; k++) { usleep(10000); defer_drain(); gone = !resident(root); }   // 等延后释放放掉，兜底 30 秒（原 2 秒：负载高时完成回调晚跑就假红）
         VERIFY(gone, "④ 池销毁、RGBA8 视图退休，围栏后底层存储出驻留集：%d（期望 1）", gone);
     }
     printf("%s t_nvn_rgba_atomic：%u 项，%u 项失败\n", fails ? "✗" : "✓", checks, fails);

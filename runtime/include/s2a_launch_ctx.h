@@ -28,6 +28,7 @@ enum { S2A_LCTX_COMPAT = 0, S2A_LCTX_FILE = 1, S2A_LCTX_CONTAINER = 2 };
 #define S2A_LCTX_PATH 1024
 typedef struct s2a_launch_ctx {
     int source;                       // S2A_LCTX_COMPAT / S2A_LCTX_FILE
+    int from_program;                 // 多款容器：1 = 这款程序从资源包旁的程序包 program/ 取（通用壳，11-16），0 = App 包内
     char ctx_path[S2A_LCTX_PATH];     // 上下文文件（兼容 = 空）
     char game_id[128], build_id[128]; // 兼容 = 空（单款包不需要）
     char bundle_dir[S2A_LCTX_PATH];   // 可执行文件目录（iOS = App 包）
@@ -47,6 +48,8 @@ int s2a_launch_ctx_resolve(s2a_launch_ctx *c, const char *exe_dir, const char *h
 int s2a_launch_ctx_resolve_game(s2a_launch_ctx *c, const char *bundle_dir, const char *home, const char *gid, char *why, size_t why_n);
 // 包根是不是多款容器布局（有 s2a_catalogue.json 且有 Games/ 目录）
 int s2a_launch_ctx_is_container_dir(const char *bundle_dir);
+// 独立 App（一 App 一游戏）：包根清单只有一款、且它的程序库在 App 包里（Frameworks/S2AImages-<号>.dylib + Games/<号>/）→ 1，gid 写这款；否则 0。纯函数
+int s2a_launch_ctx_single_game(const char *bundle_dir, char *gid, size_t gid_n);
 // 本进程是不是多款容器模式（③：容器布局且没设 S2A_LAUNCH_CTX）；只看包根与环境，不冻结、不读任何一款的文件，构造期可调
 int s2a_launch_ctx_container(void);
 // App 包根（可执行文件目录），不冻结；取不到为空串
@@ -56,8 +59,30 @@ const char *s2a_launch_ctx_bundle_dir(void);
 const char *s2a_launch_ctx_select(const char *gid);
 // 上一次 s2a_launch_ctx_select 被拒的类别（给玩家看的话按它选，原文只进日志）：
 //   APP_INCOMPLETE = 这款在 App 里不完整（不在清单、随行目录 / 镜像包不在）→ 在电脑上重新装到 iPhone；STORAGE = 建不了本款文档目录（多半存储满）；OTHER = 其余
-enum { S2A_SELECT_OTHER = 0, S2A_SELECT_APP_INCOMPLETE = 1, S2A_SELECT_STORAGE = 2 };
+//   NEEDS_UPDATE = 这款程序是按别的宿主约定号出的（s2a_host_abi_check 对不上，诊断码 ios_host_abi_mismatch）→ 在电脑上按新版更新这款
+//   NEEDS_RESIGN = 这款程序包签名对不上本机这份 App（注册签名 / 库校验失败、或程序库和清单 image_sha256 不符）→ 在电脑上重新签名推回去
+enum { S2A_SELECT_OTHER = 0, S2A_SELECT_APP_INCOMPLETE = 1, S2A_SELECT_STORAGE = 2, S2A_SELECT_NEEDS_UPDATE = 3, S2A_SELECT_NEEDS_RESIGN = 4 };
 int s2a_launch_ctx_select_kind(void);
+// 宿主约定号核对（11-16，runtime/include/s2a_host_abi.h S2A_HOST_ABI）：这款产物上记的号——程序包自带的清单 program_catalogue
+//   （程序挪出 App 后随程序走的 program/catalogue.json：{schema, title_id, host_abi, chain, rewriter_id, image, image_sha256}）优先；
+//   它不在（NULL 或文件不存在）退回 App 包根清单 app_catalogue（s2a_catalogue.json）里这款的条目；都没记 host_abi = 本字段之前出的包，按 1。
+//   → 0 对得上；1 对不上（*have 写产物上的号，记成非数字时写 -1）；-1 读不了或程序清单不是这一款（why 写原因）。纯函数，不碰进程状态
+int s2a_host_abi_check(const char *program_catalogue, const char *app_catalogue, const char *gid, int *have, char *why, size_t why_n);
+// 本款程序包清单的位置：<资源包根的上一级>/program/catalogue.json（资源包根见 s2a_docs.h s2a_pack_root）；程序挪出 App 之前不存在
+int s2a_program_catalogue_path(char *out, size_t n, const char *game_data);
+// 本款程序包（<程序包根>/<游戏号>/program/）：有清单 → 写随行目录与镜像包路径（各 S2A_LCTX_PATH 字节）、回 1；没有程序包 → 0；清单读不了 / 没这款 / 缺件 → -1。
+//   s2a_launch_ctx_resolve_game 同一套取法；多款容器构造期算地址窗口时（vawin.c s2a_window_container_need）逐款调
+int s2a_program_game_paths(const char *home, const char *gid, char *module_dir, char *images, char *why, size_t why_n);
+// 各款程序包 / 资源包所在的根（<容器>/Library/Application Support/S2Arm/games，备用位置在就取它，同 s2a_pack_root）：构造期列出只在程序包里、App 包里没有的游戏
+int s2a_program_games_root(char *out, size_t n, const char *home);
+// 程序包版本目录清理（App 启动时调）：删没被清单 dir 指着、且最新文件超过 1 小时没写入的 program/v-* 与推断了留下的 catalogue.json.*.tmp。返回删掉的条目数
+#include <time.h>
+int s2a_program_gc(const char *home, time_t now);
+// 程序包款随行目录快照（选中游戏时调）：克隆到 <HOME>/tmp/s2a-mod-<号>-<pid>，成功写 out（S2A_LCTX_PATH 字节）回 0
+int s2a_program_snapshot(const char *home, const char *gid, const char *module_dir, char *out);
+// 游戏库画卡片时预判（主线程，多款容器）：本进程 App 包里这款的程序约定号对不上本宿主 → 1（卡片标「需要在电脑上更新」）；对得上 / 不是容器 /
+//   核不了（路径太长、清单读不了：交给点开时 s2a_launch_ctx_select 的完整校验报）→ 0。只读文件，不冻结、不改任何状态
+int s2a_launch_ctx_game_needs_update(const char *gid);
 // 进程内冻结一次（线程安全）：可执行文件目录取 _NSGetExecutablePath，home 取 $HOME（没有 = "."），文件取 S2A_LAUNCH_CTX。
 //   文件来源时把四个根写进进程环境。失败回 NULL，原因见 s2a_launch_ctx_error()（宿主 main 开头据此停）。
 //   多款容器模式：s2a_launch_ctx_select 成功之前一律回 NULL（error =「还没选游戏」），之后回本款

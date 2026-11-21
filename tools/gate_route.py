@@ -14,17 +14,18 @@
 单测头部可加「# 门禁覆盖：<通配…>」补推不出的面（例：shell_lint 覆盖 *.sh），「# 门禁：每次」= 每次都跑，
 「# 门禁只看：<通配…>」= 覆盖面只有单测自己 + 这些（不推闭包：文本推导把提示字符串里的文件名、被单测换成桩的下游脚本都算进去，
   10-28 出包槽 / sched / remote 三支各被推到 124–128 个文件、几乎每批都跑；清单按执行追踪写，被测脚本新调用了别的脚本同笔补进来），
-「# 门禁闭包：[--table <表>] <入口…>」= 改动落在这些入口经 tools/stage_inputs.py 算出的依赖闭包里就跑（阶段键单测：新文件进了阶段闭包要核登记）。
+「# 门禁闭包：[--table <表>] <入口…>」= 改动落在这些入口经 tools/stage_inputs.py 算出的依赖闭包里就跑（阶段键单测：新文件进了阶段闭包要核登记），
+「# 门禁清单：<清单文件…>」= 清单文件本身 + 它非注释行里带 / 的词（仓库路径）都进覆盖面：构建也读这份清单时，路由与构建同一来源
+  （例：graphics/nvn/tests/t_present_settings.link.txt，上屏设置矩阵只编只链它列的宿主源文件）。
 钩子与 iOS 编译按各钩子文件头「# 门禁路由：<前缀…>」（tools/gate_decl.py route）；哪个钩子都没声明到的代码目录 = 全跑（宁多勿漏）。"""
 import fnmatch, json, os, re, subprocess, sys, tempfile
 
 TOK = re.compile(r'(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.(?:sh|py|c|h|m|mm|cc|cpp|swift|cs|tsv|mk|json)\b')   # 带目录的写法整段取（graphics/tools/shbake/xc_key.sh），见 refs
 LOCAL = ('tools/', 'pack/', 'tests/')   # 本线目录：单测覆盖面只在这里面推
 DOC = re.compile(r'^docs/|\.md$|^\.github/ISSUE_TEMPLATE/')   # 与 tools/gate_plan.sh GATE_DOC_RE 同一条
-# 无钩子路径（过渡，11-11 维护者：旧安卓三钩子删除）：改到 android/ 不算表外、不触发钩子全跑（文件头路由点到的钩子照常选中，
-#   如安卓新层的 android/native/gfx_plat/gate.sh）；test_wired 也跳过这里旧层单测的接线检查（清空后约 162 处没接线，多是旧图形层单测）。
-#   留到安卓线删旧层源码那一笔一并删（单测照旧按覆盖面路由）
-NOHOOK = ('android/',)
+# 无钩子路径（过渡用）：列在这里的前缀改到了不算表外、不触发钩子全跑，test_wired 也跳过其中单测的接线检查。
+#   11-11 旧安卓三钩子删除时放过 android/；11-20 新钩子 android/gate.sh（门禁路由：android/，跑 android/test.sh）接上、旧回放层源码已删，清空。
+NOHOOK = ()
 
 # 独立测试的显式覆盖合同（#925）：已有 shell 引用推导不解析 MSBuild 项目，
 # 中文说明中的 .cs 名字也不是可用的路径通配。按测试消费者合同登记，不能仅凭同名猜。
@@ -96,15 +97,72 @@ def refs(path, by_name, direct=False):
     return _REFS[k]
 
 
-def _refs(path, by_name, direct):
-    try: txt = open(path, encoding='utf-8', errors='replace').read()
-    except OSError: return frozenset(), ''
-    got = set()   # 只看代码行：整行注释里提到的文件名（「见 oneshot.sh」）不是依赖
+def _toks(path, txt):
+    """一份文件按文本点名的候选文件名（只取决于文件内容和是不是 .py；还没按仓库文件列表解析）"""
+    # 只看代码行：整行注释里提到的文件名（「见 oneshot.sh」）不是依赖
     src = drop_docstrings(txt) if path.endswith('.py') else txt
     code = '\n'.join(re.sub(r'\s#\s.*$', '', l) for l in src.split('\n') if not l.lstrip().startswith('#'))   # 行尾「  # 说明」也去掉
     code = drop_prose(code)
     if path.endswith('.py'): code = PYCALL.sub('', code)   # Python 方法调用（run.sh(…)、r.json()）不是文件名
-    toks = set(TOK.findall(code)) | {m + '.py' for m in re.findall(r'^\s*(?:from|import)\s+(\w+)', code, re.M)}   # Python 同目录模块 import
+    return set(TOK.findall(code)) | {m + '.py' for m in re.findall(r'^\s*(?:from|import)\s+(\w+)', code, re.M)}   # Python 同目录模块 import
+
+
+# 点名词表的跨次缓存（11-16 门禁提速）：_toks 只取决于文件内容，换一棵合并树绝大多数文件没变，不必再解析一遍（冷算全仓约 10 秒，
+#   解析 Python 去文档字符串占大头）。键 = 本文件版本 + 是否 .py + 内容摘要；存 git 公共目录 s2a-gate-route/toks.<本文件版本>.pickle，
+#   和覆盖面缓存同处（那边只清 .json）。GATE_ROUTE_CACHE=0 照样用它：它按内容寻址，不改变任何结果，只省解析
+_TOKC, _TOKC_NEW, _TOKC_PATH = None, 0, None
+
+
+def _tok_cache():
+    global _TOKC, _TOKC_PATH
+    if _TOKC is None:
+        _TOKC = {}
+        import hashlib, pickle
+        try:
+            ver = hashlib.sha1(open(__file__, 'rb').read()).hexdigest()[:12]
+            gd = subprocess.run(['git', 'rev-parse', '--git-common-dir'], capture_output=True, text=True, check=True).stdout.strip()
+            _TOKC_PATH = os.path.join(os.path.abspath(gd), 's2a-gate-route', f'toks.{ver}.pickle')
+            with open(_TOKC_PATH, 'rb') as f:
+                _TOKC = pickle.load(f)
+        except (OSError, ValueError, EOFError, subprocess.CalledProcessError, pickle.UnpicklingError):
+            pass
+    return _TOKC
+
+
+def file_toks(path, txt):
+    global _TOKC_NEW
+    import hashlib
+    k = ('py' if path.endswith('.py') else 'tx') + hashlib.sha1(txt.encode('utf-8', 'surrogateescape')).hexdigest()
+    c = _tok_cache()
+    if k not in c:
+        c[k] = frozenset(_toks(path, txt)); _TOKC_NEW += 1
+    return c[k]
+
+
+def save_tok_cache():
+    """有新解析的才写；写临时文件再改名（几个门禁进程并发写，最后一个赢，丢的只是缓存条目）"""
+    if not _TOKC_NEW or not _TOKC_PATH:
+        return
+    import pickle
+    try:
+        os.makedirs(os.path.dirname(_TOKC_PATH), exist_ok=True)
+        tmp = f'{_TOKC_PATH}.{os.getpid()}.tmp'
+        with open(tmp, 'wb') as f:
+            pickle.dump(_TOKC, f, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, _TOKC_PATH)
+        d = os.path.dirname(_TOKC_PATH)   # 本文件改过后旧版本的词表没用了
+        for n in os.listdir(d):
+            if n.startswith('toks.') and n.endswith('.pickle') and os.path.join(d, n) != _TOKC_PATH:
+                os.unlink(os.path.join(d, n))
+    except OSError:
+        pass
+
+
+def _refs(path, by_name, direct):
+    try: txt = open(path, encoding='utf-8', errors='replace').read()
+    except OSError: return frozenset(), ''
+    got = set()
+    toks = file_toks(path, txt)
     for t in toks:
         # 单测自己（direct）带目录点名的文件按仓库路径认，不限本线目录、不按文件名猜：从整段起逐级去掉开头一段，取第一个与仓库文件路径相同的（「$H/graphics/…」取出来是 H/gfx/…）。
         #   10-22：tests/xc_key_test.sh 写的是 $H/graphics/tools/shbake/xc_key.sh，原先只按文件名在本线目录里找、找不到就丢，11 份单测的本线外依赖都不进路由。
@@ -179,6 +237,7 @@ def test_cover(test, files, by_name, full=False):
     full=True（缓存键用）：「门禁只看」不截断闭包，只并进去——路由可以窄，缓存输入只能宽（10-30：train_test「门禁只看」漏 known_red.py，
     缓存一直沿用改判定前的绿，核干净 main 给了假绿）"""
     seen, todo, always, globs, closures, only = {test}, [test], False, list(DECLARED_TEST_COVERAGE.get(test, ())), [], None
+    listed = set()   # 「门禁清单」点到的确切路径（不当通配：几百条通配逐文件 fnmatch 太慢）
     first, txt = refs(test, by_name, direct=True)
     for l in txt.split('\n')[:15]:
         m = re.match(r'#\s*门禁覆盖：(.*)', l)
@@ -188,11 +247,13 @@ def test_cover(test, files, by_name, full=False):
         if re.match(r'#\s*门禁：每次', l): always = True
         m = re.match(r'#\s*门禁闭包：(.*)', l)   # 「门禁闭包：[--table <表>] <入口…>」：改动落在入口经 tools/stage_inputs.py 算出的依赖闭包里就跑（含新增文件）
         if m: closures.append(m.group(1).split())
+        m = re.match(r'#\s*门禁清单：(.*)', l)
+        if m: listed |= set(list_cover(test, m.group(1).split()))
     if precheck_test(test): always = True
     if only is not None:
         gone = [g for g in only if not re.search(r'[*?\[]', g) and g not in FILESET]   # 写错 / 改名的路径永远对不上 = 这支单测再也不跑，报红
         if gone: sys.exit(f'【红】gate_route：{test} 的「门禁只看」里 {" ".join(gone)} 不在仓库里（改名了要同笔改这行）')
-        if not full: return {test} | build_cover([txt] + [read_text(f) for f in FILESET if f.endswith(('.sh', '.py')) and any(fnmatch.fnmatch(f, g) for g in only)]), globs + only, always
+        if not full: return {test} | listed | build_cover([txt] + [read_text(f) for f in FILESET if f.endswith(('.sh', '.py')) and any(fnmatch.fnmatch(f, g) for g in only)]), globs + only, always
         globs = globs + only
     stub, cpdirs = copied_only(test, txt); globs += cpdirs
     while todo:
@@ -203,7 +264,19 @@ def test_cover(test, files, by_name, full=False):
     for a in closures:   # 10-27 维护者：#550 改 runtime/run_mac.sh、新增 tools/mac_chain_check.py，落进直连阶段闭包，门禁没选 stage_keys_test，main 红
         seen |= stage_closure(tuple(a))
     seen |= build_cover([read_text(f) for f in seen if f.endswith(('.sh', '.py')) or f == test])
-    return seen, globs, always
+    return seen | listed, globs, always
+
+
+def list_cover(test, lists):
+    """「门禁清单」：清单文件 + 非注释行里带 / 的词。清单或其中路径不在仓库里 = 清单过期、覆盖面推不出，报红（不静默放过）"""
+    out = []
+    for lf in lists:
+        if lf not in FILESET: sys.exit(f'【红】gate_route：{test} 的「门禁清单」{lf} 不在仓库里')
+        ps = [w for l in read_text(lf).split('\n') if not l.lstrip().startswith('#') for w in l.split() if '/' in w]
+        gone = [p for p in ps if p not in FILESET]
+        if gone: sys.exit(f'【红】gate_route：{lf} 里 {" ".join(gone[:5])} 不在仓库里（清单过期，按清单头的说明重生成）')
+        out += [lf] + ps
+    return out
 
 
 # 构建清单（11-09 维护方：feat/launch-settings 改 macos/front_mac.m，present_settings_test 现算 HOST_SRCS 把它编进来，
@@ -404,4 +477,7 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    finally:
+        save_tok_cache()

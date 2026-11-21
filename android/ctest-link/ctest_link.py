@@ -25,8 +25,8 @@
 --parts apk：安卓单库 libs2arm_android.so（APK 里那个库）同一套真编真链。起因 #1086：共享前端 hle_nvn.c 每帧调用
 nvn_be_tex_tick，只有 Apple 后端有定义，单库缺符号；core-link/link_symbols.py 的 -z defs 真链只在合入后层，合入前没拦住。
   1. 用 NDK 自带的 build/cmake/android.toolchain.cmake（与 Gradle 同一工具链、arm64-v8a、android-29 = minSdk、Debug）按
-     android/CMakeLists.txt 的 if(ANDROID) 分支配置，APK_CONFIGS 五种组合各配一次：诊断 / 游戏 × 直连前端关 /
-     nvn_vk 后端（S2A_ANDROID_VK_ENGINE 开时共享前端 hle_nvn.c 等才编进来），外加 Gradle 缺省的诊断构建
+     android/CMakeLists.txt 的 if(ANDROID) 分支配置，APK_CONFIGS 三种组合各配一次：诊断 / 游戏 × nvk 后端
+     （引擎恒开：共享前端 hle_nvn.c 等编进来；旧回放层与「引擎关」构建已删除，#1501），外加 Gradle 缺省的诊断构建
      （S2A_CS_SERVICES=0、不带探针，#557）；
   2. NativeAOT 静态服务层（libs2a_cs.a）不编：沿用 link_symbols.py 的 S2A_ANDROID_LINK_PROBE 探针——check_once 从真实
      C# 工程收出 DllImport 入口（探针引用它们）和 [UnmanagedCallersOnly] 导出（探针给空定义），write_probe 写探针；
@@ -64,17 +64,17 @@ UNDEF = re.compile(r"^ld\.lld: error: undefined symbol: (.+?)\s*$")
 REFBY = re.compile(r"^>>> referenced by (\S+?)(?: \((.+)\))?\s*$")
 EXE = re.compile(r"^build (\S+): C(?:XX)?_EXECUTABLE_LINKER__")
 OBJ_TARGET = re.compile(r"CMakeFiles/([^/]+)\.dir/")
-# 单库配置：(模式, S2A_ANDROID_VK_ENGINE, S2ARM_ANDROID_VK_BACKEND, 标签)。Gradle 缺省是引擎关；引擎开时
-# 共享前端（graphics/nvn/gfx/nvn/hle_nvn.c 等）编进来，两种后端各自要给齐 nvn_be_* —— #1086 缺的就在这里。
-APK_CONFIGS = (   # engine 后端已随 #1108 删除，S2ARM_ANDROID_VK_BACKEND 只剩 nvn_vk
+# 单库配置：(模式, S2A_ANDROID_VK_ENGINE, S2ARM_ANDROID_VK_BACKEND, 标签, 是否带探针)。旧回放层（nvn_vk）与只有它能链的
+# 「引擎关」构建已删除（#1501）：直连核心只有新回放层 nvk，它要共享 NVN 前端（graphics/nvn/gfx/nvn/hle_nvn.c 等）才链得上，
+# 引擎恒开。共享前端新调的 nvn_be_* 必须在 nvk 里有定义 —— #1086 缺的就在这里。
+APK_CONFIGS = (
     # 最后一项 = 带不带 link_symbols 探针（探针配置走 S2A_ANDROID_LINK_PROBE，等同服务层静态链入的源集合）
-    ("diagnostic", "OFF", "nvn_vk", "诊断", True),
-    ("diagnostic", "ON", "nvn_vk", "诊断 + nvn_vk 后端", True),
-    ("game", "OFF", "nvn_vk", "游戏", True),
-    ("game", "ON", "nvn_vk", "游戏 + nvn_vk 后端", True),
+    # 产品游戏包走引擎开 + nvk（pack/targets/android/package.py）；同时覆盖诊断角色的 nvk 单库。
+    ("game", "ON", "nvk", "游戏 + nvk 后端", True),
+    ("diagnostic", "ON", "nvk", "诊断 + nvk 后端", True),
     # Gradle 缺省 assembleDebug：S2A_CS_SERVICES=0、没有探针，服务层不链入（#557：这条路缺 s2a_host_session_state，
-    # 上面四种都带探针 = 走静态源集合，没拦住）。game 模式要求 static（CoreLink.cmake），只有诊断有这条路。
-    ("diagnostic", "OFF", "nvn_vk", "诊断 · Gradle 缺省（服务层不链入）", False),
+    # 带探针的配置走静态源集合，没拦住）。game 模式要求 static（CoreLink.cmake），只有诊断有这条路。
+    ("diagnostic", "ON", "nvk", "诊断 + nvk · Gradle 缺省（服务层不链入）", False),
 )
 APK_LIB = "libs2arm_android.so"
 
@@ -275,6 +275,38 @@ def apk_probes(root, work, cs_project):
     return probes, sites
 
 
+def adpf_ndk_contract(root, work, toolchain, api):
+    """The minSdk object must load ADPF dynamically; the newest real header checks its types."""
+    source = Path(root) / "android/native/adpf_hint.c"
+    signature_api = min(api, 36)
+    prefixes = ("APerformanceHint_", "AWorkDuration_", "ASessionCreationConfig_")
+    for target in (29, signature_api):
+        obj = work / ("adpf-api%d.o" % target)
+        defines = ["-DS2A_ADPF_CHECK_SIGNATURES"] if target == signature_api else []
+        result = subprocess.run([
+            str(toolchain / "bin/clang"), "--target=aarch64-linux-android%d" % target,
+            "--sysroot=" + str(toolchain / "sysroot"), "-std=gnu11",
+            "-Werror=unguarded-availability", *defines, "-c", str(source), "-o", str(obj),
+        ], capture_output=True, text=True)
+        if result.returncode:
+            print("【红】ADPF NDK API %d 编译或签名检查失败" % target)
+            print(result.stderr.strip())
+            return 1
+        symbols = subprocess.run([
+            str(toolchain / "bin/llvm-nm"), "--undefined-only", "--format=just-symbols", str(obj),
+        ], capture_output=True, text=True)
+        if symbols.returncode:
+            print("【红】ADPF API %d 读取对象导入失败：%s" % (target, symbols.stderr.strip()))
+            return 1
+        imports = [name for name in symbols.stdout.splitlines() if name.startswith(prefixes)]
+        if imports:
+            print("【红】ADPF API %d 有直接导入：%s" % (target, ", ".join(imports)))
+            return 1
+    print("PASS ADPF：API 29 / %d 三类符号均为 0 直接导入；签名核对到 NDK 真头 API %d" %
+          (signature_api, signature_api))
+    return 0
+
+
 def apk_part(root, project, work, ndk, jobs, cs_project):
     """返回 (配置数, 链过数, 红行数, [构建目录…])。"""
     toolchain = ndk / "build/cmake/android.toolchain.cmake"
@@ -321,10 +353,11 @@ def apk_part(root, project, work, ndk, jobs, cs_project):
             red += 1
         if (bdir / APK_LIB).is_file() and not bld.returncode:
             linked += 1
+            print("【绿】目标 %s 链接成功" % tlabel)
         elif not fails and not bld.returncode:
             print("【红】目标 %s 没链出来（射程不全）" % tlabel)
             red += 1
-    print("单库链接配置 %d 个（%s，NDK 安卓工具链 arm64-v8a android-29，诊断 / 游戏 × 直连前端关 / nvn_vk + 诊断 Gradle 缺省）：链过 %d、红 %d" % (
+    print("单库链接配置 %d 个（%s，NDK 安卓工具链 arm64-v8a android-29，诊断 / 游戏 × nvk + 诊断 Gradle 缺省）：链过 %d、红 %d" % (
         len(APK_CONFIGS), APK_LIB, linked, len(APK_CONFIGS) - linked))
     return len(APK_CONFIGS), linked, red, bdirs
 
@@ -393,6 +426,7 @@ def main(argv=None):
             total, linked, red = total + n, linked + ok, red + r
             bdirs += [bdir] if bdir else []
         if "apk" in parts:
+            red += adpf_ndk_contract(root, work, base, api)
             n, ok, r, more = apk_part(root, project, work, ndk, a.jobs, a.cs_project)
             total, linked, red = total + n, linked + ok, red + r
             bdirs += more

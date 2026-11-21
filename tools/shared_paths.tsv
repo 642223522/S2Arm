@@ -2,7 +2,9 @@
 # 列：路径前缀	归属线	用途	并发规则。缺省一律局目录私有；只有确实要跨局共享的才登记，并写清谁能写、怎么防撞。
 # 运行时缺省（iOS 是 App 容器私有；Mac 上是整台机器共用，Mac 局一律由 runtime/run_mac.sh / tools/mac_health.sh 显式给局目录，不许落到这里）
 ~/.s2arm/run/s2arm/ab_pair	画幅线	能力 A/B 对照局目录（tools/ab_pair.sh）	每局一个带时间戳的子目录，不共写
+~/.s2arm/run/s2arm/cache/direct	出包	直连库按程序号的缓存（计算管线归档逐支缓存 store/cpso/，pack/stage_direct_cpso.sh；S2A_DIRECT_CACHE 可改）	内容寻址；写临时文件再原子改名，同键并发写结果相同；按最近使用回收（pack/jobs/cache_retention.py）
 ~/.s2arm/run/s2arm/cache/ccache	构建工具	编译缓存（tools/cc_cache.sh）	ccache 自身并发安全
+~/.s2arm/run/s2arm/cache/native_gate_times	构建工具	runtime 钩子各组上次耗时（runtime/gate.sh，派发排序用，S2A_NATIVE_GATE_TIMES 可改）	写临时文件再原子 mv，多树并发写最后一个为准；只影响派发顺序，删了下次重学
 ~/.s2arm/run/s2arm/deps/rewriter-deps	出包线	改写器固定依赖（tools/doctor.sh 查）	只读校验，准备步骤写入
 ~/.s2arm/run/s2arm/env/layout.env	维护方	本机布局标记（tools/s2a_machine.sh 只读判断）	只读
 ~/.s2arm/run/s2arm/evidence/gate_crash	门禁	崩溃现场留证（tests/visual/crash_keep.sh）	按崩溃各建子目录，不共写
@@ -26,6 +28,7 @@
 ~/.s2arm/run/s2arm/ryu_ipcrec	服务接入线	真值 Ryujinx 私有构建（IPC 录制）	构建者独占写；跑局只读
 ~/.s2arm/run/s2arm/ryu_fps	帧率能耗线	帧率真值 Ryujinx 私有构建（TRUTH_FPS=1 build_truth.sh，compat/truth/run_fps.sh 读）	构建者独占写；跑局只读
 ~/.s2arm/run/s2arm/ryu_seam	服务接入线	真值 Ryujinx 私有构建（接缝全量对拍：IPC + SVC + 起局状态）	构建者独占写（build_truth.sh）；跑局只读
+~/.s2arm/android	安卓出包	玩家机上安卓出包的本机钥（signing-key.json，android/tools/apk_sign.py，按机器一份长期复用）与下载的 platform-tools（pack/jobs/android_export.py）	签名钥首次生成写 .tmp 再原子换名、以后只读；platform-tools 持 platform-tools.lock 解到临时目录再换名
 ~/.s2arm/toolchain	用户体验	开发机预装的工具链（jdk-17 等）：Android 门禁找 JDK 的最后一档（S2A_JAVAC / Homebrew / java_home 都没有时）；tools/remote.sh 的假 HOME 软链过去	只读；装 / 换版本由人手动做，脚本不写
 ~/.s2arm/data	服务接入线 / 测试出包	游戏原件解包（exefs / romfs，按款一目录；真值卡带软链到这里）	只读
 ~/.s2arm/run/ryu	服务接入线	真值 Ryujinx 的卡带 / 系统根	真值局串行（一台 Windows / 一份根）；只读挂载
@@ -71,6 +74,9 @@ run	测试出包	记分板 / 全绿 / 里程碑 tsv	只追加单行（< 4 KB 原
 ~/.s2arm/run/s2arm/cache/widen_gate	画幅线	宽屏门禁缓存（tests/visual/widen_gate.sh）：rec/ 金样录像解压、spv/ 回放见过的 SPIR-V、sh/ MSL 缓存、lib/<键>/ 离线着色器库（键 = graphics/metal + graphics/third_party 内容哈希）	解压与建库写 .tmp.<pid> 再 mv，SPIR-V / MSL 由 libnxgal 先写临时名再改名；只影响速度不影响判据；库留最新 3 份
 ~/.s2arm/run/s2arm/cache/opus	服务接入线（脚本）/ 测试出包（gc）	libopus 静态库整机缓存（键 = build.sh 内容 + 平台）	services/opus/build.sh：mkdir 锁 + pid 存活检查，.tmp 再 mv；gc 每平台留 2 份
 ~/.s2arm/run/s2arm/cache/dav1d	服务接入线（脚本）/ 测试出包（gc）	dav1d 静态库整机缓存（键 = build.sh 内容 + 平台）	services/dav1d/build.sh：mkdir 锁 + pid 存活检查，.tmp 再 mv；gc 每平台留 2 份
+~/.s2arm/run/s2arm/cache/av1hw	服务接入线（脚本）	AV1 硬解探测结果缓存（键 = tools/av1hw.sh 内容哈希；机器硬件不变，终身有效，改脚本 = 换键重探）	tools/av1hw.sh：mkdir 锁 + pid 存活检查；探测失败不写（装好 Xcode 后下次重探）；就一个 result 文件，无 .tmp
+~/.s2arm/run/s2arm/cache/vp9hw	服务接入线（脚本）	系统 VP9 探测结果缓存（键 = tools/vp9hw.sh 内容哈希；判据同 #348，改脚本 = 换键重探）	tools/vp9hw.sh：mkdir 锁 + pid 存活检查；探测失败不写（装好 Xcode 后下次重探）；就一个 result 文件，无 .tmp
+~/.s2arm/run/s2arm/cache/vpx-stub	服务接入线（脚本）/ 测试出包（gc）	libvpx 空垫片整机缓存（键 = build_stub.sh + stub.c 内容 + 平台；垫 DirectPInvoke 静态强引用用）	services/vpx/build_stub.sh：mkdir 锁 + pid 存活检查，.tmp 再 mv；gc 每平台留 2 份
 ~/.s2arm/run/s2arm/cache/aoc	测试出包	追加内容（DLC）解包缓存 <款>-<键>/（aoc/ + aoc.tsv + aoc.log），各产物根从这里克隆，全机只解一次	pack/stage_aoc.sh：解到 .tmp.<pid> 再 mv，并发后到的丢弃；只读使用；gc 每款留 2 份
 ~/.s2arm/run/s2arm/cache/unpack	测试出包	本体解包缓存 <程序号>-<键>/（+ 旁边 .size），pack/stages/unpack.sh 命中就克隆、没命中解完存一份；普查 / 出包队列 / 一键出包全机只解一次（11-02 维护者）	pack/stages/unpack.sh：解到 .tmp.<pid> 再改名，并发后到的丢弃；只读使用；gc 每程序号留 1 份、总量 ≤ S2A_UNPACK_CACHE_GB（缺省 150）
 ~/.s2arm/run/s2arm/cache/srcver	测试出包	原件版本核对结果 <款>-<键>（键 = 候选原件 + nx_unpack 哈希 + 现行 main 构建号；内容一行 0 / 1 + 不符原话），refresh 开头读，原件 / 工具 / 现行没变不再解	pack/srcver.sh：写 .tmp.<pid> 再 mv；每份几十字节，不清
@@ -90,6 +96,7 @@ run	测试出包	记分板 / 全绿 / 里程碑 tsv	只追加单行（< 4 KB 原
 ~/.s2arm/run/s2arm/icons	测试出包	各款 App 图标（tools/game_icons.sh 从游戏原始包重抽，中文优先；pack/ipa.sh 读）	单写者 game_icons.sh，写临时文件再改名；读方只读
 ~/Downloads	测试出包	游戏原始包（xci / nsp）所在目录，tools/game_icons.sh 只读（S2A_GAME_SRC 可改）	只读，不写
 ~/.s2arm/run/s2arm/cache/csclosure	测试出包	着色器阶段键：C# 编译闭包文件清单缓存 <粗键>.files（tools/csproj_closure.py）	同粗键并发只求值一份（<粗键>.files.lock，pid 存活检查）；写临时名再原子改名
+~/.s2arm/run/s2arm/cache/csbuild	构建工具	C# 编译产物树外缓存 <键>/（tools/cs_cache.sh：键 = 编译闭包在 HEAD 的内容 + 原命令参数 + SDK 版本 + 读到的环境变量；门禁单测 dotnet build 命中就克隆、不重编；S2A_CS_BUILD_CACHE 可改）	按键 mkdir 锁 + pid 存活检查，命中不拿锁；编完复制到 <键>.tmp.<pid> 再原子 mv；只读使用（克隆出去用）；48 小时没用或总量超 3 GB 从最久没用的删，1 小时内用过的不删
 ~/.s2arm/run/s2arm/cache/xckey	测试出包	着色器阶段键：GAL 翻译代码二进制哈希 <树号组>、SPIRV-Cross 目标文件 spvc-<键>/（graphics/tools/shbake/xc_key.sh）	同组并发只编一份（<组>.lock，pid 存活检查）；写临时名再原子改名
 ~/.s2arm/run/s2arm/wip/gate_scene	测试出包线	单测不通时的文本现场（tests/keep_scene.sh：<单测>_<时刻>_<pid>，只拷 *.log *.tsv *.txt *.json）	每次新建带 pid 的子目录、不覆盖；wip/ 下 6 小时由 tools/gc.sh 清
 ~/.s2arm/run/gal_pso_cache	画面·着色器线 / 测试出包	管线归档分片缓存（graphics/tools/shbake/pso_chunk.sh 按内容寻址：键 = 分片输入 + 编译器版本）	按键写临时文件再改名（同键并发只是重复编）；10-23 起 tools/gc.sh 不再按盘余量删（条目全和产物根共享、独占 0，删了腾不出空间）
@@ -117,3 +124,5 @@ run	测试出包	记分板 / 全绿 / 里程碑 tsv	只追加单行（< 4 KB 原
 ~/.s2a/update-signing/ed25519.key	维护方	发版清单签名私钥（tools/sign_update_manifest.py 读；只在发版机上，不进仓库）	只读；权限 600，目录 700；脚本启动时校验它与启动器内置公钥一致，对不上就拒绝签名
 ~/.s2arm/run/s2arm/shell_src	合入运维	出壳（pack/shell_build.sh）的按树私有镜像（shell_src/<树号>/src，含镜像里的 build/ 增量产物）	shell_build.sh 持本树镜像锁 src.lock（pid 存活检查）；不同树互不排队；只有出壳本身读写
 ~/.s2arm/run/s2arm/gate_depskip	合入运维	runtime 钩子按源文件跳组的缓存（src.<规则哈希>/<组>.txt 源文件清单、full.<日期> 当天已全跑标记）	写入只发生在钩子跑时；规则文件一变换新目录，旧的可随时删
+~/.cargo/bin/cargo	构建工具	Rust 工具链（门禁机 PATH 里没有 cargo 时按它找，tests/pc_selfsign_test.sh；同 launchers/macos/bundle_engine.py）	只读
+/tmp/s2a-plumesign-target	构建工具	自编 plumesign 的 macOS 编译目录（tools/plumesign_build.py FIXED_TARGET：苹果链接器把目标文件绝对路径算进 LC_UUID，固定路径才能逐字节可重复）	cargo 自带编译目录文件锁，同时编会排队；--clean 只在核可重复时手动用

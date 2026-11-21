@@ -1,3 +1,6 @@
+// 系统库[nvntest]：-framework VideoToolbox（直连层单测链 libnvn.a 时带上，tools/weak_link_decl.py flags nvntest 输出）
+// 系统库[nvntest]：-framework CoreMedia
+// 系统库[nvntest]：-framework CoreVideo
 // Switch 2 直连档：nn::codec 视频解码器、解码图像池、nn::syncpt::sdk 同步点事件、nn::gs::TryWaitNativeSync，以及 NVN2 的原生图像（nvnNativeImage* /
 //   nvnTextureInitializeFromNativeImage）——宿主自己解码、自己给图像与同步点，不进 gsv 服务。
 // 为什么：Switch 2 SDK 的 nn::codec 视频解码器经 nn::gsv::GetUserSession() 走 gsv 服务（NVIDIA 硬件解码器）。真机由 NVN2 驱动初始化时拉起 gsv，直连档把 NVN 换成
@@ -15,10 +18,11 @@
 //     Acquire 不进服务、直接出环（sdk+0x336400；空环 subsdk2 直接中止）；第 k 个发出去的同步句柄由第 k 帧达到，所以帧按登记 / 释放次序填图。
 //   - 同步句柄 NativeSyncHandle = {u32 ~计数器号, u32 模式, u64 值}，模式 1 比 64 位、否则 32 位回绕比；全 0 视为已达到。
 // 解码：VP9 / VP8 用仓库现成的 libvpx（services/vpx/build.sh，垫片 s2a_vp9.c / s2a_vp8.c，与服务层 Nvdec 同源）；AV1 用 VideoToolbox 硬件解码
-//   VP9 默认 libvpx；S2A_VP9_SYSTEM=1（仅 macOS）时整帧改走 VideoToolbox（关键帧解析 → vpcC，420v/420f → I420，失败自动回退 libvpx）
+//   VP9 默认 libvpx；S2A_VP9_SYSTEM=1（仅 macOS）时整帧改走 VideoToolbox（关键帧解析 → vpcC，420v/420f → I420，失败自动回退 libvpx）；
+//   S2A_VPX 探测到本机可走系统 VP9（tools/vp9hw.sh）不链真 libvpx 时（链空垫片）默认就走系统，S2A_VPX=1 / =0 照旧显式给
 //   （火纹 82 支片头全是 AV1：2560x1440 78 支、1920x1080 4 支），VideoToolbox 不支持 AV1 的机器（M1 / M2、A16 及更早）用 dav1d 软件解码
-//   （services/dav1d/build.sh，垫片 s2a_av1.c）；S2A_AV1_SOFT=1 强制软解（验收用，缺省关）。确认所有目标机都有 AV1 硬件解码的本地构建可设
-//   S2A_DAV1D=0 不链 dav1d（无硬解时 AV1 初始化报错，不会出假画面）。H.264 走 VideoToolbox 硬件解码（每台苹果设备都有）：输入按 Annex B（起始码）
+//   （services/dav1d/build.sh，垫片 s2a_av1.c）；S2A_AV1_SOFT=1 强制软解（验收用，缺省关）。S2A_DAV1D 缺省 auto：探测到本机有 AV1 硬解
+//   （tools/av1hw.sh：VideoToolbox 建得出 AV1 会话）就不链 dav1d（无硬解时 AV1 初始化报错，不会出假画面）；出包要落到无硬解机器上时设 S2A_DAV1D=1。H.264 走 VideoToolbox 硬件解码（每台苹果设备都有）：输入按 Annex B（起始码）
 //   或 4 字节长度前缀分 NAL，SPS / PPS 取自码流（变了就重建会话），样本按 AVCC 送；按解码次序出帧（带 B 帧的流显示次序会错，见到时间戳倒退报一次黄）。
 // 原生图像：main 拿帧的原生图像句柄（movie::VideoFrame::GetNativeImageHandle）经 nvnNativeImage* 建 NVN 纹理（火纹 main+0x1900d80：格式 0x38 RGBA8_SRGB）。
 //   宿主把这张图像的内存当成一个 CPU 可写的 NVN 内存池、纹理建成线性（LINEAR，行距 = 图像行距）：Metal 端是池缓冲上的零拷贝线性纹理（nvn_mtl.m tex_linear），
@@ -45,18 +49,24 @@
 // 弱链接[nvntest]：s2a_vp8_open（同上）
 // 弱链接[nvntest]：s2a_vp8_decode（同上）
 // 弱链接[nvntest]：s2a_vp8_close（同上）
-// 弱链接[nvntest]：s2a_av1_open（services/dav1d 提供；同上）
-// 弱链接[nvntest]：s2a_av1_decode（同上）
-// 弱链接[nvntest]：s2a_av1_close（同上）
+// 弱链接[nvntest,host,ios]：s2a_av1_open（services/dav1d 提供；NVN 单测不链服务层编解码库；宿主 / iOS 的 S2A_DAV1D 缺省 auto 探测到本机有 AV1 硬解时不链 dav1d（tools/av1hw.sh），那时 host / ios 链接也要放行未定义）
+// 弱链接[nvntest,host,ios]：s2a_av1_decode（同上）
+// 弱链接[nvntest,host,ios]：s2a_av1_close（同上）
 void *s2a_vp9_open(int threads) __attribute__((weak));
 int s2a_vp9_decode(void *h, const uint8_t *data, uint32_t len, uint8_t **planes, int32_t *strides, int32_t *info) __attribute__((weak));
 void s2a_vp9_close(void *h) __attribute__((weak));
 void *s2a_vp8_open(void) __attribute__((weak));
 int s2a_vp8_decode(void *h, const uint8_t *data, uint32_t len, uint8_t **planes, int32_t *strides, int32_t *wh) __attribute__((weak));
 void s2a_vp8_close(void *h) __attribute__((weak));
+// 弱链接[nvntest]：s2a_vpx_linked（真 libvpx 回 1 / 空垫片 services/vpx/stub.c 回 0；宿主与 iOS 链二者之一，
+//   = 0 时 VP9 默认走系统（见 vp9_system_enabled）；NVN 单测两样都不链：弱引用 NULL，调用前判）
+int s2a_vpx_linked(void) __attribute__((weak));
 // services/dav1d 的垫片（libs2a_dav1d.a：同上一起链）
 void *s2a_av1_open(int threads) __attribute__((weak));
 int s2a_av1_decode(void *h, const uint8_t *data, uint32_t len, uint8_t **planes, int32_t *strides, int32_t *info) __attribute__((weak));
+// 视频按片源帧率出图（nvn_vpace.h，hle_nvn.c s2a_video_frame / s2a_video_frame_pts）：Switch 1 由 Ryujinx Nvdec 每解一帧报一次（services/aot/Compose.cs），Switch 2 由这里 cv_emit
+//   每交出一帧新解码的画面报一次，同一口径；片源不超过 30 帧且这段主要在放视频时出图封顶 30。弱链接：单测不链 hle_nvn.c
+void s2a_video_frame_pts(int64_t pts_ns) __attribute__((weak));   // 同上，带这一帧的片源时间戳（片源帧率按时间戳判，不被出图节拍反拖）
 void s2a_av1_close(void *h) __attribute__((weak));
 
 // SDK 的「环空 / 还没有帧」结果
@@ -260,6 +270,9 @@ static void gs_frame_knob(int mode) { (void)mode; }
 //   参数是目标帧率的枚举 / 数值（各 sdk 的改编名后缀不一定相同，按名字前缀认），只用来打日志
 #define OE_TARGET_RATE "_ZN2nn2oe26SetGraphicsTargetFrameRateE"
 static Result oe_target_rate(int rate) { static _Atomic int last = -1; if (atomic_exchange(&last, rate) != rate) LOG("oe：目标帧率设置 %d：宿主按 NVN 交换间隔定节奏，只记（直连档不启动 gs，不转给 gs 服务）", rate); return RES_OK; }
+// nn::oe::SetGraphicsTargetFrameRateAuto()（D-SM6Y，040077201BE50000）：同上，sdk 内直接调 gs::sdk::SetGraphicsFrameLengthMode（自动档）；原版锁 gs 没初始化的互斥量 → 空指针
+#define OE_TARGET_RATE_AUTO "_ZN2nn2oe30SetGraphicsTargetFrameRateAutoEv"
+static Result oe_target_rate_auto(void) { static _Atomic int said; if (!atomic_exchange(&said, 1)) LOG("oe：目标帧率设为自动：宿主按 NVN 交换间隔定节奏，只记（直连档不启动 gs，不转给 gs 服务）"); return RES_OK; }
 
 // ---------- 图像池与原生图像句柄 ----------
 enum { IMG_NONE, IMG_NV12, IMG_RGBA, IMG_HDR };
@@ -283,7 +296,7 @@ _Static_assert(sizeof(cv_pool) <= 0x20, "cv_pool 超出 subsdk2 给图像池留�
 static int cv_kind(uint32_t code) {
     if (code == 1 || code == 4 || code == 7) return IMG_NV12;
     if (code == 2 || code == 5 || code == 3 || code == 6 || code == 8 || code == 9) return IMG_RGBA;
-    if (code >= 10 && code <= 13) { CV_RED(hdr, "Switch 2 视频：HDR 图像布局码 %u 按 8 位 RGBA 写（宿主不出 HDR）", code); return IMG_HDR; }
+    if (code >= 10 && code <= 13) { CV_RED(hdr, "Switch 2 视频：HDR 图像布局码 %u 按 8 位 RGBA 写（宿主不出 HDR），RgbaHdr 读回按 8 位 SDR", code); return IMG_HDR; }
     return IMG_NONE;
 }
 // 偏好 → 宿主的线性布局；0 = 不认识的布局码
@@ -414,7 +427,8 @@ static Result cv_read_bgra(const cv_pool *pool, uint32_t i, uint32_t x, uint32_t
     for (uint32_t row = 0; row < h; row++) for (uint32_t c = 0; c < w; c++) { uint8_t *px = dst + row * pitch + (size_t)c * 4, t = px[0]; px[0] = px[2]; px[2] = t; }
     return RES_OK;
 }
-static Result cv_read_hdr(void) { CV_RED(rdhdr, "Switch 2 视频：ReadDecoderOutputImageRgbaHdr 宿主不出 HDR 图像，回失败"); return RES_FAIL; }
+// PR2：RgbaHdr 已转发 cv_read_rgba（HDR 布局码的池本就按 8 位 RGBA 写出）；这里只剩 float 读回——float 布局未核（不猜 fp16/fp32），保持失败
+static Result cv_read_hdr(void) { CV_RED(rdhdr, "Switch 2 视频：ReadDecoderOutputImageRgbaHdrFloat 保持失败：HDR 的 float 读回布局未核（不猜 fp16/fp32）"); return RES_FAIL; }
 
 // ---------- 像素写入 ----------
 // YUV 三平面 → 图像（RGBA 行或 NV12）；矩阵按片子声明（未声明：720 行以上 BT.709，否则 BT.601），整数定点。
@@ -672,6 +686,7 @@ static int cv_emit(cvdec *d, void (*wr)(const cv_img *, void *), void *arg, uint
     pthread_cond_broadcast(&d->cv);
     pthread_mutex_unlock(&d->mu);
     // 达到缓冲 i 的句柄（它的序号），唤醒游戏的同步点事件
+    if (wr && !eos && s2a_video_frame_pts) s2a_video_frame_pts(pts_ns);   // 新解码的一帧报给出图节奏（重复上一帧 / 结束标记不算）；在唤醒游戏之前报，游戏拿到帧时这一帧已经计上
     sp_incr(d->ctr);
     d->frames++;
     return 1;
@@ -713,15 +728,20 @@ static void vt_out(void *ref, void *src, OSStatus st, VTDecodeInfoFlags fl, CVIm
 static int cv_threads(void) { long n = sysconf(_SC_NPROCESSORS_ONLN); return n >= 8 ? 4 : 2; }
 // S2A_AV1_SOFT=1：AV1 强制走 dav1d（有硬件的机器上验收软解用；缺省关）
 static int av1_soft_forced(void) { const char *e = getenv("S2A_AV1_SOFT"); return e && !strcmp(e, "1"); }
-// S2A_VP9_SYSTEM=1：nn::codec 的整帧 VP9 走 macOS VideoToolbox（仅 macOS；默认 libvpx，失败自动回退）
+// S2A_VP9_SYSTEM=1：nn::codec 的整帧 VP9 走 macOS VideoToolbox（仅 macOS）；=0 强制 libvpx。没设时：宿主链的是空垫片（S2A_VPX
+//   探测到本机可走系统 VP9、不链真 libvpx，tools/vp9hw.sh；s2a_vpx_linked() = 0）→ 默认走系统；链了真身的机器默认 libvpx，失败自动回退
 #if TARGET_OS_OSX
-static int vp9_system_enabled(void) { const char *e = getenv("S2A_VP9_SYSTEM"); return e && !strcmp(e, "1"); }
+static int vp9_system_enabled(void) {
+    const char *e = getenv("S2A_VP9_SYSTEM");
+    if (e) return !strcmp(e, "1");
+    return s2a_vpx_linked && !s2a_vpx_linked();
+}
 #endif
 static _Atomic unsigned long long g_vp9_vt_frames;
 unsigned long long nvn2_vp9_vt_frames(void) { return atomic_load(&g_vp9_vt_frames); }
 static void cv_soft_open(cvdec *d, const char *why) {
     long n = sysconf(_SC_NPROCESSORS_ONLN);
-    if (!s2a_av1_open) die("Switch 2 视频：%s；宿主没链 dav1d 垫片（services/dav1d，S2A_DAV1D=0 的构建不链），解不了 AV1（%dx%d）", why, d->w, d->h);
+    if (!s2a_av1_open) die("Switch 2 视频：%s；宿主没链 dav1d 垫片（services/dav1d；本机构建有 AV1 硬解时不链，S2A_DAV1D），解不了 AV1（%dx%d）", why, d->w, d->h);
     if (!(d->av1 = s2a_av1_open(n >= 8 ? 6 : (int)n))) die("Switch 2 视频：dav1d 建不出 AV1 解码器（%dx%d）", d->w, d->h);
     if (!d->av1_soft++) LOG("Switch 2 视频：AV1 %dx%d 走 dav1d 软件解码（%s）", d->w, d->h, why);
 }
@@ -936,6 +956,7 @@ static void cv_decode(cvdec *d, const cv_in *in, int gen) {
     if (in->n && d->codec == CV_VP9 && d->vp9_system && !d->vp9_no_vt) vt_handled = cv_vp9_vt_decode(d, in, pts, gen);
 #endif
     if (!vt_handled && in->n && (d->codec == CV_VP9 || d->codec == CV_VP8)) {
+        if (!d->vpx && s2a_vpx_linked && !s2a_vpx_linked()) die("Switch 2 视频：宿主没链真 libvpx（S2A_VPX 探测到本机可走系统 VP9 不链，tools/vp9hw.sh），这条 %s 流走不了系统路线又没有软解兜底，解不了（要兜底设 S2A_VPX=1）", cv_name[d->codec]);
         if (!d->vpx && !s2a_vp9_open) die("Switch 2 视频：宿主没链 libvpx 垫片（services/vpx），解不了 %s", cv_name[d->codec]);
         if (!d->vpx && !(d->vpx = d->codec == CV_VP9 ? s2a_vp9_open(cv_threads()) : s2a_vp8_open())) die("Switch 2 视频：libvpx 建不出 %s 解码器", cv_name[d->codec]);
         uint8_t *pl[3]; int32_t st[3], info[4] = { 0, 0, -1, 0 }; uint64_t t0 = now_ns();
@@ -1030,7 +1051,7 @@ static Result cv_init(void *t, int codec, uint32_t w, uint32_t h) {
     d->guest = t; d->codec = codec; d->w = (int)w; d->h = (int)h; d->last = -1;
 #if TARGET_OS_OSX
     d->vp9_system = codec == CV_VP9 && vp9_system_enabled();
-    if (d->vp9_system) LOG("Switch 2 视频：VP9 系统解码开关 S2A_VP9_SYSTEM=1（VideoToolbox，失败回退 libvpx）");
+    if (d->vp9_system) LOG("Switch 2 视频：VP9 走系统解码（VideoToolbox；%s，失败回退 libvpx）", getenv("S2A_VP9_SYSTEM") && !strcmp(getenv("S2A_VP9_SYSTEM"), "1") ? "S2A_VP9_SYSTEM=1" : "宿主没链真 libvpx，默认系统");
 #endif
     d->qcap = 64; d->q = calloc((size_t)d->qcap, sizeof *d->q);
     pthread_mutex_init(&d->mu, NULL); pthread_cond_init(&d->cv, NULL);
@@ -1212,7 +1233,8 @@ static const struct { const char *n; void *f; } g_cv_names[] = {
     { "_ZN2nn5codec36GetDecoderImagePoolNativeImageHandleEPKNS0_25VideoDecoderImagePoolTypeEj", (void *)cv_pool_handle },
     { "_ZN2nn5codec26ReadDecoderOutputImageNv12EPKNS0_25VideoDecoderImagePoolTypeEjttttPvmmS4_mm", (void *)cv_read_nv12 },
     { "_ZN2nn5codec26ReadDecoderOutputImageRgbaEPKNS0_25VideoDecoderImagePoolTypeEjttttPvmm", (void *)cv_read_rgba },
-    { "_ZN2nn5codec29ReadDecoderOutputImageRgbaHdrEPKNS0_25VideoDecoderImagePoolTypeEjttttPvmm", (void *)cv_read_hdr },
+    // PR2：HDR 布局码（10–13）的池布局本就按 8 位 RGBA 写出（cv_kind / cv_layout）→ RgbaHdr 转发 Rgba 读回（非致命回退）；float 版布局未核，保持失败
+    { "_ZN2nn5codec29ReadDecoderOutputImageRgbaHdrEPKNS0_25VideoDecoderImagePoolTypeEjttttPvmm", (void *)cv_read_rgba },
     { "_ZN2nn5codec34ReadDecoderOutputImageRgbaHdrFloatEPKNS0_25VideoDecoderImagePoolTypeEjttttPvmm", (void *)cv_read_hdr },
 // SDK 版本差异（11-04 金刚 SDK 20.5；火纹是 SDK 22）：旧版初始化不带输出模式（ByTransferMemory 版 = Initialize<C>Decoder(类型, 内存, 长, 长, 宽, 高, 率, 输入, 输出)，
 //   ByRemoteMemory 版 = 同名去掉内存指针），图像池初始化末尾多一个 CodecMode。参数前段与新版逐位相同，多 / 少的都在末尾、宿主不读 → 接同一个实现
@@ -1435,6 +1457,7 @@ void *s2a_codec_entry(const char *name) {
     for (unsigned i = 0; i < sizeof g_cv_names / sizeof *g_cv_names; i++)
         if (!strcmp(name, g_cv_names[i].n)) return g_cv_names[i].f ? g_cv_names[i].f : (void *)cv_lib_ok;
     if (!strncmp(name, OE_TARGET_RATE, sizeof OE_TARGET_RATE - 1)) return (void *)oe_target_rate;
+    if (!strcmp(name, OE_TARGET_RATE_AUTO)) return (void *)oe_target_rate_auto;
     for (unsigned i = 0; i < sizeof g_ni_names / sizeof *g_ni_names; i++) if (!strcmp(name, g_ni_names[i].n)) return g_ni_names[i].f;
     int fam = cv_video(name) || !strncmp(name, "_ZN2nn6syncpt", 13) || !strncmp(name, "_ZNK2nn6syncpt", 14) || !strncmp(name, "_ZN2nn2gs", 9) || !strncmp(name, "_ZNK2nn2gs", 10)
         || (!strncmp(name, "_Z", 2) && (strstr(name, "nvnNativeImage") || strstr(name, "FromNativeImage") || strstr(name, "3nvn11NativeImage") || strstr(name, "3nvn18NativeImageBuilder")
@@ -1484,4 +1507,74 @@ void *s2a_codec_entry(const char *name) {
     for (unsigned i = 0; i < sizeof red / sizeof *red; i++) if (!strcmp(name, red[i])) return nvn2_red(name, ns2_why(name));
     LOG("【红】直连：Switch 2 游戏导入 %s，宿主没接管：照原路径进 sdk（%s）", name, ns2_why(name));
     return NULL;
+}
+// 即时存档：视频模块的宿主表整表存取——同步计数器 / 同步点槽、活着的解码器（按原参数重建 + 缓冲记账 + 原计数器号）、解码图像表与池记录。
+//   指针都是游戏地址 / 远端影子；槽里的宿主事件（hev）不存，恢复后用到时按原逻辑重建；未解完的包丢掉（到下一个关键帧画面才干净）
+int nvn2_snap_codec_save(FILE *f) {
+    int e = 0;
+    pthread_mutex_lock(&g_sp_mu);
+    e |= fwrite(g_ctr, sizeof g_ctr, 1, f) != 1;
+    uint32_t s2a_snap_event_handle_of(uint64_t ev);
+    for (int i = 0; i < SP_SLOTS; i++) { int r[2] = {g_slot[i].used, g_slot[i].armed}; uint32_t hh = g_slot[i].hev ? s2a_snap_event_handle_of(g_slot[i].hev) : 0;
+        e |= fwrite(r, sizeof r, 1, f) != 1 || fwrite(&g_slot[i].want, sizeof g_slot[i].want, 1, f) != 1 || fwrite(g_slot[i].ev, sizeof g_slot[i].ev, 1, f) != 1 || fwrite(&hh, 4, 1, f) != 1; }
+    pthread_mutex_unlock(&g_sp_mu);
+    pthread_mutex_lock(&g_dec_mu); uint32_t n = 0; for (int i = 0; i < 64; i++) n += g_dec[i] != NULL;
+    e |= fwrite(&n, 4, 1, f) != 1;
+    for (int i = 0; i < 64; i++) if (g_dec[i]) { cvdec *d = g_dec[i]; uint64_t r[6] = {(uint64_t)(uintptr_t)d->guest, (uint64_t)d->codec, (uint64_t)d->w, (uint64_t)d->h, d->ctr, d->handed}; e |= fwrite(r, sizeof r, 1, f) != 1;
+        pthread_mutex_lock(&d->mu);
+        e |= fwrite(d->buf, sizeof d->buf, 1, f) != 1 || fwrite(d->ring, sizeof d->ring, 1, f) != 1 || fwrite(&d->rh, sizeof(int), 1, f) != 1 || fwrite(&d->rn, sizeof(int), 1, f) != 1
+          || fwrite(d->fill, sizeof d->fill, 1, f) != 1 || fwrite(&d->fh, sizeof(int), 1, f) != 1 || fwrite(&d->fn, sizeof(int), 1, f) != 1
+          || fwrite(&d->started, sizeof(int), 1, f) != 1 || fwrite(&d->gen, sizeof(int), 1, f) != 1 || fwrite(&d->last, sizeof(int), 1, f) != 1 || fwrite(&d->nsub, 8, 1, f) != 1;
+        pthread_mutex_unlock(&d->mu); }
+    pthread_mutex_unlock(&g_dec_mu);
+    pthread_mutex_lock(&g_img_mu);
+    e |= fwrite(g_img, sizeof g_img, 1, f) != 1 || fwrite(g_img_used, sizeof g_img_used, 1, f) != 1 || fwrite(&g_img_next, sizeof g_img_next, 1, f) != 1 || fwrite(g_cvp, sizeof g_cvp, 1, f) != 1;
+    pthread_mutex_unlock(&g_img_mu);
+    return e ? -1 : (int)n;
+}
+int nvn2_snap_codec_restore(FILE *f) {
+    int e = 0;
+    pthread_mutex_lock(&g_sp_mu);
+    sp_slots_for_session_locked();   // 槽表归本局（不然第一次用就被当成上一局清掉）
+    e |= fread(g_ctr, sizeof g_ctr, 1, f) != 1;
+    uint64_t s2a_snap_event_of_handle(uint32_t h);
+    for (int i = 0; i < SP_SLOTS && !e; i++) { int r[2]; uint32_t hh = 0;
+        // 槽里的系统事件结构（游戏拿着它的指针等）照 A 原样放回，里面的读句柄是 A 的号；宿主事件对象按这个号取 B 里同号句柄背后的那个（句柄表已恢复）
+        e |= fread(r, sizeof r, 1, f) != 1 || fread(&g_slot[i].want, sizeof g_slot[i].want, 1, f) != 1 || fread(g_slot[i].ev, sizeof g_slot[i].ev, 1, f) != 1 || fread(&hh, 4, 1, f) != 1;
+        g_slot[i].used = r[0]; g_slot[i].armed = r[1]; g_slot[i].hev = hh ? s2a_snap_event_of_handle(hh) : 0;
+        if (hh && !g_slot[i].hev) LOG("【红】即时存档恢复：视频同步点槽 %d 的事件句柄 %#x 在 B 里没有", i, hh); }
+    pthread_mutex_unlock(&g_sp_mu);
+    uint32_t n = 0; if (e || fread(&n, 4, 1, f) != 1) return -1;
+    for (uint32_t i = 0; i < n; i++) { uint64_t r[6]; if (fread(r, sizeof r, 1, f) != 1) return -1;
+        cv_init((void *)(uintptr_t)r[0], (int)r[1], (uint32_t)r[2], (uint32_t)r[3]);
+        cvdec *d = cv_of((void *)(uintptr_t)r[0]);
+        if (d->ctr != (uint32_t)r[4]) { sp_free(d->ctr); pthread_mutex_lock(&g_sp_mu); g_ctr[r[4]].used = 1; pthread_mutex_unlock(&g_sp_mu); d->ctr = (uint32_t)r[4]; }   // 游戏手里的同步句柄认的是 A 的计数器号
+        pthread_mutex_lock(&d->mu); d->handed = r[5];
+        e = fread(d->buf, sizeof d->buf, 1, f) != 1 || fread(d->ring, sizeof d->ring, 1, f) != 1 || fread(&d->rh, sizeof(int), 1, f) != 1 || fread(&d->rn, sizeof(int), 1, f) != 1
+          || fread(d->fill, sizeof d->fill, 1, f) != 1 || fread(&d->fh, sizeof(int), 1, f) != 1 || fread(&d->fn, sizeof(int), 1, f) != 1
+          || fread(&d->started, sizeof(int), 1, f) != 1 || fread(&d->gen, sizeof(int), 1, f) != 1 || fread(&d->last, sizeof(int), 1, f) != 1 || fread(&d->nsub, 8, 1, f) != 1;
+        pthread_mutex_unlock(&d->mu); if (e) return -1; }
+    pthread_mutex_lock(&g_img_mu);
+    e = fread(g_img, sizeof g_img, 1, f) != 1 || fread(g_img_used, sizeof g_img_used, 1, f) != 1 || fread(&g_img_next, sizeof g_img_next, 1, f) != 1 || fread(g_cvp, sizeof g_cvp, 1, f) != 1;
+    for (int i = 0; i < CV_POOLS; i++) { g_cvp[i].nv_on = 0; memset(&g_cvp[i].nv, 0, sizeof g_cvp[i].nv); }
+    pthread_mutex_unlock(&g_img_mu);
+    return e ? -1 : (int)n;
+}
+
+// 即时存档：同步点槽里的系统事件结构在宿主数据区、游戏拿着指向它的指针——整段登记成「交给游戏的宿主数据」，恢复时按偏移差平移游戏内存里的这类指针
+void s2a_snap_handout_range(uint64_t lo, uint64_t n, const char *name) __attribute__((weak));
+void nvn_snap_codec_register(int (*save)(FILE *), int (*restore)(FILE *));   // nvn_snap.inc（nvn_mtl.m）：解码器状态的存 / 读由本模块登记过去
+// 单独链本文件的解码单测（t_nvn2_codec）没有快照引擎、nvn_mtl.m 与 thread.c：弱缺省 = 不登记、不换算；宿主 / iOS 壳链进真定义
+__attribute__((weak)) void s2a_snap_handout_range(uint64_t lo, uint64_t n, const char *name) { (void)lo; (void)n; (void)name; }
+__attribute__((weak)) void nvn_snap_codec_register(int (*save)(FILE *), int (*restore)(FILE *)) { (void)save; (void)restore; }
+__attribute__((weak)) uint32_t s2a_snap_event_handle_of(uint64_t ev) { (void)ev; return 0; }
+__attribute__((weak)) uint64_t s2a_snap_event_of_handle(uint32_t h) { (void)h; return 0; }
+__attribute__((constructor)) static void snap_slot_range(void) { if (s2a_snap_handout_range) s2a_snap_handout_range((uint64_t)(uintptr_t)g_slot, sizeof g_slot, "nvn2_codec.sync_slots");
+    nvn_snap_codec_register(nvn2_snap_codec_save, nvn2_snap_codec_restore); }
+
+// 即时存档：本文件按整块存的宿主结构的布局指纹（snapfmt.h；不同 = 布局变了，恢复拒绝）
+#include "../../../../runtime/src/snapfmt.h"
+void nvn2_codec_snap_fps(snap_fp_cb cb) {
+    cb("codec.ctr", SNAP_FP_OF(g_ctr[0])); cb("codec.slot", SNAP_FP_OF(g_slot[0])); cb("codec.img", SNAP_FP_OF(g_img[0])); cb("codec.cvp", SNAP_FP_OF(g_cvp[0]));
+    cb("codec.cvdec", SNAP_FP_TYPE(cvdec));
 }

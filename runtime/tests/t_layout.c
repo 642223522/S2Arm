@@ -1,6 +1,7 @@
 // 布局回归（layout.c，docs/方案_地址空间根修.md）：期望值按 SDK 别名区规则（元数据 0x3FE00000、≥1 GiB 按 GiB 对齐、前后 4 KiB 保护页）、
 //   应用池 3284 MiB、宿主保留 768 MiB 手算，不调被测算式。模块段一律取 300 MiB。
 #include "../src/native.h"
+#include "../src/as_type.h"
 #define GB (1ull << 30)
 #define MB (1ull << 20)
 #define W 0x7000000000ull
@@ -19,6 +20,7 @@ static void fits62(const s2a_layout *L) {
     uint64_t reg = (L->alias_base + 0x3FE00000ull + 0x1000 + GB - 1) & ~(GB - 1);
     if (reg + 62*GB > L->alias_base + L->alias_size - 0x1000) { printf("✗ 62 GiB 地址区放不下（起 %#llx）\n", (unsigned long long)reg); bad++; }
 }
+int s2a_alias_big_tops_window(uint64_t alias_base, int alias_gb, uint64_t win_end);   // layout.c：地址空间不够这款的判据
 int main(void) {
     s2a_layout L; uint64_t mb, sb;
     // 标准布局跨度：VAMM = 63G + TLS 2M + 栈 2048M（Horizon 39 位栈区 0x80000000）+ 堆 3284M + 余量 96M + 模块；堆模式 = 32G + 模块
@@ -84,10 +86,31 @@ int main(void) {
     //   要 1G + 1G + 59130M + 8K = 61178M + 8K；模块 300M 时能给 = 窗口 − 718M + 16K → 窗口 61896M − 8K 正好收（别名长 = 要的），少 4K 不收
     EQ(s2a_layout_compute(3,80*MB,MOD,1,W,61896*MB-0x2000,&L,&mb,&sb),0); EQ(L.alias_size,61178*MB+0x2000); EQ(sb,0);
     EQ(s2a_layout_compute(3,80*MB,MOD,1,W,61896*MB-0x3000,&L,&mb,&sb),0); EQ(L.alias_size,64*GB); EQ(sb,W+428*MB);
+    // 地址空间不够这款的判据（11-20，宁漏勿误）：大区长 (|alias_gb| − 1) GiB，起点 = (别名基址 + 0x3FE00000 + 1G − 1) & −1G，末端 ≥ 窗口末 → 弹。
+    //   一款大游戏的 Mac 实局（窗口 0x70c0000000、别名基址 0x70ef9fc000 = 窗口 +761M，静态 57 GB）：起点 = 窗口 +2048M，末端 = +2048M + 56G = +59392M。
+    //   ① 窗口 59392 MB（iPhone 被快照让掉 3 GB 时；实测远端 3959 万次、0 帧）：末端 = 窗口末 → 弹；② 窗口 62464 MB（实测 0 次远端、60 帧）：不弹；
+    //   ③ 另一台 Mac：窗口 61 GB = 62464 MB、静态 63 GB → 大区 62G，末端 +2048M + 62G = +65536M > 62464M → 弹；上限不定（负值）同样按绝对值算；没有静态大区 → 不弹
+    { const uint64_t WB = 0x70c0000000ull, AB = 0x70ef9fc000ull;
+      EQ(s2a_alias_big_tops_window(AB, -57, WB + 59392 * MB), 1);
+      EQ(s2a_alias_big_tops_window(AB, -57, WB + 62464 * MB), 0);
+      EQ(s2a_alias_big_tops_window(AB, 63, WB + 62464 * MB), 1);
+      EQ(s2a_alias_big_tops_window(AB, 57, WB + 59392 * MB + 2 * MB), 0);   // 窗口末比大区末端高一点 → 不弹（宁漏）
+      EQ(s2a_alias_big_tops_window(AB, 0, WB + 1024 * MB), 0); }
     // 64 GiB 空洞、不是别名优先的款（王国之泪类：要满额堆）：放不下 63G + 526M + 3284M → 乙，堆给满 3284M + 256M 放前段，不是让到 32M
     EQ(s2a_layout_compute(3,80*MB,MOD,0,W,64*GB,&L,&mb,&sb),0); EQ(L.heap_size,3540*MB); EQ(mb,W); EQ(L.stack_size,2*GB); EQ(L.tlsio_base,W+6*GB);
     // 同空洞、别名优先（八方2 / 巫师3 / 异度3 类）：照旧甲，别名区在前、堆让到 32M
     EQ(s2a_layout_compute(3,80*MB,MOD,1,W,64*GB,&L,&mb,&sb),0); EQ(L.tlsio_base,W); EQ(L.heap_size,32*MB); EQ(sb,0);
+    // D-NGH9 / #947：别名优先的款上一局真要过 3140 MB 普通堆（wire/<号>/heap_need，svc_mem.c 读回设 s2a_layout_heap_floor_set）。期望手写：
+    //   乙（窗口 13 GB 起 50 GB）：堆区 = 3140 + 影子余量 128 = 3268M，仍在 +428M；余量后 TLS/IO 在 +(300+128+3268+96)M = +3792M
+    //   64 GiB 空洞：甲固定部分 63G+526M 再加 3140M 放不下 → 走乙（堆给够），模块在窗口起点、堆区 3268M
+    //   下限清 0 后回到原来的 192M（上面各条不受影响）
+    { void s2a_layout_heap_floor_set(uint64_t); const uint64_t W26 = 13 * GB;
+      s2a_layout_heap_floor_set(3292528640ull);
+      EQ(s2a_layout_compute(3,80*MB,MOD,49,W26,50*GB,&L,&mb,&sb),0);
+      EQ(L.heap_base,W26+428*MB); EQ(L.heap_size,3268*MB); EQ(L.tlsio_base,W26+3792*MB); EQ(L.alias_base,W26+3794*MB-0x4000); sane(&L,mb);
+      EQ(s2a_layout_compute(3,80*MB,MOD,1,W,64*GB,&L,&mb,&sb),0); EQ(mb,W); EQ(L.heap_size,3268*MB);
+      s2a_layout_heap_floor_set(0);
+      EQ(s2a_layout_compute(3,80*MB,MOD,49,W26,50*GB,&L,&mb,&sb),0); EQ(L.heap_size,192*MB); }
     // 堆模式甲：32G + 模块正好放下，照 39 位布局，模块在 +32G
     EQ(s2a_layout_compute(3,0,MOD,0,W,32*GB+MOD,&L,&mb,&sb),0);
     EQ(L.tlsio_base,W); EQ(L.stack_base,W+GB); EQ(L.heap_base,W+3*GB); EQ(L.heap_size,6*GB); EQ(L.alias_base,W+9*GB);
@@ -132,13 +155,38 @@ int main(void) {
       EQ(s2a_layout_compute(1,0,MOD,0,W36,14*GB-1*MB,&L,&mb,&sb),(uint64_t)-2);
       EQ(s2a_layout_compute(1,0,MOD,0,(1ull<<36)-32*GB,32*GB,&L,&mb,&sb),0);            // 顶正好到 2^36
       EQ(s2a_layout_compute(1,0,MOD,0,(1ull<<36)-32*GB,33*GB,&L,&mb,&sb),(uint64_t)-2);   // 越过 2^36
-      EQ(s2a_layout_compute(1,0,MOD,0,W,34*GB,&L,&mb,&sb),(uint64_t)-2);                 // 0x70_0000_0000 的窗口（39 位款的位置）对 36 位款不合法
+      // #1419：macOS 27 / iOS 27 的 2^36 以下被系统占满，36 位款窗口可整段放进 2^36 以上按 2^36 对齐的一块（游戏地址 = 宿主地址，IPC 描述符丢的高位服务层补回）。
+      //   0x70_0000_0000 = 7 × 2^36（39 位款的位置）：同一套 36 位布局平移到这一块，各区仍在块里；跨块的窗口不合法
+      EQ(s2a_layout_compute(1,0,MOD,0,W,34*GB,&L,&mb,&sb),0);
+      EQ(mb,W); EQ(L.tlsio_base,W+300*MB); EQ(L.stack_base+L.stack_size,W+0x78000000ull); EQ(L.heap_base,W+2*GB); EQ(L.alias_base,W+8*GB); EQ(L.alias_size,6*GB);
+      EQ(L.aslr_base,W); EQ(L.aslr_size,32*GB); EQ(L.aslr_base+L.aslr_size <= W+(1ull<<36),1); sane(&L,mb);
+      EQ(s2a_layout_compute(1,0,MOD,0,W+(1ull<<36)-32*GB,32*GB,&L,&mb,&sb),0);              // 顶正好到这一块末（2^39）
+      EQ(s2a_layout_compute(1,0,MOD,0,W+(1ull<<36)-32*GB,33*GB,&L,&mb,&sb),(uint64_t)-2);   // 越过这一块末
+      EQ(s2a_layout_compute(1,0,MOD,0,(1ull<<36)-16*GB,34*GB,&L,&mb,&sb),(uint64_t)-2);      // 跨 2^36 那条线
       EQ(s2a_layout_compute(1,0,1918*MB,0,W36,34*GB,&L,&mb,&sb),(uint64_t)-2); }
+    // s2a_as_type_end（as_type.h）：窗口所在地址空间的末端，0 = 本类型放不了。期望按定义手写
+    EQ(s2a_as_type_end(3,W,64*GB),1ull<<39); EQ(s2a_as_type_end(3,W,65*GB),0); EQ(s2a_as_type_end(3,1ull<<39,GB),0);
+    EQ(s2a_as_type_end(1,0x300000000ull,34*GB),1ull<<36);                       // 2^36 以下照旧
+    EQ(s2a_as_type_end(1,W,34*GB),W+(1ull<<36));                                 // 7 × 2^36 那一块
+    EQ(s2a_as_type_end(1,(1ull<<39)+GB,GB),(1ull<<39)+(1ull<<36));               // 2^39 以上的块也行（地址上限内由放窗口那边管）
+    EQ(s2a_as_type_end(1,(1ull<<36)-GB,2*GB),0); EQ(s2a_as_type_end(1,W,0),0); EQ(s2a_as_type_end(0,W,GB),0); EQ(s2a_as_type_end(1,~0ull-GB,2*GB),0);
     // 拒绝：地址空间类型不支持、窗口基址不按 GiB 对齐、窗口越过 2^39
     EQ(s2a_layout_compute(0,0,MOD,0,W,64*GB,&L,&mb,&sb),(uint64_t)-1);
     EQ(s2a_layout_compute(2,0,MOD,0,W,64*GB,&L,&mb,&sb),(uint64_t)-1);
     EQ(s2a_layout_compute(3,0,MOD,0,W+32*MB,64*GB,&L,&mb,&sb),(uint64_t)-2);
     EQ(s2a_layout_compute(3,0,MOD,0,W,65*GB,&L,&mb,&sb),(uint64_t)-2);
+    // #1441 报给游戏的别名区大小：期望用玩家现场数手算（iPhone 17 / iOS 26.3：窗口 0x3c0000000 +48 GiB、别名区 0x3de1fc000 +64 GiB、
+    //   空洞 49152 MB 放不下标准布局 76030 MB）。窗口末 0xfc0000000 − 别名起 0x3de1fc000 = 0xbe1e04000（47.53 GiB）→ 按 GiB 取整 47 GiB
+    { const uint64_t AB = 0x3de1fc000ull, AS = 64 * GB, WE = 0x3c0000000ull + 48 * GB, HOLE = 49152 * MB, NEED = 76030 * MB;
+      EQ(s2a_alias_report_size(AB, AS, WE, HOLE, NEED, 0, 0), 47 * GB);                 // 放不下、伸出窗口、没静态结论、没越界记录：收到 47 GiB
+      EQ(s2a_alias_report_size(AB, AS, WE, NEED, NEED, 0, 0), AS);                      // 空洞放得下标准布局：一个字节不变
+      EQ(s2a_alias_report_size(AB, AS, WE, HOLE, NEED, 12, 0), AS);                     // 别名优先（已按静态结论收进窗口的那支）：不在这里动
+      EQ(s2a_alias_report_size(AB, AS, WE, HOLE, NEED, -5, 0), AS);                     // 上限不定：宁慢不崩
+      EQ(s2a_alias_report_size(AB, AS, WE, HOLE, NEED, 0, 1), AS);                      // 上次收小后越界过：恢复原值
+      EQ(s2a_alias_report_size(AB, 40 * GB, AB + 41 * GB, HOLE, NEED, 0, 0), 40 * GB);  // 别名区整段在窗口里：不收
+      EQ(s2a_alias_report_size(AB, AS, AB + 7 * GB + 512 * MB, HOLE, NEED, 0, 0), AS);  // 窗口里只剩 7.5 GiB（取整 7 < 8）：不收
+      EQ(s2a_alias_report_size(AB, AS, AB - GB, HOLE, NEED, 0, 0), AS);                 // 窗口末在别名起点之前：不收
+    }
     printf("%s t_layout：%d 处不符\n", bad ? "✗" : "✓", bad);
     return bad != 0;
 }

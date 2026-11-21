@@ -251,21 +251,25 @@ static int parse_graphics(const uint8_t *bytes, size_t length, struct fd_program
         uint32_t mask_value = 0;
         if (!s2a_jv_obj_find(st, "attributeReadMask", &mask) && !s2a_jv_u32(mask, &mask_value))
             out->stage[idx].attr_mask = mask_value;
-        // c0Reads（可选）：编译器证得的本阶段 c0 读集。缺字段或 null = 未知（binst_unread 留 0，回放照旧拷 base instance）；
-        // 数组且没有一段与 c0 + 0x644 的 4 字节相交 = 已证不读。写了但形状不对如实拒，不当成未知。
-        { struct s2a_jv reads;
-          if (!s2a_jv_obj_find(st, "c0Reads", &reads) && !s2a_jv_is_null(reads)) {
-              int rn = s2a_jv_arr_count(reads); int hit = 0;
-              if (rn < 0) return fail(why, why_size, "stage c0 reads must be an array or null");
-              for (int r = 0; r < rn; r++) {
-                  struct s2a_jv pair, off, size; uint32_t o = 0, z = 0;
-                  if (s2a_jv_arr_item(reads, r, &pair) || s2a_jv_arr_count(pair) != 2 || s2a_jv_arr_item(pair, 0, &off) ||
-                      s2a_jv_arr_item(pair, 1, &size) || compute_u32(off, &o) || compute_u32(size, &z) || !z)
-                      return fail(why, why_size, "stage c0 read range is invalid");
-                  if ((uint64_t)o < FD_C0_BASE_INSTANCE + 4 && (uint64_t)o + z > FD_C0_BASE_INSTANCE) hit = 1;
-              }
-              out->stage[idx].binst_unread = !hit;
-          } }
+        // 两份读集均逐范围校验；缺字段 / null 是未知，不能当成不读。
+        for (int variant = 0; variant < 2; variant++) {
+            struct s2a_jv reads;
+            const char *field = variant ? "c0ReadsStatic" : "c0Reads";
+            if (s2a_jv_obj_find(st, field, &reads)) continue;
+            if (variant) out->stage[idx].binst_static_present = 1;
+            if (s2a_jv_is_null(reads)) continue;
+            int rn = s2a_jv_arr_count(reads), hit = 0;
+            if (rn < 0) return fail(why, why_size, "stage c0 reads must be an array or null");
+            for (int r = 0; r < rn; r++) {
+                struct s2a_jv pair, off, size; uint32_t o = 0, z = 0;
+                if (s2a_jv_arr_item(reads, r, &pair) || s2a_jv_arr_count(pair) != 2 || s2a_jv_arr_item(pair, 0, &off) ||
+                    s2a_jv_arr_item(pair, 1, &size) || compute_u32(off, &o) || compute_u32(size, &z) || !z)
+                    return fail(why, why_size, "stage c0 read range is invalid");
+                if ((uint64_t)o < FD_C0_BASE_INSTANCE + 4 && (uint64_t)o + z > FD_C0_BASE_INSTANCE) hit = 1;
+            }
+            if (variant) out->stage[idx].binst_unread_static = !hit;
+            else out->stage[idx].binst_unread = !hit;
+        }
         // 片元着色器的输出映射（每个颜色目标 4 位、RGBA 各 1 位）：在阶段的 info 里；读不到 = 全 1（不屏蔽）
         out->stage[idx].fragment_output_map = 0xffffffffu;
         { struct s2a_jv info = { NULL, 0 }, om = { NULL, 0 }; uint32_t om_v = 0;
@@ -326,6 +330,23 @@ static int parse_graphics(const uint8_t *bytes, size_t length, struct fd_program
                     return fail(why, why_size, "duplicate descriptor binding");
             if (!s2a_jv_obj_find(b, "stage", &stage) && !s2a_jv_str(stage, stage_text, sizeof stage_text))
                 snprintf(dst->stage, sizeof dst->stage, "%s", stage_text);
+            { struct s2a_jv pool = { NULL, 0 }; char pool_text[16];
+              if (!s2a_jv_obj_find(b, "pool", &pool)) {
+                  // 整池数组（编译器 ResolvePoolSlots）：按池编号读整个 NVN 贴图池 / 采样器池。只认 v2 的贴图绑定，不能同时带任何槽位来源；
+                  //   count 是池长，上限 65534（布局项 count 16 位，还要一项表尾 dummy）。形状不对整份拒，不退化成「从槽 0 起的数组」
+                  struct s2a_jv cnt = { NULL, 0 }, tmp; uint32_t cnt_v = 0;
+                  if (s2a_jv_str(pool, pool_text, sizeof pool_text) || (strcmp(pool_text, "texture") && strcmp(pool_text, "sampler")) ||
+                      !v2 || dst->kind != 2 || has_slot || !s2a_jv_obj_find(b, "samp_slot", &tmp) || !s2a_jv_obj_find(b, "constSampler", &tmp) ||
+                      !s2a_jv_obj_find(b, "uboSlot", &tmp) || s2a_jv_obj_find(b, "count", &cnt) || s2a_jv_u32(cnt, &cnt_v) || cnt_v < 2 || cnt_v > 0xfffe ||
+                      nvn_vk_program_graphics_stage_index(dst->stage) < 0 || nvn_vk_program_graphics_stage_index(dst->stage) > 4)   // 只认图形阶段（计算分发不建池快照）
+                      return fail(why, why_size, "invalid pool array binding");
+                  dst->pool = (uint8_t)(strcmp(pool_text, "texture") ? 2 : 1);
+                  dst->count = (uint16_t)cnt_v;
+                  dst->stage_idx = (int8_t)nvn_vk_program_graphics_stage_index(dst->stage);
+                  dst->tex_slot = -1; dst->samp_slot = -1;
+                  out->binding_count++;
+                  continue;
+              } }
             dst->count = 1;
             { struct s2a_jv cnt = { NULL, 0 }; uint32_t cnt_v = 0;
               if (!s2a_jv_obj_find(b, "count", &cnt)) {
@@ -342,9 +363,28 @@ static int parse_graphics(const uint8_t *bytes, size_t length, struct fd_program
             dst->ubo_slot = (int16_t)(dst->slot >= 3 ? dst->slot - 3 : 0);
             dst->tex_slot = -1; dst->samp_slot = -1;
             if (ubo_texture_parse(b, dst, why, why_size)) return -1;
-            struct s2a_jv samp = { NULL, 0 }; uint32_t samp_v = 0;
+            struct s2a_jv samp = { NULL, 0 }, csamp = { NULL, 0 }; uint32_t samp_v = 0, csamp_v = 0;
             int has_samp = !s2a_jv_obj_find(b, "samp_slot", &samp);
-            if (has_samp) {
+            int has_csamp = !s2a_jv_obj_find(b, "constSampler", &csamp);
+            if (has_csamp) {
+                // #1594：类型 3 句柄，采样器是着色器里的立即数采样器池下标 constSampler（0..4095，句柄高 12 位的范围；下标 0 是真下标）。
+                //   采样器来源记成 FD_SAMP_ID / samp_val，samp_pool = 1（池下标，回放要加采样器池起点），
+                //   不进 samp_slot（那是 c2 采样器表的槽）、也不是「取同字高位」。贴图字有两种来源，都只认 v2 的单个贴图：
+                //     * c2 分离贴图表（片 2）：slot 90..344 偶 → 分离贴图槽 128 + k，没有 UBO 来源；
+                //     * 游戏 UBO（片 3）：平铺的 uboSlot / uboOffset（ubo_texture_parse 已保证没有 slot、没有 sampler 对象），贴图字在 tex_u 处；
+                //       uboHandle 对象写法（离线库那一套，采样器另有 sampler 对象）不接。
+                //   缺来源 / 奇字 / 表外 / 数组 / 同时给 samp_slot 或 uboHandle / 不是贴图：一律拒，
+                //   不退化成只填贴图来源（平铺 UBO 的默认是「采样器取同一个字的高 12 位」，那里不是采样器号，会静默绑错）。
+                struct s2a_jv uh = { NULL, 0 };
+                int ubo_flat = dst->tex_ubo && s2a_jv_obj_find(b, "uboHandle", &uh);   // 找不到 uboHandle = 平铺写法
+                int c2_form = !dst->tex_ubo && dst->slot >= 90 && dst->slot < 346 && !(dst->slot & 1);
+                if (!v2 || dst->kind != 2 || has_samp || s2a_jv_u32(csamp, &csamp_v) || csamp_v > 4095 ||
+                    dst->count != 1 || !(c2_form || ubo_flat))
+                    return fail(why, why_size, "invalid constant sampler source");
+                if (c2_form) dst->tex_slot = (int16_t)(128 + (dst->slot - 90) / 2);
+                else memset(&dst->samp_u, 0, sizeof dst->samp_u);   // 平铺写法把采样器字默认成贴图字本身；常量采样器不读任何字
+                dst->samp_src = FD_SAMP_ID; dst->samp_val = (uint16_t)csamp_v; dst->samp_pool = 1;
+            } else if (has_samp) {
                 if (!v2 || dst->kind != 2 || s2a_jv_u32(samp, &samp_v) || samp_v >= 128 ||
                     dst->count != 1 || dst->slot < 90 || dst->slot >= 346 || (dst->slot & 1))
                     return fail(why, why_size, "invalid separate sampler source");
@@ -352,6 +392,9 @@ static int parse_graphics(const uint8_t *bytes, size_t length, struct fd_program
                 dst->samp_slot = (int16_t)samp_v;
             } else if (dst->kind == 2 && dst->slot >= 8 && dst->slot < 72 && !(dst->slot & 1)) {
                 dst->tex_slot = (int16_t)((dst->slot - 8) / 2);
+            } else if (dst->kind == 2 && dst->count == 1 && dst->slot >= 72 && dst->slot < 88 && !(dst->slot & 1)) {
+                // c2 图像表字 72..86 同组合槽 32..39，回放按 iOS tex_slot_h 取有效句柄。
+                dst->tex_slot = (int16_t)(32 + (dst->slot - 72) / 2);
             } else if (dst->kind == 2 && dst->count == 1 && dst->slot >= 90 && dst->slot < 346 && !(dst->slot & 1)) {
                 // 立即句柄直接读 c2 分离贴图表的字（无分离采样器：取尺寸 / texelFetch，采样器取同字高位，同组合槽）：分离贴图槽 128 + k
                 dst->tex_slot = (int16_t)(128 + (dst->slot - 90) / 2);
@@ -532,6 +575,45 @@ static int compute_storage(struct s2a_jv b, struct nvn_vk_compute_storage *s) {
     }
     return -1;
 }
+/* #1594 片 7：计算阶段的类型 3 句柄（贴图字在 c2 分离贴图表，采样器池下标是着色器里的立即数 constSampler）。
+ * 合同与图形片 2 同一份：v2、单个贴图、slot = c2 分离贴图表的偶数字 90..344、constSampler 0..4095（csamp 是它的值），
+ * 且不带 samp_slot / uboSlot / uboOffset / uboHandle / sampler（贴图字来源要唯一、采样器来源要唯一）。
+ * 返回 0 = 合同成立（*imm = 池下标）；-1 = 形态不接，调用方具名拒——包括游戏 UBO 来源（计算侧仍不接）。 */
+static int compute_const_sampler(struct s2a_jv b, struct s2a_jv csamp, int v2, int kind, uint32_t *imm) {
+    struct s2a_jv v;
+    uint32_t slot;
+    if (!v2 || kind != 2 || compute_u32(csamp, imm) || *imm > 4095u) return -1;
+    if (s2a_jv_obj_find(b, "slot", &v) || compute_u32(v, &slot) || slot < 90 || slot >= 346 || (slot & 1u)) return -1;
+    if (!s2a_jv_obj_find(b, "samp_slot", &v) || !s2a_jv_obj_find(b, "uboSlot", &v) || !s2a_jv_obj_find(b, "uboOffset", &v) ||
+        !s2a_jv_obj_find(b, "uboHandle", &v) || !s2a_jv_obj_find(b, "sampler", &v)) return -1;
+    return 0;
+}
+/* 整池数组绑定（pool = "texture" / "sampler"）：整个 NVN 贴图池 / 采样器池当一个描述符数组（编译器 ResolvePoolSlots，
+ * 着色器按运行时下标取句柄、追不到槽时的回退）。合同与图形阶段同一份（nvn_vk_program_parse 的 pool 分支）：只认 v2 的贴图绑定、
+ * 不带任何槽位来源，count 是池长 2..0xfffe（布局项 count 是 16 位，还要一项表尾 dummy）；计算侧另要求 stage 是 cs，
+ * 且不带存储来源字段 / 每组字节数。形状不对整份拒，不退化成「从槽 0 起的数组」。返回 NULL = 已填好 dst，否则是拒绝原因。 */
+static const char *compute_pool_binding(struct s2a_jv b, struct s2a_jv pool, int v2, uint32_t count, struct fd_binding *dst) {
+    static const char *const forbidden[] = {
+        "slot", "samp_slot", "constSampler", "uboSlot", "uboOffset", "uboHandle",   /* 槽位 / 句柄来源 */
+        "rw", "cbSlot", "cbOffset", "nvnSlot", "uboPtr",                              /* 存储来源 */
+        "bytesPerGroup" };                                                            /* spill */
+    char text[16];
+    struct s2a_jv extra;
+    if (s2a_jv_str(pool, text, sizeof text) || (strcmp(text, "texture") && strcmp(text, "sampler")))
+        return "compute pool array: pool is neither texture nor sampler";
+    if (!v2) return "compute pool array needs a v2 result";
+    if (dst->kind != 2 || dst->is_support) return "compute pool array on a non-texture binding";
+    if (!compute_string_is(b, "stage", "cs")) return "compute pool array binding stage is not cs";
+    if (count < 2 || count > 0xfffe) return "compute pool array length is outside 2..65534";
+    for (unsigned k = 0; k < sizeof forbidden / sizeof forbidden[0]; ++k)
+        if (!s2a_jv_obj_find(b, forbidden[k], &extra)) return "compute pool array binding carries a slot or storage source field";
+    dst->pool = (uint8_t)(strcmp(text, "texture") ? 2 : 1);
+    dst->count = (uint16_t)count;
+    snprintf(dst->stage, sizeof dst->stage, "cs");
+    dst->stage_idx = 5;   /* NVN CS index, same as the other compute bindings. */
+    dst->slot = -1; dst->ubo_slot = -1; dst->tex_slot = -1; dst->samp_slot = -1;
+    return NULL;
+}
 int nvn_vk_program_parse_compute(const uint8_t *bytes, size_t length,
     struct nvn_vk_compute_program *out, char *why, size_t why_size) {
     if (!bytes || !out) return fail(why, why_size, "compute result arguments are missing");
@@ -604,13 +686,16 @@ int nvn_vk_program_parse_compute(const uint8_t *bytes, size_t length,
         if (s2a_jv_obj_find(b, "binding", &value) || compute_u32(value, &u) || u > INT_MAX) CS_FAIL("compute binding number invalid");
         dst->binding = (int)u;
         if (s2a_jv_obj_find(b, "count", &value) || compute_u32(value, &u) || !u) CS_FAIL("compute binding count is invalid");
-        if (u > FD_MAX_ARRAY_ELEMENTS) {
+        // 整池数组（带 pool 字段）的 count 是池长，不走下面「普通数组」的上限；它的形状在后面 compute_pool_binding 里整体核
+        struct s2a_jv pool_v = { NULL, 0 };
+        const int has_pool = !s2a_jv_obj_find(b, "pool", &pool_v);
+        if (!has_pool && u > FD_MAX_ARRAY_ELEMENTS) {
             char message[128]; snprintf(message, sizeof message, "stage cs descriptor array length=%u exceeds %u", u, FD_MAX_ARRAY_ELEMENTS);
             nvn_vk_program_free_compute(out);
             fail(why, why_size, message);
             return NVK_PROGRAM_ARRAY_UNSUPPORTED;
         }
-        if (u != 1) CS_FAIL("compute descriptor arrays are unsupported");
+        if (!has_pool && u != 1) CS_FAIL("compute descriptor arrays are unsupported");
         dst->count = 1;
         for (int j = 0; j < i; ++j)
             if (out->bindings[j].set == dst->set && out->bindings[j].binding == dst->binding) CS_FAIL("duplicate compute binding");
@@ -619,7 +704,32 @@ int nvn_vk_program_parse_compute(const uint8_t *bytes, size_t length,
         else if (compute_string_is(b, "kind", "storage")) dst->kind = 1;
         else if (compute_string_is(b, "kind", "texture")) dst->kind = 2;
         else if (compute_string_is(b, "kind", "image")) dst->kind = 3;
+        else if (compute_string_is(b, "kind", "spill")) dst->kind = 4;
         else CS_FAIL("unknown compute binding kind");
+        if (has_pool) {   // 整池数组（计算分发按池建快照绑整表，回放 rp_dispatch）：形状整体核、自己收口，不进下面的槽位 / 来源检查，也不当成普通贴图数组
+            const char *bad = compute_pool_binding(b, pool_v, v2, u, dst);
+            if (bad) CS_FAIL(bad);
+            out->binding_count++;
+            continue;
+        }
+        // #1594 片 7：类型 3 句柄（贴图字在 c2 分离贴图表、采样器池下标是着色器里的立即数）。计算侧接 c2 这一种形态，合同同图形片 2
+        //   （compute_const_sampler）；别的形态——游戏 UBO 来源、越界、奇字、与 samp_slot 并存、不是贴图——一律拒，
+        //   带 constSampler 的计算绑定不能被当成「没有 samp_slot = 采样器取同字高位」绑成错的采样器。
+        //   放在 slot 等检查之前，原因才不会被别的拒绝盖住。
+        uint32_t csamp_v = 0; int has_csamp = 0;
+        { struct s2a_jv csamp;
+          if (!s2a_jv_obj_find(b, "constSampler", &csamp)) {
+              if (compute_const_sampler(b, csamp, v2, dst->kind, &csamp_v)) CS_FAIL("compute constant sampler source is invalid");
+              has_csamp = 1;
+          } }
+        {   // 每线程组字节数只属于 spill；spill 必须带、且 4 字节对齐、不超过客体上限 48 KiB；整个程序最多一个
+            struct s2a_jv per; int has_per = !s2a_jv_obj_find(b, "bytesPerGroup", &per);
+            if (dst->kind == 4) {
+                if (!has_per || compute_u32(per, &u) || !u || (u & 3) || u > 48u * 1024u) CS_FAIL("compute spill bytesPerGroup is missing or invalid");
+                if (out->spill_bytes) CS_FAIL("compute program has more than one spill binding");
+                out->spill_bytes = u;
+            } else if (has_per) CS_FAIL("compute non-spill binding carries bytesPerGroup");
+        }
         // texture (kind 2) 是 compute 的一等资源：slot 就是 NVN c2 组合纹理表里的 handleIndex，
         // 下面按 8+2*slot 校验并换算出 NVN 纹理槽。存储图像（kind 3）还没接：显式拒绝并把
         // set/binding/handleIndex 写进原因（不绑定占位图像、不静默丢一条描述符）。
@@ -643,7 +753,8 @@ int nvn_vk_program_parse_compute(const uint8_t *bytes, size_t length,
             if (compute_u32(value, &u) || u > INT_MAX) CS_FAIL("compute guest slot invalid");
             dst->slot = (int)u;
         }
-        if (!dst->is_support && dst->kind != 1 && dst->slot < 0) CS_FAIL("compute binding has no reflected guest slot");
+        if (dst->kind == 4 && dst->slot >= 0) CS_FAIL("compute spill binding carries a guest slot");
+        if (!dst->is_support && dst->kind != 1 && dst->kind != 4 && dst->slot < 0) CS_FAIL("compute binding has no reflected guest slot");
         // 图像（kind 3）：handleIndex 指驱动 c2 图像句柄表（字节 0x120 起 8 槽 × 8 字节 = 4 字节字下标 72..86 偶数，
         //   同 iOS nvn_mtl.m C2_IMG / tex_slot_h），NVN 图像槽 = (handleIndex − 72) / 2；回放按 BindImage 的槽取（rp_draw NVN_RB_IMG）
         if (dst->kind == 3 && (dst->slot < 72 || dst->slot >= 88 || (dst->slot & 1))) {
@@ -662,6 +773,9 @@ int nvn_vk_program_parse_compute(const uint8_t *bytes, size_t length,
             if (!v2 || dst->kind != 2 || compute_u32(samp, &sv) || sv >= 128 ||
                 dst->slot < 90 || dst->slot >= 346 || (dst->slot & 1)) CS_FAIL("compute separate sampler source invalid");
             dst->samp_slot = (int16_t)sv;
+        }
+        if (has_csamp) {   // 采样器 = 着色器里的立即数池下标；samp_slot 仍为 -1，不进 c2 采样器表（回放：采样器号 = 贴图字高 12 位 | 池下标，再加池起点）
+            dst->samp_src = FD_SAMP_ID; dst->samp_val = (uint16_t)csamp_v; dst->samp_pool = 1;
         }
         if (dst->kind == 0 && !dst->is_support) {
             // NVN cbuf 语义（与图形侧 nvn_vk_first_draw.c 同一套）：0 = c0/support、1 = c1 常量段、
@@ -768,31 +882,3 @@ int nvn_vk_program_parse_compute(const uint8_t *bytes, size_t length,
     return 0;
 }
 
-// SPIR-V ExecutionModel per stage slot; slots 0/1 feed the vs/fs draw paths,
-// slots 2-4 only feed the pre-raster storage scan below.
-static const uint32_t FD_STAGE_MODEL[FD_MAX_STAGES] = { 0, 4, 3, 1, 2, 5 };
-static const char *const FD_STAGE_LABEL[FD_MAX_STAGES] = {
-    "vertex", "fragment", "geometry", "tessellation control", "tessellation evaluation", "compute" };
-// Pre-raster stages covered by the writeStages 0x1d admission mask: vs, gs, tcs, tes.
-static const int FD_SCAN_STAGES[4] = { 0, 2, 3, 4 };
-int nvn_vk_program_vertex_storage_safe(const uint8_t *bytes, size_t length, char *why, size_t why_size) {
-    struct fd_program p;
-    memset(&p, 0, sizeof p);
-    int rc = nvn_vk_program_parse_graphics(bytes, length, &p, why, why_size);
-    if (!rc) {
-        for (int s = 0; s < 4 && !rc; s++) {
-            int idx = FD_SCAN_STAGES[s];
-            if (!p.stage[idx].present) continue;
-            int need = s2a_spirv_storage_need(p.stage[idx].spirv, p.stage[idx].spirv_bytes,
-                                              FD_STAGE_MODEL[idx]);
-            if (need != 0) {
-                char text[160];
-                snprintf(text, sizeof text, need < 0 ? "%s SPIR-V storage check invalid" :
-                         "%s program requires vertexPipelineStoresAndAtomics", FD_STAGE_LABEL[idx]);
-                rc = fail(why, why_size, text);
-            }
-        }
-    }
-    nvn_vk_program_free(&p);
-    return rc;
-}

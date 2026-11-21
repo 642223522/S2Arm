@@ -183,6 +183,7 @@ struct LaunchSettingsSheet: View {
                                 }
                             }
                         }
+                        PreviousSaveRow(model: model, gameID: gameID, t: t)   // 回到上一份存档（有上一份才显示）
                     }
                     .padding(.horizontal, LauncherTheme.Space.page).padding(.bottom, LauncherTheme.Space.section)
                 }
@@ -298,10 +299,27 @@ struct LaunchSettingsSheet: View {
                         .disabled(!ch.ok || saving || model.busy)
                 }
             }
+        case "text":
+            let option = options[item.id]
+            CardRow(title, detail: item.detail(lang)) {
+                TextField("192.168.1.20", text: Binding(get: { option?.value as? String ?? "" }, set: { value in
+                    options[item.id] = LaunchOption(["available": true, "value": value])
+                }))
+                .textFieldStyle(.roundedBorder).frame(width: 150).accessibilityLabel(title)
+                .accessibilityIdentifier("launch." + item.id)
+                .onSubmit { Task { await load([item.id: options[item.id]?.value as? String ?? ""]) } }
+                .disabled(saving || model.busy)
+                Button(t("input.save")) {
+                    Task { await load([item.id: options[item.id]?.value as? String ?? ""]) }
+                }.buttonStyle(LauncherSecondaryButtonStyle()).disabled(saving || model.busy)
+            }
         case "mods":
             CardRow(title, detail: modsNote(item)) {
-                Button(t("display.mods.import")) { importMods() }.controllerButtonStyle(LauncherSecondaryButtonStyle())
-                    .controllerID("launch.mods.import").disabled(saving || model.busy)
+                HStack(spacing: 10) {
+                    ModHelpButton(text: t("mods.help"), label: t("mods.help.label"), id: "launch.mods.help")   // mod 格式说明（11-17 维护者：玩家不知道支持什么、去哪找）
+                    Button(t("display.mods.import")) { importMods() }.controllerButtonStyle(LauncherSecondaryButtonStyle())
+                        .controllerID("launch.mods.import").disabled(saving || model.busy)
+                }
             }
             ForEach(mods.items) { m in
                 CardRow("  " + m.id, detail: t("display.mods.files").replacingOccurrences(of: "{0}", with: String(m.files))

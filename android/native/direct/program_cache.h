@@ -28,6 +28,15 @@ int s2a_program_cache_load(const char *dir, const uint8_t identity[32],
                            uint8_t **bytes, size_t *len,
                            uint8_t result_sha[32], char *why, size_t why_size);
 
+// 只读文件头（88 字节）：命中返回 0，给出头里记的结果摘要和负载长度；不读负载、也不重算摘要。
+// 用途：调用方只想知道「这个身份的结果是不是某份已常驻的结果」，是的话不必把整份读进来再建一遍。
+// 校验了：magic / 版本 / 头长 / 内部身份与查询身份一致 / 负载长度在界内 / 文件长度 = 头长 + 负载长度（截断的不认）。
+// 没校验（不读负载就校验不了）：负载摘要——头里的结果摘要只是文件自己的声明（正式读取 s2a_program_cache_load 才重算比对）。
+// 0 = 头对；1 = 没有这个身份的文件（ENOENT）；-1 = 参数不对 / 打不开 / 头不对。非 0 都写 why（可为 NULL）；
+// 不计入 hits / misses / failures（那三个只数正式读取）。
+int s2a_program_cache_probe(const char *dir, const uint8_t identity[32],
+                            uint8_t result_sha[32], uint64_t *len, char *why, size_t why_size);
+
 // 写入：同目录临时文件 → 文件 fsync → 原子 rename → 父目录 fsync；失败返回 -1。
 // 文件同步失败不改名；目录同步失败时目标已可见，不回滚，不记为成功写入。
 // 同步执行，供测试和收尾路径使用；热路径用 store_async。

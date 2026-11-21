@@ -29,14 +29,24 @@ import sys
 
 import batch as plans
 from core import Cancelled, Paused, atomic, journal
-from errors import Failure
+from errors import Failure, library_lock_failure
 import filelock
 
-OPERATION = {"mac": "build", "iphone": "ipa"}
-SUPPORTED = ("mac", "iphone") if sys.platform == "darwin" else ("iphone",)   # 这台电脑能出的平台：Mac 版只能在 Mac 上出
+OPERATION = {"mac": "build", "iphone": "ipa", "appletv": "ipa", "android": "android"}   # Apple TV：同一个 ipa 作业，请求带 platform = "tvos"（tvOS 壳与 image/tvos 由出包流程出）
+SUPPORTED = ("mac", "iphone", "appletv") if sys.platform == "darwin" else ("iphone", "appletv")   # 这台电脑能出的平台：Mac 版只能在 Mac 上出；Apple TV 包 Windows 也能出（要安装包带的 Shell-tvOS，tvos.derive）
 UNSUPPORTED_MESSAGE = "这台电脑出不了这个平台的包"
+
+
+def supported(platform):
+    """安卓（开关后，android_export.enabled）：Mac 与 Windows 都出得了（预编引擎 APK 组装，不要 Gradle）"""
+    if platform == "android":
+        import android_export
+        return android_export.enabled()
+    return platform in SUPPORTED
 CHILD_ENTRY = Path(__file__).resolve().with_name("main.py")
-CHILD_KEYS_DROPPED = ("plan", "taskId", "jobId", "operation", "gameId", "target", "followUp", "location", "spaceOverride", "parentPid")
+# 子作业也是作业进程：作业层自己读的开关要原样传下去（c.env() 是给外部工具的环境，会清掉 S2A_*，从那里起的子作业永远读到缺省）
+CHILD_SWITCHES = ("S2A_ANDROID_EXPORT", "S2A_ANDROID_ENGINE")
+CHILD_KEYS_DROPPED = ("plan", "taskId", "jobId", "operation", "gameId", "target", "followUp", "location", "spaceOverride", "parentPid", "installSerial")
 
 
 def child_command(request_file):
@@ -55,7 +65,7 @@ def export(c):
         with filelock.held(c.private / "export.lock", holder=c.lock_holder()):
             return _run(c, plan)
     except filelock.Busy as busy:
-        raise Failure("已经有一个出包在进行：等它出完或取消后再出。", code="library_busy", holder=busy.holder) from None
+        raise library_lock_failure(busy.holder, "已经有一个出包在进行：等它出完或取消后再出。") from None
 
 
 class _Book:
@@ -109,7 +119,7 @@ def _run(c, plan):
         try:
             where = dict(gameId=gid, platform=platform, task=child, index=index, count=total)
             c.emit("step", f"出 {item['name']}（{platform}）", step=where)
-            outcome = dict(state="failed", message=UNSUPPORTED_MESSAGE) if platform not in SUPPORTED else \
+            outcome = dict(state="failed", message=UNSUPPORTED_MESSAGE) if not supported(platform) else \
                 _run_step(c, child, gid, platform, dict(plan, sgrade=False) if item.get("sgrade") is False else plan, location, followUp=platform == "iphone" and bool(rest))
         except Cancelled:
             if not getattr(c, "parent_gone", False):
@@ -158,6 +168,12 @@ def _run_step(c, child, gid, platform, plan, location, followUp):
         request["spaceOverride"] = True
     if platform == "iphone" and plan.get("deviceTarget"):
         request["target"] = plan["deviceTarget"]
+    if platform == "android" and plan.get("androidSerial"):   # 出好接着装到这台已连接的手机（adb 序列号，androidDevices 列出的）
+        request["installSerial"] = plan["androidSerial"]
+    if platform == "appletv":
+        request["platform"] = "tvos"
+        if sys.platform != "darwin":   # Windows 装不到电视：Apple TV 包出好接着导出安装包（.ipa，资源在 App 本体里，玩家自己签名装；tvos.export_tv）
+            request["tvExport"] = True
     if plan.get("sgrade") is False:   # 出包页取消「S 级优化（Beta）」（单款：计划顶层；批量：条目 sgrade，按款记住）：各平台都不带社区补丁与金手指（pack/jobs/patches.py prepare）
         request["sgrade"] = False
     if followUp:
@@ -165,7 +181,6 @@ def _run_step(c, child, gid, platform, plan, location, followUp):
     path = c.logs / "jobs" / (child + ".request.json")
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic(path, request)
-    os.chmod(path, 0o600)
     seen = {}
     def relay(line):
         try:
@@ -178,7 +193,8 @@ def _run_step(c, child, gid, platform, plan, location, followUp):
             seen["last"] = event
         if event.get("type") != "heartbeat":
             c.emit("child", "", transient=True, step=dict(gameId=gid, platform=platform, task=child), event=event)
-    c.run(child_command(path), log=c.logs / (child + ".export.log"), on_line=relay, timeout=0, ok_codes=(0, 1, 2, 130))
+    env = dict(c.env(), **{k: os.environ[k] for k in CHILD_SWITCHES if k in os.environ})
+    c.run(child_command(path), log=c.logs / (child + ".export.log"), env=env, on_line=relay, timeout=0, ok_codes=(0, 1, 2, 130))
     return _outcome(c, child, seen.get("last"))
 
 
@@ -192,7 +208,7 @@ def _outcome(c, child, last):
         out = dict(state=state if state in ("completed", "failed", "cancelled") else "failed", message=last.get("message") or "")
         if out["state"] == "failed" and error.get("code"):
             out["code"] = error["code"]
-        for key in ("outputPath", "ipa", "ipaBytes", "packBytes", "outputBytes", "notes", "boost"):   # notes：降级继续的玩家提示（完成卡逐条显示）；boost：自动配好的金手指 / 补丁（完成页动效）
+        for key in ("outputPath", "ipa", "ipaBytes", "packBytes", "outputBytes", "notes", "boost", "apk", "installedSerial"):   # notes：降级继续的玩家提示（完成卡逐条显示）；boost：自动配好的金手指 / 补丁（完成页动效）
             if result.get(key) not in (None, ""):
                 out[key] = result[key]
         if result.get("outputPath") or result.get("ipa"):

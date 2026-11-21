@@ -15,12 +15,14 @@ import contextlib
 import json
 import os
 import re
+import socket
 import sys
 import shutil
 import time
 from pathlib import Path
 
 from core import Failure, atomic, contained, read, resolve_path
+from errors import library_lock_failure
 
 VERSION = 4   # 2：每款进 games/<英文名>/；3：iPhone 产物进每款 image/ios、装机产物与设备记录进默认位置根（_upgrade_3）；4：库外的工具缓存 / 日志搬进默认位置（_upgrade_4）
 GAME_JSON = "game.json"
@@ -324,16 +326,32 @@ def _move_folder(c, gid, src, dest_root):
         try:
             copy_tree_links(src, temporary)
             _verify_copy(src, temporary, strict=False)
-            for sub in ("saves", "save-backups"):
-                if (src / sub).is_dir():
-                    _verify_copy(src / sub, temporary / sub, strict=True)
+            for sub in save_entries(src):   # 存档类逐字节核（唯一来源 save_entries）
+                if sub.is_dir():
+                    _verify_copy(sub, temporary / sub.name, strict=True)
         except Failure:
             shutil.rmtree(temporary, ignore_errors=True)
             raise Failure("拷到新位置后核对不一致，没有移动（原位置的文件都还在）。", code="job_failed")
         os.replace(temporary, dest)
-        shutil.rmtree(src)
+        remove_tree(src)
     _retarget_links(dest, src, dest)
     return dest
+
+
+def remove_tree(path):
+    """删掉搬走后的旧文件夹（同 shutil.rmtree），只容忍「文件已经不在」：exFAT 等非 APFS 盘上每个文件旁有 AppleDouble 伴随文件 ._<名>，
+    删本体时系统会把它一起删掉，rmtree 先列出的 ._<名> 再去删就找不到（#1720 / 诊断#5d659a：游戏已搬好、旧夹删了一半，整个任务却报失败）。
+    别的错误照抛；删完旧文件夹还在也照抛"""
+    path = Path(path)
+    def gone(func, p, exc):
+        if not isinstance(exc if isinstance(exc, BaseException) else exc[1], FileNotFoundError):
+            raise exc if isinstance(exc, BaseException) else exc[1]
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=gone)
+    else:
+        shutil.rmtree(path, onerror=gone)
+    if os.path.lexists(path):
+        raise OSError(f"旧文件夹删完还在：{path}")  # 非玩家句
 
 
 def _same_volume(a, b):
@@ -435,10 +453,10 @@ def image_ios(c, gid, create=True):
     return path(c, gid, "image", "ios", create=create)
 
 
-# ---- 游戏程序专用文件夹（11-16 维护者：玩家打完包常删输出目录、之后不碰电脑，更新 S2Arm 时组容器要的游戏程序跟着丢了）----
-# 默认位置根 .programs/<程序号>/：kit/（组容器的程序件）、original-exefs/（原始程序，S 级升级用，sgrade.py）、ios.json（程序件的兼容记录，同 game.json 的 ios）。
-#   按程序号分、不在游戏文件夹里：删游戏文件夹、换存放位置删旧位置、「释放空间」都不碰它；只有「删除游戏」（library.delete：从库里删掉、也从各台手机记录摘掉）才删。
-#   旧库的 image/ios/kit、original-exefs 第一次用到时搬过来（同卷改名，跨卷拷后删）。一款约 56–238 MB（11-16 常驻库 14 款实测合计 1971 MB）
+# ---- 游戏程序常驻（11-16 维护者：玩家打完包常删输出目录、之后不碰电脑，更新 S2Arm 时组容器要的游戏程序跟着丢了；又定「极致压缩」）----
+# 默认位置根 .programs/<程序号>/：exefs.tar.zst（原始程序）、recipe.tar.zst（配方）、ios.json（程序件的兼容记录，同 game.json 的 ios）。
+#   按程序号分、不在游戏文件夹里：删游戏文件夹、换存放位置删旧位置、「释放空间」都不碰它；只有「删除游戏」（library.delete）才删。
+#   kit 与解开的原始程序是缓存（工具缓存 cache/programs/<程序号>），缺了按配方现建：见 pack/jobs/programs.py
 PROGRAMS, PROGRAM_INFO, PROGRAM_EXEFS = ".programs", "ios.json", "original-exefs"
 
 
@@ -450,25 +468,41 @@ def program_store(c, gid, create=False):
     return d
 
 
-def _adopt(c, gid, name, legacy):
-    """专用文件夹里还没有 name、游戏文件夹里的旧位置 legacy 有 → 搬过来；搬不动（盘只读 / 被占用）就先用旧位置，下次再搬"""
-    new = program_store(c, gid) / name
-    if os.path.lexists(new) or not os.path.isdir(legacy):
-        return new
-    try:
-        program_store(c, gid, create=True)
-        _move_any(legacy, new)
-    except OSError:
-        return legacy
-    return new
-
-
 def ios_kit(c, gid):
-    return _adopt(c, gid, IOS_KIT, image_ios(c, gid, create=False) / IOS_KIT)
+    """iPhone 程序件（组容器读）：缓存在就用、缺了按常驻配方现建（programs.kit_dir）；只问「有没有」用 has_ios_kit（不现建）"""
+    import programs
+    return programs.kit_dir(c, gid)
+
+
+def ios_kit_present(c, gid):
+    """已有的 iPhone 程序件目录（缓存 kit，或还没迁移的旧布局）→ 路径 | None。只看文件，不迁移、不现建：给游戏库清单这类只读的地方用
+    （11-16：清单画金色 S 调 ios_kit，升级首启在读库里做旧布局迁移，与后台作业撞上 WinError 32，整个清单读失败）"""
+    import programs
+    for kit in (programs.cache(c, gid) / "kit", program_store(c, gid) / IOS_KIT, image_ios(c, gid, create=False) / IOS_KIT):
+        if (kit / "main.npdm").is_file():
+            return kit
+    return None
+
+
+def has_ios_kit(c, gid):
+    """有没有 iPhone 程序件（游戏库清单每款都问：只看文件，不迁移、不现建——旧布局的迁移要压缩 + 现建对拍，留到真用程序件时做）"""
+    import programs
+    if programs.has_kit(c, gid):
+        return True
+    for kit in (program_store(c, gid) / IOS_KIT, image_ios(c, gid, create=False) / IOS_KIT):   # 还没迁移的旧布局
+        try:
+            if (kit / "main.npdm").stat().st_size > 0 and any(kit.glob("*.fixups.tsv")):
+                return True
+        except OSError:
+            pass
+    return False
 
 
 def program_exefs(c, gid):
-    return _adopt(c, gid, PROGRAM_EXEFS, path(c, gid, PROGRAM_EXEFS, create=False))
+    """解开的原始程序目录（缓存，缺了从常驻归档解）；没有 → 不存在的路径"""
+    import programs
+    programs.adopt(c, gid)
+    return programs.exefs_dir(c, gid) or programs.cache(c, gid) / "exefs"
 
 
 def program_info(c, gid):
@@ -511,6 +545,40 @@ def ios_work(c, gid, create=True):
     return build_dir(c, gid, create=create) / "ios"
 
 
+CURRENT = "@现行"   # 产物根里的现行指针文件名后缀：<款>@现行 是普通文件，内容 = 现行版本目录名（pack/orch/current.py）  # 非玩家句
+_CURRENT_MOD = {}
+
+
+def _current_mod(c):
+    """现行指针的读写与老库迁移（pack/orch/current.py，只依赖标准库）：按文件路径载入作业的引擎根里那份（同 programs._dirrename，#1424：
+    不走 import pack.orch）；引擎根里没有（单测的假引擎根）用本仓库那份"""
+    path = Path(c.engine) / "pack/orch/current.py"
+    if not path.is_file():
+        path = Path(__file__).resolve().parents[2] / "pack/orch/current.py"
+    key = str(path.resolve())
+    if key not in _CURRENT_MOD:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("s2a_engine_current", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _CURRENT_MOD[key] = mod
+    return _CURRENT_MOD[key]
+
+
+def current_root(c, pointer):
+    """产物根里的「<款>@现行」→ 现行版本目录 Path | None（没有 / 指针不合规）。老库的软链 / junction / 实目录当场迁移成指针文件
+    （持该款提交锁 <产物根>/.<款>.commit.lock，与 pack/roots.sh、pack/orch/roots.py 同一把，最多等 10 分钟）"""
+    import filelock
+    pointer = Path(pointer)
+    roots, game = pointer.parent, pointer.name[:-len(CURRENT)]
+    return _current_mod(c).resolve(roots, game, lock=lambda: filelock.held(roots / f".{game}.commit.lock", wait_s=600, poll=0.05))
+
+
+def set_current(c, roots, game, name):
+    """切 roots 里 game 的现行到同目录的版本目录 name（临时指针 fsync 后原子改名）"""
+    _current_mod(c).write(roots, game, name)
+
+
 def phone_ipa(c, previous=False):
     return c.library / (PHONE_PREVIOUS if previous else PHONE_IPA)
 
@@ -542,12 +610,52 @@ def save_device(c, ident, rec):
     atomic(p, dict(rec, schema=1))
 
 
+FREE_SIGN_LIFETIME = 7 * 86400   # 免费 Apple ID 签的描述文件 7 天（读不到签好的包里的真实到期时按它估，同 host_update.SIGN_LIFETIME）
+
+
+def launcher_free_in_use(rec):
+    """这台手机现在用的 S2Arm 是不是「这台电脑的启动器用免费 Apple ID 签的那份」（游戏库「免费签名快到期」提醒只给这种）。
+    只看设备记录里已有的事实，不连手机（列游戏库要快）：
+      · 启动器装过（有壳号 shellId + 包名 bundleId），且那次是免费签（signed.free）；
+      · 玩家在总控台选用的不是启动器那份（chosenBundleId 与 bundleId 不同）→ 不是；
+      · 启动器装之后又往别的工具（AltStore / SideStore …）装的 S2Arm 推过游戏（externalBundleId，推送时刻 externalAt 晚于签名时刻；
+        旧记录没有 externalAt 时按别的工具算）→ 不是；
+    不看电脑这边的签名方式设置：设置只管下一次怎么签，手机上那份免费签的 App 没重装前照样 7 天到期，照旧提醒；
+    玩家真用证书 / 付费账号重装后 signed.free 为假，提醒自然消失"""
+    signed = rec.get("signed") if isinstance(rec.get("signed"), dict) else {}
+    own = str(rec.get("bundleId") or "").lower()
+    if not signed.get("free") or not rec.get("shellId") or not own:
+        return False
+    chosen = str(rec.get("chosenBundleId") or "").lower()
+    if chosen and chosen != own:
+        return False
+    ext = str(rec.get("externalBundleId") or "").lower()
+    if ext and ext != own:
+        at, ext_at = signed.get("at"), rec.get("externalAt")
+        if not isinstance(ext_at, (int, float)) or not isinstance(at, (int, float)) or ext_at >= at:
+            return False
+    return True
+
+
 def install_record(c, gid):
-    """这款最近一次装机签名的记录 {at, free, device}（游戏库页「还有几天到期 / 续签」）：各台手机记录里带这款的取最新一次；没装过 → None"""
+    """这款最近一次装机签名的记录 {at, free, device, deviceKey, [expires, expiresKnown]}（游戏库页「还有几天到期 / 续签」）：各台手机记录里带这款的取最新一次；没装过 → None。
+    free 只在那台手机现在用的就是启动器免费签的那份时为 True（launcher_free_in_use）：玩家换成别的工具装、换签名方式后不再给，提醒自动消失。
+    free 时带到期时刻 expires：签好的包里读到的真值（signed.expires，expiresKnown=True）；没有才按 7 天估（expiresKnown=False）。前端直接用，不再自己加天数"""
     gid = gid.upper()
     # deviceKey：那台设备的记录键（UDID）。续签 / 重装装回当初那台，不替玩家换一台（维护者 11-11：续签时 iPad 被装上）
-    recs = [dict(r["signed"], deviceKey=k) for k, r in devices(c) if gid in (r.get("games") or {}) and isinstance(r.get("signed"), dict)]
-    return max(recs, key=lambda r: r.get("at") or 0) if recs else None
+    recs = [(dict(r["signed"], deviceKey=k), r) for k, r in devices(c) if gid in (r.get("games") or {}) and isinstance(r.get("signed"), dict)]
+    if not recs:
+        return None
+    out, rec = max(recs, key=lambda x: x[0].get("at") or 0)
+    out["free"] = launcher_free_in_use(rec)
+    out.pop("expires", None)
+    if out["free"]:
+        real = rec["signed"].get("expires")
+        known = isinstance(real, (int, float))
+        at = out.get("at")
+        if known or isinstance(at, (int, float)):
+            out.update(expires=real if known else at + FREE_SIGN_LIFETIME, expiresKnown=known)
+    return out
 
 
 def devices(c):
@@ -779,7 +887,7 @@ def _upgrade_3(c, marker):
             done.add(gid); atomic(marker, dict(state, iphone=sorted(done))); continue   # 游戏库里已经没有这款：留着的旧产物下面随 iPhone/ 一起删
         kit = d / "container-kit"
         if not (kit / "main.npdm").is_file():
-            root = next((r for r in [*sorted(d.glob("roots/*@现行")), d / "work/pkg/product"] if (r / "main.npdm").is_file()), None)  # 非玩家句
+            root = next((r for r in [*(current_root(c, p) for p in sorted(d.glob("roots/*" + CURRENT))), d / "work/pkg/product"] if r is not None and (r / "main.npdm").is_file()), None)
             if root is not None and any(p.suffix == ".ipa" for p in d.iterdir()):
                 save_container_kit(c, gid, root, dest=d)
         image = image_ios(c, gid)
@@ -903,7 +1011,7 @@ def _moved(src, dst):
     finally:
         if os.path.lexists(temporary):
             shutil.rmtree(temporary, ignore_errors=True) if temporary.is_dir() else temporary.unlink()
-    shutil.rmtree(src) if src.is_dir() and not src.is_symlink() else src.unlink()
+    remove_tree(src) if src.is_dir() and not src.is_symlink() else src.unlink()
 
 
 def follow_task(c):
@@ -995,6 +1103,27 @@ def entries(d, pattern="*", recursive=False):
     return sorted(p for p in found if not any(os_junk(part) for part in p.relative_to(d).parts))
 
 
+# 每款游戏文件夹里「存档类」的东西：唯一来源（维护者 11-17：删除游戏只留了 saves/、save-backups/，把 SaveData*（Mac 原生格式存档位置）
+#   和 save_backup/（iPhone / Apple TV 装机前拉回的存档备份，手机存档在电脑上唯一的一份）一起删了）。删除游戏、腾空间、换位置核对、空间统计都读这一份。
+#   saves/：Ryujinx 数据根（build.py）；save-backups/：存档管理的备份；save_backup/：装机前 / 电视拉回（install.py、tvos.py）；
+#   SaveData、SaveData-<玩家>：原生格式存档位置（build.py、saves.py）。金手指、mod 不算存档
+SAVE_DIRS = ("saves", "save-backups", "save_backup")
+SAVE_DATA = re.compile(r"SaveData(-.+)?")
+
+
+def is_save_entry(name):
+    """游戏文件夹里这一项（名字）是不是存档类"""
+    return name in SAVE_DIRS or bool(SAVE_DATA.fullmatch(name))
+
+
+def save_entries(gdir):
+    """游戏文件夹里现有的存档类各项（不跟软链认不认：按名字认，删除 / 保留由调用方定）；文件夹不在 → []"""
+    try:
+        return sorted(p for p in Path(gdir).iterdir() if is_save_entry(p.name))
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+
+
 def has_content(d):
     """d 里除了系统自动生成的文件还有没有别的东西（d 不存在 / 不是目录 → False）"""
     try:
@@ -1048,11 +1177,12 @@ def _relocate_lock(private):
         return
     try:
         with filelock.held(private / RELOCATE_LOCK, wait_s=RELOCATE_LOCK_WAIT, poll=0.05,
-                           holder=dict(operation="relocate", pid=os.getpid(), startedAt=round(time.time(), 3))):
+                           holder=dict(operation="relocate", pid=os.getpid(), host=socket.gethostname(),
+                                       startedAt=round(time.time(), 3))):
             yield
     except filelock.Busy as busy:
-        raise Failure("另一个任务正在使用游戏库，请稍后重试。", code="library_busy", holder=busy.holder,
-                      internal=f"等了 {RELOCATE_LOCK_WAIT} 秒，旧默认游戏库搬家锁仍被占（{busy.holder}）") from None  # 非玩家句
+        detail = f"等了 {RELOCATE_LOCK_WAIT} 秒，旧默认游戏库搬家锁仍被占（{busy.holder}）"  # 非玩家句
+        raise library_lock_failure(busy.holder, "另一个任务正在使用游戏库，请稍后重试。", detail) from None  # 非玩家句
 
 
 def _relocate_locked(private, library):

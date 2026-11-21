@@ -17,6 +17,7 @@ public final class GameActivity extends MainActivity {
     static Intent launch(Context context, Intent options, String titleId) {
         Intent intent = new Intent(context, GameActivity.class);
         if (options != null && options.getExtras() != null) intent.putExtras(options.getExtras());
+        AndroidLdnSettings.copyToLaunch(context, intent);
         intent.putExtra(TITLE_EXTRA, titleId);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         return intent;

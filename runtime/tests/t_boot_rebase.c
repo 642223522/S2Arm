@@ -23,7 +23,9 @@ int main(void) {
     double a = num_after(l1, "改起点前 +"), r = num_after(l2, "距进程创建 "), b = num_after(l3, "改起点后 +"), bs = num_after(l3, "本段 ");
     CHECK(a >= 300, "改起点前从进程创建算：期望 ≥ 300 ms，得 %.1f（%s）", a, l1);
     CHECK(strstr(l2, "计时起点改为点 Play") && r >= 300, "改起点那行：期望写明点 Play、距进程创建 ≥ 300 ms，得 %.1f（%s）", r, l2);
-    CHECK(b >= 0 && b < 100 && bs >= 0 && bs < 100, "改起点后：期望「+」与本段都 < 100 ms，得 +%.1f 本段 %.1f（%s）", b, bs, l3);
+    // 改起点后从点 Play 算：「+」与本段都应小于「改起点那一刻距进程创建」r（没改起点的话「+」从进程创建算、必 ≥ r）。
+    //   原判据是绝对的 < 100 ms：负载高时改起点与打点之间被挤过 100 ms → 假红
+    CHECK(b >= 0 && b < r && bs >= 0 && bs < r, "改起点后：期望「+」与本段都 < 距进程创建的 %.1f ms，得 +%.1f 本段 %.1f（%s）", r, b, bs, l3);
     if (bad) { printf("✗ t_boot_rebase：%d 项红\n", bad); return 1; }
     printf("✓ t_boot_rebase：3 条断言全过——改起点前照旧从进程创建算、改起点那行写明点 Play 与库界面停留、改起点后各段从点 Play 算\n");
     return 0;

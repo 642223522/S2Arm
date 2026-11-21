@@ -200,6 +200,14 @@ static void depth_case(NvProg *reader, prog_t *reader_p, tex_t *depth, tex_t *b,
     S.ds.dt=1; S.ds.dw=1; S.ds.df=8; g_pso_dirty=1; draw(triangle,NULL);   // writes depth (and samples it: a fresh copy of the depth before this draw)
     S.ds.dw=0; g_pso_dirty=1; uint64_t c2=g_fb_depth; draw(triangle,NULL);
     CHECK(g_fb_depth-c2==1,"after a depth-writing draw the next sampling draw copies again (new copies %llu)",(unsigned long long)(g_fb_depth-c2));
+    // Stencil writes leave the depth plane a depth-view copy holds as it was: with the stencil test on and an op that writes (REPLACE on pass, write mask 0xff),
+    //   two more sampling draws still read the copy (a deferred lighting pass: one light volume per draw, stencil on, depth writes off). The old rule copied for each
+    uint64_t sc=g_fb_depth, sr=g_fb_depth_reuse, sp=g_stat_pass;
+    S.ds.st=1; S.st_wmask[0]=S.st_wmask[1]=0xff; S.ds.zpass_f=S.ds.zpass_b=NVN_STENCIL_OP_REPLACE; g_pso_dirty=1;
+    draw(triangle,NULL); draw(triangle,NULL);
+    CHECK(g_fb_depth==sc && g_fb_depth_reuse-sr==2 && g_stat_pass==sp,"stencil-writing draws sampling the depth: reuse the depth-view copy (new copies %llu, reuses %llu, passes opened %llu)",
+        (unsigned long long)(g_fb_depth-sc),(unsigned long long)(g_fb_depth_reuse-sr),(unsigned long long)(g_stat_pass-sp));
+    S.ds.st=0; S.ds.zpass_f=S.ds.zpass_b=NVN_STENCIL_OP_KEEP; g_pso_dirty=1;
     finish(); CHECK(!mtl_last_commit_error(),"depth attachment sampled in its own pass: submission completes without a Metal error");
     // Audit P2-247: a whole-surface depth clear with no pass open is only recorded (R.clear_d, folded into the next pass's load action). A draw sampling that depth in the pass must
     //   see the cleared value, as on the Switch the clear is in memory before the draw runs: the copy is taken after the clear lands. Expected 0.75 (the clear), never the old 0.25

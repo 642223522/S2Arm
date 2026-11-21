@@ -37,7 +37,8 @@
 #                                                                       decoded at once); IoStore shader libraries (UE 5.6) decoded at once through the game's Oodle in the host (OodleHost)
 #        uepak.py finish <work dir> <out dir>                           after the host has run the job: the archives with every shader decoded
 import json, os, struct, sys
-# 仓库里唯一的 RomFS 遍历（graphics/nvn/tools/romfs_list.py：walk 同 os.walk，listdir 同 os.listdir）
+# 仓库里唯一的 RomFS 遍历（graphics/nvn/tools/romfs_list.py：walk 同 os.walk，listdir 同 os.listdir）；RomFS 文件按路径读经 romfs_list.open_file / read_file
+#   （盘上有就同 open；RomFS 不落散文件、只有 romfs.std 镜像时从镜像读）
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'graphics', 'nvn', 'tools')); import romfs_list
 
 PAK_MAGIC, ARCHIVE_VERSION = 0x5A6F12E1, 2
@@ -151,7 +152,7 @@ class OodleHost:
         self._fin = multiprocessing.util.Finalize(self, OodleHost._close, args=(self.p, self.priv), exitpriority=10)
     def output(self):
         """宿主输出的末 3000 字（进报错行）；设了 DM_OODLE_LOG_DIR 时把完整输出另存为 <目录>/oodle_host.<进程号>.log 并在头一行写明（11-01：只留末尾，
-        勇者斗恶龙 XI S 普查里看不到宿主为什么没起来；extract.sh 把它设成抽取目录，失败时随其它 .log 留进 .failed）"""
+        勇者斗恶龙 XI S 普查里看不到宿主为什么没起来；extract.py 把它设成抽取目录，失败时随其它 .log 留进 .failed）"""
         self.err.seek(0); full = self.err.read().decode(errors='replace'); head = ''
         d = os.environ.get('DM_OODLE_LOG_DIR')
         if d:
@@ -272,7 +273,7 @@ class Toc:
     u64 partition size, u32 count of chunks without a perfect hash, then reserved words. After it: chunk IDs (12 bytes: u64 hash, u16 index, u8, u8 type), offsets and lengths
     (5 + 5 bytes, big-endian), the perfect hash seeds and overflow list (u32 each), the blocks (5-byte offset, 3-byte stored size, 3-byte raw size, u8 method; little-endian), the method names"""
     def __init__(self, path, key=None):
-        b = open(path, 'rb').read()
+        b = romfs_list.read_file(path)
         if b[:16] != TOC_MAGIC: raise ValueError(f'{path}: not an IoStore TOC')
         self.path, self.key, self.version = path, key, b[16]
         hsz, n, nblk, bsz, nmeth, mlen, self.block_size, _, nparts = struct.unpack_from('<9I', b, 20)
@@ -295,7 +296,7 @@ class Toc:
         """Indices of the chunks of one EIoChunkType (Unreal Engine 5 numbering: TOC version 4 and later)"""
         return [i for i, c in enumerate(self.ids) if c[11] == t] if self.version >= 4 else []
     def ucas(self, part):
-        if part not in self.files: self.files[part] = open(self.path[:-5] + ('.ucas' if not part else f'_s{part}.ucas'), 'rb')
+        if part not in self.files: self.files[part] = romfs_list.open_file(self.path[:-5] + ('.ucas' if not part else f'_s{part}.ucas'))
         return self.files[part]
     def read(self, i, decode=None):
         """Chunk i's bytes; Oodle blocks need decode(block bytes, raw length) → bytes (the game's own decoder, OodleHost)"""
@@ -385,7 +386,7 @@ def archive_names(romfs):
     names = set()
     for f in romfs_list.listdir(romfs):
         if f.startswith('Manifest_') and f.endswith('.txt'):
-            names |= set(re.findall(r'(ShaderArchive-[\w-]+?)\.ushaderbytecode', open(os.path.join(romfs, f), encoding='utf-8', errors='replace').read()))
+            names |= set(re.findall(r'(ShaderArchive-[\w-]+?)\.ushaderbytecode', romfs_list.read_file(os.path.join(romfs, f)).decode('utf-8', errors='replace')))
     return sorted(names)
 
 def paks(romfs):
@@ -398,7 +399,7 @@ def unreal_paks(romfs, legacy=None):
     out = []
     for p in paks(romfs):
         try:
-            with open(p, 'rb') as f: ver = pak_version(f)
+            with romfs_list.open_file(p) as f: ver = pak_version(f)
         except (OSError, ValueError, struct.error): continue   # shorter than a footer, or no Unreal pak
         if legacy is None or (ver in LEGACY) == legacy: out.append(p)
     return out

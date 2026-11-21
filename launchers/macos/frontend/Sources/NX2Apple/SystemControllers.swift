@@ -16,6 +16,11 @@ final class SystemControllers: ObservableObject {
     @Published private(set) var pads: [Pad] = []
     /// 按设备看到的一代 Joy-Con（D2：几套都分得开，Gen1HIDWatcher）
     @Published private(set) var gen1: [PlayerAssignment.Gen1Device] = []
+    /// 一代 Joy-Con 读到的出厂颜色（设备 id → 颜色；Gen1HIDWatcher 读 SPI 0x6050），图示照它上色
+    @Published private(set) var gen1Colors: [String: ControllerTint] = [:]
+    /// 现在的玩家灯（分配一变就更新；手柄重连 / 系统手柄枚举变了照它再写一次）
+    private var lightMasks: [String: Int] = [:]
+    private var systemPlayers: [PlayerAssignment.SystemKey: Int] = [:]
     /// 接着的 HID 手柄名（HIDFallbackPads）；面板列 fallback（GameController 认不出、宿主按 HID 兜底读的，#1151）
     @Published private(set) var hidNames: [String] = []
     var fallback: [String] { HIDFallbackPads.listed(hid: hidNames, system: pads.map(\.name)) }
@@ -23,10 +28,18 @@ final class SystemControllers: ObservableObject {
     private var gen1Watcher: Gen1HIDWatcher?
     private var hidWatcher: HIDFallbackPads?
 
+    private var observing = false   // 单测（init(pads:)）不并模拟手柄
     init(observe: Bool = true) {
         guard observe else { return }
+        observing = true
         let watcher = Gen1HIDWatcher()
-        watcher.observe { [weak self] devices in Task { @MainActor in self?.gen1 = devices } }
+        watcher.observe { [weak self] devices in Task { @MainActor in self?.realGen1 = devices; self?.mergeSimulated() } }
+        watcher.observeColors { [weak self] colors in Task { @MainActor in self?.realGen1Colors = colors; self?.mergeSimulated() } }
+        if ControllerColorSimulator.allowed {   // 模拟手柄（本地 / 自测构建的 App 菜单）：并进下面三张表，走真的分配逻辑
+            let sim = ControllerColorSimulator.shared
+            sim.onChange.append { [weak self] in self?.mergeSimulated() }
+            sim.systemPadsInOrder = { [weak self] in self?.pads ?? [] }
+        }
         gen1Watcher = watcher
         let hid = HIDFallbackPads()
         hid.observe { [weak self] names in Task { @MainActor in self?.hidNames = names } }
@@ -64,7 +77,46 @@ final class SystemControllers: ObservableObject {
     }
 
     func refresh(connected: GCController? = nil, disconnected: GCController? = nil) {
-        pads = Self.snapshot(GCController.controllers(), connected: connected, disconnected: disconnected)
+        realPads = Self.snapshot(GCController.controllers(), connected: connected, disconnected: disconnected)
+        mergeSimulated()
+        applySystemLights(connected: connected)
+    }
+    // 真的手柄（GameController / HID 看到的）；pads / gen1 / gen1Colors = 真的 + 模拟的
+    private var realPads: [Pad] = []
+    private var realGen1: [PlayerAssignment.Gen1Device] = []
+    private var realGen1Colors: [String: ControllerTint] = [:]
+    private func mergeSimulated() {
+        let sim = observing && ControllerColorSimulator.allowed ? ControllerColorSimulator.shared : nil
+        let nextPads = realPads + (sim?.systemPads() ?? [])
+        let nextGen1 = realGen1 + (sim?.gen1Devices ?? [])
+        let nextColors = realGen1Colors.merging(sim?.gen1Colors ?? [:]) { a, _ in a }
+        if nextPads != pads { pads = nextPads }
+        if nextGen1 != gen1 { gen1 = nextGen1 }
+        if nextColors != gen1Colors { gen1Colors = nextColors }
+    }
+
+    /// 手柄上的玩家灯跟着分配（同原机）：一代 Joy-Con 按设备写子命令 0x30；系统手柄（GameController：一代 Pro、合成的一代 Joy-Con、
+    ///   PlayStation 等）设 playerIndex，系统自己点灯。GameController 只有 1–4 号，第 5 位起不设（灯照系统原样）
+    func applyPlayerLights(_ assignment: PlayerAssignment) {
+        lightMasks = assignment.lightMasks()
+        systemPlayers = assignment.systemPlayers()
+        gen1Watcher?.setLights(lightMasks)
+        applySystemLights()
+    }
+    private func applySystemLights(connected: GCController? = nil) {
+        guard !systemPlayers.isEmpty else { return }
+        var current = GCController.controllers()
+        if let connected, !current.contains(where: { $0 === connected }) { current.insert(connected, at: 0) }
+        let byID = Dictionary(current.map { (ObjectIdentifier($0), $0) }, uniquingKeysWith: { a, _ in a })
+        for (pad, key) in zip(pads, Self.keys(for: pads)) {
+            guard let number = systemPlayers[key], let gc = byID[pad.id] else { continue }
+            let index = Self.playerIndex(number)
+            if gc.playerIndex != index { gc.playerIndex = index }
+        }
+    }
+    /// 第几位（1 起）→ GameController 的玩家号；5 起没有对应的，不设
+    nonisolated static func playerIndex(_ number: Int) -> GCControllerPlayerIndex {
+        switch number { case 1: return .index1; case 2: return .index2; case 3: return .index3; case 4: return .index4; default: return .indexUnset }
     }
 
     /// 顶栏与弹窗共用同一设备判据；通知对象优先于尚未更新的枚举快照，按对象身份去重而非名称。

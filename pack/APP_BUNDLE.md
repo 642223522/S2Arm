@@ -48,6 +48,8 @@ CLI 的 stdout/stderr 明确 UTF-8，导入库不更改调用者输出流。成�
 
 `write_ipa` 允许签后材料，只读取 App，不改任何文件内容或源文件权限。流式归档为 `Payload/S2Arm.app/`，含目录条目，文件 deflate、非 ASCII 名称用 UTF-8 ZIP 标志，`create_system=3`。临时 IPA 写完才以不覆盖的硬链接发布；文件系统不支持该操作时明确失败，不退回覆盖写入。
 
+只写 zip32（侧载工具 AltServer for Windows 自带的 minizip 1.01e 不认 zip64），由 `app_bundle.py` 自己写条目，不经 `zipfile`：本地头先占位、写完回填 CRC 与两个大小，不用数据描述符。三道闸按侧载工具的真实读法分开：条目数 ≤ 65535；单条目原大小 / 压缩后大小 ≤ 4 GiB − 1（大小字段是无符号 32 位，minizip 也按无符号读）；整份 IPA ≤ 2 GiB − 1（minizip 1.01e 用 `fseek(long)` / `ftell` 定位，Windows 上 long 是 32 位有符号）。`zipfile` 把后两道合成一条 2 GiB 线，曾把压缩后远不到 2 GiB 的 2.40 GiB 游戏镜像包拒掉（#636）。超限报带体积账的红行。
+
 Windows 与 Mac 共用权限规则，完全不依赖 Windows stat 的执行位：
 
 - 主程序（App 的 `CFBundleExecutable`）、`Frameworks/*.framework` 各自 plist 指定的程序、全部 `.dylib` 为 0755。
