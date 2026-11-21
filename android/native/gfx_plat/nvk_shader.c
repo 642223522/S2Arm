@@ -70,7 +70,8 @@ int nvk_shader_open(void) {
     struct rp_shader_live_compile_stats discarded;
     rp_shader_live_compile_take(&discarded);
     if (nvn_plat_flag("nvk_live_compile_async", 1)) {
-        const int frame_ms = nvn_plat_flag("fu_frame_ms", 100);
+        // 可恢复绘制仍走同一安全判定。免等待只改变着色器翻译的帧预算。
+        const int frame_ms = nvn_plat_flag("nvk_live_compile_nowait", 0) ? 0 : nvn_plat_flag("fu_frame_ms", 100);
         const int unsafe_ms = nvn_plat_flag("fu_unsafe_ms", 10000);
         g_live_frame_ms = frame_ms > 0 ? (uint32_t)frame_ms : 0;
         g_live_unsafe_ms = unsafe_ms > 0 ? (uint32_t)unsafe_ms : 0;
