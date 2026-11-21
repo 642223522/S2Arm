@@ -222,19 +222,33 @@ class Operation(unittest.TestCase):
         self.assertEqual(devcert.parse_profile((self.t / "private/devcert/profile.mobileprovision").read_bytes())["DeveloperCertificates"], [DER])
 
     def test_distribution_import_kept_and_recorded(self):
-        # 0.6.3：分发描述文件照常导入（独立 App 能用），state 记 distribution；缺项和给发放人的话照旧随结果给（导入页「复制」用）；导入请求没带设备 → UDID 是占位
+        # 0.6.3：分发描述文件照常导入（独立 App 能用），按存着的描述文件认出分发；缺项和给发放人的话照旧随结果给（导入页「复制」用）；导入请求没带设备 → UDID 是占位
         self.imp()
-        self.assertIs(json.loads((self.t / "private/devcert/state.json").read_text())["distribution"], False)
+        self.assertIs(devcert.distribution(self.ctx()), False)
         (self.t / "in.mobileprovision").write_bytes(profile(ents={"get-task-allow": False}))
         r = self.imp(password="new")
         self.assertEqual(([w["id"] for w in r["warnings"]], r["missingEntitlements"], r["distribution"], r["active"]),
                          (["devcert_distribution"], ["get-task-allow"], True, True))
         self.assertIn("包含我的设备 UDID：<你的设备 UDID>，", r["requestText"])
-        self.assertIs(json.loads((self.t / "private/devcert/state.json").read_text())["distribution"], True)
+        self.assertIs(devcert.distribution(self.ctx()), True)
+        self.assertNotIn("distribution", json.loads((self.t / "private/devcert/state.json").read_text()))   # 不另记一份，免得与描述文件不一致
         self.assertEqual(self.sec.d, {SHA1: "new"})   # 同一张证书换了密码：存新的
         kept = devcert.parse_profile((self.t / "private/devcert/profile.mobileprovision").read_bytes())
         self.assertIs(kept["Entitlements"]["get-task-allow"], False)
         self.assertTrue(devcert.active(self.ctx()))
+
+    def test_distribution_of_import_before_the_flag(self):
+        # 11-20 前导入的证书：state.json 只有 active / certSha1 / bundleId / teamId / teamName / imported，没有分发标记。
+        #   描述文件 get-task-allow 为假或缺 → 分发；为真 → 不是；描述文件没了 / 坏了 → 不算（期望按描述文件内容手写）
+        d = self.t / "private/devcert"; d.mkdir(parents=True, exist_ok=True)
+        (d / "state.json").write_text(json.dumps(dict(active=True, certSha1=SHA1, bundleId="io.s2arm.games.abcde12345", teamId=TEAM, teamName="T", imported="2026-11-01T00:00:00+00:00")))
+        for prof, want in ((profile(ents={"get-task-allow": False}), True), (profile(ents={"get-task-allow": None}), True),
+                           (profile(), False), (b"broken", False), (None, False)):
+            with self.subTest(want=want, prof=prof and prof[-40:]):
+                (d / "profile.mobileprovision").unlink(missing_ok=True)
+                if prof is not None:
+                    (d / "profile.mobileprovision").write_bytes(prof)
+                self.assertIs(devcert.distribution(self.ctx()), want)
 
     def test_no_password(self):
         with self.assertRaises(Failure) as e:

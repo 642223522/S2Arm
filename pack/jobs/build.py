@@ -353,6 +353,20 @@ def keep_runtime_nros(c, game_id, source):
     return new
 
 
+ADDR_SHORT_MARK = "【黄】地址空间不够这款"   # 非玩家句：宿主 runtime/src/svc_mem.c addr_short_note 的日志行开头（Mac 宿主没有确认页，靠启动器出提示条）
+
+
+def addr_short_watch(c):
+    """Mac 一局的宿主输出逐行看：出现「地址空间不够这款」那条黄行（静态大区末端顶到窗口末，可能非常卡或停在开头）就发一次 notice 事件（code addr_short），
+    启动器据此弹不阻塞的提示条（文案在启动器共享文案 play.addrShort.*，五语）；只发一次，不改这局的结局"""
+    said = [False]
+    def watch(line):
+        if not said[0] and ADDR_SHORT_MARK in line:
+            said[0] = True
+            c.emit("notice", "", code="addr_short")
+    return watch
+
+
 def launch(c):
     import sgrade
     # 执行锁读写化（11-19）：起局整局只拿执行锁的共享模式——别的游戏照样能起、能出包；清理 / 删除 / 搬家等全库动作（独占）照旧等这局结束。
@@ -419,7 +433,7 @@ def launch(c):
             started, wall = time.monotonic(), time.time()
             try:
                 import onerom   # 一款一份资源（0.6.0）：游戏跑过加载期后在后台把 Mac 运行版本合并到 iPhone 那份 game.img（玩家不等，退出就停、下次接着）
-                onerom.during(c, game["id"], lambda: c.run([executable, runtime], log, env, cwd=c.library / "temp" / game["id"]))
+                onerom.during(c, game["id"], lambda: c.run([executable, runtime], log, env, cwd=c.library / "temp" / game["id"], on_line=addr_short_watch(c)))
             except Failure as f:
                 if trial:   # 新宿主试玩：TRIAL_OK_SECONDS 内异常退出 = 不认这款，下次退回原来的；玩过这么久才崩不怪宿主
                     host_update.settle(c, game["id"], host, ok=time.monotonic() - started >= host_update.TRIAL_OK_SECONDS)

@@ -1447,7 +1447,11 @@ static int apply_only(void) { const char *e = getenv("S2A_PACK_APPLY_ONLY"); ret
 __attribute__((constructor(101))) static void vawin_boot(void) {
     if (apply_only()) { vaguard_release(); LOG("地址窗口：解包专用局（S2A_PACK_APPLY_ONLY=1）不占客体窗口、不起命令记录区"); return; }   // 不占也要放行 Mac 护栏（同 S2A_VAWIN_NORESERVE）
     s2a_window_reserve();
-    cmd_arena_reserve();
+    // 构造期没算出跨度（多款容器里还没有游戏：刚装好、启动后才导入）就先不占命令记录区：它按「最高空洞」占，小地址机型上最高空洞就是唯一能放窗口的那块
+    //   （D-VTDQ iPad mini 6：地址上限 0x7180000000，[0x70_0000_0000, 上限) 这 6 GB 被 1 GB + 5 GB 占满，起宿主前补占窗口只剩 0 MB、起不了局）。
+    //   补占（s2a_window_reserve_late → vawin_reserve）占好窗口后会接着占它，按窗口定的位置（窗口外 / 宿主段底部），放不下就这一局关快照
+    if (g_need || g_noreserve) cmd_arena_reserve();
+    else LOG("命令记录区：构造期还没有可算的游戏、窗口没占，先不占；起宿主前补占窗口后再占");
 }
 
 // 布局只用窗口前 size 字节时，把尾部还给系统（Metal 的大缓冲要用，见 layout.c）

@@ -504,6 +504,8 @@
   "console.section.phone": "手機與 App",
   "console.section.sync": "遊戲同步",
   "console.section.help": "說明",
+  "play.addrShort.title": "這台裝置的位址空間不夠這款遊戲",
+  "play.addrShort.body": "這款遊戲開局要一整塊很大的位址空間，這台裝置給不了這麼多：可能會非常卡，或一直停在開頭。想正常玩，請換一台位址空間更大的裝置（例如記憶體更大的 Mac），或等後續版本改進。",
   "console.section.apps": "獨立 App",
   "console.app.outdated": "有新版 · 點「更新 iPhone 上的 S2Arm」重簽",
   "console.game.standalone": "裝成了獨立 App（見上）",
@@ -1474,7 +1476,7 @@
   "这版 S2Arm 不认识你的 Xcode": "這版 S2Arm 不認識你的 Xcode",
   "你的 Xcode 比这版 S2Arm 新。": "你的 Xcode 比這版 S2Arm 新。",
   "这款游戏暂不支持": "這款遊戲暫不支援",
-  "没找到任天堂官方图形接口（NVN / Vulkan / OpenGL），多见于自制或移植的程序。": "沒找到任天堂官方圖形介面（NVN / Vulkan / OpenGL），多見於自制或移植的程式。",
+  "没认出它用的图形接口（NVN / Vulkan / OpenGL）。请把诊断发给我们，我们会核对是不是没认出来。": "沒認出它用的圖形介面（NVN / Vulkan / OpenGL）。請把診斷發給我們，我們會核對是不是沒認出來。",
   "程序的结构我们还不认识，多见于自制或移植的程序。": "程式的結構我們還不認識，多見於自制或移植的程式。",
   "引擎文件不完整": "引擎檔案不完整",
   "应用自带的引擎文件缺失。": "應用自帶的引擎檔案缺失。",
@@ -3429,7 +3431,7 @@
   "没有可以装回的上一版手机 S2Arm。": "沒有可以裝回的上一版手機 S2Arm。",
   "装回上一版 S2Arm": "裝回上一版 S2Arm",
   "记下手机上现在的版本": "記下手機上現在的版本",
-  "这款游戏暂不支持：没找到任天堂官方图形接口（NVN / Vulkan / OpenGL），多见于自制或移植的程序。": "這款遊戲暫不支援：沒找到任天堂官方圖形介面（NVN / Vulkan / OpenGL），多見於自制或移植的程式。",
+  "这款游戏暂时出不了包：没认出它用的图形接口（NVN / Vulkan / OpenGL）。请把诊断发给我们，我们会核对是不是没认出来。": "這款遊戲暫時出不了包：沒認出它用的圖形介面（NVN / Vulkan / OpenGL）。請把診斷發給我們，我們會核對是不是沒認出來。",
   "这款暂时打不了包，换一款官方游戏试试；如果确定是正版游戏，点「复制错误摘要」发给我们。": "這款暫時打不了包，換一款官方遊戲試試；如果確定是正版遊戲，點「複製錯誤摘要」發給我們。",
   "正在传输资源": "正在傳輸資源",
   "苹果拒绝注册这个包名（Apple 错误 9401：同一个包名在苹果那边已被占用）。请在 Impactor（Mac 上是 Xcode）里确认登录的是当初装 S2Arm 用的那个 Apple ID 再装；付费开发者账号也可以到 developer.apple.com 的「Certificates, Identifiers & Profiles → Identifiers」删掉 io.s2arm.games 开头的旧包名后重试。还不行请导出诊断包反馈。": "蘋果拒絕註冊這個包名（Apple 錯誤 9401：同一個包名在蘋果那邊已被佔用）。請在 Impactor（Mac 上是 Xcode）裡確認登入的是當初裝 S2Arm 用的那個 Apple ID 再裝；付費開發者賬號也可以到 developer.apple.com 的「Certificates, Identifiers & Profiles → Identifiers」刪掉 io.s2arm.games 開頭的舊包名後重試。還不行請匯出診斷包反饋。",
@@ -4419,6 +4421,7 @@
   "先在 iPhone 上退出这款游戏，再删。": "先在 iPhone 上退出這款遊戲，再刪。",
   "没能从 iPhone 上卸掉这款的独立 App：确认 iPhone 连着、已解锁，再试一次。": "沒能從 iPhone 上卸掉這款的獨立 App：確認 iPhone 連著、已解鎖，再試一次。",
   "从 iPhone 上卸掉这款的独立 App": "從 iPhone 上卸掉這款的獨立 App",
+  "这款游戏暂时出不了包": "這款遊戲暫時出不了包",
   "应用不完整，请重新安装 S2Arm。": "應用不完整，請重新安裝 S2Arm。"
  }
 }

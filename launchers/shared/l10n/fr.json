@@ -488,6 +488,8 @@
   "console.section.phone": "iPhone et app",
   "console.section.sync": "Synchro des jeux",
   "console.section.help": "Aide",
+  "play.addrShort.title": "Cet appareil n'a pas assez d'espace d'adressage pour ce jeu",
+  "play.addrShort.body": "Ce jeu a besoin au démarrage d'un très grand bloc d'espace d'adressage, et cet appareil ne peut pas en fournir autant : il peut être très lent ou rester bloqué au début. Pour jouer normalement, utilisez un appareil avec plus d'espace d'adressage (par exemple un Mac avec plus de mémoire) ou attendez une version ultérieure.",
   "console.section.apps": "Apps autonomes",
   "console.app.outdated": "Nouvelle version · cliquez sur « Mettre à jour S2Arm sur l'iPhone » pour re-signer",
   "console.game.standalone": "Installé comme app autonome (voir ci-dessus)",
@@ -3012,7 +3014,7 @@
   "没有可以装回的上一版手机 S2Arm。": "Aucune version précédente de S2Arm à restaurer sur l'iPhone.",
   "装回上一版 S2Arm": "Restauration du S2Arm précédent en cours",
   "记下手机上现在的版本": "Enregistrement de la version actuelle sur l'iPhone",
-  "这款游戏暂不支持：没找到任天堂官方图形接口（NVN / Vulkan / OpenGL），多见于自制或移植的程序。": "Ce jeu n'est pas encore pris en charge. Aucune API graphique Nintendo officielle (NVN / Vulkan / OpenGL) n'a été trouvée ; c'est courant pour les homebrews ou les programmes portés.",
+  "这款游戏暂时出不了包：没认出它用的图形接口（NVN / Vulkan / OpenGL）。请把诊断发给我们，我们会核对是不是没认出来。": "Ce jeu ne peut pas encore être empaqueté : nous n'avons pas identifié l'interface graphique qu'il utilise (NVN / Vulkan / OpenGL). Envoyez-nous un diagnostic pour que nous vérifiions si nous l'avons manquée.",
   "这款暂时打不了包，换一款官方游戏试试；如果确定是正版游戏，点「复制错误摘要」发给我们。": "Ce jeu ne peut pas encore être packagé. Essayez un jeu officiel ; si vous êtes certain qu'il s'agit d'un jeu original, cliquez sur « Copier le résumé d'erreur » et envoyez-le nous.",
   "正在传输资源": "Transfert des ressources",
   "苹果拒绝注册这个包名（Apple 错误 9401：同一个包名在苹果那边已被占用）。请在 Impactor（Mac 上是 Xcode）里确认登录的是当初装 S2Arm 用的那个 Apple ID 再装；付费开发者账号也可以到 developer.apple.com 的「Certificates, Identifiers & Profiles → Identifiers」删掉 io.s2arm.games 开头的旧包名后重试。还不行请导出诊断包反馈。": "Apple a refusé d'enregistrer cet App ID (erreur Apple 9401 : l'identifiant est déjà utilisé du côté d'Apple). Dans Impactor (Xcode sur Mac), assurez-vous d'être connecté avec l'Apple ID utilisé lors de la première installation de S2Arm, puis réinstallez. Avec un compte développeur payant, vous pouvez aussi supprimer l'ancien identifiant commençant par io.s2arm.games sous « Certificates, Identifiers & Profiles > Identifiers » sur developer.apple.com, puis réessayer. Si le problème persiste, exportez un Diagnostic et signalez-le.",
@@ -3922,7 +3924,7 @@
   "这版 S2Arm 不认识你的 Xcode": "Cette version de S2Arm ne reconnaît pas votre Xcode",
   "你的 Xcode 比这版 S2Arm 新。": "Votre Xcode est plus récent que cette version de S2Arm.",
   "这款游戏暂不支持": "Ce jeu n'est pas encore pris en charge",
-  "没找到任天堂官方图形接口（NVN / Vulkan / OpenGL），多见于自制或移植的程序。": "Aucune API graphique officielle de Nintendo (NVN / Vulkan / OpenGL) n'a été trouvée ; ceci est courant pour les programmes homebrew ou portés.",
+  "没认出它用的图形接口（NVN / Vulkan / OpenGL）。请把诊断发给我们，我们会核对是不是没认出来。": "Nous n'avons pas identifié l'interface graphique qu'il utilise (NVN / Vulkan / OpenGL). Envoyez-nous un diagnostic pour que nous vérifiions si nous l'avons manquée.",
   "程序的结构我们还不认识，多见于自制或移植的程序。": "Nous ne reconnaissons pas encore la structure de ce programme ; ceci est courant pour les programmes homebrew ou portés.",
   "引擎文件不完整": "Fichiers du moteur incomplets",
   "应用自带的引擎文件缺失。": "Des fichiers du moteur fournis avec l'application sont manquants.",
@@ -4277,6 +4279,7 @@
   "先在 iPhone 上退出这款游戏，再删。": "Quittez d'abord ce jeu sur l'iPhone, puis supprimez-le.",
   "没能从 iPhone 上卸掉这款的独立 App：确认 iPhone 连着、已解锁，再试一次。": "Impossible de supprimer l'app autonome de ce jeu de l'iPhone. Vérifiez que l'iPhone est connecté et déverrouillé, puis réessayez.",
   "从 iPhone 上卸掉这款的独立 App": "Suppression de l'app autonome de ce jeu de l'iPhone",
+  "这款游戏暂时出不了包": "Ce jeu ne peut pas encore être empaqueté",
   "应用不完整，请重新安装 S2Arm。": "L'application est incomplète. Réinstallez S2Arm."
  }
 }

@@ -6692,10 +6692,6 @@
   "en": "Recording the version now on iPhone"
  },
  {
-  "source": "这款游戏暂不支持：没找到任天堂官方图形接口（NVN / Vulkan / OpenGL），多见于自制或移植的程序。",
-  "en": "This game is not supported yet. No official Nintendo graphics API (NVN / Vulkan / OpenGL) was found; this is common for homebrew or ported programs."
- },
- {
   "source": "这款暂时打不了包，换一款官方游戏试试；如果确定是正版游戏，点「复制错误摘要」发给我们。",
   "en": "This game can't be packaged yet. Try an official game; if you are sure this is a retail game, click \"Copy error summary\" and send it to us."
  },
@@ -10738,5 +10734,9 @@
  {
   "source": "不另占空间",
   "en": "no extra space"
+ },
+ {
+  "source": "这款游戏暂时出不了包：没认出它用的图形接口（NVN / Vulkan / OpenGL）。请把诊断发给我们，我们会核对是不是没认出来。",
+  "en": "This game can't be packed yet: we couldn't identify which graphics API it uses (NVN / Vulkan / OpenGL). Please send us a diagnostic so we can check whether we missed it."
  }
 ]
