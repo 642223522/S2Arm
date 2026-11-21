@@ -1243,10 +1243,10 @@ class GameImgZstd(Base):
         self.assertTrue(all(o.getvalue()[:4] == b"\x28\xb5\x2f\xfd" for o in outs))
         self.assertTrue(reads and max(reads) <= 4096, reads)   # 64 KB 的块分 16 段读，100 字节的末块 1 段
 
-    def test_workers_capped_by_available_memory(self):   # 线程数 = min(核数, (可用 ÷ 2 − 160) ÷ 80)，至少 1；读不到内存按核数（期望按公式手算）
-        for avail, ncpu, want in (("200", "16", 1), ("1000", "16", 4), ("4096", "16", 16), ("4096", "8", 8)):
+    def test_workers_fixed_whatever_memory(self):   # #1942：线程数固定 2，与可用内存、核数无关（帧随线程数变，量数和推送要一样长）
+        for avail, ncpu in (("200", "16"), ("4096", "16"), ("4096", "1")):
             with mock.patch.dict(os.environ, {"S2A_MEM_AVAIL_MB": avail, "S2A_NCPU": ncpu}):
-                self.assertEqual(push.zstd_workers(), want, (avail, ncpu))
+                self.assertEqual(push.zstd_workers(), 2, (avail, ncpu))
 
     def test_resume_skips_complete_chunks_and_drops_stale(self):
         first = self.device(); self.push_it(first)

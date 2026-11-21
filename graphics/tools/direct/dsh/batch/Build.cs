@@ -770,12 +770,17 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
         long avail = AvailMb();
         if (avail <= 0) return NJ;
         int jobs = Env("S2A_JOBS", Environment.ProcessorCount), peak = Env("S2A_DIRECT_METAL_PEAK_MB", 1065), p90 = Env("S2A_DIRECT_METAL_P90_MB", 420);
-        int lanes = Math.Max(NJ, (int)Math.Min(jobs, 1 + Math.Max(0, avail / 2 - peak) / p90));
+        // 可以收窄到 -j 以下（D-CMAE，Windows 15 GB 王国之泪：-j 是开工那一刻按空闲内存定的 12 路，出到后段主进程已很大，照开 12 路 metal，
+        //   提交内存用尽，连解压一块缓存都申请不到、出库失败）；至少 1 路
+        int lanes = (int)Math.Max(1, Math.Min(jobs, 1 + Math.Max(0, avail / 2 - peak) / p90));
         Say($"{phase}：{lanes} 路编（-j {NJ}；此刻空闲内存 {avail} MB 的一半按 metal 峰值 {peak} MB + 每路 p90 {p90} MB 重算，上限本单 {jobs} 核）");
         return lanes;
     }
     // 工作线程数：编译路数由 Metal 的闸管，线程按「本单核数 × 2」开（段内放宽后线程够用；拼源码、回填在多出的线程里做，Metal 不断粮）；不比 lanes × 2 少
     static int Pool(int lanes) { int j = int.TryParse(Environment.GetEnvironmentVariable("S2A_JOBS"), out var v) && v > 0 ? v : Environment.ProcessorCount; return Math.Max(lanes, j) * 2; }
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    struct MemStatus { public uint Length, MemoryLoad; public ulong TotalPhys, AvailPhys, TotalPageFile, AvailPageFile, TotalVirtual, AvailVirtual, AvailExtendedVirtual; }
+    [System.Runtime.InteropServices.DllImport("kernel32", SetLastError = true)] static extern bool GlobalMemoryStatusEx(ref MemStatus m);   // 平台例外：Windows 读空闲内存
     internal static long AvailMb()   // 此刻空闲内存（MB），同 tools/cores.sh s2a_avail_mb：S2A_MEM_AVAIL_MB 覆盖 > macOS vm_stat 空闲 + 非活跃 + 预读 + 可清除 > Linux MemAvailable；读不到 0
     {
         if (long.TryParse(Environment.GetEnvironmentVariable("S2A_MEM_AVAIL_MB"), out var o) && o > 0) return o;
@@ -789,6 +794,12 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
                 long pages = System.Text.RegularExpressions.Regex.Matches(text, @"^Pages (free|inactive|speculative|purgeable):\s+(\d+)", System.Text.RegularExpressions.RegexOptions.Multiline)
                     .Sum(m => long.Parse(m.Groups[2].Value));
                 return ps.Success ? pages * long.Parse(ps.Groups[1].Value) / 1048576 : 0;
+            }
+            // Windows（D-CMAE：原先读不到、恒为 0，各段从不按实时内存重算）：可用物理内存与剩余可提交内存取小——超了提交上限分配直接失败，不像 macOS 能换出
+            if (OperatingSystem.IsWindows())   // 平台例外：Windows 读空闲内存要 kernel32
+            {
+                var m = new MemStatus { Length = (uint)System.Runtime.InteropServices.Marshal.SizeOf<MemStatus>() };
+                return GlobalMemoryStatusEx(ref m) ? (long)(Math.Min(m.AvailPhys, m.AvailPageFile) / 1048576) : 0;
             }
             if (OperatingSystem.IsLinux() && File.ReadLines("/proc/meminfo").FirstOrDefault(l => l.StartsWith("MemAvailable:", StringComparison.Ordinal)) is { } l)
                 return long.Parse(l.Split(' ', StringSplitOptions.RemoveEmptyEntries)[1]) / 1024;
@@ -1235,16 +1246,19 @@ static class Metal
     ///   新加的那路要过几秒才吃到内存），上限本单核数 S2A_JOBS；只放宽不收窄。空闲内存是给定值（S2A_MEM_AVAIL_MB，单测）或读不到时不放宽：没有实时读数</summary>
     public static IDisposable Widen(int lanes, string phase = null)
     {
-        int extra = Math.Max(0, lanes - Cap); Cur = Cap + extra;
+        lanes = Math.Max(1, lanes);
+        int extra = Math.Max(0, lanes - Cap), held = Math.Max(0, Cap - lanes);   // held：比 -j 窄时这一段先扣住的闸位（段开头上一段已编完，立即拿到）
+        for (int i = 0; i < held; i++) Gate.Wait();
+        Cur = Cap + extra - held;
         if (extra > 0) Gate.Release(extra);
-        return new Narrow(extra, phase);
+        return new Narrow(extra, held, phase);
     }
     sealed class Narrow : IDisposable
     {
-        int extra, grown; readonly string phase; readonly Timer timer; readonly object mu = new();
-        public Narrow(int extra, string phase)
+        int extra, held, grown; readonly string phase; readonly Timer timer; readonly object mu = new();
+        public Narrow(int extra, int held, string phase)
         {
-            this.extra = extra; this.phase = phase;
+            this.extra = extra; this.held = held; this.phase = phase;
             bool live = phase != null && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("S2A_MEM_AVAIL_MB"));
             int sec = int.TryParse(Environment.GetEnvironmentVariable("S2A_LANE_GROW_S"), out var g) && g > 0 ? g : 5;
             if (live) timer = new Timer(_ => Grow(), null, sec * 1000, sec * 1000);
@@ -1255,16 +1269,18 @@ static class Metal
             int cap = Env("S2A_JOBS", Environment.ProcessorCount), peak = Env("S2A_DIRECT_METAL_PEAK_MB", 1065), p90 = Env("S2A_DIRECT_METAL_P90_MB", 420);
             lock (mu)
             {
-                if (timer == null || Cap + extra >= cap) return;
+                if (timer == null || Cap + extra - held >= cap) return;
                 long avail = Build.AvailMb();
                 if (avail <= 0 || avail / 2 < peak + 2L * p90) return;
-                extra++; grown++; Cur = Cap + extra; Gate.Release(1);
+                if (held > 0) held--; else extra++;   // 收窄过的先还扣住的闸位
+                grown++; Cur = Cap + extra - held; Gate.Release(1);
             }
         }
         public void Dispose()
         {
-            int n, g; lock (mu) { timer?.Dispose(); n = extra; g = grown; }
-            if (g > 0) Build.Say($"{phase}：段内按此刻空闲内存又放宽 {g} 路，最多 {Cap + n} 路");
+            int n, h, g; lock (mu) { timer?.Dispose(); n = extra; h = held; g = grown; }
+            if (g > 0) Build.Say($"{phase}：段内按此刻空闲内存又放宽 {g} 路，最多 {Cap + n - h} 路");
+            if (h > 0) Gate.Release(h);
             for (int i = 0; i < n; i++) Gate.Wait(); Cur = 0;
         }
     }

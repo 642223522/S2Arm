@@ -42,7 +42,6 @@
 退出码：0 成功；1 失败（标准输出末行【红】说明）；2 用法"""
 from __future__ import annotations
 
-import os as _pw_os, sys as _pw_sys; _pw_sys.path.append(_pw_os.path.dirname(_pw_os.path.abspath(__file__))); from pool_workers import available_mb, cores  # noqa: E402  核数 / 进程池路数唯一来源（tools/pool_workers.py，#1332）
 import argparse
 from collections import deque
 import hashlib
@@ -722,18 +721,20 @@ ZNAME = re.compile(r"game\.img\.([0-9a-f]{16})\.(\d{4})\.zst")
 # 流式压（D-DVFJ：7 GB 内存的 Windows 机器、此刻可用 0.1 GB，推第一块就 MemoryError）：原先每块 1 GiB 整块读进内存、整块压、压出的字节也整块攥着，
 #   再加 zstd 按核数开的工作线程各自的缓冲，一块峰值好几 GB。现在每块仍是一个独立 zstd 帧（块大小 ZCHUNK 与块名是两端契约，pack_apply.c img_unzst 按块号 × ZCHUNK 解回原处），
 #   但按 ZREAD 分段读、喂流式压缩器、压出的边写边丢（推送写进这块的临时文件，量数只累计长度）；帧头照写原文长度（pledged size），解压端本就流式解。
-#   工作线程按此刻可用内存的一半封顶（实测 9 档：基础约 160 MB、每多一个线程约 70 MB，按 ZBASE_MB / ZWORKER_MB 估，至少 1 个）；
-#   zstd 多线程的输出与线程数无关（实测 1 / 2 / 4 / 8 线程逐字节相同），所以量数时与推送时线程数不同，块长度照样对得上。
+#   工作线程固定 ZWORKERS 个（#1942：zstd 压出的帧随线程数变——Windows 随包 zstandard 0.25 实测 1 / 2 / 24 线程同一块差几个字节，
+#   量数与推送线程数不同块长度就对不上；固定 2 个，内存约 ZBASE_MB + 2 × ZWORKER_MB，1 GB 一块约 2 秒）。
 #   流式帧与原先一次性压的帧差几个头字节：量数缓存带 fmt，旧缓存作废重量，机上旧格式的块长度对不上就重推
 ZREAD = 8 << 20
 ZBASE_MB, ZWORKER_MB = 160, 80
-ZFMT = 2
+ZWORKERS = 2
+ZFMT = 3   # 3：固定线程数（#1942）后的帧，旧量数作废重量
 
 
 def zstd_workers():
-    """zstd 工作线程数：核数，按此刻可用内存的一半封顶（读不到内存就按核数），至少 1"""
-    n, mb = cores(), available_mb()
-    return n if mb is None else max(1, min(n, (mb // 2 - ZBASE_MB) // ZWORKER_MB))
+    """zstd 工作线程数：固定 ZWORKERS（#1942）。量压缩率时记下的每块大小要和推的时候压出来的逐字节一样长（续传判「这块推完了没」、
+    Apple TV 推完核对都比它），而 zstd 压出的帧随线程数变（Windows 随包 zstandard 0.25 实测 1 GB 一块：1 / 2 / 24 线程分别差几个字节），
+    原先线程数随此刻可用内存变（D-DVFJ），量和推之间一变就对不上。固定 2 线程：实测每 GB 约 2 秒，内存约 ZBASE_MB + 2 × ZWORKER_MB"""
+    return ZWORKERS
 
 
 def zstd_compressor():
@@ -754,9 +755,22 @@ def zstd_compressor():
         except ImportError:
             return None
 
+        import io
+
+        class Sink(io.RawIOBase):   # 收 stream_writer 吐出的压缩字节，feed / finish 每次取走
+            def __init__(self): super().__init__(); self.parts = []
+            def writable(self): return True
+            def write(self, b): self.parts.append(bytes(b)); return len(b)
+            def take(self): out = b"".join(self.parts); self.parts.clear(); return out
+
+        # 用 stream_writer，不用 compressobj（#1942，Windows 随包 zstandard 0.25 实测 1 GB 一块：compressobj 1 线程 19.6 秒、24 线程 260 秒，
+        #   stream_writer 1 线程 4.5 秒、24 线程 1.7 秒，压出的字节数相同）。原先「测压缩率」一块就停十几分钟，界面一直 0%，玩家当成挂住
         def stream(raw):
-            c = zstandard.ZstdCompressor(level=ZLEVEL, threads=zstd_workers(), write_checksum=True).compressobj(size=raw)
-            return c.compress, lambda: c.flush(zstandard.COMPRESSOBJ_FLUSH_FINISH)
+            sink = Sink()
+            w = zstandard.ZstdCompressor(level=ZLEVEL, threads=zstd_workers(), write_checksum=True).stream_writer(sink, size=raw, closefd=False)
+            def feed(b): w.write(b); return sink.take()
+            def finish(): w.flush(zstandard.FLUSH_FRAME); return sink.take()
+            return feed, finish
 
     def z(path, k, out=None):
         with open(path, "rb") as f:

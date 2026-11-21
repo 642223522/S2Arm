@@ -689,6 +689,13 @@ static void publish_local_players(void) {
     }
 }
 
+// 玩家在设置里关了即时快照（S2ASnapshot 显式存过且为假）：runtime/src/snapsw.c 在构造期（vawin.c vawin_boot 定命令记录区 / 虚拟池区时）第一次读开关就问这里，
+//   不等开局再写 S2A_SNAP_MODE（那时开关已缓存成「开」、地址已占，11-21）。只读 NSUserDefaults，构造期可调
+int s2a_ios_snap_pref_off(void) {
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    return [d objectForKey:@"S2ASnapshot"] != nil && ![d boolForKey:@"S2ASnapshot"];
+}
+
 void s2a_ios_load_graphics_settings(void) {
     @autoreleasepool {
         // 先套用户设置、再读包内能力清单（在 App 包顶层）：两边都只在环境变量未设时写，先写的赢 → 启动环境 > 用户设置 > 清单
