@@ -3837,6 +3837,9 @@ static void set_time_constraint(uint64_t period_ns) { int f = rt_comp_fixed_ms()
 #include "rt_demote.h"
 // 每 30 帧核一次本线程是不是还在实时档（被降级的对策见 rt_demote.h）；取图线程上调，只看自己
 static void rt_demote_tick(uint64_t period_ns) {
+#if defined(__ANDROID__) || defined(__OHOS__)
+    (void)period_ns;   // 「实时声明被降级回落优先级 0」是 XNU 的行为；安卓 / 鸿蒙走 mach 兼容层（android/native/nvn/compat/mach），没有标准 / 优先策略，不做
+#else
     static int k; static uint64_t last_ns[2];   // 最近两次处理降级的时刻（判「60 秒内第几次」）
     if (!rt_on() || g_rt_off || !g_rt_comp_ms || ++k % 30) return;
     // 测试钩子（缺省关）：DM_RT_TEST_DEMOTE=<第几次检查>[,<第几次>]——到点先把本线程改成标准策略，模拟系统降级（真降级要每帧超出申报，内核把申报至少抬到半个周期，局里逼不出来）
@@ -3866,6 +3869,7 @@ static void rt_demote_tick(uint64_t period_ns) {
     g_rt_off = 1; g_rt_comp_ms = 0;
     LOG("【红】[nvn] 取图线程的实时声明 60 秒内第二次被系统降级（当前优先级 %d、策略 %d）：本局不再声明，改标准策略并抬到优先级 47（标准策略 %s，基础 %d → 抬后 %d、precedence %s），"
         "免得降级后回落到优先级 0、整个进程被搬到能效核", xi.pth_curpri, xi.pth_policy, kr == KERN_SUCCESS ? "已设" : "设置失败", base, after, kp == KERN_SUCCESS ? "已设" : "设置失败");
+#endif
 }
 static void rt_comp_tick(uint64_t period_ns) {
     rt_demote_tick(period_ns);
