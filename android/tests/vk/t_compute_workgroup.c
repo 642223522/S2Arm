@@ -237,6 +237,18 @@ int main(int argc, char **argv) {
                  words, bytes, "main", mode == 2 ? NULL : "maxComputeWorkGroupInvocations", mode == 2 ? 128 : 256);
         free(words);
     }
+    // 共享字节闸（nvn_gpu_shader_load 侧最后一道保险）：同一个 8 KB Workgroup 数组，
+    // 收窄到 4 KB 的上限下必须具名拒收且不交驱动，等上限（8 KB）放行照常编译派发。
+    {
+        uint32_t saved = l->maxComputeSharedMemorySize;
+        size_t bytes; uint32_t *w8 = read_shader(argv[1], "shared8k", &bytes);
+        l->maxComputeSharedMemorySize = 4096;
+        run_case("shared_over", w8, bytes, "main", "exceeds maxComputeSharedMemorySize", 0);
+        l->maxComputeSharedMemorySize = 8192;
+        run_case("shared_at_limit", w8, bytes, "main", NULL, 1);
+        l->maxComputeSharedMemorySize = saved;
+        free(w8);
+    }
     two_entries[0] = SpvMagicNumber;
     run_case("entry_small", two_entries, sizeof two_entries, "small", NULL, 0);
     run_case("entry_large", two_entries, sizeof two_entries, "large", "maxComputeWorkGroupInvocations", 0);
