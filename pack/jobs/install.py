@@ -1384,12 +1384,11 @@ def export_s2arm(c, gid, *, folder=None, sign=True, step=0, total=3):
     import hashlib, io as _io, tarfile
     import program_pack
     import ipa as packer
-    from rewrite_refresh import refresh_ios
     gid = gid.upper()
     c.begin("准备这款的程序（按需更新）", step + 1, total)
     pack = ios_pack(c, gid)
     with packer.program_locks(c, [gid]):
-        refresh_ios(c, [gid])
+        refresh_local(c, gid)   # 同「更新这款」：着色器库一起补到本版（#1162：原先只重核程序、不重编着色器库，导出装好后电脑上「建议更新」照亮）
         pkg = Path(program_pack.build(c, gid))
         meta = json.loads((pkg / program_pack.META).read_text(encoding="utf-8"))
         image = pkg / program_pack.image_name(gid)
@@ -3393,8 +3392,6 @@ def export_app(c, gid):
     ② 这款的游戏包 .s2arm（资源派生件，程序不签）+ 资源本体 .img 硬链接（export_s2arm folder=游戏文件夹）
     ③ README。→ 结果页 B 要的（appName / ipaPath / gameFolder / s2armPath / resourcePath / signMode / nextSteps / exported）"""
     import ipa as packer
-    import sgrade_bf
-    from rewrite_refresh import refresh_ios
     gid = gid.upper()
     ios_pack(c, gid)
     total = 5
@@ -3403,9 +3400,7 @@ def export_app(c, gid):
     signed = None
     try:
         with packer.program_locks(c, [gid]):
-            if sgrade_bf.rechain_ios(c, gid) == "unavailable":
-                trace(c, f"{gid} 着色器链更新了，这次没重编着色器库（原因见上一行；「建议更新」照旧提示）")  # 非玩家句
-            refresh_ios(c, [gid])
+            refresh_local(c, gid)   # 同「更新这款」，一份定义
             ipa, _, _ = packer.assemble(c, gid, dest=tmp, standalone=True)
         plain = tmp / "S2Arm-app.ipa"
         if ipa_strip_widget(ipa, plain):
@@ -3447,8 +3442,6 @@ def put_app(c, gid, ph, steps=True):
     ph = 这台手机（phone_for：要签名，不走别的工具装的 S2Arm）。设备记录 apps[游戏号] = {bundleId, shellId, team, signer, signed, pack, mods, at}；
     通用壳的 bundleId / shellId / games 不碰——显式描述文件只有一个包名、独立 App 顶掉了通用壳时例外：壳号与各款记录清掉（手机上已经不是它了）"""
     import ipa as packer
-    import sgrade_bf
-    from rewrite_refresh import refresh_ios
     gid = gid.upper()
     pack = ios_pack(c, gid)
     bid, team, fixed = app_bundle(c, ph, gid)
@@ -3459,9 +3452,7 @@ def put_app(c, gid, ph, steps=True):
     tmp = Path(tempfile.mkdtemp(prefix=".container-", dir=c.library))
     try:
         with packer.program_locks(c, [gid]):
-            if sgrade_bf.rechain_ios(c, gid) == "unavailable":
-                trace(c, f"{gid} 着色器链更新了，这次没重编着色器库（原因见上一行；「建议更新」照旧提示）")  # 非玩家句
-            refresh_ios(c, [gid])
+            refresh_local(c, gid)   # 同「更新这款」，一份定义
             ipa, games, sid = packer.assemble(c, gid, dest=tmp, standalone=True)   # 主屏名 / 图标是这款的
         plain = tmp / "S2Arm-app.ipa"
         if ipa_strip_widget(ipa, plain):
