@@ -66,8 +66,13 @@ def rebuild(c, gid, src_root, plat, work):
     env = c.env()
     env.update(S2A_ROOTS=str(roots), S2A_ROOTS_SHARED=str(work / "never-shared"), S2A_ROOTS_PRIV=str(work / "roots-private"), S2A_PACK_PLAT=plat)
     logs = Path(c.logs) / c.task; logs.mkdir(parents=True, exist_ok=True)
-    for st, extra in STAGES:
+    # 步与步之间报「已完成几步 / 共几步」（D-QPGF，Mac 0.6.4：更新这款重编着色器 247 秒停在第一步、done / total 一直空，按钮一直「更新中 0%」）：
+    #   没有分段计划的作业按本段计数插值整单进度（pack/jobs/overall.py），只增不减；步内工具自己写的 S2A_PROGRESS 计数照常上报
+    n = len(STAGES)
+    for i, (st, extra) in enumerate(STAGES):
+        c.emit("progress", done=i, total=n)
         c.run(["bash", Path(c.engine) / f"pack/stage_{st}.sh", gid, *extra], logs / f"sgbf_{st}.log", env)
+    c.emit("progress", done=n, total=n)
     cur = layout.current_root(c, roots / (gid + layout.CURRENT))
     new = cur / "shaders/direct" if cur is not None else None
     if new is None or not (new / "keys.tsv").is_file() or lib_dir(new) is None:
