@@ -3232,7 +3232,7 @@ void nvn_be_drain(void) { if (mtl_gpu_halted()) { MLOG("GPU 安全停中：后�
 
 // ================= Render replay =================
 #include "../../host/front.h"
-static int g_red_once[209];   // RED_ONCE keys 0..208 (207–208: nvn_present_fsr.inc FSR 1 on the present — 207 the shaders / pipelines could not be made, 208 a slot's textures / buffers / argument tables could not be allocated; either way the present goes on bilinear; 206: a BC texture drawn as blocks on a GPU without BC, its shadow / staging / decode not made, bcdec_attach / bcdec_flush; 205: texture upload / pool-storage synchronization; 202–204: nvn_stex.inc 放置式稀疏贴图块管理 — CPU 写的 / GPU 写的稀疏贴图同步失败（没堆页 / 暂存），稀疏贴图不做 tex_upgrade 整张复制; 198–201: nvn_sparse_tex.inc Metal sparse textures — heap / texture not made, page / level deswizzle failed, map / upload command buffer failed; 195–197: nvn_tensor.inc tensor_fix_in, the tensor stand-in's fixed-size input; 194: #798 a texel buffer's aligned lead view could not be made, tbl_view; 193: a texture outside any memory pool with an unmapped storage tail, #b5a081; 188–192: internal resolution — 188 a draw / dispatch still held scaled image-slot storages after the retry limit, rs_pre_draw / rs_pre_images; 189 a storage past the device texture limit, rs_rescale / tex_widen; 190 a CPU readback of an enlarged storage not scaled back linearly, nvn_be_read_texels; 191 an image-slot storage that could not go back to its own size; 192 a screenshot of the enlarged window texture not scaled back; 187: a multisample count the GPU does not support, stepped down, mtl_samples_supported (#903); 186: a packaged texture's storage runs past the end of its memory pool, pkg_upload_ (#819); 183 / 184 / 185: an incompatible Metal texture format view fell back to the base format in rt_view_fmt / attach / clear_tex; 182: a block-compressed texture whose GPU writer resolved to its own Metal format, bcal_copy; 181: a texture view whose target and layer range Metal cannot express (#199), tex_by_id; 179 / 180: a pass's own depth attachment sampled in it could not be copied / viewed (#387); 178: a slot read on-chip by the first draw of a pass was not opened loaded; 177: a compute dispatch's binding ended the shared encoder again on the retry; 175 / 176: a block-compressed texture's GPU-written bytes not taken: no host texture of the uncompressed writer / no staging buffer, bcal_sync; 174: a converted vertex attribute stream address in no memory pool, vconv_bind; 172 / 173: a pool table for handles traced to no slot could not be allocated / grown, pool_tab_new / pool_tab_put_n; 171: a first-invocation store skipped, dispatch; 170: an sRGB / linear view not made again on its upgraded parent, tex_upgrade; 169: a storage buffer address pushed into an NVN2 push slot the pools do not hold (SBUFQ; until 11-07 a not-loaded color attachment written); 167 / 168: a storage buffer address the pools do not hold, slot / handle in a uniform buffer; 166: a texture turning packaged whose old host texture has another shape, its GPU-written texels not carried over, carry_gpu) (162: a vertex buffer address the pools do not hold, bind_vbufs) (160 / 161 / 163–165: tensor-core network stand-in, nvn_tensor.inc; 147–159 left for the NVN2 task / mesh branch) (143–146: NVN2 DLSS → MetalFX, nvn_dlss.inc) (139–142: folded linear textures: tex_linear, se_want, se_bind, copies / clears into one) (137 / 138: a GL texture an NVN texture is built from has no usable storage / no matching NVN format) (136: a draw's binding ended its pass twice) (134 / 135: alpha test / multisampling off the fragment shader cannot take); same-pass feedback snapshot too large 127, native image atomics use 128/129, same-pass feedback view narrowing 133
+static int g_red_once[211];   // RED_ONCE keys 0..210 (209–210: a vertex stream the draw reads past its bound range not limited — the range is over the staging size / a GPU write on the stream is queued in this submission, bind_vbufs vbuf_limit; 207–208: nvn_present_fsr.inc FSR 1 on the present — 207 the shaders / pipelines could not be made, 208 a slot's textures / buffers / argument tables could not be allocated; either way the present goes on bilinear; 206: a BC texture drawn as blocks on a GPU without BC, its shadow / staging / decode not made, bcdec_attach / bcdec_flush; 205: texture upload / pool-storage synchronization; 202–204: nvn_stex.inc 放置式稀疏贴图块管理 — CPU 写的 / GPU 写的稀疏贴图同步失败（没堆页 / 暂存），稀疏贴图不做 tex_upgrade 整张复制; 198–201: nvn_sparse_tex.inc Metal sparse textures — heap / texture not made, page / level deswizzle failed, map / upload command buffer failed; 195–197: nvn_tensor.inc tensor_fix_in, the tensor stand-in's fixed-size input; 194: #798 a texel buffer's aligned lead view could not be made, tbl_view; 193: a texture outside any memory pool with an unmapped storage tail, #b5a081; 188–192: internal resolution — 188 a draw / dispatch still held scaled image-slot storages after the retry limit, rs_pre_draw / rs_pre_images; 189 a storage past the device texture limit, rs_rescale / tex_widen; 190 a CPU readback of an enlarged storage not scaled back linearly, nvn_be_read_texels; 191 an image-slot storage that could not go back to its own size; 192 a screenshot of the enlarged window texture not scaled back; 187: a multisample count the GPU does not support, stepped down, mtl_samples_supported (#903); 186: a packaged texture's storage runs past the end of its memory pool, pkg_upload_ (#819); 183 / 184 / 185: an incompatible Metal texture format view fell back to the base format in rt_view_fmt / attach / clear_tex; 182: a block-compressed texture whose GPU writer resolved to its own Metal format, bcal_copy; 181: a texture view whose target and layer range Metal cannot express (#199), tex_by_id; 179 / 180: a pass's own depth attachment sampled in it could not be copied / viewed (#387); 178: a slot read on-chip by the first draw of a pass was not opened loaded; 177: a compute dispatch's binding ended the shared encoder again on the retry; 175 / 176: a block-compressed texture's GPU-written bytes not taken: no host texture of the uncompressed writer / no staging buffer, bcal_sync; 174: a converted vertex attribute stream address in no memory pool, vconv_bind; 172 / 173: a pool table for handles traced to no slot could not be allocated / grown, pool_tab_new / pool_tab_put_n; 171: a first-invocation store skipped, dispatch; 170: an sRGB / linear view not made again on its upgraded parent, tex_upgrade; 169: a storage buffer address pushed into an NVN2 push slot the pools do not hold (SBUFQ; until 11-07 a not-loaded color attachment written); 167 / 168: a storage buffer address the pools do not hold, slot / handle in a uniform buffer; 166: a texture turning packaged whose old host texture has another shape, its GPU-written texels not carried over, carry_gpu) (162: a vertex buffer address the pools do not hold, bind_vbufs) (160 / 161 / 163–165: tensor-core network stand-in, nvn_tensor.inc; 147–159 left for the NVN2 task / mesh branch) (143–146: NVN2 DLSS → MetalFX, nvn_dlss.inc) (139–142: folded linear textures: tex_linear, se_want, se_bind, copies / clears into one) (137 / 138: a GL texture an NVN texture is built from has no usable storage / no matching NVN format) (136: a draw's binding ended its pass twice) (134 / 135: alpha test / multisampling off the fragment shader cannot take); same-pass feedback snapshot too large 127, native image atomics use 128/129, same-pass feedback view narrowing 133
 // The key must be a constant inside the table: a key past the end wrote into the statics next to it (11-05: nvn_tensor.inc used 160 / 161 with 147 slots)
 #define RED_ONCE(k, ...) do { _Static_assert((k) >= 0 && (k) < (int)(sizeof g_red_once / sizeof g_red_once[0]), "RED_ONCE key outside g_red_once"); if (!g_red_once[k]++) MLOG("【红】 " __VA_ARGS__); } while (0)
 // NVN vertex streams 0–15 → Metal vertex buffer slots: 0–13 go to 16–29 (30 is the constant fallback buffer), 14 and 15 to 14 and 15. Metal has only the 31 slots 0–30; translated shaders use only buffer(0) (the argument buffer),
@@ -9465,12 +9465,40 @@ static void vbuf_zero(id en, int s) {   // en: the render encoder (plain id: MTL
     if (!g_vbuf_zero) { g_vbuf_zero = [g_dev newBufferWithLength:64 options:MTLResourceStorageModeShared]; res_add(g_vbuf_zero); g_vbuf_zero_gpu = g_vbuf_zero.gpuAddress; }
     if (s >= 0) enc_r_vbuf(en, VB_SLOT(s), g_vbuf_zero_gpu);
 }
+// Maxwell's vertex fetch stops at the stream's limit (the size of the bound range): an attribute past it reads zero. Metal fetches by address with no length, so a vertex past the
+//   bound range read whatever the memory pool held after it. Breath of the Wild (#1783) draws the Malice ground projection (a sphere, indices up to 513) with the vertex state the
+//   draw before it left, a four-vertex quad (128 bytes) or a 354-vertex mesh: the fetch past them read index and descriptor bytes as positions (around 1.8e12) and cut straight black
+//   bands across the ground. A per-vertex stream the draw's vertices overrun is bound to a copy of the vertices the draw reads: the bytes inside the bound range, zeros after it.
+//   Only when it can overrun: a direct draw's last vertex is first + count - 1; an indexed draw's is at most the index type's largest value plus the base vertex, and only when that
+//   could pass the limit are the indices' smallest and largest read (ix_range, kept while their pages stay unwritten). Indirect and multi-draws (the GPU reads the counts) are bound
+//   as before. The copy is taken on the CPU at replay: a stream with a GPU write queued in this submission is bound as before and said once (RED 210)
+static int vc_draw_range(const p_draw *dw, const p_draw_idx *di, int64_t *lo, int64_t *hi); static int vconv_size(int f);
+static struct { uint64_t addr, size, serial, gpu; int64_t lo, hi; uint32_t stride; } g_vlim[16]; static int g_vlim_next; static uint64_t g_vlim_n;
+// The GPU address to bind stream s at for vertices [lo, hi] (vertex id v reads at the returned address + v × stride); 0 = bind the stream as it is
+static uint64_t vbuf_limit(int s, uint64_t ext, int64_t lo, int64_t hi, NvShader *vs) {
+    uint64_t addr = S.vbuf[s].address, size = S.vbuf[s].size; uint32_t stride = S.stream[s].stride;
+    if (lo < 0) return 0;   // a vertex id below zero (a negative base vertex): Metal does not fetch it either
+    uint64_t start = (uint64_t)lo * stride, n = (uint64_t)(hi - lo) * stride + ext;
+    for (int i = 0; i < 16; i++) if (g_vlim[i].serial == g_arena_gen && g_vlim[i].addr == addr && g_vlim[i].size == size && g_vlim[i].stride == stride && g_vlim[i].lo == lo && g_vlim[i].hi == hi) return g_vlim[i].gpu;
+    if (n > (4u << 20)) { RED_ONCE(209, "vertex stream %d: the draw reads vertices %lld-%lld past its bound range (%llu bytes, stride %u), %llu bytes are over the staging size: bound as it is, past the range it reads the memory after it", s, (long long)lo, (long long)hi, (unsigned long long)size, stride, (unsigned long long)n); return 0; }
+    if (pend_hits(addr, size)) { RED_ONCE(210, "vertex stream %d: the draw reads vertices %lld-%lld past its bound range (%llu bytes, stride %u), and a GPU write on the stream is queued in this submission: bound as it is (a copy taken now would miss that write)", s, (long long)lo, (long long)hi, (unsigned long long)size, stride); return 0; }
+    uint64_t copy = start < size ? MIN(size - start, n) : 0; const uint8_t *src = NULL;
+    if (copy) { void *mb; uint64_t mo, g, pav; if (!gpu_addr_want(addr + start, 1, copy, &mb, &mo, &g, &pav)) return 0; src = (const uint8_t *)((__bridge id<MTLBuffer>)mb).contents + mo; }
+    id<MTLBuffer> b; size_t o = arena_alloc_origin((size_t)n, start, &b); uint8_t *d = (uint8_t *)b.contents + o;
+    if (copy) memcpy(d, src, (size_t)copy);
+    memset(d + copy, 0, (size_t)(n - copy));
+    uint64_t gpu = b.gpuAddress + o - start, k = ++g_vlim_n;
+    int c = g_vlim_next++ % 16; g_vlim[c].addr = addr; g_vlim[c].size = size; g_vlim[c].stride = stride; g_vlim[c].lo = lo; g_vlim[c].hi = hi; g_vlim[c].serial = g_arena_gen; g_vlim[c].gpu = gpu;
+    if (k <= 4 || !(k & (k - 1))) MLOG("vertex stream %d: the draw reads vertices %lld-%lld, the bound range holds %llu bytes (stride %u): past it the stream reads zeros, as the Switch's vertex fetch limit gives (%llu so far, vertex shader %.16s)",
+                                       s, (long long)lo, (long long)hi, (unsigned long long)size, stride, (unsigned long long)k, vs ? vs->key : "-");
+    return gpu;
+}
 // vs: the draw's vertex shader. Only the streams its inputs fetch are resolved (nvn_vbuf_read.h, #618: a slot left bound to memory no pool holds was looked up, and reported as
-//   reading zeros, at every draw although no attribute used it); vs nil (no reflection) resolves every bound slot as before
-static void bind_vbufs(id<MTL4RenderCommandEncoder> en, NvShader *vs) {
+//   reading zeros, at every draw although no attribute used it); vs nil (no reflection) resolves every bound slot as before. dw / di: the draw (vertex fetch limit, vbuf_limit); both nil: not limited
+static void bind_vbufs(id<MTL4RenderCommandEncoder> en, NvShader *vs, const p_draw *dw, const p_draw_idx *di) {
     static struct { uint64_t addr, gpu, gen; } cache[16];
     uint64_t gen = atomic_load_explicit(&g_pool_gen, memory_order_acquire);
-    uint32_t want = 0xffff;
+    uint32_t want = 0xffff; int rk = -1; int64_t rlo = 0, rhi = -1;   // rk: the draw's vertex range is known (-1 = not looked up yet, vbuf_limit)
     if (vs) { uint8_t an[NVN_REFL_MAXV], ast[16], afm[16]; int nv = vs->rf.nv < NVN_REFL_MAXV ? vs->rf.nv : NVN_REFL_MAXV, na = S.nattr < 16 ? S.nattr : 16;
         for (int v = 0; v < nv; v++) an[v] = vs->rf.v[v].nvn;
         for (int a = 0; a < na; a++) { ast[a] = (uint8_t)S.attr[a].stream; afm[a] = (uint8_t)S.attr[a].fmt; }
@@ -9490,6 +9518,18 @@ static void bind_vbufs(id<MTL4RenderCommandEncoder> en, NvShader *vs) {
                     MLOG("【红】 vertex buffer slot %d address %#llx (%llu bytes) is in no memory pool: the slot reads zeros (%llu so far, vertex shader %.16s); %s", s, (unsigned long long)addr, (unsigned long long)S.vbuf[s].size, (unsigned long long)k, vs ? vs->key : "-", near); }
                 vbuf_zero(en, s); continue; }
             cache[s].addr = addr; cache[s].gpu = gpu; cache[s].gen = gen;
+        }
+        uint32_t stride = S.stream[s].stride;
+        if ((dw || di) && stride && !S.stream[s].divisor && rk) {   // vertex fetch limit (vbuf_limit): ext = the furthest byte past a vertex's start any attribute on this stream reads
+            uint64_t ext = stride, size = S.vbuf[s].size;
+            for (int a = 0; a < S.nattr && a < 16; a++) if (S.attr[a].stream == s) { uint64_t e = S.attr[a].offset + (uint64_t)vconv_size(S.attr[a].fmt); if (e > ext) ext = e; }
+            uint64_t last = size >= ext ? (size - ext) / stride : 0; int none = size < ext;   // the last vertex wholly inside the range (none: not even vertex 0)
+            int64_t top = dw ? (dw->ind || dw->mdi_cnt || dw->count <= 0 ? -1 : (int64_t)dw->first + dw->count - 1)
+                             : (di->ind || di->mdi_cnt || di->count <= 0 ? -1 : (int64_t)(di->itype == 0 ? 0xff : di->itype == 1 ? 0xffff : 0xffffffffu) + di->base_vertex);
+            if (top >= 0 && (none || (uint64_t)top > last)) {
+                if (rk < 0) rk = vc_draw_range(dw, di, &rlo, &rhi);
+                uint64_t lg; if (rk && rhi >= 0 && (none || (uint64_t)rhi > last) && (lg = vbuf_limit(s, ext, rlo, rhi, vs))) gpu = lg;
+            }
         }
         enc_r_vbuf(en, VB_SLOT(s), gpu);
     }
@@ -15786,8 +15826,8 @@ static void tf_draw(NvProg *pr, const p_draw *dw, const p_draw_idx *di) {
     MTL4RenderPassDescriptor *d = pass_desc(); d.renderTargetWidth = 1; d.renderTargetHeight = 1; d.defaultRasterSampleCount = 1;
     id<MTL4RenderCommandEncoder> en = enc_r_begin(d);
     enc_r_pso(en, ps);
-    bind_vbufs(en, vs);
     p_draw range = {.prim = prim, .first = (int32_t)first, .count = (int32_t)span, .instances = (int32_t)inst, .base_instance = (int32_t)base_inst};
+    bind_vbufs(en, vs, &range, NULL);
     vconv_bind(en, vs, 1, &range, NULL);
     wd_drop(); args_dirty_all(); encode_args(en, vs, 0, 1);   // 宽屏不改写只产出数据的绘制（widen_glue.inc wd_drop）
     for (uint32_t j = 0; j < inst; j++) {
@@ -16117,8 +16157,8 @@ static void tess_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0) {
     // ① 捕获遍（照 geo_draw 213–221）：光栅关的渲染遍跑 main0_gs，槽 13 = 捕获信息块；索引绘制按去重排序后的 32 位索引表画点（NVN 的 8 位索引 Metal 没有）
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     id rd = pass_desc(); ((MTLRenderPassDescriptor *)rd).renderTargetWidth = ((MTLRenderPassDescriptor *)rd).renderTargetHeight = ((MTLRenderPassDescriptor *)rd).defaultRasterSampleCount = 1;   // 两个描述符类同名同义（pass_desc）；按老类型写不新增未守卫的 Metal 4 符号（tools/avail_count.sh）
-    id re = enc_r_begin(rd); enc_r_pso(re, capture); bind_vbufs(re, vs);   // id: only the enc_* wrappers touch it (Metal 3 hands back a Metal 3 encoder)
     p_draw vertex_range = {.first = (int32_t)first, .count = (int32_t)span, .instances = instances, .base_instance = (int32_t)first_instance};
+    id re = enc_r_begin(rd); enc_r_pso(re, capture); bind_vbufs(re, vs, &vertex_range, NULL);   // id: only the enc_* wrappers touch it (Metal 3 hands back a Metal 3 encoder)
     vconv_bind(re, vs, 1, &vertex_range, NULL);
     args_dirty_all(); encode_args(re, vs, 0, 1); enc_r_vbuf(re, 13, ci_gpu);
     if (di0) enc_r_draw_indexed(re, MTLPrimitiveTypePoint, nu, MTLIndexTypeUInt32, ix_gpu, (NSUInteger)nu * 4, instances, di.base_vertex, first_instance);
@@ -16503,7 +16543,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     enc_r_half_mask(en, cur_ps_round);
     if (!draw_pass_state(en, pr->sh[1])) return;   // depth-stencil / viewport / scissor / cull / ... (shared with tess_draw ④): 0 = this draw draws nothing
     alpha_ref_bind(en, pr->sh[1]);   // gap family 34
-    if (!g_mtk.on) bind_vbufs(en, pr->sh[0]);   // a task / mesh draw fetches no vertices
+    if (!g_mtk.on) bind_vbufs(en, pr->sh[0], dw, di);   // a task / mesh draw fetches no vertices
     if (cur_pull && !g_mtk.on) { pull_bind(en, pr->sh[0]); g_hy_draws++; }   // 拉取管线自己按布局块读顶点流：不做 CPU 转换（它按格式解码）
     else if (pr->sh[0]) vconv_bind(en, pr->sh[0], 0, dw, di);   // integer inputs fed float-type formats or 8 / 16-bit integers of the other sign (see vconv_ncomp, vconv_int)
     g_kd_force = kd_draw(pr, dw, di);
