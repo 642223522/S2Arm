@@ -597,7 +597,9 @@ def to_img(c, gid, root, pack_dir):
     """资源包就地转单一 IMG 形态（v0.3.0，pack/img.py convert）：游戏原始资源进 game.img（之后字节不变），着色器库 / 覆盖层照旧按文件。
     多程序合集的 programs/ 一并进 IMG（#1545）。转失败 = 出包失败（不交一半）"""
     c.begin("把游戏资源写成单一 IMG（game.img）")
-    log = c.logs / "img.log"
+    # 按作业分份（#1880）：原先所有游戏、所有作业共用一份 logs/img.log 追加写，失败摘要取它末尾 16000 字节、归因也读它，
+    #   前一款写 IMG 的输出（别的游戏的路径、它当时的盘满）串进这一款的失败里。<作业号>-img.log 归这次作业：诊断包、错误摘要都按作业号收
+    log = c.logs / (c.task + "-img.log")
     # 边写边删解包出来的 RomFS（#746）：出包收尾本来就清掉整个出包工作目录（prune_unless_follow_up），提前到写 IMG 时，峰值少一整份游戏大小。
     #   同一款接着还要出别的平台（followUp）要留着解包，不删
     consume = c.r.get("followUp") is not True
