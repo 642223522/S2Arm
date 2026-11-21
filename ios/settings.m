@@ -659,6 +659,9 @@ NSDictionary<NSString *, NSString *> *s2a_ios_local_player(NSUserDefaults *defau
 // 玩家在设置里关了即时快照（S2ASnapshot 显式存过且为假）：runtime/src/snapsw.c 在构造期（vawin.c vawin_boot 定命令记录区 / 虚拟池区时）第一次读开关就问这里，
 //   不等开局再写 S2A_SNAP_MODE（那时开关已缓存成「开」、地址已占，11-21）。只读 NSUserDefaults，构造期可调
 int s2a_ios_snap_pref_off(void) {
+    // 测试口（装机冒烟从电脑侧起局，没法替玩家拨设置；往容器偏好文件里写又会被 cfprefsd 缓存挡住）：S2A_TEST_SNAP_PREF=0 / 1 当作玩家在设置里存了关 / 开，
+    //   走的仍是这一路（快照开关来源记「玩家设置」），不同于直接给 S2A_SNAP_MODE（来源记「启动环境」）
+    const char *t = getenv("S2A_TEST_SNAP_PREF"); if (t && *t) return *t == '0';
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
     return [d objectForKey:@"S2ASnapshot"] != nil && ![d boolForKey:@"S2ASnapshot"];
 }
