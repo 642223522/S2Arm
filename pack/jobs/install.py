@@ -632,6 +632,8 @@ def classify(text, default="signing_failed"):
 
 def ios_pack(c, gid):
     """这款的资源包（image/ios/.pack）；还没出 iPhone 版 / 没有资源包就不装、不报成功（审计 18:00 P1-58：原先照装、启动器写死「资源包也拷好了」，打开游戏才进缺资源页）"""
+    if layout.state(c, gid)[0] == "missing":   # 游戏文件夹被删 / 挪走（独立 App 的 README 教玩家删文件夹）：照实说，不说成「还没出包」
+        raise Failure("这款在电脑上的游戏文件夹不在了（被删或挪走），没有装到 iPhone。", code="game_folder_missing")
     if not layout.has_ios_kit(c, gid):
         raise Failure("这款游戏还没出 iPhone 包：先点「打 iPhone 包」。", code="job_failed")
     pack = layout.ios_pack(c, gid)
@@ -1319,19 +1321,21 @@ def link_resource(src, dst):
     return dst
 
 
-def export_s2arm(c, gid):
+def export_s2arm(c, gid, *, folder=None, sign=True, step=0, total=3):
     """0.6.0 通用壳（开关后面）两件套导出里的小游戏包 .s2arm（《文件与程序管理体系》B 项、⑦ ①，11-17 维护者定）：
     tar（只用 ustar、只有普通文件条目；路径放不进 ustar 就报错）整体压一个带内容校验的 zstd 帧；
     第一个条目 s2arm.json（格式、程序号、名字版本、约定号、改写器指纹、程序 sha、资源包号、bytes = 其余条目内容字节合计、signer），
     program/（同推送的程序包：dylib、Games/<号>/、catalogue.json，未签名，留给手机签），pack/（资源包目录里除 game.img 以外的派生件）。
     资源本体 game.img 不拷：同盘硬链接进同一文件夹（link_resource），建不了硬链接就给出它在游戏库里的原位置（界面「显示资源文件」）。放游戏库根的固定文件夹（s2arm_dir），
-    不加锁不加权限，玩家删了下次导出重新生成；只换这一款自己的 .s2arm，同文件夹里别的东西不动。这一款的改写、出程序包都在这里前台按需做"""
+    不加锁不加权限，玩家删了下次导出重新生成；只换这一款自己的 .s2arm，同文件夹里别的东西不动。这一款的改写、出程序包都在这里前台按需做。
+    folder：独立 App 导出（export_app）写进这款自己的游戏文件夹、不写「S2Arm 游戏包」的说明；sign=False：程序不签（独立 App 起局只认包内程序，launchctx.c）；
+    step / total：进度在调用方整段里的位置"""
     import hashlib, io as _io, tarfile
     import program_pack
     import ipa as packer
     from rewrite_refresh import refresh_ios
     gid = gid.upper()
-    c.begin("准备这款的程序（按需更新）", 1, 3)
+    c.begin("准备这款的程序（按需更新）", step + 1, total)
     pack = ios_pack(c, gid)
     with packer.program_locks(c, [gid]):
         refresh_ios(c, [gid])
@@ -1339,7 +1343,7 @@ def export_s2arm(c, gid):
         meta = json.loads((pkg / program_pack.META).read_text(encoding="utf-8"))
         image = pkg / program_pack.image_name(gid)
         source_sha = program_pack.catalogue(gid, meta, image, None)["image_sha256"]
-        mode = export_sign_mode(c)
+        mode = export_sign_mode(c) if sign else "external"
         signed_with = None
         if mode != "external":   # 玩家选了用 Apple ID / 自己的证书签：导出前就签好，手机导入看清单 team 非空不再签（11-17 维护者定）
             try:
@@ -1355,7 +1359,7 @@ def export_s2arm(c, gid):
                 image = pkg / program_pack.image_name(gid)
                 signed_with = dict(mode=mode, name=who, team=team)
         cat = json.loads((pkg / program_pack.CATALOGUE).read_text(encoding="utf-8")) if signed_with else program_pack.catalogue(gid, meta, image, None)
-        c.begin("打包 .s2arm", 2, 3)
+        c.begin("打包 .s2arm", step + 2, total)
         files = [("program/" + p.relative_to(pkg).as_posix(), p) for p in sorted(pkg.rglob("*"))
                  if p.is_file() and p.name not in (program_pack.META, program_pack.KEY, program_pack.CATALOGUE)]
         derived = [("pack/" + p.relative_to(pack).as_posix(), p) for p in sorted(Path(pack).rglob("*"))
@@ -1386,17 +1390,18 @@ def export_s2arm(c, gid):
                     add(name, path=p)
             except ValueError as e:   # ustar 放不下的路径（name 100 + prefix 155）：不改用 pax / GNU 长名（手机只认 ustar）
                 raise Failure(f"{gid} 有文件路径太长，打不进 .s2arm：{e}", code="job_failed") from e  # 非玩家句
-    c.begin("写进「S2Arm 游戏包」文件夹", 3, 3)
+    c.begin("写进「S2Arm 游戏包」文件夹" if folder is None else "写进这款的游戏文件夹", step + 3, total)
     import programs
     data = programs._compress(buf.getvalue(), checksum=True)   # 带内容校验（与 iOS 导入侧对定）；核数只在 programs 里取（tools/pool_size_lint.py 白名单）
-    folder = s2arm_dir(c)
+    own = folder is None
+    folder = s2arm_dir(c) if own else Path(folder)
     folder.mkdir(parents=True, exist_ok=True)   # 玩家删了文件夹也照样重建；不设特殊权限
     out = folder / s2arm_name(c, gid)
     tmp = folder / f".{out.name}.{os.getpid()}.partial"
     tmp.write_bytes(data)
     os.replace(tmp, out)
-    lang = ui_lang(c)   # 这份文件夹的说明（玩家删了下次导出照样写回）
-    write_s2arm_readme(folder, lang)
+    if own:
+        write_s2arm_readme(folder, ui_lang(c))   # 这份文件夹的说明（玩家删了下次导出照样写回）
     game_img = Path(pack) / "game.img"
     linked = link_resource(game_img, out.with_suffix(".img")) if game_img.is_file() else None
     return dict(gameId=gid, s2armPath=str(out), s2armBytes=len(data), sha256=hashlib.sha256(data).hexdigest(),
@@ -3153,6 +3158,101 @@ def app_bundle(c, ph, gid):
     return app_bundle_id(team, gid), team, False
 
 
+def app_meta(c, gid):
+    """独立 App 落盘用：(这款的游戏文件夹, 玩家看到的游戏名, 显示版本)。游戏名同游戏库卡片（玩家改过名用改的）；版本取选中的本体 / 更新里最新那个的显示版本"""
+    import library
+    from space_rule import selected_packages
+    gid = gid.upper()
+    g = next((x for x in c.catalog()["games"] if str(x.get("id", "")).upper() == gid), {}) or {}
+    name = (library.game_custom(c, gid) or {}).get("name") or g.get("name") or gid
+    try:
+        picks = [p for p in selected_packages(g) if p.get("type") in ("base", "update")] if g.get("packages") else []
+    except (KeyError, TypeError):
+        picks = []
+    version = max(picks, key=lambda p: p.get("version", 0)).get("display", "") if picks else ""
+    return layout.game_dir(c, gid), name, version
+
+
+def app_files(c, gid, src_ipa, *, exported=False, s2arm=None, img=None, img_elsewhere=""):
+    """独立 App 的电脑产物放进这款的游戏文件夹（app_folder.py）：ipa（src_ipa 放成 <游戏名> v<版本>.ipa、删旧版本）+ 按界面语言的 README。→ dict（结果页用）"""
+    import app_folder
+    folder, name, version = app_meta(c, gid)
+    out = app_folder.place_ipa(src_ipa, folder, name, gid, version)
+    lang = ui_lang(c)
+    readme = app_folder.write_readme(folder, lang, app=name, ipa=out.name, gid=gid, s2arm=Path(s2arm).name if s2arm else "",
+                                     img=Path(img).name if img else "", img_elsewhere=img_elsewhere)
+    mode = export_sign_mode(c) if exported else chosen_sign_mode(c)
+    return dict(appName=name, appVersion=version, gameFolder=str(folder), ipaPath=str(out), ipaBytes=out.stat().st_size, readmePath=str(readme),
+                signMode=mode, nextSteps=app_folder.next_steps(lang, mode, app=name, ipa=out.name, s2arm=Path(s2arm).name if s2arm else "",
+                                                               img=Path(img).name if img else "", exported=exported))
+
+
+def app_expiry(c, ap):
+    """独立 App 这次签名的到期 → (时刻, 是不是读到的真值)：签好的包里读到的（ap.info expires）> 证书描述文件的到期日 > 按苹果规则估（免费 7 天、付费 1 年，同 host_update.SIGN_LIFETIME）"""
+    from host_update import SIGN_LIFETIME
+    if isinstance(ap.info.get("expires"), (int, float)):
+        return ap.info["expires"], True
+    if devcert.active(c):
+        end = devcert.profile_facts(c).get("expires")
+        if end:
+            return end, True
+    return time.time() + SIGN_LIFETIME["free" if ap.info.get("free", True) else "paid"], False
+
+
+def export_app(c, gid):
+    """「导出」按独立 App 出（chosen_layout = standalone、mode = export；0.6.4 维护者定）：不连手机，产物全进这款的游戏文件夹（app_folder.py）——
+    ① 组这一款的独立 App（同 put_app 的容器）→ 开发者证书模式按证书签好，其余（Apple ID、自己用 AltStore / SideStore 签）留未签名：
+       Apple ID 签名要手机登记设备，导出不连手机签不出能装的包，未签名的交给 AltStore / SideStore 或回来连手机「推到 iPhone」
+    ② 这款的游戏包 .s2arm（资源派生件，程序不签）+ 资源本体 .img 硬链接（export_s2arm folder=游戏文件夹）
+    ③ README。→ 结果页 B 要的（appName / ipaPath / gameFolder / s2armPath / resourcePath / signMode / nextSteps / exported）"""
+    import ipa as packer
+    import sgrade_bf
+    from rewrite_refresh import refresh_ios
+    gid = gid.upper()
+    ios_pack(c, gid)
+    total = 5
+    c.begin("组这款的独立 App", 1, total)
+    tmp = Path(tempfile.mkdtemp(prefix=".container-", dir=c.library))
+    signed = None
+    try:
+        with packer.program_locks(c, [gid]):
+            if sgrade_bf.rechain_ios(c, gid) == "unavailable":
+                trace(c, f"{gid} 着色器链更新了，这次没重编着色器库（原因见上一行；「建议更新」照旧提示）")  # 非玩家句
+            refresh_ios(c, [gid])
+            ipa, _, _ = packer.assemble(c, gid, dest=tmp, standalone=True)
+        plain = tmp / "S2Arm-app.ipa"
+        if ipa_strip_widget(ipa, plain):
+            ipa = plain
+        mode = export_sign_mode(c)
+        if mode == "devCert":
+            c.begin("用你的开发者证书签名", 2, total)
+            devcert.stored(c)   # 证书缺件 → devcert_missing
+            bid, _ = devcert.bundle_id(devcert.parse_profile(devcert.stored(c)[1]), gid)
+            stage = tmp / "stage"
+            r = subprocess.run(["/usr/bin/ditto", "-x", "-k", str(ipa), str(stage)], capture_output=True, text=True) if os.name != "nt" else None
+            if r is None:
+                import zipfile
+                with zipfile.ZipFile(ipa) as z:
+                    z.extractall(stage)
+            app = next((p for p in (stage / "Payload").glob("*.app") if p.is_dir()), None)
+            if (r is not None and r.returncode) or not app:
+                raise Failure("解不开 iPhone 包：" + ((r.stderr.strip()[-200:] if r is not None else "") or str(ipa)), code="job_failed")  # 非玩家句
+            got, _ = devcert.sign_app(c, app, c.logs / (c.task + "-export.log"), bid=bid)
+            signed = devcert.export_ipa(c, stage / "Payload", bid=got)
+            ipa = signed
+        folder, _, _ = app_meta(c, gid)
+        out = export_s2arm(c, gid, folder=folder, sign=False, step=2, total=total)
+        files = app_files(c, gid, ipa, exported=True, s2arm=out["s2armPath"], img=out["resourcePath"] if out.get("resourceLinked") else None,
+                          img_elsewhere=out["resourcePath"] if out.get("resourcePath") and not out.get("resourceLinked") else "")
+    finally:
+        if signed is not None:
+            Path(signed).unlink(missing_ok=True)
+        shutil.rmtree(tmp, ignore_errors=True)
+    return dict(out, **files, layout="standalone", exported=True, games=[gid],
+                signedWith=dict(mode="devCert", name=(devcert.team(c) or {}).get("name", ""), team=(devcert.team(c) or {}).get("id")) if mode == "devCert"
+                else dict(mode="none", name="", team=None))
+
+
 def put_app(c, gid, ph, steps=True):
     """「推到 iPhone」按独立 App 出（chosen_layout = standalone）：refresh_ios → 组这一款的容器（ipa.assemble）→ 去小组件 → 按独立包名签名装机 → 推资源包。
     ph = 这台手机（phone_for：要签名，不走别的工具装的 S2Arm）。设备记录 apps[游戏号] = {bundleId, shellId, team, signer, signed, pack, mods, at}；
@@ -3179,6 +3279,12 @@ def put_app(c, gid, ph, steps=True):
             ipa = plain
         if steps: c.begin("签名并装到 iPhone", 3, 4)
         got = ap.install(ipa, [], steps=False, bid=bid) or bid
+        # 装上的这份留进这款的游戏文件夹（app_folder.py）：证书签的用签好的那份，Apple ID 的留未签名容器（AltStore / SideStore 可直接用）
+        signed_ipa = devcert.signed_app_ipa(c, got)
+        try:
+            files = app_files(c, gid, signed_ipa if signed_ipa.is_file() else ipa)
+        finally:
+            signed_ipa.unlink(missing_ok=True)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     ap.bid = got
@@ -3193,16 +3299,18 @@ def put_app(c, gid, ph, steps=True):
     if rec.get("shellId") and str(rec.get("bundleId") or "").lower() == got.lower():
         note(c, f"独立 App 和通用 S2Arm 是同一个包名（{got}）：手机上的通用 S2Arm 已被这款顶掉，记录里的壳与各款清掉")  # 非玩家句
         rec = {k: v for k, v in rec.items() if k not in ("shellId", "games", "identity", "usage")}
-    signed = dict(at=time.time(), free=bool(ap.info.get("free")), mode=sign_mode(c), **({"expires": ap.info["expires"]} if ap.info.get("expires") else {}))
+    until, known = app_expiry(c, ap)
+    signed = dict(at=time.time(), free=bool(ap.info.get("free")), mode=sign_mode(c), **({"expires": until} if known else {}))
     entry = dict(old, bundleId=got, shellId=sid, team=team, signer=signer_kind(c, ph), signed=signed, at=time.time())
     layout.save_device(c, ph.key, dict(rec, apps=dict(apps, **{gid: entry})))
     if steps: c.begin("把这款的资源推进 iPhone（只推变了的文件；第一次大游戏要几分钟）", 4, 4)
+    c.app_installed = dict(files, bundleId=got, gameId=gid)   # 资源没推完时失败页要说「App 已装上」（main.py 失败结果带上 appInstalled）
     g = next((x for x in games if packer.library_id(c, x).upper() == gid), gid)   # 程序号和游戏包号对不上时按程序号放（ipa.title_mismatch）
-    files = size = 0
+    pushed_files = size = 0
     pushed, mods = old.get("pack", ""), old.get("mods") or {}
     try:
         ap.before_push({gid: pack})
-        files, size = ap.push(g, pack)
+        pushed_files, size = ap.push(g, pack)
         pushed = pack_id(pack)
         mods = push_mods(c, ap, g, mods)
     finally:
@@ -3211,8 +3319,9 @@ def put_app(c, gid, ph, steps=True):
         apps[gid] = dict({k: v for k, v in (apps.get(gid) or entry).items() if k != "mods"}, pack=pushed, **({"mods": mods} if mods else {}), at=time.time())
         layout.save_device(c, ph.key, dict(rec, apps=apps))
     extra = dict(unpackPending=ap.pending) if ap.pending else {}
-    return dict(bundleId=got, games=[gid], layout="standalone", toShell=sid, packFiles=files, packBytes=size, **ap.info, **extra, openToFinish=True,
-                **({"bundleFixed": True} if fixed else {}))
+    c.app_installed = None
+    return dict(ap.info, bundleId=got, games=[gid], layout="standalone", toShell=sid, packFiles=pushed_files, packBytes=size, **extra, openToFinish=True,
+                expiresAt=until, expiresKnown=known, **files, **({"bundleFixed": True} if fixed else {}))
 
 
 def update_apps(c, ph, sid):
@@ -3740,8 +3849,8 @@ def _install(c):
             raise Failure(f"这款用的是 {scheme['name']} 方案（独立 App），现在只能「推到 iPhone」，还不能导出自签包。", code="downstream_export_unsupported")
         return downstream.install_ios(c, next((g for g in c.catalog()["games"] if g["id"].upper() == gid.upper()), dict(id=gid)), scheme)
     ios_pack(c, gid)
-    if wants_export(c):   # 一款导出成小游戏包 .s2arm + 资源本体原位（两件套）
-        return export_s2arm(c, gid)
+    if wants_export(c):   # 独立 App：ipa + .s2arm + .img + README 全进这款的游戏文件夹；通用壳：一款导出成小游戏包 .s2arm + 资源本体原位（两件套）
+        return export_app(c, gid) if chosen_layout(c, gid) == "standalone" else export_s2arm(c, gid)
     c.begin("找签名账号与 iPhone", 1, 6)
     if chosen_layout(c, gid) == "standalone":   # 独立 App（一 App 一游戏）：这款自己签一个 App 装上
         return put_app(c, gid, phone_for(c))

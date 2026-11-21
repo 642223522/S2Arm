@@ -10718,5 +10718,17 @@
  {
   "source": "从 iPhone 上卸掉这款的独立 App",
   "en": "Removing this game's standalone app from the iPhone"
+ },
+ {
+  "source": "这款在电脑上的游戏文件夹不在了（被删或挪走），没有装到 iPhone。",
+  "en": "This game’s folder on the computer is gone (deleted or moved); nothing was installed on the iPhone."
+ },
+ {
+  "source": "在启动器里重新添加这款游戏、打一次 iPhone 包，再装到 iPhone 或续签；手机上已装的 App 和存档不受影响。",
+  "en": "Add this game again in the launcher and build the iPhone package once, then install or renew. The app already on the phone and its saves aren’t affected."
+ },
+ {
+  "source": "写进这款的游戏文件夹",
+  "en": "Writing to this game’s folder"
  }
 ]

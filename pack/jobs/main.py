@@ -61,6 +61,12 @@ def partial_import_result(c):
     return getattr(c, "import_result", None) if c.operation == "import" and c.r.get("partialResults") is True else None
 
 
+def app_installed_result(c):
+    """独立 App 装上了、资源没推完就失败（install.put_app 记的 c.app_installed）：失败结果带 appInstalled，失败页写「App 已装上，资源没推完」、重试只推剩下的"""
+    got = getattr(c, "app_installed", None)
+    return dict(appInstalled=got) if c.operation == "install" and got else None
+
+
 def run_request(request_path, *, context_class=Context, operation_overrides=None):
     # 开发者证书密码（devCert 导入那一次由启动器经环境变量给，devcert.py ⑤）：先从环境摘掉，任何子进程都拿不到；请求文件里从不放
     devcert_password = os.environ.pop(devcert.PASSWORD_ENV, None)
@@ -174,7 +180,7 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
         integrity_note(c)
         if c.operation in CLEANS_AFTER_STOP:   # 错误摘要要读产物根里的日志，所以排在它后面
             library.clean_after_stop(c)
-        c.finish("failed", message, partial_import_result(c))
+        c.finish("failed", message, partial_import_result(c) or app_installed_result(c))
         return 1
     finally:
         ended.set()

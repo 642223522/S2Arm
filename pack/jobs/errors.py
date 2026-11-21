@@ -193,6 +193,7 @@ RECOVERY = {
     'windows_mandatory_aslr': '打开「Windows 安全中心 → 应用和浏览器控制 → 漏洞利用保护设置 → 系统设置」，把「强制映像随机化（强制性 ASLR）」改回「使用默认值（关）」，再打一次包。',
     'windows_path_too_long': '路径太长：把游戏库搬到盘符根目录附近的短路径（比如 D:\\S2Arm），再打一次包；反馈时请带上错误摘要。',
     'pack_missing': '没找到这款的资源包目录：重新「打 iPhone 包」后再装到 iPhone。',
+    'game_folder_missing': '在启动器里重新添加这款游戏、打一次 iPhone 包，再装到 iPhone 或续签；手机上已装的 App 和存档不受影响。',
     'save_recovery_overridden': '已按你的确认跳过存档回退启动游戏；事务记录保留，下次启动会再试恢复。',
     'save_space': '释放备份目的地的磁盘空间后重试；不要删除原存档或唯一的备份。',
     'save_unsafe_path': '存档路径含符号链接或不安全目录；选择普通目录中的完整备份，不要绕过路径保护。',
