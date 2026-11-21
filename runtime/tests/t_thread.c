@@ -849,6 +849,7 @@ void s2a_guest_freeze(int on);
 uint32_t s2a_thread_current(void);
 int s2a_test_off_guest(uint32_t h);
 int s2a_test_unpaired(void);
+int s2a_test_core_lendable(uint32_t h); void s2a_test_soft_counts(uint64_t *keeps, uint64_t *steals); extern int g_vcore_soft;
 static _Atomic int g_lz_end_core = -9, g_lz_end_off = -9, g_lz_ret_core = -9, g_lz_ret_off = -9;
 static _Atomic int g_lz_ready, g_lz_go, g_lz_done;
 static _Atomic int g_lz2_in[3] = {-9, -9, -9}, g_lz2_out = -9, g_lz2_ready, g_lz2_go, g_lz2_done;
@@ -857,7 +858,7 @@ static _Atomic int g_lz_h_ok, g_lz_h_done;
 static void lz_worker(uint64_t arg) { (void)arg;    // ㉗：一次宿主阻塞 → 回客体
     uint64_t r[31] = {0}; svc_thread(0x25, r);                 // 一次系统调用：返回游戏前取到本核（0 号）
     s2a_core_block_begin(); s2a_core_block_end();              // 宿主阻塞：只放核；惰性化后不在这里取回
-    atomic_store(&g_lz_end_core, s2a_test_held_core(S2A_H_CUR_THREAD));
+    atomic_store(&g_lz_end_core, s2a_test_core_lendable(S2A_H_CUR_THREAD) == 1 ? -1 : s2a_test_held_core(S2A_H_CUR_THREAD));   // 可借（不持 / 持着可借）记 -1
     atomic_store(&g_lz_end_off, s2a_test_off_guest(S2A_H_CUR_THREAD));
     atomic_store(&g_lz_ready, 1);
     while (!atomic_load(&g_lz_go)) usleep(1000);
@@ -871,11 +872,11 @@ static void lz_nested(uint64_t arg) { (void)arg;    // ㉘：外层宿主调用�
     uint64_t r[31] = {0}; svc_thread(0x25, r);
     s2a_core_block_begin();                                    // 外层：调用点还持着宿主锁（本例用「还没配平」代表）
     s2a_guest_return();                                        // 没配平就回客体？不许取核、打红早报（本例随后立刻配平，所以这条线程不会真被饿死）
-    atomic_store(&g_lz2_in[0], s2a_test_held_core(S2A_H_CUR_THREAD));
+    atomic_store(&g_lz2_in[0], s2a_test_core_lendable(S2A_H_CUR_THREAD) == 1 ? -1 : s2a_test_held_core(S2A_H_CUR_THREAD));
     s2a_core_block_begin(); s2a_core_block_end();              // 内层：只减到 1
-    atomic_store(&g_lz2_in[1], s2a_test_held_core(S2A_H_CUR_THREAD));
+    atomic_store(&g_lz2_in[1], s2a_test_core_lendable(S2A_H_CUR_THREAD) == 1 ? -1 : s2a_test_held_core(S2A_H_CUR_THREAD));
     s2a_core_block_end();                                      // 最外层结束：仍不取核（要等回客体）
-    atomic_store(&g_lz2_in[2], s2a_test_held_core(S2A_H_CUR_THREAD));
+    atomic_store(&g_lz2_in[2], s2a_test_core_lendable(S2A_H_CUR_THREAD) == 1 ? -1 : s2a_test_held_core(S2A_H_CUR_THREAD));
     atomic_store(&g_lz2_ready, 1);
     while (!atomic_load(&g_lz2_go)) usleep(1000);
     s2a_guest_return();
@@ -900,6 +901,28 @@ static void lz_freeze_worker(uint64_t arg) { (void)arg;    // ㉚：冻结期间
     s2a_guest_return();                                        // 冻结中：先 park（放核等恢复），恢复后才取核
     atomic_store(&g_lz3_core, s2a_test_held_core(S2A_H_CUR_THREAD));
     atomic_store(&g_lz3_done, 1);
+    uint64_t e[31] = {0}; svc_thread(0x0A, e);
+}
+// ---- ㉛ 宿主侧可借（S2A_VCORE_SOFT，#1842）：进宿主没人等核时不放核、只置可借，回客体一次 CAS 拿回；有人等核就被取走。期望按构造手算：
+//   ① 单线程（独占核 0）进出宿主 N 次：每次回客体都拿回原核 → 免锁计数恰涨 N、被取走 0；
+//   ② 两条线程掩码都只含核 0，各做 N 次「回客体 → 非原子读改写共享计数 → 进宿主」：同核同一时刻只有一条在跑客体代码 → 计数恰为 2N（丢一次就是互斥破了）；
+//      两条争一个核 → 被取走 > 0；③ 计时 A/B（只报数）：同一循环 S2A_VCORE_SOFT 关（每次放核取核都进 g_cmu）与开各跑一遍
+enum { SC_N = 200000 };
+#include <sys/resource.h>
+static uint64_t cpu_ns(void) { struct rusage u; getrusage(RUSAGE_SELF, &u); return (uint64_t)(u.ru_utime.tv_sec + u.ru_stime.tv_sec) * 1000000000ull + (uint64_t)(u.ru_utime.tv_usec + u.ru_stime.tv_usec) * 1000ull; }
+static long g_sc_cnt; static _Atomic int g_sc_done, g_sc_go;   // spawn_mask 不带参数：圈数用常量 SC_N
+static void sc_loop(uint64_t arg) {
+    uint64_t r[31] = {0}; svc_thread(0x25, r);   // 系统调用出口取到核 0
+    while (!atomic_load(&g_sc_go)) usleep(100);
+    s2a_core_block_begin(); s2a_core_block_end();
+    (void)arg;
+    for (int i = 0; i < SC_N; i++) {
+        s2a_guest_return();                                  // 回客体：持核
+        long v = g_sc_cnt; __asm__ volatile("" ::: "memory"); g_sc_cnt = v + 1;   // 客体代码：同核互斥才不丢
+        s2a_core_block_begin(); s2a_core_block_end();        // 进宿主（直连调用）
+    }
+    s2a_guest_return();
+    atomic_fetch_add(&g_sc_done, 1);
     uint64_t e[31] = {0}; svc_thread(0x0A, e);
 }
 int main(void) {
@@ -1200,8 +1223,8 @@ int main(void) {
         g_lazy_core = 1;
         uint32_t hl; spawn(lz_worker, 0, &hl); s2a_core_leave();
         CHECK(wait_flag(&g_lz_ready, WAIT_LONG), "㉗ 阻塞线程没起来");
-        { int hc = s2a_test_held_core(hl), og = s2a_test_off_guest(hl);
-          CHECK(hc == -1 && og == 1, "㉗ block_end 之后（还没回客体）应不持核、off_guest=1：期望持核 -1、off_guest 1 → %d、%d", hc, og); }
+        { int lend = s2a_test_core_lendable(hl), og = s2a_test_off_guest(hl);   // 宿主侧可借（S2A_VCORE_SOFT）：持着但等核者能直接取走，与不持核同样不构成「持宿主锁等核」的环
+          CHECK(lend == 1 && og == 1, "㉗ block_end 之后（还没回客体）核应可借（不持 / 持着可借）、off_guest=1：期望 1、1 → %d、%d", lend, og); }
         CHECK(atomic_load(&g_lz_end_core) == -1 && atomic_load(&g_lz_end_off) == 1, "㉗ （线程内自读）期望持核 -1、off_guest 1 → %d、%d",
               atomic_load(&g_lz_end_core), atomic_load(&g_lz_end_off));
         atomic_store(&g_lz_go, 1);
@@ -1250,6 +1273,42 @@ int main(void) {
         CHECK(wait_flag(&g_lz3_done, WAIT_LONG), "㉚ 解冻后线程没走完");
         CHECK(atomic_load(&g_lz3_core) >= 0 && atomic_load(&g_lz3_core) <= 2, "㉚ 解冻后应取到核：→ %d", atomic_load(&g_lz3_core));
         g_lazy_core = 0;   // 收尾恢复旧行为（后面的用例不依赖惰性；本条用例之后也没有 block_* 调用者）
+    }
+    {   // ㉛ 宿主侧可借（见 sc_loop 处说明）
+        g_case = "㉛ 宿主侧可借：免锁拿回 / 被取走 / 同核互斥";
+        void s2a_core_leave(void);
+        g_lazy_core = 1; uint64_t k0, s0, k1, s1, k2, s2;
+        double ns_off = 0, ns_on = 0;
+        for (int pass = 0; pass < 2; pass++) {   // 0：关（每次进 g_cmu）、1：开；单线程，同一循环
+            g_vcore_soft = pass; g_sc_cnt = 0; atomic_store(&g_sc_done, 0); atomic_store(&g_sc_go, 0);
+            spawn_mask(sc_loop, 1); s2a_core_leave();
+            usleep(20000); s2a_test_soft_counts(&k0, &s0);   // 计数窗从「工作线程已取到核、等开跑」起：不含主线程放核 / 工作线程首次取核
+            uint64_t t0 = now_ns(); atomic_store(&g_sc_go, 1);
+            CHECK(wait_flag(&g_sc_done, WAIT_LONG), "㉛ 单线程循环没走完（%s）", pass ? "开" : "关");
+            double ns = (double)(now_ns() - t0) / SC_N; if (pass) ns_on = ns; else ns_off = ns;
+            s2a_test_soft_counts(&k1, &s1);
+            if (pass) CHECK(k1 - k0 == SC_N + 1 && s1 - s0 == 0 && g_sc_cnt == SC_N, "㉛① 开、独占核 0：免锁拿回应恰 %d、被取走 0、计数 %d → %llu、%llu、%ld", SC_N + 1, SC_N, (unsigned long long)(k1 - k0), (unsigned long long)(s1 - s0), g_sc_cnt);
+            else CHECK(k1 - k0 == 0, "㉛① 关：不该有免锁拿回 → %llu", (unsigned long long)(k1 - k0));
+        }
+        printf("  ㉛③ 进出宿主一次（含回客体）：关 %.0f ns、开 %.0f ns（单线程、只报数）\n", ns_off, ns_on);
+        for (int pass = 0; pass < 2; pass++) {   // ㉛④（只报数）：4 条线程各占一个核（掩码 1 / 2 / 4 / 8）同时进出宿主——放核取核都抢同一把 g_cmu、放核还广播
+            g_vcore_soft = pass; g_sc_cnt = 0; atomic_store(&g_sc_done, 0); atomic_store(&g_sc_go, 0);
+            for (int c = 0; c < 4; c++) { spawn_mask(sc_loop, 1u << c); s2a_core_leave(); }
+            usleep(50000); uint64_t t0 = now_ns(), c0 = cpu_ns(); atomic_store(&g_sc_go, 1);
+            { uint64_t w = now_ns(); while (atomic_load(&g_sc_done) < 4 && now_ns() - w < 60000000000ull) usleep(500); }
+            printf("  ㉛④ 4 线程各占一核同时进出宿主 %d 次：%s 墙钟 %.1f ms、进程 CPU %.1f ms（每次 %.0f ns CPU）\n", SC_N, pass ? "开" : "关",
+                   (now_ns() - t0) / 1e6, (cpu_ns() - c0) / 1e6, (double)(cpu_ns() - c0) / (4.0 * SC_N));
+        }
+        g_vcore_soft = 1; g_sc_cnt = 0; atomic_store(&g_sc_done, 0); atomic_store(&g_sc_go, 0);
+        spawn_mask(sc_loop, 1); s2a_core_leave(); spawn_mask(sc_loop, 1); s2a_core_leave();
+        usleep(20000); s2a_test_soft_counts(&k1, &s1); atomic_store(&g_sc_go, 1);
+        { uint64_t t0 = now_ns(); while (atomic_load(&g_sc_done) < 2 && now_ns() - t0 < 60000000000ull) usleep(1000); }
+        s2a_test_soft_counts(&k2, &s2);
+        CHECK(atomic_load(&g_sc_done) == 2, "㉛② 两条同核线程没走完（%d / 2）", atomic_load(&g_sc_done));
+        CHECK(g_sc_cnt == 2L * SC_N, "㉛② 同核互斥：共享计数应恰 %d → %ld（少了 = 两条同时在跑客体代码）", 2 * SC_N, g_sc_cnt);
+        CHECK(s2 - s1 > 0, "㉛② 两条争核 0：应有被取走 → 免锁 %llu、取走 %llu", (unsigned long long)(k2 - k1), (unsigned long long)(s2 - s1));
+        printf("  ㉛② 两线程同核：免锁拿回 %llu 次、被取走 %llu 次\n", (unsigned long long)(k2 - k1), (unsigned long long)(s2 - s1));
+        g_lazy_core = 0;
     }
     {   // ㉒ 没人等核时看门狗不轮询（10-24 测试设备2：常年 0.5 ms 轮询每秒 2000 次唤醒，直连整机多 1.16 W）：200 ms 里主动扫描 ≤ 2 次；旧代码约 400 次（反证）
         g_case = "㉒ 看门狗空闲不轮询";
