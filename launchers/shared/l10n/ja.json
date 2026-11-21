@@ -1297,7 +1297,8 @@
   "layout.card.warn.distShell": "お使いの証明書で署名した App にはデバッグ権限がないため、S2Arm の App に入れたゲームは開けません（説明ページで止まります）。「単独 App」をおすすめします。",
   "layout.card.warn.freeStandalone": "ゲームごとに App を 1 つ使います。無料の Apple ID では同時に最大 3 個、App ID の新規登録は 7 日ごとに最大 10 個までで、7 日ごとに 1 本ずつ再署名が必要です。",
   "layout.card.unknown": "Apple ID でサインインするか証明書を読み込むと、署名方法に合わせておすすめを表示します。",
-  "layout.card.whyLabel": "なぜ？"
+  "layout.card.whyLabel": "なぜ？",
+  "app.export.noExtraSpace": "追加の容量なし"
  },
  "text": {
   "无法为带空格的构建路径创建无空格别名。": "空白を含むビルドパスに空白なしのエイリアスを作成できませんでした。",
@@ -4275,6 +4276,7 @@
   "免费 Apple ID 有苹果的限制：同时最多装 3 个自己签的 App（AltStore / SideStore 也算），每 7 天最多注册 10 个 App ID；独立 App 每款占一个。装满了就在 iPhone 上删掉不玩的那个再装。": "無料の Apple ID には Apple の制限があります：自分で署名したアプリは同時に 3 つまで（AltStore / SideStore も含む）、App ID の登録は 7 日ごとに 10 個までです。「単独アプリ」はゲームごとに 1 つずつ使います。上限に達したら、もう遊ばないアプリを iPhone から削除してからインストールし直してください。",
   "先在 iPhone 上退出这款游戏，再删。": "先に iPhone でこのゲームを終了してから削除してください。",
   "没能从 iPhone 上卸掉这款的独立 App：确认 iPhone 连着、已解锁，再试一次。": "このゲームの単独 App を iPhone から削除できませんでした。iPhone が接続され、ロック解除されていることを確認して、もう一度お試しください。",
-  "从 iPhone 上卸掉这款的独立 App": "このゲームの単独 App を iPhone から削除"
+  "从 iPhone 上卸掉这款的独立 App": "このゲームの単独 App を iPhone から削除",
+  "应用不完整，请重新安装 S2Arm。": "アプリが不完全です。S2Arm を再インストールしてください。"
  }
 }

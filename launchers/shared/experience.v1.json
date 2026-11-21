@@ -1588,6 +1588,7 @@
       {"id": "app.export.imgElsewhere", "zh-Hans": "资源文件没能放进这个文件夹（盘不支持硬链接），在：{0}", "en": "The game data file couldn’t be placed in this folder (the drive doesn’t support hard links). It is at: {0}"},
       {"id": "app.export.readme", "zh-Hans": "文件夹里的「{0}」写了怎么装、续签和删除。", "en": "“{0}” in the folder explains how to install, renew and remove it."},
       {"id": "app.export.openReadme", "zh-Hans": "打开说明", "en": "Open read-me"},
+      {"id": "app.export.noExtraSpace", "zh-Hans": "不另占空间", "en": "no extra space"},
       {"id": "app.done.reveal", "zh-Hans": "在访达中显示", "en": "Show in Finder"},
       {"id": "app.done.revealWindows", "zh-Hans": "在资源管理器中显示", "en": "Show in File Explorer"},
       {"id": "app.done.finish", "zh-Hans": "完成", "en": "Done"},

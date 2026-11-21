@@ -80,7 +80,7 @@ import XCTest
         let folder = "/Users/player/S2Arm 游戏库/games/Slay the Spire"
         let app = StandaloneApp(["appName": "Slay the Spire", "exported": true, "gameFolder": folder, "ipaPath": folder + "/Slay the Spire v1.0.ipa", "ipaBytes": NSNumber(value: 200_530_283),
                                  "s2armPath": folder + "/Slay the Spire.s2arm", "s2armBytes": NSNumber(value: 31_897_038), "resourcePath": folder + "/Slay the Spire.img",
-                                 "resourceLinked": true, "readmePath": folder + "/请先读我.txt", "signMode": "external", "signedWith": ["mode": "none", "name": ""],
+                                 "resourceLinked": true, "resourceBytes": NSNumber(value: 408_833_955), "readmePath": folder + "/请先读我.txt", "signMode": "external", "signedWith": ["mode": "none", "name": ""],
                                  "nextSteps": ["AltStore / SideStore：用它们打开 Slay the Spire v1.0.ipa 安装（它们用自己的账号签名）。",
                                                "只导出、没连手机推的，还要做一步：装好后先打开一次「Slay the Spire」，再把这个文件夹里的 Slay the Spire.s2arm 和 Slay the Spire.img 放进 iPhone「文件」App →「我的 iPhone」→「Slay the Spire」→「放这里导入」，回到「Slay the Spire」点「我已放好，重新检查」，它会自动导入。"]])
         m.phoneOutcome = PhoneOutcome(app: app)

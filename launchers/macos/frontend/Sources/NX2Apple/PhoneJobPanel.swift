@@ -265,7 +265,8 @@ struct PhoneJobPanel: View {
         }
         let files: [(String, String)] = a.exported
             ? [((a.ipaPath as NSString).lastPathComponent, size(a.ipaBytes)), ((a.s2armPath as NSString).lastPathComponent, size(a.s2armBytes))]
-                + (a.resourceLinked && !a.resourcePath.isEmpty ? [((a.resourcePath as NSString).lastPathComponent, "")] : [])
+                + (a.resourceLinked && !a.resourcePath.isEmpty ? [((a.resourcePath as NSString).lastPathComponent,
+                    [size(a.resourceBytes), t("app.export.noExtraSpace")].filter { !$0.isEmpty }.joined(separator: " · "))] : [])
             : []
         return VStack(alignment: .leading, spacing: 22) {
             // 大标题用短句（装机窗只有 600 宽）：装到哪台 / 哪款游戏放副标题，各项事实逐行「名称 + 值」，长值换行不截断

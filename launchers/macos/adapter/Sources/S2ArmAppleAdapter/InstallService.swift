@@ -133,6 +133,7 @@ public struct StandaloneApp: Equatable {
     public var exported = false
     public var s2armPath = "", resourcePath = ""
     public var s2armBytes: Int64? = nil
+    public var resourceBytes: Int64? = nil
     public var resourceLinked = false
     public var signedCert = ""
     public init() {}
@@ -142,7 +143,7 @@ public struct StandaloneApp: Equatable {
         ipaBytes = (r["ipaBytes"] as? NSNumber)?.int64Value; nextSteps = r["nextSteps"] as? [String] ?? []
         expiresAt = (r["expiresAt"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) }; expiresKnown = r["expiresKnown"] as? Bool ?? false
         exported = r["exported"] as? Bool ?? false; s2armPath = r["s2armPath"] as? String ?? ""; resourcePath = r["resourcePath"] as? String ?? ""
-        s2armBytes = (r["s2armBytes"] as? NSNumber)?.int64Value; resourceLinked = r["resourceLinked"] as? Bool ?? false
+        s2armBytes = (r["s2armBytes"] as? NSNumber)?.int64Value; resourceBytes = (r["resourceBytes"] as? NSNumber)?.int64Value; resourceLinked = r["resourceLinked"] as? Bool ?? false
         let signed = r["signedWith"] as? [String: Any] ?? [:]
         signedCert = signed["mode"] as? String == "devCert" ? (signed["name"] as? String ?? "") : ""
     }

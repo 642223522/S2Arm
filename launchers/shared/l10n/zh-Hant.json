@@ -1293,7 +1293,8 @@
   "layout.card.warn.distShell": "你的憑證簽出來的 App 沒有除錯權限，通用 S2Arm 裡的遊戲打不開（會停在說明頁）。建議選「獨立 App」。",
   "layout.card.warn.freeStandalone": "每款遊戲單獨佔一個 App：免費 Apple ID 同時最多 3 個，每 7 天最多註冊 10 個 App ID，7 天到期要逐款續簽。",
   "layout.card.unknown": "登入 Apple ID 或匯入憑證後，會按你的簽名方式推薦一種。",
-  "layout.card.whyLabel": "為什麼？"
+  "layout.card.whyLabel": "為什麼？",
+  "app.export.noExtraSpace": "不另佔空間"
  },
  "text": {
   "直连": "直連",
@@ -4417,6 +4418,7 @@
   "推到 iPhone 的方式选「独立 App」，用这张证书照常能玩；要用通用 S2Arm：点「改用 Apple ID 登录」用 Apple ID 签名，或点「复制给证书发放人的话」发给对方，换成开发证书和开发描述文件后重新导入。": "推到 iPhone 的方式選「獨立 App」，用這張證書照常能玩；要用通用 S2Arm：點「改用 Apple ID 登入」用 Apple ID 簽名，或點「複製給證書發放人的話」發給對方，換成開發證書和開發描述檔後重新匯入。",
   "先在 iPhone 上退出这款游戏，再删。": "先在 iPhone 上退出這款遊戲，再刪。",
   "没能从 iPhone 上卸掉这款的独立 App：确认 iPhone 连着、已解锁，再试一次。": "沒能從 iPhone 上卸掉這款的獨立 App：確認 iPhone 連著、已解鎖，再試一次。",
-  "从 iPhone 上卸掉这款的独立 App": "從 iPhone 上卸掉這款的獨立 App"
+  "从 iPhone 上卸掉这款的独立 App": "從 iPhone 上卸掉這款的獨立 App",
+  "应用不完整，请重新安装 S2Arm。": "應用不完整，請重新安裝 S2Arm。"
  }
 }

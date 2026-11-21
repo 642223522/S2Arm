@@ -3275,6 +3275,8 @@ def export_app(c, gid):
             ipa = signed
         folder, _, _ = app_meta(c, gid)
         out = export_s2arm(c, gid, folder=folder, sign=False, step=2, total=total)
+        res = Path(out.get("resourcePath") or "")
+        out["resourceBytes"] = res.stat().st_size if res.is_file() else 0   # 硬链接也按实际大小报（界面注「不另占空间」）
         files = app_files(c, gid, ipa, exported=True, s2arm=out["s2armPath"], img=out["resourcePath"] if out.get("resourceLinked") else None,
                           img_elsewhere=out["resourcePath"] if out.get("resourcePath") and not out.get("resourceLinked") else "")
     finally:

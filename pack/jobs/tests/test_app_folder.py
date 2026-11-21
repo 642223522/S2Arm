@@ -115,6 +115,7 @@ class ExportApp(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in self.gdir.iterdir()), ["Game One v1.2.0.ipa", "Game One.img", "Game One.s2arm", "README.txt"])
         self.assertEqual((out["layout"], out["exported"], out["signedWith"]["mode"], out["signMode"]), ("standalone", True, "none", "appleId"))
         self.assertEqual(len(out["nextSteps"]), 3)
+        self.assertEqual(out["resourceBytes"], 1, "资源本体按实际大小报（硬链接界面注「不另占空间」）")
         self.assertFalse([p for p in Path(self.c.library).iterdir() if p.name.startswith(".container-")], "临时容器清掉")
 
 

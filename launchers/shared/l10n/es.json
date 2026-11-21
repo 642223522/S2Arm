@@ -1297,7 +1297,8 @@
   "layout.card.warn.distShell": "Las apps firmadas con tu certificado no tienen el permiso de depuración, así que los juegos de la app S2Arm no se abrirán (se quedan en una página de explicación). Elige «App independiente».",
   "layout.card.warn.freeStandalone": "Cada juego ocupa su propia app: un Apple ID gratuito permite como máximo 3 a la vez y 10 App ID nuevos cada 7 días, y cada app hay que renovarla cada 7 días.",
   "layout.card.unknown": "Inicia sesión con un Apple ID o importa un certificado y te recomendaremos una según tu forma de firmar.",
-  "layout.card.whyLabel": "¿Por qué?"
+  "layout.card.whyLabel": "¿Por qué?",
+  "app.export.noExtraSpace": "sin espacio extra"
  },
  "text": {
   "无法为带空格的构建路径创建无空格别名。": "No se pudo crear un alias sin espacios para la ruta de compilación que contiene espacios.",
@@ -4275,6 +4276,7 @@
   "免费 Apple ID 有苹果的限制：同时最多装 3 个自己签的 App（AltStore / SideStore 也算），每 7 天最多注册 10 个 App ID；独立 App 每款占一个。装满了就在 iPhone 上删掉不玩的那个再装。": "Un Apple ID gratuito tiene los límites de Apple: como máximo 3 apps autofirmadas instaladas a la vez (AltStore / SideStore también cuentan) y como máximo 10 App ID registrados cada 7 días. Cada app independiente usa uno. Si llegas al límite, borra del iPhone una app que ya no uses y vuelve a instalar.",
   "先在 iPhone 上退出这款游戏，再删。": "Primero cierra este juego en el iPhone y luego elimínalo.",
   "没能从 iPhone 上卸掉这款的独立 App：确认 iPhone 连着、已解锁，再试一次。": "No se pudo quitar la app independiente de este juego del iPhone. Comprueba que el iPhone esté conectado y desbloqueado e inténtalo de nuevo.",
-  "从 iPhone 上卸掉这款的独立 App": "Quitando la app independiente de este juego del iPhone"
+  "从 iPhone 上卸掉这款的独立 App": "Quitando la app independiente de este juego del iPhone",
+  "应用不完整，请重新安装 S2Arm。": "La aplicación está incompleta. Reinstala S2Arm."
  }
 }

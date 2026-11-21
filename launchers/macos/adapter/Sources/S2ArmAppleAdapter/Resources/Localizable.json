@@ -10730,5 +10730,13 @@
  {
   "source": "写进这款的游戏文件夹",
   "en": "Writing to this game’s folder"
+ },
+ {
+  "source": "应用不完整，请重新安装 S2Arm。",
+  "en": "The app is incomplete. Reinstall S2Arm."
+ },
+ {
+  "source": "不另占空间",
+  "en": "no extra space"
  }
 ]
