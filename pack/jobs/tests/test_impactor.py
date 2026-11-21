@@ -31,6 +31,8 @@ class Explain(unittest.TestCase):
                 ('[2026-11-20T14:20:23Z INFO  plumesign::commands::account] Restoring session for a@b.c...\nError: IO error: not a terminal\n', 'apple_session_expired'),   # D-G8Z8 Mac 装机签名原文
                 ('Error: IO error: not a terminal', 'device_install_failed'),   # 负对照：没有「恢复会话」在前的不认成登录过期
                 ('HTTP request error 503 attempting to connect to https://example.org/x', 'device_install_failed'),   # 负对照：不是苹果的服务器
+                ('Error: Idevice error: device does not have pairing file\n  /lib/sl/b-8967bb05a539/092fae66d35d311c_b.json', 'device_pairing_required'),   # D-EH49：十六进制里的 2fa 不算两步验证
+                ('2FA code was rejected', 'two_factor_wrong'),   # 整词 2FA 照认
                 ('完全看不懂的报错', 'device_install_failed')):
             with self.subTest(text=text): self.assertEqual(impactor.explain(text), code)
 

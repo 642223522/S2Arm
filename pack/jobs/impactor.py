@@ -170,7 +170,8 @@ EXPLAIN = (
     #   对从没登录成功过的玩家措辞不对（#edc5f5）。添加即选中（v2.7.2 accounts_add 设 selected_account）；只存了一个的在签名前已替玩家选上（select_only_account）
     (r'no account selected|please log ?in first|not logged in', 'apple_not_signed_in'),
     # 验证码不对排在「incorrect」前：苹果这句是「Incorrect verification code」（-21669），原先先命中账号密码那条，玩家被叫去重输密码
-    (r'-21669|verification code|two.?factor|2fa', 'two_factor_wrong'),
+    # 2fa 要整词（D-EH49：Windows 签名日志里着色器文件名 092fae66…_b.json 的十六进制撞上裸 2fa，真报错「device does not have pairing file」被判成验证码不对）
+    (r'-21669|verification code|two.?factor|\b2fa\b', 'two_factor_wrong'),
     # -22406「Enter the correct password for this Apple Account」（D-W2VH，Mac 0.6.1 plumesign）：同是密码不对，原先没认出、玩家看到英文原句
     (r'-2097\d|-20101|-22406|incorrect|entered incorrectly|enter the correct password', 'apple_id_wrong'),
     (r'unknown error occured while reading the file|unknown error occurred while reading the file|zip64', 'ipa_needs_repack'),
