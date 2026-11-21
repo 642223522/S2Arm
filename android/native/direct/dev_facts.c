@@ -426,13 +426,15 @@ static void query_vulkan(VkPhysicalDevice physical, struct s2a_dev_facts *f) {
     f->vdiv.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT;
     f->swapchain_m1.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT;
     // 低于 1.1 的设备：本实例按 1.1 建，Features2 / Properties2 对它不成立（后端也建不了它）——整条扩展查询链都不挂，只记核心查询
-    // 已转正的扩展：设备版本够（timeline / 描述符索引 1.2、4444 格式 1.3）就算有，不要求再列扩展名
+    // 已转正的扩展：设备版本够（timeline / 描述符索引 1.2）就算有，不要求再列扩展名。4444 例外：1.3 只转正了格式枚举，
+    //   VkPhysicalDevice4444FormatsFeaturesEXT 没有核心版，没列扩展时挂进链不合规（驱动多半忽略，位停在 0 被当成「实测不支持」），只在列了扩展时挂
     const uint32_t api = f->props.apiVersion;
+    f->have_4444_fmt = listed(f, "VK_EXT_4444_formats") || api >= VK_API_VERSION_1_3;
     if (f->have_core11) {
         LINK(chain, &f->draw_parameters);
         if ((f->have_timeline = listed(f, "VK_KHR_timeline_semaphore") || api >= VK_API_VERSION_1_2)) LINK(chain, &f->timeline);
         if ((f->have_index_u8 = listed(f, "VK_EXT_index_type_uint8"))) LINK(chain, &f->index_u8);
-        if ((f->have_4444 = listed(f, "VK_EXT_4444_formats") || api >= VK_API_VERSION_1_3)) LINK(chain, &f->f4444);
+        if ((f->have_4444 = listed(f, "VK_EXT_4444_formats"))) LINK(chain, &f->f4444);
         if ((f->have_dcc = listed(f, "VK_EXT_depth_clip_control"))) LINK(chain, &f->dcc);
         if ((f->have_placed = listed(f, "VK_EXT_map_memory_placed"))) LINK(chain, &placed);
         if ((f->have_border = listed(f, "VK_EXT_custom_border_color"))) LINK(chain, &f->border);
@@ -483,7 +485,7 @@ static void query_vulkan(VkPhysicalDevice physical, struct s2a_dev_facts *f) {
 
     // 逐格式：核心格式照常查；A4B4G4R4（VK_EXT_4444_formats 加的格式，1.3 转正）只在设备列出该扩展或设备 ≥ 1.3 时查，同 device_caps.c 的直查
     for (size_t i = 0; i < S2A_DEV_FACTS_FORMATS; i++) {
-        if (k_formats[i].f == VK_FORMAT_A4B4G4R4_UNORM_PACK16 && !f->have_4444) continue;
+        if (k_formats[i].f == VK_FORMAT_A4B4G4R4_UNORM_PACK16 && !f->have_4444_fmt) continue;
         vkGetPhysicalDeviceFormatProperties(physical, k_formats[i].f, &f->fmt[i]);
         f->fmt_have[i] = 1;
     }
@@ -859,7 +861,7 @@ int s2a_dev_profile_store(const char *files_dir, const char *json, size_t len, c
     struct stat st;
     if (stat(path, &st) == 0 && (size_t)st.st_size == len + 1) {
         // 同一代已在（文件名就是内容摘要）：不重写，只把修改时间刷成现在——「最新一代」按修改时间认（导出、留代都用它）
-        utimensat(AT_FDCWD, path, NULL, 0);
+        if (utimensat(AT_FDCWD, path, NULL, 0) != 0) { int e = errno; snprintf(why, why_size, "刷同一代档案修改时间失败 errno=%d（「最新一代」会按旧时间认）", e); return e; }
     } else {
         snprintf(tmp, sizeof tmp, "%s/.%s.tmp", dir, name);
         FILE *fp = fopen(tmp, "w");
@@ -867,6 +869,8 @@ int s2a_dev_profile_store(const char *files_dir, const char *json, size_t len, c
         int ok = fwrite(json, 1, len, fp) == len && fputc('\n', fp) != EOF && fflush(fp) == 0 && fsync(fileno(fp)) == 0;   // 落到盘上再 rename
         if (fclose(fp) != 0) ok = 0;
         if (!ok || rename(tmp, path) != 0) { int e = errno ? errno : EIO; unlink(tmp); snprintf(why, why_size, "写档案失败 errno=%d", e); return e; }
+        int dfd = open(dir, O_RDONLY | O_DIRECTORY);   // 同仓库其他原子落盘：临时文件 fsync → rename → 目录 fsync
+        if (dfd >= 0) { fsync(dfd); close(dfd); }
         if (written) *written = 1;
     }
     // 留最近 2 代（当前一代 + 修改时间最新的一份旧代，驱动升级后能前后对照），更旧的删掉；别的名字不碰

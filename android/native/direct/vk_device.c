@@ -427,10 +427,14 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
     {
         VkPhysicalDeviceFeatures2 query = {0};
         query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-        draw_parameters.pNext = has_timeline ? (void *)&timeline : (void *)&index_u8;
-        timeline.pNext = &index_u8;
-        index_u8.pNext = has_4444 ? &f4444 : NULL;
-        if (has_dcc) { dcc.pNext = index_u8.pNext; index_u8.pNext = &dcc; }
+        // 只属于扩展的特性结构只在设备列出该扩展时挂（规范：pNext 上的结构必须属于设备支持的版本或扩展；没列却挂，驱动多半忽略、位停在 0）。
+        //   index_type_uint8 原先无条件挂进查询链（启用时才看扩展），#1879 的形态档假驱动按规范判红后发现
+        const int has_u8 = has_device_extension(out->physical, "VK_EXT_index_type_uint8");
+        void **tail = &draw_parameters.pNext; *tail = NULL;
+        if (has_timeline) { *tail = &timeline; tail = &timeline.pNext; *tail = NULL; }
+        if (has_u8) { *tail = &index_u8; tail = &index_u8.pNext; *tail = NULL; }
+        if (has_4444) { *tail = &f4444; tail = &f4444.pNext; *tail = NULL; }
+        if (has_dcc) { *tail = &dcc; tail = &dcc.pNext; *tail = NULL; }
         query.pNext = &draw_parameters;
         if (out->has_swapchain_maintenance1) {
             maintenance.pNext = &draw_parameters;

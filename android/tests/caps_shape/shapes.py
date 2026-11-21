@@ -184,7 +184,7 @@ def compare(name, got_path):
     return 0
 
 
-# 版本门槛变体（dev_facts.c：timeline / 描述符索引「列了扩展或 ≥ 1.2」、A4B4G4R4「列了扩展或 ≥ 1.3」、低于 1.1 整条扩展查询链不挂）：
+# 版本门槛变体（dev_facts.c：timeline / 描述符索引「列了扩展或 ≥ 1.2」、A4B4G4R4 格式「列了扩展或 ≥ 1.3」、4444 特性位只在列了扩展时记、低于 1.1 整条扩展查询链不挂）：
 #   由 adreno 档派生，去掉这三个已转正扩展再改设备版本；期望只由变体自己的版本号决定
 PROMOTED = ('VK_KHR_timeline_semaphore', 'VK_EXT_descriptor_indexing', 'VK_EXT_4444_formats')
 VARIANTS = {'v-api10': '1.0.0', 'v-api11-noext': '1.1.0', 'v-api12-noext': '1.2.0', 'v-api13-noext': '1.3.0'}
@@ -206,7 +206,7 @@ def check_variant(name, got_path):
     minor = int(VARIANTS[name].split('.')[1])
     f, fm, pr = got['vulkan']['features'], got['vulkan']['formats'], got['vulkan']['properties']
     want = {'timelineSemaphore 记了': minor >= 2, 'runtimeDescriptorArray 记了': minor >= 2,
-            'formatA4B4G4R4 记了': minor >= 3, 'A4B4G4R4 格式查了': minor >= 3,
+            'formatA4B4G4R4 记了': False, 'A4B4G4R4 格式查了': minor >= 3,   # 变体都不列 VK_EXT_4444_formats：特性位（没转正）不记，格式（1.3 转正）照查
             'shaderDrawParameters 记了': minor >= 1, 'maxMemoryAllocationSize 记了': minor >= 1,
             '扩展特性只在 ≥ 1.1 记（swapchainMaintenance1）': minor >= 1}
     have = {'timelineSemaphore 记了': 'timelineSemaphore' in f, 'runtimeDescriptorArray 记了': 'runtimeDescriptorArray' in f,

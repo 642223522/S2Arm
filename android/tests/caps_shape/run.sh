@@ -96,6 +96,24 @@ for v in $(S2A_DEVPROFILES="$out/var/profiles" "${PY:-python3}" "$here/shapes.py
     || { echo "【红】版本门槛变体 $v 建设备 / 断言红"; cat "$out/var/$v.out"; exit 1; }
   "${PY:-python3}" "$here/shapes.py" check-variant "$v" "$out/var/gen-$v.json"
 done
+# 变体负对照：改坏 dev_facts.c 副本、按变体档重编，指定变体必须红在指定字样上。$1 名字 $2 原文 $3 改成 $4 变体 $5 红因里必须有的字
+neg_var() {
+  "${PY:-python3}" - "$out/src/dev_facts.c" "$2" "$3" <<'PY'
+import sys; p, a, b = sys.argv[1:]; s = open(p).read(); assert s.count(a) == 1, '负对照原文不唯一 / 找不到：' + a; open(p, 'w').write(s.replace(a, b))
+PY
+  build test-var-neg "$out/var"
+  rm -rf "$out/var/files-neg"; mkdir -p "$out/var/files-neg"
+  if S2A_TEST_FILES_DIR="$out/var/files-neg" S2A_CAPS_SHAPE=$4 "$out/test-var-neg" "$out/var/caps-neg.json" "$out/var/gen-neg.json" > "$out/var/neg.out" 2>&1; then
+    echo "【红】变体负对照漏抓：$1 —— $4 照样绿"; cat "$out/var/neg.out"; exit 1
+  fi
+  grep -q "$5" "$out/var/neg.out" || { echo "【红】变体负对照红错了地方：$1 —— 红因里没有「$5」"; cat "$out/var/neg.out"; exit 1; }
+  echo "PASS: 变体负对照 $1 → $4 红（$(grep -m1 FAIL "$out/var/neg.out")）"
+  fresh_src
+}
+# 4444 特性结构没转正：1.3 设备没列 VK_EXT_4444_formats 也挂进链 = 规范不允许，假驱动判红
+neg_var '1.3 没列 VK_EXT_4444_formats 也挂 4444 结构' 'if ((f->have_4444 = listed(f, "VK_EXT_4444_formats"))) LINK(chain, &f->f4444);' \
+  'if ((f->have_4444 = listed(f, "VK_EXT_4444_formats") || api >= VK_API_VERSION_1_3)) LINK(chain, &f->f4444);' v-api13-noext 'VK_EXT_4444_formats'
+neg_var '1.0 也挂扩展查询链' 'f->have_core11 = f->props.apiVersion >= VK_API_VERSION_1_1;' 'f->have_core11 = 1;' v-api10 '1.0 设备现查仍调了 Features2'
 
 # 负对照：$1 名字 $2 改哪份副本 $3 原文 $4 改成 $5 必须红的档（空格分隔） $6 红因里必须有的字
 neg_n=0
@@ -127,7 +145,14 @@ neg '几何着色器只看判定不看能力' gs_path.c 'const char *why = "hw-m
     if (1) {' minimal-1.1 'geometryShader'
 neg '数组层夹取缺省对谁都开' array_query_default.inc \
   'return g.dev->properties.vendorID == 0x19E5u && !strncmp(g.dev->driver_name, "Maleoon", 7);' 'return 1;' 'adreno-8xx-qcom mali-g710-r32p1 minimal-1.1' 'array_query_default'
-echo "PASS: 负对照 5 种改法、$neg_n 档次全部按预期变红"
+neg '查询链不看扩展就挂 index_type_uint8' vk_device.c 'if (has_u8) { *tail = &index_u8;' 'if (has_u8 || 1) { *tail = &index_u8;' minimal-1.1 'VK_EXT_index_type_uint8'
+neg '摘要改回读 scaling_max_freq' dev_facts.c 'cpufreq/cpuinfo_max_freq", sysfs_root(), i);' 'cpufreq/scaling_max_freq", sysfs_root(), i);' adreno-8xx-qcom 'scaling_max_freq 一变摘要就变'
+neg '只留 1 代' dev_facts.c '        closedir(d);
+        for (int i = 0; i < n_doomed; i++) {' '        closedir(d);
+        if (keep[0] && n_doomed < 16) snprintf(doomed[n_doomed++], 32, "%s", keep);
+        for (int i = 0; i < n_doomed; i++) {' adreno-8xx-qcom '被删了（应留最近 2 代）'
+neg '摘要行不按代去重' dev_facts.c 'if (!digest[0] || strncmp(g_logged_digest, digest, 16)) {' 'if (1) {' adreno-8xx-qcom '第二次建设备又打了【事实】行'
+echo "PASS: 负对照 9 种改法、$neg_n 档次全部按预期变红"
 
 # 设备事实负对照：dev_facts.c 漏记一组扩展特性（只改副本）→ 生成的档案和档案文件逐字段比必须红在那一项上；
 #   漏查一个格式 → 建设备时 vk_device.c 查到的格式不在事实里，比对红在该格式上
@@ -147,6 +172,6 @@ PY
 }
 neg_profile '漏记时间线信号量特性' 'if ((f->have_timeline = listed(f, "VK_KHR_timeline_semaphore") || api >= VK_API_VERSION_1_2)) LINK(chain, &f->timeline);' \
   'f->have_timeline = 0;' adreno-8xx-qcom 'features.timelineSemaphore'
-neg_profile '漏查 BC7 格式' 'if (k_formats[i].f == VK_FORMAT_A4B4G4R4_UNORM_PACK16 && !f->have_4444) continue;' \
-  'if ((k_formats[i].f == VK_FORMAT_A4B4G4R4_UNORM_PACK16 && !f->have_4444) || k_formats[i].f == VK_FORMAT_BC7_UNORM_BLOCK) continue;' mali-g710-r32p1 'VK_FORMAT_BC7_UNORM_BLOCK'
+neg_profile '漏查 BC7 格式' 'if (k_formats[i].f == VK_FORMAT_A4B4G4R4_UNORM_PACK16 && !f->have_4444_fmt) continue;' \
+  'if ((k_formats[i].f == VK_FORMAT_A4B4G4R4_UNORM_PACK16 && !f->have_4444_fmt) || k_formats[i].f == VK_FORMAT_BC7_UNORM_BLOCK) continue;' mali-g710-r32p1 'VK_FORMAT_BC7_UNORM_BLOCK'
 echo "PASS: 设备事实负对照 2 种改法全部按预期变红"

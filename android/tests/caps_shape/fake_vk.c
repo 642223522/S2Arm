@@ -87,9 +87,24 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFormatProperties(VkPhysicalDevice 
     if (i == cs_queried_fmt_count && i < 256) cs_queried_fmt[cs_queried_fmt_count++] = f;
 }
 
-// 扩展特性结构：只有设备列出了扩展才答它的位（规范：没列出的扩展不该挂结构；挂了也只回 0）
+// 只属于扩展（没转正进核心）的特性结构 → 它的扩展名；转正过的（timeline / 描述符索引 / 绘制参数）不在这里
+static const char *ext_only_struct(int st) {
+    switch (st) {
+    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_4444_FORMATS_FEATURES_EXT: return "VK_EXT_4444_formats";   // 1.3 只转正了格式枚举，特性结构没转正
+    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_EXT: return "VK_EXT_index_type_uint8";
+    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_CONTROL_FEATURES_EXT: return "VK_EXT_depth_clip_control";
+    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT: return "VK_EXT_custom_border_color";
+    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT: return "VK_EXT_vertex_attribute_divisor";
+    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT: return "VK_EXT_swapchain_maintenance1";
+    default: return NULL;
+    }
+}
+// 扩展特性结构：只有设备列出了扩展才答它的位。没列出扩展却挂了只属于该扩展的结构 = 规范不允许（真驱动多半忽略、位停在 0），直接判红，
+//   不像真平台那样安静地答 0 把错误读数放过去（#1879 复审：1.3 设备没列 VK_EXT_4444_formats 也挂了 4444 结构）
 static void features_chain(void *next, int for_create, const struct cs_shape *s) {
     for (VkBaseOutStructure *b = next; b; b = b->pNext) {
+        const char *need = ext_only_struct((int)b->sType);
+        if (need && !cs_has_ext(s, need)) { fprintf(stderr, "FAIL: 设备没列 %s，却把它的特性结构挂进了%s链（规范不允许）\n", need, for_create ? "建设备" : "查询"); abort(); }
         int ok = 1; const char *what = NULL;
 #define BIT(field, have, name) do { if (for_create) { if ((field) && !(have)) { ok = 0; what = (name); } } else (field) = (have) ? VK_TRUE : VK_FALSE; } while (0)
         switch ((int)b->sType) {
