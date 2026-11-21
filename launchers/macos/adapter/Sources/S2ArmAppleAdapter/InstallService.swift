@@ -54,6 +54,8 @@ public struct InstallReadiness: Equatable {
 
 /// 开发者证书体检（devCert 作业，pack/jobs/devcert.py inspect）：问题只提示、不挡；blocking 非空 = 根本签不了。
 public struct DevCertInfo: Equatable {
+    /// 条目号（几张证书时选 / 删用，#487）与证书 SHA-1
+    public let entry, certSha1: String
     public let teamName, teamId, certName, certExpires, profileName, profileExpires, bundleId: String
     public let wildcard, allDevices: Bool
     public let deviceCount: Int
@@ -68,6 +70,7 @@ public struct DevCertInfo: Equatable {
 
     public init(result r: [String: Any]) {
         func s(_ k: String) -> String { r[k] as? String ?? "" }
+        entry = s("entry"); certSha1 = s("certSha1")
         teamName = s("teamName"); teamId = s("teamId"); certName = s("certName"); certExpires = s("certExpires")
         profileName = s("profileName"); profileExpires = s("profileExpires"); bundleId = s("bundleId")
         wildcard = r["wildcard"] as? Bool ?? false; allDevices = r["allDevices"] as? Bool ?? false
@@ -80,14 +83,43 @@ public struct DevCertInfo: Equatable {
     }
 }
 
-/// 开发者证书现况：导入过没有、出包装机用不用它、体检结果。
+/// 存着的一张证书（devCert status 的 certs，#487）：只按描述文件读，不跑签名工具。
+public struct DevCertEntry: Equatable, Identifiable {
+    public let entry, certSha1, bundleId, teamId, teamName, profileName, profileExpires: String
+    public let allDevices: Bool
+    public let deviceCount: Int
+    /// 描述文件管不管问的那台：nil = 没问哪台 / 读不出。
+    public let deviceListed: Bool?
+    /// 这台现装的 S2Arm 是不是这张签的（包名一样）。
+    public let installedHere: Bool
+    public var id: String { entry }
+
+    public init(result r: [String: Any]) {
+        func s(_ k: String) -> String { r[k] as? String ?? "" }
+        entry = s("entry"); certSha1 = s("certSha1"); bundleId = s("bundleId"); teamId = s("teamId"); teamName = s("teamName")
+        profileName = s("profileName"); profileExpires = s("profileExpires")
+        allDevices = r["allDevices"] as? Bool ?? false
+        deviceCount = (r["deviceCount"] as? NSNumber)?.intValue ?? 0
+        deviceListed = r["deviceListed"] as? Bool
+        installedHere = r["installedHere"] as? Bool ?? false
+    }
+}
+
+/// 开发者证书现况：导入过没有、出包装机用不用它、体检结果；带设备问时还有：存着的几张、这台选的哪张、要不要问玩家（#487）。
 public struct DevCertStatus: Equatable {
     public let imported: Bool
     public let active: Bool
     public let cert: DevCertInfo?
-    public init(imported: Bool, active: Bool, cert: DevCertInfo?) { self.imported = imported; self.active = active; self.cert = cert }
+    public let certs: [DevCertEntry]
+    public let chosen: String?
+    public let needsChoice: Bool
+    public init(imported: Bool, active: Bool, cert: DevCertInfo?, certs: [DevCertEntry] = [], chosen: String? = nil, needsChoice: Bool = false) {
+        self.imported = imported; self.active = active; self.cert = cert; self.certs = certs; self.chosen = chosen; self.needsChoice = needsChoice
+    }
     public init(result r: [String: Any]) {
-        self.init(imported: r["imported"] as? Bool ?? false, active: r["active"] as? Bool ?? false, cert: (r["cert"] as? [String: Any]).map(DevCertInfo.init(result:)))
+        self.init(imported: r["imported"] as? Bool ?? false, active: r["active"] as? Bool ?? false, cert: (r["cert"] as? [String: Any]).map(DevCertInfo.init(result:)),
+                  certs: (r["certs"] as? [[String: Any]] ?? []).map(DevCertEntry.init(result:)), chosen: r["chosen"] as? String,
+                  needsChoice: r["needsChoice"] as? Bool ?? false)
     }
 }
 
@@ -225,8 +257,10 @@ public final class InstallService {
     }
 
     /// 导入 .p12 + .mobileprovision；密码只经环境变量给这一次作业（S2A_DEVCERT_PASSWORD），不写进请求文件。导入成功即切到证书签名。
-    public func devCertImport(p12: String, profile: String, password: String, device: String? = nil) async throws -> DevCertInfo {
+    ///   add = true：加一张（几张证书，#487；带 device 时顺手给这台选它）；false = 旧义「换一个」，顶掉这台在用的那张。
+    public func devCertImport(p12: String, profile: String, password: String, device: String? = nil, add: Bool = false) async throws -> DevCertInfo {
         var extra: [String: Any] = ["action": "import", "p12Path": p12, "profilePath": profile]
+        if add { extra["add"] = true }
         if let device, !device.isEmpty { extra["device"] = device }
         return DevCertInfo(result: try await client.perform("devCert", extra: extra, secrets: ["S2A_DEVCERT_PASSWORD": password]).result)
     }
@@ -249,9 +283,16 @@ public final class InstallService {
         _ = try await client.perform("devCert", extra: ["action": "use", "active": active])
     }
 
-    /// 删掉本机存的证书、描述文件和钥匙串里的密码（回到 Apple ID 签名）。
-    public func devCertDelete() async throws {
-        _ = try await client.perform("devCert", extra: ["action": "delete"])
+    /// 给这台设备选用哪张证书（条目号，#487）。
+    public func devCertChoose(device: String, cert: String) async throws {
+        _ = try await client.perform("devCert", extra: ["action": "choose", "device": device, "cert": cert])
+    }
+
+    /// 删掉本机存的证书、描述文件和钥匙串里的密码：cert = 只删这一张（条目号），nil = 全删（回到 Apple ID 签名）。
+    public func devCertDelete(cert: String? = nil) async throws {
+        var extra: [String: Any] = ["action": "delete"]
+        if let cert { extra["cert"] = cert }
+        _ = try await client.perform("devCert", extra: extra)
     }
 
     // ---- Apple ID 登录（0.6.0 Mac：随包 plumesign 自己登录，pack/jobs/apple_login.py）----
