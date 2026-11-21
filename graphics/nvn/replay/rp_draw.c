@@ -1909,11 +1909,19 @@ void rp_dispatch(nvn_gpu_cmd c, const p_dispatch *dp, const void *rec) {
             continue;
         }
         if (e->src_kind != NVN_RB_TEX) continue;
-        if (e->count > 1 || e->src_reg >= RP_NTEX || (e->src_reg2 != UINT16_MAX && (e->count != 1 || e->src_reg2 >= 128))) { skip("compute_texture_array", rec); goto done; }
+        // 类型 3 句柄（#1594 片 7）：布局项 src_reg2 带常量采样器标记 + 池下标，形状校验与图形阶段同一份（samp2_shape_ok）；数组 / 认不出的形状仍具名跳过
+        if (e->count > 1 || e->src_reg >= RP_NTEX || (e->src_reg2 != UINT16_MAX && (e->count != 1 || !samp2_shape_ok(e->src_reg2)))) { skip("compute_texture_array", rec); goto done; }
+        const int cs_const = e->src_reg2 != UINT16_MAX && (e->src_reg2 & NVN_GPU_SAMP2_CONST);
         // 贴图槽 32..39 = c2 图像句柄表第 0..7 项被当贴图采样：取图像槽绑着的句柄（同 iOS nvn_mtl.m tex_slot_h）；没绑同组合槽，读作池第 0 项
         uint64_t h = e->src_reg >= 32 && e->src_reg < 40 ? rp_S.img[5][e->src_reg - 32] : rp_S.tex[5][e->src_reg];
         tv[i] = rp_view_by_id_decl(h ? (int)(h & 0xFFFFF) : rp_S.tex_base, pg->dtt[0][i], pg->dcls[0][i], 0, c, NULL);
-        if (e->src_reg2 != UINT16_MAX) {
+        if (cs_const) {
+            // 采样器号 = 贴图字高 12 位 | 着色器里的立即数池下标（const_samp_id，同 Ryujinx ReadPackedId），登记号 = 采样器号 + 池起点；
+            //   号没登记 = 空采样器：绑默认采样器照派发（同图形阶段片 6）；登记了但后端建不出的具名跳过。不经 NVN 采样器槽。
+            ts[i] = rp_samp_for_const_handle(const_samp_id((uint32_t)h, e->src_reg2 & NVN_GPU_SAMP2_ID_MASK) + rp_S.samp_base, h ? (int)(h & 0xFFFFF) : rp_S.tex_base,
+                                             rp_S.samp_base, rp_S.samp_pool_n);
+            if (!ts[i]) { skip("const_sampler_unresolved", rec); goto done; }
+        } else if (e->src_reg2 != UINT16_MAX) {
             if (!rp_S.samp_bound[5][e->src_reg2]) { skip("separate_sampler_unbound", rec); goto done; }
             ts[i] = rp_samp_for_tex((int)(rp_S.samp[5][e->src_reg2] >> 20), h ? (int)(h & 0xFFFFF) : rp_S.tex_base);
             if (!ts[i]) { skip("separate_sampler_unresolved", rec); goto done; }
