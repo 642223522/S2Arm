@@ -1,7 +1,7 @@
-// 假 Vulkan 驱动（宿主）：按 S2A_CAPS_SHAPE 选中的整台设备形态档回答 android/native/direct/vk_device.c / device_caps.c 用到的全部查询。
-//   读数全部来自 shapes.py 出的头（真机档 + 保守档），这里不写任何厂商分支。
+// 假 Vulkan 驱动（宿主）：按 S2A_CAPS_SHAPE 选中的整台设备形态档回答 android/native/direct/vk_device.c / device_caps.c / dev_facts.c 用到的全部查询。
+//   读数全部来自 shapes.py 从设备档案（android/tests/devprofiles/*.json）出的头，这里不写任何厂商分支。
 //   vkCreateDevice 像真驱动一样核「启用的扩展 / 特性 ⊆ 设备支持的」：后端没看能力就启用，就在这里红（原因写进 cs_create_device_why）。
-//   形态档里没有读数的扩展特性 / 属性一律按「无」回答（shapes.py 文件头）。
+//   档案里没有读数（null / 没这一项）的扩展特性 / 属性一律按「无」回答（shapes.py 文件头）。
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,6 +12,8 @@
 char cs_create_device_why[256];
 uint32_t cs_enabled_ext_count;
 const char *cs_enabled_ext[32];
+uint32_t cs_queried_fmt_count;
+VkFormat cs_queried_fmt[256];
 
 const struct cs_shape *cs_shape(void) {
     static const struct cs_shape *picked;
@@ -74,10 +76,15 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceQueueFamilyProperties(VkPhysicalDe
     (void)p; const struct cs_shape *s = cs_shape();
     if (!out) { *count = s->n_queue; return; }
     uint32_t k = *count < s->n_queue ? *count : s->n_queue;
-    for (uint32_t i = 0; i < k; i++) { memset(&out[i], 0, sizeof out[i]); out[i].queueFlags = s->queues[i].flags; out[i].queueCount = s->queues[i].count; out[i].timestampValidBits = 64; }
+    for (uint32_t i = 0; i < k; i++) { memset(&out[i], 0, sizeof out[i]); out[i].queueFlags = s->queues[i].flags; out[i].queueCount = s->queues[i].count; out[i].timestampValidBits = s->queues[i].timestamp_bits; }
     *count = k;
 }
-VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFormatProperties(VkPhysicalDevice p, VkFormat f, VkFormatProperties *out) { (void)p; *out = cs_format(cs_shape(), f); }
+VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFormatProperties(VkPhysicalDevice p, VkFormat f, VkFormatProperties *out) {
+    (void)p; *out = cs_format(cs_shape(), f);
+    uint32_t i = 0;
+    while (i < cs_queried_fmt_count && cs_queried_fmt[i] != f) i++;
+    if (i == cs_queried_fmt_count && i < 256) cs_queried_fmt[cs_queried_fmt_count++] = f;
+}
 
 // 扩展特性结构：只有设备列出了扩展才答它的位（规范：没列出的扩展不该挂结构；挂了也只回 0）
 static void features_chain(void *next, int for_create, const struct cs_shape *s) {
@@ -113,8 +120,8 @@ static void features_chain(void *next, int for_create, const struct cs_shape *s)
             BIT(v->vertexAttributeInstanceRateDivisor, s->vertexAttributeInstanceRateDivisor && e, "vertexAttributeInstanceRateDivisor");
             BIT(v->vertexAttributeInstanceRateZeroDivisor, 0, "vertexAttributeInstanceRateZeroDivisor"); break; }
         case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT:
-            // 两台真机档的 enabledExtensions 都有 VK_EXT_swapchain_maintenance1（device_caps.c 只在特性也开着时写它）：列出即有
-            BIT(((VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT *)b)->swapchainMaintenance1, cs_has_ext(s, "VK_EXT_swapchain_maintenance1"), "swapchainMaintenance1"); break;
+            // 档案里的位（真机档：device_caps.c 只在特性也开着时把扩展写进 enabledExtensions，转换时据此记 1）
+            BIT(((VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT *)b)->swapchainMaintenance1, s->swapchainMaintenance1 && cs_has_ext(s, "VK_EXT_swapchain_maintenance1"), "swapchainMaintenance1"); break;
         default: break;   // 别的结构（placed 映射等）：没有读数，保持调用方清零的 0（= 无）
         }
 #undef BIT
@@ -136,9 +143,11 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceProperties2(VkPhysicalDevice p, Vk
             snprintf(d->driverInfo, sizeof d->driverInfo, "caps shape %s", s->name); break; }
         case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES:
             ((VkPhysicalDeviceMaintenance3Properties *)b)->maxMemoryAllocationSize = s->max_alloc;
-            ((VkPhysicalDeviceMaintenance3Properties *)b)->maxPerSetDescriptors = 1024; break;
+            ((VkPhysicalDeviceMaintenance3Properties *)b)->maxPerSetDescriptors = s->max_per_set; break;
         case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES:
-            ((VkPhysicalDeviceSubgroupProperties *)b)->subgroupSize = s->subgroup_size; break;
+            ((VkPhysicalDeviceSubgroupProperties *)b)->subgroupSize = s->subgroup_size;
+            ((VkPhysicalDeviceSubgroupProperties *)b)->supportedStages = s->subgroup_stages;
+            ((VkPhysicalDeviceSubgroupProperties *)b)->supportedOperations = s->subgroup_ops; break;
         default: break;   // 自定义边框色上限 / min-max 分量映射 / 实例除数上限 / 主机内存对齐 / placed 对齐：没有读数，保持调用方清零的 0（= 无）
         }
     }

@@ -320,6 +320,30 @@ public final class DiagnosticBundleWriterTest {
         expect("最多 16 条", DiagnosticExits.MAX_RECORDS, n);
         expect("按给的顺序取前 16 条：最后一条是 lmk 13", true, em.contains("\"lmk 13\"") && !em.contains("\"lmk 14\""));
 
+        // ---- 5b. Device profile (#1749 M0): files/devprofile 里最新的一代 <16 hex>.json 进包、照日志脱敏；别的名字 / 符号链接 / 过大的不读
+        Path prof = root.resolve("files/devprofile");
+        write(prof.resolve("aaaaaaaaaaaaaaaa.json"), "{\"old\":1}\n", T0);
+        write(prof.resolve("bbbbbbbbbbbbbbbb.json"), "{\"deviceName\":\"x /data/user/0/org.s2arm.android/files/y\"}\n", T1);
+        write(prof.resolve("notes.json"), "NOTES-SECRET", T2 + 1000);
+        write(prof.resolve("CCCCCCCCCCCCCCCC.json"), "UPPER-SECRET", T2 + 1000);
+        Path bigProfile = write(root.resolve("big-profile.json"), "x".repeat((int) DiagnosticBundlePolicy.MAX_PROFILE_BYTES + 1), T2 + 1000);
+        Files.createSymbolicLink(prof.resolve("dddddddddddddddd.json"), outside);
+        Files.copy(bigProfile, prof.resolve("eeeeeeeeeeeeeeee.json"));
+        Files.setLastModifiedTime(prof.resolve("eeeeeeeeeeeeeeee.json"), java.nio.file.attribute.FileTime.fromMillis(T2 + 2000));
+        r = DiagnosticBundleWriter.write(saves, prof, root.resolve("prof-out"), redactor::redact, info(), new ArrayList<>(), "diag", NOW, UTC,
+                                         DiagnosticBundleWriter.MAX_ZIP_BYTES);
+        Map<String, String> pz = zip(r.bundle);
+        expect("档案取最新一代（过大 / 符号链接 / 别的名字都跳过）", "{\"deviceName\":\"x <APP>/files/y\"}\n", pz.get("devprofile/bbbbbbbbbbbbbbbb.json"));
+        long profileEntries = pz.keySet().stream().filter(k -> k.startsWith("devprofile/")).count();
+        expect("档案只进一份", 1L, profileEntries);
+        expect("清单 files 里列了档案", true, pz.get("manifest.json").contains("\"path\" : \"devprofile/bbbbbbbbbbbbbbbb.json\""));
+        expect("首份日志名不受档案影响", true, pz.containsKey("logs/host.log"));
+        for (String secret : new String[] {"NOTES-SECRET", "UPPER-SECRET", "OUTSIDE-SECRET"})
+            expect("没读到 " + secret, false, String.join("\n", pz.values()).contains(secret));
+        r = DiagnosticBundleWriter.write(saves, root.resolve("no-such-profile-dir"), root.resolve("prof-none"), redactor::redact, info(),
+                                         new ArrayList<>(), "diag", NOW, UTC, DiagnosticBundleWriter.MAX_ZIP_BYTES);
+        expect("没有档案目录 = 不带档案", false, zip(r.bundle).keySet().stream().anyMatch(k -> k.startsWith("devprofile/")));
+
         // ---- 6. Over the cap: head quarter and tail, cut at line breaks (cap 1000: head 250, tail 750 - 64 = 686).
         StringBuilder lines = new StringBuilder();
         for (int i = 0; i < 300; i++) lines.append(String.format("line%05d\n", i));   // 10 bytes each, 3000 in all
