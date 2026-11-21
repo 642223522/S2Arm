@@ -74,6 +74,8 @@ static int has_extension(VkPhysicalDevice physical, const char *name) {
 static int has_instance_extension(const char *name) { return has_extension(VK_NULL_HANDLE, name); }
 static int has_device_extension(VkPhysicalDevice physical, const char *name) { return has_extension(physical, name); }
 
+// 弱链接[capshape]：nvn_plat_vk_instance_exts（宿主能力形态档 android/tests/caps_shape 不链平台件，靠弱符号为空）
+// 弱链接[capshape]：s2a_android_vk_custom_driver_prepare
 const char *const *nvn_plat_vk_instance_exts(uint32_t *n) __attribute__((weak));
 
 // ---------- 调试：Khronos 校验层（开关 debug.s2a.vk_validation=1，默认关） ----------
