@@ -195,6 +195,7 @@ RECOVERY = {
     'phone_app_running': '在 iPhone 上从后台划掉 S2Arm（或回到主屏后等几秒），再点一次还原。',
     'save_backup_failed': '确认后再点一次就照装：存档没备份，万一覆盖出问题可能丢档；想先备份就把手机解锁、数据线插稳后再点一次。',
     'cert_revoke_confirm': '点「仍然继续」会新建证书照签。不想动现有证书的话，点「改用已有证书」，把在 AltStore / SideStore 导出的 .p12 导进来，就不用新建。',
+    'app_bundle_replace_confirm': '点「仍然继续」照装。不想顶掉的话，换一份通配描述文件（App ID 以 .* 结尾），或改用 Apple ID 签名，或把几款都装进通用 S2Arm。',
     'device_space_low': '点「仍然继续」照传：手机报的空闲不含系统随时能清掉的空间，实际多半放得下，真写满了会停下并说明还差多少；也可以先在「设置 → 通用 → iPhone 储存空间」腾出空间。',
     'container_stale': '先给点名的游戏各「打 iPhone 包」一次，再装到 iPhone；也可以确认后这次先不带它们照装，它们的存档和资源留在手机上，重新出包再装就回来。',
     'container_incompatible': '这款没法和手机上已有的游戏放进同一个 App：先从 iPhone 删掉不兼容的那款。',

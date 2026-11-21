@@ -1327,6 +1327,8 @@
   "export.sign.choose.anyway": "それでも使う",
   "errors.cert_revoke_confirm.title": "既存の開発用証明書が 1 つ取り消されます",
   "errors.cert_revoke_confirm.detail": "アカウントの証明書が上限に達している場合、新しい証明書を作成すると Apple がリストの最初の証明書を取り消します。AltStore / SideStore で作成された証明書なら、それらが使っている証明書です。取り消されると、AltStore / SideStore とそれらでインストールした App は開けなくなります。",
+  "errors.app_bundle_replace_confirm.title": "端末上の別の App が置き換えられます",
+  "errors.app_bundle_replace_confirm.detail": "プロビジョニングプロファイルで使えるバンドル ID は 1 つだけです。このゲームを入れると同じ ID の App が置き換えられ、そちらは開けなくなります。セーブデータは端末に残り、元に戻せば続きから遊べます。",
   "errors.phone_app_running.title": "iPhone で S2Arm が実行中です",
   "errors.phone_app_running.detail": "ゲームを開いたままセーブデータを入れ替えると、ゲームに上書きされて壊れます。",
   "console.button.identity": "署名用 ID を iPhone に渡す",

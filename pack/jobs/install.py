@@ -3346,6 +3346,22 @@ def push_game(c, gid, ph, steps=True):
 #   资源包照通用壳的位置推（ph.push / push_pack 不改）。设备记录 apps[游戏号] 记独立 App，games[游戏号] 只给通用壳用
 APP_STAGE = "组这款的独立 App"
 APP_BUNDLE_FIXED = "描述文件是显式 App ID，只能用它那一个包名 {0}：每款独立 App 和通用 S2Arm 都装成它，装一个会顶掉另一个。"
+APP_BUNDLE_REPLACE_ASK = "装这款会顶掉手机上的{0}：你的描述文件只允许一个包名（{1}），装上后被顶掉的那个就打不开了。它的存档还留在手机上这个包名的数据里，以后换回来接着能玩。"
+SHELL_NAME = "通用 S2Arm（里面的游戏都要重新推）"
+
+
+def bundle_replace_check(c, ph, gid, bid):
+    """显式描述文件（只允许一个包名）装独立 App：手机上同包名已装着别的款或通用 S2Arm → 先问玩家（#1941：原先装完才黄字说顶掉了，动森已经打不开）。
+    玩家点继续（请求带 acceptBundleReplace）才装；设备记录里没有同包名的别的东西不问"""
+    if c.r.get("acceptBundleReplace") is True:
+        return
+    rec = layout.load_device(c, ph.key)
+    same = lambda b: str(b or "").lower() == bid.lower()
+    names = [app_meta(c, g)[1] for g, v in (rec.get("apps") or {}).items() if g != gid and same((v or {}).get("bundleId"))]
+    if rec.get("shellId") and same(rec.get("bundleId")):
+        names.append(SHELL_NAME)
+    if names:
+        raise Failure(APP_BUNDLE_REPLACE_ASK.format("、".join(f"「{n}」" for n in names), bid), code="app_bundle_replace_confirm")
 SHELL_DISTRIBUTION = "现在用的证书缺「调试权限（get-task-allow）」（分发证书），通用 S2Arm 里的游戏打不开：在设置里把出法改成「独立 App」就能玩。"
 APP_STALE = "「{0}」的独立 App 要按新版重新出包：先给它「打 iPhone 包」，再推到 iPhone。"
 APP_UPDATE_FAILED = "「{0}」的独立 App 这次没更新：{1}"
@@ -3473,6 +3489,8 @@ def put_app(c, gid, ph, steps=True):
     gid = gid.upper()
     pack = ios_pack(c, gid)
     bid, team, fixed = app_bundle(c, ph, gid)
+    if fixed:
+        bundle_replace_check(c, ph, gid, bid)
     ap = app_phone(ph, bid)
     had_save = gid in snapshot_phone_saves(c, ap, [gid])   # 同 push_game：开头把手机上这个 App 里这款的存档拉回电脑（按包名各算各的）
     if steps: c.begin(APP_STAGE, 2, 4)

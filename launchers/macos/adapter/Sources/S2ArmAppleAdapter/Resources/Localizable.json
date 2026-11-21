@@ -1,5 +1,17 @@
 [
  {
+  "source": "装这款会顶掉手机上的{0}：你的描述文件只允许一个包名（{1}），装上后被顶掉的那个就打不开了。它的存档还留在手机上这个包名的数据里，以后换回来接着能玩。",
+  "en": "Installing this game replaces {0} on the device: your provisioning profile allows only one bundle ID ({1}), so the replaced app stops opening. Its saves stay on the device under that bundle ID and come back if you switch back."
+ },
+ {
+  "source": "通用 S2Arm（里面的游戏都要重新推）",
+  "en": "the universal S2Arm (its games will need to be sent again)"
+ },
+ {
+  "source": "点「仍然继续」照装。不想顶掉的话，换一份通配描述文件（App ID 以 .* 结尾），或改用 Apple ID 签名，或把几款都装进通用 S2Arm。",
+  "en": "Choose Continue Anyway to install. To keep the other app, use a wildcard provisioning profile (App ID ending in .*), sign with an Apple ID instead, or install the games into the universal S2Arm."
+ },
+ {
   "source": "这款电脑上没有 iPhone 资源包，先在电脑上做好再推",
   "en": "This game has no iPhone resource pack on this computer; building it here first, then sending it"
  },

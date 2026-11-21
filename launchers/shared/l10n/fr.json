@@ -1327,6 +1327,8 @@
   "export.sign.choose.anyway": "L'utiliser quand même",
   "errors.cert_revoke_confirm.title": "Un de vos certificats de développement existants sera révoqué",
   "errors.cert_revoke_confirm.detail": "Si les certificats de votre compte sont pleins, en créer un nouveau fait révoquer par Apple le premier de la liste. S’il a été créé sur AltStore / SideStore, c’est le certificat qu’ils utilisent : une fois révoqué, AltStore / SideStore et les apps qu’ils ont installées ne s’ouvriront plus.",
+  "errors.app_bundle_replace_confirm.title": "Une autre app de l’appareil sera remplacée",
+  "errors.app_bundle_replace_confirm.detail": "Votre profil d’approvisionnement n’autorise qu’un seul identifiant de paquet : installer ce jeu remplace l’app au même identifiant, qui ne s’ouvre plus. Ses sauvegardes restent sur l’appareil et reviennent si vous revenez en arrière.",
   "errors.phone_app_running.title": "S2Arm est en cours d’exécution sur l’iPhone",
   "errors.phone_app_running.detail": "Si vous changez les sauvegardes pendant que le jeu est ouvert, le jeu les écrase et les abîme.",
   "console.button.identity": "Transmettre l'identité de signature au téléphone",
