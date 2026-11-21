@@ -1179,7 +1179,7 @@ def install_mode_job(c):
     except OSError:
         pass
     return dict(exportAvailable=True, signMode="devcert" if devcert.active(c) else "appleId", signChoice=chosen_sign_mode(c),
-                layout=chosen_layout(c), layoutChoice=layout_choice(c), distribution=distribution_cert(c), standaloneHint=standalone_hint(c),
+                layout=chosen_layout(c), layoutChoice=layout_choice(c), distribution=distribution_cert(c), standaloneHint=standalone_hint(c), standaloneHints=standalone_hints(c),
                 **layout_recommend_fields(c))
 
 
@@ -1204,15 +1204,23 @@ def layout_recommend_fields(c):
     return dict(recommend=rec, recommendWhy=why)
 
 
-def standalone_hint(c):
+def standalone_hint(c, mode=None):
     """出法选「独立 App」时按签名方式给的那一句提示（只提示不拦，0.6.4 维护者定；文案在启动器 install.layout.hint.<码>）→ 码 | None：
-    appleId = 免费 Apple ID 的 3 个 App / 7 天 10 个 App ID / 7 天到期；wildcard = 通配描述文件开不了「提高内存上限」；external = 自己用 AltStore / SideStore 签：只能导出"""
-    mode = chosen_sign_mode(c)
+    appleId = 免费 Apple ID 的 3 个 App / 7 天 10 个 App ID / 7 天到期；wildcard = 通配描述文件开不了「提高内存上限」；
+    explicit = 显式 App ID 的描述文件只允许它那一个包名：每款独立 App 都装成同一个，装一个会顶掉前一款（11-21 玩家反馈，装之前就说，
+    原先只在装完后黄字 app_bundle_fixed）；external = 自己用 AltStore / SideStore 签：只能导出。mode 不给 = 设置里选的签名方式"""
+    mode = mode or chosen_sign_mode(c)
     if mode == "external":
         return "external"
     if mode == "devCert":
-        return "wildcard" if devcert.profile_facts(c).get("wildcard") else None
+        facts = devcert.profile_facts(c)   # 没导入证书 / 读不了 → {}
+        return ("wildcard" if facts.get("wildcard") else "explicit") if facts else None
     return "appleId"
+
+
+def standalone_hints(c):
+    """导出确认页按这次选的签名方式显示那一句（11-21：确认页的签名方式可以和设置不同）→ {appleId, devCert, none: 码 | None}，键同请求 sign"""
+    return dict(appleId=standalone_hint(c, "appleId"), devCert=standalone_hint(c, "devCert"), none=standalone_hint(c, "external"))
 
 
 # 出法（0.6.3 维护者定，玩家两种自由选）：shell = 通用壳（一个 App 装整个游戏库，程序包推进 App 外）；standalone = 独立 App（一 App 一游戏，程序在 App 包里、打开直接进这款）。
@@ -1265,7 +1273,7 @@ def layout_set(c):
     else:
         (c.private / LAYOUT_CHOICE).unlink(missing_ok=True)
     now = chosen_layout(c, gid)
-    return dict(layout=now, default=chosen_layout(c), games=games, distribution=distribution_cert(c), standaloneHint=standalone_hint(c), **layout_recommend_fields(c),
+    return dict(layout=now, default=chosen_layout(c), games=games, distribution=distribution_cert(c), standaloneHint=standalone_hint(c), standaloneHints=standalone_hints(c), **layout_recommend_fields(c),
                 **({"freeLimit": FREE_APP_LIMIT} if now == "standalone" and not devcert.active(c) else {}))
 
 
