@@ -47,6 +47,7 @@ static int g_flag_pool_memo = 1;   // 用例设：开关 nvk_pool_memo 的值（
 static int g_flag_land_merge = 1;  // 用例设：开关 nvk_land_merge 的值（缺省同产品：开）；每 256 次登记才重读一次，换值后要用 rp_test_gw_merge_reload() 推一下
 static int g_flag_buf_dirtylog = -1, g_dirtylog_dflt = -1;   // 用例设：开关 nvk_buf_dirtylog（-1 = 没设，取产品写的缺省；--dirtylog-off 整套以 0 跑一遍）。受跟踪的池都有替身日志，见「脏页追加日志替身」
 static int g_flag_vf_key = 1;      // 用例设：开关 nvk_vf_key 的值（缺省同产品：视图表按存储认视图）；每 256 次取视图重读一次，换值后要用 vf_push() 推一下
+static int g_flag_split_pass = -1, g_flag_diag_load_dc, g_flag_diag_store_dc;   // 用例设：开关 nvk_split_pass（-1 = 缺省）、诊断开关 nvk_diag_load_dontcare / nvk_diag_store_dontcare
 static int g_flag_pool_stats;   // 用例设：开关 pool_stats（缺省同产品：关）
 static int g_diag_frames;
 void s2a_direct_diag_frame(void) { g_diag_frames++; }
@@ -64,6 +65,9 @@ int nvn_plat_flag(const char *name, int dflt) {
     if (!strcmp(name, "nvk_rt_cont")) return g_flag_rt_cont;
     if (!strcmp(name, "nvk_clear_park")) return g_flag_clear_park;
     if (!strcmp(name, "nvk_pass_area")) return g_flag_pass_area;
+    if (!strcmp(name, "nvk_split_pass")) return g_flag_split_pass < 0 ? dflt : g_flag_split_pass;
+    if (!strcmp(name, "nvk_diag_load_dontcare")) return g_flag_diag_load_dc;
+    if (!strcmp(name, "nvk_diag_store_dontcare")) return g_flag_diag_store_dc;
     if (!strcmp(name, "nvk_binst_hoist")) return g_flag_binst_hoist < 0 ? dflt : g_flag_binst_hoist;
     return dflt;
 }
@@ -109,7 +113,8 @@ void nvn_hle_submit_lock(void) { g_rt_locks++; CHECK(g_rt_locks == g_rt_unlocks 
 void nvn_hle_submit_unlock(void) { g_rt_unlocks++; CHECK(g_rt_unlocks == g_rt_locks); }
 static uint8_t gpu_byte(uint32_t layer, uint32_t level, int yo, int xo, uint64_t y, uint64_t i) { return (uint8_t)(0x40 + layer * 17 + level * 5 + ((uint64_t)yo + y) * 3 + ((uint64_t)xo + i)); }
 static void fake_complete(uint32_t status);   // 定义在本文件后面
-static struct { nvn_gpu_done_fn fn; void *user; uint64_t signal; uint32_t nts; nvn_gpu_timestamp_result ts[64]; } g_pend[72]; static int g_npend, g_main_commits;   // g_pend：一次提交最多 64 个中间值 + 主段；g_main_commits：不算前置段
+static struct { nvn_gpu_done_fn fn; void *user; uint64_t signal; uint32_t nts; nvn_gpu_timestamp_result ts[64]; } g_pend[72]; static int g_npend, g_main_commits;
+static int g_gdraws, g_ncd, g_cd[16];   // g_cd：每个主段提交时累计画了几笔（超长通道中途先交的用例看每段的笔数）   // g_pend：一次提交最多 64 个中间值 + 主段；g_main_commits：不算前置段
 static uint64_t g_fdone;
 static uint32_t g_occ_slots_decl; static int g_occ_log[32], g_nocc_log; static int g_rcond;
 int s2a_nvn_render_cond(void) { return g_rcond; }
@@ -147,7 +152,7 @@ uint64_t nvn_gpu_arena_fill(nvn_gpu_cmd c, const nvn_gpu_slice *sl, const void *
 uint64_t nvn_gpu_arena_fill_wait(uint64_t t) { if (t && g_fill_done < t) { g_fill_waits++; fill_run_to(t); } return g_fill_done; }
 void nvn_gpu_cmd_abort(nvn_gpu_cmd c) { fill_run_to(UINT64_MAX); c->live = 0; g_aborts++; }
 nvn_gpu_rc nvn_gpu_cmd_commit(nvn_gpu_cmd c, uint64_t signal, nvn_gpu_done_fn done, void *user, nvn_gpu_err *err) {
-    (void)err; fill_run_to(UINT64_MAX); c->live = 0; g_commits++; g_last_signal = signal; if (!c->is_pre) g_main_commits++; g_pend[g_npend].fn = done; g_pend[g_npend].user = user; g_pend[g_npend].signal = signal; g_pend[g_npend].nts = c->nts; memcpy(g_pend[g_npend].ts, c->ts, sizeof c->ts); g_npend++; return (nvn_gpu_rc){NVN_GPU_OK}; }
+    (void)err; fill_run_to(UINT64_MAX); c->live = 0; g_commits++; g_last_signal = signal; if (!c->is_pre) { g_main_commits++; if (g_ncd < 16) g_cd[g_ncd++] = g_gdraws; } g_pend[g_npend].fn = done; g_pend[g_npend].user = user; g_pend[g_npend].signal = signal; g_pend[g_npend].nts = c->nts; memcpy(g_pend[g_npend].ts, c->ts, sizeof c->ts); g_npend++; return (nvn_gpu_rc){NVN_GPU_OK}; }
 nvn_gpu_rc nvn_gpu_fence_wait(uint64_t v, uint64_t timeout_ns, nvn_gpu_err *err) { (void)timeout_ns; (void)err; if (g_auto_done && v > g_fdone && g_npend) fake_complete(NVN_GPU_DONE_OK); return (nvn_gpu_rc){v <= g_fdone ? NVN_GPU_OK : NVN_GPU_E_TIMEOUT}; }
 // 贴图 / 视图 / 采样器 / 上传：只记账
 struct nvn_gpu_tex_s { nvn_gpu_tex_desc d; uint64_t access_id; int ord; uint32_t px[4][4]; int views, released; }; struct nvn_gpu_view_s { nvn_gpu_tex of; int has_v; int rid; view_t v; nvn_gpu_buf buf; uint64_t off, bytes; uint32_t format; }; struct nvn_gpu_samp_s { int x; };   // ord：后端贴图的递增序号；px：像素替身（4 个 mip × 4 层各一个 32 位字）；v：建视图时收到的视图记录
@@ -3990,6 +3995,66 @@ static void t_autoflush(void) {
     rp_split_draws = keep; pass_fresh();
 }
 
+// 超长通道中途先交（rp_exec.c pass_split）：同一个通道里自开（或上次切）以来画满 N 笔，下一笔之前结束通道、交出这一段，下一笔按 LOAD 续开。
+// 期望值手算（N = 12，用例把 rp_split_pass_draws 改小）：40 笔 → 在第 13、25、37 笔之前各切一次，主段 4 个，各段提交时累计 12 / 24 / 36 / 40 笔；
+// 第一个通道吃掉整屏清除（CLEAR），续开的三个都是 LOAD，四个通道存储都是 STORE、挂的是同一张图。12 笔正好满阈值但没有第 13 笔：不切。
+// 缺省值 600 原样跑一遍 1300 笔：在第 601、1201 笔之前切，主段 3 个，累计 600 / 1200 / 1300。每次提交最多切 2 次时 60 笔：累计 12 / 24 / 60。
+// 不切的形态（各 40 笔，主段都只有 1 个）：开关 0、多重采样目标、影子附件（深度图经颜色视图当目标）、会话用过遮挡计数、诊断开关把载入或存储换成 DONTCARE。
+enum { SP_PLAIN, SP_MSAA, SP_SHADOW, SP_OCC, SP_DIAG_STORE, SP_DIAG_LOAD };
+static int sp_run(int kind, int draws) {
+    pass_fresh(); g_gdraws = 0; g_draw_outside = 0;
+    if (kind == SP_OCC) { uint64_t rep_[2] = {0, 0}; stream w = {0}; q_env(&w); q_counter(&w, OP_RESET_COUNTER, NVN_COUNTER_TYPE_SAMPLES_PASSED, NULL); q_draw(&w); q_counter(&w, OP_REPORT_COUNTER, NVN_COUNTER_TYPE_SAMPLES_PASSED, rep_); end(&w); submit1(&w); fake_complete(NVN_GPU_DONE_OK); g_gdraws = 0; }
+    g_flag_diag_store_dc = kind == SP_DIAG_STORE; g_flag_diag_load_dc = kind == SP_DIAG_LOAD;
+    tex_t A = mk_tex(161, 0, kind == SP_SHADOW ? NVN_FORMAT_DEPTH16 : NVN_FORMAT_RGBA8, 64, 36, 1, 0);
+    if (kind == SP_MSAA) { A.d.target = NVN_TEXTURE_TARGET_2D_MULTISAMPLE; A.d.samples = 4; nvn_tex_layout(&A.d, &A.L); A.has_layout = 1; }
+    view_t v; memset(&v, 0, sizeof v); v.set_format = 1; v.format = NVN_FORMAT_R16;
+    static stream h, b; memset(&h, 0, sizeof h); q_env(&h);
+    if (kind == SP_SHADOW) put_set_rt_v(&h, &A, &v); else { const tex_t *a_[1] = {&A}; put_set_rt_n(&h, a_, 1, NULL); }
+    if (kind == SP_OCC) q_counter(&h, OP_RESET_COUNTER, NVN_COUNTER_TYPE_SAMPLES_PASSED, NULL);
+    p_clear_color *cc = put(&h, OP_CLEAR_COLOR, sizeof *cc); cc->index = 0; cc->mask = 0xf; end(&h);
+    const int chunk = 40; memset(&b, 0, sizeof b); for (int i = 0; i < chunk; i++) q_draw(&b); end(&b);   // 一条列表 40 笔（4096 字节放得下），整次提交里按需回放几遍
+    CHECK(b.n <= sizeof b.b);
+    static stream t; memset(&t, 0, sizeof t); for (int i = 0; i < draws % chunk; i++) q_draw(&t); end(&t);
+    g_ncd = 0; g_npend = 0; const uint64_t f0 = nvn_be_last_fence();
+    nvn_be_sub_begin(); nvn_be_exec(h.b);
+    for (int i = 0; i < draws / chunk; i++) nvn_be_exec(b.b);
+    nvn_be_exec(t.b); nvn_be_sub_commit();
+    CHECK(g_npend && g_pend[g_npend - 1].signal == f0 + 64);   // 回写都在最后一段（+64），切出去的段依次取 +1、+2…（前置段也占）
+    for (int i = 1; i < g_npend; i++) CHECK(g_pend[i].signal > g_pend[i - 1].signal);
+    fake_complete(NVN_GPU_DONE_OK);
+    g_flag_diag_store_dc = g_flag_diag_load_dc = 0;
+    CHECK(g_gdraws == draws && g_draw_outside == 0);   // 切与不切画的笔数一样，每笔都在通道里
+    return g_ncd;
+}
+static void t_split_long_pass(void) {
+    const int keep = rp_split_pass_draws, keep_max = rp_split_pass_max;
+    CHECK(keep == 600 && keep_max == 8);   // 缺省：每段 600 笔、每次提交最多切 8 次
+    rp_split_pass_draws = 12;
+    CHECK(sp_run(SP_PLAIN, 40) == 4 && g_cd[0] == 12 && g_cd[1] == 24 && g_cd[2] == 36 && g_cd[3] == 40);
+    CHECK(g_npd == 4 && g_pd[0].color[0].load == NVN_GPU_LOAD_CLEAR);
+    for (int k = 0; k < 4 && k < g_npd; k++) {
+        CHECK(g_pd[k].color[0].store == NVN_GPU_STORE_STORE && g_pd[k].color[0].view && g_pd[0].color[0].view && g_pd[k].color[0].view->of == g_pd[0].color[0].view->of);
+        if (k) CHECK(g_pd[k].color[0].load == NVN_GPU_LOAD_LOAD);
+    }
+    CHECK(sp_run(SP_PLAIN, 11) == 1 && g_cd[0] == 11 && g_npd == 1);
+    CHECK(sp_run(SP_PLAIN, 12) == 1 && g_cd[0] == 12 && g_npd == 1);   // 满阈值但后面没有下一笔：不切
+    CHECK(sp_run(SP_PLAIN, 13) == 2 && g_cd[0] == 12 && g_cd[1] == 13 && g_npd == 2 && g_pd[1].color[0].load == NVN_GPU_LOAD_LOAD);
+    rp_split_pass_max = 2;   // 上限：60 笔本该切 4 次，只切前 2 次
+    CHECK(sp_run(SP_PLAIN, 60) == 3 && g_cd[0] == 12 && g_cd[1] == 24 && g_cd[2] == 60);
+    rp_split_pass_max = keep_max;
+    g_flag_split_pass = 0; CHECK(sp_run(SP_PLAIN, 40) == 1 && g_npd == 1); g_flag_split_pass = -1;   // 开关 0 = 关
+    CHECK(sp_run(SP_MSAA, 40) == 1 && g_npd == 1);
+    CHECK(sp_run(SP_SHADOW, 40) == 1 && g_npd == 1);
+    CHECK(sp_run(SP_OCC, 40) == 1);
+    CHECK(sp_run(SP_DIAG_STORE, 40) == 1 && g_npd == 1);
+    CHECK(sp_run(SP_DIAG_LOAD, 40) == 1 && g_npd == 1);
+    rp_split_pass_draws = keep;   // 缺省值原样：1300 笔
+    CHECK(sp_run(SP_PLAIN, 1300) == 3 && g_cd[0] == 600 && g_cd[1] == 1200 && g_cd[2] == 1300);
+    CHECK(g_npd == 3 && g_pd[0].color[0].load == NVN_GPU_LOAD_CLEAR && g_pd[1].color[0].load == NVN_GPU_LOAD_LOAD && g_pd[2].color[0].load == NVN_GPU_LOAD_LOAD);
+    CHECK(nvn_unimpl_kinds() == 0);
+    pass_fresh();
+}
+
 // 3D 贴图的深度切片当渲染目标：NVN 视图的层号在 3D 贴图上是深度切片（nvn_mtl.m attach() 落到 depthPlane）；Vulkan 的 3D 视图起点只能是 0，
 // 子范围只能用 2D（阵列）视图（nvn_vk_texview.h 文件头与 plan_make 的错误信息都这么说）。所以 3D 附件带层号时核心向后端请求 2D 阵列目标；
 // 游戏自己设了 3D 目标的同样请求 2D 阵列（Vulkan 的 3D 视图本身不能当附件，不管起点是不是 0；真机上有游戏对 3D 贴图的第 k 片显式设「3D 目标 + 层号 k」，#724）；
@@ -6845,6 +6910,7 @@ int main(int argc, char **argv) {
     t_pass_bc_shadow();
     t_pass_bc_shadow_3d();
     t_autoflush();
+    t_split_long_pass();
     t_pass_fresh_zero();
     t_frame_overlap();
     t_tex_fact_gens();
