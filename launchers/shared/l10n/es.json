@@ -2976,7 +2976,7 @@
   "没有可以装回的上一版手机 S2Arm。": "No hay una versión anterior de S2Arm que restaurar en el iPhone.",
   "装回上一版 S2Arm": "Restaurando el S2Arm anterior",
   "记下手机上现在的版本": "Registrando la versión actual en el iPhone",
-  "这款游戏暂不支持：没找到任天堂官方图形接口（NVN / Vulkan / OpenGL），多见于自制或移植的程序。": "Este juego aún no es compatible. No se encontró ninguna API gráfica oficial de Nintendo (NVN / Vulkan / OpenGL); esto es común en programas caseros o portados.",
+  "这款游戏暂时出不了包：没认出它用的图形接口（NVN / Vulkan / OpenGL）。请把诊断发给我们，我们会核对是不是没认出来。": "Este juego aún no se puede empaquetar: no reconocimos qué interfaz gráfica usa (NVN / Vulkan / OpenGL). Envíanos un diagnóstico para comprobar si no la detectamos.",
   "这款暂时打不了包，换一款官方游戏试试；如果确定是正版游戏，点「复制错误摘要」发给我们。": "Este juego aún no se puede empaquetar. Prueba con un juego oficial; si estás seguro de que es un juego comercial, pulsa «Copiar resumen de error» y envíanoslo.",
   "正在传输资源": "Transfiriendo recursos",
   "苹果拒绝注册这个包名（Apple 错误 9401：同一个包名在苹果那边已被占用）。请在 Impactor（Mac 上是 Xcode）里确认登录的是当初装 S2Arm 用的那个 Apple ID 再装；付费开发者账号也可以到 developer.apple.com 的「Certificates, Identifiers & Profiles → Identifiers」删掉 io.s2arm.games 开头的旧包名后重试。还不行请导出诊断包反馈。": "Apple rechazó registrar este App ID (error de Apple 9401: el identificador ya está ocupado del lado de Apple). En Impactor (Xcode en Mac), asegúrate de haber iniciado sesión con el Apple ID que usaste para instalar S2Arm originalmente, luego instala de nuevo. Con una cuenta de desarrollador de pago también puedes eliminar el identificador antiguo que comienza con io.s2arm.games en «Certificates, Identifiers & Profiles > Identifiers» en developer.apple.com e intentarlo otra vez. Si sigue fallando, exporta un paquete de diagnóstico e infórmalo.",
@@ -3886,7 +3886,7 @@
   "这版 S2Arm 不认识你的 Xcode": "Esta versión de S2Arm no reconoce tu Xcode",
   "你的 Xcode 比这版 S2Arm 新。": "Tu Xcode es más reciente que esta versión de S2Arm.",
   "这款游戏暂不支持": "Este juego aún no es compatible",
-  "没找到任天堂官方图形接口（NVN / Vulkan / OpenGL），多见于自制或移植的程序。": "No se encontró API gráfica oficial de Nintendo (NVN / Vulkan / OpenGL); esto es común en programas caseros o portados.",
+  "没认出它用的图形接口（NVN / Vulkan / OpenGL）。请把诊断发给我们，我们会核对是不是没认出来。": "No reconocimos qué interfaz gráfica usa (NVN / Vulkan / OpenGL). Envíanos un diagnóstico para comprobar si no la detectamos.",
   "程序的结构我们还不认识，多见于自制或移植的程序。": "Aún no reconocemos cómo está construido este programa; esto es común en programas caseros o portados.",
   "引擎文件不完整": "Archivos del motor incompletos",
   "应用自带的引擎文件缺失。": "Faltan archivos del motor incluidos con la aplicación.",
@@ -4240,6 +4240,7 @@
   "免费 Apple ID 有苹果的限制：同时最多装 3 个自己签的 App（AltStore / SideStore 也算），每 7 天最多注册 10 个 App ID；独立 App 每款占一个。装满了就在 iPhone 上删掉不玩的那个再装。": "Un Apple ID gratuito tiene los límites de Apple: como máximo 3 apps autofirmadas instaladas a la vez (AltStore / SideStore también cuentan) y como máximo 10 App ID registrados cada 7 días. Cada app independiente usa uno. Si llegas al límite, borra del iPhone una app que ya no uses y vuelve a instalar.",
   "先在 iPhone 上退出这款游戏，再删。": "Primero cierra este juego en el iPhone y luego elimínalo.",
   "没能从 iPhone 上卸掉这款的独立 App：确认 iPhone 连着、已解锁，再试一次。": "No se pudo quitar la app independiente de este juego del iPhone. Comprueba que el iPhone esté conectado y desbloqueado e inténtalo de nuevo.",
-  "从 iPhone 上卸掉这款的独立 App": "Quitando la app independiente de este juego del iPhone"
+  "从 iPhone 上卸掉这款的独立 App": "Quitando la app independiente de este juego del iPhone",
+  "这款游戏暂时出不了包": "Este juego aún no se puede empaquetar"
  }
 }
