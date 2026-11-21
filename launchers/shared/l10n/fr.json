@@ -4314,6 +4314,11 @@
   "这款要整款重新出包才能更新完（运行环境的约定变了，只换着色器库不够）：在出包页对这款重新出包。": "Ce jeu doit être entièrement réempaqueté pour terminer la mise à jour (le contrat de l’environnement d’exécution a changé ; remplacer la bibliothèque de shaders ne suffit pas). Réempaquetez-le depuis la page d’empaquetage.",
   "这款有一项没更新完": "Une partie de la mise à jour n’a pas abouti",
   "「更新这款」这次有一部分没做成，原因写在下面；「建议更新」会继续显示，按说明处理后再点一次。": "« Mettre à jour ce jeu » n’a pas pu tout faire cette fois ; la raison est indiquée ci-dessous. « Mise à jour suggérée » restera affiché tant que vous ne l’aurez pas réglée et recliqué.",
-  "按黄字里写的补上缺的那一项，再点一次「更新这款」；其余部分这次已经更新好了。": "Complétez l’élément manquant indiqué en jaune, puis touchez à nouveau « Mettre à jour ce jeu » ; le reste a déjà été mis à jour."
+  "按黄字里写的补上缺的那一项，再点一次「更新这款」；其余部分这次已经更新好了。": "Complétez l’élément manquant indiqué en jaune, puis touchez à nouveau « Mettre à jour ce jeu » ; le reste a déjà été mis à jour.",
+  "让 Apple TV 开着、别让它休眠，和这台 Mac 连同一个网络，再点一次「装到 Apple TV」；已经传到电视上的部分不重传，电视上的 App 和存档都保留。": "Laissez l'Apple TV allumée et hors veille, sur le même réseau que ce Mac, puis cliquez à nouveau sur « Installer sur l'Apple TV » ; ce qui est déjà arrivé sur la TV n'est pas renvoyé, et l'app et les sauvegardes de la TV sont conservées.",
+  "查看本任务日志里签名那一步的报错；确认 Xcode「设置 → 账户」里登录了你的 Apple ID、能给这台 Apple TV 签名，再试一次。": "Consultez l'erreur de l'étape de signature dans le journal de cette tâche ; vérifiez que votre identifiant Apple est connecté dans Xcode › Réglages › Comptes et peut signer pour cette Apple TV, puis réessayez.",
+  "让 Apple TV 开着、和这台 Mac 连同一个网络，再点一次「装到 Apple TV」；电视上原有的 App 和存档都保留。": "Laissez l'Apple TV allumée et sur le même réseau que ce Mac, puis cliquez à nouveau sur « Installer sur l'Apple TV » ; l'app et les sauvegardes déjà présentes sur la TV sont conservées.",
+  "让 Apple TV 开着、和这台 Mac 连同一个网络，并在 Xcode「窗口 → 设备与模拟器」里和它配对过一次，再试一次。": "Laissez l'Apple TV allumée et sur le même réseau que ce Mac, jumelez-la une fois dans Xcode › Fenêtre › Appareils et simulateurs, puis réessayez.",
+  "让 Apple TV 开着、别让它休眠，和这台 Mac 连同一个网络，再点一次「装到 Apple TV」。": "Laissez l'Apple TV allumée et hors veille, sur le même réseau que ce Mac, puis cliquez à nouveau sur « Installer sur l'Apple TV »."
  }
 }
