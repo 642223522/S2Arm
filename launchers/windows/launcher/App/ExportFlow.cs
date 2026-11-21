@@ -423,6 +423,13 @@ public sealed partial class EnvironmentWindow
         }
         else box.Children.Add(LiveSlot(() => ExportRunRows(game, run)));   // 推的进度事件只刷新这一格
         body.Children.Add(Card(box));
+        // 独立 App 成功了：说清之前独立 App 里的存档怎么搬（普通说明文字，签名方式不论）
+        if (ExportChoice.ShowsStandaloneSaveCarry(run.Layout, run.Rows.Values.Select(r => r.State)))
+        {
+            var carry = Muted(T("export.done.standaloneSaveCarry"), 13);
+            AutomationId(carry, "exportgame.saveCarry");
+            body.Children.Add(carry);
+        }
         var buttons = new WrapPanel { Orientation = Orientation.Horizontal };
         var done = Action(run.Active ? "export.running.back" : "export.run.done", () => Navigate("library"));   // 还在做时写「回到游戏库，后台继续」，不写「完成」
         done.Margin = new Thickness(0, 0, 12, 0); buttons.Children.Add(done);

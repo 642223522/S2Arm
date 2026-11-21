@@ -106,6 +106,12 @@ internal static class ExportChoiceCases
         check(ExportChoice.StandaloneNote(hints, "devCert", "shell") is null, "note: universal S2Arm chosen → no line");
         check(ExportChoice.StandaloneNote(new Dictionary<string, string>(), "devCert", "standalone") is null, "note: no hint for this sign → no line");
 
+        // 导出成功页的「旧独立 App 的存档怎么搬」：独立 App 且有一行成功才写；通用 S2Arm 不写；还没成 / 全失败不写
+        check(ExportChoice.ShowsStandaloneSaveCarry("standalone", ["succeeded", "failed"]), "save carry: standalone, one device succeeded → shown");
+        check(ExportChoice.ShowsStandaloneSaveCarry("standalone", ["succeeded"]), "save carry: standalone exported to a folder → shown");
+        check(!ExportChoice.ShowsStandaloneSaveCarry("shell", ["succeeded"]), "save carry: universal S2Arm → not shown");
+        check(!ExportChoice.ShowsStandaloneSaveCarry("standalone", ["waiting", "failed"]), "save carry: nothing succeeded yet → not shown");
+
         // 要不要先在电脑上做好 iPhone 版
         check(ExportChoice.NeedsPack(false, false, 2) && ExportChoice.NeedsPack(false, false, 0), "prepare: no iPhone version → prepare first");
         check(!ExportChoice.NeedsPack(true, false, 1), "prepare: iPhone version (old format) pushing to a device → no repack");

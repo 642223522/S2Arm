@@ -92,6 +92,11 @@ public static class ExportChoice
         layout != "standalone" || !hints.TryGetValue(sign, out var code) ? null
         : ("install.layout.hint." + code, code is "explicit" or "wildcard" ? "#FFD60A" : "#FF9F0A");
 
+    /// <summary>导出成功页（逐台结果、导出到文件夹）要不要写「之前用独立 App 装过的游戏，存档怎么搬」（export.done.standaloneSaveCarry）：
+    /// 这次出法是独立 App、且至少一台 / 文件夹那一行成功了；不论签名方式；通用 S2Arm 不写</summary>
+    public static bool ShowsStandaloneSaveCarry(string layout, IEnumerable<string> rowStates) =>
+        layout == "standalone" && rowStates.Any(s => s == "succeeded");
+
     /// <summary>开始前要不要先在电脑上做好 iPhone 版：没做过；或导出到文件夹而包还不是能直接导出的新格式（单一 IMG）</summary>
     public static bool NeedsPack(bool iphoneReady, bool iphoneExportable, int devices) => !iphoneReady || (devices == 0 && !iphoneExportable);
 }

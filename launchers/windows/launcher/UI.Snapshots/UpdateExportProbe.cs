@@ -208,6 +208,17 @@ static class UpdateExportProbe
                 Texts(w).Contains("✓ 已装到这台") && Ids(w).Contains("exportgame.retry.BARE-000000000000000000000000000000BBB222")
                 && !Ids(w).Contains("exportgame.retry.OWN-0000000000000000000000000000000AAA111") && Texts(w).Contains("去 S2Arm 卡"));
             Save(w, Path.Combine(outDir, "export_4_per_device_results.png"));
+            Check(fails, "通用 S2Arm 成功页：不写旧独立 App 存档怎么搬", !Ids(w).Contains("exportgame.saveCarry"));
+            // 独立 App：逐台成功 / 导出到文件夹成功都写「之前用独立 App 装过的游戏，存档在旧 App 里……」
+            var standaloneRun = Activator.CreateInstance(runType, [stale.Id, "devCert", "standalone", (IReadOnlyList<string>)["OWN-0000000000000000000000000000000AAA111"]])!;
+            ((System.Collections.IDictionary)runType.GetField("Rows")!.GetValue(standaloneRun)!)["OWN-0000000000000000000000000000000AAA111"] = ("succeeded", "", (string?)null);
+            runs[stale.Id] = standaloneRun; Call(w, "Render"); Settle(w);
+            Check(fails, "独立 App 装到设备成功：写旧独立 App 存档怎么搬", w.GetVisualDescendants().OfType<TextBlock>().Any(t => Id(t) == "exportgame.saveCarry" && t.Text?.StartsWith("之前用独立 App 装过的游戏") == true));
+            Save(w, Path.Combine(outDir, "export_6_standalone_done_save_carry.png"));
+            var folderRun = Activator.CreateInstance(runType, [stale.Id, "none", "standalone", (IReadOnlyList<string>)[]])!;
+            ((System.Collections.IDictionary)runType.GetField("Rows")!.GetValue(folderRun)!)[""] = ("succeeded", "", (string?)null);
+            runs[stale.Id] = folderRun; Call(w, "Render"); Settle(w);
+            Check(fails, "独立 App 导出到文件夹成功：也写", Ids(w).Contains("exportgame.saveCarry"));
             runs.Remove(stale.Id);
 
             // 更新完成带黄字（作业 updateGame 结果 diagnostics 里 update_incomplete 的玩家句；结果 reasons 还剩 → 按钮仍可点）
