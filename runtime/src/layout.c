@@ -93,11 +93,15 @@ uint64_t s2a_layout_need(uint32_t as_type, uint64_t sys_resource_size, uint64_t 
 //     结果这类款照报 64 GiB、玩久了爬进远端：一款 40 局里 31 局越出窗口、14 局远端缺页每秒 10 万次以上，它的别名区真映射只有 2.5 GB。现在照收，
 //     收小后申请地址区失败由 SDK 地址区返回门当场记下本款（svc_mem.c s2a_alias_alloc_failed，同 ④ 的记录）、下一局恢复原值；
 //   ② 宿主占到的空洞放不下标准布局（hole < need；放得下的机型与游戏报给游戏的值一个字节不变）；③ 别名区确实伸出窗口；
-//   ④ 本款没记过「收小后游戏照旧映射到收掉的那段」（full_flag，svc_mem.c 发现就记、下次起局恢复原值）。
+//   ④ 本款没记过「收小后游戏照旧映射到收掉的那段」（full_flag，svc_mem.c 发现就记、下次起局恢复原值）；⑤ 见函数里。
 //   收到窗口末、按 GiB 取整；不足 8 GiB 不收（39 位款的别名区标准是 64 GiB，收到太小风险大于收益，照旧走远端）
+int s2a_alias_big_tops_window(uint64_t alias_base, int alias_gb, uint64_t win_end);
 uint64_t s2a_alias_report_size(uint64_t alias_base, uint64_t alias_size, uint64_t win_end, uint64_t hole, uint64_t need, int alias_gb, int full_flag) {
     if (alias_gb > 0 || full_flag || !need || hole >= need || alias_base + alias_size <= win_end || win_end <= alias_base) return alias_size;
     uint64_t r = (win_end - alias_base) & ~(GB - 1);
+    // ⑤ 上限不定、但出包静态认出了开局要的大块（alias_gb < 0，|alias_gb| GB）：收小后的别名区放不下这块就不收（11-21 一款大游戏真机：
+    //   静态 63 GB、收到 58 GB，开局 AllocateAddressRegion 回 0x1803、第 0 帧 Break；记下本款下一局恢复只救得了第二局）
+    if (alias_gb < 0 && s2a_alias_big_tops_window(alias_base, alias_gb, alias_base + r)) return alias_size;
     return r >= 8 * GB && r < alias_size ? r : alias_size;
 }
 
