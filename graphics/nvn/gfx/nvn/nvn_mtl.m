@@ -9905,6 +9905,7 @@ static const prog_t *bind_stages(const prog_t *p, int stages) {
 // replayed after the save can give the slot the saved pointer names to another combination. AI: THE SOMNIUM FILES (Unity 2017.4) binds its vertex and fragment programs apart; the
 // prediction over a 280-draw submission (pso_predict_rest) made more than NCMP combinations, and the draw after it ran Legacy Shaders/VertexLit's shadow vertex shader with
 // PSYNC/BG_AlphaTest's shadow pixel shader, a pipeline Metal refused (the pixel shader reads two outputs that vertex shader does not write). The combination is taken again from S.bst
+static unsigned g_bind_last_mask; static int g_bind_last_null; static uint64_t g_bind_n;   // 最近一次 BindProgram 的阶段掩码 / 绑的是不是空程序、累计绑定次数（提交线程；只进红行）
 static void prog_resolve(void) {
     const prog_t *np = bind_stages(NULL, 0); if (np == S.prog) return;
     S.prog = np; g_pso_dirty = 1;
@@ -13665,6 +13666,7 @@ static int state_op(uint32_t op, const void *a, uint32_t size) {
         // The compute stage has a binding of its own: a compute bind used to replace the one bound program, so a draw after a dispatch found the compute program (or none) and was
         // dropped, and a dispatch after a graphics bind found no compute shader. Hyrule Warriors: Age of Calamity interleaves them; its movie's NV12 → RGB draw was dropped and the intro played black
         case OP_BIND_PROGRAM: { p_bind_program bpt_; const p_bind_program *bp_ = bind_program_rec(a, size, &bpt_); const prog_t *bpp = prog_live(bp_);
+            g_bind_last_mask = bp_->stages; g_bind_last_null = !bpp; g_bind_n++;   // 「绘制前没绑程序」那行红的现场（#1948）
             if ((bp_->stages & 0x20) && bpp != S.cprog) { S.cprog = bpp; args_dirty_all(); }
             if (bp_->stages & 0x1f) { const prog_t *np = bind_stages(bpp, bp_->stages & 0x1f); if (np != S.prog) { S.prog = np; g_pso_dirty = 1; args_dirty_all(); } }
             break; }
@@ -16626,7 +16628,8 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     if (!mdx_on && ((di && di->mdi_cnt && !mdi_live(di->mdi_cnt, di->mdi_i)) || (dw && dw->mdi_cnt && !mdi_live(dw->mdi_cnt, dw->mdi_i)))) return;   // past the multi-draw's count
     if (mdx_on && mdx_next(dw, di)) return;   // the next draw of a masked multi-draw: only the draw is encoded
     g_mdxc.next = NULL;
-    if (!S.prog) { BAD_ERR(); RED_ONCE(18, "no program bound before the draw"); PD("Z %llu draw skipped: no program bound", g_stat_pass + !g_enc); return; }
+    if (!S.prog) { BAD_ERR(); RED_ONCE(18, "no program bound before the draw (stage slots bound, by NVN stage bit: vertex %d fragment %d geometry %d tess-control %d tess-eval / mesh %d, compute %d; last bind stage mask %#x%s, %llu binds so far)",
+        S.bst[0] != NULL, S.bst[1] != NULL, S.bst[2] != NULL, S.bst[3] != NULL, S.bst[4] != NULL, S.cprog != NULL, g_bind_last_mask, g_bind_last_null ? " with no program" : "", (unsigned long long)g_bind_n); PD("Z %llu draw skipped: no program bound", g_stat_pass + !g_enc); return; }
     __unsafe_unretained NvProg *pr = g_geo_program ? g_geo_program : prog_get(S.prog);
     qf_note(pr);   // GPU error attribution: this commit's in-flight programs (qf_put)
     for (int stage = 0; stage < 5; stage++) if (!img_atomic_prepare(pr->sh[stage], stage)) return;
