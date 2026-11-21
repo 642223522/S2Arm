@@ -248,6 +248,25 @@ raise SystemExit(main.main())
         self.assertIn("「S2Arm 自带的工具」", str(explain(e)), "不带文件名照样认")
         self.assertIn("app_control_blocked", RECOVERY)
 
+    def test_orch_spawn_or_link_denied_is_app_control(self):
+        # D-GVDA / #1912（Windows 0.6.3）：出包「准备资源」起随包预编的 Yaz0 编码器被拒（编排层子进程里，错误只剩回溯文字），
+        #   同机建 RomFS 目录链接（junction）也被拒：都归 app_control_blocked，不再落笼统的 package_failed。原文取自诊断（路径已脱敏）
+        import errors
+        spawn = ('一键出包失败（八个轻阶段）：light.log：rc=1；    File "subprocess.py", line 1538, in _execute_child /   '
+                 'PermissionError: [WinError 5] 拒绝访问。 / 【红】编排中止：[WinError 5] 拒绝访问。')
+        junction = ('    File "[SOURCE]\\pack\\orch\\roots.py", line 109, in _junction\n    raise C.WinError(C.get_last_error())\n'
+                    '  PermissionError: [WinError 5] 拒绝访问。\n【红】编排中止：[WinError 5] 拒绝访问。')
+        for label, text in (("起编码器被拒", spawn), ("建 junction 被拒", junction)):
+            with self.subTest(label):
+                code, why = errors.classify_failure("ipa", None, [text])
+                self.assertEqual(code, "app_control_blocked", why)
+                self.assertEqual(errors.player_reason(code), "被 Windows 拦下：Windows 的应用控制或杀毒软件没让 S2Arm 自带的工具运行。")
+        for w in (4551, 225):   # 编排层里应用控制原号同样认
+            self.assertEqual(errors.classify_failure("ipa", None, [f'line 1538, in _execute_child / PermissionError: [WinError {w}] x'])[0], "app_control_blocked")
+        # 反证：别处的拒绝访问（改名 / 删文件）不算拦工具，照旧不归 app_control_blocked
+        other = '  File "x.py", line 3, in replace\n  PermissionError: [WinError 5] 拒绝访问。: \'D:\\a\' -> \'D:\\b\''
+        self.assertNotEqual(errors.classify_failure("ipa", None, [other])[0], "app_control_blocked")
+
     def test_unrecognized_volume_during_classification_does_not_mask_original_error(self):
         lib = self.root / "classify-volume-lib"
         src = self.root / "classify-volume-src"
