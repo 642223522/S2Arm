@@ -36,54 +36,94 @@ struct InstallModeCard: View {
     }
 }
 
-/// 出法（0.6.3 维护者定，两种并存、玩家自选）：通用 S2Arm（一个 App 装整个游戏库）/ 独立 App（每款一个 App，点开直接进这款）。
-///   gameId 为空 = 设置里的缺省（选中的是现在生效的那种：没选过时作业层按证书自动——分发证书独立 App，其余通用 S2Arm）；
-///   给了 gameId = 装机页单款覆盖，多一项「跟随设置（…）」= 撤掉这款的选择。分发证书时说清通用 S2Arm 里打不开（只提示，两种都能选）
+/// 出法（0.6.3 维护者定，两种并存、玩家自选；0.6.2 起做成两张并排卡片）：独立 App（每款一个 App，点开直接进这款）/ 通用 S2Arm（一个 App 装整个游戏库）。
+///   gameId 为空 = 设置里的缺省；给了 gameId = 出包页 / 装机页单款覆盖（单独选过时右上给「跟随设置（当前：…）」撤掉）。
+///   推荐按签名带不带调试权限（作业层 install.layout_recommend，#1760）：推荐那张底部「✓ 根据你的…推荐」；选了不推荐那张，卡片下方一行橙字说后果，不弹窗、不拦
 struct InstallLayoutRow: View {
     @ObservedObject var model: S2ArmLauncherModel
     @EnvironmentObject var loc: Localizer
     var gameId: String? = nil
+    /// 出现时读一次装机方式（按款选过的、证书换过）；离屏截图测试关掉它（测试环境没有作业入口，读失败会弹真的报错框）
+    var refreshOnAppear = true
+    @State private var showWhy = false
+
+    static let gold = Color(red: 0.93, green: 0.77, blue: 0.42)
+    static let orange = Color(red: 1.0, green: 0.62, blue: 0.04)
+
+    /// 卡片下方那一行（只出一行，按顺序取第一个）：(文字, 颜色)
+    static func note(now: String, why: String, hint: String?) -> (String, String)? {
+        if now == "shell" && why == "distribution" { return ("layout.card.warn.distShell", "orange") }
+        if now == "standalone" && why == "appleId" { return ("layout.card.warn.freeStandalone", "orange") }
+        if now == "standalone" && why == "external" { return ("install.layout.hint.external", "orange") }
+        if now == "standalone" && hint == "wildcard" { return ("install.layout.hint.wildcard", "yellow") }
+        if why == "unknown" { return ("layout.card.unknown", "gray") }
+        return nil
+    }
 
     var body: some View {
         let m = model.installMode
         let name = { (v: String) in ix(loc, v == "standalone" ? "install.layout.standalone" : "install.layout.shell") }
-        VStack(alignment: .leading, spacing: 8) {
+        let own = gameId.flatMap { m.layoutGames[$0.uppercased()] }
+        let now = gameId.map { m.layout(for: $0) } ?? m.layout
+        VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 12) {
                 if gameId == nil { LauncherRowIcon("square.stack.3d.up") }
                 Text(ix(loc, gameId == nil ? "install.layout.title" : "install.layout.game")).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary)
                 Spacer(minLength: 12)
-                if let gameId {
-                    let own = m.layoutGames[gameId.uppercased()]
-                    LauncherDropdown(options: [("follow", ix(loc, "install.layout.follow").replacingOccurrences(of: "{0}", with: name(m.layout))),
-                                               ("shell", name("shell")), ("standalone", name("standalone"))],
-                                     selection: own ?? "follow", label: ix(loc, "install.layout.game")) {
-                        model.setLayout($0 == "follow" ? nil : $0, gameId: gameId)
+                Button { showWhy.toggle() } label: { Label(ix(loc, "layout.card.whyLabel"), systemImage: "questionmark.circle").font(LauncherTheme.TypeStyle.caption) }
+                    .buttonStyle(.plain).foregroundStyle(.secondary).help(ix(loc, "layout.card.why"))
+                    .popover(isPresented: $showWhy, arrowEdge: .bottom) {
+                        Text(ix(loc, "layout.card.why")).font(.manrope(13)).fixedSize(horizontal: false, vertical: true).frame(width: 360).padding(16)
                     }
-                    .launcherRowControls().controllerID("install.layout.game")
-                } else {
-                    LauncherDropdown(options: [("shell", name("shell")), ("standalone", name("standalone"))],
-                                     selection: m.layout, label: ix(loc, "install.layout.title")) { model.setLayout($0) }
-                        .launcherRowControls().controllerID("install.layout")
+                    .accessibilityIdentifier("install.layout.why")
+                if let gameId, own != nil {
+                    Button(ix(loc, "install.layout.follow").replacingOccurrences(of: "{0}", with: name(m.layout))) { model.setLayout(nil, gameId: gameId) }
+                        .buttonStyle(.plain).font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary).underline()
+                        .accessibilityIdentifier("install.layout.follow")
                 }
             }
-            let now = gameId.map { m.layout(for: $0) } ?? m.layout
-            Text(ix(loc, now == "standalone" ? "install.layout.standalone_note" : "install.layout.shell_note"))
-                .font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            if m.distribution {
-                Text(ix(loc, "install.layout.distribution")).font(LauncherTheme.TypeStyle.caption)
-                    .foregroundStyle(now == "shell" ? Color.yellow : Color.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack(alignment: .top, spacing: 12) {
+                card("standalone", name("standalone"), "layout.card.standalone.body", "layout.card.standalone.badge", gold: true, now: now, m: m)
+                card("shell", name("shell"), "layout.card.shell.body", "layout.card.shell.badge", gold: false, now: now, m: m)
             }
-            // 选了独立 App：按签名方式给一句前置条件（免费 Apple ID 的 3 个 App / 7 天、通配描述文件、自己签只能导出），只提示不拦（0.6.4）
-            if now == "standalone", let hint = m.standaloneHint {
-                Text(ix(loc, "install.layout.hint." + hint)).font(LauncherTheme.TypeStyle.caption).foregroundStyle(.yellow).fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("install.layout.hint")
-            } else if !model.layoutNotice.isEmpty && now == "standalone" {
-                Text(loc.backend(model.layoutNotice)).font(LauncherTheme.TypeStyle.caption).foregroundStyle(.yellow).fixedSize(horizontal: false, vertical: true)
+            .fixedSize(horizontal: false, vertical: true)
+            if let (key, tone) = Self.note(now: now, why: m.recommendWhy, hint: m.standaloneHint) {
+                Text(ix(loc, key)).font(LauncherTheme.TypeStyle.caption)
+                    .foregroundStyle(tone == "orange" ? Self.orange : tone == "yellow" ? Color.yellow : Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("install.layout.note")
             }
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(gameId == nil ? "env.installLayout" : "install.layout")
-        .onAppear { if gameId != nil { model.refreshInstallMode() } }   // 设置卡自己已刷新；装机页打开时读一次（按款选过的、证书换过）
+        .onAppear { if gameId != nil && refreshOnAppear { model.refreshInstallMode() } }   // 设置卡自己已刷新；装机页 / 出包页打开时读一次（按款选过的、证书换过）
+    }
+
+    private func card(_ value: String, _ title: String, _ body: String, _ badge: String, gold: Bool, now: String, m: InstallModeInfo) -> some View {
+        let on = now == value
+        let recommended = m.recommend == value
+        return Button { if !on { model.setLayout(value, gameId: gameId) } } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(ix(loc, badge)).font(.manrope(11, .bold)).padding(.horizontal, 8).padding(.vertical, 3)
+                    .foregroundStyle(gold ? Color.black : Color.white)
+                    .background(gold ? Self.gold : Color.white.opacity(0.18), in: Capsule())
+                HStack(spacing: 8) {
+                    Image(systemName: on ? "largecircle.fill.circle" : "circle").font(.system(size: 15, weight: .semibold)).foregroundStyle(on ? Self.gold : .secondary)
+                    Text(title).font(.manrope(16, .bold))
+                }
+                Text(ix(loc, body)).font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                if recommended {
+                    Label(ix(loc, ["distribution", "devCertDebug"].contains(m.recommendWhy) ? "layout.card.recommendCert" : "layout.card.recommendSign"), systemImage: "checkmark")
+                        .font(.manrope(12, .semibold)).foregroundStyle(Self.gold).accessibilityIdentifier("install.layout.recommended." + value)
+                }
+            }
+            .padding(14).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(Color.white.opacity(on ? 0.07 : 0.03), in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(on ? Self.gold : Color.white.opacity(0.14), lineWidth: on ? 2 : 1))
+            .contentShape(RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain).controllerID((gameId == nil ? "install.layout." : "install.layout.game.") + value)
+        .accessibilityIdentifier("install.layout.card." + value)
     }
 }
 

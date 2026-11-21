@@ -618,6 +618,9 @@ def to_img(c, gid, root, pack_dir):
         reason = "写单一 IMG（game.img）失败：" + (tool_reason(log) or str(e))  # 非玩家句
         # 日志确凿根因（盘满等，errors.LOG_CAUSES）照归：原先一律 package_failed，玩家看到的是英文原句「[Errno 28] No space left on device」
         code, why = classify_failure("img", log, (reason,))
+        if code == "package_failed" and re.search(r"\[Errno 13\]|\bPermissionError\b|\[WinError (?:5|32|33)\]", reason):
+            # 写的都是游戏库里这款的文件（game.img、RomFS 镜像）：被拒 = 别的程序拿着 / 文件夹被保护（D-X5JB），归 permission_denied（Windows 有自己的下一步）
+            code, why = "permission_denied", why + "；按原文「拒绝访问」归 permission_denied"  # 非玩家句
         if code == "package_failed":
             raise Failure(reason, code=code, internal=why) from e
         said, advice = player_words(code, log, (reason,))

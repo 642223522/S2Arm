@@ -1178,7 +1178,29 @@ def install_mode_job(c):
     except OSError:
         pass
     return dict(exportAvailable=True, signMode="devcert" if devcert.active(c) else "appleId", signChoice=chosen_sign_mode(c),
-                layout=chosen_layout(c), layoutChoice=layout_choice(c), distribution=distribution_cert(c), standaloneHint=standalone_hint(c))
+                layout=chosen_layout(c), layoutChoice=layout_choice(c), distribution=distribution_cert(c), standaloneHint=standalone_hint(c),
+                **layout_recommend_fields(c))
+
+
+def layout_recommend(c):
+    """按签名带不带「调试权限」（get-task-allow）推荐出法（0.6.2 维护者定，#1760 单变量结论：不带它的 App 运行不了 App 包外的游戏程序）→ (推荐, 依据)：
+    分发 / Ad Hoc / 企业证书（导入时判的 distribution）→ standalone；带调试权限的开发证书、Apple ID 一键签名、自己用 AltStore / SideStore 签 → shell；
+    没登录 Apple ID 也没导入证书 → (None, unknown)。只给界面标「根据你的…推荐」和选了不推荐那张时的提示，不拦、不改玩家选过的"""
+    mode = chosen_sign_mode(c)
+    if mode == "external":
+        return "shell", "external"
+    if mode == "devCert":
+        return ("standalone", "distribution") if distribution_cert(c) else ("shell", "devCertDebug")
+    try:
+        signed = bool(plume_account(c, win_install_mod(c)))
+    except Exception:   # noqa: BLE001 —— 读不到账号就当识别不了，只少一个推荐标
+        signed = False
+    return ("shell", "appleId") if signed else (None, "unknown")
+
+
+def layout_recommend_fields(c):
+    rec, why = layout_recommend(c)
+    return dict(recommend=rec, recommendWhy=why)
 
 
 def standalone_hint(c):
@@ -1242,7 +1264,7 @@ def layout_set(c):
     else:
         (c.private / LAYOUT_CHOICE).unlink(missing_ok=True)
     now = chosen_layout(c, gid)
-    return dict(layout=now, default=chosen_layout(c), games=games, distribution=distribution_cert(c), standaloneHint=standalone_hint(c),
+    return dict(layout=now, default=chosen_layout(c), games=games, distribution=distribution_cert(c), standaloneHint=standalone_hint(c), **layout_recommend_fields(c),
                 **({"freeLimit": FREE_APP_LIMIT} if now == "standalone" and not devcert.active(c) else {}))
 
 
@@ -3253,6 +3275,8 @@ def export_app(c, gid):
             ipa = signed
         folder, _, _ = app_meta(c, gid)
         out = export_s2arm(c, gid, folder=folder, sign=False, step=2, total=total)
+        res = Path(out.get("resourcePath") or "")
+        out["resourceBytes"] = res.stat().st_size if res.is_file() else 0   # 硬链接也按实际大小报（界面注「不另占空间」）
         files = app_files(c, gid, ipa, exported=True, s2arm=out["s2armPath"], img=out["resourcePath"] if out.get("resourceLinked") else None,
                           img_elsewhere=out["resourcePath"] if out.get("resourcePath") and not out.get("resourceLinked") else "")
     finally:
