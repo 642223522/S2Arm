@@ -1284,7 +1284,19 @@
   "app.done.finish": "完成",
   "app.failed.partial": "App 已裝上，資源沒推完",
   "app.failed.partialNext": "點「重試」只推剩下的檔案，已推好的不重推。",
-  "console.app.renew": "續簽"
+  "console.app.renew": "續簽",
+  "layout.card.standalone.body": "一款遊戲一個 App，點開直接進遊戲",
+  "layout.card.shell.body": "一個 App 裝所有遊戲，在遊戲庫裡選",
+  "layout.card.standalone.badge": "P12 憑證使用者強烈推薦",
+  "layout.card.shell.badge": "自簽 / 一鍵簽名推薦",
+  "layout.card.why": "iPhone 只允許簽名裡帶「除錯權限」的 App 執行裝在 App 外面的遊戲。買來的 P12 大多是發佈 / 企業憑證，簽出來的 App 沒有除錯權限，遊戲只能和 App 打在一起簽——所以一款遊戲一個 App。一鍵簽名、AltStore / SideStore 自簽和開發憑證都帶除錯權限：一個 App 能裝所有遊戲，隨時增刪，S2Arm 更新時一般也不用重新出遊戲包。你的 P12 如果是開發憑證，兩種都能用。",
+  "layout.card.recommendCert": "根據你的憑證推薦",
+  "layout.card.recommendSign": "根據你的簽名方式推薦",
+  "layout.card.warn.distShell": "你的憑證簽出來的 App 沒有除錯權限，通用 S2Arm 裡的遊戲打不開（會停在說明頁）。建議選「獨立 App」。",
+  "layout.card.warn.freeStandalone": "每款遊戲單獨佔一個 App：免費 Apple ID 同時最多 3 個，每 7 天最多註冊 10 個 App ID，7 天到期要逐款續簽。",
+  "layout.card.unknown": "登入 Apple ID 或匯入憑證後，會按你的簽名方式推薦一種。",
+  "layout.card.whyLabel": "為什麼？",
+  "app.export.noExtraSpace": "不另佔空間"
  },
  "text": {
   "直连": "直連",
@@ -4409,6 +4421,7 @@
   "先在 iPhone 上退出这款游戏，再删。": "先在 iPhone 上退出這款遊戲，再刪。",
   "没能从 iPhone 上卸掉这款的独立 App：确认 iPhone 连着、已解锁，再试一次。": "沒能從 iPhone 上卸掉這款的獨立 App：確認 iPhone 連著、已解鎖，再試一次。",
   "从 iPhone 上卸掉这款的独立 App": "從 iPhone 上卸掉這款的獨立 App",
-  "这款游戏暂时出不了包": "這款遊戲暫時出不了包"
+  "这款游戏暂时出不了包": "這款遊戲暫時出不了包",
+  "应用不完整，请重新安装 S2Arm。": "應用不完整，請重新安裝 S2Arm。"
  }
 }
