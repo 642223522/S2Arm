@@ -338,6 +338,14 @@
 "img.noShaders.body" = "“%@” is incomplete. Put this game’s .s2arm from the “S2Arm Game Packs” folder on your computer in here too (it carries the game’s shaders), or connect your phone and click “Push to iPhone” in S2Arm on your computer.";
 "img.updateSkipped.title" = "Shader update skipped";
 "img.updateSkipped.body" = "“%@” doesn’t match the current version of this game, so it was skipped and not applied. The game still plays normally. To use this update, add the full .img from the same export on your computer together with it.";
+"gameExport.preparing" = "Creating the export files…";
+"gameExport.hint" = "Creates a .s2arm and a .img file and saves them in the Files app. After reinstalling S2Arm with another signature, put them in “Import Here” to bring the game back.";
+"gameExport.failed.title" = "Couldn’t export this game";
+"gameExport.noProgram" = "This game was installed the old way (its program is inside the app), so it can’t be exported on the iPhone. Export it from S2Arm on your computer.";
+"gameExport.inBundle" = "This game is inside the app package, so it can’t be exported on the iPhone.";
+"gameExport.partial" = "This game is missing some files (only partly playable). Complete it, then export again.";
+"gameExport.noImg" = "This game’s files use the old format (no game.img), so it can’t be exported on the iPhone. Export it from S2Arm on your computer.";
+"gameExport.ioFailed" = "Couldn’t write the export files: %@";
 "container.locked.title" = "Some S2Arm files are locked by the system";
 "container.locked.body" = "%@ GB of old S2Arm files on this device are locked by the system. S2Arm can neither change nor delete them; they are only removed when the app is deleted.\n\nTo free this space:\n1. In each game, open the menu → Manage saves → Export current save…, to a place in Files outside the S2Arm folder (for example iCloud Drive; the S2Arm folder is deleted together with the app)\n2. Delete and reinstall S2Arm\n3. Use Manage saves → Choose a backup to check… to bring your saves back";
 "diag.fileWord" = "diag";

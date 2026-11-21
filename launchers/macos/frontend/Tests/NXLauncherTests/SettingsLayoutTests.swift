@@ -76,10 +76,12 @@ import S2ArmAppleAdapter
         defer { fixture.remove() }
         for language in [Lang.zh, .en] {
             for player in 0..<4 {
-                let (host, window) = try await render(AnyView(InputSettingsSheet(model: fixture.model, gameID: "fixture")), fixture: fixture, language: language)
+                // 拿不到焦点的窗口（同首页搜索用例，UnfocusableWindow）：门禁机上测试进程有时是前台程序，点玩家分段那一下会被当成「激活窗口」吞掉，
+                //   选中态等满 3 秒也不来（11-15 起偶发 16 次，第 102 行取色 0.26）；本机测试进程不是前台、从不红
+                let (host, window) = try await render(AnyView(InputSettingsSheet(model: fixture.model, gameID: "fixture")), fixture: fixture, language: language, keyable: false)
                 let navigation = fixture.navigation
                 navigation.source.controllers = { [] }; navigation.attach(window); navigation.source.stop()
-                window.makeKeyAndOrderFront(nil)
+                window.orderFront(nil)
                 defer { navigation.detach(); window.close() }
                 try await settle(window, navigation, fixture.model.gamepad)
                 let players = navigation.controlTargets(in: window).filter { abs($0.frame.height - 30) < 0.5 }
@@ -648,11 +650,11 @@ import S2ArmAppleAdapter
         fixture.model.install(a, device: "dev-1")
         XCTAssertTrue(fixture.model.phoneQueued(a.id), "装正在出包的 A：排队")
         fixture.model.install(b, device: "dev-1")
-        XCTAssertEqual(fixture.model.phoneQueue.map(\.gameID), [a.id, b.id], "手机槽忙时再装 B：排在后面")
+        XCTAssertEqual(fixture.model.phoneQueue.map(\.gameID), [a.id], "B 正在推时再装 B：不再排第二单（D-YXDW）")
         for _ in 0..<200 where installs(b.id) < 1 || fixture.model.phoneBusy { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertEqual(installs(a.id), 0, "A 还在出包：A 的装机不发")
-        for _ in 0..<200 where installs(b.id) < 2 { try await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertEqual(installs(b.id), 2, "手机槽空了：排着的 B 接上（A 被主槽占着跳过它）")
+        XCTAssertEqual(installs(b.id), 1, "B 只推一遍")
+        XCTAssertFalse(fixture.model.phoneBusy, "手机槽空了：排着的 A 被主槽占着，不起")
         XCTAssertEqual(fixture.model.phoneQueue.map(\.gameID), [a.id])
 
         fixture.model.finish(.completed, message: "")   // A 出包结束
@@ -1246,10 +1248,13 @@ import S2ArmAppleAdapter
             for width: CGFloat in [800, 1000, 1120, 1440] {
                 fixture.model.home.search = ""
                 let page = AnyView(LauncherView(model: fixture.model, brand: "Original UI fixture").frame(width: width, height: 630))
-                let (host, window) = try await render(page, fixture: fixture, language: language)
+                // 窗口拿不到焦点：首页搜索框按设计在窗口失焦 / 输入框失焦时收起。门禁机上测试进程有时是前台程序，窗口焦点在进程内外来回变：
+                //   合成点击被当成「激活窗口」吞掉（b0f9f16b3c5e49a2）、点 5 次都没展开（06:31）、展开后窗口失焦又收起（11-20 10:46 第 1285 行）；
+                //   本机测试进程不是前台、窗口从来不是焦点窗口，所以单跑从不红。这里固定成本机那种状态，只测展开 / 输入 / 保留查询本身
+                let (host, window) = try await render(page, fixture: fixture, language: language, keyable: false)
                 navigation.attach(window)
                 navigation.source.stop()
-                window.makeKeyAndOrderFront(nil)
+                window.orderFront(nil)
                 defer { navigation.detach(); window.close() }
                 func settleSearch() async throws {
                     var previous = CGRect.null
@@ -2260,12 +2265,13 @@ import S2ArmAppleAdapter
         return CGRect(x: left, y: top, width: try XCTUnwrap(xs.max()) - left + 1, height: try XCTUnwrap(ys.max()) - top + 1)
     }
 
-    private func render(_ page: AnyView, fixture: SettingsFixture, language: Lang) async throws -> (NSView, NSWindow) {
+    /// keyable: false 时用拿不到焦点的窗口（见 UnfocusableWindow），用例结果不随测试进程是不是前台程序变
+    private func render(_ page: AnyView, fixture: SettingsFixture, language: Lang, keyable: Bool = true) async throws -> (NSView, NSWindow) {
         _ = NSApplication.shared
         let host = NSHostingView(rootView: page.environmentObject(Localizer(language))
             .environment(\.padControls, fixture.navigation).environment(\.colorScheme, .dark))
         host.appearance = NSAppearance(named: .darkAqua)
-        let window = NSWindow(contentRect: CGRect(origin: CGPoint(x: 80, y: 80), size: host.fittingSize),
+        let window = (keyable ? NSWindow.self : UnfocusableWindow.self).init(contentRect: CGRect(origin: CGPoint(x: 80, y: 80), size: host.fittingSize),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = host
@@ -2363,6 +2369,12 @@ private struct SearchControlPreview: View {
     /// 这个夹具里建的模型（含重启后新建的）一律接上：提示框记下来，不弹真窗
     func quiet(_ m: S2ArmLauncherModel) { m.runAlert = { [weak self] a in self?.alerts.append(a.messageText + "：" + a.informativeText); return .alertSecondButtonReturn } }
     func remove() { try? FileManager.default.removeItem(at: root) }
+}
+
+/// 永远不成为焦点窗口的测试窗口：点击直接交给控件、不先「激活窗口」，也就不会因别的窗口 / 程序拿走焦点而失焦
+private final class UnfocusableWindow: NSWindow {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
 }
 
 private final class SettingsRunner: JobProcessRunner {

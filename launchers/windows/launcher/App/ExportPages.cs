@@ -1684,6 +1684,8 @@ public sealed partial class EnvironmentWindow
         body.Children.Add(Muted(T("install.description"), 14));
         body.Children.Add(Muted(T("install.container_note"), 14));
         body.Children.Add(Muted(T("install.legacy_note"), 14));
+        EnsureInstallMode();
+        body.Children.Add(Card(LayoutRow(game.Id), 14));   // 这款推成通用 S2Arm 里的一款还是独立 App（0.6.3）：缺省跟随设置，单款可改
         if (File.Exists(BundledImpactor)) body.Children.Add(Muted(T("install.third_party")));   // 随包第三方工具要写明（11-07 维护者 随包下发）
 
         var list = new StackPanel { Spacing = 12 };

@@ -247,10 +247,15 @@ static void dq_run(const dq_rec_hdr *h) {
     default: break;
     }
 }
+#ifdef __ANDROID__
+// 录制线程是每帧必经的帧线程：常驻进 ADPF 会话（android/native/adpf_hint.c），不靠忙线程扫描的阈值。弱引用：没链 ADPF 的夹具地址为空
+void s2a_adpf_pin_self(void) __attribute__((weak));
+#endif
 static void *dq_recorder_main(void *arg) {
     (void)arg; 
 #ifdef __ANDROID__
     pthread_setname_np(pthread_self(), "s2a-vk-record");
+    if (s2a_adpf_pin_self) s2a_adpf_pin_self();
 #endif
 #ifdef __linux__
     prctl(PR_SET_TIMERSLACK, 1000UL, 0UL, 0UL, 0UL);   // 定时醒（nvk_dq_poll_us）别被默认 50 微秒的定时器松弛拖长；只作用于本线程

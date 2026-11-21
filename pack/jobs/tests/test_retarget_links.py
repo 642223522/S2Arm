@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import jobcase  # noqa: F401（把 pack/jobs 放进模块路径；门禁按文件单跑，不能靠同批别的测试先导入）
 import library
 
 

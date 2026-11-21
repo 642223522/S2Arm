@@ -338,6 +338,14 @@
 "img.noShaders.body" = "「%@」不完整。请把电脑上「S2Arm 游戏包」文件夹里这款的 .s2arm 也一起放进来（它带着这款要用的着色器），或者在电脑的 S2Arm 里连着手机点「推到 iPhone」。";
 "img.updateSkipped.title" = "这份着色器更新已跳过";
 "img.updateSkipped.body" = "「%@」和当前游戏版本不配套，已跳过、没有套用。游戏照常能玩；要用这份更新，请把电脑上同一次导出的完整 .img 和它一起放进来。";
+"gameExport.preparing" = "正在生成导出文件…";
+"gameExport.hint" = "生成 .s2arm 和 .img 两个文件存到「文件」App，换签名重装 S2Arm 后放进「放这里导入」即可导回。";
+"gameExport.failed.title" = "没能导出这一款";
+"gameExport.noProgram" = "这一款是老方式装的（程序在 App 里），手机上导不出。请在电脑上的 S2Arm 里导出这一款。";
+"gameExport.inBundle" = "这一款装在 App 包里，手机上导不出。";
+"gameExport.partial" = "这一款缺了部分文件（只部分可玩），补齐后再导出。";
+"gameExport.noImg" = "这一款的游戏资源是老格式（没有 game.img），手机上导不出。请在电脑上的 S2Arm 里导出这一款。";
+"gameExport.ioFailed" = "没能写出导出文件：%@";
 "container.locked.title" = "S2Arm 的部分文件被系统锁住了";
 "container.locked.body" = "这台设备上有 %@ GB 的 S2Arm 旧文件被系统锁住，S2Arm 改不了也删不掉，只能删除 App 时一起清掉。\n\n要腾出这些空间：\n1. 在每款游戏里打开菜单 →「存档管理」→「导出当前存档…」，存到「文件」里 S2Arm 文件夹以外（比如 iCloud 云盘；删除 App 时 S2Arm 文件夹会一起被删）\n2. 删除并重新安装 S2Arm\n3. 用「存档管理」→「选择备份并检查…」导回存档";
 "diag.fileWord" = "诊断";

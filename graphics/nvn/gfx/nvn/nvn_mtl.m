@@ -109,6 +109,17 @@ static void warm_claim(void);
 static void warm_bump(const char *vk, const char *fk);   // 游戏登记着色器程序时把预热清单里这对着色器的管线提到队头（warm_pick）
 
 static id<MTLDevice> g_dev;
+// 零拷贝缓冲一律从这里建（#1827）：Metal 的 currentAllocatedSize 把每个零拷贝缓冲按全长记一遍，同一段内存包几次记几次（11-20 本机：包 64 MB +64 MB、
+//   再包它的前半 +32 MB）。大池按块现包、加长时新旧块重叠、替下的旧块延后放，同一份游戏内存被成倍记进「GPU 已分配」；而这些缓冲的存储就是游戏内存 / 我们 mmap 的宿主内存，
+//   已在进程实占里。活着的零拷贝缓冲按建时的 allocatedSize 记进 g_nocopy_bytes，缓冲真正放掉时（Metal 调 deallocator）减回；浮层读数 = 设备总量 − 这一项（s2a_gpu_alloc_bytes）
+static _Atomic uint64_t g_nocopy_bytes;
+static id<MTLBuffer> nocopy_buf(void *p, NSUInteger n, void (^dealloc)(void *, NSUInteger)) {
+    __block uint64_t sz = 0;
+    id<MTLBuffer> b = [g_dev newBufferWithBytesNoCopy:p length:n options:MTLResourceStorageModeShared
+                                          deallocator:^(void *q, NSUInteger l) { atomic_fetch_sub(&g_nocopy_bytes, sz); if (dealloc) dealloc(q, l); }];
+    if (b) { sz = (uint64_t)b.allocatedSize; atomic_fetch_add(&g_nocopy_bytes, sz); }
+    return b;
+}
 // Immutable values avoid a per-draw allocation and remain alive through recorded
 // command replay. Fragment slot 27 is the shared GAL half-rounding ABI.
 enum { NVN_HALF_SLOT = 27 };
@@ -1142,12 +1153,12 @@ static void nvn_be_pool_add_body(const void *mem, uint64_t size) {
     // S2A_POOL_NOCOPY_REFUSE（单测 / 复现）：1 = 当作直接建零拷贝失败（走下面的重映射视图），2 = 视图也失败（走不登记）
     if (g_pool_refuse < 0) { const char *e = getenv("S2A_POOL_NOCOPY_REFUSE"); g_pool_refuse = e && *e ? atoi(e) : 0; }
     int refuse = g_pool_refuse;
-    id<MTLBuffer> buf = refuse ? nil : [g_dev newBufferWithBytesNoCopy:(void *)cha length:cl options:MTLResourceStorageModeShared deallocator:unview];
+    id<MTLBuffer> buf = refuse ? nil : nocopy_buf((void *)cha, cl, unview);
     // Pokémon Legends: Z-A: twice on the Mac a small pool's buffer was refused although its pages were one read-write VM region, both times while another heavy job (a shader compile,
     // a second game instance) took the machine's memory; every run on an idle machine created all of them. Wiring the pages may fail under memory pressure: retry for up to about 2 s
     for (int t = 0; !buf && !refuse && t < 12; t++) {
         usleep(10000u << (t < 4 ? t : 4));
-        buf = [g_dev newBufferWithBytesNoCopy:(void *)cha length:cl options:MTLResourceStorageModeShared deallocator:unview];
+        buf = nocopy_buf((void *)cha, cl, unview);
         if (buf) MLOG("【红】 memory pool %p+%#llx: the zero-copy buffer was refused, created at retry %d", mem, (unsigned long long)size, t + 1);
     }
     if (!buf) {   // say what the pages looked like: every VM region over the range, with its protection (an unmapped page in the range is the usual cause)
@@ -1173,8 +1184,7 @@ static void nvn_be_pool_add_body(const void *mem, uint64_t size) {
         kern_return_t kr = vm_remap(mach_task_self(), &v, (vm_size_t)cl, 0, VM_FLAGS_ANYWHERE, mach_task_self(), (vm_address_t)cha, FALSE, &cur, &max, VM_INHERIT_NONE);
         if (kr == KERN_SUCCESS && refuse < 2) {
             void (^orig)(void *, NSUInteger) = unview; uintptr_t ocha = cha; uint64_t ocl = cl;
-            buf = [g_dev newBufferWithBytesNoCopy:(void *)v length:(NSUInteger)cl options:MTLResourceStorageModeShared
-                                      deallocator:^(void *q, NSUInteger n) { vm_deallocate(mach_task_self(), (vm_address_t)q, n); if (orig) orig((void *)ocha, (NSUInteger)ocl); }];
+            buf = nocopy_buf((void *)v, (NSUInteger)cl, ^(void *q, NSUInteger n) { vm_deallocate(mach_task_self(), (vm_address_t)q, n); if (orig) orig((void *)ocha, (NSUInteger)ocl); });
         }
         if (buf) MLOG("【红】 memory pool %p+%#llx: the zero-copy buffer over %#lx..%#lx was refused; made over one remapped view of the same pages at %#lx",
                       mem, (unsigned long long)size, (unsigned long)cha, (unsigned long)(cha + cl), (unsigned long)v);
@@ -1218,7 +1228,7 @@ int nvn_be_pool_alias(uint64_t at, uint64_t len, uint64_t phys) {
 // 虚拟池里跨不同物理内存的一段的副本（hle_nvn.c vsh_*）：宿主内存 host 上的零拷贝缓冲，登记在虚拟池地址 at；缓冲放掉时（延迟释放之后）才 munmap
 static int nvn_be_pool_add_at_body(uint64_t at, uint64_t len, void *host, uint64_t hlen, const void *key) {
     mtl_init(); g_reg_gen++;
-    id<MTLBuffer> buf = [g_dev newBufferWithBytesNoCopy:host length:(NSUInteger)hlen options:MTLResourceStorageModeShared deallocator:^(void *q, NSUInteger n) { munmap(q, n); }];
+    id<MTLBuffer> buf = nocopy_buf(host, (NSUInteger)hlen, ^(void *q, NSUInteger n) { munmap(q, n); });
     if (!buf) { munmap(host, (size_t)hlen); return 0; }
     pthread_mutex_lock(&g_mu);
     if (g_npool == g_cap) { int c = g_cap ? g_cap * 2 : 64; if (!GROW(g_pools, (size_t)c * sizeof *g_pools, "memory pool table")) { pthread_mutex_unlock(&g_mu); return 0; } g_cap = c; }   // buf (unkept) goes now, and munmaps
@@ -1292,7 +1302,7 @@ static int big_new(big_pool *b, uintptr_t lo, uintptr_t hi, uintptr_t end) {   /
     //   整池缓冲在游戏建池时建、那时还没有页被保护，所以原先没撞上；块是 GPU 首次查到才建，常在本次绘制 / 派发刚上传贴图、设了只读之后（t_nvn_texu_pending --collision）。
     //   解保护走跟踪的宿主写前入口：页记为已写，覆盖到的贴图下次用时照常重传、再设只读；之后的只读只改 CPU 页表，不影响已建好的块
     dm_guest_write_prepare((void *)lo, end - lo);
-    id<MTLBuffer> buf = [g_dev newBufferWithBytesNoCopy:(void *)lo length:end - lo options:MTLResourceStorageModeShared deallocator:nil];
+    id<MTLBuffer> buf = nocopy_buf((void *)lo, end - lo, nil);
     if (!buf) { MLOG("【红】 memory pool %p: the zero-copy chunk over %#lx..%#lx was refused", b->mem, (unsigned long)lo, (unsigned long)end); return -1; }
     if (g_npool == g_cap) { int c = g_cap ? g_cap * 2 : 64; if (!GROW(g_pools, (size_t)c * sizeof *g_pools, "memory pool table")) return -1; g_cap = c; }
     g_plast = -1; atomic_fetch_add(&g_pool_gen, 1);
@@ -4589,7 +4599,7 @@ static id<MTLBuffer> up_tex_src(uint64_t addr, uint64_t len, uint64_t *off) {
     if (!in) return nil;
     // the pool's host bytes as its buffer has them (a far-alias pool: its shadow, or the one view of a split shadow, pool_host); the pool's buffer keeps a view alive past this one
     uintptr_t pg = (uintptr_t)getpagesize(), a = (uintptr_t)addr & ~(pg - 1), b = ((uintptr_t)addr + len + pg - 1) & ~(pg - 1), ha = host + (a - base);
-    id<MTLBuffer> buf = [g_dev newBufferWithBytesNoCopy:(void *)ha length:b - a options:MTLResourceStorageModeShared deallocator:nil];
+    id<MTLBuffer> buf = nocopy_buf((void *)ha, b - a, nil);
     if (!buf) return nil;
     res_add(buf); up_keep_add(buf); *off = (uint64_t)addr - a;
     g_up_src_n++; g_up_src_bytes += b - a;
@@ -10111,16 +10121,19 @@ static id<MTLFunction> se_build(NvShader *sh, const uint8_t md[8], uint64_t code
     sh->se_fold = se_lib_fold(lib);
     return f;
 }
-// The variant the package precompiled (library container kind LP_K_SE, <key>_se.metallib, entry main0; the package builds it for the keys whose pipelines a census run recorded
+// The variant the package precompiled (library container kind LP_K_SE, <key>_se.metallib, entry main0, or s<key>_main0 in a batched one; the package builds it for the keys whose pipelines a census run recorded
 //   with the SE_RD bit: pso_user.tsv C lines' fc, R lines' pso_key.fc): loaded at once, so its first draw already runs it. nil: not in the package (made on the device, se_build)
 static id<MTLFunction> se_packed(NvShader *sh) {
     char nm[32]; snprintf(nm, sizeof nm, "%.16s_se", sh->key);
     if (!lp_pack_get()) return nil;
     NSError *e = nil; id<MTLLibrary> lib = lib_from_pack(nm, &e); if (!lib) return nil;
-    id<MTLFunction> f = lib_entry(lib, @"main0");
+    // a batched variant library (11-20: the package compiles the variants in batches, S2A.Dsh Build.SeFinish): its functions are s<key>_main0 / s<key>_main0_fold (the folded-texture marker s2a_se_fold, renamed so a batch has one per key)
+    NSString *pre = [NSString stringWithFormat:@"s%.16s_", sh->key];
+    BOOL batched = [lib.functionNames containsObject:[pre stringByAppendingString:@"main0"]];
+    id<MTLFunction> f = lib_entry(lib, batched ? [pre stringByAppendingString:@"main0"] : @"main0");
     NSUInteger al = f && sh->rf.nb ? [f newArgumentEncoderWithBufferIndex:sh->rf.abi].encodedLength : sh->arg_len;
     if (!f || al != sh->arg_len) { MLOG("【红】 packaged sampler-emulation variant %s %s: made on the device instead", nm, f ? "takes another argument buffer than the library's main0" : "has no main0"); return nil; }
-    sh->se_fold = se_lib_fold(lib);
+    sh->se_fold = batched ? [lib.functionNames containsObject:[pre stringByAppendingString:@"main0_fold"]] : se_lib_fold(lib);
     return f;
 }
 // The variant is there (f) or not (why): published to the draws (se_st), counted, one line (t0: when its first use asked for it; how: 包内 / 后台编 / 同步现编)
@@ -10216,9 +10229,13 @@ static void vp_pack(NvShader *vs) {
     if (tried || st == SE_READY || st == SE_BUSY || !lp_pack_get()) return;
     char nm[32]; snprintf(nm, sizeof nm, "%.16s_vp", vs->key);
     NSError *e = nil; id<MTLLibrary> lib = lib_from_pack(nm, &e); if (!lib) return;
+    // a batched variant library (11-20, Build.cs VarBatches): the shader's functions are s<key>_<entry> and its mask s<key>_main0_vpmask_<hex>
+    NSString *pre = [NSString stringWithFormat:@"s%.16s_", vs->key], *ent = vs->ventry;
+    BOOL batched = [lib.functionNames containsObject:[pre stringByAppendingString:ent]];
+    NSString *mp = batched ? [pre stringByAppendingString:@"main0_vpmask_"] : @"dm_vp_mask_";
     uint32_t mask = 0;
-    for (NSString *n in lib.functionNames) if ([n hasPrefix:@"dm_vp_mask_"]) mask = (uint32_t)strtoul(n.UTF8String + 11, NULL, 16);
-    id<MTLFunction> f = lib_entry(lib, vs->ventry);
+    for (NSString *n in lib.functionNames) if ([n hasPrefix:mp]) mask = (uint32_t)strtoul(n.UTF8String + mp.length, NULL, 16);
+    id<MTLFunction> f = lib_entry(lib, batched ? [pre stringByAppendingString:ent] : ent);
     NSUInteger al = f && vs->rf.nb ? [f newArgumentEncoderWithBufferIndex:vs->rf.abi].encodedLength : vs->arg_len;
     if (!f || !mask || al != vs->arg_len) { MLOG("【红】 packaged padded vertex variant %s %s: made on the device per pair instead", nm, !f ? "has no such entry" : !mask ? "carries no mask" : "takes another argument buffer than the library's entry"); return; }
     pthread_mutex_lock(&g_vp_mu); int took = vs->vp_st != SE_READY; if (took) { vs->vp_main = f; vs->vp_mask = mask; vs->vp_st = SE_READY; } pthread_mutex_unlock(&g_vp_mu);
@@ -11523,7 +11540,11 @@ enum { POOL_FRAME_BYTES = 32u << 20, POOL_REQ_BYTES = 128u << 20 };
 static uint64_t g_walk_frame = ~0ull, g_walk_spent, g_walk_req;
 static uint64_t pool_tex_size(const tex_t *t) { return t->L.size ? t->L.size : 1; }
 static uint64_t pool_budget(void) { return g_dev.recommendedMaxWorkingSetSize / 20; }
-uint64_t s2a_gpu_alloc_bytes(void) { return g_dev ? (uint64_t)g_dev.currentAllocatedSize : 0; }   // 浮层「GPU 已分配」（runtime/src/hud.c 弱定义）
+uint64_t s2a_gpu_alloc_bytes(void) {   // 浮层「GPU 已分配」（runtime/src/hud.c 弱定义）：设备总量减去零拷贝缓冲（游戏内存，已在进程实占里；nocopy_buf）
+    if (!g_dev) return 0;
+    uint64_t a = (uint64_t)g_dev.currentAllocatedSize, z = atomic_load(&g_nocopy_bytes);
+    return a > z ? a - z : 0;
+}
 static void pool_walk_frame(void) { uint64_t f = atomic_load(&g_cur_frame); if (f != g_walk_frame) { g_walk_frame = f; g_walk_spent = 0; g_walk_req = 0; } }
 static uint64_t pool_room(void) {   // what may still be made up front this frame
     pool_walk_frame();
@@ -19672,6 +19693,7 @@ void nvn_be_present_prepare(const tex_t *t) {
 }
 uint64_t nvn_be_present(const tex_t *t, double period, const int crop[4]) { int c[4] = {0}; if (crop) memcpy(c, crop, sizeof c); wd_present(t, c); return present_enqueue(t, period, crop || c[2] || c[3] ? c : NULL, 0); }   // S2Arm widen: present notice (a fallback crop the core set counts even when the game gave none)
 void *mtl_device(void) { mtl_init(); return (__bridge void *)g_dev; }
+void *mtl_nocopy_buf(void *p, uint64_t n) { mtl_init(); id<MTLBuffer> b = nocopy_buf(p, (NSUInteger)n, nil); return b ? (__bridge_retained void *)b : NULL; }   // Vulkan 前端（hle_vk.m / vk_snap.inc）的零拷贝缓冲走同一记账
 // An external producer's texture (the Vulkan layer's swapchain images): a serial the present path resolves (serial_put), resident for the Metal 4 queue, never collected by the cross-submit ledger
 uint64_t mtl_ext_tex(void *tex) {
     static _Atomic uint64_t n; id<MTLTexture> t = (__bridge id<MTLTexture>)tex; uint64_t ser = (1ull << 62) + atomic_fetch_add(&n, 1) + 1;

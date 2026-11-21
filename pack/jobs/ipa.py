@@ -706,13 +706,14 @@ def incompatible_message(text, gid, names):
     return "这款和手机上已有的游戏地址空间类型不同，放不进同一个 App。"
 
 
-def assemble(c, gid, others=(), *, failed=(), root=None, dest=None, agreed=None):
+def assemble(c, gid, others=(), *, failed=(), root=None, dest=None, agreed=None, standalone=False):
     """现组容器（一个 App 装多款）：本版 iPhone 壳 + 这款和 others（这台手机上已有的各款）的容器件（pack/ship_ext.py container），出 S2Arm.app + S2Arm.ipa 到 dest
     （缺省游戏库同盘临时目录，由调用方装上后再放到默认位置根）。不再在上一次的底包上加款：底包和各款镜像会不一致，且换壳时要整包重出。
     gid 为 None：只组 others（从手机删一款）。哪款放不进本壳（不是本壳出的、新宿主也不认得）就报 container_stale 点名，不装半套；
     游戏库里已删的款不再带（手机上的存档还在）。root / dest：出包重叠早装用（旁路刚完成的产物根，出到临时目录）。
     agreed：设备记录 staleAgreed（#479，{壳号: [游戏号]}）——这台手机在本版壳上同意过「这次不带」的；带不进的都在里面就不再问，照不带它们装。换了壳号重新问
-    → (ipa, 全部款, 壳号)。Windows 不签（--sign none，交给 plumesign）；Mac 自签，装机时再按玩家团队重签"""
+    → (ipa, 全部款, 壳号)。Windows 不签（--sign none，交给 plumesign）；Mac 自签，装机时再按玩家团队重签。
+    standalone：独立 App（install.put_app，只这一款）——主屏名取游戏自带标题、图标取这款的（ship_ext container --standalone）"""
     import host_update
     shell, sid = built_shell(c)
     roots = {}
@@ -773,7 +774,7 @@ def assemble(c, gid, others=(), *, failed=(), root=None, dest=None, agreed=None)
         c.run([os.sys.executable, "-X", "utf8", "-B", c.engine / "pack/ship_ext.py", "container", "--shell", shell, "--out", app, "--bundle-id", CONTAINER_BUNDLE,
                "--icon", icon, "--sign", "none", "--custom", out / "custom.json", "--host-abi", str(host_update.HOST_ABI),
                "--version", release_version(c.engine), "--display-version", display_version(c.engine),
-               *[x for r in roots.values() for x in ("--game", r)], *banner_args], log, c.env())
+               *[x for r in roots.values() for x in ("--game", r)], *banner_args, *(["--standalone"] if standalone else [])], log, c.env())
     except Failure as e:
         text = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""
         if e.code == "tool_exit" and "地址空间类型不一致" in text:  # 非玩家句

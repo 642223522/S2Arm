@@ -333,6 +333,14 @@
 "img.noShaders.body" = "«%@» está incompleto. Pon también aquí el .s2arm de este juego de la carpeta «S2Arm Game Packs» de tu ordenador (lleva los sombreadores del juego), o conecta tu teléfono y haz clic en «Push to iPhone» en S2Arm en tu ordenador.";
 "img.updateSkipped.title" = "Actualización de shaders omitida";
 "img.updateSkipped.body" = "«%@» no corresponde a la versión actual de este juego, así que se omitió y no se aplicó. El juego funciona con normalidad. Para usar esta actualización, añade junto con ella el .img completo de la misma exportación de tu ordenador.";
+"gameExport.preparing" = "Creando los archivos de exportación…";
+"gameExport.hint" = "Crea un archivo .s2arm y un .img y los guarda en la app Archivos. Tras reinstalar S2Arm con otra firma, ponlos en «Import Here» para recuperar el juego.";
+"gameExport.failed.title" = "No se pudo exportar este juego";
+"gameExport.noProgram" = "Este juego se instaló de la forma antigua (su programa está dentro de la app), así que no se puede exportar en el iPhone. Expórtalo desde S2Arm en tu ordenador.";
+"gameExport.inBundle" = "Este juego está dentro del paquete de la app, así que no se puede exportar en el iPhone.";
+"gameExport.partial" = "A este juego le faltan archivos (solo se puede jugar en parte). Complétalo y vuelve a exportarlo.";
+"gameExport.noImg" = "Los archivos de este juego usan el formato antiguo (sin game.img), así que no se puede exportar en el iPhone. Expórtalo desde S2Arm en tu ordenador.";
+"gameExport.ioFailed" = "No se pudieron escribir los archivos de exportación: %@";
 "container.locked.title" = "El sistema bloqueó algunos archivos de S2Arm";
 "container.locked.body" = "En este dispositivo hay %@ GB de archivos antiguos de S2Arm bloqueados por el sistema. S2Arm no puede cambiarlos ni borrarlos; solo se eliminan al borrar la app.\n\nPara liberar ese espacio:\n1. En cada juego abre el menú → Gestionar partidas guardadas → Exportar partida guardada actual…, a un lugar de Archivos fuera de la carpeta de S2Arm (por ejemplo iCloud Drive; la carpeta de S2Arm se borra junto con la app)\n2. Borra y vuelve a instalar S2Arm\n3. Usa Gestionar partidas guardadas → Elige una copia de seguridad para comprobar… para recuperar tus partidas";
 "diag.fileWord" = "diag";

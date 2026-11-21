@@ -2,10 +2,12 @@
 
 维护者定的规则（11-09）：
   ① 导入时解析并上屏：团队名、证书 / 描述文件到期、连着的手机在不在设备列表（企业「所有设备」描述文件没有列表，照实说）、包名、权限够不够；
-     问题只提示、不挡出包和装机。只有根本签不了才停：私钥解不开（密码不对 / 文件坏），证书和描述文件不配套，
-     分发描述文件（没有 get-task-allow：0.6 起游戏程序在 App 外加载，iOS 只对开发签名放行）。
+     问题只提示、不挡出包和装机。只有根本签不了才停：私钥解不开（密码不对 / 文件坏），证书和描述文件不配套。
+     分发描述文件（没有 get-task-allow）照常导入、state 记 distribution（0.6.3 维护者定）：通用壳的游戏程序在 App 外映射，iOS 只对带它的 App 放行；
+     「独立 App」出法（一 App 一游戏）程序在 App 包里、随安装验签，照样能玩——默认出法据此改成独立 App（install.chosen_layout）。
      缺哪几项权限逐条列「中文名（技术名）——后果」，并给一段可一键复制、直接发给证书发放人的话（requestText）。
   ② 包名取描述文件的；通配（TEAM.*）→ io.s2arm.games.<小写团队号>（同 Apple ID 模式的算法）；权限 = 描述文件允许的 ∩ S2Arm 要的。
+     独立 App 按款另起包名（bundle_id(profile, gid)）：通配 → io.s2arm.games.<团队>.<程序号 16 位小写>，前缀通配 com.x.* → com.x.s2arm.<程序号>，显式 → 只有它那一个
   ③ 两端都用 rcodesign（apple-codesign，MPL-2.0，官方发布件、SHA-256 钉在下面）直接读 p12 签名：不进钥匙串、不要 Xcode。
      rcodesign 读不了新式（PBES2 / AES）加密的 p12，导入时规整成老式（3DES）再存：Mac 用系统自带 openssl（LibreSSL），Windows 用 .NET；
      私钥只经管道、不落明文，规整后的 p12 仍用原密码加密。
@@ -32,17 +34,17 @@ from core import Failure, atomic, read
 
 # S2Arm 要的权限：提高内存上限（大游戏必需，Apple ID 模式也带）+ 扩展寻址（付费账号才有，大地址窗口）；描述文件没开就不带、提示大游戏可能闪退
 WANT = ("com.apple.developer.kernel.increased-memory-limit", "com.apple.developer.kernel.extended-virtual-addressing")
-# S2Arm 要的全部权限（逐项体检用）：get-task-allow 必须为 True——0.6 起游戏程序在 App 外映射执行，iOS 只对带它的 App 放行；
-#   分发（App Store / Ad Hoc / 企业）描述文件不给它，缺了任何游戏都打不开（image_exec_denied），物理上做不到 → blocking；只缺后两项照常导入、提示
+# S2Arm 要的全部权限（逐项体检用）：get-task-allow——通用壳的游戏程序在 App 外映射执行，iOS 只对带它的 App 放行（image_exec_cert）；
+#   分发（App Store / Ad Hoc / 企业）描述文件不给它：通用壳里游戏打不开，「独立 App」照常（程序在 App 包里）→ 照常导入、warning 说清；只缺后两项同样只提示
 REQUIRED = ("get-task-allow",) + WANT
 # 缺项每条一句「中文名（技术名）——后果」：整句进翻译表，界面按行翻
 MISSING_LINES = {
-    "get-task-allow": "调试权限（get-task-allow）——没有它任何游戏都打不开",
+    "get-task-allow": "调试权限（get-task-allow）——没有它，通用 S2Arm 里的游戏打不开（「独立 App」不受影响）",
     WANT[0]: "提高内存上限（com.apple.developer.kernel.increased-memory-limit）——没有它大游戏可能内存不够、起不来",
     WANT[1]: "扩展寻址（com.apple.developer.kernel.extended-virtual-addressing）——没有它大游戏可能地址不够、起不来",
 }
-DISTRIBUTION_HEAD = "这是分发（发布）证书的描述文件，缺下面的权限，S2Arm 0.6 起用它签出来的 App 每款游戏都打不开："
-DISTRIBUTION_TAIL = "可以改用 Apple ID 登录签名，或复制下面这段话发给证书发放人，换成开发证书和开发描述文件后再导入。"
+DISTRIBUTION_HEAD = "这是分发（发布）证书的描述文件，缺下面的权限：可以照常用它装「独立 App」（一个 App 一款游戏），通用 S2Arm 里的游戏用它签了打不开。"
+DISTRIBUTION_TAIL = "要用通用 S2Arm：改用 Apple ID 登录签名，或复制下面这段话发给证书发放人，换成开发证书和开发描述文件后再导入。"
 ENTITLEMENTS_HEAD = "描述文件缺下面的权限，小游戏照常，大游戏可能起不来："
 ENTITLEMENTS_TAIL = "可以复制下面这段话发给证书发放人，补开后重新下载描述文件再导入。"
 NO_UDID_HINT = "没连着 iPhone：复制后把「<你的设备 UDID>」换成你手机的 UDID。"
@@ -114,6 +116,14 @@ def rcodesign_path(c):
     raise Failure("找不到签名工具 rcodesign：请重新安装完整的 S2Arm。", code="tool_missing")
 
 
+def rcodesign_ents(ents):
+    """rcodesign 的 -e / --entitlements-xml-path 是「作用范围:路径」格式、按第一个冒号拆：Windows 绝对路径带盘符（C:\\…）
+    会把权限挂到不存在的路径「C」上（os error 3），目录名带冒号也拆错。所有给 rcodesign 传权限文件的地方都经这里：
+    返回 (参数, 运行目录)——在权限文件所在目录里跑、只传不含冒号的文件名"""
+    p = Path(ents)   # 文件名都是我们自己起的（ents.plist / downstream.entitlements / 出包时写的权限文件），不含冒号
+    return ["-e", p.name], p.parent
+
+
 # ---------- 解析 ----------
 
 def parse_profile(data):
@@ -172,17 +182,19 @@ def iso_date(s):
     return d if d.tzinfo else d.replace(tzinfo=datetime.timezone.utc)
 
 
-def bundle_id(profile):
-    """包名：描述文件的 application-identifier 去掉前缀；通配 * → io.s2arm.games.<小写团队号>（同 Apple ID 模式）；前缀通配 com.x.* → com.x.s2arm"""
-    from install import container_bundle_id
+def bundle_id(profile, gid=None):
+    """包名 → (包名, 能不能自己定)：描述文件的 application-identifier 去掉前缀；通配 * → io.s2arm.games.<小写团队号>（同 Apple ID 模式）；前缀通配 com.x.* → com.x.s2arm。
+    gid（独立 App，一 App 一游戏）：通配 → io.s2arm.games.<小写团队号>.<程序号 16 位小写>（install.app_bundle_id，不用前 8 位：前 8 位会撞）；
+    前缀通配 → com.x.s2arm.<程序号小写>；显式描述文件只有它那一个包名（第二个 False：通用壳与各款独立 App 都只能用它，装一个顶掉另一个）"""
+    from install import app_bundle_id, container_bundle_id
     prefix = (profile.get("ApplicationIdentifierPrefix") or [""])[0]
     team = (profile.get("TeamIdentifier") or [prefix])[0]
     appid = profile["Entitlements"].get("application-identifier", "")
     rest = appid[len(prefix) + 1:] if prefix and appid.startswith(prefix + ".") else appid.partition(".")[2]
     if rest == "*":
-        return container_bundle_id(team), True
+        return (app_bundle_id(team, gid) if gid else container_bundle_id(team)), True
     if rest.endswith(".*"):
-        return rest[:-1] + "s2arm", True
+        return rest[:-1] + "s2arm" + (f".{gid.lower()}" if gid else ""), True
     return rest, False
 
 
@@ -214,12 +226,13 @@ def inspect(rcs, p12, password, profile_bytes, udid=None, now=None):
     ents = entitlements(prof, bid)
     allow = prof["Entitlements"]
     missing = [k for k in REQUIRED if allow.get(k) is not True]
+    distribution = "get-task-allow" in missing
     request = None
     if missing:
         hint = [] if udid else [NO_UDID_HINT]
         lines = [MISSING_LINES[k] for k in missing]
-        if "get-task-allow" in missing:   # 根本签不了：导入就拒（旧证书原样留着）
-            blocking.append(dict(id="devcert_distribution", text="\n".join([DISTRIBUTION_HEAD, *lines, DISTRIBUTION_TAIL, *hint])))
+        if distribution:   # 分发描述文件：照常导入（独立 App 能用），说清通用壳里游戏打不开、给发放人的话照旧
+            warnings.append(dict(id="devcert_distribution", text="\n".join([DISTRIBUTION_HEAD, *lines, DISTRIBUTION_TAIL, *hint])))
         else:
             warnings.append(dict(id="devcert_entitlements", text="\n".join([ENTITLEMENTS_HEAD, *lines, ENTITLEMENTS_TAIL, *hint])))
         request = REQUEST_TEXT.format(udid) if udid else REQUEST_TEXT_NO_UDID
@@ -248,7 +261,7 @@ def inspect(rcs, p12, password, profile_bytes, udid=None, now=None):
                 certName=cert.get("Subject CN", ""), certSha1=sha1, certExpires=cert_end.strftime("%Y-%m-%d") if cert_end else "",
                 profileName=prof.get("Name") or "", profileExpires=prof_end.strftime("%Y-%m-%d") if isinstance(prof_end, datetime.datetime) else "",
                 bundleId=bid, wildcard=wildcard, allDevices=all_devices, deviceCount=len(prof.get("ProvisionedDevices") or []),
-                deviceListed=listed, entitlements=sorted(k for k in ents if k in WANT), missingEntitlements=missing,
+                deviceListed=listed, entitlements=sorted(k for k in ents if k in WANT), missingEntitlements=missing, distribution=distribution,
                 **({"requestText": request} if request else {}))
 
 
@@ -515,7 +528,7 @@ def operation(c):
         (d / "profile.mobileprovision").write_bytes(prof)
         os.chmod(d / "profile.mobileprovision", 0o600)
         atomic(d / "state.json", dict(active=True, certSha1=got["certSha1"], bundleId=got["bundleId"], teamId=got["teamId"], teamName=got["teamName"],
-                                      imported=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")))
+                                      distribution=got["distribution"], imported=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")))
         return dict(got, active=True)
     if action == "use":
         s = state(c)
@@ -538,9 +551,10 @@ def operation(c):
 
 # ---------- 签名 ----------
 
-def export_ipa(c, payload):
-    """签好的 App 另存一份 IPA 到游戏库根 S2Arm.signed.ipa（玩家要自己留存 / 换别的工具装时用；装机照常走数据线直装）。不压缩：几十 MB，存一份一两秒"""
-    out = c.library / "S2Arm.signed.ipa"
+def export_ipa(c, payload, bid=None):
+    """签好的 App 另存一份 IPA 到游戏库根 S2Arm.signed.ipa（玩家要自己留存 / 换别的工具装时用；装机照常走数据线直装）。不压缩：几十 MB，存一份一两秒。
+    bid（独立 App）：按包名另起文件 S2Arm.<包名>.signed.ipa，不盖通用壳那份"""
+    out = c.library / (f"S2Arm.{bid}.signed.ipa" if bid else "S2Arm.signed.ipa")
     tmp = out.with_name(out.name + ".tmp")
     with zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED) as z:
         for p in sorted(Path(payload).rglob("*")):
@@ -550,23 +564,24 @@ def export_ipa(c, payload):
     return out
 
 
-def sign_app(c, app, log):
-    """把解开的 Payload/*.app 用开发者证书签好（原地）：包名改成描述文件的 → 嵌入 embedded.mobileprovision → rcodesign 递归签
-    （内嵌 framework / dylib 先签、App 主程序带权限）。返回 (包名, 体检结果)；根本签不了的问题在这里停"""
+def sign_app(c, app, log, bid=None):
+    """把解开的 Payload/*.app 用开发者证书签好（原地）：包名改成描述文件的（bid：独立 App 按款的包名，调用方按 bundle_id(profile, gid) 算）
+    → 嵌入 embedded.mobileprovision → rcodesign 递归签（内嵌 framework / dylib 先签、App 主程序带权限）。返回 (包名, 体检结果)；根本签不了的问题在这里停"""
     p12, prof, pw = stored(c)
     rcs = rcodesign_path(c)
     got = inspect(rcs, p12, pw, prof)
     if got["blocking"]:
         raise blocked(got)
+    bid = bid or got["bundleId"]
     app = Path(app)
     info = app / "Info.plist"
     pl = plistlib.loads(info.read_bytes())
-    pl["CFBundleIdentifier"] = got["bundleId"]
+    pl["CFBundleIdentifier"] = bid
     info.write_bytes(plistlib.dumps(pl))
     (app / "embedded.mobileprovision").write_bytes(prof)
     for old in app.rglob("_CodeSignature"):   # 壳是未签名模板，这里只防重签时残留
         shutil.rmtree(old, ignore_errors=True)
-    ents = entitlements(parse_profile(prof), got["bundleId"])
+    ents = entitlements(parse_profile(prof), bid)
     with pwfile(folder(c), pw) as pf:
         ef = pf.with_name("ents.plist")
         ef.write_bytes(plistlib.dumps(ents))
@@ -575,5 +590,6 @@ def sign_app(c, app, log):
         #   或目录名带冒号都会拆错，所以在权限文件所在目录里跑、只传不含冒号的文件名
         # --timestamp-url none（#794）：rcodesign 缺省向苹果时间戳服务器（timestamp.apple.com/ts01）要安全时间戳，连不上就整次签名失败、装不了也更新不了。
         #   开发签名装自己的设备不需要安全时间戳（苹果自己的 codesign 对开发签名也不打，pack/dev_sign.py 同样 --timestamp=none）
-        c.run([rcs, "sign", "--p12-file", p12, "--p12-password-file", pf, "--team-name", got["teamId"], "--timestamp-url", "none", "-e", ef.name, app], log, cwd=ef.parent)
-    return got["bundleId"], got
+        eargs, ecwd = rcodesign_ents(ef)
+        c.run([rcs, "sign", "--p12-file", p12, "--p12-password-file", pf, "--team-name", got["teamId"], "--timestamp-url", "none", *eargs, app], log, cwd=ecwd)
+    return bid, got

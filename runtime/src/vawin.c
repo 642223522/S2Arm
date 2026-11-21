@@ -1,7 +1,7 @@
 // 64 GB 地址窗口（方案 5a-1）：包括 iOS 预热在内，都在最早构造阶段占窗，客体地址空间全部区域在里面排。
 // 只占地址、不占内存（footprint 不计）。必须早于 NativeAOT 运行时与 Metal 初始化，否则它们的大块预留可能先落进来。
 // S2A_VAWIN_NORESERVE=1（诊断，5b-1 量法）：不占窗口，只在各时刻探测别人有没有映射进来。
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) || defined(__OHOS__)
 #include "../../android/native/runtime/platform/vawin_android.inc"
 #else
 #include "native.h"

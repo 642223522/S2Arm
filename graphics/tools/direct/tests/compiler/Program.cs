@@ -1,6 +1,8 @@
 // C2 主机验收：合成 VS/FS/CS 走真实 Ryujinx 翻译器；离线编译器与 NativeAOT 用的是同一
 // DirectShaderCompiler。合成 shader 只用于测试，不是运行时占位 shader。
+using Ryujinx.Graphics.Gpu.Shader;
 using Ryujinx.Graphics.Shader;
+using Ryujinx.Graphics.Shader.Translation;
 using S2A.Android.Aot;
 using S2A.DirectCompiler;
 using System;
@@ -650,7 +652,7 @@ internal static unsafe class Program
         byte[] vs = null, byte[] fs = null, byte[] cs = null, string fragmentType = "Float",
         string textureFacts = null, bool transformFeedback = false, uint localSize = 1,
         byte[] overrideCode = null, int controlX = -1, uint fsCbUse = 0, string closure = null,
-        string textureBufferLengths = null, uint csCbUse = 0, uint sharedBytes = 0)
+        string textureBufferLengths = null, uint csCbUse = 0, uint sharedBytes = 0, string[] attributeTypes = null)
     {
         using var stream = new MemoryStream();
         using (var w = new Utf8JsonWriter(stream))
@@ -702,7 +704,7 @@ internal static unsafe class Program
                 w.WriteString("alphaTestCompare", "Always");
                 w.WriteNumber("alphaTestReference", 0);
                 w.WriteStartArray("attributeTypes");
-                for (int i = 0; i < 32; i++) w.WriteStringValue(AttributeTypes[0]);
+                for (int i = 0; i < 32; i++) w.WriteStringValue(attributeTypes != null && i < attributeTypes.Length ? attributeTypes[i] : AttributeTypes[0]);
                 w.WriteEndArray();
                 w.WriteBoolean("hasConstantBufferDrawParameters", false);
                 w.WriteStartArray("fragmentOutputTypes");
@@ -2097,6 +2099,81 @@ internal static unsafe class Program
             Check(fsInfo.GetProperty("textures")[0].GetProperty("handleIndex").GetInt32() == 2 &&
                   fsInfo.GetProperty("textures")[1].GetProperty("handleIndex").GetInt32() == 3,
                 "reflected texture handles 2/3");
+        }
+
+        // 7b1c) 识别事实对翻译标志无关（laze #1774，owner B 合 main 后按真实接口重写）：
+        //   B 的现编按阶段口径 = DirectShaderCompiler.GraphicsFlags(stage)：vs/fs 关 DebugMode、gs 保留，
+        //   与出库链 dmsh（debug = gs/cs）同口径——没有外部开关，两组用例改为同一程序
+        //   按 B 的阶段口径与全程 DebugMode（旧现编口径）各译一遍，识别字段逐字段相同：
+        //   shader.Info / accessor.StateReadFlags / accessor.AttributeReadMask 是回放侧识别
+        //   raster 事实与输入用量的来源，开关只许变 SPIR-V 形态，不许变识别结果。
+        static Type RyuType(string name)
+        {
+            Type t = typeof(DirectShaderCompiler).Assembly.GetType(name)
+                ?? typeof(DirectShaderCompiler).Assembly.GetReferencedAssemblies()
+                    .Select(System.Reflection.Assembly.Load).Select(a => a.GetType(name))
+                    .FirstOrDefault(t2 => t2 != null);
+            Check(t != null, "Ryujinx type " + name + " resolvable");
+            return t;
+        }
+        static Type ShaderCacheType() => RyuType("Ryujinx.Graphics.Gpu.Shader.ShaderCache");
+        static Type TranslationFlagsType() => RyuType("Ryujinx.Graphics.Shader.Translation.TranslationFlags");
+        static Type TargetApiType() => RyuType("Ryujinx.Graphics.Shader.Translation.TargetApi");
+        static object DefaultFlags()
+        {
+            var m = ShaderCacheType().GetMember("DefaultFlags", System.Reflection.BindingFlags.Static |
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)[0];
+            return m is System.Reflection.PropertyInfo pi ? pi.GetValue(null) : ((System.Reflection.FieldInfo)m).GetValue(null);
+        }
+        static object BFlags(string stage)
+        {
+            var m = typeof(DirectShaderCompiler).GetMethod("GraphicsFlags",
+                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+            Check(m != null, "DirectShaderCompiler.GraphicsFlags per-stage flag interface exists");
+            return m.Invoke(null, new object[] { stage });
+        }
+        static string DecodeFacts(byte[] profJson, byte[] request, string stageName, object flags)
+        {
+            using JsonDocument profDoc = JsonDocument.Parse(profJson);
+            DirectProfile prof = DirectProfile.Parse(profDoc.RootElement, "profile");
+            using JsonDocument reqDoc = JsonDocument.Parse(request);
+            DirectProgram prog = DirectProgram.Parse(reqDoc.RootElement.GetProperty("program"), "program", prof);
+            var queries = new List<DirectQuery>();
+            var accessor = new DirectGpuAccessor(prof, prog, prog.StageOf(stageName),
+                stageName == "vs" ? 0 : 1, new DirectAllocator(prof), queries);
+            var decode = ShaderCacheType().GetMethod("DecodeGraphicsShader",
+                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public |
+                System.Reflection.BindingFlags.NonPublic);
+            object ctx = decode.Invoke(null,
+                new object[] { accessor, Enum.Parse(TargetApiType(), "Vulkan"), flags, 0UL });
+            var translate = ctx.GetType().GetMethods(
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public |
+                System.Reflection.BindingFlags.NonPublic)
+                .First(m => m.Name == "Translate" && m.GetParameters().Length == 1);
+            object shader = translate.Invoke(ctx, new object[] { false });
+            object info = shader.GetType().GetMember("Info") is { Length: > 0 } mem
+                ? (mem[0] is System.Reflection.PropertyInfo pi ? pi.GetValue(shader) : ((System.Reflection.FieldInfo)mem[0]).GetValue(shader))
+                : null;
+            return JsonSerializer.Serialize(info, info.GetType()) + "|" + accessor.StateReadFlags + "|" + accessor.AttributeReadMask;
+        }
+        {
+            byte[] req = RequestJson(profile, "graphics", 1, 1, "dbg-facts", vs, FsTwoTextures(), textureFacts: TwoTextureFacts);
+            object noDebug = Enum.ToObject(TranslationFlagsType(),
+                Convert.ToInt32(DefaultFlags()) & ~Convert.ToInt32(Enum.Parse(TranslationFlagsType(), "DebugMode")));
+            Check(BFlags("vs").Equals(noDebug) && BFlags("fs").Equals(noDebug) && BFlags("gs").Equals(DefaultFlags()),
+                "GraphicsFlags stage regime: vs/fs drop DebugMode, gs keeps it");
+            foreach (var st in new[] { "vs", "fs" })
+                Check(DecodeFacts(profile, req, st, BFlags(st)) == DecodeFacts(profile, req, st, DefaultFlags()),
+                    "stage-wise flags keep " + st + " raster + stage facts identical");
+        }
+        {
+            // 整数输入：属性全声明 Uint/Sint、片元输出 Uint——识别字段两种口径仍须逐字段相同。
+            string[] intAttrs = Enumerable.Repeat("Uint", 16).Concat(Enumerable.Repeat("Sint", 16)).ToArray();
+            byte[] req = RequestJson(profile, "graphics", 1, 1, "dbg-int", vs, FsTwoTextures(),
+                fragmentType: "Uint", textureFacts: TwoTextureFacts, attributeTypes: intAttrs);
+            foreach (var st in new[] { "vs", "fs" })
+                Check(DecodeFacts(profile, req, st, BFlags(st)) == DecodeFacts(profile, req, st, DefaultFlags()),
+                    "stage-wise flags keep " + st + " integer-input identification identical");
         }
 
         // 7b2) 纹理事实矩阵（W2.2）：每个字段在 accessor 查询处逐项对上；同一 handle 不同

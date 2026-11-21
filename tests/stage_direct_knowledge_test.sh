@@ -25,7 +25,7 @@ cp "$H/pack/roots.sh" "$H/pack/stage_direct.sh" "$H/pack/stage_direct_seed.sh" "
 mkdir -p $T/repo/pack/orch && cp "$H/pack/orch/current.py" $T/repo/pack/orch/   # roots.sh 写现行指针 / 迁移老库（pack/orch/current.py）
 cp "$H/tools/toolchain.sh" "$H/tools/toolchain.env" "$H/tools/machine.sh" "$H/tools/clonedir.py" "$H/tools/plock.sh" "$H/tools/flock_hold.py" "$H/tools/stage_deps.py" $T/repo/tools/; cp -R "$H/tools/stage_deps_hook" $T/repo/tools/
 cp "$H/graphics/nvn/tools/romfs_list.py" "$H/graphics/nvn/tools/gfx_api.py" $T/repo/graphics/nvn/tools/; cp "$H/graphics/tools/shbake/pak_crypto.py" $T/repo/graphics/tools/shbake/
-mkdir -p "$T/repo/tools"; cp "$H/tools/pool_workers.py" "$T/repo/tools/"   # romfs_list / pak_crypto 经它取核数（#1332：核数唯一来源）
+mkdir -p "$T/repo/tools"; cp "$H/tools/pool_workers.py" "$H/tools/progress.py" "$T/repo/tools/"   # romfs_list / pak_crypto 经它取核数（#1332：核数唯一来源）
 for f in run_knowledge.py fout_want.py se_want.py run_pairs.py pso_layout.py pso_layout.json pso_seed.py; do cp "$H/graphics/tools/direct/$f" $T/repo/graphics/tools/direct/; done
 echo m > $T/repo/graphics/metal/gal_prog.m; printf 'def version(): return "v1"\n' > $T/repo/translator/dmsh_chain.py
 printf '入\t%s\n' pack/stage_direct.sh pack/ue_pak.py graphics/metal/gal_prog.m graphics/tools/direct/run_knowledge.py > $T/repo/pack/stage_inputs/direct.tsv

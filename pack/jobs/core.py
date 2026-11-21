@@ -599,6 +599,16 @@ def describe_holder(info):
 
 
 class Context:
+    _default_developer = ()   # 未查
+
+    @property
+    def default_developer(self):
+        """没传 Xcode 时的缺省（default_developer_dir）：第一次要用时才找、本任务全程共用。原先建任务时就找，
+        不用 Xcode 的任务（导入、推到 iPhone、环境检查等）也去翻目录，找不到内置的还会翻外接卷、弹系统隐私窗"""
+        if self._default_developer == ():
+            self._default_developer = None if self.r.get("developerDir") else default_developer_dir()
+        return self._default_developer
+
     def __init__(self, request):
         # 空间预检没过、玩家点「仍然继续」重交的出包任务（library.check_pack_space）：只认布尔值、只给 Mac 打包 / 打 iPhone 包
         if "spaceOverride" in request and (not isinstance(request["spaceOverride"], bool) or request.get("operation") not in ("build", "ipa")):
@@ -607,7 +617,6 @@ class Context:
         if "followUp" in request and (not isinstance(request["followUp"], bool) or request.get("operation") != "ipa"):
             raise Failure("followUp 仅支持打 iPhone 包（ipa）任务的布尔值。")
         self.r = request
-        self.default_developer = None if request.get("developerDir") else default_developer_dir()   # 没传 Xcode 时的缺省：建任务时取一次装着的最新 Xcode，全程共用
         self.task = request.get("jobId") or request.get("taskId") or str(uuid.uuid4())
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", self.task):
             raise Failure("无效的任务标识。")

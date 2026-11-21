@@ -250,6 +250,7 @@ struct feedback_copy {
     struct feedback_copy *next;
     struct nvn_gpu_view_s *source;
     VkImageView view;
+    struct nvn_gpu_tex_s *snap, *snap_src; // 快照图（本段 REF_TEX 保活到 fence）与它照的源图；同段同源复用，见 feedback_make
 };
 
 struct nvn_gpu_cmd_s {
@@ -383,6 +384,7 @@ struct nvn_gpu_vk {
     _Atomic int stop;
     int busy;
     int commit_active;   // 正在 commit 的线程数：close 要等它归零才拆资源
+    int pipe_calls_active;   // 已准入的图形 / 计算管线调用；close 锁住入口后等它们完整退出
     int close_active;    // 已有一个线程在跑 close，防止重复 join
     _Atomic int device_lost;
     uint64_t completed;
@@ -461,6 +463,7 @@ static uint64_t g_life_ns[8], g_life_n[8];
 static uint64_t now_ns(void);
 static int g_draw_tm; static uint64_t g_draw_ns[3];   // 绘制入口分段计时：描述符 / 状态 / 顶点索引与绘制调用
 static uint64_t g_feedback_stats[3]; // nvk_gputime：只读采样 draw / 快照 vkCmdCopyImage / 反馈重开次数，只增不清零
+static uint64_t g_feedback_snap[2];  // nvk_gputime：反馈快照图 新建 / 同段同源复用 次数，只增不清零
 static uint64_t g_draw_log_ns = 5000000000ull;         // 逐笔读数（nvn_gpu_draw 末尾）的周期，缺省 5 秒；测试钩子 nvn_gpu_vk_test_diag_timing 可缩短
 static void draw_tm_init(void) { if (!g_draw_tm) g_draw_tm = nvn_plat_flag("nvk_gputime", 0) != 0; }   // 与 GPU 时间戳同一个开关
 // 回放线程取 g_mu（nvk_gputime 开着才计）：先 trylock，没拿到的记「真等了几次、等了多久」。持 g_mu 的别的线程（游戏工作线程销毁视图、
@@ -1753,6 +1756,9 @@ static void finish_cmd(struct nvn_gpu_cmd_s *c, int executed) {
 //   弱引用：只链后端的 vk 夹具没有帧日志，地址为空就不调。
 void nvn_vk_frame_log_gpu_segment(uint64_t gpu_ns) __attribute__((weak));
 void nvn_vk_frame_log_gpu_frame_end(void) __attribute__((weak));
+// 同一份段读数也交给 ADPF（android/native/adpf_hint.c）：API 35 起随帧上报 GPU 时长。只链后端的 vk 夹具没有它，地址为空就不调
+void s2a_adpf_gpu_segment(uint64_t gpu_ns) __attribute__((weak));
+void s2a_adpf_gpu_frame_end(void) __attribute__((weak));
 static void process_segment(struct nvn_gpu_vk *vk, struct vk_segment *s) {
     int failed = s->failed;
     nvn_gpu_rc code = s->rc;
@@ -1798,6 +1804,7 @@ static void process_segment(struct nvn_gpu_vk *vk, struct vk_segment *s) {
                     if (last_end && b > last_end) gap += b - last_end;
                     last_end = e; n++; sum += d; if (d > mx) mx = d;
                     if (nvn_vk_frame_log_gpu_segment) nvn_vk_frame_log_gpu_segment(d);
+                    if (s2a_adpf_gpu_segment) s2a_adpf_gpu_segment(d);
                     {   // 逐通道：按尺寸归拢（同尺寸的算一类），每 400 段报耗时最多的 6 类
                         static struct { uint32_t key, n, draws, ds, n1; uint64_t ns, ns1; } bk[48]; static int nbk;
                         static uint64_t pts[2 * TS_PASS_MAX];
@@ -1836,6 +1843,7 @@ static void process_segment(struct nvn_gpu_vk *vk, struct vk_segment *s) {
 
     if (s->internal) {   // 呈现段：没有回调、不动时间线
         if (nvn_vk_frame_log_gpu_frame_end) nvn_vk_frame_log_gpu_frame_end();   // 本帧各段都排在上屏段之前完成：在这里结一帧
+        if (s2a_adpf_gpu_frame_end) s2a_adpf_gpu_frame_end();
         pthread_mutex_lock(&g_mu);
         // 栅栏已在本线程上等到（或设备已丢）：这一段对取图信号量的等待从此对主机可见地完成，取图可以复用那把信号量
         if (s->wsi_seq > vk->wsi_done) vk->wsi_done = s->wsi_seq;
@@ -2368,10 +2376,10 @@ nvn_gpu_rc nvn_gpu_close(uint64_t timeout_ns, nvn_gpu_err *err) {
         list = next;
     }
 
-    // ②③④ 等在途段 / 退休队列 / 并发 commit 全部结束。
+    // ②③④ 等在途段 / 退休队列 / 并发 commit / 管线调用全部结束。
     pthread_mutex_lock(&g_mu);
     for (;;) {
-        if (!g.qhead && !g.busy && !g.rhead && g.commit_active == 0) {
+        if (!g.qhead && !g.busy && !g.rhead && g.commit_active == 0 && g.pipe_calls_active == 0) {
             wsi_close_locked();   // 在途段都完成了：还接着的面连同交换链一起收掉
             // 先销毁视图、放下其持有的底层缓冲引用，再由 worker 完成退休回调。
             while (g.pools) pool_destroy_locked(g.pools);
@@ -2382,7 +2390,7 @@ nvn_gpu_rc nvn_gpu_close(uint64_t timeout_ns, nvn_gpu_err *err) {
         if (now >= deadline) {
             g.close_active = 0;
             pthread_mutex_unlock(&g_mu);
-            return fail(err, NVN_GPU_E_TIMEOUT, "close 时限内未完成在途段 / 退休 / 提交（保留资源，可再调一次）");
+            return fail(err, NVN_GPU_E_TIMEOUT, "close 时限内未完成在途段 / 退休 / 提交 / 管线调用（保留资源，可再调一次）");
         }
         struct timespec ts;
         deadline_after(&ts, deadline - now);
@@ -2496,6 +2504,61 @@ static int session_accepting(void) {
     pthread_mutex_unlock(&g_mu);
     return ok;
 }
+
+static int pipe_call_enter(nvn_gpu_err *err) {
+    pthread_mutex_lock(&g_mu);
+    int ok = g_open && !g.closing;
+    if (ok) g.pipe_calls_active++;
+    pthread_mutex_unlock(&g_mu);
+    if (!ok) fail(err, NVN_GPU_E_STOPPED, "会话正在关闭 / 未打开");
+    return ok;
+}
+
+static void pipe_call_leave(void) {
+    pthread_mutex_lock(&g_mu);
+    if (g.pipe_calls_active > 0) g.pipe_calls_active--;
+    pthread_cond_broadcast(&g_cv);
+    pthread_mutex_unlock(&g_mu);
+}
+
+#if defined(S2A_BACKEND_PIPE_CALL_TEST)
+static pthread_mutex_t g_pipe_test_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_pipe_test_cv = PTHREAD_COND_INITIALIZER;
+static int g_pipe_test_hold, g_pipe_test_entered;
+
+void nvn_vk_pipe_call_test_hold(int hold) {
+    pthread_mutex_lock(&g_pipe_test_mu);
+    g_pipe_test_hold = hold;
+    if (hold) g_pipe_test_entered = 0;
+    pthread_cond_broadcast(&g_pipe_test_cv);
+    pthread_mutex_unlock(&g_pipe_test_mu);
+}
+
+int nvn_vk_pipe_call_test_wait(uint64_t timeout_ns) {
+    struct timespec until;
+    clock_gettime(CLOCK_REALTIME, &until);
+    until.tv_sec += (time_t)(timeout_ns / 1000000000ull);
+    until.tv_nsec += (long)(timeout_ns % 1000000000ull);
+    if (until.tv_nsec >= 1000000000L) { until.tv_sec++; until.tv_nsec -= 1000000000L; }
+    pthread_mutex_lock(&g_pipe_test_mu);
+    while (!g_pipe_test_entered) {
+        if (pthread_cond_timedwait(&g_pipe_test_cv, &g_pipe_test_mu, &until) != 0) break;
+    }
+    int entered = g_pipe_test_entered;
+    pthread_mutex_unlock(&g_pipe_test_mu);
+    return entered;
+}
+
+static void pipe_call_test_gate(void) {
+    pthread_mutex_lock(&g_pipe_test_mu);
+    if (g_pipe_test_hold) {
+        g_pipe_test_entered = 1;
+        pthread_cond_broadcast(&g_pipe_test_cv);
+        while (g_pipe_test_hold) pthread_cond_wait(&g_pipe_test_cv, &g_pipe_test_mu);
+    }
+    pthread_mutex_unlock(&g_pipe_test_mu);
+}
+#endif
 
 // prefer_cached：主机可见的缓冲优先挑 HOST_CACHED 的显存类型（本机有 DEVICE_LOCAL|HOST_VISIBLE|HOST_COHERENT|HOST_CACHED，类型 6）。
 // 暂存缓冲（每帧约 9 MB 常量缓冲 + 顶点镜像落盘）是 CPU 反复小段写的：写在缓存内存上比写在不缓存映射上快数倍，
@@ -4137,8 +4200,7 @@ int nvn_gpu_pipe_lookup(const nvn_gpu_pipe_desc *d, nvn_gpu_pipe *out) {
 //   ⑤ 失败原样返回；挂了等待者的那份由建者把同一个错误广播出去（不重试、不返回假成功）。
 // 调用方契约：d->st[].sh 指向的着色器在整个调用期间必须有效（核心 / 预热 owner 的程序借用合同，见 pipe_build）。
 // 设备策略：debug.s2a.nvk_pipe_serial=1 时创建重新串行化（见 ④ 前的注释），缺省 0 = 并发建。
-nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *out, nvn_gpu_err *err) {
-    if (!session_accepting()) return fail(err, NVN_GPU_E_STOPPED, "会话正在关闭 / 未打开");
+static nvn_gpu_rc pipe_get_inner(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *out, nvn_gpu_err *err) {
     (void)mode;
     if (!out) return fail(err, NVN_GPU_E_ARG, "out 为空");
     *out = NULL;
@@ -4224,8 +4286,17 @@ nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *
     return rc(NVN_GPU_OK);
 }
 
+nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *out, nvn_gpu_err *err) {
+    if (!pipe_call_enter(err)) return rc(NVN_GPU_E_STOPPED);
+#if defined(S2A_BACKEND_PIPE_CALL_TEST)
+    pipe_call_test_gate();
+#endif
+    nvn_gpu_rc result = pipe_get_inner(d, mode, out, err);
+    pipe_call_leave();
+    return result;
+}
+
 static nvn_gpu_rc cpipe_build(const nvn_gpu_stage_desc *cs, int mode, nvn_gpu_pipe *out, nvn_gpu_err *err) {
-    if (!session_accepting()) return fail(err, NVN_GPU_E_STOPPED, "会话正在关闭 / 未打开");
     (void)mode;
     if (!out) return fail(err, NVN_GPU_E_ARG, "out 为空");
     *out = NULL;
@@ -4309,9 +4380,10 @@ static nvn_gpu_rc cpipe_build(const nvn_gpu_stage_desc *cs, int mode, nvn_gpu_pi
     cp.stage.pName = sh->entry;
     cp.layout = p->layout;
     const uint64_t pc_t0 = now_ns();   // 同图形管线：超过 3 毫秒打一行，用来对长帧
-    if (vkCreateComputePipelines(g.d, g_plc, 1, &cp, NULL, &p->pipe) != VK_SUCCESS) {
+    VkResult cpvr = vkCreateComputePipelines(g.d, g_plc, 1, &cp, NULL, &p->pipe);
+    if (cpvr != VK_SUCCESS) {
         destroy_pipe_objects(p);
-        return fail(err, NVN_GPU_E_COMPILE, "vkCreateComputePipelines 失败");
+        return fail(err, NVN_GPU_E_COMPILE, "vkCreateComputePipelines 失败（VkResult %d，%u 项资源）", (int)cpvr, sh->nent);
     }
     plc_created();
     { const uint64_t dt = now_ns() - pc_t0;
@@ -4352,8 +4424,7 @@ static struct nvn_gpu_pipe_s *cpipe_find_locked(nvn_gpu_shader sh) {
         if (p->cshader == sh) return p;
     return NULL;
 }
-nvn_gpu_rc nvn_gpu_cpipe_get(const nvn_gpu_stage_desc *cs, int mode, nvn_gpu_pipe *out, nvn_gpu_err *err) {
-    if (!session_accepting()) return fail(err, NVN_GPU_E_STOPPED, "会话正在关闭 / 未打开");
+static nvn_gpu_rc cpipe_get_inner(const nvn_gpu_stage_desc *cs, int mode, nvn_gpu_pipe *out, nvn_gpu_err *err) {
     if (!out) return fail(err, NVN_GPU_E_ARG, "out 为空");
     *out = NULL;
     if (!cs || !cs->sh) return fail(err, NVN_GPU_E_ARG, "计算阶段为空");
@@ -4407,6 +4478,16 @@ nvn_gpu_rc nvn_gpu_cpipe_get(const nvn_gpu_stage_desc *cs, int mode, nvn_gpu_pip
     pthread_mutex_unlock(&g_mu);
     if (own) nvk_pf_publish(&g_cpi, handle, hit, 0, NULL);
     *out = hit; return rc(NVN_GPU_OK);
+}
+
+nvn_gpu_rc nvn_gpu_cpipe_get(const nvn_gpu_stage_desc *cs, int mode, nvn_gpu_pipe *out, nvn_gpu_err *err) {
+    if (!pipe_call_enter(err)) return rc(NVN_GPU_E_STOPPED);
+#if defined(S2A_BACKEND_PIPE_CALL_TEST)
+    pipe_call_test_gate();
+#endif
+    nvn_gpu_rc result = cpipe_get_inner(cs, mode, out, err);
+    pipe_call_leave();
+    return result;
 }
 
 // EXTENDED_USAGE 建的图：视图默认继承整张图的用途，sRGB 的采样 / 附件视图带着存储用途会被拒（格式不支持存储），

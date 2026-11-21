@@ -235,6 +235,8 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var showEnvironment = false
     /// 装到 iPhone 的方式（环境检查「装到 iPhone 的方式」卡，installMode 作业）与壳比本版旧的手机（catalog phoneUpdates，库页右上角按钮）
     @Published var installMode = InstallModeInfo()
+    /// 选了独立 App 出法、又不是用自己的证书签（Apple ID 可能是免费的）时作业层给的苹果限制提示（layoutSet 的 freeLimit，只提示不拦）；换选时清空
+    @Published var layoutNotice = ""
     /// 「建议更新」（0.6.0 通用壳开关后面，S2ArmLauncherModel+UpdateHints.swift）：游戏号（大写）→ 对不上的原因；开关关着恒为空
     @Published var updateHints: [String: [String]] = [:]
     /// iPhone 总控台（0.6.0 通用壳开关后面，S2ArmLauncherModel+PhoneConsole.swift）：nil = 开关关着，首页不出首位卡

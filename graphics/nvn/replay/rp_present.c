@@ -22,6 +22,14 @@ __attribute__((weak)) void s2a_direct_diag_frame(void);
 // 弱链接[replay]：nvn_gpu_stats
 
 enum { PT_RING = 256 };
+// 上屏线程的线程 CPU 时间（#1501 差距 9，旧层 nvn_vk_frame_stats.c 的「墙钟 vs 线程 CPU」）：相邻两次成功上屏之间，
+// 墙钟走了多少、这条线程自己用了多少 CPU。两者接近 = 线程一直在跑（游戏 CPU 模拟与回放都在这条线程上）；
+// CPU 远小于墙钟 = 线程被换出、在等锁或在等 GPU。只比同一线程的两次上屏：跨线程相减没有意义（旧层实测出过 22839 毫秒的假数），记成跨线程样本、不计。
+static pthread_mutex_t g_tc_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_t g_tc_tid; static int g_tc_have;
+static uint64_t g_tc_wall0, g_tc_cpu0;                           // 上一次上屏时的墙钟 / 线程 CPU（纳秒）
+static uint64_t g_tc_wall, g_tc_cpu, g_tc_n, g_tc_cross;          // 窗口累计：同线程样本的墙钟、CPU、样本数；跨线程样本数
+static uint64_t tc_thread_cpu_ns(void) { struct timespec t; return clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t) ? 0 : (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec; }
 static pthread_mutex_t g_pmu = PTHREAD_MUTEX_INITIALIZER;
 static nvn_gpu_surface g_surf; static int g_hz;
 static uint64_t g_ticket;                     // 已发出的票号（从 1 起）
@@ -238,6 +246,7 @@ static uint64_t present_impl(const tex_t *t, double period_s, const int crop[4])
         {   // 分时读数：每 5 秒一行（帧率低的时候「每 600 帧」等不到）
             static uint64_t t_last, n_last, d_last; struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); uint64_t now = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
             if (!t_last) t_last = now;
+            { const uint64_t cpu = tc_thread_cpu_ns(); if (cpu) rp_present_tc_note(now, cpu); }
             fseg_frame(&g_fseg, now, atomic_load_explicit(&g_tgt_itv, memory_order_relaxed), atomic_load_explicit(&g_tgt_set_ns, memory_order_relaxed));
             if (now - t_last >= 5000000000ull) {
                 uint64_t pf[RP_PERF_N], nd = 0, nsk = 0; rp_perf_take(pf); rp_draw_stats(&nd, &nsk);
@@ -253,6 +262,11 @@ static uint64_t present_impl(const tex_t *t, double period_s, const int crop[4])
                                       (double)pf[RP_PERF_WAIT_ALREADY_N] / f, (double)pf[RP_PERF_WAIT_FAKED_N] / f, (double)pf[RP_PERF_GPU_BUSY_NS] / 1e6 / f,
                                       (double)pf[RP_PERF_PASSES] / f, (double)pf[RP_PERF_PRESENT_NS] / 1e6 / f);
                 nvn_plat_log(NVN_PLAT_LOG_INFO, "present", b);
+                {   // 上屏线程 CPU（见 rp_present_tc_note）：每样本 = 相邻两次上屏
+                    uint64_t tc[4]; rp_present_tc_take(tc); const double tn = tc[2] ? (double)tc[2] : 1.0;
+                    snprintf(b, sizeof b, "分时（上屏线程 CPU，每帧）：两次上屏之间墙钟 %.1f 毫秒、本线程 CPU %.1f 毫秒（占 %.0f%%）；同线程样本 %llu、跨线程样本 %llu（不计）",
+                             (double)tc[0] / 1e6 / tn, (double)tc[1] / 1e6 / tn, tc[0] ? 100.0 * (double)tc[1] / (double)tc[0] : 0.0, (unsigned long long)tc[2], (unsigned long long)tc[3]);
+                    nvn_plat_log(NVN_PLAT_LOG_INFO, "present", b); }
                 snprintf(b, sizeof b, "分时（绘制各步，每帧毫秒）：取程序 %.1f、顶点流与索引 %.1f、取贴图视图 %.1f、开通道与取管线 %.1f、动态状态与顶点缓冲 %.1f、绑定 %.1f、后端绘制 %.1f、收尾 %.1f；回放按命令分：绘制类 %.1f、其余 %.1f",
                          (double)pf[RP_PERF_D_PROG] / 1e6 / fs, (double)pf[RP_PERF_D_PREP] / 1e6 / fs, (double)pf[RP_PERF_D_TEX] / 1e6 / fs, (double)(pf[RP_PERF_D_PASS] + pf[RP_PERF_D_PIPE]) / 1e6 / fs, (double)pf[RP_PERF_D_DYN] / 1e6 / fs, (double)pf[RP_PERF_D_BIND] / 1e6 / fs, (double)pf[RP_PERF_D_DRAW] / 1e6 / fs, (double)pf[RP_PERF_D_TAIL] / 1e6 / fs,
                           (double)pf[RP_PERF_EXEC_DRAW_NS] / 1e6 / f, (double)pf[RP_PERF_EXEC_OTHER_NS] / 1e6 / f);
@@ -378,5 +392,25 @@ double nvn_be_presented_time(uint64_t n) {
     double at; __atomic_load(&g_shown[n % PT_RING], &at, __ATOMIC_ACQUIRE);
     return at;
 }
+// 记一次成功上屏：wall_ns = CLOCK_MONOTONIC，cpu_ns = 本线程 CLOCK_THREAD_CPUTIME_ID（调用线程即上屏线程）。
+void rp_present_tc_note(uint64_t wall_ns, uint64_t cpu_ns) {
+    const pthread_t me = pthread_self();
+    pthread_mutex_lock(&g_tc_mu);
+    if (g_tc_have) {
+        if (pthread_equal(me, g_tc_tid) && wall_ns >= g_tc_wall0 && cpu_ns >= g_tc_cpu0) { g_tc_wall += wall_ns - g_tc_wall0; g_tc_cpu += cpu_ns - g_tc_cpu0; g_tc_n++; }
+        else g_tc_cross++;
+    }
+    g_tc_tid = me; g_tc_wall0 = wall_ns; g_tc_cpu0 = cpu_ns; g_tc_have = 1;
+    pthread_mutex_unlock(&g_tc_mu);
+}
+// 取走窗口累计（out：墙钟纳秒、CPU 纳秒、同线程样本数、跨线程样本数），取走即清零；起点保留（下一次上屏接着算）
+void rp_present_tc_take(uint64_t out[4]) {
+    pthread_mutex_lock(&g_tc_mu);
+    out[0] = g_tc_wall; out[1] = g_tc_cpu; out[2] = g_tc_n; out[3] = g_tc_cross;
+    g_tc_wall = g_tc_cpu = g_tc_n = g_tc_cross = 0;
+    pthread_mutex_unlock(&g_tc_mu);
+}
 void rp_present_stats(uint64_t *shown, uint64_t *dropped) { pthread_mutex_lock(&g_pmu); if (shown) *shown = g_n_shown; if (dropped) *dropped = g_n_dropped; pthread_mutex_unlock(&g_pmu); }
-void rp_present_reset(void) { atomic_store(&g_adpf_seq, 0); pthread_mutex_lock(&g_pmu); g_surf = NULL; g_hz = 0; g_ticket = 0; g_n_shown = g_n_dropped = 0; memset(g_shown, 0, sizeof g_shown); memset(&g_fseg, 0, sizeof g_fseg); pthread_mutex_unlock(&g_pmu); }
+void rp_present_reset(void) { atomic_store(&g_adpf_seq, 0);
+    pthread_mutex_lock(&g_tc_mu); g_tc_have = 0; g_tc_wall = g_tc_cpu = g_tc_n = g_tc_cross = 0; pthread_mutex_unlock(&g_tc_mu);   // 新会话不与上一局的最后一次上屏配对
+    pthread_mutex_lock(&g_pmu); g_surf = NULL; g_hz = 0; g_ticket = 0; g_n_shown = g_n_dropped = 0; memset(g_shown, 0, sizeof g_shown); memset(&g_fseg, 0, sizeof g_fseg); pthread_mutex_unlock(&g_pmu); }
