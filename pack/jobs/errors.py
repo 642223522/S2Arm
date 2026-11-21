@@ -394,6 +394,7 @@ PLAYER_REASON = {
     "resource_preparation_failed": "资源准备失败。",
     "device_install_failed": "设备安装失败。",
     "package_failed": "出包未完成。",
+    "input_missing": "找不到游戏文件：选中的游戏文件已不在原处。",
     "windows_mandatory_aslr": "Windows 的强制 ASLR 开着：出包工具起不了子进程。",
 }
 
@@ -406,6 +407,8 @@ def player_reason(code):
 # 只收工具 / 系统原样会打的字样，不从散文猜。
 LOG_CAUSES = (
     (r"WinError 206|filename or extension is too long|文件名或扩展名太长", "windows_path_too_long"),  # 非玩家句
+    # 解包读原件时路径不在（pack/nx_unpack 打的分类行；诊断#24fb13：原先按阶段落成 content_invalid「文件没下完整」，原件其实是挪走了 / 盘没连上）
+    (r"【原因 source_missing】", "input_missing"),  # 非玩家句
     # 随包 bash 起子进程刚建就退（#1762：MSYS 原文「dofork: child -1 - forked process … died unexpectedly, retry 0, exit code 0xC0000142」，连试 6 次）：
     #   Windows「强制映像随机化（强制性 ASLR）」开着，MSYS 的 fork 要在子进程同一地址装 DLL，被系统强制换址后起不来。玩家关回系统默认即可出包
     (r"dofork: child -1 - forked process \d+ died unexpectedly, retry \d+, exit code 0xC0000142", "windows_mandatory_aslr"),

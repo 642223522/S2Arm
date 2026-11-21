@@ -5056,6 +5056,10 @@
   "en": "Packaging incomplete."
  },
  {
+  "source": "找不到游戏文件：选中的游戏文件已不在原处。",
+  "en": "Game file missing: the selected game file is no longer where it was."
+ },
+ {
   "source": "按安装错误检查设备连接与包的有效性；保持手机解锁后重试，保留原 App 和存档。",
   "en": "Check the device connection and package validity against the install error. Retry with the phone unlocked; keep the original app and saves."
  },

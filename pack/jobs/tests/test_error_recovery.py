@@ -542,5 +542,17 @@ raise SystemExit(main.main())
         self.assertTrue(self.c.describe_failure(Failure("future", code="future_code"))["suggestion"])
 
 
+
+class SourceMissingCause(unittest.TestCase):
+    def test_unpack_source_missing_is_input_missing(self):
+        # 诊断#24fb13：解包读原件时路径不在（外置盘没连上 / 原件挪走），原先按阶段 unpack 落成 content_invalid「文件没下完整」。
+        #   期望：解包工具的分类行「【原因 source_missing】」→ input_missing，上屏句说原件找不到、下一步是接盘或重新放进来
+        import errors
+        text = "🔴 找不到源文件（Could not find a part of the path 'E:\\x\\game.nsp'.）：原件被挪走或删掉了……\n【原因 source_missing】\n"
+        code, why = errors.classify_failure("unpack", None, [text])
+        self.assertEqual(code, "input_missing", why)
+        self.assertIn("找不到游戏文件", errors.player_reason(code))
+        self.assertEqual(errors.classify_failure("unpack", None, ["🔴 读源文件失败（x）\n【原因 io】\n"])[0], "content_invalid", "别的读盘错照旧按阶段")
+
 if __name__ == "__main__":
     unittest.main()
