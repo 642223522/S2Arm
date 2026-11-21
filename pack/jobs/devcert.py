@@ -460,10 +460,22 @@ def _locked(c):
 
 
 def _raw(c):
-    d = folder(c)
-    e, root = read(d / "entries.json") or {}, read(d / "state.json") or {}
-    e, root = (e if isinstance(e, dict) else {}), (root if isinstance(root, dict) else {})
-    entries = {k: v for k, v in (e.get("entries") or {}).items() if isinstance(v, dict) and (entry_dir(c, k) / "cert.p12").is_file()}   # 文件没了的不算
+    """证书库原样（entries.json + 根下 state.json）。读不了（Windows 拒绝访问，D-BW75 / #3c209a：整个 devcert 目录进不去、连属性都取不到）
+    = 当作没导入、没启用证书：只是「用不用开发者证书」这个开关，Apple ID 那条路照样走得通，不为它挡装机（原先抛到 update_phone，
+    「S2Arm 自己的文件读写不了」×14）。原因每个作业记一次进作业日志"""
+    try:
+        d = folder(c)
+        e, root = read(d / "entries.json") or {}, read(d / "state.json") or {}
+        e, root = (e if isinstance(e, dict) else {}), (root if isinstance(root, dict) else {})
+        entries = {k: v for k, v in (e.get("entries") or {}).items() if isinstance(v, dict) and (entry_dir(c, k) / "cert.p12").is_file()}   # 文件没了的不算
+    except PermissionError as error:
+        if not getattr(c, "_devcert_state_denied", False):
+            try:
+                c._devcert_state_denied = True
+            except AttributeError:
+                pass
+            print(f"[s2a] 【黄】开发者证书设置读不了（{error}），这次当作没启用证书、按 Apple ID 签名", file=sys.stderr, flush=True)  # 非玩家句
+        return dict(active=False, entries={}, devices={}), {}
     return dict(active=bool(root.get("active")), entries=entries, devices=dict(e.get("devices") or {})), root
 
 
