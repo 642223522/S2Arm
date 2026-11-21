@@ -2,7 +2,7 @@
 NATIVE_TEST_OWN += nvn_pkg_gpu_alias
 ifeq ($(S2A_UNAME),Darwin)
 # #674 随包贴图被 GPU 写过后登记进共享表 + alias_key_of 块线性布局归一化；Metal 4 / 3 两路
-$(BUILD)/tests/t_nvn_pkg_gpu_alias: graphics/nvn/tests/t_nvn_pkg_gpu_alias.m graphics/nvn/gfx/nvn/nvn_mtl.m $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
+$(BUILD)/tests/t_nvn_pkg_gpu_alias: graphics/nvn/tests/t_nvn_pkg_gpu_alias.m $(NVN_MTL_DEPS) $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
 	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -Wno-unused-function -Wno-unguarded-availability-new -Wno-unguarded-availability \
 	  $(NATIVE_INC) -Igraphics/nvn/host -Igraphics/nvn/gfx/nvn -Igraphics/nvn/gfx/nvn/include -Igraphics/nvn/third_party/vulkan-headers/include \
 	  -o $@ graphics/nvn/tests/t_nvn_pkg_gpu_alias.m $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN) \

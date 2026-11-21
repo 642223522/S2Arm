@@ -3344,6 +3344,7 @@ static uint64_t g_alias_taken;   // shared textures evicted when another texture
 static nvn_hmap g_ghost;   // defined below (finalized texture serials)
 static nvn_hmap g_ghost_active = {.klen = 8};   // finalized serials resolved while the current submission is encoded (serial → retained object), under g_smu; see ghost_finish_submission
 static id pkg_tex_of(id o);
+static int pkg_unshare(id o);   // caller holds g_smu: an NvPkg (live, finalized or active serial) whose texture is o stops sharing it; 1 if any
 static int serial_holds(nvn_hmap *m, id o) { for (uint32_t i = 0; i < m->cap; i++) if (m->vals[i] && (m->vals[i] == (__bridge void *)o || pkg_tex_of((__bridge id)m->vals[i]) == o)) return 1; return 0; }
 // Storage written over by another texture (Switch / Ryujinx semantics: textures over the same memory share its bytes; once another texture's GPU write lands there, the
 //   earlier one's content is gone, and Ryujinx's texture cache drops the overlapped host texture). 11-05 Ocarina of Time on Switch 2: its shadow map changes size nearly
@@ -3409,7 +3410,9 @@ static void alias_take_over(const alias_key *nk) {
             if (g_alias_dead_n == g_alias_dead_cap) { uint32_t c = g_alias_dead_cap ? 2 * g_alias_dead_cap : 64; uint64_t *q = realloc(g_alias_dead_ser, c * sizeof *q); if (q) { g_alias_dead_ser = q; g_alias_dead_cap = c; } }
             if (g_alias_dead_n < g_alias_dead_cap) g_alias_dead_ser[g_alias_dead_n++] = sk; }   // its texture-ID views go at the end of the submission (alias_dead_views: they need g_rmu, taken before g_smu)
         @autoreleasepool { evict_note(o); }
-        if (serial_holds(&g_ghost, o) || serial_holds(&g_ghost_active, o)) defer_obj_unref(o); else defer_obj_release(o);
+        // A GPU-written packaged texture's own texture (gpw_mark registered it) stays its NvPkg's: only the table's reference goes, the NvPkg removes it from the residency set when it
+        //   goes (its dealloc, tex_shared cleared here). Retiring it here took it out of the residency set while its serial still drew with it (#1911 review)
+        if (pkg_unshare(o) || serial_holds(&g_ghost, o) || serial_holds(&g_ghost_active, o)) defer_obj_unref(o); else defer_obj_release(o);
     }
     if (n) { g_ser_gen++; g_alias_taken += n; }
 }
@@ -3609,7 +3612,7 @@ int nvn_be_tex_from_gl(tex_t *t, uint32_t gl_name) { @autoreleasepool {
 // spare: the texture the last re-upload replaced, kept resident and written by the next re-upload once the GPU has passed spare_fence (a texture the CPU rewrites every frame, a movie frame,
 // alternates between two textures instead of allocating one per frame: Link's Awakening's title movie made and freed an 8 MB texture a frame)
 static void ph_free(uint64_t *ph, uint32_t n);
-@interface NvPkg : NSObject { @public id<MTLTexture> tex, spare, view; uint64_t stamp, seen, hash, spare_fence, vgen, vseen, check_epoch; const void *span; int sparse, vbase; uint64_t *ph, *pgpu; uint32_t nph; int pre; uint64_t pre_fp; void *stex; uint64_t lseq; uint64_t (*runs)[2]; int nruns; uint8_t tex_shared, spare_shared; } @end   // lseq / runs / nruns：稀疏贴图上次整段走页表时的映射日志序号与背后的物理段（nruns 0 = 没缓存，-1 = 段太多不缓存；马车世界缺口 ①，pkg_sparse_clean）   // hash: full hash of the uploaded content under DM_NVN_DIRTYCHECK; span: its tracked range (nvn_dirty_span, NULL = untracked);
+@interface NvPkg : NSObject { @public id<MTLTexture> tex, spare, view; uint64_t stamp, seen, hash, spare_fence, vgen, vseen, check_epoch; const void *span; int sparse, vbase; uint64_t *ph, *pgpu; uint32_t nph; int pre; uint64_t pre_fp; void *stex; uint64_t lseq; uint64_t (*runs)[2]; int nruns; uint8_t tex_shared; } @end   // tex_shared: tex is also the sharing table's (gpw_mark); the table's removal is then the NvPkg's own   // lseq / runs / nruns：稀疏贴图上次整段走页表时的映射日志序号与背后的物理段（nruns 0 = 没缓存，-1 = 段太多不缓存；马车世界缺口 ①，pkg_sparse_clean）   // hash: full hash of the uploaded content under DM_NVN_DIRTYCHECK; span: its tracked range (nvn_dirty_span, NULL = untracked);
 static void evict_note(id obj) {
     id o = [obj isKindOfClass:[NvPkg class]] ? ((NvPkg *)obj)->tex : obj;
     id<MTLTexture> m = [o conformsToProtocol:@protocol(MTLTexture)] ? o : nil; while (m.parentTexture) m = m.parentTexture;
@@ -3620,9 +3623,15 @@ static void evict_note(id obj) {
 static void stex_pkg_free(void *s);   // nvn_stex.inc 胶水（pkg_upload_ 之前）：页还回堆
 // stex：放置式稀疏贴图（nvn_stex.inc）背着的大稀疏贴图：tex 就是它的贴图，原地增量同步、不换
 @implementation NvPkg
-- (void)dealloc { if (!tex_shared) res_remove(tex); if (spare && !spare_shared) res_remove(spare); ph_free(ph, nph); free(pgpu); free(runs); if (stex) stex_pkg_free(stex); }
+- (void)dealloc { if (!tex_shared) res_remove(tex); if (spare) res_remove(spare); ph_free(ph, nph); free(pgpu); free(runs); if (stex) stex_pkg_free(stex); }
 @end
 static id pkg_tex_of(id o) { return [o isKindOfClass:[NvPkg class]] ? ((NvPkg *)o)->tex : nil; }
+static int pkg_unshare(id o) {
+    int n = 0; nvn_hmap *hm[] = {&g_by_serial, &g_ghost, &g_ghost_active};
+    for (int t = 0; t < 3; t++) for (uint32_t i = 0; i < hm[t]->cap; i++) { id v = (__bridge id)hm[t]->vals[i];
+        if (v && [v isKindOfClass:[NvPkg class]] && ((NvPkg *)v)->tex == o) { ((NvPkg *)v)->tex_shared = 0; n = 1; } }
+    return n;
+}
 static uint64_t g_pkg_uploads, g_pkg_reuploads, g_pkg_miss, g_pkg_same, g_pkg_gpu_writes, g_pkg_gpu_kept, g_pkg_partial;
 // pgpu (S2Arm 10-25): per host page, the dirty-page generation when the GPU last wrote the texture's bytes there (a copy or clear into it; nvn_dirty_now at encoding, which is the game's submission).
 // The replay's GPU writes reach the host texture, never guest memory, so a whole re-upload from guest memory would undo them. Who wrote a page last decides: written by the CPU after the GPU
@@ -5261,13 +5270,13 @@ static void gpw_mark(const tex_t *t, unsigned level, unsigned layer0, unsigned n
             alias_key ak; alias_key_of(&ak, t);
             pthread_mutex_lock(&g_smu);
             if (!g_alias_set) g_alias_set = CFSetCreateMutable(NULL, 0, NULL);
-            if (hm_get_id(&g_alias, &ak) != mt) {
+            __unsafe_unretained id ex = hm_get_id(&g_alias, &ak);
+            if (!ex) {   // only an empty key: another texture under it is someone's (replacing it here released it at once, outside the deferred retirement)
                 alias_take_over(&ak);
                 hm_put_id(&g_alias, &ak, mt); CFSetAddValue(g_alias_set, (__bridge const void *)mt);
-                pk->tex_shared = 1;
+                pk->tex_shared = 1; ex = mt;
             }
-            nvn_hm_put(&g_alias_seen, &ak, (void *)(uintptr_t)(g_fence + 1));
-            nvn_hm_put(&g_alias_wrote, &ak, (void *)(uintptr_t)(g_fence + 1));
+            if (ex == mt) { nvn_hm_put(&g_alias_seen, &ak, (void *)(uintptr_t)(g_fence + 1)); nvn_hm_put(&g_alias_wrote, &ak, (void *)(uintptr_t)(g_fence + 1)); }
             pthread_mutex_unlock(&g_smu);
         }
     }
@@ -6024,11 +6033,15 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
             uint64_t st, vg = nvn_sparse_gen(), *nh = NULL; uint32_t nn = 0; id<MTLTexture> nt = pkg_upload(t, &st, reuse, &nh, &nn, 0);
             if (!nt) ph_free(nh, nn);   // the hashes stay those of the content still uploaded
             if (nt) { id<MTLTexture> old = pk->tex; pk->tex = nt; ph_free(pk->ph, pk->nph); pk->ph = nh; pk->nph = nn; free(pk->pgpu); pk->pgpu = NULL;   // the new texture holds guest memory only
-                if (pk->spare && pk->spare != nt) { if (pk->spare_shared) defer_obj_unref(pk->spare); else defer_obj_release(pk->spare); }   // still in use, or of another shape: retired as before
+                if (pk->tex_shared) {   // its GPU-written texture was the sharing table's (gpw_mark): the CPU rewrote the storage, so that entry is stale; the NvPkg keeps the texture (as spare)
+                    alias_key ak; alias_key_of(&ak, t); pthread_mutex_lock(&g_smu);
+                    if (hm_get_id(&g_alias, &ak) == old) { if (g_alias_set) CFSetRemoveValue(g_alias_set, (__bridge const void *)old); hm_del_id(&g_alias, &ak); nvn_hm_del(&g_alias_seen, &ak); nvn_hm_del(&g_alias_wrote, &ak); g_ser_gen++; }
+                    pthread_mutex_unlock(&g_smu); pk->tex_shared = 0; }
+                if (pk->spare && pk->spare != nt) defer_obj_release(pk->spare);   // still in use, or of another shape: retired as before
                 if (pk->sparse) sparse_view(pk, t);
                 zb_report(t, pk->sparse ? (unsigned)pk->vbase : 0, "re-upload");
                 if (g_snap_newtex_log > 0) { g_snap_newtex_log--; MLOG("即时存档诊断：预排布贴图整张重传 ser=%llu %ux%u 格式 %#x 池 %p+%#llx", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, (void *)t->pool, (unsigned long long)t->off); }
-                pk->spare = old; pk->spare_shared = pk->tex_shared; pk->tex_shared = 0; pk->spare_fence = g_fence + 1; g_ser_gen++; pk->stamp = st; pk->vgen = pk->vseen = vg; pk->span = nvn_dirty_span(t->mem, t->L.size); pk->seen = nvn_dirty_now(); g_pkg_reuploads++; if (dirtycheck() && !pk->sparse) pk->hash = full_hash(t->mem, t->L.size); }
+                pk->spare = old; pk->spare_fence = g_fence + 1; g_ser_gen++; pk->stamp = st; pk->vgen = pk->vseen = vg; pk->span = nvn_dirty_span(t->mem, t->L.size); pk->seen = nvn_dirty_now(); g_pkg_reuploads++; if (dirtycheck() && !pk->sparse) pk->hash = full_hash(t->mem, t->L.size); }
             return pk->view ? pk->view : pk->tex;
         }
         pk = [NvPkg new];

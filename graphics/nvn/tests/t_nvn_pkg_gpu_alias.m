@@ -8,6 +8,8 @@
 //   ② 非随包 C1（pkg_layout=1）与同存储 C2（pkg_layout=0 + MINIMAL_LAYOUT）实际块布局相同 → 同一张 Metal 贴图；
 //      反证 C3（pkg_layout=0、无 MINIMAL_LAYOUT，自动块高不同）→ 另一张贴图
 //   ③ A 与 B 均 Finalize 后跑 alias_orphan_pass + settle → GPU 写过的共享贴图仍在共享表且无驻留/释放异常
+//   ⑤（维护者补）活着的随包贴图 A2 GPU 写过、进了共享表；闲置后另一张贴图 D 写过重叠存储、按 D 的键接管：A2 的表项退掉，
+//      但 A2 自己的贴图仍在驻留集（它的序号照样画它），A2 再解析仍是它。改前接管一律 defer_obj_release，出驻留集后 A2 再画就读未驻留内存
 #include "../gfx/nvn/nvn_mtl.m"
 
 static unsigned checks, failures;
@@ -72,6 +74,28 @@ int main(void) {
         alias_orphan_pass();
         settle();
         CHECK(wa != nil, "③ NvPkg 与重建对象均 Finalize 后，GPU 写过的共享贴图仍由共享表保活");
+        // ⑤ 活着的随包贴图被接管：只放共享表那份引用，贴图留在驻留集
+        static tex_t A2, D;
+        make260(&A2, 2 << 20, NVN_TEXTURE_FLAGS_MINIMAL_LAYOUT, 1, 1);
+        id<MTLTexture> m5 = tex_mtl(&A2);
+        REQUIRE(m5 != nil && [tex_get(A2.serial) isKindOfClass:[NvPkg class]]);
+        gpw_mark(&A2, 0, 0, 1, 0, 0, 0, 0);
+        alias_key k5; alias_key_of(&k5, &A2);
+        pthread_mutex_lock(&g_smu); int in5 = hm_get_id(&g_alias, &k5) == m5; pthread_mutex_unlock(&g_smu);
+        REQUIRE(in5 && ((NvPkg *)tex_get(A2.serial))->tex_shared);
+        idle();
+        memset(&D, 0, sizeof D); D.magic = MAGIC('T', 'E', 'X', 0); D.serial = nvn_new_serial();   // 同起点、另一种描述（R8 520x260）：字节重叠、键不同
+        D.d = (nvn_texdesc){.target = NVN_TEXTURE_TARGET_2D, .format = NVN_FORMAT_R8, .width = 520, .height = 260, .depth = 1, .levels = 1, .samples = 0};
+        D.pool = g_tp; D.off = 2 << 20; D.mem = g_mem + D.off; nvn_tex_layout(&D.d, &D.L); nvn_be_tex_init(&D);
+        REQUIRE(tex_mtl(&D) != nil);
+        gpw_mark(&D, 0, 0, 1, 0, 0, 0, 0); submit();
+        alias_key kd; alias_key_of(&kd, &D);
+        pthread_mutex_lock(&g_smu); alias_take_over(&kd); int gone5 = hm_get_id(&g_alias, &k5) == nil; pthread_mutex_unlock(&g_smu);
+        settle();
+        pthread_mutex_lock(&g_res_mu); int res5 = [g_res_objects containsObject:m5]; pthread_mutex_unlock(&g_res_mu);
+        CHECK(gone5, "⑤ 另一张贴图写过重叠存储后接管：A2 的共享表项退掉");
+        CHECK(res5, "⑤ A2 自己的贴图仍在驻留集（只放共享表的引用）");
+        CHECK(tex_mtl(&A2) == m5 && !((NvPkg *)tex_get(A2.serial))->tex_shared, "⑤ A2 再解析仍是同一张贴图，不再记为共享（日后由它自己出驻留集）");
 #if !TARGET_OS_IPHONE
         CHECK(g_orph_lv == NULL, "④ macOS 上 alias_orphan_pass 不把私有显存贴图挂进低区账本");
 #endif
