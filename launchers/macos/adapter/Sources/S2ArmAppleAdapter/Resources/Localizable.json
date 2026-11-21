@@ -10730,5 +10730,9 @@
  {
   "source": "写进这款的游戏文件夹",
   "en": "Writing to this game’s folder"
+ },
+ {
+  "source": "想正常玩，请换一台地址空间更大的设备（比如内存更大的 Mac），或等后续版本改进；游戏照常能启动。",
+  "en": "To play normally, use a device with more address space (such as a Mac with more memory), or wait for a later version; the game still starts."
  }
 ]
