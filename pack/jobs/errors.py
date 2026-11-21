@@ -25,6 +25,7 @@ RECOVERY = {
     "ios_import_img_failed": "检查文件是否拷完整，再打开 S2Arm。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
     "ios_install_unknown": "导出诊断包发给我们。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
     "rewrite_gap": "之前已经装到 iPhone 上的这款可以照常接着玩。点「复制错误摘要」发给我们，修好后更新 S2Arm 再出一次包。",
+    "update_incomplete": "按黄字里写的补上缺的那一项，再点一次「更新这款」；其余部分这次已经更新好了。",   # 「更新这款」做不齐（缺原料 / 宿主约定号变了 / Mac 上正在运行），黄字说明哪一项
     "update_failed": "检查网络后重试；还是不行就到下载页下载新版覆盖安装，当前版本和存档不受影响。",
     "glslc_windows_unavailable": "这款游戏的着色器编译目前只能在 Mac 上完成，Windows 版暂不支持；请改用 Mac 版 S2Arm 出包。",
     "win_host_unsupported": "请改用64位Windows主机运行S2Arm，确认后点「重新检查」。",
@@ -111,6 +112,7 @@ RECOVERY = {
     "signing_failed": "查看本任务日志里签名那一步的报错；确认 Xcode 能用你的账号给这台 iPhone 签名，或改用 AltStore 安装。",
     "device_tunnel_unavailable": "电脑连不上这台 iPhone 的开发者通道（手机通过 Wi-Fi 连着时最常见，不是没解锁）：用数据线把手机直接插到这台电脑（别经过扩展坞或集线器），解锁停在主屏幕，再点一次；还不行就重启一次手机，插上后在手机上重新点「信任」。",
     "device_locked": "解锁这台 iPhone（保持亮屏、停在主屏幕），再点一次「推到 iPhone」；装机过程中别锁屏。",
+    "game_not_on_device": "要把这款装到这台设备，用「推到 iPhone」（在装机页选好这台）；只想更新原来那台，就连上原来装过这款的那台再点「更新这款」。",   # 「更新这款」只推装过这款的设备（install.push_game onlyInstalled，11-21）
     "shell_install_required": "在 S2Arm 里先点「安装 S2Arm」把 App 装到这台 iPhone，再对这款点「推到 iPhone」。",   # 通用壳「推到 iPhone」：手机上还没装壳（install.push_game）
     "phone_app_choice_required": "在 iPhone 总控台里选好这台手机用哪一个 S2Arm（AltStore / SideStore 装的，还是启动器装的），再推游戏；选一次就记住。",   # 同机装着不止一个 S2Arm（install.s2arm_owner choose）
     "phone_app_gone": "在 iPhone 总控台里重新选一次用哪一个 S2Arm：选过的那个已经不在这台 iPhone 上了。",   # phoneChooseApp 选的包不在手机上
@@ -128,6 +130,7 @@ RECOVERY = {
     "apple_session_expired": "Apple ID 登录已过期，请重新登录后再装：在装机页点「打开 Impactor」→「设置」，选中你的 Apple ID 点「移除账号」，再点「添加账号」用同一个 Apple ID 重新登录（邮箱、密码、手机上的验证码，输入前切到英文输入法），然后回来再点一次「推到 iPhone」。密码只在 Impactor 里输，S2Arm 不经手。",   # Windows plumesign 恢复保存的会话时 Apple 1100（impactor.explain）；Mac 同类原文归 xcode_account_missing（去 Xcode 重新登录）
     "apple_not_signed_in": "还没用 Apple ID 登录：点「登录 Apple ID」（装机清单和失败页上都有，也可以在设置 →「签名身份」下面点），在弹出的「用 Apple ID 签名」里填邮箱和密码（你的苹果设备上会弹出验证码），再点一次「推到 iPhone」。密码只用于这次向 Apple 登录，S2Arm 不保存。",   # Mac 通用壳：随包 plumesign 自己的登录面板（launchers/macos AppleLoginViews，按钮名 / 面板名与界面逐字一致；Windows 的 Impactor 说法在 WINDOWS_RECOVERY）
     "apple_login_refused": "苹果的登录服务器拒收了这次登录请求（回了「服务暂不可用」，还没到核对账号密码那一步），不是这台电脑的网络、Apple ID 或密码的问题，换网络、换 DNS 也没用。多半是苹果又调整了对第三方签名工具的规则：把 S2Arm 更新到最新版后再登录；最新版仍这样，点「复制错误摘要」发给我们。手机、已装的 App 和存档都没动。",   # 苹果 GSA 回 5xx（11-20 起拒收系统名写 macOS; 的请求：随包 plumesign 补丁 0002 曾这样拼，D-6NB2 / D-KRNJ / #1798）：不是网络问题
+    "devcert_unreadable": "要用自己的开发者证书：检查杀毒软件或 Windows 安全中心的「受控文件夹访问」有没有拦 S2Arm（把 S2Arm 加进允许的应用），然后在设置里重新导入证书。没启用过开发者证书可以不管这条。",   # 开发者证书设置读不了（D-BW75 Windows 拒绝访问）：照常按 Apple ID 签名，只说清楚
     "apple_server_unreachable": "这台电脑连不上苹果的服务器（Impactor 登录和签名都要连），不是 Apple ID 或密码的问题。检查这台电脑的网络：浏览器能打开 appleid.apple.com 就再点一次「推到 iPhone」；打不开就换个 DNS（如 223.5.5.5 或 1.1.1.1）或开 / 关代理后再装。手机、已装的 App 和存档都没动。",   # 连不上 *.apple.com（#edc5f5 拆分：网络问题，不让玩家去重登 Apple ID）
     "crash_restored": "照常玩就行；如果又崩溃，会再自动关掉，也可以在启动设置里自己关。",
     "aoc_missing": "本体已出好，照常安装即可；没解出的追加内容不在包里，游戏里用不到那部分内容。请导出诊断反馈，解码支持后重新打包即可带上。",

@@ -459,6 +459,9 @@ def _locked(c):
         raise Failure("开发者证书正被另一个任务读写，稍后再试。") from e  # 非玩家句
 
 
+UNREADABLE = "这次没能读到开发者证书设置（这台电脑拒绝 S2Arm 读它自己的证书设置文件夹），按 Apple ID 签名。如果你启用过自己的开发者证书，这次没有用它。"
+
+
 def _raw(c):
     """证书库原样（entries.json + 根下 state.json）。读不了（Windows 拒绝访问，D-BW75 / #3c209a：整个 devcert 目录进不去、连属性都取不到）
     = 当作没导入、没启用证书：只是「用不用开发者证书」这个开关，Apple ID 那条路照样走得通，不为它挡装机（原先抛到 update_phone，
@@ -475,6 +478,9 @@ def _raw(c):
             except AttributeError:
                 pass
             print(f"[s2a] 【黄】开发者证书设置读不了（{error}），这次当作没启用证书、按 Apple ID 签名", file=sys.stderr, flush=True)  # 非玩家句
+            # 不悄悄换签法：结果页黄字说清这次没读到证书设置、改用 Apple ID（读不到就不知道玩家启没启用过，按「如果启用过」说）
+            if callable(getattr(c, "diagnostic", None)):
+                c.diagnostic(UNREADABLE, code="devcert_unreadable", severity="warning", internal=str(error))
         return dict(active=False, entries={}, devices={}), {}
     return dict(active=bool(root.get("active")), entries=entries, devices=dict(e.get("devices") or {})), root
 
