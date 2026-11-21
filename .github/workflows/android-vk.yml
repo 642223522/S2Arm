@@ -43,11 +43,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - name: 系统包（lavapipe / validation / glslc / profiles 层构建依赖）
+      - name: 系统包（lavapipe / validation / SPIR-V 工具 / profiles 层构建依赖）
         run: |
           sudo apt-get update -q
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
-            mesa-vulkan-drivers vulkan-validationlayers vulkan-tools glslc libvulkan-dev \
+            mesa-vulkan-drivers vulkan-validationlayers vulkan-tools glslc spirv-tools libvulkan-dev \
             build-essential git cmake ninja-build libjsoncpp-dev python3-jsonschema python3-pyparsing
       - name: 契约测试 + 模拟机型档
         run: |

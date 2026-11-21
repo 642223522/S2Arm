@@ -184,6 +184,11 @@ extension LauncherView {
         VStack(alignment: .leading, spacing: 2) {
             homeMoreRow(loc.t("s2arm.library.refresh"), "arrow.clockwise", id: "home.refresh") { model.refresh() }
                 .disabled(model.loading)
+            // 不连手机、不经总控台：组不带游戏的通用 S2Arm.ipa 放进「S2Arm 游戏包」（作业 installUpdate + mode export → export_shell_ipa），
+            //   给 LiveContainer / SideStore / AltStore 自签（11-21 维护者；同总控台「别的工具装的」那台手机下的同名按钮）
+            homeMoreRow(BackendText.launcherText("console.button.exportShellIpa", language: loc.lang.sharedCode), "square.and.arrow.up", id: "home.exportShellIpa") {
+                model.updatePhone(acceptStale: false, repack: [], language: loc.lang.sharedCode, mode: "export")
+            }
         }
         .padding(8).frame(width: 220).font(.manrope(13.5, .semibold)).preferredColorScheme(.dark)
     }

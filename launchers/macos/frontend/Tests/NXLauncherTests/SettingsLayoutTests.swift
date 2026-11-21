@@ -1299,6 +1299,8 @@ import S2ArmAppleAdapter
                 fixture.model.home.group = .all
                 navigation.focus("home.more"); navigation.handle(.confirm)
                 try await waitUntil { navigation.activeWindow.map { menu in navigation.controlTargets(in: menu).contains { $0.id == "home.refresh" } } == true }
+                XCTAssertTrue(navigation.activeWindow.map { menu in navigation.controlTargets(in: menu).contains { $0.id == "home.exportShellIpa" } } == true,
+                              "更多菜单里有「导出 S2Arm.ipa」：不连手机、不经总控台也能拿到本版 S2Arm.ipa")
                 XCTAssertFalse(navigation.controlTargets(in: window).contains { $0.id == "top.library" })
                 navigation.focus("home.refresh"); navigation.handle(.confirm)
                 try await waitUntil { navigation.activeWindow === window && !fixture.model.loading }
