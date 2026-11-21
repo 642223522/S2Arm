@@ -204,6 +204,12 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
     out->physical = physicals[0];   // 首个＝系统主 GPU；多 GPU 选择是 C8，不在首版猜。
     free(physicals);
     vkGetPhysicalDeviceProperties(out->physical, &out->properties);
+    // #1749 M0：设备事实现查一次、落盘成设备档案、打【事实】摘要（dev_facts.c，只查询不改启用项）。放在一切「缺能力就拒绝」之前（含下一行的 1.1 版本下限）：
+    //   建不成设备的机器也留下档案（1.0 设备只记核心查询）。弱引用：只链 vk_device.c 的宿主探针照旧能链接（没有就不记）。
+    {
+        extern int s2a_dev_facts_on_device_create(VkPhysicalDevice) __attribute__((weak));
+        if (s2a_dev_facts_on_device_create) (void)s2a_dev_facts_on_device_create(out->physical);
+    }
     if (physical_api_floor(out->properties.apiVersion, why, why_size)) return -1;
     vkGetPhysicalDeviceMemoryProperties(out->physical, &out->memory);
     out->has_2d_array_compatible = out->properties.apiVersion >= VK_API_VERSION_1_1 ||
@@ -218,12 +224,6 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
     snprintf(out->driver_name, sizeof out->driver_name, "%.120s", driver.driverName);
     snprintf(out->driver_info, sizeof out->driver_info, "%.120s", driver.driverInfo);
     out->driver_id = (int)driver.driverID;
-    // #1749 M0：设备事实现查一次、落盘成设备档案、打【事实】摘要（dev_facts.c，只查询不改启用项）。放在一切「缺能力就拒绝」之前：
-    //   建不成设备的机器也留下档案。弱引用：只链 vk_device.c 的宿主探针照旧能链接（没有就不记）。
-    {
-        extern void s2a_dev_facts_on_device_create(VkPhysicalDevice) __attribute__((weak));
-        if (s2a_dev_facts_on_device_create) s2a_dev_facts_on_device_create(out->physical);
-    }
 
     uint32_t family_count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(out->physical, &family_count, NULL);

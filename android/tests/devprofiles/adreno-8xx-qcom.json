@@ -1,7 +1,7 @@
 {
  "api": {"kind":"vulkan","version":"1.3.284"},
  "completeness": "partial",
- "factsDigest": "sha256-50684c14c5e88f26473648220cdf9f8279c17955c5c209642a23c41a828f296b",
+ "factsDigest": "sha256-e9339794433f5718cb84bec12b64502a34775970f41a94aadfca6a47d903f34d",
  "identity": {
   "deviceId": "0x44050001",
   "deviceName": "Adreno (TM) 830",
@@ -193,8 +193,8 @@
   },
   "features": {
    "alphaToOne": 1,
-   "customBorderColorWithoutFormat": 0,
-   "customBorderColors": 0,
+   "customBorderColorWithoutFormat": null,
+   "customBorderColors": null,
    "depthBiasClamp": 1,
    "depthBounds": 1,
    "depthClamp": 1,
@@ -273,7 +273,7 @@
    "VK_FORMAT_A2B10G10R10_UINT_PACK32": [2147601539,2147601539,2147483736],
    "VK_FORMAT_A2B10G10R10_UNORM_PACK32": [2147614083,2147614083,2147483736],
    "VK_FORMAT_A2B10G10R10_USCALED_PACK32": [0,0,64],
-   "VK_FORMAT_A4B4G4R4_UNORM_PACK16": [0,54273,0],
+   "VK_FORMAT_A4B4G4R4_UNORM_PACK16": null,
    "VK_FORMAT_A8B8G8R8_SRGB_PACK32": [130433,130433,8],
    "VK_FORMAT_A8B8G8R8_UNORM_PACK32": [2148531587,2148531587,2147483736],
    "VK_FORMAT_ASTC_10x10_SRGB_BLOCK": [128001,128001,0],

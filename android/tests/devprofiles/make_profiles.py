@@ -28,8 +28,6 @@ DEVICES = os.path.join(REPO, 'android', 'tests', 'vk', 'profiles', 'devices')
 VK_CORE = os.path.join(REPO, 'graphics', 'nvn', 'third_party', 'vulkan-headers', 'include', 'vulkan', 'vulkan_core.h')
 REAL = (('adreno-8xx-qcom', '8e'), ('mali-g710-r32p1', '9000'))
 A4B4G4R4 = 'VK_FORMAT_A4B4G4R4_UNORM_PACK16'
-# s2a_vk_format_properties（vk_device.c）按 VK_EXT_4444_formats 规范保证给的 A4B4G4R4 optimal 特性：采样 / 位块传送源 / 线性过滤 / 传输
-A4B4G4R4_GUARANTEED = 0x1 | 0x1000 | 0x400 | 0x4000 | 0x8000
 
 # ---- minimal-1.1 手写部分（依据逐项写在行尾）----
 # 核心特性：只开 vk_device.c 建设备的硬性要求（required[] 表 + 其后的 shaderDrawParameters 检查），其余全 0
@@ -112,17 +110,24 @@ def convert(stem, phys, dev, fmt_names, fmt_num):
         if k != 'geometryShaderOcclusionQuery' and v and not phys['features'].get(k):
             sys.exit('【红】%s：devices 说 %s 已启用，物理读数却说不支持' % (stem, k))
     exts = set(phys['extensions'])
+    api = ident['apiVersion']
+    has_timeline = 'VK_KHR_timeline_semaphore' in exts or api >= (1 << 22 | 2 << 12)   # 同 dev_facts.c：列了扩展或设备 ≥ 1.2
+    has_di = 'VK_EXT_descriptor_indexing' in exts or api >= (1 << 22 | 2 << 12)
+    has_4444 = 'VK_EXT_4444_formats' in exts or api >= (1 << 22 | 3 << 12)           # 列了扩展或设备 ≥ 1.3
     ef = phys['extFeatures']
-    feats = {k: int(v) for k, v in phys['features'].items()}
-    feats['shaderDrawParameters'] = ef['shaderDrawParameters']   # 1.1 设备：dev_facts.c 总查
-    if 'VK_KHR_timeline_semaphore' in exts: feats['timelineSemaphore'] = ef['timelineSemaphore']
-    if 'VK_EXT_index_type_uint8' in exts: feats['indexTypeUint8'] = ef['indexTypeUint8']
-    if 'VK_EXT_4444_formats' in exts: feats.update(formatA4B4G4R4=None, formatA4R4G4B4=None)        # vkjson 不给该结构：未知
+    # phys 的扩展特性：vkjson 没给该结构时旧脚本记 0（「unknown extension features = absent」）——0 分不清「不支持」和「不知道」，
+    #   probed 档案不留猜的值：只有 1 是读数，0 一律写 null
+    seen = lambda v: 1 if v == 1 else None
+    feats = {k: int(v) for k, v in phys['features'].items()}   # 核心特性：vkjson 整组给出，是读数
+    feats['shaderDrawParameters'] = seen(ef['shaderDrawParameters'])   # 1.1 设备：dev_facts.c 总查
+    if has_timeline: feats['timelineSemaphore'] = seen(ef['timelineSemaphore'])
+    if 'VK_EXT_index_type_uint8' in exts: feats['indexTypeUint8'] = seen(ef['indexTypeUint8'])
+    if has_4444: feats.update(formatA4B4G4R4=None, formatA4R4G4B4=None)        # vkjson 不给该结构：未知
     if 'VK_EXT_depth_clip_control' in exts: feats['depthClipControl'] = None                       # 同上
     if 'VK_EXT_map_memory_placed' in exts: feats.update(memoryMapPlaced=None, memoryMapRangePlaced=None, memoryUnmapReserve=None)
     if 'VK_EXT_custom_border_color' in exts:
-        feats.update(customBorderColors=ef['customBorderColors'], customBorderColorWithoutFormat=ef['customBorderColorWithoutFormat'])
-    if 'VK_EXT_descriptor_indexing' in exts:
+        feats.update(customBorderColors=seen(ef['customBorderColors']), customBorderColorWithoutFormat=seen(ef['customBorderColorWithoutFormat']))
+    if has_di:   # 描述符索引的六位取应用直连层真机读数（device_caps.c 打出来的支持位），是读数
         di = dev['descriptorIndexing']
         feats.update(runtimeDescriptorArray=int(di['runtimeArray']), descriptorBindingPartiallyBound=int(di['partiallyBound']),
                      shaderSampledImageArrayNonUniformIndexing=int(di['sampledImageArrayNonUniformIndexing']),
@@ -130,7 +135,7 @@ def convert(stem, phys, dev, fmt_names, fmt_num):
                      descriptorBindingVariableDescriptorCount=int(di['variableDescriptorCount']),
                      descriptorBindingSampledImageUpdateAfterBind=int(di['sampledImageUpdateAfterBind']))
     if 'VK_EXT_vertex_attribute_divisor' in exts:
-        feats.update(vertexAttributeInstanceRateDivisor=ef['vertexAttributeInstanceRateDivisor'], vertexAttributeInstanceRateZeroDivisor=None)
+        feats.update(vertexAttributeInstanceRateDivisor=seen(ef['vertexAttributeInstanceRateDivisor']), vertexAttributeInstanceRateZeroDivisor=None)
     if 'VK_EXT_swapchain_maintenance1' in exts:
         # device_caps.c 只在特性也开着时把它写进 enabledExtensions：真机档里有 = 特性为真
         feats['swapchainMaintenance1'] = 1 if 'VK_EXT_swapchain_maintenance1' in dev.get('enabledExtensions', []) else None
@@ -147,9 +152,9 @@ def convert(stem, phys, dev, fmt_names, fmt_num):
     formats = {}
     for name in fmt_names:
         if name == A4B4G4R4:
-            if 'VK_EXT_4444_formats' not in exts: continue   # dev_facts.c：扩展没列出不查
-            # vkjson 的格式表只有核心格式；真机 caps 说 r4g4b4a4 齐（device_caps.c 直查），按规范保证值补上，否则未知
-            formats[name] = [0, A4B4G4R4_GUARANTEED, 0] if dev['formats'].get('r4g4b4a4') else None
+            if not has_4444: continue   # dev_facts.c：没列扩展且设备低于 1.3 不查
+            # vkjson 的格式表只有核心格式；device_caps.c 的 r4g4b4a4 只说「五个必需位齐」，不是三组原始位——不知道，不按规范值补
+            formats[name] = None
             continue
         formats[name] = phys['formats'].get(str(fmt_num[name]), [0, 0, 0])   # vkjson 只列有特性位的格式：没列 = 全 0
     return {

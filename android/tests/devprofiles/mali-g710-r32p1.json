@@ -1,7 +1,7 @@
 {
  "api": {"kind":"vulkan","version":"1.1.177"},
  "completeness": "partial",
- "factsDigest": "sha256-48b3982e47c1255c08fea429ced17dfeb25e564c3448c0da4ce6cf7f74b3068c",
+ "factsDigest": "sha256-62b3a5403145c937171da996d6d09ad54fcb8ac6b4d88ae7a9d146d366193721",
  "identity": {
   "deviceId": "0xa8620004",
   "deviceName": "Mali-G710 MC10",
@@ -99,8 +99,8 @@
   },
   "features": {
    "alphaToOne": 0,
-   "customBorderColorWithoutFormat": 0,
-   "customBorderColors": 0,
+   "customBorderColorWithoutFormat": null,
+   "customBorderColors": null,
    "depthBiasClamp": 1,
    "depthBounds": 0,
    "depthClamp": 1,
@@ -163,7 +163,7 @@
    "textureCompressionASTC_LDR": 1,
    "textureCompressionBC": 0,
    "textureCompressionETC2": 1,
-   "timelineSemaphore": 0,
+   "timelineSemaphore": null,
    "variableMultisampleRate": 0,
    "vertexPipelineStoresAndAtomics": 0,
    "wideLines": 0
@@ -176,7 +176,7 @@
    "VK_FORMAT_A2B10G10R10_UINT_PACK32": [183427,183427,72],
    "VK_FORMAT_A2B10G10R10_UNORM_PACK32": [515459,515459,72],
    "VK_FORMAT_A2B10G10R10_USCALED_PACK32": [0,0,64],
-   "VK_FORMAT_A4B4G4R4_UNORM_PACK16": [0,54273,0],
+   "VK_FORMAT_A4B4G4R4_UNORM_PACK16": null,
    "VK_FORMAT_A8B8G8R8_SRGB_PACK32": [515459,515459,0],
    "VK_FORMAT_A8B8G8R8_UNORM_PACK32": [515459,515459,88],
    "VK_FORMAT_ASTC_10x10_SRGB_BLOCK": [119809,119809,0],

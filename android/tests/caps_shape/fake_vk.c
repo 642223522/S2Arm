@@ -13,6 +13,7 @@ char cs_create_device_why[256];
 uint32_t cs_enabled_ext_count;
 const char *cs_enabled_ext[32];
 uint32_t cs_queried_fmt_count;
+uint32_t cs_features2_calls, cs_properties2_calls;
 VkFormat cs_queried_fmt[256];
 
 const struct cs_shape *cs_shape(void) {
@@ -129,10 +130,10 @@ static void features_chain(void *next, int for_create, const struct cs_shape *s)
     }
 }
 VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFeatures2(VkPhysicalDevice p, VkPhysicalDeviceFeatures2 *f) {
-    (void)p; f->features = cs_shape()->features; features_chain(f->pNext, 0, cs_shape());
+    (void)p; cs_features2_calls++; f->features = cs_shape()->features; features_chain(f->pNext, 0, cs_shape());
 }
 VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceProperties2(VkPhysicalDevice p, VkPhysicalDeviceProperties2 *out) {
-    (void)p; const struct cs_shape *s = cs_shape();
+    (void)p; cs_properties2_calls++; const struct cs_shape *s = cs_shape();
     out->properties = s->props;
     for (VkBaseOutStructure *b = out->pNext; b; b = b->pNext) {
         switch ((int)b->sType) {

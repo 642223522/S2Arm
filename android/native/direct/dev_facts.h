@@ -3,7 +3,7 @@
 //   队列族、驱动身份；系统段（SDK、页大小、CPU capacity / 最高频、KGSL、ADPF、显示节拍接口）一次读。
 //   只记录、不决策：本批没有任何代码读这些事实去选路径（推导层是 M1）；身份字段（厂商号 / 驱动名 / 机型名）只作记录。
 //   落盘成 s2a-device-profile-v1 档案（App 私有目录 files/devprofile/<事实摘要前 16 位>.json，字段白名单见 tools/devprofile_lint.py），
-//   并打一行【事实】摘要。档案按事实摘要分代：驱动 / 系统一变摘要就变，写新一代时删旧代。
+//   并打一行【事实】摘要（同一进程同一代只打一次）。档案按事实摘要分代：驱动 / 系统一变摘要就变；留最近 2 代。摘要输入只有静态事实。
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
@@ -57,7 +57,7 @@ struct s2a_dev_facts {
     long page_size;                            // sysconf(_SC_PAGESIZE)（plat_android.c plat_page_size 同读法）；≤0 = 不可用
     int ncpu;                                  // _SC_NPROCESSORS_CONF，不合理（≤0 或 >64）= 0（cpu_floor.c read_caps 同规则）
     uint32_t capacity[S2A_DEV_FACTS_MAX_CPU];  // /sys/devices/system/cpu/cpu<i>/cpu_capacity，单核读不到 = 0
-    uint32_t max_khz[S2A_DEV_FACTS_MAX_CPU];   // cpufreq/scaling_max_freq（cpu_floor.c read_khz 同读法），读不到 = 0
+    uint32_t max_khz[S2A_DEV_FACTS_MAX_CPU];   // cpufreq/cpuinfo_max_freq（硬件上限；不读会被温控 / 省电改的 scaling_max_freq），读不到 = 0
     int kgsl;                                  // /dev/kgsl-3d0：1 有 / 0 没有 / -1 判不了（只 stat，不打开、不 ioctl）
     int adpf;                                  // APerformanceHint_* 五个符号（adpf_hint.c backend_init 同一组）：1 齐 / 0 不齐 / -1 非安卓
     int vsync_api;                             // nvn_vsync_android.c ops_resolve 同一组符号：33 / 29 / 24 / 0 没有 / -1 非安卓
@@ -71,14 +71,15 @@ int s2a_dev_facts_collect(VkPhysicalDevice physical, struct s2a_dev_facts *out);
 // 事实 → s2a-device-profile-v1（紧凑 JSON，键按字典序，与 tools/devprofile_lint.py 的规范化写法逐字节一致）。
 //   digest_hex 写 factsDigest 的 64 位 hex（不含 "sha256-"）；返回 0 成功，-1 缓冲不够。
 int s2a_dev_profile_json(const struct s2a_dev_facts *facts, char *out, size_t cap, size_t *len, char digest_hex[65]);
-// 写 <files_dir>/devprofile/<digest 前 16 位>.json（临时文件 + rename），再删同目录的旧代档案（<16 位 hex>.json）。
-//   *written = 1 新写 / 0 同一代已在；*removed = 删掉的旧代数。返回 0 成功，否则 errno（why 写原因）。
+// 写 <files_dir>/devprofile/<digest 前 16 位>.json（临时文件 + fsync + rename；同一代已在则只刷修改时间），
+//   再把同目录更旧的代删到只剩最近 2 代（<16 位 hex>.json，别的名字不碰）。*written = 1 新写 / 0 同一代已在；*removed = 删掉的旧代数。返回 0 成功，否则 errno（why 写原因）。
 int s2a_dev_profile_store(const char *files_dir, const char *json, size_t len, const char *digest_hex,
                           int *written, int *removed, char *why, size_t why_size);
 // 一行【事实】摘要（不带换行）。
 void s2a_dev_facts_summary(const struct s2a_dev_facts *facts, const char *digest_hex, char *out, size_t cap);
 // vk_device.c 建设备时调（弱引用）：现查 → 落盘 → 打摘要。档案目录取 App files 目录（bridge.cpp s2a_android_gpu_driver_files_dir）。
-void s2a_dev_facts_on_device_create(VkPhysicalDevice physical);
+//   返回 1 = 本次打了【事实】行；0 = 本进程这一代已打过（或分配失败）。
+int s2a_dev_facts_on_device_create(VkPhysicalDevice physical);
 // 格式表（测试核对「生产会查 / 会映射的格式都在表里」用）
 const char *s2a_dev_facts_format_name(size_t i, VkFormat *format);
 

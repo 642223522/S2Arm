@@ -32,5 +32,7 @@ extern char cs_create_device_why[256];
 extern uint32_t cs_enabled_ext_count;
 extern const char *cs_enabled_ext[32];
 // 假驱动记下的每次 vkGetPhysicalDeviceFormatProperties 查询（去重；测试核对它们都在设备事实的格式表里）
+// vkGetPhysicalDeviceFeatures2 / Properties2 被调了几次（测试清零后核）
+extern uint32_t cs_features2_calls, cs_properties2_calls;
 extern uint32_t cs_queried_fmt_count;
 extern VkFormat cs_queried_fmt[256];

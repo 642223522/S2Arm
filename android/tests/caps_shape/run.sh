@@ -39,7 +39,7 @@ fresh_src
 weak=()
 [ "$(uname -s)" = Darwin ] && read -r -a weak <<< "$(python3 "$repo/tools/weak_link_decl.py" flags capshape)"   # 放行清单唯一来源：vk_device.c 里的「弱链接[capshape]」登记
 build() {   # $1 输出名 [$2 假驱动头所在目录，缺省 $out]：用 $out/src 里的（可能被改坏的）副本
-  "${CC:-cc}" ${weak[@]+"${weak[@]}"} -std=gnu11 -O1 -Wall -Wextra -Werror -DS2A_ANDROID_VK_BACKEND_NVN_VK=1 \
+  "${CC:-cc}" ${weak[@]+"${weak[@]}"} -std=gnu11 -O1 -Wall -Wextra -Werror -DS2A_ANDROID_VK_BACKEND_NVN_VK=1 -DS2A_DEV_FACTS_TEST=1 \
     -I "${2:-$out}" -I "$out/src" -I "$here" -I "$repo/android/native/direct" -I "$repo/android/native/nvn" -I "$repo/graphics/nvn/gfx/nvn" \
     -I "$repo/android/tests/vkhost" -I "$repo/graphics/nvn/third_party/vulkan-headers/include" \
     -I "$repo/android/native" -I "$repo/android/native/capprobe" \
@@ -80,6 +80,22 @@ for shape in $shapes; do
     || { echo "【红】回读闭环：rt-$shape 第二代档案和第一代不同"; exit 1; }
 done
 echo "PASS: 回读闭环 $(echo $shapes | wc -w | tr -d ' ') 档：生成的设备档案直接当形态档读，第二代与第一代逐字段相同"
+for shape in $shapes; do   # 摘要行每进程每代只打一次：测试里第二次调挂点不许再打
+  c=$(grep -c "【事实】v1" "$out/caps-$shape.json.log" || true)
+  [ "$c" = 1 ] || { echo "【红】$shape 档日志里【事实】行 $c 条（期望 1）"; exit 1; }
+done
+echo "PASS: 每档日志里【事实】行恰好 1 条（第二次建设备不刷屏）"
+
+# 版本门槛变体：已转正扩展不列名时按设备版本记；1.0 设备不挂扩展查询链（测试里另核 Features2 / Properties2 调用 0 次）
+"${PY:-python3}" "$here/shapes.py" variants "$out/var/profiles"
+S2A_DEVPROFILES="$out/var/profiles" "${PY:-python3}" "$here/shapes.py" header "$out/var/caps_shapes_gen.h"
+build test-var "$out/var"
+for v in $(S2A_DEVPROFILES="$out/var/profiles" "${PY:-python3}" "$here/shapes.py" names); do
+  mkdir -p "$out/var/files-$v"
+  S2A_TEST_FILES_DIR="$out/var/files-$v" S2A_CAPS_SHAPE=$v "$out/test-var" "$out/var/caps-$v.json" "$out/var/gen-$v.json" > "$out/var/$v.out" 2>&1 \
+    || { echo "【红】版本门槛变体 $v 建设备 / 断言红"; cat "$out/var/$v.out"; exit 1; }
+  "${PY:-python3}" "$here/shapes.py" check-variant "$v" "$out/var/gen-$v.json"
+done
 
 # 负对照：$1 名字 $2 改哪份副本 $3 原文 $4 改成 $5 必须红的档（空格分隔） $6 红因里必须有的字
 neg_n=0
@@ -129,7 +145,7 @@ PY
   echo "PASS: 设备事实负对照 $1 → $4 档比对红（$(grep -m1 "$5" "$out/mutant.cmp" | sed "s/^ *//")）"
   fresh_src
 }
-neg_profile '漏记时间线信号量特性' 'if ((f->have_timeline = listed(f, "VK_KHR_timeline_semaphore"))) LINK(chain, &f->timeline);' \
+neg_profile '漏记时间线信号量特性' 'if ((f->have_timeline = listed(f, "VK_KHR_timeline_semaphore") || api >= VK_API_VERSION_1_2)) LINK(chain, &f->timeline);' \
   'f->have_timeline = 0;' adreno-8xx-qcom 'features.timelineSemaphore'
 neg_profile '漏查 BC7 格式' 'if (k_formats[i].f == VK_FORMAT_A4B4G4R4_UNORM_PACK16 && !f->have_4444) continue;' \
   'if ((k_formats[i].f == VK_FORMAT_A4B4G4R4_UNORM_PACK16 && !f->have_4444) || k_formats[i].f == VK_FORMAT_BC7_UNORM_BLOCK) continue;' mali-g710-r32p1 'VK_FORMAT_BC7_UNORM_BLOCK'

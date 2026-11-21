@@ -15,6 +15,7 @@
   names                             列档名
   oracle <档名> <设备打出的 caps JSON>  真机档：本构建在该形态下打出的 caps 和 android/tests/vk/profiles/devices/*.json 逐项比
   compare <档名> <生成的档案>          本构建在该形态下现查生成的设备档案和该档的档案文件逐字段比（期望 = 档案文件本身）
+  variants <目录> / check-variant <名> <生成的档案>   版本门槛变体档（见 VARIANTS）
 """
 import glob, json, os, re, sys
 
@@ -117,10 +118,13 @@ def oracle(name, got_path):
     stem = REAL[name]
     want = json.load(open(os.path.join(DEVICES, stem + '.json')))
     got = json.load(open(got_path))
+    # 档案里写 null（来源没读数）的项，假驱动按「能力未知 = 按不支持」回答；真机 caps 里由它决定的项因此不比，点名列出
+    unknown = {('formats', 'r4g4b4a4')} if load(name)['vulkan']['formats'].get('VK_FORMAT_A4B4G4R4_UNORM_PACK16', 0) is None else set()
     bad = []
     for sect in ('limits', 'features', 'formats', 'memory'):
         for k, v in want[sect].items():
             if sect == 'features' and k in ('geometryShader', 'geometryShaderOcclusionQuery'): continue   # capprobe 判定，不是能力形态
+            if (sect, k) in unknown: continue
             g = got.get(sect, {}).get(k)
             if (abs(g - v) > 1e-6 if isinstance(v, float) else g != v): bad.append('%s.%s：真机 %r / 本构建 %r' % (sect, k, v, g))
     for k in ('vendorId', 'deviceId', 'deviceName', 'driverName', 'subgroupSize'):
@@ -128,8 +132,9 @@ def oracle(name, got_path):
     if bad:
         print('FAIL: %s 档打出的设备 caps 和真机档 devices/%s.json 不一致（%d 处）：\n  %s' % (name, stem, len(bad), '\n  '.join(bad)))
         return 1
-    n = sum(len(want[s]) for s in ('limits', 'features', 'formats', 'memory')) - 2 + 5
-    print('PASS: %s 档打出的设备 caps 与真机档 devices/%s.json 一致（比了 %d 项）' % (name, stem, n))
+    n = sum(len(want[s]) for s in ('limits', 'features', 'formats', 'memory')) - 2 - len(unknown) + 5
+    print('PASS: %s 档打出的设备 caps 与真机档 devices/%s.json 一致（比了 %d 项%s）' % (
+        name, stem, n, '；档案未知按不支持、不比：' + '、'.join('%s.%s' % u for u in sorted(unknown)) if unknown else ''))
     return 0
 
 
@@ -167,10 +172,49 @@ def compare(name, got_path):
     return 0
 
 
+# 版本门槛变体（dev_facts.c：timeline / 描述符索引「列了扩展或 ≥ 1.2」、A4B4G4R4「列了扩展或 ≥ 1.3」、低于 1.1 整条扩展查询链不挂）：
+#   由 adreno 档派生，去掉这三个已转正扩展再改设备版本；期望只由变体自己的版本号决定
+PROMOTED = ('VK_KHR_timeline_semaphore', 'VK_EXT_descriptor_indexing', 'VK_EXT_4444_formats')
+VARIANTS = {'v-api10': '1.0.0', 'v-api11-noext': '1.1.0', 'v-api12-noext': '1.2.0', 'v-api13-noext': '1.3.0'}
+
+
+def variants(out):
+    base = load('adreno-8xx-qcom')
+    os.makedirs(out, exist_ok=True)
+    for name, ver in VARIANTS.items():
+        p = json.loads(json.dumps(base))
+        p['api']['version'] = ver
+        for e in PROMOTED: p['vulkan']['extensions'].pop(e, None)
+        p['factsDigest'] = lint.digest(p)
+        open(os.path.join(out, name + '.json'), 'w', encoding='utf-8').write(lint.dumps_pretty(p))
+
+
+def check_variant(name, got_path):
+    got = json.load(open(got_path, encoding='utf-8'))
+    minor = int(VARIANTS[name].split('.')[1])
+    f, fm, pr = got['vulkan']['features'], got['vulkan']['formats'], got['vulkan']['properties']
+    want = {'timelineSemaphore 记了': minor >= 2, 'runtimeDescriptorArray 记了': minor >= 2,
+            'formatA4B4G4R4 记了': minor >= 3, 'A4B4G4R4 格式查了': minor >= 3,
+            'shaderDrawParameters 记了': minor >= 1, 'maxMemoryAllocationSize 记了': minor >= 1,
+            '扩展特性只在 ≥ 1.1 记（swapchainMaintenance1）': minor >= 1}
+    have = {'timelineSemaphore 记了': 'timelineSemaphore' in f, 'runtimeDescriptorArray 记了': 'runtimeDescriptorArray' in f,
+            'formatA4B4G4R4 记了': 'formatA4B4G4R4' in f, 'A4B4G4R4 格式查了': 'VK_FORMAT_A4B4G4R4_UNORM_PACK16' in fm,
+            'shaderDrawParameters 记了': 'shaderDrawParameters' in f, 'maxMemoryAllocationSize 记了': 'maxMemoryAllocationSize' in pr,
+            '扩展特性只在 ≥ 1.1 记（swapchainMaintenance1）': 'swapchainMaintenance1' in f}
+    bad = ['%s：期望 %s / 实为 %s' % (k, want[k], have[k]) for k in want if want[k] != have[k]]
+    bad += ['生成的档案不合格：' + b for b in lint.check(got)]
+    if bad:
+        print('FAIL: [%s] 版本门槛不对：\n  %s' % (name, '\n  '.join(bad))); return 1
+    print('PASS: [%s] 设备 %s、不列三个已转正扩展：%d 项版本门槛都对' % (name, VARIANTS[name], len(want)))
+    return 0
+
+
 if __name__ == '__main__':
     cmd = sys.argv[1] if len(sys.argv) > 1 else ''
     if cmd == 'header' and len(sys.argv) == 3: header(sys.argv[2])
     elif cmd == 'names': print(' '.join(names()))
     elif cmd == 'oracle' and len(sys.argv) == 4: sys.exit(oracle(sys.argv[2], sys.argv[3]))
     elif cmd == 'compare' and len(sys.argv) == 4: sys.exit(compare(sys.argv[2], sys.argv[3]))
+    elif cmd == 'variants' and len(sys.argv) == 3: variants(sys.argv[2])
+    elif cmd == 'check-variant' and len(sys.argv) == 4: sys.exit(check_variant(sys.argv[2], sys.argv[3]))
     else: sys.exit(__doc__)

@@ -10,6 +10,7 @@
 
 #include <errno.h>
 #include <dirent.h>
+#include <fcntl.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -424,16 +425,21 @@ static void query_vulkan(VkPhysicalDevice physical, struct s2a_dev_facts *f) {
     f->di.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES_EXT;
     f->vdiv.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT;
     f->swapchain_m1.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT;
-    if (f->have_core11) LINK(chain, &f->draw_parameters);
-    if ((f->have_timeline = listed(f, "VK_KHR_timeline_semaphore"))) LINK(chain, &f->timeline);
-    if ((f->have_index_u8 = listed(f, "VK_EXT_index_type_uint8"))) LINK(chain, &f->index_u8);
-    if ((f->have_4444 = listed(f, "VK_EXT_4444_formats"))) LINK(chain, &f->f4444);
-    if ((f->have_dcc = listed(f, "VK_EXT_depth_clip_control"))) LINK(chain, &f->dcc);
-    if ((f->have_placed = listed(f, "VK_EXT_map_memory_placed"))) LINK(chain, &placed);
-    if ((f->have_border = listed(f, "VK_EXT_custom_border_color"))) LINK(chain, &f->border);
-    if ((f->have_di = listed(f, VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME) && f->have_core11)) LINK(chain, &f->di);
-    if ((f->have_vdiv = listed(f, "VK_EXT_vertex_attribute_divisor"))) LINK(chain, &f->vdiv);
-    if ((f->have_swapchain_m1 = listed(f, "VK_EXT_swapchain_maintenance1"))) LINK(chain, &f->swapchain_m1);
+    // 低于 1.1 的设备：本实例按 1.1 建，Features2 / Properties2 对它不成立（后端也建不了它）——整条扩展查询链都不挂，只记核心查询
+    // 已转正的扩展：设备版本够（timeline / 描述符索引 1.2、4444 格式 1.3）就算有，不要求再列扩展名
+    const uint32_t api = f->props.apiVersion;
+    if (f->have_core11) {
+        LINK(chain, &f->draw_parameters);
+        if ((f->have_timeline = listed(f, "VK_KHR_timeline_semaphore") || api >= VK_API_VERSION_1_2)) LINK(chain, &f->timeline);
+        if ((f->have_index_u8 = listed(f, "VK_EXT_index_type_uint8"))) LINK(chain, &f->index_u8);
+        if ((f->have_4444 = listed(f, "VK_EXT_4444_formats") || api >= VK_API_VERSION_1_3)) LINK(chain, &f->f4444);
+        if ((f->have_dcc = listed(f, "VK_EXT_depth_clip_control"))) LINK(chain, &f->dcc);
+        if ((f->have_placed = listed(f, "VK_EXT_map_memory_placed"))) LINK(chain, &placed);
+        if ((f->have_border = listed(f, "VK_EXT_custom_border_color"))) LINK(chain, &f->border);
+        if ((f->have_di = listed(f, VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME) || api >= VK_API_VERSION_1_2)) LINK(chain, &f->di);
+        if ((f->have_vdiv = listed(f, "VK_EXT_vertex_attribute_divisor"))) LINK(chain, &f->vdiv);
+        if ((f->have_swapchain_m1 = listed(f, "VK_EXT_swapchain_maintenance1"))) LINK(chain, &f->swapchain_m1);
+    }
     if (chain) {
         VkPhysicalDeviceFeatures2 q = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = chain };
         vkGetPhysicalDeviceFeatures2(physical, &q);
@@ -451,12 +457,14 @@ static void query_vulkan(VkPhysicalDevice physical, struct s2a_dev_facts *f) {
     VkPhysicalDeviceMapMemoryPlacedPropertiesEXT pp = { .sType = S2A_FSTYPE_PLACED_PROPERTIES };
     chain = NULL;
     // driverProperties 是 1.2 核心 / VK_KHR_driver_properties；vk_device.c 一律挂（1.1 实例下驱动照填），这里同样只看 1.1
-    if (f->have_core11) { LINK(chain, &driver); LINK(chain, &m3); LINK(chain, &sg); }
-    if (f->have_border) LINK(chain, &bp);
-    if ((f->have_minmax = listed(f, "VK_EXT_sampler_filter_minmax"))) LINK(chain, &mp);
-    if (f->have_vdiv) LINK(chain, &vp);
-    if ((f->have_host_import = listed(f, "VK_EXT_external_memory_host"))) LINK(chain, &hp);
-    if (f->have_placed) LINK(chain, &pp);
+    if (f->have_core11) {
+        LINK(chain, &driver); LINK(chain, &m3); LINK(chain, &sg);
+        if (f->have_border) LINK(chain, &bp);
+        if ((f->have_minmax = listed(f, "VK_EXT_sampler_filter_minmax"))) LINK(chain, &mp);
+        if (f->have_vdiv) LINK(chain, &vp);
+        if ((f->have_host_import = listed(f, "VK_EXT_external_memory_host"))) LINK(chain, &hp);
+        if (f->have_placed) LINK(chain, &pp);
+    }
     if (chain) {
         VkPhysicalDeviceProperties2 q = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = chain };
         vkGetPhysicalDeviceProperties2(physical, &q);
@@ -473,7 +481,7 @@ static void query_vulkan(VkPhysicalDevice physical, struct s2a_dev_facts *f) {
     f->host_align = hp.minImportedHostPointerAlignment;
     f->placed_align = pp.minPlacedMemoryMapAlignment;
 
-    // 逐格式：核心格式照常查；A4B4G4R4（VK_EXT_4444_formats 加的格式）只在设备列出该扩展时查，同 device_caps.c 的直查
+    // 逐格式：核心格式照常查；A4B4G4R4（VK_EXT_4444_formats 加的格式，1.3 转正）只在设备列出该扩展或设备 ≥ 1.3 时查，同 device_caps.c 的直查
     for (size_t i = 0; i < S2A_DEV_FACTS_FORMATS; i++) {
         if (k_formats[i].f == VK_FORMAT_A4B4G4R4_UNORM_PACK16 && !f->have_4444) continue;
         vkGetPhysicalDeviceFormatProperties(physical, k_formats[i].f, &f->fmt[i]);
@@ -497,15 +505,23 @@ static void prop(const char *name, char *out, size_t cap) {
 }
 #endif
 
+// 系统段只记静态事实（全部进摘要）：SDK、页大小、核数、cpu_capacity、cpuinfo_max_freq（硬件上限）、KGSL 节点、ADPF / 节拍接口符号、机型。
+//   会在运行中变的量一律不记：scaling_max_freq（温控 / 省电 / 厂商调频策略随时改）、在线核数、热状态、电量——记了指纹就抖、白白换代。
+#ifdef S2A_DEV_FACTS_TEST
+static const char *sysfs_root(void) { const char *r = getenv("S2A_TEST_SYSFS_ROOT"); return r ? r : ""; }   // 宿主测试：假 sysfs 根
+#else
+static const char *sysfs_root(void) { return ""; }
+#endif
+
 static void query_system(struct s2a_dev_facts *f) {
     f->page_size = sysconf(_SC_PAGESIZE);
     long n = sysconf(_SC_NPROCESSORS_CONF);
     f->ncpu = n > 0 && n <= S2A_DEV_FACTS_MAX_CPU ? (int)n : 0;
-    char path[96];
+    char path[640];
     for (int i = 0; i < f->ncpu; i++) {
-        snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpu_capacity", i);
+        snprintf(path, sizeof path, "%s/sys/devices/system/cpu/cpu%d/cpu_capacity", sysfs_root(), i);
         f->capacity[i] = read_u32_file(path);
-        snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_max_freq", i);
+        snprintf(path, sizeof path, "%s/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", sysfs_root(), i);
         f->max_khz[i] = read_u32_file(path);
     }
     struct stat st;
@@ -818,6 +834,11 @@ int s2a_dev_profile_json(const struct s2a_dev_facts *f, char *out, size_t cap, s
 }
 
 // ---------------- 落盘 ----------------
+#if defined(__APPLE__)
+#define ST_MTIM st_mtimespec   // 宿主测试（macOS）的同一字段
+#else
+#define ST_MTIM st_mtim
+#endif
 static int is_generation_name(const char *n) {   // <16 位小写 hex>.json：只认这一种，别的文件不碰
     if (strlen(n) != 21 || strcmp(n + 16, ".json")) return 0;
     for (int i = 0; i < 16; i++) if (!((n[i] >= '0' && n[i] <= '9') || (n[i] >= 'a' && n[i] <= 'f'))) return 0;
@@ -837,26 +858,41 @@ int s2a_dev_profile_store(const char *files_dir, const char *json, size_t len, c
     snprintf(path, sizeof path, "%s/%s", dir, name);
     struct stat st;
     if (stat(path, &st) == 0 && (size_t)st.st_size == len + 1) {
-        // 同一代已在（文件名就是内容摘要）：不重写
+        // 同一代已在（文件名就是内容摘要）：不重写，只把修改时间刷成现在——「最新一代」按修改时间认（导出、留代都用它）
+        utimensat(AT_FDCWD, path, NULL, 0);
     } else {
         snprintf(tmp, sizeof tmp, "%s/.%s.tmp", dir, name);
         FILE *fp = fopen(tmp, "w");
         if (!fp) { int e = errno; snprintf(why, why_size, "开临时文件失败 errno=%d", e); return e; }
-        int ok = fwrite(json, 1, len, fp) == len && fputc('\n', fp) != EOF;
+        int ok = fwrite(json, 1, len, fp) == len && fputc('\n', fp) != EOF && fflush(fp) == 0 && fsync(fileno(fp)) == 0;   // 落到盘上再 rename
         if (fclose(fp) != 0) ok = 0;
         if (!ok || rename(tmp, path) != 0) { int e = errno ? errno : EIO; unlink(tmp); snprintf(why, why_size, "写档案失败 errno=%d", e); return e; }
         if (written) *written = 1;
     }
+    // 留最近 2 代（当前一代 + 修改时间最新的一份旧代，驱动升级后能前后对照），更旧的删掉；别的名字不碰
     DIR *d = opendir(dir);
     if (d) {
         struct dirent *e;
+        char keep[32] = "";
+        struct timespec keep_t = {0, 0};
+        char doomed[16][32]; int n_doomed = 0;
         while ((e = readdir(d))) {
             if (!is_generation_name(e->d_name) || !strcmp(e->d_name, name)) continue;
-            char old[600];
+            char old[600]; struct stat os;
             snprintf(old, sizeof old, "%s/%s", dir, e->d_name);
-            if (unlink(old) == 0 && removed) (*removed)++;
+            if (stat(old, &os) != 0) continue;
+            int newer = !keep[0] || os.ST_MTIM.tv_sec > keep_t.tv_sec ||
+                        (os.ST_MTIM.tv_sec == keep_t.tv_sec && os.ST_MTIM.tv_nsec > keep_t.tv_nsec);
+            const char *drop = e->d_name;
+            if (newer) { if (keep[0] && n_doomed < 16) snprintf(doomed[n_doomed++], 32, "%s", keep); snprintf(keep, sizeof keep, "%s", e->d_name); keep_t = os.ST_MTIM; drop = NULL; }
+            if (drop && n_doomed < 16) snprintf(doomed[n_doomed++], 32, "%s", drop);
         }
         closedir(d);
+        for (int i = 0; i < n_doomed; i++) {
+            char old[600];
+            snprintf(old, sizeof old, "%s/%s", dir, doomed[i]);
+            if (unlink(old) == 0 && removed) (*removed)++;
+        }
     }
     return 0;
 }
@@ -898,12 +934,14 @@ static double ms_since(const struct timespec *a) {
     return (double)(b.tv_sec - a->tv_sec) * 1e3 + (double)(b.tv_nsec - a->tv_nsec) / 1e6;
 }
 
-void s2a_dev_facts_on_device_create(VkPhysicalDevice physical) {
+static char g_logged_digest[17];   // 本进程已打过摘要行的那一代（设备丢失后重建同一台设备不再刷屏）
+
+int s2a_dev_facts_on_device_create(VkPhysicalDevice physical) {
     struct timespec t0; clock_gettime(CLOCK_MONOTONIC, &t0);
     struct s2a_dev_facts *f = calloc(1, sizeof *f);
     enum { CAP = 64 << 10 };
     char *json = malloc(CAP);
-    if (!f || !json) { S2A_FLOG("【红】【事实】分配失败，本次不记设备事实"); free(f); free(json); return; }
+    if (!f || !json) { S2A_FLOG("【红】【事实】分配失败，本次不记设备事实"); free(f); free(json); return 0; }
     s2a_dev_facts_collect(physical, f);
     const double collect_ms = ms_since(&t0);
     size_t len = 0; char digest[65] = "";
@@ -921,9 +959,15 @@ void s2a_dev_facts_on_device_create(VkPhysicalDevice physical) {
             else snprintf(where, sizeof where, "档案=devprofile/%.16s.json（%s，清旧代 %d）", digest, written ? "新写" : "同一代已在", removed);
         }
     }
-    s2a_dev_facts_summary(f, digest, line, sizeof line);
-    S2A_FLOG("%s %s 采集 %.1f ms 合计 %.1f ms", line, where, collect_ms, ms_since(&t0));
-    if (f->ext_state != 1) S2A_FLOG("【红】【事实】设备扩展表未知（%s）：档案 extensions 为空表、带 extensionsWhy", f->ext_why);
+    int logged = 0;
+    if (!digest[0] || strncmp(g_logged_digest, digest, 16)) {
+        s2a_dev_facts_summary(f, digest, line, sizeof line);
+        S2A_FLOG("%s %s 采集 %.1f ms 合计 %.1f ms", line, where, collect_ms, ms_since(&t0));
+        if (f->ext_state != 1) S2A_FLOG("【红】【事实】设备扩展表未知（%s）：档案 extensions 为空表、带 extensionsWhy", f->ext_why);
+        snprintf(g_logged_digest, sizeof g_logged_digest, "%.16s", digest);
+        logged = 1;
+    }
     free(json);
     free(f);
+    return logged;
 }

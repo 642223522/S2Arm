@@ -134,7 +134,10 @@ final class DiagnosticBundleWriter {
 
     /**
      * {@code profileDir}: files/devprofile (#1749 M0). Its newest regular &lt;16 hex&gt;.json goes in as devprofile/&lt;name&gt;,
-     * redacted like the logs; none there, null, or over MAX_PROFILE_BYTES = no entry. Symlinks and other names are never read.
+     * byte for byte: it is NOT run through the log redactor. The profile holds whitelisted fields only (dev_facts.c writes
+     * nothing else; tools/devprofile_lint.py rejects anything else on the way back), and the redactor would turn its
+     * "sha256-&lt;64 hex&gt;" factsDigest into [KEY_MATERIAL], so the exported profile could never pass lint.
+     * None there, null, or over MAX_PROFILE_BYTES = no entry. Symlinks and other names are never read.
      */
     static Result write(Path savesRoot, Path profileDir, Path outDir, Function<String, String> redactor, Map<String, Map<String, String>> info,
                         List<Map<String, Object>> exits, String word, long now, TimeZone zone, long maxZipBytes) throws IOException {
@@ -151,8 +154,7 @@ final class DiagnosticBundleWriter {
             if (profile != null) {
                 boolean[] truncated = {false};
                 byte[] raw = readCapped(profile, DiagnosticBundlePolicy.MAX_PROFILE_BYTES, truncated);   // no symlink; a cut profile is no profile
-                byte[] clean = truncated[0] ? null : redactor.apply(new String(raw, StandardCharsets.UTF_8)).getBytes(StandardCharsets.UTF_8);
-                if (clean != null && clean.length <= DiagnosticBundlePolicy.MAX_PROFILE_BYTES) { profileBytes = clean; budget -= clean.length; }
+                if (!truncated[0]) { profileBytes = raw; budget -= raw.length; }   // verbatim (see the method comment)
             }
             for (SessionLog log : logs) {
                 if (entries.size() >= MAX_LOGS) { omitted++; continue; }
