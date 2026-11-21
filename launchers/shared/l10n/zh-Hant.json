@@ -1374,6 +1374,8 @@
   "export.sign.choose.anyway": "仍然用這張",
   "errors.cert_revoke_confirm.title": "可能會撤掉一張別的開發證書",
   "errors.cert_revoke_confirm.detail": "帳號證書滿了時，新建證書會讓蘋果撤掉列表裡的第一張，用它簽的 App 會打不開；沒滿就什麼都不撤。",
+  "errors.app_bundle_replace_confirm.title": "會頂掉裝置上的另一個 App",
+  "errors.app_bundle_replace_confirm.detail": "你的描述檔只允許一個套件名稱，裝這款會取代裝置上同名的那個 App，被取代的就打不開了；它的存檔留在裝置上，以後換回來可以接著玩。",
   "errors.phone_app_running.title": "S2Arm 正在 iPhone 上執行",
   "errors.phone_app_running.detail": "遊戲開著的時候換存檔，存檔會被遊戲寫壞。",
   "install.layout.hint.appleId": "免費 Apple ID：同時最多 3 個自簽 App，每 7 天最多註冊 10 個 App ID；獨立 App 每款佔一個，7 天到期要續簽。付費開發者帳號簽的 1 年到期。",
