@@ -32,7 +32,7 @@ cp "$repo/android/native/direct/vk_device.c" "$repo/android/native/direct/gs_pat
 extract "$repo/android/native/nvn/backend_vulkan.c" array_query_default "$out/src/array_query_default.inc"
 # vk_device.c 的两个弱引用（平台表面扩展表 / 自定义驱动）本测试不提供，保持「没有」：macOS 链接器要显式放行弱的未定义符号
 weak=()
-[ "$(uname -s)" = Darwin ] && weak=(-Wl,-U,_nvn_plat_vk_instance_exts -Wl,-U,_s2a_android_vk_custom_driver_prepare)
+[ "$(uname -s)" = Darwin ] && read -r -a weak <<< "$(python3 "$repo/tools/weak_link_decl.py" flags capshape)"   # 放行清单唯一来源：vk_device.c 里的「弱链接[capshape]」登记
 build() {   # $1 输出名：用 $out/src 里的（可能被改坏的）副本
   "${CC:-cc}" ${weak[@]+"${weak[@]}"} -std=gnu11 -O1 -Wall -Wextra -Werror -DS2A_ANDROID_VK_BACKEND_NVN_VK=1 \
     -I "$out" -I "$out/src" -I "$here" -I "$repo/android/native/direct" -I "$repo/android/native/nvn" -I "$repo/graphics/nvn/gfx/nvn" \
