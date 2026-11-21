@@ -114,6 +114,16 @@ import XCTest
         XCTAssertEqual(S2ArmLauncherModel.exportDeviceRow(phone("E", installed: false), gameId: "0100A", sign: "devCert", layout: "standalone").note, nil, "独立 App 不需要 S2Arm")
     }
 
+    func testFailedRowShellButtonFollowsCode() {
+        XCTAssertEqual(ExportSheetView.shellLinkKey("shell_install_required"), "exportsheet.link.installShell", "没装 →「先装 S2Arm」")
+        XCTAssertEqual(ExportSheetView.shellLinkKey("shell_update_required"), "exportsheet.link.updateShell", "不是本版 →「先更新 S2Arm」")
+        XCTAssertNil(ExportSheetView.shellLinkKey("device_not_connected"), "别的失败码不给这个按钮")
+        XCTAssertEqual(BackendText.launcherText("exportsheet.row.installed", language: "zh-Hans"), "已装到这台")
+        for lang in ["zh-Hant", "en", "ja", "es", "fr"] {
+            XCTAssertFalse(BackendText.launcherText("exportsheet.row.installed", language: lang).hasPrefix("["), "缺 \(lang)")
+        }
+    }
+
     func testDefaultsNothingPreselectedExceptRenew() {
         model.openExportSheet("0100A")
         XCTAssertNil(model.exportSheet?.preselect, "默认都不勾")
@@ -264,8 +274,10 @@ import XCTest
         model.exportPhones = [phone("E1", name: "我的 iPhone", kind: "iPhone", by: .external, cert: true, state: .latest),
                               phone("E2", name: "备用机", kind: nil, by: .external, cert: false, state: nil),
                               phone("L3", name: "客厅", kind: "iPad", by: .launcher, state: .suggested)]
+        try shot(ExportSheetView(model: model, request: ExportSheetRequest(gameID: "0100A"), refreshOnAppear: false, sign: "none", layout: "shell", picked: []),
+                 "2b_导出确认页_自签_三种设备行_默认都不勾", width: 820, height: 700)
         try shot(ExportSheetView(model: model, request: ExportSheetRequest(gameID: "0100A"), refreshOnAppear: false, sign: "none", layout: "shell", picked: ["E1"]),
-                 "2b_导出确认页_自签_三种设备行", width: 820, height: 700)
+                 "2b2_导出确认页_自签_玩家勾了一台", width: 820, height: 700)
         model.exportPhones = [phone("P1", name: "我的 iPhone", kind: "iPhone", by: .launcher, state: nil)]
         try shot(ExportSheetView(model: model, request: ExportSheetRequest(gameID: "0100C"), refreshOnAppear: false, sign: "appleId", layout: "shell", picked: []),
                  "2c_导出确认页_没做好iPhone版", width: 820, height: 700)
@@ -273,13 +285,16 @@ import XCTest
 
     func testPerDeviceResults() throws {
         var flow = ExportFlow(gameID: "0100A", sign: "appleId", rows: [ExportFlow.Row(device: "P1", kind: "iPhone", name: "我的 iPhone"),
-                                                                       ExportFlow.Row(device: "P2", kind: "iPad", name: "客厅")])
+                                                                       ExportFlow.Row(device: "P2", kind: "iPad", name: "客厅"),
+                                                                       ExportFlow.Row(device: "P3", kind: "iPhone", name: "备用机")])
         flow.rows[0].state = .done
-        flow.rows[1].state = .failed; flow.rows[1].code = "shell_install_required"
-        flow.rows[1].message = "手机上还没装 S2Arm"
+        flow.rows[1].state = .failed; flow.rows[1].code = "shell_install_required"   // 码与原因句取作业层同一对（pack/jobs/install.py SHELL_INSTALL_FIRST / SHELL_UPDATE_FIRST）
+        flow.rows[1].message = "手机上还没装 S2Arm：先点「安装 S2Arm」，装好后再把这款推到 iPhone。"
+        flow.rows[2].state = .failed; flow.rows[2].code = "shell_update_required"
+        flow.rows[2].message = "手机上的 S2Arm 不是这一版：先点「更新 S2Arm」，再把这款推到 iPhone。"
         model.exportFlows["0100A"] = flow
         try shot(ExportSheetView(model: model, request: ExportSheetRequest(gameID: "0100A", results: true), refreshOnAppear: false, sign: "appleId", layout: "shell"),
-                 "3_逐台结果页_一台成功一台失败", width: 820, height: 700)
+                 "3_逐台结果页_一台装好_没装S2Arm_S2Arm旧", width: 820, height: 700)
     }
 }
 

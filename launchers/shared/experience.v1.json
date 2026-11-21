@@ -1399,7 +1399,7 @@
       {"id": "exportsheet.results.title", "zh-Hans": "导入到设备", "en": "Sending to devices"},
       {"id": "exportsheet.row.queued", "zh-Hans": "排队中", "en": "Waiting"},
       {"id": "exportsheet.row.running", "zh-Hans": "正在导入…", "en": "Sending…"},
-      {"id": "exportsheet.row.done", "zh-Hans": "导入好了", "en": "Done"},
+      {"id": "exportsheet.row.installed", "zh-Hans": "已装到这台", "en": "Installed on this device"},
       {"id": "exportsheet.row.cancelled", "zh-Hans": "已取消", "en": "Cancelled"},
       {"id": "console.status.introduce", "zh-Hans": "在 iPhone 上玩", "en": "Play on iPhone"},
       {"id": "console.status.updating", "zh-Hans": "正在更新 {0} / {1} 款", "en": "Updating {0} of {1} games"},

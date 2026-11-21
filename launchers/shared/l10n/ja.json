@@ -546,7 +546,7 @@
   "exportsheet.results.title": "デバイスに送信",
   "exportsheet.row.queued": "待機中",
   "exportsheet.row.running": "送信中…",
-  "exportsheet.row.done": "完了",
+  "exportsheet.row.installed": "このデバイスにインストール済み",
   "exportsheet.row.cancelled": "キャンセルしました",
   "console.status.introduce": "iPhone で遊ぶ",
   "console.status.updating": "{1} 本中 {0} 本目を更新中",

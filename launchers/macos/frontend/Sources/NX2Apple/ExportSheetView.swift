@@ -42,6 +42,15 @@ struct ExportSheetView: View {
         return name.isEmpty ? k : "\(k)「\(name)」"
     }
 
+    /// 失败那一行的「去首位 S2Arm 卡」按钮按失败码分：没装 →「先装 S2Arm」，不是本版 →「先更新 S2Arm」；别的码不给
+    static func shellLinkKey(_ code: String?) -> String? {
+        switch code {
+        case "shell_install_required": return "exportsheet.link.installShell"
+        case "shell_update_required": return "exportsheet.link.updateShell"
+        default: return nil
+        }
+    }
+
     /// 这次能勾的设备行（顺序同作业给的）
     var rows: [ExportDeviceRow] {
         (model.exportPhones ?? []).map { S2ArmLauncherModel.exportDeviceRow($0, gameId: id, sign: sign, layout: layout) }
@@ -241,7 +250,7 @@ struct ExportSheetView: View {
                 case .running:
                     Text(live.map { $0.stage.isEmpty ? t("exportsheet.row.running") : loc.backend($0.stage) } ?? t("exportsheet.row.running"))
                         .font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary)
-                case .done: Text(t("exportsheet.row.done")).font(LauncherTheme.TypeStyle.caption).foregroundStyle(LauncherPalette.ready)
+                case .done: Text(t("exportsheet.row.installed")).font(LauncherTheme.TypeStyle.caption).foregroundStyle(LauncherPalette.ready)
                 case .cancelled: Text(t("exportsheet.row.cancelled")).font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary)
                 case .failed:
                     Text(loc.backend(row.message)).font(LauncherTheme.TypeStyle.caption).foregroundStyle(LauncherPalette.danger).fixedSize(horizontal: false, vertical: true)
@@ -252,8 +261,8 @@ struct ExportSheetView: View {
             }
             Spacer(minLength: 8)
             if row.state == .failed || row.state == .cancelled {
-                if ["shell_install_required", "shell_update_required"].contains(row.code ?? "") {   // 这台没装 / 不是本版 S2Arm：去首位卡装，不挡别的设备
-                    Button(t(row.code == "shell_update_required" ? "exportsheet.link.updateShell" : "exportsheet.link.installShell")) { openConsole(row.device) }
+                if let key = Self.shellLinkKey(row.code) {   // 这台没装 / 不是本版 S2Arm：去首位 S2Arm 卡装 / 更新，不挡别的设备
+                    Button(t(key)) { openConsole(row.device) }
                         .controllerButtonStyle(LauncherSecondaryButtonStyle())
                 }
                 let confirm = row.code.flatMap { S2ArmLauncherModel.confirmCodes[$0] } != nil

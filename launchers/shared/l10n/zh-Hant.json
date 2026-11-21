@@ -562,7 +562,7 @@
   "exportsheet.results.title": "匯入到裝置",
   "exportsheet.row.queued": "排隊中",
   "exportsheet.row.running": "正在匯入…",
-  "exportsheet.row.done": "匯入好了",
+  "exportsheet.row.installed": "已裝到這台",
   "exportsheet.row.cancelled": "已取消",
   "console.status.introduce": "在 iPhone 上玩",
   "console.status.updating": "正在更新 {0} / {1} 款",

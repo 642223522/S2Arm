@@ -546,7 +546,7 @@
   "exportsheet.results.title": "Enviando a los dispositivos",
   "exportsheet.row.queued": "En espera",
   "exportsheet.row.running": "Enviando…",
-  "exportsheet.row.done": "Listo",
+  "exportsheet.row.installed": "Instalado en este dispositivo",
   "exportsheet.row.cancelled": "Cancelado",
   "console.status.introduce": "Jugar en el iPhone",
   "console.status.updating": "Actualizando {0} de {1} juegos",
