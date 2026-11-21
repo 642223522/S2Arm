@@ -10782,5 +10782,13 @@
  {
   "source": "「更新这款」只更新原来装过这款的设备，不会把它装到新的设备上。",
   "en": "\"Update this game\" only updates devices that already have this game; it never installs it on a new device."
+ },
+ {
+  "source": "这次没能读到开发者证书设置（这台电脑拒绝 S2Arm 读它自己的证书设置文件夹），按 Apple ID 签名。如果你启用过自己的开发者证书，这次没有用它。",
+  "en": "Could not read your developer certificate settings this time (this computer denied S2Arm access to its own certificate settings folder), so this was signed with your Apple ID. If you had turned on your own developer certificate, it was not used this time."
+ },
+ {
+  "source": "要用自己的开发者证书：检查杀毒软件或 Windows 安全中心的「受控文件夹访问」有没有拦 S2Arm（把 S2Arm 加进允许的应用），然后在设置里重新导入证书。没启用过开发者证书可以不管这条。",
+  "en": "To use your own developer certificate: check whether antivirus software or Controlled folder access in Windows Security is blocking S2Arm (add S2Arm to the allowed apps), then import the certificate again in Settings. If you never turned on a developer certificate, you can ignore this."
  }
 ]
