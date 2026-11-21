@@ -37,14 +37,51 @@ static uint16_t feedback_writes(struct nvn_gpu_cmd_s *c) {
     }
     return writes;
 }
+// from_pool = 1：这个视图来自整池数组（NVN_RB_TEXP，整张贴图池一个绑定），不是着色器声明过的某个具体绑定。
+//   整池数组只表示「可能被按运行时下标采样到」：池里登记着本通道正在画的那张图（几乎每张渲染目标都在池里），不等于这一笔会读它。
+//   照 Ryujinx：贴图数组（DescriptorSetUpdater.InsertBindingBarriers 的 segment.IsArray 分支）只排队写后读屏障，不查反馈环、不拷快照
+//   （非数组才记 FeedbackLoopHazards）。所以整池里与「本笔写着的附件」重叠的视图不拷快照、不拆通道、不把整组描述符改成快照（*skipped 记一笔供读数）。
+//   与「本笔不写的附件」重叠的照旧（只读通道 / 快照）：那是深度测试不写深度同时采样深度这类合法用法，拆通道把前面的写落地才读得对。
+//   nvk_pool_fb=1 回到旧行为；nvk_opt_layout 开着时池图像必须是 GENERAL（pool_check_layouts），重叠的视图要换成快照才合规，也保持旧行为。
+// 免拷只在「GENERAL 档（nvk_opt_layout=0）且没开旧行为开关（nvk_pool_fb=0）」成立；这一条写成显式函数，夹具案例 18 按 opt 0 / 1 各断言一遍。
+static inline int feedback_pool_skip_allowed(const struct nvn_gpu_cmd_s *c) { return !c->pool_fb_on && !c->opt; }
+// 免拷日志限流：每个（管线、图）首次一行，最多 FB_SKIP_LOG_MAX 行，写满后只说一句「不再逐条记」；读数仍在分时行的 pskip。
+// 管线键 = 建管线时的描述散列（p->hash）；图编号 = 贴图的访问编号（access_id，会话内不复用）。查表无锁：空槽 CAS 占位，占到的那一方打日志。
+#define FB_SKIP_LOG_MAX 64u
+static uint64_t access_id(uint64_t *slot);
+static uint64_t g_fb_skip_seen[FB_SKIP_LOG_MAX];
+static uint32_t g_fb_skip_full;
+static void feedback_pool_skip_note(const struct nvn_gpu_cmd_s *c, const struct nvn_gpu_view_s *v) {
+    struct nvn_gpu_tex_s *t = v->tex;
+    if (!t) return;
+    const uint64_t id = access_id(&t->access_id);
+    const uint64_t key = (((uint64_t)c->pipe->hash << 32) ^ id) * 0x9E3779B97F4A7C15ull | 1ull;
+    for (uint32_t i = 0; i < FB_SKIP_LOG_MAX; i++) {
+        uint64_t cur = __atomic_load_n(&g_fb_skip_seen[i], __ATOMIC_RELAXED);
+        if (cur == key) return;
+        if (cur) continue;
+        if (!__atomic_compare_exchange_n(&g_fb_skip_seen[i], &cur, key, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+            if (cur == key) return;   // 别的线程刚占了同一个键
+            continue;
+        }
+        char line[200];
+        snprintf(line, sizeof line, "整池数组免拷快照（与本笔写着的附件重叠，nvk_pool_fb=1 恢复旧行为）：管线 %08x，图 #%llu %ux%u 格式 %#x",
+                 c->pipe->hash, (unsigned long long)id, t->w, t->h, t->nvn_format);
+        nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", line);
+        return;
+    }
+    if (!__atomic_exchange_n(&g_fb_skip_full, 1u, __ATOMIC_RELAXED))
+        nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", "整池数组免拷快照：不同（管线、图）已记满，之后不再逐条记（计数见分时行 pskip）");
+}
 static int feedback_add(struct nvn_gpu_cmd_s *c, struct nvn_gpu_view_s *v, uint32_t set,
-                        uint16_t writes, uint16_t *read_mask) {
+                        uint16_t writes, uint16_t *read_mask, int from_pool, int *skipped) {
     uint16_t attached = 0;
     const nvn_gpu_pass_desc *d = &c->pass_desc;
     for (uint32_t i = 0; i < d->ncolor && i < 8; i++)
         if (feedback_overlap(v, d->color[i].view)) attached |= 1u << i;
     if (feedback_overlap(v, d->depth.view) || feedback_overlap(v, d->stencil.view)) attached |= 1u << 8;
     if (!attached) return 1;
+    if (from_pool && (attached & writes) && feedback_pool_skip_allowed(c)) { feedback_pool_skip_note(c, v); *skipped = 1; return 1; }
     if (c->feedback_read_on && !(attached & writes)) {
         *read_mask |= attached;
         return 1;
@@ -158,6 +195,7 @@ static int feedback_prepare(struct nvn_gpu_cmd_s *c, int compute) {
     // 每笔由实际采样集合重建：不再采样（包括没有描述符组）就退出 NONE。
     // 不遗留旧槽位的只读状态，避免另一附件别名到同一范围并开始写时漏恢复。
     uint16_t read_mask = 0;
+    int pool_skipped = 0;   // 这一笔里整池数组与写着的附件重叠而免拷的视图有没有（读数）
     for (int st = 0; st < 5; st++) {
         for (uint32_t i = 0; i < c->nbinds[st]; i++) {
             const nvn_gpu_binding *b = &c->binds[st][i].b;
@@ -169,15 +207,33 @@ static int feedback_prepare(struct nvn_gpu_cmd_s *c, int compute) {
             if (b->cls == NVN_GPU_RES_IMAGE && feedback_attached(c, v)) {
                 set_sticky(c, NVN_GPU_E_UNSUPPORTED, "feedback storage image writes cannot use a sampled snapshot"); return 0;
             }
-            if (b->cls != NVN_GPU_RES_IMAGE && !feedback_add(c, v, e->set, writes, &read_mask)) return 0;
+            if (b->cls != NVN_GPU_RES_IMAGE && !feedback_add(c, v, e->set, writes, &read_mask, 0, &pool_skipped)) return 0;
         }
         if (c->pool_active) for (uint32_t i = 0; i < c->pipe->stage_nent[st] && i < 64; i++) {
             nvn_gpu_pool_table t = c->pool_binds[st][i];
             if (!t || t->kind != NVN_GPU_POOL_IMAGE) continue;
-            for (uint32_t j = 0; j <= t->count; j++)
-                if (!feedback_add(c, t->objects[j], c->pipe->stage_ents[st][i].set, writes, &read_mask)) return 0;
+            const uint32_t set = c->pipe->stage_ents[st][i].set;
+            if (!t->ikey) {   // 没有按图索引的表：逐项扫
+                for (uint32_t j = 0; j <= t->count; j++)
+                    if (!feedback_add(c, t->objects[j], set, writes, &read_mask, 1, &pool_skipped)) return 0;
+                continue;
+            }
+            // 有索引：只看和本通道附件同一张图的视图（附件至多 9 个，深度与模板常同图，查过的图不重复查）
+            const nvn_gpu_pass_desc *d = &c->pass_desc;
+            struct nvn_gpu_view_s *att[10]; uint32_t na = 0;
+            for (uint32_t k = 0; k < d->ncolor && k < 8; k++) if (d->color[k].view) att[na++] = d->color[k].view;
+            if (d->depth.view) att[na++] = d->depth.view;
+            if (d->stencil.view) att[na++] = d->stencil.view;
+            for (uint32_t k = 0; k < na; k++) {
+                const uint64_t img = att[k]->tex ? (uint64_t)(uintptr_t)att[k]->tex->image : 0;
+                uint32_t q = 0; while (q < k && !(att[q]->tex && (uint64_t)(uintptr_t)att[q]->tex->image == img)) q++;
+                if (!img || q < k) continue;
+                for (uint32_t j = pool_img_first(t, img); j != UINT32_MAX; j = t->unext[j])
+                    if (!feedback_add(c, t->uviews[j], set, writes, &read_mask, 1, &pool_skipped)) return 0;
+            }
         }
     }
+    if (pool_skipped && g_draw_tm) __atomic_fetch_add(&g_feedback_stats[3], 1, __ATOMIC_RELAXED);
     if (read_mask && g_draw_tm) __atomic_fetch_add(&g_feedback_stats[0], 1, __ATOMIC_RELAXED);
     if (c->feedback == c->feedback_stop && read_mask == c->feedback_read_mask) return 1;
     return feedback_restart(c, read_mask, 1);

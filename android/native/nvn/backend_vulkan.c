@@ -207,9 +207,23 @@ struct nvn_gpu_pool_table_s {
     int released, refs;
     void **objects;
     VkDescriptorImageInfo *images;
+    // 图像池的「按图索引」（建表时一次建好，表不可变）：同一张 VkImage 的视图（按视图指针去重）串成链。
+    // 反馈检测只需看和本通道附件同图的那几项，不必每笔绘制逐项扫整表（整池 8448 项）。没有索引（ikey == NULL，宿主夹具手造的表）退回逐项扫。
+    uint32_t nuniq, idx_cap;
+    void **uviews;      // 去重后的视图，nuniq 项
+    uint32_t *unext;    // uviews[j] 的下一项（同图），UINT32_MAX 结尾
+    uint64_t *ikey;     // 开放寻址表：VkImage 句柄（0 = 空槽），idx_cap 项（2 的幂）
+    uint32_t *ihead;    // 对应槽的链头（uviews 下标）
     struct nvn_gpu_pool_table_s *next;
 };
 static void pool_destroy_locked(struct nvn_gpu_pool_table_s *table);
+// 按图索引的查找（feedback.inc 在 pool.inc 之前被包含，所以放在这里）：同一张图的第一项（uviews 下标），没有 = UINT32_MAX；表有索引（ikey != NULL）才能调。
+static inline uint32_t pool_hash64(uint64_t x, uint32_t cap) { return (uint32_t)((x * 0x9E3779B97F4A7C15ull) >> 40) & (cap - 1); }
+static inline uint32_t pool_img_first(const struct nvn_gpu_pool_table_s *t, uint64_t img) {
+    uint32_t g = pool_hash64(img, t->idx_cap);
+    while (t->ikey[g]) { if (t->ikey[g] == img) return t->ihead[g]; g = (g + 1) & (t->idx_cap - 1); }
+    return UINT32_MAX;
+}
 struct vk_ref { void *obj; int type; };
 enum { REF_BUF = 1, REF_TEX, REF_VIEW, REF_SAMP, REF_POOL };
 
@@ -261,6 +275,7 @@ struct nvn_gpu_cmd_s {
     struct feedback_copy *feedback, *feedback_stop; // 本笔 [feedback, stop)，历史项活到 fence
     int feedback_on;
     int feedback_read_on;
+    int pool_fb_on;              // nvk_pool_fb：1 = 整池数组里和「本笔写着的附件」重叠的视图也拷快照（旧行为，A/B 与回退诊断用）；缺省 0 = 不拷（见 feedback_add）
     uint16_t feedback_read_mask; // 颜色 bit0..7、深度模板物理附件 bit8：本物理通道 LOAD / NONE
     int recording;
     int in_pass;
@@ -462,7 +477,7 @@ static uint64_t g_life_ns[8], g_life_n[8];
 #define LIFE_ADD(i) do { if (g_draw_tm) { uint64_t ln_ = now_ns(); __atomic_fetch_add(&g_life_ns[i], ln_ - lt_, __ATOMIC_RELAXED); __atomic_fetch_add(&g_life_n[i], 1, __ATOMIC_RELAXED); lt_ = ln_; } } while (0)
 static uint64_t now_ns(void);
 static int g_draw_tm; static uint64_t g_draw_ns[3];   // 绘制入口分段计时：描述符 / 状态 / 顶点索引与绘制调用
-static uint64_t g_feedback_stats[3]; // nvk_gputime：只读采样 draw / 快照 vkCmdCopyImage / 反馈重开次数，只增不清零
+static uint64_t g_feedback_stats[4]; // nvk_gputime：只读采样 draw / 快照 vkCmdCopyImage / 反馈重开次数 / 整池数组与写着的附件重叠而免拷的 draw 数，只增不清零
 static uint64_t g_feedback_snap[2];  // nvk_gputime：反馈快照图 新建 / 同段同源复用 次数，只增不清零
 static uint64_t g_draw_log_ns = 5000000000ull;         // 逐笔读数（nvn_gpu_draw 末尾）的周期，缺省 5 秒；测试钩子 nvn_gpu_vk_test_diag_timing 可缩短
 static void draw_tm_init(void) { if (!g_draw_tm) g_draw_tm = nvn_plat_flag("nvk_gputime", 0) != 0; }   // 与 GPU 时间戳同一个开关
@@ -7812,6 +7827,7 @@ nvn_gpu_rc nvn_gpu_cmd_begin(const nvn_gpu_cmd_desc *d, nvn_gpu_cmd *out, nvn_gp
     c->opt = nvn_plat_flag("nvk_opt_layout", 0) != 0;   // 附件 / 采样用对齐语义的布局（缺省 0 = 全 GENERAL 的旧行为）
     c->feedback_on = nvn_plat_flag("nvk_fb_copy", 1) != 0; // 0 仅供回退诊断，不保证反馈采样正确
     c->feedback_read_on = c->feedback_on && g.dev->load_store_op_none_enabled && nvn_plat_flag("nvk_fb_read", 0) != 0;
+    c->pool_fb_on = nvn_plat_flag("nvk_pool_fb", 0) != 0;
     {   // 调试读数（debug 开关 nvk_gputime）：段首尾各写一个 GPU 时间戳，完成时算这一段在 GPU 上从开始到结束用了多久
         static int on = -1; if (on < 0) on = nvn_plat_flag("nvk_gputime", 0);
         VkQueryPoolCreateInfo qi; memset(&qi, 0, sizeof qi);
