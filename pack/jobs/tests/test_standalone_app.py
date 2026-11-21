@@ -42,12 +42,12 @@ def ctx(t, **r):
 
 
 def use_devcert(c, distribution, bundle=SHELL_BID, appid=f"{TEAM}.*"):
-    """在用的开发者证书（state.json + 三样文件；密码与描述文件读取替身掉）"""
+    """在用的开发者证书（state.json + 三样文件；密码与描述文件读取替身掉）。distribution = 描述文件 get-task-allow 为假（分发）"""
     d = c.private / "devcert"
     d.mkdir(parents=True, exist_ok=True)
     (d / "cert.p12").write_bytes(b"p12")
-    (d / "state.json").write_text(json.dumps(dict(active=True, certSha1="aa", bundleId=bundle, teamId=TEAM, teamName="T", distribution=distribution)))
-    prof = plistlib.dumps({"ApplicationIdentifierPrefix": [TEAM], "TeamIdentifier": [TEAM], "Entitlements": {"application-identifier": appid}})
+    (d / "state.json").write_text(json.dumps(dict(active=True, certSha1="aa", bundleId=bundle, teamId=TEAM, teamName="T")))   # 同 11-20 前导入的：没有分发标记
+    prof = plistlib.dumps({"ApplicationIdentifierPrefix": [TEAM], "TeamIdentifier": [TEAM], "Entitlements": {"application-identifier": appid, "get-task-allow": not distribution}})
     (d / "profile.mobileprovision").write_bytes(prof)
     return patch.object(devcert, "stored", lambda c_: (d / "cert.p12", prof, "pw"))
 
