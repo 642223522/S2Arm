@@ -212,6 +212,7 @@ static _Atomic uint64_t g_commit_error_n;   // 命令缓冲执行出错的累计
 void s2a_direct_gpu_error(const char *desc);   // S2Arm（graphics/nvn/host_adapt.m）：命令缓冲报错 → §11.3 直连异常（打红行，不切换）
 void s2a_gpu_safe_stop(const char *why);   // graphics/nvn/host_adapt.m：安全停之后宿主那一侧（冻游戏线程、iOS 上出错误页 / Mac 收局）
 static NSArray<NSString *> *quar_take(void); static void quar_fault(NSArray<NSString *> *sus, NSError *err);   // GPU error quarantine (defined with the pipeline user list)
+typedef struct qf_set qf_set; static qf_set *qf_take(void); static void qf_report(const qf_set *q, const char *where, uint64_t seq);   // GPU error attribution: a commit's in-flight programs (defined after the quarantine)
 // ---------- GPU 挂死安全停（11-07 Switch2 线 84，维护者「这种严重 bug 要避免，太吓人了」）----------
 // 测试设备2 金刚第 2228 帧主命令缓冲报 kIOGPUCommandBufferCallbackErrorHang，宿主照常提交，之后全是 InnocentVictim / SubmissionsIgnored、连续挂死，整机卡死只能强制重启。
 //   旧判法（host_adapt.m s2a_gpu_timeout_check）只在 localizedDescription 里找 Hang / Timeout：Metal 4 的错误把真实原因包在 NSMultipleUnderlyingErrorsKey 里，顶层
@@ -3109,6 +3110,7 @@ uint64_t nvn_be_sub_commit(void) {
     if (n) memcpy(ops, g_post, n * sizeof *ops);
     NSArray<dispatch_block_t> *commit_blocks = [g_commit_blocks copy];
     NSArray<NSString *> *qsus = quar_take();   // this commit's suspects for a GPU error (quar_fault)
+    qf_set *qf = qf_take();   // and every program it ran (qf_report)
     id o = fb_new();
     atomic_fetch_add(&g_seg_inflight, 1);
     fb_add(o, ^(id f) { (void)f; atomic_fetch_sub(&g_seg_inflight, 1); for (dispatch_block_t block in commit_blocks) block(); });
@@ -3118,7 +3120,8 @@ uint64_t nvn_be_sub_commit(void) {
     fb_add(o, ^(id<MTL4CommitFeedback> cb) {
         gpu_tag_done(gpu_f, 0, gpu_sub, cb.GPUStartTime, cb.GPUEndTime);
         uint64_t c0 = 0, c1 = 0; if (seg_ts()) { c0 = gpu_s_guest_ns(cb.GPUStartTime); c1 = gpu_s_guest_ns(cb.GPUEndTime); }
-        if (cb.error) { atomic_store(&g_last_commit_error, 1); atomic_fetch_add(&g_commit_error_n, 1); if (mtl_gpu_halted()) mtl_gpu_cb_error(cb.error, "main replay", fence); else { static int n, nv; int victim = [cb.error.description containsString:@"InnocentVictim"]; if (!victim) quar_fault(qsus, cb.error); if (victim ? nv++ < 1 : n++ < 8) MLOG("【红】 command buffer error details fence=%llu: %s | GPU %.3f→%.3f", (unsigned long long)fence, cb.error.description.UTF8String, cb.GPUStartTime, cb.GPUEndTime); if (!victim) MLOG("【红】 state of the failed submission fence=%llu: %s", (unsigned long long)fence, cctx.UTF8String); MLOG("【红】 command buffer execution error: %s", cb.error.localizedDescription.UTF8String); mtl_gpu_cb_error(cb.error, "main replay", fence); s2a_direct_gpu_error(cb.error.localizedDescription.UTF8String); } }
+        if (cb.error) { atomic_store(&g_last_commit_error, 1); atomic_fetch_add(&g_commit_error_n, 1); if (mtl_gpu_halted()) mtl_gpu_cb_error(cb.error, "main replay", fence); else { static int n, nv; int victim = [cb.error.description containsString:@"InnocentVictim"]; if (!victim) { quar_fault(qsus, cb.error); qf_report(qf, "main replay", fence); } if (victim ? nv++ < 1 : n++ < 8) MLOG("【红】 command buffer error details fence=%llu: %s | GPU %.3f→%.3f", (unsigned long long)fence, cb.error.description.UTF8String, cb.GPUStartTime, cb.GPUEndTime); if (!victim) MLOG("【红】 state of the failed submission fence=%llu: %s", (unsigned long long)fence, cctx.UTF8String); MLOG("【红】 command buffer execution error: %s", cb.error.localizedDescription.UTF8String); mtl_gpu_cb_error(cb.error, "main replay", fence); s2a_direct_gpu_error(cb.error.localizedDescription.UTF8String); } }
+        free(qf);   // the in-flight set is only read above
         for (int i = 0; i < n; i++) {
             if (ops[i].kind == 1) { if (ops[i].mode == 1) *ops[i].val += ops[i].v; else *ops[i].val = ops[i].v; evs_landed(ops[i].val); }
             else if (ops[i].kind == 3) {   // Samples passed: the sum of all slots since the reset (the folded part + the slots not yet completed at the report)
@@ -7615,6 +7618,55 @@ static void quar_fault(NSArray<NSString *> *sus, NSError *err) {   // completion
     if (add.count && p) { FILE *f = fopen(p.fileSystemRepresentation, "a"); if (f) { for (NSString *q in add) fprintf(f, "%s\n", q.UTF8String); fclose(f); } }
     pthread_mutex_unlock(&g_quar_mu);
     for (NSString *q in add) MLOG("【红】 GPU error quarantine: program pair %s skipped from now on (the faulted commit first built its pipeline; %s)", q.UTF8String, p ? "remembered for later runs" : "this run only");
+}
+// In-flight programs of a commit (GPU error attribution, step 1: diagnosis only, no behavior change). The quarantine above names only the pipelines first built for the faulted
+//   commit, and gives up past QUAR_MAX: a commit that built none (#770, a hang in a pass of indirect task / mesh draws) or many left the report empty. An error that is not an
+//   innocent victim's is this commit's own, so every program a draw or dispatch of it used is a suspect: the set is exact as a superset, only too large to skip (a few hundred).
+//   It is reported, never quarantined. Per draw: one compare with the previous draw's programs; a program set not yet seen in this commit is parsed once into a small table
+//   (open addressing, cleared by a generation, no allocation); at commit the table is copied for the completion, which prints it only when the commit faulted and frees it.
+//   Entry kinds: 0 vertex / fragment pair, 2 geometry, 3 tess control, 4 tess evaluation (the extra stages of a draw's program, b = 0), 5 compute
+typedef struct { uint64_t a, b; uint8_t kind; } qf_ent;
+struct qf_set { uint32_t n; qf_ent e[]; };
+static uint32_t *g_qf_slot, *g_qf_sgen; static qf_ent *g_qf_ent; static const void *(*g_qf_ptr)[2]; static uint32_t g_qf_cap, g_qf_n, g_qf_gen = 1; static const void *g_qf_last;   // slot → entry index (valid when its generation is current); g_qf_last: the previous draw's program / dispatch's shader
+static uint64_t qf_hex(__unsafe_unretained NvShader *s) { uint64_t v = 0; if (!s) return 0; for (int i = 0; i < 16 && s->key[i]; i++) { char c = s->key[i]; v = v << 4 | (uint64_t)(c >= 'a' ? c - 'a' + 10 : c >= 'A' ? c - 'A' + 10 : c - '0'); } return v; }
+static inline uint32_t qf_hash(const void *a, const void *b) { uint64_t h = ((uintptr_t)a * 0x9E3779B97F4A7C15ull) ^ ((uintptr_t)b * 0xC2B2AE3D27D4EB4Full); return (uint32_t)(h >> 32); }
+static void qf_slot_put(uint32_t e) { for (uint32_t i = qf_hash(g_qf_ptr[e][0], g_qf_ptr[e][1]) & (g_qf_cap - 1); ; i = (i + 1) & (g_qf_cap - 1)) if (g_qf_sgen[i] != g_qf_gen) { g_qf_sgen[i] = g_qf_gen; g_qf_slot[i] = e; return; } }
+static void qf_put(__unsafe_unretained NvShader *sa, __unsafe_unretained NvShader *sb, uint8_t kind) {   // submit thread; the second pointer carries the kind in its low bits for the identity (objects are aligned)
+    const void *a = (__bridge const void *)sa, *pb = (const void *)((uintptr_t)(__bridge const void *)sb | kind);
+    if (g_qf_n * 2 >= g_qf_cap) {   // grow (also the first call): the slots are rebuilt from the entry list, the entries stay
+        uint32_t cap = g_qf_cap ? g_qf_cap * 2 : 1024;
+        uint32_t *sl = realloc(g_qf_slot, cap * sizeof *sl), *sg = sl ? realloc(g_qf_sgen, cap * sizeof *sg) : NULL; if (sl) g_qf_slot = sl; if (sg) g_qf_sgen = sg;
+        qf_ent *en = sg ? realloc(g_qf_ent, (cap / 2) * sizeof *en) : NULL; if (en) g_qf_ent = en;
+        const void *(*pp)[2] = en ? realloc(g_qf_ptr, (cap / 2) * sizeof *pp) : NULL; if (pp) g_qf_ptr = pp;
+        if (!pp) return;   // out of memory: this program set is not listed (the report only lists what it holds)
+        memset(g_qf_sgen, 0, cap * sizeof *g_qf_sgen); g_qf_cap = cap; g_qf_gen = 1;
+        for (uint32_t e = 0; e < g_qf_n; e++) qf_slot_put(e);
+    }
+    for (uint32_t i = qf_hash(a, pb) & (g_qf_cap - 1); ; i = (i + 1) & (g_qf_cap - 1)) {
+        if (g_qf_sgen[i] != g_qf_gen) { uint32_t e = g_qf_n++; g_qf_ptr[e][0] = a; g_qf_ptr[e][1] = pb; g_qf_ent[e] = (qf_ent){qf_hex(sa), qf_hex(sb), kind}; g_qf_sgen[i] = g_qf_gen; g_qf_slot[i] = e; return; }
+        uint32_t e = g_qf_slot[i]; if (g_qf_ptr[e][0] == a && g_qf_ptr[e][1] == pb) return;
+    }
+}
+static inline void qf_note(NvProg *pr) {   // draw(): the draw's program
+    if ((__bridge const void *)pr == g_qf_last) return;
+    g_qf_last = (__bridge const void *)pr; qf_put(pr->sh[0], pr->sh[1], 0);
+    for (int st = 2; st < 5; st++) if (pr->sh[st]) qf_put(pr->sh[st], NULL, (uint8_t)st);
+}
+static inline void qf_note_cs(NvShader *cs) { if ((__bridge const void *)cs == g_qf_last) return; g_qf_last = (__bridge const void *)cs; qf_put(cs, NULL, 5); }
+static qf_set *qf_take(void) {   // at commit: this commit's set (NULL = none); the next commit starts empty
+    qf_set *q = g_qf_n ? malloc(sizeof *q + g_qf_n * sizeof q->e[0]) : NULL;
+    if (q) { q->n = g_qf_n; memcpy(q->e, g_qf_ent, g_qf_n * sizeof q->e[0]); }
+    g_qf_n = 0; if (!++g_qf_gen) { if (g_qf_sgen) memset(g_qf_sgen, 0, g_qf_cap * sizeof *g_qf_sgen); g_qf_gen = 1; } g_qf_last = NULL;   // a new generation empties the slots
+    return q;
+}
+static void qf_report(const qf_set *q, const char *where, uint64_t seq) {   // completion of a faulted commit (not an innocent victim's): the first 4 such commits are printed whole
+    static _Atomic int n; if (atomic_fetch_add(&n, 1) >= 4) return;
+    MLOG("【红】 GPU error attribution: %s commit %llu had %u program sets in flight (each a suspect; kind 0 vertex/fragment, 2 geometry, 3/4 tessellation, 5 compute)", where, (unsigned long long)seq, q ? q->n : 0);
+    for (uint32_t i = 0; q && i < q->n; i += 16) {
+        char line[16 * 40] = ""; size_t o = 0;
+        for (uint32_t j = i; j < q->n && j < i + 16; j++) o += (size_t)snprintf(line + o, sizeof line - o, j > i ? " %u:%016llx/%016llx" : "%u:%016llx/%016llx", q->e[j].kind, (unsigned long long)q->e[j].a, (unsigned long long)q->e[j].b);
+        MLOG("【红】 GPU error attribution: %s commit %llu in flight %u-%u: %s", where, (unsigned long long)seq, i, MIN(i + 16, q->n) - 1, line);
+    }
 }
 static NSString *pso_user_path(void) {
     const char *u = getenv("DM_PSO_USER"), *save = getenv("DM_SAVE");
@@ -16404,6 +16456,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     g_mdxc.next = NULL;
     if (!S.prog) { BAD_ERR(); RED_ONCE(18, "no program bound before the draw"); PD("Z %llu draw skipped: no program bound", g_stat_pass + !g_enc); return; }
     __unsafe_unretained NvProg *pr = g_geo_program ? g_geo_program : prog_get(S.prog);
+    qf_note(pr);   // GPU error attribution: this commit's in-flight programs (qf_put)
     for (int stage = 0; stage < 5; stage++) if (!img_atomic_prepare(pr->sh[stage], stage)) return;
     draw_gs_check(pr);   // a geometry stage left with no function (see prog_fold_gs)
     if (S.rast_discard) { if (!S.tf_on && sx_draw(pr, dw, di)) return; tf_draw(pr, dw, di); return; }   // the vertex stage only: transform feedback capture, a vertex shader's storage writes (sx_draw), or nothing (tf_draw)
@@ -16871,6 +16924,7 @@ static void dispatch(const p_dispatch *dp) {
     if (dp->ind && !mtl_gpu_addr(dp->ind, 12, &ib, &io, &ig)) { RED_ONCE(94, "indirect dispatch skipped: argument address %#llx is in no memory pool", (unsigned long long)dp->ind); return; }
     if (dp->ind) { static int once; if (!once++) MLOG("indirect dispatch: first time (the GPU reads the threadgroup counts from %#llx)", (unsigned long long)dp->ind); }
     NvShader *cs = prog_get(S.cprog)->sh[5];
+    if (cs) qf_note_cs(cs);   // GPU error attribution (qf_put)
     if (!cs) { RED_ONCE(28, "the dispatched program has no compute shader (or it is not mapped)"); return; }
     rs_pre_images(cs);   // internal resolution: scaled textures in this dispatch's image slots go back to 1 before the atomic upgrade and the tensor stand-in below (nvn_rscale_ops.inc)
     // internal resolution above 1: the stand-in picks its input by storage size (output ÷ input within 1–4) and feeds MetalFX storage sizes: enlarged textures it reads go back to 1 first, as for a real dispatch
@@ -17752,7 +17806,7 @@ static void sub_cut(void) {
     up_flush();
     uint64_t f = atomic_load(&g_cur_frame); double gpu_sub = gpu_tag_begin(f);
     uint32_t k = g_seg++; seg_clk *sc = NULL;   // reports encoded so far keep this segment's GPU times (seg_ts)
-    NSArray<NSString *> *qsus = quar_take();
+    NSArray<NSString *> *qsus = quar_take(); qf_set *qf = qf_take();
     uint64_t sf = arena_cut(); seg_info_put(sf, f, g_stat_pass, g_stat_draw);
     if (seg_ts()) { if (!g_sclk) { g_sclk = calloc(1, sizeof *g_sclk); if (!g_sclk) MDIE("segment clock allocation failed"); atomic_store(&g_sclk->refs, 1); } sc = g_sclk; atomic_fetch_add(&sc->refs, 1);
         if (k < SEG_CLK_N) sc->cm[sc->ncm++] = (uint16_t)k; }   // this command buffer ends with segment k (seg_idle_before)
@@ -17763,7 +17817,8 @@ static void sub_cut(void) {
         gpu_tag_done(f, 0, gpu_sub, cb.GPUStartTime, cb.GPUEndTime);
         arena_seg_done(sf);
         if (sc) { if (k < SEG_CLK_N) { atomic_store(&sc->t[k][0], gpu_s_guest_ns(cb.GPUStartTime)); atomic_store(&sc->t[k][1], gpu_s_guest_ns(cb.GPUEndTime)); } seg_clk_put(sc); }
-        if (cb.error) { atomic_store(&g_last_commit_error, 1); atomic_fetch_add(&g_commit_error_n, 1); if (mtl_gpu_halted()) mtl_gpu_cb_error(cb.error, "segment", f); else { static int k; if (![cb.error.description containsString:@"InnocentVictim"]) quar_fault(qsus, cb.error); if (k++ < 8) MLOG("【红】 segment command buffer execution error: %s", cb.error.description.UTF8String); mtl_gpu_cb_error(cb.error, "segment", f); s2a_direct_gpu_error(cb.error.localizedDescription.UTF8String); } }
+        if (cb.error) { atomic_store(&g_last_commit_error, 1); atomic_fetch_add(&g_commit_error_n, 1); if (mtl_gpu_halted()) mtl_gpu_cb_error(cb.error, "segment", f); else { static int k; if (![cb.error.description containsString:@"InnocentVictim"]) { quar_fault(qsus, cb.error); qf_report(qf, "segment", f); } if (k++ < 8) MLOG("【红】 segment command buffer execution error: %s", cb.error.description.UTF8String); mtl_gpu_cb_error(cb.error, "segment", f); s2a_direct_gpu_error(cb.error.localizedDescription.UTF8String); } }
+        free(qf);   // the in-flight set is only read above
     });
     res_commit();
     main_barrier_reset();
