@@ -1264,6 +1264,9 @@ class GameImgZstd(Base):
         self.assertEqual(dev.big, [c1]); self.assertEqual(dev.rms, [stale]); self.assertNotIn(stale, dev.files)
         self.assertEqual(dev.files[c1], first.files[c1])
         self.assertTrue(any("机上已有 1/2 个压缩块" in l for l in self.log), self.log)
+        n1 = len(first.files[c1])   # 机上第 2 块短一个字节：记一行哪块、机上长度、量数长度、重推（期望按构造手写）
+        self.assertTrue(any(f"第 2/2 块机上 {n1 - 1} 字节，量数记的是 {n1} 字节，对不上，这块重推" in l for l in self.log), self.log)
+        self.assertFalse(any("第 1/2 块机上" in l for l in self.log), "长度对的块不记")
 
     def test_progress_counts_raw_bytes(self):
         calls = []; dev = self.device(); self.push_it(dev, progress=lambda *a: calls.append(a))

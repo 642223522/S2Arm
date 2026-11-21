@@ -893,7 +893,10 @@ def _send(dev, pack, work, say=print, progress=None, zp=None):
         todo = []
         for k, x in enumerate(names):   # 续传：机上这块长度 = 这次量出的压缩字节才算传完（长度对、内容不同的块 App 按帧校验判坏、整份重推）
             got = dev.head(f"{inc(dev)}/{x}", 0) if x in seen and hasattr(dev, "head") else None
-            if not (got and got[0] == sizes[k]): todo.append(k)
+            if not (got and got[0] == sizes[k]):
+                todo.append(k)
+                if got and got[0] >= 0:   # 机上有这块、长度对不上：记一行（诊断里能数白重推了多少，#1942 线程数随内存变时会出现）
+                    say(f"  续传 {w[0]}：第 {k + 1}/{n} 块机上 {got[0]} 字节，量数记的是 {sizes[k]} 字节，对不上，这块重推")
         if len(todo) < n:
             say(f"  续传 {w[0]}：机上已有 {n - len(todo)}/{n} 个压缩块，接着推剩下的")
             done += sum(min(ZCHUNK, size - k * ZCHUNK) for k in range(n) if k not in todo)
