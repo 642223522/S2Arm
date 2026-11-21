@@ -20,6 +20,8 @@
 #include "nvn_fmt_info.h"
 #include "nvn_dirty.h"   // 写跟踪：暂存片的逐页写代号（nvk_slc_gen 用）
 #include "nvn_first_use.h"   // iOS pso_pend 语义共用件：fresh/seen 历史 / 帧预算 / wait_decide
+#include "nvn_pso_retry.h"   // iOS 暂时性建管线失败的退避节奏（图形管线失败表用）
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -214,6 +216,169 @@ static int rp_live_compile_defer_frame(uint64_t *frame) {
     return 1;
 }
 static nvn_gpu_rc rp_fu_ok(void) { nvn_gpu_rc r; r.code = NVN_GPU_OK; return r; }
+// ---------- 图形管线失败表 ----------
+// 同一条建不出来的图形管线，原先每笔绘制都同步再建一次（真机一款 3D RPG 3 分钟 9.7 万次、7 帧）。口径对齐：
+//   iOS nvn_mtl.m g_pso_fail（失败的管线记下、整局不再建）与 g_pso_retry + nvn_pso_retry.h（系统编译服务这类暂时性失败按 30·4^(n-1) 帧退避重试，
+//   连续失败 PSO_RETRY_MAX 次才进失败表）；本文件计算管线的 g_cpipe_bad；Ryujinx PipelineState.CreateGraphicsPipelineCore 失败时
+//   program.AddGraphicsPipeline(key, null)；Eden vk_pipeline_cache.cpp graphics_cache.try_emplace 先占位、建失败留空项不重建。
+// 按后端返回码分三种（rp_pfail_kind）：
+//   确定性：COMPILE（驱动编译 / vkCreateGraphicsPipelines 非内存类错误）、UNSUPPORTED（设备能力 / 本段未实现）、LAYOUT、ARG——同一份描述再建结果一样，记进失败表整局不再建；
+//   暂时性：OOM（主存 / 显存 / 描述符池不够）——退避重试，等待期间这条管线的绘制跳过，连续 PSO_RETRY_MAX 次失败才进失败表；
+//   不记：STOPPED（会话正在关闭）、DEVICE（设备丢失，终态，什么都建不了）及其他——每笔照旧交后端。
+// 键是整份管线描述的 128 位摘要（rp_pfail_key）：后端建管线只看这份描述，描述相同 ⇒ 结果相同。会话重置（rp_draw_reset）清空。
+// 分类：原因（返回码 + 后端原文里数字归一成 #）+ 粗签名（阶段、拓扑、颜色附件数、采样数、深度、变换反馈、顶点属性数）。
+//   每类第一次失败打一行红（带签名与两个程序键），present 每 5 秒的汇总行按类列前 5（rp_pipe_fail_summary）。
+enum { RP_PFAIL_NONE = 0, RP_PFAIL_FIXED = 1, RP_PFAIL_TRANSIENT = 2 };
+static int rp_pfail_kind(int code) {
+    switch (code) {
+    case NVN_GPU_E_COMPILE: case NVN_GPU_E_UNSUPPORTED: case NVN_GPU_E_LAYOUT: case NVN_GPU_E_ARG: return RP_PFAIL_FIXED;
+    case NVN_GPU_E_OOM: return RP_PFAIL_TRANSIENT;
+    default: return RP_PFAIL_NONE;
+    }
+}
+static const char *rp_gpu_code_name(int code) {
+    switch (code) {
+    case NVN_GPU_E_ARG: return "ARG"; case NVN_GPU_E_UNSUPPORTED: return "UNSUPPORTED"; case NVN_GPU_E_OOM: return "OOM";
+    case NVN_GPU_E_DEVICE: return "DEVICE"; case NVN_GPU_E_COMPILE: return "COMPILE"; case NVN_GPU_E_LAYOUT: return "LAYOUT";
+    case NVN_GPU_E_STOPPED: return "STOPPED"; default: return "OTHER";
+    }
+}
+typedef struct { uint64_t a, b; } rp_pfail_k;
+static inline uint64_t rp_pfail_mix(uint64_t h, uint64_t m, const void *p, size_t n) {
+    const uint8_t *s = (const uint8_t *)p;
+    for (; n >= 8; s += 8, n -= 8) { uint64_t w; memcpy(&w, s, 8); h = (h ^ w) * m; h ^= h >> 29; }
+    if (n) { uint64_t w = 0; memcpy(&w, s, n); h = (h ^ w) * m; h ^= h >> 29; }
+    return h;
+}
+// 着色器句柄 + 前 nspec 条特化常量 + 描述里阶段表之后的全部字节（调用方先把描述整个清零再填，填充位是 0）
+static rp_pfail_k rp_pfail_key(const nvn_gpu_pipe_desc *d) {
+    static const uint64_t m[2] = {0xff51afd7ed558ccdull, 0xc4ceb9fe1a85ec53ull}, s0[2] = {0x9e3779b97f4a7c15ull, 0x6a09e667f3bcc909ull};
+    uint64_t h[2];
+    for (int l = 0; l < 2; l++) {
+        h[l] = s0[l];
+        for (int i = 0; i < 5; i++) {
+            const uintptr_t sh = (uintptr_t)d->st[i].sh; const uint32_t ns = d->st[i].nspec < NVN_GPU_SPEC_MAX ? d->st[i].nspec : NVN_GPU_SPEC_MAX;
+            h[l] = rp_pfail_mix(h[l], m[l], &sh, sizeof sh); h[l] = rp_pfail_mix(h[l], m[l], &ns, sizeof ns);
+            if (ns) h[l] = rp_pfail_mix(h[l], m[l], d->st[i].spec, (size_t)ns * sizeof d->st[i].spec[0]);
+        }
+        const size_t off = offsetof(nvn_gpu_pipe_desc, cfmt);
+        h[l] = rp_pfail_mix(h[l], m[l], (const uint8_t *)d + off, sizeof *d - off);
+        h[l] ^= h[l] >> 33; h[l] *= m[l ^ 1]; h[l] ^= h[l] >> 33;
+    }
+    rp_pfail_k k = {h[0], h[1]};
+    return k;
+}
+// 粗签名
+typedef struct { uint8_t stages, ncolor, depth, tf, nattr, _r[3]; uint32_t prim, samples; } rp_pfail_sig;
+static rp_pfail_sig rp_pfail_sig_of(const nvn_gpu_pipe_desc *d) {
+    rp_pfail_sig s; memset(&s, 0, sizeof s);
+    for (int i = 0; i < 5; i++) if (d->st[i].sh) s.stages |= (uint8_t)(1u << i);
+    for (int i = 0; i < 8; i++) if (d->cfmt[i]) s.ncolor++;
+    for (int i = 0; i < 16; i++) if (d->attr[i].fmt) s.nattr++;
+    s.depth = (uint8_t)(d->dfmt || d->sfmt); s.tf = (uint8_t)(rp_S.tf_on != 0); s.prim = d->prim; s.samples = d->samples;
+    return s;
+}
+static void rp_pfail_sig_str(const rp_pfail_sig *s, char *b, size_t n) {
+    static const char *const nm[5] = {"vs", "fs", "gs", "tcs", "tes"};
+    char st[24] = ""; for (int i = 0; i < 5; i++) if (s->stages >> i & 1) { if (st[0]) strcat(st, "+"); strcat(st, nm[i]); }
+    snprintf(b, n, "阶段 %s、拓扑 %u、颜色附件 %u、采样 %u、深度 %s、变换反馈 %s、顶点属性 %u",
+             st[0] ? st : "-", (unsigned)s->prim, (unsigned)s->ncolor, (unsigned)s->samples, s->depth ? "有" : "无", s->tf ? "有" : "无", (unsigned)s->nattr);
+}
+// 原因：返回码名 + 后端原文，连续的数字（含 0x 十六进制）归一成 #，在 UTF-8 字边界上截断
+static void rp_pfail_reason(int code, const char *why, char *b, size_t n) {
+    size_t o = (size_t)snprintf(b, n, "%s:", rp_gpu_code_name(code));
+    for (const char *p = why ? why : ""; *p && o + 2 < n;) {
+        if (*p >= '0' && *p <= '9') {
+            b[o++] = '#';
+            if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+            while ((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f') || (*p >= 'A' && *p <= 'F')) p++;
+            continue;
+        }
+        size_t cl = (unsigned char)*p < 0x80 ? 1 : (unsigned char)*p >= 0xf0 ? 4 : (unsigned char)*p >= 0xe0 ? 3 : 2;
+        if (o + cl + 1 > n) break;
+        for (size_t i = 0; i < cl && p[i]; i++) b[o++] = p[i];
+        p += cl;
+    }
+    b[o < n ? o : n - 1] = 0;
+}
+enum { RP_PFAIL_CLS_MAX = 32 };   // 类表上限；满了之后的新类并进最后一格「其它」
+struct rp_pfail_cls { char reason[112]; rp_pfail_sig sig; uint64_t fails, cached; };
+static struct rp_pfail_cls g_pfail_cls[RP_PFAIL_CLS_MAX + 1];
+static unsigned g_pfail_ncls;
+static uint64_t g_pfail_win;   // 上次汇总后有没有新的失败 / 挡下（没有就不打汇总行）
+static nvn_hmap g_pipe_bad = {.klen = sizeof(rp_pfail_k)};     // 进了失败表的：值 = 类号 + 1
+static nvn_hmap g_pipe_retry = {.klen = sizeof(rp_pfail_k)};   // 暂时性失败等重试的：值 = pso_retry_pack(重试帧, 连续失败次数)
+static void rp_pfail_reset(void) {
+    free(g_pipe_bad.keys); free(g_pipe_bad.vals); nvn_hm_init(&g_pipe_bad, sizeof(rp_pfail_k));
+    free(g_pipe_retry.keys); free(g_pipe_retry.vals); nvn_hm_init(&g_pipe_retry, sizeof(rp_pfail_k));
+    memset(g_pfail_cls, 0, sizeof g_pfail_cls); g_pfail_ncls = 0; g_pfail_win = 0;
+}
+// 查表：1 = 这条管线在失败表里或还在退避期，本笔跳过不交后端
+static int rp_pfail_hit(const rp_pfail_k *k) {
+    void *v = nvn_hm_get(&g_pipe_bad, k);
+    if (v) { unsigned c = (unsigned)(uintptr_t)v - 1; if (c <= RP_PFAIL_CLS_MAX) g_pfail_cls[c].cached++; g_pfail_win++; return 1; }
+    v = nvn_hm_get(&g_pipe_retry, k);
+    if (v && pso_retry_frame((uint64_t)(uintptr_t)v) > rp_frame()) { g_pfail_win++; return 1; }
+    return 0;
+}
+// 记一次后端失败。k 按本笔原本的描述算（点 / 线退回填充重试时 d 被改过，键仍记原样：下一笔来的还是原样）；d 只用来出粗签名
+static void rp_pfail_note(rp_pfail_k k, const nvn_gpu_pipe_desc *d, int code, const char *why) {
+    const int kind = rp_pfail_kind(code);
+    if (kind == RP_PFAIL_NONE) return;
+    char reason[sizeof g_pfail_cls[0].reason]; rp_pfail_reason(code, why, reason, sizeof reason);
+    const rp_pfail_sig sig = rp_pfail_sig_of(d);
+    unsigned c = 0;
+    while (c < g_pfail_ncls && (strcmp(g_pfail_cls[c].reason, reason) || memcmp(&g_pfail_cls[c].sig, &sig, sizeof sig))) c++;
+    if (c == g_pfail_ncls) {
+        if (c < RP_PFAIL_CLS_MAX) { snprintf(g_pfail_cls[c].reason, sizeof g_pfail_cls[c].reason, "%s", reason); g_pfail_cls[c].sig = sig; g_pfail_ncls++; }
+        else { c = RP_PFAIL_CLS_MAX; if (!g_pfail_cls[c].reason[0]) snprintf(g_pfail_cls[c].reason, sizeof g_pfail_cls[c].reason, "其它（类表满 %d 类后的新类）", RP_PFAIL_CLS_MAX); }
+        if (c < RP_PFAIL_CLS_MAX || !g_pfail_cls[c].fails) {   // 每类第一次失败打一行红；总行数 ≤ RP_PFAIL_CLS_MAX + 1
+            char sg[160], ks[2][17] = {"-", "-"}, b[640];
+            rp_pfail_sig_str(&sig, sg, sizeof sg);
+            for (unsigned st = 0; st < 2; st++) { uint8_t key[8]; if (rp_shader_stage_key(st, key)) for (int i = 0; i < 8; i++) snprintf(ks[st] + 2 * i, 3, "%02x", key[i]); }
+            snprintf(b, sizeof b, "图形管线建失败 第 %u 类（%s）：原因 %s；%s；程序键 vs %s fs %s；后端原文：%s",
+                     c + 1, kind == RP_PFAIL_FIXED ? "确定性，记进失败表不再建" : "暂时性，退避重试", reason, sg, ks[0], ks[1], why ? why : "");
+            nvn_plat_log(NVN_PLAT_LOG_RED, "gpu", b);
+        }
+    }
+    g_pfail_cls[c].fails++; g_pfail_win++;
+    if (kind == RP_PFAIL_FIXED) { nvn_hm_del(&g_pipe_retry, &k); nvn_hm_put(&g_pipe_bad, &k, (void *)(uintptr_t)(c + 1)); return; }
+    void *v = nvn_hm_get(&g_pipe_retry, &k);
+    const unsigned fails = (v ? pso_retry_fails((uint64_t)(uintptr_t)v) : 0) + 1;
+    const uint64_t at = pso_retry_at(rp_frame(), fails);
+    if (!at) { nvn_hm_del(&g_pipe_retry, &k); nvn_hm_put(&g_pipe_bad, &k, (void *)(uintptr_t)(c + 1)); return; }   // 连续 PSO_RETRY_MAX 次：按确定性处理
+    nvn_hm_put(&g_pipe_retry, &k, (void *)(uintptr_t)pso_retry_pack(at, fails));
+}
+static void rp_pfail_ok(const rp_pfail_k *k) { if (g_pipe_retry.n) nvn_hm_del(&g_pipe_retry, k); }   // 暂时性失败后建成了：连续次数清零
+// present 汇总：有新失败 / 新挡下时写一行（按「后端失败 + 挡下」排前 5 类），返回 1；没有返回 0
+int rp_pipe_fail_summary(char *b, size_t n) {
+    if (!g_pfail_win || !n) return 0;
+    g_pfail_win = 0;
+    unsigned idx[RP_PFAIL_CLS_MAX + 1], m = 0; uint64_t tf = 0, tc = 0;
+    for (unsigned c = 0; c <= RP_PFAIL_CLS_MAX; c++) if (g_pfail_cls[c].fails || g_pfail_cls[c].cached) { idx[m++] = c; tf += g_pfail_cls[c].fails; tc += g_pfail_cls[c].cached; }
+    for (unsigned i = 1; i < m; i++) for (unsigned j = i; j > 0; j--) {
+        const struct rp_pfail_cls *x = &g_pfail_cls[idx[j]], *y = &g_pfail_cls[idx[j - 1]];
+        if (x->fails + x->cached <= y->fails + y->cached) break;
+        unsigned t = idx[j]; idx[j] = idx[j - 1]; idx[j - 1] = t;
+    }
+    size_t o = (size_t)snprintf(b, n, "图形管线失败（累计）：%u 类，后端建失败 %llu 次、失败表挡下 %llu 笔；前 5 类：", m, (unsigned long long)tf, (unsigned long long)tc);
+    for (unsigned i = 0; i < m && i < 5 && o < n; i++) {
+        const struct rp_pfail_cls *x = &g_pfail_cls[idx[i]]; char sg[160];
+        rp_pfail_sig_str(&x->sig, sg, sizeof sg);
+        o += (size_t)snprintf(b + o, n - o, "%s#%u %s [%s] 失败 %llu / 挡下 %llu", i ? "；" : "", idx[i] + 1, x->reason, idx[i] < RP_PFAIL_CLS_MAX ? sg : "-",
+                              (unsigned long long)x->fails, (unsigned long long)x->cached);
+    }
+    return 1;
+}
+// 单测读数：第 c 类（0 起）的原因、后端失败次数与挡下笔数；c 越界返回 0
+int rp_pipe_fail_class(unsigned c, const char **reason, uint64_t *fails, uint64_t *cached) {
+    if (c > RP_PFAIL_CLS_MAX || (!g_pfail_cls[c].fails && !g_pfail_cls[c].cached)) return 0;
+    if (reason) *reason = g_pfail_cls[c].reason;
+    if (fails) *fails = g_pfail_cls[c].fails;
+    if (cached) *cached = g_pfail_cls[c].cached;
+    return 1;
+}
+
 // 首用取管线：kick→PENDING 时按 iOS pso_pend_take 的判定限时等/跳；可安全丢才跳，否则按 unsafe 上限等一次后标 stuck。
 // 返回 rc；*skip 非 0 = 本笔要跳过（此时 *out 为 NULL）。NONE/FAILED/ABSENT 都回退现场 SYNC 建。
 static nvn_gpu_rc rp_draw_pipe_async(const nvn_gpu_pipe_desc *pd, const p_set_rt *rt, nvn_gpu_pipe *out, nvn_gpu_err *err, int *skip) {
@@ -1677,6 +1842,11 @@ draw_rebind:   // 出库回退落地：g_prog 已换现编版（pso_dirty 已置
         pd.clip_neg1 = (uint8_t)(g_prog->z_raw && !rp_depth_zero());   // 程序没做 near = -w 的深度改写：交给管线（只在 CAP_DEPTH_CLIP_CTL 时会出这种程序）
         nvn_gpu_pipe np = NULL; nvn_gpu_err err = {0};
         const uint64_t pg0_ = tm_ ? dt_now() : 0;
+        // 失败表（见 rp_pfail_kind）：表空时不算摘要；在表里 / 还在退避期的不交后端，跳过这笔
+        const int pf_have = g_pipe_bad.n || g_pipe_retry.n;
+        rp_pfail_k pfk = {0, 0}; if (pf_have) pfk = rp_pfail_key(&pd);
+        if (pf_have && rp_pfail_hit(&pfk)) { nvn_unimpl("gpu", "pipe_get_cached_fail", rec); g_skips++; g_pipe = NULL; goto draw_done; }
+        const poly_st pf_poly0 = pd.poly;   // 点 / 线退回填充重试会改描述；失败表的键按本笔原样算
         int fu_skip = 0;
         nvn_gpu_rc r = rp_fu_enabled() ? rp_draw_pipe_async(&pd, rt, &np, &err, &fu_skip)
                                        : nvn_gpu_pipe_get(&pd, NVN_GPU_PIPE_SYNC, &np, &err);
@@ -1699,9 +1869,15 @@ draw_rebind:   // 出库回退落地：g_prog 已换现编版（pso_dirty 已置
                 for (int i = 0; i < 16; i++)
                     if (pd.attr[i].fmt && pd.attr[i].stream < 16 && pd.stream[pd.attr[i].stream].divisor > 1) { name = "vertex_divisor_gt1"; break; }
             }
-            if (nvn_unimpl("gpu", name, rec) == 1) nvn_plat_log(NVN_PLAT_LOG_RED, "gpu", err.why);
+            const uint64_t un = nvn_unimpl("gpu", name, rec);
+            if (rp_pfail_kind(r.code) != RP_PFAIL_NONE) {   // 记表 + 每类第一次打红行（带原因、签名、程序键）
+                if (!pf_have) { const poly_st cur = pd.poly; pd.poly = pf_poly0; pfk = rp_pfail_key(&pd); pd.poly = cur; }
+                rp_pfail_note(pfk, &pd, r.code, err.why);
+            }
+            else if (un == 1) nvn_plat_log(NVN_PLAT_LOG_RED, "gpu", err.why);   // 不记表的（会话关闭 / 设备丢失）照旧只报首行
             g_skips++; g_pipe = NULL; goto draw_done;
         }
+        if (pf_have) rp_pfail_ok(&pfk);
         g_pipe = np; g_pipe_cmd = c;
         if (recipe_new && nvk_pipe_warm_note_prog) nvk_pipe_warm_note_prog(&pd, g_prog, np);   // 下一局按这份配方提前建（验收看后端 warm 命中）；np 带清单标签，已记过的管线只加计数
         nvn_gpu_set_pipe(c, g_pipe); g_pipe_set = 1;
@@ -2084,4 +2260,4 @@ void rp_draw_reset(void) { rp_access_reset(&g_compute_access); g_compute_access_
     rp_tm_reset();   // 分时抽样的开关也重新读（#1103）
     memset(g_ind_drv_ok, 0, sizeof g_ind_drv_ok); memset(g_ind_drv, 0, sizeof g_ind_drv); memset(g_lb, 0, sizeof g_lb);   // #941
     memset(g_hzt, 0, sizeof g_hzt); g_hzi = 0; g_hz_mask = 0; g_hz_on = hz_mode(nvn_plat_flag("nvk_binst_hoist", 2));   // 批量拷开关会话打开时读定
-    free(g_cpipes.keys); free(g_cpipes.vals); nvn_hm_init(&g_cpipes, 8); free(g_cpipe_bad.keys); free(g_cpipe_bad.vals); nvn_hm_init(&g_cpipe_bad, 16); g_prog = NULL; g_pipe = NULL; g_pipe_cmd = NULL; g_draws = g_skips = 0; g_prim = ~0u; g_quads = -1; g_face = -1; g_ms_off = 0; }
+    free(g_cpipes.keys); free(g_cpipes.vals); nvn_hm_init(&g_cpipes, 8); free(g_cpipe_bad.keys); free(g_cpipe_bad.vals); nvn_hm_init(&g_cpipe_bad, 16); rp_pfail_reset(); g_prog = NULL; g_pipe = NULL; g_pipe_cmd = NULL; g_draws = g_skips = 0; g_prim = ~0u; g_quads = -1; g_face = -1; g_ms_off = 0; }
