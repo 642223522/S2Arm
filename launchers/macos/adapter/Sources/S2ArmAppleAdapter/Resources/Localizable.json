@@ -1,5 +1,13 @@
 [
  {
+  "source": "这款电脑上没有 iPhone 资源包，先在电脑上做好再推",
+  "en": "This game has no iPhone resource pack on this computer; building it here first, then sending it"
+ },
+ {
+  "source": "这款的 iPhone 包没做成。",
+  "en": "The iPhone build for this game did not finish."
+ },
+ {
   "source": "满屏补丁（按屏幕比例自动选）",
   "en": "Full-screen patch (picked for your screen ratio)"
  },
