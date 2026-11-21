@@ -3189,7 +3189,7 @@ def app_files(c, gid, src_ipa, *, exported=False, s2arm=None, img=None, img_else
     import app_folder
     folder, name, version = app_meta(c, gid)
     out = app_folder.place_ipa(src_ipa, folder, name, gid, version)
-    lang = ui_lang(c)
+    lang = app_folder.lang_of(c.r.get("uiLanguage"))   # README / 下一步按界面语言五选一（中 / 英 / 日 / 西 / 法）
     readme = app_folder.write_readme(folder, lang, app=name, ipa=out.name, gid=gid, s2arm=Path(s2arm).name if s2arm else "",
                                      img=Path(img).name if img else "", img_elsewhere=img_elsewhere)
     mode = export_sign_mode(c) if exported else chosen_sign_mode(c)

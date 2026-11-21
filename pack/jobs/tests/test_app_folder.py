@@ -53,6 +53,19 @@ class Readme(unittest.TestCase):
         self.assertNotIn("访达", t, "访达直装没核实，不写")
         self.assertEqual(t.split("—— English summary ——")[1].strip().count("\n") + 1, 4, "英文摘要 4 行")
 
+    def test_five_languages(self):
+        # 五语（0.6.4）：文件名只分中文 / 英文；正文按界面语言；非英文末尾附英文摘要；繁中界面用中文那份
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            for ui, name, head in (("zh-Hant", "请先读我.txt", "【这是什么】"), ("ja", "README.txt", "【これは何か】"), ("es-ES", "README.txt", "QUÉ ES ESTO"),
+                                   ("fr", "README.txt", "DE QUOI S’AGIT-IL"), ("en", "README.txt", "WHAT THIS IS"), ("de", "README.txt", "WHAT THIS IS")):
+                out = app_folder.write_readme(d, app_folder.lang_of(ui), app="G", ipa="G v1.ipa", gid=G1, s2arm="G.s2arm")
+                t = out.read_text(encoding="utf-8")
+                self.assertEqual(out.name, name, ui); self.assertIn(head, t, ui)
+                self.assertEqual("—— English summary ——" in t, app_folder.lang_of(ui) != "en", ui)
+                self.assertEqual([p.name for p in d.iterdir()], [name], "只留一份")
+        self.assertIn("Import Here", app_folder.next_steps("ja", "external", app="G", ipa="G.ipa", s2arm="G.s2arm", exported=True)[1])
+
     def test_img_elsewhere(self):
         t = app_folder.readme_text("en", app="G", ipa="G.ipa", gid=G1, img_elsewhere="/lib/x/game.img")
         self.assertIn("It is at: /lib/x/game.img", t)
