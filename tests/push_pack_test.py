@@ -1208,7 +1208,8 @@ class GameImgZstd(Base):
 
     def test_threshold_is_15_percent(self):   # 假压缩器按比例出字节：省 16% → 压；省 14% → 不压
         row = ["game.img", str(len(self.local)), sha(self.local)]
-        def fake(r): return lambda b: b"z" * round(len(b) * r)
+        def clen(path, k): return max(0, min(push.ZCHUNK, Path(path).stat().st_size - k * push.ZCHUNK))
+        def fake(r): return lambda path, k, out=None: round(clen(path, k) * r)   # 新接口：(路径, 块号, out) → 压缩后字节数
         # 两块 65536 + 100 字节：0.84 → 55050 + 84 = 55134，省 1 − 55134/65636 = 16.0%；0.86 → 56361 + 86 = 56447，省 14.0%
         self.assertEqual(push.zstd_plan(self.pk, row, say=self.log.append, comp=fake(0.84)), [55050, 84])
         (self.pk.parent / "pack.zstd.json").unlink()
@@ -1216,13 +1217,36 @@ class GameImgZstd(Base):
 
     def test_measured_once_per_image(self):   # 同一份 game.img 只量一次（记在资源包目录旁）；镜像变了重量
         row = ["game.img", str(len(self.local)), sha(self.local)]; calls = []
-        def comp(b): calls.append(len(b)); return b"z" * 10
+        def comp(path, k, out=None): calls.append(max(0, min(push.ZCHUNK, Path(path).stat().st_size - k * push.ZCHUNK))); return 10
         push.zstd_plan(self.pk, row, say=self.log.append, comp=comp); push.zstd_plan(self.pk, row, say=self.log.append, comp=comp)
         self.assertEqual(calls, [self.Z, 100])
         self.assertEqual(json.loads((self.pk.parent / "pack.zstd.json").read_text())["z"], [10, 10])
         self.assertFalse((self.pk / "pack.zstd.json").exists())   # 不进资源包目录
         push.zstd_plan(self.pk, ["game.img", row[1], "0" * 64], say=self.log.append, comp=comp)
         self.assertEqual(len(calls), 4)
+
+    def test_stream_frames_decode_and_reads_bounded(self):   # D-DVFJ：每块仍一个 zstd 帧、解开即原样；按 ZREAD 分段读，不整块读进内存；写出的字节数 = 返回值
+        try: from compression.zstd import decompress
+        except ImportError: from zstandard import decompress
+        import builtins, io
+        m = mock.patch.object(push, "ZREAD", 4096); m.start(); self.addCleanup(m.stop)
+        src = self.pk / "game.img"; reads = []; real_open = builtins.open
+        class Spy(io.BufferedReader):
+            def read(self, n=-1): reads.append(n); return super().read(n)
+        def spy_open(f, mode="r", *a, **k):
+            return Spy(real_open(f, "rb", buffering=0)) if Path(f) == src and mode == "rb" else real_open(f, mode, *a, **k)
+        comp = push.zstd_compressor()
+        with mock.patch("builtins.open", spy_open):
+            outs = [io.BytesIO() for _ in range(2)]; ns = [comp(src, k, outs[k]) for k in range(2)]
+        self.assertEqual(ns, [len(o.getvalue()) for o in outs])
+        self.assertEqual(b"".join(decompress(o.getvalue()) for o in outs), self.local)
+        self.assertTrue(all(o.getvalue()[:4] == b"\x28\xb5\x2f\xfd" for o in outs))
+        self.assertTrue(reads and max(reads) <= 4096, reads)   # 64 KB 的块分 16 段读，100 字节的末块 1 段
+
+    def test_workers_capped_by_available_memory(self):   # 线程数 = min(核数, (可用 ÷ 2 − 160) ÷ 80)，至少 1；读不到内存按核数（期望按公式手算）
+        for avail, ncpu, want in (("200", "16", 1), ("1000", "16", 4), ("4096", "16", 16), ("4096", "8", 8)):
+            with mock.patch.dict(os.environ, {"S2A_MEM_AVAIL_MB": avail, "S2A_NCPU": ncpu}):
+                self.assertEqual(push.zstd_workers(), want, (avail, ncpu))
 
     def test_resume_skips_complete_chunks_and_drops_stale(self):
         first = self.device(); self.push_it(first)

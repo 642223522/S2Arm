@@ -511,6 +511,8 @@ static void alias_report_overrun(uint64_t a, uint64_t size) {
 // 地址空间不够这款（layout.c s2a_alias_big_tops_window）：静态大区末端顶到窗口末、别名区又伸出窗口 → 游戏其余地址区必落远端，可能非常卡或停在开头。
 //   日志打黄；iOS 人手局弹「仍要启动」页（不拦，点了照常起局）；自动化局不弹；Mac 只打日志（宿主没有确认页通道）
 // 弱链接[host]：s2a_ios_ask_continue_l10n（ios/app.m 提供；Mac 宿主、原生单测没有，取不到就只打日志）
+// 弹不弹「地址空间不够」（纯函数，t_vawin_learned 测）：学到的跨度（0 = 这款没玩过 / 没记下）在窗口以内就不弹 → 0；其余 → 1
+int s2a_addr_note_needed(uint64_t learned, uint64_t win_size) { return !(learned && learned <= win_size); }
 static void addr_short_note(int alias_gb) {
     int s2a_alias_big_tops_window(uint64_t, int, uint64_t);
     uint64_t we = L.win_base + L.win_size;
@@ -519,6 +521,14 @@ static void addr_short_note(int alias_gb) {
         uint64_t big = (uint64_t)((alias_gb < 0 ? -alias_gb : alias_gb) - 1) << 30, y = s2a_sainit_size(L.alias_base, L.alias_size, we, APP_POOL, big);
         if (y < big) { LOG("地址空间：静态大区 %d GB 顶到窗口末，来源是分配器初始化，开局闸门会把预留压到 %llu MB，不弹「仍要启动」", alias_gb < 0 ? -alias_gb : alias_gb, (unsigned long long)(y >> 20)); return; }
     }
+    // 这款玩过、记下了实际碰到的最高地址（学到的跨度）且在窗口之内：静态大区只是承诺、实际没用满，伸出段这款碰不到，不弹（#1903：
+    //   歧路旅人 II / 最终幻想 共鸣静态认出 63 GB，实际跨度 42–43 GB，窗口 54272 MB，每次起局都弹「仍要启动」、远端缺页 0 次）。没玩过照旧弹
+    { uint64_t (*span_seen)(uint64_t) = (uint64_t (*)(uint64_t))dlsym(RTLD_DEFAULT, "s2a_window_span_seen");   // vawin.c；安卓 / 单测没有 → 照旧弹
+      uint64_t seen = span_seen ? span_seen(g_lay_pid) : 0;
+      if (s2a_addr_note_needed(seen, L.win_size) == 0) {
+          LOG("地址空间：静态大区 %d GB 顶到窗口末，但这款学到的实际跨度 %llu MB 在窗口 %llu MB 之内，不弹「仍要启动」",
+              alias_gb < 0 ? -alias_gb : alias_gb, (unsigned long long)(seen >> 20), (unsigned long long)(L.win_size >> 20));
+          return; } }
     LOG("【黄】地址空间不够这款：静态大区 %d GB 的末端顶到窗口末（窗口 %llu MB），游戏其余地址区会落在窗口外走远端，可能非常卡或停在开头",
         alias_gb < 0 ? -alias_gb : alias_gb, (unsigned long long)(L.win_size >> 20));
 #if TARGET_OS_IPHONE

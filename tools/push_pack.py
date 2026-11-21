@@ -42,7 +42,7 @@
 退出码：0 成功；1 失败（标准输出末行【红】说明）；2 用法"""
 from __future__ import annotations
 
-import os as _pw_os, sys as _pw_sys; _pw_sys.path.append(_pw_os.path.dirname(_pw_os.path.abspath(__file__))); from pool_workers import cores  # noqa: E402  核数 / 进程池路数唯一来源（tools/pool_workers.py，#1332）
+import os as _pw_os, sys as _pw_sys; _pw_sys.path.append(_pw_os.path.dirname(_pw_os.path.abspath(__file__))); from pool_workers import available_mb, cores  # noqa: E402  核数 / 进程池路数唯一来源（tools/pool_workers.py，#1332）
 import argparse
 from collections import deque
 import hashlib
@@ -719,31 +719,61 @@ ZSAVE = 0.15   # 维护者定：按款实测省不到 15% 的款原样推
 ZNAME = re.compile(r"game\.img\.([0-9a-f]{16})\.(\d{4})\.zst")
 
 
+# 流式压（D-DVFJ：7 GB 内存的 Windows 机器、此刻可用 0.1 GB，推第一块就 MemoryError）：原先每块 1 GiB 整块读进内存、整块压、压出的字节也整块攥着，
+#   再加 zstd 按核数开的工作线程各自的缓冲，一块峰值好几 GB。现在每块仍是一个独立 zstd 帧（块大小 ZCHUNK 与块名是两端契约，pack_apply.c img_unzst 按块号 × ZCHUNK 解回原处），
+#   但按 ZREAD 分段读、喂流式压缩器、压出的边写边丢（推送写进这块的临时文件，量数只累计长度）；帧头照写原文长度（pledged size），解压端本就流式解。
+#   工作线程按此刻可用内存的一半封顶（实测 9 档：基础约 160 MB、每多一个线程约 70 MB，按 ZBASE_MB / ZWORKER_MB 估，至少 1 个）；
+#   zstd 多线程的输出与线程数无关（实测 1 / 2 / 4 / 8 线程逐字节相同），所以量数时与推送时线程数不同，块长度照样对得上。
+#   流式帧与原先一次性压的帧差几个头字节：量数缓存带 fmt，旧缓存作废重量，机上旧格式的块长度对不上就重推
+ZREAD = 8 << 20
+ZBASE_MB, ZWORKER_MB = 160, 80
+ZFMT = 2
+
+
+def zstd_workers():
+    """zstd 工作线程数：核数，按此刻可用内存的一半封顶（读不到内存就按核数），至少 1"""
+    n, mb = cores(), available_mb()
+    return n if mb is None else max(1, min(n, (mb // 2 - ZBASE_MB) // ZWORKER_MB))
+
+
 def zstd_compressor():
-    """→ 压一块的函数（bytes → 一个 zstd 帧，带内容校验）；本机 Python 两样都没有 → None（照原样推）。
+    """→ 压一块的函数 z(路径, 块号, out=None) → 压缩后字节数：把文件第 k 块（ZCHUNK 原始字节，末块到文件尾）压成一个 zstd 帧（带内容校验与原文长度），
+    out 给了就边压边写进去；本机 Python 两样都没有 → None（照原样推）。
     Python 3.14 用 compression.zstd，随包 Python 3.12 用 zstandard（launchers/macos/requirements-runtime.txt、Windows 同钉版）"""
     try:
         from compression import zstd
-        opts = {zstd.CompressionParameter.compression_level: ZLEVEL, zstd.CompressionParameter.nb_workers: cores(),
-                zstd.CompressionParameter.checksum_flag: 1}
-        return lambda b: zstd.compress(b, options=opts)
+        P = zstd.CompressionParameter
+
+        def stream(raw):
+            c = zstd.ZstdCompressor(options={P.compression_level: ZLEVEL, P.nb_workers: zstd_workers(), P.checksum_flag: 1})
+            c.set_pledged_input_size(raw)
+            return c.compress, lambda: c.flush(zstd.ZstdCompressor.FLUSH_FRAME)
     except ImportError:
-        pass
-    try:
-        import zstandard
-    except ImportError:
-        return None
-    c = zstandard.ZstdCompressor(level=ZLEVEL, threads=-1, write_checksum=True)
-    return c.compress
+        try:
+            import zstandard
+        except ImportError:
+            return None
+
+        def stream(raw):
+            c = zstandard.ZstdCompressor(level=ZLEVEL, threads=zstd_workers(), write_checksum=True).compressobj(size=raw)
+            return c.compress, lambda: c.flush(zstandard.COMPRESSOBJ_FLUSH_FINISH)
+
+    def z(path, k, out=None):
+        with open(path, "rb") as f:
+            f.seek(0, 2); raw = max(0, min(ZCHUNK, f.tell() - k * ZCHUNK)); f.seek(k * ZCHUNK)
+            feed, finish = stream(raw); n, left = 0, raw
+            while left:
+                b = f.read(min(ZREAD, left))
+                if not b: raise OSError(f"{path} 第 {k} 块读到 {raw - left} 字节就到了文件尾（应 {raw}）")
+                left -= len(b); o = feed(b); n += len(o)
+                if out is not None and o: out.write(o)
+            o = finish(); n += len(o)
+            if out is not None and o: out.write(o)
+        return n
+    return z
 
 
 def zname(sha, k): return f"game.img.{sha[:16]}.{k:04d}.zst"
-
-
-def read_chunk(path, k):
-    with open(path, "rb") as f:
-        f.seek(k * ZCHUNK)
-        return f.read(ZCHUNK)
 
 
 def zstd_plan(pack, row, say=print, stage=None, env=None, comp=None):
@@ -756,17 +786,17 @@ def zstd_plan(pack, row, say=print, stage=None, env=None, comp=None):
     cache = pack.parent / f"{pack.name}.zstd.json"
     try:
         c = json.loads(cache.read_text(encoding="utf-8"))
-        sizes = c["z"] if (c.get("sha"), c.get("level"), c.get("chunk")) == (sha, ZLEVEL, ZCHUNK) else None
+        sizes = c["z"] if (c.get("sha"), c.get("level"), c.get("chunk"), c.get("fmt")) == (sha, ZLEVEL, ZCHUNK, ZFMT) else None
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         sizes = None
     if sizes is None:
         t0, n, sizes = time.time(), (raw + ZCHUNK - 1) // ZCHUNK, []
         for k in range(n):
             if stage: stage(STAGE_ZSTD, k * ZCHUNK, raw)
-            sizes.append(len(comp(read_chunk(pack / row[0], k))))
+            sizes.append(comp(pack / row[0], k))
         try:
             tmp = cache.with_name(cache.name + ".tmp")
-            tmp.write_text(json.dumps(dict(sha=sha, level=ZLEVEL, chunk=ZCHUNK, raw=raw, z=sizes)), encoding="utf-8"); os.replace(tmp, cache)
+            tmp.write_text(json.dumps(dict(sha=sha, level=ZLEVEL, chunk=ZCHUNK, fmt=ZFMT, raw=raw, z=sizes)), encoding="utf-8"); os.replace(tmp, cache)
         except OSError as e:
             say(f"压缩传输：量数记不下（{e}），下次推还会再量")
         say(f"压缩传输：量了 {row[0]} {n} 块，用时 {time.time() - t0:.0f} 秒")
@@ -853,7 +883,9 @@ def _send(dev, pack, work, say=print, progress=None, zp=None):
         comp = zstd_compressor()
         check = not getattr(dev, "dp", None) and hasattr(dev, "size")   # 只走 devicectl（Apple TV）：每块推完列一次长度核对；流式通道自己按字节写完才返回，不另核
         def make(k):
-            p = work / f"zchunk_{k:04d}"; p.write_bytes(comp(read_chunk(pack / w[0], k))); return p
+            p = work / f"zchunk_{k:04d}"
+            with open(p, "wb") as o: comp(pack / w[0], k, o)
+            return p
         from concurrent.futures import ThreadPoolExecutor
         try:
             with ThreadPoolExecutor(1) as ex:

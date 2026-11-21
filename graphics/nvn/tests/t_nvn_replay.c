@@ -29,6 +29,7 @@ static int g_fail, g_checks;
 
 // ---------- 平台替身 ----------
 static int g_red_lines; static char g_last_red[200];
+static int g_pf_red; static char g_pf_last[640];   // 图形管线失败分类的红行（rp_pfail_note）
 static int g_arena_truncated_lines;
 static int g_arena_detail_lines; static char g_arena_detail[256]; static char g_arena697_lines[32][256];
 static char g_ps_lines[8][320]; static int g_ps_n;   // 池统计行（cls "poolstats"）收下来给 t_pool_stats 核
@@ -37,7 +38,7 @@ static int g_csd_lines; static char g_csd_line[256];   // 类型 3 句柄的采�
 static int g_ubo_zero_lines; static char g_ubo_zero_line[256];   // 常量缓冲句柄指向没登记的号、绑零贴图：每局首次的那一行（#1594 片 4）
 static int g_dl_unread, g_dl_lines;   // 逐笔日志（cls "draw"）：含「读不到」的行数 / 含「存」字段的贴图行数
 static int g_mm_lines; static char g_mm_last[200];   // #1810：「贴图类型不符」行数与最近一行
-void nvn_plat_log(int level, const char *cls, const char *text) { if (cls && text && !strcmp(cls, "tex") && strstr(text, "贴图类型不符")) { g_mm_lines++; snprintf(g_mm_last, sizeof g_mm_last, "%s", text); } if (cls && text && !strcmp(cls, "draw")) { if (strstr(text, "读不到")) g_dl_unread++; if (strstr(text, " 存")) g_dl_lines++; } if (cls && !strcmp(cls, "tex-reupload-summary")) { snprintf(g_tdiag_summary, sizeof g_tdiag_summary, "%s", text); g_tdiag_summaries++; return; } if (cls && !strcmp(cls, "tex-reupload")) { if (g_tdiag_n < 32) snprintf(g_tdiag_lines[g_tdiag_n], 320, "%s", text); g_tdiag_n++; return; } if (level == NVN_PLAT_LOG_INFO && text && strstr(text, "类型 3 句柄的采样器号")) { g_csd_lines++; snprintf(g_csd_line, sizeof g_csd_line, "%s", text); } if (level == NVN_PLAT_LOG_INFO && text && strstr(text, "常量缓冲句柄指向没登记的贴图号")) { g_ubo_zero_lines++; snprintf(g_ubo_zero_line, sizeof g_ubo_zero_line, "%s", text); } if (cls && !strcmp(cls, "poolstats")) { if (g_ps_n < 8) snprintf(g_ps_lines[g_ps_n], 320, "%s", text); g_ps_n++; return; } if(level == NVN_PLAT_LOG_RED && strstr(text,"后续不同原因详情省略（最多8）"))g_arena_truncated_lines++; if (level == NVN_PLAT_LOG_RED && strstr(text,"arena_alloc_failed rc=")) { if(g_arena_detail_lines<32)snprintf(g_arena697_lines[g_arena_detail_lines],256,"%s",text); g_arena_detail_lines++; snprintf(g_arena_detail,sizeof g_arena_detail,"%s",text); } if (level == NVN_PLAT_LOG_RED) { g_red_lines++; snprintf(g_last_red, sizeof g_last_red, "%s", text); } }
+void nvn_plat_log(int level, const char *cls, const char *text) { if (cls && text && !strcmp(cls, "tex") && strstr(text, "贴图类型不符")) { g_mm_lines++; snprintf(g_mm_last, sizeof g_mm_last, "%s", text); } if (cls && text && !strcmp(cls, "draw")) { if (strstr(text, "读不到")) g_dl_unread++; if (strstr(text, " 存")) g_dl_lines++; } if (cls && !strcmp(cls, "tex-reupload-summary")) { snprintf(g_tdiag_summary, sizeof g_tdiag_summary, "%s", text); g_tdiag_summaries++; return; } if (cls && !strcmp(cls, "tex-reupload")) { if (g_tdiag_n < 32) snprintf(g_tdiag_lines[g_tdiag_n], 320, "%s", text); g_tdiag_n++; return; } if (level == NVN_PLAT_LOG_INFO && text && strstr(text, "类型 3 句柄的采样器号")) { g_csd_lines++; snprintf(g_csd_line, sizeof g_csd_line, "%s", text); } if (level == NVN_PLAT_LOG_INFO && text && strstr(text, "常量缓冲句柄指向没登记的贴图号")) { g_ubo_zero_lines++; snprintf(g_ubo_zero_line, sizeof g_ubo_zero_line, "%s", text); } if (cls && !strcmp(cls, "poolstats")) { if (g_ps_n < 8) snprintf(g_ps_lines[g_ps_n], 320, "%s", text); g_ps_n++; return; } if(level == NVN_PLAT_LOG_RED && strstr(text,"后续不同原因详情省略（最多8）"))g_arena_truncated_lines++; if (level == NVN_PLAT_LOG_RED && strstr(text,"arena_alloc_failed rc=")) { if(g_arena_detail_lines<32)snprintf(g_arena697_lines[g_arena_detail_lines],256,"%s",text); g_arena_detail_lines++; snprintf(g_arena_detail,sizeof g_arena_detail,"%s",text); } if (level == NVN_PLAT_LOG_RED && text && strstr(text, "图形管线建失败")) { g_pf_red++; snprintf(g_pf_last, sizeof g_pf_last, "%s", text); } if (level == NVN_PLAT_LOG_RED) { g_red_lines++; snprintf(g_last_red, sizeof g_last_red, "%s", text); } }
 static int g_flag_finish_lag;   // 用例设：开关 nvk_finish_lag 的值
 static int g_flag_spill = 1;    // 用例设：开关 nvk_spill（缺省同产品：开）
 static int g_flag_sync_lag;     // 用例设：开关 nvk_sync_lag 的值（产品缺省 1＝允许一格在飞；用例固定 0，测的是「真等」这条契约）
@@ -531,12 +532,12 @@ int rp_shader_lib_reject(const struct rp_prog *p) {
     return 1;
 }
 void rp_shader_reset(void) {}
-static int g_pipe_rc;
+static int g_pipe_rc; static const char *g_pipe_why;   // 替身建管线的返回码与原文（原文给失败分类用例）
 static int g_pipe_gets, g_set_pipes, g_set_dyns, g_gdraws; static nvn_gpu_pipe_desc g_last_pdesc; static nvn_gpu_dyn g_last_dyn; static nvn_gpu_draw_args g_last_da;
 static struct { uint32_t stream; uint64_t off; } g_vb[4]; static int g_nvb;
 static nvn_gpu_binding g_fb[3][16]; static uint32_t g_nfb[3];
 static _Alignas(16) uint8_t g_arena[1 << 16]; static uint64_t g_arena_used; static struct nvn_gpu_buf_s g_arena_buf = { .bytes = sizeof g_arena, .cpu = g_arena };
-nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *out, nvn_gpu_err *err) { (void)mode; g_pipe_gets++; g_last_pdesc = *d; *out = g_pipe_rc ? NULL : &g_fpipe; if (err) { memset(err, 0, sizeof *err); err->rc.code = g_pipe_rc; } return (nvn_gpu_rc){g_pipe_rc}; }
+nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *out, nvn_gpu_err *err) { (void)mode; g_pipe_gets++; g_last_pdesc = *d; *out = g_pipe_rc ? NULL : &g_fpipe; if (err) { memset(err, 0, sizeof *err); err->rc.code = g_pipe_rc; if (g_pipe_rc && g_pipe_why) snprintf(err->why, sizeof err->why, "%s", g_pipe_why); } return (nvn_gpu_rc){g_pipe_rc}; }
 void nvn_gpu_set_pipe(nvn_gpu_cmd c, nvn_gpu_pipe p) { (void)c; (void)p; g_set_pipes++; }
 static struct nvn_gpu_pipe_s g_fcpipe;
 nvn_gpu_rc nvn_gpu_cpipe_get(const nvn_gpu_stage_desc *cs, int mode, nvn_gpu_pipe *out, nvn_gpu_err *err) { (void)mode; (void)err; g_cpipe_gets++; g_cpipe_sh = cs->sh; *out = &g_fcpipe; return (nvn_gpu_rc){NVN_GPU_OK}; }
@@ -5499,6 +5500,90 @@ static void t_render_cond(void) {
     g_rcond = 0; pass_fresh();
 }
 
+// 图形管线失败表（rp_draw.c rp_pfail_*，对齐 iOS g_pso_fail / g_pso_retry）：确定性失败同一份描述只交后端一次、整局不再建；
+// 暂时性（OOM）按 nvn_pso_retry.h 退避 30 / 120 / 480 帧重试、连续 4 次进失败表、建成一次清零；会话重置后重建；分类按「返回码 + 原文数字归一 + 粗签名」分开计数。
+static tex_t g_pf_rt;
+static void pf_setup(void) {
+    pass_fresh();
+    memset(&g_fprog, 0, sizeof g_fprog);
+    g_fprog.sh[0] = &g_fsh[0]; g_fprog.sh[1] = &g_fsh[1];
+    g_fprog.color_out_mask = 0xffffffffu;
+    g_resolve_rc = 0;
+    g_pf_rt = mk_tex(2101, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0);
+}
+// 一段：设目标、（可选）多边形状态、n 笔同样的绘制
+static void pf_draws(unsigned n, unsigned prim, int cull) {
+    stream s = {0}; put_set_rt(&s, &g_pf_rt, NULL);
+    if (cull >= 0) { p_bind_state *bs = put(&s, OP_BIND_STATE, sizeof *bs); bs->kind = 4; poly_st py = {(unsigned)cull, NVN_FRONT_FACE_CCW, NVN_POLYGON_MODE_FILL, 0}; memcpy(bs->bytes, &py, sizeof py); }
+    for (unsigned i = 0; i < n; i++) { p_draw *d = put(&s, OP_DRAW, sizeof *d); d->prim = prim; d->count = 3; }
+    end(&s); submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+}
+static void t_pipe_fail_table(void) {
+    const char *reason; uint64_t fails, cached; char sum[1024];
+    // 1. 确定性（COMPILE）：一段 5 笔只交后端 1 次，其余 4 笔失败表挡下；再来一段 5 笔 0 次；后端改成能建也不再试（整局不重建）
+    pf_setup(); g_pipe_why = "vkCreateGraphicsPipelines 失败（VK_ERROR_UNKNOWN -13）";
+    int gets = g_pipe_gets, draws = g_gdraws, red = g_pf_red;
+    g_pipe_rc = NVN_GPU_E_COMPILE; pf_draws(5, 4, -1);
+    printf("PIPE_FAIL fixed: backend calls %d (expect 1), cached %llu (expect 4)\n", g_pipe_gets - gets, (unsigned long long)nvn_unimpl_count("gpu", "pipe_get_cached_fail"));
+    CHECK(g_pipe_gets == gets + 1 && g_gdraws == draws);
+    CHECK(nvn_unimpl_count("gpu", "pipe_get") == 1 && nvn_unimpl_count("gpu", "pipe_get_cached_fail") == 4);
+    CHECK(rp_pipe_fail_class(0, &reason, &fails, &cached) && fails == 1 && cached == 4);
+    CHECK(!strcmp(reason, "COMPILE:vkCreateGraphicsPipelines 失败（VK_ERROR_UNKNOWN -#）"));
+    CHECK(g_pf_red == red + 1 && strstr(g_pf_last, "第 1 类（确定性") && strstr(g_pf_last, "阶段 vs+fs、拓扑 4、颜色附件 1、采样 0、深度 无、变换反馈 无、顶点属性 0"));
+    printf("PIPE_FAIL red: %s\n", g_pf_last);
+    pf_draws(5, 4, -1);
+    CHECK(g_pipe_gets == gets + 1 && nvn_unimpl_count("gpu", "pipe_get_cached_fail") == 9 && g_pf_red == red + 1);
+    g_pipe_rc = 0; pf_draws(1, 4, -1);
+    CHECK(g_pipe_gets == gets + 1 && g_gdraws == draws);
+    CHECK(rp_pipe_fail_summary(sum, sizeof sum) == 1 && strstr(sum, "1 类，后端建失败 1 次、失败表挡下 10 笔") && strstr(sum, "#1 COMPILE:"));
+    printf("PIPE_FAIL summary: %s\n", sum);
+    CHECK(rp_pipe_fail_summary(sum, sizeof sum) == 0);   // 这之后没有新失败 / 新挡下：不再打
+    // 2. 会话重置后重建：同一份描述再交后端，这回建成
+    pf_setup(); gets = g_pipe_gets; draws = g_gdraws;
+    pf_draws(5, 4, -1);
+    CHECK(g_pipe_gets == gets + 1 && g_gdraws == draws + 5 && nvn_unimpl_count("gpu", "pipe_get_cached_fail") == 0 && !rp_pipe_fail_class(0, NULL, NULL, NULL));
+    // 3. 暂时性（OOM）：帧 100 失败 → 退避到 130；130 再试失败 → 250；250 → 730；730 第 4 次失败进失败表，之后不再试
+    pf_setup(); g_pipe_why = "vkCreateGraphicsPipelines 失败（VK_ERROR_OUT_OF_DEVICE_MEMORY -2）"; gets = g_pipe_gets;
+    g_pipe_rc = NVN_GPU_E_OOM; nvn_be_set_frame(100); pf_draws(3, 4, -1);
+    CHECK(g_pipe_gets == gets + 1 && nvn_unimpl_count("gpu", "pipe_get_cached_fail") == 2);
+    nvn_be_set_frame(129); pf_draws(1, 4, -1); CHECK(g_pipe_gets == gets + 1);
+    nvn_be_set_frame(130); pf_draws(1, 4, -1); CHECK(g_pipe_gets == gets + 2);
+    nvn_be_set_frame(249); pf_draws(1, 4, -1); CHECK(g_pipe_gets == gets + 2);
+    nvn_be_set_frame(250); pf_draws(1, 4, -1); CHECK(g_pipe_gets == gets + 3);
+    nvn_be_set_frame(729); pf_draws(1, 4, -1); CHECK(g_pipe_gets == gets + 3);
+    nvn_be_set_frame(730); pf_draws(1, 4, -1); CHECK(g_pipe_gets == gets + 4);
+    nvn_be_set_frame(100000); pf_draws(1, 4, -1);
+    printf("PIPE_FAIL transient: backend calls %d over frames 100..100000 (expect 4)\n", g_pipe_gets - gets);
+    CHECK(g_pipe_gets == gets + 4);
+    CHECK(rp_pipe_fail_class(0, &reason, &fails, &cached) && fails == 4 && !strcmp(reason, "OOM:vkCreateGraphicsPipelines 失败（VK_ERROR_OUT_OF_DEVICE_MEMORY -#）"));
+    CHECK(strstr(g_pf_last, "暂时性，退避重试"));
+    // 3b. 暂时性失败后建成一次，连续次数清零：再失败从 30 帧退避算起（没清零会是 120 帧）
+    pf_setup(); gets = g_pipe_gets;
+    g_pipe_rc = NVN_GPU_E_OOM; nvn_be_set_frame(0); pf_draws(1, 4, -1);
+    g_pipe_rc = 0; nvn_be_set_frame(30); pf_draws(1, 4, -1);
+    CHECK(g_pipe_gets == gets + 2);
+    g_pipe_rc = NVN_GPU_E_OOM; nvn_be_set_frame(31); pf_draws(1, 4, -1);   // 新的一段：g_pipe 换 cmd 重取
+    CHECK(g_pipe_gets == gets + 3);
+    nvn_be_set_frame(60); pf_draws(1, 4, -1); CHECK(g_pipe_gets == gets + 3);
+    nvn_be_set_frame(61); pf_draws(1, 4, -1); CHECK(g_pipe_gets == gets + 4);
+    // 4. 不记表：会话关闭中（STOPPED）每笔照旧交后端
+    pf_setup(); gets = g_pipe_gets; g_pipe_rc = NVN_GPU_E_STOPPED; nvn_be_set_frame(0); pf_draws(3, 4, -1);
+    CHECK(g_pipe_gets == gets + 3 && nvn_unimpl_count("gpu", "pipe_get_cached_fail") == 0 && !rp_pipe_fail_class(0, NULL, NULL, NULL));
+    // 5. 分类：原文里的数字归一（set 4 / set 5 同一类），签名不同（拓扑 4 / 5）分开，原因不同分开；每类只打一行红
+    pf_setup(); red = g_pf_red;
+    g_pipe_rc = NVN_GPU_E_LAYOUT; g_pipe_why = "set 4 超过四 set 上限"; pf_draws(2, 4, -1);
+    g_pipe_why = "set 5 超过四 set 上限"; pf_draws(2, 4, NVN_FACE_BACK);    // 描述不同（剔除面）、签名相同 → 同一类第二次失败
+    g_pipe_rc = NVN_GPU_E_COMPILE; g_pipe_why = "vkCreateGraphicsPipelines 失败（VK_ERROR_UNKNOWN -13）"; pf_draws(2, 5, -1);
+    g_pipe_rc = NVN_GPU_E_UNSUPPORTED; g_pipe_why = "设备未启用无格式存储图像所需特性"; pf_draws(2, 6, -1);
+    CHECK(rp_pipe_fail_class(0, &reason, &fails, &cached) && !strcmp(reason, "LAYOUT:set # 超过四 set 上限") && fails == 2 && cached == 2);
+    CHECK(rp_pipe_fail_class(1, &reason, &fails, &cached) && !strncmp(reason, "COMPILE:", 8) && fails == 1 && cached == 1);
+    CHECK(rp_pipe_fail_class(2, &reason, &fails, &cached) && !strcmp(reason, "UNSUPPORTED:设备未启用无格式存储图像所需特性") && fails == 1 && cached == 1);
+    CHECK(!rp_pipe_fail_class(3, NULL, NULL, NULL) && g_pf_red == red + 3);
+    CHECK(rp_pipe_fail_summary(sum, sizeof sum) == 1 && strstr(sum, "3 类，后端建失败 4 次、失败表挡下 4 笔") && strstr(sum, "#1 LAYOUT:set # 超过四 set 上限"));
+    printf("PIPE_FAIL classes: %s\n", sum);
+    g_pipe_rc = 0; g_pipe_why = NULL; nvn_be_set_frame(0); pass_fresh();
+}
+
 // #863: a rejecting backend attributes only unsupported non-COPY operations by op number.
 static void t_logic_op_accounting(void) {
     pass_fresh();
@@ -5510,7 +5595,7 @@ static void t_logic_op_accounting(void) {
     for (unsigned i = 0; i < 5; i++) {
         unsigned op = i == 1 ? NVN_LOGIC_OP_COPY : i == 3 ? NVN_LOGIC_OP_SET : NVN_LOGIC_OP_XOR;
         int rc = i == 2 ? NVN_GPU_E_ARG : i == 4 ? 0 : NVN_GPU_E_UNSUPPORTED;
-        nvn_unimpl_reset();
+        nvn_unimpl_reset(); rp_draw_reset();   // 替身每轮对同一份描述换返回码：上一轮的失败会进图形管线失败表，每轮先清（同会话重置）
         stream s = {0}; put_set_rt(&s, &rt, NULL);
         p_bind_state *bs = put(&s, OP_BIND_STATE, sizeof *bs); bs->kind = 1;
         color_st color = {0}; color.logic_op = op; memcpy(bs->bytes, &color, sizeof color);
@@ -7095,6 +7180,7 @@ int main(int argc, char **argv) {
     t_draw();
     t_arena697_detail();
     t_logic_op_accounting();
+    t_pipe_fail_table();
     t_gs_dirty_and_topology();
     t_gs_bind(); t_ub_fill_async(); t_ub_fill_steal_all(); t_storage_null_binding(); t_storage_sync_before_pass(); t_stage_dropped_clears_binds(); t_sbuf_window(); t_sbuf_past_pool_end();
     t_graphics_high_slots();

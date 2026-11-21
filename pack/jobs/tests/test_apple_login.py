@@ -318,7 +318,7 @@ class BundlePlumesign(unittest.TestCase):
 
     def test_pinned_mac_hash_is_own_build(self):
         import impactor
-        self.assertEqual(impactor.BUNDLED_MAC, {"plumesign-macos-universal": "6b719c8839e219f9e8c94606330a3a3c54fcf983910f3c9b2ca24d195b1d12cf"})
+        self.assertEqual(impactor.BUNDLED_MAC, {"plumesign-macos-universal": "a4c94b2132a7b6bc8e583d03b10831ca48aa91187ff2f5a61a39534ec1bfc19a"})
 
 
 if __name__ == "__main__":
