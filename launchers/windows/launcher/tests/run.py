@@ -102,6 +102,12 @@ def main():
                        "--console-probe", str(Path(temporary) / "out"), "--data-root=" + str(Path(temporary) / "data")], env)
             if "✓ 总控台窄窗 / 英文不裁、页顶不写长编号、出法没读回不先画错" not in out.stdout:
                 raise RuntimeError("console probe did not report success")
+        # 游戏库「更新 / 导出」两件事（0.6.4 改版：大卡三态、导出确认页设备行与默认不勾、开始后起的单、逐台结果；UI.Snapshots/UpdateExportProbe.cs）
+        with tempfile.TemporaryDirectory(prefix="s2arm-update-export-probe-") as temporary:
+            out = run([dotnet, "run", "--project", str(probe), "--no-build", "--configuration", "Release", "--",
+                       "--update-export-probe", str(Path(temporary) / "out"), "--data-root=" + str(Path(temporary) / "data")], env)
+            if "✓ 更新 / 导出两件事" not in out.stdout:
+                raise RuntimeError("update/export probe did not report success")
         if args.negative_controls:
             with tempfile.TemporaryDirectory(prefix="s2arm-ui-negative-") as temporary:
                 target = Path(temporary).resolve()

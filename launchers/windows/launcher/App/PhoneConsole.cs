@@ -412,7 +412,7 @@ public sealed partial class EnvironmentWindow
                 var status = new TextBlock { Text = text, Foreground = Brush.Parse(sa.ShellCurrent && !expired ? "#30D158" : "#FF9F0A"), FontSize = 12.5,
                     TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
                 Grid.SetColumn(status, 1); row.Children.Add(status);
-                // 续签：等同这款的单款「推到 iPhone」，装到这台（InstallAsync 带设备号）；游戏库里没有这款（删了）或这台不在线时置灰
+                // 续签：打开这款的导出确认页、预勾这一台（RenewApp）；游戏库里没有这款（删了）或这台不在线时置灰
                 var owned = catalog?.Games.FirstOrDefault(g => string.Equals(g.Id, sa.GameId, StringComparison.OrdinalIgnoreCase));
                 var renew = Action("console.app.renew", () => { if (owned is not null) RenewApp(owned, phone.Device); },
                     owned is not null && !offline && !PhonePushing(owned.Id) && !PhoneQueued(owned.Id));
@@ -515,13 +515,9 @@ public sealed partial class EnvironmentWindow
         return Card(page, 24);
     }
 
-    /// <summary>总控台独立 App 一行的「续签」：走单款装机（InstallAsync），装到总控台这台；去这款的装机页看进度与结局（同游戏库「导出自签包」的落点）</summary>
-    private void RenewApp(LibraryGame game, string device)
-    {
-        selectedGame = game.Id;
-        _ = InstallAsync(game, device: device);
-        Navigate("install");
-    }
+    /// <summary>总控台独立 App 一行的「续签」：原先直接推到这台（单款装机）；0.6.4 起推只来自导出确认页，这里打开这款的导出确认页并预先勾上这一台
+    ///   （确认页唯一的预勾例外：玩家点的就是「这台续签」；其余入口一律默认都不勾），签名 / 出法照确认页缺省，玩家点「开始」才推</summary>
+    private void RenewApp(LibraryGame game, string device) => OpenExport(game, preDevice: device);
 
     // ---- 顶栏动态窗口（同 Mac S2ArmLauncherModel+PhoneConsole「顶栏动态窗口」）：有和 App 相关的作业时「游戏库」那颗显示进度，做完闪 ✓，失败 / 停下留「!」直到点开 ----
     private bool dynamicDone, dynamicAlert;

@@ -26,10 +26,11 @@ public sealed record PhoneOverview(IReadOnlyList<PhoneOverview.Phone> Phones)
     /// <param name="Actions">作业给的这台的按钮（别的工具装的才有：exportShellIpa / pushS2arm / exportS2arm / handOverIdentity）；没给 = 空</param>
     /// <param name="NeedsChoice">装着不止一个 S2Arm、玩家还没选（作业 needsChoice）：只出「选用哪个 S2Arm」</param>
     /// <param name="Candidates">装着不止一个时的全部候选（选没选过都带，选过的据此给「换一个」）；只有一个或没探测 = 空</param>
+    /// <param name="Kind">设备类型（作业 kind）："iPhone" / "iPad"；读不到 = ""（界面写「设备」，不写死 iPhone）</param>
     public sealed record Phone(string Device, string Name, bool Installed, bool ShellCurrent, DateTimeOffset? ExpiresAtEstimate,
         bool Probed, string? Online, DateTimeOffset? LastSeen, string? SignMode, IReadOnlyList<Game> Games,
         string? InstalledBy = null, string BundleId = "", IReadOnlyList<string>? Actions = null,
-        bool NeedsChoice = false, IReadOnlyList<Candidate>? Candidates = null, IReadOnlyList<App>? Apps = null)
+        bool NeedsChoice = false, IReadOnlyList<Candidate>? Candidates = null, IReadOnlyList<App>? Apps = null, string Kind = "")
     {
         public bool KnownOffline => Probed && Online is null;
         public bool External => InstalledBy == "external";
@@ -110,7 +111,7 @@ public sealed record PhoneOverview(IReadOnlyList<PhoneOverview.Phone> Phones)
                 phones.Add(new Phone(device, S(p, "name") ?? "", B(p, "installed"), B(p, "shellCurrent"), D(p, "expiresAtEstimate"),
                     p.TryGetProperty("online", out _), S(p, "online"), D(p, "lastSeen"), S(p, "signMode"), games,
                     S(p, "installedBy") is "launcher" or "external" ? S(p, "installedBy") : null, S(p, "bundleId") ?? "", actions,
-                    B(p, "needsChoice"), candidates, apps));
+                    B(p, "needsChoice"), candidates, apps, S(p, "kind")?.ToLowerInvariant() switch { "iphone" => "iPhone", "ipad" => "iPad", _ => "" }));
             }
         return new PhoneOverview(phones);
     }

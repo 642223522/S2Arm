@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 S2Arm contributors
 // 一键装到 iPhone 的签名身份 + 更新 iPhone 上的 S2Arm（v0.3.0，同 Mac InstallModeViews.swift / S2ArmLauncherModel+InstallMode.swift）。
-//   签名身份 = Apple ID（在 Impactor 里登录）/ 我的开发者证书，沿用 DevCertPage.cs 那套。11-15 维护者：导出不再是装法——
-//   游戏库「推到 iPhone」「导出自签包」两个按钮并排（ExportPages.cs ExportSelfSign），设置里没有切换。
-//   InstallModeCard：设置里的一张卡；InstallModeLine：出包页一行只读签名身份 + 「更改」（去设置）。
+//   签名身份 = Apple ID（在 Impactor 里登录）/ 我的开发者证书，沿用 DevCertPage.cs 那套。0.6.4 起推 / 导出只有游戏库「导出…」一个入口，
+//   这次怎么签在导出确认页选（ExportFlow.cs），设置里这张卡给的是缺省。InstallModeCard：设置里的一张卡。
 //   更新：游戏库顶栏按钮（catalog phoneUpdates：设备记录的壳号比本版旧）→ 有要重新出包的款先三选一 → installUpdate 作业只换壳、不重推资源；
 //   选了「更新并重新出这几款」：更新成功后把它们排进批量出包（只出 iPhone），整批出完逐款装上。
 using System.Text.Json;
@@ -254,24 +253,6 @@ public sealed partial class EnvironmentWindow
         catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
             InvalidOperationException or System.ComponentModel.Win32Exception) { }
         await RefreshInstallModeAsync();
-    }
-
-    // ---- 出包页：一键装用谁签名 + 「更改」 ----
-
-    private Control InstallModeLine()
-    {
-        EnsureInstallMode();
-        if (devCert is null) EnsureDevCert();
-        var devcertOn = devCert is { } st && Flag(st, "active");
-        var summary = T(devcertOn ? "export.sign.devcert" : "export.sign.appleId");
-        var line = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), ColumnSpacing = 12 };
-        var text = Muted(T("install.mode.summary").Replace("{0}", summary), 13.5); text.VerticalAlignment = VerticalAlignment.Center;
-        AutomationId(text, "export.installMode");
-        line.Children.Add(text);
-        var change = Action("install.mode.change", () => Navigate("settings"));
-        AutomationId(change, "export.installMode.change");
-        Grid.SetColumn(change, 1); line.Children.Add(change);
-        return Card(line, 14);
     }
 
     // ---- 游戏库顶栏：更新 iPhone 上的 S2Arm ----
