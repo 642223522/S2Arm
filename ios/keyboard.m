@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 S2Arm contributors
 // iPad 外接键盘（妙控键盘等，#1869）：GCKeyboard 采键 → ios/keyboard_map.h（规则同 Mac macos/front_mac.m）→ ios/controller.m 照 Mac 选源发布；
-//   原始键态同时喂 HID 键盘区（s2a_kb_update，同 Mac R5）。
+//   原始键态同时喂 HID 键盘区（s2a_kb_update，同 Mac R5）。鼠标键（ios/mouse.m）并进同一份（s2a_mouse_map，同 Mac sample_input）。
 //   每次按键事件都把键码表里的键全部重查一遍（buttonForKeyCode:），不自己记增减：切后台、⌘ 组合吞掉抬起事件时，下一次事件就对齐。
 //   ⌘ 按着时新按下的键交给系统、不进游戏，松开前一直不算（同 Mac：⌘ 组合的 keyDown 交系统）。CapsLock 只记锁定状态，不进按键（同 Mac）。
 //   键位：起局点名的 S2A_INPUT_CONFIG（开发 / 自动化）> 这款在改键页存的 > iPad 缺省（s2a_kbd_default）。
@@ -9,6 +9,7 @@
 #import <GameController/GameController.h>
 #include "keyboard.h"
 #include "keyboard_map.h"
+#include "mouse_map.h"
 #include "input_config.h"
 #include "settings.h"
 #include "native.h"
@@ -36,6 +37,8 @@ static void load_map(void) {
         s2a_kbd_default(&g_map);
     }
     g_map_loaded = 1;
+    s2a_input_config def; s2a_kbd_default(&def);
+    s2a_ios_mouse_config(&g_map, !memcmp(&def, &g_map, sizeof def));   // 鼠标那几项（模式 / 灵敏度 / 左键绑没绑 / 是不是缺省）同步给 mouse.m
 }
 // 现在按着的键：照键码表逐个问系统（⌘ 不进按键，同 Mac）
 static void poll_keys(GCKeyboardInput *input, s2a_kbd_keys *now) {
@@ -55,6 +58,7 @@ static void publish(int pressed) {
     if (!g_muted) {
         if (!g_map_loaded) load_map();
         s2a_kbd_map(&g_map, &g_held, &buttons, sticks);
+        s2a_mouse_map(&g_map, s2a_ios_mouse_buttons(), &buttons, sticks);   // 鼠标键与键盘一起算（同 Mac sample_input）
         s2a_kbd_hid(&g_held, g_caps, bits, &mods);
     }
     s2a_kb_update(bits, mods);
@@ -71,6 +75,9 @@ static void key_changed(GCKeyboardInput *input, GCKeyCode code) {
     for (int i = 0; i < 2; i++) {
         g_swallowed.bits[i] &= now.bits[i];   // 松开了就不再吞
         fresh.bits[i] = now.bits[i] & ~g_held.bits[i] & ~g_swallowed.bits[i];
+    }
+    if (s2a_kbd_held(&fresh, S2A_KBD_ESC) && s2a_ios_mouse_escape()) {   // 鼠标锁着时 Esc 只释放，这一下不进游戏（同 Mac），松开前不算
+        s2a_kbd_set(&g_swallowed, S2A_KBD_ESC, 1); s2a_kbd_set(&fresh, S2A_KBD_ESC, 0);
     }
     if (command_down(input)) {   // ⌘ 组合：新按下的键交系统
         for (int i = 0; i < 2; i++) { g_swallowed.bits[i] |= fresh.bits[i]; fresh.bits[i] = 0; }
@@ -142,9 +149,11 @@ void s2a_ios_keyboard_reload(void) {
     if (queue) dispatch_async(queue, ^{ load_map(); publish(0); });
 }
 void s2a_ios_keyboard_set_muted(int muted) {
+    if (muted) s2a_ios_mouse_background();   // 改键页开着：鼠标也释放、放开
     dispatch_queue_t queue = g_queue;
     if (queue) dispatch_async(queue, ^{ g_muted = muted != 0; if (!g_muted) g_record = nil; publish(0); });
 }
+void s2a_ios_keyboard_mouse_changed(int pressed) { publish(pressed); }
 void s2a_ios_keyboard_record(void (^done)(int code, unsigned modifiers)) {
     dispatch_queue_t queue = g_queue;
     void (^copy)(int, unsigned) = [done copy];

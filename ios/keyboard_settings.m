@@ -4,11 +4,14 @@
 //   点一个按键位后按键盘上的新键录入，Esc 取消；另有「常用键」（Return、Esc、空格、Tab、Shift、Ctrl、Option，同 Mac commonKeys）与「清除键盘按键」；
 //   要绑的键已给了别的按键位时先问「改绑这个键？」，确认就解开旧的再绑（存下来的键位没有重复绑定，共用解析器拒收重复）。
 //   iPad 在游戏里改：改完当场生效（Mac 在启动器里改、下次起局生效），按款存 schema 1 JSON（同 Mac input.json）。
-//   只改键盘部分；鼠标 / 触控板随后续 PR。页面开着时键盘不进游戏（keyboard.m 静音）。入口：齿轮菜单第一层，「编辑虚拟按键」旁（vpad.m）
+//   鼠标部分（#1869 PR 2）同 Mac 启动器：每个按键位的「…」里选鼠标键（未绑定 / 左 / 右 / 中 / 侧键 1、2），另有一组「鼠标」——
+//   移动鼠标时（转动视角 / 不起作用）、左右 / 上下灵敏度（0.1–10，步长 0.1）、左右 / 上下反过来、停手后视角回正；文案逐字取 Mac 启动器 input.mouse*。
+//   页面开着时键盘 / 鼠标不进游戏（keyboard.m 静音）。入口：齿轮菜单第一层，「编辑虚拟按键」旁（vpad.m）
 #import <UIKit/UIKit.h>
 #import "s2a_l10n.h"
 #include "keyboard.h"
 #include "keyboard_map.h"
+#include "mouse_map.h"
 #include "settings.h"
 
 static const int kButtons[] = {0, 1, 2, 3, 6, 7, 8, 9, 4, 5, 10, 11, 13, 15, 12, 14};   // A B X Y L R ZL ZR 按下左右摇杆 + - 十字键上下左右
@@ -35,6 +38,17 @@ static NSString *target_name(int t) {
         case 22: return S2AL(@"kbd.target.RS_RIGHT");
         case 23: return S2AL(@"kbd.target.RS_DOWN");
         default: return @(s2a_input_target_name(t));   // A B X Y L R ZL ZR
+    }
+}
+// 鼠标键名同 Mac InputNames.mouseButton
+static NSString *mouse_name(int b) {
+    switch (b) {
+        case 0: return S2AL(@"kbd.mouseButton.0");
+        case 1: return S2AL(@"kbd.mouseButton.1");
+        case 2: return S2AL(@"kbd.mouseButton.2");
+        case 3: return S2AL(@"kbd.mouseButton.3");
+        case 4: return S2AL(@"kbd.mouseButton.4");
+        default: return S2AL(@"kbd.unbound");
     }
 }
 // 键名同 Mac InputNames.key：修饰键前缀 ⇧⌃⌥ + 键帽
@@ -87,11 +101,16 @@ int s2a_ios_keyboard_customized(void) { return [s2a_ios_settings_defaults() stri
 }
 - (void)done { [self.navigationController dismissViewControllerAnimated:YES completion:nil]; }
 - (int)targetAt:(NSIndexPath *)path { return path.section == 0 ? kButtons[path.row] : kSticks[path.row]; }
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 2; }
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return section == 0 ? 16 : 8; }
-- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section { return section == 0 ? S2AL(@"kbd.section.buttons") : S2AL(@"kbd.section.sticks"); }
-- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section { return section == 1 ? S2AL(@"kbd.footer") : nil; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 3; }
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return section == 0 ? 16 : section == 1 ? 8 : 6; }
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+    return section == 0 ? S2AL(@"kbd.section.buttons") : section == 1 ? S2AL(@"kbd.section.sticks") : S2AL(@"kbd.mouse");
+}
+- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
+    return section == 1 ? S2AL(@"kbd.footer") : section == 2 ? S2AL(@"kbd.mouse.note") : nil;
+}
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {
+    if (path.section == 2) return [self mouseCell:path.row];
     int target = [self targetAt:path];
     UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:nil];
     [self configure:cell target:target];
@@ -108,9 +127,17 @@ int s2a_ios_keyboard_customized(void) { return [s2a_ios_settings_defaults() stri
         [page stopRecording]; page->_map.keyboard[target] = (s2a_input_key){-1, 0}; [page save];
     }];
     clear.attributes = UIMenuElementAttributesDestructive;
+    // 鼠标键（同 Mac 启动器每个按键位的「鼠标」下拉：未绑定 + 0–4）
+    NSMutableArray<UIMenuElement *> *mouse = [NSMutableArray array];
+    for (int b = -1; b < S2A_MOUSE_BUTTONS; b++) {
+        UIAction *pick = [UIAction actionWithTitle:mouse_name(b) image:nil identifier:nil handler:^(UIAction *a) { (void)a; [weakSelf bindMouse:b to:target]; }];
+        if (_map.mouse[target] == b) pick.state = UIMenuElementStateOn;
+        [mouse addObject:pick];
+    }
     UIButton *more = [UIButton buttonWithType:UIButtonTypeSystem];
     [more setImage:[UIImage systemImageNamed:@"ellipsis.circle"] forState:UIControlStateNormal];
-    more.menu = [UIMenu menuWithChildren:@[[UIMenu menuWithTitle:S2AL(@"kbd.common") image:[UIImage systemImageNamed:@"keyboard"] identifier:nil options:0 children:common], clear]];
+    more.menu = [UIMenu menuWithChildren:@[[UIMenu menuWithTitle:S2AL(@"kbd.common") image:[UIImage systemImageNamed:@"keyboard"] identifier:nil options:0 children:common],
+                                           [UIMenu menuWithTitle:S2AL(@"kbd.mouse") image:[UIImage systemImageNamed:@"computermouse"] identifier:nil options:0 children:mouse], clear]];
     more.showsMenuAsPrimaryAction = YES;
     more.accessibilityLabel = S2AL(@"kbd.common");
     [more sizeToFit];
@@ -122,7 +149,9 @@ int s2a_ios_keyboard_customized(void) { return [s2a_ios_settings_defaults() stri
     UIListContentConfiguration *c = [UIListContentConfiguration valueCellConfiguration];
     c.text = target_name(target);
     BOOL recording = _recording == target;
-    c.secondaryText = recording ? S2AL(@"kbd.record") : key_name(_map.keyboard[target]);
+    NSString *keys = key_name(_map.keyboard[target]);
+    if (_map.mouse[target] >= 0) keys = [NSString stringWithFormat:@"%@ · %@", keys, mouse_name(_map.mouse[target])];   // 同时绑了鼠标键：一起显示
+    c.secondaryText = recording ? S2AL(@"kbd.record") : keys;
     if (recording) c.secondaryTextProperties.color = self.view.tintColor;
     cell.contentConfiguration = c;
 }
@@ -130,12 +159,102 @@ int s2a_ios_keyboard_customized(void) { return [s2a_ios_settings_defaults() stri
 - (void)refreshVisibleRows {
     for (NSIndexPath *path in self.tableView.indexPathsForVisibleRows) {
         UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:path];
-        if (cell) [self configure:cell target:[self targetAt:path]];
+        if (!cell) continue;
+        if (path.section == 2) [self configureMouse:cell row:path.row];
+        else [self configure:cell target:[self targetAt:path]];
+        if (path.section < 2) {   // 「…」菜单里鼠标键的勾跟着换
+            UIButton *more = (UIButton *)cell.accessoryView;
+            UIMenu *menu = more.menu; NSMutableArray *children = [menu.children mutableCopy];
+            if (children.count == 3) {
+                int target = [self targetAt:path];
+                UIMenu *m = children[1]; NSArray *picks = m.children;
+                for (NSUInteger i = 0; i < picks.count; i++) ((UIAction *)picks[i]).state = _map.mouse[target] == (int)i - 1 ? UIMenuElementStateOn : UIMenuElementStateOff;
+                more.menu = [menu menuByReplacingChildren:children];
+            }
+        }
     }
+}
+// ---- 「鼠标」组（同 Mac 启动器 mouseOptions 卡片）：0 移动鼠标时、1 左右灵敏度、2 上下灵敏度、3 左右反过来、4 上下反过来、5 停手后视角回正 ----
+- (UITableViewCell *)mouseCell:(NSInteger)row {
+    UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:nil];
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    __weak S2AKeyboardSettings *weakSelf = self;
+    if (row == 0) {
+        UIButton *mode = [UIButton buttonWithType:UIButtonTypeSystem];
+        mode.showsMenuAsPrimaryAction = YES; mode.changesSelectionAsPrimaryAction = YES;
+        UIAction *camera = [UIAction actionWithTitle:S2AL(@"kbd.mouse.mode.camera") image:nil identifier:nil handler:^(UIAction *a) { (void)a; [weakSelf setMouseCamera:1]; }];
+        UIAction *off = [UIAction actionWithTitle:S2AL(@"kbd.mouse.mode.off") image:nil identifier:nil handler:^(UIAction *a) { (void)a; [weakSelf setMouseCamera:0]; }];
+        (_map.mouse_camera ? camera : off).state = UIMenuElementStateOn;
+        mode.menu = [UIMenu menuWithChildren:@[camera, off]];
+        [mode sizeToFit];
+        cell.accessoryView = mode;
+    } else if (row <= 2) {
+        UISlider *slider = [UISlider new];
+        slider.minimumValue = 0.1f; slider.maximumValue = 10; slider.tag = row;
+        slider.value = (float)(row == 1 ? _map.sensitivity_x : _map.sensitivity_y);
+        [slider addTarget:self action:@selector(sensitivityMoved:) forControlEvents:UIControlEventValueChanged];
+        [slider addTarget:self action:@selector(sensitivityDone:) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel];
+        slider.frame = CGRectMake(0, 0, 180, 32);
+        cell.accessoryView = slider;
+    } else {
+        UISwitch *toggle = [UISwitch new]; toggle.tag = row;
+        toggle.on = row == 3 ? _map.invert_x : row == 4 ? _map.invert_y : _map.recenter;
+        [toggle addTarget:self action:@selector(toggleChanged:) forControlEvents:UIControlEventValueChanged];
+        cell.accessoryView = toggle;
+    }
+    [self configureMouse:cell row:row];
+    return cell;
+}
+- (void)configureMouse:(UITableViewCell *)cell row:(NSInteger)row {
+    UIListContentConfiguration *c = [UIListContentConfiguration valueCellConfiguration];
+    switch (row) {
+        case 0: c.text = S2AL(@"kbd.mouse.mode"); break;
+        case 1: c.text = S2AL(@"kbd.mouse.sensX"); c.secondaryText = [NSString stringWithFormat:@"%.1f", _map.sensitivity_x]; break;
+        case 2: c.text = S2AL(@"kbd.mouse.sensY"); c.secondaryText = [NSString stringWithFormat:@"%.1f", _map.sensitivity_y]; break;
+        case 3: c.text = S2AL(@"kbd.mouse.invertX"); break;
+        case 4: c.text = S2AL(@"kbd.mouse.invertY"); break;
+        default: c.text = S2AL(@"kbd.mouse.recenter"); break;
+    }
+    cell.contentConfiguration = c;
+    if (row == 0) { UIButton *mode = (UIButton *)cell.accessoryView; [mode setTitle:_map.mouse_camera ? S2AL(@"kbd.mouse.mode.camera") : S2AL(@"kbd.mouse.mode.off") forState:UIControlStateNormal]; [mode sizeToFit]; }
+    else if (row <= 2) ((UISlider *)cell.accessoryView).value = (float)(row == 1 ? _map.sensitivity_x : _map.sensitivity_y);
+    else ((UISwitch *)cell.accessoryView).on = row == 3 ? _map.invert_x : row == 4 ? _map.invert_y : _map.recenter;
+}
+- (void)setMouseCamera:(int)on { [self stopRecording]; _map.mouse_camera = on; [self save]; }
+// 灵敏度：拖动时按 0.1 一档只改读数，松手再存（同 Mac 启动器 step 0.1）
+- (void)sensitivityMoved:(UISlider *)slider {
+    double v = MAX(0.1, MIN(10, round(slider.value * 10) / 10));
+    if (slider.tag == 1) _map.sensitivity_x = v; else _map.sensitivity_y = v;
+    UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:[NSIndexPath indexPathForRow:slider.tag inSection:2]];
+    UIListContentConfiguration *c = (UIListContentConfiguration *)cell.contentConfiguration;
+    c.secondaryText = [NSString stringWithFormat:@"%.1f", v]; cell.contentConfiguration = c;
+}
+- (void)sensitivityDone:(UISlider *)slider { [self sensitivityMoved:slider]; [self stopRecording]; [self save]; }
+- (void)toggleChanged:(UISwitch *)toggle {
+    [self stopRecording];
+    if (toggle.tag == 3) _map.invert_x = toggle.on; else if (toggle.tag == 4) _map.invert_y = toggle.on; else _map.recenter = toggle.on;
+    [self save];
+}
+// 绑鼠标键：别的按键位已经用了这个键就先问（同 Mac 启动器 bind("mouse", …)）
+- (void)bindMouse:(int)button to:(int)target {
+    [self stopRecording];
+    int holder = -1;
+    if (button >= 0) for (int t = 0; t < S2A_INPUT_TARGET_COUNT; t++) if (t != target && _map.mouse[t] == button) holder = t;
+    if (holder < 0) { _map.mouse[target] = button; [self save]; return; }
+    NSString *body = [NSString stringWithFormat:S2AL(@"kbd.rebind.body"), target_name(holder), target_name(target), mouse_name(button)];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:S2AL(@"kbd.rebind.title") message:body preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:S2AL(@"common.cancel") style:UIAlertActionStyleCancel handler:nil]];
+    __weak S2AKeyboardSettings *weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:S2AL(@"kbd.rebind.confirm") style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+        (void)a; S2AKeyboardSettings *page = weakSelf; if (!page) return;
+        page->_map.mouse[holder] = -1; page->_map.mouse[target] = button; [page save];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 // 点按键位：开始录（再点一次同一行取消）
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)path {
     [tableView deselectRowAtIndexPath:path animated:YES];
+    if (path.section == 2) return;   // 鼠标组用行内的开关 / 滑块 / 菜单
     int target = [self targetAt:path];
     if (_recording == target) { [self stopRecording]; return; }
     [self stopRecording];

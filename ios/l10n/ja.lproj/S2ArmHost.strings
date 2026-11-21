@@ -647,9 +647,24 @@
 "addrshort.body" = "このゲームは起動時に連続した大きなアドレス範囲を必要としますが、このデバイスのシステムがアプリに割り当てられる分では足りません（ストレージ容量とは関係なく、空き容量を増やしても解決しません）。とても重くなったり、最初の画面で止まったままになることがあります。「それでも起動」を押して試すことはできます。普通に遊ぶには、メモリの多い iPhone / iPad / Mac（アプリに割り当てるアドレス範囲が大きい）を使うか、今後のバージョンをお待ちください。";
 "host.startAnyway" = "それでも起動";
 /* iPad 外接键盘改键页（ios/keyboard_settings.m，#1869）：除菜单项 / 标题 / 说明外，文案同 Mac 启动器（launchers/shared input.*） */
-"kbd.menu" = "キーボード設定…";
-"kbd.title" = "キーボード設定";
+"kbd.menu" = "キーボードとマウス…";
+"kbd.title" = "キーボードとマウス";
 "kbd.footer" = "ボタンをタップしてから、キーボードで新しいキーを押してください。すぐに反映され、このゲームだけに保存されます。キーボードがないときは「よく使うキー」から選べます。";
+"kbd.mouse" = "マウス";
+"kbd.mouse.note" = "カメラを回転するには、ゲーム画面をクリックしてマウスをロックします。ロック中は Esc を押すと最初にマウスが解放され、もう一度 Esc を押すとゲーム内で使用されます。";
+"kbd.mouse.mode" = "マウスを動かすと";
+"kbd.mouse.mode.camera" = "カメラを回転";
+"kbd.mouse.mode.off" = "何もしない";
+"kbd.mouse.sensX" = "水平感度";
+"kbd.mouse.sensY" = "垂直感度";
+"kbd.mouse.invertX" = "水平反転";
+"kbd.mouse.invertY" = "垂直反転";
+"kbd.mouse.recenter" = "マウス停止時に中央に戻す";
+"kbd.mouseButton.0" = "左ボタン";
+"kbd.mouseButton.1" = "右ボタン";
+"kbd.mouseButton.2" = "中ボタン";
+"kbd.mouseButton.3" = "サイドボタン 1";
+"kbd.mouseButton.4" = "サイドボタン 2";
 "kbd.section.buttons" = "コントローラーボタン";
 "kbd.section.sticks" = "摇杆";
 "kbd.record" = "キーを押してください、Esc でキャンセル";
