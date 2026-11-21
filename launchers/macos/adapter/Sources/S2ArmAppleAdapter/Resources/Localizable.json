@@ -10738,5 +10738,9 @@
  {
   "source": "这款游戏暂时出不了包：没认出它用的图形接口（NVN / Vulkan / OpenGL）。请把诊断发给我们，我们会核对是不是没认出来。",
   "en": "This game can't be packed yet: we couldn't identify which graphics API it uses (NVN / Vulkan / OpenGL). Please send us a diagnostic so we can check whether we missed it."
+ },
+ {
+  "source": "想正常玩，请换一台地址空间更大的设备（比如内存更大的 Mac），或等后续版本改进；游戏照常能启动。",
+  "en": "To play normally, use a device with more address space (such as a Mac with more memory), or wait for a later version; the game still starts."
  }
 ]
