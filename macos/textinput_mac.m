@@ -46,6 +46,20 @@ static NSMutableDictionary<NSNumber *, S2ATextInputMac *> *g_inputs;   // 只在
 }
 @end
 
+static NSColor *playerCream(void) { return [NSColor colorWithSRGBRed:1 green:.94 blue:.84 alpha:1]; }
+
+@interface S2APlayerRow : NSTableRowView
+@end
+@implementation S2APlayerRow
+- (void)drawSelectionInRect:(NSRect)dirty {
+    NSBezierPath *shape = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 2, 2) xRadius:7 yRadius:7];
+    [[playerCream() colorWithAlphaComponent:.15] setFill];
+    [shape fill];
+    [[playerCream() colorWithAlphaComponent:.65] setStroke];
+    [shape stroke];
+}
+@end
+
 @interface S2APlayerTable : NSTableView
 @end
 @implementation S2APlayerTable
@@ -67,6 +81,10 @@ void s2a_mac_player_sheet_sample(uint32_t buttons) { atomic_store(&player_sheet_
 @implementation S2ATextInputMac (Players)
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)table { return self.players.count + 1; }
 
+- (NSTableRowView *)tableView:(NSTableView *)table rowViewForRow:(NSInteger)row {
+    return [S2APlayerRow new];
+}
+
 - (NSView *)tableView:(NSTableView *)table viewForTableColumn:(NSTableColumn *)column row:(NSInteger)row {
     BOOL add = row == (NSInteger)self.players.count;
     NSString *name = add ? playerLabel(@"创建新用户", @"Create new user") : self.players[row];
@@ -74,13 +92,21 @@ void s2a_mac_player_sheet_sample(uint32_t buttons) { atomic_store(&player_sheet_
     label.font = [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold];
     label.lineBreakMode = NSLineBreakByTruncatingTail;
     NSImageView *icon = [NSImageView imageViewWithImage:[NSImage imageWithSystemSymbolName:add ? @"plus.circle" : @"person.crop.circle" accessibilityDescription:nil]];
-    icon.contentTintColor = [NSColor colorWithSRGBRed:1 green:.94 blue:.84 alpha:1];
+    icon.contentTintColor = playerCream();
     NSStackView *stack = [NSStackView stackViewWithViews:@[icon, label]];
     stack.spacing = 10;
     stack.edgeInsets = NSEdgeInsetsMake(0, 8, 0, 8);
     stack.distribution = NSStackViewDistributionFill;
     [icon.widthAnchor constraintEqualToConstant:20].active = YES;
-    return stack;
+    NSTableCellView *cell = [NSTableCellView new];
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    [cell addSubview:stack];
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor],
+        [stack.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor],
+        [stack.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor]
+    ]];
+    return cell;
 }
 
 - (void)closePlayerSheet:(NSModalResponse)response {
@@ -109,9 +135,9 @@ void s2a_mac_player_sheet_sample(uint32_t buttons) { atomic_store(&player_sheet_
     CGFloat bodyHeight = creating ? 30 : MIN(self.players.count + 1, 6) * 38;
     CGFloat height = 112 + bodyHeight;
     [self.panel setContentSize:NSMakeSize(width, height)];
-    NSVisualEffectView *surface = [[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0, 0, width, height)];
-    surface.material = NSVisualEffectMaterialPopover;
-    surface.state = NSVisualEffectStateActive;
+    NSView *surface = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, width, height)];
+    surface.wantsLayer = YES;
+    surface.layer.backgroundColor = [NSColor colorWithSRGBRed:.10 green:.10 blue:.11 alpha:1].CGColor;
     self.panel.contentView = surface;
     NSString *add = playerLabel(@"创建新用户", @"Create new user");
     NSString *title = creating ? add : playerLabel(@"选择 S2Arm 用户", @"Select S2Arm user");
@@ -134,6 +160,8 @@ void s2a_mac_player_sheet_sample(uint32_t buttons) { atomic_store(&player_sheet_
         self.field = field;
         [surface addSubview:field];
         NSButton *save = [NSButton buttonWithTitle:playerLabel(@"创建", @"Create") target:self action:@selector(savePlayer:)];
+        save.bezelColor = playerCream();
+        save.contentTintColor = NSColor.blackColor;
         save.keyEquivalent = @"\r";
         save.frame = NSMakeRect(width - 100, 12, 80, 30);
         [surface addSubview:save];
@@ -149,9 +177,10 @@ void s2a_mac_player_sheet_sample(uint32_t buttons) { atomic_store(&player_sheet_
         column.width = body.size.width;
         [table addTableColumn:column];
         table.columnAutoresizingStyle = NSTableViewLastColumnOnlyAutoresizingStyle;
-        table.style = NSTableViewStyleInset;
+        table.style = NSTableViewStylePlain;
         table.headerView = nil;
         table.backgroundColor = NSColor.clearColor;
+        table.intercellSpacing = NSMakeSize(0, 2);
         table.rowHeight = 36;
         table.allowsEmptySelection = NO;
         table.delegate = self; table.dataSource = self;
