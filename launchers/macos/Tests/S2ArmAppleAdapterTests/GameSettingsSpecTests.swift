@@ -5,7 +5,7 @@ import XCTest
 final class GameSettingsSpecTests: XCTestCase {
     func testMacItemsComeFromTheSharedTable() throws {
         let items = try GameSettingsSpec.macItems()
-        XCTAssertEqual(items.map(\.id), ["quality", "fps60", "fpsPick", "resolutionScale", "fpsLimit", "widescreen", "docked", "language", "patches", "input", "rumble", "rumbleLevel", "motion", "motionInvertY", "motionInvertX", "ldnMode", "ldnHost", "ldnAddress", "padFace", "snapshot", "hud", "cheats", "mods", "pauseUnfocused", "audioLatency", "audioDevice", "vsSpeakers", "vsHeadphones", "threadCompat058", "diagRun"])
+        XCTAssertEqual(items.map(\.id), ["quality", "fps60", "fpsPick", "resolutionScale", "fpsLimit", "widescreen", "docked", "language", "patches", "input", "rumble", "rumbleLevel", "motion", "motionInvertY", "motionInvertX", "ldnMode", "ldnHost", "ldnAddress", "padFace", "snapshot", "hud", "cheats", "mods", "pauseUnfocused", "audioLatency", "audioDevice", "vsSpeakers", "vsHeadphones", "diagRun"])
         // 输出设备类型（#189 后续，5.1 虚拟环绕第二片）：四选一，external 档带「不使用虚拟环绕」的说明
         let device = try XCTUnwrap(items.first { $0.id == "audioDevice" })
         XCTAssertEqual(device.options.map(\.value), ["auto", "builtin", "headphones", "external"])

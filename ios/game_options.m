@@ -180,12 +180,11 @@ char *s2a_shell_game_options_json(const char *game_id) {
         NSString *device = [ad isKindOfClass:NSString.class] && [@[@"builtin", @"headphones", @"external"] containsObject:ad] ? ad : @"auto";
         id vsS = [d objectForKey:@"S2AAudioVsSpeakers"], vsH = [d objectForKey:@"S2AAudioVsHeadphones"];
         return dup_json(@{@"fps": fps, @"fullscreen": full, @"patches": patches, @"cheats": cheats, @"volume": @(volume), @"language": game_language_json(gid, d),
-                          @"audio": @{@"device": device, @"vsSpeakers": @([vsS boolValue]), @"vsHeadphones": @([vsH boolValue])},
-                          @"threadCompat": @([d boolForKey:@"S2AThreadCompat058"])});   // 线程调度：兼容 0.5.8（定义表 threadCompat058）
+                          @"audio": @{@"device": device, @"vsSpeakers": @([vsS boolValue]), @"vsHeadphones": @([vsH boolValue])}});
     }
 }
 
-// kind = fps / fpspick / fullscreen / patch / cheat / volume / language / audiodevice / audiovs / threadcompat；key = 补丁编号 / 「文件名/条目名」（fps、fullscreen 不看）。返回 1 存成 / 0 没存成
+// kind = fps / fpspick / fullscreen / patch / cheat / volume / language / audiodevice / audiovs；key = 补丁编号 / 「文件名/条目名」（fps、fullscreen 不看）。返回 1 存成 / 0 没存成
 int s2a_shell_game_option_set(const char *game_id, const char *kind, const char *key, int on) {
     @autoreleasepool {
         if (!gid_ok(game_id) || !kind) return 0;
@@ -198,7 +197,6 @@ int s2a_shell_game_option_set(const char *game_id, const char *kind, const char 
             if ([item isEqual:@"auto"]) [gd removeObjectForKey:@"S2AAudioDevice"]; else [gd setObject:item forKey:@"S2AAudioDevice"];
             return 1;
         }
-        if ([k isEqual:@"threadcompat"]) { [s2a_ios_settings_defaults_for(gid) setBool:(on != 0) forKey:@"S2AThreadCompat058"]; return 1; }   // 线程调度：兼容 0.5.8，下次起局生效
         if ([k isEqual:@"audiovs"]) {   // 两个虚拟环绕开关：key = speakers / headphones，on = 开关值；各存各的（切换设备类型各自恢复），on 不看类型（驱动侧判）
             if (![item isEqual:@"speakers"] && ![item isEqual:@"headphones"]) return 0;
             [s2a_ios_settings_defaults_for(gid) setBool:(on != 0) forKey:[item isEqual:@"speakers"] ? @"S2AAudioVsSpeakers" : @"S2AAudioVsHeadphones"];
