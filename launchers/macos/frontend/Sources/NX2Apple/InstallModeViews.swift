@@ -45,6 +45,8 @@ struct InstallLayoutRow: View {
     var gameId: String? = nil
     /// 出现时读一次装机方式（按款选过的、证书换过）；离屏截图测试关掉它（测试环境没有作业入口，读失败会弹真的报错框）
     var refreshOnAppear = true
+    /// 导出确认页 ② 出法（0.6.4）：点卡片只改这里，「开始」时才 layoutSet 记下（取消就不改）；nil = 照旧点了就记
+    var selection: Binding<String>? = nil
     @State private var showWhy = false
 
     static let gold = Color(red: 0.93, green: 0.77, blue: 0.42)
@@ -64,7 +66,7 @@ struct InstallLayoutRow: View {
         let m = model.installMode
         let name = { (v: String) in ix(loc, v == "standalone" ? "install.layout.standalone" : "install.layout.shell") }
         let own = gameId.flatMap { m.layoutGames[$0.uppercased()] }
-        let now = gameId.map { m.layout(for: $0) } ?? m.layout
+        let now = selection?.wrappedValue ?? gameId.map { m.layout(for: $0) } ?? m.layout
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 12) {
                 if gameId == nil { LauncherRowIcon("square.stack.3d.up") }
@@ -76,7 +78,7 @@ struct InstallLayoutRow: View {
                         Text(ix(loc, "layout.card.why")).font(.manrope(13)).fixedSize(horizontal: false, vertical: true).frame(width: 360).padding(16)
                     }
                     .accessibilityIdentifier("install.layout.why")
-                if let gameId, own != nil {
+                if let gameId, own != nil, selection == nil {
                     Button(ix(loc, "install.layout.follow").replacingOccurrences(of: "{0}", with: name(m.layout))) { model.setLayout(nil, gameId: gameId) }
                         .buttonStyle(.plain).font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary).underline()
                         .accessibilityIdentifier("install.layout.follow")
@@ -99,9 +101,9 @@ struct InstallLayoutRow: View {
     }
 
     private func card(_ value: String, _ title: String, _ body: String, _ badge: String, gold: Bool, now: String, m: InstallModeInfo) -> some View {
-        let on = (m.loaded || gameId.flatMap { m.layoutGames[$0.uppercased()] } != nil) && now == value   // 没读回不画选中（InstallModeInfo.loaded）
+        let on = (m.loaded || selection != nil || gameId.flatMap { m.layoutGames[$0.uppercased()] } != nil) && now == value   // 没读回不画选中（InstallModeInfo.loaded）
         let recommended = m.recommend == value
-        return Button { if !on { model.setLayout(value, gameId: gameId) } } label: {
+        return Button { if let selection { selection.wrappedValue = value } else if !on { model.setLayout(value, gameId: gameId) } } label: {
             VStack(alignment: .leading, spacing: 8) {
                 Text(ix(loc, badge)).font(.manrope(11, .bold)).padding(.horizontal, 8).padding(.vertical, 3)
                     .foregroundStyle(gold ? Color.black : Color.white)

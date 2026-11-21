@@ -49,8 +49,8 @@ struct ExportSessionView: View {
         }
     }
 
-    /// 这次出包是为了导出自签包（游戏库「导出自签包」点在没出过包的款上）：按钮和说明照导出写，出完自动接着导出
-    private var exportMode: Bool { model.selfSignAfterPack.contains(session.gameID ?? "") || (model.selfSigning && model.phoneSession?.kind == .install) }
+    /// 这次出包是导出确认页「开始」先做的那一步（还没做好 iPhone 版）：说明照导出写，出完自动接着导出 / 逐台导入
+    private var exportMode: Bool { model.exportAfterPack[session.gameID ?? ""] != nil || (model.selfSigning && model.phoneSession?.kind == .install) }
     private func x(_ id: String) -> String { BackendText.launcherText("export." + id, language: uiLanguage) }
 
     var body: some View {
@@ -410,8 +410,8 @@ struct ExportSessionView: View {
             if run.platforms.count > 1 {
                 successActions(platform).frame(maxWidth: .infinity, alignment: .trailing)
             }
-            if platform == .ios {
-                Text(x(exportMode ? "done.exportNote" : "done.installNote")).font(.manrope(13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if platform == .ios, exportMode {
+                Text(x("done.exportNote")).font(.manrope(13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -424,8 +424,8 @@ struct ExportSessionView: View {
             }
             if let game { finderButton(loc.t("s2arm.export.openGameFolder")) { model.reveal(game) } }
             if platform == .ios {
-                Button { if exportMode, let game { model.exportSelfSign(game) } else { install(session.gameID ?? "") } } label: {
-                    Label(x(exportMode ? "done.export" : "done.install"), systemImage: exportMode ? "square.and.arrow.up" : "iphone")
+                Button { install(session.gameID ?? "") } label: {   // 打开导出确认页（签名 → 出法 → 设备多选），不再直接推
+                    Label(BackendText.launcherText("exportsheet.open", language: uiLanguage), systemImage: "square.and.arrow.up")
                 }
                 .controllerButtonStyle(LauncherPrimaryButtonStyle(prominent: true)).keyboardShortcut(.defaultAction)
                 .controllerID("result.ios.install").controllerShortcut(.rightTrigger, focused: run.platforms.count > 1)
@@ -482,7 +482,7 @@ struct ExportSessionView: View {
                             .controllerID("result.tvos.install").controllerShortcut(.rightTrigger, focused: true)
                         if let game { Button(loc.t("s2arm.export.openGameFolder")) { model.reveal(game) } }
                     } else {
-                        Button(loc.t(model.installKey("s2arm.action.install"))) { install(session.gameID ?? "") }
+                        Button(BackendText.launcherText("exportsheet.open", language: uiLanguage)) { install(session.gameID ?? "") }
                             .controllerID("result.ios.install").controllerShortcut(.rightTrigger, focused: true)
                         if let ipa = outcome?.ipa, !ipa.isEmpty { Button(loc.t("s2arm.export.revealIpa")) { model.revealIpa(ipa) } }
                         if let game { Button(loc.t("s2arm.export.openGameFolder")) { model.reveal(game) } }

@@ -223,9 +223,12 @@ public final class InstallService {
     /// mode = "export"：游戏库「导出自签包」——不连手机、不签名，出未签名 S2Arm.ipa 和各款 .img 到文件夹（11-15 起导出只看这次请求）
     /// widget = false：玩家在设置里关了「装到 iPhone 时带主屏小组件」，作业层不带小组件扩展（不传 = 带）
     /// cloudSaves：玩家选的云存档文件夹（没开 = nil）。覆盖装前备份手机存档做不成时，作业层看这款在里面有没有快照：有就照装（覆盖装 App 不碰 iCloud 里那份）
+    /// sign：这次怎么签（导出确认页 ① 签名，0.6.4）：appleId / devCert = 已签名（推到设备时也强制用这一种），none = 自签（不签、手机上的 S2Arm 用它导入的证书签）；
+    ///   nil = 按设置里选的（作业层 install.export_sign_mode）。外部工具装的 S2Arm 作业层照旧自动走不签那条路，不论 sign
     public func install(gameId: String, teamId: String? = nil, device: String? = nil, acceptDropped: Bool = false, accept: Set<String> = [], mode: String? = nil,
-                        widget: Bool = true, cloudSaves: String? = nil, events: EventSink = .discard) async throws -> InstallResult {
+                        sign: String? = nil, widget: Bool = true, cloudSaves: String? = nil, events: EventSink = .discard) async throws -> InstallResult {
         var extra: [String: Any] = ["gameId": gameId]
+        if let sign, !sign.isEmpty { extra["sign"] = sign }
         if !widget { extra["widget"] = false }
         if let cloudSaves, !cloudSaves.isEmpty { extra["cloudSavesFolder"] = cloudSaves }
         if let mode { extra["mode"] = mode }
