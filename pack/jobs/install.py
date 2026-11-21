@@ -2645,6 +2645,20 @@ def push_program(cl, gid, pkg, inbox, custom=None, cat=None):
     return dict(sha=cat["image_sha256"], team=cat.get("team"), host_abi=cat["host_abi"], rewriter_id=cat.get("rewriter_id", ""), dir=vdir, look=look_of(custom))
 
 
+def program_on_phone(cl, gid, docs="Documents"):
+    """设备记录说这款程序包推过时，核手机上真在不在（D-TW8E：玩家在 App 里删了这款——程序包和资源一起挪走、账本记 removed——
+    电脑再推只按记录判，程序包没补推，资源推完了还是「还缺 .s2arm」）。在 = 清单 program/catalogue.json 在，或导入文件夹里还有没导走的 <号>.s2arm；
+    读不了（锁屏、断开、工具太旧）→ 按在算，照旧信记录"""
+    head = getattr(cl, "head", None)
+    if head is None:
+        return True
+    got = head(f"{PACK_GAMES}/{gid.upper()}/program/catalogue.json", 0)
+    if got is None or got[0] >= 0:
+        return True
+    pend = head(f"{import_inbox(cl, docs)}/{gid.upper()}.s2arm", 0)
+    return pend is None or pend[0] > 0
+
+
 def push_programs(c, cl, games, rec, team, bundle, signer, docs="Documents"):
     """通用壳装机：每款按设备记录判要不要推（program_pack.need），要推的出包、按这台的团队签、打成 .s2arm 推进 App 的导入文件夹（push_program）。
     rec = 设备记录；docs = 手机上 App 的文档根（导入文件夹在它下面；电视是 Library/Caches/S2Arm）。→ {游戏号: program 记录}（没推的照旧记录原样带回）；推到一半失败照抛，已推好的由调用方记下"""
@@ -2665,6 +2679,8 @@ def push_programs(c, cl, games, rec, team, bundle, signer, docs="Documents"):
         custom = next((v for k, v in looks.items() if k.upper() == g.upper()), None)
         want = dict(cat or json.loads((Path(pkg) / "catalogue.json").read_text(encoding="utf-8")), look=look_of(custom))
         why = program_pack.need(c, g, old, team, want=want)
+        if not why and docs == "Documents" and not program_on_phone(cl, g, docs):
+            why = {"missing"}   # 记录说推过、手机上却没有（玩家在 App 里删过这款，#1942 D-TW8E）：照没推过补推
         if not why:
             out[g] = old
             continue
