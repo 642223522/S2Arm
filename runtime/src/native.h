@@ -79,7 +79,9 @@ int s2a_energy_snap(s2a_esnap *s);
 int s2a_snap_saving(void); int s2a_snap_restoring(void); int s2a_snap_mode(void); int s2a_snap_logging(void);
 // 这一局关掉即时存档（snapsw.c）与原因码：S2A_SNAP_OFF_ADDRESS = 这台设备地址空间放不下标准布局、窗口外也放不下命令记录区（vawin.c）
 #define S2A_SNAP_OFF_ADDRESS 1
-void s2a_snap_disable(int why); int s2a_snap_off_reason(void);
+void s2a_snap_disable(int why); int s2a_snap_off_reason(void); int s2a_snap_reenable(int why);   // snapsw.c：构造期因 why 关的快照、选定游戏后放得下时重新打开（vawin.c s2a_window_snap_late）
+void s2a_window_snap_late(int no_far);   // vawin.c：布局定了、收尾前调，这一款没有远端段时在收尾还回去的那段里补放快照区
+int s2a_snap_late_fits(uint64_t released, uint64_t a, uint64_t host_min);   // vawin.c：纯函数
 // 两次采样之间的 GPU 忙 ms/s：分母取 GPU 时钟差（gpu_clk_ms，已入账各帧最晚 GPU 结束），不取墙钟——GPU 忙晚 8 帧在 CPU 帧边界入账，墙钟窗口会把慢帧前的时间挤进来；
 //   读不到（没有直连层）返回 -1，这段时间没有帧入账返回 0
 double s2a_gpu_busy_rate(const s2a_esnap *a, const s2a_esnap *b);

@@ -122,6 +122,8 @@ int s2a_snap_arena_place(uint64_t out, uint64_t below, uint64_t a, uint64_t host
 // 同上，宿主段本来不够时按游戏实际要多少让窗口（11-21）：fit = 宿主占到的空洞，*below = 窗口下方宿主段（放宿主段底部时可能加长到 a + host_min）；
 //   span = 本款已知的最高跨度（本机记录 / 种子表，0 = 还不知道）。不知道 → 让（按需起局，碰到上限再学）；知道且 span + margin ≤ fit − (a + host_min) → 让；
 //   否则 0（这台设备的地址空间真不够同时放下这款与快照）。空洞连 a + host_min 都不到 → 0
+// 选定游戏后收尾还给系统的 released 字节里放不放得下快照区 a 再给宿主留 host_min（vawin.c snap_late_take，11-21）
+int s2a_snap_late_fits(uint64_t released, uint64_t a, uint64_t host_min) { return released >= a + host_min; }
 int s2a_snap_arena_place2(uint64_t out, uint64_t fit, uint64_t *below, uint64_t a, uint64_t host_min, uint64_t span, uint64_t margin) {
     int w = s2a_snap_arena_place(out, *below, a, host_min);
     if (w) return w;

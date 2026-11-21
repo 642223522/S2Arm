@@ -39,6 +39,7 @@
 static int g_ok;            // 1 = 窗口已占到（首选位置整块 64 GB，或退路：2^39 以下最大空洞里的一块，见 vawin_reserve）
 static int g_noreserve;
 static uint64_t g_base, g_size;
+static uint64_t g_ca_base, g_va_cap = 64ull << 30; static int g_ca_cut;   // 命令记录区基址 / 切不切 / 虚拟池区长（缺省 = 下面的 VP_ARENA）；用法见下面命令记录区那段
 #if !TARGET_OS_OSX
 static uint64_t g_snap_below;   // 即时存档（iOS）：命令记录区放在窗口下方宿主保留段底部时的长度（0 = 没放那里）。11-20 起不再为它从窗口里让、不扩宿主段，只在宿主段本来就够大时切（s2a_snap_arena_place）
 static uint64_t g_snap_out;     // 即时存档（iOS）、窗口放不下标准布局：命令记录区 + 虚拟池区放在窗口所在空洞之外的这处（0 = 没放）
@@ -1311,6 +1312,7 @@ static void vawin_reserve(void) {
     int snap_win = s2a_snap_restoring() && !s2a_snap_manifest_win(&sw_b, &sw_s);
     if (snap_win && g_span_learned) { LOG("即时存档恢复：不用本机学到的跨度 %llu MB，窗口按快照原样占", (unsigned long long)(g_span_learned >> 20)); g_span_learned = 0; }
     uint64_t span_known = g_span_learned;   // 本款已知的最高跨度（本机记录 / 种子表，0 = 不知道）：快照区放不放得下按它判（下面）
+    (void)span_known;   // Mac 不走快照区那段
     if (g_span_learned && !s2a_window_span_rec_ok(g_span_learned, g_fit)) {
         LOG("【黄】地址窗口：本款已知碰到过的最高跨度 %llu MB（本机记录或种子表）不小于这块空洞 %llu MB：窗口不按跨度收，照缺省给", (unsigned long long)(g_span_learned >> 20), (unsigned long long)(g_fit >> 20));
         g_span_learned = 0; }
@@ -1434,7 +1436,7 @@ int s2a_window_reserve_late(void) {
 // 紧接着同一块保留里再放 VP_ARENA 给虚拟池（graphics/nvn hle_nvn.c vpool_reserve）：虚拟池各有一段自己的地址（贴图 / 缓冲地址 = 池基址 + 偏移，写在游戏内存里），
 //   原先 mmap(NULL) 落在内核挑的低区，回放进程同址占不回（11-05 旷野之息唯一的虚拟池 0x131310000+0x7300000，回放读到别的映射或 SIGBUS 在 pkg_upload）。只给地址、不建页
 #define VP_ARENA (64ull << 30)
-static uint64_t g_ca_base, g_ca_used, g_va_used, g_va_cap = VP_ARENA; static int g_ca_cut;
+static uint64_t g_ca_used, g_va_used;   // g_ca_base / g_ca_cut / g_va_cap 定义在上面（s2a_window_snap_late 要用）
 static pthread_mutex_t g_ca_mu = PTHREAD_MUTEX_INITIALIZER;
 // 即时存档开关与快照清单读取的弱缺省（快照关、没有清单）：宿主与 iOS 壳链着 snapsw.c / snapshot.c，用它们的正式定义；
 //   只编 vawin.c 的地址窗口单测（runtime/tests/mk/vawin*.mk、guest_file*.mk、ios_prewarm.mk 共 18 份）不链快照模块，取这里的缺省（同 egl.m s2a_gl_first_use 的写法）
@@ -1647,6 +1649,34 @@ void s2a_tail_note(char *o, size_t cap) {
     if (g_tl_segfull && k > 0 && (size_t)k < cap) snprintf(o + k, cap - k, "；空闲段表满丢地址 %llu 次", (unsigned long long)g_tl_segfull);
     pthread_mutex_unlock(&g_tl_mu);
 }
+// 选定游戏后按这一款补放快照区（11-21，测试机 1 0.6.4 / 0.6.5 候选冒烟）：多款容器构造期还没选游戏，窗口按包内最大的一款判（那台 6 款里一款要 72102 MB），
+//   判成放不下标准布局、快照区放不下，整局关了快照；真起的那款只要 32906 MB，窗口收尾时还给系统 29302 MB。布局定了以后（svc_mem.c layout_prepare 在收尾前调
+//   s2a_window_snap_late）：这一款没有远端段（别名区整段在窗口里）、快照是构造期因地址关的、还没有命令记录区，就在收尾还回去的那段里留 3 GB 给命令记录区与虚拟池区，
+//   重新打开快照。有远端段的不放：窗口之后是游戏的远端地址，宿主放进去的东西会被游戏的远端访问读写。恢复局不走这里（构造期按快照清单原址占）
+static int g_snap_late;
+#define SNAP_LATE_HOST_MIN (3ull << 30)   // 收尾还给系统的那段里，切走快照区后至少还剩这么多给宿主（Metal 缓冲 / 线程栈）
+void s2a_window_snap_late(int no_far) { g_snap_late = no_far; }
+__attribute__((weak)) int s2a_snap_off_reason(void) { return 0; }
+__attribute__((weak)) int s2a_snap_reenable(int why) { (void)why; return 0; }
+// 在 [at, at + avail) 这段（窗口收尾要还给系统的部分，仍是本进程的 PROT_NONE 保留）的开头留快照区；留了返回留的长度
+static uint64_t snap_late_take(uint64_t at, uint64_t avail) {
+#if TARGET_OS_OSX
+    (void)at; (void)avail; return 0;
+#else
+    const uint64_t A = (1ull << 30) + (2ull << 30);
+    int late = g_snap_late; g_snap_late = 0;
+    if (!late || g_ca_base || s2a_snap_restoring() || s2a_snap_off_reason() != S2A_SNAP_OFF_ADDRESS) return 0;
+    { const char *rec = getenv("S2A_FRAME_REC"); if (rec && *rec) return 0; }
+    if (!s2a_snap_late_fits(avail, A, SNAP_LATE_HOST_MIN)) {
+        LOG("即时存档：这一款收尾还给系统 %llu MB，放不下命令记录区与虚拟池区 %llu MB 再给宿主留 %llu MB，快照照旧关", (unsigned long long)(avail >> 20), (unsigned long long)(A >> 20), (unsigned long long)(SNAP_LATE_HOST_MIN >> 20));
+        return 0; }
+    if (!s2a_snap_reenable(S2A_SNAP_OFF_ADDRESS)) return 0;
+    g_ca_base = at; g_ca_cut = 1; g_va_cap = A - (1ull << 30);
+    LOG("即时存档：选定的这一款放得下（没有远端段），命令记录区与虚拟池区放在窗口收尾还回去的那段开头 %#llx +%llu MB，快照重新打开（构造期按容器里最大的一款判成放不下）",
+        (unsigned long long)at, (unsigned long long)(A >> 20));
+    return A;
+#endif
+}
 void s2a_window_trim(uint64_t size) {
     if (!g_ok || size >= g_size) return;
     if (tail_on()) {   // 尾部前 TL_TAKE 留着占位时的 PROT_NONE，交给 s2a_tail_map；再往后还系统
@@ -1659,11 +1689,13 @@ void s2a_window_trim(uint64_t size) {
         uint64_t cap = above >= (4ull << 30) ? TL_TAKE : TL_SMALL;
         uint64_t take = g_size - size < cap ? g_size - size : cap;
         s2a_tail_init(g_base + size, take);
-        if (take < g_size - size && munmap((void *)(g_base + size + take), g_size - size - take)) die("还窗口尾部失败 errno=%d", errno);
+        uint64_t keep = take < g_size - size ? snap_late_take(g_base + size + take, g_size - size - take) : 0;
+        if (take + keep < g_size - size && munmap((void *)(g_base + size + take + keep), g_size - size - take - keep)) die("还窗口尾部失败 errno=%d", errno);
         LOG("窗口收到前 %llu MB，尾部 %llu MB 留作统一尾部分配（Ryujinx 内存块 / 线程栈 / 备用栈；S2A_TAIL=0 关）、再往后 %llu MB 还给系统（Metal 缓冲）", (unsigned long long)(size >> 20),
             (unsigned long long)(take >> 20), (unsigned long long)((g_size - size - take) >> 20));
         g_size = size; return; }
-    if (munmap((void *)(g_base + size), g_size - size)) die("还窗口尾部失败 errno=%d", errno);
+    uint64_t keep = snap_late_take(g_base + size, g_size - size);
+    if (keep < g_size - size && munmap((void *)(g_base + size + keep), g_size - size - keep)) die("还窗口尾部失败 errno=%d", errno);
     LOG("窗口收到前 %llu MB，尾部 %llu MB 还给系统", (unsigned long long)(size >> 20), (unsigned long long)((g_size - size) >> 20));
     g_size = size;
 }

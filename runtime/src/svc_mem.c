@@ -596,6 +596,7 @@ static void layout_prepare(const char *npdm) {
               (unsigned long long)(g_alias_report >> 30), (unsigned long long)(L.alias_size >> 30), (unsigned long long)(ws_hole >> 20), (unsigned long long)(g_lay_need >> 20));
       else if (full && s2a_alias_report_size(L.alias_base, L.alias_size, L.win_base + L.win_size, ws_hole, g_lay_need, alias_gb, 0) < L.alias_size)
           LOG("【黄】别名区不收小：本款上次收小后仍映射到收掉的那段（wire/%016llX/alias_full），这局照旧报 %llu GB、伸出段走远端", (unsigned long long)pid, (unsigned long long)(L.alias_size >> 30)); }
+    { void (*late)(int) = (void (*)(int))dlsym(RTLD_DEFAULT, "s2a_window_snap_late"); if (late) late(!g_shadow_base); }   // 没有远端段的款：收尾还回去的那段里补放快照区（vawin.c）
     s2a_window_trim(L.win_size);   // 布局之外的窗口尾部交给宿主（vawin.c）
     if (g_shadow_base) s2a_far_set(L.win_base + L.win_size, L.alias_base + L.alias_size, L.heap_base, L.heap_base + L.heap_size);   // 乙：别名区伸出窗口，伸出段走远端影子（far.c）
     g_lay_ok = 1;
