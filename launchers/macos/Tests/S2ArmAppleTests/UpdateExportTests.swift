@@ -133,6 +133,24 @@ import XCTest
         XCTAssertFalse(BackendText.launcherText("install.layout.hint.explicit", language: "zh-Hans").hasPrefix("["))
     }
 
+    /// 成功页的独立 App 存档说明（export.done.standaloneSaveCarry）：出法是独立 App 就出（不论签名方式、装到设备或导出到文件夹）；通用 S2Arm 不出。期望手写
+    func testStandaloneSaveCarryNote() async throws {
+        var done = ExportFlow(gameID: "0100A", sign: "devCert", rows: [ExportFlow.Row(device: "P1", kind: "iPhone", name: "甲", state: .done)], layout: "standalone")
+        XCTAssertTrue(ExportSheetView.showsSaveCarry(done, folderDone: false), "独立 App 装好一台 → 出")
+        done.layout = "shell"
+        XCTAssertFalse(ExportSheetView.showsSaveCarry(done, folderDone: false), "通用 S2Arm → 不出")
+        let failed = ExportFlow(gameID: "0100A", sign: "appleId", rows: [ExportFlow.Row(device: "P1", kind: "iPhone", name: "甲", state: .failed)], layout: "standalone")
+        XCTAssertFalse(ExportSheetView.showsSaveCarry(failed, folderDone: false), "一台都没装好不是成功页 → 不出")
+        let folder = ExportFlow(gameID: "0100A", sign: "none", rows: [], layout: "standalone")
+        XCTAssertTrue(ExportSheetView.showsSaveCarry(folder, folderDone: true), "独立 App 导出到文件夹成功 → 出（自签也出）")
+        XCTAssertFalse(ExportSheetView.showsSaveCarry(folder, folderDone: false))
+        XCTAssertFalse(BackendText.launcherText("export.done.standaloneSaveCarry", language: "zh-Hans").hasPrefix("["))
+        // 开始时把确认页 ② 选的出法记进这一单
+        model.startExportSheet(try game("0100A"), sign: "devCert", layout: "standalone", devices: [])
+        for _ in 0..<300 where model.exportFlows["0100A"] == nil { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(model.exportFlows["0100A"]?.layout, "standalone")
+    }
+
     func testFailedRowShellButtonFollowsCode() {
         XCTAssertEqual(ExportSheetView.shellLinkKey("shell_install_required"), "exportsheet.link.installShell", "没装 →「先装 S2Arm」")
         XCTAssertEqual(ExportSheetView.shellLinkKey("shell_update_required"), "exportsheet.link.updateShell", "不是本版 →「先更新 S2Arm」")
@@ -312,6 +330,14 @@ import XCTest
                  "4_导出确认页_我的证书_显式描述文件_独立App提示", width: 820, height: 700)
         try shot(ExportSheetView(model: model, request: ExportSheetRequest(gameID: "0100A"), refreshOnAppear: false, sign: "appleId", layout: "standalone", picked: []),
                  "4b_导出确认页_改选AppleID_独立App提示", width: 820, height: 700)
+    }
+
+    /// 独立 App 装好：逐台结果下面那段「之前用独立 App 装过的游戏，存档在旧 App 里……」（普通说明色）
+    func testStandaloneSaveCarryShot() throws {
+        model.exportFlows["0100A"] = ExportFlow(gameID: "0100A", sign: "devCert", rows: [ExportFlow.Row(device: "P1", kind: "iPhone", name: "我的 iPhone", state: .done,
+                                                 next: [.key("exportsheet.phone.openApp", "甲")])], layout: "standalone")
+        try shot(ExportSheetView(model: model, request: ExportSheetRequest(gameID: "0100A", results: true), refreshOnAppear: false, sign: "devCert", layout: "standalone"),
+                 "5_独立App装好_存档怎么搬说明", width: 820, height: 700)
     }
 
     func testPerDeviceResults() throws {

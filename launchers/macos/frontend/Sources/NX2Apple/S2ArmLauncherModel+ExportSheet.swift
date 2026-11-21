@@ -20,6 +20,8 @@ struct ExportPlan: Equatable {
     struct Device: Equatable { let key: String; var kind: String? = nil; var name = "" }
     var sign: String?
     var devices: [Device]
+    /// 出法（导出确认页 ② 选的）；nil = 按这款现在的设置（控制口 / 总控台的导出）
+    var layout: String? = nil
 }
 
 /// 导出确认页上的一台设备（phoneOverview 的一台 + 这款在它上面的状态 + 这次能不能勾）
@@ -62,6 +64,8 @@ struct ExportFlow: Equatable {
     var rows: [Row]
     /// 开始的时刻：出包完成页据此认出「这一单是那次出包接着做的」
     var started = Date()
+    /// 这次的出法（shell / standalone）：成功页按它给独立 App 的存档说明
+    var layout = "shell"
     var folder: Bool { rows.isEmpty }
     var running: Bool { rows.contains { $0.state == .running || $0.state == .queued } }
 }
@@ -112,7 +116,7 @@ extension S2ArmLauncherModel {
 
     /// 导出确认页「开始」：先记这款的出法（layoutSet，同出包 / 装机读的那一份），再按计划导出
     func startExportSheet(_ game: GameSummary, sign: String, layout: String, devices: [ExportPlan.Device]) {
-        let plan = ExportPlan(sign: sign, devices: devices)
+        let plan = ExportPlan(sign: sign, devices: devices, layout: layout)
         Task {
             do { layoutNotice = try await provider.layoutSet(layout, gameId: game.id) } catch { reportFailure("s2arm.fail.layoutSet", error) }
             refreshInstallMode()
@@ -130,7 +134,8 @@ extension S2ArmLauncherModel {
             if export(game, platforms: [.ios], mode: plan.devices.isEmpty ? "export" : nil)?.stopsStart == true { exportAfterPack[id] = nil; exportFor = id }
             return
         }
-        exportFlows[id] = ExportFlow(gameID: id, sign: plan.sign, rows: plan.devices.map { ExportFlow.Row(device: $0.key, kind: $0.kind, name: $0.name) })
+        exportFlows[id] = ExportFlow(gameID: id, sign: plan.sign, rows: plan.devices.map { ExportFlow.Row(device: $0.key, kind: $0.kind, name: $0.name) },
+                                     layout: plan.layout ?? installMode.layout(for: id))
         if plan.devices.isEmpty { install(game, export: true, sign: plan.sign); return }
         pumpExportFlow(id)
     }

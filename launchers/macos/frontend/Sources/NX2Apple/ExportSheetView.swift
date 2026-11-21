@@ -237,14 +237,31 @@ struct ExportSheetView: View {
         return nil
     }
 
+    /// 成功页的独立 App 存档说明（export.done.standaloneSaveCarry）：这次出法是独立 App、而且至少一台装好 / 导出到文件夹成了才出；通用 S2Arm 不出
+    static func showsSaveCarry(_ flow: ExportFlow?, folderDone: Bool) -> Bool {
+        guard let flow, flow.layout == "standalone" else { return false }
+        return flow.folder ? folderDone : flow.rows.contains { $0.state == .done }
+    }
+
+    @ViewBuilder private var saveCarry: some View {
+        if Self.showsSaveCarry(flow, folderDone: phoneJob?.phase == .finished(.completed)) {
+            Text(t("export.done.standaloneSaveCarry")).font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("exportsheet.saveCarry")
+        }
+    }
+
     @ViewBuilder private var results: some View {
         if let flow, !flow.folder {
             VStack(alignment: .leading, spacing: 10) {
                 Text(t("exportsheet.results.title")).font(.manrope(14, .semibold)).foregroundStyle(.secondary)
                 ForEach(flow.rows) { resultRow($0) }
+                saveCarry
             }
         } else if let job = phoneJob, flow?.folder == true {
-            PhoneJobPanel(model: model, session: job, showsOperation: false)
+            VStack(alignment: .leading, spacing: 16) {
+                PhoneJobPanel(model: model, session: job, showsOperation: false)
+                saveCarry
+            }
         } else {
             HStack(spacing: 8) { ProgressView().controlSize(.small); Text(t("install.queued")).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
         }
