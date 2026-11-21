@@ -3235,7 +3235,7 @@ void nvn_be_drain(void) { if (mtl_gpu_halted()) { MLOG("GPU 安全停中：后�
 
 // ================= Render replay =================
 #include "../../host/front.h"
-static int g_red_once[211];   // RED_ONCE keys 0..210 (209–210: a vertex stream the draw reads past its bound range not limited — the range is over the staging size / a GPU write on the stream is queued in this submission, bind_vbufs vbuf_limit; 207–208: nvn_present_fsr.inc FSR 1 on the present — 207 the shaders / pipelines could not be made, 208 a slot's textures / buffers / argument tables could not be allocated; either way the present goes on bilinear; 206: a BC texture drawn as blocks on a GPU without BC, its shadow / staging / decode not made, bcdec_attach / bcdec_flush; 205: texture upload / pool-storage synchronization; 202–204: nvn_stex.inc 放置式稀疏贴图块管理 — CPU 写的 / GPU 写的稀疏贴图同步失败（没堆页 / 暂存），稀疏贴图不做 tex_upgrade 整张复制; 198–201: nvn_sparse_tex.inc Metal sparse textures — heap / texture not made, page / level deswizzle failed, map / upload command buffer failed; 195–197: nvn_tensor.inc tensor_fix_in, the tensor stand-in's fixed-size input; 194: #798 a texel buffer's aligned lead view could not be made, tbl_view; 193: a texture outside any memory pool with an unmapped storage tail, #b5a081; 188–192: internal resolution — 188 a draw / dispatch still held scaled image-slot storages after the retry limit, rs_pre_draw / rs_pre_images; 189 a storage past the device texture limit, rs_rescale / tex_widen; 190 a CPU readback of an enlarged storage not scaled back linearly, nvn_be_read_texels; 191 an image-slot storage that could not go back to its own size; 192 a screenshot of the enlarged window texture not scaled back; 187: a multisample count the GPU does not support, stepped down, mtl_samples_supported (#903); 186: a packaged texture's storage runs past the end of its memory pool, pkg_upload_ (#819); 183 / 184 / 185: an incompatible Metal texture format view fell back to the base format in rt_view_fmt / attach / clear_tex; 182: a block-compressed texture whose GPU writer resolved to its own Metal format, bcal_copy; 181: a texture view whose target and layer range Metal cannot express (#199), tex_by_id; 179 / 180: a pass's own depth attachment sampled in it could not be copied / viewed (#387); 178: a slot read on-chip by the first draw of a pass was not opened loaded; 177: a compute dispatch's binding ended the shared encoder again on the retry; 175 / 176: a block-compressed texture's GPU-written bytes not taken: no host texture of the uncompressed writer / no staging buffer, bcal_sync; 174: a converted vertex attribute stream address in no memory pool, vconv_bind; 172 / 173: a pool table for handles traced to no slot could not be allocated / grown, pool_tab_new / pool_tab_put_n; 171: a first-invocation store skipped, dispatch; 170: an sRGB / linear view not made again on its upgraded parent, tex_upgrade; 169: a storage buffer address pushed into an NVN2 push slot the pools do not hold (SBUFQ; until 11-07 a not-loaded color attachment written); 167 / 168: a storage buffer address the pools do not hold, slot / handle in a uniform buffer; 166: a texture turning packaged whose old host texture has another shape, its GPU-written texels not carried over, carry_gpu) (162: a vertex buffer address the pools do not hold, bind_vbufs) (160 / 161 / 163–165: tensor-core network stand-in, nvn_tensor.inc; 147–159 left for the NVN2 task / mesh branch) (143–146: NVN2 DLSS → MetalFX, nvn_dlss.inc) (139–142: folded linear textures: tex_linear, se_want, se_bind, copies / clears into one) (137 / 138: a GL texture an NVN texture is built from has no usable storage / no matching NVN format) (136: a draw's binding ended its pass twice) (134 / 135: alpha test / multisampling off the fragment shader cannot take); same-pass feedback snapshot too large 127, native image atomics use 128/129, same-pass feedback view narrowing 133
+static int g_red_once[213];   // RED_ONCE keys 0..212 (211–212: PR3c 出图 PSO 多槽 — 211 PQ 层目标（RGB10A2Unorm）的出图管线建不出：HDR 槽回退 SDR 基线（红一次 + 死槽负缓存，不 MDIE——基线槽照旧 MDIE，B4 不放宽 SDR 现状）；212 上屏目标像素格式超过 4 种（gal_present.m 同数四槽），本格式本帧不出图；207–208: nvn_present_fsr.inc FSR 1 on the present — 207 the shaders / pipelines could not be made, 208 a slot's textures / buffers / argument tables could not be allocated; either way the present goes on bilinear; 206: a BC texture drawn as blocks on a GPU without BC, its shadow / staging / decode not made, bcdec_attach / bcdec_flush; 205: texture upload / pool-storage synchronization; 202–204: nvn_stex.inc 放置式稀疏贴图块管理 — CPU 写的 / GPU 写的稀疏贴图同步失败（没堆页 / 暂存），稀疏贴图不做 tex_upgrade 整张复制; 198–201: nvn_sparse_tex.inc Metal sparse textures — heap / texture not made, page / level deswizzle failed, map / upload command buffer failed; 195–197: nvn_tensor.inc tensor_fix_in, the tensor stand-in's fixed-size input; 194: #798 a texel buffer's aligned lead view could not be made, tbl_view; 193: a texture outside any memory pool with an unmapped storage tail, #b5a081; 188–192: internal resolution — 188 a draw / dispatch still held scaled image-slot storages after the retry limit, rs_pre_draw / rs_pre_images; 189 a storage past the device texture limit, rs_rescale / tex_widen; 190 a CPU readback of an enlarged storage not scaled back linearly, nvn_be_read_texels; 191 an image-slot storage that could not go back to its own size; 192 a screenshot of the enlarged window texture not scaled back; 187: a multisample count the GPU does not support, stepped down, mtl_samples_supported (#903); 186: a packaged texture's storage runs past the end of its memory pool, pkg_upload_ (#819); 183 / 184 / 185: an incompatible Metal texture format view fell back to the base format in rt_view_fmt / attach / clear_tex; 182: a block-compressed texture whose GPU writer resolved to its own Metal format, bcal_copy; 181: a texture view whose target and layer range Metal cannot express (#199), tex_by_id; 179 / 180: a pass's own depth attachment sampled in it could not be copied / viewed (#387); 178: a slot read on-chip by the first draw of a pass was not opened loaded; 177: a compute dispatch's binding ended the shared encoder again on the retry; 175 / 176: a block-compressed texture's GPU-written bytes not taken: no host texture of the uncompressed writer / no staging buffer, bcal_sync; 174: a converted vertex attribute stream address in no memory pool, vconv_bind; 172 / 173: a pool table for handles traced to no slot could not be allocated / grown, pool_tab_new / pool_tab_put_n; 171: a first-invocation store skipped, dispatch; 170: an sRGB / linear view not made again on its upgraded parent, tex_upgrade; 169: a storage buffer address pushed into an NVN2 push slot the pools do not hold (SBUFQ; until 11-07 a not-loaded color attachment written); 167 / 168: a storage buffer address the pools do not hold, slot / handle in a uniform buffer; 166: a texture turning packaged whose old host texture has another shape, its GPU-written texels not carried over, carry_gpu) (162: a vertex buffer address the pools do not hold, bind_vbufs) (160 / 161 / 163–165: tensor-core network stand-in, nvn_tensor.inc; 147–159 left for the NVN2 task / mesh branch) (143–146: NVN2 DLSS → MetalFX, nvn_dlss.inc) (139–142: folded linear textures: tex_linear, se_want, se_bind, copies / clears into one) (137 / 138: a GL texture an NVN texture is built from has no usable storage / no matching NVN format) (136: a draw's binding ended its pass twice) (134 / 135: alpha test / multisampling off the fragment shader cannot take); same-pass feedback snapshot too large 127, native image atomics use 128/129, same-pass feedback view narrowing 133; 209–210: a vertex stream the draw reads past its bound range not limited — the range is over the staging size / a GPU write on the stream is queued in this submission, bind_vbufs vbuf_limit; 207–208: nvn_present_fsr.inc FSR 1 on the present — 207 the shaders / pipelines could not be made, 208 a slot's textures / buffers / argument tables could not be allocated; either way the present goes on bilinear; 206: a BC texture drawn as blocks on a GPU without BC, its shadow / staging / decode not made, bcdec_attach / bcdec_flush; 205: texture upload / pool-storage synchronization; 202–204: nvn_stex.inc 放置式稀疏贴图块管理 — CPU 写的 / GPU 写的稀疏贴图同步失败（没堆页 / 暂存），稀疏贴图不做 tex_upgrade 整张复制; 198–201: nvn_sparse_tex.inc Metal sparse textures — heap / texture not made, page / level deswizzle failed, map / upload command buffer failed; 195–197: nvn_tensor.inc tensor_fix_in, the tensor stand-in's fixed-size input; 194: #798 a texel buffer's aligned lead view could not be made, tbl_view; 193: a texture outside any memory pool with an unmapped storage tail, #b5a081; 188–192: internal resolution — 188 a draw / dispatch still held scaled image-slot storages after the retry limit, rs_pre_draw / rs_pre_images; 189 a storage past the device texture limit, rs_rescale / tex_widen; 190 a CPU readback of an enlarged storage not scaled back linearly, nvn_be_read_texels; 191 an image-slot storage that could not go back to its own size; 192 a screenshot of the enlarged window texture not scaled back; 187: a multisample count the GPU does not support, stepped down, mtl_samples_supported (#903); 186: a packaged texture's storage runs past the end of its memory pool, pkg_upload_ (#819); 183 / 184 / 185: an incompatible Metal texture format view fell back to the base format in rt_view_fmt / attach / clear_tex; 182: a block-compressed texture whose GPU writer resolved to its own Metal format, bcal_copy; 181: a texture view whose target and layer range Metal cannot express (#199), tex_by_id; 179 / 180: a pass's own depth attachment sampled in it could not be copied / viewed (#387); 178: a slot read on-chip by the first draw of a pass was not opened loaded; 177: a compute dispatch's binding ended the shared encoder again on the retry; 175 / 176: a block-compressed texture's GPU-written bytes not taken: no host texture of the uncompressed writer / no staging buffer, bcal_sync; 174: a converted vertex attribute stream address in no memory pool, vconv_bind; 172 / 173: a pool table for handles traced to no slot could not be allocated / grown, pool_tab_new / pool_tab_put_n; 171: a first-invocation store skipped, dispatch; 170: an sRGB / linear view not made again on its upgraded parent, tex_upgrade; 169: a storage buffer address pushed into an NVN2 push slot the pools do not hold (SBUFQ; until 11-07 a not-loaded color attachment written); 167 / 168: a storage buffer address the pools do not hold, slot / handle in a uniform buffer; 166: a texture turning packaged whose old host texture has another shape, its GPU-written texels not carried over, carry_gpu) (162: a vertex buffer address the pools do not hold, bind_vbufs) (160 / 161 / 163–165: tensor-core network stand-in, nvn_tensor.inc; 147–159 left for the NVN2 task / mesh branch) (143–146: NVN2 DLSS → MetalFX, nvn_dlss.inc) (139–142: folded linear textures: tex_linear, se_want, se_bind, copies / clears into one) (137 / 138: a GL texture an NVN texture is built from has no usable storage / no matching NVN format) (136: a draw's binding ended its pass twice) (134 / 135: alpha test / multisampling off the fragment shader cannot take); same-pass feedback snapshot too large 127, native image atomics use 128/129, same-pass feedback view narrowing 133
 // The key must be a constant inside the table: a key past the end wrote into the statics next to it (11-05: nvn_tensor.inc used 160 / 161 with 147 slots)
 #define RED_ONCE(k, ...) do { _Static_assert((k) >= 0 && (k) < (int)(sizeof g_red_once / sizeof g_red_once[0]), "RED_ONCE key outside g_red_once"); if (!g_red_once[k]++) MLOG("【红】 " __VA_ARGS__); } while (0)
 // NVN vertex streams 0–15 → Metal vertex buffer slots: 0–13 go to 16–29 (30 is the constant fallback buffer), 14 and 15 to 14 and 15. Metal has only the 31 slots 0–30; translated shaders use only buffer(0) (the argument buffer),
@@ -18366,8 +18366,12 @@ void nvn_be_exec(const uint8_t *p) {
 }
 
 // ---------- Present: draw the swapchain texture to the CAMetalLayer; optional screenshot ----------
-static id<MTLRenderPipelineState> g_blit_pso; static MTLPixelFormat g_blit_fmt;
-static id<MTLSamplerState> g_blit_samp;
+#include "nvn_present_pso.h"   // PR3c：直连出图 PSO 按目标格式多槽的纯逻辑（graphics/nvn/tests/t_present_pso.c 测的同一份；nvn_present_fit.h 同族）
+static pf_pso_tab g_blit_psos;   // PR3c 多槽（评审稿 v3 §2.2 PSO 缓存 / §3 B3·B4·B5）：旧单槽 g_blit_pso+g_blit_fmt 格式交替即重建——层持 PQ（PR4 起
+                                 //   RGB10A2Unorm 层）后抗锯齿 / 放大器中间图（BGRA8Unorm）与 PQ 层 drawable 一帧内交替、截图 BGRA8 目标与 HDR 层帧间交替，
+                                 //   每交替一次重编一遍，且 Metal 4 不保留编码器取过的 PSO、重建即释放旧管线（在飞命令缓冲期悬垂）。两格式并存互不逐出。
+                                 //   写入只在 present 线程（首个 present 的预热 + 懒建）；FSR / FI 线程的 present_pipeline 在槽已热后只读
+static id<MTLSamplerState> g_blit_samp;   // 采样器与目标格式无关：一次建成（旧代码随每次格式交替重建，配置恒同）
 static uint64_t g_present_n;
 uint64_t mtl_present_count(void) { return g_present_n; }   // Actual present count (heat attribution DM_HEAT computes the present frame rate)
 uint64_t s2a_direct_draws(void) { return g_stat_draw; }   // 编码出去的绘制总数（runtime/src/direct_prompt.c「画面没出来」按名字取：起局后一直为 0 = 上屏的全是空帧）
@@ -18733,6 +18737,7 @@ void dm_gfx_shot_at(long k, const char *path) {
 }
 // DM_NVN_SHOT_OUT=WIDTHxHEIGHT (for picture quality metrics): the present-frame screenshot instead captures the result "upscaled to this resolution by present_encode", i.e. the picture the player sees on screen; screen=0 (texture dump) is unaffected
 static id<MTLTexture> present_raw_src(id<MTLTexture> src);   // shot reads an enlarged sRGB window texture through it
+static int present_hdr_pf(MTLPixelFormat pf);   // PR6：present 族旁的格式归类（present_hdr_pf 定义处）——截图分支只引分类，非 8 位窗才进离屏编码
 static void shot(id<MTLTexture> src, const char *path, int screen, const int crop[4]) {
     static int out_w = -1, out_h;
     if (out_w < 0) {
@@ -18741,11 +18746,25 @@ static void shot(id<MTLTexture> src, const char *path, int screen, const int cro
         if (e && sscanf(e, "%d%c%d%c", &w, &sep, &h, &extra) == 3 && sep == 'x' && w > 0 && h > 0) { out_w = w; out_h = h; }
     }
     id<MTLTexture> read = src;
-    if (out_w && screen) {
-        MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:out_w height:out_h mipmapped:NO];
+    // PR6（评审稿 v3 §4 PR6 / §3 A9、B8）：截图/判定/录像走与 present 相同的 mode 1 副本——非 8 位窗（HDR10 / float 类，present_hdr_pf
+    //   分类）的屏幕截图经 present_encode 同一离屏编码出 BGRA8 再写 PNG：vi 答过的 HDR10 窗即 mode 1 副本（先 BT.2020→BT.709 矩阵、
+    //   负值截断在矩阵后，再肩部压缩到 SDR 白、SDR gamma 编码——保高光层次与色相，与 present 屏上同一张画）；未答过的 10 位窗 /
+    //   float 窗与 present 同为平凡直通。下面的 8 位 PNG 通路只认 RGBA8/BGRA8：10 位 PQ 码值原样读回既是红失败、也不是玩家看到的画面。
+    //   尺寸 = 画面尺寸（放大的窗口贴图按游戏尺寸，同下面 8 位路径存 PNG 的口径）；DM_NVN_SHOT_OUT 给了显式尺寸仍照它优先。
+    //   8 位源（现状全部真实路径）不进这里，字节照旧——off 不变量。判定/录像（自动玩家截图）走 grab_present，PR3b 已在同一
+    //   present_encode 出口上选过模式，本分支补齐的是写 PNG 的截图一路。
+    int shots_m1 = 0;
+    if (screen && !out_w) { int c = present_hdr_pf(src.pixelFormat); shots_m1 = c == HDR_PF_HDR10 || c == HDR_PF_FLOAT; }
+    if (screen && (out_w || shots_m1)) {
+        NSUInteger sw = out_w, sh = out_h;
+        if (shots_m1) {   // 画面尺寸：放大的窗口贴图按游戏尺寸（rs_cw / rs_ch），同下面 8 位路径存 PNG 的口径
+            sw = src.width; sh = src.height;
+            if (rs_up_on() && rs_state(src) == RS_SCALED) { sw = rs_cw(src); sh = rs_ch(src); }
+        }
+        MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:sw height:sh mipmapped:NO];
         d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead; d.storageMode = MTLStorageModePrivate;
         id<MTLTexture> out = [g_dev newTextureWithDescriptor:d];
-        if (!out) { MLOG("【红】 cannot create the screenshot output texture %dx%d", out_w, out_h); return; }
+        if (!out) { MLOG("【红】 cannot create the screenshot output texture %lux%lu", (unsigned long)sw, (unsigned long)sh); return; }
         id<MTLCommandBuffer> cb = q_cb();
         if (!present_encode(cb, src, out, crop) || !cb_run(cb)) return;
         read = out;
@@ -19047,9 +19066,14 @@ static CAMetalLayer *g_present_layer_resident;
 #endif
 void mtl_present_test_stall(uint64_t ns) { g_present_stall_ns = ns; }
 #include "nvn_present_aa.inc"
-static void present_pipeline(MTLPixelFormat format) {
-    present_options();
-    if (!g_blit_pso || g_blit_fmt != format) {
+static int present_hdr_pt(MTLPixelFormat pf);   // 下方（PR3b）：目标格式归类——失败语义按 PQ 层目标分（PR3c）
+static void present_pso_init(void);   // 出图着色器库 + 采样器，一次建成（着色器源码与格式无关，PSO 只差 color attachment 的格式）
+// The present blit's shader library and sampler, built once (the shader source is PR3b's mode-based fragment shader, unchanged; PR3c only re-does the PSO's color-attachment format per slot)
+static id<MTLFunction> g_present_vs, g_present_fs;
+static void present_pso_init(void) {
+    static int done;
+    if (done) return;
+    done = 1;
         // PR3b：模式化片元着色器（评审稿 v3 §2.4 / §4 PR3b；数学移植自 nxnative #1176 present.metal——BT.709↔BT.2020 矩阵、ST 2084
         //   EOTF/逆 EOTF、present_shoulder 有理肩部逐条对齐）。mode.x（nvn_hdr_policy.h hdr_present_mode / nvn2_hdr_present 出）：
         //   0 = 原样采样（平凡直通与 PQ 直通同走这出口——改前的 trivial 采样逐字节一致，off 不变量所在）；1 = HDR10 窗 → 8 位 SDR
@@ -19112,15 +19136,62 @@ static void present_pipeline(MTLPixelFormat format) {
         NSError *e = nil;
         id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(src_msl) options:nil error:&e];
         if (!lib) MDIE("present shader compile failed %s", e.localizedDescription.UTF8String);
-        MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
-        pd.vertexFunction = [lib newFunctionWithName:@"vs"]; pd.fragmentFunction = [lib newFunctionWithName:@"fs"];
-        pd.colorAttachments[0].pixelFormat = format;
-        g_blit_pso = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
-        if (!g_blit_pso) MDIE("present pipeline failed %s", e.localizedDescription.UTF8String);
-        g_blit_fmt = format;
+        g_present_vs = [lib newFunctionWithName:@"vs"]; g_present_fs = [lib newFunctionWithName:@"fs"];
         MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new]; sd.minFilter = sd.magFilter = g_present_nearest ? MTLSamplerMinMagFilterNearest : MTLSamplerMinMagFilterLinear; sd.supportArgumentBuffers = YES;
         g_blit_samp = [g_dev newSamplerStateWithDescriptor:sd];
+}
+// 建一个目标格式的 PSO（PR3c：每槽一次；库 / 采样器已在 init 建好）。失败语义（§4 PR3c / B4）：基线槽——单槽时代所服务的一切非 PQ 层目标——
+//   维持现有 MDIE；只有 HDR 槽（PQ 层目标 RGB10A2Unorm）红日志 + 负缓存回退基线，不 MDIE（不放宽 SDR 现状；回退的执行在 present_now：层切回 SDR）
+static id<MTLRenderPipelineState> present_pso_build(MTLPixelFormat format) {
+    present_pso_init();
+    MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+    pd.vertexFunction = g_present_vs; pd.fragmentFunction = g_present_fs;
+    pd.colorAttachments[0].pixelFormat = format;
+    NSError *e = nil;
+    id<MTLRenderPipelineState> pso = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
+    if (pso) return pso;
+    if (present_hdr_pt(format) == HDR_PT_PQ10) {   // HDR 槽：负缓存 + 回退基线（红日志在此），不 MDIE
+        RED_ONCE(211, "PQ 层目标（RGB10A2Unorm，格式 %lu）出图管线建不出：%s——HDR 槽回退 SDR 基线（present 层切回 BGRA8Unorm + 显式 sRGB tag），不退出", (unsigned long)format, e.localizedDescription.UTF8String);
+        pf_pso_dead(&g_blit_psos, (uint32_t)format);
+        return nil;
     }
+    MDIE("present pipeline failed %s", e.localizedDescription.UTF8String);   // 基线槽：现状语义原样（单槽时代同一条 MDIE）
+}
+// 按目标格式取 PSO（出图热路径，PR3c 多槽）：命中 → 缓存直用（格式交替不重建——Metal 4 不保留编码器取过的 PSO，重建即释放旧管线、
+//   在飞命令缓冲期悬垂，B5 的险在这修掉）；未见过 → 建并入槽；死槽（HDR 槽建不出的负缓存）→ nil（调用方回退基线）
+static id<MTLRenderPipelineState> present_pso(MTLPixelFormat format) {
+    present_options();
+    void *p;
+    int st = pf_pso_lookup(&g_blit_psos, (uint32_t)format, &p);
+    if (st == PF_PSO_HIT) return (__bridge id<MTLRenderPipelineState>)p;
+    if (st == PF_PSO_DEAD) return nil;
+    id<MTLRenderPipelineState> pso = present_pso_build(format);
+    if (!pso) return nil;
+    if (!pf_pso_add(&g_blit_psos, (uint32_t)format, (__bridge_retained void *)pso)) {   // +1 交表：进程期缓存、永不释放（旧全局 g_blit_pso 的强持有同口径）
+        RED_ONCE(212, "present: 上屏目标像素格式超过 %d 种（gal_present.m 同数四槽；本帧不出图——第五种格式本不该出现）", PF_PSO_SLOTS);
+        CFRelease((__bridge CFTypeRef)pso);   // 表满没接住：退还这一次多持的引用（本帧不用它；__bridge 不动持有数，退的是上面 __bridge_retained 的那一次）
+        return nil;   // gal_present.m 四槽同款处置：拒发 + 红一次
+    }
+    return pso;
+}
+// 入口保留（FSR / FI 调用点只要采样器与本格式槽已建）：等价旧调用点（present_options + 按需建）
+static void present_pipeline(MTLPixelFormat format) { (void)present_pso(format); }
+// 启动预热候选组合（§4 PR3c / T11 首帧、首切换无 >100ms 编译卡顿）：S0/S1 层两格式，PQ 候选仅在非 off 时热（off 缺省只热基线——
+//   off ⇒ 层恒 S0，照旧只建一个，off 不变量零变化）。与旧首帧编译同点同线程（首个 present 调用、取 drawable 前）——首帧与首次层切换都命中热槽
+static void *present_pso_warm_one(uint32_t fmt, void *ctx) {
+    (void)ctx;
+    id<MTLRenderPipelineState> pso = present_pso_build((MTLPixelFormat)fmt);
+    return pso ? (__bridge_retained void *)pso : NULL;
+}
+static void present_prewarm(void) {
+    static int done;
+    if (done) return;
+    done = 1;
+    present_options();
+    uint32_t cand[2] = { (uint32_t)MTLPixelFormatBGRA8Unorm, (uint32_t)MTLPixelFormatRGB10A2Unorm };
+    int n = nvn2_hdr_switch() == HDR_OFF ? 1 : 2;   // off 缺省：只热基线（off ⇒ 层恒 S0，PQ 层目标用不上）
+    pf_pso_warm(&g_blit_psos, cand, n, present_pso_warm_one, NULL);
+    MLOG("直连：出图管线预热 %d 槽（BGRA8Unorm%s）", n, n == 2 ? "、RGB10A2Unorm" : "");   // T11 的预热命中日志（预热命中断言：t_present_pso ⑤）
 }
 // Present samples only the valid source rectangle declared by NVN; kept separate from the raw swapchain readback screenshot. Edges are clamped to the texel centers of the valid area, so bilinear does not read the black texels outside.
 // Present samples the raw bytes stored in the swapchain texture (the Switch's scan-out sends the stored bytes as they are): an sRGB source is replaced by a non-sRGB view of the same storage,
@@ -19159,6 +19230,24 @@ static void present_hdr_uv(float p[8], id<MTLTexture> src, id<MTLTexture> dst, B
     if (!screen) return;
     nvn2_hdr_present(p, present_hdr_pf(src.pixelFormat), present_hdr_pt(dst.pixelFormat));
 }
+// PR3d：HDR 窗口（RGB10A2 PQ 码值）旁路上屏增强（评审稿 v3 §2.5 开关矩阵 / §3 A3 行 / §4 PR3d）：直连上屏增强一族
+//   （上屏抗锯齿 nvn_present_aa.inc / MetalFX 空间放大 nvn_present_fx.inc / FSR nvn_present_fsr.inc——与 MetalFX 同属
+//   S2A_SCALING_FILTER、同为 8 位 sRGB 感知中间图 / 出图补帧 nvn_present_fi.inc）的中间图与 MetalFX 纹理全是
+//   BGRA8Unorm，对 PQ 码值不适配——PQ 1.0 = 10000 nit，感知锐化在高光无界过冲。HDR 窗口跳过这一族、上屏直通
+//   （present 六态照选：PQ 层 mode 0/4、SDR 目标 mode 1——截图槽 3 同旁路，PQ 码值不过 8 位感知缩放）；
+//   SDR 窗口照常（层在 PQ 态的排空帧先缩放后 mode 2 转换）。一次性提示：旁路是产品限制（docs/画面设置.md），不静默降画质。
+static void present_hdr_bypass_note(void) {
+    static int said;
+    if (said) return;
+    said = 1;
+    MLOG("直连：HDR 窗口（RGB10A2 PQ 码值）旁路上屏增强（抗锯齿 / MetalFX / FSR / 补帧）——8 位感知缩放不适配 PQ 码值，"
+         "HDR 帧按直通上屏（产品限制，SDR 窗口照常；docs/画面设置.md）");
+}
+static int present_hdr_bypassed(id<MTLTexture> src) {
+    int byp = nvn2_hdr_bypass_upscale(present_hdr_pf(src.pixelFormat));   // 判定 = nvn_hdr_policy.h hdr_bypass_upscale（窗口格式 × 开关 × vi 答过 latch），读已算好的结果
+    if (byp) present_hdr_bypass_note();
+    return byp;
+}
 static int present_blit(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> dst, const int crop[4], BOOL flip, int screen) {
     NSUInteger cx = 0, cy = 0, cw = src.width, ch = src.height;
     if (crop && (crop[2] || crop[3])) {
@@ -19172,7 +19261,8 @@ static int present_blit(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTextu
     if (memcmp(meta, last_crop, sizeof meta)) { memcpy(last_crop, meta, sizeof meta);
         MLOG("present crop: source texture %lux%lu, valid %lu,%lu %lux%lu → target %lux%lu", (unsigned long)src.width, (unsigned long)src.height,
              (unsigned long)cx, (unsigned long)cy, (unsigned long)cw, (unsigned long)ch, (unsigned long)dst.width, (unsigned long)dst.height); }
-    present_pipeline(dst.pixelFormat);
+    id<MTLRenderPipelineState> pso = present_pso(dst.pixelFormat);   // PR3c：按目标格式取槽（命中直用，格式交替不重建）
+    if (!pso) { MLOG("【红】 present pipeline unavailable for the target format %lu (the HDR slot is dead; present_now falls the layer back to the SDR baseline)", (unsigned long)dst.pixelFormat); return 0; }
     MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
     // Keep the game picture's aspect ratio and center it, leaving black bars in the rest (no stretching when the screen ratio differs from the game's, e.g. iPhone about 19.5:9 versus the game's 16:9);
     // when the ratio difference is < 1% (the remainder from the game width being a multiple of 8 in the full-screen setup, e.g. 1952x900 versus 2868x1320 differs by 0.17%) fill directly, leaving no few-pixel border
@@ -19189,7 +19279,7 @@ static int present_blit(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTextu
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> en = [cb renderCommandEncoderWithDescriptor:rp];
     [en setViewport:vp];
-    [en setRenderPipelineState:g_blit_pso]; [en setFragmentTexture:present_raw_src(src) atIndex:0]; [en setFragmentSamplerState:g_blit_samp atIndex:0];
+    [en setRenderPipelineState:pso]; [en setFragmentTexture:present_raw_src(src) atIndex:0]; [en setFragmentSamplerState:g_blit_samp atIndex:0];
     float uv[16] = {(float)cx / src.width, (float)cy / src.height, (float)cw / src.width, (float)ch / src.height,
                     (cx + 0.5f) / src.width, (cy + 0.5f) / src.height, (cx + cw - 0.5f) / src.width, (cy + ch - 0.5f) / src.height};
     if (flip) { uv[1] += uv[3]; uv[3] = -uv[3]; }   // lower-left origin: the window image is stored bottom-up
@@ -19208,7 +19298,8 @@ static int present_blit_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MTLT
         }
         cx = crop[0]; cy = crop[1]; cw = crop[2]; ch = crop[3];
     }
-    present_pipeline(dst.pixelFormat);
+    id<MTLRenderPipelineState> pso = present_pso(dst.pixelFormat);   // PR3c：按目标格式取槽（命中直用，格式交替不重建——本帧抗锯齿中间图与 PQ 层 drawable 两格式并存也各用各槽）
+    if (!pso) { MLOG("【红】 present pipeline unavailable for the target format %lu (the HDR slot is dead; present_now falls the layer back to the SDR baseline)", (unsigned long)dst.pixelFormat); return 0; }
     // 自适应画幅补丁开着：游戏按当前画幅画世界，16:9 尺寸的图拉满到这个画幅。只在画进画布（screen）这一次套：
     //   拷进抗锯齿 / 放大器的中间图要原样拷满，中间图里套了画幅就只剩居中一块、四周黑边，最后拉满时黑边跟着留下、画面挤窄（#1169 SMAA 中 / 高左右留黑）
     double dw = dst.width, dh = dst.height, ca = screen ? s2a_cpatch_present_aspect() : 0;
@@ -19231,7 +19322,7 @@ static int present_blit_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MTLT
     if (flip) { uv[1] += uv[3]; uv[3] = -uv[3]; }   // normalized AA input is already upright
     present_hdr_uv(uv + 8, src, dst, screen);   // PR3b：UV 常量缓冲 p[0..7]——同一份填充逻辑喂 Metal 3 的 setFragmentBytes 与 Metal 4 的槽缓冲
     tab_buf(table, uvBuffer, 0, 0);
-    [en setViewport:vp]; [en setRenderPipelineState:g_blit_pso];
+    [en setViewport:vp]; [en setRenderPipelineState:pso];
     [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     enc_end_on(en, YES);
     return 1;
@@ -19256,6 +19347,7 @@ static const int *rs_aa_crop(id<MTLTexture> src, id<MTLTexture> dst, const int c
 static int present_encode_slot(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> dst, const int crop[4], int slot) {
     present_options();
     BOOL flip = present_ll() != 0;   // the presented window's origin (see g_present_ll)
+    if (present_hdr_bypassed(src)) return present_blit(cb, src, dst, crop, flip, 1);   // PR3d：HDR 窗口（PQ 码值）旁路 FSR / 抗锯齿 / MetalFX，直通上屏（同「!aa ∧ !fx」出口）
     if (g_present_fsr && slot != 3) { int fr = present_fsr_encode(cb, src, dst, crop, slot, flip, NO, g_present_aa, nil, nil, nil); if (fr >= 0) return fr; }   // FSR 1；3 号槽（截图 / 抓图）不过 FSR；-1 = 做不了（已报红），照下面的原路径双线性
     NvPresentFX *fx = present_fx_for(slot, src, dst, crop, NO);
     if (!g_present_aa && !fx) return present_blit(cb, src, dst, crop, flip, 1);
@@ -19285,6 +19377,7 @@ API_AVAILABLE(macos(26.0), ios(26.0))
 static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> dst, const int crop[4], int slot) {
     present_options();
     BOOL flip = present_ll() != 0;   // the presented window's origin (see g_present_ll)
+    if (present_hdr_bypassed(src)) return present_blit_m4(cb, src, dst, crop, g_present_uv[slot], g_present_args, flip, 1);   // PR3d：HDR 窗口（PQ 码值）旁路 FSR / 抗锯齿 / MetalFX，直通上屏（同「!aa ∧ !fx」出口）
     if (g_present_fsr) { int fr = present_fsr_encode(cb, src, dst, crop, slot, flip, YES, g_present_aa, g_present_uv[slot], g_present_args, nil); if (fr >= 0) return fr; }   // FSR 1；-1 = 做不了（已报红），照下面的原路径双线性
     NvPresentFX *fx = present_fx_for(slot, src, dst, crop, YES);
     if (!g_present_aa && !fx) return present_blit_m4(cb, src, dst, crop, g_present_uv[slot], g_present_args, flip, 1);
@@ -19445,7 +19538,21 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
 #if TARGET_OS_OSX
     if (!layer.displaySyncEnabled) layer.displaySyncEnabled = YES;   // Windowed mode follows the display's vsync to prevent tearing
 #endif
-    present_pipeline(layer.pixelFormat);   // Same as the original path: the first frame compiles the pipeline before taking the drawable
+    present_prewarm();   // PR3c：首个 present 调用把候选组合（基线 BGRA8 + 非 off 时 PQ 层 RGB10A2）在取 drawable 前建好——首帧 / 首次层切换无编译卡顿（T11；
+                         //   与原路径同点同线程：旧代码的第一个 present 就在这里现编译，预热只是把同一件事提前到本帧之内、再添上 PQ 候选）
+    // PR3c：PQ 层目标（RGB10A2Unorm）的管线建不出（死槽，负缓存——红日志在建槽处已打过）→ 层回退 SDR 基线，本帧起按 SDR 上屏（不 MDIE，§4 PR3c：
+    //   只放宽 HDR 槽，SDR 现状不动）。S0 配置一份：BGRA8Unorm + 显式 sRGB tag（从 PQ 层切回的层保留 PQ 色彩空间——必须显式重设，
+    //   否则无色彩匹配、字节直进屏原生 primaries（P3 屏过饱和），§2.3 注意①）+ wantsEDR 关。层状态机（PR4）不回卷：宿主 tick 见快照层态
+    //   未变不重应用，层稳定停在本配置；快照层态排空 → 重进时会再试 PQ 槽（死槽仍死则再回退——层态切换本就有换层抖动，不新增平稳路径的抖动）
+    if (layer.pixelFormat == MTLPixelFormatRGB10A2Unorm && !present_pso(layer.pixelFormat)) {
+        static CGColorSpaceRef cs_srgb; static dispatch_once_t once;
+        dispatch_once(&once, ^{ cs_srgb = CGColorSpaceCreateWithName(kCGColorSpaceSRGB); });
+        layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+        layer.colorspace = cs_srgb;
+#if !TARGET_OS_TV
+        layer.wantsExtendedDynamicRangeContent = NO;   // tvOS SDK 没有这个属性（host_adapt.m s2a_hdr_layer_apply_to 同款护栏）
+#endif
+    }
     // PR4 排空喂入（评审稿 v3 §4 PR4 ②「nvn_mtl.m 每帧喂计数」）：层持 PQ 才可能要排空——门在层格式上，SDR 层（off / S0 缺省路径）喂计数是空转
     //   （hdr_layer_tick_frame !layer_pq 直返），缺省路径零新增开销；层持 PQ 的帧才进（getenv + 锁，PQ 新路径，nvn2.c:653 事件档口径的例外已注明）。
     //   PQ 窗口 = 游戏出图源是 RGB10A2（HDR10 窗）：排空途中又见 PQ 窗口清零重等——无 HDR 帧落进 SDR 层；want 期间（can 持稳 ∧ s1_ready）非 PQ 帧也不排空。
@@ -19454,7 +19561,9 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
         nvn2_hdr_tick_frame(nvn2_hdr_switch(), src.pixelFormat == MTLPixelFormatRGB10A2Unorm);
     fit_geom(layer.drawableSize.width, layer.drawableSize.height, pcw, pch);   // game units (was the crop / source size read here)
     if (g_grab_cb) grab_present(src, crop, layer.drawableSize, ticket);   // Game picture needed by the whole-window screenshot (peek without the lock first; the real take locks inside the function)
-    if (fi_wanted() && !supplied) { if (@available(macOS 26.0, iOS 26.0, *)) { int fr = fi_frame(src, crop, layer, period, ticket); if (fr >= 0) return fr; } }   // 实验：出图补帧接手这一帧
+    // PR3d：HDR 窗口（PQ 码值）不出图补帧（nvn_present_fi.inc 同 8 位 sRGB 假设——输入缩拷 / 补出帧画布全 BGRA8Unorm）；SDR 帧照常交给补帧（旁路逐帧判，不碰补帧自己的开关状态）
+    int hdr_byp = present_hdr_bypassed(src);
+    if (!hdr_byp && fi_wanted() && !supplied) { if (@available(macOS 26.0, iOS 26.0, *)) { int fr = fi_frame(src, crop, layer, period, ticket); if (fr >= 0) return fr; } }   // 实验：出图补帧接手这一帧
     uint64_t dt0 = now_ns();
     id<CAMetalDrawable> dr = supplied ? supplied : [layer nextDrawable];
     if (!supplied) g_drawable_ns += now_ns() - dt0;
