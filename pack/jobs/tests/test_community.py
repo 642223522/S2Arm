@@ -302,6 +302,16 @@ class CommunityTests(unittest.TestCase):
         self.assertNotIn("diagRun", community.load_launch(self.c, GID)["settings"])
         self.assertEqual(community.launch_env(self.c, GID), {})
 
+    def test_thread_compat_058(self):
+        # 线程调度：兼容 0.5.8（高级选项、缺省关）：开了起局设 S2A_CORES=0（宿主虚拟核回到 0.6.0 前的关档）、每局都设；关回去就不设。期望按规格手写
+        (layout.image_mac(self.c, GID) / "cpatch.tsv").unlink()   # 只看这一项：这款包里没补丁
+        self.assertNotIn("S2A_CORES", community.launch_env(self.c, GID), "缺省关：不设")
+        self.c.r.update(settings={"threadCompat058": True}); community.save(self.c)
+        self.assertEqual(community.launch_env(self.c, GID), {"S2A_CORES": "0"})
+        self.assertEqual(community.launch_env(self.c, GID), {"S2A_CORES": "0"}, "不像诊断局：每局都生效")
+        self.c.r.update(settings={"threadCompat058": False}); community.save(self.c)
+        self.assertNotIn("S2A_CORES", community.launch_env(self.c, GID))
+
     def test_pack_without_patches(self):
         # 包里没编进补丁（没查到 / 还没出 Mac 版）→ 不列、不能存、不设 S2A_CPATCH_ON；宽屏 / 60 帧（我方能力）照常
         (layout.image_mac(self.c, GID) / "cpatch.tsv").unlink()
@@ -408,7 +418,7 @@ class MacDisplayTests(unittest.TestCase):
     def test_every_mac_item_of_the_table_is_on_the_page(self):
         # 定义表里 platforms 含 mac 的 bool / choice 项 = quality（11-15 取代 enhance）fps60 widescreen docked rumble rumbleLevel motion hud（11-13 widenForce 并进 widescreen）
         self.caps()
-        self.assertEqual(sorted(self.mac()), sorted(["quality", "fps60", "fpsPick", "resolutionScale", "fpsLimit", "widescreen", "docked", "language", "rumble", "rumbleLevel", "motion", "motionInvertY", "motionInvertX", "ldnMode", "ldnHost", "ldnAddress", "padFace", "hud", "snapshot", "pauseUnfocused", "audioLatency", "audioDevice", "vsSpeakers", "vsHeadphones", "diagRun"]))
+        self.assertEqual(sorted(self.mac()), sorted(["quality", "fps60", "fpsPick", "resolutionScale", "fpsLimit", "widescreen", "docked", "language", "rumble", "rumbleLevel", "motion", "motionInvertY", "motionInvertX", "ldnMode", "ldnHost", "ldnAddress", "padFace", "hud", "snapshot", "pauseUnfocused", "audioLatency", "audioDevice", "vsSpeakers", "vsHeadphones", "threadCompat058", "diagRun"]))
 
     def test_fps_pick_level(self):
         # 帧率档位（11-13）：包里帧率补丁（编号 fps:）目标帧率两档以上才出；选具体档 → S2A_FPS_PICK=档，选自动（"0"）不写；表外取值拒收
