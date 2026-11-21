@@ -207,6 +207,7 @@ struct LauncherView: View {
         .sheet(isPresented: Binding(get: { model.showKeys && !model.showEnvironment }, set: { model.showKeys = $0 })) {
             ImportSheet(model: model, kind: .keys).environmentObject(loc)
         }
+        .sheet(item: $model.devCertChoice) { DevCertChooseSheet(model: model, choice: $0).environmentObject(loc) }   // 几张证书：这台第一次连上时问用哪张（#487）
         .sheet(isPresented: $model.showEnvironment) {
             EnvironmentView(model: model, onOpenSpace: { returnToEnvFromSpace = true }).environmentObject(loc)
         }

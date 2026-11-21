@@ -403,12 +403,17 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var devCert: DevCertStatus?
     var failingReads: Set<String> = []   // 被动刷新正在连续失败的那几类（reportFailure 只报头一次）
     @Published var showDevCertImport = false
+    /// 几张证书（#487）：这台第一次连上（证书签名、还没给它选过）时问用哪张；本次启动每台只问一次
+    @Published var devCertChoice: DevCertChoice?
+    var devCertAsked: Set<String> = []
     /// Apple ID 登录（0.6.0 Mac，S2ArmLauncherModel+AppleLogin.swift）：当前账号、登录面板挂在哪一层（install / settings / main，nil = 没开）与进行到哪
     @Published var appleAccount: AppleAccount?
     @Published var appleLoginHost: String?
     @Published var appleLoginPhase: AppleLoginPhase = .idle
     /// 为什么开的登录面板：expired = 装机报 Apple ID 登录过期（apple_session_expired），面板说一句「过期了，重新登录」并带上原来的邮箱
     @Published var appleLoginReason: String?
+    /// 苹果刚拒收过登录（5xx），作业层在等冷却：还要等几秒（作业层 appleLogin.wait 事件每秒报一次；nil = 没在等）
+    @Published var appleLoginWait: Int?
     var appleLoginTask: Task<Void, Never>?
     /// 装机清单派发出的动作（performInstallAction）：在装机窗里弹的说明（trustHelp / developerModeHelp）、「装到哪台」那一行要不要亮出来、
     ///   设置页要定位到哪一栏（devCertSettings）、要离开装机窗去的地方（装机窗收到后先关自己再去）；开着的装机窗是哪款
@@ -619,7 +624,7 @@ public final class S2ArmLauncherModel: ObservableObject {
                 self.phoneUpdates = self.provider.library.phoneUpdates
                 self.phoneDevices = self.provider.library.phoneDevices
                 if !self.startupLoopsStarted {
-                    self.startupLoopsStarted = true; self.resumeSGradeWatch(); self.keptModulesLoop(); self.preparePhoneUpdate(); self.appleTVBackupLoop()
+                    self.startupLoopsStarted = true; self.resumeSGradeWatch(); self.keptModulesLoop(); self.devCertWatchLoop(); self.preparePhoneUpdate(); self.appleTVBackupLoop()
                     // 0.6.0（开关后面）：启动器打开时快速比对「建议更新」、读一次总控台（都只读，秒回）。之后只在出包 / 手机作业做完时再读（finish），
                     //   不跟着每次重读游戏库起：出包过程中会重读好几次，每次多起两个作业进程是浪费（ExportStreamTests）
                     self.refreshUpdateHints(); self.refreshPhoneOverview()
@@ -1118,6 +1123,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         deviceProbeError = (probe["connectedError"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         targetModels = probe["models"] as? [[String: Any]] ?? []
         targetOS = probe["osChoices"] as? [Int] ?? []
+        await askDevCertIfNew()
     }
 
     /// 换到第 k 个平台：进度、里程碑从头算（日志接着记）。

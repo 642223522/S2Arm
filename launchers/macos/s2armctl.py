@@ -228,6 +228,7 @@ AI_NEXT = {
     'devcert_mismatch': ('human', '证书和描述文件不配套：请玩家在开发者网站重新生成含这张证书的描述文件，再在出包页重新导入'),
     'devcert_distribution': ('human', '导入的是分发（发布）证书的描述文件：照常导入，推到 iPhone 的方式选「独立 App」（layoutSet 作业，layout=standalone）就能用它玩；通用 S2Arm 里用它签的游戏打不开——要用通用 S2Arm，请玩家在启动器里点「改用 Apple ID 登录」（要输密码，AI 不代做），或点「复制给证书发放人的话」发给证书发放人，换成开发证书和开发描述文件后重新导入'),
     'devcert_missing': ('human', '开发者证书不完整：请玩家在出包页重新导入，或切回 Apple ID 签名后 s2armctl install <游戏号>'),
+    'devcert_choose': ('human', '存着几张开发者证书、这台设备还没选用哪一张：请玩家在启动器出包页给这台选一张证书，再 s2armctl install <游戏号> --device <这台>'),
     'identity_unavailable': ('human', '这台电脑上没有可交的签名证书：请玩家在 AltStore / SideStore 设置里导出签名证书、在手机 S2Arm「签名证书」里导入；不要为此新建证书'),
     'identity_team_mismatch': ('human', '手机上的 S2Arm 是另一个团队签的：请玩家在启动器里登录装 S2Arm 用的那个 Apple ID（要输密码，AI 不代做）或选用同一团队的证书，再交一次签名身份'),
     'devcert_keychain': ('human', '证书密码存不进钥匙串：请玩家解锁登录钥匙串、允许 S2Arm 访问后在出包页重新导入'),
