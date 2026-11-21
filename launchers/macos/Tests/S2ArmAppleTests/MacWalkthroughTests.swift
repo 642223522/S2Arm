@@ -111,7 +111,7 @@ import XCTest
         model.exportPhones = [p]
         try sheet("1_02_点导出_确认页_没登录_没装S2Arm", sign: "appleId")
         try shot(AppleLoginSheet(model: model), "1_03_点登录AppleID_登录面板", sheet: true)
-        model.appleAccount = AppleAccount(account: "xiaoming@icloud.com", team: "AB12CD34EF", teamName: "Xiaoming (Personal Team)")
+        model.appleAccount = AppleAccount(account: "xiaoming@example.com", team: "TEAM-XM", teamName: "Xiaoming (Personal Team)")
         try sheet("1_04_登录好_回到确认页", sign: "appleId")
         model.consoleDevice = "U1"; model.selectedID = S2ArmLauncherModel.consoleID
         try home("1_05_点先装S2Arm_首位S2Arm卡")
@@ -119,7 +119,7 @@ import XCTest
         upd.started = Date().addingTimeInterval(-95); upd.ended = Date()
         model.phoneSession = upd
         model.phoneOutcome = PhoneOutcome(device: "iPhone「小明的 iPhone」", version: "0.6.4")
-        model.installTrustName = "Apple Development: xiaoming@icloud.com (AB12CD34EF)"
+        model.installTrustName = "Apple Development: xiaoming@example.com (TEAM-XM)"
         model.shellFirstInstall = true
         try home("1_06_安装S2Arm完成")
         model.phoneSession = nil; model.phoneOutcome = nil
@@ -135,7 +135,7 @@ import XCTest
         try home("1_10_做好了_接着装到勾的设备")
         model.exportAfterPack[Self.gid] = nil
         var f = flow(sign: "appleId", [("U1", "iPhone", "小明的 iPhone", .done)])
-        f.rows[0].next = [.key("install.done.open", ""), .key("install.done.trustNamed", "Apple Development: xiaoming@icloud.com (AB12CD34EF)"), .key("install.done.free", "")]
+        f.rows[0].next = [.key("install.done.open", ""), .key("install.done.trustNamed", "Apple Development: xiaoming@example.com (TEAM-XM)"), .key("install.done.free", "")]
         model.exportFlows[Self.gid] = f; model.session = nil
         try sheet("1_11_右上角胶囊点开_已装到这台", sign: "appleId", results: true)
     }
@@ -187,7 +187,7 @@ import XCTest
         let b = phone("D4", "客厅", kind: "iPad", by: .launcher, online: "network")
         model.phoneOverview = PhoneOverview(phones: [a, b]); model.exportPhones = [a, b]
         model.installMode = InstallModeInfo(result: ["signMode": "appleId", "signChoice": "appleId", "layout": "shell", "recommend": "shell", "recommendWhy": "appleId"])
-        model.appleAccount = AppleAccount(account: "player@icloud.com")
+        model.appleAccount = AppleAccount(account: "player@example.com")
         model.devCert = DevCertStatus(imported: false, active: false, cert: nil)
         try home("4_01_首页_选中这款")
         try sheet("4_02_点导出_两台都勾上", sign: "appleId", picked: ["I4", "D4"])
@@ -197,7 +197,7 @@ import XCTest
         model.exportFlows[Self.gid] = flow(sign: "appleId", [("I4", "iPhone", "我的 iPhone", .running), ("D4", "iPad", "客厅", .queued)])
         try sheet("4_03_开始_一台一台装", sign: "appleId", results: true)
         model.phoneSession = nil
-        model.installOpenToFinish = true; model.installTrustName = "Apple Development: player@icloud.com (ZX98YW76VU)"
+        model.installOpenToFinish = true; model.installTrustName = "Apple Development: player@example.com (TEAM-PL)"
         var f = flow(sign: "appleId", [("I4", "iPhone", "我的 iPhone", .done), ("D4", "iPad", "客厅", .done)])
         f.rows[0].next = model.phoneNextSteps(sign: "appleId", gameID: Self.gid); f.rows[1].next = f.rows[0].next
         model.exportFlows[Self.gid] = f
@@ -229,7 +229,7 @@ import XCTest
         let p = phone("S6", "我的 iPhone", kind: "iPhone", by: .launcher, state: .suggested)
         model.phoneOverview = PhoneOverview(phones: [p]); model.exportPhones = [p]
         model.installMode = InstallModeInfo(result: ["signMode": "appleId", "signChoice": "appleId", "layout": "shell", "recommend": "shell", "recommendWhy": "appleId"])
-        model.appleAccount = AppleAccount(account: "player@icloud.com")
+        model.appleAccount = AppleAccount(account: "player@example.com")
         model.devCert = DevCertStatus(imported: false, active: false, cert: nil)
         model.updateHints = [Self.gid: ["shader", "rewriter"]]
         try home("6_01_首页_建议更新")

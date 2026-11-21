@@ -21,8 +21,8 @@ static class WalkProbe
     static string outDir = "";
     static int shots;
 
-    const string Phone = "00008110-000A1B2C3D4E5F60";      // 夹具设备号（不是真设备）
-    const string Pad = "00008027-00112233445566AA";
+    const string Phone = "UDID-PHONE-1";      // 夹具设备号（不是真设备）
+    const string Pad = "UDID-PAD-1";
 
     public static int Run(string dir)
     {
