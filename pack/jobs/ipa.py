@@ -614,8 +614,14 @@ def to_img(c, gid, root, pack_dir):
             clear_build(c, gid)
         if not isinstance(e, Failure):
             raise
-        from errors import tool_reason
-        raise Failure("写单一 IMG（game.img）失败：" + (tool_reason(log) or str(e)), code="package_failed") from e  # 非玩家句
+        from errors import cause_facts, classify_failure, player_words, tool_reason
+        reason = "写单一 IMG（game.img）失败：" + (tool_reason(log) or str(e))  # 非玩家句
+        # 日志确凿根因（盘满等，errors.LOG_CAUSES）照归：原先一律 package_failed，玩家看到的是英文原句「[Errno 28] No space left on device」
+        code, why = classify_failure("img", log, (reason,))
+        if code == "package_failed":
+            raise Failure(reason, code=code, internal=why) from e
+        said, advice = player_words(code, log, (reason,))
+        raise Failure(said, code=code, advice=advice, internal=reason + "\n" + why, facts=cause_facts(code, log)) from e
     mark.unlink(missing_ok=True)
 
 
