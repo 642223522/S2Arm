@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 S2Arm contributors
+# 门禁间接：android/tests/vk/run.sh 默认档按 standalone/*.sh 通配逐个跑（run.sh 末段 for 循环），单独跑用 run.sh --feedback-snap-pool
 # 反馈快照池（快照图跨段复用，backend_vulkan_feedback.inc 的 fbpool_*）：t_feedback_pool.c 六个用例 × 两级回放开 / 关，
 # 再用同一份用例跑三个改坏的后端（负对照），每个都必须红在它该红的那一行。
 set -euo pipefail
