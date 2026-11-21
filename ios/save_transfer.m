@@ -384,7 +384,7 @@ S2A_VERTICAL_BAR_OFF
     UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc] initForExportingURLs:@[[NSURL fileURLWithPath:path]] asCopy:YES];
     picker.directoryURL = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
     picker.delegate = self; self.exportPicker = picker;
-    s2a_present_picker(self, picker, "导出存档");
+    s2a_present_picker(self, picker, "save-export");
 }
 - (void)exportSave {
     // 11-13 维护者「不许堵门」：上次的临时副本删不掉不挡这次（新副本用新名字，互不冲突）；只记一行日志，下次再清
@@ -407,7 +407,7 @@ S2A_VERTICAL_BAR_OFF
     UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeData] asCopy:YES];
     picker.directoryURL = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
     picker.allowsMultipleSelection = NO; picker.delegate = self;
-    s2a_present_picker(self, picker, "导入存档");
+    s2a_present_picker(self, picker, "save-import");
 }
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     if (controller == self.exportPicker) {

@@ -140,7 +140,7 @@ static NSString *cheat_status_text(NSString *st) {
 }
 
 - (void)import {
-    UIDocumentPickerViewController *p = s2a_cheats_import_picker(); p.delegate = self; s2a_present_picker(self, p, "导入金手指");
+    UIDocumentPickerViewController *p = s2a_cheats_import_picker(); p.delegate = self; s2a_present_picker(self, p, "cheats-import");
 }
 - (void)documentPicker:(UIDocumentPickerViewController *)c didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     (void)c; NSFileManager *fm = NSFileManager.defaultManager; NSURL *dir = cheats_dir(); NSMutableArray *bad = [NSMutableArray array];

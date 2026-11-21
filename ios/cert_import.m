@@ -94,7 +94,7 @@ void s2a_shell_cert_p12(void) {   // 游戏库设置「签名证书」→「导�
     UTType *p12 = [UTType typeWithIdentifier:@"com.rsa.pkcs-12"] ?: UTTypeData;
     // 任何文件都能选（AltStore / 别的工具导出的证书扩展名不一定是 .p12）：导入时按内容判，不是证书再说「不是能用的证书文件」
     UIDocumentPickerViewController *p = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[p12, UTTypeData] asCopy:YES];
-    p.delegate = delegate; s2a_present_picker(top_vc(), p, "导入签名证书");
+    p.delegate = delegate; s2a_present_picker(top_vc(), p, "cert-import");
 }
 #else
 void s2a_shell_cert_p12(void) {}

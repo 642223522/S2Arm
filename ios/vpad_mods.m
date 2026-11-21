@@ -123,7 +123,7 @@ static NSArray *find_romfs(NSURL *root, NSMutableArray<NSString *> *notes) {
 - (void)import {
     UIDocumentPickerViewController *p = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeFolder] asCopy:NO];
     p.delegate = self; p.allowsMultipleSelection = YES;
-    s2a_present_picker(self, p, "导入 mod 文件夹");
+    s2a_present_picker(self, p, "mods-import");
 }
 - (void)documentPicker:(UIDocumentPickerViewController *)c didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     NSFileManager *fm = NSFileManager.defaultManager; NSMutableArray<NSString *> *notes = [NSMutableArray array], *done = [NSMutableArray array];

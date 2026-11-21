@@ -1438,7 +1438,7 @@ void s2a_shell_pick_s2arm(const char *gid) {   // 主线程（s2a_shell.h）
     UIDocumentPickerViewController *p = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeData] asCopy:YES];
     p.delegate = delegate; UIViewController *top = lib_top();
     if (!top) { LOG("【红】游戏库：没有窗口，.s2arm 选择器开不出来"); return; }
-    s2a_present_picker(top, p, "导入 .s2arm");
+    s2a_present_picker(top, p, "s2arm-import");
 }
 // 长按卡片「导出这一款…」（0.6.3，GitHub #1793：分发证书玩家换签名重装后不想再从电脑整套重推）：后台生成这款的 <名>.s2arm + <名>.img
 //   （game_export.m，.img 是资源包 game.img——推送装的款是 romfs.img——的同卷硬链接，不拷副本），放本款文档根下的临时文件夹 game-exports/<随机名>/，交「文件」App 存走（asCopy）。
@@ -1506,7 +1506,7 @@ void s2a_shell_export_game(const char *gid_c) {   // 主线程（s2a_shell.h）
                 if (!top) { LOG("【红】导出这一款：没有窗口，「文件」导出页开不出来"); gexp_clear(x, nil); g_gexp = nil; return; }
                 UIDocumentPickerViewController *p = [[UIDocumentPickerViewController alloc] initForExportingURLs:@[[NSURL fileURLWithPath:s2s], [NSURL fileURLWithPath:ims]] asCopy:YES];
                 p.delegate = x;
-                s2a_present_picker(top, p, "导出这一款");
+                s2a_present_picker(top, p, "game-export");
             };
             if (wait && wait.presentingViewController) [wait dismissViewControllerAnimated:NO completion:next]; else next();
         });
