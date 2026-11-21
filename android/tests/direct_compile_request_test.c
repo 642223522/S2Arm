@@ -271,6 +271,21 @@ int main(int argc, char **argv) {
             CHECK(s2a_compile_request_build(&u, &j, &n, g, sizeof g) == -1 && !j,
                   "linked policy matrix rejects non-boolean values");
         }
+        // 配对接口表诊断请求位：只在配对 VS+FS 上写 linkMapDiag，其余组合 / 非布尔值拒收；缺省 0 不写。
+        u.requires_linked_varying_interface = 1; u.link_map_diag = 0;
+        CHECK(s2a_compile_request_build(&u, &j, &n, g, sizeof g) == 0 && j && !contains(j, "linkMapDiag"), "link map diag off omits linkMapDiag");
+        free(j); j = NULL;
+        u.link_map_diag = 1;
+        CHECK(s2a_compile_request_build(&u, &j, &n, g, sizeof g) == 0 && j &&
+              contains(j, "\"requiresLinkedVaryingInterface\":true,\"linkMapDiag\":true"), "paired VS+FS with link map diag asks for the map");
+        free(j); j = NULL;
+        u.link_map_diag = 2;
+        CHECK(s2a_compile_request_build(&u, &j, &n, g, sizeof g) == -1 && !j, "non-boolean link map diag rejected");
+        u.link_map_diag = 1; u.requires_linked_varying_interface = 0; u.stage_count = 1;
+        CHECK(s2a_compile_request_build(&u, &j, &n, g, sizeof g) == -1 && !j, "link map diag on a single VS rejected");
+        u.stage_count = 3;
+        CHECK(s2a_compile_request_build(&u, &j, &n, g, sizeof g) == -1 && !j, "link map diag on VS+FS+GS rejected");
+        u.stage_count = 2; u.link_map_diag = 0;
     }
 
     // 主线缺省路径：调试门关（正式构建 / 非调试）时请求里不带 kindCheck，校验保持开着。

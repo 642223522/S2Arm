@@ -105,6 +105,8 @@ struct s2a_compile_request_input {
     int stage_count;
     // Android new replay VS+FS pair opts in. Zero preserves legacy requests.
     int requires_linked_varying_interface;
+    // 诊断（缺省 0）：1 = 请结果信封附 VS/FS 两侧「逻辑 location → 宿主 Location」表（linkMap），只许配对 VS+FS 带。
+    int link_map_diag;
     struct s2a_compile_graphics_src gfx;
     struct s2a_compile_texture_src textures[S2A_COMPILE_TEXTURE_MAX];   // 真实绑定的纹理事实；0 条 = 没有可用来源
     int texture_count;

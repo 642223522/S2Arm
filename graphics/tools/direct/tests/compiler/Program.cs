@@ -1690,6 +1690,31 @@ internal static unsafe class Program
                     consumer.TryGetValue((uint)location, out string inputType) && outputType == inputType,
                     "paired VS->FS matches location and type " + location);
         }
+        // 配对接口表诊断（linkMapDiag）：信封外层带两侧实际发射的 [逻辑, 宿主]，content / contentHash 与不带时逐字节相同。
+        // 手算期望（AttributeUsage.LinkedLocations）：共用掩码 = FS 实际读 {3,7} ∪ VS 最终 IR 声明的输出 {0,3,7}，
+        // 宿主号 = 掩码里比它小的位数 → VS 0→0、3→1、7→2；FS 3→1、7→2（VS 多写的 0 照发射，两侧同号对上）。
+        {
+            byte[] mapVs = Guest(false, new[] { Ast(0), Ast(3), Ast(7) });
+            byte[] mapFs = Guest(true, new[] { Ald(3, reg: 0), Ald(7, reg: 1), FaddR(0, 0, 1) }, new[] { 3, 7 });
+            byte[] plain = RequestJson(pairedProfile, "graphics", 1, 1, "link-map", mapVs, mapFs, linked: true);
+            var diagNode = System.Text.Json.Nodes.JsonNode.Parse(plain);
+            diagNode["linkMapDiag"] = true;
+            byte[] withMap = DirectShaderCompiler.Compile(Encoding.UTF8.GetBytes(diagNode.ToJsonString()));
+            byte[] withoutMap = DirectShaderCompiler.Compile(plain);
+            using JsonDocument a = ParseResult(withMap), b = ParseResult(withoutMap);
+            string Side(string side) => a.RootElement.TryGetProperty("linkMap", out var m)
+                ? string.Join(",", m.GetProperty(side).EnumerateArray().Select(x => x[0].GetInt32() + ">" + x[1].GetInt32())) : "(missing)";
+            Check(Side("vs") == "0>0,3>1,7>2" && Side("fs") == "3>1,7>2",
+                "link map diag reports both sides logical>host: vs=" + Side("vs") + " fs=" + Side("fs"));
+            Check(!b.RootElement.TryGetProperty("linkMap", out _), "link map is absent unless requested");
+            Check(a.RootElement.GetProperty("content").GetRawText() == b.RootElement.GetProperty("content").GetRawText() &&
+                a.RootElement.GetProperty("contentHash").GetString() == b.RootElement.GetProperty("contentHash").GetString(),
+                "link map diag leaves content and contentHash byte-identical");
+            var unlinked = System.Text.Json.Nodes.JsonNode.Parse(RequestJson(pairedProfile, "graphics", 1, 1, "link-map-unlinked", mapVs, mapFs));
+            unlinked["linkMapDiag"] = true;
+            Throws("UNSUPPORTED_PROGRAM", () => DirectShaderCompiler.Compile(Encoding.UTF8.GetBytes(unlinked.ToJsonString())),
+                "link map diag without linked request rejected");
+        }
 
         // 2b) 图形阶段的 c0Reads：回放按它决定间接绘制要不要把 GPU 侧的 base instance 拷进 c0 + 0x644。
         //     真实翻译器（DrawParametersReplace）：cbdp 真时 VS 对 c0 + 0x644 / 0x640 的立即读换成内建，读集里不再有；

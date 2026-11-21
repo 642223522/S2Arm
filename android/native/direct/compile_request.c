@@ -425,6 +425,7 @@ int s2a_compile_request_build(const struct s2a_compile_request_input *in,
     // Preserve the wire protocol stage order independently of the shared policy.
     if (linked && (strcmp(in->stages[0].stage, "vs") || strcmp(in->stages[1].stage, "fs"))) return -1;
     if (in->requires_linked_varying_interface && !linked) return -1;
+    if ((in->link_map_diag != 0 && in->link_map_diag != 1) || (in->link_map_diag && !linked)) return -1;
 
     struct sb b;
     memset(&b, 0, sizeof b);
@@ -447,6 +448,7 @@ int s2a_compile_request_build(const struct s2a_compile_request_input *in,
     // program; absent means legacy independent interface semantics.
     if (linked) {
         sb_puts(&b, ",\"requiresLinkedVaryingInterface\":true");
+        if (in->link_map_diag) sb_puts(&b, ",\"linkMapDiag\":true");
     }
     sb_puts(&b, ",");
     sb_key_u32(&b, "sourceParserVersion", 1);
