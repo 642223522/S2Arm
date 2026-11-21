@@ -68,16 +68,31 @@ void main(){o=texelFetch(a,ivec3(0,0,1),0);}
 HELPER = r'''
 #include <stdio.h>
 #include "nvn_vk_array_query.h"
-int main(int argc,char **argv){
- if(argc!=4)return 2;FILE*f=fopen(argv[1],"rb");if(!f)return 3;
- fseek(f,0,SEEK_END);long z=ftell(f);rewind(f);if(z<0 || z%4)return 4;
- uint32_t*w=malloc(z),*copy=malloc(z);if(!w || !copy)return 4;
- if(fread(w,1,z,f)!=(size_t)z)return 4;fclose(f);memcpy(copy,w,z);
- uint32_t n=0,c=0;uint32_t*o=nvn_vk_array_query(w,(uint32_t)(z/4),&n,&c);
- if(c!=(uint32_t)atoi(argv[3]) || memcmp(w,copy,z))return 5;
- if(!c && (o || n!=(uint32_t)z/4))return 6;
- f=fopen(argv[2],"wb");if(!f)return 7;fwrite(o?o:w,4,n,f);fclose(f);
- free(o);free(copy);free(w);return 0;
+int main(int argc, char **argv) {
+    if (argc != 4) { return 2; }
+    FILE *f = fopen(argv[1], "rb");
+    if (!f) { return 3; }
+    fseek(f, 0, SEEK_END);
+    long z = ftell(f);
+    rewind(f);
+    if (z < 0 || z % 4) { return 4; }
+    uint32_t *w = malloc((size_t)z), *copy = malloc((size_t)z);
+    if (!w || !copy) { return 4; }
+    if (fread(w, 1, (size_t)z, f) != (size_t)z) { return 4; }
+    fclose(f);
+    memcpy(copy, w, (size_t)z);
+    uint32_t n = 0, c = 0;
+    uint32_t *o = nvn_vk_array_query(w, (uint32_t)(z / 4), &n, &c);
+    if (c != (uint32_t)atoi(argv[3]) || memcmp(w, copy, (size_t)z)) { return 5; }
+    if (!c && (o || n != (uint32_t)z / 4)) { return 6; }
+    f = fopen(argv[2], "wb");
+    if (!f) { return 7; }
+    fwrite(o ? o : w, 4, n, f);
+    fclose(f);
+    free(o);
+    free(copy);
+    free(w);
+    return 0;
 }
 '''
 with tempfile.TemporaryDirectory(prefix='s2a-array-query-') as tmp:
