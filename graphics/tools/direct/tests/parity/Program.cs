@@ -54,7 +54,10 @@ internal static class Program
             string name = Path.GetFileNameWithoutExtension(reqFile);
             if (name == "profile") continue;
             var req = JsonNode.Parse(File.ReadAllText(reqFile));
-            string closure = req["translatorClosure"].GetValue<string>();
+            // 语料是合成请求、只描述着色器与绑定事实；编译器构建身份取本次编出的这一份（DirectIdentity），不读语料里录下时的旧值：
+            // 否则编译器源码一变（任何一支改了翻译器），全部语料都以「不是本构建的 closure」被拒，比的就不再是接口事实
+            string closure = DirectIdentity.TranslatorClosure;
+            req["translatorClosure"] = closure;
             var rounds = devices.Count > 0
                 ? devices.Select(d => (d.Item1, (JsonNode)JsonNode.Parse(DirectProfileComposer.Compose(d.Item2, closure)))).ToList()
                 : new List<(string, JsonNode)> { ("request", req["profile"]?.DeepClone()) };
