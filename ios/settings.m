@@ -63,7 +63,7 @@ void s2a_ios_apply_overlay_settings(NSUserDefaults *defaults) {
 NSArray *s2a_ios_per_game_keys(void) {
     return @[@"S2AResolutionScale", @"S2AAntiAliasing", @"S2AScalingFilter", @"S2AFrameRateLimit", @"S2AWidescreen", @"S2AFps60",
              @"S2AFps60Manual", @"S2ADockedMode", @"S2ACommunityPatches", @"S2AWidescreenAsked", @"S2AFps60Asked", @"S2AFpsNative60", @"S2AFpsPick", S2AGameLanguageKey, @"S2AFrameInterp", @"S2AGameVolume",
-             @"S2AAudioDevice", @"S2AAudioVsSpeakers", @"S2AAudioVsHeadphones", @"S2AThreadCompat058"];   // 输出设备类型 + 两个虚拟环绕开关（#189 后续，5.1 虚拟环绕第二片，按游戏存）
+             @"S2AAudioDevice", @"S2AAudioVsSpeakers", @"S2AAudioVsHeadphones"];   // 输出设备类型 + 两个虚拟环绕开关（#189 后续，5.1 虚拟环绕第二片，按游戏存）
 }
 NSArray<NSString *> *s2a_ios_game_languages(void) {
     return @[@"system", @"SimplifiedChinese", @"TraditionalChinese", @"AmericanEnglish", @"BritishEnglish", @"Japanese", @"Korean", @"French", @"CanadianFrench", @"German",
@@ -487,12 +487,6 @@ void s2a_ios_apply_graphics_settings(NSUserDefaults *defaults) {
     if (!getenv("S2A_AUDIO_VS_HEADPHONES") && vsHeadphones != nil) {
         apply_environment("S2A_AUDIO_VS_HEADPHONES", [vsHeadphones boolValue] ? @"1" : @"0");
         fprintf(stderr, "[S2A 声音设置] S2A_AUDIO_VS_HEADPHONES=%d（本款设置：耳机虚拟环绕）\n", [vsHeadphones boolValue]);
-    }
-    // 线程调度：兼容 0.5.8（定义表 threadCompat058，高级选项、缺省关，按游戏存）：开着 → S2A_CORES=0，虚拟核回到 0.6.0 前的「关」档
-    //   （runtime/src/thread.c cores_mode，宿主日志「虚拟核：关……S2A_CORES 显式设」随诊断包）。启动环境显式给的优先
-    if (!getenv("S2A_CORES") && [defaults boolForKey:@"S2AThreadCompat058"]) {
-        apply_environment("S2A_CORES", @"0");
-        fprintf(stderr, "[S2A 调度设置] S2A_CORES=0（本款设置：线程调度兼容 0.5.8）\n");
     }
     // 开着社区宽屏 / 自适应满屏补丁（编号 widescreen: / wsauto:）：游戏自己按屏幕比例画宽画面，S2Arm 的满屏让开、不拉宽两次（同 Mac pack/jobs/community.py launch_env）；
     //   启动环境显式给了 S2A_WIDESCREEN 的照它

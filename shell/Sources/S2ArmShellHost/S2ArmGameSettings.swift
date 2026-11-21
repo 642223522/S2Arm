@@ -20,8 +20,6 @@ public enum S2ArmGameSettings {
     public static let splitScreen = "splitScreen", screenOrientation = "screenOrientation"
     /// 输出设备类型 + 两个虚拟环绕开关（#189 后续，5.1 虚拟环绕第二片；定义表 game_settings.v1.json 的同 id 项，本文件不另写文案与缺省）
     public static let audioDevice = "audioDevice", vsSpeakers = "vsSpeakers", vsHeadphones = "vsHeadphones"
-    /// 线程调度：兼容 0.5.8（定义表 threadCompat058，高级选项、缺省关）
-    public static let threadCompat = "threadCompat058"
 
     /// 宿主给的这款画面与金手指选项（ios/game_options.m 的 JSON）
     public struct Options: Equatable, Sendable {
@@ -42,8 +40,6 @@ public enum S2ArmGameSettings {
         ///   两个开关各存各的、只在对应类型下生效（驱动侧判），没拨过按关。宿主没给 = nil，这三行不出
         public struct Audio: Equatable, Sendable { public var device: String; public var vsSpeakers: Bool; public var vsHeadphones: Bool }
         public var audio: Audio? = nil
-        /// 线程调度：兼容 0.5.8（宿主没给 = nil，这一行不出）
-        public var threadCompat: Bool? = nil
         public init(fps: Switch, fullscreen: Switch, patches: [Item] = [], cheats: [Item] = [], audio: Audio? = nil) { self.fps = fps; self.fullscreen = fullscreen; self.patches = patches; self.cheats = cheats; self.audio = audio }
         static func parse(_ json: String) -> Options? {
             guard let o = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] else { return nil }
@@ -66,7 +62,6 @@ public enum S2ArmGameSettings {
                 let device = (a["device"] as? String).flatMap { ["auto", "builtin", "headphones", "external"].contains($0) ? $0 : nil } ?? "auto"
                 out.audio = Audio(device: device, vsSpeakers: (a["vsSpeakers"] as? Bool) ?? false, vsHeadphones: (a["vsHeadphones"] as? Bool) ?? false)
             }
-            out.threadCompat = o["threadCompat"] as? Bool
             return out
         }
     }
@@ -197,13 +192,6 @@ public enum S2ArmGameSettings {
             if !l.note.isEmpty { row.note += " · " + l.note }   // 宿主那句已按当前语言，不再查表
             out.append(SettingSection(id: "s2a.language", title: "Language", rows: [row]))
         }
-        // 高级：线程调度兼容 0.5.8（同 Mac 启动设置「其他」里那项）：只在这款从 0.6.0 起闪退 / 卡死 / CPU 明显变高时打开对照
-        if let t = o?.threadCompat {
-            out.append(SettingSection(id: "s2a.advanced", title: "Advanced", rows: [
-                SettingRow(id: threadCompat, label: "Thread scheduling: 0.5.8 compatible",
-                           note: "Off by default. Turn it on only to compare when this game started crashing, freezing or using much more CPU from 0.6.0 on; takes effect the next time this game starts.",
-                           kind: .toggle(on: "on", off: "off"), value: t ? "on" : "off")]))
-        }
         #if !os(tvOS)   // 触屏虚拟手柄（布局 / 按住锁定 / 透明度）：电视上没有触屏
         out.append(SettingSection(id: "s2a.vpad", title: "Virtual controller", rows: [
             SettingRow(id: layout, label: "Button layout", note: "Adjust normal and split positions separately; applies to this game only", kind: .choice(options), value: current),
@@ -228,7 +216,6 @@ public enum S2ArmGameSettings {
         case audioDevice: _ = stores.setOption(id, "audiodevice", value, true)   // "auto" = 未选择（宿主删掉这款的值）
         case vsSpeakers: _ = stores.setOption(id, "audiovs", "speakers", value == "on")
         case vsHeadphones: _ = stores.setOption(id, "audiovs", "headphones", value == "on")
-        case threadCompat: _ = stores.setOption(id, "threadcompat", "", value == "on")
         case gameLanguage: _ = stores.setOption(id, "language", value, true)
         case fullscreen: _ = stores.setOption(id, "fullscreen", "", value == "on")
         case _ where setting.hasPrefix(patchPrefix): _ = stores.setOption(id, "patch", String(setting.dropFirst(patchPrefix.count)), value == "on")

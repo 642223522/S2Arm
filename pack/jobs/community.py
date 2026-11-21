@@ -701,8 +701,6 @@ def launch_env(c, gid, existing=None):
         env["S2A_AUDIO_VS_HEADPHONES"] = "1" if s["vsHeadphones"] else "0"
     if s.get("pauseUnfocused") is False:
         env["S2A_FOCUS_PAUSE"] = "0"      # 切到别的窗口不暂停：游戏要求失焦暂停时也照常跑（macos/front_mac.m，#989）
-    if s.get("threadCompat058") is True:
-        env["S2A_CORES"] = "0"            # 线程调度：兼容 0.5.8（高级选项）：虚拟核回到 0.6.0 前的「关」档（runtime/src/thread.c cores_mode；宿主日志写「S2A_CORES 显式设」，随诊断包）
     if s.get("diagRun") is True:
         env.update(diag_run_env(c, gid))  # 诊断局（#438）：只管这一局，用掉就关
     return env
