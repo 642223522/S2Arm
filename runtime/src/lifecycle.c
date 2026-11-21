@@ -193,7 +193,10 @@ void s2a_host_shutdown(const char *why) {
     // 弱链接[android]：s2a_sesmark_clear_home（只有安卓 NDK 单库与 Linux 宿主单测链这一支，都不走 ld64，不需要放行参数）
     { extern void s2a_sesmark_clear_home(void) __attribute__((weak)); if (s2a_sesmark_clear_home) s2a_sesmark_clear_home(); }   // 会话标记：只删 Java 干净收尾写的 end（#528 第 15 项）
 #else
-    { void (*clr)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "s2a_sesmark_clear_home"); if (clr) clr(); }   // 会话标记（sesdiag.c）：正常收尾，下次启动不问「上次没正常退出」
+    // 会话标记（sesdiag.c）：正常收尾删掉，下次启动不问「上次没正常退出」。游戏自己中止（Break）的改写成「游戏中止」：下次启动问发诊断
+    //   （#351：PRAGMATA 缺 Switch 2 音频服务命令、游戏 Abort，原先这里照删，玩家看到闪退却拿不到诊断包），但不当成被杀，不关设置（diag.m）
+    { int brk = why && !strcmp(why, "游戏 Break");
+      void (*mk)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, brk ? "s2a_sesmark_abort_home" : "s2a_sesmark_clear_home"); if (mk) mk(); }
 #endif
     LOG("优雅退出完成（%.3f 秒）", (now_ns() - t0) / 1e9);
     s2a_logcon_flush(); _exit(atomic_load(&g_exit_code));
