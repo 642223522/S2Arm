@@ -113,5 +113,35 @@ class ShellIpaExport(unittest.TestCase):
         self.assertEqual((self.assembled, Path(r["ipa"]).parent.name), (1, "S2Arm 游戏包"))
 
 
+
+    def test_folder_export_brings_current_shell_ipa_once(self):
+        # #502：「导出…」通用 S2Arm、一台都不勾 = 导出到文件夹，原先只出 .s2arm；单独导出 S2Arm.ipa 只在总控台登记过的手机下面，
+        #   LiveContainer / 没连过电脑的玩家拿不到新版 S2Arm.ipa。期望（手写）：同文件夹放上本版壳号的 S2Arm.ipa；已是本版就不重组；壳号变了才换
+        self.assembled = 0
+        with patch.object(packer, "assemble_shell", self.fake_shell), patch.object(packer, "current_shell_id", lambda c: "SHELL1"):
+            out = install.ensure_shell_ipa(self.c)
+            again = install.ensure_shell_ipa(self.c)
+        folder = Path(self.c.library) / "S2Arm 游戏包"
+        self.assertEqual((out, again), (folder / "S2Arm.ipa", folder / "S2Arm.ipa"))
+        self.assertEqual(self.assembled, 1, "第二次已是本版壳号，不重组")
+        self.assertEqual((folder / install.SHELL_IPA_MARK).read_text(encoding="utf-8").strip(), "SHELL1")
+        with patch.object(packer, "assemble_shell", lambda c, dest=None: (self.fake_shell(c, dest=dest)[0], [], "SHELL2")), \
+                patch.object(packer, "current_shell_id", lambda c: "SHELL2"):
+            install.ensure_shell_ipa(self.c)
+        self.assertEqual(self.assembled, 2, "壳号变了就换")
+        self.assertEqual((folder / install.SHELL_IPA_MARK).read_text(encoding="utf-8").strip(), "SHELL2")
+
+    def test_install_export_shell_layout_calls_ensure_before_s2arm(self):
+        order = []
+        self.c.r.update(gameId="0100000000010000", mode="export")
+        import downstream
+        with patch.object(downstream, "requested", lambda c, g: None), patch.object(install, "ios_pack", lambda c, g: None), \
+                patch.object(install, "chosen_layout", lambda c, g=None: "shell"), \
+                patch.object(install, "ensure_shell_ipa", lambda c: order.append("ipa") or Path("/x/S2Arm.ipa")), \
+                patch.object(install, "export_s2arm", lambda c, g: order.append("s2arm") or dict(exported=True)):
+            r = install._install(self.c)
+        self.assertEqual(order, ["ipa", "s2arm"])
+        self.assertEqual(r["shellIpa"], "/x/S2Arm.ipa")
+
 if __name__ == "__main__":
     unittest.main()

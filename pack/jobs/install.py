@@ -1494,12 +1494,26 @@ def export_shell_ipa(c):
     写成「S2Arm 游戏包」文件夹（s2arm_dir，和各款 .s2arm 同一处）里的 S2Arm.ipa，就地换掉上一份；同文件夹里别的东西不动。
     0.5.x 的「S2Arm 自签导出」文件夹不碰。不读游戏库、不出游戏的程序包，所以游戏多少都一样快。玩家关了主屏小组件就去掉扩展再交（同 export_phone）。
     结果字段同 export_phone（完成页照用），games / files 为空"""
-    import ipa as packer
     c.begin("组 S2Arm（不带游戏）", 1, 2)
+    out, sid = _write_shell_ipa(c, lambda: c.begin("写进「S2Arm 游戏包」文件夹", 2, 2))
+    folder = out.parent
+    lang = ui_lang(c)
+    readme = write_s2arm_readme(folder, lang)
+    return dict(exported=True, outputPath=str(folder), ipa=str(out), readme=str(readme), shellId=sid, sgrade=patches_results(c),
+                games=[], files=[], skipped=[], exportBytes=out.stat().st_size, fresh=[], reused=0, unwritten=[])
+
+
+SHELL_IPA_MARK = ".S2Arm.ipa.shell"   # 「S2Arm 游戏包」文件夹里那份 S2Arm.ipa 是哪个壳号组的（ensure_shell_ipa 判要不要换）
+
+
+def _write_shell_ipa(c, before_write=None):
+    """组不带游戏的通用 S2Arm.ipa（未签名）写进「S2Arm 游戏包」文件夹，就地换掉上一份、记壳号 → (路径, 壳号)。export_shell_ipa 与 ensure_shell_ipa 共用"""
+    import ipa as packer
     work, tmp = Path(tempfile.mkdtemp(prefix=".export-", dir=c.library)), None
     try:
         ipa, _, sid = packer.assemble_shell(c, dest=work / "assemble")
-        c.begin("写进「S2Arm 游戏包」文件夹", 2, 2)
+        if before_write:
+            before_write()
         folder = s2arm_dir(c)
         folder.mkdir(parents=True, exist_ok=True)   # 玩家删了文件夹也照样重建
         out = folder / "S2Arm.ipa"
@@ -1507,14 +1521,26 @@ def export_shell_ipa(c):
         if not (c.r.get("widget") is False and ipa_strip_widget(ipa, tmp)):
             shutil.move(str(ipa), str(tmp))   # 临时目录和文件夹都在游戏库所在盘上：通常是改名
         os.replace(tmp, out)
+        (folder / SHELL_IPA_MARK).write_text(str(sid) + "\n", encoding="utf-8")
     finally:
         shutil.rmtree(work, ignore_errors=True)
         if tmp is not None:
             tmp.unlink(missing_ok=True)   # 半路失败不留半个文件（换上去了就已不在）
-    lang = ui_lang(c)
-    readme = write_s2arm_readme(folder, lang)
-    return dict(exported=True, outputPath=str(folder), ipa=str(out), readme=str(readme), shellId=sid, sgrade=patches_results(c),
-                games=[], files=[], skipped=[], exportBytes=out.stat().st_size, fresh=[], reused=0, unwritten=[])
+    return out, sid
+
+
+def ensure_shell_ipa(c):
+    """「导出…」通用 S2Arm、一台设备都不勾（导出到文件夹）：同一个文件夹里要有本版的 S2Arm.ipa，玩家拿去自己签了装上才用得了这款的 .s2arm。
+    #502：原先只出 .s2arm，单独导出 S2Arm.ipa 的按钮只挂在总控台里登记过的手机下面，LiveContainer / 从没连过电脑的玩家拿不到新版 S2Arm.ipa。
+    文件夹里已是本版壳号组的就不重组、不换文件（玩家不会以为又要重装）→ 路径"""
+    import ipa as packer
+    folder = s2arm_dir(c)
+    out, mark = folder / "S2Arm.ipa", folder / SHELL_IPA_MARK
+    try:
+        same = out.is_file() and mark.read_text(encoding="utf-8").strip() == str(packer.current_shell_id(c))
+    except OSError:
+        same = False
+    return out if same else _write_shell_ipa(c)[0]
 
 
 def readiness(c):
@@ -4034,7 +4060,10 @@ def _install(c):
         return downstream.install_ios(c, next((g for g in c.catalog()["games"] if g["id"].upper() == gid.upper()), dict(id=gid)), scheme)
     ios_pack(c, gid)
     if wants_export(c):   # 独立 App：ipa + .s2arm + .img + README 全进这款的游戏文件夹；通用壳：一款导出成小游戏包 .s2arm + 资源本体原位（两件套）
-        return export_app(c, gid) if chosen_layout(c, gid) == "standalone" else export_s2arm(c, gid)
+        if chosen_layout(c, gid) == "standalone":
+            return export_app(c, gid)
+        shell = ensure_shell_ipa(c)   # 先放 S2Arm.ipa 再出 .s2arm：说明文件按文件夹里有没有 S2Arm.ipa 写「先签好装上」那句
+        return dict(export_s2arm(c, gid), shellIpa=str(shell))
     c.begin("找签名账号与 iPhone", 1, 6)
     if chosen_layout(c, gid) == "standalone":   # 独立 App（一 App 一游戏）：这款自己签一个 App 装上
         return put_app(c, gid, phone_for(c))
