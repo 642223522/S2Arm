@@ -5558,10 +5558,11 @@ static void split_log(const alias_key *k, uint64_t cser, uint32_t cflags, int pk
 //   its own copy) is logged once. Submit thread (encoding)
 static void cpu_key_gpu_write(const alias_key *k, const tex_t *t) {
     if (!atomic_load_explicit(&g_cpu_key_n, memory_order_relaxed)) return;
-    uint64_t ser[CPU_KEY_MAX], join[CPU_KEY_MAX]; uint32_t flags[CPU_KEY_MAX]; uint8_t content[CPU_KEY_MAX]; uint32_t n = 0, nj = 0;
+    uint64_t ser[CPU_KEY_MAX], join[CPU_KEY_MAX]; uint32_t flags[CPU_KEY_MAX]; uint8_t content[CPU_KEY_MAX], unc[CPU_KEY_MAX]; uint32_t n = 0, nj = 0; int wunc;
     pthread_mutex_lock(&g_cpu_tex_mu);   // nearly every write: no CPU-written object over its storage
     cpu_key_set *s = nvn_hm_get(&g_cpu_key, k);
-    if (s) for (uint32_t i = 0; i < s->n; i++) if (!s->logged[i] && s->ser[i] != t->serial) { ser[n] = s->ser[i]; flags[n] = s->flags[i]; content[n++] = s->content[i]; }
+    if (s) for (uint32_t i = 0; i < s->n; i++) if (!s->logged[i] && s->ser[i] != t->serial) { ser[n] = s->ser[i]; flags[n] = s->flags[i]; unc[n] = nvn_hm_get(&g_cpu_unc, &s->ser[i]) != NULL; content[n++] = s->content[i]; }
+    wunc = nvn_hm_get(&g_cpu_unc, &t->serial) != NULL;
     pthread_mutex_unlock(&g_cpu_tex_mu);
     if (!n) return;
     __unsafe_unretained id w = tex_get(t->serial); int wpkg = [w isKindOfClass:[NvPkg class]];
@@ -5572,7 +5573,9 @@ static void cpu_key_gpu_write(const alias_key *k, const tex_t *t) {
         __unsafe_unretained id o = tex_get(ser[i]);
         if (!o || o == shared || o == w) continue;
         int pkg = [o isKindOfClass:[NvPkg class]];
-        if (target && pkg && content[i] && !((NvPkg *)o)->view) { join[nj++] = ser[i]; continue; }
+        // Joining an NvPkg into the writer's NvPkg shares one NvPkg between serials. cpu_unc_drop takes an NvPkg's texture for the one serial it converts (pk->tex = nil), which would
+        //   leave the other serial on an NvPkg with no texture: a writer or a joiner it tracks (g_cpu_unc, 2D uncompressed) stays apart, as before; each becomes a GPU texture at that pool's first GPU write
+        if (target && pkg && content[i] && !((NvPkg *)o)->view && !(wpkg && (wunc || unc[i]))) { join[nj++] = ser[i]; continue; }
         split_log(k, ser[i], flags[i], pkg, t, wpkg);
         pthread_mutex_lock(&g_cpu_tex_mu); if ((s = nvn_hm_get(&g_cpu_key, k))) for (uint32_t j = 0; j < s->n; j++) if (s->ser[j] == ser[i]) s->logged[j] = 1; pthread_mutex_unlock(&g_cpu_tex_mu);
     }
@@ -6021,21 +6024,6 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
     }
     if (have) return have;
     if (t->d.target == 10) {   // Buffer texture (TARGET_BUFFER): create the texture-buffer view directly on the memory pool buffer (zero copy; the GPU reads the pool's current content at execution time, same as NVN semantics)
-        alias_key tbk; int has_tbk = t->pool != NULL;
-        int dead = t->serial < (1ull << 62);
-        if (has_tbk) {
-            alias_key_of(&tbk, t);
-            pthread_mutex_lock(&g_smu);
-            __unsafe_unretained id shared = hm_get_id(&g_alias, &tbk);
-            if (shared) nvn_hm_put(&g_alias_seen, &tbk, (void *)(uintptr_t)(g_fence + 1));
-            dead = dead && !nvn_hm_get(&g_tex_live, &t->serial);
-            pthread_mutex_unlock(&g_smu);
-            if (shared) {
-                if (dead) { g_ghost_shared++; return shared; }
-                tex_put(t->serial, shared);
-                return shared;
-            }
-        } else if (dead) { pthread_mutex_lock(&g_smu); dead = !nvn_hm_get(&g_tex_live, &t->serial); pthread_mutex_unlock(&g_smu); }
         uint32_t pf = 0; uint8_t swz[4]; int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
         void *mb; uint64_t mo;
         if (nvn_fmt_expanded((uint32_t)t->d.format, NULL, NULL)) return nil;   // a format the host expands (RGB32F / UI / I and the rest): no such texture buffer format, the binding expands it (tbuf_expand)
@@ -6060,15 +6048,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
         }
         if (!mt) { RED_ONCE(39, "cannot create buffer texture ser=%llu: %u elements format %#x", (unsigned long long)t->serial, t->d.width, t->d.format); return nil; }
         res_add(mt);
-        if (has_tbk) {
-            pthread_mutex_lock(&g_smu);
-            if (!g_alias_set) g_alias_set = CFSetCreateMutable(NULL, 0, NULL);
-            hm_put_id(&g_alias, &tbk, mt);
-            CFSetAddValue(g_alias_set, (__bridge const void *)mt);
-            nvn_hm_put(&g_alias_seen, &tbk, (void *)(uintptr_t)(g_fence + 1));
-            pthread_mutex_unlock(&g_smu);
-        }
-        if (!dead || !has_tbk) tex_put(t->serial, mt);
+        tex_put(t->serial, mt);
         return mt;
     }
     alias_key ak; alias_key_of(&ak, t);
@@ -8490,13 +8470,10 @@ static void treg_drop_alt(treg_t *r) { if (r->alt) { if (r->alt_copy) defer_obj_
                                       r->alt = r->alt_of = NULL; r->alt_rid = r->alt_made = 0; r->alt_copy = 0; } }
 static void treg_drop_im(treg_t *r) {
     if (!r->im) return;
+    // A texture view retains its base and the base keeps the residency: only my reference goes. A texture-buffer view (img_fit / tex_float_fit on a buffer texture) is its own
+    //   resident object over the pool buffer (res_add), retired like tbl_view's: released after the submissions that used it. im_of is an unretained identity, never dereferenced
     id<MTLTexture> old = (__bridge id<MTLTexture>)r->im;
-    id<MTLTexture> of = (__bridge id<MTLTexture>)r->im_of;
-    if (old.buffer) {
-        if (of && old.buffer != of.buffer) defer_obj_release(old.buffer);
-        defer_obj_release(old);
-    } else defer_obj_unref(old);
-    CFRelease(r->im); r->im = r->im_of = NULL; r->im_rid = 0;
+    if (old.textureType == MTLTextureTypeTextureBuffer) defer_obj_release(old); else defer_obj_unref(old); CFRelease(r->im); r->im = r->im_of = NULL; r->im_rid = 0;
 }
 static void treg_drop_ar(treg_t *r) { if (r->ar) { defer_obj_unref((__bridge id)r->ar); CFRelease(r->ar); r->ar = r->ar_of = NULL; r->ar_rid = 0; }
                                      treg_drop_im(r); }   // and the image class view (img_fit)
@@ -11851,31 +11828,6 @@ static void *pool_fit(const pool_tab *t, int id_, void *o, uint64_t *rid) {
     __unsafe_unretained id<MTLTexture> x = (__bridge id<MTLTexture>)o;
     if ((int)x.textureType != t->dtt) return NULL;
     if (x.textureType == MTLTextureTypeTextureBuffer && x.bufferOffset % linear_align((uint32_t)x.pixelFormat)) {
-        if (!t->rw && x.buffer && x.buffer.contents && id_ > 0 && id_ < g_ntreg && g_treg[id_].ok) {
-            int bw, bh, bpb = nvn_fmt_bpb(g_treg[id_].t.d.format, &bw, &bh);
-            NSUInteger al = linear_align((uint32_t)x.pixelFormat);
-            size_t len = bpb > 0 ? (size_t)x.width * (size_t)bpb : 0, row = (len + al - 1) / al * al;
-            if (len > 0 && x.bufferOffset + len <= x.buffer.length) {
-                treg_t *r = &g_treg[id_];
-                MTLPixelFormat pf = t->dpf == NVN_DPF_FLOAT && pf_int32_to_float(x.pixelFormat) != MTLPixelFormatInvalid ? pf_int32_to_float(x.pixelFormat) : x.pixelFormat;
-                if (r->im && r->im_of == (__bridge void *)x && ((__bridge id<MTLTexture>)r->im).buffer != x.buffer && ((__bridge id<MTLTexture>)r->im).pixelFormat == pf) {
-                    memcpy(((__bridge id<MTLTexture>)r->im).buffer.contents, (const uint8_t *)x.buffer.contents + x.bufferOffset, len);
-                    *rid = r->im_rid; return r->im;
-                }
-                id<MTLBuffer> ab = [g_dev newBufferWithLength:row options:MTLResourceStorageModeShared];
-                if (ab) {
-                    memcpy(ab.contents, (const uint8_t *)x.buffer.contents + x.bufferOffset, len);
-                    MTLTextureDescriptor *d = [MTLTextureDescriptor textureBufferDescriptorWithPixelFormat:pf width:x.width resourceOptions:ab.resourceOptions usage:MTLTextureUsageShaderRead];
-                    id<MTLTexture> av = [ab newTextureWithDescriptor:d offset:0 bytesPerRow:row];
-                    if (av) {
-                        res_add(ab); res_add(av);
-                        treg_drop_im(r);
-                        r->im = (void *)CFBridgingRetain(av); r->im_of = (__bridge void *)x; r->im_rid = av.gpuResourceID._impl;
-                        *rid = r->im_rid; return r->im;
-                    }
-                }
-            }
-        }
         if (!g_pool_tb_unaligned++) MLOG("【红】 texture buffer at an unaligned pool offset (%lu, alignment %lu, texture ID %d) named in a pool table: the dummy (first case)",
                                          (unsigned long)x.bufferOffset, (unsigned long)linear_align((uint32_t)x.pixelFormat), id_);
         return NULL; }

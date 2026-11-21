@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 S2Arm contributors
 // 直连 Metal 后端贴图根修回归（nvn_mtl.m）：真实 Metal GPU + 公开 NVN 对象。期望值手写，不由被测实现推出：
-//   ① TARGET_BUFFER 默认带 MTLTextureUsageShaderWrite 且进 g_alias：已 Finalize 的同存储缓冲纹理复用原宿主对象、不触发 tex_upgrade
+//   ① TARGET_BUFFER（未设 IMAGE）默认带 MTLTextureUsageShaderWrite：绑进图像槽排升级（img_wr_note / img_wr_upgrade）后仍是同一对象（没被换）；改前无 ShaderWrite 会被换成升级后的新对象
 //   ② 同存储双 tex_cpu_content NvPkg（[alias] split）：GPU 写其中一个（Copy / Clear）后，另一个同存储对象读到新内容
 //   ③ 32-bit 整数 TextureBuffer 绑到 float 声明图像/纹理槽（img_fit / tex_float_fit）：零拷贝返回同缓冲的 R32Float 视图
-//   ④ 无绑定池表里的非对齐 TARGET_BUFFER（pool_fit）：返回对齐副本视图且逐元素等于源数据，不再回退全 0 dummy
 #include "../gfx/nvn/nvn_mtl.m"
 #include "../gfx/nvn/nvn_protos.h"
 #include <signal.h>
@@ -31,36 +30,29 @@ static void submit_cmd(void) {
     API(nvnQueueSubmitCommands)(&queue, 1, &h); API(nvnQueueFinish)(&queue); REQUIRE(!mtl_last_commit_error());
 }
 
-static void test_tbuf_usage_and_alias(void) {
+static void test_tbuf_shader_write(void) {
     size_t off = 2 << 20;
     uint32_t *p = (uint32_t *)(memory + off);
     for (int i = 0; i < 64; i++) p[i] = 0x100u + (uint32_t)i;
-
     NVNtextureBuilder b; API(nvnTextureBuilderSetDefaults)(&b); API(nvnTextureBuilderSetDevice)(&b, &device);
     API(nvnTextureBuilderSetTarget)(&b, NVN_TEXTURE_TARGET_BUFFER);
     API(nvnTextureBuilderSetSize1D)(&b, 64);
     API(nvnTextureBuilderSetFormat)(&b, NVN_FORMAT_R32UI);
     API(nvnTextureBuilderSetFlags)(&b, 0);   // 故意不设 NVN_TEXTURE_FLAGS_IMAGE
     API(nvnTextureBuilderSetStorage)(&b, &pool, (ptrdiff_t)off);
-
-    NVNtexture t1 = {0}, t2 = {0};
-    REQUIRE(API(nvnTextureInitialize)(&t1, &b));
-    tex_t s1 = *(const tex_t *)&t1;
-    API(nvnTextureFinalize)(&t1);   // 立即 finalize（同 Unreal 行为：登记池里保存的是 tex_t 副本）
-    REQUIRE(API(nvnTextureInitialize)(&t2, &b));
-    tex_t s2 = *(const tex_t *)&t2;
-    API(nvnTextureFinalize)(&t2);
-
-    uint64_t up0 = g_pfv_upgrades;
+    NVNtexture t = {0}; REQUIRE(API(nvnTextureInitialize)(&t, &b));
+    nvn_be_reg_tex(12, (const tex_t *)&t, NULL);
     nvn_be_sub_begin();
-    id<MTLTexture> m1 = tex_mtl(&s1);
-    id<MTLTexture> m2 = tex_mtl(&s2);
+    id<MTLTexture> m1 = tex_mtl((const tex_t *)&t);
+    os_unfair_lock_lock(&g_rmu); img_wr_note(12); os_unfair_lock_unlock(&g_rmu);
+    img_wr_upgrade();   // 图像槽写入前的升级：缺 ShaderWrite 的会被 tex_upgrade 换成新对象
+    id<MTLTexture> m2 = tex_mtl((const tex_t *)&t);
     uint64_t f = nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f, 10000000000ull));
     CHECK(m1 != nil && (m1.usage & MTLTextureUsageShaderWrite) != 0,
           "① TARGET_BUFFER R32UI（未设 IMAGE）默认带 ShaderWrite：usage=%#lx", (unsigned long)m1.usage);
-    CHECK(m1 != nil && m1 == m2 && g_pfv_upgrades == up0,
-          "① 已 Finalize 的同存储 TARGET_BUFFER 经 g_alias 复用同一宿主对象（m1=%p m2=%p upgrades=%llu）",
-          (__bridge void *)m1, (__bridge void *)m2, (unsigned long long)(g_pfv_upgrades - up0));
+    CHECK(m1 != nil && m1 == m2,
+          "① 排进图像写升级后仍是同一对象、没被换（m1=%p m2=%p）", (__bridge void *)m1, (__bridge void *)m2);
+    API(nvnTextureFinalize)(&t);
 }
 
 static void test_dual_nvpkg_alias_split(void) {
@@ -140,40 +132,6 @@ static void test_tbuf_int_as_float_fit(void) {
     API(nvnTextureFinalize)(&t);
 }
 
-static void test_pool_unaligned_tbuf(void) {
-    size_t off = (5 << 20) + 8;   // 8 字节偏移（低于 Mac 16 字节对齐）
-    float *fp = (float *)(memory + off);
-    for (int i = 0; i < 64; i++) fp[i] = 1000.0f + (float)i;
-
-    NVNtextureBuilder b; API(nvnTextureBuilderSetDefaults)(&b); API(nvnTextureBuilderSetDevice)(&b, &device);
-    API(nvnTextureBuilderSetTarget)(&b, NVN_TEXTURE_TARGET_BUFFER);
-    API(nvnTextureBuilderSetSize1D)(&b, 64);
-    API(nvnTextureBuilderSetFormat)(&b, NVN_FORMAT_R32F);
-    API(nvnTextureBuilderSetStorage)(&b, &pool, (ptrdiff_t)off);
-    NVNtexture t = {0}; REQUIRE(API(nvnTextureInitialize)(&t, &b));
-    nvn_be_reg_tex(11, (const tex_t *)&t, NULL);
-
-    nvn_be_sub_begin();
-    id<MTLTexture> mt = tex_mtl((const tex_t *)&t); REQUIRE(mt != nil && mt.bufferOffset % linear_align((uint32_t)mt.pixelFormat) != 0);
-    pool_tab fake = {.used = 1, .samp = 0, .dtt = (int)MTLTextureTypeTextureBuffer, .dpf = NVN_DPF_FLOAT, .rw = 0, .base = 0};
-    os_unfair_lock_lock(&g_rmu);
-    uint64_t rid = mt.gpuResourceID._impl;
-    void *res = pool_fit(&fake, 11, (__bridge void *)mt, &rid);
-    os_unfair_lock_unlock(&g_rmu);
-    uint64_t f = nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f, 10000000000ull));
-
-    id<MTLTexture> av = (__bridge id<MTLTexture>)res;
-    int bad = -1;
-    if (av && av.buffer && av.buffer.contents) {
-        const float *got = (const float *)((const uint8_t *)av.buffer.contents + av.bufferOffset);
-        for (int i = 0; i < 64; i++) if (got[i] != 1000.0f + (float)i) { bad = i; break; }
-    }
-    CHECK(av != nil && av.buffer != nil && av.bufferOffset % linear_align((uint32_t)av.pixelFormat) == 0 && bad < 0,
-          "④ pool_fit 非对齐 TARGET_BUFFER（off=%lu）：返回对齐副本视图且 64 元素全对（av=%p off=%lu bad=%d）",
-          (unsigned long)mt.bufferOffset, (__bridge void *)av, (unsigned long)av.bufferOffset, bad);
-    API(nvnTextureFinalize)(&t);
-}
-
 int main(void) { @autoreleasepool {
     setvbuf(stdout, NULL, _IOLBF, 0);
     struct sigaction sa = {0}; sa.sa_sigaction = fault; sa.sa_flags = SA_SIGINFO;
@@ -190,10 +148,9 @@ int main(void) { @autoreleasepool {
     REQUIRE(API(nvnCommandBufferInitialize)(&commands, &device));
     static uint8_t control[16384]; API(nvnCommandBufferAddControlMemory)(&commands, control, sizeof control);
 
-    test_tbuf_usage_and_alias();
+    test_tbuf_shader_write();
     test_dual_nvpkg_alias_split();
     test_tbuf_int_as_float_fit();
-    test_pool_unaligned_tbuf();
 
     API(nvnCommandBufferFinalize)(&commands); API(nvnQueueFinalize)(&queue);
     API(nvnMemoryPoolFinalize)(&pool); API(nvnDeviceFinalize)(&device); free(memory);
