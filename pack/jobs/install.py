@@ -734,7 +734,7 @@ def push_pack(c, ident, bid, pack, udid=None, docs=None, ctx=None, pack_root=Non
         m = re.search(r"iPhone 写不进资源包：[^\n]*", text)   # tools/push_pack.py probe：推之前写探针失败、手机确实锁着（#333）  # 非玩家句
         if m:
             raise Failure(m.group(0), code="device_locked") from e
-        m = re.search(r"iPhone 写不进资源包（[^\n]*", text)   # probe：写不进但手机没锁 / 判不了 = 连接问题（带原文），不冒充锁屏（11-13）  # 非玩家句
+        m = re.search(r"(?:iPhone|Apple TV) 写不进资源包（[^\n]*", text)   # probe：写不进但手机没锁 / 判不了 = 连接问题（带原文），不冒充锁屏（11-13）  # 非玩家句
         if m:
             raise Failure(m.group(0), code="resource_transfer_failed") from e
         from errors import tool_reason
