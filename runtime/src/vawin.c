@@ -218,7 +218,10 @@ uint64_t s2a_guest_mem_seen(void) {
     unsigned long long v = 0; int ok = fscanf(f, "%llu", &v) == 1 && v; fclose(f); return ok ? v : S2A_GUEST_SEEN_BAD;
 }
 // 每局记自己的需求、下一局起局按上一局结算（#1634，11-19 维护者：峰值只增不减 + 开着文件后备的局不记 → 一局异常就永远判开，玩家每局写闪存 16–45 GB）。
-//   本局需求 = 匿名内存的局：进程实占；开着文件后备的局：进程实占 + 窗口里在内存的客体页（文件页不计实占，换成匿名就都要算）——两种局都量得出「匿名要多少」。
+//   本局需求 = 匿名内存的局：进程实占；开着文件后备的局：进程实占 + 文件块里「在内存或已落在后备文件里」的客体页（s2a_guest_file_live；
+//     文件页不计实占，换成匿名就都要算）——两种局都量得出「匿名要多少」。
+//     #1842（11-21）：原先只加「窗口里在内存的页」（mincore），已写回文件、又被系统逐出的客体页两头都不算：iPhone 15 Pro Max 一款大作开着文件后备的局量出 4181 MB，
+//     把它上一局匿名实测的 5835 MB 往下改成 4181，下一局按 4181 + 512 ≤ 6140 判关，匿名内存进程实占 1.7–2.3 → 4.1 GB、3 分钟进热状态 2、30 → 26 帧
 //   心跳把本局最大需求与心跳次数写进同目录 mem_peak_run（「字节 心跳数 文件后备」）。下一局起局（s2a_guest_mem_settle）按上一局结算进 mem_peak_anon：
 //     ① 上一局在前台死掉、且需求 + 两份余量 > 剩余（像是撞了单进程上限）：记录取大、标「死过」——死过的记录只认够长的匿名局往下改，
 //        文件后备局在内存紧的机器上页被逐出、量小了，不许它往下改，免得「改小 → 匿名被杀 → 开 → 又改小」来回；
@@ -254,21 +257,14 @@ const char *s2a_guest_mem_settle(int died, uint64_t room, uint64_t margin) {
     snprintf(why, sizeof why, "%s（上一局需求 %llu MB、%llu 次心跳%s；记录 %llu → %llu MB）", how, need >> 20, beats, file ? "、文件后备" : "", (unsigned long long)(rec >> 20), (unsigned long long)(v >> 20));
     return why;
 }
-static uint64_t window_resident(void) {   // 窗口里在内存的页（文件后备局：这些就是换成匿名要算进实占的客体页）
-    if (!g_base || !g_size) return 0;
-    static unsigned char vec[4096]; size_t pg = (size_t)getpagesize(); uint64_t got = 0;
-    for (uint64_t a = g_base, e = g_base + g_size; a < e; a += sizeof vec * pg) {
-        size_t len = (size_t)MIN((uint64_t)sizeof vec * pg, e - a); if (mincore((void *)(uintptr_t)a, len, (char *)vec)) continue;
-        for (size_t i = 0; i < (len + pg - 1) / pg; i++) if (vec[i] & MINCORE_INCORE) got += pg;
-    }
-    return got;
-}
+// 文件后备局「换成匿名要多少」里的客体那份：文件块里在内存或已落在后备文件里的页（定义在块状态表后面，s2a_guest_file_live）
+uint64_t s2a_guest_file_live(void);
 // 心跳调（每 10 秒，后台串行队列）：footprint = 进程实占字节。记本局最大需求与心跳次数（见上）
 static void span_note(void);
 void s2a_guest_mem_note(uint64_t footprint) {
     span_note();   // 心跳顺带记本局跨度（#783）
     static uint64_t run_max, beats;
-    uint64_t need = footprint + (g_gfd >= 0 ? window_resident() : 0);
+    uint64_t need = footprint + (g_gfd >= 0 ? s2a_guest_file_live() : 0);
     if (need > run_max) run_max = need;
     beats++;
     char p[1100], line[96]; if (!run_peak_path(p, sizeof p)) return;
@@ -790,6 +786,41 @@ int s2a_guest_in_file(uint64_t a, uint64_t n) {
 void s2a_guest_backing_sum(uint64_t sum[4]) {
     sum[0] = sum[1] = sum[2] = sum[3] = 0;
     for (uint64_t i = 0; i < g_gchunk_n; i++) { uint64_t cl, ch; gchunk_span(i, &cl, &ch); sum[gc_get(i) & 3] += ch - cl; }
+}
+// 文件块里在内存或已落在后备文件里的客体字节（文件后备局的心跳记需求用，s2a_guest_mem_note）：逐个文件块，mincore 取在内存的页，
+//   后备文件里已落块的段（苹果 F_LOG2PHYS_EXT，别处 SEEK_DATA / SEEK_HOLE；还页会打洞，落块 = 游戏此刻还占着的客体页），两者取并集按页计。
+//   匿名块、挖区、未定块不算（匿名的已在进程实占里）。文件页不计进程实占：Mac 实测写脏 512 MB 共享文件页实占不变，写回后文件落块 512 MB
+uint64_t s2a_guest_file_live(void) {
+    if (g_gfd < 0 || !g_base || !g_size) return 0;
+    size_t pg = (size_t)getpagesize(); uint64_t got = 0;
+    static unsigned char vec[GCHUNK / 4096];   // 一块的页数上限（页 ≥ 4 KB）；心跳在后台串行队列里调，不并发
+    for (uint64_t i = 0, nch = g_gchunk ? g_gchunk_n : (g_size + GCHUNK - 1) / GCHUNK; i < nch; i++) {
+        if (g_gchunk && !g_gwhole && gc_get(i) != GC_FILE) continue;
+        uint64_t cl, ch; gchunk_span(i, &cl, &ch);
+        size_t np = (size_t)((ch - cl + pg - 1) / pg);
+        if (mincore((void *)(uintptr_t)cl, (size_t)(ch - cl), (char *)vec)) memset(vec, 0, np);
+        for (size_t k = 0; k < np; k++) vec[k] &= MINCORE_INCORE;
+        off_t lo = (off_t)(cl - g_base), hi = (off_t)(ch - g_base), d = lo;
+        while (d < hi) {   // 后备文件里已落块的段 → 记成「在」
+#ifdef F_LOG2PHYS_EXT
+            // APFS 上 SEEK_DATA 不分空洞（写过一次就整个文件报成数据，11-21 本机实测），逐段问逻辑 → 物理：设备偏移 -1 = 空洞（没落块 / 已打洞），段长精确
+            struct log2phys l; memset(&l, 0, sizeof l); l.l2p_contigbytes = hi - d; l.l2p_devoffset = d;
+            if (fcntl(g_gfd, F_LOG2PHYS_EXT, &l) || l.l2p_contigbytes <= 0) break;
+            off_t h = d + l.l2p_contigbytes; if (h > hi) h = hi;
+            if (l.l2p_devoffset < 0) { d = h; continue; }
+#else
+            d = lseek(g_gfd, d, SEEK_DATA); if (d < 0 || d >= hi) break;
+            off_t h = lseek(g_gfd, d, SEEK_HOLE); if (h < 0 || h > hi) h = hi;
+#endif
+            for (size_t k = (size_t)((d - lo) / (off_t)pg), e = (size_t)((h - lo + (off_t)pg - 1) / (off_t)pg); k < e && k < np; k++) vec[k] = 1;
+            d = h;
+        }
+        for (size_t k = 0; k < np; k++) {
+            uint64_t a = cl + k * pg;
+            if (vec[k] && !(g_anon_hi > g_anon_lo && a >= g_anon_lo && a < g_anon_hi)) got += pg;   // 挖区是匿名，已在实占里
+        }
+    }
+    return got;
 }
 void s2a_guest_backing_log(void) {
     if (g_gfd < 0 || !g_gchunk) return;
