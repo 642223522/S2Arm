@@ -50,7 +50,9 @@ def use_devcert(c, distribution, bundle=SHELL_BID, appid=f"{TEAM}.*"):
     (d / "state.json").write_text(json.dumps(dict(active=True, certSha1="aa", bundleId=bundle, teamId=TEAM, teamName="T")))   # 同 11-20 前导入的：没有分发标记
     prof = plistlib.dumps({"ApplicationIdentifierPrefix": [TEAM], "TeamIdentifier": [TEAM], "Entitlements": {"application-identifier": appid, "get-task-allow": not distribution}})
     (d / "profile.mobileprovision").write_bytes(prof)
-    return patch.object(devcert, "stored", lambda c_: (d / "cert.p12", prof, "pw"))
+    # 多张证书（#487）后描述文件经 _profile_bytes 读（本作业那张，不要密码）：同 stored 一起替身，不靠根下旧版副本迁移
+    #   （同一用例里先后写两份没有 UUID 的描述文件，根下副本按「同证书同 UUID」只迁一次，第二份进不了条目）
+    return patch.multiple(devcert, stored=lambda c_, eid=None: (d / "cert.p12", prof, "pw"), _profile_bytes=lambda c_: prof)
 
 
 class Layout(unittest.TestCase):

@@ -80,6 +80,9 @@ s2a_gate_step bash "$android_dir/tools/nvn_vk_frame_log_test.sh"
 s2a_gate_step bash "$android_dir/tests/nvk_shown_timing_test.sh"
 # 设备 / 实例扩展查询：枚举失败（能力未知、报红）与确实不支持分开；VK_INCOMPLETE 重取。
 s2a_gate_step bash "$android_dir/tests/vk_dev_ext_test.sh"
+# 整台设备能力形态档（#1749 只看能力）：建设备 / caps JSON / 几何着色器路径 / 数组层夹取缺省在 Adreno、Mali、保守三档下各跑一遍，
+#   两台真机档另与 devices/*.json 逐项比；六种「能力判断改坏」的负对照必须红在对应档（宿主 cc + 假驱动，约 5 秒）
+s2a_gate_step bash "$android_dir/tests/caps_shape/run.sh"
 # 调试开关读数的线程内缓存（宿主，确定性）：命中 / 过期 / 缺省 / 名字比较 / 名字上限，7 个负对照。
 s2a_gate_step bash "$android_dir/tests/nvk_flag_cache_test.sh"
 # 自定义边框色就近取内置三档（宿主，确定性）：没有 VK_EXT_custom_border_color 时浮点 / 整数各取最近一档。
