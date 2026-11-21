@@ -10766,5 +10766,21 @@
  {
   "source": "苹果的登录服务器拒收了这次登录请求（回了「服务暂不可用」，还没到核对账号密码那一步），不是这台电脑的网络、Apple ID 或密码的问题，换网络、换 DNS 也没用。多半是苹果又调整了对第三方签名工具的规则：把 S2Arm 更新到最新版后再登录；最新版仍这样，点「复制错误摘要」发给我们。手机、已装的 App 和存档都没动。",
   "en": "Apple's sign-in server refused this sign-in request (it answered \"service unavailable\" before checking your account). This is not a problem with this computer's network, your Apple ID or your password, and switching networks or DNS will not help. Apple most likely changed its rules for third-party signing tools: update S2Arm to the latest version and sign in again. If the latest version still shows this, click \"Copy error summary\" and send it to us. Your phone, installed apps and saves were not touched."
+ },
+ {
+  "source": "这款没装在这台设备上：「更新这款」只更新原来装过它的设备，这次没有推。",
+  "en": "This game is not installed on this device: \"Update this game\" only updates devices that already have it, so nothing was sent."
+ },
+ {
+  "source": "要把这款装到这台设备，用「推到 iPhone」（在装机页选好这台）；只想更新原来那台，就连上原来装过这款的那台再点「更新这款」。",
+  "en": "To install this game on this device, use \"Push to iPhone\" (pick this device on the install page). To update only the original one, connect the device that already has this game and click \"Update this game\" again."
+ },
+ {
+  "source": "这款没装在这台设备上",
+  "en": "This game is not on this device"
+ },
+ {
+  "source": "「更新这款」只更新原来装过这款的设备，不会把它装到新的设备上。",
+  "en": "\"Update this game\" only updates devices that already have this game; it never installs it on a new device."
  }
 ]
