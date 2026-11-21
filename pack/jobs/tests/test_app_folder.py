@@ -47,7 +47,7 @@ class Readme(unittest.TestCase):
         t = app_folder.readme_text("zh", app="Game One", ipa="Game One v1.ipa", gid=G1, s2arm="Game One.s2arm", img="Game One.img")
         for head in ("【这是什么】", "【怎么装】", "【到期与续签】", "【存档在哪】", "【怎么整体删除】", "—— English summary ——"):
             self.assertIn(head, t)
-        self.assertIn("Game One.s2arm和Game One.img", t, "导入那步点名两个文件")
+        self.assertIn("Game One.s2arm 和 Game One.img", t, "导入那步点名两个文件")
         self.assertIn(f".programs/{G1}", t, "点名不在文件夹里的程序备份")
         self.assertIn("用启动器删除最干净", t)
         self.assertNotIn("访达", t, "访达直装没核实，不写")
@@ -115,6 +115,7 @@ class ExportApp(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in self.gdir.iterdir()), ["Game One v1.2.0.ipa", "Game One.img", "Game One.s2arm", "README.txt"])
         self.assertEqual((out["layout"], out["exported"], out["signedWith"]["mode"], out["signMode"]), ("standalone", True, "none", "appleId"))
         self.assertEqual(len(out["nextSteps"]), 3)
+        self.assertEqual(out["resourceBytes"], 1, "资源本体按实际大小报（硬链接界面注「不另占空间」）")
         self.assertFalse([p for p in Path(self.c.library).iterdir() if p.name.startswith(".container-")], "临时容器清掉")
 
 
@@ -125,6 +126,17 @@ class Hints(unittest.TestCase):
         for mode, facts, want in (("external", {}, "external"), ("appleId", {}, "appleId"), ("devCert", {"wildcard": True}, "wildcard"), ("devCert", {"wildcard": False}, None)):
             with patch.object(install, "chosen_sign_mode", lambda c, m=mode: m), patch.object(devcert, "profile_facts", lambda c, f=facts: f):
                 self.assertEqual(install.standalone_hint(c), want, mode)
+
+    def test_layout_recommend_by_debug_permission(self):
+        # #1760：不带调试权限（分发 / 企业证书）推荐独立 App；开发证书、Apple ID、自签推荐通用 S2Arm；都没有 = 识别不了
+        import devcert
+        c = object()
+        cases = (("external", False, None, ("shell", "external")), ("devCert", True, None, ("standalone", "distribution")),
+                 ("devCert", False, None, ("shell", "devCertDebug")), ("appleId", False, {"account": "a"}, ("shell", "appleId")), ("appleId", False, None, (None, "unknown")))
+        for mode, dist, acct, want in cases:
+            with patch.object(install, "chosen_sign_mode", lambda c, m=mode: m), patch.object(install, "distribution_cert", lambda c, d=dist: d), \
+                    patch.object(install, "win_install_mod", lambda c: None), patch.object(install, "plume_account", lambda c, W, a=acct: a):
+                self.assertEqual(install.layout_recommend(c), want, (mode, dist, acct))
 
     def test_missing_game_folder_says_so(self):
         import layout

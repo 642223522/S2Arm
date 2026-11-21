@@ -265,22 +265,21 @@ struct PhoneJobPanel: View {
         }
         let files: [(String, String)] = a.exported
             ? [((a.ipaPath as NSString).lastPathComponent, size(a.ipaBytes)), ((a.s2armPath as NSString).lastPathComponent, size(a.s2armBytes))]
-                + (a.resourceLinked && !a.resourcePath.isEmpty ? [((a.resourcePath as NSString).lastPathComponent, "")] : [])
+                + (a.resourceLinked && !a.resourcePath.isEmpty ? [((a.resourcePath as NSString).lastPathComponent,
+                    [size(a.resourceBytes), t("app.export.noExtraSpace")].filter { !$0.isEmpty }.joined(separator: " · "))] : [])
             : []
         return VStack(alignment: .leading, spacing: 22) {
-            headline(seal: AnyView(SuccessSeal()),
-                     title: a.exported ? t("app.export.title").replacingOccurrences(of: "{0}", with: a.name) : t("app.done.title").replacingOccurrences(of: "{0}", with: device),
-                     subtitle: a.exported ? t("app.export.folder").replacingOccurrences(of: "{0}", with: (a.gameFolder as NSString).abbreviatingWithTildeInPath) : "")
-            if !stats.isEmpty {
-                HStack(alignment: .top, spacing: 44) {
-                    ForEach(Array(stats.enumerated()), id: \.offset) { _, s in
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(s.0).font(.manrope(14, .semibold)).foregroundStyle(.secondary)
-                            Text(s.1).font(.manrope(22, .heavy)).tracking(-0.4).lineLimit(2).fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
+            // 大标题用短句（装机窗只有 600 宽）：装到哪台 / 哪款游戏放副标题，各项事实逐行「名称 + 值」，长值换行不截断
+            headline(seal: AnyView(SuccessSeal()), title: t(a.exported ? "phone.headline.export" : "phone.headline.install"),
+                     subtitle: a.exported ? t("app.export.title").replacingOccurrences(of: "{0}", with: a.name) : t("phone.done.install").replacingOccurrences(of: "{0}", with: device))
+            if a.exported {
+                Button { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: a.ipaPath)]) } label: {
+                    Text(t("app.export.folder").replacingOccurrences(of: "{0}", with: (a.gameFolder as NSString).abbreviatingWithTildeInPath))
+                        .font(.manrope(14)).foregroundStyle(.secondary).underline().fixedSize(horizontal: false, vertical: true).multilineTextAlignment(.leading)
                 }
+                .buttonStyle(.plain).help(a.gameFolder).accessibilityIdentifier("app.export.folder")
             }
+            ForEach(Array(stats.enumerated()), id: \.offset) { _, s in PhoneJobFact(label: s.0, text: s.1) }
             if !files.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(t("app.export.files")).font(.manrope(14, .semibold)).foregroundStyle(.secondary)

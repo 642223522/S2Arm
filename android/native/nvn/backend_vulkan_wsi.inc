@@ -28,9 +28,26 @@ struct nvn_gpu_surface_s {
     uint32_t held_sem;
     uint64_t presents;
     struct wsi_timing timing;
+    uint64_t fbp_t0, fbp_last[3]; uint32_t fbp_frames;   // 反馈快照池 5 秒读数（wsi_fbpool_report）：窗口起点、上次读到的累计值、窗口内帧数
     VkSurfaceTransformFlagBitsKHR built_transform;   // 建链时表面方向；有效尺寸在 extent（见 wsi_suboptimal_stale）
     uint32_t subopt_n;
 };
+
+// 反馈快照池读数（缺省常开、只计数）：跟「分时（实际上屏）」同一个 5 秒节拍，紧挨着打一行，正式包 logcat 也能直接看到每帧新建几张快照图。
+//   新建 = 每帧还在 vkAllocateMemory 建整图的快照数（池子起作用后稳态应接近 0）；命中 = 从池里取；淘汰 = 超上限销毁。只由上屏线程调用。
+static void wsi_fbpool_report(struct nvn_gpu_surface_s *s, uint64_t now) {
+    s->fbp_frames++;
+    if (!s->fbp_t0) { s->fbp_t0 = now; uint64_t st[5]; nvn_vk_fbpool_stat(st); memcpy(s->fbp_last, st, sizeof s->fbp_last); s->fbp_frames = 0; return; }
+    if (now < s->fbp_t0 || now - s->fbp_t0 < 5000000000ull) return;
+    uint64_t st[5]; nvn_vk_fbpool_stat(st);
+    const double fr = s->fbp_frames ? (double)s->fbp_frames : 1.0;
+    char b[256];
+    snprintf(b, sizeof b, "反馈快照池（每帧，近 %u 帧）：新建 %.2f 张、池命中 %.2f 张、淘汰 %.2f 张；池里现有 %llu 张 %llu MB（上限 %llu MB）",
+             s->fbp_frames, (double)(st[0] - s->fbp_last[0]) / fr, (double)(st[1] - s->fbp_last[1]) / fr, (double)(st[2] - s->fbp_last[2]) / fr,
+             (unsigned long long)st[3], (unsigned long long)(st[4] >> 20), (unsigned long long)(g_fbpool_cap >> 20));
+    nvn_plat_log(NVN_PLAT_LOG_INFO, "present", b);
+    memcpy(s->fbp_last, st, sizeof s->fbp_last); s->fbp_t0 = now; s->fbp_frames = 0;
+}
 
 // 建链与次优检查必须用同一套几何：UINT32_MAX 是「由窗口定尺寸」，不能拿哨兵值判 resize。
 // 固定 currentExtent 是 consumer 的首选尺寸；Android 的窗口查询可能已是 buffer geometry，不能反过来覆盖它。
@@ -448,7 +465,7 @@ nvn_gpu_rc nvn_gpu_present(nvn_gpu_surface s, const nvn_gpu_drawable *dr, const 
         char b[400]; snprintf(b, sizeof b, "对象读数（每帧，近 300 帧）：新建渲染通道 %.1f、帧缓冲 %.1f、命令池 %.1f、描述符池 %.1f；分配描述符集 %.1f 次、写描述符 %.1f 次；遮挡查询 %.1f 个；新建视图 %.1f 个；取窗口图 %.1f 毫秒",
             v[OC_RP] / 300.0, v[OC_FB] / 300.0, v[OC_CPOOL] / 300.0, v[OC_DPOOL] / 300.0, v[OC_DALLOC] / 300.0, v[OC_DWRITE] / 300.0, v[OC_QUERY] / 300.0, v[OC_VIEW] / 300.0, (double)__atomic_exchange_n(&g_acq_ns, 0, __ATOMIC_RELAXED) / 300.0 / 1e6);
         nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", b);
-        { static uint64_t last_feedback[3], last_snap[2];
+        { static uint64_t last_feedback[4], last_snap[2];
           uint64_t ro = diag_delta(&g_feedback_stats[0], &last_feedback[0]);
           uint64_t cp = diag_delta(&g_feedback_stats[1], &last_feedback[1]);
           uint64_t split = diag_delta(&g_feedback_stats[2], &last_feedback[2]);
@@ -456,6 +473,10 @@ nvn_gpu_rc nvn_gpu_present(nvn_gpu_surface s, const nvn_gpu_drawable *dr, const 
           uint64_t sreuse = diag_delta(&g_feedback_snap[1], &last_snap[1]);
           snprintf(b, sizeof b, "只读反馈（每帧，近 300 帧，录制计数）：只读采样 %.2f 笔、快照拷贝 %.2f 次、重开 %.2f 次、快照图新建 %.2f / 复用 %.2f；nvk_fb_read=%d none_ext=%d",
               ro / 300.0, cp / 300.0, split / 300.0, snew / 300.0, sreuse / 300.0, nvn_plat_flag("nvk_fb_read", 0), g.dev->load_store_op_none_enabled);
+          nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", b);
+          uint64_t pskip = diag_delta(&g_feedback_stats[3], &last_feedback[3]);
+          snprintf(b, sizeof b, "整池数组读数（每帧，近 300 帧，录制计数）：整池数组与写着的附件重叠而免拷 %.2f 笔；nvk_pool_fb=%d",
+              pskip / 300.0, nvn_plat_flag("nvk_pool_fb", 0));
           nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", b);
         }
         // 留存读数（#1118）：视图表按存储认视图后，存储在共用表里留着时名下的视图与帧缓冲也留着；看它们在一局里是否有界（取这一刻的现存数，不是窗口平均）
@@ -614,6 +635,7 @@ nvn_gpu_rc nvn_gpu_present(nvn_gpu_surface s, const nvn_gpu_drawable *dr, const 
         wsi_timing_poll(&s->timing, g.d, s->swapchain);
         tnow = now_ns();
         wsi_timing_report(&s->timing, tnow);
+        wsi_fbpool_report(s, tnow);
         // 每上屏一帧调一次共用 ap_host 的上屏出口（游玩时间、直连安全网帧证据、停帧看门、HUD 与帧计数；同 iOS dm_guest_frame_tick、
         //   旧层 mtl_vk_shim.c mtl_present 的口径）。新旧两层不会编进同一个包（LinkSources.cmake 两张清单互斥），一帧只调一次；
         //   ap_host.c 只在游戏目标里，独立直连探针 / vk 宿主用例没链就跳过

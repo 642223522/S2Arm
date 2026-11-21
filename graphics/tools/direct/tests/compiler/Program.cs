@@ -2644,10 +2644,51 @@ internal static unsafe class Program
             DirectProgram progCs3 = DirectProgram.Parse(docCs3.RootElement.GetProperty("program"), "program", p3);
             DirectStage csStage3 = progCs3.StageOf("cs");
             var fcs3 = new DirectGpuAccessor(p3, progCs3, csStage3, 0, new DirectAllocator(p3), new List<DirectQuery>());
+            // 片 7：计算阶段同一份合同——取到同字事实后绑 slot = 贴图字、constSampler = 池下标，不填 samp_slot / uboSlot；
+            //   数组 / 越界下标仍具名报未接、什么都不填；游戏 UBO 里的类型 3 句柄（片 3 的形态）计算侧仍不接（下面 compute4）
             string compute3 = Resolve3(fcs3, csStage3, "cs", ShaderStage.Compute, Const3(90), slots3, 1, out DirectBinding boundCs3);
-            Check(compute3 == "UNSUPPORTED_PROGRAM cs: texture handle from cbuf slot 65538 is not implemented (constant sampler, compute)" + Tail3(90, 257) &&
-                  boundCs3.Slot == -1 && boundCs3.ConstSampler == -1,
-                "a compute-stage constant-sampler handle is rejected by name and binds nothing: " + compute3);
+            Check(compute3 == "bound" && boundCs3.Slot == 90 && boundCs3.ConstSampler == 257 && boundCs3.SamplerSlot == -1 && boundCs3.UboSlot == -1,
+                "a compute-stage type-3 handle binds texture word 90 with constant sampler 257, no samp_slot / uboSlot: " + compute3 +
+                " slot=" + boundCs3.Slot + " const=" + boundCs3.ConstSampler + " samp=" + boundCs3.SamplerSlot + " ubo=" + boundCs3.UboSlot);
+            foreach (var (what, sampler) in new[] { ("sampler index 0 is a real index, not 'none'", 0), ("sampler index above 255", 261), ("the largest sampler index", 4095) })
+            {
+                string rc3 = Resolve3(fcs3, csStage3, "cs", ShaderStage.Compute, Const3(90, sampler), slots3, 1, out DirectBinding bc3);
+                Check(rc3 == "bound" && bc3.Slot == 90 && bc3.ConstSampler == sampler && bc3.SamplerSlot == -1, "compute type-3 " + what + ": " + rc3 + " const=" + bc3.ConstSampler);
+            }
+            string computeOver3 = Resolve3(fcs3, csStage3, "cs", ShaderStage.Compute, Const3(90, 4096), slots3, 1, out DirectBinding boundCsOver3);
+            Check(computeOver3 == "UNSUPPORTED_PROGRAM cs: texture handle from cbuf slot 65538 is not implemented (constant sampler index above 4095)" + Tail3(90, 4096) &&
+                  boundCsOver3.Slot == -1 && boundCsOver3.ConstSampler == -1,
+                "a compute-stage sampler index the 12-bit handle field cannot hold is rejected by name and binds nothing: " + computeOver3);
+            foreach (var (what, count, length) in new[] { ("binding count above 1", 2, 0), ("descriptor array length above 1 alone", 1, 2) })
+            {
+                string ca3 = Resolve3(fcs3, csStage3, "cs", ShaderStage.Compute, Const3(90), slots3, count, out DirectBinding bCa3, length);
+                Check(ca3 == "UNSUPPORTED_PROGRAM cs: texture handle from cbuf slot 65538 is not implemented (constant sampler array)" + Tail3(90, 257, count, length) &&
+                      bCa3.Slot == -1 && bCa3.ConstSampler == -1,
+                    "a compute-stage constant-sampler handle with " + what + " is rejected by name and binds nothing: " + ca3);
+            }
+            // 真实翻译器（计算阶段）：LDC c2[0x168] 取贴图字、LOP32I.OR 拼上立即数采样器号、TEX.B 取样、STS 把结果留在共享内存（不留就被当死代码删了）；
+            //   结果：cs 贴图绑定 slot = 贴图字、constSampler = 采样器号、没有 samp_slot，schema 按 v2；立即数 0 同图形阶段被折成普通 c2 字（v1）
+            string RealCs3(string facts, uint sampler = 257)
+            {
+                byte[] shader = ComputeOps(Ldc(6, 0x168, 2), Lop32iOr(4, 6, sampler << 20), Fadd32i(2, 0.5f), Fadd32i(3, 0.5f), TexBindless2D(0, 2, 4), Sts(0, 0x10));
+                try
+                {
+                    using JsonDocument r = ParseResult(DirectShaderCompiler.Compile(RequestJson(profile, "compute", 2, 1, "const-sampler-cs-real", cs: shader, textureFacts: facts, csCbUse: 4, sharedBytes: 4096)));
+                    string Field(JsonElement b, string name) => b.TryGetProperty(name, out JsonElement f) ? f.GetInt32().ToString() : "-";
+                    return r.RootElement.GetProperty("schema").GetString() + " " + string.Join(";", r.RootElement.GetProperty("content").GetProperty("bindings").EnumerateArray()
+                        .Where(b => b.GetProperty("kind").GetString() == "texture").Select(b => Field(b, "slot") + "/" + Field(b, "constSampler") + "/" + Field(b, "samp_slot")));
+                }
+                catch (DirectCompileException error) { return error.Code + " " + error.Message; }
+            }
+            string csFacts3 = "[" + Fact3("cs", 90, "2d", false, true, true) + "]";
+            string realCs3 = RealCs3(csFacts3);
+            Check(realCs3 == "s2a-direct-program-v2 90/257/-", "real translator (compute): a constant-sampler handle compiles to texture word 90 + constSampler 257 (v2, no samp_slot): " + realCs3);
+            string realCs3b = RealCs3(csFacts3, 4095);
+            Check(realCs3b == "s2a-direct-program-v2 90/4095/-", "real translator (compute): another immediate sampler index only changes constSampler: " + realCs3b);
+            string realCs3z = RealCs3(csFacts3, 0);
+            Check(realCs3z == "s2a-direct-program-v1 90/-/-", "real translator (compute): an immediate sampler index 0 is folded into a plain c2 word and never becomes a constSampler: " + realCs3z);
+            string realCs3n = RealCs3("[" + Fact3("cs", 96, "2d", false, true, true) + "]");
+            Check(realCs3n.StartsWith("MISSING_FACT", StringComparison.Ordinal), "real translator (compute): a type-3 handle whose word has no cs fact stays MISSING_FACT: " + realCs3n);
             string noFact3 = Bound3(96, 257, out DirectBinding boundNo3);
             //   没有同字事实：走 c2 通用拒绝（#1488 的基础消息：handle= / arrayLength= / count= / request=<sha>，#1601 的尾巴补 kind / word / word2 / type / cbuf / key）；
             //   sha 随请求内容变，所以前后两段分开比，不写死 sha

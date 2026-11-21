@@ -575,6 +575,19 @@ static int compute_storage(struct s2a_jv b, struct nvn_vk_compute_storage *s) {
     }
     return -1;
 }
+/* #1594 片 7：计算阶段的类型 3 句柄（贴图字在 c2 分离贴图表，采样器池下标是着色器里的立即数 constSampler）。
+ * 合同与图形片 2 同一份：v2、单个贴图、slot = c2 分离贴图表的偶数字 90..344、constSampler 0..4095（csamp 是它的值），
+ * 且不带 samp_slot / uboSlot / uboOffset / uboHandle / sampler（贴图字来源要唯一、采样器来源要唯一）。
+ * 返回 0 = 合同成立（*imm = 池下标）；-1 = 形态不接，调用方具名拒——包括游戏 UBO 来源（计算侧仍不接）。 */
+static int compute_const_sampler(struct s2a_jv b, struct s2a_jv csamp, int v2, int kind, uint32_t *imm) {
+    struct s2a_jv v;
+    uint32_t slot;
+    if (!v2 || kind != 2 || compute_u32(csamp, imm) || *imm > 4095u) return -1;
+    if (s2a_jv_obj_find(b, "slot", &v) || compute_u32(v, &slot) || slot < 90 || slot >= 346 || (slot & 1u)) return -1;
+    if (!s2a_jv_obj_find(b, "samp_slot", &v) || !s2a_jv_obj_find(b, "uboSlot", &v) || !s2a_jv_obj_find(b, "uboOffset", &v) ||
+        !s2a_jv_obj_find(b, "uboHandle", &v) || !s2a_jv_obj_find(b, "sampler", &v)) return -1;
+    return 0;
+}
 /* 整池数组绑定（pool = "texture" / "sampler"）：整个 NVN 贴图池 / 采样器池当一个描述符数组（编译器 ResolvePoolSlots，
  * 着色器按运行时下标取句柄、追不到槽时的回退）。合同与图形阶段同一份（nvn_vk_program_parse 的 pool 分支）：只认 v2 的贴图绑定、
  * 不带任何槽位来源，count 是池长 2..0xfffe（布局项 count 是 16 位，还要一项表尾 dummy）；计算侧另要求 stage 是 cs，
@@ -699,11 +712,16 @@ int nvn_vk_program_parse_compute(const uint8_t *bytes, size_t length,
             out->binding_count++;
             continue;
         }
-        // #1594：类型 3 句柄（贴图字在 c2 分离贴图表、采样器池下标是着色器里的立即数）计算侧没接——编译器对 cs 已具名报未接，
-        //   这里是第二道：带 constSampler 的计算绑定不能被当成「没有 samp_slot = 采样器取同字高位」绑成错的采样器。
+        // #1594 片 7：类型 3 句柄（贴图字在 c2 分离贴图表、采样器池下标是着色器里的立即数）。计算侧接 c2 这一种形态，合同同图形片 2
+        //   （compute_const_sampler）；别的形态——游戏 UBO 来源、越界、奇字、与 samp_slot 并存、不是贴图——一律拒，
+        //   带 constSampler 的计算绑定不能被当成「没有 samp_slot = 采样器取同字高位」绑成错的采样器。
         //   放在 slot 等检查之前，原因才不会被别的拒绝盖住。
+        uint32_t csamp_v = 0; int has_csamp = 0;
         { struct s2a_jv csamp;
-          if (!s2a_jv_obj_find(b, "constSampler", &csamp)) CS_FAIL("compute constant sampler source is not implemented"); }
+          if (!s2a_jv_obj_find(b, "constSampler", &csamp)) {
+              if (compute_const_sampler(b, csamp, v2, dst->kind, &csamp_v)) CS_FAIL("compute constant sampler source is invalid");
+              has_csamp = 1;
+          } }
         {   // 每线程组字节数只属于 spill；spill 必须带、且 4 字节对齐、不超过客体上限 48 KiB；整个程序最多一个
             struct s2a_jv per; int has_per = !s2a_jv_obj_find(b, "bytesPerGroup", &per);
             if (dst->kind == 4) {
@@ -755,6 +773,9 @@ int nvn_vk_program_parse_compute(const uint8_t *bytes, size_t length,
             if (!v2 || dst->kind != 2 || compute_u32(samp, &sv) || sv >= 128 ||
                 dst->slot < 90 || dst->slot >= 346 || (dst->slot & 1)) CS_FAIL("compute separate sampler source invalid");
             dst->samp_slot = (int16_t)sv;
+        }
+        if (has_csamp) {   // 采样器 = 着色器里的立即数池下标；samp_slot 仍为 -1，不进 c2 采样器表（回放：采样器号 = 贴图字高 12 位 | 池下标，再加池起点）
+            dst->samp_src = FD_SAMP_ID; dst->samp_val = (uint16_t)csamp_v; dst->samp_pool = 1;
         }
         if (dst->kind == 0 && !dst->is_support) {
             // NVN cbuf 语义（与图形侧 nvn_vk_first_draw.c 同一套）：0 = c0/support、1 = c1 常量段、

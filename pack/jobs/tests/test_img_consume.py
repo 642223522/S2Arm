@@ -70,6 +70,7 @@ class ImgConsume(JobCase):
         # D-6DEQ：Windows 写 game.img 写到 20 GB 报「[Errno 28] No space left on device」，原先一律 package_failed，玩家看到英文原句。
         #   期望：img.log 里有确凿盘满字样 → disk_full、上屏是盘满话术、原文进 internal；别的报错 → 仍 package_failed、原文照旧在上屏句里
         for line, code, shown in (("【红】[Errno 28] No space left on device", "disk_full", "磁盘空间不够"),
+                                  ("【红】[Errno 13] Permission denied", "permission_denied", "出包未完成"),   # D-X5JB：原因句同其他判出码的；下一步按码给（Windows：关掉占着的程序、等杀毒扫完）
                                   ("【红】写标准 RomFS 段失败：坏了", "package_failed", "写单一 IMG（game.img）失败：【红】写标准 RomFS 段失败：坏了")):
             with self.subTest(code=code):
                 c, out = self._work()
