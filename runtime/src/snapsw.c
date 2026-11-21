@@ -2,6 +2,10 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#include <CoreFoundation/CoreFoundation.h>
+#endif
 // 即时存档开关的唯一定义处：图形层（弱引用）、服务层（P/Invoke，再在启动时转给音频两处）都读这里，不各自读环境变量。
 //   能存 = 苹果端缺省开、S2A_SNAP_MODE=0 关（恢复局也能存：回到那一刻之后还能再存）；恢复中 = 现在设着 S2A_SNAP_RESTORE（现读）；s2a_snap_mode = 两者之一。
 //   记日志（请求日志 / 句柄日志）= 能存且（不是恢复局，或恢复已完成）：恢复局里重放不记，恢复完成时把快照里的两份日志整份接过来当开头、序号接着编，之后照常记
@@ -9,8 +13,20 @@ static int g_snap_sw = -1;   // 位 0 能存、位 1 恢复中
 static _Atomic int g_snap_live = -1;
 // 能存：苹果端缺省开（0.6.0：玩家要真能用快照，设置里能关），S2A_SNAP_MODE=0 关（iPhone App / Mac 启动器作业层按玩家设置写）；
 //   安卓不编快照引擎，恒关（设了 1 也不开）
+// iOS 上玩家在设置里关快照（键 S2ASnapshot = NO）：原先只由 ios/settings.m 在开局时（host_main → s2a_ios_load_graphics_settings）写 S2A_SNAP_MODE=0，
+//   而这个开关在进程启动的构造期（vawin.c vawin_boot：命令记录区 / 虚拟池区占不占、占多大）就第一次读并缓存了，玩家关了也照开、地址照占（11-21 #f0490a 读码）。
+//   启动环境没给 S2A_SNAP_MODE 时直接读设置（同 settings.m 的口径：显式存过且为假才关；启动环境 > 用户设置）
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+static int snap_pref_off(void) {
+    Boolean valid = false; Boolean on = CFPreferencesGetAppBooleanValue(CFSTR("S2ASnapshot"), kCFPreferencesCurrentApplication, &valid);
+    return valid && !on;
+}
+#else
+static int snap_pref_off(void) { return 0; }
+#endif
 static int snap_save_on(const char *m) {
 #if defined(__APPLE__)
+    if (!(m && *m)) return !snap_pref_off();
     return !(m && *m == '0');
 #else
     (void)m; return 0;
