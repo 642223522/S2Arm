@@ -47,7 +47,7 @@ class Readme(unittest.TestCase):
         t = app_folder.readme_text("zh", app="Game One", ipa="Game One v1.ipa", gid=G1, s2arm="Game One.s2arm", img="Game One.img")
         for head in ("【这是什么】", "【怎么装】", "【到期与续签】", "【存档在哪】", "【怎么整体删除】", "—— English summary ——"):
             self.assertIn(head, t)
-        self.assertIn("Game One.s2arm和Game One.img", t, "导入那步点名两个文件")
+        self.assertIn("Game One.s2arm 和 Game One.img", t, "导入那步点名两个文件")
         self.assertIn(f".programs/{G1}", t, "点名不在文件夹里的程序备份")
         self.assertIn("用启动器删除最干净", t)
         self.assertNotIn("访达", t, "访达直装没核实，不写")
