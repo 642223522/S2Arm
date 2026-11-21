@@ -374,6 +374,9 @@ public struct InstallModeInfo: Equatable, Sendable {
     public var distribution: Bool = false
     /// 选独立 App 时按签名方式给的一句提示的码（作业层 install.standalone_hint：appleId / wildcard / external；nil = 不提示）→ 文案 install.layout.hint.<码>
     public var standaloneHint: String? = nil
+    /// 按签名带不带调试权限推荐的出法（作业层 install.layout_recommend）：standalone / shell / nil（识别不了）；依据 distribution / devCertDebug / appleId / external / unknown
+    public var recommend: String? = nil
+    public var recommendWhy: String = "unknown"
     public init(exportAvailable: Bool = false, signMode: String = "appleId", signChoice: String = "appleId") {
         self.exportAvailable = exportAvailable; self.signMode = signMode; self.signChoice = signChoice
     }
@@ -386,6 +389,8 @@ public struct InstallModeInfo: Equatable, Sendable {
         layoutGames = (choice["games"] as? [String: String] ?? [:]).reduce(into: [:]) { $0[$1.key.uppercased()] = $1.value }
         distribution = r["distribution"] as? Bool ?? false
         standaloneHint = r["standaloneHint"] as? String
+        recommend = r["recommend"] as? String
+        recommendWhy = r["recommendWhy"] as? String ?? "unknown"
     }
     /// 这款按哪种出法推：按款选过的 > 玩家选过的缺省 > 自动（作业层 install.chosen_layout 同序）
     public func layout(for gameId: String) -> String { layoutGames[gameId.uppercased()] ?? layout }

@@ -47,11 +47,20 @@ import XCTest
         try XCTSkipUnless(ProcessInfo.processInfo.environment["S2A_STANDALONE_SHOT"] != nil, "没给 S2A_STANDALONE_SHOT，不出截图")
     }
 
-    func testLayoutRowWithHint() throws {
-        let m = model()
-        m.installMode = InstallModeInfo(result: ["signMode": "appleId", "layout": "shell", "layoutChoice": ["games": [gid: "standalone"]], "standaloneHint": "appleId"])
-        let rep = try shot(VStack(alignment: .leading) { InstallLayoutRow(model: m, gameId: gid) }, "1_出法行", height: 200)
-        XCTAssertGreaterThan(rep.pixelsWide, 0)
+    /// 出法卡片三种状态（0.6.2）：推荐的被选中 / 不推荐的被选中（橙字）/ 识别不了签名方式（灰字、不挂推荐标）
+    func testLayoutCards() throws {
+        let states: [(String, [String: Any])] = [
+            ("1a_出法卡片_推荐被选中", ["signMode": "devcert", "layout": "standalone", "distribution": true, "recommend": "standalone", "recommendWhy": "distribution"]),
+            ("1b_出法卡片_不推荐被选中", ["signMode": "devcert", "layout": "standalone", "distribution": true, "recommend": "standalone", "recommendWhy": "distribution",
+                                     "layoutChoice": ["games": [gid: "shell"]]]),
+            ("1c_出法卡片_识别不了", ["signMode": "appleId", "layout": "shell", "recommendWhy": "unknown"]),
+        ]
+        for (name, r) in states {
+            let m = model()
+            m.installMode = InstallModeInfo(result: r)
+            let rep = try shot(VStack(alignment: .leading) { InstallLayoutRow(model: m, gameId: gid) }, name, height: 300)
+            XCTAssertGreaterThan(rep.pixelsWide, 0)
+        }
     }
 
     func testSuccessInstalled() throws {

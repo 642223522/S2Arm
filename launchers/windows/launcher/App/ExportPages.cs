@@ -987,7 +987,7 @@ public sealed partial class EnvironmentWindow
         }
         panel.Children.Add(row);
         if (IosAfterPack != "export") panel.Children.Add(InstallModeLine());
-        panel.Children.Add(Card(LayoutWithHint(game.Id), 14));   // 装到手机 / 导出两种去向都按这款的出法走（0.6.4）：出法行 + 独立 App 时的提示句
+        panel.Children.Add(Card(LayoutCards(game.Id), 14));   // 装到手机 / 导出两种去向都按这款的出法走（0.6.4）：出法两张卡 + 卡片下方一行提示
         return panel;
     }
 
@@ -1688,7 +1688,7 @@ public sealed partial class EnvironmentWindow
         body.Children.Add(Muted(T("install.container_note"), 14));
         body.Children.Add(Muted(T("install.legacy_note"), 14));
         EnsureInstallMode();
-        body.Children.Add(Card(LayoutWithHint(game.Id), 14));   // 这款推成通用 S2Arm 里的一款还是独立 App（0.6.3）：缺省跟随设置，单款可改；独立 App 时下面一句提示（0.6.4）
+        body.Children.Add(Card(LayoutCards(game.Id), 14));   // 这款推成通用 S2Arm 里的一款还是独立 App（0.6.3）：缺省跟随设置，单款可改；卡片下方一行提示（0.6.4）
         if (File.Exists(BundledImpactor)) body.Children.Add(Muted(T("install.third_party")));   // 随包第三方工具要写明（11-07 维护者 随包下发）
 
         var list = new StackPanel { Spacing = 12 };
