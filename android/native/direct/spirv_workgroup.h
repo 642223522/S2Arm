@@ -125,7 +125,8 @@ static inline const char *s2a_spv_wg_type_size(const unsigned char *p, size_t n,
     uint32_t first = s2a_spv_wg_word(p, def), op = first & 65535u, len = first >> 16;
     switch (op) {
     case SpvOpTypeInt: case SpvOpTypeFloat: {
-        if (len != (op == SpvOpTypeInt ? 4u : 3u)) return "compute shared: malformed scalar type";
+        // OpTypeInt = 4 字（含符号位）；OpTypeFloat = 3 字，SPIR-V 1.6 起可带可选的浮点编码操作数成 4 字
+        if (op == SpvOpTypeInt ? len != 4u : (len != 3u && len != 4u)) return "compute shared: malformed scalar type";
         uint32_t bits = s2a_spv_wg_word(p, def + 2);
         if (!bits || (bits & 7u)) return "compute shared: non-byte scalar width";
         *out = bits / 8; return NULL; }
