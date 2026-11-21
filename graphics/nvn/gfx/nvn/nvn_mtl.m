@@ -7010,6 +7010,41 @@ static void layer_clears(id pd0) {
         if (ds) break;
     }
 }
+// A clear folded into a pass's load action reaches only the pass's render area, the smallest of its attachments, while NVN clears the whole target. An attachment larger than the pass
+//   that is cleared there is cleared in a pass of its own first, and the pass loads it (ported from nxnative 9c1e4494, MIT). 01007960049A0000 starts its frames with a 32x32 or 256x256
+//   colour target beside its 1280x720 depth target and clears the depth there: only that corner was cleared, everything else failed the depth test against earlier frames'
+//   depth, and the screen was speckled with noise blocks (#1330)
+static uint64_t g_bigc_n;   // attachments larger than their pass cleared in a pass of their own (size_clears)
+static void size_clears(id pd0) {
+    MTLRenderPassDescriptor *pd = (MTLRenderPassDescriptor *)pd0;   // the attachment properties both descriptor classes share (see layer_clears)
+    NSUInteger pw, ph; pass_dims(pd0, (NSUInteger)R.rt.n, &pw, &ph);   // pd0 stays id (no Metal 4 type named in new code, tools/mtl4_ratchet.py)
+    for (int i = 0; i <= R.rt.n && i <= 8; i++) {
+        int ds = i == R.rt.n || i == 8;
+        MTLRenderPassAttachmentDescriptor *a = !ds ? pd.colorAttachments[i] : pd.depthAttachment.texture ? pd.depthAttachment : pd.stencilAttachment;
+        int cd = ds && pd.depthAttachment.texture && pd.depthAttachment.loadAction == MTLLoadActionClear, cs = ds && pd.stencilAttachment.texture && pd.stencilAttachment.loadAction == MTLLoadActionClear;
+        if (!a.texture || bcrt_is(a.texture) || (ds ? !cd && !cs : a.loadAction != MTLLoadActionClear)) { if (ds) break; continue; }
+        tex_extent e = tex_extent_at(NULL, a.texture, a.level, a.slice);
+        if (e.physical.width <= pw && e.physical.height <= ph) { if (ds) break; continue; }
+        id cp0 = pass_desc(); MTLRenderPassDescriptor *cp = (MTLRenderPassDescriptor *)cp0;
+        cp.renderTargetArrayLength = pd.renderTargetArrayLength;   // a layered pass: the same layers
+        if (!ds) { MTLRenderPassColorAttachmentDescriptor *c = cp.colorAttachments[0], *o = pd.colorAttachments[i];
+            c.texture = o.texture; c.level = o.level; c.slice = o.slice; c.depthPlane = o.depthPlane; c.clearColor = o.clearColor; c.loadAction = MTLLoadActionClear; c.storeAction = MTLStoreActionStore;
+            o.loadAction = MTLLoadActionLoad; }
+        else {
+            if (cd) { MTLRenderPassDepthAttachmentDescriptor *d = cp.depthAttachment, *o = pd.depthAttachment;
+                d.texture = o.texture; d.level = o.level; d.slice = o.slice; d.clearDepth = o.clearDepth; d.loadAction = MTLLoadActionClear; d.storeAction = MTLStoreActionStore; o.loadAction = MTLLoadActionLoad; }
+            if (cs) { MTLRenderPassStencilAttachmentDescriptor *st = cp.stencilAttachment, *o = pd.stencilAttachment;
+                st.texture = o.texture; st.level = o.level; st.slice = o.slice; st.clearStencil = o.clearStencil; st.loadAction = MTLLoadActionClear; st.storeAction = MTLStoreActionStore; o.loadAction = MTLLoadActionLoad; }
+        }
+        if (!g_bigc_n++) MLOG("clear of an attachment larger than its pass: cleared whole in a pass of its own (first case pass %llu %s%d, %lux%lu, the pass covers %lux%lu)",
+                              g_stat_pass + 1, ds ? "d" : "c", ds ? 0 : i, (unsigned long)e.physical.width, (unsigned long)e.physical.height, (unsigned long)pw, (unsigned long)ph);
+        PD("C %llu %s%d cleared in a pass of its own (%lux%lu, the pass covers %lux%lu)", g_stat_pass + 1, ds ? "d" : "c", ds ? 0 : i,
+           (unsigned long)e.physical.width, (unsigned long)e.physical.height, (unsigned long)pw, (unsigned long)ph);
+        if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
+        ser_gate(); enc_r_end(enc_r_begin(cp0));
+        if (ds) break;
+    }
+}
 // mode 1 (clear_only): a pass opened only to land pending clears, attaching only the attachments that have clears; mode 2: the lookahead proves this pass does not use depth-stencil, so depth is not attached.
 // clear_only: a pass opened only to land pending clears, attaching only the attachments that have clears - the other attachments are not touched by this pass, and attaching them costs a pointless load and store on TBDR
 // (Mac character select screen: the color-clear pass drags along a 400x225 depth load and store)
@@ -7217,6 +7252,7 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
         }
     }
     if (!g_rp_layered) layer_clears(pd);   // a clear of a target view with several layers, in a pass that is not layered: every layer, in a pass of its own (see layer_clears)
+    size_clears(pd);   // a clear of an attachment larger than the pass: the whole attachment, in a pass of its own (see size_clears)
     // The attachments this pass writes (gpw_mark: their guest bytes go stale); the attached level, the attached layer (a layered pass: every layer from it)
     for (int i = 0; i < R.rt.n && i < 8; i++) if (R.rt.color[i] && pd.colorAttachments[i].texture) gpw_mark_view(R.rt.color[i], &R.rt.cview[i], R.rt.has_cview[i], g_rp_layered);
     if (R.rt.depth && (pd.depthAttachment.texture || pd.stencilAttachment.texture)) gpw_mark_view(R.rt.depth, &R.rt.dview, R.rt.has_dview, g_rp_layered);
