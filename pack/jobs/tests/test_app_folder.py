@@ -105,5 +105,23 @@ class ExportApp(unittest.TestCase):
         self.assertFalse([p for p in Path(self.c.library).iterdir() if p.name.startswith(".container-")], "临时容器清掉")
 
 
+class Hints(unittest.TestCase):
+    def test_standalone_hint_by_sign_mode(self):
+        import devcert
+        c = object()
+        for mode, facts, want in (("external", {}, "external"), ("appleId", {}, "appleId"), ("devCert", {"wildcard": True}, "wildcard"), ("devCert", {"wildcard": False}, None)):
+            with patch.object(install, "chosen_sign_mode", lambda c, m=mode: m), patch.object(devcert, "profile_facts", lambda c, f=facts: f):
+                self.assertEqual(install.standalone_hint(c), want, mode)
+
+    def test_missing_game_folder_says_so(self):
+        import layout
+        with tempfile.TemporaryDirectory() as d:
+            c = jobcase.fake_context(Path(d), r={})
+            with patch.object(layout, "state", lambda c, g: ("missing", Path(d))):
+                with self.assertRaises(install.Failure) as e:
+                    install.ios_pack(c, G1)
+            self.assertEqual(e.exception.code, "game_folder_missing")
+
+
 if __name__ == "__main__":
     unittest.main()
