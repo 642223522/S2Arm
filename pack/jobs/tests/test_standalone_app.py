@@ -244,6 +244,13 @@ class ShellOwner(unittest.TestCase):
             with patch.object(install, "devpush_client", lambda c, udid, bid, w: cl), patch.object(install, "main_executable", lambda c: "S2Arm"):
                 return install.s2arm_owner(c, "UDID1", rec)
 
+    def test_bid_shape_covers_unsigned_export(self):
+        """导出未签名包的包名（每款 io.s2arm.games.app.<号>）和侧载工具接「.团队号」后的样子都认成独立 App；通用壳的包名（含换过的 .s2）不认"""
+        for b in ("io.s2arm.games.app.0100000000010000", "io.s2arm.games.app.0100000000010000.abcde12345", APP1, "com.x.s2arm.0100000000010000"):
+            self.assertTrue(install.STANDALONE_BID.fullmatch(b), b)
+        for b in (SHELL_BID, SHELL_BID + ".s2", "io.s2arm.games", "io.s2arm.games.abcde12345.mysuffix"):
+            self.assertFalse(install.STANDALONE_BID.fullmatch(b), b)
+
     def test_standalone_apps_not_counted(self):
         rec = dict(shellId="S1", bundleId=SHELL_BID)
         self.assertEqual(self.owner(rec), ("choose", None), "显式包名的独立 App 记录里没有：认不出，照旧要选")

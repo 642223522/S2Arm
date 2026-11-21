@@ -2919,8 +2919,9 @@ def installed_s2arm(c, ph):
     return installed_s2arm_on(c, ph.udid, layout.load_device(c, ph.key))
 
 
-# 独立 App 的包名形状（app_bundle_id、devcert.bundle_id 前缀通配那支）：别的电脑装的、这台设备记录里没有的也认得出，不算通用壳
-STANDALONE_BID = re.compile(r"io\.s2arm\.games\.[a-z0-9]+\.[0-9a-f]{16}|.+\.s2arm\.[0-9a-f]{16}")
+# 独立 App 的包名形状（app_bundle_id、devcert.bundle_id 前缀通配那支、导出未签名包的 ipa.standalone_bundle）：别的电脑装的、这台设备记录里没有的也认得出，不算通用壳。
+#   导出包交 AltStore / SideStore 签时它们在包名后再接「.团队号」，带这一段也认
+STANDALONE_BID = re.compile(r"(?:io\.s2arm\.games\.[a-z0-9]+\.[0-9a-f]{16}|.+\.s2arm\.[0-9a-f]{16})(?:\.[a-z0-9]+)?")
 
 
 def standalone_bids(rec):
