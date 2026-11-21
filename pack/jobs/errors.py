@@ -396,6 +396,7 @@ PLAYER_REASON = {
     "package_failed": "出包未完成。",
     "input_missing": "找不到游戏文件：选中的游戏文件已不在原处。",
     "windows_mandatory_aslr": "Windows 的强制 ASLR 开着：出包工具起不了子进程。",
+    "app_control_blocked": "被 Windows 拦下：Windows 的应用控制或杀毒软件没让 S2Arm 自带的工具运行。",
 }
 
 
@@ -407,6 +408,11 @@ def player_reason(code):
 # 只收工具 / 系统原样会打的字样，不从散文猜。
 LOG_CAUSES = (
     (r"WinError 206|filename or extension is too long|文件名或扩展名太长", "windows_path_too_long"),  # 非玩家句
+    # 起我方自带工具被拒（D-GVDA / #1912：Windows 0.6.3，出包「准备资源」起随包预编的 Yaz0 编码器 Binaries\Prepare\codecs\yaz0enc-*.exe 报 WinError 5；
+    #   同一台机器建 RomFS 目录链接（软链、junction）也报 WinError 5，普通拷文件照常）：安全软件按行为拦下，同 4551 / 1260 / 225 / 226（winproc.APP_CONTROL_BLOCKED）
+    #   归 app_control_blocked，玩家拿到「去安全中心 / 杀毒软件放行安装文件夹」那句，而不是笼统的「出包未完成」。编排层子进程里出的错只剩文字，按回溯原文认：
+    #   起进程（subprocess _execute_child）被拒，或建目录链接（roots._junction）被拒
+    (r"in _execute_child\b[\s\S]{0,400}?\[WinError (?:5|4551|1260|225|226)\]|in _junction\b[\s\S]{0,400}?\[WinError 5\]", "app_control_blocked"),  # 非玩家句
     # 解包读原件时路径不在（pack/nx_unpack 打的分类行；诊断#24fb13：原先按阶段落成 content_invalid「文件没下完整」，原件其实是挪走了 / 盘没连上）
     (r"【原因 source_missing】", "input_missing"),  # 非玩家句
     # 随包 bash 起子进程刚建就退（#1762：MSYS 原文「dofork: child -1 - forked process … died unexpectedly, retry 0, exit code 0xC0000142」，连试 6 次）：
