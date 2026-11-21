@@ -925,7 +925,18 @@ static void sc_loop(uint64_t arg) {
     atomic_fetch_add(&g_sc_done, 1);
     uint64_t e[31] = {0}; svc_thread(0x0A, e);
 }
+// ---- ㉜ 调度诊断玩家局缺省关（#1842）：判定纯函数 显式 > 开发设施 > 关；关着时有人等核、看门狗醒着也不采样、不做持核长跑探测（不挂起线程）；
+//      开着照旧采样。A 持核 0 纯自旋、B 同核等核（同 ⑮ 的搭法），期望按构造：关 300 ms 采样 +0、长跑读数全不变；开后采样 ≥ 5 次 ----
+static _Atomic int g_sd_ready, g_sd_stop;
+static __attribute__((noinline)) void sd_spin(uint64_t arg) {
+    uint64_t r[31] = {0}; svc_thread(0x25, r);
+    if (!arg) atomic_store(&g_sd_ready, 1);
+    while (!atomic_load(&g_sd_stop)) __asm__ volatile("" ::: "memory");
+    uint64_t e[31] = {0}; svc_thread(0x0A, e);
+}
+int s2a_sched_diag_decide(const char *env, int dev); extern int g_sched_diag; void s2a_test_hostcore(uint64_t *, uint64_t *, uint64_t *, uint64_t *, uint64_t *, uint64_t *);
 int main(void) {
+    setenv("S2A_SCHED_DIAG", "1", 1);   // 调度计数 / 宿主侧持核长跑的用例（⑮ 等）要它：玩家局缺省关（#1842），本单测显式开；缺省关的行为由 ㉜ 单独测
     if (getenv("S2A_TEST_FOREIGN_TSD")) return foreign_tsd_before_init();
     // Isolate the deliberately occupied host key from the normal guest setup.
     { fflush(stdout); pid_t pid = fork();
@@ -1273,6 +1284,29 @@ int main(void) {
         CHECK(wait_flag(&g_lz3_done, WAIT_LONG), "㉚ 解冻后线程没走完");
         CHECK(atomic_load(&g_lz3_core) >= 0 && atomic_load(&g_lz3_core) <= 2, "㉚ 解冻后应取到核：→ %d", atomic_load(&g_lz3_core));
         g_lazy_core = 0;   // 收尾恢复旧行为（后面的用例不依赖惰性；本条用例之后也没有 block_* 调用者）
+    }
+    {   // ㉜ 调度诊断玩家局缺省关（见 sd_spin 处说明）
+        g_case = "㉜ 调度诊断缺省关";
+        CHECK(s2a_sched_diag_decide(NULL, 0) == 0 && s2a_sched_diag_decide("", 0) == 0, "㉜ 不设、开发设施关 → 关");
+        CHECK(s2a_sched_diag_decide(NULL, 1) == 1, "㉜ 不设、开发设施开 → 开");
+        CHECK(s2a_sched_diag_decide("1", 0) == 1 && s2a_sched_diag_decide("0", 1) == 0, "㉜ 显式最优先：=1 开、=0 关");
+        void s2a_core_leave(void);
+        int saved = g_sched_diag; g_sched_diag = 0;
+        atomic_store(&g_sd_ready, 0); atomic_store(&g_sd_stop, 0);
+        spawn(sd_spin, 0, NULL); s2a_core_leave();
+        CHECK(wait_flag(&g_sd_ready, WAIT_LONG), "㉜ A 没起来");
+        spawn(sd_spin, 1, NULL); s2a_core_leave();   // B 同核等核：看门狗醒着（有等核者）
+        usleep(50000);
+        uint64_t n0 = sched_samples(), h0[6], h1[6]; s2a_test_hostcore(&h0[0], &h0[1], &h0[2], &h0[3], &h0[4], &h0[5]);
+        usleep(300000);
+        uint64_t n1 = sched_samples(); s2a_test_hostcore(&h1[0], &h1[1], &h1[2], &h1[3], &h1[4], &h1[5]);
+        int same = 1; for (int i = 0; i < 6; i++) same &= h0[i] == h1[i];
+        CHECK(n1 == n0 && same, "㉜ 关：有人等核 300 ms，采样应 +0、持核长跑读数不变 → 采样 +%llu、长跑%s", (unsigned long long)(n1 - n0), same ? "不变" : "变了");
+        g_sched_diag = 1;
+        uint64_t n2 = n1; for (int k = 0; k < WAIT_LONG && n2 - n1 < 5; k++) { usleep(1000); n2 = sched_samples(); }
+        CHECK(n2 - n1 >= 5, "㉜ 开：采样应恢复（≥ 5 次）→ +%llu", (unsigned long long)(n2 - n1));
+        atomic_store(&g_sd_stop, 1); usleep(20000);
+        g_sched_diag = saved;
     }
     {   // ㉛ 宿主侧可借（见 sc_loop 处说明）
         g_case = "㉛ 宿主侧可借：免锁拿回 / 被取走 / 同核互斥";
