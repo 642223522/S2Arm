@@ -604,6 +604,7 @@
 
 /* 0.6.0 快照：游戏中菜单 */
 "vpad.snap.save" = "存下這一刻";
+"vpad.snap.offAddress" = "這台裝置的位址空間不夠同時放下這款遊戲和快照，這款在這台裝置上不能存快照；遊戲照常玩。";
 "vpad.snap.restore" = "回到上次存下的這一刻";
 "vpad.snap.saving" = "正在存下這一刻…";
 "vpad.snap.saved" = "已存下這一刻";

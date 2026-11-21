@@ -598,6 +598,7 @@
 
 /* 0.6.0 快照：游戏中菜单 */
 "vpad.snap.save" = "Sauvegarder cet instant";
+"vpad.snap.offAddress" = "Cet appareil n'a pas assez d'espace d'adressage pour ce jeu et les instantanés à la fois : les instantanés sont désactivés pour ce jeu ici. Le jeu fonctionne normalement.";
 "vpad.snap.restore" = "Revenir à l’instant sauvegardé";
 "vpad.snap.saving" = "Sauvegarde de cet instant…";
 "vpad.snap.saved" = "Instant sauvegardé";

@@ -604,6 +604,7 @@
 
 /* 0.6.0 快照：游戏中菜单 */
 "vpad.snap.save" = "Save this moment";
+"vpad.snap.offAddress" = "This device doesn't have enough address space for both this game and snapshots, so snapshots are off for this game here. The game plays as usual.";
 "vpad.snap.restore" = "Go back to the saved moment";
 "vpad.snap.saving" = "Saving this moment…";
 "vpad.snap.saved" = "Moment saved";
