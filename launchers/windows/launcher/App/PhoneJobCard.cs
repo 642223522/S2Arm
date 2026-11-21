@@ -17,6 +17,8 @@ namespace S2Arm.Launcher;
 internal sealed class PhoneJobTrack
 {
     public string Kind = "install";
+    /// <summary>「详细过程」玩家点开了没有：卡片随进度事件重建（RefreshLive），展开状态记在这里，重建照旧展开（D-237B：点开就自动收起）</summary>
+    public bool DetailsOpen;
     public readonly List<string> Stages = [];
     public readonly List<string> Log = [];
     public double? Overall;
@@ -50,7 +52,7 @@ internal sealed class PhoneJobTrack
         Kind = kind; Device = device; Stages.Clear(); Log.Clear(); Overall = null; Step = Steps = null;
         Started = DateTime.UtcNow; Ended = null; Suggestion = ""; PackBytes = null; PackFiles = null; Skipped = []; Version = "";
         ExportFolder = ""; ExportGames = 0; ExportBytes = null; ExportFresh = []; ExportReused = 0; ExportUnwritten = []; SGrade = [];
-        Legacy = []; LegacyElsewhere = []; LegacyDevice = "";
+        Legacy = []; LegacyElsewhere = []; LegacyDevice = ""; DetailsOpen = false;
     }
 
     /// <summary>作业事件：阶段进步骤列表、整体进度只认作业层 overall（只增不减）、说明行进过程记录</summary>
@@ -329,23 +331,24 @@ public sealed partial class EnvironmentWindow
             panel.Children.Add(ReportHintText());
         }
         var log = string.Join("\n", tr.Log.Select(B)) + (diagnostics.Length > 0 && state is not ("running" or "succeeded") ? "\n\n" + diagnostics : "");
-        if (log.Trim().Length > 0) panel.Children.Add(DetailsToggle(T("phone.details"), log.Trim()));
+        if (log.Trim().Length > 0) panel.Children.Add(DetailsToggle(T("phone.details"), log.Trim(), tr));
         return panel;
     }
 
     /// <summary>「详细过程」：自己画的折叠头，箭头是矢量路径。原注释说「Expander 的箭头是字体字形、显示成厂字」是误判：
     /// Fluent Expander 的箭头本来就是矢量路径，那次看到的怪形是截图截在箭头旋转动画中途（11-14 体验梳理查实）。自绘这一个保留：样式与本卡片一致、没有动画</summary>
-    private Control DetailsToggle(string header, string text)
+    private Control DetailsToggle(string header, string text, PhoneJobTrack tr)
     {
-        var body = new TextBox { Text = text, IsReadOnly = true, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MaxHeight = 260, IsVisible = false };
+        var body = new TextBox { Text = text, IsReadOnly = true, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MaxHeight = 260, IsVisible = tr.DetailsOpen };
         var chevron = new Avalonia.Controls.Shapes.Path { Data = Geometry.Parse("M 0,0 L 5,5 L 0,10"), Stroke = Brush.Parse("#A8A6A1"), StrokeThickness = 1.6,
             Width = 7, Height = 11, VerticalAlignment = VerticalAlignment.Center, RenderTransformOrigin = RelativePoint.Center };
+        if (tr.DetailsOpen) chevron.RenderTransform = new RotateTransform(90);
         var head = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         head.Children.Add(chevron);
         head.Children.Add(Muted(header, 14));
         var toggle = new Button { Content = head, Background = Brushes.Transparent, Padding = new Thickness(0, 4), BorderThickness = new Thickness(0) };
         AutomationId(toggle, "phone.details");
-        toggle.Click += (_, _) => { body.IsVisible = !body.IsVisible; chevron.RenderTransform = body.IsVisible ? new RotateTransform(90) : null; };
+        toggle.Click += (_, _) => { tr.DetailsOpen = body.IsVisible = !body.IsVisible; chevron.RenderTransform = body.IsVisible ? new RotateTransform(90) : null; };
         var stack = new StackPanel { Spacing = 8 };
         stack.Children.Add(toggle); stack.Children.Add(body);
         return stack;
