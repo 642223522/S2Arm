@@ -111,7 +111,7 @@ def shader_hint(c, gid, ios_count=None):
     got = shader_misses(c, gid)
     n_ios = got["ios"] if ios_count is None else ios_count
     ios = layout.program_info(c, gid) or {}
-    if n_ios > 0 and ios and built_older(c, ios.get("builtBy")):
+    if n_ios > 0 and ios and built_older(c, ios.get("builtBy")) and ios_direct_lib(c, gid):   # 同 ios_lib_reasons：没有直连库的款重编不了，不标
         return True
     return ios_count is None and got["mac"] > 0 and built_older(c, _mac_built(c, gid))
 
@@ -181,10 +181,35 @@ def _game_hint(c, gid, rid, want):
         why.append("rewriter")
     if want and ios.get("hostAbi", 1) != want["hostAbi"]:
         why.append("hostAbi")
-    if want and ios.get("dmshChain", LEGACY_CHAIN) != want["dmshChain"]:
+    why += [r for r in ios_lib_reasons(c, gid, ios, want) if r != "shaderMiss"]   # shaderMiss 由 shader_hint 给（同一判据）
+    return why
+
+
+def ios_direct_lib(c, gid):
+    """这款的 iPhone 资源包里有没有直连着色器库（shaders/direct/b-<链>）：只走 GL 等别的路的款没有，谈不上「库旧了」"""
+    import sgrade_bf   # 局部导入：sgrade_bf 也会用到本模块
+    try:
+        return sgrade_bf.lib_dir(Path(layout.ios_pack(c, gid)) / "shaders/direct") is not None
+    except (Failure, OSError):
+        return False
+
+
+def ios_lib_reasons(c, gid, ios=None, want=None):
+    """「iPhone 着色器库要不要重编」的唯一定义——「建议更新」的 shader / libGen / shaderMiss（iPhone 那份）与「更新这款」/ 推送前的重编
+    （sgrade_bf.rechain_ios）都用这一处：判定列出的，更新一定会做；更新不做的，这里不算。
+    11-21 走查红：只走 GL 的款（杀戮尖塔）没有直连库、记录里也没有 libGen，判定照旧标 libGen「建议更新」，更新因「不是直连包」跳过 → 点完还在、死循环"""
+    ios = layout.program_info(c, gid) if ios is None else ios
+    if want is None:
+        want = engine_compat(c) or {}
+    if not ios or not want or not ios_direct_lib(c, gid):
+        return []
+    why = []
+    if ios.get("dmshChain", LEGACY_CHAIN) != want["dmshChain"]:
         why.append("shader")
     if lib_stale(ios.get("libGen")):
         why.append("libGen")
+    if shader_misses(c, gid)["ios"] > 0 and built_older(c, ios.get("builtBy")):
+        why.append("shaderMiss")
     return why
 
 
