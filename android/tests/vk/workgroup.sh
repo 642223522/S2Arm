@@ -27,6 +27,10 @@ compile axis_z 1 1 64
 compile spec_boundary 16 8 1 -DSIZE_SPEC=1
 compile spec_product 16 16 1 -DSIZE_SPEC=1
 compile shared8k 1 1 1 -DSHARED_WORDS=2048
+if [ "$mode" != --negative ]; then
+    compile shared32k 1 1 1 -DSHARED_WORDS=8192
+    compile shared45kb 1 1 1 -DSHARED_WORDS=11264
+fi
 inc=(-I "$repo/build/c883-ndk")
 for d in android/tests/vkhost graphics/nvn graphics/nvn/replay graphics/nvn/gfx/nvn \
          graphics/nvn/gfx/nvn/include android/native android/native/nvn android/native/direct runtime/include; do
@@ -83,4 +87,11 @@ if [ "$rc" -ne 0 ]; then
 fi
 grep -q 'workgroup cases=24 failures=0' "$out/run.log"
 echo '【绿】compute workgroup: 24 cases, real compile/dispatch, validation 0 errors'
+# Keep the expected VUID in the per-case log; the full-suite wrapper rejects VUIDs in stdout.
+if ! timeout 120 "$binary" "$out/shaders" --shared-vvl > "$out/shared-vvl.log" 2>&1; then
+    cat "$out/shared-vvl.log"
+    echo '【红】真实 Vulkan Workgroup 上限正/负控失败' >&2
+    exit 1
+fi
+echo '【绿】真实 Vulkan Workgroup 上限 32768 B：等上限建管线零报错，45056 B 命中指定校验、建管线被拦'
 bash "$0" --negative

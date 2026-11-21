@@ -361,15 +361,10 @@ def rechain_ios(c, gid):
     # 库内容代数（host_update.LIB_GEN）旧了也重编：链号没变、库里却缺了设备要用的内容（0.5.x 出的库不带客体输入，同链号）
     # 手机上现场翻译过包里没有的着色器、库又是旧版启动器出的（「建议更新」原因 shaderMiss）也重编：同链号同代数，本版出包能多覆盖；
     #   原先只认链号 / 代数，玩家点「更新这款」推完提示照旧（#1756）。重编后记本版 builtBy，这条原因随之消掉
-    if not want:
-        return "skip"
-    if side.get("dmshChain", host_update.LEGACY_CHAIN) == want["dmshChain"] and not host_update.lib_stale(side.get("libGen")) \
-            and not (host_update.shader_misses(c, gid)["ios"] > 0 and host_update.built_older(c, side.get("builtBy"))):
-        return "skip"
+    if not host_update.ios_lib_reasons(c, gid, side, want):
+        return "skip"   # 「建议更新」不会为这款的 iPhone 着色器库标原因（链号 / 代数都对、没漏、或不是直连包）：同一个判据，判定和更新不各算各的
     pack = Path(layout.ios_pack(c, gid))
     direct = pack / "shaders/direct"
-    if lib_dir(direct) is None:
-        return "skip"   # 不是直连包
     with tempfile.TemporaryDirectory(dir=_scratch(c, gid)) as tmp:
         src, where = ios_inputs(c, gid, Path(tmp))
         if src is None:

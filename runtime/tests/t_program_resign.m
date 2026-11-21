@@ -31,6 +31,7 @@ static int prov_same(char *t, size_t tn, char *a, size_t an) { snprintf(t, tn, "
 static NSData *g_p12;
 static int lc_ok(NSData **p, NSString **w) { if (p) *p = g_p12; if (w) *w = @"t"; return 1; }
 static int lc_nocert(NSData **p, NSString **w) { (void)p; (void)w; return -1; }
+static int lc_garbled(NSData **p, NSString **w) { if (p) *p = [@"not a p12" dataUsingEncoding:NSUTF8StringEncoding]; if (w) *w = @"t"; return 1; }   // LiveContainer 存了证书、系统解不开（#502 的 -26275）
 static NSString *sha_file(NSString *p) { NSData *d = [NSData dataWithContentsOfFile:p]; uint8_t h[32]; CC_SHA256(d.bytes, (CC_LONG)d.length, h);
     NSMutableString *s = [NSMutableString string]; for (int i = 0; i < 32; i++) [s appendFormat:@"%02x", h[i]]; return s; }
 static NSString *sha1_file(NSString *p) { NSData *d = [NSData dataWithContentsOfFile:p]; uint8_t h[20]; CC_SHA1(d.bytes, (CC_LONG)d.length, h);
@@ -117,6 +118,17 @@ int main(void) { @autoreleasepool {
     ARGS(); rc = s2a_program_resign_if_needed(home.fileSystemRepresentation, gd.fileSystemRepresentation, G.UTF8String, md, im, sizeof md, why, sizeof why);
     ck(rc == -1 && [json(catp)[@"dir"] isEqualToString:@"v-0000000000000000-pc"] && strstr(why, "LiveContainer"),
        [NSString stringWithFormat:@"⑦c LiveContainer 没导入证书：返回 %d（期望 -1）、清单不动、原因「%@」", rc, @(why)]);
+    // ⑦d LiveContainer 的证书解不开、玩家往 S2Arm 里导入过证书（current.json + 钥匙串身份）：改用导入的那张签，不看本包描述文件（给的是别的团队）
+    s2a_lc_cert_test(lc_garbled); s2a_program_resign_test_identity(id_ok); s2a_program_resign_test_prov(prov_other);
+    put_json([idir stringByAppendingPathComponent:@"current.json"], @{@"cert_sha1": cur_sha, @"team": @"ABCDE12345"}); put_json(catp, cat0);
+    ARGS(); rc = s2a_program_resign_if_needed(home.fileSystemRepresentation, gd.fileSystemRepresentation, G.UTF8String, md, im, sizeof md, why, sizeof why);
+    ck(rc == 1 && [json(catp)[@"signer"][@"cert_sha1"] isEqual:cur_sha],
+       [NSString stringWithFormat:@"⑦d LiveContainer 证书解不开、S2Arm 里导入过证书：返回 %d（期望 1，改用导入的那张）、signer %@", rc, json(catp)[@"signer"]]);
+    // ⑦e 解不开、也没导入过：不签、原因写清怎么导（齿轮 →「签名证书」→「导入 .p12…」）
+    [fm removeItemAtPath:[idir stringByAppendingPathComponent:@"current.json"] error:nil]; put_json(catp, cat0);
+    ARGS(); rc = s2a_program_resign_if_needed(home.fileSystemRepresentation, gd.fileSystemRepresentation, G.UTF8String, md, im, sizeof md, why, sizeof why);
+    ck(rc == -1 && [json(catp)[@"dir"] isEqualToString:@"v-0000000000000000-pc"] && strstr(why, "读不出来") && strstr(why, "导入 .p12"),
+       [NSString stringWithFormat:@"⑦e 解不开、也没导入过：返回 %d（期望 -1）、清单不动、原因「%@」写出怎么导", rc, @(why)]);
     s2a_lc_cert_test(NULL); s2a_program_resign_test_identity(id_ok);
     s2a_program_resign_test_prov(NULL);
     [fm removeItemAtPath:dir error:nil];
