@@ -198,7 +198,8 @@ def sign_install(exe, ipa, dev_id, name, log, out_ipa, bundle=None, register=Tru
     text = p.stdout + p.stderr
     Path(log).write_text(text, encoding='utf-8')
     if p.returncode or (register and 'Installation complete' not in text) or (not register and not Path(out_ipa).is_file()):
-        tail = [ln for ln in text.splitlines() if ln.strip() and 'DEBUG' not in ln][-1:] or ['（没有输出）']
+        # Rust panic 结尾的「note: run with `RUST_BACKTRACE=1` …」不当原话上屏（#1947）：取它前面那行（panic 的位置 / 原因）
+        tail = [ln for ln in text.splitlines() if ln.strip() and 'DEBUG' not in ln and 'RUST_BACKTRACE' not in ln][-1:] or ['（没有输出）']
         code = impactor.explain(text)
         raise Fail(f'签名装机失败（{code}）：{tail[0][-300:]}', 1, code)
 
@@ -457,7 +458,8 @@ def install_app(a, say=lambda m: print(m, flush=True)):
                         # 重试那次 plumesign 常常连不上就直接 panic（omnisette remote_anisette_v3.rs 显式 panic），输出里只剩
                         #   「note: run with RUST_BACKTRACE=1」认不出原因、落回 device_install_failed，玩家看到的就是这句（诊断#3fc02b D-5A5K，0.4.0）。
                         #   第二次认不出就按第一次认出的报：连不上签名服务器
-                        if again.err != 'device_install_failed': raise
+                        #   新版 impactor.explain 也认得出这个 panic（#1947，同样归 signing_server_unreachable）：两次同因时也报第一次的原话，不把 panic 那行上屏
+                        if again.err not in ('device_install_failed', 'signing_server_unreachable'): raise
                         raise e from again
                     finally:
                         Path(log).write_text(first + '\n--- 连不上签名服务器：重试 ---\n' + Path(log).read_text(encoding='utf-8', errors='replace'), encoding='utf-8')
