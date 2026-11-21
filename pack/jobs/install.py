@@ -2884,6 +2884,8 @@ def write_phone_save(c, ph, gid, src, drop=()):
 SAVE_CARRIED = "这款的存档从手机上的另一个 S2Arm（{0}）复制进了新装的独立 App；那边的存档没动，在新 App 里确认进度没问题再删旧的。"
 SAVE_CARRY_MANY = "手机上有几个 S2Arm 都存着这款的存档（{0}），没替你挑：在启动器的手机存档里选一份，还原到新装的独立 App。"
 SAVE_CARRY_INCOMPLETE = "手机上的另一个 S2Arm（{0}）里有这款的存档，但缺存档索引或用户档案，没有复制（拷过去游戏也认不出）：先别删那个 App。"
+SAVE_CARRY_SKIPPED = "新装的独立 App 里这款已有存档，没有覆盖；旧进度还在手机上的另一个 S2Arm（{0}）里，先别删那个 App。"
+SAVE_CARRY_FAILED = "从手机上的另一个 S2Arm（{0}）复制这款的存档时中断，已撤回、新 App 里没留下半份；旧存档没动，先别删那个 App，连好手机后再导出一次。"
 
 
 def carry_saves(c, ph, ap, gid):
@@ -2910,23 +2912,51 @@ def carry_saves(c, ph, ap, gid):
         return None
     (b, name), = found.items()
     # 存档文件、存档索引、用户档案三样一起搬（每款的模拟器数据根各自独立，原样拷过去索引里的存档号和用户号都对得上）。
-    #   只拷存档文件不行：新 App 第一次起这款时自己分存档号、建新用户，和拷来的对不上就看不到进度。索引或档案拉不全就整份不搬，不留半套
+    #   只拷存档文件不行：新 App 第一次起这款时自己分存档号、建新用户，和拷来的对不上就看不到进度。
+    #   要么全成、要么不动：三样先全部拉到电脑临时目录，齐了才写；新 App 里已有索引 / 档案（起过这款）不写；写到一半失败，写进去的三处整个删掉，不留半套
+    base = f"{game_docs(gid)}/"
+    targets = (base + SAVE_REL, base + SAVE_INDEX_REL, base + SAVE_PROFILE_REL)
     with tempfile.TemporaryDirectory(dir=c.private) as w:
         w = Path(w)
         cl = app_phone(ph, b, standalone=False).client(str(w))
-        base = f"{game_docs(gid)}/"
         ok, out = cl.get_tree(base + SAVE_INDEX_REL, w / "index")
         if not ok or not any(p.is_file() for p in (w / "index").rglob("*")) or not cl.get(base + SAVE_PROFILE_REL, w / "Profiles.json"):
             trace(c, f"{gid} 在 {b} 里的存档索引 / 用户档案拉不全，不复制：{(out or '').strip()[-200:]}")  # 非玩家句
             c.diagnostic(SAVE_CARRY_INCOMPLETE.format(b), code="save_carry_incomplete", severity="warning")
             return None
-        write_phone_save(c, ap, gid, layout.path(c, gid, "save_backup", create=False) / name)
         dst = ap.client(str(w))
-        for f in sorted(p for p in (w / "index").rglob("*") if p.is_file()):
-            dst.put(f, base + SAVE_INDEX_REL + "/" + f.relative_to(w / "index").as_posix())
-        dst.put(w / "Profiles.json", base + SAVE_PROFILE_REL)
+        if dst.get(base + SAVE_PROFILE_REL, w / "mine.json") or [x for x in (dst.ls(base + SAVE_INDEX_REL) or []) if x.strip()]:
+            trace(c, f"{gid} 新 App 里已有用户档案 / 存档索引（起过这款），不复制")  # 非玩家句
+            c.diagnostic(SAVE_CARRY_SKIPPED.format(b), code="save_carry_skipped", severity="warning")
+            return None
+        try:
+            write_phone_save(c, ap, gid, layout.path(c, gid, "save_backup", create=False) / name)
+            for f in sorted(p for p in (w / "index").rglob("*") if p.is_file()):
+                dst.put(f, base + SAVE_INDEX_REL + "/" + f.relative_to(w / "index").as_posix())
+            dst.put(w / "Profiles.json", base + SAVE_PROFILE_REL)
+        except Exception as e:
+            for r in targets:   # 新 App 里这三处原本都没有（上面核过）：整个删掉，回到没复制的样子
+                dst.rm(r)
+            trace(c, f"{gid} 从 {b} 复制存档写到一半失败，已撤回：{type(e).__name__} {str(e)[:200]}")  # 非玩家句
+            c.diagnostic(SAVE_CARRY_FAILED.format(b), code="save_carry_failed", severity="warning")
+            return None
     c.diagnostic(SAVE_CARRIED.format(b), code="save_carried", severity="warning")
     return b
+
+
+def saves_elsewhere(c, ph, ap, gid):
+    """新装的独立 App 里这款已有存档（不复制、不覆盖）：手机上别的 S2Arm 里也有这款的存档时说一句，免得玩家以为旧进度丢了、删掉旧 App。
+    只看目录在不在（ls），不拉文件。→ None（这条路不复制，put_app 结果不带 savesFrom）"""
+    try:
+        others = [a["bundleId"] for a in installed_s2arm(c, ph) or [] if a["bundleId"].lower() != ap.bid.lower()]
+    except Failure as e:
+        trace(c, f"{gid} 列不出手机上别的 S2Arm：{str(e)[:200]}")  # 非玩家句
+        return None
+    with tempfile.TemporaryDirectory(dir=c.private) as w:
+        have = [b for b in others if [x for x in (app_phone(ph, b, standalone=False).client(w).ls(f"{game_docs(gid)}/{SAVE_REL}") or []) if x.strip()]]
+    if have:
+        c.diagnostic(SAVE_CARRY_SKIPPED.format("、".join(sorted(have))), code="save_carry_skipped", severity="warning")
+    return None
 
 
 IDENTITY_INCOMING = "Library/Application Support/S2Arm/identity/incoming"   # App 启动时导入钥匙串、导入成功就删（手机侧，0.6.0）
@@ -3447,7 +3477,8 @@ def put_app(c, gid, ph, steps=True):
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     ap.bid = got
-    carried = None if had_save else carry_saves(c, ph, ap, gid)   # 新 App 里还没这款的存档：从手机上旧包名的 App / 通用壳复制过来（不动那边）
+    # 新 App 里还没这款的存档：从手机上旧包名的 App / 通用壳复制过来（不动那边）；已有：不覆盖，别的 App 里也有就说清旧进度还在那边
+    carried = saves_elsewhere(c, ph, ap, gid) if had_save else carry_saves(c, ph, ap, gid)
     if fixed:
         c.diagnostic(APP_BUNDLE_FIXED.format(got), code="app_bundle_fixed", severity="warning")
     if ap.info.get("free"):

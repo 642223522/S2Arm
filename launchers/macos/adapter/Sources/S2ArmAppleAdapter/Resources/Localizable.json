@@ -10854,5 +10854,21 @@
  {
   "source": "那个 App 里这款的存档没动：先别删它。在它里面进一次这款游戏、回到主界面后，再从启动器导出到这台手机一次。",
   "en": "This game's save in that app is untouched, so don't delete it. Open this game in that app once and return to its main screen, then export to this phone from the launcher again."
+ },
+ {
+  "source": "新装的独立 App 里这款已有存档，没有覆盖；旧进度还在手机上的另一个 S2Arm（{0}）里，先别删那个 App。",
+  "en": "The newly installed Standalone App already has a save for this game, so nothing was overwritten. The old progress is still in another S2Arm on the phone ({0}); don't delete that app yet."
+ },
+ {
+  "source": "旧进度还在原来那个 App 里，一个字节没动：先别删它。",
+  "en": "The old progress is still in the original app, untouched; don't delete it yet."
+ },
+ {
+  "source": "从手机上的另一个 S2Arm（{0}）复制这款的存档时中断，已撤回、新 App 里没留下半份；旧存档没动，先别删那个 App，连好手机后再导出一次。",
+  "en": "Copying this game's save from another S2Arm on the phone ({0}) was interrupted and rolled back, leaving nothing half-copied in the new app. The old save is untouched; don't delete that app, and export again once the phone is connected."
+ },
+ {
+  "source": "手机连稳（数据线插好、解锁）后，对这款再导出到这台手机一次，会重新复制。",
+  "en": "With the phone firmly connected (cable in, unlocked), export this game to this phone again and the save will be copied again."
  }
 ]

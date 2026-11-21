@@ -128,6 +128,8 @@ RECOVERY = {
     "save_carried": "新装的独立 App 用的是从旧 App 复制来的存档：进游戏确认进度没问题，再在 iPhone 上删掉旧 App。",   # install.carry_saves：新独立 App 里的存档是从手机上旧包名的 App / 通用壳复制来的（黄字）
     "save_carry_choose": "在启动器的手机存档里选你要的那一份，还原到新装的独立 App；其余几个 App 里的存档都没动。",   # install.carry_saves：几个 App 都有这款的存档，不替玩家挑（黄字）
     "save_carry_incomplete": "那个 App 里这款的存档没动：先别删它。在它里面进一次这款游戏、回到主界面后，再从启动器导出到这台手机一次。",   # install.carry_saves：另一个 App 里有这款存档，但索引 / 用户档案拉不全，没复制（黄字）
+    "save_carry_skipped": "旧进度还在原来那个 App 里，一个字节没动：先别删它。",   # install.carry_saves / saves_elsewhere（黄字）
+    "save_carry_failed": "手机连稳（数据线插好、解锁）后，对这款再导出到这台手机一次，会重新复制。",   # install.carry_saves / saves_elsewhere（黄字）
     "signing_server_unreachable": "这台电脑连不上 Impactor 签名要用的登录辅助服务器（mac-ani.jkcoxson.com，Impactor 内置、改不了），已自动重试过一次。检查这台电脑的网络：浏览器能打开这个地址就再点一次「推到 iPhone」；打不开就换个 DNS（如 223.5.5.5 或 1.1.1.1）或开 / 关代理后再装。手机、已装的 App 和存档都不受影响。",   # #3fc02b：plumesign 取 anisette（mac-ani.jkcoxson.com，Impactor v2.7.3 omnisette 写死）时 DNS / 连接失败（impactor.explain）
     "apple_session_expired": "Apple ID 登录已过期，请重新登录后再装：在导出页点「打开 Impactor」→「设置」，选中你的 Apple ID 点「移除账号」，再点「添加账号」用同一个 Apple ID 重新登录（邮箱、密码、手机上的验证码，输入前切到英文输入法），然后回来点这台的「重试」。密码只在 Impactor 里输，S2Arm 不经手。",   # Windows plumesign 恢复保存的会话时 Apple 1100（impactor.explain）；Mac 同类原文归 xcode_account_missing（去 Xcode 重新登录）
     "apple_not_signed_in": "还没用 Apple ID 登录：点「登录 Apple ID」（导出页和失败那一行都有，也可以在设置 →「签名身份」下面点），在弹出的「用 Apple ID 签名」里填邮箱和密码（你的苹果设备上会弹出验证码），再点这台的「重试」。密码只用于这次向 Apple 登录，S2Arm 不保存。",   # Mac 通用壳：随包 plumesign 自己的登录面板（launchers/macos AppleLoginViews，按钮名 / 面板名与界面逐字一致；Windows 的 Impactor 说法在 WINDOWS_RECOVERY）

@@ -129,7 +129,8 @@ class PutApp(unittest.TestCase):
         self.c = ctx(self.t)
         self.pack = self.t / "pack"; self.pack.mkdir()
         (self.pack / "manifest.json").write_text(json.dumps({"index_sha256": "P1"}))
-        self.calls = dict(install=[], push=[], snap=[], assemble=[], put=[])
+        self.calls = dict(install=[], push=[], snap=[], assemble=[], put=[], rm=[])
+        self.fail_put = None   # 写到这个相对路径时抛错（复制写到一半失败）
         self.others, self.saves = [], {}   # 手机上别的 S2Arm（installed_s2arm）/ 各 App 里有这款存档的：{包名: 备份目录名}
         self.remote = {}   # 手机上各 App 的文件：{包名: {文档根下的相对路径: 内容}}（get / get_tree 读它）
         self.ph = self.phone()
@@ -155,8 +156,13 @@ class PutApp(unittest.TestCase):
                         if k.startswith(rel + "/"):
                             f = Path(dst) / k[len(rel) + 1:]; f.parent.mkdir(parents=True, exist_ok=True); f.write_bytes(v)
                     return True, ""
-                return types.SimpleNamespace(put=lambda src, rel: calls["put"].append((me, rel, Path(src).read_bytes())), rm=lambda rel: None,
-                                             get=get, get_tree=get_tree)
+                def put(src, rel):
+                    if outer.fail_put and rel.endswith(outer.fail_put): raise install.Failure("断了", code="device_transfer_failed")
+                    calls["put"].append((me, rel, Path(src).read_bytes()))
+                def ls(rel):
+                    names = sorted({k[len(rel) + 1:].split("/")[0] for k in files if k.startswith(rel + "/")})
+                    return names or None
+                return types.SimpleNamespace(put=put, rm=lambda rel: calls["rm"].append((me, rel)) or (True, ""), get=get, get_tree=get_tree, ls=ls)
             def install(self, ipa, games, steps=True, bid=None):
                 with zipfile.ZipFile(ipa) as z:
                     calls["install"].append((bid, sorted(z.namelist())))
@@ -246,6 +252,35 @@ class PutApp(unittest.TestCase):
             out = self.run_put()
             self.assertEqual((self.calls["put"], "savesFrom" in out), ([], False), (index, profile))
             self.assertIn("save_carry_incomplete", [d["code"] for d in self.c.diagnostics])
+
+    def test_new_app_with_profile_not_overwritten(self):
+        # 新 App 里没有存档文件、却已有用户档案（起过这款）：不写，说清旧进度还在旧 App
+        self.others, self.saves = [self.OLD], {self.OLD: self.backup("20261121-010101")}
+        self.old_app_index()
+        self.remote[APP1] = {f"Documents/games/{G1}/S2A/ryujinx/system/Profiles.json": b"mine"}
+        out = self.run_put()
+        self.assertEqual((self.calls["put"], "savesFrom" in out), ([], False))
+        self.assertIn("save_carry_skipped", [d["code"] for d in self.c.diagnostics])
+
+    def test_copy_failure_rolls_back_all_three(self):
+        # 写到一半（档案那步）断了：已写的存档文件、索引连同档案三处整个删掉，不留半套；黄字说已撤回
+        self.others, self.saves = [self.OLD], {self.OLD: self.backup("20261121-010101")}
+        self.old_app_index()
+        self.fail_put = "system/Profiles.json"
+        out = self.run_put()
+        d = f"Documents/games/{G1}/S2A/ryujinx"
+        self.assertEqual(sorted(self.calls["rm"]), sorted([(APP1, f"{d}/bis/user/save"), (APP1, f"{d}/bis/system/save"), (APP1, f"{d}/system/Profiles.json")]))
+        self.assertFalse("savesFrom" in out)
+        codes = [x["code"] for x in self.c.diagnostics]
+        self.assertIn("save_carry_failed", codes); self.assertNotIn("save_carried", codes)
+
+    def test_new_app_has_save_says_old_progress_elsewhere(self):
+        # 新 App 里已有这款存档：不复制、不拉别的 App 的文件；别的 App 里也有这款存档就说一句（只 ls 看目录在不在）
+        self.others, self.saves = [self.OLD], {APP1: self.backup("20261121-020202")}
+        self.remote[self.OLD] = {f"Documents/games/{G1}/{install.SAVE_REL}/0000000000000001/0/x": b"s"}
+        out = self.run_put()
+        self.assertEqual((self.calls["snap"], self.calls["put"], "savesFrom" in out), ([(APP1, True, [G1])], [], False))
+        self.assertIn("save_carry_skipped", [d["code"] for d in self.c.diagnostics])
 
     def test_no_carry_when_new_app_has_save(self):
         # 新 App 里已有这款的存档：不碰（不去拉别的 App、不写）
