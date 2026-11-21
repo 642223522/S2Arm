@@ -23,7 +23,7 @@ struct rp_prog {
     nvn_gpu_layout_ent ent[RP_PROG_STAGES][RP_PROG_ENT_MAX];  // 与交给后端装载的布局同一份：核心按 src_kind / src_reg 逐项绑定
     uint8_t dtt[RP_PROG_STAGES][RP_PROG_ENT_MAX];             // 声明目标 + 1；0 = 未知，沿用登记视图
     uint8_t dcls[RP_PROG_STAGES][RP_PROG_ENT_MAX];            // 0 float，1 uint，2 sint，3 depth 比较
-    uint8_t difmt[RP_PROG_STAGES][RP_PROG_ENT_MAX];           // 存储图像声明的 SPIR-V Image Format（0 = Unknown；只计算阶段填，见 nvk_shader.c sampled_decl）
+    uint8_t difmt[RP_PROG_STAGES][RP_PROG_ENT_MAX];           // 存储图像声明的 SPIR-V Image Format（0 = Unknown；计算阶段与图形阶段的 imageBuffer 填，见 nvk_shader.c sampled_decl）
     uint8_t sampler_unused[RP_PROG_STAGES][RP_PROG_ENT_MAX];   // 已从 SPIR-V 证明该组合描述符不读取采样器
     uint32_t nent[RP_PROG_STAGES];
     uint32_t support_bytes;                                   // NVN_RB_SUPPORT 那一项的缓冲长度
@@ -45,6 +45,8 @@ struct rp_shader_req {
     uint32_t prim;              // NVNdrawPrimitive
     int rt_count;               // 当前颜色目标个数
     uint32_t rt_format[8];      // 各颜色目标的 NVN 格式（视图改了格式的取视图的）；0 = 空槽
+    // 仅在提交线程发现现编结果尚未就绪时调用。可暂缓则返回 1 并写入预算所属帧。
+    int (*compile_defer_frame)(uint64_t *frame);
 };
 // 当前绘制生效的图形阶段（bit = NVN 阶段 0..4）与各阶段的着色器键。核心按「程序实际有哪些阶段」
 // 窄化后的结果（同 iOS bind_stages：VS/FS 不能被关，GS/TCS/TES 程序没有就解绑）；着色器来源只消费这份结果。
@@ -54,6 +56,10 @@ int rp_shader_stage_key(unsigned st, uint8_t key[8]);   // 1 = 该阶段已绑�
 int rp_shader_resolve(const struct rp_shader_req *q, const struct rp_prog **out);
 // 取当前回放状态下计算阶段（NVN 阶段 5）绑着的程序。返回值同上。
 int rp_shader_resolve_compute(const struct rp_prog **out);
+struct rp_shader_live_compile_stats {
+    uint64_t enqueued, wait_ns, pending, fallback, timeout;
+};
+void rp_shader_live_compile_take(struct rp_shader_live_compile_stats *out);
 // 程序的内容身份（见 struct rp_prog.identity）。1 = 有；0 = 没有（p 为空 / 失败项 / 计算旧路径没记）。
 // 线程：[任意]（只读，不加锁）。生命周期：p 有效期间有效。
 int rp_shader_prog_identity(const struct rp_prog *p, uint8_t out[32]);

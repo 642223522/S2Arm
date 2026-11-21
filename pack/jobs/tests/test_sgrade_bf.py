@@ -5,6 +5,7 @@
 import contextlib
 import hashlib
 import json
+import shutil
 import os
 import tempfile
 import types
@@ -114,6 +115,35 @@ class UpgradeMac(unittest.TestCase):
                     self.assertEqual((m["libGen"], m["builtBy"]["version"]), (host_update.LIB_GEN, "0.6.3"))
                     self.assertFalse(sgrade_bf.mac_due(c, "G", m), "更新完：Mac 那份不再要更新")
                     self.assertFalse(sgrade_bf.upgrade_mac(c, "G", rt), "再点：不再重出")
+
+    def test_vulkan_gl_game_records_without_rebuild(self):
+        """D-RAKK（mac/0.6.5，0100CD801CE5E000）：Vulkan / OpenGL 款的 Mac 运行版本只有空的直连目录、库代数没记 → 原先判要重出，
+        重出必「不完整」，每点「更新这款」整单失败。期望（手写）：不调重出、不动库文件，记本版 bfGen / libGen，之后 mac_due 不再判要更新；
+        NVN 款（判成 nvn）照旧重出"""
+        import host_update
+        for api, rebuilt in (("gl", False), ("vulkan", False), ("nvn", True)):
+            with self.subTest(api), tempfile.TemporaryDirectory() as t:
+                t = Path(t); rt = t / "runtime"; (rt / "romfs").mkdir(parents=True); (rt / "shaders/direct").mkdir(parents=True)
+                (rt / "shaders/direct/keys.tsv").write_text("")
+                (rt / "manifest.json").write_text(json.dumps({"files": {"shaders/direct/keys.tsv": [0, ""]}}))
+                (t / "engine.json").write_text(json.dumps({"version": "0.6.5"}))
+                new = t / "new"; (new / "b-c").mkdir(parents=True); (new / "keys.tsv").write_text("k\n"); (new / "b-c/lib.idx").write_bytes(b"1")
+                c = types.SimpleNamespace(emit=lambda *a, **k: None, private=t, engine=t, library=t)
+                calls = []
+                with patch.object(sgrade_bf, "gfx_api", return_value=api), \
+                        patch.object(sgrade_bf, "rebuild", side_effect=lambda *a, **k: calls.append(1) or new):
+                    self.assertTrue(sgrade_bf.mac_due(c, "G", json.loads((rt / "manifest.json").read_text())), "库代数没记：判要更新")
+                    self.assertEqual(sgrade_bf.upgrade_mac(c, "G", rt), rebuilt)
+                    m = json.loads((rt / "manifest.json").read_text())
+                    self.assertEqual((bool(calls), m.get("libGen"), m.get("bfGen")), (rebuilt, host_update.LIB_GEN, sgrade_bf.BF_GEN))
+                    self.assertFalse(sgrade_bf.mac_due(c, "G", m), "做完：不再判要更新")
+                    if not rebuilt:
+                        self.assertEqual(sorted(p.name for p in (rt / "shaders/direct").iterdir()), ["keys.tsv"], "库目录不动")
+
+    def test_gfx_api_unknown_without_exefs(self):
+        c = types.SimpleNamespace(engine=Path(__file__).resolve().parents[3])
+        with tempfile.TemporaryDirectory() as t:
+            self.assertEqual(sgrade_bf.gfx_api(c, t), "unknown", "没有 exefs：判不了，调用方照旧按 NVN 走")
 
     def test_busy_gives_up_without_touching(self):
         with tempfile.TemporaryDirectory() as t:
@@ -228,11 +258,37 @@ class RechainIos(unittest.TestCase):
         """「建议更新」判据（host_update._game_hint + shader_hint，真实现）对这份记录给出的原因"""
         import host_update
         with patch.object(host_update.layout, "program_info", lambda c, g: self.info["ios"]), patch("core.release_version", lambda engine: cur), \
+                patch.object(host_update.layout, "ios_pack", lambda c, g: self.pack), \
                 patch("host_update.shader_misses", lambda c, g: dict(ios=ios_miss, mac=0)), patch.object(self.c, "engine", None, create=True):
             why = host_update._game_hint(self.c, "0100AAAA00000000", None, dict(hostAbi=1, dmshChain=chain))
             if host_update.shader_hint(self.c, "0100AAAA00000000"):
                 why.append("shaderMiss")
         return why
+
+    def test_judgment_and_update_are_one_definition(self):
+        """11-21 走查红（杀戮尖塔，只走 GL、没有直连库、记录里没有 libGen）：判定标「建议更新」、更新却跳过 → 点完还在。
+        维护者定：判定列出的每一项更新都要做掉，更新不做的不算。逐个组合核「判定有 iPhone 着色器库原因」⇔「更新会重编（不是 skip）」。期望按定义手写"""
+        import itertools, host_update
+        for has_lib, chain_same, gen_old, miss in itertools.product((True, False), (True, False), (True, False), (0, 3)):
+            with self.subTest(has_lib=has_lib, chain_same=chain_same, gen_old=gen_old, miss=miss):
+                self.setUp()
+                if not has_lib:
+                    shutil.rmtree(self.pack / "shaders/direct/b-old")   # 只走 GL 的款：shaders/direct 下没有 b-<链>
+                self.info["ios"].update(dmshChain="new" if chain_same else "old", builtBy={"version": "0.5.8", "display": "0.5.8"})
+                if gen_old:
+                    del self.info["ios"]["libGen"]
+                why = [r for r in self.reasons("new", miss) if r in ("shader", "libGen", "shaderMiss")]
+                ran = self.run_rechain(chain="new", ios_miss=miss)[0]
+                want_reason = has_lib and (not chain_same or gen_old or miss > 0)
+                self.assertEqual(bool(why), want_reason, f"判定 {why}")
+                self.assertEqual(ran != "skip", want_reason, f"更新 {ran}")
+
+    def test_gl_only_game_never_flagged(self):
+        """走查原样：只走 GL（shaders/direct 下只有 gl/）、链号是本引擎的、记录里没有 libGen → 不标「建议更新」，更新也不动它"""
+        shutil.rmtree(self.pack / "shaders/direct/b-old"); (self.pack / "shaders/direct/gl").mkdir()
+        self.info["ios"].update(dmshChain="new"); del self.info["ios"]["libGen"]
+        self.assertEqual(self.reasons("new"), [])
+        self.assertEqual(self.run_rechain(chain="new")[0], "skip")
 
     def test_update_clears_every_reason_it_handles(self):
         """11-21：每个原因码「改旧 → 判成要更新」，跑一次更新（rechain_ios）→「刚更新完必须判成无需更新」。判据与更新都是真实现，只桩掉重出。期望手写"""
@@ -309,6 +365,7 @@ class RechainIos(unittest.TestCase):
         # 期望手写：Windows 没装 Metal 开发工具时重出给 None（同 Windows 出包不带着色器库）→ 'unavailable'、资源包与链号都不动，推送照常（调用方记一行）
         before = (self.pack / "index.tsv").read_text(encoding="utf-8")
         with patch.object(sgrade_bf, "rebuild", lambda *a: None), patch("host_update.engine_compat", lambda c: dict(hostAbi=1, dmshChain="new")), \
+                patch("host_update.shader_misses", lambda c, g: dict(ios=0, mac=0)), \
                 patch.object(sgrade_bf.layout, "game_info", lambda c, g: self.info), patch.object(sgrade_bf.layout, "ios_pack", lambda c, g: self.pack), \
                 patch.object(sgrade_bf, "ios_inputs", lambda c, g, w: (Path(w) / "root", "game.img")):
             r = sgrade_bf.rechain_ios(self.c, "0100AAAA00000000")
@@ -321,6 +378,26 @@ class RechainIos(unittest.TestCase):
         with self.assertRaises(Failure):
             self.run_rechain(rebuilt=bad)
         self.assertTrue((self.pack / "shaders/direct/b-old/lib.idx").is_file(), "重编不完整不动旧库")
+
+
+class MacRebuildProgress(unittest.TestCase):
+    """D-QPGF：Mac 重出（STAGES 逐步跑阶段脚本）每步之前报一次「已完成几步 / 共几步」，最后报满。期望按 STAGES 手算：0/5 → 第 1 步 → 1/5 → … → 第 5 步 → 5/5"""
+    def test_reports_step_counts_between_stages(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp); src = t / "src"; src.mkdir(); seq = []
+            done = t / "cur"; lib = done / "shaders/direct/b-new"; lib.mkdir(parents=True); (lib / "lib.idx").write_bytes(b"L"); (done / "shaders/direct/keys.tsv").write_text("k\n")
+            c = types.SimpleNamespace(engine=str(t), logs=str(t / "logs"), task="t", env=lambda: {},
+                                      emit=lambda kind, msg="", **k: seq.append((kind, k.get("done"), k.get("total"))) if kind == "progress" else None,
+                                      run=lambda args, log, env, **k: seq.append(("run", Path(str(args[1])).name)))
+            with patch.object(sgrade_bf, "WIN", False), patch.object(sgrade_bf, "_clone", lambda c, a, b: Path(b).mkdir(parents=True)), \
+                    patch("layout.set_current", lambda *a, **k: None), patch("layout.current_root", lambda c, p: done):
+                sgrade_bf.rebuild(c, "0100aaaa00000000", src, "ios", t / "w")
+            n = len(sgrade_bf.STAGES)
+            want = []
+            for i, (st, _) in enumerate(sgrade_bf.STAGES):
+                want += [("progress", i, n), ("run", f"stage_{st}.sh")]
+            want.append(("progress", n, n))
+            self.assertEqual(seq, want)
 
 
 class WindowsRebuildTests(unittest.TestCase):

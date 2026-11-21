@@ -7,6 +7,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <dirent.h>
+#include <pthread.h>
+#include <time.h>
 #include "nvn.h"
 #include "rp_shader.h"
 #include "rp_state.h"
@@ -15,6 +17,7 @@
 #include "nvn_unimpl.h"
 #include "nvn_plat.h"
 #include "direct/compile_request.h"
+#include "direct/compile_worker.h"
 #include "direct/input_identity.h"
 #include "direct/source_store.h"
 #include "direct/sha256.h"
@@ -31,6 +34,9 @@
 
 // 实现在 nvk_shader.c，声明在 nvk_session.h。这里不包 nvk_session.h：nvk_compile_stop_test.py 拿本文件当夹具，
 // 会在同一个翻译单元里把 nvk_session_request_stop 等会话函数定义成 static，包了头就是「static 声明跟在非 static 声明后面」，编不过。
+int nvk_shader_open(void);
+void nvk_shader_stop(void);
+unsigned nvk_shader_inflight(void);
 uint64_t nvk_shader_cs_fast_hits(void);
 int nvk_shader_last_allocated(void);
 void nvk_shader_last_test_put(uint64_t key, const struct rp_prog *prog);
@@ -56,6 +62,38 @@ static int fake_cs_success, cs_loads;
 int g_s2a_logfd = 2;
 static const char *fake_compile_error;
 static const char *fake_compile_file;
+static pthread_t last_compiler_thread;
+static int fixture_live_compile, fixture_live_slots, fixture_live_nowait;
+static int fixture_live_frame_ms = 100, fixture_live_unsafe_ms = 10000;
+static pthread_mutex_t live_gate_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t live_gate_cv = PTHREAD_COND_INITIALIZER;
+static int live_gate_hold, live_gate_entered;
+static void live_gate_pause(void) {
+    pthread_mutex_lock(&live_gate_mu);
+    if (live_gate_hold) {
+        live_gate_entered++;
+        pthread_cond_broadcast(&live_gate_cv);
+        while (live_gate_hold) pthread_cond_wait(&live_gate_cv, &live_gate_mu);
+    }
+    pthread_mutex_unlock(&live_gate_mu);
+}
+static int live_gate_wait(int count) {
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += 2;
+    pthread_mutex_lock(&live_gate_mu);
+    while (live_gate_entered < count)
+        if (pthread_cond_timedwait(&live_gate_cv, &live_gate_mu, &deadline)) break;
+    int entered = live_gate_entered >= count;
+    pthread_mutex_unlock(&live_gate_mu);
+    return entered;
+}
+static void live_gate_release(void) {
+    pthread_mutex_lock(&live_gate_mu);
+    live_gate_hold = 0;
+    pthread_cond_broadcast(&live_gate_cv);
+    pthread_mutex_unlock(&live_gate_mu);
+}
 static char captured[262144], last_red[512], last_diag[512], last_stats[512], last_reason[512], last_request_reason[512];
 static int ubo_default_lines; static char last_ubo_default_line[512];   // 常量缓冲句柄指向没登记的贴图：每局首次的那一行（片 4）
 static char reason_history[8192];
@@ -73,15 +111,22 @@ void nvn_plat_safepoint(void) {}
 // 宿主夹具没有跨局缓存目录：程序预热清单不落盘（nvk_prog_warm 只读平台目录，不读环境变量）。
 const char *nvn_plat_dir(int which) { return which == NVN_PLAT_DIR_CACHE ? getenv("S2A_PW_TEST_DIR") : NULL; }
 int nvn_plat_flag(const char *name, int dflt) {
+    if (!strcmp(name, "nvk_live_compile_async") && fixture_live_compile >= 0) return fixture_live_compile;
+    if (!strcmp(name, "nvk_live_compile_slots") && fixture_live_slots) return fixture_live_slots;
+    if (!strcmp(name, "nvk_live_compile_nowait")) return fixture_live_nowait;
+    if (!strcmp(name, "fu_frame_ms")) return fixture_live_frame_ms;
+    if (!strcmp(name, "fu_unsafe_ms")) return fixture_live_unsafe_ms;
     if (!strcmp(name, "nvk_compute_warm")) return getenv("S2A_COMPUTE_WARM") ? atoi(getenv("S2A_COMPUTE_WARM")) : dflt;
     if (!strcmp(name, "nvk_texpool_log")) { diag_queries++; return diag_enabled; }
     if (fixture_alias_flag >= 0 && !strcmp(name, "nvk_alias")) return fixture_alias_flag;
     return dflt;
 }
-static int lp_missing_lines, lp_open_lines;   // 出包预编库「不在」（黄）/「已打开」两种行各打了几次
+static int lp_missing_lines, lp_open_lines, lp_unref_lines;   // 出包预编库「不在」（黄）/「已打开」/计算对齐闸拒查 三种行各打了几次
+static char last_unref[256];
 void nvn_plat_log(int level, const char *cls, const char *text) {
     if (!strcmp(cls, "shader") && strstr(text, "出包预编库不在：")) lp_missing_lines += level == NVN_PLAT_LOG_WARN ? 1 : 1000;   // 不是黄就记成大数（必红）
     if (level == NVN_PLAT_LOG_INFO && !strcmp(cls, "shader") && strstr(text, "出包预编库已打开：")) lp_open_lines++;
+    if (!strcmp(cls, "shader") && strstr(text, "libpack_cs_unaligned_refused")) { lp_unref_lines += level == NVN_PLAT_LOG_INFO ? 1 : 1000; snprintf(last_unref, sizeof last_unref, "%s", text); }
     if (level == NVN_PLAT_LOG_RED && !strcmp(cls, "shader")) snprintf(last_red, sizeof last_red, "%s", text);
     if (level == NVN_PLAT_LOG_INFO && !strcmp(cls, "shader") && strstr(text, "texture_pool_capacity=")) {
         diag_lines++; snprintf(last_diag, sizeof last_diag, "%s", text);
@@ -134,6 +179,7 @@ int rp_pool_find(uint64_t addr, uint64_t len, const uint8_t **mem, uint64_t *siz
     return addr >= lo && addr + len <= hi;
 }
 static int fake_ubo_missing;   // 1：请求里没有 (fs, 92, c3) 的事实就照真编译器报 MISSING_FACT
+static int fake_cs_ubo_missing;   // 1：计算请求里没有 (cs, 40, c6) 的事实就照真机那条报 MISSING_FACT（#1594 片 9）
 static uint64_t fake_reg_generation;
 static int fake_reg_changes = 1, gs_sep_hash_calls;
 uint64_t rp_tex_reg_gen(void) { return fake_reg_changes ? ++fake_reg_generation : fake_reg_generation; }
@@ -157,12 +203,20 @@ int s2a_direct_provider_compile_context(struct s2a_direct_compile_context *c) {
     c->translator_closure = external_closure[0] ? external_closure : "closure-test"; c->storage_buffer_offset_alignment = 16; return 0;
 }
 static int32_t fake_compile(uint64_t session, uint64_t gen, s2a_direct_bytes req, s2a_direct_emit_fn emit, void *sink) {
+    last_compiler_thread = pthread_self();
     CHECK(session == 4 && gen == 6, "compile session");
     CHECK(req.bytes < sizeof captured, "request fits capture");
     if (req.bytes >= sizeof captured) return -1;
     memcpy(captured, req.data, (size_t)req.bytes); captured[req.bytes] = 0; compiler_calls++;
+    live_gate_pause();
     if (fake_ubo_missing && !strstr(captured, "\"stage\":\"fs\",\"handle\":92,\"cbufSlot\":3,")) {
         static const char err[] = "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"MISSING_FACT\",\"message\":\"QuerySamplerType has no source (stage=fs,handle=92,cbufSlot=3)\"}";
+        s2a_direct_bytes payload = {(const uint8_t *)err, sizeof err - 1};
+        (void)emit(sink, payload); return -1;
+    }
+    if (fake_cs_ubo_missing && strstr(captured, "\"program\":{\"kind\":\"compute\"") && !strstr(captured, "\"stage\":\"cs\",\"handle\":40,\"cbufSlot\":6,")) {
+        // 真机原文（0100559011740000 标题 3D 的计算着色器）：QueryS2ASampledTextureFormat has no source (stage=cs,handle=40,cbufSlot=6)
+        static const char err[] = "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"MISSING_FACT\",\"message\":\"QueryS2ASampledTextureFormat has no source (stage=cs,handle=40,cbufSlot=6)\"}";
         s2a_direct_bytes payload = {(const uint8_t *)err, sizeof err - 1};
         (void)emit(sink, payload); return -1;
     }
@@ -246,7 +300,18 @@ static int32_t fake_compile(uint64_t session, uint64_t gen, s2a_direct_bytes req
     }
     return -27; // deliberately no result: capture input only
 }
-s2a_direct_compile_fn s2a_direct_bound_compile_any(void) { return fake_compile; }
+static int32_t fake_parallel_compile(uint64_t session, uint64_t gen, s2a_direct_bytes req,
+                                     s2a_direct_emit_fn emit, void *sink) {
+    (void)session; (void)gen; (void)req;
+    live_gate_pause();
+    static const char result[] =
+        "{\"schema\":\"s2a-direct-program-v1\",\"content\":{\"stages\":[{\"stage\":\"vs\",\"spirv\":\"" S2A_TEST_VERT_64 "\"}],"
+        "\"bindings\":[{\"stage\":\"vs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"slot\":0,\"count\":64}]}}";
+    s2a_direct_bytes payload = {(const uint8_t *)result, sizeof result - 1};
+    return emit(sink, payload);
+}
+static int fixture_parallel_compile;
+s2a_direct_compile_fn s2a_direct_bound_compile_any(void) { return fixture_parallel_compile ? fake_parallel_compile : fake_compile; }
 nvn_gpu_rc nvn_gpu_shader_load(const nvn_gpu_shader_src *s, nvn_gpu_shader *o, nvn_gpu_err *e) {
     (void)e;
     if (fake_gs_success && (unsigned)s->stage < 6) {
@@ -542,6 +607,58 @@ static void compute_default_fact_test(void) {
     CHECK(rp_shader_resolve_compute(&a) == 0 && a && compiler_calls == 3 && fact_matches_at("cs", 14, -1, "2d", 1) && !fact_matches_at("cs", 14, -1, "1d", 0),
           "CS slot naming a registered 2D texture takes the registered fact, not the default (calls=%d)", compiler_calls);
     fake_cs_success = 0; separate_fixture = 0; fake_reg_changes = 1;
+    memset(rp_S.ubo[5], 0, sizeof rp_S.ubo[5]); memset(rp_S.ssbo[5], 0, sizeof rp_S.ssbo[5]); memset(rp_S.tex[5], 0, sizeof rp_S.tex[5]);
+    rp_shader_reset();
+}
+// 句柄在计算阶段用户常量缓冲里的贴图（#1594 片 9，图形那条是片 4 的 graphics_ubo_handle_fact_test）：
+//   编译器按 (cs, 字 40, c6) 报缺事实 → 宿主读 c6（用户槽 3 = rp_S.ubo[5][3]）第 40 字 → 贴图号 → 补事实当场重编。
+//   之前计算阶段不认这条（ubo_need_learn 只认 vs / fs / gs）：同一份着色器每次派发都被拒，整笔派发被 compute_program_unresolved 跳掉。
+static int cs_ubo_fact_in_request(const char *sampler, int normalized) {
+    return fact_matches_at("cs", 40, 6, sampler, normalized);
+}
+static void compute_ubo_handle_fact_test(void) {
+    const struct rp_prog *a = NULL, *b = NULL;
+    rp_shader_reset(); s2a_source_clear(); rp_state_reset(); nvn_unimpl_reset(); source();
+    fake_cs_success = 1; separate_fixture = 1; fake_reg_changes = 0; fake_cs_ubo_missing = 1; fake_compile_error = NULL;
+    compiler_calls = cs_loads = 0; captured[0] = last_red[0] = 0; reject_lines[0] = 0;
+    bind_pools(100);
+    memset(ubo_mem, 0, sizeof ubo_mem); ubo_mem[40] = 78;   // 池起点 0：句柄低 20 位就是贴图号；78 登记为 2D RGBA8
+    rp_S.ubo[5][3].addr = (uint64_t)(uintptr_t)ubo_mem; rp_S.ubo[5][3].size = sizeof ubo_mem;
+    CHECK(rp_shader_resolve_compute(&a) == 0 && a && a->is_compute && compiler_calls == 2 && cs_loads == 1,
+          "missing cs c6 handle fact is learned and compiled in the same dispatch: calls=%d loads=%d red=%s", compiler_calls, cs_loads, last_red);
+    CHECK(!reject_lines[0], "a cs rejection that only taught a coordinate prints no program-key line (it recompiles at once): %s", reject_lines);
+    CHECK(nvn_unimpl_count("shader", "compute_compile_failed") == 0,
+          "a rejection that taught a coordinate is a learning step, not an unimplemented compute_compile_failed (count=%llu)", (unsigned long long)nvn_unimpl_count("shader", "compute_compile_failed"));
+    CHECK(cs_ubo_fact_in_request("2d", 1), "retry request carries the (cs,40,c6) fact of texture 78");
+    // 之后同一份着色器：句柄指向同一张贴图 → 不再编（第一次是学习那一笔留下的旧键，第二次起走快路）
+    const int calls = compiler_calls;
+    CHECK(rp_shader_resolve_compute(&b) == 0 && b == a && compiler_calls == calls, "same UBO texture reuses the program (calls=%d)", compiler_calls - calls);
+    const uint64_t hits = nvk_shader_cs_fast_hits();
+    CHECK(rp_shader_resolve_compute(&b) == 0 && b == a && compiler_calls == calls && nvk_shader_cs_fast_hits() == hits + 1, "same UBO texture takes the fast path");
+    ubo_mem[40] = 77;   // 77 带 RECTANGLE 视图：坐标不归一，编译事实不同 → 键跟着变，重编
+    CHECK(rp_shader_resolve_compute(&b) == 0 && b && b != a && compiler_calls == calls + 1, "UBO now names a texture with other facts: recompiles (calls=%d)", compiler_calls - calls);
+    CHECK(cs_ubo_fact_in_request("2d", 0), "recompile carries texture 77's unnormalized fact");
+    ubo_mem[40] = 79;   // 79 与 78 事实相同：回到第一份程序，不重编（按事实认，不按句柄认）
+    CHECK(rp_shader_resolve_compute(&b) == 0 && b == a && compiler_calls == calls + 1, "same facts as 78 reuse the first program (calls=%d)", compiler_calls - calls);
+    // 反例：句柄字读不到（槽长度盖不住第 40 字）→ 不给事实：请求与第一次缺事实那份逐字节相同，命中那份失败项，不编、不猜、不循环
+    rp_S.ubo[5][3].size = 40 * 4;
+    const int before = compiler_calls; captured[0] = 0; nvn_unimpl_reset();
+    CHECK(rp_shader_resolve_compute(&b) == -1 && compiler_calls == before && !captured[0], "unreadable cs handle word reuses the fact-less failure (calls=%d)", compiler_calls - before);
+    CHECK(nvn_unimpl_count("shader", "ubo_handle_unreadable") >= 1, "unreadable cs handle word is reported by name, not skipped silently");
+    // 换局清表：同样的输入要重新学（两次编译）
+    rp_shader_reset(); rp_S.ubo[5][3].size = sizeof ubo_mem; ubo_mem[40] = 78; compiler_calls = 0;
+    CHECK(rp_shader_resolve_compute(&b) == 0 && b && compiler_calls == 2, "session reset forgets learned cs coordinates (calls=%d)", compiler_calls);
+    // 反例：编译器报的不是用户常量缓冲坐标（c2，cbufSlot 2）→ 不学、不重试，照旧 compute_compile_failed
+    rp_shader_reset(); fake_cs_ubo_missing = 0; fake_cs_success = 0; compiler_calls = 0; nvn_unimpl_reset(); reject_lines[0] = 0;
+    fake_compile_error = "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"MISSING_FACT\",\"message\":\"QuerySamplerType has no source (stage=cs,handle=40,cbufSlot=2)\"}";
+    CHECK(rp_shader_resolve_compute(&b) == -1 && !b && compiler_calls == 1 && nvn_unimpl_count("shader", "compute_compile_failed") == 1,
+          "a cs c2 missing fact is not retried as a user UBO handle and stays compute_compile_failed (calls=%d count=%llu)", compiler_calls, (unsigned long long)nvn_unimpl_count("shader", "compute_compile_failed"));
+    // 反例：编译器按另一个阶段（fs）报缺 c6 坐标，计算请求不学它（图形阶段的坐标不进计算着色器的键名下）
+    rp_shader_reset(); compiler_calls = 0; nvn_unimpl_reset(); reject_lines[0] = 0;
+    fake_compile_error = "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"MISSING_FACT\",\"message\":\"QuerySamplerType has no source (stage=fs,handle=40,cbufSlot=6)\"}";
+    CHECK(rp_shader_resolve_compute(&b) == -1 && !b && compiler_calls == 1 && nvn_unimpl_count("shader", "compute_compile_failed") == 1,
+          "a missing fact for another stage is not learned by a compute dispatch (calls=%d)", compiler_calls);
+    fake_compile_error = NULL; fake_cs_success = 0; separate_fixture = 0; fake_reg_changes = 1; fake_cs_ubo_missing = 0;
     memset(rp_S.ubo[5], 0, sizeof rp_S.ubo[5]); memset(rp_S.ssbo[5], 0, sizeof rp_S.ssbo[5]); memset(rp_S.tex[5], 0, sizeof rp_S.tex[5]);
     rp_shader_reset();
 }
@@ -1484,6 +1601,65 @@ static int gs_libpack_test(void) {
     printf("nvk shader pool (libpack GS): %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
+// ---- 计算出包预编库的非对齐闸（#496085）：库件只有对齐变体（libpack_vk.c 恒写 hasUnalignedStorageBuffer:false），
+//   sbuf 绑定实况非对齐时出库 = 无钳制对齐码跑非对齐缓冲（9000 DeviceLost 元凶 cs 50c91227a1082f2c 库版同型）。
+//   state_ok 对 ckey 必须生效：非对齐 → 不取库走现编加固件（请求带 hasUnalignedStorageBuffer:true），对齐 → 照常出库 ----
+static int cs_libpack_test(void) {
+    rp_shader_reset(); s2a_source_clear(); rp_state_reset(); nvn_unimpl_reset();
+    source(); fake_cs_success = 1; compiler_calls = cs_loads = 0; captured[0] = last_red[0] = 0;
+    bind_pools(100);
+    rp_S.ubo[5][0].addr = 0x1000; rp_S.ubo[5][0].size = 64;
+    rp_S.ssbo[5][0].addr = 0x10000; rp_S.ssbo[5][0].size = 256;   // 16 对齐（夹具 storage_buffer_offset_alignment=16）
+    char root[256], dir[600];
+    snprintf(root, sizeof root, "%s/nvk_cs_libpack.XXXXXX", getenv("TMPDIR") && *getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp");
+    if (!mkdtemp(root)) { CHECK(0, "cs libpack temp root"); return 1; }
+    snprintf(dir, sizeof dir, "%s/shaders", root); mkdir(dir, 0700);
+    snprintf(dir, sizeof dir, "%s/shaders/direct", root); mkdir(dir, 0700);
+    snprintf(dir, sizeof dir, "%s/shaders/direct/b-%s-vk", root, DMSH_CHAIN); mkdir(dir, 0700);
+    // 最小计算库件：_b.json 只列 drvcb（.spv 声明 support_buffer b47 → emit 按 .spv 补出，同 libpack_vk_test 的 CS_NOSUP 夹具）。
+    //   dm_ctl 必须等于键 hex（libpack_vk.c 命中判据），按 skey[5] 现拼
+    char khex[17]; for (int b = 0; b < 8; b++) snprintf(khex + 2 * b, 3, "%02x", rp_S.skey[5][b]);
+    char csjson[512];
+    snprintf(csjson, sizeof csjson,
+        "{\"key\":\"%s_b\",\"stage\":\"cs\",\"dm_ctl\":\"%s\",\"bindings\":["
+        "{\"msl_name\":\"cp_c0\",\"kind\":\"drvcb\",\"bank\":0,\"arg_id\":0}]}", khex, khex);
+    static const uint32_t csspv[] = {
+        0x07230203u, 0x00010000u, 0u, 3u, 0u,
+        0x00060005u, 2u, 0x70707573u, 0x5f74726fu, 0x66667562u, 0x00007265u,   // OpName %2 "support_buffer"
+        0x00040047u, 2u, 33u, 47u,                                             // OpDecorate %2 Binding 47
+        0x00040047u, 2u, 34u, 0u,                                              // OpDecorate %2 DescriptorSet 0
+    };
+    uint64_t ck[2] = { lp_key(rp_S.skey[5]), lp_key(rp_S.skey[5]) };
+    uint8_t ckind[2] = { 1, 52 };
+    const uint8_t *cd[2] = { (const uint8_t *)csjson, (const uint8_t *)csspv };
+    size_t cn[2] = { strlen(csjson), sizeof csspv };
+    CHECK(lp_write(dir, ck, ckind, cd, cn, 2) == 0, "cs libpack container written");
+    setenv("S2A_SHADER_REVISION_ROOT", root, 1); unsetenv("S2A_DIRECT_CACHE_DIR");
+    const struct rp_prog *p = NULL;
+    CHECK(rp_shader_resolve_compute(&p) == 0 && p && compiler_calls == 0 && cs_loads == 1,
+          "aligned CS storage hits the library, compiler not called (calls=%d red=%s)", compiler_calls, last_red);
+    CHECK(lp_unref_lines == 0, "aligned library hit does not log the unaligned-refuse line (got %d)", lp_unref_lines);
+    int calls = compiler_calls, unref0 = lp_unref_lines;
+    rp_S.ssbo[5][0].addr = 0x10001;   // 同键同绑定、只有对齐实况变：16 非对齐
+    p = NULL;
+    CHECK(rp_shader_resolve_compute(&p) == 0 && p && compiler_calls == calls + 1,
+          "unaligned CS storage refuses the library, falls back to live compile (calls=%d)", compiler_calls);
+    CHECK(strstr(captured, "\"hasUnalignedStorageBuffer\":true") != NULL,
+          "unaligned CS compile request carries the unaligned fact (hardened variant)");
+    {   char want[80]; snprintf(want, sizeof want, "libpack_cs_unaligned_refused 键 %s", khex);
+        CHECK(lp_unref_lines == unref0 + 1 && strstr(last_unref, want) != NULL,
+              "unaligned refuse logs one named line with the program key: %s", last_unref); }
+    rp_S.ssbo[5][0].addr = 0x10000;   // 回到对齐：库照常出
+    p = NULL; calls = compiler_calls;
+    CHECK(rp_shader_resolve_compute(&p) == 0 && p && compiler_calls == calls,
+          "realigned CS storage uses the library again (calls=%d)", compiler_calls);
+    unsetenv("S2A_SHADER_REVISION_ROOT");
+    char path[700];
+    snprintf(path, sizeof path, "%s/lib.idx", dir); unlink(path); snprintf(path, sizeof path, "%s/lib.000.pak", dir); unlink(path);
+    rmdir(dir); snprintf(dir, sizeof dir, "%s/shaders/direct", root); rmdir(dir); snprintf(dir, sizeof dir, "%s/shaders", root); rmdir(dir); rmdir(root);
+    printf("nvk shader pool (libpack CS unaligned gate): %d checks, %d failures\n", checks, failures);
+    return failures ? 1 : 0;
+}
 static int diag_compile_test(void) {
     trace_on = 1; trace_begin_count = trace_end_count = 0; fake_gs_success = 0;
     gs_request_test();
@@ -1497,9 +1673,152 @@ static int diag_compile_test(void) {
     printf("compile diagnostic: %d checks, %d failures\n", checks, failures); return failures ? 1 : 0;
 }
 
+static int live_compile_thread_test(void) {
+    fixture_live_compile = -1;   // simulate an unset property and exercise the production default
+    fixture_live_slots = 2;
+    CHECK(nvk_shader_open() == 0, "open shader session");
+    struct s2a_compile_worker_stats slots;
+    s2a_compile_worker_stats(&slots);
+    CHECK(slots.slots == 2, "session passes its configured slot count to the compiler worker");
+    rp_state_reset(); source(); bind_pools(64);
+    fake_array_count = 64;
+    fake_cs_success = 1;
+    struct rp_shader_req q = {.prim = 4};
+    const struct rp_prog *graphics = NULL, *compute = NULL, *again = NULL;
+    int rc = rp_shader_resolve(&q, &graphics);
+    CHECK(rc == 0 && graphics && !graphics->is_compute && compiler_calls == 1,
+          "graphics first use publishes the real compiled program (rc=%d calls=%d)", rc, compiler_calls);
+    if (compiler_calls == 1)
+        CHECK(!pthread_equal(last_compiler_thread, pthread_self()),
+              "graphics live compiler ran on the submitting thread");
+    rc = rp_shader_resolve_compute(&compute);
+    CHECK(rc == 0 && compute && compute->is_compute && compiler_calls == 2,
+          "compute first use publishes the real compiled program (rc=%d calls=%d)", rc, compiler_calls);
+    if (compiler_calls == 2)
+        CHECK(!pthread_equal(last_compiler_thread, pthread_self()),
+              "compute live compiler ran on the submitting thread");
+    CHECK(rp_shader_resolve(&q, &again) == 0 && again == graphics && compiler_calls == 2,
+          "second graphics lookup reuses the published program");
+    CHECK(rp_shader_resolve_compute(&again) == 0 && again == compute && compiler_calls == 2,
+          "second compute lookup reuses the published program");
+    nvk_shader_stop(); rp_shader_reset(); s2a_source_clear();
+    printf("live-compile-thread checks=%d failures=%d\n", checks, failures);
+    return failures ? 1 : 0;
+}
+
+static int fixture_defer_frame(uint64_t *frame) {
+    *frame = 1;
+    return 1;
+}
+
+static int live_compile_nowait_test(void) {
+    fixture_live_compile = 1;
+    fixture_live_slots = 2;
+    fixture_live_nowait = 1;
+    fixture_live_frame_ms = 600;
+    fixture_live_unsafe_ms = 250;
+    fixture_parallel_compile = 1;
+    live_gate_hold = 1;
+
+    CHECK(nvk_shader_open() == 0, "open no-wait session");
+    rp_state_reset(); source(); bind_pools(64); fake_array_count = 64;
+    struct rp_shader_req tri = {.prim = 4, .compile_defer_frame = fixture_defer_frame};
+    struct rp_shader_req points = {.prim = 0, .compile_defer_frame = fixture_defer_frame};
+    const struct rp_prog *p = NULL;
+    CHECK(rp_shader_resolve(&tri, &p) == 1 && !p, "recoverable triangle queues and defers");
+    CHECK(rp_shader_resolve(&points, &p) == 1 && !p, "recoverable point draw queues and defers");
+    CHECK(live_gate_wait(2), "both distinct requests enter actual worker slots before release");
+    struct rp_shader_live_compile_stats stats;
+    rp_shader_live_compile_take(&stats);
+    printf("recoverable draws: queued %llu, deferred %llu, submit interval %.3f ms (legacy frame budget %d ms)\n",
+           (unsigned long long)stats.enqueued, (unsigned long long)stats.pending, stats.wait_ns / 1e6, fixture_live_frame_ms);
+    CHECK(stats.enqueued == 2 && stats.pending == 2 && stats.timeout == 0,
+          "safe draws count two submissions and two deferrals");
+    CHECK(stats.wait_ns < (uint64_t)fixture_live_frame_ms * 500000,
+          "no-wait must bypass the available frame budget while callbacks are gated");
+
+    tri.compile_defer_frame = NULL;
+    CHECK(rp_shader_resolve(&tri, &p) < 0 && !p, "unsafe first use reports deadline failure");
+    rp_shader_live_compile_take(&stats);
+    CHECK(stats.timeout == 1 && stats.pending == 0 && stats.enqueued == 0,
+          "unsafe draw waits on the original worker job and reports timeout, with no safe deferral");
+    live_gate_release();
+    points.compile_defer_frame = NULL;
+    CHECK(rp_shader_resolve(&tri, &p) == 0 && p, "triangle adopts its finished result after the unsafe timeout");
+    CHECK(rp_shader_resolve(&points, &p) == 0 && p, "points adopt their finished result on next use");
+    struct s2a_compile_worker_stats workers;
+    s2a_compile_worker_stats(&workers);
+    CHECK(workers.compiles == 2, "retry publishes the original two results without compiling them again");
+    nvk_shader_stop();
+    CHECK(s2a_compile_worker_stop_bounded(2000, NULL, 0) == 0, "stop retires the no-wait pool");
+    rp_shader_reset(); s2a_source_clear();
+    printf("live-compile-nowait checks=%d failures=%d\n", checks, failures);
+    return failures ? 1 : 0;
+}
+
+static int live_compile_pending_test(int stop) {
+    fixture_live_compile = 1;
+    fixture_live_frame_ms = 0;
+    fixture_live_unsafe_ms = stop ? 20 : 2000;
+    live_gate_hold = 1;
+    CHECK(nvk_shader_open() == 0, "open async session");
+    rp_state_reset(); source(); bind_pools(64); fake_array_count = 64;
+    struct rp_shader_req q = {.prim = 4, .compile_defer_frame = fixture_defer_frame};
+    const struct rp_prog *p = NULL;
+    CHECK(rp_shader_resolve(&q, &p) == 1 && !p, "exhausted safe budget must defer, with no program");
+    CHECK(live_gate_wait(1), "compiler is still gated on worker");
+    CHECK(rp_shader_resolve(&q, &p) == 1 && !p, "second use while pending must not publish a program");
+    struct rp_shader_live_compile_stats stats;
+    rp_shader_live_compile_take(&stats);
+    CHECK(stats.enqueued == 1 && stats.pending == 2, "same pending request must enqueue once (enqueued=%llu pending=%llu)",
+          (unsigned long long)stats.enqueued, (unsigned long long)stats.pending);
+    q.compile_defer_frame = NULL;
+    if (stop) {
+        CHECK(rp_shader_resolve(&q, &p) < 0 && !p, "unsafe hard deadline must report failure, not skip or publish");
+        rp_shader_live_compile_take(&stats);
+        CHECK(stats.timeout == 1 && stats.pending == 0, "unsafe deadline must count timeout separately");
+        // Keep the active translator held while saturating the real worker queue.
+        for (unsigned i = 0; i < S2A_CW_QUEUE_MAX; i++) {
+            uint8_t filler_key[32] = {(uint8_t)i, 0xff};
+            CHECK(s2a_compile_worker_submit_async(1, 1, "{}", 2, filler_key, NULL, 0) == 0,
+                  "queue accepts filler %u while active compile is held", i);
+        }
+        fake_cs_success = 1;
+        CHECK(rp_shader_resolve_compute(&p) < 0 && !p, "full queue must fail a bounded compute first use explicitly");
+        rp_shader_live_compile_take(&stats);
+        CHECK(stats.timeout == 1 && stats.pending == 0 && stats.enqueued == 0,
+              "full queue must not count the rejected compute as queued or skippable");
+        CHECK(nvk_shader_inflight() == 1, "waiting resolver gone but worker retains session admission");
+        nvk_shader_stop();
+        CHECK(nvk_shader_open() < 0, "must not reopen while retired compile is still in provider");
+        live_gate_release();
+        CHECK(s2a_compile_worker_stop_bounded(2000, NULL, 0) == 0, "stopped worker eventually retires");
+        rp_shader_reset();
+        CHECK(nvk_shader_open() == 0, "session may reopen after old worker quiesces");
+        CHECK(rp_shader_resolve(&q, &p) == 0 && p && compiler_calls == 2,
+              "completion from stopped session must not satisfy the same request after reopen");
+        CHECK(rp_shader_resolve_compute(&p) == 0 && p && p->is_compute && compiler_calls == 3,
+              "a compute first use refused by the full queue must be admitted on retry");
+    } else {
+        live_gate_release();
+        CHECK(rp_shader_resolve(&q, &p) == 0 && p && compiler_calls == 1,
+              "deferred result must be installed on re-use without recompiling");
+    }
+    nvk_shader_stop();
+    CHECK(s2a_compile_worker_stop_bounded(2000, NULL, 0) == 0, "stop retires worker");
+    rp_shader_reset(); s2a_source_clear();
+    printf("live-compile-%s checks=%d failures=%d\n", stop ? "stop" : "pending", checks, failures);
+    return failures ? 1 : 0;
+}
+
 int main(int argc, char **argv) {
+    if (argc == 2 && !strcmp(argv[1], "--live-compile-thread")) return live_compile_thread_test();
+    if (argc == 2 && !strcmp(argv[1], "--live-compile-pending")) return live_compile_pending_test(0);
+    if (argc == 2 && !strcmp(argv[1], "--live-compile-nowait")) return live_compile_nowait_test();
+    if (argc == 2 && !strcmp(argv[1], "--live-compile-stop")) return live_compile_pending_test(1);
     if (argc == 2 && !strcmp(argv[1], "--diag-compile")) return diag_compile_test();
     if (argc == 2 && !strcmp(argv[1], "--gs-libpack")) return gs_libpack_test();
+    if (argc == 2 && !strcmp(argv[1], "--cs-libpack")) return cs_libpack_test();
     if (argc == 2 && !strcmp(argv[1], "--compute-warm")) return compute_warm_test();
     if (argc == 2 && !strcmp(argv[1], "--compute-warm-off")) return compute_warm_off_test();
     if (argc == 2 && !strcmp(argv[1], "--legacy-bytes")) {
@@ -1723,6 +2042,7 @@ int main(int argc, char **argv) {
     fake_array_count = 0; fake_compile_error = NULL;
     compute_fast_path_test();
     compute_default_fact_test();
+    compute_ubo_handle_fact_test();
     last_table_test();
     gs_request_test();
     rp_shader_reset(); s2a_source_clear();

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import errno
+import json
 import os
 import re
 from pathlib import Path
@@ -9,7 +10,7 @@ import stat
 
 
 RECOVERY = {
-    "addr_short": "想正常玩，请换一台地址空间更大的设备（比如内存更大的 Mac），或等后续版本改进；游戏照常能启动。",   # Mac 起局宿主报「地址空间不够这款」（build.addr_short_watch 发的不阻塞提示 notice）
+    "addr_short": "这款游戏要的地址范围比这台 Mac 的系统能给 App 的多（和存储空间无关）：想正常玩，请换一台内存更大的 Mac，或等后续版本改进；游戏照常能启动。",   # Mac 起局宿主报「地址空间不够这款」（build.addr_short_watch 发的不阻塞提示 notice）
     "sgrade_upgrading": "等这款的 S 级优化升级做完（游戏上有进度），再点开始游戏；别的游戏照常能玩。",   # 11-17 S 级优化改手动单款升级（sgrade.upgrade_game），升级中只挡这一款
     "ios_install_dir_unwritable": "先试这两步：①在 iPhone 上打开一次 S2Arm，等游戏库界面出来；②回电脑对这款游戏再点一次「推到 iPhone」，会接着已传的部分继续，不用从头来。还是写不进，就要删掉 iPhone 上的 S2Arm App 再重装：先在游戏菜单「存档管理」里导出存档，存到 S2Arm 文件夹以外（比如 iCloud 云盘）；再在 iPhone 桌面长按 S2Arm，删除 App；然后在电脑上的 S2Arm 里对这款游戏再点一次「推到 iPhone」；装好后在「存档管理」里导回存档。电脑上的游戏和 S2Arm 都不用删。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
     "ios_install_no_space": "清出空间后点「重试」。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
@@ -108,15 +109,14 @@ RECOVERY = {
     "xcode_account_missing": "打开 Xcode →「设置」→「账户」，点「+」登录你的 Apple ID（免费的就可以），再点一次「推到 iPhone」；不想登录 Xcode 也可以改用 AltStore 安装。",
     "device_not_ready": "按上面的提示做完，再点一次安装。",
     "device_not_connected": "让你选的那台 iPhone / iPad 连上这台电脑：插上数据线，或解锁后和电脑连同一个 Wi-Fi；第一次连要在设备上点「信任」，并在「设置 → 隐私与安全性 → 开发者模式」打开开发者模式，然后再试。",
-    "device_required": "在装机页选好要装到哪台 iPhone / iPad，再点装机。",
+    "device_required": "在导出确认页勾上要装到的那台 iPhone / iPad，再点「开始」。",
     "signing_failed": "查看本任务日志里签名那一步的报错；确认 Xcode 能用你的账号给这台 iPhone 签名，或改用 AltStore 安装。",
     "device_tunnel_unavailable": "电脑连不上这台 iPhone 的开发者通道（手机通过 Wi-Fi 连着时最常见，不是没解锁）：用数据线把手机直接插到这台电脑（别经过扩展坞或集线器），解锁停在主屏幕，再点一次；还不行就重启一次手机，插上后在手机上重新点「信任」。",
-    "device_locked": "解锁这台 iPhone（保持亮屏、停在主屏幕），再点一次「推到 iPhone」；装机过程中别锁屏。",
-    "game_not_on_device": "要把这款装到这台设备，用「推到 iPhone」（在装机页选好这台）；只想更新原来那台，就连上原来装过这款的那台再点「更新这款」。",   # 「更新这款」只推装过这款的设备（install.push_game onlyInstalled，11-21）
-    "shell_install_required": "在 S2Arm 里先点「安装 S2Arm」把 App 装到这台 iPhone，再对这款点「推到 iPhone」。",   # 通用壳「推到 iPhone」：手机上还没装壳（install.push_game）
+    "device_locked": "解锁这台设备（保持亮屏、停在主屏幕），再点这台的「重试」；装的过程中别锁屏。",
+    "shell_install_required": "先在首位「S2Arm」卡把 App 装到这台设备，装好后点这台的「重试」。",   # 通用壳「推到 iPhone」：手机上还没装壳（install.push_game）
     "phone_app_choice_required": "在 iPhone 总控台里选好这台手机用哪一个 S2Arm（AltStore / SideStore 装的，还是启动器装的），再推游戏；选一次就记住。",   # 同机装着不止一个 S2Arm（install.s2arm_owner choose）
     "phone_app_gone": "在 iPhone 总控台里重新选一次用哪一个 S2Arm：选过的那个已经不在这台 iPhone 上了。",   # phoneChooseApp 选的包不在手机上
-    "shell_update_required": "在 S2Arm 里先点「更新 S2Arm」，把手机上的 App 换成这一版，再对这款点「推到 iPhone」。",   # 通用壳「推到 iPhone」：手机上的壳不是本版
+    "shell_update_required": "先在首位「S2Arm」卡把这台上的 App 更新到这一版，再点这台的「重试」。",   # 通用壳「推到 iPhone」：手机上的壳不是本版
     "device_not_visible": "用数据线把这台 iPhone 连到这台 Mac，解锁后在手机上点「信任」；打开开发者模式（设置 → 隐私与安全性 → 开发者模式，开了要重启手机）；等 Xcode 菜单「窗口 → 设备与模拟器」里出现这台，再点一次「推到 iPhone」。",   # pack/ensure_profile.sh：Xcode 看不到这台、账号上也没登记过它（D-44DP 兜底的盲区，11-16）
     "free_app_limit": "免费 Apple ID 在每台设备上最多同时装 3 个自签 App，这台 iPhone 已经装满：在 iPhone 上长按删掉一个不再玩的自签 App 后重试；或改用付费 Apple 开发者账号（没有这个上限）。",
     "free_appid_limit": "这是 Apple 对免费 Apple ID 的限制：7 天内最多注册 10 个包名，这个账号已经用满；在手机上删 App 不会退还额度。办法：等几天，最早那批包名注册满 7 天就会恢复；或换一个 Apple ID 登录后再装（Mac 在 S2Arm 里登录，Windows 在 Impactor 里登录）；或改用付费 Apple 开发者账号（没有这个限制）。",   # Apple 错误 9120；与 free_app_limit（设备上同时 3 个）是两件事，删 App 无效
@@ -126,9 +126,14 @@ RECOVERY = {
     "image_exec_cert": "现在用的证书是分发（发布）证书，缺「调试权限（get-task-allow）」：通用 S2Arm 里的游戏用它签了打不开。在设置里把出法改成「独立 App」（一个 App 一款游戏）就能玩；或改用 Apple ID 登录签名、换成开发证书。",   # 通用壳 + 分发证书（install.phone_signing 黄字；手机端初启失败页同码）
     "app_bundle_fixed": "你的描述文件是显式 App ID，只有一个包名：每款独立 App 和通用 S2Arm 都只能装成它，装一个会顶掉另一个（存档跟着那个 App 走）。想同时装多款，请让证书发放人给通配（*）的描述文件。",   # devcert.bundle_id 显式描述文件（install.put_app 黄字）
     "free_app_limit_note": "免费 Apple ID 有苹果的限制：同时最多装 3 个自己签的 App（AltStore / SideStore 也算），每 7 天最多注册 10 个 App ID；独立 App 每款占一个。装满了就在 iPhone 上删掉不玩的那个再装。",   # install.put_app 免费账号装独立 App 时的提示（只提示不拦）
+    "save_carried": "新装的独立 App 用的是从旧 App 复制来的存档：进游戏确认进度没问题，再在 iPhone 上删掉旧 App。",   # install.carry_saves：新独立 App 里的存档是从手机上旧包名的 App / 通用壳复制来的（黄字）
+    "save_carry_choose": "在启动器的手机存档里选你要的那一份，还原到新装的独立 App；其余几个 App 里的存档都没动。",   # install.carry_saves：几个 App 都有这款的存档，不替玩家挑（黄字）
+    "save_carry_incomplete": "那个 App 里这款的存档没动：先别删它。在它里面进一次这款游戏、回到主界面后，再从启动器导出到这台手机一次。",   # install.carry_saves：另一个 App 里有这款存档，但索引 / 用户档案拉不全，没复制（黄字）
+    "save_carry_skipped": "旧进度还在原来那个 App 里，一个字节没动：先别删它。",   # install.carry_saves / saves_elsewhere（黄字）
+    "save_carry_failed": "手机连稳（数据线插好、解锁）后，对这款再导出到这台手机一次，会重新复制。",   # install.carry_saves / saves_elsewhere（黄字）
     "signing_server_unreachable": "这台电脑连不上 Impactor 签名要用的登录辅助服务器（mac-ani.jkcoxson.com，Impactor 内置、改不了），已自动重试过一次。检查这台电脑的网络：浏览器能打开这个地址就再点一次「推到 iPhone」；打不开就换个 DNS（如 223.5.5.5 或 1.1.1.1）或开 / 关代理后再装。手机、已装的 App 和存档都不受影响。",   # #3fc02b：plumesign 取 anisette（mac-ani.jkcoxson.com，Impactor v2.7.3 omnisette 写死）时 DNS / 连接失败（impactor.explain）
-    "apple_session_expired": "Apple ID 登录已过期，请重新登录后再装：在装机页点「打开 Impactor」→「设置」，选中你的 Apple ID 点「移除账号」，再点「添加账号」用同一个 Apple ID 重新登录（邮箱、密码、手机上的验证码，输入前切到英文输入法），然后回来再点一次「推到 iPhone」。密码只在 Impactor 里输，S2Arm 不经手。",   # Windows plumesign 恢复保存的会话时 Apple 1100（impactor.explain）；Mac 同类原文归 xcode_account_missing（去 Xcode 重新登录）
-    "apple_not_signed_in": "还没用 Apple ID 登录：点「登录 Apple ID」（装机清单和失败页上都有，也可以在设置 →「签名身份」下面点），在弹出的「用 Apple ID 签名」里填邮箱和密码（你的苹果设备上会弹出验证码），再点一次「推到 iPhone」。密码只用于这次向 Apple 登录，S2Arm 不保存。",   # Mac 通用壳：随包 plumesign 自己的登录面板（launchers/macos AppleLoginViews，按钮名 / 面板名与界面逐字一致；Windows 的 Impactor 说法在 WINDOWS_RECOVERY）
+    "apple_session_expired": "Apple ID 登录已过期，请重新登录后再装：在导出页点「打开 Impactor」→「设置」，选中你的 Apple ID 点「移除账号」，再点「添加账号」用同一个 Apple ID 重新登录（邮箱、密码、手机上的验证码，输入前切到英文输入法），然后回来点这台的「重试」。密码只在 Impactor 里输，S2Arm 不经手。",   # Windows plumesign 恢复保存的会话时 Apple 1100（impactor.explain）；Mac 同类原文归 xcode_account_missing（去 Xcode 重新登录）
+    "apple_not_signed_in": "还没用 Apple ID 登录：点「登录 Apple ID」（导出页和失败那一行都有，也可以在设置 →「签名身份」下面点），在弹出的「用 Apple ID 签名」里填邮箱和密码（你的苹果设备上会弹出验证码），再点这台的「重试」。密码只用于这次向 Apple 登录，S2Arm 不保存。",   # Mac 通用壳：随包 plumesign 自己的登录面板（launchers/macos AppleLoginViews，按钮名 / 面板名与界面逐字一致；Windows 的 Impactor 说法在 WINDOWS_RECOVERY）
     "apple_login_refused": "苹果的登录服务器拒收了这次登录请求（回了「服务暂不可用」，还没到核对账号密码那一步），不是这台电脑的网络、Apple ID 或密码的问题，换网络、换 DNS 也没用。多半是苹果又调整了对第三方签名工具的规则：把 S2Arm 更新到最新版后再登录；最新版仍这样，点「复制错误摘要」发给我们。手机、已装的 App 和存档都没动。",   # 苹果 GSA 回 5xx（11-20 起拒收系统名写 macOS; 的请求：随包 plumesign 补丁 0002 曾这样拼，D-6NB2 / D-KRNJ / #1798）：不是网络问题
     "devcert_unreadable": "要用自己的开发者证书：检查杀毒软件或 Windows 安全中心的「受控文件夹访问」有没有拦 S2Arm（把 S2Arm 加进允许的应用），然后在设置里重新导入证书。没启用过开发者证书可以不管这条。",   # 开发者证书设置读不了（D-BW75 Windows 拒绝访问）：照常按 Apple ID 签名，只说清楚
     "apple_server_unreachable": "这台电脑连不上苹果的服务器（Impactor 登录和签名都要连），不是 Apple ID 或密码的问题。检查这台电脑的网络：浏览器能打开 appleid.apple.com 就再点一次「推到 iPhone」；打不开就换个 DNS（如 223.5.5.5 或 1.1.1.1）或开 / 关代理后再装。手机、已装的 App 和存档都没动。",   # 连不上 *.apple.com（#edc5f5 拆分：网络问题，不让玩家去重登 Apple ID）
@@ -190,6 +195,7 @@ RECOVERY = {
     'phone_app_running': '在 iPhone 上从后台划掉 S2Arm（或回到主屏后等几秒），再点一次还原。',
     'save_backup_failed': '确认后再点一次就照装：存档没备份，万一覆盖出问题可能丢档；想先备份就把手机解锁、数据线插稳后再点一次。',
     'cert_revoke_confirm': '点「仍然继续」会新建证书照签。不想动现有证书的话，点「改用已有证书」，把在 AltStore / SideStore 导出的 .p12 导进来，就不用新建。',
+    'app_bundle_replace_confirm': '点「仍然继续」照装。不想顶掉的话，换一份通配描述文件（App ID 以 .* 结尾），或改用 Apple ID 签名，或把几款都装进通用 S2Arm。',
     'device_space_low': '点「仍然继续」照传：手机报的空闲不含系统随时能清掉的空间，实际多半放得下，真写满了会停下并说明还差多少；也可以先在「设置 → 通用 → iPhone 储存空间」腾出空间。',
     'container_stale': '先给点名的游戏各「打 iPhone 包」一次，再装到 iPhone；也可以确认后这次先不带它们照装，它们的存档和资源留在手机上，重新出包再装就回来。',
     'container_incompatible': '这款没法和手机上已有的游戏放进同一个 App：先从 iPhone 删掉不兼容的那款。',
@@ -226,7 +232,7 @@ DEVELOPMENT_RECOVERY = {
 #   Windows 上「拒绝访问」多半是文件 / 文件夹正被别的程序拿着（资源管理器开着、自签工具还拿着上次的 S2Arm.ipa、杀毒软件在扫），
 #   其次是「受控文件夹访问」（Windows 安全中心 → 病毒和威胁防护 → 勒索软件防护）拦了往文档 / 桌面写
 WINDOWS_RECOVERY = {
-    "apple_not_signed_in": "Impactor 里还没登录 Apple ID：在装机页点「打开 Impactor」→「设置」→「添加账号」，用你的 Apple ID 登录（邮箱、密码、手机上的验证码，输入前切到英文输入法）；已经存了几个账号的，选中要用的那个（或移除后重新添加）。然后回来再点一次「推到 iPhone」。密码只在 Impactor 里输，S2Arm 不经手。",   # Impactor 里没有选中的 Apple ID（从没登录 / 存了几个没选中，#edc5f5 从登录过期拆出）
+    "apple_not_signed_in": "Impactor 里还没登录 Apple ID：在导出页点「打开 Impactor」→「设置」→「添加账号」，用你的 Apple ID 登录（邮箱、密码、手机上的验证码，输入前切到英文输入法）；已经存了几个账号的，选中要用的那个（或移除后重新添加）。然后回来点这台的「重试」。密码只在 Impactor 里输，S2Arm 不经手。",   # Impactor 里没有选中的 Apple ID（从没登录 / 存了几个没选中，#edc5f5 从登录过期拆出）
     "permission_denied": "关掉打开着这个文件夹的资源管理器窗口和自签工具（如 Sideloadly），稍等杀毒软件扫完再重试；"
                          "若开了「受控文件夹访问」（Windows 安全中心 → 病毒和威胁防护 → 勒索软件防护），把 S2Arm 加进「允许的应用」。",
     "input_permission": "关掉正在使用这个游戏文件的程序再重试；若开了「受控文件夹访问」（Windows 安全中心 → 病毒和威胁防护 → 勒索软件防护），"
@@ -390,7 +396,10 @@ PLAYER_REASON = {
     "resource_preparation_failed": "资源准备失败。",
     "device_install_failed": "设备安装失败。",
     "package_failed": "出包未完成。",
+    "input_missing": "找不到游戏文件：选中的游戏文件已不在原处。",
     "windows_mandatory_aslr": "Windows 的强制 ASLR 开着：出包工具起不了子进程。",
+    "app_control_blocked": "被 Windows 拦下：Windows 的应用控制或杀毒软件没让 S2Arm 自带的工具运行。",
+    "win_metal_missing": "缺少Windows版Metal工具：未找到能报告有效版本的官方Windows版Metal编译器。",
 }
 
 
@@ -402,6 +411,17 @@ def player_reason(code):
 # 只收工具 / 系统原样会打的字样，不从散文猜。
 LOG_CAUSES = (
     (r"WinError 206|filename or extension is too long|文件名或扩展名太长", "windows_path_too_long"),  # 非玩家句
+    # 起我方自带工具被拒（D-GVDA / #1912：Windows 0.6.3，出包「准备资源」起随包预编的 Yaz0 编码器 Binaries\Prepare\codecs\yaz0enc-*.exe 报 WinError 5；
+    #   同一台机器建 RomFS 目录链接（软链、junction）也报 WinError 5，普通拷文件照常）：安全软件按行为拦下，同 4551 / 1260 / 225 / 226（winproc.APP_CONTROL_BLOCKED）
+    #   归 app_control_blocked，玩家拿到「去安全中心 / 杀毒软件放行安装文件夹」那句，而不是笼统的「出包未完成」。编排层子进程里出的错只剩文字，按回溯原文认：
+    #   起进程（subprocess _execute_child）被拒，或建目录链接（roots._junction）被拒
+    (r"in _execute_child\b[\s\S]{0,400}?\[WinError (?:5|4551|1260|225|226)\]|in _junction\b[\s\S]{0,400}?\[WinError 5\]", "app_control_blocked"),  # 非玩家句
+    # 编着色器库前核工具读不到 Windows 版 metal.exe 的版本（translator/dmsh_chain.py tools_now，D-TYCN）：起进程被拒 → 被 Windows 拦下；
+    #   文件不在 / 起来了没打版本 → 缺少 Windows 版 Metal 工具（去苹果开发者下载页装 / 重装）。原先落笼统的「出包未完成」加一句开发者口吻的 --update-lock 提示
+    (r"metal_(?:macosx|iphoneos): lock .{0,120}? / actual missing \(start blocked", "app_control_blocked"),  # 非玩家句
+    (r"metal_(?:macosx|iphoneos): lock .{0,120}? / actual missing", "win_metal_missing"),  # 非玩家句
+    # 解包读原件时路径不在（pack/nx_unpack 打的分类行；诊断#24fb13：原先按阶段落成 content_invalid「文件没下完整」，原件其实是挪走了 / 盘没连上）
+    (r"【原因 source_missing】", "input_missing"),  # 非玩家句
     # 随包 bash 起子进程刚建就退（#1762：MSYS 原文「dofork: child -1 - forked process … died unexpectedly, retry 0, exit code 0xC0000142」，连试 6 次）：
     #   Windows「强制映像随机化（强制性 ASLR）」开着，MSYS 的 fork 要在子进程同一地址装 DLL，被系统强制换址后起不来。玩家关回系统默认即可出包
     (r"dofork: child -1 - forked process \d+ died unexpectedly, retry \d+, exit code 0xC0000142", "windows_mandatory_aslr"),
@@ -668,11 +688,38 @@ def player_words(code, log=None, texts=()):
     return player_reason(code), None
 
 
+def missing_prebuilt(env=None):
+    """随包预编件清单（S2A_PREBUILT_TOOLS/prepare.json，launchers/windows/bundle_prepare_win.py：逐文件大小 + sha256）里列着、盘上却没有或大小不对的文件
+    → 相对路径列表；没有清单 / 读不了 → []。只在失败归因时查（启动前不做文件校验）。D-VPXS / #1912（Windows 0.6.3）：随包的 rewriter\\s2a-rewrite.exe
+    不在了，改写阶段退回现编、报「CMake 未就绪」；同一台机器上另一个随包工具起进程被拒（D-GVDA）——杀毒软件隔离 / 清空了随包工具"""
+    tools = (env or os.environ).get("S2A_PREBUILT_TOOLS")
+    if not tools:
+        return []
+    root = Path(tools)
+    try:
+        files = json.loads((root / "prepare.json").read_text(encoding="utf-8"))["files"]
+        items = list(files.items())
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return []
+    gone = []
+    for rel, entry in items:
+        path = root / str(rel).replace("\\", "/")
+        try:
+            if not path.is_file() or (isinstance(entry, list) and entry and path.stat().st_size != entry[0]):
+                gone.append(str(rel))
+        except OSError:
+            gone.append(str(rel))
+    return gone
+
+
 def classify_failure(phase, log, texts=()):
     """Mac 准备（build_tool_failure）与 iPhone 打包（ipa.oneclick_failure，Mac / Windows 同一份）共用：
     日志确凿根因优先，其次阶段映射，判不出 package_failed。返回 (码, 写进 internal 的归因说明)。"""
     chunks = gather_evidence(log, texts)
     read = "；".join("%s（尾 %d 字节）" % (label, len(text.encode("utf-8"))) for label, text in chunks if label != "原因") or "无日志"  # 非玩家句
+    gone = missing_prebuilt()
+    if gone:   # 随包工具不见了：后面各阶段的报错（退回现编缺编译器、起不来）都是它的连带，先认它
+        return "app_control_blocked", "归因 app_control_blocked：随包预编件缺 / 大小不对 %d 个（%s），多半被杀毒软件隔离；读过 %s" % (len(gone), "、".join(gone[:6]), read)  # 非玩家句
     hit = log_cause(chunks, log)
     if hit[0]:
         code, label, line, why = hit

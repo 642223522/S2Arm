@@ -75,6 +75,42 @@ MPL-2.0（`../LICENSE-apple-codesign-MPL-2.0.txt`）。
   2. `src/screen/windows/login_window.rs`：提交登录记 `S2A_LOGIN_SUBMIT`、成功记 `S2A_LOGIN_OK`、失败记 `S2A_LOGIN_FAILED two_factor=<是否在验证码这步> <原因>`。不记邮箱和密码。
 - S2Arm 启动器打开随包 Impactor 时把 `S2A_IMPACTOR_LOG` 设成 `<私有目录>/logs/impactor-gui.log`（超过 1 MB 先改名为 `.old.log`，只留两份），诊断包照收 `logs/*.log`、同一套脱敏。
 
+## 0005-provision-with-login-identity.patch
+
+- 现象（11-21 起）：Mac 启动器 / Windows Impactor 登录 Apple ID，密码通过、验证码也输了，随后报
+  `Authentication SRP error -22410: This action could not be completed. Please try again.`（#1794；诊断 D-R2TK 的 plumesign 原始输出：
+  `S2A_SRP_PROTOCOL s2k` → 要验证码 → 输完码 → -22410，被拒的是验证码之后那次重新登录）。同一天 SideStore / GetMoreRam 也在报同一个码
+  （SideStore/SideStore#1749、#1744）。
+- 原因：苹果只信任「开通 anisette 时的机器身份」与「登录时发的 `X-Mme-Client-Info`」是同一台机器。我们和 anisette 服务器开通（start / end provisioning）
+  时用的是服务器自己报的身份（默认服务器 `<MacBookPro13,3> <Mac OS X;10.12.6;16G29>`），而 0002 起登录、验证码、开发者服务发给苹果的是本机身份
+  （Mac 读本机机型和系统，Windows 用一台固定的真 Mac），两边从来不一致；11-21 前苹果不核，之后核了。SideStore#1749 有人逐步实测：改了 Client Info
+  却没重新开通（adi.pb 是旧身份开的）→ -22410；重置开通数据、在同一份身份下重新开通 → 登录成功。
+- 改法：
+  1. 机器身份（`apple_client_info()` / `apple_user_agent()`）从 `plume_core` 挪进 `3rdparty/omnisette/src/identity.rs`，`plume_core::auth::anisette_data`
+     原名转出——开通和之后每个发给苹果的请求只有这一个来源。
+  2. `remote_anisette_v3.rs`：取到服务器的 `client_info` 后改用同一份本机身份开通（`provisioning_identity`），开通后生成的头也是它；
+     日志写一行 `S2A_ANISETTE_IDENTITY server <服务器报的> replaced by <实际用的>`。
+  3. `lib.rs` `state_file_name`：开通状态按服务器 + 身份分文件（`state-<身份指纹>.plist`、`state-<主机>-<身份指纹>.plist`，指纹是身份串与 UA 的
+     SHA-256 前 4 字节）。旧版按服务器身份开的 `state.plist` 不再沿用（文件留着不删），身份变了（换机器、升级系统）自动重新开通，
+     等于替玩家做一次 SideStore 的「Reset adi.pb」。代价：升级后已登录的账号要重新输一次密码和验证码（本来也登不上了）。
+  4. Impactor 设置里「重置 anisette 数据」照旧删 `state*.plist`（注释更新）。
+- 检查：`check/identity_check.rs`（8 项）：开通身份 = 登录身份（服务器报什么都不用）；发给苹果的 `X-Mme-Client-Info` / UA 与开通的同源；
+  状态文件名带身份指纹、默认与备用分开、旧名不再沿用、同一身份名字固定。负对照：开通改回用服务器身份时 ①② 三项红。
+- 协议层自测（不带账号）：全新数据目录用测试邮箱登录，开通在默认服务器上以本机身份走通、生成 `state-<指纹>.plist`，SRP init 照常拿到苹果回包；
+  拿旧版开通过的数据目录跑新版，旧 `state.plist` 原样不动、另开一份按身份命名的状态。
+- 没有在真账号上实测（要账号本人的密码和验证码）：判据是上面的检查、协议层自测和 SideStore 的同类实测记录。
+
+## 自编产物（v2.7.3-s2a6，补丁 0001 + 0002 + 0003 + 0004 + 0005；s2a6 加 0005，plumesign 与 Impactor 两端都重编）
+
+| 平台 | 文件 | SHA-256 | Rust |
+|---|---|---|---|
+| Windows | plumesign-windows-x86_64.exe | 0fd734c19fe9fa47f7a2605ce7f227437f6b9df6f7835b8bb0c777015d26c31f | 1.99.1 |
+| Windows | Impactor-windows-x86_64-portable.exe | 188e49ea40f0384c0a32988909efc3fe95dbd05842a3293db28917b23ada212f | 1.99.1 |
+| macOS | plumesign-macos-universal | a4c94b2132a7b6bc8e583d03b10831ca48aa91187ff2f5a61a39534ec1bfc19a | 1.94.0 |
+
+两端编之前补丁检查程序（login_fallback_check、srp_protocol_check、two_factor_check、identity_check）均全过；两端产物各用测试邮箱登录一次，
+日志 `S2A_ANISETTE_IDENTITY` 显示开通改用本机身份（Windows 是固定的那台真 Mac），开通在默认服务器上走通、生成按身份命名的状态文件。
+
 ## 自编产物（v2.7.3-s2a5，补丁 0001 + 0002 + 0003 + 0004；s2a5 只加 0004，只改窗口版 Impactor）
 
 | 平台 | 文件 | SHA-256 | Rust |

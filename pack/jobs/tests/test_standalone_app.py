@@ -129,12 +129,15 @@ class PutApp(unittest.TestCase):
         self.c = ctx(self.t)
         self.pack = self.t / "pack"; self.pack.mkdir()
         (self.pack / "manifest.json").write_text(json.dumps({"index_sha256": "P1"}))
-        self.calls = dict(install=[], push=[], snap=[], assemble=[])
+        self.calls = dict(install=[], push=[], snap=[], assemble=[], put=[], rm=[])
+        self.fail_put = None   # 写到这个相对路径时抛错（复制写到一半失败）
+        self.others, self.saves = [], {}   # 手机上别的 S2Arm（installed_s2arm）/ 各 App 里有这款存档的：{包名: 备份目录名}
+        self.remote = {}   # 手机上各 App 的文件：{包名: {文档根下的相对路径: 内容}}（get / get_tree 读它）
         self.ph = self.phone()
         self.gdir = self.t / "games" / "Game One"; self.gdir.mkdir(parents=True)
 
     def phone(self):
-        calls = self.calls
+        calls, outer = self.calls, self
         class Ph:   # 方法按 self 取包名（同真的手机类）：put_app 复制出的独立 App 对象推到自己的包名
             key = udid = "UDID1"
             bid, pending = SHELL_BID, None
@@ -142,7 +145,24 @@ class PutApp(unittest.TestCase):
             def __init__(self): self.info = dict(device="d", free=True)
             def pull_kept(self, g): return 0
             def before_push(self, packs): pass
-            def client(self, w): return object()
+            def client(self, w):
+                me = self.bid
+                files = outer.remote.get(me, {})
+                def get(rel, dst, t=None):
+                    if rel not in files: return False
+                    Path(dst).write_bytes(files[rel]); return True
+                def get_tree(rel, dst):
+                    for k, v in files.items():
+                        if k.startswith(rel + "/"):
+                            f = Path(dst) / k[len(rel) + 1:]; f.parent.mkdir(parents=True, exist_ok=True); f.write_bytes(v)
+                    return True, ""
+                def put(src, rel):
+                    if outer.fail_put and rel.endswith(outer.fail_put): raise install.Failure("断了", code="device_transfer_failed")
+                    calls["put"].append((me, rel, Path(src).read_bytes()))
+                def ls(rel):
+                    names = sorted({k[len(rel) + 1:].split("/")[0] for k in files if k.startswith(rel + "/")})
+                    return names or None
+                return types.SimpleNamespace(put=put, rm=lambda rel: calls["rm"].append((me, rel)) or (True, ""), get=get, get_tree=get_tree, ls=ls)
             def install(self, ipa, games, steps=True, bid=None):
                 with zipfile.ZipFile(ipa) as z:
                     calls["install"].append((bid, sorted(z.namelist())))
@@ -166,7 +186,9 @@ class PutApp(unittest.TestCase):
         with patch.object(install, "ios_pack", lambda c, g: self.pack), patch.object(packer, "assemble", assemble), \
                 patch.object(packer, "program_locks", lambda c, g: contextlib.nullcontext()), patch.object(rewrite_refresh, "refresh_ios", lambda c, g: None), \
                 patch.object(sgrade_bf, "rechain_ios", lambda c, g: "skip"), patch.object(install, "push_mods", lambda c, ph, g, m: {"m1": "fp"}), \
-                patch.object(install, "snapshot_phone_saves", lambda c, ph, g: self.calls["snap"].append((ph.bid, ph.standalone, g)) or {}), \
+                patch.object(install, "snapshot_phone_saves", lambda c, ph, g: self.calls["snap"].append((ph.bid, ph.standalone, g)) or
+                             ({g[0]: self.saves[ph.bid]} if ph.bid in self.saves else {})), \
+                patch.object(install, "installed_s2arm", lambda c, ph: [dict(bundleId=b, team=TEAM) for b in self.others]), \
                 patch.object(install, "app_meta", lambda c, g: (self.gdir, "Game One", "1.2.0")):
             return install.put_app(self.c, gid, ph or self.ph, steps=False)
 
@@ -195,11 +217,121 @@ class PutApp(unittest.TestCase):
         self.assertEqual(out["signMode"], "appleId"); self.assertEqual(len(out["nextSteps"]), 1, "直装：只给 Apple ID 那段，不给导入那步")
         self.assertIsNone(self.c.app_installed, "推完资源：失败页不说「App 已装上、资源没推完」")
 
+    OLD = "io.s2arm.games.ABCDE12345"   # 0.6.4 前导出的独立 App 经 AltStore / SideStore 签成的包名（装哪款都是它）
+
+    def backup(self, name, data=b"save-1"):
+        d = layout.path(self.c, G1, "save_backup", name); (d / "0/user").mkdir(parents=True)
+        (d / "0/user/slot.bin").write_bytes(data); (d / install.PHONE_SAVE_MARK).write_text("{}")
+        return name
+
+    def old_app_index(self, index=True, profile=True):
+        """旧 App 里这款的存档索引与用户档案（文档根 Documents/games/<号>/S2A/ryujinx/ 下）"""
+        d = f"Documents/games/{G1}/S2A/ryujinx"
+        self.remote[self.OLD] = {**({f"{d}/bis/system/save/8000000000000000/0/imkvdb.arc": b"IMKV-idx"} if index else {}),
+                                 **({f"{d}/system/Profiles.json": b'{"profiles":[]}'} if profile else {})}
+
+    def test_carries_old_app_save_into_new_app(self):
+        # 新 App 里没有这款的存档、手机上旧包名的 App 里有：存档文件 + 存档索引 + 用户档案三样一起复制进新 App（记号文件不复制），那边不动、结果带来源
+        self.others, self.saves = [self.OLD], {self.OLD: self.backup("20261121-010101")}
+        self.old_app_index()
+        out = self.run_put()
+        self.assertEqual(self.calls["snap"], [(APP1, True, [G1]), (self.OLD, False, [G1])], "先拉新 App、再拉旧 App 的这款存档")
+        d = f"Documents/games/{G1}/S2A/ryujinx"
+        self.assertEqual(self.calls["put"], [(APP1, f"{d}/bis/user/save/0/user/slot.bin", b"save-1"),
+                                             (APP1, f"{d}/bis/system/save/8000000000000000/0/imkvdb.arc", b"IMKV-idx"),
+                                             (APP1, f"{d}/system/Profiles.json", b'{"profiles":[]}')])
+        self.assertEqual(out["savesFrom"], self.OLD)
+        self.assertIn("save_carried", [d["code"] for d in self.c.diagnostics])
+
+    def test_save_id_2_and_second_user_copied_verbatim(self):
+        # 旧 App 里这款的索引指向存档号 2、档案里有两个用户：三处原样复制（索引 / 档案逐字节相同），存档号 2 的目录整个带过去。
+        #   存档号是几、用户是谁都由索引和档案决定，整份原样拷过去新 App 里就一样（多用户 / 存档号非 1 真机未验，这条单测钉住）
+        d = layout.path(self.c, G1, "save_backup", "20261121-030303")
+        for sid, data in (("0000000000000001", b"user-a"), ("0000000000000002", b"user-b")):
+            (d / sid / "0").mkdir(parents=True); (d / sid / "0" / "slot.bin").write_bytes(data)
+        (d / install.PHONE_SAVE_MARK).write_text("{}")
+        index = b"IMKV" + b"\x00" * 8 + b"IMEN-save-2-user-b" + bytes(range(64))
+        profile = b'{"profiles":[{"user_id":"00000000000000010000000000000000"},{"user_id":"8f2e0c3a1b9d4e7f6a5b4c3d2e1f0a9b"}],"last_opened":"8f2e0c3a1b9d4e7f6a5b4c3d2e1f0a9b"}'
+        root = f"Documents/games/{G1}/S2A/ryujinx"
+        self.remote[self.OLD] = {f"{root}/bis/system/save/8000000000000000/0/imkvdb.arc": index, f"{root}/system/Profiles.json": profile}
+        self.others, self.saves = [self.OLD], {self.OLD: "20261121-030303"}
+        out = self.run_put()
+        got = {rel: data for b, rel, data in self.calls["put"] if b == APP1}
+        self.assertEqual(got, {f"{root}/bis/user/save/0000000000000001/0/slot.bin": b"user-a",
+                               f"{root}/bis/user/save/0000000000000002/0/slot.bin": b"user-b",
+                               f"{root}/bis/system/save/8000000000000000/0/imkvdb.arc": index,
+                               f"{root}/system/Profiles.json": profile})
+        self.assertEqual(out["savesFrom"], self.OLD)
+
+    def test_old_app_without_index_or_profile_not_copied(self):
+        # 旧 App 有存档文件但缺索引 / 用户档案：拷过去游戏认不出，整份不复制（不留半套），黄字说清、旧 App 别删
+        for index, profile in ((False, True), (True, False)):
+            self.calls["put"].clear(); self.c.diagnostics.clear()
+            self.others, self.saves = [self.OLD], {self.OLD: self.backup(f"20261121-01010{int(index)}")}
+            self.old_app_index(index=index, profile=profile)
+            out = self.run_put()
+            self.assertEqual((self.calls["put"], "savesFrom" in out), ([], False), (index, profile))
+            self.assertIn("save_carry_incomplete", [d["code"] for d in self.c.diagnostics])
+
+    def test_new_app_with_profile_not_overwritten(self):
+        # 新 App 里没有存档文件、却已有用户档案（起过这款）：不写，说清旧进度还在旧 App
+        self.others, self.saves = [self.OLD], {self.OLD: self.backup("20261121-010101")}
+        self.old_app_index()
+        self.remote[APP1] = {f"Documents/games/{G1}/S2A/ryujinx/system/Profiles.json": b"mine"}
+        out = self.run_put()
+        self.assertEqual((self.calls["put"], "savesFrom" in out), ([], False))
+        self.assertIn("save_carry_skipped", [d["code"] for d in self.c.diagnostics])
+
+    def test_copy_failure_rolls_back_all_three(self):
+        # 写到一半（档案那步）断了：已写的存档文件、索引连同档案三处整个删掉，不留半套；黄字说已撤回
+        self.others, self.saves = [self.OLD], {self.OLD: self.backup("20261121-010101")}
+        self.old_app_index()
+        self.fail_put = "system/Profiles.json"
+        out = self.run_put()
+        d = f"Documents/games/{G1}/S2A/ryujinx"
+        self.assertEqual(sorted(self.calls["rm"]), sorted([(APP1, f"{d}/bis/user/save"), (APP1, f"{d}/bis/system/save"), (APP1, f"{d}/system/Profiles.json")]))
+        self.assertFalse("savesFrom" in out)
+        codes = [x["code"] for x in self.c.diagnostics]
+        self.assertIn("save_carry_failed", codes); self.assertNotIn("save_carried", codes)
+
+    def test_new_app_has_save_says_old_progress_elsewhere(self):
+        # 新 App 里已有这款存档：不复制、不拉别的 App 的文件；别的 App 里也有这款存档就说一句（只 ls 看目录在不在）
+        self.others, self.saves = [self.OLD], {APP1: self.backup("20261121-020202")}
+        self.remote[self.OLD] = {f"Documents/games/{G1}/{install.SAVE_REL}/0000000000000001/0/x": b"s"}
+        out = self.run_put()
+        self.assertEqual((self.calls["snap"], self.calls["put"], "savesFrom" in out), ([(APP1, True, [G1])], [], False))
+        self.assertIn("save_carry_skipped", [d["code"] for d in self.c.diagnostics])
+
+    def test_no_carry_when_new_app_has_save(self):
+        # 新 App 里已有这款的存档：不碰（不去拉别的 App、不写）
+        self.others, self.saves = [self.OLD], {APP1: self.backup("20261121-020202"), self.OLD: self.backup("20261121-010101")}
+        out = self.run_put()
+        self.assertEqual((self.calls["snap"], self.calls["put"], "savesFrom" in out), ([(APP1, True, [G1])], [], False))
+
+    def test_two_sources_not_chosen_for_player(self):
+        # 旧 App 和通用壳都有这款的存档：不替玩家挑，不写，黄字说清去手机存档里选
+        self.others, self.saves = [self.OLD, SHELL_BID], {self.OLD: self.backup("20261121-010101"), SHELL_BID: self.backup("20261121-030303", b"save-2")}
+        out = self.run_put()
+        self.assertEqual((self.calls["put"], "savesFrom" in out), ([], False))
+        self.assertIn("save_carry_choose", [d["code"] for d in self.c.diagnostics])
+
+    def test_no_other_app_nothing_carried(self):
+        out = self.run_put()
+        self.assertEqual((self.calls["put"], "savesFrom" in out), ([], False))
+
     def test_explicit_profile_replaces_shell_record(self):
         # 显式描述文件：独立 App 只能用它那一个包名 = 通用壳的包名，装上就顶掉了壳——壳号与各款清掉、apps 里同包名的旧款去掉，结果照实说
         layout.save_device(self.c, "UDID1", dict(shellId="SID2", bundleId="com.acme.one", games={G2: {}}, apps={G3: dict(bundleId="com.acme.one")}))
         self.ph.bid = "com.acme.one"
         with use_devcert(self.c, distribution=True, bundle="com.acme.one", appid=f"{TEAM}.com.acme.one"):
+            # #1941：装前先问——会顶掉 G3 那款和通用 S2Arm；没确认不装、记录不动
+            with self.assertRaises(Failure) as e:
+                self.run_put()
+            self.assertEqual(e.exception.code, "app_bundle_replace_confirm")
+            self.assertIn("通用 S2Arm", str(e.exception)); self.assertIn("com.acme.one", str(e.exception))
+            self.assertEqual(self.calls["snap"], [])
+            self.assertEqual(sorted(layout.load_device(self.c, "UDID1")["apps"]), [G3])
+            self.c.r["acceptBundleReplace"] = True
             out = self.run_put()
         rec = layout.load_device(self.c, "UDID1")
         self.assertEqual((sorted(rec["apps"]), rec["shellId"], rec["games"]), ([G1], "", {}))
@@ -223,15 +355,17 @@ class PutApp(unittest.TestCase):
         with patch.object(downstream, "requested", lambda c, g: None), patch.object(install, "ios_pack", lambda c, g: self.pack), \
                 patch.object(install, "phone_for", lambda c: "PH"), patch.object(install, "push_phone", lambda c: "PUSH"), \
                 patch.object(install, "put_app", lambda c, g, ph: seen.append(("app", g, ph))), \
-                patch.object(install, "push_game", lambda c, g, ph: seen.append(("shell", g, ph))):
-            self.c.r = dict(gameId=G1); install._install(self.c)
+                patch.object(install, "push_game", lambda c, g, ph: seen.append(("shell", g, ph)) or {}), \
+                patch.object(install, "write_s2arm_readme", lambda folder, lang: None), \
+                patch.object(install, "ensure_shell_ipa", lambda c: seen.append(("shellIpa",)) or Path("S2Arm.ipa")):
+            self.c.r = dict(gameId=G1); install._install(self.c)   # 通用壳推到手机：推完也在「S2Arm 游戏包」备本版 S2Arm.ipa（11-21），独立 App 不备
             install.layout_set(jobcase.fake_context(self.t, r=dict(layout="standalone", gameId=G1)))
             install._install(self.c)
-            with patch.object(install, "export_app", lambda c, g: seen.append(("exportApp", g))), patch.object(install, "export_s2arm", lambda c, g: seen.append(("s2arm", g))):
+            with patch.object(install, "export_app", lambda c, g: seen.append(("exportApp", g))), patch.object(install, "export_s2arm", lambda c, g: seen.append(("s2arm", g)) or {}):
                 self.c.r = dict(gameId=G1, mode="export"); install._install(self.c)   # 独立 App 导出：ipa + .s2arm + README 进游戏文件夹
                 install.layout_set(jobcase.fake_context(self.t, r=dict(layout="shell", gameId=G1)))
-                install._install(self.c)   # 通用壳导出照旧 .s2arm 两件套
-        self.assertEqual(seen, [("shell", G1, "PUSH"), ("app", G1, "PH"), ("exportApp", G1), ("s2arm", G1)])
+                install._install(self.c)   # 通用壳导出：.s2arm 两件套 + 同文件夹本版 S2Arm.ipa（#502），独立 App 导出不放
+        self.assertEqual(seen, [("shell", G1, "PUSH"), ("shellIpa",), ("app", G1, "PH"), ("exportApp", G1), ("shellIpa",), ("s2arm", G1)])
 
 
 class ShellOwner(unittest.TestCase):
@@ -250,6 +384,11 @@ class ShellOwner(unittest.TestCase):
             self.assertTrue(install.STANDALONE_BID.fullmatch(b), b)
         for b in (SHELL_BID, SHELL_BID + ".s2", "io.s2arm.games", "io.s2arm.games.abcde12345.mysuffix"):
             self.assertFalse(install.STANDALONE_BID.fullmatch(b), b)
+
+    def test_sideloaded_new_export_not_counted_as_shell(self):
+        """0.6.4 导出包经 AltStore / SideStore 签成 io.s2arm.games.app.<号>.<团队>，设备记录里没有：按包名形状排除，只剩通用壳、不让玩家选"""
+        with patch.object(self, "ROWS", [(SHELL_BID, "S2Arm", TEAM), (f"io.s2arm.games.app.{G1}.{TEAM}", "S2Arm", TEAM), (APP1, "S2Arm", TEAM)]):
+            self.assertEqual(self.owner(dict(shellId="S1", bundleId=SHELL_BID)), ("launcher", SHELL_BID))
 
     def test_standalone_apps_not_counted(self):
         rec = dict(shellId="S1", bundleId=SHELL_BID)

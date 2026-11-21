@@ -339,7 +339,7 @@ import S2ArmAppleAdapter
                 }
                 let dropdown = LauncherDropdownState()
                 let padFocus = PadFocus()
-                let page = AnyView(ExportView(model: model, covers: CoverCache(), game: game, install: {})
+                let page = AnyView(ExportView(model: model, covers: CoverCache(), game: game)
                     .environmentObject(padFocus).padScope("main", padFocus)
                     .environment(\.launcherDropdownHost, dropdown)
                     .background(LauncherWindowMaterial()).foregroundStyle(LauncherTheme.Colors.text).preferredColorScheme(.dark)
@@ -374,7 +374,7 @@ import S2ArmAppleAdapter
         for language in [Lang.zh, .en] {
             for width: CGFloat in [800, 1120, 1440] {
                 let padFocus = PadFocus()
-                let page = AnyView(ExportView(model: fixture.model, covers: CoverCache(), game: game, install: {})
+                let page = AnyView(ExportView(model: fixture.model, covers: CoverCache(), game: game)
                     .environmentObject(padFocus).padScope("main", padFocus).frame(width: width, height: 630))
                 let (host, window) = try await render(page, fixture: fixture, language: language)
                 fixture.navigation.source.controllers = { [] }; fixture.navigation.attach(window)
@@ -431,12 +431,12 @@ import S2ArmAppleAdapter
         fixture.model.refresh()
         for _ in 0..<100 where fixture.model.games.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
         let game = try XCTUnwrap(fixture.model.games.first)
-        fixture.model.selfSignAfterPack.insert(game.id)
+        fixture.model.exportAfterPack[game.id] = ExportPlan(sign: nil, devices: [])   // 导出确认页要先出包的那一步：完成页照导出写
         for language in [Lang.zh, .en] {
             for width: CGFloat in [800, 1120, 1440] {
                 fixture.model.session = nil
                 let focus = PadFocus()
-                let reference = AnyView(ExportView(model: fixture.model, covers: covers, game: game, install: {})
+                let reference = AnyView(ExportView(model: fixture.model, covers: covers, game: game)
                     .environmentObject(focus).padScope("main", focus).background(Color.black)
                     .frame(width: width, height: 630))
                 let (referenceHost, referenceWindow) = try await render(reference, fixture: fixture, language: language)
@@ -485,40 +485,6 @@ import S2ArmAppleAdapter
                     }
                     try snapshot(host, "self-sign-\(language.code)-\(Int(width))-\(state)")
                 }
-            }
-        }
-    }
-
-    func testExportIosAfterPackPickerShowsBothBranches() async throws {
-        let fixture = try SettingsFixture()
-        defer { fixture.remove() }
-        let saved = fixture.model.iosAfterPack
-        defer { fixture.model.iosAfterPack = saved }
-        if !fixture.model.exportTargets.contains(.ios) { fixture.model.toggleExport(.ios) }
-        fixture.model.refresh()
-        for _ in 0..<100 where fixture.model.games.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
-        let game = try XCTUnwrap(fixture.model.games.first)
-        for language in [Lang.zh, .en] {
-            for branch in ["install", "export"] {
-                fixture.model.iosAfterPack = branch
-                let padFocus = PadFocus()
-                let page = AnyView(ExportView(model: fixture.model, covers: CoverCache(), game: game, install: {})
-                    .environmentObject(padFocus).padScope("main", padFocus).frame(width: 1120, height: 720))
-                let (host, window) = try await render(page, fixture: fixture, language: language)
-                fixture.navigation.source.controllers = { [] }; fixture.navigation.attach(window)
-                defer { fixture.navigation.detach(); window.close() }
-                if let scroll = scrollViews(in: host).first, let document = scroll.documentView {
-                    let clip = scroll.contentView
-                    clip.scroll(to: CGPoint(x: 0, y: document.isFlipped ? max(0, document.bounds.height - clip.bounds.height) : 0))
-                    scroll.reflectScrolledClipView(clip)
-                }
-                try await Task.sleep(for: .milliseconds(70))
-                let targets = fixture.navigation.controlTargets(in: window)
-                let install = try XCTUnwrap(targets.first { $0.id == "export.after.install" })
-                let export = try XCTUnwrap(targets.first { $0.id == "export.after.export" })
-                XCTAssertEqual(install.frame.height, export.frame.height, accuracy: 1, "「出完之后」两张卡同高")
-                XCTAssertEqual(install.frame.minY, export.frame.minY, accuracy: 1)
-                try self.snapshot(host, "export-after-\(branch)-\(language.code)")
             }
         }
     }
@@ -579,7 +545,7 @@ import S2ArmAppleAdapter
         let game = try XCTUnwrap(fixture.model.games.first)
         fixture.model.exportFor = game.id
         let padFocus = PadFocus()
-        let page = AnyView(ExportView(model: fixture.model, covers: CoverCache(), game: game, install: {})
+        let page = AnyView(ExportView(model: fixture.model, covers: CoverCache(), game: game)
             .environmentObject(padFocus).padScope("main", padFocus).frame(width: 1120, height: 630))
         let (_, window) = try await render(page, fixture: fixture, language: .zh)
         let navigation = fixture.navigation
@@ -610,7 +576,7 @@ import S2ArmAppleAdapter
             let game = try XCTUnwrap(fixture.model.games.first)
             XCTAssertEqual(game.downstream?.choice, choice)
             let padFocus = PadFocus()
-            let page = AnyView(ExportView(model: fixture.model, covers: CoverCache(), game: game, install: {})
+            let page = AnyView(ExportView(model: fixture.model, covers: CoverCache(), game: game)
                 .environmentObject(padFocus).padScope("main", padFocus).frame(width: 1120, height: 900))
             let (host, window) = try await render(page, fixture: fixture, language: .zh)
             let navigation = fixture.navigation
@@ -670,7 +636,7 @@ import S2ArmAppleAdapter
         for language in [Lang.zh, .en] {
             let priorRequests = fixture.runner.requests.filter { $0["operation"] as? String == "customize" }.count
             let padFocus = PadFocus()
-            let page = AnyView(ExportView(model: fixture.model, covers: CoverCache(), game: game, install: {})
+            let page = AnyView(ExportView(model: fixture.model, covers: CoverCache(), game: game)
                 .environmentObject(padFocus).padScope("main", padFocus).frame(width: 1120, height: 630)
                 .background(LauncherWindowMaterial()).foregroundStyle(LauncherTheme.Colors.text).preferredColorScheme(.dark))
             let (host, window) = try await render(page, fixture: fixture, language: language)
@@ -716,7 +682,7 @@ import S2ArmAppleAdapter
         for language in [Lang.zh, .en] {
             for width: CGFloat in [800, 1120, 1440] {
                 let padFocus = PadFocus()
-                let page = AnyView(ExportView(model: fixture.model, covers: CoverCache(), game: game, install: {})
+                let page = AnyView(ExportView(model: fixture.model, covers: CoverCache(), game: game)
                     .environmentObject(padFocus).padScope("main", padFocus).frame(width: width, height: 810)
                     .background(LauncherWindowMaterial()).foregroundStyle(LauncherTheme.Colors.text).preferredColorScheme(.dark))
                 let (_, window) = try await render(page, fixture: fixture, language: language)
@@ -765,7 +731,7 @@ import S2ArmAppleAdapter
             for width: CGFloat in [800, 1120, 1440] {
                 fixture.model.exportFor = game.id
                 let padFocus = PadFocus()
-                let page = AnyView(ExportView(model: fixture.model, covers: CoverCache(), game: game, install: {})
+                let page = AnyView(ExportView(model: fixture.model, covers: CoverCache(), game: game)
                     .environmentObject(padFocus).padScope("main", padFocus).frame(width: width, height: 630)
                     .background(LauncherWindowMaterial()).foregroundStyle(LauncherTheme.Colors.text).preferredColorScheme(.dark))
                 let (host, window) = try await render(page, fixture: fixture, language: language)
@@ -1340,6 +1306,35 @@ import S2ArmAppleAdapter
         }
     }
 
+    /// 游戏库「…」菜单有「导出 S2Arm.ipa」（11-21 维护者：不连手机、不经总控台也能拿到本版 S2Arm.ipa），点了发的是不连手机的导出作业。
+    ///   不开窗：核菜单的项目表、执行这一项的动作看作业请求；离屏 NSHostingView 出图核画得出来（S2A_SETTINGS_SHOTS 给目录就存 PNG）
+    func testHomeMoreMenuOffersShellIpaExportWithoutWindow() async throws {
+        _ = NSApplication.shared
+        let fixture = try SettingsFixture()
+        defer { fixture.remove() }
+        for language in [Lang.zh, .en] {
+            let menu = HomeMoreMenu(model: fixture.model, loc: Localizer(language), dismiss: {})
+            let item = try XCTUnwrap(menu.items.first { $0.id == "home.exportShellIpa" }, "更多菜单里有「导出 S2Arm.ipa」")
+            XCTAssertEqual(item.title, language == .zh ? "导出 S2Arm.ipa" : "Export S2Arm.ipa")
+            XCTAssertFalse(item.disabled, "不连手机也能点")
+        }
+        let menu = HomeMoreMenu(model: fixture.model, loc: Localizer(.zh), dismiss: {})
+        try XCTUnwrap(menu.items.first { $0.id == "home.exportShellIpa" }).action()
+        for _ in 0..<200 where !fixture.runner.requests.contains(where: { $0["operation"] as? String == "installUpdate" }) { try await Task.sleep(for: .milliseconds(10)) }
+        let request = try XCTUnwrap(fixture.runner.requests.first { $0["operation"] as? String == "installUpdate" }, "点了发出更新 / 导出作业")
+        XCTAssertEqual(request["mode"] as? String, "export", "走导出：只出不带游戏的通用 S2Arm.ipa（export_shell_ipa）")
+        XCTAssertNil(request["device"], "不指定手机：不依赖手机登记")
+        let host = NSHostingView(rootView: menu.environment(\.padControls, fixture.navigation))
+        host.frame = CGRect(x: 0, y: 0, width: 240, height: 120)
+        host.layoutSubtreeIfNeeded()
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        if let output = ProcessInfo.processInfo.environment["S2A_SETTINGS_SHOTS"] {
+            try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: output).appendingPathComponent("home-more-menu.png"))
+        }
+        XCTAssertGreaterThan(bitmap.pixelsWide, 0)
+    }
+
     func testHomeSearchControllerOpensKeyboardAndRestoresTextFocus() async throws {
         let fixture = try SettingsFixture()
         defer { fixture.remove() }
@@ -1790,7 +1785,7 @@ import S2ArmAppleAdapter
         for language in [Lang.zh, .en] {
             for width: CGFloat in [800, 1120, 1440, 1920] {
                 let padFocus = PadFocus()
-                let page = AnyView(ExportView(model: fixture.model, covers: CoverCache(), game: game, install: {})
+                let page = AnyView(ExportView(model: fixture.model, covers: CoverCache(), game: game)
                     .environmentObject(padFocus).padScope("main", padFocus)
                     .background(LauncherWindowMaterial()).foregroundStyle(LauncherTheme.Colors.text).preferredColorScheme(.dark)
                     .frame(width: width, height: 630))
