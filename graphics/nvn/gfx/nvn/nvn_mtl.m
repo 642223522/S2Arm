@@ -4546,16 +4546,22 @@ static void gw_mark(void *u, uint64_t lo, uint64_t hi) {   // pages of storage [
 }
 // A copy or clear wrote texel rectangle (x, y, w, h) of layers [layer0, layer0 + nlayers) of level `level` (w / h 0 = the whole level): note the generation on its pages (see NvPkg pgpu)
 static void pkg_gpu_wrote(const tex_t *t, unsigned level, unsigned layer0, unsigned nlayers, uint32_t x, uint32_t y, uint32_t w, uint32_t h);
-static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture> reuse, uint64_t **ph, uint32_t *nph, int bg_hash);
+static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture> reuse, uint64_t **ph, uint32_t *nph, int bg_hash, const uint8_t *src_override);
 const uint8_t *nvn_host_ptr(uint64_t a, uint64_t n);   // hle_nvn.c: the host bytes behind a buffer address (a virtual pool's: the physical memory behind it or a copy), NULL where unmapped
 int nvn_sparse_pool(const void *pool); uint64_t nvn_sparse_gen(void); uint64_t nvn_sparse_copy(const void *pool, void *dst, uint64_t a, uint64_t n);
 int nvn_sparse_since(const void *pool, uint64_t a, uint64_t n, uint64_t gen, uint64_t stamp); void nvn_sparse_protect(const void *pool, uint64_t a, uint64_t n); int nvn_sparse_mapped(const void *pool, uint64_t a, uint64_t n);
-static id<MTLTexture> pkg_upload(const tex_t *t, uint64_t *stamp, id<MTLTexture> reuse, uint64_t **ph, uint32_t *nph, int bg_hash) {   // reuse: a texture of the same description, idle on the GPU, to upload into instead of a new one; ph / nph: per-page hashes (NvPkg), or NULL
+static id<MTLTexture> pkg_upload_src(const tex_t *t, uint64_t *stamp, id<MTLTexture> reuse, uint64_t **ph, uint32_t *nph, int bg_hash, const uint8_t *src_override) {
     struct timespec a, b; clock_gettime(CLOCK_MONOTONIC, &a);
-    id<MTLTexture> r = pkg_upload_(t, stamp, reuse, ph, nph, bg_hash);
+    id<MTLTexture> r = pkg_upload_(t, stamp, reuse, ph, nph, bg_hash, src_override);
     clock_gettime(CLOCK_MONOTONIC, &b); uint64_t d_ = (uint64_t)((b.tv_sec - a.tv_sec) * 1000000000ll + b.tv_nsec - a.tv_nsec);
     atomic_fetch_add(&g_upload_ns, d_); g_up_total_ns += d_;
     return r;
+}
+static id<MTLTexture> pkg_upload(const tex_t *t, uint64_t *stamp, id<MTLTexture> reuse, uint64_t **ph, uint32_t *nph, int bg_hash) {   // reuse: a texture of the same description, idle on the GPU, to upload into instead of a new one; ph / nph: per-page hashes (NvPkg), or NULL
+    return pkg_upload_src(t, stamp, reuse, ph, nph, bg_hash, NULL);
+}
+static id<MTLTexture> pkg_upload_from(const tex_t *t, id<MTLTexture> reuse, const uint8_t *src_override) {
+    return pkg_upload_src(t, NULL, reuse, NULL, NULL, 0, src_override);
 }
 uint64_t nvn_be_upload_ns_take(void) { return atomic_exchange(&g_upload_ns, 0); }
 uint64_t nvn_be_upload_gpu_ns_take(void) { return atomic_exchange(&g_upload_gpu_ns, 0); }
@@ -4737,7 +4743,7 @@ static id<MTLTexture> gstex_new(const tex_t *t) {
     }
     return nil;
 }
-static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture> reuse, uint64_t **ph, uint32_t *nph, int bg_hash) {   // bg_hash: take ph on ph_queue (the first upload, see NvPkg ph)
+static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture> reuse, uint64_t **ph, uint32_t *nph, int bg_hash, const uint8_t *src_override) {   // bg_hash: take ph on ph_queue (the first upload, see NvPkg ph)
     uint64_t stl0 = stl_now();
     MTLTextureDescriptor *d = tex_desc(t, 1);
     if (!d) return nil;
@@ -4794,12 +4800,20 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
         ctotal += (size_t)((w + bw - 1) / bw) * bpb * ((h + bh - 1) / bh) * z * layers;
     }
     g_bp_up_bytes += total;
-    void *mb; uint64_t mo; id<MTLBuffer> upsrc = nil;
+    void *mb = NULL; uint64_t mo = 0; id<MTLBuffer> upsrc = nil;
     stl0 = stl_now();
-    if ((!unp || gdec) && !sparse && g_nvn_deswz_gpu) { up_begin(); upsrc = up_tex_src((uint64_t)t->mem, tex_rd_size(t), &mo); if (upsrc) mb = (__bridge void *)upsrc; }   // a pool that holds only textures stays out of the residency set (up_tex_src)
     int lin = (t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) != 0;   // 线性排布（tex_linear_needs_upload）只有 CPU 逐行拷，GPU 去混排不认
-    int use_gpu = (!unp || gdec) && !sparse && g_nvn_deswz_gpu && !lin && (upsrc || nvn_be_addr((uint64_t)t->mem, tex_rd_size(t), &mb, &mo));   // 线性排布（tex_linear_needs_upload）只有 CPU 逐行拷，GPU 去混排不认   // a sparse pool's texture is gathered through its page table on the CPU
-    if (g_nvn_deswz_gpu && !use_gpu && !sparse && !lin && (!unp || gdec)) RED_ONCE(40, "swizzled texture storage is not in a memory pool; falling back to the CPU (ser=%llu %ux%u format %#x, storage %p = pool %p + offset %#llx, pool size %#llx, layout size %#llx)",
+    if ((!unp || gdec) && !sparse && g_nvn_deswz_gpu && !lin) {
+        up_begin();
+        if (src_override) {
+            upsrc = [g_dev newBufferWithBytes:src_override length:t->L.size ? t->L.size : 16 options:MTLResourceStorageModeShared];
+            if (upsrc) { res_add(upsrc); up_keep_add(upsrc); mb = (__bridge void *)upsrc; mo = 0; }
+        } else {
+            upsrc = up_tex_src((uint64_t)t->mem, tex_rd_size(t), &mo); if (upsrc) mb = (__bridge void *)upsrc;   // a pool that holds only textures stays out of the residency set (up_tex_src)
+        }
+    }
+    int use_gpu = (!unp || gdec) && !sparse && g_nvn_deswz_gpu && !lin && (upsrc || (!src_override && nvn_be_addr((uint64_t)t->mem, tex_rd_size(t), &mb, &mo)));   // a sparse pool's texture is gathered through its page table on the CPU
+    if (g_nvn_deswz_gpu && !use_gpu && !sparse && !lin && !src_override && (!unp || gdec)) RED_ONCE(40, "swizzled texture storage is not in a memory pool; falling back to the CPU (ser=%llu %ux%u format %#x, storage %p = pool %p + offset %#llx, pool size %#llx, layout size %#llx)",
         (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, (void *)t->mem, t->pool ? (void *)t->pool->mem : NULL, (unsigned long long)t->off,
         t->pool ? (unsigned long long)t->pool->size : 0ull, (unsigned long long)t->L.size);
     if (use_gpu) {
@@ -4845,9 +4859,10 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
     }
 
     // A sparse pool's texture is read through a copy gathered from its page table, unmapped pages as 0 (a mip tail at a 4 KB offset has no host alias; reading the alias stopped the host with SIGBUS)
-    const uint8_t *src = t->mem; uint8_t *part = NULL;
+    const uint8_t *src = src_override ? src_override : t->mem; uint8_t *part = NULL;
     stl0 = stl_now(); atomic_fetch_add_explicit(&g_stl_cpu_tex, 1, memory_order_relaxed);
-    if (sparse) {
+    if (src_override) {}
+    else if (sparse) {
         if (!(part = malloc(t->L.size ? t->L.size : 1))) MDIE("sparse texture copy of %llu bytes failed", (unsigned long long)t->L.size);
         nvn_sparse_copy(t->pool, part, (uint64_t)(uintptr_t)t->mem, t->L.size); src = part;
     }
@@ -5274,15 +5289,6 @@ static int tex_guest_order(const tex_t *t, id<MTLTexture> base) {
     uint64_t *runs = NULL, b = 0; int n = gpw_stale(t->mem, t->L.size, &runs, &b); free(runs);
     return n == 0;
 }
-// Zero the texels of the stale runs in a texture just filled from its storage: copies from the shared zero buffer, after the fill's own in the upload batch (a stale GOB reads as the zero fill
-// would give it). zn: pass 1 sums the largest copy, pass 2 records them
-typedef struct { const tex_t *t; id<MTLTexture> mt; id<MTLBuffer> zb; size_t need; int bw, bh, bpb; size_t bpp; uint64_t blits; } gz_ctx;
-static void gpw_zero_rect(void *u, unsigned level, unsigned layer, uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
-    gz_ctx *c = u; uint32_t z = c->t->d.target == 2 ? MAX(c->t->d.depth >> level, 1u) : 1;
-    size_t row = c->bpp ? (size_t)w * c->bpp : (size_t)((w + c->bw - 1) / c->bw) * c->bpb, rows = c->bpp ? h : (h + c->bh - 1) / c->bh;
-    if (!c->zb) { c->need = MAX(c->need, row * rows * z); return; }
-    up_blit_add_at(c->zb, 0, row, row * rows, MTLSizeMake(w, h, z), c->mt, c->t->d.target == 2 ? 0 : layer, level, x, y); c->blits++;
-}
 // Whether the storage of a floating-point texture holds an Inf / NaN (stops at the first; other formats: 0). Splatoon 3 (10-28, test device 1 and the Mac): at the plaza switch the game
 // frees its lobby pools and builds a 256×256 R11G11B10F cube map array (13 cubes, 6 levels) for its reflections over that memory; what the CPU had left there gave it 0.30–1.60 M
 // Inf / NaN of 6.87 M. Every level and face is drawn over that same frame, and still the exposure locked white: 25 runs on the Mac, all 15 that locked had that fill, none of the 10
@@ -5310,9 +5316,8 @@ static int tex_init_fill(const tex_t *t, id<MTLTexture> mt) {
         if (texture_storage_load(t, mt)) return 1;
         RED_ONCE(205, "GPU-written texture pool storage cannot be decoded (ser=%llu format %#x)", (unsigned long long)t->serial, t->d.format);
     }
-    // Stale runs (gpw_stale): the fill takes the storage, then their texels are zeroed (gpw_zero_rect); the Inf / NaN and all-zero checks look at the storage with them zeroed
+    // Stale runs (gpw_stale): zeroed in the masked copy and uploaded directly through pkg_upload_from (1 upload instead of per-run GPU zero blits, and exact per-GOB zeroing on 3D textures)
     const uint8_t *src = t->mem; uint8_t *masked = NULL; uint64_t *runs = NULL, sb = 0; int nr = 0;
-    gz_ctx z = {t, mt, nil, 0, 0, 0, 0, 0, 0};
     // The stale runs hold for a CPU-writable pool too: on the Switch the GPU's writes land in the pool's memory whatever its CPU access, here they stay in Metal storage
     //   and the guest bytes keep what was there before. It Takes Two (11-01): a 64x64 RGBA16F array of 102 faces (17 reflection cubes) built in a CPU-writable pool took
     //   7.5% Inf / NaN from its storage (faces 78-101, every level); the base pass samples it, and every surface inside those captures' radius went black (Cody's black disc).
@@ -5320,11 +5325,10 @@ static int tex_init_fill(const tex_t *t, id<MTLTexture> mt) {
     { static int old = -1; if (old < 0) { const char *e = getenv("DM_NVN_STALE_FILL"); old = e && atoi(e) == 1; }
         if (!old) nr = gpw_stale(t->mem, t->L.size, &runs, &sb); }
     if (nr) {
-        z.bpb = nvn_fmt_bpb(t->d.format, &z.bw, &z.bh); z.bpp = mtl_pf_bytes(mt.pixelFormat);
-        int can = sb < t->L.size && (z.bpp || ((z.bw > 1 || z.bh > 1) && z.bpb));   // a copyable format (uncompressed with a known texel size, or block-compressed as is)
+        int can = sb < t->L.size;
         uint64_t k = ++g_gpw_skips;
         if (k <= 4 || !(k & (k - 1)) || t->L.size >= (1u << 20)) MLOG("initial content: ser=%llu %ux%ux%u format %#x: %llu of its %llu bytes (%d runs) not taken from its storage: an earlier GPU write covered them (stale in guest memory), %s (%llu so far)",
-            (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.format, (unsigned long long)sb, (unsigned long long)t->L.size, nr, can ? "zero there" : "zero instead (all of it, or a format the zeroing cannot copy into)", (unsigned long long)k);
+            (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.format, (unsigned long long)sb, (unsigned long long)t->L.size, nr, can ? "zero there" : "zero instead (all of it)", (unsigned long long)k);
         if (!can) { free(runs); return 0; }
         if (!(masked = malloc(t->L.size))) MDIE("initial content check copy of %llu bytes failed", (unsigned long long)t->L.size);
         { uint8_t *pp; const uint8_t *ss = tex_src(t, t->L.size, &pp); memcpy(masked, ss, t->L.size); free(pp); }   // 诊断#f83b30：按可读截短
@@ -5337,16 +5341,11 @@ static int tex_init_fill(const tex_t *t, id<MTLTexture> mt) {
     if (no_cpu) { static int old = -1; if (old < 0) { const char *e = getenv("DM_NVN_NONFINITE_FILL"); old = e && atoi(e) == 1; }
         if (!old && fill_nonfinite(t, src, mt)) { free(masked); free(runs); static uint64_t nf; uint64_t k = ++nf; if (k <= 4 || !(k & (k - 1)) || t->L.size >= (1u << 20)) MLOG("initial content: ser=%llu %ux%ux%u format %#x not taken from its storage: it holds Inf / NaN (left in a CPU_NO_ACCESS pool), zero instead (%llu so far)",
                                                                                             (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.format, (unsigned long long)k); return 0; } }
-    free(masked);
     uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
-    if (pkg_upload(t, NULL, mt, NULL, NULL, 0) != mt) { free(runs); return 0; }
-    if (nr) {   // after the fill's copies: pass 1 sizes the zero buffer once (a bigger one replaces it), pass 2 records the copies
-        for (int i = 0; i < nr; i++) tex_bytes_gobs(t, runs[2 * i], runs[2 * i + 1], gpw_zero_rect, &z);
-        if (!(z.zb = zero_buf(MAX(z.need, (size_t)16)))) MDIE("zero buffer of %zu bytes for stale texels failed", z.need);
-        up_begin(); for (int i = 0; i < nr; i++) tex_bytes_gobs(t, runs[2 * i], runs[2 * i + 1], gpw_zero_rect, &z);
-        [g_up_texs addObject:mt]; if (!g_cb) up_flush();
-    }
+    id<MTLTexture> up = masked ? pkg_upload_from(t, mt, masked) : pkg_upload(t, NULL, mt, NULL, NULL, 0);
+    free(masked);
     free(runs);
+    if (up != mt) return 0;
     // cumulative count / bytes / submit-thread time of these fills (first 4, then at powers of two): what initial content costs before the frames it shows up in.
     // Every fill / skip of 1 MB or more gets its line too (here and above): 10-28 the Splatoon 3 plaza cube map array fill fell between the 32nd and the 64th, where no line was
     //   written, and the missing line was read as "never filled"
