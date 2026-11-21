@@ -48,7 +48,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from cs_pipelines import container, lib_functions, tt_command, tt_suffix, run_tt, clone   # 同一套库读法与 metal-tt 调法
+from cs_pipelines import container, lib_functions, tt_command, tt_suffix, run_tt, clone, sdk_tool, run_tool   # 同一套库读法与 metal-tt 调法
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / 'tools'))
 from pool_workers import cores   # 核数 / 进程池路数唯一来源（tools/pool_workers.py，#1332）
@@ -232,7 +232,7 @@ def main():
                 if not ml.is_file():   # 两路同时包同一个模块：各写各的临时件、结果相同，后改名的覆盖先的
                     t = f'm{h}.{threading.get_ident()}'; air, tmp = work / f'{t}.air', work / f'{t}.metallib'
                     air.write_bytes(mod)
-                    p = subprocess.run(['xcrun', '-sdk', sdk, 'metallib', str(air), '-o', str(tmp)], capture_output=True)
+                    p = run_tool(sdk_tool(sdk, 'metallib') + [str(air), '-o', str(tmp)])
                     try: ok = not p.returncode and lib_functions(tmp.read_bytes()).get(fn, ('',))[0] == h
                     except (OSError, ValueError, struct.error): ok = False
                     if ok: os.replace(tmp, ml)

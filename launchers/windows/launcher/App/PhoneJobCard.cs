@@ -51,7 +51,7 @@ internal sealed class PhoneJobTrack
     ///   直装：appName / expiresAt（Unix 秒）/ expiresKnown（false = 估算）/ ipaPath；导出：s2armPath / resourcePath / resourceLinked / signedWith / nextSteps / readmePath</summary>
     public bool Standalone, StandaloneExported;
     public string DeviceName = "", AppName = "", GameFolder = "", IpaPath = "", ReadmePath = "", S2armPath = "", ResourcePath = "", SignedWithMode = "", SignedWithName = "";
-    public long? IpaBytes, S2armBytes;
+    public long? IpaBytes, S2armBytes, ResourceBytes;
     public bool ResourceLinked, ExpiresKnown;
     public DateTimeOffset? ExpiresAt;
     public List<string> NextSteps = [];
@@ -64,7 +64,7 @@ internal sealed class PhoneJobTrack
         Started = DateTime.UtcNow; Ended = null; Suggestion = ""; PackBytes = null; PackFiles = null; Skipped = []; Version = "";
         ExportFolder = ""; ExportGames = 0; ExportBytes = null; ExportFresh = []; ExportReused = 0; ExportUnwritten = []; SGrade = [];
         Legacy = []; LegacyElsewhere = []; LegacyDevice = ""; DetailsOpen = false;
-        Standalone = StandaloneExported = ResourceLinked = ExpiresKnown = AppInstalled = false; ExpiresAt = null; IpaBytes = S2armBytes = null; NextSteps = [];
+        Standalone = StandaloneExported = ResourceLinked = ExpiresKnown = AppInstalled = false; ExpiresAt = null; IpaBytes = S2armBytes = ResourceBytes = null; NextSteps = [];
         DeviceName = AppName = GameFolder = IpaPath = ReadmePath = S2armPath = ResourcePath = SignedWithMode = SignedWithName = "";
     }
 
@@ -116,7 +116,7 @@ internal sealed class PhoneJobTrack
             StandaloneExported = r.TryGetProperty("exported", out var sx) && sx.ValueKind == JsonValueKind.True;
             DeviceName = name; AppName = Str(r, "appName"); GameFolder = Str(r, "gameFolder"); IpaPath = Str(r, "ipaPath"); ReadmePath = Str(r, "readmePath");
             S2armPath = Str(r, "s2armPath"); ResourcePath = Str(r, "resourcePath");
-            IpaBytes = Long(r, "ipaBytes"); S2armBytes = Long(r, "s2armBytes");
+            IpaBytes = Long(r, "ipaBytes"); S2armBytes = Long(r, "s2armBytes"); ResourceBytes = Long(r, "resourceBytes");
             ResourceLinked = r.TryGetProperty("resourceLinked", out var rl) && rl.ValueKind == JsonValueKind.True;
             ExpiresKnown = r.TryGetProperty("expiresKnown", out var ek) && ek.ValueKind == JsonValueKind.True;
             if (r.TryGetProperty("expiresAt", out var ea) && ea.ValueKind == JsonValueKind.Number)
@@ -439,14 +439,14 @@ public sealed partial class EnvironmentWindow
         var files = new StackPanel { Spacing = 4 };
         var filesLabel = Muted(T("app.export.files"), 12); filesLabel.FontWeight = FontWeight.Bold;
         files.Children.Add(filesLabel);
-        void AddFile(string path, long? bytes)
+        void AddFile(string path, long? bytes, string note = "")
         {
-            var row = Label(Path.GetFileName(path) + (bytes is { } b ? " · " + FormatBytes(b) : ""), 15); row.TextWrapping = TextWrapping.Wrap;
+            var row = Label(Path.GetFileName(path) + (bytes is { } b ? " · " + FormatBytes(b) : "") + (note.Length > 0 ? " · " + note : ""), 15); row.TextWrapping = TextWrapping.Wrap;
             files.Children.Add(row);
         }
         if (tr.IpaPath.Length > 0) AddFile(tr.IpaPath, tr.IpaBytes);
         if (tr.S2armPath.Length > 0) AddFile(tr.S2armPath, tr.S2armBytes);
-        if (tr.ResourcePath.Length > 0 && tr.ResourceLinked) AddFile(tr.ResourcePath, null);
+        if (tr.ResourcePath.Length > 0 && tr.ResourceLinked) AddFile(tr.ResourcePath, tr.ResourceBytes, T("app.export.noExtraSpace"));   // 硬链接：按实际大小报，注「不另占空间」
         AutomationId(files, "app.export.files");
         panel.Children.Add(files);
         if (tr.ResourcePath.Length > 0 && !tr.ResourceLinked)   // 盘不支持硬链接：.img 留在原处，说清在哪

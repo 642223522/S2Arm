@@ -19,17 +19,19 @@ import XCTest
         return S2ArmLauncherModel(client: JobClient(environment: JobEnvironment(privateRoot: root, resources: root, library: root.path, libraryId: "x")))
     }
 
-    /// 放进真的 AppKit 窗口再截（下拉框这类原生控件 ImageRenderer 画不了）
+    /// 离屏出图：视图不放进任何窗口、不上屏（11-20：截图测试在维护者桌面上开过窗口、弹过报错框）；直接让 NSHostingView 排版后画进位图。
+    ///   核图里确实画出了东西（非背景像素够多），免得白图当成功
     func shot<V: View>(_ view: V, _ name: String, width: CGFloat = 600, height: CGFloat = 700) throws -> NSBitmapImageRep {
-        _ = NSApplication.shared
         let root = view.s2aLocalized().frame(width: width, height: height, alignment: .topLeading).padding(32)
             .background(Color(red: 0.07, green: 0.07, blue: 0.08)).environment(\.colorScheme, .dark)
         let host = NSHostingView(rootView: root)
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width + 64, height: height + 64), styleMask: [.borderless], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false; window.contentView = host; window.orderBack(nil)
-        host.layoutSubtreeIfNeeded(); RunLoop.main.run(until: Date().addingTimeInterval(0.4)); host.layoutSubtreeIfNeeded()
+        host.frame = NSRect(x: 0, y: 0, width: width + 64, height: height + 64)
+        host.layoutSubtreeIfNeeded()
         let rep = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds)); host.cacheDisplay(in: host.bounds, to: rep)
-        window.orderOut(nil)
+        var ink = 0
+        for y in stride(from: 0, to: rep.pixelsHigh, by: 4) { for x in stride(from: 0, to: rep.pixelsWide, by: 4) {
+            if let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB), c.redComponent + c.greenComponent + c.blueComponent > 0.9 { ink += 1 } } }
+        XCTAssertGreaterThan(ink, 200, "\(name)：离屏画出来是空的")
         if let dir = ProcessInfo.processInfo.environment["S2A_STANDALONE_SHOT"] {
             try rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: dir).appendingPathComponent("\(name).png"))
         }
@@ -47,11 +49,20 @@ import XCTest
         try XCTSkipUnless(ProcessInfo.processInfo.environment["S2A_STANDALONE_SHOT"] != nil, "没给 S2A_STANDALONE_SHOT，不出截图")
     }
 
-    func testLayoutRowWithHint() throws {
-        let m = model()
-        m.installMode = InstallModeInfo(result: ["signMode": "appleId", "layout": "shell", "layoutChoice": ["games": [gid: "standalone"]], "standaloneHint": "appleId"])
-        let rep = try shot(VStack(alignment: .leading) { InstallLayoutRow(model: m, gameId: gid) }, "1_出法行", height: 200)
-        XCTAssertGreaterThan(rep.pixelsWide, 0)
+    /// 出法卡片三种状态（0.6.2）：推荐的被选中 / 不推荐的被选中（橙字）/ 识别不了签名方式（灰字、不挂推荐标）
+    func testLayoutCards() throws {
+        let states: [(String, [String: Any])] = [
+            ("1a_出法卡片_推荐被选中", ["signMode": "devcert", "layout": "standalone", "distribution": true, "recommend": "standalone", "recommendWhy": "distribution"]),
+            ("1b_出法卡片_不推荐被选中", ["signMode": "devcert", "layout": "standalone", "distribution": true, "recommend": "standalone", "recommendWhy": "distribution",
+                                     "layoutChoice": ["games": [gid: "shell"]]]),
+            ("1c_出法卡片_识别不了", ["signMode": "appleId", "layout": "shell", "recommendWhy": "unknown"]),
+        ]
+        for (name, r) in states {
+            let m = model()
+            m.installMode = InstallModeInfo(result: r)
+            let rep = try shot(VStack(alignment: .leading) { InstallLayoutRow(model: m, gameId: gid, refreshOnAppear: false) }, name, height: 300)
+            XCTAssertGreaterThan(rep.pixelsWide, 0)
+        }
     }
 
     func testSuccessInstalled() throws {
@@ -69,7 +80,7 @@ import XCTest
         let folder = "/Users/player/S2Arm 游戏库/games/Slay the Spire"
         let app = StandaloneApp(["appName": "Slay the Spire", "exported": true, "gameFolder": folder, "ipaPath": folder + "/Slay the Spire v1.0.ipa", "ipaBytes": NSNumber(value: 200_530_283),
                                  "s2armPath": folder + "/Slay the Spire.s2arm", "s2armBytes": NSNumber(value: 31_897_038), "resourcePath": folder + "/Slay the Spire.img",
-                                 "resourceLinked": true, "readmePath": folder + "/请先读我.txt", "signMode": "external", "signedWith": ["mode": "none", "name": ""],
+                                 "resourceLinked": true, "resourceBytes": NSNumber(value: 408_833_955), "readmePath": folder + "/请先读我.txt", "signMode": "external", "signedWith": ["mode": "none", "name": ""],
                                  "nextSteps": ["AltStore / SideStore：用它们打开 Slay the Spire v1.0.ipa 安装（它们用自己的账号签名）。",
                                                "只导出、没连手机推的，还要做一步：装好后先打开一次「Slay the Spire」，再把这个文件夹里的 Slay the Spire.s2arm 和 Slay the Spire.img 放进 iPhone「文件」App →「我的 iPhone」→「Slay the Spire」→「放这里导入」，回到「Slay the Spire」点「我已放好，重新检查」，它会自动导入。"]])
         m.phoneOutcome = PhoneOutcome(app: app)

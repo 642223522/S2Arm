@@ -1288,7 +1288,19 @@
   "app.done.finish": "Terminé",
   "app.failed.partial": "L'app est installée, mais les données du jeu n'ont pas fini d'être copiées",
   "app.failed.partialNext": "« Réessayer » ne copie que ce qui reste ; les fichiers déjà copiés ne sont pas recopiés.",
-  "console.app.renew": "Renouveler"
+  "console.app.renew": "Renouveler",
+  "layout.card.standalone.body": "Une app par jeu ; touchez-la pour entrer directement dans le jeu",
+  "layout.card.shell.body": "Une app pour tous vos jeux ; choisissez dans la bibliothèque",
+  "layout.card.standalone.badge": "Vivement recommandé avec un certificat P12",
+  "layout.card.shell.badge": "Recommandé pour l'autosignature / la signature en un clic",
+  "layout.card.why": "Un iPhone n'autorise une app à lancer des jeux stockés hors de l'app que si sa signature comporte l'autorisation de « débogage ». La plupart des P12 achetés sont des certificats de distribution / d'entreprise ; les apps signées avec n'ont pas cette autorisation, chaque jeu doit donc être signé dans sa propre app : une app par jeu. La signature en un clic, l'autosignature avec AltStore / SideStore et les certificats de développement l'incluent : une app peut contenir tous vos jeux, vous pouvez en ajouter ou en retirer à tout moment, et une mise à jour de S2Arm ne demande en général pas de refaire les jeux. Si votre P12 est un certificat de développement, les deux options fonctionnent.",
+  "layout.card.recommendCert": "Recommandé pour votre certificat",
+  "layout.card.recommendSign": "Recommandé pour votre façon de signer",
+  "layout.card.warn.distShell": "Les apps signées avec votre certificat n'ont pas l'autorisation de débogage : les jeux de l'app S2Arm ne s'ouvriront pas (ils s'arrêtent sur une page d'explication). Choisissez plutôt « App autonome ».",
+  "layout.card.warn.freeStandalone": "Chaque jeu occupe sa propre app : un Apple ID gratuit en permet au plus 3 à la fois et 10 nouveaux App ID tous les 7 jours, et chaque app doit être renouvelée tous les 7 jours.",
+  "layout.card.unknown": "Connectez-vous avec un Apple ID ou importez un certificat et nous vous en recommanderons une selon votre façon de signer.",
+  "layout.card.whyLabel": "Pourquoi ?",
+  "app.export.noExtraSpace": "sans espace supplémentaire"
  },
  "text": {
   "无法为带空格的构建路径创建无空格别名。": "Impossible de créer un alias sans espaces pour le chemin de compilation qui contient des espaces.",
@@ -4267,6 +4279,7 @@
   "先在 iPhone 上退出这款游戏，再删。": "Quittez d'abord ce jeu sur l'iPhone, puis supprimez-le.",
   "没能从 iPhone 上卸掉这款的独立 App：确认 iPhone 连着、已解锁，再试一次。": "Impossible de supprimer l'app autonome de ce jeu de l'iPhone. Vérifiez que l'iPhone est connecté et déverrouillé, puis réessayez.",
   "从 iPhone 上卸掉这款的独立 App": "Suppression de l'app autonome de ce jeu de l'iPhone",
-  "这款游戏暂时出不了包": "Ce jeu ne peut pas encore être empaqueté"
+  "这款游戏暂时出不了包": "Ce jeu ne peut pas encore être empaqueté",
+  "应用不完整，请重新安装 S2Arm。": "L'application est incomplète. Réinstallez S2Arm."
  }
 }

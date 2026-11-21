@@ -418,23 +418,41 @@ static int alloc_copy(nvn_gpu_cmd c, uint64_t n, const void *src, nvn_gpu_slice 
 // 常量缓冲暂存的拷贝交给后端异步填（照 iOS nvn_rec.h 的常量缓冲拷贝线程；安卓上是两级回放的录制线程按序做，见 nvn_gpu_arena_fill）。
 // 一款大型开放世界游戏（01007EF00011E000）的神庙场景每帧约 1.1 万次、44 MB，原先全在回放线程上 memcpy。正确性靠三点：
 //   ① GPU 只在段提交之后读上传片，后端保证提交 / 放弃之前填完；
-//   ② 回放线程自己改游戏内存（OP_UPDATE_UB / OP_COPY_B2B / OP_CLEAR_BUF）之前调 rp_ub_fill_fence：来源与它相交、还没填完的先等；
+//   ② 回放线程自己改游戏内存（OP_UPDATE_UB / OP_COPY_B2B / OP_CLEAR_BUF）之前调 rp_ub_fill_fence：来源与它相交、还没填完的先让它填完；
 //   ③ 一次提交里游戏不改它的缓冲（GPU 在提交之后才读，见段内切片表那段说明）；提交返回之前段已提交，①已经等完。
 // 完成回调里的「落地」（GPU 写回游戏内存）和原先编码时就拷一样是另一条线程上的并发写，挪后不改变这一点。
 // 只挪大块：小块走队列一条记录的开销比拷贝本身还大。开关 nvk_ub_fill（缺省开；0 = 照旧在回放线程上拷）。
+// ② 怎么「让它填完」（开关 nvk_ub_fill_steal，缺省开）：
+//   开：相交的每一笔都调 nvn_gpu_arena_fill_take——还没开始就由回放线程自己拷（代拷），录制线程正拷就只等这一笔。不相交的不管。
+//       一台骁龙 8 至尊版手机上（洞内走动，每帧）改内存前要等约 260 次，原先每次都等录制线程把这一笔前面排着的绘制记录全录完，
+//       游戏线程 15.1% 耗在等待；代拷只付这一笔自己的 memcpy。代拷只保证这一笔，所以要对每一笔相交的都做，不能只管最新那笔。
+//   关（0）：原来的做法，等最新一条相交的票号（nvn_gpu_arena_fill_wait 保证更旧的随之做完）。
 enum { UBF_MIN = 256, UBF_N = 256 };
-static struct { uint64_t lo, hi, t; } g_ubf[UBF_N];   // 交出去的填充：来源区间与票号，按交出顺序环形存放（票号递增）
-static uint32_t g_ubf_w; static uint64_t g_ubf_done;   // 交出去的条数；已知填完的最大票号
+static struct { uint64_t lo, hi, t; } g_ubf[UBF_N];   // 交出去的填充：来源区间与票号，按交出顺序环形存放（票号递增）；代拷 / 等过的那条把区间清空（hi = lo）
+static uint32_t g_ubf_w; static uint64_t g_ubf_done;   // 交出去的条数；已知填完的最大票号（水位：≤ 它的都填完了）
 static int ubf_on(void) { static int v = -1; static unsigned k; if (v < 0 || !(++k & 255)) v = nvn_plat_flag("nvk_ub_fill", 1) != 0; return v; }
+static int g_ubf_steal = -1; static unsigned g_ubf_steal_k;   // 开关 nvk_ub_fill_steal 的缓存（每 256 次重读；会话重开清掉）
+static int ubf_steal_on(void) { if (g_ubf_steal < 0 || !(++g_ubf_steal_k & 255)) g_ubf_steal = nvn_plat_flag("nvk_ub_fill_steal", 1) != 0; return g_ubf_steal; }
+static void ubf_take(uint32_t i) {   // 代拷第 i 条（只管它自己），记数
+    const int r = nvn_gpu_arena_fill_take(g_ubf[i].t);
+    if (r == 1) { rp_perf_add(RP_PERF_UBO_FILL_STEAL_N, 1); rp_perf_add(RP_PERF_UBO_FILL_STEAL_B, g_ubf[i].hi - g_ubf[i].lo); }
+    else if (r == 2) rp_perf_add(RP_PERF_UBO_FILL_BUSY_N, 1);
+    g_ubf[i].hi = g_ubf[i].lo;   // 已拷完：之后的写不再与它相交
+}
 void rp_ub_fill_fence(uint64_t addr, uint64_t len) {
     if (!g_ubf_w || !len) return;
     g_ubf_done = nvn_gpu_arena_fill_wait(0);
     const uint64_t hi = addr + len;
-    for (uint32_t k = 0; k < UBF_N && k < g_ubf_w; k++) {   // 从新往旧：票号递增，遇到已填完的，更旧的也都填完了
+    const int steal = ubf_steal_on();
+    int hit = 0;
+    for (uint32_t k = 0; k < UBF_N && k < g_ubf_w; k++) {   // 从新往旧：票号递增，遇到水位以下的，更旧的也都填完了
         const uint32_t i = (g_ubf_w - 1 - k) % UBF_N;
         if (g_ubf[i].t <= g_ubf_done) break;
-        if (g_ubf[i].lo < hi && addr < g_ubf[i].hi) { g_ubf_done = nvn_gpu_arena_fill_wait(g_ubf[i].t); rp_perf_add(RP_PERF_UBO_FILL_WAIT_N, 1); return; }   // 等最新一条相交的：更旧的随之填完
+        if (!(g_ubf[i].lo < hi && addr < g_ubf[i].hi)) continue;
+        if (!steal) { g_ubf_done = nvn_gpu_arena_fill_wait(g_ubf[i].t); rp_perf_add(RP_PERF_UBO_FILL_WAIT_N, 1); return; }   // 等最新一条相交的：更旧的随之填完
+        ubf_take(i); hit = 1;   // 代拷：每一笔相交的都要拷完（代拷不带着更旧的）
     }
+    if (hit) rp_perf_add(RP_PERF_UBO_FILL_WAIT_N, 1);   // 与关着时同口径：碰上相交、没填完的改内存次数
 }
 static int alloc_fill(nvn_gpu_cmd c, uint64_t n, const void *src, nvn_gpu_slice *sl) {
     if (n < UBF_MIN || !ubf_on()) return alloc_copy(c, n, src, sl);
@@ -447,7 +465,9 @@ static int alloc_fill(nvn_gpu_cmd c, uint64_t n, const void *src, nvn_gpu_slice 
     const uint64_t t = nvn_gpu_arena_fill(c, sl, src, n);
     if (t) {
         const uint32_t i = g_ubf_w++ % UBF_N;
-        if (g_ubf[i].t > g_ubf_done) g_ubf_done = nvn_gpu_arena_fill_wait(g_ubf[i].t);   // 表满：挤掉的那条必须已经填完，否则相交的写就漏等了
+        if (g_ubf[i].t > g_ubf_done) {   // 表满：挤掉的那条必须已经填完，否则相交的写就漏等了
+            if (ubf_steal_on()) ubf_take(i); else g_ubf_done = nvn_gpu_arena_fill_wait(g_ubf[i].t);
+        }
         g_ubf[i].lo = (uint64_t)(uintptr_t)src; g_ubf[i].hi = g_ubf[i].lo + n; g_ubf[i].t = t;
         rp_perf_add(RP_PERF_UBO_FILL_N, 1);
     }
@@ -1909,11 +1929,19 @@ void rp_dispatch(nvn_gpu_cmd c, const p_dispatch *dp, const void *rec) {
             continue;
         }
         if (e->src_kind != NVN_RB_TEX) continue;
-        if (e->count > 1 || e->src_reg >= RP_NTEX || (e->src_reg2 != UINT16_MAX && (e->count != 1 || e->src_reg2 >= 128))) { skip("compute_texture_array", rec); goto done; }
+        // 类型 3 句柄（#1594 片 7）：布局项 src_reg2 带常量采样器标记 + 池下标，形状校验与图形阶段同一份（samp2_shape_ok）；数组 / 认不出的形状仍具名跳过
+        if (e->count > 1 || e->src_reg >= RP_NTEX || (e->src_reg2 != UINT16_MAX && (e->count != 1 || !samp2_shape_ok(e->src_reg2)))) { skip("compute_texture_array", rec); goto done; }
+        const int cs_const = e->src_reg2 != UINT16_MAX && (e->src_reg2 & NVN_GPU_SAMP2_CONST);
         // 贴图槽 32..39 = c2 图像句柄表第 0..7 项被当贴图采样：取图像槽绑着的句柄（同 iOS nvn_mtl.m tex_slot_h）；没绑同组合槽，读作池第 0 项
         uint64_t h = e->src_reg >= 32 && e->src_reg < 40 ? rp_S.img[5][e->src_reg - 32] : rp_S.tex[5][e->src_reg];
         tv[i] = rp_view_by_id_decl(h ? (int)(h & 0xFFFFF) : rp_S.tex_base, pg->dtt[0][i], pg->dcls[0][i], 0, c, NULL);
-        if (e->src_reg2 != UINT16_MAX) {
+        if (cs_const) {
+            // 采样器号 = 贴图字高 12 位 | 着色器里的立即数池下标（const_samp_id，同 Ryujinx ReadPackedId），登记号 = 采样器号 + 池起点；
+            //   号没登记 = 空采样器：绑默认采样器照派发（同图形阶段片 6）；登记了但后端建不出的具名跳过。不经 NVN 采样器槽。
+            ts[i] = rp_samp_for_const_handle(const_samp_id((uint32_t)h, e->src_reg2 & NVN_GPU_SAMP2_ID_MASK) + rp_S.samp_base, h ? (int)(h & 0xFFFFF) : rp_S.tex_base,
+                                             rp_S.samp_base, rp_S.samp_pool_n);
+            if (!ts[i]) { skip("const_sampler_unresolved", rec); goto done; }
+        } else if (e->src_reg2 != UINT16_MAX) {
             if (!rp_S.samp_bound[5][e->src_reg2]) { skip("separate_sampler_unbound", rec); goto done; }
             ts[i] = rp_samp_for_tex((int)(rp_S.samp[5][e->src_reg2] >> 20), h ? (int)(h & 0xFFFFF) : rp_S.tex_base);
             if (!ts[i]) { skip("separate_sampler_unresolved", rec); goto done; }
@@ -2012,7 +2040,7 @@ done:
 }
 
 void rp_draw_stats(uint64_t *draws, uint64_t *skips) { if (draws) *draws = g_draws; if (skips) *skips = g_skips; }
-void rp_draw_reset(void) { rp_access_reset(&g_compute_access); g_compute_access_on = -1; g_ndispatch_access = 0; g_caps_ok = 0; g_ubf_w = 0; memset(g_ubf, 0, sizeof g_ubf); g_arena_reason_n = 0; g_arena_reason_full = 0;   // 会话重开：能力表重新取
+void rp_draw_reset(void) { rp_access_reset(&g_compute_access); g_compute_access_on = -1; g_ndispatch_access = 0; g_caps_ok = 0; g_ubf_w = 0; memset(g_ubf, 0, sizeof g_ubf); g_ubf_steal = -1; g_arena_reason_n = 0; g_arena_reason_full = 0;   // 会话重开：能力表重新取
     g_spill_on = -1; g_spill_said = 0;
     rp_tm_reset();   // 分时抽样的开关也重新读（#1103）
     memset(g_ind_drv_ok, 0, sizeof g_ind_drv_ok); memset(g_ind_drv, 0, sizeof g_ind_drv); memset(g_lb, 0, sizeof g_lb);   // #941
