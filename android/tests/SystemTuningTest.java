@@ -19,7 +19,7 @@ public final class SystemTuningTest {
             stop = type.getDeclaredMethod("stop"), detach = type.getDeclaredMethod("detach");
         attach.setAccessible(true); start.setAccessible(true); stop.setAccessible(true); detach.setAccessible(true);
 
-        Build.VERSION.SDK_INT = 31;
+        Build.VERSION.SDK_INT = 34;   // minSdk 34 起 GameManager 恒可用，无低 API 门
         long[] now = {1_000_000_000L}; final long HOLD = 5_000_000_000L;
         java.lang.reflect.Field clock = Class.forName("org.s2arm.android.FrameRateVote").getDeclaredField("clock");
         clock.setAccessible(true); clock.set(null, (java.util.function.LongSupplier) () -> now[0]);
