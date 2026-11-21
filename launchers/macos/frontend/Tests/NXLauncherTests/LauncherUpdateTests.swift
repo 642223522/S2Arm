@@ -32,6 +32,23 @@ import S2ArmAppleAdapter
         return S2ArmLauncherModel(client: client, updateDefaults: defaults)
     }
 
+    func testUpdateNotesUseSimplifiedChineseForBothChineseLanguagesAndEnglishOtherwise() {
+        let item = ["zh-Hans": "修复启动问题。", "en": "Fixed startup."]
+        for language in ["zh-Hans", "zh-Hant"] {
+            XCTAssertEqual(UpdateNoteCopy.text(item, language: language), "修复启动问题", language)
+            XCTAssertEqual(UpdateNoteCopy.heading("修复", language: language), "修复", language)
+        }
+        for language in ["en", "ja", "fr", ""] {
+            XCTAssertEqual(UpdateNoteCopy.text(item, language: language), "Fixed startup", language)
+            XCTAssertEqual(UpdateNoteCopy.heading("修复", language: language), "Fixes", language)
+        }
+    }
+
+    func testUpdateNotesPreserveUntranslatedContent() {
+        XCTAssertEqual(UpdateNoteCopy.text(["zh-Hans": "修复启动问题"], language: "ja"), "修复启动问题")
+        XCTAssertEqual(UpdateNoteCopy.heading("Compatibility", language: "en"), "Compatibility")
+    }
+
     func testManualCheckReopensASeenOffer() async {
         sim.simulateStartupCheck(failed: false)
         XCTAssertEqual(model.updatePopup?["version"] as? String, "9.9.9")
