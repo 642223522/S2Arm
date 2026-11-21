@@ -25,6 +25,7 @@ RECOVERY = {
     "ios_import_img_failed": "检查文件是否拷完整，再打开 S2Arm。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
     "ios_install_unknown": "导出诊断包发给我们。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
     "rewrite_gap": "之前已经装到 iPhone 上的这款可以照常接着玩。点「复制错误摘要」发给我们，修好后更新 S2Arm 再出一次包。",
+    "update_incomplete": "按黄字里写的补上缺的那一项，再点一次「更新这款」；其余部分这次已经更新好了。",   # 「更新这款」做不齐（缺原料 / 宿主约定号变了 / Mac 上正在运行），黄字说明哪一项
     "update_failed": "检查网络后重试；还是不行就到下载页下载新版覆盖安装，当前版本和存档不受影响。",
     "glslc_windows_unavailable": "这款游戏的着色器编译目前只能在 Mac 上完成，Windows 版暂不支持；请改用 Mac 版 S2Arm 出包。",
     "win_host_unsupported": "请改用64位Windows主机运行S2Arm，确认后点「重新检查」。",
