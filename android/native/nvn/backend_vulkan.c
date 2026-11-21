@@ -3256,6 +3256,13 @@ static nvn_gpu_rc compute_workgroup_check(const nvn_gpu_shader_src *s, nvn_gpu_e
     return rc(NVN_GPU_OK);
 }
 
+#include "nvn_vk_array_query.h"
+// 数组采样层坐标改写（nvn_vk_array_query.h）的缺省值按设备定：规范要求驱动自己把层号夹到视图的层范围，合规驱动上这段改写结果不变、
+//   只是每次数组采样多一次尺寸查询和一次夹取，所以只对实测需要的驱动缺省开。目前只有华为 Maleoon 一族（vendorID 0x19E5、驱动名以 Maleoon 开头；
+//   实测 Maleoon 920，驱动名 "Maleoon 920"、driverID 9、驱动版本 3104880233）。nvk_array_query 显式设 0 / 1 仍能强制。
+static int array_query_default(void) {
+    return g.dev->properties.vendorID == 0x19E5u && !strncmp(g.dev->driver_name, "Maleoon", 7);
+}
 nvn_gpu_rc nvn_gpu_shader_load(const nvn_gpu_shader_src *s, nvn_gpu_shader *out, nvn_gpu_err *err) {
     if (!session_accepting()) return fail(err, NVN_GPU_E_STOPPED, "会话正在关闭 / 未打开");
     if (!out) return fail(err, NVN_GPU_E_ARG, "out 为空");
@@ -3329,7 +3336,21 @@ nvn_gpu_rc nvn_gpu_shader_load(const nvn_gpu_shader_src *s, nvn_gpu_shader *out,
         VkShaderModuleCreateInfo ci = {0};
         ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         ci.codeSize = s->bytes; ci.pCode = s->blob;
-        if (vkCreateShaderModule(g.d, &ci, NULL, &sh->mod) != VK_SUCCESS) {
+        uint32_t *array_code = NULL, array_words = 0, array_count = 0;
+        if (nvn_plat_flag("nvk_array_query", array_query_default()) && s->bytes / 4 <= UINT32_MAX) {
+            array_code = nvn_vk_array_query(s->blob, (uint32_t)(s->bytes / 4), &array_words, &array_count);
+            if (array_code) {
+                ci.pCode = array_code; ci.codeSize = (size_t)array_words * 4;
+                static unsigned array_logs;
+                if (__atomic_fetch_add(&array_logs, 1, __ATOMIC_RELAXED) < 16) {
+                    char line[128]; snprintf(line, sizeof line, "array-query stage=%u samples=%u words=%u", (unsigned)s->stage, array_count, array_words);
+                    nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", line);
+                }
+            }
+        }
+        VkResult module_result = vkCreateShaderModule(g.d, &ci, NULL, &sh->mod);
+        free(array_code);
+        if (module_result != VK_SUCCESS) {
             free(sh->tfmt); free(sh->ents); free(sh);
             return fail(err, NVN_GPU_E_COMPILE, "vkCreateShaderModule 失败（stage %d）", s->stage);
         }
