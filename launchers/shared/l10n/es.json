@@ -4319,6 +4319,10 @@
   "查看本任务日志里签名那一步的报错；确认 Xcode「设置 → 账户」里登录了你的 Apple ID、能给这台 Apple TV 签名，再试一次。": "Revisa el error del paso de firma en el registro de esta tarea; asegúrate de haber iniciado sesión con tu Apple ID en Xcode › Ajustes › Cuentas y de que puede firmar para este Apple TV, y vuelve a intentarlo.",
   "让 Apple TV 开着、和这台 Mac 连同一个网络，再点一次「装到 Apple TV」；电视上原有的 App 和存档都保留。": "Mantén el Apple TV encendido y en la misma red que este Mac, y vuelve a pulsar «Instalar en el Apple TV»; se conservan la app y las partidas guardadas que ya hay en el televisor.",
   "让 Apple TV 开着、和这台 Mac 连同一个网络，并在 Xcode「窗口 → 设备与模拟器」里和它配对过一次，再试一次。": "Mantén el Apple TV encendido y en la misma red que este Mac, emparéjalo una vez en Xcode › Ventana › Dispositivos y simuladores, y vuelve a intentarlo.",
-  "让 Apple TV 开着、别让它休眠，和这台 Mac 连同一个网络，再点一次「装到 Apple TV」。": "Mantén el Apple TV encendido y sin reposo, en la misma red que este Mac, y vuelve a pulsar «Instalar en el Apple TV»."
+  "让 Apple TV 开着、别让它休眠，和这台 Mac 连同一个网络，再点一次「装到 Apple TV」。": "Mantén el Apple TV encendido y sin reposo, en la misma red que este Mac, y vuelve a pulsar «Instalar en el Apple TV».",
+  "这款的存档从手机上的另一个 S2Arm（{0}）复制进了新装的独立 App；那边的存档没动，在新 App 里确认进度没问题再删旧的。": "La partida de este juego se copió de otro S2Arm del teléfono ({0}) a la app independiente recién instalada. La de allí no se tocó; comprueba tu progreso en la app nueva antes de borrar la antigua.",
+  "手机上有几个 S2Arm 都存着这款的存档（{0}），没替你挑：在启动器的手机存档里选一份，还原到新装的独立 App。": "Varios S2Arm del teléfono tienen partida de este juego ({0}), así que no se eligió ninguna: en las partidas del teléfono del lanzador, elige una y restáurala en la app independiente recién instalada.",
+  "新装的独立 App 用的是从旧 App 复制来的存档：进游戏确认进度没问题，再在 iPhone 上删掉旧 App。": "La nueva app independiente usa la partida copiada de la app antigua: abre el juego y comprueba tu progreso; después borra la app antigua del iPhone.",
+  "在启动器的手机存档里选你要的那一份，还原到新装的独立 App；其余几个 App 里的存档都没动。": "En las partidas del teléfono del lanzador, elige la que quieras y restáurala en la app independiente recién instalada; las partidas de las demás apps no se tocaron."
  }
 }
