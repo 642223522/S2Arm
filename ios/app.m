@@ -688,6 +688,8 @@ id s2a_ios_ext_register(UIViewController *vc);   // extdisplay.m：登记外接�
 - (BOOL)prefersStatusBarHidden { return YES; }
 - (void)viewDidLayoutSubviews {   // 屏幕尺寸变了（10-27 Duo 合上切外屏、展开回内屏）：记下当前屏的比例；直连出图层按新尺寸重摆（graphics/nvn/host_adapt.m；通用模式没有这个符号）
     [super viewDidLayoutSubviews];
+    void s2a_dprompt_layout(void) __attribute__((weak_import));   // ios/dprompt.m：屏幕尺寸变了，触屏提示条按新宽度重排（只链前端的单测没有它）
+    if (s2a_dprompt_layout) s2a_dprompt_layout();
     void s2a_direct_relayout(void) __attribute__((weak_import));
     if (s2a_direct_relayout) s2a_direct_relayout();
     void nxgal_window_relayout_ios(void) __attribute__((weak_import));

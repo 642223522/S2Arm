@@ -1319,10 +1319,12 @@ S2ARM_README_TEXT = {
 }
 
 
-# 文件夹里导出过通用 S2Arm.ipa（export_shell_ipa）时，说明最前面加这一句；没导出就不出现（11-17 维护者定稿原话）
+# 文件夹里导出过通用 S2Arm.ipa（export_shell_ipa）时，说明最前面加这一句；没导出就不出现（11-17 维护者定稿；11-21 维护者要求写清这个 IPA 的用途：给 LiveContainer / SideStore / AltStore 自签）
 S2ARM_README_IPA = {
-    "zh": "S2Arm.ipa：用你自己的签名工具（AltStore、SideStore 等）签好装到手机。只装一次，S2Arm 升级时再装一次。\n",  # 非玩家句（说明文件按界面语言直接写，英文见下一项）
-    "en": "S2Arm.ipa: sign it with your own tool (AltStore, SideStore, etc.) and install it on your iPhone. You only need to do this once, and again when S2Arm updates.\n",
+    "zh": "S2Arm.ipa：S2Arm App 本体（不带游戏、未签名），给自签工具用：在 LiveContainer 里直接导入它，或用 SideStore、AltStore 等签好装到手机。"
+          "只装一次，S2Arm 升级时再装一次（每次导出都会放上本版）。\n",  # 非玩家句（说明文件按界面语言直接写，英文见下一项）
+    "en": "S2Arm.ipa: the S2Arm app itself (no games, unsigned), for self-signing tools: import it directly in LiveContainer, or sign it with SideStore, AltStore, etc. "
+          "and install it on your iPhone. You only need to do this once, and again when S2Arm updates (every export puts the current version here).\n",
 }
 
 
@@ -1384,12 +1386,11 @@ def export_s2arm(c, gid, *, folder=None, sign=True, step=0, total=3):
     import hashlib, io as _io, tarfile
     import program_pack
     import ipa as packer
-    from rewrite_refresh import refresh_ios
     gid = gid.upper()
     c.begin("准备这款的程序（按需更新）", step + 1, total)
     pack = ios_pack(c, gid)
     with packer.program_locks(c, [gid]):
-        refresh_ios(c, [gid])
+        refresh_local(c, gid)   # 同「更新这款」：着色器库一起补到本版（#1162：原先只重核程序、不重编着色器库，导出装好后电脑上「建议更新」照亮）
         pkg = Path(program_pack.build(c, gid))
         meta = json.loads((pkg / program_pack.META).read_text(encoding="utf-8"))
         image = pkg / program_pack.image_name(gid)
@@ -1495,12 +1496,26 @@ def export_shell_ipa(c):
     写成「S2Arm 游戏包」文件夹（s2arm_dir，和各款 .s2arm 同一处）里的 S2Arm.ipa，就地换掉上一份；同文件夹里别的东西不动。
     0.5.x 的「S2Arm 自签导出」文件夹不碰。不读游戏库、不出游戏的程序包，所以游戏多少都一样快。玩家关了主屏小组件就去掉扩展再交（同 export_phone）。
     结果字段同 export_phone（完成页照用），games / files 为空"""
-    import ipa as packer
     c.begin("组 S2Arm（不带游戏）", 1, 2)
+    out, sid = _write_shell_ipa(c, lambda: c.begin("写进「S2Arm 游戏包」文件夹", 2, 2))
+    folder = out.parent
+    lang = ui_lang(c)
+    readme = write_s2arm_readme(folder, lang)
+    return dict(exported=True, outputPath=str(folder), ipa=str(out), readme=str(readme), shellId=sid, sgrade=patches_results(c),
+                games=[], files=[], skipped=[], exportBytes=out.stat().st_size, fresh=[], reused=0, unwritten=[])
+
+
+SHELL_IPA_MARK = ".S2Arm.ipa.shell"   # 「S2Arm 游戏包」文件夹里那份 S2Arm.ipa 是哪个壳号组的（ensure_shell_ipa 判要不要换）
+
+
+def _write_shell_ipa(c, before_write=None):
+    """组不带游戏的通用 S2Arm.ipa（未签名）写进「S2Arm 游戏包」文件夹，就地换掉上一份、记壳号 → (路径, 壳号)。export_shell_ipa 与 ensure_shell_ipa 共用"""
+    import ipa as packer
     work, tmp = Path(tempfile.mkdtemp(prefix=".export-", dir=c.library)), None
     try:
         ipa, _, sid = packer.assemble_shell(c, dest=work / "assemble")
-        c.begin("写进「S2Arm 游戏包」文件夹", 2, 2)
+        if before_write:
+            before_write()
         folder = s2arm_dir(c)
         folder.mkdir(parents=True, exist_ok=True)   # 玩家删了文件夹也照样重建
         out = folder / "S2Arm.ipa"
@@ -1508,14 +1523,26 @@ def export_shell_ipa(c):
         if not (c.r.get("widget") is False and ipa_strip_widget(ipa, tmp)):
             shutil.move(str(ipa), str(tmp))   # 临时目录和文件夹都在游戏库所在盘上：通常是改名
         os.replace(tmp, out)
+        (folder / SHELL_IPA_MARK).write_text(str(sid) + "\n", encoding="utf-8")
     finally:
         shutil.rmtree(work, ignore_errors=True)
         if tmp is not None:
             tmp.unlink(missing_ok=True)   # 半路失败不留半个文件（换上去了就已不在）
-    lang = ui_lang(c)
-    readme = write_s2arm_readme(folder, lang)
-    return dict(exported=True, outputPath=str(folder), ipa=str(out), readme=str(readme), shellId=sid, sgrade=patches_results(c),
-                games=[], files=[], skipped=[], exportBytes=out.stat().st_size, fresh=[], reused=0, unwritten=[])
+    return out, sid
+
+
+def ensure_shell_ipa(c):
+    """「导出…」通用 S2Arm、一台设备都不勾（导出到文件夹）：同一个文件夹里要有本版的 S2Arm.ipa，玩家拿去自己签了装上才用得了这款的 .s2arm。
+    #502：原先只出 .s2arm，单独导出 S2Arm.ipa 的按钮只挂在总控台里登记过的手机下面，LiveContainer / 从没连过电脑的玩家拿不到新版 S2Arm.ipa。
+    文件夹里已是本版壳号组的就不重组、不换文件（玩家不会以为又要重装）→ 路径"""
+    import ipa as packer
+    folder = s2arm_dir(c)
+    out, mark = folder / "S2Arm.ipa", folder / SHELL_IPA_MARK
+    try:
+        same = out.is_file() and mark.read_text(encoding="utf-8").strip() == str(packer.current_shell_id(c))
+    except OSError:
+        same = False
+    return out if same else _write_shell_ipa(c)[0]
 
 
 def readiness(c):
@@ -3393,8 +3420,6 @@ def export_app(c, gid):
     ② 这款的游戏包 .s2arm（资源派生件，程序不签）+ 资源本体 .img 硬链接（export_s2arm folder=游戏文件夹）
     ③ README。→ 结果页 B 要的（appName / ipaPath / gameFolder / s2armPath / resourcePath / signMode / nextSteps / exported）"""
     import ipa as packer
-    import sgrade_bf
-    from rewrite_refresh import refresh_ios
     gid = gid.upper()
     ios_pack(c, gid)
     total = 5
@@ -3403,9 +3428,7 @@ def export_app(c, gid):
     signed = None
     try:
         with packer.program_locks(c, [gid]):
-            if sgrade_bf.rechain_ios(c, gid) == "unavailable":
-                trace(c, f"{gid} 着色器链更新了，这次没重编着色器库（原因见上一行；「建议更新」照旧提示）")  # 非玩家句
-            refresh_ios(c, [gid])
+            refresh_local(c, gid)   # 同「更新这款」，一份定义
             ipa, _, _ = packer.assemble(c, gid, dest=tmp, standalone=True)
         plain = tmp / "S2Arm-app.ipa"
         if ipa_strip_widget(ipa, plain):
@@ -3447,8 +3470,6 @@ def put_app(c, gid, ph, steps=True):
     ph = 这台手机（phone_for：要签名，不走别的工具装的 S2Arm）。设备记录 apps[游戏号] = {bundleId, shellId, team, signer, signed, pack, mods, at}；
     通用壳的 bundleId / shellId / games 不碰——显式描述文件只有一个包名、独立 App 顶掉了通用壳时例外：壳号与各款记录清掉（手机上已经不是它了）"""
     import ipa as packer
-    import sgrade_bf
-    from rewrite_refresh import refresh_ios
     gid = gid.upper()
     pack = ios_pack(c, gid)
     bid, team, fixed = app_bundle(c, ph, gid)
@@ -3459,9 +3480,7 @@ def put_app(c, gid, ph, steps=True):
     tmp = Path(tempfile.mkdtemp(prefix=".container-", dir=c.library))
     try:
         with packer.program_locks(c, [gid]):
-            if sgrade_bf.rechain_ios(c, gid) == "unavailable":
-                trace(c, f"{gid} 着色器链更新了，这次没重编着色器库（原因见上一行；「建议更新」照旧提示）")  # 非玩家句
-            refresh_ios(c, [gid])
+            refresh_local(c, gid)   # 同「更新这款」，一份定义
             ipa, games, sid = packer.assemble(c, gid, dest=tmp, standalone=True)   # 主屏名 / 图标是这款的
         plain = tmp / "S2Arm-app.ipa"
         if ipa_strip_widget(ipa, plain):
@@ -4043,11 +4062,29 @@ def _install(c):
         return downstream.install_ios(c, next((g for g in c.catalog()["games"] if g["id"].upper() == gid.upper()), dict(id=gid)), scheme)
     ios_pack(c, gid)
     if wants_export(c):   # 独立 App：ipa + .s2arm + .img + README 全进这款的游戏文件夹；通用壳：一款导出成小游戏包 .s2arm + 资源本体原位（两件套）
-        return export_app(c, gid) if chosen_layout(c, gid) == "standalone" else export_s2arm(c, gid)
+        if chosen_layout(c, gid) == "standalone":
+            return export_app(c, gid)
+        shell = ensure_shell_ipa(c)   # 先放 S2Arm.ipa 再出 .s2arm：说明文件按文件夹里有没有 S2Arm.ipa 写「先签好装上」那句
+        return dict(export_s2arm(c, gid), shellIpa=str(shell))
     c.begin("找签名账号与 iPhone", 1, 6)
     if chosen_layout(c, gid) == "standalone":   # 独立 App（一 App 一游戏）：这款自己签一个 App 装上
         return put_app(c, gid, phone_for(c))
-    return push_game(c, gid, push_phone(c))   # 「推到 iPhone」只推这一款，不装壳；别的工具装的 S2Arm 推进它自己的包名（结构 4）
+    out = push_game(c, gid, push_phone(c))   # 「推到 iPhone」只推这一款，不装壳；别的工具装的 S2Arm 推进它自己的包名（结构 4）
+    return dict(out, **shell_ipa_beside(c))
+
+
+def shell_ipa_beside(c):
+    """「导出…」勾了设备（通用 S2Arm，推完这一款）也在「S2Arm 游戏包」文件夹里备好本版 S2Arm.ipa + 说明：不论勾不勾设备，导出过就有一份
+    能拿去 LiveContainer / SideStore / AltStore 自签的本版 App（11-21 维护者定；独立 App 出法那款 App 自己就是壳，不走这里）。
+    放在推完之后：不拖慢推到手机；本版已有就不重组（ensure_shell_ipa）。组不出来不把已推好的这一款判成失败，原因放进结果 shellIpaError、写日志。
+    → {shellIpa: 路径} | {shellIpaError: 原因}"""
+    try:
+        ipa = ensure_shell_ipa(c)
+        write_s2arm_readme(ipa.parent, ui_lang(c))
+        return dict(shellIpa=str(ipa))
+    except (Failure, OSError) as e:
+        print(f"[s2a] 推完了，但「S2Arm 游戏包」里的 S2Arm.ipa 没备好：{type(e).__name__} {e}", file=sys.stderr, flush=True)  # 非玩家句
+        return dict(shellIpaError=str(e))
 
 
 def restore_previous(c):

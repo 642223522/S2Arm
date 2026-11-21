@@ -228,7 +228,8 @@ def runtime_env(c, game, runtime, input_ok=True):
                S2A_MODS_DIR=str(contained(layout.root_of(c, game["id"]), layout.path(c, game["id"], "mods"))))
     # Dock / Cmd+Tab 图标（#994）：把游戏库列表同一张封面交给宿主（封面三级取法在 library.catalog：玩家换的 → 游戏自带 → 商店横图），
     #   宿主起 App 后把图标换成它（macos/front_mac.m）。没有封面 / 文件不在了就不带，宿主用包里的默认图标（write_host_icon 编进 Resources）
-    cover = str(game.get("cover") or "")
+    from library import game_cover
+    cover = str(game.get("cover") or "") or game_cover(c, game["id"])   # 起局拿的是 catalog.json 原始记录、没有 cover，按列表同一份定义现取
     if cover and Path(cover).is_file():
         env["S2A_GAME_COVER"] = cover
     if player:

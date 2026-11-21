@@ -614,8 +614,8 @@ void s2a_diag_attach(UIViewController *vc) {
     // 上次会话是不是死在前台：只读会话标记（runtime/src/sesdiag.c，几字节），不读日志（11-07：主线程整份读上一局日志卡几秒，见 session_summary）。
     //   标记在这里先读后写：读到的是上一局留下的，然后标成本局「前台」；进后台 / 回前台由 app.m 改写，优雅退出（lifecycle.c）删掉
     { uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW); int prev = s2a_sesmark_prev(docs().fileSystemRepresentation); s2a_sesmark_set(docs().fileSystemRepresentation, S2A_SESMARK_FG);
-      LOG("诊断包：上次会话标记 %s（主线程 %.2f ms，不读日志）→ %s", prev == S2A_SESMARK_FG ? "前台未收尾" : prev == S2A_SESMARK_BG ? "后台" : "无（正常收尾）", (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0) / 1e6, prev == S2A_SESMARK_FG ? "提示导出" : "不提示");
-      g_will_ask = prev == S2A_SESMARK_FG && !getenv("S2A_OPEN_SETTINGS") && !s2a_unattended();   // 同步定：游戏里提示条（iml_probe.m，起局 3 秒后）到点时要看
+      LOG("诊断包：上次会话标记 %s（主线程 %.2f ms，不读日志）→ %s", prev == S2A_SESMARK_FG ? "前台未收尾" : prev == S2A_SESMARK_BG ? "后台" : prev == S2A_SESMARK_ABORT ? "游戏中止" : "无（正常收尾）", (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0) / 1e6, prev == S2A_SESMARK_FG ? "提示导出" : "不提示");
+      g_will_ask = (prev == S2A_SESMARK_FG || prev == S2A_SESMARK_ABORT) && !getenv("S2A_OPEN_SETTINGS") && !s2a_unattended();   // 游戏中止也问发诊断（不关设置：crash_auto_off 只认 fg）   // 同步定：游戏里提示条（iml_probe.m，起局 3 秒后）到点时要看
       dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         check_toggle();
         // 真机自动化（S2A_OPEN_SETTINGS 测试开关在）每局都是被强杀收尾的，上次异常退出的提示会挡住要截的设置页：只在这时不问（玩家给不了这个环境变量）

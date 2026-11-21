@@ -70,7 +70,8 @@ int nvk_shader_open(void) {
     struct rp_shader_live_compile_stats discarded;
     rp_shader_live_compile_take(&discarded);
     if (nvn_plat_flag("nvk_live_compile_async", 1)) {
-        const int frame_ms = nvn_plat_flag("fu_frame_ms", 100);
+        // 可恢复绘制仍走同一安全判定。免等待只改变着色器翻译的帧预算。
+        const int frame_ms = nvn_plat_flag("nvk_live_compile_nowait", 0) ? 0 : nvn_plat_flag("fu_frame_ms", 100);
         const int unsafe_ms = nvn_plat_flag("fu_unsafe_ms", 10000);
         g_live_frame_ms = frame_ms > 0 ? (uint32_t)frame_ms : 0;
         g_live_unsafe_ms = unsafe_ms > 0 ? (uint32_t)unsafe_ms : 0;
@@ -812,9 +813,10 @@ static int layout_ent(const struct fd_binding *b, nvn_gpu_layout_ent *e) {
     // 共享内存溢出缓冲（计算）：没有客体来源，回放按派发组数 × 程序的 spill_bytes 从暂存区分配（rp_draw.c rp_dispatch）
     if (b->kind == 4 && b->count == 1) { e->cls = NVN_GPU_RES_SSBO; e->src_kind = NVN_RB_SPILL; e->access = NVN_GPU_ACC_R | NVN_GPU_ACC_W; return 1; }
     // 图像：单个存储图像（解析器给出 NVN 图像槽 0..7，放在 tex_slot），计算与图形阶段同一形态；回放按槽取这一阶段 BindImage 的句柄
-    //   建存储视图（rp_draw.c image_resolve：计算派发与绘制共用）。
+    //   建存储视图（rp_draw.c image_resolve：计算派发与绘制共用）。imageBuffer（Dim=Buffer）是存储纹素缓冲：同一个图像槽，
+    //   类别 IMAGE_TBUF（描述符 STORAGE_TEXEL_BUFFER），回放按槽里的缓冲贴图建缓冲视图（rp_draw.c texel_view，同 Ryujinx 按 isImage 绑 TextureBuffer）
     if (b->kind == 3 && b->count == 1 && b->tex_slot >= 0 && b->tex_slot < 8) {
-        e->cls = NVN_GPU_RES_IMAGE; e->src_kind = NVN_RB_IMG; e->src_reg = (uint16_t)b->tex_slot;
+        e->cls = b->texel_buffer ? NVN_GPU_RES_IMAGE_TBUF : NVN_GPU_RES_IMAGE; e->src_kind = NVN_RB_IMG; e->src_reg = (uint16_t)b->tex_slot;
         e->access = NVN_GPU_ACC_R | NVN_GPU_ACC_W;
         return 1;
     }
@@ -981,8 +983,14 @@ static struct entry *build(const uint8_t *bytes, size_t len, const struct s2a_so
             le->stages = b->is_support ? (1u << nst) - 1u : 1u << st;
             if (b->kind == 2) sampled_decl(fp.stage[st].spirv, fp.stage[st].spirv_bytes, (uint32_t)b->set, (uint32_t)b->binding,
                 &e->prog.dtt[st][e->prog.nent[st]], &e->prog.dcls[st][e->prog.nent[st]], NULL);
+            // 图形阶段的 imageBuffer：回放要声明的数值类与格式选缓冲视图格式（同计算阶段）；普通图形存储图像口径不动
+            if (le->cls == NVN_GPU_RES_IMAGE_TBUF) sampled_decl(fp.stage[st].spirv, fp.stage[st].spirv_bytes, (uint32_t)b->set, (uint32_t)b->binding,
+                &e->prog.dtt[st][e->prog.nent[st]], &e->prog.dcls[st][e->prog.nent[st]], &e->prog.difmt[st][e->prog.nent[st]]);
             if (le->cls == NVN_GPU_RES_TBUF && e->prog.dtt[st][e->prog.nent[st]] != NVN_TEXTURE_TARGET_BUFFER + 1) {
                 red1("tbuf_shader_type_unproven", b->stage); e->failed = 1; break;
+            }
+            if (le->cls == NVN_GPU_RES_IMAGE_TBUF && e->prog.dtt[st][e->prog.nent[st]] != NVN_TEXTURE_TARGET_BUFFER + 1) {
+                red1("image_tbuf_shader_type_unproven", b->stage); e->failed = 1; break;
             }
             e->prog.nent[st]++;
         }
@@ -1090,7 +1098,7 @@ static struct work_snap *snap_capture(const struct facts *f, const struct s2a_in
 // 跨局缓存排在它前面：那是本机按现场事实编的，比出包推导的准。开关 debug.s2a.no_libpack=1 关掉（对照用）
 static pthread_mutex_t g_lp_mu = PTHREAD_MUTEX_INITIALIZER;
 static nvn_hmap g_lp_bad; static int g_lp_bad_init;
-static _Atomic uint64_t g_n_libpack, g_n_libpack_bad;
+static _Atomic uint64_t g_n_libpack, g_n_libpack_bad, g_lp_unaligned_refused;
 // 库状态（「程序累计」行的「库」列）：没查过 / 已打开 / 不在 / 坏。目录不在原先静默返回，读数只剩「命中 0 / 没有 0」，
 // 分不出「资源包没带这一层」和「库里没有这个键」（offline-shader-miss 调查：测试包全是前者）。
 enum { LP_ST_UNSEEN, LP_ST_OPEN, LP_ST_MISSING, LP_ST_BAD };
@@ -1121,7 +1129,25 @@ static struct s2a_libpack *libpack_for_locked(const char *root) {
 static int libpack_fetch(const uint8_t identity[32], const uint8_t (*gkeys)[8], uint32_t stages, const uint8_t *ckey, int state_ok,
                          const char *topology, const struct s2a_direct_compile_context *pc, uint8_t **bytes, size_t *len) {
     const char *root = getenv("S2A_SHADER_REVISION_ROOT");
-    if (!root || (!ckey && ((stages != 0x3u && stages != 0x7u) || !state_ok)) || nvn_plat_flag("no_libpack", 0)) return 0;
+    // state_ok 对计算同样生效：ckey 路径传 !unaligned（慢路）/ rec->lp_ok==2（暖路径），含义同图形 lp_ok。库件只有
+    //   对齐变体（libpack_vk.c 恒写 hasUnalignedStorageBuffer:false，c0 钳制补偿只有现编能出），非对齐 sbuf 绑定下
+    //   出库 = 无钳制的对齐码跑非对齐缓冲 → 设备越界丢局（9000 日包 DeviceLost 元凶 = cs 50c91227a1082f2c 库版此机制）。
+    if (!root || !state_ok || (!ckey && stages != 0x3u && stages != 0x7u) || nvn_plat_flag("no_libpack", 0)) {
+        // 计算侧对齐闸的拒查有界具名（程序键 + 原因）：库根在、ckey 非空、state_ok 假 = 非对齐 sbuf 拒查，
+        //   真机直接看到闸生效。每次取程序都可能撞上：一行一个事件只打前 8 条防日志洪泛，之后只累计。
+        if (root && ckey && !state_ok) {
+            uint64_t n = atomic_fetch_add_explicit(&g_lp_unaligned_refused, 1, memory_order_relaxed);
+            if (n < 8) {
+                char kh[17]; for (int i = 0; i < 8; i++) snprintf(kh + 2 * i, 3, "%02x", ckey[i]);
+                char b[224]; snprintf(b, sizeof b,
+                    "libpack_cs_unaligned_refused 键 %s：计算取库因存储缓冲非对齐被对齐闸拒——库件只有对齐变体，退回现编", kh);
+                nvn_plat_log(NVN_PLAT_LOG_INFO, "shader", b);
+            } else if (n == 8)
+                nvn_plat_log(NVN_PLAT_LOG_INFO, "shader",
+                    "libpack_cs_unaligned_refused 行已截断（只打前 8 条），之后只累计不发");
+        }
+        return 0;
+    }
     char lw[192] = ""; int lrc = S2A_LIBPACK_MISS;
     pthread_mutex_lock(&g_lp_mu);
     if (!g_lp_bad_init) { nvn_hm_init(&g_lp_bad, 32); g_lp_bad_init = 1; }
@@ -2036,6 +2062,9 @@ static struct entry *build_compute(const uint8_t *bytes, size_t len, const struc
             &e->prog.dtt[0][e->prog.nent[0]], &e->prog.dcls[0][e->prog.nent[0]], &e->prog.difmt[0][e->prog.nent[0]]);
         if (le->cls == NVN_GPU_RES_TBUF && e->prog.dtt[0][e->prog.nent[0]] != NVN_TEXTURE_TARGET_BUFFER + 1) {
             red1("tbuf_shader_type_unproven", "cs"); e->failed = 1; break;
+        }
+        if (le->cls == NVN_GPU_RES_IMAGE_TBUF && e->prog.dtt[0][e->prog.nent[0]] != NVN_TEXTURE_TARGET_BUFFER + 1) {
+            red1("image_tbuf_shader_type_unproven", "cs"); e->failed = 1; break;
         }
         if (le->src_kind == NVN_RB_TEX && le->src_reg >= 32 && le->src_reg < 40 &&
             le->src_reg2 == UINT16_MAX && le->cls == NVN_GPU_RES_TEX_SAMP && le->count == 1)

@@ -1053,6 +1053,21 @@ void s2a_window_fatal_msg(char *out, size_t cap, uint64_t need, uint64_t fit, ui
 }
 static char g_npdm[1100];   // 本款 main.npdm 路径（找不到可执行文件目录 / 模块目录时为空）：跨度算不出时按它说清原因
 static int g_ctr, g_ctr_astype = -1;   // 多款容器构造期（launchctx.c ③）：g_ctr = 1；g_ctr_astype = 包内各款一致的地址空间类型（不一致 / 读不到 = -1）
+// 多款容器构造期一款游戏都没有（全新安装后才导入、或删光了再导入）：原先不占窗口，起宿主前才补占（s2a_window_reserve_late）——那时宿主已用了一阵
+//   地址空间（Metal / malloc / 游戏库界面），2^39 以下最大一块从 65536 MB 碎到 37888 MB（#1903 D-D2YQ：iPhone 16 Pro 导入后第一局窗口只有 31744 MB，
+//   要约 41 GB 的款伸出窗口走远端，每秒 60 多万次缺页代执行，整局卡死；重开 App 后构造期占满 65536 MB 一点不卡）。
+//   改成构造期就按占位需求占：当成「没学到跨度的最大标准布局」把最大空洞占住（只占地址），起宿主前按真实的款核一次（s2a_window_late_keep）
+static int g_ctr_empty, g_placeholder;   // 本次 s2a_window_container_need：容器里一款都没有（且没别的错）；构造期占的是占位窗口
+#define EMPTY_CTR_NEED (76ull << 30)   // 占位需求：比任何标准布局都大（最大的 Switch 2 VAMM 款 75876 MB，t_vawin_container ③）→ 走「按需：占最大一块」
+uint64_t s2a_window_need_or_placeholder(uint64_t need, int empty) { return !need && empty ? EMPTY_CTR_NEED : need; }   // 纯函数，t_vawin_container 测
+// 起宿主前核占位窗口（纯函数，t_vawin_container 测）：真实的款装进占位窗口行不行 → 1 = 留着（只换回真实需求），0 = 放掉按真实的款重占。
+//   36 位款要 2^36 一带的空洞（占位按 39 位占的）；真实应用池要窗口下方少留宿主（小内存 iPad：本可以多给窗口）——这两种按真实的款重占，同改动前；
+//   真实需求 0（还是没有可算的款）也留着，等下一次
+int s2a_window_late_keep(uint64_t now, int astype, uint64_t below_now, uint64_t below_real) {
+    if (!now) return 1;
+    if (astype != 3) return 0;
+    return below_real >= below_now;
+}
 static int astype_of(const char *npdm) {   // main.npdm 的地址空间类型（同 svc_mem.c npdm_read：+0x0C 位 1–3，只读头 16 字节）；读不到 / 不是 META 为 -1
     uint8_t h[0x10]; int fd = npdm && npdm[0] ? open(npdm, O_RDONLY) : -1; ssize_t n = fd >= 0 ? read(fd, h, sizeof h) : -1; if (fd >= 0) close(fd);
     return n == (ssize_t)sizeof h && !memcmp(h, "META", 4) ? (h[0x0C] >> 1) & 7 : -1;
@@ -1161,7 +1176,8 @@ uint64_t s2a_window_container_need(const char *bundle, const char *home) {
         if (ni > top) top = ni;
         n++;
     }
-    if (ok && !n) LOG("【红】地址窗口：多款容器 %s 下没有游戏（程序包里也没有），不占窗口", gd);
+    g_ctr_empty = ok && !n;
+    if (ok && !n) LOG("地址窗口：多款容器 %s 下没有游戏（程序包里也没有）——还没导入，构造期按占位占窗口", gd);
     g_ctr_astype = ast;
     if (!ok || !n) return 0;
     g_span_learned = span_max;
@@ -1176,7 +1192,7 @@ static uint64_t need_from_npdm(void) {
 #if TARGET_OS_IPHONE
     // iOS：main.npdm 在启动上下文的模块目录（单款兼容 = 可执行文件同目录，同改造前）
     // 多款容器（launchctx.c ③）：构造期玩家还没选游戏、上下文不冻结——对包内每一款算，取最大（s2a_window_container_need）
-    if (s2a_launch_ctx_container()) { g_ctr = 1; return s2a_window_container_need(s2a_launch_ctx_bundle_dir(), getenv("HOME")); }
+    if (s2a_launch_ctx_container()) { g_ctr = 1; return s2a_window_container_need(s2a_launch_ctx_bundle_dir(), getenv("HOME")); }   // 空容器的占位在 vawin_reserve
     const s2a_launch_ctx *lc = s2a_launch_ctx_get();
     if (!lc) { LOG("【红】地址窗口：启动上下文不可用（%s）", s2a_launch_ctx_error()); return 0; }
     strlcpy(dir, lc->module_dir, sizeof dir);
@@ -1225,6 +1241,9 @@ static void vawin_reserve(void) {
     const char *e = getenv("S2A_VAWIN_NORESERVE"); g_noreserve = e && *e == '1';
     if (g_noreserve) { s2a_window_probe("构造函数（不占窗口）"); vaguard_release(); return; }
     g_need = need_from_npdm();
+    if (g_ctr && !g_need && g_ctr_empty) {
+        g_need = s2a_window_need_or_placeholder(g_need, 1); g_placeholder = 1; g_ctr_astype = 3; g_span_learned = 0;
+        LOG("地址窗口：多款容器构造期还没有游戏，先按占位需求 %llu MB 把最大空洞占住（只占地址），起宿主前按导入的款核一次", (unsigned long long)(g_need >> 20)); }
     {   // 只读日志（11-03 大乱斗首局定因 / 宿主预留按实测补足的依据）：构造函数时低区 [4 GB, 6 GB) 空余，与主可执行文件映射大小（各段 vmsize，不含 __PAGEZERO）
         uint64_t lt = 0, ll = 0, ex = 0; holes_in(0x100000000ull, 0x180000000ull, &lt, &ll);
         const struct mach_header_64 *mh = (const struct mach_header_64 *)_NSGetMachExecuteHeader();   // 主可执行文件（crt_externs.h；构造函数时刻 dyld 映像表的序号 0 不一定是它）
@@ -1350,6 +1369,27 @@ void s2a_window_reserve(void) {
 //   这时窗口里还什么都没放（布局、模块、尾部分配都在自检之后），放掉不碰任何东西。按需档（窗口已是本机最大一块、比要的小）重占也大不了，不动
 int s2a_window_reserve_late(void) {
     if (g_noreserve) return g_ok;
+    // 构造期按占位占的窗口（容器当时还没有游戏）：按现在导入的款核一次。放得进就留着，只把需求换成真实的（自检、日志按它说）；
+    //   36 位款、或真实应用池要窗口下方少留宿主（小内存 iPad）→ 放掉按真实的款重占（同改动前的补占）；占位那次没占成 → 按真实的款补占
+    if (g_placeholder) {
+        uint64_t now = need_from_npdm();
+        if (!now && g_ctr_empty) { LOG("地址窗口：起宿主前容器里仍没有可算的游戏，占位窗口留着"); return g_ok; }
+        g_placeholder = 0;
+        uint64_t below_now = g_ok && g_base > g_keep_lo ? g_base - g_keep_lo : 0;
+        uint64_t below_real = s2a_window_host_below_for_pool(g_fit, g_span_learned, s2a_window_container_pool());
+        if (g_ok && s2a_window_late_keep(now, npdm_astype(), below_now, below_real)) {
+            LOG("地址窗口：构造期占位占的窗口 %#llx +%llu MB 留着，导入的款要 %llu MB（下方宿主 %llu MB，按本款应 %llu MB），选了游戏再按本款学到的跨度收窄",
+                (unsigned long long)g_base, (unsigned long long)(g_res >> 20), (unsigned long long)(now >> 20), (unsigned long long)(below_now >> 20), (unsigned long long)(below_real >> 20));
+            g_need = now;
+            return g_ok;
+        }
+        LOG("地址窗口：构造期占位窗口不合导入的款（地址空间类型 %d、下方宿主 %llu MB、按本款应 %llu MB、%s），放掉按导入的款重占",
+            npdm_astype(), (unsigned long long)(below_now >> 20), (unsigned long long)(below_real >> 20), g_ok ? "占位窗口占到了" : "占位窗口没占成");
+        if (g_ok) munmap((void *)g_base, g_res);
+        g_ok = 0; g_base = g_size = g_res = 0; g_need = 0;
+        vawin_reserve();
+        return g_ok;
+    }
     if (!g_ok && !g_need) {
         LOG("地址窗口：构造期容器里没有可算的游戏（启动后才导入），起宿主前按现在的游戏补占");
         vawin_reserve();
@@ -1445,7 +1485,10 @@ static void cmd_arena_reserve(void) {   // 占窗口那一步在围栏前调；�
     //   即时存档：存档 / 恢复同样要命令记录区（命令句柄落点固定）；两次进程起来区落在同一地址才放得回（图形恢复核基址，不同即拒绝）
     const char *rec = getenv("S2A_FRAME_REC");
     if (!(rec && *rec) && !s2a_snap_mode()) return;
-    uint64_t top = s2a_va_top(), at, sz, fit, fat, lat, vp = 16ull << 30; if (!top) return;
+    // 虚拟池区：帧录按空洞剩余给，最多 16 GB（Mac 回放要把整局的虚拟池放回原地址）；只为即时存档（不录帧）给 2 GB，同放不下标准布局时的两条放法（vawin_reserve）。
+    //   11-21 #f0490a（3 台 iPad、iOS 18、空洞 52224 MB、一款要 32824 MB 的游戏）：存档也按 16 GB 给，命令记录区 + 15 GB 正好占掉窗口上方整段 16 GB 空洞，
+    //   宿主只剩低区约 4 GB，玩到 30–40 秒低区碰底（空洞合计 12 MB），上屏取不到 drawable、统一缓冲环分配失败 abort
+    uint64_t top = s2a_va_top(), at, sz, fit, fat, lat, vp = rec && *rec ? 16ull << 30 : 2ull << 30; if (!top) return;
     pick_hole(top, CMD_ARENA + (1ull << 30), &at, &sz, &fit, &fat, 0, &lat);
     if (!sz) { LOG("【红】命令记录区（iOS 帧录）：没有 %llu MB 的空洞，命令记录块照旧落低区，Mac 回放可能放不回", (unsigned long long)((CMD_ARENA + (1ull << 30)) >> 20)); return; }
     if (sz - CMD_ARENA < vp) vp = (sz - CMD_ARENA) & ~((1ull << 30) - 1);

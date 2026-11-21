@@ -63,26 +63,28 @@ int g_s2a_logfd = 2;
 static const char *fake_compile_error;
 static const char *fake_compile_file;
 static pthread_t last_compiler_thread;
-static int fixture_live_compile, fixture_live_slots, fixture_live_frame_ms = 100, fixture_live_unsafe_ms = 10000;
+static int fixture_live_compile, fixture_live_slots, fixture_live_nowait;
+static int fixture_live_frame_ms = 100, fixture_live_unsafe_ms = 10000;
 static pthread_mutex_t live_gate_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t live_gate_cv = PTHREAD_COND_INITIALIZER;
 static int live_gate_hold, live_gate_entered;
 static void live_gate_pause(void) {
     pthread_mutex_lock(&live_gate_mu);
     if (live_gate_hold) {
-        live_gate_entered = 1;
+        live_gate_entered++;
         pthread_cond_broadcast(&live_gate_cv);
         while (live_gate_hold) pthread_cond_wait(&live_gate_cv, &live_gate_mu);
     }
     pthread_mutex_unlock(&live_gate_mu);
 }
-static int live_gate_wait(void) {
+static int live_gate_wait(int count) {
     struct timespec deadline;
     clock_gettime(CLOCK_REALTIME, &deadline);
     deadline.tv_sec += 2;
     pthread_mutex_lock(&live_gate_mu);
-    while (!live_gate_entered) if (pthread_cond_timedwait(&live_gate_cv, &live_gate_mu, &deadline)) break;
-    int entered = live_gate_entered;
+    while (live_gate_entered < count)
+        if (pthread_cond_timedwait(&live_gate_cv, &live_gate_mu, &deadline)) break;
+    int entered = live_gate_entered >= count;
     pthread_mutex_unlock(&live_gate_mu);
     return entered;
 }
@@ -111,6 +113,7 @@ const char *nvn_plat_dir(int which) { return which == NVN_PLAT_DIR_CACHE ? geten
 int nvn_plat_flag(const char *name, int dflt) {
     if (!strcmp(name, "nvk_live_compile_async") && fixture_live_compile >= 0) return fixture_live_compile;
     if (!strcmp(name, "nvk_live_compile_slots") && fixture_live_slots) return fixture_live_slots;
+    if (!strcmp(name, "nvk_live_compile_nowait")) return fixture_live_nowait;
     if (!strcmp(name, "fu_frame_ms")) return fixture_live_frame_ms;
     if (!strcmp(name, "fu_unsafe_ms")) return fixture_live_unsafe_ms;
     if (!strcmp(name, "nvk_compute_warm")) return getenv("S2A_COMPUTE_WARM") ? atoi(getenv("S2A_COMPUTE_WARM")) : dflt;
@@ -118,10 +121,12 @@ int nvn_plat_flag(const char *name, int dflt) {
     if (fixture_alias_flag >= 0 && !strcmp(name, "nvk_alias")) return fixture_alias_flag;
     return dflt;
 }
-static int lp_missing_lines, lp_open_lines;   // 出包预编库「不在」（黄）/「已打开」两种行各打了几次
+static int lp_missing_lines, lp_open_lines, lp_unref_lines;   // 出包预编库「不在」（黄）/「已打开」/计算对齐闸拒查 三种行各打了几次
+static char last_unref[256];
 void nvn_plat_log(int level, const char *cls, const char *text) {
     if (!strcmp(cls, "shader") && strstr(text, "出包预编库不在：")) lp_missing_lines += level == NVN_PLAT_LOG_WARN ? 1 : 1000;   // 不是黄就记成大数（必红）
     if (level == NVN_PLAT_LOG_INFO && !strcmp(cls, "shader") && strstr(text, "出包预编库已打开：")) lp_open_lines++;
+    if (!strcmp(cls, "shader") && strstr(text, "libpack_cs_unaligned_refused")) { lp_unref_lines += level == NVN_PLAT_LOG_INFO ? 1 : 1000; snprintf(last_unref, sizeof last_unref, "%s", text); }
     if (level == NVN_PLAT_LOG_RED && !strcmp(cls, "shader")) snprintf(last_red, sizeof last_red, "%s", text);
     if (level == NVN_PLAT_LOG_INFO && !strcmp(cls, "shader") && strstr(text, "texture_pool_capacity=")) {
         diag_lines++; snprintf(last_diag, sizeof last_diag, "%s", text);
@@ -288,7 +293,18 @@ static int32_t fake_compile(uint64_t session, uint64_t gen, s2a_direct_bytes req
     }
     return -27; // deliberately no result: capture input only
 }
-s2a_direct_compile_fn s2a_direct_bound_compile_any(void) { return fake_compile; }
+static int32_t fake_parallel_compile(uint64_t session, uint64_t gen, s2a_direct_bytes req,
+                                     s2a_direct_emit_fn emit, void *sink) {
+    (void)session; (void)gen; (void)req;
+    live_gate_pause();
+    static const char result[] =
+        "{\"schema\":\"s2a-direct-program-v1\",\"content\":{\"stages\":[{\"stage\":\"vs\",\"spirv\":\"" S2A_TEST_VERT_64 "\"}],"
+        "\"bindings\":[{\"stage\":\"vs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"slot\":0,\"count\":64}]}}";
+    s2a_direct_bytes payload = {(const uint8_t *)result, sizeof result - 1};
+    return emit(sink, payload);
+}
+static int fixture_parallel_compile;
+s2a_direct_compile_fn s2a_direct_bound_compile_any(void) { return fixture_parallel_compile ? fake_parallel_compile : fake_compile; }
 nvn_gpu_rc nvn_gpu_shader_load(const nvn_gpu_shader_src *s, nvn_gpu_shader *o, nvn_gpu_err *e) {
     (void)e;
     if (fake_gs_success && (unsigned)s->stage < 6) {
@@ -1526,6 +1542,65 @@ static int gs_libpack_test(void) {
     printf("nvk shader pool (libpack GS): %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
+// ---- 计算出包预编库的非对齐闸（#496085）：库件只有对齐变体（libpack_vk.c 恒写 hasUnalignedStorageBuffer:false），
+//   sbuf 绑定实况非对齐时出库 = 无钳制对齐码跑非对齐缓冲（9000 DeviceLost 元凶 cs 50c91227a1082f2c 库版同型）。
+//   state_ok 对 ckey 必须生效：非对齐 → 不取库走现编加固件（请求带 hasUnalignedStorageBuffer:true），对齐 → 照常出库 ----
+static int cs_libpack_test(void) {
+    rp_shader_reset(); s2a_source_clear(); rp_state_reset(); nvn_unimpl_reset();
+    source(); fake_cs_success = 1; compiler_calls = cs_loads = 0; captured[0] = last_red[0] = 0;
+    bind_pools(100);
+    rp_S.ubo[5][0].addr = 0x1000; rp_S.ubo[5][0].size = 64;
+    rp_S.ssbo[5][0].addr = 0x10000; rp_S.ssbo[5][0].size = 256;   // 16 对齐（夹具 storage_buffer_offset_alignment=16）
+    char root[256], dir[600];
+    snprintf(root, sizeof root, "%s/nvk_cs_libpack.XXXXXX", getenv("TMPDIR") && *getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp");
+    if (!mkdtemp(root)) { CHECK(0, "cs libpack temp root"); return 1; }
+    snprintf(dir, sizeof dir, "%s/shaders", root); mkdir(dir, 0700);
+    snprintf(dir, sizeof dir, "%s/shaders/direct", root); mkdir(dir, 0700);
+    snprintf(dir, sizeof dir, "%s/shaders/direct/b-%s-vk", root, DMSH_CHAIN); mkdir(dir, 0700);
+    // 最小计算库件：_b.json 只列 drvcb（.spv 声明 support_buffer b47 → emit 按 .spv 补出，同 libpack_vk_test 的 CS_NOSUP 夹具）。
+    //   dm_ctl 必须等于键 hex（libpack_vk.c 命中判据），按 skey[5] 现拼
+    char khex[17]; for (int b = 0; b < 8; b++) snprintf(khex + 2 * b, 3, "%02x", rp_S.skey[5][b]);
+    char csjson[512];
+    snprintf(csjson, sizeof csjson,
+        "{\"key\":\"%s_b\",\"stage\":\"cs\",\"dm_ctl\":\"%s\",\"bindings\":["
+        "{\"msl_name\":\"cp_c0\",\"kind\":\"drvcb\",\"bank\":0,\"arg_id\":0}]}", khex, khex);
+    static const uint32_t csspv[] = {
+        0x07230203u, 0x00010000u, 0u, 3u, 0u,
+        0x00060005u, 2u, 0x70707573u, 0x5f74726fu, 0x66667562u, 0x00007265u,   // OpName %2 "support_buffer"
+        0x00040047u, 2u, 33u, 47u,                                             // OpDecorate %2 Binding 47
+        0x00040047u, 2u, 34u, 0u,                                              // OpDecorate %2 DescriptorSet 0
+    };
+    uint64_t ck[2] = { lp_key(rp_S.skey[5]), lp_key(rp_S.skey[5]) };
+    uint8_t ckind[2] = { 1, 52 };
+    const uint8_t *cd[2] = { (const uint8_t *)csjson, (const uint8_t *)csspv };
+    size_t cn[2] = { strlen(csjson), sizeof csspv };
+    CHECK(lp_write(dir, ck, ckind, cd, cn, 2) == 0, "cs libpack container written");
+    setenv("S2A_SHADER_REVISION_ROOT", root, 1); unsetenv("S2A_DIRECT_CACHE_DIR");
+    const struct rp_prog *p = NULL;
+    CHECK(rp_shader_resolve_compute(&p) == 0 && p && compiler_calls == 0 && cs_loads == 1,
+          "aligned CS storage hits the library, compiler not called (calls=%d red=%s)", compiler_calls, last_red);
+    CHECK(lp_unref_lines == 0, "aligned library hit does not log the unaligned-refuse line (got %d)", lp_unref_lines);
+    int calls = compiler_calls, unref0 = lp_unref_lines;
+    rp_S.ssbo[5][0].addr = 0x10001;   // 同键同绑定、只有对齐实况变：16 非对齐
+    p = NULL;
+    CHECK(rp_shader_resolve_compute(&p) == 0 && p && compiler_calls == calls + 1,
+          "unaligned CS storage refuses the library, falls back to live compile (calls=%d)", compiler_calls);
+    CHECK(strstr(captured, "\"hasUnalignedStorageBuffer\":true") != NULL,
+          "unaligned CS compile request carries the unaligned fact (hardened variant)");
+    {   char want[80]; snprintf(want, sizeof want, "libpack_cs_unaligned_refused 键 %s", khex);
+        CHECK(lp_unref_lines == unref0 + 1 && strstr(last_unref, want) != NULL,
+              "unaligned refuse logs one named line with the program key: %s", last_unref); }
+    rp_S.ssbo[5][0].addr = 0x10000;   // 回到对齐：库照常出
+    p = NULL; calls = compiler_calls;
+    CHECK(rp_shader_resolve_compute(&p) == 0 && p && compiler_calls == calls,
+          "realigned CS storage uses the library again (calls=%d)", compiler_calls);
+    unsetenv("S2A_SHADER_REVISION_ROOT");
+    char path[700];
+    snprintf(path, sizeof path, "%s/lib.idx", dir); unlink(path); snprintf(path, sizeof path, "%s/lib.000.pak", dir); unlink(path);
+    rmdir(dir); snprintf(dir, sizeof dir, "%s/shaders/direct", root); rmdir(dir); snprintf(dir, sizeof dir, "%s/shaders", root); rmdir(dir); rmdir(root);
+    printf("nvk shader pool (libpack CS unaligned gate): %d checks, %d failures\n", checks, failures);
+    return failures ? 1 : 0;
+}
 static int diag_compile_test(void) {
     trace_on = 1; trace_begin_count = trace_end_count = 0; fake_gs_success = 0;
     gs_request_test();
@@ -1577,6 +1652,51 @@ static int fixture_defer_frame(uint64_t *frame) {
     return 1;
 }
 
+static int live_compile_nowait_test(void) {
+    fixture_live_compile = 1;
+    fixture_live_slots = 2;
+    fixture_live_nowait = 1;
+    fixture_live_frame_ms = 600;
+    fixture_live_unsafe_ms = 250;
+    fixture_parallel_compile = 1;
+    live_gate_hold = 1;
+
+    CHECK(nvk_shader_open() == 0, "open no-wait session");
+    rp_state_reset(); source(); bind_pools(64); fake_array_count = 64;
+    struct rp_shader_req tri = {.prim = 4, .compile_defer_frame = fixture_defer_frame};
+    struct rp_shader_req points = {.prim = 0, .compile_defer_frame = fixture_defer_frame};
+    const struct rp_prog *p = NULL;
+    CHECK(rp_shader_resolve(&tri, &p) == 1 && !p, "recoverable triangle queues and defers");
+    CHECK(rp_shader_resolve(&points, &p) == 1 && !p, "recoverable point draw queues and defers");
+    CHECK(live_gate_wait(2), "both distinct requests enter actual worker slots before release");
+    struct rp_shader_live_compile_stats stats;
+    rp_shader_live_compile_take(&stats);
+    printf("recoverable draws: queued %llu, deferred %llu, submit interval %.3f ms (legacy frame budget %d ms)\n",
+           (unsigned long long)stats.enqueued, (unsigned long long)stats.pending, stats.wait_ns / 1e6, fixture_live_frame_ms);
+    CHECK(stats.enqueued == 2 && stats.pending == 2 && stats.timeout == 0,
+          "safe draws count two submissions and two deferrals");
+    CHECK(stats.wait_ns < (uint64_t)fixture_live_frame_ms * 500000,
+          "no-wait must bypass the available frame budget while callbacks are gated");
+
+    tri.compile_defer_frame = NULL;
+    CHECK(rp_shader_resolve(&tri, &p) < 0 && !p, "unsafe first use reports deadline failure");
+    rp_shader_live_compile_take(&stats);
+    CHECK(stats.timeout == 1 && stats.pending == 0 && stats.enqueued == 0,
+          "unsafe draw waits on the original worker job and reports timeout, with no safe deferral");
+    live_gate_release();
+    points.compile_defer_frame = NULL;
+    CHECK(rp_shader_resolve(&tri, &p) == 0 && p, "triangle adopts its finished result after the unsafe timeout");
+    CHECK(rp_shader_resolve(&points, &p) == 0 && p, "points adopt their finished result on next use");
+    struct s2a_compile_worker_stats workers;
+    s2a_compile_worker_stats(&workers);
+    CHECK(workers.compiles == 2, "retry publishes the original two results without compiling them again");
+    nvk_shader_stop();
+    CHECK(s2a_compile_worker_stop_bounded(2000, NULL, 0) == 0, "stop retires the no-wait pool");
+    rp_shader_reset(); s2a_source_clear();
+    printf("live-compile-nowait checks=%d failures=%d\n", checks, failures);
+    return failures ? 1 : 0;
+}
+
 static int live_compile_pending_test(int stop) {
     fixture_live_compile = 1;
     fixture_live_frame_ms = 0;
@@ -1587,7 +1707,7 @@ static int live_compile_pending_test(int stop) {
     struct rp_shader_req q = {.prim = 4, .compile_defer_frame = fixture_defer_frame};
     const struct rp_prog *p = NULL;
     CHECK(rp_shader_resolve(&q, &p) == 1 && !p, "exhausted safe budget must defer, with no program");
-    CHECK(live_gate_wait(), "compiler is still gated on worker");
+    CHECK(live_gate_wait(1), "compiler is still gated on worker");
     CHECK(rp_shader_resolve(&q, &p) == 1 && !p, "second use while pending must not publish a program");
     struct rp_shader_live_compile_stats stats;
     rp_shader_live_compile_take(&stats);
@@ -1635,9 +1755,11 @@ static int live_compile_pending_test(int stop) {
 int main(int argc, char **argv) {
     if (argc == 2 && !strcmp(argv[1], "--live-compile-thread")) return live_compile_thread_test();
     if (argc == 2 && !strcmp(argv[1], "--live-compile-pending")) return live_compile_pending_test(0);
+    if (argc == 2 && !strcmp(argv[1], "--live-compile-nowait")) return live_compile_nowait_test();
     if (argc == 2 && !strcmp(argv[1], "--live-compile-stop")) return live_compile_pending_test(1);
     if (argc == 2 && !strcmp(argv[1], "--diag-compile")) return diag_compile_test();
     if (argc == 2 && !strcmp(argv[1], "--gs-libpack")) return gs_libpack_test();
+    if (argc == 2 && !strcmp(argv[1], "--cs-libpack")) return cs_libpack_test();
     if (argc == 2 && !strcmp(argv[1], "--compute-warm")) return compute_warm_test();
     if (argc == 2 && !strcmp(argv[1], "--compute-warm-off")) return compute_warm_off_test();
     if (argc == 2 && !strcmp(argv[1], "--legacy-bytes")) {
