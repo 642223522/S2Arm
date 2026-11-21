@@ -2762,6 +2762,7 @@ uint64_t nvn_gpu_arena_fill(nvn_gpu_cmd ch, const nvn_gpu_slice *sl, const void 
     return vk_dq_fill(sl->cpu, src, bytes);
 }
 uint64_t nvn_gpu_arena_fill_wait(uint64_t ticket) { return vk_dq_fill_wait(ticket); }
+int nvn_gpu_arena_fill_take(uint64_t ticket) { return vk_dq_fill_take(ticket); }
 
 // ---------------------------------------------------------------- 录制原语
 
