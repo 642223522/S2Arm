@@ -1541,6 +1541,8 @@ static void fill_caps(struct nvn_gpu_vk *vk, const nvn_gpu_open_desc *d) {
     c->max_push_bytes = l->maxPushConstantsSize;
     c->min_ubo_align = (uint32_t)l->minUniformBufferOffsetAlignment;
     c->min_ssbo_align = (uint32_t)l->minStorageBufferOffsetAlignment;
+    c->min_texel_align = (uint32_t)l->minTexelBufferOffsetAlignment;
+    c->max_texel_elems = l->maxTexelBufferElements;
     c->max_ubo_range = l->maxUniformBufferRange;
     c->max_ssbo_range = l->maxStorageBufferRange;   // 描述符「范围」上限（不等于单次分配上限）
     // 单次分配上限来自 VkPhysicalDeviceMaintenance3Properties.maxMemoryAllocationSize（Vulkan 1.1）；
@@ -3041,13 +3043,14 @@ static VkDescriptorType vk_desc_type(uint8_t cls) {
 //   · 项与 blob 对不上 → E_LAYOUT（逐项核对的 A1 要求）；数值类 / 位宽推不出 → E_UNSUPPORTED。
 enum { SPV_OP_CAPABILITY = 17, SPV_OP_TYPE_INT = 21, SPV_OP_TYPE_FLOAT = 22, SPV_OP_TYPE_VECTOR = 23, SPV_OP_TYPE_IMAGE = 25,
        SPV_OP_TYPE_SAMPLED_IMAGE = 27, SPV_OP_TYPE_ARRAY = 28, SPV_OP_TYPE_RUNTIME_ARRAY = 29,
-       SPV_OP_TYPE_POINTER = 32, SPV_OP_VARIABLE = 59, SPV_OP_DECORATE = 71 };
+       SPV_OP_TYPE_POINTER = 32, SPV_OP_VARIABLE = 59, SPV_OP_IMAGE_TEXEL_POINTER = 60, SPV_OP_DECORATE = 71 };
 enum { SPV_DEC_BINDING = 33, SPV_DEC_SET = 34 };
 enum { SPV_DIM_BUFFER = 5, SPV_SC_UNIFORM_CONST = 0 };   // SPIR-V Dim：0-3 维度、4=Rect、5=Buffer
 
 struct spv_id {
     uint8_t kind;          // 1 int 2 float 3 vector 4 image 5 array 7 pointer 8 variable 9 sampled_image
     uint8_t sgn, sampled, dim;
+    uint8_t atom;          // variable: 着色器对它取过 OpImageTexelPointer（图像原子）
     uint32_t a;            // int/float: 位宽；vector: 分量类型 id；image: sampled 类型 id；array: elem id；ptr: pointee id；var: 指针类型 id
     uint32_t fmt;          // image: ImageFormat 操作数
 };
@@ -3162,6 +3165,9 @@ static nvn_gpu_rc spv_texel_formats(const void *blob, size_t bytes,
                 t->kind = 8; t->a = o[0];
             }
             break;
+        case SPV_OP_IMAGE_TEXEL_POINTER:   // 结果类型 / 结果 / 图像（指向变量的指针）/ 坐标 / 样本：图像原子要格式的 STORAGE_TEXEL_BUFFER_ATOMIC
+            if (wc >= 6 && o[2] < bound) ids[o[2]].atom = 1;
+            break;
         case SPV_OP_DECORATE:
             if (wc >= 4 && o[0] < bound) {
                 if (o[1] == SPV_DEC_BINDING) vbind[o[0]] = o[2];
@@ -3207,6 +3213,17 @@ static nvn_gpu_rc spv_texel_formats(const void *blob, size_t bytes,
         if (ids[t].fmt && f == VK_FORMAT_UNDEFINED) {
             r = fail(err, NVN_GPU_E_UNSUPPORTED, "texel 布局项 (set %u, binding %u) 格式推不出（ImageFormat=%u）", e->set, e->binding, ids[t].fmt);
             break;
+        }
+        // 存储纹素缓冲上的原子：绑定视图的格式必须等于声明格式（写描述符时核），所以在这里按声明格式查一次设备的
+        //   STORAGE_TEXEL_BUFFER_ATOMIC 就够；声明 Unknown 时证不出绑定格式能做原子，照实报不支持，不赌驱动
+        if (e->cls == NVN_GPU_RES_IMAGE_TBUF && ids[v].atom) {
+            VkFormatProperties fp; memset(&fp, 0, sizeof fp);
+            if (f != VK_FORMAT_UNDEFINED) s2a_vk_format_properties(g.phys, f, &fp);
+            if (!(fp.bufferFeatures & VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_ATOMIC_BIT)) {
+                r = fail(err, NVN_GPU_E_UNSUPPORTED, "texel 布局项 (set %u, binding %u) 做图像原子：格式 %d 没有 STORAGE_TEXEL_BUFFER_ATOMIC（ImageFormat=%u）",
+                         e->set, e->binding, (int)f, ids[t].fmt);
+                break;
+            }
         }
         tfmt[i] = f;
     }

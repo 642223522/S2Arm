@@ -611,6 +611,7 @@ static int skip(const char *why, const void *rec) {
 }
 void rp_draw_log_arm(int lines) { g_log_left = lines; }
 static const char *image_resolve(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, uint32_t i, int stage, nvn_gpu_view *out, tex_t *snapout);
+static const char *image_tbuf_resolve(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, uint32_t i, int stage, nvn_gpu_view *out);
 // 图形阶段存储图像：这一笔解析出的登记快照（调用方持有；登记表会扩容换地址），画成后按写访问登记 GPU 写
 static tex_t g_gimg_snap[RP_PROG_STAGES][RP_PROG_ENT_MAX]; static const tex_t *g_gimg[RP_PROG_STAGES][RP_PROG_ENT_MAX];
 
@@ -620,6 +621,65 @@ static uint64_t graphics_tex_handle(int st, unsigned reg) {
         return rp_S.img[st][reg - 32];
     return rp_S.tex[st][reg];
 }
+
+// ---------- 缓冲贴图（NVN target BUFFER）→ 后端缓冲视图 ----------
+// 两种用法同一套：采样纹素缓冲（TBUF，NVN_RB_TBUF，着色器 texelFetch）与存储纹素缓冲（IMAGE_TBUF，图像槽里的 imageBuffer，计算读写）。
+//   对照：compat Ryujinx TextureBindingsManager 遇 Target.TextureBuffer 不论采样还是图像都走 SetBufferTextureStorage（isImage 只决定描述符种类）；
+//   Eden vk_compute_pipeline.cpp 把 texture_buffer / image_buffer 两组都交给 BindComputeTextureBuffer，图像那组的格式取着色器显式声明的格式；
+//   iOS nvn_mtl.m 建贴图时 target 10 直接在池缓冲上建 texture buffer 视图（零拷贝），图像槽照普通图像绑那张视图。
+// 偏移不满足 minTexelBufferOffsetAlignment：Vulkan 不许原地建视图（VUID-VkBufferViewCreateInfo-offset-02749，Metal 那边会静默读错位）。
+//   选对齐副本（compat Ryujinx BufferHolder.CreateView / ArmAlignedTexelWriteback 同一做法，也是 iOS tba_copy 的思路）：开遍前把这段字节在 GPU 上
+//   拷进本段暂存区里按对齐起点分的一块，视图建在副本上；存储纹素缓冲写过的副本在派发之后拷回原处（texel_wb_flush）。
+//   不选 iOS 的前导元素（tbl_view：视图从向下取整的边界开、着色器取数下标加 lead）：那要改写着色器的取数与尺寸查询，安卓直连编译器没有这道改写。
+//   偏移连元素字节都不对齐的不做副本（iOS 同样给空），交给后端照实拒、具名记账。
+enum { TV_TOO_MANY, TV_UNALIGNED_GFX_WRITE, TV_UNALIGNED_PARTIAL, TV_SHADOW_FULL, TV_SHADOW_ALLOC, TV_VIEW_FAILED, TV_N };
+static const char *const k_tvw[3][TV_N] = {
+    {"tbuf_too_many_elements", "tbuf_unaligned_graphics_write", "tbuf_unaligned_partial_word", "tbuf_shadow_table_full", "tbuf_shadow_alloc_failed", "tbuf_view_create_failed"},
+    {"compute_image_tbuf_too_many_elements", "compute_image_tbuf_unaligned_graphics_write", "compute_image_tbuf_unaligned_partial_word", "compute_image_tbuf_shadow_table_full", "compute_image_tbuf_shadow_alloc_failed", "compute_image_tbuf_view_create_failed"},
+    {"graphics_image_tbuf_too_many_elements", "graphics_image_tbuf_unaligned_graphics_write", "graphics_image_tbuf_unaligned_partial_word", "graphics_image_tbuf_shadow_table_full", "graphics_image_tbuf_shadow_alloc_failed", "graphics_image_tbuf_view_create_failed"}};
+// 本笔派发里写过的对齐副本：派发之后拷回原处（texel_wb_flush）。只在一笔派发 / 绘制之内有效
+enum { TWB_MAX = 16 };
+static struct { nvn_gpu_buf src, sh; uint64_t src_off, sh_off, bytes; } g_twb[TWB_MAX]; static int g_ntwb;
+static uint64_t g_tv_shadows, g_tv_view_fails;
+// buf / off：池镜像里这段字节；elem：元素字节数；kind：0 TBUF、1 计算 imageBuffer、2 图形 imageBuffer；write：着色器会写。成功返回 NULL、*out 为临时视图
+static const char *texel_bind(nvn_gpu_cmd c, nvn_gpu_buf buf, uint64_t off, uint64_t bytes, uint32_t elem, uint32_t fmt, int kind, int write, nvn_gpu_view *out) {
+    const char *const *w = k_tvw[kind];
+    const nvn_gpu_caps *cp = caps_cached();
+    *out = NULL;
+    if (cp->max_texel_elems && bytes / elem > cp->max_texel_elems) return w[TV_TOO_MANY];
+    const uint64_t al = cp->min_texel_align;
+    nvn_gpu_buf vb = buf; uint64_t vo = off; int shadow = 0;
+    if (al > 1 && (off % al) && !(off % elem)) {
+        if (write && kind == 2) return w[TV_UNALIGNED_GFX_WRITE];   // 绘制在通道里，写完的副本拷不回去：照实记账，不原地硬建
+        if (bytes & 3) return w[TV_UNALIGNED_PARTIAL];              // 缓冲拷贝按 4 字节；多拷会把相邻字节一起写回
+        if (write && g_ntwb == TWB_MAX) return w[TV_SHADOW_FULL];
+        nvn_gpu_slice sl; nvn_gpu_err aerr = {0};
+        rp_pass_flush(c);   // 拷贝在通道外
+        nvn_gpu_rc arc = nvn_gpu_arena_alloc(c, bytes, (uint32_t)al, &sl, &aerr);
+        if (!nvn_gpu_ok(arc)) { arena_fail_detail(arc, &aerr, bytes); return w[TV_SHADOW_ALLOC]; }
+        nvn_gpu_copy_buf(c, buf, off, sl.buf, sl.off, bytes);
+        vb = sl.buf; vo = sl.off; shadow = 1;
+        if (!g_tv_shadows++) { char m[320]; snprintf(m, sizeof m, "缓冲贴图在不对齐的池偏移（镜像偏移 %llu，对齐 %llu）：%s，%llu 字节拷进对齐副本再建视图（首例）",
+            (unsigned long long)off, (unsigned long long)al, kind ? "存储纹素缓冲（写完拷回）" : "采样纹素缓冲", (unsigned long long)bytes); nvn_plat_log(NVN_PLAT_LOG_INFO, "draw", m); }
+    }
+    nvn_gpu_err err = {0}; nvn_gpu_rc rc = nvn_gpu_view_create_buf(vb, vo, bytes, fmt, out, &err);
+    if (!nvn_gpu_ok(rc) || !*out) {
+        *out = NULL;
+        if (g_tv_view_fails++ < 4) { char m[640]; snprintf(m, sizeof m, "%s：格式 %#x 偏移 %llu 字节 %llu（纹素偏移对齐 %llu、元素上限 %u）码 %d：%s",
+            w[TV_VIEW_FAILED], fmt, (unsigned long long)vo, (unsigned long long)bytes, (unsigned long long)al, cp->max_texel_elems, rc.code, err.why); nvn_plat_log(NVN_PLAT_LOG_RED, "draw", m); }
+        return w[TV_VIEW_FAILED];
+    }
+    if (shadow && write) { g_twb[g_ntwb].src = buf; g_twb[g_ntwb].src_off = off; g_twb[g_ntwb].sh = vb; g_twb[g_ntwb].sh_off = vo; g_twb[g_ntwb].bytes = bytes; g_ntwb++; }
+    return NULL;
+}
+// 派发之后：写过的对齐副本拷回池镜像原处，再一道屏障让拷回的字节对后面所有阶段可见（缓冲拷贝之前后端自带全屏障，派发的写对拷贝可见）
+static void texel_wb_flush(nvn_gpu_cmd c) {
+    for (int k = 0; k < g_ntwb; k++) nvn_gpu_copy_buf(c, g_twb[k].sh, g_twb[k].sh_off, g_twb[k].src, g_twb[k].src_off, g_twb[k].bytes);
+    if (g_ntwb) nvn_gpu_barrier(c, NVN_BARRIER_INVALIDATE_SHADER_BIT);
+    g_ntwb = 0;
+}
+// 这一项的视图是本笔临时建的缓冲视图（编码完由调用方释放）
+static int texel_tmp(const nvn_gpu_layout_ent *e) { return e->src_kind == NVN_RB_TBUF || (e->src_kind == NVN_RB_IMG && e->cls == NVN_GPU_RES_IMAGE_TBUF); }
 
 // Resolve the exact backing bytes before the pass. The view is temporary: the
 // backend retains it at bind, and the caller releases it after encoding.
@@ -652,9 +712,8 @@ static int tbuf_prepare(nvn_gpu_cmd c, const nvn_gpu_layout_ent *e, int st,
     uint64_t bytes = (uint64_t)t.d.width * base.bytes;
     nvn_gpu_buf buf = NULL; uint64_t off = 0;
     if (!rp_buf_resolve(c, (uint64_t)(uintptr_t)t.mem, bytes, &buf, &off)) return skip("tbuf_buffer_unresolved", rec);
-    nvn_gpu_err err = {0}; nvn_gpu_rc rc = nvn_gpu_view_create_buf(buf, off, bytes, fmt, out, &err);
-    if (!nvn_gpu_ok(rc) || !*out) return skip("tbuf_view_create_failed", rec);
-    return 1;
+    const char *why = texel_bind(c, buf, off, bytes, base.bytes, fmt, 0, 0, out);
+    return why ? skip(why, rec) : 1;
 }
 
 // 一个阶段的全部绑定。0 = 有取不到的资源（已记账），这笔不画
@@ -860,6 +919,7 @@ static int fast_items_ok(const struct rp_prog *pg, int pi, int st, const nvn_gpu
             else if (!tv[i] || !ts[i] || pb->u.ts.view != tv[i] || pb->u.ts.samp != ts[i]) return 0;
             break; }
         case NVN_RB_IMG: {
+            if (e->cls == NVN_GPU_RES_IMAGE_TBUF) return 0;   // 缓冲视图每笔重新建（且要登记写回），同 TBUF
             if (!tv[i] || i >= RP_PROG_ENT_MAX) return 0;
             const uint32_t at = g_lb[pi].bof[i];
             if ((uint64_t)at + 1 > g_lb[pi].n || at >= RP_PROG_ENT_MAX || g_lb[pi].b[at].u.view != tv[i]) return 0;
@@ -1093,8 +1153,9 @@ static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st
                 if (st != 5 || !g_spill_len) return skip("compute_spill_unallocated", rec);
                 o->u.b.buf = g_spill.buf; o->u.b.off = g_spill.off; o->u.b.len = g_spill_len; break;
             case NVN_RB_IMG: {
-                if (e->cls != NVN_GPU_RES_IMAGE || e->count > 1) return skip(st == 5 ? "compute_image_shape" : "graphics_image_shape", rec);
+                if ((e->cls != NVN_GPU_RES_IMAGE && e->cls != NVN_GPU_RES_IMAGE_TBUF) || e->count > 1) return skip(st == 5 ? "compute_image_shape" : "graphics_image_shape", rec);
                 if (!tv[i]) return skip(st == 5 ? "compute_image_unresolved" : "graphics_image_unresolved", rec);
+                if (e->cls == NVN_GPU_RES_IMAGE_TBUF) has_tbuf = 1;   // 本笔临时建的缓冲视图：这一组不留作下一笔沿用
                 o->u.view = tv[i]; break; }
             case NVN_RB_TBUF: {
                 if (e->cls != NVN_GPU_RES_TBUF || !tv[i]) return skip("tbuf_view_unresolved", rec);
@@ -1501,6 +1562,11 @@ draw_rebind:   // 出库回退落地：g_prog 已换现编版（pso_dirty 已置
             if (why) { skip(why, rec); goto draw_done; }
             continue;
         }
+        if (e->src_kind == NVN_RB_IMG && e->cls == NVN_GPU_RES_IMAGE_TBUF) {   // 图形阶段 imageBuffer：缓冲视图（见 image_tbuf_resolve）
+            const char *why = image_tbuf_resolve(c, g_prog, st, i, st, &tv[st][i]);
+            if (why) { skip(why, rec); goto draw_done; }
+            continue;
+        }
         if (e->src_kind == NVN_RB_IMG) {   // 图形阶段存储图像：与计算派发同一解析（image_resolve），句柄取这一阶段 BindImage 的槽
             const char *why = image_resolve(c, g_prog, st, i, st, &tv[st][i], &g_gimg_snap[st][i]);
             if (why) {
@@ -1605,7 +1671,7 @@ draw_rebind:   // 出库回退落地：g_prog 已换现编版（pso_dirty 已置
                 const p_bind_buf *sb = e->src_reg < 16 ? (e->src_kind == NVN_RB_UBOP ? &rp_S.ubo[st][e->src_reg] : &rp_S.ssbo[st][e->src_reg]) : NULL;
                 if (g_sb_ok[st][i] && sb) { uint64_t wa, wl; (void)sb_window(sb, e->src_kind == NVN_RB_SBUFP, &wa, &wl); ACCESS_READ(compute_read_buf(g_sb_buf[st][i], g_sb_off[st][i], wl)); }
                 else if (sb && sb_unmapped(sb) && e->src_kind == NVN_RB_SBUFP) ACCESS_READ(compute_read_buf(rp_buf_for_null_storage(), 0, 0x10000));
-            } else if (e->src_kind == NVN_RB_TEX || e->src_kind == NVN_RB_TEXU || e->src_kind == NVN_RB_TBUF) {
+            } else if (e->src_kind == NVN_RB_TEX || e->src_kind == NVN_RB_TEXU || texel_tmp(e)) {
                 if (e->count > 1) { for (uint32_t k = 0; k < e->count && !need; k++) ACCESS_READ(compute_read_view(g_av[st][k])); }
                 else ACCESS_READ(compute_read_view(tv[st][i]));
             }
@@ -1783,7 +1849,7 @@ draw_rebind:   // 出库回退落地：g_prog 已换现编版（pso_dirty 已置
     DT(RP_PERF_D_TAIL);
 draw_done:
     for (int st = 0; st < RP_PROG_STAGES; st++) for (uint32_t i = 0; i < g_prog->nent[st]; i++)
-        if (g_prog->ent[st][i].src_kind == NVN_RB_TBUF && tv[st][i]) nvn_gpu_view_release(tv[st][i]);
+        if (texel_tmp(&g_prog->ent[st][i]) && tv[st][i]) nvn_gpu_view_release(tv[st][i]);
     rp_view_pin_end();
 }
 
@@ -1923,6 +1989,38 @@ static const char *image_resolve(nvn_gpu_cmd c, const struct rp_prog *pg, int pi
     return NULL;
 #undef IMGW
 }
+// 图像槽里的缓冲贴图（imageBuffer，布局类别 IMAGE_TBUF）：按槽句柄取登记的 BUFFER 贴图，按声明选视图格式（同 image_resolve 的 image_view_format：
+//   声明了格式就用声明的，Eden / Ryujinx 同样取着色器的显式格式），在池镜像上建存储纹素缓冲视图（texel_bind，不对齐时走对齐副本）。
+//   着色器会写的这一段登记 GPU 写（段完成后回写游戏内存，同可写存储缓冲）。成功返回 NULL，*out 为本笔临时视图（调用方释放）
+static const char *image_tbuf_resolve(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, uint32_t i, int stage, nvn_gpu_view *out) {
+    static const char *const nm[2][6] = {
+        {"compute_image_tbuf_shape", "compute_image_tbuf_unresolved", "compute_image_tbuf_texture_shape", "compute_image_tbuf_format_unsupported", "compute_image_tbuf_buffer_unresolved", "compute_image_tbuf_decl_type_mismatch"},
+        {"graphics_image_tbuf_shape", "graphics_image_tbuf_unresolved", "graphics_image_tbuf_texture_shape", "graphics_image_tbuf_format_unsupported", "graphics_image_tbuf_buffer_unresolved", "graphics_image_tbuf_decl_type_mismatch"}};
+    const nvn_gpu_layout_ent *e = &pg->ent[pi][i]; const int gfx = stage != 5;
+    *out = NULL;
+    if (e->cls != NVN_GPU_RES_IMAGE_TBUF || e->count != 1 || e->src_reg >= 8) return nm[gfx][0];
+    if (pg->dtt[pi][i] != NVN_TEXTURE_TARGET_BUFFER + 1) return nm[gfx][5];
+    const uint64_t h = rp_S.img[stage][e->src_reg];
+    tex_t t; view_t v; int hv = 0;
+    if (!rp_tex_snap_by_id((int)(h & 0xFFFFF), &t, &v, &hv)) return nm[gfx][1];
+    // 槽里不是缓冲贴图：Ryujinx 只绑同维度的（Texture.GetTargetTexture），iOS 给声明类型的空图像；这里具名跳过，不拿别的类型硬绑
+    if (t.d.target != NVN_TEXTURE_TARGET_BUFFER || (hv && v.set_target && v.target != NVN_TEXTURE_TARGET_BUFFER) ||
+        !t.mem || !t.pool || !t.d.width || t.d.levels > 1 || t.d.samples > 1) return nm[gfx][2];
+    const uint32_t format = hv && v.set_format ? (uint32_t)v.format : (uint32_t)t.d.format;
+    uint32_t vfmt;
+    { const char *why = image_view_format(format, pg->dtt[pi][i], pg->dcls[pi][i], pg->difmt[pi][i], &vfmt); if (why) return gfx ? image_why_graphics(why) : why; }
+    nvn_fmt_info base, view;
+    if (!nvn_fmt_info_of((uint32_t)t.d.format, &base) || !nvn_fmt_info_of(vfmt, &view) || !base.bytes || base.bw != 1 || base.bh != 1 || base.depth || base.stencil ||
+        view.bytes != base.bytes || view.bw != 1 || view.bh != 1 || view.depth || view.stencil) return nm[gfx][3];
+    const uint64_t bytes = (uint64_t)base.bytes * t.d.width;   // 与 tbuf_prepare 那行写法不同：run.sh --tbuf-neg-elements 按那一行做负控，锚点要唯一
+    nvn_gpu_buf buf = NULL; uint64_t off = 0;
+    if (!rp_buf_resolve(c, (uint64_t)(uintptr_t)t.mem, bytes, &buf, &off)) return nm[gfx][4];
+    const int write = (e->access & NVN_GPU_ACC_W) != 0;
+    const char *why = texel_bind(c, buf, off, bytes, base.bytes, vfmt, gfx ? 2 : 1, write, out);
+    if (why) return why;
+    if (write) rp_post_gpu_write((uint64_t)(uintptr_t)t.mem, bytes);
+    return NULL;
+}
 void rp_dispatch(nvn_gpu_cmd c, const p_dispatch *dp, const void *rec) {
     if (!c) return;
     rp_perf_add(RP_PERF_DISP_N, 1);   // 派发次数（其余命令里最贵的一项，看它到底多少次）
@@ -1938,6 +2036,7 @@ void rp_dispatch(nvn_gpu_cmd c, const p_dispatch *dp, const void *rec) {
     const tex_t *images[RP_PROG_ENT_MAX];
     int lib_retry = 0;   // 出库版绑定核对失败只回退现编一次：现编版再失败照旧具名跳过
 cs_rebind:
+    g_ntwb = 0;
     memset(tv, 0, sizeof tv); memset(ts, 0, sizeof ts); memset(images, 0, sizeof images);
     struct timespec tr0; clock_gettime(CLOCK_MONOTONIC, &tr0); uint64_t r0 = (uint64_t)tr0.tv_sec * 1000000000ull + (uint64_t)tr0.tv_nsec;
     rp_perf_add(RP_PERF_DISP_ENTS, pg->nent[0]);
@@ -1946,6 +2045,11 @@ cs_rebind:
         if (e->src_kind == NVN_RB_TBUF) {
             rp_pass_flush(c);
             if (!tbuf_prepare(c, e, 5, pg->dtt[0][i], pg->dcls[0][i], &tv[i], rec)) goto done;
+            continue;
+        }
+        if (e->src_kind == NVN_RB_IMG && e->cls == NVN_GPU_RES_IMAGE_TBUF) {   // 计算 imageBuffer：缓冲视图（见 image_tbuf_resolve）；写过的对齐副本派发后拷回
+            const char *why = image_tbuf_resolve(c, pg, 0, i, 5, &tv[i]);
+            if (why) { skip(why, rec); goto done; }
             continue;
         }
         if (e->src_kind == NVN_RB_IMG) {
@@ -2064,6 +2168,7 @@ cs_rebind:
     uint32_t bar = rp_pass_take_barrier() | (g_disp_ind ? NVN_BARRIER_ORDER_INDIRECT_DATA_BIT | NVN_BARRIER_INVALIDATE_SHADER_BIT : 0);
     if (bar) { nvn_gpu_barrier(c, bar); g_compute_access.n = 0; }
     nvn_gpu_dispatch(c, cp, g_disp_dim[0], g_disp_dim[1], g_disp_dim[2], g_disp_ind, g_disp_ind_off);
+    texel_wb_flush(c);   // imageBuffer 的对齐副本：派发写完拷回池镜像
     for (size_t i = 0; i < g_ndispatch_access; i++) rp_access_write(&g_compute_access, &g_dispatch_access[i]);
     if (nvk_pipe_warm_note_prog && nvn_plat_flag("nvk_compute_warm", 0)) {
         static const nvn_gpu_pipe_desc compute_recipe = {0};
@@ -2072,8 +2177,9 @@ cs_rebind:
     { struct timespec tse; clock_gettime(CLOCK_MONOTONIC, &tse); rp_perf_add(RP_PERF_DISP_BIND_NS, (uint64_t)tse.tv_sec * 1000000000ull + (uint64_t)tse.tv_nsec - b0); }
     g_dispatches++;
 done:
+    g_ntwb = 0;   // 没派发成（跳过）：副本没被写过，不拷回
     for (uint32_t i = 0; i < pg->nent[0]; i++)
-        if (pg->ent[0][i].src_kind == NVN_RB_TBUF && tv[i]) nvn_gpu_view_release(tv[i]);
+        if (texel_tmp(&pg->ent[0][i]) && tv[i]) nvn_gpu_view_release(tv[i]);
     rp_view_pin_end();
     { struct timespec tsc; clock_gettime(CLOCK_MONOTONIC, &tsc); rp_perf_add(RP_PERF_DISP_TOT_NS, (uint64_t)tsc.tv_sec * 1000000000ull + (uint64_t)tsc.tv_nsec - t_disp0); }
 }

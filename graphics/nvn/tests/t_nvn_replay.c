@@ -446,7 +446,7 @@ static void fake_log_write(size_t page, uint8_t v) {   // 游戏写一页：内�
 // 通道替身：记每次开通道的描述
 static int g_pass_open, g_bind_outside, g_draw_outside;   // 通道开着没有；图形阶段的绑定在通道外到达的次数（真后端会置粘滞、整段作废）
 static int g_tbuf_created, g_tbuf_in_pass, g_tbuf_binds[6];
-static struct { nvn_gpu_buf buf; uint64_t off, bytes; uint32_t format; } g_tbuf_bound[6];
+static struct { nvn_gpu_buf buf; uint64_t off, bytes; uint32_t format; } g_tbuf_bound[6], g_itbuf_bound;   // g_itbuf_bound：最后一次绑的存储纹素缓冲（IMAGE_TBUF；视图编码后就释放，绑定时记下）
 nvn_gpu_rc nvn_gpu_view_create_buf(nvn_gpu_buf b, uint64_t off, uint64_t bytes, uint32_t fmt, nvn_gpu_view *out, nvn_gpu_err *err) {
     (void)err; *out = NULL;
     // These two formats are the only ones exercised here, both four bytes.
@@ -568,6 +568,9 @@ void nvn_gpu_bind(nvn_gpu_cmd c, nvn_gpu_stage st, const nvn_gpu_binding *b, uin
         g_tbuf_bound[st].buf = v->buf; g_tbuf_bound[st].off = v->off;
         g_tbuf_bound[st].bytes = v->bytes; g_tbuf_bound[st].format = v->format;
     }
+    for (uint32_t i = 0; i < n; i++) if (b[i].cls == NVN_GPU_RES_IMAGE_TBUF && b[i].u.view) {
+        nvn_gpu_view v = b[i].u.view; g_itbuf_bound.buf = v->buf; g_itbuf_bound.off = v->off; g_itbuf_bound.bytes = v->bytes; g_itbuf_bound.format = v->format;
+    }
     if (st == NVN_GPU_SH_CS) { g_cbinds++; g_ncb = n; memcpy(g_cb, b, (n < 16 ? n : 16) * sizeof *b); return; }
     CHECK(st >= NVN_GPU_SH_VS && st <= NVN_GPU_SH_GS);
     if (st < NVN_GPU_SH_VS || st > NVN_GPU_SH_GS) return;
@@ -585,7 +588,9 @@ void nvn_gpu_draw(nvn_gpu_cmd c, const nvn_gpu_draw_args *a) {
 static uint32_t g_caps_remove;
 static uint32_t g_caps_extra;   // 用例临时打开的能力位（如间接计数多绘）
 static uint32_t g_caps_min_ssbo; static uint64_t g_caps_max_ssbo;   // 用例临时设的 minStorageBufferOffsetAlignment / maxStorageBufferRange（0 = 不报，其余用例的口径）
-void nvn_gpu_caps_get(nvn_gpu_caps *out) { memset(out, 0, sizeof *out); out->min_ubo_align = 64; out->caps = (NVN_GPU_CAP_BLIT_SCALED | g_caps_extra) & ~g_caps_remove; out->min_ssbo_align = g_caps_min_ssbo; out->max_ssbo_range = g_caps_max_ssbo; }
+static uint32_t g_caps_min_texel, g_caps_max_texel;   // 用例临时设的 minTexelBufferOffsetAlignment / maxTexelBufferElements（0 = 不报）
+void nvn_gpu_caps_get(nvn_gpu_caps *out) { memset(out, 0, sizeof *out); out->min_ubo_align = 64; out->caps = (NVN_GPU_CAP_BLIT_SCALED | g_caps_extra) & ~g_caps_remove; out->min_ssbo_align = g_caps_min_ssbo; out->max_ssbo_range = g_caps_max_ssbo;
+    out->min_texel_align = g_caps_min_texel; out->max_texel_elems = g_caps_max_texel; }
 static int g_arena697_fail;
 nvn_gpu_rc nvn_gpu_arena_alloc(nvn_gpu_cmd c, uint64_t bytes, uint32_t align, nvn_gpu_slice *out, nvn_gpu_err *err) { (void)c; (void)err;
     if(g_arena697_fail) { memset(out,0,sizeof *out);memset(err,0,sizeof *err);
@@ -4838,6 +4843,71 @@ static void t_bufops_gpu_order(void) {
     g_gx_rec = 0; nvn_be_pool_del(g_pmem); pass_fresh();
 }
 
+// 缓冲贴图做计算存储图像（imageBuffer，布局类别 IMAGE_TBUF）与采样纹素缓冲的偏移对齐。期望值按 Vulkan 规范手算，不跑被测实现：
+//   设 minTexelBufferOffsetAlignment = 16（VUID-VkBufferViewCreateInfo-offset-02749：视图偏移须是它的倍数）。
+//   ① R32UI × 4 在池偏移 2*PG+256（16 的倍数）：原地视图 = 镜像、偏移 2*PG+256、16 字节、格式 R32UI；没有拷贝；可写 → 只有这 16 字节登记 GPU 写。
+//   ② 同一张挪到 2*PG+260（4 的倍数、不是 16 的倍数）：镜像 [2*PG+260, +16) 先拷进暂存区 16 对齐的一块，视图建在那块上；
+//      派发后那块拷回镜像 2*PG+260，再一道 INVALIDATE_SHADER 屏障；落地只覆盖 [2*PG+260, 2*PG+276)。
+//   ③ R16UI × 3 = 6 字节在 2*PG+258：要副本但长度不是 4 的倍数（缓冲拷贝按 4 字节，多拷会盖相邻字节）→ 具名跳过、不派发。
+//   ④ maxTexelBufferElements = 3、贴图 4 个元素 → 具名跳过。⑤ 槽里是 2D 贴图 → 具名跳过。
+//   ⑥ 采样纹素缓冲（TBUF）在 2*PG+260：只拷进副本、不拷回。
+static void t_image_tbuf_replay(void) {
+    pass_fresh(); g_arena_used = 0; g_buf_cpu_fake = NULL; g_caps_min_texel = 16; g_caps_max_texel = 0; rp_draw_reset(); memset(&g_itbuf_bound, 0, sizeof g_itbuf_bound);
+    g_cresolves = g_cresolve_rc = g_cpipe_gets = g_ndisp = g_cbinds = 0; g_ncb = 0; g_ngx = 0; g_gx_rec = 1; g_nbar = 0;
+    memset(g_pmem, 0x11, sizeof g_pmem); nvn_be_pool_add(g_pmem, sizeof g_pmem); int tracked = g_pg_tracked; g_pg_tracked = 0;
+    static pool_t pool; memset(&pool, 0, sizeof pool); pool.mem = g_pmem; pool.size = sizeof g_pmem;
+    tex_t t = mk_tex(88802, 0, NVN_FORMAT_R32UI, 4, 1, 1, 0);
+    t.d.target = NVN_TEXTURE_TARGET_BUFFER; t.mem = g_pmem + 2 * PG + 256; t.off = 2 * PG + 256; t.pool = &pool;
+    nvn_tex_layout(&t.d, &t.L); nvn_be_set_tex_pool_n(8); nvn_be_reg_tex(3, &t, NULL);
+    memset(&g_cprog, 0, sizeof g_cprog); g_cprog.is_compute = 1; g_cprog.sh[0] = &g_fsh[0]; g_cprog.nent[0] = 1;
+    nvn_gpu_layout_ent *e = &g_cprog.ent[0][0];
+    e->cls = NVN_GPU_RES_IMAGE_TBUF; e->src_kind = NVN_RB_IMG; e->src_reg = 2; e->src_reg2 = UINT16_MAX; e->count = 1; e->access = NVN_GPU_ACC_RW;
+    g_cprog.dtt[0][0] = NVN_TEXTURE_TARGET_BUFFER + 1; g_cprog.dcls[0][0] = 1; g_cprog.difmt[0][0] = 33;   // SPIR-V Image Format 33 = R32ui
+    rp_S.img[5][2] = 3; p_dispatch dp = {.x = 1, .y = 1, .z = 1};
+    static uint8_t mirror[sizeof g_pmem]; memset(mirror, 0xEE, sizeof mirror);
+    // ①
+    nvn_be_sub_begin(); rp_dispatch(&g_fake_cmd, &dp, NULL); nvn_be_sub_commit(); g_buf_cpu_fake = mirror; fake_complete(NVN_GPU_DONE_OK); g_buf_cpu_fake = NULL;
+    CHECK(g_ndisp == 1 && g_ncb == 1 && g_ngx == 0);
+    CHECK(g_ncb == 1 && g_cb[0].cls == NVN_GPU_RES_IMAGE_TBUF && g_itbuf_bound.buf && g_itbuf_bound.buf != &g_arena_buf && g_itbuf_bound.off == 2 * PG + 256 &&
+          g_itbuf_bound.bytes == 16 && g_itbuf_bound.format == NVN_FORMAT_R32UI);
+    CHECK(pmem_all(2 * PG + 256, 2 * PG + 272, 0xEE) && pmem_diff(0x11) == 16);
+    // ②
+    memset(g_pmem, 0x11, sizeof g_pmem); g_ngx = 0; g_ncb = 0; g_nbar = 0; memset(&g_itbuf_bound, 0, sizeof g_itbuf_bound);
+    t.mem = g_pmem + 2 * PG + 260; t.off = 2 * PG + 260; nvn_be_reg_tex(3, &t, NULL);
+    nvn_be_sub_begin(); rp_dispatch(&g_fake_cmd, &dp, NULL); nvn_be_sub_commit(); g_buf_cpu_fake = mirror; fake_complete(NVN_GPU_DONE_OK); g_buf_cpu_fake = NULL;
+    CHECK(g_ndisp == 2 && g_ncb == 1 && g_ngx == 2);
+    if (g_ngx == 2 && g_ncb == 1) {
+        CHECK(g_gx[0].op == 'c' && g_gx[0].s != &g_arena_buf && g_gx[0].soff == 2 * PG + 260 && g_gx[0].d == &g_arena_buf && g_gx[0].doff % 16 == 0 && g_gx[0].n == 16);
+        CHECK(g_itbuf_bound.buf == &g_arena_buf && g_itbuf_bound.off == g_gx[0].doff && g_itbuf_bound.bytes == 16 && g_itbuf_bound.format == NVN_FORMAT_R32UI);
+        CHECK(g_gx[1].op == 'c' && g_gx[1].s == &g_arena_buf && g_gx[1].soff == g_gx[0].doff && g_gx[1].d == g_gx[0].s && g_gx[1].doff == 2 * PG + 260 && g_gx[1].n == 16); }
+    { int hit = 0; for (int k = 0; k < g_nbar && k < 8; k++) if ((g_bar[k].bits & NVN_BARRIER_INVALIDATE_SHADER_BIT) && g_bar[k].ndisp == 2) hit = 1; CHECK(hit); }
+    CHECK(pmem_all(2 * PG + 260, 2 * PG + 276, 0xEE) && pmem_diff(0x11) == 16);
+    // ③
+    g_ngx = 0;
+    tex_t t16 = mk_tex(88803, 0, NVN_FORMAT_R16UI, 3, 1, 1, 0); t16.d.target = NVN_TEXTURE_TARGET_BUFFER; t16.mem = g_pmem + 2 * PG + 258; t16.off = 2 * PG + 258; t16.pool = &pool;
+    nvn_tex_layout(&t16.d, &t16.L); nvn_be_reg_tex(4, &t16, NULL); rp_S.img[5][2] = 4; g_cprog.difmt[0][0] = 38;   // 38 = R16ui
+    nvn_be_sub_begin(); rp_dispatch(&g_fake_cmd, &dp, NULL); nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_ndisp == 2 && g_ngx == 0 && nvn_unimpl_count("draw", "compute_image_tbuf_unaligned_partial_word") == 1);
+    // ④
+    g_caps_max_texel = 3; rp_draw_reset(); rp_S.img[5][2] = 3; g_cprog.difmt[0][0] = 33;
+    nvn_be_sub_begin(); rp_dispatch(&g_fake_cmd, &dp, NULL); nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_ndisp == 2 && nvn_unimpl_count("draw", "compute_image_tbuf_too_many_elements") == 1);
+    g_caps_max_texel = 0; rp_draw_reset();
+    // ⑤
+    tex_t t2 = mk_tex(88804, 0, NVN_FORMAT_R32UI, 4, 1, 1, 0); t2.mem = g_pmem + 3 * PG; t2.off = 3 * PG; t2.pool = &pool; nvn_be_reg_tex(5, &t2, NULL); rp_S.img[5][2] = 5;
+    nvn_be_sub_begin(); rp_dispatch(&g_fake_cmd, &dp, NULL); nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_ndisp == 2 && nvn_unimpl_count("draw", "compute_image_tbuf_texture_shape") == 1);
+    // ⑥
+    g_ngx = 0; g_ncb = 0; memset(g_tbuf_bound, 0, sizeof g_tbuf_bound);
+    e->cls = NVN_GPU_RES_TBUF; e->src_kind = NVN_RB_TBUF; e->src_reg = 0; e->access = NVN_GPU_ACC_R; rp_S.tex[5][0] = 3;
+    nvn_be_sub_begin(); rp_dispatch(&g_fake_cmd, &dp, NULL); nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_ndisp == 3 && g_ngx == 1);
+    if (g_ngx == 1) CHECK(g_gx[0].soff == 2 * PG + 260 && g_gx[0].d == &g_arena_buf && g_gx[0].doff % 16 == 0 && g_gx[0].n == 16 &&
+                          g_tbuf_bound[NVN_GPU_SH_CS].buf == &g_arena_buf && g_tbuf_bound[NVN_GPU_SH_CS].off == g_gx[0].doff);
+    g_caps_min_texel = 0; rp_draw_reset(); rp_S.img[5][2] = 0; rp_S.tex[5][0] = 0;
+    g_gx_rec = 0; g_pg_tracked = tracked; nvn_be_pool_del(g_pmem); pass_fresh();
+}
+
 // 可写：绑统一缓冲槽 2 的那一段；完成后只有登记的那些字节回到游戏内存；失败的段不回写、登记照撤。同一程序里还有一项 SBUFP（两种来源并存，各取各的表）
 static void t_dispatch_ubop_rw(void) {
     ubop_fresh();
@@ -7100,6 +7170,7 @@ int main(int argc, char **argv) {
     t_graphics_high_slots();
     t_graphics_pool();
     t_tbuf_replay();
+    t_image_tbuf_replay();
     t_decl_sampling();
     t_separate_sampler();
     t_const_sampler();

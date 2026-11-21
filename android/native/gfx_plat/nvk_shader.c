@@ -812,9 +812,10 @@ static int layout_ent(const struct fd_binding *b, nvn_gpu_layout_ent *e) {
     // 共享内存溢出缓冲（计算）：没有客体来源，回放按派发组数 × 程序的 spill_bytes 从暂存区分配（rp_draw.c rp_dispatch）
     if (b->kind == 4 && b->count == 1) { e->cls = NVN_GPU_RES_SSBO; e->src_kind = NVN_RB_SPILL; e->access = NVN_GPU_ACC_R | NVN_GPU_ACC_W; return 1; }
     // 图像：单个存储图像（解析器给出 NVN 图像槽 0..7，放在 tex_slot），计算与图形阶段同一形态；回放按槽取这一阶段 BindImage 的句柄
-    //   建存储视图（rp_draw.c image_resolve：计算派发与绘制共用）。
+    //   建存储视图（rp_draw.c image_resolve：计算派发与绘制共用）。imageBuffer（Dim=Buffer）是存储纹素缓冲：同一个图像槽，
+    //   类别 IMAGE_TBUF（描述符 STORAGE_TEXEL_BUFFER），回放按槽里的缓冲贴图建缓冲视图（rp_draw.c texel_view，同 Ryujinx 按 isImage 绑 TextureBuffer）
     if (b->kind == 3 && b->count == 1 && b->tex_slot >= 0 && b->tex_slot < 8) {
-        e->cls = NVN_GPU_RES_IMAGE; e->src_kind = NVN_RB_IMG; e->src_reg = (uint16_t)b->tex_slot;
+        e->cls = b->texel_buffer ? NVN_GPU_RES_IMAGE_TBUF : NVN_GPU_RES_IMAGE; e->src_kind = NVN_RB_IMG; e->src_reg = (uint16_t)b->tex_slot;
         e->access = NVN_GPU_ACC_R | NVN_GPU_ACC_W;
         return 1;
     }
@@ -981,8 +982,14 @@ static struct entry *build(const uint8_t *bytes, size_t len, const struct s2a_so
             le->stages = b->is_support ? (1u << nst) - 1u : 1u << st;
             if (b->kind == 2) sampled_decl(fp.stage[st].spirv, fp.stage[st].spirv_bytes, (uint32_t)b->set, (uint32_t)b->binding,
                 &e->prog.dtt[st][e->prog.nent[st]], &e->prog.dcls[st][e->prog.nent[st]], NULL);
+            // 图形阶段的 imageBuffer：回放要声明的数值类与格式选缓冲视图格式（同计算阶段）；普通图形存储图像口径不动
+            if (le->cls == NVN_GPU_RES_IMAGE_TBUF) sampled_decl(fp.stage[st].spirv, fp.stage[st].spirv_bytes, (uint32_t)b->set, (uint32_t)b->binding,
+                &e->prog.dtt[st][e->prog.nent[st]], &e->prog.dcls[st][e->prog.nent[st]], &e->prog.difmt[st][e->prog.nent[st]]);
             if (le->cls == NVN_GPU_RES_TBUF && e->prog.dtt[st][e->prog.nent[st]] != NVN_TEXTURE_TARGET_BUFFER + 1) {
                 red1("tbuf_shader_type_unproven", b->stage); e->failed = 1; break;
+            }
+            if (le->cls == NVN_GPU_RES_IMAGE_TBUF && e->prog.dtt[st][e->prog.nent[st]] != NVN_TEXTURE_TARGET_BUFFER + 1) {
+                red1("image_tbuf_shader_type_unproven", b->stage); e->failed = 1; break;
             }
             e->prog.nent[st]++;
         }
@@ -2036,6 +2043,9 @@ static struct entry *build_compute(const uint8_t *bytes, size_t len, const struc
             &e->prog.dtt[0][e->prog.nent[0]], &e->prog.dcls[0][e->prog.nent[0]], &e->prog.difmt[0][e->prog.nent[0]]);
         if (le->cls == NVN_GPU_RES_TBUF && e->prog.dtt[0][e->prog.nent[0]] != NVN_TEXTURE_TARGET_BUFFER + 1) {
             red1("tbuf_shader_type_unproven", "cs"); e->failed = 1; break;
+        }
+        if (le->cls == NVN_GPU_RES_IMAGE_TBUF && e->prog.dtt[0][e->prog.nent[0]] != NVN_TEXTURE_TARGET_BUFFER + 1) {
+            red1("image_tbuf_shader_type_unproven", "cs"); e->failed = 1; break;
         }
         if (le->src_kind == NVN_RB_TEX && le->src_reg >= 32 && le->src_reg < 40 &&
             le->src_reg2 == UINT16_MAX && le->cls == NVN_GPU_RES_TEX_SAMP && le->count == 1)
