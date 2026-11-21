@@ -359,6 +359,28 @@ nonisolated(unsafe) private var lastPlayed = ""
     #expect(sets == ["G3 audiodevice external true", "G3 audiovs speakers false", "G2 audiovs headphones true"])
 }
 
+// 线程调度：兼容 0.5.8（高级选项，定义表 threadCompat058）：宿主给了 threadCompat 才出「高级」一组、按值显示；拨动经宿主 setOption（threadcompat）。期望值手写
+@MainActor @Test func gameThreadCompatRow() throws {
+    let tag = UUID().uuidString
+    let app = try #require(UserDefaults(suiteName: "s2a.test.app." + tag))
+    typealias O = S2ArmGameSettings.Options
+    var on = O(fps: .init(on: false), fullscreen: .init(on: false)); on.threadCompat = true
+    var off = O(fps: .init(on: false), fullscreen: .init(on: false)); off.threadCompat = false
+    let opts: [String: O] = ["G1": on, "G2": off, "G3": O(fps: .init(on: false), fullscreen: .init(on: false))]   // G3：老宿主没给 → 不出
+    var sets: [String] = []
+    let stores = S2ArmGameSettings.Stores(game: { _ in app }, app: app, options: { opts[$0] },
+        setOption: { id, kind, key, v in sets.append("\(id) \(kind) \(key) \(v)"); return true })
+    defer { app.removePersistentDomain(forName: "s2a.test.app." + tag) }
+    func row(_ id: String) -> SettingRow? { S2ArmGameSettings.sections(for: id, stores: stores, state: .init(selected: "default", hasMine: false)).flatMap(\.rows).first { $0.id == S2ArmGameSettings.threadCompat } }
+    #expect(row("G1")?.value == "on" && row("G2")?.value == "off" && row("G3") == nil)
+    #expect(S2ArmGameSettings.sections(for: "G1", stores: stores, state: .init(selected: "default", hasMine: false)).contains { $0.id == "s2a.advanced" })
+    #expect(S2ArmGameSettings.Options.parse(#"{"fps":{"on":false},"fullscreen":{"on":false},"threadCompat":true}"#)?.threadCompat == true)
+    #expect(S2ArmGameSettings.Options.parse(#"{"fps":{"on":false},"fullscreen":{"on":false}}"#)?.threadCompat == nil)
+    S2ArmGameSettings.apply(id: "G2", setting: S2ArmGameSettings.threadCompat, value: "on", stores: stores)
+    S2ArmGameSettings.apply(id: "G1", setting: S2ArmGameSettings.threadCompat, value: "off", stores: stores)
+    #expect(sets == ["G2 threadcompat  true", "G1 threadcompat  false"])
+}
+
 // 这台 iPhone 上的名字和封面：叠在清单上、可恢复默认，不影响别的款。期望值手写
 @MainActor @Test func gameIdentityOverridesCatalogue() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
