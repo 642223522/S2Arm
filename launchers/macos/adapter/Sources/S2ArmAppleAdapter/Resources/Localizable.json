@@ -10814,5 +10814,41 @@
  {
   "source": "「更新这款」这次有一部分没做成，原因写在下面；「建议更新」会继续显示，按说明处理后再点一次。",
   "en": "\"Update this game\" could not finish everything this time; the reason is below. \"Update suggested\" will keep showing until you follow it and click again."
+ },
+ {
+  "source": "让 Apple TV 开着、别让它休眠，和这台 Mac 连同一个网络，再点一次「装到 Apple TV」；已经传到电视上的部分不重传，电视上的 App 和存档都保留。",
+  "en": "Keep the Apple TV on and awake, on the same network as this Mac, then click \"Install on Apple TV\" again; what already reached the TV is not sent again, and the app and saves on the TV are kept."
+ },
+ {
+  "source": "查看本任务日志里签名那一步的报错；确认 Xcode「设置 → 账户」里登录了你的 Apple ID、能给这台 Apple TV 签名，再试一次。",
+  "en": "Check the signing step's error in this task's log; make sure your Apple ID is signed in under Xcode Settings → Accounts and can sign for this Apple TV, then try again."
+ },
+ {
+  "source": "让 Apple TV 开着、和这台 Mac 连同一个网络，再点一次「装到 Apple TV」；电视上原有的 App 和存档都保留。",
+  "en": "Keep the Apple TV on and on the same network as this Mac, then click \"Install on Apple TV\" again; the app and saves already on the TV are kept."
+ },
+ {
+  "source": "让 Apple TV 开着、和这台 Mac 连同一个网络，并在 Xcode「窗口 → 设备与模拟器」里和它配对过一次，再试一次。",
+  "en": "Keep the Apple TV on and on the same network as this Mac, pair it once in Xcode's Window → Devices and Simulators, then try again."
+ },
+ {
+  "source": "让 Apple TV 开着、别让它休眠，和这台 Mac 连同一个网络，再点一次「装到 Apple TV」。",
+  "en": "Keep the Apple TV on and awake, on the same network as this Mac, then click \"Install on Apple TV\" again."
+ },
+ {
+  "source": "这款的存档从手机上的另一个 S2Arm（{0}）复制进了新装的独立 App；那边的存档没动，在新 App 里确认进度没问题再删旧的。",
+  "en": "This game's save was copied from another S2Arm on the phone ({0}) into the newly installed Standalone App. The save there was left untouched; check your progress in the new app before deleting the old one."
+ },
+ {
+  "source": "手机上有几个 S2Arm 都存着这款的存档（{0}），没替你挑：在启动器的手机存档里选一份，还原到新装的独立 App。",
+  "en": "Several S2Arm apps on the phone have a save for this game ({0}), so none was picked for you: in the launcher's phone saves, choose one and restore it to the newly installed Standalone App."
+ },
+ {
+  "source": "新装的独立 App 用的是从旧 App 复制来的存档：进游戏确认进度没问题，再在 iPhone 上删掉旧 App。",
+  "en": "The new Standalone App uses the save copied from the old app: open the game and check your progress, then delete the old app on the iPhone."
+ },
+ {
+  "source": "在启动器的手机存档里选你要的那一份，还原到新装的独立 App；其余几个 App 里的存档都没动。",
+  "en": "In the launcher's phone saves, pick the save you want and restore it to the newly installed Standalone App; the saves in the other apps were left untouched."
  }
 ]
