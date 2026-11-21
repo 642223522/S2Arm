@@ -67,6 +67,31 @@ import S2ArmAppleAdapter
         XCTAssertEqual(model.updatePopup?["kind"] as? String, "update")
     }
 
+    /// 查得慢时玩家在设置里打开了 Apple ID 登录：查完不能收起设置页和登录面板，结果留着等它们关了再弹
+    func testManualCheckResultKeepsSettingsAndAppleLoginOpen() async {
+        for result in [SimulatedUpdateDriver.CheckResult.upToDate, .network] {
+            sim.checkResult = result
+            model.showEnvironment = true
+            model.checkForUpdatesManually()
+            model.appleLoginHost = "settings"
+            await model.updateCheckTask?.value
+            XCTAssertTrue(model.showEnvironment)
+            XCTAssertEqual(model.appleLoginHost, "settings")
+            XCTAssertTrue(model.updatePopup != nil || model.checkError != nil)
+            model.appleLoginHost = nil; model.showEnvironment = false; model.updatePopup = nil; model.checkError = nil
+        }
+        sim.simulateStartupCheck(failed: false)
+        model.closeUpdatePopup()
+        model.showEnvironment = true
+        sim.checkResult = .available
+        model.appleLoginHost = "settings"
+        model.checkForUpdatesManually()
+        await model.updateCheckTask?.value
+        XCTAssertTrue(model.showEnvironment)
+        XCTAssertEqual(model.appleLoginHost, "settings")
+        XCTAssertEqual(model.updatePopup?["version"] as? String, "9.9.9")
+    }
+
     func testManualFailuresUseCheckErrorAndStartupFailureIsSilent() async {
         sim.simulateStartupCheck(failed: true)
         XCTAssertNil(model.checkError)
