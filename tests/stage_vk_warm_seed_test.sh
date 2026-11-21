@@ -10,7 +10,7 @@
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); bad=0; trap 'rm -rf "$T"' EXIT
 ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
 mkdir -p $T/repo/pack/orch $T/repo/tools $T/repo/android/tools $T/repo/graphics/tools/direct $T/roots $T/home
-cp "$H/pack/roots.sh" "$H/pack/stage_vk_warm_seed.sh" $T/repo/pack/; cp "$H/pack/orch/current.py" $T/repo/pack/orch/
+cp "$H/pack/roots.sh" "$H/pack/stage_vk_warm_seed.sh" "$H/pack/stage_keyfiles.sh" $T/repo/pack/; mkdir -p $T/repo/tools/stage_deps_hook && cp "$H/tools/stage_deps.py" "$H/tools/machine.sh" $T/repo/tools/ && cp "$H/tools/stage_deps_hook/sitecustomize.py" $T/repo/tools/stage_deps_hook/; cp "$H/pack/orch/current.py" $T/repo/pack/orch/
 cp "$H/tools/clonedir.py" "$H/tools/plock.sh" "$H/tools/flock_hold.py" "$H/tools/direct_shards.py" $T/repo/tools/ 2> /dev/null
 cp "$H/android/tools/vk_warm_seed.py" $T/repo/android/tools/
 for f in run_knowledge.py fout_want.py se_want.py run_pairs.py pso_layout.py pso_layout.json; do cp "$H/graphics/tools/direct/$f" $T/repo/graphics/tools/direct/; done   # 程序号同 run_knowledge.program_id（vk_warm_seed.py 引它）
