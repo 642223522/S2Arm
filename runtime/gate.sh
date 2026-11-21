@@ -67,11 +67,18 @@ judge() {   # judge <键>：按 $OUT 里这一组的结果判，绿 G+1 / 红 R+
   # 细节：判据不符列全部「✗」行（不只尾部：打得早的判据行会被截掉，10-24 t_thread 偶发三次都看不出是哪条）；构建失败列报错行；其余给尾部
   local d
   case $why in
-    判据不符) d=$(grep -aE '^(✗ |FAIL )' < <(printf '%s\n' "$o") | head -20);;   # FAIL：单测自己的判据行（t_dirty_growth / t_nvn_red 这样打，10-30 列车线：原先只认 ✗ 被丢）
     构建失败) d=$(grep -av '^ld: warning:' < <(printf '%s\n' "$o") | grep -aE ': (fatal )?error:|^clang: error:|^ld: |^Undefined symbols|^  "_|referenced from|^      [_A-Za-z].* in ' | head -16);;   # 链接红连缺的符号名 / 谁引用一起带（11-05 nvn_rec_cover 偶发「Undefined symbols」只剩一行、定不了因）
-    *) d=$(tail -10 < <(printf '%s\n' "$o"));;
+    *) d=$(printf '%s\n' "$o" | red_excerpt);;   # 判据不符 / 超时 / 异常退出 / 没打结论行：同一份摘录
   esac
   DET="${DET}✗ 组 ${k}：${why}"$'\n'"$d"$'\n'
+}
+# 红组的输出摘录（11-21 维护者：原先判据不符只取顶格「✗ / FAIL」行、其余只给末尾 10 行，单测缩进打的逐项「FAIL ①…」、崩溃行、
+#   超时组被杀前打的取证都丢了，门禁日志只剩「11 项里 2 项不符」这类汇总，查因要本机连跑碰运气）：
+#   按原顺序取「判据 / 红 / 崩溃」特征行 ∪ 末尾 20 行（不重复），封顶约 4 KB、按字节截后去掉截断的半个字。只用于红组，绿组日志不变
+red_excerpt() {
+  awk '{ L[NR] = $0 } END { s = NR - 19; for (i = 1; i <= NR; i++)
+         if (i >= s || L[i] ~ /FAIL|✗|【红】|不通|unrecognized selector|[Aa]ssertion|[Aa]ssert\(|signal|SIG[A-Z]+|Terminating app|uncaught exception|libc\+\+abi|Abort trap|Segmentation fault|Bus error|EXC_[A-Z_]+|panic|Killed/) print L[i] }' \
+    | head -c 4096 | iconv -c -f UTF-8 -t UTF-8
 }
 uses_pre() { grep -qs 'NVN_TEST_LIB\|NVN_TEST_HOST_OBJS' "runtime/tests/mk/$1.mk"; }   # 这组用 NVN 共用前置（库 / 宿主目标文件）
 run_groups() {   # run_groups <键…>：前置建一次 → 非 SER 组按上次耗时从长到短并行 → SER 组串行 → 按传入顺序判
