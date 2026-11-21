@@ -116,7 +116,7 @@ index d3968dac83738f8a5707bcf7e103b01f93dbd0e2..fae9cba687d7b1d4a70e2f1ba044ee15
                  _s._diag.OnEnqueue(dt);
                  if (dt > Volatile.Read(ref _s._enqStuckTicks))
 diff --git a/src/Ryujinx.Audio.Backends.Apple/Native/AudioToolbox.cs b/src/Ryujinx.Audio.Backends.Apple/Native/AudioToolbox.cs
-index ae23d844de6d677d61743a50d0262a4b8436d9a0..9e3d959723975106dcb62754dacbe2572a3c870e 100644
+index ae23d844de6d677d61743a50d0262a4b8436d9a0..9efd1f8cf11b148b5b9fbbdde66f0f9370ac8643 100644
 --- a/src/Ryujinx.Audio.Backends.Apple/Native/AudioToolbox.cs
 +++ b/src/Ryujinx.Audio.Backends.Apple/Native/AudioToolbox.cs
 @@ -149,6 +149,10 @@ namespace Ryujinx.Audio.Backends.Apple.Native
@@ -124,7 +124,7 @@ index ae23d844de6d677d61743a50d0262a4b8436d9a0..9e3d959723975106dcb62754dacbe257
          internal static partial int AudioQueueStop(nint audioQueue, [MarshalAs(UnmanagedType.I1)] bool immediate);
  
 +        // outTimeStamp：AudioTimeStamp（64 字节，mSampleTime 在偏移 0）；看门狗线程按需调（QueueTimelineWatch.PastSubmitted）
-+        [LibraryImport("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox")]
++        [LibraryImport("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox")]   // 平台例外：Apple 后端平台实现的 AudioToolbox P/Invoke 声明（#1921 队列时钟）
 +        internal static unsafe partial int AudioQueueGetCurrentTime(nint audioQueue, nint timeline, void* outTimeStamp, nint outDiscontinuity);
 +
          [LibraryImport("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox")]
