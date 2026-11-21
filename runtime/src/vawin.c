@@ -1484,6 +1484,7 @@ static void cmd_arena_reserve(void) {   // 占窗口那一步在围栏前调；�
     //   iOS 地址空间小（上限 2^39），虚拟池区按空洞剩余给，最多 16 GB；占不到就照旧不占（块回到 mmap(NULL)，回放可能放不回）
     //   即时存档：存档 / 恢复同样要命令记录区（命令句柄落点固定）；两次进程起来区落在同一地址才放得回（图形恢复核基址，不同即拒绝）
     const char *rec = getenv("S2A_FRAME_REC");
+    { const char *s2a_snap_source(void) __attribute__((weak_import)); LOG("即时存档：开关 %s（依据 %s）", s2a_snap_mode() ? "开" : "关", s2a_snap_source ? s2a_snap_source() : "未链快照模块"); }
     if (!(rec && *rec) && !s2a_snap_mode()) return;
     uint64_t top = s2a_va_top(), at, sz, fit, fat, lat, vp = 16ull << 30; if (!top) return;
     pick_hole(top, CMD_ARENA + (1ull << 30), &at, &sz, &fit, &fat, 0, &lat);
