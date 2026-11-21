@@ -14,7 +14,8 @@ void s2a_ios_keyboard_end(void);              // 键盘断开：结束接管、�
 
 // keyboard.m 提供
 void s2a_ios_keyboard_attach(void);           // 主线程，controller.m 建好输入队列后调一次
-void s2a_ios_keyboard_background(void);       // 切后台：按着的键与接管一并放开（任意线程）
+void s2a_ios_keyboard_background(void);       // 切后台：按着的键放开，接管保留（任意线程）
+void s2a_ios_keyboard_foreground(void);       // 回前台：键盘已不在就结束接管（主线程）
 int s2a_ios_keyboard_connected(void);         // 现在接着外接键盘（任意线程）
 // 改键页用（主线程）
 #define S2AKeyboardMapKey @"S2AKeyboardMap"   // 按款存（s2a_ios_per_game_keys）：schema 1 JSON，同 Mac 启动器 input.json 格式

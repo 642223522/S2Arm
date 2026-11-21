@@ -23,6 +23,14 @@ static int count_in(const char *text, const char *needle) {
     for (const char *p = text; (p = strstr(p, needle)) != NULL; p += len) n++;
     return n;
 }
+// 取函数体：从签名到下一个行首的「}」（找不到返回空串，调用方照常断言即红）
+static char *body_of(const char *text, const char *signature) {
+    const char *p = strstr(text, signature), *e = p ? strstr(p, "\n}") : NULL;
+    size_t n = e ? (size_t)(e - p) : 0;
+    char *s = malloc(n + 1); if (!s) return NULL;
+    if (n) memcpy(s, p, n);
+    s[n] = 0; return s;
+}
 // 按着这些 Mac 键码（-1 结尾）→ 用 cfg 映射
 static void press(const s2a_input_config *cfg, const int *codes, uint32_t *b, int32_t s[4]) {
     s2a_kbd_keys k = {{0, 0}};
@@ -149,6 +157,12 @@ int main(int argc, char **argv) {
         check(count_in(kbd, "s2a_kbd_hid(") >= 1 && count_in(kbd, "s2a_kb_update(") >= 1, "keyboard.m：原始键态喂 HID 键盘区（同 Mac R5）");
         check(count_in(kbd, "S2A_KBD_COMMAND") >= 1, "keyboard.m：⌘ 组合不收（同 Mac）");
         check(count_in(kbd, "s2a_kbd_default(") >= 1, "keyboard.m：没存过键位时用 iPad 缺省");
+        // 切后台只放开按着的键、不结束接管（同系统手柄：回前台自动接回，虚拟按键不跳出来）；回前台键盘已不在才结束接管
+        char *bg = body_of(kbd, "void s2a_ios_keyboard_background(void)"), *fg = body_of(kbd, "void s2a_ios_keyboard_foreground(void)");
+        check(bg && count_in(bg, "release_keys()") == 1 && !count_in(bg, "release_all") && !count_in(bg, "s2a_ios_keyboard_end"), "keyboard.m：切后台只放开按着的键，接管保留");
+        check(fg && count_in(fg, "coalescedKeyboard") >= 1 && count_in(fg, "release_all()") == 1, "keyboard.m：回前台键盘已不在 → 放开并结束接管");
+        check(count_in(ctl, "s2a_ios_keyboard_foreground()") == 1, "controller.m：回前台时核对键盘还在不在");
+        free(bg); free(fg);
     }
     free(ctl); free(kbd);
 

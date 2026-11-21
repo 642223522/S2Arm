@@ -996,7 +996,8 @@ static void log_controllers(int why) {   // why：0 启动时、1 连接通知�
     if (!foreground) { atomic_store(&g_ble_ready, 0); ble_slot_set_locked(-1); }
     pthread_mutex_unlock(&g_feedback_mu);
     s2a_pad_set_active(foreground);
-    if (!foreground) s2a_ios_keyboard_background();   // 外接键盘：按着的键与接管一并放开（回前台等下一次按键再接管）
+    if (!foreground) s2a_ios_keyboard_background();   // 外接键盘：按着的键放开，接管保留（同系统手柄，回前台虚拟按键不跳出来）
+    else s2a_ios_keyboard_foreground();               // 后台期间键盘拔了：结束接管，虚拟按键回来
     atomic_store(&g_slots_active, foreground);   // 槽 1–3：下面 selectSystem 分槽时按它采样或清零
     s2a_ios_slot_feedback_active(foreground);   // 玩家 2–4 的震动 / 体感：后台不收
     if (foreground) { phone_refresh_availability(); [self reloadAdapterPreference]; if (_adapterEnabled) [self reloadRecord]; }

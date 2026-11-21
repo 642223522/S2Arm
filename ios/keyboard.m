@@ -97,10 +97,14 @@ static void attach_keyboard(GCKeyboard *keyboard) {
     atomic_store(&g_connected, 1);
     LOG("外接键盘：已连接（%s）", keyboard.vendorName.UTF8String ?: "GCKeyboard");
 }
-// 放开全部按键、结束接管（输入队列）
-static void release_all(void) {
+// 放开全部按键（输入队列）；接管保留
+static void release_keys(void) {
     memset(&g_held, 0, sizeof g_held); memset(&g_swallowed, 0, sizeof g_swallowed); g_caps_down = 0;
     publish(0);
+}
+// 放开全部按键、结束接管（输入队列）：键盘没了
+static void release_all(void) {
+    release_keys();
     s2a_ios_keyboard_end();
 }
 void s2a_ios_keyboard_attach(void) {
@@ -119,9 +123,18 @@ void s2a_ios_keyboard_attach(void) {
     }];
     attach_keyboard(GCKeyboard.coalescedKeyboard);   // 起局前就接着的
 }
+// 切后台：按着的键收不到抬起，先放开；接管保留（同系统手柄回前台自动接回，虚拟按键不跳出来）
 void s2a_ios_keyboard_background(void) {
     dispatch_queue_t queue = g_queue;
-    if (queue) dispatch_async(queue, ^{ release_all(); });
+    if (queue) dispatch_async(queue, ^{ release_keys(); });
+}
+// 回前台（主线程）：后台期间键盘拔了、断开通知又没到时，在这里结束接管
+void s2a_ios_keyboard_foreground(void) {
+    dispatch_queue_t queue = g_queue;
+    if (!queue || GCKeyboard.coalescedKeyboard || !atomic_load(&g_connected)) return;
+    atomic_store(&g_connected, 0);
+    LOG("外接键盘：回前台时已不在");
+    dispatch_async(queue, ^{ g_caps = 0; release_all(); });
 }
 int s2a_ios_keyboard_connected(void) { return atomic_load(&g_connected); }
 void s2a_ios_keyboard_reload(void) {
