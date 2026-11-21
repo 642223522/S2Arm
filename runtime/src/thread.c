@@ -167,6 +167,7 @@ typedef struct thr {
     _Atomic int csoft;                 // 宿主侧可借（S2A_VCORE_SOFT）：0 = 硬持 / 不持；1 = 持着核但在宿主代码里，等核者可直接取走；2 = 已被取走（回客体走取核慢路）
 #if defined(__APPLE__)
     _STRUCT_MCONTEXT porig;            // 时钟抢占：被抢点原 mcontext（客体区 sig1 存、二次信号恢复）
+    void *pstk;                        // 时钟抢占：tramp 专用栈（PSTK_SIZE，线程起来时在普通上下文分配、thr_free 释放；见 on_preempt）
     sigset_t pmask;
 #endif                    // 时钟抢占：被抢前的信号掩码（sig1 存、二次信号写回 uc_sigmask）
     uint32_t ss_nocore;                // 调度计数：本线程被采到「在跑客体却不持核」的次数（收局按线程列前 5，定位违规来源）
@@ -791,6 +792,17 @@ static void set_qos(qos_class_t want) {
     if (rc || got != want) { static _Atomic int n; if (!atomic_fetch_add(&n, 1)) LOG("【红】游戏线程 QoS 设 %#x 失败：rc=%d 读回 %#x", want, rc, got); }
 }
 #endif
+#if defined(__APPLE__)
+// 时钟抢占 tramp 的专用栈（#515）：tramp 是 C 代码，原先跑在被抢线程的游戏栈上、只从原 sp 往下让 256 字节。游戏可以把活数据留在 sp 以下
+//   （一款第一方动作游戏：开变长数组后 mov sp, x29 收回 sp，之后照读写数组，数组大小随元素数涨），超出 256 字节的部分被 tramp 的栈帧盖掉 →
+//   下标成垃圾、野指针段错误（崩在同一函数，随抢占时机偶发）。改为每条线程一块自己的栈，tramp 一律在上面跑，不碰游戏栈
+#define PSTK_SIZE (64u << 10)
+static void preempt_stack_init(thr_t *t) {
+    if (!t->pstk && !(t->pstk = malloc(PSTK_SIZE))) die("时钟抢占：tramp 栈分配失败（%u 字节）", PSTK_SIZE);
+}
+#else
+static void preempt_stack_init(thr_t *t) { (void)t; }
+#endif
 static void thread_bind_host(thr_t *t) {
 #if !defined(__APPLE__)
     // Publish pthread lifetime under the same roster lock as the VM census.
@@ -814,6 +826,7 @@ static void thread_bind_host(thr_t *t) {
 #endif
     t->tsd = plat_tsd_base();
     s2a_crash_thread_init();
+    preempt_stack_init(t);
     guest_thread_init(t);
 }
 static void svc_exit(thr_t *t);
@@ -897,7 +910,11 @@ static void thr_free(thr_t *t) {   // 持 G。被系统调用钉着（pins）就
     if (s2a_test_thr_freed) s2a_test_thr_freed(t);
 #endif
     for (thr_t **p = &g_all; *p; p = &(*p)->all) if (*p == t) { *p = t->all; break; }
-    pthread_cond_destroy(&t->cv); free(t);
+    pthread_cond_destroy(&t->cv);
+#if defined(__APPLE__)
+    free(t->pstk);
+#endif
+    free(t);
 }
 static void core_release(thr_t *t);
 #if defined(__APPLE__)
@@ -1309,10 +1326,10 @@ static void on_preempt(int sig, siginfo_t *si, void *ctx) {
     if (module_of((void *)pc)) {                       // 客体区：改 PC 到 tramp（信号返回后让核）
         me->porig = *uc->uc_mcontext; me->pmask = uc->uc_sigmask;   // 被抢前的掩码（二次信号返回时写回）
         uc->uc_mcontext->__ss.__pc = (uint64_t)(uintptr_t)preempt_tramp;
-        // tramp 是 C 代码、跑在被抢线程的游戏栈上：sp 先往下让出 256 字节再进。改写器补丁区的桩把临时寄存器存在 sp 下方不挪 sp
-        //   （stp x0, x2, [sp, #-0x10] … ldp x0, x2, [sp, #-0x10]，红区用法），tramp 的栈帧若压在原 sp 上会盖掉它们（10-23 虚拟核缺省开后 Mac 塞尔达
-        //   两局 SIGBUS：x2 被读成 lr、拿去当偏移）。原 sp 随 porig 由二次信号恢复
-        uc->uc_mcontext->__ss.__sp = (uc->uc_mcontext->__ss.__sp - 256) & ~(uint64_t)15;
+        // tramp 跑在本线程的专用栈上（preempt_stack_init），不碰游戏栈：游戏栈 sp 以下可能有活数据——改写器补丁区桩的 16 字节暂存（10-23 Mac 塞尔达 SIGBUS），
+        //   也可能是游戏自己收回 sp 后还在用的变长数组（#515，大小不定，原先让 256 字节盖不住）。原 sp 随 porig 由二次信号恢复
+        uc->uc_mcontext->__ss.__sp = me->pstk ? ((uint64_t)(uintptr_t)me->pstk + PSTK_SIZE) & ~(uint64_t)15
+                                              : (uc->uc_mcontext->__ss.__sp - 256) & ~(uint64_t)15;   // 没分到专用栈的线程（不该有）：退回旧做法
     } else {                                           // 宿主区（svc 处理中 / 宿主代码里）
         // 置标志（svc_exit 是它的主场消费点），并当场 trylock 放核——只在正处系统调用处理中（in_svc）时放：
         //   卡在 svc 里回不到 svc_exit 就是这个缺口的现场（preempt_req 没人消费 = 抢占 100% 无效）。
@@ -2746,6 +2763,7 @@ static void *snap_thread_main(void *arg) {
     { char nm[24]; snprintf(nm, sizeof nm, "nx-%llu", (unsigned long long)t->id); pthread_setname_np(nm); }
     t->mport = pthread_mach_thread_np(pthread_self()); t->tsd = plat_tsd_base(); t->pt = pthread_self();
     s2a_crash_thread_init();
+    preempt_stack_init(t);
 #if defined(__APPLE__)
     gl_snap_thread_bind(t->id);
 #endif
