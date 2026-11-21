@@ -19,17 +19,19 @@ import XCTest
         return S2ArmLauncherModel(client: JobClient(environment: JobEnvironment(privateRoot: root, resources: root, library: root.path, libraryId: "x")))
     }
 
-    /// 放进真的 AppKit 窗口再截（下拉框这类原生控件 ImageRenderer 画不了）
+    /// 离屏出图：视图不放进任何窗口、不上屏（11-20：截图测试在维护者桌面上开过窗口、弹过报错框）；直接让 NSHostingView 排版后画进位图。
+    ///   核图里确实画出了东西（非背景像素够多），免得白图当成功
     func shot<V: View>(_ view: V, _ name: String, width: CGFloat = 600, height: CGFloat = 700) throws -> NSBitmapImageRep {
-        _ = NSApplication.shared
         let root = view.s2aLocalized().frame(width: width, height: height, alignment: .topLeading).padding(32)
             .background(Color(red: 0.07, green: 0.07, blue: 0.08)).environment(\.colorScheme, .dark)
         let host = NSHostingView(rootView: root)
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width + 64, height: height + 64), styleMask: [.borderless], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false; window.contentView = host; window.orderBack(nil)
-        host.layoutSubtreeIfNeeded(); RunLoop.main.run(until: Date().addingTimeInterval(0.4)); host.layoutSubtreeIfNeeded()
+        host.frame = NSRect(x: 0, y: 0, width: width + 64, height: height + 64)
+        host.layoutSubtreeIfNeeded()
         let rep = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds)); host.cacheDisplay(in: host.bounds, to: rep)
-        window.orderOut(nil)
+        var ink = 0
+        for y in stride(from: 0, to: rep.pixelsHigh, by: 4) { for x in stride(from: 0, to: rep.pixelsWide, by: 4) {
+            if let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB), c.redComponent + c.greenComponent + c.blueComponent > 0.9 { ink += 1 } } }
+        XCTAssertGreaterThan(ink, 200, "\(name)：离屏画出来是空的")
         if let dir = ProcessInfo.processInfo.environment["S2A_STANDALONE_SHOT"] {
             try rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: dir).appendingPathComponent("\(name).png"))
         }
@@ -58,7 +60,7 @@ import XCTest
         for (name, r) in states {
             let m = model()
             m.installMode = InstallModeInfo(result: r)
-            let rep = try shot(VStack(alignment: .leading) { InstallLayoutRow(model: m, gameId: gid) }, name, height: 300)
+            let rep = try shot(VStack(alignment: .leading) { InstallLayoutRow(model: m, gameId: gid, refreshOnAppear: false) }, name, height: 300)
             XCTAssertGreaterThan(rep.pixelsWide, 0)
         }
     }

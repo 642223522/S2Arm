@@ -43,6 +43,8 @@ struct InstallLayoutRow: View {
     @ObservedObject var model: S2ArmLauncherModel
     @EnvironmentObject var loc: Localizer
     var gameId: String? = nil
+    /// 出现时读一次装机方式（按款选过的、证书换过）；离屏截图测试关掉它（测试环境没有作业入口，读失败会弹真的报错框）
+    var refreshOnAppear = true
     @State private var showWhy = false
 
     static let gold = Color(red: 0.93, green: 0.77, blue: 0.42)
@@ -93,7 +95,7 @@ struct InstallLayoutRow: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(gameId == nil ? "env.installLayout" : "install.layout")
-        .onAppear { if gameId != nil { model.refreshInstallMode() } }   // 设置卡自己已刷新；装机页 / 出包页打开时读一次（按款选过的、证书换过）
+        .onAppear { if gameId != nil && refreshOnAppear { model.refreshInstallMode() } }   // 设置卡自己已刷新；装机页 / 出包页打开时读一次（按款选过的、证书换过）
     }
 
     private func card(_ value: String, _ title: String, _ body: String, _ badge: String, gold: Bool, now: String, m: InstallModeInfo) -> some View {
