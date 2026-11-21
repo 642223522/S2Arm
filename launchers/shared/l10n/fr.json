@@ -470,7 +470,7 @@
   "update.hint.reason.rewriter": "La traduction du code du jeu a été améliorée ; ce jeu utilise encore l'ancienne traduction.",
   "update.hint.reason.hostAbi": "La nouvelle version de S2Arm ne correspond plus au code de ce jeu ; sans mise à jour, il ne s'ouvrira pas sur l'iPhone.",
   "update.hint.reason.shader": "La traduction des shaders (code graphique) a été améliorée ; la bibliothèque de shaders de ce jeu a été créée avec l'ancienne version.",
-  "update.hint.tail": "Cliquez sur « Mettre à jour ce jeu » pour le préparer à nouveau. Seul ce jeu est refait et les sauvegardes restent intactes ; tant que les données du jeu sont là, le fichier d'origine n'est pas nécessaire, mais si elles ont été supprimées, la reconstruction des shaders en a besoin.",
+  "update.hint.tail": "Refait uniquement ce jeu, sur cet ordinateur : aucun appareil n’est nécessaire et les sauvegardes restent intactes. Pour le mettre ensuite sur un appareil, cliquez sur « Exporter… » et cochez cet appareil.",
   "console.status.introduce": "Jouer sur iPhone",
   "console.status.updating": "Mise à jour de {0} jeu(x) sur {1}",
   "console.status.notConnected": "iPhone non connecté · dernière synchro : {0}",

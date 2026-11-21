@@ -486,7 +486,7 @@
   "update.hint.reason.rewriter": "遊戲程式的轉譯有改進，這款還是舊版轉譯的。",
   "update.hint.reason.hostAbi": "新版 S2Arm 和這款的程式對不上了，不更新的話手機上這款打不開。",
   "update.hint.reason.shader": "著色器（畫面程式）的轉譯有改進，這款的著色器庫還是舊版做的。",
-  "update.hint.tail": "點「更新這款」重新準備，只做這一款，存檔不動；資源還在就不用原檔，資源刪了，重編著色器要原檔。",
+  "update.hint.tail": "只在電腦上重新做這一款，不連裝置、不動存檔；做完想裝到裝置上，點「匯出…」勾上那台。",
   "console.status.introduce": "在 iPhone 上玩",
   "console.status.updating": "正在更新 {0} / {1} 款",
   "console.status.notConnected": "沒連 iPhone · 上次同步：{0}",

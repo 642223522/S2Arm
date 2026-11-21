@@ -1323,7 +1323,7 @@
       {"id": "update.hint.reason.rewriter", "zh-Hans": "游戏程序的翻译有改进，这款还是旧版翻译的。", "en": "Game code translation has improved; this game still uses the older translation."},
       {"id": "update.hint.reason.hostAbi", "zh-Hans": "新版 S2Arm 和这款的程序对不上了，不更新的话手机上这款打不开。", "en": "The new S2Arm no longer matches this game's code; without an update it won't open on iPhone."},
       {"id": "update.hint.reason.shader", "zh-Hans": "着色器（画面程序）的翻译有改进，这款的着色器库还是旧版做的。", "en": "Shader (graphics code) translation has improved; this game's shader library was built with the older version."},
-      {"id": "update.hint.tail", "zh-Hans": "点「更新这款」重新准备，只做这一款，存档不动；资源还在就不用原件，资源删了，重编着色器要原件。", "en": "Click \"Update this game\" to prepare it again. Only this game is redone and saves stay as they are; no original file is needed while the game data is still here, but if it was removed, rebuilding shaders needs the original file."},
+      {"id": "update.hint.tail", "zh-Hans": "只在电脑上重新做这一款，不连设备、不动存档；做完想装到设备上，点「导出…」勾上那台。", "en": "Redoes only this game, on this computer — no device needed and saves stay as they are. To put it on a device afterwards, click \"Export…\" and tick that device."},
       {"id": "console.status.introduce", "zh-Hans": "在 iPhone 上玩", "en": "Play on iPhone"},
       {"id": "console.status.updating", "zh-Hans": "正在更新 {0} / {1} 款", "en": "Updating {0} of {1} games"},
       {"id": "console.status.notConnected", "zh-Hans": "没连 iPhone · 上次同步：{0}", "en": "iPhone not connected · last synced {0}"},

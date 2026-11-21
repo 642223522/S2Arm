@@ -470,7 +470,7 @@
   "update.hint.reason.rewriter": "ゲームプログラムの変換が改良されました。このゲームは旧版の変換のままです。",
   "update.hint.reason.hostAbi": "新しい S2Arm とこのゲームのプログラムが合わなくなりました。更新しないと iPhone で開けません。",
   "update.hint.reason.shader": "シェーダー（描画プログラム）の変換が改良されました。このゲームのシェーダーライブラリは旧版で作られています。",
-  "update.hint.tail": "「このゲームを更新」を押すと準備し直します。このゲームだけで、セーブデータはそのままです。ゲームデータが残っていれば元のファイルは不要ですが、削除済みならシェーダーの再作成に元のファイルが必要です。",
+  "update.hint.tail": "このパソコン上でこのゲームだけを作り直します。デバイスは不要で、セーブデータはそのままです。あとでデバイスに入れるときは「エクスポート…」でそのデバイスにチェックを入れてください。",
   "console.status.introduce": "iPhone で遊ぶ",
   "console.status.updating": "{1} 本中 {0} 本目を更新中",
   "console.status.notConnected": "iPhone 未接続 · 前回の同期：{0}",

@@ -353,6 +353,8 @@ def phone_overview(c):
                      lastSeen=rec.get("at") if isinstance(rec.get("at"), (int, float)) else None, canSign=_can_sign(rec), games=games, apps=_app_rows(rec, sid))
         if external:   # 别的工具装的：给它自己的一套按钮，不出「安装 S2Arm」（会新建证书、顶掉玩家 AltStore 的证书）
             phone["actions"] = list(EXTERNAL_PHONE_ACTIONS)
+            if online and online.get(key) and ext:
+                phone["certImported"] = _cert_imported(c, key, rec, ext)
         if choose:   # 装着不止一个、玩家还没选：只给「选用哪个 S2Arm」，不替玩家挑、不出安装
             phone.update(needsChoice=True, bundleId="", signMode=None, shellCurrent=None, actions=["chooseApp"])
         if cands and len(cands) > 1:
@@ -361,6 +363,18 @@ def phone_overview(c):
             phone["online"] = online.get(key)
         phones.append(phone)
     return dict(phones=phones)
+
+
+def _cert_imported(c, udid, rec, bid):
+    """别的工具装的 S2Arm 导入签名证书了没有（11-21 导出确认页「自签」时设备行：导入了才能直接推，没导入写「先在手机上导入」）。
+    同候选列表的判法（install.s2arm_candidates）：导入的证书团队 = 这个 App 的团队；读不出 App 团队时只看导没导。读不出身份 → False"""
+    import install
+    meta = install.phone_identity_meta(c, udid, bid) or {}
+    team = meta.get("team")
+    if not team:
+        return False
+    app = next((a for a in (install.installed_s2arm_on(c, udid, rec) or []) if a["bundleId"].lower() == bid.lower()), None)
+    return not app or not app.get("team") or app["team"] == team
 
 
 def _app_rows(rec, sid):

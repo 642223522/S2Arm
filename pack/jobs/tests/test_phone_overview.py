@@ -43,7 +43,7 @@ class PhoneOverview(unittest.TestCase):
         # 手机 2：旧壳、免费账号、一款没推
         layout.save_device(self.c, "PHONE-2", dict(shellId="SOLD", bundleId="io.example.two", signed=dict(at=T, free=True, device="手机乙"), games={}))
 
-    def overview(self, on=True, probe=False, online=None, owners=None, names=None, cands=None, kinds=None):
+    def overview(self, on=True, probe=False, online=None, owners=None, names=None, cands=None, kinds=None, idents=None, apps=None):
         """owners：{UDID: (谁装的, 包名)}，连着的手机现查的结果（install.s2arm_owner 的替身；没给的按列不出 (None, None)）；names：现查到的设备名"""
         if probe:
             self.c.r["probe"] = True
@@ -60,6 +60,8 @@ class PhoneOverview(unittest.TestCase):
                 patch.object(host_update, "engine_compat", lambda c: NOW), patch.object(packer, "current_shell_id", lambda c: "SNOW"), \
                 patch.object(install, "s2arm_owner", lambda c, udid, rec: (owners or {}).get(udid, (None, None))), \
                 patch.object(install, "s2arm_candidates", lambda c, udid, rec: (cands or {}).get(udid, [])), \
+                patch.object(install, "phone_identity_meta", lambda c, udid, bid: (idents or {}).get(udid)), \
+                patch.object(install, "installed_s2arm_on", lambda c, udid, rec: (apps or {}).get(udid, [])), \
                 patch.object(host_update, "_online", fake_online if probe else no_probe):
             return host_update.phone_overview(self.c)
 
@@ -197,6 +199,20 @@ class PhoneOverview(unittest.TestCase):
         self.assertEqual((p1["installedBy"], p1["bundleId"], p1["shellCurrent"]), ("launcher", "io.example.one", True))
         self.assertNotIn("actions", p1, "启动器装的手机照旧由前端按原来的按钮出")
         self.assertEqual(got["PHONE-2"]["installedBy"], "launcher", "没连着：按设备记录（有壳号 = 启动器装的）")
+
+    def test_external_cert_imported(self):
+        """11-21 导出确认页「自签」设备行：别的工具装的 S2Arm 只有一个时也报导没导入签名证书（certImported）；
+        同候选的判法：导入的证书团队 = 这个 App 的团队。没现查（不知道）不带这个键。期望手写"""
+        alt = "io.s2arm.games.0123456789abcdef"
+        owners = {"A": ("external", alt), "B": ("external", alt), "C": ("external", alt)}
+        r = self.overview(probe=True, online={"A": "usb", "B": "usb", "C": "network"}, owners=owners,
+                          idents={"A": dict(team="TEAMA"), "C": dict(team="OTHER")},
+                          apps={"A": [dict(bundleId=alt, team="TEAMA")], "C": [dict(bundleId=alt, team="TEAMC")]})
+        by = {p["device"]: p.get("certImported") for p in r["phones"]}
+        self.assertEqual(by, {"A": True, "B": False, "C": False}, "A 导入了同团队的证书；B 没导入；C 导入的不是这个 App 的团队")
+        layout.save_device(self.c, "D", dict(externalBundleId=alt, games={}))
+        self.c.r.pop("probe", None)
+        self.assertNotIn("certImported", next(p for p in self.overview()["phones"] if p["device"] == "D"), "没现查：不知道就不带")
 
     def test_external_phone_from_record_without_probe(self):
         """推过一次（push_game 记下 externalBundleId、没有壳号）后，不查手机也认得出是别的工具装的"""
