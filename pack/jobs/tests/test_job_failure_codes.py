@@ -514,7 +514,7 @@ class LogCauses(JobCase):
         error, d = self.mac_refresh(["【黄】直连缺口：配置推导不支持本款：unsupported graphics API: unknown（没有 NVN / Vulkan / OpenGL 任一接口的证据）",
                                      "【红】05F42564C82B0000 直连单轨停在 直连配置推导：直连缺口：配置推导不支持本款（direct_profile rc=3）"])
         self.assertEqual(error.code, "graphics_api_unsupported")
-        self.assertEqual(d["summary"], "这款游戏暂不支持：没找到任天堂官方图形接口（NVN / Vulkan / OpenGL），多见于自制或移植的程序。")
+        self.assertEqual(d["summary"], "这款游戏暂时出不了包：没认出它用的图形接口（NVN / Vulkan / OpenGL）。请把诊断发给我们，我们会核对是不是没认出来。")
         self.assertEqual(d["suggestion"], RECOVERY["graphics_api_unsupported"])
 
     def test_font_copy_denied_says_grant_access(self):
