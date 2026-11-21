@@ -2855,15 +2855,51 @@ def restore_phone_save(c):
     have = {p.relative_to(root / now).as_posix() for p in (root / now).rglob("*") if p.is_file() and p.name != PHONE_SAVE_MARK} if now else set()
     files = sorted(p for p in src.rglob("*") if p.is_file() and p.name != PHONE_SAVE_MARK)
     keep = {p.relative_to(src).as_posix() for p in files}
-    base = f"{game_docs(gid)}/{SAVE_REL}"
     c.begin("写回存档文件", 2, 2)
+    write_phone_save(c, ph, gid, src, have - keep)
+    return dict(gameId=gid, restored=name, files=len(files), removed=len(have - keep), safetyBackup=now or "")
+
+
+def write_phone_save(c, ph, gid, src, drop=()):
+    """把电脑上一份存档备份 src 的文件写进手机这个 App（ph.bid）里这款的存档目录；drop = 手机上要删掉的相对路径（还原时备份里没有的）"""
+    base = f"{game_docs(gid)}/{SAVE_REL}"
     with tempfile.TemporaryDirectory(dir=c.private) as w:
         cl = ph.client(w)
-        for p in files:
+        for p in sorted(x for x in Path(src).rglob("*") if x.is_file() and x.name != PHONE_SAVE_MARK):
             cl.put(p, f"{base}/{p.relative_to(src).as_posix()}")
-        for rel in sorted(have - keep):
+        for rel in sorted(drop):
             cl.rm(f"{base}/{rel}")
-    return dict(gameId=gid, restored=name, files=len(files), removed=len(have - keep), safetyBackup=now or "")
+
+
+SAVE_CARRIED = "这款的存档从手机上的另一个 S2Arm（{0}）复制进了新装的独立 App；那边的存档没动，在新 App 里确认进度没问题再删旧的。"
+SAVE_CARRY_MANY = "手机上有几个 S2Arm 都存着这款的存档（{0}），没替你挑：在启动器的手机存档里选一份，还原到新装的独立 App。"
+
+
+def carry_saves(c, ph, ap, gid):
+    """新装的独立 App 里还没有这款的存档时（put_app 开头的快照没拉到），从手机上别的 S2Arm 复制过来：
+    0.6.4 前导出的独立 App 包名都是 io.s2arm.games，侧载工具签成 io.s2arm.games.<团队>（装哪款都进同一个 App，各款存档都在它的容器里），
+    改成按款的包名后装出来是新 App、新容器，旧存档新 App 看不到；通用壳里玩过的同样搬。只复制不搬走：那边的存档一个字节不动。
+    别的 App 先照常拉回电脑留一份（snapshot_phone_saves，记号带它的包名，之后也能在手机存档里手动还原）。
+    只有一个 App 有这款的存档才复制；几个都有不替玩家挑，说清让玩家自己选一份还原。→ 复制来源的包名 | None"""
+    try:
+        others = [a["bundleId"] for a in installed_s2arm(c, ph) or [] if a["bundleId"].lower() != ap.bid.lower()]
+    except Failure as e:
+        trace(c, f"{gid} 列不出手机上别的 S2Arm，不复制旧存档：{str(e)[:200]}")  # 非玩家句
+        return None
+    found = {}
+    for b in others:
+        got = snapshot_phone_saves(c, app_phone(ph, b, standalone=False), [gid]).get(gid)
+        if got:
+            found[b] = got
+    if len(found) > 1:
+        c.diagnostic(SAVE_CARRY_MANY.format("、".join(sorted(found))), code="save_carry_choose", severity="warning")
+        return None
+    if not found:
+        return None
+    (b, name), = found.items()
+    write_phone_save(c, ap, gid, layout.path(c, gid, "save_backup", create=False) / name)
+    c.diagnostic(SAVE_CARRIED.format(b), code="save_carried", severity="warning")
+    return b
 
 
 IDENTITY_INCOMING = "Library/Application Support/S2Arm/identity/incoming"   # App 启动时导入钥匙串、导入成功就删（手机侧，0.6.0）
@@ -3342,7 +3378,7 @@ def put_app(c, gid, ph, steps=True):
     pack = ios_pack(c, gid)
     bid, team, fixed = app_bundle(c, ph, gid)
     ap = app_phone(ph, bid)
-    snapshot_phone_saves(c, ap, [gid])   # 同 push_game：开头把手机上这个 App 里这款的存档拉回电脑（按包名各算各的）
+    had_save = gid in snapshot_phone_saves(c, ap, [gid])   # 同 push_game：开头把手机上这个 App 里这款的存档拉回电脑（按包名各算各的）
     if steps: c.begin(APP_STAGE, 2, 4)
     ap.pull_kept([gid])   # 机上留下的 NRO 先收回（#8be819），refresh_ios 补进程序件
     tmp = Path(tempfile.mkdtemp(prefix=".container-", dir=c.library))
@@ -3366,6 +3402,7 @@ def put_app(c, gid, ph, steps=True):
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     ap.bid = got
+    carried = None if had_save else carry_saves(c, ph, ap, gid)   # 新 App 里还没这款的存档：从手机上旧包名的 App / 通用壳复制过来（不动那边）
     if fixed:
         c.diagnostic(APP_BUNDLE_FIXED.format(got), code="app_bundle_fixed", severity="warning")
     if ap.info.get("free"):
@@ -3399,7 +3436,7 @@ def put_app(c, gid, ph, steps=True):
     extra = dict(unpackPending=ap.pending) if ap.pending else {}
     c.app_installed = None
     return dict(ap.info, bundleId=got, games=[gid], layout="standalone", toShell=sid, packFiles=pushed_files, packBytes=size, **extra, openToFinish=True,
-                expiresAt=until, expiresKnown=known, **files, **({"bundleFixed": True} if fixed else {}))
+                expiresAt=until, expiresKnown=known, **files, **({"bundleFixed": True} if fixed else {}), **({"savesFrom": carried} if carried else {}))
 
 
 def update_apps(c, ph, sid):

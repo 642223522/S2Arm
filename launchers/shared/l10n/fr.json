@@ -4319,6 +4319,10 @@
   "查看本任务日志里签名那一步的报错；确认 Xcode「设置 → 账户」里登录了你的 Apple ID、能给这台 Apple TV 签名，再试一次。": "Consultez l'erreur de l'étape de signature dans le journal de cette tâche ; vérifiez que votre identifiant Apple est connecté dans Xcode › Réglages › Comptes et peut signer pour cette Apple TV, puis réessayez.",
   "让 Apple TV 开着、和这台 Mac 连同一个网络，再点一次「装到 Apple TV」；电视上原有的 App 和存档都保留。": "Laissez l'Apple TV allumée et sur le même réseau que ce Mac, puis cliquez à nouveau sur « Installer sur l'Apple TV » ; l'app et les sauvegardes déjà présentes sur la TV sont conservées.",
   "让 Apple TV 开着、和这台 Mac 连同一个网络，并在 Xcode「窗口 → 设备与模拟器」里和它配对过一次，再试一次。": "Laissez l'Apple TV allumée et sur le même réseau que ce Mac, jumelez-la une fois dans Xcode › Fenêtre › Appareils et simulateurs, puis réessayez.",
-  "让 Apple TV 开着、别让它休眠，和这台 Mac 连同一个网络，再点一次「装到 Apple TV」。": "Laissez l'Apple TV allumée et hors veille, sur le même réseau que ce Mac, puis cliquez à nouveau sur « Installer sur l'Apple TV »."
+  "让 Apple TV 开着、别让它休眠，和这台 Mac 连同一个网络，再点一次「装到 Apple TV」。": "Laissez l'Apple TV allumée et hors veille, sur le même réseau que ce Mac, puis cliquez à nouveau sur « Installer sur l'Apple TV ».",
+  "这款的存档从手机上的另一个 S2Arm（{0}）复制进了新装的独立 App；那边的存档没动，在新 App 里确认进度没问题再删旧的。": "La sauvegarde de ce jeu a été copiée depuis un autre S2Arm du téléphone ({0}) vers l'app autonome qui vient d'être installée. Celle d'origine n'a pas été touchée ; vérifiez votre progression dans la nouvelle app avant de supprimer l'ancienne.",
+  "手机上有几个 S2Arm 都存着这款的存档（{0}），没替你挑：在启动器的手机存档里选一份，还原到新装的独立 App。": "Plusieurs S2Arm du téléphone ont une sauvegarde de ce jeu ({0}), aucune n'a donc été choisie à votre place : dans les sauvegardes du téléphone du lanceur, choisissez-en une et restaurez-la dans l'app autonome qui vient d'être installée.",
+  "新装的独立 App 用的是从旧 App 复制来的存档：进游戏确认进度没问题，再在 iPhone 上删掉旧 App。": "La nouvelle app autonome utilise la sauvegarde copiée depuis l'ancienne app : ouvrez le jeu et vérifiez votre progression, puis supprimez l'ancienne app de l'iPhone.",
+  "在启动器的手机存档里选你要的那一份，还原到新装的独立 App；其余几个 App 里的存档都没动。": "Dans les sauvegardes du téléphone du lanceur, choisissez celle que vous voulez et restaurez-la dans l'app autonome qui vient d'être installée ; les sauvegardes des autres apps n'ont pas été touchées."
  }
 }
