@@ -238,7 +238,10 @@ static void gpu_err_walk(NSError *e, int depth, int *fatal, int *victim) {
     NSString *d = [NSString stringWithFormat:@"%@ %@", e.localizedDescription ?: @"", e.userInfo[NSLocalizedDescriptionKey] ?: @""];
     if ([d containsString:@"InnocentVictim"] || [d containsString:@"SubmissionsIgnored"]) *victim = 1;
     if ([d containsString:@"CallbackErrorHang"] || [d containsString:@"CallbackErrorTimeout"] || [d containsString:@"PageFault"]) *fatal = 1;
-    if ([e.domain isEqualToString:MTLCommandBufferErrorDomain] && (e.code == MTLCommandBufferErrorTimeout || e.code == MTLCommandBufferErrorPageFault)) *fatal |= 2;   // 2 = 只有错误码（没有 IOGPU 原因名）
+    // GPU 内存用满（kIOGPUCommandBufferCallbackErrorOutOfMemory / Metal 3 错误码 8）：原先不算、照常继续交，越交越满。#327 D-DNWG（iPhone 15 Pro Max，空之轨迹 the 1st）：
+    //   零拷贝池整块驻留 3669 MB、GPU 已分配 5127 MB，第一条之后 49 条、画面停在第 5364 帧再没动，整机卡死要硬重启。一出现就按本进程挂死安全停
+    if ([d containsString:@"CallbackErrorOutOfMemory"]) *fatal = 1;
+    if ([e.domain isEqualToString:MTLCommandBufferErrorDomain] && (e.code == MTLCommandBufferErrorTimeout || e.code == MTLCommandBufferErrorPageFault || e.code == MTLCommandBufferErrorOutOfMemory)) *fatal |= 2;   // 2 = 只有错误码（没有 IOGPU 原因名）
     id u = e.userInfo[NSUnderlyingErrorKey]; if ([u isKindOfClass:NSError.class]) gpu_err_walk(u, depth + 1, fatal, victim);
     id m = e.userInfo[@"NSMultipleUnderlyingErrorsKey"]; if ([m isKindOfClass:NSArray.class]) for (id x in (NSArray *)m) if ([x isKindOfClass:NSError.class]) gpu_err_walk(x, depth + 1, fatal, victim);
 }
@@ -247,11 +250,14 @@ int mtl_gpu_err_fatal(NSError *e) {
     if (fatal & 1) return 1;            // 有本进程的 Hang / Timeout / PageFault 原因名
     return fatal && !victim;            // 只有 Metal 3 错误码：被牵连 / 被拒收的那几种不算
 }
+static void res_drop_all(void);
 // 安全停：唯一置位处。why = 第一条错误原文
 void mtl_gpu_halt(const char *why) {
     if (atomic_exchange(&g_gpu_halt, 1)) return;
     MLOG("【红】 GPU 挂死安全停：%s；帧 %llu，最近提交栅栏 %llu，已放行提交 %llu 次；此后不再往 GPU 提交任何命令缓冲", why ? why : "-",
          (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)g_fence, (unsigned long long)atomic_load(&g_gpu_commits));
+    // GPU 内存用满停下的：此后不再提交，驻留集里钉着的（iOS 上是全机共用的 wired 内存）当场整个放掉，手机缓过来、能退回主屏，不等进程退出
+    if (why && strstr(why, "OutOfMemory")) res_drop_all();
     if (g_gpu_halt_notify) g_gpu_halt_notify(why);
 }
 // 所有命令缓冲报错的入口（where = 哪条队列 / 哪类提交，seq = 栅栏号或批号，0 = 没有）。返回 1 = 已在安全停（调用方别再刷红行）
@@ -645,6 +651,20 @@ static void res_commit(void) { @autoreleasepool {
     pthread_mutex_unlock(&g_res_commit_mu);
     for (size_t i = 0; i < nq; i++) CFRelease(q[i].o);
     free(q);
+} }
+// GPU 内存用满安全停（mtl_gpu_halt）：驻留集整个清空并提交。安全停之后 gpu_go 一律不放行，不会再有命令缓冲用到这些资源
+static void res_drop_all(void) { @autoreleasepool {
+    if (!g_res) { MLOG("【红】 GPU 内存用满安全停：没有驻留集（Metal 3 后端），无可放"); return; }
+    pthread_mutex_lock(&g_res_commit_mu);   // 同 res_commit 的加锁顺序：先提交锁、再记账锁
+    pthread_mutex_lock(&g_res_mu);
+    for (size_t i = 0; i < g_res_qn; i++) CFRelease(g_res_q[i].o);   // 还没提交的增删作废
+    free(g_res_q); g_res_q = NULL; g_res_qn = g_res_qcap = 0; g_res_dirty = 0;
+    [g_res_objects removeAllObjects];   // 记账与驻留集一致：之后再 res_add 同一个对象照常进
+    pthread_mutex_unlock(&g_res_mu);
+    uint64_t b = g_res.allocatedSize; NSUInteger n = g_res.allocationCount;
+    [g_res removeAllAllocations]; [g_res commit];
+    pthread_mutex_unlock(&g_res_commit_mu);
+    MLOG("【红】 GPU 内存用满安全停：驻留集清空，放掉 %lu 个对象、%llu MB", (unsigned long)n, (unsigned long long)(b >> 20));
 } }
 // Since the last call: residency commits (count, time), additions by source line (count, MB; the four largest by bytes) and removals
 void nvn_be_res_stats(char *out, size_t n) {
