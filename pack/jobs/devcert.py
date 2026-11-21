@@ -26,6 +26,7 @@ import plistlib
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import zipfile
 from pathlib import Path
@@ -382,7 +383,18 @@ def secrets(c):
 
 
 def state(c):
-    return read(folder(c) / "state.json") or {}
+    """证书设置（state.json）；读不了（Windows 拒绝访问，D-BW75 / #3c209a：整个 devcert 目录进不去、连属性都取不到）= 当作没启用证书：
+    只是一个开关，Apple ID 那条路照样走得通，不为它挡装机（原先抛到 update_phone，「S2Arm 自己的文件读写不了」×14）。原因每个作业记一次进作业日志"""
+    try:
+        return read(folder(c) / "state.json") or {}
+    except PermissionError as error:
+        if not getattr(c, "_devcert_state_denied", False):
+            try:
+                c._devcert_state_denied = True
+            except AttributeError:
+                pass
+            print(f"[s2a] 【黄】开发者证书设置读不了（{error}），这次当作没启用证书、按 Apple ID 签名", file=sys.stderr, flush=True)  # 非玩家句
+        return {}
 
 
 def active(c):
