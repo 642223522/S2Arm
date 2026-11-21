@@ -378,6 +378,9 @@ public struct InstallModeInfo: Equatable, Sendable {
     /// 按签名带不带调试权限推荐的出法（作业层 install.layout_recommend）：standalone / shell / nil（识别不了）；依据 distribution / devCertDebug / appleId / external / unknown
     public var recommend: String? = nil
     public var recommendWhy: String = "unknown"
+    /// 是不是从 installMode 作业读回的：没读回（启动器刚开、作业失败）时出法两张卡都不画选中——原先缺省 layout = shell
+    ///   先把「通用 S2Arm」画成选中，读回后才跳到真实那张，读失败就一直显示错的（0.6.2 前端走查）
+    public var loaded = false
     public init(exportAvailable: Bool = false, signMode: String = "appleId", signChoice: String = "appleId") {
         self.exportAvailable = exportAvailable; self.signMode = signMode; self.signChoice = signChoice
     }
@@ -385,6 +388,7 @@ public struct InstallModeInfo: Equatable, Sendable {
         self.init(exportAvailable: r["exportAvailable"] as? Bool ?? false, signMode: r["signMode"] as? String ?? "appleId",
                   signChoice: r["signChoice"] as? String ?? "appleId")
         let choice = r["layoutChoice"] as? [String: Any] ?? [:]
+        loaded = true
         layout = r["layout"] as? String ?? "shell"
         layoutDefault = choice["default"] as? String
         layoutGames = (choice["games"] as? [String: String] ?? [:]).reduce(into: [:]) { $0[$1.key.uppercased()] = $1.value }
