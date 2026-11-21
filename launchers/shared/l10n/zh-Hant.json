@@ -1379,7 +1379,7 @@
   "install.layout.hint.appleId": "免費 Apple ID：同時最多 3 個自簽 App，每 7 天最多註冊 10 個 App ID；獨立 App 每款佔一個，7 天到期要續簽。付費開發者帳號簽的 1 年到期。",
   "install.layout.hint.wildcard": "你的描述檔是萬用（*）的：開不了「提高記憶體上限」，大遊戲可能記憶體不夠；要開就換成只給這個 App 的描述檔。",
   "install.layout.hint.explicit": "你的描述檔是顯式 App ID：只允許一個套件名稱，每款獨立 App 都會裝成它，裝一款會頂掉前一款。想同時裝幾款，用萬用字元（*）描述檔，或改用通用 S2Arm（一個 App 裝所有遊戲）。",
-  "export.done.standaloneSaveCarry": "之前用獨立 App 裝過的遊戲，存檔在舊 App 裡：暫時別刪舊 App，遷移辦法隨後續版本提供。",
+  "export.done.standaloneSaveCarry": "之前用獨立 App 裝過的遊戲，存檔在舊 App 裡。把手機連上啟動器，對這款點「匯出…」、勾選這台手機後開始，啟動器會把舊 App 裡這款的存檔複製進新 App，舊 App 不動。進遊戲確認進度沒問題，再刪舊 App。新 App 裡已經有這款的存檔時，啟動器不會覆蓋：在舊 App 裡先進一次這款遊戲，再用「存檔管理」匯出存檔，到新 App 的「存檔管理」裡匯入。",
   "install.layout.hint.external": "你選的是自己用 AltStore / SideStore 簽：獨立 App 只能匯出，用它們開啟匯出的 ipa 安裝；免費帳號同樣受 3 個 App 的限制。",
   "app.done.title": "已裝到「{0}」",
   "app.done.name": "手機上的名字",
