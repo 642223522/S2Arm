@@ -165,7 +165,7 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
     app.pApplicationName = "s2a-direct-vk";
     app.applicationVersion = 1;
     app.pEngineName = "s2a";
-    app.apiVersion = VK_API_VERSION_1_1;
+    app.apiVersion = S2A_VK_APP_API_VERSION;
     VkInstanceCreateInfo info = {0};
     info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     info.pApplicationInfo = &app;
@@ -217,10 +217,15 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
 
     VkPhysicalDeviceDriverProperties driver = {0};
     driver.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES;
-    VkPhysicalDeviceProperties2 props2 = {0};
-    props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-    props2.pNext = &driver;
-    vkGetPhysicalDeviceProperties2(out->physical, &props2);
+    // 驱动属性是 1.2 核心 / VK_KHR_driver_properties：有效版本（应用申请 1.1 与设备取低）不到 1.2 时只在列了扩展才挂；
+    //   都没有 = 驱动身份未知（名字空、ID 0），按名字识别的特殊处理都不命中
+    if (s2a_vk_effective_api(out->properties.apiVersion) >= VK_API_VERSION_1_2 ||
+        has_device_extension(out->physical, "VK_KHR_driver_properties")) {
+        VkPhysicalDeviceProperties2 props2 = {0};
+        props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        props2.pNext = &driver;
+        vkGetPhysicalDeviceProperties2(out->physical, &props2);
+    }
     snprintf(out->driver_name, sizeof out->driver_name, "%.120s", driver.driverName);
     snprintf(out->driver_info, sizeof out->driver_info, "%.120s", driver.driverInfo);
     out->driver_id = (int)driver.driverID;

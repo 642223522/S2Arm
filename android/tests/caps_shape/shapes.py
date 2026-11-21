@@ -184,10 +184,12 @@ def compare(name, got_path):
     return 0
 
 
-# 版本门槛变体（dev_facts.c：timeline / 描述符索引「列了扩展或 ≥ 1.2」、A4B4G4R4 格式「列了扩展或 ≥ 1.3」、4444 特性位只在列了扩展时记、低于 1.1 整条扩展查询链不挂）：
+# 版本门槛变体（dev_facts.c：timeline / 描述符索引「列了扩展或 ≥ 1.2」、有效版本 = min(应用申请的 1.1, 设备)：不列扩展时 1.2 / 1.3 转正的都不用、4444 特性位只在列了扩展时记、低于 1.1 整条扩展查询链不挂）：
 #   由 adreno 档派生，去掉这三个已转正扩展再改设备版本；期望只由变体自己的版本号决定
 PROMOTED = ('VK_KHR_timeline_semaphore', 'VK_EXT_descriptor_indexing', 'VK_EXT_4444_formats')
-VARIANTS = {'v-api10': '1.0.0', 'v-api11-noext': '1.1.0', 'v-api12-noext': '1.2.0', 'v-api13-noext': '1.3.0'}
+VARIANTS = {'v-api10': '1.0.0', 'v-api11-noext': '1.1.0', 'v-api12-noext': '1.2.0', 'v-api13-noext': '1.3.0', 'v-khr-alias': '1.3.0'}
+# KHR 别名正控：只列 KHR 版的 index_type_uint8 / swapchain_maintenance1（同一个特性结构），照样挂、照样记，假驱动不判红
+KHR_ALIAS = {'VK_EXT_index_type_uint8': 'VK_KHR_index_type_uint8', 'VK_EXT_swapchain_maintenance1': 'VK_KHR_swapchain_maintenance1'}
 
 
 def variants(out):
@@ -196,7 +198,14 @@ def variants(out):
     for name, ver in VARIANTS.items():
         p = json.loads(json.dumps(base))
         p['api']['version'] = ver
-        for e in PROMOTED: p['vulkan']['extensions'].pop(e, None)
+        if name == 'v-khr-alias':
+            ex = p['vulkan']['extensions']
+            for e, k in KHR_ALIAS.items():
+                assert e in ex, '基准档没列 ' + e
+                ex[k] = ex.pop(e)
+            p['vulkan']['extensions'] = dict(sorted(ex.items()))
+        else:
+            for e in PROMOTED: p['vulkan']['extensions'].pop(e, None)
         p['factsDigest'] = lint.digest(p)
         open(os.path.join(out, name + '.json'), 'w', encoding='utf-8').write(lint.dumps_pretty(p))
 
@@ -205,8 +214,16 @@ def check_variant(name, got_path):
     got = json.load(open(got_path, encoding='utf-8'))
     minor = int(VARIANTS[name].split('.')[1])
     f, fm, pr = got['vulkan']['features'], got['vulkan']['formats'], got['vulkan']['properties']
-    want = {'timelineSemaphore 记了': minor >= 2, 'runtimeDescriptorArray 记了': minor >= 2,
-            'formatA4B4G4R4 记了': False, 'A4B4G4R4 格式查了': minor >= 3,   # 变体都不列 VK_EXT_4444_formats：特性位（没转正）不记，格式（1.3 转正）照查
+    if name == 'v-khr-alias':
+        bad = [k for k in ('indexTypeUint8', 'swapchainMaintenance1') if k not in f]
+        bad = ['只列 KHR 别名时没记 ' + k for k in bad] + ['生成的档案不合格：' + b for b in lint.check(got)]
+        if bad:
+            print('FAIL: [%s] KHR 别名正控：\n  %s' % (name, '\n  '.join(bad))); return 1
+        print('PASS: [%s] 只列 KHR 版 index_type_uint8 / swapchain_maintenance1：照样挂结构、记特性，假驱动放行' % name); return 0
+    # 直连实例只申请 1.1（S2A_VK_APP_API_VERSION）：有效版本 = min(1.1, 设备)。变体都不列这三个已转正扩展，
+    #   1.2 / 1.3 转正的东西（timeline、描述符索引、A4B4G4R4 格式）一概不能用，不论设备版本多高；4444 特性结构没转正，更不能挂
+    want = {'timelineSemaphore 记了': False, 'runtimeDescriptorArray 记了': False,
+            'formatA4B4G4R4 记了': False, 'A4B4G4R4 格式查了': False,
             'shaderDrawParameters 记了': minor >= 1, 'maxMemoryAllocationSize 记了': minor >= 1,
             '扩展特性只在 ≥ 1.1 记（swapchainMaintenance1）': minor >= 1}
     have = {'timelineSemaphore 记了': 'timelineSemaphore' in f, 'runtimeDescriptorArray 记了': 'runtimeDescriptorArray' in f,

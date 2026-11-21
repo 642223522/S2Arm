@@ -1,12 +1,12 @@
 {
  "api": {"kind":"vulkan","version":"1.1.0"},
  "completeness": "partial",
- "factsDigest": "sha256-69c64755de0c618eeb16712758073552540357c8bd78cf60838c2a76c5dfc928",
+ "factsDigest": "sha256-decc36ce8d88031d276bc872202ee1f7c75d69bc9ed50aa425252e796d4b7f39",
  "identity": {
   "deviceId": "0x00000000",
   "deviceName": "minimal Vulkan 1.1 shape",
-  "driverId": 0,
-  "driverName": "minimal-1.1",
+  "driverId": null,
+  "driverName": null,
   "driverVersion": 1,
   "pipelineCacheUUID": null,
   "vendorId": "0x0000"

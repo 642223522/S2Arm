@@ -52,8 +52,18 @@ VKAPI_ATTR VkResult VKAPI_CALL vkEnumerateInstanceLayerProperties(uint32_t *coun
 VKAPI_ATTR VkResult VKAPI_CALL vkEnumerateDeviceExtensionProperties(VkPhysicalDevice p, const char *layer, uint32_t *count, VkExtensionProperties *out) {
     (void)p; (void)layer; const struct cs_shape *s = cs_shape(); return fill_ext(s->ext, s->n_ext, count, out);
 }
+static uint32_t cs_app_api = VK_API_VERSION_1_0;   // 被测代码建实例时申请的版本（VkApplicationInfo.apiVersion）
+// 有效版本 = 应用申请的版本与设备版本取低：更高核心版本才有的入口，两者都够才合法（否则只能靠扩展提供）
+static uint32_t cs_eff_api(const struct cs_shape *s) { return s->props.apiVersion < cs_app_api ? s->props.apiVersion : cs_app_api; }
+static int cs_any_ext(const struct cs_shape *s, const char *a, const char *b) { return cs_has_ext(s, a) || (b && cs_has_ext(s, b)); }
+static void cs_reject(const struct cs_shape *s, const char *what) {
+    fprintf(stderr, "FAIL: %s 超出有效版本 / 扩展（应用 1.%u、设备 1.%u，没列能提供它的扩展）—— 规范不允许\n", what,
+            VK_API_VERSION_MINOR(cs_app_api), VK_API_VERSION_MINOR(s->props.apiVersion));
+    abort();
+}
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateInstance(const VkInstanceCreateInfo *ci, const VkAllocationCallbacks *a, VkInstance *out) {
     (void)a;
+    cs_app_api = ci->pApplicationInfo && ci->pApplicationInfo->apiVersion ? ci->pApplicationInfo->apiVersion : VK_API_VERSION_1_0;
     for (uint32_t i = 0; i < ci->enabledExtensionCount; i++) {
         int ok = 0;
         for (size_t k = 0; k < sizeof cs_instance_ext / sizeof *cs_instance_ext; k++) ok |= !strcmp(cs_instance_ext[k], ci->ppEnabledExtensionNames[i]);
@@ -81,30 +91,43 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceQueueFamilyProperties(VkPhysicalDe
     *count = k;
 }
 VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFormatProperties(VkPhysicalDevice p, VkFormat f, VkFormatProperties *out) {
+    if (f == VK_FORMAT_A4B4G4R4_UNORM_PACK16 && !cs_has_ext(cs_shape(), "VK_EXT_4444_formats") && cs_eff_api(cs_shape()) < VK_API_VERSION_1_3)
+        cs_reject(cs_shape(), "A4B4G4R4 格式查询（1.3 核心 / VK_EXT_4444_formats）");
     (void)p; *out = cs_format(cs_shape(), f);
     uint32_t i = 0;
     while (i < cs_queried_fmt_count && cs_queried_fmt[i] != f) i++;
     if (i == cs_queried_fmt_count && i < 256) cs_queried_fmt[cs_queried_fmt_count++] = f;
 }
 
-// 只属于扩展（没转正进核心）的特性结构 → 它的扩展名；转正过的（timeline / 描述符索引 / 绘制参数）不在这里
-static const char *ext_only_struct(int st) {
+// 特性结构准入：有效版本够（转正进核心的），或列了能提供它的扩展（EXT / KHR 同一结构）才能挂进链
+static const char *feature_struct_bad(int st, const struct cs_shape *s) {
+    const uint32_t eff = cs_eff_api(s);
     switch (st) {
-    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_4444_FORMATS_FEATURES_EXT: return "VK_EXT_4444_formats";   // 1.3 只转正了格式枚举，特性结构没转正
-    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_EXT: return "VK_EXT_index_type_uint8";
-    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_CONTROL_FEATURES_EXT: return "VK_EXT_depth_clip_control";
-    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT: return "VK_EXT_custom_border_color";
-    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT: return "VK_EXT_vertex_attribute_divisor";
-    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT: return "VK_EXT_swapchain_maintenance1";
+    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_4444_FORMATS_FEATURES_EXT:   // 1.3 只转正了格式枚举，特性结构没转正
+        return cs_has_ext(s, "VK_EXT_4444_formats") ? NULL : "4444 特性结构（VK_EXT_4444_formats）";
+    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_EXT:
+        return cs_any_ext(s, "VK_EXT_index_type_uint8", "VK_KHR_index_type_uint8") || eff >= VK_API_VERSION_1_4 ? NULL : "index_type_uint8 特性结构（VK_EXT/KHR_index_type_uint8）";
+    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_CONTROL_FEATURES_EXT:
+        return cs_has_ext(s, "VK_EXT_depth_clip_control") ? NULL : "depth_clip_control 特性结构（VK_EXT_depth_clip_control）";
+    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT:
+        return cs_has_ext(s, "VK_EXT_custom_border_color") ? NULL : "custom_border_color 特性结构（VK_EXT_custom_border_color）";
+    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT:
+        return cs_any_ext(s, "VK_EXT_vertex_attribute_divisor", "VK_KHR_vertex_attribute_divisor") || eff >= VK_API_VERSION_1_4 ? NULL : "vertex_attribute_divisor 特性结构（VK_EXT/KHR_vertex_attribute_divisor）";
+    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT:
+        return cs_any_ext(s, "VK_EXT_swapchain_maintenance1", "VK_KHR_swapchain_maintenance1") ? NULL : "swapchain_maintenance1 特性结构（VK_EXT/KHR_swapchain_maintenance1）";
+    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES:
+        return cs_has_ext(s, "VK_KHR_timeline_semaphore") || eff >= VK_API_VERSION_1_2 ? NULL : "timeline 特性结构（1.2 核心 / VK_KHR_timeline_semaphore）";
+    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES:
+        return cs_has_ext(s, "VK_EXT_descriptor_indexing") || eff >= VK_API_VERSION_1_2 ? NULL : "descriptor_indexing 特性结构（1.2 核心 / VK_EXT_descriptor_indexing）";
     default: return NULL;
     }
 }
-// 扩展特性结构：只有设备列出了扩展才答它的位。没列出扩展却挂了只属于该扩展的结构 = 规范不允许（真驱动多半忽略、位停在 0），直接判红，
-//   不像真平台那样安静地答 0 把错误读数放过去（#1879 复审：1.3 设备没列 VK_EXT_4444_formats 也挂了 4444 结构）
+// 扩展特性结构：只有设备列出了扩展才答它的位。越过有效版本 / 扩展挂进链 = 规范不允许（真驱动多半忽略、位停在 0），直接判红，
+//   不像真平台那样安静地答 0 把错误读数放过去（#1879 复审：4444 结构、index_uint8、应用 1.1 下按设备版本挂 1.2 结构）
 static void features_chain(void *next, int for_create, const struct cs_shape *s) {
     for (VkBaseOutStructure *b = next; b; b = b->pNext) {
-        const char *need = ext_only_struct((int)b->sType);
-        if (need && !cs_has_ext(s, need)) { fprintf(stderr, "FAIL: 设备没列 %s，却把它的特性结构挂进了%s链（规范不允许）\n", need, for_create ? "建设备" : "查询"); abort(); }
+        const char *bad = feature_struct_bad((int)b->sType, s);
+        if (bad) cs_reject(s, bad);
         int ok = 1; const char *what = NULL;
 #define BIT(field, have, name) do { if (for_create) { if ((field) && !(have)) { ok = 0; what = (name); } } else (field) = (have) ? VK_TRUE : VK_FALSE; } while (0)
         switch ((int)b->sType) {
@@ -153,6 +176,7 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceProperties2(VkPhysicalDevice p, Vk
     for (VkBaseOutStructure *b = out->pNext; b; b = b->pNext) {
         switch ((int)b->sType) {
         case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES: {
+            if (!cs_has_ext(s, "VK_KHR_driver_properties") && cs_eff_api(s) < VK_API_VERSION_1_2) cs_reject(s, "driver properties 属性结构（1.2 核心 / VK_KHR_driver_properties）");
             VkPhysicalDeviceDriverProperties *d = (void *)b;
             d->driverID = (VkDriverId)s->driver_id;
             snprintf(d->driverName, sizeof d->driverName, "%s", s->driver_name);

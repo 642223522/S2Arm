@@ -43,8 +43,9 @@ MINIMAL_FEATURES_ON = {
 MINIMAL_EXT_FEATURES = {'shaderDrawParameters': 1}   # Vulkan 1.1 核心特性；vk_device.c「required feature missing: shaderDrawParameters」
 MINIMAL_EXTENSIONS = {}                              # vk_device.c 建设备不要求任何设备扩展（交换链等都是有才开）
 MINIMAL_IDENTITY = {                                  # 合成档：身份字段只作标签，推导不读（§3.2-2）
-    'vendorId': '0x0000', 'deviceId': '0x00000000', 'driverId': 0, 'driverVersion': 1,
-    'driverName': 'minimal-1.1', 'deviceName': 'minimal Vulkan 1.1 shape', 'pipelineCacheUUID': None,
+    # 1.1、不列任何扩展：驱动属性（1.2 核心 / VK_KHR_driver_properties）查不了，驱动身份按「不知道」写 null
+    'vendorId': '0x0000', 'deviceId': '0x00000000', 'driverId': None, 'driverVersion': 1,
+    'driverName': None, 'deviceName': 'minimal Vulkan 1.1 shape', 'pipelineCacheUUID': None,
 }
 MINIMAL_API = '1.1.0'                                 # 后端的最低版本（vk_device.c「Vulkan loader below 1.1」）
 MINIMAL_PROPS = {
