@@ -139,7 +139,7 @@ static void features_chain(void *next, int for_create, const struct cs_shape *s)
             BIT(((VkPhysicalDeviceIndexTypeUint8FeaturesEXT *)b)->indexTypeUint8, s->indexTypeUint8 && cs_any_ext(s, "VK_EXT_index_type_uint8", "VK_KHR_index_type_uint8"), "indexTypeUint8"); break;
         case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_4444_FORMATS_FEATURES_EXT:
             BIT(((VkPhysicalDevice4444FormatsFeaturesEXT *)b)->formatA4B4G4R4, s->formatA4B4G4R4 && cs_has_ext(s, "VK_EXT_4444_formats"), "formatA4B4G4R4");
-            BIT(((VkPhysicalDevice4444FormatsFeaturesEXT *)b)->formatA4R4G4B4, 0, "formatA4R4G4B4"); break;
+            BIT(((VkPhysicalDevice4444FormatsFeaturesEXT *)b)->formatA4R4G4B4, s->formatA4R4G4B4 && cs_has_ext(s, "VK_EXT_4444_formats"), "formatA4R4G4B4"); break;
         case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_CONTROL_FEATURES_EXT:
             BIT(((VkPhysicalDeviceDepthClipControlFeaturesEXT *)b)->depthClipControl, s->depthClipControl && cs_has_ext(s, "VK_EXT_depth_clip_control"), "depthClipControl"); break;
         case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT: {
@@ -157,7 +157,7 @@ static void features_chain(void *next, int for_create, const struct cs_shape *s)
         case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT: {
             VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT *v = (void *)b; const int e = cs_any_ext(s, "VK_EXT_vertex_attribute_divisor", "VK_KHR_vertex_attribute_divisor");
             BIT(v->vertexAttributeInstanceRateDivisor, s->vertexAttributeInstanceRateDivisor && e, "vertexAttributeInstanceRateDivisor");
-            BIT(v->vertexAttributeInstanceRateZeroDivisor, 0, "vertexAttributeInstanceRateZeroDivisor"); break; }
+            BIT(v->vertexAttributeInstanceRateZeroDivisor, s->vertexAttributeInstanceRateZeroDivisor && e, "vertexAttributeInstanceRateZeroDivisor"); break; }
         case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT:
             // 档案里的位（真机档：device_caps.c 只在特性也开着时把扩展写进 enabledExtensions，转换时据此记 1）
             BIT(((VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT *)b)->swapchainMaintenance1, s->swapchainMaintenance1 && cs_any_ext(s, "VK_EXT_swapchain_maintenance1", "VK_KHR_swapchain_maintenance1"), "swapchainMaintenance1"); break;
@@ -187,8 +187,22 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceProperties2(VkPhysicalDevice p, Vk
         case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES:
             ((VkPhysicalDeviceSubgroupProperties *)b)->subgroupSize = s->subgroup_size;
             ((VkPhysicalDeviceSubgroupProperties *)b)->supportedStages = s->subgroup_stages;
-            ((VkPhysicalDeviceSubgroupProperties *)b)->supportedOperations = s->subgroup_ops; break;
-        default: break;   // 自定义边框色上限 / min-max 分量映射 / 实例除数上限 / 主机内存对齐 / placed 对齐：没有读数，保持调用方清零的 0（= 无）
+            ((VkPhysicalDeviceSubgroupProperties *)b)->supportedOperations = s->subgroup_ops;
+            ((VkPhysicalDeviceSubgroupProperties *)b)->quadOperationsInAllStages = s->subgroup_quad_all; break;
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_PROPERTIES_EXT:
+            if (!cs_has_ext(s, "VK_EXT_custom_border_color")) cs_reject(s, "自定义边框颜色属性缺扩展");
+            ((VkPhysicalDeviceCustomBorderColorPropertiesEXT *)b)->maxCustomBorderColorSamplers = s->border_max; break;
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_PROPERTIES_EXT:
+            if (!cs_has_ext(s, "VK_EXT_vertex_attribute_divisor")) cs_reject(s, "EXT 实例除数属性缺扩展");
+            ((VkPhysicalDeviceVertexAttributeDivisorPropertiesEXT *)b)->maxVertexAttribDivisor = s->divisor_max; break;
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_FILTER_MINMAX_PROPERTIES_EXT:
+            if (!cs_has_ext(s, "VK_EXT_sampler_filter_minmax")) cs_reject(s, "采样器 minmax 属性缺扩展");
+            ((VkPhysicalDeviceSamplerFilterMinmaxPropertiesEXT *)b)->filterMinmaxSingleComponentFormats = s->minmax_single;
+            ((VkPhysicalDeviceSamplerFilterMinmaxPropertiesEXT *)b)->filterMinmaxImageComponentMapping = s->minmax_mapping; break;
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT:
+            if (!cs_has_ext(s, "VK_EXT_external_memory_host")) cs_reject(s, "主机内存导入属性缺扩展");
+            ((VkPhysicalDeviceExternalMemoryHostPropertiesEXT *)b)->minImportedHostPointerAlignment = s->host_align; break;
+        default: break;   // 没有读数的结构（如 placed 对齐）保持调用方清零的 0。
         }
     }
 }
