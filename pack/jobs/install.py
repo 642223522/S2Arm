@@ -1319,10 +1319,12 @@ S2ARM_README_TEXT = {
 }
 
 
-# 文件夹里导出过通用 S2Arm.ipa（export_shell_ipa）时，说明最前面加这一句；没导出就不出现（11-17 维护者定稿原话）
+# 文件夹里导出过通用 S2Arm.ipa（export_shell_ipa）时，说明最前面加这一句；没导出就不出现（11-17 维护者定稿；11-21 维护者要求写清这个 IPA 的用途：给 LiveContainer / SideStore / AltStore 自签）
 S2ARM_README_IPA = {
-    "zh": "S2Arm.ipa：用你自己的签名工具（AltStore、SideStore 等）签好装到手机。只装一次，S2Arm 升级时再装一次。\n",  # 非玩家句（说明文件按界面语言直接写，英文见下一项）
-    "en": "S2Arm.ipa: sign it with your own tool (AltStore, SideStore, etc.) and install it on your iPhone. You only need to do this once, and again when S2Arm updates.\n",
+    "zh": "S2Arm.ipa：S2Arm App 本体（不带游戏、未签名），给自签工具用：在 LiveContainer 里直接导入它，或用 SideStore、AltStore 等签好装到手机。"
+          "只装一次，S2Arm 升级时再装一次（每次导出都会放上本版）。\n",  # 非玩家句（说明文件按界面语言直接写，英文见下一项）
+    "en": "S2Arm.ipa: the S2Arm app itself (no games, unsigned), for self-signing tools: import it directly in LiveContainer, or sign it with SideStore, AltStore, etc. "
+          "and install it on your iPhone. You only need to do this once, and again when S2Arm updates (every export puts the current version here).\n",
 }
 
 
@@ -4067,7 +4069,22 @@ def _install(c):
     c.begin("找签名账号与 iPhone", 1, 6)
     if chosen_layout(c, gid) == "standalone":   # 独立 App（一 App 一游戏）：这款自己签一个 App 装上
         return put_app(c, gid, phone_for(c))
-    return push_game(c, gid, push_phone(c))   # 「推到 iPhone」只推这一款，不装壳；别的工具装的 S2Arm 推进它自己的包名（结构 4）
+    out = push_game(c, gid, push_phone(c))   # 「推到 iPhone」只推这一款，不装壳；别的工具装的 S2Arm 推进它自己的包名（结构 4）
+    return dict(out, **shell_ipa_beside(c))
+
+
+def shell_ipa_beside(c):
+    """「导出…」勾了设备（通用 S2Arm，推完这一款）也在「S2Arm 游戏包」文件夹里备好本版 S2Arm.ipa + 说明：不论勾不勾设备，导出过就有一份
+    能拿去 LiveContainer / SideStore / AltStore 自签的本版 App（11-21 维护者定；独立 App 出法那款 App 自己就是壳，不走这里）。
+    放在推完之后：不拖慢推到手机；本版已有就不重组（ensure_shell_ipa）。组不出来不把已推好的这一款判成失败，原因放进结果 shellIpaError、写日志。
+    → {shellIpa: 路径} | {shellIpaError: 原因}"""
+    try:
+        ipa = ensure_shell_ipa(c)
+        write_s2arm_readme(ipa.parent, ui_lang(c))
+        return dict(shellIpa=str(ipa))
+    except (Failure, OSError) as e:
+        print(f"[s2a] 推完了，但「S2Arm 游戏包」里的 S2Arm.ipa 没备好：{type(e).__name__} {e}", file=sys.stderr, flush=True)  # 非玩家句
+        return dict(shellIpaError=str(e))
 
 
 def restore_previous(c):

@@ -39,6 +39,11 @@ static int snap_sw(void) {
 static int g_snap_off;
 void s2a_snap_disable(int why) { snap_sw(); g_snap_sw &= ~1; g_snap_off = why; atomic_store(&g_snap_live, 0); }
 int s2a_snap_off_reason(void) { return g_snap_off; }
+// 构造期因 why 关掉的快照，选定游戏后又放得下（vawin.c s2a_window_snap_late，11-21）：玩家本来开着快照才重新打开，清原因码，「记日志」按新状态重算。回 1 = 重新打开了
+int s2a_snap_reenable(int why) {
+    if (!why || g_snap_off != why || !snap_save_on(getenv("S2A_SNAP_MODE"))) return 0;
+    snap_sw(); g_snap_sw |= 1; g_snap_off = 0; atomic_store(&g_snap_live, -1); return 1;
+}
 const char *s2a_snap_source(void) { snap_sw(); return g_snap_src; }
 int s2a_snap_saving(void) { return snap_sw() & 1; }
 // 恢复中：每次现读 S2A_SNAP_RESTORE。进程内「回到这一刻」在宿主重启前才设它、恢复完 unsetenv，开局缓存的那一位跟不上——
