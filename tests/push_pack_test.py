@@ -1225,6 +1225,14 @@ class GameImgZstd(Base):
         push.zstd_plan(self.pk, ["game.img", row[1], "0" * 64], say=self.log.append, comp=comp)
         self.assertEqual(len(calls), 4)
 
+    def test_measure_reports_progress_by_bytes(self):   # #1942：测压缩率块内按读进的字节报进度，不只在每块开头报一次
+        row = ["game.img", str(len(self.local)), sha(self.local)]; seen = []
+        m = mock.patch.object(push, "ZREAD", 4096); m.start(); self.addCleanup(m.stop)
+        push.zstd_plan(self.pk, row, say=self.log.append, stage=lambda name, done, total: seen.append((name, done, total)))
+        total = len(self.local)   # 期望手算：两块 65536 + 100 字节，按 4096 一段读：第 0 块开头 0、16 段各报 4096 的倍数；第 1 块开头 65536、读完报 65636
+        want = [0] + [4096 * i for i in range(1, 17)] + [65536, 65636]
+        self.assertEqual(seen, [(push.STAGE_ZSTD, d, total) for d in want])
+
     def test_stream_frames_decode_and_reads_bounded(self):   # D-DVFJ：每块仍一个 zstd 帧、解开即原样；按 ZREAD 分段读，不整块读进内存；写出的字节数 = 返回值
         try: from compression.zstd import decompress
         except ImportError: from zstandard import decompress
