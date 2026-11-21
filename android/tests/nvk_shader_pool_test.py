@@ -291,8 +291,8 @@ def main():
              '(void)ae->fact_mask;', 1, 'reuses the program (no live compile'),
             # 预热线程建的那份也要算事实掩码：撤掉后，合并命中它的前台身份登记不上事实复用（真机现编 3 → 198 次的另一半）
             # 事实复用（#1187）：身份不同、编译器读到的事实相同 → 复用同一程序，不再编
-            ('fact-reuse-disabled', 'if (reusable && (*out = fact_cache_find(&id, fact_base)))',
-             'if (0 && reusable && (*out = fact_cache_find(&id, fact_base)))', 1, 'unqueried combined texture reuses compiled program'),
+            ('fact-reuse-disabled', 'if (reusable && (*out = fact_cache_find(&id, fact_base))',
+             'if (0 && reusable && (*out = fact_cache_find(&id, fact_base))', 1, 'unqueried combined texture reuses compiled program'),
             # 高槽（c2 字 72–86）事实、签名与图像优先：撤掉任一处，对应断言必须变红
             ('high-facts-withdraw', 'for (int slot = 0; slot < 8; slot++) {\n            long id = handles[slot]',
              'for (int slot = 0; slot < 0; slot++) {\n            long id = handles[slot]', 1, 'high-slot texture fact'),

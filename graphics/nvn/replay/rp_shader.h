@@ -34,6 +34,8 @@ struct rp_prog {
     uint8_t is_compute;                                       // 计算程序：只有 sh[0] / ent[0]，绑定取 NVN 阶段 5 的状态
     uint8_t binst_unread;                                     // 位 i = 阶段 i 已证不读 c0 + 0x644（编译器 c0Reads）：间接绘制不用把 GPU 侧的 base instance 拷进它的驱动段。0 = 读或未知（照旧拷）
     uint8_t z_raw;                                            // 顶点出口 z 原样（不随深度模式改写，出包预编库的程序）：near = -w 时管线设裁剪深度 [-1, 1]
+    uint8_t lib_sourced;                                      // 来自出包预编库（libpack）。绑定核对发现声明与实际绑定不符时，rp_shader_lib_reject 据此走现编回退
+    uint8_t lib_bad;                                          // 这份程序身份已按绑定核对拒收：解析路径（含事实复用 / 结果合并）绕过它，下次取现编版
     struct rp_usrc usrc[RP_PROG_USRC_MAX]; uint32_t nusrc;    // NVN_RB_TEXU / TBUFU 项的句柄来源（布局项 src_reg2 指向这里）
     // 内容身份：S2AI1 v3 规范输入的 SHA-256，也就是来源缓存（g_progs）的键。管线配方与跨会话预热清单
     // 用它跨会话定位「同一份程序」；全 0 = 没有身份（失败项 / 还没算出来），这种程序不进任何清单。
@@ -67,6 +69,10 @@ int rp_shader_prog_by_identity(const uint8_t identity[32], const struct rp_prog 
 int rp_shader_prog_borrow(const uint8_t identity[32], const struct rp_prog **out);
 void rp_shader_prog_return(const uint8_t identity[32]);
 int  rp_shader_prog_borrowed(void);   // 当前未归还的借用数（静默 / 收尾判据）
+// 绑定核对（声明 vs 实际绑定）在绘制 / 派发时失败：这份程序若是出库版（lib_sourced），把它的身份标记
+// 为「不再取出包库、不再按已发布项 / 别名命中」——调用方再调一次 resolve 即得现编版（同一笔换程序重新绑定）。
+//   1 = 已标记，值得重取；0 = 不是出库版（没有可退的替代，照旧具名跳过）。线程：[提交]。
+int rp_shader_lib_reject(const struct rp_prog *p);
 void rp_shader_reset(void);     // 会话收尾：放掉全部着色器
 // 游戏常量缓冲里的贴图句柄指向没登记的号、按默认描述符给了编译事实的次数（信息计数，不是未接；会话收尾清零）。#1594 片 4
 uint64_t rp_shader_ubo_default_fact_count(void);

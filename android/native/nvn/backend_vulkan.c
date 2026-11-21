@@ -3272,6 +3272,15 @@ static nvn_gpu_rc compute_workgroup_check(const nvn_gpu_shader_src *s, nvn_gpu_e
                         local[0], local[1], local[2], limits->maxComputeWorkGroupInvocations, entry);
         threads *= local[k];
     }
+    // Workgroup 共享字节是最后一道保险：出库闸在 libpack_compute_v1 已核，本处同时盖住现编产物与绕过出库闸的路径。
+    uint64_t shared = 0;
+    const char *swhy = s2a_spv_workgroup_bytes(s->blob, s->bytes, &shared);
+    if (swhy) return fail(err, NVN_GPU_E_UNSUPPORTED, "%s (entry=%s)", swhy, entry);
+    if (shared > limits->maxComputeSharedMemorySize)
+        return fail(err, NVN_GPU_E_UNSUPPORTED,
+                    "compute workgroup: shared=%llu exceeds maxComputeSharedMemorySize=%u (entry=%s key=%02x%02x%02x%02x%02x%02x%02x%02x)",
+                    (unsigned long long)shared, limits->maxComputeSharedMemorySize, entry,
+                    s->key[0], s->key[1], s->key[2], s->key[3], s->key[4], s->key[5], s->key[6], s->key[7]);
     return rc(NVN_GPU_OK);
 }
 
