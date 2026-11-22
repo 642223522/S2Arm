@@ -15706,12 +15706,19 @@ static void dsnap_stale(void) { g_dsnap.valid = 0; }
 enum { DSNAP_SLOTS = 4 };
 static struct { __strong id<MTLTexture> t; uint64_t used; } g_dsnap_slot[DSNAP_SLOTS];
 static uint64_t g_dsnap_tick, g_dsnap_new;   // g_dsnap_new: 新建过几张快照存储（单测看它）
-static id<MTLTexture> dsnap_storage(MTLPixelFormat pf, NSUInteger bw, NSUInteger bh, NSUInteger tl, NSUInteger nl) {
-    NSUInteger w = mip_extent(bw, tl), h = mip_extent(bh, tl); int lru = 0;
+// A depth view sampled in its own pass can be snapshotted when it is a whole 2D or 2D multisample texture (not a view of another texture); pure, t_nvn_dsnap_slots
+static int dsnap_copyable(MTLTextureType tt, NSUInteger samples, int has_parent) {
+    if (has_parent) return 0;
+    return (tt == MTLTextureType2D && samples == 1) || (tt == MTLTextureType2DMultisample && samples > 1);
+}
+// samples > 1: a 2D multisample depth (one level), copied whole sample for sample (D-ATHR, a billiards game on the Mac: a 4x multisample depth sampled in its own pass was read in place)
+static id<MTLTexture> dsnap_storage(MTLPixelFormat pf, NSUInteger bw, NSUInteger bh, NSUInteger tl, NSUInteger nl, NSUInteger samples) {
+    NSUInteger w = mip_extent(bw, tl), h = mip_extent(bh, tl); int lru = 0; if (!samples) samples = 1;
     for (int i = 0; i < DSNAP_SLOTS; i++) { id<MTLTexture> t = g_dsnap_slot[i].t;
-        if (t && t.pixelFormat == pf && t.width == w && t.height == h && t.mipmapLevelCount == nl) { g_dsnap_slot[i].used = ++g_dsnap_tick; return t; }
+        if (t && t.pixelFormat == pf && t.width == w && t.height == h && t.mipmapLevelCount == nl && t.sampleCount == samples) { g_dsnap_slot[i].used = ++g_dsnap_tick; return t; }
         if (g_dsnap_slot[i].used < g_dsnap_slot[lru].used) lru = i; }
     MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:pf width:w height:h mipmapped:NO];
+    if (samples > 1) { d.textureType = MTLTextureType2DMultisample; d.sampleCount = samples; nl = 1; }
     d.mipmapLevelCount = nl; d.usage = MTLTextureUsageShaderRead | MTLTextureUsagePixelFormatView; d.storageMode = MTLStorageModePrivate;
     id<MTLTexture> n = [g_dev newTextureWithDescriptor:d]; if (!n) return nil; res_add(n); g_dsnap_new++;
     if (g_dsnap_slot[lru].t) defer_obj_release(g_dsnap_slot[lru].t);
@@ -15801,13 +15808,14 @@ static void fb_prepare(NvProg *pr) {
             int dup = 0; for (int q = 0; q < g_fb_n; q++) dup |= g_fb_src[q] == t;
             if (!t || dup) continue;
             id<MTLTexture> base = t.parentTexture ? t.parentTexture : t; NSUInteger tl = t.parentTexture ? t.parentRelativeLevel : 0, ts = t.parentTexture ? t.parentRelativeSlice : 0;
-            if (t.textureType != MTLTextureType2D || t.sampleCount != 1 || base.parentTexture) { RED_ONCE(179, "same-pass depth sampling: the sampled view cannot be copied whole (type %lu samples %lu, shader %s); left as is", (unsigned long)t.textureType, (unsigned long)t.sampleCount, fs->key); continue; }
+            if (!dsnap_copyable(t.textureType, t.sampleCount, base.parentTexture != nil)) { RED_ONCE(179, "same-pass depth sampling: the sampled view cannot be copied whole (type %lu samples %lu, shader %s); left as is", (unsigned long)t.textureType, (unsigned long)t.sampleCount, fs->key); continue; }
+            int ms = t.textureType == MTLTextureType2DMultisample;
             NSUInteger nl = t.mipmapLevelCount;
             if (g_dsnap.valid && g_dsnap.ser == ser && g_dsnap.src == t && g_dsnap.use) {   // the same view of an unchanged depth: read the copy made for an earlier draw, the pass stays open
                 if (g_fb_use[g_fb_n] && g_fb_use[g_fb_n] != g_dsnap.use) defer_obj_unref(g_fb_use[g_fb_n]);
                 g_fb_src[g_fb_n] = t; g_fb_use[g_fb_n] = g_dsnap.use; g_fb_rid[g_fb_n] = g_dsnap.use.gpuResourceID._impl; g_fb_n++; g_fb_hits++; g_fb_depth_reuse++;
                 continue; }
-            id<MTLTexture> snap = dsnap_storage(base.pixelFormat, base.width, base.height, tl, nl); if (!snap) continue;
+            id<MTLTexture> snap = dsnap_storage(base.pixelFormat, base.width, base.height, tl, nl, ms ? t.sampleCount : 1); if (!snap) continue;
             // a clear still waiting (the depth clear folded into the next pass's load action, or lazy clears) has not reached the texture: land it first, or the copy holds the depth
             //   from before the clear, and later draws reuse it (audit P2-247; the colour branch below does the same)
             if (!settled) { int pend = g_nlc || R.clear_d || R.clear_s; for (int c = 0; c < 8; c++) pend |= R.clear_c[c];
@@ -15817,7 +15825,7 @@ static void fb_prepare(NvProg *pr) {
             for (NSUInteger l = 0; l < nl; l++) { NSUInteger w = mip_extent(base.width, tl + l), h = mip_extent(base.height, tl + l);
                 enc_b_copy_texture(e, base, ts, tl + l, MTLOriginMake(0, 0, 0), MTLSizeMake(w, h, 1), snap, 0, l, MTLOriginMake(0, 0, 0));   // the view's own layer (audit P2-247: was layer 0)
                 g_fb_bytes += (uint64_t)w * h * (uint64_t)MAX(mtl_pf_bytes(base.pixelFormat), 1u); }
-            id<MTLTexture> use = fb_narrow_view(snap, t, MTLTextureType2D, 0, nl, 0, 1);
+            id<MTLTexture> use = fb_narrow_view(snap, t, ms ? MTLTextureType2DMultisample : MTLTextureType2D, 0, nl, 0, 1);
             if (!use) { RED_ONCE(180, "same-pass depth sampling: cannot create the snapshot view (format %lu); left as is", (unsigned long)t.pixelFormat); continue; }
             if (g_fb_use[g_fb_n] && g_fb_use[g_fb_n] != use) defer_obj_unref(g_fb_use[g_fb_n]);
             g_fb_src[g_fb_n] = t; g_fb_use[g_fb_n] = use; g_fb_rid[g_fb_n] = use.gpuResourceID._impl; g_fb_n++; g_fb_hits++; g_fb_count++; g_fb_depth++;
