@@ -672,15 +672,16 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
     //   按累计字节切批（缺省 256 MB，S2A_C1CB_CHUNK_MB，0 = 每支一批），一批跑完删目录，临时盘峰值 = 一批。原缺省 4 GB 对玩家等于不切：怪猎崛起后台遍
     //   整份 2.08 GB 一次落盘、正叠在编批库的盘峰值上（v0.2.4 出包空间）；后台遍与编批库并发，多起几次子进程不进墙钟
     //   进度（11-20 010015100B514000：后台遍比编批库 / 两类变体晚完 85 秒，「等两张表」期间进度不动）：给了 tick = 阶段名，子进程每算完一支按全遍累计计一次
-    static Dictionary<string, (string C1, string Row)> C1CbChild(IReadOnlyList<string> names, string tag, Dictionary<string, string> sigs, string tick = null)
+    //   tickBase / tickTotal：同一段进度里此前已计的支数与全段支数（后台遍先查缓存仓、命中的已计，子进程只算没命中的，接着计到全遍支数）
+    static Dictionary<string, (string C1, string Row)> C1CbChild(IReadOnlyList<string> names, string tag, Dictionary<string, string> sigs, string tick = null, int tickBase = 0, int tickTotal = -1)
     {
         var res = new Dictionary<string, (string C1, string Row)>(StringComparer.Ordinal);
         long limit = long.TryParse(Environment.GetEnvironmentVariable("S2A_C1CB_CHUNK_MB"), out var mb) && mb >= 0 ? mb * 1000000 : 256000000L;
         var cur = new List<string>(); long bytes = 0; int part = 0;
-        int done = 0; using var tk = tick == null ? null : new Ticker(tick, names.Count, 0, activity: false);
-        void Flush() { if (cur.Count == 0) return; foreach (var kv in C1CbChunk(cur, tag + part++, sigs, tick == null ? null : new[] { tick, done.ToString(), names.Count.ToString() })) res[kv.Key] = kv.Value; done += cur.Count; cur = new List<string>(); bytes = 0; }
+        int total = tickTotal < 0 ? names.Count : tickTotal, done = tickBase; using var tk = tick == null ? null : new Ticker(tick, total, done, activity: false);
+        void Flush() { if (cur.Count == 0) return; foreach (var kv in C1CbChunk(cur, tag + part++, sigs, tick == null ? null : new[] { tick, done.ToString(), total.ToString() })) res[kv.Key] = kv.Value; done += cur.Count; cur = new List<string>(); bytes = 0; }
         foreach (var n in names) { var m = MAC.Get(n); if (m == null) continue; if (cur.Count > 0 && bytes + m.Length > limit) Flush(); cur.Add(n); bytes += m.Length; }
-        Flush(); tk?.Step(names.Count);   // 收满（没有 Mac 侧产物的那几支不进子进程）
+        Flush(); tk?.Step(total);   // 收满（没有 Mac 侧产物的那几支不进子进程）
         return res;
     }
     static Dictionary<string, (string C1, string Row)> C1CbChunk(IReadOnlyList<string> names, string tag, Dictionary<string, string> sigs, string[] tick)
@@ -728,24 +729,27 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
     internal static string C1CbFpPublic() => C1CbFp();
     static string C1CbKey(string name, string sig) => "c1cb/" + C1CbFp() + "/" + name + "/" + sig;   // 键名也进键：SigOf 不含它，行里带它、算法按名字后缀分支
     static byte[] Bytes(string s) => s == null ? null : Encoding.UTF8.GetBytes(s);
+    const string C1CbTick = "直连库·两张表";
     static void C1CbFill()
     {
         double t0 = Clock.Elapsed.TotalSeconds;
         var names = C1CbNames(); var sigs = new Dictionary<string, string>(StringComparer.Ordinal);
         var r = new Dictionary<string, (string C1, string Row)>(StringComparer.Ordinal); var todo = new List<string>();
+        // 查缓存仓也计进「直连库·两张表」（11-22 0400486024DEC000 热仓：41984 支全命中，查仓 225 秒，原先这段进度不动）
+        using (var tk = new Ticker(C1CbTick, names.Count, 0, activity: false))
         foreach (var n in names)
         {
             var m = MAC.Get(n); if (m == null) continue;
             var sig = sigs[n] = C1Cb.SigOf(n, m, MAC.Get(C1CbJson(n)));
             var e = Cas != null ? Store.Get(C1CbKey(n, sig)) : null;
-            if (e != null && e.ContainsKey("ok")) r[n] = (e.TryGetValue("c1", out var c1) ? Encoding.UTF8.GetString(c1) : null, e.TryGetValue("row", out var row) ? Encoding.UTF8.GetString(row) : null);
+            if (e != null && e.ContainsKey("ok")) { r[n] = (e.TryGetValue("c1", out var c1) ? Encoding.UTF8.GetString(c1) : null, e.TryGetValue("row", out var row) ? Encoding.UTF8.GetString(row) : null); tk.Step(); }
             else todo.Add(n);
         }
         Count("c1cb cached", r.Count);
         // 后台遍只是预算，失败不算整次失败（同 Python 打黄字、收尾全算）：快照置空，收尾遍按最终产物重算（合入线 11-02 对照 #4）
         try
         {
-            var got = C1CbChild(todo, "bg", null, "直连库·两张表");
+            var got = C1CbChild(todo, "bg", null, C1CbTick, tickBase: r.Count, tickTotal: names.Count);
             foreach (var (n, v) in got)
             {
                 r[n] = v;

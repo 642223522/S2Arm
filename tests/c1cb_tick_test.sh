@@ -27,5 +27,8 @@ ck "不写活动记录（旁路工作不改界面路数）" 0 "$(grep -c '^#dsh_
 ck "不带 --tick：退出 0" 0 "$r"
 ck "反证：不带 --tick 不写进度" 0 "$(wc -c < "$T/p0" | tr -d ' ')"
 ck "结果三行、带不带 --tick 逐字节相同" "3 1" "$(grep -c '_b.metal	' <<< "$o1") $([ "$o1" = "$o0" ] && echo 1 || echo 0)"
-ck "Build.C1CbFill 后台遍按「直连库·两张表」接力计数" 1 "$(grep -c 'C1CbChild(names, "bg", sigs, "直连库·两张表")' "$H/graphics/tools/direct/dsh/batch/Build.cs")"
+B=$H/graphics/tools/direct/dsh/batch/Build.cs
+ck "Build.C1CbFill 查缓存仓按「直连库·两张表」逐支计（热仓全命中时这段也走）" 1 "$(grep -c 'new Ticker(C1CbTick, names.Count, 0, activity: false)' "$B")"
+ck "Build.C1CbFill 后台遍子进程从命中数接着计到全遍支数" 1 "$(grep -c 'C1CbChild(todo, "bg", null, C1CbTick, tickBase: r.Count, tickTotal: names.Count)' "$B")"
+ck "阶段名仍是「直连库·两张表」" 1 "$(grep -c 'const string C1CbTick = "直连库·两张表";' "$B")"
 [ $bad = 0 ] && echo "c1cb_tick：全过" || echo "c1cb_tick：有失败"; exit $bad

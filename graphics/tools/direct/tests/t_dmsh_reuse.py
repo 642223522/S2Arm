@@ -253,11 +253,18 @@ def c1row(o):
     m = re.search(r'两张表后台遍：(\d+) 支（缓存仓里有 (\d+) 支，算了 (\d+) 支）', o); return tuple(map(int, m.groups())) if m else None
 def tables(): return {tb: body(P, tb) for tb in ('c1_full.tsv', 'cb_extent.tsv')}
 rc1, o1, _, _, _, _ = build('c1a', 'cas_c1'); t1 = tables(); r1 = c1row(o1)
-rc2, o2, _, _, _, _ = build('c1b', 'cas_c1'); t2 = tables(); r2 = c1row(o2)
+pg2 = os.path.join(t, 'c1b_progress.tsv'); rc2, o2, _, _, _, _ = build('c1b', 'cas_c1', progress=pg2); t2 = tables(); r2 = c1row(o2)
 rc3, o3, _, _, _, _ = build('c1c', 'cas_c1_fresh'); r3 = c1row(o3)
 n_ = r1[0] if r1 else -1
 check(rc1 == rc2 == rc3 == 0 and n_ > 0 and r1 == (n_, 0, n_) and r2 == (n_, n_, 0) and r3 == (n_, 0, n_) and t1 == t2,
       f'⑭ 两张表进缓存仓：第一次 {r1}、同仓第二次 {r2}、空仓 {r3}（期望 (N, 0, N) / (N, N, 0) / (N, 0, N)），两次表相同 {t1 == t2}')
+#    热仓那次查缓存仓也计进「直连库·两张表」（11-22 0400486024DEC000 热仓查仓 225 秒进度不动）：首行 0/N、末行 N/N。反证：修前子进程只拿到 0 支，这一段一行不写
+def c1tick(f):
+    try: rows = [l.rstrip('\n').split('\t')[1:] for l in open(f, encoding='utf-8') if not l.startswith('#')]
+    except OSError: return None
+    rows = [(int(d), int(n)) for st, d, n in rows if st == '直连库·两张表']; return (rows[0], rows[-1]) if rows else None
+k2 = c1tick(pg2)
+check(k2 == ((0, n_), (n_, n_)), f'⑭ 热仓查缓存仓计进度：「直连库·两张表」首末行 {k2}（期望 ((0, {n_}), ({n_}, {n_}))）')
 # ⑮ 两张表缓存键里的算法指纹只看 C1Cb.cs 源码（嵌入资源 sha256 前 16 位）：期望值在这里直接按文件算，不经被测实现。
 #    11-22 热仓实测：原先取 IL 字节，Build.cs 加几行指纹就变、41984 支命中 0
 import hashlib
