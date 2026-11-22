@@ -258,6 +258,13 @@ rc3, o3, _, _, _, _ = build('c1c', 'cas_c1_fresh'); r3 = c1row(o3)
 n_ = r1[0] if r1 else -1
 check(rc1 == rc2 == rc3 == 0 and n_ > 0 and r1 == (n_, 0, n_) and r2 == (n_, n_, 0) and r3 == (n_, 0, n_) and t1 == t2,
       f'⑭ 两张表进缓存仓：第一次 {r1}、同仓第二次 {r2}、空仓 {r3}（期望 (N, 0, N) / (N, N, 0) / (N, 0, N)），两次表相同 {t1 == t2}')
+# ⑮ 两张表缓存键里的算法指纹只看 C1Cb.cs 源码（嵌入资源 sha256 前 16 位）：期望值在这里直接按文件算，不经被测实现。
+#    11-22 热仓实测：原先取 IL 字节，Build.cs 加几行指纹就变、41984 支命中 0
+import hashlib
+src = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'dsh', 'batch', 'C1Cb.cs')
+want_fp = hashlib.sha256(open(src, 'rb').read()).hexdigest()[:16]
+p_ = subprocess.run(CMD + ['--c1cb-fp'], capture_output=True, text=True); got_fp = p_.stdout.strip()
+check(p_.returncode == 0 and got_fp == want_fp, f'⑮ 两张表算法指纹 = C1Cb.cs 源码 sha256：期望 {want_fp} → 真结果 {got_fp or p_.stderr.strip()[:200]}')
 
 shutil.rmtree(t, ignore_errors=True)
 print(f't_dmsh_reuse：{"全符" if not fails else f"{len(fails)} 例不符"}')

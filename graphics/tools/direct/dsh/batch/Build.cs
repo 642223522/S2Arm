@@ -716,19 +716,16 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
     // 两张表逐支的结果进缓存仓（11-22「更新这款」：41984 支的后台遍 903 秒，是更新里最长的一步；翻译器一改只动 70 支，其余每次照算）：
     //   一支的两行只由它的键名、MSL 与反射（C1Cb.SigOf）和 C1Cb 的算法决定，键 = c1cb/<算法指纹>/<键名>/<签名>。算法指纹取 C1Cb 及其嵌套类型全部方法体的 IL：
     //   改了两张表的算法才变（整份重算），出包编排等别处代码改了不变；链号 / 翻译器指纹都不覆盖 batch/*.cs，不能拿它们当版本
+    // 两张表的算法指纹：C1Cb.cs 源码（编进程序的嵌入资源 c1cb.source）的 sha256。11-22 前取 C1Cb 各方法的 IL 字节，IL 里的元数据编号随整个程序集变，
+    //   别的文件加几行（发版换新工具同理）指纹就变、缓存仓全不命中（热仓实测 41984 支命中 0）。两张表只由 C1Cb.cs 自己的代码算（外部只用到异常类型与进度条）
     static string _c1cbFp;
     static string C1CbFp()
     {
         if (_c1cbFp != null) return _c1cbFp;
-        using var h = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        const System.Reflection.BindingFlags all = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static |
-                                                   System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.DeclaredOnly;
-        var types = new List<Type> { typeof(C1Cb) }; for (int i = 0; i < types.Count; i++) types.AddRange(types[i].GetNestedTypes(all));
-        foreach (var t in types.OrderBy(t => t.FullName, StringComparer.Ordinal))
-            foreach (var m in t.GetMethods(all).Cast<System.Reflection.MethodBase>().Concat(t.GetConstructors(all)).OrderBy(m => m.ToString(), StringComparer.Ordinal))
-            { h.AppendData(Encoding.UTF8.GetBytes(t.FullName + "::" + m + "\n")); var il = m.GetMethodBody()?.GetILAsByteArray(); if (il != null) h.AppendData(il); }
-        return _c1cbFp = Convert.ToHexString(h.GetHashAndReset()).ToLowerInvariant()[..16];
+        using var s = typeof(Build).Assembly.GetManifestResourceStream("c1cb.source") ?? throw new InvalidDataException("dsh_batch: embedded resource c1cb.source missing (dsh_batch.csproj)");
+        return _c1cbFp = Convert.ToHexString(SHA256.HashData(s)).ToLowerInvariant()[..16];
     }
+    internal static string C1CbFpPublic() => C1CbFp();
     static string C1CbKey(string name, string sig) => "c1cb/" + C1CbFp() + "/" + name + "/" + sig;   // 键名也进键：SigOf 不含它，行里带它、算法按名字后缀分支
     static byte[] Bytes(string s) => s == null ? null : Encoding.UTF8.GetBytes(s);
     static void C1CbFill()
