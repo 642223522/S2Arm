@@ -13,6 +13,7 @@
 #include "native.h"
 #if defined(__APPLE__) && TARGET_OS_OSX
 #include <crt_externs.h>
+#include <dlfcn.h>
 #include <limits.h>
 #include <mach-o/dyld.h>
 #include <spawn.h>
@@ -26,6 +27,7 @@ int s2a_snap_relaunch(const char *dir, int rollback) {
     const char *at = getenv("S2A_SNAP_AT"), *rat = getenv("S2A_SNAP_RESTART_AT");
     char *sat = at ? strdup(at) : NULL, *srat = rat ? strdup(rat) : NULL;
     unsetenv("S2A_SNAP_AT"); unsetenv("S2A_SNAP_RESTART_AT");
+    { void (*keep)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "s2a_mac_slot_keep_across_exec"); if (keep) keep(); }   // 我方机器的 Mac 局槽按 pid 记，新映像不重排（mac_slot_hold.c）
     LOG("即时存档恢复：这一局的落点接不上快照，原地重新起这一局（同一进程、构造期按快照清单原址占窗口）：%s", dir);
     s2a_logcon_flush();
     posix_spawnattr_t a; posix_spawn_file_actions_t fa; int rc;
