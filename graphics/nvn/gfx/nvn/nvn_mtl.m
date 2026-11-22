@@ -2729,6 +2729,13 @@ void mtl_sub_fill(uint64_t dst, uint64_t n, uint32_t value) {
 }
 
 static void post(post_op o) {
+    // 计数器 / 时间戳报告写回的地址换不成 CPU 地址（游戏给的 GPU 地址不在任何池里，hle_nvn.c nvn_ga2ca 原样交过来）：宿主上没映射，完成回调写它必崩
+    //   （D-BSX8：0.6.3 iPad 一款每局开局 2 秒崩在这里写 0xc01d4afff0）。写不了就不写：这个地址游戏自己也读不到，报红计数
+    if ((o.kind == 2 || o.kind == 3) && nvn_ga_unmapped(o.addr)) {
+        if (o.kind == 3 && o.vis) { vis_list *l = o.vis; for (int k = 0; k < l->n; k++) CFRelease(l->s[k].buf); free(l); }
+        static _Atomic uint64_t n; uint64_t k = atomic_fetch_add(&n, 1) + 1;
+        if (k <= 4 || !(k & (k - 1))) MLOG("【红】 counter report to GPU address %#llx that maps to no pool (type %u): not written (the address has no host mapping), %llu so far", (unsigned long long)o.addr, o.type, (unsigned long long)k);
+        return; }
     if (g_npost == g_postcap) { size_t c = g_postcap ? g_postcap * 2 : 64; if (!GROW(g_post, c * sizeof *g_post, "completion write list")) return; g_postcap = c; }   // dropped: this event / report is not written
     g_post[g_npost++] = o;
 }

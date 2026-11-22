@@ -354,9 +354,19 @@ uint64_t nvn_ga2ca(uint64_t a) {
     while (lo <= hi) { int m = (lo + hi) / 2; if (g_gva[m].g <= a) lo = m + 1; else hi = m - 1; }   // hi = 最后一个起点 ≤ a 的段
     if (hi >= 0 && a - g_gva[hi].g <= g_gva[hi].n && g_gva[hi].c) r = g_gva[hi].c + (a - g_gva[hi].g);   // c = 0：虚拟池没拿到预留段   // 段尾（a = 起点 + 字节数）也认：游戏常给区间末端
     pthread_rwlock_unlock(&g_gva_lk);
-    static _Atomic int once; if (r == a && !once++) LOG("【红】[nvn] GPU 地址 %#llx 不在任何池里（池已释放 / 游戏算错）：原样交给回放（只报一次）", (unsigned long long)a);
+    // 换不了的报一次，带前后相邻的池段（GPU 起点 + 字节数、CPU 起点；c = 0 = 虚拟池没拿到预留段）：看得出是落在两池之间的间隔、池尾之外还是已释放的池（D-BSX8 只有地址、判不了）
+    static _Atomic int once;
+    if (r == a && !once++) {
+        char pv[96] = "无", nx[96] = "无";
+        pthread_rwlock_rdlock(&g_gva_lk);
+        if (hi >= 0) snprintf(pv, sizeof pv, "%#llx+%#llx（CPU %#llx）", (unsigned long long)g_gva[hi].g, (unsigned long long)g_gva[hi].n, (unsigned long long)g_gva[hi].c);
+        if (hi + 1 < g_ngva) snprintf(nx, sizeof nx, "%#llx+%#llx（CPU %#llx）", (unsigned long long)g_gva[hi + 1].g, (unsigned long long)g_gva[hi + 1].n, (unsigned long long)g_gva[hi + 1].c);
+        int ng = g_ngva; pthread_rwlock_unlock(&g_gva_lk);
+        LOG("【红】[nvn] GPU 地址 %#llx 不在任何池里（池已释放 / 游戏算错 / 虚拟池没有预留段）：原样交给回放（只报一次）；前一段 %s、后一段 %s，共 %d 段", (unsigned long long)a, pv, nx, ng);
+    }
     return r;
 }
+int nvn_ga_unmapped(uint64_t a) { return a >= GVA_LO && a < GVA_HI; }   // nvn_ga2ca 之后仍在 GPU 地址窗口里 = 换不成 CPU 地址（CPU 地址不会落进窗口，见 gva_alloc），宿主上没有映射
 // 单点查询：给定 CPU 地址，返回所在池的 {CPU 起点, 字节数}；不在任何池返回 0。
 // 池表可能上千项（BotW 约 1760），快照接口有 cap 截断，不能用来判定“是否在池里”——那会把
 // 排在 cap 之后的池误判成“不可证明”。这里直接对按 GPU 起点排序的表做一次线性定位（观测到的
