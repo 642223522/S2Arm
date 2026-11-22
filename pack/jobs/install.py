@@ -3736,7 +3736,6 @@ def install_shell(c, ph, steps=True):
     if isinstance(ph, (WinPhone, PlumeMacPhone)) and not devcert.active(c):
         tools = ph.W.impactor.bundled(c.r.get("resources")) or {}
         exe = ph.W.plumesign_path(tools.get("plumesign"))
-        ph.W.impactor.select_only_account(exe)
         win_cert_gate(c, ph.W, exe)
     games = list(rec.get("games") or {})
     stages = 4 if games else 3
