@@ -7758,7 +7758,8 @@ static void shmap_load_once(void) {
     NSMutableDictionary<NSNumber *, id> *fn_t;   // S2Arm: per-output typed entry points main0_t built when a pipeline's attachments need them (pso_fout_variant), by need mask; NSNull = could not build
     id vp_main; uint32_t vp_mask; uint8_t vp_st, vp_pk;   // S2Arm: the padded variant <key>_vp<mask> (vp_kick) and the user(locn) it adds; vp_st SE_* as se_st, all under g_vp_mu
     id se_main; uint8_t se_st, se_fold;   // se_fold: the variant can read folded linear textures (its library has s2a_se_fold; se_lib_fold). S2Arm #800: the reduction variant <key>_se's main0 (se_fn) and where it stands (SE_NONE / SE_BUSY / SE_READY / SE_FAIL, atomic: se_want, se_done)
-    uint8_t nts, size_abi, size_exact; int8_t exact; struct { uint8_t idx, img, reg; } ts[72];   // S2Arm widen: the scaled fetches (json tex_scales: render_scale index, image?, replay slot) and scale_exact (-1 = library without it); wd_tex_scales
+    uint8_t nts, size_abi, size_exact, rs_never;   // rs_never: legacy_1x only because it reads kinds the host never scales (never_scaled_*): internal resolution may scale its 2D reads (rs_bind_check)
+    int8_t exact; struct { uint8_t idx, img, reg; } ts[72];   // S2Arm widen: the scaled fetches (json tex_scales: render_scale index, image?, replay slot) and scale_exact (-1 = library without it); wd_tex_scales
     uint8_t ts_lost;   // S2Arm internal resolution: tex_scales entries not loaded (out of range): the shader counts as not exact for scaled textures (rs_support)
     NSString *posb; NSArray *posu; NSData *pos; int8_t pos_st;   // S2Arm widen geometry (11-06): json pos_slice (base64 SpirvPosSlice.Packed, decoded on first use into pos; pos_st 1 ok / -1 bad) and pos_ubo [[SPIR-V binding, uniform register]]
     NSString *cbu; int32_t wsh;   // S2Arm widen: which vec4 of each uniform register the shader reads (json cbuf_use, dmsh_xlate CbufUseText) and its widen core handle (wd_sh: registered on first draw, -1 = refused)
@@ -8384,6 +8385,12 @@ static NvShader *shader_build(NSString *pc, int stage, int layer, int depth_zero
         if (sl >= 0 && sl < 256) o->d2d[sl >> 6] |= 1ull << (sl & 63);
     }
     o->size_exact = o->size_abi && [size_exact boolValue];
+    // 内部分辨率：legacy_1x 的原因全是「宿主从不缩放的种类」（翻译器 never_scaled_image_type / never_scaled_resource：1D / 3D / 立方体 / 缓冲）时，二维取图照旧走
+    //   取图倍率（render_scale，rs_support），这支着色器读放大图不必退回；尺寸表照旧不建（1 倍时绑定逐字节不变）
+    if (o->size_abi && !o->size_exact && [j[@"resolution_scale_reasons"] isKindOfClass:[NSArray class]] && [j[@"resolution_scale_reasons"] count]) {
+        int all = 1; for (id r in j[@"resolution_scale_reasons"]) all &= [r isKindOfClass:[NSString class]] && [r hasPrefix:@"unsupported_scaled_access:never_scaled_"];
+        o->rs_never = (uint8_t)all;
+    }
     uint8_t scale_indices[73] = {0};
     for (id e in [j[@"tex_scales"] isKindOfClass:[NSArray class]] ? j[@"tex_scales"] : @[]) {
         if (![e isKindOfClass:[NSArray class]] || [e count] != 3 ||

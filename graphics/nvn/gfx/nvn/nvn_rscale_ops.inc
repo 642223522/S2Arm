@@ -185,7 +185,9 @@ static inline void rs_bind_check(id<MTLTexture> t, const NvShader *sh, int nvn_s
     if (kind == 2) rs_bad(t, "绑在存储图像槽");
     else if (kind == 1) rs_bad(t, "被句柄数组读");
     else if (nvn_stage != 1) rs_bad(t, "被顶点 / 计算等非片元阶段读");
-    else if (sh->exact != 1 || sh->ts_lost || (sh->size_abi && !sh->size_exact)) rs_bad(t, "被取图倍率不精确的片元着色器读");   // ABI2 非 exact（legacy_1x）同不精确
+    // 二维存储被当成立方体 / 3D 等非二维视图读：着色器对非二维访问一律按原尺寸（不缩放，rs_never 的放行也以此为前提，SpirvFetchScale NeverScaled），缩过的存储在这里退回
+    else if (t.textureType != MTLTextureType2D && t.textureType != MTLTextureType2DArray && t.textureType != MTLTextureType2DMultisample) rs_bad(t, "被非二维视图读");
+    else if (sh->exact != 1 || sh->ts_lost || (sh->size_abi && !sh->size_exact && !sh->rs_never)) rs_bad(t, "被取图倍率不精确的片元着色器读");   // ABI2 非 exact（legacy_1x）同不精确；只因读宿主从不缩放的种类而 legacy_1x 的（rs_never）照旧走取图倍率
 }
 // 计算派发前（dispatch，此时没有开着的遍）：这次派发要读写的缩放图当场换回原尺寸，这次派发就读到对的（绑定时的检查只能等下一个安全点）
 static void rs_pre_compute(NvShader *sh) {
