@@ -186,6 +186,7 @@ struct Switch2ProConnectionPopover: View {
                     HStack(spacing: 8) {
                         HowToTile(title: t("howPair"), keys: t("howPairKeys"))
                         HowToTile(title: t("howSingle"), keys: t("howSingleKeys"))
+                        HowToTile(title: t("howOther"), keys: t("howOtherKeys"))   // #1151：其他手柄（含 HID 兜底）接上即加入，不用按 L + R
                     }
                     VStack(spacing: 8) {
                         let units = controller.assignment.units
