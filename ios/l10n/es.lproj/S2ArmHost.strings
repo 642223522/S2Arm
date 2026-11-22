@@ -698,3 +698,16 @@
 "kbd.target.RS_DOWN" = "Palanca derecha abajo";
 "kbd.target.RS_LEFT" = "Palanca derecha izquierda";
 "kbd.target.RS_RIGHT" = "Palanca derecha derecha";
+"kbd.section.manage" = "Gestionar asignación de teclas";
+"kbd.manage.note" = "Los archivos de asignación exportados se pueden importar en otros juegos. El input.json de cada juego del lanzador de Mac usa el mismo formato y también se puede importar. Importar solo cambia este juego.";
+"kbd.import" = "Importar asignación de teclas…";
+"kbd.export" = "Exportar asignación actual…";
+"kbd.export.fileName" = "Asignación de teclas S2Arm";
+"kbd.export.err.title" = "No se pudo exportar la asignación";
+"kbd.import.err.title" = "No se pudo importar la asignación";
+"kbd.import.err.read" = "No se puede leer este archivo. Elige un archivo de asignación de teclas (.json). Tu asignación actual no ha cambiado.";
+"kbd.import.err.tooLarge" = "El archivo es demasiado grande para ser una asignación de teclas (ocupan menos de 64 KB). Tu asignación actual no ha cambiado.";
+"kbd.import.err.json" = "Este archivo no es una asignación de teclas (no es JSON válido). Tu asignación actual no ha cambiado.";
+"kbd.import.err.schema" = "Este archivo no es una asignación de teclas de S2Arm o su versión no es compatible. Tu asignación actual no ha cambiado.";
+"kbd.import.err.duplicate" = "El archivo asigna la misma tecla a más de un botón. Tu asignación actual no ha cambiado.";
+"kbd.import.err.invalid" = "La asignación del archivo está incompleta o tiene valores no válidos. Tu asignación actual no ha cambiado.";

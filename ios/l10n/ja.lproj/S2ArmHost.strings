@@ -698,3 +698,16 @@
 "kbd.target.RS_DOWN" = "右スティック下";
 "kbd.target.RS_LEFT" = "右スティック左";
 "kbd.target.RS_RIGHT" = "右スティック右";
+"kbd.section.manage" = "キー割り当ての管理";
+"kbd.manage.note" = "書き出したキー割り当てファイルは、ほかのゲームで読み込めます。Mac ランチャーの各ゲームの input.json も同じ形式なので読み込めます。読み込みはこのゲームのキー割り当てだけを変更します。";
+"kbd.import" = "キー割り当てを読み込む…";
+"kbd.export" = "現在のキー割り当てを書き出す…";
+"kbd.export.fileName" = "S2Arm キー割り当て";
+"kbd.export.err.title" = "キー割り当てを書き出せませんでした";
+"kbd.import.err.title" = "キー割り当てを読み込めませんでした";
+"kbd.import.err.read" = "このファイルは読み取れません。キー割り当てファイル（.json）を選んでください。現在のキー割り当ては変わっていません。";
+"kbd.import.err.tooLarge" = "ファイルが大きすぎるため、キー割り当てファイルではないようです（64 KB 以下です）。現在のキー割り当ては変わっていません。";
+"kbd.import.err.json" = "このファイルはキー割り当てファイルではありません（JSON として読めません）。現在のキー割り当ては変わっていません。";
+"kbd.import.err.schema" = "S2Arm のキー割り当てファイルではないか、対応していないバージョンです。現在のキー割り当ては変わっていません。";
+"kbd.import.err.duplicate" = "同じキーが複数のボタンに割り当てられています。現在のキー割り当ては変わっていません。";
+"kbd.import.err.invalid" = "ファイルのキー割り当てが不完全か、無効な値が含まれています。現在のキー割り当ては変わっていません。";

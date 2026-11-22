@@ -704,3 +704,16 @@
 "kbd.target.RS_DOWN" = "右摇杆向下";
 "kbd.target.RS_LEFT" = "右摇杆向左";
 "kbd.target.RS_RIGHT" = "右摇杆向右";
+"kbd.section.manage" = "管理键位";
+"kbd.manage.note" = "导出的键位文件可以在别的游戏里导入；Mac 启动器每款游戏的 input.json 格式相同，也能导入。导入只改这款游戏的键位。";
+"kbd.import" = "导入键位…";
+"kbd.export" = "导出当前键位…";
+"kbd.export.fileName" = "S2Arm 键位";
+"kbd.export.err.title" = "没能导出键位";
+"kbd.import.err.title" = "没能导入键位";
+"kbd.import.err.read" = "读不了这个文件。请选一个键位文件（.json）。当前键位没有改动。";
+"kbd.import.err.tooLarge" = "文件太大，不像键位文件（键位文件不超过 64 KB）。当前键位没有改动。";
+"kbd.import.err.json" = "这个文件不是键位文件（读不出 JSON）。当前键位没有改动。";
+"kbd.import.err.schema" = "这个文件不是 S2Arm 的键位文件，或版本不支持。当前键位没有改动。";
+"kbd.import.err.duplicate" = "文件里同一个键绑给了不止一个按键。当前键位没有改动。";
+"kbd.import.err.invalid" = "文件里的键位不完整或有无效的值。当前键位没有改动。";
