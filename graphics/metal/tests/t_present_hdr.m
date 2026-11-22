@@ -15,6 +15,10 @@
 // ④ PQ→SDR 切回（S2A_HDR 回 off + 排空喂入两帧）：切回的层保留 PQ 色彩空间——gal 必须显式重设 sRGB tag
 //    （§2.3 注意事项①：不设则无色彩匹配、字节直进屏幕原生 primaries，P3 屏过饱和）；存储侧层簿记同步归 0。
 // ⑤ off 不变量回归（排空切回后）：render_to 恢复 trivial 逐字节（off ⇒ 出图恒 S0 直通——两处同时回退）。
+// ⑥ PR-A（#625 第二阶段）：SDR→HDR 扩张（BT.2446-1 §4.2 逆映射 present_itm；k_present_msl 的 mode 2 参数化——
+//    p.mode.z=sdr nits / p.mode.w=target nits，双零 = off）——合成参数直驱生产 gal 源（k_present_msl 的 pr_fs_hdr，
+//    真着色器上 GPU；生产链路的 p 经 nvn2_hdr_present 取、PR-A 期恒 0,0），与 nvn 侧 t_present_hdr ⑩ 同一份期望
+//    （CPU 双精度参考复算 ±1）；off 金标对冻结的改前 mode 2 单式逐字节。红态（无实现）：对拍全红。
 #include "../gal_abi.h"
 #include "../gal_formats.h"
 #include "../../nvn/gfx/nvn/nvn_hdr_policy.h"
@@ -183,6 +187,130 @@ static void check_rt_bytes(const char *name, int fmt_gal, MTLPixelFormat fmt_mtl
     nxgal_tex_release(d);
 }
 
+// ---------- ⑥ PR-A（#625 第二阶段）：SDR→HDR 扩张（BT.2446-1 §4.2 逆映射 present_itm；k_present_msl 的 mode 2 参数化——
+//   p.mode.z = sdr nits / p.mode.w = target nits，HP 槽位与直连 Crop 一一对应）----------
+//   生产链路的 p 经 dlsym 同一入口 nvn2_hdr_present 取（PR-A 期扩张双参恒 0,0——开关解析在 PR-B，设计稿 §2.4 填充落点），
+//   扩张用例以合成 HP 直驱生产 gal 源（k_present_msl——链接进本单测的生产源码，真着色器上 GPU）；
+//   期望值 CPU 双精度参考复算 ±1 LSB（与 PR3b t_present_hdr nvn 侧同一份期望——两份副本同测）。
+//   红态（无 PR-A 实现）：gal 源无扩张分支 ⇒ 对拍全红。
+extern NSString *const k_present_msl;   // gal_present.m 的生产出图变体源（链接同树生产源码——同 PR7 的生产接缝口径）
+
+// BT.2446-1 §4.2（Method A）逆色调映射 CPU 双精度参考（设计稿 §2.2 逐段转写——gamescope 通用解析式同式；
+//   nvn 侧 t_present_hdr 同式）。入：线性光（BT.2020 基色，1.0 = sdr_nits）；出：线性光（1.0 = target_nits）。
+static void itm_ref(const double lin[3], double sdr_nits, double target_nits, double out[3]) {
+    static const double k2020[3] = {0.262698338956556, 0.678008765772817, 0.0592928952706273};   // BT.2020 亮度系数（gamescope 同值）
+    const double kR = 1.47460332208689, kB = 1.88141420945875;   // 2 − 2·k2020.r / 2 − 2·k2020.b
+    double n[3] = { pow(fmax(lin[0], 0.0), 1.0 / 2.4), pow(fmax(lin[1], 0.0), 1.0 / 2.4), pow(fmax(lin[2], 0.0), 1.0 / 2.4) };   // γ 压缩
+    double y = k2020[0] * n[0] + k2020[1] * n[1] + k2020[2] * n[2];   // Y'tmo（BT.2020 亮度变换）
+    double cb = (n[2] - y) / kB, cr = (n[0] - y) / kR;   // C'b / C'r
+    double y_sdr = y + fmax(0.1 * cr, 0.0);   // 亮度调整（逆）
+    double p_sdr = 1.0 + 32.0 * pow(sdr_nits / 10000.0, 1.0 / 2.4);
+    double y_c = log(y_sdr * (p_sdr - 1.0) + 1.0) / log(p_sdr);   // psdr 归一
+    double y_p0 = y_c / 1.0770, y_p1 = (-2.7811 + sqrt(4.83307641 - 4.604 * y_c)) / -2.302, y_p2 = (y_c - 0.5) / 0.5;   // 三段逆式
+    double y_p;
+    if (y_p0 <= 0.7399) y_p = y_p0;
+    else if (y_p1 > 0.7399 && y_p1 < 0.9909) y_p = y_p1;
+    else if (y_p2 >= 0.9909) y_p = y_p2;
+    else y_p = y_p1;   // 段界浮点兜底（gamescope 同款：误差 <0.001）
+    double p_hdr = 1.0 + 32.0 * pow(target_nits / 10000.0, 1.0 / 2.4);
+    double y_ = (pow(p_hdr, y_p) - 1.0) / (p_hdr - 1.0);   // phdr 归一（Y'hdr）
+    double col_scale = y_ > 0.0 ? y_sdr / (1.1 * y_) : 1.0;   // 保色调标量（恰黑兜底 1.0——黑→黑精确，无 gamescope 的 0/0=NaN）
+    double o[3];
+    o[2] = cb * kB / col_scale + y_;
+    o[0] = cr * kR / col_scale + y_;
+    o[1] = (y_ - (k2020[0] * o[0] + k2020[2] * o[2])) / k2020[1];   // 亮度逆推 G'（白仍是白）
+    for (int k = 0; k < 3; k++) out[k] = pow(fmin(fmax(o[k], 0.0), 1.0), 2.4);   // saturate 后回线性
+}
+// 全链期望（扩张态，10 位 PQ 码）：8 位码 → γ2.2 解码 → 709→2020 矩阵 → present_itm × target/纸白 → PQ 编码（纸白 100）
+static void itm_expect8(int r, int g, int b, double sdr, double target, double out[3]) {
+    static const double m[3][3] = {{0.627404, 0.329283, 0.043313}, {0.069097, 0.919540, 0.011362}, {0.016391, 0.088013, 0.895595}};   // kRec709To2020 各行（shader 同一矩阵）
+    double lin[3] = { sdr_dec(r / 255.0), sdr_dec(g / 255.0), sdr_dec(b / 255.0) };
+    double l2[3], o[3];
+    for (int k = 0; k < 3; k++) l2[k] = m[k][0] * lin[0] + m[k][1] * lin[1] + m[k][2] * lin[2];
+    itm_ref(l2, sdr, target, o);
+    for (int k = 0; k < 3; k++) out[k] = pq_code(o[k] * target);
+}
+
+// 改前 mode 2 单式对照着色器（冻结自基线 gal_present.m 的 mode 2 表达式与它用的 helper/矩阵——off 不变量的逐字节基准：
+//   p.mode.z=p.mode.w=0 ⇒ 生产 pr_fs_hdr 守卫短路 ⇒ 与本式同一式；k_trivial_msl 对照直通的同款先例）
+static const char *k_mode2_msl =
+    "#include <metal_stdlib>\n"
+    "using namespace metal;\n"
+    "struct VO { float4 p [[position]]; float2 uv; };\n"
+    "vertex VO pr_vs(uint vid [[vertex_id]]) {\n"
+    "  float2 uv = float2((vid << 1) & 2, vid & 2); VO o; o.p = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1); o.uv = uv; return o; }\n"
+    "struct HP { float4 mode; float4 xf; };\n"
+    "constant float3x3 kRec709To2020 = float3x3(float3(0.627404, 0.069097, 0.016391), float3(0.329283, 0.919540, 0.088013), float3(0.043313, 0.011362, 0.895595));\n"
+    "static inline float3 present_sdr_to_linear(float3 c, float g) {\n"
+    "    if (g > 0.0) return pow(max(c, float3(0.0)), float3(g));\n"
+    "    float3 lo = c * (1.0 / 12.92);\n"
+    "    float3 hi = pow((c + 0.055) * (1.0 / 1.055), float3(2.4));\n"
+    "    return select(hi, lo, c <= 0.04045);\n"
+    "}\n"
+    "static inline float3 present_linear_to_pq(float3 l, float paper) {\n"
+    "    const float m1 = 0.1593017578125, m2 = 78.84375, c1 = 0.8359375, c2 = 18.8515625, c3 = 18.6875;\n"
+    "    float3 ym = pow(max(l * (paper / 10000.0), float3(1e-30)), float3(m1));\n"
+    "    return pow((c1 + c2 * ym) / (1.0 + c3 * ym), float3(m2));\n"
+    "}\n"
+    "fragment float4 pr_fs_cmp(VO in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant HP &p [[buffer(0)]]) {\n"
+    "  float4 v = float4(t.sample(s, in.uv).rgb, 1.0);\n"
+    "  return float4(present_linear_to_pq(kRec709To2020 * present_sdr_to_linear(v.rgb, p.xf.z), p.mode.y), 1.0); }\n";
+static id<MTLRenderPipelineState> g_syn_pso_prod, g_syn_pso_cmp;
+static id<MTLRenderPipelineState> syn_pso(int prod) {
+    id<MTLRenderPipelineState> pso = prod ? g_syn_pso_prod : g_syn_pso_cmp;
+    if (pso) return pso;
+    NSError *e = nil;
+    id<MTLLibrary> lib = prod ? [g_tdev newLibraryWithSource:k_present_msl options:nil error:&e]
+                              : [g_tdev newLibraryWithSource:@(k_mode2_msl) options:nil error:&e];
+    if (!lib) { printf("  %s 编不出：%s\n", prod ? "生产 gal 出图源（k_present_msl）" : "对照着色器（改前 mode 2 单式）", e.localizedDescription.UTF8String ?: "?"); return nil; }
+    MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
+    d.vertexFunction = [lib newFunctionWithName:@"pr_vs"];
+    d.fragmentFunction = [lib newFunctionWithName:prod ? @"pr_fs_hdr" : @"pr_fs_cmp"];
+    d.colorAttachments[0].pixelFormat = MTLPixelFormatRGB10A2Unorm;
+    pso = [g_tdev newRenderPipelineStateWithDescriptor:d error:&e];
+    if (!pso) { printf("  合成驱动管线建不出：%s\n", e.localizedDescription.UTF8String ?: "?"); return nil; }
+    if (prod) g_syn_pso_prod = pso; else g_syn_pso_cmp = pso;
+    return pso;
+}
+static id<MTLTexture> syn_src(const uint8_t px[][3], int n) {   // n×1 BGRA8 源（内存字节 b,g,r,a——同 mk_bgra_src / tsrc 口径；px 按 RGB 给）
+    MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:n height:1 mipmapped:NO];
+    d.storageMode = MTLStorageModeShared; d.usage = MTLTextureUsageShaderRead;
+    id<MTLTexture> t = [g_tdev newTextureWithDescriptor:d]; uint8_t b[n * 4];
+    for (int i = 0; i < n; i++) { b[4 * i] = px[i][2]; b[4 * i + 1] = px[i][1]; b[4 * i + 2] = px[i][0]; b[4 * i + 3] = 255; }
+    [t replaceRegion:MTLRegionMake2D(0, 0, n, 1) mipmapLevel:0 withBytes:b bytesPerRow:n * 4];
+    return t;
+}
+static id<MTLTexture> syn_dst(int n) {
+    MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGB10A2Unorm width:n height:1 mipmapped:NO];
+    d.storageMode = MTLStorageModeShared; d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+    return [g_tdev newTextureWithDescriptor:d];
+}
+static id<MTLSamplerState> syn_samp(void) {
+    static id<MTLSamplerState> s;
+    if (!s) { MTLSamplerDescriptor *d = [MTLSamplerDescriptor new]; d.minFilter = d.magFilter = MTLSamplerMinMagFilterNearest; d.sAddressMode = d.tAddressMode = MTLSamplerAddressModeClampToEdge; s = [g_tdev newSamplerStateWithDescriptor:d]; }
+    return s;
+}
+// 合成参数直驱：p[0..7] 进 constant HP（mode/xf 两组并一行）；pr_fs_hdr 采样同款 in.uv 全幅三顶点 + 最近邻 1:1 逐像素
+static id<MTLTexture> syn_run(id<MTLTexture> src, id<MTLRenderPipelineState> pso, const float p[8]) {
+    if (!pso) return nil;
+    int n = (int)src.width;
+    id<MTLTexture> dst = syn_dst(n);
+    id<MTLCommandBuffer> cb = [g_tq commandBuffer];
+    MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+    rp.colorAttachments[0].texture = dst; rp.colorAttachments[0].loadAction = MTLLoadActionDontCare; rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> e = [cb renderCommandEncoderWithDescriptor:rp];
+    [e setRenderPipelineState:pso]; [e setFragmentTexture:src atIndex:0]; [e setFragmentSamplerState:syn_samp() atIndex:0];
+    [e setFragmentBytes:p length:8 * sizeof(float) atIndex:0];
+    [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; [e endEncoding];
+    [cb commit]; [cb waitUntilCompleted];
+    if (cb.status != MTLCommandBufferStatusCompleted) { printf("  扩张驱动命令缓冲 %ld：%s\n", (long)cb.status, cb.error.localizedDescription.UTF8String ?: "?"); return nil; }
+    return dst;
+}
+static int syn_read(id<MTLTexture> t, uint32_t out[], int n) {   // RGB10A2 逐像素 32 位读回（10 位码 + alpha 位）
+    [t getBytes:out bytesPerRow:(NSUInteger)n * 4 fromRegion:MTLRegionMake2D(0, 0, n, 1) mipmapLevel:0];
+    return 1;
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     unsetenv("S2A_HDR"); unsetenv("S2A_HDR_SDR_GAMMA");   // ① 起步 = off 缺省；S2A_HDR_SDR_GAMMA 缺省 2.2（期望值同口径）
@@ -297,6 +425,104 @@ int main(void) {
         printf("· off 回归：render_to 恢复 trivial 逐字节（RGB10A2 目标不转换）\n");
         nxgal_present(t_g, &c);
         check_rt_bytes("⑤ off 回归：RGB10A2 目标恢复直通", F_R10G10B10A2Unorm, MTLPixelFormatRGB10A2Unorm, (const uint8_t (*)[4])gray);
+    }
+
+    // ⑥ PR-A（#625 第二阶段）：SDR→HDR 扩张（BT.2446-1 §4.2 逆映射 present_itm；k_present_msl 的 mode 2 参数化——
+    //    p.mode.z=sdr nits / p.mode.w=target nits，双零 = off）——合成参数直驱生产 gal 源（pr_fs_hdr，真着色器上 GPU），
+    //    与 nvn 侧 t_present_hdr ⑩ 同一份期望（CPU 双精度参考复算 ±1）。红态（基线无扩张分支）对拍全红。
+    {
+        printf("· SDR→HDR 扩张：合成参数直驱生产 pr_fs_hdr（off 金标逐字节 / 端点 400/600/1000 / 段界 / 饱和色 / 非设计点 / 灰阶 256 码）\n");
+        // off 金标（§5.1 用例 1，gal 副本）+ 守卫（用例 4）
+        {
+            uint8_t c8[8][3] = {{255,255,255},{199,199,199},{157,157,157},{128,128,128},{64,64,64},{16,16,16},{1,1,1},{0,0,0}};
+            float poff[8] = {2, 100, 0, 0, 0, 0, 2.2f, 0};
+            uint32_t w1[8], w2[8];
+            id<MTLTexture> d_prod = syn_run(syn_src(c8, 8), syn_pso(1), poff);
+            id<MTLTexture> d_cmp = syn_run(syn_src(c8, 8), syn_pso(0), poff);
+            int ok = d_prod && d_cmp && syn_read(d_prod, w1, 8) && syn_read(d_cmp, w2, 8) && !memcmp(w1, w2, sizeof w1);
+            CHECK(ok, "⑥ off 金标：p.mode.z=p.mode.w=0 的生产 pr_fs_hdr 与改前 mode 2 单式逐字节一致（off 不变量——gal 副本）");
+            float peq[8] = {2, 100, 100, 100, 0, 0, 2.2f, 0};   // 守卫用例：p.mode.z=p.mode.w=100（target=sdr 形）
+            id<MTLTexture> d_eq = syn_run(syn_src(c8, 8), syn_pso(1), peq);
+            ok = d_eq && syn_read(d_eq, w2, 8) && !memcmp(w1, w2, sizeof w1);
+            CHECK(ok, "⑥ 守卫：p.mode.z=p.mode.w=100（target=sdr）⇒ 守卫短路 ⇒ 与纯 mode 2 逐字节一致（gal 副本）");
+        }
+        // 端点 + 灰阶 256 码全扫（sdr=100/target=400）：CPU 双精度参考 ±1、单调允许段界微降
+        {
+            uint8_t ramp[256][3];
+            for (int i = 0; i < 256; i++) ramp[i][0] = ramp[i][1] = ramp[i][2] = (uint8_t)i;
+            float p400[8] = {2, 100, 100, 400, 0, 0, 2.2f, 0};
+            id<MTLTexture> d = syn_run(syn_src(ramp, 256), syn_pso(1), p400);
+            uint32_t *w = malloc(256 * sizeof *w);
+            CHECK(d && syn_read(d, w, 256), "⑥ 扩张灰阶 256 码可跑（sdr=100/target=400）");
+            int bad = 0, mono = 0;
+            double e[3];
+            for (int i = 0; i < 256; i++) {
+                itm_expect8(i, i, i, 100.0, 400.0, e);
+                double g = (double)(w[i] >> 10 & 0x3ff);
+                if (fabs(g - e[1]) > 1.0) { bad++; if (bad == 1) printf("⑥ 首个不符：码 %d 出 %.1f（期望 %.1f）\n", i, g, e[1]); }
+                if (i) mono += g < (double)(w[i - 1] >> 10 & 0x3ff) - 1.0;   // 单调：降 >1 LSB 记违例（段界微降 <1 LSB + float32 噪声被容）
+            }
+            CHECK(!bad, "⑥ 扩张灰阶 256 码对拍（sdr=100/target=400，±1：三段全分支——段 1 尾码 156 / 段 2 首码 157 与 199 / 段 3 首码 253 与 254/255）");
+            CHECK(mono == 0, "⑥ 扩张灰阶 256 码单调（降 >1 LSB 违例 %d 处；段界不连续实测登记在档）", mono);
+            CHECK(fabs((double)(w[255] >> 10 & 0x3ff) - pq_code(400.0)) <= 1.0 && (double)(w[0] & 0x3ff) <= 1.0,
+                  "⑥ 端点：白 255 → target 400 精确（pq_code(400)=%.1f，±1）；黑 → 0", pq_code(400.0));
+            CHECK((w[0] >> 30) == 3 && (w[255] >> 30) == 3, "⑥ 扩张态 alpha 写 1（RGB10A2 alpha 位 = 3）");
+            free(w);
+        }
+        // 饱和色（红/绿/蓝/黄/青/品红）三通道对拍 ±1（保色调 col_scale 由同式参考锁定）
+        {
+            uint8_t c8[6][3] = {{255,0,0},{0,255,0},{0,0,255},{255,255,0},{0,255,255},{255,0,255}};
+            float p400[8] = {2, 100, 100, 400, 0, 0, 2.2f, 0};
+            id<MTLTexture> d = syn_run(syn_src(c8, 6), syn_pso(1), p400);
+            uint32_t w[6];
+            double e[3];
+            CHECK(d && syn_read(d, w, 6), "⑥ 扩张饱和色可跑");
+            int bad = 0;
+            for (int i = 0; i < 6; i++) {
+                itm_expect8(c8[i][0], c8[i][1], c8[i][2], 100.0, 400.0, e);
+                for (int k = 0; k < 3; k++) {
+                    double g = (double)(w[i] >> (10 * k) & 0x3ff);
+                    if (fabs(g - e[k]) > 1.0) { bad++; if (bad == 1) printf("⑥ 首个不符：%d 号色通道 %d 出 %.1f（期望 %.1f）\n", i, k, g, e[k]); }
+                }
+            }
+            CHECK(!bad, "⑥ 扩张饱和色（红/绿/蓝/黄/青/品红）三通道对拍 ±1（sdr=100/target=400）");
+        }
+        // 端点 600/1000：白→target 精确三点 + 段界样本重跑
+        {
+            uint8_t c8[8][3] = {{255,255,255},{0,0,0},{128,128,128},{156,156,156},{157,157,157},{252,252,252},{253,253,253},{199,199,199}};
+            for (int ti = 0; ti < 2; ti++) {
+                double t = ti ? 1000.0 : 600.0;
+                float pt[8] = {2, 100, 100, (float)t, 0, 0, 2.2f, 0};
+                id<MTLTexture> d = syn_run(syn_src(c8, 8), syn_pso(1), pt);
+                uint32_t w[8];
+                double e[3];
+                CHECK(d && syn_read(d, w, 8), "⑥ 扩张端点可跑（target %.0f）", t);
+                int bad = 0;
+                for (int i = 0; i < 8; i++) {
+                    int v = c8[i][0];
+                    itm_expect8(v, v, v, 100.0, t, e);
+                    for (int k = 0; k < 3; k++) if (fabs((double)(w[i] >> (10 * k) & 0x3ff) - e[k]) > 1.0) bad++;
+                }
+                CHECK(!bad && fabs((double)(w[0] >> 10 & 0x3ff) - pq_code(t)) <= 1.0 && (double)(w[1] & 0x3ff) <= 1.0,
+                      "⑥ 端点（target %.0f）：白 → pq_code(%.0f)=%.1f 精确 ±1、黑 → 0、段界 156/157/252/253 与 199 全对拍", t, t, pq_code(t));
+            }
+        }
+        // 非设计点参数组（sdr=203/target=600——通用解析式的意义所在，Table 4 路径在此无定义）
+        {
+            uint8_t c8[8][3] = {{255,255,255},{0,0,0},{1,1,1},{16,16,16},{128,128,128},{199,199,199},{252,252,252},{253,253,253}};
+            float pt[8] = {2, 100, 203, 600, 0, 0, 2.2f, 0};
+            id<MTLTexture> d = syn_run(syn_src(c8, 8), syn_pso(1), pt);
+            uint32_t w[8];
+            double e[3];
+            CHECK(d && syn_read(d, w, 8), "⑥ 非设计点可跑（sdr=203/target=600）");
+            int bad = 0;
+            for (int i = 0; i < 8; i++) {
+                int v = c8[i][0];
+                itm_expect8(v, v, v, 203.0, 600.0, e);
+                for (int k = 0; k < 3; k++) if (fabs((double)(w[i] >> (10 * k) & 0x3ff) - e[k]) > 1.0) bad++;
+            }
+            CHECK(!bad && fabs((double)(w[0] >> 10 & 0x3ff) - pq_code(600.0)) <= 1.0, "⑥ 非设计点对拍（sdr=203/target=600，±1；白 → 600 精确）");
+        }
     }
 
     nxgal_window_set_layer(NULL);

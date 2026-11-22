@@ -19677,13 +19677,53 @@ static void present_pso_init(void) {
             "    float a = t - k, x = m - k, f = min(k + x / (1.0 + x * (1.0 / a - 1.0 / max(s - k, a))), t);\n"
             "    return n * (f / m);\n"
             "}\n"
+            // PR-A（#625 第二阶段）：S4「SDR 转 HDR」扩张曲线 present_itm——ITU-R BT.2446-1 §4.2（Method A）逆色调映射通用解析式
+            //   （设计稿 §2.2 逐段转写；登记 THIRD_PARTY_LICENSES.md——手写 MSL，公式源自 ITU 免费标准文本，未复制代码文本）。
+            //   不用 Table 4 快速路径：target 由设置+净空推导，非 100→1000 设计点。
+            //   入 n：线性光（BT.2020 基色，1.0 = sdr_nits）；出：线性光（1.0 = target_nits——调用侧乘 target/纸白 喂 present_linear_to_pq）。
+            "static inline float3 present_itm(float3 n, float sdr_nits, float target_nits) {\n"
+            "    const float3 k2020 = float3(0.262698338956556, 0.678008765772817, 0.0592928952706273);   // BT.2020 亮度系数（gamescope 同值）\n"
+            "    const float kR = 1.47460332208689, kB = 1.88141420945875;   // 2 − 2·k2020.r / 2 − 2·k2020.b\n"
+            "    n = pow(max(n, float3(0.0)), float3(1.0 / 2.4));   // γ 压缩（线性 → 码值域）\n"
+            "    float y = dot(n, k2020);   // Y'tmo（BT.2020 亮度变换）\n"
+            "    float cb = (n.b - y) / kB, cr = (n.r - y) / kR;   // C'b / C'r\n"
+            "    float y_sdr = y + max(0.1 * cr, 0.0);   // 亮度调整（逆）：Y'sdr = Y'tmo + max(0.1·C'r, 0)\n"
+            "    float p_sdr = 1.0 + 32.0 * pow(sdr_nits / 10000.0, 1.0 / 2.4);\n"
+            "    float y_c = log(y_sdr * (p_sdr - 1.0) + 1.0) / log(p_sdr);   // psdr 归一\n"
+            "    float y_p0 = y_c / 1.0770;   // 段 1 逆式（前向 Y'c = 1.0770·Y'p）\n"
+            "    float y_p1 = (-2.7811 + sqrt(4.83307641 - 4.604 * y_c)) / -2.302;   // 段 2 逆式（前向二次段的代数逆）\n"
+            "    float y_p2 = (y_c - 0.5) / 0.5;   // 段 3 逆式（前向 Y'c = 0.5·Y'p + 0.5）\n"
+            "    float y_p;\n"
+            "    if (y_p0 <= 0.7399) y_p = y_p0;   // 段界 0.7399 / 0.9909（libplacebo 同值；标准自身段 1/2 交界有不连续 ~6e-4——对拍期望按同式复算，不假设严格单调）\n"
+            "    else if (y_p1 > 0.7399 && y_p1 < 0.9909) y_p = y_p1;\n"
+            "    else if (y_p2 >= 0.9909) y_p = y_p2;\n"
+            "    else y_p = y_p1;   // 段界浮点兜底（gamescope 同款：误差 <0.001）\n"
+            "    float p_hdr = 1.0 + 32.0 * pow(target_nits / 10000.0, 1.0 / 2.4);\n"
+            "    float y_ = (pow(p_hdr, y_p) - 1.0) / (p_hdr - 1.0);   // phdr 归一（Y'hdr）\n"
+            "    float col_scale = y_ > 0.0 ? y_sdr / (1.1 * y_) : 1.0;   // 保色调标量（gamescope else 0 会得 0/0=NaN——恰黑本就该出黑，兜底 1.0 后黑→黑精确）\n"
+            "    float3 o;\n"
+            "    o.b = cb * kB / col_scale + y_;   // 色度按 col_scale 重建（逆方向除）\n"
+            "    o.r = cr * kR / col_scale + y_;\n"
+            "    o.g = (y_ - (k2020.r * o.r + k2020.b * o.b)) / k2020.g;   // 亮度逆推 G'（白仍是白）\n"
+            "    return pow(clamp(o, float3(0.0), float3(1.0)), float3(2.4));   // saturate 后回线性\n"
+            "}\n"
             "fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant Crop& c [[buffer(0)]]) {\n"
             "    float4 v = t.sample(s, clamp(in.uv * c.rect.zw + c.rect.xy, c.edge.xy, c.edge.zw));\n"   // mode 0：原样采样（改前 trivial 采样同式）
             "    if (c.mode.x > 3.5) {   // 4：PQ 层无 metadata——游戏可能画过屏当前净空的，膝点（mode.z，nit）以上压进屏峰（mode.w，nit）\n"
             "        if (max(max(v.r, v.g), v.b) > c.xf.y) v.rgb = present_linear_to_pq(present_shoulder(present_pq_to_linear(v.rgb, 1.0), c.mode.z, c.mode.w, c.xf.x), 1.0);\n"
             "    } else if (c.mode.x > 2.5) {   // 3：float 源（线性 BT.709）按纸白编成 HDR10；负值在矩阵后才截断，scRGB 的广色域保住其 BT.2020 值\n"
             "        v = float4(present_linear_to_pq(max(kRec709To2020 * clamp(v.rgb, -65504.0, 65504.0), 0.0), c.mode.y), 1.0);\n"
-            "    } else if (c.mode.x > 1.5) v = float4(present_linear_to_pq(kRec709To2020 * present_sdr_to_linear(v.rgb, c.xf.z), c.mode.y), 1.0);   // 2：SDR 源按纸白编成 HDR10\n"
+            // PR-A（#625 第二阶段）：mode 2 参数化扩展——S4「SDR 转 HDR」扩张（BT.2446A 逆映射 present_itm；矩阵提前到曲线之前——
+            //   BT.2446A 的 Y'CbCr 变换按 BT.2020 设计，扩张必须在 709→2020 矩阵之后）。c.mode.z = sdr nits（p[2]）、
+            //   c.mode.w = target nits（p[3]）——双零 = 不扩张（off 判定，nvn_hdr_policy.h hdr_present_fill 的 engage 门）；
+            //   engage 守卫 c.mode.z > 0.0 && c.mode.w > c.mode.z——严格大于：target ≤ sdr 会压暗/重塑（设计稿 §2.2 实测），绝不进曲线。
+            //   未 engage 路径与改前同一式、同一输入、同一求值次序（仅中间量命名）——逐字节一致（off 不变量）。
+            "    } else if (c.mode.x > 1.5) {\n"
+            "        float3 lin2 = kRec709To2020 * present_sdr_to_linear(v.rgb, c.xf.z);\n"
+            "        if (c.mode.z > 0.0 && c.mode.w > c.mode.z)\n"
+            "            lin2 = present_itm(lin2, c.mode.z, c.mode.w) * (c.mode.w / c.mode.y);\n"   // 扩张：1.0=sdr nits 入 → 1.0=target nits 出 → 纸白相对域
+            "        v = float4(present_linear_to_pq(lin2, c.mode.y), 1.0);\n"
+            "    }\n"
             "    else if (c.mode.x > 0.5) v = float4(present_linear_to_sdr(saturate(present_shoulder(max(kRec2020To709 * present_pq_to_linear(v.rgb, c.mode.y), 0.0), c.mode.z, c.mode.w, c.xf.x)), c.xf.z), 1.0);   // 1：先矩阵后肩部——BT.709 后压缩，保高光层次与色相\n"
             "    return v; }\n";
         NSError *e = nil;
