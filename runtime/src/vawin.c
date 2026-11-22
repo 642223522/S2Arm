@@ -1035,12 +1035,21 @@ uint64_t s2a_window_for_span(uint64_t learned) {
     uint64_t win = (learned + learned / 4 + 2 * G + G - 1) & ~(G - 1);
     return win < MIN_WIN ? MIN_WIN : win;
 }
+// 宿主下限（11-22 D-R2VX / D-NK6Y，诊断#0c13d3 61 次）：放不下标准布局时窗口下方至少留给宿主多少。固定 3 GiB 时宿主开局低区空洞约 3.5 GB
+//   （= 下限 + 低区约 0.4 GB），而玩家诊断 7601 局（去重）里宿主开局后在低区额外吃掉的峰值 p50 861 / p90 2519 / p99 4967 MB（时之笛 Switch 2 版
+//   783 局 p99 5422 MB）；碰底（最低空洞 < 512 MB）的 345 局起点空洞中位 3499 MB、其中时之笛 230 局：开局约 30 秒低区只剩 342 MB，纹理登记表 /
+//   命令录制 2 MB 块 mmap errno 12，视频解码提交的 malloc 回空先踩到（15 GB 内存的 iPad 一样崩：耗尽的是地址范围不是物理内存）。
+//   下限取 6 GiB：起点空洞约 6.4 GB ≥ p99 + 1 GB 余量；GC 上限仍落按需档（分堆档要低区最大一块 ≥ 7808 MB，gclimit.c），不会被 GC 吃回去。
+//   只对放得下 6 GiB 宿主 + 16 GiB 窗口的空洞（≥ 22 GiB）生效；更小的空洞（4–8 GB 机）照旧 3 GiB，那里窗口本来就紧（按应用池另算，见下）
+#define HOST_FLOOR (6ull << 30)
+#define HOST_FLOOR_FIT (22ull << 30)
+uint64_t s2a_window_host_floor(uint64_t fit) { return fit >= HOST_FLOOR_FIT ? HOST_FLOOR : HOST_BELOW; }
 uint64_t s2a_window_host_below(uint64_t fit, uint64_t learned) {
-    const uint64_t G = 1ull << 30;
-    if (!learned) return HOST_BELOW;
+    const uint64_t G = 1ull << 30, floor = s2a_window_host_floor(fit);
+    if (!learned) return floor;
     uint64_t win = s2a_window_for_span(learned);
     uint64_t host = fit > win ? (fit - win) & ~(G - 1) : 0;
-    return host > HOST_BELOW ? host : HOST_BELOW;
+    return host > floor ? host : floor;
 }
 // 小内存 iPad（4 GB 机，2^39 以下只有 6 GB 空洞）上 HOST_BELOW 固定 3 GiB 把窗口压到 3 GiB；
 //   Switch 1 的 SDK 开局按应用池 3285 MB 调 SetHeapSize（不是按游戏文件大小，Ryujinx KSystemControl.GetApplicationPoolSize），
@@ -1063,9 +1072,9 @@ uint64_t s2a_window_host_below_for_pool(uint64_t fit, uint64_t learned, uint64_t
 //   布局重算、本局照常起。原先只删记录、本局照样失败，玩家第二次打开才好（v0.3.3 已记下坏记录的玩家装新版后头一次仍失败）。
 //   放宽的那段 [新起点, 窗口底) 起局后可能已被宿主映射占了一部分（lp_map 带提示往这里放直连库段等）：新起点取「已占映射末端（1 GiB 向上取整）」与「留宿主底 + HOST_BELOW」的大者，
 //   不盖别人；放不宽（新起点到不了窗口底以下）回 0，照旧失败（记录已删，下一局按缺省）。纯函数部分 s2a_window_widen_lo，t_vawin_learned 测；端到端 t_vawin_widen 测
-uint64_t s2a_window_widen_lo(uint64_t keep_lo, uint64_t base, uint64_t used_end) {
+uint64_t s2a_window_widen_lo(uint64_t keep_lo, uint64_t base, uint64_t used_end, uint64_t host) {
     const uint64_t G = 1ull << 30;
-    uint64_t lo = keep_lo + HOST_BELOW, u = (used_end + G - 1) & ~(G - 1);
+    uint64_t lo = keep_lo + host, u = (used_end + G - 1) & ~(G - 1);
     if (u > lo) lo = u;
     return lo < base ? lo : 0;
 }
@@ -1089,7 +1098,7 @@ int s2a_window_span_widen(void) {
         if (a + sz > used) used = a + sz;
         a += sz;
     }
-    uint64_t lo = s2a_window_widen_lo(g_keep_lo, g_base, used), end = g_base + g_size;
+    uint64_t lo = s2a_window_widen_lo(g_keep_lo, g_base, used, s2a_window_host_floor(g_fit)), end = g_base + g_size;
     if (!lo) { LOG("【红】地址窗口：想当场放宽，但窗口下方 %#llx 起已被宿主映射占到 %#llx，放不宽", (unsigned long long)g_keep_lo, (unsigned long long)used); return 0; }
     void *p = mmap((void *)lo, g_base - lo, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);   // 不带 MAP_FIXED：核对落点，不盖别人
     if (p != (void *)lo) { if (p != MAP_FAILED) munmap(p, g_base - lo);
@@ -1379,9 +1388,9 @@ static void vawin_reserve(void) {
     if (!sz && g_fit >= MIN_WIN + HOST_BELOW) {
         uint64_t pool = s2a_window_container_pool();   // 多款容器在构造期逐款读过 NPDM；单款 0 = 不知道，照旧 3 GiB
         uint64_t below = s2a_window_host_below_for_pool(g_fit, g_span_learned, pool);
-        if (!g_ctr && g_span_learned && below > HOST_BELOW) s2a_window_cap_try(NULL, g_ctor_pid, g_span_learned);   // 单款按已知跨度收窄了：记标记（多款容器选定游戏后按那款记，svc_mem.c）
-        if (pool && below != HOST_BELOW) LOG("地址窗口：按本款应用池 %llu MB 定宿主保留 %llu MB（固定 %llu MB 时窗口放不下 SDK 开局要的堆）",
-            (unsigned long long)(pool >> 20), (unsigned long long)(below >> 20), (unsigned long long)(HOST_BELOW >> 20));
+        if (!g_ctr && g_span_learned && below > s2a_window_host_floor(g_fit)) s2a_window_cap_try(NULL, g_ctor_pid, g_span_learned);   // 单款按已知跨度收窄了：记标记（多款容器选定游戏后按那款记，svc_mem.c）
+        if (pool && below != s2a_window_host_floor(g_fit)) LOG("地址窗口：按本款应用池 %llu MB 定宿主保留 %llu MB（固定 %llu MB 时窗口放不下 SDK 开局要的堆）",
+            (unsigned long long)(pool >> 20), (unsigned long long)(below >> 20), (unsigned long long)(s2a_window_host_floor(g_fit) >> 20));
 #if !TARGET_OS_OSX
         // 即时存档：命令记录区 1 GB + 虚拟池区 2 GB。先放窗口所在空洞之外（[4 GB, 空洞起点) 里整块 ≥3 GB 的空洞顶端）；再放窗口下方宿主保留段底部。
         //   宿主段不够时按游戏实际要多少判（s2a_snap_arena_place2）：本款已知的最高跨度（本机记录 / 种子表）加余量放得进「空洞 − 宿主 3 GB − 快照 3 GB」，
@@ -1393,7 +1402,7 @@ static void vawin_reserve(void) {
           if (!(rec && *rec) && s2a_snap_mode() && !s2a_snap_restoring()) {
               uint64_t oa = 0, os = 0, of = 0, ofa = 0, ol = 0;
               pick_hole_in(0x100000000ull, fat, A, &oa, &os, &of, &ofa, 0, &ol);
-              uint64_t below0 = below; int where = s2a_snap_arena_place2(os, g_fit, &below, A, HOST_BELOW, span_known, SNAP_SPAN_MARGIN);
+              uint64_t below0 = below; int where = s2a_snap_arena_place2(os, g_fit, &below, A, s2a_window_host_floor(g_fit), span_known, SNAP_SPAN_MARGIN);
               if (where == 2 && below != below0) LOG("即时存档：宿主保留段 %llu MB 加长到 %llu MB 放命令记录区与虚拟池区，窗口少 %llu MB（本款已知最高跨度 %llu MB，0 = 还不知道、按需起局）",
                   (unsigned long long)(below0 >> 20), (unsigned long long)(below >> 20), (unsigned long long)((below - below0) >> 20), (unsigned long long)(span_known >> 20));
               if (where == 1) { g_snap_out = oa + os - A;
@@ -1403,7 +1412,7 @@ static void vawin_reserve(void) {
                       (unsigned long long)(A >> 20), (unsigned long long)(of >> 20), (unsigned long long)(below >> 20), (unsigned long long)((below - A) >> 20)); }
               else { s2a_snap_disable(S2A_SNAP_OFF_ADDRESS);
                   LOG("【黄】即时存档：本款已知最高跨度 %llu MB 加余量 %llu MB 放不进空洞 %llu MB 减去宿主与快照区的 %llu MB，窗口外也没有整块 %llu MB 的空洞（最大 %llu MB）——这台设备的地址空间不够同时放下这款与快照，这一局不开快照，游戏照常玩",
-                      (unsigned long long)(span_known >> 20), (unsigned long long)(SNAP_SPAN_MARGIN >> 20), (unsigned long long)(g_fit >> 20), (unsigned long long)((A + HOST_BELOW) >> 20),
+                      (unsigned long long)(span_known >> 20), (unsigned long long)(SNAP_SPAN_MARGIN >> 20), (unsigned long long)(g_fit >> 20), (unsigned long long)((A + s2a_window_host_floor(g_fit)) >> 20),
                       (unsigned long long)(A >> 20), (unsigned long long)(of >> 20)); } } }
 #endif
         at = fat + below; want = g_fit - below; g_keep_lo = fat;
