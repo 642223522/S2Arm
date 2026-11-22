@@ -514,8 +514,10 @@ static struct nvn_gpu_shader_s g_fsh[3]; static struct nvn_gpu_pipe_s g_fpipe;
 static struct rp_prog g_fprog, g_variant_prog; static struct nvn_gpu_shader_s g_variant_fs; static int g_rt_variant;
 static int g_resolves, g_resolve_rc; static struct rp_shader_req g_last_req;
 static struct rp_prog g_gprog2; static const struct rp_prog *g_gresolve_next;   // 图形出库回退用例：拒收后解析交「现编版」g_gprog2
+static const struct rp_prog *g_resolve_seq[4]; static int g_resolve_seq_n, g_resolve_seq_i;   // 分层通道用例：逐次解析依次交这几份程序（最后一份一直用）
 int rp_shader_resolve(const struct rp_shader_req *q, const struct rp_prog **out) {
     g_resolves++; g_last_req = *q;
+    if (!g_resolve_rc && g_resolve_seq_n) { *out = g_resolve_seq[g_resolve_seq_i < g_resolve_seq_n ? g_resolve_seq_i++ : g_resolve_seq_n - 1]; return 0; }
     *out = g_resolve_rc ? NULL : g_gresolve_next ? g_gresolve_next : (g_rt_variant && q->rt_format[0] == NVN_FORMAT_RGBA32UI ? &g_variant_prog : &g_fprog);
     return g_resolve_rc;
 }
@@ -4402,6 +4404,65 @@ static void t_pass_3d_slice_view(void) {
     pass_fresh();
 }
 
+// 分层通道（八方旅人 010057D006492000 读档后整幅黑的根因）：调色 LUT #146 是 32x32x32 的 3D 贴图，游戏用一笔 6 顶点 × 32 实例的绘制、
+// 顶点着色器按实例号写层号（BuiltIn Layer）一次画满 32 片；通道写死 1 层时只有第 0 片能落下，调色查表全 0，整幅画面黑。
+// 规则照 iOS nvn_mtl.m（g_rp_layered → renderTargetArrayLength）：程序写层号（rp_prog.layer_out）时通道层数 = 各附件从挂接层起能给的层数取最小，
+// 附件改成「起始层起这么多层、只取一级」的二维阵列视图；不写层号的照旧 1 层、视图记录原样；两种程序交替画同一目标时拆通道。
+// 期望值手算：① 32 层 3D、不带视图 → 32 层，视图 2D 阵列 0+32、级 0+1；② 同一张、不写层号 → 1 层、不带视图；
+// ③ 写层号 → 不写层号连画同一目标 → 两个通道，32 层、1 层（③b 两笔都写层号 → 一个通道）；④ 8 层 2D 阵列、视图起点 3 层数 5 → 5 层（8−3 = 5），层数 2 → 2；
+// ⑤ 二维贴图 → 1 层、不带视图；⑥ 3D 视图取第 1 级 → 32>>1 = 16 层、级 1+1；⑦ 3D 32 层颜色 + 4 层二维阵列深度 → 取小 4。
+static void lay_run(const tex_t *ct, const view_t *cv, const tex_t *zt, const struct rp_prog *const *progs, int ndraw) {
+    pass_fresh(); g_resolve_rc = 0; g_vw_last_has = -1; memset(&g_vw_last, 0xA5, sizeof g_vw_last);
+    g_resolve_seq_n = ndraw; g_resolve_seq_i = 0; for (int i = 0; i < ndraw && i < 4; i++) g_resolve_seq[i] = progs[i];
+    stream s = {0}; q_env(&s);
+    p_set_rt r; memset(&r, 0, sizeof r); r.n = 1; r.color[0] = ct; if (cv) { r.has_cview[0] = 1; r.cview[0] = *cv; } r.depth = zt;
+    uint8_t *a = put(&s, OP_SET_RT, set_rt_size(&r)); p_set_rt_c *h = set_rt_put(a, &r);
+    const tex_t **pt = (const tex_t **)(h + 1); tex_t *snap = (tex_t *)(a + set_rt_snap_off(h)); snap[0] = *ct; pt[0] = &snap[0]; if (zt) { snap[1] = *zt; pt[1] = &snap[1]; }
+    for (int i = 0; i < ndraw; i++) { p_draw *d = put(&s, OP_DRAW, sizeof *d); d->prim = i & 1 ? 5 : 4; d->count = 6; d->instances = 32; }   // 换图元 = 换管线，逐笔重新解析程序
+    end(&s); submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+    g_resolve_seq_n = 0;
+}
+static void t_pass_layered(void) {
+    q_env(&(stream){0});   // 只为把 g_fprog 复位成固定布局（流丢弃）
+    static struct rp_prog lay, flat; lay = g_fprog; lay.layer_out = 1; flat = g_fprog; flat.layer_out = 0;
+    const struct rp_prog *L1[] = {&lay}, *F1[] = {&flat}, *LF[] = {&lay, &flat};
+    tex_t lut = mk_tex_tgt(146, NVN_TEXTURE_TARGET_3D, NVN_FORMAT_RGB10A2, 32, 32, 32);
+    // ①
+    lay_run(&lut, NULL, NULL, L1, 1);
+    CHECK(g_npd == 1 && g_pd[0].layers == 32 && g_pd[0].color[0].view);
+    CHECK(g_vw_last_has == 1 && g_vw_last.set_target == 1 && g_vw_last.target == NVN_TEXTURE_TARGET_2D_ARRAY && g_vw_last.set_layers == 1 && g_vw_last.min_layer == 0 && g_vw_last.nlayers == 32);
+    CHECK(g_vw_last.set_levels == 1 && g_vw_last.base_level == 0 && g_vw_last.nlevels == 1);
+    // ②
+    lay_run(&lut, NULL, NULL, F1, 1);
+    CHECK(g_npd == 1 && g_pd[0].layers == 1 && g_vw_last_has == 0);
+    // ③
+    lay_run(&lut, NULL, NULL, LF, 2);
+    CHECK(g_npd == 2 && g_pd[0].layers == 32 && g_pd[1].layers == 1 && g_resolves >= 2);
+    { const struct rp_prog *LL[] = {&lay, &lay}; lay_run(&lut, NULL, NULL, LL, 2); CHECK(g_npd == 1 && g_pd[0].layers == 32); }   // ③b 对照：两笔都写层号不拆（③ 的两个通道只来自分层与否不同）
+    // ④
+    tex_t arr = mk_tex_tgt(147, NVN_TEXTURE_TARGET_2D_ARRAY, NVN_FORMAT_RGBA8, 32, 32, 8);
+    view_t va; memset(&va, 0, sizeof va); va.set_layers = 1; va.min_layer = 3; va.nlayers = 5;
+    lay_run(&arr, &va, NULL, L1, 1);
+    CHECK(g_npd == 1 && g_pd[0].layers == 5 && g_vw_last_has == 1 && g_vw_last.target == NVN_TEXTURE_TARGET_2D_ARRAY && g_vw_last.min_layer == 3 && g_vw_last.nlayers == 5);
+    va.nlayers = 2; lay_run(&arr, &va, NULL, L1, 1);
+    CHECK(g_npd == 1 && g_pd[0].layers == 2 && g_vw_last_has == 1 && g_vw_last.min_layer == 3 && g_vw_last.nlayers == 2);
+    // ⑤
+    tex_t flat2d = mk_tex(148, 0, NVN_FORMAT_RGBA8, 32, 32, 1, 0);
+    lay_run(&flat2d, NULL, NULL, L1, 1);
+    CHECK(g_npd == 1 && g_pd[0].layers == 1 && g_vw_last_has == 0);
+    // ⑥
+    tex_t lut2 = lut; lut2.d.levels = 2; nvn_tex_layout(&lut2.d, &lut2.L);
+    view_t v1; memset(&v1, 0, sizeof v1); v1.set_levels = 1; v1.base_level = 1; v1.nlevels = 1;
+    lay_run(&lut2, &v1, NULL, L1, 1);
+    CHECK(g_npd == 1 && g_pd[0].layers == 16 && g_vw_last_has == 1 && g_vw_last.base_level == 1 && g_vw_last.nlevels == 1 && g_vw_last.min_layer == 0 && g_vw_last.nlayers == 16);
+    // ⑦
+    tex_t za = mk_tex_tgt(149, NVN_TEXTURE_TARGET_2D_ARRAY, NVN_FORMAT_DEPTH16, 32, 32, 4);
+    lay_run(&lut, NULL, &za, L1, 1);
+    CHECK(g_npd == 1 && g_pd[0].layers == 4 && g_pd[0].depth.view && g_vw_last_has == 1 && g_vw_last.target == NVN_TEXTURE_TARGET_2D_ARRAY && g_vw_last.nlayers == 4);
+    CHECK(nvn_unimpl_kinds() == 0);
+    pass_fresh();
+}
+
 // 遮挡计数：通过的样本数是队列上的累计值——复位清零、之后的绘制往上加、报告写出当时的累计值。
 // 期望值手算：各槽的样本数由替身在完成时给出，报告值 = 复位之后、报告之前开过的各槽之和（跨段接着加）。
 // 开段失败（审计 P1-174）：时间线照走一格，不回放出任何绘制；中途交段之后开新段失败时，已经交出去的段完成回调不能碰到放掉的提交。
@@ -7487,6 +7548,7 @@ int main(int argc, char **argv) {
     t_view_storage_sweep();
     t_view_storage_pixels();
     t_pass_3d_slice_view();
+    t_pass_layered();
     t_bind_reuse();
     t_begin_fail();
     t_fps_target_segments();

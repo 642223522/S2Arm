@@ -21,6 +21,7 @@
 #include "direct/source_store.h"
 #include "direct/texture_facts.h"
 #include "spirv_sampler_use.h"
+#include "spirv_layer_out.h"
 #include "direct/offline_library.h"
 #include "direct/libpack_vk.h"
 #include "../../../graphics/nvn/gfx/nvn/dmsh_chain.h"   // b-<DMSH_CHAIN>-vk：出包预编库目录名（同 nvn_vk_draw.c）
@@ -974,6 +975,9 @@ static struct entry *build(const uint8_t *bytes, size_t len, const struct s2a_so
       } }
     e->prog.z_raw = depth_clip_cap() == 1;   // 同 fill_facts：有管线裁剪深度时所有图形程序都不改写 z（预编库的程序另在取用处置 1）
     e->prog.color_out_mask = nst >= 2 && fp.stage[1].present ? fp.stage[1].fragment_output_map : 0xffffffffu;
+    // 顶点 / 几何阶段写层号：回放核心按分层通道开（八方旅人的 32x32x32 调色 LUT 每个实例写一层，单层通道只剩第 0 层 → 整幅画面黑）
+    for (int st = 0; st < nst && st < FD_MAX_STAGES; st += 2)
+        if (fp.stage[st].present && s2a_spirv_writes_layer((const uint32_t *)fp.stage[st].spirv, fp.stage[st].spirv_bytes)) e->prog.layer_out = 1;
     // 出包预编库按阶段分别取、拼成一份，拼时不过链接（现编走 linked 请求、缺的输出由编译器补）：片元读了上一段没写的
     //   位置，驱动按规范拒建管线（Adreno：input v_locN not declared in output from previous stage）。这份不用库，调用方
     //   libpack_mark_bad 后走现编——同「状态 / 声明对得上才用预编库」。

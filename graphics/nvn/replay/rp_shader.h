@@ -36,6 +36,7 @@ struct rp_prog {
     uint8_t z_raw;                                            // 顶点出口 z 原样（不随深度模式改写，出包预编库的程序）：near = -w 时管线设裁剪深度 [-1, 1]
     uint8_t lib_sourced;                                      // 来自出包预编库（libpack）。绑定核对发现声明与实际绑定不符时，rp_shader_lib_reject 据此走现编回退
     uint8_t lib_bad;                                          // 这份程序身份已按绑定核对拒收：解析路径（含事实复用 / 结果合并）绕过它，下次取现编版
+    uint8_t layer_out;                                        // 顶点 / 几何阶段写渲染目标层号（BuiltIn Layer）：这笔按分层通道画，图元按层号落到附件对应层（iOS nvn_mtl.m layer_out → renderTargetArrayLength）
     struct rp_usrc usrc[RP_PROG_USRC_MAX]; uint32_t nusrc;    // NVN_RB_TEXU / TBUFU 项的句柄来源（布局项 src_reg2 指向这里）
     // 内容身份：S2AI1 v3 规范输入的 SHA-256，也就是来源缓存（g_progs）的键。管线配方与跨会话预热清单
     // 用它跨会话定位「同一份程序」；全 0 = 没有身份（失败项 / 还没算出来），这种程序不进任何清单。
