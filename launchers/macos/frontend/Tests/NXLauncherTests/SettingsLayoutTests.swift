@@ -1613,6 +1613,13 @@ import S2ArmAppleAdapter
     /// #2081：键位弹窗读作业层 loadInput 的结果（同起局的规则）：存坏了标 problem、显示回落后的那份；玩家 2 沿用玩家 1 标 inherited；没有配置（null）= 标准键位。期望手写
     func testInputPopupReadsJobLayerRule() async throws {
         let fixture = try SettingsFixture()
+        defer { fixture.remove() }
+        let fallback: [String: Any] = ["schema": 1, "keyboard": ["A": ["code": 19]], "mouse": [String: Any](), "gamepad": ["A": "east"], "axes": [String: Any](),
+                                       "deadzone": 0.15, "mouseOptions": ["mode": "off", "sensitivityX": 1, "sensitivityY": 1]]
+        fixture.runner.loadInputPlayers = [["player": 1, "config": fallback, "source": "default", "problem": true],
+                                           ["player": 2, "config": fallback, "source": "player1", "problem": false],
+                                           ["player": 3, "config": NSNull(), "source": "standard", "problem": false],
+                                           ["player": 4, "config": NSNull(), "source": "standard", "problem": false]]
         let all = try await fixture.model.loadInputs(gameID: "fixture")
         XCTAssertEqual(fixture.runner.requests.filter { $0["operation"] as? String == "loadInput" }.count, 1, "四位玩家一次读")
         XCTAssertEqual(all[1]?.problem, true)
@@ -2438,6 +2445,12 @@ private final class SettingsRunner: JobProcessRunner {
     }
     private var trouble = ""
     private var swapped = false
+    /// loadInput 回的四位玩家（#2081）：缺省四位都是标准键位（config = null），要测回落的用例自己设
+    private var inputRows: [[String: Any]] = (1...4).map { ["player": $0, "config": NSNull(), "source": "standard", "problem": false] }
+    var loadInputPlayers: [[String: Any]] {
+        get { lock.withLock { inputRows } }
+        set { lock.withLock { inputRows = newValue } }
+    }
     /// 回到上一份存档：savePrevious 回的 trouble；saveRestorePrevious 每次把「已换到上一份」翻转一次（作业层的交换是可逆的）
     var previousTrouble: String {
         get { lock.withLock { trouble } }
@@ -2482,15 +2495,7 @@ private final class SettingsRunner: JobProcessRunner {
         if request["operation"] as? String == "preflight" {
             result = ["checks": preflightChecks]
         }
-        // #2081：loadInput 回四位玩家实际生效的键位（玩家 1 存坏了、回落到所有游戏的默认；玩家 2 沿用玩家 1）
-        if request["operation"] as? String == "loadInput" {
-            let fallback: [String: Any] = ["schema": 1, "keyboard": ["A": ["code": 19]], "mouse": [String: Any](), "gamepad": ["A": "east"], "axes": [String: Any](),
-                                           "deadzone": 0.15, "mouseOptions": ["mode": "off", "sensitivityX": 1, "sensitivityY": 1]]
-            result = ["players": [["player": 1, "config": fallback, "source": "default", "problem": true],
-                                  ["player": 2, "config": fallback, "source": "player1", "problem": false],
-                                  ["player": 3, "config": NSNull(), "source": "standard", "problem": false],
-                                  ["player": 4, "config": NSNull(), "source": "standard", "problem": false]]]
-        }
+        if request["operation"] as? String == "loadInput" { result = ["players": inputRows] }   // #2081：缺省四位标准键位
         if request["operation"] as? String == "savePrevious" { result = ["hasPrevious": true, "saveIds": ["0000000000000001"], "trouble": previousTrouble] }
         if request["operation"] as? String == "saveRestorePrevious" { lock.withLock { swapped.toggle() }; result = ["restored": 1] }
         if request["operation"] as? String == "saveStatus" {
