@@ -11,11 +11,13 @@
 #include "motion_pick.h"   // 玩家 1 六轴来源仲裁（纯函数，单测 t_motion_pick）
 #include "NS2Module.h"
 #include "pad_liveness.h"
+#include "pad_order_file.h"   // 分配玩家的顺序表：与 Mac 宿主同一份格式与解析
 #include "haptic_retry.h"
 #include "ea_rumble.h"   // GameSir G8+ MFi 有线：手柄马达走配件协议（#462）
 #include "keyboard.h"     // iPad 外接键盘（#1869）：键态由 keyboard.m 交来，这里照 Mac 选源
 #include "keyboard_map.h"
 #include <dlfcn.h>
+#include <sys/stat.h>
 #include <stdatomic.h>
 #include <pthread.h>
 #include <math.h>
@@ -429,6 +431,33 @@ static _Atomic uint32_t g_slot_buttons[S2A_IOS_MAX_PADS];
 static _Atomic int32_t g_slot_sticks[S2A_IOS_MAX_PADS][4];
 static _Atomic int g_slot_live = 1;    // 占到的最高槽位 + 1（触屏也算一位，同 Mac 键盘）
 static _Atomic int g_slots_active;     // 前台才喂槽 1–3（后台清零，同 pad.c s2a_pad_set_active）
+// 分配玩家的顺序表（同 Mac front_mac.m pad_order_refresh；iOS 由游戏内「分配玩家」写 App 容器 Library/Application Support/S2Arm/pad-order.json）。
+//   只在 inputQueue 上读写（planSlots 里）。没有表 / 读不懂 = 照连接顺序（同改前）；generation 变了才清槽位重排，接上 / 断开手柄已在玩的留原位
+static s2a_pad_order g_order;
+static int g_order_loaded;
+static long g_order_generation = -1;
+NSString *s2a_ios_pad_order_path(void) {
+    const char *override = getenv("S2A_PAD_ORDER_FILE");
+    if (override) return @(override);
+    NSURL *dir = [NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject;
+    return [[dir URLByAppendingPathComponent:@"S2Arm/pad-order.json"] path];
+}
+static BOOL pad_order_refresh(void) {   // 回 YES = 表换了（或没了），调用方清槽位表照新表重排
+    static struct timespec stamp;
+    NSString *path = s2a_ios_pad_order_path();
+    struct stat st;
+    if (stat(path.fileSystemRepresentation, &st)) { if (!g_order_loaded) return NO; g_order_loaded = 0; g_order_generation = -1; return YES; }
+    if (g_order_loaded && st.st_mtimespec.tv_sec == stamp.tv_sec && st.st_mtimespec.tv_nsec == stamp.tv_nsec) return NO;
+    stamp = st.st_mtimespec;
+    id json = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:path] ?: [NSData data] options:0 error:nil];
+    s2a_pad_order order; long generation;
+    int loaded = s2a_pad_order_from_json(json, &order, &generation);
+    BOOL was = g_order_loaded, reassign = !was || generation != g_order_generation;
+    g_order = order; g_order_loaded = loaded; g_order_generation = generation;
+    LOG("分配玩家顺序表：%d 位%s，没分配的 %d 只不给玩家位%s", order.count, loaded ? "" : "（读不懂，照连接顺序）", order.dropped_count,
+        reassign ? "；重新分配过，照表重排" : "；只是接上 / 断开手柄，已在玩的留原位");
+    return (loaded || was) && reassign;
+}
 // 系统扩展手柄 → Switch 按键位（0..15 + Home 扩展位 16）与摇杆。玩家 1（publishSystem）与槽 1–3 共用
 static void sample_extended(GCExtendedGamepad *pad, uint32_t *out_buttons, int32_t axes[4]) {
     // GameController 的 ABXY 通常按物理方位定义（南/东/西/北 → Nintendo B/A/Y/X）；任天堂手柄按键帽字母上报（#40），判断同 Mac 侧 front_mac.m。
@@ -762,6 +791,25 @@ static void pad_face_sync(void) {
     }
     // NS2 Pro（BLE）连着也参加分槽，和系统手柄一视同仁：先连先占、还在线留原槽、断开留空（#1428；原先只分系统手柄，NS2 Pro 被挤出）
     if (atomic_load(&g_ble_ready) && n < 9) { ids[n] = &g_ble_slot_tag; ctrls[n] = nil; n++; }
+    // 分配玩家：照顺序表排（同 Mac，排位规则共用 pad.c s2a_pad_order_arrange）；没分配的不进槽位；登记过的钉在自己那格（s2a_slot_pin）。
+    //   iOS 上键盘只并进玩家 1，表里的 keyboard 不占槽；NS2 Pro 按通道玩家 0 认
+    if (pad_order_refresh()) for (int i = 0; i < S2A_IOS_MAX_PADS; i++) _slotId[i] = NULL;
+    int rank[9];
+    for (int j = 0; j < n; j++) rank[j] = S2A_PAD_ORDER_UNLISTED;
+    if (g_order_loaded) {
+        int ns2[9], keep[9], kept_rank[9]; const char *group[9];
+        for (int j = 0; j < n; j++) {
+            ns2[j] = ids[j] == &g_ble_slot_tag ? 0 : -1;
+            group[j] = ctrls[j] ? (ctrls[j].vendorName ?: ctrls[j].productCategory).UTF8String : NULL;
+        }
+        int m = s2a_pad_order_arrange(&g_order, n, ns2, group, NULL, keep, kept_rank);
+        const void *ids2[9]; GCController *ctrls2[9];
+        for (int k = 0; k < m; k++) { ids2[k] = ids[keep[k]]; ctrls2[k] = ctrls[keep[k]]; rank[k] = kept_rank[k]; }
+        for (int k = 0; k < m; k++) { ids[k] = ids2[k]; ctrls[k] = ctrls2[k]; }
+        for (int k = m; k < n; k++) ctrls[k] = nil;
+        n = m;
+        s2a_slot_pin(_slotId, ids, rank, n, S2A_IOS_MAX_PADS);
+    }
     int slot_of[9];
     int live = s2a_slot_plan(_slotId, ids, n, S2A_IOS_MAX_PADS, slot_of);
     int ble_slot = -1;

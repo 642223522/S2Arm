@@ -53,6 +53,10 @@ int main(int argc, char **argv) {
             char what[256];
             snprintf(what, sizeof what, "%s 用共用解析 s2a_pad_order_from_json、不自带一份", argv[i]);
             check([src containsString:@"s2a_pad_order_from_json("] && ![src containsString:@"void (^fill)("], what);
+            // 排位共用 pad.c：先 s2a_pad_order_arrange 去掉没分配的、再 s2a_slot_pin 钉槽，最后才 s2a_slot_plan
+            NSRange ar = [src rangeOfString:@"s2a_pad_order_arrange("], pin = [src rangeOfString:@"s2a_slot_pin("], plan = [src rangeOfString:@"= s2a_slot_plan("];
+            snprintf(what, sizeof what, "%s 排位顺序：arrange → slot_pin → slot_plan", argv[i]);
+            check(ar.location != NSNotFound && pin.location != NSNotFound && plan.location != NSNotFound && ar.location < pin.location && pin.location < plan.location, what);
         }
     }
     printf("%s 顺序表解析单测：不符 %d\n", bad ? "🔴" : "🟢", bad);

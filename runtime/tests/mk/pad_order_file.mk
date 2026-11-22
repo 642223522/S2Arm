@@ -5,6 +5,6 @@ NATIVE_TEST_OWN += pad_order_file
 native-test-pad_order_file:
 	@mkdir -p $(BUILD)/tests
 	$(CC) $(CFLAGS) -fobjc-arc -Iios -o $(BUILD)/tests/t_pad_order_file runtime/tests/t_pad_order_file.m -framework Foundation
-	$(BUILD)/tests/t_pad_order_file macos/front_mac.m
+	$(BUILD)/tests/t_pad_order_file macos/front_mac.m ios/controller.m
 TEST_TARGETS += native-test-pad_order_file
 endif
