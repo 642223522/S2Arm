@@ -546,6 +546,7 @@ __attribute__((visibility("default"), used)) void s2a_pad_set_motion_enabled(int
     // Framework-recognized Pro uses public sensor control plus passive HID data;
     // Joy-Con / framework-unrecognized Pro retain their existing raw control path.
     s2a_joycon_imu_set_enabled(want);
+    s2a_mac_hid_pad_set_motion_enabled(want);   // 兜底 HID 手柄（第三方 Switch 模式 / GameController 不认的 Pro，#1383）同一开关
 }
 // P1（槽 0）是一代 Joy-Con 单元时（#520，同 Joy-Con 2：P1 的体感 / 震动跟占 P1 的那只走）：定义在槽位表后面
 static int p1_gen1_motion(s2a_pad_motion out[2]);
@@ -2045,6 +2046,13 @@ static void snap_mac_restart(int result, const char *detail, void *ctx) {
     dispatch_async(dispatch_get_main_queue(), ^{ [g_snap_mac snapNote:[(s2a_ui_zh() ? @"这次回不去：" : @"Couldn’t go back: ") stringByAppendingString:why]]; });
 }
 - (void)snapRestoreNow:(NSString *)dir rollback:(BOOL)rollback {
+    // 落点接不上（快照存的时候窗口 / 命令记录区与这一局不同）：进程内重启必然拒绝，原先还会先拆掉这一局。Mac 没有游戏库恢复入口——
+    //   原地重新起这一局、构造期按快照清单原址占（runtime/src/snaprelaunch.c，成功不返回）；玩家看到游戏重开一下就回到那一刻，不另弹选项
+    int s2a_snap_fits_inplace(const char *), s2a_snap_relaunch(const char *, int);
+    if (s2a_snap_fits_inplace(dir.fileSystemRepresentation) == 0) {
+        [self snapNote:s2a_ui_zh() ? @"正在回到那一刻（游戏会重开一下）…" : @"Going back (the game will reopen)…"];
+        s2a_snap_relaunch(dir.fileSystemRepresentation, rollback);
+        [self snapNote:s2a_ui_zh() ? @"这次回不去，稍后再试（快照还在）" : @"Couldn’t go back right now (the snapshot is kept)"]; return; }
     setenv("S2A_SNAP_RESTORE", dir.fileSystemRepresentation, 1);
     if (rollback) setenv("S2A_SNAP_SAVE_ROLLBACK", "1", 1); else unsetenv("S2A_SNAP_SAVE_ROLLBACK");
     g_snap_mac = self; int s2a_host_restart(void (*)(int, const char *, void *), void *);   // 进程内重启（runtime/include/s2a_session.h）

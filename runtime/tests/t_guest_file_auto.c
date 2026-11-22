@@ -48,7 +48,8 @@ int main(void) {
     CHECK(s2a_guest_file_wanted3(NULL, S1, 4096 * MB, 3000 * MB, H2, G) == 0, "㉑ 剩余 4096、实测 3000 + 512 = 3512 ≤ 4096：关");
     CHECK(s2a_guest_file_wanted3(NULL, S1, R, R - G, H2, G) == 0 && s2a_guest_file_wanted3(NULL, S1, R, R - G + 1, H2, G) == 1, "㉒ 边界：实测 + 余量 = 剩余 关，多 1 字节 开");
     {   // ㉓ 每局记需求、起局按上一局结算（#1634 11-19：原「只增不减 + 文件后备局不记」一局异常就永远判开）。期望按规则手写（余量 512、剩余 6141）：
-        //   a 没记录、本局心跳记 900 / 700 → 本局文件「900 MB 2 次 匿名」；结算（短局）→ 记录 900
+        //   a 没记录、本局心跳记 900 / 700 → 本局文件「900 MB 2 次 匿名」；结算（短局、900 + 512 ≤ 6141）→ 不建记录（短局只是下限，D-9XY8）
+        //   a' 没记录、短局（8 次、文件后备）需求 2817、剩余 6132 → 不建记录（D-9XY8 原样）；没记录、短局需求 5700（+512 > 6141，证明装不下）→ 记录 5700
         //   b 记录 5835、上一局开文件后备够长（40 次）需求 4300 → 换成 4300（往下改：#1634 帖主那种一局异常就纠正）
         //   c 记录 4300、上一局太短（5 次）需求 2000 → 不降，4300
         //   d 记录 4300、上一局前台死掉、需求 6000（+1024 > 6141，像撞上限）→ 6000、记「死过」
@@ -63,7 +64,10 @@ int main(void) {
         uint64_t a0 = s2a_guest_mem_seen(); s2a_guest_mem_note(900 * MB); s2a_guest_mem_note(700 * MB);
         unsigned long long rn = 0, rb = 0; int rf = -1; { FILE *f = fopen(rk, "r"); if (f) { if (fscanf(f, "%llu %llu %d", &rn, &rb, &rf) != 3) rn = 0; fclose(f); } }
         settle(0, R, G); uint64_t a1 = s2a_guest_mem_seen(); int gone = access(rk, F_OK) != 0;
-        CHECK(a0 == 0 && rn == 900 * MB && rb == 2 && rf == 0 && a1 == 900 * MB && gone, "㉓a 本局文件 %llu MB / %llu 次 / 文件后备 %d（期望 900 / 2 / 0），结算后记录 %llu MB（期望 900）、本局文件删掉 %d", rn >> 20, rb, rf, a1 >> 20, gone);
+        CHECK(a0 == 0 && rn == 900 * MB && rb == 2 && rf == 0 && a1 == 0 && gone, "㉓a 本局文件 %llu MB / %llu 次 / 文件后备 %d（期望 900 / 2 / 0），结算后记录 %llu MB（期望 0，短局不建）、本局文件删掉 %d", rn >> 20, rb, rf, a1 >> 20, gone);
+        PUT(rk, "%llu 8 1\n", 2817 * MB); settle(0, 6132 * MB, G); uint64_t a2 = s2a_guest_mem_seen();
+        PUT(rk, "%llu 8 1\n", 5700 * MB); settle(0, R, G); uint64_t a3 = s2a_guest_mem_seen();
+        CHECK(a2 == 0 && a3 == 5700 * MB, "㉓a' 没记录短局 2817（剩余 6132）：记录 %llu MB（期望 0）；没记录短局 5700（+512 > 6141）：记录 %llu MB（期望 5700）", a2 >> 20, a3 >> 20);
         PUT(pk, "%llu\n", 5835 * MB); PUT(rk, "%llu 40 1\n", 4300 * MB); settle(0, R, G);
         CHECK(s2a_guest_mem_seen() == 4300 * MB, "㉓b 记录 5835、上一局文件后备够长需求 4300：记录 %llu MB（期望 4300，往下改）", s2a_guest_mem_seen() >> 20);
         PUT(rk, "%llu 5 0\n", 2000 * MB); settle(0, R, G);
