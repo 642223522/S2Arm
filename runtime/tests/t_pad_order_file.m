@@ -57,8 +57,13 @@ int main(int argc, char **argv) {
             NSRange ar = [src rangeOfString:@"s2a_pad_order_arrange("], pin = [src rangeOfString:@"s2a_slot_pin("], plan = [src rangeOfString:@"= s2a_slot_plan("];
             snprintf(what, sizeof what, "%s 排位顺序：arrange → slot_pin → slot_plan", argv[i]);
             check(ar.location != NSNotFound && pin.location != NSNotFound && plan.location != NSNotFound && ar.location < pin.location && pin.location < plan.location, what);
+            if ([src containsString:@"selectSystemLocked"]) {   // iOS：没有表时玩家 1 的判活 / 换手柄照改前（s2a_system_action），按表改派只在有表时走
+                snprintf(what, sizeof what, "%s 按表改派玩家 1 只在有表时（g_order_loaded && …）", argv[i]);
+                check([src containsString:@"if (g_order_loaded && foreground && current.extendedGamepad && slot0 != current)"], what);
+            }
         }
     }
-    printf("%s 顺序表解析单测：不符 %d\n", bad ? "🔴" : "🟢", bad);
-    return bad ? 1 : 0;
+    if (bad) { fprintf(stderr, "✗ t_pad_order_file：%d 项不符\n", bad); return 1; }
+    printf("✓ t_pad_order_file：分配玩家顺序表解析（缺省 / 完整表 / 没写 generation / 超 8 项 / 混进非字典项）与宿主源码接线（共用解析、arrange → slot_pin → slot_plan、按表改派玩家 1 只在有表时）全过\n");
+    return 0;
 }

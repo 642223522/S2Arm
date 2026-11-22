@@ -103,6 +103,7 @@ hdr graphics/track/s2a_track.h
 hdr ios/haptic_retry.h
 hdr ios/haptic_safe.h
 hdr ios/local_player_prefs.h
+hdr ios/pad_order_file.h
 hdr macos/controller_view.h
 hdr macos/hid_generic.h
 hdr macos/hid_pad.h
