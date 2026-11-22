@@ -19,6 +19,7 @@
 #include "direct/libpack_vk.h"
 #include "nvn/nvn_vk_program_result.h"
 #include "libpack_texture_spirv.h"
+#include "../../graphics/nvn/gfx/nvn/include/nvn.h"
 
 static int fails;
 #define CHECK(cond, what) do { if (!(cond)) { printf("FAIL: %s\n", (what)); fails++; } } while (0)
@@ -697,6 +698,26 @@ int main(void) {
         CHECK(s2a_libpack_program_v1(lp, keys, 0x5 /* vs|gs */, NULL, 1, "h", "c", &j, &jl, w, sizeof w) == 1,
               "vs|gs 没有 fs（现编也不接这一形）→ MISS 不冒充命中");
         CHECK(s2a_libpack_misses() == m0 + 4, "miss counter +4");
+    }
+
+    // The existing VS and FS keys are present. A tessellation stage must make the whole program miss.
+    {
+        const uint8_t keys[6][8] = {
+            {0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef},
+            {0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe},
+            {0x11}, {0x22},
+        };
+        const uint32_t vf = NVN_SHADER_STAGE_VERTEX_BIT | NVN_SHADER_STAGE_FRAGMENT_BIT;
+        const uint32_t tcs = NVN_SHADER_STAGE_TESS_CONTROL_BIT, tes = NVN_SHADER_STAGE_TESS_EVALUATION_BIT;
+        const uint32_t masks[] = {vf | tcs, vf | tes, vf | tcs | tes};
+        const uint64_t m0 = s2a_libpack_misses();
+        for (size_t i = 0; i < sizeof masks / sizeof masks[0]; i++) {
+            uint8_t *j = NULL; size_t jl = 1; char w[192] = "";
+            int rc = s2a_libpack_program_v1(lp, keys, masks[i], NULL, 1, "h", "c", &j, &jl, w, sizeof w);
+            CHECK(rc == S2A_LIBPACK_MISS && !j && !jl, "tessellation stage → MISS, no partial program");
+            free(j);
+        }
+        CHECK(s2a_libpack_misses() == m0 + 3, "tessellation masks count as three misses");
     }
 
     // ---- reject：dm_ctl 不符 / spv 头坏 / 记录越界（vs 键是好的，坏在 fs 键——一段坏整个程序 reject）----
