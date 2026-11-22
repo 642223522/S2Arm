@@ -2316,13 +2316,24 @@ static void data_in_text(void) {
   msg("%s 内嵌数据判定：启用；代码段 %zu 字节，真实代码 %zu（函数范围 %zu、动态符号 %zu 个、分支闭包 %zu），排除 %zu 字节；异常类指令 %zu 条（范围外 %zu）；缺口 %zu → %zu，改写点 %zu → %zu\n",
       g->r.module, (size_t)g->text, code, fde, syms, walked, (size_t)g->text - code, exc, outside, gaps0, g->gaps.n, sites0, g->sites.n);
 }
+/* 社区补丁写进代码段尾巴（代码段结尾到 ro 开头之间的填充）的新代码字（#1628：FPSLocker 在旷野之息 1.9.0 主程序末尾放新函数，里面读计时器）。
+   这段不在代码段里，分析不覆盖；scan() 把这里的字也当代码看，要改写的（读计时器 / svc / 线程寄存器 / ctr）照常记成改写点，生成时同代码段里的点 */
+static A g_cptail[4096];
+static int g_ncptail;
+static int cp_tail(A a) {
+  for (int i = 0; i < g_ncptail; i++)
+    if (g_cptail[i] == a) return 1;
+  return 0;
+}
 static void scan(void) {
   /* NRO（romfs 里 nn::ro 装的模块，runtime/rewriter/nro_to_nso.py 转来）：text 段开头 [4, 0x80) 是 NRO 头（MOD0 偏移、
      'NRO0'、大小、段表、构建号），是数据不是指令，不扫（构建号字节会被认成 hvc 等缺口）；NSO 没有这个标记，扫描范围不变（与 patch_nso.py 同口径） */
   const A hdr = g->text >= 0x80 && !memcmp(g->img + 0x10, "NRO0", 4) ? 0x80 : 0;
-  for (A a = 0; a < (A)g->text; a += 4) {
+  A hi = (A)g->text;
+  for (int i = 0; i < g_ncptail; i++) if (g_cptail[i] + 4 > hi) hi = g_cptail[i] + 4;
+  for (A a = 0; a < hi; a += 4) {
     if (a >= 4 && a < hdr) continue;
-    if (!in_code(a)) continue;
+    if (a < (A)g->text ? !in_code(a) : !cp_tail(a)) continue;   /* 代码段外只看社区补丁写进尾巴的字（#1628） */
     uint32_t w = iw(a);
     const char* k = NULL;
     int arg = 0;
@@ -2367,6 +2378,10 @@ static void scan(void) {
       Ins x;
       if (decode(w, a, &x) && has18(&x))
         k = "x18";
+    }
+    if (k && a >= (A)g->text && eq(k, "x18")) {   /* 尾巴新代码不在任何函数里，x18 改写要靠函数分析（窗口 / 跳转），做不了：记缺口，那份补丁不进包 */
+      gap(a, "cpatch", "代码段尾巴新代码 0x%x 用到 x18，改写不了", w);
+      continue;
     }
     if (k) {
       Site s = {a, k, arg, 0};
@@ -4183,7 +4198,7 @@ static int cp_claimed(A off, A n) {
 }
 static void cpatch_rows(int phase) {
   const char* path = g->r.cpatch_tsv;
-  if (phase == 0) g_ncpclaim = 0;
+  if (phase == 0) g_ncpclaim = g_ncptail = 0;
   if (!path || !*path) return;
   FILE* f = fopen(path, "rb");
   if (!f) {
@@ -4207,7 +4222,8 @@ static void cpatch_rows(int phase) {
     uint32_t orig = (uint32_t)strtoul(origs, NULL, 16), nw = (uint32_t)strtoul(news, NULL, 16);
     if (phase == 0) {
       /* 代码段结尾到 ro 开头之间的填充（同在代码段末页，装载器按宿主页封成只读可执行）也收：金手指往这里写新代码（暗黑 3 0xC72Fxx）。
-         只收原字是全 0 / udf 的字、不越过 ro 开头；这里的字本改写器不分析不翻译，要翻译的指令（x18 / svc / tpidr）由 pack/cpatch.py 先挡掉 */
+         只收原字是全 0 / udf 的字、不越过 ro 开头；这里的新代码不进分析，scan() 按 g_cptail 逐字看：读计时器 / svc / 线程寄存器 / ctr 照常改写（#1628），
+         改写不了的（x18 / 系统寄存器 / brk 0xB000–0xBFFF）由 pack/cpatch.py tail_hazard 先挡掉 */
       int tail = off >= (A)g->text && off + 4 <= (A)g->ro && (orig == 0 || orig >> 16 == 0);
       if (off < 0 || off % 4 || (off + 4 > (A)g->text && !tail)) { gap(off, "cpatch", "w 点不在代码段"); continue; }
       if (iw(off) != orig) { gap(off, "cpatch", "w 点原字 0x%x，表里 0x%x", iw(off), orig); continue; }
@@ -4216,6 +4232,7 @@ static void cpatch_rows(int phase) {
         nw = adrp((int)(nw & 31), off, g->key);
       }
       put(off, nw);
+      if (tail && g_ncptail < (int)(sizeof g_cptail / sizeof g_cptail[0])) g_cptail[g_ncptail++] = off;
       bump("cpatch_w");
       continue;
     }
