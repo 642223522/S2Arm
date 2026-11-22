@@ -23,6 +23,8 @@ void s2a_ql_retry60(void) {}   // 档位梯子「再试 60 帧」（runtime/src/
 int s2a_snap_logging(void) { return 0; }
 int s2a_snap_dir_for(const char *gid, char *out, size_t n) { (void)gid; (void)out; (void)n; return -1; }
 int s2a_snap_exists(const char *dir) { (void)dir; return 0; }
+int s2a_snap_fits_inplace(const char *dir) { (void)dir; return -1; }   // 快照落点预检（runtime/src/snapshot.c）：本单测不恢复
+int s2a_snap_relaunch(const char *dir, int rollback) { (void)dir; (void)rollback; return -1; }   // Mac 原地重开（runtime/src/snaprelaunch.c）
 int s2a_snap_save_changed(const char *dir) { (void)dir; return -1; }
 int s2a_snap_request_save(const char *dir) { (void)dir; return -1; }
 void s2a_snap_on_done(void (*cb)(int, const char *)) { (void)cb; }
