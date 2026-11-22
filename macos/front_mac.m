@@ -1459,20 +1459,17 @@ static void sample_input(void) {
     int live_rank[S2A_LIVE_MAX];   // 顺序表里排第几（没登记 = S2A_PAD_ORDER_UNLISTED）：下面 s2a_slot_pin 照它把登记过的钉在自己那格
     for (int j = 0; j < S2A_LIVE_MAX; j++) live_rank[j] = S2A_PAD_ORDER_UNLISTED;
     if (g_order_loaded) {
-        int rank[S2A_LIVE_MAX], m = 0; NSMutableDictionary<NSString *, NSNumber *> *seen = [NSMutableDictionary new];
+        const char *group[S2A_LIVE_MAX]; int keep[S2A_LIVE_MAX], kept_rank[S2A_LIVE_MAX];
         for (int j = 0; j < n; j++) {
             NSString *name = live_ctrls[j] ? (live_ctrls[j].vendorName ?: live_ctrls[j].productCategory) : live_hid[j] ? @(live_hid[j]->name) : nil;
-            int index = name ? seen[name].intValue : 0;
-            if (name) seen[name] = @(index + 1);
-            rank[j] = s2a_pad_order_rank(&g_order, live_ble[j], live_key[j] ?: name.UTF8String, index);   // 一代按设备：照设备 id 认
+            group[j] = name.UTF8String;
         }
-        int order_idx[S2A_LIVE_MAX]; for (int j = 0; j < n; j++) order_idx[j] = j;
-        for (int a = 1; a < n; a++) for (int b = a; b > 0 && rank[order_idx[b]] < rank[order_idx[b - 1]]; b--) { int t = order_idx[b]; order_idx[b] = order_idx[b - 1]; order_idx[b - 1] = t; }   // 稳定排序
+        // 排位、稳定排序、去掉没分配的（同原机断开：系统手柄 S2Arm 断不了蓝牙，游戏不读它）与 iOS 共用 pad.c；一代按设备照 live_key 认
+        int m = s2a_pad_order_arrange(&g_order, n, live_ble, group, live_key, keep, kept_rank);
         const void *ids[S2A_LIVE_MAX]; GCExtendedGamepad *pads[S2A_LIVE_MAX]; GCController *ctrls[S2A_LIVE_MAX]; int bles[S2A_LIVE_MAX]; const char *keys2[S2A_LIVE_MAX]; const s2a_hid_pad *hids[S2A_LIVE_MAX];
-        for (int k = 0; k < n; k++) {
-            int j = order_idx[k];
-            if (rank[j] == S2A_PAD_ORDER_DROPPED) continue;   // 分配时没登记：同原机断开（系统手柄 S2Arm 断不了蓝牙，游戏不读它）
-            ids[m] = live_ids[j]; pads[m] = live_pads[j]; ctrls[m] = live_ctrls[j]; bles[m] = live_ble[j]; keys2[m] = live_key[j]; hids[m] = live_hid[j]; live_rank[m] = rank[j]; m++;
+        for (int k = 0; k < m; k++) {
+            int j = keep[k];
+            ids[k] = live_ids[j]; pads[k] = live_pads[j]; ctrls[k] = live_ctrls[j]; bles[k] = live_ble[j]; keys2[k] = live_key[j]; hids[k] = live_hid[j]; live_rank[k] = kept_rank[k];
         }
         for (int k = 0; k < m; k++) { live_ids[k] = ids[k]; live_pads[k] = pads[k]; live_ctrls[k] = ctrls[k]; live_ble[k] = bles[k]; live_key[k] = keys2[k]; live_hid[k] = hids[k]; }
         for (int k = m; k < n; k++) live_ctrls[k] = nil;
