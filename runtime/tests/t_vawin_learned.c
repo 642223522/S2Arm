@@ -19,9 +19,15 @@ static int bad;
 #define MB (1ull << 20)
 #define GB (1ull << 30)
 static uint64_t g_test_span;
-__attribute__((used, visibility("default"))) uint64_t s2a_mem_span_now(void) { return g_test_span; }   // vawin.c 按名字取（dlsym），这里冒充 svc_mem.c
+__attribute__((used, visibility("default"))) uint64_t s2a_mem_span_learn(void) { return g_test_span; }   // vawin.c 按名字取（dlsym），这里冒充 svc_mem.c
 extern uint64_t s2a_span_seed(uint64_t);
 int main(void) {
+    {   // ⓪ 学跨度的贴顶规则（s2a_span_learn_ok）：跨度 + 512 MB < 窗口才记；贴顶但有越界映射 / 远端缺页照记。期望手算：窗口 62464 MB
+        extern int s2a_span_learn_ok(uint64_t, uint64_t, uint64_t, uint64_t);
+        CHECK(!s2a_span_learn_ok(62080 * MB, 62464 * MB, 0, 0), "⓪ 异度3 贴顶 62080（窗口末 −384 MB）、没碰窗口外：不记");
+        CHECK(s2a_span_learn_ok(61951 * MB, 62464 * MB, 0, 0) && !s2a_span_learn_ok(61952 * MB, 62464 * MB, 0, 0), "⓪ 边界：61951 + 512 = 62463 < 62464 记，61952 不记");
+        CHECK(s2a_span_learn_ok(62400 * MB, 62464 * MB, 3, 0) && s2a_span_learn_ok(62300 * MB, 62464 * MB, 0, 12), "⓪ 贴顶但越界映射 3 次 / 远端缺页 12 次：记");
+        CHECK(!s2a_span_learn_ok(0, 62464 * MB, 5, 5), "⓪ 跨度 0：不记"); }
     CHECK(s2a_window_host_below(64 * GB, 0) == 6 * GB, "① 没学到跨度、空洞 64 GiB：宿主下限 6 GiB（11-22 起；原 3 GiB，宿主峰值 p99 约 5 GB 碰底）");
     {   // ①b 宿主下限按空洞定（s2a_window_host_floor）：≥ 22 GiB（6 GiB 宿主 + 16 GiB 窗口）给 6 GiB，更小的空洞照旧 3 GiB
         extern uint64_t s2a_window_host_floor(uint64_t);
@@ -115,7 +121,7 @@ int main(void) {
         char d[] = "/tmp/s2a_captry_XXXXXX"; if (!mkdtemp(d)) { CHECK(0, "⑱ 建临时文档根"); } setenv("S2A_DOCS", d, 1);
         char bp[512], tp[512], rp[512];
         snprintf(bp, sizeof bp, "%s/wire/%016llX/span_cap_bad", d, (unsigned long long)A); snprintf(tp, sizeof tp, "%s/wire/%016llX/span_cap_try", d, (unsigned long long)A);
-        snprintf(rp, sizeof rp, "%s/wire/%016llX/span_peak", d, (unsigned long long)A);
+        snprintf(rp, sizeof rp, "%s/wire/%016llX/span_peak2", d, (unsigned long long)A);
         CHECK(s2a_window_span_seen(A) == s2a_span_seed(A), "⑱ 第一局：没有标记，按种子值收");
         pid_t c = fork(); if (!c) { s2a_window_cap_try(NULL, A, s2a_window_span_seen(A)); _exit(s2a_window_span_seen(A) == s2a_span_seed(A) ? 0 : 3); }   // 早夭局：收窄、不报首帧就退出
         int st = 0; waitpid(c, &st, 0);

@@ -349,14 +349,17 @@ void s2a_guest_budget_note(uint64_t avail) {
     if (g_gfd < 0 || !g_gchunk || g_rec_off || avail >= g_hmin) return;
     if (budget_rec_write(g_anon_budget, avail)) g_hmin = avail;
 }
-// 本款本机学到的地址跨度（#783）：同目录 span_peak，一行十进制字节数 = 局中碰到的最高地址 − 窗口基址（svc_mem.c s2a_mem_span_now，心跳每 10 秒比大才写）。
+// 记录文件名（11-22 span_peak → span_peak2）：起改按贴顶规则记（s2a_span_learn_ok），旧 span_peak 里混着贴顶的假跨度（分不出真假、没记越界 / 远端），一律不读、重学；
+//   首局知识由同规则重生成的种子表（tools/span_seed.py）给
+#define SPAN_FILE "span_peak2"
+// 本款本机学到的地址跨度（#783）：同目录 span_peak2，一行十进制字节数 = 局中碰到的最高地址 − 窗口基址（svc_mem.c s2a_mem_span_now，心跳每 10 秒比大才写）。
 //   窗口放不下标准布局时按它给窗口、其余留给宿主（s2a_window_host_below）；没记录 / 读不出 = 0（照旧只留 HOST_BELOW）
 static uint64_t read_u64(const char *p) { FILE *f = fopen(p, "r"); if (!f) return 0; unsigned long long v = 0; int ok = fscanf(f, "%llu", &v) == 1; fclose(f); return ok ? v : 0; }
 static int span_path(char *out, size_t n, uint64_t pid) {   // pid = 0：按局中当前程序号（同 mem_peak 目录）
     const char *ov = getenv("S2A_WIN_SPAN_PEAK"); if (ov && *ov) { snprintf(out, n, "%s", ov); return 1; }   // 单测 / 诊断指定
-    if (pid) { s2a_docs_path(out, n, "wire/%016llX/span_peak", (unsigned long long)pid); return 1; }
+    if (pid) { s2a_docs_path(out, n, "wire/%016llX/" SPAN_FILE, (unsigned long long)pid); return 1; }
     if (!mem_peak_path(out, n)) return 0;
-    char *sl = strrchr(out, '/'); if (!sl) return 0; snprintf(sl + 1, n - (size_t)(sl + 1 - out), "span_peak"); return 1;
+    char *sl = strrchr(out, '/'); if (!sl) return 0; snprintf(sl + 1, n - (size_t)(sl + 1 - out), SPAN_FILE); return 1;
 }
 // 各款实测最高地址的种子表（tools/span_seed.py 从诊断报告生成，随宿主下发）：本机还没玩过 / 没记下的款，第一局就按别人设备上碰到过的最高值判
 //   （窗口给多大、快照区放不放得下、弹不弹「地址空间不够」）。只收放不下标准布局的局，每款取最大值、样本 ≥ 2
@@ -415,9 +418,14 @@ static uint64_t g_need, g_fit;   // 定义见下（占窗口时定）；记跨�
 //   否则它只增不减、每局宿主都只剩 3 GB。fit = 0（还没占窗口 / 单测）不判。纯函数，t_vawin_learned 测
 int s2a_window_span_rec_ok(uint64_t rec, uint64_t fit) { return rec && (!fit || rec < fit); }
 int s2a_window_span_worth(uint64_t presents) { return presents >= SPAN_MIN_PRESENTS; }   // 纯函数，t_vawin_learned 测
-static void span_note(void) {   // s2a_mem_span_now 在 svc_mem.c、mtl_present_count 在直连图形层：按名字取（只链 vawin.c 的单测没有它们；取不到 = 不记）
+// 学跨度只记「游戏真要的」（11-22 宿主下限复核，同 tools/span_seed.py 贴顶规则）：跨度离窗口末不到 512 MB = 贴顶——别名区报到窗口末、游戏的静态大区
+//   贴着顶映射，跨度跟着窗口走（异度神剑3 窗口 62464 时记 62080、53248 时远端缺页 0 次），记下来下一局窗口更小时会误弹「地址空间不够」、快照区判反。
+//   例外：本局有越界映射（映射落到宿主没占到的地址）或远端缺页——游戏真碰到了窗口外，贴顶也记。纯函数，t_vawin_learned 测
+#define SPAN_TOP_MARGIN (512ull << 20)
+int s2a_span_learn_ok(uint64_t span, uint64_t win_size, uint64_t oob, uint64_t far) { return span && (span + SPAN_TOP_MARGIN < win_size || oob || far); }
+static void span_note(void) {   // s2a_mem_span_learn 在 svc_mem.c、mtl_present_count 在直连图形层：按名字取（只链 vawin.c 的单测没有它们；取不到 = 不记）
     static uint64_t (*spanf)(void), (*presf)(void); static int looked;
-    if (!looked) { spanf = (uint64_t (*)(void))dlsym(RTLD_DEFAULT, "s2a_mem_span_now"); presf = (uint64_t (*)(void))dlsym(RTLD_DEFAULT, "mtl_present_count"); looked = 1; }
+    if (!looked) { spanf = (uint64_t (*)(void))dlsym(RTLD_DEFAULT, "s2a_mem_span_learn"); presf = (uint64_t (*)(void))dlsym(RTLD_DEFAULT, "mtl_present_count"); looked = 1; }
     if (!presf || !s2a_window_span_worth(presf())) return;
     uint64_t now = spanf ? spanf() : 0; if (!now) return;
     char p[1024], t[1100]; if (!span_path(p, sizeof p, 0)) return;
@@ -440,7 +448,7 @@ static uint64_t (*g_span_crash_f)(void);
 void s2a_window_span_arm(void) {
     char p[1024]; if (!span_path(p, sizeof p, 0)) return;
     { char d[1024]; snprintf(d, sizeof d, "%s", p); char *sl = strrchr(d, '/'); if (sl) { *sl = 0; mkdir(d, 0755); } }
-    g_span_crash_f = (uint64_t (*)(void))dlsym(RTLD_DEFAULT, "s2a_mem_span_now");
+    g_span_crash_f = (uint64_t (*)(void))dlsym(RTLD_DEFAULT, "s2a_mem_span_learn");
     snprintf(g_span_crash_t, sizeof g_span_crash_t, "%s.tmp", p); snprintf(g_span_crash_p, sizeof g_span_crash_p, "%s", p);
 }
 uint64_t s2a_window_span_crash(uint64_t low_largest) {   // 返回记下的跨度（没记 = 0）
@@ -1248,7 +1256,7 @@ uint64_t s2a_window_container_need(const char *bundle, const char *home) {
         //   原先按 Documents/wire/... 读，永远读不到：多款容器从来学不到跨度，窗口下方一直只留 3 GB（11-13 0400486024DEC000 三台设备开局约 2–4 分钟宿主地址耗尽崩溃）。
         //   这款文档根下没有时再看旧位置（单款包时代留下的记录）
         { uint64_t pid = strtoull(gid, NULL, 16), sl = 0, sg = 0; char sp[1400];
-          if (pid) { s2a_docs_path(sp, sizeof sp, "games/%s/wire/%016llX/span_peak", gid, (unsigned long long)pid); sl = read_u64(sp); }
+          if (pid) { s2a_docs_path(sp, sizeof sp, "games/%s/wire/%016llX/" SPAN_FILE, gid, (unsigned long long)pid); sl = read_u64(sp); }
           sg = s2a_window_span_seen(pid); if (sg > sl) sl = sg;   // 旧位置的记录、种子表取大
           { char pre[64]; snprintf(pre, sizeof pre, "games/%s/", gid); sl = s2a_window_span_trust(pre, pid, sl); }   // 这款收窄过、那局没到首帧：按不知道（选定后 svc_mem.c 同样不收）
           // 这款本机没记录、种子表也没有：跨度不知道。不再拿整份标准布局 ni 顶（必然不小于空洞、被当成「学到的跨度不对」作废，日志还说成旧版记错）：
