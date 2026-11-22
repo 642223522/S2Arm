@@ -207,7 +207,9 @@ void s2a_snap_handout_id(uint64_t v, const char *id) {
 // 交给游戏的宿主数据段（游戏拿着指向它内部的指针，如视频同步点槽里的系统事件结构）：按名字登记，恢复时段内的值按「同名段的新起点 + 段内偏移」换算
 static struct { uint64_t lo, n; char name[32]; } g_hor[64]; static int g_nhor;
 void s2a_snap_handout_range(uint64_t lo, uint64_t n, const char *name) {
-    if (!s2a_snap_mode()) return;
+    // 不看开关、一律登记（至多 64 段，只是名字与地址范围）：静态区在构造函数里登记，那时开关可能还没定——这一局因地址关了快照
+    //   （vawin.c s2a_snap_disable），游戏库照样给恢复（snapsw.c s2a_snap_restore_offered），恢复时按名字找新起点；原先关着就不登记，
+    //   恢复走到一半报「交出的宿主数据段 vk.pdev 在本版没有」失败（11-22 真机 r1：朋友收集 CAP 30000、快照关着，库里点恢复）
     pthread_mutex_lock(&g_ho_mu); if (g_nhor < 64) { g_hor[g_nhor].lo = lo; g_hor[g_nhor].n = n; snprintf(g_hor[g_nhor].name, sizeof g_hor[0].name, "%s", name); g_nhor++; } pthread_mutex_unlock(&g_ho_mu);
 }
 // 交给游戏的宿主内存块（本进程里的拷贝，游戏把它的地址存进自己的数据）：如 Switch 2 程序对象里的控制段自持拷贝（graphics/nvn/gfx/nvn/hle_nvn.c ctl_intern，
