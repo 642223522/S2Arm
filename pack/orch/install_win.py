@@ -472,6 +472,23 @@ def main(argv=None):
         print(f'【红】{e}', flush=True); return e.code
 
 
+def _sign_then_install_elsewhere(exe, a, say):
+    """只签名（plumesign sign --apple-id，不 --register-and-install，不连手机）→ 签好的 ipa 交 a.fallback_install(路径) 装 → 实际包名。
+    装不上照它抛的原因报（没登记过的新手机：手机不认描述文件，那句由调用方按 devicectl 原文归码）"""
+    log = a.log or os.path.join(os.path.dirname(os.path.abspath(a.ipa)), 'plumesign.log')
+    with tempfile.TemporaryDirectory() as t:
+        out = Path(t, 'signed.ipa'); say('签名（手机不在本机设备服务里，签好后经 Wi-Fi 装）…')
+        sign_install(exe, a.ipa, None, a.name, log, out, getattr(a, 'bundle', None), register=False)
+        bid = bundle_id_of(out) if out.is_file() else None
+        if not bid: raise Fail('签好了但读不到签好的 ipa 里的包名，装不了', 1, 'device_install_failed')
+        a.signed_expiry = signed_expiry(out)
+        line = iml_line(out)
+        with open(log, 'a', encoding='utf-8') as f: f.write('\n' + line + '\n')
+        if line.startswith('【IML 丢了】'): say(line)
+        a.fallback_install(out)
+    return bid
+
+
 def install_app(a, say=lambda m: print(m, flush=True)):
     """签名 + 覆盖装（同包名不卸载，Documents 保留）→ 装机后的实际包名；失败抛 Fail。
     签好的包里读到的真实到期（signed_expiry）放在 a.signed_expiry（读不到为 None），调用方据此记签名状态（#1772）"""
@@ -480,6 +497,10 @@ def install_app(a, say=lambda m: print(m, flush=True)):
     try: devs = mux_devices()
     except OSError as e: raise Fail(f'连不上本机苹果设备服务（{e}）：装 iTunes 或「Apple 设备」', 75, 'device_pairing_required')
     dev = device_id(a.udid, devs)
+    # Mac 上手机只在同一 Wi-Fi（D-WFBG / D-ST8X）：设备服务（usbmux）看不到，devicectl（CoreDevice）看得到。调用方给了别的装法（a.fallback_install，
+    #   Mac PlumeMacPhone 的 devicectl）就只签名不登记（这台更新 S2Arm 时早已登记在团队里，描述文件带着它），签好的包交它装；Windows 不给，照旧报没连上
+    if dev is None and getattr(a, 'fallback_install', None):
+        return _sign_then_install_elsewhere(exe, a, say)
     # 要装的那台不在设备服务里（D-XHV5：选中的是只在局域网上的 iPad，插着线的是另一台 iPhone）：是「没连上」，不是「要信任电脑」
     if dev is None: raise Fail(f'设备服务里没有要装的那台 {a.udid or "（没拿到设备编号）"}（在列：{", ".join(f"{u}/{c}" for u, c, _ in devs) or "无"}）：'
                                '给这台插上数据线并解锁，或在电脑上给它打开「通过 Wi-Fi 显示」', 75, 'device_not_connected')

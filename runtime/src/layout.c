@@ -87,6 +87,9 @@ uint64_t s2a_layout_need(uint32_t as_type, uint64_t sys_resource_size, uint64_t 
     return sys_resource_size ? VAMM_ALIAS + 2 * MB + VAMM_STACK + S2A_HEAP_DEFAULT + VAMM_SHARED + mod : 32 * GB + mod;
 }
 
+// 多款容器选定游戏后按学到的跨度收窗口前的试算判据（svc_mem.c layout_prepare，D-PR33）：收窄后布局算得出（rc 0），且堆区起点到窗口末端
+//   装得下这款要的堆，才收（堆区本身可以伸出窗口，只是承诺；游戏真要堆时按窗口末端判，同 svc_mem.c「本机地址空间装不下」那条）
+int s2a_layout_cap_fits(int rc, uint64_t heap_base, uint64_t win_end, uint64_t heap_want) { return rc == 0 && win_end > heap_base && win_end - heap_base >= heap_want; }
 // 报给游戏的别名区大小（GetInfo AliasSize，#1441）。内部布局不动（别名区仍按标准尺寸、伸出窗口那段照旧走远端兜底），只是告诉游戏小一点：
 //   SDK 给新地址区挑「最高那段空隙的底部」，报多大游戏就往多高爬（上面「别名优先」那段的火炬之光3 读码），报到窗口末，内存就落在窗口里、不再缺页代执行。
 //   只在这几种情况都成立时收：① 没有出包静态结论，或结论是「上限不定」（alias_gb <= 0；> 0 的上面已按证明收进窗口）。上限不定（< 0）11-21 前也不收（宁慢不崩），

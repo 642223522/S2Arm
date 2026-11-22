@@ -1867,11 +1867,12 @@ class WinWidgetInstallTests(unittest.TestCase):
             z.writestr("Payload/S2Arm.app/PlugIns/S2ArmWidget.appex/S2ArmWidget", b"ext")
         (self.tmp / "logs").mkdir()
 
-    def run_install(self, fails=(), widget=None, expiry=None, info=None):
-        given = []
+    def run_install(self, fails=(), widget=None, expiry=None, info=None, elsewhere=None):
+        given = []; self.fallback = []
         class Fail(Exception):
             def __init__(self, msg, err=None): super().__init__(msg); self.err = err
         def install_app(ns, say=None):
+            self.fallback.append(getattr(ns, "fallback_install", None))
             with zipfile.ZipFile(ns.ipa) as z: given.append(sorted(z.namelist()))
             if len(given) <= len(fails): raise Fail("plumesign 退 1", fails[len(given) - 1])
             if expiry: ns.signed_expiry = expiry   # 同 install_win.install_app：签好的包里读到的真实期限
@@ -1883,11 +1884,22 @@ class WinWidgetInstallTests(unittest.TestCase):
                                   last_log=None, diagnostic=um.MagicMock())
         me = types.SimpleNamespace(W=W, c=c, udid="U", key="dev1", bid=None, backup=lambda g: None, bundle_for_signing=lambda: None, info=info if info is not None else {})
         me.say = lambda m: install.WinPhone.say(me, m)   # install_win 的进度回调（签好后核 IML 的那行也经它）
+        if elsewhere: me.install_signed_elsewhere = elsewhere
         self.me = me
         with um.patch.object(install.devcert, "active", return_value=False), um.patch.object(install.layout, "load_device", return_value={}), \
              um.patch.object(install.layout, "save_device"):
             install.WinPhone.install(me, self.ipa, [], steps=False)
         return given, c.diagnostic
+
+    def test_mac_hands_devicectl_installer_windows_does_not(self):
+        # D-WFBG / D-ST8X：PlumeMacPhone 有 install_signed_elsewhere（签好经 devicectl 装）→ 交给 install_win 当 fallback_install；WinPhone 没有 → 不交
+        mac = lambda p: None
+        self.run_install(elsewhere=mac)
+        self.assertEqual(self.fallback, [mac])
+        self.run_install()
+        self.assertEqual(self.fallback, [None])
+        self.assertTrue(callable(getattr(install.PlumeMacPhone, "install_signed_elsewhere", None)))
+        self.assertIsNone(getattr(install.WinPhone, "install_signed_elsewhere", None))
 
     def test_quota_retry_without_widget(self):
         given, diag = self.run_install(fails=("free_appid_limit",))

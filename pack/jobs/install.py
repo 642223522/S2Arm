@@ -2224,6 +2224,8 @@ class WinPhone:
             if had and self.c.r.get("widget") is False:
                 ipa, had = plain, False
             ns = argparse.Namespace(ipa=str(ipa), udid=self.udid, name=None, plumesign=b.get("plumesign"), log=str(log), bundle=bid or self.bundle_for_signing())
+            if getattr(self, "install_signed_elsewhere", None):   # Mac：手机只在同一 Wi-Fi、设备服务看不到时签好交 devicectl 装（PlumeMacPhone）
+                ns.fallback_install = self.install_signed_elsewhere
             try:
                 installed = self.W.install_app(ns, say=self.say)
             except self.W.Fail as e:
@@ -2381,6 +2383,24 @@ class PlumeMacPhone(MacPhone):
         super().__init__(c, team=dict(id=acct["team"], name=acct["teamName"] or acct["account"], free=True), dev=dev, udid=udid)
 
     install = WinPhone.install                       # plumesign 签名装机（含 9401 旧写法、设备已登记、小组件去掉重来）
+
+    def install_signed_elsewhere(self, ipa):
+        """D-WFBG / D-ST8X：手机只连同一 Wi-Fi，devicectl（CoreDevice）看得到、plumesign 走的设备服务（usbmux）看不到；第 1 步认得手机、
+        签名装机那步却报「设备服务里没有要装的那台」。plumesign 只签名（install_win._sign_then_install_elsewhere），签好的包这里经 devicectl 装，
+        同 MacPhone 的装法：开发者通道没连上（4016）等 10 秒再装一次；失败按 devicectl 原文归码（手机不认描述文件 = 这台还没登记过，要插线装一次）"""
+        from diag import devicectl
+        with tempfile.TemporaryDirectory(dir=self.c.private) as t:
+            r = subprocess.run(["/usr/bin/ditto", "-x", "-k", str(ipa), t], capture_output=True, text=True)
+            app = next((p for p in (Path(t) / "Payload").glob("*.app") if p.is_dir()), None)
+            if r.returncode or not app:
+                raise Failure("解不开签好的 iPhone 包：" + (r.stderr.strip()[-200:] or str(ipa)), code="job_failed")  # 非玩家句
+            rc, _, err = devicectl(self.c, "device", "install", "app", "--device", self.dev["id"], str(app), timeout=1800)
+            if rc and classify(err, default="") == "device_tunnel_unavailable":
+                note(self.c, "iPhone 的开发者通道没连上（CoreDevice 4016）：10 秒后再装一次")  # 非玩家句
+                time.sleep(TUNNEL_RETRY_S)
+                rc, _, err = devicectl(self.c, "device", "install", "app", "--device", self.dev["id"], str(app), timeout=1800)
+            if rc:
+                raise Failure("装不上 iPhone：" + (err.strip()[-2000:] or f"devicectl 退出 {rc}（未提供错误详情）"), code=classify(err, default="device_install_failed"))  # 非玩家句
     say = WinPhone.say                               # install 里交给 plumesign 的进度回调（没借它：Mac 免费账号装机一调就 AttributeError）
     bundle_for_signing = WinPhone.bundle_for_signing
 
