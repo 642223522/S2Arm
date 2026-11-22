@@ -3123,6 +3123,40 @@ def validate_input(config):
     return config
 
 
+def _usable_input(path):
+    """这份键位文件能不能用：在、是 JSON、过 validate_input → (配置, 有没有问题)。不在 → (None, False)；在但读不出 / 不合规 → (None, True)"""
+    if not path.is_file():
+        return None, False
+    try:
+        return validate_input(read(path)), False
+    except (Failure, ValueError, OSError):   # ValueError 含 JSONDecodeError（core.read 只接编码问题，非 JSON 原样抛）
+        return None, True
+
+
+def effective_input(c, gid, player=1):
+    """某位玩家这款实际生效的键位（#2081：起局 build.py 与键位弹窗 loadInput 作业都只调它，两边判同一份）→
+    dict(config=配置或 None（标准键位）, source=game / default / standard / player1, problem=存过的那份读不出或不合规)。
+    玩家 1：这款的 input.json → 私有目录 default-input.json → 标准键位，每一份都要读得出且过 validate_input，不行就往下一份走；
+    玩家 2–4：这款的 input-pN.json 能用就用，否则沿用玩家 1 实际生效的那套（source=player1）"""
+    if player != 1:
+        config, problem = _usable_input(layout.path(c, gid, f"input-p{player}.json", create=False))
+        if config is not None:
+            return dict(config=config, source="game", problem=False)
+        first = effective_input(c, gid, 1)
+        return dict(config=first["config"], source="player1", problem=problem)
+    config, problem = _usable_input(layout.path(c, gid, "input.json", create=False))
+    if config is not None:
+        return dict(config=config, source="game", problem=False)
+    fallback, _ = _usable_input(c.private / "default-input.json")
+    return dict(config=fallback, source="default" if fallback is not None else "standard", problem=problem)
+
+
+def load_input(c):
+    """作业 loadInput（#2081）：键位弹窗读四位玩家实际生效的键位，规则同起局（effective_input）；config 为 None = 标准键位"""
+    gid = c.game()["id"]
+    return dict(players=[dict(player=p, **effective_input(c, gid, p)) for p in (1, 2, 3, 4)])
+
+
 def save_input(c):
     config = validate_input(c.r["config"])
     # player：键位设置的玩家（1–4；1 / 没给 = 玩家 1 的 input.json，2–4 = 这款文件夹的 input-pN.json）。
