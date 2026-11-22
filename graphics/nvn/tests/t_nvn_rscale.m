@@ -737,6 +737,23 @@ int main(int argc, char **argv) {
       storage_is(&G1, SCALED_ST, SW, SH); storage_is(&G2, on ? RS_BLACK : RS_NONE, W, H);
       printf("  rs_never=1 读后仍是放大存储，rs_never=0 读后退回原尺寸\n"); }
     done();
+
+    // 32. 计算阶段读缩放图（11-22 D-ZR6V：主场景深度被计算着色器读、整遍退回）：尺寸表精确（size_abi && size_exact）的计算程序按槽号读（kind 0）不退回；
+    //     尺寸表不精确的、经统一缓冲句柄取图（kind 3）的、张量核网络顶替（tensor == 1）的，照旧在下一个安全点退回
+    phase = "32 计算阶段读缩放图";
+    { NVNtexture K1, K2, K3, K4, K5; NVNtexture *ks[] = { &K1, &K2, &K3, &K4 };
+      for (int k = 0; k < 4; k++) { make_tex(ks[k], NVN_FORMAT_RGBA8, NVN_TEXTURE_FLAGS_COMPRESSIBLE); begin(); clear_rt(ks[k], NULL, 0, BLUE); submit(); storage_is(ks[k], SCALED_ST, SW, SH); }
+      make_tex(&K5, NVN_FORMAT_RGBA8, NVN_TEXTURE_FLAGS_COMPRESSIBLE);
+      NvShader *cs = [NvShader new]; cs->stage = 5; cs->size_abi = 1; cs->size_exact = 1;
+      rs_bind_check(tex_mtl((const tex_t *)&K1), cs, 5, 0);                    // 精确、按槽号：放行
+      rs_bind_check(tex_mtl((const tex_t *)&K2), cs, 5, 3);                    // 精确、句柄取图：退回
+      cs->size_exact = 0; rs_bind_check(tex_mtl((const tex_t *)&K3), cs, 5, 0); // 不精确：退回
+      cs->size_exact = 1; cs->tensor = 1; rs_bind_check(tex_mtl((const tex_t *)&K4), cs, 5, 0); cs->tensor = 0;   // 张量核顶替：退回
+      begin(); clear_rt(&K5, NULL, 0, RED); submit();   // 别的目标开遍：安全点
+      storage_is(&K1, SCALED_ST, SW, SH);
+      for (int k = 1; k < 4; k++) storage_is(ks[k], on ? RS_BLACK : RS_NONE, W, H);
+      printf("  精确计算程序按槽号读后仍是放大存储；句柄取图 / 不精确 / 张量核顶替读后退回原尺寸\n"); }
+    done();
     unlink(map); unlink(user);
     if (fails) { printf("t_nvn_rscale %s：%u 组、%u 项里 %u 项不通\n", argv[1], cases, checks, fails); return 1; }
 
