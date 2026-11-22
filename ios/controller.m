@@ -475,6 +475,9 @@ static void sample_extended(GCExtendedGamepad *pad, uint32_t *out_buttons, int32
     if (pad.buttonHome.isPressed) buttons |= 1u << 16;   // Home 放扩展位 bit16（同 NS2 手柄）：只用于长按开局内菜单（#276），pad.c 判完就截掉、不进游戏
     s2a_pad_stick(pad.leftThumbstick.xAxis.value, pad.leftThumbstick.yAxis.value, axes);
     s2a_pad_stick(pad.rightThumbstick.xAxis.value, pad.rightThumbstick.yAxis.value, axes + 2);
+    // 改键（#1606 ④）：这一款键位的 gamepad / axes 段，同 Mac map_pad_inputs（keyboard_map.h s2a_pad_map）；缺省配置原样不动。
+    //   只在输入队列上跑（玩家 1 与槽 1–3 的回调都排在 inputQueue），与 keyboard.m 改键页换表同一队列。NS2 Pro 走 ble_input（另一线程），这一版不改键
+    s2a_pad_map(s2a_ios_pad_map_config(), &buttons, axes);
     *out_buttons = buttons;
 }
 // 接一只系统手柄（玩家 1 与槽 1–3 同一套）：回调放输入队列；「-」「Home」关系统手势。
