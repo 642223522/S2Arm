@@ -2372,10 +2372,10 @@ static void t_stencil_sample_mode(void) {
     CHECK(vd && vs && vd != vs && vd->of == vs->of && g_tex_creates - c0 == 1);   // 一份后端存储、两个视图
     CHECK(!vd->has_v);                                                           // 深度模式：不带视图记录，后端取深度面
     CHECK(vs->has_v && vs->v.set_dsmode && vs->v.dsmode == NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL);   // 模板模式：记录带模板
-    // 模板模式的贴图是存储的第一个使用者：存储照常建，建存储时不带模板标志（取哪个面由视图决定）
+    // 模板模式的贴图是存储的第一个使用者：存储照常建，建存储时不带模板标志（取哪个面由视图记录决定；描述里原 stencil_view 那一字节现在是保留位，恒 0）
     tex_t first = mk_tex(8103, 0x4000, ds, 16, 16, 1, 0); first.stencil = 1; nvn_be_reg_tex(3, &first, NULL);
     nvn_gpu_view vf = rp_view_by_id(3, &g_fake_cmd, NULL);
-    CHECK(vf && vf->of != vs->of && vf->of->d.stencil_view == 0 && vf->has_v && vf->v.set_dsmode && vf->v.dsmode == NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL);
+    CHECK(vf && vf->of != vs->of && vf->of->d._rsv[0] == 0 && vf->of->d._rsv[1] == 0 && vf->has_v && vf->v.set_dsmode && vf->v.dsmode == NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL);
     // 视图自己设了模式：取视图的（贴图是模板模式、视图设深度 → 深度；贴图是深度模式、视图设模板 → 模板）
     view_t vdep = {0}; vdep.set_dsmode = 1; vdep.dsmode = NVN_TEXTURE_DEPTH_STENCIL_MODE_DEPTH;
     view_t vstn = {0}; vstn.set_dsmode = 1; vstn.dsmode = NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL;
