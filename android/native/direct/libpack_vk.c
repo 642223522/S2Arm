@@ -958,10 +958,11 @@ int s2a_libpack_program_v1(const struct s2a_libpack *lp_c, const uint8_t keys[6]
     struct s2a_libpack *lp = (struct s2a_libpack *)lp_c;
     if (!lp || !lp->p.idx || !keys || !json || !json_len || !stages) return S2A_LIBPACK_INVALID;
     *json = NULL; *json_len = 0;
-    // 图形接受口径同现编（DirectProgram.Parse）：vs+fs，或 vs+gs+fs（几何走原生几何阶段）；
-    //   别的形状（单阶段 / 带 tcs|tes / cs 走 compute 线）本函数产不出可采纳结果，按 miss 如实回。
-    if (stages != 0x3 && stages != 0x7) {
-        if (why && why_size) snprintf(why, why_size, "stages=0x%x is not a vs+fs or vs+gs+fs program", stages);
+    // 图形接受口径同现编（DirectProgram.Parse）：vs+fs，或 vs+gs+fs（几何走原生几何阶段），或只有 vs（只写深度的绘制：
+    //   深度预通道、阴影图；解析侧 allow_vs_only、后端 C76 管线都已支持，不造 fs）；别的形状（只有 fs / 带 tcs|tes / cs 走
+    //   compute 线）本函数产不出可采纳结果，按 miss 如实回。
+    if (stages != 0x1 && stages != 0x3 && stages != 0x7) {
+        if (why && why_size) snprintf(why, why_size, "stages=0x%x is not a vs, vs+fs or vs+gs+fs program", stages);
         atomic_fetch_add(&g_misses, 1);
         return S2A_LIBPACK_MISS;
     }

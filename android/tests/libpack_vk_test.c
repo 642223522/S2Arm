@@ -792,7 +792,7 @@ int main(void) {
         snprintf(g_dir, sizeof g_dir, "%s", tmpl);
     }
 
-    // ---- miss：缺席键 / 非 vs+fs 形状 / 缺 spv 的键 ----
+    // ---- miss：缺席键 / 非 vs、vs+fs、vs+gs+fs 形状 / 缺 spv 的键 ----
     {
         uint8_t keys[6][8] = {{0}};
         uint8_t kv[8] = { 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef };
@@ -805,8 +805,8 @@ int main(void) {
         keys[1][4] = 0xee; keys[1][5] = 0xff; keys[1][6] = 0x00; keys[1][7] = 0x11;
         CHECK(s2a_libpack_program_v1(lp, keys, 0x3, NULL, 1, "h", "c", &j, &jl, w, sizeof w) == 1,
               "fs 键只有 _b.json 缺 _b.spv → MISS（半程序不命中）");
-        CHECK(s2a_libpack_program_v1(lp, keys, 0x1 /* 只有 vs */, NULL, 1, "h", "c", &j, &jl, w, sizeof w) == 1,
-              "vs-only 形状：v1 接受口径是 vs+fs → MISS 不产半成品");
+        CHECK(s2a_libpack_program_v1(lp, keys, 0x2 /* 只有 fs */, NULL, 1, "h", "c", &j, &jl, w, sizeof w) == 1 && !j && strstr(w, "is not a vs"),
+              "fs-only 形状（没有 vs）→ MISS 不产半成品");
         memcpy(keys[1], kv, 8);
         CHECK(s2a_libpack_program_v1(lp, keys, 0x5 /* vs|gs */, NULL, 1, "h", "c", &j, &jl, w, sizeof w) == 1,
               "vs|gs 没有 fs（现编也不接这一形）→ MISS 不冒充命中");
@@ -831,6 +831,47 @@ int main(void) {
             free(j);
         }
         CHECK(s2a_libpack_misses() == m0 + 3, "tessellation masks count as three misses");
+    }
+
+    // ---- 只有 vs 的程序（0x1，只写深度的绘制）：只取真 vs 一段 + 它的真绑定，不造 fs ----
+    // 期望（手算）：vs 键 0123456789abcdef 在夹具库里有 _b.json + _b.spv → HIT；结果的 stages 只有一项 "vs"、没有任何 fs 项
+    //   （JSON 里 "fs" 字样一处都没有）；解析口径：allow_vs_only=1 接受（stage[1] 不在），allow_vs_only=0（原 vs+fs 接口）仍拒；
+    //   负控：vs 键缺席 → MISS；拿 fs 的键当 vs → REJECT（库里那条 stage 是 ps）；只有 fs（0x2）/ vs|gs（0x5）→ MISS。
+    {
+        uint8_t keys[6][8] = {{0}};
+        const uint8_t kv[8] = { 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef }, kp[8] = { 0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe };
+        uint8_t *j = NULL; size_t jl = 0; char w[192] = "";
+        memcpy(keys[0], kv, 8);
+        const uint64_t h0 = s2a_libpack_hits(), m0 = s2a_libpack_misses(), r0 = s2a_libpack_rejects();
+        int rc = s2a_libpack_program_v1(lp, keys, 0x1, NULL, 1, "h", "c", &j, &jl, w, sizeof w);
+        if (rc != 0) printf("  vs-only: rc=%d why=%s\n", rc, w);
+        CHECK(rc == 0 && j, "vs-only：真 vs 键 → HIT");
+        CHECK(has(j, "\"kind\":\"graphics\",\"stages\":[{\"stage\":\"vs\",\"spirv\":\"") && !has(j, "\"stage\":\"fs\"") && !has(j, "\"fs\""),
+              "vs-only 结果只有 vs 一段，没有造 fs");
+        CHECK(has(j, "\"kind\":\"uniform\",\"stage\":\"vs\",\"set\":0,\"binding\":0,\"slot\":3}"), "vs-only 带 vs 的真绑定（cbuf reg 0 → binding 0 slot 3）");
+        if (j) {
+            struct fd_program p1; char pw[192] = ""; memset(&p1, 0, sizeof p1);
+            CHECK(nvn_vk_program_parse_graphics_stages(j, jl, &p1, 1, pw, sizeof pw) == 0 && p1.stage[0].present && !p1.stage[1].present && !p1.stage[2].present,
+                  "allow_vs_only=1 解析：只有 vs 一段");
+            nvn_vk_program_free(&p1);
+            struct fd_program p2; memset(&p2, 0, sizeof p2); pw[0] = 0;
+            CHECK(nvn_vk_program_parse_graphics(j, jl, &p2, pw, sizeof pw) != 0, "原 vs+fs 接口（allow_vs_only=0）仍拒只有 vs 的程序");
+            nvn_vk_program_free(&p2);
+        }
+        free(j); j = NULL;
+        // 负控：vs 键缺席
+        { uint8_t k2[6][8] = {{0}}; k2[0][0] = 0xde; k2[0][1] = 0xad;
+          rc = s2a_libpack_program_v1(lp, k2, 0x1, NULL, 1, "h", "c", &j, &jl, w, sizeof w);
+          CHECK(rc == 1 && !j && !jl, "vs-only：vs 键缺席 → MISS"); }
+        // 负控：错阶段（fs 的键当 vs 取：库里那条 _b.json 的 stage 是 ps）
+        { uint8_t k3[6][8] = {{0}}; memcpy(k3[0], kp, 8); w[0] = 0;
+          rc = s2a_libpack_program_v1(lp, k3, 0x1, NULL, 1, "h", "c", &j, &jl, w, sizeof w);
+          CHECK(rc == -1 && !j && strstr(w, "stage is 'ps' not 'vs'"), "vs-only：拿 fs 键当 vs → REJECT（阶段不符）"); }
+        // 负控：别的形状照旧 MISS，不冒充
+        w[0] = 0;
+        CHECK(s2a_libpack_program_v1(lp, keys, 0x2, NULL, 1, "h", "c", &j, &jl, w, sizeof w) == 1 && !j, "fs-only（0x2）→ MISS");
+        CHECK(s2a_libpack_program_v1(lp, keys, 0x5, NULL, 1, "h", "c", &j, &jl, w, sizeof w) == 1 && !j, "vs|gs（0x5）→ MISS");
+        CHECK(s2a_libpack_hits() == h0 + 1 && s2a_libpack_rejects() == r0 + 1 && s2a_libpack_misses() == m0 + 3, "vs-only 计数：命中 +1、拒 +1、miss +3");
     }
 
     // ---- reject：dm_ctl 不符 / spv 头坏 / 记录越界（vs 键是好的，坏在 fs 键——一段坏整个程序 reject）----

@@ -41,7 +41,7 @@ void s2a_libpack_close(struct s2a_libpack *lp);
 int s2a_libpack_get(const struct s2a_libpack *lp, const uint8_t key[8], unsigned kind,
                     uint8_t **bytes, size_t *len, char *why, size_t why_size);
 
-// 程序命中：keys[6][8] + stages 位图（vs+fs 0x3 或 vs+fs+gs 0x7）→ 合成的 s2a-direct-program-v1/v2 字节（malloc，调用方 free）。
+// 程序命中：keys[6][8] + stages 位图（只有 vs 0x1、vs+fs 0x3 或 vs+fs+gs 0x7）→ 合成的 s2a-direct-program-v1/v2 字节（malloc，调用方 free）。
 //   每阶段取 _b.json + _b.spv：绑定号 = arg_id×6+阶段号（与 .spv 内烘焙的一致），kind 桶照
 //   _b.json 的语义种类译：cbuf→uniform、tex/samp_tex→texture、img→image、sbuf 系→storage、
 //   support→support(stage="program")；…Smplr / samp* 不另出描述符行。独立 c2 采样器按 v2 附在纹理的 samp_slot；

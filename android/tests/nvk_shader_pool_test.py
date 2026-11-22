@@ -150,7 +150,7 @@ def main():
         return 0
 
     if sys.argv[1:] == ['--gs-libpack-mutants']:
-        # 负对照：三段程序查出包预编库的两处接线各撤一处，--gs-libpack 必红
+        # 负对照：图形（三段 / 只有顶点）程序查出包预编库的接线各撤一处，--gs-libpack 必红
         code = original.read_text()
         for name, old, new, expected in (
             ('mask-0x3', 'lrc = s2a_libpack_program_v1(lp, keys, stages, &g,', 'lrc = s2a_libpack_program_v1(lp, keys, 0x3, &g,',
@@ -158,8 +158,12 @@ def main():
             ('no-topology', 'const struct s2a_libpack_gfx g = { topology, pc->profile_json, pc->profile_bytes };',
              'const struct s2a_libpack_gfx g = { NULL, pc->profile_json, pc->profile_bytes }; (void)topology;',
              'hit from the library, compiler not called'),
-            ('vs-fs-only', '(!ckey && stages != 0x3u && stages != 0x7u)', '(!ckey && stages != 0x3u)',
+            # 取库入口的闸（nvk_shader.c libpack_fetch）：放 0x1 / 0x3 / 0x7。去掉 0x7u：三段（含几何）程序被挡在库外，必须红；
+            #   去掉 0x1u：只有顶点的深度程序被挡在库外，必须红在 VS-only 那一例
+            ('vs-fs-only', '(!ckey && stages != 0x1u && stages != 0x3u && stages != 0x7u)', '(!ckey && stages != 0x1u && stages != 0x3u)',
              'hit from the library, compiler not called'),
+            ('no-vs-only', '(!ckey && stages != 0x1u && stages != 0x3u && stages != 0x7u)', '(!ckey && stages != 0x3u && stages != 0x7u)',
+             'libpack VS-only: hit from the library, compiler not called'),
         ):
             assert code.count(old) == 1, (name, 'mutation anchor')
             path = out / ('gs-libpack-mutant-' + name + '.c')
@@ -167,15 +171,15 @@ def main():
             result = run('gs-libpack-' + name, path, args=('--gs-libpack',))
             assert result.returncode != 0 and expected in result.stderr, (name, result.stdout, result.stderr)
             print(f'{name}: expected assertion failure: {expected}', flush=True)
-        print('PASS: 3 libpack GS negative controls')
+        print('PASS: 4 libpack GS negative controls')
         return 0
 
     if sys.argv[1:] == ['--cs-libpack-mutants']:
         # 负对照：计算出库的非对齐闸撤掉（state_ok 对 ckey 不生效），--cs-libpack 必红
         code = original.read_text()
         for name, old, new, expected in (
-            ('unaligned-gate', 'if (!root || !state_ok || (!ckey && stages != 0x3u && stages != 0x7u) || nvn_plat_flag("no_libpack", 0)) {',
-             'if (!root || (!ckey && ((stages != 0x3u && stages != 0x7u) || !state_ok)) || nvn_plat_flag("no_libpack", 0)) {',
+            ('unaligned-gate', 'if (!root || !state_ok || (!ckey && stages != 0x1u && stages != 0x3u && stages != 0x7u) || nvn_plat_flag("no_libpack", 0)) {',
+             'if (!root || (!ckey && ((stages != 0x1u && stages != 0x3u && stages != 0x7u) || !state_ok)) || nvn_plat_flag("no_libpack", 0)) {',
              'unaligned CS storage refuses the library'),
             # 诊断（对齐闸拒查日志 / 没走库原因备忘）：各撤一处，--cs-libpack 必红在对应断言
             ('no-summary-line', 'else if (!((n + 1) & 63)) {', 'else if (0) {', '141 refusals log two summary lines'),
