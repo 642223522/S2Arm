@@ -1903,6 +1903,11 @@ def win_udid(c, W):
     （11-13 维护者：插着一台手机就别说识别不了），多台让玩家选。
     设备服务列表会瞬时空（插拔 / 同网切数据线），最多读 3 次、间隔 3 秒再判"""
     want = (c.r.get("device") or "").strip()
+    # D-C2DX：启动器记的设备号与设备服务列出的 SerialNumber 写法可能不同（带不带短横、大小写），原样比对永远对不上，只连着一台也报「没列出来」。
+    #   按 install_win.udid_key 的同一写法比，返回设备服务里的那种写法（后面 plumesign / s2a-devpush 都按它找设备）
+    key = W.udid_key if hasattr(W, "udid_key") else (lambda u: str(u or "").replace("-", "").upper())
+    def match(udids):
+        return next((u for u in udids if want and key(u) == key(want)), None)
     udids = []
     for k in range(LINK_READS):
         try:
@@ -1910,12 +1915,12 @@ def win_udid(c, W):
         except OSError as e:
             raise Failure(f"连不上本机苹果设备服务（{e}）：从 Microsoft Store 装「Apple Devices」后重试。", code="device_pairing_required") from e
         udids = list(dict.fromkeys(u for u, _, _ in links if u))
-        if (want and want in udids) or (not want and udids):
+        if (want and match(udids)) or (not want and udids):
             break
         if k + 1 < LINK_READS:
             time.sleep(LINK_RETRY_WAIT)
-    if want and want in udids:
-        return want
+    if want and match(udids):
+        return match(udids)
     if not want and len(udids) == 1:
         return udids[0]
     if not udids:

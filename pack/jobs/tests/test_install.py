@@ -1970,3 +1970,13 @@ class NoDeviceSwap(unittest.TestCase):
             self.assertEqual(install.win_udid(types.SimpleNamespace(r={"device": "IPAD1"}), W), "IPAD1")
             self.assertEqual(install.win_udid(types.SimpleNamespace(r={}), W), "IPAD1", "没选、只连着一台：照旧用它")
 
+    def test_windows_udid_matches_other_spelling(self):
+        # D-C2DX：启动器记的设备号带短横 / 小写，设备服务列的是不带短横的大写；同一台必须认出来，返回设备服务那种写法
+        W = types.SimpleNamespace(mux_devices=lambda: [("ABCD12EF", "USB", 7)])
+        with um.patch.object(install, "LINK_RETRY_WAIT", 0):
+            for asked in ("AB-CD12EF", "ab-cd12ef", "ABCD12EF"):
+                self.assertEqual(install.win_udid(types.SimpleNamespace(r={"device": asked}), W), "ABCD12EF", asked)
+            with self.assertRaises(Failure) as e:
+                install.win_udid(types.SimpleNamespace(r={"device": "AB-CD12EE"}), W)
+            self.assertEqual(e.exception.code, "device_not_connected", "真是另一台：照旧报没连着")
+
