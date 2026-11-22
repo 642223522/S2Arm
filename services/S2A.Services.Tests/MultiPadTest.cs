@@ -75,7 +75,15 @@ namespace S2A.Services.Tests
             InputPump.FilterConnectedStates(states, connected, 0b1000_0011);
             Row("P1 重连后恢复 P1 + P2 + P8", "Player1 Player2 Player8", string.Join(" ", connected.ConvertAll(s => s.PlayerId.ToString())));
 
-            Console.WriteLine($"{(bad == 0 ? "🟢" : "🔴")} 多手柄输入单测：18 项，不符 {bad}");
+            // ⑧ 只断开「本局占过、现在空了」的槽（期望手写）：小程序要 2 人 / 自动玩家开的二号格从没被实体手柄占过 → 照旧配上
+            Row("只接一只、开到 2 格（小程序 / 自动玩家）：两格都配", "3", InputPump.ConfiguredMask(2, 0b01, 0b01).ToString());
+            Row("两只都接过、P1 断开：只配 P2", "2", InputPump.ConfiguredMask(2, 0b10, 0b11).ToString());
+            Row("两只都接过、P2 断开：只配 P1", "1", InputPump.ConfiguredMask(2, 0b01, 0b11).ToString());
+            Row("三只接过、P2 断开：配 P1 + P3", "5", InputPump.ConfiguredMask(3, 0b101, 0b111).ToString());
+            Row("P2 重连：三格都回来", "7", InputPump.ConfiguredMask(3, 0b111, 0b111).ToString());
+            Row("宿主没导出位图：走原来的连续配法", "-1", InputPump.ConfiguredMask(2, -1, 0).ToString());
+
+            Console.WriteLine($"{(bad == 0 ? "🟢" : "🔴")} 多手柄输入单测：24 项，不符 {bad}");
             return bad == 0 ? 0 : 1;
         }
     }

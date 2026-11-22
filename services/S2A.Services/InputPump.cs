@@ -59,6 +59,9 @@ namespace S2A.Services
         private static readonly int EnvPads = Environment.GetEnvironmentVariable("S2A_AP_PADS") == "2" ? 2 : 1;
         // -1 由原来的连续虚拟手柄策略决定；非负值按实体玩家槽位图配置与更新 Npad，允许中间有空槽（断连不挤乱其他玩家位）
         private static volatile int _physicalMask = -1;
+        // 本局实体手柄占过的槽（宿主位图逐拍或上）：只有「占过、现在空了」的槽才断开 Npad；从没被实体手柄占过的槽（手柄设置小程序要「至少 2 人」
+        //   而只接一只、自动玩家接管二号）照旧配上——那时第二格镜像一号 / 收自动玩家的键，拆掉就过不了那道界面
+        private static int _everLive;
         internal static delegate* unmanaged<int> PlayerMask;
         private static volatile int _pads = EnvPads;
         private static volatile PlayerIndex _second = PlayerIndex.Unknown;
@@ -461,6 +464,7 @@ namespace S2A.Services
             _player = PlayerIndex.Handheld;
             _type = ControllerType.Handheld;
             _physicalMask = -1;
+            _everLive = 0;
             _pads = EnvPads;
             _padCap = MaxPads;   // 上一局小程序给的上限不带进下一局
             _second = PlayerIndex.Unknown;
@@ -836,6 +840,14 @@ namespace S2A.Services
             return highest;
         }
 
+        // 实际配给游戏的槽（纯函数，单测）：前 pads 格里，去掉「本局占过（everLive）、现在不在（live）」的；live &lt; 0（宿主没导出位图）→ -1 走原来的连续配法
+        internal static int ConfiguredMask(int pads, int live, int everLive)
+        {
+            if (live < 0) return -1;
+            int all = pads >= 31 ? -1 : (1 << Math.Max(pads, 1)) - 1;
+            return all & ~(everLive & ~live);
+        }
+
         internal static void FilterConnectedStates(List<GamepadInput> states, List<GamepadInput> connected, int mask)
         {
             connected.Clear();
@@ -864,13 +876,12 @@ namespace S2A.Services
                 // 本地多手柄：Mac 前端报告接了几只手柄就开到几格（最多 MaxPads），接上第二只手柄即成为玩家 2；
                 //   导出玩家槽位图时按位图配置，允许中间有空槽（某位断连时其他玩家留在原位）
                 int livePads = _vpadPadCount != null ? _vpadPadCount() : 0;
-                int rawMask = PlayerMask != null ? PlayerMask() : -1;
-                int effectiveMask = ClampMask(rawMask, _padCap);
-                int neededPads = Math.Max(livePads, effectiveMask > 0 ? HighestSlotCount(effectiveMask) : 0);
-                bool maskChanged = effectiveMask != _physicalMask;
-                if (maskChanged) _physicalMask = effectiveMask;
-                if (neededPads > _pads && neededPads <= MaxPads) SetPads(device, neededPads);
-                else if (maskChanged) SetPrimary(device, _player, _type);
+                int liveMask = ClampMask(PlayerMask != null ? PlayerMask() : -1, _padCap);
+                if (liveMask > 0) _everLive |= liveMask;
+                int neededPads = Math.Max(livePads, liveMask > 0 ? HighestSlotCount(liveMask) : 0);
+                if (neededPads > _pads && neededPads <= MaxPads) SetPads(device, neededPads);   // SetPads 里按 _physicalMask 配，先开格再定位图
+                int effectiveMask = ConfiguredMask(_pads, liveMask, _everLive);
+                if (effectiveMask != _physicalMask) { _physicalMask = effectiveMask; SetPrimary(device, _player, _type); }
                 device.System.S2ASetLocalMultiplayer(neededPads >= 2);   // 实接 ≥ 2 只（或高槽位仍在玩）：游戏看到主机运行模式；变化时同真机插拔底座发通知
                 if (Environment.TickCount64 >= nextFollow) { FollowNow(device); nextFollow = Environment.TickCount64 + 250; }
 
@@ -929,7 +940,7 @@ namespace S2A.Services
                 PlayerIndex second = _second;
                 // 本地多手柄：Mac 前端按槽位各喂一只（槽 0 = 玩家 1），二号起读自己的按键 / 摇杆，不再镜像一号
                 bool realPads = UsePerPadInput(_vpadReadPad != null, _pads, second, neededPads);
-                if (realPads || (effectiveMask >= 0 && _vpadReadPad != null && _pads > 1 && second != PlayerIndex.Unknown))
+                if (realPads || ((_everLive & ~1) != 0 && _vpadReadPad != null && _pads > 1 && second != PlayerIndex.Unknown))   // 二号起有过实体手柄才按槽读；从没有过（小程序 / 自动玩家开的格）照旧镜像
                 {
                     FillPadStates(states, _pads, second, _vpadReadPad, AutoplayKeys2 != null ? AutoplayKeys2() : 0);
                     for (int k = 1; k < states.Count; k++)
