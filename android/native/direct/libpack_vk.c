@@ -358,6 +358,9 @@ struct lp_stage_contract {
     char key[17], json_name[12], spv_name[12];
 };
 
+#define LP_NVN_STAGES 6   // NVN 阶段号 vs..cs = 0..5；s2a_libpack_program_v1 的 keys[6][8] 与逐阶段合同都按它定长
+_Static_assert(LP_NVN_STAGES == 6, "keys[6][8] in s2a_libpack_program_v1 is indexed by NVN stage count");
+
 static void lp_record_binding(struct lp_emitted_bindings *bindings, uint32_t number, enum lp_binding_owner owner) {
     if (bindings->count < LP_STAGE_BINDINGS)
         bindings->entry[bindings->count] = (struct lp_emitted_binding){number, owner};
@@ -952,8 +955,10 @@ int s2a_libpack_program_v1(const struct s2a_libpack *lp_c, const uint8_t keys[6]
     int worst = S2A_LIBPACK_HIT;
     struct jw st = {0}, bd = {0};
     int sep = 0, uses_v2 = 0; uint32_t got = 0, support = 0;
-    struct lp_stage_contract contracts[3] = {0};
-    for (unsigned nvn = 0, idx = 0; nvn < 6 && idx < 6; nvn++) {
+    // 按 NVN 阶段号（vs=0 fs=1 gs=2 tcs=3 tes=4 cs=5）定长取下标：keys[] 与 contracts[] 同为全部阶段号一份，
+    //   循环上界取自数组本身，阶段号永远在界内（原 contracts[3] 遇 tcs/tes 位会传出越界指针）
+    struct lp_stage_contract contracts[LP_NVN_STAGES] = {0};
+    for (unsigned nvn = 0, idx = 0; nvn < sizeof contracts / sizeof contracts[0] && idx < LP_NVN_STAGES; nvn++) {
         if (!(stages & (1u << nvn))) continue;
         char sw[192] = "";
         int rc = lp_stage_emit(lp, keys[idx], nvn, 0, gs_topology, 0, &st, &bd, &sep, &got, &support, &uses_v2,
