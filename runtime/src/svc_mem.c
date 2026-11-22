@@ -574,10 +574,10 @@ static void layout_prepare(const char *npdm) {
     //   宿主只剩 11 GB，虚拟池预留减半到 16 MB 也占不到、Metal 拿到空数据崩。布局按收窄后的大小算，多出的尾部由下面 s2a_window_trim 还给宿主；
     //   只在窗口本来就放不下标准布局（按需档）时收：放得下的款照旧给满标准布局，不因学到的跨度小而改成按需。
     //   收窄后放不下走原有自愈（-2 → 删记录、放宽重算）。单款包构造期已按本款跨度给，这里至多再收 1 GiB 取整的零头
-    uint64_t cap = 0;
-    { uint64_t (*span_seen)(uint64_t) = (uint64_t (*)(uint64_t))dlsym(RTLD_DEFAULT, "s2a_window_span_seen");   // vawin.c；安卓 / 单测没有就不收
+    uint64_t cap = 0, cap_span = 0;
+    { uint64_t (*span_seen)(uint64_t) = (uint64_t (*)(uint64_t))dlsym(RTLD_DEFAULT, "s2a_window_span_seen");   // vawin.c；安卓 / 单测没有就不收（收窄过、那局没到首帧的回 0）
       uint64_t (*for_span)(uint64_t) = (uint64_t (*)(uint64_t))dlsym(RTLD_DEFAULT, "s2a_window_for_span");
-      cap = span_seen && for_span ? for_span(span_seen(pid)) : 0;
+      cap_span = span_seen && for_span ? span_seen(pid) : 0; cap = cap_span ? for_span(cap_span) : 0;
       // 即时存档恢复：窗口要与快照时一样（vawin.c 构造期已按快照清单占），学到的跨度不再收（两局之间学到的不同，收了就「窗口不符」）
       { int s2a_snap_restoring(void); if (cap && s2a_snap_restoring()) { LOG("即时存档恢复：不按本款学到的跨度收窗口（窗口保持快照时的 %llu MB）", (unsigned long long)(ws >> 20)); cap = 0; } } }
     int alias_gb = alias_first_hint(npdm, pid);
@@ -589,7 +589,9 @@ static void layout_prepare(const char *npdm) {
       if (ws < g_lay_need && cap && cap < ws) {
           s2a_layout tl; uint64_t tmb = 0, tsb = 0, want = g_lay_heap_floor ? g_lay_heap_floor : APP_POOL;
           if (s2a_layout_cap_fits(s2a_layout_compute(t, sr, mod, alias_gb, wb, cap, &tl, &tmb, &tsb), tl.heap_base, wb + cap, want)) {
-              LOG("地址窗口：按本款（%016llx）学到的跨度收到 %llu MB（原 %llu MB），其余还给宿主", (unsigned long long)pid, (unsigned long long)(cap >> 20), (unsigned long long)(ws >> 20)); ws = cap; }
+              LOG("地址窗口：按本款（%016llx）学到的跨度收到 %llu MB（原 %llu MB），其余还给宿主", (unsigned long long)pid, (unsigned long long)(cap >> 20), (unsigned long long)(ws >> 20)); ws = cap;
+              void (*cap_try)(const char *, uint64_t, uint64_t) = (void (*)(const char *, uint64_t, uint64_t))dlsym(RTLD_DEFAULT, "s2a_window_cap_try");
+              if (cap_try) cap_try(NULL, pid, cap_span); }   // 首帧上屏删；没到首帧下一局就不按这个跨度收（vawin.c s2a_window_span_trust）
           else LOG("地址窗口：本款（%016llx）学到的跨度只够 %llu MB 窗口，堆区装不下要的 %llu MB 堆，不收窄（保持 %llu MB）",
                    (unsigned long long)pid, (unsigned long long)(cap >> 20), (unsigned long long)(want >> 20), (unsigned long long)(ws >> 20)); }
     int rc = s2a_layout_compute(t, sr, mod, alias_gb, wb, ws, &L, &g_mod_base, &g_shadow_base);
