@@ -452,7 +452,7 @@
 "save.exported" = "Sauvegarde exportée.";
 "save.import" = "Choisir une sauvegarde à vérifier…";
 "save.inspected" = "Sauvegarde vérifiée. En attente de confirmation.";
-"save.intro" = "Le jeu n'a pas encore démarré. Vous pouvez exporter votre sauvegarde vers Fichiers, ou importer une sauvegarde .s2asave depuis un Mac ou un autre appareil. La sauvegarde actuelle est conservée avant la restauration.";
+"save.intro" = "Le jeu n'a pas encore démarré. Vous pouvez exporter votre sauvegarde vers Fichiers, importer une sauvegarde .s2asave depuis un Mac ou un autre appareil, ou importer un dossier ou un zip de sauvegarde d’un autre émulateur ou outil (JKSV, Checkpoint, Ryujinx, yuzu, etc.). La sauvegarde actuelle est conservée avant la restauration.";
 "save.journalUnreadable" = "Impossible de lire le dossier des enregistrements d'opérations de sauvegarde (%@) ; impossible de déterminer si le dernier import / restauration s'est terminé.\n%@";
 "save.location" = "Emplacement des sauvegardes : ouvrez l'app Fichiers → Sur mon iPhone (Sur mon iPad sur iPad) → %@ → %@\n\nPlacez-y un dossier de sauvegarde dans son format d'origine (exporté depuis une console, via JKSV / Checkpoint ou des outils similaires, ou copié depuis SaveData du même jeu sur votre ordinateur) et le jeu l'utilisera au prochain démarrage. À la fermeture, il est mis à jour avec votre progression ; copiez l'intégralité du dossier au même emplacement sur votre ordinateur ou un autre appareil pour continuer à jouer.\n\nCopier depuis un ordinateur : sur un Mac, sélectionnez cet appareil dans la barre latérale du Finder → Fichiers, faites glisser le dossier sur « %@ », puis utilisez l'app Fichiers pour le déplacer vers l'emplacement ci-dessus.";
 "save.location.problem" = "La sauvegarde placée là la dernière fois n'a pas été chargée : %@. La sauvegarde actuelle est inchangée.";
@@ -483,6 +483,8 @@
 "save.restore.title" = "Restaurer cette sauvegarde ?";
 "save.restoreCancelled" = "Restauration annulée.";
 "save.restored" = "Sauvegarde restaurée. Vous pouvez démarrer le jeu pour vérifier votre progression. Une sauvegarde préalable à la restauration a été conservée (aucune n'est créée s'il n'y avait pas de sauvegarde avant).";
+"save.community.message" = "Sauvegarde d’un autre émulateur ou outil : %@ fichiers, %@.\n\nAprès confirmation, votre sauvegarde actuelle est d’abord copiée, puis cette sauvegarde est placée dans le dossier de sauvegarde du jeu ; elle sera chargée au prochain démarrage du jeu.";
+"save.community.done" = "C’est fait : cette sauvegarde sera chargée au prochain démarrage du jeu. Votre sauvegarde précédente a été copiée (aucune copie s’il n’y avait pas de sauvegarde).";
 "save.serviceInvalid" = "Le service de sauvegarde n'a pas renvoyé de résultat valide. Fermez puis rouvrez l'app ; vos données existantes sont conservées.";
 "save.previous.ask.title" = "Ce jeu n’a pas pu charger sa sauvegarde la dernière fois. Revenir à la sauvegarde précédente ?";
 "save.previous.ask.crash" = "La dernière session s’est fermée dès le début. Vous pourrez revenir en arrière à tout moment.";

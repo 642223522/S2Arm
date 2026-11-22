@@ -84,7 +84,7 @@ struct SaveManageSheet: View {
                 Text(t("save.scope")).font(LauncherTheme.TypeStyle.detail.weight(.semibold)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true).padding(.top, 6)
                 if game?.iphoneInstalledAt != nil {
-                    Text(t("save.phoneHint").replacingOccurrences(of: "{0}", with: gameID))   // #2066：.s2asave 走设备上「存档管理」；社区存档放进设备上这款的 SaveData（iPad 导入按钮只收 .s2asave，#2070）.font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary)
+                    Text(t("save.phoneHint"))   // #2066 / #2070：设备上「存档管理」的导入收 .s2asave 和其他工具的存档
                         .fixedSize(horizontal: false, vertical: true).padding(.top, 4)
                 }
                 Text(t("save.hint")).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary)

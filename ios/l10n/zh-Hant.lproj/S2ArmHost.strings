@@ -427,7 +427,7 @@
 "save.exported" = "備份已匯出。";
 "save.import" = "選擇備份並檢查…";
 "save.inspected" = "備份檢查通過，等待確認。";
-"save.intro" = "遊戲尚未啟動。可將存檔匯出到「檔案」，或匯入 Mac / 其他裝置的 .s2asave 備份。回復前會保留目前的存檔。";
+"save.intro" = "遊戲尚未啟動。可將存檔匯出到「檔案」，或匯入 Mac / 其他裝置的 .s2asave 備份，也能匯入其他模擬器 / 工具（JKSV、Checkpoint、Ryujinx、yuzu 等）的存檔資料夾或 zip。回復前會保留目前的存檔。";
 "save.journalUnreadable" = "讀不到存檔操作紀錄目錄（%@），無法確認上次的匯入 / 回復是否已完成。\n%@";
 "save.location" = "存檔位置：開啟「檔案」App →「我的 iPhone」（iPad 為「我的 iPad」）→「%@」→ %@\n\n把原生格式的存檔資料夾放進去（主機、JKSV / Checkpoint 等工具匯出的，或從電腦上同一款遊戲的 SaveData 複製來的都可以），下次開始遊戲時就會使用它；結束遊戲後這裡會更新為最新進度，把整個資料夾複製到電腦或另一台裝置的相同位置就能接著玩。\n\n從電腦複製過來：在 Mac 的 Finder 側邊欄選取這台裝置 →「檔案」，把資料夾拖到「%@」上，再到「檔案」App 裡移進上面的位置。";
 "save.location.problem" = "上次放進來的存檔沒有讀取成功：%@。目前的存檔沒有變動。";
@@ -458,6 +458,8 @@
 "save.restore.title" = "要回復這份備份嗎？";
 "save.restoreCancelled" = "已取消回復。";
 "save.restored" = "存檔已回復。可開始遊戲檢查進度；回復前備份已保留（先前沒有存檔時不會產生備份）。";
+"save.community.message" = "認出了其他模擬器 / 工具的存檔：%@ 個檔案，%@。\n\n確認後先備份目前的存檔，再把這份存檔放進這款的存檔位置，下次開始遊戲時讀入。";
+"save.community.done" = "已放好：下次開始遊戲時讀入這份存檔。回復前的存檔已備份（先前沒有存檔時不會產生備份）。";
 "save.serviceInvalid" = "存檔服務沒有傳回有效結果。請關閉後重新開啟 App，現有資料會保留。";
 "save.previous.ask.title" = "這款上次沒能正常讀取存檔，要回到上一份存檔嗎？";
 "save.previous.ask.crash" = "上一局一開始就退出了。回到上一份後也能隨時換回來。";
