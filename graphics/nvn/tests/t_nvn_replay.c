@@ -488,6 +488,8 @@ static void t_framelog_fence(void) {   // 帧日志 fence 字段：同步等待 
 
 static struct { nvn_gpu_clear d; int npd, ends; } g_cr[8]; static int g_ncr;   // 矩形清：记描述，以及收到时已开 / 已关过几个通道
 void nvn_gpu_clear_rect(nvn_gpu_cmd c, const nvn_gpu_clear *d) { (void)c; if (g_ncr < 8) { g_cr[g_ncr].d = *d; g_cr[g_ncr].npd = g_npd; g_cr[g_ncr].ends = g_pass_ends; } g_ncr++; }
+static struct { nvn_gpu_draw_tex_desc d; int in_pass, npd; } g_dt[8]; static int g_ndt;   // DrawTexture（#1452）：记描述，以及收到时通道开着没有、已开过几个通道
+void nvn_gpu_draw_tex(nvn_gpu_cmd c, const nvn_gpu_draw_tex_desc *d) { (void)c; if (g_ndt < 8) { g_dt[g_ndt].d = *d; g_dt[g_ndt].in_pass = g_pass_open; g_dt[g_ndt].npd = g_npd; } g_ndt++; }
 static uint64_t g_tick;   // 游戏时钟替身
 uint64_t s2a_guest_tick(void) { return g_tick; }
 static int g_ts_convert_fail;
@@ -2765,6 +2767,88 @@ static void t_pass_clear_fold(void) {   // 整屏清除不单独编码：折进�
 static int pd_zero_clear(const nvn_gpu_pass_desc *d) { static const nvn_gpu_pass_desc z; return d->color[0].load == NVN_GPU_LOAD_CLEAR && !memcmp(&d->color[0].clear, &z.color[0].clear, sizeof z.color[0].clear); }   // 刚建的目标：载入时清成零（不是折进来的清除值）
 // 刚建的单级单层颜色目标：初始的全零不在 CPU 上整张上传，由第一个通道载入时清零；之后的通道照常载入。
 // 多级的不行（一个附件视图盖不住整张图）：照旧逐级填零。已有整屏清除的：按清除值清，不被零盖掉。
+// DrawTexture（#1452，rp_draw_tex.c）：期望值都按 NVN 语义手算（iOS nvn_mtl.m draw_tex / Ryujinx HelperShader.DrawTexture），不跑被测实现。
+//   负对照：后端没置 NVN_GPU_CAP_DRAW_TEX 时照旧记「未接 op OP_DRAW_TEX」、一笔不画、不开通道；同一段命令置位后才画。
+static void put_draw_tex(stream *s, int tid, int sid, float x0, float y0, float x1, float y1, float s0, float t0, float s1, float t1) {
+    p_draw_tex *d = put(s, OP_DRAW_TEX, sizeof *d); d->handle = (uint64_t)tid | (uint64_t)sid << 20;
+    d->dst[0] = x0; d->dst[1] = y0; d->dst[2] = x1; d->dst[3] = y1; d->src[0] = s0; d->src[1] = t0; d->src[2] = s1; d->src[3] = t1;
+}
+static void put_state(stream *s, int kind, const void *v, size_t n) { p_bind_state *b = put(s, OP_BIND_STATE, sizeof *b); b->kind = kind; memcpy(b->bytes, v, n); }
+static void t_draw_tex(void) {
+    tex_t rt = mk_tex(71, 0, NVN_FORMAT_RGBA8, 64, 32, 1, 0), src = mk_tex(72, 0x4000, NVN_FORMAT_RGBA8, 8, 4, 1, 0);
+    tex_t isrc = mk_tex(73, 0x8000, NVN_FORMAT_R32UI, 8, 4, 1, 0), irt = mk_tex(74, 0xC000, NVN_FORMAT_RGBA8UI, 16, 16, 1, 0);
+    samp_par sp; memset(&sp, 0, sizeof sp);
+#define DT_FRESH() do { pass_fresh(); g_ndt = 0; rp_state_reset(); nvn_be_tex_init(&src); nvn_be_tex_init(&isrc); \
+        nvn_be_set_tex_pool_n(16); nvn_be_reg_tex(7, &src, NULL); nvn_be_reg_tex(8, &isrc, NULL); nvn_be_reg_tex(9, &rt, NULL); nvn_be_reg_samp(3, &sp); } while (0)
+    g_caps_extra = 0; DT_FRESH();
+    // ① 负对照：没有能力位
+    { stream a = {0}; put_set_rt(&a, &rt, NULL); put_draw_tex(&a, 7, 3, 10, 20, 42, 4, 0, 0, 8, 4); end(&a);
+      submit1(&a); fake_complete(NVN_GPU_DONE_OK);
+      CHECK(g_ndt == 0 && g_npd == 0 && nvn_unimpl_count("op", "OP_DRAW_TEX") == 1 && nvn_unimpl_kinds() == 1); }
+    // ② 有能力位：同一段命令画一笔。目的 (10,20)→(42,4) 上下反向：视口 = 10,4 32x16，源 v 端点交换；源矩形按 8x4 归一化
+    g_caps_extra = NVN_GPU_CAP_DRAW_TEX; DT_FRESH();
+    { stream a = {0}; put_set_rt(&a, &rt, NULL);
+      p_scissor *sc = put(&a, OP_SCISSOR, sizeof *sc); sc->x = 5; sc->y = 6; sc->w = 100; sc->h = 100;   // 夹到 64x32：5,6 59x26
+      put_draw_tex(&a, 7, 3, 10, 20, 42, 4, 2, 1, 6, 3); end(&a);
+      submit1(&a); fake_complete(NVN_GPU_DONE_OK); }
+    CHECK(g_ndt == 1 && nvn_unimpl_kinds() == 0);
+    if (g_ndt == 1) {
+        const nvn_gpu_draw_tex_desc *d = &g_dt[0].d;
+        CHECK(g_dt[0].in_pass == 1 && g_dt[0].npd == 1 && g_pd[0].ncolor >= 1 && g_pd[0].color[0].view != NULL);   // 在开着的通道里、颜色 0 挂着目标
+        CHECK(d->dst[0] == 10 && d->dst[1] == 4 && d->dst[2] == 32 && d->dst[3] == 16);
+        CHECK(d->uv[0] == 0.25f && d->uv[2] == 0.75f && d->uv[1] == 0.75f && d->uv[3] == 0.25f);   // u 2/8→6/8；v 1/4→3/4 交换成 3/4→1/4
+        CHECK(d->has_sc == 1 && d->sc[0] == 5 && d->sc[1] == 6 && d->sc[2] == 59 && d->sc[3] == 26);
+        CHECK(d->src != NULL && d->samp != NULL && d->color_mask == 0xf && d->blend_en == 0);   // NVN 缺省：四通道全写、不混合
+        CHECK(d->origin_ll == (uint8_t)(rp_origin_lower_left() != 0));
+    }
+    CHECK(rp_pso_dirty == 1);   // 后端换了内置管线：下一笔绘制前全部重发
+    // ③ 混合与写掩码照游戏当前状态，只取 color(0) 那一份
+    DT_FRESH();
+    { stream a = {0}; put_set_rt(&a, &rt, NULL);
+      color_st cs; memset(&cs, 0, sizeof cs); cs.blend_en = 1; cs.logic_op = NVN_LOGIC_OP_COPY; put_state(&a, 1, &cs, sizeof cs);
+      chmask_st cm = {0x5u | 0xf0u}; put_state(&a, 2, &cm, sizeof cm);   // color(0) 只写 r、b；color(1) 的位不进
+      blend_st bs; memset(&bs, 0, sizeof bs); bs.target = 0; bs.src_rgb = NVN_BLEND_FUNC_SRC_ALPHA; bs.dst_rgb = NVN_BLEND_FUNC_ONE_MINUS_SRC_ALPHA; bs.src_a = NVN_BLEND_FUNC_ONE; bs.dst_a = NVN_BLEND_FUNC_ZERO;
+      bs.eq_rgb = NVN_BLEND_EQUATION_ADD; bs.eq_a = NVN_BLEND_EQUATION_ADD; put_state(&a, 0, &bs, sizeof bs);
+      p_blend_color *bc = put(&a, OP_BLEND_COLOR, sizeof *bc); bc->rgba[2] = 0.5f;
+      put_draw_tex(&a, 7, 3, 0, 0, 8, 4, 0, 0, 8, 4); end(&a);
+      submit1(&a); fake_complete(NVN_GPU_DONE_OK); }
+    CHECK(g_ndt == 1 && nvn_unimpl_kinds() == 0);
+    if (g_ndt == 1) {
+        const nvn_gpu_draw_tex_desc *d = &g_dt[0].d;
+        CHECK(d->color_mask == 0x5 && d->blend_en == 1 && d->blend.src_rgb == NVN_BLEND_FUNC_SRC_ALPHA && d->blend.dst_rgb == NVN_BLEND_FUNC_ONE_MINUS_SRC_ALPHA);
+        CHECK(d->blend_color[2] == 0.5f && d->has_sc == 0);
+        CHECK(d->dst[0] == 0 && d->dst[2] == 8 && d->uv[0] == 0 && d->uv[1] == 0 && d->uv[2] == 1 && d->uv[3] == 1);
+    }
+    // ④ 各种拒绝：都具名记账、一笔不画；空矩形 / 写掩码为 0 什么都不画也不算未接
+    struct { const char *name; int tid; int rt; int kind; } rj[] = {
+        {"source_format", 8, 0, 0},        // 整数源
+        {"texture_unregistered", 11, 0, 0},
+        {"target_integer", 7, 1, 0},       // 整数目标
+        {"source_is_target", 9, 0, 0},     // 源就是当前目标（反馈）
+        {"logic_op", 7, 0, 1},
+        {"dual_source_blend", 7, 0, 2},
+        {NULL, 7, 0, 3},                   // 空矩形
+        {NULL, 7, 0, 4},                   // color(0) 写掩码为 0
+    };
+    for (size_t i = 0; i < sizeof rj / sizeof rj[0]; i++) {
+        DT_FRESH();
+        stream a = {0}; put_set_rt(&a, rj[i].rt ? &irt : &rt, NULL);
+        if (rj[i].kind == 1) { color_st cs; memset(&cs, 0, sizeof cs); cs.logic_op = NVN_LOGIC_OP_XOR; put_state(&a, 1, &cs, sizeof cs); }
+        if (rj[i].kind == 2) { color_st cs; memset(&cs, 0, sizeof cs); cs.blend_en = 1; cs.logic_op = NVN_LOGIC_OP_COPY; put_state(&a, 1, &cs, sizeof cs);
+                               blend_st bs; memset(&bs, 0, sizeof bs); bs.src_rgb = 0x10; bs.dst_rgb = NVN_BLEND_FUNC_ZERO; bs.src_a = NVN_BLEND_FUNC_ONE; bs.dst_a = NVN_BLEND_FUNC_ZERO;
+                               bs.eq_rgb = bs.eq_a = NVN_BLEND_EQUATION_ADD; put_state(&a, 0, &bs, sizeof bs); }
+        if (rj[i].kind == 4) { chmask_st cm = {0xf0u}; put_state(&a, 2, &cm, sizeof cm); }
+        if (rj[i].kind == 3) put_draw_tex(&a, rj[i].tid, 3, 4, 4, 4, 9, 0, 0, 8, 4);
+        else put_draw_tex(&a, rj[i].tid, 3, 0, 0, 8, 4, 0, 0, 8, 4);
+        end(&a); submit1(&a); fake_complete(NVN_GPU_DONE_OK);
+        CHECK(g_ndt == 0);
+        if (rj[i].name) CHECK(nvn_unimpl_count("draw_tex", rj[i].name) == 1 && nvn_unimpl_kinds() == 1);
+        else CHECK(nvn_unimpl_kinds() == 0);
+    }
+    g_caps_extra = 0; pass_fresh(); rp_state_reset();
+#undef DT_FRESH
+}
+
 static void t_pass_fresh_zero(void) {
     pass_fresh();
     tex_t a = mk_tex(64, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0);
@@ -7276,6 +7360,7 @@ int main(int argc, char **argv) {
     t_pass_shared_pending_clear();
     t_pass_shared_explicit_rect();
     t_pass_clear_fold();
+    t_draw_tex();
     t_pass_depth_shadow();
     t_pass_no_attachment();
     t_pass_bc_shadow();

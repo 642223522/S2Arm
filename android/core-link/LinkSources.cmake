@@ -108,7 +108,7 @@ function(s2a_android_nvk_sources output)
         native/nvn/nvn_vk_driver_cache.c   # 驱动管线缓存落盘文件层（backend_vulkan.c 的 plc_open / plc_close 用；SHA-256 用上面的 sha256.c）
         ../graphics/nvn/gfx/nvn/nvn_fmt_expand.c
         # 回放核心（安卓 / 鸿蒙共用）
-        ../graphics/nvn/replay/rp_exec.c ../graphics/nvn/replay/rp_copy_t2b.c ../graphics/nvn/replay/rp_clear_tex.c ../graphics/nvn/replay/rp_state.c ../graphics/nvn/replay/rp_entry.c
+        ../graphics/nvn/replay/rp_exec.c ../graphics/nvn/replay/rp_copy_t2b.c ../graphics/nvn/replay/rp_clear_tex.c ../graphics/nvn/replay/rp_draw_tex.c ../graphics/nvn/replay/rp_state.c ../graphics/nvn/replay/rp_entry.c
         ../graphics/nvn/replay/rp_res.c ../graphics/nvn/replay/rp_buf.c ../graphics/nvn/replay/rp_pass.c
         ../graphics/nvn/replay/rp_present.c ../graphics/nvn/replay/rp_draw.c
         ../graphics/nvn/replay/nvn_unimpl.c
