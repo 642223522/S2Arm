@@ -825,6 +825,7 @@ static void snap_restart_result(int result, const char *detail, void *context) {
     int rc = s2a_host_restart(snap_restart_result, NULL);
     if (rc) { unsetenv("S2A_SNAP_RESTORE"); unsetenv("S2A_SNAP_SAVE_ROLLBACK"); [self snapToast:[NSString stringWithFormat:S2AL(@"vpad.snap.restoreFailed"), @""]]; }
 }
+// 弱链接[lab]：s2a_snap_fits_inplace（即时快照：runtime/src/snapshot.c 提供；输入工作台不链原生核，取不到就不预检、照旧走重启）
 - (void)snapRestore:(NSString *)dir {
     int s2a_snap_save_changed(const char *) __attribute__((weak)); int s2a_snap_fits_inplace(const char *) __attribute__((weak));
     // 游戏里回不去（快照存的时候窗口 / 命令记录区落点与这一局不同，进程内重启搬不了窗口）：先问引擎，接不上就不重启、不拆这一局，
