@@ -239,7 +239,7 @@ extension LauncherView {
                         if model.consoleChoosing == c.bundleId { ProgressView().controlSize(.small) } else { Image(systemName: "app.badge.checkmark") }
                         VStack(alignment: .leading, spacing: 2) {
                             Text(label).font(.manrope(13, .medium))
-                            Text(c.bundleId + (c.team.isEmpty ? "" : " · " + sx("console.choose.team", c.team))).font(.manrope(11)).foregroundStyle(.white.opacity(0.55))
+                            Text((c.displayName ?? c.bundleId) + (c.team.isEmpty ? "" : " · " + sx("console.choose.team", c.team))).font(.manrope(11)).foregroundStyle(.white.opacity(0.55))
                         }
                     }
                 }
