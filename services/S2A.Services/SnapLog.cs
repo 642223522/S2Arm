@@ -231,6 +231,24 @@ namespace S2A.Services
             return false;
         }
         internal static bool StateGetterQueryRulesOn = true;   // 单测负对照用：关掉就公共状态的纯查询照常进日志
+        internal static bool BinderQueryRulesOn = true;   // 单测负对照用：关掉就 HOSBinderDriverServer 的纯查询事务照常进日志
+        // HOSBinderDriverServer 的 TransactParcel（0）/ TransactParcelAuto（3）：紧跟 CMIF 头 "SFCI"（16 字节）是 binderId(s32)、code(u32)、flags(u32)。
+        //   IGraphicBufferProducer 的纯只读查询事务不改任何服务状态、不建句柄：Query（9）、GetBufferInfo（16）、GetBufferHistory（17，nn::vi::ListFrameHistory）。
+        //   HOSBinderDriverServer 会话整局常驻，按活对象收不会淘汰；每帧调 GetBufferHistory 的游戏（如 FF Resonance、巫师 3）跑 ~2.5 小时日志可涨到 ~250 MB / SOH 383 MB，
+        //   撞托管堆上限触发持续 GC 抖动卡死整局。Connect / SetPreallocatedBuffer / RequestBuffer / DequeueBuffer / QueueBuffer / CancelBuffer 等改状态事务照常记、照常重放
+        internal static bool DropBinderQuery(string n, long cmd, byte* msg, int size)
+        {
+            if (!BinderQueryRulesOn) return false;
+            uint c = (uint)cmd;
+            if (!n.Contains("HOSBinderDriver") || !(c == 0 || c == 3)) return false;
+            for (int o = 8; o + 16 + 8 <= size; o += 4)
+            {
+                if (*(uint*)(msg + o) != 0x49434653u) continue;   // CMIF 头 "SFCI"
+                uint code = *(uint*)(msg + o + 16 + 4);
+                return code == 9 || code == 16 || code == 17;     // Query / GetBufferInfo / GetBufferHistory
+            }
+            return false;
+        }
         internal static bool AudioQueueRulesOn = true;   // 单测负对照用：关掉就 AudioOut / AudioIn 的队列命令照常进日志
         internal static bool Drop(string n, long cmd)
         {
@@ -299,7 +317,7 @@ namespace S2A.Services
                 lock (_lock) { _lastMm.Remove((cookie, 2u, fid)); _lastMm.Remove((cookie, 6u, fid)); }   // Finalize 了这个请求号：之前留的最后一次设值作废（Finalize 本身照常进日志）
             _pendingNvMap = null;
             if (NvRule(n, num, cookie, cmd, msg, size)) { lock (_lock) { _dropped++; _dropBy[n + "#" + (uint)cmd] = _dropBy.GetValueOrDefault(n + "#" + (uint)cmd) + 1; } s2a_snap_hctx(-3); return -1; }
-            if (Drop(n, cmd) || DropNvSubmit(n, cmd, msg, size)) { lock (_lock) { _dropped++; _dropBy[n + "#" + (uint)cmd] = _dropBy.GetValueOrDefault(n + "#" + (uint)cmd) + 1; } s2a_snap_hctx(-3); return -1; }
+            if (Drop(n, cmd) || DropNvSubmit(n, cmd, msg, size) || DropBinderQuery(n, cmd, msg, size)) { lock (_lock) { _dropped++; _dropBy[n + "#" + (uint)cmd] = _dropBy.GetValueOrDefault(n + "#" + (uint)cmd) + 1; } s2a_snap_hctx(-3); return -1; }
             lock (_lock)
             {
                 int seq = _seq++; _kept++;
