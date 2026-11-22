@@ -232,6 +232,23 @@ raise SystemExit(main.main())
         self.assertEqual(explain(Failure("No space left on device")).code, "job_failed")
         self.assertEqual(explain(ValueError("Check keys")).code, "job_failed")
 
+    def test_disk_io_error_named(self):
+        # D-2NH2（Windows 0.6.8）：installUpdate 读游戏库遇 WinError 483「设备硬件出现致命错误」，原先落笼统的「本地任务失败」。
+        #   期望手写：WinError 483 / 23 / 1117、POSIX EIO → disk_io_error，原文与路径进 internal；工具日志里同样的原文 → disk_io_error；
+        #   反证：同一路径的 WinError 5（拒绝访问）不归它
+        lib = self.root / "d2nh2-lib"; lib.mkdir()
+        for win in (483, 23, 1117):
+            with self.subTest(winerror=win):
+                e = OSError(errno.EINVAL, "localized", str(lib / "games/x/a.bin")); e.winerror = win
+                got = explain(e, library=lib)
+                self.assertEqual(got.code, "disk_io_error"); self.assertIn(f"WinError {win}", got.internal)
+        self.assertEqual(explain(OSError(errno.EIO, "Input/output error", str(lib / "a"))).code, "disk_io_error")
+        deny = OSError(errno.EACCES, "denied", str(lib / "a")); deny.winerror = 5
+        self.assertNotEqual(explain(deny, library=lib).code, "disk_io_error")
+        import errors
+        code, why = errors.classify_failure("ipa", None, ["OSError: [WinError 483] 由于设备硬件出现致命错误，请求失败。: 'D:\\lib\\a.bin'"])
+        self.assertEqual(code, "disk_io_error", why)
+
     def test_windows_app_control_block_named(self):
         # #0745b9：Windows 应用控制（4551 智能应用控制 / WDAC、1260 组策略、225 / 226 杀毒软件）拦下我们自带的工具 → app_control_blocked，
         #   上屏点名被拦的工具（winproc.popen 补的文件名）；原先落到「本地任务失败，请检查日志和输入」。errno 写成 EACCES 也先认应用控制

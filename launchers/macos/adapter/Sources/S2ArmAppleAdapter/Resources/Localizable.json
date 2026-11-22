@@ -3872,6 +3872,18 @@
   "en": "The task disk has insufficient space."
  },
  {
+  "source": "这块盘读写出错",
+  "en": "This drive had a read/write error"
+ },
+ {
+  "source": "这块盘读写出错：系统报告硬件或连接故障。",
+  "en": "This drive had a read/write error: the system reported a hardware or connection fault."
+ },
+ {
+  "source": "这块盘读写出了错（硬件或连接问题）：插稳数据线、换个接口，或用系统自带的磁盘检查工具查一下这块盘；也可以把游戏库搬到别的盘再试。存档和已出好的版本不受影响。",
+  "en": "This drive had a read/write error (hardware or connection problem): reseat the cable, try another port, or check the drive with the system's disk check tool; you can also move the game library to another drive and try again. Your saves and finished builds are not affected."
+ },
+ {
   "source": "文件或目录不可访问或不可写。",
   "en": "A file or folder cannot be accessed or written."
  },

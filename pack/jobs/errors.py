@@ -76,6 +76,7 @@ RECOVERY = {
     "downstream_export_unsupported": "这款选的下游方案是独立 App，资源要由电脑推进去：连上手机后点「推到 iPhone」；想导出自签包就在确认页改选「仍用原版方案」。",
     "download_failed": "检查这台电脑的网络（能打开 s2arm.com）后再点一次；下了一半的不会被当成好的用。",
     "diag_upload_failed": "导出诊断包，手动发到 GitHub 帖子或群里；网络恢复后也可以再点一次「故障报修」。",   # 上传诊断没成（服务没开通 / 连不上 / 被拒收，diag_upload.py）：界面退回导出
+    "disk_io_error": "这块盘读写出了错（硬件或连接问题）：插稳数据线、换个接口，或用系统自带的磁盘检查工具查一下这块盘；也可以把游戏库搬到别的盘再试。存档和已出好的版本不受影响。",
     "disk_full": "释放任务所在磁盘的空间，检查游戏库和应用数据所在磁盘后重试；不要删除存档或上次成功的运行版本。",
     "out_of_memory": "关掉其它占内存的程序（浏览器、游戏等）后重试；还不行就在 Windows 设置里调大虚拟内存（页面文件），或换一台内存更大的电脑出包。已做完的步骤下次会复用。",
     "permission_denied": "检查文件和目录权限；若位于桌面、文稿、下载或外接磁盘，请在「系统设置 → 隐私与安全性 → 文件与文件夹」允许 S2Arm 访问，再重试。",
@@ -330,6 +331,7 @@ def _is_directory(path):
         return None
 
 
+DISK_IO_WINERRORS = (483, 23, 1117)   # ERROR_DEVICE_HARDWARE_ERROR / ERROR_CRC / ERROR_IO_DEVICE
 APP_CONTROL_BLOCKED = (4551, 1260, 225, 226)   # 同 winproc.APP_CONTROL_BLOCKED：应用控制策略 / 组策略 / 杀毒软件拦下要起的程序（#0745b9）
 
 
@@ -347,6 +349,10 @@ def explain(error, sources=(), library=None):
         paths = [p for p in (error.filename, error.filename2) if p]
         winerror = getattr(error, "winerror", None)
         internal = f"{type(error).__name__} errno {error.errno}" + (f" WinError {winerror}" if winerror else "") + f"：{error.strerror or error}" + ("；路径 " + " → ".join(map(str, paths)) if paths else "")  # 非玩家句
+        # 盘读写出了硬件 / 连接故障（D-2NH2 Windows 0.6.8：installUpdate 读游戏库 WinError 483「设备硬件出现致命错误」，原先落笼统的「本地任务失败」）：
+        #   同 disk_full 是确凿的环境原因。WinError 483 设备硬件错、23 CRC 数据错、1117 设备 I/O 错；POSIX EIO（移动硬盘掉线 / 坏道）
+        if winerror in DISK_IO_WINERRORS or error.errno == errno.EIO:
+            return Failure("这块盘读写出错：系统报告硬件或连接故障。", code="disk_io_error", internal=internal)
         if winerror in APP_CONTROL_BLOCKED:   # 先于 EACCES：4551 / 1260 也会被映射成拒绝访问，原因不同、办法不同
             tool = __import__("ntpath").basename(str(error.filename)) if error.filename else "S2Arm 自带的工具"   # ntpath：\\ 与 / 都认
             who = {4551: "Windows 的「智能应用控制」", 1260: "这台电脑的组策略（公司 / 学校管理的电脑常见）"}.get(winerror, "杀毒软件")
@@ -395,6 +401,7 @@ STAGE_CODES = {
 #   否则「title：detail」（单测 test_job_failure_codes.PlayerSummary 逐条对照；英文在 Mac 启动器 Localizable.json）。
 PLAYER_REASON = {
     "disk_full": "磁盘空间不够：准备这个游戏需要更多空余空间。",
+    "disk_io_error": "这块盘读写出错：系统报告硬件或连接故障。",
     "out_of_memory": "电脑内存不够：出包时内存用完了。",
     "rewrite_gap": "暂时出不了包：这款游戏里有程序代码我们的改写器还不支持，我们正在修。",
     "glslc_windows_unavailable": "着色器编译暂不支持：这款游戏的着色器编译目前只能在 Mac 上完成。",
@@ -449,6 +456,8 @@ LOG_CAUSES = (
     (r"No space left on device|\bENOSPC\b|\[Errno 28\]|\berrno\s*[=:]?\s*28\b"          # POSIX / Python OSError / .NET IOException（Mac）  # 非玩家句
      r"|There is not enough space on the disk|\bDisk full\b|WinError 112|ERROR_DISK_FULL|0x80070070"   # Windows / .NET
      r"|STATUS_DISK_FULL|磁盘空间不足|【写满】", "disk_full"),                                       # Windows 退出码注（direct_lib.py 127）/ 我方字样
+    # 盘读写硬件 / 连接故障（D-2NH2）：Windows 原文（WinError 483 / 23 / 1117）、POSIX EIO 原文
+    (r"WinError 483\b|WinError 23\b|WinError 1117\b|\[Errno 5\] Input/output error|STATUS_DEVICE_HARDWARE_ERROR|设备硬件出现致命错误|数据错误（循环冗余检查）", "disk_io_error"),  # 非玩家句
     # 内存用完（#711：Windows 16 GB 抽取按核数开满进程池，Python 子进程 MemoryError）：Python / .NET / Windows 提交上限原样字样
     (r"(?m:^\s*MemoryError\b)|OutOfMemoryException|\[WinError 1455\]|paging file is too small|页面文件太小|Cannot allocate memory|\bENOMEM\b", "out_of_memory"),  # 非玩家句
     # 盘不支持某种文件操作（exFAT 外接盘不支持原子改名 / 克隆 / 硬链接，实测 errno 45）：出包写入的这块盘格式不对，说清换 APFS 盘（11-10 网友：存放位置设到外接盘写入失败）

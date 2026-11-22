@@ -6784,7 +6784,6 @@ nvn_gpu_rc nvn_gpu_tex_create(const nvn_gpu_tex_desc *d, nvn_gpu_tex *out, nvn_g
     if (!g_open) return fail(err, NVN_GPU_E_STOPPED, "后端未打开");
     if (!d) return fail(err, NVN_GPU_E_ARG, "描述为空");
     if (d->host_w || d->host_h) return fail(err, NVN_GPU_E_UNSUPPORTED, "宽屏宿主尺寸（host_w/h）：本段未实现");
-    if (d->stencil_view) return fail(err, NVN_GPU_E_UNSUPPORTED, "模板视图：本段未实现");
     uint32_t target = (uint32_t)d->d.target;
     uint32_t depth = d->d.depth ? (uint32_t)d->d.depth : 1;
     uint32_t layers = 1;
