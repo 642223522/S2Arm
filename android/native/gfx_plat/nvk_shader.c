@@ -40,6 +40,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifdef S2A_ANDROID_DEBUG_ENV
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 // One atomic linearizes session stop with shader admission. The low bits
 // retain every active resolver until it has finished using the session, not
@@ -963,6 +970,51 @@ static void with_program_key(char *out, size_t cap, const char *why, const uint8
         snprintf(out + n, cap - (size_t)n, "（程序键 %02x%02x%02x%02x%02x%02x%02x%02x）",
                  key[0], key[1], key[2], key[3], key[4], key[5], key[6], key[7]);
 }
+#ifdef S2A_ANDROID_DEBUG_ENV
+// 预热与提交线程走同一拒收点。按文件加锁，让追加与 1 MiB 上限在并发和跨局时仍成立。
+static void record_link_refusal(const struct s2a_source_entry_view views[3], int nst, uint64_t miss) {
+    if (!nvn_plat_flag("nvk_link_refused_file", 0)) return;
+    const char *root = nvn_plat_dir(NVN_PLAT_DIR_CACHE);
+    char path[1200], row[128], keys[3][17] = {"", "", "-"};
+    int fd = -1;
+    const char *warning = "预编接口拒绝清单写入失败，本次采集可能不完整";
+    if (!root || !*root || nst < 2 || nst > 3) goto failed;
+    int len = snprintf(path, sizeof path, "%s/libpack-link-refused-v1.tsv", root);
+    if (len < 0 || (size_t)len >= sizeof path) goto failed;
+    for (int st = 0; st < nst; st++) {
+        if (!views[st].key) goto failed;
+        for (int i = 0; i < 8; i++)
+            snprintf(&keys[st][2 * i], 3, "%02x", views[st].key[i]);
+    }
+    len = snprintf(row, sizeof row, "%s\t%s\t0x%016llx\t%s\t%s\n",
+                   keys[0], keys[1], (unsigned long long)miss, DMSH_CHAIN, keys[2]);
+    if (len <= 0 || (size_t)len >= sizeof row) goto failed;
+    fd = open(path, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600);
+    if (fd < 0) goto failed;
+    while (flock(fd, LOCK_EX) < 0) {
+        if (errno != EINTR) goto failed;
+    }
+    struct stat st;
+    if (fstat(fd, &st) < 0 || !S_ISREG(st.st_mode)) goto failed;
+    if (st.st_size > 1024 * 1024 - len) {
+        warning = "预编接口拒绝清单达到 1 MiB 上限，后续拒绝未收录";
+        goto failed;
+    }
+    ssize_t wrote;
+    do { wrote = write(fd, row, (size_t)len); } while (wrote < 0 && errno == EINTR);
+    if (wrote != len) {
+        if (wrote > 0) (void)ftruncate(fd, st.st_size);
+        goto failed;
+    }
+    close(fd);
+    return;
+failed:
+    if (fd >= 0) close(fd);
+    static _Atomic int warned;
+    if (!atomic_exchange(&warned, 1)) nvn_plat_log(NVN_PLAT_LOG_WARN, "shader", warning);
+}
+#endif
+
 // lib = 这份结果字节来自出包预编库（shader_src.precompiled=1）：装载闸对表外声明按拒收，
 //   调用方照旧 mark_bad 退回现编。离线库 / 跨局缓存 / 现编结果传 0。
 static _Atomic uint64_t g_lp_link_refused;   // 出包预编程序因两段接口对不上退回现编的份数（本局）
@@ -1009,6 +1061,9 @@ static struct entry *build(const uint8_t *bytes, size_t len, const struct s2a_so
         const struct fd_stage *pre = nst >= 3 && fp.stage[2].present ? &fp.stage[2] : &fp.stage[0];
         uint64_t miss = 0;
         if (!nvn_vk_spirv_link_ok(pre->spirv, pre->spirv_bytes, fp.stage[1].spirv, fp.stage[1].spirv_bytes, &miss)) {
+#ifdef S2A_ANDROID_DEBUG_ENV
+            record_link_refusal(views, nst, miss);
+#endif
             uint64_t k = atomic_fetch_add(&g_lp_link_refused, 1);
             if (k < 4) { char m[200]; snprintf(m, sizeof m, "出包预编程序两段接口对不上：片元读的位置 %#llx 上一段没写（身份 %02x%02x%02x%02x…），这份退回现编",
                 (unsigned long long)miss, identity[0], identity[1], identity[2], identity[3]); nvn_plat_log(NVN_PLAT_LOG_INFO, "shader", m); }

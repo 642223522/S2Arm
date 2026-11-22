@@ -52,6 +52,7 @@ uint64_t s2a_direct_diag_compile_begin(const uint8_t identity[32], unsigned stag
 void s2a_direct_diag_compile_end(uint64_t token, int success) { if (token) trace_end_count++; trace_success=success; }
 static unsigned fake_array_count;
 static int separate_fixture;
+static int record_link_refused;
 static int link_map_flag;   // nvk_link_map_diag 开关替身
 static int fake_gs_success, fake_gs_result_mode, gs_loads[6], fake_geometry_enabled = 1, fake_depth_clip;
 static size_t gs_blob_bytes[6];   // 每个阶段最后一次装载的 SPIR-V 字节数（出包预编库命中时认出是哪一份）
@@ -119,6 +120,7 @@ int nvn_plat_flag(const char *name, int dflt) {
     if (!strcmp(name, "nvk_compute_warm")) return getenv("S2A_COMPUTE_WARM") ? atoi(getenv("S2A_COMPUTE_WARM")) : dflt;
     if (!strcmp(name, "nvk_texpool_log")) { diag_queries++; return diag_enabled; }
     if (fixture_alias_flag >= 0 && !strcmp(name, "nvk_alias")) return fixture_alias_flag;
+    if (!strcmp(name, "nvk_link_refused_file") && record_link_refused) return 1;
     if (!strcmp(name, "nvk_link_map_diag")) return link_map_flag;
     return dflt;
 }
@@ -1620,7 +1622,60 @@ static int lp_write(const char *dir, uint64_t key[], const uint8_t kind[], const
     return 0;
 }
 static uint64_t lp_key(const uint8_t k[8]) { uint64_t v = 0; for (int i = 0; i < 8; i++) v = v << 8 | k[i]; return v; }
-static int gs_libpack_test(void) {
+// Exercise the actual warm VS/FS refusal and foreground GS refusal on the same library.
+static void link_refused_test(const char *root, uint8_t keys[3][8], char hex[3][17]) {
+    char path[320];
+    snprintf(path,sizeof path,"%s/libpack-link-refused-v1.tsv",root);
+    setenv("S2A_PW_TEST_DIR", root, 1);
+    struct nvk_prog_rec rec = {0};
+    memcpy(rec.keys,keys,2 * sizeof keys[0]);
+    rec.stage_mask = 3;
+    rec.lp_ok = 2;
+    rec.identity[0] = 1;
+    CHECK(nvk_prog_warm_build(&rec) < 0, "unlinked warm program refused with switch unset");
+    CHECK(access(path,F_OK) < 0, "default-off creates no refusal file");
+    record_link_refused = 1;
+    for (unsigned i=0;i<6;i++) {
+        rec.identity[0]=(uint8_t)(2+i);
+        CHECK(nvk_prog_warm_build(&rec) < 0, "unlinked warm program %u still refused", i);
+    }
+    rp_shader_reset();
+    const struct rp_prog *prog = NULL;
+    struct rp_shader_req q = {.prim=4};
+    compiler_calls = 0;
+    CHECK(!rp_shader_resolve(&q,&prog) && prog && !prog->lib_sourced && compiler_calls==1,
+          "unlinked GS falls back to live compilation with diagnostics enabled");
+#ifdef S2A_ANDROID_DEBUG_ENV
+    FILE *f = fopen(path,"r");
+    CHECK(f!=NULL,"debug diagnostic records refused program pairs");
+    if (f) {
+        char row[180], expected[180];
+        unsigned lines=0;
+        while (fgets(row,sizeof row,f)) {
+            snprintf(expected,sizeof expected,"%s\t%s\t0x0000002000000000\t%s\t%s\n",hex[0],hex[1],
+                     DMSH_CHAIN,lines<6?"-":hex[2]);
+            CHECK(!strcmp(row,expected),"VS/FS, missing bit 37, chain and actual GS on row %u",lines);
+            lines++;
+        }
+        fclose(f);
+        CHECK(lines==7,"all seven rejects recorded beyond the four-line log limit");
+        const off_t limit=1024*1024;
+        CHECK(truncate(path,limit-1)==0,"seed almost-full refusal file");
+        rec.identity[0]=31;
+        CHECK(nvk_prog_warm_build(&rec)<0,"full diagnostic still refuses unlinked program");
+        struct stat st;
+        CHECK(!stat(path,&st) && st.st_size==limit-1,"persistent cap declines entire next row");
+    }
+#else
+    (void)hex;
+    CHECK(access(path,F_OK)<0,"player build has no refusal file even with forced flag");
+#endif
+    record_link_refused=0;
+    unlink(path);
+    unsetenv("S2A_PW_TEST_DIR");
+}
+
+static int gs_libpack_test(int diagnose_refusals) {
     fake_depth_clip = 1;   // 深度 near=-w 也能用预编库（libpack_state_ok），夹具不带深度零
     rp_shader_reset(); s2a_source_clear(); rp_state_reset(); nvn_unimpl_reset();
     uint8_t k[3][8]; for (unsigned st = 0; st < 3; st++) gs_source(st, 0, k[st]);
@@ -1653,6 +1708,12 @@ static int gs_libpack_test(void) {
         {lp_key(k[2]), 112, (const uint8_t *)jg0, strlen(jg0)}, {lp_key(k[2]), 115, (const uint8_t *)jg3, strlen(jg3)},
         {lp_key(k[2]), 120, (const uint8_t *)spv_vg0, sizeof spv_vg0}, {lp_key(k[2]), 123, (const uint8_t *)spv_vg3, sizeof spv_vg3},
     };
+    // The fragment consumes input location 37; neither synthetic producer exports a user location.
+    static const uint32_t fragment_input[] = {
+        0x07230203, 0x00010300, 0, 8, 0, 0x00040047, 4, 30, 37, 0x00030016, 1, 32,
+        0x00040020, 3, 1, 1, 0x0004003b, 3, 4, 1,
+    };
+    if (diagnose_refusals) { rec[3].d=(const uint8_t*)fragment_input; rec[3].n=sizeof fragment_input; }
     for (int i = 0; i < 8; i++) for (int j = i + 1; j < 8; j++)   // (键, 种类) 升序
         if (rec[j].key < rec[i].key || (rec[j].key == rec[i].key && rec[j].kind < rec[i].kind)) { __typeof__(rec[0]) t = rec[i]; rec[i] = rec[j]; rec[j] = t; }
     uint64_t keys[8]; uint8_t kinds[8]; const uint8_t *data[8]; size_t lens[8];
@@ -1680,6 +1741,10 @@ static int gs_libpack_test(void) {
     static const char prof_off[] = "{\"schema\":\"s2a-direct-profile-v1\",\"profileHash\":\"sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"capabilities\":{\"storageBufferOffsetAlignment\":16,\"supportsGeometryShader\":false}}";
     snprintf(external_profile, sizeof external_profile, "%s", prof_on);
     fake_gs_success = 1;
+    if (diagnose_refusals) {
+        link_refused_test(root,k,hx);
+        goto cleanup_gs;
+    }
     const uint32_t prims[4] = {4, 0, 1, 4};   // 三角列表 / 点 / 线 / 三角列表但 profile 没开几何
     const char *what[4] = {"triangles", "points", "lines", "triangles, geometryShader off"};
     for (int c = 0; c < 4; c++) {
@@ -1715,6 +1780,7 @@ static int gs_libpack_test(void) {
         CHECK(strstr(tl, "出包预编（库坏）") != NULL && lp_missing_lines == 0, "broken container: tally says bad, no missing line (%d): %s", lp_missing_lines, tl);
         unlink(f2); rmdir(d2); snprintf(d2, sizeof d2, "%s/shaders/direct", root2); rmdir(d2); snprintf(d2, sizeof d2, "%s/shaders", root2); rmdir(d2); rmdir(root2);
     }
+cleanup_gs:
     fake_gs_success = 0; external_profile[0] = 0; unsetenv("S2A_SHADER_REVISION_ROOT");
     char path[700];
     snprintf(path, sizeof path, "%s/lib.idx", dir); unlink(path); snprintf(path, sizeof path, "%s/lib.000.pak", dir); unlink(path);
@@ -1892,7 +1958,8 @@ int main(int argc, char **argv) {
     if (argc == 2 && !strcmp(argv[1], "--live-compile-pending")) return live_compile_pending_test(0);
     if (argc == 2 && !strcmp(argv[1], "--live-compile-stop")) return live_compile_pending_test(1);
     if (argc == 2 && !strcmp(argv[1], "--diag-compile")) return diag_compile_test();
-    if (argc == 2 && !strcmp(argv[1], "--gs-libpack")) return gs_libpack_test();
+    if (argc == 2 && !strcmp(argv[1], "--gs-libpack")) return gs_libpack_test(0);
+    if (argc == 2 && !strcmp(argv[1], "--link-refused-file")) return gs_libpack_test(1);
     if (argc == 2 && !strcmp(argv[1], "--cs-libpack")) return cs_libpack_test();
     if (argc == 2 && !strcmp(argv[1], "--compute-warm")) return compute_warm_test();
     if (argc == 2 && !strcmp(argv[1], "--compute-warm-off")) return compute_warm_off_test();
