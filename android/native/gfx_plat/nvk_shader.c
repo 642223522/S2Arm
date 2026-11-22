@@ -2152,6 +2152,9 @@ static struct entry *build_compute(const uint8_t *bytes, size_t len, const struc
             snprintf(nm, sizeof nm, "compute_binding_kind_%d_slot_%d_map_%d", b->kind, b->slot, b->kind == 1 ? (int)cp.storage[i].mapping : 0);
             with_program_key(wy, sizeof wy, "cs", k);
             red1(nm, wy); e->failed = 1; break; }
+        // 贴图字在游戏用户常量缓冲里的类型 3 句柄（#1594 片 10）：同图形阶段，贴图字所在的常量槽 / 偏移和常量采样器来源进程序的 usrc 表（src_reg2 = 表下标），
+        //   回放派发时从计算阶段绑的常量缓冲读贴图字（rp_draw.c rp_dispatch）
+        if (le->src_kind == NVN_RB_TEXU && !usrc_put(&e->prog, b, le)) { red1("too_many_uniform_handles", "cs"); e->failed = 1; break; }
         if (le->cls == NVN_GPU_RES_TBUF && le->src_kind != NVN_RB_TBUF) { red1("texture_buffer_replay_unsupported", "cs"); e->failed = 1; break; }
         le->stages = 1u << NVN_GPU_SH_CS;
         if (b->kind == 2 || b->kind == 3) sampled_decl(cp.stage.spirv, cp.stage.spirv_bytes, (uint32_t)b->set, (uint32_t)b->binding,   // 3 = 存储图像：数值类与声明格式给回放选视图格式

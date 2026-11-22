@@ -2285,6 +2285,16 @@ cs_rebind:
             if (why) { skip(why, rec); goto done; }
             continue;
         }
+        if (e->src_kind == NVN_RB_TEXU) {   // 贴图字在游戏用户常量缓冲里的类型 3 句柄（#1594 片 10）：读法、采样器号、没登记 / 建不出的处理与图形阶段同一份
+            if (e->count != 1 || e->src_reg2 >= pg->nusrc) { skip("uniform_handle_shape", rec); goto done; }
+            int tid = 0, sid = 0; const char *bad = usrc_ids(5, &pg->usrc[e->src_reg2], &tid, &sid);   // 常量缓冲取计算阶段（5）绑的那一份
+            if (bad) { skip(bad, rec); goto done; }
+            tv[i] = rp_view_by_ubo_handle_decl(tid, pg->dtt[0][i], pg->dcls[0][i], c, NULL);   // 没登记的号绑零贴图（Ryujinx null 贴图），不跳整次派发
+            const int const_samp = pg->usrc[e->src_reg2].samp_pool;
+            ts[i] = const_samp ? rp_samp_for_const_handle(sid, tid, rp_S.samp_base, rp_S.samp_pool_n) : rp_samp_for_tex(sid, tid);
+            if (!ts[i] && const_samp) { skip("const_sampler_unresolved", rec); goto done; }   // 号没登记 = 默认采样器（片 6）；登记了但后端建不出才具名跳过
+            continue;
+        }
         if (e->src_kind != NVN_RB_TEX) continue;
         // 类型 3 句柄（#1594 片 7）：布局项 src_reg2 带常量采样器标记 + 池下标，形状校验与图形阶段同一份（samp2_shape_ok）；数组 / 认不出的形状仍具名跳过
         if (e->count > 1 || e->src_reg >= RP_NTEX || (e->src_reg2 != UINT16_MAX && (e->count != 1 || !samp2_shape_ok(e->src_reg2)))) { skip("compute_texture_array", rec); goto done; }
