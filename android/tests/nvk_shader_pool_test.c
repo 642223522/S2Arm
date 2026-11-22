@@ -1698,6 +1698,20 @@ static int gs_libpack_test(void) {
             CHECK(compiler_calls == 1, "libpack GS %s: library misses, live compile runs (calls=%d)", what[c], compiler_calls);
         }
     }
+    {   // 只有 vs（0x1：只写深度的绘制）：库里 vs 那一条，不造 fs / gs；库里 vs 的两条记录都在，编译器替身此时会成功，
+        //   所以「命中」的证据仍是编译器调用数不变（撤掉取库入口的 0x1u 闸，这里就多一次现编）
+        rp_shader_reset(); nvn_unimpl_reset(); compiler_calls = 0; memset(gs_loads, 0, sizeof gs_loads); memset(gs_blob_bytes, 0, sizeof gs_blob_bytes);
+        const uint64_t fs_serial = rp_S.bser[1], gs_serial = rp_S.bser[2];
+        rp_S.bser[1] = rp_S.bser[2] = 0;
+        CHECK(rp_shader_graphics_stages() == 1, "libpack VS-only fixture stage mask is 0x1");
+        struct rp_shader_req q = {0}; q.prim = 4; const struct rp_prog *p = NULL;
+        int rc = rp_shader_resolve(&q, &p);
+        CHECK(rc == 0 && p, "libpack VS-only: program resolves");
+        CHECK(gs_loads[NVN_GPU_SH_VS] == 1 && gs_loads[NVN_GPU_SH_FS] == 0 && gs_loads[NVN_GPU_SH_GS] == 0, "libpack VS-only: only the vertex stage loads");
+        CHECK(compiler_calls == 0, "libpack VS-only: hit from the library, compiler not called (calls=%d)", compiler_calls);
+        CHECK(gs_blob_bytes[NVN_GPU_SH_VS] == sizeof spv0 && gs_blob_bytes[NVN_GPU_SH_FS] == 0, "libpack VS-only: the vertex stage is the library's");
+        rp_S.bser[1] = fs_serial; rp_S.bser[2] = gs_serial;
+    }
     {
         extern void nvk_shader_test_tally_line(char *out, size_t n);
         char tl[640]; nvk_shader_test_tally_line(tl, sizeof tl);
