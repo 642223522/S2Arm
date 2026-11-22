@@ -236,8 +236,11 @@ namespace S2Arm.Gfx.Widen
                         else if (n >= 5 && !img.ContainsKey(w[i + 3])) exact = false;   // 认不出图像来源
                         break;
                     case OpImageWrite:
-                        if (requireSizeTable) Reason("image_write");
-                        if (n >= 4 && (!img.TryGetValue(w[i + 1], out var wi) || Is2D(wi.Type))) exact = false;   // Ryujinx 不缩放写图像
+                        // 宽屏旧约定（scale_exact）照旧：Ryujinx 不缩放写图像，写 2D 图像的程序按真实像素画。
+                        //   尺寸表判定（requireSizeTable）不因写图像判不精确：宿主对存储图像槽一律保持原尺寸（nvn_rscale_ops.inc rs_pre_images / rs_pre_draw：
+                        //   绑上图像槽的缩放图在用它的绘制 / 派发之前换回原尺寸），写的坐标按游戏纹素就是对的；读的贴图照旧逐次要证（11-22 D-ZR6V：计算着色器几乎都写图像，
+                        //   原先整支 legacy_1x，读到放大的深度就整遍退回原尺寸）
+                        if (!requireSizeTable && n >= 4 && (!img.TryGetValue(w[i + 1], out var wi) || Is2D(wi.Type))) exact = false;   // Ryujinx 不缩放写图像
                         break;
                     case 87: case 88: case 89: case 90: case 91: case 92: case 93: case 94: // sampled image operations
                     case 96: case 97: // gathers
