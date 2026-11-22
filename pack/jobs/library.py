@@ -3,6 +3,7 @@
 Storage/interaction helpers adapted from LumaDock under MIT.
 """
 from __future__ import annotations
+import base64
 import collections
 import contextlib
 from copy import deepcopy
@@ -26,7 +27,7 @@ import zlib
 import uuid
 import zipfile
 from errors import explain
-from core import Failure, atomic, contained, digest, prune_jobs, read, resolve_path, task_of_log
+from core import Failure, atomic, contained, digest, prune_jobs, read, replace_retrying, resolve_path, task_of_log
 import toolchain
 import winproc
 import filelock
@@ -3157,19 +3158,153 @@ def load_input(c):
     return dict(players=[dict(player=p, **effective_input(c, gid, p)) for p in (1, 2, 3, 4)])
 
 
+# 标准键位（#1987）：没设所有游戏的默认时，「生效的缺省」就是它。同 Mac 启动器 InputConfig.standard（S2ArmLauncherModel+Input.swift）
+#   与宿主 s2a_input_config_default（runtime/src/input_config.c）；test_jobs 读 Swift 原文逐项核对，改一边记得改另一边。
+#   gamepad：前 16 个按键位依次对 16 个手柄键；axes：四轴各照各的源
+STANDARD_INPUT = dict(
+    schema=1,
+    keyboard={t: {"code": k} for t, k in dict(A=14, B=56, X=49, L=12, R=5, ZR=15, LS=59, RS=8, PLUS=48, MINUS=46, LEFT=123, UP=126,
+                                                 RIGHT=124, DOWN=125, LS_UP=13, LS_DOWN=1, LS_LEFT=0, LS_RIGHT=2).items()},
+    mouse=dict(Y=0, ZL=1),
+    gamepad=dict(zip(("A", "B", "X", "Y", "LS", "RS", "L", "R", "ZL", "ZR", "PLUS", "MINUS", "LEFT", "UP", "RIGHT", "DOWN"),
+                     ("east", "south", "north", "west", "leftStick", "rightStick", "leftShoulder", "rightShoulder", "leftTrigger",
+                      "rightTrigger", "menu", "options", "dpadLeft", "dpadUp", "dpadRight", "dpadDown"))),
+    axes=dict(LX={"source": "leftX"}, LY={"source": "leftY"}, RX={"source": "rightX"}, RY={"source": "rightY"}),
+    deadzone=.15,
+    mouseOptions=dict(mode="camera", sensitivityX=1, sensitivityY=1, invertX=False, invertY=False, recenter=True))
+
+
+def _input_norm(config):
+    """两份键位「是不是同一套」（#1987 存时和生效的缺省比）：按宿主的读法比——省略的 modifiers / invert / invertX / invertY 记缺省值，
+    recenter 省略记开，没有 backButtons 与空的一样，数值按大小比（1 与 1.0 相同）；schema 与契约外的多余字段不参与"""
+    o = config.get("mouseOptions") or {}
+    return (
+        {t: (b["code"], b.get("modifiers", 0)) for t, b in config["keyboard"].items()},
+        dict(config["mouse"]), dict(config["gamepad"]),
+        {t: (a["source"], a.get("invert", False)) for t, a in config["axes"].items()},
+        dict(config.get("backButtons") or {}), float(config["deadzone"]),
+        (o.get("mode"), float(o.get("sensitivityX", 1)), float(o.get("sensitivityY", 1)),
+         o.get("invertX", False), o.get("invertY", False), o.get("recenter", True)))
+
+
+def _same_input(a, b):
+    return _input_norm(a) == _input_norm(b)
+
+
+def effective_default_input(c):
+    """生效的缺省（#1987）：「恢复默认」回到的、这款「和它一样就不单独存」比的那一套。
+    私有目录 default-input.json 读得出且合规就是它（同 effective_input 的回落），否则标准键位"""
+    config, _ = _usable_input(c.private / "default-input.json")
+    return config if config is not None else STANDARD_INPUT
+
+
+def _input_player(c, need_game=False):
+    """键位作业的玩家序号（1–4；没给 = 1）。玩家 2–4 的键位只存在这款文件夹里，必须带 gameId；need_game：这个作业只对某一款"""
+    player = c.r.get("player", 1)
+    if type(player) is not int or not 1 <= player <= 4 or ((player != 1 or need_game) and not c.r.get("gameId")):
+        raise Failure("无效的玩家序号。")
+    return player
+
+
+def _game_input_path(c, player):
+    c.game()
+    return layout.path(c, c.r["gameId"], "input.json" if player == 1 else f"input-p{player}.json")
+
+
 def save_input(c):
     config = validate_input(c.r["config"])
     # player：键位设置的玩家（1–4；1 / 没给 = 玩家 1 的 input.json，2–4 = 这款文件夹的 input-pN.json）。
     #   起局时 build.py 读这些文件交给宿主（S2A_INPUT_CONFIG_P2..P4，槽位各照各玩家的映射采样）
-    player = c.r.get("player", 1)
-    if type(player) is not int or not 1 <= player <= 4 or (player != 1 and not c.r.get("gameId")):
-        raise Failure("无效的玩家序号。")
+    # #1987（同 iPad #2079 s2a_kbd_store_save）：玩家 1 存这款时和生效的缺省比，相同就删掉这款的 input.json、以后跟着所有游戏的默认走；
+    #   不带 gameId 存的就是所有游戏的默认，和标准键位相同就删掉 default-input.json（= 没设过）。玩家 2–4 照旧写自己的文件。
+    #   返回 followsDefault：存完是不是跟着生效的缺省走（没单独存文件）
+    player = _input_player(c)
     if c.r.get("gameId"):
-        c.game()
-        target = layout.path(c, c.r["gameId"], "input.json" if player == 1 else f"input-p{player}.json")
+        target = _game_input_path(c, player)
+        follows = player == 1 and _same_input(config, effective_default_input(c))
     else:
         target = c.private / "default-input.json"
-    atomic(target, config)
+        follows = _same_input(config, STANDARD_INPUT)
+    if follows:
+        target.unlink(missing_ok=True)
+    else:
+        atomic(target, config)
+    return dict(followsDefault=follows)
+
+
+def reset_input(c):
+    """作业 resetInput（#1987「恢复默认」，同 iPad s2a_kbd_store_restore）：删掉这款这位玩家单独存的键位。
+    玩家 1 → 回到所有游戏的默认（没设过就是标准键位）；玩家 2–4 → 回到沿用玩家 1（同起局 effective_input）。没存过也算成功"""
+    _game_input_path(c, _input_player(c, need_game=True)).unlink(missing_ok=True)
+    return {}
+
+
+INPUT_SNAPSHOT_LIMIT = 1 << 20   # 撤销快照里一份文件的上限，同宿主读键位文件的 1 MiB（runtime/include/s2a_input_config.h）
+
+
+def _input_snapshot(path):
+    """覆盖前的原文（base64；没有 = None）：撤销时原样写回，存坏了的也照原样"""
+    return base64.b64encode(path.read_bytes()).decode("ascii") if path.is_file() else None
+
+
+def _restore_input_file(path, saved):
+    if saved is None:
+        path.unlink(missing_ok=True)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+    try:
+        tmp.write_bytes(saved)
+        replace_retrying(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _snapshot_bytes(saved):
+    """撤销快照里的一份：None（原来没有）或 base64 原文；不合规抛 Failure（先全部核过再动文件）"""
+    if saved is None:
+        return None
+    try:
+        data = base64.b64decode(saved, validate=True) if isinstance(saved, str) else None
+    except ValueError:
+        data = None
+    if data is None or len(data) > INPUT_SNAPSHOT_LIMIT:
+        raise Failure("撤销用的键位快照无效。")
+    return data
+
+
+def set_default_input(c):
+    """作业 setDefaultInput（#1987「设为所有游戏的默认」，同 iPad #2079 s2a_kbd_store_set_default）：只对玩家 1。
+    写 default-input.json，和标准键位相同就删掉它（= 没设过）；带 gameId 时这款这时和默认相同，删掉这款的 input.json。
+    返回 undo：覆盖前 default-input.json 与这款 input.json 的原文，交 undoDefaultInput 原样写回"""
+    config = validate_input(c.r["config"])
+    if c.r.get("player", 1) != 1:
+        raise Failure("所有游戏的默认只有玩家 1 的一份。")
+    dflt = c.private / "default-input.json"
+    mine = _game_input_path(c, 1) if c.r.get("gameId") else None
+    undo = dict(default=_input_snapshot(dflt), game=_input_snapshot(mine) if mine else None)
+    if _same_input(config, STANDARD_INPUT):
+        dflt.unlink(missing_ok=True)
+    else:
+        atomic(dflt, config)
+    if mine:
+        mine.unlink(missing_ok=True)
+    return dict(undo=undo)
+
+
+def undo_default_input(c):
+    """作业 undoDefaultInput（#1987 设为默认后 5 秒内撤销，同 iPad s2a_kbd_store_undo）：把 setDefaultInput 给的快照原样写回，
+    原来没有的删掉（回到没设过 / 这款没单独存）。快照里有这款的原文时必须带 gameId"""
+    undo = c.r.get("undo")
+    if not isinstance(undo, dict) or not {"default", "game"} <= undo.keys():
+        raise Failure("撤销用的键位快照无效。")
+    saved_default, saved_game = _snapshot_bytes(undo["default"]), _snapshot_bytes(undo["game"])
+    if saved_game is not None and not c.r.get("gameId"):
+        raise Failure("撤销用的键位快照无效。")
+    mine = _game_input_path(c, 1) if c.r.get("gameId") else None
+    _restore_input_file(c.private / "default-input.json", saved_default)
+    if mine:
+        _restore_input_file(mine, saved_game)
     return {}
 
 

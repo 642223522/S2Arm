@@ -1,9 +1,13 @@
+import base64
 import contextlib
 import collections
+from copy import deepcopy
 import io
+import itertools
 import json
 import os, stat
 from pathlib import Path
+import re
 import shutil
 import signal
 import subprocess
@@ -3313,6 +3317,155 @@ class JobsTests(unittest.TestCase):
         self.c.r["player"] = 2   # 默认键位只有玩家 1 的一份：没带 gameId 只能存玩家 1
         with self.assertRaises(Failure):
             library.save_input(self.c)
+
+    # ---- #1987 Mac 键位「所有游戏的默认」作业层（同 iPad #2079 s2a_kbd_store_*）。期望全部手写 ----
+    @staticmethod
+    def launcher_standard():
+        """Mac 启动器「恢复默认」写出的标准键位：照 Swift InputConfig.standard 的 JSONEncoder 编码手写（modifiers / invert 显式写 0 / false、
+        灵敏度是 1.0、没有 backButtons），和 STANDARD_INPUT 的写法不逐字相同，比的是同一套"""
+        keys = dict(A=14, B=56, X=49, L=12, R=5, ZR=15, LS=59, RS=8, PLUS=48, MINUS=46, LEFT=123, UP=126, RIGHT=124, DOWN=125,
+                    LS_UP=13, LS_DOWN=1, LS_LEFT=0, LS_RIGHT=2)
+        pads = dict(A="east", B="south", X="north", Y="west", LS="leftStick", RS="rightStick", L="leftShoulder", R="rightShoulder",
+                    ZL="leftTrigger", ZR="rightTrigger", PLUS="menu", MINUS="options", LEFT="dpadLeft", UP="dpadUp", RIGHT="dpadRight", DOWN="dpadDown")
+        return dict(schema=1, keyboard={t: {"code": k, "modifiers": 0} for t, k in keys.items()}, mouse={"Y": 0, "ZL": 1}, gamepad=pads,
+                    axes={a: {"source": s, "invert": False} for a, s in (("LX", "leftX"), ("LY", "leftY"), ("RX", "rightX"), ("RY", "rightY"))},
+                    deadzone=0.15, mouseOptions=dict(mode="camera", sensitivityX=1.0, sensitivityY=1.0, invertX=False, invertY=False, recenter=True))
+
+    def launcher_custom(self, code):
+        config = self.launcher_standard(); config["keyboard"]["A"] = {"code": code, "modifiers": 0}
+        return config
+
+    def input_games(self):
+        first, second = self.game(), self.game("0100000000000B00")
+        self.catalogue([first, second])
+        return first["id"], second["id"]
+
+    def input_source(self, gid, player=1):
+        ctx = Context(dict(self.request, taskId=str(uuid.uuid4()), gameId=gid)); ctx.game = lambda: dict(id=gid)
+        row = library.load_input(ctx)["players"][player - 1]
+        return row["source"], row["config"]
+
+    def input_job(self, fn, **request):
+        ctx = Context(dict(self.request, taskId=str(uuid.uuid4()), **request))
+        return fn(ctx)
+
+    def test_standard_input_matches_launcher_standard(self):
+        # 作业层的标准键位与 Mac 启动器 InputConfig.standard 是同一套：读 Swift 原文的键码表、鼠标表、手柄键序与 MouseOptions 缺省逐项比
+        swift = (ROOT / "launchers/macos/frontend/Sources/NX2Apple/S2ArmLauncherModel+Input.swift").read_text(encoding="utf-8")
+        body = swift[swift.index("static var standard: InputConfig"):swift.index("enum Preset")]
+        keys = {k: int(v) for k, v in re.findall(r'"(\w+)":(\d+)', re.search(r"let keys = \[(.*?)\]", body).group(1))}
+        mouse = {k: int(v) for k, v in re.findall(r'"(\w+)":(\d+)', re.search(r"mouse: \[(.*?)\]", body).group(1))}
+        targets = re.findall(r'"(\w+)"', re.search(r"static let targets = \[(.*?)\]", swift).group(1))
+        pads = re.findall(r'"(\w+)"', re.search(r"static let padCodes = \[(.*?)\]", swift).group(1))
+        axes = dict(re.findall(r'"(\w+)":\.init\(source:"(\w+)"\)', body))
+        self.assertEqual({t: b["code"] for t, b in library.STANDARD_INPUT["keyboard"].items()}, keys)
+        self.assertEqual(library.STANDARD_INPUT["mouse"], mouse)
+        self.assertEqual(library.STANDARD_INPUT["gamepad"], dict(zip(targets[:16], pads)))
+        self.assertEqual({a: v["source"] for a, v in library.STANDARD_INPUT["axes"].items()}, axes)
+        self.assertIn('var mode = "camera"; var sensitivityX = 1.0; var sensitivityY = 1.0; var invertX = false; var invertY = false; var recenter = true', swift)
+        self.assertIn("var deadzone = 0.15", swift)
+        self.assertEqual(library.STANDARD_INPUT["deadzone"], .15)
+        self.assertEqual(library.validate_input(deepcopy(library.STANDARD_INPUT)), library.STANDARD_INPUT)
+        self.assertTrue(library._same_input(library.STANDARD_INPUT, self.launcher_standard()))
+
+    def test_save_input_compares_with_effective_default(self):
+        # 存这款（玩家 1）时和生效的缺省比：没设默认 → 和标准键位比；设了 → 和 default-input.json 比；default 坏了 → 当没设过。
+        #   相同就删掉这款的 input.json（以后跟着默认走），不同就写。玩家 2–4 照旧写。不带 gameId 存默认：和标准相同就删 default-input.json
+        gid, _ = self.input_games()
+        mine, dflt = layout.path(self.c, gid, "input.json"), self.c.private / "default-input.json"
+        custom, other = self.launcher_custom(36), self.launcher_custom(37)
+        save = lambda config, **kw: self.input_job(library.save_input, config=config, **kw)
+        # 没设默认
+        self.assertEqual(save(custom, gameId=gid), dict(followsDefault=False)); self.assertTrue(mine.is_file())
+        self.assertEqual(save(self.launcher_standard(), gameId=gid), dict(followsDefault=True))
+        self.assertFalse(mine.exists(), "存回标准键位 = 跟着默认走，删掉这款的文件")
+        self.assertEqual(self.input_source(gid), ("standard", None))
+        # 设了默认（玩家设的那份省略了 modifiers、灵敏度写整数：按宿主读法仍是同一套）
+        atomic(dflt, dict(custom, keyboard={t: {"code": b["code"]} for t, b in custom["keyboard"].items()},
+                          mouseOptions=dict(mode="camera", sensitivityX=1, sensitivityY=1)))
+        self.assertEqual(save(custom, gameId=gid), dict(followsDefault=True)); self.assertFalse(mine.exists())
+        self.assertEqual(self.input_source(gid)[0], "default")
+        self.assertEqual(save(self.launcher_standard(), gameId=gid), dict(followsDefault=False), "默认不是标准时，存标准键位要单独存")
+        self.assertEqual(json.loads(mine.read_text()), self.launcher_standard())
+        self.assertEqual(self.input_source(gid)[0], "game")
+        # 只差一项也算不同：死区、鼠标模式、背键
+        for changed in (dict(custom, deadzone=.2), dict(custom, mouseOptions=dict(custom["mouseOptions"], mode="off")),
+                        dict(custom, backButtons={"GL": "east"})):
+            with self.subTest(changed=changed):
+                self.assertEqual(save(changed, gameId=gid), dict(followsDefault=False)); self.assertTrue(mine.is_file())
+        # default 坏了 → 生效的缺省是标准键位
+        dflt.write_text("{", encoding="utf-8")
+        self.assertEqual(save(self.launcher_standard(), gameId=gid), dict(followsDefault=True)); self.assertFalse(mine.exists())
+        dflt.unlink()
+        # 玩家 2–4 照旧写自己的文件（没有「跟着玩家 1」的比较）
+        self.assertEqual(save(self.launcher_standard(), gameId=gid, player=2), dict(followsDefault=False))
+        self.assertTrue(layout.path(self.c, gid, "input-p2.json").is_file())
+        # 不带 gameId = 存所有游戏的默认
+        self.assertEqual(save(other), dict(followsDefault=False)); self.assertEqual(json.loads(dflt.read_text()), other)
+        self.assertEqual(save(self.launcher_standard()), dict(followsDefault=True)); self.assertFalse(dflt.exists(), "默认存成标准 = 没设过")
+
+    def test_reset_input_removes_own_file_only(self):
+        # 恢复默认：删掉这款这位玩家的文件。玩家 1 回到所有游戏的默认；玩家 2 回到沿用玩家 1；别的文件不动；没存过也成功；必须带 gameId
+        gid, second = self.input_games()
+        dflt = self.c.private / "default-input.json"
+        atomic(dflt, self.launcher_custom(36))
+        for g in (gid, second):
+            atomic(layout.path(self.c, g, "input.json"), self.launcher_custom(37))
+        atomic(layout.path(self.c, gid, "input-p2.json"), self.launcher_custom(38))
+        self.assertEqual(self.input_job(library.reset_input, gameId=gid), {})
+        self.assertEqual(self.input_source(gid), ("default", self.launcher_custom(36)))
+        self.assertEqual(self.input_source(gid, 2)[0], "game", "恢复玩家 1 不动玩家 2")
+        self.assertEqual(self.input_job(library.reset_input, gameId=gid, player=2), {})
+        self.assertEqual(self.input_source(gid, 2), ("player1", self.launcher_custom(36)))
+        self.assertEqual(self.input_source(second)[0], "game", "别的游戏不动")
+        self.assertTrue(dflt.is_file(), "所有游戏的默认不动")
+        self.assertEqual(self.input_job(library.reset_input, gameId=gid), {}, "没存过也成功")
+        for bad in (dict(), dict(gameId=gid, player=5), dict(gameId=gid, player="1")):
+            with self.subTest(bad=bad), self.assertRaises(Failure):
+                self.input_job(library.reset_input, **bad)
+
+    def test_set_default_input_and_undo_restore_exact_bytes(self):
+        # 设为所有游戏的默认（只对玩家 1）：写 default-input.json，这款跟着默认走（删这款的 input.json），没单独存的别的游戏跟着变；
+        #   设成标准键位 = 删掉 default（没设过）。撤销：两份文件原样写回（存坏了的也逐字节一样），原来没有的删掉。玩家 2 的文件不动
+        gid, second = self.input_games()
+        dflt, mine, p2 = self.c.private / "default-input.json", layout.path(self.c, gid, "input.json"), layout.path(self.c, gid, "input-p2.json")
+        before = dict(none=None, custom=json.dumps(self.launcher_custom(40)).encode(), broken=b"{\xff not json")
+        for (d_label, d_bytes), (g_label, g_bytes) in itertools.product(before.items(), before.items()):
+            for target in (self.launcher_custom(36), self.launcher_standard()):
+                with self.subTest(default=d_label, game=g_label, standard=target == self.launcher_standard()):
+                    for path, data in ((dflt, d_bytes), (mine, g_bytes)):
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(data) if data is not None else path.unlink(missing_ok=True)
+                    atomic(p2, self.launcher_custom(41))
+                    undo = self.input_job(library.set_default_input, config=target, gameId=gid)["undo"]
+                    self.assertFalse(mine.exists(), "这款这时和默认相同，删掉")
+                    if target == self.launcher_standard():
+                        self.assertFalse(dflt.exists(), "设成标准 = 没设过")
+                        self.assertEqual(self.input_source(gid), ("standard", None))
+                    else:
+                        self.assertEqual(json.loads(dflt.read_text()), target)
+                        self.assertEqual(self.input_source(gid), ("default", target))
+                        self.assertEqual(self.input_source(second), ("default", target), "没单独存的别的游戏跟着变")
+                    self.assertEqual(json.loads(p2.read_text()), self.launcher_custom(41), "玩家 2 不动")
+                    json.dumps(undo)   # 快照能原样走作业协议（JSON）
+                    self.assertEqual(self.input_job(library.undo_default_input, undo=undo, gameId=gid), {})
+                    for path, data in ((dflt, d_bytes), (mine, g_bytes)):
+                        self.assertEqual(path.read_bytes() if path.exists() else None, data)
+        # 不带 gameId（没有「这款」）只动默认
+        atomic(mine, self.launcher_custom(37))
+        undo = self.input_job(library.set_default_input, config=self.launcher_custom(36))["undo"]
+        self.assertEqual(undo["game"], None); self.assertTrue(mine.is_file())
+        # 坏快照拒收、不动文件：缺键、不是 base64、超过 1 MiB、有这款的原文却没带 gameId
+        for bad in (dict(undo=None), dict(undo=dict(default=None)), dict(undo=dict(default="不是base64", game=None)),
+                    dict(undo=dict(default=base64.b64encode(b"x" * ((1 << 20) + 1)).decode(), game=None)),
+                    dict(undo=dict(default=None, game=base64.b64encode(b"{}").decode()))):
+            with self.subTest(bad=str(bad)[:60]), self.assertRaises(Failure):
+                self.input_job(library.undo_default_input, **bad)
+        self.assertEqual(json.loads(dflt.read_text()), self.launcher_custom(36))
+        for bad in (dict(config=dict(schema=2)), dict(config=self.launcher_custom(39), gameId=gid, player=2)):
+            with self.subTest(bad=str(bad)[:60]), self.assertRaises(Failure):
+                self.input_job(library.set_default_input, **bad)
+        self.assertEqual(json.loads(dflt.read_text()), self.launcher_custom(36), "拒收时不动默认")
 
     def test_frontend_toolchain_is_child_only_and_logged(self):
         previous = os.environ.get("S2A_DEVELOPER_DIR")
