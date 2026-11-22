@@ -34,7 +34,7 @@ static char *body_of(const char *text, const char *signature) {
 }
 static int sticks_are(const int32_t s[4], int32_t a, int32_t b, int32_t c, int32_t d) { return s[0] == a && s[1] == b && s[2] == c && s[3] == d; }
 static s2a_mouse_state st(int touch_only, int hidden, int locked, int camera, int declared_default, int left_bound) {
-    s2a_mouse_state s = {touch_only, hidden, locked, camera, declared_default, left_bound}; return s;
+    s2a_mouse_state s = {touch_only, hidden, locked, camera, declared_default, left_bound, 0}; return s;
 }
 
 int main(int argc, char **argv) {
@@ -104,6 +104,21 @@ int main(int argc, char **argv) {
     check(s2a_mouse_may_lock(st(0, 1, 0, 1, 0, 1)) && !s2a_mouse_may_lock(st(1, 1, 0, 1, 0, 1)) && !s2a_mouse_may_lock(st(0, 0, 0, 1, 0, 1)) && !s2a_mouse_may_lock(st(0, 1, 0, 0, 0, 1)),
           "只在按键模式、虚拟按键收起、转动视角时才能锁着");
 
+    // ⑥b「使用鼠标 / 触控板」关掉（#2072）：其余 6 项怎么组合（64 种），左键都交给 UIKit 当手指、别的键不进游戏、不锁定
+    int off_pass = 0, off_quiet = 0, on_differs = 0;
+    for (int bits = 0; bits < 64; bits++) {
+        s2a_mouse_state o = st(bits & 1, bits >> 1 & 1, bits >> 2 & 1, bits >> 3 & 1, bits >> 4 & 1, bits >> 5 & 1); o.off = 1;
+        off_pass += s2a_mouse_left(o) == S2A_MOUSE_PASS;
+        off_quiet += !s2a_mouse_other_counts(o) && !s2a_mouse_may_lock(o);
+        s2a_mouse_state n = o; n.off = 0;
+        on_differs += s2a_mouse_left(n) != S2A_MOUSE_PASS;
+    }
+    check(off_pass == 64, "关掉鼠标：64 种状态下左键都交给 UIKit 当手指（叫出虚拟按键 / 点画面）");
+    check(off_quiet == 64, "关掉鼠标：64 种状态下右 / 中 / 侧键都不进游戏、都不锁定");
+    check(on_differs == 16, "对照：开着鼠标时同样 64 种里有 16 种（按键模式、虚拟按键收起）左键不是当手指（关掉的断言不是白过）");
+    s2a_mouse_state zero = {0};
+    check(zero.off == 0 && s2a_mouse_left(st(0, 1, 0, 1, 0, 1)) == S2A_MOUSE_LOCK, "没写 off 的状态 = 开着（缺省打开，同 Mac）");
+
     // ⑦ 接线
     char *mouse = slurp(argv[2]), *kbd = slurp(argv[3]), *vpad = slurp(argv[4]), *ctl = slurp(argv[5]), *app = slurp(argv[6]);
     check(mouse && kbd && vpad && ctl && app, "读得到 mouse.m / keyboard.m / vpad.m / controller.m / app.m");
@@ -123,6 +138,15 @@ int main(int argc, char **argv) {
               && count_in(watch, "s2a_vpad_pointer_touch(t, 0)") == 1, "controller.m 触摸观察：只有手指（或 mouse.m 说当手指）才算碰屏幕；当触屏时转给 vpad.m");
         free(watch);
         check(count_in(app, "prefersPointerLocked { return s2a_ios_mouse_lock_wanted(); }") == 1, "app.m：游戏页照 mouse.m 声明要不要锁定指针");
+        char *cur = body_of(mouse, "static s2a_mouse_state current_state(void)"), *cfg = body_of(mouse, "void s2a_ios_mouse_config(const s2a_input_config *c, int is_default, int off)"),
+             *mv = body_of(mouse, "static void moved(float dx, float dy)");
+        check(cur && count_in(cur, ".off = atomic_load(&g_off)") == 1, "mouse.m：左键 / 其他键 / 能不能锁的判断都带上开关（current_state）");
+        check(cfg && count_in(cfg, "atomic_store(&g_off, off != 0)") == 1 && count_in(cfg, "if (off) {") == 1 && count_in(cfg, "unlock(\"关了鼠标 / 触控板\")") == 1
+              && count_in(cfg, "atomic_store(&g_counted, 0)") == 1, "mouse.m：关掉时当场释放锁定、放开按着的鼠标键");
+        check(mv && count_in(mv, "atomic_load(&g_off)") == 1, "mouse.m：关掉后系统还没收回锁定的那几拍，位移也不进右摇杆");
+        free(cur); free(cfg); free(mv);
+        check(count_in(kbd, "s2a_ios_mouse_config(&g_map, !memcmp(&def, &g_map, sizeof def), [s2a_ios_settings_defaults() boolForKey:S2AMouseOffKey]);") == 1,
+              "keyboard.m：装键位时把这款的开关（分层读取）一起交给 mouse.m");
         char *bg = body_of(mouse, "void s2a_ios_mouse_background(void)");
         check(bg && count_in(bg, "unlock(") >= 1, "mouse.m：切后台释放锁定（同 Mac 失焦释放，回来要再点一下）");
         free(bg);
@@ -135,7 +159,7 @@ int main(int argc, char **argv) {
         const char *hit = ex ? strstr(ex, "ios/mouse.m") : NULL;
         check(hit && ex_end && hit < ex_end, "runtime/build.mk：tvOS 不编 ios/mouse.m");
         static const char *const stand_ins[] = {"void s2a_ios_mouse_attach(UIView *root)", "int s2a_ios_mouse_lock_wanted(void)", "unsigned s2a_ios_mouse_buttons(void)",
-            "void s2a_ios_mouse_config(const s2a_input_config *c, int is_default)", "int s2a_ios_mouse_escape(void)", "void s2a_ios_mouse_sync(void)",
+            "void s2a_ios_mouse_config(const s2a_input_config *c, int is_default, int off)", "int s2a_ios_mouse_escape(void)", "void s2a_ios_mouse_sync(void)",
             "void s2a_ios_mouse_background(void)", "int s2a_ios_mouse_pointer(long button_mask)", "void s2a_vpad_pointer_touch(UITouch *touch, int phase)"};
         int all = 1; for (size_t i = 0; i < sizeof stand_ins / sizeof *stand_ins; i++) if (count_in(tv, stand_ins[i]) != 1) { all = 0; fprintf(stderr, "  tv_host.m 缺：%s\n", stand_ins[i]); }
         check(all, "tv_host.m：电视版给 mouse.m / vpad.m 被调到的 9 个入口空实现");
@@ -145,6 +169,6 @@ int main(int argc, char **argv) {
     free(mac); free(mouse); free(kbd); free(vpad); free(ctl); free(app);
 
     if (failures) { fprintf(stderr, "✗ t_mouse_map：%d/%d 项不通\n", failures, checks); return 1; }
-    printf("✓ t_mouse_map：%d 项（系数与左键规则同 Mac 原文、缺省、鼠标键映射、位移换算、回中 / 不回中、左键规则表、接线）\n", checks);
+    printf("✓ t_mouse_map：%d 项（系数与左键规则同 Mac 原文、缺省、鼠标键映射、位移换算、回中 / 不回中、左键规则表、关掉鼠标、接线）\n", checks);
     return 0;
 }
