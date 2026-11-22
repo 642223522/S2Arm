@@ -248,8 +248,28 @@ int main(int argc, char **argv) {
         check(refresh && count_in(refresh, "kManageSection") >= 1, "refreshVisibleRows 跳过「管理键位」组");
         check(select && count_in(select, "kManageSection") >= 1, "点「管理键位」组的行走导入 / 导出，不进录键");
         free(refresh); free(select);
+        // #2071：每行「…」菜单的清除交 s2a_kbd_clear_target（键盘、鼠标一起清），不再只置键盘那半
+        check(count_in(page, "s2a_kbd_clear_target(&page->_map, target)") == 1, "行内「清除按键设置」交 s2a_kbd_clear_target");
+        check(count_in(page, "_map.keyboard[target] = (s2a_input_key){-1, 0}") == 0, "行内清除不再只置键盘那半");
     }
     free(page);
+
+    // ⑪ 清除一个按键位（#2071）：同一行显示的键盘键和鼠标键一起清；别的按键位、手柄、鼠标选项不动。期望值手推
+    {
+        s2a_input_config d; s2a_kbd_default(&d);   // 缺省：Y = F + 左键（鼠标 0），ZL = Z + 右键（鼠标 1）
+        s2a_input_config c = d;
+        c.keyboard[0].modifiers = 1;                // A = ⇧E：带修饰键也要一起清掉
+        s2a_kbd_clear_target(&c, 3);
+        check(c.keyboard[3].code == -1 && c.keyboard[3].modifiers == 0 && c.mouse[3] == -1, "清除 Y：键盘 F 和鼠标左键都清掉");
+        s2a_kbd_clear_target(&c, 0);
+        check(c.keyboard[0].code == -1 && c.keyboard[0].modifiers == 0 && c.mouse[0] == -1, "清除 A：键盘 ⇧E 清掉、修饰键归零");
+        s2a_input_config want = d;
+        want.keyboard[3] = (s2a_input_key){-1, 0}; want.mouse[3] = -1; want.keyboard[0] = (s2a_input_key){-1, 0};
+        check(kbd_same(&c, &want), "其余按键位（ZL 的右键、手柄、摇杆轴）与鼠标选项不动");
+        s2a_input_config edge = d;
+        s2a_kbd_clear_target(&edge, -1); s2a_kbd_clear_target(&edge, S2A_INPUT_TARGET_COUNT);
+        check(kbd_same(&edge, &d), "按键位号越界：什么都不改");
+    }
 
     // 实体手柄改键 s2a_pad_map（#1606 ④，同 Mac map_pad_inputs）：期望值手推
     {

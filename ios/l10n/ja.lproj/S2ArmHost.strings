@@ -677,7 +677,7 @@
 "kbd.section.sticks" = "摇杆";
 "kbd.record" = "キーを押してください、Esc でキャンセル";
 "kbd.common" = "よく使うキー";
-"kbd.clear" = "キーボードキーをクリア";
+"kbd.clear" = "キー設定をクリア";
 "kbd.unbound" = "未設定";
 "kbd.restoreDefault" = "デフォルトに戻す";
 "kbd.rebind.title" = "このキーを再割り当てしますか？";

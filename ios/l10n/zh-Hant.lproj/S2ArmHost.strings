@@ -683,7 +683,7 @@
 "kbd.section.sticks" = "搖桿";
 "kbd.record" = "請按新鍵，Esc 取消";
 "kbd.common" = "常用鍵";
-"kbd.clear" = "清除鍵盤按鍵";
+"kbd.clear" = "清除按鍵設定";
 "kbd.unbound" = "未設定";
 "kbd.restoreDefault" = "恢復預設";
 "kbd.rebind.title" = "改綁這個鍵？";

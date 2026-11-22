@@ -677,7 +677,7 @@
 "kbd.section.sticks" = "Sticks";
 "kbd.record" = "Pulsa una tecla, Esc para cancelar";
 "kbd.common" = "Teclas comunes";
-"kbd.clear" = "Borrar tecla del teclado";
+"kbd.clear" = "Borrar asignación";
 "kbd.unbound" = "Sin configurar";
 "kbd.restoreDefault" = "Restaurar valores predeterminados";
 "kbd.rebind.title" = "¿Reasignar esta tecla?";

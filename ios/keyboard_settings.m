@@ -146,7 +146,7 @@ static NSString *import_error(int code) {
     }
     UIAction *clear = [UIAction actionWithTitle:S2AL(@"kbd.clear") image:[UIImage systemImageNamed:@"xmark.circle"] identifier:nil handler:^(UIAction *a) {
         (void)a; S2AKeyboardSettings *page = weakSelf; if (!page) return;
-        [page stopRecording]; page->_map.keyboard[target] = (s2a_input_key){-1, 0}; [page save];
+        [page stopRecording]; s2a_kbd_clear_target(&page->_map, target); [page save];   // 键盘、鼠标一起清（#2071）
     }];
     clear.attributes = UIMenuElementAttributesDestructive;
     // 鼠标键（同 Mac 启动器每个按键位的「鼠标」下拉：未绑定 + 0–4）

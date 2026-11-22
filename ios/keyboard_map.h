@@ -188,3 +188,11 @@ static inline int s2a_kbd_import(const void *data, size_t n, s2a_input_config *o
     if (n > S2A_KBD_IMPORT_MAX_BYTES) return S2A_KBD_IMPORT_TOO_LARGE;
     return s2a_input_config_parse(n ? (const char *)data : "", n, out);
 }
+
+// 清除一个按键位（#2071）：改键页一行把键盘键和鼠标键合在一起显示（「Y　F · 左键」），清除也按一行算，两半一起清。
+//   手柄（gamepad）不在这一行显示，不动；按键位号越界什么都不改
+static inline void s2a_kbd_clear_target(s2a_input_config *c, int target) {
+    if (!c || target < 0 || target >= S2A_INPUT_TARGET_COUNT) return;
+    c->keyboard[target] = (s2a_input_key){-1, 0};
+    c->mouse[target] = -1;
+}
