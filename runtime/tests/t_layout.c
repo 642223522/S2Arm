@@ -192,7 +192,13 @@ int main(void) {
       EQ(s2a_alias_report_size(AB, AS, WE, HOLE, NEED, 0, 0), 47 * GB);                 // 放不下、伸出窗口、没静态结论、没越界记录：收到 47 GiB
       EQ(s2a_alias_report_size(AB, AS, WE, NEED, NEED, 0, 0), AS);                      // 空洞放得下标准布局：一个字节不变
       EQ(s2a_alias_report_size(AB, AS, WE, HOLE, NEED, 12, 0), AS);                     // 别名优先（已按静态结论收进窗口的那支）：不在这里动
-      EQ(s2a_alias_report_size(AB, AS, WE, HOLE, NEED, -5, 0), AS);                     // 上限不定：宁慢不崩
+      EQ(s2a_alias_report_size(AB, AS, WE, HOLE, NEED, -5, 0), 47 * GB);                // 上限不定：照收（11-21 起；收小后申请失败记下、下局不收）
+      EQ(s2a_alias_report_size(AB, AS, WE, HOLE, NEED, -5, 1), AS);                     // 上限不定、上次收小后出过事（越界 / 申请失败）：恢复原值
+      // ⑤ 上限不定、静态认出开局大块（11-21 一款大游戏 63 GB 收到 58 GB 后开局申请失败）：大块起点 = (AB + 0x3FE00000) 按 GiB 向上取整 = 0x440000000，
+      //    大块长 (|g| − 1) GiB；收小后末端 = AB + 47 GiB = 0xF9E1FC000。46 GB → 末端 0xF80000000 < 收小末端：照收；47 GB → 0xFC0000000 ≥：不收；63 GB：不收
+      EQ(s2a_alias_report_size(AB, AS, WE, HOLE, NEED, -46, 0), 47 * GB);
+      EQ(s2a_alias_report_size(AB, AS, WE, HOLE, NEED, -47, 0), AS);
+      EQ(s2a_alias_report_size(AB, AS, WE, HOLE, NEED, -63, 0), AS);
       EQ(s2a_alias_report_size(AB, AS, WE, HOLE, NEED, 0, 1), AS);                      // 上次收小后越界过：恢复原值
       EQ(s2a_alias_report_size(AB, 40 * GB, AB + 41 * GB, HOLE, NEED, 0, 0), 40 * GB);  // 别名区整段在窗口里：不收
       EQ(s2a_alias_report_size(AB, AS, AB + 7 * GB + 512 * MB, HOLE, NEED, 0, 0), AS);  // 窗口里只剩 7.5 GiB（取整 7 < 8）：不收
