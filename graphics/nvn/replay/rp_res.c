@@ -783,7 +783,7 @@ nvn_gpu_tex rp_tex_resolve(const tex_t *t, nvn_gpu_cmd c) {
         alias_key k; alias_key_of(&k, t);
         if (!cpu && t->pool) { x = nvn_hm_get(&g_alias, &k); if (x) x->seen = rp_sub_serial() + 1; }   // 同存储同描述的另一个对象已经建过：共用
         if (!x) {
-            nvn_gpu_tex_desc d = {0}; d.d = t->d; d.usage = usage_of(t, cpu); d.swz = t->set_swz && t->swz != SWZ_IDENTITY ? t->swz : 0; d.stencil_view = t->stencil;
+            nvn_gpu_tex_desc d = {0}; d.d = t->d; d.usage = usage_of(t, cpu); d.swz = t->set_swz && t->swz != SWZ_IDENTITY ? t->swz : 0;
             rp_fold_1d_desc(&d.d);   // 后端没有一维目标：一维 → 高 1 的二维，一维数组 → 二维数组（#1810）
             nvn_gpu_tex g = NULL; nvn_gpu_err err = {0};
             uint64_t mk0_ = res_now(); nvn_gpu_rc mkr_ = nvn_gpu_tex_create(&d, &g, &err); rp_perf_add(RP_PERF_RES_MAKE, res_now() - mk0_);
@@ -1000,6 +1000,20 @@ void nvn_be_alias_drop_pool(const void *pool) {
     pthread_mutex_unlock(&g_rmu);
 }
 
+// 深度模板贴图按深度还是模板采样：视图自己设了模式取视图的，否则取建贴图时设的（TextureBuilderSetDepthStencilMode）。
+// 与 iOS 层同一规则（nvn_mtl.m tex_by_id：want_st = 视图设了 ? 视图 == STENCIL : 贴图.stencil）。
+static int sample_stencil_mode(const tex_t *t, const view_t *v, int has_v) {
+    return has_v && v->set_dsmode ? v->dsmode == NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL : t->stencil;
+}
+// 交给后端建采样视图的记录。后端只认视图记录里的深度模板模式（取哪个面），不认贴图对象上的标志：建贴图时设了模板模式、视图没设时，
+// 在这里把模板模式补进视图记录。同一块存储上的两个贴图对象（深度模式、模板模式）在同存储共用表里是同一份后端存储，区别只在视图。
+static const view_t *sample_view_rec(const tex_t *t, const view_t *v, int has_v, view_t *tmp) {
+    if (!t->stencil || (has_v && v->set_dsmode)) return has_v ? v : NULL;
+    if (has_v) *tmp = *v; else memset(tmp, 0, sizeof *tmp);
+    tmp->set_dsmode = 1; tmp->dsmode = NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL;
+    return tmp;
+}
+
 nvn_gpu_view rp_view_by_id(int id, nvn_gpu_cmd c, tex_t *t_out) {
     if (t_out) memset(t_out, 0, sizeof *t_out);
     pthread_mutex_lock(&g_rmu);
@@ -1018,8 +1032,9 @@ nvn_gpu_view rp_view_by_id(int id, nvn_gpu_cmd c, tex_t *t_out) {
         if (!r->view && x) {
             nvn_gpu_err err = {0};
             struct registered_view *owned = calloc(1, sizeof *owned);
+            view_t sv;
             if (!owned) nvn_unimpl("gpu", "registered_view_allocation", r);
-            else if (nvn_gpu_ok(nvn_gpu_view_create(x->g, has_v ? &v : NULL, &owned->view, &err))) {
+            else if (nvn_gpu_ok(nvn_gpu_view_create(x->g, sample_view_rec(&t, &v, has_v, &sv), &owned->view, &err))) {
                 r->owned = owned; r->view = owned->view; r->of = x; x->nreg++;
             } else { free(owned); nvn_unimpl("gpu", "view_create", r); }
         }
@@ -1075,7 +1090,7 @@ nvn_gpu_view rp_view_by_id_decl(int id, uint8_t dtt, uint8_t dcls, int elem, nvn
             nvn_fmt_info fi;
             uint32_t fmt = has_v && v.set_format ? v.format : (uint32_t)t.d.format;
             if (nvn_fmt_info_of(fmt, &fi)) {
-                int stencil = fi.stencil && (!fi.depth || (has_v && v.set_dsmode && v.dsmode == NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL));
+                int stencil = fi.stencil && (!fi.depth || sample_stencil_mode(&t, &v, has_v));
                 int cls = stencil || fi.kind == NVN_FMT_UINT ? 1 : fi.kind == NVN_FMT_SINT ? 2 : 0;
                 if (cls && cls != dcls) {
                     // 数组各元素共用一个声明的数值类型，这个元素登记的是另一类（整数贴图进了声明成浮点的数组等）：登记的视图不能交给后端。
@@ -1164,7 +1179,8 @@ static nvn_gpu_view view_by_id_decl(int id, uint8_t dtt, uint8_t dcls, nvn_gpu_c
         nvn_gpu_view z = decl_zero(dtt, dcls, c);
         return z ? z : rp_view_by_id(id, c, t_out);
     }
-    return rp_view_for(&t, &v, c);
+    view_t sv;   // 改写目标 / 层数之后 v 一定是一份完整记录
+    return rp_view_for(&t, sample_view_rec(&t, &v, 1, &sv), c);
 }
 
 // 一组贴图槽的「编译事实」摘要：每槽取绑定贴图的有效格式、有效目标、深度（没登记的槽取「在不在池范围里」）。
