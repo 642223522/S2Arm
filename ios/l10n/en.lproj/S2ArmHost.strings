@@ -704,3 +704,16 @@
 "kbd.target.RS_DOWN" = "Right stick down";
 "kbd.target.RS_LEFT" = "Right stick left";
 "kbd.target.RS_RIGHT" = "Right stick right";
+"kbd.section.manage" = "Manage Key Mapping";
+"kbd.manage.note" = "Exported key mapping files can be imported in other games. The input.json in each game folder of the Mac launcher uses the same format and can be imported too. Importing changes this game only.";
+"kbd.import" = "Import Key Mapping…";
+"kbd.export" = "Export Current Key Mapping…";
+"kbd.export.fileName" = "S2Arm Key Mapping";
+"kbd.export.err.title" = "Couldn’t Export Key Mapping";
+"kbd.import.err.title" = "Couldn’t Import Key Mapping";
+"kbd.import.err.read" = "This file can’t be read. Choose a key mapping file (.json). Your current mapping hasn’t changed.";
+"kbd.import.err.tooLarge" = "This file is too large to be a key mapping file (they are under 64 KB). Your current mapping hasn’t changed.";
+"kbd.import.err.json" = "This isn’t a key mapping file (it isn’t valid JSON). Your current mapping hasn’t changed.";
+"kbd.import.err.schema" = "This isn’t an S2Arm key mapping file, or its version isn’t supported. Your current mapping hasn’t changed.";
+"kbd.import.err.duplicate" = "The file binds the same key to more than one button. Your current mapping hasn’t changed.";
+"kbd.import.err.invalid" = "The mapping in this file is incomplete or has invalid values. Your current mapping hasn’t changed.";
