@@ -3501,13 +3501,16 @@ static int alias_orph_cand(uint32_t i, CFSetRef held, alias_key *k) {   // calle
     uint64_t seen = (uint64_t)(uintptr_t)nvn_hm_get(&g_alias_seen, k);
     return !(seen && g_fence + 1 - seen < ALIAS_IDLE) && !(k->d.flags & (NVN_TEXTURE_FLAGS_DISPLAY | NVN_TEXTURE_FLAGS_VIDEO_DECODE));
 }
-static CFMutableSetRef alias_held(void) {   // caller holds g_smu: what live objects and finalized serials still resolve to
+static os_unfair_lock g_rmu;
+static void treg_add_held(CFMutableSetRef held);   // caller holds g_rmu and g_smu
+static CFMutableSetRef alias_held(void) {   // caller holds g_rmu and g_smu: what live objects, finalized serials, and active texture IDs still resolve to
     CFMutableSetRef held = CFSetCreateMutable(NULL, 0, NULL);
     nvn_hmap *hm[] = {&g_by_serial, &g_ghost, &g_ghost_active};
     for (int t = 0; t < 3; t++) for (uint32_t i = 0; i < hm[t]->cap; i++) if (hm[t]->vals[i]) {
         CFSetAddValue(held, hm[t]->vals[i]);
         id pt = pkg_tex_of((__bridge id)hm[t]->vals[i]); if (pt) CFSetAddValue(held, (__bridge const void *)pt);
     }
+    treg_add_held(held);
     return held;
 }
 static uint64_t alias_orph_drop(const alias_key *k, int why) {   // caller holds g_smu; why 0 never GPU-written, 1 rewritten, 2 pressure; returns the bytes let go
@@ -3520,9 +3523,12 @@ static uint64_t alias_orph_drop(const alias_key *k, int why) {   // caller holds
     defer_obj_release(o); g_ser_gen++;
     return b;
 }
-static uint64_t alias_orph_evict(void *ctx, uint64_t want) {   // the low-region ledger's give-back callback (it holds its own lock; g_smu may be held by the thread that asked: then nothing this time)
-    (void)ctx; if (pthread_mutex_trylock(&g_smu)) return 0;
+static uint64_t alias_orph_evict(void *ctx, uint64_t want) {   // the low-region ledger's give-back callback (it holds its own lock; g_rmu / g_smu may be held by the thread that asked: then nothing this time)
+    (void)ctx;
+    if (!os_unfair_lock_trylock(&g_rmu)) return 0;
+    if (pthread_mutex_trylock(&g_smu)) { os_unfair_lock_unlock(&g_rmu); return 0; }
     CFMutableSetRef held = alias_held();
+    os_unfair_lock_unlock(&g_rmu);
     uint32_t n = 0; alias_key *ks = g_alias.n ? malloc(g_alias.n * sizeof *ks) : NULL; uint64_t *seen = g_alias.n ? malloc(g_alias.n * sizeof *seen) : NULL;
     for (uint32_t i = 0; ks && seen && i < g_alias.cap; i++) { alias_key k;
         if (!alias_orph_cand(i, held, &k) || !nvn_hm_get(&g_alias_wrote, &k)) continue;
@@ -3544,8 +3550,10 @@ static void alias_orphan_pass(void) {
         if (lv && lv->size >= sizeof(s2a_lowva_api) && lv->version == S2A_LOWVA_VERSION) { g_orph_lv = lv; g_orph_lv_me = lv->user("unreferenced shared textures", alias_orph_evict, NULL); } } }
 #endif
     typedef struct { alias_key k; const uint8_t *mem; uint64_t size; } cand_t;
+    os_unfair_lock_lock(&g_rmu);
     pthread_mutex_lock(&g_smu);
     CFMutableSetRef held = alias_held();
+    os_unfair_lock_unlock(&g_rmu);
     uint32_t nc = 0, nw = 0; alias_key *cache = g_alias.n ? malloc(g_alias.n * sizeof *cache) : NULL; cand_t *wr = g_alias.n ? malloc(g_alias.n * sizeof *wr) : NULL;
     int64_t wbytes = 0;
     for (uint32_t i = 0; cache && wr && i < g_alias.cap; i++) { alias_key k;
@@ -3563,7 +3571,7 @@ static void alias_orphan_pass(void) {
         uint64_t *runs = NULL, b = 0; int n = gpw_stale(wr[j].mem, wr[j].size, &runs, &b); free(runs);
         if (n == 0) wr[nr++] = wr[j];
     }
-    if (nr) { pthread_mutex_lock(&g_smu); CFMutableSetRef h2 = alias_held();
+    if (nr) { os_unfair_lock_lock(&g_rmu); pthread_mutex_lock(&g_smu); CFMutableSetRef h2 = alias_held(); os_unfair_lock_unlock(&g_rmu);
         for (uint32_t j = 0; j < nr; j++) { void *v = nvn_hm_get(&g_alias, &wr[j].k); uint64_t seen = (uint64_t)(uintptr_t)nvn_hm_get(&g_alias_seen, &wr[j].k);
             if (!v || CFSetContainsValue(h2, v) || (seen && g_fence + 1 - seen < ALIAS_IDLE)) continue;   // taken up again meanwhile
             wbytes -= (int64_t)alias_orph_drop(&wr[j].k, 1); }
@@ -8891,6 +8899,23 @@ void treg_sweep_gone(void) {
         }
     g_gone_n = 0;
     os_unfair_lock_unlock(&g_rmu);
+}
+static void treg_add_held(CFMutableSetRef held) {   // caller holds g_rmu and g_smu: textures still pinned by a registered texture ID's cached view or recently resolved ID
+    for (int i = 0; i < g_ntreg; i++) {
+        const treg_t *r = &g_treg[i];
+        if (!r->ok || r->gone) continue;
+        if (r->view) {
+            CFSetAddValue(held, r->view);
+            id<MTLTexture> p = ((__bridge id<MTLTexture>)r->view).parentTexture;
+            if (p) CFSetAddValue(held, (__bridge const void *)p);
+            id pk = pkg_tex_of((__bridge id)(p ? (__bridge void *)p : r->view));
+            if (pk) CFSetAddValue(held, (__bridge const void *)pk);
+        } else if (r->used && g_fence + 1 - r->used < ALIAS_IDLE) {
+            alias_key ak; alias_key_of(&ak, &r->t);
+            void *v = nvn_hm_get(&g_alias, &ak);
+            if (v) { CFSetAddValue(held, v); id pk = pkg_tex_of((__bridge id)v); if (pk) CFSetAddValue(held, (__bridge const void *)pk); }
+        }
+    }
 }
 void mtl_vc_stats(unsigned *n, uint64_t *hit, uint64_t *made) { os_unfair_lock_lock(&g_rmu); *n = g_vc.n; *hit = g_vc_hit; *made = g_vc_new; os_unfair_lock_unlock(&g_rmu); }
 static void vc_drop_pool(const void *pool) {   // caller holds g_rmu
