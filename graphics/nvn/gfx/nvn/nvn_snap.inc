@@ -209,7 +209,7 @@ static id<MTLTexture> snap_al_load_x(FILE *f, int res) {   // 读一张：建同
     if (!b || !fr_r_tex(f, &hd, b.contents)) { errno = EIO; return nil; }
     if (!t) return nil;
     if (res) res_add(t);
-    if (!fr_blit_planes(t, &hd, b, 0)) return nil;
+    if (!fr_blit_planes(t, &hd, b, 0)) { if (res) res_remove(t); return nil; }   // 写回失败的没有表引用它，出常驻集
     return t;
 }
 // GL 出图层（gfx/gl 即时存档）用：整张贴图（不是视图）连描述一起存 / 取。内容存不了（多重采样 / 格式不认 / 超 256 MB）的只存描述，取时建同描述的空贴图（下一帧重画）
@@ -272,6 +272,7 @@ static int snap_ghost_put(NvPkg *pk, id<MTLTexture> src);
 static void snap_ghost_apply(uint64_t ser, id o) {
     void *v = nvn_hm_del(&g_snap_ghost_pend, &ser); if (!v) return;
     id<MTLTexture> src = CFBridgingRelease(v); int ok = snap_ghost_put((NvPkg *)o, src);
+    res_remove(src);   // 内容已写进重建的贴图（拷贝是同步跑完的），这张只是来源：出常驻集，不然一直不放
     MLOG("%s即时存档恢复：已销毁贴图 ser=%llu 重建时写回 A 的显卡内容%s（待写回还剩 %u）", ok ? "" : "【黄】", (unsigned long long)ser, ok ? "" : "失败（描述不同）", g_snap_ghost_pend.n);
 }
 static int snap_ghost_pkg(uint64_t ser, id<MTLTexture> src) {
@@ -311,7 +312,7 @@ static int snap_alias_restore(const char *path) {
         if (kind == 1) { uint32_t ai; ok = fr_r(f, &ai, 4); if (ok && ai < objs.count && objs[ai] != [NSNull null]) o = objs[ai]; }
         else if (kind == 2 || kind == 3) { o = snap_al_load(f); if (!o && errno == EIO) { ok = 0; break; } }
         if (!o) { gm++; continue; }
-        if (kind == 3) { int r = snap_ghost_pkg(ser, o); if (r == 1) gp++; else if (r == 2) gw++; else gm++; continue; }
+        if (kind == 3) { int r = snap_ghost_pkg(ser, o); if (r == 1) gp++; else if (r == 2) gw++; else gm++; if (r != 2) res_remove(o); continue; }   // 当场写回 / 没放回的，来源贴图出常驻集（等重建的留到 snap_ghost_apply / 会话销毁）
         pthread_mutex_lock(&g_smu); tex_put_locked(ser, o); pthread_mutex_unlock(&g_smu); gp++;
     }
     fclose(f);
@@ -332,7 +333,9 @@ void nvn_snap_fps(snap_fp_cb cb) {
 }
 void s2a_snap_progress(const char *layer) __attribute__((weak));
 #define SNAP_AT(s) do { if (s2a_snap_progress) s2a_snap_progress(s); } while (0)
-int nvn_snap_save(const char *dir) {
+static int nvn_snap_save_body(const char *dir);
+int nvn_snap_save(const char *dir) { @autoreleasepool { return nvn_snap_save_body(dir); } }   // 同 nvn_snap_restore，存的时候读回贴图建的对象也当场放
+static int nvn_snap_save_body(const char *dir) {
     if (!s2a_snap_arena_get) { MLOG("【红】 即时存档：宿主没有命令记录区接口"); return -1; }
     // GL 出图层（外部生产者）：先排空那一层、存它的对象与上下文（gfx/gl egl.m gl_snap_save）；Vulkan 层另做
     SNAP_AT("图形 GL 出图层");
@@ -411,7 +414,11 @@ static void snap_seq_rewind(uint64_t fence, uint64_t pq_in) {
 }
 static nvn_hmap *g_snap_addr_lk;
 static const void *snap_addr_lookup(uint64_t ser) { return g_snap_addr_lk ? nvn_hm_get(g_snap_addr_lk, &ser) : NULL; }
-int nvn_snap_restore(const char *dir) {
+// 恢复里建的 Metal 对象（放回贴图用的拷贝编码器、命令缓冲、暂存缓冲）多是自动释放的，调用线程是长活的会话线程、没有自己的池：
+//   不包一层的话它们连同引用的贴图一直不放，每在游戏中回一次快照图形内存涨一份（Mac 11-21：IOAccelerator 661 → 1229 → 1843 → 2458 MB）
+static int nvn_snap_restore_body(const char *dir);
+int nvn_snap_restore(const char *dir) { @autoreleasepool { return nvn_snap_restore_body(dir); } }
+static int nvn_snap_restore_body(const char *dir) {
     g_snap_restored = 1;
     char p[1200]; nvn_snap_live lv; int ok = 1;
     // 分步计时（11-17 iPhone 大金刚「核对」1.09 s，其中图形一段要拆开看）：命令块 / 回放层表 / 共享存储贴图 / GPU 私有贴图 / 只读普通贴图 / 预排布贴图 / 后端状态 + 视频

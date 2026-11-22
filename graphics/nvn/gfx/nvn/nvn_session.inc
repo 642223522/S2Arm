@@ -84,7 +84,10 @@ static void session_resource_release(void *v) {
     CFRelease(v);
 }
 int nvn_be_drain_session(void) { return session_wait_backend(); }
-int nvn_be_shutdown_session(void) {
+// 销毁旧会话时经手的 Metal 对象（查表取出来的贴图、缓冲）有自动释放的引用，调用线程是长活的会话线程、没有自己的池：包一层，旧局的贴图当场放
+static int nvn_be_shutdown_session_body(void);
+int nvn_be_shutdown_session(void) { @autoreleasepool { return nvn_be_shutdown_session_body(); } }
+static int nvn_be_shutdown_session_body(void) {
     int e = session_wait_backend(); if (e) { MLOG("【红】重启：Metal 工作仍持有旧会话 (%d)", e); return e; }
     // Keep completed immutable shader loads in the device cache. This also
     // consumes the old prefetch handoff before its pipeline maps are cleared.
@@ -106,7 +109,7 @@ int nvn_be_shutdown_session(void) {
     nvn_hm_clear(&g_treg_ser, NULL);
     // 同理按贴图序号 / 上一局游戏内存建的：未压缩贴图 → 池、即时存档的贴图地址表与待写回表（新一局的池、贴图对象都是新的）
     pthread_mutex_lock(&g_cpu_tex_mu); nvn_hm_clear(&g_cpu_unc, NULL); pthread_mutex_unlock(&g_cpu_tex_mu);
-    nvn_hm_clear(&g_snap_texaddr, NULL); nvn_hm_clear(&g_snap_ghost_pend, hm_rel);
+    nvn_hm_clear(&g_snap_texaddr, NULL); nvn_hm_clear(&g_snap_ghost_pend, session_resource_release);   // 这些贴图读进来时登记进了常驻集（snap_al_load），只放引用的话常驻集还攥着，每回一次快照留一批
     for (int i = 0; i < g_nsreg; i++) if (g_sview[i]) CFRelease(g_sview[i]);
     free(g_sreg); free(g_sreg_ok); free(g_sview); free(g_srid);
     g_sreg = NULL; g_sreg_ok = NULL; g_sview = NULL; g_srid = NULL; g_nsreg = 0;
@@ -114,7 +117,7 @@ int nvn_be_shutdown_session(void) {
     nvn_hm_clear(&g_vc, vc_set_free);
     nvn_hm_clear(&g_by_serial, session_resource_release);
     nvn_hm_clear(&g_alias, session_resource_release);
-    nvn_hm_clear(&g_ghost, hm_rel);
+    nvn_hm_clear(&g_ghost, session_resource_release);   // 同 g_snap_ghost_pend：只剩这张表持有、进过常驻集的贴图（恢复放回的、已销毁序号的）也要出集
     nvn_hm_clear(&g_alias_seen, NULL); nvn_hm_clear(&g_tex_live, NULL);
     // 与上面几张同键的两张也清：共享存储「最后一次 GPU 写在几号栅栏」（号倒回后旧的大号让活着的渲染目标被判成「之后被覆盖」）、幽灵贴图的淘汰环（旧序号会把新局同序号的幽灵淘汰掉）
     nvn_hm_clear(&g_alias_wrote, NULL); memset(g_ghost_ring, 0, sizeof g_ghost_ring); g_ghost_next = 0;
