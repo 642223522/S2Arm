@@ -713,16 +713,51 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
         finally { try { Directory.Delete(dir, true); } catch { } }
     }
     static List<string> C1CbNames() => MAC.Names().Where(n => n.EndsWith(".metal", StringComparison.Ordinal)).OrderBy(n => n, StringComparer.Ordinal).ToList();   // = C1Cb.BothJobs 的任务与次序
+    // 两张表逐支的结果进缓存仓（11-22「更新这款」：41984 支的后台遍 903 秒，是更新里最长的一步；翻译器一改只动 70 支，其余每次照算）：
+    //   一支的两行只由它的键名、MSL 与反射（C1Cb.SigOf）和 C1Cb 的算法决定，键 = c1cb/<算法指纹>/<键名>/<签名>。算法指纹取 C1Cb 及其嵌套类型全部方法体的 IL：
+    //   改了两张表的算法才变（整份重算），出包编排等别处代码改了不变；链号 / 翻译器指纹都不覆盖 batch/*.cs，不能拿它们当版本
+    static string _c1cbFp;
+    static string C1CbFp()
+    {
+        if (_c1cbFp != null) return _c1cbFp;
+        using var h = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        const System.Reflection.BindingFlags all = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static |
+                                                   System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.DeclaredOnly;
+        var types = new List<Type> { typeof(C1Cb) }; for (int i = 0; i < types.Count; i++) types.AddRange(types[i].GetNestedTypes(all));
+        foreach (var t in types.OrderBy(t => t.FullName, StringComparer.Ordinal))
+            foreach (var m in t.GetMethods(all).Cast<System.Reflection.MethodBase>().Concat(t.GetConstructors(all)).OrderBy(m => m.ToString(), StringComparer.Ordinal))
+            { h.AppendData(Encoding.UTF8.GetBytes(t.FullName + "::" + m + "\n")); var il = m.GetMethodBody()?.GetILAsByteArray(); if (il != null) h.AppendData(il); }
+        return _c1cbFp = Convert.ToHexString(h.GetHashAndReset()).ToLowerInvariant()[..16];
+    }
+    static string C1CbKey(string name, string sig) => "c1cb/" + C1CbFp() + "/" + name + "/" + sig;   // 键名也进键：SigOf 不含它，行里带它、算法按名字后缀分支
+    static byte[] Bytes(string s) => s == null ? null : Encoding.UTF8.GetBytes(s);
     static void C1CbFill()
     {
         double t0 = Clock.Elapsed.TotalSeconds;
         var names = C1CbNames(); var sigs = new Dictionary<string, string>(StringComparer.Ordinal);
-        Dictionary<string, (string C1, string Row)> r;
+        var r = new Dictionary<string, (string C1, string Row)>(StringComparer.Ordinal); var todo = new List<string>();
+        foreach (var n in names)
+        {
+            var m = MAC.Get(n); if (m == null) continue;
+            var sig = sigs[n] = C1Cb.SigOf(n, m, MAC.Get(C1CbJson(n)));
+            var e = Cas != null ? Store.Get(C1CbKey(n, sig)) : null;
+            if (e != null && e.ContainsKey("ok")) r[n] = (e.TryGetValue("c1", out var c1) ? Encoding.UTF8.GetString(c1) : null, e.TryGetValue("row", out var row) ? Encoding.UTF8.GetString(row) : null);
+            else todo.Add(n);
+        }
+        Count("c1cb cached", r.Count);
         // 后台遍只是预算，失败不算整次失败（同 Python 打黄字、收尾全算）：快照置空，收尾遍按最终产物重算（合入线 11-02 对照 #4）
-        try { r = C1CbChild(names, "bg", sigs, "直连库·两张表"); }
+        try
+        {
+            var got = C1CbChild(todo, "bg", null, "直连库·两张表");
+            foreach (var (n, v) in got)
+            {
+                r[n] = v;
+                if (Cas != null) Store.Put(C1CbKey(n, sigs[n]), new Dictionary<string, byte[]> { ["ok"] = new byte[] { 1 }, ["c1"] = Bytes(v.C1), ["row"] = Bytes(v.Row) }.Where(kv => kv.Value != null).ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal));
+            }
+        }
         catch (Exception e) { C1CbSnap = null; Say($"[YELLOW] c1 / cb tables: the background pass failed, the final pass computes them all: {Trunc(e.Message, 300)}"); return; }
         C1CbSnap = names.Where(r.ContainsKey).ToDictionary(n => n, n => (sigs[n], r[n]), StringComparer.Ordinal);
-        Say($"[分段] 两张表后台遍：{names.Count} 支，第 {t0:F1} 秒起、用 {Clock.Elapsed.TotalSeconds - t0:F1} 秒");
+        Say($"[分段] 两张表后台遍：{names.Count} 支（缓存仓里有 {names.Count - todo.Count} 支，算了 {todo.Count} 支），第 {t0:F1} 秒起、用 {Clock.Elapsed.TotalSeconds - t0:F1} 秒");
     }
     static void C1CbFinal()
     {
