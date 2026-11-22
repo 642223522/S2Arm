@@ -5562,21 +5562,26 @@ int nvn_be_tex_gpu_owned_since(uint64_t serial, uint64_t stamp) {
     }
     free(runs); return 1;
 }
-void nvn_be_tex_cpu_written(const tex_t *t) {
+static void tex_cpu_mark(const tex_t *t, uintptr_t kind) {
     uint64_t serial = t->serial;
     if (!serial) return;
     pthread_mutex_lock(&g_cpu_tex_mu);
     if (!g_cpu_tex.klen) nvn_hm_init(&g_cpu_tex, 8);
     int added = 0;
-    if (!nvn_hm_get(&g_cpu_tex, &serial)) {
-        nvn_hm_put(&g_cpu_tex, &serial, (void *)1); added = 1;
+    uintptr_t cur = (uintptr_t)nvn_hm_get(&g_cpu_tex, &serial);
+    if (!cur) {
+        nvn_hm_put(&g_cpu_tex, &serial, (void *)kind); added = 1;
         static int n; if (n++ < 16) MLOG("CPU-written texture ser=%llu %ux%ux%u format %#x target %d levels %u: uploaded / re-uploaded like a swizzled texture", (unsigned long long)serial, t->d.width, t->d.height, t->d.depth, t->d.format, t->d.target, t->d.levels);
+    } else if (kind == 1 && cur != 1) {
+        nvn_hm_put(&g_cpu_tex, &serial, (void *)1);
     }
     pthread_mutex_unlock(&g_cpu_tex_mu);
     if (added) { pthread_mutex_lock(&g_smu); g_ser_gen++; pthread_mutex_unlock(&g_smu); }   // the texture IDs that resolve to it take the slow path, which now treats it as packaged (tex_by_id view_pkg)
 }
+void nvn_be_tex_cpu_written(const tex_t *t) { tex_cpu_mark(t, 1); }
+void nvn_be_tex_cpu_inferred(const tex_t *t) { tex_cpu_mark(t, 2); }
 static int tex_cpu_written(uint64_t serial) {
-    pthread_mutex_lock(&g_cpu_tex_mu); int r = g_cpu_tex.n && nvn_hm_get(&g_cpu_tex, &serial); pthread_mutex_unlock(&g_cpu_tex_mu);
+    pthread_mutex_lock(&g_cpu_tex_mu); int r = g_cpu_tex.n ? (int)(uintptr_t)nvn_hm_get(&g_cpu_tex, &serial) : 0; pthread_mutex_unlock(&g_cpu_tex_mu);
     return r;
 }
 // Pools a GPU write into a texture has been recorded in (upstream reference implementation, MIT, 75e5ddd8: a render target, a texture clear, a copy or downsample into a texture,
@@ -5954,7 +5959,8 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
     if (t->magic != MAGIC('T', 'E', 'X', 0)) { RED_ONCE(70, "texture object no longer valid (magic %#x, first case ser=%llu): no MTLTexture created", t->magic, (unsigned long long)t->serial); return nil; }
     // A sampled texture in a sparse virtual pool holds what the CPU wrote into the physical pages mapped there (Monster Hunter Rise: the hunter's innerwear, ASTC 6x6 with no packaged
     // layout, came out magenta, and the face black): it is read through the page table like a packaged one. Render targets, images, linear and buffer textures stay GPU textures (as ft_add)
-    int packaged = (t->has_layout || tex_cpu_written(t->serial) || (t->pool && (t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) && t->d.target != NVN_TEXTURE_TARGET_BUFFER
+    int cpuw = tex_cpu_written(t->serial);
+    int packaged = (t->has_layout || cpuw || (t->pool && (t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) && t->d.target != NVN_TEXTURE_TARGET_BUFFER
                     && !(t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET | NVN_TEXTURE_FLAGS_COMPRESSIBLE | NVN_TEXTURE_FLAGS_IMAGE)) && nvn_sparse_pool(t->pool))) && t->mem;
     {   // Diagnostic DM_NVN_TEXINFO=WxH: log storage and description of textures of that size on first resolution (to tell whether two textures share storage and why they were not merged).
         //   DM_NVN_TEXINFO=any (or 0x0) drops the size filter: every texture is logged, all=1 on the line
@@ -5988,9 +5994,9 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
         }
     }
     id have = tex_get(t->serial);
-    if (!packaged && !have && DM_GAME_TEX_DIRTY_UPLOAD && t->mem && on_sub_thread()) { int nvn_ft_written(const tex_t *); packaged = nvn_ft_written(t); }   // first use of a texture the CPU wrote since init without a flush (hle_nvn.c)
-    int content = 0;   // taken from its storage (tex_cpu_content): a GPU write through a shared texture over it makes it that texture (cpu_key_gpu_write)
-    if (!packaged && !have && on_sub_thread() && tex_cpu_content(t)) { nvn_be_tex_cpu_written(t); packaged = content = 1; }
+    int content = (cpuw == 2);   // taken from its storage (tex_cpu_content / nvn_ft_written / nvn_ft_poll / ft_flush): a GPU write through another texture over it joins it (cpu_key_gpu_write)
+    if (!packaged && !have && DM_GAME_TEX_DIRTY_UPLOAD && t->mem && on_sub_thread()) { int nvn_ft_written(const tex_t *); if (nvn_ft_written(t)) packaged = content = 1; }   // first use of a texture the CPU wrote since init without a flush (hle_nvn.c)
+    if (!packaged && !have && on_sub_thread() && tex_cpu_content(t)) { nvn_be_tex_cpu_inferred(t); packaged = content = 1; }
     if (!packaged && !have && on_sub_thread() && tex_linear_needs_upload(t)) { nvn_be_tex_cpu_written(t); packaged = 1; }   // 建不了零拷贝视图的只读线性贴图：上传 + CPU 写后重传（#255 / #262）   // storage the CPU wrote before its first use (tex_cpu_content)
     if (packaged && atomic_load(&g_sub_thread_set) && !on_sub_thread()) {
         // S2Arm 10-25：上传批只归提交线程（up_owner_check），上屏线程等别的线程用到 CPU 写过的贴图时不上传：已传过的用现有那份（脏了留给提交线程下次用到时重传），
