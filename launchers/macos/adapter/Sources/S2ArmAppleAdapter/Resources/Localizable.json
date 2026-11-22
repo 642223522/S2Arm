@@ -10696,6 +10696,18 @@
   "en": "Windows Mandatory ASLR is on: the packing tools can't start child processes."
  },
  {
+  "source": "出包卡住了",
+  "en": "Export got stuck"
+ },
+ {
+  "source": "出包卡住了：有一步很久没有任何进展，S2Arm 已把它停下。",
+  "en": "Export got stuck: one step made no progress for a long time, so S2Arm stopped it."
+ },
+ {
+  "source": "点「重试」，已完成的阶段会核对后跳过；同一步反复卡住就导出诊断包发给我们，并关掉其他占内存的程序再试。",
+  "en": "Click Retry; finished stages are checked and skipped. If the same step keeps getting stuck, export a diagnostic package and send it to us, and close other memory-hungry apps before trying again."
+ },
+ {
   "source": "打开「Windows 安全中心 → 应用和浏览器控制 → 漏洞利用保护设置 → 系统设置」，把「强制映像随机化（强制性 ASLR）」改回「使用默认值（关）」，再打一次包。",
   "en": "Open Windows Security → App & browser control → Exploit protection settings → System settings, set \"Force randomization for images (Mandatory ASLR)\" back to \"Use default (Off)\", then package again."
  },
@@ -10974,5 +10986,29 @@
  {
   "source": "文件已发送，正在等待手机游戏库确认导入。",
   "en": "Files sent. Waiting for the phone's game library to confirm the import."
+ },
+ {
+  "source": "这台 {0} 上的 S2Arm 是 {1}，太旧了，读不了这个启动器（{2}）出的游戏程序，推进去也打不开：先在这台电脑的游戏库最前面「S2Arm」卡点「更新 S2Arm」装成 {3}，或回到当初装它的那台电脑更新，再推游戏。",
+  "en": "S2Arm on this {0} is {1}, too old to read game programs prepared by this launcher ({2}); they would not open. First, in the S2Arm card at the front of the library on this computer, click Update S2Arm to install {3}, or update it on the computer that installed it, then push the game."
+ },
+ {
+  "source": "这台 {0} 上的 S2Arm 是 {1}，太旧了，读不了这个启动器（{2}）出的游戏程序，推进去也打不开：先在游戏库最前面「S2Arm」卡导出 {3} 的 S2Arm.ipa，用你当初装它的工具（LiveContainer / SideStore 等）重新装一次，再推游戏。",
+  "en": "S2Arm on this {0} is {1}, too old to read game programs prepared by this launcher ({2}); they would not open. First export the {3} S2Arm.ipa from the S2Arm card at the front of the library and reinstall it with the tool you used before (LiveContainer, SideStore and so on), then push the game."
+ },
+ {
+  "source": "这台 {0} 上的 S2Arm 是 {1}，比电脑上的 {2} 旧，部分修复要更新 App 才生效：在这台电脑的游戏库最前面「S2Arm」卡点「更新 S2Arm」装成 {3}（之后这台电脑就认它），或回到当初装它的那台电脑更新。也可以先照旧推。",
+  "en": "S2Arm on this {0} is {1}, older than {2} on this computer, and some fixes only take effect after updating the app: in the S2Arm card at the front of the library on this computer, click Update S2Arm to install {3} (this computer then recognizes it), or update it on the computer that installed it. You can also push anyway."
+ },
+ {
+  "source": "这台 {0} 上的 S2Arm 是 {1}，比电脑上的 {2} 旧，部分修复要更新 App 才生效：在游戏库最前面「S2Arm」卡导出 {3} 的 S2Arm.ipa，用你当初装它的工具（LiveContainer / SideStore 等）重新装一次。也可以先照旧推。",
+  "en": "S2Arm on this {0} is {1}, older than {2} on this computer, and some fixes only take effect after updating the app: export the {3} S2Arm.ipa from the S2Arm card at the front of the library and reinstall it with the tool you used before (LiveContainer, SideStore and so on). You can also push anyway."
+ },
+ {
+  "source": "想马上用上新版修复就照上面说的先更新这台 {0} 上的 S2Arm；不急的话点「仍然继续」照旧推。",
+  "en": "To get the newer fixes now, update S2Arm on this {0} as described above; otherwise click Continue Anyway to push as before."
+ },
+ {
+  "source": "照上面说的把这台 {0} 上的 S2Arm 更新到这一版，再点这台的「重试」。",
+  "en": "Update S2Arm on this {0} to this version as described above, then click Retry for this device."
  }
 ]
