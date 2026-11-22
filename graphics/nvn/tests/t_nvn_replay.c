@@ -513,9 +513,10 @@ struct nvn_gpu_shader_s { int x; }; struct nvn_gpu_pipe_s { int x; };
 static struct nvn_gpu_shader_s g_fsh[3]; static struct nvn_gpu_pipe_s g_fpipe;
 static struct rp_prog g_fprog, g_variant_prog; static struct nvn_gpu_shader_s g_variant_fs; static int g_rt_variant;
 static int g_resolves, g_resolve_rc; static struct rp_shader_req g_last_req;
+static struct rp_prog g_gprog2; static const struct rp_prog *g_gresolve_next;   // 图形出库回退用例：拒收后解析交「现编版」g_gprog2
 int rp_shader_resolve(const struct rp_shader_req *q, const struct rp_prog **out) {
     g_resolves++; g_last_req = *q;
-    *out = g_resolve_rc ? NULL : (g_rt_variant && q->rt_format[0] == NVN_FORMAT_RGBA32UI ? &g_variant_prog : &g_fprog);
+    *out = g_resolve_rc ? NULL : g_gresolve_next ? g_gresolve_next : (g_rt_variant && q->rt_format[0] == NVN_FORMAT_RGBA32UI ? &g_variant_prog : &g_fprog);
     return g_resolve_rc;
 }
 // 计算：程序、管线、派发的替身
@@ -525,12 +526,12 @@ static int g_ndisp_now(void) { return g_ndisp; }
 static nvn_gpu_binding g_cb[16]; static uint32_t g_ncb; static int g_cbinds;
 static struct rp_prog g_cprog2; static const struct rp_prog *g_cresolve_next; static int g_lib_reject_calls;
 int rp_shader_resolve_compute(const struct rp_prog **out) { g_cresolves++; *out = g_cresolve_rc ? NULL : (g_cresolve_next ? g_cresolve_next : &g_cprog); return g_cresolve_rc; }
-// rp_shader_lib_reject 的替身：出库版标坏并切到「现编版」g_cprog2；非出库版（lib_sourced=0）原样报 0
+// rp_shader_lib_reject 的替身：出库版标坏并切到「现编版」（计算 g_cprog2 / 图形 g_gprog2）；非出库版（lib_sourced=0）原样报 0
 int rp_shader_lib_reject(const struct rp_prog *p) {
     g_lib_reject_calls++;
     if (!p || !p->lib_sourced) return 0;
     ((struct rp_prog *)p)->lib_bad = 1;
-    g_cresolve_next = &g_cprog2;
+    if (p->is_compute) g_cresolve_next = &g_cprog2; else g_gresolve_next = &g_gprog2;
     return 1;
 }
 void rp_shader_reset(void) {}
@@ -3401,6 +3402,26 @@ static void t_fmt_filter_blend(void) {
     pass_fresh();
 }
 
+// 图形片元采样（真机出事的那条路）：库版声明二维、实绑三维 → 标坏换现编版同一笔画出去，片元绑的是这张贴图，不记「类型不符」
+static void t_draw_tex_lib_fallback(void) {
+    pass_fresh(); g_resolve_rc = g_cresolve_rc = 0; g_gresolve_next = NULL; g_lib_reject_calls = 0;
+    int g0 = g_gdraws; uint64_t mm0 = nvn_unimpl_count("tex", "decl_type_mismatch");
+    tex_t a = mk_tex(673, 0, NVN_FORMAT_RGBA8, 16, 16, 4, 0); a.d.target = NVN_TEXTURE_TARGET_3D;
+    samp_par sp; memset(&sp, 0, sizeof sp); nvn_be_reg_tex(7, &a, NULL); nvn_be_reg_samp(3, &sp);
+    stream s = {0}; q_env(&s);
+    g_fprog.nent[1] = 1; g_fprog.ent[1][0].cls = NVN_GPU_RES_TEX_SAMP; g_fprog.ent[1][0].src_kind = NVN_RB_TEX; g_fprog.ent[1][0].src_reg = 5;
+    g_fprog.dtt[1][0] = NVN_TEXTURE_TARGET_2D + 1; g_fprog.lib_sourced = 1;                    // 库版声明二维
+    memcpy(&g_gprog2, &g_fprog, sizeof g_fprog); g_gprog2.lib_sourced = 0; g_gprog2.dtt[1][0] = NVN_TEXTURE_TARGET_3D + 1;   // 现编版声明三维
+    p_bind_handles *bh = put(&s, OP_BIND_TEX, sizeof *bh); bh->stage = 1; bh->first = 5; bh->n = 1; bh->h[0] = 7 | 3 << 20;
+    q_draw(&s); end(&s);
+    submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_lib_reject_calls == 1 && g_fprog.lib_bad && g_gdraws == g0 + 1);
+    CHECK(g_nfb[1] == 1 && g_fb[1][0].u.ts.view && ((const struct nvn_gpu_view_s *)g_fb[1][0].u.ts.view)->of->d.d.target == NVN_TEXTURE_TARGET_3D &&
+          ((const struct nvn_gpu_view_s *)g_fb[1][0].u.ts.view)->of->d.d.width == 16);
+    CHECK(nvn_unimpl_count("tex", "decl_type_mismatch") == mm0);
+    g_gresolve_next = NULL; g_lib_reject_calls = 0; g_fprog.lib_sourced = 0; g_fprog.lib_bad = 0; pass_fresh();
+}
+
 static void t_pass_clear_park_read(void) {   // 被读之前必须落地（正确性红线）：清 A 后把 A 当采样贴图用，绘制路径先落地再开通道
     pass_fresh(); g_flag_clear_park = 1; g_flag_rt_cont = 1; g_resolve_rc = g_cresolve_rc = 0;
     int g0 = g_gdraws;
@@ -5239,6 +5260,34 @@ static void t_compute_image_lib_fallback(void) {
     nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
     g_cresolve_next = NULL; g_lib_reject_calls = 0;
     memset(g_caps_stor, 0, sizeof g_caps_stor); rp_S.img[5][2] = 0; pass_fresh();
+}
+
+// 出库版采样贴图声明与实绑桥接不了：出包预编库按苹果端约定翻译（缺类型答案时一维取数译成二维行读），声明不随这一刻绑的贴图变。
+//   库版声明二维、实绑三维 → 身份标坏、换现编版（声明三维）重绑，同一笔派发出去，不绑零贴图、不记「类型不符」；
+//   非出库版同样不符 → 不回退（reject 不被调），照旧绑声明类型的零贴图、记一次「类型不符」（Ryujinx 语义）。
+static void t_compute_tex_lib_fallback(void) {
+    pass_fresh(); res_fresh(); g_arena_used = 0; g_cresolve_rc = 0; g_cresolve_next = NULL; g_lib_reject_calls = 0;
+    tex_t t = mk_tex(672, 0, NVN_FORMAT_RGBA8, 8, 8, 4, 0); t.d.target = NVN_TEXTURE_TARGET_3D;
+    samp_par sp; memset(&sp, 0, sizeof sp);
+    nvn_be_reg_tex(3, &t, NULL); nvn_be_reg_samp(0, &sp); nvn_be_set_tex_pool_n(16);
+    memset(&g_cprog, 0, sizeof g_cprog); g_cprog.is_compute = 1; g_cprog.sh[0] = &g_fsh[0]; g_cprog.nent[0] = 1; g_cprog.lib_sourced = 1;
+    nvn_gpu_layout_ent *e = &g_cprog.ent[0][0];
+    e->cls = NVN_GPU_RES_TEX_SAMP; e->src_kind = NVN_RB_TEX; e->src_reg = 2; e->src_reg2 = UINT16_MAX; e->count = 1; e->access = NVN_GPU_ACC_R;
+    g_cprog.dtt[0][0] = NVN_TEXTURE_TARGET_2D + 1;                                              // 库版声明二维
+    memcpy(&g_cprog2, &g_cprog, sizeof g_cprog); g_cprog2.lib_sourced = 0; g_cprog2.dtt[0][0] = NVN_TEXTURE_TARGET_3D + 1;   // 现编版按事实声明三维
+    rp_S.tex[5][2] = 3;
+    p_dispatch dp = {.x = 1, .y = 1, .z = 1};
+    int n = g_ndisp; uint64_t mm0 = nvn_unimpl_count("tex", "decl_type_mismatch");
+    nvn_be_sub_begin(); rp_dispatch(&g_fake_cmd, &dp, NULL);
+    CHECK(g_lib_reject_calls == 1 && g_cprog.lib_bad && g_ndisp == n + 1);                     // 库版不符 → 换现编版同一笔派发
+    CHECK(g_ncb == 1 && g_cb[0].u.ts.view && ((const struct nvn_gpu_view_s *)g_cb[0].u.ts.view)->of->d.d.target == NVN_TEXTURE_TARGET_3D && ((const struct nvn_gpu_view_s *)g_cb[0].u.ts.view)->of->d.d.width == 8);   // 绑的是这张 8 宽的三维贴图，不是 1x1 零贴图
+    CHECK(nvn_unimpl_count("tex", "decl_type_mismatch") == mm0);                               // 回退了就不是「类型不符」
+    // 非出库版同样不符：不回退，绑零贴图照派发，记一次「类型不符」
+    g_cprog2.dtt[0][0] = NVN_TEXTURE_TARGET_2D + 1; g_lib_reject_calls = 0; n = g_ndisp;
+    rp_dispatch(&g_fake_cmd, &dp, NULL);
+    CHECK(g_lib_reject_calls == 0 && g_ndisp == n + 1 && nvn_unimpl_count("tex", "decl_type_mismatch") == mm0 + 1);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    g_cresolve_next = NULL; g_lib_reject_calls = 0; rp_S.tex[5][2] = 0; pass_fresh();
 }
 
 // #659：计算阶段独立图像槽，读写属性决定 GPU 所有权；不涉及间接参数同步。
@@ -7396,6 +7445,8 @@ int main(int argc, char **argv) {
     t_compute_image();
     t_compute_image_class();
     t_compute_image_lib_fallback();
+    t_compute_tex_lib_fallback();
+    t_draw_tex_lib_fallback();
     t_graphics_image();
     t_compute_tex_from_image();
     t_drv2_table();
