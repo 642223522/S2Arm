@@ -683,7 +683,7 @@
 "kbd.section.sticks" = "摇杆";
 "kbd.record" = "请按新键，Esc 取消";
 "kbd.common" = "常用键";
-"kbd.clear" = "清除键盘按键";
+"kbd.clear" = "清除按键设置";
 "kbd.unbound" = "未设置";
 "kbd.restoreDefault" = "恢复默认";
 "kbd.rebind.title" = "改绑这个键？";

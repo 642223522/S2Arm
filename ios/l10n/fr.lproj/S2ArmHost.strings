@@ -677,7 +677,7 @@
 "kbd.section.sticks" = "Sticks";
 "kbd.record" = "Appuyez sur une touche, Esc pour annuler";
 "kbd.common" = "Touches courantes";
-"kbd.clear" = "Effacer la touche clavier";
+"kbd.clear" = "Effacer l’assignation";
 "kbd.unbound" = "Non défini";
 "kbd.restoreDefault" = "Restaurer les valeurs par défaut";
 "kbd.rebind.title" = "Réaffecter cette touche ?";

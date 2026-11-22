@@ -683,7 +683,7 @@
 "kbd.section.sticks" = "Sticks";
 "kbd.record" = "Press a key, Esc to cancel";
 "kbd.common" = "Common keys";
-"kbd.clear" = "Clear keyboard key";
+"kbd.clear" = "Clear key settings";
 "kbd.unbound" = "Not set";
 "kbd.restoreDefault" = "Restore defaults";
 "kbd.rebind.title" = "Reassign this key?";
