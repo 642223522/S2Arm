@@ -613,6 +613,8 @@
 "vpad.snap.notSaved" = "Sauvegarde impossible cette fois. Réessayez dans un instant";
 "vpad.snap.busy" = "La sauvegarde précédente est en cours";
 "vpad.snap.restoreFailed" = "Retour impossible : %@";
+"vpad.snap.useLibrary.title" = "Retour impossible depuis le jeu";
+"vpad.snap.useLibrary.body" = "Cet instant a été sauvegardé avec la mémoire du jeu placée ailleurs que dans cette partie : il ne peut pas être repris depuis le jeu. Revenez à la bibliothèque, appuyez longuement sur ce jeu et touchez « Revenir à l’instant sauvegardé » pour le restaurer. L’instantané est toujours là.";
 "vpad.snap.saveChanged.title" = "Revenir à l’instant sauvegardé ?";
 "vpad.snap.saveChanged.body" = "Le jeu a sauvegardé depuis. Revenir ramène aussi sa sauvegarde à cet instant ; la sauvegarde actuelle est d’abord copiée.";
 "vpad.snap.saveChanged.go" = "Revenir";

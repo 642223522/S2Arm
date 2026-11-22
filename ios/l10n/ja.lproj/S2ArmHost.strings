@@ -613,6 +613,8 @@
 "vpad.snap.notSaved" = "今回は保存できませんでした。少ししてからもう一度";
 "vpad.snap.busy" = "前回の保存がまだ終わっていません";
 "vpad.snap.restoreFailed" = "戻れませんでした：%@";
+"vpad.snap.useLibrary.title" = "ゲーム内からは戻れません";
+"vpad.snap.useLibrary.body" = "この瞬間を保存したときのゲームのメモリ配置が今のプレイと異なるため、ゲーム内からは再開できません。ライブラリに戻り、このゲームを長押しして「保存した瞬間に戻る」をタップすると復元できます。スナップショットは削除されていません。";
 "vpad.snap.saveChanged.title" = "保存した瞬間に戻りますか？";
 "vpad.snap.saveChanged.body" = "その後ゲームがセーブしています。戻るとゲームのセーブもその時点に戻ります。今のセーブは先にバックアップします。";
 "vpad.snap.saveChanged.go" = "戻る";

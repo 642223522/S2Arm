@@ -619,6 +619,8 @@
 "vpad.snap.notSaved" = "Couldn’t save this time. Try again in a moment";
 "vpad.snap.busy" = "Still saving the last one";
 "vpad.snap.restoreFailed" = "Couldn’t go back: %@";
+"vpad.snap.useLibrary.title" = "Can’t go back from inside the game";
+"vpad.snap.useLibrary.body" = "This moment was saved with the game’s memory in a different place than this session, so it can’t be resumed from inside the game. Go back to the library, long-press this game and tap “Go back to the saved moment” to restore it. The snapshot is still there.";
 "vpad.snap.saveChanged.title" = "Go back to the saved moment?";
 "vpad.snap.saveChanged.body" = "The game saved after that moment. Going back also takes the game’s save back to that moment; your current save is backed up first.";
 "vpad.snap.saveChanged.go" = "Go back";
