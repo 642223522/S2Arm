@@ -158,7 +158,7 @@ static int nvn_be_shutdown_session_body(void) {
     if (g_mtk_group) dispatch_group_wait(g_mtk_group, DISPATCH_TIME_FOREVER);   // task / mesh pipelines (nvn_geometry.inc mtk_pso): the background builds write the map
     os_unfair_lock_lock(&g_pso_mtk_lock); nvn_hm_clear(&g_pso_mtk, hm_rel); os_unfair_lock_unlock(&g_pso_mtk_lock);
     nvn_hm_clear(&g_pso_fail, hm_rel); nvn_hm_clear(&g_pso_retry, hm_rel);
-    nvn_hm_clear(&g_ir, free); nvn_hm_clear(&g_rt_seen, NULL); nvn_hm_clear(&g_rt_seen_mem, NULL); nvn_hm_clear(&g_rt_fresh, NULL);
+    ir_clear(); nvn_hm_clear(&g_rt_seen, NULL); nvn_hm_clear(&g_rt_seen_mem, NULL); nvn_hm_clear(&g_rt_fresh, NULL);
     g_rt_history_frame = 0; g_rt_history_valid = 0;
     for (int i = 0; i < PSO_PEND_MAX; i++) { g_pp[i].ps = nil; g_pp[i].used = g_pp[i].done = g_pp[i].late = 0; }
     g_geo_program = nil; g_pso_fsfn = nil; g_pso_lmap = NULL;
