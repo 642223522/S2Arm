@@ -62,10 +62,15 @@ void s2a_guest_freeze(int on); void guest_clock_freeze_for(int reason, int on); 
 //   冻结客机线程与游戏时钟（时钟按原因 3 冻），回焦点再放开（缺口扫描族 1 / 审计 P2-64：原先 Mac 失焦游戏照跑）
 static BOOL focus_frozen;
 // 玩家可关（#989，启动设置「切到别的窗口时暂停」关 → S2A_FOCUS_PAUSE=0）：Mac 上切出去看攻略 / 第二块屏是常事，关掉后失焦只报焦点消息、不冻结
-static BOOL focus_pause_off(void) { static int v = -1; if (v < 0) { const char *e = getenv("S2A_FOCUS_PAUSE"); v = e && !strcmp(e, "0"); } return v; }
+static int g_focus_pause_off = -1;   // -1 = 还没读环境变量（单测直接设 0 / 1）
+static BOOL focus_pause_off(void) { if (g_focus_pause_off < 0) { const char *e = getenv("S2A_FOCUS_PAUSE"); g_focus_pause_off = e && !strcmp(e, "0"); } return g_focus_pause_off; }
+static BOOL focused;
+// 手柄这一路（系统手柄 / NS2 / Joy-Con / 兜底 HID）算不算在线（#1606 ④，Ting2024）：窗口有焦点，或玩家关了「切到别的窗口时暂停」——
+//   关掉后切出去看攻略 / 第二块屏时手柄照样操作游戏；键盘 / 鼠标仍只认游戏窗口的焦点（失焦清空，不把别的 App 里打的字送进游戏）
+static BOOL pads_live(void) { return focused || focus_pause_off(); }
 // 关窗 / 收尾也发布「没焦点」，但不冻结（may_freeze = NO）：收尾要等客机线程退出
 static void display_focus_publish_ex(BOOL active, BOOL may_freeze) {
-    s2a_mac_ns2_focus(active);
+    s2a_mac_ns2_focus(active || (may_freeze && focus_pause_off()));   // NS2 手柄同手柄这一路（pads_live）；关窗 / 收尾照旧断开
     if (active && !atomic_load(&display_focused)) atomic_store(&display_focus_since, now_ns());
     atomic_store(&display_focused, active);
     s2a_host_focus_set(active);
@@ -85,7 +90,6 @@ static _Atomic uint32_t input_seq, input_buttons;
 static _Atomic int32_t input_sticks[4];
 static NSMutableSet<NSNumber *> *keys, *mouse;
 static NSDictionary *config;
-static BOOL focused;
 static bool (*read_key_state)(CGEventSourceStateID, CGKeyCode) = CGEventSourceKeyState;
 static NSUInteger system_mouse_buttons(void) { return NSEvent.pressedMouseButtons; }
 // 系统当前按下的鼠标键（第 n 位 = 按钮 n），单测可替换（审计 P2-34）
@@ -201,13 +205,13 @@ static int ns2_lead_player(void) { return atomic_load(&g_slot0_player); }
 //   s2a_pad_wait 的序号通知，不再 Thread.Sleep(16)。有扩展手柄时按系统手柄源发布（键盘 / 鼠标仍并进同一份状态），
 //   没有手柄时按触屏源发布；两个源互斥的语义由 pad.c 管，Mac 不另造第三份选源状态。
 static void publish_pad_state(int has_pad, uint32_t buttons, const int32_t sticks[4]) {
-    if (has_pad) { s2a_pad_update(S2A_PAD_SYSTEM, focused ? 1 : 0, buttons, sticks); return; }
+    if (has_pad) { s2a_pad_update(S2A_PAD_SYSTEM, pads_live() ? 1 : 0, buttons, sticks); return; }
     // 没手柄时必须先补一次 SYSTEM 断开：pad.c 的 selected() 只看 connected，不发就仍选 SYSTEM 并丢掉 TOUCH 更新，
     //   手柄断开瞬间按住的键会卡住、键盘也失灵（维护方 11-09 用 pad.c 最小程序复现：0x1，期望 0x2）。
     s2a_pad_update(S2A_PAD_SYSTEM, 0, 0, sticks);
     // 单只 Joy-Con 报原始方向时按 BLE 源发布（#520 A）：InputPump 把 BLE / 系统手柄当实体手柄、不再按横握转一次（触屏源会转，
     //   原始方向的物理键就被转两次）；其余（键盘、扮 Pro 的手柄）照旧按触屏源，BLE 源先报断开（同上 selected() 只看 connected）
-    if (ble_raw_source) { s2a_pad_update(S2A_PAD_BLE, focused ? 1 : 0, buttons, sticks); return; }
+    if (ble_raw_source) { s2a_pad_update(S2A_PAD_BLE, pads_live() ? 1 : 0, buttons, sticks); return; }
     s2a_pad_update(S2A_PAD_BLE, 0, 0, sticks);
     s2a_pad_update(S2A_PAD_TOUCH, focused ? 1 : 0, buttons, sticks);
 }
@@ -589,7 +593,7 @@ __attribute__((visibility("default"), used)) int s2a_pad_read_mouse_pair(s2a_pad
 // 实体手柄退出游戏（#276）：决策在 runtime/include/s2a_home_quit.h，界面（提示条、失焦、退出）在 S2AMacDelegate 后面的 home_quit_ui
 static s2a_hq_state g_hq;
 // 静音标记跟随 focused / 退出确认条就地刷新（都在主线程）：失焦 / 开条那一拍就生效，不等下一轮 120Hz 定时采样
-static void input_mute_refresh(void) { atomic_store(&input_muted, !focused || g_hq.open); }
+static void input_mute_refresh(void) { atomic_store(&input_muted, !pads_live() || g_hq.open); }
 static void home_quit_ui(s2a_hq_action action);
 static void sample_home_quit(GCExtendedGamepad *pad) {
     if (!pad) return;
@@ -1260,14 +1264,15 @@ static void sample_input(void) {
     uint32_t slot_buttons[S2A_MAX_PADS] = {0};
     int32_t slot_sticks[S2A_MAX_PADS][4] = {{0}};
     BOOL primary_chord = NO, primary_available = NO;
-    GCExtendedGamepad *active = focused ? active_pad(GCController.controllers) : nil;
+    GCExtendedGamepad *active = pads_live() ? active_pad(GCController.controllers) : nil;
     // 玩家 1 的体感 / 震动跟着占槽 0 的那只系统手柄（上一拍的槽位表）；槽 0 不是系统手柄时照旧用最近有输入的那只（#520 E）
-    GCExtendedGamepad *lead = focused && pad_owner[0].extendedGamepad ? pad_owner[0].extendedGamepad : active;
+    GCExtendedGamepad *lead = pads_live() && pad_owner[0].extendedGamepad ? pad_owner[0].extendedGamepad : active;
     sample_motion(lead);
     if (lead) rumble_select(lead.controller);   // 失焦不换会话：切回来同一个手柄接着震
     if (focused) sample_home_quit(lead);
     // 失焦 / 退出确认条打开：照旧不喂输入（发一份全零）。手柄槽位仍然要扫，否则窗口一失焦服务层就以为只剩 1 只手柄，会把玩家 2 的格子拆掉
-    BOOL muted = !focused || g_hq.open;
+    //   关了「切到别的窗口时暂停」：失焦只清键盘 / 鼠标（kbd_muted），手柄照常（muted 只看 pads_live）
+    BOOL muted = !pads_live() || g_hq.open, kbd_muted = !focused || g_hq.open;
     // 键盘 / 鼠标映射：键盘分配成一位玩家时照它那位的键位（顺序表第 i 位 = 玩家 i+1，玩家 2–4 的映射在 player_config_maps[0..2]）；
     //   没分配（并进槽 0 = 玩家 1）就照全局那份
     NSDictionary *kbd_cfg = config;
@@ -1277,7 +1282,7 @@ static void sample_input(void) {
             if (m) kbd_cfg = m;
             break;
         }
-    if (!muted) {
+    if (!kbd_muted) {
         NSDictionary *keyboard = kbd_cfg[@"keyboard"];
         NSUInteger consumed = 0;
         for (NSString *name in keyboard) {
@@ -1499,7 +1504,7 @@ static void sample_input(void) {
         for (int i = 0; i < 4; i++) atomic_store(&pad_sticks[s][i], slot_sticks[s][i]);
     }
     publish_input(slot_buttons[0], slot_sticks[0]);   // 玩家 1：旧 ABI + 事件驱动 ABI（含鼠标视角）
-    publish_keyboard(muted);   // R5：键盘区原始键态（先落键态再唤醒，泵醒来读到同一拍）
+    publish_keyboard(kbd_muted);   // R5：键盘区原始键态（先落键态再唤醒，泵醒来读到同一拍）
     pthread_mutex_unlock(&g_compose_mu);
     face_overlay_update(pad_owner[0], primary_chord, primary_available && !muted);
 }
@@ -2008,8 +2013,8 @@ static void snap_mac_restart(int result, const char *detail, void *ctx) {
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender { (void)sender; [self shutdown]; return NSTerminateCancel; }
 - (void)windowDidBecomeKey:(NSNotification *)note { (void)note; display_focus_publish(game_window_focused(self.window)); if (mouse_release_pending) set_mouse_capture(NO); focused = YES; input_mute_refresh(); s2a_pad_set_active(1); reset_input(); }
 // 失去 key：本机键鼠照旧停喂、复位；报给游戏的焦点看 key window 落到哪（AppKit 发这条通知时 NSApp.keyWindow 已是新窗口，sheet 也一样）
-- (void)windowDidResignKey:(NSNotification *)note { (void)note; display_focus_publish(game_window_focused(self.window)); set_mouse_capture(NO); focused = NO; input_mute_refresh(); s2a_pad_set_active(0); reset_input(); }
-- (void)applicationDidResignActive:(NSNotification *)note { (void)note; display_focus_publish(NO); set_mouse_capture(NO); focused = NO; input_mute_refresh(); s2a_pad_set_active(0); reset_input(); }
+- (void)windowDidResignKey:(NSNotification *)note { (void)note; display_focus_publish(game_window_focused(self.window)); set_mouse_capture(NO); focused = NO; input_mute_refresh(); s2a_pad_set_active(pads_live()); reset_input(); }
+- (void)applicationDidResignActive:(NSNotification *)note { (void)note; display_focus_publish(NO); set_mouse_capture(NO); focused = NO; input_mute_refresh(); s2a_pad_set_active(pads_live()); reset_input(); }
 - (void)applicationDidBecomeActive:(NSNotification *)note { (void)note; display_focus_publish(game_window_focused(self.window)); focused = self.window.isKeyWindow; input_mute_refresh(); }
 @end
 
@@ -2207,6 +2212,7 @@ void s2a_front_run(void (*guest_main)(void)) {
           if (fs && !strcmp(fs, "1")) { fprintf(stderr, "[s2a] 启动即全屏（来源 %s）\n", from); dispatch_async(dispatch_get_main_queue(), ^{ if (!window_fullscreen(window)) window_fullscreen_toggle(window); }); } }
         [app activateIgnoringOtherApps:YES]; focused = YES; input_mute_refresh();
         s2a_pad_set_active(1);
+        if (focus_pause_off()) GCController.shouldMonitorBackgroundEvents = YES;   // 失焦后系统才继续投递手柄事件（pads_live）
         install_pad_handlers();
         display_focus_publish(game_window_focused(window));
         delegate.inputGuide = [[S2AMacInputGuide alloc] initWithName:window.title gameID:gameIdentity[@"gameId"] mapping:config gameWindow:window];
