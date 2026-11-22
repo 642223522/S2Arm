@@ -51,7 +51,7 @@
   "save.restoreDone": "恢復好了。原來的存檔已自動留了一份。",
   "save.restoreDoneNoOriginal": "恢復好了。",
   "save.scope": "這一頁管的是這台 Mac 上的存檔。",
-  "save.phoneHint": "推到 iPhone / iPad 上的這款，存檔在那台裝置裡：S2Arm 的 .s2asave 備份在裝置上打開這款，遊戲內齒輪選單「存檔管理」→「選擇備份並檢查…」匯入；其他模擬器 / 工具的存檔，在裝置的「檔案」App 裡放進 S2Arm → games → {0} → SaveData → save，再開遊戲。",
+  "save.phoneHint": "推到 iPhone / iPad 上的這款，存檔在那台裝置裡：在裝置上打開這款，遊戲內齒輪選單「存檔管理」→「選擇備份並檢查…」匯入（S2Arm 的 .s2asave 備份和其他模擬器 / 工具的存檔資料夾或 zip 都能選）。",
   "save.pending": "已放好 {0} 個檔案，第一次在這台 Mac 上啟動這款時放進存檔",
   "save.pendingDiscard": "不要了",
   "save.working.discard": "正在刪掉待放入的存檔…",

@@ -51,7 +51,7 @@
   "save.restoreDone": "Restaurado. Se guardó una copia de la partida guardada anterior.",
   "save.restoreDoneNoOriginal": "Restaurado.",
   "save.scope": "Esta página gestiona las partidas guardadas en este Mac.",
-  "save.phoneHint": "Las partidas de este juego en iPhone / iPad están en ese dispositivo. Una copia .s2asave de S2Arm: abre el juego allí e impórtala desde el menú del engranaje, «Gestionar partidas guardadas» → «Elige una copia de seguridad para comprobar…». Partidas de otros emuladores o herramientas: en la app Archivos del dispositivo, ponlas en S2Arm → games → {0} → SaveData → save y luego inicia el juego.",
+  "save.phoneHint": "Las partidas de este juego en iPhone / iPad están en ese dispositivo: abre el juego allí e impórtalas desde el menú del engranaje, «Gestionar partidas guardadas» → «Elige una copia de seguridad para comprobar…» (sirve una copia .s2asave de S2Arm o una carpeta o un zip de partida de otro emulador o herramienta).",
   "save.pending": "Hay {0} archivos listos; se añadirán a la partida la primera vez que inicies este juego en este Mac",
   "save.pendingDiscard": "Descartar",
   "save.working.discard": "Descartando la partida pendiente…",

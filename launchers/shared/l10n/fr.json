@@ -51,7 +51,7 @@
   "save.restoreDone": "Restauré. Une copie de la sauvegarde précédente a été conservée.",
   "save.restoreDoneNoOriginal": "Restauré.",
   "save.scope": "Cette page gère les sauvegardes de ce Mac.",
-  "save.phoneHint": "Les sauvegardes de ce jeu sur iPhone / iPad restent sur cet appareil. Une sauvegarde .s2asave de S2Arm : ouvrez le jeu là-bas et importez-la depuis le menu de l’engrenage, « Gérer les sauvegardes » → « Choisir une sauvegarde à vérifier… ». Sauvegardes d’autres émulateurs ou outils : dans l’app Fichiers de l’appareil, placez-les dans S2Arm → games → {0} → SaveData → save, puis lancez le jeu.",
+  "save.phoneHint": "Les sauvegardes de ce jeu sur iPhone / iPad restent sur cet appareil : ouvrez le jeu là-bas et importez depuis le menu de l’engrenage, « Gérer les sauvegardes » → « Choisir une sauvegarde à vérifier… » (une sauvegarde .s2asave de S2Arm, ou un dossier ou un zip de sauvegarde d’un autre émulateur ou outil).",
   "save.pending": "{0} fichiers sont prêts ; ils seront ajoutés à la sauvegarde au premier lancement de ce jeu sur ce Mac",
   "save.pendingDiscard": "Supprimer",
   "save.working.discard": "Suppression de la sauvegarde en attente…",

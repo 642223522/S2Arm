@@ -457,7 +457,7 @@
 "save.exported" = "Backup exported.";
 "save.import" = "Choose a backup to check…";
 "save.inspected" = "Backup checked. Waiting for your confirmation.";
-"save.intro" = "The game hasn’t started yet. You can export your save to Files, or import a .s2asave backup from a Mac or another device. Your current save is kept before restoring.";
+"save.intro" = "The game hasn’t started yet. You can export your save to Files, import a .s2asave backup from a Mac or another device, or import a save folder or zip from another emulator or tool (JKSV, Checkpoint, Ryujinx, yuzu and so on). Your current save is kept before restoring.";
 "save.journalUnreadable" = "Can’t read the save operation records folder (%@), so there’s no way to tell whether the last import / restore finished.\n%@";
 "save.location" = "Save location: open the Files app → On My iPhone (On My iPad on iPad) → %@ → %@\n\nPut a save folder in its original format there (exported from a console, JKSV / Checkpoint and similar tools, or copied from the same game's SaveData on your computer) and the game uses it the next time you start. When you quit, it's updated with your latest progress; copy the whole folder to the same place on your computer or another device to keep playing.\n\nCopying from a computer: on a Mac, select this device in the Finder sidebar → Files, drag the folder onto \"%@\", then use the Files app to move it into the location above.";
 "save.location.problem" = "The save you put there last time wasn't loaded: %@. Your current save is unchanged.";
@@ -488,6 +488,8 @@
 "save.restore.title" = "Restore this backup?";
 "save.restoreCancelled" = "Restore cancelled.";
 "save.restored" = "Save restored. You can start the game to check your progress. A pre-restore backup was kept (none is created if there was no save before).";
+"save.community.message" = "This is a save from another emulator or tool: %@ files, %@.\n\nAfter you confirm, your current save is backed up first, then this save goes into the game’s save folder and is loaded the next time you start the game.";
+"save.community.done" = "Done: this save will be loaded the next time you start the game. Your previous save was backed up (no backup is made if there was no save before).";
 "save.serviceInvalid" = "The save service didn’t return a valid result. Close and reopen the app; your existing data is kept.";
 "save.previous.ask.title" = "This game couldn’t load its save last time. Go back to the previous save?";
 "save.previous.ask.crash" = "The last session quit right at the start. You can switch back at any time.";

@@ -452,7 +452,7 @@
 "save.exported" = "Copia de seguridad exportada.";
 "save.import" = "Elige una copia de seguridad para comprobar…";
 "save.inspected" = "Copia de seguridad comprobada. Esperando confirmación.";
-"save.intro" = "El juego aún no ha iniciado. Puedes exportar tu partida guardada a Archivos o importar una copia de seguridad .s2asave desde un Mac u otro dispositivo. La partida guardada actual se conserva antes de restaurar.";
+"save.intro" = "El juego aún no ha iniciado. Puedes exportar tu partida guardada a Archivos, importar una copia .s2asave desde un Mac u otro dispositivo, o importar una carpeta o un zip de partida de otro emulador o herramienta (JKSV, Checkpoint, Ryujinx, yuzu, etc.). La partida guardada actual se conserva antes de restaurar.";
 "save.journalUnreadable" = "No se puede leer la carpeta de registros de operaciones de guardado (%@), por lo que no es posible saber si la última importación o restauración terminó correctamente.\n%@";
 "save.location" = "Ubicación de partidas guardadas: abre la app Archivos → En mi iPhone (En mi iPad en iPad) → %@ → %@\n\nColoca una carpeta de partida guardada en su formato original (exportada desde una consola, con JKSV, Checkpoint u otras herramientas similares, o copiada desde la carpeta SaveData del mismo juego en tu ordenador) y el juego la usará la próxima vez que lo inicies. Al salir, se actualiza con tu progreso más reciente; copia toda la carpeta al mismo lugar en tu ordenador u otro dispositivo para seguir jugando.\n\nCopiar desde un ordenador: en un Mac, selecciona este dispositivo en la barra lateral del Finder → Archivos, arrastra la carpeta a «%@» y luego usa la app Archivos para moverla a la ubicación indicada.";
 "save.location.problem" = "La partida guardada que colocaste la última vez no se cargó: %@. La partida guardada actual no ha cambiado.";
@@ -483,6 +483,8 @@
 "save.restore.title" = "¿Restaurar esta copia de seguridad?";
 "save.restoreCancelled" = "Restauración cancelada.";
 "save.restored" = "Partida guardada restaurada. Puedes iniciar el juego para comprobar tu progreso. Se conservó una copia previa a la restauración (no se crea si no había partida guardada antes).";
+"save.community.message" = "Es una partida de otro emulador o herramienta: %@ archivos, %@.\n\nAl confirmar, primero se hace una copia de tu partida actual y luego esta partida se coloca en la carpeta de partidas del juego; se cargará la próxima vez que inicies el juego.";
+"save.community.done" = "Listo: esta partida se cargará la próxima vez que inicies el juego. Se hizo una copia de tu partida anterior (no se crea si no había partida guardada).";
 "save.serviceInvalid" = "El servicio de partidas guardadas no devolvió un resultado válido. Cierra y vuelve a abrir la app; se conservan los datos existentes.";
 "save.previous.ask.title" = "Este juego no pudo cargar su partida la última vez. ¿Volver a la partida guardada anterior?";
 "save.previous.ask.crash" = "La última sesión se cerró justo al empezar. Puedes volver a cambiar en cualquier momento.";
