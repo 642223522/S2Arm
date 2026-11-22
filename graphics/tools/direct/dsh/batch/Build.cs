@@ -1201,6 +1201,26 @@ class CompileError : Exception { public CompileError(string m) : base(m) { } }
 /// <summary>编译器超过限时没结束（Metal.Limit），已整组杀掉</summary>
 sealed class CompileTimeout : CompileError { public CompileTimeout(string m) : base(m) { } }
 
+/// <summary>Windows 作业对象（平台例外：只在 Windows 上建）：把起的编译器放进去，到限时终止整个作业，连它起的子孙（本体退出后父进程号找不回来的孤儿）一起停。
+/// 其他平台 Adopt 回 IntPtr.Zero，调用方照旧按进程树杀。建不出 / 放不进（进程已退出、所在作业不许嵌套）也回 Zero，退回原做法</summary>
+static class WinJob
+{
+    [DllImport("kernel32", SetLastError = true)] static extern IntPtr CreateJobObjectW(IntPtr attributes, IntPtr name);   // 平台例外：Windows 作业对象
+    [DllImport("kernel32", SetLastError = true)] static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);   // 平台例外：Windows 作业对象
+    [DllImport("kernel32", SetLastError = true)] static extern bool TerminateJobObject(IntPtr job, uint exitCode);   // 平台例外：Windows 作业对象
+    [DllImport("kernel32", SetLastError = true)] static extern bool CloseHandle(IntPtr handle);   // 平台例外：Windows 作业对象
+    public static IntPtr Adopt(Process p)
+    {
+        if (!OperatingSystem.IsWindows()) return IntPtr.Zero;   // 平台例外：Windows 作业对象
+        IntPtr job = CreateJobObjectW(IntPtr.Zero, IntPtr.Zero);
+        if (job == IntPtr.Zero) return IntPtr.Zero;
+        try { if (AssignProcessToJobObject(job, p.Handle)) return job; } catch (InvalidOperationException) { }
+        CloseHandle(job); return IntPtr.Zero;
+    }
+    public static void Kill(IntPtr job) { if (job != IntPtr.Zero) TerminateJobObject(job, 1); }
+    public static void Close(IntPtr job) { if (job != IntPtr.Zero) CloseHandle(job); }
+}
+
 /// <summary>Metal 编译（同原 dmsh_mtlcache.py：按「编译约定 + 编译器身份 + MSL」内容寻址；并发闸限同时在编的路数；编不过先查环境、再重试一次）</summary>
 static class Metal
 {
@@ -1448,10 +1468,28 @@ static class Metal
         if (WinBin != null && args.Any(WinUnsafe)) { args = WinRelative(args, Work); psi.WorkingDirectory = Work; }
         foreach (var x in args) psi.ArgumentList.Add(x);
         using var p = Process.Start(psi);
-        bool killed = false; string err;
-        using (new Timer(_ => { try { if (!p.HasExited) { p.Kill(entireProcessTree: true); killed = true; } } catch { } }, null, limitS * 1000L, Timeout.Infinite))   // 杀整棵树：stderr 管道被子孙进程拿着时 ReadToEnd 才能返回
-        { err = p.StandardError.ReadToEnd(); p.StandardError.Dispose(); p.WaitForExit(); }   // 显式关管道：Process.Dispose 不关重定向的流，每次漏一个描述符等 GC（实测 1000 次 25→1059），mk8d 编到上限 Too many open files
-        if (killed) throw TimedOut(a, limitS);
+        // 到限时停的是编译器起的整组进程，不只看本体还在不在（同 macOS Spawn.Run 杀整个进程组）。D-PD33（Windows 0.6.7，0100ABF008968000）：编批库 600 秒整棵进程树
+        //   CPU / 读写都不涨、在跑的 metal 进程 0 个，看门狗停掉出包。原先限时器只在本体没退出时杀进程树：本体已退、它起的子进程还拿着 stderr 管道时，
+        //   ReadToEnd 等不到结束，限时器又因本体已退不动手，这个编译线程连同它占的闸位永远挂住；孤儿子进程按父进程号也找不回来。
+        //   Windows 上起完就把它放进一个作业对象（WinJob），到限时终止整个作业——之后它起的子孙都在作业里，本体退没退都停得掉。
+        //   本体已正常退出、只是管道被子孙拿着到限时：照本体的退出码交回（编成就是编成），打一行黄字（计数），不当这一支超时
+        var job = WinJob.Adopt(p);
+        int expired = 0; bool alive = false; string err;
+        using (var tm = new Timer(_ =>
+        {
+            if (Interlocked.Exchange(ref expired, 1) != 0) return;
+            try { alive = !p.HasExited; } catch { }
+            if (job != IntPtr.Zero) WinJob.Kill(job);
+            else if (alive) try { p.Kill(entireProcessTree: true); } catch { }
+        }, null, limitS * 1000L, Timeout.Infinite))
+        {
+            err = p.StandardError.ReadToEnd(); p.StandardError.Dispose(); p.WaitForExit();   // 显式关管道：Process.Dispose 不关重定向的流，每次漏一个描述符等 GC（实测 1000 次 25→1059），mk8d 编到上限 Too many open files
+            using var done = new ManualResetEvent(false); tm.Dispose(done); done.WaitOne();   // 等可能正在跑的回调跑完，再关作业句柄
+        }
+        WinJob.Close(job);
+        if (expired == 1 && alive) throw TimedOut(a, limitS);
+        if (expired == 1 && St.AddOrUpdate("metal pipe held", 1, (_, v) => v + 1) == 1)
+            Note($"🟡 {Path.GetFileName(a[0])} 已退出，它起的子进程拿着输出管道到 {limitS} 秒限时，已连同整组停掉，按退出码 {p.ExitCode} 交回（之后同类只计数，见汇总 metal pipe held）");
         return (p.ExitCode, err);
     }
     static CompileTimeout TimedOut(string[] a, int limitS) => new($"metal timeout: {Path.GetFileName(a[0])} 超过 {limitS} 秒没结束，已终止（{Path.GetFileName(a.FirstOrDefault(x => x.EndsWith(".metal", StringComparison.Ordinal) || x.EndsWith(".air", StringComparison.Ordinal)) ?? "")}）");
