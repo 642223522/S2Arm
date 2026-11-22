@@ -960,11 +960,11 @@ static void crash_auto_off(const char *gid) {
     { void s2a_diag_note_crash_off(NSString *); s2a_diag_note_crash_off(names); }   // 进游戏后诊断询问（diag.m，上次死在前台必问）一并说，不另弹横幅
 }
 // ---------- 0.6.0 快照：游戏库长按卡片「回到上次存下的这一刻」 ----------
-// 有没有：开关关着（起局不带存档开关）一律 0（菜单里就没有这一项）；开着时看这款快照目录里有没有完整清单
+// 有没有：这款快照目录里有完整清单，且玩家开着快照、或这一局只是因地址放不下关了快照（照样能恢复，snapsw.c s2a_snap_restore_offered）；玩家关了快照一律 0
 static void *g_snap_play_ctx;
 int s2a_shell_snapshot_available(const char *gid) {
-    int s2a_snap_saving(void), s2a_snap_dir_for(const char *, char *, size_t), s2a_snap_exists(const char *);
-    char d[2048]; return gid && *gid && s2a_snap_saving() && !s2a_snap_dir_for(gid, d, sizeof d) && s2a_snap_exists(d);
+    int s2a_snap_restore_offered(int), s2a_snap_dir_for(const char *, char *, size_t), s2a_snap_exists(const char *);
+    char d[2048]; return gid && *gid && s2a_snap_restore_offered(!s2a_snap_dir_for(gid, d, sizeof d) && s2a_snap_exists(d));   // 本局因地址关了快照也照样给（snapsw.c）
 }
 // 游戏库「从这一刻继续」：有完整快照的那款给出快照目录（宿主模型每秒重判时读里面的缩略图和保存时刻）；开关关着 / 没有完整快照回 -1
 int s2a_shell_snapshot_dir(const char *gid, char *out, unsigned long size) {
