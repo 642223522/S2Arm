@@ -593,6 +593,9 @@ static NSString *vp_running_gid(void) { const char *g = getenv("S2A_LAUNCH_GAME_
     // 外接键盘的改键页（keyboard_settings.m，#1869）：与「编辑虚拟按键」并排放第一层；接着键盘或这款改过键位才列（拔了键盘还能回来看 / 恢复默认）
     if (s2a_ios_keyboard_connected() || s2a_ios_mouse_connected() || s2a_ios_keyboard_customized())
         [items addObject:vp_act(S2AL(@"kbd.menu"), @"keyboard", NO, ^{ [ws afterMenu:^{ [ws openKeyboard]; }]; })];
+    // 分配玩家（player_assign.m，#1606 ④）：连着两只以上手柄或分配过才列，同 Mac 启动器「分配玩家」
+    if (s2a_ios_player_assign_wanted())
+        [items addObject:vp_act(S2AL(@"assign.menu"), @"person.2", NO, ^{ [ws afterMenu:^{ [ws openPlayerAssign]; }]; })];
     // 按键布局（选方案：菜单不收，选中的打勾；「编辑虚拟按键」在切到仅触屏后变灰要等下次打开菜单）
     NSMutableArray<UIMenuElement *> *lay = [NSMutableArray array];
     void (^addLayout)(NSString *, NSString *, NSString *) = ^(NSString *lid, NSString *name, NSString *note) {
@@ -1240,6 +1243,18 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
     _settingsOpen = YES; [self clearTouches];
     __weak S2AVPadView *weakSelf = self;
     [controller presentViewController:s2a_ios_keyboard_settings(^{
+        S2AVPadView *view = weakSelf; if (!view) return;
+        view->_settingsOpen = NO; [view clearTouches]; [view wake];
+    }) animated:YES completion:nil];
+}
+// 分配玩家面板（player_assign.m）：同 openKeyboard，开着时触屏输入停住
+- (void)openPlayerAssign {
+    UIViewController *controller = self.window.rootViewController;
+    if (!controller || _settingsOpen) return;
+    controller = s2a_top_presenter(controller);
+    _settingsOpen = YES; [self clearTouches];
+    __weak S2AVPadView *weakSelf = self;
+    [controller presentViewController:s2a_ios_player_assign(^{
         S2AVPadView *view = weakSelf; if (!view) return;
         view->_settingsOpen = NO; [view clearTouches]; [view wake];
     }) animated:YES completion:nil];

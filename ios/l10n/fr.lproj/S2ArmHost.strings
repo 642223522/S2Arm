@@ -711,3 +711,14 @@
 "kbd.import.err.schema" = "Ce fichier n’est pas une affectation des touches S2Arm, ou sa version n’est pas prise en charge. Votre affectation actuelle n’a pas changé.";
 "kbd.import.err.duplicate" = "Le fichier affecte la même touche à plusieurs boutons. Votre affectation actuelle n’a pas changé.";
 "kbd.import.err.invalid" = "L’affectation de ce fichier est incomplète ou contient des valeurs non valides. Votre affectation actuelle n’a pas changé.";
+
+/* 游戏内「分配玩家」（ios/player_assign.m，#1606 ④）：叫法同 Mac 启动器「分配玩家」 */
+"assign.menu" = "Attribuer les joueurs…";
+"assign.title" = "Attribuer les joueurs";
+"assign.hint" = "En commençant par P1, appuyez sur un bouton de la manette de chaque joueur, à tour de rôle. Les manettes non attribuées restent connectées mais n’ont pas de joueur.";
+"assign.waiting" = "Appuyez sur un bouton d’une manette";
+"assign.restart" = "Recommencer";
+"assign.automatic" = "Revenir à l’automatique (ordre de connexion)";
+"assign.ns2pro" = "Manette Pro Switch 2";
+"assign.saveFailed" = "Impossible d’enregistrer l’attribution. Réessayez.";
+"assign.ok" = "OK";
