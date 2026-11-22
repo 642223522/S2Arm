@@ -1065,6 +1065,10 @@ static nvn_gpu_view decl_zero(uint8_t dtt, uint8_t dcls, nvn_gpu_cmd c) {
 }
 
 static nvn_gpu_view view_by_id_decl(int id, uint8_t dtt, uint8_t dcls, nvn_gpu_cmd c, tex_t *t_out);
+// 出库程序的绑定核对（rp_res.h rp_decl_probe_begin）。只在提交线程读写
+static int g_decl_probe, g_decl_unbridged;
+void rp_decl_probe_begin(void) { g_decl_probe = 1; g_decl_unbridged = 0; }
+int rp_decl_probe_end(void) { const int r = g_decl_unbridged; g_decl_probe = g_decl_unbridged = 0; return r; }
 static _Atomic uint64_t g_empty_slot_zero;   // 空槽绑零贴图的次数（#1147；信息计数，不是未接）
 uint64_t rp_empty_slot_zero_count(void) { return atomic_load(&g_empty_slot_zero); }
 nvn_gpu_view rp_view_by_id_decl(int id, uint8_t dtt, uint8_t dcls, int elem, nvn_gpu_cmd c, tex_t *t_out) {
@@ -1090,6 +1094,7 @@ nvn_gpu_view rp_view_by_id_decl(int id, uint8_t dtt, uint8_t dcls, int elem, nvn
         }
     }
     nvn_gpu_view out = view_by_id_decl(id, dtt, dcls, c, t_out);
+    if (g_decl_probe && g_decl_unbridged) return NULL;   // 核对中且声明桥接不了：不往下补零贴图，交调用方换现编版
     // 贴图数组里取不到的元素：描述符数组每项都要有效，用声明类型的零贴图顶上（类型与声明一致，不再拿别的元素凑）
     if (!out && elem) out = decl_zero(dtt, dcls, c);
     // 空槽（#1147）：着色器声明了这个组合槽、游戏这一笔没绑贴图（句柄 0 → 取池里 tex_base + 0；0 号是驱动保留区、TexturePoolInitialize 不写），
@@ -1113,7 +1118,7 @@ static _Atomic uint64_t g_ubo_zero;   // 常量缓冲句柄指向没登记的号
 uint64_t rp_ubo_zero_count(void) { return atomic_load(&g_ubo_zero); }
 nvn_gpu_view rp_view_by_ubo_handle_decl(int id, uint8_t dtt, uint8_t dcls, nvn_gpu_cmd c, tex_t *t_out) {
     nvn_gpu_view out = rp_view_by_id_decl(id, dtt, dcls, 0, c, t_out);
-    if (out || !dtt) return out;
+    if (out || !dtt || (g_decl_probe && g_decl_unbridged)) return out;
     pthread_mutex_lock(&g_rmu);
     const int unregistered = id < 0 || id >= g_ntreg || !g_treg[id].ok;
     const int cap = g_tpool_n;
@@ -1140,6 +1145,7 @@ static nvn_gpu_view view_by_id_decl(int id, uint8_t dtt, uint8_t dcls, nvn_gpu_c
     int planned = rp_decl_view_target(&t, &v, has_v, dtt);
     if (!planned) return rp_view_by_id(id, c, t_out);
     if (planned < 0) {
+        if (g_decl_probe) { g_decl_unbridged = 1; return NULL; }   // 出库程序核对：声明是出包时推的，不绑零贴图、不记未接，交调用方换现编版
         uint32_t layers = rp_tex_layer_count(&t);
         if (has_v && v.set_layers) layers = v.nlayers ? v.nlayers : (layers > v.min_layer ? layers - v.min_layer : 1);
         int cube = want == NVN_TEXTURE_TARGET_CUBEMAP || want == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY;
