@@ -2045,6 +2045,13 @@ static void snap_mac_restart(int result, const char *detail, void *ctx) {
     dispatch_async(dispatch_get_main_queue(), ^{ [g_snap_mac snapNote:[(s2a_ui_zh() ? @"这次回不去：" : @"Couldn’t go back: ") stringByAppendingString:why]]; });
 }
 - (void)snapRestoreNow:(NSString *)dir rollback:(BOOL)rollback {
+    // 落点接不上（快照存的时候窗口 / 命令记录区与这一局不同）：进程内重启必然拒绝，原先还会先拆掉这一局。Mac 没有游戏库恢复入口——
+    //   原地重新起这一局、构造期按快照清单原址占（runtime/src/snaprelaunch.c，成功不返回）；玩家看到游戏重开一下就回到那一刻，不另弹选项
+    int s2a_snap_fits_inplace(const char *), s2a_snap_relaunch(const char *, int);
+    if (s2a_snap_fits_inplace(dir.fileSystemRepresentation) == 0) {
+        [self snapNote:s2a_ui_zh() ? @"正在回到那一刻（游戏会重开一下）…" : @"Going back (the game will reopen)…"];
+        s2a_snap_relaunch(dir.fileSystemRepresentation, rollback);
+        [self snapNote:s2a_ui_zh() ? @"这次回不去，稍后再试（快照还在）" : @"Couldn’t go back right now (the snapshot is kept)"]; return; }
     setenv("S2A_SNAP_RESTORE", dir.fileSystemRepresentation, 1);
     if (rollback) setenv("S2A_SNAP_SAVE_ROLLBACK", "1", 1); else unsetenv("S2A_SNAP_SAVE_ROLLBACK");
     g_snap_mac = self; int s2a_host_restart(void (*)(int, const char *, void *), void *);   // 进程内重启（runtime/include/s2a_session.h）

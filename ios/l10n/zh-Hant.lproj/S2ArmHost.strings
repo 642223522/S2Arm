@@ -619,6 +619,8 @@
 "vpad.snap.notSaved" = "這次沒存成，稍後再試一次";
 "vpad.snap.busy" = "還在存上一次，稍等";
 "vpad.snap.restoreFailed" = "這次回不去：%@";
+"vpad.snap.useLibrary.title" = "遊戲裡回不到這一刻";
+"vpad.snap.useLibrary.body" = "這一刻存的時候，遊戲的記憶體位置和現在這一局不同，在遊戲裡接不上。回到遊戲庫，長按這款點「回到上次存下的這一刻」即可恢復。快照還在，沒有刪。";
 "vpad.snap.saveChanged.title" = "回到存下的那一刻？";
 "vpad.snap.saveChanged.body" = "存下那一刻之後遊戲又存過檔。回去會把遊戲存檔也退回那一刻；現在的存檔會先備份。";
 "vpad.snap.saveChanged.go" = "回去";
