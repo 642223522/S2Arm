@@ -1155,7 +1155,7 @@ sealed class Ticker : IDisposable
         {
             if (disposed) return;
             if (!force && now - last < 1) return;
-            last = now; File.AppendAllText(path, $"{now}\t{stage}\t{Math.Min(done, total)}\t{total}\n");
+            last = now; Append(path, $"{now}\t{stage}\t{Math.Min(done, total)}\t{total}\n");
         }
     }
     void PublishActivity(bool ending)
@@ -1168,14 +1168,32 @@ sealed class Ticker : IDisposable
             // so an idle/deadlocked child cannot keep nostall alive by writing its own heartbeat.
             var data = new DshActivity(schema: 1, pid: Environment.ProcessId, stage: stage, target: Build.Jobs,
                 pool: Build.Jobs * 2, state: ending ? "ended" : "active");   // 具名 record + 源码生成（DshActivity.cs）：dsh_batch 是 NativeAOT 单文件，没有反射序列化
-            try { File.AppendAllText(path, "#dsh_activity\t" + System.Text.Json.JsonSerializer.Serialize(data, DshActivityJson.Default.DshActivity) + "\n"); }
-            catch (IOException) { }   // Optional telemetry must not change compilation results.
-            catch (UnauthorizedAccessException) { }
+            Append(path, "#dsh_activity\t" + System.Text.Json.JsonSerializer.Serialize(data, DshActivityJson.Default.DshActivity) + "\n");   // Optional telemetry must not change compilation results.
         }
     }
     public void Dispose()
     {
         lock (this) { if (disposed) return; disposed = true; PublishActivity(true); }
+    }
+    // 进度文件同时有好几个写者：本进程里并跑的几个 Ticker（主段与两张表这类旁路段）、接力计数的子进程（dsh_batch --c1cb --tick）、父进程的 Python（tools/progress.py）。
+    //   File.AppendAllText 只给别人留读共享（FileShare.Read）：Windows 上只要另一个句柄开着写，这里就抛 IOException「being used by another process」，
+    //   没人接住 → dsh_batch 退出码 -1、整次出包失败（#2034，0.6.7 时之笛 Windows 每次 88%）。Mac 没有强制共享锁，所以只在 Windows 出。
+    //   改为允许别人同时读写 / 删除地追加，进程内一把锁串起来（一行一次写完，不交错）；仍写不进（被占、盘满、没权限）就重试两次后丢这一行：进度少一行不该让出包失败
+    static readonly object AppendLock = new();
+    internal static void Append(string path, string line)
+    {
+        var bytes = System.Text.Encoding.UTF8.GetBytes(line);
+        lock (AppendLock)
+            for (int i = 0; i < 3; i++)
+            {
+                try
+                {
+                    using var f = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+                    f.Write(bytes, 0, bytes.Length); return;
+                }
+                catch (IOException) { if (i < 2) Thread.Sleep(20); }
+                catch (UnauthorizedAccessException) { return; }
+            }
     }
 }
 
