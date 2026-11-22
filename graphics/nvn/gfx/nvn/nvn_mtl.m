@@ -11258,7 +11258,8 @@ static int first_skip_ok(const pso_key *k, NvShader *vs, NvShader *fs) {
 // 跳过的绘制晚了几帧（11-21 编批库方案「物体晚出现」的读数）：按（顶点键, 片元键）记第一次被跳过的帧号，同一对第一次画成时记下隔了几帧。
 //   只在有跳过时才查表；表满不再记（只少读数，不影响绘制）。每满 2ⁿ 支打一行中位 / p90 / 最长
 #define FSL_CAP 4096u
-static struct { uint64_t h, f; } g_fsl[FSL_CAP]; static uint32_t g_fsl_live; static uint32_t g_fsl_late[FSL_CAP]; static uint32_t g_fsl_n;
+// g_fsl：f = 第一次被跳过的帧，l = 最近一次被跳过的帧，n = 被跳过的次数
+static struct { uint64_t h, f, l; uint32_t n; } g_fsl[FSL_CAP]; static uint32_t g_fsl_live; static uint32_t g_fsl_late[FSL_CAP]; static uint32_t g_fsl_n;
 static uint64_t fsl_hash(NvShader *vs, NvShader *fs) {
     uint64_t h = 1469598103934665603ull; const char *a = vs ? vs->key : "-", *b = fs ? fs->key : "-";
     for (const char *c = a; *c; c++) h = (h ^ (uint8_t)*c) * 1099511628211ull;
@@ -11268,9 +11269,10 @@ static uint64_t fsl_hash(NvShader *vs, NvShader *fs) {
 }
 static void fsl_skipped(NvShader *vs, NvShader *fs) {
     uint64_t h = fsl_hash(vs, fs); uint32_t i = (uint32_t)h & (FSL_CAP - 1);
-    while (g_fsl[i].h) { if (g_fsl[i].h == h) return; i = (i + 1) & (FSL_CAP - 1); }
+    uint64_t f = atomic_load_explicit(&g_cur_frame, memory_order_relaxed);
+    while (g_fsl[i].h) { if (g_fsl[i].h == h) { g_fsl[i].l = f; g_fsl[i].n++; return; } i = (i + 1) & (FSL_CAP - 1); }
     if (g_fsl_live >= FSL_CAP / 2) return;
-    g_fsl[i].h = h; g_fsl[i].f = atomic_load_explicit(&g_cur_frame, memory_order_relaxed); g_fsl_live++;
+    g_fsl[i].h = h; g_fsl[i].f = g_fsl[i].l = f; g_fsl[i].n = 1; g_fsl_live++;
 }
 static int fsl_cmp(const void *a, const void *b) { uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b; return x < y ? -1 : x > y; }
 static void fsl_drawn(NvShader *vs, NvShader *fs) {
@@ -11278,19 +11280,23 @@ static void fsl_drawn(NvShader *vs, NvShader *fs) {
     uint64_t h = fsl_hash(vs, fs); uint32_t i = (uint32_t)h & (FSL_CAP - 1);
     while (g_fsl[i].h && g_fsl[i].h != h) i = (i + 1) & (FSL_CAP - 1);
     if (!g_fsl[i].h) return;
-    uint64_t late = atomic_load_explicit(&g_cur_frame, memory_order_relaxed) - g_fsl[i].f;
+    // 晚几帧 = 游戏一直在发、我们一直在跳过的那段：第一次跳过 → 最近一次跳过（+1）。游戏中途不再发这次绘制（物体不在画面里）不算晚：
+    //   11-22 iPhone 实机局「最长 531 帧」按第一次跳过 → 第一次画成算，把游戏不画的那段也算了进去。gap = 最近一次跳过 → 画成（> 1 = 中途游戏没再发）
+    uint64_t now = atomic_load_explicit(&g_cur_frame, memory_order_relaxed), late = g_fsl[i].l - g_fsl[i].f + 1, gap = now - g_fsl[i].l; uint32_t nsk = g_fsl[i].n;
+    static int named; if (late > 60 && named < 8) { named++; MLOG("first-use skip lateness: pipeline vertex %s fragment %s missing %llu frames (skipped %u draws, from frame %llu; drawn %llu frames after the last skip)",
+        vs ? vs->key : "-", fs ? fs->key : "-", (unsigned long long)late, nsk, (unsigned long long)g_fsl[i].f, (unsigned long long)gap); }
     // 线性探测表删除：同一簇后面的项取出来重新插一遍，查找链不断
     g_fsl[i].h = 0; g_fsl_live--;
     for (uint32_t k = (i + 1) & (FSL_CAP - 1); g_fsl[k].h; k = (k + 1) & (FSL_CAP - 1)) {
-        uint64_t eh = g_fsl[k].h, ef = g_fsl[k].f; g_fsl[k].h = 0;
+        uint64_t eh = g_fsl[k].h, ef = g_fsl[k].f, el = g_fsl[k].l; uint32_t en = g_fsl[k].n; g_fsl[k].h = 0;
         uint32_t m = (uint32_t)eh & (FSL_CAP - 1); while (g_fsl[m].h) m = (m + 1) & (FSL_CAP - 1);
-        g_fsl[m].h = eh; g_fsl[m].f = ef;
+        g_fsl[m].h = eh; g_fsl[m].f = ef; g_fsl[m].l = el; g_fsl[m].n = en;
     }
     if (g_fsl_n >= FSL_CAP) return;
     g_fsl_late[g_fsl_n++] = (uint32_t)MIN(late, UINT32_MAX);
     if (!(g_fsl_n & (g_fsl_n - 1))) {
         uint32_t v[FSL_CAP]; memcpy(v, g_fsl_late, g_fsl_n * sizeof *v); qsort(v, g_fsl_n, sizeof *v, fsl_cmp);
-        MLOG("first-use skip lateness: %u pipelines drawn after being skipped, frames late median %u, p90 %u, longest %u (still waiting %u)",
+        MLOG("first-use skip lateness: %u pipelines drawn after being skipped, frames missing (first to last skip) median %u, p90 %u, longest %u (still waiting %u)",
              g_fsl_n, v[g_fsl_n / 2], v[MIN(g_fsl_n - 1, g_fsl_n * 9 / 10)], v[g_fsl_n - 1], g_fsl_live);
     }
 }
