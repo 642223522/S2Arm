@@ -320,9 +320,20 @@ const uint8_t *rp_tex_src(const tex_t *t, uint8_t **part) {
 static int linear_class(const tex_t *t, const char **why, int initial) {
     *why = NULL;
     if (!(t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET | NVN_TEXTURE_FLAGS_SPARSE))) return 0;
-    if (!initial && !(t->d.flags & NVN_TEXTURE_FLAGS_LINEAR)) { *why = "linear_render_target_unsupported"; return -1; }   // 只有 LINEAR_RENDER_TARGET：内容通常归 GPU
-    if (!initial && (t->d.flags & NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) { *why = "linear_render_target_and_linear_unsupported"; return -1; }
-    if (t->d.flags & NVN_TEXTURE_FLAGS_SPARSE) { *why = "linear_sparse_unsupported"; return -1; }
+    if (initial) {
+        // 真要传：排布只看 LINEAR / LINEAR_RENDER_TARGET（同苹果端 nvn_mtl.m 的 lin）。SPARSE 只说驻留方式、不改排布：
+        //   只带 SPARSE 的是普通块线性贴图，不进线性族；带 SPARSE 的线性贴图照线性逐行拷。真在虚拟池里的由下面「池不可 CPU 访问」拦下，
+        //   虚拟池里的压缩贴图走 x->sparse 那条（upload_all 不进这里）。原先这里一律当「线性加稀疏」拒：11-21 同一款带存档局一局 442 万次、整屏黑
+        if (!(t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET))) {
+            // 只带 SPARSE、又在虚拟池 / CPU 不可访问的池里（虚拟池里的非压缩贴图，x->sparse 不收）：内容不在 CPU 读得到的地方，照旧不传、不读
+            if (t->pool && (t->pool->flags & (NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS | NVN_MEMORY_POOL_FLAGS_VIRTUAL))) { *why = "linear_sparse_unsupported"; return -1; }
+            return 0;
+        }
+    } else {
+        if (!(t->d.flags & NVN_TEXTURE_FLAGS_LINEAR)) { *why = "linear_render_target_unsupported"; return -1; }   // 只有 LINEAR_RENDER_TARGET：内容通常归 GPU
+        if (t->d.flags & NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET) { *why = "linear_render_target_and_linear_unsupported"; return -1; }
+        if (t->d.flags & NVN_TEXTURE_FLAGS_SPARSE) { *why = "linear_sparse_unsupported"; return -1; }
+    }
     if (!t->mem || !t->pool) { *why = "linear_no_cpu_memory"; return -1; }
     if (t->has_layout) { *why = "linear_packaged_unsupported"; return -1; }
     if (t->d.target != NVN_TEXTURE_TARGET_2D) { *why = "linear_target_not_2d"; return -1; }
