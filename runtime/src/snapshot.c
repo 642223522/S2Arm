@@ -699,7 +699,9 @@ static void *snap_restart_timer(void *arg) {
         while (atomic_load(&g_snap_busy)) usleep(100000);   // 正在存就等存完
         LOG("即时存档：游戏起来后 %ld 秒到点，回到快照（进程内重启，第 %ld / %ld 次）%s", sec, i + 1, rep, dir);
         int s2a_snap_fits_inplace(const char *);   // 同游戏内菜单（ios/vpad.m snapRestore）：落点不同就不重启，界面那边会让玩家回游戏库
-        if (!s2a_snap_fits_inplace(dir)) { LOG("即时存档：游戏里接不上这个快照（落点不同），不进程内重启——玩家路径是回游戏库恢复"); break; }
+        if (!s2a_snap_fits_inplace(dir)) {   // 同菜单：iPhone 让玩家回游戏库；Mac 原地重新起这一局按快照原址占（snaprelaunch.c，成功不返回）
+            int s2a_snap_relaunch(const char *, int); s2a_snap_relaunch(dir, 0);   // 非 Mac 是空实现、直接回 -1
+            LOG("即时存档：游戏里接不上这个快照（落点不同），不进程内重启——玩家路径是回游戏库恢复"); break; }
         setenv("S2A_SNAP_RESTORE", dir, 1);
         int rc = s2a_host_restart(snap_restart_cb, NULL); if (rc) LOG("【红】即时存档：进程内重启请求被拒 %d", rc);
     }
@@ -734,7 +736,8 @@ void s2a_snap_result_note(int ok) {
     if (ok) fprintf(f, "结果\t恢复成功\n");
     else if (g_snap_save_moved) fprintf(f, "结果\t需要确认\n分类\t存档已变\n给玩家\t存这个快照之后，游戏又存过档；恢复会把游戏存档退回到快照那一刻（现在的存档会先备份）。确认后再恢复\n");
     // 11-22 起快照文件任何情况下都不删（拒绝时也留着：之后修好的版本能恢复；原先旧版快照接不上就整目录删掉）
-    else if (g_snap_old) fprintf(f, "结果\t拒绝\n分类\t旧版快照\n给玩家\t这个快照是旧版 S2Arm 存的，这一版接不上；快照留着没删，游戏自己的存档不受影响\n");
+    // 模块排布变了（补丁区变长、改写器换版）：快照里的游戏内存接不上这一版的代码。玩家能做的：取消这款的社区补丁打入、重新出包，模块回到存档时那样再恢复
+    else if (g_snap_old) fprintf(f, "结果\t拒绝\n分类\t旧版快照\n给玩家\t这个快照存的时候，这款的程序和现在打的包不一样（多半是社区补丁打进了包），这一版接不上。在出包页取消这款的「出包时打入」、重新出包后再恢复；恢复后可以再打开。快照留着没删，游戏自己的存档不受影响\n");
     // 落点不同：游戏里（进程内重启）搬不了窗口；游戏库那条路起宿主前按清单重占（vawin.c snap_retake），原址被占时重开 App 再点一次
     else if (g_snap_where) fprintf(f, "结果\t拒绝\n分类\t落点不同\n给玩家\t这一刻存的时候，游戏的内存位置和现在不同，这里接不上。回到游戏库（必要时重开 S2Arm），长按这款点「回到上次存下的这一刻」即可恢复；快照还在，没有删\n");
     else fprintf(f, "结果\t失败\n分类\t快照不完整或损坏\n给玩家\t这个快照读不了（可能存的时候没存完）；游戏自己的存档不受影响\n");
