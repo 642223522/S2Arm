@@ -204,6 +204,7 @@ RECOVERY = {
     'game_files_mismatch': '用原版游戏文件重新导入这款：先在游戏库里移除它，再把原版文件拖进来。',
     'container_purge_failed': '手机解锁、数据线插稳后再删一次；不影响其他游戏。',
     'keychain_prompt': '在这台 Mac 屏幕上的钥匙串弹窗里点「始终允许」（需要的话输入 Mac 登录密码），再点一次「推到 iPhone」。',
+    'build_stalled': '点「重试」，已完成的阶段会核对后跳过；同一步反复卡住就导出诊断包发给我们，并关掉其他占内存的程序再试。',
     'windows_mandatory_aslr': '打开「Windows 安全中心 → 应用和浏览器控制 → 漏洞利用保护设置 → 系统设置」，把「强制映像随机化（强制性 ASLR）」改回「使用默认值（关）」，再打一次包。',
     'windows_path_too_long': '路径太长：把游戏库搬到盘符根目录附近的短路径（比如 D:\\S2Arm），再打一次包；反馈时请带上错误摘要。',
     'pack_missing': '没找到这款的资源包目录：重新「打 iPhone 包」后再装到 iPhone。',
@@ -417,6 +418,7 @@ PLAYER_REASON = {
     "package_failed": "出包未完成。",
     "input_missing": "找不到游戏文件：选中的游戏文件已不在原处。",
     "windows_mandatory_aslr": "Windows 的强制 ASLR 开着：出包工具起不了子进程。",
+    "build_stalled": "出包卡住了：有一步很久没有任何进展，S2Arm 已把它停下。",
     "app_control_blocked": "被 Windows 拦下：Windows 的应用控制或杀毒软件没让 S2Arm 自带的工具运行。",
     "win_metal_missing": "缺少Windows版Metal工具：未找到能报告有效版本的官方Windows版Metal编译器。",
 }
@@ -482,6 +484,9 @@ LOG_CAUSES = (
      r"|【红】环境缺件 metal：", "metal_unavailable"),   # 后者：Windows 出包预检（pack/orch/oneclick_win.py env_items）找不到 Metal Developer Tools
     (r"is not installed\. (?:To use with Xcode, first download and install the platform|Please download and install the platform)", "ios_platform_missing"),   # xcodebuild 原文（11-07 gate-host Xcode 26.6）
     (r"unable to find utility \"|: command not found|is not recognized as an internal or external command", "tool_missing"),
+    # 无进展看门狗把某一步停了（tools/nostall.py，退 124）：放在最后——同一段证据里有写满 / 内存用完等确凿原因时那才是真因，看门狗只是结果。
+    #   D-PD33（Windows 0.6.7）：编批库 15 分钟没有一批编完被停，原先落「package_failed，按阶段 未识别」，玩家只看到「这一步的失败还没归类」
+    (r"【红】无进展看门狗：", "build_stalled"),  # 非玩家句
 )
 _RED = ("【红】", "🔴", "[RED]")  # 非玩家句
 # 红行里点名的子日志（如直连库 <缓存>/work.stage.N/build.log）：绝对路径（可含空格，如「Application Support」），以 .log / .out 结尾
