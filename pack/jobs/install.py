@@ -1131,6 +1131,13 @@ EXPORT_UNSIGNED = "没读到登录的 Apple ID，这份游戏包未签名，导�
 EXPORT_UNSIGNED_NO_ID = "没读到登录的 Apple ID，这份游戏包未签名；手机上的 S2Arm 还没拿到签名身份，导入后签不了。用 AltStore 或 SideStore 装的 S2Arm：在它们的设置里导出签名证书，到手机上 S2Arm 齿轮 →「签名证书」→「导入 .p12…」导入。用启动器装的：在启动器里登录 Apple ID（或选用自己的证书），连上手机推一次游戏，把签名身份交给它。"
 
 
+TEAM_NO_DEVICES = "has no devices from which to generate"   # plumesign 转述的 Apple Developer API 8220 原文
+EXPORT_NO_DEVICE = "你的 Apple ID 团队里还没登记任何 iPhone / iPad，电脑上签不了，这份游戏包未签名，导入后由手机上的 S2Arm 签名。"
+EXPORT_NO_DEVICE_NO_ID = ("你的 Apple ID 团队里还没登记任何 iPhone / iPad，电脑上签不了，这份游戏包未签名；手机上的 S2Arm 还没拿到签名身份，导入后签不了。"
+                          "用 AltStore 或 SideStore 装的 S2Arm：在它们的设置里导出签名证书，到手机上 S2Arm 齿轮 →「签名证书」→「导入 .p12…」导入。")
+EXPORT_NO_DEVICE_ADVICE = "想在电脑上签：用数据线把 iPhone 连上这台电脑、解锁并点「信任」，在启动器里推一次游戏（会把这台登记进你的团队），再导出。"
+
+
 def any_phone_identity(c):
     """这台电脑交过签名身份的手机有没有（设备记录 identity，deliver_identity 写）：导出未签名的 .s2arm 时按它说导入后能不能签"""
     return any((rec or {}).get("identity") for _, rec in layout.devices(c))
@@ -1414,9 +1421,20 @@ def export_s2arm(c, gid, *, folder=None, sign=True, step=0, total=3):
                 c.diagnostic(EXPORT_UNSIGNED if any_phone_identity(c) else EXPORT_UNSIGNED_NO_ID, code="apple_not_signed_in", severity="warning", internal=str(e))   # 下一步同没登录：想在电脑上签就去登录
                 team = None
             if team:
-                pkg = Path(program_pack.sign(c, gid, team, bundle, signer, pkg=pkg))
-                image = pkg / program_pack.image_name(gid)
-                signed_with = dict(mode=mode, name=who, team=team)
+                try:
+                    signed = Path(program_pack.sign(c, gid, team, bundle, signer, pkg=pkg))
+                except Exception as e:   # noqa: BLE001 —— 只认团队没设备这一种，别的照旧抛
+                    # D-VX6J：本机还没有这个团队的私钥时退到 plumesign 签，它要先拿团队描述文件，团队里一台设备都没登记（Apple 8220）就拿不到。
+                    #   签程序库本身不需要设备，导出也不加拦截（11-19 维护者）：同没登录，照样导出未签名的，照实说为什么、怎么让电脑能签
+                    if TEAM_NO_DEVICES not in str(e) or mode != "appleId":
+                        raise
+                    c.diagnostic(EXPORT_NO_DEVICE if any_phone_identity(c) else EXPORT_NO_DEVICE_NO_ID, code="device_not_visible", severity="warning",
+                                 internal=str(e)[-600:], advice=EXPORT_NO_DEVICE_ADVICE)
+                    signed = None
+                if signed:
+                    pkg = signed
+                    image = pkg / program_pack.image_name(gid)
+                    signed_with = dict(mode=mode, name=who, team=team)
         cat = json.loads((pkg / program_pack.CATALOGUE).read_text(encoding="utf-8")) if signed_with else program_pack.catalogue(gid, meta, image, None)
         c.begin("打包 .s2arm", step + 2, total)
         files = [("program/" + p.relative_to(pkg).as_posix(), p) for p in sorted(pkg.rglob("*"))
