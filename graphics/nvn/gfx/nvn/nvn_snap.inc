@@ -397,6 +397,18 @@ int nvn_snap_save(const char *dir) {
          (unsigned long long)lv.pq_in, (unsigned long long)lv.serial, (unsigned long long)lv.frame, nseg, (unsigned long long)(cu >> 20));
     return ok ? 0 : -1;
 }
+// 恢复把栅栏号 / 出图票号倒回快照里的数。「这份分配器占用到几号」的两张表（g_alloc_fence / g_present_alloc_fence）记的是旧局的大号，
+//   进程内恢复时不清就等不到：显示链接回调在 present_now 里等 g_pq_done 追上旧票号，画面停在恢复那一帧，追上后下一槽等的正是自己这张票，永久停。
+//   走到这里时旧局的提交与上屏都已排空（session_wait_backend / nvn_be_present_shutdown），两张表清零即「全部空闲」；冷启动恢复本来就是零
+static void snap_seq_rewind(uint64_t fence, uint64_t pq_in) {
+    pthread_mutex_lock(&g_mu); g_fence = g_done = fence; memset(g_alloc_fence, 0, sizeof g_alloc_fence); pthread_mutex_unlock(&g_mu);
+    // 同理「这段内存的 GPU 写入到几号栅栏才落地」的表：会话清理只清 g_gw / g_gw_all，大范围写入表与在途内联常量更新表的旧号留着，
+    //   ubo_wait_submitted 会在提交线程上等它（等的线程自己就是推进栅栏号的那个）。ifw 清桶头即可，表项按 seq 核对、够不着就不算
+    memset(g_gw, 0, sizeof g_gw); g_gw_all = 0; memset(g_gw_wide, 0, sizeof g_gw_wide); memset(g_ifw_head, 0, sizeof g_ifw_head);
+    g_reclaim_next = 0;   // 低内存贴图回收「下一次到几号栅栏」：留着旧的大号，追上之前不回收
+    g_ev.signaledValue = fence;
+    pthread_mutex_lock(&g_pq_mu); g_pq_in = g_pq_done = g_pq_read = pq_in; memset(g_present_alloc_fence, 0, sizeof g_present_alloc_fence); pthread_mutex_unlock(&g_pq_mu);
+}
 static nvn_hmap *g_snap_addr_lk;
 static const void *snap_addr_lookup(uint64_t ser) { return g_snap_addr_lk ? nvn_hm_get(g_snap_addr_lk, &ser) : NULL; }
 int nvn_snap_restore(const char *dir) {
@@ -430,9 +442,7 @@ int nvn_snap_restore(const char *dir) {
     int ntreg = 0; snprintf(p, sizeof p, "%s/gfx_state.bin", dir); ok = ok && fr_restore_state(p, &ntreg);
     if (!ok) { MLOG("【红】 即时存档恢复：图形回放层表恢复失败"); return -1; }
     // 栅栏 / 出图序号：游戏内存里的同步对象与窗口票据记的是 A 的数，B 从 A 的值接着数（都已完成）
-    pthread_mutex_lock(&g_mu); g_fence = g_done = lv.fence > lv.done ? lv.fence : lv.done; pthread_mutex_unlock(&g_mu);
-    g_ev.signaledValue = g_fence;
-    pthread_mutex_lock(&g_pq_mu); g_pq_in = g_pq_done = g_pq_read = lv.pq_in; pthread_mutex_unlock(&g_pq_mu);
+    snap_seq_rewind(lv.fence > lv.done ? lv.fence : lv.done, lv.pq_in);
     atomic_store(&g_cur_frame, lv.frame);
     { snprintf(p, sizeof p, "%s/gfx_gs.bin", dir); FILE *f = fopen(p, "rb"); int in = f && nvn2_snap_gs_restore ? nvn2_snap_gs_restore(f) : -1; if (f) fclose(f);
       if (in < 0) { MLOG("【红】 即时存档恢复：图形系统启动记账读不了"); return -1; } }
