@@ -387,6 +387,9 @@ def phone_overview(c):
         if online is not None:
             phone["online"] = online.get(key)
         phones.append(phone)
+    if c.r.get("liveContainer") is True and sys.platform == "darwin":
+        import livecontainer
+        phones = livecontainer.overview(c, phones)
     return dict(phones=phones)
 
 

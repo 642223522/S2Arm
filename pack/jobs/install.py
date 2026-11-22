@@ -3164,6 +3164,9 @@ PHONE_APP_GONE = "选的这个 S2Arm 不在这台 {0} 上了：点游戏库最�
 def phone_choose_app(c):
     """作业 phoneChooseApp（总控台「选用哪个 S2Arm」，11-20 维护者：玩家自选优先）：请求带 device（UDID）与 bundleId；核实它现在装在这台手机上，
     记进设备记录 chosenBundleId，之后推送 / 总控台都用它，直到它不在了再问。→ {device, bundleId}"""
+    if str(c.r.get("bundleId") or "").startswith("lc:"):
+        import livecontainer
+        return livecontainer.choose(c)
     udid = (c.r.get("device") or "").strip()
     want = (c.r.get("bundleId") or "").strip()
     if not udid or not want:
@@ -3176,6 +3179,8 @@ def phone_choose_app(c):
     if not hit:
         raise Failure(on_device(PHONE_APP_GONE, device_of(c)), code="phone_app_gone")
     rec = {k: v for k, v in rec.items() if k != "pendingChoice"}   # 选好了：推送时记下的「待选」作废
+    rec.pop("liveContainerTarget", None)
+    rec.pop("chosenLCHostId", None)
     layout.save_device(c, udid, dict(rec, chosenBundleId=hit))
     return dict(device=udid, bundleId=hit)
 
@@ -3664,6 +3669,11 @@ def push_selected(c):
     每推完一款记一次进度：请求带 resume: true 就从上一轮没推成的（没推到的 + 失败的）接着推；带 gameIds 就开新一轮。
     → {games: [{gameId, ok, code?, message?}], done, failed, remaining}；开关关着 → {enabled: False}"""
     from core import Cancelled
+    if os.name != "nt":
+        import livecontainer
+        if livecontainer.selected(c):
+            with packer_phone_lock(c):
+                return livecontainer.push(c, c.r.get("gameIds") or [])
     state_path = c.private / PUSH_SELECTED
     with packer_phone_lock(c):
         c.begin("找签名账号与 iPhone", 1, 1)
@@ -4162,6 +4172,10 @@ def _install(c):
             return export_app(c, gid)
         shell = ensure_shell_ipa(c)   # 先放 S2Arm.ipa 再出 .s2arm：说明文件按文件夹里有没有 S2Arm.ipa 写「先签好装上」那句
         return dict(export_s2arm(c, gid), shellIpa=str(shell))
+    if os.name != "nt" and chosen_layout(c, gid) != "standalone":
+        import livecontainer
+        if livecontainer.selected(c):
+            return livecontainer.push(c, [gid])
     c.begin("找签名账号与 iPhone", 1, 6)
     if chosen_layout(c, gid) == "standalone":   # 独立 App（一 App 一游戏）：这款自己签一个 App 装上
         return put_app(c, gid, phone_for(c))

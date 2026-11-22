@@ -1825,6 +1825,12 @@ static class T
             Check("缓冲贴图整数取图不影响 exact", true, ex3);
             SpirvFetchScale.PatchY(B2(Build(true, false, true)), 5, out var sc4, out _, out bool ex4);
             Check("缩放后再加运行时偏移（OpIAdd）仍 exact、缩放项照记", "True 1", $"{ex4} {sc4.Length}");
+            // 尺寸表证明（内部分辨率 ABI2）：缓冲贴图（Dim Buffer）宿主从不缩放，取图单独记 never_scaled（内部分辨率放行）；类型认不出的（%44 改指一个没声明的类型）照旧是原因
+            SpirvFetchScale.AnalyzeSizeTable(B2(Build(true, true)), 5, out _, out var rsBuf);
+            var unk = Build(true, true); { int k = unk.LastIndexOf(43u); unk[k] = 199; }   // 缓冲贴图那次 OpLoad 的结果类型 %43 → 没声明的 %199
+            SpirvFetchScale.AnalyzeSizeTable(B2(unk), 5, out _, out var rsUnk);
+            Check("尺寸表证明：缓冲贴图取图记 never_scaled、不记 non_2d / 类型认不出的照记 non_2d", "True False True",
+                  $"{Array.IndexOf(rsBuf, "never_scaled_image_type") >= 0} {Array.IndexOf(rsBuf, "non_2d_or_unknown_image_type") >= 0} {Array.IndexOf(rsUnk, "non_2d_or_unknown_image_type") >= 0}");
         }
 
         // ---------- 游戏自己出宽图（GameWide）：不放宽贴图、按视口判原生宽、界面原尺寸居中在视口区域 ----------

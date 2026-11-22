@@ -10910,5 +10910,69 @@
  {
   "source": "备份手机上各款的存档",
   "en": "Backing up saves for the games on the device"
+ },
+ {
+  "source": "iPhone 已锁屏，宿主文件通道无法准备；请解锁手机后重试。",
+  "en": "The iPhone is locked, so the host file channel can't be prepared. Unlock the phone and try again."
+ },
+ {
+  "source": "LiveContainer 文件访问失败：",
+  "en": "LiveContainer file access failed: "
+ },
+ {
+  "source": "选的 LiveContainer 内部 S2Arm 已不在这台设备上，请重新选择。",
+  "en": "The S2Arm you chose inside LiveContainer is no longer on this device. Choose again."
+ },
+ {
+  "source": "请先选择这台手机内要使用的 S2Arm 容器。",
+  "en": "First choose which S2Arm container on this phone to use."
+ },
+ {
+  "source": "LiveContainer 内部 S2Arm 容器已改变，请重新选择设备。",
+  "en": "The S2Arm container inside LiveContainer has changed. Choose the device again."
+ },
+ {
+  "source": "S2Arm 还没建立导入目录，请在手机上打开它的游戏库后重试。",
+  "en": "S2Arm hasn't created its import folder yet. Open its game library on the phone, then try again."
+ },
+ {
+  "source": "上次推送的设备或容器已改变，请重新选择游戏后推送。",
+  "en": "The device or container from the last push has changed. Choose the game again, then push."
+ },
+ {
+  "source": "游戏号无效，无法定位要推送的游戏。",
+  "en": "The game ID is invalid, so the game to push can't be found."
+ },
+ {
+  "source": "准备推送到 LiveContainer 内部 S2Arm",
+  "en": "Preparing to push to S2Arm inside LiveContainer"
+ },
+ {
+  "source": "正在推送到 LiveContainer：",
+  "en": "Pushing to LiveContainer: "
+ },
+ {
+  "source": "正在同步 Mod：",
+  "en": "Syncing mods: "
+ },
+ {
+  "source": "文件已发送到 LiveContainer 内部 S2Arm；回到游戏库完成导入，Mod 下次启动游戏时生效。",
+  "en": "Files sent to S2Arm inside LiveContainer. Go back to its game library to finish importing; mods take effect the next time you start the game."
+ },
+ {
+  "source": "手机上的游戏状态文件读不懂，请打开 S2Arm 游戏库后重试。",
+  "en": "The game status file on the phone can't be read. Open the S2Arm game library, then try again."
+ },
+ {
+  "source": "手机上的游戏状态格式暂不支持，请打开 S2Arm 游戏库后重试。",
+  "en": "The game status format on the phone isn't supported yet. Open the S2Arm game library, then try again."
+ },
+ {
+  "source": "手机上的游戏状态记录不完整，请打开 S2Arm 游戏库后重试。",
+  "en": "The game status record on the phone is incomplete. Open the S2Arm game library, then try again."
+ },
+ {
+  "source": "文件已发送，正在等待手机游戏库确认导入。",
+  "en": "Files sent. Waiting for the phone's game library to confirm the import."
  }
 ]
