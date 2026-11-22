@@ -10176,8 +10176,8 @@
   "en": "Couldn't read the private key in your certificate, so it wasn't handed to S2Arm on your {0}. Import the certificate again in Settings."
  },
  {
-  "source": "把证书交给 iPhone 上的 S2Arm",
-  "en": "Handing the certificate to S2Arm on your iPhone"
+  "source": "把证书交给 {0} 上的 S2Arm",
+  "en": "Handing the certificate to S2Arm on your {0}"
  },
  {
   "source": "现在没在用你自己的开发者证书签名，没有要交给 {0} 的证书：先在设置里导入并选用你的证书。",
@@ -10496,8 +10496,8 @@
   "en": "Sent to your phone. It installs automatically the next time you open S2Arm."
  },
  {
-  "source": "等 iPhone 上的 S2Arm 装好这款的程序",
-  "en": "Waiting for S2Arm on the iPhone to install this game's program"
+  "source": "等 {0} 上的 S2Arm 装好这款的程序",
+  "en": "Waiting for S2Arm on the {0} to install this game's program"
  },
  {
   "source": "Intel Mac：给 iPhone 出包可用；在 Mac 上起游戏仍要 Apple 芯片。",

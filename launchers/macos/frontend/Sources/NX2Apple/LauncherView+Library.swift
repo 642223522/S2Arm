@@ -170,8 +170,9 @@ extension LauncherView {
         if game.iphoneInstalledAt != nil {
             if let days = model.freeSignDaysLeft(game) {
                 expired = days == 0
-                parts.append(expired ? txt("library.status.expired") : txt("library.status.installed").replacingOccurrences(of: "{0}", with: "\(days)"))
-            } else { parts.append(txt("library.status.installedPaid")) }
+                parts.append(expired ? txt("library.status.expired") : txt("library.status.installed").replacingOccurrences(of: "{0}", with: "\(days)")
+                    .replacingOccurrences(of: "{1}", with: BackendText.deviceKind(game.iphoneInstallKind)))
+            } else { parts.append(txt("library.status.installedPaid").replacingOccurrences(of: "{0}", with: BackendText.deviceKind(game.iphoneInstallKind))) }   // #1962：推到的是 iPad 就写 iPad
         } else if game.iphoneReady { parts.append(txt("library.status.iphone")) }
         if game.playable { parts.append(loc.t("library.ready")) }
         if parts.isEmpty { return (loc.t("s2arm.library.notPrepared"), LauncherPalette.unbuilt) }
