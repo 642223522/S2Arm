@@ -198,6 +198,7 @@ uint64_t s2a_alias_report_size(uint64_t alias_base, uint64_t alias_size, uint64_
 //     负数 = 同样大小但读码判「上限不定」（addr_need.tsv 别名区上限 = 不定），别名优先照旧、不收窗口
 //   乙另回 *shadow_base = 堆区起点：远端影子块从堆区顶往下分（far.c），与堆共用这段地址；别名区没伸出窗口（甲，或别名优先收在窗口内）为 0
 #define S2A_FAR_SLACK (256ull << 20)   // 乙的堆区比应用池多给这么多：影子按 2 MiB 块取整的余量
+int s2a_layout_cap_fits(int rc, uint64_t heap_base, uint64_t win_end, uint64_t heap_want);   // layout.c：按学到跨度收窗口前的试算判据（D-PR33）
 int s2a_layout_compute(uint32_t as_type, uint64_t sys_resource_size, uint64_t module_span, int alias_gb, uint64_t win_base, uint64_t win_size, s2a_layout *out, uint64_t *mod_base, uint64_t *shadow_base);
 
 // ---------- 远端（far.c，乙布局一律开）：别名区伸出宿主窗口那段的内容放影子区，游戏一碰即缺页代执行并记点 ----------

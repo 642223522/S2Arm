@@ -205,5 +205,13 @@ int main(void) {
       EQ(s2a_alias_report_size(AB, AS, AB - GB, HOLE, NEED, 0, 0), AS);                 // 窗口末在别名起点之前：不收
     }
     printf("%s t_layout：%d 处不符\n", bad ? "✗" : "✓", bad);
-    return bad != 0;
+        // D-PR33（多款容器选定游戏后按学到的跨度收窗口前的试算，s2a_layout_cap_fits）：现场 39 位、堆模式（系统资源 0）、模块 36 MB、窗口基址 0xc00000000，
+    //   上一局要过 3252 MB 普通堆。期望（手写）：收到 3072 MB 时堆区装不下 → 不收；原窗口 15360 MB 装得下 → 收；布局失败（-2）一律不收
+    { s2a_layout T3; uint64_t tmb = 0, tsb = 0; const uint64_t WANT = 3252 * MB, WB3 = 0xc00000000ull;
+      int r1 = s2a_layout_compute(3, 0, 36 * MB, 0, WB3, 3072 * MB, &T3, &tmb, &tsb);
+      EQ(s2a_layout_cap_fits(r1, T3.heap_base, WB3 + 3072 * MB, WANT), 0);   // 堆区起点到窗口末 2716 MB 左右（现场读数）
+      int r2 = s2a_layout_compute(3, 0, 36 * MB, 0, WB3, 15360 * MB, &T3, &tmb, &tsb);
+      EQ(s2a_layout_cap_fits(r2, T3.heap_base, WB3 + 15360 * MB, WANT), 1);
+      EQ(s2a_layout_cap_fits(-2, WB3, WB3 + 64 * GB, WANT), 0); }
+return bad != 0;
 }
