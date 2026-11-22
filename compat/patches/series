@@ -661,6 +661,9 @@
 20261120-1021-spirv-declare-used-caps.patch
 20261120-1330-nifm-offline-submit-onhold.patch
 20261121-0733-ios-queue-clock-ahead.patch
+20261122-0009-local-player-account-bridge.patch
+20261122-0130-local-player-picker.patch
 20261121-1035-sfdnsres-socktype-from-hints.patch
 20261121-1216-audio-depth-catch-up.patch
 20261121-1552-audio-recover-hook-by-event.patch
+20261121-1603-local-player-order-not-hide.patch

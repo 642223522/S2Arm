@@ -534,6 +534,8 @@
 "settings.toggle.touchHud" = "Touch diagnostics";
 "settings.widen.blocked" = "Full screen has known issues in this game; you can still turn it on";
 "textinput.header" = "Enter Text";
+"textinput.player.create" = "Create new user";
+"textinput.player.select" = "Select S2Arm user";
 "textinput.min" = "At least %ld characters";
 "textinput.ok" = "OK";
 "textinput.range" = "%ld–%ld characters";

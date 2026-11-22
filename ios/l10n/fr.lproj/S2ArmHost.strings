@@ -529,6 +529,8 @@
 "settings.toggle.touchHud" = "Diagnostic tactile";
 "settings.widen.blocked" = "Le plein écran a des problèmes connus dans ce jeu ; vous pouvez quand même l'activer";
 "textinput.header" = "Saisir du texte";
+"textinput.player.create" = "Créer un utilisateur";
+"textinput.player.select" = "Choisir un utilisateur S2Arm";
 "textinput.min" = "Au moins %ld caractères";
 "textinput.ok" = "OK";
 "textinput.range" = "%ld–%ld caractères";
