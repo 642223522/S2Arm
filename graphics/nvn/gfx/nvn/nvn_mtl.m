@@ -8187,11 +8187,35 @@ static int pull_refl_ok(NSDictionary *j) {
     NSDictionary *p = [j isKindOfClass:[NSDictionary class]] ? j[@"pull"] : nil;
     return [p isKindOfClass:[NSDictionary class]] && [p[@"slot"] isKindOfClass:[NSNumber class]] && [p[@"slot"] intValue] == VB_SLOT(0) && [p[@"entry"] isEqual:@"main0"];
 }
+// 兜底翻译在设备上编成库的用时（11-21 编批库方案：包里不带的支在玩家机上现编要多久）：每满 2ⁿ 支打一行支数 / 平均 / 最长
+static _Atomic uint64_t g_fbc_n, g_fbc_ns, g_fbc_max;
+static void fb_compile_note(uint64_t ns, NSString *pc) {
+    uint64_t n = atomic_fetch_add(&g_fbc_n, 1) + 1, sum = atomic_fetch_add(&g_fbc_ns, ns) + ns, mx = atomic_load(&g_fbc_max);
+    while (ns > mx && !atomic_compare_exchange_weak(&g_fbc_max, &mx, ns)) {}
+    if (!(n & (n - 1))) MLOG("fallback translation compiled into a library on this device: %llu shaders, mean %.1f ms, longest %.1f ms (this one %s %.1f ms)",
+                             (unsigned long long)n, sum / 1e6 / n, MAX(ns, mx) / 1e6, pc.UTF8String, ns / 1e6);
+}
+// 测量开关 DM_SHLIB_KEEP=<键名单文件>（每行一个 16 位十六进制键，同 shader_seen.tsv 第一列；11-21 编批库方案）：名单外的键当成包里没有，
+//   走设备上的首遇现编（DM_MSL_FALLBACK）——量「出包只编名单上的」在玩家机上要现编多少、物体晚出现几帧。不设时行为不变
+static int shlib_dropped(const char *name) {
+    static NSSet<NSString *> *keep; static int on = -1;
+    if (on < 0) {
+        // 相对路径按 App 的 Documents 解析（真机局 dev_run 的 PUSH 推进 Documents/ 下，起局环境里写不出容器的绝对路径）
+        const char *f = getenv("DM_SHLIB_KEEP"); NSString *fp = f && *f ? @(f) : nil;
+        if (fp && !fp.absolutePath) { char d[1024]; fp = s2a_docs_root(d, sizeof d) >= 0 ? [@(d) stringByAppendingPathComponent:fp] : nil; }
+        NSString *t = fp ? [NSString stringWithContentsOfFile:fp encoding:NSUTF8StringEncoding error:nil] : nil;
+        NSMutableSet *m = [NSMutableSet set];
+        for (NSString *l in [t componentsSeparatedByString:@"\n"]) if (l.length >= 16) [m addObject:[l substringToIndex:16].lowercaseString];
+        keep = m; on = t != nil;
+        if (on) MLOG("measurement: DM_SHLIB_KEEP keeps %lu packaged shaders, every other key compiles on this device at first use", (unsigned long)m.count);
+    }
+    return on && strlen(name) >= 16 && ![keep containsObject:[[NSString alloc] initWithBytes:name length:16 encoding:NSASCIIStringEncoding].lowercaseString];
+}
 static NvShader *shader_build(NSString *pc, int stage, int layer, int depth_zero) {
     NSError *e = nil; NSString *mnote = nil, *msrc = nil;   // #065090 msl_note
     // S2Arm: a key missing from the library is looked up in DM_MSL_FALLBACK (the on-device fallback translation writes <key>_b.metal + .json there; iOS cannot store a metallib built at runtime)
     NSString *dir = g_msl_dir;
-    NSData *jd = json_from_pack(pc.UTF8String);   // S2Arm: from the library container, or its file without one (lib_pack.inc)
+    NSData *jd = shlib_dropped(pc.UTF8String) ? nil : json_from_pack(pc.UTF8String);   // S2Arm: from the library container, or its file without one (lib_pack.inc)
     const char *fb = getenv("DM_MSL_FALLBACK");
     if (!jd && fb && *fb) { NSString *fd = @(fb); if ((jd = [NSData dataWithContentsOfFile:[NSString stringWithFormat:@"%@/%@.json", fd, pc]])) dir = fd; }
     // v0.4.1 重译抢跑赢过的键（cps_retrans 留的 <键>.retrans 标记）：本机重译那份还是本机翻译器的就用它，不再先撞一次出包库那份的慢编译
@@ -8224,7 +8248,8 @@ static NvShader *shader_build(NSString *pc, int stage, int layer, int depth_zero
     if (lib && ul) { os_unfair_lock_lock(&ulock); if (!ulibs) ulibs = [NSMutableDictionary dictionary]; if (!ulibs[ul]) ulibs[ul] = lib; else lib = ulibs[ul]; os_unfair_lock_unlock(&ulock); }
     if (!lib && dir != g_msl_dir) {   // S2Arm fallback: MSL source compiled here, same options as the offline chain (dm_msl_opts)
         NSString *sp = [NSString stringWithFormat:@"%@/%@.metal", dir, pc], *src = [NSString stringWithContentsOfFile:sp encoding:NSUTF8StringEncoding error:&e];
-        if (src) { MTLCompileOptions *co = dm_msl_opts(); t_lib_layer = [src containsString:@"render_target_array_index"]; lib = [g_dev newLibraryWithSource:src options:co error:&e]; mnote = msl_note(pc, src); msrc = sp; }
+        if (src) { MTLCompileOptions *co = dm_msl_opts(); t_lib_layer = [src containsString:@"render_target_array_index"]; uint64_t t0 = stl_now(); lib = [g_dev newLibraryWithSource:src options:co error:&e];
+            fb_compile_note(stl_now() - t0, pc); mnote = msl_note(pc, src); msrc = sp; }
         if (lib) MLOG("shader %s loaded from the fallback translation (%s)", pc.UTF8String, fb);
     }
     if (!lib || !j) { MLOG("【红】 failed to load shader %s: %s", pc.UTF8String, e ? e.localizedDescription.UTF8String : "no reflection json"); return nil; }
@@ -8571,6 +8596,7 @@ int nvn_be_shader_key_canon(uint8_t key[8]) {
 // 只查索引不读数据（每次 ProgramSetShaders 都会问）：现编过的 / 内置的 → 有；有库容器 → 容器索引里有没有 <键>_b 的反射；没容器（Mac 开发树）→ <键>_b.json 文件在不在
 int mtl_shlib_has(const char *key) {
     if (shmap_rt_get(@(key)) != nil || builtin_get(key) != NULL) return 1;
+    if (shlib_dropped(key)) return 0;   // 测量开关：名单外当成包里没有
     char name[32]; snprintf(name, sizeof name, "%.16s_b", key);
     lp_pack *p = lp_pack_get();
     if (!p && !g_libpack_ok) { struct stat st; return !stat([NSString stringWithFormat:@"%@/%s.json", g_msl_dir, name].UTF8String, &st); }
@@ -11136,6 +11162,45 @@ static int first_skip_ok(const pso_key *k, NvShader *vs, NvShader *fs) {
     if (st == 2) return 0;   // already compiled: pso_pend_take takes it at once
     if (st != 1) return FSKN(3);   // the background table is full: build here as before
     g_first_skipped = 1; return 1;
+}
+// 跳过的绘制晚了几帧（11-21 编批库方案「物体晚出现」的读数）：按（顶点键, 片元键）记第一次被跳过的帧号，同一对第一次画成时记下隔了几帧。
+//   只在有跳过时才查表；表满不再记（只少读数，不影响绘制）。每满 2ⁿ 支打一行中位 / p90 / 最长
+#define FSL_CAP 4096u
+static struct { uint64_t h, f; } g_fsl[FSL_CAP]; static uint32_t g_fsl_live; static uint32_t g_fsl_late[FSL_CAP]; static uint32_t g_fsl_n;
+static uint64_t fsl_hash(NvShader *vs, NvShader *fs) {
+    uint64_t h = 1469598103934665603ull; const char *a = vs ? vs->key : "-", *b = fs ? fs->key : "-";
+    for (const char *c = a; *c; c++) h = (h ^ (uint8_t)*c) * 1099511628211ull;
+    h = (h ^ 0xff) * 1099511628211ull;
+    for (const char *c = b; *c; c++) h = (h ^ (uint8_t)*c) * 1099511628211ull;
+    return h ? h : 1;
+}
+static void fsl_skipped(NvShader *vs, NvShader *fs) {
+    uint64_t h = fsl_hash(vs, fs); uint32_t i = (uint32_t)h & (FSL_CAP - 1);
+    while (g_fsl[i].h) { if (g_fsl[i].h == h) return; i = (i + 1) & (FSL_CAP - 1); }
+    if (g_fsl_live >= FSL_CAP / 2) return;
+    g_fsl[i].h = h; g_fsl[i].f = atomic_load_explicit(&g_cur_frame, memory_order_relaxed); g_fsl_live++;
+}
+static int fsl_cmp(const void *a, const void *b) { uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b; return x < y ? -1 : x > y; }
+static void fsl_drawn(NvShader *vs, NvShader *fs) {
+    if (!g_fsl_live) return;
+    uint64_t h = fsl_hash(vs, fs); uint32_t i = (uint32_t)h & (FSL_CAP - 1);
+    while (g_fsl[i].h && g_fsl[i].h != h) i = (i + 1) & (FSL_CAP - 1);
+    if (!g_fsl[i].h) return;
+    uint64_t late = atomic_load_explicit(&g_cur_frame, memory_order_relaxed) - g_fsl[i].f;
+    // 线性探测表删除：同一簇后面的项取出来重新插一遍，查找链不断
+    g_fsl[i].h = 0; g_fsl_live--;
+    for (uint32_t k = (i + 1) & (FSL_CAP - 1); g_fsl[k].h; k = (k + 1) & (FSL_CAP - 1)) {
+        uint64_t eh = g_fsl[k].h, ef = g_fsl[k].f; g_fsl[k].h = 0;
+        uint32_t m = (uint32_t)eh & (FSL_CAP - 1); while (g_fsl[m].h) m = (m + 1) & (FSL_CAP - 1);
+        g_fsl[m].h = eh; g_fsl[m].f = ef;
+    }
+    if (g_fsl_n >= FSL_CAP) return;
+    g_fsl_late[g_fsl_n++] = (uint32_t)MIN(late, UINT32_MAX);
+    if (!(g_fsl_n & (g_fsl_n - 1))) {
+        uint32_t v[FSL_CAP]; memcpy(v, g_fsl_late, g_fsl_n * sizeof *v); qsort(v, g_fsl_n, sizeof *v, fsl_cmp);
+        MLOG("first-use skip lateness: %u pipelines drawn after being skipped, frames late median %u, p90 %u, longest %u (still waiting %u)",
+             g_fsl_n, v[g_fsl_n / 2], v[MIN(g_fsl_n - 1, g_fsl_n * 9 / 10)], v[g_fsl_n - 1], g_fsl_live);
+    }
 }
 static void first_skip_note(void) {
     uint64_t n = ++g_fsk_draws, f = atomic_load_explicit(&g_cur_frame, memory_order_relaxed); g_fsk_occl += g_vis_cur >= 0;
@@ -16905,8 +16970,9 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     g_udc_lmap = g_pso_lmap; g_udc_fsfn = g_pso_fsfn != nil;   // udc_note_draw (below) judges this draw's writes by the map its pipeline used
     if (g_pso_lmap) { g_pso_lmap = NULL; g_pso_fsfn = nil; memset(&g_pso_fz, 0, sizeof g_pso_fz); g_pso_dirty = 1; }   // The next draw fetches again according to its own situation
     __unsafe_unretained id<MTLRenderPipelineState> ps = cur_ps;
-    if (!ps && g_first_skipped) { g_first_skipped = 0; first_skip_note(); PD("Z %llu draw skipped: its pipeline compiles in the background (vertex %s fragment %s)", g_stat_pass, pr->sh[0] ? pr->sh[0]->key : "-", pr->sh[1] ? pr->sh[1]->key : "-"); return; }
+    if (!ps && g_first_skipped) { g_first_skipped = 0; first_skip_note(); fsl_skipped(pr->sh[0], pr->sh[1]); PD("Z %llu draw skipped: its pipeline compiles in the background (vertex %s fragment %s)", g_stat_pass, pr->sh[0] ? pr->sh[0]->key : "-", pr->sh[1] ? pr->sh[1]->key : "-"); return; }
     if (!ps) { BAD_ERR(); PD("Z %llu draw skipped: no render pipeline (vertex %s fragment %s)", g_stat_pass, pr->sh[0] ? pr->sh[0]->key : "-", pr->sh[1] ? pr->sh[1]->key : "-"); return; }
+    fsl_drawn(pr->sh[0], pr->sh[1]);
     draw_widen(pr, dw, di);   // S2Arm widen: this draw's mode and rewritten uniforms (see draw_widen)
     // The widen core samples textures too (World War Z: "texture upgraded to allow format views" right after the core sampled it); an upgrade there ends the pass before any state is set
     //   on en. Same retry as after the binding below
