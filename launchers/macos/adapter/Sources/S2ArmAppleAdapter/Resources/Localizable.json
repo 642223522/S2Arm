@@ -6684,10 +6684,6 @@
   "en": "\"{0}\" was removed from the library, so the new S2Arm no longer includes it. Its saves stay on the phone."
  },
  {
-  "source": "这款游戏在这台电脑上还没玩过：存档会在下次启动游戏时放进去。",
-  "en": "You haven't played this game on this Mac yet. The save will be added the next time you start the game."
- },
- {
   "source": "这款游戏没有可用的 60 帧方案。",
   "en": "No 60 FPS option is available for this game."
  },
@@ -11022,5 +11018,13 @@
  {
   "source": "照上面说的把这台 {0} 上的 S2Arm 更新到这一版，再点这台的「重试」。",
   "en": "Update S2Arm on this {0} to this version as described above, then click Retry for this device."
+ },
+ {
+  "source": "这款游戏在这台电脑上还没玩过：存档会在下次在这台电脑上启动这款时放进去；推到 iPhone / iPad 的这款不带这份存档。",
+  "en": "You haven't played this game on this computer yet: the save goes in the next time you start this game on this computer; the copy pushed to iPhone / iPad doesn't get it."
+ },
+ {
+  "source": "删掉待放入的存档",
+  "en": "Discarding the waiting save"
  }
 ]
