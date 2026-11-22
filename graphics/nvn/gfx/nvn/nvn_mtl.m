@@ -10354,19 +10354,32 @@ static void vconv_fill(int f, uint64_t src, uint32_t stride, uint64_t nv, float 
 // vertices before its start as the range starts at. The indices' range is kept while their pages stay unwritten (write-protected as packaged textures, nvn_dirty_protect),
 // and never trusted again once a GPU copy, update or fill is queued on them (pend_add). Keeping the conversions too did not pay: the soldiers' attributes change every frame.
 // DM_NVN_VCONV_CHECK=1 scans the indices again at every reuse and reports differences. DM_NVN_VCONV_RANGE=0 / 1 overrides the profile
-enum { VC_RGN = 1 << 16 };   // bits of the region filter
 typedef struct { uint64_t ibuf; int32_t count, itype; } ir_key;
 typedef struct { uint32_t mn, mx; uint64_t stamp, seen, lo, n; const void *span; int gpuw; } ir_ent;   // gpuw: a GPU write was queued on the indices: never trusted again
 static nvn_hmap g_ir = {.klen = sizeof(ir_key)};
-static uint64_t g_vc_rgn[VC_RGN / 64], g_vc_stat, g_vc_conv, g_vc_whole, g_vc_checks, g_vc_bad;   // g_vc_rgn: 1 MB regions holding a kept index range (hashed); g_vc_conv / g_vc_whole: vertices converted / in the bound ranges
+static uint64_t g_vc_stat, g_vc_conv, g_vc_whole, g_vc_checks, g_vc_bad, g_vc_scanned;   // g_vc_conv / g_vc_whole: vertices converted / in the bound ranges; g_vc_scanned: kept ranges a queued GPU write looked at
+// Kept index ranges by 1 MB region (vc_gpu_write): a queued GPU write looks only at the ranges in the regions it touches. It used to walk the whole table once a hashed
+//   1 MB filter said "maybe": every constant update passed that filter in a long session (#2004, iPad mini, a large open-world game: the table grew from 10,642 to 26,937
+//   ranges and 16K to 64K slots, submission CPU time to 94 ms a frame, 30 fps fell to 10; 1,305 updates in a Mac replay all passed the filter, none overlapped a range)
+typedef struct { uint32_t n, cap; ir_ent **v; } ir_rgn;
+static nvn_hmap g_ir_rgn = {.klen = sizeof(uint64_t)};
+static void ir_rgn_free(void *v) { ir_rgn *b = v; free(b->v); free(b); }
+static void ir_rgn_add(ir_ent *e) {   // once per kept range (its key fixes lo and n)
+    for (uint64_t r = e->lo >> 20; r <= (e->lo + e->n - 1) >> 20; r++) {
+        ir_rgn *b = nvn_hm_get(&g_ir_rgn, &r);
+        if (!b) { b = calloc(1, sizeof *b); if (!b) return; nvn_hm_put(&g_ir_rgn, &r, b); }
+        if (b->n == b->cap) { uint32_t c = b->cap ? b->cap * 2 : 4; ir_ent **v = realloc(b->v, c * sizeof *v); if (!v) return; b->v = v; b->cap = c; }
+        b->v[b->n++] = e; }
+}
+static void ir_clear(void) { nvn_hm_clear(&g_ir_rgn, ir_rgn_free); nvn_hm_clear(&g_ir, free); }
 static int vc_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_VCONV_RANGE"); v = e && *e ? atoi(e) != 0 : DM_GAME_VCONV_RANGE; MLOG("vertex conversion of the draw's vertices only: %s", v ? "on" : "off"); } return v; }
 static int vc_check(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_VCONV_CHECK"); v = e && *e && atoi(e); } return v; }
-static inline uint32_t vc_rgn(uint64_t r) { return (uint32_t)((r * 0x9E3779B97F4A7C15ull) >> 48) & (VC_RGN - 1); }
-static void vc_rgn_mark(uint64_t lo, uint64_t n) { for (uint64_t r = lo >> 20; r <= (lo + n - 1) >> 20; r++) { uint32_t b = vc_rgn(r); g_vc_rgn[b >> 6] |= 1ull << (b & 63); } }
-static int vc_rgn_hit(uint64_t lo, uint64_t n) { for (uint64_t r = lo >> 20; r <= (lo + n - 1) >> 20; r++) { uint32_t b = vc_rgn(r); if (g_vc_rgn[b >> 6] >> (b & 63) & 1) return 1; } return 0; }
 static void vc_gpu_write(uint64_t dst, uint64_t n) {   // pend_add: a GPU write queued on [dst, dst + n)
-    if (!n || !g_ir.n || !vc_rgn_hit(dst, n)) return;
-    for (uint32_t i = 0; i < g_ir.cap; i++) { ir_ent *e = g_ir.vals[i]; if (e && dst < e->lo + e->n && dst + n > e->lo) e->gpuw = 1; }
+    if (!n || !g_ir_rgn.n) return;
+    for (uint64_t r = dst >> 20; r <= (dst + n - 1) >> 20; r++) {
+        ir_rgn *b = nvn_hm_get(&g_ir_rgn, &r); if (!b) continue;
+        g_vc_scanned += b->n;
+        for (uint32_t i = 0; i < b->n; i++) { ir_ent *e = b->v[i]; if (dst < e->lo + e->n && dst + n > e->lo) e->gpuw = 1; } }
 }
 static void ix_minmax(const void *p, int isz, int32_t count, uint32_t *mn, uint32_t *mx) {
     uint32_t a = UINT32_MAX, b = 0;
@@ -10390,8 +10403,9 @@ static int ix_range(const p_draw_idx *di, uint32_t *mn, uint32_t *mx) {
     }
     const void *span = nvn_dirty_span(p, (size_t)n);
     if (!span) return 0;   // not in a tracked memory pool
-    if (!e) { if (g_ir.n >= 1 << 16) { nvn_hm_clear(&g_ir, free); memset(g_vc_rgn, 0, sizeof g_vc_rgn); } e = calloc(1, sizeof *e); nvn_hm_put(&g_ir, &k, e); }
-    nvn_dirty_protect(p, (size_t)n); e->stamp = e->seen = nvn_dirty_now(); e->span = span; e->lo = di->ibuf; e->n = n; vc_rgn_mark(e->lo, e->n);   // protect, take the stamp, then read (as pkg_upload)
+    int fresh = !e;
+    if (!e) { if (g_ir.n >= 1 << 16) ir_clear(); e = calloc(1, sizeof *e); nvn_hm_put(&g_ir, &k, e); }
+    nvn_dirty_protect(p, (size_t)n); e->stamp = e->seen = nvn_dirty_now(); e->span = span; e->lo = di->ibuf; e->n = n; if (fresh) ir_rgn_add(e);   // protect, take the stamp, then read (as pkg_upload)
     ix_minmax(p, isz, di->count, &e->mn, &e->mx); *mn = e->mn; *mx = e->mx;
     return 1;
 }
