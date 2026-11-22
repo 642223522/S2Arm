@@ -220,7 +220,7 @@ def scan(index_dirs, exefs, log=None):
                 text_end, ro, ln, key = module_layout(os.path.join(exefs, 'main'))
                 M = ((ln + 15) & ~15) + MIRROR_FPSL
                 try:
-                    w, rt = fpslocker.convert(miniyaml.load(open(full, encoding='utf-8', errors='replace').read()), (text_end, ro), (M, key))
+                    w, rt = fpslocker.convert(miniyaml.load(open(full, encoding='utf-8', errors='replace').read()), (text_end, ro), (M, key - FIX_LOCK_TAIL))
                 except (fpslocker.Unsupported, ValueError) as e:
                     skipped['FPSLocker：' + str(e)[:40]] = skipped.get('FPSLocker：' + str(e)[:40], 0) + 1
                     # 进补丁打入记录（11-15 #934：原先只打一行「跳过」，完成页、S 级页都看不出这款的帧率补丁没打进去、开关显示成开着）
@@ -999,6 +999,7 @@ KEY_TAIL_MIN = 0x1000   # 映像结尾到键页至少留的可写空余（同 ru
 
 
 MIRROR_FPSL = 0x400   # 映像结尾可写空余的分区：前 0x400 字节给金手指空洞开关表，之后给 FPSLocker 变量（各管各的，不重叠）
+FIX_LOCK_TAIL = 0x10   # 空余的最后 16 字节（键页前）留给游戏缺陷修补表的客体锁字（runtime/fix/README.md；跳板 adrp 键页再减 0x10），FPSLocker 变量不进
 
 
 def _cheat_mirror(entries, text_end, ro, ln, key, why):
