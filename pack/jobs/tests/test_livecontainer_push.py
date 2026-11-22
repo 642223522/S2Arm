@@ -42,6 +42,8 @@ class Files:
             return {"CFBundleIdentifier": "io.s2arm.games", "CFBundleExecutable": "S2Arm"}
         return {"LCDataUUID": CONTAINER, "LCContainers": [{"folderName": CONTAINER, "name": "Default"}]}
 
+    def json(self, path):
+        return {"version": 1, "games": {}}
 
 
 class Discovery(unittest.TestCase):
@@ -195,6 +197,7 @@ class Launch(unittest.TestCase):
 class Push(unittest.TestCase):
     def setUp(self):
         import install
+        self.enterContext(patch.object(install, "IMPORT_WAIT_S", (0, 0)))
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -278,6 +281,34 @@ class Push(unittest.TestCase):
         self.assertEqual(copies, [(f"Documents/Data/Application/{CONTAINER}/Documents/games/0100000000010000",
                                   ["mods/translation/romfs/game.win"])])
 
+    def test_push_saves_receipt_only_for_selected_container_and_reads_import_ack(self):
+        import install
+        import mods
+        gid = "0100000000010000"
+        other = {"ledger": {gid: {"state": "removed"}}}
+        store = {livecontainer.SELECTED: self.target, livecontainer.STATE: {"lc:other": other},
+                 "games": {gid: {"program": "native"}}}
+        class Sender(Files):
+            def put(client, *args):
+                pass
+            def put_directory(client, *args):
+                pass
+            def launch(client, *args):
+                pass
+            def json(client, path):
+                return {"version": 1, "games": {gid: {"state": "present"}}}
+        with patch.object(livecontainer, "Files", Sender), \
+             patch.object(livecontainer.layout, "load_device", lambda *a: dict(store)), \
+             patch.object(livecontainer.layout, "save_device", lambda c, key, value: store.update(value)), \
+             patch.object(install, "export_s2arm", lambda *a, **k: {"s2armPath": str(self.program), "resourcePath": str(self.image), "sha256": "synthetic-sha"}), \
+             patch.object(mods, "mods_dir", lambda *a, **k: self.mod_home):
+            result = livecontainer.push(self.c, [gid])
+        receipt = store[livecontainer.STATE][self.target["id"]]["sent"][gid]
+        self.assertEqual(receipt["s2armSha256"], "synthetic-sha")
+        self.assertTrue(receipt["imported"])
+        self.assertEqual(store[livecontainer.STATE]["lc:other"], other)
+        self.assertEqual(store["games"], {gid: {"program": "native"}})
+        self.assertIsNone(result["unpackPending"])
 
 
 if __name__ == "__main__":

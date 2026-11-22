@@ -19,6 +19,7 @@ import layout
 
 KEY = "liveContainerTargets"
 SELECTED = "liveContainerTarget"
+STATE = "liveContainerState"
 
 
 def component(value):
@@ -54,6 +55,13 @@ class Files:
         with tempfile.TemporaryDirectory(dir=self.c.private) as work:
             return plistlib.loads(self.get(path, Path(work) / "info.plist"))
 
+    def json(self, path):
+        with tempfile.TemporaryDirectory(dir=self.c.private) as work:
+            try:
+                return json.loads(self.get(path, Path(work) / "state.json"))
+            except (ValueError, UnicodeError) as error:
+                raise Failure("手机上的游戏状态文件读不懂，请打开 S2Arm 游戏库后重试。",
+                              code="device_not_ready") from error
 
     def put(self, local, remote):
         # Reuse the existing bounded large-file fallback policy and AFC when available.
@@ -145,10 +153,62 @@ def candidates(found):
     return [dict(bundleId=t["id"], team="", byThisLauncher=False, identityTeam=None, displayName=t["displayName"]) for t in found]
 
 
+def read_ledger(files, target):
+    data = files.json(target["home"] + "/Documents/.s2a-games.json")
+    if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("games"), dict):
+        raise Failure("手机上的游戏状态格式暂不支持，请打开 S2Arm 游戏库后重试。", code="device_not_ready")
+    games = data["games"]
+    if any(not isinstance(v, dict) or v.get("state") not in ("present", "removed") for v in games.values()):
+        raise Failure("手机上的游戏状态记录不完整，请打开 S2Arm 游戏库后重试。", code="device_not_ready")
+    return games
 
 
+def refresh_state(c, device, target, rec, live):
+    states = dict(rec.get(STATE) or {})
+    cached = dict(states.get(target["id"]) or {})
+    if live:
+        files = Files(c, device, target["hostBundleId"])
+        try:
+            ledger = read_ledger(files, target)
+            pending = set()
+            if cached.get("sent"):
+                import install
+                docs = target["home"] + "/Documents"
+                names = files.listdir(docs)
+                for inbox in install.IMPORT_DIRS:
+                    if inbox in names:
+                        pending.update(files.listdir(docs + "/" + inbox))
+            sent = {gid: dict(entry, imported=ledger.get(gid, {}).get("state") == "present"
+                             and bool(entry.get("files")) and not pending.intersection(entry["files"]))
+                    for gid, entry in (cached.get("sent") or {}).items()}
+            cached.update(ledger=ledger, pending=sorted(pending), sent=sent, readAt=time.time())
+            cached.pop("error", None)
+        except Failure as error:
+            cached["error"] = str(error)
+    states[target["id"]] = cached
+    rec[STATE] = states
+    return cached
 
 
+def game_rows(games, cached):
+    rows = []
+    for original in games:
+        row = {k: v for k, v in original.items() if k != "reasons"}
+        gid = row["gameId"].upper()
+        ledger = cached.get("ledger")
+        sent = (cached.get("sent") or {}).get(gid) or {}
+        if cached.get("error") or ledger is None:
+            row.update(state="unknown", reasons=[cached["error"]] if cached.get("error") else [])
+        elif set(sent.get("files") or []).intersection(cached.get("pending") or []):
+            row["state"] = "pending"
+        elif sent and not sent.get("imported") and ledger.get(gid, {}).get("state") != "removed":
+            row["state"] = "pending"
+        else:
+            row["state"] = "present" if ledger.get(gid, {}).get("state") == "present" else "notPushed"
+            if ledger.get(gid, {}).get("state") == "removed":
+                row["reasons"] = ["removed"]
+        rows.append(row)
+    return rows
 
 
 def overview(c, phones):
@@ -176,10 +236,18 @@ def overview(c, phones):
                            signMode="external", actions=["exportShellIpa", "pushS2arm", "exportS2arm"], needsChoice=False)
                 row["name"] = (original.get("name") or "iPhone") + " · " + chosen["hostName"]
                 rec[SELECTED] = chosen
+                cached = refresh_state(c, device, chosen, rec, c.r.get("probe") is True and bool(row.get("online"))
+                                       and not row.get("liveContainerProbeError"))
+                if row.get("liveContainerProbeError"):
+                    cached["error"] = row["liveContainerProbeError"]
+                row["games"] = game_rows(original.get("games") or [], cached)
+                if cached.get("error"):
+                    row["liveContainerStateError"] = cached["error"]
             elif not direct or not rec.get("chosenBundleId"):
                 row.update(installed=True, installedBy=None, bundleId="", needsChoice=True, signMode=None,
                            actions=["chooseApp"])
                 rec.pop(SELECTED, None)
+                row["games"] = game_rows(original.get("games") or [], {})
             all_candidates = candidates(found)
             if direct:
                 all_candidates += row.get("candidates") or [dict(bundleId=original["bundleId"], team="", byThisLauncher=original.get("installedBy") == "launcher", identityTeam=None)]
@@ -300,7 +368,27 @@ def push(c, game_ids):
                     c.emit("message", "正在同步 Mod：" + "、".join(p.name for p in enabled))
                     files.put_directory(stage_mods, parent + "/mods")
         files.launch(target)
-        rows.append(dict(gameId=gid, ok=True, mods=[p.name for p in enabled], imported=False))
+        rec = layout.load_device(c, device)
+        states = dict(rec.get(STATE) or {})
+        cached = dict(states.get(target["id"]) or {})
+        sent = dict(cached.get("sent") or {})
+        sent[gid] = dict(at=time.time(), files=[p.name for p in sources], s2armSha256=result.get("sha256"),
+                         mods=[p.name for p in enabled], imported=False)
+        cached["sent"] = sent
+        states[target["id"]] = cached
+        rec[STATE] = states
+        cached = refresh_state(c, device, target, rec, True)
+        imported = cached.get("sent", {}).get(gid, {}).get("imported", False) and not cached.get("error")
+        if not imported and not cached.get("error"):
+            c.emit("message", "文件已发送，正在等待手机游戏库确认导入。")
+            deadline = time.monotonic() + install.IMPORT_WAIT_S[1]
+            while not imported and not cached.get("error") and time.monotonic() < deadline:
+                c.check()
+                time.sleep(2)
+                cached = refresh_state(c, device, target, rec, True)
+                imported = cached.get("sent", {}).get(gid, {}).get("imported", False) and not cached.get("error")
+        layout.save_device(c, device, rec)
+        rows.append(dict(gameId=gid, ok=True, mods=[p.name for p in enabled], imported=bool(imported)))
         state["done"].append(raw_gid)
         atomic(state_path, state)
     pending = any(not row["imported"] for row in rows)

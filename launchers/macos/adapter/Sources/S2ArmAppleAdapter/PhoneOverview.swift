@@ -8,7 +8,7 @@ public struct PhoneOverview: Equatable {
     public enum SignMode: String { case appleId, devCert, external }
     /// 手机上的 S2Arm 是谁装的（作业 installedBy）：启动器装的 / 别的工具（AltStore、SideStore…）装的；nil = 没装或判不出（旧作业不带这个键也是 nil）
     public enum InstalledBy: String { case launcher, external }
-    public enum GameState: String { case latest, suggested, notPushed, needsData }
+    public enum GameState: String { case latest, suggested, notPushed, needsData, present, unknown, pending }
     /// 同一台手机上装着不止一个 S2Arm 时让玩家选的候选（作业 candidates，install.s2arm_candidates）：byThisLauncher = 这台电脑的启动器装的；
     ///   identityTeam = 这个 S2Arm 导入的签名证书的团队（没导入为 nil）
     public struct Candidate: Equatable {
