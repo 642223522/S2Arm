@@ -654,7 +654,7 @@
 "cert.source.p12" = "导入的 .p12";
 "cert.source.pc" = "电脑交来";
 "addrshort.title" = "这台设备的系统能给 App 的地址范围不够这款游戏";
-"addrshort.body" = "这款游戏开局要一大块连续的地址范围，这台设备的系统能给 App 的不够（和存储空间无关，清理空间没有用）：可能会非常卡，或一直停在开头。可以先点「仍要启动」试试；想正常玩，请换一台内存更大的 iPhone / iPad / Mac（系统能给 App 的地址范围更大），或等后续版本改进。";
+"addrshort.body" = "这款游戏开局要一大块连续的地址范围，这台设备的系统能给 App 的不够（和存储空间无关，清理空间没有用）：可能会非常卡，或一直停在开头。可以先点「仍要启动」试试；想正常玩，请换一台内存更大的 iPhone / iPad（系统能给 App 的地址范围更大），或等后续版本改进。";
 "host.startAnyway" = "仍要启动";
 /* iPad 外接键盘改键页（ios/keyboard_settings.m，#1869）：除菜单项 / 标题 / 说明外，文案同 Mac 启动器（launchers/shared input.*） */
 "kbd.menu" = "键盘与鼠标…";

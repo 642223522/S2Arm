@@ -648,7 +648,7 @@
 "cert.source.p12" = ".p12 importado";
 "cert.source.pc" = "Desde tu ordenador";
 "addrshort.title" = "El sistema de este dispositivo no puede dar a las apps suficiente rango de direcciones para este juego";
-"addrshort.body" = "Este juego necesita al empezar un gran rango continuo de direcciones y el sistema de este dispositivo no puede dar tanto a las apps (no tiene nada que ver con el almacenamiento; liberar espacio no ayuda): puede ir muy lento o quedarse parado al principio. Puedes tocar «Iniciar de todos modos» para probar; para jugar con normalidad, usa un iPhone, iPad o Mac con más memoria (dan a las apps un rango de direcciones mayor) o espera a una versión posterior.";
+"addrshort.body" = "Este juego necesita al empezar un gran rango continuo de direcciones y el sistema de este dispositivo no puede dar tanto a las apps (no tiene nada que ver con el almacenamiento; liberar espacio no ayuda): puede ir muy lento o quedarse parado al principio. Puedes tocar «Iniciar de todos modos» para probar; para jugar con normalidad, usa un iPhone o iPad con más memoria (dan a las apps un rango de direcciones mayor) o espera a una versión posterior.";
 "host.startAnyway" = "Iniciar de todos modos";
 /* iPad 外接键盘改键页（ios/keyboard_settings.m，#1869）：除菜单项 / 标题 / 说明外，文案同 Mac 启动器（launchers/shared input.*） */
 "kbd.menu" = "Teclado y ratón…";
