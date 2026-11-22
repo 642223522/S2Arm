@@ -952,6 +952,13 @@ class SaveBackupTests(unittest.TestCase):
         self.assertEqual((d / "0000000000000001/0/save.dat").read_text(), "内容:" + got[0])
         self.assertEqual(d.parent, self.c.library / "games/0100C2500FC20000/save_backup")
 
+    def test_update_backup_reports_completed_files(self):
+        self.c.begin("备份这款的存档", 2, 4, key="phone_save_backup")
+        with um.patch.object(self.c, "emit") as emit:
+            self._run([("a", False), ("b", False)])
+        counts = [call.kwargs for call in emit.call_args_list if call.args[0] == "progress"]
+        self.assertEqual(counts, [dict(done=1, total=2, unit="files"), dict(done=2, total=2, unit="files")])
+
     def test_list_entry_without_relative_path_asks_not_crash(self):
         # #908：Xcode 16.0 的 devicectl 有条目不带 relativePath，原先 KeyError 让整个装机作业崩成「本地任务失败」。
         #   path 字段照认、照备份；两种都没有 → 停在「备份不了存档」确认（save_backup_failed），玩家确认后照装

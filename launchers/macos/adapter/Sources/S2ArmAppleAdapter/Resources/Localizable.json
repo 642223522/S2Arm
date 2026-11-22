@@ -10906,5 +10906,9 @@
  {
   "source": "S2Arm 自带的读取工具 nx_unpack.exe 不见了：是杀毒软件把它当成病毒隔离了。到「Windows 安全中心 → 保护历史记录」里把它还原并允许，把 S2Arm 安装文件夹加进信任后再点一次。",
   "en": "S2Arm's bundled reader nx_unpack.exe is gone: antivirus software quarantined it as a virus. Open Windows Security → Protection history, restore and allow it, add the S2Arm install folder to the trusted list, then try again."
+ },
+ {
+  "source": "备份手机上各款的存档",
+  "en": "Backing up saves for the games on the device"
  }
 ]
