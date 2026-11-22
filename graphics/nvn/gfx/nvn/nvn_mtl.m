@@ -8200,7 +8200,10 @@ static void fb_compile_note(uint64_t ns, NSString *pc) {
 static int shlib_dropped(const char *name) {
     static NSSet<NSString *> *keep; static int on = -1;
     if (on < 0) {
-        const char *f = getenv("DM_SHLIB_KEEP"); NSString *t = f && *f ? [NSString stringWithContentsOfFile:@(f) encoding:NSUTF8StringEncoding error:nil] : nil;
+        // 相对路径按 App 的 Documents 解析（真机局 dev_run 的 PUSH 推进 Documents/ 下，起局环境里写不出容器的绝对路径）
+        const char *f = getenv("DM_SHLIB_KEEP"); NSString *fp = f && *f ? @(f) : nil;
+        if (fp && !fp.absolutePath) { char d[1024]; fp = s2a_docs_root(d, sizeof d) >= 0 ? [@(d) stringByAppendingPathComponent:fp] : nil; }
+        NSString *t = fp ? [NSString stringWithContentsOfFile:fp encoding:NSUTF8StringEncoding error:nil] : nil;
         NSMutableSet *m = [NSMutableSet set];
         for (NSString *l in [t componentsSeparatedByString:@"\n"]) if (l.length >= 16) [m addObject:[l substringToIndex:16].lowercaseString];
         keep = m; on = t != nil;
