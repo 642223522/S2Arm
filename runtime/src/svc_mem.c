@@ -574,15 +574,24 @@ static void layout_prepare(const char *npdm) {
     //   宿主只剩 11 GB，虚拟池预留减半到 16 MB 也占不到、Metal 拿到空数据崩。布局按收窄后的大小算，多出的尾部由下面 s2a_window_trim 还给宿主；
     //   只在窗口本来就放不下标准布局（按需档）时收：放得下的款照旧给满标准布局，不因学到的跨度小而改成按需。
     //   收窄后放不下走原有自愈（-2 → 删记录、放宽重算）。单款包构造期已按本款跨度给，这里至多再收 1 GiB 取整的零头
+    uint64_t cap = 0;
     { uint64_t (*span_seen)(uint64_t) = (uint64_t (*)(uint64_t))dlsym(RTLD_DEFAULT, "s2a_window_span_seen");   // vawin.c；安卓 / 单测没有就不收
       uint64_t (*for_span)(uint64_t) = (uint64_t (*)(uint64_t))dlsym(RTLD_DEFAULT, "s2a_window_for_span");
-      uint64_t cap = span_seen && for_span ? for_span(span_seen(pid)) : 0;
+      cap = span_seen && for_span ? for_span(span_seen(pid)) : 0;
       // 即时存档恢复：窗口要与快照时一样（vawin.c 构造期已按快照清单占），学到的跨度不再收（两局之间学到的不同，收了就「窗口不符」）
-      { int s2a_snap_restoring(void); if (cap && s2a_snap_restoring()) { LOG("即时存档恢复：不按本款学到的跨度收窗口（窗口保持快照时的 %llu MB）", (unsigned long long)(ws >> 20)); cap = 0; } }
-      if (ws < g_lay_need && cap && cap < ws) { LOG("地址窗口：按本款（%016llx）学到的跨度收到 %llu MB（原 %llu MB），其余还给宿主", (unsigned long long)pid, (unsigned long long)(cap >> 20), (unsigned long long)(ws >> 20)); ws = cap; } }
+      { int s2a_snap_restoring(void); if (cap && s2a_snap_restoring()) { LOG("即时存档恢复：不按本款学到的跨度收窗口（窗口保持快照时的 %llu MB）", (unsigned long long)(ws >> 20)); cap = 0; } } }
     int alias_gb = alias_first_hint(npdm, pid);
     { void s2a_layout_heap_floor_set(uint64_t); uint64_t hn = heap_need_read(pid); s2a_layout_heap_floor_set(hn); g_lay_heap_floor = hn;   // 上一局真要过的普通堆（见 heap_need_path）
       if (hn) LOG("地址布局：本款上一局要过 %llu MB 普通堆（wire/%016llX/heap_need），堆区至少给到这么多", (unsigned long long)(hn >> 20), (unsigned long long)pid); }
+      // 收窄前按收窄后的大小试算一遍：堆区装不下这款要的堆（上一局记录；没记录按应用池满额）就不收。D-PR33（11-21，iOS 26.7、0.6.7）：
+      //   学到的跨度来自开局就因窗口太小停掉的局（只碰到 356 MB），收到 3072 MB 后堆区只剩 2716 MB、游戏要 3252 MB，又停在开局——
+      //   这条路不经构造期的当场放宽（s2a_window_span_widen 只认构造期按单款收的窗口），自愈不了，每局都打不开
+      if (ws < g_lay_need && cap && cap < ws) {
+          s2a_layout tl; uint64_t tmb = 0, tsb = 0, want = g_lay_heap_floor ? g_lay_heap_floor : APP_POOL;
+          if (s2a_layout_cap_fits(s2a_layout_compute(t, sr, mod, alias_gb, wb, cap, &tl, &tmb, &tsb), tl.heap_base, wb + cap, want)) {
+              LOG("地址窗口：按本款（%016llx）学到的跨度收到 %llu MB（原 %llu MB），其余还给宿主", (unsigned long long)pid, (unsigned long long)(cap >> 20), (unsigned long long)(ws >> 20)); ws = cap; }
+          else LOG("地址窗口：本款（%016llx）学到的跨度只够 %llu MB 窗口，堆区装不下要的 %llu MB 堆，不收窄（保持 %llu MB）",
+                   (unsigned long long)pid, (unsigned long long)(cap >> 20), (unsigned long long)(want >> 20), (unsigned long long)(ws >> 20)); }
     int rc = s2a_layout_compute(t, sr, mod, alias_gb, wb, ws, &L, &g_mod_base, &g_shadow_base);
     if (rc == -1) die("【红】NPDM 地址空间类型 %u（%s）暂不支持（布局只支持类型 1 = 36 位、3 = 39 位）", t, s2a_as_type_bits(t));
     if (rc == -2) {   // 窗口按学到的跨度收窄了（#783）：当场放宽回缺省给法、重算一次（vawin.c；安卓 / 单测没有这个就不调）
