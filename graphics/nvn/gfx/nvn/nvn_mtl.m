@@ -3292,7 +3292,7 @@ void nvn_be_drain(void) { if (mtl_gpu_halted()) { MLOG("GPU 安全停中：后�
 
 // ================= Render replay =================
 #include "../../host/front.h"
-static int g_red_once[213];   // RED_ONCE keys 0..212 (211–212: PR3c 出图 PSO 多槽 — 211 PQ 层目标（RGB10A2Unorm）的出图管线建不出：HDR 槽回退 SDR 基线（红一次 + 死槽负缓存，不 MDIE——基线槽照旧 MDIE，B4 不放宽 SDR 现状）；212 上屏目标像素格式超过 4 种（gal_present.m 同数四槽），本格式本帧不出图；207–208: nvn_present_fsr.inc FSR 1 on the present — 207 the shaders / pipelines could not be made, 208 a slot's textures / buffers / argument tables could not be allocated; either way the present goes on bilinear; 206: a BC texture drawn as blocks on a GPU without BC, its shadow / staging / decode not made, bcdec_attach / bcdec_flush; 205: texture upload / pool-storage synchronization; 202–204: nvn_stex.inc 放置式稀疏贴图块管理 — CPU 写的 / GPU 写的稀疏贴图同步失败（没堆页 / 暂存），稀疏贴图不做 tex_upgrade 整张复制; 198–201: nvn_sparse_tex.inc Metal sparse textures — heap / texture not made, page / level deswizzle failed, map / upload command buffer failed; 195–197: nvn_tensor.inc tensor_fix_in, the tensor stand-in's fixed-size input; 194: #798 a texel buffer's aligned lead view could not be made, tbl_view; 193: a texture outside any memory pool with an unmapped storage tail, #b5a081; 188–192: internal resolution — 188 a draw / dispatch still held scaled image-slot storages after the retry limit, rs_pre_draw / rs_pre_images; 189 a storage past the device texture limit, rs_rescale / tex_widen; 190 a CPU readback of an enlarged storage not scaled back linearly, nvn_be_read_texels; 191 an image-slot storage that could not go back to its own size; 192 a screenshot of the enlarged window texture not scaled back; 187: a multisample count the GPU does not support, stepped down, mtl_samples_supported (#903); 186: a packaged texture's storage runs past the end of its memory pool, pkg_upload_ (#819); 183 / 184 / 185: an incompatible Metal texture format view fell back to the base format in rt_view_fmt / attach / clear_tex; 182: a block-compressed texture whose GPU writer resolved to its own Metal format, bcal_copy; 181: a texture view whose target and layer range Metal cannot express (#199), tex_by_id; 179 / 180: a pass's own depth attachment sampled in it could not be copied / viewed (#387); 178: a slot read on-chip by the first draw of a pass was not opened loaded; 177: a compute dispatch's binding ended the shared encoder again on the retry; 175 / 176: a block-compressed texture's GPU-written bytes not taken: no host texture of the uncompressed writer / no staging buffer, bcal_sync; 174: a converted vertex attribute stream address in no memory pool, vconv_bind; 172 / 173: a pool table for handles traced to no slot could not be allocated / grown, pool_tab_new / pool_tab_put_n; 171: a first-invocation store skipped, dispatch; 170: an sRGB / linear view not made again on its upgraded parent, tex_upgrade; 169: a storage buffer address pushed into an NVN2 push slot the pools do not hold (SBUFQ; until 11-07 a not-loaded color attachment written); 167 / 168: a storage buffer address the pools do not hold, slot / handle in a uniform buffer; 166: a texture turning packaged whose old host texture has another shape, its GPU-written texels not carried over, carry_gpu) (162: a vertex buffer address the pools do not hold, bind_vbufs) (160 / 161 / 163–165: tensor-core network stand-in, nvn_tensor.inc; 147–159 left for the NVN2 task / mesh branch) (143–146: NVN2 DLSS → MetalFX, nvn_dlss.inc) (139–142: folded linear textures: tex_linear, se_want, se_bind, copies / clears into one) (137 / 138: a GL texture an NVN texture is built from has no usable storage / no matching NVN format) (136: a draw's binding ended its pass twice) (134 / 135: alpha test / multisampling off the fragment shader cannot take); same-pass feedback snapshot too large 127, native image atomics use 128/129, same-pass feedback view narrowing 133; 209–210: a vertex stream the draw reads past its bound range not limited — the range is over the staging size / a GPU write on the stream is queued in this submission, bind_vbufs vbuf_limit; 207–208: nvn_present_fsr.inc FSR 1 on the present — 207 the shaders / pipelines could not be made, 208 a slot's textures / buffers / argument tables could not be allocated; either way the present goes on bilinear; 206: a BC texture drawn as blocks on a GPU without BC, its shadow / staging / decode not made, bcdec_attach / bcdec_flush; 205: texture upload / pool-storage synchronization; 202–204: nvn_stex.inc 放置式稀疏贴图块管理 — CPU 写的 / GPU 写的稀疏贴图同步失败（没堆页 / 暂存），稀疏贴图不做 tex_upgrade 整张复制; 198–201: nvn_sparse_tex.inc Metal sparse textures — heap / texture not made, page / level deswizzle failed, map / upload command buffer failed; 195–197: nvn_tensor.inc tensor_fix_in, the tensor stand-in's fixed-size input; 194: #798 a texel buffer's aligned lead view could not be made, tbl_view; 193: a texture outside any memory pool with an unmapped storage tail, #b5a081; 188–192: internal resolution — 188 a draw / dispatch still held scaled image-slot storages after the retry limit, rs_pre_draw / rs_pre_images; 189 a storage past the device texture limit, rs_rescale / tex_widen; 190 a CPU readback of an enlarged storage not scaled back linearly, nvn_be_read_texels; 191 an image-slot storage that could not go back to its own size; 192 a screenshot of the enlarged window texture not scaled back; 187: a multisample count the GPU does not support, stepped down, mtl_samples_supported (#903); 186: a packaged texture's storage runs past the end of its memory pool, pkg_upload_ (#819); 183 / 184 / 185: an incompatible Metal texture format view fell back to the base format in rt_view_fmt / attach / clear_tex; 182: a block-compressed texture whose GPU writer resolved to its own Metal format, bcal_copy; 181: a texture view whose target and layer range Metal cannot express (#199), tex_by_id; 179 / 180: a pass's own depth attachment sampled in it could not be copied / viewed (#387); 178: a slot read on-chip by the first draw of a pass was not opened loaded; 177: a compute dispatch's binding ended the shared encoder again on the retry; 175 / 176: a block-compressed texture's GPU-written bytes not taken: no host texture of the uncompressed writer / no staging buffer, bcal_sync; 174: a converted vertex attribute stream address in no memory pool, vconv_bind; 172 / 173: a pool table for handles traced to no slot could not be allocated / grown, pool_tab_new / pool_tab_put_n; 171: a first-invocation store skipped, dispatch; 170: an sRGB / linear view not made again on its upgraded parent, tex_upgrade; 169: a storage buffer address pushed into an NVN2 push slot the pools do not hold (SBUFQ; until 11-07 a not-loaded color attachment written); 167 / 168: a storage buffer address the pools do not hold, slot / handle in a uniform buffer; 166: a texture turning packaged whose old host texture has another shape, its GPU-written texels not carried over, carry_gpu) (162: a vertex buffer address the pools do not hold, bind_vbufs) (160 / 161 / 163–165: tensor-core network stand-in, nvn_tensor.inc; 147–159 left for the NVN2 task / mesh branch) (143–146: NVN2 DLSS → MetalFX, nvn_dlss.inc) (139–142: folded linear textures: tex_linear, se_want, se_bind, copies / clears into one) (137 / 138: a GL texture an NVN texture is built from has no usable storage / no matching NVN format) (136: a draw's binding ended its pass twice) (134 / 135: alpha test / multisampling off the fragment shader cannot take); same-pass feedback snapshot too large 127, native image atomics use 128/129, same-pass feedback view narrowing 133
+static int g_red_once[214];   // RED_ONCE keys 0..213 (213: 同一张贴图挂在两个颜色槽、后一个槽经影子画（rtdup_attach），同一遍里两个槽写了同一通道：遍末按后一个槽并回，两槽之间的先后不保留; 211–212: PR3c 出图 PSO 多槽 — 211 PQ 层目标（RGB10A2Unorm）的出图管线建不出：HDR 槽回退 SDR 基线（红一次 + 死槽负缓存，不 MDIE——基线槽照旧 MDIE，B4 不放宽 SDR 现状）；212 上屏目标像素格式超过 4 种（gal_present.m 同数四槽），本格式本帧不出图；207–208: nvn_present_fsr.inc FSR 1 on the present — 207 the shaders / pipelines could not be made, 208 a slot's textures / buffers / argument tables could not be allocated; either way the present goes on bilinear; 206: a BC texture drawn as blocks on a GPU without BC, its shadow / staging / decode not made, bcdec_attach / bcdec_flush; 205: texture upload / pool-storage synchronization; 202–204: nvn_stex.inc 放置式稀疏贴图块管理 — CPU 写的 / GPU 写的稀疏贴图同步失败（没堆页 / 暂存），稀疏贴图不做 tex_upgrade 整张复制; 198–201: nvn_sparse_tex.inc Metal sparse textures — heap / texture not made, page / level deswizzle failed, map / upload command buffer failed; 195–197: nvn_tensor.inc tensor_fix_in, the tensor stand-in's fixed-size input; 194: #798 a texel buffer's aligned lead view could not be made, tbl_view; 193: a texture outside any memory pool with an unmapped storage tail, #b5a081; 188–192: internal resolution — 188 a draw / dispatch still held scaled image-slot storages after the retry limit, rs_pre_draw / rs_pre_images; 189 a storage past the device texture limit, rs_rescale / tex_widen; 190 a CPU readback of an enlarged storage not scaled back linearly, nvn_be_read_texels; 191 an image-slot storage that could not go back to its own size; 192 a screenshot of the enlarged window texture not scaled back; 187: a multisample count the GPU does not support, stepped down, mtl_samples_supported (#903); 186: a packaged texture's storage runs past the end of its memory pool, pkg_upload_ (#819); 183 / 184 / 185: an incompatible Metal texture format view fell back to the base format in rt_view_fmt / attach / clear_tex; 182: a block-compressed texture whose GPU writer resolved to its own Metal format, bcal_copy; 181: a texture view whose target and layer range Metal cannot express (#199), tex_by_id; 179 / 180: a pass's own depth attachment sampled in it could not be copied / viewed (#387); 178: a slot read on-chip by the first draw of a pass was not opened loaded; 177: a compute dispatch's binding ended the shared encoder again on the retry; 175 / 176: a block-compressed texture's GPU-written bytes not taken: no host texture of the uncompressed writer / no staging buffer, bcal_sync; 174: a converted vertex attribute stream address in no memory pool, vconv_bind; 172 / 173: a pool table for handles traced to no slot could not be allocated / grown, pool_tab_new / pool_tab_put_n; 171: a first-invocation store skipped, dispatch; 170: an sRGB / linear view not made again on its upgraded parent, tex_upgrade; 169: a storage buffer address pushed into an NVN2 push slot the pools do not hold (SBUFQ; until 11-07 a not-loaded color attachment written); 167 / 168: a storage buffer address the pools do not hold, slot / handle in a uniform buffer; 166: a texture turning packaged whose old host texture has another shape, its GPU-written texels not carried over, carry_gpu) (162: a vertex buffer address the pools do not hold, bind_vbufs) (160 / 161 / 163–165: tensor-core network stand-in, nvn_tensor.inc; 147–159 left for the NVN2 task / mesh branch) (143–146: NVN2 DLSS → MetalFX, nvn_dlss.inc) (139–142: folded linear textures: tex_linear, se_want, se_bind, copies / clears into one) (137 / 138: a GL texture an NVN texture is built from has no usable storage / no matching NVN format) (136: a draw's binding ended its pass twice) (134 / 135: alpha test / multisampling off the fragment shader cannot take); same-pass feedback snapshot too large 127, native image atomics use 128/129, same-pass feedback view narrowing 133; 209–210: a vertex stream the draw reads past its bound range not limited — the range is over the staging size / a GPU write on the stream is queued in this submission, bind_vbufs vbuf_limit; 207–208: nvn_present_fsr.inc FSR 1 on the present — 207 the shaders / pipelines could not be made, 208 a slot's textures / buffers / argument tables could not be allocated; either way the present goes on bilinear; 206: a BC texture drawn as blocks on a GPU without BC, its shadow / staging / decode not made, bcdec_attach / bcdec_flush; 205: texture upload / pool-storage synchronization; 202–204: nvn_stex.inc 放置式稀疏贴图块管理 — CPU 写的 / GPU 写的稀疏贴图同步失败（没堆页 / 暂存），稀疏贴图不做 tex_upgrade 整张复制; 198–201: nvn_sparse_tex.inc Metal sparse textures — heap / texture not made, page / level deswizzle failed, map / upload command buffer failed; 195–197: nvn_tensor.inc tensor_fix_in, the tensor stand-in's fixed-size input; 194: #798 a texel buffer's aligned lead view could not be made, tbl_view; 193: a texture outside any memory pool with an unmapped storage tail, #b5a081; 188–192: internal resolution — 188 a draw / dispatch still held scaled image-slot storages after the retry limit, rs_pre_draw / rs_pre_images; 189 a storage past the device texture limit, rs_rescale / tex_widen; 190 a CPU readback of an enlarged storage not scaled back linearly, nvn_be_read_texels; 191 an image-slot storage that could not go back to its own size; 192 a screenshot of the enlarged window texture not scaled back; 187: a multisample count the GPU does not support, stepped down, mtl_samples_supported (#903); 186: a packaged texture's storage runs past the end of its memory pool, pkg_upload_ (#819); 183 / 184 / 185: an incompatible Metal texture format view fell back to the base format in rt_view_fmt / attach / clear_tex; 182: a block-compressed texture whose GPU writer resolved to its own Metal format, bcal_copy; 181: a texture view whose target and layer range Metal cannot express (#199), tex_by_id; 179 / 180: a pass's own depth attachment sampled in it could not be copied / viewed (#387); 178: a slot read on-chip by the first draw of a pass was not opened loaded; 177: a compute dispatch's binding ended the shared encoder again on the retry; 175 / 176: a block-compressed texture's GPU-written bytes not taken: no host texture of the uncompressed writer / no staging buffer, bcal_sync; 174: a converted vertex attribute stream address in no memory pool, vconv_bind; 172 / 173: a pool table for handles traced to no slot could not be allocated / grown, pool_tab_new / pool_tab_put_n; 171: a first-invocation store skipped, dispatch; 170: an sRGB / linear view not made again on its upgraded parent, tex_upgrade; 169: a storage buffer address pushed into an NVN2 push slot the pools do not hold (SBUFQ; until 11-07 a not-loaded color attachment written); 167 / 168: a storage buffer address the pools do not hold, slot / handle in a uniform buffer; 166: a texture turning packaged whose old host texture has another shape, its GPU-written texels not carried over, carry_gpu) (162: a vertex buffer address the pools do not hold, bind_vbufs) (160 / 161 / 163–165: tensor-core network stand-in, nvn_tensor.inc; 147–159 left for the NVN2 task / mesh branch) (143–146: NVN2 DLSS → MetalFX, nvn_dlss.inc) (139–142: folded linear textures: tex_linear, se_want, se_bind, copies / clears into one) (137 / 138: a GL texture an NVN texture is built from has no usable storage / no matching NVN format) (136: a draw's binding ended its pass twice) (134 / 135: alpha test / multisampling off the fragment shader cannot take); same-pass feedback snapshot too large 127, native image atomics use 128/129, same-pass feedback view narrowing 133
 // The key must be a constant inside the table: a key past the end wrote into the statics next to it (11-05: nvn_tensor.inc used 160 / 161 with 147 slots)
 #define RED_ONCE(k, ...) do { _Static_assert((k) >= 0 && (k) < (int)(sizeof g_red_once / sizeof g_red_once[0]), "RED_ONCE key outside g_red_once"); if (!g_red_once[k]++) MLOG("【红】 " __VA_ARGS__); } while (0)
 // NVN vertex streams 0–15 → Metal vertex buffer slots: 0–13 go to 16–29 (30 is the constant fallback buffer), 14 and 15 to 14 and 15. Metal has only the 31 slots 0–30; translated shaders use only buffer(0) (the argument buffer),
@@ -3997,6 +3997,26 @@ static uint64_t up_keep_cap(void) { static uint64_t v; if (!v) { const char *e =
 #define UP_KEEP_CAP up_keep_cap()
 static uint64_t g_up_keep_bytes; static uint64_t g_up_cap_flushes;
 static void up_keep_add(id<MTLBuffer> b) { if (!g_up_keep) g_up_keep = [NSMutableArray array]; [g_up_keep addObject:b]; g_up_keep_bytes += b.length; }
+// CPU 上传的暂存（pkg_upload_ 的 CPU 路径）。D-8QFH（0.6.1，iPad，一局 9400 帧、实占 3.8 GB 时）：这里分配返回 nil 没判空，直接进 up_keep_add，
+//   NSMutableArray 收 nil 抛未捕获的 ObjC 异常闪退（日志里没有当时要的字节数）。这里能回收的是在途上传批攥着的暂存：先把本批交出去、等在途的批退役放掉暂存，再分配一次；
+//   仍分配不到才停（同 up_alloc 暂存块分配失败的口径），并写清要了多少、批里攥着多少。调用前已 up_begin，本函数返回时批仍开着
+#ifndef UP_CPU_STAGE_NEW   // 单测替换这一处分配（t_nvn_pkg_unreadable ⑨ 模拟第一次分配不到）
+#define UP_CPU_STAGE_NEW(n) [g_dev newBufferWithLength:(n) options:MTLResourceStorageModeShared]
+#endif
+static uint64_t g_up_stage_retries;
+static void up_begin(void);   // 下面定义
+static id<MTLBuffer> up_cpu_stage(size_t n, const tex_t *t) {
+    id<MTLBuffer> b = UP_CPU_STAGE_NEW(n);
+    if (b) return b;
+    uint64_t held = g_up_keep_bytes;
+    up_flush(); rec_drain(); up_wait_zero(&g_up_pending);   // 同 q_cb：交出本批、交给编码线程、等全部上传批完成（完成回调放掉它们的暂存）
+    up_begin();
+    b = UP_CPU_STAGE_NEW(n); g_up_stage_retries++;
+    if (b) { MLOG("【黄】CPU 上传暂存 %zu 字节第一次分配不到（本批攥着 %llu 字节）：交出在途上传批、等它们放掉暂存后重分配成功（ser=%llu %ux%u format %#x）",
+                  n, (unsigned long long)held, (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format); return b; }
+    MDIE("CPU upload staging of %zu bytes could not be allocated even after the in-flight upload batches retired (held %llu bytes before; ser=%llu %ux%u format %#x levels %u)",
+         n, (unsigned long long)held, (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, t->d.levels);
+}
 
 
 // The upload command buffer was discarded by the system (dropped along during GPU error recovery; the first frame on entering Travincal drops one every run): the objects of this batch of textures are built and the timestamps updated, but the content was never written in,
@@ -4955,7 +4975,7 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
     //   原先只在没有池指针时截短，这种跳过了、块线性拷贝直接从起点读，提交线程 SIGBUS。CPU 拷贝前一律先问可读长度（不看有没有池指针）
     else src = tex_src(t, t->L.size, &part);
     up_begin();
-    id<MTLBuffer> stg = [g_dev newBufferWithLength:total ? total : 16 options:MTLResourceStorageModeShared];
+    id<MTLBuffer> stg = up_cpu_stage(total ? total : 16, t);
     res_add(stg); up_keep_add(stg);
     size_t off = 0;
     int zb = zblock_on() && t->d.format >= 0x79 && t->d.format <= 0x94; if (zb) { g_zb_ser = t->serial; g_zb_n = (int)MIN(d.mipmapLevelCount, 16u); memset(g_zb, 0, sizeof g_zb); memset(g_zb_tot, 0, sizeof g_zb_tot); }
@@ -5580,21 +5600,26 @@ int nvn_be_tex_gpu_owned_since(uint64_t serial, uint64_t stamp) {
     }
     free(runs); return 1;
 }
-void nvn_be_tex_cpu_written(const tex_t *t) {
+static void tex_cpu_mark(const tex_t *t, uintptr_t kind) {
     uint64_t serial = t->serial;
     if (!serial) return;
     pthread_mutex_lock(&g_cpu_tex_mu);
     if (!g_cpu_tex.klen) nvn_hm_init(&g_cpu_tex, 8);
     int added = 0;
-    if (!nvn_hm_get(&g_cpu_tex, &serial)) {
-        nvn_hm_put(&g_cpu_tex, &serial, (void *)1); added = 1;
+    uintptr_t cur = (uintptr_t)nvn_hm_get(&g_cpu_tex, &serial);
+    if (!cur) {
+        nvn_hm_put(&g_cpu_tex, &serial, (void *)kind); added = 1;
         static int n; if (n++ < 16) MLOG("CPU-written texture ser=%llu %ux%ux%u format %#x target %d levels %u: uploaded / re-uploaded like a swizzled texture", (unsigned long long)serial, t->d.width, t->d.height, t->d.depth, t->d.format, t->d.target, t->d.levels);
+    } else if (kind == 1 && cur != 1) {
+        nvn_hm_put(&g_cpu_tex, &serial, (void *)1);
     }
     pthread_mutex_unlock(&g_cpu_tex_mu);
     if (added) { pthread_mutex_lock(&g_smu); g_ser_gen++; pthread_mutex_unlock(&g_smu); }   // the texture IDs that resolve to it take the slow path, which now treats it as packaged (tex_by_id view_pkg)
 }
+void nvn_be_tex_cpu_written(const tex_t *t) { tex_cpu_mark(t, 1); }
+void nvn_be_tex_cpu_inferred(const tex_t *t) { tex_cpu_mark(t, 2); }
 static int tex_cpu_written(uint64_t serial) {
-    pthread_mutex_lock(&g_cpu_tex_mu); int r = g_cpu_tex.n && nvn_hm_get(&g_cpu_tex, &serial); pthread_mutex_unlock(&g_cpu_tex_mu);
+    pthread_mutex_lock(&g_cpu_tex_mu); int r = g_cpu_tex.n ? (int)(uintptr_t)nvn_hm_get(&g_cpu_tex, &serial) : 0; pthread_mutex_unlock(&g_cpu_tex_mu);
     return r;
 }
 // Pools a GPU write into a texture has been recorded in (upstream reference implementation, MIT, 75e5ddd8: a render target, a texture clear, a copy or downsample into a texture,
@@ -5972,7 +5997,8 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
     if (t->magic != MAGIC('T', 'E', 'X', 0)) { RED_ONCE(70, "texture object no longer valid (magic %#x, first case ser=%llu): no MTLTexture created", t->magic, (unsigned long long)t->serial); return nil; }
     // A sampled texture in a sparse virtual pool holds what the CPU wrote into the physical pages mapped there (Monster Hunter Rise: the hunter's innerwear, ASTC 6x6 with no packaged
     // layout, came out magenta, and the face black): it is read through the page table like a packaged one. Render targets, images, linear and buffer textures stay GPU textures (as ft_add)
-    int packaged = (t->has_layout || tex_cpu_written(t->serial) || (t->pool && (t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) && t->d.target != NVN_TEXTURE_TARGET_BUFFER
+    int cpuw = tex_cpu_written(t->serial);
+    int packaged = (t->has_layout || cpuw || (t->pool && (t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) && t->d.target != NVN_TEXTURE_TARGET_BUFFER
                     && !(t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET | NVN_TEXTURE_FLAGS_COMPRESSIBLE | NVN_TEXTURE_FLAGS_IMAGE)) && nvn_sparse_pool(t->pool))) && t->mem;
     {   // Diagnostic DM_NVN_TEXINFO=WxH: log storage and description of textures of that size on first resolution (to tell whether two textures share storage and why they were not merged).
         //   DM_NVN_TEXINFO=any (or 0x0) drops the size filter: every texture is logged, all=1 on the line
@@ -6006,9 +6032,9 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
         }
     }
     id have = tex_get(t->serial);
-    if (!packaged && !have && DM_GAME_TEX_DIRTY_UPLOAD && t->mem && on_sub_thread()) { int nvn_ft_written(const tex_t *); packaged = nvn_ft_written(t); }   // first use of a texture the CPU wrote since init without a flush (hle_nvn.c)
-    int content = 0;   // taken from its storage (tex_cpu_content): a GPU write through a shared texture over it makes it that texture (cpu_key_gpu_write)
-    if (!packaged && !have && on_sub_thread() && tex_cpu_content(t)) { nvn_be_tex_cpu_written(t); packaged = content = 1; }
+    int content = (cpuw == 2);   // taken from its storage (tex_cpu_content / nvn_ft_written / nvn_ft_poll / ft_flush): a GPU write through another texture over it joins it (cpu_key_gpu_write)
+    if (!packaged && !have && DM_GAME_TEX_DIRTY_UPLOAD && t->mem && on_sub_thread()) { int nvn_ft_written(const tex_t *); if (nvn_ft_written(t)) packaged = content = 1; }   // first use of a texture the CPU wrote since init without a flush (hle_nvn.c)
+    if (!packaged && !have && on_sub_thread() && tex_cpu_content(t)) { nvn_be_tex_cpu_inferred(t); packaged = content = 1; }
     if (!packaged && !have && on_sub_thread() && tex_linear_needs_upload(t)) { nvn_be_tex_cpu_written(t); packaged = 1; }   // 建不了零拷贝视图的只读线性贴图：上传 + CPU 写后重传（#255 / #262）   // storage the CPU wrote before its first use (tex_cpu_content)
     if (packaged && atomic_load(&g_sub_thread_set) && !on_sub_thread()) {
         // S2Arm 10-25：上传批只归提交线程（up_owner_check），上屏线程等别的线程用到 CPU 写过的贴图时不上传：已传过的用现有那份（脏了留给提交线程下次用到时重传），
@@ -6725,6 +6751,7 @@ static void defer_fallback(void);
 static int g_el_w, g_el_h, g_el_draws; static char g_el_key[12];
 static int enc_label_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_ENC_LABEL"); v = e && atoi(e); } return v; }
 static int g_nbcrt; static void bcrt_flush(void);   // shadows of block-compressed render targets used by the open pass (see bcrt_attach)
+static int g_rtdup_n; static void rtdup_flush(void);   // 同一张贴图挂两个颜色槽：后一个槽画进的影子，遍末把它写过的通道并回原贴图（见 rtdup_attach）
 static int g_unb; static p_set_rt g_unb_rt; static uint64_t g_unb_n, g_unb_land;   // a held empty binding (see unb_on)
 static void rp_end(void) { if (!g_rlane) geo_run_flush(); if (g_enc) { AP_B;
     if (enc_label_on()) { static uint64_t lf = ~0ull, base; uint64_t f = atomic_load(&g_cur_frame); if (f != lf) { lf = f; base = g_stat_pass - 1; }   // Intra-frame serial: the same pass has the same name every frame, so the table can aggregate by name
@@ -6734,6 +6761,7 @@ static void rp_end(void) { if (!g_rlane) geo_run_flush(); if (g_enc) { AP_B;
 #endif
     sd_finish(); enc_r_end_pass(g_enc); zskip_commit_clears(); g_enc = nil; g_rt_merged = 0; g_rt_range_active = g_rt_range_pending = 0; ts_after(); ms_after(); if (g_lp.count) lp_finish(); fz_end();
     if (g_nubd && g_nubd >= ubd_lazy()) ubd_flush();   // the inline updates deferred in this pass, in order (see mtl_sub_update); across passes they wait for the next copy or dispatch (blit_raw)
+    if (g_rtdup_n) rtdup_flush();   // 第二个槽写过的通道并回原贴图（见 rtdup_attach）
     if (g_nbcrt) bcrt_flush();   // blocks drawn into shadows go back into their compressed textures
 #ifdef NVN_RT_RANGE_TEST
     rr_finish(ranged);
@@ -6787,7 +6815,13 @@ typedef struct { id<MTLTexture> base, shadow; id<MTLBuffer> buf; NSUInteger leve
 static void bcdec_flush(const bcrt_t *e, NSUInteger row);   // 无 BC：影子的块解回底贴图（见 bcdec_attach）
 static bcrt_t g_bcrt[8];
 static __strong id<MTLTexture> g_bcrt_sh[8]; static __strong id<MTLBuffer> g_bcrt_buf[8];
-static int bcrt_is(id<MTLTexture> t) { for (int i = 0; i < g_nbcrt; i++) if (t && g_bcrt[i].shadow == t) return 1; return 0; }
+// 同一张贴图挂两个颜色槽的影子（rtdup_attach），按本遍的附件号记：on 已挂影子、j 同贴图的更早槽、dst 原贴图（附件实际用的视图）及级 / 层、
+//   wmask 本遍槽 i 写过的通道并集（遍末并回这些通道）、jmask 槽 j 写过的通道并集（与 wmask 相交 = 两槽写了同一通道，红 213）
+typedef struct { int on, j; __strong id<MTLTexture> dst, shadow; NSUInteger level, slice; uint32_t wmask, jmask; } rtdup_t;
+static rtdup_t g_rtdup[8];
+static int rtdup_is(id<MTLTexture> t) { if (!t || !g_rtdup_n) return 0; for (int i = 0; i < 8; i++) if (g_rtdup[i].on && g_rtdup[i].shadow == t) return 1; return 0; }
+// Shadows (block / depth ones and the duplicate-slot ones of rtdup_attach) stay out of the load-skip / store-elision / zero-source bookkeeping keyed by the texture's serial
+static int bcrt_is(id<MTLTexture> t) { for (int i = 0; i < g_nbcrt; i++) if (t && g_bcrt[i].shadow == t) return 1; return rtdup_is(t); }
 static void bcrt_flush(void) {
     int n = g_nbcrt; g_nbcrt = 0;
     for (int i = 0; i < n; i++) { bcrt_t e = g_bcrt[i]; g_bcrt[i] = (bcrt_t){0};
@@ -6908,16 +6942,125 @@ static MTLPixelFormat rt_view_fmt(id<MTLTexture> base, const view_t *v, int has_
 // The same texture level / layer attached at more than one colour slot: only the first is attached, later ones are not (their writes are dropped). The G-buffer passes of The Legend of Zelda: Breath of the Wild attach the albedo and another buffer twice each
 // (c1 = c2, c3 = c4), and the channel write masks of c2 / c4 are always 0 (cmask 0x00f0f0ff). The Switch's ROP writes only the masked channels and the two slots do not interfere;
 // on Apple's TBDR each attachment has its own tile memory and the whole tile is stored back at the end of the pass, so the copy stored later (loaded, never written) overwrites the writes of the earlier one -- the order differs per 32x32 tile,
-// the albedo kept only scattered squares, and the whole 3D picture went black. A red line is printed when a dropped slot is used with a non-zero write mask (those writes are really lost)
-static int rt_dup_slot(const p_set_rt *r, int i) {
-    if (!r->color[i]) return 0;
+// the albedo kept only scattered squares, and the whole 3D picture went black.
+// 11-21 起后一个槽不再丢：它画进一张影子（rtdup_attach），遍末把它写过的通道并回原贴图（rtdup_flush）。程序 010051F0207B2000 的诊断里这条红 99 行，90 行是
+//   1 号槽只写透明度（掩码 0x8）、0 号槽写 RGB：不接 1 号槽，透明度整遍丢。只有并不了的（整数格式、多重采样、3D、块压缩 / 深度、分层遍、影子建不出）
+//   仍不接，被写时打红 79
+static int rt_dup_src(const p_set_rt *r, int i) {   // the earlier slot holding the same texture level / layer as slot i, -1 when none
+    if (!r->color[i]) return -1;
     uint8_t lv = r->has_cview[i] && r->cview[i].set_levels ? r->cview[i].base_level : 0; uint16_t ly = r->has_cview[i] && r->cview[i].set_layers ? r->cview[i].min_layer : 0;
     for (int j = 0; j < i; j++) {
         if (!r->color[j] || r->color[j]->serial != r->color[i]->serial) continue;   // compare serials: records hold copies of the texture objects (tex_snap), so the pointers differ
         uint8_t lj = r->has_cview[j] && r->cview[j].set_levels ? r->cview[j].base_level : 0; uint16_t yj = r->has_cview[j] && r->cview[j].set_layers ? r->cview[j].min_layer : 0;
-        if (lj == lv && yj == ly) return 1;
+        if (lj == lv && yj == ly) return j;
     }
-    return 0;
+    return -1;
+}
+static int rt_dup_slot(const p_set_rt *r, int i) { return rt_dup_src(r, i) >= 0; }
+#include "nvn_pfkind.h"   // pf_int_kind
+static void attach(MTLRenderPassAttachmentDescriptor *a, const tex_t *t, const view_t *v, int has_v);
+// 槽 i 能不能经影子画（并回只做浮点 / 归一化格式；pso_predict 与 rtdup_attach 共用，两边的管线格式一致）：能则 *pf 给影子 = 附件格式（rt_view_fmt，同不重复时这个槽挂上的格式），
+//   返回 NULL；不能返回原因（红 79 用）
+static const char *rtdup_no(const p_set_rt *r, int i, id<MTLTexture> base, MTLPixelFormat *pf) {
+    *pf = MTLPixelFormatInvalid;
+    if (!base) return "no Metal texture";
+    if (base.sampleCount != 1) return "multisampled";
+    if (base.textureType == MTLTextureType3D) return "3D texture";
+    if (mtl_fmt_block(base.pixelFormat) || mtl_fmt_depth(base.pixelFormat) || nvn_fmt_bc(r->color[i]->d.format)) return "compressed or depth texture";
+    MTLPixelFormat f = rt_view_fmt(base, &r->cview[i], r->has_cview[i]);
+    if (!f) return "format not attachable";
+    if (pf_int_kind(f)) return "integer format (merging back is done for float / normalized formats only)";
+    *pf = f; return NULL;
+}
+static const char *g_rtdup_why[8];   // why this pass's duplicate slot i has no shadow (NULL: it has one, or it is no duplicate)
+static __strong id<MTLTexture> g_rtdup_sh[8];   // the shadows, kept per slot and reused while format and size match (as g_bcrt_sh)
+static uint64_t g_rtdup_made, g_rtdup_merged;
+// 槽 i 与更早的槽 j 是同一张贴图的同一级同一层：槽 i 挂一张影子（j 挂上的格式、该级尺寸，RenderTarget | ShaderRead，Private）。影子与 j 起点一致：
+//   j 开遍清除（含槽 i 自己的清除，rp_begin_ex 已转给 j）则影子按同一颜色清除，否则开遍前把原贴图那一级那一层 blit 进影子、Load。总是 Store。
+//   本遍槽 i 写过的通道记在 wmask（udc_note_draw / udc_encode / clear_color_tri），遍末 rtdup_flush 只把这些通道并回原贴图。返回 1 = a 现挂影子
+static uint64_t g_rtdup_skipped;   // shadows attached without the copy in (slot proven unwritten to the pass end)
+static int rtdup_attach(MTLRenderPassColorAttachmentDescriptor *a, int i, int j, int clear_only) {
+    g_rtdup_why[i] = NULL;
+    if (clear_only == 1) return 0;   // a pass for clears only: the slot's clear went to slot j (rp_begin_ex), nothing draws
+    MTLPixelFormat pf; const char *no = rtdup_no(&R.rt, i, tex_mtl(R.rt.color[i]), &pf);
+    if (!no && g_rp_layered) no = "layered pass";
+    if (no) { g_rtdup_why[i] = no; return 0; }
+    attach(a, R.rt.color[i], &R.rt.cview[i], R.rt.has_cview[i]);
+    id<MTLTexture> dst = a.texture;
+    if (!dst || pf_int_kind(dst.pixelFormat)) { a.texture = nil; g_rtdup_why[i] = dst ? "integer format" : "not attachable"; return 0; }
+    NSUInteger lv = a.level, sl = a.slice, w = mip_extent(dst.width, lv), h = mip_extent(dst.height, lv);
+    id<MTLTexture> sh = g_rtdup_sh[i];
+    if (!sh || sh.pixelFormat != dst.pixelFormat || sh.width != w || sh.height != h) {
+        MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:dst.pixelFormat width:w height:h mipmapped:NO];
+        d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead; d.storageMode = MTLStorageModePrivate;
+        sh = [g_dev newTextureWithDescriptor:d];
+        if (!sh) { a.texture = nil; g_rtdup_why[i] = "shadow texture could not be created"; return 0; }
+        if (g_rtdup_sh[i]) defer_obj_release(g_rtdup_sh[i]);
+        res_add(sh); g_rtdup_sh[i] = sh; g_rtdup_made++;
+    }
+    if (R.clear_c[j]) { a.loadAction = MTLLoadActionClear; a.clearColor = R.cc[j]; }
+    else if (g_noload_mask >> i & 1) { a.loadAction = MTLLoadActionDontCare; g_rtdup_skipped++; }   // proven unwritten to the pass end (pass_color_unwritten): no copy in; nothing written = nothing merged back (rtdup_flush skips wmask 0). A G-buffer that binds a target twice and never writes the second slot pays only the attachment
+    else { enc_b_copy_texture(blit(), dst, sl, lv, MTLOriginMake(0, 0, 0), MTLSizeMake(w, h, 1), sh, 0, 0, MTLOriginMake(0, 0, 0)); a.loadAction = MTLLoadActionLoad; }
+    a.texture = sh; a.level = 0; a.slice = 0; a.depthPlane = 0; a.storeAction = MTLStoreActionStore;
+    g_rtdup[i] = (rtdup_t){1, j, dst, sh, lv, sl, 0, 0}; g_rtdup_n++;
+    g_fb_dirty[i] = a.loadAction != MTLLoadActionLoad;
+    static int once; if (!once++) MLOG("color slot %d holds the same texture as slot %d (ser=%llu): drawn into a %lux%lu shadow (Metal format %lu), its written channels merged back after the pass (first case pass %llu)",
+                                       i, j, (unsigned long long)R.rt.color[i]->serial, (unsigned long)w, (unsigned long)h, (unsigned long)dst.pixelFormat, g_stat_pass + 1);
+    PD("P %llu c%d duplicate of c%d: shadow %lux%lu %s", g_stat_pass + 1, i, j, (unsigned long)w, (unsigned long)h, a.loadAction == MTLLoadActionClear ? "clear" : "copy");
+    return 1;
+}
+// 记下这一笔槽 i（经影子）/ 槽 j 写的通道
+static void rtdup_note(int i, uint32_t mi, uint32_t mj) {
+    rtdup_t *e = &g_rtdup[i]; e->wmask |= mi; e->jmask |= mj;
+    if (e->wmask & e->jmask && R.rt.color[i])
+        RED_ONCE(213, "color slots %d and %d hold the same texture (ser=%llu) and both write channels %#x in one pass: slot %d's values are merged back over slot %d's after the pass (the order between them is not kept)",
+                 e->j, i, (unsigned long long)R.rt.color[i]->serial, e->wmask & e->jmask, i, e->j);
+}
+static id<MTLDepthStencilState> clr_dss(int dw, unsigned sm);
+static int g_udc_precise;   // the next encode is accounted for already (see udc_encode)
+// 并回管线：全屏三角形，片元按像素读影子（同尺寸，texture.read），颜色写掩码 = 槽 i 写过的通道，不混合。按（像素格式、掩码）缓存
+static id<MTLRenderPipelineState> rtdup_pso(MTLPixelFormat pf, uint32_t mask) {
+    static NSMutableDictionary<NSNumber *, id<MTLRenderPipelineState>> *cache; static id<MTLLibrary> lib; static int failed;
+    NSNumber *key = @(((uint64_t)pf << 4) | (mask & 0xf)); id<MTLRenderPipelineState> ps = cache[key]; if (ps || failed) return ps;
+    NSError *e = nil;
+    if (!lib) { lib = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\n"
+                       "vertex float4 rd_vs(uint i [[vertex_id]]) { return float4(float2(float((i << 1) & 2), float(i & 2)) * 2.0 - 1.0, 0.0, 1.0); }\n"
+                       "fragment float4 rd_fs(float4 p [[position]], texture2d<float> s [[texture(0)]]) { return s.read(uint2(p.xy)); }\n" options:nil error:&e];
+        if (!lib) { failed = 1; MLOG("【红】 duplicate color slot merge: shader compile failed: %s", e.localizedDescription.UTF8String); return nil; } }
+    MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
+    d.vertexFunction = [lib newFunctionWithName:@"rd_vs"]; d.fragmentFunction = [lib newFunctionWithName:@"rd_fs"];
+    d.colorAttachments[0].pixelFormat = pf;
+    d.colorAttachments[0].writeMask = (mask & 1 ? MTLColorWriteMaskRed : 0) | (mask & 2 ? MTLColorWriteMaskGreen : 0) | (mask & 4 ? MTLColorWriteMaskBlue : 0) | (mask & 8 ? MTLColorWriteMaskAlpha : 0);
+    ps = [g_dev newRenderPipelineStateWithDescriptor:d error:&e];
+    if (!ps) { MLOG("【红】 duplicate color slot merge: cannot create the pipeline (Metal format %lu mask %#x): %s", (unsigned long)pf, mask, e.localizedDescription.UTF8String); return nil; }
+    if (!cache) cache = [NSMutableDictionary dictionary];
+    cache[key] = ps; return ps;
+}
+// 遍末（rp_end / defer_fallback，渲染编码器已结束）：每个挂了影子、被写过的槽，开一个小渲染遍把影子里写过的通道并回原贴图那一级那一层（Load / Store）
+static void rtdup_flush(void) {
+    if (!g_rtdup_n) return;
+    g_rtdup_n = 0;
+    static id tab; static int tfail;
+    for (int i = 0; i < 8; i++) {
+        rtdup_t e = g_rtdup[i]; g_rtdup[i] = (rtdup_t){0};
+        if (!e.on || !e.wmask) continue;
+        if (!tab && !tfail) { NSError *err = nil; tab = rec_table(tab_new(1, 1, 0, &err)); if (!tab) { tfail = 1; MLOG("【红】 duplicate color slot merge: cannot create the argument table: %s", err.localizedDescription.UTF8String); } }
+        id<MTLRenderPipelineState> ps = rtdup_pso(e.dst.pixelFormat, e.wmask); id<MTLDepthStencilState> ds = clr_dss(0, 0);
+        if (!ps || !ds || !tab) { RED_ONCE(79, "color slot %d holds the same texture as slot %d: its writes (mask %#x) were drawn into a shadow but cannot be merged back (pipeline / table not made): lost", i, e.j, e.wmask); continue; }
+        if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
+        id rp = pass_desc(); MTLRenderPassColorAttachmentDescriptor *a = ((MTLRenderPassDescriptor *)rp).colorAttachments[0];   // the properties both descriptor classes share (see layer_clears)
+        a.texture = e.dst; a.level = e.level; a.slice = e.slice; a.loadAction = MTLLoadActionLoad; a.storeAction = MTLStoreActionStore;
+        ser_gate(); id en = enc_r_begin(rp);
+        NSUInteger w = e.shadow.width, h = e.shadow.height;
+        tab_tex(tab, e.shadow, 0); enc_r_table(en, tab, MTLRenderStageFragment);
+        enc_r_pso(en, ps); enc_r_dss(en, ds);
+        enc_r_viewport(en, (MTLViewport){0, 0, (double)w, (double)h, 0, 1}); enc_r_scissor(en, (MTLScissorRect){0, 0, w, h});
+        g_udc_precise = 1;   // not a game draw: no attachment bookkeeping (udc_encode)
+        enc_r_draw(en, MTLPrimitiveTypeTriangle, 0, 3);
+        enc_r_table(en, g_ft, MTLRenderStageFragment); enc_r_end(en);
+        g_rtdup_merged++;
+    }
+    args_dirty_all(); g_pso_dirty = g_dss_dirty = 1; g_enc_pso = nil; g_enc_dss = nil; g_ed.ok = 0;
 }
 // S2Arm widen (direct third layer, widen_glue.inc wd_widen_rts): a render target the widen core widens gets storage r texels wide, the game's content in its left part. The core maps this target's
 //   viewports and scissors to r (s2a_widen_map_viewport); on the game's width every full-screen pass stretched its picture by k and cut the right (10-26 Mario Kart 8 Deluxe direct title movie,
@@ -7254,9 +7397,12 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     MTL4RenderPassDescriptor *pd = pass_desc();
     int any = 0;
+    // 同一张贴图的后一个槽被清除：清的是那张贴图，交给更早的槽 j（它若自己也清，以它的为准）；影子随 j 的起点（rtdup_attach）
+    memset(g_rtdup_why, 0, sizeof g_rtdup_why);
+    for (int i = 1; i < R.rt.n && i < 8; i++) if (R.clear_c[i]) { int j = rt_dup_src(&R.rt, i); if (j >= 0 && !R.clear_c[j]) { R.clear_c[j] = 1; R.cc[j] = R.cc[i]; } }
     for (int i = 0; i < R.rt.n; i++) {
         if (!R.rt.color[i] || (clear_only == 1 && !R.clear_c[i])) continue;
-        if (rt_dup_slot(&R.rt, i)) continue;   // a slot attached twice is not attached (see rt_dup_slot)
+        if (i < 8) { int dj = rt_dup_src(&R.rt, i); if (dj >= 0) { if (rtdup_attach(pd.colorAttachments[i], i, dj, clear_only)) any = 1; continue; } }   // a slot attached twice: a shadow, or not attached (see rt_dup_slot / rtdup_attach)
         attach(pd.colorAttachments[i], R.rt.color[i], &R.rt.cview[i], R.rt.has_cview[i]);
         if (!pd.colorAttachments[i].texture) continue;
         any = 1;
@@ -7742,10 +7888,19 @@ enum { QUAR_MAX = 16 };
 static NSMutableSet<NSString *> *g_quar; static NSMutableArray<NSString *> *g_quar_new; static pthread_mutex_t g_quar_mu = PTHREAD_MUTEX_INITIALIZER; static int g_quar_n;
 static int quar_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_QUARANTINE"); v = !(e && !strcmp(e, "0")); } return v; }
 static NSString *quar_path(void) { NSString *u = pso_user_path(); return u ? [u.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"gpu_quarantine.tsv"] : nil; }
+// File version (11-21, #327): a file written before it blamed the program pairs of every faulted commit, GPU memory exhaustion too — the first out-of-memory commit of
+//   a run pinned the pairs it had just built, and every later run skipped them from the start (a whole scene black from the first controllable frame, the opening
+//   logo half drawn: Trails in the Sky the 1st, iPhone 15 Pro Max). Such a file cannot tell an out-of-memory entry from a real fault, so it is dropped and relearned:
+//   a pair that really faults is pinned again the first time it does
+#define QUAR_HEAD "# gpu_quarantine v2: program pairs whose first commit faulted (not GPU memory exhaustion)"
 static void quar_load(void) {   // caller holds g_quar_mu
     if (g_quar) return;
     g_quar = [NSMutableSet set]; g_quar_new = [NSMutableArray array];
     NSString *p = quar_path(), *t = p ? [NSString stringWithContentsOfFile:p encoding:NSUTF8StringEncoding error:nil] : nil;
+    if (t.length && ![t hasPrefix:@QUAR_HEAD]) {
+        NSUInteger old = 0; for (NSString *l in [t componentsSeparatedByString:@"\n"]) old += l.length && ![l hasPrefix:@"#"];
+        [NSFileManager.defaultManager removeItemAtPath:p error:nil]; t = nil;
+        MLOG("GPU error quarantine: %s was written before out-of-memory faults were told apart (%lu program pairs, possibly pinned by memory exhaustion only): dropped, relearned from now on", p.UTF8String, (unsigned long)old); }
     for (NSString *l in [t componentsSeparatedByString:@"\n"]) if (l.length && ![l hasPrefix:@"#"]) [g_quar addObject:l];
     g_quar_n = (int)g_quar.count;
     if (g_quar_n) MLOG("GPU error quarantine: %d program pairs skipped from the start (%s)", g_quar_n, p.UTF8String);
@@ -7765,14 +7920,23 @@ static NSArray<NSString *> *quar_take(void) {   // submit thread, at commit: thi
     pthread_mutex_lock(&g_quar_mu); quar_load(); NSArray *a = g_quar_new.count ? [g_quar_new copy] : nil; [g_quar_new removeAllObjects]; pthread_mutex_unlock(&g_quar_mu);
     return a;
 }
+// GPU memory exhaustion is no program's fault: whatever the commit built would have faulted the same with any shader (kIOGPUCommandBufferCallbackErrorOutOfMemory,
+//   Metal 3 MTLCommandBufferErrorOutOfMemory; Metal 4 nests the reason in its underlying errors, which the description carries)
+static int quar_blameless(NSError *err) {
+    if (!err) return 0;
+    if ([err.domain isEqualToString:MTLCommandBufferErrorDomain] && err.code == MTLCommandBufferErrorOutOfMemory) return 1;
+    return [err.description containsString:@"OutOfMemory"] || [err.description containsString:@"Insufficient Memory"];
+}
 static void quar_fault(NSArray<NSString *> *sus, NSError *err) {   // completion: a commit faulted
     if (!quar_on()) return;
+    if (quar_blameless(err)) { static int n; if (n++ < 4) MLOG("GPU error quarantine: the commit ran out of GPU memory, no program pair blamed (%lu new in it)", (unsigned long)sus.count); return; }
     if (!sus.count || sus.count > QUAR_MAX) { static int n; if (n++ < 8) MLOG("【红】 GPU error quarantine: the faulted commit first built %lu pipelines, %s (%s)", (unsigned long)sus.count, sus.count ? "too many to pin, nothing skipped" : "none new, nothing skipped", err.localizedDescription.UTF8String); return; }
     pthread_mutex_lock(&g_quar_mu);
     NSMutableArray *add = [NSMutableArray array]; for (NSString *q in sus) if (![g_quar containsObject:q]) { [g_quar addObject:q]; [add addObject:q]; }
     g_quar_n = (int)g_quar.count;
     NSString *p = quar_path();
-    if (add.count && p) { FILE *f = fopen(p.fileSystemRepresentation, "a"); if (f) { for (NSString *q in add) fprintf(f, "%s\n", q.UTF8String); fclose(f); } }
+    if (add.count && p) { int fresh = ![NSFileManager.defaultManager fileExistsAtPath:p];
+        FILE *f = fopen(p.fileSystemRepresentation, "a"); if (f) { if (fresh) fprintf(f, "%s\n", QUAR_HEAD); for (NSString *q in add) fprintf(f, "%s\n", q.UTF8String); fclose(f); } }
     pthread_mutex_unlock(&g_quar_mu);
     for (NSString *q in add) MLOG("【红】 GPU error quarantine: program pair %s skipped from now on (the faulted commit first built its pipeline; %s)", q.UTF8String, p ? "remembered for later runs" : "this run only");
 }
@@ -9801,12 +9965,13 @@ static void swrite_note(NvProg *pr) {
 //   and 0 when the fragment shader's output list is known and lacks l. It used to be "channel mask nonzero OR the shader writes it": an attachment the shader never outputs
 //   but whose channel mask is left fully open (the default) counted as written, so the unwritten-attachment store almost never fired
 static const uint8_t *g_udc_lmap; static int g_udc_fsfn;   // the merged-pass map and replacement fragment function this draw's pipeline was fetched with (draw() keeps them before clearing g_pso_lmap / g_pso_fsfn)
-static int udc_slot_writes(int i, __unsafe_unretained NvShader *fs) {
+static uint32_t udc_slot_mask(int i, __unsafe_unretained NvShader *fs) {   // the channels this draw writes in the pass's attachment i
     int l = g_udc_lmap ? g_udc_lmap[i] : i; if (l == 0xff || l > 7) return 0;
     uint32_t m = (S.chmask.mask >> (4 * l)) & 0xf;
     if (fs && fs->rf.color_known && !g_udc_fsfn && !(fs->rf.color_mask >> l & 1)) m = 0;
-    return m != 0;
+    return m;
 }
+static int udc_slot_writes(int i, __unsafe_unretained NvShader *fs) { return udc_slot_mask(i, fs) != 0; }
 // The written marks are kept at the one place every game draw passes, the encode (udc_encode, called by every enc_r_draw* wrapper): udc_note_draw (draw()'s precise
 //   account from the pipeline state and the fragment shader's outputs) covers the next encode; any other encode marks every attachment of the open pass written.
 //   Opting in per draw path lost writes: DrawTexture, tessellation and merged passes never reported, and their attachments' write-backs became DontCare
@@ -9814,6 +9979,8 @@ static int udc_slot_writes(int i, __unsafe_unretained NvShader *fs) {
 static int g_udc_precise;
 static void udc_encode(void) {
     if (g_udc_precise) { g_udc_precise = 0; return; }
+    // 挂了影子的重复槽：不知道着色器写哪些，按通道掩码记，但只记槽 j 写不了的通道——多记一个 j 也写的通道，并回时会拿开遍时的旧值盖掉 j 写的
+    if (g_rtdup_n) for (int i = 1; i < 8; i++) if (g_rtdup[i].on) { uint32_t mi = (S.chmask.mask >> (4 * i)) & 0xf, mj = (S.chmask.mask >> (4 * g_rtdup[i].j)) & 0xf; rtdup_note(i, mi & ~mj, mj); }
     for (int i = 0; i < g_nsd; i++) if (!g_sd[i].wrote) { if (g_sd[i].lskip) noload_witness(i, 6, 0); g_sd[i].wrote = 1; g_sd[i].wwhy = 6; }
 }
 static void udc_note_draw(NvProg *pr) {
@@ -9829,9 +9996,11 @@ static void udc_note_draw(NvProg *pr) {
         for (int i = 0; i < sh->rf.nb; i++) if ((sh->rf.b[i].kind == NVN_RB_IMG || sh->rf.b[i].kind == NVN_RB_IMGU) && sh->rf.b[i].rw) { image_write = 1; break; }
         if (image_write) break;
     }
-    if (R.has_rt) for (int i = 1; i < R.rt.n && i < 8; i++)   // a slot attached twice (left unattached) really written: the writes are lost (see rt_dup_slot)
-        if ((shader_color_mask >> i & 1) && ((S.chmask.mask >> (4 * i)) & 0xf) && rt_dup_slot(&R.rt, i))
-            RED_ONCE(79, "color slot %d holds the same texture as an earlier slot (ser=%llu) and this draw writes it (mask %#x): these writes are lost", i, (unsigned long long)R.rt.color[i]->serial, (S.chmask.mask >> (4 * i)) & 0xf);
+    if (g_rtdup_n) for (int i = 1; i < 8; i++) if (g_rtdup[i].on) rtdup_note(i, udc_slot_mask(i, pr ? pr->sh[1] : nil), udc_slot_mask(g_rtdup[i].j, pr ? pr->sh[1] : nil));   // drawn through a shadow: the channels merged back after the pass (rtdup_flush)
+    if (R.has_rt) for (int i = 1; i < R.rt.n && i < 8; i++)   // a slot attached twice and left unattached (no shadow: rtdup_attach) really written: the writes are lost
+        if ((shader_color_mask >> i & 1) && ((S.chmask.mask >> (4 * i)) & 0xf) && !g_rtdup[i].on && rt_dup_slot(&R.rt, i))
+            RED_ONCE(79, "color slot %d holds the same texture as an earlier slot (ser=%llu) and this draw writes it (mask %#x), but it cannot be drawn through a shadow (%s): these writes are lost", i, (unsigned long long)R.rt.color[i]->serial, (S.chmask.mask >> (4 * i)) & 0xf,
+                     g_rtdup_why[i] ? g_rtdup_why[i] : "not attached in this pass");
     for (int i = 0; i < g_nsd; i++) {
         sd_att *t = &g_sd[i]; int was = t->wrote;
         if (image_write) { t->wrote = 1; t->wwhy = 1; }
@@ -9926,6 +10095,7 @@ static const prog_t *bind_stages(const prog_t *p, int stages) {
 // replayed after the save can give the slot the saved pointer names to another combination. AI: THE SOMNIUM FILES (Unity 2017.4) binds its vertex and fragment programs apart; the
 // prediction over a 280-draw submission (pso_predict_rest) made more than NCMP combinations, and the draw after it ran Legacy Shaders/VertexLit's shadow vertex shader with
 // PSYNC/BG_AlphaTest's shadow pixel shader, a pipeline Metal refused (the pixel shader reads two outputs that vertex shader does not write). The combination is taken again from S.bst
+static unsigned g_bind_last_mask; static int g_bind_last_null; static uint64_t g_bind_n;   // 最近一次 BindProgram 的阶段掩码 / 绑的是不是空程序、累计绑定次数（提交线程；只进红行）
 static void prog_resolve(void) {
     const prog_t *np = bind_stages(NULL, 0); if (np == S.prog) return;
     S.prog = np; g_pso_dirty = 1;
@@ -10775,7 +10945,7 @@ static int spec_probe_on(void) { static int on = -1; if (on < 0) { const char *e
 static void spec_probe_color(id p, MTLRenderPipelineDescriptor *d, int unspec) API_AVAILABLE(macos(26.0), ios(26.0)) {
     // unspec：8 个附件全部留空，没绑的也不写 Invalid——基础管线与本笔画布无关（拉取基础管线按 pbase_key 认，键里没有画布），出包离线编的随包基础管线
     //   （graphics/tools/direct/base_pipelines.py）也是全留空；11-19 本机实测：没绑的写 Invalid 的描述查全留空的归档不中。特化时没绑的才写 Invalid
-    for (int i = 0; i < 8; i++) { MTLRenderPipelineColorAttachmentDescriptor *s = d.colorAttachments[i]; MTL4RenderPipelineColorAttachmentDescriptor *c = [[p colorAttachments] objectAtIndexedSubscript:i];
+    for (int i = 0; i < 8; i++) { MTLRenderPipelineColorAttachmentDescriptor *s = d.colorAttachments[i]; MTL4RenderPipelineColorAttachmentDescriptor *c = (id)[[p colorAttachments] objectAtIndexedSubscript:i];   // 两个描述符类共用这些属性（见 layer_clears）；显式转，指针类型不符在本文件按错误编（graphics/nvn/Makefile WARN）
         if (!unspec && s.pixelFormat == MTLPixelFormatInvalid) { [c setPixelFormat:MTLPixelFormatInvalid]; continue; }
         [c setPixelFormat:unspec ? MTLPixelFormatUnspecialized : s.pixelFormat]; [c setWriteMask:unspec ? MTLColorWriteMaskUnspecialized : s.writeMask];
         [c setBlendingState:unspec ? MTL4BlendStateUnspecialized : s.blendingEnabled ? MTL4BlendStateEnabled : MTL4BlendStateDisabled];
@@ -13745,6 +13915,7 @@ static int state_op(uint32_t op, const void *a, uint32_t size) {
         // The compute stage has a binding of its own: a compute bind used to replace the one bound program, so a draw after a dispatch found the compute program (or none) and was
         // dropped, and a dispatch after a graphics bind found no compute shader. Hyrule Warriors: Age of Calamity interleaves them; its movie's NV12 → RGB draw was dropped and the intro played black
         case OP_BIND_PROGRAM: { p_bind_program bpt_; const p_bind_program *bp_ = bind_program_rec(a, size, &bpt_); const prog_t *bpp = prog_live(bp_);
+            g_bind_last_mask = bp_->stages; g_bind_last_null = !bpp; g_bind_n++;   // 「绘制前没绑程序」那行红的现场（#1948）
             if ((bp_->stages & 0x20) && bpp != S.cprog) { S.cprog = bpp; args_dirty_all(); }
             if (bp_->stages & 0x1f) { const prog_t *np = bind_stages(bpp, bp_->stages & 0x1f); if (np != S.prog) { S.prog = np; g_pso_dirty = 1; args_dirty_all(); } }
             break; }
@@ -13858,7 +14029,7 @@ static void pso_predict_rest_(void) {
         if (hq.op == OP_SET_RT) {
             p_set_rt rb; const p_set_rt *r = set_rt_rec(aq, hq.size, &rb); memset(cf, 0, sizeof cf); dfull = sfull = 0; samples = 1;
             g_tex_peek = 1;   // 只取格式 / 采样数（见 g_tex_peek）
-            for (int i = 0; i < r->n && i < 8; i++) { id<MTLTexture> t = r->color[i] && !rt_dup_slot(r, i) ? tex_mtl(r->color[i]) : nil; if (t && nvn_fmt_bc(r->color[i]->d.format) && mtl_fmt_block(t.pixelFormat)) t = nil; if (t) { MTLPixelFormat dpf; cf[i] = bcdec_view(r->color[i], t, &r->cview[i], r->has_cview[i], &dpf) ? (uint32_t)dpf : (uint32_t)rt_view_fmt(t, &r->cview[i], r->has_cview[i]); samples = (uint32_t)t.sampleCount; } }   // 无 BC 的块影子按视图格式（bcdec_attach）   // compressed BC targets are never attached (see attach); on a GPU without BC the storage is decoded and IS attached, so predict its real format
+            for (int i = 0; i < r->n && i < 8; i++) { id<MTLTexture> t = r->color[i] ? tex_mtl(r->color[i]) : nil; if (t && rt_dup_slot(r, i)) { MTLPixelFormat spf; if (!rtdup_no(r, i, t, &spf)) { cf[i] = (uint32_t)spf; samples = (uint32_t)t.sampleCount; } continue; }   /* a slot attached twice: its shadow's format, or not attached (rtdup_attach) */ if (t && nvn_fmt_bc(r->color[i]->d.format) && mtl_fmt_block(t.pixelFormat)) t = nil; if (t) { MTLPixelFormat dpf; cf[i] = bcdec_view(r->color[i], t, &r->cview[i], r->has_cview[i], &dpf) ? (uint32_t)dpf : (uint32_t)rt_view_fmt(t, &r->cview[i], r->has_cview[i]); samples = (uint32_t)t.sampleCount; } }   // 无 BC 的块影子按视图格式（bcdec_attach）   // compressed BC targets are never attached (see attach); on a GPU without BC the storage is decoded and IS attached, so predict its real format
             id<MTLTexture> dt = r->depth ? tex_mtl(r->depth) : nil;
             g_tex_peek = 0;
             if (dt) { MTLPixelFormat f = dt.pixelFormat; samples = (uint32_t)dt.sampleCount;
@@ -14545,7 +14716,7 @@ static void defer_replay(void) {
 static void defer_fallback(void) {
     if (g_defer_replaying || !defer_has_active()) return;
     g_defer_fallbacks++; MLOG("【红】 deferred pass merge: groups still not replayed at the end of the submission; falling back to each group's original P target");
-    if (g_enc) { enc_r_end(g_enc); g_enc = nil; if (g_nbcrt) bcrt_flush(); }
+    if (g_enc) { enc_r_end(g_enc); g_enc = nil; if (g_rtdup_n) rtdup_flush(); if (g_nbcrt) bcrt_flush(); }
     typeof(S) save; memcpy(&save, &S, sizeof S); p_set_rt rt = R.rt; g_defer_replaying = 1;
     for (int gi, after = 0; (gi = defer_next(0, after)) >= 0;) { defer_t *d = &g_defer_slots[gi]; after = d->born; g_defer_cur = d; R.rt = d->p_rt; R.has_rt = 1; memcpy(R.clear_c, d->clear_c, 8); memcpy(R.cc, d->cc, sizeof R.cc);
         R.clear_d = d->clear_d; R.clear_s = d->clear_s; R.cd = d->cd; R.cs = d->cs;
@@ -15452,10 +15623,12 @@ static void tex3d_prepare(NvProg *pr) {
     uint64_t frame = atomic_load(&g_cur_frame); id<MTLTexture> src[8], dst[8]; int n = 0;
     for (int i = 0; i < fs->rf.nb && n < 8; i++) { const nvn_rbind *b = &fs->rf.b[i]; if (b->kind != NVN_RB_TEX || b->dtt != (uint8_t)MTLTextureType3D) continue;
         int tid = (int)(tex_slot_h(S.tex[1], S.img[1], b->reg) & 0xfffff); id<MTLTexture> t = nil, have = nil; uint64_t made = 0;
-        pthread_mutex_lock(&g_rmu);
+        // g_rmu 是 os_unfair_lock：原先这里用 pthread_mutex_lock / unlock，签名不符直接返回错误、根本没上锁，游戏线程登记贴图让 g_treg 扩容（realloc）时
+        //   这里读到已还给系统的旧表，提交线程缺页闪退（D-BHBZ / D-SCMX：两款 Switch 2 游戏、两台设备同址，draw 里内联的这一段）
+        os_unfair_lock_lock(&g_rmu);
         if (tid >= 0 && tid < g_ntreg && g_treg[tid].ok) { void *tv = NULL; tex_fast_rid(tid, &tv); t = (__bridge id<MTLTexture>)tv; treg_t *r = &g_treg[tid];
             if (t && r->alt && r->alt_copy && r->alt_of == (__bridge void *)t) { have = (__bridge id<MTLTexture>)r->alt; made = r->alt_made; } }
-        pthread_mutex_unlock(&g_rmu);
+        os_unfair_lock_unlock(&g_rmu);
         unsigned depth = t ? t3b_depth((int)t.textureType, T3B_TYPE_3D, (unsigned)t.sampleCount, (unsigned)t.arrayLength, t3b_pf_plain(t.pixelFormat)) : 0;
         if (!depth || (have && t3b_action(made, frame, g_enc != nil) == T3B_USE)) continue;
         if (!have) { MTLTextureDescriptor *d = [MTLTextureDescriptor new]; d.textureType = MTLTextureType3D; d.pixelFormat = t.pixelFormat; d.width = t.width; d.height = t.height; d.depth = depth;
@@ -15464,11 +15637,11 @@ static void tex3d_prepare(NvProg *pr) {
             res_add(have); g_t3b_made++;
             if (g_t3b_made <= 4) MLOG("3D slot holding a %s texture (texture ID %d, %lux%lu, %u layer%s, format %lu, shader %s slot %d): bound as a 3D copy of it (%llu so far)", t.textureType == MTLTextureType2D ? "2D" : "2D array", tid,
                                       (unsigned long)t.width, (unsigned long)t.height, depth, depth == 1 ? "" : "s", (unsigned long)t.pixelFormat, fs->key, b->reg, (unsigned long long)g_t3b_made); }
-        pthread_mutex_lock(&g_rmu);
+        os_unfair_lock_lock(&g_rmu);
         int keep = 0; if (tid < g_ntreg && g_treg[tid].ok) { void *tv = NULL; tex_fast_rid(tid, &tv); treg_t *r = &g_treg[tid];
             if (tv == (__bridge void *)t) { if (r->alt != (__bridge void *)have) { treg_drop_alt(r); r->alt = (void *)CFBridgingRetain(have); r->alt_of = (__bridge void *)t; r->alt_type = (uint8_t)MTLTextureType3D; r->alt_rid = have.gpuResourceID._impl; r->alt_copy = 1; }
                 r->alt_made = frame + 1; keep = 1; } }
-        pthread_mutex_unlock(&g_rmu);
+        os_unfair_lock_unlock(&g_rmu);
         if (!keep) { defer_obj_release(have); continue; }   // the ID was registered again meanwhile: the next draw looks again
         src[n] = t; dst[n] = have; n++; }
     if (!n) return;
@@ -16706,7 +16879,8 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     if (!mdx_on && ((di && di->mdi_cnt && !mdi_live(di->mdi_cnt, di->mdi_i)) || (dw && dw->mdi_cnt && !mdi_live(dw->mdi_cnt, dw->mdi_i)))) return;   // past the multi-draw's count
     if (mdx_on && mdx_next(dw, di)) return;   // the next draw of a masked multi-draw: only the draw is encoded
     g_mdxc.next = NULL;
-    if (!S.prog) { BAD_ERR(); RED_ONCE(18, "no program bound before the draw"); PD("Z %llu draw skipped: no program bound", g_stat_pass + !g_enc); return; }
+    if (!S.prog) { BAD_ERR(); RED_ONCE(18, "no program bound before the draw (stage slots bound, by NVN stage bit: vertex %d fragment %d geometry %d tess-control %d tess-eval / mesh %d, compute %d; last bind stage mask %#x%s, %llu binds so far)",
+        S.bst[0] != NULL, S.bst[1] != NULL, S.bst[2] != NULL, S.bst[3] != NULL, S.bst[4] != NULL, S.cprog != NULL, g_bind_last_mask, g_bind_last_null ? " with no program" : "", (unsigned long long)g_bind_n); PD("Z %llu draw skipped: no program bound", g_stat_pass + !g_enc); return; }
     __unsafe_unretained NvProg *pr = g_geo_program ? g_geo_program : prog_get(S.prog);
     qf_note(pr);   // GPU error attribution: this commit's in-flight programs (qf_put)
     for (int stage = 0; stage < 5; stage++) if (!img_atomic_prepare(pr->sh[stage], stage)) return;
@@ -18248,6 +18422,12 @@ static void clear_color_tri(const p_clear_color *c) {
         else if (kind == 2) { si = !(f == f) ? 0 : f >= 2147483520.f ? INT32_MAX : f <= -2147483648.f ? INT32_MIN : (int32_t)f; memcpy(&v[i], &si, 4); }
         else memcpy(&v[i], &f, 4); }
     clr_tri(en, ps, ds, sc, g_pass.tw, g_pass.th, v, 0, 0); clr_note(at, 0, 0);
+    {   // 同一张贴图另有一个槽经影子挂着（rtdup_attach）：清的是那张贴图，两处都清，影子与原槽在这几个通道上保持一致
+        int root = at < 8 && g_rtdup[at].on ? g_rtdup[at].j : at;
+        if (g_rtdup_n) for (int s2 = 0; s2 < R.rt.n && s2 < 8; s2++) if (s2 != at && g_pass.cfmt[s2] && (s2 == root || (g_rtdup[s2].on && g_rtdup[s2].j == root)) && pf_int_kind((MTLPixelFormat)g_pass.cfmt[s2]) == kind) {
+            clr_key k2 = k; k2.slot = s2; id<MTLRenderPipelineState> ps2 = clr_pso(&k2); if (!ps2) continue;
+            clr_tri(en, ps2, ds, sc, g_pass.tw, g_pass.th, v, 0, 0); clr_note(s2, 0, 0); }
+    }
     if (!g_clr_tri[0]++) MLOG("mid-pass / partial-mask / partial-scissor color clear: drawn as a full-pass triangle (first case pass %llu slot %d mask %#x scissor %lu,%lu %lux%lu)", g_stat_pass, at, mask,
                               (unsigned long)sc.x, (unsigned long)sc.y, (unsigned long)sc.width, (unsigned long)sc.height);
     PD("c %llu color clear drawn as a triangle slot%d ser=%llu mask=%#x scissor=%lu,%lu,%lu,%lu color=%g,%g,%g,%g", g_stat_pass, at, (unsigned long long)R.rt.color[at]->serial, mask,

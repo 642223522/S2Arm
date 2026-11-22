@@ -27,7 +27,7 @@ import threading
 import time
 import uuid
 from progress_activity import BatchActivity
-from errors import Failure, explain, failure_summary, last_output_lines, recovery, library_lock_failure
+from errors import Failure, device_of, explain, failure_summary, last_output_lines, recovery, library_lock_failure
 
 
 def default_developer_dir():
@@ -777,7 +777,8 @@ class Context:
             transient = extra.pop("transient", False)   # 只给标准输出、不进事件记录（出包编排转发子作业事件：子作业自己的记录里已有，剃刀 H13）
             if kind == "plan":
                 self.overall.plan(extra.get("milestones"))
-            overall = self.overall.feed(kind, now - self.t0, getattr(self, "milestone", None), state, self.number, self.count, done, total)
+            overall = self.overall.feed(kind, now - self.t0, getattr(self, "milestone", None), state, self.number, self.count, done, total,
+                                        sub=kind == "progress" and "counters" in extra)   # 阶段工具的子计数（emit_stage_counter）
             if overall is not None:
                 extra["overall"] = overall
                 self.job["overall"] = overall
@@ -991,7 +992,7 @@ class Context:
         failure = explain(error, **self.failure_roots())
         code = failure.code
         result = dict(code=code, severity=severity, summary=self.redact(failure),
-                      suggestion=getattr(failure, "advice", None) or recovery(code, packaged=bool(self.r.get("engineBundle")), tv=str(getattr(self, "operation", "")).startswith("tv")), detail="", stage=self.stage,
+                      suggestion=getattr(failure, "advice", None) or recovery(code, packaged=bool(self.r.get("engineBundle")), tv=str(getattr(self, "operation", "")).startswith("tv"), device=device_of(self)), detail="", stage=self.stage,
                       component="S2Arm", logPath=str(self.last_log) if self.last_log else None)
         if exit_code is not None:
             result["exitCode"] = exit_code

@@ -75,6 +75,7 @@ extension S2ArmLauncherModel {
                 let r = try await self?.provider.updatePhone(acceptStale: acceptStale, accept: accept, mode: mode, sgradeUpgrade: sgradeUpgrade, device: device, events: sink) ?? [:]
                 let names = Dictionary((self?.games ?? []).map { ($0.id.uppercased(), $0.name) }, uniquingKeysWith: { a, _ in a })
                 self?.installTrustName = r["trustName"] as? String ?? ""   // 重装了 App（换团队 / 续签）：完成页同样说要点哪一项信任
+                self?.installTrustKind = r["deviceKind"] as? String ?? ""
                 self?.phoneOutcome = PhoneOutcome(device: Self.deviceLabel(kind: r["deviceKind"] as? String ?? "", name: r["deviceName"] as? String ?? ""),
                                                   packFiles: (r["packFiles"] as? NSNumber)?.intValue, packBytes: (r["packBytes"] as? NSNumber)?.int64Value,
                                                   skipped: (r["skipped"] as? [String] ?? []).map { names[$0.uppercased()] ?? $0 },
@@ -104,6 +105,7 @@ extension S2ArmLauncherModel {
     func phoneUpdateEnded(completed: Bool) {
         let repack = completed ? updateRepack : []
         updateRepack = []
+        if !repack.isEmpty { installAfterDevice = lastUpdateArgs?.device }
         refresh()
         guard !repack.isEmpty else { return }
         Task {
@@ -131,6 +133,6 @@ extension S2ArmLauncherModel {
         let id = installAfterQueue.removeFirst()
         let plan = exportAfterPack.removeValue(forKey: id)
         guard let game = games.first(where: { $0.id == id }) else { installNextQueued(); return }
-        if let plan { runExportPlan(game, plan) } else { install(game) }   // 导出确认页要先出包的款按它那份计划走；批量「更新并重新出」出完的照旧装上
+        if let plan { runExportPlan(game, plan) } else { install(game, device: installAfterDevice) }   // 导出确认页要先出包的款按它那份计划走；批量「更新并重新出」出完的照旧装上
     }
 }

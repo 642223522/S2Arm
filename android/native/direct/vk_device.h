@@ -5,6 +5,11 @@
 #include <stdint.h>
 #include <vulkan/vulkan.h>
 
+// 直连实例申请的 Vulkan 版本（VkApplicationInfo.apiVersion）。用更高核心版本才有的物理设备功能，要应用申请的版本和设备版本都够：
+//   有效版本 = 两者较低者；不够就只认对应扩展（Khronos：VkApplicationInfo 描述、初始化一章的 physical-device 扩展段）。
+#define S2A_VK_APP_API_VERSION VK_API_VERSION_1_1
+static inline uint32_t s2a_vk_effective_api(uint32_t device_api) { return device_api < S2A_VK_APP_API_VERSION ? device_api : S2A_VK_APP_API_VERSION; }
+
 // 等栅栏，按墙钟算时限。有的驱动在等待被信号打断时不接着等，直接返回 VK_TIMEOUT（#697：天玑 9000+ / Mali-G710 r32p1 上，
 // 一次计算解码的提交之后 vkWaitForFences(5 秒) 不到 1 毫秒就返回超时、栅栏其实稍后才触发；等待期间屏蔽本线程的异步信号后正常）。
 // 我们的进程里信号很多（写跟踪的缺页、游戏线程的挂起），所以超时返回不能当真：没到墙钟时限就接着等。
@@ -67,6 +72,7 @@ struct s2a_vk_device {
     // descriptor indexing 仅建可选设备能力；编译器的 non-uniform profile 仍独立关闭。
     // ext_state: -1 枚举失败（未知），0 未列出，1 列出。后续位为物理设备支持，不等于启用。
     int descriptor_indexing_ext_state, descriptor_indexing_enabled;
+    int device_fault_ext_state;  // 仅诊断：1 已列出，0 未列出，-1 枚举失败
     int descriptor_indexing_runtime, descriptor_indexing_partial, descriptor_indexing_sampled_nonuniform;
     int descriptor_indexing_storage_nonuniform, descriptor_indexing_variable_count, descriptor_indexing_sampled_update_after_bind;
     // #1199：逐格式 BC 能力位（bit i 对应 NVN 格式 0x41+i）。

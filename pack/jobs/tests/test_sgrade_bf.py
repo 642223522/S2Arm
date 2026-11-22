@@ -116,6 +116,35 @@ class UpgradeMac(unittest.TestCase):
                     self.assertFalse(sgrade_bf.mac_due(c, "G", m), "更新完：Mac 那份不再要更新")
                     self.assertFalse(sgrade_bf.upgrade_mac(c, "G", rt), "再点：不再重出")
 
+    def test_vulkan_gl_game_records_without_rebuild(self):
+        """D-RAKK（mac/0.6.5，0100CD801CE5E000）：Vulkan / OpenGL 款的 Mac 运行版本只有空的直连目录、库代数没记 → 原先判要重出，
+        重出必「不完整」，每点「更新这款」整单失败。期望（手写）：不调重出、不动库文件，记本版 bfGen / libGen，之后 mac_due 不再判要更新；
+        NVN 款（判成 nvn）照旧重出"""
+        import host_update
+        for api, rebuilt in (("gl", False), ("vulkan", False), ("nvn", True)):
+            with self.subTest(api), tempfile.TemporaryDirectory() as t:
+                t = Path(t); rt = t / "runtime"; (rt / "romfs").mkdir(parents=True); (rt / "shaders/direct").mkdir(parents=True)
+                (rt / "shaders/direct/keys.tsv").write_text("")
+                (rt / "manifest.json").write_text(json.dumps({"files": {"shaders/direct/keys.tsv": [0, ""]}}))
+                (t / "engine.json").write_text(json.dumps({"version": "0.6.5"}))
+                new = t / "new"; (new / "b-c").mkdir(parents=True); (new / "keys.tsv").write_text("k\n"); (new / "b-c/lib.idx").write_bytes(b"1")
+                c = types.SimpleNamespace(emit=lambda *a, **k: None, private=t, engine=t, library=t)
+                calls = []
+                with patch.object(sgrade_bf, "gfx_api", return_value=api), \
+                        patch.object(sgrade_bf, "rebuild", side_effect=lambda *a, **k: calls.append(1) or new):
+                    self.assertTrue(sgrade_bf.mac_due(c, "G", json.loads((rt / "manifest.json").read_text())), "库代数没记：判要更新")
+                    self.assertEqual(sgrade_bf.upgrade_mac(c, "G", rt), rebuilt)
+                    m = json.loads((rt / "manifest.json").read_text())
+                    self.assertEqual((bool(calls), m.get("libGen"), m.get("bfGen")), (rebuilt, host_update.LIB_GEN, sgrade_bf.BF_GEN))
+                    self.assertFalse(sgrade_bf.mac_due(c, "G", m), "做完：不再判要更新")
+                    if not rebuilt:
+                        self.assertEqual(sorted(p.name for p in (rt / "shaders/direct").iterdir()), ["keys.tsv"], "库目录不动")
+
+    def test_gfx_api_unknown_without_exefs(self):
+        c = types.SimpleNamespace(engine=Path(__file__).resolve().parents[3])
+        with tempfile.TemporaryDirectory() as t:
+            self.assertEqual(sgrade_bf.gfx_api(c, t), "unknown", "没有 exefs：判不了，调用方照旧按 NVN 走")
+
     def test_busy_gives_up_without_touching(self):
         with tempfile.TemporaryDirectory() as t:
             t = Path(t); rt = t / "runtime"; (rt / "romfs").mkdir(parents=True); (rt / "shaders/direct").mkdir(parents=True)

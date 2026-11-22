@@ -27,7 +27,7 @@ import java.util.TreeMap;
 
 /**
  * #528 item 15: the Android side of "export diagnostics". Collects what only a Context knows
- * (this app's directories, the imported key file, version and device facts) and runs
+ * (this app's directories, the imported key file, version, device facts and the device profile) and runs
  * DiagnosticBundleWriter. Call off the main thread.
  */
 final class DiagnosticExport {
@@ -39,8 +39,10 @@ final class DiagnosticExport {
         DiagnosticRedactor redactor = new DiagnosticRedactor(prefixes(context), DiagnosticRedactor.keyValues(keyText(context)));
         Path saves = new File(context.getFilesDir(), "user/0/saves").toPath();   // same root as BootSpecSource
         String word = Locale.getDefault().getLanguage().equals("zh") ? "诊断" : "diag";
-        return DiagnosticBundleWriter.write(saves, DiagnosticShareProvider.checkedDirectory(context), redactor::redact,
-                                            info(context), exits(context), word, System.currentTimeMillis(), TimeZone.getDefault()).bundle;
+        Path profiles = new File(context.getFilesDir(), "devprofile").toPath();   // device profile (android/native/direct/dev_facts.c, #1749)
+        return DiagnosticBundleWriter.write(saves, profiles, DiagnosticShareProvider.checkedDirectory(context), redactor::redact,
+                                            info(context), exits(context), word, System.currentTimeMillis(), TimeZone.getDefault(),
+                                            DiagnosticBundleWriter.MAX_ZIP_BYTES).bundle;
     }
 
     /** This app's own directories, under every spelling a log may use; the rest of each path is kept. */
@@ -64,7 +66,6 @@ final class DiagnosticExport {
     /** How this app's processes (library, :game) ended, newest first; none before API 30. */
     static List<Map<String, Object>> exits(Context context) {
         List<Map<String, Object>> out = new ArrayList<>();
-        if (Build.VERSION.SDK_INT < 30) return out;
         ActivityManager am = context.getSystemService(ActivityManager.class);
         if (am == null) return out;
         List<ApplicationExitInfo> all = new ArrayList<>(am.getHistoricalProcessExitReasons(context.getPackageName(), 0, DiagnosticExits.MAX_RECORDS));
@@ -106,7 +107,7 @@ final class DiagnosticExport {
         device.put("android", Build.VERSION.RELEASE);
         device.put("sdk", Integer.toString(Build.VERSION.SDK_INT));
         device.put("abi", Build.SUPPORTED_ABIS.length > 0 ? Build.SUPPORTED_ABIS[0] : "");
-        device.put("soc", Build.VERSION.SDK_INT >= 31 ? Build.SOC_MODEL : "");
+        device.put("soc", Build.SOC_MODEL);
         settings.put("language", Locale.getDefault().toLanguageTag());
         Map<String, Map<String, String>> info = new TreeMap<>();
         info.put("app", app);

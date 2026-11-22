@@ -34,12 +34,12 @@ def plumesign_path(given=None):
     return None
 
 
-def _mux_list():
-    """本机设备服务（usbmux）ListDevices 的原始设备表"""
+def _mux_request(req):
+    """向本机设备服务（usbmux）发一条 plist 请求 → 回包字典"""
     if os.name == 'nt': s = socket.create_connection(('127.0.0.1', 27015), 5)
     else: s = socket.socket(socket.AF_UNIX); s.settimeout(5); s.connect('/var/run/usbmuxd')
     with s:
-        p = plistlib.dumps({'MessageType': 'ListDevices', 'ClientVersionString': 'S2Arm-install', 'ProgName': 'S2Arm-install', 'kLibUSBMuxVersion': 3})
+        p = plistlib.dumps({**req, 'ClientVersionString': 'S2Arm-install', 'ProgName': 'S2Arm-install', 'kLibUSBMuxVersion': 3})
         s.sendall(struct.pack('<IIII', 16 + len(p), 1, 8, 1) + p)
         h = b''
         while len(h) < 16: h += s.recv(16 - len(h))
@@ -48,7 +48,44 @@ def _mux_list():
             c = s.recv(n - len(b))
             if not c: break
             b += c
-    return plistlib.loads(b).get('DeviceList', [])
+    return plistlib.loads(b)
+
+
+def _mux_list():
+    """本机设备服务（usbmux）ListDevices 的原始设备表"""
+    return _mux_request({'MessageType': 'ListDevices'}).get('DeviceList', [])
+
+
+def has_pair_record(udid):
+    """设备服务里存着这台的配对记录吗（ReadPairRecord 回 PairRecordData）；问不了设备服务抛 OSError"""
+    return bool(_mux_request({'MessageType': 'ReadPairRecord', 'PairRecordID': udid}).get('PairRecordData'))
+
+
+PAIR_TIMEOUT = 200   # s2a-devpush pair 自己最多等 180 秒手机上点「信任」
+
+
+def ensure_paired(udid, devpush=None, say=lambda m: print(m, flush=True), log=None):
+    """签名装机前先配对（#1973）：Windows 上只有 iTunes / Apple Devices 会向手机发起配对、存配对记录。它们没开着时，手机上点了「信任」
+    也没有记录，plumesign 报「device does not have pairing file」，玩家怎么点都没用。设备服务里没有这台的记录 → 用 s2a-devpush pair 自己发起配对
+    （手机弹「要信任此电脑吗」）、存进设备服务，再去签名。有记录不动；设备服务问不了交给后面报真原因"""
+    try:
+        if has_pair_record(udid): return
+    except OSError:
+        return
+    sys.path.insert(0, str(R / 'tools')); import push_pack as P
+    exe = P.devpush_path(devpush)
+    if not exe: return   # 没有配对工具：照常去签名，没记录时由签名报真原因
+    say('这台电脑还没和手机配对：解锁手机，在弹出的「要信任此电脑吗」里点「信任」并输入锁屏密码')
+    try:
+        r = subprocess.run([exe, udid, '-', 'pair', socket.gethostname()], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=PAIR_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise Fail('手机上一直没点「信任」：解锁手机、点「信任」并输入锁屏密码，再装一次', 1, 'device_pairing_required')
+    if log:
+        with open(log, 'a', encoding='utf-8') as f: f.write(f'\n--- 配对（s2a-devpush pair）退出码 {r.returncode} ---\n{r.stdout}{r.stderr}\n')
+    if r.returncode != 0:
+        why = (r.stderr.strip().splitlines() or ['配对没成'])[-1]
+        raise Fail(why, 1, 'device_pairing_required')
+    say('已和手机配对')
 
 
 def mux_devices():
@@ -204,7 +241,8 @@ def sign_install(exe, ipa, dev_id, name, log, out_ipa, bundle=None, register=Tru
     text = p.stdout + p.stderr
     Path(log).write_text(text, encoding='utf-8')
     if p.returncode or (register and 'Installation complete' not in text) or (not register and not Path(out_ipa).is_file()):
-        tail = [ln for ln in text.splitlines() if ln.strip() and 'DEBUG' not in ln][-1:] or ['（没有输出）']
+        # Rust panic 结尾的「note: run with `RUST_BACKTRACE=1` …」不当原话上屏（#1947）：取它前面那行（panic 的位置 / 原因）
+        tail = [ln for ln in text.splitlines() if ln.strip() and 'DEBUG' not in ln and 'RUST_BACKTRACE' not in ln][-1:] or ['（没有输出）']
         code = impactor.explain(text)
         raise Fail(f'签名装机失败（{code}）：{tail[0][-300:]}', 1, code)
 
@@ -446,6 +484,7 @@ def install_app(a, say=lambda m: print(m, flush=True)):
     if dev is None: raise Fail(f'设备服务里没有要装的那台 {a.udid or "（没拿到设备编号）"}（在列：{", ".join(f"{u}/{c}" for u, c, _ in devs) or "无"}）：'
                                '给这台插上数据线并解锁，或在电脑上给它打开「通过 Wi-Fi 显示」', 75, 'device_not_connected')
     log = a.log or os.path.join(os.path.dirname(os.path.abspath(a.ipa)), 'plumesign.log')
+    ensure_paired(next((u for u, _, d in devs if d == dev and u), a.udid), getattr(a, 'devpush', None), say, log)   # 设备服务里记的写法（不带横线）
     with tempfile.TemporaryDirectory() as t:
         out = Path(t, 'signed.ipa'); say(f'签名 + 装机（设备编号 {dev}）…')
         bundle = getattr(a, 'bundle', None)
@@ -465,7 +504,8 @@ def install_app(a, say=lambda m: print(m, flush=True)):
                         # 重试那次 plumesign 常常连不上就直接 panic（omnisette remote_anisette_v3.rs 显式 panic），输出里只剩
                         #   「note: run with RUST_BACKTRACE=1」认不出原因、落回 device_install_failed，玩家看到的就是这句（诊断#3fc02b D-5A5K，0.4.0）。
                         #   第二次认不出就按第一次认出的报：连不上签名服务器
-                        if again.err != 'device_install_failed': raise
+                        #   新版 impactor.explain 也认得出这个 panic（#1947，同样归 signing_server_unreachable）：两次同因时也报第一次的原话，不把 panic 那行上屏
+                        if again.err not in ('device_install_failed', 'signing_server_unreachable'): raise
                         raise e from again
                     finally:
                         Path(log).write_text(first + '\n--- 连不上签名服务器：重试 ---\n' + Path(log).read_text(encoding='utf-8', errors='replace'), encoding='utf-8')
