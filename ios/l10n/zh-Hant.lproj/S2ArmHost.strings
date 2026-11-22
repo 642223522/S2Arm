@@ -503,6 +503,8 @@
 "settings.toggle.touchHud" = "觸控診斷資訊";
 "settings.widen.blocked" = "本遊戲的全螢幕有已知問題，仍可開啟";
 "textinput.header" = "輸入";
+"textinput.player.create" = "建立新使用者";
+"textinput.player.select" = "選擇 S2Arm 使用者";
 "textinput.min" = "至少 %ld 個字";
 "textinput.ok" = "確定";
 "textinput.range" = "%ld–%ld 個字";
