@@ -3895,7 +3895,14 @@ def phone_updates(c):
                           games=[dict(gameId=g, name=names.get(g, g)) for g in sorted(rec.get("games") or {})] if rec.get("shellId") else [], stale=[])
             out.append(dict(device=key, name=(rec.get("signed") or {}).get("device") or "", **st, kept=[dict(gameId=g, name=g) for g in kept],
                             apps=[dict(gameId=g, name=names[g.upper()]) for g in old]))
-    return out
+    # D-XYNG：两个启动器的「更新」按钮都取第一条。连着的那台排前（稳定排序，其余照原顺序）：原先按记录文件名排，游戏库里留着一台
+    #   不在线的旧设备时，按钮永远去找它、报「没列出来」，连着的这台也旧却轮不到。键比较同 win_udid（设备服务的写法可能差在短横 / 大小写）
+    online = {_udid_cmp(u) for u in online_devices(c)} if len(out) > 1 else set()   # 本机回环查设备服务，毫秒级；只有一条时不用排
+    return sorted(out, key=lambda u: _udid_cmp(u["device"]) not in online) if online else out
+
+
+def _udid_cmp(u):
+    return str(u or "").replace("-", "").upper()
 
 
 PLAYING_WINDOW_S = 45   # 游玩时间心跳：游戏在前台时每 10 秒写一次 playtime.json（runtime/src/playtime.c，平台壳 10 秒定时器）；最近 45 秒内写过 = 正在玩
