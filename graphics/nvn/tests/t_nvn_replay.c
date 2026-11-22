@@ -2344,6 +2344,56 @@ static void t_decl_array_numeric(void) {
     rp_view_pin_end(); nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK); res_fresh();
 }
 
+// 深度模板贴图按哪个面采样（#1679 斑马纹的根因）：建贴图时设了模板模式（TextureBuilderSetDepthStencilMode）、视图没设模式时，
+// 交给后端的采样视图记录要带模板模式；视图自己设了模式就取视图的（同 iOS 层 nvn_mtl.m tex_by_id 的规则）。
+// 同一块存储上的深度模式贴图与模板模式贴图在同存储共用表里是同一份后端存储，区别只在视图记录。
+static void t_stencil_sample_mode(void) {
+    nvn_be_sub_begin(); res_fresh(); nvn_unimpl_reset(); nvn_be_set_tex_pool_n(8); rp_view_pin_begin();
+    const int ds = NVN_FORMAT_DEPTH24_STENCIL8;
+    tex_t dep = mk_tex(8101, 0, ds, 16, 16, 1, 0);                    // 深度缓冲本体：深度模式
+    tex_t stn = mk_tex(8102, 0, ds, 16, 16, 1, 0); stn.stencil = 1;   // 同池同偏移同描述的第二个对象：建贴图时设了模板模式
+    nvn_be_reg_tex(1, &dep, NULL); nvn_be_reg_tex(2, &stn, NULL);
+    int c0 = g_tex_creates;
+    nvn_gpu_view vd = rp_view_by_id(1, &g_fake_cmd, NULL), vs = rp_view_by_id(2, &g_fake_cmd, NULL);
+    CHECK(vd && vs && vd != vs && vd->of == vs->of && g_tex_creates - c0 == 1);   // 一份后端存储、两个视图
+    CHECK(!vd->has_v);                                                           // 深度模式：不带视图记录，后端取深度面
+    CHECK(vs->has_v && vs->v.set_dsmode && vs->v.dsmode == NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL);   // 模板模式：记录带模板
+    // 模板模式的贴图是存储的第一个使用者：存储照常建，建存储时不带模板标志（取哪个面由视图决定）
+    tex_t first = mk_tex(8103, 0x4000, ds, 16, 16, 1, 0); first.stencil = 1; nvn_be_reg_tex(3, &first, NULL);
+    nvn_gpu_view vf = rp_view_by_id(3, &g_fake_cmd, NULL);
+    CHECK(vf && vf->of != vs->of && vf->of->d.stencil_view == 0 && vf->has_v && vf->v.set_dsmode && vf->v.dsmode == NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL);
+    // 视图自己设了模式：取视图的（贴图是模板模式、视图设深度 → 深度；贴图是深度模式、视图设模板 → 模板）
+    view_t vdep = {0}; vdep.set_dsmode = 1; vdep.dsmode = NVN_TEXTURE_DEPTH_STENCIL_MODE_DEPTH;
+    view_t vstn = {0}; vstn.set_dsmode = 1; vstn.dsmode = NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL;
+    tex_t sd = mk_tex(8104, 0x8000, ds, 16, 16, 1, 0); sd.stencil = 1; nvn_be_reg_tex(4, &sd, &vdep);
+    tex_t ds2 = mk_tex(8105, 0xC000, ds, 16, 16, 1, 0); nvn_be_reg_tex(5, &ds2, &vstn);
+    nvn_gpu_view v4 = rp_view_by_id(4, &g_fake_cmd, NULL), v5 = rp_view_by_id(5, &g_fake_cmd, NULL);
+    CHECK(v4 && v4->has_v && v4->v.set_dsmode && v4->v.dsmode == NVN_TEXTURE_DEPTH_STENCIL_MODE_DEPTH);
+    CHECK(v5 && v5->has_v && v5->v.set_dsmode && v5->v.dsmode == NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL);
+    // 视图记录里别的设定（只取第 0 级）原样保留，只补模式
+    view_t lv = {0}; lv.set_levels = 1; lv.base_level = 0; lv.nlevels = 1;
+    tex_t sl = mk_tex(8106, 0x10000, ds, 16, 16, 1, 0); sl.stencil = 1; nvn_be_reg_tex(6, &sl, &lv);
+    nvn_gpu_view v6 = rp_view_by_id(6, &g_fake_cmd, NULL);
+    CHECK(v6 && v6->has_v && v6->v.set_levels && v6->v.nlevels == 1 && v6->v.set_dsmode && v6->v.dsmode == NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL);
+    // 声明目标与贴图不同、要改写视图的路径（12 层二维数组按二维读）：模板模式照样带上
+    tex_t arr = mk_tex(8107, 0x14000, ds, 4, 4, 1, 0); arr.stencil = 1;
+    arr.d.target = NVN_TEXTURE_TARGET_2D_ARRAY; arr.d.depth = 12; nvn_tex_layout(&arr.d, &arr.L); nvn_be_reg_tex(7, &arr, NULL);
+    CHECK(rp_view_by_id_decl(7, NVN_TEXTURE_TARGET_2D + 1, 0, 0, &g_fake_cmd, NULL) != NULL);
+    CHECK(g_vw_last_has && g_vw_last.set_target && g_vw_last.target == NVN_TEXTURE_TARGET_2D && g_vw_last.set_layers && g_vw_last.nlayers == 1 &&
+          g_vw_last.set_dsmode && g_vw_last.dsmode == NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL);
+    // 描述符数组元素：模板的数值型是整数（uint），进了声明成浮点的数组按「数值型不符」处理；声明成 uint 的拿登记的
+    uint8_t dtt = NVN_TEXTURE_TARGET_2D + 1;
+    nvn_gpu_view z = rp_view_by_id_decl(2, dtt, 0, 1, &g_fake_cmd, NULL);
+    CHECK(z && z->of->d.d.width == 1 && z->of->d.d.height == 1 && nvn_unimpl_count("tex", "sampled_array_numeric_mismatch") == 1);
+    CHECK(rp_view_by_id_decl(2, dtt, 1, 1, &g_fake_cmd, NULL) == vs && nvn_unimpl_count("tex", "sampled_array_numeric_mismatch") == 1);
+    // 负对照：同一块存储上深度模式的贴图声明成浮点，拿登记的、不记账；颜色贴图不带视图记录
+    CHECK(rp_view_by_id_decl(1, dtt, 0, 1, &g_fake_cmd, NULL) == vd && nvn_unimpl_count("tex", "sampled_array_numeric_mismatch") == 1);
+    tex_t col = mk_tex(8108, 0x18000, NVN_FORMAT_RGBA8, 4, 4, 1, 0); nvn_be_reg_tex(0, &col, NULL);
+    nvn_gpu_view vc = rp_view_by_id(0, &g_fake_cmd, NULL);
+    CHECK(vc && !vc->has_v);
+    rp_view_pin_end(); nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK); res_fresh();
+}
+
 static void t_buf_mirror_fail_once(void) {   // 池镜像建不出来：同一个池只尝试一次，之后直接按未接返回；池释放再登记会重试
     nvn_be_sub_begin();
     nvn_be_shutdown_session(); nvn_unimpl_reset(); g_pg_tracked = 1; g_nbw = 0;
@@ -7196,6 +7246,7 @@ int main(int argc, char **argv) {
     t_decl_view();
     t_decl_view_1d();
     t_decl_array_numeric();
+    t_stencil_sample_mode();
 #ifdef S2A_GPU_LAND_TEST
     t_gpu_land_concurrent();
     t_gpu_land_destroy();
