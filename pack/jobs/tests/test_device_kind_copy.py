@@ -15,10 +15,12 @@
 import ast
 import json
 import re
+import sys
 import unittest
 from pathlib import Path
 
 JOBS = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(JOBS))   # 门禁按单文件跑（unittest discover -p 本文件），不靠别的测试先把 pack/jobs 加进路径
 ROOT = JOBS.parents[1]
 FILES = ("install.py", "errors.py", "devcert.py")
 SHARED = ROOT / "launchers/shared/experience.v1.json"
