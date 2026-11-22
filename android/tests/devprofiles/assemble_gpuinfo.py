@@ -45,6 +45,15 @@ TARGETS = (
     ('adreno-750-sd8g3', 49630, '骁龙 8 Gen 3'),
     ('adreno-840-sd8eg5', 52150, '骁龙 8 Elite Gen 5'),          # SM-S948B（Galaxy S26 Ultra）
     ('adreno-850-sd8exg6', 52618, '骁龙 8 Elite Extreme Gen 6'),  # OnePlus PYB110；Adreno 850 = Extreme 档（Qualcomm 命名）
+    # 天玑（9000 有真机 probed 档 mali-g710-r32p1、9400 等真机导出，都不拼）
+    ('mali-g710-d9000p', 50347, '天玑 9000+'),                   # vivo V2231A
+    ('mali-g715-d9200', 49866, '天玑 9200'),
+    ('mali-g715-d9200p', 45760, '天玑 9200+'),                   # vivo V2302A
+    ('mali-g720-d9300', 45060, '天玑 9300'),
+    ('mali-g720-d9300p', 42339, '天玑 9300+'),                   # vivo V2359A
+    ('mali-g925-d9400p', 45836, '天玑 9400+'),                   # vivo V2458A
+    ('mali-g1ultra-d9500', 52556, '天玑 9500'),                  # OPPO PLG110
+    ('mali-g2ultra-d9600pro', 52183, '天玑 9600 Pro'),           # OPPO PMX110
 )
 
 

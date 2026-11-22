@@ -529,6 +529,8 @@
 "settings.toggle.touchHud" = "タッチ診断情報";
 "settings.widen.blocked" = "このゲームでは全画面に既知の問題があります。それでもオンにできます";
 "textinput.header" = "テキスト入力";
+"textinput.player.create" = "新しいユーザーを作成";
+"textinput.player.select" = "S2Arm ユーザーを選択";
 "textinput.min" = "%ld 文字以上";
 "textinput.ok" = "OK";
 "textinput.range" = "%ld〜%ld 文字";
