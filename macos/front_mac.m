@@ -259,14 +259,13 @@ static NSMutableSet<NSNumber *> *stale_keys;
 // 鼠标键的同一套记录（审计 P2-34，见 release_stale_mouse）
 static NSMutableDictionary<NSNumber *, NSNumber *> *mouse_up_polls;
 static NSMutableSet<NSNumber *> *stale_mouse;
-// —— 手柄快速路径（valueChangedHandler 专用队列上的回调，见 sample_input 之后的 pad_event_fast）的共享状态 ——
+// —— 手柄快速路径（valueChangedHandler 回调，主队列上，见 sample_input 之后的 pad_event_fast）的共享状态 ——
 //   键盘 / 鼠标位快照与静音标记由主线程每次采样刷新，槽位镜像（见 S2A_MAX_PADS 那段）照 pad_owner 抄一份；
 //   全部在 g_compose_mu 下交接，谁拿到锁谁重读要合的那份再发布，两条线交错也不丢键
 static _Atomic uint32_t kbd_buttons_snap;
 static _Atomic int32_t kbd_sticks_snap[4];
 static _Atomic int input_muted;   // 失焦 / 退出确认条开着（同 sample_input 的 muted 判据）：快速路径照它发零
 static pthread_mutex_t g_compose_mu = PTHREAD_MUTEX_INITIALIZER;   // 主线程的采样发布段与手柄快速路径互斥；publish 的序号快照也只允许一个写者在锁内
-static dispatch_queue_t pad_input_queue(void);
 static void pad_event_fast(GCController *controller);
 static uint32_t controller_face_bits(GCController *controller);
 static int controller_face_map(GCController *controller);
@@ -453,10 +452,12 @@ static GCExtendedGamepad *active_pad(NSArray *controllers) {
     }
     return best;
 }
-// 手柄事件驱动（A2）：valueChangedHandler 走 GameController 的回调队列。队列不再挂主队列——原先为让 sample_input
-//   直接读 keys / mouse / config（与 AppKit 键盘 / 鼠标事件串行）的权衡，代价是主线程被菜单动画 / 提示条 / 系统弹窗占住时
-//   手柄事件跟着排队（延迟管线调研：列为权衡而非缺陷）。改挂专用串行队列（对齐 iOS ios/controller.m 的 s2arm.controller.input），
-//   回调只走 pad_event_fast 快速路径：照槽位采样这一只、合键盘 / 鼠标快照发布，不碰主线程的 keys / mouse / config。
+// 手柄事件驱动（A2）：valueChangedHandler 一到就走 pad_event_fast 快速路径：照槽位采样这一只、合键盘 / 鼠标快照发布。
+//   回调队列必须是主队列（#1819，11-22）：真机手柄的状态由 GameController 自己的 GCDevicePhysicalInput 队列改写，
+//   那条队列挂在主队列上跑（玩家 .ips：_dispatch_main_queue_drain → -[_GCDevicePhysicalInput handleGamepadEvent:]）。
+//   A2 原先把 handlerQueue 挂专用串行队列，回调在那条队列上读 physicalInputProfile，系统同时在主线程改写同一只手柄 →
+//   「BUG IN _GCDevicePhysicalInput: Recursive or concurrent mutation detected」整进程被杀（A2 2312475e1 起，v0.3.6 起各版都有）。专用队列也换不来
+//   「主线程忙时手柄不排队」：系统处理手柄事件本身就排在主线程，主线程忙时事件根本没被处理、回调不会来。
 //   120Hz 主线程定时器仍保留：键盘 / 鼠标的粘键核对、补装新连接的手柄、槽位重排、六轴 / 震动 / Home 退出都在那一轮。
 //   Switch 2 Pro 输入不靠定时器拉取：报文线程对变化经 s2a_mac_ns2_input_changed 踢主队列采样（见下，#771），到手即采样。
 // 没有扩展手柄描述、但通用物理描述里有按键的手柄（部分第三方手柄的某些模式、只给简易描述的手柄）：原先整只被忽略、游戏里没反应也没有提示。
@@ -466,7 +467,7 @@ static void install_pad_handler(GCController *controller) {
     GCExtendedGamepad *pad = controller.extendedGamepad;
     if (pad) {
         if (pad.valueChangedHandler) return;
-        controller.handlerQueue = pad_input_queue();
+        controller.handlerQueue = dispatch_get_main_queue();   // 与系统改写手柄状态同一条线程（见上，#1819）
         __weak GCController *wc = controller;   // 断开的手柄会被系统释放：弱引用防悬空（同 iOS attachSystem 的写法）
         pad.valueChangedHandler = ^(GCExtendedGamepad *profile, GCControllerElement *element) {
             (void)profile; (void)element;
@@ -476,7 +477,7 @@ static void install_pad_handler(GCController *controller) {
         return;
     }
     if (!pad_has_profile_buttons(controller) || controller.physicalInputProfile.valueDidChangeHandler) return;
-    controller.handlerQueue = pad_input_queue();
+    controller.handlerQueue = dispatch_get_main_queue();
     __weak GCController *wc = controller;
     controller.physicalInputProfile.valueDidChangeHandler = ^(GCPhysicalInputProfile *profile, GCControllerElement *element) {
         (void)profile; (void)element;
@@ -1525,17 +1526,7 @@ __attribute__((visibility("default"), used)) uint32_t s2a_vpad_read_pad(int inde
     for (int i = 0; i < 4; i++) sticks[i] = atomic_load_explicit(&pad_sticks[index][i], memory_order_seq_cst);
     return buttons;
 }
-// 手柄事件的专用串行队列（对齐 iOS ios/controller.m 的 s2arm.controller.input）：valueChangedHandler 全在这条队列上跑，
-//   主线程被菜单动画 / 提示条 / 系统弹窗占住时手柄事件不再排在后面。交互优先级对齐主队列，输入不排低优先后面
-static dispatch_queue_t pad_input_queue(void) {
-    static dispatch_queue_t queue;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        queue = dispatch_queue_create("dev.s2arm.mac-pad-input", s2a_qos_queue_attr(DISPATCH_QUEUE_SERIAL, S2A_QOS_INPUT));
-    });
-    return queue;
-}
-// 手柄快速路径（pad_input_queue 上跑，valueChangedHandler 的回调体）：只采样这一只手柄并立即发布。
+// 手柄快速路径（主队列上跑，valueChangedHandler 的回调体）：只采样这一只手柄并立即发布。
 //   槽 0（玩家 1）合主线程刚刷新的键盘 / 鼠标快照走发布（旧 ABI 快照 + pad.c 事件唤醒 HID 泵，pad.c 自带锁）；
 //   槽 1–3（玩家 2–4）只写自己的槽位原子量，再 s2a_pad_wake 叫泵立刻重读（原先玩家 2–4 只能等 16ms 心跳）。
 //   没占到槽（刚接上、还没被 120Hz 定时器排进槽位表）就交给定时器那一轮，下一事件起走这里——采样读的是当前整份状态，

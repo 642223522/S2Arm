@@ -731,7 +731,7 @@ static void test_profile_only_pad(void) {
     GCController *c = [GCController controllerWithMicroGamepad];
     expect(c.extendedGamepad == nil && pad_has_profile_buttons(c), "micro-only controller counts as a profile-only pad");
     install_pad_handler(c);
-    expect(c.physicalInputProfile.valueDidChangeHandler != nil && c.handlerQueue != nil && c.handlerQueue != dispatch_get_main_queue(), "profile handler installed on the dedicated pad queue");
+    expect(c.physicalInputProfile.valueDidChangeHandler != nil && c.handlerQueue == dispatch_get_main_queue(), "profile handler installed on the main queue (#1819)");
     uint32_t buttons = 99; int32_t sticks[4];
     sample_profile_state(c, config, &buttons, sticks);
     expect(buttons == 0, "nothing pressed: no buttons");
@@ -901,13 +901,13 @@ static void test_per_player_config(void) {
 }
 
 
-// 手柄事件回调（A2）：handlerQueue 挂专用串行队列、不再挂主队列（主线程被菜单动画 / 提示条占住时手柄事件不再排队，见 test_pad_fast_path）；
+// 手柄事件回调：handlerQueue 必须是主队列（#1819：真机手柄状态由 GameController 在主线程改写，回调在别的队列读同一份 → Recursive or concurrent mutation 杀进程）；
 //   没占到槽的回调直接跳过（快速路径不碰没排进槽位表的手柄），没有新事件时 120Hz 定时器仍是回退采样，长按不会因为「只发变化」而丢。
 static void test_pad_handler_install(void) {
     FakePad *pad = [FakePad new];
     FakeController *controller = fake_controller(pad);
     install_pad_handler((GCController *)controller);
-    expect(controller.handlerQueue != nil && controller.handlerQueue != dispatch_get_main_queue(), "pad handler runs on a dedicated serial queue, not the main queue");
+    expect(controller.handlerQueue == dispatch_get_main_queue(), "pad handler runs on the main queue, where GameController mutates the device state (#1819)");
     expect(pad.valueChangedHandler != nil, "gamepad valueChangedHandler installed");
     config = default_config(); keys = [NSMutableSet set]; mouse = [NSMutableSet set]; focused = YES;
     read_key_state = key_state; memset(physical_keys, 0, sizeof physical_keys); physical_keys[14] = YES;
@@ -924,14 +924,13 @@ static void test_pad_handler_install(void) {
     expect(s2a_vpad_read(sticks) == 1, "held state persists across the 120Hz fallback and no-op callbacks");
     physical_keys[14] = NO;
     reset_input();
-    puts("Mac pad: handler installs on a dedicated queue and 120Hz fallback keeps held state passed");
+    puts("Mac pad: handler installs on the main queue and 120Hz fallback keeps held state passed");
 }
 
 // 手柄快速路径（延迟管线调研·输入：GCController 权衡解除）。期望手算（缺省映射：手柄 A=东=位 0、B=南=位 1；键盘 Shift=B 位 1；E=A 位 0）：
-//   ① 回调队列离开主队列（改前：主队列，红）；
+//   ① 回调队列 = 主队列（#1819：系统在主线程改写真机手柄状态，回调读它必须同一条线程；A2 曾挂专用队列，红）；
 //   ② 快速路径合成槽 0：键盘快照（位 1）+ 手柄 A（位 0）一起发布 = 3；松手后只剩键盘位（回调读当前整份状态，不是只发变化）；
-//   ③ 主线程忙 300ms 不进 runloop（等效菜单动画 / 提示条占住主线程），事件经 handlerQueue 投递，
-//      后台 s2a_pad_wait 截止 200ms 必须被唤醒（改前：回调排主队列、等主线程空下来才发 → 超时，红）；
+//   ③ 已删（11-22 #1819）：原例「主线程忙时事件经专用队列照样发布」的前提不成立——系统处理真机手柄事件本身排在主线程，主线程忙时回调不会来；
 //   ④ 玩家 2（槽 1）事件只写自己的槽位原子量并唤醒泵（改前：sample_input 采不到不在系统列表里的虚拟手柄 → 槽 1 恒 0，红）；
 //   ⑤ 失焦静音：快速路径发零。
 //   系统虚拟手柄（controllerWithExtendedGamepad）不在 GCController.controllers 里，槽位镜像由测试照 sample_input
@@ -949,10 +948,13 @@ static void test_pad_fast_path(void) {
     s2a_pad_set_active(0); s2a_pad_set_active(1);   // 清上一局留下的源选择
     reset_input();
 
-    // ① 回调队列离开主队列
+    // ① 回调队列 = 主队列（#1819）
     GCController *pad0 = [GCController controllerWithExtendedGamepad];
     install_pad_handler(pad0);
-    expect(pad0.handlerQueue != nil && pad0.handlerQueue != dispatch_get_main_queue(), "pad handler leaves the main queue");
+    expect(pad0.handlerQueue == dispatch_get_main_queue(), "pad handler stays on the main queue (#1819)");
+    { GCController *pp = [GCController controllerWithExtendedGamepad]; pp.handlerQueue = dispatch_queue_create("t.other", DISPATCH_QUEUE_SERIAL);
+      pp.extendedGamepad.valueChangedHandler = nil; install_pad_handler(pp);
+      expect(pp.handlerQueue == dispatch_get_main_queue(), "a handler queue set elsewhere is moved back to the main queue (#1819)"); }
     sample_input();   // 刷新键盘 / 鼠标快照与静音标记（此刻全零）
     slot_fake_pad(0, pad0);
 
@@ -972,27 +974,6 @@ static void test_pad_fast_path(void) {
     [keys removeObject:@56]; modifiers = 0; physical_keys[60] = NO; sample_input(); slot_fake_pad(0, pad0);
     read_ex(&snap);
     expect(snap.buttons == 0, "keyboard release is visible after a sample");
-
-    // ③ 主线程忙 300ms：事件经 handlerQueue 投递，200ms 截止内必须发布（改前排主队列，红）
-    [pad0.extendedGamepad.buttonA setValue:1];
-    read_ex(&snap); uint64_t observed = snap.notification_seq;
-    dispatch_async(pad0.handlerQueue, ^{ pad0.extendedGamepad.valueChangedHandler(pad0.extendedGamepad, pad0.extendedGamepad.buttonA); });
-    __block int woke = -1;
-    dispatch_semaphore_t done = dispatch_semaphore_create(0);
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        woke = s2a_pad_wait(observed, s2a_pad_now_us() + 200000);   // 截止 200ms < 主线程忙 300ms：判「排不排队」，不受机器快慢影响
-        dispatch_semaphore_signal(done);
-    });
-    usleep(20000);   // 让等待线程先进入条件变量；即使没进，序号变化也会让它立即返回
-    uint64_t spin = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) + 300000000ull;
-    while (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) < spin) {}   // 主线程忙转：不进 runloop、不排主队列
-    expect(dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC)) == 0, "pad wait settles");
-    expect(woke == 1, "controller event publishes while the main thread is busy (deadline 200ms < busy 300ms)");
-    run_loop_for(0.05);   // 改前实现：让仍排在主队列的那份回调在断言之后补跑，不泄给后面的用例
-    read_ex(&snap);
-    expect(snap.buttons == 1, "pad bit visible after the queued event");
-    [pad0.extendedGamepad.buttonA setValue:0];
-    pad0.extendedGamepad.valueChangedHandler(pad0.extendedGamepad, pad0.extendedGamepad.buttonA);
 
     // ④ 玩家 2（槽 1）：事件只写自己的槽位原子量并唤醒泵
     GCController *pad1 = [GCController controllerWithExtendedGamepad];
@@ -1022,7 +1003,7 @@ static void test_pad_fast_path(void) {
     expect(snap.buttons == 0, "refocus keeps input neutral until the next event");
     [pad0.extendedGamepad.buttonA setValue:0];
     reset_input();
-    puts("Mac pad: dedicated-queue fast path, busy-main publish, player 2 slot and mute passed");
+    puts("Mac pad: main-queue fast path, player 2 slot and mute passed");
 }
 
 // 延迟读数（--pad-latency-probe 手动跑，不进门禁）：事件投递 → 回调执行 → pad.c 发布的毫秒读数，
