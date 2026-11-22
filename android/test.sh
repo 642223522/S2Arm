@@ -356,6 +356,8 @@ s2a_gate_step "$PY" "$android_dir/tests/gs_compiler_chain_test.py"
 # BUFFER texture: real producer, Maxwell compiler and SPIR-V parser.
 s2a_gate_step "$PY" "$android_dir/tests/tbuf_compiler_chain_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/libpack_tbuf_withdraw_test.py"
+# 计算取库的原因码（s2a_libpack_why）：正例 + 改坏 libpack_vk.c 的原因码各一处必红（诊断按码分类，不读报错文本）
+s2a_gate_step "$PY" "$android_dir/tests/libpack_reason_code_test.py"
 # Pool-backed TBUF replay: both stages, synchronization and three mutations.
 s2a_gate_step "$PY" "$android_dir/tests/tbuf_replay_core_test.py" --withdraw
 # W2 compute: real C components with synthetic input / Vulkan mocks, never GPU or device evidence.
