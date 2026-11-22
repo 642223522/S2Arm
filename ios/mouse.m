@@ -150,7 +150,7 @@ void s2a_ios_mouse_attach(UIView *root) {
 int s2a_ios_mouse_connected(void) { return atomic_load(&g_mice) > 0; }
 int s2a_ios_mouse_lock_wanted(void) { return atomic_load(&g_wanted); }
 unsigned s2a_ios_mouse_buttons(void) { return atomic_load(&g_counted); }
-// keyboard.m 装好键位时（输入队列）：同步鼠标那几项和「使用鼠标 / 触控板」开关
+// keyboard.m 装好键位时（输入队列）：同步鼠标那几项和「使用鼠标 / 触控板」开关；is_default = 没动过鼠标的用法（mouse_map.h s2a_mouse_use_default）
 void s2a_ios_mouse_config(const s2a_input_config *c, int is_default, int off) {
     int left_bound = 0;
     for (int t = 0; t < S2A_INPUT_TARGET_COUNT; t++) if (c->mouse[t] == 0) left_bound = 1;

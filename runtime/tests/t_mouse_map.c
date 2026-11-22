@@ -47,8 +47,12 @@ int main(int argc, char **argv) {
           "鼠标位移系数 = front_mac.m mouseMoved 的 1500");
     // Mac 左键规则原文：① 声明触屏 + 缺省键位 → 触屏，先于「转动视角」；② 仅按键模式下左键没映射 → 触屏
     char *ltouch = body_of(mac, "static BOOL left_click_touches(void)");
-    const char *r1 = ltouch ? strstr(ltouch, "touch_declared) >= 0 && mapping_is_default()) return YES") : NULL, *r2 = ltouch ? strstr(ltouch, "if (camera_mouse()) return NO") : NULL;
+    const char *r1 = ltouch ? strstr(ltouch, "touch_declared) >= 0 && mouse_use_is_default()) return YES") : NULL, *r2 = ltouch ? strstr(ltouch, "if (camera_mouse()) return NO") : NULL;
     check(r1 && r2 && r1 < r2 && count_in(ltouch, "isEqual:@0]) return NO") == 1, "front_mac.m left_click_touches 仍是「① 声明触屏 + 缺省 → 触屏，先于转动视角；② 左键没映射 → 触屏」");
+    char *mdef = body_of(mac, "static BOOL mouse_use_is_default(void)");
+    check(mdef && count_in(mdef, "camera_mouse() && [left_targets(config) isEqualToSet:left_targets(default_config())]") == 1,
+          "front_mac.m「没动过鼠标的用法」只比左键绑在哪、鼠标模式（#1987 维护方定，iPad s2a_mouse_use_default 同口径）");
+    free(mdef);
     char *down = body_of(mac, "- (void)mouseDown:(NSEvent *)e");
     const char *d1 = down ? strstr(down, "left_click_touches()") : NULL, *d2 = down ? strstr(down, "camera_mouse()) { set_mouse_capture(YES); return; }") : NULL;
     check(d1 && d2 && d1 < d2 && count_in(down, "!mouse_captured") == 2, "front_mac.m mouseDown：没锁定时先看触屏、再看锁定，锁定后照映射");
@@ -104,6 +108,24 @@ int main(int argc, char **argv) {
     check(s2a_mouse_may_lock(st(0, 1, 0, 1, 0, 1)) && !s2a_mouse_may_lock(st(1, 1, 0, 1, 0, 1)) && !s2a_mouse_may_lock(st(0, 0, 0, 1, 0, 1)) && !s2a_mouse_may_lock(st(0, 1, 0, 0, 0, 1)),
           "只在按键模式、虚拟按键收起、转动视角时才能锁着");
 
+    // ⑥a「玩家没动过鼠标的用法」（规则 ① 的缺省，#1987 维护方 11-22 定）：只看左键绑在哪个按键位上、鼠标模式，别的键改了不算
+    s2a_input_config u; s2a_kbd_default(&u);
+    check(s2a_mouse_use_default(&u), "缺省键位：没动过鼠标的用法");
+    u.gamepad[0] = c.gamepad[1]; u.gamepad[1] = c.gamepad[0];
+    check(s2a_mouse_use_default(&u), "所有游戏的默认只换了一组手柄键（A / B 对调）：仍算没动过，触屏游戏里左键照旧当触屏");
+    s2a_kbd_default(&u); u.keyboard[0].code = 36;
+    check(s2a_mouse_use_default(&u), "某款只改了一个键盘键（A → 回车）：仍算没动过");
+    s2a_kbd_default(&u); u.sensitivity_x = 2; u.mouse[8] = -1;
+    check(s2a_mouse_use_default(&u), "只改了灵敏度、右键不绑：左键和模式没动，仍算没动过");
+    s2a_kbd_default(&u); u.mouse[3] = -1; u.mouse[9] = 0;
+    check(!s2a_mouse_use_default(&u), "左键改绑成 ZR：动过，不接管（转动视角下点一下锁定）");
+    check(s2a_mouse_left(st(0, 1, 0, 1, s2a_mouse_use_default(&u), 1)) == S2A_MOUSE_LOCK, "  ↳ 声明了触屏、左键改绑成 ZR：左键 = 只锁定（不当触屏）");
+    s2a_kbd_default(&u); u.mouse[3] = -1; u.mouse_camera = 0;
+    check(!s2a_mouse_use_default(&u), "鼠标模式改成不起作用、左键没绑：动过");
+    check(s2a_mouse_left(st(0, 1, 0, 0, s2a_mouse_use_default(&u), 0)) == S2A_MOUSE_TOUCH, "  ↳ 按规则 ② 接管：左键当触屏");
+    s2a_kbd_default(&u); u.mouse_camera = 0;
+    check(!s2a_mouse_use_default(&u) && s2a_mouse_left(st(0, 1, 0, 0, 0, 1)) == S2A_MOUSE_BUTTON, "鼠标模式改成不起作用、左键仍绑 Y：动过，照映射发 Y");
+
     // ⑥b「使用鼠标 / 触控板」关掉（#2072）：其余 6 项怎么组合（64 种），左键都交给 UIKit 当手指、别的键不进游戏、不锁定
     int off_pass = 0, off_quiet = 0, on_differs = 0;
     for (int bits = 0; bits < 64; bits++) {
@@ -145,7 +167,7 @@ int main(int argc, char **argv) {
               && count_in(cfg, "atomic_store(&g_counted, 0)") == 1, "mouse.m：关掉时当场释放锁定、放开按着的鼠标键");
         check(mv && count_in(mv, "atomic_load(&g_off)") == 1, "mouse.m：关掉后系统还没收回锁定的那几拍，位移也不进右摇杆");
         free(cur); free(cfg); free(mv);
-        check(count_in(kbd, "s2a_ios_mouse_config(&g_map, !memcmp(&def, &g_map, sizeof def), [s2a_ios_settings_defaults() boolForKey:S2AMouseOffKey]);") == 1,
+        check(count_in(kbd, "s2a_ios_mouse_config(&g_map, s2a_mouse_use_default(&g_map), [s2a_ios_settings_defaults() boolForKey:S2AMouseOffKey]);") == 1,
               "keyboard.m：装键位时把这款的开关（分层读取）一起交给 mouse.m");
         char *bg = body_of(mouse, "void s2a_ios_mouse_background(void)");
         check(bg && count_in(bg, "unlock(") >= 1, "mouse.m：切后台释放锁定（同 Mac 失焦释放，回来要再点一下）");
@@ -169,6 +191,6 @@ int main(int argc, char **argv) {
     free(mac); free(mouse); free(kbd); free(vpad); free(ctl); free(app);
 
     if (failures) { fprintf(stderr, "✗ t_mouse_map：%d/%d 项不通\n", failures, checks); return 1; }
-    printf("✓ t_mouse_map：%d 项（系数与左键规则同 Mac 原文、缺省、鼠标键映射、位移换算、回中 / 不回中、左键规则表、关掉鼠标、接线）\n", checks);
+    printf("✓ t_mouse_map：%d 项（系数与左键规则同 Mac 原文、缺省、鼠标键映射、位移换算、回中 / 不回中、左键规则表、没动过鼠标的判据、关掉鼠标、接线）\n", checks);
     return 0;
 }
