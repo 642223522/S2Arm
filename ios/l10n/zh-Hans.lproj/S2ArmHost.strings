@@ -712,6 +712,12 @@
 "kbd.manage.note" = "导出的键位文件可以在别的游戏里导入；Mac 启动器每款游戏的 input.json 格式相同，也能导入。导入只改这款游戏的键位。";
 "kbd.import" = "导入键位…";
 "kbd.export" = "导出当前键位…";
+"kbd.setDefault" = "设为所有游戏的默认";
+"kbd.default.done" = "已设为所有游戏的默认";
+"kbd.default.undo" = "撤销";
+"kbd.source.custom" = "当前键位：自定义";
+"kbd.source.default" = "当前键位：默认";
+"kbd.manage.noteAll" = "导出的键位文件可以在别的游戏里导入；Mac 启动器每款游戏的 input.json 格式相同，也能导入。导入只改这款游戏的键位。\n「设为所有游戏的默认」把当前键位设为所有游戏的默认：已经单独调过键位的游戏不受影响，以后新加的游戏也用这套。「恢复默认」回到这套默认。";
 "kbd.export.fileName" = "S2Arm 键位";
 "kbd.export.err.title" = "没能导出键位";
 "kbd.import.err.title" = "没能导入键位";
