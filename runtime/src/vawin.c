@@ -1078,6 +1078,35 @@ int s2a_window_span_widen(void) {
     { void (*gc)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "s2a_gc_limit_reapply"); if (gc) gc(); }   // GC 上限是按放宽前的低区选的（gclimit.c），按现在的重选
     return 1;
 }
+// Mac：别名区伸出窗口的那段直接并进窗口（svc_mem.c layout_prepare 在开远端前调）。窗口顶在 2^39，其上在 Mac 上是空的（内核保护区在窗口下方），
+//   伸出段原本走远端：地址占成不可访问、游戏一碰就缺页代执行（far.c）。这里把 [窗口末, end) 也占成窗口的不可访问保留，游戏映射照常放开成真内存，
+//   不再缺页代执行。游戏碰到的地址不变（远端本来就是这些地址）；2^39 以上的 IPC 缓冲照旧由 s2a_ipc_addr39 补回第 39 位。
+//   占不到（被宿主映射占了 / iPhone 地址约束开着、那段被围栏占死）、文件后备已往窗口外接长或已有定过后备的块：回 0，调用方照旧开远端
+int s2a_window_extend_up(uint64_t end) {
+#if TARGET_OS_OSX
+    if (!g_ok || g_size != g_res) return 0;   // 窗口已收过尾部：尾部那段可能已还给系统，不在这里接
+    uint64_t lo = g_base + g_res; end = (end + 0x3fff) & ~0x3fffull;
+    if (end <= lo) return 0;
+    if (g_gextra) { LOG("地址窗口：文件后备已往窗口外接长（%llu MB），伸出段不并进窗口，照旧走远端", (unsigned long long)(g_gextra >> 20)); return 0; }
+    if (g_gfd >= 0 && !g_gwhole && g_gchunk) for (uint64_t i = 0; i < g_gchunk_n; i++) if (gc_get(i) != GC_UNDEC) {
+        LOG("地址窗口：文件后备已有定过后备的块（%#llx），伸出段不并进窗口，照旧走远端", (unsigned long long)(g_base + i * GCHUNK)); return 0; }
+    void *p = mmap((void *)lo, end - lo, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);   // 不带 MAP_FIXED：核对落点，不盖别人
+    if (p != (void *)lo) { if (p != MAP_FAILED) munmap(p, end - lo);
+        LOG("地址窗口：伸出段 %#llx +%llu MB 占不到（%s），照旧走远端", (unsigned long long)lo, (unsigned long long)((end - lo) >> 20), p == MAP_FAILED ? "失败" : "已有映射"); return 0; }
+    if (g_gfd >= 0 && ftruncate(g_gfd, (off_t)(end - g_base))) {
+        LOG("地址窗口：文件后备接长到 %llu MB 失败（errno=%d），伸出段不并进窗口，照旧走远端", (unsigned long long)((end - g_base) >> 20), errno); munmap(p, end - lo); return 0; }
+    if (g_gfd >= 0 && g_gwhole && mmap((void *)lo, end - lo, PROT_NONE, MAP_FIXED | MAP_SHARED, g_gfd, (off_t)(lo - g_base)) != (void *)lo) {   // 整段进文件：接上的这段也进文件（同偏移 = 地址 − 窗口基址）
+        int er = errno; munmap((void *)lo, end - lo); if (ftruncate(g_gfd, (off_t)g_size)) {}
+        LOG("地址窗口：伸出段映射成文件失败（errno=%d），不并进窗口，照旧走远端", er); return 0; }
+    uint64_t old = g_size; g_size = g_res = end - g_base;
+    if (g_gfd >= 0 && !gchunk_alloc(g_gwhole ? GC_FILE : GC_UNDEC)) die("客体内存文件后备：窗口接长后块状态表分配失败");
+    LOG("地址窗口：别名区伸出段 %#llx +%llu MB 并进窗口（Mac 上 2^39 之上是空的），窗口 %llu MB → %llu MB，不开远端、不缺页代执行",
+        (unsigned long long)lo, (unsigned long long)((end - lo) >> 20), (unsigned long long)(old >> 20), (unsigned long long)(g_size >> 20));
+    return 1;
+#else
+    (void)end; return 0;
+#endif
+}
 static uint64_t g_need, g_fit;   // 本款要的跨度；2^39 以下最大能放的一块（1 GB 对齐后）——自检提示「本款需要 N GB，本机最多 M GB」用
 void s2a_window_need(uint64_t *need, uint64_t *fit) { *need = g_need; *fit = g_fit; }
 static uint64_t g_hole_top;   // 2^39 / 2^36 以下那次找空洞的上界（本款地址空间上界与系统地址上限取小；没算到 0）
