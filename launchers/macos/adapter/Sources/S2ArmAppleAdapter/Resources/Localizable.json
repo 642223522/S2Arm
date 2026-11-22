@@ -10958,5 +10958,21 @@
  {
   "source": "文件已发送到 LiveContainer 内部 S2Arm；回到游戏库完成导入，Mod 下次启动游戏时生效。",
   "en": "Files sent to S2Arm inside LiveContainer. Go back to its game library to finish importing; mods take effect the next time you start the game."
+ },
+ {
+  "source": "手机上的游戏状态文件读不懂，请打开 S2Arm 游戏库后重试。",
+  "en": "The game status file on the phone can't be read. Open the S2Arm game library, then try again."
+ },
+ {
+  "source": "手机上的游戏状态格式暂不支持，请打开 S2Arm 游戏库后重试。",
+  "en": "The game status format on the phone isn't supported yet. Open the S2Arm game library, then try again."
+ },
+ {
+  "source": "手机上的游戏状态记录不完整，请打开 S2Arm 游戏库后重试。",
+  "en": "The game status record on the phone is incomplete. Open the S2Arm game library, then try again."
+ },
+ {
+  "source": "文件已发送，正在等待手机游戏库确认导入。",
+  "en": "Files sent. Waiting for the phone's game library to confirm the import."
  }
 ]
