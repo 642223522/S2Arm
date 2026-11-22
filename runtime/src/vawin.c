@@ -1419,7 +1419,17 @@ void s2a_window_reserve(void) {
 //   按同一套取法占。构造期算出过跨度的（不论占没占成）不重来，已有游戏的进程照旧只在构造期占
 // 构造期占过、但只够当时那几款的（窗口按它们的最大跨度占）：启动后又导入了一款要得更多的，起宿主前放掉旧窗口、按现在的最大值重占。
 //   这时窗口里还什么都没放（布局、模块、尾部分配都在自检之后），放掉不碰任何东西。按需档（窗口已是本机最大一块、比要的小）重占也大不了，不动
+static int snap_retake(void);
+static int reserve_late_(void);
+// 即时存档恢复（游戏库长按「回到上次存下的这一刻」）：构造期还不知道要恢复（玩家在库里点了才设 S2A_SNAP_RESTORE），窗口 / 命令记录区按普通局占；
+//   起宿主前（这里）按快照清单里记的落点核一次，不同就就地重占（snap_retake）。补占 / 重占本身照旧
 int s2a_window_reserve_late(void) {
+    int ok = reserve_late_();
+    if (g_noreserve) return ok;
+    snap_retake();
+    return g_ok;
+}
+static int reserve_late_(void) {
     if (g_noreserve) return g_ok;
     // 构造期按占位占的窗口（容器当时还没有游戏）：按现在导入的款核一次。放得进就留着，只把需求换成真实的（自检、日志按它说）；
     //   36 位款、或真实应用池要窗口下方少留宿主（小内存 iPad）→ 放掉按真实的款重占（同改动前的补占）；占位那次没占成 → 按真实的款补占
@@ -1486,6 +1496,76 @@ static int cmd_arena_at_snapshot(void) {
     if (m != (void *)at) { if (m != MAP_FAILED) munmap(m, len); LOG("【红】即时存档恢复：命令记录区占不到快照时的地址 %#llx +%llu MB", (unsigned long long)at, (unsigned long long)(len >> 20)); return 0; }
     g_ca_base = at; g_ca_cut = 1; g_va_cap = len - CMD_ARENA;
     LOG("即时存档恢复：命令记录区按快照占在 %#llx +%llu MB（其后虚拟池区 +%llu GB）", (unsigned long long)at, (unsigned long long)(CMD_ARENA >> 20), (unsigned long long)(g_va_cap >> 30));
+    return 1;
+}
+// 恢复局起宿主前，当前窗口 / 命令记录区与快照清单对不上哪几样（纯函数，t_vawin_snap_retake 测）：1 = 窗口（基址或长度不同），2 = 命令记录区；清单里没记的那样不算
+int s2a_snap_retake_plan(uint64_t wb, uint64_t ws, uint64_t cb, uint64_t cl, uint64_t mwb, uint64_t mws, uint64_t mcb, uint64_t mcl) {
+    return (mwb && mws && (wb != mwb || ws != mws) ? 1 : 0) | (mcb && mcl > CMD_ARENA && (cb != mcb || cl != mcl) ? 2 : 0);
+}
+static int window_all_none(uint64_t b, uint64_t n) {   // [b, b+n) 里全是不可访问的保留（还没放开过任何一段）
+    for (vm_address_t a = (vm_address_t)b, end = (vm_address_t)(b + n); a < end; ) {
+        vm_address_t ra = a; vm_size_t sz = 0; vm_region_basic_info_data_64_t bi; mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64; mach_port_t obj = MACH_PORT_NULL;
+        if (vm_region_64(mach_task_self(), &ra, &sz, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&bi, &cnt, &obj) != KERN_SUCCESS || ra >= end) break;
+        if (bi.protection != VM_PROT_NONE) return 0;
+        a = ra + sz;
+    }
+    return 1;
+}
+// 即时存档恢复：窗口与命令记录区按快照清单原址重占。快照里全是游戏地址（窗口）和命令句柄 / 虚拟池地址（命令记录区），落点不同恢复必拒（清单「窗口」项、图形恢复核基址）。
+//   构造期只有启动时就带 S2A_SNAP_RESTORE 的局（测试 / 开发工具）按清单占；游戏库里点恢复是构造期之后，窗口按普通局的规则占：
+//   跨版本（11-22 宿主下限 3 → 6 GiB：0.6.8 存的窗口 0x7180000000 +23856 MB，新版普通局占 0x7240000000 +20784 MB）、同版本两局之间学到的跨度不同，落点都会变。
+//   这时窗口里还什么都没放（布局、模块、尾部分配都在自检之后）：整段还是不可访问的保留才放掉重占；原址被别人占了 / 窗口已放开过 → 不动、打红行（恢复照旧按清单拒绝，快照不删）
+static int snap_retake(void) {
+    if (!s2a_snap_restoring()) return 0;
+    uint64_t mwb = 0, mws = 0, mcb = 0, mcl = 0;
+    if (s2a_snap_manifest_win(&mwb, &mws)) mwb = mws = 0;
+    if (s2a_snap_manifest_u64("命令记录区", &mcb, &mcl)) mcb = mcl = 0;
+    uint64_t cl = g_ca_base ? CMD_ARENA + g_va_cap : 0;
+    int plan = s2a_snap_retake_plan(g_ok ? g_base : 0, g_ok ? g_size : 0, g_ca_base, cl, mwb, mws, mcb, mcl);
+    if (!plan) return 0;
+    const char *why = NULL;
+    if ((plan & 1) && g_ok && g_size != g_res) why = "窗口已收过尾";
+    else if ((plan & 1) && g_gextra) why = "文件后备已往窗口外接长";
+    else if ((plan & 1) && g_ok && !window_all_none(g_base, g_size)) why = "窗口里已有放开过的映射";
+    else if ((plan & 1) && g_gfd >= 0 && !g_gwhole && g_gchunk) { for (uint64_t i = 0; i < g_gchunk_n && !why; i++) if (gc_get(i) != GC_UNDEC) why = "文件后备已有定过后备的块"; }
+    if (!why && (plan & 2) && (g_ca_used || g_va_used)) why = "命令记录区已切过";
+    if (why) { LOG("【红】即时存档恢复：窗口 / 命令记录区与快照时不同（当前 %#llx +%llu MB / %#llx，快照 %#llx +%llu MB / %#llx），%s，不能按快照重占，恢复会拒绝（快照不删）",
+                   (unsigned long long)g_base, (unsigned long long)(g_size >> 20), (unsigned long long)g_ca_base, (unsigned long long)mwb, (unsigned long long)(mws >> 20), (unsigned long long)mcb, why);
+               return -1; }
+    uint64_t ob = g_base, os = g_res, oc = g_ca_base; int had = g_ok;
+    if ((plan & 1) && had) munmap((void *)ob, os);
+    if ((plan & 2) && oc) munmap((void *)oc, cl);
+    int bad = 0; void *p;
+    if (plan & 1) { p = mmap((void *)mwb, mws, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0); if (p != (void *)mwb) { if (p != MAP_FAILED) munmap(p, mws); bad |= 1; } }   // 不带 MAP_FIXED：核对落点，不盖别人
+    if (plan & 2) { p = mmap((void *)mcb, mcl, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0); if (p != (void *)mcb) { if (p != MAP_FAILED) munmap(p, mcl); bad |= 2; } }
+    if (bad) {   // 原址占不到：新占到的那样放掉，旧落点原样占回（刚放掉的是自己的，照旧起局；恢复按清单拒绝）
+        if ((plan & 1) && !(bad & 1)) munmap((void *)mwb, mws);
+        if ((plan & 2) && !(bad & 2)) munmap((void *)mcb, mcl);
+        int back = 1;
+        if ((plan & 1) && had) { p = mmap((void *)ob, os, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0); if (p != (void *)ob) { if (p != MAP_FAILED) munmap(p, os); back = 0; g_ok = 0; } }
+        if ((plan & 2) && oc) { p = mmap((void *)oc, cl, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0); if (p != (void *)oc) { if (p != MAP_FAILED) munmap(p, cl); back = 0; g_ca_base = 0; } }
+        LOG("【红】即时存档恢复：按快照原址重占%s占不到（快照窗口 %#llx +%llu MB、命令记录区 %#llx +%llu MB），旧落点%s，恢复会拒绝（快照不删）",
+            bad == 3 ? "窗口与命令记录区都" : bad & 1 ? "窗口" : "命令记录区", (unsigned long long)mwb, (unsigned long long)(mws >> 20), (unsigned long long)mcb, (unsigned long long)(mcl >> 20),
+            back ? "已占回" : "【红】没占回");
+        return -1;
+    }
+    if (plan & 1) {
+        LOG("即时存档恢复：窗口按快照原址重占 %#llx +%llu MB（本局按普通局占在 %#llx +%llu MB）", (unsigned long long)mwb, (unsigned long long)(mws >> 20), (unsigned long long)ob, (unsigned long long)(g_size >> 20));
+        g_ok = 1; g_base = mwb; g_size = g_res = mws; g_span_learned = 0;   // 恢复局不按学到的跨度当场放宽（s2a_window_span_widen）
+        if (g_gfd >= 0 && g_gwhole) {   // 文件后备整段进文件：整段重映射成文件（窗口还没有内容）
+            void *q = ftruncate(g_gfd, (off_t)mws) ? MAP_FAILED : mmap((void *)mwb, mws, PROT_NONE, MAP_FIXED | MAP_SHARED, g_gfd, 0);
+            if (q != (void *)mwb) { int er = errno; mmap((void *)mwb, mws, PROT_NONE, MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1, 0); close(g_gfd); g_gfd = -1;
+                LOG("【红】客体内存文件后备：按快照重占窗口后重映射成文件失败（errno=%d），照旧用匿名内存", er); } }
+        else if (g_gfd >= 0 && ftruncate(g_gfd, (off_t)mws)) { LOG("【红】客体内存文件后备：按快照重占窗口后文件定长失败（errno=%d），照旧用匿名内存", errno); close(g_gfd); g_gfd = -1; }
+        if (g_gfd >= 0 && !gchunk_alloc(g_gwhole ? GC_FILE : GC_UNDEC)) die("客体内存文件后备：按快照重占窗口后块状态表分配失败");
+        if (g_gfd < 0) { free(g_gchunk); g_gchunk = NULL; free(g_gtouch); g_gtouch = NULL; g_gchunk_n = 0; }
+    }
+    if (plan & 2) {
+        LOG("即时存档恢复：命令记录区按快照原址重占 %#llx +%llu MB（本局按普通局占在 %#llx），其后虚拟池区 +%llu GB", (unsigned long long)mcb, (unsigned long long)(CMD_ARENA >> 20),
+            (unsigned long long)oc, (unsigned long long)((mcl - CMD_ARENA) >> 30));
+        g_ca_base = mcb; g_ca_cut = 1; g_va_cap = mcl - CMD_ARENA;
+    }
+    { void (*gc)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "s2a_gc_limit_reapply"); if (gc) gc(); }   // 低区变了：GC 上限按现在的重选
     return 1;
 }
 static void cmd_arena_reserve(void) {   // 占窗口那一步在围栏前调；窗口没占到提前返回的路径由 vawin_boot 补调（只占一次）
