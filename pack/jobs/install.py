@@ -2823,7 +2823,11 @@ def await_import(c, ph, gid, want):
 
 
 # 「更新这款」做不齐时照实说（11-21：原先静默跳过，「建议更新」点了还在，玩家不知道为什么）
-UPDATE_SHADER_NOT_REBUILT = "这款的着色器库这次没能重编（电脑上没有这款的游戏文件，或这台电脑没装 Metal 开发工具），「建议更新」会继续显示：补上游戏文件或装好工具后再点「更新这款」。"
+# 着色器库重编不了分三种说（#1961：原先一句「补上游戏文件」，界面上却没地方补）：没装 Metal 工具 → 装工具；重编的原料（游戏库里已出好的
+#   iPhone 包 / Mac 版）不在、原件还在 → 出包页重新出包；原件也不在 → 黄字带「重新添加原件…」（facts.action = relinkSource，前端画按钮）
+UPDATE_SHADER_NO_TOOLS = "这款的着色器库这次没能重编：这台电脑没装 Metal 开发工具。在「准备这台电脑」装好后再点「更新这款」；「建议更新」会继续显示。"
+UPDATE_NEEDS_REPACK_SOURCE = "这款的着色器库这次没能重编：游戏库里重编要用的游戏文件不在了（比如清理空间时删了已出好的 iPhone 包）。原件还在：在出包页对这款重新出包。"
+UPDATE_NEEDS_SOURCE = "这款的着色器库这次没能重编：游戏库里重编要用的游戏文件和这款的原件都不在了。点「重新添加原件…」选这款的原件，再在出包页对这款重新出包。"
 UPDATE_MAC_BUSY = "这款在这台 Mac 上正在运行，Mac 版的着色器库这次没更新：退出游戏后再点一次「更新这款」。"
 UPDATE_NEEDS_REPACK = "这款要整款重新出包才能更新完（运行环境的约定变了，只换着色器库不够）：在出包页对这款重新出包。"
 SHELL_INSTALL_FIRST = "手机上还没装 S2Arm：先点「安装 S2Arm」，装好后再把这款推到 iPhone。"
@@ -3352,6 +3356,20 @@ def update_mac_lib(c, gid):
         return bool(sgrade_bf.upgrade_mac(c, gid, runtime))
 
 
+def sources_present(c, gid):
+    """这款登记的原件里有没有还在原位的（#1961：缺原料时判该指去重新出包，还是先重新添加原件）"""
+    import library
+    game = next((g for g in c.catalog()["games"] if g["id"].upper() == gid.upper()), None)
+    for package in (game or {}).get("packages") or []:
+        try:
+            path = library.source_path(c, package)
+        except (Failure, OSError, ValueError):
+            continue
+        if path.is_file() or path.is_dir():
+            return True
+    return False
+
+
 def refresh_local(c, gid):
     """把这款在电脑上的 iPhone 程序与着色器库补到本版（「更新这款」updateGame 与推到设备前共用，调用方拿着这款的程序锁）：
     着色器链变了只重编这款的着色器库（游戏库里的 game.img / 借 Mac 版），不重出整款；按本版改写器重核程序。
@@ -3360,9 +3378,15 @@ def refresh_local(c, gid):
     from rewrite_refresh import refresh_ios
     if (layout.program_info(c, gid) or {}).get("hostAbi", 1) != host_update.HOST_ABI:
         c.diagnostic(UPDATE_NEEDS_REPACK, code="update_incomplete", severity="warning")   # 约定号变了：换库 / 刷程序消不掉这条原因，照实说
-    if sgrade_bf.rechain_ios(c, gid) == "unavailable":
+    rechain = sgrade_bf.rechain_ios(c, gid)
+    if rechain in ("no_source", "no_tools"):
         trace(c, f"{gid} 着色器链更新了，这次没重编着色器库（原因见上一行；「建议更新」照旧提示）")  # 非玩家句
-        c.diagnostic(UPDATE_SHADER_NOT_REBUILT, code="update_incomplete", severity="warning")
+        if rechain == "no_tools":
+            c.diagnostic(UPDATE_SHADER_NO_TOOLS, code="update_incomplete", severity="warning")
+        elif sources_present(c, gid):
+            c.diagnostic(UPDATE_NEEDS_REPACK_SOURCE, code="update_incomplete", severity="warning")
+        else:
+            c.diagnostic(UPDATE_NEEDS_SOURCE, code="update_incomplete", severity="warning", facts={"action": "relinkSource"})
     refresh_ios(c, [gid])
 
 
