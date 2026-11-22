@@ -85,17 +85,26 @@ uint64_t s2a_guest_anon_budget(const char *e, uint64_t room, uint64_t margin, ui
 //   ③ 有本机记录（上局预算 prev_b、上局溢出模式下心跳读到的离上限剩余最小值 hmin）→ prev_b + (hmin − margin) − GCHUNK，限在 [0, room − margin]：
 //      hmin < 余量就收紧，> 余量就放宽（每局最多放宽 hmin − margin − 一块）；④ 没有记录（首局）→ room − margin − first_host（首局宿主开销，缺省 4096 = 全库 P90）。
 //   *src：0 显式 / 1 上局死掉 / 2 按上局实测 / 3 首局估计
-uint64_t s2a_guest_next_budget(const char *e, uint64_t room, uint64_t margin, uint64_t first_host, int died, int have, uint64_t prev_b, uint64_t hmin, int *src) {
+// 11-22 往上抬要有证据（一台 iPhone，池 9216 MB 的 Switch 2 大款）：上局 61 秒就停、剩余最小 6012 MB 是开局那段的读数，预算 3521 → 7676 一次抬了一倍多，
+//   下一局约 5.8 分钟（帧 10622）进场景剩余从 2797 掉到 930、帧 18226 掉到 183 MB 被系统收掉。剩余最小只会随局变长而变小，短局读到的是上界：
+//   只能证明「该收紧」，不能证明「能放宽」。所以：long_run（上局溢出模式心跳 ≥ GMEM_BEATS_MIN 次 = 5 分钟）才许往上抬，每局最多抬 BUDGET_STEP；
+//   短局只许持平或收紧。那局到 5.8 分钟才掉，5 分钟门槛单独兜不住，所以再加 ceil：被系统收掉那局的预算 − BUDGET_STEP 记成天花板，之后不再越过（0 = 没有）
+#define BUDGET_STEP (1024ull << 20)
+uint64_t s2a_guest_next_budget(const char *e, uint64_t room, uint64_t margin, uint64_t first_host, int died, int have, uint64_t prev_b, uint64_t hmin, int long_run, uint64_t ceil, int *src) {
     if (e && *e) { *src = 0; return strtoull(e, NULL, 10) << 20; }
     if (died) { *src = 1; return 0; }
-    uint64_t cap = room > margin ? room - margin : 0;
+    uint64_t cap = room > margin ? room - margin : 0, v;
+    if (ceil && ceil < cap) cap = ceil;
     if (have) {
         *src = 2;
-        __int128 v = (__int128)prev_b + (__int128)hmin - (__int128)margin - (__int128)GCHUNK;
-        return v <= 0 ? 0 : (uint64_t)v > cap ? cap : (uint64_t)v;
+        __int128 w = (__int128)prev_b + (__int128)hmin - (__int128)margin - (__int128)GCHUNK;
+        v = w <= 0 ? 0 : (uint64_t)w;
+        if (v > prev_b) v = long_run ? (v - prev_b > BUDGET_STEP ? prev_b + BUDGET_STEP : v) : prev_b;
+        return v > cap ? cap : v;
     }
     *src = 3;
-    return room > margin + first_host ? room - margin - first_host : 0;
+    v = room > margin + first_host ? room - margin - first_host : 0;
+    return v > cap ? cap : v;
 }
 // 开不开（纯函数，t_guest_file_auto 测）：e = S2A_GUEST_FILE；pool = 本款应用内存池；room = 起局时离系统给本进程的内存上限还剩多少（os_proc_available_memory，
 //   0 = 不知道上限，Mac 恒传 0）；host = 宿主自身开销估计；margin = 余量。设了按设的（"0" 关、其余开）；没设 → 上限已知且「池 + 宿主开销 + 余量」装不下才开。
@@ -322,6 +331,15 @@ int s2a_guest_budget_rec_read(uint64_t *b, uint64_t *hmin) {   // 两项都读�
     return ok;
 }
 static uint64_t g_budget_room;   // 本局定预算时的起局剩余（写进记录第三项）
+static uint64_t g_budget_ceil;   // 本款预算天花板（写进记录第五项；0 = 没有，s2a_guest_next_budget）
+static uint64_t g_bbeats;        // 本局溢出模式下的心跳次数（写进记录第四项：上局够不够长）
+// 记录第四、五项（11-22）：上局溢出模式心跳次数、天花板 MB。旧记录没有 → 0（当短局：只许收紧；没有天花板）
+static void budget_rec_ext(uint64_t *beats, uint64_t *ceil) {
+    *beats = *ceil = 0; char p[1100]; if (!budget_rec_path(p, sizeof p)) return;
+    FILE *f = fopen(p, "r"); if (!f) return;
+    unsigned long long x, y, z, b = 0, c = 0; int n = fscanf(f, "%llu %llu %llu %llu %llu", &x, &y, &z, &b, &c); fclose(f);
+    if (n == 5) { *beats = b; *ceil = (uint64_t)c << 20; }
+}
 uint64_t s2a_guest_budget_rec_room(void) {   // 记录第三项（字节）；没有 / 旧记录回 0
     char p[1100]; if (!budget_rec_path(p, sizeof p)) return 0;
     FILE *f = fopen(p, "r"); if (!f) return 0;
@@ -333,18 +351,24 @@ static int budget_rec_write(uint64_t b, uint64_t hmin) {
     char p[1100], t[1200]; if (!budget_rec_path(p, sizeof p)) return 0;
     { char d[1100]; snprintf(d, sizeof d, "%s", p); char *sl = strrchr(d, '/'); if (sl) { *sl = 0; mkdir(d, 0755); } }
     snprintf(t, sizeof t, "%s.tmp", p); FILE *f = fopen(t, "w"); if (!f) return 0;
-    fprintf(f, "%llu %llu %llu\n", (unsigned long long)(b >> 20), (unsigned long long)(hmin >> 20), (unsigned long long)(g_budget_room >> 20)); fclose(f);
+    fprintf(f, "%llu %llu %llu %llu %llu\n", (unsigned long long)(b >> 20), (unsigned long long)(hmin >> 20), (unsigned long long)(g_budget_room >> 20),
+            (unsigned long long)g_bbeats, (unsigned long long)(g_budget_ceil >> 20)); fclose(f);
     return !rename(t, p);
 }
 // 起局（iOS）定溢出模式预算：读记录、上一局死掉就清，交 s2a_guest_next_budget；*pb / *ph 回读到的上局记录（日志用）。单测在 Mac 上直接调
 uint64_t s2a_guest_overflow_budget_ios(const char *e, uint64_t room, uint64_t margin, int died, int *src, uint64_t *pb, uint64_t *ph) {
-    *pb = *ph = 0; int have = !died && s2a_guest_budget_rec_read(pb, ph);
+    *pb = *ph = 0; uint64_t rb = 0, rh = 0, beats = 0; int rec = s2a_guest_budget_rec_read(&rb, &rh), have = !died && rec;
+    budget_rec_ext(&beats, &g_budget_ceil);
+    if (have) { *pb = rb; *ph = rh; }
     uint64_t pr = have ? s2a_guest_budget_rec_room() : 0;
     if (have && pr > room) *ph = *ph > pr - room ? *ph - (pr - room) : 0;   // 这局上限比上局低：上局的剩余最小值按差额扣（*ph 回扣过的值，日志用）
-    if (died) budget_rec_clear();
-    g_budget_room = room;
+    g_budget_room = room; g_bbeats = 0;
+    if (died) {   // 上局按 rb 的预算被系统收掉：rb − 一步记成天花板（只降不升）；rb 不到一步（整段 / 预算很小时死掉，不是预算的事）不动天花板
+        if (rec && rb >= BUDGET_STEP && (!g_budget_ceil || rb - BUDGET_STEP < g_budget_ceil)) g_budget_ceil = rb - BUDGET_STEP;
+        budget_rec_clear(); if (g_budget_ceil) budget_rec_write(0, 0);
+    }
     { const char *v = getenv("S2A_GUEST_FILE_OVERFLOW_HOST_MB"); uint64_t fh = (v && *v ? strtoull(v, NULL, 10) : 4096ull) << 20;
-      return s2a_guest_next_budget(e, room, margin, fh, died, have, *pb, *ph, src); }
+      return s2a_guest_next_budget(e, room, margin, fh, died, have, *pb, *ph, beats >= GMEM_BEATS_MIN, g_budget_ceil, src); }
 }
 static uint64_t g_hmin = UINT64_MAX;   // 本局开着文件后备时心跳读到的离上限剩余最小值
 static int g_rec_off;   // 1 = 显式设 S2A_GUEST_FILE_ANON_BUDGET_MB=0 的对照局：不写记录
@@ -352,8 +376,10 @@ static int g_rec_off;   // 1 = 显式设 S2A_GUEST_FILE_ANON_BUDGET_MB=0 的对�
 //   整段模式（预算 0）也写（B 记 0）：上局死掉清了记录、这局整段，照写 B = 0 与 Hmin，下一局按整段模式下的实测余量回升（0 + Hmin − 余量 − 一块）；
 //   否则算出 0 后不再有新记录，永远卡在整段。显式设 0 的对照局不写
 void s2a_guest_budget_note(uint64_t avail) {
-    if (g_gfd < 0 || !g_gchunk || g_rec_off || avail >= g_hmin) return;
-    if (budget_rec_write(g_anon_budget, avail)) g_hmin = avail;
+    if (g_gfd < 0 || !g_gchunk || g_rec_off) return;
+    g_bbeats++;
+    if (avail < g_hmin) { if (budget_rec_write(g_anon_budget, avail)) g_hmin = avail; }
+    else if (g_bbeats == GMEM_BEATS_MIN) budget_rec_write(g_anon_budget, g_hmin);   // 够长了：记一笔次数（往上抬要它）
 }
 // 记录文件名（11-22 span_peak → span_peak2）：起改按贴顶规则记（s2a_span_learn_ok），旧 span_peak 里混着贴顶的假跨度（分不出真假、没记越界 / 远端），一律不读、重学；
 //   首局知识由同规则重生成的种子表（tools/span_seed.py）给
@@ -612,13 +638,15 @@ static void guest_file_map(uint64_t room) {
     unlink(path);
     if (ftruncate(fd, (off_t)g_size)) { LOG("【红】客体内存文件后备：文件定长 %llu MB 失败（errno=%d），照旧用匿名内存", (unsigned long long)(g_size >> 20), errno); close(fd); return; }
     const char *be = getenv("S2A_GUEST_FILE_ANON_BUDGET_MB");
-    uint64_t margin = env_mb("S2A_GUEST_FILE_MARGIN_MB", 512), budget; char why[200];
+    uint64_t margin = env_mb("S2A_GUEST_FILE_MARGIN_MB", 512), budget; char why[512];
 #ifdef __IPHONE_OS_VERSION_MIN_REQUIRED   // iOS 有单进程上限：按本机本款实测定（s2a_guest_next_budget）
     { int src = 0; uint64_t pb = 0, ph = 0; budget = s2a_guest_overflow_budget_ios(be, room, margin, g_gfile_died, &src, &pb, &ph);
       if (src == 0) snprintf(why, sizeof why, "按 S2A_GUEST_FILE_ANON_BUDGET_MB 显式设定");
-      else if (src == 1) snprintf(why, sizeof why, "上一局在前台死掉：退回整段进文件，清掉本款预算记录");
-      else if (src == 2) snprintf(why, sizeof why, "按上局实测余量：上局预算 %llu MB + (上局离上限剩余最小 %llu MB（已按两局起局剩余之差扣过）− 余量 %llu MB) − 一块 %llu MB，上限 剩余 %llu − 余量",
-                                  (unsigned long long)(pb >> 20), (unsigned long long)(ph >> 20), (unsigned long long)(margin >> 20), (unsigned long long)(GCHUNK >> 20), (unsigned long long)(room >> 20));
+      else if (src == 1) snprintf(why, sizeof why, "上一局在前台死掉：退回整段进文件，清掉本款预算记录，天花板 %llu MB（0 = 没有）", (unsigned long long)(g_budget_ceil >> 20));
+      else if (src == 2) snprintf(why, sizeof why, "按上局实测余量：上局预算 %llu MB + (上局离上限剩余最小 %llu MB（已按两局起局剩余之差扣过）− 余量 %llu MB) − 一块 %llu MB，上限 剩余 %llu − 余量；"
+                                  "上局不到 5 分钟只许收紧、够长每局最多抬 1024 MB，天花板 %llu MB（0 = 没有）",
+                                  (unsigned long long)(pb >> 20), (unsigned long long)(ph >> 20), (unsigned long long)(margin >> 20), (unsigned long long)(GCHUNK >> 20), (unsigned long long)(room >> 20),
+                                  (unsigned long long)(g_budget_ceil >> 20));
       else { const char *v = getenv("S2A_GUEST_FILE_OVERFLOW_HOST_MB");
           snprintf(why, sizeof why, "首局估计：剩余 %llu MB − 余量 %llu MB − 首局宿主开销 %llu MB（S2A_GUEST_FILE_OVERFLOW_HOST_MB）", (unsigned long long)(room >> 20),
                    (unsigned long long)(margin >> 20), v && *v ? strtoull(v, NULL, 10) : 4096ull); } }
