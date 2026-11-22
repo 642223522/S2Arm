@@ -11828,6 +11828,7 @@ static void warm_tick_full(long total) { if (!atomic_exchange(&g_wp_full_sent, 1
 //   （怪猎首帧等整段预热 64 s，6 核 user-initiated 起局即严重发热、60 帧掉 30）。11-05 改回有上限：斯普拉遁3（c1104_r2）进局后第 54 / 232 帧单条首用等待 26.5 / 36.7 s，
 //   31 条等的管线 31 条都在清单里，只是后台还没排到。判据（维护者 10-29）：首装一次性 loading ≤ 15 s、之后不卡 → 首帧前满核编清单最前面（首遇先后）的，
 //   15 s（DM_PSO_PREPARE_MAX_MS）到点必放行、前端也不能延长，剩下的交给后台 DM_PSO_BG_THREADS 路 utility（同 11-02 的后台）
+//   11-22 #502：有加载页前端时不再到点放行（玩家选择等、编译还在往前走，到点硬进 = 替玩家做决定、半编进局首遇卡顿）；只在玩家点「先开始玩」或前端判无进展时放行。上限只管没有前端的宿主（Mac、单测）
 static int prepare_on(void) {
     static int v = -1;
     if (v < 0) { const char *e = getenv("DM_PSO_PREPARE"); v = !(e && !strcmp(e, "0")); }
@@ -11840,7 +11841,7 @@ static int prepare_workers(void) {
 }
 // The first submission waits for the whole list (S2Arm 10-30, 维护者: the loading page shows the progress, nvn_warm.h), no longer at most 15 s. It hands back to the host, the rest going on in
 //   the background as before, when the player taps "play now" (s2a_warm_play_now), when no line has finished for DM_PSO_PREPARE_STALL_MS (default 20000) or after DM_PSO_PREPARE_MAX_MS
-//   (default 30000 since 11-06, 维护者: 15000 since 11-05 left cold first runs half compiled; see prepare_on; it binds with a front end too; 0 = none for either). Both are set from device measurements of whole lists (Monster Hunter Rise 10-26: 17625 seed lines, 77 s in all).
+//   (default 30000 since 11-06, 维护者: 15000 since 11-05 left cold first runs half compiled; see prepare_on; 11-22 #502: only without a front end — with one, only the player or the front end's no-progress guard ends the wait; 0 = none). Both are set from device measurements of whole lists (Monster Hunter Rise 10-26: 17625 seed lines, 77 s in all).
 //   Returns 1 when everything was built before it returned, 0 when the rest goes on in the background (warm_finish runs when they end)
 static int prepare_max_ms(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_PSO_PREPARE_MAX_MS"); v = e ? atoi(e) : 30000; } return v; }   // 11-06 维护者：30 s（原 11-05 定 15 s，冷装首玩编不完；8 s 后可「先开始玩」照旧）
 static int prepare_stall_ms(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_PSO_PREPARE_STALL_MS"); v = e ? atoi(e) : 20000; } return v; }
@@ -11881,7 +11882,7 @@ static int warm_prepare(NSArray<WarmTask *> *tasks, long lines) {
         int why;
         if (front) why = s2a_front_warm_tick(done, lines) == 1 || atomic_load(&g_wp_play) ? WARM_WHY_PLAYER : WARM_WHY_NONE;   // the front end owns the page, its estimate and its guards
         else why = warm_hold_why(el, now - moved, atomic_load(&g_wp_play), lim, stall);
-        if (!why && lim && el >= lim) why = WARM_WHY_LIMIT;   // 11-05：上限对前端同样生效——到点必放行进局，前端不能延长（维护者 判据 ≤ 15 s）
+        if (!why && !front && lim && el >= lim) why = WARM_WHY_LIMIT;   // 上限只管没有前端的宿主（11-22 #502：有加载页时编译还在进展就继续等，玩家可随时点「先开始玩」）
         // 11-06（异度3 测试设备1 再启动局：归档 2048 / 2048 全命中，首帧仍等满 15 s，12523 行剩 26 行）：清单每一行都已有工人领走、只剩在编的几条时不再挡首帧——
         //   再等也不会让任何一条更早开编；游戏真用到其中一条时，首遇路径按同键等那一条在编的（不重编），用不到的不该拖住进局。在编的照常在满核工人上编完
         if (!why && atomic_load(&next) >= n) why = WARM_WHY_TAIL;
