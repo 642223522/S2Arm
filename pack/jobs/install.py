@@ -2783,7 +2783,7 @@ def external_identity_gap(c, ph):
     if team and got and got != team:
         return "phone_identity_team_mismatch", EXTERNAL_IDENTITY_TEAM.format(got, team)
     return None
-PROGRAM_WAIT = "等 iPhone 上的 S2Arm 装好这款的程序"
+PROGRAM_WAIT = "等 {0} 上的 S2Arm 装好这款的程序"   # 阶段名会显示给玩家（导出页设备行）：{0} 按这次作业认出的设备类型填（#1962）
 IMPORT_WAIT_S = (300, 20)   # App 开着：等它导入的上限（大游戏 1.6 GB 程序包在手机上解开、校验）；查不清开没开（Windows 没有 devicectl）：只看这么久
 
 
@@ -3328,7 +3328,7 @@ def phone_identity(c):
     """作业 phoneIdentity（总控台「把证书交给 App」，证书签名用户）：连着的这台手机，把证书交给 App 保存，以后手机上自己签游戏。
     交过了（同一张证书、手机上已导入或还等着导入）不重交，delivered = False；请求带 force 照样重交。通用壳开关关着 → {enabled: False}"""
     with packer_phone_lock(c):   # 装机类作业一次一个（ipa.phone_lock）
-        c.begin("把证书交给 iPhone 上的 S2Arm", 1, 1)
+        c.begin(on_device("把证书交给 {0} 上的 S2Arm", device_of(c)), 1, 1)   # 阶段名显示给玩家；这时还没认设备，多半填「iPhone / iPad」（#1962）
         ph = phone_for(c)
         src = _identity_source(c, ph)
         if src:   # 别的工具装的 S2Arm（包名被改过）也交：按手机上实际装着、团队对得上的那个（identity_target）
@@ -3437,7 +3437,7 @@ def push_game(c, gid, ph, steps=True):
                                            at=time.time()))
     pull_shader_counts(c, ph, [gid])
     if progs[gid] != old.get("program") and not ph.pending:   # 这次推了程序包（没推的原样带回）：App 导入换上了才算装好
-        if steps: c.begin(PROGRAM_WAIT, 3, 3)
+        if steps: c.begin(on_device(PROGRAM_WAIT, device_of(c)), 3, 3)
         ph.pending = await_import(c, ph, gid, progs[gid]["dir"])
     gap = external_identity_gap(c, ph) if ext else None   # 导入不签名、起局才签：没身份就别报「装好了」
     if gap:
@@ -3811,7 +3811,8 @@ def install_shell(c, ph, steps=True):
     rec = layout.load_device(c, ph.key)
     if ph.bid and rec.get("apps"):   # 显式描述文件只有一个包名：装壳顶掉了装成同包名的独立 App
         rec = dict(rec, apps={k: v for k, v in rec["apps"].items() if str((v or {}).get("bundleId") or "").lower() != ph.bid.lower()})
-    signed = dict(signed=dict(at=time.time(), free=bool(ph.info["free"]), device=ph.info["device"], mode=sign_mode(c),
+    # deviceKind：游戏库状态写「已推到 iPad」（#1962）；旧记录没有，前端填「iPhone / iPad」
+    signed = dict(signed=dict(at=time.time(), free=bool(ph.info["free"]), device=ph.info["device"], deviceKind=ph.info.get("deviceKind") or "", mode=sign_mode(c),
                               **({"expires": ph.info["expires"]} if ph.info.get("expires") else {}))) if "free" in ph.info else {}
     # 换了签名方式后第一次装（Mac 从 Xcode 钥匙串换到 plumesign、证书 ↔ Apple ID）：结果带 signerSwitched，完成页写「这一次要重新装一下」，只这一次
     now = signer_kind(c, ph)
