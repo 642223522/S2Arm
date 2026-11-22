@@ -354,9 +354,19 @@ uint64_t nvn_ga2ca(uint64_t a) {
     while (lo <= hi) { int m = (lo + hi) / 2; if (g_gva[m].g <= a) lo = m + 1; else hi = m - 1; }   // hi = 最后一个起点 ≤ a 的段
     if (hi >= 0 && a - g_gva[hi].g <= g_gva[hi].n && g_gva[hi].c) r = g_gva[hi].c + (a - g_gva[hi].g);   // c = 0：虚拟池没拿到预留段   // 段尾（a = 起点 + 字节数）也认：游戏常给区间末端
     pthread_rwlock_unlock(&g_gva_lk);
-    static _Atomic int once; if (r == a && !once++) LOG("【红】[nvn] GPU 地址 %#llx 不在任何池里（池已释放 / 游戏算错）：原样交给回放（只报一次）", (unsigned long long)a);
+    // 换不了的报一次，带前后相邻的池段（GPU 起点 + 字节数、CPU 起点；c = 0 = 虚拟池没拿到预留段）：看得出是落在两池之间的间隔、池尾之外还是已释放的池（D-BSX8 只有地址、判不了）
+    static _Atomic int once;
+    if (r == a && !once++) {
+        char pv[96] = "无", nx[96] = "无";
+        pthread_rwlock_rdlock(&g_gva_lk);
+        if (hi >= 0) snprintf(pv, sizeof pv, "%#llx+%#llx（CPU %#llx）", (unsigned long long)g_gva[hi].g, (unsigned long long)g_gva[hi].n, (unsigned long long)g_gva[hi].c);
+        if (hi + 1 < g_ngva) snprintf(nx, sizeof nx, "%#llx+%#llx（CPU %#llx）", (unsigned long long)g_gva[hi + 1].g, (unsigned long long)g_gva[hi + 1].n, (unsigned long long)g_gva[hi + 1].c);
+        int ng = g_ngva; pthread_rwlock_unlock(&g_gva_lk);
+        LOG("【红】[nvn] GPU 地址 %#llx 不在任何池里（池已释放 / 游戏算错 / 虚拟池没有预留段）：原样交给回放（只报一次）；前一段 %s、后一段 %s，共 %d 段", (unsigned long long)a, pv, nx, ng);
+    }
     return r;
 }
+int nvn_ga_unmapped(uint64_t a) { return a >= GVA_LO && a < GVA_HI; }   // nvn_ga2ca 之后仍在 GPU 地址窗口里 = 换不成 CPU 地址（CPU 地址不会落进窗口，见 gva_alloc），宿主上没有映射
 // 单点查询：给定 CPU 地址，返回所在池的 {CPU 起点, 字节数}；不在任何池返回 0。
 // 池表可能上千项（BotW 约 1760），快照接口有 cap 截断，不能用来判定“是否在池里”——那会把
 // 排在 cap 之后的池误判成“不可证明”。这里直接对按 GPU 起点排序的表做一次线性定位（观测到的
@@ -1418,6 +1428,40 @@ static int keys_hash_early(const NVNshaderData *sd, uint8_t out[8]) {
 }
 // 首用算键的读数（11-18：4ff1884da 的修复走没走到，原先没有一行能数）：Switch 2 游戏每个阶段都在首用才算键，读的是 SetShaders 时自持的控制段（ctl_intern）；
 //   魔数 / 版本不对 = 首用时读到的不是 NVN2 控制段（#1520 卡比修复前 98 支就是这样）。g_ctl_held / g_ctl_uniq：SetShaders 自持控制段的次数 / 去重后份数
+// 局内实际用到的着色器（shader_seen.tsv，放在 pso_user.tsv 旁边，同 nvn_mtl.m pso_user_path：DM_PSO_USER 所在目录，否则存档目录 DM_SAVE 的上一级）：
+//   每个绘制 / 派发第一次给某一阶段算出键时记一行「键<TAB>阶段」，只记键、不记着色器内容；同一个键只记一次（起局先读已有的，跨局累加）。
+//   随诊断回收（ios/diagcollect.m、pack/jobs/library.py 同收 pso_user.tsv 那段），与同行公开清单合成「玩家会用到的着色器」名单：
+//   出包只编会用到的那一部分之前，先要知道这份名单有多大、各局稳不稳（11-21 编批库方案）。写不了就整局不记，不影响游戏
+#define SEEN_CAP (1u << 17)   // 不同着色器数的上限（一款大游戏局内见到的在 1 万上下）；满了不再记，不扩容
+static pthread_mutex_t g_seen_mu = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t *g_seen_tab; static uint32_t g_seen_n; static FILE *g_seen_f; static int g_seen_state;   // 0 没开过；1 在记；-1 不记
+static int seen_add(uint64_t v) {   // 开放寻址；0 留作空位（真有全零键时记成 1，只影响去重，不影响写出的键）
+    uint64_t h = v ? v : 1; uint32_t i = (uint32_t)(h * 0x9E3779B97F4A7C15ull >> 47) & (SEEN_CAP - 1);
+    while (g_seen_tab[i]) { if (g_seen_tab[i] == h) return 0; i = (i + 1) & (SEEN_CAP - 1); }
+    if (g_seen_n >= SEEN_CAP / 2) return 0;
+    g_seen_tab[i] = h; g_seen_n++; return 1;
+}
+static void seen_open_locked(void) {
+    g_seen_state = -1;
+    const char *u = getenv("DM_PSO_USER"), *save = getenv("DM_SAVE"), *base = u && *u ? u : save && *save ? save : NULL;
+    if (!base) return;
+    char path[4096]; const char *slash = strrchr(base, '/');
+    if (!slash || (size_t)(slash - base) + sizeof "/shader_seen.tsv" > sizeof path) return;
+    snprintf(path, sizeof path, "%.*s/shader_seen.tsv", (int)(slash - base), base);
+    if (!(g_seen_tab = calloc(SEEN_CAP, sizeof *g_seen_tab))) return;
+    FILE *r = fopen(path, "r"); char line[64]; unsigned long long v;
+    if (r) { while (fgets(line, sizeof line, r)) if (sscanf(line, "%16llx", &v) == 1) seen_add(v); fclose(r); }
+    if (!(g_seen_f = fopen(path, "a"))) return;
+    g_seen_state = 1;
+    LOG("[nvn] 局内用到的着色器记到 shader_seen.tsv（只记键与阶段）：已有 %u 支", g_seen_n);
+}
+static void seen_note(const uint8_t key[8], unsigned st) {
+    uint64_t v = 0; for (int i = 0; i < 8; i++) v = v << 8 | key[i];   // 与 dsh_miss.inc 的键写法同序（逐字节 %02x）
+    pthread_mutex_lock(&g_seen_mu);
+    if (!g_seen_state) seen_open_locked();
+    if (g_seen_state > 0 && seen_add(v)) { fprintf(g_seen_f, "%016llx\t%u\n", (unsigned long long)v, st); fflush(g_seen_f); }
+    pthread_mutex_unlock(&g_seen_mu);
+}
 static _Atomic uint64_t g_ctl_held, g_ctl_uniq, g_n2_late, g_n2_late_bad;
 int prog_key(const prog_t *p, unsigned st, uint8_t key[8]) {
     if (st >= p->nstage) return 0;
@@ -1439,6 +1483,9 @@ int prog_key(const prog_t *p, unsigned st, uint8_t key[8]) {
             dm_shader_miss(k->key[st], p->sd[st].data, p->sd[st].control);
         }
     }
+    // 记局内用到的着色器：画 / 派发用到这一阶段时（键可能早在 SetShaders 时就算好了），按键去重（seen_note）；没算出键（全零）不记。
+    //   不在 prog_keys_t 上加「已记」位：它原样进快照（gfx_progkeys.bin，s2a_hle_pk_save / load），加字段就改了快照格式
+    { static const uint8_t zero[8]; if (memcmp(k->key[st], zero, 8)) seen_note(k->key[st], st); }
     memcpy(key, k->key[st], 8);
     return 1;
 }
