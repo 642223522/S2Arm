@@ -1044,7 +1044,7 @@ def backup_saves(c, ident, bid, gid, docs="Documents"):
     if not files:
         return None
     dest = layout.path(c, gid, "save_backup", time.strftime("%Y%m%d-%H%M%S"))
-    for rel in files:
+    for index, rel in enumerate(files, 1):
         try:
             (dest / rel).parent.mkdir(parents=True, exist_ok=True)
         except OSError as e:
@@ -1056,6 +1056,8 @@ def backup_saves(c, ident, bid, gid, docs="Documents"):
         if rc or not (dest / rel).is_file():
             return save_backup_stuck(c, gid, f"拉存档失败（{rel}）：" + (err.splitlines()[-1] if err else f"devicectl 退出 {rc}"),  # 非玩家句
                                      nospace=rc == DEVICECTL_NOSPACE)
+        if getattr(c, "stage_key", None) == "phone_save_backup":
+            c.emit("progress", f"{gid} · {index}/{len(files)}", done=index, total=len(files), unit="files")
     return dest
 
 
@@ -3730,10 +3732,20 @@ def install_shell(c, ph, steps=True):
     import ipa as packer
     rec = layout.load_device(c, ph.key)
     before = last_signer(rec)   # 装之前取（换包名时 forget_other_app 会清记录）
-    snapshot_phone_saves(c, ph, list(rec.get("games") or {}))   # 0.6.0：装壳前把手机上各款的存档拉回电脑（同 push_game）
-    if steps: c.begin("组 S2Arm（不带游戏）", 2, 3)
+    # Check the signing decision before doing any backup. Keep the check at sign time too.
+    if isinstance(ph, (WinPhone, PlumeMacPhone)) and not devcert.active(c):
+        tools = ph.W.impactor.bundled(c.r.get("resources")) or {}
+        exe = ph.W.plumesign_path(tools.get("plumesign"))
+        ph.W.impactor.select_only_account(exe)
+        win_cert_gate(c, ph.W, exe)
+    games = list(rec.get("games") or {})
+    stages = 4 if games else 3
+    if games and steps:
+        c.begin("备份这款的存档", 2, stages, key="phone_save_backup")
+    snapshot_phone_saves(c, ph, games)
+    if steps: c.begin("组 S2Arm（不带游戏）", stages - 1, stages)
     ipa, _, sid = packer.assemble_shell(c)
-    if steps: c.begin("签名并装到 iPhone", 3, 3)
+    if steps: c.begin("签名并装到 iPhone", stages, stages)
     ph.install(ipa, [], steps=False)
     forget_other_app(c, ph)
     rec = layout.load_device(c, ph.key)

@@ -93,6 +93,9 @@ struct PhoneJobPanel: View {
                 .accessibilityIdentifier("phone.action")
             }
             steps
+            if p.unit == "files", !p.countText.isEmpty {
+                Text(p.countText).font(.manrope(14, .medium)).monospacedDigit()
+            }
         }
         .accessibilityIdentifier("phone.running")
     }

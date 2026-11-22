@@ -547,7 +547,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     }
     /// 手机槽空出来 / 主槽或游戏槽一单结束：起排着的第一个能起的（那款不被主槽 / 游戏槽占着）
     func pumpPhone() {
-        guard !phoneBusy, let i = phoneQueue.firstIndex(where: { !mainHolds($0.gameID) }) else { return }
+        guard !phoneBusy, dropConfirm == nil, let i = phoneQueue.firstIndex(where: { !mainHolds($0.gameID) }) else { return }
         phoneQueue.remove(at: i).run()
     }
 
@@ -1249,7 +1249,8 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// 装机 / 删除会让手机上别的电脑装的游戏暂时不能玩（作业层 container_would_drop）：界面弹确认，确认了带 acceptDropped 重跑。
     /// ask = false（控制口发起）不弹，原样失败，由调用方带 acceptDropped 再发。
     /// 更新手机上的 S2Arm 也会撞上（v0.3.0 只换壳验收：原先这条路没接确认，界面说「确认继续再点一次」却永远过不去）：update 记着当时的参数，确认后原样带 acceptDropped 重跑
-    struct UpdateArgs { let acceptStale: Bool; let repack: [String]; let language: String; let device: String?; var accept: Set<String> = []
+    var queuedPhoneUpdates = Set<UpdateArgs>()
+    struct UpdateArgs: Hashable { let acceptStale: Bool; let repack: [String]; let language: String; let device: String?; var accept: Set<String> = []
         var mode: String? = nil; var sgradeUpgrade = false }   // 「S 级优化升级」页发起的：重发时照带装法与升级标记
     /// 作业层可确认继续的停装码 → 玩家点「仍然继续」后重发时带的参数（维护者 11-11 装机原则：认得出的风险让玩家确认，确认了就装）。
     ///   结局页（PhoneJobPanel）按码在页内问「仍然继续 / 先不」，不弹散的对话框；参数累积（先确认挤掉、再撞上备份失败，第二次重发两个都带）
@@ -2012,6 +2013,8 @@ public final class S2ArmLauncherModel: ObservableObject {
     func backFromPhone() {
         guard let s = phoneSession, isFinished(s) else { return }
         phoneSession = nil
+        if dropConfirm?.kind == s.kind { dropConfirm = nil }
+        pumpPhone()
     }
 
     /// 停主槽的作业（出包 / 导入 / 下载…的「取消」）
