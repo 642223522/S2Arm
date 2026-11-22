@@ -1303,8 +1303,8 @@ extern int s2a_source_keep(const uint8_t key[8], uint32_t array_index, const voi
 // Bind 时用当时的 code 补算 key。全部弱绑定：其他平台没有实现时行为不变。
 extern int s2a_source_hold_pending(uint64_t prog_serial, uint32_t stage, const void *control,
                                    uint32_t control_bytes) __attribute__((weak));
-extern int s2a_source_pending_control(uint64_t prog_serial, uint32_t stage, const uint8_t **control,
-                                      uint32_t *control_bytes) __attribute__((weak));
+extern int s2a_source_pending_control_copy(uint64_t prog_serial, uint32_t stage, void *dst, uint32_t cap,
+                                           uint32_t *n) __attribute__((weak));
 extern int s2a_source_has(const uint8_t key[8]) __attribute__((weak));
 extern void s2a_source_drop_pending_stage(uint64_t prog_serial, uint32_t stage) __attribute__((weak));   // 源已存好：释放该阶段的自持控制段
 
@@ -2461,10 +2461,10 @@ NVN(nvnCommandBufferBindProgram, void, NVNcommandBuffer *c, const NVNprogram *p,
                 const uint8_t *ctl = NULL;
                 uint32_t nctl = 0;
                 {
-                    const uint8_t *pc = NULL; uint32_t pn = 0;
-                    if (s2a_source_pending_control && s2a_source_pending_control(snap.serial, i, &pc, &pn) &&
-                        pc && pn >= 0x760 && pn <= sizeof pctl) {
-                        memcpy(pctl, pc, pn); ctl = pctl; nctl = pn;
+                    uint32_t pn = 0;
+                    if (s2a_source_pending_control_copy && s2a_source_pending_control_copy(snap.serial, i, pctl, sizeof pctl, &pn) &&
+                        pn >= 0x760 && pn <= sizeof pctl) {
+                        ctl = pctl; nctl = pn;
                     }
                 }
                 if (!ctl || nctl < 0x708) continue;   // 只用 SetShaders 自持的 control；guest control 已可能失效
