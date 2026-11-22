@@ -1089,7 +1089,7 @@ static int link_map_interesting(const char *vs, const char *fs, int level) {
 }
 static void link_map_note(const uint8_t *bytes, size_t len, const char *keys_hex, const uint8_t identity[32]) {
     struct s2a_jv top = {(const char *)bytes, len}, map;
-    char vs[256], fs[256], m[640];
+    char vs[256], fs[256], m[sizeof vs + sizeof fs + 192];   // 固定文字 + 键 + 身份不到 192 字节，两侧表各自最长 255
     if (s2a_jv_obj_find(top, "linkMap", &map)) { snprintf(vs, sizeof vs, "?"); snprintf(fs, sizeof fs, "?"); }
     else { link_map_side(map, "vs", vs, sizeof vs); link_map_side(map, "fs", fs, sizeof fs); }
     {   // 档位（nvk_link_map_diag）：1 全打；2 只打「任一侧 ≥2 个 varying 或两侧对不上」；3 只打「两侧对不上」。不合档的不占名额
