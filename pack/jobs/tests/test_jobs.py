@@ -1818,6 +1818,39 @@ class JobsTests(unittest.TestCase):
                 else:
                     os.environ[name] = value
 
+    def test_launch_and_popup_read_the_same_input(self):
+        # #2081：这款的 input.json 不合规 / 缺字段 / 不是 JSON 时，起局（runtime_env）和键位弹窗（loadInput 作业）都回落到
+        #   default-input.json，default 也坏才用标准键位；problem 标出来。玩家 2 的 input-p2.json 坏了 → 照玩家 1 实际生效的那套。期望手写
+        def mapping(code):
+            return dict(schema=1, keyboard={"A": {"code": code}}, mouse={"Y": 0}, gamepad={"A": "east"},
+                        axes={}, deadzone=.15, mouseOptions=dict(mode="off", sensitivityX=1, sensitivityY=1))
+        game = self.game()
+        defaults = mapping(14)
+        dup = dict(mapping(36), keyboard={"A": {"code": 36}, "B": {"code": 36}})   # 两个按键位绑同一个键：validate_input 拒
+        partial = {k: v for k, v in mapping(36).items() if k != "gamepad"}         # 缺 gamepad 段
+        cases = (("不合规", json.dumps(dup)), ("缺字段", json.dumps(partial)), ("不是 JSON", "{"))
+        mine = layout.path(self.c, game["id"], "input.json")
+        for label, text in cases:
+            for has_default in (True, False):
+                with self.subTest(label, default=has_default):
+                    mine.parent.mkdir(parents=True, exist_ok=True); mine.write_text(text, encoding="utf-8")
+                    layout.path(self.c, game["id"], "input-p2.json").write_text("{", encoding="utf-8")
+                    dflt = self.c.private / "default-input.json"
+                    if has_default:
+                        atomic(dflt, defaults)
+                    elif dflt.exists():
+                        dflt.unlink()
+                    want = defaults if has_default else None
+                    ctx = Context(dict(self.request, taskId=str(uuid.uuid4())))
+                    env = build.runtime_env(ctx, game, self.root / "runtime")
+                    launched = json.loads(Path(env["S2A_INPUT_CONFIG"]).read_text()) if "S2A_INPUT_CONFIG" in env else None
+                    self.assertEqual(launched, want)
+                    self.assertNotIn("S2A_INPUT_CONFIG_P2", env, "玩家 2 的坏文件不带，照玩家 1")
+                    pop = Context(dict(self.request, taskId=str(uuid.uuid4()), gameId=game["id"])); pop.game = lambda: game
+                    shown = library.load_input(pop)["players"]
+                    self.assertEqual([(p["player"], p["config"], p["problem"]) for p in shown[:2]], [(1, want, True), (2, want, True)])
+                    self.assertEqual((shown[0]["source"], shown[1]["source"]), ("default" if has_default else "standard", "player1"))
+
     def test_mac_input_guide_freezes_the_confirmed_mapping_per_game_and_launch(self):
         def mapping(code):
             return dict(schema=1, keyboard={"A": {"code": code}}, mouse={"Y": 0}, gamepad={"A": "east"},
