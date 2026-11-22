@@ -12088,6 +12088,7 @@ typedef struct {
     int used, samp, dtt, dpf, rw, base;   // rw: an image table (the shader writes through it, access::write / read_write): entries need the shader-write usage, the dummy is writable
     void **obj;   // per entry: the object it names, retained by the table; NULL: the dummy
     uint64_t wsub;   // rw: the submission whose GPU writes its textures were last marked for (pool_mark_writes)
+    uint64_t bound_fence;   // g_fence + 1 when pool_gpu last handed buf to a draw/dispatch; > pin_done() means GPU may still read buf
 } pool_tab;
 static pool_tab g_ptab[POOL_TABS]; static unsigned g_ptab_next; static _Atomic int g_ptab_any;
 static uint64_t g_psnap_gen = 1;   // bumped when a table's address changes (made, grown, dropped): an argument block holding a pool address is not reused past it (encode_args_ ab_pgen)
@@ -12229,7 +12230,19 @@ static int pool_pin_retire(void *r) {   // res_remove (g_res_mu held): 1 = pinne
 // Entry i of table ti names o (NULL: the dummy)
 static void pool_ent_put(int ti, uint32_t i, void *o, uint64_t rid) {
     pool_tab *t = &g_ptab[ti]; void *old = t->obj[i];
-    ((uint64_t *)((uint8_t *)t->buf.contents + DMSH_POOL_HEAD))[i] = o ? rid : t->dummy;
+    uint64_t val = o ? rid : t->dummy;
+    uint64_t *slot = (uint64_t *)((uint8_t *)t->buf.contents + DMSH_POOL_HEAD);
+    if (slot[i] != val && old != NULL && t->bound_fence > pin_done()) {
+        // GPU is still in-flight reading t->buf: copy-on-write a fresh buffer so in-flight draws keep their intact snapshot (#674)
+        id<MTLBuffer> b = [g_dev newBufferWithLength:t->buf.length options:MTLResourceStorageModeShared];
+        if (b) {
+            res_add(b); res_commit();
+            memcpy(b.contents, t->buf.contents, DMSH_POOL_HEAD + 8 * ((size_t)t->n + 1));
+            defer_obj_release(t->buf); t->buf = b; t->gpu = b.gpuAddress; t->bound_fence = 0; g_psnap_gen++;
+            slot = (uint64_t *)((uint8_t *)t->buf.contents + DMSH_POOL_HEAD);
+        }
+    }
+    slot[i] = val;
     if (old == o) return;
     uint32_t code = (uint32_t)ti << 20 | i; void *k[4]; int nk;
     if (o) { CFRetain(o); nk = pool_pin_keys(o, k); for (int j = 0; j < nk; j++) pin_add(k[j], code); }
@@ -12246,7 +12259,8 @@ static void *pool_tex_obj(int id_, uint64_t limit, int *left, uint64_t *rid, int
     *left = 0;
     if (id_ <= 0 || id_ >= g_ntreg || !g_treg[id_].ok) return NULL;
     treg_t *r = &g_treg[id_];
-    if (!r->view && (!tex_storage_live(r) || (!write && pool_unwritten_target(&r->t)))) return NULL;   // a target: the dummy until a pass writes it (a shader's read keeps it waiting, pool_seen_scan)
+    if (!r->view && !tex_storage_live(r)) return NULL;
+    if (!r->view && !write && pool_unwritten_target(&r->t)) { *left = 2; return NULL; }   // a target: the dummy until a pass writes it (tracked in g_punwritten so the next pool_gpu after the pass populates it immediately, #674)
     int made = r->view || tex_get(r->t.serial);
     if (!made && pool_tex_size(&r->t) > limit && !(pool_seen(id_) && g_walk_req < POOL_REQ_BYTES)) { *left = 1; return NULL; }
     void *tv = NULL; uint64_t tr = tex_fast_rid(id_, &tv);
@@ -12315,7 +12329,8 @@ static void pool_samp_update(int id_) {
 }
 // ----- What changed. Dirty IDs: registration paths mark them (under g_rmu) while a table exists; each is looked up again once at the next pool_gpu
 typedef struct { uint32_t *bits, *list; uint32_t n, cap, nbits; } pool_dset;
-static pool_dset g_pdirty[2], g_pleft;   // [0] texture IDs, [1] sampler IDs; g_pleft: texture IDs the budget left out
+static pool_dset g_pdirty[2], g_pleft, g_punwritten;   // [0] texture IDs, [1] sampler IDs; g_pleft: budget left out; g_punwritten: skipped by pool_unwritten_target until a pass writes them (#674)
+static uint64_t g_punwritten_ser = ~0ull;
 static void pool_dset_add(pool_dset *d, int id_) {
     if (id_ < 0 || id_ >= (1 << 20)) return;
     if (!d->bits) { d->bits = calloc((1u << 20) / 32, 4); if (!d->bits) MDIE("pool dirty set: out of memory"); }
@@ -12331,11 +12346,14 @@ static void pool_dirty(int samp, int id_) { if (atomic_load_explicit(&g_ptab_any
 // view_pkg): what nothing retires or registers still reaches what shaders read within a submission. Shaders read a few hundred of the tens of thousands of IDs
 static uint64_t g_seen_dirty = ~0ull, g_seen_ser = ~0ull;
 static void pool_seen_scan(void) {
-    if (!g_seen_buf || g_seen_sub == g_sub_serial) return;
-    g_seen_sub = g_sub_serial;
-    pool_walk_frame();
+    if (!g_seen_buf) return;
+    uint64_t dg = nvn_dirty_now(), sg = g_ser_gen;
+    int new_sub = (g_seen_sub != g_sub_serial);
+    int recheck = (dg != g_seen_dirty || sg != g_seen_ser);
+    if (!new_sub && !recheck) return;
+    g_seen_sub = g_sub_serial; g_seen_dirty = dg; g_seen_ser = sg;
+    if (new_sub) pool_walk_frame();
     const uint32_t *w = (const uint32_t *)g_seen_buf.contents; unsigned words = MIN((unsigned)g_ntreg / 32 + 1, (unsigned)POOL_SEEN_WORDS);
-    uint64_t dg = nvn_dirty_now(), sg = g_ser_gen; int recheck = dg != g_seen_dirty || sg != g_seen_ser; g_seen_dirty = dg; g_seen_ser = sg;
     for (unsigned i = 0; i < words; i++) {
         uint32_t fresh = w[i] & ~g_seen_done[i];
         if (fresh) { g_seen_done[i] |= fresh; g_seen_todo[i] |= fresh; }
@@ -12361,7 +12379,27 @@ static void pool_left_scan(void) {
     uint64_t limit = pool_walk_limit(0, (int)g_pleft.n, g_pleft.list); if (!limit) return;
     uint32_t *ids = malloc(g_pleft.n * sizeof *ids), m = g_pleft.n; if (!ids) return;
     memcpy(ids, g_pleft.list, m * sizeof *ids); pool_dset_clear(&g_pleft);
-    for (uint32_t j = 0; j < m; j++) { g_pool_upd_left++; if (pool_tex_update((int)ids[j], limit)) pool_dset_add(&g_pleft, (int)ids[j]); }
+    for (uint32_t j = 0; j < m; j++) { g_pool_upd_left++; int lr = pool_tex_update((int)ids[j], limit); if (lr == 1) pool_dset_add(&g_pleft, (int)ids[j]); else if (lr == 2) pool_dset_add(&g_punwritten, (int)ids[j]); }
+    free(ids);
+}
+// When a render pass creates/writes a target that was previously skipped by pool_unwritten_target (g_ser_gen bumped), populate its pool entry immediately in the same submission (#674)
+static void pool_unwritten_scan(void) {
+    if (!g_punwritten.n || g_ser_gen == g_punwritten_ser) return;
+    g_punwritten_ser = g_ser_gen;
+    uint32_t m = g_punwritten.n, *ids = malloc(m * sizeof *ids); if (!ids) return;
+    memcpy(ids, g_punwritten.list, m * sizeof *ids); pool_dset_clear(&g_punwritten);
+    for (uint32_t j = 0; j < m; j++) {
+        int id_ = (int)ids[j];
+        if (id_ <= 0 || id_ >= g_ntreg || !g_treg[id_].ok || g_treg[id_].gone) continue;
+        if (!g_treg[id_].view && pool_unwritten_target(&g_treg[id_].t)) { pool_dset_add(&g_punwritten, id_); continue; }
+        int left = 0; uint64_t rid = 0; void *o = pool_tex_obj(id_, 0, &left, &rid, 0);
+        if (left == 1) pool_dset_add(&g_pleft, id_);
+        else if (left == 2) pool_dset_add(&g_punwritten, id_);
+        else if (o) {
+            for (int k = 0; k < POOL_TABS; k++) { const pool_tab *t = &g_ptab[k]; if (t->samp || t->rw || !pool_covers(t, id_)) continue;
+                uint64_t r = rid; void *f = pool_fit(t, id_, o, &r); pool_ent_put(k, (uint32_t)(id_ - t->base), f, r); }
+        }
+    }
     free(ids);
 }
 // ----- Tables
@@ -12377,7 +12415,7 @@ static void pool_tab_put_n(pool_tab *t, uint32_t n) {   // the IDs a table cover
                                                         //   fell short of t->cap, a later growth within the room skipped the realloc and pool_ent_put read past it (11-06 第47版 SIGSEGV objc_retain 0x1f7)
         void **o = realloc(t->obj, (size_t)cap * sizeof *o); if (!o) MDIE("pool table: out of memory");
         memset(o + t->n, 0, (size_t)(cap - t->n) * sizeof *o); t->obj = o;
-        defer_obj_release(t->buf); t->buf = b; t->gpu = b.gpuAddress; t->cap = cap; g_psnap_gen++;
+        defer_obj_release(t->buf); t->buf = b; t->gpu = b.gpuAddress; t->cap = cap; t->bound_fence = 0; g_psnap_gen++;
     } else if (t->cap < n + 1) { void **o = realloc(t->obj, (size_t)(n + 1) * sizeof *o); if (!o) MDIE("pool table: out of memory"); memset(o + t->n, 0, (size_t)(n + 1 - t->n) * sizeof *o); t->obj = o; t->cap = n + 1; }
     uint64_t *e = (uint64_t *)((uint8_t *)t->buf.contents + DMSH_POOL_HEAD);
     for (uint32_t i = t->n; i <= n; i++) e[i] = t->dummy;
@@ -12415,7 +12453,7 @@ static int pool_tab_new(int samp, int dtt, int dpf, int rw, int base) {   // the
         if (samp) o = pool_samp_obj(id_, &rid);
         else if (id_ > 0 && id_ < g_ntreg && g_treg[id_].ok && g_treg[id_].tt1 && g_treg[id_].tt1 - 1 != dtt) {}   // an ID of another texture type, seen before: nothing to look up or charge
         else { o = pool_tex_obj(id_, limit, &lft, &rid, rw); o = pool_fit(t, id_, o, &rid); }
-        if (lft) { left++; pool_dset_add(&g_pleft, id_); }
+        if (lft == 1) { left++; pool_dset_add(&g_pleft, id_); } else if (lft == 2) { pool_dset_add(&g_punwritten, id_); }
         if (o) { pool_ent_put(ti, (uint32_t)i, o, rid); real++; }
     }
     g_psnap_gen++;
@@ -12444,9 +12482,10 @@ static uint64_t pool_gpu(int samp, int dtt, int dpf, int rw, int base, __unsafe_
             uint32_t m = g_pdirty[s].n; uint32_t *ids = malloc(m * sizeof *ids); if (!ids) break;
             memcpy(ids, g_pdirty[s].list, m * sizeof *ids); pool_dset_clear(&g_pdirty[s]);
             uint64_t room = s ? 0 : pool_room();
-            for (uint32_t j = 0; j < m; j++) { g_pool_upd_dirty++; if (s) pool_samp_update((int)ids[j]); else if (pool_tex_update((int)ids[j], room)) pool_dset_add(&g_pleft, (int)ids[j]); }
+            for (uint32_t j = 0; j < m; j++) { g_pool_upd_dirty++; if (s) pool_samp_update((int)ids[j]); else { int lr = pool_tex_update((int)ids[j], room); if (lr == 1) pool_dset_add(&g_pleft, (int)ids[j]); else if (lr == 2) pool_dset_add(&g_punwritten, (int)ids[j]); } }
             free(ids);
         }
+        pool_unwritten_scan();
         pool_seen_scan();
         pool_left_scan();
     }
@@ -12460,6 +12499,7 @@ static uint64_t pool_gpu(int samp, int dtt, int dpf, int rw, int base, __unsafe_
              (unsigned long long)g_pool_calls, (unsigned long long)g_pool_walks, g_pool_walk_ms, (unsigned long long)g_pool_made, (unsigned long long)g_pool_upd_dirty, (unsigned long long)g_pool_upd_ret, (unsigned long long)atomic_load(&g_unpin_late),
              (unsigned long long)g_pool_upd_seen, (unsigned long long)g_pool_upd_left, g_pool_ms, nseen, (unsigned long long)(bseen >> 20), g_pleft.n, (unsigned long long)(g_dev.currentAllocatedSize >> 20)); }
     if (ti < 0) { *out = dummy_buf(); return dummy_buf_gpu(); }
+    g_ptab[ti].bound_fence = g_fence + 1;
     *out = g_ptab[ti].buf; return g_ptab[ti].gpu;
 }
 // New session (nvn_be_shutdown_session, the GPU idle): the tables and their pins go, before the owners below remove what they hold from the residency set
@@ -12474,6 +12514,7 @@ static void pool_session_reset(void) {
     atomic_store(&g_ptab_any, 0);
     for (int s = 0; s < 2; s++) pool_dset_clear(&g_pdirty[s]);
     pool_dset_clear(&g_pleft);
+    pool_dset_clear(&g_punwritten); g_punwritten_ser = ~0ull;
     memset(g_seen_done, 0, sizeof g_seen_done); memset(g_seen_todo, 0, sizeof g_seen_todo); g_seen_sub = ~0ull;
     if (g_seen_buf) memset(g_seen_buf.contents, 0, POOL_SEEN_WORDS * 4);
     g_psnap_gen++;
