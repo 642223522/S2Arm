@@ -717,3 +717,14 @@
 "kbd.import.err.schema" = "这个文件不是 S2Arm 的键位文件，或版本不支持。当前键位没有改动。";
 "kbd.import.err.duplicate" = "文件里同一个键绑给了不止一个按键。当前键位没有改动。";
 "kbd.import.err.invalid" = "文件里的键位不完整或有无效的值。当前键位没有改动。";
+
+/* 游戏内「分配玩家」（ios/player_assign.m，#1606 ④）：叫法同 Mac 启动器「分配玩家」 */
+"assign.menu" = "分配玩家…";
+"assign.title" = "分配玩家";
+"assign.hint" = "从 P1 开始，依次在每位玩家的手柄上按任意键。没登记的手柄连着也不会成为玩家。";
+"assign.waiting" = "在手柄上按任意键";
+"assign.restart" = "重新开始";
+"assign.automatic" = "恢复自动（按连接顺序）";
+"assign.ns2pro" = "Switch 2 Pro 手柄";
+"assign.saveFailed" = "没能保存分配结果，请再试一次。";
+"assign.ok" = "好";

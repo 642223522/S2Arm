@@ -711,3 +711,14 @@
 "kbd.import.err.schema" = "S2Arm のキー割り当てファイルではないか、対応していないバージョンです。現在のキー割り当ては変わっていません。";
 "kbd.import.err.duplicate" = "同じキーが複数のボタンに割り当てられています。現在のキー割り当ては変わっていません。";
 "kbd.import.err.invalid" = "ファイルのキー割り当てが不完全か、無効な値が含まれています。現在のキー割り当ては変わっていません。";
+
+/* 游戏内「分配玩家」（ios/player_assign.m，#1606 ④）：叫法同 Mac 启动器「分配玩家」 */
+"assign.menu" = "プレイヤーを割り当て…";
+"assign.title" = "プレイヤーを割り当て";
+"assign.hint" = "P1 から順に、各プレイヤーのコントローラーでボタンを押してください。割り当てなかったコントローラーは接続されたままで、プレイヤーにはなりません。";
+"assign.waiting" = "コントローラーのボタンを押してください";
+"assign.restart" = "最初からやり直す";
+"assign.automatic" = "自動に戻す（接続順）";
+"assign.ns2pro" = "Switch 2 Pro コントローラー";
+"assign.saveFailed" = "割り当てを保存できませんでした。もう一度お試しください。";
+"assign.ok" = "OK";

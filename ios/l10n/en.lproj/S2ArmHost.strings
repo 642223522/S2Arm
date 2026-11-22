@@ -717,3 +717,14 @@
 "kbd.import.err.schema" = "This isn’t an S2Arm key mapping file, or its version isn’t supported. Your current mapping hasn’t changed.";
 "kbd.import.err.duplicate" = "The file binds the same key to more than one button. Your current mapping hasn’t changed.";
 "kbd.import.err.invalid" = "The mapping in this file is incomplete or has invalid values. Your current mapping hasn’t changed.";
+
+/* 游戏内「分配玩家」（ios/player_assign.m，#1606 ④）：叫法同 Mac 启动器「分配玩家」 */
+"assign.menu" = "Assign Players…";
+"assign.title" = "Assign Players";
+"assign.hint" = "Starting with P1, press any button on each player’s controller in turn. Controllers you don’t assign stay connected but don’t get a player.";
+"assign.waiting" = "Press any button on a controller";
+"assign.restart" = "Start Over";
+"assign.automatic" = "Back to Automatic (connection order)";
+"assign.ns2pro" = "Switch 2 Pro Controller";
+"assign.saveFailed" = "Couldn’t save the assignment. Please try again.";
+"assign.ok" = "OK";

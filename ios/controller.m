@@ -524,7 +524,10 @@ static void ble_p1_publish(uint32_t raw, const int32_t raw_axes[4]) {
     s2a_kbd_merge(&buttons, axes, kb_buttons, kb_sticks);
     s2a_pad_update(S2A_PAD_BLE, 1, buttons, axes);
 }
+static _Atomic uint32_t g_ble_raw_buttons;   // NS2 Pro 最近一笔原始按键：游戏内「分配玩家」认「在它上面按了一下」（player_assign.m）
+uint32_t s2a_ios_ble_raw_buttons(int *ready) { *ready = atomic_load(&g_ble_ready) && atomic_load(&g_adapter_enabled); return *ready ? atomic_load(&g_ble_raw_buttons) : 0; }
 static void ble_input(const ns2_state *state, void *context) {
+    atomic_store(&g_ble_raw_buttons, (uint32_t)state->buttons);
     pthread_mutex_lock(&g_feedback_mu);
     if (atomic_load(&g_adapter_enabled) && (uintptr_t)context == atomic_load(&g_session) && atomic_load(&g_ble_ready)) {
         int32_t axes[4] = { state->lx, state->ly, state->rx, state->ry };
@@ -925,6 +928,10 @@ static void pad_face_sync(void) {
         default:
             break;
     }
+}
+// 游戏内「分配玩家」写好 / 删掉顺序表（player_assign.m）：立即按新表重排，不等下一次接上 / 断开手柄
+void s2a_ios_pad_order_changed(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{ [g_controller selectSystem]; });
 }
 - (void)selectSystem {
     BOOL foreground = _foreground;
