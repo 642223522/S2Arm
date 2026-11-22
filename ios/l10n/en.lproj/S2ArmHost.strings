@@ -275,6 +275,8 @@
 "app.fpsCap.ladder" = "This session can't hold 60 FPS steadily, so the game is back at its native frame rate for now. It starts at 60 FPS again the next time you open the game.";
 "app.fpsCap.restored" = "60 FPS is back.";
 "app.fpsCap.retry" = "Try 60 FPS again";
+"app.os180.title" = "This system version may crash";
+"app.os180.body" = "iOS / iPadOS 18.0 has a system issue that can close the app as soon as the game picture appears; 18.1 fixes it. Please update in Settings > General > Software Update to 18.1 or later (free) and the crash will go away.";
 "app.lowRam.title" = "This device may not have enough memory";
 "app.lowRam.body" = "This game needs more memory than this device has. It will still start, but it may stutter or be closed by the system.";
 "app.gpuStop.body" = "Swipe this app away in the app switcher and open it again — you can usually keep playing from where the game last saved. To help us find the cause, tap “Report a Problem” to send us diagnostics.";
