@@ -307,6 +307,17 @@ raise SystemExit(main.main())
             code2, why2 = errors.classify_failure("ipa", None, ["light.log：rc=1；没有别的原因"])
             self.assertEqual(code2, "app_control_blocked", why2)
 
+    def test_nostall_watchdog_is_build_stalled(self):
+        # D-PD33（Windows 0.6.7）：直连库编批库 15 分钟没有一批编完，无进展看门狗停掉 dsh_batch（rc=124），原先落「package_failed，按阶段 未识别」。
+        #   期望手写：只有看门狗那行 → build_stalled，上屏句是它自己的；同段还有写满 → disk_full（看门狗只是结果）
+        import errors
+        stalled = "[直连库] 🔴 出库失败 rc=124：【红】无进展看门狗：python dsh_batch.py build --pkg x 900 秒产出没有前进"
+        code, why = errors.classify_failure("direct", None, [stalled])
+        self.assertEqual(code, "build_stalled", why)
+        self.assertNotEqual(errors.player_reason("build_stalled"), errors.player_reason("package_failed"))
+        code2, why2 = errors.classify_failure("direct", None, ["OSError: [Errno 28] No space left on device\n" + stalled])
+        self.assertEqual(code2, "disk_full", why2)
+
     def test_windows_metal_version_unreadable(self):
         # D-TYCN（Windows 0.6.3）：编着色器库前核工具读不到 metal.exe 版本，原先落笼统的 package_failed + 开发者口吻的 --update-lock 提示。
         #   起进程被拒 → app_control_blocked；文件不在 / 起来没打版本 → win_metal_missing（原文取自诊断与 dmsh_chain.tools_now 的写法）
