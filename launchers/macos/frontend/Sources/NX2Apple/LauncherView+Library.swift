@@ -362,8 +362,19 @@ struct HeroUpdateLines: View {
         let failure = run.flatMap { $0.running ? nil : $0.failure }
         // 更新只改电脑上这份：这款装到过设备的，做完说一句手机上那份要再导一次（不然玩家以为手机上已经是新的）
         let sendAgain = run.map { !$0.running && $0.failure == nil } == true && game.iphoneInstalledAt != nil
-        if game.iphoneReady, !reasons.isEmpty || !incomplete.isEmpty || failure != nil || sendAgain {
+        if game.iphoneReady, !reasons.isEmpty || !incomplete.isEmpty || failure != nil || sendAgain || run?.running == true {
             VStack(alignment: .leading, spacing: 3) {
+                // 正在更新：当前这一段的计数、速度、还剩多久（重编着色器库一段可能几小时，只看整单百分比分不出卡没卡；11-21）
+                if let run, run.running, run.progress.total != nil {
+                    let p = run.progress
+                    TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                        let count = p.countText.isEmpty ? nil : p.countText + (p.unit == "MB" ? " MB" : "")
+                        let parts = [p.stage.isEmpty ? nil : loc.backend(p.stage), count, p.rateText.isEmpty ? nil : p.rateText, p.clock(at: timeline.date, left: loc.t("prog.eta"))]
+                        Text(parts.compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
+                            .font(.manrope(12, .medium)).monospacedDigit().foregroundStyle(.white.opacity(0.85)).lineLimit(1)
+                    }
+                    .accessibilityIdentifier("update.progress." + game.id)
+                }
                 ForEach(reasons, id: \.self) { key in
                     Label(txt(key), systemImage: "arrow.triangle.2.circlepath")
                         .font(.manrope(12, .medium)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
