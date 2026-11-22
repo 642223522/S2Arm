@@ -336,6 +336,7 @@ static int fact_matches(const char *stage, int handle, const char *sampler, int 
 
 // 原创 Maxwell 头+EXIT；对应阶段与控制快照都来自真实 source_store 入口。
 // c1fill 非 0：控制段 +0x700/+0x704 声明一段 0x100 字节的 c1（落在控制段 0x200..0x2ff），内容全填 c1fill；为 0 = 没有 c1（原行为）。
+static unsigned gs_c1_len = 0x100;   // c1 段长度（c1fill 非 0 时）：缺省 0x100；长 c1 用例临时改大（段落在控制段 0x200 起，最长 0x500）
 static void gs_source_ex(unsigned st, unsigned variant, unsigned c1fill, uint8_t key[8]) {
     uint8_t ctl[0x760] = {0}, code[0x70] = {0}, digest[32];
     const unsigned type[3] = {1, 5, 4};
@@ -345,7 +346,7 @@ static void gs_source_ex(unsigned st, unsigned variant, unsigned c1fill, uint8_t
     wr64(code + 0x50, 0x001f8000fc0007e0ull); wr64(code + 0x58, 0xe30000000007000full);
     wr64(code + 0x60, 0xe30000000007000full); wr64(code + 0x68, 0xe30000000007000full);
     wr(ctl + 0x20, sizeof ctl); ctl[0x100] = (uint8_t)variant;
-    if (c1fill) { wr(ctl + 0x700, sizeof code + 0x200); wr(ctl + 0x704, sizeof code + 0x300); memset(ctl + 0x200, (int)c1fill, 0x100); }
+    if (c1fill) { wr(ctl + 0x700, sizeof code + 0x200); wr(ctl + 0x704, sizeof code + 0x200 + gs_c1_len); memset(ctl + 0x200, (int)c1fill, gs_c1_len); }
     s2a_sha256 h; s2a_sha256_init(&h); s2a_sha256_update(&h, ctl, sizeof ctl);
     s2a_sha256_update(&h, code, sizeof code); s2a_sha256_final(&h, digest);
     CHECK(!s2a_source_keep(digest, st, code, sizeof code, ctl, sizeof ctl), "GS fixture source stage=%u", st);
@@ -984,6 +985,34 @@ static void alias_rmdir(const char *dir) {
     }
     closedir(d); (void)rmdir(dir);
 }
+// c1 整段（八方旅人调色 LUT 的片元读 c1 到第 2304 字节；原先程序对象只拷前 0x100，后段读 0 → 场景整幅黑）。
+// 期望值手算：c1 段 0x100 字节、全填 0x33 → 程序对象三个阶段 c1_len = 0x100、内容全 0x33，预热清单收下 1 条；
+// c1 段 0x200 字节、全填 0x44 → c1_len = 0x200、第 0 与第 0x1ff 字节都是 0x44，预热清单同样收下 1 条（清单按整段记 c1；
+// 整段落盘 / 读回见 nvn_vk_prog_warm_test.c「c1 整段往返」）。
+static void graphics_c1_full_test(void) {
+    rp_shader_reset(); s2a_source_clear(); rp_state_reset(); nvn_unimpl_reset();
+    uint8_t ks[3][8], kl[3][8];
+    gs_c1_len = 0x100; for (unsigned st = 0; st < 3; st++) gs_source_ex(st, 7, 0x33, ks[st]);
+    gs_c1_len = 0x200; for (unsigned st = 0; st < 3; st++) gs_source_ex(st, 8, 0x44, kl[st]);
+    gs_c1_len = 0x100;
+    fake_gs_success = 1; fake_gs_fact_deps = 0; fake_gs_result_tag = 0; separate_fixture = 0; fake_reg_changes = 0;
+    fixture_depth_zero = fixture_origin_lower_left = 0;
+    struct nvk_prog_warm_stats w0, w1, w2; nvk_prog_warm_stats(&w0);
+    struct rp_shader_req q = {0}; q.prim = 4; const struct rp_prog *p = NULL;
+    alias_bind(ks); bind_pools(100);
+    CHECK(!rp_shader_resolve(&q, &p) && p, "c1 full: 0x100 program resolves");
+    if (p) { int ok = (p->c1_ok & 7) == 7; for (int st = 0; st < 3 && ok; st++) { ok = p->c1_len[st] == 0x100; for (unsigned i = 0; i < 0x100 && ok; i++) ok = p->c1[st][i] == 0x33; }
+             CHECK(ok, "c1 full: 0x100 c1 kept whole in every stage"); }
+    nvk_prog_warm_stats(&w1);
+    CHECK(w1.recorded == w0.recorded + 1, "c1 full: 0x100 program recorded in warm manifest (%llu -> %llu)", (unsigned long long)w0.recorded, (unsigned long long)w1.recorded);
+    p = NULL; alias_bind(kl);
+    CHECK(!rp_shader_resolve(&q, &p) && p, "c1 full: 0x200 program resolves");
+    if (p) { int ok = (p->c1_ok & 7) == 7; for (int st = 0; st < 3 && ok; st++) ok = p->c1_len[st] == 0x200 && p->c1[st][0] == 0x44 && p->c1[st][0x1ff] == 0x44;
+             CHECK(ok, "c1 full: 0x200 c1 kept whole (not cut at 0x100)"); }
+    nvk_prog_warm_stats(&w2);
+    CHECK(w2.recorded == w1.recorded + 1, "c1 full: long-c1 program is recorded in the warm manifest too (%llu -> %llu)", (unsigned long long)w1.recorded, (unsigned long long)w2.recorded);
+}
+
 static void graphics_alias_test(int flag_on) {
     const char *tag = flag_on ? "on" : "off";
     char dir[] = "/tmp/s2a-alias-fg-XXXXXX";
@@ -1104,7 +1133,9 @@ static void graphics_alias_fact_bg_test(int flag_on) {
     struct nvk_prog_rec rec; memset(&rec, 0, sizeof rec);   // 清单里 F 的那一条（身份、阶段掩码、源键、c1），预热线程照它建
     if (!f || !rp_shader_prog_identity(f, rec.identity)) { CHECK(0, "alias fact-bg[%s] s1: F has an identity", tag); goto done; }   // F 没建出来：别往下解引用（变异体下的夹具会走到这里）
     rec.stage_mask = 7u; rec.c1_ok = f->c1_ok;
-    for (unsigned st = 0; st < 3; st++) { memcpy(rec.keys[st], k1[st], 8); memcpy(rec.c1[st], f->c1[st], NVK_PROG_REC_C1_BYTES); }
+    static uint8_t c1copy[3][0x400];   // F 随后被 rp_shader_reset 释放：c1 先拷到夹具自己的缓冲（生产里预热记录的 c1 指向清单的只读副本）
+    for (unsigned st = 0; st < 3; st++) { memcpy(rec.keys[st], k1[st], 8);
+        if ((f->c1_ok & (1u << st)) && f->c1_len[st] <= sizeof c1copy[st]) { memcpy(c1copy[st], f->c1[st], f->c1_len[st]); rec.c1[st] = c1copy[st]; rec.c1_len[st] = f->c1_len[st]; } }
     fixture_depth_zero = 1;
     CHECK(!rp_shader_resolve(&q, &g) && g && compiler_calls == 2, "alias fact-bg[%s] s1: G (only the depth mode differs) compiles live", tag);
     CHECK(s2a_program_cache_drain(5000) == 0, "alias fact-bg[%s] s1: cache writes drained", tag);
@@ -1855,6 +1886,7 @@ int main(int argc, char **argv) {
     graphics_fact_array_length_test();
     graphics_high_slot_test();
     graphics_active_ubo_test();
+    graphics_c1_full_test();
     graphics_alias_test(1);
     graphics_alias_fact_test(1);
     graphics_alias_fact_bg_test(1);

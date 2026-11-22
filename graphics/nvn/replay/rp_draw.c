@@ -1322,8 +1322,12 @@ static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st
             case NVN_RB_C1: {
                 if (!(pg->c1_ok >> pi & 1)) return skip("c1_segment_not_captured", rec);
                 rp_perf_add(RP_PERF_UBO_C1_N, 1);
-                if (!slc_get_x(c, (uint64_t)(uintptr_t)pg ^ (uint64_t)(pi + 1) << 60, 0x100, pg->c1[pi], &sl, 1)) return skip("arena_alloc_failed", rec);   // 程序自带常量段：内容恒定，段内一直有效
-                o->u.b.buf = sl.buf; o->u.b.off = sl.off; o->u.b.len = 0x100; break; }
+                // 程序自带常量段整段绑（内容恒定，段内一直有效）。只绑前 0x100 字节时，着色器读后段全得 0（八方旅人调色 LUT 读到第 2304 字节 → 场景整幅黑）。
+                //   长度按 16 字节补齐（std140 vec4 数组）；补齐部分是暂存区里的 0，着色器读到的与「越界读 0」一致。
+                const uint32_t c1n = (pg->c1_len[pi] + 15u) & ~15u;
+                { const nvn_gpu_caps *cp = caps_cached(); if (cp->max_ubo_range && c1n > cp->max_ubo_range) return skip("c1_segment_over_ubo_range", rec); }
+                if (!slc_get_x(c, (uint64_t)(uintptr_t)pg ^ (uint64_t)(pi + 1) << 60, c1n, pg->c1[pi], &sl, 1)) return skip("arena_alloc_failed", rec);
+                o->u.b.buf = sl.buf; o->u.b.off = sl.off; o->u.b.len = c1n; break; }
             case NVN_RB_CBUF: {
                 const uint64_t cbuf_t0 = btm ? dt_now() : 0;
                 const p_bind_buf *ub = &rp_S.ubo[st][e->src_reg];
@@ -2051,7 +2055,7 @@ draw_rebind:   // 出库回退落地：g_prog 已换现编版（pso_dirty 已置
             else for (int q = 0; q < 20; q += 5) { int o = snprintf(b, sizeof b, "  片元常量 0（长 %llu）第 %d 项起：", (unsigned long long)ub->size, q);
                 for (int k = q; k < q + 5; k++) o += snprintf(b + o, sizeof b - (size_t)o, "[%.3g %.3g %.3g %.3g]", (double)uf[k * 4], (double)uf[k * 4 + 1], (double)uf[k * 4 + 2], (double)uf[k * 4 + 3]);
                 nvn_plat_log(NVN_PLAT_LOG_INFO, "draw", b); } }
-          if (g_prog->c1_ok >> 1 & 1) { float f[8]; memcpy(f, g_prog->c1[1], sizeof f);
+          if (g_prog->c1_ok >> 1 & 1) { float f[8]; memcpy(f, g_prog->c1[1], sizeof f);   // c1 至少 0x100 字节（c1_ok 的判据）
             snprintf(b, sizeof b, "  片元自带常量：[%.3g %.3g %.3g %.3g][%.3g %.3g %.3g %.3g]", (double)f[0], (double)f[1], (double)f[2], (double)f[3], (double)f[4], (double)f[5], (double)f[6], (double)f[7]);
             nvn_plat_log(NVN_PLAT_LOG_INFO, "draw", b); } }
     }
