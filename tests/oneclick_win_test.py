@@ -639,6 +639,22 @@ class InstallWin(unittest.TestCase):
                 except install_win.Fail as e: return e, got, None
             finally: install_win.mux_devices, install_win.push_pack = olds
 
+    def test_not_in_device_service_with_other_installer_signs_only_then_hands_over(self):
+        # D-WFBG / D-ST8X：Mac 上手机只在同一 Wi-Fi，设备服务（usbmux）里没有；调用方给了别的装法 → plumesign 只签名（不 --register-and-install），
+        #   签好的包交它装、返回签好包里的包名。期望手写
+        body = ("print('args', a)\nz = zipfile.ZipFile(a[a.index('-o') + 1], 'w')\n"
+                "z.writestr('Payload/S2Arm.app/Info.plist', b'<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>a.b.W</string></dict></plist>')\nz.close()\n")
+        with tempfile.TemporaryDirectory() as d:
+            exe = self.fake(d, body); handed = []
+            old = install_win.mux_devices; install_win.mux_devices = lambda: []
+            ns = self.ns(d, exe); ns.fallback_install = lambda p: handed.append(__import__("zipfile").ZipFile(p).namelist())
+            try: bid = install_win.install_app(ns, say=lambda m: None)
+            finally: install_win.mux_devices = old
+            log = Path(d, 'p.log').read_text()
+        self.assertEqual(bid, 'a.b.W')
+        self.assertEqual(handed, [['Payload/S2Arm.app/Info.plist']])
+        self.assertNotIn('--register-and-install', log)
+
     def test_target_not_listed_is_not_connected(self):
         # D-XHV5：要装的那台不在设备服务里（插着线的是另一台）→ device_not_connected，报错里写出在列的是哪台；不是「要信任电脑」
         with tempfile.TemporaryDirectory() as d:
