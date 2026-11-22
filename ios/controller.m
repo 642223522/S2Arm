@@ -906,6 +906,14 @@ static void pad_face_sync(void) {
         .may_clear = mayClear,
     };
     const char *name = current.vendorName.UTF8String ?: "GameController";
+    // 按顺序表分配过（#1606 ④）：玩家 1 可能被重新指定成别的手柄、或这只被设成不分配。s2a_system_action 只看「当前这只还活着就留着」
+    //   （不按表时还在线的手柄一定留原槽，这么判没错），所以有表、前台、当前这只还活着而槽 0 换了人时在这里换：槽 0 有人就接它，空了就清掉这只。没表时不走这里
+    if (g_order_loaded && foreground && current.extendedGamepad && slot0 != current) {
+        LOG("系统手柄：按分配玩家的顺序表，玩家 1 从 %s 换成 %s", name, slot0 ? (slot0.vendorName.UTF8String ?: "GameController") : "（没有手柄）");
+        if (slot0) { [self attachSystem:slot0]; [self publishSystem:slot0.extendedGamepad]; }
+        else { [self clearSystem]; if (atomic_load(&g_kb_state) == KB_ACTIVE) [self keyboardChanged:NO]; }
+        return;
+    }
     switch (s2a_system_action(state)) {
         case S2A_SYS_PUBLISH:
             if (mayClear) LOG("系统手柄：%s 已恢复，保留 handler", name);
