@@ -706,6 +706,12 @@
 "kbd.manage.note" = "Les fichiers d’affectation exportés peuvent être importés dans d’autres jeux. Le fichier input.json de chaque jeu du lanceur Mac utilise le même format et peut aussi être importé. L’importation ne modifie que ce jeu.";
 "kbd.import" = "Importer une affectation des touches…";
 "kbd.export" = "Exporter l’affectation actuelle…";
+"kbd.setDefault" = "Définir par défaut pour tous les jeux";
+"kbd.default.done" = "Définie par défaut pour tous les jeux";
+"kbd.default.undo" = "Annuler";
+"kbd.source.custom" = "Affectation actuelle : personnalisée";
+"kbd.source.default" = "Affectation actuelle : par défaut";
+"kbd.manage.noteAll" = "Les fichiers d’affectation exportés peuvent être importés dans d’autres jeux. Le fichier input.json de chaque jeu du lanceur Mac utilise le même format et peut aussi être importé. L’importation ne modifie que ce jeu.\n« Définir par défaut pour tous les jeux » fait de l’affectation actuelle celle par défaut pour tous les jeux. Les jeux que vous avez personnalisés séparément ne changent pas, et les jeux ajoutés plus tard l’utilisent aussi. « Restaurer les valeurs par défaut » revient à cette affectation.";
 "kbd.export.fileName" = "Affectation des touches S2Arm";
 "kbd.export.err.title" = "Impossible d’exporter l’affectation";
 "kbd.import.err.title" = "Impossible d’importer l’affectation";

@@ -236,7 +236,8 @@ int main(int argc, char **argv) {
         check(count_in(page, "initForOpeningContentTypes:@[UTTypeJSON] asCopy:YES") == 1, "导入：选文件面板只认 JSON、以副本方式读（同触屏布局页）");
         check(count_in(page, "s2a_kbd_import(") == 1, "导入：读进来的内容交 s2a_kbd_import（先查大小再解析）");
         check(count_in(page, "initForExportingURLs:") == 1, "导出：用选文件面板导出（同触屏布局页，不走分享面板）");
-        check(count_in(page, "s2a_kbd_config_json(") == 2, "导出与存盘写的是同一份 schema 1 JSON");
+        check(count_in(page, "s2a_kbd_config_json(") == 1 && count_in(page, "s2a_kbd_store_save(game, app, &_map)") == 1,
+              "导出写 schema 1 JSON；存盘交 keyboard_store（写的是同一份 JSON，t_keyboard_store ② 核逐字相同）");
         char *cancel = body_of(page, "- (void)documentPickerWasCancelled:");
         check(cancel && count_in(cancel, "cleanExport") == 1, "导出取消也清掉临时目录");
         free(cancel);
