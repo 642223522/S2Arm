@@ -400,10 +400,10 @@ def main():
             # 结果合并（#1355）前台路径：每一道判据撤一次，对应的用例必须变红
             ('alias-fg-disabled', '    if (alias_on()) {\n        int a_adopted = 0;', '    if (0 && alias_on()) {\n        int a_adopted = 0;', 1,
              'same result -> same program object'),
-            ('alias-result-ignored', 'memcpy(buf, res, 32); n += 32;', 'memset(buf, 0, 32); n += 32;', 1,
+            ('alias-result-ignored', 'memcpy(head, res, 32); n += 32;', 'memset(head, 0, 32); n += 32;', 1,
              'different result is not merged'),
-            ('alias-c1-ignored', 'if (k->c1_ok & (1u << st)) { memcpy(buf + n, k->c1[st], 0x100); n += 0x100; }',
-             'if (0) { memcpy(buf + n, k->c1[st], 0x100); n += 0x100; }', 1, 'different c1 is not merged'),
+            ('alias-c1-ignored', 's2a_sha256_update(&h, len4, 4); s2a_sha256_update(&h, k->c1[st], k->c1_len[st]);',
+             '(void)len4;', 1, 'different c1 is not merged'),
             ('alias-fact-registration-omitted', 'if (reusable && ae->fact_ok) fact_cache_keep_mask(&id, fact_base, ae->fact_mask, &ae->prog);',
              '(void)ae->fact_mask;', 1, 'reuses the program (no live compile'),
             # 预热线程建的那份也要算事实掩码：撤掉后，合并命中它的前台身份登记不上事实复用（真机现编 3 → 198 次的另一半）

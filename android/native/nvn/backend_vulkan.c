@@ -145,6 +145,7 @@ struct nvn_gpu_view_s {
     VkComponentMapping components; // 反馈快照保持采样视图的通道映射
     uint32_t att_layer;          // 当附件时取的层 / 3D 深度切片（视图没设层范围 = 0）
     VkImageView att;             // 附件形态（一级一层的 2D 视图），第一次当附件时建（view_attachment）
+    VkImageView att_n; uint32_t att_nl;   // 分层通道的附件形态（起始层起 att_nl 层的 2D 阵列视图，一级），第一次当分层附件时建
     VkImageView img;             // 图像形态（恒等通道映射），第一次当存储图像时建：存储图像视图必须恒等映射（view_image_form）
     VkImageView depth_blit[2];   // 辅助深度模板拷贝的恒等单级单层采样视图，随本视图保活与释放
     // 反查表：这个视图当过附件的帧缓冲（帧缓冲缓存槽位 + 代 + 句柄）。视图销毁时只拆这几项，
@@ -1229,6 +1230,7 @@ static void destroy_view_locked(struct nvn_gpu_vk *vk, struct nvn_gpu_view_s *v)
     LIFE_T0;
     pc_drop_view_fast(v, v->att); pc_drop_view_fast(v, v->img); pc_drop_view_fast(v, v->view); LIFE_ADD(6);
     if (v->att) vkDestroyImageView(vk->d, v->att, NULL);
+    if (v->att_n) vkDestroyImageView(vk->d, v->att_n, NULL);
     if (v->img) vkDestroyImageView(vk->d, v->img, NULL);
     for (unsigned i = 0; i < 2; i++) if (v->depth_blit[i]) vkDestroyImageView(vk->d, v->depth_blit[i], NULL);
     if (v->view) vkDestroyImageView(vk->d, v->view, NULL);
@@ -2590,6 +2592,7 @@ nvn_gpu_rc nvn_gpu_close(uint64_t timeout_ns, nvn_gpu_err *err) {
     while (vw) {
         struct nvn_gpu_view_s *vn = vw->all_next;
         if (vw->att) vkDestroyImageView(g.d, vw->att, NULL);
+        if (vw->att_n) vkDestroyImageView(g.d, vw->att_n, NULL);
         if (vw->view) vkDestroyImageView(g.d, vw->view, NULL);
         free(vw);
         vw = vn;
@@ -4981,12 +4984,36 @@ static const void *view_usage_next(const struct nvn_gpu_tex_s *t, VkFormat vf, V
 // 附件形态的视图：一级一层的 2D 视图，深度模板格式两个面都在（对照 nvn_mtl.m attach @4928：附件 = 基底 + 视图设了才取的
 // level / slice，没设就是首级首层）。采样用的视图可以是多级 / 多层 / 立方体 / 只取深度面，都不能直接挂到帧缓冲上：
 // 第一次当附件时另建一个，随视图销毁。建不出来回空。
-static VkImageView view_attachment(struct nvn_gpu_view_s *v) {
+// nl = 所在通道的层数（nvn_gpu_pass_desc.layers）。分层通道（nl > 1，程序的顶点 / 几何阶段写层号）要起始层起 nl 层的 2D 阵列视图，
+// 图元按层号落到对应层（3D 贴图：深度切片，要 2D_ARRAY_COMPATIBLE）；单层形态只有第 0 层，写到更高层的图元全丢（八方旅人调色 LUT 32 片只剩第 0 片）。
+// 视图自己的层数不够 nl 时回空（回放核心按附件可给的层数定 nl，正常走不到）。
+static VkImageView view_attachment(struct nvn_gpu_view_s *v, uint32_t nl) {
     struct nvn_gpu_tex_s *t = v->tex;
     if (v->p16_remap) return VK_NULL_HANDLE;   // #975：恒等形态会按退回格式的分量顺序写，调用方具名报红
+    int image3d = t->target == NVN_TEXTURE_TARGET_3D && t->depth > 1;
+    if (nl > 1) {
+        if (v->layers < nl || (image3d && !t->array_compatible)) return VK_NULL_HANDLE;
+        gmu_lock_rt();
+        if (v->att_n && v->att_nl != nl) { pc_drop_view(v->att_n); vkDestroyImageView(g.d, v->att_n, NULL); v->att_n = VK_NULL_HANDLE; }
+        if (!v->att_n) {
+            VkImageViewCreateInfo ci;
+            memset(&ci, 0, sizeof ci);
+            ci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            ci.image = t->image;
+            ci.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+            ci.format = v->format ? v->format : t->format;
+            ci.subresourceRange = (VkImageSubresourceRange){t->aspect, v->base_level, 1, image3d ? v->att_layer : v->base_layer, nl};
+            VkImageViewUsageCreateInfo vu; ci.pNext = view_usage_next(t, ci.format, &vu);
+            OC(OC_VIEW);
+            { LIFE_T0; if (vkCreateImageView(g.d, &ci, NULL, &v->att_n) != VK_SUCCESS) v->att_n = VK_NULL_HANDLE; LIFE_ADD(4); }
+            v->att_nl = v->att_n ? nl : 0;
+        }
+        VkImageView r = v->att_n;
+        pthread_mutex_unlock(&g_mu);
+        return r;
+    }
     if (!v->swizzled && v->levels == 1 && v->layers == 1 && v->type == VK_IMAGE_VIEW_TYPE_2D && v->aspect == t->aspect) return v->view;
     gmu_lock_rt();
-    int image3d = t->target == NVN_TEXTURE_TARGET_3D && t->depth > 1;
     if (!v->att && !(image3d && !t->array_compatible)) {
         VkImageViewCreateInfo ci;
         memset(&ci, 0, sizeof ci);
@@ -5205,7 +5232,7 @@ static VkRenderPass make_pass(const nvn_gpu_pass_desc *d, VkImageView fb_views[9
         att[a].finalLayout = att_lay[a];
         col[ncol].attachment = a;
         col[ncol].layout = att_lay[a];
-        fb_views[a] = view_attachment(v);
+        fb_views[a] = view_attachment(v, d->layers);
         if (!fb_views[a]) return VK_NULL_HANDLE;
         ncol++; a++;
     }
@@ -5232,7 +5259,7 @@ static VkRenderPass make_pass(const nvn_gpu_pass_desc *d, VkImageView fb_views[9
         att[a].finalLayout = att_lay[a];
         dref->attachment = a;
         dref->layout = att_lay[a];
-        fb_views[a] = view_attachment(v);
+        fb_views[a] = view_attachment(v, d->layers);
         if (!fb_views[a]) return VK_NULL_HANDLE;
         *has_depth = 1;
         a++;
