@@ -840,6 +840,18 @@ namespace S2A.Services
             return highest;
         }
 
+        // HID 条目的固定写入周期（微秒）。每轮循环都 Npads.Update 一次（采样号 +1），所以输入线程最晚每 5 ms 醒一次，
+        //   输入不变时条目也按这个节奏写，同真机 hid 持续采样（SDK 掉样按 5 ms 补，即 200 Hz，见 NpadImu.cs）。
+        //   D-2T9N：原先输入不变时只按 16 ms 心跳写，条目稀疏，实况力量棒球按采样号判十字键连发，菜单十字键慢半拍；
+        //   玩家实测 4 / 8 ms 消失、12 ms 轻微。反馈心跳（_feedback.Update）仍走 16 ms，不随这个周期变。
+        internal const ulong HidSamplePeriodUs = 5_000;
+
+        // 下一个采样格点（纯函数，单测）：固定时间轴上严格晚于 now 的第一个格点；next = 0（首轮）从 now 起算。处理耗时不让时间轴漂移
+        internal static ulong NextSample(ulong next, ulong now) =>
+            next == 0 ? now + HidSamplePeriodUs
+            : next > now ? next
+            : next + ((now - next) / HidSamplePeriodUs + 1) * HidSamplePeriodUs;
+
         // 实际配给游戏的槽（纯函数，单测）：前 pads 格里，去掉「本局占过（everLive）、现在不在（live）」的；live &lt; 0（宿主没导出位图）→ -1 走原来的连续配法
         internal static int ConfiguredMask(int pads, int live, int everLive)
         {
@@ -862,7 +874,7 @@ namespace S2A.Services
             // 每键在第一次 HID 提交后保持 20 ms，让正常 60 Hz 轮询能看到短按。
             // 同键快速连点仍可能合并；不承诺卡帧或低频采样游戏一定读到。
             ButtonVisibility visibility = new();
-            ulong nextHeartbeat = 0;
+            ulong nextHeartbeat = 0, nextSample = 0;
             PadSnapshot uncommitted = default;
             int configuration = Volatile.Read(ref _configurationGeneration);
             int* st = stackalloc int[4];
@@ -1004,7 +1016,9 @@ namespace S2A.Services
                 }
                 if (eventInput)
                 {
-                    ulong deadline = visibility.Deadline(snapshot.Buttons, _padNow(), nextHeartbeat);
+                    ulong waitNow = _padNow();
+                    nextSample = NextSample(nextSample, waitNow);
+                    ulong deadline = Math.Min(visibility.Deadline(snapshot.Buttons, waitNow, nextHeartbeat), nextSample);
                     // Stop/改配可能发生在本轮 read 后、wait 前，显式检查并由序号兜住此窗口。
                     if (!_stop && configuration == Volatile.Read(ref _configurationGeneration))
                         _padWait(snapshot.NotificationSeq, deadline);
