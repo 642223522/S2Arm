@@ -48,6 +48,7 @@ __attribute__((constructor)) static void cheats_register_host(void) { void (*f)(
 int s2a_ui_zh(void) { return [NSLocale.preferredLanguages.firstObject hasPrefix:@"zh"]; }
 #include "../ios/haptic_retry.h"
 #include "../ios/haptic_safe.h"
+#include "../ios/pad_order_file.h"
 int s2a_screen_fit(int pw, int ph);   // runtime/src/widen.c：按窗口像素跟屏
 
 void s2a_host_shutdown(const char *why);
@@ -1253,29 +1254,12 @@ static BOOL pad_order_refresh(void) {
     if (stat(path.fileSystemRepresentation, &st)) { if (!g_order_loaded) return NO; g_order_loaded = 0; return YES; }
     if (g_order_loaded && st.st_mtimespec.tv_sec == stamp.tv_sec && st.st_mtimespec.tv_nsec == stamp.tv_nsec) return NO;
     stamp = st.st_mtimespec;
-    NSDictionary *json = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:path] ?: [NSData data] options:0 error:nil];
-    s2a_pad_order order = {0};
-    void (^fill)(id, s2a_pad_order_entry *, int *) = ^(id list, s2a_pad_order_entry *out, int *count) {
-        for (NSDictionary *e in [list isKindOfClass:NSArray.class] ? list : @[]) {
-            if (*count >= S2A_PAD_ORDER_MAX || ![e isKindOfClass:NSDictionary.class]) break;
-            s2a_pad_order_entry *x = &out[(*count)++];
-            BOOL ns2 = [e[@"type"] isEqual:@"ns2"], keyboard = [e[@"type"] isEqual:@"keyboard"], gen1 = [e[@"type"] isEqual:@"gen1"], gen1pair = [e[@"type"] isEqual:@"gen1pair"], empty = [e[@"type"] isEqual:@"empty"];
-            x->ns2_player = empty ? S2A_PAD_ORDER_EMPTY : keyboard ? S2A_PAD_ORDER_KEYBOARD : gen1 ? S2A_PAD_ORDER_GEN1 : gen1pair ? S2A_PAD_ORDER_GEN1_PAIR : ns2 ? [e[@"player"] intValue] : -1;
-            if (empty || keyboard) continue;
-            if (gen1 || gen1pair) {   // 一代按设备：单只 id、一对「左 id|右 id」
-                NSString *key = gen1 ? [e[@"id"] description] : [NSString stringWithFormat:@"%@|%@", e[@"left"], e[@"right"]];
-                [key getCString:x->name maxLength:sizeof x->name encoding:NSUTF8StringEncoding];
-                continue;
-            }
-            x->index = [e[@"index"] intValue];
-            if (!ns2) [[e[@"name"] description] getCString:x->name maxLength:sizeof x->name encoding:NSUTF8StringEncoding];
-        }
-    };
-    if ([json isKindOfClass:NSDictionary.class]) { fill(json[@"order"], order.entry, &order.count); fill(json[@"dropped"], order.dropped, &order.dropped_count); }
+    id json = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:path] ?: [NSData data] options:0 error:nil];
+    s2a_pad_order order; long generation;
+    int loaded = s2a_pad_order_from_json(json, &order, &generation);   // 解析与 iOS 共用（ios/pad_order_file.h）
     BOOL was = g_order_loaded;
-    long generation = [json isKindOfClass:NSDictionary.class] ? [json[@"generation"] longValue] : -1;
     BOOL reassign = !was || generation != g_order_generation;
-    g_order = order; g_order_loaded = [json isKindOfClass:NSDictionary.class]; g_order_generation = generation;
+    g_order = order; g_order_loaded = loaded; g_order_generation = generation;
     fprintf(stderr, "[s2a] 分配玩家顺序表：%d 位%s，没分配的 %d 只不给玩家位%s\n", order.count, g_order_loaded ? "" : "（读不懂，照连接顺序）", order.dropped_count,
             reassign ? "；重新分配过，照表重排" : "；只是接上 / 断开手柄，已在玩的留原位");
     return (g_order_loaded || was) && reassign;
