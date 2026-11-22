@@ -235,6 +235,7 @@ void nvn_be_tex_cpu_written(const tex_t *t) {
     if (x) { x->cpu = 1; x->gpu_written = 0; x->uploaded = 0; x->check_epoch = 0; x->check_seg = 0; x->check_dirty = 1; }   // 游戏刚用 CPU 写了它：下次使用整张重传（纪元清零 = 强制重查）
     pthread_mutex_unlock(&g_rmu);
 }
+void nvn_be_tex_cpu_inferred(const tex_t *t) { nvn_be_tex_cpu_written(t); }
 // 调试取证：这个序号的存储现在的归属（位 0 当 CPU 贴图、位 1 传过、位 2 GPU 写过、位 3 有存储），没建过 = 0
 int rp_tex_debug_state(uint64_t serial) {
     pthread_mutex_lock(&g_rmu);

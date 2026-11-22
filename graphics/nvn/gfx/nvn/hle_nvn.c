@@ -713,6 +713,7 @@ static void ft_del(uint64_t serial) {
 // Profile tex_dirty_upload: Tears of the Kingdom fills some textures from the CPU after creating them and publishes them with no NVN flush at all (os::FlushDataCache runs
 // natively; its 121-layer ASTC terrain material arrays, 42 MB each). They stayed GPU-only textures with content 0, which ASTC decodes as the error colour, and the cave came out magenta.
 // ft_add write-protects a registered texture's pages, and on its first resolution (tex_mtl, submit thread) a write since then makes it CPU-written like a flushed one
+void nvn_be_tex_cpu_inferred(const tex_t *t);   // nvn_mtl.m / replay/rp_res.c：脏页 / 刷新范围推断的 CPU 写，与显式 WriteTexels 区分（cpu_key_gpu_write）
 int nvn_ft_written(const tex_t *t) {
     if (!DM_GAME_TEX_DIRTY_UPLOAD || !t->serial) return 0;
     int r = 0; pthread_mutex_lock(&g_ft_mu);
@@ -720,7 +721,7 @@ int nvn_ft_written(const tex_t *t) {
         if (nvn_dirty_since_span(g_ft[i].span, g_ft[i].mem, g_ft[i].size, g_ft[i].stamp)) { r = 1; g_ft[i] = g_ft[--g_nft]; }
         break; }
     pthread_mutex_unlock(&g_ft_mu);
-    if (r) nvn_be_tex_cpu_written(t);
+    if (r) nvn_be_tex_cpu_inferred(t);
     return r;
 }
 // Later writes (tex_dirty_upload): a texture first resolved before the CPU filled it stays a GPU-only texture, and the first-use check above never runs for it again.
@@ -764,14 +765,14 @@ void nvn_ft_poll(void) {
         int kept = msaa || nvn_be_tex_gpu_owned_since(t->serial, hst[i]); uint64_t k = kept ? ++nkept : ++nup;
         if (k <= 8 || !(k & (k - 1))) LOG("[nvn] texture ser=%llu %ux%ux%u format %#x flags %#x: pages written after its first use, %s (%llu so far)", (unsigned long long)t->serial,
                                           t->d.width, t->d.height, t->d.depth, t->d.format, t->d.flags, msaa ? "kept as the GPU wrote it (multisample: its samples are not in guest memory)" : kept ? "kept as the GPU wrote it (its GPU-written bytes are unchanged in guest memory)" : "uploaded from guest memory", (unsigned long long)k);
-        if (!kept) nvn_be_tex_cpu_written(t);
+        if (!kept) nvn_be_tex_cpu_inferred(t);
     }
 }
 static void ft_flush(const uint8_t *a, uint64_t n) {
     if (!DM_GAME_TEX_FLUSH_UPLOAD || !a || !n) return;
     pthread_mutex_lock(&g_ft_mu);
     for (size_t i = 0; i < g_nft;)
-        if (g_ft[i].mem < a + n && a < g_ft[i].mem + g_ft[i].size) { nvn_be_tex_cpu_written(&g_ft[i].t); g_ft[i] = g_ft[--g_nft]; } else i++;
+        if (g_ft[i].mem < a + n && a < g_ft[i].mem + g_ft[i].size) { nvn_be_tex_cpu_inferred(&g_ft[i].t); g_ft[i] = g_ft[--g_nft]; } else i++;
     pthread_mutex_unlock(&g_ft_mu);
 }
 int nvn_be_tex_from_gl(tex_t *t, uint32_t gl_name);   // nvn_mtl.m：按 GL 纹理名接存储与描述（声明不放 nvn_obj.h：那是直连出库阶段键的输入，宿主改动不该让各款直连库重出）
