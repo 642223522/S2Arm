@@ -1006,6 +1006,45 @@ static void test_pad_fast_path(void) {
     puts("Mac pad: main-queue fast path, player 2 slot and mute passed");
 }
 
+// 关了「切到别的窗口时暂停」（S2A_FOCUS_PAUSE=0，#1606 ④）时失焦：手柄照常操作游戏，键盘 / 鼠标清空。期望手算（缺省映射：手柄 A = 位 0；键盘 Shift = B = 位 1）：
+//   ① 缺省（暂停开）失焦：手柄 A 也发零（同 test_pad_fast_path ⑤）；
+//   ② 暂停关失焦：键盘按着 Shift、手柄按 A → 只剩手柄位 = 1（改前：失焦一律静音 = 0，红）；pad.c 仍 active；
+//   ③ 暂停关、回到焦点：键盘位回来 = 3
+static void test_pad_unfocused_when_pause_off(void) {
+    typedef void (*read_ex_fn)(s2a_pad_snapshot *);
+    read_ex_fn read_ex = (read_ex_fn)dlsym(RTLD_DEFAULT, "s2a_vpad_read_ex");
+    config = default_config(); keys = [NSMutableSet set]; mouse = [NSMutableSet set];
+    read_key_state = key_state; memset(physical_keys, 0, sizeof physical_keys);
+    reset_input(); s2a_pad_set_active(0); s2a_pad_set_active(1);
+    GCController *pad0 = [GCController controllerWithExtendedGamepad];
+    install_pad_handler(pad0);
+    s2a_pad_snapshot snap;
+    int saved = g_focus_pause_off;
+    for (int off = 0; off <= 1; off++) {
+        g_focus_pause_off = off;
+        focused = NO; input_mute_refresh(); s2a_pad_set_active(pads_live());
+        [keys addObject:@56]; modifiers = 1; physical_keys[60] = YES;   // 失焦时还按着 Shift（别的 App 里按的也一样）
+        sample_input(); slot_fake_pad(0, pad0);
+        [pad0.extendedGamepad.buttonA setValue:1];
+        pad0.extendedGamepad.valueChangedHandler(pad0.extendedGamepad, pad0.extendedGamepad.buttonA);
+        read_ex(&snap);
+        if (!off) expect(snap.buttons == 0, "pause on (default): unfocused pad is muted");
+        else expect(snap.buttons == 1, "pause off: unfocused pad keeps playing, keyboard cleared (#1606)");
+        if (off) {
+            focused = YES; input_mute_refresh(); s2a_pad_set_active(1); sample_input(); slot_fake_pad(0, pad0);
+            pad0.extendedGamepad.valueChangedHandler(pad0.extendedGamepad, pad0.extendedGamepad.buttonA);
+            read_ex(&snap);
+            expect(snap.buttons == 3, "pause off, focus back: keyboard and pad both count");
+        }
+        [pad0.extendedGamepad.buttonA setValue:0];
+        pad0.extendedGamepad.valueChangedHandler(pad0.extendedGamepad, pad0.extendedGamepad.buttonA);
+        [keys removeObject:@56]; modifiers = 0; physical_keys[60] = NO;
+        focused = YES; input_mute_refresh(); s2a_pad_set_active(1); sample_input(); reset_input();
+    }
+    g_focus_pause_off = saved;
+    puts("Mac pad: pause-off keeps the pad live when unfocused, keyboard cleared passed");
+}
+
 // 延迟读数（--pad-latency-probe 手动跑，不进门禁）：事件投递 → 回调执行 → pad.c 发布的毫秒读数，
 //   同一测法改前改后各跑一遍（改前 = 负对照构建）。设备无关的判据在 test_pad_fast_path（截止 200ms < 忙 300ms），
 //   这里只报数：主线程忙 0 / 100 / 300 / 1000ms 各 3 轮，dispatch→回调执行的耗时（排主队列的改前 ≈ 忙的时长）、
@@ -1661,6 +1700,7 @@ int main(int argc, const char **argv) {
         test_pad_disconnect();
         test_pad_handler_install();
         test_pad_fast_path();
+        test_pad_unfocused_when_pause_off();
         test_profile_only_pad();
     test_pad_layout();
     test_shared_face_map();
