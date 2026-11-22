@@ -10906,7 +10906,7 @@ static int spec_probe_on(void) { static int on = -1; if (on < 0) { const char *e
 static void spec_probe_color(id p, MTLRenderPipelineDescriptor *d, int unspec) API_AVAILABLE(macos(26.0), ios(26.0)) {
     // unspec：8 个附件全部留空，没绑的也不写 Invalid——基础管线与本笔画布无关（拉取基础管线按 pbase_key 认，键里没有画布），出包离线编的随包基础管线
     //   （graphics/tools/direct/base_pipelines.py）也是全留空；11-19 本机实测：没绑的写 Invalid 的描述查全留空的归档不中。特化时没绑的才写 Invalid
-    for (int i = 0; i < 8; i++) { MTLRenderPipelineColorAttachmentDescriptor *s = d.colorAttachments[i]; MTL4RenderPipelineColorAttachmentDescriptor *c = [[p colorAttachments] objectAtIndexedSubscript:i];
+    for (int i = 0; i < 8; i++) { MTLRenderPipelineColorAttachmentDescriptor *s = d.colorAttachments[i]; MTL4RenderPipelineColorAttachmentDescriptor *c = (id)[[p colorAttachments] objectAtIndexedSubscript:i];   // 两个描述符类共用这些属性（见 layer_clears）；显式转，指针类型不符在本文件按错误编（graphics/nvn/Makefile WARN）
         if (!unspec && s.pixelFormat == MTLPixelFormatInvalid) { [c setPixelFormat:MTLPixelFormatInvalid]; continue; }
         [c setPixelFormat:unspec ? MTLPixelFormatUnspecialized : s.pixelFormat]; [c setWriteMask:unspec ? MTLColorWriteMaskUnspecialized : s.writeMask];
         [c setBlendingState:unspec ? MTL4BlendStateUnspecialized : s.blendingEnabled ? MTL4BlendStateEnabled : MTL4BlendStateDisabled];
@@ -15525,10 +15525,12 @@ static void tex3d_prepare(NvProg *pr) {
     uint64_t frame = atomic_load(&g_cur_frame); id<MTLTexture> src[8], dst[8]; int n = 0;
     for (int i = 0; i < fs->rf.nb && n < 8; i++) { const nvn_rbind *b = &fs->rf.b[i]; if (b->kind != NVN_RB_TEX || b->dtt != (uint8_t)MTLTextureType3D) continue;
         int tid = (int)(tex_slot_h(S.tex[1], S.img[1], b->reg) & 0xfffff); id<MTLTexture> t = nil, have = nil; uint64_t made = 0;
-        pthread_mutex_lock(&g_rmu);
+        // g_rmu 是 os_unfair_lock：原先这里用 pthread_mutex_lock / unlock，签名不符直接返回错误、根本没上锁，游戏线程登记贴图让 g_treg 扩容（realloc）时
+        //   这里读到已还给系统的旧表，提交线程缺页闪退（D-BHBZ / D-SCMX：两款 Switch 2 游戏、两台设备同址，draw 里内联的这一段）
+        os_unfair_lock_lock(&g_rmu);
         if (tid >= 0 && tid < g_ntreg && g_treg[tid].ok) { void *tv = NULL; tex_fast_rid(tid, &tv); t = (__bridge id<MTLTexture>)tv; treg_t *r = &g_treg[tid];
             if (t && r->alt && r->alt_copy && r->alt_of == (__bridge void *)t) { have = (__bridge id<MTLTexture>)r->alt; made = r->alt_made; } }
-        pthread_mutex_unlock(&g_rmu);
+        os_unfair_lock_unlock(&g_rmu);
         unsigned depth = t ? t3b_depth((int)t.textureType, T3B_TYPE_3D, (unsigned)t.sampleCount, (unsigned)t.arrayLength, t3b_pf_plain(t.pixelFormat)) : 0;
         if (!depth || (have && t3b_action(made, frame, g_enc != nil) == T3B_USE)) continue;
         if (!have) { MTLTextureDescriptor *d = [MTLTextureDescriptor new]; d.textureType = MTLTextureType3D; d.pixelFormat = t.pixelFormat; d.width = t.width; d.height = t.height; d.depth = depth;
@@ -15537,11 +15539,11 @@ static void tex3d_prepare(NvProg *pr) {
             res_add(have); g_t3b_made++;
             if (g_t3b_made <= 4) MLOG("3D slot holding a %s texture (texture ID %d, %lux%lu, %u layer%s, format %lu, shader %s slot %d): bound as a 3D copy of it (%llu so far)", t.textureType == MTLTextureType2D ? "2D" : "2D array", tid,
                                       (unsigned long)t.width, (unsigned long)t.height, depth, depth == 1 ? "" : "s", (unsigned long)t.pixelFormat, fs->key, b->reg, (unsigned long long)g_t3b_made); }
-        pthread_mutex_lock(&g_rmu);
+        os_unfair_lock_lock(&g_rmu);
         int keep = 0; if (tid < g_ntreg && g_treg[tid].ok) { void *tv = NULL; tex_fast_rid(tid, &tv); treg_t *r = &g_treg[tid];
             if (tv == (__bridge void *)t) { if (r->alt != (__bridge void *)have) { treg_drop_alt(r); r->alt = (void *)CFBridgingRetain(have); r->alt_of = (__bridge void *)t; r->alt_type = (uint8_t)MTLTextureType3D; r->alt_rid = have.gpuResourceID._impl; r->alt_copy = 1; }
                 r->alt_made = frame + 1; keep = 1; } }
-        pthread_mutex_unlock(&g_rmu);
+        os_unfair_lock_unlock(&g_rmu);
         if (!keep) { defer_obj_release(have); continue; }   // the ID was registered again meanwhile: the next draw looks again
         src[n] = t; dst[n] = have; n++; }
     if (!n) return;
