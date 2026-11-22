@@ -125,6 +125,14 @@ int s2a_guest_file_wanted(const char *e, uint64_t pool, uint64_t room) { return 
 //   池 > 剩余且物理内存 ≥ 池 + 宿主估计 开；物理内存也装不下 → 照样开并 *low = 1（起局提示玩家这台设备内存可能不够这款）。
 //     两种都可能坏时按「能玩下去」选：那台 iPad（7.5 GB）上文件后备 8 局每局都玩到约 30 分钟（27000–41000 帧）才掉帧卡死；匿名内存这款要约 7.9 GB、
 //     比它的物理内存还大，没有实测，按 iPhone 首局约 8 分钟就被系统结束看更早出局（11-13 维护者定：都装不下时提示 + 照样开文件后备）
+// 判据用的「剩余」（纯函数，t_guest_file_auto 测）：离单进程上限的剩余与「物理内存 − 余量」取小。D-YDKK（iPad14,3，物理 7536 MB，带提高内存上限权限、剩余 8189 MB）：
+//   单进程上限比物理内存还大，只比上限剩余就会把装不下判成装得下——实测峰值 7625 + 512 ≤ 8189 判关文件后备、物理映射区按「剩余 8189 ≥ 7168」挖回匿名，
+//   两局都在开局被系统结束。上限未知（0，Mac）照旧 0；读不到物理内存（0）只按上限
+uint64_t s2a_guest_room_eff(uint64_t room, uint64_t phys, uint64_t margin) {
+    if (!room || !phys) return room;
+    uint64_t cap = phys > margin ? phys - margin : 0;
+    return cap < room ? cap : room;
+}
 int s2a_guest_file_wanted6(const char *e, uint64_t pool, uint64_t room, uint64_t phys, uint64_t seen, uint64_t host, uint64_t margin, int died, int *low) {
     *low = 0;
     if (e && *e) return strcmp(e, "0") != 0;
@@ -147,11 +155,31 @@ static const char *tier_why(int on, int low, uint64_t seen, int died) {
          : low ? "池大于剩余、物理内存也装不下池 + 宿主估计：照样开（能玩下去优先），提示玩家内存可能不够"
          : on ? "池大于剩余、物理内存装得下：开" : "池不大于剩余：装得下、保持匿名内存";
 }
-static int g_low_tier;   // 这一局判在「物理内存也装不下」那档（s2a_guest_file_carve 只在这档挖物理映射区）
+static int g_low_tier;   // 这一局判在「物理内存也装不下」那档（文件后备开、物理映射区也走文件，s2a_guest_carve_wanted）
+static uint64_t g_lowram_need, g_lowram_phys;   // 待问玩家的「本款约需 / 本机物理内存」（s2a_guest_lowram_ask 问完清零）
 static void low_ram_notice(uint64_t phys, uint64_t need) {
-    g_low_tier = 1;
-    LOG("【黄】客体内存：这台设备物理内存 %llu MB，装不下这款要的约 %llu MB（池 + 宿主估计），照样开局；可能卡顿或被系统结束", (unsigned long long)(phys >> 20), (unsigned long long)(need >> 20));
-    void (*f)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "s2a_ios_low_ram_notice"); if (f) f();   // ios/app.m：游戏内提示条；单测 / 安卓没有
+    g_low_tier = 1; g_lowram_need = need; g_lowram_phys = phys;
+    LOG("【黄】客体内存：这台设备物理内存 %llu MB，装不下这款要的约 %llu MB（池 + 宿主估计），文件后备兜底照样开局；可能卡顿或被系统结束", (unsigned long long)(phys >> 20), (unsigned long long)(need >> 20));
+}
+// 「已问过」记号（纯文件操作，t_guest_file_auto 测）：同 mem_peak_anon 的目录下 lowram_asked。没有 → 写上、返回 0（这次要问）；有 → 返回 1（问过，不再弹）；路径取不到 → 1（不弹）
+static int mem_peak_path(char *out, size_t n);
+int s2a_guest_lowram_once(void) {
+    char p[1100]; if (!mem_peak_path(p, sizeof p)) return 1;
+    char *sl = strrchr(p, '/'); if (!sl) return 1; snprintf(sl + 1, sizeof p - (size_t)(sl + 1 - p), "lowram_asked");
+    struct stat st; if (!stat(p, &st)) return 1;
+    { char d[1100]; snprintf(d, sizeof d, "%s", p); char *s2 = strrchr(d, '/'); if (s2) { *s2 = 0; mkdir(d, 0755); } }
+    FILE *f = fopen(p, "w"); if (f) { fputs("1\n", f); fclose(f); }
+    return 0;
+}
+// 兜底之后物理上仍装不下（low 档）：起局前问一次「本款约需 X GB，这台 Y GB，可能中途退出」+「仍要启动」，本机本款只问一次（D-YDKK，11-22 维护者定：能玩就别拦）。
+//   构造期在主线程、问不了（s2a_ios_ask_continue 主线程直接回 0），所以判定时只记下，装模块前在宿主线程上问（host_main.c load_session_modules，多款容器的再判也在那之前）
+void s2a_guest_lowram_ask(void) {
+    uint64_t need = g_lowram_need, phys = g_lowram_phys; g_lowram_need = 0;
+    if (!need) return;
+    { int (*un)(void) = (int (*)(void))dlsym(RTLD_DEFAULT, "s2a_unattended"); if (un && un()) { LOG("客体内存：无人值守局，不问「内存可能不够」"); return; } }   // 测试 / 普查局不停在提示页，也不写记号
+    if (s2a_guest_lowram_once()) { LOG("客体内存：本机这款已问过一次「内存可能不够」，不再弹"); return; }
+    int (*f)(uint64_t, uint64_t) = (int (*)(uint64_t, uint64_t))dlsym(RTLD_DEFAULT, "s2a_ios_low_ram_ask");   // ios/app.m；Mac / 单测 / 安卓没有
+    if (f && f(need >> 20, phys >> 20)) LOG("客体内存：玩家看过「内存可能不够」，点了仍要启动");
 }
 int s2a_guest_file_wanted5(const char *e, uint64_t room, uint64_t seen, uint64_t margin, int died) {
     if (e && *e) return strcmp(e, "0") != 0;
@@ -507,6 +535,8 @@ static void guest_file_attach_(void) {
     // 余量缺省 512 MB（S2A_GUEST_FILE_MARGIN_MB）；池只作日志里的上界，不作判据（#783，见 s2a_guest_file_wanted5）
     if (ballast) { room = room > ballast ? room - ballast : 1; LOG("【黄】测试压舱：文件后备判定按余量少 %llu MB 算（S2A_TEST_BALLAST_MB，装模块前才真占）", (unsigned long long)(ballast >> 20)); }
     uint64_t margin = env_mb("S2A_GUEST_FILE_MARGIN_MB", 512), host = env_mb("S2A_GUEST_FILE_HOST_MB", 2048), phys = phys_mem();
+    { uint64_t r0 = room; room = s2a_guest_room_eff(room, phys, margin);   // 下面判开、预算、挖区、记录全按这个剩余（s2a_guest_room_eff）
+      if (room != r0) LOG("客体内存文件后备：离单进程上限还剩 %llu MB，比物理内存 %llu MB − 余量 %llu MB 大，判据按 %llu MB", (unsigned long long)(r0 >> 20), (unsigned long long)(phys >> 20), (unsigned long long)(margin >> 20), (unsigned long long)(room >> 20)); }
     int died = room && s2a_guest_run_died(), low = 0;
     { const char *st = room ? s2a_guest_mem_settle(died, room, margin) : NULL; if (st) LOG("客体内存实测记录：%s", st); }
     uint64_t seen = s2a_guest_mem_seen();
@@ -684,30 +714,30 @@ int s2a_guest_map_fixed(uint64_t a, uint64_t len) {
 //   11-13 Duo 正式游戏实测窗口脏页约 1.3 GB，最脏的 4 段里两段在别名区（各 130–185 MB）。放在文件里，物理内存小的机器（iPad 7.5 GB）脏页超回写阈值后
 //   这些每帧都被改写的页会被反复刷盘（那台 iPad 文件后备局每 10 秒写 2–3 GB）。别名区保持匿名：热页不进文件，只有游戏堆走文件后备。
 //   代价是这段的常驻页计进进程实占（Duo 正式游戏约 1.0–1.7 GB），iPad 档单进程上限 8 GB 装得下。下面两个口子按它分段：在这段里一律当「不在文件里」
-//   （svc_mem.c 的懒清零与还页就走匿名那套）。S2A_GUEST_FILE_CARVE=0 不挖、=1 强制挖（对照用）；缺省只在「物理内存也装不下」那档挖
+//   （svc_mem.c 的懒清零与还页就走匿名那套）。S2A_GUEST_FILE_CARVE=0 不挖、=1 强制挖（对照用）；缺省按剩余挖（s2a_guest_carve_wanted），「物理内存也装不下」那档不挖
 static uint64_t g_anon_lo, g_anon_hi;
 static int reserve_hole(uint64_t lo, uint64_t hi) {   // [lo, hi) 放回不可访问的匿名占位（空洞补占位；MAP_FIXED 也盖掉原映射）；空段回 0；不成返回非 0
     return lo < hi && mmap((void *)(uintptr_t)lo, hi - lo, PROT_NONE, MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1, 0) != (void *)(uintptr_t)lo;
 }
 static int in_anon(uint64_t a, uint64_t n) { return g_anon_hi > g_anon_lo && a < g_anon_hi && a + n > g_anon_lo; }
 // 布局定下别名区后调（svc_mem.c，那时这段还没放开过）：与窗口的交集按宿主页向内取整，逐块确认仍是不可访问的保留（没有内容）才换成匿名占位
-// 挖不挖（纯函数，单测直接测）：S2A_GUEST_FILE_CARVE=0 / 1 按设的；「物理内存也装不下」那档挖；离单进程上限剩余 ≥ S2A_GUEST_FILE_CARVE_ROOM_MB（缺省 7168）也挖——
+// 挖不挖（纯函数，单测直接测）：S2A_GUEST_FILE_CARVE=0 / 1 按设的；「物理内存也装不下」那档不挖；剩余（s2a_guest_room_eff：上限剩余与物理内存 − 余量取小）≥ S2A_GUEST_FILE_CARVE_ROOM_MB（缺省 7168）挖——
 //   11-14 实测：写盘几乎全来自物理映射区，而且写回的大多是游戏已经释放、内容作废的页（释放不打洞、重新给出时 memset 清零，内存一紧整段写回）：每次起局加载时一次写 7–17 GB
 //   （一台测试 iPhone 两局 16.7 / 6.7 GB；Duo 挖 0 写 9.4 GB、挖 1 写 33 MB）。挖的代价是这段常驻计实占（Duo 15 分钟：实占峰 3370 → 6101 MB，离上限最少还剩 2122 MB）。挖了的实占峰是绝对量（约 6.1 GB = 文件后备峰约 3.4 GB + 挖区约 2.7 GB），门槛再留约 1 GB：起局剩余 ≥ 7 GB 才挖——
 //   17 Pro Max 那档剩余约 6.1 GB，挖了会贴着上限，不挖（曾按 4 GB 定，算错）。剩余未知（0，Mac）不挖
 int s2a_guest_carve_wanted(const char *e, int low, uint64_t room, uint64_t room_min) {
     if (e && *e) return *e != '0';
-    if (low) return 1;
+    if (low) return 0;   // 物理内存也装不下那档：不挖，物理映射区也走文件（D-YDKK，11-22 维护者定：装不下先让文件兜底、能玩下去；挖了这段常驻计实占，那台 iPad 开局 6.7 GB 就被结束）
     return room && room >= room_min;
 }
 void s2a_guest_file_carve(uint64_t a, uint64_t n) {
     if (g_gfd < 0 || !n) return;
     const char *e = getenv("S2A_GUEST_FILE_CARVE");
     if (e && *e == '0') { LOG("客体内存文件后备：物理映射区照旧进文件（S2A_GUEST_FILE_CARVE=0，对照用）"); return; }
-    // 挖不挖按 s2a_guest_carve_wanted（上面）：「物理内存也装不下」那档挖；起局时离单进程上限剩余 ≥ S2A_GUEST_FILE_CARVE_ROOM_MB（缺省 7168）也挖；
+    // 挖不挖按 s2a_guest_carve_wanted（上面）：「物理内存也装不下」那档不挖；起局时的剩余（与物理内存 − 余量取小）≥ S2A_GUEST_FILE_CARVE_ROOM_MB（缺省 7168）挖；
     //   S2A_GUEST_FILE_CARVE=1 / 0 强制。挖与不挖都写一行带剩余与原因（看玩家单用）
     uint64_t room_min = env_mb("S2A_GUEST_FILE_CARVE_ROOM_MB", 7168);
-    if (!s2a_guest_carve_wanted(e, g_low_tier, g_gfile_room, room_min)) { LOG("客体内存文件后备：物理映射区照旧进文件（不是内存不够那档，离单进程上限剩余 %llu MB < %llu MB：挖了常驻会贴近上限）", (unsigned long long)(g_gfile_room >> 20), (unsigned long long)(room_min >> 20)); return; }
+    if (!s2a_guest_carve_wanted(e, g_low_tier, g_gfile_room, room_min)) { LOG("客体内存文件后备：物理映射区照旧进文件（%s，剩余 %llu MB、门槛 %llu MB）", g_low_tier ? "物理内存也装不下那档：先让文件兜底" : "剩余不到门槛：挖了常驻会贴近上限", (unsigned long long)(g_gfile_room >> 20), (unsigned long long)(room_min >> 20)); return; }
     const uint64_t pg = 0x4000;
     uint64_t lo = a > g_base ? a : g_base, hi = a + n < g_base + g_size ? a + n : g_base + g_size;
     lo = (lo + pg - 1) & ~(pg - 1); hi &= ~(pg - 1);
@@ -735,7 +765,7 @@ void s2a_guest_file_carve(uint64_t a, uint64_t n) {
         for (uint64_t i = (lo - g_base + GCHUNK - 1) / GCHUNK; i < g_gchunk_n && g_base + (i + 1) * GCHUNK <= hi; i++) if (g_gchunk[i] != GC_ANON) gc_set(i, GC_CARVE);
         pthread_mutex_unlock(&g_gchunk_mu); }
     LOG("客体内存文件后备：物理映射区 %#llx +%llu MB 保持匿名内存（%s；游戏反复映射 / 释放的就是这段，进文件的话作废页也要写回闪存；游戏堆照旧走文件）", (unsigned long long)lo, (unsigned long long)((hi - lo) >> 20),
-        e && *e ? "S2A_GUEST_FILE_CARVE=1 强制" : g_low_tier ? "物理内存也装不下那档" : "离单进程上限剩余够");
+        e && *e ? "S2A_GUEST_FILE_CARVE=1 强制" : "剩余够");
     if (!(e && *e) && !g_low_tier) LOG("客体内存文件后备：挖区判据 离单进程上限剩余 %llu MB ≥ %llu MB", (unsigned long long)(g_gfile_room >> 20), (unsigned long long)(room_min >> 20));
 }
 // 一块的窗口范围 [*lo, *hi)

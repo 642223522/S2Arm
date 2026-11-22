@@ -156,6 +156,21 @@ int main(void) {
       CHECK(s2a_guest_file_wanted6(NULL, S1, 4093 * MB, 5667 * MB, 3700 * MB, H2, G, 1, &low) == 1 && s2a_guest_file_wanted6(NULL, S1, 4093 * MB, 5667 * MB, 3700 * MB, H2, G, 0, &low) == 1,
             "58 实测 3700 + 512 > 4093：死没死都开");
       CHECK(s2a_guest_file_wanted6("1", S1, RP, PI, 0, H2, G, 0, &low) == 1 && s2a_guest_file_wanted6("0", S2, R, PD, 0, H2, G, 1, &low) == 0, "54 显式 1 / 0 压过一切"); }
+    {   // 63–67 判据剩余按物理内存封顶（s2a_guest_room_eff，D-YDKK：iPad14,3 物理 7536 MB、带提高内存上限权限剩余 8189 MB）。期望手算：min(剩余, 物理 − 余量 512)
+        uint64_t s2a_guest_room_eff(uint64_t, uint64_t, uint64_t); int s2a_guest_carve_wanted(const char *, int, uint64_t, uint64_t); int low = -1;
+        CHECK(s2a_guest_room_eff(8189 * MB, 7536 * MB, 512 * MB) == 7024 * MB, "63 iPad 物理 7536、剩余 8189：判据按 7536 − 512 = 7024 MB");
+        CHECK(s2a_guest_room_eff(8189 * MB, 11570 * MB, 512 * MB) == 8189 * MB && s2a_guest_room_eff(6141 * MB, 7680 * MB, 512 * MB) == 6141 * MB, "64 物理 − 余量不小于剩余（Duo 11570 / 8 GB iPhone 剩余 6141）：照旧按剩余");
+        CHECK(s2a_guest_room_eff(0, 7536 * MB, 512 * MB) == 0 && s2a_guest_room_eff(8189 * MB, 0, 512 * MB) == 8189 * MB, "65 剩余未知（Mac 0）仍 0；物理读不到只按剩余");
+        uint64_t r = s2a_guest_room_eff(8189 * MB, 7536 * MB, 512 * MB);
+        CHECK(s2a_guest_file_wanted6(NULL, S2, r, 7536 * MB, 7625 * MB, H2, G, 0, &low) == 1, "66 D-YDKK 第 2 局：实测 7625 + 512 = 8137 > 7024 → 开（原先比 8189 判关）");
+        CHECK(s2a_guest_carve_wanted(NULL, 0, r, 7168 * MB) == 0 && s2a_guest_carve_wanted(NULL, 1, 8189 * MB, 7168 * MB) == 0,
+              "66 D-YDKK 第 3 局：剩余 7024 < 7168 不挖；物理内存也装不下那档（low）也不挖，物理映射区走文件"); }
+    {   // 67 「内存可能不够」只问一次（s2a_guest_lowram_once）：记号在 mem_peak_anon 同目录 lowram_asked；第一次 0（要问）、之后 1
+        int s2a_guest_lowram_once(void); char d[] = "/tmp/t_lowram_XXXXXX"; if (!mkdtemp(d)) { CHECK(0, "67 建临时目录"); return 1; }
+        char pk[256]; snprintf(pk, sizeof pk, "%s/w/mem_peak_anon", d); setenv("S2A_GUEST_MEM_PEAK", pk, 1);
+        int a = s2a_guest_lowram_once(), b = s2a_guest_lowram_once(); char m[300]; snprintf(m, sizeof m, "%s/w/lowram_asked", d);
+        CHECK(a == 0 && b == 1 && access(m, F_OK) == 0, "67 第一次要问（%d，期望 0）、第二次不问（%d，期望 1）、记号写在 lowram_asked", a, b);
+        unlink(m); snprintf(m, sizeof m, "%s/w", d); rmdir(m); rmdir(d); unsetenv("S2A_GUEST_MEM_PEAK"); }
     printf("%s t_guest_file_auto：%d 项不符\n", bad ? "✗" : "✓", bad);
     return bad != 0;
 }
