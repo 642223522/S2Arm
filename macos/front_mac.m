@@ -6,6 +6,9 @@
 #import <CoreGraphics/CoreGraphics.h>
 #import <GameController/GameController.h>
 #import <CoreHaptics/CoreHaptics.h>
+#import <IOKit/IOKitLib.h>
+#import <IOKit/hidsystem/IOHIDServiceClient.h>
+#import <objc/runtime.h>
 #import <QuartzCore/CAMetalLayer.h>
 #include "../runtime/include/s2a_pad.h"
 #include "../runtime/include/s2a_qos.h"
@@ -1024,6 +1027,73 @@ static void sample_coded_state(uint32_t bits, int lx, int ly, int rx, int ry, NS
 static void sample_ns2_state(const ns2_state *ble, NSDictionary *cfg, uint32_t *out_buttons, int32_t sticks[4]) {
     sample_coded_state(ble->buttons, ble->lx, ble->ly, ble->rx, ble->ry, cfg, out_buttons, sticks);
 }
+// GameController 的公开接口没有物理设备标识。仅在运行时能取得精确 Registry ID 时叠加 HID，
+// 避免同名手柄混连或重连后串轴。系统接口变化时回到原本的 GameController 轴。
+@protocol S2ABetopControllerIdentity
+- (id)componentForClass:(Class)componentClass;
+- (NSArray *)hidServices;
+@end
+@protocol S2ABetopHIDIdentity
+- (NSNumber *)registryID;
+@end
+static NSNumber *betop_gc_service_id(GCController *controller) {
+    id<S2ABetopControllerIdentity> identity = (id)controller;
+    static Class hidInfoClass;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ hidInfoClass = NSClassFromString(@"GCHIDInformation"); });
+    if (hidInfoClass && [controller respondsToSelector:@selector(componentForClass:)]) {
+        id<S2ABetopHIDIdentity> info = [identity componentForClass:hidInfoClass];
+        if ([(id)info isKindOfClass:hidInfoClass] && [(id)info respondsToSelector:@selector(registryID)]) {
+            NSNumber *entry = info.registryID;
+            if ([entry isKindOfClass:NSNumber.class] && entry.unsignedLongLongValue) return entry;
+        }
+    }
+    // 旧版 GameController 会直接持有 HID event service。
+    if (![controller respondsToSelector:@selector(hidServices)]) return nil;
+    NSArray *services = [identity hidServices];
+    if (![services isKindOfClass:NSArray.class] || services.count != 1) return nil;
+    CFTypeRef service = (__bridge CFTypeRef)services.firstObject;
+    if (!service || CFGetTypeID(service) != IOHIDServiceClientGetTypeID()) return nil;
+    id entry = (__bridge id)IOHIDServiceClientGetRegistryID((IOHIDServiceClientRef)service);
+    return [entry isKindOfClass:NSNumber.class] ? entry : nil;
+}
+
+static uint64_t betop_pro_registry_id(GCController *controller) {
+    if (![controller.productCategory isEqualToString:@"Switch Pro Controller"]) return 0;
+    NSNumber *entry = betop_gc_service_id(controller);
+    uint64_t service = entry.unsignedLongLongValue;
+    if (!service) return 0;
+    // 系统手柄可能给出 AppleGCHIDUserEventDriver 的 ID，IOHIDDevice 拿的是它的父级。
+    // 按系统对象和 event service ID 缓存父设备，避免每个输入事件都遍历 I/O Registry。
+    static char registryCacheKey;
+    NSArray<NSNumber *> *cached = objc_getAssociatedObject(controller, &registryCacheKey);
+    if ([cached.firstObject isEqualToNumber:entry]) return cached.lastObject.unsignedLongLongValue;
+    io_registry_entry_t node = IOServiceGetMatchingService(kIOMainPortDefault, IORegistryEntryIDMatching(service));
+    uint64_t physical = 0;
+    while (node) {
+        if (IOObjectConformsTo(node, "IOHIDDevice")) {
+            IORegistryEntryGetRegistryEntryID(node, &physical);
+            IOObjectRelease(node);
+            break;
+        }
+        io_registry_entry_t parent = IO_OBJECT_NULL;
+        IORegistryEntryGetParentEntry(node, kIOServicePlane, &parent);
+        IOObjectRelease(node);
+        node = parent;
+    }
+    if (physical) objc_setAssociatedObject(controller, &registryCacheKey, @[entry, @(physical)], OBJC_ASSOCIATION_RETAIN);
+    return physical ?: service;
+}
+static void sample_left_stick(GCController *controller, GCControllerDirectionPad *left, float *x, float *y) {
+    int16_t axes[2];
+    if (s2a_mac_hid_betop_left(betop_pro_registry_id(controller), axes)) {
+        *x = axes[0] / 32767.0f;
+        *y = axes[1] / 32767.0f;
+        return;
+    }
+    *x = left.xAxis.value;
+    *y = left.yAxis.value;
+}
 static void sample_pad_state(GCExtendedGamepad *pad, NSDictionary *cfg, uint32_t *out_buttons, int32_t sticks[4]) {
     // GameController 通常按物理方位上报（buttonA 在南侧）；Switch Pro 手柄在 macOS 上按键面字母上报（A 在东侧、X 在北侧）
     //   位序调共用的 s2a_pad_abxy_order（同 iOS controller.m publishSystem；审计 P2-213：两端各写一套，以后只改一处就会一端错）。order 按任天堂 A / B / X / Y = 东 / 南 / 北 / 西
@@ -1040,7 +1110,9 @@ static void sample_pad_state(GCExtendedGamepad *pad, NSDictionary *cfg, uint32_t
     if (pad.rightThumbstickButton) inputs[@"rightStick"] = pad.rightThumbstickButton;
     NSMutableDictionary *all = [NSMutableDictionary new];
     for (NSString *code in inputs) all[code] = @([inputs[code] isPressed]);
-    map_pad_inputs(cfg, all, @{@"leftX": @(pad.leftThumbstick.xAxis.value), @"leftY": @(pad.leftThumbstick.yAxis.value),
+    float lx, ly;
+    sample_left_stick(pad.controller, pad.leftThumbstick, &lx, &ly);
+    map_pad_inputs(cfg, all, @{@"leftX": @(lx), @"leftY": @(ly),
                           @"rightX": @(pad.rightThumbstick.xAxis.value), @"rightY": @(pad.rightThumbstick.yAxis.value)}, out_buttons, sticks);
 }
 // 只有通用物理描述的手柄：按标准键名读，位序与扩展手柄同一套（s2a_pad_abxy_order，类型按 productCategory 判）
@@ -1058,7 +1130,9 @@ static void sample_profile_state(GCController *c, NSDictionary *cfg, uint32_t *o
     for (NSString *code in named) all[code] = @(btn(named[code]).isPressed);
     GCControllerDirectionPad *dpad = p.dpads[GCInputDirectionPad], *ls = p.dpads[GCInputLeftThumbstick], *rs = p.dpads[GCInputRightThumbstick];
     all[@"dpadLeft"] = @(dpad.left.isPressed); all[@"dpadRight"] = @(dpad.right.isPressed); all[@"dpadUp"] = @(dpad.up.isPressed); all[@"dpadDown"] = @(dpad.down.isPressed);
-    map_pad_inputs(cfg, all, @{@"leftX": @(ls.xAxis.value), @"leftY": @(ls.yAxis.value), @"rightX": @(rs.xAxis.value), @"rightY": @(rs.yAxis.value)}, out_buttons, sticks);
+    float lx, ly;
+    sample_left_stick(c, ls, &lx, &ly);
+    map_pad_inputs(cfg, all, @{@"leftX": @(lx), @"leftY": @(ly), @"rightX": @(rs.xAxis.value), @"rightY": @(rs.yAxis.value)}, out_buttons, sticks);
 }
 // 槽位计划 s2a_slot_plan 在 runtime/src/pad.c（iOS ios/controller.m 共用同一份规则）
 // R5：原始键态 → HID 键盘区（s2a_kb_update，键码表 mac_key_hid）。位图是 (keys, modifiers, caps_locked, muted) 的
