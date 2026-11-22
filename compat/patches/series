@@ -667,3 +667,4 @@
 20261121-1216-audio-depth-catch-up.patch
 20261121-1552-audio-recover-hook-by-event.patch
 20261121-1603-local-player-order-not-hide.patch
+20261121-2020-ldn-route-select-by-system-route.patch
