@@ -169,6 +169,14 @@ int main(void) {
         CHECK(s2a_guest_file_wanted6(NULL, S2, r, 7536 * MB, 7625 * MB, H2, G, 0, &low) == 1, "66 D-YDKK 第 2 局：实测 7625 + 512 = 8137 > 7024 → 开（原先比 8189 判关）");
         CHECK(s2a_guest_carve_wanted(NULL, 0, r, 7168 * MB) == 0 && s2a_guest_carve_wanted(NULL, 1, 8189 * MB, 7168 * MB) == 0,
               "66 D-YDKK 第 3 局：剩余 7024 < 7168 不挖；物理内存也装不下那档（low）也不挖，物理映射区走文件"); }
+    {   // 68–71 有实测时也判「物理内存也装不下」那档（D-9R4S：6 GB iPad，Switch 2 大款实测 8877 MB，原先有实测就不判、从不提示）。期望手算：on 且 实测 + 余量 512 > 物理
+        int low = -1; uint64_t s2a_guest_need(uint64_t, uint64_t, uint64_t);
+        CHECK(s2a_guest_file_wanted6(NULL, S2, 4092 * MB, 5914 * MB, 8877 * MB, H2, G, 0, &low) == 1 && low == 1, "68 D-9R4S：实测 8877 + 512 > 剩余 4092 开、> 物理 5914 提示（low %d，期望 1）", low);
+        CHECK(s2a_guest_file_wanted6(NULL, S2, 7024 * MB, 7536 * MB, 7625 * MB, H2, G, 0, &low) == 1 && low == 1, "69 D-YDKK：实测 7625 + 512 = 8137 > 物理 7536：提示（low %d，期望 1）", low);
+        CHECK(s2a_guest_file_wanted6(NULL, S2, 8189 * MB, 11570 * MB, 7800 * MB, H2, G, 0, &low) == 1 && low == 0, "70 Duo：实测 7800 + 512 ≤ 物理 11570：开、不提示（low %d，期望 0）", low);
+        CHECK(s2a_guest_file_wanted6(NULL, S2, 8189 * MB, 11570 * MB, 2118 * MB, H2, G, 0, &low) == 0 && low == 0, "71 实测装得下：关、不提示（low %d）", low);
+        CHECK(s2a_guest_need(9216 * MB, 2048 * MB, 8877 * MB) == 8877 * MB && s2a_guest_need(9216 * MB, 2048 * MB, 0) == 11264 * MB && s2a_guest_need(9216 * MB, 2048 * MB, UINT64_MAX) == 11264 * MB,
+              "71 「约需」：有实测 8877、没实测 / 坏记录 9216 + 2048 = 11264"); }
     {   // 67 「内存可能不够」只问一次（s2a_guest_lowram_once）：记号在 mem_peak_anon 同目录 lowram_asked；第一次 0（要问）、之后 1
         int s2a_guest_lowram_once(void); char d[] = "/tmp/t_lowram_XXXXXX"; if (!mkdtemp(d)) { CHECK(0, "67 建临时目录"); return 1; }
         char pk[256]; snprintf(pk, sizeof pk, "%s/w/mem_peak_anon", d); setenv("S2A_GUEST_MEM_PEAK", pk, 1);

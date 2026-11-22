@@ -150,12 +150,15 @@ int s2a_guest_file_wanted6(const char *e, uint64_t pool, uint64_t room, uint64_t
     // 安全阀收窄（#2f79dd，11-15）：上局前台死掉本为兜「判了不开、实际超单进程上限被杀」——心跳 10 秒一次，最后那段涨幅可能没记进实测。
     //   本款有实测、且实测 + 两份余量（多一份给漏记的涨幅）仍不超剩余：那次死掉不是超上限（标记被别的原因留下，D-C73M 那次原因未定），不强制开，按实测判关。
     //   D-C73M 6 GB iPhone：实测 2372 + 1024 ≤ 4093 却被强制开，开局写盘 2.6 GB 后卡死在缺页
-    if (died && !(seen && seen + 2 * margin <= room)) return 1;
-    if (seen) return seen + margin > room;
-    if (pool <= room) return 0;
-    if (phys && phys >= pool + host) return 1;
-    *low = 1; return 1;
+    int on = seen == UINT64_MAX ? 1 : died && !(seen && seen + 2 * margin <= room) ? 1 : seen ? seen + margin > room : pool > room;
+    // 物理内存也装不下那档（起局提示一次、物理映射区也走文件）：按本款要多少判（s2a_guest_need：有实测按实测 + 余量，没实测按池 + 宿主估计）。
+    //   11-22 D-9R4S：原先只在「没实测、池 > 剩余」那支判这档，有实测就直接按实测回、不判——6 GB iPad 上一款 Switch 2 大款实测 8877 MB，
+    //   物理只有 5914，却从不提示（一局往闪存写 66–118 GB、换场景卡住 / GPU 超时黑屏）。读不到物理内存（0）不判这档
+    if (on && phys) *low = seen && seen != UINT64_MAX ? seen + margin > phys : pool + host > phys;
+    return on;
 }
+// 本款要多少（提示玩家「约需」用）：有实测（不是坏记录）按实测，否则按池 + 宿主估计
+uint64_t s2a_guest_need(uint64_t pool, uint64_t host, uint64_t seen) { return seen && seen != UINT64_MAX ? seen : pool + host; }
 static uint64_t phys_mem(void) { uint64_t ph = 0; size_t n = sizeof ph; return sysctlbyname("hw.memsize", &ph, &n, NULL, 0) ? 0 : ph; }
 // 三档判定的一句理由（日志用）
 static const char *tier_why(int on, int low, uint64_t seen, int died) {
@@ -168,7 +171,7 @@ static int g_low_tier;   // 这一局判在「物理内存也装不下」那档�
 static uint64_t g_lowram_need, g_lowram_phys;   // 待问玩家的「本款约需 / 本机物理内存」（s2a_guest_lowram_ask 问完清零）
 static void low_ram_notice(uint64_t phys, uint64_t need) {
     g_low_tier = 1; g_lowram_need = need; g_lowram_phys = phys;
-    LOG("【黄】客体内存：这台设备物理内存 %llu MB，装不下这款要的约 %llu MB（池 + 宿主估计），文件后备兜底照样开局；可能卡顿或被系统结束", (unsigned long long)(phys >> 20), (unsigned long long)(need >> 20));
+    LOG("【黄】客体内存：这台设备物理内存 %llu MB，装不下这款要的约 %llu MB（有实测按实测，没有按池 + 宿主估计），文件后备兜底照样开局；可能卡顿或被系统结束", (unsigned long long)(phys >> 20), (unsigned long long)(need >> 20));
 }
 // 「已问过」记号（纯文件操作，t_guest_file_auto 测）：同 mem_peak_anon 的目录下 lowram_asked。没有 → 写上、返回 0（这次要问）；有 → 返回 1（问过，不再弹）；路径取不到 → 1（不弹）
 static int mem_peak_path(char *out, size_t n);
@@ -592,7 +595,7 @@ static void guest_file_attach_(void) {
     LOG("客体内存文件后备：%s——%s；本款应用内存池 %llu MB、离单进程内存上限还剩 %llu MB%s、物理内存 %llu MB、宿主估计 %llu MB、本机本款实测峰值 %llu MB（0 = 没有）%s", on ? "开" : "关", why,
         (unsigned long long)(pool >> 20), (unsigned long long)(room >> 20), room ? "" : "（0 = 未知）", (unsigned long long)(phys >> 20), (unsigned long long)(host >> 20),
         (unsigned long long)(seen == UINT64_MAX ? 0 : seen >> 20), s2a_process_prewarmed() ? "；预热进程" : "");
-    if (low && !late) low_ram_notice(phys, pool + host);
+    if (low && !late) low_ram_notice(phys, s2a_guest_need(pool, host, seen));
     g_gfile_room = room; g_gfile_died = died;
     if (late) { g_gfile_late = 1; g_gfile_room0 = room; return; }
     if (!on) return;
@@ -696,7 +699,7 @@ int s2a_guest_file_retry(void) {
         LOG("客体内存文件后备（装游戏前按本款再判）：%s——%s；本款应用内存池 %llu MB、起局时离单进程内存上限还剩 %llu MB、物理内存 %llu MB、宿主估计 %llu MB、本机本款实测峰值 %llu MB（0 = 没有）",
             on ? "开" : "关", tier_why(on, low, seen, died), (unsigned long long)(pool >> 20), (unsigned long long)(g_gfile_room0 >> 20), (unsigned long long)(phys >> 20),
             (unsigned long long)(host >> 20), (unsigned long long)(seen == UINT64_MAX ? 0 : seen >> 20));
-        if (low) low_ram_notice(phys, pool + host);
+        if (low) low_ram_notice(phys, s2a_guest_need(pool, host, seen));
         // 补写「本局在跑」标记（died 已在上面读过，不会读到自己）：标记按程序号放目录，App 到前台时（ios/app.m）多款容器还没选游戏、程序号是 0，
         //   路径取不到就没写——诊断 D-4PMS（6 GB iPhone，多款容器）一款 Switch 2 大款连着 5 局都在前台被内存上限杀，每局再判仍是「实测峰值装得下、关」，
         //   安全阀一次没触发。此刻已选定游戏、程序号确定，在这里补；进后台 / 将终止时删照旧（那时也认得程序号）
