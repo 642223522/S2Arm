@@ -696,6 +696,8 @@ static void *snap_restart_timer(void *arg) {
         sleep((unsigned)sec);
         while (atomic_load(&g_snap_busy)) usleep(100000);   // 正在存就等存完
         LOG("即时存档：游戏起来后 %ld 秒到点，回到快照（进程内重启，第 %ld / %ld 次）%s", sec, i + 1, rep, dir);
+        int s2a_snap_fits_inplace(const char *);   // 同游戏内菜单（ios/vpad.m snapRestore）：落点不同就不重启，界面那边会让玩家回游戏库
+        if (!s2a_snap_fits_inplace(dir)) { LOG("即时存档：游戏里接不上这个快照（落点不同），不进程内重启——玩家路径是回游戏库恢复"); break; }
         setenv("S2A_SNAP_RESTORE", dir, 1);
         int rc = s2a_host_restart(snap_restart_cb, NULL); if (rc) LOG("【红】即时存档：进程内重启请求被拒 %d", rc);
     }
