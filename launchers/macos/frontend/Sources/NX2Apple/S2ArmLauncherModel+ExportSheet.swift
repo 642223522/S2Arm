@@ -26,7 +26,7 @@ struct ExportPlan: Equatable {
 
 /// 导出确认页上的一台设备（phoneOverview 的一台 + 这款在它上面的状态 + 这次能不能勾）
 struct ExportDeviceRow: Equatable, Identifiable {
-    enum GameState: Equatable { case latest, old, none }
+    enum GameState: Equatable { case latest, old, none, present, unknown, pending, removed }
     /// 行内说明；link = 说明旁边给的入口（去首位 S2Arm 卡装 / 更新、去看怎么导入证书）
     enum Note: Equatable { case offline, needCert, launcherSigned, noShell, shellOld, standaloneSelfSign, deviceAccess(String) }
     let device: String
@@ -97,8 +97,18 @@ extension S2ArmLauncherModel {
 
     /// ③ 一台设备这次能不能勾、行内写什么（作业层契约：自签时只有别的工具装的 S2Arm 能用；已签名都能勾，没装 / 不是本版 S2Arm 那台开始后单独失败、不挡别的）
     nonisolated static func exportDeviceRow(_ p: PhoneOverview.Phone, gameId: String, sign: String, layout: String) -> ExportDeviceRow {
-        let state = p.games.first { $0.gameId == gameId.uppercased() }?.state
-        let game: ExportDeviceRow.GameState = state == .latest ? .latest : state == .suggested ? .old : .none
+        let found = p.games.first { $0.gameId == gameId.uppercased() }
+        let state = found?.state
+        let game: ExportDeviceRow.GameState
+        switch state {
+        case .latest: game = .latest
+        case .suggested: game = .old
+        case .present: game = .present
+        case .unknown: game = .unknown
+        case .pending: game = .pending
+        case .notPushed: game = found?.reasons.contains("removed") == true ? .removed : .none
+        default: game = .none
+        }
         func row(_ ok: Bool, _ note: ExportDeviceRow.Note?) -> ExportDeviceRow {
             ExportDeviceRow(device: p.device, kind: p.kind, name: p.name, game: game, selectable: ok, note: note)
         }
