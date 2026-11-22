@@ -18703,9 +18703,13 @@ void nvn_be_exec(const uint8_t *p) {
         // A GPU-side event signal / value write (SignalEvent, ReportValue; not WaitEvent) stays inside the run too: it encodes nothing either, mtl_sub_event queues a write applied once the
         //   submission completes, and a queue parked on that event resumes only when the submission ends (nvn_xqueue.inc). 0100B8E016F76000 (#1449, 0.6.7, D-CQG6) follows each
         //   occlusion report with a ReportValue: once the report stayed in the run, these ended 534000 runs of 1.02 draws, 867 passes a frame, 6 fps. A wait still ends the run
-        if (g_gr.active && !geo_run_keeps(h.op) && !(h.op == OP_REPORT_COUNTER && h.size >= 16 && *(const uint64_t *)a == NVN_COUNTER_TYPE_SAMPLES_PASSED)
+        // An occlusion-query reset (SAMPLES_PASSED) stays inside the run as well, unless it would split the pass (the first reset inside a pass begun without a visibility buffer, below):
+        //   it encodes nothing either, it empties the slot table (vis_clear) and the next draw takes a new slot in order, as after a report. 0100B8E016F76000 (#1449, main 11-22) resets
+        //   before every geometry draw: once reports and signals stayed in the run, these ended 4,295,710 runs of 1.008 draws in a 17,100-frame Mac run
+        if (g_gr.active && !geo_run_keeps(h.op) && !((h.op == OP_REPORT_COUNTER || (h.op == OP_RESET_COUNTER && !(g_enc && !g_enc_has_vis)))
+                                                      && h.size >= 16 && *(const uint64_t *)a == NVN_COUNTER_TYPE_SAMPLES_PASSED)
             && !(h.op == OP_SIGNAL_EVENT && h.size >= 24 && !(*(const uint32_t *)((const uint8_t *)a + 8) & NVN_EV_WAIT))) {
-            g_gr_why = GEO_END_OP; g_gr_why_op = (int)h.op; geo_run_flush(); }   // only state settings, draws, occlusion reports and event signals stay inside a geometry run (nvn_geometry.inc ①)
+            g_gr_why = GEO_END_OP; g_gr_why_op = (int)h.op; geo_run_flush(); }   // only state settings, draws, occlusion reports / resets and event signals stay inside a geometry run (nvn_geometry.inc ①)
         switch (h.op) {
             case OP_END: g_exec_cur = NULL;
                 if (g_ret_n > base) { g_ret_n--; p = g_cstk_ret[g_ret_n]; list = g_cstk_list[g_ret_n]; prev = NULL; continue; }   // 子列表结束：回调用方 CALL 之后
