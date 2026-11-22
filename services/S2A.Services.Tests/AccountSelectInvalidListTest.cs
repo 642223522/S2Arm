@@ -80,7 +80,7 @@ namespace S2A.Services.Tests
 
             // 启动器的玩家名单只定顺序：名单里的人排前面，名单外原有的用户（上面新建的两个 PlayerN）照样给游戏看到，存档不丢
             string NameOf(UserId id) => users.GetAllUsers().First(u => u.UserId == id).Name;
-            string legacy = NameOf(a.Uid) + "," + NameOf(c.Uid);
+            string legacy = string.Join(",", new[] { a.Uid, c.Uid }.OrderBy(id => id.ToString(), StringComparer.Ordinal).Select(NameOf));   // 名单外的按用户号排
             const string second = "123456789abcdef0123456789abcdef0";
             string roster = """[{"user":"first","name":"One","folder":"SaveData"},{"user":"123456789abcdef0123456789abcdef0","name":"Two","folder":"SaveData-Two"}]""";
             Environment.SetEnvironmentVariable("S2A_LOCAL_PLAYERS", roster);

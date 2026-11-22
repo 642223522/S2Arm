@@ -39,7 +39,7 @@ index e2ad848c5ed185a8590cf72c441fab2e154194d5..ec43847ad724cf0d15d77bbcb4ae2959
              if (mode == UiModeUserCreator)
              {
 diff --git a/src/Ryujinx.HLE/HOS/Services/Account/Acc/AccountManager.cs b/src/Ryujinx.HLE/HOS/Services/Account/Acc/AccountManager.cs
-index cbb017ec5d8368a37355be55c43ad723452659fd..55d8521fec4dc5720910287e0cf060ebbc5532f3 100644
+index cbb017ec5d8368a37355be55c43ad723452659fd..61ba05668d2ac522f23374a50ee411cda8ac6ffc 100644
 --- a/src/Ryujinx.HLE/HOS/Services/Account/Acc/AccountManager.cs
 +++ b/src/Ryujinx.HLE/HOS/Services/Account/Acc/AccountManager.cs
 @@ -220,7 +220,7 @@ namespace Ryujinx.HLE.HOS.Services.Account.Acc
@@ -61,7 +61,7 @@ index cbb017ec5d8368a37355be55c43ad723452659fd..55d8521fec4dc5720910287e0cf060eb
              return _userOrder.Select(key => _profiles.TryGetValue(key, out var user) ? user : null)
 -                .Where(user => user != null);
 +                .Where(user => user != null)
-+                .Concat(_profiles.Where(p => !_userOrder.Contains(p.Key)).Select(p => p.Value));
++                .Concat(_profiles.Where(p => !_userOrder.Contains(p.Key)).OrderBy(p => p.Key, StringComparer.Ordinal).Select(p => p.Value));   // fixed order: the dictionary has none
          }
  
          public void SetUserOrder(IEnumerable<UserId> orderedUsers)

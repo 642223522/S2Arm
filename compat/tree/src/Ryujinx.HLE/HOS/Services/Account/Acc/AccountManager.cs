@@ -235,7 +235,7 @@ namespace Ryujinx.HLE.HOS.Services.Account.Acc
             if (_userOrder.Length == 0) return _profiles.Values;
             return _userOrder.Select(key => _profiles.TryGetValue(key, out var user) ? user : null)
                 .Where(user => user != null)
-                .Concat(_profiles.Where(p => !_userOrder.Contains(p.Key)).Select(p => p.Value));
+                .Concat(_profiles.Where(p => !_userOrder.Contains(p.Key)).OrderBy(p => p.Key, StringComparer.Ordinal).Select(p => p.Value));   // fixed order: the dictionary has none
         }
 
         public void SetUserOrder(IEnumerable<UserId> orderedUsers)
