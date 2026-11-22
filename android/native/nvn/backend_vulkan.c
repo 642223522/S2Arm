@@ -285,6 +285,7 @@ struct nvn_gpu_cmd_s {
     VkCommandBuffer cb;
     struct bc_temp *bc_temps;
     struct clr_pipe_temp *clear_pipes;   // 清除缓存满后的段自有管线，完成 / 放弃时回收
+    struct dtx_pipe_temp *dtx_pipes;     // DrawTexture 管线缓存满后的段自有管线（backend_vulkan_draw_tex.inc），同上回收
     struct feedback_copy *feedback, *feedback_stop; // 本笔 [feedback, stop)，历史项活到 fence
     int feedback_on;
     int feedback_read_on;
@@ -1635,6 +1636,7 @@ static void fill_caps(struct nvn_gpu_vk *vk, const nvn_gpu_open_desc *d) {
 
     if (vk->report_calibrate) c->caps |= NVN_GPU_CAP_REPORT_TIMESTAMP;
     if (vk->dev->properties.apiVersion >= VK_API_VERSION_1_1) c->caps |= NVN_GPU_CAP_STORAGE_SRGB_ALIAS;   // EXTENDED_USAGE / VkImageViewUsageCreateInfo 是 1.1 核心
+    c->caps |= NVN_GPU_CAP_DRAW_TEX;   // v20：内置四边形管线（backend_vulkan_draw_tex.inc）只用 Vulkan 1.0 核心，恒有
     if (d->caps_record && d->caps_record_bytes) {
         caps_digest(d->caps_record, d->caps_record_bytes, c->caps_id);
     } else {
@@ -1747,6 +1749,7 @@ static void detach_live(struct nvn_gpu_cmd_s *c) {
 }
 
 static void clr_cmd_free(struct nvn_gpu_cmd_s *c);   // backend_vulkan_clear.inc
+static void dtx_cmd_free(struct nvn_gpu_cmd_s *c);   // backend_vulkan_draw_tex.inc
 
 static void finish_cmd(struct nvn_gpu_cmd_s *c, int executed) {
     if (!c) return;
@@ -1817,6 +1820,7 @@ static void finish_cmd(struct nvn_gpu_cmd_s *c, int executed) {
         free(b);
     }
     clr_cmd_free(c);   // 先解除旧命令的管线依赖，再把命令池交给另一线程复用
+    dtx_cmd_free(c);
     seg_give_cmd(c->pool, c->cb, c->init_cb);
     free(c->refs);
     free(c->refseen);
@@ -2423,6 +2427,7 @@ uint32_t nvn_gpu_format_caps(uint32_t nvn_format) {
 
 static void wsi_close_locked(void);   // backend_vulkan_wsi.inc
 static void clr_close(void);          // backend_vulkan_clear.inc
+static void dtx_close(void);          // backend_vulkan_draw_tex.inc
 static void depth_blit_close(void);   // backend_vulkan_depth_blit.inc
 static void easu_close(void);   // backend_vulkan_easu.inc
 nvn_gpu_rc nvn_gpu_close(uint64_t timeout_ns, nvn_gpu_err *err) {
@@ -2497,6 +2502,7 @@ nvn_gpu_rc nvn_gpu_close(uint64_t timeout_ns, nvn_gpu_err *err) {
         b = next;
     }
     clr_close();
+    dtx_close();
     depth_blit_close();
     dset_close();   // 在途段都完成了：增长池整池销毁（组随池一起没了；布局只在会话收尾销毁，下面销毁完管线之后才轮到它，所以回收表不用跟着布局摘表）
     prs_close();    // 整池组回收的空闲组：连池销毁
@@ -7900,6 +7906,7 @@ void nvn_gpu_tex_upload(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32_t
 }
 
 #include "backend_vulkan_clear.inc"
+#include "backend_vulkan_draw_tex.inc"
 
 void nvn_gpu_clear_rect(nvn_gpu_cmd ch, const nvn_gpu_clear *d) {
     struct nvn_gpu_cmd_s *c = ch;
