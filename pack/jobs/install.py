@@ -3740,7 +3740,7 @@ def install_shell(c, ph, steps=True):
     games = list(rec.get("games") or {})
     stages = 4 if games else 3
     if games and steps:
-        c.begin("备份这款的存档", 2, stages, key="phone_save_backup")
+        c.begin("备份手机上各款的存档", 2, stages, key="phone_save_backup")
     snapshot_phone_saves(c, ph, games)
     if steps: c.begin("组 S2Arm（不带游戏）", stages - 1, stages)
     ipa, _, sid = packer.assemble_shell(c)
