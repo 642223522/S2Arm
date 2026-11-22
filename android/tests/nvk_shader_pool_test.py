@@ -54,10 +54,10 @@ def main():
     base += ['-I'+str(p) for p in inc]
     original = native/'gfx_plat/nvk_shader.c'
 
-    def run(name, source, extra_libs=None, args=(), env=None):
+    def run(name, source, extra_libs=None, args=(), env=None, extra_flags=()):
         exe = out/name
         src = [ROOT/'android/tests/nvk_shader_pool_test.c', source, *(extra_libs if extra_libs is not None else libs)]
-        host_link.run(base + [str(p) for p in src] + [strip, '-lm', '-o', str(exe)], check=True, timeout=60)
+        host_link.run(base + list(extra_flags) + [str(p) for p in src] + [strip, '-lm', '-o', str(exe)], check=True, timeout=60)
         return subprocess.run([str(exe), *args], capture_output=True, text=True, timeout=30, env=env)
 
     live_modes = ('--live-compile-thread', '--live-compile-pending', '--live-compile-stop', '--cs-libpack')
@@ -66,6 +66,22 @@ def main():
         sys.stdout.write(result.stdout)
         sys.stderr.write(result.stderr)
         return result.returncode
+
+    if sys.argv[1:] == ['--link-refused-file']:
+        for mode, flags in [('player', []), ('debug', ['-DS2A_ANDROID_DEBUG_ENV=1'])]:
+            # 编译实际生产翻译单元。夹具也知道开关和文件名，整份测试可执行文件不能用于这个判据。
+            obj = out / ('link-refused-' + mode + '.o')
+            subprocess.run(base + flags + ['-c', str(original), '-o', str(obj)], check=True, timeout=60)
+            code = obj.read_bytes()
+            for marker in (b'nvk_link_refused_file', b'libpack-link-refused-v1.tsv'):
+                if (marker in code) != (mode == 'debug'):
+                    raise AssertionError(f'{mode} shader object has unexpected diagnostic marker {marker!r}')
+            result = run('link-refused-' + mode, original, args=('--link-refused-file',), extra_flags=flags)
+            sys.stdout.write(result.stdout)
+            sys.stderr.write(result.stderr)
+            if result.returncode:
+                return result.returncode
+        return 0
 
     if sys.argv[1:] == ['--live-compile-mutants']:
         text = original.read_text()
