@@ -278,7 +278,7 @@
 "app.os180.title" = "This system version may crash";
 "app.os180.body" = "iOS / iPadOS 18.0 has a system issue that can close the app as soon as the game picture appears; 18.1 fixes it. Please update in Settings > General > Software Update to 18.1 or later (free) and the crash will go away.";
 "app.lowRam.title" = "This device may not have enough memory";
-"app.lowRam.body" = "This game needs more memory than this device has. It will still start, but it may stutter or be closed by the system.";
+"app.lowRam.body" = "This game needs about %1$@ GB of memory; this device has %2$@ GB. Storage makes up the difference, so you can play, but it may slow down or be closed mid-game. Shown only once.";
 "app.gpuStop.body" = "Swipe this app away in the app switcher and open it again — you can usually keep playing from where the game last saved. To help us find the cause, tap “Report a Problem” to send us diagnostics.";
 "app.gpuStop.title" = "The game got stuck and was stopped safely";
 "app.library.broken.title" = "Game files are incomplete";

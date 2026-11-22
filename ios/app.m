@@ -619,9 +619,12 @@ static void qp_fps_restart_ask(void) {
 void s2a_dprompt_notice(NSString *title, NSString *body, double delay, double seconds);   // dprompt.m
 // 档位梯子压回原生帧率 / 恢复（runtime/src/qladder_host.c，原因 4）：设置里的 60 帧开关仍显示玩家选的「开」，画面已回到原生帧率——横幅说清楚。
 //   热 / 低电量自动降档（原因 1 / 2）11-13 删了（维护者「不读电量、不设自己挡自己的闸」），这里不再有对应文案
-// 客体内存三档判定落到「物理内存也装不下」（runtime/src/vawin.c low_ram_notice，#964）：照样开局，游戏内提示一次（不拦）
-void s2a_ios_low_ram_notice(void) {
-    dispatch_async(dispatch_get_main_queue(), ^{ s2a_dprompt_notice(S2AL(@"app.lowRam.title"), S2AL(@"app.lowRam.body"), 3, 10); });
+// 客体内存三档判定落到「物理内存也装不下」、文件后备兜底后仍装不下（runtime/src/vawin.c s2a_guest_lowram_ask，D-YDKK）：装模块前在宿主线程问一次，
+//   「本款约需 X GB，这台 Y GB，可能中途退出」+「仍要启动」；本机本款只问一次（vawin.c 记号）。GB 取一位小数、整数不带 .0
+static NSString *gb_text(uint64_t mb) { double g = round(mb / 102.4) / 10; return g == floor(g) ? [NSString stringWithFormat:@"%.0f", g] : [NSString stringWithFormat:@"%.1f", g]; }
+int s2a_ios_low_ram_ask(uint64_t need_mb, uint64_t phys_mb) {
+    NSString *body = [NSString stringWithFormat:S2AL(@"app.lowRam.body"), gb_text(need_mb), gb_text(phys_mb)];
+    return s2a_ios_ask_continue("memorychip", S2AL(@"app.lowRam.title").UTF8String, body.UTF8String, S2AL(@"host.startAnyway").UTF8String);
 }
 //   压回时带「再试 60 帧」按钮（#1688）：点了梯子回 60 帧档（s2a_ql_retry60）；下一局本来就从 60 帧起
 void s2a_dprompt_ask(NSString *title, NSString *body, NSString *accept, NSString *decline, double delay, double seconds, void (^cb)(BOOL));   // dprompt.m
