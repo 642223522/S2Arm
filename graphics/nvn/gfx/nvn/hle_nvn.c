@@ -1042,7 +1042,7 @@ NVN(nvnProgramFinalize, void, NVNprogram *p) {
     nvn_be_prog_release((prog_t *)p); ((prog_t *)p)->magic = 0; pk_drop(p);
 }
 // a program's per-stage keys (side table: guest NVNprogram address → host object; bit i of ok = stage i computed)
-typedef struct { uint8_t key[6][8]; uint8_t stage[6]; uint8_t ok; uint8_t seen; } prog_keys_t;   // seen：第 i 位 = 第 i 阶段已记进 shader_seen.tsv
+typedef struct { uint8_t key[6][8]; uint8_t stage[6]; uint8_t ok; } prog_keys_t;
 static pthread_mutex_t g_pk_mu = PTHREAD_MUTEX_INITIALIZER; static CFMutableDictionaryRef g_pk;   // a dedicated table (keys not shared with other side tables)
 static prog_keys_t *pk_get(const void *p, int make) {
     pthread_mutex_lock(&g_pk_mu);
@@ -1473,12 +1473,9 @@ int prog_key(const prog_t *p, unsigned st, uint8_t key[8]) {
             dm_shader_miss(k->key[st], p->sd[st].data, p->sd[st].control);
         }
     }
-    // 记局内用到的着色器：画 / 派发用到这一阶段时（键可能早在 SetShaders 时就算好了），每个程序每个阶段只记一次；没算出键（全零）不记
-    if (!(k->seen >> st & 1)) {
-        k->seen |= (uint8_t)(1u << st);
-        static const uint8_t zero[8];
-        if (memcmp(k->key[st], zero, 8)) seen_note(k->key[st], st);
-    }
+    // 记局内用到的着色器：画 / 派发用到这一阶段时（键可能早在 SetShaders 时就算好了），按键去重（seen_note）；没算出键（全零）不记。
+    //   不在 prog_keys_t 上加「已记」位：它原样进快照（gfx_progkeys.bin，s2a_hle_pk_save / load），加字段就改了快照格式
+    { static const uint8_t zero[8]; if (memcmp(k->key[st], zero, 8)) seen_note(k->key[st], st); }
     memcpy(key, k->key[st], 8);
     return 1;
 }
