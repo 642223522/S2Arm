@@ -737,9 +737,14 @@ def classify_failure(phase, log, texts=()):
     chunks = gather_evidence(log, texts)
     read = "；".join("%s（尾 %d 字节）" % (label, len(text.encode("utf-8"))) for label, text in chunks if label != "原因") or "无日志"  # 非玩家句
     gone = missing_prebuilt()
+    hit = log_cause(chunks, log)
+    # 日志确凿是写满（log_cause 已按写满当时的量数 / 回溯末行 / 剩余空间核实）：认它，随包件缺只记进说明——盘满能让解出来的随包件大小不对，
+    #   随包件缺却写不满盘（D-6ZDD Windows 0.6.7：写 game.img 时 [Errno 28]，随包 rcodesign 大小不对，原先先认随包件、玩家看到「被 Windows 拦下」）
+    if gone and hit[0] == "disk_full":
+        code, label, line, why = hit
+        return code, "归因 disk_full：%s 里「%s」%s；随包预编件同时缺 / 大小不对 %d 个（%s），按盘满的连带记；读过 %s" % (label, line, "（" + why + "）" if why else "", len(gone), "、".join(gone[:6]), read)  # 非玩家句
     if gone:   # 随包工具不见了：后面各阶段的报错（退回现编缺编译器、起不来）都是它的连带，先认它
         return "app_control_blocked", "归因 app_control_blocked：随包预编件缺 / 大小不对 %d 个（%s），多半被杀毒软件隔离；读过 %s" % (len(gone), "、".join(gone[:6]), read)  # 非玩家句
-    hit = log_cause(chunks, log)
     if hit[0]:
         code, label, line, why = hit
         return code, "归因 %s：%s 里「%s」%s；读过 %s" % (code, label, line, "（" + why + "）" if why else "", read)  # 非玩家句
