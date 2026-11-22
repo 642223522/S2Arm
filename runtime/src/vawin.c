@@ -256,7 +256,9 @@ uint64_t s2a_guest_mem_seen(void) {
 //     ① 上一局在前台死掉、且需求 + 两份余量 > 剩余（像是撞了单进程上限）：记录取大、标「死过」——死过的记录只认够长的匿名局往下改，
 //        文件后备局在内存紧的机器上页被逐出、量小了，不许它往下改，免得「改小 → 匿名被杀 → 开 → 又改小」来回；
 //     ② 上一局干净（或死掉但离上限远，不是内存杀的）且够长（心跳 ≥ 30 次 = 5 分钟）：记录换成这一局的需求，可以往下改（一局异常下一局就纠正）；
-//     ③ 太短的局：只往上改（菜单里待 30 秒的局代表不了进场景要多少）。
+//     ③ 太短的局：只往上改（菜单里待 30 秒的局代表不了进场景要多少）。量出的只是下限：只能证明「装不下」，不能证明「装得下」——
+//        没有记录时，短局需求 + 余量不超剩余就不建记录（留着「没实测」按三档判）。D-9XY8（iPad 物理 7908 MB，一款 Switch 2 大款池 9216 MB）：
+//        首局开着文件后备在菜单待 8 次心跳量出 2817 MB，记录 0 → 2817，下一局按 2817 + 512 ≤ 6132 判关文件后备，进场景涨到 5509 MB 被系统结束
 //   记录格式「字节[ died]」，旧记录（只有字节）读作没死过
 enum { GMEM_BEATS_MIN = 30 };
 static int run_peak_path(char *out, size_t n) {
@@ -282,6 +284,10 @@ const char *s2a_guest_mem_settle(int died, uint64_t room, uint64_t margin) {
     uint64_t v; int vs; const char *how;
     if (mem_kill) { v = need > rec ? need : rec; vs = 1; how = "上一局在前台死掉、需求逼近上限：取大、记「死过」"; }
     else if (longrun && !(sticky && file)) { v = need; vs = 0; how = need < rec ? "上一局够长：换成它的需求（往下改）" : "上一局够长：换成它的需求"; }
+    else if (!rec && need + margin <= room) {
+        snprintf(why, sizeof why, "上一局太短、本款还没记录：量出的只是下限，不当「装得下」的实测，不建记录（上一局需求 %llu MB、%llu 次心跳%s）",
+                 need >> 20, beats, file ? "、文件后备" : "");
+        return why; }
     else { v = need > rec ? need : rec; vs = sticky; how = sticky && file && longrun ? "记录死过、上一局开着文件后备：不往下改" : "上一局太短：只往上改"; }
     char line[64]; snprintf(line, sizeof line, vs ? "%llu died\n" : "%llu\n", (unsigned long long)v); write_line(pp, line);
     snprintf(why, sizeof why, "%s（上一局需求 %llu MB、%llu 次心跳%s；记录 %llu → %llu MB）", how, need >> 20, beats, file ? "、文件后备" : "", (unsigned long long)(rec >> 20), (unsigned long long)(v >> 20));
