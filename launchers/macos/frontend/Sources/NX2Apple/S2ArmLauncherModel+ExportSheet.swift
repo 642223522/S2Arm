@@ -28,7 +28,7 @@ struct ExportPlan: Equatable {
 struct ExportDeviceRow: Equatable, Identifiable {
     enum GameState: Equatable { case latest, old, none }
     /// 行内说明；link = 说明旁边给的入口（去首位 S2Arm 卡装 / 更新、去看怎么导入证书）
-    enum Note: Equatable { case offline, needCert, launcherSigned, noShell, shellOld, standaloneSelfSign }
+    enum Note: Equatable { case offline, needCert, launcherSigned, noShell, shellOld, standaloneSelfSign, deviceAccess(String) }
     let device: String
     let kind: String?
     let name: String
@@ -103,10 +103,13 @@ extension S2ArmLauncherModel {
             ExportDeviceRow(device: p.device, kind: p.kind, name: p.name, game: game, selectable: ok, note: note)
         }
         guard (p.online ?? nil) != nil else { return row(false, .offline) }   // 没连着（或没现查到）：置灰，不替玩家换成别的那台
+        if layout != "standalone", let error = p.liveContainerProbeError, !p.installed || p.bundleId.hasPrefix("lc:") {
+            return row(false, .deviceAccess(error))
+        }
         let external = p.installedBy == .external || (p.needsChoice && p.candidates.contains { !$0.byThisLauncher })
         if sign == "none" {
             if layout == "standalone" { return row(false, .standaloneSelfSign) }   // 独立 App 推到设备要在电脑上签（install.put_app），自签只能导出到文件夹
-            if external { return row(true, p.signCertImported == true ? nil : .needCert) }
+            if external { return row(true, p.bundleId.hasPrefix("lc:") || p.signCertImported == true ? nil : .needCert) }
             return row(false, p.installed ? .launcherSigned : .noShell)
         }
         if layout == "standalone" || external { return row(true, nil) }   // 独立 App 不需要 S2Arm；别的工具装的 S2Arm 作业层自动走不签那条路

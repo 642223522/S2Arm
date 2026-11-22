@@ -173,6 +173,7 @@ struct ExportSheetView: View {
         case .noShell: return t(sign == "none" ? "exportsheet.note.noShellSelfSign" : "exportsheet.note.noShell")
         case .shellOld: return t("exportsheet.note.shellOld")
         case .standaloneSelfSign: return t("exportsheet.note.standaloneSelfSign")
+        case .deviceAccess(let error): return loc.backend(error)
         }
     }
 
