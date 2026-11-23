@@ -108,7 +108,7 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
                   "phoneSaves": install.phone_saves,
                   "phoneSaveRestore": install.restore_phone_save,
                   "diagnostics": library.diagnostics, "diagnosticsUpload": diag_upload.upload, "saveInput": library.save_input, "loadInput": library.load_input, "resetInput": library.reset_input,
-                  "setDefaultInput": library.set_default_input, "undoDefaultInput": library.undo_default_input,
+                  "setDefaultInput": library.set_default_input,
                   "phoneUsage": install.phone_usage,
                   "locations": library.list_locations, "moveGame": library.move_game, "relinkGame": library.relink_game, "forgetGame": library.forget_game,
                   "phoneIdentity": install.phone_identity, "phoneChooseApp": install.phone_choose_app,

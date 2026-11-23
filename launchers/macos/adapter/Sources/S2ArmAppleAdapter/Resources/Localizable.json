@@ -11060,10 +11060,6 @@
   "en": "This {0} doesn't accept the development certificate used for this signature (it says the certificate is no longer valid). Common causes: another tool such as AltStore, SideStore or iloader created or revoked certificates for this Apple ID and pushed out the one S2Arm was using, or the date and time on this {0} are wrong. To fix it: on the {0}, turn on “Set Automatically” in Settings → General → Date & Time, then retry. Before signing, S2Arm checks the certificate with Apple again and replaces one that was revoked (it asks you first if another tool's certificate would be revoked). Apps and saves already on the phone are not affected."
  },
  {
-  "source": "撤销用的键位快照无效。",
-  "en": "The key mapping snapshot for undo is invalid."
- },
- {
   "source": "所有游戏的默认只有玩家 1 的一份。",
   "en": "The default for all games applies to player 1 only."
  }

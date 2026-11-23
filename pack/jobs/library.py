@@ -3,7 +3,6 @@
 Storage/interaction helpers adapted from LumaDock under MIT.
 """
 from __future__ import annotations
-import base64
 import collections
 import contextlib
 from copy import deepcopy
@@ -27,7 +26,7 @@ import zlib
 import uuid
 import zipfile
 from errors import explain
-from core import Failure, atomic, contained, digest, prune_jobs, read, replace_retrying, resolve_path, task_of_log
+from core import Failure, atomic, contained, digest, prune_jobs, read, resolve_path, task_of_log
 import toolchain
 import winproc
 import filelock
@@ -3239,72 +3238,21 @@ def reset_input(c):
     return {}
 
 
-INPUT_SNAPSHOT_LIMIT = 1 << 20   # 撤销快照里一份文件的上限，同宿主读键位文件的 1 MiB（runtime/include/s2a_input_config.h）
-
-
-def _input_snapshot(path):
-    """覆盖前的原文（base64；没有 = None）：撤销时原样写回，存坏了的也照原样"""
-    return base64.b64encode(path.read_bytes()).decode("ascii") if path.is_file() else None
-
-
-def _restore_input_file(path, saved):
-    if saved is None:
-        path.unlink(missing_ok=True)
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
-    try:
-        tmp.write_bytes(saved)
-        replace_retrying(tmp, path)
-    finally:
-        tmp.unlink(missing_ok=True)
-
-
-def _snapshot_bytes(saved):
-    """撤销快照里的一份：None（原来没有）或 base64 原文；不合规抛 Failure（先全部核过再动文件）"""
-    if saved is None:
-        return None
-    try:
-        data = base64.b64decode(saved, validate=True) if isinstance(saved, str) else None
-    except ValueError:
-        data = None
-    if data is None or len(data) > INPUT_SNAPSHOT_LIMIT:
-        raise Failure("撤销用的键位快照无效。")
-    return data
-
-
 def set_default_input(c):
     """作业 setDefaultInput（#1987「设为所有游戏的默认」，同 iPad #2079 s2a_kbd_store_set_default）：只对玩家 1。
     写 default-input.json，和标准键位相同就删掉它（= 没设过）；带 gameId 时这款这时和默认相同，删掉这款的 input.json。
-    返回 undo：覆盖前 default-input.json 与这款 input.json 的原文，交 undoDefaultInput 原样写回"""
+    Mac 键位弹窗点「保存」时才调它，没有撤销（#1987 维护方定：弹窗按「保存才写」一种规矩），所以不留覆盖前的快照"""
     config = validate_input(c.r["config"])
     if c.r.get("player", 1) != 1:
         raise Failure("所有游戏的默认只有玩家 1 的一份。")
     dflt = c.private / "default-input.json"
     mine = _game_input_path(c, 1) if c.r.get("gameId") else None
-    undo = dict(default=_input_snapshot(dflt), game=_input_snapshot(mine) if mine else None)
     if _same_input(config, STANDARD_INPUT):
         dflt.unlink(missing_ok=True)
     else:
         atomic(dflt, config)
     if mine:
         mine.unlink(missing_ok=True)
-    return dict(undo=undo)
-
-
-def undo_default_input(c):
-    """作业 undoDefaultInput（#1987 设为默认后 5 秒内撤销，同 iPad s2a_kbd_store_undo）：把 setDefaultInput 给的快照原样写回，
-    原来没有的删掉（回到没设过 / 这款没单独存）。快照里有这款的原文时必须带 gameId"""
-    undo = c.r.get("undo")
-    if not isinstance(undo, dict) or not {"default", "game"} <= undo.keys():
-        raise Failure("撤销用的键位快照无效。")
-    saved_default, saved_game = _snapshot_bytes(undo["default"]), _snapshot_bytes(undo["game"])
-    if saved_game is not None and not c.r.get("gameId"):
-        raise Failure("撤销用的键位快照无效。")
-    mine = _game_input_path(c, 1) if c.r.get("gameId") else None
-    _restore_input_file(c.private / "default-input.json", saved_default)
-    if mine:
-        _restore_input_file(mine, saved_game)
     return {}
 
 
