@@ -1,4 +1,3 @@
-import base64
 import contextlib
 import collections
 from copy import deepcopy
@@ -3424,9 +3423,9 @@ class JobsTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(Failure):
                 self.input_job(library.reset_input, **bad)
 
-    def test_set_default_input_and_undo_restore_exact_bytes(self):
-        # 设为所有游戏的默认（只对玩家 1）：写 default-input.json，这款跟着默认走（删这款的 input.json），没单独存的别的游戏跟着变；
-        #   设成标准键位 = 删掉 default（没设过）。撤销：两份文件原样写回（存坏了的也逐字节一样），原来没有的删掉。玩家 2 的文件不动
+    def test_set_default_input_writes_default_and_game_follows(self):
+        # 设为所有游戏的默认（只对玩家 1；Mac 弹窗点「保存」时才调，没有撤销，#1987）：写 default-input.json，这款跟着默认走
+        #   （删这款的 input.json），没单独存的别的游戏跟着变；设成标准键位 = 删掉 default（没设过）。原来的两份文件是什么都一样，玩家 2 的文件不动
         gid, second = self.input_games()
         dflt, mine, p2 = self.c.private / "default-input.json", layout.path(self.c, gid, "input.json"), layout.path(self.c, gid, "input-p2.json")
         before = dict(none=None, custom=json.dumps(self.launcher_custom(40)).encode(), broken=b"{\xff not json")
@@ -3437,7 +3436,7 @@ class JobsTests(unittest.TestCase):
                         path.parent.mkdir(parents=True, exist_ok=True)
                         path.write_bytes(data) if data is not None else path.unlink(missing_ok=True)
                     atomic(p2, self.launcher_custom(41))
-                    undo = self.input_job(library.set_default_input, config=target, gameId=gid)["undo"]
+                    self.assertEqual(self.input_job(library.set_default_input, config=target, gameId=gid), {})
                     self.assertFalse(mine.exists(), "这款这时和默认相同，删掉")
                     if target == self.launcher_standard():
                         self.assertFalse(dflt.exists(), "设成标准 = 没设过")
@@ -3447,21 +3446,10 @@ class JobsTests(unittest.TestCase):
                         self.assertEqual(self.input_source(gid), ("default", target))
                         self.assertEqual(self.input_source(second), ("default", target), "没单独存的别的游戏跟着变")
                     self.assertEqual(json.loads(p2.read_text()), self.launcher_custom(41), "玩家 2 不动")
-                    json.dumps(undo)   # 快照能原样走作业协议（JSON）
-                    self.assertEqual(self.input_job(library.undo_default_input, undo=undo, gameId=gid), {})
-                    for path, data in ((dflt, d_bytes), (mine, g_bytes)):
-                        self.assertEqual(path.read_bytes() if path.exists() else None, data)
         # 不带 gameId（没有「这款」）只动默认
         atomic(mine, self.launcher_custom(37))
-        undo = self.input_job(library.set_default_input, config=self.launcher_custom(36))["undo"]
-        self.assertEqual(undo["game"], None); self.assertTrue(mine.is_file())
-        # 坏快照拒收、不动文件：缺键、不是 base64、超过 1 MiB、有这款的原文却没带 gameId
-        for bad in (dict(undo=None), dict(undo=dict(default=None)), dict(undo=dict(default="不是base64", game=None)),
-                    dict(undo=dict(default=base64.b64encode(b"x" * ((1 << 20) + 1)).decode(), game=None)),
-                    dict(undo=dict(default=None, game=base64.b64encode(b"{}").decode()))):
-            with self.subTest(bad=str(bad)[:60]), self.assertRaises(Failure):
-                self.input_job(library.undo_default_input, **bad)
-        self.assertEqual(json.loads(dflt.read_text()), self.launcher_custom(36))
+        self.assertEqual(self.input_job(library.set_default_input, config=self.launcher_custom(36)), {})
+        self.assertTrue(mine.is_file()); self.assertEqual(json.loads(dflt.read_text()), self.launcher_custom(36))
         for bad in (dict(config=dict(schema=2)), dict(config=self.launcher_custom(39), gameId=gid, player=2)):
             with self.subTest(bad=str(bad)[:60]), self.assertRaises(Failure):
                 self.input_job(library.set_default_input, **bad)

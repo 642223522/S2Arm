@@ -422,7 +422,7 @@ Run `python3 -I -B pack/jobs/main.py --request <0600-json-file>`. Requests inclu
 `engineDir` (CLI development), optional `engineBundle` (packaged app), `library`, `libraryId`, `developerDir`, and operation parameters.
 Operations: `setup`, `preflight`, `prepareEngine`, `keys`, `import`, `catalog`,
 `build`, `launch`, `remove`, `clean`, `saveInput`, `loadInput`, `resetInput`, `setDefaultInput`,
-`undoDefaultInput`, `diagnostics`, `saveStatus`,
+`diagnostics`, `saveStatus`,
 `saveBackup`, `saveInspect`, `saveRestore`.
 
 Stdout is NDJSON with `schema`, `jobId`, monotonic `seq`, UTC `timestamp`, `stage`,
