@@ -61,7 +61,7 @@ def rebuild(c, gid, src_root, plat, work):
     _clone(c, src_root, roots / tag)
     for stale_out in ("shaders/direct", ".stage_direct", ".stage_direct_seed", ".stage_direct_cpso"):   # 旧库与它的阶段键不带进来：键对得上会被当成「已是本树」跳过
         p = roots / tag / stale_out
-        shutil.rmtree(p) if p.is_dir() else p.unlink(missing_ok=True)
+        layout.remove_tree(p) if p.is_dir() else p.unlink(missing_ok=True)
     layout.set_current(c, roots, gid, tag)
     env = c.env()
     # 直连缓存用这款出包时那份（library.direct_cache_dir，同 _rebuild_win）：Metal 编译结果与批成员索引按内容寻址，翻译器改了没变的支整批沿用旧库。
@@ -124,7 +124,7 @@ def _rebuild_win(c, gid, src_root, work):
     root, work = Path(src_root), Path(work) / "win"
     for stale_out in ("shaders/direct", "extract"):   # 旧库 / 旧抽取不带进来：按本引擎重抽重翻
         p = root / stale_out
-        shutil.rmtree(p) if p.is_dir() else p.unlink(missing_ok=True)
+        layout.remove_tree(p) if p.is_dir() else p.unlink(missing_ok=True)
     _win_profile(c, root)
     work.mkdir(parents=True, exist_ok=True)
     env = c.env()
