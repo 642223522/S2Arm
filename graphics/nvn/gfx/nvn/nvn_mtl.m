@@ -17812,6 +17812,10 @@ static void dispatch(const p_dispatch *dp) {
     }
     const uint16_t *tg = cs->rf.tg;
     if (!tg[0]) { RED_ONCE(29, "compute shader lacks threadgroup size reflection"); return; }
+    if ((NSUInteger)tg[0] * (tg[1] ? tg[1] : 1) * (tg[2] ? tg[2] : 1) > ps.maxTotalThreadsPerThreadgroup && !(cs->logged & (1ull << 41))) {   // #2118：超管线上限派发是未定义行为（剔除核结果不对、物件不显示）；新出包的核带线程数声明（dsh MaxThreads）
+        cs->logged |= 1ull << 41;
+        MLOG("【红】 compute pipeline %s: threadgroup %ux%ux%u exceeds the pipeline's limit of %lu threads (the kernel has no thread-count declaration: package built before the fix, update this game)", cs->key, tg[0], tg[1], tg[2], (unsigned long)ps.maxTotalThreadsPerThreadgroup);
+    }
     // A store the shader makes on its very first invocation only, before the others run on the Switch: the build takes it out of the shader (S.Dsh first_store; upstream reference
     //   implementation, MIT, c8521eeb / e07cba1c), as Apple's GPUs start workgroups in no order. The host makes it here, in order before this dispatch; an empty dispatch makes none.
     //   A slot not bound, a word past the binding's size, or an address in no pool is skipped
