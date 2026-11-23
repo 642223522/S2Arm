@@ -118,7 +118,7 @@ namespace S2A.Services
             !string.Equals(Environment.GetEnvironmentVariable("S2A_LDN_AUTO"), "0", StringComparison.Ordinal);
 
         // 游戏初始化 ldn:u：按需启动已登记的平台发现；显式中继地址不自动发现。
-        internal static void OnLdnInitializing()
+        internal static unsafe void OnLdnInitializing()
         {
             lock (_lanLock)
             {
@@ -130,16 +130,12 @@ namespace S2A.Services
                     return;
                 }
 
-                if (LdnAutoRequested)
+                // 自动模式（#2134 起缺省开）：宿主有平台局域网发现（iOS 登记了 provider）时照旧「发现 → RyuLDN 中继」，iPhone 之间的局域网联机走这条；
+                //   没有平台发现（Mac 不登记 provider）、或发现起不来时才用 Switch ldn_mitm 协议。#2134 原先自动模式一律 ldn_mitm，
+                //   iOS 的发现 / 选举 / 托管中继整条不走了（services/gate.sh LdnRelayTest 8 项不符）
+                if (LdnAutoRequested && Native.LanDiscovery == null)
                 {
-                    LdnAutoTried = true;
-                    Logger.SetEnable(LogLevel.NetLog, true);
-                    if (Device != null)
-                    {
-                        Device.Configuration.MultiplayerMode = MultiplayerMode.LdnMitm;
-                        Device.Configuration.MultiplayerLdnServer = string.Empty;
-                    }
-                    Console.Error.WriteLine("[S2A 联机] 游戏初始化 ldn:u：自动模式固定使用 ldn_mitm（UDP/TCP 11452）");
+                    UseAutoMitm("宿主没有平台局域网发现");
                     return;
                 }
 
@@ -150,13 +146,32 @@ namespace S2A.Services
 
                 LdnAutoTried = true;
 
-                if (!StartLanDiscovery()) return;
+                if (!StartLanDiscovery())
+                {
+                    if (LdnAutoRequested) UseAutoMitm("平台局域网发现起不来");
+                    return;
+                }
+                Ryujinx.HLE.S2AHooks.LdnPlatformDiscovery = true;   // ldn:u 照旧建 RyuLDN 中继客户端（不建双协议自动客户端）
 
                 Logger.SetEnable(LogLevel.NetLog, true);
                 StartLdnRelay();
                 ApplyLanSelection();
                 Console.Error.WriteLine($"[S2A 联机] 游戏初始化 ldn:u：自动进入局域网模式，先用中继 {Device.Configuration.MultiplayerLdnServer}（Bonjour 选举结果在建房 / 加入时生效）");
             }
+        }
+
+        // 自动模式退到 Switch ldn_mitm 协议（UDP/TCP 11452）：调用方持 _lanLock
+        private static void UseAutoMitm(string why)
+        {
+            LdnAutoTried = true;
+            Ryujinx.HLE.S2AHooks.LdnPlatformDiscovery = false;
+            Logger.SetEnable(LogLevel.NetLog, true);
+            if (Device != null)
+            {
+                Device.Configuration.MultiplayerMode = MultiplayerMode.LdnMitm;
+                Device.Configuration.MultiplayerLdnServer = string.Empty;
+            }
+            Console.Error.WriteLine($"[S2A 联机] 游戏初始化 ldn:u：自动模式使用 ldn_mitm（UDP/TCP 11452）：{why}");
         }
 
         // Host session retirement is terminal even though the platform provider
@@ -168,6 +183,7 @@ namespace S2A.Services
                 if (_lanStopping || _lan) throw new InvalidOperationException("上一联机会话未停止");
                 _lanSessionStopped = false;
                 LdnAutoTried = false;
+                Ryujinx.HLE.S2AHooks.LdnPlatformDiscovery = false;
             }
         }
 

@@ -33,7 +33,8 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator
         private static bool LdnAutoRequested =>
             !string.Equals(Environment.GetEnvironmentVariable("S2A_LDN_MITM"), "1", StringComparison.Ordinal) &&
             string.IsNullOrEmpty(Environment.GetEnvironmentVariable("S2A_LDN_SERVER")) &&
-            !string.Equals(Environment.GetEnvironmentVariable("S2A_LDN_AUTO"), "0", StringComparison.Ordinal);
+            !string.Equals(Environment.GetEnvironmentVariable("S2A_LDN_AUTO"), "0", StringComparison.Ordinal) &&
+            !S2AHooks.LdnPlatformDiscovery;   // 宿主这一局走了平台局域网发现（iOS）：照旧 RyuLDN，不建双协议自动客户端
 
         internal static MultiplayerMode SelectAutoMode(MultiplayerMode mode, Func<bool> switchRoomFound)
         {

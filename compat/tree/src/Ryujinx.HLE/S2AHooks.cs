@@ -58,6 +58,9 @@ namespace Ryujinx.HLE
 
         // Upstream silently defaulted on missing data in a few places; those now report through here (S2Arm red list)
         public static System.Action<string> Red;
+        // 联机自动模式这一局走平台局域网发现（iOS：发现 → RyuLDN 中继）：宿主在 LdnInitializing 里定、置位；置位时 ldn:u 不建双协议自动客户端（LdnAutoClient），
+        //   照旧按 MultiplayerMode（LdnRyu）建中继客户端。没有平台发现（Mac）或发现起不来时为 false，走双协议自动
+        public static bool LdnPlatformDiscovery;
 
         // Platform JPEG encoding; null preserves the existing Skia implementation on default hosts.
         public static Ryujinx.HLE.UI.ScreenshotJpegEncoder EncodeScreenshotJpeg;
