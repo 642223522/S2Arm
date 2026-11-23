@@ -420,7 +420,7 @@ static int came_from_import(const char *root) {
     char p[2400], a[160], b[160]; snprintf(p, sizeof p, "%s/.imported", root); if (manifest_sha(p, a, sizeof a)) return 0;
     snprintf(p, sizeof p, "%s/manifest.json", root); return !manifest_sha(p, b, sizeof b) && !strcmp(a, b);
 }
-// 外部游戏来源（11-22 jhz「游戏库设置可以指定其他目录也作为游戏来源」）：资源包根照旧在 App 内，只有本体 game.img 是指向来源文件夹里导出 .img 的软链接
+// 外部游戏来源（11-22 维护者「游戏库设置可以指定其他目录也作为游戏来源」）：资源包根照旧在 App 内，只有本体 game.img 是指向来源文件夹里导出 .img 的软链接
 //   （s2a_img_link），旁边 .game.img.source 记「来源号 \t 来源内相对路径 \t 资源包号」。读者（本文件、服务层 RomFsIndex）经软链接照常读；
 //   外部文件只读——本文件凡是写 game.img 的地方先判 ext_img：截派生件不做、套着色器更新包不整理本体、电脑推同一款先拆掉软链接再写进 App
 #define S2A_EXT_MARK ".game.img.source"   // 点开头：解开时「删掉不在 index.tsv 里的旧文件」不删它（prune 跳过点开头的记账文件）
@@ -1302,7 +1302,7 @@ int s2a_img_scan(const char *proc_docs) {   // 回前台 / 「重新检查」可
         for (int i = 0; i < 2; i++) { char dir[2200]; snprintf(dir, sizeof dir, "%s/%s", proc_docs, s2a_img_import_dirs[i]); img_scan_dir(proc_docs, dir, 0, pass, &placed); }
     pthread_mutex_unlock(&g_scan_mu); return placed;
 }
-// ---- 外部游戏来源（11-22 jhz：游戏库设置里加的「游戏来源文件夹」，如外接硬盘）----
+// ---- 外部游戏来源（11-22 维护者：游戏库设置里加的「游戏来源文件夹」，如外接硬盘）----
 //   壳（S2ArmShellHost GameSources.swift）解析书签、拿到访问权后把文件夹路径与来源号交进来。只认电脑「导出」的完整 .img（格式 1、头魔数 S2AIMG01、
 //   目录表读得出且列着 exefs/main.npdm = 拷完），文件名以 .img 结尾，往下最多两层（同导入文件夹、同 NX2Apple）。不挪、不改外部文件：本款资源包根照旧在 App 内，
 //   game.img 是指向它的软链接，.game.img.source 记「来源号 \t 相对路径 \t 资源包号」；之后同导入一样等游戏库解开（派生件解进 App）。
