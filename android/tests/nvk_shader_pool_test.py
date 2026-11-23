@@ -61,7 +61,7 @@ def main():
         return subprocess.run([str(exe), *args], capture_output=True, text=True, timeout=30, env=env)
 
     live_modes = ('--live-compile-default', '--live-compile-thread', '--live-compile-pending',
-                  '--live-compile-stop', '--cs-libpack')
+                  '--live-compile-stop', '--cs-libpack', '--lp-gate')
     if len(sys.argv) == 2 and sys.argv[1] in live_modes:
         result = run(sys.argv[1][2:], original, args=(sys.argv[1],))
         sys.stdout.write(result.stdout)
@@ -95,6 +95,17 @@ def main():
              '--live-compile-thread', 'compute first use publishes the real compiled program'),
             ('pending-marked-failed', '        return LIVE_PENDING;', '        return LIVE_ABORT;',
              '--live-compile-pending', 'exhausted safe budget must defer'),
+            # 编译线程里一份编多久（现编帧读数的「编译线程跑完 N 份、合计、最长」）：份数 / 合计 / 最长各撤一处，--live-compile-pending 必红
+            ('compile-count-dropped', '        atomic_fetch_add_explicit(&g_live_cmp_n, 1, memory_order_relaxed);\n', '',
+             '--live-compile-pending', 'one finished compile is counted once'),
+            ('compile-ns-dropped', '        atomic_fetch_add_explicit(&g_live_cmp_ns, dt, memory_order_relaxed);\n', '',
+             '--live-compile-pending', 'one finished compile is counted once'),
+            ('compile-max-dropped', '        uint64_t mx = atomic_load_explicit(&g_live_cmp_max_ns, memory_order_relaxed);\n'
+             '        while (dt > mx && !atomic_compare_exchange_weak_explicit(&g_live_cmp_max_ns, &mx, dt, memory_order_relaxed, memory_order_relaxed)) {}\n', '',
+             '--live-compile-pending', 'one finished compile is counted once'),
+            ('compile-stats-not-cleared', '    s->compiled = atomic_exchange_explicit(&g_live_cmp_n, 0, memory_order_relaxed);',
+             '    s->compiled = atomic_load_explicit(&g_live_cmp_n, memory_order_relaxed);',
+             '--live-compile-pending', 'reading the compile timing clears it'),
         ]
         for name, old, new, mode, expected in mutants:
             assert text.count(old) == 1, (name, 'mutation anchor')
@@ -189,6 +200,43 @@ def main():
             assert result.returncode != 0 and expected in result.stderr, (name, result.stdout, result.stderr)
             print(f'{name}: expected assertion failure: {expected}', flush=True)
         print('PASS: 4 libpack GS negative controls')
+        return 0
+
+    if sys.argv[1:] == ['--lp-gate-mutants']:
+        # 负对照：出包预编库状态闸（libpack_gate_mask）与读数各撤一处，--lp-gate 必红。
+        #   六条闸各撤一位：被撤的那一条不再挡下，库里明明有的程序被取走，「库没被查」的断言红；
+        #   直方图的两处累加、闸位集合落到快照上、并列时取位集合小的在前，各撤 / 改一处：读数那一行红。
+        code = original.read_text()
+        gate_lines = (
+            ('depth', '    if (g->depth_mode && !depth_clip_cap()) m |= LPG_DEPTH;\n', "gate case 'depth mode' #0: library not used"),
+            ('origin', '    if (g->y_negate) m |= LPG_ORIGIN;\n', "gate case 'origin lower-left' #0: library not used"),
+            ('alpha', '    if (g->alpha_test_compare && strcmp(g->alpha_test_compare, "Always")) m |= LPG_ALPHA;\n', "gate case 'alpha test' #0: library not used"),
+            ('a2c', '    if (g->alpha_to_coverage_enable) m |= LPG_A2C;\n', "gate case 'alpha to coverage' #0: library not used"),
+            ('dual', '    if (g->dual_source_blend) m |= LPG_DUAL;\n', "gate case 'dual source blend' #0: library not used"),
+            ('unaligned', '    if (g->has_unaligned_ssbo && g->unaligned_ssbo) m |= LPG_UNALIGNED;', "gate case 'unaligned storage' #0: library not used"),
+        )
+        cases = [(f'gate-{n}-dropped', old, ('    (void)0;' if n == 'unaligned' else ''), exp) for n, old, exp in gate_lines]
+        cases += [
+            ('snap-not-counted', '    atomic_fetch_add_explicit(&g_lp_gate_snap[s->lp_gate], 1, memory_order_relaxed);\n', '', 'gate readout line'),
+            ('live-not-counted', '        atomic_fetch_add_explicit(&g_lp_gate_live[s->lp_gate], 1, memory_order_relaxed);\n', '', 'gate readout line'),
+            ('gate-not-on-snapshot', '    s->lp_gate = libpack_gate_mask(&s->f.gfx); s->lp_ok = s->lp_gate == 0;',
+             '    s->lp_gate = 0; s->lp_ok = 1;', "library not used"),
+            ('ties-pick-larger-mask', 'for (unsigned m = 1; m < (1u << LPG_N); m++) if (v[m] > v[best]) best = m;',
+             'for (unsigned m = 1; m < (1u << LPG_N); m++) if (v[m] >= v[best] && v[m]) best = m;', 'gate readout line'),
+            # 「放开闸会怎样」的只读探测：缺省关、两样记录都要在、没有的不算有、探过的份数要记，各撤一处，探测读数那一行红。
+            ('probe-flag-ignored', ' || !nvn_plat_flag("nvk_gate_probe", 0)', '', 'gate probe line'),
+            ('probe-json-only', 'for (unsigned k = 0; k < 2 && has; k++) {', 'for (unsigned k = 0; k < 1 && has; k++) {', 'gate probe line'),
+            ('probe-miss-counted-as-has', 'sizeof w) != 0) has = 0;', 'sizeof w) != 0) (void)0;', 'gate probe line'),
+            ('probe-count-dropped', '    atomic_fetch_add_explicit(&g_lp_probe_n[s->lp_gate], 1, memory_order_relaxed);\n', '', 'gate probe line'),
+        ]
+        for name, old, new, expected in cases:
+            assert code.count(old) == 1, (name, 'mutation anchor')
+            path = out / ('lp-gate-mutant-' + name + '.c')
+            path.write_text(code.replace(old, new))
+            result = run('lp-gate-' + name, path, args=('--lp-gate',))
+            assert result.returncode != 0 and expected in result.stderr, (name, result.stdout, result.stderr)
+            print(f'{name}: expected assertion failure: {expected}', flush=True)
+        print(f'PASS: {len(cases)} libpack state gate negative controls')
         return 0
 
     if sys.argv[1:] == ['--cs-libpack-mutants']:
@@ -524,7 +572,7 @@ def main():
         print(f'PASS: {len(changes)} negative controls')
         return 0
     if sys.argv[1:]:
-        raise ValueError('usage: nvk_shader_pool_test.py [--withdraw | --gs-libpack-mutants | --cs-libpack-mutants | --compute-warm-mutants | --diag-mutants | --live-compile-mutants | --graphics-image-mutants | --cs-ubo-sampler-mutants]'
+        raise ValueError('usage: nvk_shader_pool_test.py [--withdraw | --gs-libpack-mutants | --cs-libpack-mutants | --lp-gate-mutants | --compute-warm-mutants | --diag-mutants | --live-compile-mutants | --graphics-image-mutants | --cs-ubo-sampler-mutants]'
                          '（其余参数是 gs_compiler_chain_test.py / tbuf_compiler_chain_test.py 的子命令）')
     # 存储图像的声明（数值类 + SPIR-V Image Format）落程序记录：生产 sampled_decl，手搭 SPIR-V
     exe = out/'image-decl'

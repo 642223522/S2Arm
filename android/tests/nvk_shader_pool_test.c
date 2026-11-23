@@ -25,6 +25,7 @@
 #include "../../runtime/include/s2a_direct_host.h"
 #include "direct/jv.h"
 #include "direct/program_cache.h"
+#include "direct/libpack_vk.h"   // s2a_libpack_hits / misses / rejects：状态闸探测不许动库自己的计数
 #include "nvn/nvn_vk_prog_warm.h"
 #include "dmsh_chain.h"   // DMSH_CHAIN：出包预编库目录 b-<链>-vk 与容器头的链号
 #include <sys/stat.h>
@@ -60,6 +61,7 @@ static int fake_gs_fact_deps;
 static int fixture_alias_flag = -1;   // 结果合并开关（debug.s2a.nvk_alias）：-1 = 取生产缺省，0 = 关
 static int fake_gs_result_tag;        // 非 0：结果里多带一个无关字段，同一份输入的结果字节（摘要）就不同
 static int fixture_depth_zero, fixture_origin_lower_left, shader_load_count, shader_release_count;
+static int fixture_gate_probe;   // nvk_gate_probe：只读探测开关（缺省 0）
 static int fake_cs_success, cs_loads;
 int g_s2a_logfd = 2;
 static const char *fake_compile_error;
@@ -122,6 +124,7 @@ int nvn_plat_flag(const char *name, int dflt) {
     if (fixture_alias_flag >= 0 && !strcmp(name, "nvk_alias")) return fixture_alias_flag;
     if (!strcmp(name, "nvk_link_refused_file") && record_link_refused) return 1;
     if (!strcmp(name, "nvk_link_map_diag")) return link_map_flag;
+    if (!strcmp(name, "nvk_gate_probe")) return fixture_gate_probe;
     return dflt;
 }
 static int link_map_lines; static char last_link_map[700];   // 配对接口表诊断行（nvk_link_map_diag）
@@ -2041,6 +2044,9 @@ static int live_compile_pending_test(int stop) {
     rp_shader_live_compile_take(&stats);
     CHECK(stats.enqueued == 1 && stats.pending == 2, "same pending request must enqueue once (enqueued=%llu pending=%llu)",
           (unsigned long long)stats.enqueued, (unsigned long long)stats.pending);
+    CHECK(stats.compiled == 0 && stats.compile_ns == 0 && stats.compile_max_ns == 0,
+          "compile still held in the worker: nothing counted as finished yet (compiled=%llu ns=%llu max=%llu)",
+          (unsigned long long)stats.compiled, (unsigned long long)stats.compile_ns, (unsigned long long)stats.compile_max_ns);
     q.compile_defer_frame = NULL;
     if (stop) {
         CHECK(rp_shader_resolve(&q, &p) < 0 && !p, "unsafe hard deadline must report failure, not skip or publish");
@@ -2072,6 +2078,12 @@ static int live_compile_pending_test(int stop) {
         live_gate_release();
         CHECK(rp_shader_resolve(&q, &p) == 0 && p && compiler_calls == 1,
               "deferred result must be installed on re-use without recompiling");
+        rp_shader_live_compile_take(&stats);
+        CHECK(stats.compiled == 1 && stats.compile_ns > 0 && stats.compile_max_ns == stats.compile_ns,
+              "one finished compile is counted once, its total equals its longest (compiled=%llu ns=%llu max=%llu)",
+              (unsigned long long)stats.compiled, (unsigned long long)stats.compile_ns, (unsigned long long)stats.compile_max_ns);
+        rp_shader_live_compile_take(&stats);
+        CHECK(stats.compiled == 0 && stats.compile_ns == 0 && stats.compile_max_ns == 0, "reading the compile timing clears it");
     }
     nvk_shader_stop();
     CHECK(s2a_compile_worker_stop_bounded(2000, NULL, 0) == 0, "stop retires worker");
@@ -2080,7 +2092,145 @@ static int live_compile_pending_test(int stop) {
     return failures ? 1 : 0;
 }
 
+// ---- 状态闸读数（nvk_shader.c lp_gate_*）----
+// 出包预编库只在六条状态闸全部放行时才会被查；被挡下的程序以前在「程序累计」里完全看不见（库没查过、也不是库里没有），
+// 只能看到现场编译很多。这里用 VS + FS 两段程序（0x3）+ 一份只含这两段的库，把每条闸的「挡下」与「放行后库里没有」分开读出来，
+// 同时锁住取程序的决定没变：放行且库里有 → 命中（编译器不调）；放行但库里没有 → 现编；任何一条闸单独挡下 → 库里明明有也不查，现编。
+// 单独起进程：直方图是进程累计的；深度能力缓存只读一次，这里按「设备没有 CAP_DEPTH_CLIP_CTL」定死，深度模式闸才测得到
+// （基准 fixture_depth_zero = 1，深度零到一，不挡；改成 0 即 near=-w，被挡）。
+static uint8_t gate_key_hit[8], gate_key_miss[8], gate_key_fs[8], gate_key_fsjson[8];   // fsjson：库里只有 _b.json、没有 _b.spv 的片元键
+static unsigned gate_alpha0, gate_src0;   // rp_state_reset 的默认值（位域，不能用 typeof）：每个用例结束时原样还原
+static void gc_none(void) {}
+static void gc_miss_on(void) { memcpy(rp_S.skey[0], gate_key_miss, 8); }   // 取程序读的是绑定时抄进 rp_S.skey 的键
+static void gc_miss_off(void) { memcpy(rp_S.skey[0], gate_key_hit, 8); }
+static void gc_depth_on(void) { fixture_depth_zero = 0; }
+static void gc_depth_off(void) { fixture_depth_zero = 1; }
+static void gc_origin_on(void) { fixture_origin_lower_left = 1; }
+static void gc_origin_off(void) { fixture_origin_lower_left = 0; }
+static void gc_alpha_on(void) { rp_S.color.alpha_func = 2; }
+static void gc_alpha_off(void) { rp_S.color.alpha_func = gate_alpha0; }
+static void gc_a2c_on(void) { rp_S.ms.a2c = 1; }
+static void gc_a2c_off(void) { rp_S.ms.a2c = 0; }
+static void gc_dual_on(void) { rp_S.blend[0].src_rgb = 0x10; }
+static void gc_dual_off(void) { rp_S.blend[0].src_rgb = gate_src0; }
+static void gc_ssbo_on(void) { rp_S.ssbo[1][0].addr = 0x10001; rp_S.ssbo[1][0].size = 16; }   // 夹具 storage_buffer_offset_alignment = 16，0x10001 非对齐
+static void gc_ssbo_off(void) { rp_S.ssbo[1][0].addr = 0; rp_S.ssbo[1][0].size = 0; }
+static void gc_alpha_a2c_on(void) { gc_alpha_on(); gc_a2c_on(); }
+static void gc_alpha_a2c_off(void) { gc_alpha_off(); gc_a2c_off(); }
+static void gc_alpha_miss_on(void) { gc_alpha_on(); gc_miss_on(); }
+static void gc_alpha_miss_off(void) { gc_alpha_off(); gc_miss_off(); }
+static void gc_alpha_fsjson_on(void) { gc_alpha_on(); memcpy(rp_S.skey[1], gate_key_fsjson, 8); }
+static void gc_alpha_fsjson_off(void) { gc_alpha_off(); memcpy(rp_S.skey[1], gate_key_fs, 8); }
+static int lp_gate_test(void) {
+    extern void nvk_shader_test_gate_line(char *out, size_t n);
+    extern void nvk_shader_test_gate_probe_line(char *out, size_t n);
+    fake_depth_clip = 0; fixture_depth_zero = 1; fixture_origin_lower_left = 0; fake_geometry_enabled = 1;
+    rp_shader_reset(); s2a_source_clear(); rp_state_reset(); nvn_unimpl_reset();
+    gate_alpha0 = rp_S.color.alpha_func; gate_src0 = rp_S.blend[0].src_rgb;
+    uint8_t k[3][8]; for (unsigned st = 0; st < 3; st++) gs_source(st, 0, k[st]);
+    memcpy(gate_key_hit, k[0], 8); gs_source(0, 1, gate_key_miss);   // 库里没有的 VS 键：变体 1 的顶点来源
+    memcpy(gate_key_fs, k[1], 8); gs_source(1, 1, gate_key_fsjson);   // 库里只有 json 的 FS 键：变体 1 的片元来源
+    memset(&gs_program, 0, sizeof gs_program); gs_program.magic = MAGIC('P','R','O','G'); gs_program.serial = 101; gs_program.nstage = 3;
+    memset(gs_stages, 0xff, sizeof gs_stages); memset(gs_keys, 0, sizeof gs_keys);
+    for (unsigned i = 0; i < 3; i++) { gs_stages[i] = (uint8_t)i; memcpy(gs_keys[i], k[i], 8); }
+    gs_keys_ok = 7; p_bind_program_id bind = {&gs_program, gs_program.serial, 0x1f, 0};
+    CHECK(rp_state_op(OP_BIND_PROGRAM, &bind, sizeof bind + 8), "gate fixture binds program");
+    rp_S.bser[2] = 0;   // 去掉几何段：VS + FS 两段
+    CHECK(rp_shader_graphics_stages() == 3, "gate fixture stage mask is 0x3");
+    bind_pools(7);
+    char root[256], dir[600];
+    snprintf(root, sizeof root, "%s/nvk_lp_gate.XXXXXX", getenv("TMPDIR") && *getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp");
+    if (!mkdtemp(root)) { CHECK(0, "gate temp root"); return 1; }
+    snprintf(dir, sizeof dir, "%s/shaders", root); mkdir(dir, 0700);
+    snprintf(dir, sizeof dir, "%s/shaders/direct", root); mkdir(dir, 0700);
+    snprintf(dir, sizeof dir, "%s/shaders/direct/b-%s-vk", root, DMSH_CHAIN); mkdir(dir, 0700);
+    static const uint32_t spv0[5] = {0x07230203u, 0x00010300u, 0, 1, 0};
+    char hx[2][17]; for (int st = 0; st < 2; st++) for (int b = 0; b < 8; b++) snprintf(hx[st] + 2 * b, 3, "%02x", k[st][b]);
+    char hxj[17]; for (int b = 0; b < 8; b++) snprintf(hxj + 2 * b, 3, "%02x", gate_key_fsjson[b]);
+    char jvs[160], jfs[160], jfj[160];
+    snprintf(jvs, sizeof jvs, "{\"stage\":\"vs\",\"dm_ctl\":\"%s\",\"bindings\":[]}", hx[0]);
+    snprintf(jfs, sizeof jfs, "{\"stage\":\"ps\",\"dm_ctl\":\"%s\",\"bindings\":[]}", hx[1]);
+    snprintf(jfj, sizeof jfj, "{\"stage\":\"ps\",\"dm_ctl\":\"%s\",\"bindings\":[]}", hxj);
+    struct { uint64_t key; uint8_t kind; const uint8_t *d; size_t n; } rec[5] = {
+        {lp_key(k[0]), 1, (const uint8_t *)jvs, strlen(jvs)}, {lp_key(k[0]), 52, (const uint8_t *)spv0, sizeof spv0},
+        {lp_key(k[1]), 1, (const uint8_t *)jfs, strlen(jfs)}, {lp_key(k[1]), 52, (const uint8_t *)spv0, sizeof spv0},
+        {lp_key(gate_key_fsjson), 1, (const uint8_t *)jfj, strlen(jfj)},   // 只有 json、没有 spv：探测要两样都在才算「库里有」
+    };
+    for (int i = 0; i < 5; i++) for (int j = i + 1; j < 5; j++)   // (键, 种类) 升序
+        if (rec[j].key < rec[i].key || (rec[j].key == rec[i].key && rec[j].kind < rec[i].kind)) { __typeof__(rec[0]) t = rec[i]; rec[i] = rec[j]; rec[j] = t; }
+    uint64_t keys[5]; uint8_t kinds[5]; const uint8_t *data[5]; size_t lens[5];
+    for (int i = 0; i < 5; i++) { keys[i] = rec[i].key; kinds[i] = rec[i].kind; data[i] = rec[i].d; lens[i] = rec[i].n; }
+    CHECK(lp_write(dir, keys, kinds, data, lens, 5) == 0, "gate container written");
+    setenv("S2A_SHADER_REVISION_ROOT", root, 1); unsetenv("S2A_DIRECT_CACHE_DIR");
+    static const char prof_on[] = "{\"schema\":\"s2a-direct-profile-v1\",\"profileHash\":\"sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"capabilities\":{\"storageBufferOffsetAlignment\":16,\"supportsGeometryShader\":true}}";
+    snprintf(external_profile, sizeof external_profile, "%s", prof_on);
+    fake_gs_success = 1; fake_gs_result_mode = 1;   // 现编结果只含 vs + fs，与两段程序对得上
+    // 每行：状态（设置 / 还原）、份数、期望是否从库里取、这一行是否开只读探测（nvk_gate_probe）。份数是手算的，直方图的期望从这张表算出（见下面 want）。
+    static const struct { const char *name; void (*on)(void); void (*off)(void); int n, hit, probe; } cases[] = {
+        {"allowed, in library",   gc_none,         gc_none,          1, 1, 1},
+        {"allowed, not in library", gc_miss_on,    gc_miss_off,      2, 0, 1},
+        {"alpha test, probe off", gc_alpha_on,     gc_alpha_off,     1, 0, 0},   // 探测缺省关：被挡下、照样现编，但不探
+        {"depth mode",            gc_depth_on,     gc_depth_off,     2, 0, 1},
+        {"origin lower-left",     gc_origin_on,    gc_origin_off,    1, 0, 1},
+        {"alpha test",            gc_alpha_on,     gc_alpha_off,     2, 0, 1},
+        {"alpha test, not in library", gc_alpha_miss_on, gc_alpha_miss_off, 1, 0, 1},   // 被挡下、库里本来也没有
+        {"alpha test, library has only the json", gc_alpha_fsjson_on, gc_alpha_fsjson_off, 1, 0, 1},   // 被挡下、片元键在库里只有 _b.json
+        {"alpha to coverage",     gc_a2c_on,       gc_a2c_off,       1, 0, 1},
+        {"dual source blend",     gc_dual_on,      gc_dual_off,      1, 0, 1},
+        {"unaligned storage",     gc_ssbo_on,      gc_ssbo_off,      2, 0, 1},
+        {"alpha test + coverage", gc_alpha_a2c_on, gc_alpha_a2c_off, 1, 0, 1},
+    };
+    for (size_t c = 0; c < sizeof cases / sizeof cases[0]; c++) for (int i = 0; i < cases[c].n; i++) {
+        rp_shader_reset(); compiler_calls = 0;
+        cases[c].on(); fixture_gate_probe = cases[c].probe;
+        struct rp_shader_req q = {0}; q.prim = 4; const struct rp_prog *p = NULL;
+        int rc = rp_shader_resolve(&q, &p);
+        cases[c].off(); fixture_gate_probe = 0;
+        CHECK(rc == 0 && p, "gate case '%s' #%d: program resolves (rc=%d)", cases[c].name, i, rc);
+        if (cases[c].hit) CHECK(compiler_calls == 0 && p && p->lib_sourced, "gate case '%s': hit from the library, compiler not called (calls=%d)", cases[c].name, compiler_calls);
+        else CHECK(compiler_calls == 1 && p && !p->lib_sourced, "gate case '%s' #%d: library not used, live compile runs once (calls=%d)", cases[c].name, i, compiler_calls);
+    }
+    // 期望（手算）：新程序 放行 = 1 + 2 = 3，挡下 = 1 + 2 + 1 + 1 + 2 + 1 + 1 + 1 + 2 + 1 = 13；现场编 放行 = 2（库里没有的那两份），挡下 = 13。
+    //   按「挡下」份数前五名：透明测试 5（探测关的 1 + 开的 2 + 库里没有的 1 + 库里只有 json 的 1）；深度模式 2 与 存储缓冲不对齐 2（并列，位集合小的在前）；
+    //   窗口原点左下 1 与 透明转覆盖 1（并列，同理；双源混合 1、透明测试+透明转覆盖 1 排在第六、第七，不列）。
+    static const char want[] = "出包预编库状态闸：新程序 放行 3、挡下 13（最多的：透明测试 5、深度模式 2、存储缓冲不对齐 2、窗口原点左下 1、透明转覆盖 1）"
+                               "；现场编 放行 2、挡下 13（最多的：透明测试 5、深度模式 2、存储缓冲不对齐 2、窗口原点左下 1、透明转覆盖 1）";
+    char got[640]; nvk_shader_test_gate_line(got, sizeof got);
+    CHECK(!strcmp(got, want), "gate readout line\n  got : %s\n  want: %s", got, want);
+    // 探测读数（手算）：只算开了探测的被挡下份数 = 13 - 1（探测关的那一份）= 12；库里有这几段（_b.json 与 _b.spv 都在）的 = 12 - 2（透明测试：库里没有的 1、只有 json 的 1）= 10。
+    //   按闸：透明测试 探 4（开的 2 + 库里没有的 1 + 只有 json 的 1）有 2；深度模式 2/2、存储缓冲不对齐 2/2（并列，位集合小的在前）；窗口原点左下 1/1、透明转覆盖 1/1。
+    static const char wantp[] = "出包预编库放开状态闸会怎样（只读探测）：被挡下又现场编的 12 份里，库里有这几段记录的 10 份"
+                                "（按闸 有/共：透明测试 2/4、深度模式 2/2、存储缓冲不对齐 2/2、窗口原点左下 1/1、透明转覆盖 1/1）";
+    char gotp[640]; nvk_shader_test_gate_probe_line(gotp, sizeof gotp);
+    CHECK(!strcmp(gotp, wantp), "gate probe line\n  got : %s\n  want: %s", gotp, wantp);
+    // 探测只读：库自己的命中 / 没有 / 坏三个计数只来自真正的取程序（命中 1 = 基准那份；没有 2 = 库里没有 VS 键的那两份；被挡下的一份都没查过库）。
+    CHECK(s2a_libpack_hits() == 1 && s2a_libpack_misses() == 2 && s2a_libpack_rejects() == 0,
+          "gate probe leaves the library counters alone (hits=%llu misses=%llu rejects=%llu)",
+          (unsigned long long)s2a_libpack_hits(), (unsigned long long)s2a_libpack_misses(), (unsigned long long)s2a_libpack_rejects());
+    // 基准状态再来一份新程序（放行、库里有 → 命中）：只有「新程序 放行」加一，现场编不动；同一份已发布的程序再解析一遍，读数不动。
+    {
+        struct rp_shader_req q = {0}; q.prim = 4; const struct rp_prog *p = NULL;
+        rp_shader_reset(); compiler_calls = 0;
+        CHECK(rp_shader_resolve(&q, &p) == 0 && p && compiler_calls == 0, "gate: one more baseline program comes from the library (calls=%d)", compiler_calls);
+        char once[640]; nvk_shader_test_gate_line(once, sizeof once);
+        CHECK(strstr(once, "新程序 放行 4、挡下 13（") && strstr(once, "；现场编 放行 2、挡下 13（"),
+              "gate readout: one more allowed snapshot, no more live compiles\n  %s", once);
+        CHECK(rp_shader_resolve(&q, &p) == 0 && p, "gate: a published program resolves again");
+        char again[640]; nvk_shader_test_gate_line(again, sizeof again);
+        CHECK(!strcmp(again, once), "gate readout does not move for an already published program\n  was: %s\n  now: %s", once, again);
+        char againp[640]; nvk_shader_test_gate_probe_line(againp, sizeof againp);
+        CHECK(!strcmp(againp, wantp), "gate probe readout does not move for allowed programs\n  now: %s", againp);
+    }
+    fake_gs_success = 0; fake_gs_result_mode = 0; external_profile[0] = 0; unsetenv("S2A_SHADER_REVISION_ROOT");
+    char path[700];
+    snprintf(path, sizeof path, "%s/lib.idx", dir); unlink(path); snprintf(path, sizeof path, "%s/lib.000.pak", dir); unlink(path);
+    rmdir(dir); snprintf(dir, sizeof dir, "%s/shaders/direct", root); rmdir(dir); snprintf(dir, sizeof dir, "%s/shaders", root); rmdir(dir); rmdir(root);
+    printf("nvk shader pool (libpack state gate readout): %d checks, %d failures\n", checks, failures);
+    return failures ? 1 : 0;
+}
+
 int main(int argc, char **argv) {
+    if (argc == 2 && !strcmp(argv[1], "--lp-gate")) return lp_gate_test();
     if (argc == 2 && !strcmp(argv[1], "--live-compile-default")) return live_compile_thread_test(0);
     if (argc == 2 && !strcmp(argv[1], "--live-compile-thread")) return live_compile_thread_test(1);
     if (argc == 2 && !strcmp(argv[1], "--live-compile-pending")) return live_compile_pending_test(0);
