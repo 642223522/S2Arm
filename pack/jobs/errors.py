@@ -447,6 +447,8 @@ LOG_CAUSES = (
     #   归 app_control_blocked，玩家拿到「去安全中心 / 杀毒软件放行安装文件夹」那句，而不是笼统的「出包未完成」。编排层子进程里出的错只剩文字，按回溯原文认：
     #   起进程（subprocess _execute_child）被拒，或建目录链接（roots._junction）被拒
     (r"in _execute_child\b[\s\S]{0,400}?\[WinError (?:5|4551|1260|225|226)\]|in _junction\b[\s\S]{0,400}?\[WinError 5\]", "app_control_blocked"),  # 非玩家句
+    # 回溯没落在读到的日志里、只剩编排中止那一行时（D-QNJQ）：roots._junction 把「在 _junction」附在异常上，同一行里认
+    (r"编排中止：\[WinError 5\][^\n]{0,200}在 _junction", "app_control_blocked"),  # 非玩家句
     # 编着色器库前核工具读不到 Windows 版 metal.exe 的版本（translator/dmsh_chain.py tools_now，D-TYCN）：起进程被拒 → 被 Windows 拦下；
     #   文件不在 / 起来了没打版本 → 缺少 Windows 版 Metal 工具（去苹果开发者下载页装 / 重装）。原先落笼统的「出包未完成」加一句开发者口吻的 --update-lock 提示
     (r"metal_(?:macosx|iphoneos): lock .{0,120}? / actual missing \(start blocked", "app_control_blocked"),  # 非玩家句
