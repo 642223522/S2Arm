@@ -1637,6 +1637,9 @@ static void sg_sub(uint64_t *v, int *n, uint64_t b, uint64_t e, uint64_t cb, uin
 static int sg_cmp(const void *x, const void *y) { uint64_t a = *(const uint64_t *)x, b = *(const uint64_t *)y; return a < b ? -1 : a > b; }
 static void snap_guard_take(void) {
     if (s2a_snap_restoring()) return;   // 构造期就知道要恢复：窗口已按清单原样占（vawin_reserve snap_win）
+#if TARGET_OS_OSX && !defined(S2A_UNIT_TEST)
+    return;   // Mac 的恢复（启动器 / 游戏里「回到这一刻」）都是新进程带 S2A_SNAP_RESTORE 起（snaprelaunch.c），构造期已知道，用不着护栏；普通局不白让宿主段
+#endif
     uint64_t raw[4 * SG_MAX]; int nr = 0, ng = g_ctr ? g_ctr_nok : 1;
     for (int i = 0; i < ng; i++) {
         uint64_t wb, ws, cb, cl;
