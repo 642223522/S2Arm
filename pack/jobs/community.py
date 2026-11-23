@@ -703,6 +703,11 @@ def launch_env(c, gid, existing=None):
         env["S2A_FOCUS_PAUSE"] = "0"      # 切到别的窗口不暂停：游戏要求失焦暂停时也照常跑（macos/front_mac.m，#989）
     if s.get("diagRun") is True:
         env.update(diag_run_env(c, gid))  # 诊断局（#438）：只管这一局，用掉就关
+    import diagcode
+    code_env = diagcode.pending(c, gid)
+    if code_env:   # 诊断码（#1449）：在这台 Mac 上起这款，直接并进这一局的环境，用掉就清
+        env.update(code_env)
+        diagcode.used(c, f"Mac 起局 {gid}")  # 非玩家句
     return env
 
 
