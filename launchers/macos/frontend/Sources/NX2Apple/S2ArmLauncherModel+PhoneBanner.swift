@@ -18,7 +18,8 @@ extension S2ArmLauncherModel {
     }
 
     var phoneUpdatePercent: Int? {
-        guard phoneBusy, let phone = phoneSession, phone.kind == .installUpdate else { return nil }
+        guard phoneBusy, !selfSigning, !shellFirstInstall,
+              let phone = phoneSession, phone.kind == .installUpdate else { return nil }
         return Int(((phone.progress.overall ?? 0) * 100).rounded())
     }
 }

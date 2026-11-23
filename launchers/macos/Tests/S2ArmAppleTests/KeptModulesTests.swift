@@ -138,6 +138,12 @@ import S2ArmAppleAdapter
         XCTAssertNil(model.phoneUpdatePercent)
         model.phoneSession = JobSession(kind: .installUpdate, gameID: nil, name: "更新 S2Arm")
         XCTAssertEqual(model.phoneUpdatePercent, 0)
+        model.selfSigning = true
+        XCTAssertNil(model.phoneUpdatePercent)
+        model.selfSigning = false
+        model.shellFirstInstall = true
+        XCTAssertNil(model.phoneUpdatePercent)
+        model.shellFirstInstall = false
         model.phoneSession?.phase = .finished(.completed)
         XCTAssertNil(model.phoneUpdatePercent)
     }
