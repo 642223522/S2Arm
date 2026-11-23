@@ -19,6 +19,7 @@ import re
 import sys
 import time
 import zlib
+from pathlib import Path
 
 from core import Failure, atomic, read, trace
 
@@ -75,7 +76,7 @@ def parse(code):
 
 
 def _path(c):
-    return c.private / "diagcode.json"
+    return Path(c.private) / "diagcode.json"   # 有的上下文给的是字符串
 
 
 def pending(c, gid):
