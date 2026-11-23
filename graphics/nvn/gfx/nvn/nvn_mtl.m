@@ -3106,6 +3106,7 @@ static void rp_flush(void);
 static void rt_keep_state(void);
 static void ghost_finish_submission(void);
 static void alias_dead_views(void);
+static void alias_wb_drain(int wait);
 static void tex_idle_reclaim(void);
 static void bcal_sweep_overwritten(void);
 int nvn_cmd_call_target(uint64_t h);   // hle_nvn.c：回放 CALL 核目标（#768338 安全阀）
@@ -3165,6 +3166,7 @@ uint64_t nvn_be_sub_commit(void) {
     tex_idle_reclaim();   // #1386: under memory pressure, idle live textures whose content the guest storage still holds (their views go in alias_dead_views below)
     alias_dead_views();   // likewise for the texture-ID views of textures dropped as overwritten
     bcal_sweep_overwritten();   // and the writer textures the block-compressed alias table keeps over storage since overwritten
+    alias_wb_drain(0);   // #674: write back GPU-written unreferenced shared textures queued by alias_orph_evict (those whose last GPU write has completed) before releasing them
     uint64_t fence = ++g_fence;
     rc_commit(fence);
     gw_commit(fence);
@@ -3371,9 +3373,26 @@ static void treg_drop_pool_views(const void *pool);
 static void pool_dirty(int samp, int id_);   // a registration changed what the ID names: a pool table entry is looked up again (pool_gpu)
 static void pool_gpuw_drop(const void *pool);   // with tex_cpu_content
 static void bcal_drop_pool(const void *pool);   // g_bcal (below, with gpw_mark)
+typedef struct { alias_key k; void *o; uint64_t wf; } alias_wb_e;   // #674: GPU-written unreferenced shared textures queued for writeback to guest pool memory before release; wf = fence of the last GPU write (g_alias_wrote), 0 = none known
+static alias_wb_e *g_alias_wb; static uint32_t g_alias_wb_n, g_alias_wb_cap;
+static _Atomic uint32_t g_alias_wb_cnt;
+static pthread_mutex_t g_wb_mu = PTHREAD_MUTEX_INITIALIZER;   // guards guest pool memory during alias_wb_drain swizzle against concurrent pool finalize (lock order: g_wb_mu -> g_smu)
+static uint64_t g_alias_pool_drop_gen;
+static uint64_t g_alias_orph_wb_ok, g_alias_orph_wb_b;
+static int alias_wb_eligible(const alias_key *k, id o);
 void nvn_be_alias_drop_pool(const void *pool) {
     if (!pool) return;
+    pthread_mutex_lock(&g_wb_mu);
     pthread_mutex_lock(&g_smu);
+    g_alias_pool_drop_gen++;
+    for (uint32_t i = 0; i < g_alias_wb_n; ) {
+        if (g_alias_wb[i].k.pool == (uint64_t)(uintptr_t)pool) {
+            id wo = CFBridgingRelease(g_alias_wb[i].o);
+            g_alias_wb[i] = g_alias_wb[--g_alias_wb_n];
+            defer_obj_release(wo);
+        } else i++;
+    }
+    atomic_store_explicit(&g_alias_wb_cnt, g_alias_wb_n, memory_order_release);
     uint32_t n = 0; alias_key *ks = NULL;
     for (uint32_t i = 0; i < g_alias.cap; i++) {
         if (!g_alias.vals[i]) continue;
@@ -3391,6 +3410,7 @@ void nvn_be_alias_drop_pool(const void *pool) {
     }
     if (n) { g_ser_gen++; g_alias_evicted += n; }
     pthread_mutex_unlock(&g_smu);
+    pthread_mutex_unlock(&g_wb_mu);
     free(ks);
     treg_drop_pool_views(pool);   // outside g_smu: the texture ID registry lock g_rmu is taken before g_smu
     bcal_drop_pool(pool);
@@ -3516,11 +3536,26 @@ static CFMutableSetRef alias_held(void) {   // caller holds g_rmu and g_smu: wha
 static uint64_t alias_orph_drop(const alias_key *k, int why) {   // caller holds g_smu; why 0 never GPU-written, 1 rewritten, 2 pressure; returns the bytes let go
     void *old = nvn_hm_del(&g_alias, k);
     if (!old) return 0;
+    uint64_t wf = (uint64_t)(uintptr_t)nvn_hm_get(&g_alias_wrote, k);   // #674: the writeback reads only after this fence is done (the write may still be on the main queue)
     nvn_hm_del(&g_alias_seen, k); nvn_hm_del(&g_alias_wrote, k);
     id o = CFBridgingRelease(old); uint64_t b = res_bytes(o);
     if (why == 0) { g_alias_orph_cache++; g_alias_orph_cache_b += b; } else if (why == 1) { g_alias_orph_rw++; g_alias_orph_rw_b += b; } else { g_alias_orph_valve++; g_alias_orph_valve_b += b; }
     if (g_alias_set) CFSetRemoveValue(g_alias_set, (__bridge const void *)o);
-    defer_obj_release(o); g_ser_gen++;
+    int queued = 0;
+    if (why == 2 && alias_wb_eligible(k, o)) {
+        if (g_alias_wb_n == g_alias_wb_cap) {
+            uint32_t nc = g_alias_wb_cap ? 2 * g_alias_wb_cap : 16;
+            alias_wb_e *q = realloc(g_alias_wb, nc * sizeof *q);
+            if (q) { g_alias_wb = q; g_alias_wb_cap = nc; }
+        }
+        if (g_alias_wb_n < g_alias_wb_cap) {
+            g_alias_wb[g_alias_wb_n++] = (alias_wb_e){*k, (void *)CFBridgingRetain(o), wf};
+            atomic_store_explicit(&g_alias_wb_cnt, g_alias_wb_n, memory_order_release);
+            queued = 1;
+        }
+    }
+    if (!queued) defer_obj_release(o);
+    g_ser_gen++;
     return b;
 }
 static uint64_t alias_orph_evict(void *ctx, uint64_t want) {   // the low-region ledger's give-back callback (it holds its own lock; g_rmu / g_smu may be held by the thread that asked: then nothing this time)
@@ -5441,6 +5476,129 @@ static int fill_nonfinite(const tex_t *t, const uint8_t *p, id<MTLTexture> mt) {
     return 0;
 }
 #include "nvn_texture_storage.inc"
+// #674: write back GPU-written unreferenced shared textures queued by alias_orph_evict (why=2) to their guest pool storage before releasing the Metal texture,
+//   so rebuilding a texture over the same untouched storage (e.g. cached terrain normal maps) reloads the GPU-computed content instead of all zeros, while still
+//   releasing the Metal texture under low-VA pressure (#357).
+static int alias_wb_eligible(const alias_key *k, id o) {
+    if (!k || !o || ![o conformsToProtocol:@protocol(MTLTexture)]) return 0;
+    id<MTLTexture> mt = o;
+    if (k->d.samples > 1 || k->d.target == NVN_TEXTURE_TARGET_BUFFER || (k->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET))) return 0;
+    if (mtl_fmt_depth(mt.pixelFormat) || rs_state(mt) == RS_SCALED) return 0;
+    uint32_t upf; int ubpp;
+    if (fmt_unpack(k->d.format, &upf, &ubpp)) return 0;
+    int bw = 1, bh = 1, bpb = nvn_fmt_bpb(k->d.format, &bw, &bh);
+    if (!bpb) return 0;
+    if (bw == 1 && bh == 1 && (int)mtl_pf_bytes(mt.pixelFormat) != bpb) return 0;
+    const pool_t *p = (const pool_t *)(uintptr_t)k->pool;
+    if (!p || !p->mem || (p->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) || nvn_sparse_pool(p) || k->off < 0) return 0;
+    if ((p->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS) && (k->d.flags & NVN_TEXTURE_FLAGS_COMPRESSIBLE)) return 0;
+    nvn_texlayout L; nvn_tex_layout(&k->d, &L);
+    if (!L.size || (uint64_t)k->off + L.size > p->size) return 0;
+    unsigned nl = k->d.levels ? k->d.levels : 1;
+    if (mt.width != k->d.width || mt.height != k->d.height || mt.mipmapLevelCount < nl || mt.arrayLength < L.layers) return 0;
+    return 1;
+}
+// Order and cost (review on #2046): the evicted texture was GPU-written, and the writes may still be on the main queue g_cq while the readback goes on g_q (q_cb: no
+//   ordering between the two). So an entry is read back only once its last write fence (wf) is done — CPU-observed completion orders it before anything committed after.
+//   wait = 0 (each submission): entries whose write is still in flight stay queued for a later submission, nothing waits on the GPU for them.
+//   wait = 1 (tex_init_fill, a rebuild may sit over the evicted storage): wait for those fences first.
+//   All entries of one drain are copied in one command buffer and one staging buffer, waited once; at most ALIAS_WB_BATCH bytes per drain (the first entry always),
+//   the rest stay queued — eviction happens because the low region is short, so the staging allocation is kept bounded.
+#define ALIAS_WB_BATCH (16u << 20)
+static uint64_t g_alias_wb_deferred, g_alias_wb_drains;   // read-only counters (t_nvn_alias_orphan): entries left queued because their write was in flight; drains that encoded a batch
+static size_t alias_wb_bytes(const alias_key *k) {   // staging bytes for all levels and layers (0 = cannot be laid out)
+    nvn_texlayout L; nvn_tex_layout(&k->d, &L);
+    unsigned nl = k->d.levels ? k->d.levels : 1, layers = L.layers ? L.layers : 1; size_t tot = 0;
+    for (unsigned ly = 0; ly < layers; ly++) for (unsigned lv = 0; lv < nl; lv++) {
+        uint32_t rb, rows, slices, bpb; uint64_t base; unsigned th, td;
+        if (nvn_deswizzle_geom(&k->d, lv, ly, &rb, &rows, &slices, &base, &th, &td, &bpb)) return 0;
+        tot += (size_t)rb * (size_t)rows * (size_t)slices;
+    }
+    return tot;
+}
+static void alias_wb_drain(int wait) {
+    if (!atomic_load_explicit(&g_alias_wb_cnt, memory_order_acquire)) return;
+    if (!atomic_load(&g_sub_thread_set) || !on_sub_thread()) return;
+    pthread_mutex_lock(&g_mu); uint64_t done = g_done; pthread_mutex_unlock(&g_mu);
+    // take what this drain handles; the rest stays in g_alias_wb (in place, under g_smu)
+    pthread_mutex_lock(&g_smu);
+    uint32_t n = 0, keep = 0; alias_wb_e *list = g_alias_wb_n ? malloc(g_alias_wb_n * sizeof *list) : NULL; size_t *sz = g_alias_wb_n ? malloc(g_alias_wb_n * sizeof *sz) : NULL;
+    size_t tot = 0; uint64_t wmax = 0, gen0 = g_alias_pool_drop_gen;
+    for (uint32_t i = 0; i < g_alias_wb_n; i++) {
+        alias_wb_e e = g_alias_wb[i]; size_t b = list ? alias_wb_bytes(&e.k) : 0;
+        int ready = e.wf <= done || (wait && e.wf <= g_fence), fits = !n || tot + b <= ALIAS_WB_BATCH;   // a write in the submission still being recorded (wf = g_fence + 1) cannot be waited for here
+        if (list && ready && fits) { list[n] = e; sz[n++] = b; tot += b; if (e.wf > wmax) wmax = e.wf; }
+        else { if (!ready) g_alias_wb_deferred++; g_alias_wb[keep++] = e; }
+    }
+    g_alias_wb_n = keep;
+    atomic_store_explicit(&g_alias_wb_cnt, g_alias_wb_n, memory_order_release);
+    pthread_mutex_unlock(&g_smu);
+    if (!n) { free(list); free(sz); return; }
+    int ok = !wmax || wmax <= done || nvn_be_wait(wmax, 2000000000ull);   // wait = 1 only: the last write of every taken entry has completed
+    if (!ok) {   // the GPU did not get there (stopping session / hang): put them back for a later drain rather than read early
+        pthread_mutex_lock(&g_smu);
+        for (uint32_t i = 0; i < n; i++) {
+            if (g_alias_wb_n == g_alias_wb_cap) { uint32_t nc = g_alias_wb_cap ? 2 * g_alias_wb_cap : 16; alias_wb_e *q = realloc(g_alias_wb, nc * sizeof *q); if (!q) break; g_alias_wb = q; g_alias_wb_cap = nc; }
+            g_alias_wb[g_alias_wb_n++] = list[i]; list[i].o = NULL;
+        }
+        atomic_store_explicit(&g_alias_wb_cnt, g_alias_wb_n, memory_order_release);
+        pthread_mutex_unlock(&g_smu);
+        for (uint32_t i = 0; i < n; i++) if (list[i].o) defer_obj_release(CFBridgingRelease(list[i].o));
+        free(list); free(sz); return;
+    }
+    id<MTLBuffer> buf = ok && tot ? [g_dev newBufferWithLength:tot options:MTLResourceStorageModeShared] : nil;
+    if (buf) {
+        id<MTLCommandBuffer> cb = q_cb(); id<MTLBlitCommandEncoder> b = enc_b_begin(cb);
+        size_t off = 0;
+        for (uint32_t i = 0; i < n; i++) {
+            if (!sz[i]) continue;
+            alias_key *k = &list[i].k; id<MTLTexture> mt = (__bridge id<MTLTexture>)list[i].o;
+            nvn_texlayout L; nvn_tex_layout(&k->d, &L);
+            unsigned nl = k->d.levels ? k->d.levels : 1, layers = L.layers ? L.layers : 1; int is3d = (k->d.target == NVN_TEXTURE_TARGET_3D);
+            for (unsigned ly = 0; ly < layers; ly++) for (unsigned lv = 0; lv < nl; lv++) {
+                uint32_t rb, rows, slices, bpb; uint64_t base; unsigned th, td;
+                nvn_deswizzle_geom(&k->d, lv, ly, &rb, &rows, &slices, &base, &th, &td, &bpb);
+                uint32_t lw = MAX(k->d.width >> lv, 1u), lh = (k->d.target == 0 || k->d.target == 3) ? 1u : MAX(k->d.height >> lv, 1u);
+                size_t img = (size_t)rb * (size_t)rows;
+                for (uint32_t z = 0; z < slices; z++)
+                    [b copyFromTexture:mt sourceSlice:is3d ? 0 : ly sourceLevel:lv sourceOrigin:MTLOriginMake(0, 0, is3d ? z : 0)
+                            sourceSize:MTLSizeMake(lw, lh, 1) toBuffer:buf destinationOffset:off + (size_t)z * img
+                    destinationBytesPerRow:rb destinationBytesPerImage:img];
+                off += img * (size_t)slices;
+            }
+        }
+        [b endEncoding]; DM_BLOCK_BEGIN(); ok = cb_run(cb); DM_BLOCK_END();   // one GPU round trip for the whole batch
+        g_alias_wb_drains++;
+    } else ok = 0;
+    size_t off = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        alias_key k = list[i].k; id<MTLTexture> mt = CFBridgingRelease(list[i].o);
+        if (ok && sz[i]) {
+            nvn_texlayout L; nvn_tex_layout(&k.d, &L);
+            unsigned nl = k.d.levels ? k.d.levels : 1, layers = L.layers ? L.layers : 1;
+            pthread_mutex_lock(&g_wb_mu);
+            const pool_t *p = (const pool_t *)(uintptr_t)k.pool;
+            if (g_alias_pool_drop_gen == gen0 && p && p->mem && (uint64_t)k.off + L.size <= p->size) {
+                uint8_t *dst = p->mem + k.off;
+                uint64_t *runs = NULL, sb = 0; int nr = gpw_stale(dst, L.size, &runs, &sb); free(runs);
+                if (nr > 0 && sb == L.size) {   // entire texture is still GPU-written and untouched by CPU: write back without clobbering any CPU writes
+                    size_t o2 = off; int swz_ok = 1;
+                    for (unsigned ly = 0; ly < layers && swz_ok; ly++) for (unsigned lv = 0; lv < nl && swz_ok; lv++) {
+                        uint32_t rb, rows, slices, bpb; uint64_t base; unsigned th, td;
+                        nvn_deswizzle_geom(&k.d, lv, ly, &rb, &rows, &slices, &base, &th, &td, &bpb);
+                        if (nvn_swizzle(&k.d, lv, ly, (const uint8_t *)buf.contents + o2, rb, dst)) swz_ok = 0;
+                        o2 += (size_t)rb * (size_t)rows * (size_t)slices;
+                    }
+                    if (swz_ok) { gpw_clear((uint64_t)(uintptr_t)dst, L.size); g_alias_orph_wb_ok++; g_alias_orph_wb_b += L.size; }
+                }
+            }
+            pthread_mutex_unlock(&g_wb_mu);
+        }
+        off += sz[i];
+        defer_obj_release(mt);
+    }
+    free(list); free(sz);
+}
 static int tex_init_fill(const tex_t *t, id<MTLTexture> mt) {
     if (!t->mem || !t->pool || (t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) || t->has_layout) return 0;
     if (t->d.samples > 1 || ((int)mt.pixelFormat >= 250 && (int)mt.pixelFormat <= 262)) return 0;   // 250..262: Depth16Unorm … X24_Stencil8 (some names are macOS-only)
@@ -5451,6 +5609,7 @@ static int tex_init_fill(const tex_t *t, id<MTLTexture> mt) {
     static int flush_fill = -1; if (flush_fill < 0) { const char *e = getenv("DM_NVN_FLUSH_FILL"); flush_fill = !e || atoi(e) != 0; }
     if (!no_cpu && !flush_fill) return 0;
     if (!atomic_load(&g_sub_thread_set) || !on_sub_thread()) return 0;   // the upload batch belongs to the submit thread
+    if (atomic_load_explicit(&g_alias_wb_cnt, memory_order_acquire)) alias_wb_drain(1);   // a rebuild may be over evicted storage: write back now, waiting for pending writes
     if (g_cb && (pend_hits((uint64_t)t->mem, t->L.size) || sbw_hits((uint64_t)t->mem, (uint64_t)t->mem + t->L.size) || gw_live((uint64_t)t->mem, (uint64_t)t->mem + t->L.size))) {
         if (texture_storage_load(t, mt)) return 1;
         RED_ONCE(205, "GPU-written texture pool storage cannot be decoded (ser=%llu format %#x)", (unsigned long long)t->serial, t->d.format);
@@ -6206,7 +6365,22 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
     // A finalized serial over storage the sharing table holds resolves to that texture with no ghost entry (S2Arm 11-05, after upstream PR #1299 commit 3, MIT, seedds/upstream ee9b7765):
     //   the game finalizes texture objects and keeps their descriptors registered over live storage, and each resolution went through the ring (an entry evicted, g_ser_gen moved, so
     //   every texture ID cache resolved again). The sharing table keeps the texture resident; once it leaves the table, the next resolution makes it anew, as for a live object
-    pthread_mutex_lock(&g_smu); __unsafe_unretained id shared = hm_get_id(&g_alias, &ak); if (shared) nvn_hm_put(&g_alias_seen, &ak, (void *)(uintptr_t)(g_fence + 1));
+    pthread_mutex_lock(&g_smu); __unsafe_unretained id shared = hm_get_id(&g_alias, &ak);
+    if (!shared && g_alias_wb_n) {
+        for (uint32_t i = 0; i < g_alias_wb_n; i++) {
+            if (!memcmp(&g_alias_wb[i].k, &ak, sizeof ak)) {
+                id wo = CFBridgingRelease(g_alias_wb[i].o);
+                g_alias_wb[i] = g_alias_wb[--g_alias_wb_n];
+                atomic_store_explicit(&g_alias_wb_cnt, g_alias_wb_n, memory_order_release);
+                if (!g_alias_set) g_alias_set = CFSetCreateMutable(NULL, 0, NULL);
+                hm_put_id(&g_alias, &ak, wo); CFSetAddValue(g_alias_set, (__bridge const void *)wo);
+                nvn_hm_put(&g_alias_wrote, &ak, (void *)(uintptr_t)(g_fence + 1));
+                shared = wo;
+                break;
+            }
+        }
+    }
+    if (shared) nvn_hm_put(&g_alias_seen, &ak, (void *)(uintptr_t)(g_fence + 1));
     int dead = t->serial < (1ull << 62) && !nvn_hm_get(&g_tex_live, &t->serial); pthread_mutex_unlock(&g_smu);
     if (shared && dead && !((t->d.flags & NVN_TEXTURE_FLAGS_IMAGE) && !(((id<MTLTexture>)shared).usage & MTLTextureUsageShaderWrite))) { g_ghost_shared++; return shared; }
     if (shared) {
