@@ -130,7 +130,16 @@ def _rebuild_win(c, gid, src_root, work):
     env = c.env()
     env.update(S2A_PACK_PLAT="ios", S2A_TARGET="ios", S2A_PY=sys.executable, S2A_DIRECT_CACHE=str(library.direct_cache_dir(c, gid)))
     logs = Path(c.logs) / c.task; logs.mkdir(parents=True, exist_ok=True)
-    c.run([sys.executable, "-X", "utf8", "-c", WIN_DIRECT, str(root), str(work), gid.upper()], logs / "sgbf_win_direct.log", env, cwd=c.engine)
+    try:
+        c.run([sys.executable, "-X", "utf8", "-c", WIN_DIRECT, str(root), str(work), gid.upper()], logs / "sgbf_win_direct.log", env, cwd=c.engine)
+    except Failure:
+        # D-Z2VA：直连库那一步的日志（direct_lib.log 等，oneclick_win.Run.sh 写在工作目录下）随临时目录删掉、诊断包里没有，定不了崩因：失败时拷进本任务日志目录
+        keep = logs / "win-direct"
+        for p in sorted(work.glob("*.log")):
+            if p.is_file() and p.stat().st_size <= 8 << 20:
+                keep.mkdir(exist_ok=True)
+                shutil.copyfile(p, keep / p.name)
+        raise
     got = (work / "direct_result.txt").read_text(encoding="utf-8").strip() if (work / "direct_result.txt").is_file() else None
     if got is None:
         raise Failure("重出直连着色器库的进程没交回结果")  # 非玩家句
