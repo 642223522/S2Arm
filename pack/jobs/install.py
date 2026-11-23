@@ -3939,10 +3939,11 @@ def phone_updates(c):
                           games=[dict(gameId=g, name=names.get(g, g)) for g in sorted(rec.get("games") or {})] if rec.get("shellId") else [], stale=[])
             out.append(dict(device=key, name=(rec.get("signed") or {}).get("device") or "", **st, kept=[dict(gameId=g, name=g) for g in kept],
                             apps=[dict(gameId=g, name=names[g.upper()]) for g in old]))
-    # D-XYNG：两个启动器的「更新」按钮都取第一条。连着的那台排前（稳定排序，其余照原顺序）：原先按记录文件名排，游戏库里留着一台
-    #   不在线的旧设备时，按钮永远去找它、报「没列出来」，连着的这台也旧却轮不到。键比较同 win_udid（设备服务的写法可能差在短横 / 大小写）
-    online = {_udid_cmp(u) for u in online_devices(c)} if len(out) > 1 else set()   # 本机回环查设备服务，毫秒级；只有一条时不用排
-    return sorted(out, key=lambda u: _udid_cmp(u["device"]) not in online) if online else out
+    # D-XYNG / D-Z622：有设备连着时只列连着的那几台。两个启动器的「更新」按钮都取第一条、提示只看列表空不空：游戏库里留着一台不在线的
+    #   旧设备时，原先按钮永远去找它（报「没列出来」/ CoreDevice 4016），连着的这台已是新版也一直提示更新。一台都没连（或读不到）照旧全列，
+    #   插上那台再点就行。键比较同 win_udid（设备服务 / devicectl 的写法可能差在短横 / 大小写）
+    online = {_udid_cmp(u) for u in online_devices(c)} if out else set()   # Windows 本机回环查设备服务毫秒级；Mac devicectl 约 0.3 秒
+    return [u for u in out if _udid_cmp(u["device"]) in online] if online else out
 
 
 def _udid_cmp(u):
@@ -4192,9 +4193,13 @@ def _kept_pull_on(c, ph):
 
 
 def online_devices(c):
-    """现在连着的设备号（Windows 设备服务里 USB 或同网的都算）；Mac / 读不到 → 空集（不影响更新本身，只少一句说明）"""
+    """现在连着的设备号（Windows 设备服务里 USB 或同网的都算；Mac 是 devicectl 里有线或隧道通的）；读不到 → 空集（调用方当「不知道」，照旧全列）"""
     if os.name != "nt":
-        return set()
+        import target
+        try:
+            return {d["udid"] for d in target.devices(timeout=10) if d.get("udid") and (d.get("wired") or d.get("tunnel"))}
+        except Exception:   # 没装 Xcode / 设备特征库读不了：当不知道，不能让游戏库读挂
+            return set()
     try:
         return {u for u, _, _ in win_install_mod(c).mux_devices() if u}
     except OSError:
