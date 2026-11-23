@@ -790,6 +790,7 @@ int main(void) {
       //   f 同款从导入文件夹认领进 App：软链接换成真文件、.source 删掉、外部文件不变；之后再扫来源不改回软链接
       //   g 移除来源：从它链来的款（只剩甲）资源包根删掉 → 状态 0，外部文件不动、乙不受影响；别的来源号拆 0 款
       //   h 库里删过的款：例行扫描（带跳过名单）不链回来，主动加文件夹（不带名单）链回来
+      //   i 同一来源里同款两份：只链新的、再扫不动  j 两个来源各有一份：不抢；链着的那份打不开才换，插回不换回
       { char E[1300], ED[1400], EV[1400], EV2[1400], rA[1600], rB[1600], rC[1600], gA[1500], gB[1500], gC[1500], lk[2000], tgt[2000], want[2000];
         snprintf(E, sizeof E, "%s/exth/Documents", T); snprintf(ED, sizeof ED, "%s/ext_drive", T); snprintf(EV, sizeof EV, "%s/ext_gone", T); snprintf(EV2, sizeof EV2, "%s/ext_drive2", T);
         snprintf(c, sizeof c, "mkdir -p '%s/放这里导入' '%s/sub' '%s/a/b/c' && python3 '%s/pack/img.py' build - '%s/src/others_sh.tsv' '%s/sub/甲.img' --gid 0100abcd000000e1 --pack-id ext1 > /dev/null"
@@ -837,7 +838,31 @@ int main(void) {
         // h 玩家在库里删过甲：例行扫描带跳过名单 → 不链回来；玩家主动加文件夹（不带名单）→ 链回来
         CHECK(s2a_img_scan_source(E, EV2, "src2", "0100ABCD00000099,0100ABCD000000E1") == 0, "⑮h 删过的甲：例行扫描不链回来");
         snprintf(c, sizeof c, "test ! -e '%s'", rA); CHECK(sh(c) == 0, "⑮h 甲的资源包根仍不在");
-        CHECK(s2a_img_scan_source(E, EV2, "src2", NULL) == 1, "⑮h 主动加文件夹：甲链回来"); }
+        CHECK(s2a_img_scan_source(E, EV2, "src2", NULL) == 1, "⑮h 主动加文件夹：甲链回来");
+        // i 同一来源里同一款有两份（资源包号不同，如老「S2Arm 自签导出」与「S2Arm 游戏包」各一份）：只链修改时间新的那份，
+        //   再扫两次都不动（原先按读目录次序逐个链，每次来回改链、每次重解）
+        { char S3[1400], gD[1500], rD[1600]; snprintf(S3, sizeof S3, "%s/ext_two", T); snprintf(gD, sizeof gD, "%s/games/0100ABCD000000E4", E); s2a_pack_root(rD, sizeof rD, gD);
+          snprintf(c, sizeof c, "mkdir -p '%s/老' '%s/新' && python3 '%s/pack/img.py' build - '%s/src/others_sh.tsv' '%s/老/丁.img' --gid 0100abcd000000e4 --pack-id old4 > /dev/null"
+                   " && python3 '%s/pack/img.py' build - '%s/src/others_sh.tsv' '%s/新/丁.img' --gid 0100abcd000000e4 --pack-id new4 > /dev/null"
+                   " && touch -t 202601010000 '%s/老/丁.img' && touch -t 202611010000 '%s/新/丁.img'", S3, S3, R, D, S3, R, D, S3, S3, S3);
+          CHECK(sh(c) == 0, "⑮i 造同一来源两份同款");
+          int r1 = s2a_img_scan_source(E, S3, "src3", NULL), r2 = s2a_img_scan_source(E, S3, "src3", NULL), r3 = s2a_img_scan_source(E, S3, "src3", NULL);
+          snprintf(c, sizeof c, "test \"$(readlink '%s/game.img')\" = '%s/新/丁.img' && grep -q new4 '%s/manifest.json'", rD, S3, rD);
+          CHECK(r1 == 1 && r2 == 0 && r3 == 0 && sh(c) == 0, "⑮i 只链新的那份，之后不再改链（返回 %d / %d / %d）", r1, r2, r3);
+          // j 另一个来源里也有这一款：现在链着的那份打得开 → 不抢（返回 0、软链接不变）；那份打不开（盘拔了）→ 换成这一份；原来的盘插回 → 不再换回去
+          char S4[1400]; snprintf(S4, sizeof S4, "%s/ext_other", T);
+          snprintf(c, sizeof c, "mkdir -p '%s' && python3 '%s/pack/img.py' build - '%s/src/others_sh.tsv' '%s/丁.img' --gid 0100abcd000000e4 --pack-id oth4 > /dev/null", S4, R, D, S4);
+          CHECK(sh(c) == 0, "⑮j 造另一个来源");
+          int j1 = s2a_img_scan_source(E, S4, "src4", NULL), j1b = s2a_img_scan_source(E, S3, "src3", NULL);
+          snprintf(c, sizeof c, "test \"$(readlink '%s/game.img')\" = '%s/新/丁.img'", rD, S3);
+          CHECK(j1 == 0 && j1b == 0 && sh(c) == 0, "⑮j 两个来源轮流扫：不抢、不来回改链（返回 %d / %d）", j1, j1b);
+          char S3x[1500]; snprintf(S3x, sizeof S3x, "%s_gone", S3); CHECK(rename(S3, S3x) == 0, "⑮j 拔掉第一个来源");
+          int j2 = s2a_img_scan_source(E, S4, "src4", NULL);
+          snprintf(c, sizeof c, "test \"$(readlink '%s/game.img')\" = '%s/丁.img'", rD, S4);
+          CHECK(j2 == 1 && sh(c) == 0, "⑮j 原来那份打不开：换成另一个来源的（返回 %d）", j2);
+          CHECK(rename(S3x, S3) == 0, "⑮j 第一个来源插回");
+          int j3 = s2a_img_scan_source(E, S3, "src3", NULL), j4 = s2a_img_scan_source(E, S4, "src4", NULL);
+          CHECK(j3 == 0 && j4 == 0 && sh(c) == 0, "⑮j 插回后不再换回去（返回 %d / %d）", j3, j4); } }
       // ⑭c 着色器更新包（格式号 2，维护者 11-13）：先导完整包（带 shaders/a.metallib = 'x'）并解开；再导更新包（同游戏号同资源包号，a.metallib = 'y'——
       //   同长度：旧的若还在本体目录表里，下次解包会按「长度对就跳过 / 照目录表回写」把它弄回 'x'）。期望手写：
       //   认领 1 个、更新包从导入文件夹删掉、a.metallib = 'y'、本体目录表里不再有 shaders/ 条目、本体头里整长 = 文件长、再次应用后仍是 'y'；
