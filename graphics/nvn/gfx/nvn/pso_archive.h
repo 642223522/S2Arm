@@ -150,8 +150,14 @@ static NSSet<NSString *> *par_ga_list(int own_only) {
 //   gpuarchiver-* 也算成 A 新建的被删掉，B 的序列化找不到自己的临时目录（11-01 普查 93 款里 12 款报 cannot remove、6 款报 cannot write …
 //   Failed to generate machO: cannot pack / cannot read …/C//…），存档没写成、下一局重编。写存档整段（列目录、建、序列化、再列、删）在这把锁里串行，
 //   前后两次列目录之间多出的只会是本进程的。锁文件放在第一个 gpuarchiver 目录的上一级（同一用户的宿主看到同一路径）；打不开锁照旧只用进程内锁
+//   iPhone / iPad / Apple TV 不拿这把文件锁：App 容器里只有本进程一个宿主（没有别的进程会碰同一个 gpuarchiver 目录），进程内的 g_par_wmu 已经串行；
+//   而存档写手在后台低优先级跑、一批可写几秒，切到后台时系统发现挂起的 App 还拿着文件锁就直接杀掉（RunningBoard 0xdead10cc，诊断 D-7NAV 11-23 iPhone19,2：
+//   符号化后第 156 号线程正停在 par_write_batch → serializeToURL，锁就是这一把），玩家看到的是「切出去回来游戏没了」
 #include <sys/file.h>
 static int par_ga_lock(void) {
+#if TARGET_OS_IPHONE
+    return -1;
+#else
     static int fd = -2; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
     pthread_mutex_lock(&mu);
     if (fd == -2) { NSArray *d = par_ga_dirs(); fd = -1;
@@ -160,6 +166,7 @@ static int par_ga_lock(void) {
     pthread_mutex_unlock(&mu);
     if (fd >= 0) while (flock(fd, LOCK_EX) != 0 && errno == EINTR) {}
     return fd;
+#endif
 }
 static void par_ga_unlock(int fd) { if (fd >= 0) flock(fd, LOCK_UN); }
 static void par_ga_remove_new(NSSet<NSString *> *before) {
