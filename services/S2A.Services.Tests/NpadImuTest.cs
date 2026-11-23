@@ -15,7 +15,8 @@ namespace S2A.Services.Tests
     //   ⑤ 缓冲太小（0x1000 < 0x3528）→ InvalidBufferSize（模块 202、描述 131：131 << 9 | 202 = 0x106CA）、报红 +1
     //   ⑥ 321 → Imu 不在用；之后喂数不再写（格 0 写入位置仍 1）
     //   ⑧ 玩家 1 左只、玩家 2 右只：左只写传感器 0，右只写传感器 1
-    //   ⑨ Joy-Con 样式（单只 / 一对）写 IMU 前按 Y 轴镜像（加速度 Y、角速度 X / Z 取反）：⑦ 一对的角速度 X 跟着取反；Pro 不动（②）
+    //   ⑩ 时间戳没往前的读数不重写（双 Joy-Con 每拍重推同一份时，游戏不会把同一份角速度积分好几遍）
+    //   ⑨ 单只 Joy-Con 写 IMU 前按 Y 轴镜像（加速度 Y、角速度 X / Z 取反）；一对绕 X 轴转 180°（⑦：加速度 / 角速度 Y、Z 取反）；Pro 不动（②）
     public static unsafe partial class Program
     {
         [SoloTest("--npad-imu", Booted = true)]
@@ -95,8 +96,9 @@ namespace S2A.Services.Tests
             npads.Update(new System.Collections.Generic.List<GamepadInput> { new() { PlayerId = PlayerIndex.Player1 } });
             npads.PushImu(PlayerIndex.Player1, a, new Vector3(90, 0, 0), 300000, 0);
             npads.PushImu(PlayerIndex.Player1, a, new Vector3(-90, 0, 0), 300000, 1);
-            Check("NpadImu ⑦ 双 Joy-Con 左右各写各的（按 Y 轴镜像，角速度 X 取反）：格 0 / 传感器 1 格写入位置、角速度 X", "结果 0、1 / 1、-1.5707964 / 1.5707964",
-                $"结果 {en2.Result}、{Wi(0)} / {Wi(0x1950)}、{F32(0x1c)} / {F32(0x1950 + 0x1c)}");
+            Check("NpadImu ⑦ 双 Joy-Con 左右各写各的（绕 X 轴转 180°：角速度 X 不变、加速度 Z 取反）：格 0 / 传感器 1 格写入位置、角速度 X、加速度 Z",
+                "结果 0、1 / 1、1.5707964 / -1.5707964、-9.80665",
+                $"结果 {en2.Result}、{Wi(0)} / {Wi(0x1950)}、{F32(0x1c)} / {F32(0x1950 + 0x1c)}、{F32(0x18)}");
             npads.Configure(new ControllerConfig { Player = PlayerIndex.Player1, Type = ControllerType.ProController });
             npads.Update(new System.Collections.Generic.List<GamepadInput> { new() { PlayerId = PlayerIndex.Player1 } });
             npads.PushImu(PlayerIndex.Player1, a, new Vector3(-90, 0, 0), 305000, 1);
@@ -119,6 +121,14 @@ namespace S2A.Services.Tests
             Check("NpadImu ⑨ 单只样式 Y 轴镜像：加速度 X / Y / Z、角速度 X / Y / Z",
                 "4.903325 / -2.4516625 / 9.80665、-0.17453292 / 0.34906584 / -0.5235988",   // 0.5 / −0.25 / 1 g × 9.80665；−10 / 20 / −30 度 × π/180（float）
                 $"{F32(s9 + 0x10)} / {F32(s9 + 0x14)} / {F32(s9 + 0x18)}、{F32(s9 + 0x1c)} / {F32(s9 + 0x20)} / {F32(s9 + 0x24)}");
+            // ⑩ 同一笔读数（时间戳没往前）不重写：同格同时间戳再推一次，写入位置不动
+            npads.PushImu(PlayerIndex.Player1, new Vector3(0.5f, 0.25f, 1f), new Vector3(10, 20, 30), 405000);
+            npads.PushImu(PlayerIndex.Player1, new Vector3(0.5f, 0.25f, 1f), new Vector3(10, 20, 30), 404000);
+            Check("NpadImu ⑩ 时间戳相同 / 倒退的读数不重写：玩家 1 传感器 0 写入位置", "2", $"{Wi(0)}");
+            // ⑪ 往回跳 1 秒以上 = 换了时钟（这一格换了体感源）：照新样本写。先推到 3 秒（写入位置 3），再推 1 秒（往回 2 秒）→ 写入位置 4
+            npads.PushImu(PlayerIndex.Player1, new Vector3(0.5f, 0.25f, 1f), new Vector3(10, 20, 30), 3000000);
+            npads.PushImu(PlayerIndex.Player1, new Vector3(0.5f, 0.25f, 1f), new Vector3(10, 20, 30), 1000000);
+            Check("NpadImu ⑪ 时间戳往回跳 1 秒以上（换了时钟）照写：玩家 1 传感器 0 写入位置", "4", $"{Wi(0)}");
             npads.Configure();
         }
     }

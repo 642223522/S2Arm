@@ -677,3 +677,5 @@
 20261122-1942-audio-pace-test-clock.patch
 20261122-2045-ios-audio-thaw-grace.patch
 20261123-1237-joycon-imu-mirror.patch
+20261123-1303-joycon-pair-imu-rotate.patch
+20261122-2108-npad-imu-clock-jump.patch
