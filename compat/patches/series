@@ -661,6 +661,9 @@
 20261120-1306-ldn-mitm-disconnect-diagnostics.patch
 20261120-1021-spirv-declare-used-caps.patch
 20261120-1330-nifm-offline-submit-onhold.patch
+20261121-1628-ldn-target-route-selection.patch
+20261121-2131-ldn-route-candidate-selection.patch
+20261123-1140-ldn-multihomed-vpn-route-selection.patch
 20261121-0733-ios-queue-clock-ahead.patch
 20261122-0009-local-player-account-bridge.patch
 20261122-0130-local-player-picker.patch
@@ -680,3 +683,6 @@
 20261123-1303-joycon-pair-imu-rotate.patch
 20261122-2108-npad-imu-clock-jump.patch
 20261122-2344-fs-fail-mount.patch
+20261122-2357-ldn-auto-and-socket-route.patch
+20261123-0113-ldn-prefer-lan-gateway-route.patch
+20261123-0820-ldn-dual-protocol-auto.patch

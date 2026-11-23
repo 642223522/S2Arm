@@ -1,0 +1,36 @@
+diff --git a/src/Ryujinx.Common/Utilities/NetworkHelpers.cs b/src/Ryujinx.Common/Utilities/NetworkHelpers.cs
+index 3df23cf622fd947229433c3fc3dc16cf5ebd5c69..b967a42da89ddf56ba8700748573225d2cab2590 100644
+--- a/src/Ryujinx.Common/Utilities/NetworkHelpers.cs
++++ b/src/Ryujinx.Common/Utilities/NetworkHelpers.cs
+@@ -119,19 +119,23 @@ namespace Ryujinx.Common.Utilities
+             }
+ 
+             // A route probe resolves the usual "which adapter wins?" ambiguity without sending
+-            // traffic. Before a peer is known, the system default route is the strongest signal,
+-            // but a VPN source must be rejected for a LAN room. If there is no usable default
+-            // route, score every physical gateway source instead of trusting enumeration order.
++            // traffic. Before a peer is known, score every LAN gateway source first. Split-tunnel
++            // systems can route a documentation/Internet probe through Wi-Fi even when the active
++            // wired LAN is the preferred route to the room's subnet. Only use the system default
++            // probe when no LAN gateway candidate exists.
+             IPAddress defaultSource = null;
+             if (remoteAddress == null)
+             {
+-                IPAddress routedSource = ProbeRouteSource(DefaultRouteProbeTarget, null);
+-                if (!IsTunnel(FindAdapterByAddress(routedSource)))
++                defaultSource = ProbeLanGatewaySource(interfaces);
++                if (defaultSource == null)
+                 {
+-                    defaultSource = routedSource;
+-                }
++                    IPAddress routedSource = ProbeRouteSource(DefaultRouteProbeTarget, null);
++                    if (!IsTunnel(FindAdapterByAddress(routedSource)))
++                    {
++                        defaultSource = routedSource;
++                    }
+ 
+-                defaultSource ??= ProbeLanGatewaySource(interfaces);
++                }
+             }
+             else
+             {
