@@ -332,7 +332,7 @@ static const char *const k_prec_types[] = {
     "isampler2D", "isampler3D", "isamplerCube", "isampler2DArray", "isampler2DMS", "usampler2D", "usampler3D", "usamplerCube", "usampler2DArray", "usampler2DMS",
     "image2D", "iimage2D", "uimage2D", "image3D", "iimage3D", "uimage3D", "imageCube", "iimageCube", "uimageCube", "image2DArray", "iimage2DArray", "uimage2DArray",
 };
-static int has_word(const char *t, size_t n, const char *w) {
+static int prec_has_word(const char *t, size_t n, const char *w) {
     size_t wl = strlen(w);
     for (size_t i = 0; i + wl <= n; i++) if (!memcmp(t + i, w, wl) && boundary_before(t, i) && (i + wl == n || !is_word((unsigned char)t[i + wl]))) return 1;
     return 0;
@@ -351,7 +351,7 @@ static int has_prec_decl(const char *t, size_t n, const char *w) {   // precisio
 static char *sampler_precision(char *t, size_t n, size_t *on) {   // t 以「#version …」行开头（es100 / 310 es 两条路都是）
     sb add = {0};
     for (size_t i = 0; i < sizeof k_prec_types / sizeof *k_prec_types; i++)
-        if (has_word(t, n, k_prec_types[i]) && !has_prec_decl(t, n, k_prec_types[i])) { sb_str(&add, "precision highp "); sb_str(&add, k_prec_types[i]); sb_str(&add, ";\n"); }
+        if (prec_has_word(t, n, k_prec_types[i]) && !has_prec_decl(t, n, k_prec_types[i])) { sb_str(&add, "precision highp "); sb_str(&add, k_prec_types[i]); sb_str(&add, ";\n"); }
     if (add.oom) { free(add.p); return NULL; }
     if (!add.n) { *on = n; return t; }
     // 插在开头连续的预处理行（#version / #extension / #pragma …，及其间空行）之后：#extension 必须在任何非预处理记号之前
