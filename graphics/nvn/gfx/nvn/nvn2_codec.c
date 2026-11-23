@@ -41,6 +41,9 @@
 #include <CoreMedia/CoreMedia.h>
 #include <CoreVideo/CoreVideo.h>
 #include <TargetConditionals.h>
+#if TARGET_OS_IPHONE
+#include <os/proc.h>   // os_proc_available_memory：先解队列按剩余内存定格数
+#endif
 
 // services/vpx 的垫片（libs2a_vpx.a：宿主与 iOS App 链直连层时一起链）。NVN 单测链 libnvn.a 不链服务层编解码库：弱引用，按登记放行
 // 弱链接[nvntest]：s2a_vp9_open（services/vpx 提供；宿主 / iOS 照常链上，NVN 单测不链，runtime/build.mk 按这行放行未定义）
@@ -658,7 +661,7 @@ typedef struct cvdec {
     // 先解几帧（ah）：游戏只登记 2 个缓冲（一个在显示、一个在填），解码线程原本最多领先 1 帧；dav1d 一包偶尔 100+ ms（关键帧、和编译服务抢核），
     //   游戏就重复上一帧、影片越放越慢，声音照真实时间放、跑到前面（一款动作冒险游戏：154 s 的片子多放约 9 s）。
     //   解码线程把转好格式的帧放进宿主内存的先解队列（按图像布局，最多 CV_AHEAD_BYTES），出帧线程（eth）有空缓冲就拷进去、照旧发同步点
-    struct cv_ahead { uint8_t *p; size_t cap, size; uint16_t fw, fh; int64_t pts; int eos, gen, has; } ah[32]; int ah_h, ah_n, ah_cap, ah_epoch; pthread_t eth;
+    struct cv_ahead { uint8_t *p; size_t cap, size; uint16_t fw, fh; int64_t pts; int eos, gen, has; } ah[32]; int ah_h, ah_n, ah_cap, ah_epoch; size_t ah_frame; pthread_t eth;
     uint64_t ah_peak, ah_low;   // 队列最深 / 出帧线程取到时队列已空（解码跟不上）的次数
     uint64_t props_wait_n, props_wait_ns;   // 游戏取帧属性时那一格还没帧、等了的次数 / 合计
 } cvdec;
@@ -720,14 +723,32 @@ static void wr_pb(const cv_img *im, void *a) {
 static void wr_ahead(const cv_img *im, void *a) { const struct cv_ahead *x = a; memcpy(im->host, x->p, x->size < im->size ? x->size : im->size); }
 // 已登记缓冲的图像布局（同一个池，布局一样）；0 = 还没有登记的
 static int cv_tpl_locked(cvdec *d, cv_img *out) { for (int i = 0; i < CV_BUFS; i++) if (d->buf[i].reg && cv_img_get(d->buf[i].img, out)) return 1; return 0; }
+// 先解队列格数：上限 CV_AHEAD_BYTES；iOS 再按当时剩余内存压到 os_proc_available_memory() / 8（读 0 就只开 1 格），
+//   装不下就少开几格，最少 1 格、最多 CV_AHEAD_MAX。每格内存到解码器销毁才放，整段影片都占着。DM_NVN_AVAIL_MB 可代替读数（测试 / 在 Mac 上看读数）
+static int cv_ahead_slots(cvdec *d, size_t frame) {
+    uint64_t lim = CV_AHEAD_BYTES, avail = 0; int have_avail = 0;
+    const char *e = getenv("DM_NVN_AVAIL_MB");
+    if (e && *e && atoll(e) >= 0) { avail = (uint64_t)atoll(e) << 20; have_avail = 1; }
+#if TARGET_OS_IPHONE
+    else { avail = os_proc_available_memory(); have_avail = 1; }
+#endif
+    if (have_avail && avail / 8 < lim) lim = avail / 8;
+    uint64_t c = frame ? lim / frame : 1;
+    int n = (int)(c < 1 ? 1 : c > CV_AHEAD_MAX ? CV_AHEAD_MAX : c);
+    char av[48] = ""; if (have_avail) snprintf(av, sizeof av, "，剩余内存 %.0f MB", avail / 1048576.0);
+    LOG("视频解码：先解队列 %d 格 × %zu 字节 = %.1f MB（上限 %.1f MB%s）", n, frame, n * (double)frame / 1048576.0, lim / 1048576.0, av);
+    d->ah_frame = frame;
+    return n;
+}
 // 解码线程：转好的一帧进先解队列（满了等出帧线程取走）；0 = 解码器要退 / 换代（同 cv_emit_now）
 static int cv_emit(cvdec *d, void (*wr)(const cv_img *, void *), void *arg, uint16_t fw, uint16_t fh, int64_t pts_ns, int eos, int gen) {
     cv_img tpl;
     pthread_mutex_lock(&d->mu);
     int have = cv_tpl_locked(d, &tpl);
     if (wr && !have) { pthread_mutex_unlock(&d->mu); return cv_emit_now(d, wr, arg, fw, fh, pts_ns, eos, gen); }   // 还没登记缓冲：照旧直接等
-    if (!d->ah_cap) { size_t c = have && tpl.size ? CV_AHEAD_BYTES / tpl.size : 4; d->ah_cap = (int)(c < 4 ? 4 : c > CV_AHEAD_MAX ? CV_AHEAD_MAX : c); }
-    while (!d->quit && d->gen == gen && d->ah_n >= d->ah_cap) pthread_cond_wait(&d->cv, &d->mu);
+    if (!d->ah_cap && have) d->ah_cap = cv_ahead_slots(d, tpl.size);
+    int cap = d->ah_cap ? d->ah_cap : 1;   // 还没登记缓冲时进队的只有不带图像的帧（不占内存）
+    while (!d->quit && d->gen == gen && d->ah_n >= cap) pthread_cond_wait(&d->cv, &d->mu);
     if (d->quit || d->gen != gen) { pthread_mutex_unlock(&d->mu); return 0; }
     struct cv_ahead *a = &d->ah[(d->ah_h + d->ah_n) % CV_AHEAD_MAX];
     pthread_mutex_unlock(&d->mu);
@@ -1151,7 +1172,7 @@ static void cv_teardown(cvdec *d, int guest_event) {
         destroy((uint8_t *)t + 8);   // 托管句柄随之关掉
     }
     s2a_event_release(d->ready_ev);
-    LOG("视频解码：先解队列 %d 格、最深 %llu 帧，出帧线程取到空队列 %llu 次；游戏取帧属性时那格还没帧 %llu 次、合计等 %.1f ms", d->ah_cap, (unsigned long long)d->ah_peak,
+    LOG("视频解码：先解队列 %d 格（%.1f MB）、最深 %llu 帧，出帧线程取到空队列 %llu 次；游戏取帧属性时那格还没帧 %llu 次、合计等 %.1f ms", d->ah_cap, d->ah_cap * (double)d->ah_frame / 1048576.0, (unsigned long long)d->ah_peak,
         (unsigned long long)d->ah_low, (unsigned long long)d->props_wait_n, d->props_wait_ns / 1e6);
     LOG("Switch 2 视频：%s 解码器结束，出帧 %llu；解码 %llu 包，每包平均 %.2f ms、最长 %.2f ms；写进图像每帧平均 %.2f ms（%s）", cv_name[d->codec], (unsigned long long)d->frames, (unsigned long long)d->dec_n,
         d->dec_n ? d->dec_ns / 1e6 / (double)d->dec_n : 0.0, d->dec_max / 1e6, d->wr_n ? d->wr_ns / 1e6 / (double)d->wr_n : 0.0,

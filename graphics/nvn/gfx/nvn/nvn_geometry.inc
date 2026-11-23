@@ -240,12 +240,14 @@ static NSArray *mxl_get(const char *key, int st, char *why, size_t nw, int bg) {
     if (v == NSNull.null || ![v isKindOfClass:NSArray.class]) { if (!why[0]) snprintf(why, nw, "no translation of it on this device"); return nil; }
     return v;
 }
-static void mxl_record(const char *key, int st, NSString *entry) {   // 提交线程
+static void mxl_record(const char *key, int st, NSString *entry) {
     NSString *path = mxl_list_path(); if (!path) return;
     NSString *line = [NSString stringWithFormat:@"%s\t%d\t%@", key, st, entry];
+    os_unfair_lock_lock(&g_mxl_lock);
     if (!g_mxl_listed) g_mxl_listed = [NSMutableSet set];
-    if ([g_mxl_listed containsObject:line]) return;
-    [g_mxl_listed addObject:line];
+    BOOL seen = [g_mxl_listed containsObject:line]; if (!seen) [g_mxl_listed addObject:line];
+    os_unfair_lock_unlock(&g_mxl_lock);
+    if (seen) return;
     FILE *f = fopen(path.fileSystemRepresentation, "a"); if (!f) return;
     fprintf(f, "%s\n", line.UTF8String); fclose(f);
 }
@@ -256,11 +258,14 @@ static void mtk_emu_prebuild(void) {
     NSString *txt = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil]; if (!txt.length) return;
     if (!mtk_emu_on()) return;
     NSMutableArray *rows = [NSMutableArray array]; NSMutableSet *libs = [NSMutableSet set];
-    if (!g_mxl_listed) g_mxl_listed = [NSMutableSet set];
     for (NSString *l in [txt componentsSeparatedByString:@"\n"]) {
         NSArray *c = [l componentsSeparatedByString:@"\t"]; if (c.count != 3 || [c[0] length] < 16) continue;
-        [g_mxl_listed addObject:l]; [rows addObject:c]; [libs addObject:[NSString stringWithFormat:@"%@/%@", c[0], c[1]]];
+        [rows addObject:c]; [libs addObject:[NSString stringWithFormat:@"%@/%@", c[0], c[1]]];
     }
+    os_unfair_lock_lock(&g_mxl_lock);   // warm_start 不一定在提交线程上（换目录时重起预热），跟 mxl_record 共用一把锁
+    if (!g_mxl_listed) g_mxl_listed = [NSMutableSet set];
+    for (NSArray *c in rows) [g_mxl_listed addObject:[c componentsJoinedByString:@"\t"]];
+    os_unfair_lock_unlock(&g_mxl_lock);
     if (!rows.count) return;
     uint64_t t0 = bp_now(); NSUInteger nrows = rows.count, nlibs = libs.count;
     MLOG("task / mesh host stages: prebuilding %lu libraries (%lu entries) from %s in the background", (unsigned long)nlibs, (unsigned long)nrows, path.UTF8String);
