@@ -973,6 +973,20 @@ static int lp_kind_storage_class(const char *kind) {
     return -1;
 }
 
+// SPIR-V 模块里有没有声明某个 OpCapability：1 有 / 0 没有 / -1 读不懂（调用方按「说不准」处理）。
+//   整份模块按指令字数走一遍，不假定能力声明都排在最前面。
+static int lp_spv_has_capability(const uint8_t *spv, size_t n, uint32_t cap) {
+    if (!spv || n < 20 || (n & 3) || *(const uint32_t *)spv != SpvMagicNumber) return -1;
+    const uint32_t *w = (const uint32_t *)spv; const size_t nw = n / 4;
+    for (size_t i = 5; i < nw; ) {
+        const uint32_t op = w[i] & 0xffff, wc = w[i] >> 16;
+        if (!wc || wc > nw - i) return -1;
+        if (op == SpvOpCapability && wc >= 2 && w[i + 1] == cap) return 1;
+        i += wc;
+    }
+    return 0;
+}
+
 int s2a_libpack_stage_sbuf_slots(const struct s2a_libpack *lp_c, const uint8_t key[8], unsigned nvn, const char *topology, uint32_t *slots) {
     struct s2a_libpack *lp = (struct s2a_libpack *)lp_c;
     if (slots) *slots = 0;
@@ -1009,6 +1023,15 @@ int s2a_libpack_stage_sbuf_slots(const struct s2a_libpack *lp_c, const uint8_t k
             if (jf_u32(b, "reg", &reg) || reg >= 16) goto done;
             mask |= 1u << reg;
         }
+        // 不经描述符的内存访问：这一段的 SPIR-V 声明了 PhysicalStorageBufferAddresses = 着色器可以按 64 位地址直接读写内存，
+        //   那条路不走 rp_S.ssbo 的槽，_b.json 的绑定表就不是它碰得到的全部存储 → 说不准（返回 2，与别的「说不准」分开计数）。
+        //   .spv 取不到 / 读不懂同样说不准（返回 1）：没有 .spv 的键本来也合成不出库程序。
+        uint8_t *spv = NULL; size_t sn = 0; char sw[64] = "";
+        const int got = s2a_libpack_get(lp, key, gs ? LP_K_VGSPV + (unsigned)gt : LP_K_BSPV, &spv, &sn, sw, sizeof sw);
+        const int psb = got == S2A_LIBPACK_HIT ? lp_spv_has_capability(spv, sn, SpvCapabilityPhysicalStorageBufferAddresses) : -1;
+        free(spv);
+        if (psb < 0) goto done;
+        if (psb) { out = 2; goto done; }
         *slots = mask;
         out = 0;
     }

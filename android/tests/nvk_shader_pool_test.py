@@ -238,14 +238,14 @@ def main():
              '            else if (used & um[st]) used_unaligned = 1;', '            else if (0) used_unaligned = 1;',
              "gate case 'unaligned storage, slot the program uses (fs)' #0: library not used"),
             ('ssbo-unknown-as-unused',   # 库里没有的程序读不出用到哪几个槽：现编也必须按非对齐编（编出来的代码要对得上真实绑定）
-             '(unsigned)st, q->prim, &used)) unknown = 1;', '(unsigned)st, q->prim, &used)) (void)0;',
+             'if (r != SBU_KNOWN) { unknown = 1; by_addr = r == SBU_PSB; }', 'if (r != SBU_KNOWN) { by_addr = r == SBU_PSB; }',
              "gate case 'unaligned storage, program not in library' #0: live compile request carries hasUnalignedStorageBuffer=true"),
             ('ssbo-fill-facts-unrefined',   # 程序身份（fill_facts）不跟新口径、快路摘要跟：身份说非对齐，库件放不出来
              '    if (un && ssbo_used_slots_on()) {', '    if (un && !count && ssbo_used_slots_on()) {',
              "gate case 'unaligned storage, slot the program does not use': hit from the library"),
             ('ssbo-stages-merged',
              '            else if (used & um[st]) used_unaligned = 1;', '            else if (used & (um[0] | um[1] | um[2])) used_unaligned = 1;',
-             "gate case 'unaligned storage, only in another stage': hit from the library"),
+             "gate case 'unaligned storage, crossed between stages': hit from the library"),   # 「各段各算各的」要靠两段交叉的那一行才抓得到：只有一段有非对齐绑定时，另一段本来就不读库
             ('ssbo-slots-merged',
              '            else if (used & um[st]) used_unaligned = 1;', '            else if (used && um[st]) used_unaligned = 1;',
              "gate case 'unaligned storage, another slot of the same stage': hit from the library"),
@@ -254,7 +254,7 @@ def main():
              "gate case 'unaligned storage, slot the program uses (fs)' #0: library not used"),
             ('ssbo-wrong-stage-read',
              'sbu_stage_slots(stage_key((unsigned)st), (unsigned)st, q->prim, &used)', 'sbu_stage_slots(stage_key((unsigned)st), 0u, q->prim, &used)',
-             "gate case 'unaligned storage, only in another stage': hit from the library"),
+             "gate case 'unaligned storage, slot the program does not use': hit from the library"),   # 片元段（有非对齐绑定才会被问）当成顶点段去读：stage 对不上 → 说不准 → 被挡下
             ('ssbo-switch-ignored',
              '    if (un && ssbo_used_slots_on()) {', '    if (un && (ssbo_used_slots_on() || 1)) {',
              "gate case 'unaligned storage, switch off' #0: library not used"),
@@ -268,11 +268,32 @@ def main():
              '            if (used_unaligned) atomic_fetch_add_explicit(&g_sbu_used, 1, memory_order_relaxed);', '            if (used_unaligned) (void)0;',
              'ssbo readout line'),
             ('ssbo-unknown-not-counted',
-             '            else if (unknown) atomic_fetch_add_explicit(&g_sbu_unknown, 1, memory_order_relaxed);', '            else if (unknown) (void)0;',
+             '                atomic_fetch_add_explicit(&g_sbu_unknown, 1, memory_order_relaxed);\n', '',
              'ssbo readout line'),
             ('ssbo-counted-on-every-call',
              '        if (count) {\n            atomic_fetch_add_explicit(&g_sbu_calls,', '        if (count || 1) {\n            atomic_fetch_add_explicit(&g_sbu_calls,',
              'ssbo readout line'),
+            # 只读真有非对齐绑定的阶段、按阶段键缓存、按地址访问内存的能力单列、判定本身的开销有读数：各撤一处，--lp-gate 必红。
+            #   没有非对齐绑定的阶段也去读（顶点键库里没有 → 读不出 → 退回旧口径）：「顶点段绑定全对齐」那一行红；
+            #   缓存永远不命中：每次判定都重读库，「按阶段键缓存」那几条红；读库次数 / 命中次数 / 读库耗时没记：读数行红
+            ('ssbo-unaligned-free-stage-read',
+             '            if (!um[st]) continue;   // 这个阶段没有非对齐的绑定：它用哪些槽都不受影响，不必读库\n', '',
+             "gate case 'unaligned storage, stage without unaligned binding is not in library' #0: live compile request carries hasUnalignedStorageBuffer=false"),
+            ('ssbo-psb-not-counted',
+             '                if (by_addr) atomic_fetch_add_explicit(&g_sbu_psb, 1, memory_order_relaxed);\n', '                (void)by_addr;\n',
+             'ssbo readout line'),
+            ('ssbo-cache-never-hits',
+             '    if (e && e->state) {\n        atomic_store_explicit(&g_sbu_hits,', '    if (0 && e && e->state) {\n        atomic_store_explicit(&g_sbu_hits,',
+             'stage-key cache: two stage keys read the library once each'),
+            ('ssbo-reads-not-counted',
+             '        atomic_fetch_add_explicit(&g_sbu_reads, 1, memory_order_relaxed);\n', '',
+             'ssbo readout line'),
+            ('ssbo-hits-not-counted',
+             '        atomic_store_explicit(&g_sbu_hits, atomic_load_explicit(&g_sbu_hits, memory_order_relaxed) + 1, memory_order_relaxed);   // 单写者：不用带锁的加法\n', '',
+             'ssbo readout line: cache hits cover every new program'),
+            ('ssbo-read-time-not-counted',
+             '        atomic_fetch_add_explicit(&g_sbu_read_ns, dt, memory_order_relaxed);\n', '',
+             'ssbo readout line: library read time is recorded'),
         ]
         for name, old, new, expected in cases:
             assert code.count(old) == 1, (name, 'mutation anchor')

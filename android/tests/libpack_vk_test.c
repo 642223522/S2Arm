@@ -51,7 +51,7 @@ static int mk_pack(struct trec *recs, uint32_t n, const uint8_t *payloads[], siz
     for (uint32_t i = 0; i < n; i++) { recs[i].shard = 0; recs[i].off = off; fwrite(payloads[i], 1, plens[i], f); off += plens[i]; }
     fclose(f);
     qsort(recs, n, sizeof *recs, trec_cmp);
-    uint8_t idx[48 + 16 + 24 * 64];
+    uint8_t idx[48 + 16 + 24 * 128];
     size_t at = 0;
     wr(idx, "S2ALIB\0\0", 8, &at);
     wr32(idx, 1, &at); wr32(idx, n, &at); wr32(idx, nshard ? nshard : 1, &at); wr32(idx, 0, &at);
@@ -1558,39 +1558,73 @@ int main(void) {
             nb_ += (size_t)snprintf(nonstorage_body + nb_, sizeof nonstorage_body - nb_, "%s{\"msl_name\":\"n%zu\",\"kind\":\"%s\",\"reg\":%zu,\"arg_id\":%zu}", i ? "," : "", i, NONSTORAGE_KINDS[i], i % 8, i);
         CHECK(nb_ < sizeof nonstorage_body, "非存储种类夹具没有被截断");
         #define SB(kind_, reg_, idx_) "{\"msl_name\":\"s\",\"kind\":\"" kind_ "\",\"index\":" #idx_ ",\"reg\":" #reg_ ",\"rw\":true,\"arg_id\":1}"
-        struct sbcase { const char *stage; uint32_t gs_topo; int kind; const char *dm_override; const char *body; const char *raw; };
+        // SPIR-V 夹具：只为能力扫描——头 + 几条指令，不要求设备上建得出来。能力编号：1 Shader、11 Int64、5347 PhysicalStorageBufferAddresses
+        //   （5348 是 addressing model PhysicalStorageBuffer64，5346 不是任何一条这里关心的能力）
+        static const uint32_t SPV_CLEAN[]     = { 0x07230203u, 0x00010000u, 0u, 3u, 0u, 0x00020011u, 1u, 0x00020011u, 11u };
+        static const uint32_t SPV_PSB_FIRST[] = { 0x07230203u, 0x00010500u, 0u, 3u, 0u, 0x00020011u, 5347u, 0x00020011u, 1u };
+        static const uint32_t SPV_PSB_LATE[]  = { 0x07230203u, 0x00010500u, 0u, 3u, 0u, 0x00020011u, 1u, 0x00020011u, 11u, 0x00020011u, 5347u, 0x0003000eu, 5348u, 0u };
+        static const uint32_t SPV_NEAR_MISS[] = { 0x07230203u, 0x00010500u, 0u, 3u, 0u, 0x00020011u, 5346u, 0x00020011u, 5348u,
+                                                  0x00030005u, 5347u, 0x00000078u,   // OpName %5347 "x"：第一个操作数恰好是 5347（大着色器里 id 很容易编到这个号），但它不是能力声明
+                                                  0x00040015u, 1u, 32u, 0u, 0x0004002bu, 1u, 2u, 5347u };   // OpTypeInt 32 0；OpConstant（值 5347，也不是能力声明）
+        static const uint32_t SPV_BAD_LEN[]   = { 0x07230203u, 0x00010000u, 0u, 3u, 0u, 0x00050011u, 1u };   // 指令字数 5，模块里只剩 2 个字
+        static const uint32_t SPV_ZERO_LEN[]  = { 0x07230203u, 0x00010000u, 0u, 3u, 0u, 0x00000011u, 5347u };   // 指令字数 0
+        static const uint32_t SPV_BAD_MAGIC[] = { 0x07230204u, 0x00010000u, 0u, 3u, 0u, 0x00020011u, 1u };
+        static const uint32_t SPV_SHORT[]     = { 0x07230203u, 0x00010000u, 0u, 3u };   // 16 字节，不足一个模块头
+        enum { SV_CLEAN, SV_PSB_FIRST, SV_PSB_LATE, SV_NEAR_MISS, SV_BAD_LEN, SV_ZERO_LEN, SV_BAD_MAGIC, SV_SHORT, SV_NONE, SV_N };
+        static const struct { const uint32_t *w; size_t n; } SV[SV_N] = {
+            { SPV_CLEAN, sizeof SPV_CLEAN }, { SPV_PSB_FIRST, sizeof SPV_PSB_FIRST }, { SPV_PSB_LATE, sizeof SPV_PSB_LATE },
+            { SPV_NEAR_MISS, sizeof SPV_NEAR_MISS }, { SPV_BAD_LEN, sizeof SPV_BAD_LEN }, { SPV_ZERO_LEN, sizeof SPV_ZERO_LEN },
+            { SPV_BAD_MAGIC, sizeof SPV_BAD_MAGIC }, { SPV_SHORT, sizeof SPV_SHORT }, { NULL, 0 } };
+        enum { EX_NONE, EX_PSB_B, EX_PSB_VG3 };   // 同键再放一份「带该能力」的别种 spv：_b.spv（种类 52）/ _vg3.spv（种类 123），用来锁「按阶段挑对那一份读」
+        struct sbcase { const char *stage; uint32_t gs_topo; int kind; const char *dm_override; const char *body; const char *raw; int spv, extra; };
         // kind：1 = _b.json（LP_K_BJSON）；112 + t = _vg<t>.json（几何输入图元 t）。raw 非空：整份 json 用它（语法错 / 顶层不是对象等）
+        // spv：SV_*，随 json 写一份对应的 spv 记录（_b.json 配 _b.spv 种类 52；_vg<t>.json 配 _vg<t>.spv 种类 120 + t）；缺省 SV_CLEAN = 不带该能力的模块
         const struct sbcase C[] = {
-            /* 0  */ { "vs", 0, 1, NULL, "{\"msl_name\":\"c\",\"kind\":\"cbuf\",\"reg\":0,\"arg_id\":0}," SB("sbuf", 0, 0) ",{\"msl_name\":\"t\",\"kind\":\"tex\",\"reg\":5,\"arg_id\":2}," SB("sbuf", 3, 1) "," SB("sbuf", 15, 2), NULL },
-            /* 1  */ { "vs", 0, 1, NULL, "", NULL },
-            /* 2  */ { "vs", 0, 1, NULL, nonstorage_body, NULL },
-            /* 3  */ { "vs", 0, 1, NULL, SB("sbuf", 16, 0), NULL },
-            /* 4  */ { "vs", 0, 1, NULL, SB("sbuf_ubo", 1, 0), NULL },
-            /* 5  */ { "vs", 0, 1, NULL, SB("ubo_ptr", 1, 0), NULL },
-            /* 6  */ { "vs", 0, 1, NULL, SB("gmem_map", 1, 0), NULL },
-            /* 7  */ { "vs", 0, 1, NULL, SB("sbuf_push", 1, 0), NULL },
-            /* 8  */ { "vs", 0, 1, NULL, SB("geometry", 1, 0), NULL },
-            /* 9  */ { "vs", 0, 1, NULL, SB("future_storage", 1, 0), NULL },
-            /* 10 */ { "vs", 0, 1, NULL, "{\"msl_name\":\"s\",\"kind\":\"sbuf\",\"index\":0,\"rw\":true,\"arg_id\":1}", NULL },
-            /* 11 */ { "vs", 0, 1, NULL, "{\"msl_name\":\"x\",\"reg\":1,\"arg_id\":1}", NULL },
-            /* 12 */ { "vs", 0, 1, NULL, "{\"msl_name\":\"x\",\"kind\":\"sbuf_with_a_very_long_name_that_cannot_be_a_kind\",\"reg\":1,\"arg_id\":1}", NULL },
-            /* 13 */ { "vs", 0, 1, NULL, SB("sbuf", 15, 0), NULL },
-            /* 14 */ { "vs", 0, 1, NULL, SB("sbuf", 0, 0) "," SB("sbuf", 0, 1), NULL },
-            /* 15 */ { "ps", 0, 1, NULL, SB("sbuf", 2, 0), NULL },
-            /* 16 */ { "vs", 0, 1, "ffffffffffffffff", SB("sbuf", 1, 0), NULL },
-            /* 17 */ { "vs", 0, 1, NULL, "", "{\"key\":\"x_b\",\"stage\":\"vs\",\"dm_ctl\":\"%KEY%\",\"bindings\":[{\"kind\":\"sbuf\",\"reg\":1" },
-            /* 18 */ { "vs", 0, 1, NULL, "", "{\"key\":\"x_b\",\"stage\":\"vs\",\"dm_ctl\":\"%KEY%\",\"bindings\":[{\"kind\":\"sbuf\",\"reg\":1}]}xyz" },
-            /* 19 */ { "vs", 0, 1, NULL, "", "[1,2,3]" },
-            /* 20 */ { "fs", 0, 1, NULL, SB("sbuf", 1, 0), NULL },
-            /* 21 */ { "gs", 3, 115, NULL, SB("sbuf", 1, 0), NULL },
-            /* 22 */ { "gs", 0, 115, NULL, SB("sbuf", 1, 0), NULL },
-            /* 23 */ { "gs", 1, 113, NULL, SB("sbuf", 4, 0), NULL },
-            /* 24 */ { "gs", 3, 1, NULL, SB("sbuf", 1, 0), NULL },
-            /* 25 */ { "vs", 3, 115, NULL, SB("sbuf", 1, 0), NULL },
-            /* 26 */ { "vs", 0, 1, NULL, "", "{\"key\":\"x_b\",\"stage\":\"vs\",\"dm_ctl\":\"%KEY%\",\"bindings\":[{\"kind\":\"sbuf\",\"reg\":1}],\"tail\":\"abc}" },
+            /* 0  */ { "vs", 0, 1, NULL, "{\"msl_name\":\"c\",\"kind\":\"cbuf\",\"reg\":0,\"arg_id\":0}," SB("sbuf", 0, 0) ",{\"msl_name\":\"t\",\"kind\":\"tex\",\"reg\":5,\"arg_id\":2}," SB("sbuf", 3, 1) "," SB("sbuf", 15, 2), NULL, SV_CLEAN, EX_NONE },
+            /* 1  */ { "vs", 0, 1, NULL, "", NULL, SV_CLEAN, EX_NONE },
+            /* 2  */ { "vs", 0, 1, NULL, nonstorage_body, NULL, SV_CLEAN, EX_NONE },
+            /* 3  */ { "vs", 0, 1, NULL, SB("sbuf", 16, 0), NULL, SV_CLEAN, EX_NONE },
+            /* 4  */ { "vs", 0, 1, NULL, SB("sbuf_ubo", 1, 0), NULL, SV_CLEAN, EX_NONE },
+            /* 5  */ { "vs", 0, 1, NULL, SB("ubo_ptr", 1, 0), NULL, SV_CLEAN, EX_NONE },
+            /* 6  */ { "vs", 0, 1, NULL, SB("gmem_map", 1, 0), NULL, SV_CLEAN, EX_NONE },
+            /* 7  */ { "vs", 0, 1, NULL, SB("sbuf_push", 1, 0), NULL, SV_CLEAN, EX_NONE },
+            /* 8  */ { "vs", 0, 1, NULL, SB("geometry", 1, 0), NULL, SV_CLEAN, EX_NONE },
+            /* 9  */ { "vs", 0, 1, NULL, SB("future_storage", 1, 0), NULL, SV_CLEAN, EX_NONE },
+            /* 10 */ { "vs", 0, 1, NULL, "{\"msl_name\":\"s\",\"kind\":\"sbuf\",\"index\":0,\"rw\":true,\"arg_id\":1}", NULL, SV_CLEAN, EX_NONE },
+            /* 11 */ { "vs", 0, 1, NULL, "{\"msl_name\":\"x\",\"reg\":1,\"arg_id\":1}", NULL, SV_CLEAN, EX_NONE },
+            /* 12 */ { "vs", 0, 1, NULL, "{\"msl_name\":\"x\",\"kind\":\"sbuf_with_a_very_long_name_that_cannot_be_a_kind\",\"reg\":1,\"arg_id\":1}", NULL, SV_CLEAN, EX_NONE },
+            /* 13 */ { "vs", 0, 1, NULL, SB("sbuf", 15, 0), NULL, SV_CLEAN, EX_NONE },
+            /* 14 */ { "vs", 0, 1, NULL, SB("sbuf", 0, 0) "," SB("sbuf", 0, 1), NULL, SV_CLEAN, EX_NONE },
+            /* 15 */ { "ps", 0, 1, NULL, SB("sbuf", 2, 0), NULL, SV_CLEAN, EX_NONE },
+            /* 16 */ { "vs", 0, 1, "ffffffffffffffff", SB("sbuf", 1, 0), NULL, SV_CLEAN, EX_NONE },
+            /* 17 */ { "vs", 0, 1, NULL, "", "{\"key\":\"x_b\",\"stage\":\"vs\",\"dm_ctl\":\"%KEY%\",\"bindings\":[{\"kind\":\"sbuf\",\"reg\":1", SV_CLEAN, EX_NONE },
+            /* 18 */ { "vs", 0, 1, NULL, "", "{\"key\":\"x_b\",\"stage\":\"vs\",\"dm_ctl\":\"%KEY%\",\"bindings\":[{\"kind\":\"sbuf\",\"reg\":1}]}xyz", SV_CLEAN, EX_NONE },
+            /* 19 */ { "vs", 0, 1, NULL, "", "[1,2,3]", SV_CLEAN, EX_NONE },
+            /* 20 */ { "fs", 0, 1, NULL, SB("sbuf", 1, 0), NULL, SV_CLEAN, EX_NONE },
+            /* 21 */ { "gs", 3, 115, NULL, SB("sbuf", 1, 0), NULL, SV_CLEAN, EX_NONE },
+            /* 22 */ { "gs", 0, 115, NULL, SB("sbuf", 1, 0), NULL, SV_CLEAN, EX_NONE },
+            /* 23 */ { "gs", 1, 113, NULL, SB("sbuf", 4, 0), NULL, SV_CLEAN, EX_NONE },
+            /* 24 */ { "gs", 3, 1, NULL, SB("sbuf", 1, 0), NULL, SV_CLEAN, EX_NONE },
+            /* 25 */ { "vs", 3, 115, NULL, SB("sbuf", 1, 0), NULL, SV_CLEAN, EX_NONE },
+            /* 26 */ { "vs", 0, 1, NULL, "", "{\"key\":\"x_b\",\"stage\":\"vs\",\"dm_ctl\":\"%KEY%\",\"bindings\":[{\"kind\":\"sbuf\",\"reg\":1}],\"tail\":\"abc}", SV_CLEAN, EX_NONE },
+            // 不经描述符的访问：SPIR-V 声明 PhysicalStorageBufferAddresses（着色器按 64 位地址直接读写内存，不走存储缓冲槽）→ 绑定表不是它碰得到的全部存储
+            /* 27 */ { "vs", 0, 1, NULL, SB("sbuf", 2, 0), NULL, SV_PSB_FIRST, EX_NONE },
+            /* 28 */ { "ps", 0, 1, NULL, SB("sbuf", 1, 0), NULL, SV_PSB_LATE, EX_NONE },
+            /* 29 */ { "vs", 0, 1, NULL, "", NULL, SV_PSB_FIRST, EX_NONE },
+            /* 30 */ { "vs", 0, 1, NULL, SB("sbuf", 2, 0), NULL, SV_NEAR_MISS, EX_NONE },
+            /* 31 */ { "vs", 0, 1, NULL, SB("sbuf", 2, 0), NULL, SV_BAD_LEN, EX_NONE },
+            /* 32 */ { "vs", 0, 1, NULL, SB("sbuf", 2, 0), NULL, SV_ZERO_LEN, EX_NONE },
+            /* 33 */ { "vs", 0, 1, NULL, SB("sbuf", 2, 0), NULL, SV_BAD_MAGIC, EX_NONE },
+            /* 34 */ { "vs", 0, 1, NULL, SB("sbuf", 2, 0), NULL, SV_SHORT, EX_NONE },
+            /* 35 */ { "vs", 0, 1, NULL, SB("sbuf", 2, 0), NULL, SV_NONE, EX_NONE },
+            /* 36 */ { "gs", 3, 115, NULL, SB("sbuf", 1, 0), NULL, SV_PSB_FIRST, EX_NONE },
+            /* 37 */ { "gs", 3, 115, NULL, SB("sbuf", 1, 0), NULL, SV_CLEAN, EX_PSB_B },
+            /* 38 */ { "vs", 0, 1, NULL, SB("sbuf", 2, 0), NULL, SV_CLEAN, EX_PSB_VG3 },
         };
         enum { NC = (int)(sizeof C / sizeof C[0]) };
-        struct trec rs[NC + 4]; const uint8_t *ps_[NC + 4]; size_t ns_[NC + 4]; static char js[NC][4096];
+        enum { NREC = 3 * NC + 4 };   // 每个用例至多 json + spv + 一份别种 spv；末尾 4 条是标准夹具
+        struct trec rs[NREC]; const uint8_t *ps_[NREC]; size_t ns_[NREC]; static char js[NC][4096];
+        int nrec = 0;
         for (int i = 0; i < NC; i++) {
             const uint64_t key = base + (uint64_t)i;
             char kh[17], dm[17];
@@ -1605,18 +1639,30 @@ int main(void) {
             } else {
                 snprintf(js[i], sizeof js[i], "{\"key\":\"%s_vg%u\",\"stage\":\"%s\",\"dm_ctl\":\"%s\",\"gs_input_topology\":%u,\"bindings\":[%s]}", kh, C[i].gs_topo, C[i].stage, dm, C[i].gs_topo, C[i].body);
             }
-            rs[i] = (struct trec){ .key = key, .kind = (uint8_t)C[i].kind, .len = (uint32_t)strlen(js[i]) };
-            ps_[i] = (const uint8_t *)js[i]; ns_[i] = strlen(js[i]);
+            rs[nrec] = (struct trec){ .key = key, .kind = (uint8_t)C[i].kind, .len = (uint32_t)strlen(js[i]) };
+            ps_[nrec] = (const uint8_t *)js[i]; ns_[nrec] = strlen(js[i]); nrec++;
+            // 配套的 spv：_b.json（种类 1）配 _b.spv（种类 52）；_vg<t>.json（种类 112 + t）配 _vg<t>.spv（种类 120 + t）。SV_NONE 不写
+            const uint8_t spv_kind = C[i].kind == 1 ? 52 : (uint8_t)(C[i].kind + 8);
+            if (C[i].spv != SV_NONE) {
+                rs[nrec] = (struct trec){ .key = key, .kind = spv_kind, .len = (uint32_t)SV[C[i].spv].n };
+                ps_[nrec] = (const uint8_t *)SV[C[i].spv].w; ns_[nrec] = SV[C[i].spv].n; nrec++;
+            }
+            if (C[i].extra != EX_NONE) {   // 别种 spv 带该能力：_b.spv（52）/ _vg3.spv（123）；读对的那一份不受它影响
+                rs[nrec] = (struct trec){ .key = key, .kind = C[i].extra == EX_PSB_B ? 52 : 123, .len = (uint32_t)SV[SV_PSB_FIRST].n };
+                ps_[nrec] = (const uint8_t *)SV[SV_PSB_FIRST].w; ns_[nrec] = SV[SV_PSB_FIRST].n; nrec++;
+            }
         }
         #undef SB
         // 标准 vs+fs 夹具（与最上面那个容器同一份记录）：末尾四条，给「与合成对账」用
-        rs[NC]     = (struct trec){ .key = 0x0123456789abcdef, .kind = 1,  .len = (uint32_t)strlen(VS_JSON) };       ps_[NC]     = (const uint8_t *)VS_JSON; ns_[NC]     = strlen(VS_JSON);
-        rs[NC + 1] = (struct trec){ .key = 0x0123456789abcdef, .kind = 52, .len = sizeof libpack_vert_spv };        ps_[NC + 1] = libpack_vert_spv;         ns_[NC + 1] = sizeof libpack_vert_spv;
-        rs[NC + 2] = (struct trec){ .key = 0x1032547698badcfe, .kind = 1,  .len = (uint32_t)strlen(PS_JSON) };       ps_[NC + 2] = (const uint8_t *)PS_JSON; ns_[NC + 2] = strlen(PS_JSON);
-        rs[NC + 3] = (struct trec){ .key = 0x1032547698badcfe, .kind = 52, .len = sizeof libpack_frag_spv };        ps_[NC + 3] = libpack_frag_spv;         ns_[NC + 3] = sizeof libpack_frag_spv;
+        rs[nrec]     = (struct trec){ .key = 0x0123456789abcdef, .kind = 1,  .len = (uint32_t)strlen(VS_JSON) };       ps_[nrec]     = (const uint8_t *)VS_JSON; ns_[nrec]     = strlen(VS_JSON);
+        rs[nrec + 1] = (struct trec){ .key = 0x0123456789abcdef, .kind = 52, .len = sizeof libpack_vert_spv };        ps_[nrec + 1] = libpack_vert_spv;         ns_[nrec + 1] = sizeof libpack_vert_spv;
+        rs[nrec + 2] = (struct trec){ .key = 0x1032547698badcfe, .kind = 1,  .len = (uint32_t)strlen(PS_JSON) };       ps_[nrec + 2] = (const uint8_t *)PS_JSON; ns_[nrec + 2] = strlen(PS_JSON);
+        rs[nrec + 3] = (struct trec){ .key = 0x1032547698badcfe, .kind = 52, .len = sizeof libpack_frag_spv };        ps_[nrec + 3] = libpack_frag_spv;         ns_[nrec + 3] = sizeof libpack_frag_spv;
+        nrec += 4;
+        CHECK(nrec <= 120, "sbuf-slots pack fits the index buffer (<= 120 records)");
         snprintf(g_dir, sizeof g_dir, "%s/sbslots", tmpl);
         CHECK(mkdir(g_dir, 0700) == 0, "create sbuf-slots pack directory");
-        CHECK(mk_pack(rs, NC + 4, ps_, ns_, 1) == 0, "sbuf-slots pack written");
+        CHECK(mk_pack(rs, (uint32_t)nrec, ps_, ns_, 1) == 0, "sbuf-slots pack written");
         struct s2a_libpack *slp = NULL;
         CHECK(s2a_libpack_open(&slp, g_dir) == 1 && slp, "open sbuf-slots pack");
         const uint64_t sh0 = s2a_libpack_hits(), sm0 = s2a_libpack_misses(), sr0 = s2a_libpack_rejects();
@@ -1658,6 +1704,20 @@ int main(void) {
             { 24, 2, "Triangles", 0u, 1, "几何段只有 _b.json、没有 _vg3 → 说不准（不退到 _b.json 去读）" },
             { 25, 0, NULL,        0u, 1, "顶点段只有 _vg3、没有 _b.json → 说不准" },
             { 26, 0, NULL,        0u, 1, "bindings 之后还有语法错误的成员 → 说不准（整份核一遍，不只读用到的字段）" },
+            // 返回 2：库里读得到、但 SPIR-V 声明了按地址访问内存的能力（PhysicalStorageBufferAddresses）——绑定表不是它碰得到的全部存储，
+            //   调用方按「说不准」处理（与返回 1 同样退回旧口径），只是原因单列计数；集合同样清零
+            { 27, 0, NULL,        0u, 2, "SPIR-V 第一条能力就是 PhysicalStorageBufferAddresses → 返回 2、集合清零（绑定表里的 sbuf reg 2 不算数）" },
+            { 28, 1, NULL,        0u, 2, "片元段：该能力排在几条别的能力之后、后面还有 OpMemoryModel → 同样返回 2" },
+            { 29, 0, NULL,        0u, 2, "绑定表里一个存储槽也没有、但带该能力 → 返回 2（不当成「没用存储」）" },
+            { 30, 0, NULL,      0x4u, 0, "能力编号差一位（5346 / 5348）、第一个操作数恰为 5347 的 OpName、值为 5347 的常量都不是该能力声明 → 照常读到 0x4（只认 OpCapability 的操作数）" },
+            { 31, 0, NULL,        0u, 1, "SPIR-V 指令字数写到模块外面 → 读不懂，返回 1" },
+            { 32, 0, NULL,        0u, 1, "SPIR-V 指令字数为 0 → 读不懂，返回 1（不死循环）" },
+            { 33, 0, NULL,        0u, 1, "SPIR-V 魔数不对 → 读不懂，返回 1" },
+            { 34, 0, NULL,        0u, 1, "SPIR-V 不足一个模块头（16 字节）→ 读不懂，返回 1" },
+            { 35, 0, NULL,        0u, 1, "有 _b.json、没有 _b.spv → 读不到能力声明，返回 1（不当成没带该能力）" },
+            { 36, 2, "Triangles", 0u, 2, "几何段、三角输入：_vg3.spv 带该能力 → 返回 2" },
+            { 37, 2, "Triangles", 0x2u, 0, "几何段只看 _vg3.spv：同键的 _b.spv 带该能力也不影响 → 读到 0x2" },
+            { 38, 0, NULL,      0x4u, 0, "顶点段只看 _b.spv：同键的 _vg3.spv 带该能力也不影响 → 读到 0x4" },
             { 0,  3, NULL,  0u, 1, "细分控制段 → 说不准" },
             { 0,  4, NULL,  0u, 1, "细分求值段 → 说不准" },
             { 0,  5, NULL,  0u, 1, "计算段不走这里 → 说不准" },
@@ -1666,7 +1726,7 @@ int main(void) {
         for (size_t q = 0; q < sizeof Q / sizeof Q[0]; q++) {
             uint32_t got = 0xDEADBEEFu;
             const int rc = s2a_libpack_stage_sbuf_slots(slp, kb[Q[q].c], Q[q].nvn, Q[q].topo, &got);
-            char what[200]; snprintf(what, sizeof what, "存储槽集合：%s", Q[q].what);
+            char what[512]; snprintf(what, sizeof what, "存储槽集合：%s", Q[q].what);   // 够放最长的说明：截在汉字中间会让输出不是合法 UTF-8，负控的断言匹配也对不上
             CHECK(rc == Q[q].rc && got == Q[q].want, what);
         }
         {   // 库里没有的键、空参数：说不准，集合清零，不崩

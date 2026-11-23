@@ -1477,29 +1477,66 @@ static void lp_gate_probe(const struct work_snap *s) {
 //   连这个程序根本没用到的槽（上一个通道留下的旧绑定）也算。出包预编库只有对齐变体，这个程序就被挡在库外、改成现场编。
 //   新口径：着色器只访问它自己声明的存储缓冲，没用到的槽绑成什么都不影响它的代码，所以「非对齐」只在这个程序真用到的槽上才有意义。
 //   用到的槽取自出包预编库里这个阶段键的 _b.json（s2a_libpack_stage_sbuf_slots）。任何一段说不准（库里没有这个键 / 读不出 / 有别的存储种类 /
-//   几何输入图元没有那一份 / 库被关掉）就退回旧口径——不猜。
+//   几何输入图元没有那一份 / 这一段的 SPIR-V 带 PhysicalStorageBufferAddresses 能力（按地址直接访问内存，不经槽）/ 库被关掉）就退回旧口径——不猜。
+//   只有真有非对齐绑定的阶段才查：这个阶段的绑定全对齐，它用哪些槽都不受影响。
 //   用到的槽是阶段键的函数（同键同槽集），哪些槽对齐则进了程序身份的事实位，所以「身份」仍然唯一决定「这一笔该用现编码还是库件」。
 //   只在旧口径说「有非对齐」时才查（其余情形答案本来就是「没有」）；开关 debug.s2a.nvk_lp_used_slots=0 退回旧口径（对照用）。
 // 提交线程独占（同 g_comb_sig 的约定）：缓存不加锁；读库那一下在 g_lp_mu 下（和工作线程共用容器句柄）。
-enum { SBU_N = 8192, SBU_KNOWN = 1, SBU_UNKNOWN = 2 };
-static struct sbu_ent { uint8_t key[8]; uint8_t nvn, prim, state; uint16_t mask; } g_sbu[SBU_N];   // 直接映射：撞了就换（代价是再读一次库，不影响正确性）
-static _Atomic uint64_t g_sbu_calls, g_sbu_cleared, g_sbu_used, g_sbu_unknown;   // 只给读数：fill_facts 每份新程序记一次（input_sig 每笔绘制都调，不记）
-static int sbu_stage_slots(const uint8_t key[8], unsigned nvn, uint32_t prim, uint32_t *mask) {   // 1 = 读到了（*mask = 这一段用到的槽位集合）；0 = 说不准
-    const uint8_t pr = nvn == 2u ? (uint8_t)prim : 0;
+//   判定结果按阶段键（键 + 阶段号 + 几何输入图元）缓存，开放寻址、只增不换：同一个阶段键一局里只读一次库，
+//   后面不管来多少种新的绑定 / 状态组合，都只是查表。读库的次数、命中缓存的次数、读库的耗时都进读数行（lp_ssbo_text）。
+enum { SBU_KNOWN = 1, SBU_UNKNOWN = 2, SBU_PSB = 3 };   // 判定结果：读到了 / 说不准 / 说不准且原因是 SPIR-V 带按地址访问内存的能力（单列计数，处理同「说不准」）
+static struct sbu_ent { uint8_t key[8]; uint8_t nvn, prim, state; uint16_t mask; } *g_sbu;   // state 0 = 空格
+static uint32_t g_sbu_cap, g_sbu_n;   // 格数（2 的幂）/ 已存条数；装载不超过一半，探查必然碰到空格
+static _Atomic uint64_t g_sbu_calls, g_sbu_cleared, g_sbu_used, g_sbu_unknown, g_sbu_psb;   // 只给读数：fill_facts 每份新程序记一次（input_sig 每笔绘制都调，不记）
+static _Atomic uint64_t g_sbu_reads, g_sbu_hits, g_sbu_read_ns, g_sbu_read_max_ns;   // 判定本身的开销：读库（缓存里没有）的次数 / 命中缓存的次数 / 读库合计耗时 / 最长一次；只有提交线程写
+static struct sbu_ent *sbu_slot(const uint8_t key[8], unsigned nvn, uint8_t pr) {   // 这个阶段键的格子：已有条目，或该放它的空格（表还没建时 NULL）
+    if (!g_sbu_cap) return NULL;
     uint64_t k; memcpy(&k, key, 8);
-    struct sbu_ent *e = &g_sbu[(unsigned)(((k * 0x9E3779B97F4A7C15ull) >> 40) ^ nvn ^ ((unsigned)pr << 2)) & (SBU_N - 1)];
-    if (e->state && e->nvn == nvn && e->prim == pr && !memcmp(e->key, key, 8)) { *mask = e->mask; return e->state == SBU_KNOWN; }
-    uint32_t m = 0; int known = 0;
+    k = (k ^ (((uint64_t)nvn << 8) | pr)) * 0x9E3779B97F4A7C15ull;
+    for (uint32_t i = (uint32_t)(k >> 32) & (g_sbu_cap - 1); ; i = (i + 1) & (g_sbu_cap - 1)) {
+        struct sbu_ent *e = &g_sbu[i];
+        if (!e->state || (e->nvn == nvn && e->prim == pr && !memcmp(e->key, key, 8))) return e;
+    }
+}
+static int sbu_grow(void) {   // 装载过半就翻倍；分配不到就不缓存（照样答对，只是下次再读一遍库）
+    if (g_sbu_cap >= (1u << 22)) return 0;
+    const uint32_t nc = g_sbu_cap ? g_sbu_cap * 2 : 4096;
+    struct sbu_ent *nt = calloc(nc, sizeof *nt);
+    if (!nt) return 0;
+    struct sbu_ent *old = g_sbu; const uint32_t oc = g_sbu_cap;
+    g_sbu = nt; g_sbu_cap = nc;
+    for (uint32_t i = 0; i < oc; i++) if (old[i].state) *sbu_slot(old[i].key, old[i].nvn, old[i].prim) = old[i];
+    free(old);
+    return 1;
+}
+// 返回 SBU_KNOWN（*mask = 这一段用到的槽位集合）/ SBU_UNKNOWN / SBU_PSB（后两种 *mask = 0）
+static int sbu_stage_slots(const uint8_t key[8], unsigned nvn, uint32_t prim, uint32_t *mask) {
+    const uint8_t pr = nvn == 2u ? (uint8_t)prim : 0;
+    struct sbu_ent *e = sbu_slot(key, nvn, pr);
+    if (e && e->state) {
+        atomic_store_explicit(&g_sbu_hits, atomic_load_explicit(&g_sbu_hits, memory_order_relaxed) + 1, memory_order_relaxed);   // 单写者：不用带锁的加法
+        *mask = e->mask;
+        return e->state;
+    }
+    uint32_t m = 0; int rc = 1;   // s2a_libpack_stage_sbuf_slots 的返回：0 读到 / 1 说不准 / 2 说不准（SPIR-V 带按地址访问内存的能力）
     const char *root = getenv("S2A_SHADER_REVISION_ROOT");
     if (root && !nvn_plat_flag("no_libpack", 0)) {
+        const uint64_t t0 = now_ns();
         pthread_mutex_lock(&g_lp_mu);
         struct s2a_libpack *lp = libpack_for_locked(root);
-        known = lp && s2a_libpack_stage_sbuf_slots(lp, key, nvn, topology(prim), &m) == 0;
+        if (lp) rc = s2a_libpack_stage_sbuf_slots(lp, key, nvn, topology(prim), &m);
         pthread_mutex_unlock(&g_lp_mu);
+        const uint64_t dt = now_ns() - t0;
+        atomic_fetch_add_explicit(&g_sbu_reads, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&g_sbu_read_ns, dt, memory_order_relaxed);
+        if (dt > atomic_load_explicit(&g_sbu_read_max_ns, memory_order_relaxed)) atomic_store_explicit(&g_sbu_read_max_ns, dt, memory_order_relaxed);
     }
-    memcpy(e->key, key, 8); e->nvn = (uint8_t)nvn; e->prim = pr; e->mask = (uint16_t)(known ? m : 0); e->state = known ? SBU_KNOWN : SBU_UNKNOWN;
-    *mask = known ? m : 0;
-    return known;
+    const int st = rc == 0 ? SBU_KNOWN : rc == 2 ? SBU_PSB : SBU_UNKNOWN;
+    if (st != SBU_KNOWN) m = 0;
+    if ((uint64_t)(g_sbu_n + 1) * 2 > g_sbu_cap) e = sbu_grow() ? sbu_slot(key, nvn, pr) : NULL;   // 表要扩（扩不了就不存，答案照给）
+    if (e) { memcpy(e->key, key, 8); e->nvn = (uint8_t)nvn; e->prim = pr; e->mask = (uint16_t)m; e->state = (uint8_t)st; g_sbu_n++; }
+    *mask = m;
+    return st;
 }
 static int g_sbu_on = -1;   // 开关 debug.s2a.nvk_lp_used_slots（缺省开，=0 退回旧口径，A/B 对照用）：每局第一次用到时读一次（rp_shader_reset 清回 -1），不每笔绘制都读系统属性
 static int ssbo_used_slots_on(void) {
@@ -1517,17 +1554,22 @@ static void gfx_ssbo_align(const struct rp_shader_req *q, const struct s2a_direc
     }
     *any_out = any;
     if (un && ssbo_used_slots_on()) {
-        int used_unaligned = 0, unknown = 0;
+        int used_unaligned = 0, unknown = 0, by_addr = 0;
         for (int st = 0; st < nst && st < 3 && !used_unaligned && !unknown; st++) {
+            if (!um[st]) continue;   // 这个阶段没有非对齐的绑定：它用哪些槽都不受影响，不必读库
             uint32_t used = 0;
-            if (!sbu_stage_slots(stage_key((unsigned)st), (unsigned)st, q->prim, &used)) unknown = 1;
+            const int r = sbu_stage_slots(stage_key((unsigned)st), (unsigned)st, q->prim, &used);
+            if (r != SBU_KNOWN) { unknown = 1; by_addr = r == SBU_PSB; }
             else if (used & um[st]) used_unaligned = 1;
         }
         un = used_unaligned || unknown;
         if (count) {
             atomic_fetch_add_explicit(&g_sbu_calls, 1, memory_order_relaxed);
             if (used_unaligned) atomic_fetch_add_explicit(&g_sbu_used, 1, memory_order_relaxed);
-            else if (unknown) atomic_fetch_add_explicit(&g_sbu_unknown, 1, memory_order_relaxed);
+            else if (unknown) {
+                atomic_fetch_add_explicit(&g_sbu_unknown, 1, memory_order_relaxed);
+                if (by_addr) atomic_fetch_add_explicit(&g_sbu_psb, 1, memory_order_relaxed);
+            }
             else atomic_fetch_add_explicit(&g_sbu_cleared, 1, memory_order_relaxed);
         }
     }
@@ -1537,9 +1579,16 @@ static void gfx_ssbo_align(const struct rp_shader_req *q, const struct s2a_direc
 static uint64_t lp_ssbo_text(char *b, size_t bn) {
     const uint64_t n = atomic_load_explicit(&g_sbu_calls, memory_order_relaxed);
     if (!n) return 0;
-    snprintf(b, bn, "存储缓冲非对齐（只看程序真用到的槽）：新程序里绑定有非对齐的 %llu 份：程序没用到非对齐的槽、按对齐放行 %llu、用到了、照旧按非对齐 %llu、库里说不准、退回旧口径按非对齐 %llu",
+    const uint64_t ns = atomic_load_explicit(&g_sbu_read_ns, memory_order_relaxed);
+    snprintf(b, bn, "存储缓冲非对齐（只看程序真用到的槽）：新程序里绑定有非对齐的 %llu 份：程序没用到非对齐的槽、按对齐放行 %llu、用到了、照旧按非对齐 %llu、"
+                    "库里说不准、退回旧口径按非对齐 %llu（其中 SPIR-V 带按地址访问内存的能力 %llu）；"
+                    "判定读库 %llu 次、命中缓存 %llu 次，读库合计 %llu.%03llu 毫秒、平均每份新程序 %llu 微秒、最长一次 %llu 微秒",
              (unsigned long long)n, (unsigned long long)atomic_load_explicit(&g_sbu_cleared, memory_order_relaxed),
-             (unsigned long long)atomic_load_explicit(&g_sbu_used, memory_order_relaxed), (unsigned long long)atomic_load_explicit(&g_sbu_unknown, memory_order_relaxed));
+             (unsigned long long)atomic_load_explicit(&g_sbu_used, memory_order_relaxed), (unsigned long long)atomic_load_explicit(&g_sbu_unknown, memory_order_relaxed),
+             (unsigned long long)atomic_load_explicit(&g_sbu_psb, memory_order_relaxed),
+             (unsigned long long)atomic_load_explicit(&g_sbu_reads, memory_order_relaxed), (unsigned long long)atomic_load_explicit(&g_sbu_hits, memory_order_relaxed),
+             (unsigned long long)(ns / 1000000ull), (unsigned long long)(ns / 1000ull % 1000ull), (unsigned long long)(ns / n / 1000ull),
+             (unsigned long long)(atomic_load_explicit(&g_sbu_read_max_ns, memory_order_relaxed) / 1000ull));
     return n;
 }
 // 程序累计一行：出包预编 / 离线库 / 跨局缓存 / 现场编 合计第 1 个和每 50 个打一次（每发布一份新程序合计正好加 1）
@@ -2794,7 +2843,7 @@ void rp_shader_reset(void) {
     free(g_last_tab); g_last_tab = NULL;
     memset(g_comb_sig, 0, sizeof g_comb_sig);
     memset(g_high_sig, 0, sizeof g_high_sig);
-    memset(g_sbu, 0, sizeof g_sbu); g_sbu_on = -1;   // 「阶段键 → 用到的存储缓冲槽」缓存：随库走，换局 / 换库根不留旧答案；开关下一局重读
+    free(g_sbu); g_sbu = NULL; g_sbu_cap = g_sbu_n = 0; g_sbu_on = -1;   // 「阶段键 → 用到的存储缓冲槽」缓存：随库走，换局 / 换库根不留旧答案；开关下一局重读
     memset(g_ubo_need, 0, sizeof g_ubo_need); g_ubo_need_n = 0; g_ubo_learned = 0; atomic_store(&g_ubo_default_fact, 0);
     memset(g_idg, 0, sizeof g_idg); memset(g_idg_set, 0, sizeof g_idg_set);
     g_idg_groups = g_idg_idents = g_idg_resolves = g_idg_compiles = g_idg_loads = g_idg_multi = 0; g_idg_last_ns = 0;

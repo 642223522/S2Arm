@@ -41,7 +41,7 @@ print('PASS: libpack_vk_test (stage sbuf slots: set / unknown / stage / topology
 PREFIX = 'FAIL: 存储槽集合：'
 mutants = (
     # 种类
-    ('unknown-kind-as-nonstorage', '    return -1;\n}\n\nint s2a_libpack_stage_sbuf_slots', '    return 0;\n}\n\nint s2a_libpack_stage_sbuf_slots',
+    ('unknown-kind-as-nonstorage', 'if (!strcmp(kind, non_storage[i])) return 0;\n    return -1;\n}', 'if (!strcmp(kind, non_storage[i])) return 0;\n    return 0;\n}',
      PREFIX + '不认得的种类 → 说不准（不当成没用存储）'),
     ('other-storage-kinds-skipped', '            if (cls < 0) goto done;', '            if (cls < 0) continue;',
      PREFIX + 'sbuf_ubo → 说不准（别的存储种类）'),
@@ -76,6 +76,31 @@ mutants = (
     ('gs-topology-fixed-triangle', 'gs ? LP_K_VGJSON + (unsigned)gt : LP_K_BJSON, &jb, &jn, gw, sizeof gw) != S2A_LIBPACK_HIT) { free(jb); return 1; }\n    struct s2a_jv top',
      'gs ? LP_K_VGJSON + 3u : LP_K_BJSON, &jb, &jn, gw, sizeof gw) != S2A_LIBPACK_HIT) { free(jb); return 1; }\n    struct s2a_jv top',
      PREFIX + '几何段、线输入：_vg1 的 sbuf reg 4 → 0x10（图元挑对格子）'),
+    # 不经描述符的内存访问（PhysicalStorageBufferAddresses）：带这条能力的 SPIR-V，绑定表就不是它碰得到的全部存储。
+    #   不查 / 并进别的「说不准」不分开计 / 只看第一条能力 / 不认指令字数就当没带 / 把别的指令的操作数当成能力 / 差一位的能力号也算 /
+    #   读不懂当成没带 / 读不到 spv 当成没带 / 几何段与顶点段读错那一份 spv：各一处，必红
+    ('psb-not-checked', '        if (psb) { out = 2; goto done; }', '        if (psb) { (void)0; }',
+     PREFIX + 'SPIR-V 第一条能力就是 PhysicalStorageBufferAddresses → 返回 2、集合清零（绑定表里的 sbuf reg 2 不算数）'),
+    ('psb-folded-into-unknown', '        if (psb) { out = 2; goto done; }', '        if (psb) { out = 1; goto done; }',
+     PREFIX + 'SPIR-V 第一条能力就是 PhysicalStorageBufferAddresses → 返回 2、集合清零（绑定表里的 sbuf reg 2 不算数）'),
+    ('psb-only-first-capability', 'if (op == SpvOpCapability && wc >= 2 && w[i + 1] == cap) return 1;\n        i += wc;', 'if (op == SpvOpCapability && wc >= 2 && w[i + 1] == cap) return 1;\n        i += wc; break;',
+     PREFIX + '片元段：该能力排在几条别的能力之后、后面还有 OpMemoryModel → 同样返回 2'),
+    ('psb-matches-any-operand', 'if (op == SpvOpCapability && wc >= 2 && w[i + 1] == cap) return 1;', 'if ((void)op, wc >= 2 && w[i + 1] == cap) return 1;',
+     PREFIX + '能力编号差一位（5346 / 5348）、第一个操作数恰为 5347 的 OpName、值为 5347 的常量都不是该能力声明 → 照常读到 0x4（只认 OpCapability 的操作数）'),
+    ('psb-matches-adjacent-capability', 'if (op == SpvOpCapability && wc >= 2 && w[i + 1] == cap) return 1;', 'if (op == SpvOpCapability && wc >= 2 && (w[i + 1] | 1u) == (cap | 1u)) return 1;',
+     PREFIX + '能力编号差一位（5346 / 5348）、第一个操作数恰为 5347 的 OpName、值为 5347 的常量都不是该能力声明 → 照常读到 0x4（只认 OpCapability 的操作数）'),
+    ('psb-bad-length-as-clean', 'if (!wc || wc > nw - i) return -1;', 'if (!wc || wc > nw - i) return 0;',
+     PREFIX + 'SPIR-V 指令字数写到模块外面 → 读不懂，返回 1'),
+    ('psb-bad-magic-accepted', ' || *(const uint32_t *)spv != SpvMagicNumber) return -1;', ') return -1;',
+     PREFIX + 'SPIR-V 魔数不对 → 读不懂，返回 1'),
+    ('psb-short-module-accepted', 'if (!spv || n < 20 || (n & 3) ||', 'if (!spv || n < 4 || (n & 3) ||',
+     PREFIX + 'SPIR-V 不足一个模块头（16 字节）→ 读不懂，返回 1'),
+    ('psb-missing-spv-as-clean', 'lp_spv_has_capability(spv, sn, SpvCapabilityPhysicalStorageBufferAddresses) : -1;', 'lp_spv_has_capability(spv, sn, SpvCapabilityPhysicalStorageBufferAddresses) : 0;',
+     PREFIX + '有 _b.json、没有 _b.spv → 读不到能力声明，返回 1（不当成没带该能力）'),
+    ('psb-gs-reads-b-spv', 'gs ? LP_K_VGSPV + (unsigned)gt : LP_K_BSPV, &spv, &sn, sw, sizeof sw);', 'LP_K_BSPV, &spv, &sn, sw, sizeof sw);',
+     PREFIX + '几何段只看 _vg3.spv：同键的 _b.spv 带该能力也不影响 → 读到 0x2'),
+    ('psb-vs-reads-vg3-spv', 'gs ? LP_K_VGSPV + (unsigned)gt : LP_K_BSPV, &spv, &sn, sw, sizeof sw);', 'LP_K_VGSPV + 3u, &spv, &sn, sw, sizeof sw);',
+     PREFIX + '顶点段只看 _b.spv：同键的 _vg3.spv 带该能力也不影响 → 读到 0x4'),
     # 说不准时集合清零；只读
     ('slots-not-cleared-on-failure', '    if (slots) *slots = 0;\n    if (!lp || !lp->p.idx || !key || !slots) return 1;', '    if (!lp || !lp->p.idx || !key || !slots) return 1;',
      PREFIX + 'sbuf 槽号 16（越界）→ 说不准'),
