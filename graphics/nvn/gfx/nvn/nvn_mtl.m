@@ -10198,7 +10198,9 @@ static uint64_t vbuf_limit(int s, uint64_t ext, int64_t lo, int64_t hi, NvShader
     if (lo < 0) return 0;   // a vertex id below zero (a negative base vertex): Metal does not fetch it either
     uint64_t start = (uint64_t)lo * stride, n = (uint64_t)(hi - lo) * stride + ext;
     for (int i = 0; i < 16; i++) if (g_vlim[i].serial == g_arena_gen && g_vlim[i].addr == addr && g_vlim[i].size == size && g_vlim[i].stride == stride && g_vlim[i].lo == lo && g_vlim[i].hi == hi) return g_vlim[i].gpu;
-    if (n > (4u << 20)) { RED_ONCE(209, "vertex stream %d: the draw reads vertices %lld-%lld past its bound range (%llu bytes, stride %u), %llu bytes are over the staging size: bound as it is, past the range it reads the memory after it", s, (long long)lo, (long long)hi, (unsigned long long)size, stride, (unsigned long long)n); return 0; }
+    // 限长副本上限 32 MB（原 4 MB）：11-23 一款像素风 RPG（Unity，2D 光照）一笔绘制读第 1764–67070 个顶点、步长 76，跨度 4.96 MB，超 4 MB 照原样绑、读到绑定范围后面的内存，
+    //   场景边缘出边缘笔直的黑块（同 #1783 地面黑带的形状）。成本是这一笔在提交里一次 memset（同提交同参数复用 g_vlim），32 MB 以内都比画错划算
+    if (n > (32u << 20)) { RED_ONCE(209, "vertex stream %d: the draw reads vertices %lld-%lld past its bound range (%llu bytes, stride %u), %llu bytes are over the staging size: bound as it is, past the range it reads the memory after it", s, (long long)lo, (long long)hi, (unsigned long long)size, stride, (unsigned long long)n); return 0; }
     if (pend_hits(addr, size)) { RED_ONCE(210, "vertex stream %d: the draw reads vertices %lld-%lld past its bound range (%llu bytes, stride %u), and a GPU write on the stream is queued in this submission: bound as it is (a copy taken now would miss that write)", s, (long long)lo, (long long)hi, (unsigned long long)size, stride); return 0; }
     uint64_t copy = start < size ? MIN(size - start, n) : 0; const uint8_t *src = NULL;
     if (copy) { void *mb; uint64_t mo, g, pav; if (!gpu_addr_want(addr + start, 1, copy, &mb, &mo, &g, &pav)) return 0; src = (const uint8_t *)((__bridge id<MTLBuffer>)mb).contents + mo; }
