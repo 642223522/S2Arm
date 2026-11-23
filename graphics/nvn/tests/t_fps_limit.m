@@ -76,7 +76,11 @@ static void mark(int frame) {
     if (windowed && frame == 48 + samples) nvn_be_link_sample(&link_end_n, &link_end_ns);
     if (windowed && (frame == 47 || frame == 48 + samples)) window_state(0, frame);
 }
+static int slow_ms(void) { static int v = -1; if (v < 0) { const char *e = getenv("FPS_TEST_SLOW_MS"); v = e ? atoi(e) : 0; } return v; }
 static void delay(int frame) {
+    // FPS_TEST_SLOW_MS=<毫秒>：计时窗口里每帧游戏自己多花这么久（慢机 / 高负载的确定性替身，不在共享主机上造满载）。
+    //   12 ms 复现 11-23 门禁机那次（GL 上限 120 均值 12.27 ms > 1.3 倍判红）：限帧器照样每帧排拍，只是帧本身比周期长
+    if (slow_ms() && frame > 48 && frame <= 48 + samples) { struct timespec s = {0, (long)slow_ms() * 1000000L}; nanosleep(&s, NULL); }
     // 停顿放在计时窗口（第 48 帧起）之前：仍在 HUD 的 10 秒环里产生慢帧，但不混进周期判据（#619：8.3 ms 周期下 60 个样本只有 0.5 秒，停顿 200 ms 会把均值撑出容差）
     if (check_hud && frame == 20) { struct timespec pause = {0, 200000000}; nanosleep(&pause, NULL); }
 }
@@ -395,6 +399,8 @@ static void run(void) {
             if (gl0) CHECK(gl_pace1[4] * 2 <= per * 3, "GL 限帧器单次最长要睡 %.3f ms，期望 ≤ 1.5 个周期 %.3f ms（重新对齐 %llu 次、真睡 %llu 次）",
                 gl_pace1[4] / 1e6, per * 1.5 / 1e6, (unsigned long long)(gl_pace1[2] - gl_pace0[2]), (unsigned long long)(gl_pace1[3] - gl_pace0[3]));
             CHECK(mean >= target_ms * .90, "%s 真实时钟：%d 周期 %.3f ms、均值 %.3f ms；期望 ≥ %.3f ms 的九成（只判下沿，上沿看限帧器读数）", frontend, samples, elapsed_ms, mean, target_ms);
+            // 慢调度注入那一格：先证注入真生效（均值确实超出旧判据的 1.3 倍上沿，旧判据在这里必红），上面的计数判据照样要绿
+            if (slow_ms()) CHECK(mean > target_ms * 1.30, "慢调度注入生效：每帧多花 %d ms，均值 %.3f ms > %.3f ms（旧墙钟上沿判据在这里会红）", slow_ms(), mean, target_ms * 1.30);
         } else CHECK(target_ms ? mean >= target_ms * .90 && mean <= target_ms * 1.30 : mean < 5,
             "%s 真实时钟：%d 周期 %.3f ms、均值 %.3f ms；期望 %.3f ms（上限0/无原生节拍时 <5 ms）", frontend, samples, elapsed_ms, mean, target_ms);
         if (windowed) {
