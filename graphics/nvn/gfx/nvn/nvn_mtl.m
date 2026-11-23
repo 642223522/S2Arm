@@ -7974,6 +7974,9 @@ static void shmap_load_once(void) {
     __weak id<MTLLibrary> plib;   // the library fn came from (#1001 two-level build probe, spec_probe: Metal 4 names a function by library + name)
     id<MTLFunction> fn, tf_fn, fn_u, geo_fn;   // fn_u: the integer-output entry point (dmsh_build.py fs_uint), for pipelines whose unsigned integer attachments are exactly u_mask (pso_desc)
     uint8_t s_rec, warm_claimed;   // submit-thread first-use / prewarm handoff counters
+    // D-92BW 库按活跃集持有：warm_lib = 预热亲手建的、库来自库容器（pkg_lib）；skel = 预热建完管线后只剩骨架（库与函数放掉，映射随之释放），
+    //   游戏首次用它（shader_used）或再次预热（warm_shader）时 sh_hydrate 补回。两者与 s_rec 都只在 g_hyd_mu 里改（sh_release / sh_hydrate_locked）
+    uint8_t warm_lib, pkg_lib, skel;
     uint8_t gmem_use;   // 0 未判 / 1 不绑原始内存池表 / 2 绑（gmem_uses：动态占比计数用）
     uint8_t tensor, tensor_log;   // HMMA: 1 = spatial stand-in, 2 = none, 3 = native SIMD-group matrix ABI 1; 0 = not checked
     uint16_t tensor_sq;   // S2Arm 11-05: such a shader's HMUL2 Rd, Ra, |Ra| (nvn2_hsq_count): its output is the signed square of what it reads plus the network's residual, the stand-in squares its input (nvn_tensor.inc)
@@ -8045,6 +8048,7 @@ static NSMutableDictionary<NSString *, NvShader *> *g_shcache;
 @implementation ShaderFlight @end
 static NSMutableDictionary<NSString *, ShaderFlight *> *g_shader_flights;
 static os_unfair_lock g_shader_lock = OS_UNFAIR_LOCK_INIT;
+static _Atomic uint64_t g_hyd_n, g_hyd_ns, g_hyd_max_ns, g_hyd_fail, g_rel_n;   // D-92BW 补回次数 / 耗时 / 最长 / 失败、预热后放掉的个数（sh_hydrate_locked / sh_release_unused）
 static _Atomic uint64_t g_shader_requests, g_shader_hits, g_shader_waits, g_shader_wait_ns, g_shader_builds, g_shader_failures, g_shader_build_live;
 // Stages whose entry point follows the depth mode: vertex, and an NVN2 mesh shader at stage 4 (main0 / main0_z as a vertex shader's; a domain shader there takes main0 either way)
 static inline int stage_depth_moded(int stage) { return stage == 0 || stage == 4; }
@@ -8065,6 +8069,8 @@ static void shader_load_stats(void) {
                                           (unsigned long long)atomic_load(&g_lp_lib_built), (unsigned long long)atomic_load(&g_lp_lib_shared),
                                           (unsigned long long)atomic_load(&g_lp_hi_n), atomic_load(&g_lp_hi_live) / 1048576.0,
                                           (unsigned long long)atomic_load(&g_lp_low_n), atomic_load(&g_lp_low_bytes) / 1048576.0);
+    if (atomic_load(&g_rel_n)) MLOG("shader libraries released after the prewarm %llu, reloaded at a later use %llu (longest %.2f ms, %.1f ms in all), reloads failed %llu",
+                                    (unsigned long long)atomic_load(&g_rel_n), (unsigned long long)atomic_load(&g_hyd_n), atomic_load(&g_hyd_max_ns) / 1e6, atomic_load(&g_hyd_ns) / 1e6, (unsigned long long)atomic_load(&g_hyd_fail));
 }
 
 static void c1_store(NvShader *o) {
@@ -8295,6 +8301,11 @@ static __thread int t_lib_layer;
 //   nvn_tensor.inc): that shader is never dispatched, so shader_build parses its reflection only (the stand-in reads the bindings) and loads no library
 //   (Zelda: Ocarina of Time: 11 programs, 11.2 MB of library slices built at the opening, in the 4 GB..window address range that ran out in its 3D load)
 static __thread int t_refl_only;
+// D-92BW：sh_hydrate 借 shader_build 重载一个骨架的库与函数（造一个临时对象、只取它的库 / 函数成员）：只有第一次建才该有的副作用
+//   （c1 专用缓冲进驻留集、顶点着色器计数）在补回时跳过，免得每补回一次就多占一块缓冲
+static __thread int t_hydrate;
+// 批库（json fn_lib）：同批各键共用的库，按批名记（shader_build）；预热结束放库时清空（sh_release_unused），之后用到的批照旧建一次、再记
+static NSMutableDictionary<NSString *, id<MTLLibrary>> *g_ulibs; static os_unfair_lock g_ulock = OS_UNFAIR_LOCK_INIT;
 static id<MTLLibrary> lib_from_file(NSString *path, NSError **err) {
     int fd = open(path.fileSystemRepresentation, O_RDONLY); struct stat st;
     if (fd < 0 || fstat(fd, &st) || st.st_size <= 0) { if (fd >= 0) close(fd); if (err) *err = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"cannot open %@", path]}]; return nil; }
@@ -8533,12 +8544,14 @@ static NvShader *shader_build(NSString *pc, int stage, int layer, int depth_zero
     }
     NSString *lp = [NSString stringWithFormat:@"%@/%@.metallib", dir, pc];
     // a batched library (json fn_lib, dmsh_build.py unity_flush): every key of the batch has the same library, built once and kept (by its name; in the container all those keys' records are one slice)
-    static NSMutableDictionary<NSString *, id<MTLLibrary>> *ulibs; static os_unfair_lock ulock = OS_UNFAIR_LOCK_INIT;
+    //   D-92BW：字典在文件作用域（g_ulibs），预热结束放库时整份清空（sh_release_unused）：强引用会让批库的整片映射永不释放。不改成弱引用：库对象不被函数拉住，
+    //   弱引用下预热中批库一建好就可能被放掉、同批下一个键又重建（Mac 实局：建库 1880 → 3573 个）
+    os_unfair_lock *ulock_p = &g_ulock;
     NSString *ul = dir == g_msl_dir && [j[@"fn_lib"] isKindOfClass:[NSString class]] ? j[@"fn_lib"] : nil;
     id<MTLLibrary> lib = nil;
-    if (ul) { os_unfair_lock_lock(&ulock); lib = ulibs[ul]; os_unfair_lock_unlock(&ulock); }
+    if (ul) { os_unfair_lock_lock(ulock_p); lib = g_ulibs[ul]; os_unfair_lock_unlock(ulock_p); }
     if (!lib) lib = dir == g_msl_dir ? lib_from_pack(pc.UTF8String, &e) : [NSFileManager.defaultManager fileExistsAtPath:lp] ? lib_from_file(lp, &e) : nil;
-    if (lib && ul) { os_unfair_lock_lock(&ulock); if (!ulibs) ulibs = [NSMutableDictionary dictionary]; if (!ulibs[ul]) ulibs[ul] = lib; else lib = ulibs[ul]; os_unfair_lock_unlock(&ulock); }
+    if (lib && ul) { os_unfair_lock_lock(ulock_p); if (!g_ulibs) g_ulibs = [NSMutableDictionary dictionary]; if (!g_ulibs[ul]) g_ulibs[ul] = lib; else lib = g_ulibs[ul]; os_unfair_lock_unlock(ulock_p); }
     if (!lib && dir != g_msl_dir) {   // S2Arm fallback: MSL source compiled here, same options as the offline chain (dm_msl_opts)
         NSString *sp = [NSString stringWithFormat:@"%@/%@.metal", dir, pc], *src = [NSString stringWithContentsOfFile:sp encoding:NSUTF8StringEncoding error:&e];
         if (src) { MTLCompileOptions *co = dm_msl_opts(); t_lib_layer = [src containsString:@"render_target_array_index"]; uint64_t t0 = stl_now(); lib = [g_dev newLibraryWithSource:src options:co error:&e];
@@ -8548,7 +8561,7 @@ static NvShader *shader_build(NSString *pc, int stage, int layer, int depth_zero
     if (!lib || !j) { MLOG("【红】 failed to load shader %s: %s", pc.UTF8String, e ? e.localizedDescription.UTF8String : "no reflection json"); return nil; }
     if (![j[@"chain"] isEqual:@DMSH_CHAIN]) { MLOG("【红】 shader %s has translation chain version %s, but this host expects %s", pc.UTF8String, [[j[@"chain"] description] UTF8String], DMSH_CHAIN); return nil; }
     if (layer && !j[@"entry_layer"]) { MLOG("【红】 vertex shader %s has no layer entry points", pc.UTF8String); return nil; }
-    NvShader *o = [NvShader new]; o->gs_loc = o->lay_loc = -1;
+    NvShader *o = [NvShader new]; o->gs_loc = o->lay_loc = -1; o->pkg_lib = dir == g_msl_dir;
     // 出包库没有源：带上出包时的翻译器指纹与本宿主的（只升级 App 不重写已出包的库，COMPUTE_REPAIR.md：指纹不同 = 别的翻译器出的，拆分要重新出包或 repair_compute.py）
     o->mslnote = mnote ?: [NSString stringWithFormat:@"%@ %s (no source on the device; translator %@, this build %s)", pc, dir == g_msl_dir ? "packaged library" : "fallback library file",
                            [j[@"xfp"] isKindOfClass:[NSString class]] ? j[@"xfp"] : @"unknown", fb_xfp() ?: "unknown"]; o->mslsrc = msrc;
@@ -8568,7 +8581,7 @@ static NvShader *shader_build(NSString *pc, int stage, int layer, int depth_zero
     if (rt_range_on()) o->range_ro=rt_range_bindings_ro(j);
     NSString *entry = j[@"entry"];
     if (stage == 0) {
-        atomic_fetch_add(&g_vs_loaded, 1);
+        if (!t_hydrate) atomic_fetch_add(&g_vs_loaded, 1);
         if (depth_zero) { if (j[@"entry_z"]) entry = j[@"entry_z"]; else RED_ONCE(85, "vertex shader %s has no near=0 entry (entry_z): depth stays in the GL convention", pc.UTF8String); }
         if (layer) entry = depth_zero ? j[@"entry_layer_z"] : j[@"entry_layer"];
     }
@@ -8684,7 +8697,7 @@ static NvShader *shader_build(NSString *pc, int stage, int layer, int depth_zero
         if (o->fn_u) { f = [lib newFunctionWithName:fnn(o, j[@"entry_u"]) constantValues:[MTLFunctionConstantValues new] error:&fe]; o->fn_u = f; }
     }
     if (!shader_args_init(o)) return nil;
-    if (o->rf.has_c1) c1_store(o);
+    if (o->rf.has_c1 && !t_hydrate) c1_store(o);
     NSString *ext = g_cb_ext[[pc hasSuffix:@"_b"] ? [pc substringToIndex:pc.length - 2] : pc];   // bytes each uniform slot can read (cb_len), storage slots never written (sb_ro)
     for (NSString *f in [ext componentsSeparatedByString:@" "]) { int r = 0, n = 0;
         if (sscanf(f.UTF8String, "%d:%d", &r, &n) == 2 && r >= 0 && r < 16 && n > 0) o->cb_ext[r] = (uint32_t)n;
@@ -8793,16 +8806,40 @@ static int rt_range_pr_ro(NvProg *p) {
 // S2Arm: an S line means the shader was used (a program the game draws with), however it reached the cache: loaded here, prefetched at ProgramSetShaders or prewarmed from a list.
 //   Prefetched shaders used to be recorded when claimed: Splatoon 3 creates 12610 programs in its first 10 s and draws with 287 keys' pipelines, so pso_user.tsv listed all of them
 //   and the next start's prepare step loaded every one before the first frame (delivery line 10-27)
+// D-92BW 库按活跃集持有（iPad mini 6 奥德赛：开局预热建的 1689 个库全程映射着，库切片 718 MB、Metal 内部约 2 GB，几分钟后宿主低区耗尽闪退）：
+//   预热建完全部管线后（warm_finish → sh_release_unused），只被预热用过的着色器放掉库和函数、留下骨架（对象本身、反射、键都在：已建管线按着色器对象作键，照常命中）；
+//   要再读它的库 / 函数只有两条路，都先补回：游戏第一次用它（shader_used，置 s_rec 之后永不再放）、再次预热（多程序换程序后 warm_shader）。
+//   补回 = 按同一键 / 阶段 / 深度约定重走 shader_build 的加载（t_hydrate），取回 fn / fn_u / tf_fn / geo_fn / plib / at_lib；其余懒载成员（_bv / _bp / _ft、
+//   at_fns）放掉时退回「没试过」，用到时按原路自己再载。放与补都在 g_hyd_mu 里：成员在锁外只会从空变成有，读的一方不会撞见被清掉
+static pthread_mutex_t g_hyd_mu = PTHREAD_MUTEX_INITIALIZER;
+static int sh_hydrate_locked(NvShader *o) {   // 1 = 成员都在（不是骨架，或补回成功）；0 = 补回失败（已报红）。调用方持 g_hyd_mu
+    if (!o->skel) return 1;
+    uint64_t t0 = bp_now(); int ro = t_refl_only; t_refl_only = 0; t_hydrate = 1;
+    NvShader *t = shader_build(@(o->key), o->stage, 0, o->load_depth_zero);
+    t_hydrate = 0; t_refl_only = ro;
+    if (!t || !t->fn) { atomic_fetch_add(&g_hyd_fail, 1); MLOG("【红】 shader %s: reloading its library after the prewarm released it failed (its draws are skipped as a failed load)", o->key); return 0; }
+    o->fn = t->fn; o->fn_u = t->fn_u; o->tf_fn = t->tf_fn; o->geo_fn = t->geo_fn; o->plib = t->plib; o->at_lib = t->at_lib; o->skel = 0;
+    uint64_t d = bp_now() - t0, n = atomic_fetch_add(&g_hyd_n, 1) + 1; atomic_fetch_add(&g_hyd_ns, d);
+    for (uint64_t m = atomic_load(&g_hyd_max_ns); d > m && !atomic_compare_exchange_weak(&g_hyd_max_ns, &m, d);) {}
+    if (n <= 4 || !(n & (n - 1))) MLOG("shader libraries reloaded after the prewarm released them: %llu so far (this one %s %.2f ms; longest %.2f ms, %.1f ms in all)",
+                                       (unsigned long long)n, o->key, d / 1e6, atomic_load(&g_hyd_max_ns) / 1e6, atomic_load(&g_hyd_ns) / 1e6);
+    return 1;
+}
 static NvShader *shader_used(NvShader *o, NSString *pc, int stage) {
-    if (o && !o->s_rec) { o->s_rec = 1; pso_record("S\t%s\t%d\n", pc.UTF8String, stage); pso_user_record("S\t%s\t%d\n", pc.UTF8String, stage); }
-    return o;
+    if (!o) return nil;
+    int first = 0, ok = 1;
+    pthread_mutex_lock(&g_hyd_mu);
+    if (!o->s_rec) { o->s_rec = 1; first = 1; }
+    ok = sh_hydrate_locked(o);
+    pthread_mutex_unlock(&g_hyd_mu);
+    if (first) { pso_record("S\t%s\t%d\n", pc.UTF8String, stage); pso_user_record("S\t%s\t%d\n", pc.UTF8String, stage); }
+    return ok ? o : nil;
 }
 static NvShader *shader_get(NSString *pc, int stage) {
     warm_claim();
     NvShader *o = shader_load_submit(pc, stage, 0, stage_depth_moded(stage) && atomic_load(&g_depth_zero));
     if (!o) return nil;   // the third tier: a shader not prefetched yet is loaded here, at its first use (it is compiled already, only the read is left)
-    shader_used(o, pc, stage);
-    return o;
+    return shader_used(o, pc, stage);
 }
 // A layer variant follows its bound vertex shader's captured depth convention.
 static NvShader *shader_get_layer(NvShader *vs) {
@@ -10877,6 +10914,8 @@ static id<MTLFunction> fs_typed_fn(NvShader *fs, uint32_t need) {
 enum { SE_VERSION = 4 };   // = S2A.Dsh RED_BEGIN (4: folded linear textures, s2a_fx, 11-03; 3: S2ASe entries, custom border colours, every filter combination reduced; 11-01)
 enum { SE_NONE, SE_BUSY, SE_READY, SE_FAIL };   // NvShader.se_st: not asked yet / being made / se_main is the variant / none (its draws keep main0)
 static _Atomic uint64_t g_se_made, g_se_failed;   // shaders whose variant this run made and loaded / could not
+// D-92BW 收局汇总（dsh_miss.inc dsh_summary）：[0] 预热后放掉的着色器 [1] 之后补回 [2] 补回合计 ns [3] 最长一次 ns [4] 补回失败 [5] 此刻库切片在宿主高位区的在用字节
+void mtl_libact_stats(uint64_t out[6]) { out[0] = atomic_load(&g_rel_n); out[1] = atomic_load(&g_hyd_n); out[2] = atomic_load(&g_hyd_ns); out[3] = atomic_load(&g_hyd_max_ns); out[4] = atomic_load(&g_hyd_fail); out[5] = atomic_load(&g_lp_hi_live); }
 void mtl_se_stats(uint64_t out[2]) { out[0] = atomic_load(&g_se_made); out[1] = atomic_load(&g_se_failed); }   // the run's summary line (dsh_miss.inc dsh_summary)
 static int prog_stage_of(const prog_t *p, const char *key, uint8_t md[8]);
 static id<MTLFunction> se_warm(NvShader *sh, int fc);
@@ -11772,7 +11811,15 @@ static NvShader *warm_shader(NSString *key, int stage) {
     // an older translator's translation (warm_stale kept it, fb_retranslatable): retranslated here, in the background, from its guest input (dsh_miss.inc dm_shader_refresh)
     if (!shader_loadable(key) && key.length >= 16 && fb_retranslatable([key substringToIndex:16])) dm_shader_refresh([key substringToIndex:16].UTF8String);
     if (!shader_loadable(key)) { atomic_fetch_add_explicit(&g_cold_skips, 1, memory_order_relaxed); return nil; }
-    return shader_load(key, stage, 0);
+    int built = 0;
+    NvShader *o = shader_load_depth(key, stage, 0, stage_depth_moded(stage) && atomic_load(&g_depth_zero), &built, NULL);
+    if (!o) return nil;
+    // D-92BW：预热亲手建、库来自库容器的，预热结束时可放（sh_release_unused）；已是骨架的（上一轮预热放过，多程序换程序后再预热）先补回
+    pthread_mutex_lock(&g_hyd_mu);
+    if (built && o->pkg_lib && !o->s_rec) o->warm_lib = 1;
+    int ok = sh_hydrate_locked(o);
+    pthread_mutex_unlock(&g_hyd_mu);
+    return ok ? o : nil;
 }
 static void warm_enqueue(WarmItem *item) {
     os_unfair_lock_lock(&g_warm_lock);
@@ -12065,8 +12112,39 @@ static void warm_task_(WarmTask *t) {
         }
     }
 }
+// D-92BW：放掉一个只被预热用过的着色器的库与函数（调用方持 g_hyd_mu）。游戏用过的（s_rec）、不是预热亲手建的、库不来自库容器的（兜底目录现编：补回要整份重编）不放。
+//   不放的成员：可读瓦片版（bf_lib 与它的函数）—— 它的函数指针是管线缓存键的一部分（pso_key.fsfn），缓存不拉住函数，放掉后同一地址可能被别的新对象占去、撞出错的管线；
+//   归约 / 顶点补齐变体（se_main / vp_main）—— 本机现编在堆上、不占库切片，且有后台在编的状态机。返回 1 = 放了
+static int sh_release(NvShader *o) {
+    if (o->s_rec || o->skel || !o->warm_lib || !o->pkg_lib || !o->fn) return 0;
+    o->fn = o->fn_u = o->tf_fn = o->geo_fn = nil; o->plib = nil; o->at_lib = nil;
+    os_unfair_lock_lock(&g_atfn_lock); o->at_fns = nil; os_unfair_lock_unlock(&g_atfn_lock);
+    os_unfair_lock_lock(&g_vin_lock); if (o->vfn_state == 1) { o->vfn = nil; o->vfn_state = 0; } os_unfair_lock_unlock(&g_vin_lock);
+    os_unfair_lock_lock(&g_pull_lock); if (o->pfn_state == 1) { o->pfn = nil; o->pull_lib = nil; o->pfn_state = 0; } os_unfair_lock_unlock(&g_pull_lock);
+    pthread_mutex_lock(&g_fnt_mu);   // 「试过」的记号与失败（NSNull）留着，只放函数
+    if (o->fn_t) { NSMutableDictionary *keep = [NSMutableDictionary dictionary]; [o->fn_t enumerateKeysAndObjectsUsingBlock:^(NSNumber *k, id v, BOOL *stop) { (void)stop; if (v == NSNull.null) keep[k] = v; }]; o->fn_t = keep.count ? keep : nil; }
+    o->ft_lib = nil; o->ft_tried = 0;
+    pthread_mutex_unlock(&g_fnt_mu);
+    o->skel = 1;
+    return 1;
+}
+static void sh_release_unused(void) {
+    os_unfair_lock_lock(&g_shader_lock); NSArray<NvShader *> *all = g_shcache.allValues; os_unfair_lock_unlock(&g_shader_lock);
+    uint64_t live0 = atomic_load(&g_lp_hi_live), n = 0;
+    @autoreleasepool {
+        for (NvShader *o in all) { pthread_mutex_lock(&g_hyd_mu); n += sh_release(o); pthread_mutex_unlock(&g_hyd_mu); }
+    }
+    os_unfair_lock_lock(&g_ulock); [g_ulibs removeAllObjects]; os_unfair_lock_unlock(&g_ulock);   // 批库字典不再拉住它们：还活着的着色器的函数照旧可用，放掉的批随之释放
+    atomic_fetch_add(&g_rel_n, n);
+    MLOG("shader libraries after the prewarm: %llu of %lu loaded shaders only the prewarm used released (their pipelines stay; a first use reloads), library segments in the host high range %.1f MB live before",
+         (unsigned long long)n, (unsigned long)all.count, live0 / 1048576.0);
+    // 映射在 dispatch_data 的析构里放（库容器的 IO 队列上，异步）：稍后再记一次在用量，判据「改前改后」取这一行
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        MLOG("shader libraries after the prewarm: library segments in the host high range %.1f MB live (was %.1f MB before the release)", atomic_load(&g_lp_hi_live) / 1048576.0, live0 / 1048576.0); });
+}
 static void warm_finish(void) {
     shader_load_stats();
+    sh_release_unused();
     if (g_warm_mps) MLOG("pipeline prewarm: %llu task / mesh pipelines built (M lines)", (unsigned long long)g_warm_mps);
     MLOG("pipeline prewarm done: shaders %llu / render pipelines %llu (specialized fragment skipped %llu) / compute pipelines %llu, background time %.1f ms; shader keys not in the shader map (another game version) %llu; not in the library yet (compiled at their first use) %llu",
          (unsigned long long)g_warm_shaders, (unsigned long long)g_warm_rps, (unsigned long long)g_warm_skip_fz, (unsigned long long)g_warm_cps, (bp_now() - g_warm_t0) / 1e6, (unsigned long long)g_warm_skip_stale, (unsigned long long)atomic_load(&g_cold_skips));

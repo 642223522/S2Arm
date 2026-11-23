@@ -78,6 +78,7 @@ void *dm_shader_snap(uint64_t code, const void *control, uint64_t *code_out, con
 int dm_shader_retrans(const uint8_t key[8], uint64_t code, const void *control);   // 出包库计算着色器按本机翻译器重出源码 <键>_b.metal（dsh_miss.inc，v0.4.1 重译抢跑）：成功 0、做不了 1
 void mtl_se_stats(uint64_t out[2]);   // S2Arm（#800，nvn_mtl.m se_done）：采样器归约变体 [0] 本局在设备上编好的着色器数、[1] 编不出的（收局汇总行）
 void mtl_vp_stats(uint64_t out[2]);   // S2Arm（nvn_mtl.m vp_done）：顶点补齐变体 [0] 本局在设备上编好的、[1] 编不出的
+void mtl_libact_stats(uint64_t out[6]);   // D-92BW（nvn_mtl.m）：预热后放掉的着色器 / 之后补回次数 / 补回合计 ns / 最长 ns / 补回失败 / 库切片高位区在用字节
 void mtl_hybrid_pkg_stats(uint64_t out[7]);   // S2Arm（nvn_hybrid.inc hybrid_pkg_base）：随包拉取基础管线 [0] 命中、[1] 包里没有这一对、[2] 有文件查不中、[3] 当场解压的份数、[4] 解压合计纳秒、
                                                //   [5] 开局首查预热（hybrid_pkg_warm）0 没做 / 1 查中 / 2 没查中、[6] 预热耗时纳秒
 void mtl_shmap_rt_add(const char *key, const char *stage); int mtl_shmap_known(const char *key); int mtl_shlib_has(const char *key);
