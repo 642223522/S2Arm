@@ -213,7 +213,7 @@ def main():
             ('alpha', '    if (g->alpha_test_compare && strcmp(g->alpha_test_compare, "Always")) m |= LPG_ALPHA;\n', "gate case 'alpha test' #0: library not used"),
             ('a2c', '    if (g->alpha_to_coverage_enable) m |= LPG_A2C;\n', "gate case 'alpha to coverage' #0: library not used"),
             ('dual', '    if (g->dual_source_blend) m |= LPG_DUAL;\n', "gate case 'dual source blend' #0: library not used"),
-            ('unaligned', '    if (g->has_unaligned_ssbo && g->unaligned_ssbo) m |= LPG_UNALIGNED;', "gate case 'unaligned storage' #0: library not used"),
+            ('unaligned', '    if (g->has_unaligned_ssbo && g->unaligned_ssbo) m |= LPG_UNALIGNED;', "gate case 'unaligned storage, slot the program uses (fs)' #0: library not used"),
         )
         cases = [(f'gate-{n}-dropped', old, ('    (void)0;' if n == 'unaligned' else ''), exp) for n, old, exp in gate_lines]
         cases += [
@@ -228,6 +228,51 @@ def main():
             ('probe-json-only', 'for (unsigned k = 0; k < 2 && has; k++) {', 'for (unsigned k = 0; k < 1 && has; k++) {', 'gate probe line'),
             ('probe-miss-counted-as-has', 'sizeof w) != 0) has = 0;', 'sizeof w) != 0) (void)0;', 'gate probe line'),
             ('probe-count-dropped', '    atomic_fetch_add_explicit(&g_lp_probe_n[s->lp_gate], 1, memory_order_relaxed);\n', '', 'gate probe line'),
+            # 存储缓冲「非对齐」只看程序真用到的槽（gfx_ssbo_align）：用到的槽集合、逐阶段、逐槽、说不准退回旧口径、开关、快路摘要、读数，各改坏一处，--lp-gate 必红。
+            #   「没用到」也放行 / 用到了也放行 / 说不准当没用到 / 阶段并在一起 / 槽并在一起 / 槽号错位 / 取错阶段 / 开关不管用：库件被错放或错挡，对应用例红；
+            #   快路摘要不带这一位：槽翻成非对齐后还拿到按对齐翻的库件（「快路」用例红）；三个读数各少记一类、或每笔绘制都记：读数那一行红。
+            ('ssbo-any-known-stage-blocks',
+             '            else if (used & um[st]) used_unaligned = 1;', '            else used_unaligned = 1;',
+             "gate case 'unaligned storage, slot the program does not use': hit from the library"),
+            ('ssbo-used-slot-never-blocks',
+             '            else if (used & um[st]) used_unaligned = 1;', '            else if (0) used_unaligned = 1;',
+             "gate case 'unaligned storage, slot the program uses (fs)' #0: library not used"),
+            ('ssbo-unknown-as-unused',   # 库里没有的程序读不出用到哪几个槽：现编也必须按非对齐编（编出来的代码要对得上真实绑定）
+             '(unsigned)st, q->prim, &used)) unknown = 1;', '(unsigned)st, q->prim, &used)) (void)0;',
+             "gate case 'unaligned storage, program not in library' #0: live compile request carries hasUnalignedStorageBuffer=true"),
+            ('ssbo-fill-facts-unrefined',   # 程序身份（fill_facts）不跟新口径、快路摘要跟：身份说非对齐，库件放不出来
+             '    if (un && ssbo_used_slots_on()) {', '    if (un && !count && ssbo_used_slots_on()) {',
+             "gate case 'unaligned storage, slot the program does not use': hit from the library"),
+            ('ssbo-stages-merged',
+             '            else if (used & um[st]) used_unaligned = 1;', '            else if (used & (um[0] | um[1] | um[2])) used_unaligned = 1;',
+             "gate case 'unaligned storage, only in another stage': hit from the library"),
+            ('ssbo-slots-merged',
+             '            else if (used & um[st]) used_unaligned = 1;', '            else if (used && um[st]) used_unaligned = 1;',
+             "gate case 'unaligned storage, another slot of the same stage': hit from the library"),
+            ('ssbo-slot-bit-shifted',
+             '{ un = 1; um[st] |= 1u << i; }', '{ un = 1; um[st] |= 1u << ((i + 1) & 15); }',
+             "gate case 'unaligned storage, slot the program uses (fs)' #0: library not used"),
+            ('ssbo-wrong-stage-read',
+             'sbu_stage_slots(stage_key((unsigned)st), (unsigned)st, q->prim, &used)', 'sbu_stage_slots(stage_key((unsigned)st), 0u, q->prim, &used)',
+             "gate case 'unaligned storage, only in another stage': hit from the library"),
+            ('ssbo-switch-ignored',
+             '    if (un && ssbo_used_slots_on()) {', '    if (un && (ssbo_used_slots_on() || 1)) {',
+             "gate case 'unaligned storage, switch off' #0: library not used"),
+            ('ssbo-quick-path-blind',
+             'MIX(any); MIX(un); MIX(pc->storage_buffer_offset_alignment);', 'MIX(any); MIX(pc->storage_buffer_offset_alignment);',
+             'quick path: used slot turning unaligned'),
+            ('ssbo-cleared-not-counted',
+             '            else atomic_fetch_add_explicit(&g_sbu_cleared, 1, memory_order_relaxed);', '            else (void)0;',
+             'ssbo readout line'),
+            ('ssbo-used-not-counted',
+             '            if (used_unaligned) atomic_fetch_add_explicit(&g_sbu_used, 1, memory_order_relaxed);', '            if (used_unaligned) (void)0;',
+             'ssbo readout line'),
+            ('ssbo-unknown-not-counted',
+             '            else if (unknown) atomic_fetch_add_explicit(&g_sbu_unknown, 1, memory_order_relaxed);', '            else if (unknown) (void)0;',
+             'ssbo readout line'),
+            ('ssbo-counted-on-every-call',
+             '        if (count) {\n            atomic_fetch_add_explicit(&g_sbu_calls,', '        if (count || 1) {\n            atomic_fetch_add_explicit(&g_sbu_calls,',
+             'ssbo readout line'),
         ]
         for name, old, new, expected in cases:
             assert code.count(old) == 1, (name, 'mutation anchor')

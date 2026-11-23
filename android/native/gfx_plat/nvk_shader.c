@@ -720,6 +720,7 @@ static uint64_t ubo_fact_sig(int st) {
 }
 
 static int depth_clip_cap(void);
+static void gfx_ssbo_align(const struct rp_shader_req *q, const struct s2a_direct_compile_context *pc, int nst, int count, int *any, int *un);
 static void fill_facts(const struct rp_shader_req *q, const struct s2a_direct_compile_context *pc, struct facts *f, int nst) {
     memset(f, 0, sizeof *f);
     struct s2a_compile_graphics_src *g = &f->gfx;
@@ -741,7 +742,7 @@ static void fill_facts(const struct rp_shader_req *q, const struct s2a_direct_co
     // 参考值是绘制时的状态（OP_ALPHA_REF）。测试没开（函数是 ALWAYS）时固定给 0：不让同一个程序因为一个用不到的数拆成多份
     g->has_alpha_test_reference = 1; g->alpha_test_reference = rp_S.color.alpha_func >= 1 && rp_S.color.alpha_func <= 7 ? rp_S.alpha_ref : 0.0f;
     int any_ssbo = 0, unaligned = 0;
-    for (int st = 0; st < 5; st++) for (int i = 0; i < 16; i++) if (rp_S.ssbo[st][i].addr) { any_ssbo = 1; if (pc->storage_buffer_offset_alignment && rp_S.ssbo[st][i].addr % pc->storage_buffer_offset_alignment) unaligned = 1; }
+    gfx_ssbo_align(q, pc, nst, 1, &any_ssbo, &unaligned);   // 非对齐只看这个程序真用到的槽（口径见 gfx_ssbo_align）；input_sig 读同一份答案
     if (!any_ssbo || pc->storage_buffer_offset_alignment) { g->has_unaligned_ssbo = 1; g->unaligned_ssbo = unaligned; }
     for (int i = 0; i < 32; i++) g->attribute_types[i] = num_type(i < rp_S.nattr && i < 16 ? rp_S.attr[i].fmt : 0, 1);
     for (int i = 0; i < 8; i++) g->fragment_output_types[i] = i < q->rt_count && q->rt_format[i] ? num_type(q->rt_format[i], 0) : "Float";
@@ -1469,6 +1470,78 @@ static void lp_gate_probe(const struct work_snap *s) {
     atomic_fetch_add_explicit(&g_lp_probe_n[s->lp_gate], 1, memory_order_relaxed);
     if (has) atomic_fetch_add_explicit(&g_lp_probe_has[s->lp_gate], 1, memory_order_relaxed);
 }
+// ---- 图形存储缓冲「非对齐」事实：只看程序真用到的槽 ----
+// fill_facts（程序身份里的 hasUnalignedStorageBuffer）、input_sig（快路摘要）与状态闸（libpack_gate_mask 的 LPG_UNALIGNED）都读这一份答案，
+// 三处不许各算各的。
+//   旧口径：阶段 0..4 × 槽 0..15 里只要有一个绑定地址不是 minStorageBufferOffsetAlignment 的整数倍，整个程序就记「非对齐」——
+//   连这个程序根本没用到的槽（上一个通道留下的旧绑定）也算。出包预编库只有对齐变体，这个程序就被挡在库外、改成现场编。
+//   新口径：着色器只访问它自己声明的存储缓冲，没用到的槽绑成什么都不影响它的代码，所以「非对齐」只在这个程序真用到的槽上才有意义。
+//   用到的槽取自出包预编库里这个阶段键的 _b.json（s2a_libpack_stage_sbuf_slots）。任何一段说不准（库里没有这个键 / 读不出 / 有别的存储种类 /
+//   几何输入图元没有那一份 / 库被关掉）就退回旧口径——不猜。
+//   用到的槽是阶段键的函数（同键同槽集），哪些槽对齐则进了程序身份的事实位，所以「身份」仍然唯一决定「这一笔该用现编码还是库件」。
+//   只在旧口径说「有非对齐」时才查（其余情形答案本来就是「没有」）；开关 debug.s2a.nvk_lp_used_slots=0 退回旧口径（对照用）。
+// 提交线程独占（同 g_comb_sig 的约定）：缓存不加锁；读库那一下在 g_lp_mu 下（和工作线程共用容器句柄）。
+enum { SBU_N = 8192, SBU_KNOWN = 1, SBU_UNKNOWN = 2 };
+static struct sbu_ent { uint8_t key[8]; uint8_t nvn, prim, state; uint16_t mask; } g_sbu[SBU_N];   // 直接映射：撞了就换（代价是再读一次库，不影响正确性）
+static _Atomic uint64_t g_sbu_calls, g_sbu_cleared, g_sbu_used, g_sbu_unknown;   // 只给读数：fill_facts 每份新程序记一次（input_sig 每笔绘制都调，不记）
+static int sbu_stage_slots(const uint8_t key[8], unsigned nvn, uint32_t prim, uint32_t *mask) {   // 1 = 读到了（*mask = 这一段用到的槽位集合）；0 = 说不准
+    const uint8_t pr = nvn == 2u ? (uint8_t)prim : 0;
+    uint64_t k; memcpy(&k, key, 8);
+    struct sbu_ent *e = &g_sbu[(unsigned)(((k * 0x9E3779B97F4A7C15ull) >> 40) ^ nvn ^ ((unsigned)pr << 2)) & (SBU_N - 1)];
+    if (e->state && e->nvn == nvn && e->prim == pr && !memcmp(e->key, key, 8)) { *mask = e->mask; return e->state == SBU_KNOWN; }
+    uint32_t m = 0; int known = 0;
+    const char *root = getenv("S2A_SHADER_REVISION_ROOT");
+    if (root && !nvn_plat_flag("no_libpack", 0)) {
+        pthread_mutex_lock(&g_lp_mu);
+        struct s2a_libpack *lp = libpack_for_locked(root);
+        known = lp && s2a_libpack_stage_sbuf_slots(lp, key, nvn, topology(prim), &m) == 0;
+        pthread_mutex_unlock(&g_lp_mu);
+    }
+    memcpy(e->key, key, 8); e->nvn = (uint8_t)nvn; e->prim = pr; e->mask = (uint16_t)(known ? m : 0); e->state = known ? SBU_KNOWN : SBU_UNKNOWN;
+    *mask = known ? m : 0;
+    return known;
+}
+static int g_sbu_on = -1;   // 开关 debug.s2a.nvk_lp_used_slots（缺省开，=0 退回旧口径，A/B 对照用）：每局第一次用到时读一次（rp_shader_reset 清回 -1），不每笔绘制都读系统属性
+static int ssbo_used_slots_on(void) {
+    if (g_sbu_on < 0) g_sbu_on = nvn_plat_flag("nvk_lp_used_slots", 1) != 0;
+    return g_sbu_on;
+}
+// any = 阶段 0..4 里有没有绑过存储缓冲；un = 这个程序的编译结果会不会受存储缓冲非对齐影响（口径见上）。
+// nst = 程序的图形阶段数（vs / vs+fs / vs+fs+gs），阶段号即 NVN 阶段号；count 非 0 时记读数（只有 fill_facts 记）。
+static void gfx_ssbo_align(const struct rp_shader_req *q, const struct s2a_direct_compile_context *pc, int nst, int count, int *any_out, int *un_out) {
+    const uint32_t al = pc->storage_buffer_offset_alignment;
+    int any = 0, un = 0; uint32_t um[5] = {0, 0, 0, 0, 0};   // um[阶段]：这个阶段上地址非 0 又不对齐的槽位集合
+    for (int st = 0; st < 5; st++) for (int i = 0; i < 16; i++) if (rp_S.ssbo[st][i].addr) {
+        any = 1;
+        if (al && rp_S.ssbo[st][i].addr % al) { un = 1; um[st] |= 1u << i; }
+    }
+    *any_out = any;
+    if (un && ssbo_used_slots_on()) {
+        int used_unaligned = 0, unknown = 0;
+        for (int st = 0; st < nst && st < 3 && !used_unaligned && !unknown; st++) {
+            uint32_t used = 0;
+            if (!sbu_stage_slots(stage_key((unsigned)st), (unsigned)st, q->prim, &used)) unknown = 1;
+            else if (used & um[st]) used_unaligned = 1;
+        }
+        un = used_unaligned || unknown;
+        if (count) {
+            atomic_fetch_add_explicit(&g_sbu_calls, 1, memory_order_relaxed);
+            if (used_unaligned) atomic_fetch_add_explicit(&g_sbu_used, 1, memory_order_relaxed);
+            else if (unknown) atomic_fetch_add_explicit(&g_sbu_unknown, 1, memory_order_relaxed);
+            else atomic_fetch_add_explicit(&g_sbu_cleared, 1, memory_order_relaxed);
+        }
+    }
+    *un_out = un;
+}
+// 读数一行（与「状态闸」同一节拍；没有一份「旧口径说有非对齐」的新程序就不打）：返回 0 = 没有读数。
+static uint64_t lp_ssbo_text(char *b, size_t bn) {
+    const uint64_t n = atomic_load_explicit(&g_sbu_calls, memory_order_relaxed);
+    if (!n) return 0;
+    snprintf(b, bn, "存储缓冲非对齐（只看程序真用到的槽）：新程序里绑定有非对齐的 %llu 份：程序没用到非对齐的槽、按对齐放行 %llu、用到了、照旧按非对齐 %llu、库里说不准、退回旧口径按非对齐 %llu",
+             (unsigned long long)n, (unsigned long long)atomic_load_explicit(&g_sbu_cleared, memory_order_relaxed),
+             (unsigned long long)atomic_load_explicit(&g_sbu_used, memory_order_relaxed), (unsigned long long)atomic_load_explicit(&g_sbu_unknown, memory_order_relaxed));
+    return n;
+}
 // 程序累计一行：出包预编 / 离线库 / 跨局缓存 / 现场编 合计第 1 个和每 50 个打一次（每发布一份新程序合计正好加 1）
 static void prog_tally_text(char *b, size_t bn) {
     int bo = snprintf(b, bn, "程序累计：出包预编（库%s）命中 %llu / 没有 %llu / 坏 %llu / 不可用 %llu（删 64 位能力声明 %llu）、离线库 %llu、跨局缓存 %llu、现场编 %llu、失败 %llu",
@@ -1542,12 +1615,14 @@ static void prog_tally_log(void) {
     nvn_plat_log(NVN_PLAT_LOG_INFO, "shader", b);
     lp_gate_text(b, sizeof b);
     nvn_plat_log(NVN_PLAT_LOG_INFO, "shader", b);
+    if (lp_ssbo_text(b, sizeof b)) nvn_plat_log(NVN_PLAT_LOG_INFO, "shader", b);
     if (lp_gate_probe_text(b, sizeof b)) nvn_plat_log(NVN_PLAT_LOG_INFO, "shader", b);
 }
 // 测试读数：当下的「程序累计」行（不受每 50 个打一次的节拍限制）；结果合并读头的三个计数（读头 / 没有缓存文件 / 缓存文件坏）
 void nvk_shader_test_tally_line(char *out, size_t n) { if (out && n) prog_tally_text(out, n); }
 void nvk_shader_test_gate_line(char *out, size_t n) { if (out && n) lp_gate_text(out, n); }
 void nvk_shader_test_gate_probe_line(char *out, size_t n) { if (out && n && !lp_gate_probe_text(out, n)) out[0] = 0; }
+void nvk_shader_test_ssbo_line(char *out, size_t n) { if (out && n && !lp_ssbo_text(out, n)) out[0] = 0; }
 void nvk_shader_test_alias_probe(uint64_t out[3]) {
     out[0] = atomic_load(&g_n_alias_probe); out[1] = atomic_load(&g_n_alias_nofile); out[2] = atomic_load(&g_n_alias_badfile);
 }
@@ -2043,7 +2118,7 @@ static uint64_t input_sig(const struct rp_shader_req *q, const struct s2a_direct
     MIX(rp_S.ms.a2c ? 1 : 0); MIX(rp_S.ms.a2c_dither ? 1 : 0);
     { int dual = 0; for (int i = 0; i < 8; i++) if (src1(rp_S.blend[i].src_rgb) || src1(rp_S.blend[i].dst_rgb) || src1(rp_S.blend[i].src_a) || src1(rp_S.blend[i].dst_a)) dual = 1; MIX(dual); }
     MIX(rp_depth_zero()); MIX(rp_origin_lower_left()); MIX(pc->shader_draw_parameters);
-    { int any = 0, un = 0; for (int st = 0; st < 5; st++) for (int i = 0; i < 16; i++) if (rp_S.ssbo[st][i].addr) { any = 1; if (pc->storage_buffer_offset_alignment && rp_S.ssbo[st][i].addr % pc->storage_buffer_offset_alignment) un = 1; } MIX(any); MIX(un); MIX(pc->storage_buffer_offset_alignment); }
+    { int any = 0, un = 0; gfx_ssbo_align(q, pc, stages == 7u ? 3 : stages == 3u ? 2 : 1, 0, &any, &un); MIX(any); MIX(un); MIX(pc->storage_buffer_offset_alignment); }   // 与 fill_facts 同一份答案（快路摘要不许和程序身份各算各的）
     MIX(rp_S.nattr); for (int i = 0; i < 16; i++) MIX(i < rp_S.nattr ? rp_S.attr[i].fmt : 0);
     for (int st = 0; st < 3; st++) if (stages & (1u << st)) { uint32_t m = 0; for (int i = 0; i < 16; i++) if (rp_S.ubo[st][i].size) m |= 1u << i; MIX(m); }
     MIX(rp_S.tex_pool_n); MIX(rp_S.samp_pool_n); MIX(rp_S.tf_on); MIX(rp_S.tex_base);
@@ -2719,6 +2794,7 @@ void rp_shader_reset(void) {
     free(g_last_tab); g_last_tab = NULL;
     memset(g_comb_sig, 0, sizeof g_comb_sig);
     memset(g_high_sig, 0, sizeof g_high_sig);
+    memset(g_sbu, 0, sizeof g_sbu); g_sbu_on = -1;   // 「阶段键 → 用到的存储缓冲槽」缓存：随库走，换局 / 换库根不留旧答案；开关下一局重读
     memset(g_ubo_need, 0, sizeof g_ubo_need); g_ubo_need_n = 0; g_ubo_learned = 0; atomic_store(&g_ubo_default_fact, 0);
     memset(g_idg, 0, sizeof g_idg); memset(g_idg_set, 0, sizeof g_idg_set);
     g_idg_groups = g_idg_idents = g_idg_resolves = g_idg_compiles = g_idg_loads = g_idg_multi = 0; g_idg_last_ns = 0;

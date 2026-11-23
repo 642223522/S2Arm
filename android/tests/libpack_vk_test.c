@@ -1544,6 +1544,168 @@ int main(void) {
         snprintf(g_dir, sizeof g_dir, "%s", tmpl);
     }
 
+    // ---- s2a_libpack_stage_sbuf_slots：图形阶段键用到哪几个存储缓冲槽（引擎据此判断「非对齐的绑定」会不会影响这个程序） ----
+    // 判据：一律与 program_v1 的合成同口径——整份 json 语法完整、dm_ctl == 键、stage == 本阶段；sbuf 的 reg（NVN 槽，0..15）进集合；
+    //   已知的非存储种类跳过；其余（别的存储种类 / 不认得的种类 / 缺字段 / 槽号越界 / 库里没有这一份）一律「说不准」，不许当成「没用存储」。
+    //   说不准时 *slots 清零、返回 1；只读，不动 hits / misses / rejects 计数。
+    {
+        const uint64_t base = 0x5100000000000000ull;
+        const char *const NONSTORAGE_KINDS[] = { "tex", "tbuf", "tex_pool", "tex_ubo", "tbuf_ubo", "tex_c2a", "samp", "samp_id", "samp_ubo",
+            "samp_c2a", "samp_pool", "samp_tex", "img", "img_ubo", "cbuf", "c1", "ubolen", "uvx", "lb", "sbsize", "drvcb", "support" };
+        char nonstorage_body[2048]; size_t nb_ = 0;   // 22 项 × 至多约 60 字节 + 逗号，远小于 2048
+        nonstorage_body[0] = 0;
+        for (size_t i = 0; i < sizeof NONSTORAGE_KINDS / sizeof NONSTORAGE_KINDS[0] && nb_ < sizeof nonstorage_body; i++)
+            nb_ += (size_t)snprintf(nonstorage_body + nb_, sizeof nonstorage_body - nb_, "%s{\"msl_name\":\"n%zu\",\"kind\":\"%s\",\"reg\":%zu,\"arg_id\":%zu}", i ? "," : "", i, NONSTORAGE_KINDS[i], i % 8, i);
+        CHECK(nb_ < sizeof nonstorage_body, "非存储种类夹具没有被截断");
+        #define SB(kind_, reg_, idx_) "{\"msl_name\":\"s\",\"kind\":\"" kind_ "\",\"index\":" #idx_ ",\"reg\":" #reg_ ",\"rw\":true,\"arg_id\":1}"
+        struct sbcase { const char *stage; uint32_t gs_topo; int kind; const char *dm_override; const char *body; const char *raw; };
+        // kind：1 = _b.json（LP_K_BJSON）；112 + t = _vg<t>.json（几何输入图元 t）。raw 非空：整份 json 用它（语法错 / 顶层不是对象等）
+        const struct sbcase C[] = {
+            /* 0  */ { "vs", 0, 1, NULL, "{\"msl_name\":\"c\",\"kind\":\"cbuf\",\"reg\":0,\"arg_id\":0}," SB("sbuf", 0, 0) ",{\"msl_name\":\"t\",\"kind\":\"tex\",\"reg\":5,\"arg_id\":2}," SB("sbuf", 3, 1) "," SB("sbuf", 15, 2), NULL },
+            /* 1  */ { "vs", 0, 1, NULL, "", NULL },
+            /* 2  */ { "vs", 0, 1, NULL, nonstorage_body, NULL },
+            /* 3  */ { "vs", 0, 1, NULL, SB("sbuf", 16, 0), NULL },
+            /* 4  */ { "vs", 0, 1, NULL, SB("sbuf_ubo", 1, 0), NULL },
+            /* 5  */ { "vs", 0, 1, NULL, SB("ubo_ptr", 1, 0), NULL },
+            /* 6  */ { "vs", 0, 1, NULL, SB("gmem_map", 1, 0), NULL },
+            /* 7  */ { "vs", 0, 1, NULL, SB("sbuf_push", 1, 0), NULL },
+            /* 8  */ { "vs", 0, 1, NULL, SB("geometry", 1, 0), NULL },
+            /* 9  */ { "vs", 0, 1, NULL, SB("future_storage", 1, 0), NULL },
+            /* 10 */ { "vs", 0, 1, NULL, "{\"msl_name\":\"s\",\"kind\":\"sbuf\",\"index\":0,\"rw\":true,\"arg_id\":1}", NULL },
+            /* 11 */ { "vs", 0, 1, NULL, "{\"msl_name\":\"x\",\"reg\":1,\"arg_id\":1}", NULL },
+            /* 12 */ { "vs", 0, 1, NULL, "{\"msl_name\":\"x\",\"kind\":\"sbuf_with_a_very_long_name_that_cannot_be_a_kind\",\"reg\":1,\"arg_id\":1}", NULL },
+            /* 13 */ { "vs", 0, 1, NULL, SB("sbuf", 15, 0), NULL },
+            /* 14 */ { "vs", 0, 1, NULL, SB("sbuf", 0, 0) "," SB("sbuf", 0, 1), NULL },
+            /* 15 */ { "ps", 0, 1, NULL, SB("sbuf", 2, 0), NULL },
+            /* 16 */ { "vs", 0, 1, "ffffffffffffffff", SB("sbuf", 1, 0), NULL },
+            /* 17 */ { "vs", 0, 1, NULL, "", "{\"key\":\"x_b\",\"stage\":\"vs\",\"dm_ctl\":\"%KEY%\",\"bindings\":[{\"kind\":\"sbuf\",\"reg\":1" },
+            /* 18 */ { "vs", 0, 1, NULL, "", "{\"key\":\"x_b\",\"stage\":\"vs\",\"dm_ctl\":\"%KEY%\",\"bindings\":[{\"kind\":\"sbuf\",\"reg\":1}]}xyz" },
+            /* 19 */ { "vs", 0, 1, NULL, "", "[1,2,3]" },
+            /* 20 */ { "fs", 0, 1, NULL, SB("sbuf", 1, 0), NULL },
+            /* 21 */ { "gs", 3, 115, NULL, SB("sbuf", 1, 0), NULL },
+            /* 22 */ { "gs", 0, 115, NULL, SB("sbuf", 1, 0), NULL },
+            /* 23 */ { "gs", 1, 113, NULL, SB("sbuf", 4, 0), NULL },
+            /* 24 */ { "gs", 3, 1, NULL, SB("sbuf", 1, 0), NULL },
+            /* 25 */ { "vs", 3, 115, NULL, SB("sbuf", 1, 0), NULL },
+            /* 26 */ { "vs", 0, 1, NULL, "", "{\"key\":\"x_b\",\"stage\":\"vs\",\"dm_ctl\":\"%KEY%\",\"bindings\":[{\"kind\":\"sbuf\",\"reg\":1}],\"tail\":\"abc}" },
+        };
+        enum { NC = (int)(sizeof C / sizeof C[0]) };
+        struct trec rs[NC + 4]; const uint8_t *ps_[NC + 4]; size_t ns_[NC + 4]; static char js[NC][4096];
+        for (int i = 0; i < NC; i++) {
+            const uint64_t key = base + (uint64_t)i;
+            char kh[17], dm[17];
+            snprintf(kh, sizeof kh, "%016llx", (unsigned long long)key);
+            snprintf(dm, sizeof dm, "%s", C[i].dm_override ? C[i].dm_override : kh);
+            if (C[i].raw) {
+                const char *raw = C[i].raw, *at = strstr(raw, "%KEY%");
+                if (at) snprintf(js[i], sizeof js[i], "%.*s%s%s", (int)(at - raw), raw, dm, at + 5);
+                else snprintf(js[i], sizeof js[i], "%s", raw);
+            } else if (C[i].kind == 1) {
+                snprintf(js[i], sizeof js[i], "{\"key\":\"%s_b\",\"stage\":\"%s\",\"dm_ctl\":\"%s\",\"bindings\":[%s]}", kh, C[i].stage, dm, C[i].body);
+            } else {
+                snprintf(js[i], sizeof js[i], "{\"key\":\"%s_vg%u\",\"stage\":\"%s\",\"dm_ctl\":\"%s\",\"gs_input_topology\":%u,\"bindings\":[%s]}", kh, C[i].gs_topo, C[i].stage, dm, C[i].gs_topo, C[i].body);
+            }
+            rs[i] = (struct trec){ .key = key, .kind = (uint8_t)C[i].kind, .len = (uint32_t)strlen(js[i]) };
+            ps_[i] = (const uint8_t *)js[i]; ns_[i] = strlen(js[i]);
+        }
+        #undef SB
+        // 标准 vs+fs 夹具（与最上面那个容器同一份记录）：末尾四条，给「与合成对账」用
+        rs[NC]     = (struct trec){ .key = 0x0123456789abcdef, .kind = 1,  .len = (uint32_t)strlen(VS_JSON) };       ps_[NC]     = (const uint8_t *)VS_JSON; ns_[NC]     = strlen(VS_JSON);
+        rs[NC + 1] = (struct trec){ .key = 0x0123456789abcdef, .kind = 52, .len = sizeof libpack_vert_spv };        ps_[NC + 1] = libpack_vert_spv;         ns_[NC + 1] = sizeof libpack_vert_spv;
+        rs[NC + 2] = (struct trec){ .key = 0x1032547698badcfe, .kind = 1,  .len = (uint32_t)strlen(PS_JSON) };       ps_[NC + 2] = (const uint8_t *)PS_JSON; ns_[NC + 2] = strlen(PS_JSON);
+        rs[NC + 3] = (struct trec){ .key = 0x1032547698badcfe, .kind = 52, .len = sizeof libpack_frag_spv };        ps_[NC + 3] = libpack_frag_spv;         ns_[NC + 3] = sizeof libpack_frag_spv;
+        snprintf(g_dir, sizeof g_dir, "%s/sbslots", tmpl);
+        CHECK(mkdir(g_dir, 0700) == 0, "create sbuf-slots pack directory");
+        CHECK(mk_pack(rs, NC + 4, ps_, ns_, 1) == 0, "sbuf-slots pack written");
+        struct s2a_libpack *slp = NULL;
+        CHECK(s2a_libpack_open(&slp, g_dir) == 1 && slp, "open sbuf-slots pack");
+        const uint64_t sh0 = s2a_libpack_hits(), sm0 = s2a_libpack_misses(), sr0 = s2a_libpack_rejects();
+        uint8_t kb[NC][8];
+        for (int i = 0; i < NC; i++) for (int b = 0; b < 8; b++) kb[i][b] = (uint8_t)((base + (uint64_t)i) >> (56 - 8 * b));
+        // want：期望集合；rc：0 = 读到、1 = 说不准（此时集合必须清零）。每项是 (用例号, 阶段号, 图元名, 期望集合, 期望返回)
+        const struct { int c; unsigned nvn; const char *topo; uint32_t want; int rc; const char *what; } Q[] = {
+            { 0,  0, NULL,  0x8009u, 0, "sbuf reg 0 / 3 / 15（夹着 cbuf / tex）→ 集合 0x8009" },
+            { 1,  0, NULL,  0u,      0, "bindings 为空 → 读到、一个槽也没用" },
+            { 2,  0, NULL,  0u,      0, "22 种已知非存储种类 → 读到、集合为空（逐个种类都认得）" },
+            { 3,  0, NULL,  0u,      1, "sbuf 槽号 16（越界）→ 说不准" },
+            { 4,  0, NULL,  0u,      1, "sbuf_ubo → 说不准（别的存储种类）" },
+            { 5,  0, NULL,  0u,      1, "ubo_ptr → 说不准" },
+            { 6,  0, NULL,  0u,      1, "gmem_map → 说不准" },
+            { 7,  0, NULL,  0u,      1, "sbuf_push → 说不准" },
+            { 8,  0, NULL,  0u,      1, "geometry → 说不准" },
+            { 9,  0, NULL,  0u,      1, "不认得的种类 → 说不准（不当成没用存储）" },
+            { 10, 0, NULL,  0u,      1, "sbuf 没有 reg → 说不准" },
+            { 11, 0, NULL,  0u,      1, "绑定没有 kind → 说不准" },
+            { 12, 0, NULL,  0u,      1, "种类名放不进 24 字节 → 说不准" },
+            { 13, 0, NULL,  0x8000u, 0, "边界：槽 15 → 0x8000" },
+            { 14, 0, NULL,  0x1u,    0, "边界：槽 0，同一槽两个绑定 → 0x1（并集）" },
+            { 15, 1, NULL,  0x4u,    0, "片元段（NVN 阶段 1，json stage=ps）sbuf reg 2 → 0x4" },
+            { 15, 0, NULL,  0u,      1, "同一份 json 当顶点段读 → stage 不符，说不准" },
+            { 16, 0, NULL,  0u,      1, "dm_ctl 与键不符 → 说不准" },
+            { 17, 0, NULL,  0u,      1, "json 被截断 → 说不准" },
+            { 18, 0, NULL,  0u,      1, "对象后面还有多余字节 → 说不准" },
+            { 19, 0, NULL,  0u,      1, "顶层不是对象 → 说不准" },
+            { 20, 0, NULL,  0u,      1, "stage 写成 fs（库里片元段叫 ps）→ 顶点段读说不准" },
+            { 20, 1, NULL,  0u,      1, "stage 写成 fs → 片元段读也说不准" },
+            { 21, 2, "Triangles", 0x2u, 0, "几何段、三角输入、_vg3：sbuf reg 1 → 0x2" },
+            { 21, 2, "Lines",     0u, 1, "几何段、线输入：库里没有 _vg1 → 说不准" },
+            { 21, 2, "Points",    0u, 1, "几何段、点输入：库里没有 _vg0 → 说不准" },
+            { 21, 2, "TrianglesAdjacency", 0u, 1, "几何段、邻接输入（离线不出）→ 说不准" },
+            { 21, 2, NULL,        0u, 1, "几何段、没有图元名 → 说不准" },
+            { 22, 2, "Triangles", 0u, 1, "_vg3 里 json 自称点输入 → 说不准" },
+            { 23, 2, "Lines",     0x10u, 0, "几何段、线输入：_vg1 的 sbuf reg 4 → 0x10（图元挑对格子）" },
+            { 23, 2, "Triangles", 0u, 1, "同一键、三角输入：没有 _vg3 → 说不准" },
+            { 24, 2, "Triangles", 0u, 1, "几何段只有 _b.json、没有 _vg3 → 说不准（不退到 _b.json 去读）" },
+            { 25, 0, NULL,        0u, 1, "顶点段只有 _vg3、没有 _b.json → 说不准" },
+            { 26, 0, NULL,        0u, 1, "bindings 之后还有语法错误的成员 → 说不准（整份核一遍，不只读用到的字段）" },
+            { 0,  3, NULL,  0u, 1, "细分控制段 → 说不准" },
+            { 0,  4, NULL,  0u, 1, "细分求值段 → 说不准" },
+            { 0,  5, NULL,  0u, 1, "计算段不走这里 → 说不准" },
+            { 0, 99, NULL,  0u, 1, "阶段号越界 → 说不准" },
+        };
+        for (size_t q = 0; q < sizeof Q / sizeof Q[0]; q++) {
+            uint32_t got = 0xDEADBEEFu;
+            const int rc = s2a_libpack_stage_sbuf_slots(slp, kb[Q[q].c], Q[q].nvn, Q[q].topo, &got);
+            char what[200]; snprintf(what, sizeof what, "存储槽集合：%s", Q[q].what);
+            CHECK(rc == Q[q].rc && got == Q[q].want, what);
+        }
+        {   // 库里没有的键、空参数：说不准，集合清零，不崩
+            const uint8_t absent[8] = { 0xde, 0xad, 0xbe, 0xef, 0x00, 0x11, 0x22, 0x33 };
+            uint32_t got = 0xDEADBEEFu;
+            CHECK(s2a_libpack_stage_sbuf_slots(slp, absent, 0, NULL, &got) == 1 && got == 0, "存储槽集合：库里没有这个键 → 说不准、集合清零");
+            got = 0xDEADBEEFu; CHECK(s2a_libpack_stage_sbuf_slots(NULL, kb[0], 0, NULL, &got) == 1 && got == 0, "存储槽集合：库句柄为空 → 说不准");
+            got = 0xDEADBEEFu; CHECK(s2a_libpack_stage_sbuf_slots(slp, NULL, 0, NULL, &got) == 1 && got == 0, "存储槽集合：键为空 → 说不准");
+            CHECK(s2a_libpack_stage_sbuf_slots(slp, kb[0], 0, NULL, NULL) == 1, "存储槽集合：没给结果指针 → 说不准、不崩");
+        }
+        CHECK(s2a_libpack_hits() == sh0 && s2a_libpack_misses() == sm0 && s2a_libpack_rejects() == sr0, "存储槽集合：只读，不动命中 / 没有 / 拒收计数");
+
+        // 与 program_v1 的合成对账：同一个键，合成出的 storage 绑定的 nvnSlot 集合必须落在这里报的集合里（这里的集合只许比合成的多，不许少）；
+        //   标准夹具（顶点段 sbuf reg 7，片元段没有存储）两边恰好相等
+        uint8_t keys[6][8] = {{0}};
+        const uint8_t kv[8] = { 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef };
+        const uint8_t kp[8] = { 0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe };
+        memcpy(keys[0], kv, 8); memcpy(keys[1], kp, 8);
+        uint8_t *j = NULL; size_t jl = 0; char w[192] = "";
+        const int crc = slp ? s2a_libpack_program_v1(slp, keys, 0x3, NULL, 1, "sha256-aaa", "closure-x", &j, &jl, w, sizeof w) : -9;
+        CHECK(crc == 0 && j, "对账：标准 vs+fs 夹具合成命中");
+        if (crc) printf("  合成没有命中（rc=%d）：%s\n", crc, w);
+        for (unsigned st = 0; st < 2 && j; st++) {
+            uint32_t composed = 0, reported = 0;
+            const char *want_stage = st ? "\"kind\":\"storage\",\"stage\":\"fs\"" : "\"kind\":\"storage\",\"stage\":\"vs\"";
+            for (const char *p = (const char *)j; p && (p = strstr(p, want_stage)); p++) {
+                const char *end = strchr(p, '}'), *nv = strstr(p, "\"nvnSlot\":");
+                if (nv && end && nv < end) composed |= 1u << strtoul(nv + 10, NULL, 10);
+            }
+            CHECK(s2a_libpack_stage_sbuf_slots(slp, keys[st], st, NULL, &reported) == 0, "对账：标准夹具读得到");
+            CHECK((composed & ~reported) == 0, "对账：合成出的存储槽都在报告的集合里（不许少报）");
+            CHECK(composed == reported && reported == (st ? 0u : 0x80u), st ? "对账：片元段没有存储槽，两边都空" : "对账：顶点段两边都是槽 7（0x80）");
+        }
+        free(j);
+        s2a_libpack_close(slp);
+        { char path[400]; snprintf(path, sizeof path, "%s/lib.idx", g_dir); unlink(path); snprintf(path, sizeof path, "%s/lib.000.pak", g_dir); unlink(path); rmdir(g_dir); }
+        snprintf(g_dir, sizeof g_dir, "%s", tmpl);
+    }
+
     s2a_libpack_close(lp);
     char cleanup[400];
     snprintf(cleanup, sizeof cleanup, "%s/lib.idx", tmpl); unlink(cleanup);
