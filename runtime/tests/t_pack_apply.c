@@ -23,7 +23,7 @@ int s2a_import_docs_pick(const s2a_launch_ctx *c, int game_data_env, const char 
 int s2a_import_state_game_quick(const char *proc_docs, const char *gid);
 int s2a_game_install_state(const char *proc_docs, const char *gid);
 int s2a_img_scan(const char *proc_docs); const char *s2a_img_scan_failure(void);
-int s2a_img_scan_source(const char *proc_docs, const char *dir, const char *srcid); int s2a_pack_source_forget(const char *proc_docs, const char *srcid);
+int s2a_img_scan_source(const char *proc_docs, const char *dir, const char *srcid, const char *skip); int s2a_pack_source_forget(const char *proc_docs, const char *srcid);
 int s2a_pack_migrate_one(const char *docs); int s2a_pack_migrate(const char *proc_docs, int *failed);
 const char *s2a_install_code(int rc, int err, int truncated, int from_img); const char *s2a_pack_apply_code(void); const char *s2a_img_scan_code(void);
 extern void (*s2a_pack_apply_phase)(int phase, uint64_t done, uint64_t total);
@@ -789,6 +789,7 @@ int main(void) {
       //   e 换路径回来（外接盘重新挂载）→ 两款只改软链接（返回 2）、不重解、状态回 1
       //   f 同款从导入文件夹认领进 App：软链接换成真文件、.source 删掉、外部文件不变；之后再扫来源不改回软链接
       //   g 移除来源：从它链来的款（只剩甲）资源包根删掉 → 状态 0，外部文件不动、乙不受影响；别的来源号拆 0 款
+      //   h 库里删过的款：例行扫描（带跳过名单）不链回来，主动加文件夹（不带名单）链回来
       { char E[1300], ED[1400], EV[1400], EV2[1400], rA[1600], rB[1600], rC[1600], gA[1500], gB[1500], gC[1500], lk[2000], tgt[2000], want[2000];
         snprintf(E, sizeof E, "%s/exth/Documents", T); snprintf(ED, sizeof ED, "%s/ext_drive", T); snprintf(EV, sizeof EV, "%s/ext_gone", T); snprintf(EV2, sizeof EV2, "%s/ext_drive2", T);
         snprintf(c, sizeof c, "mkdir -p '%s/放这里导入' '%s/sub' '%s/a/b/c' && python3 '%s/pack/img.py' build - '%s/src/others_sh.tsv' '%s/sub/甲.img' --gid 0100abcd000000e1 --pack-id ext1 > /dev/null"
@@ -799,7 +800,7 @@ int main(void) {
         CHECK(sh(c) == 0, "⑮ 造来源文件夹夹具");
         snprintf(gA, sizeof gA, "%s/games/0100ABCD000000E1", E); snprintf(gB, sizeof gB, "%s/games/0100ABCD000000E2", E); snprintf(gC, sizeof gC, "%s/games/0100ABCD000000E3", E);
         s2a_pack_root(rA, sizeof rA, gA); s2a_pack_root(rB, sizeof rB, gB); s2a_pack_root(rC, sizeof rC, gC);
-        int ne = s2a_img_scan_source(E, ED, "src1");
+        int ne = s2a_img_scan_source(E, ED, "src1", NULL);
         CHECK(ne == 2, "⑮a 扫来源链上 2 款（实际 %d）", ne);
         snprintf(lk, sizeof lk, "%s/game.img", rA); ssize_t tk = readlink(lk, tgt, sizeof tgt - 1); tgt[tk > 0 ? tk : 0] = 0; snprintf(want, sizeof want, "%s/sub/甲.img", ED);
         CHECK(tk > 0 && !strcmp(tgt, want), "⑮a 本体是软链接、指向来源里的文件（实际「%s」）", tgt);
@@ -812,13 +813,13 @@ int main(void) {
         CHECK(s2a_game_install_state(E, "0100ABCD000000E1") == 1, "⑮b 解开后就绪(1)（实际 %d）", s2a_game_install_state(E, "0100ABCD000000E1"));
         snprintf(c, sizeof c, "cmp -s '%s/src/npdm' '%s/exefs/main.npdm' && cmp -s '%s/sub/甲.img' '%s/甲_原样.bin' && test -L '%s/game.img'", D, rA, ED, T, rA);
         CHECK(sh(c) == 0, "⑮b 小文件逐字节解出、外部文件仍不变（没截派生件）、本体仍是软链接");
-        CHECK(s2a_img_scan_source(E, ED, "src1") == 0, "⑮c 再扫同一份不重链");
+        CHECK(s2a_img_scan_source(E, ED, "src1", NULL) == 0, "⑮c 再扫同一份不重链");
         CHECK(rename(ED, EV) == 0, "⑮d 挪走来源文件夹");
         CHECK(s2a_game_install_state(E, "0100ABCD000000E1") == 5, "⑮d 来源离线 → 5（实际 %d）", s2a_game_install_state(E, "0100ABCD000000E1"));
         CHECK(s2a_import_state_game_quick(E, "0100ABCD000000E1") != 0, "⑮d 离线时快判不报就绪");
-        CHECK(s2a_img_scan_source(E, ED, "src1") == -1, "⑮d 来源文件夹打不开 → -1");
+        CHECK(s2a_img_scan_source(E, ED, "src1", NULL) == -1, "⑮d 来源文件夹打不开 → -1");
         CHECK(rename(EV, EV2) == 0, "⑮e 换个路径放回来");
-        ne = s2a_img_scan_source(E, EV2, "src1");
+        ne = s2a_img_scan_source(E, EV2, "src1", NULL);
         tk = readlink(lk, tgt, sizeof tgt - 1); tgt[tk > 0 ? tk : 0] = 0; snprintf(want, sizeof want, "%s/sub/甲.img", EV2);
         CHECK(ne == 2 && !strcmp(tgt, want), "⑮e 两款只改软链接（返回 %d，指向「%s」）", ne, tgt);
         CHECK(s2a_game_install_state(E, "0100ABCD000000E1") == 1, "⑮e 不重解、状态回 1（实际 %d）", s2a_game_install_state(E, "0100ABCD000000E1"));
@@ -826,13 +827,17 @@ int main(void) {
         CHECK(s2a_img_scan(E) == 1, "⑮f 导入文件夹认领乙");
         snprintf(c, sizeof c, "test -f '%s/game.img' && test ! -L '%s/game.img' && test ! -e '%s/.game.img.source' && cmp -s '%s/a/b/乙.IMG' '%s/乙_原样.bin'", rB, rB, rB, EV2, T);
         CHECK(sh(c) == 0, "⑮f 乙的软链接换成真文件、.source 删掉、外部文件不变");
-        CHECK(s2a_img_scan_source(E, EV2, "src1") == 0, "⑮f 再扫来源：App 内已有本体的乙不改回软链接");
+        CHECK(s2a_img_scan_source(E, EV2, "src1", NULL) == 0, "⑮f 再扫来源：App 内已有本体的乙不改回软链接");
         snprintf(c, sizeof c, "test ! -L '%s/game.img'", rB); CHECK(sh(c) == 0, "⑮f 乙仍是 App 内的真文件");
         CHECK(s2a_pack_source_forget(E, "src9") == 0, "⑮g 别的来源号拆 0 款");
         CHECK(s2a_pack_source_forget(E, "src1") == 1, "⑮g 移除来源拆 1 款（甲）");
         snprintf(c, sizeof c, "test ! -e '%s' && cmp -s '%s/sub/甲.img' '%s/甲_原样.bin' && test -f '%s/game.img'", rA, EV2, T, rB);
         CHECK(sh(c) == 0, "⑮g 甲的资源包根删掉、外部文件不动、乙不受影响");
-        CHECK(s2a_game_install_state(E, "0100ABCD000000E1") == 0, "⑮g 移除后甲 → 0（实际 %d）", s2a_game_install_state(E, "0100ABCD000000E1")); }
+        CHECK(s2a_game_install_state(E, "0100ABCD000000E1") == 0, "⑮g 移除后甲 → 0（实际 %d）", s2a_game_install_state(E, "0100ABCD000000E1"));
+        // h 玩家在库里删过甲：例行扫描带跳过名单 → 不链回来；玩家主动加文件夹（不带名单）→ 链回来
+        CHECK(s2a_img_scan_source(E, EV2, "src2", "0100ABCD00000099,0100ABCD000000E1") == 0, "⑮h 删过的甲：例行扫描不链回来");
+        snprintf(c, sizeof c, "test ! -e '%s'", rA); CHECK(sh(c) == 0, "⑮h 甲的资源包根仍不在");
+        CHECK(s2a_img_scan_source(E, EV2, "src2", NULL) == 1, "⑮h 主动加文件夹：甲链回来"); }
       // ⑭c 着色器更新包（格式号 2，维护者 11-13）：先导完整包（带 shaders/a.metallib = 'x'）并解开；再导更新包（同游戏号同资源包号，a.metallib = 'y'——
       //   同长度：旧的若还在本体目录表里，下次解包会按「长度对就跳过 / 照目录表回写」把它弄回 'x'）。期望手写：
       //   认领 1 个、更新包从导入文件夹删掉、a.metallib = 'y'、本体目录表里不再有 shaders/ 条目、本体头里整长 = 文件长、再次应用后仍是 'y'；

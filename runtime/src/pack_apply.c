@@ -1360,7 +1360,7 @@ int s2a_img_link(const char *proc_docs, const char *path, const char *srcid, con
     return 0;
 }
 static int ends_with_ci(const char *s, const char *t) { size_t a = strlen(s), b = strlen(t); return a >= b && !strcasecmp(s + a - b, t); }
-static void src_scan_dir(const char *proc_docs, const char *top, const char *dir, int depth, const char *srcid, int *n) {
+static void src_scan_dir(const char *proc_docs, const char *top, const char *dir, int depth, const char *srcid, const char *skip, int *n) {
     DIR *d = opendir(dir); if (!d) return;
     char *names[512]; int nn = 0; struct dirent *e;
     while ((e = readdir(d)) && nn < 512) { if (e->d_name[0] == '.') continue; names[nn++] = strdup(e->d_name); }
@@ -1368,8 +1368,12 @@ static void src_scan_dir(const char *proc_docs, const char *top, const char *dir
     for (int i = 0; i < nn; i++) {
         char p[2400]; struct stat st; snprintf(p, sizeof p, "%s/%s", dir, names[i]);
         if (!lstat(p, &st)) {
-            if (S_ISDIR(st.st_mode) && depth < 2) src_scan_dir(proc_docs, top, p, depth + 1, srcid, n);
+            if (S_ISDIR(st.st_mode) && depth < 2) src_scan_dir(proc_docs, top, p, depth + 1, srcid, skip, n);
             else if (S_ISREG(st.st_mode) && st.st_size >= 4096 && ends_with_ci(names[i], ".img")) {
+                if (skip && *skip) {   // 玩家在库里删过的款：例行扫描不再链回来（玩家主动加文件夹时壳不传，删过的回到库里）
+                    int fd = open(p, O_RDONLY); uint8_t gh[32]; int got = fd >= 0 && pread(fd, gh, sizeof gh, 0) == (ssize_t)sizeof gh && !memcmp(gh, "S2AIMG01", 8); if (fd >= 0) close(fd);
+                    if (got) { char g[17]; memcpy(g, gh + 16, 16); g[16] = 0; for (int k = 0; k < 16; k++) if (g[k] >= 'a' && g[k] <= 'f') g[k] -= 32;
+                        if (strstr(skip, g)) { free(names[i]); continue; } } }
                 int r = s2a_img_link(proc_docs, p, srcid, p + strlen(top) + 1);
                 if (r == 0 || r == 3) (*n)++;
                 else if (r < 0) LOG("【红】外部游戏来源：%s 没链上：%s", names[i], g_img_err); }
@@ -1377,12 +1381,13 @@ static void src_scan_dir(const char *proc_docs, const char *top, const char *dir
         free(names[i]);
     }
 }
-// 扫一个外部来源文件夹（壳已拿到访问权）：返回新链 / 改链的款数；文件夹打不开（离线）→ -1（不动已链的款，库里按软链接打不开显示离线）
-int s2a_img_scan_source(const char *proc_docs, const char *dir, const char *srcid) {
+// 扫一个外部来源文件夹（壳已拿到访问权）：返回新链 / 改链的款数；文件夹打不开（离线）→ -1（不动已链的款，库里按软链接打不开显示离线）。
+//   skip：玩家在库里删过的游戏号（逗号隔开，大写；NULL / 空 = 不跳过）
+int s2a_img_scan_source(const char *proc_docs, const char *dir, const char *srcid, const char *skip) {
     if (!proc_docs || !*proc_docs || !dir || !*dir || !srcid || !*srcid || strchr(srcid, '\t') || strchr(srcid, '\n')) return -1;
     DIR *d = opendir(dir); if (!d) return -1; closedir(d);
     pthread_mutex_lock(&g_scan_mu); int n = 0; g_img_err[0] = 0;
-    src_scan_dir(proc_docs, dir, dir, 0, srcid, &n);
+    src_scan_dir(proc_docs, dir, dir, 0, srcid, skip, &n);
     pthread_mutex_unlock(&g_scan_mu);
     if (n) LOG("外部游戏来源：%s 新链 / 改链 %d 款", dir, n);
     return n;
