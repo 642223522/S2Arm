@@ -55,10 +55,42 @@ void s2a_pso_archive_crash_note(void) {   // 崩溃处理器在崩溃线程上�
     int fd = open(g_par_dead_path, O_WRONLY | O_CREAT | O_APPEND, 0644); if (fd < 0) return;
     (void)!write(fd, g_par_os_key, strlen(g_par_os_key)); (void)!write(fd, "\n", 1); close(fd);
 }
-static int par_dead_global_has(void) {   // 全机标记里有本系统版本串
+static int par_dead_global_count(void) {   // 全机标记里本系统版本串的行数 = 崩溃处理器记过几次真崩（每崩一次追加一行）
     if (!g_par_dead_path[0] || !g_par_os_key[0]) return 0;
-    NSString *s = [NSString stringWithContentsOfFile:@(g_par_dead_path) encoding:NSUTF8StringEncoding error:nil];
-    for (NSString *ln in [s componentsSeparatedByString:@"\n"]) if ([ln isEqualToString:@(g_par_os_key)]) return 1;
+    NSString *s = [NSString stringWithContentsOfFile:@(g_par_dead_path) encoding:NSUTF8StringEncoding error:nil]; int n = 0;
+    for (NSString *ln in [s componentsSeparatedByString:@"\n"]) n += [ln isEqualToString:@(g_par_os_key)];
+    return n;
+}
+// 真崩后隔几局重试（11-23 D-KDM4：一台 iPhone 27.2.1 在写归档时真崩过一次，原先这个系统版本从此整机不写，一款 4.7 万条管线的大游戏每局起局重编几分钟、「起不来」）：
+//   停写 3 局后重试写一局；重试那局又崩（崩溃处理器再追加一行）→ 间隔翻倍（6、12 … 至多 48 局）；重试那局没崩 → 清掉本系统版本的记录、照常写。
+//   状态记在标记旁的 <标记>.wait：一行「<系统版本串>\t<wait 已停局数 | retry 重试时的崩溃次数>」。返回 1 = 这一局不写
+static int par_dead_retry(int crashes) {
+    NSString *wps = [@(g_par_dead_path) stringByAppendingString:@".wait"];
+    NSString *st = [NSString stringWithContentsOfFile:wps encoding:NSUTF8StringEncoding error:nil] ?: @"", *key = @(g_par_os_key);
+    NSMutableArray<NSString *> *keep = [NSMutableArray array]; NSString *mine = nil;
+    for (NSString *ln in [st componentsSeparatedByString:@"\n"]) { if (!ln.length) continue; if ([ln hasPrefix:[key stringByAppendingString:@"\t"]]) mine = ln; else [keep addObject:ln]; }
+    NSArray *f = [[mine substringFromIndex:mine ? key.length + 1 : 0] componentsSeparatedByString:@" "];
+    NSString *kind = mine && f.count == 2 ? f[0] : @"wait"; long v = mine && f.count == 2 ? [f[1] integerValue] : 0;
+    void (^save)(NSString *) = ^(NSString *line) { NSMutableArray *a = [keep mutableCopy]; if (line) [a addObject:line]; [[[a componentsJoinedByString:@"\n"] stringByAppendingString:a.count ? @"\n" : @""] writeToFile:wps atomically:YES encoding:NSUTF8StringEncoding error:nil]; };
+    if ([kind isEqualToString:@"retry"]) {
+        if (crashes <= v) {   // 重试那局没有再崩：本系统版本的记录清掉
+            NSString *d = [NSString stringWithContentsOfFile:@(g_par_dead_path) encoding:NSUTF8StringEncoding error:nil] ?: @""; NSMutableArray *rest = [NSMutableArray array];
+            for (NSString *ln in [d componentsSeparatedByString:@"\n"]) if (ln.length && ![ln isEqualToString:key]) [rest addObject:ln];
+            [[[rest componentsJoinedByString:@"\n"] stringByAppendingString:rest.count ? @"\n" : @""] writeToFile:@(g_par_dead_path) atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            save(nil);
+            MLOG("【黄】 pipeline archive: the retry after a crash in the archive writer on this OS version (%s) did not crash: writing again from now on (#756)", g_par_os_key);
+            return 0;
+        }
+        kind = @"wait"; v = 0;   // 重试那局又崩了：按翻倍的间隔重新停
+    }
+    long interval = MIN(3L << MIN(crashes - 1, 4), 48L);
+    if (v < interval) {
+        save([NSString stringWithFormat:@"%@\twait %ld", key, v + 1]);
+        MLOG("【黄】 pipeline archive: a game on this device crashed inside the archive writer on this OS version (%s, #756; %d time(s)): reading it as usual, writing nothing this run (%ld of %ld before a retry)", g_par_os_key, crashes, v + 1, interval);
+        return 1;
+    }
+    save([NSString stringWithFormat:@"%@\tretry %d", key, crashes]);
+    MLOG("【黄】 pipeline archive: %ld runs without writing after a crash in the archive writer on this OS version (%s, #756; %d time(s)): writing again this run as a retry", interval, g_par_os_key, crashes);
     return 0;
 }
 static void par_global_init(void) {
@@ -72,7 +104,7 @@ static void par_global_init(void) {
 // ①② 之一命中返回 1（并打一行原因）。单测直接调
 static int par_gate_or_learned(int ios, long major, long minor) {
     if (par_os_gate(ios, major, minor)) { MLOG("【黄】 pipeline archive: iOS %ld.%ld: Metal's archive writer crashes on iOS 18.0–18.3 (#756, player diagnoses): reading it as usual, writing nothing", major, minor); return 1; }
-    if (par_dead_global_has()) { MLOG("【黄】 pipeline archive: a game on this device crashed inside the archive writer on this OS version (%s, #756): reading it as usual, writing nothing", g_par_os_key); return 1; }
+    { int c = par_dead_global_count(); if (c > 0) return par_dead_retry(c); }
     return 0;
 }
 static void par_check_dead_write(void) {   // 起局（打开归档目录时）调：版本先验或崩溃处理器记过真崩 → 这个系统版本不再写；老版本的 .writing 标记删掉

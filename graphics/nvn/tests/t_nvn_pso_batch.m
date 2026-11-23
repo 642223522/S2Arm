@@ -90,6 +90,25 @@ int main(void) { @autoreleasepool {
         VERIFY(!before && learned && !after_upgrade, "⑭ 全机学习：不在写时崩不记（命中 %d，应 0）、在写时崩后同系统版本不写（%d，应 1）、升级后重判（%d，应 0）", before, learned, after_upgrade);
         g_par_dead_path[0] = 0; char cmd[256]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", t2); system(cmd);
     }
+    // ⑮ 真崩后隔几局重试（11-23 D-KDM4）：期望按规则手写——崩 1 次：停 3 局（1 1 1）、第 4 局重试写（0）；下一局没新崩 → 清记录、照写（0），标记里本版本 0 行。
+    //   再崩：重试局里又崩（追加第 2 行）→ 停 6 局再重试；别的系统版本不受影响
+    {
+        char t4[] = "/tmp/t_pso_retry.XXXXXX"; REQUIRE(mkdtemp(t4));
+        snprintf(g_par_dead_path, sizeof g_par_dead_path, "%s/pso_archive_dead.txt", t4);
+        snprintf(g_par_os_key, sizeof g_par_os_key, "Version 27.2.1 (Build 24B91034)");
+        g_par_in_write = 1; s2a_pso_archive_crash_note(); g_par_in_write = 0;   // 真崩 1 次
+        char seq[32] = ""; for (int i = 0; i < 5; i++) seq[i] = (char)('0' + par_gate_or_learned(1, 27, 2));
+        int left = par_dead_global_count();
+        VERIFY(!strcmp(seq, "11100") && left == 0, "⑮ 崩 1 次：起局序列 %s（应 11100：停 3 局、第 4 局重试、重试没崩后照写），之后本版本记录 %d 行（应 0）", seq, left);
+        g_par_in_write = 1; s2a_pso_archive_crash_note(); g_par_in_write = 0;   // 又崩 1 次（记录已清，重新计 1 次）
+        for (int i = 0; i < 3; i++) (void)par_gate_or_learned(1, 27, 2);         // 停 3 局
+        int retry = par_gate_or_learned(1, 27, 2);                              // 第 4 局重试
+        g_par_in_write = 1; s2a_pso_archive_crash_note(); g_par_in_write = 0;   // 重试那局又崩 → 共 2 次
+        char seq2[32] = ""; for (int i = 0; i < 7; i++) seq2[i] = (char)('0' + par_gate_or_learned(1, 27, 2));
+        snprintf(g_par_os_key, sizeof g_par_os_key, "Version 27.3 (Build 24C1)"); int other = par_gate_or_learned(1, 27, 3);
+        VERIFY(retry == 0 && !strcmp(seq2, "1111110") && other == 0, "⑮ 重试局又崩：重试局 %d（应 0），之后序列 %s（应 1111110：间隔翻倍停 6 局再重试），别的系统版本 %d（应 0）", retry, seq2, other);
+        g_par_dead_path[0] = 0; char cmd[256]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", t4); system(cmd);
+    }
     if (failures) { printf("✗ t_nvn_pso_batch：%u 项里 %u 项不符\n", checks, failures); return 1; }
     printf("✓ t_nvn_pso_batch：%u 项全过（70 条管线写成 3 个批文件，按键全部取回；老版本被杀留下的标记不再停写、真崩照停；正常收局不留标记）\n", checks); return 0;
 } }
