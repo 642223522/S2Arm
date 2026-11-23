@@ -10,6 +10,7 @@
 //   脱敏：App 数据目录 / 安装目录换成 <APP> / <BUNDLE>，设备名、UDID 去掉；存档（bis/user/save）、资源包、密钥都不放。
 //   交出（11-13 起）：入口②③④是「上传给开发者」——传到 diag.s2arm.com，玩家拿到短码、只复制短码；上传失败退回系统分享面板（AirDrop / 存到文件 / 微信）。
 //         入口①仍直接弹分享面板。包同时留在 Documents/diag/（只留最近 3 个，Mac 前端「拉回诊断」能拉到）。
+#include <dlfcn.h>
 #import <UIKit/UIKit.h>
 #include "s2a_docs.h"   // s2a_container_docs：容器文档根（Apple TV 在 Library/Caches/S2Arm）
 #import "s2a_l10n.h"
@@ -236,6 +237,9 @@ static void build_async(void (^done)(NSURL *zip, NSString *err)) {
     g_exporting = YES;
     [NSNotificationCenter.defaultCenter postNotificationName:@"S2ADiagExportChanged" object:nil];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        // 打包前记一份游戏线程表（同崩溃现场那份 s2a_thread_dump：各线程停在哪个系统调用 / 等什么地址 / 客体回溯）。游戏照跑：表只拿全局锁、逐条短暂停住在跑的线程读寄存器。
+        //   #2130：卡在加载界面、画面照常出、游戏线程空着——出帧不停，停住现场（开发设施）也不起，玩家包里原先拿不到任何线程状态
+        { void (*td)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "s2a_thread_dump"); if (td) { LOG("诊断包：打包前的游戏线程表（游戏照跑）："); td(); } }
         NSString *err = nil; NSURL *zip = nil; unsigned long long sz = 0;
         struct { NSUInteger cap; BOOL slim; } tiers[] = {{8u << 20, NO}, {4u << 20, YES}, {1u << 20, YES}};
         for (int i = 0; i < 3; i++) {
