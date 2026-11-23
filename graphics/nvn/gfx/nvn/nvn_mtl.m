@@ -12201,8 +12201,10 @@ static void warm_announce(void) {
     int r = s2a_front_warm_tick(0, n);
     MLOG("pipeline prepare: announced before the first frame (%ld list lines; front end %s)", n, r < 0 ? "absent" : "told");
 }
+static void mtk_emu_prebuild(void);   // nvn_geometry.inc：宿主自跑任务 / 网格阶段的库按上一局清单开局后台先编
 static void warm_start(void) {
     if (g_warm_started++) return;
+    mtk_emu_prebuild();
     // 混合管线的随包首查预热（nvn_hybrid.inc hybrid_pkg_warm）：进程里第一次从 Metal 4 归档查中有一次性初始化，开局在后台付掉，不落在提交线程的第一次首遇上
     if (@available(macOS 26.0, iOS 26.0, *)) if (hybrid_on()) dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ @autoreleasepool { if (@available(macOS 26.0, iOS 26.0, *)) hybrid_pkg_warm(); } });
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ pso_user_seen_load(); });   // the record's dedupe set, off the submit thread (pso_user_seen_load)
