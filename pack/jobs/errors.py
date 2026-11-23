@@ -101,7 +101,7 @@ RECOVERY = {
     "engine_incomplete": "重新安装完整的 S2Arm，然后点「重新检查」。",
     "engine_toolchain_newer": "把 S2Arm 更新到最新版（新版认得你的 Xcode），然后再点一次。",
     "graphics_api_unsupported": "这款暂时打不了包，换一款官方游戏试试；如果确定是正版游戏，点「复制错误摘要」发给我们。",   # #222：同人移植把图形库静态链进程序，判不出图形接口   # 11-07 联合开发者：beta.4 遇 Xcode 27.2（metal 比锁新）直连库「链号前后不一」
-    "game_structure_unsupported": "这款暂时打不了包，换一款官方游戏试试；如果确定是正版游戏，点「复制错误摘要」发给我们。",   # v0.3.1：直连配置推导不认这款的程序结构（⑪ 照停、说人话）
+    "game_structure_unsupported": "这款还没适配，点「复制错误摘要」发给我们，我们按它补上。",   # v0.3.1：直连配置推导不认这款的程序结构（⑪ 照停、说人话）
     "tool_missing": "重新安装完整的 S2Arm，点「重新检查」后重试。",
     "target_unsupported": "这台设备的 GPU 或系统不在当前支持范围内，重试无法解决；需要 A14 / M1 或更新芯片及 iOS / iPadOS 18 或更新系统。",
     "xcode_sdk_too_old": "把 Xcode 更新到最新版，装好打开一次，回来点「重新检查」，再打 iPhone 包。",
@@ -123,6 +123,7 @@ RECOVERY = {
     "phone_app_incompatible": "照上面说的把这台 {0} 上的 S2Arm 更新到这一版，再点这台的「重试」。",   # 同上，App 早于接口起始版（host_update.COMPAT_SINCE），推进去打不开   # 通用壳「推到 iPhone」：手机上的壳不是本版
     "device_not_visible": "用数据线把这台 {0} 连到这台 Mac，解锁后在设备上点「信任」；打开开发者模式（设置 → 隐私与安全性 → 开发者模式，开了要重启）；等 Xcode 菜单「窗口 → 设备与模拟器」里出现这台，再点一次「推到 iPhone」。",   # pack/ensure_profile.sh：Xcode 看不到这台、账号上也没登记过它（D-44DP 兜底的盲区，11-16）
     "free_app_limit": "免费 Apple ID 在每台设备上最多同时装 3 个自签 App，这台 {0} 已经装满：在设备上长按删掉一个不再玩的自签 App 后重试；或改用付费 Apple 开发者账号（没有这个上限）。",
+    "signing_identity_invalid": "这台 {0} 不认这次签名用的开发证书（手机说它已失效）。常见原因：在 AltStore、SideStore、iloader 等别的工具里新建或撤销过这个 Apple ID 的证书，把 S2Arm 在用的那张顶掉了；或者这台 {0} 的日期时间不对。办法：在 {0} 上打开「设置 → 通用 → 日期与时间」里的「自动设置」，再点一次重试：S2Arm 签名前会重新向 Apple 核这张证书，已被撤掉的会换一张新的（要撤别的工具的证书时会先问你）。手机上已装的 App 和存档都不受影响。",   # D-7VBE：installd 0xe8008018（impactor.EXPLAIN / install.SIGN_ERRORS）
     "free_appid_limit": "这是 Apple 对免费 Apple ID 的限制：7 天内最多注册 10 个包名，这个账号已经用满；在手机上删 App 不会退还额度。办法：等几天，最早那批包名注册满 7 天就会恢复；或换一个 Apple ID 登录后再装（Mac 在 S2Arm 里登录，Windows 在 Impactor 里登录）；或改用付费 Apple 开发者账号（没有这个限制）。",   # Apple 错误 9120；与 free_app_limit（设备上同时 3 个）是两件事，删 App 无效
     "app_id_taken": "苹果拒绝注册这个包名（Apple 错误 9401：同一个包名在苹果那边已被占用）。请在 Impactor（Mac 上是 Xcode）里确认登录的是当初装 S2Arm 用的那个 Apple ID 再装；付费开发者账号也可以到 developer.apple.com 的「Certificates, Identifiers & Profiles → Identifiers」删掉 io.s2arm.games 开头的旧包名后重试。还不行请导出诊断包反馈。",   # Apple 错误 9401；Windows 装机先用大小写两种包名各试一次（install_win.install_app），都被拒才报这个码
     "app_other_signer": "手机上已经有一个用别的签名装的 S2Arm（包名相同、签名不同），系统不让覆盖。二选一：继续用你原来的签名工具更新它；或者在 iPhone 上长按 S2Arm 删掉它（里面的存档会一起删，先在 S2Arm 里导出存档），再点「推到 iPhone」。",   # 玩家先自签装过同包名的 S2Arm（11-11 反馈）：installation_proxy MismatchedApplicationIdentifierEntitlement
@@ -412,7 +413,7 @@ PLAYER_REASON = {
     "ios_platform_missing": "缺少 iOS 平台组件：Xcode 的 iOS 平台还没装，打不了 iPhone 包。",
     "engine_toolchain_newer": "这版 S2Arm 不认识你的 Xcode：你的 Xcode 比这版 S2Arm 新。",
     "graphics_api_unsupported": "这款游戏暂时出不了包：没认出它用的图形接口（NVN / Vulkan / OpenGL）。请把诊断发给我们，我们会核对是不是没认出来。",
-    "game_structure_unsupported": "这款游戏暂不支持：程序的结构我们还不认识，多见于自制或移植的程序。",
+    "game_structure_unsupported": "这款游戏暂不支持：出包工具还没适配这款游戏的程序结构。请把诊断发给我们，我们按它补上。",
     "tool_missing": "缺少工具：这条链上有个工具没装。",
     "content_invalid": "文件内容不对：文件结构校验没通过，可能没下完整。",
     "volume_ops_unsupported": "存放位置所在磁盘格式不支持：这块盘不支持出包需要的文件操作（常见于 exFAT / FAT 格式的外接盘）。",

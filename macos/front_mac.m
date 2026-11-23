@@ -3,6 +3,7 @@
 // (A2) used by services/InputPump.cs when the host exports it.
 #include <dlfcn.h>
 #import <AppKit/AppKit.h>
+
 #import <CoreGraphics/CoreGraphics.h>
 #import <GameController/GameController.h>
 #import <CoreHaptics/CoreHaptics.h>
@@ -49,6 +50,10 @@ int s2a_ui_zh(void) { return [NSLocale.preferredLanguages.firstObject hasPrefix:
 #include "../ios/haptic_retry.h"
 #include "../ios/haptic_safe.h"
 #include "../ios/pad_order_file.h"
+#include <stdatomic.h>
+// 游戏窗口可见（遮挡通知维护，主线程写、心跳读）：-1 = 窗口还没建；g_win_hidden_n = 变成不可见的次数（被挡 / 最小化 / 切到别的桌面）
+static _Atomic int g_win_visible = -1, g_win_hidden_n;
+int s2a_mac_window_visible(int *hidden_n) { if (hidden_n) *hidden_n = atomic_load(&g_win_hidden_n); return atomic_load(&g_win_visible); }
 int s2a_screen_fit(int pw, int ph);   // runtime/src/widen.c：按窗口像素跟屏
 
 void s2a_host_shutdown(const char *why);
@@ -325,13 +330,13 @@ static void set_mouse_capture(BOOL capture) {
 // ---- 鼠标左键点画面 = 触屏（11-04 维护者定，对齐 Ryujinx Ryujinx.Input/HLE/TouchScreenManager：按下 Start、拖动跟点、抬起 End，坐标落在游戏画面里）----
 //   脑锻炼（010062200D392000）标题页「开始」只认点按，Mac 原先鼠标只当视角 / 按键，开不了局。
 //   什么时候接管左键（11-04 维护者定，开箱即用）：
-//     ① 游戏声明了触屏 / 手写笔配置（hid SetTouchScreenConfiguration，服务层经 s2a_vpad_touch_configured 告知），且玩家没改过键位 → 左键当触屏，
+//     ① 游戏声明了触屏 / 手写笔配置（hid SetTouchScreenConfiguration，服务层经 s2a_vpad_touch_configured 告知），且玩家没动过鼠标的用法 → 左键当触屏，
 //        缺省键位里左键 = Y、鼠标模式 = 转动视角，这两样在这里让给触屏（不发 Y、不锁鼠标）；
 //     ② 否则只在左键没映射成按键、鼠标模式不是「转动视角」时接管（玩家自己的设置里左键没别的用途）。
-//   「玩家改过键位」判据（mapping_is_default）：本局生效的映射（S2A_INPUT_CONFIG 的快照，或没给时的内置缺省）与内置缺省 default_config() 按值比，
-//     不同 = 改过。不看文件在不在：启动器首启的键位引导卡会把未改动的标准映射也当 launchInputConfig 写成快照（pack/jobs/build.py runtime_env），
-//     文件存在不等于玩家改过；启动器的标准映射 InputConfig.standard（Models.swift）与 default_config() 逐项同值，只是 JSON 多写了缺省字段
-//     （schema、modifiers 0、invert false、recenter true），比较前按 Models.swift 的解码缺省补齐（mapping_norm）。
+//   「玩家动过鼠标的用法」判据（mouse_use_is_default，#1987 维护方 11-22 定）：只比两样——左键绑在哪个按键位上、鼠标模式，
+//     和内置缺省 default_config() 一样（左键 = Y、转动视角）就当没动过；别的键改没改不算。原先整份按值比（mapping_norm），
+//     设了所有游戏的默认（default-input.json）只改了一个手柄键、或某款单独改了个按键，都会判成「改过」，脑锻炼这类游戏又点不了开始。
+//     不看文件在不在：启动器首启的键位引导卡会把未改动的标准映射也当 launchInputConfig 写成快照（pack/jobs/build.py runtime_env）。
 //   触点经 s2a_vpad_read_touch 交给服务层 InputPump.PushTouch（与 iOS 壳仅触屏方案同一导出、同一写法），主线程写、HID 线程读，锁保护。
 //   画面矩形与上屏同一套算式：通用模式取渲染层这一帧（nxgal_present_frame + gal_present.m dst_rect），直连模式取出图比例
 //   （graphics/nvn/host_adapt.m out_aspect 同式）按 nvn_present_fit.h pf_viewport 放进窗口。触点空间同 iOS vpad.m switchPoint：
@@ -361,10 +366,12 @@ __attribute__((visibility("default"), used)) void s2a_vpad_set_style(int style) 
 static _Atomic int g_slot_style[8];
 __attribute__((visibility("default"), used)) void s2a_vpad_set_slot_style(int slot, int style) { if (slot >= 0 && slot < 8) atomic_store(&g_slot_style[slot], style); }
 __attribute__((visibility("default"), used)) int s2a_vpad_touch_configured(int mode) {
-    if (atomic_exchange(&touch_declared, mode) < 0) fprintf(stderr, "[s2a] Mac：游戏声明了触屏配置（模式 %d）；键位没改过时左键点画面当触屏\n", mode);
+    if (atomic_exchange(&touch_declared, mode) < 0) fprintf(stderr, "[s2a] Mac：游戏声明了触屏配置（模式 %d）；左键和鼠标模式没改过时左键点画面当触屏\n", mode);
     return 1;
 }
-static NSDictionary *mapping_norm(NSDictionary *c) {   // 只取影响输入的字段，缺省字段按 Models.swift 解码缺省补齐
+// 只取影响输入的字段，缺省字段按 Models.swift 解码缺省补齐（启动器标准映射与 default_config() 逐项同值、只是 JSON 多写缺省字段）；
+//   运行时不再用它判「改过」（见上），单测 launchers/macos/Tests/input_test.m 拿它核缺省映射的语义没变
+__attribute__((unused)) static NSDictionary *mapping_norm(NSDictionary *c) {
     NSMutableDictionary *k = [NSMutableDictionary dictionary], *a = [NSMutableDictionary dictionary];
     NSDictionary *kb = [c[@"keyboard"] isKindOfClass:NSDictionary.class] ? c[@"keyboard"] : @{};
     for (NSString *n in kb) k[n] = @[kb[n][@"code"] ?: @(-1), kb[n][@"modifiers"] ?: @0];
@@ -376,9 +383,15 @@ static NSDictionary *mapping_norm(NSDictionary *c) {   // 只取影响输入的�
     double dz = c[@"deadzone"] ? [c[@"deadzone"] doubleValue] : .15;
     return @{@"k": k, @"m": c[@"mouse"] ?: @{}, @"g": c[@"gamepad"] ?: @{}, @"a": a, @"o": opt, @"d": @(llround(dz * 1000))};
 }
-static BOOL mapping_is_default(void) { return [mapping_norm(config) isEqual:mapping_norm(default_config())]; }
+static NSSet *left_targets(NSDictionary *c) {   // 绑着左键（鼠标键 0）的按键位
+    NSDictionary *m = [c[@"mouse"] isKindOfClass:NSDictionary.class] ? c[@"mouse"] : @{};
+    return [m keysOfEntriesPassingTest:^BOOL(id key, id value, BOOL *stop) { (void)key; (void)stop; return [value isEqual:@0]; }];
+}
+static BOOL mouse_use_is_default(void) {
+    return camera_mouse() && [left_targets(config) isEqualToSet:left_targets(default_config())];
+}
 static BOOL left_click_touches(void) {
-    if (atomic_load(&touch_declared) >= 0 && mapping_is_default()) return YES;
+    if (atomic_load(&touch_declared) >= 0 && mouse_use_is_default()) return YES;
     if (camera_mouse()) return NO;
     NSDictionary *m = config[@"mouse"];
     for (NSString *name in m) if ([m[name] isEqual:@0]) return NO;
@@ -1492,13 +1505,16 @@ static void sample_input(void) {
     // 断开清槽：整表重建，只有本轮还在的才写回（强引用随之释放，不会留悬空指针）
     GCController *owner_before[S2A_MAX_PADS];
     for (int i = 0; i < S2A_MAX_PADS; i++) owner_before[i] = pad_owner[i];
-    for (int i = 0; i < S2A_MAX_PADS; i++) { pad_id[i] = NULL; pad_owner[i] = nil; pad_slot_owner[i] = nil; }
+    // pad_id 别的线程不加锁就读（服务层按槽位读体感 / 鼠标 / 样式，s2a_pad_read_motion_slot 等）：新表先算在 next_id，算完逐格写回——
+    //   改前先整表清空再填，读的一方撞上清空的那一瞬就当这格没手柄，玩家 2 起的体感被整份丢掉重来（实机：两人各拿一只 Joy-Con，玩家 2 放平校准一直不过）
+    const void *next_id[S2A_MAX_PADS] = {0};
+    for (int i = 0; i < S2A_MAX_PADS; i++) { pad_owner[i] = nil; pad_slot_owner[i] = nil; }
     for (int j = 0; j < n; j++) {
         int s = slot_of[j];
         if (s < 0) continue;   // 超过 S2A_MAX_PADS 只：多出来的不参与
         NSDictionary *pad_cfg = slot_cfg(s);   // 槽 i = 玩家 i+1：照各玩家自己的键位映射采样（没给就照玩家 1 的那份）
         pad_cfg = face_mapping_cfg(pad_cfg);
-        pad_id[s] = live_ids[j];
+        next_id[s] = live_ids[j];
         if (live_ble[j] == S2A_PAD_ORDER_GEN1 || live_ble[j] == S2A_PAD_ORDER_GEN1_PAIR) {
             gen1_unit *u = gen1_of(live_ids[j]);
             sample_ns2_state(&gen1_state[u - g_gen1], pad_cfg, &slot_buttons[s], slot_sticks[s]);
@@ -1527,6 +1543,7 @@ static void sample_input(void) {
             }
         }
     }
+    for (int i = 0; i < S2A_MAX_PADS; i++) if (pad_id[i] != next_id[i]) pad_id[i] = next_id[i];
     s2a_mac_player_sheet_sample(sheet_buttons);
     int ns2_style[NS2_RELAY_PLAYERS] = {0};   // 玩家 2 起的单只 Joy-Con 照它占的那一格的样式整形（下一拍读时用；没占格 = 转横握）
     for (int i = 0; i < S2A_MAX_PADS; i++) for (int p = 0; p < NS2_RELAY_PLAYERS; p++) if (pad_id[i] == &ns2_slot_id[p]) ns2_style[p] = atomic_load(&g_slot_style[i]);
@@ -2274,6 +2291,9 @@ void s2a_front_run(void (*guest_main)(void)) {
             tick(); [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) { (void)t; tick(); }];
         }
         [view setNeedsLayout:YES]; [window center]; [window makeKeyAndOrderFront:nil]; [window makeFirstResponder:view];
+        // 窗口遮挡（D-JSGK 11-22：Mac 局整局线程在等、性能核几乎没用，判不了是不是窗口被挡 / 最小化后系统节流）：主线程上跟遮挡通知记下，心跳在后台队列只读原子量
+        { __weak NSWindow *w = window; void (^occ)(void) = ^{ int v = (w.occlusionState & NSWindowOcclusionStateVisible) ? 1 : 0; if (atomic_exchange(&g_win_visible, v) != v && !v) atomic_fetch_add(&g_win_hidden_n, 1); };
+          occ(); [NSNotificationCenter.defaultCenter addObserverForName:NSWindowDidChangeOcclusionStateNotification object:w queue:nil usingBlock:^(NSNotification *n) { (void)n; occ(); }]; }
         // 启动即全屏（#575，S2A_FULLSCREEN=1）：窗口出来后走系统原生全屏，同菜单「进入全屏幕」，退出后回到窗口。
         //   S2A_FULLSCREEN_DEFAULT 是启动器设置里「启动游戏时自动全屏」的全局缺省：这款显式给了 S2A_FULLSCREEN（含 =0）就照这款的，没给才用全局的
         { const char *fs = getenv("S2A_FULLSCREEN"); const char *from = "S2A_FULLSCREEN";

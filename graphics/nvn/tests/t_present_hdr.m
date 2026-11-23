@@ -25,6 +25,14 @@
 //      双零 = off）：门全分支（engage/净空夹顶/target=sdr 不 engage/mode 1/4 金标）+ 合成参数直驱对拍（端点 400/600/1000 精确、
 //      段界 156/157/252/253、饱和色、非设计点 sdr=203/target=600、负值防护、灰阶 256 码单调）+ off 金标（改前 mode 2 单式对照
 //      逐字节 + 守卫短路逐字节 + 与生产链路逐字节）。红态（无实现）：门用例显式红 + 扩张对拍全红。
+//   ⑪ PR #2080 评审第 1 轮（要改①）·独立判据：⑩ 的对拍期望由 itm_ref（present_itm 同一逆式的 CPU 转写）复算——只能证
+//      GPU/CPU 算得一致、证不了公式本身对（公式写错则两边一起错、单测照样绿）。本组期望 = 输入本身：BT.2446-1 §4.1 Method A
+//      前向式（HDR→SDR，标准正文给的方向——Table 2 三段 EETF 与 ρ 式 + Table 3 色彩校正 + BT.2020 Y'CbCr→RGB，逐系数照标准
+//      印出值直写）作用于 present_itm 的 GPU 输出应回到输入。灰阶几档 + 灰阶 256 码全扫 + 饱和色 + 两处段界与段界缝内样本；
+//      sdr=100/target=400（缺省）与 sdr=100/target=1000（标准设计点）两组；探针着色器直调生产 present_itm 文本
+//      （K_PRESENT_ITM_MSL——与 src_msl 同一份），RGBA32F 线性直出（不经 PQ 10 位量化——其 ~1e-3 量级量化噪声会淹没
+//      段界不连续判据）；容差 1.5e-3 按三段 EETF 段界不连续定（段 1/2 交界两段式差 5.46e-4 经 ρ_SDR 归一放大 ≈1.48 ⇒
+//      输入信号域 ≈8.1e-4——见 ⑪ 注释）。红态（无实现）：探针无生产文本可编，显式红。
 // PQ 层目标（RGB10A2）在 PR3b 阶段还没有真层（PR4 落地）：②④⑤⑥⑦ 的 RGB10A2 目标是单测直接建的——验的是转换数学与管线接线，
 //   真机路径随 PR4/PR5 验收（§4 PR3b 的时点口径）。S3 真机路径同理：vi 门控接线是 PR5，本测经同源答案入口直调驱动。
 #ifndef T_PRESENT_HDR_SOURCE
@@ -280,6 +288,121 @@ static int tex10(id<MTLTexture> t, double out[][3], double alpha[], int n) {   /
     free(w);
     return 1;
 }
+
+#ifdef HDR_SDR_MAP_FILL   // ⑪ 探针与独立判据参考（PR #2080 评审第 1 轮）：present_itm 文本随实现提交进 nvn_mtl.m（K_PRESENT_ITM_MSL）——
+                           // 红态无此宏：⑪ 走显式红分支，本段编译出局（探针 MSL 引用 K_PRESENT_ITM_MSL，编不过红态就没意义）
+// ---------- ⑪ 独立判据参考：BT.2446-1 §4.1 Method A 前向 TMO（HDR→SDR）——Table 2 + Table 3 逐系数照标准印出值直写 ----------
+//   独立于被测逆式：不用 present_itm / itm_ref 的任何一份（⑩ 的 itm_ref 是同一逆式的 CPU 转写，只能证 GPU/CPU 一致）。
+//   L_HDR = target / L_SDR = sdr 与 present_itm 的参数对应（标准 §4.2 的 ITM 即本前向式的逐段代数逆——fwd 作用于
+//   present_itm 的输出应回到输入，是公式正确性的独立判据）。系数用标准印出值：Y' = 0.2627R'+0.6780G'+0.0593B'、
+//   EETF 1.0770 / −1.1510Y'p²+2.7811Y'p−0.6302 / 0.5Y'p+0.5（段界 0.7399/0.9909）、色彩校正 1.4746/1.8814/
+//   f(Y'SDR)=Y'SDR/(1.1Y')、Y'TMO=Y'SDR−max(0.1C'r,0)、BT.2020 Y'CbCr→RGB（1.4746/0.16455/0.57135/1.8814，
+//   BT.2446-1 Table 4 的 f⁻¹ 结构同系数）。标准印出 4 位值对 present_itm 精确 BT.2020 系数的舍入差 ~2e-6（远小于容差）。
+//   入 lin：线性光（1.0 = target）；出 out：SDR R'G'B'（γ 域，1.0 = sdr）。黑（Y'=0 ⇒ R'=G'=B'=0）：f 的 0/0 不取，
+//   连续极限 = 黑（Table 4 的 SC「1 if Y'=0」同款口径）。
+static void fwd_tmo(const double lin[3], double sdr, double target, double out[3]) {
+    double rp = pow(fmax(lin[0], 0.0), 1.0 / 2.4), gp = pow(fmax(lin[1], 0.0), 1.0 / 2.4), bp = pow(fmax(lin[2], 0.0), 1.0 / 2.4);   // Table 2 非线性传输
+    double y = 0.2627 * rp + 0.6780 * gp + 0.0593 * bp;   // Table 2 亮度
+    double rho_hdr = 1.0 + 32.0 * pow(target / 10000.0, 1.0 / 2.4);
+    double yp = log(1.0 + (rho_hdr - 1.0) * y) / log(rho_hdr);   // Table 2 步骤 1
+    double yc;   // Table 2 步骤 2：三段 EETF（段界 0.7399 / 0.9909——两处交界两段式各自不连续，段 1/2 处差 5.46e-4、段 2/3 处 5.1e-6，标准原文）
+    if (yp <= 0.7399) yc = 1.0770 * yp;
+    else if (yp < 0.9909) yc = -1.1510 * yp * yp + 2.7811 * yp - 0.6302;
+    else yc = 0.5 * yp + 0.5;
+    double rho_sdr = 1.0 + 32.0 * pow(sdr / 10000.0, 1.0 / 2.4);
+    double ysdr = (pow(rho_sdr, yc) - 1.0) / (rho_sdr - 1.0);   // Table 2 步骤 3
+    if (y <= 0.0) { out[0] = out[1] = out[2] = 0.0; return; }   // 黑
+    double f = ysdr / (1.1 * y);   // Table 3 色彩缩放
+    double cb = f * (bp - y) / 1.8814, cr = f * (rp - y) / 1.4746;   // Table 3 色差
+    double ytmo = ysdr - fmax(0.1 * cr, 0.0);   // Table 3 亮度调整
+    out[0] = ytmo + 1.4746 * cr;   // BT.2020 Y'CbCr→RGB
+    out[1] = ytmo - 0.16455 * cb - 0.57135 * cr;
+    out[2] = ytmo + 1.8814 * cb;
+}
+// 段界缝内灰样本（⑪ 容差依据的直测点）：y_c 取段 1/2 交界两段式的中缝（f1(0.7399)=0.796872 与 f2(0.7399)=0.797419
+//   之中点）——缝内的 y_c 不在前向 EETF 的值域里，present_itm 的段界兜底分支把它带回段 1 一侧 ⇒ round-trip 偏差 =
+//   缝宽 5.46e-4 经 ρ_SDR 归一（Table 2 步骤 3 的逆变换，该点斜率 ≈1.48）放大 ≈8.1e-4——容差 1.5e-3 的主要构成。
+//   构造全用前向侧公式（f1/f2 边界值 + Table 2 步骤 3 + γ 2.4），不经被测逆式。
+static double itm_gap_lin(double sdr) {
+    double lo = 1.0770 * 0.7399, hi = -1.1510 * 0.7399 * 0.7399 + 2.7811 * 0.7399 - 0.6302;   // f1(0.7399) / f2(0.7399)
+    double yc = (lo + hi) * 0.5;
+    double rho_sdr = 1.0 + 32.0 * pow(sdr / 10000.0, 1.0 / 2.4);
+    double y_sdr = (pow(rho_sdr, yc) - 1.0) / (rho_sdr - 1.0);   // Table 2 步骤 3 逆取输入灰信号
+    return pow(y_sdr, 2.4);   // 灰的线性 = γ 域信号 ^2.4
+}
+// ⑪ 探针着色器：生产 present_itm 文本（K_PRESENT_ITM_MSL——nvn_mtl.m 的 src_msl 同一份）+ 线性直出 RGBA32F。
+//   不经生产 fs 的 mode 2 链（PQ 编码 10 位量化 ~1e-3 量级噪声会淹没段界 6e-4 判据）——直测 present_itm 本体。
+static const char *k_itm_probe_msl =
+    "#include <metal_stdlib>\nusing namespace metal;\n"
+    "struct V { float4 p [[position]]; float2 uv; };\n"
+    "vertex V vs(uint id [[vertex_id]]) { float2 uv = float2((id << 1) & 2, id & 2); V o; o.p = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1); o.uv = uv; return o; }\n"
+    "struct IP { float4 rect; float4 edge; float4 q; float4 pad; };\n"   // 16 字布局同 syn_render 的 uv[16]：rect/edge + q.x=sdr、q.y=target
+    K_PRESENT_ITM_MSL
+    "fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant IP& c [[buffer(0)]]) {\n"
+    "    float4 v = t.sample(s, clamp(in.uv * c.rect.zw + c.rect.xy, c.edge.xy, c.edge.zw));\n"
+    "    return float4(present_itm(v.rgb, c.q.x, c.q.y), 1.0);\n"
+    "}\n";
+static id<MTLSamplerState> itm_probe_samp(void) {   // 最近邻（32 位 float 纹理的线性滤波在 Metal 无谓依赖设备档——探针只要逐位读回）
+    static id<MTLSamplerState> s;
+    if (!s) { MTLSamplerDescriptor *d = [MTLSamplerDescriptor new]; d.minFilter = d.magFilter = MTLSamplerMinMagFilterNearest; s = [g_dev newSamplerStateWithDescriptor:d]; }
+    return s;
+}
+// ⑪ 探针直驱：n×1 线性 float 输入（RGBA32F）→ 生产 present_itm 文本 → RGBA32F 线性读回（1.0 = target 域）
+static int itm_probe(const float lin[][3], int n, double sdr, double target, double out[][3]) {
+    static id<MTLRenderPipelineState> pso;
+    if (!pso) {
+        NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(k_itm_probe_msl) options:nil error:&e];
+        if (!lib) { printf("SETUP FAIL 探针着色器（present_itm 文本）编译：%s\n", e.localizedDescription.UTF8String ?: "?"); return 0; }
+        MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+        pd.vertexFunction = [lib newFunctionWithName:@"vs"]; pd.fragmentFunction = [lib newFunctionWithName:@"fs"];
+        pd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA32Float;
+        pso = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
+        if (!pso) { printf("SETUP FAIL 探针管线：%s\n", e.localizedDescription.UTF8String ?: "?"); return 0; }
+    }
+    MTLTextureDescriptor *sd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA32Float width:n height:1 mipmapped:NO];
+    sd.storageMode = MTLStorageModeShared; sd.usage = MTLTextureUsageShaderRead;
+    id<MTLTexture> src = [g_dev newTextureWithDescriptor:sd];
+    { float *b = malloc((size_t)n * 4 * sizeof *b);
+      for (int i = 0; i < n; i++) { b[4 * i] = lin[i][0]; b[4 * i + 1] = lin[i][1]; b[4 * i + 2] = lin[i][2]; b[4 * i + 3] = 1; }
+      [src replaceRegion:MTLRegionMake2D(0, 0, n, 1) mipmapLevel:0 withBytes:b bytesPerRow:(NSUInteger)n * 4 * sizeof *b]; free(b); }
+    id<MTLTexture> dst = dst_tex(MTLPixelFormatRGBA32Float, n, 1);
+    id<MTLCommandBuffer> cb = [g_q commandBuffer];
+    MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+    rp.colorAttachments[0].texture = dst; rp.colorAttachments[0].loadAction = MTLLoadActionDontCare; rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> en = [cb renderCommandEncoderWithDescriptor:rp];
+    [en setRenderPipelineState:pso]; [en setFragmentTexture:src atIndex:0]; [en setFragmentSamplerState:itm_probe_samp() atIndex:0];
+    float uv[16] = {0, 0, 1, 1, 0.5f / n, 0.5f, (n - 0.5f) / n, 0.5f, (float)sdr, (float)target, 0, 0, 0, 0};
+    [en setFragmentBytes:uv length:sizeof uv atIndex:0];
+    [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; [en endEncoding];
+    [cb commit]; [cb waitUntilCompleted];
+    if (cb.status != MTLCommandBufferStatusCompleted) { printf("SETUP FAIL 探针命令缓冲 %ld：%s\n", (long)cb.status, cb.error.localizedDescription.UTF8String ?: "?"); return 0; }
+    float *b = malloc((size_t)n * 4 * sizeof *b);
+    [dst getBytes:b bytesPerRow:(NSUInteger)n * 4 * sizeof *b fromRegion:MTLRegionMake2D(0, 0, n, 1) mipmapLevel:0];
+    for (int i = 0; i < n; i++) { out[i][0] = b[4 * i]; out[i][1] = b[4 * i + 1]; out[i][2] = b[4 * i + 2]; }
+    free(b);
+    return 1;
+}
+// ⑪ round-trip 判据本体：探针输出 → fwd_tmo（标准前向式）→ 应回到输入信号（γ 域）；容差 ITM_RT_TOL。
+//   lin/n_in 由调用方成对给（n_in = 纹理里 float 线性值的 ^(1/2.4)，双精度复算——期望不经被测逆式）。
+#define ITM_RT_TOL 1.5e-3   // 段界不连续（缝宽 5.46e-4 × ρ_SDR 斜率 1.48 ≈ 8.1e-4）+ 饱和色系数舍入 ~2e-6 + float32 噪声，余量 ≈1.85×
+static int itm_rt_check(const float lin[][3], int n, double sdr, double target, double *maxerr, char *why, int whylen) {
+    double (*out)[3] = malloc((size_t)n * sizeof *out);
+    int ran = itm_probe(lin, n, sdr, target, out), bad = 0;
+    *maxerr = 0.0;
+    for (int i = 0; ran && i < n; i++) {
+        double back[3];
+        fwd_tmo(out[i], sdr, target, back);
+        for (int k = 0; k < 3; k++) {
+            double e = fabs(back[k] - pow((double)lin[i][k], 1.0 / 2.4));
+            if (e > *maxerr) *maxerr = e;
+            if (e > ITM_RT_TOL && !bad && whylen > 0) snprintf(why, whylen, "样本 %d 通道 %d：fwd→ %.6f 期望 %.6f（偏差 %.2e）", i, k, back[k], pow((double)lin[i][k], 1.0 / 2.4), e);
+            if (e > ITM_RT_TOL) bad++;
+        }
+    }
+    free(out);
+    return ran && !bad;
+}
+#endif   // HDR_SDR_MAP_FILL（⑪ 探针与独立判据参考）
 
 int main(void) { @autoreleasepool {
     setvbuf(stdout, NULL, _IOLBF, 0);
@@ -610,7 +733,6 @@ int main(void) { @autoreleasepool {
             }
             CHECK(!bad && fabs(o5[0][1] - pq_code(600.0)) <= 1.0, "⑩ 非设计点对拍（sdr=203/target=600，±1；白 → 600 精确）");
         }
-
         // —— 负值输入防护（用例 3：max(n,0) 与 saturate——float 源负通道解码钳 0 → 恰黑 col_scale 兜底 → 黑；超白样本 saturate 有界）——
         {
             float f[8][3] = {{1,1,1},{-1,-1,-1},{0,0,0},{-0.05f,1,1},{-1,0.5f,0},{-3,2,0.25f},{2,1,0.5f},{1,1,1}};
@@ -628,6 +750,57 @@ int main(void) { @autoreleasepool {
                   "⑩ 负值防护：负通道 → 黑（≤1 码——max(n,0) 路径）、恰黑无 NaN（col_scale 兜底）、超白样本 saturate 有界对拍");
         }
     }
+
+    // ⑪ PR #2080 评审第 1 轮（要改①）·独立判据：BT.2446-1 §4.1 Method A 前向式（HDR→SDR，标准正文给的方向——
+    //    fwd_tmo 逐系数照标准印出值直写）作用于 present_itm 的 GPU 输出，应回到输入。期望 = 输入本身（灰阶几档 +
+    //    灰阶 256 码全扫 + 饱和色 + 两处段界与段界缝内样本），不经 present_itm / itm_ref 任何一份生成——⑩ 的对拍
+    //    期望是同一逆式的 CPU 转写（itm_ref），只能证 GPU/CPU 算得一致、证不了公式本身对（公式写错则两边一起错、
+    //    单测照样绿）。探针（上方 itm_probe）直调生产 present_itm 文本、RGBA32F 线性直出，不经 PQ 10 位量化。
+    //    容差 1.5e-3 按三段 EETF 段界不连续定：段 1/2 交界（Y'p=0.7399 ↔ Y'c 0.7969）两段前向式相差 5.46e-4
+    //    （0.796872 / 0.797419——标准原文的不连续，段 2/3 交界 0.9909 ↔ 0.9955 处仅 5.1e-6），经 ρ_SDR 归一
+    //    （Table 2 步骤 3 的逆，段界处斜率 ≈1.48）到输入信号域 ≈8.1e-4；段界外样本双精度 round-trip 偏差 <1e-15、
+    //    饱和色 ~2e-6（标准印出系数对 present_itm 精确 BT.2020 系数的舍入差）、着色器 float32 噪声 ~1e-6 量级。
+#ifdef HDR_SDR_MAP_FILL
+    {
+        char why[160];
+        double err;
+        // —— 灰阶几档（含两处段界两侧 156/157、252/253）+ 段界缝内样本：sdr=100/target=400（缺省组）与 100/1000（标准设计点）——
+        const int grays[] = {0, 16, 64, 128, 156, 157, 199, 252, 253, 255};
+        for (int ti = 0; ti < 2; ti++) {
+            double t = ti ? 1000.0 : 400.0;
+            float lin[11][3];
+            double gap = itm_gap_lin(100.0);
+            for (int i = 0; i < 10; i++) { double l = pow(grays[i] / 255.0, 2.2); lin[i][0] = lin[i][1] = lin[i][2] = (float)l; }   // 灰：γ2.2 解码（矩阵对灰 = 恒等）
+            lin[10][0] = lin[10][1] = lin[10][2] = (float)gap;   // 段界缝内灰（构造见 itm_gap_lin——全前向侧公式）
+            int rt = itm_rt_check(lin, 11, 100.0, t, &err, why, sizeof why);   // 变量名避开 CHECK 宏内的局部 ok（宏体自带 int ok=!!(c)，同名会被遮蔽）
+            CHECK(rt, "⑪ 灰阶 round-trip（sdr=100/target=%.0f）：fwd_tmo(present_itm(x)) = x，容差 1.5e-3（实测最大 %.2e%s%s）",
+                  t, err, rt ? "" : "；", rt ? "" : why);
+        }
+        // —— 灰阶 256 码全扫（sdr=100/target=400）：全灰域回输入 ——
+        {
+            static float lin[256][3];
+            for (int i = 0; i < 256; i++) { double l = pow(i / 255.0, 2.2); lin[i][0] = lin[i][1] = lin[i][2] = (float)l; }
+            int rt = itm_rt_check(lin, 256, 100.0, 400.0, &err, why, sizeof why);
+            CHECK(rt, "⑪ 灰阶 256 码全扫 round-trip（sdr=100/target=400）：全灰域回到输入，容差 1.5e-3（实测最大 %.2e%s%s）",
+                  err, rt ? "" : "；", rt ? "" : why);
+        }
+        // —— 饱和色几个（红/绿/蓝/黄/青/品红，BT.709 8 位全饱和 → γ2.2 解码 → 709→2020 矩阵——生产输入链同式）——
+        {
+            static const uint8_t sat[6][3] = {{255,0,0},{0,255,0},{0,0,255},{255,255,0},{0,255,255},{255,0,255}};
+            static const double m[3][3] = {{0.627404, 0.329283, 0.043313}, {0.069097, 0.919540, 0.011362}, {0.016391, 0.088013, 0.895595}};   // kRec709To2020 各行（shader 同一矩阵）
+            float lin[6][3];
+            for (int i = 0; i < 6; i++) {
+                double l709[3] = { pow(sat[i][0] / 255.0, 2.2), pow(sat[i][1] / 255.0, 2.2), pow(sat[i][2] / 255.0, 2.2) };
+                for (int k = 0; k < 3; k++) lin[i][k] = (float)(m[k][0] * l709[0] + m[k][1] * l709[1] + m[k][2] * l709[2]);
+            }
+            int rt = itm_rt_check(lin, 6, 100.0, 400.0, &err, why, sizeof why);
+            CHECK(rt, "⑪ 饱和色 round-trip（红/绿/蓝/黄/青/品红，sdr=100/target=400）：三通道回到输入，容差 1.5e-3（实测最大 %.2e%s%s）",
+                  err, rt ? "" : "；", rt ? "" : why);
+        }
+    }
+#else
+    CHECK(0, "⑪ 独立判据：present_itm 不在位——PR-A 实现缺位（红态：探针无生产文本可编，前向式 round-trip 无从测起）");
+#endif
 
     printf("%s t_present_hdr：%u 项，%u 项不符\n", failures ? "✗" : "✓", checks, failures);
     return failures != 0;
