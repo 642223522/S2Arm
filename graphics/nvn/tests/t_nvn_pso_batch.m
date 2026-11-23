@@ -35,30 +35,35 @@ int main(void) { @autoreleasepool {
     VERIFY(got == N, "② 只准命中归档地建管线 %d/%d", got, N);
     VERIFY(atomic_load(&g_par_written) - w0 == N && atomic_load(&g_par_write_failed) == f0, "③ 写成 +%llu（期望 70）、写失败 +%llu（期望 0）",
            (unsigned long long)(atomic_load(&g_par_written) - w0), (unsigned long long)(atomic_load(&g_par_write_failed) - f0));
-    // #756：写归档前留 .writing、写完删掉；进程死在写里则留下，下次起局判「不再写」
+    // 11-23：写归档不再留 .writing；「不再写」只认版本先验与崩溃处理器的真崩记录（⑬ ⑭）。老版本留下的标记（被划掉 / 内存超限 / 挂起被杀都会留）起局删掉、照常写
     NSString *wflag = [g_par_dir stringByAppendingPathComponent:PAR_WRITING];
-    VERIFY(![NSFileManager.defaultManager fileExistsAtPath:wflag], "④ 写完不留 .writing 标记");
-    // #618：修之前的版本留下的标记（只有批文件名，正常收局也会留）→ 删掉、照常写
-    REQUIRE([@"batch-x" writeToFile:wflag atomically:NO encoding:NSUTF8StringEncoding error:nil]);
+    char t3[] = "/tmp/t_pso_dead3.XXXXXX"; REQUIRE(mkdtemp(t3));   // 全机真崩标记放临时目录：本段起局判定只看它
+    snprintf(g_par_dead_path, sizeof g_par_dead_path, "%s/pso_archive_dead.txt", t3); snprintf(g_par_os_key, sizeof g_par_os_key, "Version 99.1 (Build T1)");
+    VERIFY(![NSFileManager.defaultManager fileExistsAtPath:wflag], "④ 写完 70 条：归档目录里没有 .writing 标记（新版不留）");
+    // ⑤ 反证（原判据）：老版本写到一半被杀留下的标记（带版本行，原先据此从此不写）→ 起局删掉、照常写
+    REQUIRE(([@"s2a-pso-writing 2 pid=1 batch-x\n" writeToFile:wflag atomically:NO encoding:NSUTF8StringEncoding error:nil]));
     par_check_dead_write();
-    VERIFY(g_par_nowrite == 0 && ![NSFileManager.defaultManager fileExistsAtPath:wflag], "⑦ 旧版标记（没有版本行）不当崩溃：照常写、标记删掉（nowrite=%d）", g_par_nowrite);
-    REQUIRE(([[NSString stringWithFormat:@PAR_WRITING_TAG " pid=%d batch-x\n", getpid() + 1] writeToFile:wflag atomically:NO encoding:NSUTF8StringEncoding error:nil]));   // 模拟上次死在写里
+    VERIFY(g_par_nowrite == 0 && ![NSFileManager.defaultManager fileExistsAtPath:wflag], "⑤ 老版本被杀留下的 .writing（没有真崩记录）：标记删掉、照常写（nowrite=%d，应 0）", g_par_nowrite);
+    REQUIRE([@"batch-x" writeToFile:wflag atomically:NO encoding:NSUTF8StringEncoding error:nil]);   // 更老的无版本行标记
     par_check_dead_write();
-    VERIFY(g_par_nowrite == 1, "⑤ 起局见到 .writing → 这个系统版本不再写");
+    VERIFY(g_par_nowrite == 0 && ![NSFileManager.defaultManager fileExistsAtPath:wflag], "⑦ 更老的无版本行标记：同样删掉、照常写（nowrite=%d）", g_par_nowrite);
+    // ⑥ 真崩照停：写归档时崩（崩溃处理器在 g_par_in_write 下记全机标记）→ 起局不再写、par_note 不进待写队列
+    g_par_in_write = 1; s2a_pso_archive_crash_note(); g_par_in_write = 0;
+    par_check_dead_write();
+    VERIFY(g_par_nowrite == 1, "⑥a 写归档时真崩过（崩溃处理器记了本系统版本）→ 起局不再写（nowrite=%d，应 1）", g_par_nowrite);
     pthread_mutex_lock(&g_par_mu); NSUInteger before = g_par_todo.count; pthread_mutex_unlock(&g_par_mu);
     par_note(@"t-after-dead-write", descs[0]);
     pthread_mutex_lock(&g_par_mu); NSUInteger after = g_par_todo.count; pthread_mutex_unlock(&g_par_mu);
-    VERIFY(after == before, "⑥ 不再写时 par_note 不进待写队列（%lu → %lu）", (unsigned long)before, (unsigned long)after);
-    // #618 复现：一批正写在 Metal 里（标记已留）时进程正常收局 → 收局删标记，下一局照常写。
-    //   写线程卡在批中间用持住 g_par_wmu 之后的状态模拟：直接按写线程的做法留标记，再走收局
-    [NSFileManager.defaultManager removeItemAtPath:wflag error:nil]; g_par_nowrite = 0;
-    par_mark_writing(wflag.fileSystemRepresentation, @"batch-inflight.metalarchive");
-    REQUIRE([NSFileManager.defaultManager fileExistsAtPath:wflag]);
+    VERIFY(after == before, "⑥b 不再写时 par_note 不进待写队列（%lu → %lu）", (unsigned long)before, (unsigned long)after);
+    s2a_pso_archive_exit(); par_check_dead_write();
+    VERIFY(g_par_nowrite == 1, "⑫ 真崩判定不被正常收局清掉：收局后再起局仍不再写（nowrite=%d）", g_par_nowrite);
+    unlink(g_par_dead_path); g_par_nowrite = 0; atomic_store(&g_par_closing, 0);
+    // ⑧ 一批写到一半正常收局（#618）：不留标记，下一局照常写
     s2a_pso_archive_exit();
-    VERIFY(![NSFileManager.defaultManager fileExistsAtPath:wflag], "⑧ 写到一半正常收局：s2a_pso_archive_exit 删掉 .writing");
+    VERIFY(![NSFileManager.defaultManager fileExistsAtPath:wflag], "⑧ 写到一半正常收局：没有标记");
     par_check_dead_write();
-    VERIFY(g_par_nowrite == 0, "⑨ 下一局起局：没有标记 → 照常写（nowrite=%d）", g_par_nowrite);
-    // 收局之后写线程再起一批（与收局赛跑输了的那一侧）：留了标记也自己删掉、不写、不进队列
+    VERIFY(g_par_nowrite == 0, "⑨ 下一局起局：照常写（nowrite=%d）", g_par_nowrite);
+    // 收局之后写线程再起一批（与收局赛跑输了的那一侧）：不写、不进队列
     uint64_t w1 = atomic_load(&g_par_written);
     par_write_batch(@[@[@"t-after-exit", descs[1]]]);
     VERIFY(![NSFileManager.defaultManager fileExistsAtPath:wflag] && atomic_load(&g_par_written) == w1, "⑩ 收局后起的一批：不留标记、不写（写成 +%llu）", (unsigned long long)(atomic_load(&g_par_written) - w1));
@@ -66,11 +71,7 @@ int main(void) { @autoreleasepool {
     par_note(@"t-after-exit-note", descs[2]);
     pthread_mutex_lock(&g_par_mu); after = g_par_todo.count; pthread_mutex_unlock(&g_par_mu);
     VERIFY(after == before, "⑪ 收局后 par_note 不进待写队列（%lu → %lu）", (unsigned long)before, (unsigned long)after);
-    // #756 的持久判定不被正常收局清掉：本局起局就见到标记（不再写）→ 收局不删，下一局仍不写
-    REQUIRE(([[NSString stringWithFormat:@PAR_WRITING_TAG " pid=%d batch-y\n", getpid() + 1] writeToFile:wflag atomically:NO encoding:NSUTF8StringEncoding error:nil]));
-    par_check_dead_write(); REQUIRE(g_par_nowrite == 1);
-    s2a_pso_archive_exit();
-    VERIFY([NSFileManager.defaultManager fileExistsAtPath:wflag], "⑫ 起局就判不再写的一局正常收局：标记留着（#756 保护不被清掉）");
+    g_par_dead_path[0] = 0; { char cmd[256]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", t3); system(cmd); }
     [NSFileManager.defaultManager removeItemAtPath:g_par_dir error:nil];
     // ⑬ #756 版本先验（期望按玩家诊断定的区间手写）：iOS 18.0–18.3 不写；18.4、17.7、26.0 与非 iOS 的 18.2 照写
     VERIFY(par_os_gate(1, 18, 0) && par_os_gate(1, 18, 3) && !par_os_gate(1, 18, 4) && !par_os_gate(1, 17, 7) && !par_os_gate(1, 26, 0) && !par_os_gate(0, 18, 2),
@@ -90,5 +91,5 @@ int main(void) { @autoreleasepool {
         g_par_dead_path[0] = 0; char cmd[256]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", t2); system(cmd);
     }
     if (failures) { printf("✗ t_nvn_pso_batch：%u 项里 %u 项不符\n", checks, failures); return 1; }
-    printf("✓ t_nvn_pso_batch：%u 项全过（70 条管线写成 3 个批文件，按键全部取回；死在写里的标记生效；正常收局不留标记）\n", checks); return 0;
+    printf("✓ t_nvn_pso_batch：%u 项全过（70 条管线写成 3 个批文件，按键全部取回；老版本被杀留下的标记不再停写、真崩照停；正常收局不留标记）\n", checks); return 0;
 } }
