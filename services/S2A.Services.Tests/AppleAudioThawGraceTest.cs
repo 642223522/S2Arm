@@ -14,6 +14,9 @@ namespace S2A.Services.Tests
     // ⑥ 再冻结一次再解冻（seq 2，now 20000）：重新进宽限
     static class AppleAudioThawGraceTest
     {
+        private static bool Step(bool frozen, long seq, ref long graceSeq, ref long thawTicks, long now, long freq, out bool rebase) =>
+            AppleHardwareDeviceSession.S2AThawGraceStep(frozen, seq, ref graceSeq, ref thawTicks, now, freq, out rebase);   // 平台例外：苹果音频后端的解冻宽限判定（纯函数）
+
         [SoloTest("--apple-audio-thaw-grace")]
         private static int Check()
         {
@@ -25,18 +28,18 @@ namespace S2A.Services.Tests
             }
 
             long gs = 0, tt = 0;
-            bool g = AppleHardwareDeviceSession.S2AThawGraceStep(false, 0, ref gs, ref tt, 5000, 1000, out bool rb);
+            bool g = Step(false, 0, ref gs, ref tt, 5000, 1000, out bool rb);
             Row("① 从没冻结", "不宽限、不刷新", $"宽限 {g}、刷新 {rb}", !g && !rb);
-            g = AppleHardwareDeviceSession.S2AThawGraceStep(true, 1, ref gs, ref tt, 6000, 1000, out rb);
+            g = Step(true, 1, ref gs, ref tt, 6000, 1000, out rb);
             Row("② 冻结中", "宽限、刷新、解冻时刻仍 0", $"宽限 {g}、刷新 {rb}、解冻时刻 {tt}", g && rb && tt == 0 && gs == 0);
-            g = AppleHardwareDeviceSession.S2AThawGraceStep(false, 1, ref gs, ref tt, 10000, 1000, out rb);
+            g = Step(false, 1, ref gs, ref tt, 10000, 1000, out rb);
             Row("③ 解冻后第一拍", "宽限、刷新、解冻时刻 10000、seq 1", $"宽限 {g}、刷新 {rb}、解冻时刻 {tt}、seq {gs}", g && rb && tt == 10000 && gs == 1);
-            g = AppleHardwareDeviceSession.S2AThawGraceStep(false, 1, ref gs, ref tt, 11499, 1000, out rb);
+            g = Step(false, 1, ref gs, ref tt, 11499, 1000, out rb);
             Row("④ 解冻后 1499 ms", "宽限、不刷新", $"宽限 {g}、刷新 {rb}", g && !rb);
-            g = AppleHardwareDeviceSession.S2AThawGraceStep(false, 1, ref gs, ref tt, 11500, 1000, out rb);
+            g = Step(false, 1, ref gs, ref tt, 11500, 1000, out rb);
             Row("⑤ 解冻后 1500 ms", "出宽限", $"宽限 {g}、刷新 {rb}", !g && !rb);
-            AppleHardwareDeviceSession.S2AThawGraceStep(true, 2, ref gs, ref tt, 15000, 1000, out _);
-            g = AppleHardwareDeviceSession.S2AThawGraceStep(false, 2, ref gs, ref tt, 20000, 1000, out rb);
+            Step(true, 2, ref gs, ref tt, 15000, 1000, out _);
+            g = Step(false, 2, ref gs, ref tt, 20000, 1000, out rb);
             Row("⑥ 再冻结再解冻", "宽限、刷新、解冻时刻 20000", $"宽限 {g}、刷新 {rb}、解冻时刻 {tt}", g && rb && tt == 20000);
             return bad == 0 ? 0 : 1;
         }
