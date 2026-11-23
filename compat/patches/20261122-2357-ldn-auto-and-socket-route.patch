@@ -1,0 +1,133 @@
+diff --git a/src/Ryujinx.HLE/HOS/Services/Ldn/UserServiceCreator/IUserLocalCommunicationService.cs b/src/Ryujinx.HLE/HOS/Services/Ldn/UserServiceCreator/IUserLocalCommunicationService.cs
+index cf0cc4b1d9cf96d6977760c783b752000811faae..3724bf9766225de64c3d6ca913ba6f518c74f7ff 100644
+--- a/src/Ryujinx.HLE/HOS/Services/Ldn/UserServiceCreator/IUserLocalCommunicationService.cs
++++ b/src/Ryujinx.HLE/HOS/Services/Ldn/UserServiceCreator/IUserLocalCommunicationService.cs
+@@ -30,6 +30,34 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator
+         private const string DefaultSubnetMask = "255.255.255.0";
+         private const bool IsDevelopment = false;
+ 
++        private static bool LdnAutoRequested =>
++            !string.Equals(Environment.GetEnvironmentVariable("S2A_LDN_MITM"), "1", StringComparison.Ordinal) &&
++            string.IsNullOrEmpty(Environment.GetEnvironmentVariable("S2A_LDN_SERVER")) &&
++            !string.Equals(Environment.GetEnvironmentVariable("S2A_LDN_AUTO"), "0", StringComparison.Ordinal);
++
++        internal static MultiplayerMode SelectAutoMode(MultiplayerMode mode, Func<bool> switchRoomFound)
++        {
++            if (!LdnAutoRequested || mode == MultiplayerMode.LdnMitm)
++            {
++                return mode;
++            }
++
++            if (mode == MultiplayerMode.Disabled)
++            {
++                return MultiplayerMode.LdnMitm;
++            }
++
++            try
++            {
++                return switchRoomFound() ? MultiplayerMode.LdnMitm : mode;
++            }
++            catch (Exception ex)
++            {
++                Logger.Warning?.Print(LogClass.ServiceLdn, $"Auto LDN Switch probe failed, keeping RyuLDN: {ex.Message}");
++                return mode;
++            }
++        }
++
+         private readonly KEvent _stateChangeEvent;
+         private int _stateChangeEventHandle;
+ 
+@@ -1253,7 +1281,8 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator
+ 
+                     // S2Arm: with multiplayer disabled the service reports unavailable without touching
+                     // the network, so the host's interfaces are not queried either
+-                    if (mode == MultiplayerMode.Disabled || System.Net.NetworkInformation.NetworkInterface.GetIsNetworkAvailable())
++                    if ((mode == MultiplayerMode.Disabled && !LdnAutoRequested) ||
++                        System.Net.NetworkInformation.NetworkInterface.GetIsNetworkAvailable())
+                     {
+                         Logger.Info?.PrintMsg(LogClass.ServiceLdn, $"Initializing with multiplayer mode: {mode}");
+ 
+@@ -1285,6 +1314,22 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator
+         {
+             S2ANetworkClientServer = null;
+ 
++            if (LdnAutoRequested && mode != MultiplayerMode.LdnMitm)
++            {
++                mode = SelectAutoMode(mode, () =>
++                {
++                    using LdnMitmClient probe = new(context.Device.Configuration);
++                    return probe.Scan(0, default).Length != 0;
++                });
++
++                if (mode == MultiplayerMode.LdnMitm)
++                {
++                    context.Device.Configuration.MultiplayerMode = MultiplayerMode.LdnMitm;
++                    context.Device.Configuration.MultiplayerLdnServer = string.Empty;
++                    Logger.Info?.Print(LogClass.ServiceLdn, "Auto LDN selected the Switch-compatible ldn_mitm path");
++                }
++            }
++
+             if (mode == MultiplayerMode.Disabled)
+             {
+                 // S2Arm: local wireless discovery / multiplayer is unavailable. Return
+diff --git a/src/Ryujinx.HLE/HOS/Services/Sockets/Bsd/Proxy/DefaultSocket.cs b/src/Ryujinx.HLE/HOS/Services/Sockets/Bsd/Proxy/DefaultSocket.cs
+index f1040e799567e9867a35ff02e9b38b6352df8b15..8521c41cfba5ce939af05d5f6872f85bb15246e0 100644
+--- a/src/Ryujinx.HLE/HOS/Services/Sockets/Bsd/Proxy/DefaultSocket.cs
++++ b/src/Ryujinx.HLE/HOS/Services/Sockets/Bsd/Proxy/DefaultSocket.cs
+@@ -44,13 +44,35 @@ namespace Ryujinx.HLE.HOS.Services.Sockets.Bsd.Proxy
+             BaseSocket = new Socket(domain, type, protocol);
+         }
+ 
+-        private void EnsureNetworkInterfaceBound()
++        private void EnsureNetworkInterfaceBound(EndPoint remoteEndPoint = null)
+         {
+-            if (_lanInterfaceId != "0" && !BaseSocket.IsBound)
++            if (BaseSocket.IsBound)
++            {
++                return;
++            }
++
++            if (remoteEndPoint is IPEndPoint remote &&
++                remote.Address.AddressFamily == AddressFamily.InterNetwork)
++            {
++                (_, UnicastIPAddressInformation ipInfo) =
++                    NetworkHelpers.GetLocalInterfaceForTarget(_lanInterfaceId, remote.Address);
++
++                if (ipInfo != null)
++                {
++                    BaseSocket.Bind(new IPEndPoint(ipInfo.Address, 0));
++                }
++
++                return;
++            }
++
++            if (_lanInterfaceId != "0")
+             {
+                 (_, UnicastIPAddressInformation ipInfo) = NetworkHelpers.GetLocalInterface(_lanInterfaceId);
+ 
+-                BaseSocket.Bind(new IPEndPoint(ipInfo.Address, 0));
++                if (ipInfo != null)
++                {
++                    BaseSocket.Bind(new IPEndPoint(ipInfo.Address, 0));
++                }
+             }
+         }
+ 
+@@ -74,7 +96,7 @@ namespace Ryujinx.HLE.HOS.Services.Sockets.Bsd.Proxy
+ 
+         public void Connect(EndPoint remoteEP)
+         {
+-            EnsureNetworkInterfaceBound();
++            EnsureNetworkInterfaceBound(remoteEP);
+ 
+             BaseSocket.Connect(remoteEP);
+         }
+@@ -145,7 +167,7 @@ namespace Ryujinx.HLE.HOS.Services.Sockets.Bsd.Proxy
+ 
+         public int SendTo(ReadOnlySpan<byte> buffer, SocketFlags flags, EndPoint remoteEP)
+         {
+-            EnsureNetworkInterfaceBound();
++            EnsureNetworkInterfaceBound(remoteEP);
+ 
+             return BaseSocket.SendTo(buffer, flags, remoteEP);
+         }

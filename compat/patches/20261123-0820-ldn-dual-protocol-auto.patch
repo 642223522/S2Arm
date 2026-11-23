@@ -1,0 +1,437 @@
+diff --git a/src/Ryujinx.HLE/HOS/Services/Ldn/UserServiceCreator/IUserLocalCommunicationService.cs b/src/Ryujinx.HLE/HOS/Services/Ldn/UserServiceCreator/IUserLocalCommunicationService.cs
+index 3724bf9766225de64c3d6ca913ba6f518c74f7ff..22f51cd8803e4e2ff30c36651d529871ecaed995 100644
+--- a/src/Ryujinx.HLE/HOS/Services/Ldn/UserServiceCreator/IUserLocalCommunicationService.cs
++++ b/src/Ryujinx.HLE/HOS/Services/Ldn/UserServiceCreator/IUserLocalCommunicationService.cs
+@@ -35,29 +35,6 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator
+             string.IsNullOrEmpty(Environment.GetEnvironmentVariable("S2A_LDN_SERVER")) &&
+             !string.Equals(Environment.GetEnvironmentVariable("S2A_LDN_AUTO"), "0", StringComparison.Ordinal);
+ 
+-        internal static MultiplayerMode SelectAutoMode(MultiplayerMode mode, Func<bool> switchRoomFound)
+-        {
+-            if (!LdnAutoRequested || mode == MultiplayerMode.LdnMitm)
+-            {
+-                return mode;
+-            }
+-
+-            if (mode == MultiplayerMode.Disabled)
+-            {
+-                return MultiplayerMode.LdnMitm;
+-            }
+-
+-            try
+-            {
+-                return switchRoomFound() ? MultiplayerMode.LdnMitm : mode;
+-            }
+-            catch (Exception ex)
+-            {
+-                Logger.Warning?.Print(LogClass.ServiceLdn, $"Auto LDN Switch probe failed, keeping RyuLDN: {ex.Message}");
+-                return mode;
+-            }
+-        }
+-
+         private readonly KEvent _stateChangeEvent;
+         private int _stateChangeEventHandle;
+ 
+@@ -1314,23 +1291,7 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator
+         {
+             S2ANetworkClientServer = null;
+ 
+-            if (LdnAutoRequested && mode != MultiplayerMode.LdnMitm)
+-            {
+-                mode = SelectAutoMode(mode, () =>
+-                {
+-                    using LdnMitmClient probe = new(context.Device.Configuration);
+-                    return probe.Scan(0, default).Length != 0;
+-                });
+-
+-                if (mode == MultiplayerMode.LdnMitm)
+-                {
+-                    context.Device.Configuration.MultiplayerMode = MultiplayerMode.LdnMitm;
+-                    context.Device.Configuration.MultiplayerLdnServer = string.Empty;
+-                    Logger.Info?.Print(LogClass.ServiceLdn, "Auto LDN selected the Switch-compatible ldn_mitm path");
+-                }
+-            }
+-
+-            if (mode == MultiplayerMode.Disabled)
++            if (!LdnAutoRequested && mode == MultiplayerMode.Disabled)
+             {
+                 // S2Arm: local wireless discovery / multiplayer is unavailable. Return
+                 // the service's own result code and report once, instead of handing a
+@@ -1351,6 +1312,29 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator
+                 return ResultCode.InvalidState;
+             }
+ 
++            if (LdnAutoRequested)
++            {
++                try
++                {
++                    Logger.Info?.PrintMsg(
++                        LogClass.ServiceLdn,
++                        $"Auto LDN branch: envAuto={Environment.GetEnvironmentVariable("S2A_LDN_AUTO")}, " +
++                        $"envMitm={Environment.GetEnvironmentVariable("S2A_LDN_MITM")}, " +
++                        $"envServer={Environment.GetEnvironmentVariable("S2A_LDN_SERVER")}, " +
++                        $"mode={mode}, configServer={context.Device.Configuration.MultiplayerLdnServer}");
++                    NetworkClient = new LdnAutoClient(context.Device.Configuration);
++                    S2ANetworkClientServer = context.Device.Configuration.MultiplayerLdnServer;
++                    NetworkClient.SetGameVersion(controlProperty.DisplayVersion);
++                    return ResultCode.Success;
++                }
++                catch (Exception ex)
++                {
++                    Logger.Error?.Print(LogClass.ServiceLdn, $"Could not initialize automatic LDN: {ex.Message}");
++                    S2AHooks.Red?.Invoke($"ldn: automatic LAN is unavailable, {ex.Message}");
++                    return ResultCode.DeviceNotAvailable;
++                }
++            }
++
+             switch (mode)
+             {
+                 case MultiplayerMode.LdnRyu:
+diff --git a/src/Ryujinx.HLE/HOS/Services/Ldn/UserServiceCreator/LdnAutoClient.cs b/src/Ryujinx.HLE/HOS/Services/Ldn/UserServiceCreator/LdnAutoClient.cs
+new file mode 100644
+index 0000000000000000000000000000000000000000..95a1d404822637682a3e5307523dd08a9b120533
+--- /dev/null
++++ b/src/Ryujinx.HLE/HOS/Services/Ldn/UserServiceCreator/LdnAutoClient.cs
+@@ -0,0 +1,342 @@
++using Ryujinx.Common.Logging;
++using Ryujinx.Common.Configuration.Multiplayer;
++using Ryujinx.HLE.HOS.Services.Ldn.Types;
++using Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator.LdnMitm;
++using Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator.LdnRyu;
++using Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator.Types;
++using System;
++using System.Collections.Generic;
++using System.Runtime.InteropServices;
++using System.Threading.Tasks;
++
++namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator
++{
++    /// <summary>
++    /// Keeps both LAN transports available in automatic mode. Room scans identify the protocol
++    /// that can reach each peer before the game connects.
++    /// </summary>
++    internal sealed class LdnAutoClient : INetworkClient
++    {
++        private readonly HleConfiguration _configuration;
++        private readonly INetworkClient _mitm;
++        private readonly INetworkClient _ryu;
++        private readonly object _sync = new();
++        private readonly Dictionary<string, INetworkClient> _roomSources = new();
++
++        private INetworkClient _selected;
++
++        public LdnAutoClient(HleConfiguration configuration)
++            : this(
++                configuration,
++                new LdnMitmClient(configuration),
++                new LdnMasterProxyClient(
++                    configuration.MultiplayerLdnServer ?? "127.0.0.1",
++                    S2AHooks.LdnPort,
++                    configuration))
++        {
++        }
++
++        internal LdnAutoClient(
++            HleConfiguration configuration,
++            INetworkClient mitm,
++            INetworkClient ryu)
++        {
++            _configuration = configuration;
++            _mitm = mitm;
++            _ryu = ryu;
++
++            _mitm.NetworkChange += ForwardNetworkChange;
++            _ryu.NetworkChange += ForwardNetworkChange;
++        }
++
++        public ProxyConfig Config
++        {
++            get
++            {
++                lock (_sync)
++                {
++                    return _selected?.Config ?? default;
++                }
++            }
++        }
++
++        public bool NeedsRealId => true;
++
++        public event EventHandler<NetworkChangeEventArgs> NetworkChange;
++
++        public void DisconnectNetwork()
++        {
++            lock (_sync)
++            {
++                if (_selected != null)
++                {
++                    _selected.DisconnectNetwork();
++                    return;
++                }
++            }
++
++            _mitm.DisconnectNetwork();
++            _ryu.DisconnectNetwork();
++        }
++
++        public void DisconnectAndStop()
++        {
++            _mitm.DisconnectAndStop();
++            _ryu.DisconnectAndStop();
++        }
++
++        public NetworkError Connect(ConnectRequest request)
++        {
++            INetworkClient target = SourceFor(request.NetworkInfo);
++            Select(target);
++
++            NetworkError error = target.Connect(request);
++            if (error == NetworkError.None)
++            {
++                return error;
++            }
++
++            INetworkClient fallback = Other(target);
++            Logger.Warning?.PrintMsg(
++                LogClass.ServiceLdn,
++                $"Auto LDN {Name(target)} connect failed ({error}); retrying with {Name(fallback)}");
++
++            target.DisconnectNetwork();
++            Select(fallback);
++            return fallback.Connect(request);
++        }
++
++        public NetworkError ConnectPrivate(ConnectPrivateRequest request)
++        {
++            INetworkClient target = PreferredHostClient();
++            Select(target);
++            return target.ConnectPrivate(request);
++        }
++
++        public ResultCode Reject(DisconnectReason disconnectReason, uint nodeId)
++        {
++            lock (_sync)
++            {
++                return (_selected ?? _mitm).Reject(disconnectReason, nodeId);
++            }
++        }
++
++        public NetworkInfo[] Scan(ushort channel, ScanFilter scanFilter)
++        {
++            Task<NetworkInfo[]> mitmTask = Task.Run(() => SafeScan(_mitm, channel, scanFilter, "ldn_mitm"));
++            Task<NetworkInfo[]> ryuTask = Task.Run(() => SafeScan(_ryu, channel, scanFilter, "RyuLDN"));
++
++            Task.WaitAll(mitmTask, ryuTask);
++
++            NetworkInfo[] mitmRooms = mitmTask.Result;
++            NetworkInfo[] ryuRooms = ryuTask.Result;
++            List<NetworkInfo> merged = [];
++            HashSet<string> seen = [];
++
++            lock (_sync)
++            {
++                _roomSources.Clear();
++
++                AddRooms(merged, seen, mitmRooms, _mitm);
++                AddRooms(merged, seen, ryuRooms, _ryu);
++
++            }
++
++            Logger.Info?.PrintMsg(
++                LogClass.ServiceLdn,
++                $"Auto LDN scan: ldn_mitm={mitmRooms.Length}, RyuLDN={ryuRooms.Length}, merged={merged.Count}");
++
++            return merged.ToArray();
++        }
++
++        public void SetGameVersion(ReadOnlySpan<byte> versionString)
++        {
++            _mitm.SetGameVersion(versionString);
++            _ryu.SetGameVersion(versionString);
++        }
++
++        public void SetStationAcceptPolicy(AcceptPolicy acceptPolicy)
++        {
++            _mitm.SetStationAcceptPolicy(acceptPolicy);
++            _ryu.SetStationAcceptPolicy(acceptPolicy);
++        }
++
++        public void SetAdvertiseData(byte[] data)
++        {
++            _mitm.SetAdvertiseData(data);
++            _ryu.SetAdvertiseData(data);
++        }
++
++        public bool CreateNetwork(CreateAccessPointRequest request, byte[] advertiseData)
++        {
++            INetworkClient target = PreferredHostClient();
++            Select(target);
++            Logger.Info?.PrintMsg(
++                LogClass.ServiceLdn,
++                $"Auto LDN host selection: target={Name(target)}");
++            Console.Error.WriteLine($"[S2A 联机] Auto LDN host selection: target={Name(target)}");
++
++            if (target.CreateNetwork(request, advertiseData))
++            {
++                return true;
++            }
++
++            INetworkClient fallback = Other(target);
++            Logger.Warning?.PrintMsg(
++                LogClass.ServiceLdn,
++                $"Auto LDN {Name(target)} host creation failed; retrying with {Name(fallback)}");
++
++            target.DisconnectNetwork();
++            Select(fallback);
++            return fallback.CreateNetwork(request, advertiseData);
++        }
++
++        public bool CreateNetworkPrivate(CreateAccessPointPrivateRequest request, byte[] advertiseData)
++        {
++            INetworkClient target = PreferredHostClient();
++            Select(target);
++
++            if (target.CreateNetworkPrivate(request, advertiseData))
++            {
++                return true;
++            }
++
++            INetworkClient fallback = Other(target);
++            Logger.Warning?.PrintMsg(
++                LogClass.ServiceLdn,
++                $"Auto LDN {Name(target)} private host creation failed; retrying with {Name(fallback)}");
++
++            target.DisconnectNetwork();
++            Select(fallback);
++            return fallback.CreateNetworkPrivate(request, advertiseData);
++        }
++
++        public void Dispose()
++        {
++            _mitm.NetworkChange -= ForwardNetworkChange;
++            _ryu.NetworkChange -= ForwardNetworkChange;
++            _mitm.Dispose();
++            _ryu.Dispose();
++        }
++
++        private static NetworkInfo[] SafeScan(
++            INetworkClient client,
++            ushort channel,
++            ScanFilter scanFilter,
++            string name)
++        {
++            try
++            {
++                return client.Scan(channel, scanFilter);
++            }
++            catch (Exception ex)
++            {
++                Logger.Warning?.PrintMsg(LogClass.ServiceLdn, $"Auto LDN {name} scan failed: {ex.Message}");
++                return [];
++            }
++        }
++
++        private void AddRooms(
++            List<NetworkInfo> merged,
++            HashSet<string> seen,
++            NetworkInfo[] rooms,
++            INetworkClient source)
++        {
++            foreach (NetworkInfo room in rooms)
++            {
++                string key = RoomKey(room);
++                if (seen.Add(key))
++                {
++                    merged.Add(room);
++                }
++
++                _roomSources.TryAdd(key, source);
++            }
++        }
++
++        private INetworkClient SourceFor(in NetworkInfo networkInfo)
++        {
++            string key = RoomKey(networkInfo);
++
++            lock (_sync)
++            {
++                if (_roomSources.TryGetValue(key, out INetworkClient source))
++                {
++                    return source;
++                }
++
++                return PreferredHostClientLocked();
++            }
++        }
++
++        private INetworkClient PreferredHostClient()
++        {
++            lock (_sync)
++            {
++                return PreferredHostClientLocked();
++            }
++        }
++
++        private INetworkClient PreferredHostClientLocked()
++        {
++            return _mitm;
++        }
++
++        private INetworkClient Other(INetworkClient target)
++        {
++            return target == _mitm ? _ryu : _mitm;
++        }
++
++        private string Name(INetworkClient client)
++        {
++            return client == _mitm ? "ldn_mitm" : "RyuLDN";
++        }
++
++        private void Select(INetworkClient target)
++        {
++            lock (_sync)
++            {
++                _selected = target;
++
++                if (_configuration == null)
++                {
++                    return;
++                }
++
++                if (target == _mitm)
++                {
++                    _configuration.MultiplayerMode = MultiplayerMode.LdnMitm;
++                    _configuration.MultiplayerLdnServer = string.Empty;
++                }
++                else
++                {
++                    _configuration.MultiplayerMode = MultiplayerMode.LdnRyu;
++                    if (string.IsNullOrEmpty(_configuration.MultiplayerLdnServer))
++                    {
++                        _configuration.MultiplayerLdnServer = "127.0.0.1";
++                    }
++                }
++            }
++        }
++
++        private void ForwardNetworkChange(object sender, NetworkChangeEventArgs args)
++        {
++            lock (_sync)
++            {
++                if (_selected != sender)
++                {
++                    return;
++                }
++            }
++
++            NetworkChange?.Invoke(this, args);
++        }
++
++        private static string RoomKey(in NetworkInfo networkInfo)
++        {
++            Span<byte> bytes = stackalloc byte[Marshal.SizeOf<NetworkId>()];
++            MemoryMarshal.Write(bytes, in networkInfo.NetworkId);
++            return Convert.ToHexString(bytes);
++        }
++    }
++}
