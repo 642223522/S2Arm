@@ -67,6 +67,8 @@ public struct DevCertInfo: Equatable {
     public let warnings: [String]
     /// 描述文件缺权限时给证书发放人的一段话（作业层整句写好，界面翻译后一键复制，不在前端拼）；不缺为空
     public let requestText: String
+    /// 只选了 .p12（没有描述文件）、作业层交给 Apple ID 签名沿用这张证书（devcert.adopt，#2015）：成了的那句说明；不是这条路为空
+    public let adoptedMessage: String
 
     public init(result r: [String: Any]) {
         func s(_ k: String) -> String { r[k] as? String ?? "" }
@@ -80,6 +82,7 @@ public struct DevCertInfo: Equatable {
         distribution = r["distribution"] as? Bool ?? false
         warnings = (r["warnings"] as? [[String: Any]] ?? []).compactMap { $0["text"] as? String }
         requestText = s("requestText")
+        adoptedMessage = r["adopted"] as? Bool == true ? s("message") : ""
     }
 }
 
@@ -260,6 +263,7 @@ public final class InstallService {
     }
 
     /// 导入 .p12 + .mobileprovision；密码只经环境变量给这一次作业（S2A_DEVCERT_PASSWORD），不写进请求文件。导入成功即切到证书签名。
+    ///   profile 为空 = 只有 .p12：交给 Apple ID 签名沿用这张证书（不切签名方式，结果的 adoptedMessage 说清）
     ///   add = true：加一张（几张证书，#487；带 device 时顺手给这台选它）；false = 旧义「换一个」，顶掉这台在用的那张。
     public func devCertImport(p12: String, profile: String, password: String, device: String? = nil, add: Bool = false) async throws -> DevCertInfo {
         var extra: [String: Any] = ["action": "import", "p12Path": p12, "profilePath": profile]

@@ -1904,6 +1904,8 @@
       {"id": "export.sign.sheet.title", "zh-Hans": "导入开发者证书", "en": "Import developer certificate"},
       {"id": "export.sign.sheet.p12", "zh-Hans": "证书（.p12）", "en": "Certificate (.p12)"},
       {"id": "export.sign.sheet.profile", "zh-Hans": "描述文件（.mobileprovision）", "en": "Provisioning profile (.mobileprovision)"},
+      {"id": "export.sign.sheet.profileNote", "zh-Hans": "免费 Apple ID 没有描述文件：只选 .p12（例如从 SideStore 导出的证书）也能导入，S2Arm 用你登录的 Apple ID 自己申请描述文件。", "en": "Free Apple IDs don't come with a provisioning profile: you can import just the .p12 (for example a certificate exported from SideStore), and S2Arm requests the profile with the Apple ID you're signed in with."},
+      {"id": "export.sign.sheet.needP12", "zh-Hans": "先选择 .p12 证书。", "en": "Choose the .p12 certificate first."},
       {"id": "export.sign.sheet.drop", "zh-Hans": "拖到这里，或点「选择…」", "en": "Drop here, or click Choose…"},
       {"id": "export.sign.sheet.choose", "zh-Hans": "选择…", "en": "Choose…"},
       {"id": "export.sign.sheet.password", "zh-Hans": "证书密码", "en": "Certificate password"},
