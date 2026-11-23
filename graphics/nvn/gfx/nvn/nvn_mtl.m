@@ -8266,9 +8266,12 @@ static void fb_compile_note(uint64_t ns, NSString *pc) {
 }
 // 测量开关 DM_SHLIB_KEEP=<键名单文件>（每行一个 16 位十六进制键，同 shader_seen.tsv 第一列；11-21 编批库方案）：名单外的键当成包里没有，
 //   走设备上的首遇现编（DM_MSL_FALLBACK）——量「出包只编名单上的」在玩家机上要现编多少、物体晚出现几帧。不设时行为不变
+// 线程（诊断#559828，0.6.8 iPhone19,4 宿主崩溃 objc_release 0x400000000000bad0 ← shlib_dropped ← mtl_shlib_has ← 预热线程 warm_task）：
+//   提交线程 / 游戏线程（ProgramSetShaders → mtl_shlib_has）和预热线程（GCD，shader_loadable）都会第一次调到这里；原先按 on < 0 懒初始化，
+//   两条线程同时进来各建一份、同时赋值静态强引用 keep（ARC 先放旧值）→ 同一个对象放两次。初始化改一次性（dispatch_once），之后只读
 static int shlib_dropped(const char *name) {
-    static NSSet<NSString *> *keep; static int on = -1;
-    if (on < 0) {
+    static NSSet<NSString *> *keep; static int on; static dispatch_once_t once;
+    dispatch_once(&once, ^{
         // 相对路径按 App 的 Documents 解析（真机局 dev_run 的 PUSH 推进 Documents/ 下，起局环境里写不出容器的绝对路径）
         const char *f = getenv("DM_SHLIB_KEEP"); NSString *fp = f && *f ? @(f) : nil;
         if (fp && !fp.absolutePath) { char d[1024]; fp = s2a_docs_root(d, sizeof d) >= 0 ? [@(d) stringByAppendingPathComponent:fp] : nil; }
@@ -8277,7 +8280,7 @@ static int shlib_dropped(const char *name) {
         for (NSString *l in [t componentsSeparatedByString:@"\n"]) if (l.length >= 16) [m addObject:[l substringToIndex:16].lowercaseString];
         keep = m; on = t != nil;
         if (on) MLOG("measurement: DM_SHLIB_KEEP keeps %lu packaged shaders, every other key compiles on this device at first use", (unsigned long)m.count);
-    }
+    });
     return on && strlen(name) >= 16 && ![keep containsObject:[[NSString alloc] initWithBytes:name length:16 encoding:NSASCIIStringEncoding].lowercaseString];
 }
 static NvShader *shader_build(NSString *pc, int stage, int layer, int depth_zero) {
@@ -8670,7 +8673,7 @@ int nvn_be_shader_key_canon(uint8_t key[8]) {
 // S2Arm 两段式出包（10-27）：映射表有键不等于库里有这支——热键版包的映射表是全键、库只带热键，缺的那支要照样走首遇现编（dsh_miss.inc），不能让 shader_load 失败去触发直连失败判据。
 // 只查索引不读数据（每次 ProgramSetShaders 都会问）：现编过的 / 内置的 → 有；有库容器 → 容器索引里有没有 <键>_b 的反射；没容器（Mac 开发树）→ <键>_b.json 文件在不在
 int mtl_shlib_has(const char *key) {
-    if (shmap_rt_get(@(key)) != nil || builtin_get(key) != NULL) return 1;
+    if (shmap_rt_get(@(key)) != nil || builtin_known(key)) return 1;   // 只比内嵌核表：builtin_get 会懒建库、改 g_builtin（不带锁），这里预热线程与游戏线程同时调
     if (shlib_dropped(key)) return 0;   // 测量开关：名单外当成包里没有
     char name[32]; snprintf(name, sizeof name, "%.16s_b", key);
     lp_pack *p = lp_pack_get();
