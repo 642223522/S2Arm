@@ -1274,7 +1274,8 @@ static BOOL pad_order_refresh(void) {
     BOOL was = g_order_loaded;
     BOOL reassign = !was || generation != g_order_generation;
     g_order = order; g_order_loaded = loaded; g_order_generation = generation;
-    fprintf(stderr, "[s2a] 分配玩家顺序表：%d 位%s，没分配的 %d 只不给玩家位%s\n", order.count, g_order_loaded ? "" : "（读不懂，照连接顺序）", order.dropped_count,
+    char who[400]; s2a_pad_order_describe(&order, who, sizeof who);
+    fprintf(stderr, "[s2a] 分配玩家顺序表：%d 位%s%s%s%s，没分配的 %d 只不给玩家位%s\n", order.count, g_order_loaded ? "" : "（读不懂，照连接顺序）", who[0] ? "（" : "", who, who[0] ? "）" : "", order.dropped_count,
             reassign ? "；重新分配过，照表重排" : "；只是接上 / 断开手柄，已在玩的留原位");
     return (g_order_loaded || was) && reassign;
 }
