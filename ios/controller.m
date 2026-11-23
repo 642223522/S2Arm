@@ -454,7 +454,8 @@ static BOOL pad_order_refresh(void) {   // 回 YES = 表换了（或没了），
     int loaded = s2a_pad_order_from_json(json, &order, &generation);
     BOOL was = g_order_loaded, reassign = !was || generation != g_order_generation;
     g_order = order; g_order_loaded = loaded; g_order_generation = generation;
-    LOG("分配玩家顺序表：%d 位%s，没分配的 %d 只不给玩家位%s", order.count, loaded ? "" : "（读不懂，照连接顺序）", order.dropped_count,
+    char who[400]; s2a_pad_order_describe(&order, who, sizeof who);
+    LOG("分配玩家顺序表：%d 位%s%s%s%s，没分配的 %d 只不给玩家位%s", order.count, loaded ? "" : "（读不懂，照连接顺序）", who[0] ? "（" : "", who, who[0] ? "）" : "", order.dropped_count,
         reassign ? "；重新分配过，照表重排" : "；只是接上 / 断开手柄，已在玩的留原位");
     return (loaded || was) && reassign;
 }
