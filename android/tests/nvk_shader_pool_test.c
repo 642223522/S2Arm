@@ -25,7 +25,6 @@
 #include "../../runtime/include/s2a_direct_host.h"
 #include "direct/jv.h"
 #include "direct/program_cache.h"
-#include "direct/libpack_vk.h"   // s2a_libpack_hits / misses / rejects：状态闸探测不许动库自己的计数
 #include "nvn/nvn_vk_prog_warm.h"
 #include "dmsh_chain.h"   // DMSH_CHAIN：出包预编库目录 b-<链>-vk 与容器头的链号
 #include <sys/stat.h>
@@ -61,8 +60,6 @@ static int fake_gs_fact_deps;
 static int fixture_alias_flag = -1;   // 结果合并开关（debug.s2a.nvk_alias）：-1 = 取生产缺省，0 = 关
 static int fake_gs_result_tag;        // 非 0：结果里多带一个无关字段，同一份输入的结果字节（摘要）就不同
 static int fixture_depth_zero, fixture_origin_lower_left, shader_load_count, shader_release_count;
-static int fixture_gate_probe;   // nvk_gate_probe：只读探测开关（缺省 0）
-static int fixture_used_slots = -1;   // nvk_lp_used_slots：-1 = 取生产缺省（关 = 「任何一个非对齐绑定都算」的旧口径），0 / 1 = 读成这个值（缺省关之后，新口径的用例要显式设 1，就像调试包设属性）
 static int fake_cs_success, cs_loads;
 int g_s2a_logfd = 2;
 static const char *fake_compile_error;
@@ -125,8 +122,6 @@ int nvn_plat_flag(const char *name, int dflt) {
     if (fixture_alias_flag >= 0 && !strcmp(name, "nvk_alias")) return fixture_alias_flag;
     if (!strcmp(name, "nvk_link_refused_file") && record_link_refused) return 1;
     if (!strcmp(name, "nvk_link_map_diag")) return link_map_flag;
-    if (!strcmp(name, "nvk_gate_probe")) return fixture_gate_probe;
-    if (fixture_used_slots >= 0 && !strcmp(name, "nvk_lp_used_slots")) return fixture_used_slots;
     return dflt;
 }
 static int link_map_lines; static char last_link_map[700];   // 配对接口表诊断行（nvk_link_map_diag）
@@ -2046,9 +2041,6 @@ static int live_compile_pending_test(int stop) {
     rp_shader_live_compile_take(&stats);
     CHECK(stats.enqueued == 1 && stats.pending == 2, "same pending request must enqueue once (enqueued=%llu pending=%llu)",
           (unsigned long long)stats.enqueued, (unsigned long long)stats.pending);
-    CHECK(stats.compiled == 0 && stats.compile_ns == 0 && stats.compile_max_ns == 0,
-          "compile still held in the worker: nothing counted as finished yet (compiled=%llu ns=%llu max=%llu)",
-          (unsigned long long)stats.compiled, (unsigned long long)stats.compile_ns, (unsigned long long)stats.compile_max_ns);
     q.compile_defer_frame = NULL;
     if (stop) {
         CHECK(rp_shader_resolve(&q, &p) < 0 && !p, "unsafe hard deadline must report failure, not skip or publish");
@@ -2080,12 +2072,6 @@ static int live_compile_pending_test(int stop) {
         live_gate_release();
         CHECK(rp_shader_resolve(&q, &p) == 0 && p && compiler_calls == 1,
               "deferred result must be installed on re-use without recompiling");
-        rp_shader_live_compile_take(&stats);
-        CHECK(stats.compiled == 1 && stats.compile_ns > 0 && stats.compile_max_ns == stats.compile_ns,
-              "one finished compile is counted once, its total equals its longest (compiled=%llu ns=%llu max=%llu)",
-              (unsigned long long)stats.compiled, (unsigned long long)stats.compile_ns, (unsigned long long)stats.compile_max_ns);
-        rp_shader_live_compile_take(&stats);
-        CHECK(stats.compiled == 0 && stats.compile_ns == 0 && stats.compile_max_ns == 0, "reading the compile timing clears it");
     }
     nvk_shader_stop();
     CHECK(s2a_compile_worker_stop_bounded(2000, NULL, 0) == 0, "stop retires worker");
@@ -2094,283 +2080,7 @@ static int live_compile_pending_test(int stop) {
     return failures ? 1 : 0;
 }
 
-// ---- 状态闸读数（nvk_shader.c lp_gate_*）----
-// 出包预编库只在六条状态闸全部放行时才会被查；被挡下的程序以前在「程序累计」里完全看不见（库没查过、也不是库里没有），
-// 只能看到现场编译很多。这里用 VS + FS 两段程序（0x3）+ 一份只含这两段的库，把每条闸的「挡下」与「放行后库里没有」分开读出来，
-// 同时锁住取程序的决定没变：放行且库里有 → 命中（编译器不调）；放行但库里没有 → 现编；任何一条闸单独挡下 → 库里明明有也不查，现编。
-// 单独起进程：直方图是进程累计的；深度能力缓存只读一次，这里按「设备没有 CAP_DEPTH_CLIP_CTL」定死，深度模式闸才测得到
-// （基准 fixture_depth_zero = 1，深度零到一，不挡；改成 0 即 near=-w，被挡）。
-static uint8_t gate_key_hit[8], gate_key_miss[8], gate_key_fs[8], gate_key_fsjson[8];   // fsjson：库里只有 _b.json、没有 _b.spv 的片元键
-static uint8_t gate_key_vssb[8], gate_key_fssb[8];   // 库里有、且真用到存储缓冲槽的顶点键（槽 3）/ 片元键（槽 0）；基准的 vs / fs 键一个存储槽也不用
-static uint8_t gate_key_fspsb[8];   // 库里有、_b.json 一个存储槽也不列、但 _b.spv 声明了 PhysicalStorageBufferAddresses（按地址直接访问内存）的片元键
-static unsigned gate_alpha0, gate_src0;   // rp_state_reset 的默认值（位域，不能用 typeof）：每个用例结束时原样还原
-static void gc_none(void) {}
-static void gc_miss_on(void) { memcpy(rp_S.skey[0], gate_key_miss, 8); }   // 取程序读的是绑定时抄进 rp_S.skey 的键
-static void gc_miss_off(void) { memcpy(rp_S.skey[0], gate_key_hit, 8); }
-static void gc_depth_on(void) { fixture_depth_zero = 0; }
-static void gc_depth_off(void) { fixture_depth_zero = 1; }
-static void gc_origin_on(void) { fixture_origin_lower_left = 1; }
-static void gc_origin_off(void) { fixture_origin_lower_left = 0; }
-static void gc_alpha_on(void) { rp_S.color.alpha_func = 2; }
-static void gc_alpha_off(void) { rp_S.color.alpha_func = gate_alpha0; }
-static void gc_a2c_on(void) { rp_S.ms.a2c = 1; }
-static void gc_a2c_off(void) { rp_S.ms.a2c = 0; }
-static void gc_dual_on(void) { rp_S.blend[0].src_rgb = 0x10; }
-static void gc_dual_off(void) { rp_S.blend[0].src_rgb = gate_src0; }
-static void gc_ssbo_set(unsigned st, unsigned slot, uint64_t addr) { rp_S.ssbo[st][slot].addr = addr; rp_S.ssbo[st][slot].size = addr ? 16 : 0; }   // 夹具 storage_buffer_offset_alignment = 16：0x…0 对齐，0x…1 非对齐
-static void gc_ssbo_on(void) { gc_ssbo_set(1, 0, 0x10001); }   // 片元段槽 0 绑了非对齐地址；基准程序一个存储槽也不用（旧口径下这就足以挡住库）
-static void gc_ssbo_off(void) { gc_ssbo_set(1, 0, 0); }
-static void gc_fssb_key(int on) { memcpy(rp_S.skey[1], on ? gate_key_fssb : gate_key_fs, 8); }
-static void gc_vssb_key(int on) { memcpy(rp_S.skey[0], on ? gate_key_vssb : gate_key_hit, 8); }
-static void gc_fssb_un_on(void) { gc_fssb_key(1); gc_ssbo_set(1, 0, 0x10001); }   // 片元程序用槽 0，槽 0 非对齐：真受影响
-static void gc_fssb_un_off(void) { gc_fssb_key(0); gc_ssbo_set(1, 0, 0); }
-static void gc_fssb_al_on(void) { gc_fssb_key(1); gc_ssbo_set(1, 0, 0x10000); }   // 片元程序用槽 0，槽 0 对齐
-static void gc_fssb_stage_on(void) { gc_fssb_key(1); gc_ssbo_set(1, 0, 0x10000); gc_ssbo_set(0, 0, 0x30001); }   // 片元用槽 0（对齐）；顶点段槽 0 非对齐，但顶点程序不用存储
-static void gc_fssb_stage_off(void) { gc_fssb_key(0); gc_ssbo_set(1, 0, 0); gc_ssbo_set(0, 0, 0); }
-static void gc_vssb_un_on(void) { gc_vssb_key(1); gc_ssbo_set(0, 3, 0x20001); }   // 顶点程序用槽 3，槽 3 非对齐：真受影响
-static void gc_vssb_un_off(void) { gc_vssb_key(0); gc_ssbo_set(0, 3, 0); }
-static void gc_vssb_slot_on(void) { gc_vssb_key(1); gc_ssbo_set(0, 3, 0x20000); gc_ssbo_set(0, 0, 0x20001); }   // 顶点程序用槽 3（对齐）；同一阶段的槽 0 非对齐，但没用
-static void gc_vssb_slot_off(void) { gc_vssb_key(0); gc_ssbo_set(0, 3, 0); gc_ssbo_set(0, 0, 0); }
-// 顶点程序用槽 3、片元程序用槽 0；非对齐的恰好是顶点段的槽 0 和片元段的槽 3——两段各算各的，谁也没碰到非对齐的槽（把两段的槽并起来看就会误挡）
-static void gc_cross_on(void) { gc_vssb_key(1); gc_fssb_key(1); gc_ssbo_set(0, 0, 0x20001); gc_ssbo_set(1, 3, 0x10001); }
-static void gc_cross_off(void) { gc_vssb_key(0); gc_fssb_key(0); gc_ssbo_set(0, 0, 0); gc_ssbo_set(1, 3, 0); }
-static void gc_miss_ssbo_on(void) { gc_miss_on(); gc_ssbo_on(); }   // 顶点键在库里没有 + 片元段有一个非对齐绑定（顶点段的绑定全对齐：它用哪些槽都不受影响，不必读它）
-static void gc_miss_ssbo_off(void) { gc_miss_off(); gc_ssbo_off(); }
-static void gc_miss_vsun_on(void) { gc_miss_on(); gc_ssbo_set(0, 0, 0x20001); }   // 顶点键在库里没有（读不出用到哪几个槽）+ 顶点段自己有一个非对齐绑定：必须读它，读不出就不猜
-static void gc_miss_vsun_off(void) { gc_miss_off(); gc_ssbo_set(0, 0, 0); }
-static void gc_fspsb_key(int on) { memcpy(rp_S.skey[1], on ? gate_key_fspsb : gate_key_fs, 8); }
-static void gc_fspsb_un_on(void) { gc_fspsb_key(1); gc_ssbo_set(1, 0, 0x10001); }   // 片元程序的 SPIR-V 带按地址访问内存的能力、片元段有非对齐绑定：绑定表不代表它碰得到的全部存储
-static void gc_fspsb_un_off(void) { gc_fspsb_key(0); gc_ssbo_set(1, 0, 0); }
-static void gc_fspsb_al_on(void) { gc_fspsb_key(1); gc_ssbo_set(1, 0, 0x10000); }   // 同一份程序、绑定全对齐：不涉及非对齐，照常取库
-static void gc_flagoff_ssbo_on(void) { fixture_used_slots = 0; gc_ssbo_on(); }   // 开关显式设 0：退回旧口径（任何一个非对齐绑定都挡库）
-static void gc_flagoff_ssbo_off(void) { fixture_used_slots = 1; gc_ssbo_off(); }   // 还原成整个用例表的底色（显式设 1）
-static void gc_default_ssbo_on(void) { fixture_used_slots = -1; gc_ssbo_on(); }   // 属性没设：读生产缺省（关）= 旧口径；把缺省改回开，这一行就会放行、命中库而变红
-static void gc_default_ssbo_off(void) { fixture_used_slots = 1; gc_ssbo_off(); }
-static void gc_alpha_ssbo_on(void) { gc_alpha_on(); gc_ssbo_on(); }   // 透明测试挡下 + 基准程序没用的槽非对齐
-static void gc_alpha_ssbo_off(void) { gc_alpha_off(); gc_ssbo_off(); }
-static void gc_alpha_a2c_on(void) { gc_alpha_on(); gc_a2c_on(); }
-static void gc_alpha_a2c_off(void) { gc_alpha_off(); gc_a2c_off(); }
-static void gc_alpha_miss_on(void) { gc_alpha_on(); gc_miss_on(); }
-static void gc_alpha_miss_off(void) { gc_alpha_off(); gc_miss_off(); }
-static void gc_alpha_fsjson_on(void) { gc_alpha_on(); memcpy(rp_S.skey[1], gate_key_fsjson, 8); }
-static void gc_alpha_fsjson_off(void) { gc_alpha_off(); memcpy(rp_S.skey[1], gate_key_fs, 8); }
-// 读数行里「判定读库 N 次、命中缓存 M 次」的两个数（行里没有就给 0）
-static void ssbo_cost_counts(unsigned long long *reads, unsigned long long *hits) {
-    extern void nvk_shader_test_ssbo_line(char *out, size_t n);
-    char b[800]; nvk_shader_test_ssbo_line(b, sizeof b);
-    const char *p = strstr(b, "判定读库 ");
-    *reads = *hits = 0;
-    if (p) sscanf(p, "判定读库 %llu 次、命中缓存 %llu 次", reads, hits);
-}
-static int lp_gate_test(void) {
-    extern void nvk_shader_test_gate_line(char *out, size_t n);
-    extern void nvk_shader_test_gate_probe_line(char *out, size_t n);
-    extern void nvk_shader_test_ssbo_line(char *out, size_t n);
-    fake_depth_clip = 0; fixture_depth_zero = 1; fixture_origin_lower_left = 0; fake_geometry_enabled = 1;
-    fixture_used_slots = 1;   // 开关缺省关之后，整张用例表按「调试包设了 nvk_lp_used_slots=1」跑；只有「属性没设」「显式设 0」两行改成读缺省 / 读 0
-    rp_shader_reset(); s2a_source_clear(); rp_state_reset(); nvn_unimpl_reset();
-    gate_alpha0 = rp_S.color.alpha_func; gate_src0 = rp_S.blend[0].src_rgb;
-    uint8_t k[3][8]; for (unsigned st = 0; st < 3; st++) gs_source(st, 0, k[st]);
-    memcpy(gate_key_hit, k[0], 8); gs_source(0, 1, gate_key_miss);   // 库里没有的 VS 键：变体 1 的顶点来源
-    memcpy(gate_key_fs, k[1], 8); gs_source(1, 1, gate_key_fsjson);   // 库里只有 json 的 FS 键：变体 1 的片元来源
-    gs_source(0, 2, gate_key_vssb); gs_source(1, 2, gate_key_fssb);   // 库里有、真用到存储缓冲槽的 VS / FS 键：变体 2（顶点槽 3 / 片元槽 0）
-    gs_source(1, 3, gate_key_fspsb);   // 库里有、_b.spv 带按地址访问内存的能力的 FS 键：变体 3
-    memset(&gs_program, 0, sizeof gs_program); gs_program.magic = MAGIC('P','R','O','G'); gs_program.serial = 101; gs_program.nstage = 3;
-    memset(gs_stages, 0xff, sizeof gs_stages); memset(gs_keys, 0, sizeof gs_keys);
-    for (unsigned i = 0; i < 3; i++) { gs_stages[i] = (uint8_t)i; memcpy(gs_keys[i], k[i], 8); }
-    gs_keys_ok = 7; p_bind_program_id bind = {&gs_program, gs_program.serial, 0x1f, 0};
-    CHECK(rp_state_op(OP_BIND_PROGRAM, &bind, sizeof bind + 8), "gate fixture binds program");
-    rp_S.bser[2] = 0;   // 去掉几何段：VS + FS 两段
-    CHECK(rp_shader_graphics_stages() == 3, "gate fixture stage mask is 0x3");
-    bind_pools(7);
-    char root[256], dir[600];
-    snprintf(root, sizeof root, "%s/nvk_lp_gate.XXXXXX", getenv("TMPDIR") && *getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp");
-    if (!mkdtemp(root)) { CHECK(0, "gate temp root"); return 1; }
-    snprintf(dir, sizeof dir, "%s/shaders", root); mkdir(dir, 0700);
-    snprintf(dir, sizeof dir, "%s/shaders/direct", root); mkdir(dir, 0700);
-    snprintf(dir, sizeof dir, "%s/shaders/direct/b-%s-vk", root, DMSH_CHAIN); mkdir(dir, 0700);
-    static const uint32_t spv0[5] = {0x07230203u, 0x00010300u, 0, 1, 0};
-    static const uint32_t spv_psb[7] = {0x07230203u, 0x00010300u, 0, 1, 0, 0x00020011u, 5347u};   // 头 + OpCapability PhysicalStorageBufferAddresses
-    char hx[2][17]; for (int st = 0; st < 2; st++) for (int b = 0; b < 8; b++) snprintf(hx[st] + 2 * b, 3, "%02x", k[st][b]);
-    char hxj[17]; for (int b = 0; b < 8; b++) snprintf(hxj + 2 * b, 3, "%02x", gate_key_fsjson[b]);
-    char hxvsb[17], hxfsb[17], hxfpsb[17];
-    for (int b = 0; b < 8; b++) { snprintf(hxvsb + 2 * b, 3, "%02x", gate_key_vssb[b]); snprintf(hxfsb + 2 * b, 3, "%02x", gate_key_fssb[b]); snprintf(hxfpsb + 2 * b, 3, "%02x", gate_key_fspsb[b]); }
-    char jvs[160], jfs[160], jfj[160], jvsb[320], jfsb[320], jfpsb[160];
-    snprintf(jfpsb, sizeof jfpsb, "{\"stage\":\"ps\",\"dm_ctl\":\"%s\",\"bindings\":[]}", hxfpsb);   // 绑定表里一个存储槽也没有；存储访问全靠地址
-    snprintf(jvs, sizeof jvs, "{\"stage\":\"vs\",\"dm_ctl\":\"%s\",\"bindings\":[]}", hx[0]);
-    snprintf(jfs, sizeof jfs, "{\"stage\":\"ps\",\"dm_ctl\":\"%s\",\"bindings\":[]}", hx[1]);
-    snprintf(jfj, sizeof jfj, "{\"stage\":\"ps\",\"dm_ctl\":\"%s\",\"bindings\":[]}", hxj);
-    snprintf(jvsb, sizeof jvsb, "{\"stage\":\"vs\",\"dm_ctl\":\"%s\",\"bindings\":[{\"msl_name\":\"vp_s0\",\"kind\":\"sbuf\",\"index\":0,\"reg\":3,\"rw\":true,\"arg_id\":0}]}", hxvsb);   // 顶点段用存储槽 3
-    snprintf(jfsb, sizeof jfsb, "{\"stage\":\"ps\",\"dm_ctl\":\"%s\",\"bindings\":[{\"msl_name\":\"fp_s0\",\"kind\":\"sbuf\",\"index\":0,\"reg\":0,\"rw\":true,\"arg_id\":0}]}", hxfsb);   // 片元段用存储槽 0
-    struct { uint64_t key; uint8_t kind; const uint8_t *d; size_t n; } rec[11] = {
-        {lp_key(k[0]), 1, (const uint8_t *)jvs, strlen(jvs)}, {lp_key(k[0]), 52, (const uint8_t *)spv0, sizeof spv0},
-        {lp_key(k[1]), 1, (const uint8_t *)jfs, strlen(jfs)}, {lp_key(k[1]), 52, (const uint8_t *)spv0, sizeof spv0},
-        {lp_key(gate_key_fsjson), 1, (const uint8_t *)jfj, strlen(jfj)},   // 只有 json、没有 spv：探测要两样都在才算「库里有」
-        {lp_key(gate_key_vssb), 1, (const uint8_t *)jvsb, strlen(jvsb)}, {lp_key(gate_key_vssb), 52, (const uint8_t *)spv0, sizeof spv0},
-        {lp_key(gate_key_fssb), 1, (const uint8_t *)jfsb, strlen(jfsb)}, {lp_key(gate_key_fssb), 52, (const uint8_t *)spv0, sizeof spv0},
-        {lp_key(gate_key_fspsb), 1, (const uint8_t *)jfpsb, strlen(jfpsb)}, {lp_key(gate_key_fspsb), 52, (const uint8_t *)spv_psb, sizeof spv_psb},   // 绑定表里没有存储槽、SPIR-V 带 PhysicalStorageBufferAddresses
-    };
-    for (int i = 0; i < 11; i++) for (int j = i + 1; j < 11; j++)   // (键, 种类) 升序
-        if (rec[j].key < rec[i].key || (rec[j].key == rec[i].key && rec[j].kind < rec[i].kind)) { __typeof__(rec[0]) t = rec[i]; rec[i] = rec[j]; rec[j] = t; }
-    uint64_t keys[11]; uint8_t kinds[11]; const uint8_t *data[11]; size_t lens[11];
-    for (int i = 0; i < 11; i++) { keys[i] = rec[i].key; kinds[i] = rec[i].kind; data[i] = rec[i].d; lens[i] = rec[i].n; }
-    CHECK(lp_write(dir, keys, kinds, data, lens, 11) == 0, "gate container written");
-    setenv("S2A_SHADER_REVISION_ROOT", root, 1); unsetenv("S2A_DIRECT_CACHE_DIR");
-    static const char prof_on[] = "{\"schema\":\"s2a-direct-profile-v1\",\"profileHash\":\"sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"capabilities\":{\"storageBufferOffsetAlignment\":16,\"supportsGeometryShader\":true}}";
-    snprintf(external_profile, sizeof external_profile, "%s", prof_on);
-    fake_gs_success = 1; fake_gs_result_mode = 1;   // 现编结果只含 vs + fs，与两段程序对得上
-    // 每行：状态（设置 / 还原）、份数、期望是否从库里取、这一行是否开只读探测（nvk_gate_probe）、现编时请求里 hasUnalignedStorageBuffer 的期望值（-1 = 命中库、没有现编请求，不核）。
-    //   份数是手算的，直方图的期望从这张表算出（见下面 want）。
-    static const struct { const char *name; void (*on)(void); void (*off)(void); int n, hit, probe, un; } cases[] = {
-        {"allowed, in library",   gc_none,         gc_none,          1, 1, 1, -1},
-        {"allowed, not in library", gc_miss_on,    gc_miss_off,      2, 0, 1, 0},
-        {"alpha test, probe off", gc_alpha_on,     gc_alpha_off,     1, 0, 0, 0},   // 探测缺省关：被挡下、照样现编，但不探
-        {"depth mode",            gc_depth_on,     gc_depth_off,     2, 0, 1, 0},
-        {"origin lower-left",     gc_origin_on,    gc_origin_off,    1, 0, 1, 0},
-        {"alpha test",            gc_alpha_on,     gc_alpha_off,     2, 0, 1, 0},
-        {"alpha test, not in library", gc_alpha_miss_on, gc_alpha_miss_off, 1, 0, 1, 0},   // 被挡下、库里本来也没有
-        {"alpha test, library has only the json", gc_alpha_fsjson_on, gc_alpha_fsjson_off, 1, 0, 1, 0},   // 被挡下、片元键在库里只有 _b.json
-        {"alpha to coverage",     gc_a2c_on,       gc_a2c_off,       1, 0, 1, 0},
-        {"dual source blend",     gc_dual_on,      gc_dual_off,      1, 0, 1, 0},
-        // 存储缓冲非对齐：只有「这个程序真用到的槽」非对齐才算（口径见 nvk_shader.c gfx_ssbo_align）。绑定在没用到的槽上，不影响程序的代码：库照取，现编也不当非对齐编
-        {"unaligned storage, slot the program does not use", gc_ssbo_on, gc_ssbo_off, 2, 1, 1, -1},   // 基准程序一个存储槽也不用：以前就被挡下（旧口径），现在放行、命中
-        {"alpha test + coverage", gc_alpha_a2c_on, gc_alpha_a2c_off, 1, 0, 1, 0},
-        {"unaligned storage, slot the program uses (fs)", gc_fssb_un_on, gc_fssb_un_off, 2, 0, 1, 1},   // 真用到的槽非对齐：照旧挡下、现编（按非对齐编）；库里有这个程序，探测算「有」
-        {"aligned storage, slot the program uses (fs)", gc_fssb_al_on, gc_fssb_un_off, 1, 1, 1, -1},   // 真用到的槽、但对齐：放行、命中（旧口径下别处没有非对齐也一样放行）
-        {"unaligned storage, only in another stage", gc_fssb_stage_on, gc_fssb_stage_off, 1, 1, 1, -1},   // 非对齐的槽在顶点段，顶点程序不用存储；片元程序用槽 0 且对齐 → 放行（两段各算各的）
-        {"unaligned storage, slot the program uses (vs)", gc_vssb_un_on, gc_vssb_un_off, 1, 0, 1, 1},
-        {"unaligned storage, another slot of the same stage", gc_vssb_slot_on, gc_vssb_slot_off, 1, 1, 1, -1},   // 顶点程序用槽 3（对齐），同阶段槽 0 非对齐但没用 → 放行（逐槽算，不是整阶段）
-        {"unaligned storage, crossed between stages", gc_cross_on, gc_cross_off, 1, 1, 1, -1},   // 顶点用槽 3、片元用槽 0；非对齐的是顶点槽 0 与片元槽 3：两段各算各的，没有一段碰到自己的非对齐槽 → 放行
-        {"unaligned storage, program not in library", gc_miss_vsun_on, gc_miss_vsun_off, 1, 0, 1, 1},   // 非对齐绑定在顶点段、顶点键库里没有 → 读不出用到哪几个槽 → 不猜，照旧按非对齐：挡下，现编也按非对齐编（探测：库里本来也没有）
-        {"unaligned storage, switch off", gc_flagoff_ssbo_on, gc_flagoff_ssbo_off, 1, 0, 1, 1},   // debug.s2a.nvk_lp_used_slots=0：退回旧口径，基准程序也被挡下、按非对齐编
-        {"unaligned storage, property not set (production default)", gc_default_ssbo_on, gc_default_ssbo_off, 1, 0, 1, 1},   // 属性没设：生产缺省是关 = 旧口径，基准程序也被挡下、按非对齐编（缺省改回开会放行命中库 → 这一行红）
-        {"alpha test, unaligned slot the program does not use", gc_alpha_ssbo_on, gc_alpha_ssbo_off, 1, 0, 1, 0},   // 被别的闸挡下、现编；没用到的槽非对齐不改变现编结果（同一份现编结果不再因旧绑定分成两份）
-        {"unaligned storage, stage without unaligned binding is not in library", gc_miss_ssbo_on, gc_miss_ssbo_off, 1, 0, 1, 0},   // 顶点键库里没有，但顶点段的绑定全对齐（只有片元段有非对齐、且片元程序没用）→ 不必读顶点段：按对齐，现编也按对齐编
-        {"unaligned storage, program declares physical addresses", gc_fspsb_un_on, gc_fspsb_un_off, 1, 0, 1, 1},   // 片元 SPIR-V 带 PhysicalStorageBufferAddresses：绑定表不代表它碰得到的全部存储 → 退回旧口径：挡下，现编按非对齐编（探测：库里有）
-        {"aligned storage, program declares physical addresses", gc_fspsb_al_on, gc_fspsb_un_off, 1, 1, 1, -1},   // 同一份程序、绑定全对齐：没有非对齐可言，照常取库（负对照：这条能力本身不挡库）
-    };
-    for (size_t c = 0; c < sizeof cases / sizeof cases[0]; c++) for (int i = 0; i < cases[c].n; i++) {
-        rp_shader_reset(); compiler_calls = 0; captured[0] = 0;
-        cases[c].on(); fixture_gate_probe = cases[c].probe;
-        struct rp_shader_req q = {0}; q.prim = 4; const struct rp_prog *p = NULL;
-        int rc = rp_shader_resolve(&q, &p);
-        cases[c].off(); fixture_gate_probe = 0;
-        CHECK(rc == 0 && p, "gate case '%s' #%d: program resolves (rc=%d)", cases[c].name, i, rc);
-        if (cases[c].hit) CHECK(compiler_calls == 0 && p && p->lib_sourced, "gate case '%s': hit from the library, compiler not called (calls=%d)", cases[c].name, compiler_calls);
-        else CHECK(compiler_calls == 1 && p && !p->lib_sourced, "gate case '%s' #%d: library not used, live compile runs once (calls=%d)", cases[c].name, i, compiler_calls);
-        if (!cases[c].hit && cases[c].un >= 0)
-            CHECK(strstr(captured, cases[c].un ? "\"hasUnalignedStorageBuffer\":true" : "\"hasUnalignedStorageBuffer\":false") != NULL,
-                  "gate case '%s' #%d: live compile request carries hasUnalignedStorageBuffer=%s", cases[c].name, i, cases[c].un ? "true" : "false");
-    }
-    // 期望（手算）：新程序 放行 = 基准 1 + 库里没有 2 + 没用到的槽非对齐 2 + 用到的槽对齐 1 + 非对齐在别的阶段 1 + 同阶段别的槽非对齐 1
-    //          + 两段的非对齐槽恰好各是对方用到的槽 1
-    //          + 顶点键库里没有、但非对齐的绑定只在片元段且片元程序没用 1 + 带按地址访问内存能力的程序、绑定全对齐 1 = 11；
-    //   挡下 = 透明测试 1+2+1+1 + 深度模式 2 + 窗口原点左下 1 + 透明转覆盖 1 + 双源混合 1 + 透明测试+透明转覆盖 1（= 11）
-    //          + 存储缓冲非对齐：用到的槽 片元 2 + 顶点 1、顶点键库里没有且顶点段有非对齐 1、开关显式设 0 的 1、属性没设（生产缺省关）的 1、带按地址访问内存的能力且有非对齐 1（= 7）
-    //          + 透明测试且没用到的槽非对齐 1 = 19；现场编 放行 = 3（库里没有的那两份 + 顶点键库里没有但顶点段绑定全对齐的那份），挡下 = 19。
-    //   按「挡下」份数前五名：存储缓冲不对齐 7；透明测试 6（探测关的 1 + 开的 2 + 库里没有的 1 + 库里只有 json 的 1 + 没用到的槽非对齐的 1）；
-    //   深度模式 2；窗口原点左下 1 与 透明转覆盖 1（并列，位集合小的在前；双源混合 1、透明测试+透明转覆盖 1 排在第六、第七，不列）。
-    static const char want[] = "出包预编库状态闸：新程序 放行 11、挡下 19（最多的：存储缓冲不对齐 7、透明测试 6、深度模式 2、窗口原点左下 1、透明转覆盖 1）"
-                               "；现场编 放行 3、挡下 19（最多的：存储缓冲不对齐 7、透明测试 6、深度模式 2、窗口原点左下 1、透明转覆盖 1）";
-    char got[640]; nvk_shader_test_gate_line(got, sizeof got);
-    CHECK(!strcmp(got, want), "gate readout line\n  got : %s\n  want: %s", got, want);
-    // 探测读数（手算）：只算开了探测的被挡下份数 = 19 - 1（探测关的那一份）= 18；库里有这几段（_b.json 与 _b.spv 都在）的 = 18 - 3 = 15
-    //   （透明测试：库里没有的 1、只有 json 的 1；存储缓冲不对齐：库里没有的 1；带按地址访问内存能力的那份两样都在，算「有」；属性没设的那份基准程序在库里，算「有」）。
-    //   按闸：存储缓冲不对齐 探 7（片元 2 + 顶点 1 + 库里没有 1 + 开关显式设 0 的 1 + 属性没设的 1 + 带按地址访问内存能力 1）有 6；透明测试 探 5（开的 2 + 库里没有的 1 + 只有 json 的 1
-    //   + 没用到的槽非对齐的 1）有 3（份数多的在前：存储缓冲不对齐在前）；深度模式 2/2；窗口原点左下 1/1、透明转覆盖 1/1（并列，位集合小的在前）。
-    static const char wantp[] = "出包预编库放开状态闸会怎样（只读探测）：被挡下又现场编的 18 份里，库里有这几段记录的 15 份"
-                                "（按闸 有/共：存储缓冲不对齐 6/7、透明测试 3/5、深度模式 2/2、窗口原点左下 1/1、透明转覆盖 1/1）";
-    char gotp[640]; nvk_shader_test_gate_probe_line(gotp, sizeof gotp);
-    CHECK(!strcmp(gotp, wantp), "gate probe line\n  got : %s\n  want: %s", gotp, wantp);
-    // 存储缓冲非对齐读数（手算）：只有「旧口径说有非对齐」且开关开着的新程序才记（开关显式设 0 的那份、属性没设（缺省关）的那份都不记，也不读库）。
-    //   没用到非对齐的槽、按对齐放行 7（基准程序的片元槽 0 非对齐 2 份 + 非对齐在别的阶段 1 + 同阶段别的槽 1 + 两段交叉 1 + 透明测试那份 1
-    //   + 顶点键库里没有但顶点段绑定全对齐 1）；用到了、照旧按非对齐 3（片元 2 + 顶点 1）；
-    //   库里说不准、退回旧口径 2（顶点键库里没有且顶点段有非对齐 1 + SPIR-V 带按地址访问内存的能力 1，后一份单列）；合计 12。
-    //   判定读库（手算）：每份新程序前都清了缓存，所以每份新程序读一次它「真有非对齐绑定的阶段」的库——没有非对齐绑定的阶段不读：
-    //   没用到的槽 2 + 用到的槽（片元）2 + 非对齐在别的阶段 1（只读顶点段）+ 用到的槽（顶点）1 + 同阶段别的槽 1 + 两段交叉 2（顶点段、片元段各读一次）
-    //   + 顶点键库里没有 1 + 透明测试那份 1 + 顶点键库里没有但顶点段全对齐 1（只读片元段）+ 带按地址访问内存的能力 1 = 13 次。
-    static const char wants[] = "存储缓冲非对齐（只看程序真用到的槽）：新程序里绑定有非对齐的 12 份：程序没用到非对齐的槽、按对齐放行 7、用到了、照旧按非对齐 3、"
-                                "库里说不准、退回旧口径按非对齐 2（其中 SPIR-V 带按地址访问内存的能力 1）；判定读库 13 次、命中缓存 ";
-    char gots[800]; nvk_shader_test_ssbo_line(gots, sizeof gots);
-    CHECK(!strncmp(gots, wants, sizeof wants - 1), "ssbo readout line\n  got : %s\n  want: %s…", gots, wants);
-    {   // 句子的后半：命中缓存几次（至少每份新程序 1 次——快路摘要先读库、程序身份再查缓存）、读库合计耗时要有、平均 / 最长是数
-        unsigned long long hits = 0, ms = 0, us = 0, avg = 0, mx = 0;
-        CHECK(!strncmp(gots, wants, sizeof wants - 1) &&
-              sscanf(gots + sizeof wants - 1, "%llu 次，读库合计 %llu.%llu 毫秒、平均每份新程序 %llu 微秒、最长一次 %llu 微秒", &hits, &ms, &us, &avg, &mx) == 5,
-              "ssbo readout line: cost part parses\n  got : %s", gots);
-        CHECK(hits >= 12, "ssbo readout line: cache hits cover every new program (hits=%llu)", hits);
-        CHECK(ms * 1000 + us > 0, "ssbo readout line: library read time is recorded (%llu.%03llu ms)", ms, us);
-    }
-    // 探测只读：库自己的命中 / 没有 / 坏三个计数只来自真正的取程序（命中 8 = 基准 1 + 没用到的槽非对齐 2 + 用到的槽对齐 1 + 别的阶段 1 + 同阶段别的槽 1
-    //   + 两段交叉 1 + 带按地址访问内存的能力但绑定全对齐 1；没有 3 = 库里没有 VS 键的那两份 + 顶点键库里没有但顶点段全对齐的那份；被挡下的一份都没查过库，
-    //   库里没有 VS 键又非对齐的那份、带按地址访问内存的能力又非对齐的那份也被挡在查库之前）。
-    CHECK(s2a_libpack_hits() == 8 && s2a_libpack_misses() == 3 && s2a_libpack_rejects() == 0,
-          "gate probe leaves the library counters alone (hits=%llu misses=%llu rejects=%llu)",
-          (unsigned long long)s2a_libpack_hits(), (unsigned long long)s2a_libpack_misses(), (unsigned long long)s2a_libpack_rejects());
-    // 基准状态再来一份新程序（放行、库里有 → 命中）：只有「新程序 放行」加一，现场编不动；同一份已发布的程序再解析一遍，读数不动。
-    {
-        struct rp_shader_req q = {0}; q.prim = 4; const struct rp_prog *p = NULL;
-        rp_shader_reset(); compiler_calls = 0;
-        CHECK(rp_shader_resolve(&q, &p) == 0 && p && compiler_calls == 0, "gate: one more baseline program comes from the library (calls=%d)", compiler_calls);
-        char once[640]; nvk_shader_test_gate_line(once, sizeof once);
-        CHECK(strstr(once, "新程序 放行 12、挡下 19（") && strstr(once, "；现场编 放行 3、挡下 19（"),
-              "gate readout: one more allowed snapshot, no more live compiles\n  %s", once);
-        CHECK(rp_shader_resolve(&q, &p) == 0 && p, "gate: a published program resolves again");
-        char again[640]; nvk_shader_test_gate_line(again, sizeof again);
-        CHECK(!strcmp(again, once), "gate readout does not move for an already published program\n  was: %s\n  now: %s", once, again);
-        char againp[640]; nvk_shader_test_gate_probe_line(againp, sizeof againp);
-        CHECK(!strcmp(againp, wantp), "gate probe readout does not move for allowed programs\n  now: %s", againp);
-    }
-    {   // 快路摘要（input_sig）与程序身份用同一个答案：同一份着色器、同一份库，绑定在「对齐 / 非对齐」之间来回翻，结果必须跟着「程序真用到的槽」走。
-        //   快路若不看这个事实，翻转后会把「按对齐翻的」库件原样交给一个非对齐的绑定（画出来是错的）。
-        struct rp_shader_req q = {0}; q.prim = 4;
-        const struct rp_prog *p0 = NULL, *p1 = NULL, *pa = NULL, *pb = NULL, *pc = NULL, *pd = NULL;
-        rp_shader_reset(); compiler_calls = 0;
-        unsigned long long reads0 = 0, hits0 = 0; ssbo_cost_counts(&reads0, &hits0);
-        CHECK(rp_shader_resolve(&q, &p0) == 0 && p0 && p0->lib_sourced && compiler_calls == 0, "quick path: baseline program comes from the library");
-        gc_ssbo_on();   // 程序没用到的槽翻成非对齐：身份不变，不再编、也不换程序
-        CHECK(rp_shader_resolve(&q, &p1) == 0 && p1 == p0 && compiler_calls == 0,
-              "quick path: an unused slot turning unaligned keeps the same program and compiles nothing (calls=%d)", compiler_calls);
-        gc_ssbo_off();
-        gc_fssb_al_on();   // 片元程序换成用槽 0 的那份，槽 0 对齐：库件
-        CHECK(rp_shader_resolve(&q, &pa) == 0 && pa && pa->lib_sourced && compiler_calls == 0, "quick path: used slot aligned -> library program (calls=%d)", compiler_calls);
-        gc_ssbo_set(1, 0, 0x10001);   // 同一个用到的槽翻成非对齐：不能再给库件（库件假设对齐），要现编
-        CHECK(rp_shader_resolve(&q, &pb) == 0 && pb && pb != pa && !pb->lib_sourced && compiler_calls == 1,
-              "quick path: used slot turning unaligned -> a different, live-compiled program, not the stale library one (calls=%d)", compiler_calls);
-        gc_ssbo_set(1, 0, 0x10000);   // 翻回对齐：回到原来的库件，不再编
-        CHECK(rp_shader_resolve(&q, &pc) == 0 && pc == pa && compiler_calls == 1, "quick path: back to aligned -> the library program again, no new compile (calls=%d)", compiler_calls);
-        gc_ssbo_set(1, 0, 0x10001);   // 再翻非对齐：回到现编那份，不再编
-        CHECK(rp_shader_resolve(&q, &pd) == 0 && pd == pb && compiler_calls == 1, "quick path: unaligned again -> the live-compiled program again, no new compile (calls=%d)", compiler_calls);
-        {   // 判定按阶段键缓存：到这里只读过两个阶段键（片元基准键、片元用存储槽 0 的键）的库，来回翻了好几次绑定都只是查缓存；
-            //   再给同一个阶段键换几种绑定状态（程序身份与快路摘要各不相同），读库次数仍不动
-            unsigned long long reads1 = 0, hits1 = 0; ssbo_cost_counts(&reads1, &hits1);
-            CHECK(reads1 - reads0 == 2, "stage-key cache: two stage keys read the library once each, however often the binding flipped (reads +%llu)", reads1 - reads0);
-            CHECK(hits1 > hits0, "stage-key cache: the flips were answered from the cache (hits +%llu)", hits1 - hits0);
-            const unsigned sets[4][2] = { {0, 1}, {2, 3}, {1, 0}, {4, 5} };   // 片元段哪些槽非对齐：程序用到的槽 0 在不在、别的槽怎么摆，每次都不同
-            for (int s2 = 0; s2 < 4; s2++) {
-                for (unsigned sl = 0; sl < 8; sl++) gc_ssbo_set(1, sl, 0);
-                gc_ssbo_set(1, sets[s2][0], 0x10001); gc_ssbo_set(1, sets[s2][1], 0x10003);
-                const struct rp_prog *px = NULL;
-                CHECK(rp_shader_resolve(&q, &px) == 0 && px, "stage-key cache: binding pattern %d resolves", s2);
-            }
-            for (unsigned sl = 0; sl < 8; sl++) gc_ssbo_set(1, sl, 0);
-            unsigned long long reads2 = 0, hits2 = 0; ssbo_cost_counts(&reads2, &hits2);
-            CHECK(reads2 == reads1, "stage-key cache: four more binding states on the same stage key read the library no more (reads +%llu)", reads2 - reads1);
-            CHECK(hits2 >= hits1 + 4, "stage-key cache: each of the four resolves was answered from the cache (hits +%llu)", hits2 - hits1);
-        }
-        gc_fssb_un_off();
-    }
-    fake_gs_success = 0; fake_gs_result_mode = 0; external_profile[0] = 0; unsetenv("S2A_SHADER_REVISION_ROOT");
-    fixture_used_slots = -1;
-    char path[700];
-    snprintf(path, sizeof path, "%s/lib.idx", dir); unlink(path); snprintf(path, sizeof path, "%s/lib.000.pak", dir); unlink(path);
-    rmdir(dir); snprintf(dir, sizeof dir, "%s/shaders/direct", root); rmdir(dir); snprintf(dir, sizeof dir, "%s/shaders", root); rmdir(dir); rmdir(root);
-    printf("nvk shader pool (libpack state gate readout): %d checks, %d failures\n", checks, failures);
-    return failures ? 1 : 0;
-}
-
 int main(int argc, char **argv) {
-    if (argc == 2 && !strcmp(argv[1], "--lp-gate")) return lp_gate_test();
     if (argc == 2 && !strcmp(argv[1], "--live-compile-default")) return live_compile_thread_test(0);
     if (argc == 2 && !strcmp(argv[1], "--live-compile-thread")) return live_compile_thread_test(1);
     if (argc == 2 && !strcmp(argv[1], "--live-compile-pending")) return live_compile_pending_test(0);
