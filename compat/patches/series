@@ -681,3 +681,4 @@
 20261122-2108-npad-imu-clock-jump.patch
 20261122-2344-fs-fail-mount.patch
 20261123-0435-ldn-session-route-multihomed-auto.patch
+20261123-0537-ldn-auto-platform-discovery.patch
