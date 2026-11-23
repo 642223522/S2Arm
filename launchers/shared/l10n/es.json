@@ -1344,6 +1344,8 @@
   "export.sign.choose.use": "Usar este certificado",
   "export.sign.choose.later": "Ahora no",
   "export.sign.choose.anyway": "Usarlo de todos modos",
+  "errors.diag_code_invalid.title": "Código de diagnóstico no reconocido",
+  "errors.diag_code_invalid.detail": "El texto pegado no es un código de diagnóstico de S2Arm completo.",
   "errors.cert_revoke_confirm.title": "Se revocará uno de tus certificados de desarrollo",
   "errors.cert_revoke_confirm.detail": "Si los certificados de tu cuenta están llenos, crear uno nuevo hace que Apple revoque el primero de la lista. Si se creó en AltStore / SideStore, es el certificado que usan: una vez revocado, AltStore / SideStore y las apps que instalaron dejarán de abrirse.",
   "errors.app_bundle_replace_confirm.title": "Se reemplazará otra app del dispositivo",
@@ -4480,6 +4482,7 @@
   "诊断码已清掉。": "Código de diagnóstico borrado.",
   "诊断码已写进 iPhone：下一局生效一次，玩完请在 S2Arm 里导出诊断包。": "Código de diagnóstico escrito en el iPhone: se aplicará una vez en la próxima sesión. Después, exporta un paquete de diagnóstico en S2Arm.",
   "不支持的诊断码操作。": "Acción de código de diagnóstico no admitida.",
+  "从帖子里完整复制那一整串诊断码（以 S2A-DIAG1- 开头）再粘一次；还不行就在帖子里回复，请维护者重发一条。": "Vuelve a copiar el código de diagnóstico completo de la publicación (empieza por S2A-DIAG1-) y pégalo otra vez. Si sigue sin funcionar, responde en la publicación y pide al mantenedor que envíe uno nuevo.",
   "证书里的私钥读不出来，没能交给 {0} 上的 S2Arm：在设置里重新导入一次证书。": "No se pudo leer la clave privada de tu certificado, así que no se entregó a S2Arm en tu {0}. Vuelve a importar el certificado en Ajustes.",
   "电脑连不上这台 {0} 的开发者通道（通过 Wi-Fi 连着时最常见，不是没解锁）：用数据线把它直接插到这台电脑（别经过扩展坞或集线器），解锁停在主屏幕，再点一次；还不行就把它重启一次，插上后在设备上重新点「信任」。": "Este Mac no puede acceder a la conexión de desarrollador del {0} (es lo más habitual cuando está conectado por Wi-Fi; no tiene que ver con que esté bloqueado): conéctalo directamente a este Mac con un cable (sin base ni concentrador), desbloquéalo hasta la pantalla de inicio y vuelve a intentarlo. Si sigue fallando, reinícialo, vuelve a conectarlo y toca «Confiar» de nuevo en el dispositivo.",
   "在 {0} 上从后台划掉 S2Arm（或回到主屏后等几秒），再点一次还原。": "Cierra S2Arm en el {0} (deslízalo fuera del selector de apps) y vuelve a restaurar."

@@ -10204,6 +10204,10 @@
   "en": "Checking the certificates in your Apple ID"
  },
  {
+  "source": "从帖子里完整复制那一整串诊断码（以 S2A-DIAG1- 开头）再粘一次；还不行就在帖子里回复，请维护者重发一条。",
+  "en": "Copy the whole diagnostic code from the post again (it starts with S2A-DIAG1-) and paste it once more. If it still fails, reply in the post and ask the maintainer to send a new one."
+ },
+ {
   "source": "证书里的私钥读不出来，没能交给 {0} 上的 S2Arm：在设置里重新导入一次证书。",
   "en": "Couldn't read the private key in your certificate, so it wasn't handed to S2Arm on your {0}. Import the certificate again in Settings."
  },
