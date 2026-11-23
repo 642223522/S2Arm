@@ -1,5 +1,5 @@
 #!/bin/bash
-# 门禁覆盖：tools/gate.sh android/tools/gate_step.sh
+# 门禁覆盖：tools/gate.sh android/tools/gate_step.sh android/gate.sh
 # 红步摘要只取失败子项自己的结论行、反证段不算（11-23 维护者：反证输出混进红行摘要，误导两轮定位）。期望手写：
 #   ① 243e72aa 那局的形状（android/gate.sh 聚合钩子：provider 缺导出场景的【红】、save_atomic 变异的 ✗、caps_shape 策略反证的 FAIL、
 #      pipe_pend 负对照的 FAIL 都出自通过的子项；唯一失败子项是 demand 的「stop stays bounded near 500ms」）→ 红步摘要的首行与明细只剩 demand 那条，
@@ -40,4 +40,9 @@ o=$(sum "$T/one.log" "1 3")
 printf '%s\n' '通 ① 越界边报出' '不通 ⑥ 真仓库：未登记 0、豁免过时 0（用时 0.3 秒，只作读数）（分层边：越界边 133 处；未登记 1、豁免过时 0）' '通 ⑦ 路由' 'layer_edge 单测有 1 项不通' > "$T/le.log"
 o=$(sum "$T/le.log" "1 1")
 { [[ "$(head -1 <<< "$o")" == *"不通 ⑥ 真仓库"* ]] && [[ "$o" == 🔴* ]]; } && ok "③ 反证：layer_edge ⑥ 真红重算仍红、首行不变" || no "③ 实得：$o"
+# ④ 真入口接上了：android/gate.sh 跑整套前 s2a_gate_init、收尾 s2a_gate_finish（11-23：原先 exec 直跑整套，子项隔离从没生效）
+g=$(grep -n 's2a_gate_init\|s2a_gate_finish\|bash android/test.sh' "$H/android/gate.sh")
+{ grep -q 's2a_gate_init' <<< "$g" && grep -q "trap 's2a_gate_finish" <<< "$g" && ! grep -q '^exec bash android/test.sh' "$H/android/gate.sh" && \
+  [ "$(grep -n '^s2a_gate_init' "$H/android/gate.sh" | cut -d: -f1)" -lt "$(grep -n '^bash android/test.sh' "$H/android/gate.sh" | cut -d: -f1)" ]; } \
+  && ok "④ android/gate.sh 跑整套前初始化子项隔离、收尾输出失败子项摘要" || no "④ android/gate.sh 没接子项隔离（${g}）"
 [ $bad = 0 ] && echo "red_summary 单测全过" || echo "red_summary 单测有不通"; exit $bad
