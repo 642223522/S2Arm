@@ -11094,5 +11094,29 @@
  {
   "source": "所有游戏的默认只有玩家 1 的一份。",
   "en": "The default for all games applies to player 1 only."
+ },
+ {
+  "source": "诊断码不对：请从帖子里完整复制那一整串（以 S2A-DIAG1- 开头），再粘一次。",
+  "en": "That diagnostic code isn't right: copy the whole string from the post (it starts with S2A-DIAG1-) and paste it again."
+ },
+ {
+  "source": "已收下诊断码（游戏 {0}）：下次把这款推到 iPhone（或在这台 Mac 上开它）时生效一局，玩完自动失效。",
+  "en": "Diagnostic code saved (game {0}): it takes effect for one session the next time you push this game to your iPhone (or open it on this Mac), then expires."
+ },
+ {
+  "source": "已收下诊断码：下次推到 iPhone（或在这台 Mac 上开）的那一款生效一局，玩完自动失效。",
+  "en": "Diagnostic code saved: it takes effect for one session in the next game you push to your iPhone (or open on this Mac), then expires."
+ },
+ {
+  "source": "诊断码已清掉。",
+  "en": "Diagnostic code cleared."
+ },
+ {
+  "source": "诊断码已写进 iPhone：下一局生效一次，玩完请在 S2Arm 里导出诊断包。",
+  "en": "Diagnostic code written to your iPhone: it takes effect once in the next session. Afterwards, export a diagnostic package in S2Arm."
+ },
+ {
+  "source": "不支持的诊断码操作。",
+  "en": "Unsupported diagnostic code action."
  }
 ]

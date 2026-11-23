@@ -280,6 +280,11 @@ public final class InstallService {
         return try await client.perform("layoutSet", extra: extra).result["freeLimit"] as? String ?? ""
     }
 
+    /// 诊断码（#1449，作业 diagCode set）：收下帖子里给的码，下次推那款 / 在这台 Mac 上开它时生效一局 → 作业层那句说明（原句，界面再翻）
+    public func diagCodeSet(_ code: String) async throws -> String {
+        try await client.perform("diagCode", extra: ["action": "set", "code": code]).result["message"] as? String ?? ""
+    }
+
     /// 签名方式三选一（作业 signModeSet：appleId / devCert / external）→ 生效后的选择
     public func signModeSet(_ mode: String) async throws -> String {
         try await client.perform("signModeSet", extra: ["mode": mode]).result["signMode"] as? String ?? mode

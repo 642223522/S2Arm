@@ -767,6 +767,25 @@ def push_cheats(c, device, bid, gid, docs, mkdir=None):
         print(f"[装机] 金手指文件 {len(files) - bad}/{len(files)} 份拷进手机{'（有拷不进的，游戏内菜单里会缺几份）' if bad else ''}", file=sys.stderr, flush=True)  # 非玩家句
 
 
+def push_diag_code(c, ph, gid):
+    """诊断码（#1449，pack/jobs/diagcode.py）：玩家粘过、对得上这款的那条写进机上本款文档根 diag_once.txt，宿主下一局读到即作废（envfile.c）。
+    写进去了就清掉电脑上的待用码；写不进只记黄、码留着下次推再写，不挡装机"""
+    import diagcode
+    env = diagcode.pending(c, gid)
+    if not env:
+        return
+    try:
+        with tempfile.TemporaryDirectory(dir=c.private) as w:
+            f = Path(w) / diagcode.ONCE
+            f.write_text(diagcode.once_text(env), encoding="utf-8")
+            ph.client(w).put(str(f), f"{game_docs(gid)}/{diagcode.ONCE}")
+    except Exception as e:
+        c.diagnostic(f"诊断码没写进 iPhone，下次「推到 iPhone」会再写：{str(e)[:200]}", code="resource_transfer_failed", severity="warning")  # 非玩家句
+        return
+    diagcode.used(c, f"写进 {ph.key} 的 {gid}")  # 非玩家句
+    c.emit("message", diagcode.PUSHED)
+
+
 def push_mods(c, ph, gid, had):
     """资源替换类 mod（11-15）：这款游戏文件夹 mods/<名字>/romfs 推进机上本款文档根 mods/（服务层 RomFsMods.cs 起局叠上）。
     had = 上次推过的 {名字: 内容记号}（设备记录 games.<款>.mods）：记号变了的整份重推、电脑上删了的机上也删；玩家在手机上自己放的别的 mod 不碰。
@@ -3474,6 +3493,7 @@ def push_game(c, gid, ph, steps=True):
         files, size = ph.push(gid, pack)
         pushed = pack_id(pack)
         mods = push_mods(c, ph, gid, mods)
+        push_diag_code(c, ph, gid)
     finally:
         rec = layout.load_device(c, ph.key)
         layout.save_device(c, ph.key, dict(rec, games=dict(rec.get("games") or {}, **{gid: dict(program=progs[gid], pack=pushed, **({"mods": mods} if mods else {}))}),
@@ -3691,6 +3711,7 @@ def put_app(c, gid, ph, steps=True):
         pushed_files, size = ap.push(g, pack)
         pushed = pack_id(pack)
         mods = push_mods(c, ap, g, mods)
+        push_diag_code(c, ap, g)
     finally:
         rec = layout.load_device(c, ph.key)
         apps = dict(rec.get("apps") or {})
