@@ -41,9 +41,6 @@
 #include <CoreMedia/CoreMedia.h>
 #include <CoreVideo/CoreVideo.h>
 #include <TargetConditionals.h>
-#if TARGET_OS_IPHONE
-#include <os/proc.h>   // os_proc_available_memory：先解队列按剩余内存定格数
-#endif
 
 // services/vpx 的垫片（libs2a_vpx.a：宿主与 iOS App 链直连层时一起链）。NVN 单测链 libnvn.a 不链服务层编解码库：弱引用，按登记放行
 // 弱链接[nvntest]：s2a_vp9_open（services/vpx 提供；宿主 / iOS 照常链上，NVN 单测不链，runtime/build.mk 按这行放行未定义）
@@ -64,6 +61,9 @@ void s2a_vp8_close(void *h) __attribute__((weak));
 // 弱链接[nvntest]：s2a_vpx_linked（真 libvpx 回 1 / 空垫片 services/vpx/stub.c 回 0；宿主与 iOS 链二者之一，
 //   = 0 时 VP9 默认走系统（见 vp9_system_enabled）；NVN 单测两样都不链：弱引用 NULL，调用前判）
 int s2a_vpx_linked(void) __attribute__((weak));
+// 弱链接[nvntest]：s2a_host_mem_avail（宿主还能给多少内存，平台层实现 runtime/src/hostmem_apple.c；iPhone 是离系统给本 App 的上限还剩多少。
+//   先解队列按它定格数；NVN 单测不链原生核：弱引用 NULL，调用前判）
+uint64_t s2a_host_mem_avail(void) __attribute__((weak));
 // services/dav1d 的垫片（libs2a_dav1d.a：同上一起链）
 void *s2a_av1_open(int threads) __attribute__((weak));
 int s2a_av1_decode(void *h, const uint8_t *data, uint32_t len, uint8_t **planes, int32_t *strides, int32_t *info) __attribute__((weak));
@@ -723,14 +723,14 @@ static void wr_pb(const cv_img *im, void *a) {
 static void wr_ahead(const cv_img *im, void *a) { const struct cv_ahead *x = a; memcpy(im->host, x->p, x->size < im->size ? x->size : im->size); }
 // 已登记缓冲的图像布局（同一个池，布局一样）；0 = 还没有登记的
 static int cv_tpl_locked(cvdec *d, cv_img *out) { for (int i = 0; i < CV_BUFS; i++) if (d->buf[i].reg && cv_img_get(d->buf[i].img, out)) return 1; return 0; }
-// 先解队列格数：上限 CV_AHEAD_BYTES；iOS 再按当时剩余内存压到 os_proc_available_memory() / 8（读 0 就只开 1 格），
+// 先解队列格数：上限 CV_AHEAD_BYTES；iOS 再按当时剩余内存（平台层 s2a_host_mem_avail）压到 / 8（读 0 就只开 1 格），
 //   装不下就少开几格，最少 1 格、最多 CV_AHEAD_MAX。每格内存到解码器销毁才放，整段影片都占着。DM_NVN_AVAIL_MB 可代替读数（测试 / 在 Mac 上看读数）
 static int cv_ahead_slots(cvdec *d, size_t frame) {
     uint64_t lim = CV_AHEAD_BYTES, avail = 0; int have_avail = 0;
     const char *e = getenv("DM_NVN_AVAIL_MB");
     if (e && *e && atoll(e) >= 0) { avail = (uint64_t)atoll(e) << 20; have_avail = 1; }
 #if TARGET_OS_IPHONE
-    else { avail = os_proc_available_memory(); have_avail = 1; }
+    else if (s2a_host_mem_avail) { avail = s2a_host_mem_avail(); have_avail = 1; }
 #endif
     if (have_avail && avail / 8 < lim) lim = avail / 8;
     uint64_t c = frame ? lim / frame : 1;
