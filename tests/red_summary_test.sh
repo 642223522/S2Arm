@@ -44,5 +44,5 @@ o=$(sum "$T/le.log" "1 1")
 g=$(grep -n 's2a_gate_init\|s2a_gate_finish\|bash android/test.sh' "$H/android/gate.sh")
 { grep -q 's2a_gate_init' <<< "$g" && grep -q "trap 's2a_gate_finish" <<< "$g" && ! grep -q '^exec bash android/test.sh' "$H/android/gate.sh" && \
   [ "$(grep -n '^s2a_gate_init' "$H/android/gate.sh" | cut -d: -f1)" -lt "$(grep -n '^bash android/test.sh' "$H/android/gate.sh" | cut -d: -f1)" ]; } \
-  && ok "④ android/gate.sh 跑整套前初始化子项隔离、收尾输出失败子项摘要" || no "④ android/gate.sh 没接子项隔离（$g）"
+  && ok "④ android/gate.sh 跑整套前初始化子项隔离、收尾输出失败子项摘要" || no "④ android/gate.sh 没接子项隔离（${g}）"
 [ $bad = 0 ] && echo "red_summary 单测全过" || echo "red_summary 单测有不通"; exit $bad
