@@ -250,6 +250,18 @@ int mtl_gpu_err_fatal(NSError *e) {
     if (fatal & 1) return 1;            // 有本进程的 Hang / Timeout / PageFault 原因名
     return fatal && !victim;            // 只有 Metal 3 错误码：被牵连 / 被拒收的那几种不算
 }
+// 这条错误是不是只有「GPU 内存用满」。链上有 IOGPU 原因名时以原因名为准（外层错误码可能是别的，如 Timeout），没有原因名才看错误码；
+//   带挂死 / 超时 / 缺页、被牵连 / 被拒收的都不算。11-23 iPad 原文：MTLCommandBufferErrorDomain Code=8 "Insufficient Memory (…kIOGPUCommandBufferCallbackErrorOutOfMemory)"，里层 IOGPUCommandQueueErrorDomain Code=8
+static void gpu_err_kinds(NSError *e, int depth, int *name_oom, int *name_other, int *code_oom, int *code_other) {
+    if (!e || depth > 6) return;
+    NSString *d = [NSString stringWithFormat:@"%@ %@", e.localizedDescription ?: @"", e.userInfo[NSLocalizedDescriptionKey] ?: @""];
+    if ([d containsString:@"CallbackErrorOutOfMemory"]) *name_oom = 1;
+    if ([d containsString:@"CallbackErrorHang"] || [d containsString:@"CallbackErrorTimeout"] || [d containsString:@"PageFault"] || [d containsString:@"InnocentVictim"] || [d containsString:@"SubmissionsIgnored"]) *name_other = 1;
+    if ([e.domain isEqualToString:MTLCommandBufferErrorDomain]) { if (e.code == MTLCommandBufferErrorOutOfMemory) *code_oom = 1; else if (e.code == MTLCommandBufferErrorTimeout || e.code == MTLCommandBufferErrorPageFault) *code_other = 1; }
+    id u = e.userInfo[NSUnderlyingErrorKey]; if ([u isKindOfClass:NSError.class]) gpu_err_kinds(u, depth + 1, name_oom, name_other, code_oom, code_other);
+    id m = e.userInfo[@"NSMultipleUnderlyingErrorsKey"]; if ([m isKindOfClass:NSArray.class]) for (id x in (NSArray *)m) if ([x isKindOfClass:NSError.class]) gpu_err_kinds(x, depth + 1, name_oom, name_other, code_oom, code_other);
+}
+static int gpu_err_only_oom(NSError *e) { int no = 0, nx = 0, co = 0, cx = 0; gpu_err_kinds(e, 0, &no, &nx, &co, &cx); return no || nx ? no && !nx : co && !cx; }
 static void res_drop_all(void);
 // 安全停：唯一置位处。why = 第一条错误原文
 void mtl_gpu_halt(const char *why) {
@@ -19476,6 +19488,17 @@ int mtl_grab_inflight(void) { return atomic_load(&g_grab_busy); }
 static uint64_t g_grab_tk;   // under g_pq_mu: ticket of the present whose texture is still being copied (0 = none); nvn_be_present_wait waits on it
 static uint64_t g_ext_cur;   // present thread: the external producer value ext_wait was given for the present being made (0 = none)
 static id<MTLSharedEvent> g_ext_ev;
+// 测试开关 DM_TEST_SHOT_OOM=1：下一张截图的命令缓冲当作报了 GPU 内存用满。单测直接写 g_test_shot_err（1 = 内存用满、2 = 挂死），用一次就清
+static _Atomic int g_test_shot_err = -1;
+static NSError *grab_test_err(NSError *e) {
+    int v = atomic_load(&g_test_shot_err);
+    if (v < 0) { int want = -1; const char *t = getenv("DM_TEST_SHOT_OOM"); v = t && atoi(t) ? 1 : 0; atomic_compare_exchange_strong(&g_test_shot_err, &want, v); }
+    if (!v) return e;
+    v = atomic_exchange(&g_test_shot_err, 0);
+    if (v == 1) return [NSError errorWithDomain:MTLCommandBufferErrorDomain code:MTLCommandBufferErrorOutOfMemory userInfo:@{NSLocalizedDescriptionKey: @"Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory)"}];
+    if (v == 2) return [NSError errorWithDomain:MTLCommandBufferErrorDomain code:MTLCommandBufferErrorTimeout userInfo:@{NSLocalizedDescriptionKey: @"Caused GPU Hang Error (00000003:kIOGPUCommandBufferCallbackErrorHang)"}];
+    return e;
+}
 static void grab_present(id<MTLTexture> src, const int crop[4], CGSize sz, uint64_t ticket) {
     if (atomic_load(&g_grab_busy)) return;
     pthread_mutex_lock(&g_shotq_mu); void (^cb)(const uint8_t *, size_t, size_t, size_t) = g_grab_cb; g_grab_cb = nil; pthread_mutex_unlock(&g_shotq_mu);
@@ -19484,7 +19507,7 @@ static void grab_present(id<MTLTexture> src, const int crop[4], CGSize sz, uint6
     // S2Arm: the offscreen texture and readback buffer are kept for the next grab of the same size. The autoplayer asks about 20 times a second; a fresh full-window texture and buffer
     //   each time showed up as 707 of 1844 samples of the main thread in IOKit (Breath of the Wild, 10 s Time Profiler, botw_1025095845_2). Only the present path calls this (one thread)
     static id<MTLTexture> out; static id<MTLBuffer> buf;
-    if (!out || out.width != w || out.height != h) {
+    if (!out || !buf || out.width != w || out.height != h) {   // !buf：显存不足放掉后，上次只建成离屏图时也要重建
         MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
         d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead; d.storageMode = MTLStorageModePrivate;
         out = w && h ? [g_dev newTextureWithDescriptor:d] : nil; buf = out ? [g_dev newBufferWithLength:row * h options:MTLResourceStorageModeShared] : nil; }
@@ -19503,7 +19526,11 @@ static void grab_present(id<MTLTexture> src, const int crop[4], CGSize sz, uint6
     [cb2 addCompletedHandler:^(id<MTLCommandBuffer> c) {
         pthread_mutex_lock(&g_pq_mu); g_grab_tk = 0; pthread_cond_broadcast(&g_pq_cv); pthread_mutex_unlock(&g_pq_mu);   // the copy is done: src may be handed back (nvn_be_present_wait)
         // S2Arm: the bytes as they are (BGRA8, sRGB), valid during the call; the caller copies them once. buf stays ours until the callback returns
-        if (c.error) { if (!mtl_gpu_cb_error(c.error, "screenshot", 0)) MLOG("【红】 full-window screenshot: copy failed: %s", c.error.description.UTF8String); cb(NULL, 0, 0, 0); }
+        NSError *ce = grab_test_err(c.error);
+        // 截图是额外的一笔（一张离屏图 + 一块读回缓冲），它撞上 GPU 内存上限只丢这张图，不停整局：11-23 iPad 显存 98% 时自动快照取图报内存用满，整局安全停、快照也没存成。
+        //   游戏自己的命令缓冲再报内存用满，照旧当场安全停（#327）。这两个对象留着也是占显存：放掉，下一张再建（g_grab_busy 还是 1，出图线程碰不到）
+        if (ce && !mtl_gpu_halted() && gpu_err_only_oom(ce)) { static int said; if (said++ < 8) MLOG("【黄】 full-window screenshot: out of GPU memory, this picture is dropped and the game goes on"); out = nil; buf = nil; cb(NULL, 0, 0, 0); }
+        else if (ce) { if (!mtl_gpu_cb_error(ce, "screenshot", 0)) MLOG("【红】 full-window screenshot: copy failed: %s", ce.description.UTF8String); cb(NULL, 0, 0, 0); }
         else { g_fj_tok_now = tok; cb((const uint8_t *)bb.contents, w, h, row); g_fj_tok_now = 0; }
         atomic_store(&g_grab_busy, 0);
     }];
