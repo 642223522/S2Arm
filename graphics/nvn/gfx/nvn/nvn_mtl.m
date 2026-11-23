@@ -3267,11 +3267,13 @@ int nvn_be_wait(uint64_t fence, uint64_t timeout_ns) {
 void *nvn_be_fence_event(void) { mtl_init(); return (__bridge void *)g_ev; }   // NVN 提交的共享事件：值 = 已完成的栅栏号（提交时 signal）
 // NVN 队列在 GPU 上等别的队列的共享事件到 v：此后提交到本层队列的全部工作（主命令缓冲、上传批）都排在它后面。先等录制线程把已录的提交交出去，再下等待：
 //   Metal 4 是队列级 waitForEvent；Metal 3 是只含一条 encodeWaitForEvent 的命令缓冲（同一队列后续命令缓冲都被它挡住，11-01 本机实测）。此前还没提交的工作也会一起等（只多等不少等）
-static void *g_qw_ev; static uint64_t g_qw_v, g_qw_n, g_qw_frame;   // the last wait put on the queue (mtl_wait_state_dump: a queue that stops moving is waiting for it)
+// the last wait put on the queue (mtl_wait_state_dump: a queue that stops moving is waiting for it). 持有引用（11-23 D-8MVA）：原先是不持有的 void*，事件释放后那块内存被别的对象复用，
+//   停帧转储读 signaledValue 抛「unrecognized selector」把 App 打崩（这一局本来 16 秒后自己恢复）。回放线程写、看门狗线程读，经 g_qw_mu
+static id<MTLSharedEvent> g_qw_ev; static os_unfair_lock g_qw_mu = OS_UNFAIR_LOCK_INIT; static uint64_t g_qw_v, g_qw_n, g_qw_frame;
 static void queue_wait_event(void *ev, uint64_t v) {   // the wait itself; the replay calls it while encoding a submission (OP_WAIT_SYNC), whose command buffer commits after it
     id<MTLSharedEvent> e = (__bridge id<MTLSharedEvent>)ev;
     if (e.signaledValue >= v) return;
-    g_qw_ev = ev; g_qw_v = v; g_qw_n++; g_qw_frame = atomic_load(&g_cur_frame);
+    os_unfair_lock_lock(&g_qw_mu); g_qw_ev = e; g_qw_v = v; g_qw_n++; g_qw_frame = atomic_load(&g_cur_frame); os_unfair_lock_unlock(&g_qw_mu);
     if (mtl_gpu_halted()) return;   // GPU 安全停后不再往队列放东西
     if (g_m3) { id<MTLCommandBuffer> cb = m3_cb(); [cb encodeWaitForEvent:e value:v]; [cb commit]; }
     else [g_q4 waitForEvent:e value:v];
@@ -21117,10 +21119,11 @@ void mtl_wait_state_dump(void) {
           MLOG("wait points: upload batch seq %u NOT completed: committed after segment %llu (frame %llu), %d copies, %d GPU block decodes, %d textures", g_upb[i].seq, (unsigned long long)g_upb[i].after_seg,
                (unsigned long long)g_upb[i].frame, g_upb[i].blits, g_upb[i].decs, g_upb[i].texs);
       MLOG("wait points: segments handed %llu / completed %llu; frame now %llu, pass %llu, draws %llu", (unsigned long long)sent, (unsigned long long)done, (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)g_stat_pass, (unsigned long long)g_stat_draw); }
-    if (g_qw_ev) { id<MTLSharedEvent> e = (__bridge id<MTLSharedEvent>)g_qw_ev;
-        MLOG("wait points: queue waits on another queue's event %llu so far; the last (frame %llu) waits for event %p to reach %llu, it is at %llu now%s%s", (unsigned long long)g_qw_n, (unsigned long long)g_qw_frame,
-             g_qw_ev, (unsigned long long)g_qw_v, (unsigned long long)e.signaledValue, e.signaledValue < g_qw_v ? " -- NOT REACHED: the queue is held behind it" : "",
-             g_qw_ev == (__bridge void *)g_ev ? " (this layer's own fence event)" : g_qw_ev == (__bridge void *)g_ext_ev ? " (the external producer's event)" : ""); }
+    { os_unfair_lock_lock(&g_qw_mu); id<MTLSharedEvent> e = g_qw_ev; uint64_t qv = g_qw_v, qn = g_qw_n, qf = g_qw_frame; os_unfair_lock_unlock(&g_qw_mu);   // 取一份强引用再读（转储期间被换掉也不悬空）
+      if (e) { uint64_t at = e.signaledValue;
+        MLOG("wait points: queue waits on another queue's event %llu so far; the last (frame %llu) waits for event %p to reach %llu, it is at %llu now%s%s", (unsigned long long)qn, (unsigned long long)qf,
+             (__bridge void *)e, (unsigned long long)qv, (unsigned long long)at, at < qv ? " -- NOT REACHED: the queue is held behind it" : "",
+             e == g_ev ? " (this layer's own fence event)" : e == g_ext_ev ? " (the external producer's event)" : ""); } }
 }
 void nvn_be_alloc_stats(uint64_t *waits, uint64_t *grown, int *n) { *waits = g_alloc_waits; *grown = g_alloc_grown; *n = g_alloc_n; }   // Main submit allocator pool: how many times it waited, how many times it grew, how many exist now
 #include "nvn_session.inc"
