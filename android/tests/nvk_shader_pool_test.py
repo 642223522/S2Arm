@@ -229,7 +229,7 @@ def main():
             ('probe-miss-counted-as-has', 'sizeof w) != 0) has = 0;', 'sizeof w) != 0) (void)0;', 'gate probe line'),
             ('probe-count-dropped', '    atomic_fetch_add_explicit(&g_lp_probe_n[s->lp_gate], 1, memory_order_relaxed);\n', '', 'gate probe line'),
             # 存储缓冲「非对齐」只看程序真用到的槽（gfx_ssbo_align）：用到的槽集合、逐阶段、逐槽、说不准退回旧口径、开关、快路摘要、读数，各改坏一处，--lp-gate 必红。
-            #   「没用到」也放行 / 用到了也放行 / 说不准当没用到 / 阶段并在一起 / 槽并在一起 / 槽号错位 / 取错阶段 / 开关不管用：库件被错放或错挡，对应用例红；
+            #   「没用到」也放行 / 用到了也放行 / 说不准当没用到 / 阶段并在一起 / 槽并在一起 / 槽号错位 / 取错阶段 / 开关不管用 / 缺省改回开：库件被错放或错挡，对应用例红；
             #   快路摘要不带这一位：槽翻成非对齐后还拿到按对齐翻的库件（「快路」用例红）；三个读数各少记一类、或每笔绘制都记：读数那一行红。
             ('ssbo-any-known-stage-blocks',
              '            else if (used & um[st]) used_unaligned = 1;', '            else used_unaligned = 1;',
@@ -258,6 +258,9 @@ def main():
             ('ssbo-switch-ignored',
              '    if (un && ssbo_used_slots_on()) {', '    if (un && (ssbo_used_slots_on() || 1)) {',
              "gate case 'unaligned storage, switch off' #0: library not used"),
+            ('ssbo-default-on',   # 属性没设时读生产缺省（关 = 旧口径，玩家包就是这样）：缺省改回开，「属性没设」那一行放行、命中库而红
+             'nvn_plat_flag("nvk_lp_used_slots", 0) != 0', 'nvn_plat_flag("nvk_lp_used_slots", 1) != 0',
+             "gate case 'unaligned storage, property not set (production default)' #0: library not used"),
             ('ssbo-quick-path-blind',
              'MIX(any); MIX(un); MIX(pc->storage_buffer_offset_alignment);', 'MIX(any); MIX(pc->storage_buffer_offset_alignment);',
              'quick path: used slot turning unaligned'),

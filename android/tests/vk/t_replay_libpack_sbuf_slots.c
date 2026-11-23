@@ -10,7 +10,9 @@
 //   · 用到的槽（片元槽 9 / 槽 2）非对齐：不许给库件（库件假设对齐）：不命中、现编被叫到、这一笔没画。
 //   · 顶点段的同号槽（2 / 9）非对齐、顶点程序不用存储：照样命中库、像素不变（两段各算各的，不串号）。
 #define main backend_fixture_main
+#define nvn_plat_flag backend_fixture_plat_flag   // 后端夹具的开关替身改名，下面包一层（见 nvn_plat_flag）
 #include "t_backend_vk.c"
+#undef nvn_plat_flag
 #undef main
 #include "rp_shader.h"
 #include "rp_state.h"
@@ -27,6 +29,13 @@
 #include "direct/libpack_vk.h"
 #include <sys/stat.h>
 
+// 调试开关 nvk_lp_used_slots 缺省关（玩家包走旧口径：任何一个非对齐绑定都挡库）。本夹具对账的是新口径（只看程序真用到的槽），
+// 所以像调试包设了 debug.s2a.nvk_lp_used_slots=1 那样读成 1；其余开关照后端夹具原样。「属性没设走旧口径」由 nvk_shader_pool_test.c --lp-gate 管。
+int nvn_plat_flag(const char *name, int dflt);
+int nvn_plat_flag(const char *name, int dflt) {
+    if (!strcmp(name, "nvk_lp_used_slots")) return 1;
+    return backend_fixture_plat_flag(name, dflt);
+}
 static int compile_calls;
 static const char *case_dir;
 static prog_t guest_program; static uint8_t guest_keys[6][8], guest_stages[6];

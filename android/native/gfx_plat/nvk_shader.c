@@ -1480,7 +1480,8 @@ static void lp_gate_probe(const struct work_snap *s) {
 //   几何输入图元没有那一份 / 这一段的 SPIR-V 带 PhysicalStorageBufferAddresses 能力（按地址直接访问内存，不经槽）/ 库被关掉）就退回旧口径——不猜。
 //   只有真有非对齐绑定的阶段才查：这个阶段的绑定全对齐，它用哪些槽都不受影响。
 //   用到的槽是阶段键的函数（同键同槽集），哪些槽对齐则进了程序身份的事实位，所以「身份」仍然唯一决定「这一笔该用现编码还是库件」。
-//   只在旧口径说「有非对齐」时才查（其余情形答案本来就是「没有」）；开关 debug.s2a.nvk_lp_used_slots=0 退回旧口径（对照用）。
+//   只在旧口径说「有非对齐」时才查（其余情形答案本来就是「没有」）。开关 debug.s2a.nvk_lp_used_slots 缺省关（= 旧口径，玩家包就是这样）；
+//   调试包设 1 才走新口径。缺省开要等 Mali 9000 / 9400 整局零致命读数到齐（#2145 条件 (c)）。
 // 提交线程独占（同 g_comb_sig 的约定）：缓存不加锁；读库那一下在 g_lp_mu 下（和工作线程共用容器句柄）。
 //   判定结果按阶段键（键 + 阶段号 + 几何输入图元）缓存，开放寻址、只增不换：同一个阶段键一局里只读一次库，
 //   后面不管来多少种新的绑定 / 状态组合，都只是查表。读库的次数、命中缓存的次数、读库的耗时都进读数行（lp_ssbo_text）。
@@ -1538,9 +1539,10 @@ static int sbu_stage_slots(const uint8_t key[8], unsigned nvn, uint32_t prim, ui
     *mask = m;
     return st;
 }
-static int g_sbu_on = -1;   // 开关 debug.s2a.nvk_lp_used_slots（缺省开，=0 退回旧口径，A/B 对照用）：每局第一次用到时读一次（rp_shader_reset 清回 -1），不每笔绘制都读系统属性
+static int g_sbu_on = -1;   // 开关 debug.s2a.nvk_lp_used_slots（缺省关 = 旧口径；调试包设 1 才走新口径，A/B 对照与 Mali 整局读数用）：每局第一次用到时读一次（rp_shader_reset 清回 -1），不每笔绘制都读系统属性
 static int ssbo_used_slots_on(void) {
-    if (g_sbu_on < 0) g_sbu_on = nvn_plat_flag("nvk_lp_used_slots", 1) != 0;
+    // 缺省关（#2145 / #2153 复审定的合入口径）：玩家包的开关一律取缺省（plat_nvn.c），所以玩家包走旧口径；等 Mali 9000 / 9400 整局零致命读数到齐（#2145 条件 (c)）再改缺省。
+    if (g_sbu_on < 0) g_sbu_on = nvn_plat_flag("nvk_lp_used_slots", 0) != 0;
     return g_sbu_on;
 }
 // any = 阶段 0..4 里有没有绑过存储缓冲；un = 这个程序的编译结果会不会受存储缓冲非对齐影响（口径见上）。
