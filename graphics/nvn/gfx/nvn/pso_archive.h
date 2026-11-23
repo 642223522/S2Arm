@@ -44,35 +44,26 @@ static int par_may_write(void) {
 }
 // #756 进阶（11-16）：每款各自的 .writing 标记要每款先崩一次才学会，且用户划掉 / 内存杀也会留下它（玩家诊断 27.x 上 3214 局里 143 局），不能直接全机共享。另加两道：
 //   ① 版本先验：iOS 18.0–18.3.x 不写。依据玩家诊断：崩溃线程栈在归档写入器里的 7 局全在 18.1.1 / 18.3.2，18.2 / 18.3.2 有 18 局「上次死在写里」、0 局写成；18.4、18.7.x 共 13 局写成、0 崩
-//   ② 全机学习：只在崩溃线程正在写归档（g_par_in_write）时由崩溃处理器（runtime/src/crash.c）记一行系统版本串进全机标记（Application Support/S2Arm/pso_archive_dead.txt）；
-//      起局读到本系统版本串就不写。版本串含构建号，系统升级后自动不再命中、重新判
-static __thread int g_par_in_write;
-static char g_par_dead_path[1024], g_par_os_key[192];
+//   ② 原有的「全机学习」（崩溃线程正在写归档时由崩溃处理器记系统版本串进 Application Support/S2Arm/pso_archive_dead.txt，起局读到就整机不写）去掉（11-23 维护者：要根修）：
+//      唯一留下崩溃现场的那次（iPhone18,2 iOS 26.0、0.6.7，写进 1852 条后崩）对上符号 = serializeToURL:error: 失败返回后，ARC 立刻 retain 它写回的 NSError
+//      时总线错——Metal 在序列化失败路径上交回的 error 指针是失效的（返回那一刻就坏，不是我们自动释放池排空后才读）。根修：写归档的几个调用不取 error（见 par_write_batch），
+//      失败只看返回值；全机标记不再记、不再读，老版本留下的标记起局删掉（这台机从此照常写）。全机标记涉及 macOS 15.1 / 15.3、iOS 26.0 / 27.2 / 27.2.1 共 6 个构建，不是某一版独有
+static char g_par_os_key[192];
 static int par_os_gate(int ios, long major, long minor) { return ios && major == 18 && minor < 4; }
-void s2a_pso_archive_crash_note(void);
-void s2a_pso_archive_crash_note(void) {   // 崩溃处理器在崩溃线程上调（信号处理里：只用 open / write / close）
-    if (!g_par_in_write || !g_par_dead_path[0] || !g_par_os_key[0]) return;
-    int fd = open(g_par_dead_path, O_WRONLY | O_CREAT | O_APPEND, 0644); if (fd < 0) return;
-    (void)!write(fd, g_par_os_key, strlen(g_par_os_key)); (void)!write(fd, "\n", 1); close(fd);
-}
-static int par_dead_global_has(void) {   // 全机标记里有本系统版本串
-    if (!g_par_dead_path[0] || !g_par_os_key[0]) return 0;
-    NSString *s = [NSString stringWithContentsOfFile:@(g_par_dead_path) encoding:NSUTF8StringEncoding error:nil];
-    for (NSString *ln in [s componentsSeparatedByString:@"\n"]) if ([ln isEqualToString:@(g_par_os_key)]) return 1;
-    return 0;
+static int par_dead_cleanup(NSString *as_dir) {   // 老版本的全机标记删掉；删了回 1（单测直接调，传临时目录）
+    NSString *dead = [[as_dir stringByAppendingPathComponent:@"S2Arm"] stringByAppendingPathComponent:@"pso_archive_dead.txt"];
+    if (unlink(dead.fileSystemRepresentation) != 0) return 0;
+    MLOG("【黄】 pipeline archive: removed the device-wide \"crashed inside the archive writer\" marker from an older build: the crash was reading the error Metal returns from a failed serialize, which this build no longer reads; writing again (#756)");
+    return 1;
 }
 static void par_global_init(void) {
     NSString *osk = NSProcessInfo.processInfo.operatingSystemVersionString ?: @""; snprintf(g_par_os_key, sizeof g_par_os_key, "%s", osk.UTF8String);
     NSURL *as = [NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject;
-    if (!as) return;
-    NSString *dir = [as.path stringByAppendingPathComponent:@"S2Arm"];
-    [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
-    snprintf(g_par_dead_path, sizeof g_par_dead_path, "%s", [dir stringByAppendingPathComponent:@"pso_archive_dead.txt"].fileSystemRepresentation);
+    if (as) par_dead_cleanup(as.path);
 }
-// ①② 之一命中返回 1（并打一行原因）。单测直接调
+// ① 命中返回 1（并打一行原因）。单测直接调
 static int par_gate_or_learned(int ios, long major, long minor) {
     if (par_os_gate(ios, major, minor)) { MLOG("【黄】 pipeline archive: iOS %ld.%ld: Metal's archive writer crashes on iOS 18.0–18.3 (#756, player diagnoses): reading it as usual, writing nothing", major, minor); return 1; }
-    if (par_dead_global_has()) { MLOG("【黄】 pipeline archive: a game on this device crashed inside the archive writer on this OS version (%s, #756): reading it as usual, writing nothing", g_par_os_key); return 1; }
     return 0;
 }
 static void par_check_dead_write(void) {   // 起局（打开归档目录时）调：版本先验或崩溃处理器记过真崩 → 这个系统版本不再写；老版本的 .writing 标记删掉
@@ -86,6 +77,7 @@ static void par_check_dead_write(void) {   // 起局（打开归档目录时）�
 }
 static const char *g_par_harvest;                                        // S2A_PSO_HARVEST: the folder the harvest writes into (nvn_pso_harvest); writes at once instead of noting
 static _Atomic uint64_t g_par_hits, g_par_misses, g_par_written, g_par_write_failed, g_par_stale, g_par_ga_removed;
+static _Atomic uint64_t g_par_ser_failed;   // 序列化没成的批（Metal 返回失败；它的 error 不读，见 par_write_batch）
 static __thread int par_write_in_place;                                  // the prewarm's threads: what they compile is noted for writing (par_flush_bg)
 static NSMutableArray *g_par_todo;                                       // @[key, descriptor] noted by the prewarm, written beside it (par_writer)
 
@@ -268,14 +260,16 @@ static void par_write(NSString *key, id desc) {
     NSSet<NSString *> *before = par_ga_list(0);
     @autoreleasepool {
         id<MTLBinaryArchive> a = [g_dev newBinaryArchiveWithDescriptor:[MTLBinaryArchiveDescriptor new] error:&e];
-        ok = a && ([desc isKindOfClass:MTLRenderPipelineDescriptor.class] ? [a addRenderPipelineFunctionsWithDescriptor:desc error:&e]
-                                                                          : [a addComputePipelineFunctionsWithDescriptor:desc error:&e]);
-        if (ok) ok = [a serializeToURL:[NSURL fileURLWithPath:temp] error:&e] && rename(temp.fileSystemRepresentation, path.fileSystemRepresentation) == 0;
+        // 加管线 / 序列化不取 error（见 par_write_batch：Metal 失败路径交回的 error 是失效指针，读它就崩）
+        ok = a && ([desc isKindOfClass:MTLRenderPipelineDescriptor.class] ? [a addRenderPipelineFunctionsWithDescriptor:desc error:nil]
+                                                                          : [a addComputePipelineFunctionsWithDescriptor:desc error:nil]);
+        if (ok && ![a serializeToURL:[NSURL fileURLWithPath:temp] error:nil]) { ok = NO; atomic_fetch_add(&g_par_ser_failed, 1); }
+        if (ok) ok = rename(temp.fileSystemRepresentation, path.fileSystemRepresentation) == 0;
     }
     par_ga_remove_new(before);
     par_ga_unlock(lk); pthread_mutex_unlock(&g_par_wmu);
     if (!ok) { unlink(temp.fileSystemRepresentation);
-               if (atomic_fetch_add(&g_par_write_failed, 1) < 4) MLOG("【红】 pipeline archive: cannot write %s: %s", path.UTF8String, e ? e.localizedDescription.UTF8String : "rename failed"); return; }
+               if (atomic_fetch_add(&g_par_write_failed, 1) < 4) MLOG("【红】 pipeline archive: cannot write %s: %s", path.UTF8String, e ? e.localizedDescription.UTF8String : "adding / serializing failed (Metal's error not read) or rename failed"); return; }
     pthread_mutex_lock(&g_par_mu); [g_par_have addObject:key]; pthread_mutex_unlock(&g_par_mu);
     atomic_fetch_add(&g_par_written, 1);
 }
@@ -299,17 +293,18 @@ static void par_write_batch(NSArray<NSArray *> *items) {
     NSMutableArray<NSString *> *keys = [NSMutableArray array]; NSError *e = nil; BOOL ok = NO;
     pthread_mutex_lock(&g_par_wmu); int lk = par_ga_lock();
     NSSet<NSString *> *before = par_ga_list(0);
-    // #618：已在收局就不写（par_may_write）。#756：崩在这一段里由崩溃处理器记全机标记（g_par_in_write）
+    // #618：已在收局就不写（par_may_write）
     if (!par_may_write()) { par_ga_unlock(lk); pthread_mutex_unlock(&g_par_wmu); return; }
-    g_par_in_write = 1;   // 崩在这一段里：崩溃处理器记全机标记（s2a_pso_archive_crash_note）
     @autoreleasepool {
         id<MTLBinaryArchive> a = [g_dev newBinaryArchiveWithDescriptor:[MTLBinaryArchiveDescriptor new] error:&e];
-        for (NSArray *it in todo) { NSError *e1 = nil; id desc = it[1];
-            BOOL one = a && ([desc isKindOfClass:MTLRenderPipelineDescriptor.class] ? [a addRenderPipelineFunctionsWithDescriptor:desc error:&e1] : [a addComputePipelineFunctionsWithDescriptor:desc error:&e1]);
-            if (one) [keys addObject:it[0]]; else { e = e1; atomic_fetch_add(&g_par_write_failed, 1); } }
-        if (keys.count) ok = [a serializeToURL:[NSURL fileURLWithPath:temp] error:&e] && rename(temp.fileSystemRepresentation, path.fileSystemRepresentation) == 0;
+        // 加管线与序列化不取 error（11-23 #756 根修）：唯一留下现场的那次真崩 = serializeToURL:error: 失败返回后 ARC retain 写回的 NSError 时总线错——
+        //   Metal 在失败路径交回的 error 指针返回那一刻就已失效，读它（哪怕只是 ARC 的写回 retain）就崩。失败只看返回值、计数（g_par_ser_failed），这一批下次再写
+        for (NSArray *it in todo) { id desc = it[1];
+            BOOL one = a && ([desc isKindOfClass:MTLRenderPipelineDescriptor.class] ? [a addRenderPipelineFunctionsWithDescriptor:desc error:nil] : [a addComputePipelineFunctionsWithDescriptor:desc error:nil]);
+            if (one) [keys addObject:it[0]]; else atomic_fetch_add(&g_par_write_failed, 1); }
+        if (keys.count && ![a serializeToURL:[NSURL fileURLWithPath:temp] error:nil]) atomic_fetch_add(&g_par_ser_failed, 1);
+        else if (keys.count) ok = rename(temp.fileSystemRepresentation, path.fileSystemRepresentation) == 0;
     }
-    g_par_in_write = 0;
     par_ga_remove_new(before);
     if (ok) {   // the index after the file: a line always names a file that is there
         NSMutableString *lines = [NSMutableString string]; for (NSString *k in keys) [lines appendFormat:@"%@\t%@\n", k, name];
@@ -318,7 +313,7 @@ static void par_write_batch(NSArray<NSArray *> *items) {
     }
     par_ga_unlock(lk); pthread_mutex_unlock(&g_par_wmu);
     if (!ok) { unlink(temp.fileSystemRepresentation);
-               if (atomic_fetch_add(&g_par_write_failed, 1) < 4) MLOG("【红】 pipeline archive: cannot write the batch %s (%lu pipelines): %s", name.UTF8String, (unsigned long)keys.count, e ? e.localizedDescription.UTF8String : "rename or index failed"); return; }
+               if (atomic_fetch_add(&g_par_write_failed, 1) < 4) MLOG("【红】 pipeline archive: cannot write the batch %s (%lu pipelines): %s (serializations failed so far %llu)", name.UTF8String, (unsigned long)keys.count, e ? e.localizedDescription.UTF8String : "serializing failed (Metal's error not read), or rename / index failed", (unsigned long long)atomic_load(&g_par_ser_failed)); return; }
     pthread_mutex_lock(&g_par_mu); for (NSString *k in keys) { g_par_bmap[k] = name; [g_par_have addObject:k]; } pthread_mutex_unlock(&g_par_mu);
     atomic_fetch_add(&g_par_written, keys.count);
 }
