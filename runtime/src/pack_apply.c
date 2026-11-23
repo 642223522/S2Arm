@@ -1306,7 +1306,8 @@ int s2a_img_scan(const char *proc_docs) {   // 回前台 / 「重新检查」可
 //   壳（S2ArmShellHost GameSources.swift）解析书签、拿到访问权后把文件夹路径与来源号交进来。只认电脑「导出」的完整 .img（格式 1、头魔数 S2AIMG01、
 //   目录表读得出且列着 exefs/main.npdm = 拷完），文件名以 .img 结尾，往下最多两层（同导入文件夹、同 NX2Apple）。不挪、不改外部文件：本款资源包根照旧在 App 内，
 //   game.img 是指向它的软链接，.game.img.source 记「来源号 \t 相对路径 \t 资源包号」；之后同导入一样等游戏库解开（派生件解进 App）。
-//   不认：着色器更新包（格式 2，放「放这里导入」照常套）、.s2arm（程序件要拷进 App，放「放这里导入」）、手机导出的 romfs 镜像。
+//   来源里的 .s2arm（程序件）在扫描时导进 App（盘上的不删、同一个文件不重导，见 s2a_img_scan_source）。
+//   不认：着色器更新包（格式 2，放「放这里导入」照常套）、手机导出的 romfs 镜像。
 //   App 内已有这款的真本体（电脑推的 / 导入的）：以 App 内为准，不换成外部的（离线也能玩），记一行
 // 返回 0 = 新链好（等解开）；2 = 已是这份，没动；3 = 同一份换了位置（外接盘重新挂载路径变了），只改软链接；1 = 不是可认的 .img / 还在拷 / App 内已有（不动）；负数 = 失败
 int s2a_img_link(const char *proc_docs, const char *path, const char *srcid, const char *rel) {
@@ -1369,7 +1370,8 @@ static int ends_with_ci(const char *s, const char *t) { size_t a = strlen(s), b 
 // 一次扫描里认出的候选：同一款只链一份（同一来源里同款有两份 .img——老「S2Arm 自签导出」与「S2Arm 游戏包」各一份等——
 //   原先按读目录的次序逐个链，每次扫描都来回改链、每次重解）。取修改时间最新的；一样新取路径字典序小的，次次结果相同
 typedef struct { char *path; char gid[17]; long long mtime; } src_cand;
-static void src_scan_dir(const char *dir, int depth, const char *skip, src_cand **c, int *nc, int *cap) {
+typedef struct { char **p; int n, cap; } src_list;   // 来源里的 .s2arm（程序件，11-22 维护者「一块盘 Mac / iPhone 两端通用」：随 .img 一起放在盘上，扫描时导进 App）
+static void src_scan_dir(const char *dir, int depth, const char *skip, src_cand **c, int *nc, int *cap, src_list *progs) {
     DIR *d = opendir(dir); if (!d) return;
     char *names[512]; int nn = 0; struct dirent *e;
     while ((e = readdir(d)) && nn < 512) { if (e->d_name[0] == '.') continue; names[nn++] = strdup(e->d_name); }
@@ -1377,7 +1379,10 @@ static void src_scan_dir(const char *dir, int depth, const char *skip, src_cand 
     for (int i = 0; i < nn; i++) {
         char p[2400]; struct stat st; snprintf(p, sizeof p, "%s/%s", dir, names[i]);
         if (!lstat(p, &st)) {
-            if (S_ISDIR(st.st_mode) && depth < 2) src_scan_dir(p, depth + 1, skip, c, nc, cap);
+            if (S_ISDIR(st.st_mode) && depth < 2) src_scan_dir(p, depth + 1, skip, c, nc, cap, progs);
+            else if (S_ISREG(st.st_mode) && ends_with_ci(names[i], ".s2arm")) {
+                if (progs->n == progs->cap) { progs->cap = progs->cap ? progs->cap * 2 : 8; progs->p = realloc(progs->p, (size_t)progs->cap * sizeof *progs->p); }
+                progs->p[progs->n++] = strdup(p); }
             else if (S_ISREG(st.st_mode) && st.st_size >= 4096 && ends_with_ci(names[i], ".img")) {
                 // 只收拷完的完整包（格式 1、头里的整长 = 文件长）：拷到一半的同款不能因为更新就被挑中、把能用的那份挤掉
                 int fd = open(p, O_RDONLY); uint8_t gh[136]; uint32_t gf = 0; uint64_t gt = 0;
@@ -1397,8 +1402,23 @@ static void src_scan_dir(const char *dir, int depth, const char *skip, src_cand 
 int s2a_img_scan_source(const char *proc_docs, const char *dir, const char *srcid, const char *skip) {
     if (!proc_docs || !*proc_docs || !dir || !*dir || !srcid || !*srcid || strchr(srcid, '\t') || strchr(srcid, '\n')) return -1;
     DIR *d = opendir(dir); if (!d) return -1; closedir(d);
-    pthread_mutex_lock(&g_scan_mu); int n = 0, nc = 0, cap = 0; src_cand *c = NULL; g_img_err[0] = 0;
-    src_scan_dir(dir, 0, skip, &c, &nc, &cap);
+    pthread_mutex_lock(&g_scan_mu); int n = 0, nc = 0, cap = 0; src_cand *c = NULL; src_list progs = {0}; g_img_err[0] = 0;
+    src_scan_dir(dir, 0, skip, &c, &nc, &cap, &progs);
+    // 程序件 .s2arm：拷进 App（程序要在 App 里签、执行），盘上的不删；同一个文件（来源号 + 相对路径 + 大小 + 修改时间）导过就不再导，记在 .source-s2arm.tsv；
+    //   导失败的同一个文件本进程内不再重试（同导入文件夹，scan_failed_*）。.s2arm 在前：同一次扫描里它带来的派生件与清单先到，.img 再链（img_scan_dir 同一个次序）
+    { char base[1200], memo[1400]; if (s2a_pack_base(base, sizeof base, proc_docs) < 0) snprintf(base, sizeof base, "%s", proc_docs);
+      snprintf(memo, sizeof memo, "%s/.source-s2arm.tsv", base);
+      char *seen = NULL; { FILE *f = fopen(memo, "r"); if (f) { fseek(f, 0, SEEK_END); long len = ftell(f); fseek(f, 0, SEEK_SET);
+          if (len > 0 && len < (8 << 20) && (seen = malloc((size_t)len + 2))) { size_t k = fread(seen + 1, 1, (size_t)len, f); seen[0] = '\n'; seen[k + 1] = 0; } fclose(f); } }
+      for (int i = 0; i < progs.n; i++) { struct stat st; const char *rel = progs.p[i] + strlen(dir) + 1;
+          if (stat(progs.p[i], &st) || scan_failed_same(progs.p[i], &st)) { free(progs.p[i]); continue; }
+          char key[1800]; snprintf(key, sizeof key, "\n%s\t%s\t%lld\t%lld\n", srcid, rel, (long long)st.st_size, st_mtime_ns(&st));
+          if (seen && strstr(seen, key)) { free(progs.p[i]); continue; }
+          char g[17] = ""; int r = s2a_s2arm_import(proc_docs, progs.p[i], g, sizeof g);
+          if (!r) { FILE *f = fopen(memo, "a"); if (f) { fputs(key + 1, f); fclose(f); } n++; LOG("外部游戏来源：导入程序件 %s → %s（盘上的不删）", rel, g); }
+          else if (r < 0) { if (!strstr(g_s2arm_code, "space")) scan_failed_note(progs.p[i], &st); LOG("【红】外部游戏来源：程序件 %s 没导进（%s）：%s", rel, g_s2arm_code, g_s2arm_err); }
+          free(progs.p[i]); }
+      free(progs.p); free(seen); }
     for (int i = 0; i < nc; i++) {
         int best = 1; for (int j = 0; j < nc && best; j++) if (j != i && !strcmp(c[j].gid, c[i].gid))
             best = c[i].mtime > c[j].mtime || (c[i].mtime == c[j].mtime && strcmp(c[i].path, c[j].path) < 0);

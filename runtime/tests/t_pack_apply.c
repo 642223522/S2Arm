@@ -791,6 +791,7 @@ int main(void) {
       //   g 移除来源：从它链来的款（只剩甲）资源包根删掉 → 状态 0，外部文件不动、乙不受影响；别的来源号拆 0 款
       //   h 库里删过的款：例行扫描（带跳过名单）不链回来，主动加文件夹（不带名单）链回来
       //   i 同一来源里同款两份：只链新的、再扫不动  j 两个来源各有一份：不抢；链着的那份打不开才换，插回不换回
+      //   k 来源里的 .s2arm：导进 App、盘上的不删、同一个文件不重导、改过重导
       { char E[1300], ED[1400], EV[1400], EV2[1400], rA[1600], rB[1600], rC[1600], gA[1500], gB[1500], gC[1500], lk[2000], tgt[2000], want[2000];
         snprintf(E, sizeof E, "%s/exth/Documents", T); snprintf(ED, sizeof ED, "%s/ext_drive", T); snprintf(EV, sizeof EV, "%s/ext_gone", T); snprintf(EV2, sizeof EV2, "%s/ext_drive2", T);
         snprintf(c, sizeof c, "mkdir -p '%s/放这里导入' '%s/sub' '%s/a/b/c' && python3 '%s/pack/img.py' build - '%s/src/others_sh.tsv' '%s/sub/甲.img' --gid 0100abcd000000e1 --pack-id ext1 > /dev/null"
@@ -862,7 +863,22 @@ int main(void) {
           CHECK(j2 == 1 && sh(c) == 0, "⑮j 原来那份打不开：换成另一个来源的（返回 %d）", j2);
           CHECK(rename(S3x, S3) == 0, "⑮j 第一个来源插回");
           int j3 = s2a_img_scan_source(E, S3, "src3", NULL), j4 = s2a_img_scan_source(E, S4, "src4", NULL);
-          CHECK(j3 == 0 && j4 == 0 && sh(c) == 0, "⑮j 插回后不再换回去（返回 %d / %d）", j3, j4); } }
+          CHECK(j3 == 0 && j4 == 0 && sh(c) == 0, "⑮j 插回后不再换回去（返回 %d / %d）", j3, j4); }
+        // k 来源里的 .s2arm（程序件，一块盘 Mac / iPhone 两端通用）：扫描时导进 App、盘上的不删；同一个文件再扫不重导（删掉导好的清单再扫，不会被重写）；
+        //   文件改过（修改时间变了）再扫 → 重导
+        if (zstd_pick()) { char S5[1400], pg[1600], cat[1700]; struct stat ks; snprintf(S5, sizeof S5, "%s/ext_prog/sub", T);
+          snprintf(c, sizeof c, "mkdir -p '%s'", S5); sh(c);
+          char sp[1500]; snprintf(sp, sizeof sp, "%s/某游戏.s2arm", S5); s2arm_pack(T, sp, "s2arm.json", NULL);
+          snprintf(pg, sizeof pg, "%s/exth/Library/Application Support/S2Arm/games/0100ABCDE0000000/program", T); snprintf(cat, sizeof cat, "%s/catalogue.json", pg);
+          snprintf(S5, sizeof S5, "%s/ext_prog", T);
+          int k1 = s2a_img_scan_source(E, S5, "src5", NULL);
+          CHECK(k1 == 1 && stat(cat, &ks) == 0 && stat(sp, &ks) == 0, "⑮k 程序件导进 App（返回 %d）、盘上的 .s2arm 还在", k1);
+          unlink(cat);
+          int k2 = s2a_img_scan_source(E, S5, "src5", NULL);
+          CHECK(k2 == 0 && stat(cat, &ks) != 0, "⑮k 同一个文件再扫不重导（返回 %d）", k2);
+          snprintf(c, sizeof c, "touch -t 202612010000 '%s'", sp); sh(c);
+          int k3 = s2a_img_scan_source(E, S5, "src5", NULL);
+          CHECK(k3 == 1 && stat(cat, &ks) == 0, "⑮k 文件改过再扫 → 重导（返回 %d）", k3); } }
       // ⑭c 着色器更新包（格式号 2，维护者 11-13）：先导完整包（带 shaders/a.metallib = 'x'）并解开；再导更新包（同游戏号同资源包号，a.metallib = 'y'——
       //   同长度：旧的若还在本体目录表里，下次解包会按「长度对就跳过 / 照目录表回写」把它弄回 'x'）。期望手写：
       //   认领 1 个、更新包从导入文件夹删掉、a.metallib = 'y'、本体目录表里不再有 shaders/ 条目、本体头里整长 = 文件长、再次应用后仍是 'y'；
