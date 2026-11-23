@@ -139,15 +139,76 @@ javac -encoding UTF-8 -sourcepath "$android/app/src/main/java" -d "$tmp/java" "$
 java -Djava.io.tmpdir="$tmp" -cp "$tmp/java" org.s2arm.android.GameInstallTest --install-warm-seeds \
   "$tmp/input/rev" "$tmp/games" "$tmp/revision"
 revision="$(cat "$tmp/revision")"
-"$tmp/t_seed" --installed "$revision" "$tmp/cache" 2
 # Invalid links must never turn identical valid fixture bytes into a seed.
 python3 - "$tmp" "$revision" <<'VERIFY'
 import os, pathlib, subprocess, sys
+from contextlib import contextmanager
 tmp, revision = map(pathlib.Path, sys.argv[1:])
 program, = revision.glob('shaders/direct/warm-vk/*/programs-*.bin')
 pipe = program.with_name('pipes-v1-352.bin')
 def check(programs, pipes):
-    subprocess.run([tmp/'t_seed', '--installed', revision, tmp/'cache', str(programs), str(pipes)], check=True)
+    subprocess.run([tmp/'t_seed', '--installed', revision, tmp/'cache', str(programs), str(pipes)], check=True, timeout=10)
+    print(f'loaded programs={programs} pipes={pipes}', flush=True)
+
+@contextmanager
+def saved_entry(path):
+    # Move the real installer entry aside; never modify the object through its revision link.
+    saved = tmp/'original-entry'
+    path.rename(saved)
+    try:
+        yield
+    finally:
+        if path.is_dir() and not path.is_symlink():
+            path.rmdir()
+        elif path.is_symlink() or path.exists():
+            path.unlink()
+        saved.rename(path)
+
+def rejected(case):
+    print(f'negative: {case}', flush=True)
+    check(0, 0)
+
+original = os.readlink(program)
+obj = program.resolve(strict=True)
+payload = obj.read_bytes()
+bucket, digest = obj.parent.name, obj.name
+wrong_bucket = '00' if bucket != '00' else '01'
+# Change one letter after the bucket prefix so only the lowercase requirement is violated.
+i = next(i for i, char in enumerate(digest) if i >= 2 and char in 'abcdef')
+mixed_case = digest[:i] + digest[i].upper() + digest[i + 1:]
+for case, target in [
+    ('bucket mismatch', original.rsplit('/', 2)[0] + '/' + wrong_bucket + '/' + digest),
+    ('uppercase digest', original.rsplit('/', 1)[0] + '/' + mixed_case),
+    ('one extra parent', '../' + original),
+    ('one missing parent', original.removeprefix('../')),
+]:
+    # Put valid manifest bytes at the alternative destination, so a missing target
+    # cannot produce a false green. On case-insensitive volumes the mixed name already exists.
+    alternate = pathlib.Path(os.path.normpath(program.parent / target))
+    alternate.parent.mkdir(parents=True, exist_ok=True)
+    if not alternate.exists():
+        alternate.write_bytes(payload)
+    assert alternate.read_bytes() == payload
+    with saved_entry(program):
+        program.symlink_to(target)
+        rejected(case)
+
+for kind in ('directory', 'FIFO'):
+    with saved_entry(obj):
+        if kind == 'directory':
+            obj.mkdir()
+        else:
+            os.mkfifo(obj)
+        rejected('object is ' + kind)
+
+for directory in (obj.parent.parent, obj.parent):
+    with saved_entry(directory):
+        directory.symlink_to(os.path.relpath(tmp/'original-entry', directory.parent), target_is_directory=True)
+        assert program.read_bytes() == payload
+        rejected('aliased directory ' + directory.name)
+
+print('positive: restored installer leaves', flush=True)
+check(2, 2)
 for leaf, counts in [(program, (0, 0)), (pipe, (2, 0))]:
     original = os.readlink(leaf)
     copy = tmp/leaf.name
