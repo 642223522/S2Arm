@@ -4,6 +4,6 @@ Ryujinx.Graphics.Shader.dll	42388d2d4a519449
 Ryujinx.Common.dll	b3dda31436a0c13d
 S2Arm.Gfx.Widen.Shader.dll	93e1c0b894673435
 xlate_source	bb697a9803ab28f7
-spirv-cross	unknown: /usr/local/bin/spirv-cross
-metal_macosx	Apple metal version 32023.922 (metalfe-32023.922.4)
-metal_iphoneos	Apple metal version 32023.922 (metalfe-32023.922.4)
+spirv-cross	1.4.363.0
+metal_macosx	Apple metal version 32023.883 (metalfe-32023.883)
+metal_iphoneos	Apple metal version 32023.883 (metalfe-32023.883)
