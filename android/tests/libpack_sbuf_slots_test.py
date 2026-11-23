@@ -111,6 +111,8 @@ for name, old, new, expected in mutants:
     assert source.count(old) == 1, (name, 'mutation anchor', source.count(old))
     result = run(name, source.replace(old, new))
     if result.returncode == 0 or expected not in result.stdout:
-        sys.exit(f'{name}: wrong negative control outcome rc={result.returncode}\n{result.stdout}\n{result.stderr}')
+        sys.exit(f'{name}: wrong negative control outcome rc={result.returncode}\n{result.stdout}\n{result.stderr}')   # 真失败在标记之外：门禁红步摘要要看得到
+    print('【负对照开始】', flush=True)   # 改坏项按设计红出的 FAIL 行不进门禁红步摘要（门禁靠这对标记剔除）
     print(f'{name}: expected assertion failure: {expected}', flush=True)
+    print('【负对照结束】', flush=True)
 print(f'PASS: {len(mutants)} stage-sbuf-slots negative controls')

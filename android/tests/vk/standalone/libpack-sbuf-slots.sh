@@ -81,7 +81,7 @@ if [ -n "$mode" ]; then
         *) expect='gate unused-unaligned: library hit' ;;
     esac
     if [ "$rc" = 0 ] || ! grep -q 'device: llvmpipe' "$log" || ! grep -q "FAIL .*: $expect" "$log" || grep -qE 'Validation Error|VUID-|SYNC-HAZARD-' "$log"; then cat "$log"; exit 1; fi
-    echo "libpack-sbuf-slots $mode: PASS（撤改后红在「${expect}」）"
+    echo '【负对照开始】'; echo "libpack-sbuf-slots $mode: PASS（撤改后红在「${expect}」）"; echo '【负对照结束】'   # 撤改按设计红出的断言不进门禁红步摘要（真失败上面已 cat 日志并退出，在标记之外）
     exit 0
 fi
 cat "$log"
