@@ -1,6 +1,6 @@
 """Mac 公共宿主与只换宿主（11-09 维护者定「升级后只换宿主」；游戏库结构双端统一后宿主多款共用，见 layout.py）。
 
-宿主放 <库>/hosts/mac/<可执行文件摘要前 12 位>/S2ArmGame.app，每款镜像 games/<英文名>/image/mac 不含宿主；game.json 的 hostMac 记这款在用的宿主。
+宿主放 <库>/hosts/mac.noindex/<可执行文件摘要前 12 位>/S2ArmGame.app（layout.hosts_mac），每款镜像 games/<英文名>/image/mac 不含宿主；game.json 的 hostMac 记这款在用的宿主。
 升级 S2Arm 后，新宿主认得旧镜像就直接换用，不用重新准备。判据两项，都对上才换：
   hostAbi    —— 宿主读每款产物的约定号，就是下面的 HOST_ABI（从 runtime/include/s2a_host_abi.h 读，宿主编的是同一个数）。改了宿主读产物的方式（改写器与运行时的约定：跳板 / 虚拟寄存器槽 / 门控表，
                 *.fixups / *.sites / *.gates / addr_need.tsv 等表的格式，镜像目录布局）就把它加 1；只修宿主自身的 bug 不动它。
