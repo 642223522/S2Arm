@@ -766,6 +766,7 @@ def validate_request(raw, what):
         constant_buffer_use[name] = _integer(stage.get('constantBufferUse', 0),
                                              f'{where}.constantBufferUse', 0, 0xFFFFFFFF)
     expected = GRAPHICS_STAGES if kind == 'graphics' else COMPUTE_STAGES
+    # 生产编译器支持单顶点（只写深度）程序；请求与结果两端的阶段校验要用同一约定，否则单 VS 请求在这里被误拒。
     vertex_only = kind == 'graphics' and names == ['vs']
     if not vertex_only and set(names) != set(expected) and not (v2 and set(names) == set(GEOMETRY_STAGES)):
         _fail(f'{what}: program.stages {sorted(names)} is not {list(expected)}'

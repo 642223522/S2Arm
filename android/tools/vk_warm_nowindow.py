@@ -143,7 +143,8 @@ def build(base, capture, output, cli, compiler_identity):
             identity = bytes.fromhex(path.stem)
             if identity not in programs or identity not in seen_pipes or identity not in observed:
                 continue
-            # 同一局的普通编译请求保留真实绘制事实。清单中的 lp_ok 描述预编库适用性，后续两字节保留。
+            # 选件看真实请求里的非对齐存储缓冲事实，再核程序身份在本局程序清单与当局管线里都有；不看程序清单的 lp_ok / 其后保留字节：
+            # 第 61 字节只描述预编库适用性、第 62 字节是保留位（原生写入器固定写 0），拿它们当「关窗」标记会让两站各选出 0 个。
             if req['_kind'] != 'graphics' or req['program']['graphicsState']['hasUnalignedStorageBuffer'] is not True:
                 continue
             if not same_program(programs[identity], observed[identity]):

@@ -899,6 +899,9 @@ static int pw_write_atomic(const char *path, const uint8_t *buf, size_t bytes) {
 }
 
 // 整份读（有界）。*enoent = 1 表示目录里还没有旧文件（不是错误）。
+// installed = 1：随包种子（含 nowindow/ 补件）。跨资源根换包后这些叶子是指向游戏对象库的相对链接，普通 open 会撞 ELOOP、种子整份读不到；
+//   经 s2a_installed_seed_open 只放行常规文件或恰一条规范的库内相对链接，库外 / 环 / 绝对链接、目录别名一律拒（拒收 ≠ 缺文件：不退回上一级清单）。
+//   installed = 0：本机清单（可写目录），仍禁止跟链。
 static int pw_read_file(const char *path, int installed, uint8_t **out, size_t *bytes, int *enoent) {
     *out = NULL; *bytes = 0; *enoent = 0;
     int fd = installed ? s2a_installed_seed_open(path) : open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
