@@ -1340,6 +1340,12 @@ int s2a_img_link(const char *proc_docs, const char *path, const char *srcid, con
             if (write_atomic(root, S2A_EXT_MARK, line)) LOG("【黄】外部游戏来源：%s 的来源记录没写成（%s），下次扫描再写", gid, strerror(errno));
             LOG("外部游戏来源：%s 换了位置（%s → %s），只改软链接", gid, cur, path);
             return 3; }
+        // 已链着别的一份、那份还打得开：别的来源里的同一款不抢（两个来源各有一份时，原先每次扫描来回改链、每次重解）；
+        //   同一来源里的另一份（扫描已只挑最新的那份）比现在链着的新才换。现在那份打不开（盘拔了 / 文件删了）就换成这份
+        { int cfd = open(gp, O_RDONLY); struct stat cs;
+          if (cfd >= 0) { int ok2 = !fstat(cfd, &cs); close(cfd);
+              int same = t1 && (size_t)(t1 - old) == strlen(srcid) && !strncmp(old, srcid, strlen(srcid));
+              if (ok2 && (!same || st_mtime_ns(&cs) >= st_mtime_ns(&st))) return 1; } }
     }
     if (mkdirs(gp)) { snprintf(g_img_err, sizeof g_img_err, "建 %s 失败：%s", root, g_untar_err); return -4; }
     mf_aside(root, 0);   // 先作废（留退路）：链到一半断了不会判成就绪
@@ -1360,7 +1366,10 @@ int s2a_img_link(const char *proc_docs, const char *path, const char *srcid, con
     return 0;
 }
 static int ends_with_ci(const char *s, const char *t) { size_t a = strlen(s), b = strlen(t); return a >= b && !strcasecmp(s + a - b, t); }
-static void src_scan_dir(const char *proc_docs, const char *top, const char *dir, int depth, const char *srcid, const char *skip, int *n) {
+// 一次扫描里认出的候选：同一款只链一份（同一来源里同款有两份 .img——老「S2Arm 自签导出」与「S2Arm 游戏包」各一份等——
+//   原先按读目录的次序逐个链，每次扫描都来回改链、每次重解）。取修改时间最新的；一样新取路径字典序小的，次次结果相同
+typedef struct { char *path; char gid[17]; long long mtime; } src_cand;
+static void src_scan_dir(const char *dir, int depth, const char *skip, src_cand **c, int *nc, int *cap) {
     DIR *d = opendir(dir); if (!d) return;
     char *names[512]; int nn = 0; struct dirent *e;
     while ((e = readdir(d)) && nn < 512) { if (e->d_name[0] == '.') continue; names[nn++] = strdup(e->d_name); }
@@ -1368,15 +1377,17 @@ static void src_scan_dir(const char *proc_docs, const char *top, const char *dir
     for (int i = 0; i < nn; i++) {
         char p[2400]; struct stat st; snprintf(p, sizeof p, "%s/%s", dir, names[i]);
         if (!lstat(p, &st)) {
-            if (S_ISDIR(st.st_mode) && depth < 2) src_scan_dir(proc_docs, top, p, depth + 1, srcid, skip, n);
+            if (S_ISDIR(st.st_mode) && depth < 2) src_scan_dir(p, depth + 1, skip, c, nc, cap);
             else if (S_ISREG(st.st_mode) && st.st_size >= 4096 && ends_with_ci(names[i], ".img")) {
-                if (skip && *skip) {   // 玩家在库里删过的款：例行扫描不再链回来（玩家主动加文件夹时壳不传，删过的回到库里）
-                    int fd = open(p, O_RDONLY); uint8_t gh[32]; int got = fd >= 0 && pread(fd, gh, sizeof gh, 0) == (ssize_t)sizeof gh && !memcmp(gh, "S2AIMG01", 8); if (fd >= 0) close(fd);
-                    if (got) { char g[17]; memcpy(g, gh + 16, 16); g[16] = 0; for (int k = 0; k < 16; k++) if (g[k] >= 'a' && g[k] <= 'f') g[k] -= 32;
-                        if (strstr(skip, g)) { free(names[i]); continue; } } }
-                int r = s2a_img_link(proc_docs, p, srcid, p + strlen(top) + 1);
-                if (r == 0 || r == 3) (*n)++;
-                else if (r < 0) LOG("【红】外部游戏来源：%s 没链上：%s", names[i], g_img_err); }
+                // 只收拷完的完整包（格式 1、头里的整长 = 文件长）：拷到一半的同款不能因为更新就被挑中、把能用的那份挤掉
+                int fd = open(p, O_RDONLY); uint8_t gh[136]; uint32_t gf = 0; uint64_t gt = 0;
+                int got = fd >= 0 && pread(fd, gh, sizeof gh, 0) == (ssize_t)sizeof gh && !memcmp(gh, "S2AIMG01", 8) && (memcpy(&gf, gh + 8, 4), memcpy(&gt, gh + 128, 8), gf == 1 && gt == (uint64_t)st.st_size);
+                if (fd >= 0) close(fd);
+                if (got) { char g[17]; memcpy(g, gh + 16, 16); g[16] = 0; for (int k = 0; k < 16; k++) if (g[k] >= 'a' && g[k] <= 'f') g[k] -= 32;
+                    // 玩家在库里删过的款：例行扫描不再链回来（玩家主动加文件夹时壳不传，删过的回到库里）
+                    if (!(skip && *skip && strstr(skip, g))) {
+                        if (*nc == *cap) { *cap = *cap ? *cap * 2 : 16; *c = realloc(*c, (size_t)*cap * sizeof **c); }
+                        (*c)[*nc].path = strdup(p); snprintf((*c)[*nc].gid, 17, "%s", g); (*c)[*nc].mtime = st_mtime_ns(&st); (*nc)++; } } }
         }
         free(names[i]);
     }
@@ -1386,8 +1397,17 @@ static void src_scan_dir(const char *proc_docs, const char *top, const char *dir
 int s2a_img_scan_source(const char *proc_docs, const char *dir, const char *srcid, const char *skip) {
     if (!proc_docs || !*proc_docs || !dir || !*dir || !srcid || !*srcid || strchr(srcid, '\t') || strchr(srcid, '\n')) return -1;
     DIR *d = opendir(dir); if (!d) return -1; closedir(d);
-    pthread_mutex_lock(&g_scan_mu); int n = 0; g_img_err[0] = 0;
-    src_scan_dir(proc_docs, dir, dir, 0, srcid, skip, &n);
+    pthread_mutex_lock(&g_scan_mu); int n = 0, nc = 0, cap = 0; src_cand *c = NULL; g_img_err[0] = 0;
+    src_scan_dir(dir, 0, skip, &c, &nc, &cap);
+    for (int i = 0; i < nc; i++) {
+        int best = 1; for (int j = 0; j < nc && best; j++) if (j != i && !strcmp(c[j].gid, c[i].gid))
+            best = c[i].mtime > c[j].mtime || (c[i].mtime == c[j].mtime && strcmp(c[i].path, c[j].path) < 0);
+        if (best) { int r = s2a_img_link(proc_docs, c[i].path, srcid, c[i].path + strlen(dir) + 1);
+            if (r == 0 || r == 3) n++;
+            else if (r < 0) LOG("【红】外部游戏来源：%s 没链上：%s", c[i].path + strlen(dir) + 1, g_img_err); }
+    }
+    for (int i = 0; i < nc; i++) free(c[i].path);
+    free(c);
     pthread_mutex_unlock(&g_scan_mu);
     if (n) LOG("外部游戏来源：%s 新链 / 改链 %d 款", dir, n);
     return n;
