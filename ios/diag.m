@@ -415,15 +415,15 @@ void s2a_diag_report(void) {
     present_over(host, a);
 }
 void s2a_shell_report_problem(void) { s2a_diag_report(); }   // 游戏库设置页「故障报修」（shell/Sources/S2ArmShellBridge/include/s2a_shell.h，壳里有空的弱定义）
-// 页面左上角的小齿轮（加载页 / 提示页 / 帮助页；游戏中用虚拟按键自己的齿轮、游戏库用库界面的齿轮）：菜单最下面「故障报修」
+// 页面左上角的「故障报修」按钮（加载页 / 提示页 / 帮助页；游戏中用虚拟按键里齿轮旁那颗、游戏库用库设置里的）：点一下直接报修。
+//   原先是一颗齿轮、菜单里只有「故障报修」一项，玩家认不出它能报修（11-23 维护者：卡在加载页「这个页面咋没有故障报修按钮」）；
+//   改成与游戏内同一颗按钮（11-19 定：从齿轮菜单里拿出来），图标同 vpad.m _reportBtn
 void s2a_report_gear_attach(UIView *page) {
     if (!page) return;
-    UIButton *g = [UIButton buttonWithType:UIButtonTypeSystem]; g.accessibilityIdentifier = @"page.gear"; g.accessibilityLabel = S2AL(@"diag.report.title");
-    [g setImage:[UIImage systemImageNamed:@"gearshape.fill"] forState:UIControlStateNormal]; g.tintColor = UIColor.whiteColor;
+    UIButton *g = [UIButton buttonWithType:UIButtonTypeSystem]; g.accessibilityIdentifier = @"page.report"; g.accessibilityLabel = S2AL(@"diag.report.title");
+    [g setImage:[UIImage systemImageNamed:@"exclamationmark.bubble.fill"] forState:UIControlStateNormal]; g.tintColor = UIColor.whiteColor;
     g.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45]; g.layer.cornerRadius = 18; g.alpha = 0.9; g.translatesAutoresizingMaskIntoConstraints = NO;
-    g.showsMenuAsPrimaryAction = YES;
-    g.menu = [UIMenu menuWithTitle:@"" children:@[[UIAction actionWithTitle:S2AL(@"diag.report.title") image:[UIImage systemImageNamed:@"exclamationmark.bubble"] identifier:nil
-        handler:^(__unused UIAction *x) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ s2a_diag_report(); }); }]]];
+    [g addAction:[UIAction actionWithHandler:^(__unused UIAction *x) { s2a_diag_report(); }] forControlEvents:UIControlEventTouchUpInside];
     [page addSubview:g];
     [NSLayoutConstraint activateConstraints:@[[g.widthAnchor constraintEqualToConstant:36], [g.heightAnchor constraintEqualToConstant:36],
         [g.leadingAnchor constraintEqualToAnchor:page.safeAreaLayoutGuide.leadingAnchor constant:12], [g.topAnchor constraintEqualToAnchor:page.safeAreaLayoutGuide.topAnchor constant:12]]];
