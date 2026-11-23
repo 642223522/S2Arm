@@ -748,20 +748,38 @@ def missing_prebuilt(env=None):
     return gone
 
 
+UNRELATED_TO_PREBUILT = ("disk_full", "graphics_api_unsupported")   # 日志里有这些确凿结论时，随包件缺不抢归因（classify_failure）
+
+
+def prebuilt_reason(rel, env=None):
+    """随包件缺的一项写清是哪种：「<路径>（不在）」/「<路径>（大小 实际 / 应为 字节）」；读不到清单就只写路径（诊断说明用）"""
+    tools = (env or os.environ).get("S2A_PREBUILT_TOOLS")
+    try:
+        want = json.loads((Path(tools) / "prepare.json").read_text(encoding="utf-8"))["files"][rel][0]
+        path = Path(tools) / str(rel).replace("\\", "/")
+        return f"{rel}（大小 {path.stat().st_size} / 应为 {want} 字节）" if path.is_file() else f"{rel}（不在）"  # 非玩家句
+    except (OSError, ValueError, KeyError, TypeError, IndexError):
+        return str(rel)
+
+
 def classify_failure(phase, log, texts=()):
     """Mac 准备（build_tool_failure）与 iPhone 打包（ipa.oneclick_failure，Mac / Windows 同一份）共用：
     日志确凿根因优先，其次阶段映射，判不出 package_failed。返回 (码, 写进 internal 的归因说明)。"""
     chunks = gather_evidence(log, texts)
     read = "；".join("%s（尾 %d 字节）" % (label, len(text.encode("utf-8"))) for label, text in chunks if label != "原因") or "无日志"  # 非玩家句
     gone = missing_prebuilt()
+    shown = "、".join(prebuilt_reason(rel) for rel in gone[:6])
     hit = log_cause(chunks, log)
-    # 日志确凿是写满（log_cause 已按写满当时的量数 / 回溯末行 / 剩余空间核实）：认它，随包件缺只记进说明——盘满能让解出来的随包件大小不对，
-    #   随包件缺却写不满盘（D-6ZDD Windows 0.6.7：写 game.img 时 [Errno 28]，随包 rcodesign 大小不对，原先先认随包件、玩家看到「被 Windows 拦下」）
-    if gone and hit[0] == "disk_full":
+    # 日志确凿的结论与随包件无关时认日志，随包件缺只记进说明：
+    #   ① 写满（log_cause 已按写满当时的量数 / 回溯末行 / 剩余空间核实）——盘满能让解出来的随包件大小不对，随包件缺却写不满盘
+    #     （D-6ZDD Windows 0.6.7：写 game.img 时 [Errno 28]，随包 rcodesign 大小不对，原先先认随包件、玩家看到「被 Windows 拦下」）
+    #   ② 判不出图形接口（纯 Python 的 gfx_api.py 读游戏程序得出的结论，不经任何随包工具）——D-TW4Z Windows 0.6.9：日志写着
+    #     「unsupported graphics API: unknown」，同时 rcodesign 记成缺，原先归 app_control_blocked，玩家去安全中心找不到任何拦截记录
+    if gone and hit[0] in UNRELATED_TO_PREBUILT:
         code, label, line, why = hit
-        return code, "归因 disk_full：%s 里「%s」%s；随包预编件同时缺 / 大小不对 %d 个（%s），按盘满的连带记；读过 %s" % (label, line, "（" + why + "）" if why else "", len(gone), "、".join(gone[:6]), read)  # 非玩家句
+        return code, "归因 %s：%s 里「%s」%s；随包预编件同时缺 / 大小不对 %d 个（%s），与这条结论无关，只记下；读过 %s" % (code, label, line, "（" + why + "）" if why else "", len(gone), shown, read)  # 非玩家句
     if gone:   # 随包工具不见了：后面各阶段的报错（退回现编缺编译器、起不来）都是它的连带，先认它
-        return "app_control_blocked", "归因 app_control_blocked：随包预编件缺 / 大小不对 %d 个（%s），多半被杀毒软件隔离；读过 %s" % (len(gone), "、".join(gone[:6]), read)  # 非玩家句
+        return "app_control_blocked", "归因 app_control_blocked：随包预编件缺 / 大小不对 %d 个（%s），多半被杀毒软件隔离；读过 %s" % (len(gone), shown, read)  # 非玩家句
     if hit[0]:
         code, label, line, why = hit
         return code, "归因 %s：%s 里「%s」%s；读过 %s" % (code, label, line, "（" + why + "）" if why else "", read)  # 非玩家句
