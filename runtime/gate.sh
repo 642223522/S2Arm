@@ -77,6 +77,12 @@ judge() {   # judge <键>：按 $OUT 里这一组的结果判，绿 G+1 / 红 R+
     *) d=$(printf '%s\n' "$o" | red_excerpt)   # 判据不符 / 超时 / 异常退出 / 没打结论行：同一份摘录
        local sf; for sf in "$OUT/$k.ns"/nostall_stacks.*.log; do [ -f "$sf" ] && d="$d"$'\n'"--- 挂死取证（各进程调用栈，前 2 KB）"$'\n'"$(head -c 2048 "$sf" | iconv -c -f UTF-8 -t UTF-8)"; done;;
   esac
+  # 红组的整份输出留下（11-23：$OUT 是临时目录、退出就删，摘录只有 4 KB；nvn_hybrid / nvn_rt_rgb9e5_view 时红时绿，摘录里连失败的那条判据都没留下，
+  #   本机连跑 120 次复现不出，查不下去）。留到本树 build/tests/gate_red/，每组只留最近 5 份，路径写进细节
+  local keep="${S2A_GATE_RED_KEEP:-build/tests/gate_red}" kf=
+  if mkdir -p "$keep" 2> /dev/null; then kf="$keep/$k.$(date +%m%d-%H%M%S).$$.out"; cp "$OUT/$k.out" "$kf" 2> /dev/null || kf=
+    ls -t "$keep/$k".*.out 2> /dev/null | tail -n +6 | while read -r old; do rm -f "$old"; done; fi
+  [ -n "$kf" ] && d="$d"$'\n'"（整份输出：$(cd "$(dirname "$kf")" && pwd)/$(basename "$kf")）"
   DET="${DET}✗ 组 ${k}：${why}"$'\n'"$d"$'\n'
 }
 # 红组的输出摘录（11-21 维护者：原先判据不符只取顶格「✗ / FAIL」行、其余只给末尾 10 行，单测缩进打的逐项「FAIL ①…」、崩溃行、
