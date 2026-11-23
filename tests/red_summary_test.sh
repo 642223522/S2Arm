@@ -29,7 +29,7 @@ o=$(sum "$T/agg.log" "1 1562")
 head1=$(head -1 <<< "$o")
 [[ "$head1" == *"stop stays bounded near 500ms"* ]] && ok "① 首行是失败子项 demand 的红（实得：${head1:0:120}）" || no "① 首行应是 demand 计时红，实得：${head1:0:160}"
 for k in s2a_clock_unseen_ns save_atomic_poll tex.fmt_list "second enter follows"; do
-  grep -qF "$k" <<< "$o" && no "① 摘要里不该有通过子项的「$k」" || ok "① 摘要里没有通过子项的「$k」"; done
+  grep -qF "$k" <<< "$o" && no "① 摘要里不该有通过子项的「${k}」" || ok "① 摘要里没有通过子项的「${k}」"; done
 
 # ② 单测日志：标记内不算、标记外照算
 printf '%s\n' '【负对照开始】' 'FAIL: 变异后该红的用例' '【负对照结束】' 'FAIL: 真坏的用例' 'RED (1 failures)' > "$T/one.log"
