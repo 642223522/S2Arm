@@ -164,7 +164,7 @@ struct ShellSettingsView: View {
                                     }
                                 }
                                 SourceRow(symbol: "folder.badge.plus", title: ShellStrings.text("Add a folder"),
-                                          note: ShellStrings.text("Put games exported from the computer (.img files) in a folder, for example on an external drive, and add it here. S2Arm plays them from that folder without copying them in. Their saves stay in this app. When the drive isn’t connected, its games stay in the library, greyed out, and come back once it is.")) {
+                                          note: ShellStrings.text("Put games exported from the computer (their .s2arm and .img files) in a folder, for example on an external drive, and add it here. S2Arm plays them from that folder without copying the game data in. Saves stay in this app. Format the drive as APFS. After you update a game on the computer, export it again so this device gets the new version. When the drive isn’t connected, its games stay in the library, greyed out, and come back once it is.")) {
                                     Button(ShellStrings.text("Choose folder…")) { addSource() }
                                         .buttonStyle(ShellButtonStyle(fills: true)).accessibilityIdentifier("shellSettings.source.add")
                                         .shellTarget("shs.source.add") { addSource() }

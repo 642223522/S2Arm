@@ -121,42 +121,42 @@
         }
       }
     },
-    "Put games exported from the computer (.img files) in a folder, for example on an external drive, and add it here. S2Arm plays them from that folder without copying them in. Their saves stay in this app. When the drive isn’t connected, its games stay in the library, greyed out, and come back once it is.": {
+    "Put games exported from the computer (their .s2arm and .img files) in a folder, for example on an external drive, and add it here. S2Arm plays them from that folder without copying the game data in. Saves stay in this app. Format the drive as APFS. After you update a game on the computer, export it again so this device gets the new version. When the drive isn’t connected, its games stay in the library, greyed out, and come back once it is.": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Put games exported from the computer (.img files) in a folder, for example on an external drive, and add it here. S2Arm plays them from that folder without copying them in. Their saves stay in this app. When the drive isn’t connected, its games stay in the library, greyed out, and come back once it is."
+            "value": "Put games exported from the computer (their .s2arm and .img files) in a folder, for example on an external drive, and add it here. S2Arm plays them from that folder without copying the game data in. Saves stay in this app. Format the drive as APFS. After you update a game on the computer, export it again so this device gets the new version. When the drive isn’t connected, its games stay in the library, greyed out, and come back once it is."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "把电脑导出的游戏（.img 文件）放进一个文件夹，比如外接硬盘里的，再在这里添加它。S2Arm 直接从那个文件夹里玩，不拷进来。存档留在本 App 里。硬盘没接上时，它里面的游戏仍留在游戏库里、显示为灰色，接上后自己恢复。"
+            "value": "把电脑导出的游戏（它的 .s2arm 和 .img 文件）放进一个文件夹，比如外接硬盘里的，再在这里添加它。S2Arm 直接从那个文件夹里玩，游戏数据不拷进来。存档留在本 App 里。硬盘要格式化成 APFS。在电脑上更新游戏后，再导出一次，这台设备才拿到新版。硬盘没接上时，它里面的游戏仍留在游戏库里、显示为灰色，接上后自己恢复。"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "把電腦匯出的遊戲（.img 檔案）放進一個資料夾，例如外接硬碟裡的，再在這裡新增它。S2Arm 直接從那個資料夾裡玩，不複製進來。存檔留在本 App 裡。硬碟沒接上時，它裡面的遊戲仍留在遊戲庫裡、顯示為灰色，接上後自己恢復。"
+            "value": "把電腦匯出的遊戲（它的 .s2arm 和 .img 檔案）放進一個資料夾，例如外接硬碟裡的，再在這裡新增它。S2Arm 直接從那個資料夾裡玩，遊戲資料不複製進來。存檔留在本 App 裡。硬碟要格式化成 APFS。在電腦上更新遊戲後，再匯出一次，這台裝置才拿到新版。硬碟沒接上時，它裡面的遊戲仍留在遊戲庫裡、顯示為灰色，接上後自己恢復。"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "パソコンから書き出したゲーム（.img ファイル）をフォルダ（外付けドライブ内など）に入れ、ここで追加してください。S2Arm はコピーせずにそのフォルダから直接遊びます。セーブデータはこの App 内に残ります。ドライブがつながっていないときも、そのゲームはグレー表示でライブラリに残り、つなぐと元に戻ります。"
+            "value": "パソコンから書き出したゲーム（.s2arm と .img ファイル）をフォルダ（外付けドライブ内など）に入れ、ここで追加してください。S2Arm はゲームデータをコピーせずにそのフォルダから直接遊びます。セーブデータはこの App 内に残ります。ドライブは APFS でフォーマットしてください。パソコンでゲームを更新したら、もう一度書き出すとこのデバイスに新しいバージョンが届きます。ドライブがつながっていないときも、そのゲームはグレー表示でライブラリに残り、つなぐと元に戻ります。"
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Pon los juegos exportados desde el ordenador (archivos .img) en una carpeta, por ejemplo en un disco externo, y añádela aquí. S2Arm los juega desde esa carpeta sin copiarlos. Las partidas guardadas se quedan en esta app. Si el disco no está conectado, sus juegos siguen en la biblioteca, en gris, y vuelven cuando lo conectas."
+            "value": "Pon los juegos exportados desde el ordenador (sus archivos .s2arm e .img) en una carpeta, por ejemplo en un disco externo, y añádela aquí. S2Arm los juega desde esa carpeta sin copiar los datos del juego. Las partidas guardadas se quedan en esta app. Formatea el disco como APFS. Después de actualizar un juego en el ordenador, vuelve a exportarlo para que este dispositivo reciba la nueva versión. Si el disco no está conectado, sus juegos siguen en la biblioteca, en gris, y vuelven cuando lo conectas."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Placez les jeux exportés depuis l’ordinateur (fichiers .img) dans un dossier, par exemple sur un disque externe, puis ajoutez-le ici. S2Arm les lance depuis ce dossier sans les copier. Les sauvegardes restent dans cette app. Si le disque n’est pas branché, ses jeux restent dans la bibliothèque, en gris, et reviennent une fois le disque branché."
+            "value": "Placez les jeux exportés depuis l’ordinateur (leurs fichiers .s2arm et .img) dans un dossier, par exemple sur un disque externe, puis ajoutez-le ici. S2Arm les lance depuis ce dossier sans copier les données du jeu. Les sauvegardes restent dans cette app. Formatez le disque en APFS. Après avoir mis à jour un jeu sur l’ordinateur, exportez-le à nouveau pour que cet appareil reçoive la nouvelle version. Si le disque n’est pas branché, ses jeux restent dans la bibliothèque, en gris, et reviennent une fois le disque branché."
           }
         }
       }
