@@ -11126,6 +11126,8 @@ static void spec_probe(MTLRenderPipelineDescriptor *d, NvShader *vs, NvShader *f
     } } });
 }
 #include "nvn_hybrid.inc"   // 混合管线：拉取式顶点 + 特化（hybrid_get、pull_bind）
+// 单测闸门（t_nvn_hybrid）：非空时后台精确编译开始前先等它放行，单测据此让「精确那条还在编」这一刻确定成立，判据不随编译快慢 / 归档冷热变；产品里恒为空
+static dispatch_semaphore_t g_pp_test_hold;
 static void pso_pend_kick(const pso_key *k, NvShader *vs, NvShader *fs) {   // Called by the submit thread: kick only if it is neither in the cache nor in the table
     if (hm_get_id(&g_pso, k) || !pso_pair_ok(vs, fs, 0)) return;
     pthread_mutex_lock(&g_pp_mu);
@@ -11141,7 +11143,9 @@ static void pso_pend_kick(const pso_key *k, NvShader *vs, NvShader *fs) {   // C
     g_pp_kicked++; NSString *pkey = par_rkey(k, vs, fs, 0, nil); pso_key kc = *k;
     // The descriptor is made in the block, off the submit thread: picking the fragment entry can specialize it (fs_atms_fn: output types, alpha test; #427), and the draw's wait
     //   (pso_pend_take, fu_take) then counts that time instead of the submit thread spending it before the wait starts (the first-use split showed "built here 0.6 ms" for 90–157 ms)
+    dispatch_semaphore_t hold = g_pp_test_hold;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        if (hold) { dispatch_semaphore_wait(hold, DISPATCH_TIME_FOREVER); dispatch_semaphore_signal(hold); }
         MTLRenderPipelineDescriptor *d = pso_desc(&kc, vs, fs, nil, 0);
         if (spec_probe_on()) spec_probe(d, vs, fs);   // #1001 diagnostic, off by default
         NSError *e = nil; id<MTLRenderPipelineState> ps = par_render(d, pkey, &e);
