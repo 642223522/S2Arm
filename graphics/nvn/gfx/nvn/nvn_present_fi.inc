@@ -76,6 +76,7 @@ static int fi_wanted_now(void) {
 // 放掉一份插值器自己进驻留集的贴图 / 缓冲（fi_tex、uv、运动矢量那几块）：驻留集持有它们，只把对象置空不会释放。
 //   诊断#D-YVDD（11-22 #2111，杀戮尖塔 iPhone）：游戏每帧把画面尺寸在 1263–1295 × 715–720 之间微调（屏幕震动），插值器跟着「画面比例变了、整个重建」几百次，
 //   旧的一套（两张输入、补出帧、深度、运动 + 运动矢量各块）一直挂在驻留集里，GPU 占用一路涨到约 10 GB 后被系统杀。出集在下一次 res_commit 生效，在途 GPU 工作由命令缓冲持有
+API_AVAILABLE(macos(26.0), ios(26.0))
 static void fi_release(NvPresentFI *f) {
     if (!f) return;
     id<MTLResource> rs[] = { f->in_tex[0], f->in_tex[1], f->mid_tex, f->depth, f->motion, f->fsr_in, f->luma[0], f->luma[1], f->luma16[0], f->luma16[1],
@@ -83,7 +84,7 @@ static void fi_release(NvPresentFI *f) {
     for (size_t i = 0; i < sizeof rs / sizeof *rs; i++) if (rs[i]) res_remove(rs[i]);
     res_commit();
 }
-static void fi_off(const char *why) { fi_release(g_fi); g_fi_state = 0; g_fi = nil; MLOG("【红】 present frame interpolation turned off: %s; presenting as before", why); fi_link_follow(0); }   // 整段回退：显示链设回（审计 P1-188）
+static void fi_off(const char *why) { if (@available(macOS 26.0, iOS 26.0, *)) fi_release(g_fi); g_fi_state = 0; g_fi = nil; MLOG("【红】 present frame interpolation turned off: %s; presenting as before", why); fi_link_follow(0); }   // 整段回退：显示链设回（审计 P1-188）
 
 API_AVAILABLE(macos(26.0), ios(26.0))
 static id<MTLTexture> fi_tex(MTLPixelFormat pf, int w, int h, MTLTextureUsage u) {
