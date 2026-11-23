@@ -10,6 +10,11 @@
 #   有单测文件的组要 rc=0 且有「✓ t_」行、没有「✗ t_」行；build.mk 里没有单测文件的目标（ns2pro、touch_compat，打自己的通过行）只要 rc=0。
 # 本机自测排在门禁后面：不在门禁里跑（没有 GATE2_PAR）就把自己降到 nice 15，子进程继承；门禁步的优先级由门禁自己定
 [ -n "${GATE2_PAR:-}" ] || renice 15 -p $$ > /dev/null 2>&1 || true
+# C# 编译串行（同 graphics/gate.sh：门禁 tools/gate.sh 已接则沿用，单独跑本钩子时这里接上）：各组并行时 graphics_session 的 nxaot（dotnet publish）
+#   与别的组同编 compat/tree，共用 obj/ bin/ 互踩（11-23 开发者单独跑本钩子：NU5026 Ryujinx.Common.dll not found on disk；门禁里有锁、11-16 起没出过）
+if [ -z "${S2A_DOTNET_LOCK:-}" ] && [ -f tools/dotnet_lock.c ] && mkdir -p build/dotnet_lock && cc -O2 -o build/dotnet_lock/dotnet tools/dotnet_lock.c 2> /dev/null; then
+  export S2A_DOTNET_REAL=${DOTNET:-$HOME/.dotnet/dotnet} S2A_DOTNET_LOCK=$PWD/build/.dotnet_build.lock DOTNET=$PWD/build/dotnet_lock/dotnet PATH=$PWD/build/dotnet_lock:$PATH
+fi
 set -u
 GT=300   # 每组无进展秒：连续这么久日志不长、进程树 CPU / 磁盘不涨、没有编译子进程才判挂死（tools/nostall.py）
 GHX=${GATE_HARD_X:-4}   # 墙钟保底 = GT × GHX：只兜一直吃 CPU 的死循环。11-21：原先每组固定墙钟 300 秒，本机同时出候选（负载 70）时
