@@ -122,7 +122,6 @@ def build(base, capture, output, cli, compiler_identity):
         raise ValueError('采集与原种子的完整 profile、ABI 或闭包不符')
     command = direct_batch.cli_command(cli)
     closure = direct_batch.load_identity(compiler_identity)['closure']
-    wanted = {i for i, (r, _) in programs.items() if r[61:63] == bytes([2, 1])}
     seen_pipes = {e[:32] for e in after}
     accepted = set()
     cohort = None
@@ -142,12 +141,13 @@ def build(base, capture, output, cli, compiler_identity):
                 raise ValueError('录制混局或编译器闭包不符')
             cohort = current
             identity = bytes.fromhex(path.stem)
-            if identity not in wanted or identity not in seen_pipes or identity not in observed:
+            if identity not in programs or identity not in seen_pipes or identity not in observed:
+                continue
+            # 同一局的普通编译请求保留真实绘制事实。清单中的 lp_ok 描述预编库适用性，后续两字节保留。
+            if req['_kind'] != 'graphics' or req['program']['graphicsState']['hasUnalignedStorageBuffer'] is not True:
                 continue
             if not same_program(programs[identity], observed[identity]):
                 raise ValueError(f'{path.stem}: 同身份的阶段或 c1 原文不符')
-            if req['_kind'] != 'graphics' or req['program']['graphicsState']['hasUnalignedStorageBuffer'] is not True:
-                raise ValueError(f'{path.stem}: 缺少真实非对齐绘制事实')
             request = scratch / 'request.json'
             request.write_bytes(body)
             result = direct_batch.compile_one(command, {'index': n, 'request': request}, scratch)
@@ -163,7 +163,7 @@ def build(base, capture, output, cli, compiler_identity):
             (alternate / (path.stem + '.program')).write_bytes(library.encode_container(path.stem, payload))
             accepted.add(identity)
         if not accepted:
-            raise ValueError(f'交集为空（种子窗口身份 {len(wanted)}，延后 {deferred}）')
+            raise ValueError(f'无可封装的同局非对齐程序（延后 {deferred}）')
         replacement = [e for e in before if e[:32] not in accepted] + [e for e in after if e[:32] in accepted]
         alt_pipes = seed.pipe_bytes(replacement)
         seed.pipe_check(alt_pipes)
@@ -177,7 +177,7 @@ def build(base, capture, output, cli, compiler_identity):
         (alternate / 'index.json').write_text(json.dumps(receipt, indent=2) + '\n')
         stage_companion(alternate, scratch / 'verified', name, original, base_pipes)
         donor.rename(output)
-    return f'非窗口种子：窗口目标 {len(wanted)}，生成 {len(accepted)}，未覆盖 {len(wanted)-len(accepted)}，延后 {deferred}，替换后管线 {len(replacement)}'
+    return f'非窗口种子：同局非对齐程序 {len(accepted)+deferred}，生成 {len(accepted)}，延后 {deferred}，替换后管线 {len(replacement)}'
 
 
 if __name__ == '__main__':

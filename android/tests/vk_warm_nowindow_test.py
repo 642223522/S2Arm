@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from direct_batch_test import built_tools
 
@@ -55,11 +56,11 @@ class WarmNowindowTest(unittest.TestCase):
                            env=env_arms, check=True)
             (capsule,) = (capture / 'warm-nowindow-capture').glob('*.request')
             (manifest,) = capture.glob('programs-v1-*.bin')
-            original = bytearray(manifest.read_bytes())
+            original = manifest.read_bytes()
             ident = bytes.fromhex(capsule.stem)
             self.assertEqual(original[seed.PROG_HDR:seed.PROG_HDR+32], ident)
-            original[seed.PROG_HDR+61:seed.PROG_HDR+63] = bytes([2, 1])
-            struct.pack_into('<Q', original, len(original)-8, seed.fnv1a64(original[:-8]))
+            # 使用原生写入器的原件；第 62 字节保留，不能作为是否需要补件的依据。
+            self.assertEqual(original[seed.PROG_HDR+62], 0)
             (baseline / manifest.name).write_bytes(original)
             # The two fixture descriptors differ at the real clip_neg1 byte.
             # GPU object creation and guest-memory assertions belong to the Vulkan test.
@@ -85,6 +86,18 @@ class WarmNowindowTest(unittest.TestCase):
             self.assertEqual(json.loads(packed)['contentHash'], json.loads(payload)['contentHash'])
             self.assertEqual(len(list((final / 'nowindow').iterdir())), 2)
             self.assertFalse(list(packaged.rglob('*.request')))
+            # 负控：保持同一原生清单、请求与管线，只把基准候选集合退回旧的两字节选择。
+            name, raw, records, pipes = companion.manifests(baseline)
+            legacy_records = {key: record for key, record in records.items()
+                              if record[0][61:63] == bytes((2, 1))}
+            self.assertIn(ident, records)
+            self.assertNotIn(ident, legacy_records)
+            legacy_source = root / 'legacy-selector'
+            with patch.object(companion, 'manifests', side_effect=[
+                    (name, raw, legacy_records, pipes), companion.manifests(capture)]):
+                with self.assertRaisesRegex(ValueError, '无可封装的同局非对齐程序'):
+                    companion.build(baseline, capture, legacy_source, cli, identity_path)
+            self.assertFalse(legacy_source.exists())
             stored = next((source / 'nowindow').glob('*.program'))
             bad = bytearray(stored.read_bytes())
             bad[-1] ^= 1

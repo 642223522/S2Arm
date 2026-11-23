@@ -766,8 +766,10 @@ def validate_request(raw, what):
         constant_buffer_use[name] = _integer(stage.get('constantBufferUse', 0),
                                              f'{where}.constantBufferUse', 0, 0xFFFFFFFF)
     expected = GRAPHICS_STAGES if kind == 'graphics' else COMPUTE_STAGES
-    if set(names) != set(expected) and not (v2 and set(names) == set(GEOMETRY_STAGES)):
+    vertex_only = kind == 'graphics' and names == ['vs']
+    if not vertex_only and set(names) != set(expected) and not (v2 and set(names) == set(GEOMETRY_STAGES)):
         _fail(f'{what}: program.stages {sorted(names)} is not {list(expected)}'
+              + (" or ['vs']" if kind == 'graphics' else '')
               + (f' or {list(GEOMETRY_STAGES)}' if v2 else '') + f' for kind={kind}')
     linked = doc.get('requiresLinkedVaryingInterface', False)
     if not isinstance(linked, bool) or (linked and (kind != 'graphics' or tuple(names) != GRAPHICS_STAGES)):
@@ -853,9 +855,9 @@ def validate_result(raw, what, request=None, descriptor=None, expected_profile=N
         }
         constant_buffer_use[name] = _integer(stage.get('constantBufferUse', 0),
                                              f'{where}.constantBufferUse', 0, 0xFFFFFFFF)
-    if tuple(names) != expected and not (kind == 'graphics' and tuple(names) == GEOMETRY_STAGES):
+    if tuple(names) != expected and not (kind == 'graphics' and tuple(names) in (('vs',), GEOMETRY_STAGES)):
         _fail(f'{what}: content.stages is {names}, expected {list(expected)}'
-              + (f' or {list(GEOMETRY_STAGES)}' if kind == 'graphics' else '') + f' for kind={kind}')
+              + (f" or ['vs'] or {list(GEOMETRY_STAGES)}" if kind == 'graphics' else '') + f' for kind={kind}')
     support = _object(content.get('supportLayout'), f'{what}.content.supportLayout')
     support_hash = _content_root(support.get('hash'), f'{what}.content.supportLayout.hash')
     bindings = _array(content.get('bindings'), f'{what}.content.bindings')
