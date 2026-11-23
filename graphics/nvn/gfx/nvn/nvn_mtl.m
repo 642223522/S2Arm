@@ -10575,6 +10575,7 @@ static os_unfair_lock g_fz_fn_lock = OS_UNFAIR_LOCK_INIT;
 typedef struct { char key[24]; uint8_t fbmask, nfc; int8_t fx[32]; uint8_t lmap[8]; } bf_key;
 static nvn_hmap g_bf_fn = {.klen = sizeof(bf_key)}; static unsigned g_bf_libs;
 static nvn_hmap g_pso = {.klen = sizeof(pso_key)}, g_dss;
+static void pb_tick(void); static void pb_touch_r(const pso_key *k); static void pb_built_r(const pso_key *k); static int pb_warm_full(uint64_t built_unclaimed);   // 管线额度（nvn_pso_budget.inc）：先用到的几个
 static nvn_hmap g_pso_fail = {.klen = sizeof(pso_key)};   // pipelines that failed to build: remembered and never retried (previously every draw recompiled it, over 10,000 times in one iPhone session)
 static const char g_tf_mark;
 static char g_geo_mark;
@@ -11393,8 +11394,9 @@ static void *pso_get_vs_ptr(NvProg *pr, NvShader *vs) {   // borrowed: g_pso hol
       if (at > 0 && cf - f0 + 1 == at && skip_safe(vs, fs)) {
           static uint64_t n; if (!(++n & (n - 1))) MLOG("skip-safe test (DM_NVN_SKIP_SAFE_AT=%ld): %llu draws skipped; %llu steady answers so far came from the storage only", at, (unsigned long long)n, (unsigned long long)g_rt_steady_mem);
           g_first_skipped = 1; PSO_WHY("skip-safe test frame"); return NULL; } }
+    pb_tick();   // 管线额度：每帧第一次查表时检查、超额放掉久没用的（nvn_pso_budget.inc）
     __unsafe_unretained id<MTLRenderPipelineState> cached = hm_get_id(&g_pso, &k);
-    if (cached) return (__bridge void *)cached;
+    if (cached) { pb_touch_r(&k); return (__bridge void *)cached; }
     if (hm_get_id(&g_pso_fail, &k)) { PSO_WHY("on the failed list (its first build was refused; the red line then said why)"); return NULL; }
     { NSNumber *r = hm_get_id(&g_pso_retry, &k); if (r && pso_retry_frame(r.unsignedLongLongValue) > atomic_load(&g_cur_frame)) { g_first_skipped = 1; PSO_WHY("waiting to retry after a compiler service failure"); return NULL; } }   // waiting to retry (pso_err_transient)
     if (quar_has(vs, fs)) { hm_put_id(&g_pso_fail, &k, NSNull.null); PSO_WHY("quarantined after a GPU error"); return NULL; }   // a GPU error quarantined it (quar_fault)
@@ -11483,7 +11485,7 @@ static void *pso_get_vs_ptr(NvProg *pr, NvShader *vs) {   // borrowed: g_pso hol
         pso_record("R\t%s\n", shex);
         pso_user_record("R\t%s\n", shex); }
     quar_built(vs, fs);
-    hm_put_id(&g_pso, &k, ps);
+    hm_put_id(&g_pso, &k, ps); pb_built_r(&k);
     return (__bridge void *)ps;
 }
 static NSString *warm_key(const char *s, size_t n) {
@@ -11777,6 +11779,7 @@ static void warm_task_(WarmTask *t) {
             if (sh) { WarmItem *item = [WarmItem new]; item->kind = 0; item->key = t->key; item->shader = sh; warm_enqueue(item); g_warm_shaders++; }
             g_warm_done++; return;
         }
+        if ((t->kind == 1 || t->kind == 2) && pb_warm_full((g_warm_rps + g_warm_cps) - (g_warm_claim_rps + g_warm_claim_cps))) { g_warm_done += t->kind == 1 ? (long)t->rs.count : 1; return; }   // 管线额度：到预热线就停，剩下的首遇时建
         if (t->kind == 2) {
             NvShader *cs = warm_shader(t->key, 5); NSError *e = nil;
             if (cs && cs->tensor == 1) { g_warm_skip_fz++; g_warm_done++; return; }   // a tensor-core network program: never dispatched (nvn_tensor.inc), no pipeline
@@ -16459,7 +16462,7 @@ static void *tf_pso_ptr(NvShader *vs) {
     if (hm_get_id(&g_pso_fail, &k)) return NULL;
     NSError *e = nil; id<MTLRenderPipelineState> ps = [g_dev newRenderPipelineStateWithDescriptor:pso_desc(&k, vs, nil, nil, 0) error:&e];
     if (!ps) { MLOG("【红】 failed to create the transform feedback pipeline (vertex %s): %s", vs->key, e.localizedDescription.UTF8String); hm_put_id(&g_pso_fail, &k, NSNull.null); return NULL; }
-    hm_put_id(&g_pso, &k, ps);
+    hm_put_id(&g_pso, &k, ps); pb_built_r(&k);
     return (__bridge void *)ps;
 }
 // Instanced draws capture one instance at a time (the feedback stage writes instance j's vertices after instance j - 1's). Indexed draws capture each index in draw order: the
@@ -17424,6 +17427,7 @@ static void draw_emit(id en, MTLPrimitiveType mp, int prim, const p_draw *dw, co
 static nvn_hmap g_cps = {.klen = sizeof(void *)};
 typedef struct { const void *cs; uintptr_t fc; } cps_se_key;
 static nvn_hmap g_cps_se = {.klen = sizeof(cps_se_key)};   // S2Arm #800: compute pipelines of the sampler-emulation variant (se_want), by shader and SE_* bits: keyed apart from main0's
+#include "nvn_pso_budget.inc"   // 管线额度：常驻条数、按最后用到的帧淘汰、预热按额度停（S2Arm 11-22，AGX 编译变体额度）
 static void warm_claim(void) {
     if (!atomic_exchange_explicit(&g_warm_ready, 0, memory_order_acq_rel)) return;
     os_unfair_lock_lock(&g_warm_lock);
@@ -17438,11 +17442,11 @@ static void warm_claim(void) {
         } else if (item->kind == 4) {
             mtk_warm_claim(item->mkey, item->object);
         } else if (item->kind == 1) {
-            if (!hm_get_id(&g_pso, &item->pso)) { hm_put_id(&g_pso, &item->pso, item->object); g_warm_claim_rps++; }
+            if (!hm_get_id(&g_pso, &item->pso)) { hm_put_id(&g_pso, &item->pso, item->object); pb_built_r(&item->pso); g_warm_claim_rps++; }
         } else {
             const void *key = (__bridge const void *)item->shader; cps_se_key fk = {key, (uintptr_t)item->fc};   // S2Arm #800: an emulation variant's pipeline goes where dispatch looks for it
             nvn_hmap *cps = item->fc ? &g_cps_se : &g_cps; const void *ck = item->fc ? (const void *)&fk : (const void *)&key;
-            if (!hm_get_id(cps, ck)) { hm_put_id(cps, ck, item->object); g_warm_claim_cps++; }
+            if (!hm_get_id(cps, ck)) { hm_put_id(cps, ck, item->object); pb_built(item->fc ? &g_pb_use_s : &g_pb_use_c, item->fc ? &g_pb_gone_s : &g_pb_gone_c, ck); g_warm_claim_cps++; }
         }
     }
 }
@@ -17576,8 +17580,11 @@ static void dispatch(const p_dispatch *dp) {
     const void *k = (__bridge const void *)cs;
     int fc = se_want(S.cprog, cs, 5);   // S2Arm #800: this dispatch binds a sampler the GPU cannot reduce natively: the reduction variant (see se_bind)
     cps_se_key fk = {k, (uintptr_t)fc}; nvn_hmap *cps = fc ? &g_cps_se : &g_cps; const void *ck = fc ? (const void *)&fk : (const void *)&k;
+    pb_tick();   // 管线额度（nvn_pso_budget.inc）
+    nvn_hmap *pb_use = fc ? &g_pb_use_s : &g_pb_use_c, *pb_gone = fc ? &g_pb_gone_s : &g_pb_gone_c;
     id<MTLComputePipelineState> ps = hm_get_id(cps, ck);
     if ((id)ps == (id)NSNull.null) return;   // its pipeline failed before: built once, reported once (see below)
+    if (ps) pb_touch(pb_use, ck);
     if (!ps) {
         // #884：Metal 编译服务对一条计算管线现编一直不返回，提交线程跟着卡死（开场剧情固定定格）。至多等 DM_NVN_CPSO_WAIT_MS（缺省 60000，0 = 不限）：
         //   等不到就跳过这一次派发、不记失败，后台编完下一次派发直接用（pso_archive.h par_compute_wait）。缺省原为 10 秒，11-14 改 60 秒（#065090）：309 份诊断里编满 5 秒的
@@ -17600,10 +17607,10 @@ static void dispatch(const p_dispatch *dp) {
                                                     cs->key, fc ? " (sampler-emulation variant)" : "", (long long)(cwait / 1000000)); } return; }
         // A failure is remembered like a success: it was rebuilt at every dispatch (Monster Hunter Rise's 36,880-byte threadgroup memory, over Apple's 32,768: 2,472–6,450 builds in one
         // Mac run; on the test device the compiles kept the frame from ending for 45 s, 10-26 cold run, frame 1150)
-        if (!ps) { MLOG("【红】 failed to create compute pipeline %s%s: %s", cs->key, fc ? " (sampler-emulation variant)" : "", e.localizedDescription.UTF8String); hm_put_id(cps, ck, NSNull.null); return; }
+        if (!ps) { MLOG("【红】 failed to create compute pipeline %s%s: %s", cs->key, fc ? " (sampler-emulation variant)" : "", e.localizedDescription.UTF8String); hm_put_id(cps, ck, NSNull.null); pb_cfail_note(); return; }
         pso_record("C\t%s\n", cs->key);
         if (cs->key[0]) { if (fc) pso_user_record("C\t%s\t%x\n", cs->key, fc); else pso_user_record("C\t%s\n", cs->key); }   // a reduction variant's: its bits (warm_parse masks them per GPU)
-        hm_put_id(cps, ck, ps);
+        hm_put_id(cps, ck, ps); pb_built(pb_use, pb_gone, ck);
     }
     if (cs->builtin) {   // Built-in compute kernel: n = uniform buffer 0, src = storage buffer 0, dst = storage buffer 1
         const p_bind_buf *u = &S.ubo[5][0], *a0 = &S.ssbo[5][0], *a1 = &S.ssbo[5][1];
