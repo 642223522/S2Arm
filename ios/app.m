@@ -735,6 +735,13 @@ static void audio_category_apply(void) {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         AVAudioSession *s = AVAudioSession.sharedInstance;
         NSString *want = mix ? AVAudioSessionCategoryAmbient : play ? AVAudioSessionCategoryPlayback : AVAudioSessionCategorySoloAmbient;
+        // 每次（起局 / 回前台 / 改设置）记一行现状：「没声音」类诊断据此判是不是跟随静音键的类别、声音去了哪个输出、系统音量是不是 0
+        //   （D-N6G7 等：管线满、设备照常播完，看不出声音被谁吞了；静音拨片本身的状态系统不给读，类别 SoloAmbient / Ambient 才会被它静音）
+        { NSMutableString *outs = [NSMutableString string];
+          for (AVAudioSessionPortDescription *o in s.currentRoute.outputs) [outs appendFormat:@"%s%@", outs.length ? ", " : "", o.portType];
+          NSString *cat = s.category;
+          LOG("[声] 音频会话现状：类别 %s（%s）、输出 %s、系统音量 %.0f%%", cat.UTF8String ?: "?",
+              [cat isEqualToString:AVAudioSessionCategoryPlayback] ? "不跟随静音键" : "跟随静音键：拨到静音就没声音", outs.length ? outs.UTF8String : "无", s.outputVolume * 100.0); }
         if ([s.category isEqualToString:want]) return;
         NSError *e = nil; BOOL ok = [s setCategory:want error:&e];
         LOG("[声] 音频会话类别 → %s（%s）%s%s", mix ? "Ambient" : play ? "Playback" : "SoloAmbient", mix ? "与其他 App 混音、静音键只静音游戏" : play ? "静音键下照样出声" : "跟随静音键",
