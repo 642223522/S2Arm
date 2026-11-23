@@ -125,6 +125,10 @@ namespace S2A.Services.Tests
             npads.PushImu(PlayerIndex.Player1, new Vector3(0.5f, 0.25f, 1f), new Vector3(10, 20, 30), 405000);
             npads.PushImu(PlayerIndex.Player1, new Vector3(0.5f, 0.25f, 1f), new Vector3(10, 20, 30), 404000);
             Check("NpadImu ⑩ 时间戳相同 / 倒退的读数不重写：玩家 1 传感器 0 写入位置", "2", $"{Wi(0)}");
+            // ⑪ 往回跳 1 秒以上 = 换了时钟（这一格换了体感源）：照新样本写。先推到 3 秒（写入位置 3），再推 1 秒（往回 2 秒）→ 写入位置 4
+            npads.PushImu(PlayerIndex.Player1, new Vector3(0.5f, 0.25f, 1f), new Vector3(10, 20, 30), 3000000);
+            npads.PushImu(PlayerIndex.Player1, new Vector3(0.5f, 0.25f, 1f), new Vector3(10, 20, 30), 1000000);
+            Check("NpadImu ⑪ 时间戳往回跳 1 秒以上（换了时钟）照写：玩家 1 传感器 0 写入位置", "4", $"{Wi(0)}");
             npads.Configure();
         }
     }
