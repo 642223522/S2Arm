@@ -199,9 +199,14 @@ def main():
              'unaligned CS storage refuses the library'),
             # 诊断（对齐闸拒查日志 / 没走库原因备忘）：各撤一处，--cs-libpack 必红在对应断言
             ('no-summary-line', 'else if (!((n + 1) & 63)) {', 'else if (0) {', '141 refusals log two summary lines'),
-            ('no-unaligned-note', '            cs_note_set(ckey, CSN_UNALIGNED);\n', '', 'unaligned refuse is remembered'),
-            ('shared-not-named', 'strstr(lw, "exceeds device limit") ? CSN_SHARED :', '0 ? CSN_SHARED :', 'shared-memory gate refusal is remembered'),
-            ('hit-keeps-note', 'if (ckey) cs_note_set(ckey, lrc == S2A_LIBPACK_HIT ? CSN_NONE :', 'if (ckey) cs_note_set(ckey, lrc == S2A_LIBPACK_HIT ? CSN_UNALIGNED :', 'a library hit clears the remembered reason'),
+            ('no-unaligned-note', '            cs_note_set(ckey, cs_note_of_lib(S2A_LIBPACK_REJECT, S2A_LIBPACK_WHY_UNALIGNED));\n', '', 'unaligned refuse is remembered'),
+            # 原因按码分类（libpack_vk.h enum s2a_libpack_why）：映射表里各撤一处 / 命中不清备忘 / 记坏路径各撤一处，--cs-libpack 必红在对应断言
+            ('shared-code-unmapped', '    case S2A_LIBPACK_WHY_SHARED_LIMIT: return CSN_SHARED;\n', '', 'shared-memory gate refusal is remembered'),
+            ('reflect-code-unmapped', '    case S2A_LIBPACK_WHY_REFLECT: return CSN_REFLECT;\n', '', 'SPIR-V capability refusal is remembered as a reflection refusal'),
+            ('hit-keeps-note', '    if (lrc == S2A_LIBPACK_HIT) return CSN_NONE;\n', '    if (lrc == S2A_LIBPACK_HIT) return CSN_UNALIGNED;\n', 'a library hit clears the remembered reason'),
+            ('mark-bad-no-note', '    if (ckey) cs_note_set(ckey, CSN_BUILD);', '    (void)ckey;', 'a marked-bad library program is remembered as a build failure'),
+            ('bad-hit-no-note', '    if (bad && ckey) cs_note_set(ckey, (uintptr_t)bad == LPBAD_BUILD ? CSN_BUILD : CSN_REJECT);\n', '', 'a bad-table hit is reported as a build failure'),
+            ('bad-reason-dropped', '(void *)(uintptr_t)LPBAD_BUILD);', '(void *)(uintptr_t)99);', 'a bad-table hit is reported as a build failure'),
         ):
             assert code.count(old) == 1, (name, 'mutation anchor')
             path = out / ('cs-libpack-mutant-' + name + '.c')
@@ -209,7 +214,16 @@ def main():
             result = run('cs-libpack-' + name, path, args=('--cs-libpack',))
             assert result.returncode != 0 and expected in result.stderr, (name, result.stdout, result.stderr)
             print(f'{name}: expected assertion failure: {expected}', flush=True)
-        print('PASS: 5 libpack CS negative controls')
+        # 正控：把 why 文本清空（模拟改了报错文案 / 文案消失）备忘仍归对类——分类读的是码，不是文本
+        text_gone = code.replace('pc->translator_closure, pf.max_shared, bytes, len, lw, sizeof lw, &lwhy);',
+                                 'pc->translator_closure, pf.max_shared, bytes, len, lw, sizeof lw, &lwhy); lw[0] = 0;')
+        assert text_gone != code, 'text-independence anchor'
+        path = out / 'cs-libpack-text-gone.c'
+        path.write_text(text_gone)
+        result = run('cs-libpack-text-gone', path, args=('--cs-libpack',))
+        assert result.returncode == 0 and ' 0 failures' in result.stdout, ('text-independence control', result.stdout, result.stderr)
+        print('text-gone: PASS with the why text blanked (classification is by code)', flush=True)
+        print('PASS: 9 libpack CS negative controls + 1 text-independence control')
         return 0
 
     if sys.argv[1:] == ['--graphics-image-mutants']:

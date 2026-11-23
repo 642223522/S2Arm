@@ -1909,6 +1909,58 @@ static int cs_libpack_test(void) {
         note = nvk_shader_cs_lib_note(rp_S.skey[5]);
         CHECK(note && strstr(note, "没有这一键"), "missing key is remembered: %s", note ? note : "(none)");
         cs_lib_root_rm(sroot); cs_lib_root_rm(mroot); setenv("S2A_SHADER_REVISION_ROOT", root, 1); }
+    // 原因按码分类（libpack_vk.h enum s2a_libpack_why），不按 why 文本：每一类各出一份真库件，核备忘归对类
+    {   char rroot[256], oroot[256];
+        // 反射 / 能力核拒：模块用 64 位浮点（OpCapability Float64 + OpTypeFloat 64）→ 出库拒（WHY_REFLECT）
+        static const uint32_t f64spv[] = {
+            0x07230203u, 0x00010000u, 0u, 2u, 0u,
+            0x00020011u, 10u,                 // OpCapability Float64
+            0x00030016u, 1u, 64u,             // %1 = OpTypeFloat 64
+        };
+        const uint8_t *rd[2] = { (const uint8_t *)csjson, (const uint8_t *)f64spv };
+        size_t rn[2] = { strlen(csjson), sizeof f64spv };
+        CHECK(cs_lib_root(rroot, ck, ckind, rd, rn, 2) == 0, "reflection-refused library piece written (own root)");
+        rp_shader_reset(); p = NULL;
+        CHECK(rp_shader_resolve_compute(&p) == 0 && p, "reflection-refused piece falls back to live compile");
+        const char *note = nvk_shader_cs_lib_note(rp_S.skey[5]);
+        CHECK(note && strstr(note, "反射"), "SPIR-V capability refusal is remembered as a reflection refusal: %s", note ? note : "(none)");
+        // 其它拒收：_b.json 的 dm_ctl 与键不符（WHY_OTHER，既不是反射也不是共享内存）→ 备忘「库件被拒收」且不带反射 / 共享内存字样
+        char badjson[512];
+        snprintf(badjson, sizeof badjson, "{\"key\":\"%s_b\",\"stage\":\"cs\",\"dm_ctl\":\"0000000000000000\",\"bindings\":["
+                 "{\"msl_name\":\"cp_c0\",\"kind\":\"drvcb\",\"bank\":0,\"arg_id\":0}]}", khex);
+        const uint8_t *od[2] = { (const uint8_t *)badjson, (const uint8_t *)csspv };
+        size_t on[2] = { strlen(badjson), sizeof csspv };
+        CHECK(cs_lib_root(oroot, ck, ckind, od, on, 2) == 0, "other-refused library piece written (own root)");
+        rp_shader_reset(); p = NULL;
+        CHECK(rp_shader_resolve_compute(&p) == 0 && p, "other-refused piece falls back to live compile");
+        note = nvk_shader_cs_lib_note(rp_S.skey[5]);
+        CHECK(note && strstr(note, "被拒收") && !strstr(note, "反射") && !strstr(note, "共享内存"),
+              "other refusal is remembered as plain rejection: %s", note ? note : "(none)");
+        cs_lib_root_rm(rroot); cs_lib_root_rm(oroot); setenv("S2A_SHADER_REVISION_ROOT", root, 1); }
+    // 取到库件但 build 不过（129 个 cbuf 绑定超过程序条目上限）：记坏时留原因，备忘「库件 build 失败」；之后命中记坏表也按这个归类，
+    //   不再留着上一次的状态（修前：对齐闸拒查留下「非对齐」后，命中记坏表直接返回，备忘不更新；命中库后清空的备忘则只剩「没有出库记录」）
+    {   const char *note; char broot[256]; static char bjson[8192]; int o = snprintf(bjson, sizeof bjson, "{\"key\":\"%s_b\",\"stage\":\"cs\",\"dm_ctl\":\"%s\",\"bindings\":[", khex, khex);
+        for (int i = 0; i < 129; i++)
+            o += snprintf(bjson + o, sizeof bjson - (size_t)o, "%s{\"msl_name\":\"cp_c%d\",\"kind\":\"cbuf\",\"reg\":%d,\"arg_id\":%d}", i ? "," : "", i, i % 16, i);
+        snprintf(bjson + o, sizeof bjson - (size_t)o, "]}");
+        const uint8_t *bd[2] = { (const uint8_t *)bjson, (const uint8_t *)csspv };
+        size_t bn[2] = { strlen(bjson), sizeof csspv };
+        CHECK(cs_lib_root(broot, ck, ckind, bd, bn, 2) == 0, "library piece that cannot be built written (own root)");
+        rp_shader_reset(); p = NULL; calls = compiler_calls;
+        CHECK(rp_shader_resolve_compute(&p) == 0 && p && compiler_calls == calls + 1,
+              "library piece that cannot be built falls back to live compile (calls=%d)", compiler_calls);
+        note = nvk_shader_cs_lib_note(rp_S.skey[5]);
+        CHECK(note && strstr(note, "build 失败"), "a marked-bad library program is remembered as a build failure: %s", note ? note : "(none)");
+        // 现在把备忘换成别的状态（非对齐闸拒查）：命中记坏表时必须改回「build 失败」，而不是留着「非对齐」或空
+        rp_S.ssbo[5][0].addr = 0x10001;
+        rp_shader_reset(); p = NULL; (void)rp_shader_resolve_compute(&p);
+        note = nvk_shader_cs_lib_note(rp_S.skey[5]);
+        CHECK(note && strstr(note, "非对齐"), "unaligned refuse replaces the note: %s", note ? note : "(none)");
+        rp_S.ssbo[5][0].addr = 0x10000;
+        rp_shader_reset(); p = NULL; (void)rp_shader_resolve_compute(&p);
+        note = nvk_shader_cs_lib_note(rp_S.skey[5]);
+        CHECK(note && strstr(note, "build 失败"), "a bad-table hit is reported as a build failure, not as a stale reason or as no record: %s", note ? note : "(none)");
+        cs_lib_root_rm(broot); setenv("S2A_SHADER_REVISION_ROOT", root, 1); }
     unsetenv("S2A_SHADER_REVISION_ROOT");
     char path[700];
     snprintf(path, sizeof path, "%s/lib.idx", dir); unlink(path); snprintf(path, sizeof path, "%s/lib.000.pak", dir); unlink(path);
