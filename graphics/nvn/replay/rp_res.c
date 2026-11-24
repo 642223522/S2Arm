@@ -1161,9 +1161,13 @@ static nvn_gpu_view view_by_id_decl(int id, uint8_t dtt, uint8_t dcls, nvn_gpu_c
     if (!planned) return rp_view_by_id(id, c, t_out);
     if (planned < 0) {
         if (g_decl_probe) { g_decl_unbridged = 1; return NULL; }   // 出库程序核对：声明是出包时推的，不绑零贴图、不记未接，交调用方换现编版
+        int cube = want == NVN_TEXTURE_TARGET_CUBEMAP || want == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY;
+        if (cube && want == have) {
+            nvn_unimpl("tex", "cube_view_layers", NULL);
+            return decl_zero(dtt, dcls, c);
+        }
         uint32_t layers = rp_tex_layer_count(&t);
         if (has_v && v.set_layers) layers = v.nlayers ? v.nlayers : (layers > v.min_layer ? layers - v.min_layer : 1);
-        int cube = want == NVN_TEXTURE_TARGET_CUBEMAP || want == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY;
         if (cube && (have == NVN_TEXTURE_TARGET_2D || (have == NVN_TEXTURE_TARGET_2D_ARRAY && layers < 6))) {
             if (!g_zero_cube_logged) {
                 g_zero_cube_logged = 1;
