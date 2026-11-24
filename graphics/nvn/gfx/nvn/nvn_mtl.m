@@ -908,7 +908,6 @@ static void ixc_prewarm(void); static void tensor_sq_prewarm(void);   // Switch 
 //   补帧开着也起显示链——进程内重启 / 切游戏后补帧任务与显示链同时取画布，CAMetalLayerInvalidOperation 闪退，#ee56e7 / #1155 的另一条入口）。
 //   0 = 出图线程自己取画布、1 = 60 Hz 显示链、2 = 高刷显示链
 static int g_link_base = 1;   // 不算补帧时的出图方式（环境 DM_PRESENT_LINK，缺省 1）：补帧这局 / 这一帧不补时回到它（fi_link_follow、fi_off）
-#if TARGET_OS_OSX
 // Metal 性能浮层开着没有、从哪认出来的（NULL = 没开）：见 present_link_from_env 里 #1523 那段
 static const char *metal_hud_source(void) {
     const char *e = getenv("MTL_HUD_ENABLED"); if (e && !strcmp(e, "1")) return "环境变量 MTL_HUD_ENABLED";
@@ -916,7 +915,6 @@ static const char *metal_hud_source(void) {
     for (uint32_t i = 0, n = _dyld_image_count(); i < n; i++) { const char *nm = _dyld_get_image_name(i); if (nm && strstr(nm, "libMTLHud")) return "浮层库 libMTLHud 已载入"; }
     return NULL;
 }
-#endif
 static int present_link_from_env(void) {
     const char *link = getenv("DM_PRESENT_LINK");
     int v = link ? atoi(link) : 1; if (v < 0 || v > 2) v = 1;
@@ -931,15 +929,15 @@ static int present_link_from_env(void) {
     //   CAMetalDisplayLinkUpdate 的 drawable 取值，把这个更新对象当 CAMetalLayer 交给浮层初始化，发 -device 不认 → ObjC 异常。
     //   macOS 27.2 上同样开浮层 + 显示链（本机最小程序，libMTLHud 已加载）跑 120 帧不崩，苹果已修；中间哪一版修的没核，按 27 以下都避开。
     //   玩家在启动器开了 Metal 性能浮层（MTL_HUD_ENABLED=1）时这一局出图线程自己取画布（同 DM_PRESENT_LINK=0），浮层照常显示
-#if TARGET_OS_OSX
+    //   D-3VFB（0.6.9 iPadOS 18.7.8）：iOS / iPadOS 同一个系统 bug（设置 → 开发者 → Metal 性能浮层，libMTLHud 载入，同一句 -[CAMetalDisplayLinkUpdate device]
+    //   unrecognized selector），原先只在 Mac 上避开。不分平台同一判法：系统版本号 26 起两边统一，27 以下都避开（同 Mac 口径，iOS 哪一版修的没核）
     //   #1523（D-H9ZM，0.5.7 macOS 15.7.9）：只认环境变量漏了别的打开方式——浮层开着、这一行没打、照样闪退。改成判浮层实际开没开：
     //   环境变量 MTL_HUD_ENABLED=1、偏好 MetalForceHudEnabled（含全局 defaults write -g，开发者设置用的就是它）、或浮层库 libMTLHud 已载入进程，任一即算
     { const char *hud = metal_hud_source();
       if (v && hud && NSProcessInfo.processInfo.operatingSystemVersion.majorVersion < 27) {
-          static int said; if (!said++) MLOG("Metal 性能浮层开着（%s）、macOS %ld 低于 27：这一局不用显示链（系统浮层在老版本上和显示链一起会闪退，D-G4ZD）", hud, (long)NSProcessInfo.processInfo.operatingSystemVersion.majorVersion);
+          static int said; if (!said++) MLOG("Metal 性能浮层开着（%s）、系统版本 %ld 低于 27：这一局不用显示链（系统浮层在老版本上和显示链一起会闪退，D-G4ZD / D-3VFB）", hud, (long)NSProcessInfo.processInfo.operatingSystemVersion.majorVersion);
           v = 0; g_link_base = 0;
       } }
-#endif
     return v;
 }
 static void present_fsr_env_check(void);   // nvn_present_fsr.inc
