@@ -289,6 +289,18 @@ import XCTest
         XCTAssertNil(runner.requests.first { $0["operation"] as? String == "install" }, "出完之前不推")
         XCTAssertNil(r?["mode"], "要导入设备的：出包不带 mode = export")
     }
+
+    func testAfterPackContinuesWithoutRepacking() async throws {
+        // D-4V5Q：先出 iPhone 包、出完接着导出的款，出完那一刻游戏列表还是出包前的（iphoneExportable 仍 false）。
+        //   期望（手写）：installNextQueued 按计划直接导出到文件夹（install，mode = export），不再起出包作业
+        model.exportAfterPack["0100C"] = ExportPlan(sign: "none", devices: [])
+        model.installAfterQueue = ["0100C"]
+        model.installNextQueued()
+        let r = await waitRequests("install", count: 1).first
+        XCTAssertEqual(r?["mode"] as? String, "export", "出完接着导出到文件夹")
+        XCTAssertNil(runner.requests.first { $0["operation"] as? String == "export" }, "出完不再从头出一遍")
+        XCTAssertNil(model.exportAfterPack["0100C"], "计划用掉了")
+    }
 }
 
 /// 离屏出图（不进任何窗口、不上屏、不整屏截）：NSHostingView 排版后画进位图，appearance = darkAqua。S2A_UXMAC_SHOT=<目录> 时存 PNG 看样子（不给也照跑）；
