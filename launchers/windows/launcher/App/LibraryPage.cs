@@ -678,7 +678,7 @@ public sealed partial class EnvironmentWindow
         finally
         { EndJob(front); Render(); }
         if (!succeeded || closingLibrary) return;
-        if ((operation == "forgetGame" || operation == "delete") && selectedGame == game.Id) selectedGame = null;
+        if ((operation == "forgetGame" || operation == "delete") && selectedGame == game.Id) ClearSelectedGame(operation);
         locationsFor = null;   // 位置表的剩余空间 / 这款的位置变了：出包页下次重读
         await RunLibraryAsync("catalog", null);
     }
@@ -841,6 +841,16 @@ public sealed partial class EnvironmentWindow
         libraryOperation = RunLibraryAsync(operation, null);
     }
 
+    /// <summary>清空选中（顶部大卡回退到第一款）：每处清空都先在 logs/launcher-crash.log 记一行 library.select.clear（#1392）——
+    /// 选中的款、为什么清（absent / hidden = 目录刷新后缺席或被隐藏；forgetGame / delete = 遗忘 / 删除这款；setup = 选库或换库整段清空）、
+    /// 当时目录总款数、出包款与状态。没选中就什么都不做。</summary>
+    private void ClearSelectedGame(string reason)
+    {
+        if (selectedGame is null) return;
+        LauncherCrash.Log(null, $"library.select.clear selected={selectedGame} state={reason} catalog={catalog?.Games.Count.ToString() ?? "null"} pack={packGame?.Id ?? "null"}/{(packState == "" ? "null" : packState)} result=cleared");
+        selectedGame = null;
+    }
+
     /// <summary>游戏库作业在跑时又要刷新（出包 / 装机完、换页）：记一笔，这一轮结束后补刷一次（剃刀 W8：原先直接丢掉，刚出好的状态要等下一次别的刷新）。</summary>
     private bool catalogAgain;
 
@@ -864,7 +874,8 @@ public sealed partial class EnvironmentWindow
         {
             if (operation == "setup")
             {
-                connectedFolder = null; libraryId = null; catalog = null; selectedGame = null; ClearCovers();
+                ClearSelectedGame("setup");   // 选库 / 换库：整段清空，先记一行（#1392）
+                connectedFolder = null; libraryId = null; catalog = null; ClearCovers();
                 var folder = Path.GetFullPath(libraryFolder);
                 var accept = new HashSet<string>();
                 var setup = await LibraryJobClient.RunAsync(paths, privateRoot, folder, null, "setup", null, front.Token, jobId: front.Next());
@@ -887,10 +898,7 @@ public sealed partial class EnvironmentWindow
             catalog = LibraryCatalog.Parse(listing.Report.Result); ClearCovers();
             if (selectedGame is not null && !catalog.Games.Any(g => g.Id == selectedGame && !g.Hidden))
             {
-                // #1392 读数：清空选中之前记一行（logs/launcher-crash.log）——选中的款、是缺席还是 Hidden、目录总款数、当时的出包款与状态
-                var present = catalog.Games.FirstOrDefault(g => g.Id == selectedGame);
-                LauncherCrash.Log(null, $"library.select.clear selected={selectedGame} state={(present is null ? "absent" : "hidden")} catalog={catalog.Games.Count} pack={packGame?.Id ?? "null"}/{(packState == "" ? "null" : packState)} result=cleared");
-                selectedGame = null;
+                ClearSelectedGame(catalog.Games.Any(g => g.Id == selectedGame) ? "hidden" : "absent");
             }
             librarySummary = "library.completed";
             ResumeSGradeWatch();   // S 级批量升级队列还在跑就接着读进度（SGradeUpgrade.cs）
