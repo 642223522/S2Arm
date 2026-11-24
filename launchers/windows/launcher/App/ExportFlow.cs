@@ -388,7 +388,7 @@ public sealed partial class EnvironmentWindow
     private void OpenConsoleFor(string device)
     {
         consoleDevice = device;
-        selectedGame = ConsoleId;
+        ChangeSelectedGame(ConsoleId, "rowConsole");
         Navigate("library");
         _ = RefreshPhoneOverviewAsync(probe: true);
     }
