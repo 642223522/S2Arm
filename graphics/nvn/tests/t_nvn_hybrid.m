@@ -19,6 +19,8 @@
 //      首查预热（hybrid_pkg_warm，测试里直接调）：随包 s2a_warm.metallib + 别的片元的归档冒名 → 「没查中」（2）、一行【黄】；换成本对小库按同一描述出、压过的归档 →
 //      「查中」（1）、耗时 > 0、不计入「解压」
 //   反证：DM_PSO_HYBRID=0（子进程）→ ② 拿到的是精确管线、g_pso_pull 0
+//   ① ⑥ ⑦ 的首遇经 get_held 取：精确那条闸到这次首遇踢了基础管线或取完。反证（11-24 本机）：⑥ ⑦ 改回直接 pso_get_，并在生产 pso_get_ 踢出精确编译与再查状态之间
+//      临时插 100 ms → 5 项红，拉取 / 踢 / 命中全零，与门禁 11-19..11-21 留下的 FAIL 行逐字同形；带 get_held 插 100 / 300 ms 照旧 19 项全过
 #include "../gfx/nvn/nvn_mtl.m"
 #include <sys/wait.h>
 
@@ -80,6 +82,14 @@ static NSString *capture_stderr(void (^fn)(void)) {
 }
 // 等后台建好基础管线，兜底 30 秒（原 5 秒：负载高时后台编得慢就假红）；等不到返回 0，调用处判红
 static int wait_bases(uint64_t want) { for (int i = 0; i < 3000 && g_hy_bases < want; i++) usleep(10000); return g_hy_bases >= want; }
+// 首遇取管线，精确那条的后台编译先闸住（g_pp_test_hold），直到这次首遇踢了基础管线（g_hy_kicked 变了：之后它要等精确那条，得放行）或取完返回才放行。
+//   不闸：pso_get_ 踢出精确编译后要再查一次状态，系统着色器缓存热时精确那条在这两步之间就编好（状态 2），混合那条路整条跳过，
+//   拉取 0、踢 0、命中 0 全零判红（门禁 11-19..11-23 ⑥ ⑦ 的红样；本机在两步之间插 100 ms 必现，① 同样中）
+static id get_held(NvProg *p) {
+    uint64_t k0 = g_hy_kicked; __block volatile int done = 0; dispatch_semaphore_t h = dispatch_semaphore_create(0); g_pp_test_hold = h;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{ for (int i = 0; i < 30000 && g_hy_kicked == k0 && !done; i++) usleep(1000); dispatch_semaphore_signal(h); });
+    id ps = pso_get_(p, nil); done = 1; g_pp_test_hold = nil; return ps;
+}
 
 static int run(int hybrid) {
     setenv("DM_NVN_FIRST_SKIP", "0", 1);   // 测的是不能跳的首遇（跳过那条路另有单测）
@@ -118,7 +128,7 @@ static int run(int hybrid) {
     memset(&g_pass, 0, sizeof g_pass); g_pass.cfmt[0] = (uint32_t)MTLPixelFormatRGBA32Float; g_pass.samples = 1;
 
     // ① 第一次首遇：基础管线还没有
-    uint64_t kick0 = g_hy_kicked; id ps1 = pso_get_(pr, nil); int pull1 = g_pso_pull;
+    uint64_t kick0 = g_hy_kicked; id ps1 = hybrid ? get_held(pr) : pso_get_(pr, nil); int pull1 = g_pso_pull;
     if (hybrid) VERIFY(ps1 && !pull1 && g_hy_kicked - kick0 == 1, "① 第一次首遇：拿到精确管线 %d、g_pso_pull %d（期望 0）、后台踢出基础管线 %llu 条（期望 1）", ps1 != nil, pull1, (unsigned long long)(g_hy_kicked - kick0));
     if (hybrid) REQUIRE(wait_bases(1));
     // ② 同一对、换画布格式：新键
@@ -197,7 +207,7 @@ static int run(int hybrid) {
         for (int i = 0; i < 3; i++) {
             NvProg *p6 = [NvProg new]; p6->sh[0] = vs; p6->sh[1] = fss[i];
             uint64_t st0[3], st1[3], k0 = g_hy_kicked; mtl_hybrid_pkg_stats(st0);
-            id ps = pso_get_(p6, nil); pulled[i] = ps && g_pso_pull; mtl_hybrid_pkg_stats(st1);
+            id ps = get_held(p6); pulled[i] = ps && g_pso_pull; mtl_hybrid_pkg_stats(st1);
             kicked[i] = g_hy_kicked - k0; hit[i] = st1[0] - st0[0]; nofile[i] = st1[1] - st0[1]; miss[i] = st1[2] - st0[2];
         }
         VERIFY(pulled[0] && !kicked[0] && hit[0] == 1 && !nofile[0] && !miss[0], "⑥ 随包有这一对：第一次首遇就拿到拉取管线 %d（期望 1）、后台踢 %llu（期望 0）、随包命中 +%llu（期望 1）、包里没有 +%llu、有文件查不中 +%llu（期望都 0）",
@@ -216,13 +226,13 @@ static int run(int hybrid) {
         NvShader *fsd = shader(fl, @"fd", "dddddddddddddddd_b", 1), *fsc = shader(fl, @"fc", "cccccccccccccccc_b", 1);
         uint64_t s0[7], s1[7], s2[7]; mtl_hybrid_pkg_stats(s0);
         NvProg *pd7 = [NvProg new]; pd7->sh[0] = vs; pd7->sh[1] = fsd;
-        uint64_t kd0 = g_hy_kicked; id psd = pso_get_(pd7, nil); int pzd = psd && g_pso_pull; uint64_t kzd = g_hy_kicked - kd0; mtl_hybrid_pkg_stats(s1);
+        uint64_t kd0 = g_hy_kicked; id psd = get_held(pd7); int pzd = psd && g_pso_pull; uint64_t kzd = g_hy_kicked - kd0; mtl_hybrid_pkg_stats(s1);
         uint64_t hitd = s1[0] - s0[0], unzd = s1[3] - s0[3], nsd = s1[4] - s0[4];
         VERIFY(pzd && !kzd && hitd == 1 && unzd == 1 && nsd > 0 && !tmp_left(), "⑦ 只有 .lzfse：第一次首遇就拿到拉取管线 %d（期望 1）、后台踢 %llu（期望 0）、随包命中 +%llu（期望 1）、解压 +%llu（期望 1）、"
                "解压耗时 %.3f ms（期望 > 0）、临时目录留下的解压副本 %d 份（期望 0）", pzd, (unsigned long long)kzd, (unsigned long long)hitd, (unsigned long long)unzd, nsd / 1e6, tmp_left());
         NvProg *pc7 = [NvProg new]; pc7->sh[0] = vs; pc7->sh[1] = fsc;
         __block int pzc = 0; __block uint64_t kzc = 0;
-        NSString *err = capture_stderr(^{ uint64_t k0 = g_hy_kicked; id ps = pso_get_(pc7, nil); pzc = ps && g_pso_pull; kzc = g_hy_kicked - k0; });
+        NSString *err = capture_stderr(^{ uint64_t k0 = g_hy_kicked; id ps = get_held(pc7); pzc = ps && g_pso_pull; kzc = g_hy_kicked - k0; });
         mtl_hybrid_pkg_stats(s2);
         uint64_t missc = s2[2] - s1[2], unzc = s2[3] - s1[3];
         int yellow = [err rangeOfString:@"【黄】 hybrid pipelines: the package's pulling base of vertex aaaaaaaaaaaaaaaa_b fragment cccccccccccccccc_b did not serve"].location != NSNotFound;
