@@ -11130,5 +11130,13 @@
  {
   "source": "不支持的诊断码操作。",
   "en": "Unsupported diagnostic code action."
+ },
+ {
+  "source": "这台 {0} 上要推进去的「{1}」看起来是一款游戏的独立 App：它只玩自己带的那一款，推别的游戏进去不会出现，这次就不推了。请装一个通用 S2Arm（游戏库最前面「S2Arm」卡）再推；如果它其实就是通用 S2Arm，用当初装它的工具装一次这一版的 S2Arm.ipa 再推。",
+  "en": "The \"{1}\" you're pushing to on this {0} looks like a standalone App for one game: it only plays the game it came with, so other games pushed into it would not show up. Nothing was pushed. Install a general S2Arm (the \"S2Arm\" card at the front of the game library) and push again; if it really is a general S2Arm, reinstall this version's S2Arm.ipa with the tool you originally used, then push again."
+ },
+ {
+  "source": "装一个通用 S2Arm（游戏库最前面「S2Arm」卡）后再推；如果它其实就是通用 S2Arm，用当初装它的工具装一次这一版的 S2Arm.ipa，再点这台的「重试」。",
+  "en": "Install a general S2Arm (the \"S2Arm\" card at the front of the game library) and push again; if it really is a general S2Arm, reinstall this version's S2Arm.ipa with the tool you originally used, then click Retry for this device."
  }
 ]
