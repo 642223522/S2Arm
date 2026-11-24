@@ -51,6 +51,10 @@ static void dsh_summary(int normal) {
     uint64_t se[2]; mtl_se_stats(se);
     if (se[0] || se[1]) LOG("采样器归约变体：设备编好 %llu / 编不出 %llu", (unsigned long long)se[0], (unsigned long long)se[1]);
     // 顶点补齐变体（nvn_mtl.m vp_ask）：运行期配上的片元要读顶点不写的 user(locn) 时在设备上编
+    // D-92BW 着色器库按活跃集持有（nvn_mtl.m sh_release_unused / sh_hydrate_locked）：预热后放掉多少、这一局又补回多少、补回耗时，收局时库切片还占多少
+    uint64_t la[6]; mtl_libact_stats(la);
+    if (la[0]) LOG("着色器库按活跃集：预热后放掉 %llu 个，之后补回 %llu 次（合计 %.1f ms、最长 %.2f ms、失败 %llu），收局时库切片在用 %.1f MB",
+                   (unsigned long long)la[0], (unsigned long long)la[1], la[2] / 1e6, la[3] / 1e6, (unsigned long long)la[4], la[5] / 1048576.0);
     uint64_t vp[2]; mtl_vp_stats(vp);
     if (vp[0] || vp[1]) LOG("顶点补齐变体：设备编好 %llu / 编不出 %llu", (unsigned long long)vp[0], (unsigned long long)vp[1]);
     // 混合管线的拉取基础管线（nvn_hybrid.inc hybrid_pkg_base）：首遇先查随包归档（出包 base_pipelines.py），命中 = 没在设备上后台建；
