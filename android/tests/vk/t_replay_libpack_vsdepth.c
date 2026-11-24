@@ -33,7 +33,8 @@ const prog_t *nvn_prog_snap_get(uint64_t serial, uint8_t keys[6][8], uint8_t *ok
     if (serial != guest_program.serial) return NULL;
     memcpy(keys, guest_keys, sizeof guest_keys); memcpy(stage, guest_stages, sizeof guest_stages); *ok = 3; return &guest_program;
 }
-int rp_depth_zero(void) { return 1; }   // 出包预编库按 near = 0 翻译：深度 0..1，不走 clip_neg1
+static int guest_depth_zero = 1;
+int rp_depth_zero(void) { return guest_depth_zero; }
 int rp_origin_lower_left(void) { return 0; }
 void rp_perf_add(int index, uint64_t value) { (void)index; (void)value; }
 uint64_t rp_frame(void) { return 1; }   // #996：rp_draw 首用策略按帧号判（rp_entry.c 的替身）
@@ -158,12 +159,54 @@ static void make_library(const char *tag, const uint8_t *vs_spv, size_t vs_n, co
     setenv("S2A_SHADER_REVISION_ROOT", root, 1); unsetenv("S2A_DIRECT_CACHE_DIR");
 }
 
+static void clip_control_draws(nvn_gpu_tex depth, uint64_t signal, int clamp_only) {
+    const char *tag = clamp_only ? "depthClamp control" : "clipControl";
+    const float expected[] = {1.0f, clamp_only ? 0.0f : 0.25f, 1.0f};
+    nvn_gpu_buf readback = make_buf(3 * 64, NVN_GPU_MEM_SHARED, NULL);
+    memset(buf_cpu(readback), 0xee, 3 * 64);
+    nvn_gpu_cmd cmd = begin_cmd();
+    const p_draw draw = {.prim = 4, .count = 3, .instances = 1};
+    p_depth_clamp clamp = {0};
+    guest_depth_zero = 1;
+    CHECK(rp_state_op(OP_DEPTH_CLAMP, &clamp, sizeof clamp), "%s: disable depth clamp", tag);
+    rp_dirty_all();   // 与 rp_exec.c 开新段同口径。段内接下来的笔保持回放状态可复用。
+    for (unsigned i = 0; i < 3; i++) {
+        // 三笔共用同一命令缓冲和程序，每遍只清同一张深度图。测试臂只切近裁模式。
+        if (clamp_only) {
+            clamp.on = i == 1;
+            CHECK(rp_state_op(OP_DEPTH_CLAMP, &clamp, sizeof clamp), "%s: switch depth clamp", tag);
+        } else guest_depth_zero = i != 1;
+        pass_began = 0;
+        rp_draw(cmd, &draw, NULL, &draw);
+        CHECK(pass_began == 1, "%s pass %u opens", tag, i);
+        if (pass_began) {
+            nvn_gpu_pass_end(cmd);
+            nvn_gpu_copy_tex_buf(cmd, depth, 0, 0, NULL, readback, i * 64, 16, 64);
+        }
+    }
+    nvn_gpu_err e = {0};
+    CHECK(OK(nvn_gpu_cmd_commit(cmd, signal, on_done, NULL, &e)), "%s commit: %s", tag, e.why);
+    CHECK(OK(nvn_gpu_fence_wait(signal, 5000000000ull, &e)), "%s wait: %s", tag, e.why);
+    for (unsigned pass = 0; pass < 3; pass++) {
+        float got[16];
+        memcpy(got, buf_cpu(readback) + pass * 64, sizeof got);
+        unsigned matched = 0;
+        for (unsigned i = 0; i < 16; i++) matched += got[i] == expected[pass];
+        printf("%s pass %u depth=%g expected=%g pixels=%u/16\n", tag, pass,
+               (double)got[10], (double)expected[pass], matched);
+        CHECK(matched == 16, "%s pass %u depth pixels differ", tag, pass);
+    }
+    nvn_gpu_buf_release(readback, NULL, NULL);
+}
+
 int main(int argc, char **argv) {
-    if (argc != 2) return 2;
+    const int clip_control = argc == 3 && !strcmp(argv[2], "--clip-control");
+    if (argc != 2 && !clip_control) return 2;
     case_dir = argv[1];
     char path[1100];
     size_t vs_n = 0, fs_n = 0;
-    snprintf(path, sizeof path, "%s/libpack_depth.vert.spv", argv[1]); uint8_t *vs_spv = read_file(path, &vs_n);
+    snprintf(path, sizeof path, "%s/%s.vert.spv", argv[1], clip_control ? "libpack_clip_control" : "libpack_depth");
+    uint8_t *vs_spv = read_file(path, &vs_n);
     snprintf(path, sizeof path, "%s/libpack_support.frag.spv", argv[1]); uint8_t *fs_spv = read_file(path, &fs_n);
     if (!vs_spv || !fs_spv) return 2;
     memset(&guest_program, 0, sizeof guest_program); guest_program.magic = MAGIC('P','R','O','G'); guest_program.serial = 100; guest_program.nstage = 2;
@@ -187,15 +230,34 @@ int main(int argc, char **argv) {
     memset(&target_color, 0, sizeof target_color); target_color.n = 1; target_color.color[0] = &color_tex;
     memset(&target_depth, 0, sizeof target_depth); target_depth.depth = &depth_tex;
 
-    make_library("vsonly", vs_spv, vs_n, fs_spv, fs_n);
+    make_library(clip_control ? "clip-control" : "vsonly", vs_spv, vs_n, fs_spv, fs_n);
     rp_shader_reset(); rp_state_reset();
-    p_bind_program_id bind = {&guest_program, guest_program.serial, 0x1f, 0};
+    p_bind_program_id bind = {&guest_program, guest_program.serial, clip_control ? 1u : 0x1fu, 0};
     CHECK(rp_state_op(OP_BIND_PROGRAM, &bind, sizeof bind + 8), "OP_BIND_PROGRAM accepted");
     dpool_t tp = {0}, sp = {0}; tp.n = 7; sp.n = 9; p_set_pool t = {&tp}, sm = {&sp};
     CHECK(rp_state_op(OP_SET_TEX_POOL, &t, sizeof t) && rp_state_op(OP_SET_SAMP_POOL, &sm, sizeof sm), "descriptor pools accepted");
     ds_st ds = {0}; ds.dt = 1; ds.dw = 1; ds.df = 8;   // 深度测试开、写深度、ALWAYS（同后端 C76）
     p_bind_state bs = {5, {0}}; memcpy(bs.bytes, &ds, sizeof ds);
     CHECK(rp_state_op(OP_BIND_STATE, &bs, sizeof bs), "depth state accepted");
+
+    if (clip_control) {
+        nvn_gpu_caps caps;
+        nvn_gpu_caps_get(&caps);
+        CHECK(caps.caps & NVN_GPU_CAP_DEPTH_CLIP_CTL, "clip control capability");
+        pass_mode = 1;
+        const uint64_t hits = s2a_libpack_hits();
+        clip_control_draws(dtex, 1, 0);
+        clip_control_draws(dtex, 2, 1);
+        CHECK(s2a_libpack_hits() > hits && compile_calls == 0, "clip control uses LibPack vertex shader");
+        nvn_gpu_view_release(color_view); nvn_gpu_view_release(depth_view);
+        nvn_gpu_tex_release(ctex); nvn_gpu_tex_release(dtex);
+        nvn_gpu_err e = {0};
+        CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "close clip control session");
+        s2a_vk_device_destroy(&g_dev, 1);
+        free(vs_spv); free(fs_spv);
+        printf("libpack clip control: failures=%d\n", g_fail);
+        return g_fail ? 1 : 0;
+    }
 
     const uint64_t h0 = s2a_libpack_hits(), j0 = s2a_libpack_rejects();
     nvn_gpu_buf rbc = make_buf(64, NVN_GPU_MEM_SHARED, NULL), rbd = make_buf(64, NVN_GPU_MEM_SHARED, NULL);
