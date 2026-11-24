@@ -83,6 +83,21 @@ class S2armExport(unittest.TestCase):
         self.assertTrue(os.path.samefile(link, self.pack / "game.img"), "同一个文件（不占新空间）")
         self.assertEqual(os.stat(self.pack / "game.img").st_nlink, 2)
 
+    def test_steps_stay_steps(self):
+        # #2177：「写进『S2Arm 游戏包』文件夹」一步的总步数原先被 .s2arm 字节数盖掉（局部变量与参数 total 同名），界面算出「后面还有 12 亿步」。
+        #   期望（手写）：三步依次是 1/3、2/3、3/3；调用方给的位置（step=2, total=5）照样传到每一步
+        self.fixture()
+        for kw, want in ((dict(), [(1, 3), (2, 3), (3, 3)]), (dict(step=2, total=5), [(3, 5), (4, 5), (5, 5)])):
+            seen = []
+            real = self.c.begin
+            def begin(stage, index=None, count=None, *a, **k):
+                seen.append((index, count)); return real(stage, index, count, *a, **k)
+            self.c.r.update(gameId=self.A, mode="export")
+            with patch.object(self.c, "begin", begin), patch.object(program_pack, "build", lambda c, g, **k: self.pkg), \
+                    patch.object(rewrite_refresh, "refresh_ios", lambda c, games, **k: []), patch.object(install, "export_sign_mode", lambda c: "external"):
+                install.export_s2arm(self.c, self.A, **kw)
+            self.assertEqual(seen, want, kw)
+
     def test_resource_link_refresh_and_fallback(self):
         # 同名的是上次链的旧 game.img（后来换过）→ 换成现在这份；建不了硬链接（exFAT：os.link 报 EPERM / ENOTSUP）→ 给原位置、文件夹里不留东西
         self.fixture()

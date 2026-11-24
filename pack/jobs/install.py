@@ -1478,11 +1478,11 @@ def export_s2arm(c, gid, *, folder=None, sign=True, step=0, total=3):
                    if p.is_file() and p.relative_to(pack).as_posix() != "game.img"]
         manifest = read(Path(pack) / "manifest.json", {})
         cat_bytes = json.dumps(cat, ensure_ascii=False, indent=1).encode("utf-8")
-        total = len(cat_bytes) + sum(p.stat().st_size for _, p in files + derived)   # 解压后其余条目内容字节合计（手机导入前看空间、显示进度）
+        nbytes = len(cat_bytes) + sum(p.stat().st_size for _, p in files + derived)   # 解压后其余条目内容字节合计（手机导入前看空间、显示进度）；不叫 total：那是参数里的步数，#2177 原先盖掉它，下一步报「后面还有 12 亿步」
         head = dict(format=S2ARM_FORMAT, schema=1, title_id=gid, name=cat["name"], display_version=cat["display_version"],
                     host_abi=cat["host_abi"], chain=cat["chain"], rewriter_id=cat["rewriter_id"], image=cat["image"],
                     image_sha256=cat["image_sha256"], source_sha256=source_sha, pack=(manifest or {}).get("index_sha256", ""),
-                    bytes=total, signer=dict(mode=signed_with["mode"], team=signed_with["team"]) if signed_with else None)
+                    bytes=nbytes, signer=dict(mode=signed_with["mode"], team=signed_with["team"]) if signed_with else None)
         buf = _io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as t:
             def add(name, data=None, path=None):
