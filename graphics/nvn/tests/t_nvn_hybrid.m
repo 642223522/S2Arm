@@ -24,7 +24,10 @@
 
 static unsigned failures, checks;
 #define REQUIRE(c) do { if (!(c)) { fprintf(stderr, "FAIL setup %s:%d: %s\n", __FILE__, __LINE__, #c); exit(2); } } while (0)
-#define VERIFY(c, ...) do { checks++; int ok_ = !!(c); if (!ok_) failures++; printf("%s ", ok_ ? "PASS" : "FAIL"); printf(__VA_ARGS__); putchar('\n'); fflush(stdout); } while (0)
+// 不符的项连同期望 / 实际记进 g_fail，子进程末行汇总里逐项列出：门禁红组摘录只留 ✗ 行与【红】行，中间的 FAIL 行会被挤掉（11-23 六次红定不了是哪一项）
+static char g_fail[8192];
+#define VERIFY(c, ...) do { checks++; int ok_ = !!(c); char m_[1024]; snprintf(m_, sizeof m_, __VA_ARGS__); printf("%s %s\n", ok_ ? "PASS" : "FAIL", m_); fflush(stdout); \
+    if (!ok_) { failures++; strlcat(g_fail, "\n  ✗ 不符：", sizeof g_fail); strlcat(g_fail, m_, sizeof g_fail); } } while (0)
 
 static NSString *const source = @"#include <metal_stdlib>\nusing namespace metal;\n"
 "struct VO { float4 p [[position]]; float4 a [[user(locn0)]]; };\n"
@@ -126,16 +129,17 @@ static int run(int hybrid) {
     if (hybrid) g_pp_test_hold = dispatch_semaphore_create(0);
     uint64_t made0 = g_hy_made; id ps2 = pso_get_(pr, nil); int pull2 = g_pso_pull, st2 = pso_pend_state(&k2);
     if (!hybrid) { VERIFY(ps2 && !pull2, "反证 DM_PSO_HYBRID=0：② 拿到精确管线 %d、g_pso_pull %d（期望 0）", ps2 != nil, pull2); return 0; }
-    VERIFY(ps2 && pull2 && ps2 != ps1 && (st2 == 1 || st2 == 2) && g_hy_made - made0 == 1, "② 基础管线已建好的首遇：拉取管线 g_pso_pull %d（期望 1）、精确那条在后台表里（状态 %d，期望 1 / 2）、特化 +%llu（期望 1）",
-           pull2, st2, (unsigned long long)(g_hy_made - made0));
+    VERIFY(ps2 && pull2 && ps2 != ps1 && (st2 == 1 || st2 == 2) && g_hy_made - made0 == 1, "② 基础管线已建好的首遇：拉取管线 g_pso_pull %d（期望 1）、拿到管线 %d（期望 1）、与 ① 同一条 %d（期望 0）、精确那条在后台表里（状态 %d，期望 1 / 2）、特化 +%llu（期望 1）",
+           pull2, ps2 != nil, ps2 == ps1, st2, (unsigned long long)(g_hy_made - made0));
     // ③ 同键再取：精确那条编好前同一条拉取管线、编好后精确的
     id ps3 = pso_get_(pr, nil); int pull3 = g_pso_pull;
-    if (pull3) VERIFY(ps3 == ps2 && g_hy_made - made0 == 1, "③ 精确那条还在编：同一条拉取管线、不再特化（特化 +%llu）", (unsigned long long)(g_hy_made - made0));
+    if (pull3) VERIFY(ps3 == ps2 && g_hy_made - made0 == 1, "③ 精确那条还在编：与 ② 同一条拉取管线 %d（期望 1）、不再特化（特化 +%llu，期望 1）", ps3 == ps2, (unsigned long long)(g_hy_made - made0));
     VERIFY(pull3, "③ 闸住期间同键再取：仍给拉取管线（g_pso_pull %d，期望 1）", pull3);
     dispatch_semaphore_signal(g_pp_test_hold); g_pp_test_hold = nil;   // 放行：精确那条开始编
-    for (int i = 0; i < 3000 && pso_pend_state(&k2) != 2; i++) usleep(10000);   // 等精确那条后台编好，兜底 30 秒（原 5 秒）；等不到下一行判红
-    id ps4 = pso_get_(pr, nil);
-    VERIFY(ps4 && !g_pso_pull && ps4 != ps2, "③ 精确那条编好后：给精确管线（g_pso_pull %d，期望 0）", g_pso_pull);
+    int waited = 0; for (; waited < 3000 && pso_pend_state(&k2) != 2; waited++) usleep(10000);   // 等精确那条后台编好，兜底 30 秒（原 5 秒）；等不到下一行判红
+    int st4 = pso_pend_state(&k2); id ps4 = pso_get_(pr, nil);
+    VERIFY(ps4 && !g_pso_pull && ps4 != ps2, "③ 精确那条编好后：给精确管线（g_pso_pull %d，期望 0）、拿到管线 %d（期望 1）、仍是 ② 那条拉取管线 %d（期望 0）；取之前后台状态 %d（期望 2）、等了约 %d ms",
+           g_pso_pull, ps4 != nil, ps4 == ps2, st4, waited * 10);
     // ④ 布局块（手算）
     pull_layout L; pull_layout_fill(&L, vs);
     uint64_t gpu = 0; void *mb; uint64_t mo; REQUIRE(mtl_gpu_addr((uint64_t)(uintptr_t)vb, sizeof verts, &mb, &mo, &gpu));
@@ -196,12 +200,12 @@ static int run(int hybrid) {
             id ps = pso_get_(p6, nil); pulled[i] = ps && g_pso_pull; mtl_hybrid_pkg_stats(st1);
             kicked[i] = g_hy_kicked - k0; hit[i] = st1[0] - st0[0]; nofile[i] = st1[1] - st0[1]; miss[i] = st1[2] - st0[2];
         }
-        VERIFY(pulled[0] && !kicked[0] && hit[0] == 1 && !nofile[0] && !miss[0], "⑥ 随包有这一对：第一次首遇就拿到拉取管线 %d（期望 1）、后台踢 %llu（期望 0）、随包命中 +%llu（期望 1）",
-               pulled[0], (unsigned long long)kicked[0], (unsigned long long)hit[0]);
-        VERIFY(!pulled[1] && kicked[1] == 1 && !hit[1] && nofile[1] == 1 && !miss[1], "⑥ 包里没有这一对：拉取管线 %d（期望 0）、后台踢 %llu（期望 1）、包里没有 +%llu（期望 1）",
-               pulled[1], (unsigned long long)kicked[1], (unsigned long long)nofile[1]);
-        VERIFY(!pulled[2] && kicked[2] == 1 && !hit[2] && !nofile[2] && miss[2] == 1, "⑥ 文件在、内容是别的片元的：拉取管线 %d（期望 0）、后台踢 %llu（期望 1）、有文件查不中 +%llu（期望 1）",
-               pulled[2], (unsigned long long)kicked[2], (unsigned long long)miss[2]);
+        VERIFY(pulled[0] && !kicked[0] && hit[0] == 1 && !nofile[0] && !miss[0], "⑥ 随包有这一对：第一次首遇就拿到拉取管线 %d（期望 1）、后台踢 %llu（期望 0）、随包命中 +%llu（期望 1）、包里没有 +%llu、有文件查不中 +%llu（期望都 0）",
+               pulled[0], (unsigned long long)kicked[0], (unsigned long long)hit[0], (unsigned long long)nofile[0], (unsigned long long)miss[0]);
+        VERIFY(!pulled[1] && kicked[1] == 1 && !hit[1] && nofile[1] == 1 && !miss[1], "⑥ 包里没有这一对：拉取管线 %d（期望 0）、后台踢 %llu（期望 1）、包里没有 +%llu（期望 1）、随包命中 +%llu、有文件查不中 +%llu（期望都 0）",
+               pulled[1], (unsigned long long)kicked[1], (unsigned long long)nofile[1], (unsigned long long)hit[1], (unsigned long long)miss[1]);
+        VERIFY(!pulled[2] && kicked[2] == 1 && !hit[2] && !nofile[2] && miss[2] == 1, "⑥ 文件在、内容是别的片元的：拉取管线 %d（期望 0）、后台踢 %llu（期望 1）、有文件查不中 +%llu（期望 1）、随包命中 +%llu、包里没有 +%llu（期望都 0）",
+               pulled[2], (unsigned long long)kicked[2], (unsigned long long)miss[2], (unsigned long long)hit[2], (unsigned long long)nofile[2]);
         // ⑦ 逐对 lzfse：D 对（fd，片元键 dddd…）只有压过的；C 对（fc，片元键 cccc…）压过的截掉后一半
         NSString *pd = [g_pkg_dir stringByAppendingPathComponent:pkg_name("aaaaaaaaaaaaaaaa_b", "dddddddddddddddd_b")], *pc = [g_pkg_dir stringByAppendingPathComponent:pkg_name("aaaaaaaaaaaaaaaa_b", "cccccccccccccccc_b")];
         REQUIRE(pkg_make(vlib, @"main0", flib, @"fd", pd) && sh([NSString stringWithFormat:@"compression_tool -encode -a lzfse -i '%@' -o '%@.lzfse' && rm -f '%@'", pd, pd, pd]));
@@ -244,7 +248,7 @@ static int run(int hybrid) {
 }
 int main(int argc, char **argv) { @autoreleasepool {
     setvbuf(stdout, NULL, _IOLBF, 0);
-    if (argc == 3 && !strcmp(argv[1], "--child")) { run(atoi(argv[2])); printf("%s t_nvn_hybrid 子进程（DM_PSO_HYBRID=%s）：%u 项，%u 项不符\n", failures ? "✗" : "✓", argv[2], checks, failures); return failures != 0; }
+    if (argc == 3 && !strcmp(argv[1], "--child")) { run(atoi(argv[2])); printf("%s t_nvn_hybrid 子进程（DM_PSO_HYBRID=%s）：%u 项，%u 项不符%s\n", failures ? "✗" : "✓", argv[2], checks, failures, g_fail); return failures != 0; }
     unsigned bad = 0; static const char *const modes[2] = {"1", "0"};
     for (int m = 0; m < 2; m++) {
         fflush(NULL); pid_t pid = fork(); REQUIRE(pid >= 0);
