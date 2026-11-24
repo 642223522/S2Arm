@@ -156,6 +156,7 @@ JsonOutCases.Run(Check);
 LauncherLanguageCases.Run(Check);
 SGradeVersionsCases.Run(Check);
 PackCases.Run(Check);
+UpdateRepackCases.Run(Check);
 BatchCases.Run(Check);
 ExportStreamCases.Run(Check);
 BackendTextCases.Run(Check);

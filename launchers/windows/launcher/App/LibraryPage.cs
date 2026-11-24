@@ -270,6 +270,7 @@ public sealed partial class EnvironmentWindow
             if (SGradeLine(hero) is { } sgNote) overlay.Children.Add(sgNote);
             if (UpdateReasonLines(hero) is { } heroHint) overlay.Children.Add(heroHint);
             overlay.Children.Add(HeroActions(hero));   // 有横图时按钮也叠在底部渐变上（v0.4.5 修：说明写着「常驻」，之前只画了大图）
+            if (UpdateRepackNote(hero) is { } heroRepack) overlay.Children.Add(heroRepack);   // #1961：按钮下一行「要整款重新出包」
             if (UpdateOutcomeLines(hero) is { } heroDone) overlay.Children.Add(heroDone);
             art.Children.Add(overlay);
             body.Children.Add(new Border { CornerRadius = new CornerRadius(16), ClipToBounds = true, Child = art });
@@ -286,6 +287,7 @@ public sealed partial class EnvironmentWindow
             if (SGradeLine(hero) is { } sgNote) title.Children.Add(sgNote);
             if (UpdateReasonLines(hero) is { } heroHint) title.Children.Add(heroHint);
             title.Children.Add(HeroActions(hero));
+            if (UpdateRepackNote(hero) is { } heroRepack) title.Children.Add(heroRepack);   // #1961：按钮下一行「要整款重新出包」
             if (UpdateOutcomeLines(hero) is { } heroDone) title.Children.Add(heroDone);
             Grid.SetColumn(title, 1); banner.Children.Add(title); body.Children.Add(Card(banner, 20));
         }
