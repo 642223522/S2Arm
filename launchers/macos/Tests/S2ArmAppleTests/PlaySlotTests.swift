@@ -43,6 +43,32 @@ import S2ArmAppleAdapter
         XCTAssertTrue(model.canPlay(a.id), "出完了：A 能玩")
     }
 
+    // #2191：启动设置（金手指 / mod / 补丁）只在这款的文件被别的作业占着时不让改；期望按 gameFilesHeld 注释里的冲突手写
+    func testLaunchSettingsHeldOnlyForThisGame() {
+        model.session = JobSession(kind: .export, gameID: a.id, name: a.name)
+        XCTAssertFalse(model.gameFilesHeld(b.id), "出包 A：B 的金手指 / mod 照常能改")
+        XCTAssertTrue(model.gameFilesHeld(a.id), "出包 A：A 自己的不能改（出包读它的 cheats / mods / launch.json）")
+        for kind: JobSession.Kind in [.delete, .moveGame, .clearCache, .prepare] {
+            model.session = JobSession(kind: kind, gameID: a.id, name: "x")
+            XCTAssertFalse(model.gameFilesHeld(b.id), "\(kind) A：B 照常")
+            XCTAssertTrue(model.gameFilesHeld(a.id), "\(kind) A：A 不能改")
+        }
+        for kind: JobSession.Kind in [.importGames, .setupLibrary] {
+            model.session = JobSession(kind: kind, gameID: nil, name: "x")
+            XCTAssertTrue(model.gameFilesHeld(b.id), "\(kind)（不带游戏号，可能动任何一款）：都不能改")
+        }
+        model.session = JobSession(kind: .keys, gameID: nil, name: "x")
+        XCTAssertFalse(model.gameFilesHeld(b.id), "导入密钥不碰游戏文件夹：照常")
+        model.session = nil
+        model.playSession = JobSession(kind: .play, gameID: a.id, name: a.name)
+        XCTAssertTrue(model.gameFilesHeld(a.id), "A 在玩：收局写 launch.json，不能改"); XCTAssertFalse(model.gameFilesHeld(b.id))
+        model.playSession = nil
+        model.phoneSession = JobSession(kind: .install, gameID: b.id, name: b.name)
+        XCTAssertTrue(model.gameFilesHeld(b.id), "在推 B：推送读 mods"); XCTAssertFalse(model.gameFilesHeld(a.id))
+        model.phoneSession = JobSession(kind: .pushSelected, gameID: nil, name: "x")
+        XCTAssertTrue(model.gameFilesHeld(a.id), "推所选几款（不带游戏号）：都不能改")
+    }
+
     func testLibraryWideJobsBlockPlay() {
         let kinds: [JobSession.Kind] = [.delete, .clearCache, .importGames, .keys, .moveGame, .setupLibrary, .downloadMetal, .installDotnet, .diagnostics, .exportTV]
         for kind in kinds {

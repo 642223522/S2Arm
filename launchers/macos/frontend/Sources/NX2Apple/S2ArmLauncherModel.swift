@@ -533,6 +533,19 @@ public final class S2ArmLauncherModel: ObservableObject {
     var busySession: JobSession? { mainBusy ? session : playBusy ? playSession : phoneBusy ? phoneSession : nil }
     /// 这款正在玩（游戏槽一局还没结束）
     func playHolds(_ gameID: String?) -> Bool { guard let gameID, playBusy else { return false }; return playSession?.gameID == gameID }
+    /// 这款的启动设置（金手指 / mod / 补丁 / 设置项，作业层 communitySave、sgradeReenable）现在能不能改（#2191，维护者 11-16：互斥只在真有冲突时）。
+    /// 那两个作业不拿锁、只写这款文件夹里的 cheats/、mods/、launch.json（全局设置 app.json 原子写），只和动这款文件的作业冲突：
+    ///   主槽在动这一款——出包 / 准备读它的 cheats/、mods/、launch.json（patches.prepare → cheats.fetch / mods.code_index），删除 / 搬家 / 清缓存挪它的文件夹；
+    ///   主槽在导入或换游戏库（会话不带游戏号）——导入可能重写这款的文件夹、换库整库搬家，不知道碰哪款，按碰到算；
+    ///   这款正在玩——收局时写它的 launch.json / 金手指记录（build.launch → cheats.note_good / note_crash），同时改会丢一边；
+    ///   手机槽在推这一款（或推所选几款，会话不带游戏号）——推送读它的 mods/（install.push_mods）。
+    /// 主槽在出别的款、做与这款无关的事：照常能改（原先任何作业在跑都灰）
+    func gameFilesHeld(_ gameID: String) -> Bool {
+        if mainBusy, let s = session, s.gameID == gameID || (s.gameID == nil && (s.kind == .importGames || s.kind == .setupLibrary)) { return true }
+        if playHolds(gameID) { return true }
+        if phoneBusy, let s = phoneSession, s.gameID == gameID || (s.gameID == nil && s.kind == .pushSelected) { return true }
+        return false
+    }
     /// 这款正被主槽或游戏槽占着（正在出包 / 删除 / 清缓存 / 玩…）：对它的手机作业要等那一单结束
     func mainHolds(_ gameID: String?) -> Bool { guard let gameID else { return false }; return (mainBusy && session?.gameID == gameID) || playHolds(gameID) }
     /// 开局判据：能不能现在开始玩这款。游戏槽空着、不在同步 iCloud 存档；主槽在出别的款（出包 / 准备，执行锁共享）时照样能玩，
