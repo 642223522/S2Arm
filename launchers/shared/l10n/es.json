@@ -262,6 +262,7 @@
   "diagnostics.details": "Detalles",
   "protocol.invalid_report": "No se pudo verificar el informe de comprobación; consulte el diagnóstico",
   "process.start_failed": "No se pudo iniciar la comprobación del entorno; revise los ajustes de ruta",
+  "impactor.already_running": "Ya hay un Impactor ejecutándose en segundo plano, pero su ventana no apareció, así que uno nuevo se cierra al instante. Finaliza «{0}» en el Administrador de tareas y vuelve a pulsar «Abrir Impactor».",
   "process.interrupted": "La comprobación del entorno se interrumpió; la disponibilidad no está confirmada",
   "library.title": "Biblioteca",
   "library.inside_program": "Tu Biblioteca está dentro de una carpeta del programa S2Arm ({0}). Eliminar esa carpeta, o limpiar la carpeta descomprimida al pasarte a la versión con instalador, borraría también la Biblioteca. Muévela a otra ubicación primero.",

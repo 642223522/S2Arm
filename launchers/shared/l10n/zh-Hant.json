@@ -262,6 +262,7 @@
   "diagnostics.details": "詳細輸出",
   "protocol.invalid_report": "後端檢查報告格式無法核實，請檢視診斷",
   "process.start_failed": "未能啟動環境檢查，請檢查路徑設定",
+  "impactor.already_running": "已經有一個 Impactor 在背景執行，但它的視窗沒出來，新開的會直接結束：請在工作管理員裡結束「{0}」，再點一次「開啟 Impactor」。",
   "process.interrupted": "環境檢查意外中斷，尚不能確認就緒",
   "library.title": "遊戲庫",
   "library.inside_program": "遊戲庫在 S2Arm 程式資料夾裡面（{0}）：刪除這個資料夾、或換裝安裝版後清理舊的解壓資料夾，會連遊戲庫一起刪掉。請先把遊戲庫換到別處。",
