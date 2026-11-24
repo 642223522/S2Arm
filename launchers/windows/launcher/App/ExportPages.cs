@@ -1054,16 +1054,18 @@ public sealed partial class EnvironmentWindow
             // 事件还在排队：排在它们后面收尾
             Dispatcher.UIThread.Post(() =>
             {
+                // 收尾第一件事撤作业登记（EndJob 的约定）：下面读结局时再出什么异常，按钮也不会一直灰到重开启动器（#2191）
+                EndJob(front); if (packJob == front) packJob = null;
                 if (!exportStepEnded && packGame is not null && !batch)
                 {
-                    // 第一步还没结束编排作业就停了：整个作业的结局就是这一款的结局（被拒、已有一个在出、取消、起不来）
+                    // 第一步还没结束编排作业就停了：整个作业的结局就是这一款的结局（被拒、已有一个在出、取消、起不来）。
+                    //   出包客户端抛了上面 catch 列表之外的异常时 job 和 endState 都为空：按失败收
                     packTrack.Finish(Clock); packSeconds = (DateTime.UtcNow - packStarted).TotalSeconds;
-                    packState = endState ?? (job!.Report.State == "succeeded" ? "failed" : job.Report.State);
+                    packState = endState ?? (job is null || job.Report.State == "succeeded" ? "failed" : job.Report.State);
                     packSummary = job?.Report.Message ?? "";
                     packDiagnostics = job is not null ? JobDiagnostics(job) : error ?? "";
                     packFailureCode = job is not null ? DiagnosticCode(job.Report.Diagnostics) : null;
                 }
-                EndJob(front); if (packJob == front) packJob = null;
                 AfterArtifactJob(); Render();
                 if (batch) _ = BatchExportEndedAsync(job?.Report, error);
                 else if (exportAfterPack is { } run) { exportAfterPack = null; ContinueExportRun(run); }   // 导出确认页起的：iPhone 版做好了，接着导出 / 逐台推
