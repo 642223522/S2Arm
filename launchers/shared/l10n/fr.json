@@ -262,6 +262,7 @@
   "diagnostics.details": "Détails",
   "protocol.invalid_report": "Le rapport de vérification n'a pas pu être validé ; consultez le Diagnostic",
   "process.start_failed": "Impossible de démarrer la vérification de l'environnement ; vérifiez les réglages de chemin",
+  "impactor.already_running": "Un Impactor tourne déjà en arrière-plan, mais sa fenêtre n'est pas apparue : un nouveau se ferme aussitôt. Terminez « {0} » dans le Gestionnaire des tâches, puis cliquez de nouveau sur « Ouvrir Impactor ».",
   "process.interrupted": "La vérification de l'environnement a été interrompue ; la disponibilité n'est pas confirmée",
   "library.title": "Bibliothèque",
   "library.inside_program": "Votre Bibliothèque se trouve dans un dossier programme S2Arm ({0}). Supprimer ce dossier, ou nettoyer l'ancien dossier décompressé après être passé à la version installable, supprimerait aussi la Bibliothèque. Déplacez d'abord la Bibliothèque ailleurs.",

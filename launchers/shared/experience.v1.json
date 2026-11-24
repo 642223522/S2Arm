@@ -1133,6 +1133,7 @@
       {"id": "diagnostics.details", "zh-Hans": "详细输出", "en": "Details"},
       {"id": "protocol.invalid_report", "zh-Hans": "后端检查报告格式无法核实，请查看诊断", "en": "The check report could not be verified; see diagnostics"},
       {"id": "process.start_failed", "zh-Hans": "未能启动环境检查，请检查路径设置", "en": "Could not start the environment check; check the path settings"},
+      {"id": "impactor.already_running", "zh-Hans": "已经有一个 Impactor 在后台运行，但它的窗口没出来，新打开的会直接退出：请在任务管理器里结束「{0}」，再点一次「打开 Impactor」。", "en": "An Impactor is already running in the background but its window didn't appear, so a new one quits right away. End “{0}” in Task Manager, then click Open Impactor again."},
       {"id": "process.interrupted", "zh-Hans": "环境检查意外中断，尚不能确认就绪", "en": "The environment check was interrupted; readiness is not confirmed"},
       {"id": "library.title", "zh-Hans": "游戏库", "en": "Library"},
       {"id": "library.inside_program", "zh-Hans": "游戏库位于 S2Arm 程序文件夹（{0}）内，删除或替换程序前请先将游戏库移到别处", "en": "Move your library out of the S2Arm program folder ({0}) before deleting it or replacing an unzipped copy"},
