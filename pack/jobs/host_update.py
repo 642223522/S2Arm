@@ -213,7 +213,20 @@ def ios_lib_reasons(c, gid, ios=None, want=None):
         why.append("libGen")
     if shader_misses(c, gid)["ios"] > 0 and built_older(c, ios.get("builtBy")):
         why.append("shaderMiss")
+    if ios_runtime_only(c, gid) and built_older(c, ios.get("builtBy")):
+        why.append("shaderGap")
     return why
+
+
+def ios_runtime_only(c, gid):
+    """这款的 iPhone 资源包是抽取缺口出的空直连库（离线 0 支，graphics/tools/direct/runtime_only_lib.sh 写 shaders/direct/runtime_only.txt）。
+    #2158：0.6.0 / 0.6.5 出这款时 Unreal 着色器存档抽不出（那时宿主工具模式起不了），包里 0 支、全部在手机上现编；本版能抽出 7 万多支，
+    可链号、代数都没变，「更新这款」一直不重编，缺口留到现在。旧版出的空库算一条原因（shaderGap）：更新时按本版阶段重抽重编（sgrade_bf.rechain_ios，
+    记本版 builtBy）；本版重抽仍是 0 支的，builtBy 已是本版、不再标，下一版再试"""
+    try:
+        return (Path(layout.ios_pack(c, gid)) / "shaders/direct/runtime_only.txt").is_file()
+    except (Failure, OSError):
+        return False
 
 
 def _online(c, names=None, kinds=None):
