@@ -200,6 +200,15 @@ class S2armExport(unittest.TestCase):
         self.assertEqual(data[f"program/{program_pack.image_name(self.A)}"], DYLIB, "程序库原样、没签")
         warn = [d for d in self.c.job["diagnostics"] if d.get("code") == "device_not_visible"]
         self.assertEqual([(d["severity"], d["summary"]) for d in warn], [("warning", install.EXPORT_NO_DEVICE_NO_ID)])
+        # D-39W8：Windows 签程序库失败已转成作业失败（program_pack.win_signer → win_install_failure），8220 原文在 internal、上屏是说人话的那句：照样认出、导出未签名的
+        def wrapped(dylib, team, bundle):
+            raise install.Failure("签名装机没成：让你选的那台设备连上这台电脑", code="device_not_connected",
+                                  internal="签名装机失败（device_not_connected）：r team has no devices from which to generate a provisioning profile.")
+        self.c.job["diagnostics"].clear()
+        with patch.object(program_pack, "build", lambda c, g, **k: self.pkg), patch.object(rewrite_refresh, "refresh_ios", lambda c, games, **k: []), \
+                patch.object(install, "export_signer", lambda c, mode: ("TEAMX", "io.example.app", wrapped, "测试账号")):
+            r = install.export_s2arm(self.c, self.A)
+        self.assertEqual(r["signedWith"], dict(mode="none", name="", team=None), "转成作业失败的 8220 照样当团队没设备、导出未签名的")
         def other(dylib, team, bundle):
             raise RuntimeError("签名装机失败（signing_server_unreachable）：os error 11001")
         with patch.object(program_pack, "build", lambda c, g, **k: self.pkg), patch.object(rewrite_refresh, "refresh_ios", lambda c, games, **k: []), \

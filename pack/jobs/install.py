@@ -1461,7 +1461,7 @@ def export_s2arm(c, gid, *, folder=None, sign=True, step=0, total=3):
                 except Exception as e:   # noqa: BLE001 —— 只认团队没设备这一种，别的照旧抛
                     # D-VX6J：本机还没有这个团队的私钥时退到 plumesign 签，它要先拿团队描述文件，团队里一台设备都没登记（Apple 8220）就拿不到。
                     #   签程序库本身不需要设备，导出也不加拦截（11-19 维护者）：同没登录，照样导出未签名的，照实说为什么、怎么让电脑能签
-                    if TEAM_NO_DEVICES not in str(e) or mode != "appleId":
+                    if TEAM_NO_DEVICES not in str(e) + str(getattr(e, "internal", "") or "") or mode != "appleId":   # 转成作业失败的（win_install_failure）原文在 internal
                         raise
                     c.diagnostic(EXPORT_NO_DEVICE if any_phone_identity(c) else EXPORT_NO_DEVICE_NO_ID, code="device_not_visible", severity="warning",
                                  internal=str(e)[-600:], advice=EXPORT_NO_DEVICE_ADVICE)
