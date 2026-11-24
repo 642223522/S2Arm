@@ -1988,6 +1988,7 @@
   "游戏已停止。": "El juego se ha detenido.",
   "任务已取消；上次成功的运行版本和存档已保留。": "Tarea cancelada. Se conservan la última versión de ejecución correcta y las partidas guardadas.",
   "已停止等待：Xcode 的下载可能仍在继续（可在 Xcode → 设置 → Components 里查看）。": "Se dejó de esperar. La descarga de Xcode puede seguir en curso (ver Xcode → Settings → Components).",
+  "苹果的下载工具这一步不报进度：Metal 编译组件近 1 GB，网速慢时要十几分钟甚至更久，转圈就是还在下；不想等可以在 Xcode → 设置 → Components 里手动下载 Metal Toolchain，下完回来点「重新检查」。": "La herramienta de descarga de Apple no muestra el progreso en este paso. El componente de compilación de Metal ocupa casi 1 GB; con una conexión lenta puede tardar más de 10 minutos. Mientras gire el indicador, la descarga sigue. Si no quieres esperar, descarga Metal Toolchain a mano en Xcode → Ajustes → Components y vuelve para pulsar Comprobar de nuevo.",
   "操作失败，请检查磁盘连接、权限和任务日志后重试。": "La operación falló. Comprueba la conexión de la unidad, los permisos y el registro de tareas, y vuelve a intentarlo.",
   "解包与合并 {0}": "Extraer y fusionar {0}",
   "配置指定版本": "versión requerida por el perfil",

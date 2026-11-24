@@ -2096,6 +2096,10 @@
   "en": "Stopped waiting. Xcode's download may still be running (see Xcode → Settings → Components)."
  },
  {
+  "source": "苹果的下载工具这一步不报进度：Metal 编译组件近 1 GB，网速慢时要十几分钟甚至更久，转圈就是还在下；不想等可以在 Xcode → 设置 → Components 里手动下载 Metal Toolchain，下完回来点「重新检查」。",
+  "en": "Apple's download tool doesn't report progress for this step. The Metal compiler component is close to 1 GB, so on a slow connection it can take 10+ minutes or longer; the spinner means it's still downloading. If you'd rather not wait, download Metal Toolchain manually in Xcode → Settings → Components, then come back and click Check again."
+ },
+ {
   "source": "操作失败，请检查磁盘连接、权限和任务日志后重试。",
   "en": "The operation failed. Check the drive connection, permissions, and task log, then retry."
  },
