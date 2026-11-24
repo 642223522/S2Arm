@@ -12185,9 +12185,11 @@ static void warm_finish(void) {
     if (g_warm_mps) MLOG("pipeline prewarm: %llu task / mesh pipelines built (M lines)", (unsigned long long)g_warm_mps);
     MLOG("pipeline prewarm done: shaders %llu / render pipelines %llu (specialized fragment skipped %llu) / compute pipelines %llu, background time %.1f ms; shader keys not in the shader map (another game version) %llu; not in the library yet (compiled at their first use) %llu",
          (unsigned long long)g_warm_shaders, (unsigned long long)g_warm_rps, (unsigned long long)g_warm_skip_fz, (unsigned long long)g_warm_cps, (bp_now() - g_warm_t0) / 1e6, (unsigned long long)g_warm_skip_stale, (unsigned long long)atomic_load(&g_cold_skips));
-    if (g_warm_rf_cand) { uint64_t rf[3]; dm_shader_refresh_stats(rf);   // D-NJC8：与「别的游戏版本」分开数（原先都算进那一项）
-        MLOG("pipeline prewarm: %llu shader keys this device translated with an older translator (S2Arm updated since): retranslated here, source unchanged %llu (their compiled libraries and archived pipelines still hit), changed %llu (compiled in the background), not retranslated %llu (no guest input: compiled at their first use)",
-             (unsigned long long)g_warm_rf_cand, (unsigned long long)rf[0], (unsigned long long)rf[1], (unsigned long long)rf[2]); }
+    if (g_warm_rf_cand) { uint64_t rf[DM_RF_STATS]; dm_shader_refresh_stats(rf);   // D-NJC8：与「别的游戏版本」分开数（原先都算进那一项）
+        // 做不了按原因分开（#2158 B：原先一律写「no guest input」，真机那 1 支其实有补料、是只写层的几何着色器被认错）
+        MLOG("pipeline prewarm: %llu shader keys this device translated with an older translator (S2Arm updated since): retranslated here, source unchanged %llu (their compiled libraries and archived pipelines still hit), changed %llu (compiled in the background), not retranslated %llu (compiled at their first use: no guest input %llu, guest input unusable %llu, translation failed %llu, stage unknown or no translator %llu)",
+             (unsigned long long)g_warm_rf_cand, (unsigned long long)rf[0], (unsigned long long)rf[1], (unsigned long long)(rf[2] + rf[3] + rf[4] + rf[5]),
+             (unsigned long long)rf[2], (unsigned long long)rf[3], (unsigned long long)rf[4], (unsigned long long)rf[5]); }
     if (g_par_on) MLOG("pipeline archive after the prewarm: %llu builds from the archive, %llu compiled (written beside it, in the background), %llu stale files dropped",
                        (unsigned long long)g_par_hits, (unsigned long long)g_par_misses, (unsigned long long)g_par_stale);
     atomic_store(&g_warm_running, 0); atomic_store(&g_wp_phase, WARM_DONE);   // the host's progress (nvn_warm.h)
