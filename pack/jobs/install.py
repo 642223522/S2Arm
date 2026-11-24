@@ -2587,6 +2587,19 @@ def external_app_outdated(c, ph):
     return "phone_app_outdated", f"这台 {dev} 上的 S2Arm 是 {have}，比电脑上的 {want} 旧，部分修复要更新 App 才生效：在游戏库最前面「S2Arm」卡导出 {want} 的 S2Arm.ipa，用你当初装它的工具（LiveContainer / SideStore 等）重新装一次。也可以先照旧推。"
 
 
+PHONE_APP_STANDALONE = ("这台 {0} 上要推进去的「{1}」看起来是一款游戏的独立 App：它只玩自己带的那一款，推别的游戏进去不会出现，这次就不推了。"
+                        "请装一个通用 S2Arm（游戏库最前面「S2Arm」卡）再推；如果它其实就是通用 S2Arm，用当初装它的工具装一次这一版的 S2Arm.ipa 再推。")
+
+
+def standalone_target(c, ph):
+    """推送目标是兜底认不准、多半是老独立 App 的那个（installed_s2arm_on 标 looksStandalone：没有 S2AKind、带壳号、主屏名里没有 S2Arm）→ 推之前说明的那句话；不是 → None。
+    独立 App 起局只认包里自带的那一款，推别的进去等于白推，不能悄悄推"""
+    udid = getattr(ph, "udid", None)
+    apps = (getattr(c, "_s2arm_apps", None) or {}).get(udid) or []
+    hit = next((a for a in apps if a.get("looksStandalone") and a["bundleId"].lower() == (ph.bid or "").lower()), None)
+    return on_device(PHONE_APP_STANDALONE, device_of(c)).replace("{1}", hit["name"]) if hit else None
+
+
 def owner_for_push(c, udid, key):
     """推送前判这台手机用哪个 S2Arm（s2arm_owner）。装着不止一个、玩家还没选（choose）：不替玩家挑——现查的候选记进设备记录 pendingChoice
     （总览不现查时也按这同一份给 needsChoice / candidates，两处不各判各的），失败带 facts {device, candidates}，失败页就地列出来让玩家选（phoneChooseApp），
@@ -3258,9 +3271,10 @@ def installed_s2arm(c, ph):
     return installed_s2arm_on(c, ph.udid, layout.load_device(c, ph.key))
 
 
-# 独立 App 的包名形状（app_bundle_id、devcert.bundle_id 前缀通配那支、导出未签名包的 ipa.standalone_bundle）：别的电脑装的、这台设备记录里没有的也认得出，不算通用壳。
-#   导出包交 AltStore / SideStore 签时它们在包名后再接「.团队号」，带这一段也认
-STANDALONE_BID = re.compile(r"(?:io\.s2arm\.games\.[a-z0-9]+\.[0-9a-f]{16}|.+\.s2arm\.[0-9a-f]{16})(?:\.[a-z0-9]+)?")
+# 独立 App 的包名形状（app_bundle_id、devcert.bundle_id 前缀通配那支、导出未签名包的 ipa.standalone_bundle）：只给没有 S2AKind 的老包兜底（新包按 Info.plist 的
+#   S2AKind 认，见 installed_s2arm_on）。后面最多再接两段：撞号自动换的「.s2」（ALT_BUNDLE_SUFFIX）、AltStore / SideStore 签时接的「.团队号」，两段都在也认
+STANDALONE_BID = re.compile(r"(?:io\.s2arm\.games\.[a-z0-9]+\.[0-9a-f]{16}|.+\.s2arm\.[0-9a-f]{16})(?:\.[a-z0-9]+){0,2}")
+SHELL_BRAND = "S2Arm"   # 通用壳 / 多款容器的主屏名带它（缺省就叫 S2Arm，实验包「<游戏> S2Arm」）；独立 App 的主屏名是纯游戏名（ship_ext ascii_display_name brand=False）
 
 
 def standalone_bids(rec):
@@ -3269,8 +3283,10 @@ def standalone_bids(rec):
 
 
 def installed_s2arm_on(c, udid, rec=None):
-    """同 installed_s2arm，按 UDID 查（总控台逐台现查、推送前还没有手机对象时用）。rec = 这台的设备记录：apps 里的独立 App 包名排除
-    （它们也是 io.s2arm.games 前缀、主程序也叫 S2Arm，算进来会让通用壳判「装着不止一个、要选」）；包名形状是独立 App 的同样排除"""
+    """同 installed_s2arm，按 UDID 查（总控台逐台现查、推送前还没有手机对象时用）。先看 App 自己写的类别（Info.plist S2AKind，s2a-devpush apps 第五列）：
+    standalone（独立 App，只玩自带那一款）一律不列，container（通用壳）一律列，不管包名改成什么。没有这个键的老包按包名兜底：io.s2arm.games 前缀或主程序名
+    认成 S2Arm，再排除设备记录 apps 里的独立 App 包名（它们也是 io.s2arm.games 前缀、主程序也叫 S2Arm，算进来会让通用壳判「装着不止一个、要选」）和
+    包名形状是独立 App 的。兜底认不准的（带壳号、主屏名里却没有 S2Arm：多半是老独立 App）照列，标 looksStandalone，推之前说明（push_game）"""
     if not udid:
         return None
     with tempfile.TemporaryDirectory(dir=c.private) as w:
@@ -3279,8 +3295,18 @@ def installed_s2arm_on(c, udid, rec=None):
         return None
     main = main_executable(c)
     skip = standalone_bids(rec)
-    apps = [dict(bundleId=b, team=t or None, version=v or None) for b, e, t, *rest in rows for v in [(rest or [""])[0]]
-            if (b.lower().startswith(S2ARM_BID_PREFIX) or e == main) and b.lower() not in skip and not STANDALONE_BID.fullmatch(b.lower())]
+    apps = []
+    for b, e, t, *rest in rows:
+        v, kind, shell, name = (list(rest) + [""] * 4)[:4]
+        kind = kind.strip().lower()
+        if kind == "standalone":
+            continue
+        if kind != "container" and not ((b.lower().startswith(S2ARM_BID_PREFIX) or e == main) and b.lower() not in skip and not STANDALONE_BID.fullmatch(b.lower())):
+            continue
+        a = dict(bundleId=b, team=t or None, version=v or None)
+        if kind != "container" and shell and name.strip() and SHELL_BRAND.lower() not in name.lower():
+            a.update(looksStandalone=True, name=name.strip())
+        apps.append(a)
     c.__dict__.setdefault("_s2arm_apps", {})[udid] = apps   # 本次作业里记下（app_version_on 读，推送前不为取版本再列一次设备）
     return apps
 
@@ -3556,6 +3582,9 @@ def push_game(c, gid, ph, steps=True):
     rec = layout.load_device(c, ph.key)
     ext = getattr(ph, "external", False)   # 别的工具装的 S2Arm（push_phone）：不查启动器的壳号、不签名、不交身份，推进它自己的包名
     if ext:   # 不查壳号，但比 App 版本（#1842）：接口不兼容拦；只是旧就提示一次，玩家确认（acceptOldApp）后照推
+        looks = standalone_target(c, ph)
+        if looks:
+            raise Failure(looks, code="phone_app_standalone")
         old = external_app_outdated(c, ph)
         if old and old[0] == "phone_app_incompatible":
             raise Failure(old[1], code="phone_app_incompatible")
