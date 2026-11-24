@@ -8147,7 +8147,9 @@ static NSString *quar_path(void) { NSString *u = pso_user_path(); return u ? [u.
 //   a run pinned the pairs it had just built, and every later run skipped them from the start (a whole scene black from the first controllable frame, the opening
 //   logo half drawn: Trails in the Sky the 1st, iPhone 15 Pro Max). Such a file cannot tell an out-of-memory entry from a real fault, so it is dropped and relearned:
 //   a pair that really faults is pinned again the first time it does
-#define QUAR_HEAD "# gpu_quarantine v2: program pairs whose first commit faulted (not GPU memory exhaustion)"
+// v3（11-23，D-9R4S #2077）：GPU 挂死 / 超时前约 10 秒本进程在大量写盘或缺页读入（客体内存文件后备写回、分页）时也不怪程序对——
+//   v2 把这种挂死时那次提交新建的程序对记进文件，一局 3 GB / 10 s 写回下挂死 5 次、5 对无辜绘制以后每局开局就跳过。v2 文件分不清哪些是这样记进去的，同样整份作废重学
+#define QUAR_HEAD "# gpu_quarantine v3: program pairs whose first commit faulted (not GPU memory exhaustion, not a hang under heavy write-back / paging)"
 static void quar_load(void) {   // caller holds g_quar_mu
     if (g_quar) return;
     g_quar = [NSMutableSet set]; g_quar_new = [NSMutableArray array];
@@ -8170,9 +8172,12 @@ static void quar_built(NvShader *vs, NvShader *fs) {   // submit thread: a pipel
     if (!quar_on()) return;
     pthread_mutex_lock(&g_quar_mu); quar_load(); if (g_quar_new.count <= QUAR_MAX) [g_quar_new addObject:quar_name(vs, fs)]; pthread_mutex_unlock(&g_quar_mu);
 }
+static void quar_io_note(uint64_t t, uint64_t w, uint64_t p); static int quar_disk_io(uint64_t *r, uint64_t *w, uint64_t *p);
 static NSArray<NSString *> *quar_take(void) {   // submit thread, at commit: this commit's suspects
     if (!quar_on()) return nil;
-    pthread_mutex_lock(&g_quar_mu); quar_load(); NSArray *a = g_quar_new.count ? [g_quar_new copy] : nil; [g_quar_new removeAllObjects]; pthread_mutex_unlock(&g_quar_mu);
+    static uint64_t last; uint64_t t = now_ns(), r, w, p;   // 写盘 / 缺页基准：每秒最多取一次（proc_pid_rusage 一次系统调用）
+    int io = t - last >= 1000000000ull && !quar_disk_io(&r, &w, &p); if (io) last = t;
+    pthread_mutex_lock(&g_quar_mu); quar_load(); if (io) quar_io_note(t, w, p); NSArray *a = g_quar_new.count ? [g_quar_new copy] : nil; [g_quar_new removeAllObjects]; pthread_mutex_unlock(&g_quar_mu);
     return a;
 }
 // GPU memory exhaustion is no program's fault: whatever the commit built would have faulted the same with any shader (kIOGPUCommandBufferCallbackErrorOutOfMemory,
@@ -8182,9 +8187,43 @@ static int quar_blameless(NSError *err) {
     if ([err.domain isEqualToString:MTLCommandBufferErrorDomain] && err.code == MTLCommandBufferErrorOutOfMemory) return 1;
     return [err.description containsString:@"OutOfMemory"] || [err.description containsString:@"Insufficient Memory"];
 }
+// GPU 挂死 / 超时（kIOGPUCommandBufferCallbackErrorHang / ErrorTimeout，Metal 3 MTLCommandBufferErrorTimeout）：程序写出死循环会挂，内存在写回 / 分页时 GPU 等页也会挂。
+static int quar_hang(NSError *err) {
+    if (!err) return 0;
+    if ([err.domain isEqualToString:MTLCommandBufferErrorDomain] && err.code == MTLCommandBufferErrorTimeout) return 1;
+    return [err.description containsString:@"ErrorHang"] || [err.description containsString:@"ErrorTimeout"] || [err.description containsString:@"GPU Hang"];
+}
+// 本进程写盘 / 缺页读入的累计（runtime/src/energy.c s2a_disk_io，proc_pid_rusage）；只链图形层的单测没有它，取不到就不豁免（照旧隔离）
+// 弱链接[nvntest]：s2a_disk_io（runtime/src/energy.c 提供；图形单测不链宿主，链接行按这行放行未定义，取不到 = 不豁免）
+__attribute__((weak)) int s2a_disk_io(uint64_t *rd, uint64_t *wr, uint64_t *pageins);
+// 单测换成替身（t_nvn_draw_fallback ⑤；测试工程也链了 energy.c，弱声明盖不过它）；缺省 = s2a_disk_io
+static int (*g_quar_disk_io)(uint64_t *, uint64_t *, uint64_t *);
+static int quar_disk_io(uint64_t *r, uint64_t *w, uint64_t *p) { int (*f)(uint64_t *, uint64_t *, uint64_t *) = g_quar_disk_io ? g_quar_disk_io : s2a_disk_io; return f ? f(r, w, p) : -1; }
+// 「出事前约 10 秒」的基准：提交时最多每秒取一个样本进环（16 格，约 16 秒）；出事时取最新的、至少 10 秒前的那个（不够 10 秒就取最旧的）。
+//   只在提交线程写、完成回调读（都持 g_quar_mu）
+typedef struct { uint64_t t, w, p; } quar_io;
+enum { QUAR_IO_N = 16 };
+static quar_io g_qio[QUAR_IO_N]; static unsigned g_qio_n;
+enum { QUAR_IO_WIN_NS = 10000000000ull };   // 窗口 10 秒，同心跳 [写盘] 一行
+static void quar_io_note(uint64_t t, uint64_t w, uint64_t p) { g_qio[g_qio_n++ % QUAR_IO_N] = (quar_io){t, w, p}; }   // caller holds g_quar_mu
+// 门槛（按 D-9R4S 读数定，不按实现推）：挂死前那个 10 秒窗口写盘 2.3–3.4 GB（4 次全是）；不在写回的局这一窗是 0。取 ≥ 1 GB / 10 s 写，或 ≥ 10000 次 / 10 s 缺页读入（同局 1.3–3.1 万）
+enum { QUAR_IO_WRITE = 1024u << 20, QUAR_IO_PAGEINS = 10000 };
+static int quar_io_heavy(uint64_t now, uint64_t w, uint64_t p, uint64_t *dw, uint64_t *dp, double *secs) {   // caller holds g_quar_mu
+    const quar_io *b = NULL; unsigned n = g_qio_n < QUAR_IO_N ? g_qio_n : QUAR_IO_N;
+    for (unsigned i = 0; i < n; i++) { const quar_io *e = &g_qio[(g_qio_n - 1 - i) % QUAR_IO_N]; if (e->t >= now) continue; b = e; if (now - e->t >= QUAR_IO_WIN_NS) break; }   // 由新到旧：第一个够 10 秒的；都不够就停在最旧的
+    if (!b) return 0;
+    uint64_t dt = now - b->t; if (dt < 1000000000ull) return 0;
+    *dw = w >= b->w ? w - b->w : 0; *dp = p >= b->p ? p - b->p : 0; *secs = dt / 1e9;
+    double k = dt > QUAR_IO_WIN_NS ? (double)QUAR_IO_WIN_NS / dt : 1;   // 窗口比 10 秒长时按 10 秒折算（不会因为样本旧而夸大）
+    return *dw * k >= QUAR_IO_WRITE || *dp * k >= QUAR_IO_PAGEINS;
+}
 static void quar_fault(NSArray<NSString *> *sus, NSError *err) {   // completion: a commit faulted
     if (!quar_on()) return;
     if (quar_blameless(err)) { static int n; if (n++ < 4) MLOG("GPU error quarantine: the commit ran out of GPU memory, no program pair blamed (%lu new in it)", (unsigned long)sus.count); return; }
+    { uint64_t r, w, p, dw = 0, dp = 0; double secs = 0; int heavy = 0;
+      if (quar_hang(err) && !quar_disk_io(&r, &w, &p)) { pthread_mutex_lock(&g_quar_mu); heavy = quar_io_heavy(now_ns(), w, p, &dw, &dp, &secs); pthread_mutex_unlock(&g_quar_mu); }
+      if (heavy) { static int n; if (n++ < 8) MLOG("GPU error quarantine: GPU hang while this process wrote %llu MB and paged in %llu times in the last %.1f s (memory write-back / paging): no program pair blamed (%lu new in it)",
+                                                     (unsigned long long)(dw >> 20), (unsigned long long)dp, secs, (unsigned long)sus.count); return; } }
     if (!sus.count || sus.count > QUAR_MAX) { static int n; if (n++ < 8) MLOG("【红】 GPU error quarantine: the faulted commit first built %lu pipelines, %s (%s)", (unsigned long)sus.count, sus.count ? "too many to pin, nothing skipped" : "none new, nothing skipped", err.localizedDescription.UTF8String); return; }
     pthread_mutex_lock(&g_quar_mu);
     NSMutableArray *add = [NSMutableArray array]; for (NSString *q in sus) if (![g_quar containsObject:q]) { [g_quar addObject:q]; [add addObject:q]; }
