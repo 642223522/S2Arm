@@ -386,8 +386,8 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var batchShown = false
     @Published var batchDraft: [BatchRow] = []
     @Published var batchLocation = ""
-    @Published var batchState: [String: Any]?
-    @Published var batchRunning = false
+    @Published var batchState: [String: Any]? { didSet { pumpQueuedDeletes() } }   // 这批里排队删的款出完了：接着删
+    @Published var batchRunning = false { didSet { pumpQueuedDeletes() } }
     /// 正在跑的那个批量出包编排作业（取消 = 取消它，剃刀 H13）
     var batchWork: Task<Void, Never>?
     /// 批次记录（batch.py mark / 命令）没写成的原因：整批停住、批量页显示（剃刀 M7：原先失败照样往下走，状态和真实结局分叉）；nil = 没出错
@@ -462,7 +462,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published private(set) var spaceFreed: Int64?
     private var spaceGameID: String?
     /// 游戏库页顶部一条操作提示（删除游戏 / 清除缓存）：点下就有「正在…」，结束换成「已…」或失败原因；有别的作业在跑时说清楚在等什么
-    struct LibraryNotice: Equatable { enum Kind { case running, done, failed }; let kind: Kind; let key: String; let name: String; var detail: String = "" }
+    struct LibraryNotice: Equatable { enum Kind { case running, done, failed, queued }; let kind: Kind; let key: String; let name: String; var detail: String = ""; var gameID: String? = nil }
     @Published var libraryNotice: LibraryNotice?
     /// 读不到设备列表的原因（targetDevice 的 connectedError / 探测出错）：出包页设备那一行显示它，而不是「把 iPhone 插上」
     @Published var deviceProbeError: String?
@@ -547,6 +547,11 @@ public final class S2ArmLauncherModel: ObservableObject {
         return exportQueue.contains { $0.game.id == gameID } || (batchRunning && batchPendingIDs.contains(gameID))
     }
     static let packKinds: Set<JobSession.Kind> = [.export, .prepare]
+    /// 这款正在出包 / 准备（主槽或按款作业槽），或排着出包、或在正出的这批里还没出完：此时删它排队等出完（不阻断玩家主动操作）
+    func packHolds(_ gameID: String) -> Bool {
+        mainJobs.contains { Self.packKinds.contains($0.kind) && $0.gameID == gameID }
+            || exportQueue.contains { $0.game.id == gameID } || (batchRunning && batchPendingIDs.contains(gameID))
+    }
     /// 手机槽有作业在跑
     var phoneBusy: Bool { if let phoneSession, case .finished = phoneSession.phase { return false }; return phoneSession != nil }
     /// 游戏槽有一局在跑（开局到退出，含正在停）
@@ -1756,6 +1761,7 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     /// 删这款（IPA / 资源包 / 中间产物 / 缓存；存档与原始游戏文件保留）。
     func deleteGame(_ game: GameSummary) {
+        if packHolds(game.id) { queueDelete(game); return }
         guard !gameJobHeld(game.id) else { refuseNotice(game); return }
         failAction(nil, game: nil)
         libraryNotice = LibraryNotice(kind: .running, key: "s2arm.notice.delete", name: game.name)
@@ -1764,6 +1770,31 @@ public final class S2ArmLauncherModel: ObservableObject {
             if self?.selectedID == game.id { self?.selectedID = nil }
             return nil
         }
+    }
+
+    /// 出包时点了删这款的：等这款不再有出包在跑或排着就删（游戏号 → 点删除时的那款）
+    @Published private(set) var queuedDeletes: [String: GameSummary] = [:]
+
+    /// 排进去（同一款再点不重复排），顶部那条提示说「出完包就删」、带取消
+    private func queueDelete(_ game: GameSummary) {
+        queuedDeletes[game.id] = game
+        libraryNotice = LibraryNotice(kind: .queued, key: "s2arm.notice.delete", name: game.name, gameID: game.id)
+    }
+
+    /// 顶部提示上的「取消」：这款不删了；还有别的款在排，提示换成那一款的（不然它没处取消）
+    func cancelQueuedDelete() {
+        guard let n = libraryNotice, n.kind == .queued, let id = n.gameID else { return }
+        queuedDeletes[id] = nil
+        libraryNotice = queuedDeletes.values.first.map { LibraryNotice(kind: .queued, key: "s2arm.notice.delete", name: $0.name, gameID: $0.id) }
+    }
+
+    /// 排着删的款不再有出包在跑或排着：走正常删除（结果写进同一条提示）。还被别的库类作业（删 / 搬别的款、清缓存…）占着就再等它结束；
+    ///   被手机槽 / 游戏槽占着的照常拒绝、说在等谁。一次起一款，其余等这一单结束（finish）再接
+    func pumpQueuedDeletes() {
+        guard let game = queuedDeletes.values.first(where: { !packHolds($0.id) && (!gameJobHeld($0.id) || phoneBusy || playBusy) }) else { return }
+        queuedDeletes[game.id] = nil
+        if libraryNotice?.kind == .queued { libraryNotice = nil }   // 让正常删除 / 拒绝的提示接上这一条
+        deleteGame(games.first { $0.id == game.id } ?? game)
     }
 
     /// 改名字 / 换封面（nil 不动，空字符串恢复默认）：很快，不进作业页，失败写在出包页上。
@@ -2045,6 +2076,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         if Self.repairKinds.contains(session.kind) {
             if state == .completed, !repairQueue.isEmpty { repair(repairQueue.removeFirst()) } else if state != .completed { repairQueue = [] }
         }
+        pumpQueuedDeletes()   // 出包结束（成 / 败 / 取消）或占着的库类作业做完：排着删的款接着删
         refresh()   // 运行文件 / 存档 / 游戏库状态可能变了
     }
 

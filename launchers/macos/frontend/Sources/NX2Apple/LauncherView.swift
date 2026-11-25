@@ -242,17 +242,21 @@ struct LauncherView: View {
     /// 删除游戏 / 清除缓存的进行中与结果。
     @ViewBuilder private var libraryNoticeBar: some View {
         if let n = model.libraryNotice {
-            let text = loc.t(n.key + "." + { switch n.kind { case .running: "running"; case .done: "done"; case .failed: "failed" } }())
+            let text = loc.t(n.key + "." + { switch n.kind { case .running: "running"; case .done: "done"; case .failed: "failed"; case .queued: "queued" } }())
                 .replacingOccurrences(of: "{0}", with: n.name).replacingOccurrences(of: "{1}", with: loc.backend(n.detail))
             HStack(spacing: 10) {
                 switch n.kind {
                 case .running: ProgressView().controlSize(.small)
                 case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                 case .failed: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(LauncherPalette.danger)
+                case .queued: Image(systemName: "clock").foregroundStyle(.secondary)
                 }
                 Text(text).font(.manrope(13, .semibold)).fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 8)
-                if n.kind != .running {
+                if n.kind == .queued {   // 排着等出完包再删：能取消（不删了）
+                    Button(loc.t("s2arm.job.cancel")) { model.cancelQueuedDelete() }.controllerButtonStyle(.plain).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("notice.library.cancel")
+                } else if n.kind != .running {
                     Button { model.libraryNotice = nil } label: { Image(systemName: "xmark") }.controllerButtonStyle(.plain).foregroundStyle(.secondary)
                         .accessibilityIdentifier("notice.library.close")
                 }
