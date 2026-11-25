@@ -51,6 +51,9 @@ static int fit_w, fit_h;
 int s2a_screen_fit(int pw, int ph) { fit_w = pw; fit_h = ph; return 0; }   // 宽屏跟窗口比例（runtime/src/widen.c）：只记前端交出的像素尺寸
 int s2a_hud_on(void) { return 0; }   // 开发浮层（runtime/src/hud.c）在这里不测，关着
 int s2a_hud_text(char *out, size_t n, const s2a_hud_host *h) { (void)h; return snprintf(out, n, "%s", ""); }
+int s2a_hud_brief(char *out, size_t n) { return snprintf(out, n, "%s", ""); }   // 帧率浮层（macos/perf_brief.m，#2207）在这里不测
+int s2a_hud_brief_fps(char *out, size_t n) { return snprintf(out, n, "%s", ""); }
+void s2a_hud_brief_set(int on) { (void)on; }
 // 存档原子提交判定（runtime/src/direct_prompt.c s2a_save_atomic_poll，判定本身由 runtime/tests/t_direct_prompt.c 测）：这里只给读数，测 Mac 横幅接线
 static int fake_atomic;
 int s2a_save_atomic_poll(void) { int bits = fake_atomic; fake_atomic = 0; return bits; }

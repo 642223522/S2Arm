@@ -4,7 +4,7 @@
 # 门禁覆盖：macos/perf_brief.h macos/perf_brief.m macos/tests/t_perf_brief.m tests/macos_perf_brief_test.sh
 set -u
 H=$(cd "$(dirname "$0")/.." && pwd)
-[ "$(uname -s)" = Darwin ] || { echo "跳过：Mac 专用"; exit 0; }
+[ "$(uname -s)" = Darwin ] || { echo "跳过：Mac 专用（环境未就绪）"; exit 75; }
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 clang -fobjc-arc -O1 -Wall -Werror "$H/macos/tests/t_perf_brief.m" "$H/macos/perf_brief.m" -framework AppKit -o "$T/t" || { echo "🔴 t_perf_brief 编不过"; exit 1; }
 "$T/t" ${1:+"$1"} || exit 1
