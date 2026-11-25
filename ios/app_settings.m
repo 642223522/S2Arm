@@ -474,11 +474,11 @@ static UILabel *textLabel(UIFontTextStyle style) {
     return [s.array sortedArrayUsingSelector:@selector(compare:)];
 }
 - (NSArray<NSNumber *> *)graphicsRows {
-    BOOL fpsP = NO, wsP = NO;
-    for (S2ACPatchGroup *g in _patchGroups) for (S2ACPatchItem *it in g.items) { if (it.followsFps60) fpsP = YES; if ([g.kind isEqual:@"widescreen"] || it.followsFullscreen) wsP = YES; }
+    BOOL fpsP = NO;
+    for (S2ACPatchGroup *g in _patchGroups) for (S2ACPatchItem *it in g.items) if (it.followsFps60) fpsP = YES;
     NSMutableArray *rows = [@[@0, @1, @2, @3] mutableCopy];
     [rows addObject:@21];   // 游戏内亮度（按款，所有游戏都有；跟随系统 / 50 / 65 / 80 / 100%）
-    if (wsP) [rows addObject:@6];
+    [rows addObject:@6];   // 满屏：没有宽屏补丁也列（11-15 维护者「没补丁的游戏手动打开满屏就走咱们通用方案」，#2205），缺省关；有补丁时副标题写补丁接管
     if (fpsP) [rows addObject:@7];
     if (fpsP && [self fpsLevels].count > 1) [rows addObject:@20];   // 帧率档位（两档以上才列）
     [rows addObject:@9];
