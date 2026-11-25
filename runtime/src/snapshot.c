@@ -495,7 +495,9 @@ static void *snap_dog(void *arg) {
     snap_dog_arg *a = arg; pthread_setname_np("s2a-存档看门狗");
     while (atomic_load(&g_snap_dog_on)) {
         usleep(200000);
-        uint64_t idle = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - atomic_load(&g_snap_tick);
+        // 先取存档线程报的时刻、再取现在：反过来的话存档线程恰在两次读之间报一次（层内长循环报得很密），报的时刻晚于「现在」，
+        //   无符号相减下溢成约 1.8e10 秒，好好的存档被当成卡住放弃（玩家诊断包 7 次「存档卡在「游戏内存」18446744073.7 秒」）。饱和减兜底
+        uint64_t tick = atomic_load(&g_snap_tick), now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW), idle = now > tick ? now - tick : 0;
         if (!atomic_load(&g_snap_dog_on) || idle < SNAP_DOG_NS) continue;
         const char *ly = atomic_load(&g_snap_layer);
         LOG("【红】即时存档：存档卡在「%s」%.1f 秒没前进，放弃这次存档、游戏照常跑；下面是各线程现场（报修用）", ly ? ly : "?", idle / 1e9);
