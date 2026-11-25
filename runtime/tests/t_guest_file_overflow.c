@@ -38,6 +38,12 @@ __attribute__((constructor(100))) static void need(void) {   // 先于 vawin.c �
 }
 uint64_t s2a_guest_anon_budget(const char *e, uint64_t room, uint64_t margin, uint64_t host);
 uint64_t s2a_guest_next_budget(const char *e, uint64_t room, uint64_t margin, uint64_t first_host, int died, int have, uint64_t prev_b, uint64_t hmin, int long_run, uint64_t ceil, int *src);
+void s2a_heat_count(const unsigned char *vec, size_t np, uint64_t *dirty, uint64_t *out);
+int s2a_guest_heat_scan(uint64_t r[10], uint64_t top[3], uint64_t topi[3]);
+int s2a_heat_log_due(uint64_t last[10], const uint64_t r[10], int *logged);
+// 单测不链图形层：强定义一份，按 g_alias_lo / g_alias_hi 假装这段被 GPU 缓冲指着（验证别名块不进换位上限）
+static uint64_t g_alias_lo, g_alias_hi;
+uint64_t nvn_be_pool_host_overlap(uint64_t lo, uint64_t hi) { uint64_t a = lo > g_alias_lo ? lo : g_alias_lo, c = hi < g_alias_hi ? hi : g_alias_hi; return c > a ? c - a : 0; }
 uint64_t s2a_guest_overflow_budget_ios(const char *e, uint64_t room, uint64_t margin, int died, int *src, uint64_t *pb, uint64_t *ph);
 int s2a_guest_budget_rec_read(uint64_t *b, uint64_t *hmin); void s2a_guest_budget_note(uint64_t avail);
 void s2a_guest_commit(uint64_t a, uint64_t n); void s2a_guest_file_carve(uint64_t a, uint64_t n); int s2a_window_session_reset(void); void s2a_guest_backing_log(void); void s2a_guest_backing_sum(uint64_t sum[4]); void s2a_window_trim(uint64_t size);
@@ -83,6 +89,37 @@ int main(void) {
     {   // ⑤
         long long f0 = fp(); for (uint64_t o = 0; o < 32 * MB; o += 64) ((uint8_t *)(uintptr_t)C)[o] = (uint8_t)(o >> 6) | 1; long long df = fp() - f0;
         CHECK(df < (8ll << 20), "⑤ 文件块写满 32 MB：实占 +%lld KB（期望 < 8192 KB）", df >> 10);
+    }
+    {   // ⑤b 冷热读数（#1268）：纯函数按 mincore 位数页；实扫：刚写满的文件块 C 是热块、脏页约 32 MB，匿名块 A / B 计进匿名块数
+        unsigned char v[8] = {MINCORE_INCORE | MINCORE_MODIFIED, MINCORE_INCORE, MINCORE_PAGED_OUT, 0, MINCORE_INCORE | MINCORE_MODIFIED | MINCORE_REFERENCED, MINCORE_PAGED_OUT, MINCORE_MODIFIED, MINCORE_INCORE};
+        uint64_t d = 9, o = 9; s2a_heat_count(v, 8, &d, &o);
+        CHECK(d == 2 && o == 2, "⑤b 纯函数：在内存且改过 2 页、已换出 2 页（不在内存的 MODIFIED 不算脏）：脏 %llu / 换出 %llu", (unsigned long long)d, (unsigned long long)o);
+        uint64_t r[10], top[3], topi[3]; int ok = s2a_guest_heat_scan(r, top, topi);
+        CHECK(ok && r[0] >= 1 && r[1] >= 24 * MB && r[2] >= 1 && r[4] >= 2 && top[0] >= 24 * MB && topi[0] == (C - b) / GCH,
+              "⑤b 实扫：文件块 %llu、脏 %llu MB、热块 %llu、匿名块 %llu、最脏块 #%llu %llu MB（期望 ≥1、≥24、≥1、≥2、#%llu ≥24）",
+              (unsigned long long)r[0], (unsigned long long)(r[1] / MB), (unsigned long long)r[2], (unsigned long long)r[4],
+              (unsigned long long)topi[0], (unsigned long long)(top[0] / MB), (unsigned long long)((C - b) / GCH));
+        s2a_guest_heat_scan(r, top, topi); s2a_guest_heat_scan(r, top, topi);
+        CHECK(r[3] >= 1 && r[8] == 0, "⑤b 连扫 3 次 C 仍脏 → 常热块 %llu（期望 ≥ 1）、被别名 %llu（期望 0）", (unsigned long long)r[3], (unsigned long long)r[8]);
+        // 硬约束：被 GPU 零拷贝缓冲指着的块不能换位——让 C 那块被「指着」，常热照数、算进被别名，换位上限不算它
+        g_alias_lo = C + 4096; g_alias_hi = C + 8192; s2a_guest_heat_scan(r, top, topi);
+        CHECK(r[3] >= 1 && r[8] == r[3] && r[7] == 0, "⑤b C 被 GPU 缓冲指着：常热 %llu、其中被别名 %llu（期望相等）、换位上限 %llu MB（期望 0）",
+              (unsigned long long)r[3], (unsigned long long)r[8], (unsigned long long)(r[7] >> 20));
+        g_alias_lo = g_alias_hi = 0;
+        {   // ⑤c 冷热行有界：同读数不打、脏页差 < 16 MB 不打、块数一变就打；一局最多 40 条（期望手算：1000 次心跳、每次都变 → 40）
+            uint64_t last[10] = {0}, q[10] = {0}; int lg = 0, n = 0;
+            q[0] = 5; q[1] = 100 * MB; n += s2a_heat_log_due(last, q, &lg);
+            n += s2a_heat_log_due(last, q, &lg);
+            q[1] = 110 * MB; n += s2a_heat_log_due(last, q, &lg);
+            q[1] = 120 * MB; n += s2a_heat_log_due(last, q, &lg);
+            q[2] = 1; n += s2a_heat_log_due(last, q, &lg);
+            CHECK(n == 3 && lg == 3, "⑤c 首条打、同值不打、差 10 MB 不打、差 20 MB 打、热块数变打：打了 %d 条（期望 3）", n);
+            for (int i = 0; i < 1000; i++) { q[0] = 100 + i; n += s2a_heat_log_due(last, q, &lg); }
+            CHECK(lg == 40 && n == 40, "⑤c 1000 次心跳每次都变：总共打 %d 条（期望 40，上限）", n);
+        }
+        // 「脏」的语义是「上次写回后又写过」：单测里手动写回（内核回收时做的就是这一步），C 的脏页应归零、常热断掉
+        int ms = msync((void *)(uintptr_t)C, 32 * MB, MS_SYNC); s2a_guest_heat_scan(r, top, topi);
+        CHECK(ms == 0 && r[1] < 1 * MB && r[3] == 0, "⑤b 写回后：脏 %llu KB（期望 < 1024）、常热块 %llu（期望 0）", (unsigned long long)(r[1] >> 10), (unsigned long long)r[3]);
     }
     {   // ⑥
         uint8_t keep = ((uint8_t *)(uintptr_t)C)[16 * MB + 64];

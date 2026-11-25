@@ -1280,6 +1280,18 @@ int nvn_be_pool_alias(uint64_t at, uint64_t len, uint64_t phys) {
     pthread_mutex_unlock(&g_mu);
     return ok;
 }
+// 冷热读数（runtime/src/vawin.c s2a_guest_heat_scan，#1268）：[lo, hi) 里被物理池零拷贝 Metal 缓冲指着的字节。这些页底下的映射换不得——
+//   零拷贝缓冲按建时的宿主页记账，底下换成别的映射，缓冲就指到旧页上。虚拟池条目（vpf）指的是 GPU 地址或宿主副本，不在客体窗口里，不算
+uint64_t nvn_be_pool_host_overlap(uint64_t lo, uint64_t hi) {
+    uint64_t got = 0; pthread_mutex_lock(&g_mu);
+    for (int i = 0; i < g_npool; i++) {
+        if (g_pools[i].vpf || g_pools[i].dead) continue;
+        uint64_t a = g_pools[i].lo > lo ? g_pools[i].lo : lo, b = g_pools[i].hi < hi ? g_pools[i].hi : hi;
+        if (b > a) got += b - a;
+    }
+    pthread_mutex_unlock(&g_mu);
+    return got > hi - lo ? hi - lo : got;   // 块与块、块与整池缓冲会重叠：上限是这段本身
+}
 // 虚拟池里跨不同物理内存的一段的副本（hle_nvn.c vsh_*）：宿主内存 host 上的零拷贝缓冲，登记在虚拟池地址 at；缓冲放掉时（延迟释放之后）才 munmap
 static int nvn_be_pool_add_at_body(uint64_t at, uint64_t len, void *host, uint64_t hlen, const void *key) {
     mtl_init(); g_reg_gen++;
