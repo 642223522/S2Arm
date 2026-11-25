@@ -107,7 +107,7 @@ int main(int argc, char **argv) {
             at += gs[g].n;
         }
         if (![out writeToFile:@(argv[2]) atomically:YES]) die("写不出输出");
-        printf("t_pblend_gpu：%u 组、%zu 格、%s\n", groups, total, argv[3]);
+        printf("✓ t_pblend_gpu：%u 组、%zu 格、%s（只出结果；和模型比由 maxwell_blend_matrix_test.py 做）\n", groups, total, argv[3]);
         free(msl);
     }
     return 0;

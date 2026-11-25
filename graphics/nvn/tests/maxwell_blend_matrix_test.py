@@ -123,7 +123,9 @@ def main():
         total, bad, first, cell674 = run(name, impl, full)
         if name in MUST_DIFFER:
             ok = bad > 0 and not cell674
+            print("【负对照开始】")
             print(f"{'通' if ok else '不通'} 负对照 {name}：{total} 格里和模型不等 {bad} 格（要 > 0），#674 那一格{'不等' if not cell674 else '相等'}（要不等）")
+            print("【负对照结束】")
         else:
             ok = bad == 0 and cell674
             print(f"{'通' if ok else '不通'} {name}：{total} 格，和模型不等 {bad} 格（要 0）" + ("" if ok else f"；第一格 {first}"))
