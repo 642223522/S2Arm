@@ -448,7 +448,24 @@ void s2a_snap_thaw(void);   // thread.c
 static _Atomic(const char *) g_snap_layer;
 static _Atomic uint64_t g_snap_tick;
 static _Atomic int g_snap_done_once, g_snap_abandoned, g_snap_dog_on;
+// 逐层实占（存档途中被系统按内存收掉的诊断，玩家包也开）：每层一行「进入时实占 / 层内峰值 / 层内离上限最少」，层内长循环的进度报点顺手采样。
+//   一次存档约 20 行。离上限 = s2a_host_mem_avail（iPhone：os_proc_available_memory；Mac：系统随时能收回给本进程的部分）。只在存档线程上调
+uint64_t s2a_host_mem_avail(void);   // hostmem_apple.c
+static const char *g_fp_layer; static uint64_t g_fp_in, g_fp_peak, g_fp_minav;
+static void snap_fp_sample(uint64_t *fp, uint64_t *av) {
+    task_vm_info_data_t vi; mach_msg_type_number_t c = TASK_VM_INFO_COUNT;
+    *fp = task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vi, &c) == KERN_SUCCESS ? vi.phys_footprint >> 20 : 0;
+    *av = s2a_host_mem_avail() >> 20;
+}
+static void snap_fp_flush(void) {
+    if (g_fp_layer) LOG("即时存档实占：「%s」进入 %llu MB、层内峰值 %llu MB、层内离上限最少 %llu MB", g_fp_layer,
+                        (unsigned long long)g_fp_in, (unsigned long long)g_fp_peak, (unsigned long long)g_fp_minav);
+    g_fp_layer = NULL;
+}
 void s2a_snap_progress(const char *layer) {
+    { uint64_t fp, av; snap_fp_sample(&fp, &av);
+      if (layer) { snap_fp_flush(); g_fp_layer = layer; g_fp_in = g_fp_peak = fp; g_fp_minav = av; }
+      else if (g_fp_layer) { if (fp > g_fp_peak) g_fp_peak = fp; if (av < g_fp_minav) g_fp_minav = av; } }
     if (layer) atomic_store(&g_snap_layer, layer);
     atomic_store(&g_snap_tick, clock_gettime_nsec_np(CLOCK_UPTIME_RAW));
     const char *st = layer ? getenv("S2A_SNAP_TEST_STALL") : NULL;   // 看门狗实测用：存档走到这一层时停 20 秒（模拟卡住）
@@ -457,6 +474,7 @@ void s2a_snap_progress(const char *layer) {
 static void snap_finish(int ok, const char *dir, int exit_after);
 // 这次存档只收尾一次：看门狗放弃了的，存档线程后来走到收尾时只放开「正在存」
 static void snap_finish_once(int ok, const char *dir, int exit_after) {
+    snap_fp_flush();   // 最后一层的实占行
     atomic_store(&g_snap_dog_on, 0);
     if (atomic_exchange(&g_snap_done_once, 1)) { atomic_store(&g_snap_busy, 0); LOG("即时存档：看门狗放弃过的那次存档线程现在才走完（结果作废），之后可以再存"); return; }
     snap_finish(ok, dir, exit_after);

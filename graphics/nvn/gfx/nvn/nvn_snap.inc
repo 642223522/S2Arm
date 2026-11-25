@@ -24,6 +24,7 @@ static int snap_dump_tex(FILE *f, uint64_t ser, id<MTLTexture> t, uint64_t *byte
     if (FR_READ_STOPPED) return 0;
     id<MTLBuffer> b = [g_dev newBufferWithLength:tot options:MTLResourceStorageModeShared]; if (!b) fr_read_lost("读回缓冲建不出来"); if (!b || !fr_blit_planes(t, &hd, b, 1)) return 0;
     if (!fr_w_tex(f, &hd, b.contents, tot)) return -1;
+    if (s2a_snap_progress) s2a_snap_progress(NULL);   // 逐张回读：看门狗心跳 + 逐层实占采样（声明在 nvn_frame_rec.inc）
     *bytes += tot; return 1;
 }
 // 显卡内容已经没了的打包贴图不存。切后台瘦身（nvn_mtl.m nvn_be_background_purge）把能从客体内存重建的打包贴图标成可清除，系统清掉后回前台只登记
@@ -234,6 +235,7 @@ static int snap_al_dump(FILE *f, id<MTLTexture> t, uint64_t *bytes) {   // 1 存
     if (FR_READ_STOPPED) return 0;
     id<MTLBuffer> b = [g_dev newBufferWithLength:tot options:MTLResourceStorageModeShared]; if (!b) fr_read_lost("读回缓冲建不出来"); if (!b || !fr_blit_planes(t, &hd, b, 1)) return 0;
     if (!fr_w(f, &x, sizeof x) || !fr_w_tex(f, &hd, b.contents, tot)) return -1;
+    if (s2a_snap_progress) s2a_snap_progress(NULL);   // 逐张回读：看门狗心跳 + 逐层实占采样（声明在 nvn_frame_rec.inc）
     *bytes += tot; return 1;
 }
 static int g_snap_al_zero;   // 上一次 snap_al_load_x 读到的内容是不是全零（snap_alias_restore kind 3 用）
