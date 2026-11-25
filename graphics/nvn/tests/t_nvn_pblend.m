@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 S2Arm contributors
-// #674 可编程混合走真实宿主（nvn_mtl.m pso_pb_eff / fs_pb_fn / pso_desc / enc_r_slot27）：片元源码照 SPIRV-Cross 格式写、经 gal_color_round_msl 改写（同出包 / 机上现编），
+// #674 可编程混合走真实宿主（nvn_mtl.m pso_pb_eff / fs_pb_fn / pso_desc / enc_r_slot27）：片元源码照 SPIRV-Cross 格式写、经 gal_color_round_pb_msl 改写（同出包 / 机上现编），
 //   浮点附件开混合的绘制由宿主特化开关常量、关掉固定混合、往 27 号槽绑混合状态。期望手写（Maxwell：混合里 0 × 任何数 = 0，graphics/nvn/tests/maxwell_blend_ref.py）：
 //   ① #674 原状态：源 (NaN,NaN,NaN,0) 以 SRC_ALPHA / ONE_MINUS_SRC_ALPHA（A：ZERO / ONE_MINUS_SRC_ALPHA）混进 (0,0,0,1) → (0,0,0,1)；正常半透明照常
 //   ② 目标是 NaN（清 NaN 窄修救不了的一路）：源 alpha 1、ONE_MINUS_SRC_ALPHA → 目标项 0 × NaN = 0，结果就是源；固定混合是 NaN
@@ -72,7 +72,7 @@ int main(void) { @autoreleasepool {
     setenv("DM_NVN_SHMAP",map,1); setenv("DM_PSO_USER",user,1); setenv("DM_PSO_ARCHIVE","0",1);
     setenv("DM_NVN_TBDR","0",1); mtl_init(); printf("BACKEND Metal%d\n",g_m3?3:4);
     const op_hdr empty={OP_END,sizeof(op_hdr)}; nvn_be_exec((const uint8_t *)&empty);
-    char why[256]; char *msl = gal_color_round_msl(k_frag, "main0", why); REQUIRE(msl);
+    char why[256]; char *msl = gal_color_round_pb_msl(k_frag, "main0", why); REQUIRE(msl);
     NSError *error=nil; MTLCompileOptions *co=[MTLCompileOptions new]; co.mathMode=MTLMathModeRelaxed; co.preserveInvariance=YES;
     id<MTLLibrary> flib=[g_dev newLibraryWithSource:@(msl) options:co error:&error]; if(!flib) fprintf(stderr,"MSL %s\n",error.localizedDescription.UTF8String); REQUIRE(flib);
     id<MTLLibrary> vlib=[g_dev newLibraryWithSource:k_vert options:co error:&error]; REQUIRE(vlib);

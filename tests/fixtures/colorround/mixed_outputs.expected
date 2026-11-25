@@ -76,10 +76,8 @@ static inline float4 s2a_pblend(float4 s, float4 d, float4 s1, constant S2APBlen
     return float4(rgb.xyz, a.w);
 }
 #endif
-constant bool s2a_pb0_c [[function_constant(110)]];
-constant bool s2a_pb0 = is_function_constant_defined(s2a_pb0_c) && s2a_pb0_c;
-constant bool s2a_pb2_c [[function_constant(112)]];
-constant bool s2a_pb2 = is_function_constant_defined(s2a_pb2_c) && s2a_pb2_c;
+constant bool s2a_pb0_c [[function_constant(110)]]; constant bool s2a_pb0 = is_function_constant_defined(s2a_pb0_c) && s2a_pb0_c;
+constant bool s2a_pb2_c [[function_constant(112)]]; constant bool s2a_pb2 = is_function_constant_defined(s2a_pb2_c) && s2a_pb2_c;
 [[ early_fragment_tests ]] fragment main0_out main0(main0_in in [[stage_in]], constant uint* fp_c3 [[buffer(1)]], constant S2APBlend& s2a_pb [[buffer(27)]], float4 s2a_dst0 [[color(0), function_constant(s2a_pb0)]], float4 s2a_dst2 [[color(2), function_constant(s2a_pb2)]])
 {
     main0_out out = {};

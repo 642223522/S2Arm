@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 S2Arm contributors
-// 可编程混合（#674 通用根修，graphics/dsx/gal_colorround.c 的 gal_color_round_msl 门控版）在真 Metal 上跑：maxwell_blend_matrix_test.py 的 pb 实现。
+// 可编程混合（#674 通用根修，graphics/dsx/gal_colorround.c 的 gal_color_round_pb_msl 门控版）在真 Metal 上跑：maxwell_blend_matrix_test.py 的 pb 实现。
 //   输入（Python 写）：魔数 "S2PB"、组数、每组 (6 个 NVN 混合枚举、常量色 float4、格子数 n、n × (源 float4, 第二源 float4, 目标 float4))；
-//   每组画一行：附件先填目标值（读入）；片元入口照 SPIRV-Cross 格式写（输出 0 = 源、输出 1 = 第二源），经 gal_color_round_msl 改写，
+//   每组画一行：附件先填目标值（读入）；片元入口照 SPIRV-Cross 格式写（输出 0 = 源、输出 1 = 第二源），经 gal_color_round_pb_msl 改写，
 //   特化时置 s2a_pb0_c = 真（同宿主），按 27 号槽的混合状态自己混合；管线只有附件 0、固定混合关掉，输出 1 不落任何附件（第二源只在片元里用）。
 //   输出：每组 n × 结果 float4（附件读回）。附件格式由参数给（rgba32f / rgba16f）。只跑改写后的着色器，不读期望值。
 #import <Foundation/Foundation.h>
@@ -40,7 +40,7 @@ int main(int argc, char **argv) {
         }
         if (!groups) { [[NSData data] writeToFile:@(argv[2]) atomically:YES]; printf("t_pblend_gpu：0 组\n"); return 0; }
         char why[256] = "";
-        char *msl = gal_color_round_msl(k_frag, "main0", why);
+        char *msl = gal_color_round_pb_msl(k_frag, "main0", why);
         if (!msl) { fprintf(stderr, "改写失败：%s\n", why); return 1; }
         id<MTLDevice> dev = MTLCreateSystemDefaultDevice(); if (!dev) die("没有 Metal 设备");
         MTLCompileOptions *co = [MTLCompileOptions new]; co.mathMode = MTLMathModeRelaxed; co.preserveInvariance = YES;   // 同运行时（nvn_mtl.m）

@@ -69,10 +69,8 @@ static inline float4 s2a_pblend(float4 s, float4 d, float4 s1, constant S2APBlen
     return float4(rgb.xyz, a.w);
 }
 #endif
-constant bool s2a_pb0_c [[function_constant(110)]];
-constant bool s2a_pb0 = is_function_constant_defined(s2a_pb0_c) && s2a_pb0_c;
-constant bool s2a_pb1_c [[function_constant(111)]];
-constant bool s2a_pb1 = is_function_constant_defined(s2a_pb1_c) && s2a_pb1_c;
+constant bool s2a_pb0_c [[function_constant(110)]]; constant bool s2a_pb0 = is_function_constant_defined(s2a_pb0_c) && s2a_pb0_c;
+constant bool s2a_pb1_c [[function_constant(111)]]; constant bool s2a_pb1 = is_function_constant_defined(s2a_pb1_c) && s2a_pb1_c;
 fragment main0_out main0(float4 gl_FragCoord [[position]], constant S2APBlend& s2a_pb [[buffer(27)]], float4 s2a_dst0 [[color(0), function_constant(s2a_pb0)]], float4 s2a_dst1 [[color(1), function_constant(s2a_pb1)]])
 {
     main0_out out = {};
