@@ -1045,8 +1045,16 @@ static void *grab_thread(void *arg) {
     s2a_snap_ap_hold = 0;   // 验证截图存完：放开自动玩家
     LOG("即时存档恢复：验证截图已存（%s/b_after_*.png）", d); return NULL;
 }
+static int restore_body(const char *dir);
 int s2a_snap_restore(const char *dir) {
-    s2a_snap_ap_gen++; s2a_snap_ap_hold = 1;   // 自动玩家闸：恢复开始即停手（失败时调用方当场退出进程，不用清）
+    // 自动玩家闸：恢复开始即停手、恢复前定的那一下作废（gen+1）；失败一律放开——进程内重建失败不退出进程，而是不带快照重新开局
+    //   （host_main.c s2a_session_fresh_restart），hold 不清的话新开的那局自动玩家要干等 300 秒（开发乙 11-25 复审）
+    s2a_snap_ap_gen++; s2a_snap_ap_hold = 1;
+    int r = restore_body(dir);
+    if (r) s2a_snap_ap_hold = 0;
+    return r;
+}
+static int restore_body(const char *dir) {
     {   // 动态装载的 NRO：先按快照顺序重新装（落点与存档时相同），再核模块落点、写回游戏内存
         int s2a_snap_nro_preload(FILE *); FILE *nf = open_in(dir, "nro.bin", "rb");
         if (!nf) { LOG("【红】即时存档恢复：快照缺动态模块表（nro.bin）"); return -1; }
@@ -1107,7 +1115,7 @@ int s2a_snap_restore(const char *dir) {
     s2a_snap_unfreeze();
     {   // 验证用：恢复后第 1 / 5 / 20 秒的画面（另起线程，不挡游戏）
         static char gdir[2048]; s2a_docs_root(gdir, sizeof gdir);
-        pthread_t th; pthread_create(&th, NULL, grab_thread, gdir); pthread_detach(th);
+        pthread_t th; if (pthread_create(&th, NULL, grab_thread, gdir) == 0) pthread_detach(th); else s2a_snap_ap_hold = 0;   // 截图线程起不来：没人放开自动玩家，这里放
     }
     LOG("即时存档恢复：完成，合计 %.2f s（内存账 %.2f、页内容 %.0f MB %.2f、内核账 %.2f、服务重放 %.2f（异常 %d 条）、核对 %.2f、起线程 %.2f）；存档目录前后一致（%d 个文件 %.12s…）",
         t6 - t0, t1 - t0, raw / 1048576.0, t2 - t1, t3 - t2, t4 - t3, rbad, t5 - t4, t6 - t5, sn1, st1);
