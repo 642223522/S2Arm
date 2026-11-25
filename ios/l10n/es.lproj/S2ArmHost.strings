@@ -615,7 +615,8 @@
 
 /* 0.6.0 快照：游戏中菜单 */
 "vpad.snap.save" = "Guardar este momento";
-"vpad.snap.offAddress" = "Este juego necesita más rango de direcciones del que el sistema de este dispositivo puede dar a las apps, así que no caben las instantáneas y están desactivadas para este juego aquí. No tiene nada que ver con el almacenamiento; el juego funciona con normalidad.";
+"vpad.snap.offAddress" = "Este dispositivo no tiene suficiente rango de direcciones de memoria para este juego y una instantánea a la vez, así que las instantáneas están desactivadas para este juego aquí. No tiene nada que ver con el almacenamiento; el juego funciona como siempre.";
+"vpad.snap.offAddressNums" = " (el juego necesita %@ GB, la instantánea %@ GB, este dispositivo puede dar %@ GB)";
 "vpad.snap.restore" = "Volver al momento guardado";
 "vpad.snap.saving" = "Guardando este momento…";
 "vpad.snap.saved" = "Momento guardado";

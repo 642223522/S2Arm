@@ -615,7 +615,8 @@
 
 /* 0.6.0 快照：游戏中菜单 */
 "vpad.snap.save" = "Sauvegarder cet instant";
-"vpad.snap.offAddress" = "Ce jeu a besoin de plus de plage d'adresses que le système de cet appareil ne peut en donner aux apps : il n'y a pas de place pour les instantanés, ils sont désactivés pour ce jeu ici. Cela n'a rien à voir avec le stockage ; le jeu fonctionne normalement.";
+"vpad.snap.offAddress" = "Cet appareil n'a pas assez de plage d'adresses mémoire pour contenir à la fois ce jeu et un instantané : les instantanés sont désactivés pour ce jeu ici. Cela n'a rien à voir avec le stockage ; le jeu fonctionne normalement.";
+"vpad.snap.offAddressNums" = " (le jeu demande %@ Go, l'instantané %@ Go, cet appareil peut donner %@ Go)";
 "vpad.snap.restore" = "Revenir à l’instant sauvegardé";
 "vpad.snap.saving" = "Sauvegarde de cet instant…";
 "vpad.snap.saved" = "Instant sauvegardé";
