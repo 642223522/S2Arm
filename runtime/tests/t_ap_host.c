@@ -57,7 +57,8 @@ int s2a_host_sleeping(void) { return atomic_load(&g_host_sleeping); }
 static _Atomic int g_applet;   // ④c 系统小程序开着的个数（os.c s2a_applet_open 的桩）
 int s2a_applet_open(void) { return atomic_load(&g_applet); }
 static _Atomic int g_nhost;
-int s2a_dump_threads(const char *why) { (void)why; g_nhost++; return 0; }   // 桩：宿主线程栈
+static _Atomic int g_nshort;   // ⑨：只数短停顿现场打的份数（原 1 秒停住看门同进程也在跑，负载高时等待睡过 1 秒它也会打一份，共用 g_ndump 会多数）
+int s2a_dump_threads(const char *why) { if (why && strstr(why, "短停顿现场")) g_nshort++; g_nhost++; return 0; }   // 桩：宿主线程栈
 // 等看门线程在「现在」之后再走满 k 格（s2a_ap_stall_ticks 圈首计）：按看门自己的格数同步，不按墙钟睡（11-19：负载高时固定睡 1.6 秒格数不够，
 //   ④ ⑦ 份数对不上、测的是机器负载）。期望格数按看门规则手算：看到帧变 1 格 + 停满 lim=4 格打现场 → 取 7 格。60 秒兜底只防线程没起来，到了判红
 static int wait_ticks(int k) {
@@ -310,13 +311,13 @@ int main(void) {
         pid_t pid = fork();
         if (pid == 0) {
             close(pfd[0]); unsetenv("S2A_STALL_DUMP_S"); setenv("DM_STALL_SHORT_MS", "150", 1); setenv("DM_STALL_SHORT_N", "3", 1);
-            atomic_store(&g_ndump, 0); atomic_store(&g_fz, 0); atomic_store(&g_host_focused, 1);
+            atomic_store(&g_nshort, 0); atomic_store(&g_fz, 0); atomic_store(&g_host_focused, 1);
             char r[64]; int k = 0;
-            s2a_frame_presented(); usleep(600000); k += snprintf(r + k, sizeof r - (size_t)k, "%d", (int)g_ndump);
-            s2a_frame_presented(); atomic_store(&g_fz, 1); usleep(600000); k += snprintf(r + k, sizeof r - (size_t)k, " %d", (int)g_ndump);
-            atomic_store(&g_fz, 0); usleep(600000); k += snprintf(r + k, sizeof r - (size_t)k, " %d", (int)g_ndump);
-            s2a_frame_presented(); usleep(600000); k += snprintf(r + k, sizeof r - (size_t)k, " %d", (int)g_ndump);
-            s2a_frame_presented(); usleep(600000); k += snprintf(r + k, sizeof r - (size_t)k, " %d", (int)g_ndump);
+            s2a_frame_presented(); usleep(600000); k += snprintf(r + k, sizeof r - (size_t)k, "%d", (int)g_nshort);
+            s2a_frame_presented(); atomic_store(&g_fz, 1); usleep(600000); k += snprintf(r + k, sizeof r - (size_t)k, " %d", (int)g_nshort);
+            atomic_store(&g_fz, 0); usleep(600000); k += snprintf(r + k, sizeof r - (size_t)k, " %d", (int)g_nshort);
+            s2a_frame_presented(); usleep(600000); k += snprintf(r + k, sizeof r - (size_t)k, " %d", (int)g_nshort);
+            s2a_frame_presented(); usleep(600000); k += snprintf(r + k, sizeof r - (size_t)k, " %d", (int)g_nshort);
             s2a_ap_session_stop(); ssize_t w = write(pfd[1], r, (size_t)k); (void)w; _exit(0);
         }
         close(pfd[1]); char got[64] = {0}; ssize_t rd = read(pfd[0], got, sizeof got - 1); (void)rd; close(pfd[0]); waitpid(pid, NULL, 0);
