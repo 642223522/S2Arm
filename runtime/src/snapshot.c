@@ -1048,7 +1048,7 @@ static void *grab_thread(void *arg) {
 static int restore_body(const char *dir);
 int s2a_snap_restore(const char *dir) {
     // 自动玩家闸：恢复开始即停手、恢复前定的那一下作废（gen+1）；失败一律放开——进程内重建失败不退出进程，而是不带快照重新开局
-    //   （host_main.c s2a_session_fresh_restart），hold 不清的话新开的那局自动玩家要干等 300 秒（开发乙 11-25 复审）
+    //   （host_main.c s2a_session_fresh_restart），hold 不清的话新开的那局自动玩家要干等 300 秒
     s2a_snap_ap_gen++; s2a_snap_ap_hold = 1;
     int r = restore_body(dir);
     if (r) s2a_snap_ap_hold = 0;
