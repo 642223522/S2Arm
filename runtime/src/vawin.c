@@ -82,10 +82,12 @@ uint64_t s2a_guest_anon_budget(const char *e, uint64_t room, uint64_t margin, ui
 }
 // iOS 下一局的匿名预算（纯函数，t_guest_file_overflow 测；11-16 审）：宿主开销不能写死——全库文件后备局进程实占（≈宿主开销）中位约 2.1 GB、P90 约 3.8 GB、最大 5.8 GB，
 //   按 2048 估，12 GB 机（剩余 8189）上的大款预算给到约 5.6 GB 匿名，再加 3–4 GB 宿主就超上限被系统结束，下一局同样预算再被结束。改成只用实测量：
-//   ① e = S2A_GUEST_FILE_ANON_BUDGET_MB 设了按设的（最优先）；② 上一局在前台死掉（died）→ 0 = 整段进文件（旧行为；调用方同时清记录），被结束一次马上退回、不会连着被结束；
+//   ① e = S2A_GUEST_FILE_ANON_BUDGET_MB 设了按设的（最优先）；② 上一局在前台死掉（died）不另算：同样按记录走 ③ / ④（天花板由调用方按死掉那局压低）。
+//      （#1268 D-PEM9，11-24：原先 died → 0 整段进文件并清记录、占位「0 0」，下一局再算还是 0。6 GB iPhone 一款要约 3.6 GB 的游戏，整段局每 10 秒写闪存
+//       0.9–2.4 GB，6 / 9 局在前台没了：死 → 整段 → 写盘卡死再死 → 又整段，越死越狠。溢出模式那局每 10 秒 0.36 GB）
 //   ③ 有本机记录（上局预算 prev_b、上局溢出模式下心跳读到的离上限剩余最小值 hmin）→ prev_b + (hmin − margin) − GCHUNK，限在 [0, room − margin]：
 //      hmin < 余量就收紧，> 余量就放宽（每局最多放宽 hmin − margin − 一块）；④ 没有记录（首局）→ room − margin − first_host（首局宿主开销，缺省 4096 = 全库 P90）。
-//   *src：0 显式 / 1 上局死掉 / 2 按上局实测 / 3 首局估计
+//   *src：0 显式 / 2 按上局实测 / 3 首局估计（1 = 旧的「上局死掉」，已不再返回）
 // 11-22 往上抬要有证据（一台 iPhone，池 9216 MB 的 Switch 2 大款）：上局 61 秒就停、剩余最小 6012 MB 是开局那段的读数，预算 3521 → 7676 一次抬了一倍多，
 //   下一局约 5.8 分钟（帧 10622）进场景剩余从 2797 掉到 930、帧 18226 掉到 183 MB 被系统收掉。剩余最小只会随局变长而变小，短局读到的是上界：
 //   只能证明「该收紧」，不能证明「能放宽」。所以：long_run（上局溢出模式心跳 ≥ GMEM_BEATS_MIN 次 = 5 分钟）才许往上抬，每局最多抬 BUDGET_STEP；
@@ -93,7 +95,7 @@ uint64_t s2a_guest_anon_budget(const char *e, uint64_t room, uint64_t margin, ui
 #define BUDGET_STEP (1024ull << 20)
 uint64_t s2a_guest_next_budget(const char *e, uint64_t room, uint64_t margin, uint64_t first_host, int died, int have, uint64_t prev_b, uint64_t hmin, int long_run, uint64_t ceil, int *src) {
     if (e && *e) { *src = 0; return strtoull(e, NULL, 10) << 20; }
-    if (died) { *src = 1; return 0; }
+    (void)died;
     uint64_t cap = room > margin ? room - margin : 0, v;
     if (ceil && ceil < cap) cap = ceil;
     if (have) {
@@ -167,7 +169,7 @@ uint64_t s2a_guest_need(uint64_t pool, uint64_t host, uint64_t seen) { return se
 // 判开的这一局池本身是不是装得下（Switch 1 款；纯函数，t_guest_file_auto 测）：是 → 溢出模式首局预算按宿主估计（S2A_GUEST_FILE_HOST_MB）算，
 //   不按首局宿主开销 4096 算——4096 是全库文件后备局（Switch 2 大款为主）的 P90，6 GB 机 剩余约 4090 − 512 − 4096 不到 0 = 整段进文件：
 //   D-D4AK（没实测、池 + 宿主估计 + 余量超剩余）首局就整段；D-F5PT（6 GB iPhone，一款 Switch 1 游戏实测 3874 + 512 > 剩余 4085）每局整段进文件，
-//   进程实占只有 0.5–1.2 GB，却 10 秒写盘约 3 GB、帧时 p99 0.2–2 秒。上局在前台死掉照旧整段（s2a_guest_next_budget ②）；坏记录也不算这档
+//   进程实占只有 0.5–1.2 GB，却 10 秒写盘约 3 GB、帧时 p99 0.2–2 秒。上局在前台死掉不进这档；坏记录也不算这档
 int s2a_guest_soft_tier(int on, const char *e, uint64_t pool, uint64_t room, uint64_t seen, int died) {
     return on && !(e && *e) && room && !died && seen != UINT64_MAX && pool <= room;
 }
@@ -363,7 +365,6 @@ uint64_t s2a_guest_budget_rec_room(void) {   // 记录第三项（字节）；�
     unsigned long long x = 0, y = 0, z = 0; int ok = fscanf(f, "%llu %llu %llu", &x, &y, &z) == 3; fclose(f);
     return ok ? (uint64_t)z << 20 : 0;
 }
-static void budget_rec_clear(void) { char p[1100]; if (budget_rec_path(p, sizeof p)) unlink(p); }
 static int budget_rec_write(uint64_t b, uint64_t hmin) {
     char p[1100], t[1200]; if (!budget_rec_path(p, sizeof p)) return 0;
     { char d[1100]; snprintf(d, sizeof d, "%s", p); char *sl = strrchr(d, '/'); if (sl) { *sl = 0; mkdir(d, 0755); } }
@@ -374,15 +375,15 @@ static int budget_rec_write(uint64_t b, uint64_t hmin) {
 }
 // 起局（iOS）定溢出模式预算：读记录、上一局死掉就清，交 s2a_guest_next_budget；*pb / *ph 回读到的上局记录（日志用）。单测在 Mac 上直接调
 uint64_t s2a_guest_overflow_budget_ios(const char *e, uint64_t room, uint64_t margin, int died, int *src, uint64_t *pb, uint64_t *ph) {
-    *pb = *ph = 0; uint64_t rb = 0, rh = 0, beats = 0; int rec = s2a_guest_budget_rec_read(&rb, &rh), have = !died && rec;
+    *pb = *ph = 0; uint64_t rb = 0, rh = 0, beats = 0; int rec = s2a_guest_budget_rec_read(&rb, &rh), have = rec;
     budget_rec_ext(&beats, &g_budget_ceil);
     if (have) { *pb = rb; *ph = rh; }
     uint64_t pr = have ? s2a_guest_budget_rec_room() : 0;
     if (have && pr > room) *ph = *ph > pr - room ? *ph - (pr - room) : 0;   // 这局上限比上局低：上局的剩余最小值按差额扣（*ph 回扣过的值，日志用）
     g_budget_room = room; g_bbeats = 0;
-    if (died) {   // 上局按 rb 的预算被系统收掉：rb − 一步记成天花板（只降不升）；rb 不到一步（整段 / 预算很小时死掉，不是预算的事）不动天花板
+    if (died) {   // 上局按 rb 的预算被系统收掉：rb − 一步记成天花板（只降不升）；rb 不到一步（整段 / 预算很小时死掉，不是预算的事）不动天花板。
+        //   记录不清、不写「0 0」占位：这局照记录算（天花板夹住），心跳照常更新记录
         if (rec && rb >= BUDGET_STEP && (!g_budget_ceil || rb - BUDGET_STEP < g_budget_ceil)) g_budget_ceil = rb - BUDGET_STEP;
-        budget_rec_clear(); if (g_budget_ceil) budget_rec_write(0, 0);
     }
     { const char *v = getenv("S2A_GUEST_FILE_OVERFLOW_HOST_MB"); uint64_t fh = v && *v ? strtoull(v, NULL, 10) << 20 : g_soft_host ? g_soft_host : 4096ull << 20;
       return s2a_guest_next_budget(e, room, margin, fh, died, have, *pb, *ph, beats >= GMEM_BEATS_MIN, g_budget_ceil, src); }
@@ -390,7 +391,7 @@ uint64_t s2a_guest_overflow_budget_ios(const char *e, uint64_t room, uint64_t ma
 static uint64_t g_hmin = UINT64_MAX;   // 本局开着文件后备时心跳读到的离上限剩余最小值
 static int g_rec_off;   // 1 = 显式设 S2A_GUEST_FILE_ANON_BUDGET_MB=0 的对照局：不写记录
 // 心跳调（iOS，s2a_guest_backing_log 里，avail = os_proc_available_memory()）：开着文件后备时比小，变小才写记录（预算 = 本局的）。
-//   整段模式（预算 0）也写（B 记 0）：上局死掉清了记录、这局整段，照写 B = 0 与 Hmin，下一局按整段模式下的实测余量回升（0 + Hmin − 余量 − 一块）；
+//   整段模式（预算 0）也写（B 记 0）：预算算出 0、这局整段，照写 B = 0 与 Hmin，下一局按整段模式下的实测余量回升（0 + Hmin − 余量 − 一块）；
 //   否则算出 0 后不再有新记录，永远卡在整段。显式设 0 的对照局不写
 void s2a_guest_budget_note(uint64_t avail) {
     if (g_gfd < 0 || !g_gchunk || g_rec_off) return;
@@ -691,7 +692,6 @@ static void guest_file_map(uint64_t room) {
 #ifdef __IPHONE_OS_VERSION_MIN_REQUIRED   // iOS 有单进程上限：按本机本款实测定（s2a_guest_next_budget）
     { int src = 0; uint64_t pb = 0, ph = 0; budget = s2a_guest_overflow_budget_ios(be, room, margin, g_gfile_died, &src, &pb, &ph);
       if (src == 0) snprintf(why, sizeof why, "按 S2A_GUEST_FILE_ANON_BUDGET_MB 显式设定");
-      else if (src == 1) snprintf(why, sizeof why, "上一局在前台死掉：退回整段进文件，清掉本款预算记录，天花板 %llu MB（0 = 没有）", (unsigned long long)(g_budget_ceil >> 20));
       else if (src == 2) snprintf(why, sizeof why, "按上局实测余量：上局预算 %llu MB + (上局离上限剩余最小 %llu MB（已按两局起局剩余之差扣过）− 余量 %llu MB) − 一块 %llu MB，上限 剩余 %llu − 余量；"
                                   "上局不到 5 分钟只许收紧、够长每局最多抬 1024 MB，天花板 %llu MB（0 = 没有）",
                                   (unsigned long long)(pb >> 20), (unsigned long long)(ph >> 20), (unsigned long long)(margin >> 20), (unsigned long long)(GCHUNK >> 20), (unsigned long long)(room >> 20),
