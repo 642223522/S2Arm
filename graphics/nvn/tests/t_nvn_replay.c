@@ -7800,6 +7800,8 @@ static void t_registered_view_freed_with_storage(void) {
 
 static void t_sync_reuse_after_gpu_write(void) {
     g_flag_sync_lag = 1; g_buf_cpu_auto = 1;
+    uint64_t pf[RP_PERF_N]; rp_perf_take(pf);   // 清掉前面用例的计数：下面每次真等都按回写类别核一遍（RP_PERF_WAIT_EFX_*）
+#define EFX_IS(ts, fx, gw, later) (rp_perf_take(pf), pf[RP_PERF_WAIT_EFX_TS] == (ts) && pf[RP_PERF_WAIT_EFX_FX] == (fx) && pf[RP_PERF_WAIT_EFX_GW] == (gw) && pf[RP_PERF_WAIT_EFX_LATER] == (later))
     memset(g_pmem, 0x11, sizeof g_pmem);
     uint64_t addr = (uint64_t)(uintptr_t)g_pmem;
     nvn_be_pool_add(g_pmem, sizeof g_pmem); nvn_be_sub_begin();
@@ -7809,6 +7811,7 @@ static void t_sync_reuse_after_gpu_write(void) {
     nvn_be_sub_commit(); uint64_t f = nvn_be_last_fence();
     // A successful wait grants CPU reuse. GPU writeback must have landed first.
     CHECK(nvn_be_wait(f, 0) == 0);
+    CHECK(EFX_IS(0, 0, 1, 0));   // 挡住这次放行的是显卡写缓冲
     fake_complete(NVN_GPU_DONE_OK);
     CHECK(nvn_be_wait(f, 0) == 1 && g_pmem[0] == 0x22);
     memset(g_pmem, 0x33, 16);
@@ -7820,17 +7823,25 @@ static void t_sync_reuse_after_gpu_write(void) {
     volatile uint32_t ev = 0; stream a = {0};
     uint8_t *r = put(&a, OP_SIGNAL_EVENT, 16); volatile uint32_t *pv = &ev; uint32_t mode = 0, value = 7;
     memcpy(r, &pv, 8); memcpy(r+8, &mode, 4); memcpy(r+12, &value, 4); end(&a);
-    submit1(&a); CHECK(nvn_be_wait(nvn_be_last_fence(), 0) == 0);
+    rp_perf_take(pf); submit1(&a); CHECK(nvn_be_wait(nvn_be_last_fence(), 0) == 0);
+    CHECK(EFX_IS(0, 1, 0, 0));   // 事件
     fake_complete(NVN_GPU_DONE_OK); CHECK(ev == 7);
     uint64_t ts[2] = {0, 0}; stream t = {0}; g_tick = 7777;
     q_counter(&t, OP_REPORT_COUNTER, NVN_COUNTER_TYPE_TIMESTAMP, ts); end(&t);
-    submit1(&t); CHECK(nvn_be_wait(nvn_be_last_fence(), 0) == 0);
+    rp_perf_take(pf); submit1(&t); CHECK(nvn_be_wait(nvn_be_last_fence(), 0) == 0);
+    CHECK(EFX_IS(1, 0, 0, 0));   // 只有时间戳
     fake_complete(NVN_GPU_DONE_OK); CHECK(ts[1] == 7777);
     // #653 capability path: report-position samples still write only before wait publishes success.
     g_caps_extra = NVN_GPU_CAP_REPORT_TIMESTAMP; g_ts_calls = 0; ts[0] = ts[1] = 999;
     submit1(&t); CHECK(nvn_be_wait(nvn_be_last_fence(), 0) == 0 && ts[1] == 999);
     fake_complete(NVN_GPU_DONE_OK); CHECK(nvn_be_wait(nvn_be_last_fence(), 0) == 1 && ts[1] == 110);
     g_caps_extra = 0;
+    // 所等的是只读提交，之后又交了一次带时间戳的：照旧真等（放行判定不变），记「只有之后的提交带回写」
+    nvn_be_sub_begin(); nvn_be_sub_commit(); const uint64_t fr = nvn_be_last_fence();
+    rp_perf_take(pf); submit1(&t); CHECK(nvn_be_wait(fr, 0) == 0);
+    CHECK(EFX_IS(0, 0, 0, 1));
+    fake_complete(NVN_GPU_DONE_OK);
+#undef EFX_IS
     nvn_be_pool_del(g_pmem); g_buf_cpu_auto = 0;
 }
 

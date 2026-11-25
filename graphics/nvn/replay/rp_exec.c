@@ -133,6 +133,10 @@ uint64_t rp_seg_serial(void) { return g_seg_serial; }
 static uint64_t g_fence;       // 最近一次提交的栅栏值
 static uint64_t g_wait_effect_fence;   // SyncWait：包括时间戳在内，所有完成回调对游戏内存的写。
 static uint64_t g_effect_fence, g_finish_prev;   // 见 nvn_be_finish_publish
+// 最近 32 次带回写的提交：栅栏值（SUB_STEP 的整数倍，低 6 位空着）或上回写类别位（1 时间戳、2 事件 / 别的计数器 / 遮挡、4 显卡写缓冲）。
+// 提交线程写、等待线程读，只给 nvn_be_wait 归类真等用（诊断读数，不改放行判定）。
+enum { EFX_RING = 32, EFX_TS = 1, EFX_FX = 2, EFX_GW = 4 };
+static uint64_t g_efx_ring[EFX_RING]; static uint32_t g_efx_head;
 enum { SUB_STEP = 64 };       // 一次提交在时间线上占 64 个值：最后一段（带回写）取 g_fence + 64，它前面的前置段 / 中途先交的段依次取 +1、+2…
 static uint32_t g_mid;         // 这次提交已经用掉几个中间值
 static uint64_t g_split_base;  // 上次中途交段时的累计绘制笔数
@@ -431,7 +435,11 @@ static uint64_t sub_commit_body(void) {
     nvn_gpu_cmd c = g_cmd; g_cmd = NULL;
     // 契约：无论成败 done 恰好调一次（失败以 FAILED 调），所以 s 一定由 sub_done 释放
     uint64_t t0 = now_ns(); if (s) { s->t_commit = t0; s->fence = f; s->occ_base = g_occ_base; }
-    if (s && (s->n || s->noe || s->ngw)) __atomic_store_n(&g_wait_effect_fence, f, __ATOMIC_RELEASE);
+    if (s && (s->n || s->noe || s->ngw)) {
+        const uint64_t m = (s->n > s->nfx ? EFX_TS : 0) | (s->nfx || s->noe ? EFX_FX : 0) | (s->ngw ? EFX_GW : 0);
+        __atomic_store_n(&g_efx_ring[g_efx_head++ % EFX_RING], f | m, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_wait_effect_fence, f, __ATOMIC_RELEASE);
+    }
     if (s && (s->nfx || s->noe || s->ngw)) g_effect_fence = f;   // 这次提交做完时有东西要写回游戏内存（事件、时间戳以外的计数器报告、遮挡结果、GPU 写的缓冲）
     if (s && (s->n || s->noe || s->ngw)) { pf_add(RP_PERF_FX_SUBS, 1); pf_add(RP_PERF_FX_OCC, (uint64_t)s->noe); pf_add(RP_PERF_FX_GW, (uint64_t)s->ngw); }   // 这次提交做完时有东西要写回游戏内存（事件、计数器报告、遮挡结果、GPU 写的缓冲）
     rc_commit(f);
@@ -534,7 +542,17 @@ int nvn_be_wait(uint64_t fence, uint64_t timeout_ns) {
             // 等待成功之后游戏可以立刻复用池内存。尚未落地的 GPU 写、事件或遮挡结果
             // 不能放行：双镜像只保护 GPU 读，不会阻止完成回调覆盖新的 CPU 写。
             // 时间戳同样会覆盖游戏内存，SyncWait 不能像 Finish 一样排除它；只读提交仍保留重叠。
-            if (__atomic_load_n(&g_wait_effect_fence, __ATOMIC_ACQUIRE) > done) allow = 0;
+            if (__atomic_load_n(&g_wait_effect_fence, __ATOMIC_ACQUIRE) > done) {
+                if (allow) {   // 只因回写改成真等：按所等区间 (done, fence] 里待落地的回写类别记账
+                    uint64_t in = 0;
+                    for (int i = 0; i < EFX_RING; i++) { const uint64_t e = __atomic_load_n(&g_efx_ring[i], __ATOMIC_ACQUIRE), ef = e & ~(uint64_t)(SUB_STEP - 1); if (ef > done && ef <= fence) in |= e & (SUB_STEP - 1); }
+                    if (in & EFX_TS) pf_add(RP_PERF_WAIT_EFX_TS, 1);
+                    if (in & EFX_FX) pf_add(RP_PERF_WAIT_EFX_FX, 1);
+                    if (in & EFX_GW) pf_add(RP_PERF_WAIT_EFX_GW, 1);
+                    if (!in) pf_add(RP_PERF_WAIT_EFX_LATER, 1);
+                }
+                allow = 0;
+            }
             if (allow) { rp_buf_frame_flip(); uint64_t w = now_ns() - t0; pf_add(RP_PERF_WAIT_NS, w); pf_add(RP_PERF_WAIT_N, 1); pf_add(RP_PERF_WAIT_FAKED_N, 1); fl_fence(w); return 1; }
         } }
     nvn_gpu_rc r = nvn_gpu_fence_wait(fence, timeout_ns, NULL);
