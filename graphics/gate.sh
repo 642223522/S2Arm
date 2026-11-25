@@ -386,7 +386,7 @@ lane_native() {
     job direct_link_dsx make -s -C graphics/dsx "$(pwd -P)/build/dsx/libdsx.dylib"
     job dmsh_tess timeout 60 python3 graphics/tools/direct/tests/t_dmsh_tess.py build/dsx/libdsx.dylib build/gal/t_tess
     job dmsh_spill timeout 300 python3 graphics/tools/direct/tests/t_dmsh_spill.py build/dsx/libdsx.dylib
-    job dmsh_reuse timeout 180 python3 graphics/tools/direct/tests/t_dmsh_reuse.py
+    job dmsh_reuse "${S2A_PY:-python3}" tools/nostall.py 300 -- python3 graphics/tools/direct/tests/t_dmsh_reuse.py   # 按无进展判挂死（原墙钟 180 秒：本机负载下超时退 124 判红，11-23 / 11-24 两次环境红、一次疑误撤）
   fi
   py_items
 }

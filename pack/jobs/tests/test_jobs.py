@@ -1501,8 +1501,10 @@ class JobsTests(unittest.TestCase):
         touched = []
         # 本单测自己的临时目录不算外接卷：门禁机把 TMPDIR 放在外接盘时（本机 gate2 沙箱在 /Volumes 下），夹具 no-xcode 也落在 /Volumes
         mine = str(self.root.resolve())
+        # 门禁机的沙箱 HOME 也可能在外接盘（本机 gate2 homes/<n> 在 /Volumes 下）：~/Applications 正是被测的两个默认位置之一，不算翻外接卷
+        own = [mine] + [str(d) for d in toolchain.default_app_dirs()]
         def outside(p):
-            s = str(p); return s.startswith("/Volumes") and not (s == mine or s.startswith(mine + "/"))
+            s = str(p); return s.startswith("/Volumes") and not any(s == o or s.startswith(o + "/") for o in own)
         def guard(real):
             def f(p=".", *a, **k):
                 if outside(p):
