@@ -428,6 +428,8 @@ static FILE *open_in(const char *dir, const char *name, const char *mode) { char
 static int close_sync(FILE *f) { int e = fflush(f) || fsync(fileno(f)); return fclose(f) || e ? -1 : 0; }
 #include <fts.h>
 void s2a_snap_rmtree(const char *path);   // snapdel.c：删整棵目录（快照的临时 / 旧目录）；不存在不算错
+int s2a_snap_swap_in(const char *neu, const char *final);   // snapdel.c：新快照原子换上（0 换上了 / -1 没换上、旧的原样）
+int s2a_snap_recover(const char *final);   // snapdel.c：换上没走完留下的 .old 改回正式目录 / 两个都在删 .old（回 1 = 恢复了一份）
 static void rmtree(const char *path) { s2a_snap_rmtree(path); }
 // 新快照先写进 <目录>.new，全部写完、清单标「完整」后才原子换上；中途失败旧快照原样留着（存一次失败不能把玩家上一份好快照弄坏）
 typedef snap_fp_cb fp_cb;
@@ -531,6 +533,7 @@ static void snap_take_(const char *final_dir, int exit_after);
 static void snap_take(const char *final_dir) { const char *x = getenv("S2A_SNAP_EXIT"); snap_take_(final_dir, x && *x == '1'); }   // 测试定时器：缺省同产品（存完接着玩），S2A_SNAP_EXIT=1 存完退出
 static void snap_take_(const char *final_dir, int exit_after) {
     double t0 = now_s();
+    if (s2a_snap_recover(final_dir)) LOG("即时存档：上次换上没走完，旧快照已从 %s.old 恢复", final_dir);   // 先恢复再存：.old 只在正式目录在时才删
     static char tmpd[2048]; snprintf(tmpd, sizeof tmpd, "%s.new", final_dir); rmtree(tmpd);
     const char *dir = tmpd;
     if (mkdir(dir, 0755)) { LOG("【红】即时存档：建不了快照临时目录 %s（errno %d），不存", dir, errno); snap_finish_once(0, final_dir, 0); return; }
@@ -612,11 +615,9 @@ static void snap_take_(const char *final_dir, int exit_after) {
         e ? "【红】" : "", dir, us, nthr, nst[1], nst[2], nst[3], nst[4], nst[5], nst[6], raw / 1048576.0, comp / 1048576.0, t1 - t0, t2 - t1, t3 - t2, t4 - t3, id.save_n, id.save);
     if (!e && atomic_load(&g_snap_abandoned)) { e = 1; LOG("【红】即时存档：看门狗已放弃这次存档，写完的不换上"); }
     s2a_snap_progress("换上新快照");
-    if (!e) {   // 换上：旧的挪开 → 新的改名到位 → 删旧的（改名在同一目录下，原子）
-        char old[2100]; snprintf(old, sizeof old, "%s.old", final_dir); rmtree(old);
-        if (rename(final_dir, old) && errno != ENOENT) { LOG("【红】即时存档：旧快照挪不开（errno %d），新快照留在 %s", errno, dir); e = 1; }
-        else if (rename(dir, final_dir)) { LOG("【红】即时存档：新快照换不上（errno %d），旧快照放回", errno); rename(old, final_dir); e = 1; }
-        else { rmtree(old); LOG("即时存档：新快照已换上 %s", final_dir); }
+    if (!e) {   // 换上：新旧目录一次原子交换、删换下来的旧的（snapdel.c s2a_snap_swap_in；进程死在任何时刻，final 不是旧的就是新的）
+        if (s2a_snap_swap_in(dir, final_dir)) { LOG("【红】即时存档：新快照换不上（errno %d），旧快照原样保留", errno); rmtree(dir); e = 1; }
+        else LOG("即时存档：新快照已换上 %s", final_dir);
     } else { rmtree(dir); LOG("【红】即时存档：这次没存成，临时目录已删，旧快照（如有）原样保留"); }
     snap_finish_once(!e, final_dir, exit_after);
     return;
@@ -663,7 +664,7 @@ int s2a_snap_save_changed(const char *dir) {
     if (!g_root_hint[0] && !man_get(dir, "数据根", g_root_hint_v, sizeof g_root_hint_v) && g_root_hint_v[0]) root_expand(g_root_hint_v, g_root_hint, sizeof g_root_hint);
     save_dir_hash(cur, &n); return strcmp(want, cur) != 0; }
 // 这一款有没有能用的快照：清单在、且「完整 1」
-int s2a_snap_exists(const char *dir) { char v[16]; return dir && *dir && !man_get(dir, "完整", v, sizeof v) && !strcmp(v, "1"); }
+int s2a_snap_exists(const char *dir) { char v[16]; if (dir && *dir && s2a_snap_recover(dir)) LOG("即时存档：上次换上没走完，旧快照已从 %s.old 恢复", dir); return dir && *dir && !man_get(dir, "完整", v, sizeof v) && !strcmp(v, "1"); }
 static void *snap_req_main(void *a) { snap_take_((const char *)a, 0); free(a); return NULL; }
 int s2a_snap_request_save(const char *dir) {
     if (!s2a_snap_logging() || !dir || !*dir) return -1;
