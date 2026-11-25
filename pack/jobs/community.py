@@ -249,8 +249,8 @@ def mac_settings(c, gid):
     #   （读到了能力清单才判：还没出 Mac 版时照旧都列、先存偏好）
     if caps:
         fps_p = "社区帧率补丁" in rows.get("fps60", ("", ""))[1]  # 非玩家句
-        ws_p = any((r.get("编号") or "").startswith(("widescreen:", "wsauto:")) for r in _rows(layout.image_mac(c, gid, create=False) / "cpatch.tsv"))  # 非玩家句
-        for key, has in (("fps60", fps_p), ("widescreen", ws_p), ("fpsPick", len(fps_levels(c, gid)) > 1)):
+        #   满屏例外（11-15 维护者「没补丁的游戏手动打开满屏就走咱们通用方案」，#2205）：没有宽屏补丁也列，缺省关、明确开 = 我方通用满屏
+        for key, has in (("fps60", fps_p), ("fpsPick", len(fps_levels(c, gid)) > 1)):
             if key in out and not has:
                 out[key]["hidden"] = True
     # 两个虚拟环绕开关只在对应设备类型下生效（#189 后续，5.1 虚拟环绕第二片）：设备类型 = builtin / headphones 时各自的开关才
