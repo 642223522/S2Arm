@@ -2324,6 +2324,7 @@ static int diag_compile_test(void) {
 }
 
 static int live_compile_thread_test(int asynchronous) {
+    const uint64_t before = rp_shader_compiled_programs();
     fixture_live_compile = asynchronous ? 1 : -1;   // explicit opt-in or an unset property
     fixture_live_slots = 2;
     CHECK(nvk_shader_open() == 0, "open shader session");
@@ -2357,6 +2358,7 @@ static int live_compile_thread_test(int asynchronous) {
           "second graphics lookup reuses the published program");
     CHECK(rp_shader_resolve_compute(&again) == 0 && again == compute && compiler_calls == 2,
           "second compute lookup reuses the published program");
+    CHECK(rp_shader_compiled_programs() - before == 2, "two live programs across graphics, compute and their cache hits");
     nvk_shader_stop(); rp_shader_reset(); s2a_source_clear();
     printf("live-compile-%s checks=%d failures=%d\n", asynchronous ? "thread" : "default", checks, failures);
     return failures ? 1 : 0;

@@ -42,6 +42,7 @@
 #include "nvn_vk_texview.h"
 #include "nvn_vk_bcdec.h"
 #include "nvn_vk_pipe_once.h"     // 装缓存的双检去重（纯逻辑，宿单测用假创建驱动）
+#include "nvn_vk_pipe_demand.h"
 #include "nvn_vk_pipe_warm.h"     // 预热清单：warm 标记 / 命中计数的口径
 #include "nvn_vk_pipe_diag.h"     // 计算管线现建慢行的文本（带阶段键与出库标记）
 #include "nvn_vk_driver_cache.h"   // 驱动管线缓存的落盘文件层（见「驱动管线缓存」一节）
@@ -3917,7 +3918,14 @@ static pthread_mutex_t g_create_mu = PTHREAD_MUTEX_INITIALIZER;
 static int pipe_serial_on(void) { return nvn_plat_flag("nvk_pipe_serial", 0) != 0; }
 // 预热（W3）：t_warm_scope = 本线程的创建算「预建」（预热线程设 1，见 nvk_pipe_warm_build）。
 // 预建对象打 warm 位；真实 draw 第一次命中它时计 warm 命中。计数都是进程累计，nvn_gpu_stats 报。
-static _Thread_local int t_warm_scope;
+static _Thread_local int t_warm_scope, t_demand_worker;
+static _Atomic uint64_t g_sync_pipelines;
+void nvk_pipe_demand_worker_enter(void) { t_demand_worker = 1; }   // 专用后台线程，退出时 TLS 一并释放
+uint64_t rp_sync_pipelines_created(void) { return atomic_load_explicit(&g_sync_pipelines, memory_order_relaxed); }
+static void note_sync_pipeline(void) {
+    if (!t_warm_scope && !t_demand_worker)
+        atomic_fetch_add_explicit(&g_sync_pipelines, 1, memory_order_relaxed);
+}
 static uint64_t g_warm_hits, g_warm_created, g_pipe_dup;
 // 在途表读数（见 pipe_inflight）：同配方需求合并等待的次数 / 表满（或停用）自己直接建的次数 /
 // 认领后复检命中的次数（省掉一次重复建）。
@@ -4585,6 +4593,7 @@ static nvn_gpu_rc pipe_build(const nvn_gpu_pipe_desc *d, struct nvn_gpu_pipe_s *
     }
     p->actual_samples = d->samples > 1 ? d->samples : 1;
     p->key = *requested;   // 以原请求查找：预热、在途表与缓存使用同一身份。
+    note_sync_pipeline();
     *out = p;
     return rc(NVN_GPU_OK);
 }
@@ -4890,6 +4899,7 @@ static nvn_gpu_rc cpipe_build(const nvn_gpu_stage_desc *cs, int mode, nvn_gpu_pi
             memcpy(p->stage_tfmt[NVN_GPU_SH_CS], sh->tfmt, (size_t)sh->nent * sizeof *sh->tfmt);
         }
     }
+    note_sync_pipeline();
     *out = p;
     return rc(NVN_GPU_OK);
 }

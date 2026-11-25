@@ -19,6 +19,7 @@ struct rp_tex {
     uint8_t cpu;               // 内容来自游戏内存（按脏页重传）
     uint8_t gpu_written;       // 内容以 GPU 为准
     uint8_t uploaded;
+    uint8_t ever_uploaded;   // WriteTexels 会使 uploaded 失效，下一次传输仍属于重传
     uint8_t need_init;         // 刚建的存储，初始内容还没定（init_content）
     uint8_t zero_pending;      // 初始内容该是全零、还没填：等第一个通道用清零载入做掉（rp_view_for_attach / rp_tex_take_zero）
     uint8_t in_alias;
@@ -74,6 +75,17 @@ static nvn_hmap g_pool_gpu = {.klen = 8};                   // GPU 写过的内�
 static uint64_t g_ser_gen = 1;                              // 任何「序号 → 存储」映射变了就 +1：各贴图号缓存的视图据此重验
 static uint64_t g_tex_uid;                                  // rp_tex 创建序号（只增、会话重置也不清）
 static int g_built; static uint64_t g_uploads, g_alias_taken, g_alias_dead;   // g_alias_taken：被新贴图占了存储而出表的共用存储数；g_alias_dead：其中还有对象指着的
+
+// 呈现线程每帧读取；不让记录长帧的线程等资源上传锁。
+static _Atomic uint64_t g_first_uploads, g_reuploads;
+void nvn_be_pkg_stats(uint64_t *uploads, uint64_t *reuploads) {
+    if (uploads) *uploads = atomic_load_explicit(&g_first_uploads, memory_order_relaxed);
+    if (reuploads) *reuploads = atomic_load_explicit(&g_reuploads, memory_order_relaxed);
+}
+static void note_tex_upload(struct rp_tex *x) {
+    atomic_fetch_add_explicit(x->ever_uploaded ? &g_reuploads : &g_first_uploads, 1, memory_order_relaxed);
+    x->ever_uploaded = 1;
+}
 
 static int tex_window(const tex_t *t, uint64_t *lo, uint64_t *hi);
 const uint8_t *rp_tex_src(const tex_t *t, uint8_t **part);
@@ -552,6 +564,7 @@ static int upload_all(const tex_t *t, struct rp_tex *x, nvn_gpu_cmd c, int track
     }
 done:
     free(tmp); free(part);
+    if (!rc) note_tex_upload(x);
     if (!rc && track) { x->stamp = st; x->uploaded = 1; x->unarmed = !armed; if (!armed) rp_perf_add(RP_PERF_TEX_UNARMED, 1); g_uploads++; }   // 加保护没落地：下一次必重传（rp_tex_resolve）
     if (x->sparse && !rc) {
         x->vgen = vg; x->nruns = 0;   // 重传之后第一次检查整段走，按新的 vgen / stamp 重建物理段缓存
@@ -623,6 +636,7 @@ static int upload_linear_dirty(const tex_t *t, struct rp_tex *x, nvn_gpu_cmd c) 
     }
     free(tmp); free(run);
     if (rc) return 1;
+    if (nrun) note_tex_upload(x);   // 脏页核对后实际没有上传任何行时，只刷新同步代号
     rp_perf_add(RP_PERF_TEX_UP_PART, 1);
     x->stamp = st; x->unarmed = !armed; if (!armed) rp_perf_add(RP_PERF_TEX_UNARMED, 1); g_uploads++;
     return 0;
