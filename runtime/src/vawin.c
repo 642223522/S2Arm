@@ -590,6 +590,21 @@ static void guest_file_map(uint64_t room);
 static int g_gfile_pending;
 // 多款容器起局时还没选游戏（程序号 0，读不到本款实测 / 「在跑」标记）：先用匿名内存、记下起局时的剩余，装游戏模块前按本款再判一次（s2a_guest_file_retry，#783）
 static int g_gfile_late; static uint64_t g_gfile_room0;
+static uint64_t g_gfile_lim0;   // 多款容器起局时读剩余那一刻的「系统给本 App 的上限」= 占用 + 剩余（0 = 没读）；装游戏前按前台上限补差（s2a_guest_room_fg）
+// 起局时的剩余按前台上限补回（纯函数，t_guest_file_auto 测；#674 对照 11-25）：多款容器起局时 App 常还是预热进程 / 后台档，上限比前台小约 2 GB——
+//   同一局开头读到「还剩 6140 MB」、自检时已是 8122；装游戏前沿用起局那一刻的 6140，上局的剩余最小值按两局差 2048 扣成 0，匿名预算压到 480 MB、
+//   物理映射区「剩余不到门槛」进了文件，进局约 100 秒卡在 11–14 帧、写盘 11 GB（修前同款同机 316 MB）。
+//   room0 = 起局时剩余、lim0 = 起局时上限、lim1 = 此刻上限：上限变大（后台档 → 前台档）就把差额补给起局时的剩余；变小或读不到照旧（只补不扣）
+uint64_t s2a_guest_room_fg(uint64_t room0, uint64_t lim0, uint64_t lim1) { return lim0 && lim1 > lim0 ? room0 + (lim1 - lim0) : room0; }
+static uint64_t proc_limit(void) {   // 系统给本 App 的上限 = phys_footprint + os_proc_available_memory（同 selfcheck.c / hud.c）；Mac 回 0
+#ifdef __IPHONE_OS_VERSION_MIN_REQUIRED
+    task_vm_info_data_t vi; mach_msg_type_number_t c = TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vi, &c) != KERN_SUCCESS) return 0;
+    return (uint64_t)vi.phys_footprint + (uint64_t)os_proc_available_memory();
+#else
+    return 0;
+#endif
+}
 static int g_gfile_died;   // 这一局判定时「上一局在前台死掉」（iOS；溢出模式预算按它退回整段进文件）
 static uint64_t g_gfile_room;   // 文件后备判定时离单进程上限的剩余（s2a_guest_file_carve 按它决定挖不挖物理映射区）
 static void guest_file_attach_(void);
@@ -644,7 +659,14 @@ static void guest_file_attach_(void) {
         (unsigned long long)(seen == UINT64_MAX ? 0 : seen >> 20), s2a_process_prewarmed() ? "；预热进程" : "");
     if (low && !late) low_ram_notice(phys, s2a_guest_need(pool, host, seen));
     g_gfile_room = room; g_gfile_died = died; g_soft_host = s2a_guest_soft_tier(on && !late, e, pool, room, seen, died) ? host : 0;
-    if (late) { g_gfile_late = 1; g_gfile_room0 = room; return; }
+    // 自动判成「开」的也等装模块前再定（单款与多款容器同一个根，11-25）：此刻 App 可能还是预热进程 / 后台档，上限比前台小约 2 GB，按它定的预算 / 物理映射区门槛偏紧；
+    //   装模块前（s2a_guest_file_retry，host_main.c load_session_modules）已到前台，按前台上限补回差额（s2a_guest_room_fg）再判开、定预算。窗口那时还原封不动，换文件照旧可行
+    int defer = late || (on && !(e && *e));
+    if (defer) {
+        g_gfile_late = 1; g_gfile_room0 = room; g_gfile_lim0 = proc_limit();
+        if (!late) LOG("客体内存文件后备：自动判开，先用匿名内存，装模块前到前台按此刻上限再定（起局时上限 %llu MB）", (unsigned long long)(g_gfile_lim0 >> 20));
+        return;
+    }
     if (!on) return;
     guest_file_map(room);
 #else
@@ -730,9 +752,18 @@ void s2a_guest_file_test_pending(void) { g_gfile_pending = 1; }
 void s2a_guest_file_test_late(void) { g_gfile_late = 1; }   // 单测（t_guest_file_retry ④）：造「多款容器、已选定游戏、要按本款再判」的状态   // 单测（t_guest_file_retry）：造「装游戏前要换成文件」的状态（真机只由多款容器按本款再判置位，Mac 上 room 0 走不到）
 #endif
 int s2a_guest_file_retry(void) {
-    if (g_gfile_late && g_gfd < 0 && g_ok) {   // 多款容器：此刻已选定游戏，按本款实测 / 「在跑」标记再判（剩余用起局时那一刻的，和单款同口径）
+    if (g_gfile_late && g_gfd < 0 && g_ok) {   // 多款容器（已选定游戏）/ 自动判开的单款（等到前台）：按本款实测 / 「在跑」标记再判，剩余按前台上限补过的
         g_gfile_late = 0;
         uint64_t margin = env_mb("S2A_GUEST_FILE_MARGIN_MB", 512), host = env_mb("S2A_GUEST_FILE_HOST_MB", 2048), phys = phys_mem();
+        {   // 起局时若是后台档上限，按此刻（前台、已选定游戏）的上限补回差额，判开 / 预算 / 物理映射区门槛 / 预算记录第三项都按补后的剩余
+            uint64_t lim1 = proc_limit(), r1 = s2a_guest_room_eff(s2a_guest_room_fg(g_gfile_room0, g_gfile_lim0, lim1), phys, margin);
+            static int said;
+            if (r1 != g_gfile_room0) {
+                if (!said++) LOG("客体内存文件后备：起局时的上限 %llu MB 比此刻 %llu MB 小（起局时是预热 / 后台档），起局剩余 %llu MB 按前台补成 %llu MB",
+                    (unsigned long long)(g_gfile_lim0 >> 20), (unsigned long long)(lim1 >> 20), (unsigned long long)(g_gfile_room0 >> 20), (unsigned long long)(r1 >> 20));
+                g_gfile_room0 = g_gfile_room = r1;
+            }
+        }
         { const char *st = s2a_guest_mem_settle(s2a_guest_run_died(), g_gfile_room0, margin); if (st) LOG("客体内存实测记录：%s", st); }
         uint64_t seen = s2a_guest_mem_seen();
         // 此刻已选定游戏、模块目录已是这一款，但布局还没按本款排（s2a_app_pool 仍是容器缺省）：按本款 main.npdm 取池（Switch 2 9 GiB），读不到退回 s2a_app_pool
