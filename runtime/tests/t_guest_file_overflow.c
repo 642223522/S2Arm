@@ -14,7 +14,7 @@
 //   ⑧ 换文件不抹已有内容：块 D 定之前先在里面直接映射一段有内容的匿名可写页（同装载器映射模块数据），预算已用完 → D 进文件；那段内容还在、仍不在文件里，D 别处写入在文件里
 //   ⑨ 挖区（S2A_GUEST_FILE_CARVE=1）：整块落在挖区里的块预算已用完也是匿名（写入文件里读不到）；in_file 0
 //   ⑩ 窗口重置（s2a_window_session_reset）后块状态清回未定、累计清零：原是文件的块 C 再放开 → 匿名（累计 0 < 64）
-//   ⑪ iOS 下一局预算（s2a_guest_next_budget，只用实测量）：显式最优先；上局死掉 → 0；有记录 → B + (Hmin − 余量) − 32 MB，限 [0, 剩余 − 余量]；首局 → 剩余 − 余量 − 4096。
+//   ⑪ iOS 下一局预算（s2a_guest_next_budget，只用实测量）：显式最优先；上局死掉不另算；有记录 → B + (Hmin − 余量) − 32 MB，限 [0, 剩余 − 余量]；首局 → 剩余 − 余量 − 4096。
 //      D-JETP（剩余 6141、余量 512）：首局 6141 − 512 − 4096 = 1533；设那局 Hmin 2600 → 第二局 1533 + 2088 − 32 = 3589；
 //      收紧 3589 + (300 − 512) − 32 = 3345；下限 100 + (0 − 512) − 32 < 0 → 0；上限 5000 + 3488 − 32 = 8456 > 6141 − 512 = 5629 → 5629；
 //      12 GB 机（剩余 8189）首局 8189 − 512 − 4096 = 3581；剩余 4000 首局不够 → 0；上局整段（B 0）Hmin 3000 → 3000 − 512 − 32 = 2456
@@ -129,7 +129,9 @@ int main(void) {
 #define NB2(room, have, pb, ph, lr, ceil) s2a_guest_next_budget(NULL, (room) * MB, M, H, 0, have, (pb) * MB, (ph) * MB, lr, (ceil) * MB, &src)
         uint64_t v;
         v = NB("100", 6141, 1, 1, 1533, 2600); CHECK(v == 100 * MB && src == 0, "⑪ 显式 100 最优先（哪怕上局死掉）：%llu MB", (unsigned long long)(v / MB));
-        v = NB(NULL, 6141, 1, 1, 1533, 2600); CHECK(v == 0 && src == 1, "⑪ 上局死掉 → 0（整段进文件）：%llu MB", (unsigned long long)(v / MB));
+        v = NB(NULL, 6141, 1, 1, 1533, 2600); CHECK(v == 2557 * MB && src == 2, "⑪ 上局死掉不另算、照记录 1533 / 2600 → 2557（原先 0 整段）：%llu MB", (unsigned long long)(v / MB));
+        v = NB(NULL, 4085, 1, 1, 2214, 2263); CHECK(v == 3238 * MB && src == 2, "⑪ #1268 D-PEM9 溢出局 2214 / 2263 死掉：照记录 2214 + 1024 = 3238（不退整段）：%llu MB", (unsigned long long)(v / MB));
+        v = NB(NULL, 6141, 1, 0, 0, 0); CHECK(v == 1533 * MB && src == 3, "⑪ 上局死掉、没记录：按首局估计 1533：%llu MB", (unsigned long long)(v / MB));
         v = NB(NULL, 6141, 0, 0, 0, 0); CHECK(v == 1533 * MB && src == 3, "⑪ D-JETP 首局 6141 − 512 − 4096 = 1533：%llu MB", (unsigned long long)(v / MB));
         v = NB(NULL, 6141, 0, 1, 1533, 2600); CHECK(v == 2557 * MB && src == 2, "⑪ D-JETP 第二局（Hmin 2600、够长）1533 + 2056 超一步 → 1533 + 1024 = 2557：%llu MB", (unsigned long long)(v / MB));
         v = NB(NULL, 6141, 0, 1, 3589, 300); CHECK(v == 3345 * MB, "⑪ Hmin 300 < 余量 收紧 3589 − 212 − 32 = 3345：%llu MB", (unsigned long long)(v / MB));
@@ -162,7 +164,8 @@ int main(void) {
             uint64_t pb, ph, v = s2a_guest_overflow_budget_ios(NULL, 6141 * MB, 512 * MB, 0, &src, &pb, &ph);
             CHECK(v == 64 * MB && src == 2 && pb == 64 * MB && ph == 2600 * MB, "⑫ 起局按上局实测：64 + 2088 − 32 = 2120 往上抬，但上局只 3 次心跳（短局）→ 持平 64（得 %llu MB，来源 %d）", (unsigned long long)(v / MB), src);
             v = s2a_guest_overflow_budget_ios(NULL, 6141 * MB, 512 * MB, 1, &src, &pb, &ph);
-            CHECK(v == 0 && src == 1 && access(rp, F_OK) != 0, "⑫ 上局死掉 → 0、记录已删（得 %llu MB，记录%s）", (unsigned long long)(v / MB), access(rp, F_OK) ? "没了" : "还在");
+            CHECK(v == 64 * MB && src == 2 && access(rp, F_OK) == 0, "⑫ 上局死掉不另算：照记录持平 64、记录不删（原先 0 并删记录；得 %llu MB，记录%s）", (unsigned long long)(v / MB), access(rp, F_OK) ? "没了" : "还在");
+            unlink(rp);
             v = s2a_guest_overflow_budget_ios(NULL, 6141 * MB, 512 * MB, 0, &src, &pb, &ph);
             CHECK(v == 1533 * MB && src == 3, "⑫ 没记录 → 首局估计 1533（得 %llu MB，来源 %d）", (unsigned long long)(v / MB), src);
             setenv("S2A_GUEST_FILE_OVERFLOW_HOST_MB", "3000", 1); v = s2a_guest_overflow_budget_ios(NULL, 6141 * MB, 512 * MB, 0, &src, &pb, &ph); unsetenv("S2A_GUEST_FILE_OVERFLOW_HOST_MB");
@@ -191,10 +194,9 @@ int main(void) {
                 f = fopen(rp, "w"); fprintf(f, "7676 6012 8188 6 0\n"); fclose(f);
                 uint64_t v1 = s2a_guest_overflow_budget_ios(NULL, 8188 * MB, 512 * MB, 1, &src, &pb, &ph);
                 f = fopen(rp, "r"); n5 = f ? fscanf(f, "%llu %llu %llu %llu %llu", &r[0], &r[1], &r[2], &r[3], &r[4]) : 0; if (f) fclose(f);
-                CHECK(v1 == 0 && src == 1 && n5 == 5 && r[0] == 0 && r[1] == 0 && r[2] == 8188 && r[3] == 0 && r[4] == 6652,
-                      "⑫c 被收掉：预算 %llu（期望 0）、记录「%llu %llu %llu %llu %llu」（期望 0 0 8188 0 6652）", (unsigned long long)(v1 / MB), r[0], r[1], r[2], r[3], r[4]);
-                v1 = s2a_guest_overflow_budget_ios(NULL, 8188 * MB, 512 * MB, 0, &src, &pb, &ph);
-                CHECK(v1 == 0 && src == 2, "⑫c 死后下一局读到 0 / 0：%llu（期望 0）", (unsigned long long)(v1 / MB));
+                CHECK(v1 == 6652 * MB && src == 2 && n5 == 5 && r[0] == 7676 && r[1] == 6012,
+                      "⑫c 被收掉：预算 %llu（期望照记录、夹到天花板 7676 − 1024 = 6652，原先 0）、记录不清「%llu %llu …」（期望 7676 6012）", (unsigned long long)(v1 / MB), r[0], r[1]);
+
                 f = fopen(rp, "w"); fprintf(f, "6000 4000 8188 30 6652\n"); fclose(f);
                 v1 = s2a_guest_overflow_budget_ios(NULL, 8188 * MB, 512 * MB, 0, &src, &pb, &ph);
                 CHECK(v1 == 6652 * MB, "⑫c 够长局夹到天花板：%llu（期望 6652）", (unsigned long long)(v1 / MB));
