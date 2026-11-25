@@ -3336,7 +3336,7 @@ void nvn_be_drain(void) { if (mtl_gpu_halted()) { MLOG("GPU 安全停中：后�
 
 // ================= Render replay =================
 #include "../../host/front.h"
-static int g_red_once[215];   // RED_ONCE keys 0..214 (214: 画法拷贝的源级别 / 层超出源贴图（copy_t2t_draw）；213: 同一张贴图挂在两个颜色槽、后一个槽经影子画（rtdup_attach），同一遍里两个槽写了同一通道：遍末按后一个槽并回，两槽之间的先后不保留; 211–212: PR3c 出图 PSO 多槽 — 211 PQ 层目标（RGB10A2Unorm）的出图管线建不出：HDR 槽回退 SDR 基线（红一次 + 死槽负缓存，不 MDIE——基线槽照旧 MDIE，B4 不放宽 SDR 现状）；212 上屏目标像素格式超过 4 种（gal_present.m 同数四槽），本格式本帧不出图；207–208: nvn_present_fsr.inc FSR 1 on the present — 207 the shaders / pipelines could not be made, 208 a slot's textures / buffers / argument tables could not be allocated; either way the present goes on bilinear; 206: a BC texture drawn as blocks on a GPU without BC, its shadow / staging / decode not made, bcdec_attach / bcdec_flush; 205: texture upload / pool-storage synchronization; 202–204: nvn_stex.inc 放置式稀疏贴图块管理 — CPU 写的 / GPU 写的稀疏贴图同步失败（没堆页 / 暂存），稀疏贴图不做 tex_upgrade 整张复制; 198–201: nvn_sparse_tex.inc Metal sparse textures — heap / texture not made, page / level deswizzle failed, map / upload command buffer failed; 195–197: nvn_tensor.inc tensor_fix_in, the tensor stand-in's fixed-size input; 194: #798 a texel buffer's aligned lead view could not be made, tbl_view; 193: a texture outside any memory pool with an unmapped storage tail, #b5a081; 188–192: internal resolution — 188 a draw / dispatch still held scaled image-slot storages after the retry limit, rs_pre_draw / rs_pre_images; 189 a storage past the device texture limit, rs_rescale / tex_widen; 190 a CPU readback of an enlarged storage not scaled back linearly, nvn_be_read_texels; 191 an image-slot storage that could not go back to its own size; 192 a screenshot of the enlarged window texture not scaled back; 187: a multisample count the GPU does not support, stepped down, mtl_samples_supported (#903); 186: a packaged texture's storage runs past the end of its memory pool, pkg_upload_ (#819); 183 / 184 / 185: an incompatible Metal texture format view fell back to the base format in rt_view_fmt / attach / clear_tex; 182: a block-compressed texture whose GPU writer resolved to its own Metal format, bcal_copy; 181: a texture view whose target and layer range Metal cannot express (#199), tex_by_id; 179 / 180: a pass's own depth attachment sampled in it could not be copied / viewed (#387); 178: a slot read on-chip by the first draw of a pass was not opened loaded; 177: a compute dispatch's binding ended the shared encoder again on the retry; 175 / 176: a block-compressed texture's GPU-written bytes not taken: no host texture of the uncompressed writer / no staging buffer, bcal_sync; 174: a converted vertex attribute stream address in no memory pool, vconv_bind; 172 / 173: a pool table for handles traced to no slot could not be allocated / grown, pool_tab_new / pool_tab_put_n; 171: a first-invocation store skipped, dispatch; 170: an sRGB / linear view not made again on its upgraded parent, tex_upgrade; 169: a storage buffer address pushed into an NVN2 push slot the pools do not hold (SBUFQ; until 11-07 a not-loaded color attachment written); 167 / 168: a storage buffer address the pools do not hold, slot / handle in a uniform buffer; 166: a texture turning packaged whose old host texture has another shape, its GPU-written texels not carried over, carry_gpu) (162: a vertex buffer address the pools do not hold, bind_vbufs) (160 / 161 / 163–165: tensor-core network stand-in, nvn_tensor.inc; 147–159 left for the NVN2 task / mesh branch) (143–146: NVN2 DLSS → MetalFX, nvn_dlss.inc) (139–142: folded linear textures: tex_linear, se_want, se_bind, copies / clears into one) (137 / 138: a GL texture an NVN texture is built from has no usable storage / no matching NVN format) (136: a draw's binding ended its pass twice) (134 / 135: alpha test / multisampling off the fragment shader cannot take); same-pass feedback snapshot too large 127, native image atomics use 128/129, same-pass feedback view narrowing 133; 209–210: a vertex stream the draw reads past its bound range not limited — the range is over the staging size / a GPU write on the stream is queued in this submission, bind_vbufs vbuf_limit; 207–208: nvn_present_fsr.inc FSR 1 on the present — 207 the shaders / pipelines could not be made, 208 a slot's textures / buffers / argument tables could not be allocated; either way the present goes on bilinear; 206: a BC texture drawn as blocks on a GPU without BC, its shadow / staging / decode not made, bcdec_attach / bcdec_flush; 205: texture upload / pool-storage synchronization; 202–204: nvn_stex.inc 放置式稀疏贴图块管理 — CPU 写的 / GPU 写的稀疏贴图同步失败（没堆页 / 暂存），稀疏贴图不做 tex_upgrade 整张复制; 198–201: nvn_sparse_tex.inc Metal sparse textures — heap / texture not made, page / level deswizzle failed, map / upload command buffer failed; 195–197: nvn_tensor.inc tensor_fix_in, the tensor stand-in's fixed-size input; 194: #798 a texel buffer's aligned lead view could not be made, tbl_view; 193: a texture outside any memory pool with an unmapped storage tail, #b5a081; 188–192: internal resolution — 188 a draw / dispatch still held scaled image-slot storages after the retry limit, rs_pre_draw / rs_pre_images; 189 a storage past the device texture limit, rs_rescale / tex_widen; 190 a CPU readback of an enlarged storage not scaled back linearly, nvn_be_read_texels; 191 an image-slot storage that could not go back to its own size; 192 a screenshot of the enlarged window texture not scaled back; 187: a multisample count the GPU does not support, stepped down, mtl_samples_supported (#903); 186: a packaged texture's storage runs past the end of its memory pool, pkg_upload_ (#819); 183 / 184 / 185: an incompatible Metal texture format view fell back to the base format in rt_view_fmt / attach / clear_tex; 182: a block-compressed texture whose GPU writer resolved to its own Metal format, bcal_copy; 181: a texture view whose target and layer range Metal cannot express (#199), tex_by_id; 179 / 180: a pass's own depth attachment sampled in it could not be copied / viewed (#387); 178: a slot read on-chip by the first draw of a pass was not opened loaded; 177: a compute dispatch's binding ended the shared encoder again on the retry; 175 / 176: a block-compressed texture's GPU-written bytes not taken: no host texture of the uncompressed writer / no staging buffer, bcal_sync; 174: a converted vertex attribute stream address in no memory pool, vconv_bind; 172 / 173: a pool table for handles traced to no slot could not be allocated / grown, pool_tab_new / pool_tab_put_n; 171: a first-invocation store skipped, dispatch; 170: an sRGB / linear view not made again on its upgraded parent, tex_upgrade; 169: a storage buffer address pushed into an NVN2 push slot the pools do not hold (SBUFQ; until 11-07 a not-loaded color attachment written); 167 / 168: a storage buffer address the pools do not hold, slot / handle in a uniform buffer; 166: a texture turning packaged whose old host texture has another shape, its GPU-written texels not carried over, carry_gpu) (162: a vertex buffer address the pools do not hold, bind_vbufs) (160 / 161 / 163–165: tensor-core network stand-in, nvn_tensor.inc; 147–159 left for the NVN2 task / mesh branch) (143–146: NVN2 DLSS → MetalFX, nvn_dlss.inc) (139–142: folded linear textures: tex_linear, se_want, se_bind, copies / clears into one) (137 / 138: a GL texture an NVN texture is built from has no usable storage / no matching NVN format) (136: a draw's binding ended its pass twice) (134 / 135: alpha test / multisampling off the fragment shader cannot take); same-pass feedback snapshot too large 127, native image atomics use 128/129, same-pass feedback view narrowing 133
+static int g_red_once[216];   // RED_ONCE keys 0..215 (215: #674 programmable blending, the blend state for slot 27 could not be staged in the frame arena (enc_r_slot27), the draw keeps the bit map only; 214: 画法拷贝的源级别 / 层超出源贴图（copy_t2t_draw）；213: 同一张贴图挂在两个颜色槽、后一个槽经影子画（rtdup_attach），同一遍里两个槽写了同一通道：遍末按后一个槽并回，两槽之间的先后不保留; 211–212: PR3c 出图 PSO 多槽 — 211 PQ 层目标（RGB10A2Unorm）的出图管线建不出：HDR 槽回退 SDR 基线（红一次 + 死槽负缓存，不 MDIE——基线槽照旧 MDIE，B4 不放宽 SDR 现状）；212 上屏目标像素格式超过 4 种（gal_present.m 同数四槽），本格式本帧不出图；207–208: nvn_present_fsr.inc FSR 1 on the present — 207 the shaders / pipelines could not be made, 208 a slot's textures / buffers / argument tables could not be allocated; either way the present goes on bilinear; 206: a BC texture drawn as blocks on a GPU without BC, its shadow / staging / decode not made, bcdec_attach / bcdec_flush; 205: texture upload / pool-storage synchronization; 202–204: nvn_stex.inc 放置式稀疏贴图块管理 — CPU 写的 / GPU 写的稀疏贴图同步失败（没堆页 / 暂存），稀疏贴图不做 tex_upgrade 整张复制; 198–201: nvn_sparse_tex.inc Metal sparse textures — heap / texture not made, page / level deswizzle failed, map / upload command buffer failed; 195–197: nvn_tensor.inc tensor_fix_in, the tensor stand-in's fixed-size input; 194: #798 a texel buffer's aligned lead view could not be made, tbl_view; 193: a texture outside any memory pool with an unmapped storage tail, #b5a081; 188–192: internal resolution — 188 a draw / dispatch still held scaled image-slot storages after the retry limit, rs_pre_draw / rs_pre_images; 189 a storage past the device texture limit, rs_rescale / tex_widen; 190 a CPU readback of an enlarged storage not scaled back linearly, nvn_be_read_texels; 191 an image-slot storage that could not go back to its own size; 192 a screenshot of the enlarged window texture not scaled back; 187: a multisample count the GPU does not support, stepped down, mtl_samples_supported (#903); 186: a packaged texture's storage runs past the end of its memory pool, pkg_upload_ (#819); 183 / 184 / 185: an incompatible Metal texture format view fell back to the base format in rt_view_fmt / attach / clear_tex; 182: a block-compressed texture whose GPU writer resolved to its own Metal format, bcal_copy; 181: a texture view whose target and layer range Metal cannot express (#199), tex_by_id; 179 / 180: a pass's own depth attachment sampled in it could not be copied / viewed (#387); 178: a slot read on-chip by the first draw of a pass was not opened loaded; 177: a compute dispatch's binding ended the shared encoder again on the retry; 175 / 176: a block-compressed texture's GPU-written bytes not taken: no host texture of the uncompressed writer / no staging buffer, bcal_sync; 174: a converted vertex attribute stream address in no memory pool, vconv_bind; 172 / 173: a pool table for handles traced to no slot could not be allocated / grown, pool_tab_new / pool_tab_put_n; 171: a first-invocation store skipped, dispatch; 170: an sRGB / linear view not made again on its upgraded parent, tex_upgrade; 169: a storage buffer address pushed into an NVN2 push slot the pools do not hold (SBUFQ; until 11-07 a not-loaded color attachment written); 167 / 168: a storage buffer address the pools do not hold, slot / handle in a uniform buffer; 166: a texture turning packaged whose old host texture has another shape, its GPU-written texels not carried over, carry_gpu) (162: a vertex buffer address the pools do not hold, bind_vbufs) (160 / 161 / 163–165: tensor-core network stand-in, nvn_tensor.inc; 147–159 left for the NVN2 task / mesh branch) (143–146: NVN2 DLSS → MetalFX, nvn_dlss.inc) (139–142: folded linear textures: tex_linear, se_want, se_bind, copies / clears into one) (137 / 138: a GL texture an NVN texture is built from has no usable storage / no matching NVN format) (136: a draw's binding ended its pass twice) (134 / 135: alpha test / multisampling off the fragment shader cannot take); same-pass feedback snapshot too large 127, native image atomics use 128/129, same-pass feedback view narrowing 133; 209–210: a vertex stream the draw reads past its bound range not limited — the range is over the staging size / a GPU write on the stream is queued in this submission, bind_vbufs vbuf_limit; 207–208: nvn_present_fsr.inc FSR 1 on the present — 207 the shaders / pipelines could not be made, 208 a slot's textures / buffers / argument tables could not be allocated; either way the present goes on bilinear; 206: a BC texture drawn as blocks on a GPU without BC, its shadow / staging / decode not made, bcdec_attach / bcdec_flush; 205: texture upload / pool-storage synchronization; 202–204: nvn_stex.inc 放置式稀疏贴图块管理 — CPU 写的 / GPU 写的稀疏贴图同步失败（没堆页 / 暂存），稀疏贴图不做 tex_upgrade 整张复制; 198–201: nvn_sparse_tex.inc Metal sparse textures — heap / texture not made, page / level deswizzle failed, map / upload command buffer failed; 195–197: nvn_tensor.inc tensor_fix_in, the tensor stand-in's fixed-size input; 194: #798 a texel buffer's aligned lead view could not be made, tbl_view; 193: a texture outside any memory pool with an unmapped storage tail, #b5a081; 188–192: internal resolution — 188 a draw / dispatch still held scaled image-slot storages after the retry limit, rs_pre_draw / rs_pre_images; 189 a storage past the device texture limit, rs_rescale / tex_widen; 190 a CPU readback of an enlarged storage not scaled back linearly, nvn_be_read_texels; 191 an image-slot storage that could not go back to its own size; 192 a screenshot of the enlarged window texture not scaled back; 187: a multisample count the GPU does not support, stepped down, mtl_samples_supported (#903); 186: a packaged texture's storage runs past the end of its memory pool, pkg_upload_ (#819); 183 / 184 / 185: an incompatible Metal texture format view fell back to the base format in rt_view_fmt / attach / clear_tex; 182: a block-compressed texture whose GPU writer resolved to its own Metal format, bcal_copy; 181: a texture view whose target and layer range Metal cannot express (#199), tex_by_id; 179 / 180: a pass's own depth attachment sampled in it could not be copied / viewed (#387); 178: a slot read on-chip by the first draw of a pass was not opened loaded; 177: a compute dispatch's binding ended the shared encoder again on the retry; 175 / 176: a block-compressed texture's GPU-written bytes not taken: no host texture of the uncompressed writer / no staging buffer, bcal_sync; 174: a converted vertex attribute stream address in no memory pool, vconv_bind; 172 / 173: a pool table for handles traced to no slot could not be allocated / grown, pool_tab_new / pool_tab_put_n; 171: a first-invocation store skipped, dispatch; 170: an sRGB / linear view not made again on its upgraded parent, tex_upgrade; 169: a storage buffer address pushed into an NVN2 push slot the pools do not hold (SBUFQ; until 11-07 a not-loaded color attachment written); 167 / 168: a storage buffer address the pools do not hold, slot / handle in a uniform buffer; 166: a texture turning packaged whose old host texture has another shape, its GPU-written texels not carried over, carry_gpu) (162: a vertex buffer address the pools do not hold, bind_vbufs) (160 / 161 / 163–165: tensor-core network stand-in, nvn_tensor.inc; 147–159 left for the NVN2 task / mesh branch) (143–146: NVN2 DLSS → MetalFX, nvn_dlss.inc) (139–142: folded linear textures: tex_linear, se_want, se_bind, copies / clears into one) (137 / 138: a GL texture an NVN texture is built from has no usable storage / no matching NVN format) (136: a draw's binding ended its pass twice) (134 / 135: alpha test / multisampling off the fragment shader cannot take); same-pass feedback snapshot too large 127, native image atomics use 128/129, same-pass feedback view narrowing 133
 // The key must be a constant inside the table: a key past the end wrote into the statics next to it (11-05: nvn_tensor.inc used 160 / 161 with 147 slots)
 #define RED_ONCE(k, ...) do { _Static_assert((k) >= 0 && (k) < (int)(sizeof g_red_once / sizeof g_red_once[0]), "RED_ONCE key outside g_red_once"); if (!g_red_once[k]++) MLOG("【红】 " __VA_ARGS__); } while (0)
 // NVN vertex streams 0–15 → Metal vertex buffer slots: 0–13 go to 16–29 (30 is the constant fallback buffer), 14 and 15 to 14 and 15. Metal has only the 31 slots 0–30; translated shaders use only buffer(0) (the argument buffer),
@@ -7979,7 +7979,7 @@ static void shmap_load_once(void) {
     uint8_t tensor, tensor_log;   // HMMA: 1 = spatial stand-in, 2 = none, 3 = native SIMD-group matrix ABI 1; 0 = not checked
     uint16_t tensor_sq;   // S2Arm 11-05: such a shader's HMUL2 Rd, Ra, |Ra| (nvn2_hsq_count): its output is the signed square of what it reads plus the network's residual, the stand-in squares its input (nvn_tensor.inc)
     uint16_t tensor_srgb;   // HSETP2 Rd, Ra, 0.04045 (nvn2_srgb_count): its output is the sRGB decode (to linear) of what it reads plus the network's residual, the stand-in decodes its input (nvn_tensor.inc)
-    id<MTLLibrary> at_lib; NSString *at_main, *at_u; NSMutableDictionary<NSNumber *, id<MTLFunction>> *at_fns; uint8_t has_atms, fout_fc;   // gap families 34 / 37: a fragment main0 declaring S2A_AT / S2A_MSOFF (Dsh.cs FsAlphaMs): its library and entry names, specialized per (u, at, msoff, output types) on demand (fs_atms_fn); fout_fc: main0 also declares S2A_FU / S2A_FS (Dsh.cs FsFout), its output types are constants too
+    id<MTLLibrary> at_lib; NSString *at_main, *at_u; NSMutableDictionary<NSNumber *, id<MTLFunction>> *at_fns; uint8_t has_atms, fout_fc; uint8_t pb_av, pb_av_done, pb_bad;   // gap families 34 / 37: a fragment main0 declaring S2A_AT / S2A_MSOFF (Dsh.cs FsAlphaMs): its library and entry names, specialized per (u, at, msoff, output types) on demand (fs_atms_fn); fout_fc: main0 also declares S2A_FU / S2A_FS (Dsh.cs FsFout), its output types are constants too
     int load_depth_zero;   // captured with the identity, also used by its layer variant
     uint8_t u_mask;   // S2Arm gap 2 A: the colour outputs fn_u returns as uint, bit n = color(n) (json u_mask; dmsh_build.py fs_uint turns only the integer-bit writers)
     uint16_t tf_stride[4]; uint32_t cb_ext[16], sb_ro; nvn_refl rf; uint8_t t3d /* 0 not looked at, 1 no 3D texture slot, 2 has one (tex3d_prepare) */; id<MTLArgumentEncoder> ae; NSUInteger arg_len; int stage, range_ro, afr, layer_out; const char *builtin; uint64_t logged; char key[24]; id<MTLBuffer> c1buf; uint64_t c1_gpu; size_t c1off;
@@ -10895,7 +10895,59 @@ static uint32_t pso_int_need(const pso_key *k, NvShader *fs, int merged) {
 }
 // S2Arm: the fragment output interface the pipeline needs beyond the library's main0: the integer outputs (pso_int_need) and PSO_FOUT_DUAL when attachment 0 blends with the second
 //   source (pso_dual_source, nvn_pso_skey.h): both come from the typed-output entry main0_t<u>_<s> (fs_typed_fn / pso_fout_variant)
-static uint32_t pso_fout_need(const pso_key *k, NvShader *fs, int merged) { return pso_int_need(k, fs, merged) | (pso_dual_source(k, merged) ? PSO_FOUT_DUAL : 0); }
+// S2Arm #674: the colour outputs whose main0 has the programmable-blend switch s2a_pb<n>_c (graphics/dsx/gal_colorround.c): a library translated before the switch existed has none
+//   (its draws keep Metal's blender until the game's shader library is rebuilt). Read once from the function's constants
+static os_unfair_lock g_atfn_lock = OS_UNFAIR_LOCK_INIT;
+static uint8_t fs_pb_avail(NvShader *fs) {
+    os_unfair_lock_lock(&g_atfn_lock); int done = fs->pb_av_done; uint8_t av = fs->pb_av; os_unfair_lock_unlock(&g_atfn_lock);
+    if (done) return av;
+    av = 0; NSDictionary *fc = fs->fn.functionConstantsDictionary;
+    for (int i = 0; i < 8; i++) if (fc[[NSString stringWithFormat:@"s2a_pb%d_c", i]]) av |= (uint8_t)(1u << i);
+    os_unfair_lock_lock(&g_atfn_lock); fs->pb_av = av; fs->pb_av_done = 1; os_unfair_lock_unlock(&g_atfn_lock);
+    return av;
+}
+static _Atomic uint64_t g_pb_pipes, g_pb_fallback;   // pipelines blending in the fragment shader / pipelines that wanted it and kept Metal's blender (old library, typed entry)
+// S2Arm #674: the targets this pipeline blends in the fragment shader (pso_pb_want narrowed to what the shader can do), physical = logical (not on a merged pass). Not with the
+//   sampler-emulation variant or another fragment function; with integer outputs only when main0 takes its output types as constants too (fout_fc; otherwise the typed entry main0_t
+//   is a plain copy without the switches). Decided from the key and the shader alone: the background prewarm (pso_desc) and the draw (pso_get_vs_ptr) agree
+static uint32_t pso_int_need(const pso_key *k, NvShader *fs, int merged);
+static uint32_t pso_pb_eff(const pso_key *k, NvShader *fs, int merged, int note) {
+    if (!fs || merged || k->fc || fs->pb_bad) return 0;
+    uint32_t want = pso_pb_want(k, merged);
+    if (fs->rf.color_known) want &= fs->rf.color_mask;
+    if (!want) return 0;
+    uint32_t got = want & fs_pb_avail(fs);
+    if (got && pso_int_need(k, fs, 0) && !fs->fout_fc) got = 0;
+    if (note && got != want) {
+        uint64_t n = atomic_fetch_add(&g_pb_fallback, 1) + 1;
+        if (!(n & (n - 1))) MLOG("programmable blending: fragment shader %s wants targets %#x blended in the shader, has %#x (%s): those keep Metal's blender (0 x NaN = NaN); %llu such pipelines so far",
+                                 fs->key, want, got, fs_pb_avail(fs) ? "integer outputs on a typed entry" : "its library predates the switch: rebuilt by Update this game", (unsigned long long)n);
+    }
+    return got;
+}
+// main0 specialized with the programmable-blend switches on, together with the constants pso_desc would otherwise set (alpha test / multisampling off, output types on a fout_fc library)
+static id<MTLFunction> fs_pb_fn(NvShader *fs, int at, int msoff, uint32_t need, uint32_t pb) {
+    id<MTLLibrary> lib = fs->has_atms ? fs->at_lib : fs->plib;
+    NSString *name = fs->has_atms ? fs->at_main : fs->fn.name;
+    if (!lib || !name) return nil;
+    NSNumber *key = @((uint64_t)pb << 56 | (uint64_t)(need & 0xffffffu) << 16 | (uint64_t)(at << 1 | (msoff != 0)) | 1ull << 63);
+    os_unfair_lock_lock(&g_atfn_lock); id f = fs->at_fns[key]; os_unfair_lock_unlock(&g_atfn_lock);
+    if (f) return f == NSNull.null ? nil : f;
+    MTLFunctionConstantValues *cv = [MTLFunctionConstantValues new]; bool on = true;
+    for (int i = 0; i < 8; i++) if (pb >> i & 1) [cv setConstantValue:&on type:MTLDataTypeBool withName:[NSString stringWithFormat:@"s2a_pb%d_c", i]];
+    if (fs->has_atms && at) { int32_t a = at; [cv setConstantValue:&a type:MTLDataTypeInt withName:@"S2A_AT"]; }
+    if (fs->has_atms && msoff) { bool b = true; [cv setConstantValue:&b type:MTLDataTypeBool withName:@"S2A_MSOFF"]; }
+    if (need && fs->fout_fc) { uint32_t fu = need & 0xff, fsg = need >> 8; [cv setConstantValue:&fu type:MTLDataTypeUInt withName:@"S2A_FU"]; [cv setConstantValue:&fsg type:MTLDataTypeUInt withName:@"S2A_FS"]; }
+    NSError *e = nil; f = [lib newFunctionWithName:name constantValues:cv error:&e];
+    if (!f) { MLOG("【红】 fragment shader %s: specializing programmable blending for targets %#x failed (%s): its pipelines keep Metal's blender", fs->key, pb, e.localizedDescription.UTF8String); fs->pb_bad = 1; }
+    os_unfair_lock_lock(&g_atfn_lock); if (!fs->at_fns) fs->at_fns = [NSMutableDictionary dictionary]; fs->at_fns[key] = f ? f : NSNull.null; os_unfair_lock_unlock(&g_atfn_lock);
+    return f;
+}
+// The fragment output interface beyond main0: integer outputs, and PSO_FOUT_DUAL when attachment 0 blends with the second source and Metal's blender does it (blended in the shader,
+//   the second source is output 1 read there: no dual-source entry)
+static uint32_t pso_fout_need(const pso_key *k, NvShader *fs, int merged) {
+    return pso_int_need(k, fs, merged) | (pso_dual_source(k, merged) && !(pso_pb_eff(k, fs, merged, 0) & 1) ? PSO_FOUT_DUAL : 0);
+}
 // Compute beside the selected key, then cache beside each draw path's cur_ps.
 // lmap maps physical attachments to logical shader outputs; the shader's RTZ
 // calls affect only float4 source-0 outputs, including typed mixed-output entries.
@@ -11208,7 +11260,6 @@ static int vp_ask(const prog_t *p, NvShader *vs, uint32_t miss) {
 //   (1 NEVER … 7 GEQUAL; not given when 0, the test compiled out) and S2A_MSOFF = sample mask written full. Built once per (u, at, msoff, need) and kept; nil when the shader declares none.
 //   need (#427, pso_fout_need): the output types, given as S2A_FU = bits 0–7 (unsigned integer targets) and S2A_FS = bits 8–16 (signed, bit 8 there = dual-source blending) when main0
 //   declares them (fout_fc, Dsh.cs FsFout); nil for a need on a shader without them (the caller goes the old way: main0_u / _ft / a variant compiled on the device)
-static os_unfair_lock g_atfn_lock = OS_UNFAIR_LOCK_INIT;
 static id<MTLFunction> fs_atms_fn(NvShader *fs, int u, int at, int msoff, uint32_t need) {
     if (!fs || !fs->has_atms || (u && !fs->at_u) || (need && !fs->fout_fc)) return nil;
     NSNumber *key = @((uint64_t)need << 16 | (uint64_t)(u << 9 | at << 1 | (msoff != 0)));
@@ -11244,15 +11295,20 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
             if (hl) d.fragmentFunction = [hl newFunctionWithName:[NSString stringWithFormat:@"hl%d", i]];
             break; } }
     uint32_t need = fs && !fsfn && d.fragmentFunction == fs->fn ? pso_fout_need(k, fs, merged) : 0;
-    id<MTLFunction> fcf = need && fs->fout_fc ? fs_atms_fn(fs, 0, k->at, k->msoff, need) : nil;   // #427: output types, alpha test and sample mask in one specialization of main0
-    if (fcf) d.fragmentFunction = fcf;
+    // #674: targets blended in the fragment shader: main0 specialized with the switches (and the constants below in the same specialization), their fixed blending off further down
+    uint32_t pb = fs && !fsfn && d.fragmentFunction == fs->fn ? pso_pb_eff(k, fs, merged, 0) : 0;
+    id<MTLFunction> pbf = pb ? fs_pb_fn(fs, k->at, k->msoff, need, pb) : nil;
+    if (!pbf) pb = 0;
+    id<MTLFunction> fcf = !pb && need && fs->fout_fc ? fs_atms_fn(fs, 0, k->at, k->msoff, need) : nil;   // #427: output types, alpha test and sample mask in one specialization of main0
+    if (pbf) d.fragmentFunction = pbf;
+    else if (fcf) d.fragmentFunction = fcf;
     else if (need && fs->fn_u && need == fs->u_mask) d.fragmentFunction = fs->fn_u;   // the integer attachments are exactly the outputs main0_u turns (dmsh_build.py fs_uint u_mask)
     else if (need) { id<MTLFunction> t = fs_typed_fn(fs, need); if (t) d.fragmentFunction = t; }   // S2Arm: mixed float / integer targets, dual-source blending (pso_fout_variant)
     else if (k->fc && fs && d.fragmentFunction == fs->fn) {   // S2Arm #800: the sampler-emulation variant (se_want: never with integer outputs)
         id<MTLFunction> f = se_fn(fs, k->fc); if (f) d.fragmentFunction = f; else MLOG("【红】 fragment shader %s: pipeline keyed for its sampler-emulation variant (bits %d), which is not there: main0", fs->key, k->fc); }
     if (fs && (k->at || k->msoff) && (d.fragmentFunction == fs->fn || (fs->fn_u && d.fragmentFunction == fs->fn_u))) {   // gap families 34 / 37: main0 / main0_u with the alpha test / full sample mask
         id<MTLFunction> f = fs_atms_fn(fs, d.fragmentFunction == fs->fn_u, k->at, k->msoff, 0); if (f) d.fragmentFunction = f; }
-    else if (fs && (k->at || k->msoff) && !fcf) RED_ONCE(135, "fragment shader %s: alpha test %d / multisampling off %d on a variant entry point without the constants (typed / sampler-emulation / merged): drawn without them", fs->key, k->at, k->msoff);
+    else if (fs && (k->at || k->msoff) && !fcf && !pbf) RED_ONCE(135, "fragment shader %s: alpha test %d / multisampling off %d on a variant entry point without the constants (typed / sampler-emulation / merged): drawn without them", fs->key, k->at, k->msoff);
     if (vs && vs->layer_out && k->fsfn != GEO_MARK) d.inputPrimitiveTopology = vs->geo_output == 1 ? MTLPrimitiveTopologyClassPoint : vs->geo_output == 6 ? MTLPrimitiveTopologyClassLine : MTLPrimitiveTopologyClassTriangle;
     if (vs && (k->fsfn == TF_MARK || k->fsfn == GEO_MARK)) { d.vertexFunction = k->fsfn == GEO_MARK ? vs->geo_fn : vs->tf_fn; d.fragmentFunction = nil; d.rasterizationEnabled = NO; }   // transform feedback capture (tf_draw)
     d.rasterSampleCount = k->samples ? k->samples : 1;
@@ -11270,7 +11326,7 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
         if (unwritten) m = 0;
         c.writeMask = (m & 1 ? MTLColorWriteMaskRed : 0) | (m & 2 ? MTLColorWriteMaskGreen : 0) | (m & 4 ? MTLColorWriteMaskBlue : 0) | (m & 8 ? MTLColorWriteMaskAlpha : 0);
         // Integer targets never blend: Maxwell ignores the blend state for them, Metal aborts on a pipeline that enables it (Xenoblade 3 G-buffer: RG32Uint / R32Uint with blending on)
-        if (l != 0xff && k->blend_en >> l & 1 && !unwritten && !pf_int_kind(c.pixelFormat)) {
+        if (l != 0xff && k->blend_en >> l & 1 && !unwritten && !pf_int_kind(c.pixelFormat) && !(pb >> l & 1)) {   // #674: pb targets blend in the fragment shader
             c.blendingEnabled = YES;
             c.sourceRGBBlendFactor = bfac(k->blend[l].src_rgb); c.destinationRGBBlendFactor = bfac(k->blend[l].dst_rgb);
             c.sourceAlphaBlendFactor = bfac(k->blend[l].src_a); c.destinationAlphaBlendFactor = bfac(k->blend[l].dst_a);
@@ -11686,6 +11742,26 @@ static char g_pso_why[200];
 // Submit-thread only: pso_get_ (normal/GS final draw) and tess_draw are the two
 // callers. Background prewarm builds descriptors directly, without this state.
 static uint16_t g_pso_color_round;
+// #674: the pipeline pso_get_vs_ptr returned blends these targets in the fragment shader (g_pso_pb), from these NVN states (equation, source, destination × RGB, A);
+//   the draw binds slot 27 to S2APBlend (graphics/dsx/gal_colorround.c k_pblend): the RTZ / NaN bit map first, then the blend constant and the states
+typedef struct { uint32_t mask, pad[3]; float k[4]; uint32_t f[8][2][4]; } s2a_pblend_t;
+static uint8_t g_pso_pb; static uint32_t g_pso_pbst[8][2][4];
+static void pso_pb_note(const pso_key *k, uint32_t pb) {
+    g_pso_pb = (uint8_t)pb; memset(g_pso_pbst, 0, sizeof g_pso_pbst);
+    for (int i = 0; i < 8; i++) if (pb >> i & 1) {
+        g_pso_pbst[i][0][0] = k->blend[i].eq_rgb; g_pso_pbst[i][0][1] = k->blend[i].src_rgb; g_pso_pbst[i][0][2] = k->blend[i].dst_rgb;
+        g_pso_pbst[i][1][0] = k->blend[i].eq_a; g_pso_pbst[i][1][1] = k->blend[i].src_a; g_pso_pbst[i][1][2] = k->blend[i].dst_a;
+    }
+}
+static void enc_r_slot27(id e, uint16_t mask, uint8_t pb, const uint32_t st[8][2][4]) {
+    if (!pb) { enc_r_half_mask(e, mask); return; }
+    s2a_pblend_t b = {0}; b.mask = mask; memcpy(b.k, S.blend_color, sizeof b.k); memcpy(b.f, st, sizeof b.f);
+    __unsafe_unretained id<MTLBuffer> buf; size_t off = arena_alloc_u(sizeof b, &buf);
+    if (!buf) { RED_ONCE(215, "programmable blending: the blend state for slot 27 could not be staged: drawn with the bit map only"); enc_r_half_mask(e, mask); return; }
+    memcpy((uint8_t *)buf.contents + off, &b, sizeof b);
+    enc_r_args(e, MTLRenderStageFragment, buf.gpuAddress + off, NVN_HALF_SLOT);
+    g_half_mask_sent = -1;   // slot 27 holds this draw's state now: the next bit-map-only draw binds again
+}
 #define PSO_WHY(...) snprintf(g_pso_why, sizeof g_pso_why, __VA_ARGS__)
 static void *pso_get_vs_ptr(NvProg *pr, NvShader *vs) {   // borrowed: g_pso holds what it returns
     __unsafe_unretained NvShader *fs = pr->sh[1]; g_pso_why[0] = 0;
@@ -11702,6 +11778,11 @@ static void *pso_get_vs_ptr(NvProg *pr, NvShader *vs) {   // borrowed: g_pso hol
     }
     id<MTLFunction> ms_fn = ms_fs_override(fs); if (ms_fn) k.fsfn = (__bridge void *)ms_fn;   // DM_NVN_MAGSCAN phases 2 / 3
     g_pso_color_round = ms_fn ? 0 : pso_color_round_mask(&k, fs, g_pso_lmap != NULL);
+    { uint32_t pb = ms_fn || g_pso_fsfn ? 0 : pso_pb_eff(&k, fs, g_pso_lmap != NULL, 1);
+      if (pb && !fs_pb_fn(fs, k.at, k.msoff, pso_fout_need(&k, fs, 0), pb)) pb = 0;   // the same specialization pso_desc takes (cached): a failure leaves both on Metal's blender
+      if (pb) { static int once; if (!once++) MLOG("programmable blending (#674): fragment shader %s blends targets %#x in the shader (first pipeline)", fs->key, pb); }
+      g_pso_color_round &= (uint16_t)~(pb << 8);   // blended in the shader: no NaN clearing before Metal's blender
+      pso_pb_note(&k, pb); }
     // 诊断（DM_NVN_SKIP_SAFE_AT=<n>，帧回放里用）：第 n 个建管线的帧（从 1 数，回放第 n 遍）每笔 skip_safe 判可跳的都当「管线还没编好」跳掉，
     //   验证首遇跳过只丢一帧——下一遍画面应与全不跳逐像素一致
     { static long at = -2, f0 = -1; if (at == -2) { const char *e = getenv("DM_NVN_SKIP_SAFE_AT"); at = e && *e ? atol(e) : -1; }
@@ -17298,16 +17379,16 @@ static void tess_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0) {
     // 渲染管线：顶点阶段是域着色器 pr->sh[4]（不是 sh[0] 的游戏原顶点着色器）。取 sh[0] 会拿曲面前段那支去配读域输出（user(locn)）的片元着色器，
     //   pso_pair_ok 判它不写片元读的位置，管线永远建不出来（巫师3 8 次曲面绘制全跳过，w3tess6b 10-28）
     //   S2Arm #800：片元着色器的归约模拟位同 draw 逐笔取（se_want），换了就换管线、绘制前绑表（se_bind）
-    static id<MTLRenderPipelineState> cur_tess_ps; static NvProg *cur_tess_pr; static NvShader *cur_tess_ds; static uint64_t cur_tess_pass; static int cur_tess_fc; static uint16_t cur_tess_round;
+    static id<MTLRenderPipelineState> cur_tess_ps; static NvProg *cur_tess_pr; static NvShader *cur_tess_ds; static uint64_t cur_tess_pass; static int cur_tess_fc; static uint16_t cur_tess_round; static uint8_t cur_tess_pb; static uint32_t cur_tess_pbst[8][2][4];
     int fc = se_want(pr->gp, fs, 1);
     if (g_pso_dirty || pr != cur_tess_pr || ds != cur_tess_ds || cur_tess_pass != g_pass.serial || fc != cur_tess_fc) {
-        g_pso_fc = fc; cur_tess_ps = pso_get_vs(pr, ds); cur_tess_round = g_pso_color_round; g_pso_fc = 0; cur_tess_pr = pr; cur_tess_ds = ds; cur_tess_pass = g_pass.serial; cur_tess_fc = fc; g_pso_dirty = !cur_tess_ps; }
+        g_pso_fc = fc; cur_tess_ps = pso_get_vs(pr, ds); cur_tess_round = g_pso_color_round; cur_tess_pb = g_pso_pb; memcpy(cur_tess_pbst, g_pso_pbst, sizeof cur_tess_pbst); g_pso_fc = 0; cur_tess_pr = pr; cur_tess_ds = ds; cur_tess_pass = g_pass.serial; cur_tess_fc = fc; g_pso_dirty = !cur_tess_ps; }
     __unsafe_unretained id<MTLRenderPipelineState> ps = cur_tess_ps;
     if (!ps) { tess_skipped(); static int n; if (n++ < 8) MLOG("【红】 tessellation render pipeline not built (domain %s fragment %s): %s; draw skipped", ds->key, fs->key, g_pso_why);
         PD("Z %llu tessellation draw skipped: no render pipeline", g_stat_pass); return; }
 
     enc_r_pso(en, ps);
-    enc_r_half_mask(en, cur_tess_round);
+    enc_r_slot27(en, cur_tess_round, cur_tess_pb, cur_tess_pbst);
     // 深度 / 模板 / 视口 / 裁剪 / 剔除 / 绕序 / 填充：① 捕获遍结束时清了编码器状态（g_enc_pso / g_enc_dss 置空、g_ed.ok = 0），新编码器是空状态，
     //   不设就是深度测试关、不写深度。与 draw 同一份规则（draw_pass_state）
     if (!draw_pass_state(en, 0)) { tess_skipped(); PD("Z %llu tessellation draw skipped: empty scissor", g_stat_pass); return; }
@@ -17577,7 +17658,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     if (defer_q_draw) defer_replay();
     if (skip_d) { g_stat_ds_omit++; if (mode == 3) g_stat_s_only++; else if (mode == 4) g_stat_d_only++; }
     // The pipeline depends only on (program, render pass targets, blend / color / write mask / multisample state, vertex layout): if these did not change, reuse the previous one
-    static id<MTLRenderPipelineState> cur_ps; static NvProg *cur_pr; static uint64_t cur_ps_pass; static int cur_ps_fc; static uint16_t cur_ps_round; static int cur_pull;   // cur_pull: cur_ps 是拉取管线（nvn_hybrid.inc）
+    static id<MTLRenderPipelineState> cur_ps; static NvProg *cur_pr; static uint64_t cur_ps_pass; static int cur_ps_fc; static uint16_t cur_ps_round; static uint8_t cur_ps_pb; static uint32_t cur_ps_pbst[8][2][4]; static int cur_pull;   // cur_pull: cur_ps 是拉取管线（nvn_hybrid.inc）
     if (g_fz.active && !g_defer_replaying) { g_pso_lmap = g_fz.phase == 1 ? g_fz.lmap1 : g_fz.lmap2; g_pso_fsfn = g_fz.phase == 1 ? nil : fz_fn; g_pso_fz = g_fz.phase == 1 ? (pso_fz_desc){0} : g_fz_desc; g_pso_dirty = 1; }
     else if (g_fbt.on && g_enc && !g_defer_replaying) {   // ⑤ 遍内自采样片上读取：本笔用可读瓦片版（输出不搬位置）
         g_pso_lmap = g_fbt.lmap; g_pso_fsfn = g_fbt.fn; memset(&g_pso_fz, 0, sizeof g_pso_fz); g_pso_fz.kind = 1; g_pso_fz.fbmask = g_fbt.fbmask;
@@ -17588,9 +17669,9 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     g_fold_sh[1] = NULL;   // reset here too: the readable-tile paths below skip se_want
     int fc = g_pso_lmap || g_pso_fsfn ? 0 : se_want(pr->gp, pr->sh[1], 1);
     if (g_mtk.on) {   // a task / mesh draw (mesh_tasks_draw): its own pipeline kind; the next draw fetches its own again (cur_pr nil)
-        g_pso_fc = fc; cur_ps = mtk_pso(pr); cur_ps_round = g_pso_color_round; g_pso_fc = 0; cur_pr = nil;
+        g_pso_fc = fc; cur_ps = mtk_pso(pr); cur_ps_round = g_pso_color_round; cur_ps_pb = g_pso_pb; memcpy(cur_ps_pbst, g_pso_pbst, sizeof cur_ps_pbst); g_pso_fc = 0; cur_pr = nil;
         if (!cur_ps) { g_mtk.miss = 1; if (g_pso_lmap) { g_pso_lmap = NULL; g_pso_fsfn = nil; memset(&g_pso_fz, 0, sizeof g_pso_fz); g_pso_dirty = 1; } return; } }
-    else if (g_pso_dirty || pr != cur_pr || cur_ps_pass != g_pass.serial || fc != cur_ps_fc) { g_pso_fc = fc; cur_ps = pso_get(pr, nil); cur_ps_round = g_pso_color_round; g_pso_fc = 0; cur_pr = pr; cur_ps_pass = g_pass.serial; cur_ps_fc = fc; cur_pull = g_pso_pull; g_pso_dirty = !cur_ps || cur_pull; }   // 拉取管线只顶一笔：下一笔再取，精确的编好就换上
+    else if (g_pso_dirty || pr != cur_pr || cur_ps_pass != g_pass.serial || fc != cur_ps_fc) { g_pso_fc = fc; cur_ps = pso_get(pr, nil); cur_ps_round = g_pso_color_round; cur_ps_pb = g_pso_pb; memcpy(cur_ps_pbst, g_pso_pbst, sizeof cur_ps_pbst); g_pso_fc = 0; cur_pr = pr; cur_ps_pass = g_pass.serial; cur_ps_fc = fc; cur_pull = g_pso_pull; g_pso_dirty = !cur_ps || cur_pull; }   // 拉取管线只顶一笔：下一笔再取，精确的编好就换上
     g_udc_lmap = g_pso_lmap; g_udc_fsfn = g_pso_fsfn != nil;   // udc_note_draw (below) judges this draw's writes by the map its pipeline used
     if (g_pso_lmap) { g_pso_lmap = NULL; g_pso_fsfn = nil; memset(&g_pso_fz, 0, sizeof g_pso_fz); g_pso_dirty = 1; }   // The next draw fetches again according to its own situation
     __unsafe_unretained id<MTLRenderPipelineState> ps = cur_ps;
@@ -17611,7 +17692,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     if (g_wd_side_on || g_wd_row_on) wd_page_clear(en);   // S2Arm widen: a 16:9 page starts at this draw; its side strips are cleared before any of this draw's state is set (the clear resets it)
     { uint32_t r5[5]; if (wd_p2_want_self(R.has_rt && R.rt.n > 0 ? R.rt.color[0] : NULL, r5)) wd_p2_self_clear(en, r5); }   // S2Arm widen: fallback sentinel in the world target's side bands when the game did not clear it this frame
     if (ps != g_enc_pso) { enc_r_pso(en, ps); g_enc_pso = ps; if (fault_enc_on()) fault_enc_mark(en, [NSString stringWithFormat:@"draw vertex %s fragment %s", pr->sh[0] ? pr->sh[0]->key : "-", pr->sh[1] ? pr->sh[1]->key : "-"]); }
-    enc_r_half_mask(en, cur_ps_round);
+    enc_r_slot27(en, cur_ps_round, cur_ps_pb, cur_ps_pbst);
     if (!draw_pass_state(en, pr->sh[1])) return;   // depth-stencil / viewport / scissor / cull / ... (shared with tess_draw ④): 0 = this draw draws nothing
     alpha_ref_bind(en, pr->sh[1]);   // gap family 34
     if (!g_mtk.on) bind_vbufs(en, pr->sh[0], dw, di);   // a task / mesh draw fetches no vertices
