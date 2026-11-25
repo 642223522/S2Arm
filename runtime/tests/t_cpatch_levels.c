@@ -13,7 +13,7 @@
 void s2a_cpatch_load(module_t *m, const char *dir);
 int s2a_cpatch_itv_cap(void);
 void s2a_cpatch_fps_follow(int on); void s2a_cpatch_fps_pick(int target); int s2a_cpatch_fps_levels(int *out, int n, int *cur); int s2a_cpatch_stall_rescue(void); int s2a_cpatch_fps_unit(const char *id);
-void s2a_cpatch_snap_hold(void); void s2a_cpatch_snap_reapply(void);
+void s2a_cpatch_snap_hold(void); void s2a_cpatch_snap_reapply(void); int s2a_cpatch_fps_engaged(void);
 static int fails;
 static int g_scr;   // ⑤ 屏幕最高刷新率（覆盖 cpatch.c 的弱定义 front_screen_max_fps；0 = 还不知道）
 int front_screen_max_fps(void) { return g_scr; }
@@ -200,6 +200,28 @@ static void run_fl_snap(char *out, size_t n) {
     }
     close(pp[1]); ssize_t r = read(pp[0], out, n - 1); out[r > 0 ? r : 0] = 0; close(pp[0]); waitpid(c, NULL, 0); unlink(p); rmdir(dir);
 }
+// ⑭ 玩家帧率上限 30 + 60 帧开（11-25 #502）：期望（手算）FPSLocker 配置（段名 FPSLocker，位 4，数据 0x48 → 66）→ 位 10、66、封 2、按份问 0、抬高 1；
+//   普通帧率补丁（段名 60 帧，位 6，数据 0x40 → 55）→ 位 0、00、封 0、抬高 0（不开 = 原版 30，直连层上限也不管用）；不设上限时普通补丁照开 → 40 55 封 0 抬高 1
+static void run_cap(const char *name, int bit, const char *data, const char *cap, char *out, size_t n) {
+    char dir[] = "/tmp/t_cpatch_cap.XXXXXX"; if (!mkdtemp(dir)) { out[0] = 0; return; }
+    char p[256]; snprintf(p, sizeof p, "%s/cpatch.tsv", dir); FILE *f = fopen(p, "w");
+    fprintf(f, "编号\t模块\t位\t类别\t段名\t许可\t来源\t数据写入\t缺省开\t目标帧率\t画幅\t模式\n");
+    fprintf(f, "fps:C\tmain\t%d\t60fps\t%s\t\tc.txt\t%s\t1\t60\t\t\n", bit, name, data);
+    fclose(f);
+    int pp[2]; pipe(pp); pid_t c = fork();
+    if (c == 0) {
+        close(pp[0]); unsetenv("DM_PRESENT_LINK"); unsetenv("DM_PRESENT_HZ"); unsetenv("S2A_CPATCH_ON"); unsetenv("S2A_FPS_PICK"); unsetenv("DM_PRESENT_FI");
+        if (cap) setenv("S2A_FPS", cap, 1); else unsetenv("S2A_FPS");
+        module_t m; memset(&m, 0, sizeof m); snprintf(m.name, sizeof m.name, "%s", "main");
+        m.size = 0x8000; m.base = mmap(NULL, m.size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0); m.key_page_off = 0x4000; m.key_page_size = 0x4000;
+        s2a_cpatch_load(&m, dir);
+        uint64_t *slot = (uint64_t *)(m.base + m.key_page_off) + 2046; char b[128]; int k = 0;
+        s2a_cpatch_fps_follow(1);
+        k += snprintf(b + k, sizeof b - (size_t)k, "%llx %02x 封%d 份%d 抬%d", (unsigned long long)(*slot & ((1ull << bit))), m.base[bit == 4 ? 0x48 : 0x40], s2a_cpatch_itv_cap(), s2a_cpatch_fps_unit("fps:C"), s2a_cpatch_fps_engaged());
+        write(pp[1], b, (size_t)k); _exit(0);
+    }
+    close(pp[1]); ssize_t r = read(pp[0], out, n - 1); out[r > 0 ? r : 0] = 0; close(pp[0]); waitpid(c, NULL, 0); unlink(p); rmdir(dir);
+}
 int main(void) {
     char dir[] = "/tmp/t_cpatch_levels.XXXXXX"; if (!mkdtemp(dir)) return 1;
     char p[256]; snprintf(p, sizeof p, "%s/cpatch.tsv", dir); FILE *f = fopen(p, "w");
@@ -242,6 +264,12 @@ int main(void) {
     CHECK(!strcmp(got, "起关 0 00 0 开 10 66 1 局中关 10 66 2 份0 再开 10 66 1"), "⑫ FPSLocker 局中关保持补丁、30 帧档：期望 起关 0 00 0 开 10 66 1 局中关 10 66 2 份0 再开 10 66 1，实得 %s", got);
     run_fl_snap(got, sizeof got);
     CHECK(!strcmp(got, "开存关恢复 10 66 2"), "⑬ 快照存时 FPSLocker 开着、当前关：期望 开存关恢复 10 66 2，实得 %s", got);
+    run_cap("FPSLocker", 4, "48:00:66", "30", got, sizeof got);
+    CHECK(!strcmp(got, "10 66 封2 份0 抬1"), "⑭ 上限 30 + FPSLocker：期望 10 66 封2 份0 抬1，实得 %s", got);
+    run_cap("60 帧", 6, "40:00:55", "30", got, sizeof got);
+    CHECK(!strcmp(got, "0 00 封0 份0 抬0"), "⑭ 上限 30 + 普通帧率补丁：期望 0 00 封0 份0 抬0，实得 %s", got);
+    run_cap("60 帧", 6, "40:00:55", NULL, got, sizeof got);
+    CHECK(!strcmp(got, "40 55 封0 份60 抬1"), "⑭ 不设上限 + 普通帧率补丁：期望 40 55 封0 份60 抬1，实得 %s", got);
     run_snap(dir, got, sizeof got);
     const char *want6 = "关→关 对 关→开 对 开→关 对 开→开 对 非帧率位 对";
     CHECK(!strcmp(got, want6), "⑩ 即时存档恢复后按本进程开关重写：期望 %s，实得 %s", want6, got);

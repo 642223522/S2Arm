@@ -12,10 +12,15 @@ void s2a_ios_sgrade_counts(NSString *gid, NSInteger *cheatOn, NSInteger *cheatAl
 #import "play_layout.h"
 // 弱链接[lab]：s2a_fps_cap_reason（runtime/src/fps.c：60 帧降档原因 0 无 / 1 热 / 2 低电量 / 3 A/B 测原帧率段；输入工作台不链原生核，取不到就不写降档副标题）
 int s2a_fps_cap_reason(void) __attribute__((weak_import));
+// 弱链接[lab]：s2a_fps_raised（runtime/src/fps.c：这局帧率是否被补丁抬高；输入工作台不链原生核，取不到就不写帧率上限说明）
+int s2a_fps_raised(void) __attribute__((weak_import));
+// 弱链接[lab]：s2a_host_session_state（runtime/src/session.c；输入工作台不链原生核，取不到 = 不在局内）
+int s2a_host_session_state(void) __attribute__((weak_import));
 #import "vpad.h"
 #import "vpad_settings.h"
 #import "cpatch_settings.h"
 #include "native.h"   // LOG
+#include "s2a_session.h"   // S2A_SESSION_RUNNING：帧率上限说明只在局内写
 #include "s2a_pad.h"   // 手柄按键排布（自动 / Switch / Xbox）的取值解析，同齿轮菜单
 // 游戏内亮度（按款）：option 定义在 ios/settings.m（纯数据，命令行单测也能编）；拖动即时生效函数在本文件下方（需要 UIKit）。
 NSDictionary *s2a_ios_brightness_option(void);
@@ -577,6 +582,10 @@ static UILabel *textLabel(UIFontTextStyle style) {
         // PR3d HDR 开关联动（照 nxnative Upscaling 行 needs=DM_HDR=0 形态映射，S2A_HDR 是启动环境开关、无设置页行）：
         //   HDR 管线接手时上屏增强一族对 HDR 窗口旁路（8 位感知缩放不适配 PQ 码值）——行下写产品限制提示，不置灰：
         //   SDR 窗口（排空帧：先缩放后 mode 2 转换）照常用这两行，置灰会谎报「设置无效」
+        // 帧率上限（row 3，11-25 #502）：显示 = 生效。局内选了 30、而这局帧率没被补丁抬高（没开 60 帧补丁）→ 直连层不压游戏原生出图率
+        //   （graphics/nvn/gfx/nvn/nvn_fps.c，压下去按帧推进的款就慢），行下写明这一局上限 30 不生效；不在局内（s2a_fps_raised 拿不到局况）不写
+        if (row == 3) { NSString *cap = s2a_ios_graphics_snapshot(s2a_ios_settings_defaults())[option[@"key"]];
+            return [self sliderCell:option note:[cap isEqual:@"30"] && s2a_host_session_state && s2a_fps_raised && s2a_host_session_state() == S2A_SESSION_RUNNING && !s2a_fps_raised() ? S2AL(@"gfx.fpsLimit.native.note") : nil]; }
         if (row != 2) return [self sliderCell:option note:row == 1 && s2a_ios_hdr_upscale_bypassed() ? S2AL(@"gfx.hdrUpscaleBypass.note") : nil];
         NSArray *values = option[@"values"];
         NSInteger selected = [values indexOfObject:s2a_ios_graphics_snapshot(s2a_ios_settings_defaults())[option[@"key"]]];
