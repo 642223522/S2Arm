@@ -20,6 +20,8 @@
 //      会低于活着的条数 → 放 → T 不回升 → 额度更低 …一直放一直重建。按峰值：空洞不够只是不再长（额度停在峰值、预热到线停），
 //      已建的照留；超过「峰值 + 余量」的新管线才按最久没用放，放出的地址给新管线接着用，管线占的地址封在峰值
 //      扫不到（单测 / 回放不链原生层）= 不设地址额度
+//      只在 iOS / iPadOS 上设（#2218，11-25）：低区耗尽而崩只在 iPhone / iPad 上出现（#2020）；Mac 上低区被 Metal 内部与 malloc 吃到几十 MB 是常态，
+//      游戏照常运行（M1 Pro 时之笛不设额度一局低区 21 MB 正常退出），设了反而预热停在 70%、读区域那帧多现建 80 条、长约 470 ms
 // 由 nvn_mtl.m 在 g_cps / g_cps_se 之后包含；渲染那半在 pso_get_vs_ptr 之前已前向声明（pb_touch_r / pb_tick）
 #define PB_KEEP_FRAMES 240   // 这么多帧内用过的不放（约 4–8 秒；在途命令缓冲最多几帧）
 #define PB_LOW_PCT 85        // 超额时放到额度的这个比例
@@ -64,9 +66,9 @@ static uint32_t pb_budget(void) {
     else for (size_t i = 0; i < sizeof pb_table / sizeof *pb_table; i++) if (!strncmp(model, pb_table[i].prefix, strlen(pb_table[i].prefix))) { g_pb_budget_v = pb_table[i].budget; break; }
     g_pb_env = e && *e;
     MLOG("pipeline budget: %u pipelines resident (%s; machine %s; 0 = no budget)%s", g_pb_budget_v, g_pb_env ? "DM_PSO_BUDGET" : "per-model table", model,
-         g_pb_env ? "; the host-address budget is off" : "; the host-address budget follows");
-    if (!g_pb_env) {   // ⑤：开局同步扫一次（预热要用），之后后台每秒一次
-        if (!g_pb_holes_tried) { g_pb_holes_tried = 1; g_pb_holes_fn = (void (*)(uint64_t *, uint64_t *))dlsym(RTLD_DEFAULT, "s2a_low_holes"); }
+         g_pb_env ? "; the host-address budget is off" : TARGET_OS_IPHONE ? "; the host-address budget follows" : "; no host-address budget on macOS");
+    if (!g_pb_env) {   // ⑤：开局同步扫一次（预热要用），之后后台每秒一次；Mac 不取（见头注 ⑤ 末段），单测自己置 g_pb_holes_tried + 桩
+        if (!g_pb_holes_tried) { g_pb_holes_tried = 1; if (TARGET_OS_IPHONE) g_pb_holes_fn = (void (*)(uint64_t *, uint64_t *))dlsym(RTLD_DEFAULT, "s2a_low_holes"); }
         if (g_pb_holes_fn) {
             pb_va_sample();
             dispatch_source_t t = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
