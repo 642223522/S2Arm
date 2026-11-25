@@ -14,7 +14,11 @@
 //   ⑤ 地址额度（#2020，11-24）：每条活着的管线占宿主低区约 256 KB 地址（本机实测现编 / 存档取一样 240–316 KB；iPad M5 上 0400486024DEC000 一局预热全建全留约 2.5 万条，
 //      C# 初始化后低区空洞 6643 MB → 448 MB，各处分配失败、在 nvn_hm_grow / nvn_ft_poll 里 abort）。放掉的管线地址不还给系统，但新建的管线会接着用它
 //      （本机：放掉 300 条再建 300 条只多 7–11 MB），所以按条数封顶就封住了地址。后台每秒扫一次低区空洞 T，
-//      地址额度 = 此刻活着的条数（常驻 + 预热已建未领）+ (T − PB_VA_RESERVE) ÷ PB_VA_PER，即这台机器眼下还容得下的管线总条数；与机型额度取严的那个。
+//      地址额度 = 峰值 + max(0, T − PB_VA_RESERVE) ÷ PB_VA_PER；峰值 = 本局活着的条数（常驻 + 预热已建未领）到过的最大值。与机型额度取严的那个。
+//      为什么按峰值而不按此刻活着的条数（#2218，11-25 M1 Pro 时之笛：额度 9407 → 3732 → 1，放掉 9806 条，常驻只剩 3 条、低区仍 702 → 36 MB）：
+//      放掉的管线地址不还系统，放到峰值以下一分地址也收不回；低区被管线以外的分配（Metal 内部 / malloc / 运行时）吃掉时，按此刻条数算的额度
+//      会低于活着的条数 → 放 → T 不回升 → 额度更低 …一直放一直重建。按峰值：空洞不够只是不再长（额度停在峰值、预热到线停），
+//      已建的照留；超过「峰值 + 余量」的新管线才按最久没用放，放出的地址给新管线接着用，管线占的地址封在峰值
 //      扫不到（单测 / 回放不链原生层）= 不设地址额度
 // 由 nvn_mtl.m 在 g_cps / g_cps_se 之后包含；渲染那半在 pso_get_vs_ptr 之前已前向声明（pb_touch_r / pb_tick）
 #define PB_KEEP_FRAMES 240   // 这么多帧内用过的不放（约 4–8 秒；在途命令缓冲最多几帧）
@@ -29,12 +33,14 @@ static const struct { const char *prefix; uint32_t budget; } pb_table[] = {
     {"", 0},   // 缺省：实测前不设
 };
 static uint32_t g_pb_budget_v; static int g_pb_budget_init, g_pb_env;
-static _Atomic uint32_t g_pb_live_pub, g_pb_va; static _Atomic uint64_t g_pb_unclaimed, g_pb_va_holes;   // g_pb_va：地址额度，0 = 不设
+static _Atomic uint32_t g_pb_live_pub, g_pb_va, g_pb_peak; static _Atomic uint64_t g_pb_unclaimed, g_pb_va_holes;   // g_pb_va：地址额度，0 = 不设；g_pb_peak：活着条数的峰值
 static void (*g_pb_holes_fn)(uint64_t *total, uint64_t *largest);   // 原生层 s2a_low_holes（runtime/src/vawin.c），运行时取
 static int g_pb_holes_tried;   // 取过了（取不到 = 不设地址额度；单测直接置位、自己给桩）
 // 地址额度（⑤）：由一次扫描的空洞 T 与此刻活着的条数算
+static void pb_peak_note(uint64_t alive) { uint32_t a = alive > UINT32_MAX ? UINT32_MAX : (uint32_t)alive, p = atomic_load(&g_pb_peak); while (a > p && !atomic_compare_exchange_weak(&g_pb_peak, &p, a)) {} }
 static uint32_t pb_va_from(uint64_t holes, uint64_t alive) {
-    int64_t b = (int64_t)alive + ((int64_t)holes - (int64_t)PB_VA_RESERVE) / (int64_t)PB_VA_PER;
+    pb_peak_note(alive);
+    int64_t room = (int64_t)holes - (int64_t)PB_VA_RESERVE, b = (int64_t)atomic_load(&g_pb_peak) + (room > 0 ? room / (int64_t)PB_VA_PER : 0);
     return b < 1 ? 1 : b > (int64_t)UINT32_MAX ? UINT32_MAX : (uint32_t)b;
 }
 static void pb_va_sample(void) {
