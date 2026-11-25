@@ -45,6 +45,7 @@ static int g_flag_finish_lag;   // 用例设：开关 nvk_finish_lag 的值
 static int g_flag_spill = 1;    // 用例设：开关 nvk_spill（缺省同产品：开）
 static int g_flag_sync_lag;     // 用例设：开关 nvk_sync_lag 的值（产品缺省 1＝允许一格在飞；用例固定 0，测的是「真等」这条契约）
 static int g_flag_binst_hoist = -1;   // 用例设：开关 nvk_binst_hoist（-1 = 缺省）
+static int g_flag_clear_only_attachments;
 static int g_flag_state_keep = 1, g_flag_rt_cont = 1, g_flag_clear_park = 1, g_flag_pass_area = 1;   // 用例设：开关 nvk_state_keep / nvk_rt_cont / nvk_clear_park / nvk_pass_area 的值（缺省同产品：都开）
 static int g_flag_pool_memo = 1;   // 用例设：开关 nvk_pool_memo 的值（缺省同产品：开）；备忘每 4096 次查找才重读一次，换值后要用 pm_flag() 推一下
 static int g_flag_land_merge = 1;  // 用例设：开关 nvk_land_merge 的值（缺省同产品：开）；每 256 次登记才重读一次，换值后要用 rp_test_gw_merge_reload() 推一下
@@ -70,6 +71,7 @@ int nvn_plat_flag(const char *name, int dflt) {
     if (!strcmp(name, "nvk_state_keep")) return g_flag_state_keep;
     if (!strcmp(name, "nvk_rt_cont")) return g_flag_rt_cont;
     if (!strcmp(name, "nvk_clear_park")) return g_flag_clear_park;
+    if (!strcmp(name, "nvk_clear_only_attachments")) return g_flag_clear_only_attachments;
     if (!strcmp(name, "nvk_pass_area")) return g_flag_pass_area;
     if (!strcmp(name, "nvk_ub_fill_steal")) return g_flag_ub_steal < 0 ? dflt : g_flag_ub_steal;
     if (!strcmp(name, "nvk_split_pass")) return g_flag_split_pass < 0 ? dflt : g_flag_split_pass;
@@ -220,6 +222,7 @@ static uint32_t g_caps_nofilter = ~0u, g_caps_noblend = ~0u;   // #1072：这个
 uint32_t nvn_gpu_format_caps(uint32_t f) { if (f == g_caps_nosample) return 0;
     uint32_t c = f == NVN_FORMAT_RGBA8 ? NVN_GPU_FMT_SAMPLE | NVN_GPU_FMT_RENDER | NVN_GPU_FMT_STORAGE | NVN_GPU_FMT_BLEND : f == NVN_FORMAT_R16 || f == NVN_FORMAT_RG32UI || f == NVN_FORMAT_RGBA32UI || f == NVN_FORMAT_RGBA32F || f == NVN_FORMAT_RGBA16UI ? NVN_GPU_FMT_SAMPLE | NVN_GPU_FMT_RENDER : NVN_GPU_FMT_SAMPLE;
     for (int k = 0; k < 4; k++) if (g_caps_stor[k] && f == g_caps_stor[k]) c = NVN_GPU_FMT_SAMPLE | NVN_GPU_FMT_STORAGE;   // 用例指定的存储图像格式
+    if (f == NVN_FORMAT_DEPTH24_STENCIL8) c |= NVN_GPU_FMT_DEPTH;
     c |= NVN_GPU_FMT_FILTER;
     if (f == g_caps_nofilter) c &= ~(uint32_t)NVN_GPU_FMT_FILTER;
     if (f == g_caps_noblend) c &= ~(uint32_t)NVN_GPU_FMT_BLEND;
@@ -4395,6 +4398,56 @@ static void put_set_rt_n(stream *s, const tex_t *const *color, int n, const tex_
     for (int i = 0; i < n; i++) if (color[i]) { snap[k] = *color[i]; pt[k] = &snap[k]; k++; }
     if (depth) { snap[k] = *depth; pt[k] = &snap[k]; }
 }
+static void t_pass_clear_only_attachments(void) {
+    enum { OFF, TRIM, MIXED, ALIAS, ZERO, DEPTH, STENCIL, CASES };
+    for (int mode = OFF; mode < CASES; mode++) {
+        pass_fresh(); g_flag_clear_only_attachments = mode != OFF;
+        tex_t a = mk_tex(941, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0);
+        tex_t b = mk_tex(942, mode == ALIAS ? 0 : 0x4000, NVN_FORMAT_RGBA8, mode == MIXED ? 8 : 16, 16, 1, 0);
+        tex_t ds = mk_tex(943, 0x8000, NVN_FORMAT_DEPTH24_STENCIL8, 16, 16, 1, 0);
+        const int aspect = mode == DEPTH || mode == STENCIL;
+        if (aspect) memset(a.mem, 0x7e, (size_t)a.L.size);
+        if (mode != ZERO) memset(b.mem, 0x7e, (size_t)b.L.size);
+        if (mode == ALIAS) {
+            // Both registrations deliberately resolve the same uninitialized GPU storage.
+            memset(b.mem, 0, (size_t)b.L.size);
+        }
+        stream s = {0};
+        const tex_t *colors[] = {&a, &b};
+        put_set_rt_n(&s, colors, 2, aspect ? &ds : NULL);
+        if (aspect) {
+            p_clear_ds *cl = put(&s, OP_CLEAR_DS, sizeof *cl);
+            cl->depth_mask = mode == DEPTH; cl->depth = 0.25f;
+            cl->stencil_mask = mode == STENCIL ? 0xff : 0; cl->stencil = 7;
+        } else {
+            p_clear_color *cl = put(&s, OP_CLEAR_COLOR, sizeof *cl);
+            cl->index = 0; cl->mask = 0xf; cl->rgba[2] = 1;
+        }
+        end(&s);
+        submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+        CHECK(g_npd == (mode == MIXED ? 2 : 1) && g_pass_ends == g_npd);
+        const nvn_gpu_pass_desc *p = &g_pd[g_npd - 1];
+        const int trim = mode == TRIM || aspect;
+        CHECK((p->color[1].view == NULL) == trim); // A preserving slot is unnecessary only in the guarded shape.
+        CHECK((nvn_be_tex_gpu_owned(b.serial) == 0) == trim);
+        if (aspect) {
+            CHECK(!p->color[0].view && nvn_be_tex_gpu_owned(a.serial) == 0);
+            CHECK(p->depth.view && p->stencil.view == p->depth.view);
+            CHECK(p->depth.load == (mode == DEPTH ? NVN_GPU_LOAD_CLEAR : NVN_GPU_LOAD_LOAD));
+            CHECK(p->stencil.load == (mode == STENCIL ? NVN_GPU_LOAD_CLEAR : NVN_GPU_LOAD_LOAD));
+            CHECK(p->depth.store == NVN_GPU_STORE_STORE && p->stencil.store == NVN_GPU_STORE_STORE);
+        } else {
+            CHECK(p->color[0].view && nvn_be_tex_gpu_owned(a.serial) == 1);
+            if (mode == ZERO) CHECK(p->color[1].view && p->color[1].load == NVN_GPU_LOAD_CLEAR && !p->color[1].clear.u[0]);
+            if (mode == MIXED) CHECK(g_pd[0].w == 16 && g_pd[0].color[0].load == NVN_GPU_LOAD_CLEAR && p->w == 8);
+        }
+        printf("clear-only attachments case=%d expected_trim=%d attached_b=%d gpu_owned_b=%d\n",
+               mode, trim, p->color[1].view != NULL, nvn_be_tex_gpu_owned(b.serial));
+    }
+    g_flag_clear_only_attachments = 0;
+    pass_fresh();
+}
+
 // 中途交段：换渲染目标时，自上次交段起画够了 300 笔，就把已经录下的命令先交给后端，回放接着录进新的一段；
 // 回写、同步对象的栅栏值都在最后一段上。用例把每段的笔数改成 12（手工拼的命令流放不下三百笔）：13 笔 → 交一次（主段 2 个）；11 笔 → 不交。
 static int af_run(int draws, uint64_t *last_sig, uint64_t *f0) {
@@ -8112,6 +8165,7 @@ int main(int argc, char **argv) {
     t_pass_state_keep();
     t_pass_clear_park();
     t_pass_clear_park_tail();
+    t_pass_clear_only_attachments();
     t_pass_clear_park_read();
     t_pass_clear_park_sample();
     t_drawlog_unreadable_tex_mem();
