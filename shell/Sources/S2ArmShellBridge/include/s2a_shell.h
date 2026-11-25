@@ -115,6 +115,8 @@ void s2a_shell_report_problem(void);
 const char *s2a_shell_cert_status(void);
 void s2a_shell_cert_p12(void);
 void s2a_shell_cert_sidestore(void);
+// 「从 SideStore 获取」给不给：0 = S2Arm 在 LiveContainer 里（切过去会结束 S2Arm、证书回不来，#2226），设置里不出这一项。弱缺省 1
+int s2a_shell_cert_sidestore_ok(void);
 // 库卡片「需要签名证书」的主按钮：这台手机装了 SideStore 走 SideStore 取证书，否则开文件选择器选 .p12（宿主 ios/cert_import.m；弱缺省什么也不做）
 void s2a_shell_cert_get(void);
 /// Instant snapshot (0.6.0): 1 = the game has a complete snapshot to go back to (host ios/app.m; the shell's weak stub says 0).
