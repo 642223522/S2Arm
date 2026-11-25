@@ -225,6 +225,22 @@ static void depth_case(NvProg *reader, prog_t *reader_p, tex_t *depth, tex_t *b,
     [be endEncoding]; [cb commit]; [cb waitUntilCompleted];
     float d0=((float *)rb.contents)[0];
     CHECK(d0==0.75f,"pending depth clear then same-pass sampling: the copy holds the cleared depth (read %g, expected 0.75)",d0);
+    // Precise dsnap invalidation: unrelated textures / buffer ranges must keep g_dsnap valid, while overlapping ones must stale it
+    tex_t d_obj = *depth; d_obj.mem = (uint8_t *)(uintptr_t)0x100000000ull; d_obj.L.size = 0x10000;
+    tex_t other = *out;   other.serial = depth->serial + 999; other.mem = (uint8_t *)(uintptr_t)0x200000000ull; other.L.size = 0x10000;
+    tex_t alias = *out;   alias.serial = depth->serial + 1000; alias.mem = d_obj.mem + 0x1000; alias.L.size = 0x2000;
+    g_dsnap.ser = d_obj.serial; g_dsnap.mem = d_obj.mem; g_dsnap.size = d_obj.L.size; g_dsnap.base = nil; g_dsnap.valid = 1;
+    dsnap_stale_tex(&other);
+    dsnap_stale_addr((uint64_t)(uintptr_t)other.mem, 0x1000);
+    CHECK(g_dsnap.valid == 1, "unrelated texture / buffer range leaves depth snapshot valid");
+    dsnap_stale_tex(&alias);
+    CHECK(g_dsnap.valid == 0, "overlapping aliased texture stales depth snapshot");
+    g_dsnap.valid = 1;
+    dsnap_stale_addr((uint64_t)(uintptr_t)(d_obj.mem + 0x800), 64);
+    CHECK(g_dsnap.valid == 0, "overlapping buffer write range stales depth snapshot");
+    g_dsnap.valid = 1;
+    dsnap_stale_tex(&d_obj);
+    CHECK(g_dsnap.valid == 0, "same serial texture stales depth snapshot");
 }
 
 int main(int argc, char **argv) {

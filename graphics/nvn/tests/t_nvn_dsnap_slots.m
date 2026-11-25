@@ -76,6 +76,18 @@ int main(void) {
             CHECK(copied && v && v.textureType == MTLTextureType2DMultisample && c2.status == MTLCommandBufferStatusCompleted && !wrong,
                 "⑦ 多重采样深度清成 0.375 拷进快照、按采样 0 读回：拷贝完成 %d、视图类型 %lu、不等于 0.375 的像素 %d（期望 0）、首像素 %.4f", copied, (unsigned long)v.textureType, wrong, f[0]);
         }
+        {   // ⑧ 颜色自采样快照（fb_snap_shape）同槽位多种形状交替取 50 轮不重建，且不同槽位不共享存储
+            id<MTLTexture> f0 = fb_snap_shape(MTLTextureType2D, MTLPixelFormatRGBA16Float, 1440, 810, 0, 1, 1, 0);
+            id<MTLTexture> f1 = fb_snap_shape(MTLTextureType2D, MTLPixelFormatRGBA16Float, 720, 405, 0, 1, 1, 0);
+            id<MTLTexture> f2 = fb_snap_shape(MTLTextureType2D, MTLPixelFormatRGBA16Float, 1440, 810, 0, 1, 1, 1);
+            int chg = 0;
+            for (int r = 0; r < 50; r++) {
+                chg += fb_snap_shape(MTLTextureType2D, MTLPixelFormatRGBA16Float, 1440, 810, 0, 1, 1, 0) != f0;
+                chg += fb_snap_shape(MTLTextureType2D, MTLPixelFormatRGBA16Float, 720, 405, 0, 1, 1, 0) != f1;
+            }
+            CHECK(f0 && f1 && f2 && f0 != f1 && f0 != f2 && chg == 0,
+                "⑧ fb_snap_shape 同槽位交替 1440x810 / 720x405 50 轮不重建（换了 %d 次，期望 0），不同槽位隔离", chg);
+        }
         unlink(map); unlink(user);
     }
     printf("%s t_nvn_dsnap_slots: %u checks %u failures\n", failures ? "✗" : "✓", checks, failures);
