@@ -993,6 +993,80 @@ uint64_t s2a_guest_file_live(void) {
     }
     return got;
 }
+// 冷热读数（#1268，11-24）：文件后备的写盘全是内核回收 MAP_SHARED 脏页时的写回（本文件与 svc_mem.c 没有 msync / fsync），
+//   物理内存装不下时总要有页进闪存，写量取决于进闪存的是不是热页。溢出模式按「首次放开先后」定块的后备，后碰的块（常是流式 / 帧间缓冲）进文件。
+//   这里只读不改：每次心跳对已放开的文件块、匿名块各 mincore 一遍，按块数页——
+//   文件块：此刻的脏页（MINCORE_MODIFIED：上次写回后又被写过，下次回收要再写一遍）；脏页 ≥ 块的 1/8 算热块，连续 3 次心跳都是热块算常热；
+//   匿名块：已被系统压缩换出的页（MINCORE_PAGED_OUT：系统判它冷）；≥ 块的一半算冷块。
+//   GPU 别名：块里有字节被物理池零拷贝 Metal 缓冲指着（nvn_mtl.m nvn_be_pool_host_overlap，没链图形层 = 0）的块换不得——缓冲按建时的宿主页记账，
+//   底下的映射一换就指到旧页上。常热文件块 / 冷匿名块各数一份「被别名」的，换位上限只算没被别名的两边。
+//   「可换位上限」= min(常热且没被别名的文件块, 冷且没被别名的匿名块) × 32 MB：冷热换位最多能把这么多热页从文件挪回匿名，用来判换位值不值得做
+// 纯函数（t_guest_file_overflow ⑤b 测）：一块的 mincore 向量 → 脏页数 / 换出页数
+void s2a_heat_count(const unsigned char *vec, size_t np, uint64_t *dirty, uint64_t *out) {
+    uint64_t d = 0, o = 0;
+    for (size_t k = 0; k < np; k++) { if (vec[k] & MINCORE_INCORE) { if (vec[k] & MINCORE_MODIFIED) d++; } else if (vec[k] & MINCORE_PAGED_OUT) o++; }
+    *dirty = d; *out = o;
+}
+__attribute__((weak)) uint64_t nvn_be_pool_host_overlap(uint64_t lo, uint64_t hi) { (void)lo; (void)hi; return 0; }   // 弱定义：没链图形层（单测 / 安卓）= 没有 GPU 别名；宿主里 nvn_mtl.m 的强定义盖掉它
+static int g_heat_sync = -1;   // S2A_GUEST_HEAT_SYNC，首扫读一次
+static uint8_t *g_heat_hist; static uint64_t g_heat_n;   // 每块一字节：低 3 位 = 最近 3 次心跳是不是热块（文件块用）；块表重建（块数变）时重分配
+// 扫一遍：r[0] 文件块数、r[1] 文件脏字节、r[2] 热块、r[3] 常热块、r[4] 匿名块数、r[5] 已换出字节、r[6] 冷块、r[7] 可换位上限字节、
+//   r[8] 常热块里被 GPU 别名的、r[9] 冷块里被 GPU 别名的；top / topi 最脏三块的脏字节与块号。没开文件后备回 0
+int s2a_guest_heat_scan(uint64_t r[10], uint64_t top[3], uint64_t topi[3]) {
+    memset(r, 0, 10 * sizeof *r); memset(top, 0, 3 * sizeof *top); memset(topi, 0, 3 * sizeof *topi);
+    if (g_gfd < 0 || !g_gchunk || !g_gtouch) return 0;
+    if (g_heat_n != g_gchunk_n) { free(g_heat_hist); g_heat_hist = calloc(g_gchunk_n ? g_gchunk_n : 1, 1); g_heat_n = g_heat_hist ? g_gchunk_n : 0; }
+    if (!g_heat_hist) return 0;
+    if (g_heat_sync < 0) { const char *e = getenv("S2A_GUEST_HEAT_SYNC"); g_heat_sync = e && *e && strcmp(e, "0"); }
+    size_t pg = (size_t)getpagesize(); static unsigned char vec[GCHUNK / 4096];   // 心跳在后台串行队列里调，不并发
+    uint64_t nf = 0, fdirty = 0, fhot = 0, fsteady = 0, na = 0, aout = 0, acold = 0, fs_alias = 0, ac_alias = 0;
+    for (uint64_t i = 0; i < g_gchunk_n; i++) {
+        uint8_t st = gc_get(i) & 3; if (st != GC_FILE && st != GC_ANON) continue;
+        if (!__atomic_load_n(&g_gtouch[i], __ATOMIC_RELAXED)) { g_heat_hist[i] = 0; continue; }
+        uint64_t cl, ch; gchunk_span(i, &cl, &ch); size_t np = (size_t)((ch - cl + pg - 1) / pg);
+        if (mincore((void *)(uintptr_t)cl, (size_t)(ch - cl), (char *)vec)) continue;
+        uint64_t d, o; s2a_heat_count(vec, np, &d, &o);
+        // S2A_GUEST_HEAT_SYNC=1（量冷热的对照局用，缺省关）：扫完把这块的脏页写回。物理内存宽裕的机器（Mac）上内核不回收，脏位一直挂着、
+        //   看不出谁在反复写；每 10 秒写回一次，下一次扫到的脏页就是这 10 秒里重新写过的——即「内核每 10 秒回收一遍」时的写回量上界。会多写盘，玩家局不开
+        if (st == GC_FILE && g_heat_sync && d) msync((void *)(uintptr_t)cl, (size_t)(ch - cl), MS_ASYNC);
+        if (st == GC_FILE) {
+            nf++; fdirty += d; int hot = d * 8 >= np; fhot += hot;
+            g_heat_hist[i] = (uint8_t)(((g_heat_hist[i] << 1) | hot) & 7);
+            if (g_heat_hist[i] == 7) { fsteady++; fs_alias += nvn_be_pool_host_overlap(cl, ch) > 0; }
+            for (int t = 0; t < 3; t++) if (d > top[t]) { for (int u = 2; u > t; u--) { top[u] = top[u - 1]; topi[u] = topi[u - 1]; } top[t] = d; topi[t] = i; break; }
+        } else { na++; aout += o; if (o * 2 >= np) { acold++; ac_alias += nvn_be_pool_host_overlap(cl, ch) > 0; } }
+    }
+    uint64_t fs_free = fsteady - fs_alias, ac_free = acold - ac_alias, swap = fs_free < ac_free ? fs_free : ac_free;
+    r[0] = nf; r[1] = fdirty * pg; r[2] = fhot; r[3] = fsteady; r[4] = na; r[5] = aout * pg; r[6] = acold; r[7] = swap * GCHUNK; r[8] = fs_alias; r[9] = ac_alias;
+    for (int t = 0; t < 3; t++) top[t] *= pg;
+    return 1;
+}
+// 日志有界（不随局长涨）：和上一条打出的比，块数一样、脏页 / 换出 / 换位上限差不到 16 MB 就不打；一局最多 HEAT_LOG_MAX 条，到上限后不再打
+enum { HEAT_LOG_MAX = 40 };
+// 纯函数（t_guest_file_overflow ⑤c 测）：这次要不要打；要打就把 r 记成 last、*logged + 1
+int s2a_heat_log_due(uint64_t last[10], const uint64_t r[10], int *logged) {
+    if (*logged >= HEAT_LOG_MAX) return 0;
+    int same = *logged > 0;
+    for (int k = 0; k < 10 && same; k++) {
+        uint64_t a = r[k], b = last[k], d = a > b ? a - b : b - a;
+        same = (k == 1 || k == 5 || k == 7) ? d < (16ull << 20) : d == 0;
+    }
+    if (same) return 0;
+    memcpy(last, r, 10 * sizeof *last); (*logged)++;
+    return 1;
+}
+void s2a_guest_heat_log(void) {
+    uint64_t r[10], top[3], topi[3]; if (!s2a_guest_heat_scan(r, top, topi)) return;
+    static uint64_t last[10]; static int logged;
+    if (!s2a_heat_log_due(last, r, &logged)) return;
+    LOG("[客体冷热] 文件块 %llu 块：此刻脏页 %llu MB、热块（脏 ≥ 1/8）%llu 块、连续 3 次心跳都热 %llu 块（其中被 GPU 缓冲指着 %llu 块），最脏三块 #%llu %llu MB / #%llu %llu MB / #%llu %llu MB；"
+        "匿名块 %llu 块：已压缩换出 %llu MB、冷块（换出 ≥ 一半）%llu 块（其中被 GPU 缓冲指着 %llu 块）；可换位上限（两边都不算被指着的）%llu MB",
+        (unsigned long long)r[0], (unsigned long long)(r[1] >> 20), (unsigned long long)r[2], (unsigned long long)r[3], (unsigned long long)r[8],
+        (unsigned long long)topi[0], (unsigned long long)(top[0] >> 20), (unsigned long long)topi[1], (unsigned long long)(top[1] >> 20),
+        (unsigned long long)topi[2], (unsigned long long)(top[2] >> 20),
+        (unsigned long long)r[4], (unsigned long long)(r[5] >> 20), (unsigned long long)r[6], (unsigned long long)r[9], (unsigned long long)(r[7] >> 20));
+    if (logged == HEAT_LOG_MAX) LOG("[客体冷热] 本局已打满 %d 条，之后不再打（读数只在变化时打）", HEAT_LOG_MAX);
+}
 void s2a_guest_backing_log(void) {
     if (g_gfd < 0 || !g_gchunk) return;
 #ifdef __IPHONE_OS_VERSION_MIN_REQUIRED
@@ -1002,6 +1076,7 @@ void s2a_guest_backing_log(void) {
     LOG("[客体后备] %s：匿名块 %llu MB（已计 %llu MB / 预算 %llu MB）、文件块 %llu MB、挖区未放开 %llu MB、未定 %llu MB；本局离上限剩余最小 %lld MB（-1 = 没读过）", g_gwhole ? "整段进文件" : "溢出模式",
         (unsigned long long)(sum[GC_ANON] >> 20), (unsigned long long)(g_anon_used >> 20), (unsigned long long)(g_anon_budget >> 20),
         (unsigned long long)(sum[GC_FILE] >> 20), (unsigned long long)(sum[GC_CARVE] >> 20), (unsigned long long)(sum[GC_UNDEC] >> 20), g_hmin == UINT64_MAX ? -1ll : (long long)(g_hmin >> 20));
+    s2a_guest_heat_log();
 }
 int s2a_window_ok(void) { return g_ok; }
 void s2a_window_get(uint64_t *base, uint64_t *size) { *base = g_base; *size = g_size; }
