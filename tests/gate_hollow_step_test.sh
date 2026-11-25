@@ -18,7 +18,7 @@ git add -A; git commit -qm 1
 bash tools/gate.sh > $T/o1 2>&1; r1=$?
 ck "① foo 🟢（$(grep -a 'foo_test' $T/o1 | head -1 | cut -c1-80)）" 'grep -aq "^🟢 单测 foo_test" $T/o1'
 ck "① silent 🔴 且点名空跑（$(grep -a 'silent_test' $T/o1 | head -1 | cut -c1-100)）" 'grep -aq "^🔴 单测 silent_test.*空跑" $T/o1'
-ck "① 整份门禁红、退 1（实得 $r1）" '[ $r1 = 1 ] && grep -aq "^门禁 红" $T/o1'
+ck "① 整份门禁红、退 1（实得 ${r1}）" '[ $r1 = 1 ] && grep -aq "^门禁 红" $T/o1'
 bash tools/gate.sh > $T/o2 2>&1
 ck "② 再跑 foo 缓存命中照绿" 'grep -aq "^🟢 单测 foo_test（缓存命中）" $T/o2'
 ck "② silent 不因缓存变绿，仍 🔴 空跑（$(grep -a 'silent_test' $T/o2 | head -1 | cut -c1-100)）" 'grep -aq "^🔴 单测 silent_test.*空跑" $T/o2'
