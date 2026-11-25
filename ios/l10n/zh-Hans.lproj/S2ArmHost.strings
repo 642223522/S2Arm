@@ -277,7 +277,7 @@
 "app.fpsCap.ladder" = "这一局跑不稳 60 帧，已先回到原生帧率；下次开游戏会重新从 60 帧开始。";
 "app.fpsCap.fast" = "这款游戏开 60 帧会加速，已保持 30 帧。";
 "app.fpsCap.restored" = "60 帧已恢复。";
-"app.fpsCap.retry" = "再试 60 帧";
+"app.fpsCap.retry" = "改回 60 帧，本局不再自动降";
 "app.mic.title" = "麦克风";
 "app.mic.denied" = "游戏想用麦克风，但 S2Arm 没有麦克风权限，游戏只会收到静音。可到「设置 › 隐私与安全性 › 麦克风」打开 S2Arm，重开游戏后生效。";
 "app.mic.failed" = "游戏想用麦克风，但麦克风打不开，游戏只会收到静音。";
