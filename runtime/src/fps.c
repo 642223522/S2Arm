@@ -101,6 +101,10 @@ static void slots_apply(int on) {   // 槽按开关写：slot 行开 / 关时值
 //   弱定义缺省空实现 / 0 份：cpatch 运行时给强定义就覆盖（静态链接选强定义）。维护者 10-27：设置里一个开关管 60 帧
 __attribute__((weak)) void s2a_cpatch_fps_follow(int on) { (void)on; }
 __attribute__((weak)) int s2a_cpatch_fps_count(void) { return 0; }   // 本包收下的社区帧率补丁份数（设置页据此也显示开关）
+__attribute__((weak)) int s2a_cpatch_fps_engaged(void) { return 0; }
+// 帧率被抬高了没有（graphics/nvn/gfx/nvn/nvn_fps.c 问：玩家帧率上限只压补丁抬上去的那部分，11-25 #502）：我方帧率表开着，或社区帧率补丁的位真开着
+static int eff_table(void);
+int s2a_fps_raised(void) { return eff_table() || s2a_cpatch_fps_engaged(); }
 static void cpatch_follow(int on) { s2a_cpatch_fps_follow(on); }
 // 宿主帧步（10-29 维护者，调研 the reference port FRAME_STEP：维护者「高帧率时同时低功耗，而不是高帧率高功耗这个能力就不给玩家了」）：表里有 speed 行（按帧推进、游戏速度改读步长槽的款）
 //   就把直连宿主的帧步状态页接上（graphics/nvn hle_nvn.c fstep_tick + nvn_fstep.h：每帧定「这一帧在屏上保持几个 vsync」，60 撑不住连续 3 帧迟到就稳定落到 30，

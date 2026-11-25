@@ -616,8 +616,17 @@ static int fps_chosen(const struct cp_fu *u, int on, int pick, const char *grp) 
 //   撤掉补丁后原速度函数仍按 60 帧口径给步长，30 帧下半速（11-24 实测：局内 60 开 → 关，走到同一处时刻比 0.511）；补丁自带按真实帧间隔算步长的代码，
 //   按 30 帧档跑速度就对。起局就关的才是撤补丁的原版；下次按关起局即撤
 static int fl_engaged(void) { for (int i = 0; i < g_nfu; i++) if (g_fu[i].fl && g_fu[i].slot && (atomic_load(g_fu[i].slot) & g_fu[i].bits) == g_fu[i].bits) return 1; return 0; }
+// 玩家设的帧率上限（App 设置 S2A_FPS，档位 30 / 60 / 120 / 不限）≤ 30 且 60 帧开：这局按 30 帧档跑（11-25 #502）——
+//   FPSLocker 配置开着、按 30 写、交帧间隔封 2（补丁自带按目标帧率 / 真实帧间隔算步长，速度对）；其余帧率补丁不开（原版 30）。
+//   原先补丁按 60 档开着、直连层再把出图压到 30：按帧推进的款每帧步长按 60 算、只出 30 帧，半速慢动作
+static int cap30(void) { const char *e = getenv("S2A_FPS"); int v = e && *e ? atoi(e) : 0; return v > 0 && v <= 30; }
+// 帧率被补丁抬高了没有（直连层 nvn_fps.c 据此决定玩家上限管不管用：没抬高时不压游戏自己请求的出图率，压下去按帧推进的款就慢）：有帧率补丁的位真开着
+int s2a_cpatch_fps_engaged(void) { for (int i = 0; i < g_nfu; i++) if (g_fu[i].slot && (atomic_load(g_fu[i].slot) & g_fu[i].bits) == g_fu[i].bits) return 1; return 0; }
 void s2a_cpatch_fps_follow(int on) {
-    int fl30 = !on && (g_fps_on > 0 || g_fl30) && fl_engaged();
+    int force = on && cap30(), tier = force ? fps_pick() : 0; const char *tgrp = force ? fps_group_pick(tier) : NULL;
+    if (force) { on = 0; if (g_fps_on != 0 || !g_fl30) LOG("社区补丁：帧率上限 30 且 60 帧开，这局按 30 帧档跑（FPSLocker 配置开着按 30 写；别的帧率补丁不开）"); }
+    int force_fl = 0; for (int i = 0; force && i < g_nfu; i++) if (g_fu[i].slot && g_fu[i].fl && fps_chosen(&g_fu[i], 1, tier, tgrp)) force_fl = 1;   // 上限 30：选中档里有 FPSLocker 配置才按 30 帧档跑，没有就是原版
+    int fl30 = !on && (force ? force_fl : (g_fps_on > 0 || g_fl30) && fl_engaged());
     if (fl30 && !g_fl30) LOG("社区补丁：局中关 60 帧，FPSLocker 配置保持开着、改按 30 帧档跑（撤补丁游戏会半速；下次按关起局才撤）");
     g_fl30 = fl30;
     g_fps_on = on;
@@ -631,6 +640,12 @@ void s2a_cpatch_fps_follow(int on) {
         if (g_fl30 && u->fl && (atomic_load(u->slot) & u->bits) == u->bits) continue;   // 局中关：FPSLocker 配置保持（见 g_fl30）
         atomic_fetch_and(u->slot, ~u->bits);
         if (u->spec && data_writes(u->m, u->spec, 2)) die("社区帧率补丁已准入的数据写入失败");
+    }
+    for (int i = 0; force && i < g_nfu; i++) {   // 上限 30：选中档里的 FPSLocker 配置开着（起局时还没开过，补上）
+        struct cp_fu *u = &g_fu[i];
+        if (!u->slot || !u->fl || !fps_chosen(u, 1, tier, tgrp) || (atomic_load(u->slot) & u->bits) == u->bits) continue;
+        if (u->spec && data_writes(u->m, u->spec, 1)) die("社区帧率补丁已准入的数据写入失败");
+        atomic_fetch_or(u->slot, u->bits);
     }
     for (int i = 0; on && i < g_nfu; i++) {
         struct cp_fu *u = &g_fu[i];
