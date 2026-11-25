@@ -88,6 +88,15 @@ int main(void) {
             CHECK(f0 && f1 && f2 && f0 != f1 && f0 != f2 && chg == 0,
                 "⑧ fb_snap_shape 同槽位交替 1440x810 / 720x405 50 轮不重建（换了 %d 次，期望 0），不同槽位隔离", chg);
         }
+        {   // ⑨ 快照池合计上限（PR #2230 复审）：4 槽 × 4 种 1080p RGBA16F（每张约 16.6 MB，16 张约 265 MB），每次取当一笔新绘制。
+            //   期望（手算）：合计保留 ≤ FB_SNAP_CAP（96 MB，最多容 5 张）→ 因上限放掉 ≥ 11 张；刚取的那张留着（同参数再取是同一张）；改前合计约 265 MB、放掉 0
+            uint64_t ev0 = g_fbsnap_cap_evict; id<MTLTexture> last = nil;
+            for (int sl = 0; sl < 4; sl++) for (int w = 0; w < 4; w++) { g_draw_seq++; last = fb_snap_shape(MTLTextureType2D, MTLPixelFormatRGBA16Float, 1920, 1080 - (NSUInteger)w, 0, 1, 1, sl); }
+            id<MTLTexture> again = fb_snap_shape(MTLTextureType2D, MTLPixelFormatRGBA16Float, 1920, 1077, 0, 1, 1, 3);
+            uint64_t ev = g_fbsnap_cap_evict - ev0;
+            CHECK(last && again == last && g_fbsnap_bytes <= FB_SNAP_CAP && ev >= 11,
+                "⑨ 快照池合计 %.1f MB（上限 %u MB）、因上限放掉 %llu 张（期望 ≥ 11）、刚取的那张还在 %d", g_fbsnap_bytes / 1048576.0, FB_SNAP_CAP >> 20, (unsigned long long)ev, again == last);
+        }
         unlink(map); unlink(user);
     }
     printf("%s t_nvn_dsnap_slots: %u checks %u failures\n", failures ? "✗" : "✓", checks, failures);

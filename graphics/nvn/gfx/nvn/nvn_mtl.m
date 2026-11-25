@@ -16114,16 +16114,21 @@ static id<MTLTexture> fb_narrow_view(id<MTLTexture> base, id<MTLTexture> t, MTLT
 // A snapshot of the shape a sampled view has: `nl` levels from level tl of the base and `ns` slices (a 2D array / cube base; 1 otherwise). The mip chain is kept because
 // the shader's LOD means the same in the snapshot as in the attachment (fb_prepare ④ copies every level and slice into it). One per slot of the draw: distinct sources of one draw
 // never share a snapshot, even with the same shape (10-27 #570 follow-up, xy0v0 ae42eb856: two same-format same-size attachments read the second one's copy); kept across draws
+// 快照池合计上限（PR #2230 复审）：每槽 4 路、只替换不释放，最坏 16 张整屏快照（1080p RGBA16F 带 mip 一张约 22 MB，合计约 354 MB，原先 4 张约 88 MB）。
+//   iPhone 上贴着内存上限跑的款扛不住这一块：所有槽位合计保留的快照按 allocatedSize 记，超过 FB_SNAP_CAP 就从最久没用的放起，直到回到上限以下；
+//   本笔绘制已取用的（used_draw = g_draw_seq）不放。fb_report 每 300 帧报保留字节与因上限放掉的张数
+enum { FB_SNAP_CAP = 96u << 20 };
+static uint64_t g_fbsnap_bytes, g_fbsnap_cap_evict;
 static id<MTLTexture> fb_snap_shape(MTLTextureType tt, MTLPixelFormat pf, NSUInteger bw, NSUInteger bh, NSUInteger tl, NSUInteger nl, NSUInteger ns, int slot) {   // tt: the base's type (2D / 2D array); a cube / cube array view is made from the 2D array snapshot by fb_narrow_view, never as a cube base (see tex_desc)
     enum { FB_SNAP_WAYS = 4 };
-    static struct { __strong id<MTLTexture> t; uint64_t used; } pool[4][FB_SNAP_WAYS];
+    static struct { __strong id<MTLTexture> t; uint64_t used, used_draw, bytes; } pool[4][FB_SNAP_WAYS];
     static uint64_t tick;
     NSUInteger w = mip_extent(bw, tl), h = mip_extent(bh, tl), al = tt == MTLTextureType2D ? 1 : ns;
     int lru = 0;
     for (int i = 0; i < FB_SNAP_WAYS; i++) {
         id<MTLTexture> p = pool[slot][i].t;
         if (p && p.textureType == tt && p.pixelFormat == pf && p.width == w && p.height == h && p.mipmapLevelCount == nl && p.arrayLength == al) {
-            pool[slot][i].used = ++tick; return p;
+            pool[slot][i].used = ++tick; pool[slot][i].used_draw = g_draw_seq; return p;
         }
         if (pool[slot][i].used < pool[slot][lru].used) lru = i;
     }
@@ -16132,8 +16137,16 @@ static id<MTLTexture> fb_snap_shape(MTLTextureType tt, MTLPixelFormat pf, NSUInt
     d.arrayLength = al;
     d.usage = MTLTextureUsageShaderRead | MTLTextureUsagePixelFormatView; d.storageMode = MTLStorageModePrivate;
     id<MTLTexture> t = [g_dev newTextureWithDescriptor:d]; if (!t) return nil; res_add(t);
-    if (pool[slot][lru].t) defer_obj_release(pool[slot][lru].t);
-    pool[slot][lru].t = t; pool[slot][lru].used = ++tick;
+    if (pool[slot][lru].t) { defer_obj_release(pool[slot][lru].t); g_fbsnap_bytes -= pool[slot][lru].bytes; }
+    pool[slot][lru].t = t; pool[slot][lru].used = ++tick; pool[slot][lru].used_draw = g_draw_seq; pool[slot][lru].bytes = (uint64_t)t.allocatedSize;
+    g_fbsnap_bytes += pool[slot][lru].bytes;
+    while (g_fbsnap_bytes > FB_SNAP_CAP) {   // 合计超上限：放最久没用的（本笔绘制取用的不放）
+        int vs = -1, vw = -1;
+        for (int s2 = 0; s2 < 4; s2++) for (int w2 = 0; w2 < FB_SNAP_WAYS; w2++)
+            if (pool[s2][w2].t && pool[s2][w2].used_draw != g_draw_seq && (vs < 0 || pool[s2][w2].used < pool[vs][vw].used)) { vs = s2; vw = w2; }
+        if (vs < 0) break;   // 只剩本笔绘制在用的：这一笔要的就是这么多，下一笔再收
+        defer_obj_release(pool[vs][vw].t); pool[vs][vw].t = nil; g_fbsnap_bytes -= pool[vs][vw].bytes; pool[vs][vw].bytes = 0; pool[vs][vw].used = 0; g_fbsnap_cap_evict++;
+    }
     return t;
 }
 // ⑤ 遍内自采样改片上读取（10-30 帧率能耗线；DM_NVN_FB_TILE=0 关）：第 ③ 步结束遍之前先试——这一笔采样本遍已改过的附件 k，且只在本像素读它：
@@ -16286,6 +16299,8 @@ static void fb_report(uint64_t frame) {   // every 300 frames: hits per layer an
     {   static uint64_t q0[FB4_N]; char line[512]; int at = 0; uint64_t tot = 0;
         for (int i = 0; i < FB4_N; i++) { uint64_t d = g_fb4[i] - q0[i]; q0[i] = g_fb4[i]; tot += d; if (d) at += snprintf(line + at, sizeof line - (size_t)at, "%s%s %llu", at ? ", " : "", g_fb4_name[i], (unsigned long long)d); if (at >= (int)sizeof line) break; }
         if (tot) MLOG("same-pass feedback sampling up to frame %llu: ④ snapshots by case: %s", (unsigned long long)frame, line); }
+    {   static uint64_t ev0; MLOG("same-pass feedback sampling up to frame %llu: snapshot pool keeps %.1f MB (cap %u MB), %llu released at the cap since the last report",
+                                  (unsigned long long)frame, g_fbsnap_bytes / 1048576.0, FB_SNAP_CAP >> 20, (unsigned long long)(g_fbsnap_cap_evict - ev0)); ev0 = g_fbsnap_cap_evict; }
 }
 // Called before the draw opens its render pass: if a snapshot is needed, end the current render pass, copy the snapshot and register the substitution (used by this draw's argument encoding)
 // #387 the depth snapshot of the pass's own depth attachment, kept while that depth stays unchanged: draws after the first that sample it read the same copy (one copy and
