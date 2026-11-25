@@ -655,6 +655,8 @@
 "cert.sidestore.empty" = "SideStore no devolvió ningún certificado. Toca «Export» en SideStore e inténtalo de nuevo.";
 "cert.sidestore.noReply" = "SideStore no ha devuelto ningún certificado. Puede que tocaras Cancelar o que esta versión de SideStore sea demasiado antigua para compartir su certificado con otras apps. Actualiza SideStore y vuelve a intentarlo, o exporta el certificado como archivo .p12 e impórtalo.";
 "cert.pickP12" = "Importar .p12…";
+"cert.lc.title" = "Importa el certificado de LiveContainer";
+"cert.lc.message" = "S2Arm se está ejecutando dentro de LiveContainer. Cambiar a SideStore cerraría S2Arm, así que el certificado no podría volver. Exporta el certificado de firma como .p12 desde el SideStore o AltStore que instaló LiveContainer (debe ser el mismo Apple ID) e impórtalo aquí.";
 "cert.status" = "Equipo %1$@ · %2$@";
 "cert.status.otherTeam" = "otro Apple ID distinto del de S2Arm";
 "cert.status.replaced" = "ya no es válido";
