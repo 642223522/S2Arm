@@ -270,6 +270,7 @@
 "about.mode.unrecorded" = "不明（このパッケージにはグラフィックスモードが記録されていません）";
 "about.unknown" = "不明";
 "app.fpsCap.ladder" = "このプレイでは 60 FPS を安定して維持できないため、いったん元のフレームレートに戻しました。次にゲームを開くと 60 FPS から始まります。";
+"app.fpsCap.fast" = "このゲームは 60 FPS にすると速く動いてしまうため、30 FPS のままにしています。";
 "app.fpsCap.restored" = "60 FPS に戻りました。";
 "app.fpsCap.retry" = "60 FPS を再試行";
 "app.mic.title" = "マイク";

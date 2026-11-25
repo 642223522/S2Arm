@@ -270,6 +270,7 @@
 "about.mode.unrecorded" = "Desconocido (este paquete no registró un modo gráfico)";
 "about.unknown" = "Desconocido";
 "app.fpsCap.ladder" = "En esta partida no se pueden mantener 60 FPS de forma estable, así que el juego vuelve por ahora a su velocidad de fotogramas nativa. La próxima vez que abras el juego empezará de nuevo a 60 FPS.";
+"app.fpsCap.fast" = "Este juego va demasiado rápido a 60 FPS, así que se mantiene a 30 FPS.";
 "app.fpsCap.restored" = "60 FPS restablecidos.";
 "app.fpsCap.retry" = "Probar 60 FPS de nuevo";
 "app.mic.title" = "Micrófono";
