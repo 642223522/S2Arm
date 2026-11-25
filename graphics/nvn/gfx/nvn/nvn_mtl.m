@@ -16328,6 +16328,7 @@ static void dsnap_stale_addr(uint64_t dst, uint64_t n) {
     if (!g_dsnap.valid || !n) return;
     if (!g_dsnap.mem || !g_dsnap.size) { dsnap_stale(); return; }
     uint64_t ca = nvn_ga2ca(dst), a = (uint64_t)(uintptr_t)g_dsnap.mem;
+    if (nvn_ga_unmapped(ca)) { dsnap_stale(); return; }   // 换不成 CPU 地址（nvn_ga2ca 原样回 GPU 地址）：判不了重叠，按改过算
     if (ca < a + g_dsnap.size && a < ca + n) dsnap_stale();
 }
 // 存储按形状留 DSNAP_SLOTS 份（11-13，0400486024DEC000 读档进场景：每帧先后采样 768x432、1536x864 两张深度，只留一份时每帧来回整张重建，
@@ -19469,10 +19470,11 @@ void nvn_be_exec(const uint8_t *p) {
             case OP_COPY_B2T: dsnap_stale_tex(((const p_copy_b2t *)a)->tex); copy_b2t(a); break;
             case OP_COPY_T2B: copy_t2b(a); break;
             case OP_COPY_T2T: dsnap_stale_tex(((const p_copy_t2t *)a)->dst); copy_t2t(a); break;
-            case OP_DLSS: dlss_eval(a, h.size); break;   // NVN2 EvaluateDlss → MetalFX temporal upscale (nvn_dlss.inc)
+            case OP_DLSS: dsnap_stale(); dlss_eval(a, h.size); break;   // NVN2 EvaluateDlss → MetalFX temporal upscale (nvn_dlss.inc)；写出贴图可能与深度同存储，按改过算（同 OP_DISPATCH）
             case OP_PUSH_CONST: case OP_PUSH_CONST_PTR: state_op(h.op, a, h.size); break;
             case OP_CLEAR_TEX: dsnap_stale_tex(((const p_clear_tex *)a)->tex); clear_tex(a); break;   // it may clear the depth texture the copy was taken from (audit P2-247)
-            case OP_DISPATCH: dispatch(a); break;
+            case OP_DISPATCH: dsnap_stale(); dispatch(a); break;   // 计算着色器可经别名视图写深度的存储（深度格式本身不可写，同存储的颜色格式视图可以），写了哪些图像这里不逐个核：按改过算。
+                                                                  //   原先派发后游戏重设渲染目标时一律作废、兜住了这种写法；精确失效后 OP_SET_RT 只核颜色目标，这里补上
             case OP_BARRIER: { int32_t bits; memcpy(&bits, a, 4);   // ordered at the next draw pass (barrier_game); inside a pass with shader writes, the pass ends first (swrite_note)
                 int split = g_enc && g_pass_swrite && (bits & (NVN_BARRIER_ORDER_FRAGMENTS_BIT | NVN_BARRIER_ORDER_FRAGMENTS_TILED_BIT));
                 PD("I %llu barrier bits %#x%s", g_stat_pass, bits, split ? ": ends the pass (shader writes)" : g_enc ? " (render pass open)" : "");

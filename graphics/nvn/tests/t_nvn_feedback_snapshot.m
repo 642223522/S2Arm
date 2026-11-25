@@ -241,6 +241,11 @@ static void depth_case(NvProg *reader, prog_t *reader_p, tex_t *depth, tex_t *b,
     g_dsnap.valid = 1;
     dsnap_stale_tex(&d_obj);
     CHECK(g_dsnap.valid == 0, "same serial texture stales depth snapshot");
+    // 换不成 CPU 地址的 GPU 地址（GPU 地址窗口 0xC000000000 起、没映射到任何池：nvn_ga2ca 原样回 GPU 地址）判不了重叠：要按改过算。
+    //   旧写法拿 GPU 地址和深度的 CPU 区间比、永远不重叠，快照不作废、之后读到旧深度
+    g_dsnap.valid = 1;
+    dsnap_stale_addr(0xC000000000ull + 0x3000000000ull, 64);
+    CHECK(g_dsnap.valid == 0, "unmapped GPU address write stales depth snapshot (overlap cannot be judged)");
 }
 
 int main(int argc, char **argv) {
