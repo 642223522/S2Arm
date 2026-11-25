@@ -98,8 +98,7 @@ import S2ArmAppleAdapter
 
     func testSameGameAndLibraryWideJobsWaitWhileExporting() async throws {   // ③ ④
         exportingA()
-        model.deleteGame(a)
-        XCTAssertEqual(model.libraryNotice?.key, "s2arm.notice.waitBusy", "出包 A 时删 A：不起（A 的按款锁出包整段拿着），说在等谁")
+        model.deleteGame(a)   // 出包 A 时删 A 排队等出完（下面几个用例），这里只核它没发给后端
         model.moveGame(a, to: root.appendingPathComponent("elsewhere"))
         model.libraryNotice = nil
         model.clearCache(b)
@@ -108,6 +107,59 @@ import S2ArmAppleAdapter
         try await Task.sleep(for: .milliseconds(200))
         XCTAssertEqual(runner.ops.filter { !$0.hasPrefix("catalog") && !$0.hasPrefix("locations") }, [], "删 A / 搬 A / 清缓存 / 导入一个都没发给后端")
         XCTAssertEqual(model.session?.gameID, a.id); XCTAssertEqual(model.session?.phase, .running)
+    }
+
+    // 出包 A 时点删 A：不当场拒绝，排队等 A 出完再删（不阻断玩家主动操作），排队期间能取消。期望按「这款不再有出包在跑或排着就删」手写
+    func testDeleteSameGameQueuesWhileExporting() async throws {   // 排队 ①
+        exportingA()
+        model.deleteGame(a)
+        model.deleteGame(a)   // 再点一次不重复排
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertFalse(runner.ops.contains("delete:" + a.id), "A 在出包：删除先不发给后端")
+        XCTAssertEqual(model.libraryNotice?.key, "s2arm.notice.delete"); XCTAssertEqual(model.libraryNotice?.kind, .queued, "提示说出完包就删（带取消）")
+        XCTAssertEqual(model.libraryNotice?.gameID, a.id)
+        XCTAssertEqual(Array(model.queuedDeletes.keys), [a.id], "同一款只排一次")
+        XCTAssertEqual(model.session?.gameID, a.id); XCTAssertEqual(model.session?.phase, .running, "A 的出包照旧在跑")
+    }
+
+    func testQueuedDeleteRunsAfterExportEnds() async throws {   // 排队 ②
+        exportingA()
+        model.deleteGame(a)
+        model.finish(.failed, message: "x", slot: .main)   // 出包没成也接着删
+        try await waitOp("delete:" + a.id)
+        XCTAssertEqual(model.libraryNotice?.key, "s2arm.notice.delete"); XCTAssertNotEqual(model.libraryNotice?.kind, .queued, "提示换成删除的进行中 / 结果")
+        XCTAssertEqual(model.queuedDeletes.count, 0)
+    }
+
+    func testCancelledQueuedDeleteNeverRuns() async throws {   // 排队 ③
+        exportingA()
+        model.deleteGame(a)
+        model.cancelQueuedDelete()
+        XCTAssertNil(model.libraryNotice, "取消：提示消失")
+        model.finish(.completed, message: "", slot: .main)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertFalse(runner.ops.contains("delete:" + a.id), "取消后 A 出完也不删（收到的：\(runner.ops)）")
+    }
+
+    func testQueuedDeleteWaitsForBatch() async throws {   // 排队：A 在正出的这批里还没出完
+        model.batchState = ["batch": ["items": [["gameId": a.id, "platforms": ["mac"], "results": ["mac": ["state": "running"]]]]]]
+        model.batchRunning = true
+        model.deleteGame(a)
+        XCTAssertEqual(model.libraryNotice?.kind, .queued)
+        model.batchState = ["batch": ["items": [["gameId": a.id, "platforms": ["mac"], "results": ["mac": ["state": "pending"]]]]]]
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertFalse(runner.ops.contains("delete:" + a.id), "这批里 A 还排着：不删")
+        model.batchRunning = false
+        try await waitOp("delete:" + a.id)
+    }
+
+    func testDeleteRefusedWhilePhoneBusy() async throws {   // 排队 ⑤：手机槽忙时删 A 照旧拒绝
+        model.phoneSession = JobSession(kind: .install, gameID: b.id, name: b.name)
+        model.deleteGame(a)
+        XCTAssertEqual(model.libraryNotice?.key, "s2arm.notice.waitBusy", "手机槽在装 B：删 A 不排队、当场说在等谁")
+        XCTAssertEqual(model.queuedDeletes.count, 0)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertFalse(runner.ops.contains("delete:" + a.id))
     }
 
     func testConcurrentJobsFinishOnTheirOwn() async throws {   // ⑤
