@@ -13,6 +13,7 @@
 void s2a_cpatch_load(module_t *m, const char *dir);
 int s2a_cpatch_itv_cap(void);
 void s2a_cpatch_fps_follow(int on); void s2a_cpatch_fps_pick(int target); int s2a_cpatch_fps_levels(int *out, int n, int *cur); int s2a_cpatch_stall_rescue(void); int s2a_cpatch_fps_unit(const char *id);
+void s2a_cpatch_snap_hold(void); void s2a_cpatch_snap_reapply(void);
 static int fails;
 static int g_scr;   // ⑤ 屏幕最高刷新率（覆盖 cpatch.c 的弱定义 front_screen_max_fps；0 = 还不知道）
 int front_screen_max_fps(void) { return g_scr; }
@@ -127,6 +128,32 @@ static void run_itv(const char *mod, const char *name, int tgt, char *out, size_
     }
     close(pp[1]); ssize_t r = read(pp[0], out, n - 1); out[r > 0 ? r : 0] = 0; close(pp[0]); waitpid(c, NULL, 0); unlink(p); rmdir(dir);
 }
+// ⑩ 即时存档恢复把键页 / 数据段盖回存档那一刻（11-24 一款开放世界大作：60 帧关时存、开着恢复约 2 倍速；开时存、关着恢复人物走不动）。四格：存时开关 X、恢复时开关 Y。
+//   做法：follow(X) 后取「快照」= 掩码槽 + 0x40 字节；follow(Y) 后取「期望」= 同两处（就是按 Y 起局写出来的，不经被测的重写入口）；另有非帧率位 0 本进程开着。
+//   然后 hold → 把快照写回（模拟 load_mem）→ reapply，比两处是否等于期望。旧码（没有重写）关→开、开→关两格红；⑪ 非帧率位旧码也红
+static void run_snap(const char *dir, char *out, size_t n) {
+    int pp[2]; pipe(pp); pid_t c = fork();
+    if (c == 0) {
+        close(pp[0]); unsetenv("DM_PRESENT_LINK"); unsetenv("DM_PRESENT_HZ"); unsetenv("S2A_CPATCH_ON"); unsetenv("S2A_FPS_PICK"); unsetenv("DM_PRESENT_FI");
+        module_t m; memset(&m, 0, sizeof m); snprintf(m.name, sizeof m.name, "%s", "main");
+        m.size = 0x8000; m.base = mmap(NULL, m.size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0); m.key_page_off = 0x4000; m.key_page_size = 0x4000;
+        s2a_cpatch_load(&m, dir);
+        uint64_t *slot = (uint64_t *)(m.base + m.key_page_off) + 2046; char b[512]; int k = 0;
+        static const char *nm[2] = {"关", "开"};
+        for (int x = 0; x < 2; x++) for (int y = 0; y < 2; y++) {
+            s2a_cpatch_fps_follow(x); uint64_t snap_slot = *slot; uint8_t snap_b = m.base[0x40];   // 存档那一局
+            s2a_cpatch_fps_follow(y); uint64_t want_slot = *slot; uint8_t want_b = m.base[0x40];   // 本进程按 Y 起局
+            s2a_cpatch_snap_hold(); *slot = snap_slot; m.base[0x40] = snap_b; s2a_cpatch_snap_reapply();
+            k += snprintf(b + k, sizeof b - (size_t)k, "%s%s→%s %s", k ? " " : "", nm[x], nm[y], *slot == want_slot && m.base[0x40] == want_b ? "对" : "错");
+        }
+        // ⑪ 非帧率位（金手指 / 宽屏之类，本进程局中开着、存档那一局关着）：恢复后仍开着
+        s2a_cpatch_fps_follow(1); uint64_t snap2 = *slot; *slot |= 1; uint64_t want2 = *slot;
+        s2a_cpatch_snap_hold(); *slot = snap2; s2a_cpatch_snap_reapply();
+        k += snprintf(b + k, sizeof b - (size_t)k, " 非帧率位 %s", *slot == want2 ? "对" : "错");
+        write(pp[1], b, (size_t)k); _exit(0);
+    }
+    close(pp[1]); ssize_t r = read(pp[0], out, n - 1); out[r > 0 ? r : 0] = 0; close(pp[0]); waitpid(c, NULL, 0);
+}
 int main(void) {
     char dir[] = "/tmp/t_cpatch_levels.XXXXXX"; if (!mkdtemp(dir)) return 1;
     char p[256]; snprintf(p, sizeof p, "%s/cpatch.tsv", dir); FILE *f = fopen(p, "w");
@@ -165,6 +192,9 @@ int main(void) {
     run_rescue(dir, got, sizeof got);
     const char *want3 = "未开救 0 开 80 77 2 120 救 1 0 00 1 60 标记 fps 再救 0";
     CHECK(!strcmp(got, want3), "③ 停帧救场：期望 %s，实得 %s", want3, got);
+    run_snap(dir, got, sizeof got);
+    const char *want6 = "关→关 对 关→开 对 开→关 对 开→开 对 非帧率位 对";
+    CHECK(!strcmp(got, want6), "⑩ 即时存档恢复后按本进程开关重写：期望 %s，实得 %s", want6, got);
     unlink(p); rmdir(dir);
     if (fails) { printf("✗ t_cpatch_levels：%d 项红\n", fails); return 1; }
     printf("✓ t_cpatch_levels：3 项（缺省按屏幕取档、局中切档、玩家设置起局、停帧救场）\n"); return 0;
