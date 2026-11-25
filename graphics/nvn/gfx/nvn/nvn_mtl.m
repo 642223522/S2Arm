@@ -692,6 +692,11 @@ void nvn_be_res_stats(char *out, size_t n) {
     { uint8_t used[RS_SITES] = {0};   // not reset: what is resident now, the largest four by bytes
       for (int i = 0; i < 4 && o < n; i++) { int best = -1; for (int k = 0; k < RS_SITES; k++) if (!used[k] && g_rs_live[k].line && g_rs_live[k].n > 0 && (best < 0 || g_rs_live[k].bytes > g_rs_live[best].bytes)) best = k;
           if (best < 0) break; used[best] = 1; o += snprintf(out + o, n - o, "%sline %d: %lld, %.0f MB", i ? ", " : "", g_rs_live[best].line, (long long)g_rs_live[best].n, g_rs_live[best].bytes / 1048576.0); } }
+    // 同样是当前驻留，按对象个数取最多的四个来源：长局里 64 KB 的小共享缓冲一分钟涨约 25 个（404 → 855），按字节排进不了上面的前四，看不出是哪一处加的
+    if (o < n) o += snprintf(out + o, n - o, "), most objects by adding line (");
+    { uint8_t used[RS_SITES] = {0};
+      for (int i = 0; i < 4 && o < n; i++) { int best = -1; for (int k = 0; k < RS_SITES; k++) if (!used[k] && g_rs_live[k].line && g_rs_live[k].n > 0 && (best < 0 || g_rs_live[k].n > g_rs_live[best].n)) best = k;
+          if (best < 0) break; used[best] = 1; o += snprintf(out + o, n - o, "%sline %d: %lld, %.1f MB", i ? ", " : "", g_rs_live[best].line, (long long)g_rs_live[best].n, g_rs_live[best].bytes / 1048576.0); } }
     if (o < n) snprintf(out + o, n - o, ")");
     memset(g_rs_site, 0, sizeof g_rs_site); memset(g_rs_rmsite, 0, sizeof g_rs_rmsite); g_rs_rm = g_rs_commits = g_rs_commit_ns = 0;
     pthread_mutex_unlock(&g_res_mu);
