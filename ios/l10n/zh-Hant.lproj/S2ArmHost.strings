@@ -622,7 +622,8 @@
 
 /* 0.6.0 快照：游戏中菜单 */
 "vpad.snap.save" = "存下這一刻";
-"vpad.snap.offAddress" = "這款遊戲要用的位址範圍比這台裝置的系統能給 App 的多，放不下快照，所以在這台裝置上不能存快照。這和儲存空間無關，遊戲照常玩。";
+"vpad.snap.offAddress" = "這台裝置的記憶體位址不夠同時放下這款遊戲和快照，所以在這台裝置上不能存快照。這和儲存空間無關，遊戲照常玩。";
+"vpad.snap.offAddressNums" = "（遊戲要 %@ GB，快照要 %@ GB，這台裝置能給 %@ GB）";
 "vpad.snap.restore" = "回到上次存下的這一刻";
 "vpad.snap.saving" = "正在存下這一刻…";
 "vpad.snap.saved" = "已存下這一刻";
