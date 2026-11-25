@@ -272,7 +272,7 @@
 "app.fpsCap.ladder" = "En esta partida no se pueden mantener 60 FPS de forma estable, así que el juego vuelve por ahora a su velocidad de fotogramas nativa. La próxima vez que abras el juego empezará de nuevo a 60 FPS.";
 "app.fpsCap.fast" = "Este juego va demasiado rápido a 60 FPS, así que se mantiene a 30 FPS.";
 "app.fpsCap.restored" = "60 FPS restablecidos.";
-"app.fpsCap.retry" = "Probar 60 FPS de nuevo";
+"app.fpsCap.retry" = "Volver a 60 FPS sin bajar más en esta partida";
 "app.mic.title" = "Micrófono";
 "app.mic.denied" = "El juego quiere usar el micrófono, pero S2Arm no tiene permiso de micrófono, así que el juego solo oye silencio. Activa S2Arm en Ajustes › Privacidad y seguridad › Micrófono y vuelve a abrir el juego.";
 "app.mic.failed" = "El juego quiere usar el micrófono, pero no se pudo abrir el micrófono, así que el juego solo oye silencio.";
