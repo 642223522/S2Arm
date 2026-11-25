@@ -20,6 +20,16 @@ static int t_exiting(pid_t pid) {
 #include <sys/time.h>
 #include <sys/wait.h>
 #include <signal.h>
+#include <poll.h>
+#ifndef T_PROBE_WAIT_S
+#define T_PROBE_WAIT_S 120   // 兜底：排队者这么久都没探过持锁进程 = 排队循环没在跑（如退回成阻塞在 flock 上），当场报红，不等门禁步墙钟上限
+#endif
+// 等排队者的一次探测：1 收到、0 排队者已退出（EOF）、-1 兜底超时
+static int t_probe_wait(int fd) {
+    struct pollfd q = {fd, POLLIN, 0};
+    if (poll(&q, 1, T_PROBE_WAIT_S * 1000) <= 0) return -1;
+    char c; return read(fd, &c, 1) == 1 ? 1 : 0;
+}
 static int fails;
 #define CHECK(c, ...) do { if (!(c)) { fails++; printf("不通 "); printf(__VA_ARGS__); printf("\n"); } else { printf("通 "); printf(__VA_ARGS__); printf("\n"); } } while (0)
 static double now(void) { struct timeval t; gettimeofday(&t, NULL); return t.tv_sec + t.tv_usec / 1e6; }
@@ -48,7 +58,12 @@ int main(void) {
         CHECK(WIFEXITED(sc) && WEXITSTATUS(sc) == 0, "⑤ 局持锁时工具模式（%s）不取锁、当场返回 0（实 %d）", tool[i][0], WEXITSTATUS(sc));
     }
     close(probe[1]);   // 写端只留给排队者：它提前退出（产品回归）时这里读到 EOF，不会卡死
-    read(probe[0], &got, 1); write(rel[1], "r", 1);   // 第二个局已在排队循环里探过持锁进程 → 放第一个局退出
+    if (t_probe_wait(probe[0]) < 0) {
+        CHECK(0, "② 排队者 %d 秒内没探过持锁进程（排队循环没在跑）", T_PROBE_WAIT_S);
+        kill(b, SIGKILL); kill(a, SIGKILL); waitpid(b, NULL, 0); waitpid(a, NULL, 0);
+        return S2A_T_RESULT("t_dev_serial_lock", fails);
+    }
+    write(rel[1], "r", 1);   // 第二个局已在排队循环里探过持锁进程 → 放第一个局退出
     int st; waitpid(b, &st, 0); double w = now() - t0;
     CHECK(WIFEXITED(st) && WEXITSTATUS(st) == 2, "② 第二个局等第一个退出才拿到（返回 %d = 等过才拿到，等了 %.1f 秒）", WEXITSTATUS(st), w);   // 返回 2 由产品表明「等过」，不再用墙钟 ≥ 1 秒判（负载高时父进程取 t0 晚 → 假红）
     waitpid(a, &st, 0);
@@ -66,7 +81,13 @@ int main(void) {
     //   期间每次探测都判「不在退出中」，越过阈值也不该轮换。按时间而不是按探测次数凑够阈值，产品轮询间隔改了也不会绿着失效；
     //   这只是放行前的最短等待，负载高只会等得更久，不作判据
     double t6 = 0;
-    while (read(probe6[0], &got, 1) == 1) { if (!t6) t6 = now(); else if (now() - t6 >= 2.0) break; }
+    int pw;
+    while ((pw = t_probe_wait(probe6[0])) == 1) { if (!t6) t6 = now(); else if (now() - t6 >= 2.0) break; }
+    if (pw < 0) {
+        CHECK(0, "⑥ 排队者 %d 秒内没探过持锁进程（排队循环没在跑）", T_PROBE_WAIT_S);
+        kill(w6, SIGKILL); kill(h, SIGKILL); waitpid(w6, NULL, 0); waitpid(h, NULL, 0);
+        return S2A_T_RESULT("t_dev_serial_lock", fails);
+    }
     write(rel[1], "r", 1);
     waitpid(w6, &st, 0);
     snprintf(stuck, sizeof stuck, "%s.stuck-%ld", lk, (long)h);
