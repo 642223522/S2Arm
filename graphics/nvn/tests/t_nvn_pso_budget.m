@@ -9,6 +9,12 @@
 //   ⑥ 全部最近用过：超额也一条都不放
 //   ⑦ 预热线：常驻 6 + 已建未领 0 → 不停（6 < 7）；常驻 6 + 已建未领 1 → 停（7 ≥ 10 × 70%）
 //   ⑧ DM_PSO_BUDGET=0：不设额度，超多少都不放、预热不停
+//   地址额度（#2020；不设 DM_PSO_BUDGET、机型表缺省 0，低区扫描换成桩 fake_holes，每条 256 KB、留 1 GB）：
+//   ⑨ 空洞 1 GB + 100 × 256 KB、常驻 12、未领 0 → 额度 112
+//   ⑩ 空洞 1 GB − 5 × 256 KB、常驻 12 条且都在 240 帧外 → 额度 7，放到 7 × 85% = 5 条（取整 5），表里剩 5
+//   ⑪ 空洞 1 GB + 10 × 256 KB、常驻 0、未领 6 → 额度 16；预热线 16 × 70% = 11.2：未领 6 不停、未领 12 停
+//   ⑫ 显式 DM_PSO_BUDGET=0：地址额度也不看（同空洞的 ⑩ 场景不放）
+//   ⑬ 扫不到低区（桩为空）：不设地址额度、不放
 #include "../gfx/nvn/nvn_mtl.m"
 static unsigned checks, failures;
 #define REQUIRE(c) do { if (!(c)) { fprintf(stderr, "SETUP FAIL %s:%d %s\n", __FILE__, __LINE__, #c); exit(2); } } while (0)
@@ -19,6 +25,13 @@ static void put_r(int i, uint64_t frame, __weak id *wr) {
     nvn_hm_put(&g_pb_use_r, &k, (void *)(uintptr_t)(frame + 1));
 }
 static int has_r(int i) { pso_key k = key_of(i); return hm_get_id(&g_pso, &k) != nil; }
+static uint64_t g_fake_t;
+static void fake_holes(uint64_t *t, uint64_t *l) { *t = g_fake_t; *l = g_fake_t; }
+static void reset_va(uint64_t holes, int have) {   // 地址额度：不设 DM_PSO_BUDGET，换上桩
+    nvn_hm_clear(&g_pso, (void (*)(void *))CFRelease); nvn_hm_clear(&g_cps, NULL); nvn_hm_clear(&g_pb_use_r, NULL); nvn_hm_clear(&g_pb_gone_r, NULL);
+    g_pb_cfail = 0; unsetenv("DM_PSO_BUDGET"); g_pb_budget_init = 0; g_pb_frame = UINT64_MAX; g_pb_evicted = g_pb_rebuilt = 0; atomic_store(&g_pb_warm_stopped, 0);
+    atomic_store(&g_pb_va, 0); atomic_store(&g_pb_unclaimed, 0); atomic_store(&g_pb_live_pub, 0); g_fake_t = holes; g_pb_holes_tried = 1; g_pb_holes_fn = have ? fake_holes : NULL;
+}
 static void reset(const char *budget) {
     nvn_hm_clear(&g_pso, (void (*)(void *))CFRelease); nvn_hm_clear(&g_cps, NULL); nvn_hm_clear(&g_pb_use_r, NULL); nvn_hm_clear(&g_pb_gone_r, NULL);
     g_pb_cfail = 0; setenv("DM_PSO_BUDGET", budget, 1); g_pb_budget_init = 0; g_pb_frame = UINT64_MAX; g_pb_evicted = g_pb_rebuilt = 0; atomic_store(&g_pb_warm_stopped, 0);
@@ -62,6 +75,34 @@ int main(void) { @autoreleasepool {
     // ② 后半：GPU 那一拍过去后，放掉的对象真的释放
     @autoreleasepool { g_done = g_fence + 2; defer_drain(); }
     CHECK(w0 == nil || w1 == nil, "② GPU 用完后放掉的对象释放：0 号 %s、1 号 %s", w0 ? "在" : "已释放", w1 ? "在" : "已释放");
+    // ⑨ 地址额度的数
+    reset_va((1024ull << 20) + 100 * (256ull << 10), 1);
+    for (int i = 0; i < 12; i++) put_r(i, 0, NULL);
+    atomic_store(&g_pb_live_pub, 12); (void)pb_budget(); pb_va_sample();
+    CHECK(pb_budget() == 112, "⑨ 空洞 1 GB + 100 条、常驻 12：额度 %u（应 112）", pb_budget());
+    // ⑩ 空洞不够：放
+    reset_va((1024ull << 20) - 5 * (256ull << 10), 1);
+    for (int i = 0; i < 12; i++) put_r(i, (uint64_t)i, NULL);
+    atomic_store(&g_pb_live_pub, 12); (void)pb_budget(); pb_va_sample(); atomic_store(&g_cur_frame, 6000);
+    @autoreleasepool { pb_tick(); }
+    CHECK(pb_budget() == 7 && g_pso.n == 5 && g_pb_evicted == 7, "⑩ 空洞 1 GB − 5 条、常驻 12：额度 %u（应 7）、放后表里 %u（应 5）、淘汰 %llu（应 7）", pb_budget(), g_pso.n, (unsigned long long)g_pb_evicted);
+    // ⑪ 预热线按地址额度
+    reset_va((1024ull << 20) + 10 * (256ull << 10), 1);
+    (void)pb_budget(); atomic_store(&g_pb_unclaimed, 6); pb_va_sample();
+    int g6 = pb_warm_full(6), g12 = pb_warm_full(12);
+    CHECK(pb_budget() == 16 && !g6 && g12, "⑪ 空洞 1 GB + 10 条、未领 6：额度 %u（应 16）；未领 6 → %s（应不停）、未领 12 → %s（应停）", pb_budget(), g6 ? "停" : "不停", g12 ? "停" : "不停");
+    // ⑫ 显式 0：地址额度也不看
+    reset_va((1024ull << 20) - 5 * (256ull << 10), 1); setenv("DM_PSO_BUDGET", "0", 1);
+    for (int i = 0; i < 12; i++) put_r(i, (uint64_t)i, NULL);
+    atomic_store(&g_pb_live_pub, 12); (void)pb_budget(); pb_va_sample(); atomic_store(&g_cur_frame, 7000);
+    @autoreleasepool { pb_tick(); }
+    CHECK(g_pso.n == 12 && g_pb_evicted == 0, "⑫ DM_PSO_BUDGET=0：同空洞也不放（表里 %u、淘汰 %llu）", g_pso.n, (unsigned long long)g_pb_evicted);
+    // ⑬ 扫不到低区
+    reset_va((1024ull << 20) - 5 * (256ull << 10), 0);
+    for (int i = 0; i < 12; i++) put_r(i, (uint64_t)i, NULL);
+    atomic_store(&g_pb_live_pub, 12); (void)pb_budget(); pb_va_sample(); atomic_store(&g_cur_frame, 8000);
+    @autoreleasepool { pb_tick(); }
+    CHECK(g_pso.n == 12 && g_pb_evicted == 0 && pb_budget() == 0, "⑬ 扫不到低区：不设地址额度（额度 %u、表里 %u、淘汰 %llu）", pb_budget(), g_pso.n, (unsigned long long)g_pb_evicted);
     printf("%s t_nvn_pso_budget：%u 项，%u 项不符\n", failures ? "✗" : "✓", checks, failures);
     return failures ? 1 : 0;
 } }
