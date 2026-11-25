@@ -47,7 +47,21 @@ static inline uint32_t rp_tex_layer_count(const tex_t *t) {
 static inline int rp_decl_view_target(const tex_t *t, view_t *v, int has_v, uint8_t dtt) {
     if (!dtt) return 0;
     int want = rp_fold_1d_target(dtt - 1), have = rp_fold_1d_target(has_v && v->set_target ? v->target : t->d.target);
-    if (want == have) return 0;
+    if (want == have) {
+        if (want != NVN_TEXTURE_TARGET_CUBEMAP && want != NVN_TEXTURE_TARGET_CUBEMAP_ARRAY) return 0;
+        const uint32_t total = rp_tex_layer_count(t);
+        const int explicit_layers = has_v && v->set_layers;
+        const uint32_t base = explicit_layers ? v->min_layer : 0;
+        const uint32_t count = explicit_layers ? (v->nlayers ? v->nlayers : 1) : total;
+        // 后端可以把不完整的立方层范围当二维视图用，采样绑定必须保留着色器的声明维度。
+        if (base >= total || count > total - base || count < 6 || count % 6) return -1;
+        if (want == NVN_TEXTURE_TARGET_CUBEMAP) return count == 6 ? 0 : -1;
+        // 单组六面默认会落成立方体；显式指定目标才能保留一组立方体的数组视图。
+        if (count != 6 || (has_v && v->set_target)) return 0;
+        if (!has_v) memset(v, 0, sizeof *v);
+        v->set_target = 1; v->target = NVN_TEXTURE_TARGET_CUBEMAP_ARRAY;
+        return 1;
+    }
     uint32_t layers = rp_tex_layer_count(t);
     if (has_v && v->set_layers) layers = v->nlayers ? v->nlayers : (layers > v->min_layer ? layers - v->min_layer : 1);
     uint32_t n = 0;
