@@ -12486,7 +12486,7 @@ static int warm_prepare(NSArray<WarmTask *> *tasks, long lines) {
          lines, (unsigned long long)g_warm_shaders, (unsigned long long)g_warm_rps, (unsigned long long)g_warm_cps, (bp_now() - t0) / 1e9, workers, (bp_now() - t0) / 1e6, shown ? ", a long wait" : "");
     return 1;
 }
-// The prewarm lists: DM_PSO_MANIFEST (off = none), else the package's seed beside the shader map plus this device's user list when it exists. nil = none. say: log why
+// The prewarm lists: DM_PSO_MANIFEST (off = none), else the package's seed beside the shader map, the cloud seed beside the user list (pso_cloud.tsv) and this device's user list, each when it exists. nil = none. say: log why
 static NSArray<NSString *> *warm_paths(int say) {
     const char *e = getenv("DM_PSO_MANIFEST");
     if (e && !strcmp(e, "off")) return nil;
@@ -12499,6 +12499,11 @@ static NSArray<NSString *> *warm_paths(int say) {
     if ([NSFileManager.defaultManager fileExistsAtPath:seed]) [all addObject:seed];
     else if (say) MLOG("pipeline prewarm: this package has no seed list (%s): prewarm uses this device's user list only", seed.UTF8String);
     NSString *user = pso_user_path();
+    // 云端管线种子（11-25：手机直导 .s2arm 不经电脑出包，包里的种子表是导出那一刻的、常为空表）：App 导入 / 首次开这一款时按程序号取云端统一包
+    //   g/<号> 的管线种子（ios/cloud_seed.m），原样存在本机清单旁的 pso_cloud.tsv。行格式同 pso_user.tsv，别的版本的键、旧结构的行由 warm_parse 按本包库滤掉
+    //   （第 1 代键经 key_alias.tsv 换代），与包里种子表、本机清单的重复行只建一次
+    NSString *cloud = user ? [user.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"pso_cloud.tsv"] : nil;
+    if (cloud && [NSFileManager.defaultManager fileExistsAtPath:cloud]) [all addObject:cloud];
     if (user && [NSFileManager.defaultManager fileExistsAtPath:user]) [all addObject:user];
     else if (say) MLOG("pipeline prewarm: this device's user list %s%s", user ? "does not exist yet: " : "has no path (neither DM_PSO_USER nor DM_SAVE is set)", user ? user.UTF8String : "");
     return all.count ? all : nil;
