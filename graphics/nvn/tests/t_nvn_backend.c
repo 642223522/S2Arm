@@ -14,7 +14,25 @@
 #define SIG(fn, T) _Static_assert(__builtin_types_compatible_p(__typeof__(&fn), T), #fn " 签名与契约表不符")
 #define DISTINCT(A, B) _Static_assert(!__builtin_types_compatible_p(A, B), #A " 与 " #B " 必须是不同的句柄类型")
 
-_Static_assert(NVN_GPU_CONTRACT_VERSION == 23, "契约版本变了：同批更新本签名表");
+_Static_assert(NVN_GPU_CONTRACT_VERSION == 24, "契约版本变了：同批更新本签名表");
+
+// v24 冷环绑定描述：缓冲身份、访问区间和嵌套前缀按共用契约传递。
+#define FIELD_TYPE(record, member, T) \
+    _Static_assert(__builtin_types_compatible_p(__typeof__(((struct record *)0)->member), T), \
+                   #record "." #member " 字段类型与契约表不符")
+FIELD_TYPE(nvn_gpu_cold_prefix, buf, nvn_gpu_buf);
+FIELD_TYPE(nvn_gpu_cold_prefix, binding, nvn_gpu_access_span);
+FIELD_TYPE(nvn_gpu_cold_prefix, fragment_ent, uint32_t);
+FIELD_TYPE(nvn_gpu_cold_prefix, byte, uint32_t);
+FIELD_TYPE(nvn_gpu_cold_prefix, mask, uint32_t);
+FIELD_TYPE(nvn_gpu_cold_domain, buf, nvn_gpu_buf);
+FIELD_TYPE(nvn_gpu_cold_domain, binding, nvn_gpu_access_span);
+FIELD_TYPE(nvn_gpu_cold_domain, first_word, uint32_t);
+FIELD_TYPE(nvn_gpu_cold_domain, stride_words, uint32_t);
+FIELD_TYPE(nvn_gpu_cold_domain, count, uint32_t);
+FIELD_TYPE(nvn_gpu_cold_domain, fragment_ent, uint32_t);
+FIELD_TYPE(nvn_gpu_cold_domain, prefix, struct nvn_gpu_cold_prefix);
+#undef FIELD_TYPE
 
 // 句柄：指针大小、两两不同
 _Static_assert(sizeof(nvn_gpu_buf) == sizeof(void *), "句柄应为指针");
