@@ -6,7 +6,8 @@
 被测实现（provider）按 cell(state, s, s1, d, c) → RGBA 接进来：
   fixed  —— Metal / D3D 的固定混合（IEEE：0 × NaN = NaN），即修前直连层的做法。它必须红：矩阵查得出 #674 这类差异（负对照），
             并且 #674 原状态那一格必须在不等之列。
-  （可编程混合实现落地后在这里加它的 provider，要求全等。）
+  pb / pb16 —— 可编程混合（graphics/dsx/gal_colorround.c 门控版，特化时开附件 0）在真 Metal 上跑（t_pblend_gpu，环境变量 S2A_PBLEND_GPU 给可执行文件）：
+            RGBA32F / RGBA16F，要求全等，第二源系数（SRC1_*）照送（片元里用输出 1 的值）。没有可执行文件（非 Mac）→ 跳过并照实说
 用法：maxwell_blend_matrix_test.py [--full]   缺省只跑门禁用的子集（每种系数 / 方程组合都在，取值组合缩小），--full 跑满。
 """
 import itertools
@@ -37,7 +38,39 @@ def fixed(state, s, s1, d, c):
     return M.blend(state, s, s1, d, c, ztaiz=False)
 
 
+SRC1 = {M.SRC1_COLOR, M.ONE_MINUS_SRC1_COLOR, M.SRC1_ALPHA, M.ONE_MINUS_SRC1_ALPHA}
+
+
+def pb_batch(cells, fmt="rgba32f"):
+    """cells：[(state, s, s1, d, c)] → 结果 [RGBA] 或 None（没有 t_pblend_gpu）。按 (state, c) 分组写给 t_pblend_gpu、读回附件"""
+    import struct, subprocess, tempfile
+    exe = os.environ.get("S2A_PBLEND_GPU")
+    if not exe or not os.path.isfile(exe):
+        return None
+    groups = {}
+    for i, (state, s, s1, d, c) in enumerate(cells):
+        groups.setdefault((state, c), []).append(i)
+    out = [None] * len(cells)
+    with tempfile.TemporaryDirectory() as t:
+        src, dst = os.path.join(t, "in.bin"), os.path.join(t, "out.bin")
+        order = list(groups.items())
+        with open(src, "wb") as f:
+            f.write(b"S2PB" + struct.pack("<I", len(order)))
+            for (state, c), idx in order:
+                f.write(struct.pack("<6I4fI", *state, *c, len(idx)))
+                for i in idx:
+                    f.write(struct.pack("<12f", *cells[i][1], *cells[i][2], *cells[i][3]))
+        subprocess.run([exe, src, dst, fmt], check=True, stdout=subprocess.DEVNULL)
+        data = open(dst, "rb").read()
+        at = 0
+        for _, idx in order:
+            for i in idx:
+                out[i] = struct.unpack_from("<4f", data, at * 16); at += 1
+    return out
+
+
 PROVIDERS = {"fixed": fixed}
+BATCH = {"pb": pb_batch, "pb16": lambda cells: pb_batch(cells, "rgba16f")}   # 游戏常见的半精度附件也跑（门禁取值在 half 下都精确可表示）   # 游戏常见的半精度附件也跑（门禁取值在 half 下都精确可表示）
 MUST_DIFFER = {"fixed"}   # 负对照：这些实现必须和模型不等
 
 
@@ -55,9 +88,37 @@ def run(name, impl, full):
     return total, bad, first, cell674
 
 
+def run_batch(name, impl, full):
+    """批量实现：一次送完全部格子（含第二源系数的状态）"""
+    every = list(cases(full))
+    sent = every
+    st674 = (M.ADD, M.SRC_ALPHA, M.ONE_MINUS_SRC_ALPHA, M.ADD, M.ZERO, M.ONE_MINUS_SRC_ALPHA)
+    cell674 = (st674, (NAN, NAN, NAN, 0.0), (0.0,) * 4, (0.0, 0.0, 0.0, 1.0), (0.0,) * 4)
+    got = impl(sent + [cell674])
+    if got is None:
+        return None
+    bad = 0; first = None
+    for (state, s, s1, d, c), g in zip(sent, got):
+        want = M.blend(state, s, s1, d, c)
+        if not all(M.same(x, w) for x, w in zip(g, want)):
+            bad += 1; first = first or (state, s, d, c, want, g)
+    ok674 = all(M.same(x, w) for x, w in zip(got[-1], M.blend(*cell674)))
+    return len(sent), sum(1 for x in sent if SRC1 & set(x[0][1:3] + x[0][4:6])), bad, first, ok674
+
+
 def main():
     full = "--full" in sys.argv
     fails = 0
+    for name, impl in BATCH.items():
+        r = run_batch(name, impl, full)
+        if r is None:
+            print(f"跳过 {name}：没有 S2A_PBLEND_GPU（非 Mac 或没编 t_pblend_gpu），可编程混合这次没验")
+            continue
+        total, src1, bad, first, ok674 = r
+        ok = bad == 0 and ok674
+        print(f"{'通' if ok else '不通'} {name}（真 Metal）：{total} 格，和模型不等 {bad} 格（要 0），#674 那一格{'相等' if ok674 else '不等'}（要相等）；"
+              f"其中第二源系数 {src1} 格" + ("" if ok else f"；第一格 {first}"))
+        fails += not ok
     for name, impl in PROVIDERS.items():
         total, bad, first, cell674 = run(name, impl, full)
         if name in MUST_DIFFER:
@@ -67,7 +128,7 @@ def main():
             ok = bad == 0 and cell674
             print(f"{'通' if ok else '不通'} {name}：{total} 格，和模型不等 {bad} 格（要 0）" + ("" if ok else f"；第一格 {first}"))
         fails += not ok
-    print(f"{'✓' if not fails else '✗'} maxwell_blend_matrix：{len(PROVIDERS)} 个实现，不通 {fails}（{'满矩阵' if full else '门禁子集'}）")
+    print(f"{'✓' if not fails else '✗'} maxwell_blend_matrix：{len(PROVIDERS) + len(BATCH)} 个实现，不通 {fails}（{'满矩阵' if full else '门禁子集'}）")
     return 1 if fails else 0
 
 
