@@ -21343,6 +21343,8 @@ nvn_gpu_rc nvn_gpu_pool_bind(nvn_gpu_cmd c, nvn_gpu_stage st, uint32_t ent, nvn_
     return rc;
 }
 void nvn_gpu_pool_release(nvn_gpu_pool_table table) { (void)table; }
+int nvn_gpu_pool_has_texture(nvn_gpu_pool_table table, nvn_gpu_tex tex) { (void)table; (void)tex; return 0; }
+nvn_gpu_tex nvn_gpu_view_texture(nvn_gpu_view v) { (void)v; return NULL; }
 
 // Contract v12 compatibility entries. Metal still replays through nvn_be_*;
 // it has no nvn_gpu_buf/view wrapper or lifetime-ID registry. A legacy object
