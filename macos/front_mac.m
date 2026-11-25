@@ -43,6 +43,7 @@ __attribute__((constructor)) static void cheats_register_host(void) { void (*f)(
 #include "../runtime/include/s2a_direct_prompt.h"
 #include "../runtime/include/s2a_gfx_mode.h"
 #include "../runtime/include/s2a_hud.h"
+#import "perf_brief.h"
 #include "../runtime/include/s2a_home_quit.h"
 #include "../runtime/include/s2a_mac_focus.h"
 #include "../runtime/include/s2a_ui_text.h"
@@ -2201,7 +2202,14 @@ static void snap_mac_restart(int result, const char *detail, void *ctx) {
     [a beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse r) { if (r == NSAlertFirstButtonReturn) [ws snapRestoreNow:dir rollback:YES]; }];
 }
 - (void)toggleFullScreenItem:(id)sender { (void)sender; fullscreen_toggle(self.window); }
+// 帧率浮层（#2207，perf_brief.m）：偏好 S2APerfHUD 开关（跨局记住，与 iPhone 齿轮「性能浮层」同一个键）、S2APerfHUDMem 帧率旁带内存（缺省只看帧率）
+- (void)perfApply { NSUserDefaults *d = NSUserDefaults.standardUserDefaults; s2a_perf_brief_apply(self.window.contentView, [d boolForKey:@"S2APerfHUD"], [d boolForKey:@"S2APerfHUDMem"]); }
+- (void)togglePerfItem:(id)sender { (void)sender; NSUserDefaults *d = NSUserDefaults.standardUserDefaults; [d setBool:![d boolForKey:@"S2APerfHUD"] forKey:@"S2APerfHUD"]; [self perfApply]; }
+- (void)togglePerfMemItem:(id)sender { (void)sender; NSUserDefaults *d = NSUserDefaults.standardUserDefaults; [d setBool:![d boolForKey:@"S2APerfHUDMem"] forKey:@"S2APerfHUDMem"]; [self perfApply]; }
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    if (item.action == @selector(togglePerfItem:)) item.state = [d boolForKey:@"S2APerfHUD"] ? NSControlStateValueOn : NSControlStateValueOff;
+    if (item.action == @selector(togglePerfMemItem:)) { item.state = [d boolForKey:@"S2APerfHUDMem"] ? NSControlStateValueOn : NSControlStateValueOff; return [d boolForKey:@"S2APerfHUD"]; }   // 浮层关着时不可选
     if (item.action == @selector(toggleFullScreenItem:))
         item.title = window_fullscreen(self.window) ? (s2a_ui_zh() ? @"退出全屏幕" : @"Exit Full Screen") : (s2a_ui_zh() ? @"进入全屏幕" : @"Enter Full Screen");
     return YES;
@@ -2347,6 +2355,10 @@ void s2a_front_run(void (*guest_main)(void)) {
         fullScreen.keyEquivalentModifierMask = NSEventModifierFlagControl | NSEventModifierFlagCommand; fullScreen.target = delegate;
         NSMenuItem *escHint = [viewMenu addItemWithTitle:s2a_ui_zh() ? @"全屏时 Esc 退出（Esc 映射了游戏按键时按住 1 秒）" : @"In full screen, Esc exits (hold 1 s if Esc is mapped to a game button)" action:NULL keyEquivalent:@""];
         escHint.enabled = NO;
+        [viewMenu addItem:NSMenuItem.separatorItem];
+        NSMenuItem *perf = [viewMenu addItemWithTitle:s2a_ui_zh() ? @"显示帧率" : @"Show Frame Rate" action:@selector(togglePerfItem:) keyEquivalent:@"p"];
+        perf.keyEquivalentModifierMask = NSEventModifierFlagControl | NSEventModifierFlagCommand; perf.target = delegate;
+        [viewMenu addItemWithTitle:s2a_ui_zh() ? @"帧率旁显示内存占用" : @"Show Memory Use Next to Frame Rate" action:@selector(togglePerfMemItem:) keyEquivalent:@""].target = delegate;
         viewRoot.submenu = viewMenu; [menu addItem:viewRoot]; app.mainMenu = menu;
         NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1280, 720)
             styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
@@ -2402,6 +2414,7 @@ void s2a_front_run(void (*guest_main)(void)) {
             };
             tick(); [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) { (void)t; tick(); }];
         }
+        [delegate perfApply];   // 帧率浮层上局开着就接着显示（#2207）
         [view setNeedsLayout:YES]; [window center]; [window makeKeyAndOrderFront:nil]; [window makeFirstResponder:view];
         // 窗口遮挡（D-JSGK 11-22：Mac 局整局线程在等、性能核几乎没用，判不了是不是窗口被挡 / 最小化后系统节流）：主线程上跟遮挡通知记下，心跳在后台队列只读原子量
         { __weak NSWindow *w = window; void (^occ)(void) = ^{ int v = (w.occlusionState & NSWindowOcclusionStateVisible) ? 1 : 0; if (atomic_exchange(&g_win_visible, v) != v && !v) atomic_fetch_add(&g_win_hidden_n, 1); };
