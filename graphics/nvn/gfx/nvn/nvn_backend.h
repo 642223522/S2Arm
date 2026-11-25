@@ -39,7 +39,7 @@
 extern "C" {
 #endif
 
-#define NVN_GPU_CONTRACT_VERSION 23   // 改任何签名或语义 +1；两个后端与核心同批改，t_nvn_backend.c 的签名表同批改
+#define NVN_GPU_CONTRACT_VERSION 24   // 改任何签名或语义 +1；两个后端与核心同批改，t_nvn_backend.c 的签名表同批改
 /* 定稿 #1（调用形式）：链接期直接调用 nvn_gpu_*。每个平台构建只链一个后端，Metal 3 / 4 的选择留在 Metal 后端内部。
    理由：零间接、可内联；同进程 A/B 对照没有真实消费者，不为它新增注册实体（vickwv 同意）。 */
 
@@ -530,6 +530,21 @@ typedef struct {
 } nvn_gpu_access_span;
 int nvn_gpu_buf_access_span(nvn_gpu_buf b, uint64_t off, uint64_t bytes, nvn_gpu_access_span *out);
 int nvn_gpu_view_access_span(nvn_gpu_view v, nvn_gpu_access_span *out);
+// A dynamic prefix comes from the same segment-owned CPU DRV0 slice the
+// fragment shader will bind. A null buffer describes a constant prefix.
+struct nvn_gpu_cold_prefix {
+    nvn_gpu_buf buf;
+    nvn_gpu_access_span binding;
+    uint32_t fragment_ent, byte, mask;
+};
+struct nvn_gpu_cold_domain {
+    nvn_gpu_buf buf;
+    nvn_gpu_access_span binding;
+    uint32_t first_word, stride_words, count;
+    uint32_t fragment_ent;
+    struct nvn_gpu_cold_prefix prefix;
+};
+
 // 通道外：此前计算写入对后续间接参数 / 索引 / 顶点 / 图形着色器读取可见；不包含附件载入、计算或传输，不分段、不等待。
 // 由核心仅在图形实际读到计算写过的范围时调用；全体计算写对这些读阶段发布，所以核心可一起撤掉待发布表。
 void nvn_gpu_compute_to_graphics(nvn_gpu_cmd c);
