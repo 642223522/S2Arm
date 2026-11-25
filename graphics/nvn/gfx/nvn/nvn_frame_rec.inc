@@ -307,7 +307,7 @@ static int fr_dump_gpu(const char *path, uint64_t *bytes, int *skipped) {
     pthread_mutex_unlock(&g_smu);
     size_t n = objs.count;
     int saved = 0; *bytes = 0; *skipped = 0;
-    for (size_t k = 0; k < n; k++) {
+    for (size_t k = 0; k < n; k++) { @autoreleasepool {   // 每张一个自动释放池（同 nvn_snap.inc snap_dump_tex）
         id o = objs[k]; if (![o conformsToProtocol:@protocol(MTLTexture)]) continue;
         id<MTLTexture> t = o;
         if (!(t.usage & (MTLTextureUsageRenderTarget | MTLTextureUsageShaderWrite)) || t.buffer || t.parentTexture) continue;
@@ -331,7 +331,7 @@ static int fr_dump_gpu(const char *path, uint64_t *bytes, int *skipped) {
         if (!fr_w_tex(f, &hd, b.contents, tot)) { fclose(f); return -1; }
         if (s2a_snap_progress) s2a_snap_progress(NULL);   // 存档看门狗心跳 + 逐层实占采样（逐张回读的长循环；帧录调到时无副作用）
         *bytes += tot; saved++;
-    }
+    } }
     return fclose(f) == 0 ? saved : -1;
 }
 
