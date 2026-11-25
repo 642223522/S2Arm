@@ -66,6 +66,8 @@ typedef struct { const void *vf, *ff; uint32_t samples, a2c, a21, topo; } pbase_
 static nvn_hmap g_pbase = {.klen = sizeof(pbase_key)};   // → id<MTLRenderPipelineState>，失败 NSNull
 static nvn_hmap g_pso_hy = {.klen = sizeof(pso_key)};   // 特化好的拉取管线，按它顶替的精确管线的键（提交线程）
 static os_unfair_lock g_pbase_lock = OS_UNFAIR_LOCK_INIT;
+// 基础管线也是活着的管线，算进管线额度（nvn_pso_budget.inc ⑥）：放进 g_pbase 一律经 pb_base_put_locked、用到经 pb_base_touch_locked（都在 g_pbase_lock 下）
+static void pb_base_put_locked(const pbase_key *bk, id ps); static void pb_base_touch_locked(const pbase_key *bk);
 static id g_hy_comp;   // Metal 4 编译器（m4_compiler）
 static int g_pso_pull;   // pso_get_ 这次返回的是拉取管线（绘制改绑布局块，不做 CPU 顶点转换）
 static _Atomic uint64_t g_hy_draws, g_hy_made, g_hy_none, g_hy_kicked, g_hy_bases, g_hy_base_fail, g_hy_spec_ns;
@@ -158,6 +160,7 @@ static NSMutableSet<NSData *> *g_hy_pre_tried;   // g_pbase_lock
 static _Atomic uint64_t g_hy_pre_n, g_hy_pre_hit, g_hy_pre_ns;   // 预热里查了几把基底键 / 查中几把 / 查询耗时合计
 static int hybrid_prefetch(const pso_key *k, NvShader *vs, NvShader *fs) {   // → 1 查中、0 没查中、-1 没查（已有 / 查过 / 不走混合管线）
     if (!vs || !fs || !vs->has_pull || k->fc || k->fsfn || !hybrid_on()) return -1;
+    if (pb_prefetch_full()) return -1;   // 管线额度到预热线：不再先取（不占额度），首遇时照旧在后台建
     if (@available(macOS 26.0, iOS 26.0, *)) {
         MTLRenderPipelineDescriptor *d = pso_desc(k, vs, fs, nil, 0);
         if (!hybrid_fits(d, vs, fs)) return -1;
@@ -172,7 +175,7 @@ static int hybrid_prefetch(const pso_key *k, NvShader *vs, NvShader *fs) {   // 
         atomic_fetch_add(&g_hy_pre_n, 1); atomic_fetch_add(&g_hy_pre_ns, bp_now() - t0);
         if (!pb) return 0;
         atomic_fetch_add(&g_hy_pre_hit, 1);
-        os_unfair_lock_lock(&g_pbase_lock); if (!hm_get_id(&g_pbase, &bk)) hm_put_id(&g_pbase, &bk, pb); os_unfair_lock_unlock(&g_pbase_lock);
+        os_unfair_lock_lock(&g_pbase_lock); if (!hm_get_id(&g_pbase, &bk)) pb_base_put_locked(&bk, pb); os_unfair_lock_unlock(&g_pbase_lock);
         return 1;
     }
     return -1;
@@ -193,7 +196,7 @@ static __unsafe_unretained id<MTLRenderPipelineState> hybrid_get(const pso_key *
         // 基底键认着色器对象（D-92BW）：原先认函数指针，预热后放掉的着色器补回后函数是新对象，旧键不再命中；放掉的旧函数地址还可能被别的新函数占去、撞出错的基底。
         //   着色器对象常驻：同一对着色器 → 同一拉取入口（pull_fn 按 vs 的键与入口名载）与同一片元主入口
         pbase_key bk = pbase_key_of(d, vs, fs);
-        os_unfair_lock_lock(&g_pbase_lock); id base = hm_get_id(&g_pbase, &bk); if (!base) hm_put_id(&g_pbase, &bk, NSNull.null); os_unfair_lock_unlock(&g_pbase_lock);
+        os_unfair_lock_lock(&g_pbase_lock); id base = hm_get_id(&g_pbase, &bk); if (!base) hm_put_id(&g_pbase, &bk, NSNull.null); else if (base != NSNull.null) pb_base_touch_locked(&bk); os_unfair_lock_unlock(&g_pbase_lock);
         id bd = base ? nil : pull_desc4(d, vs, fs, 1);
         // 第一次：查随包归档、查不中就现建，都在后台队列（hybrid_q）做，这一笔照旧给 nil（首遇跳过 / 等精确管线）；占位 NSNull 防重复踢，好了换成管线。
         //   查随包归档也不放提交线程：查中了 Metal 4 归档建管线仍要经编译服务特化一次函数（AGX Metal4To3 转换 createFunction → MTLCompilerScheduler 同步请求），
@@ -202,7 +205,7 @@ static __unsafe_unretained id<MTLRenderPipelineState> hybrid_get(const pso_key *
             g_hy_kicked++;
             dispatch_async(hybrid_q(), ^{ @autoreleasepool { NSError *e = nil; id<MTLRenderPipelineState> ps = hybrid_pkg_base(bd, vs, fs);
                 if (!ps) ps = [g_hy_comp newRenderPipelineStateWithDescriptor:bd compilerTaskOptions:nil error:&e];
-                if (ps) { os_unfair_lock_lock(&g_pbase_lock); hm_put_id(&g_pbase, &bk, ps); os_unfair_lock_unlock(&g_pbase_lock); g_hy_bases++; }
+                if (ps) { os_unfair_lock_lock(&g_pbase_lock); pb_base_put_locked(&bk, ps); os_unfair_lock_unlock(&g_pbase_lock); g_hy_bases++; }
                 else { uint64_t n = ++g_hy_base_fail; if (n <= 8) MLOG("【红】 hybrid pipelines: pulling base for vertex %s fragment %s failed: %s (that pair's first uses wait)", vs->key, fs->key, e.localizedDescription.UTF8String); } } });
             g_hy_none++; return nil;
         }

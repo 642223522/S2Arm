@@ -10960,7 +10960,7 @@ static os_unfair_lock g_fz_fn_lock = OS_UNFAIR_LOCK_INIT;
 typedef struct { char key[24]; uint8_t fbmask, nfc; int8_t fx[32]; uint8_t lmap[8]; } bf_key;
 static nvn_hmap g_bf_fn = {.klen = sizeof(bf_key)}; static unsigned g_bf_libs;
 static nvn_hmap g_pso = {.klen = sizeof(pso_key)}, g_dss;
-static void pb_tick(void); static void pb_touch_r(const pso_key *k); static void pb_built_r(const pso_key *k); static int pb_warm_full(uint64_t built_unclaimed);   // 管线额度（nvn_pso_budget.inc）：先用到的几个
+static void pb_tick(void); static void pb_touch_r(const pso_key *k); static void pb_built_r(const pso_key *k); static int pb_warm_full(uint64_t built_unclaimed); static int pb_prefetch_full(void);   // 管线额度（nvn_pso_budget.inc）：先用到的几个
 static nvn_hmap g_pso_fail = {.klen = sizeof(pso_key)};   // pipelines that failed to build: remembered and never retried (previously every draw recompiled it, over 10,000 times in one iPhone session)
 static const char g_tf_mark;
 static char g_geo_mark;
