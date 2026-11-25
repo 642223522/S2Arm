@@ -1,7 +1,5 @@
-// 管线归档批量写回（pso_archive.h par_note / par_ser_batch，11-06 马车8 卡预热：一条一个文件写回 ~95 ms/条，一局写不完、退出即丢、每次启动从零编）。
-//   直接包含生产 nvn_mtl.m，在真 Metal 设备上编 70 条不同的计算管线（先编一遍 = 预热），逐条 par_note（编完当场加进这一批，#2020：不再由后台写手过后重编），
-//   预热结束 par_flush_bg 写掉没攒满的一批，等后台写完。期望（按 PAR_BATCH=32 手算）：
-//   ⓪ 第 1 条 par_note 之后：它已在正攒的这一批里（1 条）、还没有批文件（攒满才写）；
+// 管线归档批量写回（pso_archive.h par_write_batch，11-06 马车8 卡预热：一条一个文件写回 ~95 ms/条，一局写不完、退出即丢、每次启动从零编）。
+//   直接包含生产 nvn_mtl.m，在真 Metal 设备上编 70 条不同的计算管线（先编一遍 = 预热），一次放进待写队列再同步跑写回。期望（按 PAR_BATCH=32 手算）：
 //   ① 写出 3 个批文件（32 + 32 + 6）、batches.tsv 70 行、每行指向在的文件；② 70 个键都能经 par_archive_for 取到归档，只准命中归档地建管线（FailOnBinaryArchiveMiss）70/70 成；
 //   ③ 写成计数 +70、写失败 0。反证（构建规则另编 -DPAR_BATCH=1）：批文件 70 个，① 不符
 #include "../gfx/nvn/nvn_mtl.m"
@@ -21,13 +19,8 @@ int main(void) { @autoreleasepool {
         [descs addObject:d]; [keys addObject:[NSString stringWithFormat:@"t-batch-%02d", i]];
     }
     uint64_t w0 = atomic_load(&g_par_written), f0 = atomic_load(&g_par_write_failed);
-    par_note(keys[0], descs[0]);
-    { pthread_mutex_lock(&g_par_cmu); NSUInteger in_batch = g_par_cur_keys.count; pthread_mutex_unlock(&g_par_cmu);
-      NSUInteger f1 = [[NSFileManager.defaultManager contentsOfDirectoryAtPath:g_par_dir error:nil] filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"SELF BEGINSWITH 'batch-'"]].count;
-      VERIFY(in_batch == 1 && f1 == 0, "⓪ 第 1 条编完当场加进这一批：批里 %lu 条（期望 1）、批文件 %lu 个（期望 0）", (unsigned long)in_batch, (unsigned long)f1); }
-    for (int i = 1; i < N; i++) par_note(keys[i], descs[i]);
-    par_flush_bg();
-    dispatch_group_wait(g_par_ser_grp, DISPATCH_TIME_FOREVER);
+    pthread_mutex_lock(&g_par_mu); g_par_todo = [NSMutableArray array]; for (int i = 0; i < N; i++) [g_par_todo addObject:@[keys[i], descs[i]]]; g_par_writer = 1; pthread_mutex_unlock(&g_par_mu);
+    par_writer();
     NSArray *names = [NSFileManager.defaultManager contentsOfDirectoryAtPath:g_par_dir error:nil];
     NSUInteger files = [names filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"SELF BEGINSWITH 'batch-' AND SELF ENDSWITH '.metalarchive'"]].count;
     NSString *idx = [NSString stringWithContentsOfFile:[g_par_dir stringByAppendingPathComponent:@"batches.tsv"] encoding:NSUTF8StringEncoding error:nil];
@@ -60,32 +53,31 @@ int main(void) { @autoreleasepool {
       VERIFY(del == 1 && access(sd, F_OK) != 0 && g_par_nowrite == 0, "⑥a 老版本的全机真崩标记：起局删掉（删了 %d、还在 %d）、照常写（nowrite=%d，应 0）", del, access(sd, F_OK) == 0, g_par_nowrite); }
     { NSString *saved = g_par_dir; g_par_dir = [NSString stringWithFormat:@"%s/no-such-dir/pipelines", t3];   // 写不进的目录：序列化必失败
       uint64_t sf0 = atomic_load(&g_par_ser_failed), w2 = atomic_load(&g_par_written);
-      par_note(@"t-ser-fail", descs[3]); par_flush_bg(); dispatch_group_wait(g_par_ser_grp, DISPATCH_TIME_FOREVER);
+      par_write_batch(@[@[@"t-ser-fail", descs[3]]]);
       pthread_mutex_lock(&g_par_mu); BOOL had = [g_par_have containsObject:@"t-ser-fail"]; pthread_mutex_unlock(&g_par_mu);
       g_par_dir = saved;
       VERIFY(atomic_load(&g_par_ser_failed) == sf0 + 1 && atomic_load(&g_par_written) == w2 && !had,
              "⑥b 序列化失败（目录写不进）：不崩、没写成计数 +%llu（应 1）、写成 +%llu（应 0）、键没记成已写（%d，应 0）",
              (unsigned long long)(atomic_load(&g_par_ser_failed) - sf0), (unsigned long long)(atomic_load(&g_par_written) - w2), had); }
-    g_par_nowrite = 1;   // 版本先验命中时（⑬）：par_note 不加进批
-    pthread_mutex_lock(&g_par_cmu); NSUInteger before = g_par_cur_keys.count; pthread_mutex_unlock(&g_par_cmu);
+    g_par_nowrite = 1;   // 版本先验命中时（⑬）：par_note 不进待写队列
+    pthread_mutex_lock(&g_par_mu); NSUInteger before = g_par_todo.count; pthread_mutex_unlock(&g_par_mu);
     par_note(@"t-after-dead-write", descs[0]);
-    pthread_mutex_lock(&g_par_cmu); NSUInteger after = g_par_cur_keys.count; pthread_mutex_unlock(&g_par_cmu);
-    VERIFY(after == before, "⑥c 不写时 par_note 不加进批（%lu → %lu）", (unsigned long)before, (unsigned long)after);
+    pthread_mutex_lock(&g_par_mu); NSUInteger after = g_par_todo.count; pthread_mutex_unlock(&g_par_mu);
+    VERIFY(after == before, "⑥c 不写时 par_note 不进待写队列（%lu → %lu）", (unsigned long)before, (unsigned long)after);
     g_par_nowrite = 0; atomic_store(&g_par_closing, 0);
     // ⑧ 一批写到一半正常收局（#618）：不留标记，下一局照常写
     s2a_pso_archive_exit();
     VERIFY(![NSFileManager.defaultManager fileExistsAtPath:wflag], "⑧ 写到一半正常收局：没有标记");
     par_check_dead_write();
     VERIFY(g_par_nowrite == 0, "⑨ 下一局起局：照常写（nowrite=%d）", g_par_nowrite);
-    // 收局之后后台才轮到写的一批（与收局赛跑输了的那一侧）：不写
+    // 收局之后写线程再起一批（与收局赛跑输了的那一侧）：不写、不进队列
     uint64_t w1 = atomic_load(&g_par_written);
-    { id<MTLBinaryArchive> a = [g_dev newBinaryArchiveWithDescriptor:[MTLBinaryArchiveDescriptor new] error:nil]; REQUIRE([a addComputePipelineFunctionsWithDescriptor:descs[1] error:nil]);
-      par_ser_batch(a, @[@"t-after-exit"], par_ga_list(0)); }
+    par_write_batch(@[@[@"t-after-exit", descs[1]]]);
     VERIFY(![NSFileManager.defaultManager fileExistsAtPath:wflag] && atomic_load(&g_par_written) == w1, "⑩ 收局后起的一批：不留标记、不写（写成 +%llu）", (unsigned long long)(atomic_load(&g_par_written) - w1));
-    pthread_mutex_lock(&g_par_cmu); before = g_par_cur_keys.count; pthread_mutex_unlock(&g_par_cmu);
+    pthread_mutex_lock(&g_par_mu); before = g_par_todo.count; pthread_mutex_unlock(&g_par_mu);
     par_note(@"t-after-exit-note", descs[2]);
-    pthread_mutex_lock(&g_par_cmu); after = g_par_cur_keys.count; pthread_mutex_unlock(&g_par_cmu);
-    VERIFY(after == before, "⑪ 收局后 par_note 不加进批（%lu → %lu）", (unsigned long)before, (unsigned long)after);
+    pthread_mutex_lock(&g_par_mu); after = g_par_todo.count; pthread_mutex_unlock(&g_par_mu);
+    VERIFY(after == before, "⑪ 收局后 par_note 不进待写队列（%lu → %lu）", (unsigned long)before, (unsigned long)after);
     { char cmd[256]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", t3); system(cmd); }
     [NSFileManager.defaultManager removeItemAtPath:g_par_dir error:nil];
     // ⑬ #756 版本先验（期望按玩家诊断定的区间手写）：iOS 18.0–18.3 不写；18.4、17.7、26.0 与非 iOS 的 18.2 照写
