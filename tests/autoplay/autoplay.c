@@ -31,6 +31,8 @@
 // 弱链接[autoplay]：s2a_ap_passes（渲染器提供；没登记时进局读数只用绘制数）
 // 弱链接[autoplay]：s2a_ap_audio_mark（声音层提供；没登记时 MARK 处报红）
 // 弱链接[autoplay]：s2a_thread_dump（原生层 thread.c 提供；单测假宿主 / 真值垫片没有）
+// 弱链接[autoplay]：s2a_snap_ap_hold（即时存档 snapshot.c 提供；没有 = 不停手，同原行为）
+// 弱链接[autoplay]：s2a_snap_ap_gen（即时存档 snapshot.c 提供；没有 = 不作废）
 // 弱链接[autoplay]：s2a_dump_threads（渲染器 gal_core.m 提供；同上）
 // 弱链接[autoplay]：s2a_widen_game（runtime/src/widen.c 提供：游戏自己出宽图 = 第二层；没登记按游戏不知道宽屏、触点画布 1280×720）
 #pragma weak s2a_ap_passes       // 没登记（老宿主 / 单测假宿主 / 通用模式）：进局读数只用绘制数这一路
