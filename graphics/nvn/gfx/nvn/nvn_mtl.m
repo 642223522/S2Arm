@@ -1503,6 +1503,54 @@ static int addr_adhoc(uint64_t addr, uint64_t len) {
     return 1;
 }
 static int addr_fallback(uint64_t addr, uint64_t len, uint64_t want) { return nvn_sparse_shadow(addr, len, want) || addr_adhoc(addr, len); }
+// 池里伸出池尾的缓冲对象（D-6VG6，11-25）：游戏在 0x195000 的池上建 0x1b0000 的缓冲（旷野之息拍照存图），缓冲对象是「池 + 偏移 + 大小」的视图，
+//   真机上整段都有 GPU 地址、读写落在池存储之后同一处内存。这边池的 Metal 缓冲只盖到池尾（按页取整），尾部 96 KB 不在任何池缓冲里：按首字节查到池缓冲、
+//   着色器再往后读写，就出了 Metal 缓冲 → GPU 缺页（kIOGPUCommandBufferCallbackErrorPageFault）；按整段查则查不到，绑定被丢。
+//   建缓冲对象时（hle_nvn.c BufferInitialize）把池在 Metal 侧的覆盖扩到 [mem, mem + need)：普通池补登记一条同键、同起点的长条目（池释放时 nvn_be_pool_del 按键一并到期），
+//   大池（按块现包）把区间上界与块表扩过去。扩出去的那段就是池存储之后同地址的内存，须整段可读写地映射着，否则不扩、记一行（不硬建：零拷贝建不出要重试约 2 秒）
+static int mem_rw_mapped(uint64_t a, uint64_t n) {   // [a, a + n) 每一页都在可读写的映射区里
+    for (uint64_t p = a, end = a + n; p < end; ) {
+        vm_address_t ra = (vm_address_t)p; vm_size_t rs = 0; vm_region_basic_info_data_64_t vi; mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64; mach_port_t obj = MACH_PORT_NULL;
+        if (vm_region_64(mach_task_self(), &ra, &rs, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&vi, &cnt, &obj) != KERN_SUCCESS) return 0;
+        if (obj != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), obj);
+        if (ra > p || (vi.protection & (VM_PROT_READ | VM_PROT_WRITE)) != (VM_PROT_READ | VM_PROT_WRITE)) return 0;
+        p = (uint64_t)ra + rs;
+    }
+    return 1;
+}
+void nvn_be_pool_cover(const void *mem, uint64_t size, uint64_t need) {
+    if (!mem || need <= size) return;
+    mtl_init();
+    uintptr_t lo = (uintptr_t)mem;
+    pthread_mutex_lock(&g_mu);
+    int known = pool_known(lo, need), big = g_nbig ? big_of(lo) : -1;
+    pthread_mutex_unlock(&g_mu);
+    if (known) return;   // 已盖到（同一个池上再建同样的缓冲对象）
+    static _Atomic int said;
+    if (!mem_rw_mapped(lo + size, need - size)) {
+        if (atomic_fetch_add(&said, 1) < 8) MLOG("【红】 memory pool %p+%#llx: a buffer object reaches %#llx past its start, but the memory after the pool is not mapped read-write: not covered, accesses past the pool end stay outside any Metal buffer",
+                                                 mem, (unsigned long long)size, (unsigned long long)need);
+        return;
+    }
+    if (big >= 0) {
+        pthread_mutex_lock(&g_mu);
+        big_pool *b = &g_big[big]; int done = 0;
+        if (b->full) {}   // 已改整池一个缓冲（长度建时定）：不扩，下面记一行
+        else {
+            uintptr_t nb = (lo + need + getpagesize() - 1) & ~(uintptr_t)(getpagesize() - 1);
+            size_t ok = ((b->b - b->a) >> 24) + 1, nk = ((nb - b->a) >> 24) + 1;
+            int *ch = nk > ok ? realloc(b->chunk, nk * sizeof *ch) : b->chunk;
+            if (ch) { if (nk > ok) memset(ch + ok, 0, (nk - ok) * sizeof *ch); b->chunk = ch; if (nb > b->b) b->b = nb; if (lo + need > b->hi) b->hi = lo + need; g_plast = -1; atomic_fetch_add(&g_pool_gen, 1); done = 1; }
+        }
+        pthread_mutex_unlock(&g_mu);
+        if (atomic_fetch_add(&said, 1) < 8) MLOG("%s memory pool %p+%#llx (in chunks): a buffer object reaches %#llx past its start: %s", done ? "" : "【红】", mem, (unsigned long long)size, (unsigned long long)need,
+                                                 done ? "the pool's address range now covers it" : "the pool is already one whole-pool buffer, not covered");
+        return;
+    }
+    nvn_be_pool_add(mem, need);
+    if (atomic_fetch_add(&said, 1) < 8) MLOG("memory pool %p+%#llx: a buffer object reaches %#llx past its start; the pool's Metal buffer now covers it (the memory after the pool, as the hardware addresses it)",
+                                             mem, (unsigned long long)size, (unsigned long long)need);
+}
 int nvn_be_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off) {
     addr = nvn_ga2ca(addr);   // 兜底：录制入口已换成 CPU 地址，这里只接住从游戏内存里读出、没在读出处换的 GPU 地址（hle_nvn.c GPU 地址空间）
     const pc_ent *c = pc_get(addr, len);
