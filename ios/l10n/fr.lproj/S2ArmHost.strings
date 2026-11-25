@@ -270,6 +270,7 @@
 "about.mode.unrecorded" = "Inconnu (ce package n'a pas enregistré de mode graphique)";
 "about.unknown" = "Inconnu";
 "app.fpsCap.ladder" = "Cette session ne peut pas maintenir 60 FPS de façon stable ; le jeu revient pour l'instant à sa fréquence native. Il repartira à 60 FPS la prochaine fois que vous ouvrirez le jeu.";
+"app.fpsCap.fast" = "Ce jeu tourne trop vite à 60 FPS ; il reste donc à 30 FPS.";
 "app.fpsCap.restored" = "60 FPS est rétabli.";
 "app.fpsCap.retry" = "Réessayer 60 FPS";
 "app.mic.title" = "Micro";
