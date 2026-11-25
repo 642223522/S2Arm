@@ -3184,10 +3184,12 @@ def effective_input(c, gid, player=1):
 
 def load_input(c):
     """作业 loadInput（#2081）：键位弹窗读四位玩家实际生效的键位，规则同起局（effective_input）；config 为 None = 标准键位。
-    default（#1987）：所有游戏的默认，default-input.json 能用时的那份，否则 None（没设过 = 标准键位）；弹窗「恢复默认」回到它"""
+    default（#1987）：所有游戏的默认，default-input.json 能用时的那份，否则 None（没设过 = 标准键位）；弹窗「恢复默认」回到它。
+    defaultProblem：default-input.json 在但读不出或不合规（这时 default 为 None，各款按标准键位走），弹窗提示一行，不再静默退回"""
     gid = c.game()["id"]
+    default, default_problem = _usable_input(c.private / "default-input.json")
     return dict(players=[dict(player=p, **effective_input(c, gid, p)) for p in (1, 2, 3, 4)],
-                default=_usable_input(c.private / "default-input.json")[0])
+                default=default, defaultProblem=default_problem)
 
 
 # 标准键位（#1987）：没设所有游戏的默认时，「生效的缺省」就是它。同 Mac 启动器 InputConfig.standard（S2ArmLauncherModel+Input.swift）

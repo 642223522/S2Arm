@@ -3476,14 +3476,21 @@ class JobsTests(unittest.TestCase):
         gid, _ = self.input_games()
         load = lambda: self.input_job(lambda c: (setattr(c, "game", lambda: dict(id=gid)), library.load_input(c))[1], gameId=gid)
         self.assertIsNone(load()["default"])
+        self.assertFalse(load()["defaultProblem"], "没设过不是问题")
         self.input_job(library.set_default_input, config=self.launcher_custom(19))
         shown = load()
         self.assertEqual(shown["default"]["keyboard"]["A"]["code"], 19)
         self.assertEqual(shown["players"][0]["source"], "default")
+        self.assertFalse(shown["defaultProblem"])
         dflt = Context(dict(self.request, taskId=str(uuid.uuid4()))).private / "default-input.json"
         dflt.write_bytes(b"{\xff not json")
         self.assertIsNone(load()["default"])
         self.assertEqual(load()["players"][0]["source"], "standard")
+        self.assertTrue(load()["defaultProblem"], "默认文件坏了要报出来，弹窗提示一行，不静默退回标准键位")
+        # 合规性也算：是 JSON 但过不了 validate_input
+        dflt.write_text('{"schema": 1, "keyboard": {}}', encoding="utf-8")
+        self.assertIsNone(load()["default"])
+        self.assertTrue(load()["defaultProblem"])
 
     def test_standard_input_matches_launcher_standard(self):
         # 作业层的标准键位与 Mac 启动器 InputConfig.standard 是同一套：读 Swift 原文的键码表、鼠标表、手柄键序与 MouseOptions 缺省逐项比
