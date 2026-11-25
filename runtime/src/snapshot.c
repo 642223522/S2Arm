@@ -1078,7 +1078,12 @@ static int restore_body(const char *dir) {
     { int s2a_snap_far_load(FILE *); f = open_in(dir, "far.bin", "rb"); if (!f || s2a_snap_far_load(f)) { if (f) fclose(f); return -1; } fclose(f); }
     double t1 = now_s(); uint64_t raw = 0;
     int s2a_snap_keypages_reapply(void);
+    // 社区补丁开关槽 / 帧率表槽在模块键页里，load_mem 会把它们盖回存档那一刻：写回前记下本进程的，写回后按当前开关重写（11-24 一款开放世界大作：
+    //   60 帧关时存、开着恢复约 2 倍速；开时存、关着恢复画面冻住）
+    void s2a_cpatch_snap_hold(void), s2a_cpatch_snap_reapply(void), s2a_fps_snap_reapply(void), s2a_widen_snap_hold(void), s2a_widen_snap_reapply(void);
+    s2a_cpatch_snap_hold(); s2a_widen_snap_hold();
     if (load_mem(dir, &raw) || s2a_snap_hostslots_reapply() || s2a_snap_keypages_reapply()) return -1;
+    s2a_cpatch_snap_reapply(); s2a_widen_snap_reapply(); s2a_fps_snap_reapply();
     double t2 = now_s();
     f = open_in(dir, "hlog.bin", "rb"); if (!f || s2a_snap_hlog_load(f)) { if (f) fclose(f); LOG("【红】即时存档恢复：读不了句柄日志"); return -1; } fclose(f);
     f = open_in(dir, "kernel.bin", "rb"); if (!f || s2a_snap_kernel_load(f, s2a_snap_skip_cs)) { if (f) fclose(f); return -1; } fclose(f);

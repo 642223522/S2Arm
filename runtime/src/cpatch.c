@@ -20,6 +20,8 @@
 #include <sys/mman.h>
 #include "s2a_docs.h"
 #define CP_SLOT 2046
+// 开关槽所在模块（即时存档恢复前后保持 / 重写用，见 s2a_cpatch_snap_hold）：v = 恢复写回前本进程槽里的值
+static struct { module_t *m; uint64_t v; } g_slotm[16]; static int g_nslotm;
 static _Thread_local FILE *g_boot_file;
 void s2a_cpatch_abort_boot_inputs(void) {
     FILE *file = g_boot_file; g_boot_file = NULL;
@@ -85,6 +87,7 @@ void s2a_cpatch_session_reset(void) {
     pthread_mutex_unlock(&g_ad_lock);
     for (int i = 0; i < g_nfu; i++) free(g_fu[i].spec);
     memset(g_fu, 0, sizeof g_fu); g_nfu = g_nfud = 0; atomic_store(&g_nfps, 0); g_fps_target = 0; g_fps_on = -1; g_fps_want = 0;
+    memset(g_slotm, 0, sizeof g_slotm); g_nslotm = 0;
 }
 
 static int in_list(const char *list, const char *id) {
@@ -405,6 +408,7 @@ static void cpatch_load_stream(module_t *m, FILE *f) {
     uint8_t *page = m->base + m->key_page_off;   // 键页（宽屏点同样把它改成可写：命中槽要写）
     if (mprotect(page, m->key_page_size, PROT_READ | PROT_WRITE)) die("%s 键页改可写失败（社区补丁槽）", m->name);
     ((uint64_t *)page)[CP_SLOT] = mask;
+    if (g_nslotm < (int)(sizeof g_slotm / sizeof *g_slotm)) g_slotm[g_nslotm++].m = m; else LOG("【红】社区补丁：开关槽模块超过 %d 个，%s 即时存档恢复后不重写", (int)(sizeof g_slotm / sizeof *g_slotm), m->name);
     for (int i = ch0; i < g_nch; i++) g_ch[i].slot = (_Atomic uint64_t *)((uint64_t *)page + CP_SLOT);
     pthread_mutex_lock(&g_ad_lock);
     int nad = 0;
@@ -650,6 +654,26 @@ void s2a_cpatch_fps_follow(int on) {
         snprintf(g_st[j].st, sizeof g_st[j].st, "%s", lit ? "开" : "关"); if (!lit) g_st[j].eff[0] = 0; any = 1; }
     if (any) st_flush_locked();
     pthread_mutex_unlock(&g_st_lock);
+}
+// 即时存档恢复（runtime/src/snapshot.c 写回游戏内存前后各调一次）：快照整页写回模块内存，键页里的开关槽（2046：帧率 / 宽屏 / 金手指的位）
+//   和补丁写进数据段的值都变回存档那一刻，本进程起局 / 局中按当前开关写好的被盖掉。11-24 一款开放世界大作实测：60 帧关时存的快照开着 60 帧恢复，
+//   补丁的步长代码不执行（步长恒 0），游戏约 2 倍速；60 帧开时存、关着恢复，画面冻住。
+//   hold：写回前记下各模块开关槽（本进程真值）；reapply：写回后还原，再按当前画幅、当前 60 帧开关把已开补丁的数据写入重做（mode 1 / 2 不校验原值）
+static _Atomic int g_snap_gen;   // 即时存档恢复次数：服务层 FpsLocker.cs 见它变了就按当前选档把 FPSLocker 写入重做一遍（游戏内存是存档那一刻的）
+int s2a_cpatch_snap_gen(void) { return atomic_load(&g_snap_gen); }
+void s2a_cpatch_snap_hold(void) { for (int i = 0; i < g_nslotm; i++) g_slotm[i].v = ((uint64_t *)(g_slotm[i].m->base + g_slotm[i].m->key_page_off))[CP_SLOT]; }
+void s2a_cpatch_snap_reapply(void) {
+    int fix = 0;
+    for (int i = 0; i < g_nslotm; i++) { _Atomic uint64_t *sl = (_Atomic uint64_t *)((uint64_t *)(g_slotm[i].m->base + g_slotm[i].m->key_page_off) + CP_SLOT);
+        if (atomic_exchange(sl, g_slotm[i].v) != g_slotm[i].v) fix++; }
+    int nd = 0;
+    pthread_mutex_lock(&g_ad_lock);
+    for (int i = 0; i < g_nad; i++) if (g_ad[i].slot && g_ad[i].on && g_ad[i].spec[0]) { if (data_writes(g_ad[i].m, g_ad[i].spec, 1)) die("自适应画幅已校验的数据写入失败（即时存档恢复后重写）"); nd++; }
+    for (int i = 0; i < g_nfx; i++) if (g_fx[i].slot && g_fx[i].on && g_fx[i].spec[0]) { if (data_writes(g_fx[i].m, g_fx[i].spec, 1)) die("宽屏变体已校验的数据写入失败（即时存档恢复后重写）"); nd++; }
+    pthread_mutex_unlock(&g_ad_lock);
+    if (g_fps_on >= 0) s2a_cpatch_fps_follow(g_fps_on);
+    atomic_fetch_add(&g_snap_gen, 1);
+    if (g_nslotm) LOG("即时存档恢复：社区补丁开关槽 %d 个按本进程还原（与快照不同 %d 个），画面补丁数据重写 %d 份，帧率补丁按当前开关（%s）重跟", g_nslotm, fix, nd, g_fps_on > 0 ? "开" : g_fps_on == 0 ? "关" : "没跟过");
 }
 // 这一份帧率补丁此刻是否被选中开着（服务层 FpsLocker.cs 每秒按份问）：选中 → 选中档的目标帧率；没选中 / 帧率关 / 包里没有这份 → 0。
 //   FPSLocker 的定期写入只该写选中那一份、按选中的档求值（审计 P1-184：原先跟 s2a_fps_live 一律按 60 写进每一份，选 120 档时和已开的 120 补丁抢同一处）
