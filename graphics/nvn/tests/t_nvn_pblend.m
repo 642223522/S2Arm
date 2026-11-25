@@ -7,6 +7,8 @@
 //   ③ 同一次绘制两个重叠三角形依次混合：(1,1,1,.5) 两遍 SRC_ALPHA / ONE_MINUS_SRC_ALPHA（RGB 与 A 同）混进 (0,0,0,0) → (.75,.75,.75,.375)
 //   ④ 第二源（SRC1_ALPHA，输出 1 的 alpha = 0）清掉源 NaN；⑤ 混合常量色 (0,1,0,1) 的 CONSTANT_COLOR 只清 R / B
 //   ⑥ 老库的着色器（没有开关常量）照旧固定混合、记一次退回
+//   ⑦ 着色器照生产加载（sh_fn_constants：带函数常量的函数换成不设值的特化）：特化后的函数读不出常量表（Metal 行为），开关仍认得出（加载时先读）；
+//      ①–⑥ 都用这样加载的着色器跑（11-24 真机：特化后再读，开关一律读成 0，可编程混合整套没生效）
 #ifndef NVN_PBLEND_SOURCE
 #define NVN_PBLEND_SOURCE "../gfx/nvn/nvn_mtl.m"
 #endif
@@ -32,6 +34,7 @@ static NSString *const k_old = @"#include <metal_stdlib>\nusing namespace metal;
 
 static NvShader *shader(id<MTLLibrary> lib, NSString *name, int stage) {
     NvShader *s=[NvShader new]; s->stage=stage; s->fn=[lib newFunctionWithName:name]; s->plib=lib; REQUIRE(s->fn);
+    REQUIRE(sh_fn_constants(s, lib, name, nil, stage, name));   // 同 shader_build：有函数常量就换成不设值的特化
     strlcpy(s->key,stage?"cccccccccccccccc_b":"dddddddddddddddd_b",sizeof s->key);
     s->rf.pos_attr=-1; s->rf.has_user=stage?2:1;
     if(stage) { s->rf.color_known=1; s->rf.color_mask=3; }
@@ -78,6 +81,9 @@ int main(void) { @autoreleasepool {
     id<MTLLibrary> vlib=[g_dev newLibraryWithSource:k_vert options:co error:&error]; REQUIRE(vlib);
     id<MTLLibrary> olib=[g_dev newLibraryWithSource:k_old options:co error:&error]; REQUIRE(olib);
     NvProg *program=[NvProg new]; program->sh[0]=shader(vlib,@"triangle",0); program->sh[1]=shader(flib,@"main0",1);
+    { NvShader *f=program->sh[1];
+      CHECK(f->fn.functionConstantsDictionary.count==0 && fs_pb_avail(f)==3, "⑦ 照生产加载：特化后的函数常量表 %lu 项（Metal 读不出，应 0）、认出的开关 %#x（两个浮点输出，应 0x3）",
+            (unsigned long)f->fn.functionConstantsDictionary.count, fs_pb_avail(f)); }
     NvShader *writer=shader(olib,@"old_main",1); writer->rf.color_mask=1; strlcpy(writer->key,"eeeeeeeeeeeeeeee_b",sizeof writer->key);   // 写目标值用：不开混合，照原样写源
     prog_t p={.magic=MAGIC('P','R','O','G'),.serial=nvn_new_serial()}; serial_put(p.serial,program);
     uint8_t *memory=NULL; REQUIRE(!posix_memalign((void **)&memory,65536,1<<20)); memset(memory,0,1<<20);

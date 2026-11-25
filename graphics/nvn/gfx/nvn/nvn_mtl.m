@@ -8490,6 +8490,21 @@ static int shader_args_init(NvShader *o) {   // 1 = usable; 0 = red line given
     return 1;
 }
 static NSString *fnn(NvShader *o, NSString *entry) { return o->fnpfx.length && entry ? [o->fnpfx stringByAppendingString:entry] : entry; }   // a function of the shader's library by its logical entry name
+// A function that declares function constants is kept specialized with none set (shader_build; pipelines are built from it). What the library's function declares is read
+//   before that: a specialized function's functionConstantsDictionary is empty (Metal on this Mac: a function with s2a_pb0_c lists it, the same function specialized with no
+//   value or with s2a_pb0_c set lists nothing). #674: every float-output fragment declares the programmable-blend switches s2a_pb<n>_c, so they all went through here and
+//   fs_pb_avail read none — on a package translated with the switches, every pipeline that wanted it kept Metal's blender (0 x NaN = NaN). Returns 0 when specializing failed (logged)
+static int sh_fn_constants(NvShader *o, id<MTLLibrary> lib, NSString *main, NSString *main_u, int stage, NSString *pc) {
+    NSDictionary *fc = o->fn.functionConstantsDictionary;
+    uint8_t av = 0; for (int i = 0; i < 8; i++) if (fc[[NSString stringWithFormat:@"s2a_pb%d_c", i]]) av |= (uint8_t)(1u << i);
+    o->pb_av = av; o->pb_av_done = 1;   // fs_pb_avail reads these (the shader is not shared yet)
+    if (!fc.count) return 1;
+    if (stage == 1 && fc[@"S2A_AT"]) { o->has_atms = 1; o->at_lib = lib; o->at_main = main; o->at_u = o->fn_u ? main_u : nil; o->fout_fc = fc[@"S2A_FU"] != nil; }   // gap families 34 / 37 (fs_atms_fn)
+    NSError *fe = nil; id<MTLFunction> f = [lib newFunctionWithName:main constantValues:[MTLFunctionConstantValues new] error:&fe];
+    if (f) o->fn = f; else { MLOG("【红】 shader %s: specializing its function constants failed: %s", pc.UTF8String, fe.localizedDescription.UTF8String); return 0; }
+    if (o->fn_u) { f = [lib newFunctionWithName:main_u constantValues:[MTLFunctionConstantValues new] error:&fe]; o->fn_u = f; }
+    return 1;
+}
 // S2Arm: a fallback-directory json (DM_MSL_FALLBACK, the on-device translation) is current only when its chain and its translator fingerprint "xfp" (S2A.Dsh s2a_dsh_xfp) are this build's:
 //   the chain follows only the host / library interface and the fallback directory survives app updates, so an older translator's result keeps the chain. Without s2a_dsh_xfp (S2A.Aot not linked) none is.
 //   dsh_miss.inc dsh_have checks the same two before reusing it
@@ -8738,12 +8753,7 @@ static NvShader *shader_build(NSString *pc, int stage, int layer, int depth_zero
                 if ([v isKindOfClass:[NSDictionary class]] && v[@"output_control_points"]) { o->tess_ocp = [v[@"output_control_points"] unsignedIntValue]; break; } } }
         else o->tess_ocp = 0;   // domain: ocp无意义
     }
-    if (o->fn.functionConstantsDictionary.count) {
-        if (stage == 1 && o->fn.functionConstantsDictionary[@"S2A_AT"]) { o->has_atms = 1; o->at_lib = lib; o->at_main = fnn(o, entry); o->at_u = o->fn_u ? fnn(o, j[@"entry_u"]) : nil; o->fout_fc = o->fn.functionConstantsDictionary[@"S2A_FU"] != nil; }   // gap families 34 / 37 (fs_atms_fn)
-        NSError *fe = nil; id<MTLFunction> f = [lib newFunctionWithName:fnn(o, entry) constantValues:[MTLFunctionConstantValues new] error:&fe];
-        if (f) o->fn = f; else { MLOG("【红】 shader %s: specializing its function constants failed: %s", pc.UTF8String, fe.localizedDescription.UTF8String); return nil; }
-        if (o->fn_u) { f = [lib newFunctionWithName:fnn(o, j[@"entry_u"]) constantValues:[MTLFunctionConstantValues new] error:&fe]; o->fn_u = f; }
-    }
+    if (!sh_fn_constants(o, lib, fnn(o, entry), o->fn_u ? fnn(o, j[@"entry_u"]) : nil, stage, pc)) return nil;
     if (!shader_args_init(o)) return nil;
     if (o->rf.has_c1 && !t_hydrate) c1_store(o);
     NSString *ext = g_cb_ext[[pc hasSuffix:@"_b"] ? [pc substringToIndex:pc.length - 2] : pc];   // bytes each uniform slot can read (cb_len), storage slots never written (sb_ro)
@@ -11307,7 +11317,7 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
             break; } }
     uint32_t need = fs && !fsfn && d.fragmentFunction == fs->fn ? pso_fout_need(k, fs, merged) : 0;
     // #674: targets blended in the fragment shader: main0 specialized with the switches (and the constants below in the same specialization), their fixed blending off further down
-    uint32_t pb = fs && !fsfn && d.fragmentFunction == fs->fn ? pso_pb_eff(k, fs, merged, 0) : 0;
+    uint32_t pb = fs && !fsfn && d.fragmentFunction == fs->fn ? pso_pb_eff(k, fs, merged, 1) : 0;   // one count per pipeline built (prewarm or first use) that wanted the switch and has none
     id<MTLFunction> pbf = pb ? fs_pb_fn(fs, k->at, k->msoff, need, pb) : nil;
     if (!pbf) pb = 0;
     id<MTLFunction> fcf = !pb && need && fs->fout_fc ? fs_atms_fn(fs, 0, k->at, k->msoff, need) : nil;   // #427: output types, alpha test and sample mask in one specialization of main0
@@ -11789,7 +11799,7 @@ static void *pso_get_vs_ptr(NvProg *pr, NvShader *vs) {   // borrowed: g_pso hol
     }
     id<MTLFunction> ms_fn = ms_fs_override(fs); if (ms_fn) k.fsfn = (__bridge void *)ms_fn;   // DM_NVN_MAGSCAN phases 2 / 3
     g_pso_color_round = ms_fn ? 0 : pso_color_round_mask(&k, fs, g_pso_lmap != NULL);
-    { uint32_t pb = ms_fn || g_pso_fsfn ? 0 : pso_pb_eff(&k, fs, g_pso_lmap != NULL, 1);
+    { uint32_t pb = ms_fn || g_pso_fsfn ? 0 : pso_pb_eff(&k, fs, g_pso_lmap != NULL, 0);   // every draw comes here: the fallback is counted where a pipeline is built (pso_desc)
       if (pb && !fs_pb_fn(fs, k.at, k.msoff, pso_fout_need(&k, fs, 0), pb)) pb = 0;   // the same specialization pso_desc takes (cached): a failure leaves both on Metal's blender
       if (pb) { static int once; if (!once++) MLOG("programmable blending (#674): fragment shader %s blends targets %#x in the shader (first pipeline)", fs->key, pb); }
       g_pso_color_round &= (uint16_t)~(pb << 8);   // blended in the shader: no NaN clearing before Metal's blender
