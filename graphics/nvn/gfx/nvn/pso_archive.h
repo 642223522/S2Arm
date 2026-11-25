@@ -1,11 +1,10 @@
 // S2Arm: the pipeline archive (after MacNativeGames totk_pipeline_archive.h, MIT). A pipeline's GPU code, once compiled on this device, is kept in a Metal binary archive beside
-// pso_user.tsv (pipelines/<key>.metalarchive, or batch-*.metalarchive files indexed by batches.tsv, see par_write_batch) and later builds take it from there instead of compiling: the system's own shader cache is cleared by reboots and OS updates, and
+// pso_user.tsv (pipelines/<key>.metalarchive, or batch-*.metalarchive files indexed by batches.tsv, see par_ser_batch) and later builds take it from there instead of compiling: the system's own shader cache is cleared by reboots and OS updates, and
 // the prepare step (warm_prepare) rebuilt every listed pipeline from scratch after one. Measured there (M4, 2026-10-21): one file per pipeline, because a file holding many costs
 // memory about quadratic in their number and Metal searches every archive handed to a pipeline; a one-pipeline file opens in 0.08 ms (about 35 KB) and gives its pipeline in
 // 0.04 ms. iPhone 14: prewarm 95-122 s → 5.9 s, pipeline time in long frames 1,452 → 102 ms.
-// A build first asks only its own file (MTLPipelineOptionFailOnBinaryArchiveMiss); a miss compiles as before. Writing compiles the pipeline once more, and writes go one at a time
-// (g_par_wmu: the build folder a write leaves is told apart from others' by appearing during it): written in place they held the prepare step's 18 workers behind one lock
-// (mhrise on the Mac 10-26: 2.0 s → 48.9 s). So the prewarm's misses are only noted (par_write_in_place) and written beside it, one by one by a utility writer (par_note);
+// A build first asks only its own file (MTLPipelineOptionFailOnBinaryArchiveMiss); a miss compiles as before. The prewarm's misses (par_write_in_place) are added to the batch
+// being gathered right after they compile, while Metal's compile cache still holds them (no second compile, #2020), and a full batch is serialized in the background (par_note);
 // a pipeline first compiled in play is in pso_user.tsv, and the next start's prewarm notes it.
 // The key only finds the file: Metal checks the functions and state, so a wrong file is a miss, never a wrong pipeline. A file that misses (another package's libraries under the
 // same key) is removed and written again. Valid for one OS version, GPU and translation chain (pipelines/identity.json; otherwise the folder is removed).
@@ -21,7 +20,7 @@
 
 static pthread_mutex_t g_par_mu = PTHREAD_MUTEX_INITIALIZER;
 static NSMutableSet<NSString *> *g_par_have;                              // keys with a file
-static NSMutableDictionary<NSString *, NSString *> *g_par_bmap;          // key → batch file name (pipelines/batches.tsv; 11-06, see par_write_batch)
+static NSMutableDictionary<NSString *, NSString *> *g_par_bmap;          // key → batch file name (pipelines/batches.tsv; 11-06, see par_ser_batch)
 static NSMutableDictionary<NSString *, id<MTLBinaryArchive>> *g_par_open; // opened (kept: Metal keeps their memory anyway)
 static NSString *g_par_dir, *g_par_bdir;                                // g_par_bdir: the package's read-only archives (shaders/direct/pipelines, made at pack time)
 static NSMutableSet<NSString *> *g_par_bhave;                             // keys with a package file
@@ -46,7 +45,7 @@ static int par_may_write(void) {
 //   ① 版本先验：iOS 18.0–18.3.x 不写。依据玩家诊断：崩溃线程栈在归档写入器里的 7 局全在 18.1.1 / 18.3.2，18.2 / 18.3.2 有 18 局「上次死在写里」、0 局写成；18.4、18.7.x 共 13 局写成、0 崩
 //   ② 原有的「全机学习」（崩溃线程正在写归档时由崩溃处理器记系统版本串进 Application Support/S2Arm/pso_archive_dead.txt，起局读到就整机不写）去掉（11-23 维护者：要根修）：
 //      唯一留下崩溃现场的那次（iPhone18,2 iOS 26.0、0.6.7，写进 1852 条后崩）对上符号 = serializeToURL:error: 失败返回后，ARC 立刻 retain 它写回的 NSError
-//      时总线错——Metal 在序列化失败路径上交回的 error 指针是失效的（返回那一刻就坏，不是我们自动释放池排空后才读）。根修：写归档的几个调用不取 error（见 par_write_batch），
+//      时总线错——Metal 在序列化失败路径上交回的 error 指针是失效的（返回那一刻就坏，不是我们自动释放池排空后才读）。根修：写归档的几个调用不取 error（见 par_ser_batch），
 //      失败只看返回值；全机标记不再记、不再读，老版本留下的标记起局删掉（这台机从此照常写）。全机标记涉及 macOS 15.1 / 15.3、iOS 26.0 / 27.2 / 27.2.1 共 6 个构建，不是某一版独有
 static char g_par_os_key[192];
 static int par_os_gate(int ios, long major, long minor) { return ios && major == 18 && minor < 4; }
@@ -77,9 +76,8 @@ static void par_check_dead_write(void) {   // 起局（打开归档目录时）�
 }
 static const char *g_par_harvest;                                        // S2A_PSO_HARVEST: the folder the harvest writes into (nvn_pso_harvest); writes at once instead of noting
 static _Atomic uint64_t g_par_hits, g_par_misses, g_par_written, g_par_write_failed, g_par_stale, g_par_ga_removed;
-static _Atomic uint64_t g_par_ser_failed;   // 序列化没成的批（Metal 返回失败；它的 error 不读，见 par_write_batch）
+static _Atomic uint64_t g_par_ser_failed;   // 序列化没成的批（Metal 返回失败；它的 error 不读，见 par_ser_batch）
 static __thread int par_write_in_place;                                  // the prewarm's threads: what they compile is noted for writing (par_flush_bg)
-static NSMutableArray *g_par_todo;                                       // @[key, descriptor] noted by the prewarm, written beside it (par_writer)
 
 static NSDictionary *par_identity(id<MTLDevice> dev) {
     return @{@"schema": @1, @"chain": @DMSH_CHAIN, @"gpu": dev.name ?: @"?", @"os": NSProcessInfo.processInfo.operatingSystemVersionString ?: @"?"};
@@ -133,7 +131,7 @@ static NSSet<NSString *> *par_ga_list(int own_only) {
 //   前后两次列目录之间多出的只会是本进程的。锁文件放在第一个 gpuarchiver 目录的上一级（同一用户的宿主看到同一路径）；打不开锁照旧只用进程内锁
 //   iPhone / iPad / Apple TV 不拿这把文件锁：App 容器里只有本进程一个宿主（没有别的进程会碰同一个 gpuarchiver 目录），进程内的 g_par_wmu 已经串行；
 //   而存档写手在后台低优先级跑、一批可写几秒，切到后台时系统发现挂起的 App 还拿着文件锁就直接杀掉（RunningBoard 0xdead10cc，诊断 D-7NAV 11-23 iPhone19,2：
-//   符号化后第 156 号线程正停在 par_write_batch → serializeToURL，锁就是这一把），玩家看到的是「切出去回来游戏没了」
+//   符号化后第 156 号线程正停在 par_write_batch（现 par_ser_batch）→ serializeToURL，锁就是这一把），玩家看到的是「切出去回来游戏没了」
 #include <sys/file.h>
 static int par_ga_lock(void) {
 #if TARGET_OS_IPHONE
@@ -150,14 +148,14 @@ static int par_ga_lock(void) {
 #endif
 }
 static void par_ga_unlock(int fd) { if (fd >= 0) flock(fd, LOCK_UN); }
-static void par_ga_remove_new(NSSet<NSString *> *before) {
-    NSMutableSet<NSString *> *made = [par_ga_list(0) mutableCopy]; [made minusSet:before];
+static void par_ga_remove_new_set(NSSet<NSString *> *made) {
     for (NSString *path in made) {
         NSError *e = nil;
         if ([NSFileManager.defaultManager removeItemAtPath:path error:&e]) atomic_fetch_add(&g_par_ga_removed, 1);
         else { static _Atomic int said; if (atomic_fetch_add(&said, 1) < 4) MLOG("【红】 pipeline archive: cannot remove Metal's build folder %s: %s", path.UTF8String, e.localizedDescription.UTF8String); }
     }
 }
+static void par_ga_remove_new(NSSet<NSString *> *before) { NSMutableSet<NSString *> *made = [par_ga_list(0) mutableCopy]; [made minusSet:before]; par_ga_remove_new_set(made); }
 // Once: the folder of this OS version, GPU and chain, and the keys it has files for
 static void par_open_dir(void) {
     static dispatch_once_t once;
@@ -201,7 +199,7 @@ static void par_open_dir(void) {
             [g_par_have addObject:name.stringByDeletingPathExtension];
             bytes += [[fm attributesOfItemAtPath:[g_par_dir stringByAppendingPathComponent:name] error:nil] fileSize];
         }
-        // Batch files (par_write_batch): batches.tsv holds key → file, later lines win (a key written again after a miss); a line whose file is gone is skipped
+        // Batch files (par_ser_batch): batches.tsv holds key → file, later lines win (a key written again after a miss); a line whose file is gone is skipped
         g_par_bmap = [NSMutableDictionary dictionary]; NSUInteger nb = 0;
         NSString *idx = [NSString stringWithContentsOfFile:[g_par_dir stringByAppendingPathComponent:@"batches.tsv"] encoding:NSUTF8StringEncoding error:nil];
         NSMutableSet *bfiles = [NSMutableSet set];
@@ -268,7 +266,7 @@ static void par_write(NSString *key, id desc) {
     NSSet<NSString *> *before = par_ga_list(0);
     @autoreleasepool {
         id<MTLBinaryArchive> a = [g_dev newBinaryArchiveWithDescriptor:[MTLBinaryArchiveDescriptor new] error:&e];
-        // 加管线 / 序列化不取 error（见 par_write_batch：Metal 失败路径交回的 error 是失效指针，读它就崩）
+        // 加管线 / 序列化不取 error（见 par_ser_batch：Metal 失败路径交回的 error 是失效指针，读它就崩）
         ok = a && ([desc isKindOfClass:MTLRenderPipelineDescriptor.class] ? [a addRenderPipelineFunctionsWithDescriptor:desc error:nil]
                                                                           : [a addComputePipelineFunctionsWithDescriptor:desc error:nil]);
         if (ok && ![a serializeToURL:[NSURL fileURLWithPath:temp] error:nil]) { ok = NO; atomic_fetch_add(&g_par_ser_failed, 1); }
@@ -281,10 +279,6 @@ static void par_write(NSString *key, id desc) {
     pthread_mutex_lock(&g_par_mu); [g_par_have addObject:key]; pthread_mutex_unlock(&g_par_mu);
     atomic_fetch_add(&g_par_written, 1);
 }
-// The prewarm's misses go to one writer at utility QoS, started at the first one and running beside the prewarm, off the game's way (the next start takes them from the
-//   archive). Not after the prewarm: 11-02 mhrise on an iPhone 17 Pro (thermal state serious) had the first frame wait 64 s for 12,741 of 17,630 lines and the rest 52 s more in
-//   play; the writes after it (each compiles its pipeline once more) never finished before the app went to the background, and the runs before it ended before the prewarm did,
-//   so every start found 0 in the archive and compiled all 17,630 again. Written as they come, whatever a run compiled is kept, however it ends
 // Up to PAR_BATCH noted pipelines into one file (11-06 Mario Kart 8 Deluxe on an iPhone, prewarm list 19,077 lines: one file per pipeline wrote about 95 ms each — the
 //   lock, two listings of Metal's build folders, a serialization and a 380 KB build folder per pipeline — so a run wrote 446 of 5,830 in 42.6 s, the rest were lost at exit and every
 //   start compiled almost everything again behind the 15 s first-frame cap). Measured on this Mac (fresh pipelines): one per file 9.9–10.9 ms each, 32 per file 2.6–4.1 ms each;
@@ -292,28 +286,31 @@ static void par_write(NSString *key, id desc) {
 #ifndef PAR_BATCH
 #define PAR_BATCH 32   // 单测反证编 -DPAR_BATCH=1
 #endif
-static void par_write_batch(NSArray<NSArray *> *items) {
-    NSMutableArray<NSArray *> *todo = [NSMutableArray array];
-    pthread_mutex_lock(&g_par_mu); for (NSArray *it in items) if (![g_par_have containsObject:it[0]]) [todo addObject:it]; pthread_mutex_unlock(&g_par_mu);
-    if (!todo.count) return;
+// 写回不二次编译（#2020，11-24）：原先预热只记下（键，描述符），由后台最低优先级的写手过后逐批 addRenderPipelineFunctions 再序列化——那一步要把管线
+//   再编一遍（本机：刚编完紧接着收 0.1 ms/条，没编过的收 6.0 ms/条；iPad M5 上 0400486024DEC000 实测 301.7 s 写 481 条、剩 16930 条，一局新编一万多条只写进约三千，
+//   下一局又从头编）。现在编完当场在编译线程上加进正在攒的这一批（Metal 的编译缓存还热，不重编），攒满 PAR_BATCH 条整批交后台序列化 / 改名 / 写索引；
+//   预热结束（par_flush_bg）把没攒满的一批也写掉。收局时正攒着的一批丢掉（同原先：丢一批下次再写）
+static id<MTLBinaryArchive> g_par_cur;          // 正在攒的一批（g_par_cmu）
+static NSMutableArray<NSString *> *g_par_cur_keys;
+static NSSet<NSString *> *g_par_cur_before;     // 这一批开攒前 Metal 的构建目录：它的构建目录建存档 / 加管线时就出现、序列化时才用
+static pthread_mutex_t g_par_cmu = PTHREAD_MUTEX_INITIALIZER;
+static dispatch_group_t g_par_ser_grp;          // 在写的批（单测等它）
+static uint64_t g_par_w_t0, g_par_w_n0;         // 预热第一次记下的时刻与当时已写条数（par_flush_bg 报进度）
+// 写一批（后台）：序列化、改名、写索引；构建目录只删「本批开攒后、下一批开攒前」新出现的（下一批的还要留给它自己序列化）
+static void par_ser_batch(id<MTLBinaryArchive> a, NSArray<NSString *> *keys, NSSet<NSString *> *before) {
     NSString *name = [NSString stringWithFormat:@"batch-%llx-%d.metalarchive", (unsigned long long)clock_gettime_nsec_np(CLOCK_REALTIME), getpid()];
     NSString *path = [g_par_dir stringByAppendingPathComponent:name], *temp = [path stringByAppendingString:@".tmp"];
-    NSMutableArray<NSString *> *keys = [NSMutableArray array]; NSError *e = nil; BOOL ok = NO;
+    BOOL ok = NO;
     pthread_mutex_lock(&g_par_wmu); int lk = par_ga_lock();
-    NSSet<NSString *> *before = par_ga_list(0);
-    // #618：已在收局就不写（par_may_write）
-    if (!par_may_write()) { par_ga_unlock(lk); pthread_mutex_unlock(&g_par_wmu); return; }
+    if (!par_may_write()) { par_ga_unlock(lk); pthread_mutex_unlock(&g_par_wmu); return; }   // #618：已在收局就不写
     @autoreleasepool {
-        id<MTLBinaryArchive> a = [g_dev newBinaryArchiveWithDescriptor:[MTLBinaryArchiveDescriptor new] error:&e];
-        // 加管线与序列化不取 error（11-23 #756 根修）：唯一留下现场的那次真崩 = serializeToURL:error: 失败返回后 ARC retain 写回的 NSError 时总线错——
-        //   Metal 在失败路径交回的 error 指针返回那一刻就已失效，读它（哪怕只是 ARC 的写回 retain）就崩。失败只看返回值、计数（g_par_ser_failed），这一批下次再写
-        for (NSArray *it in todo) { id desc = it[1];
-            BOOL one = a && ([desc isKindOfClass:MTLRenderPipelineDescriptor.class] ? [a addRenderPipelineFunctionsWithDescriptor:desc error:nil] : [a addComputePipelineFunctionsWithDescriptor:desc error:nil]);
-            if (one) [keys addObject:it[0]]; else atomic_fetch_add(&g_par_write_failed, 1); }
-        if (keys.count && ![a serializeToURL:[NSURL fileURLWithPath:temp] error:nil]) atomic_fetch_add(&g_par_ser_failed, 1);
-        else if (keys.count) ok = rename(temp.fileSystemRepresentation, path.fileSystemRepresentation) == 0;
+        // 序列化不取 error（11-23 #756 根修）：Metal 在失败路径交回的 error 指针返回那一刻就已失效，读它（哪怕只是 ARC 的写回 retain）就崩。失败只看返回值、计数
+        if (![a serializeToURL:[NSURL fileURLWithPath:temp] error:nil]) atomic_fetch_add(&g_par_ser_failed, 1);
+        else ok = rename(temp.fileSystemRepresentation, path.fileSystemRepresentation) == 0;
     }
-    par_ga_remove_new(before);
+    pthread_mutex_lock(&g_par_cmu); NSSet *next = g_par_cur ? g_par_cur_before : nil; pthread_mutex_unlock(&g_par_cmu);
+    NSMutableSet *mine = [NSMutableSet setWithSet:next ?: par_ga_list(0)]; [mine minusSet:before];
+    par_ga_remove_new_set(mine);
     if (ok) {   // the index after the file: a line always names a file that is there
         NSMutableString *lines = [NSMutableString string]; for (NSString *k in keys) [lines appendFormat:@"%@\t%@\n", k, name];
         FILE *f = fopen([g_par_dir stringByAppendingPathComponent:@"batches.tsv"].fileSystemRepresentation, "a");
@@ -321,31 +318,38 @@ static void par_write_batch(NSArray<NSArray *> *items) {
     }
     par_ga_unlock(lk); pthread_mutex_unlock(&g_par_wmu);
     if (!ok) { unlink(temp.fileSystemRepresentation);
-               if (atomic_fetch_add(&g_par_write_failed, 1) < 4) MLOG("【红】 pipeline archive: cannot write the batch %s (%lu pipelines): %s (serializations failed so far %llu)", name.UTF8String, (unsigned long)keys.count, e ? e.localizedDescription.UTF8String : "serializing failed (Metal's error not read), or rename / index failed", (unsigned long long)atomic_load(&g_par_ser_failed)); return; }
+               if (atomic_fetch_add(&g_par_write_failed, 1) < 4) MLOG("【红】 pipeline archive: cannot write the batch %s (%lu pipelines): serializing failed (Metal's error not read), or rename / index failed (serializations failed so far %llu)", name.UTF8String, (unsigned long)keys.count, (unsigned long long)atomic_load(&g_par_ser_failed)); return; }
     pthread_mutex_lock(&g_par_mu); for (NSString *k in keys) { g_par_bmap[k] = name; [g_par_have addObject:k]; } pthread_mutex_unlock(&g_par_mu);
     atomic_fetch_add(&g_par_written, keys.count);
 }
-static int g_par_writer;                                                 // the writer is running (g_par_mu)
-static uint64_t g_par_w_t0, g_par_w_n0;
-static void par_writer(void) { @autoreleasepool {
-    for (;;) @autoreleasepool {
-        pthread_mutex_lock(&g_par_mu);
-        NSUInteger n = MIN(g_par_todo.count, (NSUInteger)PAR_BATCH); NSArray *batch = n ? [g_par_todo subarrayWithRange:NSMakeRange(0, n)] : nil;
-        if (n && !atomic_load(&g_par_closing)) [g_par_todo removeObjectsInRange:NSMakeRange(0, n)]; else { batch = nil; g_par_writer = 0; }
-        pthread_mutex_unlock(&g_par_mu);
-        if (!batch) break;
-        par_write_batch(batch);   // whatever is noted when the writer comes round, up to PAR_BATCH a file
-    }
-} }
+static void par_ser_async(id<MTLBinaryArchive> a, NSArray<NSString *> *keys, NSSet<NSString *> *before) {
+    static dispatch_once_t once; dispatch_once(&once, ^{ g_par_ser_grp = dispatch_group_create(); });
+    dispatch_group_async(g_par_ser_grp, s2a_qos_global(S2A_QOS_IO_BG), ^{ par_ser_batch(a, keys, before); });
+}
+// 摘下正攒着的这一批（g_par_cmu 持有）
+static void par_cur_take(id<MTLBinaryArchive> *a, NSArray<NSString *> **keys, NSSet<NSString *> **before) {
+    *a = g_par_cur_keys.count ? g_par_cur : nil; *keys = g_par_cur_keys; *before = g_par_cur_before;
+    g_par_cur = nil; g_par_cur_keys = nil; g_par_cur_before = nil;
+}
+// 预热线程编完一条（par_write_in_place）：当场加进这一批
 static void par_note(NSString *key, id desc) {
     if (g_par_nowrite || atomic_load(&g_par_closing)) return;   // #756：上次死在写归档里，这个系统版本不再写；#618：在收局
-    pthread_mutex_lock(&g_par_mu);
-    if (!g_par_todo) g_par_todo = [NSMutableArray array];
-    [g_par_todo addObject:@[key, desc]];
-    int start = !g_par_writer; g_par_writer = 1;
-    if (start && !g_par_w_t0) { g_par_w_t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW); g_par_w_n0 = atomic_load(&g_par_written); }
+    pthread_mutex_lock(&g_par_mu); BOOL have = [g_par_have containsObject:key];
+    if (!g_par_w_t0) { g_par_w_t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW); g_par_w_n0 = atomic_load(&g_par_written); }
     pthread_mutex_unlock(&g_par_mu);
-    if (start) dispatch_async(s2a_qos_global(S2A_QOS_IO_BG), ^{ par_writer(); });
+    if (have) return;
+    id<MTLBinaryArchive> full = nil; NSArray<NSString *> *fkeys = nil; NSSet<NSString *> *fbefore = nil;
+    pthread_mutex_lock(&g_par_cmu);
+    if (![g_par_cur_keys containsObject:key]) @autoreleasepool {
+        if (!g_par_cur) { g_par_cur_before = par_ga_list(0); g_par_cur = [g_dev newBinaryArchiveWithDescriptor:[MTLBinaryArchiveDescriptor new] error:nil]; g_par_cur_keys = [NSMutableArray array]; }
+        // 加管线不取 error（同上 #756）
+        BOOL one = g_par_cur && ([desc isKindOfClass:MTLRenderPipelineDescriptor.class] ? [g_par_cur addRenderPipelineFunctionsWithDescriptor:desc error:nil]
+                                                                                        : [g_par_cur addComputePipelineFunctionsWithDescriptor:desc error:nil]);
+        if (one) [g_par_cur_keys addObject:key]; else atomic_fetch_add(&g_par_write_failed, 1);
+        if (g_par_cur_keys.count >= PAR_BATCH) par_cur_take(&full, &fkeys, &fbefore);
+    }
+    pthread_mutex_unlock(&g_par_cmu);
+    if (full) par_ser_async(full, fkeys, fbefore);
 }
 // #618：进程正常收局（runtime/src/lifecycle.c s2a_host_shutdown 一开头经 dlsym 调，两个 _exit(0) 出口之前）：不再起新的一批写。
 //   正在写的那一批不等（收局有 1.5 s 兜底，丢一批下次再写），它随 _exit 结束；不留任何标记，下一局照常写
@@ -355,12 +359,15 @@ void s2a_pso_archive_exit(void) {
     atomic_store(&g_par_closing, 1);
     pthread_mutex_unlock(&g_par_mkmu);
 }
-// After the prewarm: how far the writer is (it goes on until what the prewarm noted is written)
+// 预热结束：没攒满的一批也写掉，报进度（写在后台接着走）
 static void par_flush_bg(void) {
-    pthread_mutex_lock(&g_par_mu); unsigned long left = (unsigned long)g_par_todo.count; uint64_t t0 = g_par_w_t0, n0 = g_par_w_n0; pthread_mutex_unlock(&g_par_mu);
+    id<MTLBinaryArchive> a = nil; NSArray<NSString *> *keys = nil; NSSet<NSString *> *before = nil;
+    pthread_mutex_lock(&g_par_cmu); par_cur_take(&a, &keys, &before); pthread_mutex_unlock(&g_par_cmu);
+    if (a) par_ser_async(a, keys, before);
+    pthread_mutex_lock(&g_par_mu); uint64_t t0 = g_par_w_t0, n0 = g_par_w_n0; pthread_mutex_unlock(&g_par_mu);
     if (!t0) return;
-    MLOG("pipeline archive: %llu pipelines the prewarm compiled written so far in %.1f s beside it, %lu still to write (Metal build folders removed so far %llu)",
-         (unsigned long long)(atomic_load(&g_par_written) - n0), (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0) / 1e9, left, (unsigned long long)atomic_load(&g_par_ga_removed));
+    MLOG("pipeline archive: %llu pipelines the prewarm compiled written so far in %.1f s, the last %lu being written (added to a batch as each was compiled, no second compile; Metal build folders removed so far %llu)",
+         (unsigned long long)(atomic_load(&g_par_written) - n0), (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0) / 1e9, (unsigned long)keys.count, (unsigned long long)atomic_load(&g_par_ga_removed));
 }
 static _Atomic uint64_t g_par_dedup, g_par_dedup_ns;   // 等了别人在编的同一条：次数、总等待
 // 只读计数（单测按事件判、不量墙钟，t_nvn_pso_inflight）：进入「等别人在编的同键」的次数；编完时慢编译定时器还没到的次数。不改行为
