@@ -2962,13 +2962,15 @@ static int ev_wait(volatile uint32_t *val, uint32_t mode, uint32_t v, const uint
     return 0;
 }
 static void ts_clk(void);
+static int ts_mode(void);
 void mtl_sub_counter(uint64_t addr, uint32_t type) {
-    // #653: legacy Metal does not implement the nvn_gpu per-report timestamp contract.
-    // Count this unsupported capability at its real entry point; preserve legacy feedback.
-    if (type == NVN_COUNTER_TYPE_TIMESTAMP || type == NVN_COUNTER_TYPE_TIMESTAMP_TOP) {
-        static _Atomic uint64_t unsupported;
-        uint64_t n = atomic_fetch_add(&unsupported, 1) + 1;
-        if (n && !(n & (n - 1))) MLOG("per-report GPU timestamp unsupported on legacy Metal (count=%llu); retaining legacy counter feedback", (unsigned long long)n);
+    // Timestamp reports (#653): their time comes from ts_mode (logged once when first asked). Only the submission mode, where every report of one
+    //   submission reads the same time, is worth a count here; the segment modes give each report its own segment's GPU start / end (Metal 4 and Metal 3 alike).
+    //   This used to say "unsupported on legacy Metal" on every backend, a Metal 4 run included, and sent a diagnosis down the wrong path (11-25)
+    if ((type == NVN_COUNTER_TYPE_TIMESTAMP || type == NVN_COUNTER_TYPE_TIMESTAMP_TOP) && ts_mode() == 0) {
+        static _Atomic uint64_t same;
+        uint64_t n = atomic_fetch_add(&same, 1) + 1;
+        if (n && !(n & (n - 1))) MLOG("counter timestamp reports: %llu so far, one time per submission (gpu_timestamps off): reports in one submission read the same time", (unsigned long long)n);
     }
     sbw_note(addr, 16, SBW_REPORT); post((post_op){2, NULL, 0, 0, addr, type, NULL, g_seg}); ts_clk();
 }
