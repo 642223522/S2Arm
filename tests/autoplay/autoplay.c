@@ -337,13 +337,15 @@ static void route_record(void) {
     LOG("固定路线录像：推左摇杆向前 %.1f 秒，存 %d 张（拍空 %d），录像期间出图 %.1f 帧/秒 → %s", secs, n, miss, fps, out);
     if (gs_n) LOG("固定路线录像：main+0x%llx（f32）%d 次读数 均值 %.3f、范围 %.3f–%.3f", (unsigned long long)gs_off, gs_n, gs_sum / gs_n, gs_lo, gs_hi);
 }
-// 固定路线的起点快照（S2A_AP_ROUTE_SNAP=<目录>，非恢复局）：MARK 后画面稳了原地存一份即时存档、等存完，之后两局（原帧率 / 60 帧）都从它恢复录像——
-//   起点就是自动玩家判过可操控的游戏场景，不靠起局后定时（MARK 早晚每局差几十秒）。存了回 1（这局不录），没设回 0
+// 固定路线的起点快照（S2A_AP_ROUTE_SNAP=<目录>）：画面稳了原地存一份即时存档、等存完，之后的对照局都从它恢复——
+//   非恢复局（after_replay 0）：MARK 后存，起点就是自动玩家判过可操控的游戏场景，不靠起局后定时（MARK 早晚每局差几十秒）；
+//   恢复局（after_replay 1，docs/对照局模板.md「挪起点」）：从旧起点恢复、手柄录像放完后在走到的地方存新起点（旧起点不合适时：社区存档只有一份、落在水面上之类）。
+//   存了回 1（这局不录），没设回 0
 #pragma weak s2a_snap_request_save
 #pragma weak s2a_snap_exists
 int s2a_snap_request_save(const char *dir); int s2a_snap_exists(const char *dir);
-static int route_snap_save(void) {
-    const char *d = getenv("S2A_AP_ROUTE_SNAP"); if (!d || !*d || getenv("S2A_SNAP_RESTORE")) return 0;
+static int route_snap_save(int after_replay) {
+    const char *d = getenv("S2A_AP_ROUTE_SNAP"); if (!d || !*d || (getenv("S2A_SNAP_RESTORE") && !after_replay)) return 0;
     if (!s2a_snap_request_save || !s2a_snap_exists) { LOG("【红】未实现：固定路线起点快照（宿主没有即时存档接口）"); return 1; }
     settle(2.0); int rc = s2a_snap_request_save(d); uint64_t t0 = real_ns();
     if (rc) { LOG("【红】固定路线起点快照：请求被拒 %d → %s", rc, d); return 1; }
@@ -353,7 +355,7 @@ static int route_snap_save(void) {
 }
 static void speed_probe(void) {
     const char *e = getenv("S2A_AP_SPEED"); if (!e) return;
-    if (!strcmp(e, "route")) { int sg = s2a_ap_seg_open("固定路线录像", 1); if (!route_snap_save()) route_record(); s2a_ap_seg_close(sg); return; }
+    if (!strcmp(e, "route")) { int sg = s2a_ap_seg_open("固定路线录像", 1); if (!route_snap_save(0)) route_record(); s2a_ap_seg_close(sg); return; }
     if (!strcmp(e, "ab")) { int sg = s2a_ap_seg_open("逻辑速度同局 A/B", 1); g_ab_retry = speed_ab(); s2a_ap_seg_close(sg); return; }
     if (strcmp(e, "1")) return;
     if (speed_probe_once()) return;
@@ -1157,6 +1159,7 @@ static void *ap_main(void *a) {
         int sg = s2a_ap_seg_open(route ? "固定路线录像" : "固定输入回放", 1);
         int played = route ? (route_record(), 1) : padrec_play(getenv("S2A_AP_PADREC"), now_ns() + 3600ull * 1000000000ull);
         uint64_t f_end = s2a_ap_frames(); s2a_ap_seg_close(sg);
+        if (!route && played) route_snap_save(1);   // 挪起点：放完手柄录像、原地存新起点（没设 S2A_AP_ROUTE_SNAP 时不存）
         LOG("对照局：%s段 帧 %llu–%llu（%llu 帧）%s", route ? "路线录像" : "固定输入回放", (unsigned long long)f_mark, (unsigned long long)f_end, (unsigned long long)(f_end - f_mark), played ? "" : "；【红】回放没放成");
         snprintf(fin_why, sizeof fin_why, "对照局（即时存档恢复）：%s", played ? "固定输入喂完" : "回放没放成"); goto finish; }
     // 基线：首帧后 3 秒、每秒一窗
