@@ -741,11 +741,14 @@ def save_identity_args():
     return ['--save-identity', si] if si else []
 
 
+# 包键首词 = 包号（Info.plist S2ABuildID，ipa_tail.py build_id）前缀：Windows 出的包一律写 win（11-25：原先写的是维护方一台出包机的名字，
+#   玩家在 Windows 上出的包号也带着它，分诊把玩家报修当成内部测试）。包号只用于显示与诊断（关于本包、设置页、浮层、诊断包），
+#   不参与推送续传、资源包比对和已装包更新判断，换前缀不会让已装的包被当成新包；包名（--bundle-id 缺省 io.github.s2arm.<款>）不动——它变了 iOS 就当成另一个 App
 def ipa(run, w, game, shell, bundle_id, suffix=''):
     title = subprocess.run([PY, '-X', 'utf8', str(R / 'pack/display_name.py'), str(w), '--title'], capture_output=True, text=True, encoding='utf-8').stdout.strip()
     env = dict(os.environ, PYTHONUTF8='1')
     run.step('ipa 收尾', lambda: run.sh([PY, '-X', 'utf8', str(R / 'pack/ipa_tail.py'), '--work', str(w), '--game', game, '--shell', str(shell),
-                                        '--bundle-id', bundle_id or f'io.github.s2arm.{game}', '--suffix', suffix, '--key', f'tianyan {game}',
+                                        '--bundle-id', bundle_id or f'io.github.s2arm.{game}', '--suffix', suffix, '--key', f'win {game}',
                                         '--title', title, '--sign', 'none', *save_identity_args()], 'ipa_tail.log', env=env))
     return w / 'pkg' / f'{game}.ipa', title
 
@@ -766,7 +769,7 @@ def Early(run, a, cur, game):
         suffix = a.suffix if a.suffix is not None else 'Win'
         with open(log, 'w', encoding='utf-8', newline='\n') as f:
             p = subprocess.run([PY, '-X', 'utf8', str(R / 'pack/ipa_tail.py'), '--work', str(w), '--game', game, '--shell', str(a.shell),
-                                '--bundle-id', a.bundle_id or f'io.github.s2arm.{game}', '--suffix', suffix, '--key', f'tianyan {game} early',
+                                '--bundle-id', a.bundle_id or f'io.github.s2arm.{game}', '--suffix', suffix, '--key', f'win {game} early',
                                 '--title', title, '--sign', 'none', *save_identity_args()], stdout=f, stderr=subprocess.STDOUT, env=dict(os.environ, PYTHONUTF8='1'), cwd=R)
         if p.returncode or not (w / 'pkg' / f'{game}.ipa').is_file(): raise RuntimeError(f'早期包没出成（ipa_tail 退 {p.returncode}，见 {log}）')
         return w
