@@ -13962,6 +13962,18 @@ static drv2_last g_drv2_cache[6];
 static uint64_t g_drv_cache_hits;
 // Arena-generation-keyed cache for DRV0 (graphics stages only; compute writes g_c0_dim_buf/off patched in-place by dispatch) and DRV2:
 // avoids allocating & zeroing DRV_SIZE (2.5 KB) + filling 305 handle slots on every encode_args when SSBO / handle tables did not change.
+// c0 (DRV0) layout, measured:
+// Compute also has the dispatch size at 0x200 (x, y, z) and the uniform buffer table at 0x210 + 16 r (address 64 bits, size 32 bits), ending where the storage buffer table
+// starts (0x310). Measured on Link's Awakening's light culling (light_culling_compute.bfsha): tile index = workgroup y × c0[0x200] + workgroup x, and c0[0x280] is
+// the address of uniform buffer 7 (the light parameters, 144 bytes per light); Breath of the Wild's compute shaders read 0x280 / 0x290 / 0x2d0 of the same table
+// Graphics stages: 0x610, right after the pixel stage's storage buffer table, holds the largest point size, to which GLSLC clamps a shader-written
+// gl_PointSize (Super Mario Odyssey's agl point sprites, alPointSpriteShader: gl_PointSize = min(size attribute, c0[0x610])). It is not SetPointSize: the game
+// sets that to 1 and sizes its sprites itself (the fog splats ask for 3-18 px). Left at 0, every sprite had size 0, so the splats that push the Cap Kingdom
+// fog aside never reached its velocity fields and the fog did not part around Mario. 2047 is Maxwell's point size limit (Metal clamps to its own)
+// Graphics stages: 0x644 holds the draw's base instance. Maxwell's instance ID leaves it out (GL's gl_InstanceID), and GLSLC adds this word where a shader needs the
+// absolute instance (gl_InstanceID + gl_BaseInstance): Pokémon Legends: Z-A's occlusion boxes (a793f436dcabd350, one box per draw at base instance 61, 62, …) pick their
+// transform this way, and 1,550 reads in 793 of its vertex shaders. Left at 0, every box was box 0: all six queries came back empty, and the game, taking its characters for
+// hidden, posed their legs straight back from the hips. 0x640 (read by 58 shaders, added to the vertex ID) stays 0: what the driver puts there is not established
 static uint64_t drv0_fill(int nvn_stage, int mesh_kind, __unsafe_unretained id<MTLBuffer> *out_buf) {
     int base = c0_ssbo_base(nvn_stage, mesh_kind);
     // An indirect draw whose base instance was hoisted (binst_hoist, #2247) writes into its own pre-allocated slice: the GPU copies the draw's base instance to its 0x644
@@ -13992,6 +14004,12 @@ static uint64_t drv0_fill(int nvn_stage, int mesh_kind, __unsafe_unretained id<M
     for (int r = 0; r < 16; r++) { uint64_t a = S.ubo[5][r].addr; uint32_t n = (uint32_t)S.ubo[5][r].size; memcpy(d + 0x210 + 16 * r, &a, 8); memcpy(d + 0x210 + 16 * r + 8, &n, 4); }
     *out_buf = db; return dgpu;
 }
+// c2 (DRV2) handle tables:
+// A shader with dynamic handle arrays (TEXD / SAMPD, profile key tex_dyn_slots) picks a table slot at run time and ORs a texture word with a sampler word into a handle,
+// whose texture / sampler IDs index the arrays. For it the tables hold slot indices instead of handles (texture slot r → r, and r << 20 when a combined handle carries
+// a sampler; sampler slot r → r << 20), and the arrays hold the bound slots, so the shader's own arithmetic picks the binding (Octopath Traveler 0: separate texture slots 0-10, samplers 0-4)
+// A shader with pools (TEXP / SAMPP, pool_gpu) indexes them with the IDs it reads, which in the game's own memory are the bound pool's: pool_gpu adds that pool's base. Its
+// tables therefore hold the handles as the game bound them, without the base bind_rec / bh_fresh added (nvn_obj.h), so a handle taken from c2 lands on the same entry
 static uint64_t drv2_fill(int nvn_stage, int dyn, int tb, int sb, __unsafe_unretained id<MTLBuffer> *out_buf) {
     const uint64_t *tx = S.tex[nvn_stage], *im = S.img[nvn_stage], *sm = S.samp[nvn_stage];
     drv2_last *c = &g_drv2_cache[nvn_stage < 6 ? nvn_stage : 5];
