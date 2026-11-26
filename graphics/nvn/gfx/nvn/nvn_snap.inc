@@ -626,8 +626,8 @@ int nvn_snap_thumb(const char *src, const char *dst, int w, int h) {
     MLOG("%s即时存档：缩略图 %d×%d %s %s", ok ? "" : "【黄】 ", w, h, ok ? "存到" : "没存成", dst);
     return ok ? 0 : -1;
 }
-// 验证截图：取「下一次出图」的画面。取图钩子只有一个槽，自动玩家截图等也用它，后来的请求会把前面的回调盖掉（11-17：iPhone 上第 5 / 20 秒两张逐字节相同、
-//   Mac 上第 20 秒那张等不到）：3 秒没等到就重新请求，最多 3 次；回调里记下截自第几帧
+// 验证截图：取「下一次出图」的画面（mtl_grab_next_present）。取图请求原先只有一个槽，后来的把前面的回调盖掉（11-17：iPhone 上第 5 / 20 秒两张逐字节相同、
+//   Mac 上第 20 秒那张等不到）；11-26 起多个请求一起等下一次出图、各自都拿到。3 秒没等到就重新请求（最多 3 次）留着兜出图停住的局；回调里记下截自第几帧
 int nvn_snap_grab(const char *path) {
     for (int attempt = 1; attempt <= 3; attempt++) {
         __block int done = 0; char *pp = strdup(path); int at = attempt;

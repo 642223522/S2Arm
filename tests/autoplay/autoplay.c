@@ -1136,8 +1136,15 @@ static void *ap_main(void *a) {
     const char *stage = "等首帧"; char fin_why[400] = ""; int marked = 0, steps = 0, replayed = 0; uint64_t t_first = 0, t_mark = 0, f_mark = 0;
     // 等首帧（首帧前按键会把游戏弄卡）：出图停 / 墙钟按 run_left 兜底
     g_last_new_f_t = real_ns();
-    while (!poll_digest(0.5)) { if (run_left_s() < end_left) { snprintf(fin_why, sizeof fin_why, "导航卡住（离收局只剩 %.0f 秒还没出首帧）", run_left_s()); goto finish; }
-        if ((real_ns() - g_last_new_f_t) / 1e9 > (getenv("S2A_SNAP_RESTORE") ? 900 : 120)) { snprintf(fin_why, sizeof fin_why, "120 秒没出首帧"); goto finish; } }   // 即时存档恢复局：进程要先排显卡局槽，首帧可能很晚
+    // 出图帧数在涨、截图却一直拿不到（11-26：上屏取图请求被别的请求盖掉后再也不来，游戏照常出帧、自动玩家永远等首帧；即时存档恢复局的首帧兜底是 900 秒，
+    //   比局时还长，整局连红都不报）：宿主已出 ≥ 30 帧、S2A_AP_NOSHOT_S（缺省 30）真秒一张截图都没拿到，当场报红收局
+    const uint64_t f_wait0 = s2a_ap_frames(); const char *nse = getenv("S2A_AP_NOSHOT_S"); const double noshot_s = nse && atof(nse) > 0 ? atof(nse) : 30;
+    while (!poll_digest(0.5)) {
+        if (s2a_ap_frames() - f_wait0 >= 30 && (real_ns() - g_last_new_f_t) / 1e9 > noshot_s) {
+            LOG("【红】自动玩家：出图帧数在涨（等首帧期间出了 %llu 帧）、截图 %.0f 秒一张没拿到", (unsigned long long)(s2a_ap_frames() - f_wait0), noshot_s);
+            snprintf(fin_why, sizeof fin_why, "出图在涨、截图拿不到（%.0f 秒）", noshot_s); goto finish; }
+        if (run_left_s() < end_left) { snprintf(fin_why, sizeof fin_why, "导航卡住（离收局只剩 %.0f 秒还没出首帧）", run_left_s()); goto finish; }
+        { const int lim = getenv("S2A_SNAP_RESTORE") ? 900 : 120; if ((real_ns() - g_last_new_f_t) / 1e9 > lim) { snprintf(fin_why, sizeof fin_why, "%d 秒没出首帧", lim); goto finish; } } }   // 即时存档恢复局：进程要先排显卡局槽，首帧可能很晚
     t_first = now_ns(); LOG("自动玩家：首帧（帧 %llu，%.1f 秒）", (unsigned long long)g_cur_f, secs(t_first));
     // 对照局（docs/对照局模板.md）：从同一份即时存档恢复（S2A_SNAP_RESTORE）的局恢复完就在局内、各局起点同一刻，不走导航、不问视觉模型
     //   （导航 / 学过的路线回放会把人挪走，起点就不同了）。首帧后等画面稳 5 秒记 MARK，然后按下面两种之一喂固定输入，喂完收局（按进度结束，不按墙钟）：
