@@ -19878,8 +19878,24 @@ API_AVAILABLE(macos(26.0), ios(26.0))
 static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> dst, const int crop[4], int uv_i);
 // Game picture needed by the whole-window screenshot (front end window_shot; no longer does drawViewHierarchy on a Metal layer with the display link attached): at the next present, the present thread draws the same frame
 // with the same encoding as the present (present_encode) into an offscreen texture of the same size as the swapchain, and after the GPU finishes hands out a CGImage in the completion callback (the callback does not block the present). Guarded by g_shotq_mu
-static void (^g_grab_cb)(const uint8_t *bgra, size_t w, size_t h, size_t row);   // S2Arm: raw BGRA8 bytes (valid only during the call), no CGImage: the caller copies them once
-void mtl_grab_next_present(void (^cb)(const uint8_t *bgra, size_t w, size_t h, size_t row)) { pthread_mutex_lock(&g_shotq_mu); g_grab_cb = [cb copy]; pthread_mutex_unlock(&g_shotq_mu); }
+// S2Arm: raw BGRA8 bytes (valid only during the call), no CGImage: the caller copies them once.
+// 11-26: several requests wait together and all get the same next present. It used to be one slot: a later request replaced the earlier callback without calling it, and a caller
+//   that keeps one request armed until its callback runs (the autoplayer's screenshots, host_adapt.m shot_arm) never asked again — after an instant-save restore the verification
+//   screenshots took the slot and about one restored run in four never got a screenshot (2 of 8 runs, frames presented all along). mtl_grab_next_present(nil) still clears them all
+//   (session teardown); a request beyond GRAB_MAX is answered at once with no picture (cb(NULL, 0, 0, 0)), never dropped
+typedef void (^grab_cb_t)(const uint8_t *bgra, size_t w, size_t h, size_t row);
+enum { GRAB_MAX = 8 };
+static grab_cb_t g_grab_cbs[GRAB_MAX]; static int g_grab_n;   // under g_shotq_mu
+void mtl_grab_next_present(grab_cb_t cb) {
+    pthread_mutex_lock(&g_shotq_mu);
+    int full = 0;
+    if (!cb) { for (int i = 0; i < g_grab_n; i++) g_grab_cbs[i] = nil; g_grab_n = 0; }
+    else if (g_grab_n < GRAB_MAX) g_grab_cbs[g_grab_n++] = [cb copy];
+    else full = 1;
+    pthread_mutex_unlock(&g_shotq_mu);
+    if (full) { static int said; if (said++ < 4) MLOG("【黄】 full-window screenshot: more than %d requests waiting for the next present; this one gets no picture", GRAB_MAX); cb(NULL, 0, 0, 0); }
+}
+static int grab_pending(void) { pthread_mutex_lock(&g_shotq_mu); int n = g_grab_n; pthread_mutex_unlock(&g_shotq_mu); return n; }
 // S2Arm full-screen check (10-26): the same judgement, thresholds and log lines as the generic present layer graphics/metal/gal_present.m (shared in graphics/metal/fit_judge.h); the run executors
 //   (tools/dev_run.sh) read "【红】出图未满屏" from host.log, and before this the direct present never wrote it, so every direct run read as full screen whatever it showed.
 //   Geometry: on every present, the picture's viewport (present_encode's rule: aspect kept, filled when within 1%) narrower than the screen by more than 2 pixels, except a frame the core keeps
@@ -19985,8 +20001,7 @@ int mtl_fit_judge_shot(uint64_t tok, const uint8_t *p, size_t w, size_t h, size_
 //   上屏线程照上屏同一编码画一份离屏图），回调里只拷一份字节，判定交后台队列（不占上屏线程与 GPU 完成回调；10-30 d2r 判据在上屏线程跑过 2.4% 慢帧）。
 //   自动玩家已挂着取图请求时让路（返回 0，不抢它的图）；判不判仍由 fit_pick 定（至少隔 30 次出图）。建议调用方 ≤ 1 次 / 秒。返回 1 = 已请求
 int mtl_fit_sample(void) {
-    pthread_mutex_lock(&g_shotq_mu); int busy = g_grab_cb != nil; pthread_mutex_unlock(&g_shotq_mu);
-    if (busy) return 0;
+    if (grab_pending()) return 0;
     mtl_grab_next_present(^(const uint8_t *bgra, size_t w, size_t h, size_t row) {
         uint64_t tok = mtl_grab_fit_token(); if (!tok || !bgra || !w || !h) return;
         uint8_t *cp = malloc(row * h); if (!cp) return; memcpy(cp, bgra, row * h);
@@ -20024,8 +20039,10 @@ static NSError *grab_test_err(NSError *e) {
 }
 static void grab_present(id<MTLTexture> src, const int crop[4], CGSize sz, uint64_t ticket) {
     if (atomic_load(&g_grab_busy)) return;
-    pthread_mutex_lock(&g_shotq_mu); void (^cb)(const uint8_t *, size_t, size_t, size_t) = g_grab_cb; g_grab_cb = nil; pthread_mutex_unlock(&g_shotq_mu);
-    if (!cb) return;
+    pthread_mutex_lock(&g_shotq_mu); int ncb = g_grab_n; NSMutableArray *cbs = [NSMutableArray arrayWithCapacity:(NSUInteger)ncb];
+    for (int i = 0; i < ncb; i++) { [cbs addObject:g_grab_cbs[i]]; g_grab_cbs[i] = nil; } g_grab_n = 0; pthread_mutex_unlock(&g_shotq_mu);
+    if (!ncb) return;
+    void (^cb)(const uint8_t *, size_t, size_t, size_t) = ^(const uint8_t *px, size_t cw, size_t chh, size_t cr) { for (grab_cb_t one in cbs) one(px, cw, chh, cr); };   // every waiting request, same bytes
     size_t w = (size_t)sz.width, h = (size_t)sz.height, row = w * 4;
     // S2Arm: the offscreen texture and readback buffer are kept for the next grab of the same size. The autoplayer asks about 20 times a second; a fresh full-window texture and buffer
     //   each time showed up as 707 of 1844 samples of the main thread in IOKit (Breath of the Wild, 10 s Time Profiler, botw_1025095845_2). Only the present path calls this (one thread)
@@ -20950,7 +20967,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     //   11-02 饥荒：游戏往没放宽的 1920 目标上画，真机 2.17 屏左右留黑边，Mac 普查无窗口局从不判几何、截图又按画面自己的比例出，满屏判「过」（假绿）
     if (!layer) { NSUInteger icw = pcw, ich = pch;   // game units (pcw x pch above; was the crop / source size read here)
         float ky = s2a_widen_ky(); fit_geom(16.0 / 9.0 * s2a_widen_k() / (ky > 0 ? ky : 1) * ich, ich, icw, ich); }
-    if (!layer) { if (g_grab_cb) grab_present(src, crop, nolayer_sz, ticket); return 0; }   // nolayer_sz (above; the same expression on the canvas)
+    if (!layer) { if (grab_pending()) grab_present(src, crop, nolayer_sz, ticket); return 0; }   // nolayer_sz (above; the same expression on the canvas)
     if (!g_m3 && g_present_layer_resident != layer) { [g_q4 addResidencySet:layer.residencySet]; g_present_layer_resident = layer; }   // the layer's residency set is macOS / iOS 26 on; Metal 3 presents through the command buffer
 #if TARGET_OS_OSX
     if (!layer.displaySyncEnabled) layer.displaySyncEnabled = YES;   // Windowed mode follows the display's vsync to prevent tearing
@@ -20977,7 +20994,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     if (layer.pixelFormat == MTLPixelFormatRGB10A2Unorm)
         nvn2_hdr_tick_frame(nvn2_hdr_layer_sw(), src.pixelFormat == MTLPixelFormatRGB10A2Unorm);   // sw = 层视角开关（PR-B 终稿）：S4 开而玩家 off 时 want 期间不排空——层由 S4 持住（喂玩家开关会把 SDR 帧两帧排空、层掉回 S0，S4 失载体）
     fit_geom(layer.drawableSize.width, layer.drawableSize.height, pcw, pch);   // game units (was the crop / source size read here)
-    if (g_grab_cb) grab_present(src, crop, layer.drawableSize, ticket);   // Game picture needed by the whole-window screenshot (peek without the lock first; the real take locks inside the function)
+    if (grab_pending()) grab_present(src, crop, layer.drawableSize, ticket);   // Game picture needed by the whole-window screenshot (the take itself locks again inside the function)
     // PR3d：HDR 窗口（PQ 码值）不出图补帧（nvn_present_fi.inc 同 8 位 sRGB 假设——输入缩拷 / 补出帧画布全 BGRA8Unorm）；SDR 帧照常交给补帧（旁路逐帧判，不碰补帧自己的开关状态）
     int hdr_byp = present_hdr_bypassed(src);
     if (!hdr_byp && fi_wanted() && !supplied) { if (@available(macOS 26.0, iOS 26.0, *)) { int fr = fi_frame(src, crop, layer, period, ticket); if (fr >= 0) return fr; } }   // 实验：出图补帧接手这一帧
