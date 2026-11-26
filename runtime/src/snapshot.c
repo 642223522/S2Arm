@@ -449,9 +449,9 @@ static _Atomic(const char *) g_snap_layer;
 static _Atomic uint64_t g_snap_tick;
 static _Atomic int g_snap_done_once, g_snap_abandoned, g_snap_dog_on;
 // 逐层实占（存档途中被系统按内存收掉的诊断，玩家包也开）：每层一行「进入时实占 / 层内峰值 / 层内离上限最少」，层内长循环的进度报点顺手采样。
-//   一次存档约 20 行。离上限 = s2a_host_mem_avail（iPhone：os_proc_available_memory；Mac：系统随时能收回给本进程的部分）。只在存档线程上调
+//   一次存档约 20 行。离上限 = s2a_host_mem_avail（iPhone：os_proc_available_memory；Mac：系统随时能收回给本进程的部分）。只在存档 / 恢复线程上调（两者不同时跑）
 uint64_t s2a_host_mem_avail(void);   // hostmem_apple.c
-static const char *g_fp_layer; static uint64_t g_fp_in, g_fp_peak, g_fp_minav;
+static const char *g_fp_layer; static uint64_t g_fp_in, g_fp_peak, g_fp_minav, g_fp_said;   // g_fp_said：本层上次「涨到」行的实占
 static void snap_fp_sample(uint64_t *fp, uint64_t *av) {
     task_vm_info_data_t vi; mach_msg_type_number_t c = TASK_VM_INFO_COUNT;
     *fp = task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vi, &c) == KERN_SUCCESS ? vi.phys_footprint >> 20 : 0;
@@ -464,8 +464,10 @@ static void snap_fp_flush(void) {
 }
 void s2a_snap_progress(const char *layer) {
     { uint64_t fp, av; snap_fp_sample(&fp, &av);
-      if (layer) { snap_fp_flush(); g_fp_layer = layer; g_fp_in = g_fp_peak = fp; g_fp_minav = av; }
-      else if (g_fp_layer) { if (fp > g_fp_peak) g_fp_peak = fp; if (av < g_fp_minav) g_fp_minav = av; } }
+      if (layer) { snap_fp_flush(); g_fp_layer = layer; g_fp_in = g_fp_peak = g_fp_said = fp; g_fp_minav = av; }
+      else if (g_fp_layer) { if (fp > g_fp_peak) g_fp_peak = fp; if (av < g_fp_minav) g_fp_minav = av;
+          // 层内每涨 512 MB 当场记一行：层行要等出层才打，在层里被系统按内存收掉时（iPhone 恢复局图形阶段）一行都留不下
+          if (fp >= g_fp_said + 512) { g_fp_said = fp; LOG("即时存档实占：「%s」层内涨到 %llu MB、离上限 %llu MB", g_fp_layer, (unsigned long long)fp, (unsigned long long)av); } } }
     if (layer) atomic_store(&g_snap_layer, layer);
     atomic_store(&g_snap_tick, clock_gettime_nsec_np(CLOCK_UPTIME_RAW));
     const char *st = layer ? getenv("S2A_SNAP_TEST_STALL") : NULL;   // 看门狗实测用：存档走到这一层时停 20 秒（模拟卡住）
