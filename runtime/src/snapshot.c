@@ -698,9 +698,12 @@ const char *s2a_snap_path(const char *v) {
     s2a_docs_path(o, sizeof buf[0], "%s", v); return o;
 }
 static void *snap_timer(void *arg) {
-    (void)arg; long sec = atol(getenv("S2A_SNAP_AT")); const char *dir = s2a_snap_path(getenv("S2A_SNAP_DIR"));
+    (void)arg; long sec = atol(getenv("S2A_SNAP_AT"));
     int s2a_thread_alive_count(void);
     while (s2a_thread_alive_count() == 0) usleep(200000);   // 从游戏线程起来算（进程可能先排很久显卡局槽）
+    // 相对路径等游戏起来后再按文档根解析：本线程由构造函数在进程一开始就起，那时多款容器还没冻结启动上下文（S2A_DOCS = Documents/games/<号>），
+    //   早解析会落到 Documents 根下，而恢复局按 games/<号> 找，存下的快照永远找不到（11-25 iPhone 实测三局全拒）
+    const char *dir = s2a_snap_path(getenv("S2A_SNAP_DIR"));
     sleep((unsigned)sec);
     LOG("即时存档：游戏起来后 %ld 秒到点，开始存档 → %s", sec, dir);
     { int z = 0; if (!atomic_compare_exchange_strong(&g_snap_busy, &z, 1)) { LOG("【黄】即时存档：定时到点时正在存，跳过"); return NULL; } }
@@ -711,8 +714,9 @@ static void *snap_timer(void *arg) {
 #include "s2a_session.h"
 static void snap_restart_cb(int rc, const char *why, void *ctx) { (void)ctx; LOG("即时存档：进程内重启%s%s%s", rc ? "没成：" : "已开始", rc && why ? why : "", ""); }
 static void *snap_restart_timer(void *arg) {
-    (void)arg; long sec = atol(getenv("S2A_SNAP_RESTART_AT")); const char *dir = strdup(s2a_snap_path(getenv("S2A_SNAP_RESTART_DIR")));   // 留一份（s2a_snap_path 回的是轮转的静态缓冲，连着几次要跨几分钟）
+    (void)arg; long sec = atol(getenv("S2A_SNAP_RESTART_AT"));
     int s2a_thread_alive_count(void); while (s2a_thread_alive_count() == 0) usleep(200000);
+    const char *dir = strdup(s2a_snap_path(getenv("S2A_SNAP_RESTART_DIR")));   // 游戏起来后再解析（同 snap_timer：启动上下文冻结前文档根还不是这一款的）；留一份（s2a_snap_path 回的是轮转的静态缓冲，连着几次要跨几分钟）
     // S2A_SNAP_RESTART_REPEAT=<次数>（缺省 1）：连着回到快照几次，每次都等上一次重建完、再过同样的秒数（量连续恢复的内存 / 残留用）
     long rep = 1; { const char *r = getenv("S2A_SNAP_RESTART_REPEAT"); if (r && atol(r) > 1) rep = atol(r); }
     for (long i = 0; i < rep; i++) {
