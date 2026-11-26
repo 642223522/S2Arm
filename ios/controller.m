@@ -850,6 +850,13 @@ static void pad_face_sync(void) {
     GCController *old[S2A_IOS_MAX_PADS];
     for (int i = 0; i < S2A_IOS_MAX_PADS; i++) { old[i] = _slotOwner[i]; _slotId[i] = NULL; _slotOwner[i] = nil; }
     for (int j = 0; j < n; j++) if (slot_of[j] >= 0) { _slotId[slot_of[j]] = ids[j]; _slotOwner[slot_of[j]] = ctrls[j]; }
+    // 系统玩家号（#2142）：分到槽的手柄按槽号设 playerIndex（玩家灯固定亮第 N 颗），没分到的清掉。一般 iOS 游戏都会设；有的兼容 Pro 手柄
+    //   （D-FZCQ / D-4X5W 同型、盖世小鸡启明星 NS 蓝牙）没被分配玩家号就不送体感：打开传感器后只回 1 个全 0 样本，原装 Pro 不在乎（约 240 个 / 秒）
+    for (GCController *c in GCController.controllers) {
+        GCControllerPlayerIndex want = GCControllerPlayerIndexUnset;
+        for (int i = 0; i < S2A_IOS_MAX_PADS && i <= GCControllerPlayerIndex4; i++) if (_slotOwner[i] == c) { want = (GCControllerPlayerIndex)i; break; }
+        if (c.playerIndex != want) { c.playerIndex = want; LOG("系统手柄：%s 玩家号 %ld", (c.vendorName ?: @"GameController").UTF8String, (long)want + 1); }
+    }
     pthread_mutex_lock(&g_feedback_mu);
     if (atomic_load(&g_ble_ready)) ble_slot_set_locked(ble_slot);   // 掉线由 ble_status 自己让槽；这里只在还连着时换槽
     pthread_mutex_unlock(&g_feedback_mu);
