@@ -841,6 +841,7 @@ static void pad_face_sync(void) {
         for (int k = 0; k < m; k++) { ids[k] = ids2[k]; ctrls[k] = ctrls2[k]; }
         for (int k = m; k < n; k++) ctrls[k] = nil;
         n = m;
+        s2a_slot_rank_cap(rank, n, s2a_pad_cap());   // 游戏限人数：空位不占名额（D-VYNF，同 Mac）
         s2a_slot_pin(_slotId, ids, rank, n, S2A_IOS_MAX_PADS);
     }
     int slot_of[9];
@@ -1188,6 +1189,7 @@ static void pad_selection_check(void) {
 void s2a_controller_attach(UIView *root, void (^touchEnabled)(BOOL)) {
     if (g_controller) return;
     g_controller = [[S2AController alloc] initWithRoot:root touchEnabled:touchEnabled];
+    s2a_pad_cap_hook = s2a_ios_pad_order_changed;   // 游戏限人数变了（手柄设置小程序）：立刻按压缩后的名次重排
     [g_controller setForeground:YES];
     S2ATouchWatch *watch = [S2ATouchWatch new];   // 不吃游戏 / 虚拟按键的触摸（同 diag.m 四指长按的设法）
     watch.cancelsTouchesInView = NO; watch.delaysTouchesBegan = NO; watch.delaysTouchesEnded = NO;
