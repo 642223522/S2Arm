@@ -65,12 +65,7 @@ __attribute__((format(printf, 1, 2))) static inline void s2a_log_line2(const cha
     if (p != b) free(p);
 }
 
-#if defined(__ANDROID__) || defined(__OHOS__)
-// Android/OHOS 地址窗口：平台实现先按最大值整块保留（platform/vawin_android.inc），起局时
-// svc_mem 用 s2a_layout_need 算出本款跨度再 s2a_window_trim 收缩。非 Android 由 vawin.c
-// 直接按本款跨度预留，不再使用这个最大值常量。
-#define S2A_WIN_SIZE (72ull << 30)   // 63 GiB 别名区 + 栈区 2 GiB（Horizon 真值）+ 堆 + 模块放得下（layout_android.inc）
-#endif
+#include "s2a_window.h"   // S2A_WIN_SIZE：安卓 / 鸿蒙地址窗口最大值（唯一来源）
 void s2a_log_session_start(void);   // iOS 主线程：正式激活才轮换日志 / 切 fd / 起控制台副本；幂等
 // energy.c：进程能耗分账（快照单位：纳秒 / 纳焦；s2a_energy_log 打「上次调用以来」一行）
 typedef struct { uint64_t wall, cpu, pcpu, nj, pnj, cyc, pcyc, intr, idle; double gpu_ms, gpu_clk_ms; int ok_g; } s2a_esnap;   // gpu_ms：直连层 GPU 忙累计毫秒（时间，非能耗；ok_g = 有直连层）
